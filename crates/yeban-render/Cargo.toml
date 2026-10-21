@@ -57,6 +57,13 @@ yeban-model.workspace = true
 # `cargo test -p yeban-render` / `-p yeban-mcp` **不编 `cpal`**。
 # ⚠ `--workspace` 全量构建仍会为 `yeban-app` 编 `cpal` —— ⛔ 本行不声称"整仓不编 cpal"。
 yeban-engine = { workspace = true, default-features = false }
+# ⭐ `#274`（`ADR-0011` 的 SFZ 那一半）：引擎的 SFZ 摊平入口需要
+# `yeban_sfz::parser::ParseLimits`（`SfzInstrument::load`／`load_with_includes` 的第二参），
+# 而 `yeban-engine` **没有 re-export** 那个类型 ⇒ 这里只加这一条成员依赖。
+# 第三方包集合不变（`yeban-sfz` 的外部依赖只有 `thiserror`，已在树里）。
+# ⚠ ⛔ **不下移 `yeban-decode`**：解码留在调用方当 provider（`ArmedSfzInput` 接的是
+# **已经解码**的 PCM），否则 `symphonia`／`rubato` 会进渲染栈（`#270` 的禁区）。
+yeban-sfz.workspace = true
 # 共用纯数学 DSP 原语: 确定性 xorshift RNG 与标量块混音 [ARCH-RT-001] [ARCH-DET-001]。
 # 版本由根清单钉死; 本 crate 不改变它的版本, 只把 feature 显式说清。
 yeban-dsp.workspace = true

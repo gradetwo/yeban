@@ -609,7 +609,7 @@ pub fn render_project_f32_with_plans_under(
             }
             // ⭐ 与引擎侧同形（`NoteSchedule::with_track_gain`）：轨增益乘在**乐器层输出之外**。
             // ⭐ `#255`：`--sfz` 旁路也吃**轨声相** —— 值来自 [`crate::audio_clip::track_pan_gains`]
-            //    （与 MIDI 振荡器路径／MCP 的 `SamplerTrackSource` 同一条等功率曲线）。
+            //    （与引擎乐器路径／MCP 的采样器轨同一条等功率曲线）。
             //    `pan == 0` ⇒ `(1.0, 1.0)` ⇒ 导出字节逐位不变。
             .with_track_gain(track_gain)
             .with_pan(track_pan_of(
@@ -627,7 +627,7 @@ pub fn render_project_f32_with_plans_under(
         for track_id in renderable.clone() {
             // ⭐ `#255`：**采样器轨也乘 pan**。修前这里按 `snapshot.sfz().contains_key`
             // 分流、把绑了采样器的轨钉成 `(1.0, 1.0)`（对齐当时**不应用**声相的 MCP
-            // `SamplerTrackSource`）。现在 MCP 那边也在同一个源上乘**同一条**曲线 ⇒
+            // 采样器源）。⭐ `#274`：MCP 的采样器轨也走同一个 `EngineTrackSource` ⇒
             // 分流取消，全部走 [`track_pan_of`]（它内部是 `audio_clip::track_pan_gains`）。
             // `render_track` 输出的是**声相之前**的单声道 ⇒ 在这里注入 pan（`#251` 的落点不变）。
             let pan = track_pan_of(project, track_id, pan_gates.contains_key(&track_id));

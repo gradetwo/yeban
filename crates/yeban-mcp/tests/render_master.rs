@@ -5344,45 +5344,13 @@ fn the_known_unsupported_list_is_not_decoration() {
             render_or_ok(&project, "audio-absent")
         }),
     ));
-    // ⑫ `sfzLoopExpansion`：采样器区域要求循环（`loop_mode=loop_continuous`）。
-    triggers.push((
-        "sfzLoopExpansion",
-        Box::new(|| {
-            let dir = scratch.join("loop-sfz");
-            fs::create_dir_all(&dir).expect("建目录");
-            write_constant_wav(&dir.join("c.wav"), 0.5, 480, 48_000);
-            fs::write(
-                dir.join("l.sfz"),
-                "<region> sample=c.wav key=69 loop_mode=loop_continuous loop_start=0 loop_end=400\n",
-            )
-            .expect("写 loop sfz");
-            let path = dir.join("l.sfz").display().to_string();
-            render_or_ok(&project_with_sampler(Some(&path)), "sfz-loop")
-        }),
-    ));
-    // ⑭ `sfzRegionEnvelope`：命中的区域声明了 `ampeg_*`（本渲染器不应用幅度包络）。
-    triggers.push((
-        "sfzRegionEnvelope",
-        Box::new({
-            let scratch = &scratch;
-            move || {
-                let dir = scratch.join("env-sfz");
-                fs::create_dir_all(&dir).expect("建目录");
-                write_constant_wav(&dir.join("e.wav"), 0.5, 480, 48_000);
-                fs::write(
-                    dir.join("e.sfz"),
-                    "<region> sample=e.wav key=69 ampeg_attack=0.5 ampeg_release=0.5\n",
-                )
-                .expect("写带包络的 sfz");
-                let path = dir.join("e.sfz").display().to_string();
-                render_or_ok(&project_with_sampler(Some(&path)), "sfz-env")
-            }
-        }),
-    ));
     // ⑬ `sfzTrackPan` **已退役**（`#255`）：采样器轨的 pan 现在真的生效（与 MIDI 源
     //    共用 `track_pan_gains`），因此清单里没有它、这里也**没有**触发器。
     //    正向判据见 `a_sampler_track_with_pan_applies_the_same_curve_as_midi`。
-    // ⑮ `sfzAmplitude`：命中区域声明了 `amplitude=50`（线性百分比，不在 `total_gain()` 里）。
+    // ⑮ `sfzAmplitude`：命中区域声明了 **`amplitude_oncc1`（CC 调制）**。
+    //    ⭐ `#274`：静态 `amplitude` 已由引擎的 SFZ 支路应用 ⇒ 那个触发器退役；
+    //    仍为真的是 **CC 那一半**（本层没有 CC 状态）。见
+    //    `sfz_amplitude_is_reported_only_for_the_cc_half` 的两臂正对照。
     triggers.push((
         "sfzAmplitude",
         Box::new({
@@ -5393,11 +5361,11 @@ fn the_known_unsupported_list_is_not_decoration() {
                 write_constant_wav(&dir.join("m.wav"), 0.5, 480, 48_000);
                 fs::write(
                     dir.join("m.sfz"),
-                    "<region> sample=m.wav key=69 amplitude=50\n",
+                    "<region> sample=m.wav key=69 amplitude_oncc1=20\n",
                 )
                 .expect("写带 amplitude 的 sfz");
                 let path = dir.join("m.sfz").display().to_string();
-                render_or_ok(&project_with_sampler(Some(&path)), "sfz-amplitude")
+                render_or_ok(&project_with_sampler(Some(&path)), "sfz-amplitude-cc")
             }
         }),
     ));
@@ -5439,47 +5407,6 @@ fn the_known_unsupported_list_is_not_decoration() {
             }
         }),
     ));
-    // ⑱ `sfzSampleSpan`：命中区域声明了 `offset` / `end`（本渲染器不按 span 切片）。
-    triggers.push((
-        "sfzSampleSpan",
-        Box::new({
-            let scratch = &scratch;
-            move || {
-                let dir = scratch.join("span-sfz");
-                fs::create_dir_all(&dir).expect("建目录");
-                write_constant_wav(&dir.join("s.wav"), 0.5, 480, 48_000);
-                fs::write(
-                    dir.join("s.sfz"),
-                    "<region> sample=s.wav key=69 offset=100 end=400\n",
-                )
-                .expect("写带 offset/end 的 sfz");
-                let path = dir.join("s.sfz").display().to_string();
-                render_or_ok(&project_with_sampler(Some(&path)), "sfz-span")
-            }
-        }),
-    ));
-
-    // ⑲ `sfzRegionLayering`：**多于一条**区域命中同一音符（本渲染器只取第一条，引擎叠加）。
-    triggers.push((
-        "sfzRegionLayering",
-        Box::new({
-            let scratch = &scratch;
-            move || {
-                let dir = scratch.join("layer-sfz");
-                fs::create_dir_all(&dir).expect("建目录");
-                write_constant_wav(&dir.join("l.wav"), 0.5, 480, 48_000);
-                fs::write(
-                    dir.join("l.sfz"),
-                    "<region> sample=l.wav key=69 volume=-6\n\
-                     <region> sample=l.wav key=69 volume=-6\n",
-                )
-                .expect("写双层 sfz");
-                let path = dir.join("l.sfz").display().to_string();
-                render_or_ok(&project_with_sampler(Some(&path)), "sfz-layering")
-            }
-        }),
-    ));
-
     // 清单与触发器**逐条重合**（两方向都查：少一个触发器 ⇒ 清单腐烂；多一个 ⇒ 清单漏登记）。
     let listed: Vec<&str> = KNOWN_UNSUPPORTED_KEYS.to_vec();
     let covered: Vec<&str> = triggers.iter().map(|(key, _)| *key).collect();
@@ -5515,28 +5442,82 @@ fn the_known_unsupported_list_is_not_decoration() {
     }
 }
 
-/// ⭐ `#273` 判据 1/2：层叠登记的**两方向** —— 两条区域命中同一音符 ⇒ 必须出现；
-/// 一条区域 ⇒ ⛔ 不许出现（触发器不是恒真）。
+/// ⭐ `#273` 判据（`#274` 的迁移后形态）：**双层区域真的叠加，且不再登记**。
 ///
-/// 为什么单独一条：`the_known_unsupported_list_is_not_decoration` 只逼"能出现"，
-/// 而第 324 条的缺陷形状正好是"报了但报不全"与"没报"一样坏 —— 一个恒真的键同样坏
-/// （它会在每一份单层 SFZ 上说假话）。这里两条腿共用**同一份**渲染路径。
+/// 两条腿共用同一份渲染路径：
+/// * 单层 ⇒ `sfzRegionLayering` **不出现**（触发器不是恒真）；
+/// * 双层 ⇒ 也**不出现**（⭐ `#274`：引擎把**每一条**命中区域都建成声部并叠加 ⇒
+///   这个键已退役），且 `peak.before` 必须显著高于单层 —— 证明"不报"是因为
+///   **真的做到了**，不是因为把输入弄丢了（第 324 条的反向证明）。
 #[test]
-fn sfz_region_layering_is_reported_only_when_two_regions_match_the_same_note() {
+fn sfz_region_layering_is_applied_and_no_longer_reported() {
     let scratch = Scratch::new("region-layering");
     let dir = scratch.join("region-layering");
     fs::create_dir_all(&dir).expect("建目录");
     write_constant_wav(&dir.join("tone.wav"), 0.5, 480, 48_000);
     let cases = [
-        (
-            "single",
-            "<region> sample=tone.wav key=69 volume=-6\n",
-            false,
-        ),
+        ("single", "<region> sample=tone.wav key=69 volume=-6\n"),
         (
             "layered",
             "<region> sample=tone.wav key=69 volume=-6\n\
              <region> sample=tone.wav key=69 volume=-6\n",
+        ),
+    ];
+    let mut peaks = Vec::new();
+    for (tag, text) in cases {
+        let sfz = dir.join(format!("{tag}.sfz"));
+        fs::write(&sfz, text).expect("写 sfz");
+        let path = sfz.display().to_string();
+        let response = render_or_ok(&project_with_sampler(Some(&path)), tag);
+        let unsupported = response["data"]["unsupported"]
+            .as_array()
+            .unwrap_or_else(|| panic!("{tag}: 响应必须带 unsupported: {response}"));
+        println!("### [{tag}] unsupported（逐字）: {unsupported:?}");
+        assert!(
+            !unsupported.iter().any(|value| value == "sfzRegionLayering"),
+            "⭐ `{tag}`: `sfzRegionLayering` 已退役（引擎叠加全部区域）⇒ 不许再出现: \
+             {unsupported:?}"
+        );
+        peaks.push(
+            response["data"]["peak"]["before"]
+                .as_f64()
+                .unwrap_or_else(|| panic!("{tag}: 必须带 peak.before: {response}")),
+        );
+    }
+    let ratio = peaks[1] / peaks[0];
+    println!(
+        "### 双层 / 单层 峰值比 = {ratio:.6}（single={:.9} layered={:.9}）",
+        peaks[0], peaks[1]
+    );
+    assert!(
+        ratio > 1.5,
+        "双层必须真的叠加（两条区域各 -6 dB ⇒ 约 2×）: ratio={ratio}（single={} layered={}）",
+        peaks[0],
+        peaks[1]
+    );
+}
+
+/// ⭐ `#274` 判据 6：`sfzAmplitude` **收窄**的两条控制臂。
+///
+/// * 只写静态 `amplitude=50` ⇒ ⛔ **不出现**（引擎真的应用它 ⇒ 键退役）；
+/// * 只写 `amplitude_oncc1=20` ⇒ **出现**（本层没有 CC 状态 ⇒ 那一半仍为真）。
+///
+/// 两臂的 SFZ 只差一个 opcode ⇒ 任何"恒真 / 恒假"的实现都会有一条腿红。
+#[test]
+fn sfz_amplitude_is_reported_only_for_the_cc_half() {
+    let scratch = Scratch::new("amplitude-two-arms");
+    let dir = scratch.join("amplitude-two-arms");
+    fs::create_dir_all(&dir).expect("建目录");
+    write_constant_wav(&dir.join("a.wav"), 0.5, 480, 48_000);
+    let cases = [
+        (
+            "static",
+            "<region> sample=a.wav key=69 amplitude=50\n",
+            false,
+        ),
+        (
+            "cc",
+            "<region> sample=a.wav key=69 amplitude_oncc1=20\n",
             true,
         ),
     ];
@@ -5548,13 +5529,78 @@ fn sfz_region_layering_is_reported_only_when_two_regions_match_the_same_note() {
         let unsupported = response["data"]["unsupported"]
             .as_array()
             .unwrap_or_else(|| panic!("{tag}: 响应必须带 unsupported: {response}"));
-        let present = unsupported.iter().any(|value| value == "sfzRegionLayering");
+        let present = unsupported.iter().any(|value| value == "sfzAmplitude");
         println!("### [{tag}] unsupported（逐字）: {unsupported:?}");
         assert_eq!(
             present, expected,
-            "`{tag}`: `sfzRegionLayering` 的出现与否必须 = {expected}: {unsupported:?}"
+            "⭐ `{tag}`: `sfzAmplitude` 的出现与否必须 = {expected}（静态一半退役、CC 一半留）: \
+             {unsupported:?}"
         );
     }
+}
+
+/// ⭐ `#274` 判据 8：**声部窃取必须可见**（第 324 条：⛔ 不许静默少做）。
+///
+/// ## 为什么这一条必须有
+///
+/// `#274` 之前 MCP 的采样器轨是"逐音符烘 PCM"⇒ **永不丢声部**（20 个同时的音符就有
+/// 20 条 PCM）。现在它走引擎的 SFZ 声部池（`SFZ_VOICES_PER_TRACK = 16`）⇒ 池满会
+/// **窃取**。这是行为变化，必须能在响应里看见；否则用户会听到"少了几个音"而报告里
+/// 一个数都没有。
+///
+/// 夹具：一条采样器轨 ＋ **20 个同起点的不同音高**（`lokey=0 hikey=127` 的一条区域，
+/// 每个音符一个声部）⇒ 20 > 16 ⇒ 引擎窃取 4 条。读数进
+/// `data.sources[].sampler.voiceSteals`。
+///
+/// 反证：把 `EngineTrackSource::steal_counter` 的填回删掉 ⇒ `voiceSteals` 恒 `0`，
+/// 本判据当场红（打印的两组数字也会一起暴露）。
+#[test]
+fn a_sampler_track_over_sixteen_voices_reports_its_steals() {
+    let scratch = Scratch::new("sampler-steals");
+    let dir = scratch.join("steals-sfz");
+    fs::create_dir_all(&dir).expect("建目录");
+    write_constant_wav(&dir.join("s.wav"), 0.5, 48_000, 48_000);
+    fs::write(
+        dir.join("s.sfz"),
+        "<region> sample=s.wav lokey=0 hikey=127 pitch_keycenter=60 volume=-6\n",
+    )
+    .expect("写全音域 sfz");
+    let path = dir.join("s.sfz").display().to_string();
+
+    // 20 个同起点的音符（音高 60..79，互不相同 ⇒ 每个音符一条声部）。
+    let mut project = project(&Spec::default());
+    let lead = id(2);
+    let clip = id(10);
+    let mut notes = BTreeMap::new();
+    for index in 0..20u128 {
+        let note = id(200 + index as u32);
+        notes.insert(
+            note,
+            MidiNote::new(note, 0, 60 + u8::try_from(index).unwrap(), 480),
+        );
+    }
+    project.clip_pool.get_mut(&clip).expect("夹具片段").content = ClipContent::Midi { notes };
+    project.tracks.get_mut(&lead).expect("Lead 轨").sampler =
+        Some(yeban_model::SamplerBinding { path: path.clone() });
+    project.validate().expect("20 声部夹具必须合法");
+
+    let (_sha, _peak, response) = render_once(&scratch, "steals", &project);
+    let sampler = &response["data"]["sources"][0]["sampler"];
+    let steals = sampler["voiceSteals"]
+        .as_u64()
+        .unwrap_or_else(|| panic!("必须带 voiceSteals: {response}"));
+    let notes_reported = sampler["notes"]
+        .as_u64()
+        .unwrap_or_else(|| panic!("必须带 notes: {response}"));
+    println!(
+        "### 20 声部夹具: notes={notes_reported} voiceSteals={steals} label={}",
+        sampler["label"]
+    );
+    assert_eq!(notes_reported, 20, "20 个音符必须全部排程");
+    assert!(
+        steals > 0,
+        "⭐ 20 > 16 个同时声部 ⇒ 引擎的 SFZ 声部池必须窃取（读数不许恒 0）: {sampler}"
+    );
 }
 
 /// 渲染一次并要求成功（`unsupported` 判据用；失败即点名叫测试红）。

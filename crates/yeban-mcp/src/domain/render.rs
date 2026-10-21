@@ -56,19 +56,21 @@
 //! | `busTrackClips` | 非源节点（总线/主轨）上的片段没有渲染（只有源节点有音源） |
 //! | `sidechainRouting` | 侧链边按普通音频边处理（`yeban-render` 的既有边界） |
 //! | `masterPan` | Master 轨的 `pan` 没有应用（母带输出的声相由总线求和决定）。⚠ `master` 的 `volume_db` **有**应用，`TrackVolume` 自动化也走第二个站点（执行之后）。⚠ `#257`：`TrackPan` 落在**主总线**上的泳道因此仍登记 `automationLanes`（`supported: false`）—— 主总线没有声相落点 |
-//! | `sfzLoopExpansion` | ⭐ `#221`：采样器区域要求的**循环**没有展开（每个音符只响一遍，与 `yeban_render_sfz_wav` 同一句登记）。只在真的遇到循环区域时出现 |
-//! | `sfzRegionEnvelope` | ⭐ `#221`：命中的采样器区域声明了 `ampeg_*` 幅度包络，**本渲染器不应用**（缺省值 ⇒ 与引擎逐位相同）。只在真的声明了包络时出现 |
-//! | `sfzAmplitude` | ⭐ `#223`：命中区域的 **`amplitude` 一族**（静态值 ≠ 100，或 `amplitude*ccN`）没有应用。`PlaybackSpec::total_gain()` 只含 `volume × 力度 × 交叉淡化`；引擎在它**之外**另乘 `(amplitude + Σ delta)/100` ⇒ 本渲染器与引擎分叉。只在真的声明时出现 |
+//! | `sfzAmplitude` | ⭐ `#274`：命中区域的 **`amplitude_oncc*`（CC 调制那一半）** 没有求值 —— 静态 `amplitude` 已由引擎的 SFZ 支路应用；CC 增量需要 CC 状态，本层没有。**只**在真的声明了 CC 调制时出现（静态 `amplitude=50` ⇒ ⛔ 不报） |
 //! | `sfzTuneCcModulation` | ⭐ `#223`：命中区域的 **`tune` 的 CC 调制**（`tune*ccN`，`pitch*ccN` 亦归此族）没有求值 —— 基准 `tune` 已烘进 `pitch_ratio`，CC 增量需要 CC 状态，本层没有。只在真的声明时出现 |
 //! | `sfzVolumeCcModulation` | ⭐ `#223`：命中区域的 **`volume` 的 CC 调制**（`volume*ccN` / `gain_ccN`）没有求值 —— 基准 `volume` 已折进 `total_gain()`，CC 增量（dB）需要 CC 状态，本层没有。只在真的声明时出现 |
-//! | `sfzSampleSpan` | ⭐ `#223`：命中区域的 **`offset` / `end` 播放区间**没有归约 —— `PlaybackSpec::span` 已由 `yeban-sfz` 算好，但本渲染器把整份样本从 0 播到末尾。只在偏离缺省（`offset=0` ＋ `end=unspecified`）时出现 |
-//! | `sfzRegionLayering` | ⭐ `#273`：**多于一条区域命中同一音符**时，本渲染器只取**第一条**，而引擎（`sfz_instrument.rs` 的 `render_note_into`）**遍历全部命中并叠加** ⇒ 采样器轨的输出与监听/CLI 分叉。只在真的层叠时出现（单层区域 ⇒ ⛔ 不报） |
 //!
 //! ⚠ **`sfzSampler` 这个键已经退役**（`#221`）：`#220` 的第 324 条指出，模块文档
 //! 曾承诺"会把 `sfzSampler` 放进 `unsupported`"，而代码里**没有任何地方读 `sampler`**
-//! ⇒ 缺失连 `unsupported` 都不报。现在的处置是**真的支持**（`TrackV3.sampler` 走
-//! [`sfz::prepare_sampler`] 发声，读数进 `data.sources[].sampler`），因此那个键
-//! **不能**再出现在 `unsupported` 里 —— 报一个已经做到的键就是假话。
+//! ⇒ 缺失连 `unsupported` 都不报。现在的处置是**真的支持**（`TrackV3.sampler` 由引擎的
+//! SFZ 支路发声，读数进 `data.sources[].sampler`），因此那个键**不能**再出现在
+//! `unsupported` 里 —— 报一个已经做到的键就是假话。
+//!
+//! ⭐ **`#274`：循环 / 播放区间 / 幅度包络 / 双层也是同一条道理** —— 采样器轨改由
+//! 引擎的 SFZ 支路发声之后，引擎真的应用这四项（`PreparedRegion` 的
+//! `loop_mode`/`span`/`ampeg_*`、以及"每条命中区域一个声部"）⇒ 那四个键退役
+//! （17 → 13）。⚠ **声部池是 16 槽**：> 16 个同时声部会**窃取**，读数进
+//! `data.sources[].sampler.voiceSteals`（第 324 条：⛔ 不许静默少做）。
 //!
 //! ⚠ **`sfzTrackPan` 这个键也已经退役**（`#255`）：修前 MCP 的 [`SamplerTrackSource`]
 //! 与 CLI 的 SFZ 导出分支同口径地**不应用**声相，因此 `pan != 0` 时登记它；
@@ -234,8 +236,8 @@
 //!
 //! ⚠ **这不是只改文案**：`MidiSynthSource` 已退役，母带样本因此真的变了
 //! （`masterDigest` / `sha256` / `clippedSamples` 的旧→新读数见任务单 `#268` 的报告）。
-//! 绑定了 SFZ 采样器的轨仍由 `SamplerTrackSource` 发声（与 CLI 的 `--sfz` 旁路同形，
-//! `ADR-0011 D6` 明确不在替换面里），`sources[].sampler` 里另有读数。
+//! ⭐ `#274`：绑定了 SFZ 采样器的轨**也走这条引擎音源**（引擎的 SFZ 支路）——
+//! `SamplerTrackSource` / `sfz::prepare_sampler` 已退休，`sources[].sampler` 里另有读数。
 //!
 //! ## 削波**预警 + 建议 trim**（⭐ `#225`；⛔ **不自动改增益**）
 //!
@@ -403,7 +405,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 use serde_json::{Map, Value};
 
@@ -416,7 +418,7 @@ use yeban_model::{
 use yeban_render::dither::{BitDepth, quantize};
 // ⭐ `ADR-0011`（`#268`）：引擎音色源适配器（CSV：CLI 与 MCP 共用同一份实现）。
 // 本 crate ⛔ 不直接依赖 `yeban-engine`（`scripts/gates/check_mcp_dependency_direction.py`）。
-use yeban_render::engine_source::{EngineTimbre, EngineTrackSource};
+use yeban_render::engine_source::{ArmedSfzInput, ArmedSfzSample, EngineTimbre, EngineTrackSource};
 // 插入链的投影与"是否还有未消费参数"的判据都住在 `yeban-render`：MCP 不复制
 // 第二份白名单（`yeban-engine` 的投影是同一份规则的来源，但 MCP 不能依赖它）。
 use yeban_render::automation::{
@@ -544,10 +546,9 @@ pub const SILENT_SOURCE_KIND: &str = "silent";
 
 /// 音频源种类：⭐ `TrackV3.sampler` 绑定的**采样器音源**（`#221`）。
 ///
-/// 与 [`SOURCE_KIND`] 的区别是**发声体不同**：这个源不用引擎的复音合成器，
-/// 而是按 SFZ 区域从样本文件（或内存正弦回退）取音 —— 与 app 的
-/// `--track-sampler` / `--export-wav` **同一条音源路径**（`domain::sfz` 的
-/// `note_wave`／`prepare_sampler`）。
+/// ⭐ `#274`：它现在是**引擎的 SFZ 支路**（`render_track` 的第 3 参 = 快照里的摊平表）
+/// —— 与 CLI 的 `arm_pending_sfz` 同一条路径。本常量只负责**命名**
+/// （`has_sampler && has_midi`），⛔ 不再对应第二种音源实现。
 pub const SAMPLER_SOURCE_KIND: &str = "sfz-sampler";
 
 /// 音频源种类：采样器音符与音频片段**都有**的源。
@@ -569,16 +570,26 @@ pub const SAMPLER_MIXED_SOURCE_KIND: &str = "sfz-sampler+audio-clip";
 ///   清单里的**每一项**都必须在一个**具体输入**下真的出现在 `unsupported` 里
 ///   ⇒ 清单不会腐烂成一张"反正也不会被检查"的装饰表。
 ///
-/// ⚠ `#221` 之后 `sfzSampler` **不在**这里：采样器绑定现在真的被渲染（见
-/// [`SamplerTrackSource`]），报它就是在说假话。
+/// ⚠ `#221` 之后 `sfzSampler` **不在**这里：采样器绑定现在真的被渲染（`#274` 起由
+/// 引擎的 SFZ 支路发声），报它就是在说假话。
 ///
 /// ⚠ `#255` 之后 `sfzTrackPan` 也**不在**这里：采样器轨的 `pan` 现在真的生效
 /// （MCP 与 CLI 同时接上同一条等功率曲线），报它同样是在说假话。
 ///
-/// ⭐ `#273`：`sfzRegionLayering` 是本清单的**第 17 项**（修前 16 项）—— `#272`
-/// 实测"双层区域命中同一音符 ⇒ MCP 只取第一条、引擎叠加全部"，而响应里**没有任何
-/// 键**说这件事。相加的不是一个新概念，而是**已经存在却不被报**的分叉。
-pub const KNOWN_UNSUPPORTED_KEYS: [&str; 17] = [
+/// ⭐ `#274`：**17 → 13** —— 采样器轨改由引擎的 SFZ 支路发声之后，这四项
+/// **真的做到了**，报它们就是在说假话：
+///
+/// | 退役的键 | 为什么不再报 |
+/// | :--- | :--- |
+/// | `sfzLoopExpansion` | 引擎的 `PreparedRegion` 真的展开 `loop_mode`（`#91`） |
+/// | `sfzSampleSpan` | 引擎真的按 `offset`/`end` 切片（`span`，步 3） |
+/// | `sfzRegionEnvelope` | 引擎真的应用 `ampeg_*`（`#92`） |
+/// | `sfzRegionLayering` | 引擎把**每一条**命中区域都建成声部并叠加（⛔ 不再只取第一条） |
+///
+/// ⚠ `sfzAmplitude` **收窄不退役**：静态 `amplitude` 已由引擎应用，但
+/// `amplitude_oncc*` 需要 CC 状态（本层没有）⇒ 只有 **CC 那一半**仍登记。
+/// `sfzTuneCcModulation` / `sfzVolumeCcModulation` 同理（模型没有 CC 状态）。
+pub const KNOWN_UNSUPPORTED_KEYS: [&str; 13] = [
     "audioClips",
     "automationLanes",
     "busTrackClips",
@@ -590,10 +601,6 @@ pub const KNOWN_UNSUPPORTED_KEYS: [&str; 17] = [
     "noteSlide",
     "sidechainRouting",
     "sfzAmplitude",
-    "sfzLoopExpansion",
-    "sfzRegionEnvelope",
-    "sfzRegionLayering",
-    "sfzSampleSpan",
     "sfzTuneCcModulation",
     "sfzVolumeCcModulation",
 ];
@@ -1236,11 +1243,15 @@ pub struct SamplerReport {
     pub notes_unmatched: u64,
     /// 用文件样本发声的音符数。
     pub notes_using_file_sample: u64,
-    /// 回退内存正弦的音符数。
+    /// 回退内存正弦的音符数 —— ⭐ `#274` 起引擎的 SFZ 支路**没有回退**
+    /// （缺样本 ⇒ 静音 ＋ 计数）⇒ 本键恒 `0`；保留它是为了响应形状不破坏既有调用方，
+    /// 诚实的"没有样本"读数见 [`Self::notes_without_sample`]。
     pub notes_using_sine_fallback: u64,
+    /// ⭐ `#274`：有命中区域、但**没有任何已解码样本**的音符数（引擎静音 ＋ 计数）。
+    pub notes_without_sample: u64,
     /// 落在内建静音区域上的音符数。
     pub notes_using_builtin_silence: u64,
-    /// 落在要求循环的区域上的音符数（本实现不展开循环）。
+    /// 落在要求循环的区域上的音符数（⭐ `#274` 起引擎**真的**展开循环；这仍是读数）。
     pub notes_looping: u64,
     /// 真的读到的样本文件来源（升序去重）。
     pub sample_sources: Vec<String>,
@@ -1248,8 +1259,22 @@ pub struct SamplerReport {
     pub sample_failures: Vec<String>,
     /// 累计解码帧数。
     pub sample_frames_loaded: u64,
-    /// 命中的区域里声明了 `ampeg_*`（本渲染器**不应用**幅度包络）的个数。
+    /// 本次装载是否命中样本读盘上界（MCP 侧的三条上限；⛔ 不是"静默截断"）。
+    pub sample_reads_truncated: bool,
+    /// 命中的区域里声明了 `ampeg_*` 的个数（⭐ `#274` 起引擎**应用**包络；这仍是读数，
+    /// ⛔ 不再登记 `sfzRegionEnvelope`）。
     pub regions_with_envelope: u64,
+    /// ⭐ `#274`：**真的解码成功**的去重样本数（＝ 提供表长度；引擎摊平口径）。
+    pub decoded_samples: usize,
+    /// ⭐ `#274`：引擎摊平表报出的**缺样本路径**（升序去重；`silent` 里除内建静音
+    /// 以外的那一半）。
+    pub missing_sample_paths: Vec<String>,
+    /// ⭐ `#274`：**声部窃取**数（引擎 SFZ 声部池 16 槽；池满 ⇒ 窃取最老的声部）。
+    ///
+    /// 由渲染期的 [`EngineTrackSource::steal_counter`] 填回（构造期恒 `0`）——
+    /// 第 324 条：MCP 现在**会**窃取（> 16 个同时发声的声部），这件事必须能看见，
+    /// ⛔ 不许静默少做。
+    pub voice_steals: u64,
 }
 
 impl SamplerReport {
@@ -1266,17 +1291,19 @@ impl SamplerReport {
     ///   分档）：三档恒为 `0`，**原因串**逐条在 `sampleFailures` 里。
     #[must_use]
     pub fn label(&self) -> String {
+        // ⭐ `#274`：`samples` / `missing` 与 `silent` 现在是**引擎摊平表**的口径
+        // （`PreparedSfz` 的 `sample_count` / `missing_sample_paths` /
+        // `silent_region_count`）—— 与 CLI 的 `sfz_decode_label` **同一个来源**，
+        // 因此两侧的 `sfz(...)` 行逐字相同。
         let missing: Vec<&str> = self
-            .sample_failures
+            .missing_sample_paths
             .iter()
-            .map(|failure| missing_path_of(failure))
+            .map(String::as_str)
             .collect();
         format!(
             "sfz(tracks=1 regions={} samples={} silent={} missing={missing:?} \
              unreadable(not_found=0,unsupported=0,other=0))",
-            self.regions,
-            self.sample_sources.len(),
-            self.silent_regions,
+            self.regions, self.decoded_samples, self.silent_regions,
         )
     }
 
@@ -1292,23 +1319,20 @@ impl SamplerReport {
             "notesUnmatched": self.notes_unmatched,
             "notesUsingFileSample": self.notes_using_file_sample,
             "notesUsingSineFallback": self.notes_using_sine_fallback,
+            "notesWithoutSample": self.notes_without_sample,
             "notesUsingBuiltinSilence": self.notes_using_builtin_silence,
             "notesLooping": self.notes_looping,
             "sampleSources": self.sample_sources,
             "sampleFailures": self.sample_failures,
             "sampleFramesLoaded": self.sample_frames_loaded,
+            "sampleReadsTruncated": self.sample_reads_truncated,
             "regionsWithEnvelope": self.regions_with_envelope,
+            "decodedSamples": self.decoded_samples,
+            "missingSamplePaths": self.missing_sample_paths,
+            "voiceSteals": self.voice_steals,
             "label": self.label(),
         })
     }
-}
-
-/// 从 `unreadable(<path>): <原因>` 里取回 `<path>`（[`SamplerReport::label`] 用）。
-fn missing_path_of(failure: &str) -> &str {
-    failure
-        .strip_prefix("unreadable(")
-        .and_then(|rest| rest.split("): ").next())
-        .unwrap_or(failure)
 }
 
 /// 一个源节点的渲染报告（进响应 `data.sources`）。
@@ -2238,9 +2262,38 @@ pub fn build(
     // ⭐ `#268`（`ADR-0011`）：**一次**快照投影，供全部 CPU 轨共用
     // （与 CLI 的 `render_core` 同一条装配；`Arc::clone` 只是指针复制）。
     // 失败 ⇒ 在**落盘之前**如实失败（不写一份"没有声部"的母带）。
-    let timbre = EngineTimbre::from_project(project).map_err(|error| {
+    //
+    // ⭐ `#274`：这里改成**武装入口** —— 快照投影之后立刻把 `sfz_pending()` 里每条轨
+    // 的样本摊平进快照（`SfzPlan::prepare_with_samples` ＋ `with_sfz`）。解码仍在本层
+    // 当 provider（⛔ `yeban-decode` 不下移进 `yeban-render`），引擎只接已解码 PCM。
+    //
+    // ⚠ 失败的**结构化**报文由 provider 捕获（`sampler_failure`）并在武装之后**原样**
+    // 抛回 ⇒ `samplerUnreadable` 的 `tried` 列表与 `#271` 的形状一字不变。
+    let mut sampler_loads: BTreeMap<EntityId, ArmedSamplerTrack> = BTreeMap::new();
+    let mut sampler_failure: Option<Fault> = None;
+    let timbre = EngineTimbre::from_project_armed(project, sample_rate as f32, |track, raw| {
+        match prepare_sampler_track(track, raw, project, project_path) {
+            Ok(armed) => {
+                // 解码表交给引擎（`(sample= 原样字符串, (PCM, 原始采样率))`）。
+                let resolved = armed.load.path.clone();
+                let samples = armed.samples.clone();
+                sampler_loads.insert(track, armed);
+                ArmedSfzInput::new(resolved, samples)
+            }
+            Err(fault) => {
+                if sampler_failure.is_none() {
+                    sampler_failure = Some(fault);
+                }
+                ArmedSfzInput::empty(raw)
+            }
+        }
+    });
+    if let Some(fault) = sampler_failure {
+        return Err(fault);
+    }
+    let timbre = timbre.map_err(|error| {
         render_failed(
-            format!("引擎快照投影失败: {error}"),
+            format!("引擎快照投影/武装失败: {error}"),
             serde_json::json!({
                 "reason": "engineSource",
                 "cause": error.message(),
@@ -2251,6 +2304,8 @@ pub fn build(
     let mut registry: BTreeMap<EntityId, Box<dyn AudioSource>> = BTreeMap::new();
     let mut pending: Vec<(EntityId, TrackSource)> = Vec::new();
     let mut reports: Vec<SourceReport> = Vec::new();
+    // ⭐ `#274`：逐轨的**声部窃取**句柄（渲染之后才有读数，见 `9a` 的同一条时机）。
+    let mut sampler_steals: BTreeMap<EntityId, Arc<AtomicU64>> = BTreeMap::new();
     let mut end_tick = 0u64;
     for &node in &source_nodes {
         let track = project.tracks.get(&node).ok_or_else(|| {
@@ -2263,12 +2318,13 @@ pub fn build(
             project,
             &timbre,
             track,
-            project_path,
             sample_rate,
             any_solo,
             assets,
             &mut asset_cache,
             &mut asset_reports,
+            &sampler_loads,
+            &mut sampler_steals,
             &mut unsupported,
             &mut counts,
         )?;
@@ -2401,6 +2457,13 @@ pub fn build(
     for report in &mut reports {
         if let Some(bits) = peak_taps.get(&report.node) {
             report.peak = f32::from_bits(bits.load(Ordering::Relaxed));
+        }
+        // ⭐ `#274`：采样器轨的**声部窃取**读数（与峰值同一个时机：渲染已结束，
+        //    只读原子；第 324 条 —— MCP 现在会窃取，这件事必须在响应里能看见）。
+        if let Some(counter) = sampler_steals.get(&report.node)
+            && let Some(sampler) = &mut report.sampler
+        {
+            sampler.voice_steals = counter.load(Ordering::Relaxed);
         }
     }
     // 10. 峰值归一化(抖动之前)。
@@ -2883,12 +2946,15 @@ fn channel_gain(span: &ClipSpan, channel: usize) -> f32 {
 ///
 /// ⭐ `#268`（`ADR-0011`）：`midi` 是 **`yeban-engine` 的引擎音源**
 /// （[`EngineTrackSource`]，与 CLI / 界面**同一份**实现）—— 本 crate 不再有正弦振荡器。
-/// `None` 的两种情形：① 该轨在快照里没有可发声音符（纯音频轨，不白建一台 109 KB 的
-/// 引擎）；② `sampler` 为 `Some`（`#221`：采样器轨由采样器音源发声，引擎那条路
-/// **不参与**，否则采样与复音会叠成两份声音）。
+/// `None` 的唯一情形：该轨在快照里没有可发声音符（纯音频轨，不白建一台 109 KB 的引擎）。
+///
+/// ⭐ `#274`：**采样器轨也走这一支**（`TrackV3.sampler` ⇒ 引擎的 SFZ 支路）；
+/// `sampler_bound` 只用于 `sources[].kind` 的命名 —— 它⛔ 不参与发声
+/// （旧的 `SamplerTrackSource` 已退休，⛔ 不再有第二份采样音源）。
 struct TrackSource {
     midi: Option<EngineTrackSource>,
-    sampler: Option<SamplerTrackSource>,
+    /// 本轨是否绑了 `TrackV3.sampler`（`kind` 命名用）。
+    sampler_bound: bool,
     clips: Vec<AudioClipSource>,
     /// ⭐ 本轨的 `TrackVolume` 自动化；`None` = 恒等快路径（没有可求值点 / 曲线处处
     /// 等于静态推子）。它在源输出**之后**乘 R55 比率，因此包含 MIDI、采样器与音频片段
@@ -2951,15 +3017,15 @@ impl TrackSource {
     }
 
     /// 源种类（响应 `sources[].kind`）。
+    ///
+    /// ⭐ `#274`：`has_sampler` 现在看 `sampler_bound`（不再有 `SamplerTrackSource`）——
+    /// 只影响**命名**，发声仍由 `midi` 那一支（引擎 SFZ 支路）负责。
     fn kind(&self) -> &'static str {
-        let has_sampler = self
-            .sampler
-            .as_ref()
-            .is_some_and(|sampler| !sampler.notes.is_empty());
         let has_midi = self
             .midi
             .as_ref()
             .is_some_and(|midi| midi.scheduled_notes() > 0);
+        let has_sampler = self.sampler_bound && has_midi;
         let has_audio = self.clips.iter().any(|clips| !clips.spans.is_empty());
         match (has_sampler, has_midi, has_audio) {
             (true, _, true) => SAMPLER_MIXED_SOURCE_KIND,
@@ -2980,9 +3046,6 @@ impl AudioSource for TrackSource {
         //    它是本容器的**第一路**，因此覆写不会抹掉别的贡献。
         if let Some(midi) = &mut self.midi {
             midi.render_block(context, out)?;
-        }
-        if let Some(sampler) = &mut self.sampler {
-            sampler.render_block(context, out)?;
         }
         for clips in &mut self.clips {
             clips.render_block(context, out)?;
@@ -3011,79 +3074,116 @@ impl AudioSource for TrackSource {
     }
 }
 
-/// ⭐ 一条**采样器轨**的音源（`#221`）：构造期已算好的逐音符单声道 PCM。
+/// ⭐ `#274`：一条采样器轨的**武装材料**（provider 交回；报告与读数用）。
 ///
-/// ## 与 app 的 `--track-sampler` 同一条音源（口径差如实登记）
-///
-/// | 维度 | app 的 `SfzTrackSource`（CLI 导出） | 本类型 |
-/// | :--- | :--- | :--- |
-/// | 区域选择 / 速率 / 总增益 | `yeban-sfz` 的公开读数（`playback_rate` / `playback_spec`） | **同一份**（`domain::sfz::note_wave`） |
-/// | 样本数据 | 读到文件 PCM，读不到回退内存正弦 | **同一份**（`domain::sfz::SampleCache`） |
-/// | 轨增益 | `track_gain_scale`（`mute`/`solo` × `volume_db`） | **同一个公式**（`audible` × `db_to_linear`） |
-/// | 声相 | ⭐ `#255`：`audio_clip::track_pan_gains`（`pan = 0` ⇒ `(1.0, 1.0)`） | ⭐ `#255`：**同一条**等功率曲线 [`pan_gains`]，经 [`track_pan_gains`] 与 MIDI 源共用 |
-/// | 末尾淡出 | 无 | 无（同上：与 CLI 逐位可比） |
-///
-/// ⭐ `#255`：本类型**乘 `pan_gains`**（与引擎音源共用 [`track_pan_gains`]），
-/// 因为 CLI 的两条采样器入口也乘了同一条曲线 ⇒ 同一 `pan` 下两侧左右比相同、
-/// 与 MIDI 路径同曲线。`pan == 0`（或非有限）走**恒等快路径**（两个声道都是
-/// `track_gain`，⛔ 不乘 `√2/2`）⇒ 居中工程的字节与接线前**逐位相同**。
-struct SamplerTrackSource {
-    /// 逐音符的 `(起始帧, 单声道 PCM)`（PCM 已含区域增益；⛔ 不含轨增益）。
-    notes: Vec<(u64, Vec<f32>)>,
-    /// 左声道增益（轨增益 × 声相左；`pan = 0` ⇒ 就是轨增益）。
-    gain_l: f32,
-    /// 右声道增益（轨增益 × 声相右；`pan = 0` ⇒ 就是轨增益）。
-    gain_r: f32,
+/// 为什么把 `SfzLoad` 留在这里：`data.sources[].sampler` 的读数（区域摘要 /
+/// 样本来源 / 读失败 / 累计帧数）本来就在装载期算好 —— 再算一遍会变成第二份口径。
+/// ⚠ 解码表**只**交出引擎需要的那一份（`sample=` 原样字符串 ＋ PCM ＋ 原始采样率）。
+struct ArmedSamplerTrack {
+    /// 本次装载的读数（与 `yeban_load_sfz` 工具同一份 `SfzLoad`）。
+    load: sfz::SfzLoad,
+    /// 交给引擎的解码表（`ArmedSfzSample` ＝ `(raw_path, (pcm, sample_hz))`）。
+    samples: Vec<ArmedSfzSample>,
+    /// 解码成功的 `sample=` 原样字符串（读数用；与 `samples` 的下标一一对应）。
+    decoded: BTreeSet<String>,
 }
 
-impl AudioSource for SamplerTrackSource {
-    fn render_block(&mut self, context: BlockContext, out: &mut [f32]) -> Result<(), RenderError> {
-        let channels = context.channels;
-        if channels == 0 {
-            return Ok(());
-        }
-        let frames = context.frames.min(out.len() / channels);
-        let block_start = context.first_frame;
-        let block_end = block_start.saturating_add(frames as u64);
-        for (note_start, pcm) in &self.notes {
-            let note_start = *note_start;
-            if block_end <= note_start {
-                continue;
-            }
-            let window_start = block_start.saturating_sub(note_start);
-            let window_end = (block_end - note_start).min(pcm.len() as u64);
-            if window_end <= window_start {
-                continue;
-            }
-            let lo = usize::try_from(window_start).unwrap_or(usize::MAX);
-            let hi = usize::try_from(window_end)
-                .unwrap_or(usize::MAX)
-                .min(pcm.len());
-            for (offset, sample) in pcm.iter().enumerate().take(hi).skip(lo) {
-                let frame_in_block = if note_start >= block_start {
-                    usize::try_from(note_start - block_start).unwrap_or(usize::MAX) + offset
-                } else {
-                    offset - lo
-                };
-                if frame_in_block >= frames {
-                    break;
+/// ⭐ `#274` 的 **provider 实现**：解析路径 → 装载 SFZ → 逐 `sample=` 解码。
+///
+/// ## 为什么解码留在这一侧（⛔ 不下移 `yeban-decode`）
+///
+/// `yeban-render` 是**离线渲染栈**：把 `symphonia` / `rubato` 放进去会让每个
+/// `cargo test -p yeban-render` 都编解码器栈，也违背 `yeban-mcp` 的"轻量 crate"边界
+/// （`#270` 的禁区）。因此本层把**已经解码**的 PCM 交出去，引擎只做摊平。
+///
+/// ## 与 CLI 的口径
+///
+/// 解码走 [`sfz::read_sample_file`]（WAV 走 `read_plain_wav_mono_f32`、其余走
+/// `yeban-decode`）—— 与 `yeban_app::sfz_load::read_sample_file` **同一条腿**；
+/// 去重键是 `region.sample_path()` 的**原样字符串**（与引擎摊平的去重键同一句）。
+///
+/// 读不到 ⇒ **不放进提供表**（引擎按缺样本 ⇒ 静音 ＋ 计数，⛔ 不发明替代内容）。
+///
+/// # Errors
+///
+/// 路径解析不到 / SFZ 文件读不到 / 文本非法 ⇒ `RENDER_FAILED`（报文与原形状逐字相同）。
+fn prepare_sampler_track(
+    _track: EntityId,
+    raw: &str,
+    project: &YebanProjectV1,
+    project_path: &Path,
+) -> Result<ArmedSamplerTrack, Fault> {
+    let resolved = resolve_sampler_path(raw, project_path)?;
+    let load = sfz::load(
+        &resolved,
+        project.audio_config.sample_rate.hz() as f32,
+        0,
+        false,
+    )
+    .map_err(|fault| {
+        let cause = fault.into_result().map_or_else(
+            |error| serde_json::json!({ "code": error.code, "message": error.message }),
+            |value| value["error"].clone(),
+        );
+        render_failed(
+            format!(
+                "采样器定义文件读不到或解析不了: {} (工程里登记的是 `{raw}`)",
+                resolved.display()
+            ),
+            serde_json::json!({
+                "reason": "samplerUnreadable",
+                "path": raw,
+                "resolvedPath": resolved.display().to_string(),
+                "cause": cause,
+            }),
+        )
+    })?;
+    let samples = load
+        .with_instrument(|instrument| {
+            let mut cache = sfz::SampleCache::new();
+            let mut seen: BTreeSet<String> = BTreeSet::new();
+            let mut samples: Vec<ArmedSfzSample> = Vec::new();
+            for region in instrument.regions() {
+                // ⭐ `sample=*silence` 不是文件（`#218`）：⛔ 不读盘、⛔ 不进提供表
+                //    （引擎摊平期把它标 `NO_SAMPLE` 并计入 `silent`）。
+                if region.is_builtin_silence() {
+                    continue;
                 }
-                let value = *sample;
-                let base = frame_in_block * channels;
-                for (channel, slot) in out[base..base + channels].iter_mut().enumerate() {
-                    let gain = if channel == 0 {
-                        self.gain_l
-                    } else if channel == 1 {
-                        self.gain_r
-                    } else {
-                        0.0
-                    };
-                    *slot += value * gain;
+                let raw_path = region.sample_path().into_owned();
+                if raw_path.trim().is_empty() || !seen.insert(raw_path.clone()) {
+                    continue;
+                }
+                let resolved_sample = sfz::resolve_sample_path(&resolved, &raw_path);
+                // 读不到 ⇒ 不进提供表（引擎按缺样本处理），原因已在
+                // `SfzLoad::sample_failures` 里如实登记。
+                if let Ok(reading) = cache.get(&resolved_sample) {
+                    samples.push((raw_path, (reading.pcm.as_ref().clone(), reading.sample_hz)));
                 }
             }
-        }
-        Ok(())
-    }
+            samples
+        })
+        .map_err(|fault| {
+            let cause = fault.into_result().map_or_else(
+                |error| serde_json::json!({ "code": error.code, "message": error.message }),
+                |value| value["error"].clone(),
+            );
+            render_failed(
+                format!("采样器区域表重放失败: {}", resolved.display()),
+                serde_json::json!({
+                    "reason": "samplerUnreadable",
+                    "path": raw,
+                    "resolvedPath": resolved.display().to_string(),
+                    "cause": cause,
+                }),
+            )
+        })?;
+    // 读数只认真的解码成功的那几份（`seen` 收的是**所有**被引用路径，含读失败的）。
+    let decoded: BTreeSet<String> = samples.iter().map(|(path, _)| path.clone()).collect();
+    Ok(ArmedSamplerTrack {
+        load,
+        samples,
+        decoded,
+    })
 }
 
 /// 解析（必要时解码 + 重采样）一个音频资产；结果按哈希缓存。
@@ -3410,23 +3510,19 @@ fn build_source(
     project: &YebanProjectV1,
     timbre: &EngineTimbre,
     track: &TrackV3,
-    project_path: &Path,
     sample_rate: u32,
     any_solo: bool,
     assets: &dyn AssetStore,
     cache: &mut BTreeMap<AssetHash, Option<Arc<PreparedAsset>>>,
     asset_reports: &mut BTreeMap<AssetHash, AudioAssetReport>,
+    sampler_loads: &BTreeMap<EntityId, ArmedSamplerTrack>,
+    sampler_steals: &mut BTreeMap<EntityId, Arc<AtomicU64>>,
     unsupported: &mut BTreeSet<&'static str>,
     counts: &mut BTreeMap<&'static str, u64>,
 ) -> Result<(TrackSource, SourceReport), Fault> {
     // solo 语义（只作用于源轨；辅助返回总线不参与判定 —— 登记在 notes 的边界里）:
     // 只要工程里有任一音轨 solo, 未 solo 且非 solo-safe 的源轨就不发声。
     let audible = !track.mute && (!any_solo || track.solo || track.solo_safe);
-    let track_gain = if audible {
-        db_to_linear(track.volume_db)
-    } else {
-        0.0
-    };
     // ⭐ `#257`：本轨的 `TrackPan` 自动化。**先**构造它，再决定源侧静态声相 ——
     // 非恒等时把静态声相关掉（`pan = 0` ⇒ `(track_gain, track_gain)`），
     // 改由源输出之后的门乘自动化位置的绝对左右增益（同一份 `pan_gains` 曲线，
@@ -3434,9 +3530,9 @@ fn build_source(
     let pan_automation = TrackPanAutomation::new(project, track.id, sample_rate);
     let pan_identity = pan_automation.is_identity();
     let source_pan = if pan_identity { track.pan } else { 0.0 };
-    // ⭐ `#255`：本轨的**左右声道增益**（轨增益 × 等功率声相）—— MIDI 源与采样器源
-    // **共用这一对**，两条路径因此不可能漂移成两条曲线或两种 `pan = 0` 快路径。
-    let (pan_gain_l, pan_gain_r) = track_pan_gains(track_gain, source_pan);
+    // ⚠ `#274`：采样器轨与 CPU 轨**共用**同一个引擎源 ⇒ 轨增益由引擎的
+    //   `NoteSchedule::track_gain` 乘，本层只给等功率那一半（见下面 `midi` 的装配）。
+    //   旧的 `SamplerTrackSource`（自带 `gain_l/gain_r`）已退休。
     // ⭐ `#221`：绑了采样器 ⇒ 这条轨的音符走**采样器音源**（⛔ 不走正弦振荡器）。
     //    这条判据只看 `TrackV3.sampler` 是否为 `Some`，与 app 的
     //    `sfz_pending()` → `arm_pending_sfz` 那条链的入口条件**同一个字段**。
@@ -3725,108 +3821,88 @@ fn build_source(
             source
         })
         .collect();
-    // ⭐ `#221`：**真的消费** `TrackV3.sampler`。
+    // ⭐ `#274`（`ADR-0011`）：采样器轨**改由引擎的 SFZ 支路发声**。
     //
-    // 这一段就是 `#220` 缺陷 ② 的修复点：在它之前，`sampler` 字段一个字节都不参与
-    // 渲染 ⇒ "绑了采样器的工程"与"去掉 sampler"导出**逐字节相同**，而且
-    // `unsupported=[]`（连"没支持"都不说）。现在：
+    // 这一段是 `#221`／`#220` 缺陷 ② 的**最终形态**：在 `#274` 之前，本层用
+    // `sfz::prepare_sampler` 逐音符烘 PCM（`SamplerTrackSource`），于是与引擎的
+    // SFZ 支路成了**两份音源** —— `#272` 实测 `loop` / `offset,end` / `ampeg` /
+    // 双层四项在两侧字节不同。现在：
     //
-    // 1. 路径**读不到** ⇒ `RENDER_FAILED`（`reason: "samplerUnreadable"`，带 tried），
-    //    ⛔ 绝不静默回退成正弦；
-    // 2. 读到 ⇒ 走 [`sfz::prepare_sampler`]（与 `yeban_render_sfz_wav` **同一份**
-    //    区域选择 / 速率 / 增益 / 样本来源），再乘**轨增益**（与 CLI 的
-    //    `track_gain_scale` 同一个 `mute`/`solo` × `volume_db` 口径）；
-    // 3. 读数进 `data.sources[].sampler`（含与 CLI 同形的 `sfz(...)` 行）。
-    let (sampler, sampler_report) = match &track.sampler {
-        None => (None, None),
+    // 1. 路径**读不到** ⇒ `RENDER_FAILED`（`reason: "samplerUnreadable"`，带 `tried`），
+    //    发生在 `build` 的 provider 里（⛔ 绝不静默回退）；
+    // 2. 读到 ⇒ 解码表交给 `EngineTimbre::from_project_armed` 摊平进快照 ⇒
+    //    `render_track` 的第 3 参走引擎的 SFZ 支路（与 CLI 的 `arm_pending_sfz`
+    //    **同一条**路径、**同一份** `SfzPlan`）；
+    // 3. 读数仍进 `data.sources[].sampler`（含与 CLI 同形的 `sfz(...)` 行）：
+    //    `regions`／`silent`／`missing` 来自**引擎的摊平表**（⛔ 不是另算一遍），
+    //    逐音符计数来自**同一份已解析区域表**（`sfz::survey_sampler`，⛔ 不渲染）。
+    //
+    // ⚠ 因此本轨**要建引擎源**（与 CPU 轨同一支）—— 声相 / 轨增益也走同一条：
+    //    引擎内部已含轨增益门（`NoteSchedule::track_gain`），本层只传等功率那一半。
+    let sampler_report = match &track.sampler {
+        None => None,
         Some(binding) => {
-            let resolved = resolve_sampler_path(&binding.path, project_path)?;
-            let loaded = sfz::load(&resolved, sample_rate as f32, 0, false).map_err(|fault| {
-                let cause = fault.into_result().map_or_else(
-                    |error| serde_json::json!({ "code": error.code, "message": error.message }),
-                    |value| value["error"].clone(),
-                );
+            let armed = sampler_loads.get(&track.id).ok_or_else(|| {
                 render_failed(
                     format!(
-                        "采样器定义文件读不到或解析不了: {} (工程里登记的是 `{}`)",
-                        resolved.display(),
-                        binding.path
+                        "采样器轨没有武装记录: {} —— provider 必须为每条 `sfz_pending` 返回输入",
+                        track.id.to_canonical_string()
                     ),
-                    serde_json::json!({
-                        "reason": "samplerUnreadable",
-                        "path": binding.path,
-                        "resolvedPath": resolved.display().to_string(),
-                        "cause": cause,
-                    }),
+                    serde_json::json!({ "reason": "engineSource" }),
                 )
             })?;
-            let prepared = loaded.with_instrument(|instrument| {
-                sfz::prepare_sampler(
-                    instrument,
-                    &sampler_notes,
-                    sfz::FALLBACK_SINE_HZ,
-                    sample_rate as f32,
-                    // `sample=` 是**相对 SFZ 文件**的路径 ⇒ 必须把文件路径传进去。
-                    Some(&resolved),
+            let summary = timbre.armed_sfz(track.id).ok_or_else(|| {
+                render_failed(
+                    format!(
+                        "采样器轨没有摊平表: {} —— `with_sfz` 没有注入该轨",
+                        track.id.to_canonical_string()
+                    ),
+                    serde_json::json!({ "reason": "engineSource" }),
                 )
             })?;
-            // 循环区域只响一遍（与 `yeban_render_sfz_wav` 同一句如实登记）。
-            if prepared.notes_looping > 0 {
-                note_unsupported(unsupported, counts, "sfzLoopExpansion");
-            }
-            // ⭐ `#255`：采样器轨的声相**已应用**（见下面的增益构造）：与 MIDI 源共用
-            //    [`track_pan_gains`]，`pan == 0` 走恒等快路径 ⇒ 不再登记 `sfzTrackPan`。
-            // ⭐ 区域级 `ampeg_*` 包络**本渲染器不应用**（只有缺省值时两条路才逐位相同）
-            // ⇒ 作者真的写了包络就必须登记（第 324 条）。
-            if prepared.regions_with_envelope > 0 {
-                note_unsupported(unsupported, counts, "sfzRegionEnvelope");
-            }
-            // ⭐ `#223`：四类已知但不生效的区域参数 —— 逐类登记，⛔ 不许"不生效也不报"。
-            // 它们的共同点是**不在 `total_gain()` 里**（或需要本层没有的 CC 状态 /
-            // 样本区间切片）；只要作者真的声明了，输出就与 app/引擎路径分叉。
-            if prepared.regions_with_amplitude > 0 {
+            // ⭐ 读数在同一份已解析区域表上投影（包络 / CC 调制 / 命中数）。
+            //    `with_instrument` 只读重放：失败 ⇒ 空读数（⛔ 不影响渲染）。
+            let survey = armed
+                .load
+                .with_instrument(|instrument| {
+                    sfz::survey_sampler(instrument, &sampler_notes, &armed.decoded)
+                })
+                .unwrap_or_default();
+            // ⭐ 第 324 条：**只登记还没做到的**。`#274` 之后循环 / 播放区间 /
+            //    幅度包络 / 双层都由引擎应用 ⇒ 那四个键退役（== `KNOWN_UNSUPPORTED_KEYS`
+            //    17 → 13）；静态 `amplitude` 也已由引擎应用 ⇒ 只剩 **CC 那一半**。
+            if survey.notes_with_amplitude_cc > 0 {
                 note_unsupported(unsupported, counts, "sfzAmplitude");
             }
-            if prepared.regions_with_tune_cc > 0 {
+            if survey.notes_with_tune_cc > 0 {
                 note_unsupported(unsupported, counts, "sfzTuneCcModulation");
             }
-            if prepared.regions_with_volume_cc > 0 {
+            if survey.notes_with_volume_cc > 0 {
                 note_unsupported(unsupported, counts, "sfzVolumeCcModulation");
             }
-            if prepared.regions_with_sample_span > 0 {
-                note_unsupported(unsupported, counts, "sfzSampleSpan");
-            }
-            // ⭐ `#273`：**多于一条**区域命中同一音符 ⇒ 本渲染器只播第一条，引擎叠加全部。
-            // ⛔ 不在这里改选择（那会改音声）；只把这项分叉说出来（第 324 条）。
-            if prepared.notes_with_multiple_regions > 0 {
-                note_unsupported(unsupported, counts, "sfzRegionLayering");
-            }
-            let report = SamplerReport {
+            Some(SamplerReport {
                 path: binding.path.clone(),
-                resolved_path: resolved.display().to_string(),
-                regions: prepared.regions,
-                silent_regions: prepared.silent_regions,
-                notes: prepared.notes_total,
-                notes_unmatched: prepared.notes_unmatched,
-                notes_using_file_sample: prepared.notes_using_file_sample,
-                notes_using_sine_fallback: prepared.notes_using_sine_fallback,
-                notes_using_builtin_silence: prepared.notes_using_builtin_silence,
-                notes_looping: prepared.notes_looping,
-                sample_sources: prepared.sample_sources,
-                sample_failures: prepared.sample_failures,
-                sample_frames_loaded: prepared.sample_frames_loaded,
-                regions_with_envelope: prepared.regions_with_envelope,
-            };
-            (
-                Some(SamplerTrackSource {
-                    notes: prepared.notes,
-                    // ⭐ `#255`：与 MIDI 源**同一对**声道增益（同一条等功率曲线、同一个
-                    // `pan = 0` 快路径）⇒ 两侧与 MIDI 路径的左右比不可能漂移。
-                    gain_l: pan_gain_l,
-                    gain_r: pan_gain_r,
-                }),
-                Some(report),
-            )
+                resolved_path: summary.resolved_path.display().to_string(),
+                regions: summary.regions,
+                silent_regions: summary.silent_regions,
+                notes: u64::try_from(timbre.scheduled_notes(track.id)).unwrap_or(u64::MAX),
+                notes_unmatched: survey.notes_unmatched,
+                notes_using_file_sample: survey.notes_using_file_sample,
+                // ⚠ 引擎的 SFZ 支路**没有**正弦回退（缺样本 ⇒ 静音 ＋ 计数）⇒
+                //    本键恒 0；`notesWithoutSample` 是新的、诚实的那一栏。
+                notes_using_sine_fallback: 0,
+                notes_without_sample: survey.notes_without_sample,
+                notes_using_builtin_silence: survey.notes_using_builtin_silence,
+                notes_looping: survey.notes_looping,
+                sample_sources: armed.load.sample_sources.clone(),
+                sample_failures: armed.load.sample_failures.clone(),
+                sample_frames_loaded: armed.load.sample_frames_loaded,
+                sample_reads_truncated: armed.load.sample_reads_truncated,
+                regions_with_envelope: survey.regions_with_envelope,
+                decoded_samples: summary.samples,
+                missing_sample_paths: summary.missing_samples.clone(),
+                voice_steals: 0,
+            })
         }
     };
     // ⭐ `#268`（`ADR-0011` D2）：CPU 轨走**引擎音色** —— 适配器住在
@@ -3840,7 +3916,7 @@ fn build_source(
     // ⚠ 采样器轨**不建引擎源**（`#221` 的 `sampler` 分支是整体替换，与 CLI 的
     //   `--sfz` 旁路同形）⇒ 否则采样与复音会叠成两份声音。
     // ⚠ 没有可发声音符的纯音频轨也不建（一台引擎约 109 KB，白建没有收益）。
-    let midi = if sampler_bound || timbre.scheduled_notes(track.id) == 0 {
+    let midi = if timbre.scheduled_notes(track.id) == 0 {
         None
     } else {
         let (engine_l, engine_r) = centered_pan_gains(source_pan, pan_gains);
@@ -3863,11 +3939,15 @@ fn build_source(
                 .with_pan((engine_l, engine_r)),
         )
     };
+    // ⭐ `#274`：把采样器轨的**声部窃取**句柄留到渲染之后（⛔ 不猜、⛔ 不静默）。
+    if sampler_bound && let Some(counter) = midi.as_ref().map(EngineTrackSource::steal_counter) {
+        sampler_steals.insert(track.id, counter);
+    }
     // ⭐ 本轨的 `TrackVolume` 自动化：构造期判定恒等快路径，非恒等才挂到源上。
     let automation = TrackGainAutomation::new(project, track.id, sample_rate);
     let source = TrackSource {
         midi,
-        sampler,
+        sampler_bound,
         clips,
         automation: (!automation.is_identity()).then_some(automation),
         // ⭐ `#257`：声相自动化（恒等时 `None`，源侧静态声相保持原样）。
@@ -3878,18 +3958,9 @@ fn build_source(
         track: track.name.clone(),
         kind: source.kind(),
         audible,
-        notes: source
-            .midi
-            .as_ref()
-            .map_or(0, |midi| {
-                u64::try_from(midi.scheduled_notes()).unwrap_or(u64::MAX)
-            })
-            .saturating_add(
-                source
-                    .sampler
-                    .as_ref()
-                    .map_or(0, |sampler| u64::try_from(sampler.notes.len()).unwrap_or(0)),
-            ),
+        notes: source.midi.as_ref().map_or(0, |midi| {
+            u64::try_from(midi.scheduled_notes()).unwrap_or(u64::MAX)
+        }),
         audio_clips,
         audio_clips_unrendered: clips_unrendered,
         audio_clips_gated: clips_gated,
@@ -3912,23 +3983,6 @@ pub(super) fn pan_gains(pan: f32) -> (f32, f32) {
     let clamped = pan.clamp(-1.0, 1.0);
     let angle = (clamped + 1.0) * core::f32::consts::FRAC_PI_4;
     (libm::cosf(angle), libm::sinf(angle))
-}
-
-/// 一条轨的**左右声道增益**（`track_gain × 等功率声相`）—— 第 255 单的**唯一**组合入口。
-///
-/// ⭐ 采样器源（[`SamplerTrackSource`]）与音频片段路径**共用**本函数
-/// ⇒ 同一 `pan` 下两条路径的左右比相同、且不可能出现"一条乘 `pan_gains`、另一条不乘"
-/// 的分叉。
-///
-/// - `pan == 0`（或非有限）⇒ `(track_gain, track_gain)` —— ⛔ 不乘 `√2/2`：居中的
-///   工程必须与接线前**逐位相同**（这条恒等也是正对照的判据）。
-/// - 否则 `track_gain * pan_gains(pan)`（与 app 的 `audio_clip::track_pan_gains`
-///   **同一条**曲线、同一套衰减律）。
-pub(super) fn track_pan_gains(track_gain: f32, pan: f32) -> (f32, f32) {
-    // ⭐ `#257`：“居中 = 不衰减”的规则搬进 `yeban_render::automation::centered_pan_gains`
-    // ⇒ 与声相自动化共用同一个入口（同一 `pan` 值逐位同解）。数值与搬前完全相同。
-    let (left, right) = centered_pan_gains(pan, pan_gains);
-    (track_gain * left, track_gain * right)
 }
 
 /// 登记一条"明确没渲染"的部分（键 + 出现次数）。
@@ -4271,70 +4325,6 @@ mod tests {
         assert!((left - 1.0).abs() < 1.0e-6 && right.abs() < 1.0e-6, "全左");
         let (left, right) = pan_gains(1.0);
         assert!((right - 1.0).abs() < 1.0e-6 && left.abs() < 1.0e-6, "全右");
-    }
-
-    /// ⭐ `#255`：MIDI 源与采样器源**共用**的左右增益 —— `pan = 0` 走恒等快路径
-    /// （⛔ 不乘 `√2/2`），`pan = -1` 的右声道**逐位 0**，`pan = -0.5` 落在 `tan(3π/8)`。
-    #[test]
-    fn the_shared_track_pan_gains_keep_center_identity_and_hard_left_silences_right() {
-        let gain = 0.375_f32;
-        let (left, right) = track_pan_gains(gain, 0.0);
-        assert_eq!(left.to_bits(), gain.to_bits(), "pan = 0 ⇒ 左 = 轨增益");
-        assert_eq!(right.to_bits(), gain.to_bits(), "pan = 0 ⇒ 右 = 轨增益");
-
-        let (left, right) = track_pan_gains(gain, -1.0);
-        assert_eq!(left.to_bits(), gain.to_bits(), "pan = -1 ⇒ 左 = 轨增益");
-        assert_eq!(right.to_bits(), 0.0_f32.to_bits(), "pan = -1 ⇒ 右逐位 0");
-
-        let (left, right) = track_pan_gains(gain, -0.5);
-        let ratio = f64::from(left) / f64::from(right);
-        let expected = core::f64::consts::FRAC_PI_8.cos() / core::f64::consts::FRAC_PI_8.sin();
-        assert!(
-            (ratio - expected).abs() < 1.0e-6,
-            "pan = -0.5 的左右比必须落在等功率曲线上：{ratio:.9} vs {expected:.9}"
-        );
-    }
-
-    /// ⭐ `#255`：采样器源的**浮点输出**在 `pan = -1` 时右声道**逐位 0**。
-    ///
-    /// 集成腿（`tests/render_master.rs`）只能读 24-bit 落盘产物，而母带一律做 TPDF
-    /// 抖动 ⇒ 零声道在**文件**里是 ±1 LSB 的抖动底噪（与 pan 无关的既有行为）。本判据
-    /// 直接量**量化之前**的源输出 ⇒ 证明"右声道没有信号"，不是"信号很小"。
-    #[test]
-    fn a_hard_left_sampler_source_writes_a_bitwise_zero_right_channel() {
-        let (gain_l, gain_r) = track_pan_gains(1.0, -1.0);
-        let mut source = SamplerTrackSource {
-            notes: vec![(0, vec![0.5_f32; 64])],
-            gain_l,
-            gain_r,
-        };
-        let mut out = vec![0.0_f32; 64 * 2];
-        source
-            .render_block(
-                BlockContext {
-                    block_index: 0,
-                    first_frame: 0,
-                    frames: 64,
-                    channels: 2,
-                    sample_rate: 48_000,
-                    seed: 0,
-                },
-                &mut out,
-            )
-            .expect("采样器源必须能渲染");
-        let left = out
-            .iter()
-            .step_by(2)
-            .map(|sample| sample.abs())
-            .fold(0.0_f32, f32::max);
-        let right = out
-            .iter()
-            .skip(1)
-            .step_by(2)
-            .map(|sample| sample.abs())
-            .fold(0.0_f32, f32::max);
-        assert!(left > 0.0, "全左必须仍有左声道：L={left}");
-        assert_eq!(right.to_bits(), 0.0_f32.to_bits(), "全左的右声道必须逐位 0");
     }
 
     #[test]

@@ -251,9 +251,9 @@ pub(crate) struct TrackClips {
 ///
 /// ⭐ `#255`：**采样器路径也调本函数**（两条入口：`--sfz` 旁路由
 /// [`crate::sfz_load::SfzTrackSource::with_pan`] 接收；绑定了 `TrackV3.sampler` 的
-/// 引擎轨仍是引擎乐器源，由 `EngineTrackSource::with_pan` 接收）—— 加上 MCP 侧
-/// `SamplerTrackSource` 的 `pan_gains` 之后，**四条路径**（片段 / MIDI / 两条采样器）
-/// 共用同一条等功率曲线与同一条 `pan = 0` 快路径。
+/// 引擎轨仍是引擎乐器源，由 `EngineTrackSource::with_pan` 接收）—— ⭐ `#274` 起
+/// MCP 的采样器轨也走 `EngineTrackSource::with_pan` ⇒ **全部路径**（片段 / MIDI /
+/// 两条采样器入口）共用同一条等功率曲线与同一条 `pan = 0` 快路径。
 ///
 /// - `pan == 0`（或非有限）⇒ `(1.0, 1.0)`。乘 `1.0` 是 IEEE 恒等 ⇒ 居中工程的导出
 ///   字节与接线前**逐位相同**（`pan = 0` 是绝大多数工程；这条恒等也是正对照的判据）。

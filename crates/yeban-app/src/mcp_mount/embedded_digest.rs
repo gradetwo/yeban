@@ -1189,52 +1189,32 @@ fn a_request_rate_different_from_the_project_rate_changes_the_digests() {
 }
 
 // ---------------------------------------------------------------------------
-// ⭐ 任务单 `#272`：**采样器的 C1 判据从"峰值相等"收紧成"字节相等"**
+// ⭐ 任务单 `#272` / `#274`：**采样器的 C1 判据从"峰值相等"收紧成"字节相等"**
 // ---------------------------------------------------------------------------
 //
-// ## 为什么这一节存在（`#270` / `#271` 的逐字事实）
+// ## 为什么这一节存在（`#272` 的读数，`#274` 的验收）
 //
-// 既有的采样器判据（`embedded_sampler.rs:255-262`）只断言 **峰值** 相同：
-// MCP 的 `SamplerTrackSource`（`domain/sfz.rs::prepare_sampler`，逐音符烘 PCM）与
-// CLI 的引擎 SFZ 支路（`render_core` → `arm_pending_sfz` → `SynthEngine`）今天
-// 在**四个**区域参数上走的是**两条不同的实现**：
+// `#272` 实测：MCP 的 `SamplerTrackSource`（`domain/sfz.rs::prepare_sampler`，逐音符
+// 烘 PCM）与 CLI 的引擎 SFZ 支路（`render_core` → `arm_pending_sfz` → `SynthEngine`）
+// 在**四个**区域参数上是两条实现 ⇒ `loop` 63/64、`offset/end` 58/64、`ampeg` 60/64、
+// 双层 60/64（双层峰值 MCP `0.1243` vs CLI `0.2486`）。
 //
-// | 区域参数 | 引擎（CLI） | MCP | 今天的差 |
-// | :--- | :--- | :--- | :--- |
-// | `loop_mode` / `loop_start` / `loop_end` | 回绕（`mix_span_into`） | 只响一遍（`render_pcm_into`） | 有 |
-// | `offset` / `end` | 按 `SampleSpan` 切片 | 从 0 播到样本尾 | 有 |
-// | `ampeg_*` | 幅度包络（`AmpegRun`） | 不应用 | 有 |
-// | 多个 `region` 命中同一音符 | **全部叠加**（每个 region 是独立声部） | **只取第一条**（`.find`） | 有 |
+// ⭐ `#274`（`ADR-0011` 的 SFZ 那一半）之后：MCP 的采样器轨改由**引擎的 SFZ 支路**
+// 发声（`EngineTimbre::from_project_armed` ⇒ `SfzPlan::prepare_with_samples` ⇒
+// `render_track` 的第 3 参），`SamplerTrackSource` / `prepare_sampler` 退休
+// ⇒ 两条腿是**同一份**实现。因此本节的两条判据都读作"**必须相同**"：
 //
-// 因此"峰值相等"只是"峰一致"，⛔ 不是字节一致。本节的判据对象换成
-// `masterDigest` / `digest`（都是 `RenderOutput::digest_of`：对母带每个 `f32` 的
-// IEEE-754 位型做 SHA-256，在主总线增益之后、抖动/量化之前重算）——
-// **两侧同一个哈希函数**，所以它测的是"母带 f32 是否逐位相同"。
-//
-// ## 本节的夹具（一个 SFZ ＋ 一个工程，五条区域）
-//
-// `SFZ_ALL` 把四项各放在一个**独立音高**上（60 / 62 / 64 / 67×2）⇒ 每个音符只
-// 触发一项，差异可归因。另有一条**基线**区域（`SFZ_PLAIN`，无任何四项参数）作为
-// 正对照：如果基线也不相等，那不是"四项"的问题，而是整条采样器路径不一致。
-//
-// ## 判据的读法（⭐ 今天必须读作"不同"）
-//
-// 本节的**主张**是"迁移后两侧必须字节相等"。今天它**不是**绿的：四项都还没迁。
-// 因此：
-// * [`the_sampler_export_digests_are_not_yet_equal_and_the_four_features_localize_it`]
-//   **钉住今天的事实**（基线相同、四项各自不同、无采样器正对照相同），并逐项打印
-//   首个 `>1 LSB` 的样本位置 —— 它就是"这一项是不是差异来源"的读数；
-// * [`the_sampler_export_must_be_byte_identical_after_the_sfz_migration`] 是**严格
-//   验收判据**（`assert_eq!`），今天 `#[ignore]`：把它拉起来（`--ignored`）就会红，
-//   红的每一条都点名一项未迁移的参数。迁移完成后删掉 `#[ignore]` 即为验收。
-//
-// ⚠ `#[ignore]` **不是**放宽判据：正常档里它一条断言都不执行；它的值在
-// `--ignored` 档与报告里（`#272` 的交付就是那组红的读数）。
+// * [`the_sampler_export_is_byte_identical_and_the_four_features_no_longer_diverge`]：
+//   正对照（基线 / 无采样器轨）＋ 四项**逐项**相同 ＋ 五条区域一起相同 ＋
+//   四个 `unsupported` 键**退役**（`sfzLoopExpansion` / `sfzSampleSpan` /
+//   `sfzRegionEnvelope` / `sfzRegionLayering`）；
+// * [`the_sampler_export_must_be_byte_identical_after_the_sfz_migration`]：**严格
+//   验收判据**（五条全是 `assert_eq!`；`#274` 起 `#[ignore]` 已删除）。
 //
 // ## 它**不**证什么
 //
 // ⛔ 没人耳听；⛔ 不证用户机器上的真 SFZ 库（夹具写在 `std::env::temp_dir()` 下，
-// `Drop` 删除）；⛔ 不证迁移**之后**的字节（那要等生产代码真的把四项接进 MCP）。
+// `Drop` 删除）；⛔ 不证跨平台（`ARCH-DET-001` 只在同机同工具链上承诺）。
 
 /// 采样器的样本：**48 000 帧 Float32 单声道**（1 秒 @ 48 kHz）。
 ///
@@ -1527,18 +1507,17 @@ fn measure_sampler(tag: &str, project: &YebanProjectV1, scratch: &Scratch) -> Sa
     reading
 }
 
-/// ⭐ `#272` 判据 1–5：**同一工程、同一 SFZ ⇒ 两侧的字节摘要并排读数**。
+/// ⭐ `#272` 判据 1–5（`#274` 的**迁移后**形态）：**同一工程、同一 SFZ ⇒ 两侧字节相同**，
+/// 且四个 `unsupported` 键真的退役（第 324 条：不再做的必须证明它真的不再报）。
 ///
 /// 今天的事实（本判据钉住的）：
-/// * **基线**（无四项参数）：两侧 `masterDigest` **相同** ⇒ 判据本身不假红；
-/// * **四项**各自：两侧 `masterDigest` **不同**，且每项都给出首个 `>1 LSB` 的样本；
-/// * **无采样器轨**：两侧 `masterDigest` **相同** ⇒ 差异确实来自采样器路径；
-/// * 五条区域的 `SFZ_ALL`：per-track 读数点名 `regions=5`，`unsupported` 点名
-///   `sfzLoopExpansion` / `sfzSampleSpan` / `sfzRegionEnvelope` / `sfzRegionLayering`；
-///   ⭐ `#273` 之后双层区域**有**对应的 `unsupported` 键（修前是**未登记**的分叉）。
-///   单层区域⛔ 不登记该键（触发器不是恒真）。
+/// * **基线**（无四项参数）与**无采样器轨**：两侧 `masterDigest` 相同 ⇒ 判据不假红；
+/// * **四项各自**：两侧 `masterDigest` **相同**（修前是不同）；
+/// * **五条区域一起**：相同，且 `unsupported` 里**没有**那四个键；
+/// * per-track 读数仍点名 `regions=5` / `notes=4` / `looping=1` / `fileSample=4` /
+///   `envelope=1`（读数没跟着迁移一起丢）。
 #[test]
-fn the_sampler_export_digests_are_not_yet_equal_and_the_four_features_localize_it() {
+fn the_sampler_export_is_byte_identical_and_the_four_features_no_longer_diverge() {
     let scratch = Scratch::new("sampler-c1");
     structured_sampler_sample(&scratch);
 
@@ -1572,7 +1551,26 @@ fn the_sampler_export_digests_are_not_yet_equal_and_the_four_features_localize_i
         "无采样器轨 ⇒ 同一抖动种子下 PCM 负载也必须逐字节相同"
     );
 
-    // ---- 四项逐项：每项都必须真的是差异来源 ----
+    // ---- 四项逐项：迁移后每一项都**不再是**差异来源 ----
+    //
+    // 第 324 条：这四条既是"相同"的正面证明，也是"四个 `unsupported` 键退役"的
+    // 正面证明 —— 每条输入**只**触发那一项，`unsupported` 里就不许再出现对应的键。
+    // 双层的**对照**：同样的区域参数、只有**一条** ⇒ 两条叠加后峰值应约为它的两倍。
+    let one_layer_sfz = scratch.write_sfz(
+        "one-layer.sfz",
+        "<region> sample=tone.wav key=60 pitch_keycenter=60 volume=-6\n",
+    );
+    let one_layer = measure_sampler(
+        "only-one-layer",
+        &sampler_project(&[(0, 60)], Some(&one_layer_sfz)),
+        &scratch,
+    );
+    const RETIRED: [(&str, &str); 4] = [
+        ("loop", "sfzLoopExpansion"),
+        ("span", "sfzSampleSpan"),
+        ("ampeg", "sfzRegionEnvelope"),
+        ("layers", "sfzRegionLayering"),
+    ];
     let loop_sfz = scratch.write_sfz("loop.sfz", SFZ_LOOP);
     let span_sfz = scratch.write_sfz("span.sfz", SFZ_SPAN);
     let ampeg_sfz = scratch.write_sfz("ampeg.sfz", SFZ_AMPEG);
@@ -1590,16 +1588,17 @@ fn the_sampler_export_digests_are_not_yet_equal_and_the_four_features_localize_i
             &scratch,
         );
         assert!(
-            !reading.same(),
-            "⭐ `{name}` 今天必须是差异来源（MCP 不应用它、引擎应用它）；\
-             MCP={} CLI={} —— 若这条红，说明它已被迁移，请把本断言改成相等并挪进严格判据",
+            reading.same(),
+            "⭐ `{name}`：迁移后两侧 masterDigest **必须相同**（修前不同）；\
+             MCP={} CLI={}；首个不同样本={:?}",
             reading.mcp_digest,
-            reading.cli_digest
+            reading.cli_digest,
+            reading.first
         );
         assert!(
-            reading.first.is_some(),
-            "`{name}`: 摘要不同 ⇒ 必须存在首个 >1 LSB 的样本（实际没有 ⇒ 差异只在抖动底，\
-             报我）"
+            reading.first.is_none(),
+            "`{name}`: 摘要相同 ⇒ 不应再有 >1 LSB 的样本（实际 {:?}）",
+            reading.first
         );
         // 夹具自证：CLI 的 `sfz(...)` 行必须包含与 MCP **逐字相同**的那一段。
         assert!(
@@ -1608,32 +1607,34 @@ fn the_sampler_export_digests_are_not_yet_equal_and_the_four_features_localize_i
             reading.cli_label,
             reading.label
         );
+        // ⭐ 第 324 条：这项输入**只**触发这一项 ⇒ 对应的键必须真的退役。
+        let retired_key = RETIRED
+            .iter()
+            .find(|(feature, _)| *feature == name)
+            .map(|(_, key)| *key)
+            .expect("四项都有对应的键");
+        assert!(
+            !reading.unsupported.iter().any(|entry| entry == retired_key),
+            "⭐ `{name}` 的输入只触发 `{retired_key}`，迁移后它**不许**再出现在 unsupported: {:?}",
+            reading.unsupported
+        );
         if name == "layers" {
             assert_eq!(reading.sampler_regions, 2, "双层夹具必须装出 2 条区域");
             assert_eq!(reading.sampler_notes, 1, "双层夹具只有一个音符");
-            // ⭐ `#273`：两条区域命中同一音符 ⇒ 必须登记这条分叉。
+            // 引擎把**两条**区域都建成声部 ⇒ 峰值约为**单层同参数**的两倍
+            // （修前 MCP 只播第一条 ⇒ 与单层逐位相同）。
             assert!(
-                reading
-                    .unsupported
-                    .iter()
-                    .any(|entry| entry == "sfzRegionLayering"),
-                "双层夹具必须登记 `sfzRegionLayering`: {:?}",
-                reading.unsupported
+                reading.mcp_peak > one_layer.mcp_peak * 1.5,
+                "双层必须真的叠加（修前 MCP 只播第一条）: layers={} one-layer={}",
+                reading.mcp_peak,
+                one_layer.mcp_peak
             );
         } else {
-            // 单层夹具（loop / span / ampeg）⛔ 不得登记：触发器不是恒真。
-            assert!(
-                !reading
-                    .unsupported
-                    .iter()
-                    .any(|entry| entry == "sfzRegionLayering"),
-                "单层夹具 `{name}` 不得登记 `sfzRegionLayering`: {:?}",
-                reading.unsupported
-            );
+            assert_eq!(reading.sampler_regions, 1, "单层夹具必须只有 1 条区域");
         }
     }
 
-    // ---- 五条区域一起上：夹具自证 ----
+    // ---- 五条区域一起上：夹具自证 ＋「四项全部退役」 ----
     let all_sfz = scratch.write_sfz("all.sfz", SFZ_ALL);
     let all = measure_sampler(
         "all-four",
@@ -1661,33 +1662,18 @@ fn the_sampler_export_digests_are_not_yet_equal_and_the_four_features_localize_i
         all.regions_with_envelope, 1,
         "恰好一个音符落在 ampeg 区域上"
     );
-    for key in ["sfzLoopExpansion", "sfzSampleSpan", "sfzRegionEnvelope"] {
-        assert!(
-            all.unsupported.iter().any(|entry| entry == key),
-            "SFZ_ALL 必须让 MCP 登记 `{key}`: {:?}",
-            all.unsupported
-        );
-    }
-    // ⭐ `#273`：双层区域（key=67 有两条 region）必须**点名**登记；修前这里断言"没有"。
     assert!(
-        all.unsupported
-            .iter()
-            .any(|entry| entry == "sfzRegionLayering"),
-        "双层区域必须登记 `sfzRegionLayering`（⛔ 不许心知肚明地不报）: {:?}",
-        all.unsupported
+        all.same(),
+        "⭐ 四项一起（迁移后）⇒ 两侧 masterDigest **必须相同**；MCP={} CLI={}",
+        all.mcp_digest,
+        all.cli_digest
     );
-    // 触发器⛔ 不是恒真：单层夹具（基线 / loop / span / ampeg）一条都不许出现。
-    for reading in [&plain, &no_sampler] {
-        assert!(
-            !reading
-                .unsupported
-                .iter()
-                .any(|entry| entry == "sfzRegionLayering"),
-            "单层/无采样器夹具 `{}` 不得登记 `sfzRegionLayering`: {:?}",
-            reading.tag,
-            reading.unsupported
-        );
-    }
+    // ⭐ 第 324 条：四条输入**只**声明这四项 ⇒ `unsupported` 必须空（四个键真的退役）。
+    assert_eq!(
+        all.unsupported,
+        Vec::<String>::new(),
+        "⭐ 迁移后四项都已由引擎应用 ⇒ unsupported 必须为空（⛔ 不许再报退役的键）"
+    );
     assert!(
         all.cli_label.contains(&all.label),
         "CLI 的 source_label 必须包含与 MCP 逐字相同的 sfz(...) 行: {} vs {}",
@@ -1700,23 +1686,8 @@ fn the_sampler_export_digests_are_not_yet_equal_and_the_four_features_localize_i
         "CLI 腿也必须装出 5 条区域（⛔ 不是只有 MCP 一份）: {}",
         all.cli_label
     );
-    assert!(
-        !all.same(),
-        "⭐ 五项一起（四项未迁移）⇒ 两侧 masterDigest 必须不同；若相同 ⇒ 夹具没触发四项"
-    );
-    let point = all.first.expect("五项一起时必须有首个不同样本");
-    println!(
-        "### all-four 首个不同样本落在帧 {}（音符序号 = {}，@ {:.3} s）",
-        point.frame,
-        point.frame / 24_000,
-        point.frame as f64 / f64::from(SAMPLE_RATE)
-    );
 
-    // ---- 判据 3 的正对照：既有的"峰值相等"判据在**基线**上仍绿 ----
-    //
-    // ⚠ 四项一起上时峰值**不一定**相等（双层区域：MCP 只播第一条 ⇒ 0.124294676，
-    // 引擎叠加两条 ⇒ 0.248589352）。本单**不删**既有判据；这里的正对照只证明
-    // "无四项参数时峰值相等"这条今天仍为真，⛔ 不拿它去要求四项也必须峰值相等。
+    // ---- 既有的"峰值相等"判据在**基线**上仍绿，且不再是四项的盲区 ----
     assert_eq!(
         plain.mcp_peak.to_bits(),
         plain.cli_peak.to_bits(),
@@ -1724,11 +1695,12 @@ fn the_sampler_export_digests_are_not_yet_equal_and_the_four_features_localize_i
         plain.mcp_peak,
         plain.cli_peak
     );
-    println!(
-        "### 峰值判据的盲区（本单的新读数）：loop/span/ampeg 三项**峰值相同**\
-         （MCP=CLI={:.9}）而 masterDigest 不同；只有 layers 的峰值也不同。\
-         ⇒ 「峰值相等」对 3/4 项是盲的。",
-        plain.cli_peak
+    assert_eq!(
+        all.mcp_peak.to_bits(),
+        all.cli_peak.to_bits(),
+        "四项一起时峰值也相等（修前双层是 0.1243 vs 0.2486）: MCP={} CLI={}",
+        all.mcp_peak,
+        all.cli_peak
     );
 }
 
@@ -1810,13 +1782,11 @@ fn measure_sampler_no_sampler(
     reading
 }
 
-/// ⭐ `#272` **严格验收判据**（迁移引擎 SFZ 之后必须绿）。
+/// ⭐ `#272` **严格验收判据**（`#274` 迁移引擎 SFZ 之后必须全绿）。
 ///
-/// 今天 `#[ignore]`：正常档不执行，`--ignored` 档会红在这四项上 —— 那组红的读数
-/// 就是本单的交付。迁移完成后：删掉 `#[ignore]`、删掉
-/// [`the_sampler_export_digests_are_not_yet_equal_and_the_four_features_localize_it`]
-/// 里的 `!reading.same()` 断言，本节即为验收基线。
-#[ignore = "#272 S0 验收基线：四项未迁引擎 SFZ ⇒ 今天必红；迁移后删掉本标记"]
+/// 五条读数（baseline / loop / span / ampeg / layers）**逐条** `assert_eq!`：
+/// 同一工程、同一 SFZ ⇒ MCP 与 CLI 的 `masterDigest` 必须逐位相同。
+/// `#274` 起 `#[ignore]` 已删除 —— 它现在**在正常档里跑**，是本单的验收本身。
 #[test]
 fn the_sampler_export_must_be_byte_identical_after_the_sfz_migration() {
     let scratch = Scratch::new("sampler-c1-strict");

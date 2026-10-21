@@ -33,7 +33,10 @@
 //!
 //! | 面 | reason 数 | 规范行数 | SHA-256 |
 //! | :--- | ---: | ---: | :--- |
-//! | `reason`（字面 `json!` 第一层键，含顺序） | 143 | 646 | `614191c2ed9365fef9d12869e561a30c1c89e442c47f79f147c621f196e7e8ba` |
+//! | `reason`（字面 `json!` 第一层键，含顺序） | 143 | 646 | `18b8b4cb49cefafb93c28f66022b97cd00784500348b5e3da6b825b3528ff4cf` |
+//!
+//! ⚠ `#274`：摘要随"登记位置搬进 provider"重钉（集合不变、顺序变了）；
+//! 见 `FROZEN_REASON_SURFACE_SHA256` 的沿革注释。
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
@@ -1333,8 +1336,14 @@ fn the_reason_payload_shape_is_the_published_table() {
 /// 判据用 `include_str!` 把本文件读回来核对（表与代码不许各说各话）。
 /// 规范形式：**文件按路径排序** → 每个 `reason` 按**首次出现**顺序 →
 /// 每个键按**源码顺序**（只收字面 `json!` 对象第一层的键）。
+///
+/// ⭐ `#274` 重钉：采样器轨的读盘失败登记从 `build_source` **搬进** provider
+/// （`prepare_sampler_track`），并新增两条"没有武装记录 / 没有摊平表"的
+/// `engineSource` 失败 ⇒ `reason` 的**首次出现顺序**变了（**集合不变**：
+/// `engineSource` / `samplerUnreadable` 都是既有词），摘要因此按判据要求逐位更新。
+/// 新摘要由判据自己报出后照抄（`18b8b4cb…`）。
 pub const FROZEN_REASON_SURFACE_SHA256: &str =
-    "ab8db1aaedb73ab1f36705c69f1e701bb31a5f31916f93e3460e6e70d9d090df";
+    "18b8b4cb49cefafb93c28f66022b97cd00784500348b5e3da6b825b3528ff4cf";
 
 /// 规范形式里的 reason 数 / 规范行数（与摘要一起构成"两端"读数）。
 pub const REASON_SURFACE_REASONS: usize = 143;

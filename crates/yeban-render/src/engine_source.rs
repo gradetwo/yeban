@@ -61,11 +61,16 @@
 //! （模块文档的第一条契约），因此这里安全；`render_block` 本身**零分配**
 //! （`mono` 缓冲只在不足时增长，构造后稳定）。
 
+use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
+use yeban_engine::sfz_instrument::{InMemorySample, SfzInstrument, SfzPlan};
 use yeban_engine::snapshot::{EngineSnapshot, SnapshotError};
 use yeban_engine::synth::{NoteSchedule, SynthEngine};
 use yeban_model::{EntityId, YebanProjectV1};
+use yeban_sfz::parser::ParseLimits;
 
 use crate::render::{AudioSource, BlockContext, RenderError};
 
@@ -79,6 +84,13 @@ pub struct EngineSourceError {
 }
 
 impl EngineSourceError {
+    /// 造一条报文（本模块内部的装载/摊平失败用）。
+    fn new(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+        }
+    }
+
     /// 报文（给调用方拼进 `data.reason` / 错误文本）。
     #[must_use]
     pub fn message(&self) -> &str {
@@ -102,6 +114,72 @@ impl From<SnapshotError> for EngineSourceError {
     }
 }
 
+/// ⭐ `#274`：**控制侧交回的一条样本**（SFZ 的 `sample=` 原样字符串 ＋ 已解码 PCM）。
+///
+/// 单位与口径：
+/// * `path`：`region.sample_path()` 的**原样**字符串（⚠ 可能已拼上
+///   `default_path=` 前缀）—— 它同时是 `SfzPlan::prepare_with_samples` 的**去重键**，
+///   ⛔ 本层不做任何路径规范化（与引擎的 `PreparedSfz::prepare_with_samples` 同一句）；
+/// * `pcm`：单声道、归一化到 `[-1, 1]` 的样本帧；
+/// * `sample_hz`：该 PCM 的**原始采样率**（Hz）—— 播放速率换算交给引擎的
+///   `RenderRates`（⛔ 本层不重采样）。
+pub type ArmedSfzSample = (String, (Vec<f32>, f32));
+
+/// ⭐ `#274`：一条轨的**武装输入**（provider 的返回值）。
+///
+/// `resolved_path` 由调用方**解析**（绝对原样 ⇒ 工程目录 ⇒ …）：本层只负责按这份
+/// 路径读文本、摊平、注入快照 —— 路径解析的候选顺序属于各入口自己的口径
+/// （CLI 的 `SfzRoots` / MCP 的 `resolve_sampler_path`），⛔ 不由本层发明第三份。
+#[derive(Clone, Debug, Default)]
+pub struct ArmedSfzInput {
+    /// 解析后的 SFZ 文件路径（本层按它读盘）。
+    pub resolved_path: PathBuf,
+    /// [`ArmedSfzSample`] 的列表（去重由引擎的 `prepare_with_samples` 做）。
+    pub samples: Vec<ArmedSfzSample>,
+}
+
+impl ArmedSfzInput {
+    /// 造一份输入。
+    #[must_use]
+    pub fn new(resolved_path: PathBuf, samples: Vec<ArmedSfzSample>) -> Self {
+        Self {
+            resolved_path,
+            samples,
+        }
+    }
+
+    /// 空输入（provider 失败时的占位：调用方随后会用自己捕获的错误**响亮失败**，
+    /// ⛔ 不会拿这份空表去渲染）。
+    #[must_use]
+    pub fn empty(resolved_path: impl Into<PathBuf>) -> Self {
+        Self {
+            resolved_path: resolved_path.into(),
+            samples: Vec::new(),
+        }
+    }
+}
+
+/// ⭐ `#274`：武装之后的**逐轨读数**（来自引擎摊平表本身，⛔ 不是另算一遍）。
+///
+/// 它们是 `data.sources[].sampler` 的承重数字：`regions`／`silent`／`missing` 与
+/// CLI 的 `sfz(...)` 行**同一个来源**（[`yeban_engine::sfz_instrument::PreparedSfz`]），
+/// 因此两侧读数不可能漂移。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ArmedSfzSummary {
+    /// 模型里登记的路径（**逐字**，⛔ 未解析）。
+    pub sfz_path: String,
+    /// 实际读的那份文件（provider 解析的路径）。
+    pub resolved_path: PathBuf,
+    /// 摊平后的区域数。
+    pub regions: usize,
+    /// materialize 的**去重**样本数（＝提供表里真的解码成功的那几份）。
+    pub samples: usize,
+    /// 不产生采样输出的区域数（缺样本 ＋ 内建静音，引擎口径）。
+    pub silent_regions: usize,
+    /// 缺样本的路径（升序去重；`silent_regions` 里除内建静音以外的那一半）。
+    pub missing_samples: Vec<String>,
+}
+
 /// 一次工程快照 ＋ 逐轨引擎源的工厂。
 ///
 /// 存在的理由：`EngineSnapshot::from_project` 会把**全部**轨道（调度表 / 音色 /
@@ -110,6 +188,9 @@ impl From<SnapshotError> for EngineSourceError {
 /// `render_core` 同一手法：`Arc::clone` 是指针复制，⛔ 不 clone PCM）。
 pub struct EngineTimbre {
     snapshot: Arc<EngineSnapshot>,
+    /// ⭐ `#274`：已武装的 SFZ 轨读数（键 = 轨）。空 = 这次快照没有摊平任何 SFZ
+    /// （没有 `TrackV3.sampler`，或调用方走的是非武装入口）。
+    armed: BTreeMap<EntityId, ArmedSfzSummary>,
 }
 
 impl EngineTimbre {
@@ -121,13 +202,123 @@ impl EngineTimbre {
     pub fn from_project(project: &YebanProjectV1) -> Result<Self, EngineSourceError> {
         Ok(Self {
             snapshot: Arc::new(EngineSnapshot::from_project(project, 1)?),
+            armed: BTreeMap::new(),
+        })
+    }
+
+    /// ⭐ `#274`：**武装入口** —— 投影快照，再把 `sfz_pending()` 里每条轨的样本摊平
+    /// 进快照（`SfzPlan::prepare_with_samples` ＋ `with_sfz`）。
+    ///
+    /// ## 分工（与引擎 `PendingSfz` 的分工图**同一条**）
+    ///
+    /// ```text
+    /// from_project(project)            ⇒ 快照（含 sfz_pending：轨 → 路径）
+    /// provider(track, raw_path)        ⇒ ArmedSfzInput { resolved_path, samples }
+    ///                                      ⚠ 读盘／解析／解码都在 provider 里（控制侧，允许 I/O）
+    /// SfzInstrument::load*(文本)        ⇒ 区域表（⛔ 引擎不读盘，本层只读 provider 指的那份文件）
+    /// SfzPlan::prepare_with_samples    ⇒ 摊平表（去重 ＋ 缺样本静音 ＋ 计数）
+    /// with_sfz                         ⇒ 摊平表**取代**待摊平项
+    /// ```
+    ///
+    /// ⚠ **provider 是可靠的**：它不返回 `Result` —— 失败（文件读不到 / 文本非法 /
+    /// 样本读不动）由调用方在**调用本函数之前**用自己的错误类型响亮报出（MCP 的
+    /// `RENDER_FAILED` / CLI 的 `SfzLoadError` 都在各自那一侧）。provider 失败时
+    /// 返回 [`ArmedSfzInput::empty`] 占位，调用方随即丢弃本次 `EngineTimbre`。
+    ///
+    /// ⚠ `engine_hz`：摊平期采样率（进 `rate_per_note` / 包络换算）。CLI 传的是
+    /// **导出率**（`WavExportOptions::sample_rate`），MCP 传的是**请求率**
+    /// ⇒ 两侧同一份工程、同一个率时逐位相同。
+    ///
+    /// ⚠ ⛔ **本层不解码**：`samples` 里是**已经解码**的 PCM
+    /// （`yeban-decode`／`symphonia` 留在调用方），因此 `yeban-render` 的依赖闭包
+    /// ⛔ 不新增任何音频解码器（`#270` 的禁区）。
+    ///
+    /// # Errors
+    ///
+    /// 快照投影失败 / SFZ 文件读不到 / SFZ 文本非法 / 摊平失败 ⇒ [`EngineSourceError`]
+    /// （报文带具体路径）。
+    pub fn from_project_armed<F>(
+        project: &YebanProjectV1,
+        engine_hz: f32,
+        provider: F,
+    ) -> Result<Self, EngineSourceError>
+    where
+        F: FnMut(EntityId, &str) -> ArmedSfzInput,
+    {
+        let snapshot = EngineSnapshot::from_project(project, 1)?;
+        Self::from_snapshot_armed(snapshot, engine_hz, provider)
+    }
+
+    /// 与 [`Self::from_project_armed`] 相同，但快照由调用方给（已有快照时省一次投影）。
+    ///
+    /// # Errors
+    ///
+    /// 与 [`Self::from_project_armed`] 相同。
+    pub fn from_snapshot_armed<F>(
+        snapshot: EngineSnapshot,
+        engine_hz: f32,
+        mut provider: F,
+    ) -> Result<Self, EngineSourceError>
+    where
+        F: FnMut(EntityId, &str) -> ArmedSfzInput,
+    {
+        // 先收集（键升序）再逐条摊平：`with_sfz` 吃掉 `self`，⛔ 不能边借边改。
+        let pending: Vec<(EntityId, String)> = snapshot
+            .sfz_pending()
+            .iter()
+            .map(|(track, entry)| (*track, entry.path().to_owned()))
+            .collect();
+        let mut snapshot = snapshot;
+        let mut armed: BTreeMap<EntityId, ArmedSfzSummary> = BTreeMap::new();
+        for (track, raw_path) in pending {
+            let input = provider(track, &raw_path);
+            let instrument = load_sfz_instrument(&input.resolved_path)?;
+            let provided: Vec<(String, InMemorySample)> = input
+                .samples
+                .into_iter()
+                .map(|(path, (pcm, sample_hz))| (path, InMemorySample { pcm, sample_hz }))
+                .collect();
+            let plan = SfzPlan::prepare_with_samples(&instrument, &provided, engine_hz).map_err(
+                |error| {
+                    EngineSourceError::new(format!(
+                        "SFZ 摊平失败 ({}): {error}",
+                        input.resolved_path.display()
+                    ))
+                },
+            )?;
+            let prepared = plan.prepared();
+            armed.insert(
+                track,
+                ArmedSfzSummary {
+                    sfz_path: raw_path,
+                    resolved_path: input.resolved_path,
+                    regions: prepared.region_count(),
+                    samples: prepared.sample_count(),
+                    silent_regions: prepared.silent_region_count(),
+                    missing_samples: prepared.missing_sample_paths().to_vec(),
+                },
+            );
+            snapshot = snapshot.with_sfz(track, plan);
+        }
+        Ok(Self {
+            snapshot: Arc::new(snapshot),
+            armed,
         })
     }
 
     /// 直接包一份快照（app 的导出 / 录音路径已有快照时用它）。
     #[must_use]
     pub fn from_snapshot(snapshot: Arc<EngineSnapshot>) -> Self {
-        Self { snapshot }
+        Self {
+            snapshot,
+            armed: BTreeMap::new(),
+        }
+    }
+
+    /// ⭐ `#274`：该轨的武装读数（`None` = 这次快照没给它摊平 SFZ）。
+    #[must_use]
+    pub fn armed_sfz(&self, track: EntityId) -> Option<&ArmedSfzSummary> {
+        self.armed.get(&track)
     }
 
     /// 快照的采样率（Hz）—— 源的构造与音频配置必须用**同一份**快照的值。
@@ -156,6 +347,32 @@ impl EngineTimbre {
     pub fn track_source(&self, track: EntityId) -> Result<EngineTrackSource, EngineSourceError> {
         EngineTrackSource::new(Arc::clone(&self.snapshot), track)
     }
+}
+
+/// 控制侧**读盘 ＋ 解析**一份 SFZ（⭐ `#274`；与 CLI 的
+/// `yeban_app::sfz_load::load_sfz_with_instrument` **同一份** include 口径）。
+///
+/// * 根文本在这里读（⛔ 引擎不读盘）；
+/// * `ParseLimits::default()` 与 CLI / `SfzLoad::with_instrument` 同一个缺省；
+/// * 有 UTF-8 文件名 ⇒ `load_with_includes`（`#include` 展开，基准目录 = 根文件所在目录）；
+///   否则退回纯文本 `load`（既有行为）。
+fn load_sfz_instrument(path: &Path) -> Result<SfzInstrument, EngineSourceError> {
+    let text = std::fs::read_to_string(path).map_err(|error| {
+        EngineSourceError::new(format!("读 SFZ 文件失败 ({}): {error}", path.display()))
+    })?;
+    let limits = ParseLimits::default();
+    let base_dir = match path.parent() {
+        Some(parent) if !parent.as_os_str().is_empty() => parent,
+        _ => Path::new("."),
+    };
+    let entry = path.file_name().and_then(|name| name.to_str());
+    match entry {
+        Some(entry) if !entry.is_empty() => {
+            SfzInstrument::load_with_includes(text, base_dir, entry, &limits)
+        }
+        _ => SfzInstrument::load(text, &limits),
+    }
+    .map_err(|error| EngineSourceError::new(format!("SFZ 文本非法 ({}): {error}", path.display())))
 }
 
 /// **引擎乐器音源**：每条轨道一个 [`SynthEngine`]，用**同一条离线装配路径**
@@ -199,6 +416,13 @@ pub struct EngineTrackSource {
     /// 导出把用户拉过的 pan 完全丢掉（`#250` 勘察的实测缺陷）。
     /// 值来自调用方的 `track_pan_gains`（与音频片段同一条曲线）。
     pan: (f32, f32),
+    /// ⭐ `#274`：**声部窃取**读数（引擎 SFZ 声部池 16 槽，池满 ⇒ 窃取最老的声部）。
+    ///
+    /// 为什么是 `Arc<AtomicU64>`：本值在**渲染之后**才有意义，而渲染期间本结构体被
+    /// `Box<dyn AudioSource>` 吃掉（`RenderPlan::execute`）⇒ 调用方必须在装箱**之前**
+    /// 留一个句柄（[`Self::steal_counter`]）。写入只发生在 `render_block` 末尾
+    /// （一次 relaxed `store`），⛔ 不影响音频。
+    steals: Arc<AtomicU64>,
 }
 
 impl EngineTrackSource {
@@ -222,6 +446,7 @@ impl EngineTrackSource {
             mono: Vec::new(),
             // ⭐ 默认**居中**（`1.0, 1.0`）：没注入时导出字节与接线前逐位相同（`#251`）。
             pan: (1.0, 1.0),
+            steals: Arc::new(AtomicU64::new(0)),
         })
     }
 
@@ -257,6 +482,16 @@ impl EngineTrackSource {
     #[must_use]
     pub fn notes_triggered(&self) -> u64 {
         self.engine.notes_triggered()
+    }
+
+    /// ⭐ `#274`：**声部窃取**计数的句柄（渲染结束后读；见字段文档）。
+    ///
+    /// 口径：`SynthEngine::sfz_voice_steals()` 的**累计**值（该引擎所有轨的 SFZ 声部池
+    /// 之和）。MCP 一个源一台引擎且只渲染自己那条轨 ⇒ 读数就是这条轨的窃取数。
+    /// ⚠ 与 `sfz_voice_drops()` 配对：`池满的溢出 = 窃取 + 真丢弃`，本读数**只**计窃取。
+    #[must_use]
+    pub fn steal_counter(&self) -> Arc<AtomicU64> {
+        Arc::clone(&self.steals)
     }
 }
 
@@ -308,6 +543,10 @@ impl AudioSource for EngineTrackSource {
         //    `if running { transport.advance_frames(frames as u64); synth.advance(frames); }`）。
         // ⚠ 本函数每块恰好渲染一次、推进一次 ⇒ 与 `first_frame` 同步，⛔ 不会推进两次。
         self.engine.advance(frames);
+        // ⭐ `#274`：**声部窃取**读数（引擎 SFZ 声部池 16 槽；池满 ⇒ 窃取）。
+        //    ⚠ 只写一个 relaxed 原子（⛔ 不改音频、⛔ 不分配）；调用方在渲染之后读。
+        self.steals
+            .store(self.engine.sfz_voice_steals(), Ordering::Relaxed);
         out.fill(0.0);
         let (gain_l, gain_r) = self.pan;
         for index in 0..frames {
@@ -337,6 +576,90 @@ mod tests {
     use sha2::{Digest, Sha256};
 
     use crate::render::RenderOutput;
+
+    /// ⭐ `#274`：**武装入口**把 `sfz_pending` 摊平进快照，并把同一份摊平表的数字报回来。
+    ///
+    /// 三条腿：
+    /// 1. provider 被**恰好调用一次**（键 = 那条绑了 sampler 的轨，参数 = **原样**路径）；
+    /// 2. 给了样本 ⇒ `regions = samples = 1`、`silent = 0`、`missing = []`；
+    /// 3. ⛔ 不给样本 ⇒ 引擎口径**静音 ＋ 计数**（`silent = 1`、`missing = ["tone.wav"]`）
+    ///    —— 证明"缺样本"不会被悄悄补成别的内容（`R711`）。
+    #[test]
+    fn the_armed_entry_flattens_pending_sfz_and_reports_the_same_numbers_as_the_engine() {
+        let dir = tempfile::tempdir().expect("临时目录");
+        let sfz_path = dir.path().join("t.sfz");
+        std::fs::write(&sfz_path, "<region> sample=tone.wav key=60\n").expect("写 SFZ");
+        let wav_path = dir.path().join("tone.wav");
+        crate::wav::write_plain_wav(
+            &wav_path,
+            &crate::rf64::PcmFormat::float(1, 48_000, 32),
+            &crate::dither::PcmBuffer::Float32(vec![0.5_f32; 4_800]),
+        )
+        .expect("写样本");
+
+        let mut project = yeban_model::samples::demo_project();
+        let track = project
+            .tracks
+            .values()
+            .find(|track| {
+                **track != project.tracks[&project.master_bus_track_id]
+                    && track.clips.values().any(|placement| {
+                        project
+                            .clip_pool
+                            .get(&placement.clip_id)
+                            .is_some_and(|entry| {
+                                matches!(entry.content, yeban_model::ClipContent::Midi { .. })
+                            })
+                    })
+            })
+            .expect("演示工程必须有 MIDI 轨")
+            .id;
+        project.tracks.get_mut(&track).expect("轨").sampler = Some(yeban_model::SamplerBinding {
+            path: sfz_path.display().to_string(),
+        });
+        project.validate().expect("武装夹具必须合法");
+
+        let mut calls = 0u32;
+        let timbre = EngineTimbre::from_project_armed(&project, 48_000.0, |called, raw| {
+            calls = calls.saturating_add(1);
+            assert_eq!(called, track, "provider 只应为那条绑了 sampler 的轨调用");
+            assert_eq!(
+                raw,
+                sfz_path.display().to_string(),
+                "路径必须**原样**交给 provider"
+            );
+            ArmedSfzInput::new(
+                sfz_path.clone(),
+                vec![("tone.wav".to_owned(), (vec![0.25_f32; 4_800], 48_000.0))],
+            )
+        })
+        .expect("武装必须成功");
+        assert_eq!(calls, 1, "provider 必须恰好调用一次");
+        let summary = timbre.armed_sfz(track).expect("必须留下该轨的读数");
+        assert_eq!(
+            (
+                summary.regions,
+                summary.samples,
+                summary.silent_regions,
+                summary.missing_samples.clone(),
+            ),
+            (1, 1, 0, Vec::new()),
+            "一条区域 / 一份样本 / 无静音 / 无缺样本"
+        );
+
+        // 反向对照：同样的 SFZ，提供表为空 ⇒ 引擎按缺样本处理（静音 ＋ 计数）。
+        let timbre = EngineTimbre::from_project_armed(&project, 48_000.0, |_, _| {
+            ArmedSfzInput::new(sfz_path.clone(), Vec::new())
+        })
+        .expect("空提供表也必须能摊平");
+        let summary = timbre.armed_sfz(track).expect("必须留下该轨的读数");
+        assert_eq!(
+            (summary.regions, summary.samples, summary.silent_regions),
+            (1, 0, 1),
+            "缺样本 ⇒ 该区域不产生采样输出（引擎口径）"
+        );
+        assert_eq!(summary.missing_samples, vec!["tone.wav".to_owned()]);
+    }
 
     /// 演示工程的第一个有声轨 + 一份快照（与 app 的离线装配同一条入口）。
     fn source(project: &YebanProjectV1) -> (EngineTimbre, EntityId) {

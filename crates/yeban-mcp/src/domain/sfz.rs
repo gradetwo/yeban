@@ -1516,7 +1516,8 @@ pub fn render(
     let mut notes_using_builtin_silence = 0u64;
     let mut notes_using_file_sample = 0u64;
     let mut notes_using_sine_fallback = 0u64;
-    // ⭐ `#223`：四类已知但不生效的区域参数（判据函数与 `prepare_sampler` **同一份**）。
+    // ⭐ `#223`：区域参数读数（`prepare_sampler` 已退休；判据函数与
+    //    `render::survey_sampler` **同一份**，`yeban_render_sfz_wav` 仍用本函数）。
     let mut notes_with_amplitude = 0u64;
     let mut notes_with_tune_cc = 0u64;
     let mut notes_with_volume_cc = 0u64;
@@ -1773,194 +1774,128 @@ pub(super) fn note_wave(
     })
 }
 
-/// 一条**采样器轨**（`TrackV3.sampler`）的已就绪产物：每音符一段单声道 PCM。
+/// 一条采样器轨的**只读读数**（⭐ `#274`：发声改由引擎的 SFZ 支路负责，
+/// 本层**不再**逐音符烘 PCM ⇒ `prepare_sampler`／`PreparedSampler` 已退休）。
 ///
-/// 全部在**构造期**算完（读盘 / 解析 / 内插都在离线控制侧，`[ARCH-RT-001]` 的同一条
-/// 纪律：`render_block` 里⛔ 不读盘）。
-pub(super) struct PreparedSampler {
-    /// 逐音符的 `(起始帧, 单声道 PCM)`（PCM 已含区域增益；⛔ 不含轨增益）。
-    pub notes: Vec<(u64, Vec<f32>)>,
-    /// 音符总数（含没匹配到区域的）。
+/// 为什么还留这一组读数：`data.sources[].sampler` 的字段是响应契约的一部分
+/// （既有判据逐条读它们），而且"这条轨命中了什么"与"引擎会怎么响"是**同一份**
+/// 已解析区域表上的两个投影 —— 读数从区域表来，⛔ 不是第二份音源。
+///
+/// ⚠ 与引擎口径的**差别如实登记**：区域选择这里仍用 `matches_key && matches_velocity`
+/// （与 `#221` 的 `note_wave` 同一条），**不含**通道 / `trigger` / keyswitch / CC 门控
+/// —— 那些由引擎在摊平期烧进掩码。因此"读数说命中、引擎不出声"的情形只可能出现在
+/// 那些门控上；本层的三个 `unsupported` 键（`sfzAmplitude` / `sfzTuneCcModulation` /
+/// `sfzVolumeCcModulation`）只报**CC 调制**，静态参数已由引擎应用。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) struct SamplerSurvey {
+    /// 排程音符数（含没匹配到区域的）。
     pub notes_total: u64,
-    /// 没匹配到区域的音符数。
+    /// 没匹配到任何区域的音符数。
     pub notes_unmatched: u64,
-    /// 落在要求循环的区域上的音符数（本实现不展开 ⇒ 只响一遍）。
+    /// 至少有一条命中区域要求循环的音符数（引擎**真的**展开循环）。
     pub notes_looping: u64,
-    /// 用文件样本发声的音符数。
+    /// 至少有一条命中区域的样本**真的解码成功**的音符数。
     pub notes_using_file_sample: u64,
-    /// 回退内存正弦的音符数。
-    pub notes_using_sine_fallback: u64,
-    /// 落在内建静音区域上的音符数。
+    /// 命中区域**只有**内建静音（`*silence`）的音符数。
     pub notes_using_builtin_silence: u64,
-    /// SFZ 的区域总数。
-    pub regions: usize,
-    /// 内建静音（`sample=*silence`）区域数。
-    pub silent_regions: usize,
-    /// 真的读到的样本文件来源（升序去重）。
-    pub sample_sources: Vec<String>,
-    /// 读失败的样本文件（升序去重）。
-    pub sample_failures: Vec<String>,
-    /// 累计解码帧数。
-    pub sample_frames_loaded: u64,
-    /// ⭐ 命中的区域里**声明了 `ampeg_*`**（非缺省值）的个数。
-    ///
-    /// ⚠ 本渲染器（[`note_wave`]）**不**应用 SFZ 的幅度包络 —— 它只取区域选择 /
-    /// 播放速率 / 总增益 / 样本数据。缺省 `ampeg_*`（attack/hold/decay/release 全 0、
-    /// sustain 100）等于"无包络" ⇒ 这些区域的输出与引擎路径**逐位相同**；
-    /// 一旦作者真的写了 `ampeg_*`，两条路就分叉 ⇒ 这个读数让
-    /// `yeban_render_master` 能把 `sfzRegionEnvelope` 登记进 `unsupported`
-    /// （第 324 条：已知不支持项必须能列出来，⛔ 不许"心知肚明地不报"）。
+    /// 有命中区域、但**没有任何已解码样本**的音符数
+    /// （引擎按"缺样本 ⇒ 静音 ＋ 计数"处理，⛔ 不回退正弦）。
+    pub notes_without_sample: u64,
+    /// 命中区域里**声明了 `ampeg_*`**（非缺省）的个数（引擎**应用**它，读数仍如实给出）。
     pub regions_with_envelope: u64,
-    // -----------------------------------------------------------------
-    // ⭐ `#223`：四类**已知但不生效**的区域参数，各自数出来，供 `unsupported` 逐项登记。
-    //
-    // 共同点：它们都**不在** `PlaybackSpec::total_gain()` 里，而本渲染器只消费
-    // `total_gain()` ＋ `playback_rate()` ＋ 样本数据 ⇒ 若作者写了它们，输出与
-    // app/引擎路径（那里确实应用它们）**分叉**。第 324 条要求这种分叉必须能列出来。
-    // -----------------------------------------------------------------
-    /// ⭐ 命中的区域里**声明了 `amplitude` 一族**的个数（静态 `amplitude != 100`，
-    /// 或 `amplitude*ccN` 的 CC 调制项）。
+    /// 命中区域里声明了 **`amplitude_oncc*`**（CC 调制）的个数。
     ///
-    /// `total_gain()` 只含 `volume × 力度 × 交叉淡化`；引擎在它**之外**另乘
-    /// `(amplitude + Σ delta)/100` ⇒ 本渲染器不乘 = 静默比引擎响/轻。
-    pub regions_with_amplitude: u64,
-    /// ⭐ 命中的区域里声明了 **`tune` 的 CC 调制**（`pitch*ccN` 亦归入此族）的个数。
-    ///
-    /// 基准 `tune` 已烘进 `pitch_ratio`；CC 贡献的是**逐块可变增量**，本渲染器没有
-    /// CC 状态 ⇒ 不应用。
-    pub regions_with_tune_cc: u64,
-    /// ⭐ 命中的区域里声明了 **`volume` 的 CC 调制**（`volume*ccN` / `gain_ccN`）的个数。
-    ///
-    /// 基准 `volume` 已折进 `total_gain()`；CC 增量（单位 dB）本渲染器没有 CC 状态 ⇒ 不应用。
-    pub regions_with_volume_cc: u64,
-    /// ⭐ 命中的区域里声明了 **`offset` / `end` 播放区间**的个数。
-    ///
-    /// `PlaybackSpec::span` 已由 `yeban-sfz` 归约好，但本渲染器把整份样本从 0 播到末尾
-    /// （⛔ 不按 `span` 切片）⇒ 起点/终点与作者写的不一致。
-    pub regions_with_sample_span: u64,
-    /// ⭐ `#273`：**多于一条区域命中**同一音符的音符数（本实现只取第一条，引擎叠加全部）。
-    ///
-    /// 区域选择仍是 [`note_wave`] 的"第一个命中"（⛔ 不改播放行为）；这个读数只让
-    /// `yeban_render_master` 把 `sfzRegionLayering` 登记进 `unsupported`（第 324 条）。
+    /// ⭐ `#274`：静态 `amplitude` 已由引擎应用 ⇒ **不再**计入这个键；只有 CC 那一半
+    /// （本层没有 CC 状态）仍登记 `sfzAmplitude`。
+    pub notes_with_amplitude_cc: u64,
+    /// 命中区域里声明了 **`tune` 的 CC 调制**的个数（本层没有 CC 状态）。
+    pub notes_with_tune_cc: u64,
+    /// 命中区域里声明了 **`volume` 的 CC 调制**的个数（本层没有 CC 状态）。
+    pub notes_with_volume_cc: u64,
+    /// **多于一条**区域命中同一音符的音符数（引擎叠加全部 —— ⭐ `#274` 起不再是
+    /// "已知分叉"，只是读数）。
     pub notes_with_multiple_regions: u64,
 }
 
-/// 用一份已解析的 SFZ 把一组 `(起始帧, 时值帧, 音高, 力度)` 造成**每音符一段 PCM**。
+/// 在**已解析**的区域表上投影出 [`SamplerSurvey`]（`#274`；⛔ 不渲染、⛔ 不读盘）。
 ///
-/// `tone_hz` 只服务"没有文件样本时的内存正弦回退"（与 [`render`] 同一口径）。
-pub(super) fn prepare_sampler(
+/// `decoded` 是本轨**真的解码成功**的 `sample=` 原样字符串集合
+/// （由 `render.rs` 的 provider 从同一份区域表 + `SampleCache` 得到）。
+///
+/// `notes` 是 `(起始帧, 时值帧, 音高, 力度)`；只有后两项参与读数。
+pub(super) fn survey_sampler(
     instrument: &Instrument<'_>,
     notes: &[(u64, u64, u8, u8)],
-    tone_hz: f32,
-    engine_hz: f32,
-    sfz_path: Option<&Path>,
-) -> PreparedSampler {
-    let mut cache = SampleCache::new();
-    let mut prepared = PreparedSampler {
-        notes: Vec::with_capacity(notes.len()),
+    decoded: &BTreeSet<String>,
+) -> SamplerSurvey {
+    let mut survey = SamplerSurvey {
         notes_total: u64::try_from(notes.len()).unwrap_or(u64::MAX),
-        notes_unmatched: 0,
-        notes_looping: 0,
-        notes_using_file_sample: 0,
-        notes_using_sine_fallback: 0,
-        notes_using_builtin_silence: 0,
-        regions: instrument.regions().len(),
-        silent_regions: instrument
+        ..SamplerSurvey::default()
+    };
+    for &(_start, _frames, pitch, velocity) in notes {
+        let mut matching = instrument
             .regions()
             .iter()
-            .filter(|region| region.is_builtin_silence())
-            .count(),
-        sample_sources: Vec::new(),
-        sample_failures: Vec::new(),
-        sample_frames_loaded: 0,
-        regions_with_envelope: 0,
-        regions_with_amplitude: 0,
-        regions_with_tune_cc: 0,
-        regions_with_volume_cc: 0,
-        regions_with_sample_span: 0,
-        notes_with_multiple_regions: 0,
-    };
-    for &(start, frames, pitch, velocity) in notes {
-        let note = SfzNote {
-            start_frame: start,
-            frames,
-            pitch,
-            velocity,
-            // ⛔ 采样器轨的左右增益是**轨级**的（`volume_db`/`mute`/`solo`），
-            // 由 `render::SamplerTrackSource` 乘在这一段之外。
-            gain_l: 1.0,
-            gain_r: 1.0,
-        };
-        let Some(wave) = note_wave(instrument, &note, tone_hz, engine_hz, sfz_path, &mut cache)
-        else {
-            prepared.notes_unmatched = prepared.notes_unmatched.saturating_add(1);
+            .filter(|region| region.matches_key(pitch) && region.matches_velocity(velocity));
+        let Some(first) = matching.next() else {
+            survey.notes_unmatched = survey.notes_unmatched.saturating_add(1);
             continue;
         };
-        if wave.looping {
-            prepared.notes_looping = prepared.notes_looping.saturating_add(1);
+        let mut layered = matching.next().is_some();
+        let mut looping = first
+            .playback_spec(pitch, velocity, RenderRates::default())
+            .loops();
+        let mut has_file_sample = {
+            let raw = first.sample_path();
+            !first.is_builtin_silence() && decoded.contains(raw.as_ref())
+        };
+        let mut has_builtin_silence = first.is_builtin_silence();
+        let envelope = region_declares_envelope(first);
+        let amplitude_cc = region_declares_cc_target(first, ModTarget::Amplitude);
+        let tune_cc = region_declares_cc_target(first, ModTarget::Tune);
+        let volume_cc = region_declares_cc_target(first, ModTarget::Volume);
+        // 其余命中的区域只参与"有没有文件样本 / 内建静音 / 循环"这四条读数：
+        // 引擎会把**每一条**命中区域都建成声部 ⇒ 判定必须看全集（⛔ 只看第一条）。
+        for region in matching {
+            layered = true;
+            looping |= region
+                .playback_spec(pitch, velocity, RenderRates::default())
+                .loops();
+            let raw = region.sample_path();
+            has_file_sample |= !region.is_builtin_silence() && decoded.contains(raw.as_ref());
+            has_builtin_silence |= region.is_builtin_silence();
+            // ⚠ 包络 / CC 三条仍按**第一条**数（与 `#221` 的读数口径**逐位不变**）；
+            //    它们不是"引擎会不会响"的判据，而是"作者写了什么"的逐音符计数。
         }
-        // ⭐ `#273`：多于一条区域命中这个音符（引擎叠加，本实现只取第一条）⇒ 如实数出来。
-        if wave.layered {
-            prepared.notes_with_multiple_regions =
-                prepared.notes_with_multiple_regions.saturating_add(1);
+        if layered {
+            survey.notes_with_multiple_regions =
+                survey.notes_with_multiple_regions.saturating_add(1);
         }
-        // ⭐ 区域级**幅度包络**：本渲染器不应用（见字段文档）⇒ 如实数出来。
-        if let Some(region) = instrument.regions().get(wave.region_index) {
-            if region_declares_envelope(region) {
-                prepared.regions_with_envelope = prepared.regions_with_envelope.saturating_add(1);
-            }
-            // ⭐ `#223`：四类已知但不生效的区域参数，逐类数出来（登记见 `render.rs`）。
-            if region_declares_amplitude(region) {
-                prepared.regions_with_amplitude = prepared.regions_with_amplitude.saturating_add(1);
-            }
-            if region_declares_cc_target(region, ModTarget::Tune) {
-                prepared.regions_with_tune_cc = prepared.regions_with_tune_cc.saturating_add(1);
-            }
-            if region_declares_cc_target(region, ModTarget::Volume) {
-                prepared.regions_with_volume_cc = prepared.regions_with_volume_cc.saturating_add(1);
-            }
-            if region_declares_sample_span(region) {
-                prepared.regions_with_sample_span =
-                    prepared.regions_with_sample_span.saturating_add(1);
-            }
+        if looping {
+            survey.notes_looping = survey.notes_looping.saturating_add(1);
         }
-        match wave.kind {
-            NoteSampleKind::BuiltinSilence => {
-                prepared.notes_using_builtin_silence =
-                    prepared.notes_using_builtin_silence.saturating_add(1);
-            }
-            NoteSampleKind::FileSample => {
-                prepared.notes_using_file_sample =
-                    prepared.notes_using_file_sample.saturating_add(1);
-            }
-            NoteSampleKind::SineFallback => {
-                prepared.notes_using_sine_fallback =
-                    prepared.notes_using_sine_fallback.saturating_add(1);
-            }
+        if has_file_sample {
+            survey.notes_using_file_sample = survey.notes_using_file_sample.saturating_add(1);
+        } else if has_builtin_silence {
+            survey.notes_using_builtin_silence =
+                survey.notes_using_builtin_silence.saturating_add(1);
+        } else {
+            survey.notes_without_sample = survey.notes_without_sample.saturating_add(1);
         }
-        prepared.notes.push((start, wave.mono));
+        if envelope {
+            survey.regions_with_envelope = survey.regions_with_envelope.saturating_add(1);
+        }
+        if amplitude_cc {
+            survey.notes_with_amplitude_cc = survey.notes_with_amplitude_cc.saturating_add(1);
+        }
+        if tune_cc {
+            survey.notes_with_tune_cc = survey.notes_with_tune_cc.saturating_add(1);
+        }
+        if volume_cc {
+            survey.notes_with_volume_cc = survey.notes_with_volume_cc.saturating_add(1);
+        }
     }
-    let mut sources: Vec<String> = cache
-        .entries_iter()
-        .filter_map(|(_, entry)| entry.as_ref().ok().map(|reading| reading.describe.clone()))
-        .collect();
-    sources.sort_unstable();
-    sources.dedup();
-    let mut failures: Vec<String> = cache
-        .entries_iter()
-        .filter_map(|(path, entry)| {
-            entry
-                .as_ref()
-                .err()
-                .map(|reason| format!("unreadable({}): {reason}", path.display()))
-        })
-        .collect();
-    failures.sort_unstable();
-    failures.dedup();
-    prepared.sample_sources = sources;
-    prepared.sample_failures = failures;
-    prepared.sample_frames_loaded = cache.frames_loaded();
-    prepared
+    survey
 }
 
 /// 该区域是否**声明了** SFZ 的幅度包络（`ampeg_*` 非缺省值）。
