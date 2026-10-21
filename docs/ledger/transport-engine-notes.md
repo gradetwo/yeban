@@ -351,6 +351,7 @@ $ bash scripts/dev/ci-verdict.sh line/transport-engine
 | 9 | **`Shift+Space`（从当前位置继续）** | 未接线：快捷键策略表在 `docs/YEBAN_ARCHITECTURE_AND_SYSTEM_DESIGN.md` §7.4，`src/input.rs` 只做判定、无 `Transport` 动作 | `input.rs` 的调用点属于 UI 事件循环（本线的 `wire_transport` 是它的落点） |
 | 10 | **快照退役回收在真实设备线程上的证明** | 未实现：本机证明的是"控制面显式驱动"这条同函数路径 | CI 的 `device` feature 档 |
 | 11 | **`ui/reload_engine` 与 GUI 路径的走带初始状态一致性** | 已知接缝：GUI 路径 `reload + stop()`；`ui/reload_engine` **不碰**走带（保持"推 N 个量子"契约） | **needs**：由 live-port 线裁决 `ui/reload_engine` 是否应当同时停住走带（本线不改它的语义） |
+| 12 | **场景启动（量化）**（`TransportConfig::launch_quantization`） | ⭐ ⭐ **已接通（`#283`）**：Session View 的 `scene-launch-<i>-button` → `host::wire_scene_launch` → `EngineHost::queue_scene_launch`；控制驱动直调运行时，设备腿走既有 `EngineEvent::SceneLaunch`（同一个 `arm_scene_launch`）。`Off`/`Bar`/`TwoBars`/`FourBars` 四档均有判据（`rt.rs` 5 条 ＋ `tests/scene_launch_wiring.rs` 5 条）。⚠ **仍未实现**：① 场景在引擎里只有 **tempo 覆盖**这一条可执行语义（不启动剪辑、不停止其它场景）；② "当前场景"是**点击时**写入的会话读数（量化到点前就显示）；③ 设备腿下控制面读不到 `scene_launches_applied`（`EngineRuntime` 在 cpal 回调线程上，既有统计限制）；④ UI 没有取消入口（`cancel_scene_launch` 无按钮）；⑤ 场景启动不进撤销/自动保存（会话运行态） | **needs**：剪辑触发语义、设备腿 `EngineStats` 跨线程镜像、取消按钮 |
 
 **需要别人做的事**：`models`/`bridge` 把 `time_signature` 投影进 `ViewState`（未实现项 6）；
 集成者裁决 §6.2 的本机纪律越界是否接受。
