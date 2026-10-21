@@ -22,7 +22,7 @@
 判据 7 自 2026-10-07 起也读本表 **+ `gate-status.md` + `phase-status.md`** 的源码行引用 ——
 为什么扩在这里而不是那两张表各自的守卫里，见 `SOURCE_CITATION_DOCS` 的注释。）
 
-## 七条机械判据（语义是否正确仍要人看）
+## 八条机械判据（语义是否正确仍要人看）
 
 1. **正向完整性**：`schemas/mcp-tools.schema.json` 里的**每一个** `yeban_*` 工具、
    `crates/yeban-ui-mcp/src/methods.rs` 里的**每一条** `ui/*` 方法，都必须在本表里
@@ -56,6 +56,14 @@
 与四张表（本表 / `gate-status.md` / `phase-status.md` / `human-decisions.md`）。
 `docs/DEVELOPMENT_LEDGER.md` 与 `docs/ledger/*-notes.md` 是**带日期的测量记录**
 （"当轮测得 66 行"是那一刻的真话），按纪律不得改写，因此**不参与**对账 —— 否则守卫会逼人篡改历史读数。
+
+   **2026-10-22 本切片再加三类表内读数**（同一手法，射程收在本表的数据行）：
+   `N 条方法`（机械值是 `METHOD_COUNT`）、`N 个 Op 变体`（`schemas/ops.schema.json` 的
+   `properties.op.oneOf` 长度）、`` `grep -c "…" 路径` = N ``（按同一命令现数匹配行）。
+   同一行后文若有更正读数（`实测 N 条` / `实测 N 个…变体` / 同一命令后 `实测 N`），以
+   **最后一个更正读数**为现行、之前的只计数不判红 —— 本表 36 行"保留旧句 + 追加更正"的写法
+   就是靠这条才不被误红。`命中 N` / `N 处` / `N 行` 等其余族**尚未纳入**（单位混杂：行 /
+   文件 / 出现次数；实测 `grep -rn` 的 9 行与"6 处"口径不同，精确计数会造出新的假话）。
 
 6. **行号交叉引用必须指向它点名的那一行**：本表里凡是 `` `其它活表:NN` `` 或
    `` `其它活表` 第 NN 行 `` 的写法，若同行**恰好点名了一个**属于那张表的 ID
@@ -138,6 +146,14 @@
    是**下界**。同一处引用点名多个构件时，只要有一个在，就算过 —— 它抓的是"整段漂走 / 指到
    无关行"这类腐烂，不保证每一行的语义都对。
 
+8. **负存在断言必须真的不存在**（2026-10-22 新增；`:143` 的教训，也是本表**最危险**的一类错）：
+   表里若用 `` `yeban-*` `` crate 断言"**没有任何工作区内消费者** / **无消费者**"，守卫**现算**
+   `crates/*/Cargo.toml` 里依赖它的**别的** crate 数：> 0 且同一行后文没有
+   `为假 / 过期 / 不成立` 的撤回（或该句写成"此前…"的历史句）⇒ 红。
+   **只判 > 0，不做精确计数**：现有更正里的"实测 6 处"与 `grep -rn` 数出的 9 行口径本来就不同，
+   精确计数会造出新的假话。第 324 条的原形就是这一族 —— "有依赖写成没依赖"会让人重写一个
+   已经存在的东西。
+
 ## 为什么"分类"是机器算的而不是人填的
 
 分类由 `classify()` 从三侧标记**唯一确定**，不写在表里（表列固定为任务书要求的五列）。
@@ -157,6 +173,7 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[2]
 TABLE = REPO / "docs/ledger/feature-alignment.md"
 SCHEMA = REPO / "schemas/mcp-tools.schema.json"
+OPS_SCHEMA = REPO / "schemas/ops.schema.json"
 METHODS = REPO / "crates/yeban-ui-mcp/src/methods.rs"
 CRATES = REPO / "crates"
 
@@ -228,6 +245,30 @@ DECLARED_UNCHECKED_RE = re.compile(r"本表有\s*(\d+)\s*行是")
 #: 但它们是同一台机器算出来的同一族数字 —— 一旦有人手抄，就必须对得上。
 DECLARED_TOOLS_RE = re.compile(r"(\d+)\s*个 MCP 工具")
 DECLARED_METHODS_RE = re.compile(r"(\d+)\s*条 ui 方法")
+
+#: 判据 5（2026-10-22 扩展）：本表数据行里的三类手抄读数。
+#: ⚠ 只认这三种**带单位**的形态；`命中 N` / `N 处` / `N 行` 单位混杂（行 / 文件 / 出现次数），
+#: 先不纳入 —— 实测同一条 `grep -rn` 的 9 行与文献里的"6 处"口径不同，精确计数会造出新的假话。
+METHOD_CLAIM_RE = re.compile(r"(\d+)\s*\**\s*条\s*方法")
+#: 更正文里的现行读数（`今天实测 **17** 条`）。旧句里的 `当轮实测为 16 条` 不算（有"为"）。
+METHOD_READING_RE = re.compile(r"实测\s*\**\s*(\d+)\s*\**\s*条")
+VARIANT_CLAIM_RE = re.compile(r"(\d+)\s*\**\s*个\s*(?:`Op`\s*)?变体")
+VARIANT_READING_RE = re.compile(r"实测\s*\**\s*(\d+)\s*\**\s*个\s*(?:顶层\s*)?(?:`Op`\s*)?变体")
+#: `` `grep -c "pat" path` = **8** ``：只认**带路径**的 `-c` 形态（不带路径的半条命令不猜）。
+GREP_COUNT_CLAIM_RE = re.compile(
+    r'grep -c\s+"(?P<pattern>[^"]+)"\s+(?P<path>[A-Za-z0-9_./-]+)`?\s*=\s*\**\s*(?P<count>\d+)'
+)
+
+#: 判据 7 的历史更正标记（出现在引用**之后** ⇒ 这一行在记录一次移动，不是主张现状）。
+CITATION_HISTORY_RE = re.compile(r"旧记|更正|更正为|现位于|为假|过期|不成立")
+
+#: 判据 8：负存在断言的形态（`yeban-*` crate + "没有任何工作区内消费者 / 无消费者"）。
+#: 这是 `:143` 的教科书例，也是第 324 条的原形：把"有依赖"写成"没依赖"。
+NEGATIVE_CLAIM_RE = re.compile(
+    r"`(?P<crate>yeban-[a-z0-9-]+)`[^。；\n]{0,12}?(?P<claim>没有任何工作区内消费者|无消费者)"
+)
+#: 同一行后文的**撤回**（"为假 / 过期 / 不成立"）⇒ 旧句是历史记录，不判红。
+RETRACTION_RE = re.compile(r"为假|过期|不成立")
 
 #: 行数区间（任务书建议 40–70；给"加一行不用同时改守卫"留出空间）。
 # 上限从 70 放宽到 80（负责人授权的自主决策，第 164 轮）: 工具集从 15 增到 16（D56 诊断导出），
@@ -580,20 +621,25 @@ def named_construct(text: str, start: int, end: int) -> str | None:
     return None
 
 
-def source_line_problems(path: Path) -> tuple[list[str], int, int, int]:
+def source_line_problems(path: Path) -> tuple[list[str], int, int, int, int]:
     """判据 7：射程内**每一张**活表的源码引用必须点名一个**真的存在**的构件。
 
-    返回 `(问题列表, 已核对处数, 按构造跳过处数, 行号已漂移处数)`。跳过的一律**不假装
-    通过**：路径不能唯一定位、旁边没有代码括注、括注抽不出标识符 —— 三类都计入跳过并在
-    `[ok]` 行报数。
+    返回 `(问题列表, 已核对处数, 按构造跳过处数, 历史更正的行号漂移数, 附录未判数)`。
+    跳过的一律**不假装通过**：路径不能唯一定位、旁边没有代码括注、括注抽不出标识符 ——
+    三类都计入跳过并在 `[ok]` 行报数。
 
-    **符号是判据、行号是提示**（2026-10-08 改口径，理由见模块头第 7 条）：构件在目标文件里
-    **任意一行**存在即通过；行号不参与成败判定，只统计漂移（漂了**不红**）。
+    **符号是判据**：构件在目标文件里**任意一行**存在即算存在（删 / 改名 ⇒ 红）。
+    **行号对非历史引用也是判据**（2026-10-22 升级）：数据行里没有历史更正标记
+    （`旧记 / 更正 / 现位于 / 为假 / 过期 / 不成立`）、且同一路径只出现一个行号时，
+    行号与符号不重合 ⇒ 红。附录 / 散文是带日期的记录（`AGENTS.md` §6），行号不判红，
+    但**每次都计数并打印**（`[ok]` 行的"附录 X 处未判"）—— 不让它变成"附录可以永久腐烂
+    而没人知道"。
     """
     problems: list[str] = []
     checked = 0
     skipped = 0
     hints = 0
+    appendix_unjudged = 0
     text = path.read_text(encoding="utf-8")
     citing = path.relative_to(REPO)
     for matched in SOURCE_CITATION_RE.finditer(text):
@@ -630,15 +676,15 @@ def source_line_problems(path: Path) -> tuple[list[str], int, int, int]:
         cited = cited_line_numbers(spec)
         named = " / ".join(f"`{symbol}`" for symbol in symbols)
 
-        def mentioned(symbol: str, line: str) -> bool:
+        def mentioned(symbol: str, line_text: str) -> bool:
             """该行里是否出现这个标识符（按**词边界**，免得 `undo` 命中 `undoable`）。"""
-            return re.search(r"\b" + re.escape(symbol) + r"\b", line) is not None
+            return re.search(r"\b" + re.escape(symbol) + r"\b", line_text) is not None
 
         # **符号是判据**：构件必须在文件里存在（哪一行都行）。
         present = {
             index
-            for index, line in enumerate(source, 1)
-            if any(mentioned(symbol, line) for symbol in symbols)
+            for index, line_text in enumerate(source, 1)
+            if any(mentioned(symbol, line_text) for symbol in symbols)
         }
         if not present:
             problems.append(
@@ -646,19 +692,176 @@ def source_line_problems(path: Path) -> tuple[list[str], int, int, int]:
                 f"但 `{path}` 里没有它（构件被删除或被改名）"
             )
             continue
-        # **行号是提示**：符号对而行号漂了（含越界）⇒ 只计数，不红。
-        if not cited or not (cited & present):
+        if cited & present:
+            continue
+        # 行号与符号不重合：先把"历史记录"与"附录"分出来，剩下的才是活声明。
+        line_start = text.rfind("\n", 0, matched.start()) + 1
+        line_end = text.find("\n", matched.end())
+        if line_end == -1:
+            line_end = len(text)
+        line_text = text[line_start:line_end]
+        if not line_text.lstrip().startswith("|"):
+            # 附录 / 散文：带日期的记录，行号不判红；但计数，防止永久腐烂。
+            appendix_unjudged += 1
+            continue
+        tail = text[matched.end():line_end]
+        same_path_specs = {
+            other.group("lines")
+            for other in SOURCE_CITATION_RE.finditer(line_text)
+            if other.group("path") == path
+        }
+        if CITATION_HISTORY_RE.search(tail) or len(same_path_specs) >= 2:
+            # 同一行给出旧号与现号（或带"旧记/更正"）⇒ 这一行在记录一次移动，整行豁免。
             hints += 1
-    return problems, checked, skipped, hints
+            continue
+        nearest = min(present, key=lambda n: min(abs(n - c) for c in cited)) if cited else min(present)
+        problems.append(
+            f"{citing}:{lineno} 的**非历史**源码引用 `{path}:{spec}` 点名 {named}，"
+            f"但第 {spec} 行没有它（构件最近出现在第 {nearest} 行）—— "
+            "旧位置请写成 `旧记 :N` 或 `⚠ …就地更正：…现位于 :M`，别把旧行号留在活声明里"
+        )
+    return problems, checked, skipped, hints, appendix_unjudged
+
+
+def variant_count() -> int:
+    """`schemas/ops.schema.json` 的 `properties.op.oneOf` 条数（`Op` 变体的机械读数）。"""
+    document = json.loads(OPS_SCHEMA.read_text(encoding="utf-8"))
+    return len(document["properties"]["op"]["oneOf"])
+
+
+def hand_copied_number_problems(
+    lines: list[str], rows: list[Row], expected_methods: int, expected_variants: int
+) -> tuple[list[str], int, int]:
+    """判据 5（2026-10-22 扩展）：本表数据行里的三类手抄读数必须与机械值相等。
+
+    认三种形态：`N 条方法`、`N 个 Op 变体`、`` `grep -c "…" 路径` = N ``。
+    同一行里**位置最后**的那个读数 / 更正读数为现行；之前的只计数不判红（本表 36 行
+    "保留旧句 + 追加更正"的写法）。实测路径标定不了、或 `grep -c` 的路径不存在 ⇒ 跳过。
+    """
+    problems: list[str] = []
+    checked = 0
+    historical = 0
+    for row in rows:
+        line = lines[row.line_no - 1]
+        # A: N 条方法
+        candidates = [
+            (matched.start(), int(matched.group(1)))
+            for matched in METHOD_CLAIM_RE.finditer(line)
+        ] + [
+            (matched.start(), int(matched.group(1)))
+            for matched in METHOD_READING_RE.finditer(line)
+        ]
+        if candidates:
+            _, stated = max(candidates)
+            historical += len(candidates) - 1
+            checked += 1
+            if stated != expected_methods:
+                problems.append(
+                    f"表第 {row.line_no} 行的『N 条方法』读数是 {stated} 条，"
+                    f"`crates/yeban-ui-mcp/src/methods.rs` 的机械读数是 {expected_methods} 条"
+                )
+        # B: N 个 Op 变体
+        candidates = [
+            (matched.start(), int(matched.group(1)))
+            for matched in VARIANT_CLAIM_RE.finditer(line)
+        ] + [
+            (matched.start(), int(matched.group(1)))
+            for matched in VARIANT_READING_RE.finditer(line)
+        ]
+        if candidates:
+            _, stated = max(candidates)
+            historical += len(candidates) - 1
+            checked += 1
+            if stated != expected_variants:
+                problems.append(
+                    f"表第 {row.line_no} 行的『N 个 Op 变体』读数是 {stated} 个，"
+                    f"`schemas/ops.schema.json` 的 `properties.op.oneOf` 是 {expected_variants} 个"
+                )
+        # C: grep -c "…" path = N（按同一命令的现行读数对账；用 Python 数匹配行）
+        for matched in GREP_COUNT_CLAIM_RE.finditer(line):
+            pattern = matched.group("pattern")
+            target_rel = matched.group("path")
+            stated = int(matched.group("count"))
+            reading_re = re.compile(
+                r'grep -c\s+"' + re.escape(pattern) + r'"\s+' + re.escape(target_rel)
+                + r'`?\s*实测\s*\**\s*(\d+)'
+            )
+            later = list(reading_re.finditer(line, matched.end()))
+            if later:
+                stated = int(later[-1].group(1))
+                historical += 1
+            target = REPO / target_rel
+            if not target.is_file():
+                continue
+            actual = sum(
+                1
+                for text_line in target.read_text(encoding="utf-8", errors="ignore").splitlines()
+                if re.search(pattern, text_line)
+            )
+            checked += 1
+            if stated != actual:
+                problems.append(
+                    f"表第 {row.line_no} 行的 `grep -c \"{pattern}\" {target_rel}` "
+                    f"写的是 {stated}，现数是 {actual}"
+                )
+    return problems, checked, historical
+
+
+def crate_dependents(crate: str) -> list[str]:
+    """`crates/*/Cargo.toml` 里**别的** crate 对这个 crate 的依赖行（不含自身）。"""
+    dependents: list[str] = []
+    for manifest in sorted(CRATES.glob("*/Cargo.toml")):
+        if manifest.parent.name == crate:
+            continue
+        for text_line in manifest.read_text(encoding="utf-8", errors="ignore").splitlines():
+            stripped = text_line.strip()
+            if stripped.startswith("#"):
+                continue
+            if re.match(r"^" + re.escape(crate) + r"\s*(?:\.workspace\s*=|=)", stripped):
+                dependents.append(str(manifest.relative_to(REPO)))
+                break
+    return dependents
+
+
+def negative_claim_problems(lines: list[str], rows: list[Row]) -> tuple[list[str], int, int]:
+    """判据 8：`yeban-*` crate 的"没有任何工作区内消费者 / 无消费者"必须为真。
+
+    只判 `> 0`：只要 `crates/*/Cargo.toml` 里有**别的** crate 依赖它，断言就是假的。
+    同一行后文有 `为假 / 过期 / 不成立` 的撤回、或句子写成"此前…" ⇒ 历史记录，只计数。
+    """
+    problems: list[str] = []
+    checked = 0
+    historical = 0
+    for row in rows:
+        line = lines[row.line_no - 1]
+        for matched in NEGATIVE_CLAIM_RE.finditer(line):
+            crate = matched.group("crate")
+            gap = line[matched.start("crate") + len(crate) : matched.start("claim")]
+            if "此前" in gap:
+                historical += 1
+                continue
+            if RETRACTION_RE.search(line[matched.end() :]):
+                historical += 1
+                continue
+            dependents = crate_dependents(crate)
+            checked += 1
+            if dependents:
+                problems.append(
+                    f"表第 {row.line_no} 行断言 `{crate}` **没有任何工作区内消费者**，"
+                    f"但 `crates/*/Cargo.toml` 里有 {len(dependents)} 个别的 crate 依赖它"
+                    f"（{', '.join(dependents)}）—— 第 324 条那类『有依赖写成没依赖』"
+                )
+    return problems, checked, historical
 
 
 def main() -> int:
-    for required in (TABLE, SCHEMA, METHODS):
+    for required in (TABLE, SCHEMA, OPS_SCHEMA, METHODS):
         if not required.exists():
             print(f"缺少权威来源: {required}", file=sys.stderr)
             return 1
 
     text = TABLE.read_text(encoding="utf-8")
+    table_lines = text.splitlines()
     problems: list[str] = []
 
     rows, _ = parse_rows(text)
@@ -812,6 +1015,17 @@ def main() -> int:
                         f"{stated}{unit}，守卫算出来是 {computed}{unit}"
                     )
 
+    # ---- 判据 5（续）：三类表内手抄读数 -----------------------------------------
+    #
+    # 2026-10-22：`N 条方法` / `N 个 Op 变体` / `grep -c … = N` 这类读数此前不在任何判据的
+    # 射程内（判据 5 只认 `N 条 ui 方法` 那种带 `ui` 的形态）。这里只读本表数据行；同一行后文
+    # 的更正读数为现行，之前的只计数 —— 见 `hand_copied_number_problems()` 的注释。
+    expected_variants = variant_count()
+    number_problems, numbers_checked, numbers_historical = hand_copied_number_problems(
+        table_lines, rows, len(expected_methods), expected_variants
+    )
+    problems.extend(number_problems)
+
     # ---- 判据 6：行号交叉引用必须指向它点名的那一行 -----------------------------
     #
     # 判据 4/5 管的是**手抄的数字**；本表里还有一类跨文档的活声明：`` `其它活表:NN` ``。
@@ -831,15 +1045,23 @@ def main() -> int:
     # `piano_roll.slint:68-70` 应为 `77-79`、`host.rs:130-140` 应为 `157-184`），
     # 而此前没有任何守卫读它们的源码行引用。
     source_problems: list[str] = []
-    source_per_doc: list[tuple[Path, int, int]] = []
+    source_per_doc: list[tuple[Path, int, int, int, int]] = []
     for citing_doc in SOURCE_CITATION_DOCS:
         if not citing_doc.is_file():
             problems.append(f"缺少活表 {citing_doc.relative_to(REPO)}（判据 7 无法复核其源码行引用）")
             continue
-        doc_problems, doc_checked, doc_skipped, doc_hints = source_line_problems(citing_doc)
+        doc_problems, doc_checked, doc_skipped, doc_hints, doc_appendix = source_line_problems(citing_doc)
         source_problems.extend(doc_problems)
-        source_per_doc.append((citing_doc, doc_checked, doc_skipped, doc_hints))
+        source_per_doc.append((citing_doc, doc_checked, doc_skipped, doc_hints, doc_appendix))
     problems.extend(source_problems)
+
+    # ---- 判据 8：负存在断言必须真的不存在 ---------------------------------------
+    #
+    # 这是 `:143` 的教科书例，也是第 324 条的原形：把"有依赖"写成"没依赖"会让人重写一个
+    # 已经存在的东西。只判 > 0（有别的 crate 依赖它），不做精确计数 —— 现有更正里的
+    # "6 处"与 `grep -rn` 的 9 行口径不同，精确计数会造出新的假话。
+    negative_problems, negative_checked, negative_historical = negative_claim_problems(table_lines, rows)
+    problems.extend(negative_problems)
 
     if problems:
         print("三方对齐矩阵校验未通过:", file=sys.stderr)
@@ -847,12 +1069,13 @@ def main() -> int:
             print(f"  - {item}", file=sys.stderr)
         return 1
 
-    source_checked = sum(checked for _, checked, _, _ in source_per_doc)
-    source_skipped = sum(skipped for _, _, skipped, _ in source_per_doc)
-    source_hints = sum(hints for _, _, _, hints in source_per_doc)
+    source_checked = sum(checked for _, checked, _, _, _ in source_per_doc)
+    source_skipped = sum(skipped for _, _, skipped, _, _ in source_per_doc)
+    source_hints = sum(hints for _, _, _, hints, _ in source_per_doc)
+    source_appendix = sum(appendix for *_, appendix in source_per_doc)
     source_breakdown = " / ".join(
-        f"{doc.name} 核对 {checked} 跳过 {skipped} 行号漂移 {hints}"
-        for doc, checked, skipped, hints in source_per_doc
+        f"{doc.name} 核对 {checked} 跳过 {skipped} 历史漂移 {hints} 附录未判 {appendix}"
+        for doc, checked, skipped, hints, appendix in source_per_doc
     )
     print(
         f"[ok] feature-alignment.md: {len(rows)} 行功能 / "
@@ -861,8 +1084,12 @@ def main() -> int:
         + f"；{citations_checked} 处行号交叉引用全部落在目标行"
         + f"；{source_checked} 处源码引用点名了**存在**的构件"
         + f"（另有 {source_skipped} 处路径歧义 / 未点名构件，按构造跳过、未假装通过；"
-        + f"{source_hints} 处行号已漂移 —— 按新口径只提示、不判红；"
+        + f"{source_hints} 处历史更正的行号已漂移，不判红；"
+        + f"附录 {source_appendix} 处行号未判（不参与成败）；"
         + f"分表：{source_breakdown}）"
+        + f"；手抄数字 {numbers_checked} 处现行读数对上（{numbers_historical} 处更正前的旧读数不判）"
+        + f"；负存在断言命中 {negative_checked + negative_historical} 处"
+        + f"（{negative_checked} 处现算，{negative_historical} 处历史/已更正不判）"
     )
     return 0
 
