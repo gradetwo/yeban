@@ -14395,14 +14395,25 @@ fn s116_the_ampeg_attack_three_tiers_name_their_caliber() {
                 } else if let Some(ext) = path.extension().and_then(|e| e.to_str())
                     && (ext.eq_ignore_ascii_case("sfz") || ext.eq_ignore_ascii_case("sfzh"))
                 {
-                    elsewhere.push(path);
+                    // ⚠ `#280`：**测试夹具**不算。本档要证的是"⭐ 仓里放 SFZ 的地方只有
+                    // `assets/samples/**` 一处"—— 指**生产**代码与资产。测试夹具是
+                    // **故意**签进来的输入（`#272` 的 `tests/fixtures/sampler_c1.sfz`
+                    // 就是给采样器字节判据用的），它既不被产品加载、也不参与资产清单。
+                    // 排除判据：路径里含名为 `fixtures` 的目录分量。
+                    let in_fixtures = path
+                        .components()
+                        .any(|component| component.as_os_str() == "fixtures");
+                    if !in_fixtures {
+                        elsewhere.push(path);
+                    }
                 }
             }
         }
     }
     assert!(
         elsewhere.is_empty(),
-        "⭐ `crates/**` 与 `spikes/**` 下必须 **0** 个 `.sfz`／`.sfzh`（实测 {elsewhere:?}）\
+        "⭐ `crates/**` 与 `spikes/**` 下必须 **0** 个 `.sfz`／`.sfzh`，\
+         **`fixtures/` 目录除外**（实测 {elsewhere:?}）\
          ⇒ 「文件集合」这一档在本仓只剩 `assets/samples/**` 一种选择"
     );
 
