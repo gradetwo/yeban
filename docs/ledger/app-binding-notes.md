@@ -56,6 +56,7 @@
 | `sections`（`SectionV3`） | `sections: Vec<SectionView>` | `section-names` / `section-positions` / `section-widths` | `section-{i}-card`（ID 序 = `BTreeMap` 键序） |
 | `SectionV3::name` / `start_tick` / `end_tick` | `name` / `start_tick` / `end_tick` / `x` / `width` | `section-names[i]` 等 | `section-{i}-card.label == "章节 {name}"` |
 | `scenes`（`SceneV3`） | `scenes: Vec<SceneView>` | `scene-names` | `scene-launch-{i}-button` / `slot-{t}-{s}-cell` / `session-track-{t}-header` |
+| ⭐ `current_scene`（⭐ `#283`） | ⭐ **会话运行态**：`ViewState::current_scene: Option<CurrentScene>` ⇒ ⭐ ⚠ ⭐ ⭐ **`from_project*` 一律写 `None`**（⭐ `#283` 逐字：⭐ "⭐ 不是投影产物"）★ ⭐ **唯一写者** ⭐ `host::wire_scene_launch`（⭐ 点击时写入、⭐ ⛔ **不是**量化点生效时）⇒ ⭐ 完整重投影（⭐ 换工程/⭐ 打开）会**清回 `None`** ⇒ ⭐ 它 ⛔ 不进 `.yeban`、⛔ 不进 `projectDigest`、⛔ 不进撤销栈（⭐ `MODEL-ISO-001` 中间层） | `current-scene-index`（⭐ `-1` ＝ ⭐ 无）／⭐ `current-scene-name`（⭐ 空串 ＝ ⭐ 无） | ⭐ ⚠ **与 `launch_quantization` 的区别**：⭐ 后者 ⭐ **是**投影产物**（⭐ `project.transport.launch_quantization` ⇒ ⭐ `ViewState::launch_quantization`） |
 | `SceneV3::tempo` | `tempo: Option<f64>` | —（Session 量化未接） | `canonical_lines()` 的 `tempo=` |
 | `clip_pool[*].content.notes[*].id`（`BTreeMap` 键序） | `note_ulids: Vec<String>` | `MainWindow.note-ulids` → `ConsoleTabs` → `PianoRoll.note-ulids` | `note-{ulid}-rect`（**ID 段 = 工程的 `MidiNote::id`**） |
 | `MidiNote::velocity`（0–127） | `note_velocities: Vec<f32>`（÷127） | `note-velocities` → `PianoRoll.velocities` | `velocity-{i}-bar` 的柱高 |
