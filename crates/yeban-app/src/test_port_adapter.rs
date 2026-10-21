@@ -3369,7 +3369,7 @@ fn toggle_play_and_stop_degrade_instead_of_aborting_when_the_engine_is_already_b
 // | 1 | 停止（在起点） | `Space` | 开始播放 |
 // | 2 | 播放中 | `Space` | 停止、**停在中途**（位置保留） |
 // | 3 | 停止（在中途，无待配对停住） | `Space`（第一次） | 从停止处继续 |
-// | 4 | 停止（在中途，上一次 `Space` 停住在 1.5 s 内） | `Space`（连按第二次） | 回到起点 |
+// | 4 | 停止（在中途，上一次 `Space` 停住在 500 ms 内） | `Space`（连按第二次） | 回到起点 |
 // | 5 | 任意停住 | `Return` / `Enter` | 回到起点 |
 // | 6 | 播放中 | `Return` / `Enter` | 回到起点 ＋ **继续播放** |
 
@@ -3621,7 +3621,7 @@ fn head_state_machine_full_table_is_measured_on_the_production_wiring() {
 
     // ---- 行 4：停止（在中途）＋ `Space`（连按第二次，**无时间窗等待**）⇒ 回到起点 ----
     // ⚠ 顺序：行 4 必须先于"行 3 的继续"—— 行 2 的 `Stop` 刚刚写下了停住时刻，
-    // 紧接着的这一下就是任务单说的"连按第二次"（1.5 s 窗口内，见 [`HEAD_DOUBLE_TAP_WINDOW`]）。
+    // 紧接着的这一下就是任务单说的"连按第二次"（500 ms 窗口内，见 [`HEAD_DOUBLE_TAP_WINDOW`]）。
     let base = harness.journal().len();
     assert!(press(&ui, " "), "`Space` 必须被消费");
     let row4 = harness.reading();
@@ -3634,7 +3634,7 @@ fn head_state_machine_full_table_is_measured_on_the_production_wiring() {
     );
     assert_eq!(ui.get_timecode(), "001.01.000");
     observe(&format!(
-        "[logic-head] 行4 状态=停止@{} ＋ Space（连按第二次，1.5 s 内）⇒ 状态={:?} 位置={} tick \
+        "[logic-head] 行4 状态=停止@{} ＋ Space（连按第二次，500 ms 内）⇒ 状态={:?} 位置={} tick \
          命令={:?} 时间码={}",
         playing_at,
         row4.state,
@@ -3766,15 +3766,15 @@ fn head_state_machine_full_table_is_measured_on_the_production_wiring() {
     ));
 }
 
-/// 任务单 §2 第 4 条（a）：**连按窗口的边界** —— 纯函数在 1.5 s 前后逐点读数。
+/// 任务单 §2 第 4 条（a）：**连按窗口的边界** —— 纯函数在 **500 ms** 前后逐点读数（⭐ `#268` 人类裁决改的窗口）。
 ///
-/// 判据不必睡 1.5 s 就能把边界钉死：`head_command` 是纯函数，时间戳是入参。
+/// 判据不必睡到窗口外就能把边界钉死：`head_command` 是纯函数，时间戳是入参。
 #[test]
 fn head_double_tap_window_boundary_is_measured_on_the_pure_function() {
     use std::time::{Duration, Instant};
     use yeban_app::host::{HEAD_DOUBLE_TAP_WINDOW, HeadCommand, head_command};
 
-    // ---- 纯函数：1.5 s 窗口的两侧与边界（单位 = 毫秒）----
+    // ---- 纯函数：500 ms 窗口的两侧与边界（单位 = 毫秒）----
     let now = Instant::now();
     let at = |ms: u64| {
         now.checked_sub(Duration::from_millis(ms))
@@ -3782,8 +3782,9 @@ fn head_double_tap_window_boundary_is_measured_on_the_pure_function() {
     };
     assert_eq!(
         HEAD_DOUBLE_TAP_WINDOW,
-        Duration::from_millis(1_500),
-        "窗口必须钉在 1.5 s（任务单举例值；改它要重新量边界）"
+        Duration::from_millis(500),
+        "窗口必须钉在 500 ms（⭐ 负责人 `#268` 真机裁决「1.5 秒太长、应该快速两下」；\
+         改它要重新量边界，见下面三条 499/500/501）"
     );
     assert_eq!(
         head_command(true, None, now),
@@ -3806,19 +3807,19 @@ fn head_double_tap_window_boundary_is_measured_on_the_pure_function() {
         "刚停住 ⇒ 连按第二次 ⇒ 回起点"
     );
     assert_eq!(
-        head_command(false, Some(at(1_499)), now),
+        head_command(false, Some(at(499)), now),
         HeadCommand::RewindToStart,
-        "1.499 s ⇒ 仍在窗内"
+        "499 ms ⇒ 仍在窗内"
     );
     assert_eq!(
-        head_command(false, Some(at(1_500)), now),
+        head_command(false, Some(at(500)), now),
         HeadCommand::RewindToStart,
-        "1.500 s ⇒ 边界含（<=）"
+        "500 ms ⇒ 边界含（<=）"
     );
     assert_eq!(
-        head_command(false, Some(at(1_501)), now),
+        head_command(false, Some(at(501)), now),
         HeadCommand::Play,
-        "1.501 s ⇒ 窗外 ⇒ 新的第一次 ⇒ 继续"
+        "501 ms ⇒ 窗外 ⇒ 新的第一次 ⇒ 继续"
     );
     assert_eq!(
         head_command(
@@ -3830,7 +3831,7 @@ fn head_double_tap_window_boundary_is_measured_on_the_pure_function() {
         "时钟异常（停住时刻在未来）⇒ 保守按刚停住处理，⛔ 不 panic"
     );
     observe(&format!(
-        "[logic-head] 连按窗口（纯函数，单位 ms）：0/1499/1500 ⇒ RewindToStart；1501/None ⇒ Play；\
+        "[logic-head] 连按窗口（纯函数，单位 ms）：0/499/500 ⇒ RewindToStart；501/None ⇒ Play；\
          窗口={} ms",
         HEAD_DOUBLE_TAP_WINDOW.as_millis()
     ));
@@ -3839,7 +3840,7 @@ fn head_double_tap_window_boundary_is_measured_on_the_pure_function() {
 /// 任务单 §2 第 4 条（b）：**生产装配**里窗口的两侧读数（同一时间线、一个活窗口）。
 ///
 /// 窗内：`Space` 停住 → 紧接着 `Space` ⇒ 回起点（`SeekTicks(0)`）。
-/// 窗外：真实等待 1.55 s → `Space` ⇒ 从停住处继续（`Play`，位置不回退）。
+/// 窗外：真实等待 600 ms → `Space` ⇒ 从停住处继续（`Play`，位置不回退）。
 ///
 /// ⚠ 一个测试只建一个活窗口（Tier-1 平台是**线程级**的一次性安装）。
 #[test]
@@ -3867,7 +3868,7 @@ fn head_double_tap_is_measured_inside_and_outside_the_window_on_the_production_w
         commands_since(&harness, base),
     ));
 
-    // ---- 窗外（真实等待 1.55 s）⇒ 继续（**位置不回退**）----
+    // ---- 窗外（真实等待 600 ms）⇒ 继续（**位置不回退**）----
     // 上一步停在起点（回起点之后状态是停住）；先起播、再停住（写下新的停住时刻），
     // 然后等窗口真的过期 —— 用的是生产回调里的 `Instant::now()`，⛔ 不是合成时间戳。
     assert!(press(&ui, " "), "起播");
