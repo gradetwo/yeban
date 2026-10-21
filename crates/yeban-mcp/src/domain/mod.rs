@@ -2937,6 +2937,8 @@ fn plan_render_sfz_wav(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> 
             notes_with_tune_cc: outcome.notes_with_tune_cc,
             notes_with_volume_cc: outcome.notes_with_volume_cc,
             notes_with_sample_span: outcome.notes_with_sample_span,
+            // ⭐ `#273`：多于一条区域命中同一音符（本工具只取第一条）。
+            notes_with_multiple_regions: outcome.notes_with_multiple_regions,
         }),
     })
 }

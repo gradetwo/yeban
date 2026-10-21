@@ -1534,8 +1534,9 @@ fn measure_sampler(tag: &str, project: &YebanProjectV1, scratch: &Scratch) -> Sa
 /// * **四项**各自：两侧 `masterDigest` **不同**，且每项都给出首个 `>1 LSB` 的样本；
 /// * **无采样器轨**：两侧 `masterDigest` **相同** ⇒ 差异确实来自采样器路径；
 /// * 五条区域的 `SFZ_ALL`：per-track 读数点名 `regions=5`，`unsupported` 点名
-///   `sfzLoopExpansion` / `sfzSampleSpan` / `sfzRegionEnvelope`；双层区域**没有**
-///   对应的 `unsupported` 键（⇒ 那是一项**未登记**的分叉，见报告）。
+///   `sfzLoopExpansion` / `sfzSampleSpan` / `sfzRegionEnvelope` / `sfzRegionLayering`；
+///   ⭐ `#273` 之后双层区域**有**对应的 `unsupported` 键（修前是**未登记**的分叉）。
+///   单层区域⛔ 不登记该键（触发器不是恒真）。
 #[test]
 fn the_sampler_export_digests_are_not_yet_equal_and_the_four_features_localize_it() {
     let scratch = Scratch::new("sampler-c1");
@@ -1610,6 +1611,25 @@ fn the_sampler_export_digests_are_not_yet_equal_and_the_four_features_localize_i
         if name == "layers" {
             assert_eq!(reading.sampler_regions, 2, "双层夹具必须装出 2 条区域");
             assert_eq!(reading.sampler_notes, 1, "双层夹具只有一个音符");
+            // ⭐ `#273`：两条区域命中同一音符 ⇒ 必须登记这条分叉。
+            assert!(
+                reading
+                    .unsupported
+                    .iter()
+                    .any(|entry| entry == "sfzRegionLayering"),
+                "双层夹具必须登记 `sfzRegionLayering`: {:?}",
+                reading.unsupported
+            );
+        } else {
+            // 单层夹具（loop / span / ampeg）⛔ 不得登记：触发器不是恒真。
+            assert!(
+                !reading
+                    .unsupported
+                    .iter()
+                    .any(|entry| entry == "sfzRegionLayering"),
+                "单层夹具 `{name}` 不得登记 `sfzRegionLayering`: {:?}",
+                reading.unsupported
+            );
         }
     }
 
@@ -1648,13 +1668,26 @@ fn the_sampler_export_digests_are_not_yet_equal_and_the_four_features_localize_i
             all.unsupported
         );
     }
+    // ⭐ `#273`：双层区域（key=67 有两条 region）必须**点名**登记；修前这里断言"没有"。
     assert!(
-        !all.unsupported.iter().any(|entry| {
-            entry.contains("layer") || entry.contains("regionSelection") || entry.contains("all")
-        }),
-        "双层区域今天**没有**对应的 unsupported 键（这是一项未登记的分叉，⛔ 不要假装它有）: {:?}",
+        all.unsupported
+            .iter()
+            .any(|entry| entry == "sfzRegionLayering"),
+        "双层区域必须登记 `sfzRegionLayering`（⛔ 不许心知肚明地不报）: {:?}",
         all.unsupported
     );
+    // 触发器⛔ 不是恒真：单层夹具（基线 / loop / span / ampeg）一条都不许出现。
+    for reading in [&plain, &no_sampler] {
+        assert!(
+            !reading
+                .unsupported
+                .iter()
+                .any(|entry| entry == "sfzRegionLayering"),
+            "单层/无采样器夹具 `{}` 不得登记 `sfzRegionLayering`: {:?}",
+            reading.tag,
+            reading.unsupported
+        );
+    }
     assert!(
         all.cli_label.contains(&all.label),
         "CLI 的 source_label 必须包含与 MCP 逐字相同的 sfz(...) 行: {} vs {}",

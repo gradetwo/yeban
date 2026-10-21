@@ -5459,6 +5459,27 @@ fn the_known_unsupported_list_is_not_decoration() {
         }),
     ));
 
+    // ⑲ `sfzRegionLayering`：**多于一条**区域命中同一音符（本渲染器只取第一条，引擎叠加）。
+    triggers.push((
+        "sfzRegionLayering",
+        Box::new({
+            let scratch = &scratch;
+            move || {
+                let dir = scratch.join("layer-sfz");
+                fs::create_dir_all(&dir).expect("建目录");
+                write_constant_wav(&dir.join("l.wav"), 0.5, 480, 48_000);
+                fs::write(
+                    dir.join("l.sfz"),
+                    "<region> sample=l.wav key=69 volume=-6\n\
+                     <region> sample=l.wav key=69 volume=-6\n",
+                )
+                .expect("写双层 sfz");
+                let path = dir.join("l.sfz").display().to_string();
+                render_or_ok(&project_with_sampler(Some(&path)), "sfz-layering")
+            }
+        }),
+    ));
+
     // 清单与触发器**逐条重合**（两方向都查：少一个触发器 ⇒ 清单腐烂；多一个 ⇒ 清单漏登记）。
     let listed: Vec<&str> = KNOWN_UNSUPPORTED_KEYS.to_vec();
     let covered: Vec<&str> = triggers.iter().map(|(key, _)| *key).collect();
@@ -5491,6 +5512,48 @@ fn the_known_unsupported_list_is_not_decoration() {
                 "`{key}` 的输入登记了清单外的键 `{observed}` ⇒ KNOWN_UNSUPPORTED_KEYS 少了它"
             );
         }
+    }
+}
+
+/// ⭐ `#273` 判据 1/2：层叠登记的**两方向** —— 两条区域命中同一音符 ⇒ 必须出现；
+/// 一条区域 ⇒ ⛔ 不许出现（触发器不是恒真）。
+///
+/// 为什么单独一条：`the_known_unsupported_list_is_not_decoration` 只逼"能出现"，
+/// 而第 324 条的缺陷形状正好是"报了但报不全"与"没报"一样坏 —— 一个恒真的键同样坏
+/// （它会在每一份单层 SFZ 上说假话）。这里两条腿共用**同一份**渲染路径。
+#[test]
+fn sfz_region_layering_is_reported_only_when_two_regions_match_the_same_note() {
+    let scratch = Scratch::new("region-layering");
+    let dir = scratch.join("region-layering");
+    fs::create_dir_all(&dir).expect("建目录");
+    write_constant_wav(&dir.join("tone.wav"), 0.5, 480, 48_000);
+    let cases = [
+        (
+            "single",
+            "<region> sample=tone.wav key=69 volume=-6\n",
+            false,
+        ),
+        (
+            "layered",
+            "<region> sample=tone.wav key=69 volume=-6\n\
+             <region> sample=tone.wav key=69 volume=-6\n",
+            true,
+        ),
+    ];
+    for (tag, text, expected) in cases {
+        let sfz = dir.join(format!("{tag}.sfz"));
+        fs::write(&sfz, text).expect("写 sfz");
+        let path = sfz.display().to_string();
+        let response = render_or_ok(&project_with_sampler(Some(&path)), tag);
+        let unsupported = response["data"]["unsupported"]
+            .as_array()
+            .unwrap_or_else(|| panic!("{tag}: 响应必须带 unsupported: {response}"));
+        let present = unsupported.iter().any(|value| value == "sfzRegionLayering");
+        println!("### [{tag}] unsupported（逐字）: {unsupported:?}");
+        assert_eq!(
+            present, expected,
+            "`{tag}`: `sfzRegionLayering` 的出现与否必须 = {expected}: {unsupported:?}"
+        );
     }
 }
 

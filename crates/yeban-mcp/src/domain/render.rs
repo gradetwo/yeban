@@ -62,6 +62,7 @@
 //! | `sfzTuneCcModulation` | ⭐ `#223`：命中区域的 **`tune` 的 CC 调制**（`tune*ccN`，`pitch*ccN` 亦归此族）没有求值 —— 基准 `tune` 已烘进 `pitch_ratio`，CC 增量需要 CC 状态，本层没有。只在真的声明时出现 |
 //! | `sfzVolumeCcModulation` | ⭐ `#223`：命中区域的 **`volume` 的 CC 调制**（`volume*ccN` / `gain_ccN`）没有求值 —— 基准 `volume` 已折进 `total_gain()`，CC 增量（dB）需要 CC 状态，本层没有。只在真的声明时出现 |
 //! | `sfzSampleSpan` | ⭐ `#223`：命中区域的 **`offset` / `end` 播放区间**没有归约 —— `PlaybackSpec::span` 已由 `yeban-sfz` 算好，但本渲染器把整份样本从 0 播到末尾。只在偏离缺省（`offset=0` ＋ `end=unspecified`）时出现 |
+//! | `sfzRegionLayering` | ⭐ `#273`：**多于一条区域命中同一音符**时，本渲染器只取**第一条**，而引擎（`sfz_instrument.rs` 的 `render_note_into`）**遍历全部命中并叠加** ⇒ 采样器轨的输出与监听/CLI 分叉。只在真的层叠时出现（单层区域 ⇒ ⛔ 不报） |
 //!
 //! ⚠ **`sfzSampler` 这个键已经退役**（`#221`）：`#220` 的第 324 条指出，模块文档
 //! 曾承诺"会把 `sfzSampler` 放进 `unsupported`"，而代码里**没有任何地方读 `sampler`**
@@ -573,7 +574,11 @@ pub const SAMPLER_MIXED_SOURCE_KIND: &str = "sfz-sampler+audio-clip";
 ///
 /// ⚠ `#255` 之后 `sfzTrackPan` 也**不在**这里：采样器轨的 `pan` 现在真的生效
 /// （MCP 与 CLI 同时接上同一条等功率曲线），报它同样是在说假话。
-pub const KNOWN_UNSUPPORTED_KEYS: [&str; 16] = [
+///
+/// ⭐ `#273`：`sfzRegionLayering` 是本清单的**第 17 项**（修前 16 项）—— `#272`
+/// 实测"双层区域命中同一音符 ⇒ MCP 只取第一条、引擎叠加全部"，而响应里**没有任何
+/// 键**说这件事。相加的不是一个新概念，而是**已经存在却不被报**的分叉。
+pub const KNOWN_UNSUPPORTED_KEYS: [&str; 17] = [
     "audioClips",
     "automationLanes",
     "busTrackClips",
@@ -587,6 +592,7 @@ pub const KNOWN_UNSUPPORTED_KEYS: [&str; 16] = [
     "sfzAmplitude",
     "sfzLoopExpansion",
     "sfzRegionEnvelope",
+    "sfzRegionLayering",
     "sfzSampleSpan",
     "sfzTuneCcModulation",
     "sfzVolumeCcModulation",
@@ -3789,6 +3795,11 @@ fn build_source(
             }
             if prepared.regions_with_sample_span > 0 {
                 note_unsupported(unsupported, counts, "sfzSampleSpan");
+            }
+            // ⭐ `#273`：**多于一条**区域命中同一音符 ⇒ 本渲染器只播第一条，引擎叠加全部。
+            // ⛔ 不在这里改选择（那会改音声）；只把这项分叉说出来（第 324 条）。
+            if prepared.notes_with_multiple_regions > 0 {
+                note_unsupported(unsupported, counts, "sfzRegionLayering");
             }
             let report = SamplerReport {
                 path: binding.path.clone(),

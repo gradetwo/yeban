@@ -1137,6 +1137,8 @@ pub struct SfzWavArtifact {
     pub notes_with_volume_cc: u64,
     /// 命中区域声明了 `offset` / `end` 播放区间的音符数。
     pub notes_with_sample_span: u64,
+    /// ⭐ `#273`：**多于一条区域命中**同一音符的音符数（本工具只取第一条，引擎叠加全部）。
+    pub notes_with_multiple_regions: u64,
 }
 
 impl SfzWavArtifact {
@@ -1161,6 +1163,10 @@ impl SfzWavArtifact {
         }
         if self.notes_with_sample_span > 0 {
             keys.push("sfzSampleSpan");
+        }
+        // ⭐ `#273`：有多于一条区域命中同一音符 ⇒ 本工具只取第一条、引擎叠加全部。
+        if self.notes_with_multiple_regions > 0 {
+            keys.push("sfzRegionLayering");
         }
         keys
     }
@@ -1460,6 +1466,11 @@ pub struct SfzRenderOutcome {
     pub notes_with_volume_cc: u64,
     /// ⭐ `#223`：命中区域声明了 `offset` / `end` 播放区间的音符数（不按 span 切片）。
     pub notes_with_sample_span: u64,
+    /// ⭐ `#273`：**多于一条区域命中**同一音符的音符数（本渲染器只取第一条，引擎叠加全部）。
+    ///
+    /// 只数**真的发声**的音符（[`note_wave`] 选出了区域）；`> 0` ⇒
+    /// `yeban_render_sfz_wav` 登记 `sfzRegionLayering`。计数本身⛔ 不改变区域选择。
+    pub notes_with_multiple_regions: u64,
 }
 
 /// 把工程里的音符经一份**已解析**的 SFZ 渲染成交织立体声浮点母带。
@@ -1510,6 +1521,8 @@ pub fn render(
     let mut notes_with_tune_cc = 0u64;
     let mut notes_with_volume_cc = 0u64;
     let mut notes_with_sample_span = 0u64;
+    // ⭐ `#273`：多于一条区域命中同一音符的音符数（区域选择仍是"第一条"）。
+    let mut notes_with_multiple_regions = 0u64;
     let mut cache = SampleCache::new();
     for note in notes {
         // ⭐ `#221`：区域选择 / 速率 / 增益 / 样本来源**只有一份实现**
@@ -1521,6 +1534,11 @@ pub fn render(
             continue;
         };
         regions_used.insert(wave.region_index);
+        // ⭐ `#273`：这个音符被**多于一条**区域命中 ⇒ 引擎会叠加全部，本渲染器只取第一条。
+        // 只数发声的音符；`wave.layered` 由 [`note_wave`] 在**同一次**选择里顺手算出。
+        if wave.layered {
+            notes_with_multiple_regions = notes_with_multiple_regions.saturating_add(1);
+        }
         // ⭐ `#223`：四类已知但不生效的区域参数，逐音符数出来（键进 `unsupported`）。
         if let Some(region) = instrument.regions().get(wave.region_index) {
             if region_declares_amplitude(region) {
@@ -1619,6 +1637,7 @@ pub fn render(
         notes_with_tune_cc,
         notes_with_volume_cc,
         notes_with_sample_span,
+        notes_with_multiple_regions,
     })
 }
 
@@ -1647,6 +1666,8 @@ pub(super) struct NoteWave {
     pub region_index: usize,
     /// 该区域是否要求循环（本实现**不**展开循环，只响一遍）。
     pub looping: bool,
+    /// ⭐ `#273`：**多于一条**区域命中这个音符（引擎叠加全部，本渲染器只取第一条）。
+    pub layered: bool,
     /// 样本来源裁决。
     pub kind: NoteSampleKind,
 }
@@ -1669,13 +1690,20 @@ pub(super) fn note_wave(
     cache: &mut SampleCache,
 ) -> Option<NoteWave> {
     let rates = RenderRates::new(engine_hz, engine_hz);
-    let (region_index, region) = instrument
+    // ⭐ `#273`：`find` 仍然只取**第一条**（区域选择逐位不变），但顺手数一下还有没有
+    // 第二条命中 —— 引擎（`sfz_instrument.rs` 的 `render_note_into`）遍历全部命中并
+    // 叠加 ⇒ 层叠本身是一项**已知分叉**，必须能报出来。
+    //
+    // 用同一个 `filter` 谓词选出迭代器 ⇒ "选中的区域"与"层叠的判定"不可能漂移。
+    let mut matching = instrument
         .regions()
         .iter()
         .enumerate()
-        .find(|(_, region)| {
+        .filter(|(_, region)| {
             region.matches_key(note.pitch) && region.matches_velocity(note.velocity)
-        })?;
+        });
+    let (region_index, region) = matching.next()?;
+    let layered = matching.next().is_some();
     let rate = region.playback_rate(note.pitch, rates);
     let spec = region.playback_spec(note.pitch, note.velocity, rates);
     let gain = spec.total_gain();
@@ -1740,6 +1768,7 @@ pub(super) fn note_wave(
         written,
         region_index,
         looping,
+        layered,
         kind,
     })
 }
@@ -1809,6 +1838,11 @@ pub(super) struct PreparedSampler {
     /// `PlaybackSpec::span` 已由 `yeban-sfz` 归约好，但本渲染器把整份样本从 0 播到末尾
     /// （⛔ 不按 `span` 切片）⇒ 起点/终点与作者写的不一致。
     pub regions_with_sample_span: u64,
+    /// ⭐ `#273`：**多于一条区域命中**同一音符的音符数（本实现只取第一条，引擎叠加全部）。
+    ///
+    /// 区域选择仍是 [`note_wave`] 的"第一个命中"（⛔ 不改播放行为）；这个读数只让
+    /// `yeban_render_master` 把 `sfzRegionLayering` 登记进 `unsupported`（第 324 条）。
+    pub notes_with_multiple_regions: u64,
 }
 
 /// 用一份已解析的 SFZ 把一组 `(起始帧, 时值帧, 音高, 力度)` 造成**每音符一段 PCM**。
@@ -1844,6 +1878,7 @@ pub(super) fn prepare_sampler(
         regions_with_tune_cc: 0,
         regions_with_volume_cc: 0,
         regions_with_sample_span: 0,
+        notes_with_multiple_regions: 0,
     };
     for &(start, frames, pitch, velocity) in notes {
         let note = SfzNote {
@@ -1863,6 +1898,11 @@ pub(super) fn prepare_sampler(
         };
         if wave.looping {
             prepared.notes_looping = prepared.notes_looping.saturating_add(1);
+        }
+        // ⭐ `#273`：多于一条区域命中这个音符（引擎叠加，本实现只取第一条）⇒ 如实数出来。
+        if wave.layered {
+            prepared.notes_with_multiple_regions =
+                prepared.notes_with_multiple_regions.saturating_add(1);
         }
         // ⭐ 区域级**幅度包络**：本渲染器不应用（见字段文档）⇒ 如实数出来。
         if let Some(region) = instrument.regions().get(wave.region_index) {
