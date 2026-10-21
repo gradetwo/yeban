@@ -72,11 +72,13 @@ use yeban_mcp::security::Channel;
 use yeban_model::{
     AssetHash, AssetMetadata, ClipContent, ClipPlacement, ClipPoolEntry, EntityId, LoopConfig,
     MediaKind, MidiNote, ProjectAudioConfig, RoutingEdge, RoutingGraph, RoutingKind, SampleRate,
-    TrackKind, TrackV3, YebanProjectV1,
+    SamplerBinding, TrackKind, TrackV3, YebanProjectV1,
 };
-use yeban_render::dither::{BitDepth, PcmBuffer};
+use yeban_render::dither::{BitDepth, PcmBuffer, quantize};
 use yeban_render::rf64::PcmFormat;
 use yeban_render::wav::write_plain_wav;
+
+use crate::export_wav::write_interleaved_wav;
 
 use super::embedded_sfz_tools::{Scratch, call_tool};
 use super::session_dispatcher;
@@ -529,16 +531,10 @@ fn quantize_like_export(sample: f32) -> i32 {
     scaled.clamp(-8_388_608.0, 8_388_607.0) as i32
 }
 
-/// 把 MCP 落盘的母带文件解回整数码，与 CLI 的 f32 母带逐样本比。
+/// MCP 母带文件的 **`data` 负载**（24-bit 整数码的原始字节，按样本顺序）。
 ///
-/// ⚠ **不用 `yeban_render::wav::read_plain_wav`（hound）**：母带带 `bext`，它的
-/// `codingHistory` 今天是 **641 字节（奇数）** ⇒ chunk 末尾有一个偶数补位字节，而
-/// hound 3.5.1 的未知 chunk 跳过逻辑**不跳补位字节** ⇒ 实测报
-/// `Hound("Failed to read enough bytes.")`（本判据第一次运行就撞上，已上报）。
-/// 本函数改用本仓**自己的**容器解析器 [`yeban_render::rf64::parse_container`]：它按规范
-/// 处理补位，`ParsedContainer::data` 给出 `data` 负载的精确字节区间。⛔ 这不是"绕过判据"：
-/// 比的是 24-bit 整数码本身，读法只影响"能不能读到"，不影响读数。
-fn sample_diff(path: &Path, cli_samples: &[f32]) -> SampleDiff {
+/// 解析口径与理由见 [`sample_diff`] 的文档（不用 hound，改用本仓的 rf64 解析器）。
+fn mcp_pcm_payload(path: &Path) -> Vec<u8> {
     let bytes = std::fs::read(path).expect("读 MCP 母带字节");
     let parsed = yeban_render::rf64::parse_container(&bytes).expect("解析 MCP 母带容器");
     assert_eq!(
@@ -552,14 +548,19 @@ fn sample_diff(path: &Path, cli_samples: &[f32]) -> SampleDiff {
         parsed.format.bits_per_sample
     );
     assert!(!parsed.format.is_float, "MCP 母带必须是整数 PCM");
-    let payload = &bytes[parsed.data.clone()];
+    bytes[parsed.data.clone()].to_vec()
+}
+
+/// 把 MCP 落盘的母带 `data` 负载解回 24-bit 整数码（PCM 是小端三字节）。
+fn mcp_pcm_codes(path: &Path) -> Vec<i32> {
+    let payload = mcp_pcm_payload(path);
     let (three_byte_chunks, remainder) = payload.as_chunks::<3>();
     assert!(
         remainder.is_empty(),
         "MCP 母带负载必须是每样本 3 字节，实际 {} 字节",
         payload.len()
     );
-    let mcp_codes: Vec<i32> = three_byte_chunks
+    three_byte_chunks
         .iter()
         .map(|three| {
             let raw =
@@ -570,7 +571,20 @@ fn sample_diff(path: &Path, cli_samples: &[f32]) -> SampleDiff {
                 raw
             }
         })
-        .collect();
+        .collect()
+}
+
+/// 把 MCP 落盘的母带文件解回整数码，与 CLI 的 f32 母带逐样本比。
+///
+/// ⚠ **不用 `yeban_render::wav::read_plain_wav`（hound）**：母带带 `bext`，它的
+/// `codingHistory` 今天是 **641 字节（奇数）** ⇒ chunk 末尾有一个偶数补位字节，而
+/// hound 3.5.1 的未知 chunk 跳过逻辑**不跳补位字节** ⇒ 实测报
+/// `Hound("Failed to read enough bytes.")`（本判据第一次运行就撞上，已上报）。
+/// 本函数改用本仓**自己的**容器解析器 [`yeban_render::rf64::parse_container`]：它按规范
+/// 处理补位，`ParsedContainer::data` 给出 `data` 负载的精确字节区间。⛔ 这不是"绕过判据"：
+/// 比的是 24-bit 整数码本身，读法只影响"能不能读到"，不影响读数。
+fn sample_diff(path: &Path, cli_samples: &[f32]) -> SampleDiff {
+    let mcp_codes = mcp_pcm_codes(path);
     // 长度不一致（"故意不对齐帧数"的反证）⇒ 只比**公共前缀**：前缀逐位相同、摘要却
     // 不同，说明差在长度而不是差在样本 —— 这正是"帧数也是摘要输入"的证据。
     let compared = mcp_codes.len().min(cli_samples.len());
@@ -1172,4 +1186,639 @@ fn a_request_rate_different_from_the_project_rate_changes_the_digests() {
         "⭐ 请求率 ≠ 工程率 ⇒ 摘要必须不同（MCP 88.2k vs CLI 48k）"
     );
     assert_ne!(mismatched.mcp_frames, mismatched.cli_frames);
+}
+
+// ---------------------------------------------------------------------------
+// ⭐ 任务单 `#272`：**采样器的 C1 判据从"峰值相等"收紧成"字节相等"**
+// ---------------------------------------------------------------------------
+//
+// ## 为什么这一节存在（`#270` / `#271` 的逐字事实）
+//
+// 既有的采样器判据（`embedded_sampler.rs:255-262`）只断言 **峰值** 相同：
+// MCP 的 `SamplerTrackSource`（`domain/sfz.rs::prepare_sampler`，逐音符烘 PCM）与
+// CLI 的引擎 SFZ 支路（`render_core` → `arm_pending_sfz` → `SynthEngine`）今天
+// 在**四个**区域参数上走的是**两条不同的实现**：
+//
+// | 区域参数 | 引擎（CLI） | MCP | 今天的差 |
+// | :--- | :--- | :--- | :--- |
+// | `loop_mode` / `loop_start` / `loop_end` | 回绕（`mix_span_into`） | 只响一遍（`render_pcm_into`） | 有 |
+// | `offset` / `end` | 按 `SampleSpan` 切片 | 从 0 播到样本尾 | 有 |
+// | `ampeg_*` | 幅度包络（`AmpegRun`） | 不应用 | 有 |
+// | 多个 `region` 命中同一音符 | **全部叠加**（每个 region 是独立声部） | **只取第一条**（`.find`） | 有 |
+//
+// 因此"峰值相等"只是"峰一致"，⛔ 不是字节一致。本节的判据对象换成
+// `masterDigest` / `digest`（都是 `RenderOutput::digest_of`：对母带每个 `f32` 的
+// IEEE-754 位型做 SHA-256，在主总线增益之后、抖动/量化之前重算）——
+// **两侧同一个哈希函数**，所以它测的是"母带 f32 是否逐位相同"。
+//
+// ## 本节的夹具（一个 SFZ ＋ 一个工程，五条区域）
+//
+// `SFZ_ALL` 把四项各放在一个**独立音高**上（60 / 62 / 64 / 67×2）⇒ 每个音符只
+// 触发一项，差异可归因。另有一条**基线**区域（`SFZ_PLAIN`，无任何四项参数）作为
+// 正对照：如果基线也不相等，那不是"四项"的问题，而是整条采样器路径不一致。
+//
+// ## 判据的读法（⭐ 今天必须读作"不同"）
+//
+// 本节的**主张**是"迁移后两侧必须字节相等"。今天它**不是**绿的：四项都还没迁。
+// 因此：
+// * [`the_sampler_export_digests_are_not_yet_equal_and_the_four_features_localize_it`]
+//   **钉住今天的事实**（基线相同、四项各自不同、无采样器正对照相同），并逐项打印
+//   首个 `>1 LSB` 的样本位置 —— 它就是"这一项是不是差异来源"的读数；
+// * [`the_sampler_export_must_be_byte_identical_after_the_sfz_migration`] 是**严格
+//   验收判据**（`assert_eq!`），今天 `#[ignore]`：把它拉起来（`--ignored`）就会红，
+//   红的每一条都点名一项未迁移的参数。迁移完成后删掉 `#[ignore]` 即为验收。
+//
+// ⚠ `#[ignore]` **不是**放宽判据：正常档里它一条断言都不执行；它的值在
+// `--ignored` 档与报告里（`#272` 的交付就是那组红的读数）。
+//
+// ## 它**不**证什么
+//
+// ⛔ 没人耳听；⛔ 不证用户机器上的真 SFZ 库（夹具写在 `std::env::temp_dir()` 下，
+// `Drop` 删除）；⛔ 不证迁移**之后**的字节（那要等生产代码真的把四项接进 MCP）。
+
+/// 采样器的样本：**48 000 帧 Float32 单声道**（1 秒 @ 48 kHz）。
+///
+/// 为什么是 Float32：两条读取腿（`yeban-mcp::domain::sfz::read_sample_file` 与
+/// `yeban-app::sfz_load::decode_sample_classified`）在 WAV 上都走
+/// `yeban_render::wav::read_plain_wav_mono_f32`，而 Float32 的归一化因子是 `1.0`
+/// ⇒ **不把"解码归一化"这个自变量混进来**（整数素材那条口径已由夹具 A2 钉住）。
+///
+/// 为什么不是常量：`offset`/`end`、`loop_*` 只有在样本**有形状**时才会改变输出；
+/// 常量样本上"裁掉前 5000 帧"与"从 0 播"逐位相同 ⇒ 判据会假绿。
+fn structured_sampler_sample(scratch: &Scratch) -> std::path::PathBuf {
+    let frames = 48_000usize;
+    let mut samples = Vec::with_capacity(frames);
+    for index in 0..frames {
+        // 整数算术的阶梯（⛔ 不用 sin/cos）：跨平台逐位一致的确定性素材。
+        let step = ((index * 37) % 997) as f32 / 997.0 - 0.5;
+        samples.push(step * 0.8);
+    }
+    let path = scratch.join("tone.wav");
+    write_plain_wav(
+        &path,
+        &PcmFormat::float(1, SAMPLE_RATE, 32),
+        &PcmBuffer::Float32(samples),
+    )
+    .expect("写 Float32 单声道采样器夹具");
+    path
+}
+
+/// 基线区域：**没有任何** `#272` 四项参数（正对照）。
+const SFZ_PLAIN: &str = "<region> sample=tone.wav key=60 pitch_keycenter=60\n";
+
+/// `loop_mode=loop_continuous`（循环窗口 1000..3000 样本帧）。
+const SFZ_LOOP: &str = "<region> sample=tone.wav key=60 pitch_keycenter=60 \
+                         loop_mode=loop_continuous loop_start=1000 loop_end=3000\n";
+
+/// `offset=5000 end=15000`（引擎按 span 切片，MCP 从 0 播到样本尾）。
+const SFZ_SPAN: &str = "<region> sample=tone.wav key=60 pitch_keycenter=60 offset=5000 end=15000\n";
+
+/// `ampeg_attack=0.05 ampeg_release=0.2`（引擎有包络，MCP 一个包络值都不读）。
+const SFZ_AMPEG: &str = "<region> sample=tone.wav key=60 pitch_keycenter=60 \
+                          ampeg_attack=0.05 ampeg_release=0.2\n";
+
+/// **双层区域**：两条 `region` 命中同一个音符（引擎叠加，MCP 只取第一条）。
+const SFZ_LAYERS: &str = "<region> sample=tone.wav key=60 pitch_keycenter=60 volume=-6\n\
+                          <region> sample=tone.wav key=60 pitch_keycenter=60 volume=-6\n";
+
+/// **一个 SFZ 覆盖四项**：60 = 循环、62 = 区间、64 = 包络、67 = 双层（两条）。
+///
+/// 四个音高互不相同 ⇒ 任一音符的差异只能来自它命中的那一项，⛔ 不会串味。
+///
+/// 逐行原文住在 `crates/yeban-app/tests/fixtures/sampler_c1.sfz`（`include_str!`
+/// 编译进判据 ⇒ 判据读的就是仓库里那一份，⛔ 不是运行期再拼一份字符串）。
+const SFZ_ALL: &str = include_str!("../../tests/fixtures/sampler_c1.sfz");
+
+/// 一条采样器轨的工程：`Master` ＋ 一条 MIDI 轨（`TrackV3.sampler = sfz`）。
+///
+/// `notes` 是 `(start_tick, pitch)`，时值统一 960 tick（0.5 秒 @ 120 BPM / 960 PPQ）；
+/// 片段时长 = [`END_TICK`]（2 秒）。`sampler = None` 是"**无采样器轨**"正对照。
+fn sampler_project(notes: &[(u64, u8)], sampler: Option<&Path>) -> YebanProjectV1 {
+    let mut project = empty_project();
+    let track = add_track(&mut project, 2, TrackKind::Midi, "Sampler");
+    project.tracks.get_mut(&track).expect("夹具轨").sampler = sampler.map(|path| SamplerBinding {
+        path: path.display().to_string(),
+    });
+    let mut map = BTreeMap::new();
+    for (index, (start_tick, pitch)) in notes.iter().enumerate() {
+        let id = fixed(100 + index as u128);
+        map.insert(id, MidiNote::new(id, *start_tick, *pitch, 960));
+    }
+    place_clip(
+        &mut project,
+        track,
+        10,
+        "sampler",
+        ClipContent::Midi { notes: map },
+    );
+    project.validate().expect("采样器夹具工程必须合法");
+    project
+}
+
+/// 首个"超出抖动底"（`|Δ| > 1` LSB）的样本：下标、帧、声道、两侧整数码与差值。
+#[derive(Clone, Copy, Debug)]
+struct DiffPoint {
+    /// 交错样本下标（声道合计）。
+    index: usize,
+    /// 帧号（`index / 2`）。
+    frame: u64,
+    /// 声道（0 = 左，1 = 右）。
+    channel: usize,
+    /// MCP 落盘的 24-bit 整数码。
+    mcp_code: i32,
+    /// CLI 的 f32 母带按同一 `2^23` 尺度取整后的整数码（⛔ 不加抖动）。
+    cli_code: i32,
+    /// `mcp_code - cli_code`（LSB）。
+    delta_lsb: i64,
+}
+
+/// 找首个 `|Δ| > 1 LSB` 的样本（`None` = 两侧只差 TPDF 抖动底）。
+fn first_sample_diff(path: &Path, cli_samples: &[f32]) -> Option<DiffPoint> {
+    for (index, (&mcp_code, &cli)) in mcp_pcm_codes(path).iter().zip(cli_samples).enumerate() {
+        let cli_code = quantize_like_export(cli);
+        let delta_lsb = i64::from(mcp_code) - i64::from(cli_code);
+        if delta_lsb.abs() > 1 {
+            return Some(DiffPoint {
+                index,
+                frame: (index / 2) as u64,
+                channel: index % 2,
+                mcp_code,
+                cli_code,
+                delta_lsb,
+            });
+        }
+    }
+    None
+}
+
+/// 一次采样器 C1 读数的全部字段（每一条都打印，⛔ 不让人猜）。
+struct SamplerByteReading {
+    tag: String,
+    mcp_digest: String,
+    cli_digest: String,
+    mcp_file_sha256: String,
+    cli_file_sha256: String,
+    mcp_payload_sha256: String,
+    cli_payload_sha256: String,
+    mcp_peak: f32,
+    cli_peak: f32,
+    diff: SampleDiff,
+    first: Option<DiffPoint>,
+    label: String,
+    /// CLI 腿的 `source_label`（`render_core` 的 `sfz(...)` 行就在里面）。
+    cli_label: String,
+    unsupported: Vec<String>,
+    sampler_regions: u64,
+    sampler_notes: u64,
+    notes_looping: u64,
+    notes_using_file_sample: u64,
+    regions_with_envelope: u64,
+}
+
+impl SamplerByteReading {
+    fn same(&self) -> bool {
+        self.mcp_digest == self.cli_digest
+    }
+
+    fn print(&self) {
+        println!(
+            "### [{}] masterDigest: MCP={} CLI={} 相同={}（十六进制差 {}/64）",
+            self.tag,
+            self.mcp_digest,
+            self.cli_digest,
+            self.same(),
+            digest_hex_distance(&self.mcp_digest, &self.cli_digest),
+        );
+        println!(
+            "### [{}] 导出文件 sha256: MCP={} CLI={} 相同={}（⚠ 容器/抖动不同 ⇒ 本条不可比）",
+            self.tag,
+            self.mcp_file_sha256,
+            self.cli_file_sha256,
+            self.mcp_file_sha256 == self.cli_file_sha256,
+        );
+        println!(
+            "### [{}] PCM 负载 sha256（同一抖动种子）: MCP={} CLI={} 相同={}",
+            self.tag,
+            self.mcp_payload_sha256,
+            self.cli_payload_sha256,
+            self.mcp_payload_sha256 == self.cli_payload_sha256,
+        );
+        println!(
+            "### [{}] 峰值: MCP.before={:.9} CLI.f32={:.9} 位型相同={}",
+            self.tag,
+            self.mcp_peak,
+            self.cli_peak,
+            self.mcp_peak.to_bits() == self.cli_peak.to_bits(),
+        );
+        println!(
+            "### [{}] 样本差: 比较={} >1LSB={} max={} LSB RMS={:.3} 首个>1LSB={:?}",
+            self.tag,
+            self.diff.compared,
+            self.diff.over_one_lsb,
+            self.diff.max_abs_lsb,
+            self.diff.rms_lsb,
+            self.diff.first_over_one_lsb,
+        );
+        match self.first {
+            Some(point) => println!(
+                "### [{}] 首个不同样本: 下标={} 帧={} 声道={} MCP码={} CLI码={} 差={} LSB",
+                self.tag,
+                point.index,
+                point.frame,
+                point.channel,
+                point.mcp_code,
+                point.cli_code,
+                point.delta_lsb,
+            ),
+            None => println!("### [{}] 首个不同样本: 无（只剩抖动底）", self.tag),
+        }
+        println!(
+            "### [{}] per-track: label={}（regions={} notes={} looping={} fileSample={} envelope={}）",
+            self.tag,
+            self.label,
+            self.sampler_regions,
+            self.sampler_notes,
+            self.notes_looping,
+            self.notes_using_file_sample,
+            self.regions_with_envelope,
+        );
+        println!("### [{}] CLI label: {}", self.tag, self.cli_label);
+        println!("### [{}] unsupported: {:?}", self.tag, self.unsupported);
+    }
+}
+
+/// 跑一条采样器 C1 读数：MCP 导出 ＋ CLI 导出 ＋ 三种"sha256"并排。
+fn measure_sampler(tag: &str, project: &YebanProjectV1, scratch: &Scratch) -> SamplerByteReading {
+    let response = mcp_render(project, &[], scratch, tag, FRAMES, false, SAMPLE_RATE);
+    let cli = cli_render(project, &[], FRAMES, SAMPLE_RATE);
+    let mcp_path = scratch.join(&format!("{tag}.master.wav"));
+    let diff = sample_diff(&mcp_path, &cli.samples);
+    let first = first_sample_diff(&mcp_path, &cli.samples);
+    // MCP 的 `data` 负载（24-bit 整数码的字节）。
+    let mcp_payload_sha256 = AssetHash::of_bytes(&mcp_pcm_payload(&mcp_path))
+        .as_str()
+        .to_owned();
+    // CLI 的 f32 母带按 **MCP 侧同一个抖动种子**量化后的负载：
+    // 若两侧 f32 逐位相同，这一步应当重建出与 MCP 逐字节相同的 `data` 负载。
+    let mut rng = yeban_render::rng::dither_rng_for(project.rng_seed, project.master_bus_track_id);
+    let cli_pcm = quantize(&cli.samples, BitDepth::Int24, &mut rng);
+    let cli_payload_sha256 = AssetHash::of_bytes(&cli_pcm.to_le_bytes())
+        .as_str()
+        .to_owned();
+    // CLI 自己的导出文件（plain WAV；与 MCP 的 BWF 容器**不是**同一种字节）。
+    let cli_path = scratch.join(&format!("{tag}.cli.wav"));
+    let _ = write_interleaved_wav(
+        &cli_path,
+        &cli.samples,
+        2,
+        SAMPLE_RATE,
+        project.rng_seed,
+        BitDepth::Int24,
+    )
+    .expect("CLI 导出腿必须能落盘");
+    let cli_file_sha256 = AssetHash::of_bytes(&std::fs::read(&cli_path).expect("读 CLI 导出文件"))
+        .as_str()
+        .to_owned();
+    let data = &response["data"];
+    let sources = data["sources"].as_array().expect("sources");
+    let sampler = sources
+        .iter()
+        .find(|source| !source["sampler"].is_null())
+        .expect("夹具必须有一条采样器源的读数")["sampler"]
+        .clone();
+    let unsupported: Vec<String> = data["unsupported"]
+        .as_array()
+        .expect("unsupported")
+        .iter()
+        .filter_map(|value| value.as_str().map(str::to_owned))
+        .collect();
+    let reading = SamplerByteReading {
+        tag: tag.to_owned(),
+        mcp_digest: data["masterDigest"]
+            .as_str()
+            .expect("data.masterDigest")
+            .to_owned(),
+        cli_digest: cli.digest.clone(),
+        mcp_file_sha256: data["sha256"].as_str().expect("data.sha256").to_owned(),
+        cli_file_sha256,
+        mcp_payload_sha256,
+        cli_payload_sha256,
+        mcp_peak: data["peak"]["before"].as_f64().expect("data.peak.before") as f32,
+        cli_peak: cli
+            .samples
+            .iter()
+            .fold(0.0_f32, |acc, sample| acc.max(sample.abs())),
+        diff,
+        first,
+        label: sampler["label"].as_str().expect("label").to_owned(),
+        cli_label: cli.source_label.clone(),
+        unsupported,
+        sampler_regions: sampler["regions"].as_u64().expect("regions"),
+        sampler_notes: sampler["notes"].as_u64().expect("notes"),
+        notes_looping: sampler["notesLooping"].as_u64().expect("notesLooping"),
+        notes_using_file_sample: sampler["notesUsingFileSample"]
+            .as_u64()
+            .expect("notesUsingFileSample"),
+        regions_with_envelope: sampler["regionsWithEnvelope"]
+            .as_u64()
+            .expect("regionsWithEnvelope"),
+    };
+    reading.print();
+    reading
+}
+
+/// ⭐ `#272` 判据 1–5：**同一工程、同一 SFZ ⇒ 两侧的字节摘要并排读数**。
+///
+/// 今天的事实（本判据钉住的）：
+/// * **基线**（无四项参数）：两侧 `masterDigest` **相同** ⇒ 判据本身不假红；
+/// * **四项**各自：两侧 `masterDigest` **不同**，且每项都给出首个 `>1 LSB` 的样本；
+/// * **无采样器轨**：两侧 `masterDigest` **相同** ⇒ 差异确实来自采样器路径；
+/// * 五条区域的 `SFZ_ALL`：per-track 读数点名 `regions=5`，`unsupported` 点名
+///   `sfzLoopExpansion` / `sfzSampleSpan` / `sfzRegionEnvelope`；双层区域**没有**
+///   对应的 `unsupported` 键（⇒ 那是一项**未登记**的分叉，见报告）。
+#[test]
+fn the_sampler_export_digests_are_not_yet_equal_and_the_four_features_localize_it() {
+    let scratch = Scratch::new("sampler-c1");
+    structured_sampler_sample(&scratch);
+
+    // ---- 正对照 1：基线（无四项参数）⇒ 必须相同 ----
+    let plain_sfz = scratch.write_sfz("plain.sfz", SFZ_PLAIN);
+    let plain = measure_sampler(
+        "baseline",
+        &sampler_project(&[(0, 60)], Some(&plain_sfz)),
+        &scratch,
+    );
+    assert!(
+        plain.same(),
+        "⭐ 基线区域（无 loop/offset/ampeg/双层）⇒ 两侧 masterDigest **必须相同**；\
+         若不同 ⇒ 采样器路径整体不一致，⛔ 不是四项的问题。MCP={} CLI={}",
+        plain.mcp_digest,
+        plain.cli_digest
+    );
+
+    // ---- 正对照 2：无采样器轨 ⇒ 必须相同 ----
+    let no_sampler =
+        measure_sampler_no_sampler("no-sampler", &sampler_project(&[(0, 60)], None), &scratch);
+    assert!(
+        no_sampler.same(),
+        "⭐ 无采样器轨（两侧都走引擎音源）⇒ masterDigest **必须相同**（判据不假红）：\
+         MCP={} CLI={}",
+        no_sampler.mcp_digest,
+        no_sampler.cli_digest
+    );
+    assert_eq!(
+        no_sampler.mcp_payload_sha256, no_sampler.cli_payload_sha256,
+        "无采样器轨 ⇒ 同一抖动种子下 PCM 负载也必须逐字节相同"
+    );
+
+    // ---- 四项逐项：每项都必须真的是差异来源 ----
+    let loop_sfz = scratch.write_sfz("loop.sfz", SFZ_LOOP);
+    let span_sfz = scratch.write_sfz("span.sfz", SFZ_SPAN);
+    let ampeg_sfz = scratch.write_sfz("ampeg.sfz", SFZ_AMPEG);
+    let layers_sfz = scratch.write_sfz("layers.sfz", SFZ_LAYERS);
+    let features: [(&str, &Path); 4] = [
+        ("loop", &loop_sfz),
+        ("span", &span_sfz),
+        ("ampeg", &ampeg_sfz),
+        ("layers", &layers_sfz),
+    ];
+    for (name, sfz_path) in features {
+        let reading = measure_sampler(
+            &format!("only-{name}"),
+            &sampler_project(&[(0, 60)], Some(sfz_path)),
+            &scratch,
+        );
+        assert!(
+            !reading.same(),
+            "⭐ `{name}` 今天必须是差异来源（MCP 不应用它、引擎应用它）；\
+             MCP={} CLI={} —— 若这条红，说明它已被迁移，请把本断言改成相等并挪进严格判据",
+            reading.mcp_digest,
+            reading.cli_digest
+        );
+        assert!(
+            reading.first.is_some(),
+            "`{name}`: 摘要不同 ⇒ 必须存在首个 >1 LSB 的样本（实际没有 ⇒ 差异只在抖动底，\
+             报我）"
+        );
+        // 夹具自证：CLI 的 `sfz(...)` 行必须包含与 MCP **逐字相同**的那一段。
+        assert!(
+            reading.cli_label.contains(&reading.label),
+            "`{name}`: CLI 的 source_label 必须包含与 MCP 逐字相同的 sfz(...) 行: {} vs {}",
+            reading.cli_label,
+            reading.label
+        );
+        if name == "layers" {
+            assert_eq!(reading.sampler_regions, 2, "双层夹具必须装出 2 条区域");
+            assert_eq!(reading.sampler_notes, 1, "双层夹具只有一个音符");
+        }
+    }
+
+    // ---- 五条区域一起上：夹具自证 ----
+    let all_sfz = scratch.write_sfz("all.sfz", SFZ_ALL);
+    let all = measure_sampler(
+        "all-four",
+        &sampler_project(
+            &[(0, 60), (960, 62), (1_920, 64), (2_880, 67)],
+            Some(&all_sfz),
+        ),
+        &scratch,
+    );
+    println!("### SFZ_ALL（逐字）:\n{SFZ_ALL}");
+    assert!(
+        all.label
+            .starts_with("sfz(tracks=1 regions=5 samples=1 silent=0"),
+        "夹具必须真的让 5 条区域被装载（{SFZ_ALL}）: {}",
+        all.label
+    );
+    assert_eq!(all.sampler_regions, 5, "区域数必须是 5");
+    assert_eq!(all.sampler_notes, 4, "四个音符必须都被排程");
+    assert_eq!(all.notes_looping, 1, "恰好一个音符落在循环区域上");
+    assert_eq!(
+        all.notes_using_file_sample, 4,
+        "四个音符都必须落在文件样本上"
+    );
+    assert_eq!(
+        all.regions_with_envelope, 1,
+        "恰好一个音符落在 ampeg 区域上"
+    );
+    for key in ["sfzLoopExpansion", "sfzSampleSpan", "sfzRegionEnvelope"] {
+        assert!(
+            all.unsupported.iter().any(|entry| entry == key),
+            "SFZ_ALL 必须让 MCP 登记 `{key}`: {:?}",
+            all.unsupported
+        );
+    }
+    assert!(
+        !all.unsupported.iter().any(|entry| {
+            entry.contains("layer") || entry.contains("regionSelection") || entry.contains("all")
+        }),
+        "双层区域今天**没有**对应的 unsupported 键（这是一项未登记的分叉，⛔ 不要假装它有）: {:?}",
+        all.unsupported
+    );
+    assert!(
+        all.cli_label.contains(&all.label),
+        "CLI 的 source_label 必须包含与 MCP 逐字相同的 sfz(...) 行: {} vs {}",
+        all.cli_label,
+        all.label
+    );
+    assert!(
+        all.cli_label
+            .contains("sfz(tracks=1 regions=5 samples=1 silent=0"),
+        "CLI 腿也必须装出 5 条区域（⛔ 不是只有 MCP 一份）: {}",
+        all.cli_label
+    );
+    assert!(
+        !all.same(),
+        "⭐ 五项一起（四项未迁移）⇒ 两侧 masterDigest 必须不同；若相同 ⇒ 夹具没触发四项"
+    );
+    let point = all.first.expect("五项一起时必须有首个不同样本");
+    println!(
+        "### all-four 首个不同样本落在帧 {}（音符序号 = {}，@ {:.3} s）",
+        point.frame,
+        point.frame / 24_000,
+        point.frame as f64 / f64::from(SAMPLE_RATE)
+    );
+
+    // ---- 判据 3 的正对照：既有的"峰值相等"判据在**基线**上仍绿 ----
+    //
+    // ⚠ 四项一起上时峰值**不一定**相等（双层区域：MCP 只播第一条 ⇒ 0.124294676，
+    // 引擎叠加两条 ⇒ 0.248589352）。本单**不删**既有判据；这里的正对照只证明
+    // "无四项参数时峰值相等"这条今天仍为真，⛔ 不拿它去要求四项也必须峰值相等。
+    assert_eq!(
+        plain.mcp_peak.to_bits(),
+        plain.cli_peak.to_bits(),
+        "既有判据（峰值相等）在基线上今天为真：MCP={} CLI={} —— 本单 ⛔ 不删它",
+        plain.mcp_peak,
+        plain.cli_peak
+    );
+    println!(
+        "### 峰值判据的盲区（本单的新读数）：loop/span/ampeg 三项**峰值相同**\
+         （MCP=CLI={:.9}）而 masterDigest 不同；只有 layers 的峰值也不同。\
+         ⇒ 「峰值相等」对 3/4 项是盲的。",
+        plain.cli_peak
+    );
+}
+
+/// 无采样器轨时的读数：`measure_sampler` 要求有 per-track 采样器读数，这条腿没有。
+fn measure_sampler_no_sampler(
+    tag: &str,
+    project: &YebanProjectV1,
+    scratch: &Scratch,
+) -> SamplerByteReading {
+    let response = mcp_render(project, &[], scratch, tag, FRAMES, false, SAMPLE_RATE);
+    let cli = cli_render(project, &[], FRAMES, SAMPLE_RATE);
+    let mcp_path = scratch.join(&format!("{tag}.master.wav"));
+    let diff = sample_diff(&mcp_path, &cli.samples);
+    let first = first_sample_diff(&mcp_path, &cli.samples);
+    let mcp_payload_sha256 = AssetHash::of_bytes(&mcp_pcm_payload(&mcp_path))
+        .as_str()
+        .to_owned();
+    let mut rng = yeban_render::rng::dither_rng_for(project.rng_seed, project.master_bus_track_id);
+    let cli_pcm = quantize(&cli.samples, BitDepth::Int24, &mut rng);
+    let cli_payload_sha256 = AssetHash::of_bytes(&cli_pcm.to_le_bytes())
+        .as_str()
+        .to_owned();
+    let cli_path = scratch.join(&format!("{tag}.cli.wav"));
+    let _ = write_interleaved_wav(
+        &cli_path,
+        &cli.samples,
+        2,
+        SAMPLE_RATE,
+        project.rng_seed,
+        BitDepth::Int24,
+    )
+    .expect("CLI 导出腿必须能落盘");
+    let cli_file_sha256 = AssetHash::of_bytes(&std::fs::read(&cli_path).expect("读 CLI 导出文件"))
+        .as_str()
+        .to_owned();
+    let data = &response["data"];
+    assert!(
+        data["sources"]
+            .as_array()
+            .expect("sources")
+            .iter()
+            .all(|source| source["sampler"].is_null()),
+        "正对照工程不得有任何采样器源: {response}"
+    );
+    let unsupported: Vec<String> = data["unsupported"]
+        .as_array()
+        .expect("unsupported")
+        .iter()
+        .filter_map(|value| value.as_str().map(str::to_owned))
+        .collect();
+    let reading = SamplerByteReading {
+        tag: tag.to_owned(),
+        mcp_digest: data["masterDigest"]
+            .as_str()
+            .expect("data.masterDigest")
+            .to_owned(),
+        cli_digest: cli.digest.clone(),
+        mcp_file_sha256: data["sha256"].as_str().expect("data.sha256").to_owned(),
+        cli_file_sha256,
+        mcp_payload_sha256,
+        cli_payload_sha256,
+        mcp_peak: data["peak"]["before"].as_f64().expect("data.peak.before") as f32,
+        cli_peak: cli
+            .samples
+            .iter()
+            .fold(0.0_f32, |acc, sample| acc.max(sample.abs())),
+        diff,
+        first,
+        label: "(无采样器轨)".to_owned(),
+        cli_label: cli.source_label.clone(),
+        unsupported,
+        sampler_regions: 0,
+        sampler_notes: 0,
+        notes_looping: 0,
+        notes_using_file_sample: 0,
+        regions_with_envelope: 0,
+    };
+    reading.print();
+    reading
+}
+
+/// ⭐ `#272` **严格验收判据**（迁移引擎 SFZ 之后必须绿）。
+///
+/// 今天 `#[ignore]`：正常档不执行，`--ignored` 档会红在这四项上 —— 那组红的读数
+/// 就是本单的交付。迁移完成后：删掉 `#[ignore]`、删掉
+/// [`the_sampler_export_digests_are_not_yet_equal_and_the_four_features_localize_it`]
+/// 里的 `!reading.same()` 断言，本节即为验收基线。
+#[ignore = "#272 S0 验收基线：四项未迁引擎 SFZ ⇒ 今天必红；迁移后删掉本标记"]
+#[test]
+fn the_sampler_export_must_be_byte_identical_after_the_sfz_migration() {
+    let scratch = Scratch::new("sampler-c1-strict");
+    structured_sampler_sample(&scratch);
+
+    let cases: [(&str, &str, Vec<(u64, u8)>); 5] = [
+        ("baseline", SFZ_PLAIN, vec![(0, 60)]),
+        ("loop", SFZ_LOOP, vec![(0, 60)]),
+        ("span", SFZ_SPAN, vec![(0, 60)]),
+        ("ampeg", SFZ_AMPEG, vec![(0, 60)]),
+        ("layers", SFZ_LAYERS, vec![(0, 60)]),
+    ];
+    let mut readings: Vec<(String, SamplerByteReading)> = Vec::new();
+    for (name, sfz_text, notes) in cases {
+        let sfz = scratch.write_sfz(&format!("strict-{name}.sfz"), sfz_text);
+        let reading = measure_sampler(
+            &format!("strict-{name}"),
+            &sampler_project(&notes, Some(&sfz)),
+            &scratch,
+        );
+        readings.push((name.to_owned(), reading));
+    }
+    // 先全部渲染完再断言：失败时四条读数（含首个不同样本）都已在日志里。
+    for (name, reading) in readings {
+        assert_eq!(
+            reading.mcp_digest,
+            reading.cli_digest,
+            "⭐ 严格验收（`{name}`）：同一工程、同一 SFZ ⇒ MCP 与 CLI 的母带字节必须相同。\
+             MCP={} CLI={}；首个不同样本={:?}；峰值 MCP={} CLI={}。\
+             ⚠ 这条红就是在说 `{name}` 还没迁进 MCP —— ⛔ 不要改夹具去回避它。",
+            reading.mcp_digest,
+            reading.cli_digest,
+            reading.first,
+            reading.mcp_peak,
+            reading.cli_peak
+        );
+    }
 }

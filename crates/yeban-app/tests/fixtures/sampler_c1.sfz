@@ -1,0 +1,5 @@
+<region> sample=tone.wav key=60 pitch_keycenter=60 loop_mode=loop_continuous loop_start=1000 loop_end=3000
+<region> sample=tone.wav key=62 pitch_keycenter=62 offset=5000 end=15000
+<region> sample=tone.wav key=64 pitch_keycenter=64 ampeg_attack=0.05 ampeg_release=0.2
+<region> sample=tone.wav key=67 pitch_keycenter=67 volume=-6
+<region> sample=tone.wav key=67 pitch_keycenter=67 volume=-6
