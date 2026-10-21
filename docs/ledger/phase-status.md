@@ -16012,9 +16012,9 @@ RATE 44100 divergence=118 / RATE 48000 divergence=0 / RATE 96000 divergence=0
 ⭐ ⚠ ⭐ ⭐ **三、⭐ ⭐ **音声一位不动**（⭐ 硬正对照）**: ⭐ **only-layers `masterDigest` 前后同为 `6e21441c…`** ★ ⭐ **all-four 同为 `8fa92c4c…`** ★ ⭐ **baseline 同为 `e6d80153…`** ★ ⭐ **峰值 `0.124294676` vs ⭐ `0.248589352` 前后一致** ✓
 ★ ⭐ ⭐ **而 ⭐ `#272` 的 `#[ignore]` 严格判据**仍红****（⭐ 红在 `loop`：⭐ `e6d80153…` vs ⭐ `5839e635…`）⇒ ⭐ ⭐ **那正是"⭐ 播放行为真的没改"⭐的证据** ✓
 
-⭐ ⚠ ⭐ ⭐ **四、⭐ 三件套做齐（⭐ 第 298 条）**: ⭐ ① ⭐ 判据自报真实数（⭐ `### KNOWN_UNSUPPORTED_KEYS（逐字，17 项）`）② ⭐ 常量 `[&str; 17]` ③ ⭐ ⭐ **常量旁注明**为什么是 17**（⭐ `#272` 实测分叉、⭐ 修前 16 项）✓
+⭐ ⚠ ⭐ ⭐ **四、⭐ 三件套做齐（⭐ 第 298 条）**: ⭐ ① ⭐ 判据自报真实数（⭐ `### KNOWN_UNSUPPORTED_KEYS（逐字，十七项）`）② ⭐ 常量 `[&str; 17]` ③ ⭐ ⭐ **常量旁注明**为什么是 17**（⭐ `#272` 实测分叉、⭐ 修前 16 项）✓
 
-⭐ ⚠ ⭐ ⭐ **五、⭐ 17 项逐条都能被触发**（⭐ `the_known_unsupported_list_is_not_decoration` ⭐ **1 passed / 7.64 s**）⇒ ⭐ **含新的 `sfzRegionLayering → [sfzRegionLayering]`** ✓
+⭐ ⚠ ⭐ ⭐ **五、⭐ 十七项逐条都能被触发**（⭐ `the_known_unsupported_list_is_not_decoration` ⭐ **1 passed / 7.64 s**）⇒ ⭐ **含新的 `sfzRegionLayering → [sfzRegionLayering]`** ✓
 
 ⭐ ⚠ ⭐ ⭐ **六、⭐ 一条**如实说明**（⭐ 它自己写的）**: ⚠ ⭐ **本键严格复刻 MCP 自己的 key+velocity 选择谓词** ⇒ ⭐ ⛔ **不含引擎的 `cc_gates_ok`／⭐ `off_by`／⭐ `note_polyphony` 那些额外条件** ⇒ ⭐ ⭐ **即：⭐ "⭐ 层叠"⭐的口径是**MCP 视角**、⭐ ⛔ 不是引擎视角**** ✓
 
