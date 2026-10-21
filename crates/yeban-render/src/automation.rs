@@ -35,12 +35,14 @@
 //! ## 边界（本模块没有证明什么）
 //!
 //! - 只接 [`AutomationTarget::TrackVolume`]（含主总线）、[`AutomationTarget::SendGain`]、
-//!   [`AutomationTarget::TrackPan`] 与 [`AutomationTarget::DeviceParam`] 里**一个名字**
-//!   （[`APPLIED_DEVICE_PARAM_NAMES`] = `output_gain_db`）；`Macro` 仍由调用方如实登记
-//!   为不支持，`DeviceParam` 的其它名字（含白名单里的）也如实登记（⛔ 不冒充已支持）；
+//!   [`AutomationTarget::TrackPan`] 与 [`AutomationTarget::DeviceParam`] 里**通道条那一组**
+//!   名字（[`APPLIED_DEVICE_PARAM_NAMES`]：27 个拼写 = 14 个字段，含别名）；`Macro` 仍由
+//!   调用方如实登记为不支持，`DeviceParam` 的其它名字（压缩 / 混响 / 卷积 / 未知旋钮）
+//!   也如实登记（⛔ 不冒充已支持）；
 //! - 设备参数自动化的形状**不同**（任务单 `#266`）：它改的是**器件参数**、要重算系数
 //!   ⇒ 只在**块边界**调 [`crate::inserts::InsertRuntime::apply_device_params`]，
-//!   ⛔ 不逐样本平滑，也 ⛔ 不乘样本；单位是**原生绝对值**（`dB`），没有 R55 换域；
+//!   ⛔ 不逐样本平滑，也 ⛔ 不乘样本；单位是**原生绝对值**（`_db` = dB、`_hz` = Hz、
+//!   开关 `0.0`/`1.0`），没有 R55 换域；
 //! - 主总线的第二个站点在调用方（主总线没有源，它的 `volume_db` 在源侧无法表达）；
 //! - 发送量的落点在 [`crate::render::RenderPlan`] 的**入边归约**里（见
 //!   [`SendGainAutomation`]）：它乘的是该边的**静态增益**，与源节点的 `TrackVolume`
@@ -52,11 +54,12 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use yeban_dsp::channel_strip::ChannelStripParams;
 use yeban_dsp::smoothing::ParamSmoother;
 use yeban_model::{AutomationTarget, EntityId, PPQ, TrackV3, YebanProjectV1};
 
 use crate::inserts::{
-    resolve_device_param, sanitised_output_gain_db, strip_source_params, strip_source_slot,
+    StripField, forced_identity_strip, resolve_device_param, strip_source_params, strip_source_slot,
 };
 use crate::render::{L1_BLOCK_SIZE, db_to_linear};
 
@@ -797,41 +800,107 @@ impl TrackPanAutomation {
     }
 }
 
-/// 本切片**真的会落点**的设备参数名（小写；任务单 `#266` 只开一个名字）。
+/// 本切片**真的会落点**的设备参数名（**含别名**，27 个拼写 = 14 个字段；
+/// `#266` 只开 `output_gain_db`，
+/// 任务单 `#267` 扩到**通道条那一整组**）。
 ///
-/// ⛔ 不是"白名单"：`crates/yeban-render/src/inserts.rs::is_supported_param` 的 44 个
-/// 名字是**静态投影**消费的全集；本表是**自动化**这一层接上的子集。白名单里的
-/// `cutoff_hz` / `reverb_wet` 等名字仍不落点（理由：本单只裁到 `output_gain_db`）。
-pub const APPLIED_DEVICE_PARAM_NAMES: &[&str] = &["output_gain_db"];
+/// ⛔ 不是"白名单"：`crates/yeban-render/src/inserts.rs::is_supported_param` 的名字是
+/// **静态投影**消费的全集；本表是**自动化**这一层接上的子集。判别处**只有一处** ——
+/// [`crate::inserts::StripField::from_name`]；本表是它的可读清单，两者由
+/// `the_applied_names_and_the_field_table_agree` 双向钉住（⛔ 不许只改一边）。
+///
+/// ## 为什么**是**这 27 个
+///
+/// 它们逐个对应 [`crate::inserts::StripField`] 的 14 个字段（增益 3 名字 ×2、级开关
+/// ×2、EQ 七参数、滤波三参数），而 `StripField` 与 `StripProjection::apply` 的
+/// 通道条分支**同集** ⇒ 一条泳道改的正是静态投影会交给 `ChannelStrip::set_params`
+/// 的那个字段。
+///
+/// ## 为什么**不**是别的名字
+///
+/// - **压缩**（`threshold_db` / `ratio` / `knee_db` / `detector_s` / `attack_s` /
+///   `release_s` / `makeup_db` / `compressor_enabled`）：离线侧**整级不执行**
+///   （`inserts.rs` 模块头 §1：检波器在声相前后的电平口径未裁决）⇒ 改它一个字节都
+///   不会变。接上就是假话；
+/// - **混响 / 卷积**（`reverb_size` / `reverb_wet` / `conv_*` …）：那是**构造期**参数，
+///   改它要**重新分配**延迟线 / 重新合成 IR（`InsertRuntime::new` 才做），不是块边界
+///   能改的标量 ⇒ 本渲染器没有"运行期换混响参数"的路；
+/// - 未知旋钮。
+pub const APPLIED_DEVICE_PARAM_NAMES: &[&str] = &[
+    "input_gain_db",
+    "input_gain",
+    "trim_db",
+    "output_gain_db",
+    "output_gain",
+    "fader_db",
+    "eq_enabled",
+    "filter_enabled",
+    "eq_low_gain",
+    "low_gain",
+    "eq_low_freq",
+    "low_freq",
+    "eq_mid_gain",
+    "mid_gain",
+    "eq_mid_freq",
+    "mid_freq",
+    "eq_mid_q",
+    "mid_q",
+    "eq_high_gain",
+    "high_gain",
+    "eq_high_freq",
+    "high_freq",
+    "cutoff_hz",
+    "resonance",
+    "filter_resonance",
+    "drive",
+    "filter_drive",
+];
 
 /// 名字是否是本切片会落点的设备参数（**大小写不敏感**，与 `strip_of` 的同一口径）。
+///
+/// 唯一判定处是 [`crate::inserts::StripField::from_name`]（本表只是它的可读清单）。
 #[must_use]
 pub fn is_applied_device_param_name(name: &str) -> bool {
-    APPLIED_DEVICE_PARAM_NAMES
-        .iter()
-        .any(|applied| name.eq_ignore_ascii_case(applied))
+    StripField::from_name(name).is_some()
 }
 
-/// 把一条 `DeviceParam` 泳道**解析成落点**：`(参数名原文, 设备身份, 静态输出增益 dB)`。
+/// 本轨通道条的**静态基值**：投影来源的参数；没有来源时是
+/// [`forced_identity_strip`]（`#266` 的缝，`#267` 原样沿用）。
+///
+/// 为什么必须是**这一份**而不是 `ChannelStripParams::DEFAULT`：强制实例化时器件拿到的
+/// 就是 `effective_strip()` 的这一个分支（三级全关），它的 `eq_enabled` / `filter_enabled`
+/// 与 `DEFAULT`（三级全开）**不同** —— 恒等判定若比 `DEFAULT`，一条 `eq_enabled: 0`
+/// 的泳道会被误判成"非恒等"，于是白实例化一台器件。
+fn static_strip(track: &TrackV3) -> ChannelStripParams {
+    strip_source_params(track).unwrap_or_else(forced_identity_strip)
+}
+
+/// 把一条 `DeviceParam` 泳道**解析成落点**：
+/// `(参数名原文, 设备身份, 通道条字段, 该字段的静态值)`。
 ///
 /// 返回 `None` 的四种情形（全部是"不落点"，⛔ 不是沉默）：
 ///
 /// 1. 序数地址解析失败（轨 / 插槽 / 参数下标越界）；
-/// 2. 参数名不在 [`APPLIED_DEVICE_PARAM_NAMES`]；
+/// 2. 参数名不在 [`APPLIED_DEVICE_PARAM_NAMES`]（⇒ 不是通道条字段）；
 /// 3. 设备被旁通 / 不是内置效果器（规则同 `from_devices`）；
 /// 4. 该插槽**不是**本轨通道条的来源设备（`strip_source_slot`）—— 那台设备的参数
 ///    根本不会进 DSP，改它没有落点。
 ///
-/// ## "全恒等设备"也是来源（`#266` 的边界裁决）
+/// ## "全恒等设备"也是来源（`#266` 的边界裁决，`#267` 逐条沿用）
 ///
 /// [`crate::inserts::InsertChain::from_devices`] 的"已识别"规则有一条兜底：
 /// `params != DEFAULT`（与实时引擎 `InsertParams::from_devices` 的 `into_params`
-/// 逐字同式）。于是**只写 `output_gain_db: 0.0`** 的设备投影成 `None` —— 它在引擎侧
-/// **不武装**通道条。但它的静态投影**恰好就是恒等**（只有 `0 dB` 的增益名能落进这个
-/// 缝里），所以一条 `output_gain_db` 泳道指向它时，"强制实例化一台 DEFAULT 参数
-/// （三级全关）的通道条"就是它的忠实静态基值。本函数因此在这一个缝里承认它是来源：
-/// **仅当整条轨没有任何其它通道条来源**时（有来源 ⇒ 只认那台，⛔ 不把参数改到
-/// 另一台设备上）。
+/// 逐字同式）。于是**只写 `output_gain_db: 0.0`**（或 `input_gain_db: 0.0` —— 两个增益
+/// 是唯一"写默认值也不置 `seen` 位"的字段）的设备投影成 `None` —— 它在引擎侧
+/// **不武装**通道条。但它的静态投影**恰好就是恒等**，所以一条泳道指向它时，
+/// "强制实例化一台 [`forced_identity_strip`] 参数的通道条"就是它的忠实静态基值。
+/// 本函数因此在这一个缝里承认它是来源：**仅当整条轨没有任何其它通道条来源**时
+/// （有来源 ⇒ 只认那台，⛔ 不把参数改到另一台设备上）。
+///
+/// ⚠ 缝只对**增益**字段存在：`eq_*` / `cutoff_hz` / `resonance` / `drive` / 两个开关
+/// 只要出现就把 `StripProjection` 的 `seen` 位置起 ⇒ `strip_of` 返回 `Some`，走的是
+/// 正常来源分支（静态值仍是投影出来的那一个）。因此"设备改不动"的情形不会因为
+/// 扩名字而出现。
 ///
 /// 这是**唯一**的判定处：`DeviceParamAutomation::new` 与 MCP 的 `AutomationReport`
 /// 都调它 ⇒ "报告说应用了"与"真的挂上了"不会各判一套。
@@ -840,11 +909,9 @@ fn applicable_device_param(
     track_id: EntityId,
     slot_index: usize,
     param_index: usize,
-) -> Option<(String, EntityId, f32)> {
+) -> Option<(String, EntityId, StripField, f32)> {
     let resolved = resolve_device_param(project, track_id, slot_index, param_index).ok()?;
-    if !is_applied_device_param_name(&resolved.param_name) {
-        return None;
-    }
+    let field = StripField::from_name(&resolved.param_name)?;
     let track = project.tracks.get(&track_id)?;
     let slot_is_source = match strip_source_slot(track) {
         Some(source) => source == slot_index,
@@ -855,10 +922,10 @@ fn applicable_device_param(
     if !slot_is_source {
         return None;
     }
-    // 有投影来源 ⇒ 静态值就是投影的 `output_gain_db`；全恒等缝里投影是 `DEFAULT`
-    // （`output_gain_db == 0.0`），`strip_source_params` 为 `None` 时取 `0.0` 是同值。
-    let static_db = strip_source_params(track).map_or(0.0, |params| params.output_gain_db);
-    Some((resolved.param_name, resolved.device_id, static_db))
+    // 静态值 = **器件实际拿到的**投影参数里这个字段的值。投影本身已 `sanitised`
+    // （`strip_source_params`），缝里那一份也是全定义 ⇒ 恒等判定比的就是器件读数。
+    let static_value = field.read(&static_strip(track));
+    Some((resolved.param_name, resolved.device_id, field, static_value))
 }
 
 /// 一条 `DeviceParam` 泳道是否**会被**接上（MCP 的 `AutomationReport` 用）。
@@ -891,15 +958,17 @@ pub fn device_param_lane_is_applicable(
 /// `ChannelStrip::set_params`）⇒ 只能在**块边界**做一次，⛔ 不能逐样本线性插值
 /// "效果"。本类型因此：
 ///
-/// - 每 [`AUTOMATION_BLOCK_SIZE`]（128）帧求值一次，把原生绝对值（`dB`）交给运行态；
+/// - 每 [`AUTOMATION_BLOCK_SIZE`]（128）帧求值一次，把该字段的**原生绝对值**交给运行态
+///   （字段由 [`Self::field`] 给出：`#267` 起是通道条整组，⛔ 不再只有输出增益）；
 /// - **不持有** `ParamSmoother`，也**不**乘任何样本；
 /// - 恒等（没有落点 / 没有泳道 / `read_enabled:false` / 空泳道 / 每个点的
 ///   **钳制后**值都等于静态值）⇒ 调用方一个器件都不实例化。
 ///
 /// ## 单位
 ///
-/// **原生绝对值**（`dB`），与 `TrackPan`／`SendGain` 同一条先例：⛔ 没有 0..1
-/// 归一化，也 ⛔ 没有 R55 换域 —— 交出去的数直接就是器件参数。
+/// **原生绝对值**，与 `TrackPan`／`SendGain` 同一条先例：⛔ 没有 0..1
+/// 归一化，也 ⛔ 没有 R55 换域 —— 交出去的数直接就是器件参数（`_db` = dB、
+/// `_hz` = Hz、开关 `0.0`/`1.0`）。
 ///
 /// ## 为什么求值器仍是一份"只含本轨的模型工程"
 ///
@@ -915,8 +984,10 @@ pub struct DeviceParamAutomation {
     applicable: bool,
     /// 参数名**原文**（读数用）。
     param_name: String,
-    /// 通道条投影的静态输出增益（`dB`，已 `sanitised`）。
-    static_db: f32,
+    /// 这条泳道改的是**哪个通道条字段**（没有落点时为 `None`）。
+    field: Option<StripField>,
+    /// 该字段的静态值（与器件拿到的投影参数同源，已 `sanitised`；开关是 `0.0`/`1.0`）。
+    static_value: f32,
     /// 曲线是否**处处**等于静态值（或本就没有落点）⇒ 恒等快路径。
     identity: bool,
     /// 只含本轨的最小求值工程（含设备链，`validate_against` 要按序数取）。
@@ -931,8 +1002,8 @@ pub struct DeviceParamAutomation {
     points: usize,
     /// 已被求值的块数（只统计非恒等路径）。
     blocks: u64,
-    /// 最近一次块级曲线值（`dB`）。
-    last_db: Option<f32>,
+    /// 最近一次块级曲线值（原生绝对值；开关是 `0.0`/`1.0`）。
+    last_value: Option<f32>,
 }
 
 impl DeviceParamAutomation {
@@ -955,9 +1026,9 @@ impl DeviceParamAutomation {
         };
         let resolved = applicable_device_param(project, track_id, slot_index, param_index);
         let applicable = resolved.is_some();
-        let (param_name, static_db) = resolved.map_or_else(
-            || (String::new(), 0.0),
-            |(name, _device_id, static_db)| (name, static_db),
+        let (param_name, field, static_value) = resolved.map_or_else(
+            || (String::new(), None, 0.0),
+            |(name, _device_id, field, static_value)| (name, Some(field), static_value),
         );
         let lane = project.automation_lane(&target);
         let (evaluable, points, curve_identity) = match lane {
@@ -966,10 +1037,15 @@ impl DeviceParamAutomation {
             Some(lane) if lane.points.is_empty() => (false, 0, true),
             Some(lane) => {
                 // 与 `TrackGainAutomation` 同一条充要条件：分段插值在两端相等时整段恒定，
-                // 边界是保持 ⇒ 所有点钳制后相等就等于整条曲线处处相等。
-                let identity = lane.points.values().all(|point| {
-                    sanitised_output_gain_db(point.value).to_bits() == static_db.to_bits()
-                });
+                // 边界是保持 ⇒ 所有点**钳制后**相等就等于整条曲线处处相等。
+                // 钳制走 `StripField::sanitise`（器件内部同一次 `sanitised`）⇒ 恒等判定
+                // 不会因为"`-100 dB` 与 `-60 dB` 交给器件是同一个值"而漏判。
+                let identity = match field {
+                    Some(field) => lane.points.values().all(|point| {
+                        field.sanitise(point.value).to_bits() == static_value.to_bits()
+                    }),
+                    None => true,
+                };
                 (true, lane.points.len(), identity)
             }
         };
@@ -990,7 +1066,8 @@ impl DeviceParamAutomation {
             track_id,
             applicable,
             param_name,
-            static_db,
+            field,
+            static_value,
             identity: !applicable || curve_identity,
             evaluator,
             bpm: project.bpm,
@@ -998,7 +1075,7 @@ impl DeviceParamAutomation {
             evaluable,
             points,
             blocks: 0,
-            last_db: None,
+            last_value: None,
         }
     }
 
@@ -1026,10 +1103,18 @@ impl DeviceParamAutomation {
         &self.param_name
     }
 
-    /// 通道条投影的静态输出增益（`dB`）。
+    /// 这条泳道改的**通道条字段**（没有落点时为 `None`）。
+    ///
+    /// `value_at_block` 返回 `Some` ⇒ 这里必然是 `Some`（非恒等 ⇒ 有落点）。
     #[must_use]
-    pub const fn static_db(&self) -> f32 {
-        self.static_db
+    pub const fn field(&self) -> Option<StripField> {
+        self.field
+    }
+
+    /// 该字段的**静态值**（与器件拿到的投影参数同源；开关是 `0.0` / `1.0`）。
+    #[must_use]
+    pub const fn static_value(&self) -> f32 {
+        self.static_value
     }
 
     /// 曲线是否**处处**等于静态值（或没有落点）⇒ 一个器件都不用实例化。
@@ -1056,10 +1141,10 @@ impl DeviceParamAutomation {
         self.blocks
     }
 
-    /// 最近一次块级曲线值（`dB`）；恒等路径不更新。
+    /// 最近一次块级曲线值（原生绝对值；开关是 `0.0` / `1.0`）；恒等路径不更新。
     #[must_use]
-    pub const fn last_db(&self) -> Option<f32> {
-        self.last_db
+    pub const fn last_value(&self) -> Option<f32> {
+        self.last_value
     }
 
     /// 复位到"全新构造"的状态（同一个 [`crate::render::RenderPlan`] 连续执行时调用）。
@@ -1068,7 +1153,7 @@ impl DeviceParamAutomation {
     /// 因此只清读数；器件的复位由 `RenderPlan::execute` 对 `InsertRuntime::reset` 做。
     pub fn reset_for_execution(&mut self) {
         self.blocks = 0;
-        self.last_db = None;
+        self.last_value = None;
     }
 
     /// 一块开始：求一次曲线值（**块边界**调用一次，⛔ 不是逐样本）。
@@ -1082,12 +1167,12 @@ impl DeviceParamAutomation {
         self.blocks = self.blocks.saturating_add(1);
         let tick = tick_at_frame(first_frame, self.bpm, self.sample_rate);
         // 唯一入口：目标对账 + `read_enabled` 闸 + 曲线插值都在模型层。
-        let db = match self.evaluator.automation_value_at(&self.target, tick) {
+        let value = match self.evaluator.automation_value_at(&self.target, tick) {
             Ok(Some(value)) if value.is_finite() => value,
-            _ => self.static_db,
+            _ => self.static_value,
         };
-        self.last_db = Some(db);
-        Some(db)
+        self.last_value = Some(value);
+        Some(value)
     }
 }
 
@@ -1587,7 +1672,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // ⭐ `#266`：`DeviceParam`（本单只接 `output_gain_db`）
+    // ⭐ `#266`（一个名字）／`#267`（通道条整组）：`DeviceParam` 自动化
     // -----------------------------------------------------------------------
 
     /// 一条轨 + 一台设备（给定的参数表）+ 可选的 `DeviceParam { slot: 0, param: 0 }` 泳道。
@@ -1660,7 +1745,7 @@ mod tests {
         assert!(automation.is_evaluable());
         assert!(!automation.is_identity());
         assert_eq!(automation.points(), 2);
-        assert_eq!(automation.static_db().to_bits(), 0.0f32.to_bits());
+        assert_eq!(automation.static_value().to_bits(), 0.0f32.to_bits());
         assert_eq!(automation.param_name(), "output_gain_db");
         // 块 0：曲线起点（⛔ 不"淡入"）。
         assert_eq!(
@@ -1676,10 +1761,10 @@ mod tests {
             (-12.0f32).to_bits()
         );
         assert_eq!(automation.evaluated_blocks(), 3);
-        assert_eq!(automation.last_db(), Some(-12.0));
+        assert_eq!(automation.last_value(), Some(-12.0));
         automation.reset_for_execution();
         assert_eq!(automation.evaluated_blocks(), 0);
-        assert_eq!(automation.last_db(), None);
+        assert_eq!(automation.last_value(), None);
     }
 
     #[test]
@@ -1840,5 +1925,289 @@ mod tests {
         );
         let automations = device_param_automations(&disabled, 48_000);
         assert!(forced_strip_tracks(&automations).is_empty());
+    }
+
+    // -----------------------------------------------------------------------
+    // ⭐ `#267`：通道条整组名字（27 个拼写 = 14 个字段）
+    // -----------------------------------------------------------------------
+
+    /// 每个字段的：规范名、静态值、渐变的终点值。
+    ///
+    /// 静态值刻意**全非默认**（除了两个开关的 `0` 与两个增益的 `0` —— 那三组正是
+    /// `#266` 的兜底缝，单独一条判据覆盖）。
+    const FIELD_CASES: &[(StripField, &str, f32, f32)] = &[
+        (StripField::InputGainDb, "input_gain_db", 0.0, -12.0),
+        (StripField::OutputGainDb, "output_gain_db", 0.0, -12.0),
+        (StripField::EqEnabled, "eq_enabled", 0.0, 1.0),
+        (StripField::FilterEnabled, "filter_enabled", 0.0, 1.0),
+        (StripField::EqLowGain, "eq_low_gain", 3.0, -6.0),
+        (StripField::EqLowFreq, "eq_low_freq", 800.0, 4_000.0),
+        (StripField::EqMidGain, "eq_mid_gain", -3.0, 6.0),
+        (StripField::EqMidFreq, "eq_mid_freq", 2_000.0, 500.0),
+        (StripField::EqMidQ, "eq_mid_q", 1.5, 0.4),
+        (StripField::EqHighGain, "eq_high_gain", -3.0, 6.0),
+        (StripField::EqHighFreq, "eq_high_freq", 6_000.0, 1_500.0),
+        (StripField::CutoffHz, "cutoff_hz", 5_000.0, 800.0),
+        (StripField::Resonance, "resonance", 0.2, 0.9),
+        (StripField::Drive, "drive", 0.2, 0.9),
+    ];
+
+    /// ⭐ 名单 ↔ 字段表**双向**一致：`APPLIED_DEVICE_PARAM_NAMES` 就是
+    /// `StripField::from_name` 认下的那一组拼写（⛔ 只改一边会让两条判据红）。
+    #[test]
+    fn the_applied_names_and_the_field_table_agree() {
+        // 1. 名单里的每个拼写都能解析成一个字段，且**规范名**也在名单里。
+        for &name in APPLIED_DEVICE_PARAM_NAMES {
+            let field = StripField::from_name(name)
+                .unwrap_or_else(|| panic!("{name} 在名单里但解析不出字段"));
+            assert!(
+                is_applied_device_param_name(&name.to_ascii_uppercase()),
+                "大小写不敏感：{name}"
+            );
+            assert!(
+                APPLIED_DEVICE_PARAM_NAMES
+                    .iter()
+                    .any(|applied| applied.eq_ignore_ascii_case(field.canonical_name())),
+                "字段 {} 的规范名必须在名单里",
+                field.canonical_name()
+            );
+        }
+        // 2. 每个字段都有且只有一个规范拼写在名单里（别名可以多，规范名只能一个）。
+        for field in StripField::ALL {
+            let canonical = field.canonical_name();
+            assert!(
+                APPLIED_DEVICE_PARAM_NAMES.contains(&canonical),
+                "字段 {canonical} 的规范名不在名单里"
+            );
+            // 该字段的"拼写集合"必须恰好包含它的规范名（逐个对照，⛔ 不在空集合上
+            // 用 `.any` 真空通过 —— 那是 R102/R111/R114 禁的量词断言形状）。
+            let spellings: Vec<&str> = APPLIED_DEVICE_PARAM_NAMES
+                .iter()
+                .copied()
+                .filter(|name| StripField::from_name(name) == Some(*field))
+                .collect();
+            assert!(!spellings.is_empty(), "字段 {canonical} 至少要有一个拼写");
+            assert!(
+                spellings.contains(&canonical),
+                "字段 {canonical} 的拼写集合里必须有它自己: {spellings:?}"
+            );
+        }
+        // 3. 名单与**唯一名字表** `StripField::SPELLINGS` 逐字相等（⛔ 少一个名字、
+        //    ⛔ 多一个名字、⛔ 重复拼写，三条都在这里红）。
+        assert_eq!(
+            APPLIED_DEVICE_PARAM_NAMES.len(),
+            StripField::SPELLINGS.len(),
+            "名单与 SPELLINGS 的条数必须相等"
+        );
+        assert_eq!(StripField::ALL.len(), 14, "14 个字段");
+        let mut sorted: Vec<&str> = APPLIED_DEVICE_PARAM_NAMES.to_vec();
+        sorted.sort_unstable();
+        let mut expected: Vec<&str> = StripField::SPELLINGS
+            .iter()
+            .map(|(name, _)| *name)
+            .collect();
+        expected.sort_unstable();
+        assert_eq!(
+            sorted, expected,
+            "名单必须与 SPELLINGS 完全一致（字典序逐条）"
+        );
+        sorted.dedup();
+        assert_eq!(
+            sorted.len(),
+            APPLIED_DEVICE_PARAM_NAMES.len(),
+            "名单里不许有重复拼写"
+        );
+        // 4. 名单外的名字一律不认。
+        for name in [
+            "threshold_db",
+            "ratio",
+            "knee_db",
+            "detector_s",
+            "attack_s",
+            "release_s",
+            "makeup_db",
+            "compressor_enabled",
+            "reverb_size",
+            "reverb_damp",
+            "reverb_wet",
+            "conv_wet",
+            "conv_ir_decay_s",
+            "mix",
+            "filter_cutoff_hz",
+        ] {
+            assert!(!is_applied_device_param_name(name), "{name} 不该有落点");
+        }
+    }
+
+    /// ⭐ `#267` 判据 1/2：**14 个字段各一条** —— 泳道从静态值渐变到终点值 ⇒
+    /// 求值器把**这个字段**接上（`field()` / `param_name()` / 静态值），曲线在
+    /// 块边界上单调，且恒等判定为假。
+    #[test]
+    fn every_applied_name_is_applied_and_ramps_monotonically() {
+        // 逐个**拼写**（26 个，含别名）而不是逐个字段：别名也是一条能落点的名字。
+        for &name in APPLIED_DEVICE_PARAM_NAMES {
+            let field = StripField::from_name(name).expect("名单里的名字");
+            let &(_, _, static_value, target) = FIELD_CASES
+                .iter()
+                .find(|case| case.0 == field)
+                .expect("每个字段都有用例");
+            let (project, track) = project_with_device_lane(
+                &[(name, static_value)],
+                &[(0, static_value), (1_920, target)],
+                true,
+                false,
+            );
+            let mut automation = DeviceParamAutomation::new(&project, track, 0, 0, 48_000);
+            assert!(automation.is_applicable(), "{name} 必须有落点");
+            assert_eq!(automation.field(), Some(field), "{name} 的字段");
+            assert_eq!(automation.param_name(), name, "{name} 的原文");
+            assert_eq!(
+                automation.static_value().to_bits(),
+                field.sanitise(static_value).to_bits(),
+                "{name} 的静态值必须与器件同一次钳制"
+            );
+            assert!(automation.is_evaluable(), "{name} 有可求值点");
+            assert!(!automation.is_identity(), "{name} 渐变必须非恒等");
+            // 块边界上的读数：起点 == 静态值、终点 == 终点值、中点严格在两者之间。
+            let start = automation.value_at_block(0).expect("块 0");
+            assert_eq!(start.to_bits(), field.sanitise(static_value).to_bits());
+            let mid = automation.value_at_block(24_000).expect("中点");
+            let end = automation.value_at_block(96_000).expect("末端");
+            assert_eq!(end.to_bits(), target.to_bits(), "{name} 末端");
+            let low = static_value.min(target);
+            let high = static_value.max(target);
+            assert!(
+                (low..=high).contains(&mid),
+                "{name} 中点必须在两端之间: {mid}"
+            );
+            if (target - static_value).abs() > 1e-3 {
+                assert!(
+                    mid != start && mid != end,
+                    "{name} 的曲线中点必须真的在移动: {mid}"
+                );
+            }
+            assert_eq!(automation.evaluated_blocks(), 3);
+            assert_eq!(automation.last_value(), Some(end));
+        }
+    }
+
+    /// ⭐ `#267` 判据 3/4：**每个字段**的恒等路径 —— 泳道处处等于静态值、或
+    /// `readEnabled:false` ⇒ [`DeviceParamAutomation::is_identity`] 为真
+    /// （⇒ 不强制实例化器件、一个参数都不改）。
+    #[test]
+    fn every_applied_name_is_identity_when_flat_or_disabled() {
+        for &name in APPLIED_DEVICE_PARAM_NAMES {
+            let field = StripField::from_name(name).expect("名单里的名字");
+            let &(_, _, static_value, target) = FIELD_CASES
+                .iter()
+                .find(|case| case.0 == field)
+                .expect("每个字段都有用例");
+            let flat = [static_value, static_value, static_value];
+            let (project, track) = project_with_device_lane(
+                &[(name, static_value)],
+                &[(0, flat[0]), (960, flat[1]), (1_920, flat[2])],
+                true,
+                false,
+            );
+            let mut automation = DeviceParamAutomation::new(&project, track, 0, 0, 48_000);
+            assert!(automation.is_applicable(), "{name} 有落点");
+            assert!(automation.is_identity(), "{name} 处处等于静态值 ⇒ 恒等");
+            assert_eq!(automation.field(), Some(field));
+            assert!(
+                automation.value_at_block(0).is_none(),
+                "{name} 恒等不改参数"
+            );
+
+            let (project, track) = project_with_device_lane(
+                &[(name, static_value)],
+                &[(0, static_value), (1_920, target)],
+                false,
+                false,
+            );
+            let mut automation = DeviceParamAutomation::new(&project, track, 0, 0, 48_000);
+            assert!(automation.is_identity(), "{name} 的 readEnabled:false");
+            assert!(!automation.is_evaluable());
+            assert!(automation.value_at_block(0).is_none());
+        }
+    }
+
+    /// ⭐ `#267`：**钳制后**才比恒等（`-100 dB` 与 `-60 dB` 交给器件是同一个值）；
+    /// 并且名单外的名字即使指向合法设备也**不落点**（`field()` 是 `None`）。
+    #[test]
+    fn the_identity_compares_the_clamped_value_and_rejects_other_names() {
+        let (project, track) =
+            project_with_device_lane(&[("output_gain_db", -60.0)], &[(0, -100.0)], true, false);
+        let automation = DeviceParamAutomation::new(&project, track, 0, 0, 48_000);
+        assert!(automation.is_identity(), "钳制后相等 ⇒ 恒等");
+        assert_eq!(automation.field(), Some(StripField::OutputGainDb));
+
+        for name in ["threshold_db", "reverb_wet", "conv_wet", "mix"] {
+            let (project, track) =
+                project_with_device_lane(&[(name, 1.0)], &[(0, 0.0), (960, 2.0)], true, false);
+            let automation = DeviceParamAutomation::new(&project, track, 0, 0, 48_000);
+            assert!(!automation.is_applicable(), "{name} 不该有落点");
+            assert!(automation.is_identity());
+            assert_eq!(automation.field(), None);
+            assert_eq!(automation.param_name(), "");
+        }
+    }
+
+    /// ⭐ `#266` 的兜底缝在 `#267` 之后**仍然成立**：只写默认值的**增益**设备投影成
+    /// `None`（`params != DEFAULT` 不认它），但它的泳道仍然是来源 —— 静态基值就是
+    /// [`forced_identity_strip`]。
+    ///
+    /// ⚠ 缝只对两个增益字段存在：其它字段只要出现就把 `seen` 位置起 ⇒ 投影是 `Some`。
+    #[test]
+    fn the_identity_seam_still_holds_for_the_gain_fields() {
+        for name in [
+            "output_gain_db",
+            "input_gain_db",
+            "output_gain",
+            "input_gain",
+            "trim_db",
+        ] {
+            let (project, track) =
+                project_with_device_lane(&[(name, 0.0)], &[(0, 0.0), (1_920, 6.0)], true, false);
+            let track_ref = &project.tracks[&track];
+            assert!(
+                strip_source_params(track_ref).is_none(),
+                "{name}: 全默认设备必须落进兜底缝（投影是 None）"
+            );
+            assert_eq!(
+                strip_source_slot(track_ref),
+                None,
+                "{name}: 缝里没有投影来源"
+            );
+            let automation = DeviceParamAutomation::new(&project, track, 0, 0, 48_000);
+            assert!(automation.is_applicable(), "{name}: 缝里仍然有落点");
+            assert!(!automation.is_identity(), "{name}: 渐变非恒等 ⇒ 强制实例化");
+            assert_eq!(
+                automation.static_value().to_bits(),
+                0.0f32.to_bits(),
+                "{name}: 静态基值是恒等参数"
+            );
+        }
+        // 对照：非增益字段写"默认值"也**不**落进缝里（`seen` 位把投影点起来）。
+        for (name, value) in [
+            ("cutoff_hz", 20_000.0),
+            ("resonance", 0.0),
+            ("drive", 0.0),
+            ("eq_low_gain", 0.0),
+            ("eq_enabled", 1.0),
+            ("filter_enabled", 1.0),
+        ] {
+            let (project, track) =
+                project_with_device_lane(&[(name, value)], &[(0, value)], true, false);
+            assert!(
+                strip_source_params(&project.tracks[&track]).is_some(),
+                "{name}: 非增益字段必须被投影认下（不进兜底缝）"
+            );
+            let automation = DeviceParamAutomation::new(&project, track, 0, 0, 48_000);
+            assert!(automation.is_applicable(), "{name}: 有落点");
+            assert!(
+                automation.is_identity(),
+                "{name}: 泳道 == 静态值 ⇒ 恒等（不白实例化器件）"
+            );
+        }
     }
 }

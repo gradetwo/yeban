@@ -79,7 +79,7 @@
 //!
 //! ### 3.1 设备参数自动化的**编译期强制实例化**（任务单 `#266`）
 //!
-//! 一条 `DeviceParam` 泳道（本切片只接 `output_gain_db`）要改的是**通道条器件的
+//! 一条 `DeviceParam` 泳道（`#266` 只接 `output_gain_db`；`#267` 接通道条整组）要改的是**通道条器件的
 //! 参数**，不是增益乘子。若静态参数恰好是"全恒等"（`0 dB` ＋ 三级全关），
 //! [`InsertChain::effective_strip`] 会返回 `None` ⇒ 编译期根本没有器件可改。
 //! 因此调用方在**编译计划之前**用 [`project_inserts_with_forced_strips`] 声明
@@ -290,12 +290,7 @@ impl InsertChain {
     fn effective_strip(&self) -> Option<ChannelStripParams> {
         let mut params = match self.strip {
             Some(params) => params,
-            None if self.force_strip => ChannelStripParams {
-                eq_enabled: false,
-                filter_enabled: false,
-                compressor_enabled: false,
-                ..ChannelStripParams::DEFAULT
-            },
+            None if self.force_strip => forced_identity_strip(),
             None => return None,
         };
         params.compressor_enabled = false;
@@ -491,14 +486,232 @@ pub fn strip_source_params(track: &TrackV3) -> Option<ChannelStripParams> {
 /// 设备参数自动化的恒等判定必须比这个值，而不是比原始参数：`-100 dB` 与
 /// `-60 dB` 交给器件是**同一个值**，把它们当"不同"会让恒等快路径漏掉一次
 /// 不必要的器件实例化。
+/// 任务单 `#267` 起它只是 [`StripField::sanitise`] 的一个特例（⛔ 不是第二套钳制）。
 #[must_use]
 pub fn sanitised_output_gain_db(value: f32) -> f32 {
+    StripField::OutputGainDb.sanitise(value)
+}
+
+/// 通道条上**可被设备参数自动化落点**的字段（任务单 `#267`）。
+///
+/// 与 [`StripProjection::apply`] 的**通道条分支一一对应**：同一组名字、同一个别名表、
+/// 同一个目标字段。⛔ 刻意**不含**：
+///
+/// - **压缩级**（`threshold_db` / `ratio` / `knee_db` / `detector_s` / `attack_s` /
+///   `release_s` / `makeup_db` 与 `compressor_enabled`）：离线侧整级不执行（§1），
+///   改它不会改一个字节 —— 接上就是假话。它们的名字也不在 [`is_supported_param`] 里，
+///   因此 [`track_has_unhandled_dsp`] 仍会登记 `deviceChainDsp`；
+/// - **混响 / 卷积**（`reverb_*` / `conv_*`）：那是**构造期**参数，改它要重新分配
+///   延迟线 / 重新合成 IR（[`ConvolutionPlan`] 里已烘好一条 IR），不是
+///   `ChannelStrip::set_params` 能在块边界改的标量；
+/// - 未知旋钮。
+///
+/// ## 单位（原生绝对值，⛔ 不归一化）
+///
+/// 字段名自带单位：`_db` = dB、`_hz` = Hz、`resonance` / `drive` / `mid_q` = 旋钮原值。
+/// 开关字段（[`Self::EqEnabled`] / [`Self::FilterEnabled`]）的自动化值是 `0.0` = 假、
+/// 其它 = 真（与 [`flag`] 的"非零即真"同式）—— 读数与写入都用这个口径。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum StripField {
+    /// 输入增益（trim，dB）。`input_gain_db` / `input_gain` / `trim_db`。
+    InputGainDb,
+    /// 输出增益（推子，dB）。`output_gain_db` / `output_gain` / `fader_db`。
+    OutputGainDb,
+    /// EQ 级开关。`eq_enabled`。
+    EqEnabled,
+    /// 滤波级开关。`filter_enabled`。
+    FilterEnabled,
+    /// EQ 低频增益（dB）。`eq_low_gain` / `low_gain`。
+    EqLowGain,
+    /// EQ 低频转折频率（Hz）。`eq_low_freq` / `low_freq`。
+    EqLowFreq,
+    /// EQ 中频增益（dB）。`eq_mid_gain` / `mid_gain`。
+    EqMidGain,
+    /// EQ 中频中心频率（Hz）。`eq_mid_freq` / `mid_freq`。
+    EqMidFreq,
+    /// EQ 中频 Q。`eq_mid_q` / `mid_q`。
+    EqMidQ,
+    /// EQ 高频增益（dB）。`eq_high_gain` / `high_gain`。
+    EqHighGain,
+    /// EQ 高频转折频率（Hz）。`eq_high_freq` / `high_freq`。
+    EqHighFreq,
+    /// 低通截止频率（Hz）。`cutoff_hz`（⚠ `filter_cutoff_hz` 与引擎一样**不认**）。
+    CutoffHz,
+    /// 低通谐振。`resonance` / `filter_resonance`。
+    Resonance,
+    /// 低通驱动。`drive` / `filter_drive`。
+    Drive,
+}
+
+impl StripField {
+    /// 全部字段（每个字段的**规范名**见 [`Self::canonical_name`]）。
+    pub const ALL: &'static [Self] = &[
+        Self::InputGainDb,
+        Self::OutputGainDb,
+        Self::EqEnabled,
+        Self::FilterEnabled,
+        Self::EqLowGain,
+        Self::EqLowFreq,
+        Self::EqMidGain,
+        Self::EqMidFreq,
+        Self::EqMidQ,
+        Self::EqHighGain,
+        Self::EqHighFreq,
+        Self::CutoffHz,
+        Self::Resonance,
+        Self::Drive,
+    ];
+
+    /// **全部拼写** → 字段（`27` 条；这是"哪个名字能落点"的**唯一**名字表）。
+    ///
+    /// 与 [`StripProjection::apply`] 的通道条分支逐字同集：7 个参数各有 2 个拼写，
+    /// 两个增益各有 3 个，两个开关与 `cutoff_hz` 各 1 个。
+    /// `yeban_render::automation::APPLIED_DEVICE_PARAM_NAMES` 必须与本表**完全一致**
+    /// （由 `the_applied_names_and_the_field_table_agree` 双向钉住）。
+    pub const SPELLINGS: &'static [(&'static str, Self)] = &[
+        ("input_gain_db", Self::InputGainDb),
+        ("input_gain", Self::InputGainDb),
+        ("trim_db", Self::InputGainDb),
+        ("output_gain_db", Self::OutputGainDb),
+        ("output_gain", Self::OutputGainDb),
+        ("fader_db", Self::OutputGainDb),
+        ("eq_enabled", Self::EqEnabled),
+        ("filter_enabled", Self::FilterEnabled),
+        ("eq_low_gain", Self::EqLowGain),
+        ("low_gain", Self::EqLowGain),
+        ("eq_low_freq", Self::EqLowFreq),
+        ("low_freq", Self::EqLowFreq),
+        ("eq_mid_gain", Self::EqMidGain),
+        ("mid_gain", Self::EqMidGain),
+        ("eq_mid_freq", Self::EqMidFreq),
+        ("mid_freq", Self::EqMidFreq),
+        ("eq_mid_q", Self::EqMidQ),
+        ("mid_q", Self::EqMidQ),
+        ("eq_high_gain", Self::EqHighGain),
+        ("high_gain", Self::EqHighGain),
+        ("eq_high_freq", Self::EqHighFreq),
+        ("high_freq", Self::EqHighFreq),
+        ("cutoff_hz", Self::CutoffHz),
+        ("resonance", Self::Resonance),
+        ("filter_resonance", Self::Resonance),
+        ("drive", Self::Drive),
+        ("filter_drive", Self::Drive),
+    ];
+
+    /// 名字 → 字段（**大小写不敏感**，别名表与 [`StripProjection::apply`] 逐字同集）。
+    ///
+    /// `None` = 本字段集不认这个名字（压缩 / 混响 / 卷积 / 未知旋钮）。⚠ 本函数是
+    /// "哪个名字能落点"的唯一判定处：`yeban_render::automation::APPLIED_DEVICE_PARAM_NAMES`
+    /// 是它的**可读清单**，两者由 `the_applied_names_and_the_field_table_agree` 钉住。
+    #[must_use]
+    pub fn from_name(name: &str) -> Option<Self> {
+        Self::SPELLINGS
+            .iter()
+            .find(|(spelling, _)| name.eq_ignore_ascii_case(spelling))
+            .map(|(_, field)| *field)
+    }
+
+    /// 规范名（进读数 / 文档的那一个拼写）。
+    #[must_use]
+    pub const fn canonical_name(self) -> &'static str {
+        match self {
+            Self::InputGainDb => "input_gain_db",
+            Self::OutputGainDb => "output_gain_db",
+            Self::EqEnabled => "eq_enabled",
+            Self::FilterEnabled => "filter_enabled",
+            Self::EqLowGain => "eq_low_gain",
+            Self::EqLowFreq => "eq_low_freq",
+            Self::EqMidGain => "eq_mid_gain",
+            Self::EqMidFreq => "eq_mid_freq",
+            Self::EqMidQ => "eq_mid_q",
+            Self::EqHighGain => "eq_high_gain",
+            Self::EqHighFreq => "eq_high_freq",
+            Self::CutoffHz => "cutoff_hz",
+            Self::Resonance => "resonance",
+            Self::Drive => "drive",
+        }
+    }
+
+    /// 本字段是否是**开关**（读作 `1.0` / `0.0`，写时非零即真）。
+    #[must_use]
+    pub const fn is_flag(self) -> bool {
+        matches!(self, Self::EqEnabled | Self::FilterEnabled)
+    }
+
+    /// 从**已 sanitised 的**通道条参数里读这个字段（开关读成 `1.0` / `0.0`）。
+    ///
+    /// 与 [`Self::store`] 是同一张字段表的两个方向：`store` 之后 `read` 必得
+    /// （钳制后的）存入值。
+    #[must_use]
+    pub fn read(self, params: &ChannelStripParams) -> f32 {
+        match self {
+            Self::InputGainDb => params.input_gain_db,
+            Self::OutputGainDb => params.output_gain_db,
+            Self::EqEnabled => f32::from(u8::from(params.eq_enabled)),
+            Self::FilterEnabled => f32::from(u8::from(params.filter_enabled)),
+            Self::EqLowGain => params.eq.low_gain,
+            Self::EqLowFreq => params.eq.low_freq,
+            Self::EqMidGain => params.eq.mid_gain,
+            Self::EqMidFreq => params.eq.mid_freq,
+            Self::EqMidQ => params.eq.mid_q,
+            Self::EqHighGain => params.eq.high_gain,
+            Self::EqHighFreq => params.eq.high_freq,
+            Self::CutoffHz => params.filter.cutoff_hz,
+            Self::Resonance => params.filter.resonance,
+            Self::Drive => params.filter.drive,
+        }
+    }
+
+    /// 把**原生绝对值**写进参数（开关：非零即真，与 [`flag`] 同式）。
+    ///
+    /// ⚠ 不在这里钳制：钳制是器件自己的纪律（`ChannelStrip::set_params` 内部调
+    /// [`ChannelStripParams::sanitised`]）。[`Self::sanitise`] 只是把**同一次**钳制
+    /// 提前算给恒等判定看。
+    pub fn store(self, params: &mut ChannelStripParams, value: f32) {
+        match self {
+            Self::InputGainDb => params.input_gain_db = value,
+            Self::OutputGainDb => params.output_gain_db = value,
+            Self::EqEnabled => params.eq_enabled = value != 0.0,
+            Self::FilterEnabled => params.filter_enabled = value != 0.0,
+            Self::EqLowGain => params.eq.low_gain = value,
+            Self::EqLowFreq => params.eq.low_freq = value,
+            Self::EqMidGain => params.eq.mid_gain = value,
+            Self::EqMidFreq => params.eq.mid_freq = value,
+            Self::EqMidQ => params.eq.mid_q = value,
+            Self::EqHighGain => params.eq.high_gain = value,
+            Self::EqHighFreq => params.eq.high_freq = value,
+            Self::CutoffHz => params.filter.cutoff_hz = value,
+            Self::Resonance => params.filter.resonance = value,
+            Self::Drive => params.filter.drive = value,
+        }
+    }
+
+    /// 与器件内部**同一次**钳制：把值写进一份 `DEFAULT` 参数、`sanitised()`、再读回来。
+    ///
+    /// ⛔ 不复制上下界：`ChannelStripParams::sanitised` 是唯一一份钳制规则（包括
+    /// `cutoff_hz` 的非有限值归**上界**这条不对称裁决）。把它抄到这里必然漂移。
+    #[must_use]
+    pub fn sanitise(self, value: f32) -> f32 {
+        let mut params = ChannelStripParams::DEFAULT;
+        self.store(&mut params, value);
+        self.read(&params.sanitised())
+    }
+}
+
+/// 通道条被**强制实例化**、但本轨没有投影来源时的参数（任务单 `#266` 的缝）。
+///
+/// 三级全关 ＋ 增益 `0 dB` ⇒ 器件是**逐样本恒等**的直通，只是"此刻由泳道来改它"。
+/// [`InsertChain::effective_strip`] 与
+/// [`crate::automation::applicable_device_param`] 的静态基值都用**这一份**
+/// ⇒ "器件拿到的静态参数"与"恒等判定比的那个静态值"不可能各写一套。
+#[must_use]
+pub fn forced_identity_strip() -> ChannelStripParams {
     ChannelStripParams {
-        output_gain_db: value,
+        eq_enabled: false,
+        filter_enabled: false,
+        compressor_enabled: false,
         ..ChannelStripParams::DEFAULT
     }
-    .sanitised()
-    .output_gain_db
 }
 
 /// 一次**成功解析**的设备参数地址（序数 → 稳定身份）。
@@ -942,8 +1155,9 @@ impl InsertRuntime {
         }
     }
 
-    /// 把一个新的**输出增益**（`dB`，原生绝对值）交给通道条并**重算系数**
-    /// （任务单 `#266`；[`ChannelStrip::set_params`] 是唯一入口）。
+    /// 把一个新的**原生绝对值**交给通道条的某个字段并**重算系数**
+    /// （任务单 `#266` 开一个名字 / `#267` 扩到通道条整组；[`ChannelStrip::set_params`]
+    /// 是唯一入口）。
     ///
     /// 调用纪律（通道条自己不做平滑，模块头 §4 的器件纪律）：
     ///
@@ -951,12 +1165,12 @@ impl InsertRuntime {
     ///   乘一个增益；
     /// - `ChannelStrip::set_params` **不清状态**（EQ 双二阶 / 滤波器 / 压缩器记忆保留），
     ///   因此块与块之间没有复位爆音；
-    /// - 本单只开 `output_gain_db` 一个字段：`strip` 为 `None` 时什么都没发生
-    ///   （恒等泳道根本不会走到这里）。
-    pub(crate) fn apply_device_params(&mut self, output_gain_db: f32) {
+    /// - 写哪个字段由 [`StripField`] 决定（`strip` 为 `None` 时什么都没发生 —— 恒等泳道
+    ///   根本不会走到这里）。
+    pub(crate) fn apply_device_params(&mut self, field: StripField, value: f32) {
         if let Some(strip) = &mut self.strip {
             let mut params = strip.params();
-            params.output_gain_db = output_gain_db;
+            field.store(&mut params, value);
             strip.set_params(params);
         }
     }
@@ -999,5 +1213,167 @@ impl InsertRuntime {
                 buffer[2 * frame + 1] = right[frame];
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use yeban_dsp::channel_strip::{MAX_CUTOFF_HZ, MAX_GAIN_DB, MIN_CUTOFF_HZ, MIN_GAIN_DB};
+    use yeban_model::ParameterValue;
+
+    fn device(params: &[(&str, f32)]) -> DeviceDefinition {
+        DeviceDefinition {
+            id: EntityId::default(),
+            name: "strip".to_owned(),
+            kind: DeviceKind::InternalEffect,
+            bypassed: false,
+            params: params
+                .iter()
+                .map(|(name, value)| ParameterValue {
+                    name: (*name).to_owned(),
+                    value: *value,
+                    unit: None,
+                })
+                .collect(),
+            latency_samples: 0,
+        }
+    }
+
+    /// 每个字段一个"非默认"的样本值：`strip_of` 必须认出它（⛔ 不能落进
+    /// `params != DEFAULT` 的兜底缝，否则测的就不是投影）。
+    fn sample(field: StripField) -> f32 {
+        match field {
+            StripField::InputGainDb | StripField::OutputGainDb => 3.0,
+            StripField::EqEnabled | StripField::FilterEnabled => 1.0,
+            StripField::EqLowGain => 3.0,
+            StripField::EqLowFreq => 800.0,
+            StripField::EqMidGain => -3.0,
+            StripField::EqMidFreq => 2_000.0,
+            StripField::EqMidQ => 1.5,
+            StripField::EqHighGain => -3.0,
+            StripField::EqHighFreq => 6_000.0,
+            StripField::CutoffHz => 5_000.0,
+            StripField::Resonance | StripField::Drive => 0.5,
+        }
+    }
+
+    /// ⭐ `#267` 判据：`APPLIED_DEVICE_PARAM_NAMES` 的**每一个拼写**都投影到
+    /// 它自己那个字段，且恒等判定用的钳制值与器件读数是同一个。
+    ///
+    /// 这条就是"名单 ↔ 投影 ↔ 器件"三者的镜像判据：只改名单（不加 `StripField`
+    /// 分支）⇒ `from_name` 返回 `None` ⇒ 红；只改 `StripProjection::apply`（不扩
+    /// `StripField`）⇒ 投影值读不出来 ⇒ 红。
+    #[test]
+    fn every_applied_name_projects_to_its_own_strip_field() {
+        for &name in crate::automation::APPLIED_DEVICE_PARAM_NAMES {
+            let field = StripField::from_name(name)
+                .unwrap_or_else(|| panic!("名单里的 {name} 必须是通道条字段"));
+            let value = sample(field);
+            let projected = strip_of(&device(&[(name, value)]))
+                .unwrap_or_else(|| panic!("{name}={value} 必须被 strip_of 认出来"))
+                .sanitised();
+            assert_eq!(
+                field.read(&projected).to_bits(),
+                field.sanitise(value).to_bits(),
+                "{name} 的投影值与恒等判定值必须同一个"
+            );
+        }
+    }
+
+    /// 别名与规范名指向**同一个**字段（⛔ 不允许一个别名被投影认、被自动化拒）。
+    #[test]
+    fn aliases_resolve_to_the_same_field() {
+        for field in StripField::ALL {
+            assert_eq!(StripField::from_name(field.canonical_name()), Some(*field));
+        }
+        for (alias, field) in [
+            ("input_gain", StripField::InputGainDb),
+            ("trim_db", StripField::InputGainDb),
+            ("output_gain", StripField::OutputGainDb),
+            ("fader_db", StripField::OutputGainDb),
+            ("low_gain", StripField::EqLowGain),
+            ("low_freq", StripField::EqLowFreq),
+            ("mid_gain", StripField::EqMidGain),
+            ("mid_freq", StripField::EqMidFreq),
+            ("mid_q", StripField::EqMidQ),
+            ("high_gain", StripField::EqHighGain),
+            ("high_freq", StripField::EqHighFreq),
+            ("filter_resonance", StripField::Resonance),
+            ("filter_drive", StripField::Drive),
+        ] {
+            assert_eq!(StripField::from_name(alias), Some(field), "{alias}");
+            assert_eq!(
+                StripField::from_name(&alias.to_ascii_uppercase()),
+                Some(field),
+                "大小写不敏感：{alias}"
+            );
+        }
+    }
+
+    /// ⛔ 压缩 / 混响 / 卷积 / 未知名字**不是**通道条字段（它们不在自动化名单里）。
+    #[test]
+    fn compressor_reverb_and_convolution_names_are_not_strip_fields() {
+        for name in [
+            "threshold_db",
+            "ratio",
+            "knee_db",
+            "detector_s",
+            "attack_s",
+            "release_s",
+            "makeup_db",
+            "compressor_enabled",
+            "reverb_size",
+            "reverb_damp",
+            "reverb_wet",
+            "reverb_predelay",
+            "conv_predelay_s",
+            "conv_dry",
+            "conv_wet",
+            "conv_ir_gain_db",
+            "conv_ir_decay_s",
+            "conv_ir_seed",
+            "filter_cutoff_hz",
+            "mix",
+            "",
+        ] {
+            assert_eq!(StripField::from_name(name), None, "{name}");
+        }
+    }
+
+    /// 钳制是**器件那一份**（⛔ 不复制上下界）：几个不对称的边界。
+    #[test]
+    fn the_field_clamp_is_the_device_clamp() {
+        assert_eq!(StripField::CutoffHz.sanitise(1.0e9), MAX_CUTOFF_HZ);
+        assert_eq!(
+            StripField::CutoffHz.sanitise(f32::NAN).to_bits(),
+            MAX_CUTOFF_HZ.to_bits(),
+            "非有限截止频率归**上界**（低通最保守的一侧）"
+        );
+        assert_eq!(StripField::CutoffHz.sanitise(1.0), MIN_CUTOFF_HZ);
+        assert_eq!(StripField::OutputGainDb.sanitise(-1.0e9), MIN_GAIN_DB);
+        assert_eq!(StripField::OutputGainDb.sanitise(1.0e9), MAX_GAIN_DB);
+        assert_eq!(
+            StripField::InputGainDb.sanitise(f32::NAN).to_bits(),
+            0.0f32.to_bits(),
+            "非有限增益归 0 dB（逐位透明）"
+        );
+        assert_eq!(StripField::Resonance.sanitise(5.0), 1.0);
+        assert_eq!(StripField::Drive.sanitise(-5.0), 0.0);
+        assert_eq!(StripField::EqEnabled.sanitise(0.0), 0.0);
+        assert_eq!(StripField::EqEnabled.sanitise(0.25), 1.0);
+        assert_eq!(StripField::EqEnabled.sanitise(-2.0), 1.0);
+    }
+
+    /// 强制实例化 + 没有投影来源 ⇒ 器件拿到的就是 [`forced_identity_strip`]
+    /// （静态基值与器件参数**同一份**）。
+    #[test]
+    fn a_forced_strip_without_a_source_uses_the_identity_params() {
+        let chain = InsertChain::empty().with_forced_strip(true);
+        assert_eq!(chain.effective_strip(), Some(forced_identity_strip()));
+        let params = forced_identity_strip();
+        assert!(!params.eq_enabled && !params.filter_enabled && !params.compressor_enabled);
+        assert_eq!(params.input_gain_db.to_bits(), 0.0f32.to_bits());
+        assert_eq!(params.output_gain_db.to_bits(), 0.0f32.to_bits());
     }
 }

@@ -302,11 +302,11 @@ struct NodeState {
     /// [`sum::accumulate_into`]（逐位不变）；`Some` 且恒等 ⇒ 同样走静态路径；
     /// `Some` 且非恒等 ⇒ 每块求值一次 + 逐样本平滑后累加。
     send_automations: Vec<Option<SendGainAutomation>>,
-    /// 本节点的**设备参数**自动化（任务单 `#266`；本切片只接 `output_gain_db`）。
+    /// 本节点的**设备参数**自动化（任务单 `#266`；`#267` 起接通道条整组字段）。
     ///
-    /// 与发送/声相不同，它们不乘样本：每 128 帧块起点求值一次，把**原生 dB 值**
-    /// 交给插入链运行态的 `set_params`（重算系数）。空表 ⇒ 插入链的调用形状
-    /// 与接线前**逐位相同**。
+    /// 与发送/声相不同，它们不乘样本：每 128 帧块起点求值一次，把该字段的
+    /// **原生绝对值**（`_db` / `_hz` / 开关 `0.0`·`1.0`）交给插入链运行态的
+    /// `set_params`（重算系数）。空表 ⇒ 插入链的调用形状与接线前**逐位相同**。
     device_param_automations: Vec<DeviceParamAutomation>,
     /// 与 `incoming` 一一对应的延迟线 (零延迟时走旁路, 不使用 `scratch`)。
     delay_lines: Vec<DelayLine>,
@@ -1074,8 +1074,11 @@ fn render_node(
                 let chunk = (context.frames - offset).min(AUTOMATION_BLOCK_SIZE);
                 let block_first = context.first_frame.saturating_add(offset as u64);
                 for automation in device_param_automations.iter_mut() {
-                    if let Some(db) = automation.value_at_block(block_first) {
-                        inserts.apply_device_params(db);
+                    // 字段来自泳道自己（`#267`：通道条整组），⛔ 本层不写"哪些名字"的表。
+                    if let (Some(value), Some(field)) =
+                        (automation.value_at_block(block_first), automation.field())
+                    {
+                        inserts.apply_device_params(field, value);
                     }
                 }
                 inserts.process(&mut buffer[offset * channels..(offset + chunk) * channels]);

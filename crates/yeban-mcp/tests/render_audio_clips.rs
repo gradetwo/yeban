@@ -2382,3 +2382,105 @@ fn a_device_param_lane_on_an_unhandled_name_does_not_land_but_registers_device_c
         "不可落点的泳道必须登记 automationLanes: {data}"
     );
 }
+
+/// ⭐ `#267` 判据 6：**名单外**的名字（压缩的 `threshold_db`、混响的 `reverb_wet`）
+/// ⇒ **不落点**（母带与"清掉泳道"逐字节相同），但**不沉默**。
+///
+/// ⚠ 两者"不沉默"的**键不同**，这是本判据逐字钉住的事实（⛔ 不把两者混成一句）：
+///
+/// | 名字 | `unresolved` | `deviceChainDsp` | 为什么 |
+/// | :--- | :--- | :--- | :--- |
+/// | `threshold_db` | `"paramNotSupported"` | **登记** | 压缩级离线整级不执行，且名字不在 `is_supported_param` 里 ⇒ 设备链确实"还有没消费的参数" |
+/// | `reverb_wet` | `null` | **不登记** | `reverb_wet` **被 Freeverb 级消费**（`is_supported_param` 认它）⇒ 设备链没有"没消费的参数"；但它**不是通道条字段** ⇒ 自动化不落点，靠 `automationLanes` 登记 |
+#[test]
+fn names_outside_the_channel_strip_do_not_land_but_are_never_silent() {
+    for (param_name, static_value, to, expect_code, expect_chain_dsp) in [
+        ("threshold_db", -20.0_f32, -40.0_f32, true, true),
+        ("reverb_wet", 0.5, 0.1, false, false),
+    ] {
+        let scratch = Scratch::new("device-param-outside");
+        let bytes = wav_f32(2, 48_000, &constant(48_000, 0.5));
+        let mut fixture = fixture(bytes.clone(), &Tune::default());
+        let lead = id(2);
+        with_device_param_lane(
+            &mut fixture.project,
+            lead,
+            param_name,
+            static_value,
+            &[(0, static_value), (ONE_SECOND_TICKS, to)],
+            true,
+            330,
+        );
+        let out = scratch.join("outside.wav");
+        let artifact =
+            build_with(&fixture.project, &pool(&fixture), &out, args(&out)).expect("渲染");
+        let data = artifact.response_data();
+        let mut without_lane = fixture;
+        without_lane
+            .project
+            .tracks
+            .get_mut(&lead)
+            .expect("Lead")
+            .automation_lanes
+            .clear();
+        without_lane.project.validate().expect("对照夹具合法");
+        let base_out = scratch.join("outside-baseline.wav");
+        let base = build_with(
+            &without_lane.project,
+            &pool(&without_lane),
+            &base_out,
+            args(&base_out),
+        )
+        .expect("对照渲染");
+        println!(
+            "### MCP #267 outside {param_name}: digest={} base={} unsupported={}",
+            data["masterDigest"],
+            base.response_data()["masterDigest"],
+            data["unsupported"]
+        );
+        assert_eq!(
+            data["masterDigest"],
+            base.response_data()["masterDigest"],
+            "{param_name}: 名单外的名字不许改母带一个字节"
+        );
+        let lane = &data["automation"]["tracks"][0]["lanes"][0];
+        assert_eq!(lane["target"], "DeviceParam", "{param_name}");
+        assert_eq!(lane["resolvedParamName"], param_name);
+        assert_eq!(lane["supported"], false, "{param_name} 不许被报成支持");
+        assert_eq!(lane["applied"], false, "{param_name} 不许被报成应用");
+        if expect_code {
+            assert_eq!(lane["unresolved"], "paramNotSupported", "{param_name}");
+        } else {
+            assert_eq!(
+                lane["unresolved"],
+                Value::Null,
+                "{param_name}: 名字在静态投影里是认得的（被 Freeverb 消费），只是不可自动化"
+            );
+        }
+        let unsupported = data["unsupported"].as_array().expect("unsupported");
+        assert!(
+            unsupported.iter().any(|value| value == "automationLanes"),
+            "{param_name}: 不可落点的泳道必须登记 automationLanes: {data}"
+        );
+        assert_eq!(
+            unsupported.iter().any(|value| value == "deviceChainDsp"),
+            expect_chain_dsp,
+            "{param_name}: deviceChainDsp 的登记口径（见本判据的表）: {data}"
+        );
+        // 名单是**唯一来源**：27 个拼写，且这两个名字都不在里面。
+        let listed = data["automation"]["appliedDeviceParamNames"]
+            .as_array()
+            .expect("appliedDeviceParamNames");
+        assert_eq!(listed.len(), 27, "{data}");
+        assert!(
+            !listed.iter().any(|value| value == param_name),
+            "{param_name} 不在通道条那一组里"
+        );
+        for name in ["output_gain_db", "cutoff_hz", "eq_mid_q", "filter_enabled"] {
+            assert!(
+                listed.iter().any(|value| value == name),
+                "{name} 必须在名单里: {data}"
+            );
+        }
+    }
+}

@@ -130,16 +130,18 @@ fn constant(frames: usize, level: f32) -> Vec<f32> {
 // 工程：Master ← Lead(Audio 片段) ＋ 一台只写 `output_gain_db` 的内置效果器
 // ---------------------------------------------------------------------------
 
-/// 夹具旋钮：泳道形状、`readEnabled`、设备参数的**静态**值三个自由度。
-struct Tune {
-    points: &'static [(u64, f32)],
+/// 夹具旋钮：泳道形状、`readEnabled`、设备参数表三个自由度。
+struct Tune<'a> {
+    points: &'a [(u64, f32)],
     read_enabled: bool,
-    device_output_gain_db: f32,
+    /// 设备的参数表。**第 0 位就是泳道指向的那个参数**（`param_index = 0`）——
+    /// `#267` 的矩阵用这一点把"被测名字"放在 `params[0]`。
+    params: &'a [(&'a str, f32)],
     /// 是否真的插入泳道对象（空点 + 关掉 = “没有泳道”与“关掉的空泳道”的对照）。
     insert_lane: bool,
 }
 
-fn project(tune: &Tune, bytes: &[u8], seed: u32) -> YebanProjectV1 {
+fn project(tune: &Tune<'_>, bytes: &[u8], seed: u32) -> YebanProjectV1 {
     let master = id(1);
     let lead = id(2);
     let clip = id(10);
@@ -176,11 +178,15 @@ fn project(tune: &Tune, bytes: &[u8], seed: u32) -> YebanProjectV1 {
             name: "strip".to_owned(),
             kind: DeviceKind::InternalEffect,
             bypassed: false,
-            params: vec![ParameterValue {
-                name: "output_gain_db".to_owned(),
-                value: tune.device_output_gain_db,
-                unit: None,
-            }],
+            params: tune
+                .params
+                .iter()
+                .map(|(name, value)| ParameterValue {
+                    name: (*name).to_owned(),
+                    value: *value,
+                    unit: None,
+                })
+                .collect(),
             latency_samples: 0,
         }],
         ..TrackV3::default()
@@ -266,7 +272,7 @@ fn no_lane(bytes: &[u8], seed: u32) -> YebanProjectV1 {
         &Tune {
             points: &[],
             read_enabled: false,
-            device_output_gain_db: 0.0,
+            params: &[("output_gain_db", 0.0)],
             insert_lane: false,
         },
         bytes,
@@ -352,7 +358,7 @@ fn a_device_param_ramp_lowers_the_export_and_matches_the_mcp_digest() {
         &Tune {
             points: &[(0, 0.0), (ONE_SECOND_TICKS, -12.0)],
             read_enabled: true,
-            device_output_gain_db: 0.0,
+            params: &[("output_gain_db", 0.0)],
             insert_lane: true,
         },
         &bytes,
@@ -394,7 +400,7 @@ fn device_param_identity_paths_are_byte_identical_to_no_lane() {
         &Tune {
             points: &[(0, 0.0), (ONE_SECOND_TICKS, -12.0)],
             read_enabled: false,
-            device_output_gain_db: 0.0,
+            params: &[("output_gain_db", 0.0)],
             insert_lane: true,
         },
         &bytes,
@@ -411,7 +417,7 @@ fn device_param_identity_paths_are_byte_identical_to_no_lane() {
         &Tune {
             points: &[(0, 0.0), (960, 0.0), (ONE_SECOND_TICKS, 0.0)],
             read_enabled: true,
-            device_output_gain_db: 0.0,
+            params: &[("output_gain_db", 0.0)],
             insert_lane: true,
         },
         &bytes,
@@ -439,7 +445,7 @@ fn a_constant_device_param_lane_equals_a_static_device_param() {
             &Tune {
                 points: &[(0, -12.0)],
                 read_enabled: true,
-                device_output_gain_db: 0.0,
+                params: &[("output_gain_db", 0.0)],
                 insert_lane: true,
             },
             &bytes,
@@ -452,7 +458,7 @@ fn a_constant_device_param_lane_equals_a_static_device_param() {
             &Tune {
                 points: &[],
                 read_enabled: false,
-                device_output_gain_db: -12.0,
+                params: &[("output_gain_db", -12.0)],
                 insert_lane: false,
             },
             &bytes,
@@ -475,4 +481,371 @@ fn a_constant_device_param_lane_equals_a_static_device_param() {
         automated.digest, static_device.digest,
         "同一个原生 dB 值必须给出同一份母带（max_ulp={max_ulp}）"
     );
+}
+
+// ---------------------------------------------------------------------------
+// ⭐ `#267`：**通道条整组字段**（14 个字段 / 27 个拼写）在两条导出里都生效
+// ---------------------------------------------------------------------------
+
+/// 一段正弦（左右相同）：`freq` 让被测字段"听得见"（增益看电平、EQ 看频段、
+/// 截止/谐振看它自己的中心频率附近的幅度）。
+fn sine(frames: usize, freq: f32, level: f32) -> Vec<f32> {
+    let mut out = Vec::with_capacity(frames * 2);
+    let step = core::f32::consts::TAU * freq / 48_000.0;
+    for frame in 0..frames {
+        let value = level * (step * frame as f32).sin();
+        out.push(value);
+        out.push(value);
+    }
+    out
+}
+
+/// 四段峰值的**方向**（判据 1 的可机械判定形状）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Trend {
+    /// 逐段**严格**递增。
+    Rising,
+    /// 逐段**严格**递减。
+    Falling,
+    /// 开关字段：阶跃 ⇒ 逐段**非增**，且首段 > 末段（严格）。
+    ///
+    /// ⚠ 开关不是"渐变"：`0.0 → 1.0` 在第一个块边界就翻真（`value != 0.0`），
+    /// 于是四段峰值里必然有两段相等 —— "严格单调"对布尔量不成立，⛔ 不是放宽。
+    StepDown,
+}
+
+/// 一个**字段**一条用例。`params[0]` 就是被测名字（泳道指向 `param_index = 0`），
+/// `from` 必须等于 `params[0].1`（否则"恒等"那条就不是恒等）。
+struct FieldCase {
+    name: &'static str,
+    params: &'static [(&'static str, f32)],
+    freq: f32,
+    from: f32,
+    to: f32,
+    trend: Trend,
+}
+
+/// 14 个字段 —— 每个都用**规范名**（27 个拼写里的别名由
+/// `yeban-render` 的 `every_applied_name_is_applied_and_ramps_monotonically`
+/// 与 `every_applied_name_projects_to_its_own_strip_field` 逐条覆盖；别名与规范名
+/// 在 `StripField::from_name` 里解析到**同一个**字段 ⇒ 同一条代码路径）。
+const FIELD_CASES: &[FieldCase] = &[
+    FieldCase {
+        name: "input_gain_db",
+        params: &[("input_gain_db", 0.0)],
+        freq: 1_000.0,
+        from: 0.0,
+        to: -18.0,
+        trend: Trend::Falling,
+    },
+    FieldCase {
+        name: "output_gain_db",
+        params: &[("output_gain_db", 0.0)],
+        freq: 1_000.0,
+        from: 0.0,
+        to: -18.0,
+        trend: Trend::Falling,
+    },
+    FieldCase {
+        name: "eq_enabled",
+        params: &[("eq_enabled", 0.0), ("eq_low_gain", -24.0)],
+        freq: 120.0,
+        from: 0.0,
+        to: 1.0,
+        trend: Trend::StepDown,
+    },
+    FieldCase {
+        name: "filter_enabled",
+        params: &[("filter_enabled", 0.0), ("cutoff_hz", 300.0)],
+        freq: 2_000.0,
+        from: 0.0,
+        to: 1.0,
+        trend: Trend::StepDown,
+    },
+    FieldCase {
+        name: "eq_low_gain",
+        params: &[("eq_low_gain", 0.0)],
+        freq: 120.0,
+        from: 0.0,
+        to: 12.0,
+        trend: Trend::Rising,
+    },
+    FieldCase {
+        name: "eq_low_freq",
+        params: &[("eq_low_freq", 100.0), ("eq_low_gain", 12.0)],
+        freq: 1_000.0,
+        from: 100.0,
+        to: 1_000.0,
+        trend: Trend::Rising,
+    },
+    FieldCase {
+        name: "eq_mid_gain",
+        params: &[("eq_mid_gain", 0.0)],
+        freq: 1_000.0,
+        from: 0.0,
+        to: 12.0,
+        trend: Trend::Rising,
+    },
+    FieldCase {
+        name: "eq_mid_freq",
+        params: &[("eq_mid_freq", 1_000.0), ("eq_mid_gain", 12.0)],
+        freq: 1_000.0,
+        from: 1_000.0,
+        to: 8_000.0,
+        trend: Trend::Falling,
+    },
+    FieldCase {
+        name: "eq_mid_q",
+        params: &[
+            ("eq_mid_q", 0.4),
+            ("eq_mid_gain", 12.0),
+            ("eq_mid_freq", 1_000.0),
+        ],
+        freq: 1_500.0,
+        from: 0.4,
+        to: 4.0,
+        trend: Trend::Falling,
+    },
+    FieldCase {
+        name: "eq_high_gain",
+        params: &[("eq_high_gain", 0.0)],
+        freq: 6_000.0,
+        from: 0.0,
+        to: 12.0,
+        trend: Trend::Rising,
+    },
+    FieldCase {
+        name: "eq_high_freq",
+        params: &[("eq_high_freq", 2_000.0), ("eq_high_gain", 12.0)],
+        freq: 8_000.0,
+        from: 2_000.0,
+        to: 12_000.0,
+        trend: Trend::Falling,
+    },
+    FieldCase {
+        name: "cutoff_hz",
+        params: &[("cutoff_hz", 20_000.0)],
+        freq: 2_000.0,
+        from: 20_000.0,
+        to: 500.0,
+        trend: Trend::Falling,
+    },
+    FieldCase {
+        name: "resonance",
+        params: &[("resonance", 0.0), ("cutoff_hz", 1_000.0)],
+        freq: 1_000.0,
+        from: 0.0,
+        to: 0.9,
+        trend: Trend::Rising,
+    },
+    FieldCase {
+        name: "drive",
+        params: &[("drive", 0.0), ("cutoff_hz", 20_000.0)],
+        freq: 1_000.0,
+        from: 0.0,
+        to: 1.0,
+        // ⚠ 实测：drive 是**饱和器的输入量**，推满会把 1 kHz 正弦压得更低
+        // （0.1995 → 0.1962 → 0.1950 → 0.1937）⇒ 方向是**下降**。
+        // ⛔ 不按"驱动=更响"的直觉写成 Rising。
+        trend: Trend::Falling,
+    },
+];
+
+fn assert_trend(case: &FieldCase, peaks: [f32; 4]) {
+    let ok = match case.trend {
+        Trend::Rising => peaks[0] < peaks[1] && peaks[1] < peaks[2] && peaks[2] < peaks[3],
+        Trend::Falling => peaks[0] > peaks[1] && peaks[1] > peaks[2] && peaks[2] > peaks[3],
+        Trend::StepDown => {
+            // 阶跃 ⇒ 第一段（还带着关闭时的电平）明显更高，其后三段**持平**
+            // （1% 容差：器件状态不会在阶跃后逐位恒定）。
+            peaks[0] > peaks[1] * 1.1
+                && peaks[1] > 0.0
+                && peaks[3] <= peaks[1] * 1.01
+                && peaks[3] < peaks[0]
+        }
+    };
+    assert!(
+        ok,
+        "{}: 四段峰值方向不对（期望 {:?}）: {peaks:?}",
+        case.name, case.trend
+    );
+    assert_eq!(
+        case.from.to_bits(),
+        case.params[0].1.to_bits(),
+        "{}: from 必须等于静态值（否则恒等那条不是恒等）",
+        case.name
+    );
+}
+
+/// ⭐ `#267` 判据 1/3/4（每个字段一条，两条导出各跑一遍）：渐变 ⇒ 四段峰值按方向
+/// 单调 **＋ `sha256` 变**；泳道处处等于静态值 ⇒ 逐字节等于无泳道；`readEnabled:false`
+/// ⇒ 逐字节等于无泳道。
+#[test]
+fn every_channel_strip_field_changes_the_export_and_is_byte_identical_when_flat() {
+    let scratch = Scratch::new("fields");
+    for (index, case) in FIELD_CASES.iter().enumerate() {
+        let seed = 600 + (index as u32) * 10;
+        // 源电平 0.2：最坏情况（+12 dB）也只到 0.8 ⇒ ⛔ 不撞 24-bit 满刻度
+        // （撞顶会把"单调"读成两段 1.0）。
+        let bytes = wav_f32(2, 48_000, &sine(FRAMES as usize, case.freq, 0.2));
+        let base = project(
+            &Tune {
+                points: &[],
+                read_enabled: false,
+                params: case.params,
+                insert_lane: false,
+            },
+            &bytes,
+            seed,
+        );
+        let (base_samples, base_sha, base_digest) = export(&scratch, "base", &base, &bytes);
+        let base_peaks = four_window_peaks(&base_samples);
+
+        let ramp = project(
+            &Tune {
+                points: &[(0, case.from), (ONE_SECOND_TICKS, case.to)],
+                read_enabled: true,
+                params: case.params,
+                insert_lane: true,
+            },
+            &bytes,
+            seed + 1,
+        );
+        let (samples, ramp_sha, ramp_digest) = export(&scratch, "ramp", &ramp, &bytes);
+        let peaks = four_window_peaks(&samples);
+        assert_ne!(
+            ramp_sha, base_sha,
+            "{}: 渐变必须改字节（自动化没落地？）",
+            case.name
+        );
+        assert_ne!(ramp_digest, base_digest, "{}: 浮点母带也要变", case.name);
+        assert_trend(case, peaks);
+        println!(
+            "### #267 {}: sha={ramp_sha} digest={ramp_digest} peaks={peaks:?} \
+             (base sha={base_sha} peaks={base_peaks:?})",
+            case.name
+        );
+
+        let flat = project(
+            &Tune {
+                points: &[
+                    (0, case.from),
+                    (960, case.from),
+                    (ONE_SECOND_TICKS, case.from),
+                ],
+                read_enabled: true,
+                params: case.params,
+                insert_lane: true,
+            },
+            &bytes,
+            seed + 2,
+        );
+        let (_, flat_sha, flat_digest) = export(&scratch, "flat", &flat, &bytes);
+        assert_eq!(
+            flat_sha, base_sha,
+            "{}: 处处等于静态值 ⇒ 必须逐字节等于无泳道",
+            case.name
+        );
+        assert_eq!(flat_digest, base_digest, "{}", case.name);
+
+        let disabled = project(
+            &Tune {
+                points: &[(0, case.from), (ONE_SECOND_TICKS, case.to)],
+                read_enabled: false,
+                params: case.params,
+                insert_lane: true,
+            },
+            &bytes,
+            seed + 3,
+        );
+        let (_, disabled_sha, disabled_digest) = export(&scratch, "disabled", &disabled, &bytes);
+        assert_eq!(
+            disabled_sha, base_sha,
+            "{}: readEnabled:false ⇒ 必须逐字节等于无泳道",
+            case.name
+        );
+        assert_eq!(disabled_digest, base_digest, "{}", case.name);
+    }
+}
+
+/// ⭐ `#267` 判据 5：**每一个通道条字段**的 `masterDigest` 在两条导出（CLI 的
+/// `render_project_f32` 与 MCP 的 `render::build`）里**逐位相同**。
+///
+/// 为什么这条判据挂在 `yeban-app` 的测试目标里而不是 `yeban-mcp`：MCP 不能反向依赖
+/// `yeban-app`（`scripts/gates/check_mcp_dependency_direction.py`），而**同一份夹具**
+/// 必须被两条导出各渲染一次才能比 —— 夹具与 CLI 侧都在这里，MCP 侧通过
+/// `in-process-mcp` 这个 feature 直接调它的领域渲染本体（⛔ 不走 socket，⛔ 不复制
+/// 夹具）。没有这个 feature 时本判据不编译（判据 1/3/4 仍在默认档覆盖每个字段）。
+#[cfg(feature = "in-process-mcp")]
+#[test]
+fn every_channel_strip_field_gives_the_same_master_in_both_exports() {
+    /// MCP 侧固定注入时钟（与 `yeban-mcp/tests/render_audio_clips.rs` 同值）。
+    const NOW_MS: u64 = 1_760_000_000_000;
+    let scratch = Scratch::new("two-exports");
+    for (index, case) in FIELD_CASES.iter().enumerate() {
+        let seed = 900 + (index as u32) * 10;
+        let bytes = wav_f32(2, 48_000, &sine(FRAMES as usize, case.freq, 0.5));
+        let fixture = project(
+            &Tune {
+                points: &[(0, case.from), (ONE_SECOND_TICKS, case.to)],
+                read_enabled: true,
+                params: case.params,
+                insert_lane: true,
+            },
+            &bytes,
+            seed,
+        );
+        // CLI 侧：浮点母带摘要（`render_project_f32`）。
+        let cli = render(&fixture, &bytes);
+        // MCP 侧：领域渲染本体（`yeban_render_master` 的同一条装配）。
+        let mcp_path = scratch.wav("mcp");
+        let arguments = serde_json::json!({
+            "format": "wav",
+            "sampleRate": 48_000,
+            "frames": FRAMES,
+            "path": mcp_path.display().to_string(),
+        });
+        let request = yeban_mcp::domain::render::validate(arguments.as_object().expect("参数对象"))
+            .expect("MCP 渲染参数合法");
+        let asset = AssetHash::of_bytes(&bytes);
+        let pool: BTreeMap<AssetHash, Vec<u8>> = BTreeMap::from([(asset, bytes.clone())]);
+        let artifact = yeban_mcp::domain::render::build(
+            &fixture,
+            &mcp_path.with_extension("project.yeban"),
+            &request,
+            NOW_MS,
+            &pool,
+        )
+        .expect("MCP 渲染必须成功");
+        let data = artifact.response_data();
+        let mcp_digest = data["masterDigest"].as_str().expect("masterDigest");
+        println!(
+            "### #267 two-exports {}: cli={} mcp={mcp_digest} sha={}",
+            case.name, cli.digest, data["sha256"]
+        );
+        assert_eq!(
+            cli.digest, mcp_digest,
+            "{}: 两条导出的浮点母带必须逐位相同",
+            case.name
+        );
+        // 泳道在这一侧也必须被报成"真的应用了"（⛔ 不是一条静默的）。
+        let lane = &data["automation"]["tracks"][0]["lanes"][0];
+        assert_eq!(lane["target"], "DeviceParam", "{}", case.name);
+        assert_eq!(lane["supported"], true, "{}", case.name);
+        assert_eq!(lane["applied"], true, "{}", case.name);
+        assert_eq!(
+            lane["resolvedParamName"].as_str().expect("名字"),
+            case.name,
+            "{}: 解析到的参数名",
+            case.name
+        );
+        let listed = data["automation"]["appliedDeviceParamNames"]
+            .as_array()
+            .expect("appliedDeviceParamNames");
+        assert_eq!(
+            listed.len(),
+            27,
+            "MCP 名单必须逐条来自 yeban-render（27 个拼写）: {data}"
+        );
+    }
 }

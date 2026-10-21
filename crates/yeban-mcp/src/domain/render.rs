@@ -49,7 +49,7 @@
 //! | `audioClips` | **收窄后的口径**：仅当工程在 `assets` 索引里**声明**了这个资产、而会话 CAS 池里**没有它的字节**时才登记（`Domain::open_in_memory` 注入的会话就是这种形态）。此时该片段当静音，且响应 `data.audio.assets[].bytesPresent = false` 如实说明。读 `.yeban` 容器时索引与字节由 `store` 双向校验必然同时存在，因此这一项在真实容器工程上**不会**出现 |
 //! | `deviceChainDsp` | 设备链里**本切片没有消费**的参数（**压缩** / 未知旋钮）没有求值；增益、EQ、低通、Freeverb、卷积已求值 |
 //! | `externalPlugins` | `DeviceKind::ExternalInstrument/ExternalEffect` 没有宿主 |
-//! | `automationLanes` | ⭐ `#243` / `#256` / `#257` / `#266`：**仅**指仍有可求值点、但本渲染器不消费的自动化目标（`Macro`；`DeviceParam` 里**不是** `output_gain_db` 的名字、或指向旁通/非通道条来源设备的情形），以及 `TrackVolume` 落在**总线轨**上（总线没有源、静态音量也没有落点）、`SendGain` 落在**被剪枝的边**上、`TrackPan` 落在**主总线**上的情形。`TrackVolume` 在源节点与主总线上**真的被求值**；`SendGain` 在保留子图的入边归约里**真的被求值**（任务单 `#256`）；`TrackPan` 在源节点的源输出之后**真的被求值**（任务单 `#257`）；`DeviceParam` 的 `output_gain_db` 在该节点的通道条上**真的被求值**（任务单 `#266`，块边界 `set_params`）；空泳道与 `readEnabled:false` 的泳道**不**登记（一条没有点的曲线没有“少做了什么”）。逐泳道的支持/应用读数见 `data.automation` |
+//! | `automationLanes` | ⭐ `#243` / `#256` / `#257` / `#266` / `#267`：**仅**指仍有可求值点、但本渲染器不消费的自动化目标（`Macro`；`DeviceParam` 里**不是**通道条字段的名字（压缩 / 混响 / 卷积 / 未知旋钮）、或指向旁通/非通道条来源设备的情形），以及 `TrackVolume` 落在**总线轨**上（总线没有源、静态音量也没有落点）、`SendGain` 落在**被剪枝的边**上、`TrackPan` 落在**主总线**上的情形。`TrackVolume` 在源节点与主总线上**真的被求值**；`SendGain` 在保留子图的入边归约里**真的被求值**（任务单 `#256`）；`TrackPan` 在源节点的源输出之后**真的被求值**（任务单 `#257`）；`DeviceParam` 的通道条字段（`data.appliedDeviceParamNames` 逐条列出）在该节点的通道条上**真的被求值**（`#266` 开一个名字 / `#267` 扩到整组，块边界 `set_params`）；空泳道与 `readEnabled:false` 的泳道**不**登记（一条没有点的曲线没有“少做了什么”）。逐泳道的支持/应用读数见 `data.automation` |
 //! | `noteSlide` | 滑音没有实现 |
 //! | `notePitchBend` | 弯音曲线没有求值 |
 //! | `noteLyrics` | 歌词/音素没有歌声合成 |
@@ -414,8 +414,9 @@ use yeban_render::dither::{BitDepth, quantize};
 // 插入链的投影与"是否还有未消费参数"的判据都住在 `yeban-render`：MCP 不复制
 // 第二份白名单（`yeban-engine` 的投影是同一份规则的来源，但 MCP 不能依赖它）。
 use yeban_render::automation::{
-    TrackGainAutomation, TrackPanAutomation, centered_pan_gains, device_param_automations,
-    device_param_lane_is_applicable, forced_strip_tracks, send_gain_automations,
+    APPLIED_DEVICE_PARAM_NAMES, TrackGainAutomation, TrackPanAutomation, centered_pan_gains,
+    device_param_automations, device_param_lane_is_applicable, forced_strip_tracks,
+    send_gain_automations,
 };
 use yeban_render::inserts::{
     project_inserts_with_forced_strips, resolve_device_param, track_has_unhandled_dsp,
@@ -1600,8 +1601,8 @@ impl AutomationReport {
                 // - `TrackVolume`：源节点（源侧）或主总线（执行后）；
                 // - `SendGain`：这条边在保留子图的入边归约里（`#256`）；
                 // - `TrackPan`：源节点（源输出之后；主总线没有声相落点，`#257`）；
-                // - `DeviceParam`：节点在计划里（插入链落点）且参数名有落点（`#266`，
-                //   只接 `output_gain_db`；其它名字/旁通设备/非通道条来源设备一律不落点）；
+                // - `DeviceParam`：节点在计划里（插入链落点）且参数名有落点（`#266`／
+                //   `#267`：通道条字段整组；其它名字/旁通设备/非通道条来源设备一律不落点）；
                 // - `Macro` 仍不支持。
                 let supported = match target {
                     AutomationTarget::TrackVolume { track_id } => {
@@ -1692,9 +1693,11 @@ impl AutomationReport {
             "evaluator": "YebanProjectV1::automation_value_at",
             "targetsSupported": ["TrackVolume", "TrackPan", "SendGain", "DeviceParam"],
             "targetsUnsupported": ["Macro"],
-            // ⭐ `#266`：`DeviceParam` 这一族只接了**一个名字**；哪些名字有落点必须可读
-            // （⛔ 不让 "DeviceParam 支持了" 这句话被读成 44 个名字全通）。
-            "appliedDeviceParamNames": ["output_gain_db"],
+            // ⭐ `#267`：`DeviceParam` 这一族接了**通道条整组**名字（27 个，含别名）；
+            // 哪些名字有落点必须可读，且**只有一处来源**
+            // （`yeban_render::automation::APPLIED_DEVICE_PARAM_NAMES`）——
+            // ⛔ 不让 "DeviceParam 支持了" 这句话被读成 `is_supported_param` 全通。
+            "appliedDeviceParamNames": APPLIED_DEVICE_PARAM_NAMES,
             "granularity": {
                 "blockSize": L1_BLOCK_SIZE,
                 "curve": "每块起点取一次曲线值（tick = floor(frame * PPQ * bpm / (sample_rate * 60))）",
@@ -2209,7 +2212,7 @@ pub fn build(
     //      `TrackVolume` 落在不可应用的总线轨上、`SendGain` 落在被剪枝的边上 ⇒
     //      进 `unsupported`（`automationLanes`）；
     //    - 源节点与主总线上的 `TrackVolume`、保留子图入边上的 `SendGain`、源节点上的
-    //      `TrackPan`、计划节点上的 `DeviceParam`（本切片只接 `output_gain_db`）真的
+    //      `TrackPan`、计划节点上的 `DeviceParam`（通道条字段整组，`#267`）真的
     //      被应用（见 `TrackSource`、第 9 步、`RenderPlan::attach_send_automation`
     //      与 `RenderPlan::attach_device_param_automation`）。
     let rendered_edges = probe_plan.edge_ids();
