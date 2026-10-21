@@ -1509,7 +1509,9 @@ fn reason_surface(files: &[(String, String)]) -> String {
 fn the_reason_surface_digest_is_frozen_and_documented() {
     let files: Vec<(String, String)> = read_rust_sources(&[manifest_dir().join("src")]);
     // #176：新增 `src/output_schema.rs` ⇒ 40 → 41（`reason` 面的规范文本不含 reason 键，摘要不变）。
-    assert_eq!(files.len(), 41, "生产区 `.rs` 文件数（规范形式的分母之一）");
+    // #271：新增 `src/domain/sample_roots.rs` ⇒ 41 → 42（同样不含 `reason` 键，摘要逐位不变）
+    // ⇒ 本条只证明"分母变了一位"，`FROZEN_REASON_SURFACE_SHA256` 仍与 #176 时逐字相同。
+    assert_eq!(files.len(), 42, "生产区 `.rs` 文件数（规范形式的分母之一）");
     let canonical = reason_surface(&files);
     let digest = yeban_model::AssetHash::of_bytes(canonical.as_bytes())
         .as_str()

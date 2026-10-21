@@ -3311,26 +3311,57 @@ pub(crate) fn decode_error_class(error: &DecodeError) -> &'static str {
     }
 }
 
-/// 解析 `TrackV3.sampler.path` 到一份**真的存在**的文件（⭐ `#221`）。
+/// 解析 `TrackV3.sampler.path` 到一份**真的存在**的文件（⭐ `#221`，⭐ `#271` 补两档）。
 ///
-/// 候选次序与 app 侧 `SfzRoots::under_project` 的**第一条**同口径：
-/// 相对路径**先试工程文件所在目录**，再试"原样"（= 相对进程 cwd）。
-/// ⛔ 本层不发明第三套根（app 的仓库根 / cwd 两条是 CLI 的口径，工具面不复制它）。
+/// 候选次序与 app 侧 `sfz_load::resolve_sampler_path` 的**四档**同口径：
+///
+/// 1. **绝对路径** ⇒ 只试它自己；
+/// 2. **相对路径** ⇒ 依次试
+///    ① 工程文件所在目录；
+///    ② **采样库根**（[`super::sample_roots::library_root`]：`YEBAN_SAMPLE_LIBRARY` 非空覆盖，否则按平台惯例；`assets/samples/` 前缀先剥掉 ⇒ 库内布局是 `<库根>/<乐器>/…`）；
+///    ③ **仓库根**（[`super::sample_roots::repo_root`]：`CARGO_MANIFEST_DIR/../..`，内置清单相对路径的契约根）；
+///    ④ 进程 cwd（"原样"路径 —— 与 `#221` 修前**同一形状**，按 cwd 解析）。
+///
+/// 候选按 `PathBuf` 去重（工程目录可能就是仓库根），先命中先返回。顺序的理由逐条照
+/// app 的文档：工程目录最具体；库根用户可写、内置样本字节住在那里（所以它优先于仓库根
+/// 里那份只有 SFZ 文本的空目录）；仓库根是内置清单的契约；cwd 只是 `#79` 之前的历史行为。
+///
+/// ⭐ `#271`：修前只有 ① 和 ④ —— 装在采样库里的内置 SFZ 在 MCP 导出上会报
+/// `samplerUnreadable`，而 CLI 正常加载。本函数现在与 CLI 找同一个文件。
+///
+/// ## 与 app 的两条**如实登记的**口径差
+///
+/// - **绝对路径**：app 原样返回、⛔ 不查存在性（缺文件由后续 `Read` 错误兜住）；本层仍
+///   先 `is_file` 判一次、失败即报 `samplerUnreadable` —— `#221` 既有行为，且理由更准
+///   （`#324`：`samplerUnreadable` 只在真的不可读时出现）；
+/// - **cwd 档**：app 的候选是 `cwd.join(raw)`（绝对），本层仍把**原样**相对路径作为候选
+///   与返回值 —— 二者解析到同一个文件，但本层保留 `#221` 的 `resolvedPath` 形状
+///   （`#271` 判据 4 的"正对照"：本来就能解析的路径不改行为）。
 ///
 /// # Errors
 ///
-/// 两个候选都不是文件 ⇒ `RENDER_FAILED` + `data.reason = "samplerUnreadable"`
-/// （带 `tried` 列表）。⛔ **绝不**静默回退成正弦 —— 那正是 `#220` 缺陷 ② 的形状。
+/// 四档都不是文件 ⇒ `RENDER_FAILED` + `data.reason = "samplerUnreadable"`
+/// （带 `tried` 列表，逐条按尝试顺序）。⛔ **绝不**静默回退成正弦 —— 那正是
+/// `#220` 缺陷 ② 的形状。
 fn resolve_sampler_path(raw: &str, project_path: &Path) -> Result<PathBuf, Fault> {
+    use super::sample_roots::{library_root, repo_root};
+
     let candidate = Path::new(raw);
     let mut tried: Vec<PathBuf> = Vec::new();
     if candidate.is_absolute() {
         tried.push(candidate.to_path_buf());
     } else {
         if let Some(dir) = project_path.parent() {
-            tried.push(dir.join(candidate));
+            push_unique_candidate(&mut tried, dir.join(candidate));
         }
-        tried.push(candidate.to_path_buf());
+        // 库内布局剥掉 `assets/samples/` 前缀（与 app 及下载脚本 `--dest` 同一条规则）。
+        let library_relative = candidate
+            .strip_prefix("assets/samples")
+            .unwrap_or(candidate);
+        push_unique_candidate(&mut tried, library_root().join(library_relative));
+        push_unique_candidate(&mut tried, repo_root().join(candidate));
+        // 最后一档：**原样**（相对进程 cwd）—— 保留 `#221` 既有形状，见上面的口径差。
+        push_unique_candidate(&mut tried, candidate.to_path_buf());
     }
     for path in &tried {
         if path.is_file() {
@@ -3354,9 +3385,17 @@ fn resolve_sampler_path(raw: &str, project_path: &Path) -> Result<PathBuf, Fault
                 .map(|path| path.display().to_string())
                 .collect::<Vec<_>>(),
             "hint": "`setTrackSampler` 只把路径当留痕字符串（不查存在性）; \
-                     相对路径先按工程文件所在目录解析",
+                     相对路径按 工程目录 ⇒ 采样库根 ⇒ 仓库根 ⇒ cwd 解析",
         }),
     ))
+}
+
+/// 按 `PathBuf` 逐字去重地追加一个候选（顺序 = 尝试顺序；与 app 的
+/// `push_unique_candidate` 同一条，⭐ `#271`）。
+fn push_unique_candidate(tried: &mut Vec<PathBuf>, candidate: PathBuf) {
+    if !tried.contains(&candidate) {
+        tried.push(candidate);
+    }
 }
 
 /// 由一条音轨构造音频源 + 报告，并把"没渲染的部分"登记进 `unsupported`。

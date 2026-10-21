@@ -68,6 +68,8 @@ pub mod record_wav;
 pub mod render;
 pub mod render_clip_math;
 pub mod render_math;
+// ⭐ `#271`：采样器路径的根推导（MCP 不能依赖 `yeban-app`，这里与 app 同口径重算）。
+mod sample_roots;
 pub mod section;
 pub mod section_build;
 pub mod sfz;
