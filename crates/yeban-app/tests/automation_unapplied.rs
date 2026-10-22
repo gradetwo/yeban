@@ -412,7 +412,7 @@ fn the_diagnostic_line_is_present_even_when_nothing_is_unapplied() {
         line,
         "automation-engine: unapplied-lanes=0 send-gain=0 device-param=0 macro=0 \
          note=\"有 0 条自动化泳道在监听里没落地；SendGain 的边在监听里没有落点\
-         （离线导出/MCP 按边求值），DeviceParam 只有通道条那一组名字在离线导出/MCP \
-         渲染里有落点，Macro 没有任何生效路径\""
+         （离线导出/MCP 按边求值），DeviceParam 的通道条/混响/卷积标量名字在离线导出/MCP \
+         渲染里有落点（压缩与卷积 IR 形状没有），Macro 没有任何生效路径\""
     );
 }

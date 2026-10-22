@@ -89,10 +89,10 @@ use std::sync::atomic::{AtomicU32, Ordering};
 
 use yeban_model::{AssetHash, EntityId, YebanProjectV1};
 use yeban_render::automation::{
-    TrackGainAutomation, TrackPanAutomation, device_param_automations, forced_strip_tracks,
+    TrackGainAutomation, TrackPanAutomation, device_param_automations, forced_insert_instances,
     pan_automations, send_gain_automations,
 };
-use yeban_render::inserts::project_inserts_with_forced_strips;
+use yeban_render::inserts::project_inserts_with_forced_instances;
 use yeban_render::render::{
     AudioSource, BlockContext, RenderError, RenderOptions, RenderOutput, RenderPlan, db_to_linear,
     track_latencies,
@@ -486,22 +486,24 @@ pub fn render_project_f32_with_plans_under(
     //
     // - [`track_latencies`] 是 `DeviceDefinition::latency_samples` 的**唯一累加处**
     //   （[ARCH-PDC-001]；旁通设备不计入 ⇒ 旁通 = 没有那台设备）；
-    // - [`project_inserts_with_forced_strips`] 是"设备链 → 插入链"的**唯一转换器**
-    //   （EQ / Freeverb / 卷积；`#266` 起另带"强制实例化通道条"的编译期开关），
-    //   `yeban-render/tests/insert_chain.rs` 与 MCP 都在用它 ⇒ ⛔ 这里不写第二份。
+    // - [`project_inserts_with_forced_instances`] 是"设备链 → 插入链"的**唯一转换器**
+    //   （EQ / Freeverb / 卷积；`#266` 起带"强制实例化通道条"、`#293` 起带"强制实例化
+    //   Freeverb/卷积"的编译期开关），`yeban-render/tests/insert_chain.rs` 与 MCP 都在用它
+    //   ⇒ ⛔ 这里不写第二份。
     //
     // 修前这里调 `RenderPlan::compile(...)`，它内部等价于传**两张空表**
     // （`crates/yeban-render/src/render.rs:439` 的 `&BTreeMap::new()`）⇒ 用户装的
     // EQ / 混响 / 卷积**完全不进导出**（`#226`／`#240` 登记的口径）。
     let latencies = track_latencies(&project.tracks);
-    // ⭐ 任务单 `#266`：有**非恒等** `DeviceParam` 泳道的轨，通道条被**强制实例化**
-    // （`effective_strip` 在全恒等参数下也会返回 `Some`）⇒ 块边界的 `set_params`
-    // 有器件可改。扫描器与 MCP 的 `yeban_render_master` 共用同一份
-    // （`yeban_render::automation`），⛔ 本层不复制"哪些泳道"的判定。
+    // ⭐ 任务单 `#266`/`#293`：有**非恒等** `DeviceParam` 泳道的轨，对应器件被**强制
+    // 实例化**（通道条：`effective_strip` 在全恒等参数下也返回 `Some`；Freeverb/卷积：
+    // 静态 `wet = 0` 时 `is_active()` 为假，但块边界仍需有器件可改）。扫描器与 MCP 的
+    // `yeban_render_master` 共用同一份（`yeban_render::automation`），
+    // ⛔ 本层不复制"哪些泳道/哪一族"的判定。
     let device_automations = device_param_automations(project, options.sample_rate);
-    let forced_strips = forced_strip_tracks(&device_automations);
+    let forced = forced_insert_instances(&device_automations);
     let inserts =
-        project_inserts_with_forced_strips(&project.tracks, options.sample_rate, &forced_strips);
+        project_inserts_with_forced_instances(&project.tracks, options.sample_rate, &forced);
     let mut plan = RenderPlan::compile_with_latencies_and_inserts(
         &project.routing_graph,
         project.master_bus_track_id,
@@ -522,9 +524,9 @@ pub fn render_project_f32_with_plans_under(
 
     // ---- 1c. ⭐ 设备参数自动化（`DeviceParam`，任务单 `#266`）----
     //
-    // 落点是**该节点的通道条运行态**（`InsertRuntime::apply_device_params`，块边界
-    // 一次 `set_params`）。恒等泳道也挂（`value_at_block` 返回 `None`，一个参数都不改）；
-    // 没有设备参数泳道的工程一个槽都不改 ⇒ 产物逐字节不变。
+    // 落点是**该节点的插入链运行态**（`InsertRuntime::apply_device_params`，块边界
+    // 一次对应器件的 `set_params`）。恒等泳道也挂（`value_at_block` 返回 `None`，
+    // 一个参数都不改）；没有设备参数泳道的工程一个槽都不改 ⇒ 产物逐字节不变。
     for automation in device_automations.into_values().flatten() {
         plan.attach_device_param_automation(automation);
     }

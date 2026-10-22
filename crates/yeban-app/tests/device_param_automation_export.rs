@@ -484,7 +484,8 @@ fn a_constant_device_param_lane_equals_a_static_device_param() {
 }
 
 // ---------------------------------------------------------------------------
-// ⭐ `#267`：**通道条整组字段**（14 个字段 / 27 个拼写）在两条导出里都生效
+// ⭐ `#267`：**通道条整组字段**（14 个字段 / 27 个拼写）在两条导出里都生效；
+// `#293` 的 Freeverb 标量另有一条端到端判据（见文件末尾）。
 // ---------------------------------------------------------------------------
 
 /// 一段正弦（左右相同）：`freq` 让被测字段"听得见"（增益看电平、EQ 看频段、
@@ -525,9 +526,9 @@ struct FieldCase {
     trend: Trend,
 }
 
-/// 14 个字段 —— 每个都用**规范名**（27 个拼写里的别名由
+/// 14 个通道条字段 —— 每个都用**规范名**（27 个拼写里的别名由
 /// `yeban-render` 的 `every_applied_name_is_applied_and_ramps_monotonically`
-/// 与 `every_applied_name_projects_to_its_own_strip_field` 逐条覆盖；别名与规范名
+/// 与 `every_applied_name_projects_to_its_own_field` 逐条覆盖；别名与规范名
 /// 在 `StripField::from_name` 里解析到**同一个**字段 ⇒ 同一条代码路径）。
 const FIELD_CASES: &[FieldCase] = &[
     FieldCase {
@@ -844,8 +845,139 @@ fn every_channel_strip_field_gives_the_same_master_in_both_exports() {
             .expect("appliedDeviceParamNames");
         assert_eq!(
             listed.len(),
-            27,
-            "MCP 名单必须逐条来自 yeban-render（27 个拼写）: {data}"
+            41,
+            "MCP 名单必须逐条来自 yeban-render（41 个拼写：27 通道条 + 6 混响 + 8 卷积）: {data}"
         );
+        for name in [
+            "output_gain_db",
+            "cutoff_hz",
+            "reverb_wet",
+            "reverb_size",
+            "conv_wet",
+            "conv_ir_gain_db",
+        ] {
+            assert!(
+                listed.iter().any(|value| value == name),
+                "{name} 必须在名单里: {data}"
+            );
+        }
+        for name in ["threshold_db", "conv_ir_decay_s", "conv_ir_seed"] {
+            assert!(
+                !listed.iter().any(|value| value == name),
+                "{name} 不许在名单里: {data}"
+            );
+        }
     }
+}
+
+// ---------------------------------------------------------------------------
+// ⭐ `#293`：Freeverb 标量自动化（判据 1 的“复现/修后”改用混响；压缩器留作负对照）
+// ---------------------------------------------------------------------------
+
+/// 0.1 s 的 440 Hz 正弦，之后是精确静音（用于量“音符结束后”的混响尾音）。
+fn tone_burst(frames: usize, note_frames: usize, level: f32) -> Vec<f32> {
+    let mut out = vec![0.0f32; frames * 2];
+    let step = core::f32::consts::TAU * 440.0 / 48_000.0;
+    let fade = 240usize; // 5 ms
+    for frame in 0..note_frames.min(frames) {
+        let mut envelope = 1.0f32;
+        if frame < fade {
+            envelope = frame as f32 / fade as f32;
+        }
+        let remaining = note_frames.min(frames) - frame;
+        if remaining < fade {
+            envelope *= remaining as f32 / fade as f32;
+        }
+        let value = level * envelope * (step * frame as f32).sin();
+        out[2 * frame] = value;
+        out[2 * frame + 1] = value;
+    }
+    out
+}
+
+fn window_rms(samples: &[f32], start: usize, end: usize) -> f64 {
+    let mut sum = 0.0f64;
+    let mut count = 0usize;
+    for frame in start..end {
+        for channel in 0..2 {
+            let value = f64::from(samples[frame * 2 + channel]);
+            sum += value * value;
+            count += 1;
+        }
+    }
+    (sum / count as f64).sqrt()
+}
+
+/// ⭐ `#293` 判据 1/2：**只写 `reverb_wet: 0`** 的源设备 + 一条非恒等 `reverb_wet`
+/// 泳道（0 → 1）⇒ 修前（旧装配）没有运行态器件，导出与无泳道逐字节相同；
+/// 修后必须真的建出 Freeverb、音频真的变（尾音 > 0），并且不是“报 applied 却静默无效”。
+///
+/// 正对照：同一工程**无泳道**时，静态 `reverb_wet: 0` 的链不建运行态器件 ⇒ 摘要与
+/// “同一段素材、根本没有那台设备”的工程**逐位相同**。
+#[test]
+fn a_reverb_wet_zero_source_really_changes_the_export_when_automated() {
+    let scratch = Scratch::new("reverb-automation");
+    let bytes = wav_f32(2, 48_000, &tone_burst(48_000, 4_800, 0.5));
+
+    let bare = project(
+        &Tune {
+            points: &[],
+            read_enabled: false,
+            params: &[],
+            insert_lane: false,
+        },
+        &bytes,
+        690,
+    );
+    let (_, bare_sha, bare_digest) = export(&scratch, "reverb-bare", &bare, &bytes);
+
+    let baseline = project(
+        &Tune {
+            points: &[],
+            read_enabled: false,
+            params: &[("reverb_wet", 0.0)],
+            insert_lane: false,
+        },
+        &bytes,
+        700,
+    );
+    let (base_samples, base_sha, base_digest) = export(&scratch, "reverb-base", &baseline, &bytes);
+    assert_eq!(
+        base_digest, bare_digest,
+        "无泳道 + 静态 wet=0 ⇒ 必须与无设备工程逐位相同（不建器件）"
+    );
+    assert_eq!(base_sha, bare_sha);
+    let base_tail = window_rms(&base_samples, 7_200, 24_000);
+    assert!(
+        base_tail < 1.0e-5,
+        "静态 wet=0 ⇒ 音符结束后必须接近静音（24-bit 抖动底噪）: {base_tail:.9e}"
+    );
+
+    let automated = project(
+        &Tune {
+            points: &[(0, 0.0), (960, 1.0), (1_920, 1.0)],
+            read_enabled: true,
+            params: &[("reverb_wet", 0.0)],
+            insert_lane: true,
+        },
+        &bytes,
+        710,
+    );
+    let (samples, sha, digest) = export(&scratch, "reverb-auto", &automated, &bytes);
+    let tail = window_rms(&samples, 7_200, 24_000);
+    println!(
+        "### #293 reverb_wet 0→1: base_sha={base_sha} auto_sha={sha} \
+         base_digest={base_digest} auto_digest={digest} \
+         tail(base)={base_tail:.9e} tail(auto)={tail:.9e}"
+    );
+    assert_ne!(sha, base_sha, "修后：混响自动化必须真的改字节");
+    assert_ne!(digest, base_digest, "修后：浮点母带必须真的不同");
+    assert!(
+        tail > 1.0e-5,
+        "修后：音符结束后的混响尾音必须大于零（静默无效会得到 {tail:.9e}）"
+    );
+    assert!(
+        tail > base_tail * 1_000.0,
+        "湿尾必须远高于干尾: {tail:.9e} vs {base_tail:.9e}"
+    );
 }

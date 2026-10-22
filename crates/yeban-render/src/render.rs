@@ -302,11 +302,12 @@ struct NodeState {
     /// [`sum::accumulate_into`]（逐位不变）；`Some` 且恒等 ⇒ 同样走静态路径；
     /// `Some` 且非恒等 ⇒ 每块求值一次 + 逐样本平滑后累加。
     send_automations: Vec<Option<SendGainAutomation>>,
-    /// 本节点的**设备参数**自动化（任务单 `#266`；`#267` 起接通道条整组字段）。
+    /// 本节点的**设备参数**自动化（任务单 `#266`；`#267` 起接通道条整组字段；
+    /// `#293` 起接 Freeverb / 卷积标量字段）。
     ///
     /// 与发送/声相不同，它们不乘样本：每 128 帧块起点求值一次，把该字段的
-    /// **原生绝对值**（`_db` / `_hz` / 开关 `0.0`·`1.0`）交给插入链运行态的
-    /// `set_params`（重算系数）。空表 ⇒ 插入链的调用形状与接线前**逐位相同**。
+    /// **原生绝对值**（`_db` / `_hz` / 秒 / 开关 `0.0`·`1.0`）交给插入链运行态对应
+    /// 器件的 `set_params`（重算系数）。空表 ⇒ 插入链的调用形状与接线前**逐位相同**。
     device_param_automations: Vec<DeviceParamAutomation>,
     /// 与 `incoming` 一一对应的延迟线 (零延迟时走旁路, 不使用 `scratch`)。
     delay_lines: Vec<DelayLine>,
@@ -316,7 +317,8 @@ struct NodeState {
     ///
     /// `None` 表示"本节点没有可执行器件" ⇒ `render_node` 整段跳过 ⇒ 逐位不退化。
     /// ⚠ 主总线**也**挂链（`#173`；旧注释写"主总线恒为 `None`"已陈）。
-    /// 有**非恒等**设备参数泳道的轨，链在编译期被强制实例化（`#266`）⇒ 有器件可改。
+    /// 有**非恒等**设备参数泳道的轨，对应器件在编译期被强制实例化
+    /// （`#266` 通道条 / `#293` Freeverb 与卷积）⇒ 有器件可改。
     inserts: Option<InsertRuntime>,
 }
 
@@ -811,11 +813,12 @@ impl RenderPlan {
 
     /// 把一条**设备参数**自动化接到计划上（任务单 `#266`）。
     ///
-    /// 落点是该节点的插入链运行态（通道条）。恒等泳道可以挂（`value_at_block`
-    /// 返回 `None`，一个参数都不改）；非恒等泳道要求该节点**已经有**插入链运行态
-    /// （调用方必须先用 `project_inserts_with_forced_strips` 强制实例化，见
-    /// `crate::inserts` 模块头 §3.1），否则返回 `false` —— 调用方据此如实登记，
-    /// 而不是谎称应用了。
+    /// 落点是该节点的插入链运行态（通道条 / Freeverb / 卷积标量）。恒等泳道可以挂
+    /// （`value_at_block` 返回 `None`，一个参数都不改）；非恒等泳道要求该节点**已经有**
+    /// 插入链运行态（调用方必须先用
+    /// [`crate::inserts::project_inserts_with_forced_instances`] 按族强制实例化，见
+    /// `crate::inserts` 模块头 §3.1 与本单 `#293` 的 `reverb_wet: 0` 缝），否则返回
+    /// `false` —— 调用方据此如实登记，而不是谎称应用了。
     pub fn attach_device_param_automation(&mut self, automation: DeviceParamAutomation) -> bool {
         let track_id = automation.track_id();
         let Some(slot) = self.slot_of.get(&track_id).copied() else {
@@ -1074,7 +1077,8 @@ fn render_node(
                 let chunk = (context.frames - offset).min(AUTOMATION_BLOCK_SIZE);
                 let block_first = context.first_frame.saturating_add(offset as u64);
                 for automation in device_param_automations.iter_mut() {
-                    // 字段来自泳道自己（`#267`：通道条整组），⛔ 本层不写"哪些名字"的表。
+                    // 字段来自泳道自己（`#267`：通道条整组；`#293`：混响/卷积标量），
+                    // ⛔ 本层不写"哪些名字"的表。
                     if let (Some(value), Some(field)) =
                         (automation.value_at_block(block_first), automation.field())
                     {

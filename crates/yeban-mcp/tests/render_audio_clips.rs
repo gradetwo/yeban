@@ -2383,20 +2383,20 @@ fn a_device_param_lane_on_an_unhandled_name_does_not_land_but_registers_device_c
     );
 }
 
-/// ⭐ `#267` 判据 6：**名单外**的名字（压缩的 `threshold_db`、混响的 `reverb_wet`）
-/// ⇒ **不落点**（母带与"清掉泳道"逐字节相同），但**不沉默**。
+/// ⭐ `#267`/`#293` 判据：**插入链之外**的名字（压缩的 `threshold_db`、卷积 IR 形状
+/// 的 `conv_ir_decay_s`）⇒ **不落点**（母带与“清掉泳道”逐字节相同），但**不沉默**。
 ///
 /// ⚠ 两者"不沉默"的**键不同**，这是本判据逐字钉住的事实（⛔ 不把两者混成一句）：
 ///
 /// | 名字 | `unresolved` | `deviceChainDsp` | 为什么 |
 /// | :--- | :--- | :--- | :--- |
 /// | `threshold_db` | `"paramNotSupported"` | **登记** | 压缩级离线整级不执行，且名字不在 `is_supported_param` 里 ⇒ 设备链确实"还有没消费的参数" |
-/// | `reverb_wet` | `null` | **不登记** | `reverb_wet` **被 Freeverb 级消费**（`is_supported_param` 认它）⇒ 设备链没有"没消费的参数"；但它**不是通道条字段** ⇒ 自动化不落点，靠 `automationLanes` 登记 |
+/// | `conv_ir_decay_s` | `null` | **不登记** | 名字**被卷积的静态投影消费**（`is_supported_param` 认它）⇒ 设备链没有"没消费的参数"；但它**是构造期 IR 形状** ⇒ 自动化不落点，靠 `automationLanes` 登记 |
 #[test]
-fn names_outside_the_channel_strip_do_not_land_but_are_never_silent() {
+fn names_outside_the_insert_chain_do_not_land_but_are_never_silent() {
     for (param_name, static_value, to, expect_code, expect_chain_dsp) in [
         ("threshold_db", -20.0_f32, -40.0_f32, true, true),
-        ("reverb_wet", 0.5, 0.1, false, false),
+        ("conv_ir_decay_s", 0.5, 2.0, false, false),
     ] {
         let scratch = Scratch::new("device-param-outside");
         let bytes = wav_f32(2, 48_000, &constant(48_000, 0.5));
@@ -2433,7 +2433,7 @@ fn names_outside_the_channel_strip_do_not_land_but_are_never_silent() {
         )
         .expect("对照渲染");
         println!(
-            "### MCP #267 outside {param_name}: digest={} base={} unsupported={}",
+            "### MCP #293 outside {param_name}: digest={} base={} unsupported={}",
             data["masterDigest"],
             base.response_data()["masterDigest"],
             data["unsupported"]
@@ -2454,7 +2454,7 @@ fn names_outside_the_channel_strip_do_not_land_but_are_never_silent() {
             assert_eq!(
                 lane["unresolved"],
                 Value::Null,
-                "{param_name}: 名字在静态投影里是认得的（被 Freeverb 消费），只是不可自动化"
+                "{param_name}: 名字在静态投影里是认得的（被卷积消费），只是不可自动化"
             );
         }
         let unsupported = data["unsupported"].as_array().expect("unsupported");
@@ -2467,20 +2467,92 @@ fn names_outside_the_channel_strip_do_not_land_but_are_never_silent() {
             expect_chain_dsp,
             "{param_name}: deviceChainDsp 的登记口径（见本判据的表）: {data}"
         );
-        // 名单是**唯一来源**：27 个拼写，且这两个名字都不在里面。
+        // 名单是**唯一来源**：41 个拼写，且这两个名字都不在里面。
         let listed = data["automation"]["appliedDeviceParamNames"]
             .as_array()
             .expect("appliedDeviceParamNames");
-        assert_eq!(listed.len(), 27, "{data}");
+        assert_eq!(listed.len(), 41, "{data}");
         assert!(
             !listed.iter().any(|value| value == param_name),
-            "{param_name} 不在通道条那一组里"
+            "{param_name} 不在落点名单里"
         );
-        for name in ["output_gain_db", "cutoff_hz", "eq_mid_q", "filter_enabled"] {
+        for name in ["output_gain_db", "cutoff_hz", "eq_mid_q", "reverb_wet"] {
             assert!(
                 listed.iter().any(|value| value == name),
                 "{name} 必须在名单里: {data}"
             );
         }
     }
+}
+
+/// ⭐ `#293` 判据 1/2/4：只写 `reverb_wet: 0` 的源设备 + 非恒等 `reverb_wet` 泳道
+/// ⇒ MCP 报 `supported:true` / `applied:true`，母带真的变，且**不再**登记
+/// `automationLanes`（该名字现在有落点了）。
+#[test]
+fn an_automated_reverb_wet_lane_really_lands_and_is_not_silent() {
+    let scratch = Scratch::new("device-param-reverb");
+    let bytes = wav_f32(2, 48_000, &constant(48_000, 0.5));
+    let mut fixture = fixture(bytes.clone(), &Tune::default());
+    let lead = id(2);
+    with_device_param_lane(
+        &mut fixture.project,
+        lead,
+        "reverb_wet",
+        0.0,
+        &[(0, 0.0), (ONE_SECOND_TICKS, 1.0)],
+        true,
+        340,
+    );
+    let out = scratch.join("reverb.wav");
+    let artifact = build_with(&fixture.project, &pool(&fixture), &out, args(&out)).expect("渲染");
+    let data = artifact.response_data();
+
+    let mut without_lane = fixture;
+    without_lane
+        .project
+        .tracks
+        .get_mut(&lead)
+        .expect("Lead")
+        .automation_lanes
+        .clear();
+    without_lane.project.validate().expect("对照夹具合法");
+    let base_out = scratch.join("reverb-baseline.wav");
+    let base = build_with(
+        &without_lane.project,
+        &pool(&without_lane),
+        &base_out,
+        args(&base_out),
+    )
+    .expect("对照渲染");
+    println!(
+        "### MCP #293 reverb_wet: digest={} base={} unsupported={} lane={}",
+        data["masterDigest"],
+        base.response_data()["masterDigest"],
+        data["unsupported"],
+        data["automation"]["tracks"][0]["lanes"][0]
+    );
+    assert_ne!(
+        data["masterDigest"],
+        base.response_data()["masterDigest"],
+        "混响自动化必须真的改母带（静默无效会得到相同摘要）"
+    );
+    let lane = &data["automation"]["tracks"][0]["lanes"][0];
+    assert_eq!(lane["target"], "DeviceParam");
+    assert_eq!(lane["resolvedParamName"], "reverb_wet");
+    assert_eq!(lane["supported"], true, "{data}");
+    assert_eq!(lane["applied"], true, "{data}");
+    assert_eq!(lane["unresolved"], Value::Null, "{data}");
+    let unsupported = data["unsupported"].as_array().expect("unsupported");
+    assert!(
+        !unsupported.iter().any(|value| value == "automationLanes"),
+        "混响泳道已有落点 ⇒ 不许再登记 automationLanes: {data}"
+    );
+    let listed = data["automation"]["appliedDeviceParamNames"]
+        .as_array()
+        .expect("appliedDeviceParamNames");
+    assert_eq!(listed.len(), 41, "{data}");
+    assert!(
+        listed.iter().any(|value| value == "reverb_wet"),
+        "reverb_wet 必须在名单里: {data}"
+    );
 }

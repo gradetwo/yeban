@@ -26,7 +26,7 @@ use serde_json::{Value, json};
 use yeban_mcp::dispatch::Dispatcher;
 use yeban_mcp::security::{BearerToken, Channel, RunMode, ScopeSet};
 use yeban_model::samples::filled_project;
-use yeban_model::{EntityId, YebanProjectV1};
+use yeban_model::{DeviceDefinition, DeviceKind, EntityId, ParameterValue, YebanProjectV1};
 
 /// 临时目录（`Drop` 删掉自己；工作树里不留临时文件）。
 struct Scratch {
@@ -268,5 +268,98 @@ fn a_non_channel_strip_device_param_is_reported_as_not_applied() {
     assert!(
         unsupported_has_automation_lanes(&rendered),
         "非通道条设备参数没有落点 ⇒ 导出必须真的登记: {rendered}"
+    );
+}
+
+/// 给一条轨追加一台内置效果器，返回它的 `slot_index`。
+fn append_effect(
+    project: &mut YebanProjectV1,
+    track_id: EntityId,
+    name: &str,
+    params: &[(&str, f32)],
+) -> usize {
+    let track = project.tracks.get_mut(&track_id).expect("目标音轨存在");
+    let slot = track.devices.len();
+    track.devices.push(DeviceDefinition {
+        id: EntityId::new(),
+        name: name.to_owned(),
+        kind: DeviceKind::InternalEffect,
+        bypassed: false,
+        params: params
+            .iter()
+            .map(|(name, value)| ParameterValue {
+                name: (*name).to_owned(),
+                value: *value,
+                unit: None,
+            })
+            .collect(),
+        latency_samples: 0,
+    });
+    slot
+}
+
+/// ⭐ `#293` 判据 4（`residualReason` 同步）：混响泳道**不再**报
+/// `deviceParamNotChannelStrip`；同一份工程里压缩器与卷积 IR 形状**继续**报同一个值
+/// （它们仍是“插入链没有这个落点”）。
+#[test]
+fn a_reverb_lane_lands_while_compressor_and_ir_decay_keep_the_residual() {
+    let scratch = Scratch::new("residual-sync");
+    let mut project = filled_project();
+    let lead = lead_track(&project);
+    let reverb_slot = append_effect(&mut project, lead, "Reverb", &[("reverb_wet", 0.0)]);
+    let compressor_slot =
+        append_effect(&mut project, lead, "Compressor", &[("threshold_db", -20.0)]);
+    let conv_slot = append_effect(
+        &mut project,
+        lead,
+        "Convolution",
+        &[("conv_ir_decay_s", 0.35)],
+    );
+    let mut dispatcher = dispatcher(project, &scratch.project());
+
+    let reverb = write_point(
+        &mut dispatcher,
+        lead,
+        "DeviceParam",
+        json!({"slotIndex": reverb_slot, "paramIndex": 0}),
+    );
+    assert_eq!(reverb["appliedInOfflineRender"], true, "{reverb}");
+    assert_eq!(reverb["residualReason"], Value::Null, "{reverb}");
+
+    let compressor = write_point(
+        &mut dispatcher,
+        lead,
+        "DeviceParam",
+        json!({"slotIndex": compressor_slot, "paramIndex": 0}),
+    );
+    assert_eq!(compressor["appliedInOfflineRender"], false, "{compressor}");
+    assert_eq!(
+        compressor["residualReason"], "deviceParamNotChannelStrip",
+        "{compressor}"
+    );
+
+    let convolution = write_point(
+        &mut dispatcher,
+        lead,
+        "DeviceParam",
+        json!({"slotIndex": conv_slot, "paramIndex": 0}),
+    );
+    assert_eq!(
+        convolution["appliedInOfflineRender"], false,
+        "{convolution}"
+    );
+    assert_eq!(
+        convolution["residualReason"], "deviceParamNotChannelStrip",
+        "{convolution}"
+    );
+    println!(
+        "### #293 residualReason: reverb={} compressor={} conv_ir_decay={}",
+        reverb["residualReason"], compressor["residualReason"], convolution["residualReason"]
+    );
+
+    let rendered = render(&mut dispatcher, &scratch.wav());
+    assert!(
+        unsupported_has_automation_lanes(&rendered),
+        "混响泳道已落点，但压缩/IR 形状仍不可落点 ⇒ 导出仍应登记 automationLanes: {rendered}"
     );
 }

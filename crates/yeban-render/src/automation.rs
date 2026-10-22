@@ -35,14 +35,17 @@
 //! ## 边界（本模块没有证明什么）
 //!
 //! - 只接 [`AutomationTarget::TrackVolume`]（含主总线）、[`AutomationTarget::SendGain`]、
-//!   [`AutomationTarget::TrackPan`] 与 [`AutomationTarget::DeviceParam`] 里**通道条那一组**
-//!   名字（[`APPLIED_DEVICE_PARAM_NAMES`]：27 个拼写 = 14 个字段，含别名）；`Macro` 仍由
-//!   调用方如实登记为不支持，`DeviceParam` 的其它名字（压缩 / 混响 / 卷积 / 未知旋钮）
-//!   也如实登记（⛔ 不冒充已支持）；
+//!   [`AutomationTarget::TrackPan`] 与 [`AutomationTarget::DeviceParam`] 里**插入链能改的
+//!   标量字段**（[`APPLIED_DEVICE_PARAM_NAMES`]：41 个拼写 = 22 个字段，含别名；
+//!   通道条 14 ＋ Freeverb 4 ＋ 卷积标量 4）；`Macro` 仍由调用方如实登记为不支持，
+//!   **压缩**与**卷积 IR 形状**（`conv_ir_decay*` / `conv_ir_seed`）也如实登记
+//!   （⛔ 不冒充已支持）；
 //! - 设备参数自动化的形状**不同**（任务单 `#266`）：它改的是**器件参数**、要重算系数
 //!   ⇒ 只在**块边界**调 [`crate::inserts::InsertRuntime::apply_device_params`]，
 //!   ⛔ 不逐样本平滑，也 ⛔ 不乘样本；单位是**原生绝对值**（`_db` = dB、`_hz` = Hz、
-//!   开关 `0.0`/`1.0`），没有 R55 换域；
+//!   秒 = 秒、开关 `0.0`/`1.0`），没有 R55 换域；混响/卷积的 128 帧块边界改参数
+//!   **没有平滑**（与既有 `DeviceParam` 同一条纪律）⇒ 本模块只保证“字节变了 ＋
+//!   分段读数”，⛔ 不证听感；
 //! - 主总线的第二个站点在调用方（主总线没有源，它的 `volume_db` 在源侧无法表达）；
 //! - 发送量的落点在 [`crate::render::RenderPlan`] 的**入边归约**里（见
 //!   [`SendGainAutomation`]）：它乘的是该边的**静态增益**，与源节点的 `TrackVolume`
@@ -59,7 +62,9 @@ use yeban_dsp::smoothing::ParamSmoother;
 use yeban_model::{AutomationTarget, EntityId, PPQ, TrackV3, YebanProjectV1};
 
 use crate::inserts::{
-    StripField, forced_identity_strip, resolve_device_param, strip_source_params, strip_source_slot,
+    DeviceParamFamily, DeviceParamField, ForcedInsertInstances, convolution_source_params,
+    convolution_source_slot, forced_identity_strip, resolve_device_param, reverb_source_params,
+    reverb_source_slot, strip_source_params, strip_source_slot,
 };
 use crate::render::{L1_BLOCK_SIZE, db_to_linear};
 
@@ -800,21 +805,28 @@ impl TrackPanAutomation {
     }
 }
 
-/// 本切片**真的会落点**的设备参数名（**含别名**，27 个拼写 = 14 个字段；
-/// `#266` 只开 `output_gain_db`，
-/// 任务单 `#267` 扩到**通道条那一整组**）。
+/// 本切片**真的会落点**的设备参数名（**含别名**，`41` 个拼写 = `22` 个字段）。
+///
+/// `#266` 只开 `output_gain_db`；`#267` 扩到**通道条那一整组**（27 拼写 / 14 字段）；
+/// `#293` 再扩到 **Freeverb 的 4 个标量字段**（6 拼写）与**卷积混响的 4 个标量字段**
+/// （8 拼写）。
 ///
 /// ⛔ 不是"白名单"：`crates/yeban-render/src/inserts.rs::is_supported_param` 的名字是
-/// **静态投影**消费的全集；本表是**自动化**这一层接上的子集。判别处**只有一处** ——
-/// [`crate::inserts::StripField::from_name`]；本表是它的可读清单，两者由
-/// `the_applied_names_and_the_field_table_agree` 双向钉住（⛔ 不许只改一边）。
+/// **静态投影**消费的全集（多三个构造期 IR 形状名）；本表是**自动化**这一层接上的
+/// 子集。判别处**只有一处** —— [`crate::inserts::DeviceParamField::from_name`]；
+/// 本表是它的可读清单，两者由 `the_applied_names_and_the_field_table_agree` 双向钉住
+/// （⛔ 不许只改一边）。
 ///
-/// ## 为什么**是**这 27 个
+/// ## 为什么**是**这些
 ///
-/// 它们逐个对应 [`crate::inserts::StripField`] 的 14 个字段（增益 3 名字 ×2、级开关
-/// ×2、EQ 七参数、滤波三参数），而 `StripField` 与 `StripProjection::apply` 的
-/// 通道条分支**同集** ⇒ 一条泳道改的正是静态投影会交给 `ChannelStrip::set_params`
-/// 的那个字段。
+/// - 27 个通道条拼写对应 [`crate::inserts::StripField`] 的 14 个字段；
+/// - 6 个混响拼写对应 [`crate::inserts::ReverbField`] 的 4 个字段
+///   （`reverb_size` / `reverb_damp` / `reverb_wet`(＋`_mix`) / `reverb_predelay`(＋`_s`)）；
+/// - 8 个卷积拼写对应 [`crate::inserts::ConvolutionField`] 的 4 个字段
+///   （`conv_predelay*` / `conv_dry` / `conv_wet`(＋`_mix`) / `conv_ir_gain*`）。
+///
+/// 三者与静态投影**同一张拼写表** ⇒ 一条泳道改的正是静态投影会交给对应器件
+/// `set_params` 的那个字段。
 ///
 /// ## 为什么**不**是别的名字
 ///
@@ -822,11 +834,12 @@ impl TrackPanAutomation {
 ///   `release_s` / `makeup_db` / `compressor_enabled`）：离线侧**整级不执行**
 ///   （`inserts.rs` 模块头 §1：检波器在声相前后的电平口径未裁决）⇒ 改它一个字节都
 ///   不会变。接上就是假话；
-/// - **混响 / 卷积**（`reverb_size` / `reverb_wet` / `conv_*` …）：那是**构造期**参数，
-///   改它要**重新分配**延迟线 / 重新合成 IR（`InsertRuntime::new` 才做），不是块边界
-///   能改的标量 ⇒ 本渲染器没有"运行期换混响参数"的路；
+/// - **卷积 IR 形状**（`conv_ir_decay_s` / `conv_ir_decay` / `conv_ir_seed`）：那是
+///   **构造期烘焙**，换值要重新合成 IR 并走 `set_impulse_response`（分配入口）⇒
+///   每 128 帧重烘会破坏“IR 构造期烘好 / `process` 零分配”的架构契约；
 /// - 未知旋钮。
 pub const APPLIED_DEVICE_PARAM_NAMES: &[&str] = &[
+    // 通道条（27 = 14 个字段，含别名）。
     "input_gain_db",
     "input_gain",
     "trim_db",
@@ -854,14 +867,30 @@ pub const APPLIED_DEVICE_PARAM_NAMES: &[&str] = &[
     "filter_resonance",
     "drive",
     "filter_drive",
+    // Freeverb 标量（6 = 4 个字段）。
+    "reverb_size",
+    "reverb_damp",
+    "reverb_wet",
+    "reverb_wet_mix",
+    "reverb_predelay",
+    "reverb_predelay_s",
+    // 卷积混响标量（8 = 4 个字段；⛔ 不含 `conv_ir_decay*` / `conv_ir_seed`）。
+    "conv_predelay_s",
+    "conv_pre_delay_s",
+    "conv_predelay",
+    "conv_dry",
+    "conv_wet",
+    "conv_wet_mix",
+    "conv_ir_gain_db",
+    "conv_ir_gain",
 ];
 
-/// 名字是否是本切片会落点的设备参数（**大小写不敏感**，与 `strip_of` 的同一口径）。
+/// 名字是否是本切片会落点的设备参数（**大小写不敏感**，与静态投影的同一口径）。
 ///
-/// 唯一判定处是 [`crate::inserts::StripField::from_name`]（本表只是它的可读清单）。
+/// 唯一判定处是 [`crate::inserts::DeviceParamField::from_name`]（本表只是它的可读清单）。
 #[must_use]
 pub fn is_applied_device_param_name(name: &str) -> bool {
-    StripField::from_name(name).is_some()
+    DeviceParamField::from_name(name).is_some()
 }
 
 /// 本轨通道条的**静态基值**：投影来源的参数；没有来源时是
@@ -875,16 +904,39 @@ fn static_strip(track: &TrackV3) -> ChannelStripParams {
     strip_source_params(track).unwrap_or_else(forced_identity_strip)
 }
 
-/// 把一条 `DeviceParam` 泳道**解析成落点**：
-/// `(参数名原文, 设备身份, 通道条字段, 该字段的静态值)`。
+/// 本轨某个**插入器件族**的静态字段值（恒等判定用）。
 ///
-/// 返回 `None` 的四种情形（全部是"不落点"，⛔ 不是沉默）：
+/// - 通道条沿用 [`static_strip`] 的 `#266` 缝（全恒等增益设备也是来源）；
+/// - Freeverb / 卷积没有那条缝：目标参数名本身就是 `reverb_of` / `convolution_of`
+///   的“已识别”证据 ⇒ 来源设备必然存在，`None` 只是“不是来源”的报错。
+///
+/// 混响/卷积的静态值在这里先过 [`DeviceParamField::sanitise`]（与器件 `set_params`
+/// 同一次钳制），因此恒等判定比的是**器件读数**，不是原始旋钮值。
+fn static_insert_field_value(track: &TrackV3, field: DeviceParamField) -> Option<f32> {
+    match field {
+        DeviceParamField::Strip(field) => Some(field.read(&static_strip(track))),
+        DeviceParamField::Reverb(field) => {
+            let params = reverb_source_params(track)?;
+            Some(field.sanitise(field.read(&params)))
+        }
+        DeviceParamField::Convolution(field) => {
+            let params = convolution_source_params(track)?;
+            Some(field.sanitise(field.read(&params)))
+        }
+    }
+}
+
+/// 把一条 `DeviceParam` 泳道**解析成落点**：
+/// `(参数名原文, 设备身份, 落点字段, 该字段的静态值)`。
+///
+/// 返回 `None` 的情形（全部是"不落点"，⛔ 不是沉默）：
 ///
 /// 1. 序数地址解析失败（轨 / 插槽 / 参数下标越界）；
-/// 2. 参数名不在 [`APPLIED_DEVICE_PARAM_NAMES`]（⇒ 不是通道条字段）；
+/// 2. 参数名不是任何器件族的字段（[`crate::inserts::DeviceParamField::from_name`]）；
 /// 3. 设备被旁通 / 不是内置效果器（规则同 `from_devices`）；
-/// 4. 该插槽**不是**本轨通道条的来源设备（`strip_source_slot`）—— 那台设备的参数
-///    根本不会进 DSP，改它没有落点。
+/// 4. 该插槽**不是**本轨对应器件族的来源设备（`strip_source_slot` /
+///    `reverb_source_slot` / `convolution_source_slot`）—— 那台设备的参数根本不会
+///    进 DSP，改它没有落点。
 ///
 /// ## "全恒等设备"也是来源（`#266` 的边界裁决，`#267` 逐条沿用）
 ///
@@ -900,7 +952,7 @@ fn static_strip(track: &TrackV3) -> ChannelStripParams {
 /// ⚠ 缝只对**增益**字段存在：`eq_*` / `cutoff_hz` / `resonance` / `drive` / 两个开关
 /// 只要出现就把 `StripProjection` 的 `seen` 位置起 ⇒ `strip_of` 返回 `Some`，走的是
 /// 正常来源分支（静态值仍是投影出来的那一个）。因此"设备改不动"的情形不会因为
-/// 扩名字而出现。
+/// 扩名字而出现。混响/卷积**没有**这条缝：任何已识别名字都让对应 `*_of` 返回 `Some`。
 ///
 /// 这是**唯一**的判定处：`DeviceParamAutomation::new` 与 MCP 的 `AutomationReport`
 /// 都调它 ⇒ "报告说应用了"与"真的挂上了"不会各判一套。
@@ -909,22 +961,26 @@ fn applicable_device_param(
     track_id: EntityId,
     slot_index: usize,
     param_index: usize,
-) -> Option<(String, EntityId, StripField, f32)> {
+) -> Option<(String, EntityId, DeviceParamField, f32)> {
     let resolved = resolve_device_param(project, track_id, slot_index, param_index).ok()?;
-    let field = StripField::from_name(&resolved.param_name)?;
+    let field = DeviceParamField::from_name(&resolved.param_name)?;
     let track = project.tracks.get(&track_id)?;
-    let slot_is_source = match strip_source_slot(track) {
-        Some(source) => source == slot_index,
-        None => track.devices.get(slot_index).is_some_and(|device| {
-            !device.bypassed && device.kind == yeban_model::DeviceKind::InternalEffect
-        }),
+    let slot_is_source = match field.family() {
+        DeviceParamFamily::Strip => match strip_source_slot(track) {
+            Some(source) => source == slot_index,
+            None => track.devices.get(slot_index).is_some_and(|device| {
+                !device.bypassed && device.kind == yeban_model::DeviceKind::InternalEffect
+            }),
+        },
+        DeviceParamFamily::Reverb => reverb_source_slot(track) == Some(slot_index),
+        DeviceParamFamily::Convolution => convolution_source_slot(track) == Some(slot_index),
     };
     if !slot_is_source {
         return None;
     }
-    // 静态值 = **器件实际拿到的**投影参数里这个字段的值。投影本身已 `sanitised`
-    // （`strip_source_params`），缝里那一份也是全定义 ⇒ 恒等判定比的就是器件读数。
-    let static_value = field.read(&static_strip(track));
+    // 静态值 = **器件实际拿到的**投影参数里这个字段的值（混响/卷积已按器件同一次
+    // 钳制算过；通道条投影本身已 `sanitised`，缝里那一份也是全定义）。
+    let static_value = static_insert_field_value(track, field)?;
     Some((resolved.param_name, resolved.device_id, field, static_value))
 }
 
@@ -959,8 +1015,11 @@ pub enum LaneResidual {
     /// `Macro`：宏的级联量纲尚未接线（`MacroMapping` 只有 `depth`，参数值域住在
     /// 设备/参数层），因此本渲染器不消费宏泳道。
     Macro,
-    /// `DeviceParam`：没有通道条落点（名字不在 [`APPLIED_DEVICE_PARAM_NAMES`]、
-    /// 设备被旁通、或指向的不是来源设备）。
+    /// `DeviceParam`：没有插入链落点（名字不是通道条 / Freeverb / 卷积标量字段、
+    /// 设备被旁通、或指向的不是该器件族的来源设备）。
+    ///
+    /// ⚠ 名字里的 `NotChannelStrip` 是**外部契约的稳定串**，本单 `#293` 扩到
+    /// Freeverb/卷积后**不改**：它仍是“离线插入链没有这个落点”的唯一残差值。
     DeviceParamNotChannelStrip,
     /// 目标轨**没有源落点**（有入边的总线轨，或不在渲染计划里的不可达轨）。
     BusTrack,
@@ -993,7 +1052,8 @@ impl LaneResidual {
 /// - `TrackVolume`：主总线，或计划里的源节点；
 /// - `SendGain`：边在保留子图里（`#256`）；
 /// - `TrackPan`：非主总线的源节点（`#257`；主总线没有声相级）；
-/// - `DeviceParam`：节点在计划里且参数名有通道条落点（`#266`/`#267`）；
+/// - `DeviceParam`：节点在计划里且参数名有**插入链落点**（通道条 / Freeverb 标量 /
+///   卷积标量；`#266`/`#267`/`#293`）；
 /// - `Macro`：永不落点（量纲未接线）。
 ///
 /// ⛔ 这里是判定落点的**唯一处**：`yeban-mcp` 的 `AutomationReport` 与
@@ -1049,21 +1109,21 @@ pub fn unsupported_lane_reason(
 /// `TrackVolume` / `SendGain` 是"**逐样本乘一个标量**"，所以它们走
 /// [`ParamSmoother`]（5 ms）；`TrackPan` 平滑的是位置、乘的是两个绝对增益。而
 /// `DeviceParam` 改的是**一台器件的参数**，器件换参数就要**重算系数**
-/// （[`crate::inserts::InsertRuntime::apply_device_params`] 走
-/// `ChannelStrip::set_params`）⇒ 只能在**块边界**做一次，⛔ 不能逐样本线性插值
-/// "效果"。本类型因此：
+/// （[`crate::inserts::InsertRuntime::apply_device_params`] 走对应器件的 `set_params`）
+/// ⇒ 只能在**块边界**做一次，⛔ 不能逐样本线性插值"效果"。本类型因此：
 ///
 /// - 每 [`AUTOMATION_BLOCK_SIZE`]（128）帧求值一次，把该字段的**原生绝对值**交给运行态
-///   （字段由 [`Self::field`] 给出：`#267` 起是通道条整组，⛔ 不再只有输出增益）；
+///   （字段由 [`Self::field`] 给出：`#267` 起是通道条整组，`#293` 起含 Freeverb /
+///   卷积标量；⛔ 不再只有输出增益）；
 /// - **不持有** `ParamSmoother`，也**不**乘任何样本；
 /// - 恒等（没有落点 / 没有泳道 / `read_enabled:false` / 空泳道 / 每个点的
-///   **钳制后**值都等于静态值）⇒ 调用方一个器件都不实例化。
+///   **钳制后**值都等于静态值）⇒ 调用方一个器件都不强制实例化。
 ///
 /// ## 单位
 ///
 /// **原生绝对值**，与 `TrackPan`／`SendGain` 同一条先例：⛔ 没有 0..1
 /// 归一化，也 ⛔ 没有 R55 换域 —— 交出去的数直接就是器件参数（`_db` = dB、
-/// `_hz` = Hz、开关 `0.0`/`1.0`）。
+/// `_hz` = Hz、秒 = 秒、开关 `0.0`/`1.0`）。
 ///
 /// ## 为什么求值器仍是一份"只含本轨的模型工程"
 ///
@@ -1079,9 +1139,9 @@ pub struct DeviceParamAutomation {
     applicable: bool,
     /// 参数名**原文**（读数用）。
     param_name: String,
-    /// 这条泳道改的是**哪个通道条字段**（没有落点时为 `None`）。
-    field: Option<StripField>,
-    /// 该字段的静态值（与器件拿到的投影参数同源，已 `sanitised`；开关是 `0.0`/`1.0`）。
+    /// 这条泳道改的是**哪个插入器件字段**（没有落点时为 `None`）。
+    field: Option<DeviceParamField>,
+    /// 该字段的静态值（与器件拿到的投影参数同源，已按器件钳制；开关是 `0.0`/`1.0`）。
     static_value: f32,
     /// 曲线是否**处处**等于静态值（或本就没有落点）⇒ 恒等快路径。
     identity: bool,
@@ -1133,8 +1193,9 @@ impl DeviceParamAutomation {
             Some(lane) => {
                 // 与 `TrackGainAutomation` 同一条充要条件：分段插值在两端相等时整段恒定，
                 // 边界是保持 ⇒ 所有点**钳制后**相等就等于整条曲线处处相等。
-                // 钳制走 `StripField::sanitise`（器件内部同一次 `sanitised`）⇒ 恒等判定
-                // 不会因为"`-100 dB` 与 `-60 dB` 交给器件是同一个值"而漏判。
+                // 钳制走 `DeviceParamField::sanitise`（对应器件 `set_params` 内部同一次
+                // 钳制；混响/卷积的镜像由真实器件网格判据钉住）⇒ 恒等判定不会因为
+                // "`-100 dB` 与 `-60 dB` 交给器件是同一个值"而漏判。
                 let identity = match field {
                     Some(field) => lane.points.values().all(|point| {
                         field.sanitise(point.value).to_bits() == static_value.to_bits()
@@ -1186,7 +1247,7 @@ impl DeviceParamAutomation {
         self.track_id
     }
 
-    /// 是否有落点（名字 ∈ [`APPLIED_DEVICE_PARAM_NAMES`] 且指向通道条来源设备）。
+    /// 是否有落点（名字 ∈ [`APPLIED_DEVICE_PARAM_NAMES`] 且指向对应器件族的来源设备）。
     #[must_use]
     pub const fn is_applicable(&self) -> bool {
         self.applicable
@@ -1198,11 +1259,11 @@ impl DeviceParamAutomation {
         &self.param_name
     }
 
-    /// 这条泳道改的**通道条字段**（没有落点时为 `None`）。
+    /// 这条泳道改的**插入器件字段**（没有落点时为 `None`）。
     ///
     /// `value_at_block` 返回 `Some` ⇒ 这里必然是 `Some`（非恒等 ⇒ 有落点）。
     #[must_use]
-    pub const fn field(&self) -> Option<StripField> {
+    pub const fn field(&self) -> Option<DeviceParamField> {
         self.field
     }
 
@@ -1305,20 +1366,49 @@ pub fn device_param_automations(
     out
 }
 
-/// 需要**强制实例化通道条**的轨（有任何一条非恒等的设备参数泳道）。
+/// 需要**按器件族强制实例化**的轨（任务单 `#266` 的通道条 ＋ `#293` 的混响/卷积）。
 ///
-/// 这就是"编译期开关"的数据：`project_inserts_with_forced_strips` 用它让
-/// `effective_strip` 在全恒等参数下也返回 `Some`（任务单 `#266`；理由见
-/// `crate::inserts` 模块头 §3.1）。
+/// 这就是"编译期开关"的数据：`project_inserts_with_forced_instances` 用它让
+/// 通道条在"全恒等参数"下也返回 `Some`、让 Freeverb/卷积在 `wet = 0`（`is_active()`
+/// 为假）时仍建出运行态 —— 否则块边界没有器件可改，泳道会"报 applied 却静默无效"。
+///
+/// ⚠ **按族收窄**：只有落点族等于该族的非恒等泳道才置位。混响泳道不会白实例化一条
+/// 恒等通道条（`#293` 判据）；恒等泳道一律不置位（否则产物会变）。
+#[must_use]
+pub fn forced_insert_instances(
+    automations: &BTreeMap<EntityId, Vec<DeviceParamAutomation>>,
+) -> ForcedInsertInstances {
+    let mut forced = ForcedInsertInstances::default();
+    for (track_id, list) in automations {
+        for automation in list.iter().filter(|automation| !automation.is_identity()) {
+            let Some(field) = automation.field() else {
+                continue;
+            };
+            match field.family() {
+                DeviceParamFamily::Strip => {
+                    forced.strip.insert(*track_id);
+                }
+                DeviceParamFamily::Reverb => {
+                    forced.reverb.insert(*track_id);
+                }
+                DeviceParamFamily::Convolution => {
+                    forced.convolution.insert(*track_id);
+                }
+            }
+        }
+    }
+    forced
+}
+
+/// 需要**强制实例化通道条**的轨（`forced_insert_instances` 的 `strip` 族）。
+///
+/// 保留这个入口是为了既有调用点/判据的签名不变；它是同一个扫描器的**投影**，
+/// ⛔ 不是第二套判定。
 #[must_use]
 pub fn forced_strip_tracks(
     automations: &BTreeMap<EntityId, Vec<DeviceParamAutomation>>,
 ) -> BTreeSet<EntityId> {
-    automations
-        .iter()
-        .filter(|(_, list)| list.iter().any(|automation| !automation.is_identity()))
-        .map(|(track_id, _)| *track_id)
-        .collect()
+    forced_insert_instances(automations).strip
 }
 
 /// 扫描工程里**全部** `SendGain` 泳道，给每条边构造一个求值器（按边身份升序）。
@@ -1388,6 +1478,7 @@ mod tests {
     use super::*;
     use std::str::FromStr as _;
 
+    use crate::inserts::{ConvolutionField, DeviceParamField, ReverbField, StripField};
     use yeban_model::{
         AutomationLane, AutomationPoint, AutomationWriteMode, CurveType, DeviceDefinition,
         DeviceKind, ParameterValue, RoutingEdge, RoutingKind, TrackKind,
@@ -2022,8 +2113,52 @@ mod tests {
         assert!(forced_strip_tracks(&automations).is_empty());
     }
 
+    /// ⭐ `#293` 判据 3：强制实例化**按族收窄** —— 混响/卷积泳道不许白实例化通道条，
+    /// 反之亦然；恒等泳道三族都不置位。
+    #[test]
+    fn the_scanner_forces_each_family_separately() {
+        let (reverb_project, reverb_track) = project_with_device_lane(
+            &[("reverb_wet", 0.0)],
+            &[(0, 0.0), (1_920, 1.0)],
+            true,
+            false,
+        );
+        let automations = device_param_automations(&reverb_project, 48_000);
+        let forced = forced_insert_instances(&automations);
+        assert_eq!(
+            forced.reverb,
+            BTreeSet::from([reverb_track]),
+            "非恒等混响泳道必须强制实例化 Freeverb"
+        );
+        assert!(forced.strip.is_empty(), "混响泳道不许白实例化通道条");
+        assert!(forced.convolution.is_empty());
+        assert!(
+            forced_strip_tracks(&automations).is_empty(),
+            "`forced_strip_tracks` 是同一扫描器的 strip 族投影"
+        );
+
+        let (conv_project, conv_track) =
+            project_with_device_lane(&[("conv_wet", 0.0)], &[(0, 0.0), (1_920, 1.0)], true, false);
+        let automations = device_param_automations(&conv_project, 48_000);
+        let forced = forced_insert_instances(&automations);
+        assert_eq!(forced.convolution, BTreeSet::from([conv_track]));
+        assert!(forced.strip.is_empty() && forced.reverb.is_empty());
+
+        let (flat_project, _flat_track) = project_with_device_lane(
+            &[("reverb_wet", 0.25)],
+            &[(0, 0.25), (1_920, 0.25)],
+            true,
+            false,
+        );
+        let automations = device_param_automations(&flat_project, 48_000);
+        assert!(
+            forced_insert_instances(&automations).is_empty(),
+            "恒等泳道三族都不许强制实例化（否则产物会变）"
+        );
+    }
+
     // -----------------------------------------------------------------------
-    // ⭐ `#267`：通道条整组名字（27 个拼写 = 14 个字段）
+    // ⭐ `#267`/`#293`：通道条整组（27 拼写 = 14 字段）＋ 混响/卷积标量（14 拼写 = 8 字段）
     // -----------------------------------------------------------------------
 
     /// 每个字段的：规范名、静态值、渐变的终点值。
@@ -2047,14 +2182,87 @@ mod tests {
         (StripField::Drive, "drive", 0.2, 0.9),
     ];
 
+    /// 非通道条字段（`#293`）的：落点、规范名、静态值、渐变终点值。
+    ///
+    /// 静态值都**不是器件默认值的重复**（`reverb_wet: 0` 正是"静态链不建器件"的缝，
+    /// 单列一条运行态判据）；`conv_ir_gain_db` 用 `0 dB → −12 dB`。
+    const INSERT_FIELD_CASES: &[(DeviceParamField, &str, f32, f32)] = &[
+        (
+            DeviceParamField::Reverb(ReverbField::Size),
+            "reverb_size",
+            0.2,
+            0.9,
+        ),
+        (
+            DeviceParamField::Reverb(ReverbField::Damp),
+            "reverb_damp",
+            0.1,
+            0.9,
+        ),
+        (
+            DeviceParamField::Reverb(ReverbField::Wet),
+            "reverb_wet",
+            0.0,
+            1.0,
+        ),
+        (
+            DeviceParamField::Reverb(ReverbField::Predelay),
+            "reverb_predelay_s",
+            0.0,
+            0.09,
+        ),
+        (
+            DeviceParamField::Convolution(ConvolutionField::PreDelay),
+            "conv_predelay_s",
+            0.0,
+            0.09,
+        ),
+        (
+            DeviceParamField::Convolution(ConvolutionField::Dry),
+            "conv_dry",
+            1.0,
+            0.0,
+        ),
+        (
+            DeviceParamField::Convolution(ConvolutionField::Wet),
+            "conv_wet",
+            0.0,
+            1.0,
+        ),
+        (
+            DeviceParamField::Convolution(ConvolutionField::IrGainDb),
+            "conv_ir_gain_db",
+            0.0,
+            -12.0,
+        ),
+    ];
+
+    /// 一个**名单拼写**的用例：落点、规范名、静态值、终点值。
+    fn case_for(name: &str) -> (DeviceParamField, &'static str, f32, f32) {
+        let field = DeviceParamField::from_name(name)
+            .unwrap_or_else(|| panic!("{name} 在名单里但解析不出落点"));
+        match field {
+            DeviceParamField::Strip(strip) => FIELD_CASES
+                .iter()
+                .find(|case| case.0 == strip)
+                .map(|&(_, canonical, from, to)| (field, canonical, from, to))
+                .expect("每个通道条字段都有用例"),
+            _ => INSERT_FIELD_CASES
+                .iter()
+                .find(|case| case.0 == field)
+                .map(|&(_, canonical, from, to)| (field, canonical, from, to))
+                .expect("每个插入字段都有用例"),
+        }
+    }
+
     /// ⭐ 名单 ↔ 字段表**双向**一致：`APPLIED_DEVICE_PARAM_NAMES` 就是
     /// `StripField::from_name` 认下的那一组拼写（⛔ 只改一边会让两条判据红）。
     #[test]
     fn the_applied_names_and_the_field_table_agree() {
-        // 1. 名单里的每个拼写都能解析成一个字段，且**规范名**也在名单里。
+        // 1. 名单里的每个拼写都能解析成一个落点，且**规范名**也在名单里。
         for &name in APPLIED_DEVICE_PARAM_NAMES {
-            let field = StripField::from_name(name)
-                .unwrap_or_else(|| panic!("{name} 在名单里但解析不出字段"));
+            let field = DeviceParamField::from_name(name)
+                .unwrap_or_else(|| panic!("{name} 在名单里但解析不出落点"));
             assert!(
                 is_applied_device_param_name(&name.to_ascii_uppercase()),
                 "大小写不敏感：{name}"
@@ -2067,45 +2275,69 @@ mod tests {
                 field.canonical_name()
             );
         }
-        // 2. 每个字段都有且只有一个规范拼写在名单里（别名可以多，规范名只能一个）。
+        // 2. 三族各自的每个字段都有一条规范拼写在名单里，且拼写集合包含它自己。
         for field in StripField::ALL {
             let canonical = field.canonical_name();
             assert!(
                 APPLIED_DEVICE_PARAM_NAMES.contains(&canonical),
-                "字段 {canonical} 的规范名不在名单里"
+                "{canonical}"
             );
-            // 该字段的"拼写集合"必须恰好包含它的规范名（逐个对照，⛔ 不在空集合上
-            // 用 `.any` 真空通过 —— 那是 R102/R111/R114 禁的量词断言形状）。
             let spellings: Vec<&str> = APPLIED_DEVICE_PARAM_NAMES
                 .iter()
                 .copied()
                 .filter(|name| StripField::from_name(name) == Some(*field))
                 .collect();
-            assert!(!spellings.is_empty(), "字段 {canonical} 至少要有一个拼写");
-            assert!(
-                spellings.contains(&canonical),
-                "字段 {canonical} 的拼写集合里必须有它自己: {spellings:?}"
-            );
+            assert!(spellings.contains(&canonical), "{canonical}: {spellings:?}");
         }
-        // 3. 名单与**唯一名字表** `StripField::SPELLINGS` 逐字相等（⛔ 少一个名字、
-        //    ⛔ 多一个名字、⛔ 重复拼写，三条都在这里红）。
+        for field in ReverbField::ALL {
+            let canonical = field.canonical_name();
+            assert!(
+                APPLIED_DEVICE_PARAM_NAMES.contains(&canonical),
+                "{canonical}"
+            );
+            let spellings: Vec<&str> = APPLIED_DEVICE_PARAM_NAMES
+                .iter()
+                .copied()
+                .filter(|name| ReverbField::from_name(name) == Some(*field))
+                .collect();
+            assert!(spellings.contains(&canonical), "{canonical}: {spellings:?}");
+        }
+        for field in ConvolutionField::ALL {
+            let canonical = field.canonical_name();
+            assert!(
+                APPLIED_DEVICE_PARAM_NAMES.contains(&canonical),
+                "{canonical}"
+            );
+            let spellings: Vec<&str> = APPLIED_DEVICE_PARAM_NAMES
+                .iter()
+                .copied()
+                .filter(|name| ConvolutionField::from_name(name) == Some(*field))
+                .collect();
+            assert!(spellings.contains(&canonical), "{canonical}: {spellings:?}");
+        }
+        // 3. 名单与三张**唯一名字表**的并集逐字相等（⛔ 少一个、多一个、重复都红）。
+        assert_eq!(StripField::ALL.len(), 14, "通道条 14 个字段");
+        assert_eq!(ReverbField::ALL.len(), 4, "Freeverb 4 个字段");
+        assert_eq!(ConvolutionField::ALL.len(), 4, "卷积标量 4 个字段");
+        let expected_len = StripField::SPELLINGS.len()
+            + ReverbField::SPELLINGS.len()
+            + ConvolutionField::SPELLINGS.len();
+        assert_eq!(expected_len, 41, "27 + 6 + 8 = 41 个拼写");
         assert_eq!(
             APPLIED_DEVICE_PARAM_NAMES.len(),
-            StripField::SPELLINGS.len(),
-            "名单与 SPELLINGS 的条数必须相等"
+            expected_len,
+            "名单与三张 SPELLINGS 的并集条数必须相等"
         );
-        assert_eq!(StripField::ALL.len(), 14, "14 个字段");
         let mut sorted: Vec<&str> = APPLIED_DEVICE_PARAM_NAMES.to_vec();
         sorted.sort_unstable();
         let mut expected: Vec<&str> = StripField::SPELLINGS
             .iter()
             .map(|(name, _)| *name)
+            .chain(ReverbField::SPELLINGS.iter().map(|(name, _)| *name))
+            .chain(ConvolutionField::SPELLINGS.iter().map(|(name, _)| *name))
             .collect();
         expected.sort_unstable();
-        assert_eq!(
-            sorted, expected,
-            "名单必须与 SPELLINGS 完全一致（字典序逐条）"
-        );
+        assert_eq!(sorted, expected, "名单必须与三张 SPELLINGS 完全一致");
         sorted.dedup();
         assert_eq!(
             sorted.len(),
@@ -2122,11 +2354,11 @@ mod tests {
             "release_s",
             "makeup_db",
             "compressor_enabled",
-            "reverb_size",
-            "reverb_damp",
-            "reverb_wet",
-            "conv_wet",
+            "reverb_mix",
+            "reverb_width",
             "conv_ir_decay_s",
+            "conv_ir_decay",
+            "conv_ir_seed",
             "mix",
             "filter_cutoff_hz",
         ] {
@@ -2134,18 +2366,13 @@ mod tests {
         }
     }
 
-    /// ⭐ `#267` 判据 1/2：**14 个字段各一条** —— 泳道从静态值渐变到终点值 ⇒
-    /// 求值器把**这个字段**接上（`field()` / `param_name()` / 静态值），曲线在
-    /// 块边界上单调，且恒等判定为假。
+    /// ⭐ `#267`/`#293` 判据 1/2：**22 个字段各一条**（41 个拼写逐个跑）—— 泳道从静态值
+    /// 渐变到终点值 ⇒ 求值器把**这个字段**接上（`field()` / `param_name()` / 静态值），
+    /// 曲线在块边界上单调，且恒等判定为假。别名与规范名解析到**同一个**落点。
     #[test]
     fn every_applied_name_is_applied_and_ramps_monotonically() {
-        // 逐个**拼写**（26 个，含别名）而不是逐个字段：别名也是一条能落点的名字。
         for &name in APPLIED_DEVICE_PARAM_NAMES {
-            let field = StripField::from_name(name).expect("名单里的名字");
-            let &(_, _, static_value, target) = FIELD_CASES
-                .iter()
-                .find(|case| case.0 == field)
-                .expect("每个字段都有用例");
+            let (field, _canonical, static_value, target) = case_for(name);
             let (project, track) = project_with_device_lane(
                 &[(name, static_value)],
                 &[(0, static_value), (1_920, target)],
@@ -2192,11 +2419,7 @@ mod tests {
     #[test]
     fn every_applied_name_is_identity_when_flat_or_disabled() {
         for &name in APPLIED_DEVICE_PARAM_NAMES {
-            let field = StripField::from_name(name).expect("名单里的名字");
-            let &(_, _, static_value, target) = FIELD_CASES
-                .iter()
-                .find(|case| case.0 == field)
-                .expect("每个字段都有用例");
+            let (field, _canonical, static_value, target) = case_for(name);
             let flat = [static_value, static_value, static_value];
             let (project, track) = project_with_device_lane(
                 &[(name, static_value)],
@@ -2226,17 +2449,21 @@ mod tests {
         }
     }
 
-    /// ⭐ `#267`：**钳制后**才比恒等（`-100 dB` 与 `-60 dB` 交给器件是同一个值）；
-    /// 并且名单外的名字即使指向合法设备也**不落点**（`field()` 是 `None`）。
+    /// ⭐ `#267`/`#293`：**钳制后**才比恒等（`-100 dB` 与 `-60 dB` 交给器件是同一个值）；
+    /// 并且名单外的名字（压缩 / 卷积 IR 形状 / 未知旋钮）即使指向合法设备也**不落点**
+    /// （`field()` 是 `None`）。
     #[test]
     fn the_identity_compares_the_clamped_value_and_rejects_other_names() {
         let (project, track) =
             project_with_device_lane(&[("output_gain_db", -60.0)], &[(0, -100.0)], true, false);
         let automation = DeviceParamAutomation::new(&project, track, 0, 0, 48_000);
         assert!(automation.is_identity(), "钳制后相等 ⇒ 恒等");
-        assert_eq!(automation.field(), Some(StripField::OutputGainDb));
+        assert_eq!(
+            automation.field(),
+            Some(DeviceParamField::Strip(StripField::OutputGainDb))
+        );
 
-        for name in ["threshold_db", "reverb_wet", "conv_wet", "mix"] {
+        for name in ["threshold_db", "conv_ir_decay_s", "conv_ir_seed", "mix"] {
             let (project, track) =
                 project_with_device_lane(&[(name, 1.0)], &[(0, 0.0), (960, 2.0)], true, false);
             let automation = DeviceParamAutomation::new(&project, track, 0, 0, 48_000);

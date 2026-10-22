@@ -49,7 +49,7 @@
 //! | `audioClips` | **收窄后的口径**：仅当工程在 `assets` 索引里**声明**了这个资产、而会话 CAS 池里**没有它的字节**时才登记（`Domain::open_in_memory` 注入的会话就是这种形态）。此时该片段当静音，且响应 `data.audio.assets[].bytesPresent = false` 如实说明。读 `.yeban` 容器时索引与字节由 `store` 双向校验必然同时存在，因此这一项在真实容器工程上**不会**出现 |
 //! | `deviceChainDsp` | 设备链里**本切片没有消费**的参数（**压缩** / 未知旋钮）没有求值；增益、EQ、低通、Freeverb、卷积已求值 |
 //! | `externalPlugins` | `DeviceKind::ExternalInstrument/ExternalEffect` 没有宿主 |
-//! | `automationLanes` | ⭐ `#243` / `#256` / `#257` / `#266` / `#267`：**仅**指仍有可求值点、但本渲染器不消费的自动化目标（`Macro`；`DeviceParam` 里**不是**通道条字段的名字（压缩 / 混响 / 卷积 / 未知旋钮）、或指向旁通/非通道条来源设备的情形），以及 `TrackVolume` 落在**总线轨**上（总线没有源、静态音量也没有落点）、`SendGain` 落在**被剪枝的边**上、`TrackPan` 落在**主总线**上的情形。`TrackVolume` 在源节点与主总线上**真的被求值**；`SendGain` 在保留子图的入边归约里**真的被求值**（任务单 `#256`）；`TrackPan` 在源节点的源输出之后**真的被求值**（任务单 `#257`）；`DeviceParam` 的通道条字段（`data.appliedDeviceParamNames` 逐条列出）在该节点的通道条上**真的被求值**（`#266` 开一个名字 / `#267` 扩到整组，块边界 `set_params`）；空泳道与 `readEnabled:false` 的泳道**不**登记（一条没有点的曲线没有“少做了什么”）。逐泳道的支持/应用读数见 `data.automation` |
+//! | `automationLanes` | ⭐ `#243` / `#256` / `#257` / `#266` / `#267` / `#293`：**仅**指仍有可求值点、但本渲染器不消费的自动化目标（`Macro`；`DeviceParam` 里**不是**插入链落点的名字（**压缩** / **卷积 IR 形状** `conv_ir_decay*`、`conv_ir_seed` / 未知旋钮）、或指向旁通/非对应器件族来源设备的情形），以及 `TrackVolume` 落在**总线轨**上（总线没有源、静态音量也没有落点）、`SendGain` 落在**被剪枝的边**上、`TrackPan` 落在**主总线**上的情形。`TrackVolume` 在源节点与主总线上**真的被求值**；`SendGain` 在保留子图的入边归约里**真的被求值**（任务单 `#256`）；`TrackPan` 在源节点的源输出之后**真的被求值**（任务单 `#257`）；`DeviceParam` 的通道条 / Freeverb / 卷积标量字段（`data.appliedDeviceParamNames` 逐条列出）在该节点的插入链上**真的被求值**（`#266` 开一个名字 / `#267` 扩到通道条整组 / `#293` 扩到混响与卷积标量，块边界 `set_params`）；空泳道与 `readEnabled:false` 的泳道**不**登记（一条没有点的曲线没有“少做了什么”）。逐泳道的支持/应用读数见 `data.automation` |
 //! | `noteSlide` | 滑音没有实现 |
 //! | `notePitchBend` | 弯音曲线没有求值 |
 //! | `noteLyrics` | 歌词/音素没有歌声合成 |
@@ -423,10 +423,10 @@ use yeban_render::engine_source::{ArmedSfzInput, ArmedSfzSample, EngineTimbre, E
 // 第二份白名单（`yeban-engine` 的投影是同一份规则的来源，但 MCP 不能依赖它）。
 use yeban_render::automation::{
     APPLIED_DEVICE_PARAM_NAMES, LaneResidual, TrackGainAutomation, TrackPanAutomation,
-    centered_pan_gains, device_param_automations, forced_strip_tracks, send_gain_automations,
+    centered_pan_gains, device_param_automations, forced_insert_instances, send_gain_automations,
 };
 use yeban_render::inserts::{
-    project_inserts_with_forced_strips, resolve_device_param, track_has_unhandled_dsp,
+    project_inserts_with_forced_instances, resolve_device_param, track_has_unhandled_dsp,
 };
 use yeban_render::mastering;
 use yeban_render::render::{
@@ -1606,8 +1606,9 @@ impl AutomationReport {
     /// - `rendered_edges` 是**保留子图里的入边身份**（`RenderPlan::edge_ids()`）——
     ///   `SendGain` 只有落在这张表里才算“会被累加”（任务单 `#256`）；
     /// - `rendered_nodes` 是**保留子图里的全部节点**（`RenderPlan::nodes()`）——
-    ///   `DeviceParam` 的落点是该节点的插入链（通道条），因此只有节点在计划里、
-    ///   且参数名有落点（`device_param_lane_is_applicable`）才算“会被应用”（`#266`）。
+    ///   `DeviceParam` 的落点是该节点的插入链（通道条 / Freeverb / 卷积标量），因此
+    ///   只有节点在计划里、且参数名有落点（`device_param_lane_is_applicable`）才算
+    ///   “会被应用”（`#266`/`#267`/`#293`）。
     #[must_use]
     pub fn from_project(
         project: &YebanProjectV1,
@@ -1714,8 +1715,9 @@ impl AutomationReport {
             "evaluator": "YebanProjectV1::automation_value_at",
             "targetsSupported": ["TrackVolume", "TrackPan", "SendGain", "DeviceParam"],
             "targetsUnsupported": ["Macro"],
-            // ⭐ `#267`：`DeviceParam` 这一族接了**通道条整组**名字（27 个，含别名）；
-            // 哪些名字有落点必须可读，且**只有一处来源**
+            // ⭐ `#267`/`#293`：`DeviceParam` 这一族接了**插入链能改的标量字段**
+            // （41 个拼写 = 27 通道条 + 6 混响 + 8 卷积，含别名）；哪些名字有落点必须
+            // 可读，且**只有一处来源**
             // （`yeban_render::automation::APPLIED_DEVICE_PARAM_NAMES`）——
             // ⛔ 不让 "DeviceParam 支持了" 这句话被读成 `is_supported_param` 全通。
             "appliedDeviceParamNames": APPLIED_DEVICE_PARAM_NAMES,
@@ -2371,12 +2373,13 @@ pub fn build(
     // "主总线上的设备链不挂"已陈（`#244` 实测点出，此处更正）。实时引擎的逐轨循环
     // 跳过 master 是**另一件事**，不要拿它推这条行为的结论。
     //
-    // ⭐ 任务单 `#266`：有**非恒等** `DeviceParam` 泳道的轨，通道条被**强制实例化**
-    // （`effective_strip` 在全恒等参数下也会返回 `Some`）⇒ 块边界的 `set_params`
-    // 有器件可改。扫描器与 app 的 `--export-wav` 共用同一份（`yeban-render::automation`）。
+    // ⭐ 任务单 `#266`/`#293`：有**非恒等** `DeviceParam` 泳道的轨，对应器件被**强制
+    // 实例化**（通道条：`effective_strip` 在全恒等参数下也返回 `Some`；Freeverb/卷积：
+    // 静态 `wet = 0` 时 `is_active()` 为假，但块边界仍需有器件可改）。扫描器与 app 的
+    // `--export-wav` 共用同一份（`yeban-render::automation`）。
     let device_automations = device_param_automations(project, sample_rate);
-    let forced_strips = forced_strip_tracks(&device_automations);
-    let inserts = project_inserts_with_forced_strips(&project.tracks, sample_rate, &forced_strips);
+    let forced = forced_insert_instances(&device_automations);
+    let inserts = project_inserts_with_forced_instances(&project.tracks, sample_rate, &forced);
     let mut plan = RenderPlan::compile_with_latencies_and_inserts(
         &project.routing_graph,
         project.master_bus_track_id,
@@ -2391,7 +2394,7 @@ pub fn build(
     for automation in send_gain_automations(project, sample_rate).into_values() {
         plan.attach_send_automation(automation);
     }
-    // ⭐ 任务单 `#266`：把每条 `DeviceParam` 泳道接到**该节点的插入链**上。
+    // ⭐ 任务单 `#266`/`#293`：把每条 `DeviceParam` 泳道接到**该节点的插入链**上。
     // 求值（模型唯一入口）、恒等判定与块级落点都在 `yeban-render`；这里只负责“哪些轨”。
     // 恒等泳道也挂（`value_at_block` 返回 `None`，一个参数都不改）。
     for automation in device_automations.into_values().flatten() {

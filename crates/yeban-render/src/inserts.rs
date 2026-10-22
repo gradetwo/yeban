@@ -76,16 +76,26 @@
 //! **不挂运行态**，`render_node` 整段跳过 ⇒ 输出与接线前逐位相同（`C0` 口径）。
 //! 设备写了 `eq_enabled: 0` / `reverb_wet: 0` ⇒ 链里的该级为 `None` ⇒ 同样整级跳过
 //! （器件状态**不推进**，与 `Reverb::is_active` / `ConvolutionReverb::is_active` 同口径）。
+//! 例外是 §3.1 的强制实例化：有**非恒等**泳道时该族器件仍会被建出来（否则块边界
+//! 没有落点），但恒等泳道下这条默认口径逐字不变。
 //!
-//! ### 3.1 设备参数自动化的**编译期强制实例化**（任务单 `#266`）
+//! ### 3.1 设备参数自动化的**编译期强制实例化**（任务单 `#266`/`#293`）
 //!
-//! 一条 `DeviceParam` 泳道（`#266` 只接 `output_gain_db`；`#267` 接通道条整组）要改的是**通道条器件的
-//! 参数**，不是增益乘子。若静态参数恰好是"全恒等"（`0 dB` ＋ 三级全关），
-//! [`InsertChain::effective_strip`] 会返回 `None` ⇒ 编译期根本没有器件可改。
-//! 因此调用方在**编译计划之前**用 [`project_inserts_with_forced_strips`] 声明
-//! "本轨有非恒等的设备参数泳道" ⇒ 该轨的通道条被**强制实例化**（参数取投影值）。
+//! 一条 `DeviceParam` 泳道（`#266` 只接 `output_gain_db`；`#267` 接通道条整组；
+//! `#293` 接 Freeverb 与卷积的标量字段）要改的是**器件的参数**，不是增益乘子。
+//!
+//! - **通道条**：若静态参数恰好是"全恒等"（`0 dB` ＋ 三级全关），
+//!   [`InsertChain::effective_strip`] 会返回 `None` ⇒ 编译期根本没有器件可改。
+//!   因此调用方在**编译计划之前**用 [`ForcedInsertInstances::strip`] 声明"本轨有非恒等
+//!   的通道条泳道" ⇒ 该轨的通道条被**强制实例化**（参数取投影值）。
+//! - **Freeverb / 卷积**：静态 `reverb_wet: 0` / `conv_wet: 0` 时，投影里的器件
+//!   `is_active()` 为假，[`InsertRuntime::new`] 会把它丢掉 ⇒ 一条非恒等泳道会
+//!   `attach` 成功、被报成 applied，却**静默无效**。因此 [`ForcedInsertInstances::reverb`]
+//!   / [`ForcedInsertInstances::convolution`] 让运行态仍然建出器件（IR 仍是构造期烘好的
+//!   那一份；`set_params` 零分配）。
+//!
 //! 恒等泳道（无点 / `read_enabled:false` / 处处等于静态值）**不**强实例化 ⇒ 产物
-//! 与没有泳道逐字节相同。
+//! 与没有泳道逐字节相同。三族**分开**置位：混响泳道不会白实例化一条恒等通道条。
 //!
 //! ## 4. 音频线程边界
 //!
@@ -95,7 +105,10 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use yeban_dsp::channel_strip::{ChannelStrip, ChannelStripParams};
-use yeban_dsp::convolution_reverb::{ConvolutionReverb, ConvolutionReverbParams};
+use yeban_dsp::convolution_reverb::{
+    ConvolutionReverb, ConvolutionReverbParams, MAX_IR_GAIN_DB, MAX_PRE_DELAY_SECONDS,
+    MIN_IR_GAIN_DB,
+};
 use yeban_dsp::noise::Rng;
 use yeban_dsp::reverb::{Reverb, ReverbParams};
 use yeban_dsp::shaping::EqParams;
@@ -126,6 +139,14 @@ pub const fn convolution_ir_frames(sample_rate: u32) -> usize {
     let frames = sample_rate as usize / CONV_IR_SAMPLE_RATE_DIVISOR;
     if frames == 0 { 1 } else { frames }
 }
+
+/// Freeverb 预延迟的上界（秒），与 `yeban_dsp::reverb::Reverb::set_params` 里的
+/// `0.1` **同值**。
+///
+/// ⚠ 那一侧只在函数体里写常量、没有 `pub` 常量可给，因此这里只能镜像；镜像
+/// 由 `reverb_field_clamp_is_the_device_clamp` 用**真实器件**的网格对账钉住
+/// （⛔ 不是一份会静默漂移的第二套钳制）。
+const REVERB_MAX_PREDELAY_S: f32 = 0.1;
 
 /// 构造期合成一条单声道 IR：白噪声 × 指数衰减包络，再峰值归一化。
 ///
@@ -197,6 +218,16 @@ pub struct InsertChain {
     /// （`0 dB` ＋ 三级全关，[`Self::effective_strip`] 本来会返回 `None`），也必须有
     /// 一台器件让块边界的 `set_params` 有落点。恒等泳道**不**置这一位。
     force_strip: bool,
+    /// **编译期强制实例化 Freeverb**（`#293`）。
+    ///
+    /// `true` = 本轨有**非恒等**的混响 `DeviceParam` 泳道。投影里 `reverb` 已经是
+    /// `Some`（泳道目标的那个参数名就是 `reverb_of` 的来源），但若静态值是
+    /// `reverb_wet: 0`，[`InsertRuntime::new`] 会因 `is_active()` 为假把器件丢掉 ⇒
+    /// 块边界没有东西可改（“报 applied 却静默无效”）。这一位让运行态仍然建出器件。
+    force_reverb: bool,
+    /// **编译期强制实例化卷积混响**（`#293`）。与 [`Self::force_reverb`] 同理：
+    /// `conv_wet: 0` 的静态链会让 `InsertRuntime` 丢掉器件。
+    force_convolution: bool,
 }
 
 impl InsertChain {
@@ -208,6 +239,8 @@ impl InsertChain {
             reverb: None,
             convolution: None,
             force_strip: false,
+            force_reverb: false,
+            force_convolution: false,
         }
     }
 
@@ -247,16 +280,32 @@ impl InsertChain {
             reverb,
             convolution,
             force_strip: false,
+            force_reverb: false,
+            force_convolution: false,
         }
     }
 
     /// 置"强制实例化通道条"位（任务单 `#266`；见模块头 §3.1）。
     ///
     /// 调用方在**编译渲染计划之前**按"本轨有没有非恒等的设备参数泳道"设置它；
-    /// `project_inserts_with_forced_strips` 是唯一的生产调用者。
+    /// `project_inserts_with_forced_instances` 是唯一的生产调用者。
     #[must_use]
     pub const fn with_forced_strip(mut self, force: bool) -> Self {
         self.force_strip = force;
+        self
+    }
+
+    /// 置"强制实例化 Freeverb"位（任务单 `#293`）。见 [`Self::force_reverb`]。
+    #[must_use]
+    pub const fn with_forced_reverb(mut self, force: bool) -> Self {
+        self.force_reverb = force;
+        self
+    }
+
+    /// 置"强制实例化卷积混响"位（任务单 `#293`）。见 [`Self::force_convolution`]。
+    #[must_use]
+    pub const fn with_forced_convolution(mut self, force: bool) -> Self {
+        self.force_convolution = force;
         self
     }
 
@@ -264,6 +313,18 @@ impl InsertChain {
     #[must_use]
     pub const fn is_forced_strip(&self) -> bool {
         self.force_strip
+    }
+
+    /// 本链是否被编译期强制实例化了 Freeverb（读数用）。
+    #[must_use]
+    pub const fn is_forced_reverb(&self) -> bool {
+        self.force_reverb
+    }
+
+    /// 本链是否被编译期强制实例化了卷积混响（读数用）。
+    #[must_use]
+    pub const fn is_forced_convolution(&self) -> bool {
+        self.force_convolution
     }
 
     /// 本链是否为空（没有任何**离线会执行**的器件）。
@@ -343,26 +404,49 @@ pub fn project_inserts(
     tracks: &BTreeMap<EntityId, TrackV3>,
     sample_rate: u32,
 ) -> BTreeMap<EntityId, InsertChain> {
-    project_inserts_with_forced_strips(tracks, sample_rate, &BTreeSet::new())
+    project_inserts_with_forced_instances(tracks, sample_rate, &ForcedInsertInstances::default())
 }
 
-/// 与 [`project_inserts`] 相同，但给 `forced_strip` 里的每条轨**强制实例化通道条**
-/// （任务单 `#266`；理由见模块头 §3.1）。
+/// 编译期强制实例化的**按器件族**集合（任务单 `#293`；`#266` 的通道条是其中一族）。
 ///
-/// `forced_strip` 由 `yeban_render::automation::forced_strip_tracks` 从
-/// "非恒等的 `DeviceParam` 泳道"算出来 —— 两个导出（MCP / app）用**同一份**扫描器。
-/// 空集等价于 [`project_inserts`]（逐字节不退化）。
+/// 由 `yeban_render::automation::forced_insert_instances` 从“非恒等的 `DeviceParam`
+/// 泳道”算出来 —— 两个导出（MCP / app）用**同一份**扫描器。空集等价于
+/// [`project_inserts`]（逐字节不退化）。
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ForcedInsertInstances {
+    /// 需要强制实例化通道条的轨。
+    pub strip: BTreeSet<EntityId>,
+    /// 需要强制实例化 Freeverb 的轨。
+    pub reverb: BTreeSet<EntityId>,
+    /// 需要强制实例化卷积混响的轨。
+    pub convolution: BTreeSet<EntityId>,
+}
+
+impl ForcedInsertInstances {
+    /// 三族都空。
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.strip.is_empty() && self.reverb.is_empty() && self.convolution.is_empty()
+    }
+}
+
+/// 与 [`project_inserts`] 相同，但按 [`ForcedInsertInstances`] **强制实例化**对应器件。
+///
+/// 理由见模块头 §3.1（通道条）与本单 `#293`（混响/卷积的 `wet = 0` 静态链）：
+/// 恒等泳道**不**进集合 ⇒ 产物与没有泳道逐字节相同。
 #[must_use]
-pub fn project_inserts_with_forced_strips(
+pub fn project_inserts_with_forced_instances(
     tracks: &BTreeMap<EntityId, TrackV3>,
     sample_rate: u32,
-    forced_strip: &BTreeSet<EntityId>,
+    forced: &ForcedInsertInstances,
 ) -> BTreeMap<EntityId, InsertChain> {
     tracks
         .iter()
         .filter_map(|(&id, track)| {
             let chain = InsertChain::from_devices(&track.devices, sample_rate)
-                .with_forced_strip(forced_strip.contains(&id));
+                .with_forced_strip(forced.strip.contains(&id))
+                .with_forced_reverb(forced.reverb.contains(&id))
+                .with_forced_convolution(forced.convolution.contains(&id));
             if chain.is_empty() {
                 None
             } else {
@@ -370,6 +454,24 @@ pub fn project_inserts_with_forced_strips(
             }
         })
         .collect()
+}
+
+/// 与 [`project_inserts`] 相同，但给 `forced_strip` 里的每条轨**强制实例化通道条**
+/// （任务单 `#266`；理由见模块头 §3.1）。
+///
+/// 这是 [`project_inserts_with_forced_instances`] 的**只含通道条**的包装：保留它
+/// 是为了既有调用点/判据的签名不变；混响与卷积的强制位由新函数承担。
+#[must_use]
+pub fn project_inserts_with_forced_strips(
+    tracks: &BTreeMap<EntityId, TrackV3>,
+    sample_rate: u32,
+    forced_strip: &BTreeSet<EntityId>,
+) -> BTreeMap<EntityId, InsertChain> {
+    let forced = ForcedInsertInstances {
+        strip: forced_strip.clone(),
+        ..ForcedInsertInstances::default()
+    };
+    project_inserts_with_forced_instances(tracks, sample_rate, &forced)
 }
 
 /// 本轨是否仍有**离线路径没有消费**的设备参数（MCP 的 `deviceChainDsp` 登记口径）。
@@ -403,59 +505,15 @@ pub fn track_has_unhandled_dsp(track: &TrackV3) -> bool {
 
 /// 本切片**消费**的参数名（小写）全集。
 ///
-/// 刻意**不含**：压缩的七个名字（`threshold*` / `ratio` / `knee*` / `detector*` /
-/// `attack*` / `release*` / `makeup*`）与 `reverb_mix` / `reverb_width`。压缩与单声道
-/// 检波口径绑定（§1）；后两个名字引擎同样不认。写这些名字的设备会被
-/// [`track_has_unhandled_dsp`] 如实登记。
+/// 它**不是**另一张表：名字来自 [`DeviceParamField::from_name`]（通道条 / 混响 /
+/// 卷积标量的三张拼写表）＋ 三个**构造期** IR 形状名字（`conv_ir_decay*` /
+/// `conv_ir_seed`，静态投影会消费它们，但自动化不落点）。刻意**不含**压缩的七个
+/// 名字（`threshold*` / `ratio` / `knee*` / `detector*` / `attack*` / `release*` /
+/// `makeup*`）与 `reverb_mix` / `reverb_width`：压缩与单声道检波口径绑定（§1）；
+/// 后两个名字引擎同样不认。写这些名字的设备会被 [`track_has_unhandled_dsp`] 如实登记。
 fn is_supported_param(name: &str) -> bool {
-    matches!(
-        name,
-        // 通道条：增益 / 级开关 / EQ / 滤波（引擎 insert.rs 的 StripProjection 同集）。
-        "input_gain_db"
-            | "input_gain"
-            | "trim_db"
-            | "output_gain_db"
-            | "output_gain"
-            | "fader_db"
-            | "filter_enabled"
-            | "cutoff_hz"
-            | "resonance"
-            | "filter_resonance"
-            | "drive"
-            | "filter_drive"
-            | "eq_enabled"
-            | "eq_low_gain"
-            | "low_gain"
-            | "eq_low_freq"
-            | "low_freq"
-            | "eq_mid_gain"
-            | "mid_gain"
-            | "eq_mid_freq"
-            | "mid_freq"
-            | "eq_mid_q"
-            | "mid_q"
-            | "eq_high_gain"
-            | "high_gain"
-            | "eq_high_freq"
-            | "high_freq"
-            | "reverb_size"
-            | "reverb_damp"
-            | "reverb_wet"
-            | "reverb_wet_mix"
-            | "reverb_predelay"
-            | "reverb_predelay_s"
-            | "conv_predelay_s"
-            | "conv_pre_delay_s"
-            | "conv_predelay"
-            | "conv_dry"
-            | "conv_wet"
-            | "conv_wet_mix"
-            | "conv_ir_gain_db"
-            | "conv_ir_gain"
-            | "conv_ir_decay_s"
-            | "conv_ir_decay"
-            | "conv_ir_seed"
-    )
+    DeviceParamField::from_name(name).is_some()
+        || matches!(name, "conv_ir_decay_s" | "conv_ir_decay" | "conv_ir_seed")
 }
 
 /// 本轨通道条的**来源设备下标**：`from_devices` 的"首个含已识别通道条名字的设备"规则。
@@ -480,6 +538,41 @@ pub fn strip_source_params(track: &TrackV3) -> Option<ChannelStripParams> {
     strip_of(&track.devices[slot]).map(ChannelStripParams::sanitised)
 }
 
+/// 本轨 **Freeverb 来源设备**的下标（`from_devices` 的“首个含已识别混响名字的设备”）。
+///
+/// 与 [`strip_source_slot`] 同一条规则；自动化只能落在这一台上，指向别的下标
+/// 那个参数**不是**进 DSP 的那一份。
+#[must_use]
+pub fn reverb_source_slot(track: &TrackV3) -> Option<usize> {
+    track.devices.iter().position(|device| {
+        !device.bypassed && device.kind == DeviceKind::InternalEffect && reverb_of(device).is_some()
+    })
+}
+
+/// 本轨 Freeverb **来源设备**的投影参数（未 sanitised；器件 `set_params` 再钳制）。
+#[must_use]
+pub fn reverb_source_params(track: &TrackV3) -> Option<ReverbParams> {
+    let slot = reverb_source_slot(track)?;
+    reverb_of(&track.devices[slot])
+}
+
+/// 本轨 **卷积混响来源设备**的下标（`from_devices` 的“首个含已识别卷积名字的设备”）。
+#[must_use]
+pub fn convolution_source_slot(track: &TrackV3) -> Option<usize> {
+    track.devices.iter().position(|device| {
+        !device.bypassed
+            && device.kind == DeviceKind::InternalEffect
+            && convolution_projection(device).is_some()
+    })
+}
+
+/// 本轨卷积混响**来源设备**的四个标量参数（不合成 IR；IR 形状由静态投影烘）。
+#[must_use]
+pub fn convolution_source_params(track: &TrackV3) -> Option<ConvolutionReverbParams> {
+    let slot = convolution_source_slot(track)?;
+    convolution_projection(&track.devices[slot]).map(|(params, _decay_s, _seed)| params)
+}
+
 /// 通道条**实际会用的**输出增益值（`dB`）—— 与器件内部同一次钳制
 /// （[`ChannelStripParams::sanitised`]，非有限值归 `0 dB`）。
 ///
@@ -501,9 +594,10 @@ pub fn sanitised_output_gain_db(value: f32) -> f32 {
 ///   `release_s` / `makeup_db` 与 `compressor_enabled`）：离线侧整级不执行（§1），
 ///   改它不会改一个字节 —— 接上就是假话。它们的名字也不在 [`is_supported_param`] 里，
 ///   因此 [`track_has_unhandled_dsp`] 仍会登记 `deviceChainDsp`；
-/// - **混响 / 卷积**（`reverb_*` / `conv_*`）：那是**构造期**参数，改它要重新分配
-///   延迟线 / 重新合成 IR（[`ConvolutionPlan`] 里已烘好一条 IR），不是
-///   `ChannelStrip::set_params` 能在块边界改的标量；
+/// - **混响 / 卷积**（`reverb_*` / `conv_*`）：它们不是**通道条**字段，而是
+///   [`ReverbField`] / [`ConvolutionField`] 的落点（`#293`）。其中卷积的 IR 形状
+///   （`conv_ir_decay*` / `conv_ir_seed`）是构造期烘焙、不可自动化；其余标量由对应
+///   器件的 `set_params` 在块边界改（⛔ 不是 `ChannelStrip::set_params`）；
 /// - 未知旋钮。
 ///
 /// ## 单位（原生绝对值，⛔ 不归一化）
@@ -695,6 +789,264 @@ impl StripField {
         let mut params = ChannelStripParams::DEFAULT;
         self.store(&mut params, value);
         self.read(&params.sanitised())
+    }
+}
+
+/// Freeverb 上**可被 `DeviceParam` 自动化落点**的字段。
+///
+/// 与 `reverb_of` 的静态投影**同一张拼写表**（[`Self::SPELLINGS`]）：静态投影与
+/// 块边界自动化读的是同一组名字，⛔ 不写第二份。刻意**不含** `reverb_mix` /
+/// `reverb_width`（与引擎 `ReverbProjection::apply` 同口径，那两个名字**不认**）。
+///
+/// 四个字段都是器件 `Reverb::set_params` 的标量入参；该函数文档承诺**零分配、可逐块**
+/// ⇒ 块边界自动化不需要重新分配延迟线（`set_sample_rate` 才是分配入口）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum ReverbField {
+    /// 衰减长度（0..1）。`reverb_size`。
+    Size,
+    /// 尾巴高频阻尼（0..1）。`reverb_damp`。
+    Damp,
+    /// 湿/干平衡（0..1）。`reverb_wet` / `reverb_wet_mix`。
+    Wet,
+    /// 湿路预延迟（秒）。`reverb_predelay` / `reverb_predelay_s`。
+    Predelay,
+}
+
+impl ReverbField {
+    /// 全部字段。
+    pub const ALL: &'static [Self] = &[Self::Size, Self::Damp, Self::Wet, Self::Predelay];
+
+    /// **全部拼写** → 字段（`6` 条 = `4` 个字段）。
+    pub const SPELLINGS: &'static [(&'static str, Self)] = &[
+        ("reverb_size", Self::Size),
+        ("reverb_damp", Self::Damp),
+        ("reverb_wet", Self::Wet),
+        ("reverb_wet_mix", Self::Wet),
+        ("reverb_predelay", Self::Predelay),
+        ("reverb_predelay_s", Self::Predelay),
+    ];
+
+    /// 名字 → 字段（大小写不敏感）。
+    #[must_use]
+    pub fn from_name(name: &str) -> Option<Self> {
+        Self::SPELLINGS
+            .iter()
+            .find(|(spelling, _)| name.eq_ignore_ascii_case(spelling))
+            .map(|(_, field)| *field)
+    }
+
+    /// 规范名。
+    #[must_use]
+    pub const fn canonical_name(self) -> &'static str {
+        match self {
+            Self::Size => "reverb_size",
+            Self::Damp => "reverb_damp",
+            Self::Wet => "reverb_wet",
+            Self::Predelay => "reverb_predelay_s",
+        }
+    }
+
+    /// 从投影参数里读这个字段。
+    #[must_use]
+    pub fn read(self, params: &ReverbParams) -> f32 {
+        match self {
+            Self::Size => params.size,
+            Self::Damp => params.damp,
+            Self::Wet => params.mix,
+            Self::Predelay => params.predelay,
+        }
+    }
+
+    /// 把**原生绝对值**写进投影参数（⛔ 不在这里钳制：钳制在器件的 `set_params`）。
+    pub fn store(self, params: &mut ReverbParams, value: f32) {
+        match self {
+            Self::Size => params.size = value,
+            Self::Damp => params.damp = value,
+            Self::Wet => params.mix = value,
+            Self::Predelay => params.predelay = value,
+        }
+    }
+
+    /// 与 `Reverb::set_params` **同一次**钳制/回落（只给恒等判定用）。
+    ///
+    /// 非有限值：`size` / `damp` / `mix` 回落到 [`ReverbParams::default`] 的对应值，
+    /// `predelay` 回落到 `0.0`（与器件逐字一致）。由真实器件的网格判据钉住。
+    #[must_use]
+    pub fn sanitise(self, value: f32) -> f32 {
+        let fallback = ReverbParams::default();
+        let finite = |value: f32, fallback: f32| {
+            if value.is_finite() { value } else { fallback }
+        };
+        match self {
+            Self::Size => finite(value, fallback.size).clamp(0.0, 1.0),
+            Self::Damp => finite(value, fallback.damp).clamp(0.0, 1.0),
+            Self::Wet => finite(value, fallback.mix).clamp(0.0, 1.0),
+            Self::Predelay => finite(value, 0.0).clamp(0.0, REVERB_MAX_PREDELAY_S),
+        }
+    }
+}
+
+/// 卷积混响上**可被 `DeviceParam` 自动化落点**的**标量**字段。
+///
+/// 刻意**不含** IR 形状（`conv_ir_decay_s` / `conv_ir_decay` / `conv_ir_seed`）：
+/// 那三个是**构造期烘焙**，换值要重新合成 IR 并走 `set_impulse_response`
+/// （`yeban-dsp` 文档逐字“分配入口之一”）⇒ 不是块边界能改的标量。
+///
+/// 四个字段都是 `ConvolutionReverb::set_params` 的入参；该函数文档承诺**零分配、
+/// 可以逐块调用** ⇒ 块边界自动化不需要重烘 IR。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum ConvolutionField {
+    /// 湿路预延迟（秒，0..0.1）。`conv_predelay*`。
+    PreDelay,
+    /// 干路电平（0..1）。`conv_dry`。
+    Dry,
+    /// 湿路电平（0..1）。`conv_wet` / `conv_wet_mix`。
+    Wet,
+    /// IR 增益（dB，−60..+24）。`conv_ir_gain_db` / `conv_ir_gain`。
+    IrGainDb,
+}
+
+impl ConvolutionField {
+    /// 全部字段。
+    pub const ALL: &'static [Self] = &[Self::PreDelay, Self::Dry, Self::Wet, Self::IrGainDb];
+
+    /// **全部拼写** → 字段（`8` 条 = `4` 个字段）。
+    pub const SPELLINGS: &'static [(&'static str, Self)] = &[
+        ("conv_predelay_s", Self::PreDelay),
+        ("conv_pre_delay_s", Self::PreDelay),
+        ("conv_predelay", Self::PreDelay),
+        ("conv_dry", Self::Dry),
+        ("conv_wet", Self::Wet),
+        ("conv_wet_mix", Self::Wet),
+        ("conv_ir_gain_db", Self::IrGainDb),
+        ("conv_ir_gain", Self::IrGainDb),
+    ];
+
+    /// 名字 → 字段（大小写不敏感）。
+    #[must_use]
+    pub fn from_name(name: &str) -> Option<Self> {
+        Self::SPELLINGS
+            .iter()
+            .find(|(spelling, _)| name.eq_ignore_ascii_case(spelling))
+            .map(|(_, field)| *field)
+    }
+
+    /// 规范名。
+    #[must_use]
+    pub const fn canonical_name(self) -> &'static str {
+        match self {
+            Self::PreDelay => "conv_predelay_s",
+            Self::Dry => "conv_dry",
+            Self::Wet => "conv_wet",
+            Self::IrGainDb => "conv_ir_gain_db",
+        }
+    }
+
+    /// 从投影参数里读这个字段。
+    #[must_use]
+    pub fn read(self, params: &ConvolutionReverbParams) -> f32 {
+        match self {
+            Self::PreDelay => params.pre_delay_s,
+            Self::Dry => params.dry,
+            Self::Wet => params.wet,
+            Self::IrGainDb => params.ir_gain_db,
+        }
+    }
+
+    /// 把**原生绝对值**写进投影参数（⛔ 钳制在器件的 `set_params`）。
+    pub fn store(self, params: &mut ConvolutionReverbParams, value: f32) {
+        match self {
+            Self::PreDelay => params.pre_delay_s = value,
+            Self::Dry => params.dry = value,
+            Self::Wet => params.wet = value,
+            Self::IrGainDb => params.ir_gain_db = value,
+        }
+    }
+
+    /// 与 `ConvolutionReverb::set_params` **同一次**钳制/回落（只给恒等判定用）。
+    ///
+    /// 上下界直接引用 `yeban-dsp` 的 `pub` 常量（`MAX_PRE_DELAY_SECONDS` /
+    /// `MIN_IR_GAIN_DB` / `MAX_IR_GAIN_DB`），⛔ 不手抄数字。
+    #[must_use]
+    pub fn sanitise(self, value: f32) -> f32 {
+        let fallback = ConvolutionReverbParams::default();
+        let finite = |value: f32, fallback: f32| {
+            if value.is_finite() { value } else { fallback }
+        };
+        match self {
+            Self::PreDelay => finite(value, fallback.pre_delay_s).clamp(0.0, MAX_PRE_DELAY_SECONDS),
+            Self::Dry => finite(value, fallback.dry).clamp(0.0, 1.0),
+            Self::Wet => finite(value, fallback.wet).clamp(0.0, 1.0),
+            Self::IrGainDb => {
+                finite(value, fallback.ir_gain_db).clamp(MIN_IR_GAIN_DB, MAX_IR_GAIN_DB)
+            }
+        }
+    }
+}
+
+/// 一条 `DeviceParam` 泳道在离线插入链上的**落点**：器件族 ＋ 字段。
+///
+/// [`Self::from_name`] 是“哪个名字有落点”的**唯一**判定处：静态投影
+/// （`strip_of` / `reverb_of` / `convolution_of`）与块边界自动化都从这张表出发。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum DeviceParamField {
+    /// 通道条字段。
+    Strip(StripField),
+    /// Freeverb 标量字段。
+    Reverb(ReverbField),
+    /// 卷积混响**标量**字段。
+    Convolution(ConvolutionField),
+}
+
+/// 强制实例化按**器件族**分开。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum DeviceParamFamily {
+    /// 通道条。
+    Strip,
+    /// Freeverb。
+    Reverb,
+    /// 卷积混响。
+    Convolution,
+}
+
+impl DeviceParamField {
+    /// 名字 → 落点（大小写不敏感）。顺序：通道条 → 混响 → 卷积。
+    #[must_use]
+    pub fn from_name(name: &str) -> Option<Self> {
+        StripField::from_name(name)
+            .map(Self::Strip)
+            .or_else(|| ReverbField::from_name(name).map(Self::Reverb))
+            .or_else(|| ConvolutionField::from_name(name).map(Self::Convolution))
+    }
+
+    /// 规范名。
+    #[must_use]
+    pub const fn canonical_name(self) -> &'static str {
+        match self {
+            Self::Strip(field) => field.canonical_name(),
+            Self::Reverb(field) => field.canonical_name(),
+            Self::Convolution(field) => field.canonical_name(),
+        }
+    }
+
+    /// 器件族（强制实例化用）。
+    #[must_use]
+    pub const fn family(self) -> DeviceParamFamily {
+        match self {
+            Self::Strip(_) => DeviceParamFamily::Strip,
+            Self::Reverb(_) => DeviceParamFamily::Reverb,
+            Self::Convolution(_) => DeviceParamFamily::Convolution,
+        }
+    }
+
+    /// 与器件**同一次**钳制/回落（只给恒等判定用）。
+    #[must_use]
+    pub fn sanitise(self, value: f32) -> f32 {
+        match self {
+            Self::Strip(field) => field.sanitise(value),
+            Self::Reverb(field) => field.sanitise(value),
+            Self::Convolution(field) => field.sanitise(value),
+        }
     }
 }
 
@@ -1004,39 +1356,29 @@ impl StripProjection {
 
 /// 单台设备 → 混响参数（`None` = 本设备不是混响来源）。
 ///
-/// ⚠ `reverb_mix` / `reverb_width` **刻意不认**：与引擎的 `ReverbProjection::apply`
-/// 逐字同口径（这两个名字属于"单声道插入点"那一组，见引擎模块文档 §8.1）。
+/// 名字表是 [`ReverbField::SPELLINGS`]（与自动化**同一张**）；⚠ `reverb_mix` /
+/// `reverb_width` **刻意不认**：与引擎的 `ReverbProjection::apply` 逐字同口径
+/// （这两个名字属于"单声道插入点"那一组，见引擎模块文档 §8.1）。
 fn reverb_of(device: &DeviceDefinition) -> Option<ReverbParams> {
     let mut params = ReverbParams::default();
     let mut seen = false;
     for param in &device.params {
-        let name = param.name.to_ascii_lowercase();
-        let value = param.value;
-        match name.as_str() {
-            "reverb_size" => {
-                params.size = value;
-                seen = true;
-            }
-            "reverb_damp" => {
-                params.damp = value;
-                seen = true;
-            }
-            "reverb_wet" | "reverb_wet_mix" => {
-                params.mix = value;
-                seen = true;
-            }
-            "reverb_predelay" | "reverb_predelay_s" => {
-                params.predelay = value;
-                seen = true;
-            }
-            _ => {}
+        if let Some(field) = ReverbField::from_name(&param.name) {
+            field.store(&mut params, param.value);
+            seen = true;
         }
     }
     if seen { Some(params) } else { None }
 }
 
-/// 单台设备 → 卷积计划（`None` = 本设备不是卷积来源）。
-fn convolution_of(device: &DeviceDefinition, sample_rate: u32) -> Option<ConvolutionPlan> {
+/// 单台设备 → 卷积的**投影中间态**：`(标量参数, IR 衰减秒, IR 种子)`。
+///
+/// 与 [`convolution_of`] 的识别规则**同一份**；单独拆出来是为了让“来源设备”判定与
+/// 标量参数读取**不用重烘 IR**（[`convolution_source_slot`] /
+/// [`convolution_source_params`]）。`None` = 本设备不是卷积来源。
+fn convolution_projection(
+    device: &DeviceDefinition,
+) -> Option<(ConvolutionReverbParams, f32, u32)> {
     let mut params = ConvolutionReverbParams::default();
     let mut decay_s = CONV_IR_DEFAULT_DECAY_S;
     let mut seed = CONV_IR_DEFAULT_SEED as u32;
@@ -1044,23 +1386,12 @@ fn convolution_of(device: &DeviceDefinition, sample_rate: u32) -> Option<Convolu
     for param in &device.params {
         let name = param.name.to_ascii_lowercase();
         let value = param.value;
+        if let Some(field) = ConvolutionField::from_name(&name) {
+            field.store(&mut params, value);
+            seen = true;
+            continue;
+        }
         match name.as_str() {
-            "conv_predelay_s" | "conv_pre_delay_s" | "conv_predelay" => {
-                params.pre_delay_s = value;
-                seen = true;
-            }
-            "conv_dry" => {
-                params.dry = value;
-                seen = true;
-            }
-            "conv_wet" | "conv_wet_mix" => {
-                params.wet = value;
-                seen = true;
-            }
-            "conv_ir_gain_db" | "conv_ir_gain" => {
-                params.ir_gain_db = value;
-                seen = true;
-            }
             "conv_ir_decay_s" | "conv_ir_decay" => {
                 decay_s = value;
                 seen = true;
@@ -1072,9 +1403,16 @@ fn convolution_of(device: &DeviceDefinition, sample_rate: u32) -> Option<Convolu
             _ => {}
         }
     }
-    if !seen {
-        return None;
+    if seen {
+        Some((params, decay_s, seed))
+    } else {
+        None
     }
+}
+
+/// 单台设备 → 卷积计划（`None` = 本设备不是卷积来源）。
+fn convolution_of(device: &DeviceDefinition, sample_rate: u32) -> Option<ConvolutionPlan> {
+    let (params, decay_s, seed) = convolution_projection(device)?;
     let decay_s = if decay_s.is_finite() {
         decay_s.clamp(CONV_IR_MIN_DECAY_S, CONV_IR_MAX_DECAY_S)
     } else {
@@ -1119,7 +1457,14 @@ impl InsertRuntime {
             let mut state = Reverb::new();
             state.set_sample_rate(sample_rate_f32);
             state.set_params(params);
-            if state.is_active() { Some(state) } else { None }
+            // ⭐ `#293`：静态 `reverb_wet: 0` 时器件 `is_active()` 为假，但一条
+            // 非恒等泳道会在块边界把它拉起来 ⇒ 强制位为真时必须保留这个实例，
+            // 否则“报 applied、却静默无效”。
+            if state.is_active() || chain.is_forced_reverb() {
+                Some(state)
+            } else {
+                None
+            }
         });
         let convolution = chain.convolution.as_ref().and_then(|plan| {
             let mut state = ConvolutionReverb::new();
@@ -1131,7 +1476,12 @@ impl InsertRuntime {
                 return None;
             }
             state.set_params(plan.params());
-            if state.is_active() { Some(state) } else { None }
+            // ⭐ `#293`：与 Freeverb 同一条缝（静态 `conv_wet: 0`）。
+            if state.is_active() || chain.is_forced_convolution() {
+                Some(state)
+            } else {
+                None
+            }
         });
         Self {
             strip,
@@ -1155,23 +1505,43 @@ impl InsertRuntime {
         }
     }
 
-    /// 把一个新的**原生绝对值**交给通道条的某个字段并**重算系数**
-    /// （任务单 `#266` 开一个名字 / `#267` 扩到通道条整组；[`ChannelStrip::set_params`]
-    /// 是唯一入口）。
+    /// 把一个新的**原生绝对值**交给某个插入器件的字段并**重算系数**
+    /// （`#266` 开 `output_gain_db` / `#267` 扩到通道条整组 / `#293` 扩到 Freeverb
+    /// 与卷积的标量字段；`ChannelStrip::set_params` / `Reverb::set_params` /
+    /// `ConvolutionReverb::set_params` 是各自**唯一**入口）。
     ///
-    /// 调用纪律（通道条自己不做平滑，模块头 §4 的器件纪律）：
+    /// 调用纪律（器件自己不做平滑，模块头 §4 的器件纪律）：
     ///
     /// - **只在块边界**调用（自动化块的 128 帧起点）—— 改的是**参数**，⛔ 不是逐样本
     ///   乘一个增益；
-    /// - `ChannelStrip::set_params` **不清状态**（EQ 双二阶 / 滤波器 / 压缩器记忆保留），
-    ///   因此块与块之间没有复位爆音；
-    /// - 写哪个字段由 [`StripField`] 决定（`strip` 为 `None` 时什么都没发生 —— 恒等泳道
-    ///   根本不会走到这里）。
-    pub(crate) fn apply_device_params(&mut self, field: StripField, value: f32) {
-        if let Some(strip) = &mut self.strip {
-            let mut params = strip.params();
-            field.store(&mut params, value);
-            strip.set_params(params);
+    /// - 三个 `set_params` 都**不清状态**（EQ 双二阶 / 滤波器 / 梳状线 / 卷积尾保留），
+    ///   因此块与块之间没有复位爆音；混响/卷积的 `set_params` 的预延迟长度变化会清
+    ///   对应延迟线（器件文档 §6 / §2.2，本单不另做平滑）；
+    /// - 写哪个字段由 [`DeviceParamField`] 决定（对应器件为 `None` 时什么都没发生 ——
+    ///   恒等泳道根本不会走到这里）。
+    pub(crate) fn apply_device_params(&mut self, field: DeviceParamField, value: f32) {
+        match field {
+            DeviceParamField::Strip(field) => {
+                if let Some(strip) = &mut self.strip {
+                    let mut params = strip.params();
+                    field.store(&mut params, value);
+                    strip.set_params(params);
+                }
+            }
+            DeviceParamField::Reverb(field) => {
+                if let Some(reverb) = &mut self.reverb {
+                    let mut params = reverb.params();
+                    field.store(&mut params, value);
+                    reverb.set_params(params);
+                }
+            }
+            DeviceParamField::Convolution(field) => {
+                if let Some(convolution) = &mut self.convolution {
+                    let mut params = convolution.params();
+                    field.store(&mut params, value);
+                    convolution.set_params(params);
+                }
+            }
         }
     }
 
@@ -1258,34 +1628,86 @@ mod tests {
         }
     }
 
-    /// ⭐ `#267` 判据：`APPLIED_DEVICE_PARAM_NAMES` 的**每一个拼写**都投影到
-    /// 它自己那个字段，且恒等判定用的钳制值与器件读数是同一个。
-    ///
-    /// 这条就是"名单 ↔ 投影 ↔ 器件"三者的镜像判据：只改名单（不加 `StripField`
-    /// 分支）⇒ `from_name` 返回 `None` ⇒ 红；只改 `StripProjection::apply`（不扩
-    /// `StripField`）⇒ 投影值读不出来 ⇒ 红。
-    #[test]
-    fn every_applied_name_projects_to_its_own_strip_field() {
-        for &name in crate::automation::APPLIED_DEVICE_PARAM_NAMES {
-            let field = StripField::from_name(name)
-                .unwrap_or_else(|| panic!("名单里的 {name} 必须是通道条字段"));
-            let value = sample(field);
-            let projected = strip_of(&device(&[(name, value)]))
-                .unwrap_or_else(|| panic!("{name}={value} 必须被 strip_of 认出来"))
-                .sanitised();
-            assert_eq!(
-                field.read(&projected).to_bits(),
-                field.sanitise(value).to_bits(),
-                "{name} 的投影值与恒等判定值必须同一个"
-            );
+    /// 每个**设备参数落点**一个“非默认”的样本值：静态投影必须认出它，且落在
+    /// 器件合法域内（这样“投影读数”与“钳制镜像”可以直接按位比）。
+    fn sample_device(field: DeviceParamField) -> f32 {
+        match field {
+            DeviceParamField::Strip(field) => sample(field),
+            DeviceParamField::Reverb(ReverbField::Size | ReverbField::Damp | ReverbField::Wet) => {
+                0.72
+            }
+            DeviceParamField::Reverb(ReverbField::Predelay) => 0.05,
+            DeviceParamField::Convolution(ConvolutionField::PreDelay) => 0.05,
+            DeviceParamField::Convolution(ConvolutionField::Dry | ConvolutionField::Wet) => 0.72,
+            DeviceParamField::Convolution(ConvolutionField::IrGainDb) => -7.5,
         }
     }
 
-    /// 别名与规范名指向**同一个**字段（⛔ 不允许一个别名被投影认、被自动化拒）。
+    /// ⭐ `#267`/`#293` 判据：`APPLIED_DEVICE_PARAM_NAMES` 的**每一个拼写**都投影到
+    /// 它自己那个字段，且恒等判定用的钳制值与**真实器件**读数是同一个。
+    ///
+    /// 这条就是"名单 ↔ 投影 ↔ 器件"三者的镜像判据：只改名单（不加字段表分支）⇒
+    /// `from_name` 返回 `None` ⇒ 红；只改投影（不扩字段表）⇒ 投影值读不出来 ⇒ 红；
+    /// 钳制镜像与器件漂移 ⇒ 红（混响/卷积走的是 `new → set_params → params` 的真实实例）。
+    #[test]
+    fn every_applied_name_projects_to_its_own_field() {
+        for &name in crate::automation::APPLIED_DEVICE_PARAM_NAMES {
+            let field = DeviceParamField::from_name(name)
+                .unwrap_or_else(|| panic!("名单里的 {name} 必须是设备参数字段"));
+            let value = sample_device(field);
+            match field {
+                DeviceParamField::Strip(strip) => {
+                    let projected = strip_of(&device(&[(name, value)]))
+                        .unwrap_or_else(|| panic!("{name}={value} 必须被 strip_of 认出来"))
+                        .sanitised();
+                    assert_eq!(
+                        strip.read(&projected).to_bits(),
+                        strip.sanitise(value).to_bits(),
+                        "{name} 的投影值与恒等判定值必须同一个"
+                    );
+                }
+                DeviceParamField::Reverb(reverb) => {
+                    let projected = reverb_of(&device(&[(name, value)]))
+                        .unwrap_or_else(|| panic!("{name}={value} 必须被 reverb_of 认出来"));
+                    let mut device = Reverb::new();
+                    device.set_sample_rate(48_000.0);
+                    device.set_params(projected);
+                    assert_eq!(
+                        reverb.read(&device.params()).to_bits(),
+                        reverb.sanitise(value).to_bits(),
+                        "{name} 的器件读数与恒等判定值必须同一个"
+                    );
+                }
+                DeviceParamField::Convolution(convolution_field) => {
+                    let (projected, _, _) = convolution_projection(&device(&[(name, value)]))
+                        .unwrap_or_else(|| panic!("{name}={value} 必须被 convolution_of 认出来"));
+                    let mut device = ConvolutionReverb::new();
+                    device.set_sample_rate(48_000.0);
+                    device.set_params(projected);
+                    assert_eq!(
+                        convolution_field.read(&device.params()).to_bits(),
+                        convolution_field.sanitise(value).to_bits(),
+                        "{name} 的器件读数与恒等判定值必须同一个"
+                    );
+                }
+            }
+        }
+    }
+
+    /// 别名与规范名指向**同一个**落点（⛔ 不允许一个别名被投影认、被自动化拒）。
     #[test]
     fn aliases_resolve_to_the_same_field() {
         for field in StripField::ALL {
             assert_eq!(StripField::from_name(field.canonical_name()), Some(*field));
+        }
+        for field in ReverbField::ALL {
+            assert_eq!(ReverbField::from_name(field.canonical_name()), Some(*field));
+        }
+        for field in ConvolutionField::ALL {
+            assert_eq!(
+                ConvolutionField::from_name(field.canonical_name()),
+                Some(*field)
+            );
         }
         for (alias, field) in [
             ("input_gain", StripField::InputGainDb),
@@ -1309,11 +1731,34 @@ mod tests {
                 "大小写不敏感：{alias}"
             );
         }
+        for (alias, field) in [
+            ("reverb_wet_mix", ReverbField::Wet),
+            ("reverb_predelay", ReverbField::Predelay),
+        ] {
+            assert_eq!(
+                DeviceParamField::from_name(alias),
+                Some(DeviceParamField::Reverb(field)),
+                "{alias}"
+            );
+        }
+        for (alias, field) in [
+            ("conv_pre_delay_s", ConvolutionField::PreDelay),
+            ("conv_predelay", ConvolutionField::PreDelay),
+            ("conv_wet_mix", ConvolutionField::Wet),
+            ("conv_ir_gain", ConvolutionField::IrGainDb),
+        ] {
+            assert_eq!(
+                DeviceParamField::from_name(alias),
+                Some(DeviceParamField::Convolution(field)),
+                "{alias}"
+            );
+        }
     }
 
-    /// ⛔ 压缩 / 混响 / 卷积 / 未知名字**不是**通道条字段（它们不在自动化名单里）。
+    /// ⛔ 压缩 / IR 形状 / 未知名字**不是**设备参数落点；混响/卷积标量**不是**
+    /// 通道条字段（但它们有各自的落点）。
     #[test]
-    fn compressor_reverb_and_convolution_names_are_not_strip_fields() {
+    fn non_applied_names_are_not_device_param_fields() {
         for name in [
             "threshold_db",
             "ratio",
@@ -1323,6 +1768,19 @@ mod tests {
             "release_s",
             "makeup_db",
             "compressor_enabled",
+            "conv_ir_decay_s",
+            "conv_ir_decay",
+            "conv_ir_seed",
+            "reverb_mix",
+            "reverb_width",
+            "filter_cutoff_hz",
+            "mix",
+            "",
+        ] {
+            assert_eq!(DeviceParamField::from_name(name), None, "{name}");
+            assert_eq!(StripField::from_name(name), None, "{name}");
+        }
+        for name in [
             "reverb_size",
             "reverb_damp",
             "reverb_wet",
@@ -1331,13 +1789,12 @@ mod tests {
             "conv_dry",
             "conv_wet",
             "conv_ir_gain_db",
-            "conv_ir_decay_s",
-            "conv_ir_seed",
-            "filter_cutoff_hz",
-            "mix",
-            "",
         ] {
-            assert_eq!(StripField::from_name(name), None, "{name}");
+            assert_eq!(StripField::from_name(name), None, "{name} 不是通道条字段");
+            assert!(
+                DeviceParamField::from_name(name).is_some(),
+                "{name} 必须有设备参数落点"
+            );
         }
     }
 
@@ -1363,6 +1820,121 @@ mod tests {
         assert_eq!(StripField::EqEnabled.sanitise(0.0), 0.0);
         assert_eq!(StripField::EqEnabled.sanitise(0.25), 1.0);
         assert_eq!(StripField::EqEnabled.sanitise(-2.0), 1.0);
+    }
+
+    /// ⭐ `#293`：混响字段的钳制镜像必须与**真实器件**逐位一致（含非有限值与越界）。
+    ///
+    /// 这是“⛔ 不是会漂移的第二套钳制”的机械证明：`yeban-dsp` 的 sanitise 是私有的，
+    /// 这里只能镜像；对账对象是 `Reverb::new → set_params → params()` 的真读数。
+    #[test]
+    fn reverb_field_clamp_is_the_device_clamp() {
+        for field in ReverbField::ALL {
+            for value in [
+                f32::NAN,
+                f32::INFINITY,
+                f32::NEG_INFINITY,
+                -1.0,
+                0.0,
+                0.25,
+                0.72,
+                1.0,
+                2.0,
+                f32::MIN,
+                f32::MAX,
+            ] {
+                let mut projected = ReverbParams::default();
+                field.store(&mut projected, value);
+                let mut device = Reverb::new();
+                device.set_sample_rate(48_000.0);
+                device.set_params(projected);
+                assert_eq!(
+                    field.sanitise(value).to_bits(),
+                    field.read(&device.params()).to_bits(),
+                    "{field:?} {value}"
+                );
+            }
+        }
+    }
+
+    /// ⭐ `#293`：卷积标量字段的钳制镜像必须与**真实器件**逐位一致。
+    #[test]
+    fn convolution_field_clamp_is_the_device_clamp() {
+        for field in ConvolutionField::ALL {
+            for value in [
+                f32::NAN,
+                f32::INFINITY,
+                f32::NEG_INFINITY,
+                -1.0,
+                0.0,
+                0.05,
+                0.25,
+                0.75,
+                1.0,
+                2.0,
+                f32::MIN,
+                f32::MAX,
+            ] {
+                let mut projected = ConvolutionReverbParams::default();
+                field.store(&mut projected, value);
+                let mut device = ConvolutionReverb::new();
+                device.set_sample_rate(48_000.0);
+                device.set_params(projected);
+                assert_eq!(
+                    field.sanitise(value).to_bits(),
+                    field.read(&device.params()).to_bits(),
+                    "{field:?} {value}"
+                );
+            }
+        }
+    }
+
+    /// ⭐ `#293` 判据 2（机制层）：静态 `reverb_wet: 0` 的链在**不强制**时**不建**器件；
+    /// 一置 `force_reverb`，运行态就真的有一台 Freeverb 可让块边界改它。
+    ///
+    /// 没有这一位，`attach_device_param_automation` 会成功、MCP 会报 applied，而
+    /// `apply_device_params` 找不到 `self.reverb` ⇒ **静默无效**。
+    #[test]
+    fn forced_reverb_keeps_a_wet_zero_instance_alive() {
+        let chain = InsertChain::from_devices(&[device(&[("reverb_wet", 0.0)])], 48_000);
+        assert!(chain.reverb().is_some(), "静态投影认得 `reverb_wet`");
+        assert!(!chain.is_empty(), "链本身非空");
+        let quiet = InsertRuntime::new(&chain, 48_000, 128);
+        assert!(
+            quiet.reverb.is_none(),
+            "没有强制位 ⇒ 静态 `wet = 0` 仍整级跳过（既有口径）"
+        );
+
+        let forced = chain.with_forced_reverb(true);
+        assert!(forced.is_forced_reverb());
+        let mut runtime = InsertRuntime::new(&forced, 48_000, 128);
+        assert!(
+            runtime.reverb.is_some(),
+            "强制位 ⇒ 运行态必须有器件，否则泳道静默无效"
+        );
+
+        // 真的能改：从 0 拉到 1 之后器件是 active 的。
+        runtime.apply_device_params(DeviceParamField::Reverb(ReverbField::Wet), 1.0);
+        let reverb = runtime.reverb.as_ref().expect("器件");
+        assert_eq!(reverb.params().mix.to_bits(), 1.0f32.to_bits());
+        assert!(reverb.is_active());
+    }
+
+    /// ⭐ `#293` 判据 2（机制层）：卷积同一条缝。
+    #[test]
+    fn forced_convolution_keeps_a_wet_zero_instance_alive() {
+        let chain = InsertChain::from_devices(&[device(&[("conv_wet", 0.0)])], 48_000);
+        assert!(chain.convolution().is_some());
+        let quiet = InsertRuntime::new(&chain, 48_000, 128);
+        assert!(quiet.convolution.is_none(), "静态 `wet = 0` 整级跳过");
+
+        let forced = chain.with_forced_convolution(true);
+        assert!(forced.is_forced_convolution());
+        let mut runtime = InsertRuntime::new(&forced, 48_000, 128);
+        assert!(runtime.convolution.is_some(), "强制位 ⇒ 运行态必须有器件");
+        runtime.apply_device_params(DeviceParamField::Convolution(ConvolutionField::Wet), 1.0);
+        let convolution = runtime.convolution.as_ref().expect("器件");
+        assert_eq!(convolution.params().wet.to_bits(), 1.0f32.to_bits());
+        assert!(convolution.is_active());
     }
 
     /// 强制实例化 + 没有投影来源 ⇒ 器件拿到的就是 [`forced_identity_strip`]
