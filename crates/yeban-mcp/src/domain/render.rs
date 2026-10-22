@@ -422,9 +422,8 @@ use yeban_render::engine_source::{ArmedSfzInput, ArmedSfzSample, EngineTimbre, E
 // 插入链的投影与"是否还有未消费参数"的判据都住在 `yeban-render`：MCP 不复制
 // 第二份白名单（`yeban-engine` 的投影是同一份规则的来源，但 MCP 不能依赖它）。
 use yeban_render::automation::{
-    APPLIED_DEVICE_PARAM_NAMES, TrackGainAutomation, TrackPanAutomation, centered_pan_gains,
-    device_param_automations, device_param_lane_is_applicable, forced_strip_tracks,
-    send_gain_automations,
+    APPLIED_DEVICE_PARAM_NAMES, LaneResidual, TrackGainAutomation, TrackPanAutomation,
+    centered_pan_gains, device_param_automations, forced_strip_tracks, send_gain_automations,
 };
 use yeban_render::inserts::{
     project_inserts_with_forced_strips, resolve_device_param, track_has_unhandled_dsp,
@@ -1616,7 +1615,6 @@ impl AutomationReport {
         rendered_edges: &[EntityId],
         rendered_nodes: &[EntityId],
     ) -> Self {
-        let master = project.master_bus_track_id;
         let mut tracks = Vec::with_capacity(project.tracks.len());
         let mut lanes = 0usize;
         let mut evaluable = 0usize;
@@ -1630,27 +1628,17 @@ impl AutomationReport {
                 if is_evaluable {
                     evaluable += 1;
                 }
-                // 支持的目标与落点：
-                // - `TrackVolume`：源节点（源侧）或主总线（执行后）；
-                // - `SendGain`：这条边在保留子图的入边归约里（`#256`）；
-                // - `TrackPan`：源节点（源输出之后；主总线没有声相落点，`#257`）；
-                // - `DeviceParam`：节点在计划里（插入链落点）且参数名有落点（`#266`／
-                //   `#267`：通道条字段整组；其它名字/旁通设备/非通道条来源设备一律不落点）；
-                // - `Macro` 仍不支持。
-                let supported = match target {
-                    AutomationTarget::TrackVolume { track_id } => {
-                        *track_id == master || source_nodes.contains(track_id)
-                    }
-                    AutomationTarget::SendGain { edge_id, .. } => rendered_edges.contains(edge_id),
-                    AutomationTarget::TrackPan { track_id } => {
-                        *track_id != master && source_nodes.contains(track_id)
-                    }
-                    AutomationTarget::DeviceParam { track_id, .. } => {
-                        rendered_nodes.contains(track_id)
-                            && device_param_lane_is_applicable(project, target)
-                    }
-                    AutomationTarget::Macro { .. } => false,
-                };
+                // 支持的目标与落点判定**只有一份**：
+                // `yeban_render::automation::unsupported_lane_reason`（本层⛔ 不写第二份
+                // match —— `yeban_edit_automation` 的读侧也调同一个函数）。
+                let supported = yeban_render::automation::unsupported_lane_reason(
+                    project,
+                    target,
+                    source_nodes,
+                    rendered_edges,
+                    rendered_nodes,
+                )
+                .is_none();
                 let is_applied = is_evaluable && supported;
                 if is_applied {
                     applied += 1;
@@ -2212,20 +2200,13 @@ pub fn build(
     let latencies = track_latencies(&project.tracks);
     // 3. 探针编译: 用 frames=1 取得"剪枝后的可达子图 + 源节点集合"。
     //    刻意复用渲染器的剪枝/分层逻辑, 而不是在这里复制一份图算法(两份必然漂移)。
-    let probe = RenderOptions::l1(1, MASTER_CHANNELS, sample_rate, project.rng_seed);
-    let probe_plan = RenderPlan::compile_with_latencies(
-        &project.routing_graph,
-        project.master_bus_track_id,
-        probe,
-        &latencies,
-    )
-    .map_err(|error| render_error("渲染计划探针编译", &error))?;
-    let nodes = probe_plan.nodes();
-    let source_nodes: Vec<EntityId> = nodes
-        .iter()
-        .copied()
-        .filter(|node| is_source_node(&probe_plan, *node))
-        .collect();
+    //    ⭐ 同一个探针也服务 `yeban_edit_automation` 的读侧 ⇒ 写侧读数与导出读数
+    //    看到**同一张**保留子图（否则"写时说会应用、导出说不支持"会各判一套）。
+    let probe = probe_subgraph(project, sample_rate)
+        .map_err(|error| render_error("渲染计划探针编译", &error))?;
+    let nodes = probe.nodes;
+    let source_nodes = probe.source_nodes;
+    let rendered_edges = probe.rendered_edges;
     // 4b. 组装音源 + 采集"明确没渲染"的部分 + 得到时间轴末端。
     let mut unsupported: BTreeSet<&'static str> = BTreeSet::new();
     let mut counts: BTreeMap<&'static str, u64> = BTreeMap::new();
@@ -2250,7 +2231,6 @@ pub fn build(
     //      `TrackPan`、计划节点上的 `DeviceParam`（通道条字段整组，`#267`）真的
     //      被应用（见 `TrackSource`、第 9 步、`RenderPlan::attach_send_automation`
     //      与 `RenderPlan::attach_device_param_automation`）。
-    let rendered_edges = probe_plan.edge_ids();
     let automation =
         AutomationReport::from_project(project, &source_nodes, &rendered_edges, &nodes);
     if automation.unsupported > 0 {
@@ -2769,6 +2749,98 @@ pub(super) fn encode_container_without_bext(
 pub(super) fn is_source_node(plan: &RenderPlan, node: EntityId) -> bool {
     plan.bus_reduction_order(node)
         .is_none_or(|inputs| inputs.is_empty())
+}
+
+/// 一次**探针**渲染计划的三个落点视图（不渲染一个样本）。
+///
+/// 这是 `build` 与 `yeban_edit_automation` 的读侧**共用**的探针：两边必须看到
+/// 同一张保留子图，否则"写的时候说会应用"与"导出时说不支持"会各判一套。
+pub(super) struct ProbeSubgraph {
+    /// 保留子图里的全部节点（`RenderPlan::nodes()`）。
+    pub(super) nodes: Vec<EntityId>,
+    /// 其中的源节点（没有入边的节点；主总线也算）。
+    pub(super) source_nodes: Vec<EntityId>,
+    /// 保留子图里的全部边（`RenderPlan::edge_ids()`）。
+    pub(super) rendered_edges: Vec<EntityId>,
+}
+
+/// 编译一次探针计划并取出三个落点视图。
+///
+/// 与 `build` 的探针**同一条**：`track_latencies` + `RenderOptions::l1(1, …)` +
+/// `RenderPlan::compile_with_latencies` ⇒ 剪枝/分层逻辑不复制第二份。
+///
+/// # Errors
+///
+/// 路由图非法 / 主总线不在图里 / PDC 分析失败 —— 与真实导出在**同一处**失败。
+pub(super) fn probe_subgraph(
+    project: &YebanProjectV1,
+    sample_rate: u32,
+) -> Result<ProbeSubgraph, RenderError> {
+    let latencies = track_latencies(&project.tracks);
+    let probe = RenderOptions::l1(1, MASTER_CHANNELS, sample_rate, project.rng_seed);
+    let plan = RenderPlan::compile_with_latencies(
+        &project.routing_graph,
+        project.master_bus_track_id,
+        probe,
+        &latencies,
+    )?;
+    let nodes = plan.nodes();
+    let source_nodes = nodes
+        .iter()
+        .copied()
+        .filter(|node| is_source_node(&plan, *node))
+        .collect();
+    let rendered_edges = plan.edge_ids();
+    Ok(ProbeSubgraph {
+        nodes,
+        source_nodes,
+        rendered_edges,
+    })
+}
+
+/// `yeban_edit_automation` 读侧的**离线落点**读数。
+///
+/// 它复用 `yeban_render::automation::unsupported_lane_reason`（与 `AutomationReport`
+/// 同一份判定）与 [`probe_subgraph`]（与 `build` 同一份探针），⛔ 本层不维护清单。
+pub(super) struct OfflineLaneStatus {
+    /// 渲染器是否消费这个目标（与 `data.automation[].supported` 同义）。
+    pub(super) supported: bool,
+    /// 没有落点时的原因（`None` = 有落点）。
+    pub(super) residual: Option<LaneResidual>,
+    /// 探针编译失败的原因（`None` = 探针正常）。
+    ///
+    /// 失败时 `supported = false`，但 `residual` 也是 `None` —— 这不是"某条泳道的
+    /// 残差"，而是"这份工程根本编译不出渲染计划"（导出会以同一个原因 `RENDER_FAILED`）。
+    pub(super) error: Option<String>,
+}
+
+/// 判定一条目标在离线渲染里会不会被应用（写侧读数的唯一入口）。
+pub(super) fn offline_lane_status(
+    project: &YebanProjectV1,
+    target: &AutomationTarget,
+) -> OfflineLaneStatus {
+    let sample_rate = project.audio_config.sample_rate.hz();
+    match probe_subgraph(project, sample_rate) {
+        Ok(probe) => {
+            let residual = yeban_render::automation::unsupported_lane_reason(
+                project,
+                target,
+                &probe.source_nodes,
+                &probe.rendered_edges,
+                &probe.nodes,
+            );
+            OfflineLaneStatus {
+                supported: residual.is_none(),
+                residual,
+                error: None,
+            }
+        }
+        Err(error) => OfflineLaneStatus {
+            supported: false,
+            residual: None,
+            error: Some(error.to_string()),
+        },
+    }
 }
 
 /// `u64` 帧数 → `i64` 的饱和转换（`ClipSpan` 用 `i64`；上限远小于 `i64::MAX`）。

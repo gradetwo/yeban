@@ -54,6 +54,7 @@ use yeban_model::{
     AutomationLane, AutomationPoint, AutomationTarget, CurveType, EntityId, Op, OpOrigin,
     YebanProjectV1,
 };
+use yeban_render::automation::LaneResidual;
 
 use super::error::{self, Fault};
 use super::extension_pure::{self, LaneKind};
@@ -190,6 +191,29 @@ pub struct AutomationEdit {
     pub digest_before: String,
     /// 写入后的工程内容摘要（预测；只读调用为 `None`）。
     pub digest_after: Option<String>,
+    /// ⭐ 这次调用（写入后）的目标**在离线渲染里会不会被应用**。
+    ///
+    /// 口径与 `yeban_render_master` 的 `data.automation[].applied` 逐位相同：
+    /// `evaluable && supported`。`supported` 来自
+    /// [`yeban_render::automation::unsupported_lane_reason`]（与 `AutomationReport`
+    /// 的 `supported` 同一份判定），`evaluable` = 泳道有点且 `readEnabled`。
+    ///
+    /// ⚠ 带 `point` 的调用看的是**写入后的模拟工程**（与 `valuesAfter` 同一次），
+    /// 而 `lane` 块仍是写入**前**的快照 —— 因此新建泳道时可能出现
+    /// `lane.pointCount == 0` 而本字段已 `true`：那个点正是本次写入。
+    pub applied_in_offline_render: bool,
+    /// 目标**没有落点**时的残差类（`None` = 有落点）。
+    ///
+    /// 这是 `residualReason` 的唯一来源；名字由 [`LaneResidual::as_str`] 给出
+    /// （⛔ MCP 不另拼字面量）。当 `applied_in_offline_render == false` 而本字段
+    /// 为 `None` 时，原因**不是**残差，而是"没有可求值点 / 读开关关闭"（导出同样
+    /// 不登记 `automationLanes`），或探针编译失败（见 [`Self::offline_render_error`]）。
+    pub residual_reason: Option<LaneResidual>,
+    /// 探针计划编译失败的原因（`None` = 正常）。
+    ///
+    /// 失败时工程**根本导出不了**（同一处会 `RENDER_FAILED`）⇒ 本字段把"不知道"
+    /// 与"没有落点"分开，⛔ 不拿一个残差类冒充。
+    pub offline_render_error: Option<String>,
 }
 
 impl AutomationEdit {
@@ -280,6 +304,12 @@ impl AutomationEdit {
             "valuesAfter": self.values_after.as_ref().map_or(Value::Null, |values| {
                 Value::Array(values.iter().map(|reading| reading.to_value()).collect())
             }),
+            // ⭐ 离线渲染的落点读数：与导出响应 `data.automation` 同一份判定。
+            // 键**始终在**（⛔ 不静默省略）：`false` + `residualReason:null` 的含义
+            // 是"没有可求值点 / 读开关关闭"（见 `AutomationEdit` 的字段文档）。
+            "appliedInOfflineRender": self.applied_in_offline_render,
+            "residualReason": self.residual_reason.map(LaneResidual::as_str),
+            "offlineRenderError": self.offline_render_error.clone().map_or(Value::Null, Value::from),
             "projectDigestBefore": self.digest_before.clone(),
             "projectDigestAfter": self.digest_after.clone().map_or(Value::Null, Value::from),
             "origin": {
@@ -518,7 +548,7 @@ pub fn plan(
     let mut write = None;
     let mut values_after = None;
     let mut digest_after = None;
-    if let Some(raw_point) = arguments.get("point") {
+    let offline_support = if let Some(raw_point) = arguments.get("point") {
         let (point_id, point) = parse_point(arguments, raw_point, &target_label, domain)?;
         let old_point = lane.and_then(|lane| lane.points.get(&point_id)).copied();
         let op = Op::SetAutomationPoint {
@@ -549,7 +579,12 @@ pub fn plan(
             old_value: old_point.map(|old| old.value),
             op,
         });
-    }
+        // ⭐ 落点读数必须看**写入之后**的工程（刚写的点让空泳道变成可求值）。
+        offline_render_support(&simulated, &target)
+    } else {
+        offline_render_support(project, &target)
+    };
+    let (applied_in_offline_render, residual_reason, offline_render_error) = offline_support;
 
     Ok(AutomationEdit {
         track_id,
@@ -568,7 +603,26 @@ pub fn plan(
         values_after,
         digest_before,
         digest_after,
+        applied_in_offline_render,
+        residual_reason,
+        offline_render_error,
     })
+}
+
+/// `(applied, residual, probe_error)` —— 写侧读数的**唯一**计算处。
+///
+/// - `applied` 与 `AutomationReport.applied` 同义：`evaluable && supported`；
+/// - `supported` 与探针来自 `super::render`（`yeban_render` 的同一份判定，⛔ 不抄清单）；
+/// - `evaluable` = 泳道存在 ∧ `readEnabled` ∧ 有点。
+fn offline_render_support(
+    project: &YebanProjectV1,
+    target: &AutomationTarget,
+) -> (bool, Option<LaneResidual>, Option<String>) {
+    let status = super::render::offline_lane_status(project, target);
+    let evaluable = project
+        .automation_lane(target)
+        .is_some_and(|lane| lane.read_enabled && !lane.points.is_empty());
+    (evaluable && status.supported, status.residual, status.error)
 }
 
 /// 读 `ticks` 实参（缺省空；每个元素必须是非负整数；条数有护栏）。

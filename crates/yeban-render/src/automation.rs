@@ -947,6 +947,101 @@ pub fn device_param_lane_is_applicable(
     }
 }
 
+/// 一条自动化目标在**离线渲染**里**没有落点**的原因。
+///
+/// 这是 [`unsupported_lane_reason`] 的返回值，也是 `yeban_edit_automation` 读侧
+/// `residualReason` 的**唯一**字面量来源（⛔ 不在 MCP 侧再拼一份）。
+///
+/// ⚠ 名字 `BusTrack` 的口径是"**该轨在渲染计划里没有源落点**"：它同时覆盖
+/// "有入边的总线轨"与"不在保留子图里的不可达轨"（两者都不是 `source_nodes`）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LaneResidual {
+    /// `Macro`：宏的级联量纲尚未接线（`MacroMapping` 只有 `depth`，参数值域住在
+    /// 设备/参数层），因此本渲染器不消费宏泳道。
+    Macro,
+    /// `DeviceParam`：没有通道条落点（名字不在 [`APPLIED_DEVICE_PARAM_NAMES`]、
+    /// 设备被旁通、或指向的不是来源设备）。
+    DeviceParamNotChannelStrip,
+    /// 目标轨**没有源落点**（有入边的总线轨，或不在渲染计划里的不可达轨）。
+    BusTrack,
+    /// `SendGain` 的路由边不在**保留子图**里（被剪枝）。
+    PrunedEdge,
+    /// `TrackPan` 落在**主总线**上（主总线没有声相级；与 `masterPan` 同一条缺口）。
+    MasterPan,
+}
+
+impl LaneResidual {
+    /// 响应里的稳定名字（`yeban_edit_automation` 的 `residualReason`）。
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Macro => "macro",
+            Self::DeviceParamNotChannelStrip => "deviceParamNotChannelStrip",
+            Self::BusTrack => "busTrack",
+            Self::PrunedEdge => "prunedEdge",
+            Self::MasterPan => "masterPan",
+        }
+    }
+}
+
+/// 离线渲染对一条自动化目标**有没有落点**的**唯一判定**（`None` = 有落点）。
+///
+/// 三个切片是**同一次**计划探针的三个视图（`RenderPlan::nodes()`、其中的源节点、
+/// `RenderPlan::edge_ids()`），因此本函数与 `yeban_render_master` 的
+/// `AutomationReport`（`data.automation[].supported`）是**同一份事实**：
+///
+/// - `TrackVolume`：主总线，或计划里的源节点；
+/// - `SendGain`：边在保留子图里（`#256`）；
+/// - `TrackPan`：非主总线的源节点（`#257`；主总线没有声相级）；
+/// - `DeviceParam`：节点在计划里且参数名有通道条落点（`#266`/`#267`）；
+/// - `Macro`：永不落点（量纲未接线）。
+///
+/// ⛔ 这里是判定落点的**唯一处**：`yeban-mcp` 的 `AutomationReport` 与
+/// `yeban_edit_automation` 的读侧都调它 —— 第二份 match 就是第二份会漂移的事实。
+#[must_use]
+pub fn unsupported_lane_reason(
+    project: &YebanProjectV1,
+    target: &AutomationTarget,
+    source_nodes: &[EntityId],
+    rendered_edges: &[EntityId],
+    rendered_nodes: &[EntityId],
+) -> Option<LaneResidual> {
+    match target {
+        AutomationTarget::TrackVolume { track_id } => {
+            if *track_id == project.master_bus_track_id || source_nodes.contains(track_id) {
+                None
+            } else {
+                Some(LaneResidual::BusTrack)
+            }
+        }
+        AutomationTarget::SendGain { edge_id, .. } => {
+            if rendered_edges.contains(edge_id) {
+                None
+            } else {
+                Some(LaneResidual::PrunedEdge)
+            }
+        }
+        AutomationTarget::TrackPan { track_id } => {
+            if *track_id == project.master_bus_track_id {
+                Some(LaneResidual::MasterPan)
+            } else if source_nodes.contains(track_id) {
+                None
+            } else {
+                Some(LaneResidual::BusTrack)
+            }
+        }
+        AutomationTarget::DeviceParam { track_id, .. } => {
+            if rendered_nodes.contains(track_id) && device_param_lane_is_applicable(project, target)
+            {
+                None
+            } else {
+                Some(LaneResidual::DeviceParamNotChannelStrip)
+            }
+        }
+        AutomationTarget::Macro { .. } => Some(LaneResidual::Macro),
+    }
+}
+
 /// 一条音轨上的**设备参数**自动化（`AutomationTarget::DeviceParam`）。
 ///
 /// ## 与增益 / 声相自动化的形状差别（任务单 `#262` 逐条，本类型必须照它）
