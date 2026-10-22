@@ -842,8 +842,18 @@ pub const LOGIC_REGION_TAG: [u8; 4] = *b"qeSM";
 /// 事件行长度（16 字节）。
 pub const LOGIC_EVENT_LINE_SIZE: usize = 16;
 
-/// 音符头行的状态字节（MIDI 风格的 `0x90`）。
+/// 音符头行的**状态 nibble**（MIDI 风格的 `0x90`；低 4 位是通道号）。
+///
+/// ⚠ 判定音符时**必须**先与 [`LOGIC_NOTE_STATUS_MASK`] 相与：Logic 把 region 的 MIDI 通道
+/// 写进状态字节的低半字节（负责人 3 轨供体的 `down:` 是 **`0x91`**），只认恰好 `0x90`
+/// 会把整条通道 ≠ 0 的 region 的音符**整轨丢掉**（`#289`）。
 pub const LOGIC_NOTE_STATUS: u8 = 0x90;
+
+/// 音符状态字节的**高半字节**掩码（`0xF0`）—— 用来把状态与 MIDI 通道分开。
+///
+/// `#289` 实测：`0x90..=0x9F` 都是 note-on（低 4 位是通道）；`0xB0`/`0xB1`（控制行）与
+/// `0xF1`（尾行）在掩码后分别落回 `0xB0` / `0xF0`，因此掩码不会把它们误认成音符。
+pub const LOGIC_NOTE_STATUS_MASK: u8 = 0xF0;
 
 /// 事件行第 7 字节的续行标志位。
 pub const LOGIC_CONTINUATION_FLAG: u8 = 0x80;
@@ -1525,6 +1535,11 @@ pub struct LogicBundle {
 ///
 /// 返回 `(起始 tick, 时值 tick, 音高, 力度)`，起始 tick 已扣掉
 /// [`LOGIC_NOTE_ORIGIN_TICKS`]（即回到"region 内相对 tick + 摆放起点"的口径）。
+///
+/// **音符判定 = `line[0] & 0xF0 == 0x90`**（`#289`）：状态字节的低半字节是 MIDI 通道，
+/// Logic 自己会把通道 1 写成 `0x91`（负责人的 3 轨供体 `down:` 就是，388 条）。只认恰好
+/// `0x90` 时那 388 条会被**整轨丢掉**（3 轨供体读到 517，而 Logic 自己的 `.mid` 是 905）。
+/// 掩码化后 `0x90..=0x9F` 都算 note-on；`0xB0`/`0xB1`/`0xF1` 等控制/尾行仍被排除。
 #[must_use]
 pub fn decode_note_lines(body: &[u8]) -> Vec<(u64, u64, u8, u8)> {
     let mut notes = Vec::new();
@@ -1540,7 +1555,7 @@ pub fn decode_note_lines(body: &[u8]) -> Vec<(u64, u64, u8, u8)> {
         {
             next += LOGIC_EVENT_LINE_SIZE;
         }
-        if line[0] == LOGIC_NOTE_STATUS {
+        if line[0] & LOGIC_NOTE_STATUS_MASK == LOGIC_NOTE_STATUS {
             let raw = u64::from(u32::from_le_bytes([line[4], line[5], line[6], line[7]]));
             let start = raw.saturating_sub(LOGIC_NOTE_ORIGIN_TICKS);
             let duration = if next > at + LOGIC_EVENT_LINE_SIZE {
@@ -9393,17 +9408,13 @@ mod tests {
         }
     }
 
-    /// **判据（有牙，`#194` 第一条）**：读得动负责人的 3 轨工程（用**入库的三份供体字节**
-    /// 组装 bundle，因此 CI 上可跑）—— 读数：轨数 / 片段数 / 音符数 / `active_alternative`。
+    /// 用**入库的** 3 轨供体三份文件组装一个临时 `.logicx`（`ProjectData` 一个字节不换，
+    /// `MetaData.plist` / `ProjectInformation.plist` 用供体自己的）。
     ///
-    /// 先量出"第 3 轨在哪、长什么样"，再谈容量。⚠ 该工程的
-    /// `ProjectInformation.plist` **没有** `ActiveVariant` 键 ⇒ 这里同时验
+    /// ⚠ 该工程的 `ProjectInformation.plist` **没有** `ActiveVariant` 键 ⇒ 同时覆盖
     /// `logic_read::active_alternative` 的**目录唯一性回退**（`Alternatives/` 下恰一个 `000`）。
     #[cfg(feature = "experimental-logic-import")]
-    #[test]
-    fn logic_read_inspects_the_vendored_three_track_bundle() {
-        use crate::logic_read::{import_bundle, inspect_bundle};
-
+    fn vendored_three_track_bundle() -> tempfile::TempDir {
         let dir = tempfile::tempdir().expect("tempdir");
         std::fs::create_dir_all(dir.path().join("Alternatives/000")).expect("mkdir");
         std::fs::create_dir_all(dir.path().join("Resources")).expect("mkdir");
@@ -9422,6 +9433,21 @@ mod tests {
             LOGIC_OWNER_DONOR_3T_PROJECT_INFORMATION,
         )
         .expect("write ProjectInformation");
+        dir
+    }
+
+    /// **判据（有牙，`#194` 第一条）**：读得动负责人的 3 轨工程（用**入库的三份供体字节**
+    /// 组装 bundle，因此 CI 上可跑）—— 读数：轨数 / 片段数 / 音符数 / `active_alternative`。
+    ///
+    /// 先量出"第 3 轨在哪、长什么样"，再谈容量。⚠ 该工程的
+    /// `ProjectInformation.plist` **没有** `ActiveVariant` 键 ⇒ 这里同时验
+    /// `logic_read::active_alternative` 的**目录唯一性回退**（`Alternatives/` 下恰一个 `000`）。
+    #[cfg(feature = "experimental-logic-import")]
+    #[test]
+    fn logic_read_inspects_the_vendored_three_track_bundle() {
+        use crate::logic_read::{import_bundle, inspect_bundle};
+
+        let dir = vendored_three_track_bundle();
 
         let inspection = inspect_bundle(dir.path()).expect("3 轨供体必须读得动");
         assert_eq!(
@@ -9437,13 +9463,13 @@ mod tests {
         assert_eq!(inspection.regions_all, 19, "所有 `qeSM` 条数");
         assert_eq!(inspection.internal_regions, 5, "内部区域条数");
         assert_eq!(inspection.regions, 14, "非内部区域条数");
-        // ⚠ 读数口径：`decode_note_lines` 只认**恰好 `0x90`** 的音符行（既有定义，8 台 demo
-        // 的 9,825 就是按它量的）。这份供体的 `down:` 音符行是 **`0x91`**（MIDI 通道 1）⇒
-        // 生产读取器读到 **517**，而 Logic 自己的 `.mid` 里 `up:` 517 + `down:` 388 = **905**。
-        // 本条把这个**既有的**口径差钉成读数，⛔ 不为了让数字好看去改 8 台 demo 的定义。
+        // `#289` 起：音符判定是 `0x9?`（状态 nibble + 通道），不再是恰好 `0x90`。
+        // 这份供体的 `down:` 音符行是 **`0x91`**（MIDI 通道 1，388 条）⇒ 生产读取器读到
+        // **905** = `up:` 517（`0x90`）+ `down:` 388（`0x91`），与 Logic 自己的 `.mid` 相等。
+        // ⚠ **这是修对、不是回归**：改前 517 正是把整条通道 1 丢掉的那个读数。
         assert_eq!(
-            inspection.notes, 517,
-            "生产读取器的音符数（只认 0x90；down: 是 0x91）"
+            inspection.notes, 905,
+            "生产读取器的音符数（#289：0x9? 全通道；517 + 388）"
         );
         assert_eq!(inspection.region_placements, 19, "成功读出摆放字段的条数");
         assert_eq!(inspection.sample_rate, 48_000);
@@ -9486,11 +9512,11 @@ mod tests {
 
         let imported = import_bundle(dir.path()).expect("3 轨供体必须读得动");
         assert_eq!(imported.tracks, 3);
-        assert_eq!(imported.notes, 517, "导入读取器用的也是同一套 0x90 口径");
+        assert_eq!(imported.notes, 905, "导入读取器按 `0x9?` 全通道解码");
         for (name, notes, track) in [
             ("control track", 0usize, 1u32),
             ("up:", 517, 2),
-            ("down:", 0, 3),
+            ("down:", 388, 3),
         ] {
             let region = imported
                 .imported_regions
@@ -9504,6 +9530,65 @@ mod tests {
                 "`{name}` 的轨道绑定（摆放事件 +0x14，1 起）"
             );
         }
+    }
+
+    /// **判据（有牙，`#289`）**：**导入的音符数必须等于 Logic 自己在 `.mid` 里写下的 note-on
+    /// 总数** —— 按**通道**统计，不是只按 `0x90`。
+    ///
+    /// 实测（3 轨供体）：`up:` 517（`0x90`，通道 0）+ `down:` 388（**`0x91`**，通道 1）+
+    /// `control track` 0 = **905**，与 `track3-3tracks/export.mid` 的 4 个 `MTrk`
+    /// （meta 0 / control 0 / up 517 / down 388）逐条相等。
+    ///
+    /// **正对照**：通道 0 的 `up:` 在泛化前后都必须是 **517**（⛔ 不是把计数整体放大），
+    /// 通道 1 的 `down:` 是 **388**（改前是 0 —— 整轨丢掉）。
+    #[cfg(feature = "experimental-logic-import")]
+    #[test]
+    fn imported_note_count_matches_the_logic_export_midi_on_every_channel() {
+        use crate::logic_read::{import_bundle, inspect_bundle};
+
+        let dir = vendored_three_track_bundle();
+        let reference = read_reference_midi(LOGIC_OWNER_DONOR_3T_EXPORT_MID);
+        let midi_note_ons: usize = reference.tracks.iter().map(|track| track.notes.len()).sum();
+        assert_eq!(
+            midi_note_ons, 905,
+            "Logic 自己的 `.mid`（meta 0 + control track 0 + up: 517 + down: 388）"
+        );
+
+        let inspection = inspect_bundle(dir.path()).expect("3 轨供体必须读得动");
+        let imported = import_bundle(dir.path()).expect("3 轨供体必须读得动");
+        assert_eq!(
+            inspection.notes, midi_note_ons,
+            "探针的音符数必须等于 `.mid` 的 note-on 总数（含通道 ≠ 0）"
+        );
+        assert_eq!(
+            imported.notes, midi_note_ons,
+            "导入的音符数必须等于 `.mid` 的 note-on 总数（含通道 ≠ 0）"
+        );
+
+        // 正对照：通道 0 的 `up:` 一条不多、一条不少；通道 1 的 `down:` 整轨回来。
+        for (name, notes) in [("control track", 0usize), ("up:", 517), ("down:", 388)] {
+            let region = imported
+                .imported_regions
+                .iter()
+                .find(|region| region.name == name)
+                .unwrap_or_else(|| panic!("供体里必须有 `{name}`"));
+            assert_eq!(
+                region.notes.len(),
+                notes,
+                "`{name}` 的音符数（按通道解码；改前 `down:` 是 0）"
+            );
+        }
+
+        // 独立的**正对照**：1 轨供体的音符行全是通道 0（`0x90`）⇒ 泛化前后都必须是 517。
+        let one_track: usize = read_records(LOGIC_OWNER_DONOR_1T_PROJECT_DATA)
+            .into_iter()
+            .filter(|record| record.tag == LOGIC_SEQUENCE_TAG)
+            .map(|record| decode_note_lines(&record.body).len())
+            .sum();
+        assert_eq!(
+            one_track, 517,
+            "通道 0 的 1 轨供体（`up:`）读数不得被泛化放大"
+        );
     }
 
     /// **判据（有牙，最重要的一条）**：单 MIDI 轨工程仍然逐字节产出于 **Logic Pro 12.2 打开过**

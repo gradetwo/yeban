@@ -20,7 +20,8 @@ use yeban_render::logic_read::{
     is_region_length_in_range, placement_events, region_placements,
 };
 
-/// 一台 demo 的期望读数（`#139` 实测）。
+/// 一台 demo 的期望读数（`#139` 实测；`#289` 把音符口径从「恰好 `0x90`」改为
+/// 「`0x9?` 全通道」后**重测**，只有 Manzana 两台变化：1,519 → 2,887）。
 struct Expected {
     /// `.logicx` 目录名（不含后缀）。
     bundle: &'static str,
@@ -60,7 +61,7 @@ const EXPECTED: [Expected; 8] = [
         tracks: 81,
         regions: 464,
         non_internal: 139,
-        notes: 1_519,
+        notes: 2_887,
     },
     Expected {
         bundle: "Manzana - Spatial Audio",
@@ -70,7 +71,7 @@ const EXPECTED: [Expected; 8] = [
         tracks: 81,
         regions: 465,
         non_internal: 139,
-        notes: 1_519,
+        notes: 2_887,
     },
     Expected {
         bundle: "MONTERO",
@@ -124,17 +125,23 @@ const EXPECTED: [Expected; 8] = [
     },
 ];
 
-/// 合计期望（`#139` 实测）。
+/// 合计期望（`#139` 实测；**`#289` 重测** —— 音符读数改为按 `0x9?` 全通道，
+/// 9,825 → **12,561**，差 **+2,736** 全部来自 Manzana 两台各 +1,368）。
 const EXPECTED_TOTALS: LogicTotals = LogicTotals {
     demos: 8,
     tracks: 714,
     regions_all: 4_144,
     regions: 1_074,
-    notes: 9_825,
+    notes: 12_561,
     audio_regions: 4_104,
 };
 
 /// `#148` 的区域摆放期望（8 台 demo 的**实测字面量**，不是从实现反算）。
+///
+/// ⚠ **`#289` 重测**：音符口径改成 `0x9?` 全通道后，只有 Manzana 两台变化 ——
+/// `note_regions` 54 → **109**、`start_sum` 9,968,640 → **19,092,480**、
+/// `length_sum` 977,760 → **1,692,000**、`beat_aligned` 54 → **109**；
+/// 其余六台逐项不变（正对照：通道 0 的读数不该被放大）。
 ///
 /// 口径：
 /// * `note_regions` = 其后 `qSvE` 里 `decode_note_lines` 非空的 `qeSM` 条数；
@@ -172,19 +179,19 @@ const PLACEMENT_EXPECTED: [PlacementExpected; 8] = [
     PlacementExpected {
         bundle: "Manzana",
         regions_all: 464,
-        note_regions: 54,
-        start_sum: 9_968_640,
-        length_sum: 977_760,
-        beat_aligned: 54,
+        note_regions: 109,
+        start_sum: 19_092_480,
+        length_sum: 1_692_000,
+        beat_aligned: 109,
         start_max: 422_400,
     },
     PlacementExpected {
         bundle: "Manzana - Spatial Audio",
         regions_all: 465,
-        note_regions: 54,
-        start_sum: 9_968_640,
-        length_sum: 977_760,
-        beat_aligned: 54,
+        note_regions: 109,
+        start_sum: 19_092_480,
+        length_sum: 1_692_000,
+        beat_aligned: 109,
         start_max: 422_400,
     },
     PlacementExpected {
