@@ -46,8 +46,9 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
+use yeban_model::EntityId;
 use yeban_model::container::ProjectArchive;
-use yeban_model::project::{SampleRate, YebanProjectV1};
+use yeban_model::project::{SampleRate, TrackV3, YebanProjectV1};
 use yeban_render::dither::BitDepth;
 use yeban_render::midi::MidiFormat;
 
@@ -234,6 +235,13 @@ pub const THEME_SWITCH: &str = "--theme";
 /// "我说要 material，这个二进制到底编的是不是 material"。
 pub const PRINT_THEME_SWITCH: &str = "--print-theme";
 
+/// ⭐ 任务单 `#287`：`--sampler-track` 单独给时的**逐字**用法错误。
+///
+/// 它同时是 [`ParseError::SamplerTrackWithoutTrackSampler`] 与 [`run_batch`] 第二道
+/// 守卫的文案（一处定义 ⇒ 两条入口不会漂移）。
+pub const SAMPLER_TRACK_PAIRING_ERROR: &str =
+    "`--sampler-track` 必须与 `--track-sampler` 一起给 (它只选目标轨; 单独给会被静默忽略)";
+
 /// `SLINT_STYLE` 的字面值 —— Slint **自己**的编译期风格选择入口（本仓库不改它的语义）。
 ///
 /// 为什么要在用法文本里写它：Slint 1.18.1 的**风格**只能在编译期选，而 `--theme` 只能在
@@ -320,11 +328,23 @@ pub fn usage_text() -> String {
                            与 --export-wav 同时给 ⇒ **导出的声音来自这份 SFZ**;
                            `sample=<path>` 会被**真读** (只支持本仓 read_plain_wav 能读的
                            PCM WAV; 读不到 ⇒ 如实回退到内存正弦并把原因写进 source=)
-  --track-sampler <path>   把这份 SFZ **装到当前展示轨** (TrackV3::sampler), 走既有的
-                           Op::SetTrackSampler ⇒ 一次提交、可撤销; 目标轨 = 身份序第一条
-                           非主总线轨 (CLI 没有选中态, 与 GUI 的兜底同一档);
+  --track-sampler <path>   把这份 SFZ **装到一条轨** (TrackV3::sampler), 走既有的
+                           Op::SetTrackSampler ⇒ 一次提交、可撤销;
+                           目标轨 = --sampler-track 给的身份, 缺省 = 身份序第一条
+                           非主总线轨 (旧行为, 逐字节不变; CLI 没有选中态);
                            样本字节缺失 ⇒ 响亮拒绝 (不把一条有声的轨装成静音);
                            与 --export-wav / --save-as 同给 ⇒ 它们看到的是装好之后的工程
+  --sampler-track <trackId>
+                           把 --track-sampler 装到**哪条**轨: <trackId> = 音轨身份
+                           (26 字符 ULID, 大小写不敏感; 即 project.json `tracks` 的键,
+                           yeban_query_project 的 tracks[].id);
+                           身份形状不对 / 工程里没有 / 是主总线 ⇒ 响亮报错并列出可用身份
+                           (不回落); 主总线被拒的理由: 它是唯一混音出口, 渲染的
+                           renderable 排除它 ⇒ 装上去的 sampler 永远不会有消费点;
+                           必须与 --track-sampler 一起给 (单独给 = 用法错误, 退出码 {usage});
+                           两种形状:
+                             yeban-app --track-sampler p.sfz          # 旧 = 身份序第一条非主总线轨
+                             yeban-app --sampler-track <trackId> --track-sampler p.sfz
   --midi-in <port>         打开一个**物理 MIDI 输入端口**并采集 (**需要** midi-input 特性;
                            默认构建会给出结构化错误并说明怎么开)
                            <port> = 端口序号 (全十进制) 或端口名**子串** (大小写敏感);
@@ -529,6 +549,11 @@ pub fn usage_text() -> String {
   两条同给时的顺序              **先声音 → 再谱面**: 先渲染的是**还没写进工程**的那一份
                                ⇒ 每条音符只被触发一次 (否则环与快照排程会各触发一次 = 双触发)
                                两者都不给时 --midi-in 仍是**只读**诊断 (⛔ 不建会话、⛔ 不写盘)
+  --sampler-track 与 --track-sampler
+                               --sampler-track 只**选目标轨**, 必须与 --track-sampler 一起给
+                               (单独给 = 用法错误, 退出码 {usage}); 缺省 = 身份序第一条
+                               非主总线轨 (旧行为, 逐字节不变); 指定不存在的身份 / 主总线
+                               = 响亮报错 (退出码 {open}), ⛔ 不静默回落到第一条
   --save-as 不给 --open        保存的是演示工程, 输出 `saved: ... from=sample=default` 明说
   --save-as 与 --headless      两者都是无窗口路径, 可以一起给 (保存不需要窗口)
   --export-elements 与 --export-midi 与 --export-als 与 --export-logic 与 --save-as 任意组合
@@ -597,7 +622,9 @@ pub fn usage_text() -> String {
   {open} --import-logic 失败 (读 demo / ProjectData 记录流不合法 / 采样率不在规范枚举 /
      没有 karT 轨道 / 建出的工程未通过模型校验; 输入路径不存在是 skip, ⛔ 不算失败)
   {open} --sfz 失败 (读文件 / SFZ 文本非法)
-  {open} --track-sampler 失败 (没有展示轨 / 路径不是 UTF-8 / 样本字节缺失 / 提交被拒)
+  {open} --track-sampler 失败 (没有展示轨 / 路径不是 UTF-8 / 样本字节缺失 / 提交被拒 /
+      --sampler-track 的身份形状不对 / 工程里没有该身份 / 该身份是主总线)
+  {usage} --sampler-track 没和 --track-sampler 一起给
   {open} --midi-in 失败 (端口不存在或名字有歧义 / 宿主不可用 / 本次构建未编译 `midi-input` 特性)
   {open} --midi-in-write-notes / --midi-in-render 失败 (一条音符都没有 / 没有可写目标 /
      没有可发声的目标音轨 / 音轨选择器命中 0 或多条 / 提交被拒 / 引擎重建失败)
@@ -628,6 +655,7 @@ pub fn usage_text() -> String {
   yeban-app --open p.yeban --sfz strings.sfz --record-wav take.wav --record-seconds 8
   yeban-app --sfz strings.sfz --export-wav out.wav   # 导出的音源 = 该 SFZ
   yeban-app --open song.yeban --track-sampler p.sfz --export-wav out.wav  # 轨上的乐器先装好再导出
+  yeban-app --open song.yeban --sampler-track 01J8Z5Q0R7K3M9X2V4B6N8P0A0 --track-sampler p.sfz --save-as tuned.yeban  # 指定轨 (身份)
   yeban-app --import-midi take.mid --save-as song.yeban
   yeban-app --open song.yeban --import-audio kick.wav --save-as song.yeban
   yeban-app --open song.yeban --export-midi song.mid
@@ -1096,11 +1124,12 @@ pub struct Options {
     /// 读不到才**如实回退**到内存正弦并把原因写进报告行。
     /// 本开关**只读**（不建会话、不改工程）⇒ 与导出/保存可以任意组合。
     pub sfz: Option<PathBuf>,
-    /// ⭐ 任务单 `#210`：`--track-sampler <path>`：把一份 SFZ **装到当前展示轨**
+    /// ⭐ 任务单 `#210`：`--track-sampler <path>`：把一份 SFZ **装到一条轨**
     /// （`TrackV3::sampler`），走**既有**的 `Op::SetTrackSampler`。
     ///
     /// 它是 GUI"点一下换乐器"的**命令行等价路径**：
-    /// 1. 目标轨 = [`crate::bridge::device_rack_track`]（身份序第一条非主总线轨；
+    /// 1. 目标轨 = [`Self::sampler_track`] 给的身份（`#287`），缺省 =
+    ///    [`crate::bridge::device_rack_track`]（身份序第一条非主总线轨；
     ///    GUI 用"选中轨 or 兜底"——CLI 没有选中态，取同一个兜底）；
     /// 2. `Op` 由 [`crate::bridge::instrument_install_ops_on`] 构造 ⇒ **同一条**
     ///    样本字节谓词（缺样本 ⇒ 响亮拒绝，⛔ 不把有声轨装成静音）；
@@ -1110,7 +1139,26 @@ pub struct Options {
     /// **执行顺序**：与 `--import-midi` 同一条契约（编辑 ⇒ 在导出与保存**之前**）。
     /// 只给本开关（没有别的批处理开关）也走 `run_batch`（[`ACTION_SWITCHES`] 里是
     /// `Batch`）：它会真的改内存里的工程并打印一行读数，然后退出。
+    ///
+    /// ⭐ 任务单 `#287`：目标轨可以用 [`Self::sampler_track`] **显式指定**；不给时
+    /// 仍是上面第 1 条的老规则（逐字节不变）。
     pub track_sampler: Option<PathBuf>,
+    /// ⭐ 任务单 `#287`：`--sampler-track <trackId>`：`--track-sampler` 装到**哪条**轨。
+    ///
+    /// 取值是工程里的**音轨身份**（26 字符 ULID，大小写不敏感）—— 即 `project.json`
+    /// `tracks` 的键 / `yeban_query_project` 的 `tracks[].id`。
+    ///
+    /// * 缺省 ⇒ 旧行为：身份序第一条非主总线轨（[`crate::bridge::device_rack_track`]）；
+    /// * 给了 ⇒ **只**装到那一条：身份形状不对 / 查不到 / 是主总线 ⇒ **响亮报错**
+    ///   （⛔ 静默回落到第一条）；
+    /// * **必须**与 `--track-sampler` 一起给（单独给 = 用法错误，见
+    ///   [`SAMPLER_TRACK_PAIRING_ERROR`]）。
+    ///
+    /// 为什么是**独立开关**，而不是把身份塞进 `--track-sampler <id>:<path>`：路径里
+    /// 允许出现 `:`（POSIX 文件名的合法字符；Windows 盘符是第二个例子）⇒ 那种形状
+    /// 会把一个**合法**的旧调用重新解释成 `id:path`，破坏"旧用法逐字节不变"。独立
+    /// 开关也与既有的 `--midi-in-track`（同样是独立的目标选择器）同形。
+    pub sampler_track: Option<String>,
     /// `--midi-in <端口>`：⭐ **打开一个物理 MIDI 输入端口并采集**（⭐ 本仓第一条
     /// **用户可触发**的硬件 MIDI 入口）。
     ///
@@ -1690,6 +1738,12 @@ pub enum ParseError {
     /// 一个给**精确帧数**、一个给**秒数换算**，同时给必然有一个被静默丢掉 ——
     /// 本仓不接受这种组合（⛔ 不靠"谁优先"发明语义）。
     WavFramesConflict,
+    /// ⭐ 任务单 `#287`：`--sampler-track` 单独给（没配 `--track-sampler`）。
+    ///
+    /// 它只是 `--track-sampler` 的**目标选择器**，没有主语时什么也不选。⛔ 不接受
+    /// "独立给"：`--sampler-track` 自己不选无窗口路径 ⇒ 静默进 GUI 路径、彻底
+    /// 什么也不做（本仓最忌讳的假绿）。文本见 [`SAMPLER_TRACK_PAIRING_ERROR`]。
+    SamplerTrackWithoutTrackSampler,
 }
 
 impl ParseError {
@@ -1855,6 +1909,9 @@ impl fmt::Display for ParseError {
                 "`--wav-frames` 与 `--wav-seconds` 互斥 —— 一个给精确帧数、一个给秒数换算, \
                  同时给必然有一个被静默丢掉"
             ),
+            Self::SamplerTrackWithoutTrackSampler => {
+                formatter.write_str(SAMPLER_TRACK_PAIRING_ERROR)
+            }
         }
     }
 }
@@ -1978,6 +2035,10 @@ pub fn parse(args: &[String]) -> Result<Options, ParseError> {
                     "--track-sampler",
                     PathBuf::from(value),
                 )?;
+            }
+            "--sampler-track" => {
+                let value = take_value("--sampler-track", inline, args, &mut cursor)?;
+                set_once_string(&mut options.sampler_track, "--sampler-track", value)?;
             }
             "--midi-in" => {
                 let value = take_value("--midi-in", inline, args, &mut cursor)?;
@@ -2263,6 +2324,14 @@ pub fn parse(args: &[String]) -> Result<Options, ParseError> {
     // 模块不存在，因此同样必须是一次**点名 feature** 的用法错误。
     if options.export_logic.is_some() && !cfg!(feature = "experimental-logic-export") {
         return Err(ParseError::LogicNotCompiled);
+    }
+    // ⭐ 任务单 `#287`：`--sampler-track` 只是 `--track-sampler` 的**目标选择器**。
+    // 单独给 ⇒ 用法错误。这道检查放在**解析期**（而不是 `run_batch` 里）：后者只在
+    // 无窗口路径上跑，而 `--sampler-track` 自己不选路径 —— 放在那里会让"单独给"
+    // 悄悄进 GUI 路径、什么也不做（本仓最忌讳的假绿）。`run_batch` 仍留第二道守卫
+    // （`Options` 的字段是公开的，判据可以直接构造组合）。
+    if options.sampler_track.is_some() && options.track_sampler.is_none() {
+        return Err(ParseError::SamplerTrackWithoutTrackSampler);
     }
     Ok(options)
 }
@@ -2832,8 +2901,11 @@ pub enum CliError {
     /// ⭐ 任务单 `#210`：`--track-sampler` 失败（没有展示轨 / 路径不是 UTF-8 /
     /// 样本字节缺失 / 提交被拒）。
     ///
+    /// ⭐ 任务单 `#287`：`--sampler-track` 的目标轨解析失败也走这一档（身份形状不对 /
+    /// 工程里没有该身份 / 该身份是主总线），`reason` 逐字带可用身份清单。
+    ///
     /// `reason` **逐字**来自 [`crate::bridge::instrument_install_ops_on`] 的拒绝原因
-    /// （或提交层的裁决）—— ⛔ 不换成一句通用错误。
+    /// （或 [`resolve_sampler_track`] 的裁决，或提交层的裁决）—— ⛔ 不换成一句通用错误。
     TrackSampler {
         /// 调用方给的 SFZ 路径。
         path: PathBuf,
@@ -2985,11 +3057,9 @@ impl fmt::Display for CliError {
             Self::Sfz { path, source } => {
                 write!(formatter, "装载 SFZ `{}` 失败: {source}", path.display())
             }
-            Self::TrackSampler { path, reason } => write!(
-                formatter,
-                "把 `{}` 装到展示轨失败: {reason}",
-                path.display()
-            ),
+            Self::TrackSampler { path, reason } => {
+                write!(formatter, "把 `{}` 装到音轨失败: {reason}", path.display())
+            }
             Self::ImportMidi { path, source } => {
                 write!(
                     formatter,
@@ -3917,10 +3987,75 @@ pub fn run_probe_instruments(mut emit: impl FnMut(String)) -> (usize, usize, usi
     (total, installable, missing, unreadable)
 }
 
+/// ⭐ 任务单 `#287`：`--sampler-track <trackId>` 的目标轨解析（**唯一**实现）。
+///
+/// 规则（顺序即优先级，**没有"猜"也没有"回落"**）：
+/// 1. 取值必须是**音轨身份**（26 字符 ULID，大小写不敏感；`EntityId::from_str` 负责
+///    规范化）。形状不对 ⇒ 错误 —— ⛔ 不把它当名字 / 序号去匹配（那正是"选错轨"的
+///    来源：同一串文本在别的选择器里可能有别的含义）；
+/// 2. 该身份必须**在** `project.tracks` 里 ⇒ 否则错误，并列出可用 `id=名字`；
+/// 3. 该身份**不是**主总线 ⇒ 否则错误。
+///
+/// 为什么主总线要**响亮拒绝**（而不是"装了也算成功"）：主总线是整份工程的唯一混音
+/// 出口，不是乐器轨 —— `render_core` 的 `renderable` 逐字把它排除在外
+/// （`filter(|id| *id != project.master_bus_track_id && …)`）⇒ 主总线的
+/// `TrackV3.sampler` **没有任何消费点**，装上去只会静默无效。⛔ 不接受一个
+/// "看起来成功、其实永远不发声"的目标。
+fn resolve_sampler_track<'a>(
+    project: &'a YebanProjectV1,
+    wanted: &str,
+) -> Result<&'a TrackV3, String> {
+    let available = selectable_track_list(project);
+    let id = wanted.parse::<EntityId>().map_err(|_| {
+        format!(
+            "`--sampler-track` 的取值 `{wanted}` 不是音轨身份 (26 字符 ULID, 大小写不敏感); \
+             可用: {available}"
+        )
+    })?;
+    let track = project
+        .tracks
+        .get(&id)
+        .ok_or_else(|| format!("工程里没有身份 `{id}` 的音轨; 可用: {available}"))?;
+    if id == project.master_bus_track_id {
+        return Err(format!(
+            "身份 `{id}` (`{}`) 是**主总线**: 主总线是整份工程的唯一混音出口, 不是乐器轨 —— \
+             渲染的 `renderable` 明确把它排除在外, 装上去的 `TrackV3.sampler` 永远不会有\
+             消费点 ⇒ 拒绝; 可用: {available}",
+            track.name
+        ));
+    }
+    Ok(track)
+}
+
+/// ⭐ 任务单 `#287`：可用（= **非主总线**）音轨身份的**人可读**清单。
+///
+/// 空清单也要**明说**（⛔ 不留空白）：错误报文里"可用: "后面必须有东西，否则
+/// 用户会以为选择器坏了。
+fn selectable_track_list(project: &YebanProjectV1) -> String {
+    let list: Vec<String> = project
+        .tracks
+        .values()
+        .filter(|track| track.id != project.master_bus_track_id)
+        .map(|track| format!("{}={}", track.id, track.name))
+        .collect();
+    if list.is_empty() {
+        "工程里没有非主总线轨".to_owned()
+    } else {
+        list.join(" / ")
+    }
+}
+
 /// ⭐ 任务单 `#210`／`#239`：`--track-sampler` 的**唯一**应用实现。
 ///
 /// 一次装 ＝ **恰好一次** `Op::SetTrackSampler` ＋ 一次提交（已经装有这份乐器 ⇒ 0 次提交）。
 /// 返回**应用之后的工程**与**回执行**；由调用方决定把它落到哪里。
+///
+/// ## 目标轨（⭐ 任务单 `#287`）
+///
+/// `track_id` 为 `None` ⇒ **旧行为**：展示轨 = [`crate::bridge::device_rack_track`]
+/// （身份序第一条非主总线轨），逐字节不变；为 `Some` ⇒ 只认
+/// [`resolve_sampler_track`] 解析出的那一条（形状不对 / 查不到 / 主总线 ⇒ 响亮报错，
+/// ⛔ 不回落）。两条都只影响"装到谁"，⛔ 不碰渲染语义（`F6`／`#240` 已修好）。
 ///
 /// ## 为什么返回值里带工程（`#239`）
 ///
@@ -3931,13 +4066,25 @@ pub fn run_probe_instruments(mut emit: impl FnMut(String)) -> (usize, usize, usi
 fn apply_track_sampler(
     project: &YebanProjectV1,
     path: &Path,
+    track_id: Option<&str>,
 ) -> Result<(YebanProjectV1, String), CliError> {
     let sfz_text = path.to_str().ok_or_else(|| CliError::TrackSampler {
         path: path.to_path_buf(),
         reason: "路径不是 UTF-8，无法逐字写进 `TrackV3::sampler.path`".to_owned(),
     })?;
-    // 目标轨 = 展示轨（身份序第一条非主总线轨）；CLI 没有选中态 ⇒ 与 GUI 的兜底同一档。
-    let track = crate::bridge::device_rack_track(project).cloned();
+    // 目标轨：显式身份（`#287`）或展示轨（身份序第一条非主总线轨；CLI 没有选中态
+    // ⇒ 与 GUI 的兜底同一档）。显式身份**没有**第二条解析路径。
+    let track = match track_id {
+        Some(wanted) => Some(
+            resolve_sampler_track(project, wanted)
+                .map_err(|reason| CliError::TrackSampler {
+                    path: path.to_path_buf(),
+                    reason,
+                })?
+                .clone(),
+        ),
+        None => crate::bridge::device_rack_track(project).cloned(),
+    };
     let track_label = track
         .as_ref()
         .map_or_else(|| "<无>".to_owned(), |track| track.name.clone());
@@ -4008,6 +4155,11 @@ pub fn run_batch(options: &Options) -> Result<Vec<String>, CliError> {
     }
     if options.version {
         return Ok(vec![version_text()]);
+    }
+    // ⭐ 任务单 `#287`：`--sampler-track` 的第二道守卫（`parse()` 已拒；这里兜住
+    // 直接构造的 [`Options`] —— 字段是公开的，判据可以绕过解析器）。
+    if options.sampler_track.is_some() && options.track_sampler.is_none() {
+        return Err(CliError::Usage(SAMPLER_TRACK_PAIRING_ERROR.to_owned()));
     }
     if options.headless_idle {
         // 防假绿守卫，**不是**形式主义：本函数的模块文档第一句就是"零 Slint 依赖"，
@@ -4123,7 +4275,14 @@ pub fn run_batch(options: &Options) -> Result<Vec<String>, CliError> {
             (Some(_), Some(sampler))
                 if options.record_source.as_deref() != Some("tone") && options.sfz.is_none() =>
             {
-                Some(apply_track_sampler(&loaded.archive.project, sampler)?.0)
+                Some(
+                    apply_track_sampler(
+                        &loaded.archive.project,
+                        sampler,
+                        options.sampler_track.as_deref(),
+                    )?
+                    .0,
+                )
             }
             _ => None,
         };
@@ -4287,7 +4446,11 @@ pub fn run_batch(options: &Options) -> Result<Vec<String>, CliError> {
     // ⭐ 任务单 `#239`：应用逻辑唯一实现在 [`apply_track_sampler`] —— 录音块在**副本**上先用
     // 同一份实现（`recorded_bound_project`），这里仍是**真身**的落点（导入之后）。
     if let Some(path) = options.track_sampler.as_ref() {
-        let (project, line) = apply_track_sampler(&loaded.archive.project, path)?;
+        let (project, line) = apply_track_sampler(
+            &loaded.archive.project,
+            path,
+            options.sampler_track.as_deref(),
+        )?;
         // 会话是权威 ⇒ 落回归档：同一命令里的 `--export-wav` / `--save-as` 看的是这一份。
         loaded.archive.project = project;
         lines.push(line);
