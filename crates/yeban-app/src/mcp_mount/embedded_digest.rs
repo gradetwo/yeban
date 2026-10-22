@@ -1787,12 +1787,19 @@ fn measure_sampler_no_sampler(
 /// 五条读数（baseline / loop / span / ampeg / layers）**逐条** `assert_eq!`：
 /// 同一工程、同一 SFZ ⇒ MCP 与 CLI 的 `masterDigest` 必须逐位相同。
 /// `#274` 起 `#[ignore]` 已删除 —— 它现在**在正常档里跑**，是本单的验收本身。
+/// 一个夹具的声明：名字 ＋ SFZ 文本 ＋ 音符（tick, pitch）。
+///
+/// ⚠ 单独起名是因为 `clippy::type_complexity` 在**合并特性腿**（`APP_FEATURES` 五条一起开）
+/// 会把内联的 `[(&str, &str, Vec<(u64, u8)>); 5]` 判为"极复杂类型" —— 本地 `premerge-gate.sh`
+/// 不跑那条特性组合，所以它只在 CI 上红（详见台账 R1031）。
+type SamplerCase<'a> = (&'a str, &'a str, Vec<(u64, u8)>);
+
 #[test]
 fn the_sampler_export_must_be_byte_identical_after_the_sfz_migration() {
     let scratch = Scratch::new("sampler-c1-strict");
     structured_sampler_sample(&scratch);
 
-    let cases: [(&str, &str, Vec<(u64, u8)>); 5] = [
+    let cases: [SamplerCase<'_>; 5] = [
         ("baseline", SFZ_PLAIN, vec![(0, 60)]),
         ("loop", SFZ_LOOP, vec![(0, 60)]),
         ("span", SFZ_SPAN, vec![(0, 60)]),
