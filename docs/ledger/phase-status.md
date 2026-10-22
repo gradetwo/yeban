@@ -16449,3 +16449,25 @@ cargo test -p yeban-engine -p yeban-render -p yeban-mcp -p yeban-app --locked --
 ⭐ ⚠ ⭐ ⭐ **三、⚠ 三单的共同点（⭐ 可疑处、⭐ ⛔ 不是结论）**: ⭐ 三单**都**改了代码** ＋ ⭐ **都跑了 22–28 分钟**（⭐ 而文档提交只 1 分钟）⇒ ⭐ ⚠ **那个时长说明**测试腿真的跑了**** ⇒ ⭐ ⭐ **所以这是**真红**、⭐ ⛔ 不是"⭐ 空绿"** ★ ⭐ 而 ⭐ ⚠ **`#286` 与 `#287` 都在 `yeban-app` 的测试面**、⭐ `trim-target.sh` 在 `scripts/**` ⇒ ⭐ ⭐ **暂看不出共同的技术原因** ✓
 
 ⭐ ⚠ **本条状态词⛔ 未动**（⭐ 项数与状态词一个字未动）✓ ⚠ **仍待补**: ⭐ ⭐ **网络恢复后逐 job 读这三个 run**（⭐ `39727338230`／⭐ `39729957047`／⭐ `39734712439`）⇒ ⭐ **判是不是既有红/⭐ 环境问题/⭐ 真回归** ＋ ⭐ `Macro` ＋ ⭐ ⚠ **仍需人类**：⭐ 真声卡核验 ＋ ⭐ 听三对 ＋ ⭐ 真 MIDI ＋ ⭐ 物理回环线 ✓
+
+---
+
+## R1032 实测追加（2026-10-22）：⭐ **三条红找到根因并修好** ＋ ⚠ **两个"⭐ 假绿/⭐ 无判决"的坑**
+
+⭐ ⚠ ⭐ ⭐ **一、⭐ `#287` 的红（⭐ 逐 job 读、⭐ 逐字）**: ⭐ `plan`／⭐ `deny`／⭐ `checks`／⭐ `lockfile` ✓ ⇒ ⭐ ⚠ **`rust (yeban-app)` ✗**、⭐ ⭐ **红在 `clippy (合并特性, -D warnings)`** **** ⇒ ⭐ 而 ⭐ **同一 job 里 `clippy (-D warnings)` 单特性、⭐ `test`、⭐ `doctests` 都 ✓** ✓
+★ ⭐ ⭐ **那个"合并特性"⭐是什么（⭐ `.github/workflows/ci.yml:60`）**: ⭐ ⭐ **`APP_FEATURES: "experimental-als-export,experimental-logic-export,experimental-logic-import,in-process-mcp,midi-input"`** **** ⇒ ⭐ 步里跑 ⭐ `cargo clippy -p <crate> --all-targets --locked --features "$features" -- -D warnings` ✓
+★ ⭐ ⚠ ⭐ ⭐ **而 ⭐ `premerge-gate.sh` **不跑**这条组合** **** ⇒ ⭐ ⭐ **那就是"⭐ 本机绿、⭐ CI 红"⭐的**结构性**原因**（⭐ ⛔ 不是谁粗心）✓
+
+⭐ ⚠ ⭐ ⭐ **二、⭐ 本机复现（⭐ 逐字）**: ⭐ ⭐ **`error: very complex type used. Consider factoring parts into \`type\` definitions` ⇒ ⭐ `crates/yeban-app/src/mcp_mount/embedded_digest.rs:1795:16`** **** ⇒ ⭐ `clippy::type_complexity` ⭐ 指着 ⭐ `[(&str, &str, Vec<(u64, u8)>); 5]`（⭐ 那是 `#286` 加的测试行）✓
+★ ⭐ **修法**: ⭐ ⭐ **具名别名 `type SamplerCase<'a> = (&'a str, &'a str, Vec<(u64, u8)>);`** **** ⇒ ⭐ **合并特性 clippy `rc=0`** ＋ ⭐ `cargo test -p yeban-app --lib --features in-process-mcp` **`385 passed`** ＋ ⭐ 轻门 ＋ ⭐ 守卫 18 ＋ ⭐ `fmt` 0 ⇒ ⭐ 提交 **`0c27ddbb`** ✓
+
+⭐ ⚠ ⭐ ⭐ **三、⚠ ⚠ 两个坑（⭐ 比修本身更值钱）**:
+| ⭐ | ⭐ 坑 | ⭐ 逐字 |
+| :-- | :--- | :--- |
+| ⭐ **1** | ⭐ ⭐ **`0c27ddbb` 的 CI 是 `cancelled`（⭐ 跑了 **1h5m** ⇒ ⭐ 超时）** | ⭐ ⭐ **不是判决** ⇒ ⭐ 我**重跑**了 `gh run rerun 39738252369` ⇒ ⭐ 现 `in_progress` ✓ |
+| ⭐ **2** | ⭐ ⭐ **`Gates (手动)` 那条 on `0c27ddbb` 判 `success`**、⭐ **而 12 个 job 里只有 `inventory` 跑了、⭐ 其余 11 个全 `skipped`** | ⭐ ⭐ **那是**空绿**（⭐ 第 342 条）⇒ ⭐ ⛔ 什么都不证明** ✓ |
+⇒ ⭐ ⭐ **所以 ⭐ "⭐ 一次 `success`"⭐必须连**跑了哪些 job** 一起读** ✓
+
+⭐ ⚠ ⭐ ⭐ **四、⚠ 一条**观察（⭐ ⛔ 不是结论）**: ⭐ CI 时长在涨 —— ⭐ `#287` **22m**、⭐ `#286` **27m**、⭐ trim-target **28m**、⭐ `0c27ddbb` **>1h（⭐ 超时）** ⇒ ⭐ ⚠ **可疑：⭐ 近期新加的测试**（⭐ `scene_launch_wiring` 370 行、⭐ `track_sampler_track_selector` 537 行、⭐ `export_wav_aux_sampler` +260）⇒ ⭐ ⚠ **但 ⛔ 没量过、⭐ 记成待查** ✓
+
+⭐ ⚠ **本条状态词⛔ 未动**（⭐ 项数与状态词一个字未动）✓ ⚠ **仍待补**: ⭐ ⭐ **`0c27ddbb` 重跑的判决** ＋ ⭐ **CI 时长为何涨到超时** ＋ ⭐ **把"⭐ 合并特性 clippy"⭐加进本机门**（⭐ 那样"⭐ 本地绿"⭐才推得出"⭐ CI 绿"）＋ ⭐ `Macro` ＋ ⭐ ⚠ **仍需人类**：⭐ 真声卡核验 ＋ ⭐ 听三对 ＋ ⭐ 真 MIDI ＋ ⭐ 物理回环线 ✓
