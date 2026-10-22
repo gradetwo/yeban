@@ -25,13 +25,16 @@
 //! | [`the_aux_return_is_registered_as_a_sample_source`] | ⭐ `#240`：aux 仍**注册自己的源**（`#237` 的绕法已删）⇒ 逐源峰值表里**有** aux；它的源为空时峰值为 0、但节点在表里 |
 //! | [`an_aux_return_without_a_send_still_exports`] | **无入边**的 aux 也是源节点，能导出（`MissingSource` 不会炸） |
 //! | [`a_project_without_an_aux_return_exports_the_same_bytes_twice`] | 正对照：无 aux 的同形工程连导两次逐字节相同（同时给报告行 sha256，供修前/修后对比） |
+//! | [`the_sampler_installed_on_the_aux_return_is_heard_in_the_export`] | ⭐ `#286`（F6 的**真**判据）：aux **自己带音符** ⇒ 母带上唯一能发声的源就是它的采样器；装/不装采样器两次 CLI 导出的 `sha256` **必须不同**，逐源峰值 > 0 |
 //!
 //! # 边界（⛔ 不声称）
 //!
 //! - ⛔ 不证"人耳听到混响"：只证**样本**上 aux 的贡献存在且随发送增益变化；
 //! - ⛔ 不钉 WAV 的绝对 `sha256`（机器相关，台账第 313 条）—— 正对照用同一台机器的自比；
-//! - ⭐ `#240` 起 aux 的源（含片段/采样器）**会**进输出：本夹具的 aux 没有 MIDI 内容，
-//!   所以源峰值为 0；"源 ＋ 发送两路都响"的分路读数在 `export_wav_bus_sum.rs`。
+//! - ⚠ ⭐ `#286` 实测发现：[`fixture_project`] 的 aux **没有 MIDI 内容** ⇒ 上面那条
+//!   CLI 判据的 `peak > 0` 其实来自 `T1`／`T2`，**不证明** aux 的采样器发声。
+//!   补的判据用 [`aux_source_only_project`]（`T1` 静音、`A0` 自带音符）把声源
+//!   **隔离到 aux**；"源 ＋ 发送两路都响"的分路读数仍在 `export_wav_bus_sum.rs`。
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -43,8 +46,8 @@ use yeban_app::export_wav::{WavExportOptions, export_wav};
 use yeban_app::render_core::render_project_f32_with_assets_under;
 use yeban_model::container::write_project_container;
 use yeban_model::{
-    ClipContent, ClipPlacement, ClipPoolEntry, EntityId, LoopConfig, MidiNote, RoutingEdge,
-    RoutingKind, TrackKind, TrackV3, YebanProjectV1,
+    AssetHash, ClipContent, ClipPlacement, ClipPoolEntry, EntityId, LoopConfig, MidiNote,
+    RoutingEdge, RoutingKind, SamplerBinding, TrackKind, TrackV3, YebanProjectV1,
 };
 use yeban_render::dither::PcmBuffer;
 use yeban_render::rf64::PcmFormat;
@@ -215,6 +218,114 @@ fn fixture_project(with_aux: bool, send_gain_db: Option<f32>) -> YebanProjectV1 
                 destination_node: aux,
                 kind: RoutingKind::SendToAux,
                 gain_db: send_gain_db,
+            },
+        );
+    }
+
+    project.routing_graph.nodes.sort_unstable();
+    project.validate().expect("夹具工程必须合法");
+    project
+}
+
+/// ⭐ `#286`（F6 的**真**判据形状）：**母带上唯一能发声的源就是 aux 自己的采样器**。
+///
+/// 与 [`fixture_project`] 的差别：那条夹具的 aux 没有 MIDI 内容 ⇒ 导出峰值来自
+/// `T1`／`T2`，"峰值 > 0"**不能**证明 aux 的采样器发声（`#286` 的实测发现）。
+/// 这里 `T1` **没有片段**（只留一条 `SendToAux`，给 aux 造入边 —— F6 的形状），
+/// `A0` 自己带一个 pitch 60 的音符 ⇒ 母带上的非零样本只可能来自 aux 的源。
+///
+/// 身份序：`A0` < `T1` ⇒ `--track-sampler` 的目标轨（第一条非主总线轨）就是 aux。
+fn aux_source_only_project() -> YebanProjectV1 {
+    let master = fixture_id("M1");
+    let aux = fixture_id("A0");
+    let send_only = fixture_id("T1");
+
+    let mut project = YebanProjectV1 {
+        id: fixture_id("Z1"),
+        title: "aux source only fixture".to_owned(),
+        bpm: 120.0,
+        // ⭐ `#286`：固定种子 ⇒ 概率触发与噪声在每次执行里同解。
+        rng_seed: 0x5945_4241_4E00_0286,
+        master_bus_track_id: master,
+        ..YebanProjectV1::default()
+    };
+    project.tracks.insert(
+        master,
+        TrackV3 {
+            id: master,
+            name: "Master".to_owned(),
+            kind: TrackKind::Master,
+            ..TrackV3::default()
+        },
+    );
+    project.routing_graph.nodes.push(master);
+
+    // T1：**没有片段**（静音），只有一条 `SendToAux` ⇒ aux 有入边。
+    project.tracks.insert(
+        send_only,
+        TrackV3 {
+            id: send_only,
+            name: "Send Only".to_owned(),
+            kind: TrackKind::Midi,
+            volume_db: -6.0,
+            ..TrackV3::default()
+        },
+    );
+    project.routing_graph.nodes.push(send_only);
+
+    // A0：自己带一个音符（pitch 60，与夹具 SFZ 的 region 对上）。
+    let clip = fixture_id("K0");
+    let placement = fixture_id("P0");
+    let note = fixture_id("N0");
+    let mut track = TrackV3 {
+        id: aux,
+        name: "Aux Return".to_owned(),
+        kind: TrackKind::AuxReturn,
+        ..TrackV3::default()
+    };
+    track.clips.insert(
+        placement,
+        ClipPlacement {
+            id: placement,
+            clip_id: clip,
+            start_tick: 0,
+            duration_ticks: 1_920,
+            loop_config: LoopConfig::default(),
+            muted: false,
+        },
+    );
+    let mut notes = BTreeMap::new();
+    notes.insert(
+        note,
+        MidiNote {
+            velocity: 100,
+            ..MidiNote::new(note, 0, 60, 1_920)
+        },
+    );
+    project.clip_pool.insert(
+        clip,
+        ClipPoolEntry {
+            id: clip,
+            name: "auxclip".to_owned(),
+            content: ClipContent::Midi { notes },
+        },
+    );
+    project.tracks.insert(aux, track);
+    project.routing_graph.nodes.push(aux);
+
+    for (tail, source_node, destination_node, kind) in [
+        ("E1", send_only, aux, RoutingKind::SendToAux),
+        ("E2", aux, master, RoutingKind::BusToMaster),
+    ] {
+        let id = fixture_id(tail);
+        project.routing_graph.edges.insert(
+            id,
+            RoutingEdge {
+                id,
+                source_node,
+                destination_node,
+                kind,
+                gain_db: None,
             },
         );
     }
@@ -479,4 +590,149 @@ fn a_project_without_an_aux_return_exports_the_same_bytes_twice() {
     assert_eq!(first.bytes, second.bytes, "字节数");
     assert_eq!(first_bytes, second_bytes, "同一工程连导两次必须逐字节相同");
     assert_eq!(first.digest, second.digest, "母带 digest 必须相同");
+}
+
+/// ⭐ `#286`（F6 的**真**判据）：CLI 装到 aux 上的采样器**真的进导出**。
+///
+/// 为什么补这一条：`#220` 的复现形状里，`--track-sampler` 落到 aux（身份序第一条
+/// 非主总线轨），但 aux 本身没有 MIDI 内容 ⇒ 那条 CLI 判据的 `peak > 0` 来自别的
+/// MIDI 轨，**采不采样器都成立**。本判据把 `T1` 静音、把音符放在 aux 上：
+///
+/// - 母带上**唯一**能发声的源 = aux（它自带音符 ＋ 采样器）；
+/// - 同一份容器，**装/不装** `--track-sampler` 各导一次 ⇒ WAV `sha256` **必须不同**
+///   （采样器被静默丢掉时两次会逐字节相同 —— 这正是 `#324` 的"静默少做"）；
+/// - 逐源读数：aux 的源峰值 > 0，且装/不装时峰值不同。
+///
+/// ⚠ 本判据**不钉**绝对 `sha256`（机器相关，台账第 313 条）：只比同一台机器上
+/// 同一次执行里的"装 vs 不装"。
+#[test]
+fn the_sampler_installed_on_the_aux_return_is_heard_in_the_export() {
+    let fixture = Fixture::new("audible");
+    let sfz = fixture.write_sfz("tone.sfz", "<region> key=60 sample=tone.wav\n");
+    let project = aux_source_only_project();
+    let aux = fixture_id("A0");
+    let container = write_container(&fixture.dir, "audible-plain.yeban", &project);
+
+    // ---- ① 不装采样器：aux 走引擎合成器（"采样器真的改变了声音"的对照）。 ----
+    let plain_wav = fixture.dir.join("audible-plain.wav");
+    let (plain_code, plain_stdout, plain_stderr) = invoke(&[
+        "--open",
+        container.to_str().expect("UTF-8"),
+        "--export-wav",
+        plain_wav.to_str().expect("UTF-8"),
+    ]);
+    assert_eq!(
+        plain_code, 0,
+        "无采样器的形状也必须能导出; stderr={plain_stderr}"
+    );
+    let plain_line = plain_stdout
+        .lines()
+        .find(|line| line.starts_with("exported-wav:"))
+        .expect("必须有 exported-wav 报告行");
+    assert_eq!(field(plain_line, "frames").as_deref(), Some("384000"));
+    let plain_peak = peak_of(&plain_wav);
+    let plain_sha = AssetHash::of_bytes(&std::fs::read(&plain_wav).expect("读无采样器产物"));
+
+    // ---- ② 同一份容器 ＋ `--track-sampler`：采样器落到 aux，导出必须成功。 ----
+    let sampled_wav = fixture.dir.join("audible-sampled.wav");
+    let (code, stdout, stderr) = invoke(&[
+        "--open",
+        container.to_str().expect("UTF-8"),
+        "--track-sampler",
+        sfz.to_str().expect("UTF-8"),
+        "--export-wav",
+        sampled_wav.to_str().expect("UTF-8"),
+    ]);
+    assert_eq!(code, 0, "aux 装采样器后必须能导出; stderr={stderr}");
+    let track_line = stdout
+        .lines()
+        .find(|line| line.starts_with("track-sampler:"))
+        .expect("必须有 track-sampler 报告行");
+    assert!(
+        track_line.contains("track=Aux Return"),
+        "采样器必须装到 aux 上（F6 的形状）: {track_line}"
+    );
+    let line = stdout
+        .lines()
+        .find(|line| line.starts_with("exported-wav:"))
+        .expect("必须有 exported-wav 报告行");
+    assert_eq!(field(line, "frames").as_deref(), Some("384000"), "{line}");
+    assert!(
+        line.contains("sfz(tracks=1") && line.contains("silent=0"),
+        "导出必须把 aux 的采样器摊平进来: {line}"
+    );
+    let sampled_peak = peak_of(&sampled_wav);
+    let sampled_sha = AssetHash::of_bytes(&std::fs::read(&sampled_wav).expect("读采样器产物"));
+
+    println!(
+        "[286/cli] plain:  bytes={} peak={plain_peak:.9} sha256={plain_sha}",
+        std::fs::metadata(&plain_wav).expect("stat").len()
+    );
+    println!(
+        "[286/cli] sampled: bytes={} peak={sampled_peak:.9} sha256={sampled_sha}",
+        std::fs::metadata(&sampled_wav).expect("stat").len()
+    );
+    assert!(plain_peak > 0.0, "对照档（引擎合成器）必须非静音");
+    assert!(
+        sampled_peak > 0.0,
+        "aux 的采样器必须发声（母带上没有别的声源）: {sampled_peak}"
+    );
+    assert_ne!(
+        plain_sha, sampled_sha,
+        "装/不装采样器的导出字节必须不同（相同 ⇒ 采样器被静默丢掉）"
+    );
+    assert!(
+        (plain_peak - sampled_peak).abs() > 1e-3,
+        "装/不装采样器的母带峰值必须不同: plain={plain_peak} sampled={sampled_peak}"
+    );
+
+    // ---- ③ 逐源读数：aux 的源峰值 > 0，且装/不装的 `digest` 不同。 ----
+    //
+    // 采样器的绑定与 `--track-sampler` 的落点相同（`Op::SetTrackSampler` 只写这一个
+    // 字段）；CLI 的安装→导出接线已经由上面的两次子进程钉住。
+    let mut with_sampler = aux_source_only_project();
+    with_sampler
+        .tracks
+        .get_mut(&aux)
+        .expect("夹具必须有 aux")
+        .sampler = Some(SamplerBinding {
+        path: sfz.to_str().expect("UTF-8").to_owned(),
+    });
+    let options = WavExportOptions {
+        frames: 48_000 * 2,
+        ..WavExportOptions::default()
+    };
+    let plain =
+        render_project_f32_with_assets_under(&project, options, None, &[], Some(&fixture.dir))
+            .expect("无采样器的工程必须能渲染");
+    let sampled =
+        render_project_f32_with_assets_under(&with_sampler, options, None, &[], Some(&fixture.dir))
+            .expect("aux 采样器的工程必须能渲染");
+    let aux_peak_of = |output: &yeban_app::render_core::RenderProjectOutput| {
+        output
+            .source_peaks
+            .iter()
+            .find(|(id, _)| *id == aux)
+            .map(|(_, peak)| *peak)
+            .expect("aux 必须在逐源峰值表里")
+    };
+    let plain_aux = aux_peak_of(&plain);
+    let sampled_aux = aux_peak_of(&sampled);
+    println!(
+        "[286/sources] plain_aux={plain_aux:.9} sampled_aux={sampled_aux:.9} \
+         plain_digest={} sampled_digest={}",
+        plain.digest, sampled.digest
+    );
+    assert!(
+        sampled_aux > 0.0,
+        "aux 的源必须发声（采样器 PCM 常数 0.25）: {sampled_aux}"
+    );
+    assert!(
+        (plain_aux - sampled_aux).abs() > 1e-3,
+        "装/不装采样器的 aux 源峰值必须不同: plain={plain_aux} sampled={sampled_aux}"
+    );
+    assert_ne!(
+        plain.digest, sampled.digest,
+        "装/不装采样器的母带 digest 必须不同（相同 ⇒ 采样器被静默丢掉）"
+    );
 }
