@@ -16772,3 +16772,35 @@ empty 7
 ⭐ ⚠ ⭐ ⭐ **五、⭐ 新判据**: ⭐ `imported_note_count_matches_the_logic_export_midi_on_every_channel`（⭐ `logic.rs:9546`）⇒ ⭐ **导入音符数 ＝ ⭐ `export.mid` 的 note-on 总数（905）** ＋ ⭐ **逐 region 0／⭐ 517／⭐ 388** ＋ ⭐ **正对照 1 轨仍 517** ✓
 
 ⭐ ⚠ **本条状态词⛔ 未动**（⭐ 项数与状态词一个字未动）✓ ⚠ **仍待补**: ⭐ ⭐ **上面 R1042 那句"⭐ 音符 9,825"⭐已过时（⭐ 现为 12,561）** ⇒ ⭐ **但那是**历史条目**、⭐ 按第 44 条**⛔ 不改写**、⭐ 以本条为准** ＋ ⭐ **`32b8f8ff` 的判决** ＋ ⭐ **通道 2–15 需新供体** ＋ ⭐ `Macro` ＋ ⭐ ⚠ **仍需人类**：⭐ 真声卡核验 ＋ ⭐ 听三对 ＋ ⭐ 真 MIDI ＋ ⭐ 物理回环线 ✓
+
+---
+
+## R1047 实测追加（2026-10-23）：⭐⭐ **`#290` 落地** —— ⭐ **MCP 现在能启动场景了**（⭐ **工具 22 → 23**）
+
+⭐ **合并**: ⭐ base `34aa94ee` ⇒ ⭐ `FINAL=5421dba2`（⭐ **21 文件 ＋1536／−42**：⭐ ADDED 3、⭐ CHANGED 18）⇒ ⭐ 主干 ff ✓ ⭐ 读数：⭐ **`1051 passed`**（⭐ mcp ＋ ui-mcp、⭐ 41 结果行、⭐ 1 ignored）＋ ⭐ 门 **26 层全 0** ＋ ⭐ 守卫 **18** ＋ ⭐ 轻门 ＋ ⭐ `validate_schemas` ＋ ⭐ **`check_mcp_dependency_direction` 0 违规** ✓ ⭐ 树已拆 ✓
+
+⭐ ⚠ ⭐ ⭐ **一、⭐ 新工具 `yeban_launch_scene`**（⭐ `sceneId` ＝ ⭐ 26 字符 ULID、⭐ specId `MCP-TOOL-EXT-SCENE-LAUNCH`、⭐ scope `app:admin`）✓
+★ ⭐ ⭐ **参数用 `sceneId` ⛔ 不是 `sceneIndex`**：⭐ 因为 ⭐ **索引是 `bridge.rs:3581-3583` 的**投影派生物**、⭐ 增删场景就变义** ⇒ ⭐ **而 `EntityId` 是身份** ✓
+
+⭐ ⚠ ⭐ ⭐ **二、⭐ 四档量化 ＋ 真启动（⭐ 逐字）**:
+| ⭐ 档 | ⭐ 读数 |
+| :-- | :--- |
+| ⭐ `Off` | ⭐ `used_blocks=1`、⭐ `bpm=128->145`、⭐ `applied=1` |
+| ⭐ `Bar` | ⭐ `used_blocks=750` |
+| ⭐ `TwoBars` | ⭐ `used_blocks=1500` |
+| ⭐ `FourBars` | ⭐ `used_blocks=3000` |
+★ ⭐ 并 ⭐ **`yeban_query_engine_state` 的 `engine.sceneLaunchesApplied` `0 → 1`**（⭐ 源 ⭐ `hostEngineMirror`）⇒ ⭐ ⭐ **AI 现在能**闭环确认**"到点真的生效了"**（⭐ 那是我**加码**要求的、⭐ 它原本建议不做）✓
+
+⭐ ⚠ ⭐ ⭐ **三、⭐ 形态 B（⭐ stdio 独立进程）⭐ 响亮报错、⭐ ⛔ 静默成功**（⭐ 逐字）: ⭐ `status="error"`、⭐ `code="CONFLICT"`、⭐ `reason="engineUnavailable"`、⭐ `form="stdio"`、⭐ `hostAttached=false`、⭐ 报文 ⭐ **"本形态没有引擎：独立 stdio 进程（形态 B）不托管 yeban-engine，yeban_launch_scene 无法启动场景。"** ✓
+★ ⭐ ⚠ ⭐ ⭐ **它明确**否掉**了照 `bufferFrames = null` 的只读惯例**：⭐ ⭐ **"⭐ 那是**读**工具的语义；⭐ 本工具是**动作**、⭐ `null` + `success` 就是'⭐ 静默成功'、⭐ 直接撞 `#324`"** **** ✓
+
+⭐ ⚠ ⭐ ⭐ **四、⭐ 越界两枪 ＋ 队列上界**: ⭐ 非法 ULID ⇒ ⭐ `INVALID_PARAMETER_RANGE`／⭐ `invalidSceneId`；⭐ 合法但不在工程 ⇒ ⭐ `ENTITY_NOT_FOUND`／⭐ `sceneNotFound` ＋ ⭐ `sceneCount` ⇒ ⭐ ⭐ **⛔ 不回落第一个**（⭐ 注入验证：⭐ 加回落 ⇒ ⭐ 判据红、⭐ `left: "success"`／⭐ `right: "error"`）★ ⭐ 队列满（⭐ `MAX_PENDING_SCENE_LAUNCHES=64`）⇒ ⭐ `BUSY`／⭐ `sceneLaunchQueueFull` ✓
+
+⭐ ⚠ ⭐ ⭐ **五、⭐ 一条**架构边界**（⭐ 它写清了、⭐ 很重要）**: ⭐ ⭐ **`yeban-engine` 在 `check_mcp_dependency_direction.py:85` 里是 `FORBIDDEN`** **** ⇒ ⭐ ⭐ **所以本票**没有**让 `yeban-mcp` 依赖引擎**（⭐ `grep -cE '^yeban-engine' crates/yeban-mcp/Cargo.toml` ⇒ **0**）⇒ ⭐ **而是走 `crates/yeban-app` 的**宿主 attach 口**（⭐ `mcp_mount.rs` 的 `SceneLaunchHandle`／⭐ `apply_scene_launch_requests`／⭐ `publish_scene_launches_applied` ＋ ⭐ `main.rs` 的 60Hz 心跳）✓
+★ ⭐ 并 ⭐ **它纠正了我的前提**：⭐ ⭐ **"⭐ 形态 A 也**不是**同线程直调 —— ⭐ MCP 是**环回 HTTP 工作线程**、⭐ `Domain` 只有**只读** `EngineReadings` 镜像"** **** ✓
+
+⭐ ⚠ ⭐ ⭐ **六、⚠ 它如实划的**最弱点**（⭐ 很值钱）**: ⭐ ⭐ **"⭐ 形 A 的'真启动'判据走的是**产品同一个搬运函数**、⭐ ⛔ 不是 16ms 定时器本身 ⇒ ⭐ 若把定时器那条线删掉、⭐ 本判据**不会红**（⭐ 它只证搬运链、⭐ 不证定时器注册）"** **** ✓
+★ ⭐ 另 ⭐ **设备腿 `sceneLaunchesApplied` 如实 `null`**（⭐ 运行时在 cpal 回调线程、⭐ 需要 RT→UI 原子镜面 ⇒ ⭐ **登记为后续**）✓
+★ ⭐ ⚠ **并 ⭐ 登记一条既有偶发**：⭐ `yeban-ui-mcp` 的 `transport::mount::tests::stop_releases_the_listener` ⚠ **并行全量跑时偶红**（⭐ 单独跑 3 次全过、⭐ 串行 premerge 全过）⇒ ⭐ **本票 ⛔ 未改 ui-mcp 一个字节** ✓
+
+⭐ ⚠ **本条状态词⛔ 未动**（⭐ 项数与状态词一个字未动）✓ ⚠ **仍待补**: ⭐ **`5421dba2` 的判决** ＋ ⭐ **设备腿 RT→UI 镜面** ＋ ⭐ **定时器注册的判据** ＋ ⭐ ⭐ **`automationLanes`／⭐ `audioClips` 进渲染**（⭐ MCP 创作的**两个大头**）＋ ⭐ `Macro` ＋ ⭐ ⚠ **仍需人类**：⭐ 真声卡核验 ＋ ⭐ 听三对 ＋ ⭐ 真 MIDI ＋ ⭐ 物理回环线 ✓
