@@ -196,6 +196,18 @@ for c in ${CRATES[@]+"${CRATES[@]}"}; do
   #    下面这组层**逐条对齐 `.github/workflows/ci.yml` 里真实存在的 feature 腿**；
   #    ⛔ 只在 crate 真声明了该特性时才跑（对其余 crate 传不存在的 `--features` 会直接报错）。
   layer "check -p $c --all-targets" cargo check -p "$c" --all-targets --locked
+  # ⚠ 第 347 条（R1031/R1032 换来的）：CI 还有一条**合并特性**腿 ——
+  #    `.github/workflows/ci.yml:60` 的 `APP_FEATURES` 五条**一起**开，然后跑
+  #    `cargo clippy --all-targets --features "<那五条>" -- -D warnings`。
+  #    ⛔ **本门以前不跑它** ⇒ 于是"本机全绿"**推不出**"CI 会绿"：
+  #    `#287` 就是这样 —— 本地 20 层全 0，CI 在 `clippy (合并特性)` 红
+  #    （`clippy::type_complexity` 只在五条一起开时才触发）。
+  #    清单的**单一事实源**是 `scripts/dev/app-features.sh`（它读的那个环境变量
+  #    与 workflow 同名同值），⛔ 别在这里手抄一份。
+  merged_features="$(APP_FEATURES="experimental-als-export,experimental-logic-export,experimental-logic-import,in-process-mcp,midi-input" bash scripts/dev/app-features.sh "$c" 2>/dev/null || true)"
+  if [ -n "$merged_features" ]; then
+    layer "clippy -p $c --all-targets (合并特性)" cargo clippy -p "$c" --all-targets --locked --features "$merged_features" -- -D warnings
+  fi
   # CI: clippy/test (实验性导出特性)
   if grep -q '^experimental-logic-export' "crates/$c/Cargo.toml" 2>/dev/null; then
     layer "check -p $c --all-targets --features 实验性导出" \
