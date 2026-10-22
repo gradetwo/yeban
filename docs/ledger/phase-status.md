@@ -16804,3 +16804,32 @@ empty 7
 ★ ⭐ ⚠ **并 ⭐ 登记一条既有偶发**：⭐ `yeban-ui-mcp` 的 `transport::mount::tests::stop_releases_the_listener` ⚠ **并行全量跑时偶红**（⭐ 单独跑 3 次全过、⭐ 串行 premerge 全过）⇒ ⭐ **本票 ⛔ 未改 ui-mcp 一个字节** ✓
 
 ⭐ ⚠ **本条状态词⛔ 未动**（⭐ 项数与状态词一个字未动）✓ ⚠ **仍待补**: ⭐ **`5421dba2` 的判决** ＋ ⭐ **设备腿 RT→UI 镜面** ＋ ⭐ **定时器注册的判据** ＋ ⭐ ⭐ **`automationLanes`／⭐ `audioClips` 进渲染**（⭐ MCP 创作的**两个大头**）＋ ⭐ `Macro` ＋ ⭐ ⚠ **仍需人类**：⭐ 真声卡核验 ＋ ⭐ 听三对 ＋ ⭐ 真 MIDI ＋ ⭐ 物理回环线 ✓
+
+---
+
+## R1048 实测追加（2026-10-23）：⭐⭐ **`#291` 落地（⭐ 但 ⛔ 不是按票做的）** —— ⭐ `automationLanes` 是**残差桶**、⭐ ⛔ 不是"⭐ 自动化不参与"
+
+⭐ **合并**: ⭐ base `cbb9a9a8` ⇒ ⭐ `FINAL=c1b84e47`（⭐ 5 文件 ＋538／−42）⇒ ⭐ 主干 ff ✓ ⭐ 读数：⭐ **`2353 passed`**（⭐ render＋mcp＋app、⭐ 148 二进制）＋ ⭐ `in-process-mcp` **940 passed** ＋ ⭐ 门 **31/31 层** ＋ ⭐ 守卫 18 ＋ ⭐ 轻门 ＋ ⭐ `validate_schemas` ＋ ⭐ 依赖方向 0 违规 ✓ ⭐ 树已拆 ✓
+
+⭐ ⚠ ⭐ ⭐ **一、⚠ ⭐ 我票里的前提**是错的**（⭐ 这轮第四次同类错）**: ⚠ 我写 ⭐ **"⭐ 模型与工具面都支持、⭐ 而渲染层明确登记'⭐ 不参与' ⇒ ⭐ 写了听不到"** **** ⇒ ⭐ ⭐ **而 ⭐ `render.rs:52` 逐字说那是个**共用残差键**、⭐ 只覆盖 ⭐ ① `Macro` ② 非通道条 `DeviceParam` ③ 总线轨 `TrackVolume` ④ 被剪枝边 `SendGain` ⑤ 主总线 `TrackPan`** **** ⇒ ⭐ ⭐ **而 ⭐ `TrackVolume`／⭐ `TrackPan`／⭐ `SendGain`／⭐ 通道条 `DeviceParam` ⭐ **真的被求值**** ✓
+
+⭐ ⭐ **二、⭐ 铁证（⭐ 它的实测、⭐ 逐字）**: ⭐ `TrackVolume` 泳道（⭐ t=0 −24dB → ⭐ t=1920 0dB）⇒ ⭐ ⭐ **4 段峰值 `[0.06796956, 0.13559294, 0.27050066, 0.5396745]`、⭐ 比 **7.939944×**** **** ＋ ⭐ `sha=4cff560b…`；⭐ **正对照**（⭐ 删泳道）⭐ `[0.776, 0.551, 0.551, 0.551]`、⭐ `sha=837db980…` ⇒ ⭐ **逐字节不同** ✓
+⇒ ⭐ ⭐ **即：⭐ 自动化**一直在工作**、⭐ 是我的推断错** ✓
+
+⭐ ⚠ ⭐ ⭐ **三、⭐⭐ "13 → 12"**拒绝做**（⭐ 理由很硬）**: ⭐ ⚠ 要退役那个键 ⇒ ⭐ **必须清掉全部 5 类残差** ⇒ ⭐ ⭐ **而 ③④⑤ **架构上没有落点**（⭐ 总线无增益级／⭐ 母带求和后无声相级）、⭐ ② 是 `#266`/⭐ `#267` 量级（⭐ 逐器件）、⭐ ① 要**先裁决宏的量纲语义**** **** ⇒ ⭐ ⭐ **"⭐ 硬退 ＝ 第 324 条禁止的漏报；⭐ 硬做 ＝ 新语义／⭐ 第二份实现"** ✓
+
+⭐ ⚠ ⭐ ⭐ **四、⭐ 做了的是 **B**（⭐ 诚实的小改进、⭐ 而 ⭐ 它恰好是**MCP 创作的那个缺口**）**: ⭐ ⭐ **`yeban_edit_automation` 的写侧现在报** `appliedInOfflineRender` ＋ ⭐ `residualReason`** **** ⇒ ⭐ 读数：⭐
+| ⭐ 写什么 | ⭐ 读数 | ⭐ 导出侧 |
+| :-- | :--- | :--- |
+| ⭐ `TrackVolume` | ⭐ `true`、⭐ `null` | ⭐ **`unsupported` 不含 `automationLanes`** |
+| ⭐ `Macro` | ⭐ `false`、⭐ `"macro"` | ⭐ **含 `automationLanes`、⭐ `unsupportedLanes:1`** |
+| ⭐ 主总线 `TrackPan` | ⭐ `false`、⭐ `"masterPan"` | ⭐ 一致 |
+| ⭐ 总线轨 `TrackVolume` | ⭐ `false`、⭐ `"busTrack"` | ⭐ 一致 |
+| ⭐ 非通道条 `DeviceParam` | ⭐ `false`、⭐ `"deviceParamNotChannelStrip"` | ⭐ 一致 |
+⇒ ⭐ ⭐ **即：⭐ "⭐ 写了会不会听得到"⭐现在**当场可读**、⭐ ⛔ 不用等到导出后才发现** ✓
+
+⭐ ⚠ ⭐ ⭐ **五、⭐ 一条**很漂亮**的工程判断**: ⭐ ⭐ **它把 `yeban-render` 里那份判定抽成 `LaneResidual` ＋ ⭐ `unsupported_lane_reason`、⭐ 并**删掉了 `render.rs` 原来那份 match** ⇒ ⭐ ⭐ **判定只剩一处**（⭐ 第 43 条：⭐ 第二份实现就是第二份会被绕过的防御面）** **** ✓
+
+⭐ ⚠ ⭐ ⭐ **六、⭐ 两条注入都红 ＋ ⭐ 它**拒改提交信息****: ⭐ **A**（⭐ `Macro` 判定改成 `None`）⇒ ⭐ 判据 FAILED；⭐ **B**（⭐ `evaluable && supported` 改成 `evaluable`）⇒ ⭐ FAILED（⭐ **自相矛盾被抓**）★ ⭐ ⚠ **而 ⭐ 它把提交信息从票面的 `feat(render): apply automation lanes…` 改成 `feat(mcp): report whether an automation target lands in the offline render`** ⇒ ⭐ ⭐ **因为"⭐ 原来那句会是**假话**"**（⭐ 第 324 条）✓
+
+⭐ ⚠ **本条状态词⛔ 未动**（⭐ 项数与状态词一个字未动）✓ ⚠ **仍待补**: ⭐ **`c1b84e47` 的判决** ＋ ⭐ **残差拆票 ①–⑤**（⭐ ①**先裁决宏量纲**）＋ ⭐ **`prunedEdge` 无端到端夹具** ＋ ⭐ ⭐ **`audioClips` 进渲染**（⭐ MCP 创作剩下的大头）＋ ⭐ `Macro` ＋ ⭐ ⚠ **仍需人类**：⭐ 真声卡核验 ＋ ⭐ 听三对 ＋ ⭐ 真 MIDI ＋ ⭐ 物理回环线 ✓
