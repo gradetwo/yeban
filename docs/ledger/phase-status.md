@@ -16610,3 +16610,26 @@ head -2 /tmp/def-pass.txt
 ★ ⭐ ⚠ **而 ⭐ 我 ⛔ 没查它们是谁**（⭐ 本单只量了数）⇒ ⭐ **记成待查、⭐ 有明确的下一步** ✓
 
 ⭐ ⚠ **本条状态词⛔ 未动**（⭐ 项数与状态词一个字未动）✓ ⚠ **仍待补**: ⭐ **那 2 个空壳是谁**（⭐ `grep 'test result: ok\. 0 passed' /tmp/merged-pass.txt` 去看…⚠ 但 ⭐ 那文件只有结果行、⭐ **没有二进制名**）⇒ ⭐ **要查得用 ⭐ `-- --list` 或 ⭐ 逐 target 跑** ＋ ⭐ **可比旧绿 run** ＋ ⭐ `Macro` ＋ ⭐ ⚠ **仍需人类**：⭐ 真声卡核验 ＋ ⭐ 听三对 ＋ ⭐ 真 MIDI ＋ ⭐ 物理回环线 ✓
+
+---
+
+## R1040 实测追加（2026-10-22）：⭐ **8 → 2 的那 6 个找到了**（⭐ 5 个 `in-process-mcp` ＋ ⭐ 1 个 `experimental-logic-import`）
+
+⭐ ⚠ ⭐ ⭐ **一、⭐ 读数（⭐ `grep -l '^#!\[cfg(feature'` ＋ ⭐ 逐文件取那一行）**: ⭐ ⭐ **`crates/yeban-app/tests/` 下 **6 个**文件在**crate 根**就 `#![cfg(feature = …)]`** ****:
+| ⭐ 文件 | ⭐ 门槛 |
+| :-- | :--- |
+| ⭐ `in_process_mcp_lock.rs` | ⭐ `in-process-mcp` |
+| ⭐ `in_process_mcp.rs` | ⭐ `in-process-mcp` |
+| ⭐ `production_reprojection.rs` | ⭐ `in-process-mcp` |
+| ⭐ `production_save_ui.rs` | ⭐ `in-process-mcp` |
+| ⭐ `single_writer_session.rs` | ⭐ `in-process-mcp` |
+| ⭐ `logic_import.rs` | ⭐ `experimental-logic-import` |
+⇒ ⭐ ⭐ **即：⭐ 5 个要 `in-process-mcp`、⭐ 1 个要 `experimental-logic-import`** ★ ⭐ ⭐ **而 ⭐ 两条都在合并集里** ⇒ ⭐ ⭐ **这 6 个在合并档全部激活** ✓
+
+⭐ ⚠ ⭐ ⭐ **二、⭐ 与 R1039 那个 8 → 2 对得上**: ⭐ 默认档空 **8 个** ⇒ ⭐ 合并档空 **2 个** ⇒ ⭐ ⭐ **激活了 **6 个** ＝ ⭐ 正是这 6 个文件** **** ✓
+★ ⭐ ⭐ **所以"⭐ 合并档比默认档多覆盖 6 个"⭐有了**指名道姓的证据****、⭐ ⛔ 不是只有一个数字 ✓
+
+⭐ ⚠ ⭐ ⭐ **三、⚠ 而那 **2 个**仍是未明的**（⭐ 如实）**: ⚠ ⭐ 我查了 ⭐ **`required-features = ["ui-test-port"]`** ⇒ ⭐ ⭐ **只有 **1 个** test target 用它（⭐ `test_port_adapter`）** **** ⇒ ⭐ ⚠ **而 ⭐ 那种 target 在没特性时**根本不编译** ⇒ ⭐ ⭐ **所以它 ⛔ 不会被算进"⭐ 97 个二进制"** ⇒ ⭐ **那 2 个空壳 ⛔ 不是它** ✓
+★ ⭐ ⚠ **结论：⭐ 那 2 个是**别的原因**（⭐ 例如 ⭐ 文件里每个 `#[test]` 都带 `#[ignore]`／⭐ 或 ⭐ 只声明了 `fn main`／⭐ 或 ⭐ 条件编译到空）⇒ ⭐ ⛔ 未查** ⇒ ⭐ **记成待查、⭐ 方法明确**（⭐ 逐 target `-- --list` 看哪两个列 0 条）✓
+
+⭐ ⚠ **本条状态词⛔ 未动**（⭐ 项数与状态词一个字未动）✓ ⚠ **仍待补**: ⭐ **那 2 个空壳** ＋ ⭐ **可比旧绿 run** ＋ ⭐ `Macro` ＋ ⭐ ⚠ **仍需人类**：⭐ 真声卡核验 ＋ ⭐ 听三对 ＋ ⭐ 真 MIDI ＋ ⭐ 物理回环线 ✓
