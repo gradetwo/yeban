@@ -435,6 +435,24 @@ fn run_gui(options: &Options) -> Result<Vec<String>, cli::CliError> {
             )]),
         }
     }
+    // ⭐ `#290`：把**场景启动口**接到形态 A 的进程内控制面。
+    //
+    // 顺序是契约：必须等引擎真的建起来（`reload` 成功）之后再 attach —— 没有引擎时
+    // `yeban_launch_scene` 要**响亮**报 `engineUnavailable`，⛔ 不是"先接上再假装"。
+    // 句柄在心跳闭包里用：取走 MCP 排队的请求 → `EngineHost::queue_scene_launch`
+    // （与界面按钮**同一个**入口）；再回注 `scene_launches_applied` 读数。
+    #[cfg(feature = "in-process-mcp")]
+    let scene_launch_handle = in_process_mcp.as_ref().map(|mount| {
+        let handle = mount.scene_launch_handle();
+        if engine.has_engine() {
+            handle.attach();
+        }
+        handle
+    });
+    #[cfg(feature = "in-process-mcp")]
+    let engine_readings_handle = in_process_mcp
+        .as_ref()
+        .map(yeban_app::mcp_mount::InProcessMcp::engine_readings_handle);
     let engine_handle = engine.engine_handle();
     host::apply_transport(&ui, engine_handle.borrow().transport());
     // -----------------------------------------------------------------------
@@ -504,6 +522,10 @@ fn run_gui(options: &Options) -> Result<Vec<String>, cli::CliError> {
         let view_tick = Rc::clone(&view_cell);
         let warned = Rc::clone(&meter_mismatch_warned);
         let midi_live = Rc::clone(&midi_live_state);
+        #[cfg(feature = "in-process-mcp")]
+        let scene_launch_tick = scene_launch_handle.clone();
+        #[cfg(feature = "in-process-mcp")]
+        let readings_tick = engine_readings_handle.clone();
         heartbeat.start(
             slint::TimerMode::Repeated,
             std::time::Duration::from_millis(HEARTBEAT_PERIOD_MS),
@@ -517,6 +539,29 @@ fn run_gui(options: &Options) -> Result<Vec<String>, cli::CliError> {
                     None
                 };
                 let tick = production.tick(&ui_tick, &view_tick.borrow(), mark, project.as_ref());
+                // ⭐ `#290`：**MCP 场景启动**的唯一搬运点（与界面按钮同一个 60Hz 节拍、
+                // 同一个 `EngineHost::queue_scene_launch`）。取走即清空；再回注生效计数。
+                // ⚠ 在 `tick` **之后**取引擎（`tick` 内部已经借用过它，`#212` 的纪律）。
+                #[cfg(feature = "in-process-mcp")]
+                if let Some(handle) = scene_launch_tick.as_ref() {
+                    let engine = production.engine_handle();
+                    let drain = yeban_app::mcp_mount::apply_scene_launch_requests(
+                        handle,
+                        &mut engine.borrow_mut(),
+                    );
+                    if let Some(readings) = readings_tick.as_ref() {
+                        yeban_app::mcp_mount::publish_scene_launches_applied(
+                            readings,
+                            &engine.borrow(),
+                        );
+                    }
+                    if drain.refused > 0 {
+                        eprintln!(
+                            "[yeban-app] MCP 场景启动：{} 条没有送到引擎（见上面的逐条日志）",
+                            drain.refused
+                        );
+                    }
+                }
                 // ⭐ **实时腿的发布点**（⭐ 与"编辑 ⇒ 发声"共用同一个 60Hz 节拍、同一个
                 // `EngineHost`）：会话线程在窗口内采到的事件在这里进引擎的音符路径。
                 // ⚠ 车道空时是一次 `Mutex` 判空（⛔ 不进音频线程、⛔ 不加任何音频侧工作）；

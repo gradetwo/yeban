@@ -10,15 +10,15 @@
 //! 这两份契约在"错误码"上**不一致**（见 [`ErrorCode`] 的说明），本模块的处置是
 //! "两份都实现、把差异钉成常量、让判据把它暴露出来"，而不是悄悄选一边。
 //!
-//! ## 二十二个工具 = 规范表格的十个 + 十二条**扩展**（ADR-0001 D45 / D46 + 后续线）
+//! ## 二十三个工具 = 规范表格的十个 + 十三条**扩展**（ADR-0001 D45 / D46 + 后续线）
 //!
 //! 扩展段的**唯一清单**是 [`EXTENSION_NAMES`]：D45 的撤销 / 重做 2 条、D46 的三类能力 3 条、
 //! D56 的诊断包 1 条、SMF 导出 1 条、SFZ 装载与 SFZ 音色导出 2 条、录音导出 1 条、
-//! 物理 MIDI 输入探针 1 条、未合并提案清单 1 条（`#176`）= **12** 条。
+//! 物理 MIDI 输入探针 1 条、未合并提案清单 1 条（`#176`）、场景启动 1 条（`#290`）= **13** 条。
 //!
 //! `ADR-0001` **D46** 明文："十工具是**起点不是上限**；扩充时必须同步
 //! `schemas/mcp-tools.schema.json`（契约是唯一权威定义）"。**D45** 则要求撤销入口
-//! "UI+MCP 两侧同接，共用同一实现"。于是本注册表多出十二条扩展：
+//! "UI+MCP 两侧同接，共用同一实现"。于是本注册表多出十三条扩展：
 //!
 //! | 工具 | 作用 | 规范 ID |
 //! | :--- | :--- | :--- |
@@ -34,6 +34,7 @@
 //! | `yeban_record_wav` | `ARCH-REC-001` 三段（无锁环 + 后台抽干）录一段测试音成 24-bit WAV | `MCP-TOOL-EXT-RECORD-WAV` |
 //! | `yeban_midi_input_probe` | 物理 MIDI 输入端口的一段事件窗口（`ADR-0006`，feature `midi-input` 默认关） | `MCP-TOOL-EXT-MIDI-INPUT` |
 //! | `yeban_list_proposals` | **未合并**的提案清单（只读；`#176`，`#174` 坑②的发现面） | `MCP-TOOL-EXT-LIST-PROPOSALS` |
+//! | `yeban_launch_scene` | 把一次**量化场景启动**交给宿主（`#290`；引擎由形态 A 的 app 经 attach 口接上） | `MCP-TOOL-EXT-SCENE-LAUNCH` |
 //!
 //! ### 为什么它们的 `specId` 不是 `MCP-TOOL-011/012`
 //!
@@ -93,7 +94,7 @@ pub const IDEMPOTENCY_KEY_PARAM: &str = "idempotencyKey";
 pub const INCLUDE_OPS_PARAM: &str = "includeOps";
 
 /// 工具集规模（规范表格的 10 个 + `ADR-0001` D45/D46 的扩展）。
-pub const TOOL_COUNT: usize = 22;
+pub const TOOL_COUNT: usize = 23;
 
 /// **规范表格**里的工具数（`MCP-TOOL-001..010`）。
 pub const DOCUMENTED_TOOL_COUNT: usize = 10;
@@ -102,7 +103,7 @@ pub const DOCUMENTED_TOOL_COUNT: usize = 10;
 /// + D56 的诊断包 1 条 + SMF 导出 1 条 + SFZ 装载 / SFZ 音色导出 2 条
 /// + 录音导出 1 条 + **物理 MIDI 输入探针 1 条**（`ADR-0006`，`midi-input` 默认关）
 /// + **未合并提案清单 1 条**（`#176`，`#174` 坑②）。
-pub const EXTENSION_TOOL_COUNT: usize = 12;
+pub const EXTENSION_TOOL_COUNT: usize = 13;
 
 /// 扩展工具的规范 ID 前缀。
 ///
@@ -128,6 +129,7 @@ pub const EXTENSION_NAMES: [&str; EXTENSION_TOOL_COUNT] = [
     "yeban_record_wav",
     "yeban_midi_input_probe",
     "yeban_list_proposals",
+    "yeban_launch_scene",
 ];
 
 /// 规范 ID 前缀。
@@ -593,7 +595,7 @@ const fn array_param(
     }
 }
 
-/// 二十二个工具，**规范顺序**（`MCP-TOOL-001..010` 在前，D45/D46 及后续的扩展在后）。
+/// 二十三个工具，**规范顺序**（`MCP-TOOL-001..010` 在前，D45/D46 及后续的扩展在后）。
 pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
     ToolSpec {
         spec_id: "MCP-TOOL-001",
@@ -1385,9 +1387,33 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
         )],
         errors: &[ErrorCode::InvalidParameterRange],
     },
+    ToolSpec {
+        spec_id: "MCP-TOOL-EXT-SCENE-LAUNCH",
+        name: "yeban_launch_scene",
+        summary: "把一次**量化场景启动**交给宿主：`sceneId` 必须是当前工程里的场景；成功响应的 `data.queued` 只代表**已交给宿主**（宿主在量化点调用引擎），⛔ 不代表已生效；`data.applied` 恒为 `false`。生效读数用 `yeban_query_engine_state` 的 `engine.sceneLaunchesApplied`。⚠ 形态 B（独立 stdio 进程）不托管引擎 ⇒ 响亮报 `CONFLICT`（`reason:\"engineUnavailable\"`），⛔ 不静默成功；本 crate 不依赖 `yeban-engine`（依赖方向门 `FORBIDDEN`），引擎由形态 A 的 `yeban-app` 经宿主 attach 口接上。",
+        scope: Scope::AppAdmin,
+        // 最坏情况声明：它不改工程文档（`Plan::mutates_project = false`），但会改
+        // 会话/引擎运行态 ⇒ `dryRun` 必须短路。标成 `ProjectState` 与
+        // `yeban_edit_automation`（同一条纪律）一致。
+        side_effect: SideEffect::ProjectState,
+        params: &[param(
+            "sceneId",
+            "string",
+            true,
+            "场景身份（26 字符 ULID；与 yeban_query_project 的 entities[] 里 kind == \"scene\" 的 id 同形）。合法但不在当前工程里 ⇒ ENTITY_NOT_FOUND (reason sceneNotFound, 带 sceneCount)；⛔ 不回落第一个场景",
+        )],
+        errors: &[
+            ErrorCode::NoActiveProject,
+            ErrorCode::EntityNotFound,
+            ErrorCode::InvalidParameterRange,
+            ErrorCode::OutOfRange,
+            ErrorCode::Conflict,
+            ErrorCode::Busy,
+        ],
+    },
 ];
 
-/// 按名查找工具（`const` 数组上的线性查找；22 个元素，无需哈希表）。
+/// 按名查找工具（`const` 数组上的线性查找；23 个元素，无需哈希表）。
 #[must_use]
 pub fn tool(name: &str) -> Option<&'static ToolSpec> {
     TOOLS.iter().find(|spec| spec.name == name)

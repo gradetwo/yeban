@@ -477,6 +477,7 @@ fn a_client_receives_loudness_updates_over_the_in_process_control_plane() {
         short_term_lufs: Some(-13.8),
         loudness_range_lu: Some(6.0),
         true_peak_dbfs: Some(-1.0),
+        scene_launches_applied: None,
     };
     handle.set_engine_readings(Some(first_reading));
 
@@ -542,6 +543,7 @@ fn a_client_receives_loudness_updates_over_the_in_process_control_plane() {
         short_term_lufs: Some(-8.8),
         loudness_range_lu: Some(3.0),
         true_peak_dbfs: Some(-0.5),
+        scene_launches_applied: None,
     }));
 
     // ---- 7. 客户端带旧游标 ⇒ **只**拿到新的那一条（旧的不得重放） ----

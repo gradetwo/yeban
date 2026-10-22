@@ -457,7 +457,8 @@ fn query_engine_state() -> Value {
                 "type": "object",
                 "required": [
                     "sampleRate", "sampleRateSource", "bufferFrames", "bufferSource",
-                    "mirrorPresent", "readingsRevision"
+                    "mirrorPresent", "readingsRevision", "sceneLaunchesApplied",
+                    "sceneLaunchesAppliedSource"
                 ],
                 "properties": {
                     "sampleRate": {"type": "integer"},
@@ -470,6 +471,11 @@ fn query_engine_state() -> Value {
                     "shortTermLufs": {"type": ["number", "null"]},
                     "loudnessRangeLu": {"type": ["number", "null"]},
                     "truePeakDbfs": {"type": ["number", "null"]},
+                    "sceneLaunchesApplied": {
+                        "type": ["integer", "null"],
+                        "description": "引擎累计**真的生效**过的量化场景启动次数（宿主心跳注入；`null` = 这一代引擎拿不到该读数）。`yeban_launch_scene` 的 `queued:true` 之后用它确认到点生效。"
+                    },
+                    "sceneLaunchesAppliedSource": {"type": "string"},
                     "mirrorSampleRate": {"type": ["integer", "null"]},
                     "sampleRateMatchesMirror": {"type": ["boolean", "null"]},
                     "readingsRevision": {"type": "integer"}

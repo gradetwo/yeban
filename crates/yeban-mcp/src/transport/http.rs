@@ -600,6 +600,35 @@ impl HttpServer {
         self.lock().domain_mut().set_engine_readings(readings);
     }
 
+    /// **宿主侧场景启动口**：声明"这个进程里有引擎，可以把场景启动请求交给我"。
+    ///
+    /// 与 [`Self::set_engine_readings`] 同一个理由：分发器在 `Mutex` 里，宿主只能在
+    /// 挂载之后（引擎真正起来之后）通过这个口子把 `Domain` 的
+    /// `scene_launch_host_attached` 置位。它**不**暴露 `Dispatcher`、**不**改工程文档，
+    /// 也不是第二条 JSON-RPC 通道。
+    pub fn attach_scene_launch_host(&self) {
+        self.lock().domain_mut().attach_scene_launch_host();
+    }
+
+    /// 断开场景启动口（幂等；同时清掉尚未取走的请求）。
+    pub fn detach_scene_launch_host(&self) {
+        self.lock().domain_mut().detach_scene_launch_host();
+    }
+
+    /// 宿主取走全部待启动请求（取走即清空；顺序 = 入队顺序）。
+    #[must_use]
+    pub fn take_scene_launch_requests(
+        &self,
+    ) -> Vec<crate::domain::scene_launch::SceneLaunchRequest> {
+        self.lock().domain_mut().take_scene_launch_requests()
+    }
+
+    /// **宿主侧场景启动读数注入口**：把 `EngineStats::scene_launches_applied` 交给
+    /// 正在服务的那一个会话（`None` = 这一代引擎拿不到该读数）。
+    pub fn set_scene_launches_applied(&self, applied: Option<u64>) {
+        self.lock().domain_mut().set_scene_launches_applied(applied);
+    }
+
     /// **宿主侧只读投影口**：把正在服务的那**一个**会话的领域状态交给宿主**读一次**。
     ///
     /// 为什么住在传输层：与 [`Self::set_engine_readings`] 同一个理由 —— 分发器在

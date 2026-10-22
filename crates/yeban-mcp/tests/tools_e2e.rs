@@ -1453,6 +1453,14 @@ fn no_tool_answers_with_a_blanket_not_implemented() {
         ("yeban_midi_input_probe", json!({})),
         // #176：未合并提案清单 —— 只读，任何会话下都带内成功（可能为空数组）。
         ("yeban_list_proposals", json!({})),
+        // #290：场景启动 —— 形态 B（判据里的裸 `Dispatcher`）没有宿主引擎；
+        // 这里给一个**合法但不在工程里**的 ULID ⇒ 带内 `ENTITY_NOT_FOUND`
+        // （`reason:"sceneNotFound"`，⛔ 不回落第一个场景）。真正能启动的形态 A
+        // 判据在 `crates/yeban-app/tests/mcp_scene_launch.rs`。
+        (
+            "yeban_launch_scene",
+            json!({"sceneId": "01J8ZQ00000000000000000000"}),
+        ),
         // 关闭放最后: 前面的用例都要有活跃工程。
         ("yeban_close_project", json!({ "saveFirst": false })),
     ];

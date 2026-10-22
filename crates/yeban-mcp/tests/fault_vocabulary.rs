@@ -33,7 +33,7 @@
 //!
 //! | 面 | reason 数 | 规范行数 | SHA-256 |
 //! | :--- | ---: | ---: | :--- |
-//! | `reason`（字面 `json!` 第一层键，含顺序） | 143 | 646 | `18b8b4cb49cefafb93c28f66022b97cd00784500348b5e3da6b825b3528ff4cf` |
+//! | `reason`（字面 `json!` 第一层键，含顺序） | 148 | 668 | `480018afbd8c47dd9db4c4d3d4ffb4e082748ecbe44e3638547a2bbb8f9dd22a` |
 //!
 //! ⚠ `#274`：摘要随"登记位置搬进 provider"重钉（集合不变、顺序变了）；
 //! 见 `FROZEN_REASON_SURFACE_SHA256` 的沿革注释。
@@ -45,7 +45,7 @@ use yeban_mcp::undo_session::read_rust_sources;
 
 /// 本轮开工基线上**生产区**里出现的全部 `reason` 字面量（排序）。
 /// 这是黄金表：任何改名 / 新增 / 删除都必须**故意**改这一行。
-pub const GOLDEN_REASONS: [&str; 139] = [
+pub const GOLDEN_REASONS: [&str; 144] = [
     "assetChannelLayout",
     "assetDecodeFailed",
     "assetHashMismatch",
@@ -80,9 +80,13 @@ pub const GOLDEN_REASONS: [&str; 139] = [
     // ⭐ `#268`（`ADR-0011`）：引擎音源装配失败（防御映射；合法工程上前面的
     // 探针编译会先拒绝同一批路由错误 ⇒ 本词主要用于"没有主总线 / 快照投影失败"）。
     "engineSource",
+    // ⭐ `#290`：形态 A 的宿主口没有接上（形态 B / 引擎未起来）。
+    "engineUnavailable",
     "framesExceedCap",
     "indexTooLarge",
     "invalidDeviceDefinition",
+    // ⭐ `#290`：`sceneId` 不是合法 ULID。
+    "invalidSceneId",
     "laneMustBeString",
     "lanePropertiesNotApplicableToPointRemoval",
     "latencyOutOfRange",
@@ -130,9 +134,13 @@ pub const GOLDEN_REASONS: [&str; 139] = [
     "routingNodeNotFound",
     "samplerUnreadable",
     "sceneAlreadyExists",
+    // ⭐ `#290`：`sceneId` 缺失 / 队列满 / 场景 tempo 越界。
+    "sceneIdRequired",
+    "sceneLaunchQueueFull",
     "sceneNameRequiredWhenCreating",
     "sceneNotFound",
     "sceneTempoMustBeNumberOrNull",
+    "sceneTempoOutOfRange",
     "secondsExceedCap",
     "sectionAlreadyExists",
     "sectionNameRequiredWhenCreating",
@@ -494,7 +502,7 @@ fn every_reason_is_asserted_somewhere() {
 /// 每条 `reason` 在生产区**字面 `json!` 对象**里带的同级键（排序）。
 /// ⚠ 口径：只收字面 `json!` 里的键；运行时 `map.insert(...)` 加进去的键不在内。
 /// 空数组 = 该 reason 的 `data` 里**没有**同级键（或 Data 由别的构造方式给出）。
-pub const GOLDEN_REASON_PAYLOADS: [(&str, &[&str]); 139] = [
+pub const GOLDEN_REASON_PAYLOADS: [(&str, &[&str]); 144] = [
     (
         "assetChannelLayout",
         &[
@@ -521,6 +529,11 @@ pub const GOLDEN_REASON_PAYLOADS: [(&str, &[&str]); 139] = [
     ("assetHashMismatch", &["actual", "asset", "bytes", "reason"]),
     // ⭐ `#268`：两处出口（快照投影 / 逐轨 `arm_from_snapshot`）共用同一组键。
     ("engineSource", &["cause", "hint", "reason"]),
+    // ⭐ `#290`：形态 A 的宿主口没有接上。
+    (
+        "engineUnavailable",
+        &["form", "hint", "hostAttached", "reason"],
+    ),
     (
         "assetMissing",
         &["asset", "declaredInIndex", "hint", "reason"],
@@ -582,6 +595,8 @@ pub const GOLDEN_REASON_PAYLOADS: [(&str, &[&str]); 139] = [
     ("framesExceedCap", &["frames", "maxFrames", "reason"]),
     ("indexTooLarge", &["field", "reason", "value"]),
     ("invalidDeviceDefinition", &["deviceId", "reason"]),
+    // ⭐ `#290`：非法 `sceneId`。
+    ("invalidSceneId", &["hint", "reason", "sceneId"]),
     ("laneMustBeString", &["allowed", "field", "reason"]),
     (
         "lanePropertiesNotApplicableToPointRemoval",
@@ -739,15 +754,26 @@ pub const GOLDEN_REASON_PAYLOADS: [(&str, &[&str]); 139] = [
     ("routingNodeAlreadyExists", &["hint", "nodeId", "reason"]),
     ("routingNodeNotFound", &["hint", "nodeId", "reason"]),
     ("sceneAlreadyExists", &["hint", "reason", "sceneId"]),
+    // ⭐ `#290`：缺 `sceneId` / 队列满。
+    ("sceneIdRequired", &["hint", "reason"]),
+    (
+        "sceneLaunchQueueFull",
+        &["capacity", "hostAttached", "pending", "reason"],
+    ),
     (
         "sceneNameRequiredWhenCreating",
         &["field", "hint", "reason"],
     ),
-    ("sceneNotFound", &["hint", "reason", "sceneId"]),
+    (
+        "sceneNotFound",
+        &["hint", "reason", "sceneCount", "sceneId"],
+    ),
     (
         "sceneTempoMustBeNumberOrNull",
         &["field", "reason", "received"],
     ),
+    // ⭐ `#290`：场景 tempo 覆盖越界 / 非有限。
+    ("sceneTempoOutOfRange", &["reason", "sceneId", "tempoBpm"]),
     ("secondsExceedCap", &["maxSeconds", "reason", "seconds"]),
     ("sectionAlreadyExists", &["hint", "reason", "sectionId"]),
     (
@@ -1342,13 +1368,20 @@ fn the_reason_payload_shape_is_the_published_table() {
 /// `engineSource` 失败 ⇒ `reason` 的**首次出现顺序**变了（**集合不变**：
 /// `engineSource` / `samplerUnreadable` 都是既有词），摘要因此按判据要求逐位更新。
 /// 新摘要由判据自己报出后照抄（`18b8b4cb…`）。
+///
+/// ⭐ `#290` 重钉：新增 `yeban_launch_scene` ⇒ 5 个新 reason
+/// （`engineUnavailable` / `invalidSceneId` / `sceneIdRequired` /
+/// `sceneLaunchQueueFull` / `sceneTempoOutOfRange`）＋ `sceneNotFound` 多一个
+/// `sceneCount` 键 ⇒ 148 个 reason / 668 行；新摘要
+/// `480018afbd8c47dd9db4c4d3d4ffb4e082748ecbe44e3638547a2bbb8f9dd22a`
+/// 同样由判据自己报出后照抄。
 pub const FROZEN_REASON_SURFACE_SHA256: &str =
-    "18b8b4cb49cefafb93c28f66022b97cd00784500348b5e3da6b825b3528ff4cf";
+    "480018afbd8c47dd9db4c4d3d4ffb4e082748ecbe44e3638547a2bbb8f9dd22a";
 
 /// 规范形式里的 reason 数 / 规范行数（与摘要一起构成"两端"读数）。
-pub const REASON_SURFACE_REASONS: usize = 143;
+pub const REASON_SURFACE_REASONS: usize = 148;
 /// 规范行数（每个 reason 一行 ＋ 每个键一行）。
-pub const REASON_SURFACE_LINES: usize = 646;
+pub const REASON_SURFACE_LINES: usize = 668;
 
 /// 单文件里的 `reason` 面：**保留出现顺序**的 `(reason, keys)`。
 ///
@@ -1520,7 +1553,7 @@ fn the_reason_surface_digest_is_frozen_and_documented() {
     // #176：新增 `src/output_schema.rs` ⇒ 40 → 41（`reason` 面的规范文本不含 reason 键，摘要不变）。
     // #271：新增 `src/domain/sample_roots.rs` ⇒ 41 → 42（同样不含 `reason` 键，摘要逐位不变）
     // ⇒ 本条只证明"分母变了一位"，`FROZEN_REASON_SURFACE_SHA256` 仍与 #176 时逐字相同。
-    assert_eq!(files.len(), 42, "生产区 `.rs` 文件数（规范形式的分母之一）");
+    assert_eq!(files.len(), 43, "生产区 `.rs` 文件数（规范形式的分母之一）");
     let canonical = reason_surface(&files);
     let digest = yeban_model::AssetHash::of_bytes(canonical.as_bytes())
         .as_str()

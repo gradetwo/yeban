@@ -6,7 +6,7 @@
 //!
 //! | 判据 | 对象 | 单位 |
 //! | :--- | :--- | :--- |
-//! | [`list_proposals_is_discoverable_and_the_counts_move_with_it`] | `tools/list` 里的工具数 / `TOOL_COUNT` / 样本 `registry.count` / 契约 enum | **工具个数**（22） |
+//! | [`list_proposals_is_discoverable_and_the_counts_move_with_it`] | `tools/list` 里的工具数 / `TOOL_COUNT` / 样本 `registry.count` / 契约 enum | **工具个数**（23） |
 //! | [`a_pending_proposal_is_listed_and_disappears_after_merge`] | `yeban_list_proposals` 的 `openCount` | **提案条数**（1 → 0） |
 //! | [`the_empty_state_is_an_empty_array_plus_one_sentence`] | 空态响应 | 1 个空数组 + 1 句逐字 `note` |
 //! | [`five_main_tools_publish_an_output_schema_their_real_responses_satisfy`] | 5 个主力工具的真实 `data` | **5 份 schema**，每份都被自己的响应反校 |
@@ -184,8 +184,8 @@ fn list_proposals_is_discoverable_and_the_counts_move_with_it() {
     );
     assert_eq!(
         tools::TOOL_COUNT,
-        22,
-        "10 个规范工具 + 12 个扩展 = 22（#176 新增 1 条）"
+        23,
+        "10 个规范工具 + 13 个扩展 = 23（#176 新增 1 条、#290 新增场景启动 1 条）"
     );
     assert_eq!(
         registry["count"],
@@ -198,11 +198,11 @@ fn list_proposals_is_discoverable_and_the_counts_move_with_it() {
     );
     assert_eq!(
         tools::EXTENSION_NAMES.last().copied(),
-        Some("yeban_list_proposals"),
+        Some("yeban_launch_scene"),
         "扩展清单顺序 = 注册顺序（新工具追加在末尾）"
     );
 
-    // 契约 enum 也是 22 个名字，且与注册表逐字相同（顺序一致）。
+    // 契约 enum 也是 23 个名字，且与注册表逐字相同（顺序一致）。
     let contract: Value = serde_json::from_str(
         &std::fs::read_to_string(
             PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -224,7 +224,7 @@ fn list_proposals_is_discoverable_and_the_counts_move_with_it() {
         "### 契约 enum 尾部\n{:?}",
         &enum_names[enum_names.len().saturating_sub(3)..]
     );
-    assert_eq!(enum_names.len(), 22, "契约 enum 的工具个数");
+    assert_eq!(enum_names.len(), 23, "契约 enum 的工具个数");
     assert_eq!(enum_names, tools::tool_names(), "enum 顺序 = 注册表顺序");
 }
 

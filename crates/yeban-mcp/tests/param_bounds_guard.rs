@@ -87,7 +87,7 @@ enum BoundStatus {
 }
 
 /// 24 条 string 参数声明（`TOOLS` 里 `json_type == "string"` 的**不同名**）。
-const STRING_PARAM_BOUNDS: [(&str, BoundStatus); 24] = [
+const STRING_PARAM_BOUNDS: [(&str, BoundStatus); 25] = [
     ("idempotencyKey", BoundStatus::Length(None, Some(256))),
     ("name", BoundStatus::Length(Some(1), None)),
     ("license", BoundStatus::Length(Some(1), None)),
@@ -97,6 +97,8 @@ const STRING_PARAM_BOUNDS: [(&str, BoundStatus); 24] = [
     ("pointId", BoundStatus::Identity),
     ("placementId", BoundStatus::Identity),
     ("proposalId", BoundStatus::Identity),
+    // ⭐ `#290`：场景身份（26 字符 ULID；解析在 `scene_launch::resolve`）。
+    ("sceneId", BoundStatus::Identity),
     ("assetHash", BoundStatus::Hash),
     ("lane", BoundStatus::WordList),
     // #176：`yeban_list_proposals` 的类别过滤 —— 取值是固定词表（section / notes / macro）。

@@ -40,6 +40,7 @@
 //! | [`automation`] | `yeban_edit_automation`：泳道读（唯一求值入口）+ 写一个点（`Op`，可逆） |
 //! | [`automation_audit`] | **零依赖**审计：生产代码里不许有第二份自动化求值，本机可单独验证 |
 //! | [`engine_state`] | `yeban_query_engine_state`：设备链 + 引擎/会话读数（只读） |
+//! | [`scene_launch`] | `yeban_launch_scene`：解析场景并把启动请求交给宿主（引擎无关；`#290`） |
 //! | [`project_create`] | `yeban_open_project` 的 **`create: true`** 分支：从零建一个可渲染、可配器的工程（主总线在路由图里） |
 //! | [`import_audio`] | `yeban_import_audio`：`yeban-decode` + `PcmBudget` + `Op::AddClip` |
 //! | [`export_midi`] | `yeban_export_midi`：`yeban-midi` 共享映射 → SMF 字节（base64 回传，只读） |
@@ -70,6 +71,8 @@ pub mod render_clip_math;
 pub mod render_math;
 // ⭐ `#271`：采样器路径的根推导（MCP 不能依赖 `yeban-app`，这里与 app 同口径重算）。
 mod sample_roots;
+// ⭐ `#290`：场景启动的领域面（只解析 + 排队；引擎由形态 A 的宿主经 attach 口接上）。
+pub mod scene_launch;
 pub mod section;
 pub mod section_build;
 pub mod sfz;
@@ -199,6 +202,25 @@ pub struct Domain {
     /// 与 `engine` 一样是**会话运行态**（`MODEL-ISO-001` 第 2 层）：打开 / 关闭工程会整体重置，
     /// 不进 `project.json` 也不进 `history.dag`。
     readings_tail: Vec<(u64, engine_state::EngineReadings)>,
+    /// 宿主的**场景启动口**是否接上（形态 A 的 `yeban-app` 在引擎起来后 attach）。
+    ///
+    /// 形态 B（独立 stdio 二进制）永远 `false` ⇒ `yeban_launch_scene` 响亮报
+    /// `engineUnavailable`，⛔ 不静默成功。这个位与 [`Self::engine`] 是两件事：
+    /// 后者是**读数**，前者是**动作口**（宿主必须显式声明"我这里有引擎"）。
+    scene_launch_host_attached: bool,
+    /// 尚未被宿主取走的场景启动请求（有界；见
+    /// [`scene_launch::MAX_PENDING_SCENE_LAUNCHES`]）。
+    ///
+    /// 它是**会话运行态**（`MODEL-ISO-001` 第 2 层）：不进 `project.json`、不进
+    /// `history.dag`；打开 / 关闭工程会整体清空（否则会把上一份工程的场景启动
+    /// 悄悄带进下一份）。
+    pending_scene_launches: Vec<scene_launch::SceneLaunchRequest>,
+    /// 宿主注入的 `EngineStats::scene_launches_applied` **只读镜像**。
+    ///
+    /// `None` = 宿主没有（或这一代引擎拿不到该读数：设备腿的运行时在 cpal 回调
+    /// 线程上，`EngineHost` 拿不到 stats）⇒ `engine.sceneLaunchesApplied` 如实为
+    /// `null`，⛔ 不沿用上一代引擎的旧数字。
+    scene_launches_applied: Option<u64>,
     now_ms: u64,
     /// **会话内已装载的 SFZ 乐器**（`yeban_load_sfz` 的登记表），键 = instrumentId。
     ///
@@ -242,6 +264,9 @@ impl Domain {
             engine: None,
             readings_revision: 0,
             readings_tail: Vec::new(),
+            scene_launch_host_attached: false,
+            pending_scene_launches: Vec::new(),
+            scene_launches_applied: None,
             now_ms: 0,
             sfz_instruments: BTreeMap::new(),
             sfz_next_id: 1,
@@ -344,6 +369,68 @@ impl Domain {
                 self.readings_tail.drain(..excess);
             }
         }
+    }
+
+    /// 宿主的**场景启动口**是否接上（见 [`Domain::scene_launch_host_attached`] 字段）。
+    #[must_use]
+    pub const fn scene_launch_host_attached(&self) -> bool {
+        self.scene_launch_host_attached
+    }
+
+    /// **接上**宿主的场景启动口（只对宿主开放；形态 A 的 `yeban-app` 在引擎起来后调用）。
+    ///
+    /// 它不是第二条写通道：没有任何 JSON-RPC 方法能到达它，它也不改工程文档。
+    pub const fn attach_scene_launch_host(&mut self) {
+        self.scene_launch_host_attached = true;
+    }
+
+    /// **断开**宿主的场景启动口，并清掉尚未取走的请求（幂等）。
+    pub fn detach_scene_launch_host(&mut self) {
+        self.scene_launch_host_attached = false;
+        self.pending_scene_launches.clear();
+    }
+
+    /// 把一条场景启动请求放进**有界**队列。
+    ///
+    /// 返回 `false` 表示"没有接上宿主"或"队列满"—— 调用方（`apply_launch_scene`）
+    /// 必须把它变成**响亮错误**，⛔ 不允许静默丢弃。
+    pub fn queue_scene_launch(&mut self, request: scene_launch::SceneLaunchRequest) -> bool {
+        if !self.scene_launch_host_attached
+            || self.pending_scene_launches.len() >= scene_launch::MAX_PENDING_SCENE_LAUNCHES
+        {
+            return false;
+        }
+        self.pending_scene_launches.push(request);
+        true
+    }
+
+    /// 宿主取走全部待启动请求（取走即清空；顺序 = 入队顺序）。
+    pub fn take_scene_launch_requests(&mut self) -> Vec<scene_launch::SceneLaunchRequest> {
+        std::mem::take(&mut self.pending_scene_launches)
+    }
+
+    /// 尚未被宿主取走的请求条数（`dryRun` 预览与判据读它）。
+    #[must_use]
+    pub fn pending_scene_launch_count(&self) -> usize {
+        self.pending_scene_launches.len()
+    }
+
+    /// 注入宿主读到的 `scene_launches_applied`（`None` = 这一代引擎拿不到 ⇒ 如实 `null`）。
+    ///
+    /// **只对宿主开放**：没有任何工具会写它。它**不**推进 `readings_revision` ——
+    /// 它不是一条完整的 [`engine_state::EngineReadings`]，而是同一份引擎事实的
+    /// 一个**标量**读数；把它塞进读数尾部会让 `since` 游标收到"没有新字段"的更新。
+    pub fn set_scene_launches_applied(&mut self, applied: Option<u64>) {
+        self.scene_launches_applied = applied;
+        if let Some(engine) = self.engine.as_mut() {
+            engine.scene_launches_applied = applied;
+        }
+    }
+
+    /// 宿主注入的 `scene_launches_applied` 只读镜像（`None` = 不知道）。
+    #[must_use]
+    pub const fn scene_launches_applied(&self) -> Option<u64> {
+        self.scene_launches_applied
     }
 
     /// 把模型会话态里那份**撤销游标镜像**同步成权威值（见 [`Domain::session`]）。
@@ -607,6 +694,13 @@ impl Domain {
         // 乐器"悄悄参与这一份工程的导出）。
         self.sfz_instruments.clear();
         self.sfz_next_id = 1;
+        // 场景启动队列与引擎读数都是**会话运行态**：换工程 ⇒ 上一份工程的排队请求
+        // 与旧引擎的 applied 计数一律作废（⛔ 不让它们跨打开边界存活）。
+        self.pending_scene_launches.clear();
+        self.scene_launches_applied = None;
+        if let Some(engine) = self.engine.as_mut() {
+            engine.scene_launches_applied = None;
+        }
         self.undo = undo_session::UndoState::new(AGENT_NAME);
         if let Some(history) = seed.history {
             self.graph = history;
@@ -643,6 +737,12 @@ impl Domain {
     /// 释放当前工程（`yeban_close_project` 的落点）。
     fn release(&mut self) -> Option<(PathBuf, bool)> {
         let active = self.active.take()?;
+        // 会话运行态随工程关闭一起作废（与 `reset_history` 同口径）。
+        self.pending_scene_launches.clear();
+        self.scene_launches_applied = None;
+        if let Some(engine) = self.engine.as_mut() {
+            engine.scene_launches_applied = None;
+        }
         let saved = !active.read_only;
         Some((active.path, saved))
     }
@@ -904,6 +1004,19 @@ pub enum Plan {
         /// 已经组装好的读数（`apply` 原样返回，一位都不改）。
         data: Value,
     },
+    /// `yeban_launch_scene`（`#290`）：把一次**量化场景启动**交给宿主。
+    ///
+    /// 它**不**改工程文档（[`Plan::mutates_project`] = `false`），但会改**会话/引擎
+    /// 运行态**：`plan` 只解析场景与校验宿主口，`apply` 把 `request` 放进宿主的
+    /// **有界**队列，由形态 A 的 `yeban-app` 在它自己的线程上调用引擎。
+    /// ⚠ `data.queued` 在 `plan` 相位是 `false`（`dryRun` 预览），在 `apply` 相位改成
+    /// `true`；`data.applied` **恒为 `false`** —— 量化启动在**未来**生效。
+    LaunchScene {
+        /// 已经解析好的请求（字段与 `EngineRuntime::queue_scene_launch` 一一对应）。
+        request: scene_launch::SceneLaunchRequest,
+        /// `dryRun` 预览 / 成功响应共用的场景读数。
+        data: Value,
+    },
     /// `yeban_list_proposals`（**只读**）：当前**未合并**的提案清单 `[#176]`。
     ///
     /// 它是 `#174` 坑②的发现面：提案记录住在 [`Domain::proposals`]（会话运行态），
@@ -973,6 +1086,7 @@ impl Plan {
             Self::Redo { .. } => "redo",
             Self::EditAutomation { .. } => "edit_automation",
             Self::EngineState { .. } => "engine_state",
+            Self::LaunchScene { .. } => "launch_scene",
             Self::ListProposals { .. } => "list_proposals",
             Self::ImportAudio { .. } => "import_audio",
             Self::ExportMidi { .. } => "export_midi",
@@ -1021,6 +1135,8 @@ impl Plan {
             | Self::RecordWav { .. }
             // 物理 MIDI 探针只读硬件端口，⛔ 不碰工程文档、⛔ 不落盘。
             | Self::MidiInputProbe { .. }
+            // 场景启动不改工程文档（只改会话/引擎运行态）⇒ 提交数不变。
+            | Self::LaunchScene { .. }
             // 撤销 / 重做**不动提交图谱**（只动文档与游标）⇒ 提交数不变。
             | Self::Undo { .. }
             | Self::Redo { .. } => 0,
@@ -1086,7 +1202,10 @@ impl Plan {
             | Self::RenderSfzWav { .. }
             | Self::RecordWav { .. }
             // 物理 MIDI 探针只读硬件端口（连工程都不要求活跃）。
-            | Self::MidiInputProbe { .. } => false,
+            | Self::MidiInputProbe { .. }
+            // 场景启动只往宿主队列里放一条请求：工程文档一个字节都不改
+            // ⇒ ⛔ 不推进 `apply_revision`（界面不需要重投影）。
+            | Self::LaunchScene { .. } => false,
         }
     }
 
@@ -1217,7 +1336,9 @@ impl Plan {
             | Self::RenderSfzWav { .. }
             | Self::RecordWav { .. }
             // 探针不改工程内容（连工程都不要求活跃）。
-            | Self::MidiInputProbe { .. } => Ok(None),
+            | Self::MidiInputProbe { .. }
+            // 场景启动不改工程文档 ⇒ `dryRun` 的“工程差异”是 `None`。
+            | Self::LaunchScene { .. } => Ok(None),
         }
     }
 
@@ -1489,6 +1610,17 @@ impl Plan {
                 }
                 preview.insert("readOnly".to_owned(), Value::from(true));
                 preview.insert("result".to_owned(), data.clone());
+            }
+            // 场景启动：预览 = 同一份场景读数（`queued:false`）；它**不是只读**，
+            // 但也不改工程文档 —— `wouldChangeState` 由 `ToolSpec::side_effect` 给出。
+            Self::LaunchScene { data, .. } => {
+                if let Value::Object(fields) = data.clone() {
+                    for (key, value) in fields {
+                        preview.insert(key, value);
+                    }
+                }
+                preview.insert("wouldQueue".to_owned(), Value::from(true));
+                preview.insert("engineAction".to_owned(), Value::from(true));
             }
             // 未合并提案清单：预览 = 真做（只读工具没有任何差异可预览）。
             // 与 `EngineState` 同一做法：把 `data` 的键合并进预览。
@@ -1781,6 +1913,7 @@ pub fn plan(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
         "yeban_redo" => plan_redo(domain, call),
         "yeban_edit_automation" => plan_edit_automation(domain, call),
         "yeban_query_engine_state" => plan_query_engine_state(domain, call),
+        "yeban_launch_scene" => plan_launch_scene(domain, call),
         "yeban_list_proposals" => plan_list_proposals(domain, call),
         "yeban_import_audio" => plan_import_audio(domain, call),
         "yeban_export_diagnostics" => plan_export_diagnostics(domain, call),
@@ -2692,6 +2825,7 @@ fn plan_query_engine_state(domain: &Domain, call: &ToolCall) -> Result<Plan, Fau
         project,
         domain.session(),
         domain.engine_readings(),
+        domain.scene_launches_applied(),
         domain.undo_display().undoable,
         track_id,
         engine_state::ReadingsCursor {
@@ -2701,6 +2835,69 @@ fn plan_query_engine_state(domain: &Domain, call: &ToolCall) -> Result<Plan, Fau
         },
     )?;
     Ok(Plan::EngineState { data })
+}
+
+/// `yeban_launch_scene`（`#290`）：解析场景 + 检查宿主口 + 组一条待排队请求。
+///
+/// ## 为什么这不是“只读”
+///
+/// 它不改工程文档（[`Plan::mutates_project`] = `false`），但**真的会改变会话/引擎
+/// 运行态**：`apply` 把请求放进宿主队列，宿主下一次心跳会把它送进引擎的
+/// `EngineRuntime::queue_scene_launch`。因此 `ToolSpec` 按最坏情况声明
+/// `SideEffect::ProjectState`（`dryRun` 必须短路），而 `apply_revision` **不**推进
+/// （界面没有可重投影的东西）。
+///
+/// ## 形态 B 的响亮拒绝
+///
+/// 独立 stdio 进程没有引擎，也永远没人调用 [`Domain::attach_scene_launch_host`]
+/// ⇒ 这里返回 `CONFLICT` + `reason:"engineUnavailable"`，⛔ **不**返回
+/// `success` + `engine:null`（那会静默成功）。
+fn plan_launch_scene(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
+    let project = require_active(domain)?;
+    let scene_id_text = arg_str(call, "sceneId").ok_or_else(|| {
+        Fault::domain_with_data(
+            ErrorCode::InvalidParameterRange,
+            "`sceneId` 必填（26 字符 ULID）",
+            serde_json::json!({
+                "reason": "sceneIdRequired",
+                "hint": "用 yeban_query_project 的 entities[] 读 kind == \"scene\" 的 id",
+            }),
+        )
+    })?;
+    let resolved = scene_launch::resolve(project, scene_id_text)?;
+    if !domain.scene_launch_host_attached() {
+        return Err(Fault::domain_with_data(
+            ErrorCode::Conflict,
+            "本形态没有引擎：独立 stdio 进程（形态 B）不托管 yeban-engine，\
+             yeban_launch_scene 无法启动场景。",
+            serde_json::json!({
+                "reason": "engineUnavailable",
+                "form": "stdio",
+                "hostAttached": false,
+                "hint": "请在形态 A（yeban-app 的进程内控制面）里调用；\
+                         本 crate 的依赖图里没有 yeban-engine（见 check_mcp_dependency_direction.py 的 FORBIDDEN）",
+            }),
+        ));
+    }
+    if domain.pending_scene_launch_count() >= scene_launch::MAX_PENDING_SCENE_LAUNCHES {
+        return Err(Fault::domain_with_data(
+            ErrorCode::Busy,
+            format!(
+                "场景启动队列已满（容量 {} 条）：宿主还没有取走上一批请求",
+                scene_launch::MAX_PENDING_SCENE_LAUNCHES
+            ),
+            serde_json::json!({
+                "reason": "sceneLaunchQueueFull",
+                "capacity": scene_launch::MAX_PENDING_SCENE_LAUNCHES,
+                "pending": domain.pending_scene_launch_count(),
+            }),
+        ));
+    }
+    let data = resolved.data(false);
+    Ok(Plan::LaunchScene {
+        request: resolved.request,
+        data,
+    })
 }
 
 /// `yeban_list_proposals` `[#176]`（**只读**）。
@@ -3216,6 +3413,27 @@ fn apply_inner(domain: &mut Domain, plan: Plan) -> Result<ToolResponse, Fault> {
         Plan::EditAutomation { edit } => automation::apply(domain, &edit),
         // 只读：`plan` 已经把读数组装好了，`apply` 原样返回（一位都不改）。
         Plan::EngineState { data } => Ok(ToolResponse::success(data)),
+        // 场景启动：只把请求放进宿主队列（**不改工程文档**）；`queued` 在这里
+        // 从 `false` 变成 `true` —— `applied` 仍然恒为 `false`（量化启动在未来生效）。
+        Plan::LaunchScene { request, mut data } => {
+            if !domain.queue_scene_launch(request) {
+                // `plan` 已经检查过容量与 attach 位；走到这里只可能是同一把锁内的
+                // 竞态（例如宿主刚 detach）。仍然响亮拒绝，⛔ 不假装已排队。
+                return Err(Fault::domain_with_data(
+                    ErrorCode::Busy,
+                    "场景启动队列拒绝入队（宿主口已断开或队列已满）",
+                    serde_json::json!({
+                        "reason": "sceneLaunchQueueFull",
+                        "hostAttached": domain.scene_launch_host_attached(),
+                        "pending": domain.pending_scene_launch_count(),
+                    }),
+                ));
+            }
+            if let Some(object) = data.as_object_mut() {
+                object.insert("queued".to_owned(), Value::from(true));
+            }
+            Ok(ToolResponse::success(data))
+        }
         // 只读：清单在 `plan` 里就组装好了（`apply` 一位都不改）。
         Plan::ListProposals { data } => Ok(ToolResponse::success(data)),
         Plan::ImportAudio { import } => import_audio::apply(domain, &import),
@@ -4349,6 +4567,21 @@ mod tests {
             ("yeban_midi_input_probe", serde_json::json!({})),
             // #176：未合并提案清单（只读）⇒ 空会话里规划成功（`proposals: []`）。
             ("yeban_list_proposals", serde_json::json!({})),
+            // #290：场景启动 —— 这个夹具**没有** attach 宿主口 ⇒ 规划阶段就响亮报
+            // `CONFLICT`（`reason:"engineUnavailable"`），⛔ 不是"先入队再说"。
+            (
+                "yeban_launch_scene",
+                serde_json::json!({
+                    "sceneId": domain
+                        .active_project()
+                        .expect("工程")
+                        .scenes
+                        .keys()
+                        .next()
+                        .expect("场景")
+                        .to_canonical_string(),
+                }),
+            ),
         ];
         for spec in &crate::tools::TOOLS {
             assert!(
@@ -4395,6 +4628,16 @@ mod tests {
                             );
                         }
                     }
+                }
+                "yeban_launch_scene" => {
+                    // 没有 attach 宿主口 ⇒ 形态 B 的响亮拒绝（结构化 reason）。
+                    let fault = outcome.expect_err("没有宿主引擎");
+                    assert_eq!(fault.domain_code(), Some(ErrorCode::Conflict));
+                    let rendered = format!("{fault:?}");
+                    assert!(
+                        rendered.contains("engineUnavailable"),
+                        "没有引擎必须带结构化 reason: {rendered}"
+                    );
                 }
                 "yeban_render_sfz_wav" => {
                     // 这个夹具**没有**装载过乐器 ⇒ 规划阶段响亮拒绝（不是 -32005，

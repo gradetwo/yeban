@@ -4943,7 +4943,7 @@ fn two_track_project() -> YebanProjectV1 {
     project
 }
 
-/// ⭐ 判据 1 ＋ 2：**工具面逐字**（22 个工具、36 个 kind、含 `setTrackSampler`），
+/// ⭐ 判据 1 ＋ 2：**工具面逐字**（23 个工具、36 个 kind、含 `setTrackSampler`），
 /// 且经这条通路给**两轨绑不同采样器**后 `query_project` 逐轨读得回来。
 ///
 /// 注入（实测红）：
@@ -4963,7 +4963,7 @@ fn the_tool_surface_binds_two_different_samplers_and_query_reads_them_back() {
     let rhythm = id(3).to_canonical_string();
     let (mut dispatcher, auth) = dispatcher_with(&project, &scratch.join("bind.yeban"));
 
-    // ---- ① tools/list：22 个工具，逐字 ----
+    // ---- ① tools/list：23 个工具，逐字 ----
     let listed = request(&mut dispatcher, &auth, "tools/list", json!({}));
     let tools = listed["tools"].as_array().expect("tools");
     println!(
@@ -4971,7 +4971,11 @@ fn the_tool_surface_binds_two_different_samplers_and_query_reads_them_back() {
         tools.len()
     );
     assert_eq!(tools.len(), TOOL_COUNT, "工具面条数必须等于 TOOL_COUNT");
-    assert_eq!(tools.len(), 22, "验收 `#220` 的逐字读数：22 个工具");
+    assert_eq!(
+        tools.len(),
+        23,
+        "`#220` 的逐字读数曾是 22；`#290` 新增 `yeban_launch_scene` ⇒ 23"
+    );
 
     // ---- ② `yeban_edit_notes` 的 kind 表：与 `OP_KINDS` 逐字同序 ----
     let edit = tools

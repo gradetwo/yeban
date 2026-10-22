@@ -139,6 +139,7 @@ use std::time::{Duration, Instant};
 use yeban_mcp::Dispatcher;
 use yeban_mcp::domain::engine_state::EngineReadings;
 use yeban_mcp::domain::error::Fault;
+use yeban_mcp::domain::scene_launch::SceneLaunchRequest as McpSceneLaunchRequest;
 use yeban_mcp::domain::store::{self, AcquiredLock, LockMode};
 use yeban_mcp::domain::{Domain, HostAction, HostOutcome, HostSaveOutcome};
 use yeban_mcp::security::{BearerToken, RunMode, ScopeSet, TokenFile};
@@ -146,6 +147,8 @@ use yeban_mcp::transport::http::{HttpError, HttpServer, MCP_PATH, ProjectRevisio
 use yeban_mcp::transport::{HttpStartup, TransportError, plan_http_startup};
 use yeban_mcp::undo_session::UndoDisplay;
 use yeban_model::{CommitGraph, YebanProjectV1};
+
+use crate::engine_host::{EngineHost, SceneLaunchRequest as EngineSceneLaunchRequest};
 
 // ---------------------------------------------------------------------------
 // 两道开关（第二道）与时间常量
@@ -451,6 +454,101 @@ impl EngineReadingsHandle {
     pub fn set_engine_readings(&self, readings: Option<EngineReadings>) {
         self.server.set_engine_readings(readings);
     }
+
+    /// ⭐ `#290`：注入 / 清除引擎累计生效的**量化场景启动次数**。
+    ///
+    /// 与 [`Self::set_engine_readings`] 分开的理由：那个镜像是"设备/响度"的完整快照，
+    /// 而场景启动计数在设备腿运行时拿不到（`EngineHost::scene_launches_applied()` 返回
+    /// `None`）⇒ 用独立标量口注入 `None`，`engine.sceneLaunchesApplied` 如实为 `null`，
+    /// ⛔ 不沿用上一代引擎的旧数字。它**不**推进读数修订号（不是一条完整读数）。
+    pub fn set_scene_launches_applied(&self, applied: Option<u64>) {
+        self.server.set_scene_launches_applied(applied);
+    }
+}
+
+/// **宿主侧场景启动句柄**（`#290`）。
+///
+/// 它只做两件事：声明"本进程有引擎"（[`Self::attach`]）与取走工具排队进来的请求
+/// （[`Self::take_requests`]）。它是 [`EngineReadingsHandle`] 的**动作对偶**：
+/// 一个是引擎 → 控制面的读数，一个是控制面 → 宿主的请求。
+///
+/// **不是第二条写通道**：它拿不到 `Dispatcher`，也不改工程文档；请求只能由
+/// `yeban_launch_scene` 放进 `Domain` 的有界队列，且只在 attach 之后。
+#[derive(Clone, Debug)]
+pub struct SceneLaunchHandle {
+    /// 与工作线程共享的那一个服务。
+    server: Arc<HttpServer>,
+}
+
+impl SceneLaunchHandle {
+    /// 声明本进程有引擎：之后的 `yeban_launch_scene` 才会入队（否则响亮报
+    /// `engineUnavailable`）。
+    pub fn attach(&self) {
+        self.server.attach_scene_launch_host();
+    }
+
+    /// 断开（幂等；清掉尚未取走的请求）。
+    pub fn detach(&self) {
+        self.server.detach_scene_launch_host();
+    }
+
+    /// 取走全部待启动请求（取走即清空；顺序 = 入队顺序）。
+    #[must_use]
+    pub fn take_requests(&self) -> Vec<McpSceneLaunchRequest> {
+        self.server.take_scene_launch_requests()
+    }
+}
+
+/// 一次宿主的场景启动搬运读数（`delivered` / `refused` 分开，⛔ 不压成一个 bool）。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SceneLaunchDrain {
+    /// 真的送到引擎（`Direct` 或 `QueuedToDevice`）的条数。
+    pub delivered: usize,
+    /// 没有送到引擎（`NoEngine` / `EventQueueFull`）的条数。
+    pub refused: usize,
+}
+
+/// 把工具面排队的场景启动请求搬进**真正的**引擎（`EngineHost::queue_scene_launch`）。
+///
+/// 这是产品心跳与判据**共用**的那**一个**函数：`crates/yeban-app/src/main.rs` 的
+/// 16 ms 定时器与 `tests/mcp_scene_launch.rs` 都调它 ⇒ "判据通过"蕴含"产品路径
+/// 走的是同一条链"。
+///
+/// 失败**不静默**：`refused` 逐条计数，调用方负责打日志 / 写回执；本函数不碰界面。
+#[must_use]
+pub fn apply_scene_launch_requests(
+    handle: &SceneLaunchHandle,
+    engine: &mut EngineHost,
+) -> SceneLaunchDrain {
+    let mut drain = SceneLaunchDrain::default();
+    for request in handle.take_requests() {
+        let disposition = engine.queue_scene_launch(EngineSceneLaunchRequest {
+            scene_id: Some(request.scene_id),
+            tempo_bpm: request.tempo_bpm,
+            quantization: request.quantization,
+            time_signature: request.time_signature,
+        });
+        if disposition.is_delivered() {
+            drain.delivered += 1;
+        } else {
+            drain.refused += 1;
+            eprintln!(
+                "[yeban-app] 场景启动没有送到引擎（{:?}）：scene={} tempo={}",
+                disposition,
+                request.scene_id.to_canonical_string(),
+                request.tempo_bpm
+            );
+        }
+    }
+    drain
+}
+
+/// 把引擎的 `scene_launches_applied` 读数注入控制面（`None` = 这一代引擎拿不到）。
+///
+/// 产品心跳与判据共用：设备腿返回 `None` ⇒ `engine.sceneLaunchesApplied` 如实为
+/// `null`，⛔ 不保留上一代引擎的旧数字。
+pub fn publish_scene_launches_applied(handle: &EngineReadingsHandle, engine: &EngineHost) {
+    handle.set_scene_launches_applied(engine.scene_launches_applied());
 }
 
 /// **宿主侧工程权威句柄**（`ROAD-M4-008` 选项 (a) 的交付侧，2026-10-06；第二片 2026-10-06）。
@@ -703,6 +801,24 @@ impl InProcessMcp {
     #[must_use]
     pub fn engine_readings_handle(&self) -> EngineReadingsHandle {
         EngineReadingsHandle {
+            server: Arc::clone(
+                self.server
+                    .as_ref()
+                    .expect("挂载存活期间监听 socket 一定在（stop 消费 self）"),
+            ),
+        }
+    }
+
+    /// ⭐ `#290`：**宿主侧场景启动句柄**（与 [`Self::engine_readings_handle`] 的动作对偶）。
+    ///
+    /// 引擎真正起来之后，宿主先 [`SceneLaunchHandle::attach`]，再在每个心跳里
+    /// [`SceneLaunchHandle::take_requests`] → [`apply_scene_launch_requests`]。
+    /// 没有引擎时**不要** attach ⇒ 工具会响亮报 `engineUnavailable`。
+    ///
+    /// 返回的句柄与工作线程共享同一份分发器；它不延长监听生命周期。
+    #[must_use]
+    pub fn scene_launch_handle(&self) -> SceneLaunchHandle {
+        SceneLaunchHandle {
             server: Arc::clone(
                 self.server
                     .as_ref()

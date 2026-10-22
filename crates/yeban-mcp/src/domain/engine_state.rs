@@ -87,6 +87,13 @@ pub struct EngineReadings {
     pub loudness_range_lu: Option<f32>,
     /// 真峰值（dBFS）。
     pub true_peak_dbfs: Option<f32>,
+    /// ⭐ `#290`：引擎累计**真的生效**过的量化场景启动次数
+    /// （`EngineStats::scene_launches_applied` 的只读镜像）。
+    ///
+    /// `None` = 这一代引擎拿不到该读数（设备腿的运行时在 cpal 回调线程上，
+    /// `EngineHost` 没有它的 stats）⇒ 响应里 `sceneLaunchesApplied` 如实为 `null`，
+    /// ⛔ 不沿用上一代引擎的旧数字。
+    pub scene_launches_applied: Option<u64>,
 }
 
 impl Default for EngineReadings {
@@ -100,6 +107,7 @@ impl Default for EngineReadings {
             short_term_lufs: None,
             loudness_range_lu: None,
             true_peak_dbfs: None,
+            scene_launches_applied: None,
         }
     }
 }
@@ -144,7 +152,11 @@ pub fn session_value(
 
 /// 引擎读数的 JSON 形态（`mirror == None` 时如实报告"不知道"）。
 #[must_use]
-pub fn engine_value(project: &YebanProjectV1, mirror: Option<EngineReadings>) -> Value {
+pub fn engine_value(
+    project: &YebanProjectV1,
+    mirror: Option<EngineReadings>,
+    scene_launches_applied: Option<u64>,
+) -> Value {
     let project_rate = project.sample_rate().hz();
     let (buffer_frames, mirror_rate, matches) = match mirror {
         Some(readings) => (
@@ -154,6 +166,10 @@ pub fn engine_value(project: &YebanProjectV1, mirror: Option<EngineReadings>) ->
         ),
         None => (Value::Null, Value::Null, Value::Null),
     };
+    // ⭐ `#290`：applied 计数优先取宿主**单独**注入的那一格（心跳每跳更新），
+    // 其次取完整读数镜像里的同名字段（老客户端 / 判据只注入 `EngineReadings` 时）。
+    let applied = scene_launches_applied
+        .or_else(|| mirror.and_then(|readings| readings.scene_launches_applied));
     serde_json::json!({
         "sampleRate": project_rate,
         "sampleRateSource": "project.audio_config.sample_rate",
@@ -166,6 +182,9 @@ pub fn engine_value(project: &YebanProjectV1, mirror: Option<EngineReadings>) ->
         "shortTermLufs": mirror.and_then(|readings| readings.short_term_lufs),
         "loudnessRangeLu": mirror.and_then(|readings| readings.loudness_range_lu),
         "truePeakDbfs": mirror.and_then(|readings| readings.true_peak_dbfs),
+        // ⭐ `#290`：量化场景启动的累计生效次数（宿主心跳注入；`None` ⇒ `null`）。
+        "sceneLaunchesApplied": applied,
+        "sceneLaunchesAppliedSource": if applied.is_some() { "hostEngineMirror" } else { "unavailable" },
         "mirrorSampleRate": mirror_rate,
         "sampleRateMatchesMirror": matches,
     })
@@ -186,6 +205,8 @@ pub fn readings_record(revision: u64, readings: EngineReadings) -> Value {
         "shortTermLufs": readings.short_term_lufs,
         "loudnessRangeLu": readings.loudness_range_lu,
         "truePeakDbfs": readings.true_peak_dbfs,
+        // ⭐ `#290`：与当前读数同一口径；没有注入时为 `null`。
+        "sceneLaunchesApplied": readings.scene_launches_applied,
     })
 }
 
@@ -380,6 +401,7 @@ pub fn snapshot(
     project: &YebanProjectV1,
     session: &SessionRuntimeState,
     mirror: Option<EngineReadings>,
+    scene_launches_applied: Option<u64>,
     undo_cursor: usize,
     track_id: Option<EntityId>,
     readings: ReadingsCursor<'_>,
@@ -401,7 +423,7 @@ pub fn snapshot(
             project.time_signature.denominator,
         ),
     );
-    let mut engine = engine_value(project, mirror);
+    let mut engine = engine_value(project, mirror, scene_launches_applied);
     if let Value::Object(fields) = &mut engine {
         // 客户端从这里取下一次调用要用的游标（`readingsRevision`）。
         fields.insert(
@@ -449,6 +471,7 @@ pub fn snapshot(
             "sends": "project.routing_graph.edges where kind == SendToAux",
             "undoCursor": "undo_session::UndoState::display().undoable (applied op count; same value as yeban_undo before.undoable) [#177]",
             "readingsRevision": "host injected EngineReadings mirror (monotonic)",
+            "sceneLaunchesApplied": "host injected EngineStats::scene_launches_applied (None = this engine generation cannot read it)",
         }),
     );
     Ok(Value::Object(data))
@@ -498,7 +521,7 @@ mod tests {
     #[test]
     fn engine_value_reads_the_sample_rate_from_the_project_and_the_buffer_from_the_mirror() {
         let project = filled_project();
-        let bare = engine_value(&project, None);
+        let bare = engine_value(&project, None, None);
         assert_eq!(bare["sampleRate"], 48_000);
         assert_eq!(bare["bufferFrames"], Value::Null);
         assert_eq!(bare["bufferSource"], "unavailable");
@@ -511,6 +534,7 @@ mod tests {
                 buffer_frames: 128,
                 ..EngineReadings::default()
             }),
+            None,
         );
         assert_eq!(with["bufferFrames"], 128);
         assert_eq!(with["bufferSource"], "hostEngineMirror");
@@ -525,8 +549,20 @@ mod tests {
                 buffer_frames: 256,
                 ..EngineReadings::default()
             }),
+            None,
         );
         assert_eq!(matching["sampleRateMatchesMirror"], true);
+    }
+
+    #[test]
+    fn scene_launches_applied_is_null_without_injection_and_echoed_when_injected() {
+        let project = filled_project();
+        let absent = engine_value(&project, None, None);
+        assert!(absent["sceneLaunchesApplied"].is_null());
+        assert_eq!(absent["sceneLaunchesAppliedSource"], "unavailable");
+        let injected = engine_value(&project, None, Some(3));
+        assert_eq!(injected["sceneLaunchesApplied"], 3);
+        assert_eq!(injected["sceneLaunchesAppliedSource"], "hostEngineMirror");
     }
 
     #[test]
@@ -554,6 +590,7 @@ mod tests {
             &project,
             &session,
             None,
+            None,
             0,
             None,
             ReadingsCursor {
@@ -573,6 +610,7 @@ mod tests {
         let fault = snapshot(
             &project,
             &session,
+            None,
             None,
             0,
             Some(ghost),
@@ -602,6 +640,7 @@ mod tests {
             short_term_lufs: Some(-13.8),
             loudness_range_lu: Some(6.0),
             true_peak_dbfs: Some(-1.0),
+            scene_launches_applied: Some(2),
         };
         let tail = [(3_u64, measured), (4, EngineReadings::default())];
 
@@ -672,12 +711,12 @@ mod tests {
             "truePeakDbfs",
         ];
         // 无镜像：**不知道**，如实 null（不编造 0）。
-        let absent = engine_value(&project, None);
+        let absent = engine_value(&project, None, None);
         for key in keys {
             assert!(absent[key].is_null(), "{key} 无镜像时必须是 null");
         }
         // 有镜像但**尚未测量**：仍为 null —— 与"测得静音"区分（账本第 327/328 轮）。
-        let unmeasured = engine_value(&project, Some(EngineReadings::default()));
+        let unmeasured = engine_value(&project, Some(EngineReadings::default()), None);
         for key in keys {
             assert!(unmeasured[key].is_null(), "{key} 未测量时必须是 null");
         }
@@ -692,6 +731,7 @@ mod tests {
                 true_peak_dbfs: Some(-1.0),
                 ..EngineReadings::default()
             }),
+            None,
         );
         for (key, want) in [
             ("integratedLufs", -14.0_f64),
