@@ -216,7 +216,13 @@ jobs:
     # 宽运行走下面的 rust-workspace 单腿 —— 23 条腿各自装 apt/工具链/解析依赖是纯浪费。
     if: needs.plan.outputs.workspace_wide != 'true' && needs.plan.outputs.crates != '["none"]'
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    # ⚠ 2026-10-22（R1034）：**60 → 90**。`#287` 这条腿跑了 22m、`0c27ddbb` 27m，
+    #    而 `0c27ddbb` 的**第一次**是 `cancelled` @ 1h5m ⇒ **撞的正是这个 60 分钟**。
+    #    `cancelled` ⛔ 不是判决（第 322 条）⇒ 它逼了一次 `gh run rerun`（27m）⇒
+    #    净代价一小时。⛔ 这**不是**"慢就没关系"：时长从 22m 涨到 27m 的现象已单独记在
+    #    台账 R1034 待查（可疑：`#283`/`#286`/`#287` 新加的测试）；本行只保证
+    #    **撞线时给判决而不是给 `cancelled`**。宽运行那条腿本来就是 90（见 rust-workspace）。
+    timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
