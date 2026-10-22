@@ -86,11 +86,11 @@ use super::session_dispatcher;
 /// 夹具速度：120 BPM / 960 PPQ ⇒ 1 tick = 25 帧 @ 48 kHz（可手算）。
 const BPM: f64 = 120.0;
 /// 采样率：工程率 ＝ 导出率 ＝ 请求率（前置条件 4）。
-const SAMPLE_RATE: u32 = 48_000;
+pub(super) const SAMPLE_RATE: u32 = 48_000;
 /// 工程末端：3840 tick = 2 秒 @ 120 BPM。
-const END_TICK: u64 = 3_840;
+pub(super) const END_TICK: u64 = 3_840;
 /// 显式帧数：2 秒 @ 48 kHz。
-const FRAMES: u64 = 96_000;
+pub(super) const FRAMES: u64 = 96_000;
 /// 音频素材帧数：1 秒 @ 48 kHz。
 const ASSET_FRAMES: usize = 48_000;
 /// 24-bit 量化尺度 `2^(bits-1)`（`yeban_render::dither::BitDepth::Int24::scale()`）。
@@ -236,14 +236,14 @@ fn digest_hex_distance(left: &str, right: &str) -> usize {
 /// 固定 ULID（同一次测试里两次运行拿到**同一批**实体 ⇒ 计划节点序、求和序可复现）。
 ///
 /// 26 字符 Crockford Base32；`01J` 前缀 ＋ 23 位十进制补零。
-fn fixed(index: u128) -> EntityId {
+pub(super) fn fixed(index: u128) -> EntityId {
     format!("01J{index:023}")
         .parse()
         .expect("固定夹具身份必须是 26 字符 Crockford Base32 ULID")
 }
 
 /// 空工程：4/4、120 BPM、48 kHz、一个主总线（⛔ 没有别的轨道）。
-fn empty_project() -> YebanProjectV1 {
+pub(super) fn empty_project() -> YebanProjectV1 {
     let master = fixed(1);
     YebanProjectV1 {
         bpm: BPM,
@@ -270,7 +270,12 @@ fn empty_project() -> YebanProjectV1 {
 }
 
 /// 加一条直连主总线的轨（`TrackToBus`，⛔ 没有 aux send / sidechain）。
-fn add_track(project: &mut YebanProjectV1, index: u128, kind: TrackKind, name: &str) -> EntityId {
+pub(super) fn add_track(
+    project: &mut YebanProjectV1,
+    index: u128,
+    kind: TrackKind,
+    name: &str,
+) -> EntityId {
     let id = fixed(index);
     project.tracks.insert(
         id,
@@ -463,8 +468,9 @@ fn mixed_project(scratch: &Scratch) -> (YebanProjectV1, Vec<(AssetHash, Vec<u8>)
 
 /// MCP 腿：**生产装配** [`session_dispatcher`] ＋ `yeban_render_master` 工具调用。
 ///
-/// 资产字节经 `Domain::put_asset` 放进会话 CAS 池（与 `yeban_open_project` 从 `.yeban`
-/// 容器填充的是**同一个** `assets: BTreeMap<AssetHash, Vec<u8>>`）。
+/// 资产字节经**装配口**（`session_dispatcher` 的 `assets` 参数，`#292`）一次带进会话
+/// CAS 池 —— 与 `yeban_open_project` 从 `.yeban` 容器填充的是**同一个**
+/// `assets: BTreeMap<AssetHash, Vec<u8>>`，也与生产路径 `start_for_project` 同一条。
 fn mcp_render(
     project: &YebanProjectV1,
     assets: &[(AssetHash, Vec<u8>)],
@@ -474,18 +480,15 @@ fn mcp_render(
     normalize: bool,
     sample_rate: u32,
 ) -> Value {
+    // ⭐ `#292`：池由**装配口**一次带进去（与生产路径 `start_for_project` 同一个
+    // 参数），⛔ 不再在装配之后逐条 `put_asset` —— 那会掩盖"挂载漏传池"这类缺陷。
     let mut dispatcher = session_dispatcher(
         project,
         &scratch.join(&format!("{tag}.session.yeban")),
         false,
+        assets.iter().cloned(),
     )
     .expect("内嵌会话装配（生产路径的同一个符号）");
-    for (_, bytes) in assets {
-        dispatcher
-            .domain_mut()
-            .put_asset(bytes.clone())
-            .expect("资产放进会话 CAS 池");
-    }
     let out = scratch.join(&format!("{tag}.master.wav"));
     let result = call_tool(
         &mut dispatcher,
@@ -534,7 +537,7 @@ fn quantize_like_export(sample: f32) -> i32 {
 /// MCP 母带文件的 **`data` 负载**（24-bit 整数码的原始字节，按样本顺序）。
 ///
 /// 解析口径与理由见 [`sample_diff`] 的文档（不用 hound，改用本仓的 rf64 解析器）。
-fn mcp_pcm_payload(path: &Path) -> Vec<u8> {
+pub(super) fn mcp_pcm_payload(path: &Path) -> Vec<u8> {
     let bytes = std::fs::read(path).expect("读 MCP 母带字节");
     let parsed = yeban_render::rf64::parse_container(&bytes).expect("解析 MCP 母带容器");
     assert_eq!(

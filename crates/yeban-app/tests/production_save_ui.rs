@@ -159,6 +159,7 @@ fn the_production_window_save_entry_writes_through_the_mounted_authority() {
         true,
         yeban_model::samples::filled_project(),
         SessionSource::WritableFile(project_path.clone()),
+        Vec::new(),
     )
     .expect("挂载决策")
     .expect("必须挂载");

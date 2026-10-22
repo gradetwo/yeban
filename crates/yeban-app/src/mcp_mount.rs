@@ -35,8 +35,9 @@
 //!
 //! ## 会话：来源决定 `read_only` 与它取的 `.yeban.lock` 模式
 //!
-//! [`start_for_project`] 把调用方交进来的 `YebanProjectV1` 经 `Domain::open_in_memory`
-//! 注入控制面会话；`read_only` **不再写死**，而由 [`SessionSource`] 一处给出
+//! [`start_for_project`] 把调用方交进来的 `YebanProjectV1` **与会话 CAS 池**
+//! （`assets/{sha256}`，`#292`）经 `Domain::open_in_memory_with_assets` 注入控制面会话；
+//! `read_only` **不再写死**，而由 [`SessionSource`] 一处给出
 //! （[`SessionSource::session_read_only`]）：只读形态（[`SessionSource::File`] /
 //! [`SessionSource::InMemory`]）是 `true`，单一写者形态（[`SessionSource::WritableFile`]）
 //! 是 `false`。注意 `read_only` 的准确含义是**不许落盘**（`yeban_save_project` 被拒，
@@ -146,7 +147,7 @@ use yeban_mcp::security::{BearerToken, RunMode, ScopeSet, TokenFile};
 use yeban_mcp::transport::http::{HttpError, HttpServer, MCP_PATH, ProjectRevisionSink};
 use yeban_mcp::transport::{HttpStartup, TransportError, plan_http_startup};
 use yeban_mcp::undo_session::UndoDisplay;
-use yeban_model::{CommitGraph, YebanProjectV1};
+use yeban_model::{AssetHash, CommitGraph, YebanProjectV1};
 
 use crate::engine_host::{EngineHost, SceneLaunchRequest as EngineSceneLaunchRequest};
 
@@ -756,6 +757,12 @@ impl InProcessMcp {
     /// 只读文件取共享读锁、单一写者文件取排他写锁（两者拿不到都 ⇒
     /// [`MountError::Locked`]）、内存样本不取。
     ///
+    /// ⭐ `#292`：`assets` 是**会话 CAS 池**（`assets/{sha256}`），由调用方按
+    /// [`ProjectArchive::assets`](yeban_model::container::ProjectArchive::assets)
+    /// 的原样交出。漏了它 ⇒ 带音频片段的工程经这个控制面导出时片段静音
+    /// （登记 `audioClips`，`bytesPresent: false`）。空池是**合法**输入（样本工程
+    /// 本来就没有载荷），但它必须由调用方**明确**给出，⛔ 不再由本模块默认成空。
+    ///
     /// # Errors
     ///
     /// 决策失败、`.yeban.lock` 被别的形态持有、工程无法注入、或绑定/线程失败。
@@ -763,6 +770,7 @@ impl InProcessMcp {
         requested: bool,
         project: YebanProjectV1,
         source: SessionSource,
+        assets: impl IntoIterator<Item = (AssetHash, Vec<u8>)>,
     ) -> Result<Option<Self>, MountError> {
         match plan(requested)? {
             HttpStartup::Disabled => Ok(None),
@@ -770,7 +778,7 @@ impl InProcessMcp {
                 // 取锁先于绑 socket：这是 fail-closed 的方向（少一个监听口，不是多一个）。
                 let lock = acquire_session_lock(&source)?;
                 let read_only = source.session_read_only();
-                let dispatcher = session_dispatcher(&project, source.path(), read_only)?;
+                let dispatcher = session_dispatcher(&project, source.path(), read_only, assets)?;
                 Self::start(dispatcher, lock).map(Some)
             }
         }
@@ -1008,10 +1016,17 @@ fn acquire_session_lock(source: &SessionSource) -> Result<Option<AcquiredLock>, 
         })
 }
 
-/// 构造一个**生产模式**的分发器，并把工程注入它的会话。
+/// 构造一个**生产模式**的分发器，并把工程**与会话 CAS 池**注入它的会话。
 ///
 /// `read_only` 是 [`SessionSource::session_read_only`] 给出的**唯一**判定：只读挂载与
 /// 内存样本是 `true`，单一写者挂载（[`SessionSource::WritableFile`]）是 `false`。
+///
+/// ⭐ `#292`：`assets` 是**会话 CAS 池**（`assets/{sha256}` 的 `(哈希, 字节)`），与
+/// [`ProjectArchive::assets`](yeban_model::container::ProjectArchive::assets) /
+/// `UndoPort::assets()` **同一形态、同一来源**。上一版只交 `project`，于是导入过音频的
+/// 工程经内嵌控制面导出时，片段引用的哈希在池里查不到 ⇒ 渲染层只能把它当静音并登记
+/// `audioClips`（`bytesPresent: false`）。池在这里**一次**交进去，⛔ 不在调用点逐条
+/// `put_asset`（那会造出第二个池登记点）。
 ///
 /// 高熵令牌在**这里**生成（[`BearerToken::generate`]，256 bit）—— 没有第二个生成点。
 ///
@@ -1023,6 +1038,7 @@ pub(crate) fn session_dispatcher(
     project: &YebanProjectV1,
     path: &Path,
     read_only: bool,
+    assets: impl IntoIterator<Item = (AssetHash, Vec<u8>)>,
 ) -> Result<Dispatcher, MountError> {
     let token = BearerToken::generate().token;
     // scope 给全：`ui:inject` 的硬禁**不在这里**判，而在 `security::authorize`
@@ -1030,7 +1046,7 @@ pub(crate) fn session_dispatcher(
     let mut dispatcher = Dispatcher::new(token, ScopeSet::all(), RunMode::Production);
     dispatcher
         .domain_mut()
-        .open_in_memory(path.to_path_buf(), project.clone(), read_only)
+        .open_in_memory_with_assets(path.to_path_buf(), project.clone(), read_only, assets)
         .map_err(|fault| MountError::Domain(format!("{fault:?}")))?;
     Ok(dispatcher)
 }
@@ -1063,3 +1079,7 @@ mod embedded_sampler;
 // （三个夹具 ＋ 四条前置条件反证）。与上面两个子模块同一条 `session_dispatcher` 装配。
 #[cfg(test)]
 mod embedded_digest;
+// ⭐ `#292`：**会话 CAS 池必须跟着挂载进 `Domain`** —— GUI 导入的音频经内嵌控制面
+// 导出时，片段不能在渲染层被当成"声明了但没有字节"。与上面三个子模块同一条装配。
+#[cfg(test)]
+mod embedded_audio_pool;

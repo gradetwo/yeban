@@ -181,6 +181,7 @@ fn a_writable_session_is_the_only_writer_and_its_save_persists() {
         true,
         yeban_model::samples::filled_project(),
         SessionSource::WritableFile(project_path.clone()),
+        Vec::new(),
     )
     .expect("挂载决策")
     .expect("运行期开关打开时必须真的挂载");
@@ -207,9 +208,13 @@ fn a_writable_session_is_the_only_writer_and_its_save_persists() {
         ("只读", SessionSource::File(project_path.clone())),
         ("写", SessionSource::WritableFile(project_path.clone())),
     ] {
-        let error =
-            InProcessMcp::start_for_project(true, yeban_model::samples::filled_project(), source)
-                .expect_err(&format!("{tag}形态在写者存活时不得挂载"));
+        let error = InProcessMcp::start_for_project(
+            true,
+            yeban_model::samples::filled_project(),
+            source,
+            Vec::new(),
+        )
+        .expect_err(&format!("{tag}形态在写者存活时不得挂载"));
         match &error {
             MountError::Locked { path, fault } => {
                 assert_eq!(path, &project_path, "报错必须点名目标工程");
@@ -308,6 +313,7 @@ fn the_local_gui_save_cannot_write_while_a_writable_session_lives() {
         true,
         yeban_model::samples::filled_project(),
         SessionSource::WritableFile(project_path.clone()),
+        Vec::new(),
     )
     .expect("挂载决策")
     .expect("必须挂载");
@@ -372,6 +378,7 @@ fn the_host_save_action_is_refused_on_a_read_only_session() {
         true,
         yeban_model::samples::filled_project(),
         SessionSource::File(project_path.clone()),
+        Vec::new(),
     )
     .expect("挂载决策")
     .expect("必须挂载");
@@ -434,6 +441,7 @@ fn the_production_save_dispatches_through_the_writable_authority() {
         true,
         yeban_model::samples::filled_project(),
         SessionSource::WritableFile(project_path.clone()),
+        Vec::new(),
     )
     .expect("挂载决策")
     .expect("必须挂载");
@@ -498,6 +506,7 @@ fn the_production_save_refuses_on_a_read_only_authority_without_falling_back() {
         true,
         yeban_model::samples::filled_project(),
         SessionSource::File(project_path.clone()),
+        Vec::new(),
     )
     .expect("挂载决策")
     .expect("必须挂载");

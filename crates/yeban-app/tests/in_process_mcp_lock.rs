@@ -340,6 +340,7 @@ fn a_mount_is_refused_while_another_form_holds_the_project_exclusively() {
         true,
         yeban_model::samples::filled_project(),
         SessionSource::File(project.clone()),
+        Vec::new(),
     )
     .expect_err("被排他持有时挂载必须失败");
     match &error {
@@ -366,6 +367,7 @@ fn a_mount_is_refused_while_another_form_holds_the_project_exclusively() {
         true,
         yeban_model::samples::filled_project(),
         SessionSource::File(project.clone()),
+        Vec::new(),
     )
     .expect("持有者消失后挂载决策")
     .expect("持有者消失后必须能挂载");
@@ -387,6 +389,7 @@ fn a_mount_is_refused_while_another_form_holds_the_project_exclusively() {
         true,
         yeban_model::samples::filled_project(),
         SessionSource::InMemory(PathBuf::from("sample:filled")),
+        Vec::new(),
     )
     .expect("内存会话挂载决策")
     .expect("内存会话必须能挂载");
@@ -421,6 +424,7 @@ fn the_mounted_control_plane_excludes_writers_and_shares_with_readers() {
         true,
         yeban_model::samples::filled_project(),
         SessionSource::File(project.clone()),
+        Vec::new(),
     )
     .expect("挂载决策")
     .expect("开关打开时必须真的挂载");
@@ -598,6 +602,7 @@ fn a_mounted_read_only_session_refuses_the_gui_save_on_the_same_file() {
         true,
         yeban_model::samples::filled_project(),
         SessionSource::File(project.clone()),
+        Vec::new(),
     )
     .expect("挂载决策")
     .expect("开关打开时必须真的挂载");

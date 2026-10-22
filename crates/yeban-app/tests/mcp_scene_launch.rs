@@ -104,6 +104,7 @@ impl Fixture {
             true,
             project.clone(),
             SessionSource::InMemory(PathBuf::from("sample:mcp-scene-launch")),
+            Vec::new(),
         )
         .expect("挂载决策")
         .expect("运行期开关打开时必须真的挂载");
@@ -327,6 +328,7 @@ fn without_the_host_attached_the_tool_is_a_loud_engine_unavailable_error() {
         true,
         project,
         SessionSource::InMemory(PathBuf::from("sample:mcp-scene-launch-no-host")),
+        Vec::new(),
     )
     .expect("挂载决策")
     .expect("挂载");

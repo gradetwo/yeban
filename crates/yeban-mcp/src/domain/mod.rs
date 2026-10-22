@@ -120,8 +120,10 @@ struct Active {
     saved_digest: String,
     /// 会话 CAS 资产池（`assets/{sha256}` 的**字节**，`BTreeMap` 保证键序确定）。
     ///
-    /// 打开工程时由容器里的 `assets/{sha256}` 填充；`open_in_memory` 注入的会话
-    /// （夹具 / 测试）没有载荷字节，因此池为空、只有 `project.assets` 那份元数据索引。
+    /// 打开工程时由容器里的 `assets/{sha256}` 填充；[`Domain::open_in_memory_with_assets`]
+    /// 注入的会话（`yeban-app` 内嵌控制面，`#292`）由调用方把**同一份**池交进来；
+    /// 只有 [`Domain::open_in_memory`] 这条口子固定为空池（夹具 / 测试）。
+    /// ⚠ 空池 ＋ 工程里有音频片段 ＝ 渲染层如实登记 `audioClips` 并把片段当静音。
     /// 保存时整体交给 `write_project_container` 逐条重算 SHA-256。
     assets: BTreeMap<AssetHash, Vec<u8>>,
     /// 持有的锁（内存会话没有工程文件时为 `None`）。
@@ -642,13 +644,18 @@ impl Domain {
             .is_none_or(|digest| digest != active.saved_digest)
     }
 
-    /// **不碰文件系统**地注入一个已经打开的工程。
+    /// **不碰文件系统**地注入一个已经打开的工程（会话 CAS 池为空）。
     ///
     /// 两个用途，都是正当的：
     ///
     /// 1. 形态 A（`yeban-app` 内嵌）：应用进程自己持有 `YebanProjectV1`，
     ///    通过这个口子把它交给 MCP 层，而不是让 MCP 去读盘；
     /// 2. 判据与规范样本：需要一个确定性的"已打开"起点。
+    ///
+    /// ⚠ 应用进程手里通常**还有资产字节**（`ProjectArchive::assets` /
+    /// `UndoPort::assets()`）⇒ 那条路走 [`Self::open_in_memory_with_assets`]。
+    /// 用本函数注入一个**带音频片段**的工程等于告诉渲染层"声明了但没有字节"，
+    /// 片段会被当静音并登记 `audioClips`（如实，但多半不是调用方想要的）。
     ///
     /// # Errors
     ///
@@ -658,6 +665,30 @@ impl Domain {
         path: impl Into<PathBuf>,
         project: YebanProjectV1,
         read_only: bool,
+    ) -> Result<(), Fault> {
+        self.open_in_memory_with_assets(path, project, read_only, std::iter::empty())
+    }
+
+    /// 与 [`Self::open_in_memory`] **同一条口子**，但把会话 CAS 池一起交进来。
+    ///
+    /// `assets` 的形态与 [`crate::domain::render::AssetStore`] 读的那个池一致
+    /// （`assets/{sha256}` 的 `(哈希, 字节)`；`ProjectArchive::assets` 与
+    /// `UndoPort::assets()` 都是它）⇒ 调用方**不必**再逐条 [`Self::put_asset`]，
+    /// 渲染层看到的字节与容器里落盘的是**同一份**。
+    ///
+    /// 内容寻址的校验**不在**这里重复：哈希由字节算出（[`AssetHash::of_bytes`]）
+    /// 是导入与容器读写的纪律，而渲染层在消费前仍会复核一遍
+    /// （不符 ⇒ `assetHashMismatch`）。本函数只负责"把池放进会话"。
+    ///
+    /// # Errors
+    ///
+    /// 同 [`Self::open_in_memory`]。
+    pub fn open_in_memory_with_assets(
+        &mut self,
+        path: impl Into<PathBuf>,
+        project: YebanProjectV1,
+        read_only: bool,
+        assets: impl IntoIterator<Item = (AssetHash, Vec<u8>)>,
     ) -> Result<(), Fault> {
         project
             .check_readable()
@@ -674,7 +705,7 @@ impl Domain {
             digest,
             lock: None,
             history: None,
-            assets: BTreeMap::new(),
+            assets: assets.into_iter().collect(),
         })
     }
 

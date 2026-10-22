@@ -997,6 +997,10 @@ fn mount_in_process_mcp(
         requested,
         loaded.archive.project.clone(),
         source,
+        // ⭐ `#292`：**会话 CAS 池跟着工程一起进控制面**。少了这一句，导入过音频的
+        // 工程经内嵌控制面导出时片段会被当静音（`unsupported: ["audioClips"]`）。
+        // 来源与保存路径读的是**同一份** `ProjectArchive::assets`（`#132` 的三层之一）。
+        loaded.archive.assets.clone(),
     ) {
         Ok(mounted) => mounted,
         // 工程被别的形态排他持有 ⇒ **只**拒绝控制面，界面照常启动。

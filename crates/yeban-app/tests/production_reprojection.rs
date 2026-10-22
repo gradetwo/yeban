@@ -110,6 +110,7 @@ fn a_session_side_mutation_reaches_the_production_window_through_the_runtime_hoo
         true,
         project,
         SessionSource::InMemory(std::path::PathBuf::from("sample:m4-008-reproject")),
+        Vec::new(),
     )
     .expect("挂载决策")
     .expect("运行期开关打开时必须真的挂载");

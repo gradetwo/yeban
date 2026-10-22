@@ -154,6 +154,7 @@ pub(super) fn embedded(scratch: &Scratch, read_only: bool) -> Dispatcher {
         &project_without_note_probability(),
         &scratch.join("session.yeban"),
         read_only,
+        Vec::new(),
     )
     .expect("内嵌会话装配")
 }

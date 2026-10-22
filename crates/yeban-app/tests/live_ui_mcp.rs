@@ -3482,6 +3482,7 @@ fn a_gui_force_save_while_mounted_writes_through_the_authority() {
         true,
         yeban_model::samples::filled_project(),
         SessionSource::WritableFile(project_path.clone()),
+        Vec::new(),
     )
     .expect("挂载决策")
     .expect("运行期开关打开时必须真的挂载");
@@ -4313,6 +4314,7 @@ fn an_mcp_mutation_reaches_the_live_ui_projection_through_the_single_authority()
         true,
         project,
         SessionSource::InMemory(std::path::PathBuf::from("sample:m4-008")),
+        Vec::new(),
     )
     .expect("挂载决策")
     .expect("运行期开关打开时必须真的挂载");
@@ -4640,6 +4642,7 @@ fn a_gui_action_and_a_session_action_share_one_projection_through_the_authority(
         true,
         project,
         SessionSource::InMemory(std::path::PathBuf::from("sample:m4-008-gui-undo")),
+        Vec::new(),
     )
     .expect("挂载决策")
     .expect("运行期开关打开时必须真的挂载");
@@ -4786,6 +4789,7 @@ fn a_gui_pencil_edit_lands_in_the_same_authority_as_the_session() {
         true,
         project,
         SessionSource::InMemory(std::path::PathBuf::from("sample:m4-008-gui-pencil")),
+        Vec::new(),
     )
     .expect("挂载决策")
     .expect("运行期开关打开时必须真的挂载");
@@ -6301,6 +6305,7 @@ fn a_gui_delete_lands_in_the_same_authority_and_one_undo_restores_all() {
         true,
         project,
         SessionSource::InMemory(PathBuf::from("sample:delete-selection")),
+        Vec::new(),
     )
     .expect("挂载决策")
     .expect("运行期开关打开时必须真的挂载");

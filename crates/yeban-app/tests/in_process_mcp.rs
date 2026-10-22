@@ -236,6 +236,7 @@ fn the_switch_off_builds_nothing_at_all() {
         false,
         unreadable.clone(),
         SessionSource::InMemory(PathBuf::from("sample:unreadable")),
+        Vec::new(),
     )
     .expect("运行期开关关着 ⇒ 不是错误");
     assert!(
@@ -247,6 +248,7 @@ fn the_switch_off_builds_nothing_at_all() {
         true,
         unreadable,
         SessionSource::InMemory(PathBuf::from("sample:unreadable")),
+        Vec::new(),
     )
     .expect_err("开关打开时必须真的注入工程 ⇒ 不可读工程要被拒");
     assert!(
@@ -280,6 +282,7 @@ fn the_round_trip_stops_leaving_nothing_listening() {
         true,
         project,
         SessionSource::InMemory(PathBuf::from("sample:filled")),
+        Vec::new(),
     )
     .expect("挂载决策")
     .expect("运行期开关打开时必须真的挂载");
@@ -426,6 +429,7 @@ fn a_client_receives_loudness_updates_over_the_in_process_control_plane() {
         true,
         project,
         SessionSource::InMemory(PathBuf::from("sample:loudness")),
+        Vec::new(),
     )
     .expect("挂载决策")
     .expect("运行期开关打开时必须真的挂载");

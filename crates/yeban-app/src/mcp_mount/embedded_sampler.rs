@@ -282,6 +282,7 @@ fn the_mcp_export_and_the_cli_leg_agree_about_the_sampler() {
         &parity_project,
         &scratch.join("parity-embedded.yeban"),
         false,
+        Vec::new(),
     )
     .expect("内嵌会话装配");
     let track = midi_track_of(&mut embedded_dispatcher, Channel::Http);
@@ -344,6 +345,7 @@ fn the_mcp_export_and_the_cli_leg_agree_about_the_sampler() {
             &parity_project,
             &scratch.join(&format!("parity-{tag}.yeban")),
             false,
+            Vec::new(),
         )
         .expect("内嵌会话装配");
         let track = midi_track_of(&mut dispatcher, Channel::Http);
@@ -428,9 +430,13 @@ fn the_two_sides_agree_about_a_panned_sampler_track() {
         let project = single_track_sampler_project(pan, &sfz_path);
 
         // ---- MCP 腿 ----
-        let mut dispatcher =
-            super::session_dispatcher(&project, &scratch.join(&format!("{tag}-mcp.yeban")), false)
-                .expect("内嵌会话装配");
+        let mut dispatcher = super::session_dispatcher(
+            &project,
+            &scratch.join(&format!("{tag}-mcp.yeban")),
+            false,
+            Vec::new(),
+        )
+        .expect("内嵌会话装配");
         let (sha, peak, response) = render(&mut dispatcher, Channel::Http, &scratch, tag);
         let (mcp_l, mcp_r) = channel_peaks(&scratch.join(&format!("{tag}.wav")));
         assert_eq!(
@@ -809,9 +815,13 @@ fn the_embedded_dispatcher_surfaces_the_clipping_warning() {
     }
     project.validate().expect("过载夹具工程必须合法");
 
-    let mut dispatcher =
-        super::session_dispatcher(&project, &scratch.join("clip-warning.yeban"), false)
-            .expect("内嵌会话装配");
+    let mut dispatcher = super::session_dispatcher(
+        &project,
+        &scratch.join("clip-warning.yeban"),
+        false,
+        Vec::new(),
+    )
+    .expect("内嵌会话装配");
 
     let (sha, peak, response) = render(&mut dispatcher, Channel::Http, &scratch, "clip-warning");
     let data = &response["data"];
