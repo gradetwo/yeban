@@ -58,11 +58,19 @@
 //!
 //! **没接**：
 //!
-//! - **压缩参数的自动化**：静态投影消费压缩的 14 个拼写（[`is_supported_param`] 认它们），
-//!   但 [`StripField`] / [`DeviceParamField`] 刻意**不含**这些字段 ⇒ 指向压缩参数的
-//!   `DeviceParam` 泳道仍报 `deviceParamNotChannelStrip`（与 `#293` 的边界同款：
-//!   静态生效 ≠ 可自动化）。
+//! - **卷积 IR 形状**（`conv_ir_decay*` / `conv_ir_seed`）：构造期烘焙，自动化不落点
+//!   （与 `#293` 的边界同款：静态生效 ≠ 可自动化）；
 //! - **未知旋钮 / 外部器件**：同一条如实登记口径。
+//!
+//! ⭐ **压缩参数的自动化自 `#304` 起接通**：压缩的 14 个拼写（8 个字段）并入了
+//! [`StripField::SPELLINGS`]，成为**唯一名字表**的一部分（⛔ 不再有第二张
+//! `STRIP_COMPRESSOR_SPELLINGS`）。`DeviceParam` 泳道改的是同一台
+//! `ChannelStrip` 的压缩参数；`Compressor::set_params` 的"弹道状态不重置"是这条
+//! 接线的依据（逐字见 `yeban-dsp/src/compressor.rs`）。⚠ 两个登记边界：
+//! 静态 `compressor_enabled == false` 时，非 `compressor_enabled` 的压缩参数泳道
+//! 仍会**报 applied 但听不出**（与 `eq_enabled: 0` ＋ EQ 参数泳道同款）；把静态关闭的
+//! 压缩器从 `0` 自动到 `1` 时，[`compressing_nodes`] 的 pre-pan tap 仍按静态位判
+//! （`#304` 明确登记、⛔ 本单不扩）。
 //! - **主总线插入**（⚠ 本节在任务单 `#173` **已接通**，原文见 §1 的修订段）：
 //!   本模块的 [`crate::render::RenderPlan`] 现在给**每个**节点挂链，**包括 master**。
 //!   - **为什么改**：`#173` 之前实时引擎的逐轨循环**跳过 master**
@@ -577,42 +585,19 @@ pub fn track_has_unhandled_dsp(track: &TrackV3) -> bool {
 
 /// 本切片**消费**的参数名（小写）全集。
 ///
-/// 它**不是**另一张表：名字来自 [`DeviceParamField::from_name`]（通道条 / 混响 /
-/// 卷积标量的三张拼写表）＋ 三个**构造期** IR 形状名字（`conv_ir_decay*` /
-/// `conv_ir_seed`，静态投影会消费它们，但自动化不落点）＋ 压缩的 14 个拼写
-/// （[`STRIP_COMPRESSOR_SPELLINGS`]：`#303` 起静态投影**执行**它们）。
+/// 它**不是**另一张表：名字来自 [`DeviceParamField::from_name`]（通道条 — 含自
+/// `#304` 起的压缩 14 拼写 — / 混响 / 卷积标量的**同一张**拼写表）＋ 三个
+/// **构造期** IR 形状名字（`conv_ir_decay*` / `conv_ir_seed`，静态投影会消费它们，
+/// 但自动化不落点）。
 ///
-/// ⚠ 这**不是**"可自动化名单"：压缩的 14 个拼写被消费，但 [`DeviceParamField`]
-/// **不认**它们 ⇒ `DeviceParam` 泳道仍不可落点（[`crate::automation::APPLIED_DEVICE_PARAM_NAMES`]
-/// 保持 41 个拼写，⛔ 不变）。刻意**不**在里面的仍是 `reverb_mix` / `reverb_width`
+/// ⚠ 自 `#304` 起**压缩不再有第二张表**：14 个拼写住在 [`StripField::SPELLINGS`]，
+/// 静态投影（[`StripProjection::apply`]）与自动化（`DeviceParamField::from_name`）
+/// 读的是同一组名字。刻意**不**在里面的仍是 `reverb_mix` / `reverb_width`
 /// （引擎同样不认）。写这些名字的设备会被 [`track_has_unhandled_dsp`] 如实登记。
 fn is_supported_param(name: &str) -> bool {
     DeviceParamField::from_name(name).is_some()
         || matches!(name, "conv_ir_decay_s" | "conv_ir_decay" | "conv_ir_seed")
-        || STRIP_COMPRESSOR_SPELLINGS.contains(&name)
 }
-
-/// 压缩级**静态投影**认的全部拼写（14 条）。
-///
-/// 与 [`StripProjection::apply`] 的压缩分支**逐字同集**（判据
-/// `strip_names_are_the_engine_whitelist` 双向钉住）：静态投影消费它们，
-/// ⛔ 但 [`StripField`] / [`DeviceParamField`] 不含它们（自动化**不接压缩**）。
-const STRIP_COMPRESSOR_SPELLINGS: &[&str] = &[
-    "compressor_enabled",
-    "threshold_db",
-    "threshold",
-    "ratio",
-    "knee_db",
-    "knee",
-    "detector_s",
-    "detector",
-    "attack_s",
-    "attack",
-    "release_s",
-    "release",
-    "makeup_db",
-    "makeup",
-];
 
 /// 本轨通道条的**来源设备下标**：`from_devices` 的"首个含已识别通道条名字的设备"规则。
 ///
@@ -683,27 +668,33 @@ pub fn sanitised_output_gain_db(value: f32) -> f32 {
     StripField::OutputGainDb.sanitise(value)
 }
 
-/// 通道条上**可被设备参数自动化落点**的字段（任务单 `#267`）。
+/// 通道条上**可被设备参数自动化落点**的字段（任务单 `#267`；`#304` 扩压缩）。
 ///
 /// 与 [`StripProjection::apply`] 的**通道条分支一一对应**：同一组名字、同一个别名表、
 /// 同一个目标字段。⛔ 刻意**不含**：
 ///
-/// - **压缩级**（`threshold_db` / `ratio` / `knee_db` / `detector_s` / `attack_s` /
-///   `release_s` / `makeup_db` 与 `compressor_enabled`）：自 `#303` 起静态投影**执行**
-///   它们（[`STRIP_COMPRESSOR_SPELLINGS`]），但**自动化不接**这一级 —— 那是一条独立的
-///   切片（`#293` 对混响/卷积标量做的正是那件事），本单只接**静态执行** ⇒ 指过来的
-///   泳道仍报 `deviceParamNotChannelStrip`；
 /// - **混响 / 卷积**（`reverb_*` / `conv_*`）：它们不是**通道条**字段，而是
 ///   [`ReverbField`] / [`ConvolutionField`] 的落点（`#293`）。其中卷积的 IR 形状
 ///   （`conv_ir_decay*` / `conv_ir_seed`）是构造期烘焙、不可自动化；其余标量由对应
 ///   器件的 `set_params` 在块边界改（⛔ 不是 `ChannelStrip::set_params`）；
 /// - 未知旋钮。
 ///
+/// ⭐ **压缩 8 字段自 `#304` 起在本表里**（14 个拼写：`compressor_enabled`、
+/// `threshold_db` / `threshold`、`ratio`、`knee_db` / `knee`、`detector_s` /
+/// `detector`、`attack_s` / `attack`、`release_s` / `release`、`makeup_db` /
+/// `makeup`）。它们与增益 / EQ / 滤波共用**同一台** `ChannelStrip`：块边界写进
+/// `ChannelStripParams`，`ChannelStrip::set_params` 转给 `Compressor::set_params`
+/// （⚠ 该函数**不清弹道状态**）。`compressor_enabled` 是这一级的开关字段；
+/// 静态关闭时，其它压缩字段的泳道仍会报 applied 但**听不出**（与 `eq_enabled: 0`
+/// ＋ EQ 参数泳道同款，`#304` 明确登记）。
+///
 /// ## 单位（原生绝对值，⛔ 不归一化）
 ///
-/// 字段名自带单位：`_db` = dB、`_hz` = Hz、`resonance` / `drive` / `mid_q` = 旋钮原值。
-/// 开关字段（[`Self::EqEnabled`] / [`Self::FilterEnabled`]）的自动化值是 `0.0` = 假、
-/// 其它 = 真（与 [`flag`] 的"非零即真"同式）—— 读数与写入都用这个口径。
+/// 字段名自带单位：`_db` = dB、`_hz` = Hz、`_s` = 秒、`resonance` / `drive` /
+/// `mid_q` / `ratio` = 旋钮原值。
+/// 开关字段（[`Self::EqEnabled`] / [`Self::FilterEnabled`] /
+/// [`Self::CompressorEnabled`]）的自动化值是 `0.0` = 假、其它 = 真（与 [`flag`] 的
+/// "非零即真"同式）—— 读数与写入都用这个口径。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum StripField {
     /// 输入增益（trim，dB）。`input_gain_db` / `input_gain` / `trim_db`。
@@ -734,6 +725,22 @@ pub enum StripField {
     Resonance,
     /// 低通驱动。`drive` / `filter_drive`。
     Drive,
+    /// 压缩级开关（`0.0` = 关，其它 = 开）。`compressor_enabled`。
+    CompressorEnabled,
+    /// 压缩阈值（dBFS）。`threshold_db` / `threshold`。
+    ThresholdDb,
+    /// 压缩比率（`≥ 1`）。`ratio`。
+    Ratio,
+    /// 压缩软膝宽度（dB）。`knee_db` / `knee`。
+    KneeDb,
+    /// 检波器平均窗口（秒）。`detector_s` / `detector`。
+    DetectorS,
+    /// 起振时间常数（秒）。`attack_s` / `attack`。
+    AttackS,
+    /// 释放时间常数（秒）。`release_s` / `release`。
+    ReleaseS,
+    /// makeup 补偿增益（dB）。`makeup_db` / `makeup`。
+    MakeupDb,
 }
 
 impl StripField {
@@ -753,12 +760,21 @@ impl StripField {
         Self::CutoffHz,
         Self::Resonance,
         Self::Drive,
+        Self::CompressorEnabled,
+        Self::ThresholdDb,
+        Self::Ratio,
+        Self::KneeDb,
+        Self::DetectorS,
+        Self::AttackS,
+        Self::ReleaseS,
+        Self::MakeupDb,
     ];
 
-    /// **全部拼写** → 字段（`27` 条；这是"哪个名字能落点"的**唯一**名字表）。
+    /// **全部拼写** → 字段（`41` 条；这是"哪个名字能落点"的**唯一**名字表）。
     ///
     /// 与 [`StripProjection::apply`] 的通道条分支逐字同集：7 个参数各有 2 个拼写，
-    /// 两个增益各有 3 个，两个开关与 `cutoff_hz` 各 1 个。
+    /// 两个增益各有 3 个，两个开关与 `cutoff_hz` 各 1 个；⭐ `#304` 起压缩的 8 个
+    /// 字段共 14 个拼写也在这里（⛔ 不再有第二张 `STRIP_COMPRESSOR_SPELLINGS`）。
     /// `yeban_render::automation::APPLIED_DEVICE_PARAM_NAMES` 必须与本表**完全一致**
     /// （由 `the_applied_names_and_the_field_table_agree` 双向钉住）。
     pub const SPELLINGS: &'static [(&'static str, Self)] = &[
@@ -789,11 +805,26 @@ impl StripField {
         ("filter_resonance", Self::Resonance),
         ("drive", Self::Drive),
         ("filter_drive", Self::Drive),
+        // ⭐ `#304`：压缩 8 字段 / 14 拼写（与 `StripProjection::apply` 同集）。
+        ("compressor_enabled", Self::CompressorEnabled),
+        ("threshold_db", Self::ThresholdDb),
+        ("threshold", Self::ThresholdDb),
+        ("ratio", Self::Ratio),
+        ("knee_db", Self::KneeDb),
+        ("knee", Self::KneeDb),
+        ("detector_s", Self::DetectorS),
+        ("detector", Self::DetectorS),
+        ("attack_s", Self::AttackS),
+        ("attack", Self::AttackS),
+        ("release_s", Self::ReleaseS),
+        ("release", Self::ReleaseS),
+        ("makeup_db", Self::MakeupDb),
+        ("makeup", Self::MakeupDb),
     ];
 
     /// 名字 → 字段（**大小写不敏感**，别名表与 [`StripProjection::apply`] 逐字同集）。
     ///
-    /// `None` = 本字段集不认这个名字（压缩 / 混响 / 卷积 / 未知旋钮）。⚠ 本函数是
+    /// `None` = 本字段集不认这个名字（混响 / 卷积 / 未知旋钮）。⚠ 本函数是
     /// "哪个名字能落点"的唯一判定处：`yeban_render::automation::APPLIED_DEVICE_PARAM_NAMES`
     /// 是它的**可读清单**，两者由 `the_applied_names_and_the_field_table_agree` 钉住。
     #[must_use]
@@ -822,13 +853,24 @@ impl StripField {
             Self::CutoffHz => "cutoff_hz",
             Self::Resonance => "resonance",
             Self::Drive => "drive",
+            Self::CompressorEnabled => "compressor_enabled",
+            Self::ThresholdDb => "threshold_db",
+            Self::Ratio => "ratio",
+            Self::KneeDb => "knee_db",
+            Self::DetectorS => "detector_s",
+            Self::AttackS => "attack_s",
+            Self::ReleaseS => "release_s",
+            Self::MakeupDb => "makeup_db",
         }
     }
 
     /// 本字段是否是**开关**（读作 `1.0` / `0.0`，写时非零即真）。
     #[must_use]
     pub const fn is_flag(self) -> bool {
-        matches!(self, Self::EqEnabled | Self::FilterEnabled)
+        matches!(
+            self,
+            Self::EqEnabled | Self::FilterEnabled | Self::CompressorEnabled
+        )
     }
 
     /// 从**已 sanitised 的**通道条参数里读这个字段（开关读成 `1.0` / `0.0`）。
@@ -852,6 +894,14 @@ impl StripField {
             Self::CutoffHz => params.filter.cutoff_hz,
             Self::Resonance => params.filter.resonance,
             Self::Drive => params.filter.drive,
+            Self::CompressorEnabled => f32::from(u8::from(params.compressor_enabled)),
+            Self::ThresholdDb => params.compressor.threshold_db,
+            Self::Ratio => params.compressor.ratio,
+            Self::KneeDb => params.compressor.knee_db,
+            Self::DetectorS => params.compressor.detector_s,
+            Self::AttackS => params.compressor.attack_s,
+            Self::ReleaseS => params.compressor.release_s,
+            Self::MakeupDb => params.compressor.makeup_db,
         }
     }
 
@@ -876,6 +926,14 @@ impl StripField {
             Self::CutoffHz => params.filter.cutoff_hz = value,
             Self::Resonance => params.filter.resonance = value,
             Self::Drive => params.filter.drive = value,
+            Self::CompressorEnabled => params.compressor_enabled = value != 0.0,
+            Self::ThresholdDb => params.compressor.threshold_db = value,
+            Self::Ratio => params.compressor.ratio = value,
+            Self::KneeDb => params.compressor.knee_db = value,
+            Self::DetectorS => params.compressor.detector_s = value,
+            Self::AttackS => params.compressor.attack_s = value,
+            Self::ReleaseS => params.compressor.release_s = value,
+            Self::MakeupDb => params.compressor.makeup_db = value,
         }
     }
 
@@ -1636,16 +1694,16 @@ impl InsertRuntime {
 
     /// 把一个新的**原生绝对值**交给某个插入器件的字段并**重算系数**
     /// （`#266` 开 `output_gain_db` / `#267` 扩到通道条整组 / `#293` 扩到 Freeverb
-    /// 与卷积的标量字段；`ChannelStrip::set_params` / `Reverb::set_params` /
-    /// `ConvolutionReverb::set_params` 是各自**唯一**入口）。
+    /// 与卷积的标量字段 / `#304` 扩到压缩 8 字段；`ChannelStrip::set_params` /
+    /// `Reverb::set_params` / `ConvolutionReverb::set_params` 是各自**唯一**入口）。
     ///
     /// 调用纪律（器件自己不做平滑，模块头 §4 的器件纪律）：
     ///
     /// - **只在块边界**调用（自动化块的 128 帧起点）—— 改的是**参数**，⛔ 不是逐样本
     ///   乘一个增益；
-    /// - 三个 `set_params` 都**不清状态**（EQ 双二阶 / 滤波器 / 梳状线 / 卷积尾保留），
-    ///   因此块与块之间没有复位爆音；混响/卷积的 `set_params` 的预延迟长度变化会清
-    ///   对应延迟线（器件文档 §6 / §2.2，本单不另做平滑）；
+    /// - 三个 `set_params` 都**不清状态**（EQ 双二阶 / 滤波器 / 梳状线 / 卷积尾 /
+    ///   **压缩器弹道**保留），因此块与块之间没有复位爆音；混响/卷积的 `set_params`
+    ///   的预延迟长度变化会清对应延迟线（器件文档 §6 / §2.2，本单不另做平滑）；
     /// - 写哪个字段由 [`DeviceParamField`] 决定（对应器件为 `None` 时什么都没发生 ——
     ///   恒等泳道根本不会走到这里）。
     pub(crate) fn apply_device_params(&mut self, field: DeviceParamField, value: f32) {
@@ -1719,6 +1777,9 @@ impl InsertRuntime {
 mod tests {
     use super::*;
     use yeban_dsp::channel_strip::{MAX_CUTOFF_HZ, MAX_GAIN_DB, MIN_CUTOFF_HZ, MIN_GAIN_DB};
+    use yeban_dsp::compressor::{
+        MAX_KNEE_DB, MAX_MAKEUP_DB, MAX_RATIO, MAX_THRESHOLD_DB, MIN_LEVEL_DB, MIN_TIME_S,
+    };
     use yeban_model::ParameterValue;
 
     fn device(params: &[(&str, f32)]) -> DeviceDefinition {
@@ -1744,7 +1805,9 @@ mod tests {
     fn sample(field: StripField) -> f32 {
         match field {
             StripField::InputGainDb | StripField::OutputGainDb => 3.0,
-            StripField::EqEnabled | StripField::FilterEnabled => 1.0,
+            StripField::EqEnabled | StripField::FilterEnabled | StripField::CompressorEnabled => {
+                1.0
+            }
             StripField::EqLowGain => 3.0,
             StripField::EqLowFreq => 800.0,
             StripField::EqMidGain => -3.0,
@@ -1754,6 +1817,13 @@ mod tests {
             StripField::EqHighFreq => 6_000.0,
             StripField::CutoffHz => 5_000.0,
             StripField::Resonance | StripField::Drive => 0.5,
+            StripField::ThresholdDb => -20.0,
+            StripField::Ratio => 4.0,
+            StripField::KneeDb => 6.0,
+            StripField::DetectorS => 0.005,
+            StripField::AttackS => 0.010,
+            StripField::ReleaseS => 0.100,
+            StripField::MakeupDb => 3.0,
         }
     }
 
@@ -1852,6 +1922,13 @@ mod tests {
             ("high_freq", StripField::EqHighFreq),
             ("filter_resonance", StripField::Resonance),
             ("filter_drive", StripField::Drive),
+            // ⭐ `#304`：压缩 6 个别名（每个都指向与规范名同一个落点）。
+            ("threshold", StripField::ThresholdDb),
+            ("knee", StripField::KneeDb),
+            ("detector", StripField::DetectorS),
+            ("attack", StripField::AttackS),
+            ("release", StripField::ReleaseS),
+            ("makeup", StripField::MakeupDb),
         ] {
             assert_eq!(StripField::from_name(alias), Some(field), "{alias}");
             assert_eq!(
@@ -1884,19 +1961,11 @@ mod tests {
         }
     }
 
-    /// ⛔ 压缩 / IR 形状 / 未知名字**不是**设备参数落点；混响/卷积标量**不是**
-    /// 通道条字段（但它们有各自的落点）。
+    /// ⛔ IR 形状 / 未知名字**不是**设备参数落点；混响/卷积标量**不是**
+    /// 通道条字段（但它们有各自的落点）。⭐ `#304` 起压缩 14 拼写**是**通道条字段。
     #[test]
     fn non_applied_names_are_not_device_param_fields() {
         for name in [
-            "threshold_db",
-            "ratio",
-            "knee_db",
-            "detector_s",
-            "attack_s",
-            "release_s",
-            "makeup_db",
-            "compressor_enabled",
             "conv_ir_decay_s",
             "conv_ir_decay",
             "conv_ir_seed",
@@ -1908,6 +1977,33 @@ mod tests {
         ] {
             assert_eq!(DeviceParamField::from_name(name), None, "{name}");
             assert_eq!(StripField::from_name(name), None, "{name}");
+        }
+        // ⭐ `#304`：压缩 14 拼写全部有落点（与静态投影同一张表）。
+        for name in [
+            "compressor_enabled",
+            "threshold_db",
+            "threshold",
+            "ratio",
+            "knee_db",
+            "knee",
+            "detector_s",
+            "detector",
+            "attack_s",
+            "attack",
+            "release_s",
+            "release",
+            "makeup_db",
+            "makeup",
+        ] {
+            assert!(
+                DeviceParamField::from_name(name).is_some(),
+                "{name} 自 #304 起必须有设备参数落点"
+            );
+            assert_eq!(
+                DeviceParamField::from_name(name),
+                StripField::from_name(name).map(DeviceParamField::Strip),
+                "{name} 必须解析到通道条字段"
+            );
         }
         for name in [
             "reverb_size",
@@ -1949,6 +2045,22 @@ mod tests {
         assert_eq!(StripField::EqEnabled.sanitise(0.0), 0.0);
         assert_eq!(StripField::EqEnabled.sanitise(0.25), 1.0);
         assert_eq!(StripField::EqEnabled.sanitise(-2.0), 1.0);
+        // ⭐ `#304`：压缩字段的钳制走同一次 `ChannelStripParams::sanitised`。
+        assert_eq!(StripField::CompressorEnabled.sanitise(0.0), 0.0);
+        assert_eq!(StripField::CompressorEnabled.sanitise(0.25), 1.0);
+        assert_eq!(StripField::CompressorEnabled.sanitise(-2.0), 1.0);
+        assert_eq!(StripField::ThresholdDb.sanitise(-1.0e9), MIN_LEVEL_DB);
+        assert_eq!(StripField::ThresholdDb.sanitise(1.0e9), MAX_THRESHOLD_DB);
+        assert_eq!(StripField::Ratio.sanitise(0.0), 1.0);
+        assert_eq!(StripField::Ratio.sanitise(1.0e9), MAX_RATIO);
+        assert_eq!(StripField::KneeDb.sanitise(-1.0), 0.0);
+        assert_eq!(StripField::KneeDb.sanitise(1.0e9), MAX_KNEE_DB);
+        assert_eq!(
+            StripField::DetectorS.sanitise(f32::NAN).to_bits(),
+            MIN_TIME_S.to_bits(),
+            "非有限时间常数归下界（与器件同一条裁决）"
+        );
+        assert_eq!(StripField::MakeupDb.sanitise(1.0e9), MAX_MAKEUP_DB);
     }
 
     /// ⭐ `#293`：混响字段的钳制镜像必须与**真实器件**逐位一致（含非有限值与越界）。

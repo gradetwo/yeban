@@ -449,13 +449,13 @@ pub struct TransportActionRecord {
 /// [`EngineHost::publish_automation`] 真的落到引擎里了。
 ///
 /// `DeviceParam` / `Macro` 与 `SendGain` **不是**同一类：实时引擎没有槽位。
-/// ⚠ ⭐ **任务单 `#266` 修订了这段话的"连离线也没有落点"那一半，`#267`/`#293` 再扩**：
+/// ⚠ ⭐ **任务单 `#266` 修订了这段话的"连离线也没有落点"那一半，`#267`/`#293`/`#304` 再扩**：
 /// `DeviceParam` 里**插入链能改的标量字段**（`yeban_render::automation::
-/// APPLIED_DEVICE_PARAM_NAMES`，41 个拼写 / 22 个字段：通道条 14 ＋ Freeverb 4 ＋
-/// 卷积标量 4）现在有离线落点（`yeban_render` 的 `DeviceParamAutomation` →
-/// `InsertRuntime::apply_device_params`，只在导出/MCP 渲染里）；**压缩** / **卷积 IR
-/// 形状**（`conv_ir_decay*` / `conv_ir_seed`）/ 未知名字与 `Macro` **仍然**没有落点。
-/// ⇒ 读数里**分开列**，⛔ 不混进 `send-gain`。
+/// APPLIED_DEVICE_PARAM_NAMES`，55 个拼写 / 30 个字段：通道条 22（14 增益/EQ/滤波
+/// ＋ 8 压缩）＋ Freeverb 4 ＋ 卷积标量 4）现在有离线落点（`yeban_render` 的
+/// `DeviceParamAutomation` → `InsertRuntime::apply_device_params`，只在导出/MCP 渲染里）；
+/// **卷积 IR 形状**（`conv_ir_decay*` / `conv_ir_seed`）/ 未知名字与 `Macro`
+/// **仍然**没有落点。⇒ 读数里**分开列**，⛔ 不混进 `send-gain`。
 ///
 /// ⚠ **这是一个 gauge（每跳重采的当前值），不是累计计数器**：它与
 /// [`EngineHost::automation_counts`] 的两个数（累计事件条数）形状不同 ——
@@ -477,8 +477,8 @@ pub struct UnappliedAutomationLanes {
     /// ⇒ 它们不计入本列；本列只剩"边根本不在可搬运音频的图里"的那一类
     /// （离线导出 / MCP 渲染按边求值，但对这类边同样没有落点）。
     pub send_gain: u64,
-    /// 开着的 `DeviceParam` 泳道数（实时**没有**落点；离线有通道条 / Freeverb / 卷积
-    /// 标量的落点，见任务单 `#266` / `#267` / `#293`）。
+    /// 开着的 `DeviceParam` 泳道数（实时**没有**落点；离线有通道条（含压缩）/
+    /// Freeverb / 卷积标量的落点，见任务单 `#266` / `#267` / `#293` / `#304`）。
     pub device_param: u64,
     /// 开着的 `Macro` 泳道数（实时与离线**都**没有落点）。
     pub macro_lanes: u64,
@@ -578,8 +578,8 @@ pub fn automation_unapplied_line(lanes: UnappliedAutomationLanes) -> String {
     format!(
         "automation-engine: unapplied-lanes={} send-gain={} device-param={} macro={} \
          note=\"有 {} 条自动化泳道在监听里没落地；SendGain 的边在监听里没有落点\
-         （离线导出/MCP 按边求值），DeviceParam 的通道条/混响/卷积标量名字在离线导出/MCP \
-         渲染里有落点（压缩与卷积 IR 形状没有），Macro 在监听里没有落点\
+         （离线导出/MCP 按边求值），DeviceParam 的通道条（含压缩）/混响/卷积标量名字在离线导出/MCP \
+         渲染里有落点（卷积 IR 形状没有），Macro 在监听里没有落点\
          （离线导出/MCP 只在存在 Macro 泳道时按映射级联）\"",
         lanes.total(),
         lanes.send_gain,

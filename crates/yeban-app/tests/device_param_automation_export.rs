@@ -388,6 +388,98 @@ fn a_device_param_ramp_lowers_the_export_and_matches_the_mcp_digest() {
     );
 }
 
+/// 压缩夹具的设备参数（硬膝 + 短弹道 ⇒ 稳态 GR 可手算；`params[0]` 是
+/// `threshold_db`，泳道指向 `param_index = 0`）。
+fn compressor_params() -> &'static [(&'static str, f32)] {
+    &[
+        ("threshold_db", -30.0),
+        ("ratio", 4.0),
+        ("knee_db", 0.0),
+        ("detector_s", 0.005),
+        ("attack_s", 0.002),
+        ("release_s", 0.050),
+        ("makeup_db", 0.0),
+    ]
+}
+
+/// ⭐ `#304` 判据 2/3：`threshold_db` 泳道在 **app 导出**里真的改音频
+/// （`sha` / `digest` 都变、四段峰值随阈值上升而上升），且"处处等于静态值"的泳道
+/// **逐字节等于**无泳道。
+///
+/// 常量 0.5 素材的检波电平 −6.02 dBFS：静态 `T = −30 dBFS` ⇒ 稳态 GR ≈ 17.98 dB；
+/// 泳道末端 `T = −12 dBFS` ⇒ GR ≈ 4.49 dB ⇒ 峰值上升。
+/// GR 器件读数在 `crates/yeban-render/tests/insert_chain.rs` 的同名判据里。
+#[test]
+fn an_automated_compressor_threshold_changes_the_export_and_flat_is_byte_identical() {
+    let scratch = Scratch::new("compressor-threshold");
+    let bytes = wav_f32(2, 48_000, &constant(48_000, 0.5));
+    let params = compressor_params();
+
+    let base = project(
+        &Tune {
+            points: &[],
+            read_enabled: false,
+            params,
+            insert_lane: false,
+        },
+        &bytes,
+        500,
+    );
+    let (base_samples, base_sha, base_digest) = export(&scratch, "compressor-base", &base, &bytes);
+
+    let ramp = project(
+        &Tune {
+            points: &[(0, -30.0), (ONE_SECOND_TICKS, -12.0)],
+            read_enabled: true,
+            params,
+            insert_lane: true,
+        },
+        &bytes,
+        510,
+    );
+    let (samples, sha, digest) = export(&scratch, "compressor-ramp", &ramp, &bytes);
+    let peaks = four_window_peaks(&samples);
+    let base_peaks = four_window_peaks(&base_samples);
+    println!(
+        "### #304 app compressor: sha={sha} digest={digest} peaks={peaks:?}\n\
+         ###   no-lane: sha={base_sha} digest={base_digest} peaks={base_peaks:?}"
+    );
+    assert_ne!(
+        sha, base_sha,
+        "压缩阈值泳道必须改文件字节（静默无效会得到相同 sha）"
+    );
+    assert_ne!(
+        digest, base_digest,
+        "压缩阈值泳道必须改浮点母带（静默无效会得到相同 digest）"
+    );
+    // 窗口 0 含压缩器 attack 的**初始瞬态**（前几毫秒还没压下去）⇒ 不参与单调方向；
+    // 后三段必须随阈值上升（压缩变少）严格上升，且末端显著高于静态 −30 的峰值。
+    assert!(
+        peaks[1] < peaks[2] && peaks[2] < peaks[3],
+        "阈值上升 ⇒ 后三段峰值必须上升（窗口 0 是 attack 瞬态）: {peaks:?}"
+    );
+    assert!(
+        peaks[3] > base_peaks[3] * 2.0,
+        "泳道末端少压 ⇒ 峰值必须显著高于静态 −30: {peaks:?} vs base {base_peaks:?}"
+    );
+
+    // ---- 正对照：处处等于静态值 ⇒ 逐字节等于无泳道 ----
+    let flat = project(
+        &Tune {
+            points: &[(0, -30.0), (960, -30.0), (ONE_SECOND_TICKS, -30.0)],
+            read_enabled: true,
+            params,
+            insert_lane: true,
+        },
+        &bytes,
+        520,
+    );
+    let (_, flat_sha, flat_digest) = export(&scratch, "compressor-flat", &flat, &bytes);
+    println!("### #304 app compressor flat: sha={flat_sha} digest={flat_digest}");
+    assert_eq!(flat_sha, base_sha, "处处等于静态值 ⇒ 必须逐字节等于无泳道");
+    assert_eq!(flat_digest, base_digest, "浮点母带也必须相同");
+}
+
 /// ⭐ 判据 3/4/5：无泳道 / `readEnabled:false` / 曲线恒等于静态值 ⇒ 逐字节相同。
 #[test]
 fn device_param_identity_paths_are_byte_identical_to_no_lane() {
@@ -526,10 +618,14 @@ struct FieldCase {
     trend: Trend,
 }
 
-/// 14 个通道条字段 —— 每个都用**规范名**（27 个拼写里的别名由
+/// 14 个**增益/EQ/滤波**通道条字段 —— 每个都用**规范名**（27 个拼写里的别名由
 /// `yeban-render` 的 `every_applied_name_is_applied_and_ramps_monotonically`
 /// 与 `every_applied_name_projects_to_its_own_field` 逐条覆盖；别名与规范名
 /// 在 `StripField::from_name` 里解析到**同一个**字段 ⇒ 同一条代码路径）。
+///
+/// ⭐ `#304`：压缩 8 字段（14 拼写）**不在这张矩阵**里 —— 它们的趋势依赖电平 / 比率
+/// 与弹道，单独由 `an_automated_compressor_threshold_changes_the_export_and_flat_is_byte_identical`
+/// 与 render 级 GR 判据覆盖；机械覆盖（55 拼写逐个）在 `yeban-render` 的单元判据里。
 const FIELD_CASES: &[FieldCase] = &[
     FieldCase {
         name: "input_gain_db",
@@ -682,7 +778,7 @@ fn assert_trend(case: &FieldCase, peaks: [f32; 4]) {
 /// 单调 **＋ `sha256` 变**；泳道处处等于静态值 ⇒ 逐字节等于无泳道；`readEnabled:false`
 /// ⇒ 逐字节等于无泳道。
 #[test]
-fn every_channel_strip_field_changes_the_export_and_is_byte_identical_when_flat() {
+fn every_gain_eq_filter_field_changes_the_export_and_is_byte_identical_when_flat() {
     let scratch = Scratch::new("fields");
     for (index, case) in FIELD_CASES.iter().enumerate() {
         let seed = 600 + (index as u32) * 10;
@@ -779,7 +875,7 @@ fn every_channel_strip_field_changes_the_export_and_is_byte_identical_when_flat(
 /// 夹具）。没有这个 feature 时本判据不编译（判据 1/3/4 仍在默认档覆盖每个字段）。
 #[cfg(feature = "in-process-mcp")]
 #[test]
-fn every_channel_strip_field_gives_the_same_master_in_both_exports() {
+fn every_gain_eq_filter_field_gives_the_same_master_in_both_exports() {
     /// MCP 侧固定注入时钟（与 `yeban-mcp/tests/render_audio_clips.rs` 同值）。
     const NOW_MS: u64 = 1_760_000_000_000;
     let scratch = Scratch::new("two-exports");
@@ -845,8 +941,8 @@ fn every_channel_strip_field_gives_the_same_master_in_both_exports() {
             .expect("appliedDeviceParamNames");
         assert_eq!(
             listed.len(),
-            41,
-            "MCP 名单必须逐条来自 yeban-render（41 个拼写：27 通道条 + 6 混响 + 8 卷积）: {data}"
+            55,
+            "MCP 名单必须逐条来自 yeban-render（55 个拼写：41 通道条（含压缩）+ 6 混响 + 8 卷积）: {data}"
         );
         for name in [
             "output_gain_db",
@@ -861,10 +957,17 @@ fn every_channel_strip_field_gives_the_same_master_in_both_exports() {
                 "{name} 必须在名单里: {data}"
             );
         }
-        for name in ["threshold_db", "conv_ir_decay_s", "conv_ir_seed"] {
+        for name in ["conv_ir_decay_s", "conv_ir_seed"] {
             assert!(
                 !listed.iter().any(|value| value == name),
                 "{name} 不许在名单里: {data}"
+            );
+        }
+        // ⭐ `#304`：压缩 14 拼写现在**必须**在名单里。
+        for name in ["compressor_enabled", "threshold_db", "makeup_db"] {
+            assert!(
+                listed.iter().any(|value| value == name),
+                "{name} 自 #304 起必须在名单里: {data}"
             );
         }
     }

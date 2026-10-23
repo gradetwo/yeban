@@ -17,12 +17,15 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use yeban_model::{
+    AutomationLane, AutomationPoint, AutomationTarget, AutomationWriteMode, CurveType,
     DeviceDefinition, DeviceKind, EntityId, ParameterValue, RoutingEdge, RoutingGraph, RoutingKind,
-    TrackV3,
+    TrackV3, YebanProjectV1,
 };
+use yeban_render::automation::{device_param_automations, forced_insert_instances};
 use yeban_render::inserts::{
-    InsertChain, compressing_nodes, project_inserts, project_inserts_with_forced_strips,
-    strip_source_params, strip_source_slot, track_has_unhandled_dsp,
+    InsertChain, compressing_nodes, project_inserts, project_inserts_with_forced_instances,
+    project_inserts_with_forced_strips, strip_source_params, strip_source_slot,
+    track_has_unhandled_dsp,
 };
 use yeban_render::render::{
     AudioSource, BlockContext, InsertMeterReading, RenderError, RenderOptions, RenderOutput,
@@ -1168,6 +1171,97 @@ fn render_with_readings(
     (output, plan.insert_meter_readings(), longest_path)
 }
 
+/// ⭐ `#304`：一条轨 + 一台设备 +（可选）一条 `DeviceParam` 泳道的**模型工程**。
+///
+/// `points` 为空 ⇒ 不插泳道（正对照）。`param_index` 是设备 `params` 里的下标。
+fn project_with_device_automation(
+    devices: Vec<DeviceDefinition>,
+    param_index: usize,
+    points: &[(u64, f32)],
+) -> YebanProjectV1 {
+    let track_id = node(1);
+    let mut track = track(devices);
+    track.id = track_id;
+    if !points.is_empty() {
+        let target = AutomationTarget::DeviceParam {
+            track_id,
+            slot_index: 0,
+            param_index,
+        };
+        let mut lane_points = BTreeMap::new();
+        for (tick, value) in points {
+            let point = AutomationPoint {
+                id: EntityId::new(),
+                tick: *tick,
+                value: *value,
+                curve: CurveType::Linear,
+            };
+            lane_points.insert(point.id, point);
+        }
+        track.automation_lanes.insert(
+            target,
+            AutomationLane {
+                target,
+                points: lane_points,
+                read_enabled: true,
+                write_mode: AutomationWriteMode::Off,
+                domain: None,
+            },
+        );
+    }
+    let mut project = YebanProjectV1 {
+        master_bus_track_id: node(0xFF),
+        ..YebanProjectV1::default()
+    };
+    project.tracks.insert(track_id, track);
+    project
+}
+
+/// ⭐ `#304`：编译"带设备参数自动化"的计划并执行，返回母带与通道条读数。
+///
+/// 与生产两条导出同一条装配：`device_param_automations` → `forced_insert_instances`
+/// → `project_inserts_with_forced_instances` → `attach_device_param_automation`
+/// （⛔ 不在判据里复制"哪些名字"的判定）。
+fn render_with_device_automations(
+    routing: &RoutingGraph,
+    master: EntityId,
+    project: &YebanProjectV1,
+    frames: usize,
+    mono: Vec<f32>,
+    source_node: EntityId,
+) -> (RenderOutput, Vec<InsertMeterReading>) {
+    let automations = device_param_automations(project, SR);
+    let forced = forced_insert_instances(&automations);
+    let inserts = project_inserts_with_forced_instances(&project.tracks, SR, &forced);
+    let options = RenderOptions::l1(frames as u64, 2, SR, 0x155).with_threads(1);
+    let mut plan = RenderPlan::compile_with_latencies_and_inserts(
+        routing,
+        master,
+        options,
+        &BTreeMap::new(),
+        &inserts,
+    )
+    .expect("编译");
+    for automation in automations.into_values().flatten() {
+        assert!(
+            plan.attach_device_param_automation(automation),
+            "非恒等设备参数泳道必须有运行态可改"
+        );
+    }
+    let mut sources: BTreeMap<EntityId, Box<dyn AudioSource>> = BTreeMap::new();
+    sources.insert(source_node, Box::new(BufferSource::new(mono)));
+    let output = plan.execute(sources).expect("渲染");
+    (output, plan.insert_meter_readings())
+}
+
+/// 一条轨的通道条读数（没有运行态 ⇒ 判据自己的前置条件失败）。
+fn strip_reading(readings: &[InsertMeterReading], node: EntityId) -> &InsertMeterReading {
+    readings
+        .iter()
+        .find(|reading| reading.node == node)
+        .expect("本轨必须有通道条读数")
+}
+
 /// 一条压缩器的参数：**硬膝**（`knee_db: 0`）+ 短起振/释放，读数可手算对账。
 ///
 /// 静态曲线（`knee = 0`）：`GR = (1 − 1/R)·(x − T)`，`x` 是检波器看到的 RMS dBFS。
@@ -1312,6 +1406,194 @@ fn the_compressor_reduces_above_threshold_and_is_transparent_below_it() {
         "阈值以下不得出现任何增益衰减"
     );
     assert_eq!(quiet_read.gain_reductions, 0, "阈值以下不得计一次压缩");
+}
+
+/// ⭐ `#304` 判据 2/3：`threshold_db` 泳道**真的改压缩量**（GR 读数随泳道变化），
+/// 且"处处等于静态值"的泳道**逐字节等于**无泳道。
+///
+/// 手算（硬膝、`R = 4`、0.5 正弦 ⇒ 检波 RMS `−9.03 dBFS`）：
+/// - 静态 `T = −30 dBFS` ⇒ 稳态 `GR = 0.75·(−9.03 + 30) = 15.73 dB`；
+/// - 泳道末端 `T = −12 dBFS` ⇒ 稳态 `GR = 0.75·(−9.03 + 12) = 2.23 dB`。
+#[test]
+fn an_automated_compressor_threshold_changes_the_compression_amount_and_the_master() {
+    let master = node(0xFF);
+    let track_node = node(1);
+    let routing = graph(
+        &[master, track_node],
+        &[(track_node, master, RoutingKind::TrackToBus)],
+    );
+    let frames = 24_000;
+    let fade = (SR as usize / 200).max(1);
+    let loud: Vec<f32> = (0..frames)
+        .map(|index| {
+            let envelope = if index < fade {
+                index as f32 / fade as f32
+            } else {
+                1.0
+            };
+            let phase = core::f64::consts::TAU * 440.0 * index as f64 / f64::from(SR);
+            (0.5f64 * f64::from(envelope) * phase.sin()) as f32
+        })
+        .collect();
+
+    let base_project = project_with_device_automation(vec![hard_knee_compressor(-30.0)], 0, &[]);
+    let ramp_project = project_with_device_automation(
+        vec![hard_knee_compressor(-30.0)],
+        0,
+        &[(0, -30.0), (960, -12.0)],
+    );
+    let flat_project = project_with_device_automation(
+        vec![hard_knee_compressor(-30.0)],
+        0,
+        &[(0, -30.0), (480, -30.0), (960, -30.0)],
+    );
+
+    let (base, base_readings) = render_with_device_automations(
+        &routing,
+        master,
+        &base_project,
+        frames,
+        loud.clone(),
+        track_node,
+    );
+    let (ramp, ramp_readings) = render_with_device_automations(
+        &routing,
+        master,
+        &ramp_project,
+        frames,
+        loud.clone(),
+        track_node,
+    );
+    let (flat, flat_readings) =
+        render_with_device_automations(&routing, master, &flat_project, frames, loud, track_node);
+    let base_read = strip_reading(&base_readings, track_node);
+    let ramp_read = strip_reading(&ramp_readings, track_node);
+    let flat_read = strip_reading(&flat_readings, track_node);
+    println!(
+        "### #304 threshold: base digest={} maxGR={:.3} curGR={:.3} / \
+         ramp digest={} maxGR={:.3} curGR={:.3} / flat digest={} maxGR={:.3} curGR={:.3}",
+        hex(&base.digest),
+        base_read.max_reduction_db,
+        base_read.current_reduction_db,
+        hex(&ramp.digest),
+        ramp_read.max_reduction_db,
+        ramp_read.current_reduction_db,
+        hex(&flat.digest),
+        flat_read.max_reduction_db,
+        flat_read.current_reduction_db
+    );
+
+    assert!(
+        base_read.max_reduction_db > 15.0,
+        "静态 −30 dB 阈值必须压 > 15 dB，实得 {}",
+        base_read.max_reduction_db
+    );
+    assert!(
+        ramp_read.current_reduction_db < 8.0,
+        "泳道末端 −12 dB 阈值的稳态 GR 必须 < 8 dB，实得 {}",
+        ramp_read.current_reduction_db
+    );
+    assert!(
+        base_read.current_reduction_db - ramp_read.current_reduction_db > 5.0,
+        "GR 必须随泳道变化（静态 {} / 泳道末端 {}）",
+        base_read.current_reduction_db,
+        ramp_read.current_reduction_db
+    );
+    assert_ne!(
+        ramp.digest, base.digest,
+        "阈值泳道必须真的改母带（静默无效会得到相同摘要）"
+    );
+    assert_eq!(
+        flat.digest, base.digest,
+        "处处等于静态值 ⇒ 必须逐字节等于无泳道"
+    );
+    assert_eq!(
+        flat_read.max_reduction_db.to_bits(),
+        base_read.max_reduction_db.to_bits(),
+        "恒等泳道的 GR 读数也必须等于无泳道"
+    );
+    assert_eq!(
+        flat_read.current_reduction_db.to_bits(),
+        base_read.current_reduction_db.to_bits()
+    );
+}
+
+/// ⭐ `#304` 边界判据（用户裁决：⛔ 只登记"报 applied 而听不出"）：
+/// 显式 `compressor_enabled: 0` ＋ **只**自动化 `threshold_db` ⇒
+/// 求值器**有落点**（`is_applicable()` 为真、曲线非恒等），但压缩级被静态旁通 ⇒
+/// **GR 必须逐位为 0**，且母带逐字节等于无泳道。
+///
+/// 这与 `eq_enabled: 0` ＋ `eq_low_gain` 泳道同一条既有口径：参数确实送到了器件，
+/// 只是该级不执行。判据把"听不出"变成读数，⛔ 不允许只报 applied。
+#[test]
+fn an_explicitly_disabled_compressor_is_applied_but_has_zero_gr() {
+    let master = node(0xFF);
+    let track_node = node(1);
+    let routing = graph(
+        &[master, track_node],
+        &[(track_node, master, RoutingKind::TrackToBus)],
+    );
+    let frames = 24_000;
+    let fade = (SR as usize / 200).max(1);
+    let loud: Vec<f32> = (0..frames)
+        .map(|index| {
+            let envelope = if index < fade {
+                index as f32 / fade as f32
+            } else {
+                1.0
+            };
+            let phase = core::f64::consts::TAU * 440.0 * index as f64 / f64::from(SR);
+            (0.5f64 * f64::from(envelope) * phase.sin()) as f32
+        })
+        .collect();
+    let disabled = || effect(&[("compressor_enabled", 0.0), ("threshold_db", -20.0)]);
+    let base_project = project_with_device_automation(vec![disabled()], 1, &[]);
+    let ramp_project =
+        project_with_device_automation(vec![disabled()], 1, &[(0, -20.0), (960, -40.0)]);
+
+    let automations = device_param_automations(&ramp_project, SR);
+    let automation = automations
+        .get(&track_node)
+        .and_then(|lanes| lanes.first())
+        .expect("门槛泳道必须被扫描到");
+    assert!(automation.is_applicable(), "参数本身有落点（applied 语义）");
+    assert!(!automation.is_identity(), "曲线必须是非恒等的");
+
+    let (base, _) = render_with_device_automations(
+        &routing,
+        master,
+        &base_project,
+        frames,
+        loud.clone(),
+        track_node,
+    );
+    let (ramp, readings) =
+        render_with_device_automations(&routing, master, &ramp_project, frames, loud, track_node);
+    let read = strip_reading(&readings, track_node);
+    println!(
+        "### #304 disabled compressor + threshold lane: base digest={} / lane digest={} / \
+         maxGR={:.6} curGR={:.6} reductions={}",
+        hex(&base.digest),
+        hex(&ramp.digest),
+        read.max_reduction_db,
+        read.current_reduction_db,
+        read.gain_reductions
+    );
+    assert_eq!(
+        ramp.digest, base.digest,
+        "压缩级静态旁通 ⇒ 阈值泳道听不出（母带逐字节相同）"
+    );
+    assert_eq!(read.gain_reductions, 0, "旁通的压缩级不得计一次压缩");
+    assert_eq!(
+        read.max_reduction_db.to_bits(),
+        0.0f32.to_bits(),
+        "旁通的压缩级最大 GR 必须逐位为 0"
+    );
+    assert_eq!(
+        read.current_reduction_db.abs().to_bits(),
+        0.0f32.to_bits(),
+        "旁通的压缩级当前 GR 必须为 0（器件读数是 -0.0，数值 0）"
+    );
 }
 
 /// 判据 3（`#303` 裁决三）：**无 lookahead、零延迟** ⇒ 输出帧数不变、冲激不移位、

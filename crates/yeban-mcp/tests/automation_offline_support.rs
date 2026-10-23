@@ -465,11 +465,11 @@ fn append_effect(
     slot
 }
 
-/// ⭐ `#293` 判据 4（`residualReason` 同步）：混响泳道**不再**报
-/// `deviceParamNotChannelStrip`；同一份工程里压缩器与卷积 IR 形状**继续**报同一个值
-/// （它们仍是“插入链没有这个落点”）。
+/// ⭐ `#293`/`#304` 判据 4（`residualReason` 同步）：混响与压缩泳道**都不再**报
+/// `deviceParamNotChannelStrip`；同一份工程里**只有**卷积 IR 形状继续报同一个值
+/// （它仍是“插入链没有这个落点”）。
 #[test]
-fn a_reverb_lane_lands_while_compressor_and_ir_decay_keep_the_residual() {
+fn a_reverb_and_a_compressor_land_while_ir_decay_keeps_the_residual() {
     let scratch = Scratch::new("residual-sync");
     let mut project = filled_project();
     let lead = lead_track(&project);
@@ -499,11 +499,11 @@ fn a_reverb_lane_lands_while_compressor_and_ir_decay_keep_the_residual() {
         "DeviceParam",
         json!({"slotIndex": compressor_slot, "paramIndex": 0}),
     );
-    assert_eq!(compressor["appliedInOfflineRender"], false, "{compressor}");
     assert_eq!(
-        compressor["residualReason"], "deviceParamNotChannelStrip",
-        "{compressor}"
+        compressor["appliedInOfflineRender"], true,
+        "⭐ #304：压缩阈值泳道有落点: {compressor}"
     );
+    assert_eq!(compressor["residualReason"], Value::Null, "{compressor}");
 
     let convolution = write_point(
         &mut dispatcher,
@@ -520,13 +520,13 @@ fn a_reverb_lane_lands_while_compressor_and_ir_decay_keep_the_residual() {
         "{convolution}"
     );
     println!(
-        "### #293 residualReason: reverb={} compressor={} conv_ir_decay={}",
+        "### #304 residualReason: reverb={} compressor={} conv_ir_decay={}",
         reverb["residualReason"], compressor["residualReason"], convolution["residualReason"]
     );
 
     let rendered = render(&mut dispatcher, &scratch.wav());
     assert!(
         unsupported_has_automation_lanes(&rendered),
-        "混响泳道已落点，但压缩/IR 形状仍不可落点 ⇒ 导出仍应登记 automationLanes: {rendered}"
+        "混响/压缩泳道已落点，但 IR 形状仍不可落点 ⇒ 导出仍应登记 automationLanes: {rendered}"
     );
 }

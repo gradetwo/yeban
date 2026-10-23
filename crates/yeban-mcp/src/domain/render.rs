@@ -50,7 +50,7 @@
 //! | `audioClips` | **收窄后的口径**：仅当工程在 `assets` 索引里**声明**了这个资产、而会话 CAS 池里**没有它的字节**时才登记（`Domain::open_in_memory` 注入的会话就是这种形态）。此时该片段当静音，且响应 `data.audio.assets[].bytesPresent = false` 如实说明。读 `.yeban` 容器时索引与字节由 `store` 双向校验必然同时存在，因此这一项在真实容器工程上**不会**出现 |
 //! | `deviceChainDsp` | 设备链里**本切片没有消费**的参数（未知旋钮 / `filter_cutoff_hz` / `reverb_mix` / `reverb_width`）没有求值；增益、EQ、低通、**压缩**、Freeverb、卷积已求值（压缩自 `#303`；`#303` 之前它**一整级不执行**） |
 //! | `externalPlugins` | `DeviceKind::ExternalInstrument/ExternalEffect` 没有宿主 |
-//! | `automationLanes` | ⭐ `#243` / `#256` / `#257` / `#266` / `#267` / `#293`：**仅**指仍有可求值点、但本渲染器不消费的自动化目标（`Macro`；`DeviceParam` 里**不是**插入链落点的名字（**压缩** / **卷积 IR 形状** `conv_ir_decay*`、`conv_ir_seed` / 未知旋钮）、或指向旁通/非对应器件族来源设备的情形），以及 `TrackVolume` 落在**不可达轨**上（不在保留子图）、`SendGain` 落在**被剪枝的边**上、`TrackPan` 落在**有入边的总线轨**上（任务单 `#296` B2：总线声相本单不做）的情形。`TrackVolume` 在源节点、主总线与**总线轨**（`#296` 的新增输出级推子）上**真的被求值**；`TrackPan` 在**主总线**上也真的被求值（`#296`）；`SendGain` 在保留子图的入边归约里**真的被求值**（任务单 `#256`）；`TrackPan` 在源节点的源输出之后**真的被求值**（任务单 `#257`）；`DeviceParam` 的通道条 / Freeverb / 卷积标量字段（`data.appliedDeviceParamNames` 逐条列出）在该节点的插入链上**真的被求值**（`#266` 开一个名字 / `#267` 扩到通道条整组 / `#293` 扩到混响与卷积标量，块边界 `set_params`）；空泳道与 `readEnabled:false` 的泳道**不**登记（一条没有点的曲线没有“少做了什么”）。逐泳道的支持/应用读数见 `data.automation` |
+//! | `automationLanes` | ⭐ `#243` / `#256` / `#257` / `#266` / `#267` / `#293` / `#304`：**仅**指仍有可求值点、但本渲染器不消费的自动化目标（`Macro`；`DeviceParam` 里**不是**插入链落点的名字（**卷积 IR 形状** `conv_ir_decay*`、`conv_ir_seed` / 未知旋钮）、或指向旁通/非对应器件族来源设备的情形），以及 `TrackVolume` 落在**不可达轨**上（不在保留子图）、`SendGain` 落在**被剪枝的边**上、`TrackPan` 落在**有入边的总线轨**上（任务单 `#296` B2：总线声相本单不做）的情形。`TrackVolume` 在源节点、主总线与**总线轨**（`#296` 的新增输出级推子）上**真的被求值**；`TrackPan` 在**主总线**上也真的被求值（`#296`）；`SendGain` 在保留子图的入边归约里**真的被求值**（任务单 `#256`）；`TrackPan` 在源节点的源输出之后**真的被求值**（任务单 `#257`）；`DeviceParam` 的通道条（**含压缩**）/ Freeverb / 卷积标量字段（`data.appliedDeviceParamNames` 逐条列出）在该节点的插入链上**真的被求值**（`#266` 开一个名字 / `#267` 扩到通道条整组 / `#293` 扩到混响与卷积标量 / ⭐ `#304` 扩到压缩 8 字段，块边界 `set_params`）；空泳道与 `readEnabled:false` 的泳道**不**登记（一条没有点的曲线没有“少做了什么”）。逐泳道的支持/应用读数见 `data.automation` |
 //! | `noteSlide` | 滑音没有实现 |
 //! | `notePitchBend` | 弯音曲线没有求值 |
 //! | `noteLyrics` | 歌词/音素没有歌声合成 |
@@ -1728,9 +1728,9 @@ impl AutomationReport {
             "evaluator": "YebanProjectV1::automation_value_at",
             "targetsSupported": ["TrackVolume", "TrackPan", "SendGain", "DeviceParam"],
             "targetsUnsupported": ["Macro"],
-            // ⭐ `#267`/`#293`：`DeviceParam` 这一族接了**插入链能改的标量字段**
-            // （41 个拼写 = 27 通道条 + 6 混响 + 8 卷积，含别名）；哪些名字有落点必须
-            // 可读，且**只有一处来源**
+            // ⭐ `#267`/`#293`/`#304`：`DeviceParam` 这一族接了**插入链能改的标量字段**
+            // （55 个拼写 = 41 通道条（含压缩 14）+ 6 混响 + 8 卷积，含别名）；哪些名字
+            // 有落点必须可读，且**只有一处来源**
             // （`yeban_render::automation::APPLIED_DEVICE_PARAM_NAMES`）——
             // ⛔ 不让 "DeviceParam 支持了" 这句话被读成 `is_supported_param` 全通。
             "appliedDeviceParamNames": APPLIED_DEVICE_PARAM_NAMES,

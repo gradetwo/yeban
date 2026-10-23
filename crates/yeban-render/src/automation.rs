@@ -36,10 +36,11 @@
 //!
 //! - 只接 [`AutomationTarget::TrackVolume`]（含主总线）、[`AutomationTarget::SendGain`]、
 //!   [`AutomationTarget::TrackPan`] 与 [`AutomationTarget::DeviceParam`] 里**插入链能改的
-//!   标量字段**（[`APPLIED_DEVICE_PARAM_NAMES`]：41 个拼写 = 22 个字段，含别名；
-//!   通道条 14 ＋ Freeverb 4 ＋ 卷积标量 4）；**压缩**（`#303` 起静态执行，但自动化
-//!   落点不在本单）与**卷积 IR 形状**（`conv_ir_decay*` / `conv_ir_seed`）如实登记
-//!   （⛔ 不冒充已支持）；
+//!   标量字段**（[`APPLIED_DEVICE_PARAM_NAMES`]：55 个拼写 = 30 个字段，含别名；
+//!   通道条 22（14 增益/EQ/滤波 ＋ 8 压缩）＋ Freeverb 4 ＋ 卷积标量 4）；**卷积
+//!   IR 形状**（`conv_ir_decay*` / `conv_ir_seed`）如实登记（⛔ 不冒充已支持）；
+//!   ⭐ `#304` 起**压缩 8 字段**也在这张表里（`compressor_enabled` + 7 个标量），
+//!   静态投影与自动化因此读**同一张**名字表；
 //! - `#297` 起 [`AutomationTarget::Macro`] **接上了离线渲染**，口径是
 //!   `目标当前值 + depth × macro_value`（`depth` 是目标单位的振幅）。只有**存在
 //!   `Macro` 泳道**时才做动态级联：没有宏泳道的静态宏不参与渲染（`yeban_set_macro`
@@ -981,21 +982,31 @@ impl TrackPanAutomation {
     }
 }
 
-/// 本切片**真的会落点**的设备参数名（**含别名**，`41` 个拼写 = `22` 个字段）。
+/// 本切片**真的会落点**的设备参数名（**含别名**，`55` 个拼写 = `30` 个字段）。
 ///
 /// `#266` 只开 `output_gain_db`；`#267` 扩到**通道条那一整组**（27 拼写 / 14 字段）；
 /// `#293` 再扩到 **Freeverb 的 4 个标量字段**（6 拼写）与**卷积混响的 4 个标量字段**
-/// （8 拼写）。
+/// （8 拼写）；⭐ `#304` 扩到**压缩的 8 个字段**（14 拼写）。
 ///
 /// ⛔ 不是"白名单"：`crates/yeban-render/src/inserts.rs::is_supported_param` 的名字是
-/// **静态投影**消费的全集（多三个构造期 IR 形状名）；本表是**自动化**这一层接上的
+/// **静态投影**消费的全集（只多三个构造期 IR 形状名）；本表是**自动化**这一层接上的
 /// 子集。判别处**只有一处** —— [`crate::inserts::DeviceParamField::from_name`]；
 /// 本表是它的可读清单，两者由 `the_applied_names_and_the_field_table_agree` 双向钉住
 /// （⛔ 不许只改一边）。
 ///
+/// ## ⭐ `#304`：名字表只剩**一张**
+///
+/// `#303` 让静态投影执行压缩参数，但压缩 14 拼写只在 `inserts.rs` 的
+/// `STRIP_COMPRESSOR_SPELLINGS` 里，而自动化走 `DeviceParamField::from_name` ——
+/// **两张表并存**正是"静态支持被误读成自动化支持"的根源。`#304` 删掉那张独立表，
+/// 把 14 拼写并进 [`crate::inserts::StripField::SPELLINGS`] ⇒ 静态投影与自动化
+/// 读**同一组名字**；`is_supported_param` 与 `from_name` 从此只在三个构造期 IR
+/// 形状名上不同。
+///
 /// ## 为什么**是**这些
 ///
-/// - 27 个通道条拼写对应 [`crate::inserts::StripField`] 的 14 个字段；
+/// - 41 个通道条拼写对应 [`crate::inserts::StripField`] 的 22 个字段
+///   （14 增益/EQ/滤波 ＋ 8 压缩）；
 /// - 6 个混响拼写对应 [`crate::inserts::ReverbField`] 的 4 个字段
 ///   （`reverb_size` / `reverb_damp` / `reverb_wet`(＋`_mix`) / `reverb_predelay`(＋`_s`)）；
 /// - 8 个卷积拼写对应 [`crate::inserts::ConvolutionField`] 的 4 个字段
@@ -1006,17 +1017,23 @@ impl TrackPanAutomation {
 ///
 /// ## 为什么**不**是别的名字
 ///
-/// - **压缩**（`threshold_db` / `ratio` / `knee_db` / `detector_s` / `attack_s` /
-///   `release_s` / `makeup_db` / `compressor_enabled`）：⭐ `#303` 起**静态投影执行**
-///   它们（`inserts.rs` 模块头 §1.1），但**自动化落点不在本单**（那是独立的一票）⇒
-///   指向它们的 `DeviceParam` 泳道仍不可落点（`unsupported_lane_reason` 报
-///   `deviceParamNotChannelStrip`），本名单 ⛔ 不收它们；
 /// - **卷积 IR 形状**（`conv_ir_decay_s` / `conv_ir_decay` / `conv_ir_seed`）：那是
 ///   **构造期烘焙**，换值要重新合成 IR 并走 `set_impulse_response`（分配入口）⇒
 ///   每 128 帧重烘会破坏“IR 构造期烘好 / `process` 零分配”的架构契约；
 /// - 未知旋钮。
+///
+/// ## ⚠ `#304` 登记的两条边界
+///
+/// 1. 静态 `compressor_enabled == false` 时，`threshold_db` 等泳道仍**有落点**
+///    （报 applied），但压缩级不执行 ⇒ **听不出**（与 `eq_enabled: 0` ＋ EQ 参数泳道
+///    同款）。判据 `an_explicitly_disabled_compressor_is_applied_but_has_zero_gr`
+///    用 **GR == 0** 把这条"静默假话"变成读数；`compressor_enabled` 自己的泳道可以
+///    把这一级打开。
+/// 2. 把静态关闭的压缩器从 `0` 自动到 `1` 时，pre-pan tap 的编译期判据
+///    [`crate::inserts::compressing_nodes`] 仍看**静态** `compressor_enabled`
+///    ⇒ `pan != 0` 的轨检波参考点会不同。`#304` 明确登记、⛔ 不扩到预扫描。
 pub const APPLIED_DEVICE_PARAM_NAMES: &[&str] = &[
-    // 通道条（27 = 14 个字段，含别名）。
+    // 通道条（27 = 14 个增益/EQ/滤波字段，含别名）。
     "input_gain_db",
     "input_gain",
     "trim_db",
@@ -1044,6 +1061,21 @@ pub const APPLIED_DEVICE_PARAM_NAMES: &[&str] = &[
     "filter_resonance",
     "drive",
     "filter_drive",
+    // ⭐ 压缩（14 = 8 个字段，含别名；`#304`）。
+    "compressor_enabled",
+    "threshold_db",
+    "threshold",
+    "ratio",
+    "knee_db",
+    "knee",
+    "detector_s",
+    "detector",
+    "attack_s",
+    "attack",
+    "release_s",
+    "release",
+    "makeup_db",
+    "makeup",
     // Freeverb 标量（6 = 4 个字段）。
     "reverb_size",
     "reverb_damp",
@@ -1195,11 +1227,12 @@ pub enum LaneResidual {
     /// 落点 = 宏存在 ∧ 至少一条 mapping ∧ **每条** mapping 的目标都落点（递归判定；
     /// 目标是 `Macro` 或成环、空 mappings 都仍报本残差）。
     Macro,
-    /// `DeviceParam`：没有插入链落点（名字不是通道条 / Freeverb / 卷积标量字段、
-    /// 设备被旁通、或指向的不是该器件族的来源设备）。
+    /// `DeviceParam`：没有插入链落点（名字不是通道条（含压缩）/ Freeverb / 卷积
+    /// 标量字段、设备被旁通、或指向的不是该器件族的来源设备）。
     ///
     /// ⚠ 名字里的 `NotChannelStrip` 是**外部契约的稳定串**，本单 `#293` 扩到
-    /// Freeverb/卷积后**不改**：它仍是“离线插入链没有这个落点”的唯一残差值。
+    /// Freeverb/卷积、`#304` 扩到压缩后**不改**：它仍是“离线插入链没有这个落点”
+    /// 的唯一残差值。
     DeviceParamNotChannelStrip,
     /// 目标轨**没有落点**（**只有不可达轨**）：
     /// - `TrackVolume`：不在渲染计划里。计划内的总线轨与源轨**都有**落点
@@ -1235,8 +1268,8 @@ impl LaneResidual {
 /// - `SendGain`：边在保留子图里（`#256`）；
 /// - `TrackPan`：主总线（`#296` 起有声相落点）、计划里的源节点（`#257`）或
 ///   **计划里的总线轨**（B2：输出级声相；只有不可达轨仍是 `busTrack`）；
-/// - `DeviceParam`：节点在计划里且参数名有**插入链落点**（通道条 / Freeverb 标量 /
-///   卷积标量；`#266`/`#267`/`#293`）；
+/// - `DeviceParam`：节点在计划里且参数名有**插入链落点**（通道条 — 含压缩 — /
+///   Freeverb 标量 / 卷积标量；`#266`/`#267`/`#293`/`#304`）；
 /// - `Macro`：宏存在、至少一条 mapping、且每条 mapping 的目标本身有落点
 ///   （`#297`；目标是 `Macro` / 成环 / 空 mappings ⇒ 仍报 `macro`）。
 ///
@@ -1367,7 +1400,7 @@ fn macro_lane_lands(
 ///
 /// - 每 [`AUTOMATION_BLOCK_SIZE`]（128）帧求值一次，把该字段的**原生绝对值**交给运行态
 ///   （字段由 [`Self::field`] 给出：`#267` 起是通道条整组，`#293` 起含 Freeverb /
-///   卷积标量；⛔ 不再只有输出增益）；
+///   卷积标量，`#304` 起含压缩 8 字段；⛔ 不再只有输出增益）；
 /// - **不持有** `ParamSmoother`，也**不**乘任何样本；
 /// - 恒等（没有落点 / 没有泳道 / `read_enabled:false` / 空泳道 / 每个点的
 ///   **钳制后**值都等于静态值）⇒ 调用方一个器件都不强制实例化。
@@ -2571,6 +2604,28 @@ mod tests {
         );
         let automations = device_param_automations(&disabled, 48_000);
         assert!(forced_strip_tracks(&automations).is_empty());
+
+        // ⭐ `#304`：压缩 14 拼写走**同一条**通道条强制实例化路径。
+        for param in [
+            "threshold_db",
+            "threshold",
+            "ratio",
+            "knee_db",
+            "detector_s",
+            "attack_s",
+            "release_s",
+            "makeup_db",
+            "compressor_enabled",
+        ] {
+            let (compressor, compressor_track) =
+                project_with_device_lane(&[(param, 1.0)], &[(0, 0.0), (1_920, 2.0)], true, false);
+            let automations = device_param_automations(&compressor, 48_000);
+            assert_eq!(
+                forced_strip_tracks(&automations),
+                std::collections::BTreeSet::from([compressor_track]),
+                "`{param}` 的非恒等泳道必须强制实例化通道条"
+            );
+        }
     }
 
     /// ⭐ `#293` 判据 3：强制实例化**按族收窄** —— 混响/卷积泳道不许白实例化通道条，
@@ -2618,12 +2673,12 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // ⭐ `#267`/`#293`：通道条整组（27 拼写 = 14 字段）＋ 混响/卷积标量（14 拼写 = 8 字段）
+    // ⭐ `#267`/`#293`/`#304`：通道条整组（41 拼写 = 22 字段）＋ 混响/卷积标量（14 拼写 = 8 字段）
     // -----------------------------------------------------------------------
 
     /// 每个字段的：规范名、静态值、渐变的终点值。
     ///
-    /// 静态值刻意**全非默认**（除了两个开关的 `0` 与两个增益的 `0` —— 那三组正是
+    /// 静态值刻意**全非默认**（除了三个开关的 `0` 与两个增益的 `0` —— 那几组正是
     /// `#266` 的兜底缝，单独一条判据覆盖）。
     const FIELD_CASES: &[(StripField, &str, f32, f32)] = &[
         (StripField::InputGainDb, "input_gain_db", 0.0, -12.0),
@@ -2640,6 +2695,20 @@ mod tests {
         (StripField::CutoffHz, "cutoff_hz", 5_000.0, 800.0),
         (StripField::Resonance, "resonance", 0.2, 0.9),
         (StripField::Drive, "drive", 0.2, 0.9),
+        // ⭐ `#304`：压缩 8 字段（14 拼写）。
+        (
+            StripField::CompressorEnabled,
+            "compressor_enabled",
+            0.0,
+            1.0,
+        ),
+        (StripField::ThresholdDb, "threshold_db", -20.0, -40.0),
+        (StripField::Ratio, "ratio", 2.0, 8.0),
+        (StripField::KneeDb, "knee_db", 0.0, 12.0),
+        (StripField::DetectorS, "detector_s", 0.005, 0.05),
+        (StripField::AttackS, "attack_s", 0.002, 0.5),
+        (StripField::ReleaseS, "release_s", 0.1, 1.0),
+        (StripField::MakeupDb, "makeup_db", 0.0, 6.0),
     ];
 
     /// 非通道条字段（`#293`）的：落点、规范名、静态值、渐变终点值。
@@ -2735,7 +2804,7 @@ mod tests {
                 field.canonical_name()
             );
         }
-        // 2. 三族各自的每个字段都有一条规范拼写在名单里，且拼写集合包含它自己。
+        // 2. 三组各自的每个字段都有一条规范拼写在名单里，且拼写集合包含它自己。
         for field in StripField::ALL {
             let canonical = field.canonical_name();
             assert!(
@@ -2776,13 +2845,22 @@ mod tests {
             assert!(spellings.contains(&canonical), "{canonical}: {spellings:?}");
         }
         // 3. 名单与三张**唯一名字表**的并集逐字相等（⛔ 少一个、多一个、重复都红）。
-        assert_eq!(StripField::ALL.len(), 14, "通道条 14 个字段");
+        assert_eq!(
+            StripField::ALL.len(),
+            22,
+            "通道条 22 个字段（14 增益/EQ/滤波 ＋ 8 压缩）"
+        );
         assert_eq!(ReverbField::ALL.len(), 4, "Freeverb 4 个字段");
         assert_eq!(ConvolutionField::ALL.len(), 4, "卷积标量 4 个字段");
+        assert_eq!(
+            StripField::SPELLINGS.len(),
+            41,
+            "通道条 41 个拼写（27 ＋ 压缩 14；⛔ 只有这一张表）"
+        );
         let expected_len = StripField::SPELLINGS.len()
             + ReverbField::SPELLINGS.len()
             + ConvolutionField::SPELLINGS.len();
-        assert_eq!(expected_len, 41, "27 + 6 + 8 = 41 个拼写");
+        assert_eq!(expected_len, 55, "41 + 6 + 8 = 55 个拼写");
         assert_eq!(
             APPLIED_DEVICE_PARAM_NAMES.len(),
             expected_len,
@@ -2806,14 +2884,6 @@ mod tests {
         );
         // 4. 名单外的名字一律不认。
         for name in [
-            "threshold_db",
-            "ratio",
-            "knee_db",
-            "detector_s",
-            "attack_s",
-            "release_s",
-            "makeup_db",
-            "compressor_enabled",
             "reverb_mix",
             "reverb_width",
             "conv_ir_decay_s",
@@ -2826,7 +2896,7 @@ mod tests {
         }
     }
 
-    /// ⭐ `#267`/`#293` 判据 1/2：**22 个字段各一条**（41 个拼写逐个跑）—— 泳道从静态值
+    /// ⭐ `#267`/`#293`/`#304` 判据 1/2：**30 个字段各一条**（55 个拼写逐个跑）—— 泳道从静态值
     /// 渐变到终点值 ⇒ 求值器把**这个字段**接上（`field()` / `param_name()` / 静态值），
     /// 曲线在块边界上单调，且恒等判定为假。别名与规范名解析到**同一个**落点。
     #[test]
@@ -2909,9 +2979,9 @@ mod tests {
         }
     }
 
-    /// ⭐ `#267`/`#293`：**钳制后**才比恒等（`-100 dB` 与 `-60 dB` 交给器件是同一个值）；
-    /// 并且名单外的名字（压缩 / 卷积 IR 形状 / 未知旋钮）即使指向合法设备也**不落点**
-    /// （`field()` 是 `None`）。
+    /// ⭐ `#267`/`#293`/`#304`：**钳制后**才比恒等（`-100 dB` 与 `-60 dB` 交给器件是
+    /// 同一个值）；并且名单外的名字（卷积 IR 形状 / 未知旋钮）即使指向合法设备也
+    /// **不落点**（`field()` 是 `None`）。
     #[test]
     fn the_identity_compares_the_clamped_value_and_rejects_other_names() {
         let (project, track) =
@@ -2923,7 +2993,7 @@ mod tests {
             Some(DeviceParamField::Strip(StripField::OutputGainDb))
         );
 
-        for name in ["threshold_db", "conv_ir_decay_s", "conv_ir_seed", "mix"] {
+        for name in ["conv_ir_decay_s", "conv_ir_seed", "mix"] {
             let (project, track) =
                 project_with_device_lane(&[(name, 1.0)], &[(0, 0.0), (960, 2.0)], true, false);
             let automation = DeviceParamAutomation::new(&project, track, 0, 0, 48_000);

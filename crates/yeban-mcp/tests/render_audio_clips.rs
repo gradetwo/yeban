@@ -2383,26 +2383,23 @@ fn a_device_param_lane_on_an_unhandled_name_does_not_land_but_registers_device_c
     );
 }
 
-/// ⭐ `#267`/`#293`/`#303` 判据：**静态投影消费、但自动化不落点**的名字
-/// （压缩的 `threshold_db`、卷积 IR 形状的 `conv_ir_decay_s`）⇒ **不落点**
+/// ⭐ `#267`/`#293`/`#304` 判据：**静态投影消费、但自动化不落点**的名字
+/// （现在只剩卷积 IR 形状的 `conv_ir_decay_s`）⇒ **不落点**
 /// （母带与“清掉泳道”逐字节相同），但**不沉默**（靠 `automationLanes` 登记）。
-///
-/// ⚠ `#303` 改变了 `threshold_db` 的两格（`unresolved` 与 `deviceChainDsp`），
-/// 这里逐字钉住（⛔ 不把两者混成一句）：
 ///
 /// | 名字 | `supported` / `applied` | `unresolved` | `deviceChainDsp` | 为什么 |
 /// | :--- | :--- | :--- | :--- | :--- |
-/// | `threshold_db` | `false` / `false` | `null` | **不登记** | ⭐ 压缩级自 `#303` 起**执行**（静态投影消费它）⇒ 设备链没有"没消费的参数"、名字也解析得到；但自动化**不落点**（`StripField` 不含压缩）⇒ 靠 `automationLanes` 登记 |
 /// | `conv_ir_decay_s` | `false` / `false` | `null` | **不登记** | 名字**被卷积的静态投影消费** ⇒ 设备链没有"没消费的参数"；但它是**构造期 IR 形状** ⇒ 自动化不落点 |
 ///
-/// ⚠ 修前 `threshold_db` 那一行是 `unresolved: "paramNotSupported"` ＋ `deviceChainDsp`
-/// **登记**（压缩整级不执行）—— 那是 `#303` 的**行为变更**，不是回归。
+/// ⚠ `#303` 曾让 `threshold_db` 停在这一类（`unresolved: null`、不登记
+/// `deviceChainDsp`，但 `supported: false`）；⭐ `#304` 把它接进自动化名字表 ⇒
+/// 本测试不再收它，压缩阈值现在由
+/// `an_automated_compressor_threshold_really_lands_and_flat_is_byte_identical` 覆盖。
 #[test]
 fn names_outside_the_insert_chain_do_not_land_but_are_never_silent() {
-    for (param_name, static_value, to, expect_code, expect_chain_dsp) in [
-        ("threshold_db", -20.0_f32, -40.0_f32, false, false),
-        ("conv_ir_decay_s", 0.5, 2.0, false, false),
-    ] {
+    for (param_name, static_value, to, expect_code, expect_chain_dsp) in
+        [("conv_ir_decay_s", 0.5, 2.0, false, false)]
+    {
         let scratch = Scratch::new("device-param-outside");
         let bytes = wav_f32(2, 48_000, &constant(48_000, 0.5));
         let mut fixture = fixture(bytes.clone(), &Tune::default());
@@ -2452,8 +2449,8 @@ fn names_outside_the_insert_chain_do_not_land_but_are_never_silent() {
         assert_eq!(lane["target"], "DeviceParam", "{param_name}");
         assert_eq!(lane["resolvedParamName"], param_name);
         // `supported` 的口径 = "这条**自动化泳道**有没有落点"（静态消费 ≠ 可自动化）：
-        // 两个名字都不可落点 ⇒ false；`threshold_db` 的 `unresolved` 自 `#303` 起是 `null`
-        // （名字被静态投影认得），但 `automationLanes` 仍登记。
+        // 名字不可落点 ⇒ false；`unresolved` 是 `null`（名字被静态投影认得），但
+        // `automationLanes` 仍登记。
         assert_eq!(
             lane["supported"], false,
             "{param_name}: 自动化不可落点 ⇒ supported=false"
@@ -2478,11 +2475,11 @@ fn names_outside_the_insert_chain_do_not_land_but_are_never_silent() {
             expect_chain_dsp,
             "{param_name}: deviceChainDsp 的登记口径（见本判据的表）: {data}"
         );
-        // 名单是**唯一来源**：41 个拼写，且这两个名字都不在里面。
+        // 名单是**唯一来源**：55 个拼写，且这个 IR 形状名字不在里面。
         let listed = data["automation"]["appliedDeviceParamNames"]
             .as_array()
             .expect("appliedDeviceParamNames");
-        assert_eq!(listed.len(), 41, "{data}");
+        assert_eq!(listed.len(), 55, "{data}");
         assert!(
             !listed.iter().any(|value| value == param_name),
             "{param_name} 不在落点名单里"
@@ -2561,9 +2558,275 @@ fn an_automated_reverb_wet_lane_really_lands_and_is_not_silent() {
     let listed = data["automation"]["appliedDeviceParamNames"]
         .as_array()
         .expect("appliedDeviceParamNames");
-    assert_eq!(listed.len(), 41, "{data}");
+    assert_eq!(listed.len(), 55, "{data}");
     assert!(
         listed.iter().any(|value| value == "reverb_wet"),
         "reverb_wet 必须在名单里: {data}"
     );
+}
+
+/// ⭐ `#304` 判据 2/3：`threshold_db` 泳道在 MCP 导出里**真的落点**（`supported` /
+/// `applied` 都是 true、母带与文件字节都变）；"处处等于静态值"的泳道**逐字节等于**
+/// 无泳道。
+///
+/// GR 读数在渲染层：`crates/yeban-render/tests/insert_chain.rs::an_automated_compressor_threshold_changes_the_compression_amount_and_the_master`
+/// （MCP 响应没有 GR 字段；这里给的是母带/文件摘要）。
+#[test]
+fn an_automated_compressor_threshold_really_lands_and_flat_is_byte_identical() {
+    let scratch = Scratch::new("compressor-threshold");
+    let bytes = wav_f32(2, 48_000, &constant(48_000, 0.5));
+    let lead = id(2);
+
+    let mut base_fixture = fixture(bytes.clone(), &Tune::default());
+    // 正对照必须保留**同一台**静态压缩器（否则比的是"有设备 vs 没设备"）。
+    with_device_param_lane(
+        &mut base_fixture.project,
+        lead,
+        "threshold_db",
+        -30.0,
+        &[],
+        false,
+        0,
+    );
+    base_fixture
+        .project
+        .tracks
+        .get_mut(&lead)
+        .expect("Lead")
+        .automation_lanes
+        .clear();
+    base_fixture.project.validate().expect("对照夹具合法");
+    let base_out = scratch.join("compressor-base.wav");
+    let base = build_with(
+        &base_fixture.project,
+        &pool(&base_fixture),
+        &base_out,
+        args(&base_out),
+    )
+    .expect("对照渲染");
+
+    let mut ramp_fixture = fixture(bytes.clone(), &Tune::default());
+    with_device_param_lane(
+        &mut ramp_fixture.project,
+        lead,
+        "threshold_db",
+        -30.0,
+        &[(0, -30.0), (ONE_SECOND_TICKS, -12.0)],
+        true,
+        340,
+    );
+    let out = scratch.join("compressor-ramp.wav");
+    let artifact = build_with(
+        &ramp_fixture.project,
+        &pool(&ramp_fixture),
+        &out,
+        args(&out),
+    )
+    .expect("渲染");
+    let data = artifact.response_data();
+    println!(
+        "### MCP #304 threshold: digest={} base={} sha={} baseSha={} lane={}",
+        data["masterDigest"],
+        base.response_data()["masterDigest"],
+        data["sha256"],
+        base.response_data()["sha256"],
+        data["automation"]["tracks"][0]["lanes"][0]
+    );
+    assert_ne!(
+        data["masterDigest"],
+        base.response_data()["masterDigest"],
+        "压缩阈值自动化必须真的改母带（静默无效会得到相同摘要）"
+    );
+    assert_ne!(
+        data["sha256"],
+        base.response_data()["sha256"],
+        "压缩阈值自动化必须改文件字节"
+    );
+    let lane = &data["automation"]["tracks"][0]["lanes"][0];
+    assert_eq!(lane["target"], "DeviceParam");
+    assert_eq!(lane["resolvedParamName"], "threshold_db");
+    assert_eq!(lane["supported"], true, "{data}");
+    assert_eq!(lane["applied"], true, "{data}");
+    assert_eq!(lane["unresolved"], Value::Null, "{data}");
+    let unsupported = data["unsupported"].as_array().expect("unsupported");
+    assert!(
+        !unsupported.iter().any(|value| value == "automationLanes"),
+        "压缩阈值已有落点 ⇒ 不许再登记 automationLanes: {data}"
+    );
+    let listed = data["automation"]["appliedDeviceParamNames"]
+        .as_array()
+        .expect("appliedDeviceParamNames");
+    assert_eq!(listed.len(), 55, "{data}");
+    assert!(
+        listed.iter().any(|value| value == "threshold_db"),
+        "threshold_db 必须在名单里: {data}"
+    );
+
+    // ---- 正对照：泳道处处等于静态值 ⇒ 逐字节等于无泳道 ----
+    let mut flat_fixture = fixture(bytes, &Tune::default());
+    with_device_param_lane(
+        &mut flat_fixture.project,
+        lead,
+        "threshold_db",
+        -30.0,
+        &[(0, -30.0), (960, -30.0), (ONE_SECOND_TICKS, -30.0)],
+        true,
+        380,
+    );
+    let flat_out = scratch.join("compressor-flat.wav");
+    let flat = build_with(
+        &flat_fixture.project,
+        &pool(&flat_fixture),
+        &flat_out,
+        args(&flat_out),
+    )
+    .expect("平泳道渲染");
+    let flat_data = flat.response_data();
+    println!(
+        "### MCP #304 threshold flat: digest={} base={} sha={} baseSha={}",
+        flat_data["masterDigest"],
+        base.response_data()["masterDigest"],
+        flat_data["sha256"],
+        base.response_data()["sha256"]
+    );
+    assert_eq!(
+        flat_data["masterDigest"],
+        base.response_data()["masterDigest"],
+        "处处等于静态值 ⇒ 母带必须逐字节等于无泳道"
+    );
+    assert_eq!(
+        flat_data["sha256"],
+        base.response_data()["sha256"],
+        "处处等于静态值 ⇒ 文件字节也必须等于无泳道"
+    );
+}
+
+/// 给一条轨追加一台"显式关闭 + 阈值"的压缩器，返回它的槽位。
+fn add_disabled_compressor(project: &mut YebanProjectV1, track_id: EntityId) -> usize {
+    let track = project.tracks.get_mut(&track_id).expect("目标音轨必须存在");
+    let slot = track.devices.len();
+    track.devices.push(DeviceDefinition {
+        id: id(102),
+        name: "compressor".to_owned(),
+        kind: DeviceKind::InternalEffect,
+        bypassed: false,
+        params: vec![
+            ParameterValue {
+                name: "compressor_enabled".to_owned(),
+                value: 0.0,
+                unit: None,
+            },
+            ParameterValue {
+                name: "threshold_db".to_owned(),
+                value: -20.0,
+                unit: None,
+            },
+        ],
+        latency_samples: 0,
+    });
+    slot
+}
+
+/// 给 `(slot, param)` 挂一条 `DeviceParam` 泳道。
+fn with_device_lane(
+    project: &mut YebanProjectV1,
+    track_id: EntityId,
+    slot_index: usize,
+    param_index: usize,
+    points: &[(u64, f32)],
+    first_point_seed: u32,
+) {
+    let track = project.tracks.get_mut(&track_id).expect("目标音轨必须存在");
+    let target = AutomationTarget::DeviceParam {
+        track_id,
+        slot_index,
+        param_index,
+    };
+    let mut map = BTreeMap::new();
+    for (index, (tick, value)) in points.iter().enumerate() {
+        let point = AutomationPoint {
+            id: id(first_point_seed + index as u32),
+            tick: *tick,
+            value: *value,
+            curve: CurveType::Linear,
+        };
+        map.insert(point.id, point);
+    }
+    track.automation_lanes.insert(
+        target,
+        AutomationLane {
+            target,
+            points: map,
+            read_enabled: true,
+            write_mode: AutomationWriteMode::Off,
+            domain: None,
+        },
+    );
+    project.validate().expect("带设备参数泳道的夹具必须合法");
+}
+
+/// ⭐ `#304` 边界判据（用户裁决）：显式 `compressor_enabled: 0` ＋ 只自动化
+/// `threshold_db` ⇒ MCP 如实报 `supported:true` / `applied:true`（参数有落点），
+/// 但压缩级静态旁通 ⇒ 母带与文件字节**逐字节等于无泳道**。
+///
+/// "GR == 0"的器件级读数在
+/// `crates/yeban-render/tests/insert_chain.rs::an_explicitly_disabled_compressor_is_applied_but_has_zero_gr`
+/// （MCP 响应没有 GR 字段）。两条判据合起来把"报 applied 而听不出"变成**读数**。
+#[test]
+fn an_explicitly_disabled_compressor_is_reported_applied_but_the_master_is_unchanged() {
+    let scratch = Scratch::new("compressor-disabled");
+    let bytes = wav_f32(2, 48_000, &constant(48_000, 0.5));
+    let lead = id(2);
+
+    let mut base_fixture = fixture(bytes.clone(), &Tune::default());
+    add_disabled_compressor(&mut base_fixture.project, lead);
+    base_fixture.project.validate().expect("对照夹具合法");
+    let base_out = scratch.join("disabled-base.wav");
+    let base = build_with(
+        &base_fixture.project,
+        &pool(&base_fixture),
+        &base_out,
+        args(&base_out),
+    )
+    .expect("对照渲染");
+
+    let mut fixture = fixture(bytes, &Tune::default());
+    let slot = add_disabled_compressor(&mut fixture.project, lead);
+    with_device_lane(
+        &mut fixture.project,
+        lead,
+        slot,
+        1,
+        &[(0, -20.0), (ONE_SECOND_TICKS, -40.0)],
+        420,
+    );
+    let out = scratch.join("disabled-ramp.wav");
+    let artifact = build_with(&fixture.project, &pool(&fixture), &out, args(&out)).expect("渲染");
+    let data = artifact.response_data();
+    println!(
+        "### MCP #304 disabled compressor: digest={} base={} sha={} baseSha={} lane={}",
+        data["masterDigest"],
+        base.response_data()["masterDigest"],
+        data["sha256"],
+        base.response_data()["sha256"],
+        data["automation"]["tracks"][0]["lanes"][0]
+    );
+    assert_eq!(
+        data["masterDigest"],
+        base.response_data()["masterDigest"],
+        "静态旁通的压缩级 ⇒ 阈值泳道听不出（母带逐字节相同）"
+    );
+    assert_eq!(
+        data["sha256"],
+        base.response_data()["sha256"],
+        "静态旁通的压缩级 ⇒ 文件字节也相同"
+    );
+    let lane = &data["automation"]["tracks"][0]["lanes"][0];
+    assert_eq!(lane["resolvedParamName"], "threshold_db");
+    assert_eq!(
+        lane["supported"], true,
+        "参数有落点 ⇒ supported 必须如实为 true（听不出由 GR==0 判据给出）: {data}"
+    );
+    assert_eq!(lane["applied"], true, "{data}");
+    assert_eq!(lane["unresolved"], Value::Null, "{data}");
 }
