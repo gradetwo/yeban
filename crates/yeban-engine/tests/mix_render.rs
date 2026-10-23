@@ -21,7 +21,10 @@
 
 mod support;
 
-use support::{MixSpec, NoteSpec, empty_project, render, render_with, rms_peak, tuned_project};
+use support::{
+    MixSpec, NoteSpec, empty_project, render, render_with, render_with_limiter,
+    render_with_limiter_and, rms_peak, tuned_project,
+};
 
 /// 任务单 `#300` 之后中性声相的**唯一**期望比：`1.0`（源侧中心 = 离线中心 = 恒等）。
 const UNITY_RATIO: f64 = 1.0;
@@ -175,7 +178,7 @@ fn pan_gains_outside_the_centre_follow_the_declared_cosine_sine_curve() {
 #[test]
 fn bus_limiter_caps_an_over_threshold_fixture() {
     let notes = [NoteSpec::at(0, 960, 69, 127)];
-    let rendered = render(&tuned_project(&notes, MixSpec::volume(6.0)).project, 120);
+    let rendered = render_with_limiter(&tuned_project(&notes, MixSpec::volume(6.0)).project, 120);
     let peak = rendered.peak();
 
     println!(
@@ -447,8 +450,8 @@ fn master_fader_sits_upstream_of_the_bus_limiter() {
         .expect("`tuned_project` 的母线在 tracks 里")
         .volume_db = -6.0;
 
-    let unity = render(&unity_project, 120);
-    let quiet = render(&quiet_project, 120);
+    let unity = render_with_limiter(&unity_project, 120);
+    let quiet = render_with_limiter(&quiet_project, 120);
     println!(
         "[engine-master] M9 0 dB: peak={:.6} reductions={} | −6 dB: peak={:.6} reductions={}",
         unity.peak(),
@@ -516,7 +519,7 @@ fn limiter_current_reduction_is_a_gauge_that_agrees_with_the_running_maximum() {
     // 第 k−1 个量子结束时的读数；渲染结束后再补上最后一个量子（`Render::stats`）
     // ⇒ 采样集合覆盖**每一个**有快照的量子的量子边界值。
     let mut sampled: Vec<f32> = Vec::new();
-    let rendered = render_with(&loud.project, 60, 1, |quantum, rig| {
+    let rendered = render_with_limiter_and(&loud.project, 60, |quantum, rig| {
         if quantum > 0 {
             sampled.push(rig.runtime.stats().limiter_current_reduction);
         }
@@ -582,7 +585,7 @@ fn limiter_current_reduction_is_a_gauge_that_agrees_with_the_running_maximum() {
     // (5) 未过阈值：量规**逐位**贴地（限制器透明 ⇒ `1.0 − 1.0 = +0.0`）。
     let quiet = tuned_project(&notes, MixSpec::volume(-12.0));
     let mut quiet_samples: Vec<f32> = Vec::new();
-    let quiet_rendered = render_with(&quiet.project, 30, 1, |quantum, rig| {
+    let quiet_rendered = render_with_limiter_and(&quiet.project, 30, |quantum, rig| {
         if quantum > 0 {
             quiet_samples.push(rig.runtime.stats().limiter_current_reduction);
         }

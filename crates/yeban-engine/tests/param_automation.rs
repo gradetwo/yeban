@@ -48,7 +48,7 @@
 
 mod support;
 
-use support::{NoteSpec, note_project, render};
+use support::{NoteSpec, note_project, render, render_with_limiter};
 use yeban_engine::level::MAX_LINEAR_MAGNITUDE;
 use yeban_engine::meter::meter_channel;
 use yeban_engine::mixer::BUS_LIMITER_LATENCY_FRAMES;
@@ -87,7 +87,20 @@ struct ParamRig {
 
 impl ParamRig {
     fn new(project: &YebanProjectV1, revision: u64) -> Self {
-        let snapshot = EngineSnapshot::from_project(project, revision).expect("夹具工程必须能编译");
+        Self::from_snapshot(
+            EngineSnapshot::from_project(project, revision).expect("夹具工程必须能编译"),
+        )
+    }
+
+    /// 同 [`Self::new`]，但显式打开母线限制器（任务单 `#302` 的 B 组判据用）。
+    fn new_with_limiter(project: &YebanProjectV1, revision: u64) -> Self {
+        Self::from_snapshot(
+            EngineSnapshot::from_project_with_limiter(project, revision, true)
+                .expect("夹具工程必须能编译"),
+        )
+    }
+
+    fn from_snapshot(snapshot: EngineSnapshot) -> Self {
         let slot = SnapshotSlot::new(snapshot);
         let (retire, queue) = retire_channel(64);
         let (sender, receiver) = event_channel(64);
@@ -132,6 +145,11 @@ impl ParamRig {
 /// 把一条轨道的左声道原样渲染（**没有**任何事件）——"接线前"的参照。
 fn unarmed_left(project: &YebanProjectV1) -> Vec<f32> {
     render(project, QUANTA).left
+}
+
+/// 同 [`unarmed_left`]，但打开母线限制器（B 组判据的参照）。
+fn unarmed_left_with_limiter(project: &YebanProjectV1) -> Vec<f32> {
+    render_with_limiter(project, QUANTA).left
 }
 
 /// 判据 P0：四种"本表不改变音频"的口径与接线前**逐字节相同**。
@@ -235,9 +253,9 @@ fn an_accepted_gain_multiplies_the_render_bit_for_bit() {
 #[test]
 fn a_step_target_is_smoothed_rather_than_jumped() {
     let fixture = note_project(&[NOTE]);
-    let reference = unarmed_left(&fixture.project);
+    let reference = unarmed_left_with_limiter(&fixture.project);
 
-    let mut rig = ParamRig::new(&fixture.project, 1);
+    let mut rig = ParamRig::new_with_limiter(&fixture.project, 1);
     // 让第一个量子先把场景暖起来（声部起音），再在第 2 个量子之前发目标。
     rig.quanta(1);
     rig.set_param(fixture.track, TRACK_GAIN_SLOT, 0.25);
@@ -372,19 +390,25 @@ fn unarmed_stereo(project: &YebanProjectV1) -> (Vec<f32>, Vec<f32>) {
     (render.left, render.right)
 }
 
+/// 同 [`unarmed_stereo`]，但打开母线限制器（B 组判据的参照）。
+fn unarmed_stereo_with_limiter(project: &YebanProjectV1) -> (Vec<f32>, Vec<f32>) {
+    let render = render_with_limiter(project, QUANTA);
+    (render.left, render.right)
+}
+
 /// 判据 P9 + P10：主总线上的被接受事件**逐位**改变整条母线，
 /// 两条声道共用同一个平滑增益，且阶跃**不是**跳变。
 #[test]
 fn a_master_gain_multiplies_the_whole_bus_bit_for_bit_and_smoothly() {
     let fixture = note_project(&[NOTE]);
-    let (reference_left, reference_right) = unarmed_stereo(&fixture.project);
+    let (reference_left, reference_right) = unarmed_stereo_with_limiter(&fixture.project);
     assert_eq!(reference_left.len(), QUANTA * 128);
     assert!(
         reference_left.iter().any(|sample| *sample != 0.0),
         "参照渲染必须真的出声（否则本判据是空转）"
     );
 
-    let mut rig = ParamRig::new(&fixture.project, 1);
+    let mut rig = ParamRig::new_with_limiter(&fixture.project, 1);
     // 与判据 P3 同一条对齐纪律：先让第 1 个量子把场景暖起来，再在**第 2 个量子之前**
     // 发布目标 ⇒ 变化从 `track_scratch` 的下标 128 起算；母线限制器的 33 帧前瞻
     // 让"第一个被乘的输出样本"落在 `128 + 33`（详见 P3 的对齐注释）。
@@ -631,7 +655,7 @@ fn a_master_slot_armed_after_a_sample_rate_change_uses_the_new_sample_rate() {
 fn an_extreme_gain_must_not_push_the_bus_out_of_the_finite_range() {
     const HUGE: f32 = 1.0e20;
     let fixture = note_project(&[NOTE]);
-    let mut rig = ParamRig::new(&fixture.project, 1);
+    let mut rig = ParamRig::new_with_limiter(&fixture.project, 1);
     assert_eq!(rig.set_param(fixture.track, TRACK_GAIN_SLOT, HUGE), 1);
     assert_eq!(rig.set_param(fixture.master, MASTER_GAIN_SLOT, HUGE), 1);
     rig.quanta(QUANTA);

@@ -22,7 +22,6 @@ mod support;
 use std::sync::Arc;
 
 use yeban_engine::audio_clip::{AudioPcm, project_audio_clips};
-use yeban_engine::mixer::BUS_LIMITER_LATENCY_FRAMES;
 use yeban_engine::snapshot::EngineSnapshot;
 use yeban_model::{LoopConfig, YebanProjectV1};
 
@@ -171,15 +170,14 @@ fn an_audio_loop_is_expanded_into_two_spans_and_both_segments_peak_equally() {
     assert_eq!(plain_snapshot.audio_placements(), 1);
     assert_eq!(plain_snapshot.audio_spans(), 1, "关掉循环 ⇒ 单 span");
     let plain_render = render_snapshot(plain_snapshot, 400);
-    let latency = BUS_LIMITER_LATENCY_FRAMES as usize;
     let plain_first = peak_in(&plain_render, 0, segment);
-    // 母线限制器有 33 帧前瞻延迟 ⇒ 第 2 段的前 33 帧仍是第 1 段素材的尾巴；
-    // 判"静音"要从 `segment + latency` 起读（与 A3 的同一条口径）。
-    let plain_second = peak_in(&plain_render, segment + latency, 2 * segment);
+    // ⭐ `#302`：默认档限制器关 ⇒ 没有 33 帧前瞻延迟；第 2 段从 `segment` 起
+    // 就必须逐位静音（时序前移 33 帧是**修对**）。
+    let plain_second = peak_in(&plain_render, segment, 2 * segment);
     println!(
         "[#249/loop-control] 关掉循环（＝修前口径）两段峰值：{plain_first:.9} / \
-         [{}, {}) 峰值 {plain_second:.9}（跳过 {latency} 帧限制器延迟）",
-        segment + latency,
+         [{}, {}) 峰值 {plain_second:.9}（无限制器延迟）",
+        segment,
         2 * segment
     );
     assert!(
@@ -256,11 +254,11 @@ fn source_offset_points_each_pass_at_the_loop_region() {
     );
 
     let rendered = render_snapshot(snapshot, 400);
-    let latency = BUS_LIMITER_LATENCY_FRAMES as usize;
+    // ⭐ `#302`：默认档去掉母线限制器的 33 帧环 ⇒ 监听输出**不再后移 33 帧**，
+    // 输出绝对帧直接等于排程帧。时序前移 33 帧是**修对**（监听与导出在样本层对齐）。
     // 硬左 ⇒ 左声道增益 1.0。
     let pan = 1.0_f32;
-    // 输出绝对帧 `position` 读的是排程位置 `position − latency`。
-    let read = |asset_frame: usize| rendered.left[asset_frame + latency];
+    let read = |asset_frame: usize| rendered.left[asset_frame];
     let cases = [
         ("pickup @5000", 5_000usize, 5_001.0 * 1e-6 * pan),
         ("pass1 @18000", 18_000, 18_001.0 * 1e-6 * pan),

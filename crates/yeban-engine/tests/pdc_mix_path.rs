@@ -491,14 +491,29 @@ fn pdc_lines_up_a_parallel_diamond_sample_exactly_at_the_summing_node() {
 /// 样本级比对因此是**第二道**防线（防未来某次改动让 RT 路径改读别的 PDC 读数），
 /// 不是唯一防线。见报告的"没红的注入"。
 #[test]
-fn bus_limiter_latency_backfill_keeps_the_render_bit_identical() {
+fn limiter_backfill_adds_the_33_frame_output_delay_only_when_enabled_and_never_moves_branches() {
     let ids = ids();
     let project = project(ids, SLOW_LATENCY, Some(0), None);
 
-    let backfilled = EngineSnapshot::from_project(&project, 1).expect("生产路径快照");
+    // 默认档（关）：不回填，两个读数都等于 L_max。
+    let default_off = EngineSnapshot::from_project(&project, 1).expect("默认快照");
+    assert!(!default_off.limiter_enabled(), "默认档必须关限制器");
+    assert_eq!(
+        default_off.pdc().output_latency(),
+        SLOW_LATENCY,
+        "默认档：输出延迟 = L_max（没有 33 回填）"
+    );
+
+    // 开启档：回填 33；对照臂用**显式表 + 同一个 33**（+ limiter_enabled），
+    // 这样两边跑的是同一个限制器状态 ⇒ 渲染应逐位相同（旧判据的核心）。
+    let backfilled =
+        EngineSnapshot::from_project_with_limiter(&project, 1, true).expect("开启快照");
     let raw_table = LatencyTable::from_project(&project);
-    let explicit =
-        EngineSnapshot::from_project_with_latencies(&project, 1, &raw_table).expect("注入路径快照");
+    let mut explicit_table = raw_table.clone();
+    explicit_table.add(ids.master, BUS_LIMITER_LATENCY_FRAMES);
+    let explicit = EngineSnapshot::from_project_with_latencies(&project, 1, &explicit_table)
+        .expect("注入路径快照")
+        .with_limiter_enabled(true);
 
     // 渲染会**接管**快照所有权 ⇒ 先把全部计划读数取出来。
     let l_max_backfilled = backfilled.pdc().total_latency();
@@ -552,13 +567,17 @@ fn bus_limiter_latency_backfill_keeps_the_render_bit_identical() {
         "对齐基准 L_max 不许被那 33 帧改变"
     );
     assert_eq!(
-        output_backfilled,
-        output_explicit + BUS_LIMITER_LATENCY_FRAMES,
-        "引擎输出延迟必须恰好多出母线限制器的 33 帧"
+        output_backfilled, output_explicit,
+        "开启档：回填与显式表必须给出同一个输出延迟（都是 L_max + 33）"
     );
     assert_eq!(
-        output_explicit, SLOW_LATENCY,
-        "注入路径只有设备链延迟（= 慢支路的 400）"
+        output_backfilled,
+        SLOW_LATENCY + BUS_LIMITER_LATENCY_FRAMES,
+        "开启档：输出延迟 = 设备链 400 + 限制器 33"
+    );
+    assert_eq!(
+        l_max_backfilled, SLOW_LATENCY,
+        "对齐基准仍是慢支路的 400（限制器在求和之后）"
     );
     assert_eq!(comp_fast, Some(SLOW_LATENCY));
     assert_eq!(comp_slow, Some(0));

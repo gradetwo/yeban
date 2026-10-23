@@ -398,6 +398,8 @@ pub fn usage_text() -> String {
                            (默认**跟随工程** audio_config.sample_rate; 要旧口径就显式给 48000)
   --wav-seconds <秒>       --export-wav 的**时长** (默认 8 秒, 与旧行为一致;
                            帧数 = round(秒 × 采样率)); ⛔ 缺省不是\"工程可闻末端\"
+  --limiter                --export-wav 在**主总线推子之后**跑母线限制器
+                           (默认关; 开启时补偿 33 帧前瞻延迟, 输出长度不变)
   --wav-frames <n>         --export-wav 的**精确帧数** (与 MCP render_master.frames 同量纲):
                            原样使用, 不再做秒×采样率换算; 与 --wav-seconds **互斥**;
                            必须是**正**整数 (0 帧是空产物, 按用法错误拒绝)
@@ -1233,6 +1235,13 @@ pub struct Options {
     /// （同时给 ⇒ [`ParseError::WavFramesConflict`]，⛔ 不靠"谁优先"发明语义）。
     /// 取值必须是正的十进制整数（`0` 是**空产物**，按用法错误拒绝）。
     pub wav_frames: Option<u64>,
+    /// `--limiter`：`--export-wav` 是否在**主总线推子之后**跑母线限制器
+    /// （任务单 `#302`；默认 **关** ⇒ 与旧导出逐字节相同）。
+    ///
+    /// 这是**每次调用**的开关（⛔ 工程字段、⛔ `project.schema.json`）。
+    /// 开启时限制器带 33 帧前瞻延迟，导出路径会**补偿**这 33 帧 ⇒ 输出长度与
+    /// 时间轴不变，只有压限本身改变样本。
+    pub wav_limiter: bool,
     /// `--export-als <path>`：当前工程导出成实验性 Ableton `.als`（Gzip XML）
     /// `[ARCH-FMT-002]` / `[ROAD-M4-007]`，与 `--export-midi` 并列同属 `D47` 的 CLI 出口。
     ///
@@ -2163,6 +2172,15 @@ pub fn parse(args: &[String]) -> Result<Options, ParseError> {
                     return Err(ParseError::WavFramesConflict);
                 }
                 options.wav_frames = Some(frames);
+            }
+            "--limiter" => {
+                // 布尔修饰开关：⛔ 不吃值（与 `--wav-*` 同档，只改 `--export-wav`
+                // 的产物形状）。重复给 ⇒ 明确报错，⛔ 不静默。
+                if options.wav_limiter {
+                    return Err(ParseError::DuplicateOption("--limiter"));
+                }
+                options.wav_limiter = true;
+                cursor += 1;
             }
             "--export-als" => {
                 let value = take_value("--export-als", inline, args, &mut cursor)?;
@@ -4335,6 +4353,7 @@ pub fn run_batch(options: &Options) -> Result<Vec<String>, CliError> {
         (options.wav_sample_rate.is_some(), "--wav-sample-rate"),
         (options.wav_seconds.is_some(), "--wav-seconds"),
         (options.wav_frames.is_some(), "--wav-frames"),
+        (options.wav_limiter, "--limiter"),
     ] {
         if given && options.export_wav.is_none() {
             return Err(CliError::Usage(format!(
@@ -4490,13 +4509,15 @@ pub fn run_batch(options: &Options) -> Result<Vec<String>, CliError> {
         // 见 `crate::audio_clip` 的模块文档。
         // ⭐ 位深／采样率／时长／精确帧数在这里解析出**唯一一份**可执行选项
         // （缺省口径见 `WavExportOptions::resolve`：24-bit / 跟随工程 / 8 秒）。
-        let wav_options = crate::export_wav::WavExportOptions::resolve(
+        let mut wav_options = crate::export_wav::WavExportOptions::resolve(
             &loaded.archive.project,
             options.wav_sample_rate,
             options.wav_bit_depth,
             options.wav_seconds,
             options.wav_frames,
         );
+        // ⭐ 任务单 `#302`：per-call 限制器开关；默认关 ⇒ 旧导出逐字节不变。
+        wav_options.limiter = options.wav_limiter;
         // ⭐ 任务单 `#168`：`--open` 那个文件所在目录 = 相对 SFZ 路径的第一个候选根
         //    ⇒ "样本放在工程旁边"在**任意 cwd** 下都读得到。样本形态（没有 `--open`）
         //    给 `None`，解析从仓库根开始（旧口径）。
@@ -7769,6 +7790,35 @@ mod tests {
             .map(std::collections::BTreeMap::len)
             .sum();
         assert!(notes > 0, "夹具必须有音符（实际 {notes}）");
+    }
+
+    /// ⭐ 任务单 `#302`：`--limiter` 是**每次调用**的导出修饰开关，默认关，
+    /// 重复给明确报错（⛔ 不静默）。
+    #[test]
+    fn limiter_is_a_per_call_export_modifier_and_defaults_off() {
+        let off = parse(&["--export-wav".to_owned(), "out.wav".to_owned()]).expect("默认解析");
+        assert!(!off.wav_limiter, "缺省必须是关");
+
+        let on = parse(&[
+            "--export-wav".to_owned(),
+            "out.wav".to_owned(),
+            "--limiter".to_owned(),
+        ])
+        .expect("开启解析");
+        assert!(on.wav_limiter, "--limiter 必须打开开关");
+
+        let duplicate = parse(&[
+            "--export-wav".to_owned(),
+            "out.wav".to_owned(),
+            "--limiter".to_owned(),
+            "--limiter".to_owned(),
+        ])
+        .expect_err("重复 --limiter 必须拒绝");
+        assert_eq!(
+            duplicate,
+            ParseError::DuplicateOption("--limiter"),
+            "重复开关必须逐字报同一变体"
+        );
     }
 
     /// `--export-wav` 的**拒绝不留半成品**：目标目录不可写 / 目标不是容器 ⇒ 一个字节都不写。

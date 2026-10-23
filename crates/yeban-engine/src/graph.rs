@@ -14,7 +14,7 @@
 //!    （规范 §3.4 第 2 条："从每个信号源到 Master 总线的所有声学通路…确定最长延迟
 //!    关键路径 $L_{\max}$"）[ARCH-PDC-001]。
 //!    ⚠ **不是** `arrival(master)`：`master` 自身的处理延迟发生在**求和之后**
-//!    （母线限制器的 33 帧），它是**引擎输出延迟**的一部分，见
+//!    （母线限制器**开启时**的 33 帧），它是**引擎输出延迟**的一部分，见
 //!    [`PdcPlan::output_latency`]。把 `arrival(master)` 当作 `L_max` 会给**每一条**
 //!    支路白加 33 帧延迟线，而对齐一个相位也补不回来。
 //! 3. **延迟分配**：对每条可达 master 的**支路**插入
@@ -49,9 +49,11 @@
 //! 第二处是**引擎自己知道**的一段固定延迟：母线总线限制器的
 //! [`BUS_LIMITER_LATENCY_FRAMES`](crate::mixer::BUS_LIMITER_LATENCY_FRAMES)（33 帧）。
 //! [ADR-0001 D44(b)] 要求它"必须回填进 `LatencyTable`"（"引擎链路上每一段延迟都可被
-//! PDC 看见"）⇒ [`crate::snapshot::EngineSnapshot::from_project`] 在**构造期**用
-//! [`LatencyTable::add`] 把它加到 `master` 节点上。它接在总线求和**之后**，
-//! 因此只进 [`PdcPlan::output_latency`]、**不**产生任何 `D(v)`。
+//! PDC 看见"）—— **只在限制器真的跑时**：`EngineSnapshot::from_project_with_limiter(.., true)`
+//! 在**构造期**用 [`LatencyTable::add`] 把它加到 `master` 节点上；默认档
+//! （`from_project`，任务单 `#302`）**不跑限制器、不回填**，因此
+//! `output_latency() == total_latency()`。它接在总线求和**之后**，因此只进
+//! [`PdcPlan::output_latency`]、**不**产生任何 `D(v)`。
 //!
 //! [`LatencyTable`] 仍然可以显式注入（[`PdcPlan::compute`] 接收它），
 //! 供离线对账/测量注入使用；但**默认路径**永远走上面这两处。
@@ -396,9 +398,9 @@ impl PdcPlan {
 
     /// 关键路径总延迟 `L_max` = 求和节点**输入端**的最长支路延迟 [ARCH-PDC-001]。
     ///
-    /// 它是 `D(v)` 的对齐基准，**不包含** `master` 自身的处理延迟（求和之后的
-    /// 母线限制器 33 帧）。需要"引擎输出相对工程时间轴后移多少"请读
-    /// [`Self::output_latency`]。
+    /// 它是 `D(v)` 的对齐基准，**不包含** `master` 自身的处理延迟（求和之后、
+    /// 限制器**开启时**的 33 帧）。需要"引擎输出相对工程时间轴后移多少"请读
+    /// [`Self::output_latency`]（默认档两者相等）。
     #[must_use]
     pub fn total_latency(&self) -> u32 {
         self.total_latency
@@ -408,11 +410,11 @@ impl PdcPlan {
     ///
     /// 它是"喂进引擎第 0 帧的信号在第几帧出现在输出"的那个数 —— 既含支路对齐用的
     /// `L_max`，也含接在**总线求和之后**的 `master` 自身延迟
-    /// （母线限制器的 [`BUS_LIMITER_LATENCY_FRAMES`](crate::mixer::BUS_LIMITER_LATENCY_FRAMES)
-    /// = 33 帧，[ADR-0001 D44(b)]）。
+    /// （母线限制器**开启时**的 [`BUS_LIMITER_LATENCY_FRAMES`](crate::mixer::BUS_LIMITER_LATENCY_FRAMES)
+    /// = 33 帧，[ADR-0001 D44(b)]；默认档限制器关 ⇒ 没有这 33 帧）。
     ///
     /// ⚠ 它**不是** [`Self::total_latency`]：后者只是支路对齐基准。
-    /// 当 `master` 没有自身延迟时两者相等（历史行为）。
+    /// **默认档（限制器关）两者相等**；只有开启档才相差 33 帧。
     #[must_use]
     pub fn output_latency(&self) -> u32 {
         self.output_latency

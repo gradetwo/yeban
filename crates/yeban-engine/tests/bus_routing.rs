@@ -39,7 +39,11 @@ use yeban_model::{
     RoutingGraph, RoutingKind, TrackKind, TrackV3, YebanProjectV1,
 };
 
-/// 既有混音夹具的逐位指纹 —— ⭐ **`#233` 之后只剩一个值**。
+/// 既有混音夹具的逐位指纹 —— ⭐ **`#302` 重钉后只剩一个值**。
+///
+/// ⚠ 与 `#300` 的 `0x4be67b6b4bee4fad` 不同：`#302` 默认档去掉母线限制器的
+/// 33 帧环 ⇒ 时序前移 33 帧 ⇒ 指纹变；峰值也由 `0.9000658`（被限制器压住）
+/// 变为 `1.3172894`（不再压）。这是**修对**，不是回归。
 ///
 /// ## 历史：`#169` 的三平台三值（保留作证据，⛔ 不再是断言口径）
 ///
@@ -65,7 +69,7 @@ use yeban_model::{
 /// peak 由 `0.9000465` 微升到 `0.9000658`（母线限制器把上升压在 0.9 附近）。
 /// 夹具、路由图、默认直连与判据本身一字未改。
 const fn existing_mix_fnv() -> Option<u64> {
-    Some(0x4be6_7b6b_4bee_4fad)
+    Some(0x2d33_3312_d836_c439)
 }
 
 /// 既有混音夹具在 **`#233` 之前**实测的 `sha256`（外部 `shasum -a 256` 对原始 `f32` 字节，
@@ -262,7 +266,7 @@ fn r1_missing_edges_are_bit_identical_to_the_explicit_unit_direct_edge() {
 /// 2. **与平台无关**：峰值仍是 `0.9000465`（容差 `1e-6`）⇒ 增益/求和路径没变；
 /// 3. **已实测平台**：逐位等于该平台的改动前读数（见 [`existing_mix_fnv`]）。
 #[test]
-fn r1b_existing_mix_fixture_matches_the_pre_change_baseline() {
+fn r1b_existing_mix_fixture_matches_the_post_302_baseline() {
     let notes = [
         NoteSpec::at(0, 480, 60, 100),
         NoteSpec::at(240, 480, 64, 90),
@@ -311,15 +315,15 @@ fn r1b_existing_mix_fixture_matches_the_pre_change_baseline() {
         "默认路径必须与显式单位 TrackToBus 逐位相同（与平台无关）"
     );
     assert!(
-        (out.peak() - 0.900_065_8).abs() <= 1.0e-6,
-        "既有夹具的峰值必须是 0.9000658（`#300` 重标定；修前 0.9000465），实测 {}",
+        (out.peak() - 1.317_289_4).abs() <= 1.0e-6,
+        "既有夹具的峰值必须是 1.3172894（`#302` 默认关限制器 ⇒ 不再被压到 0.9），实测 {}",
         out.peak()
     );
     if let Some(expected) = baseline {
         assert_eq!(
             out.fingerprint(),
             expected,
-            "既有混音夹具的逐位指纹必须等于 `#233` 之后的单值基线（三平台应当相同）"
+            "既有混音夹具的逐位指纹必须等于 `#302` 重钉后的单值基线（三平台应当相同）"
         );
     }
 }

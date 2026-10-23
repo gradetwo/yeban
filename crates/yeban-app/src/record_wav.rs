@@ -879,6 +879,9 @@ pub fn record_project_under(
         // `--record-wav` 的位深**不在本切片的选择面里**：钉住 24-bit（旧行为），
         // 于是"录制"的中间渲染仍与 `--export-wav` 的缺省同一格式。
         bit_depth: yeban_render::dither::BitDepth::Int24,
+        // ⭐ 任务单 `#302`：本票的 per-call 开关只开**导出侧**；录制默认关
+        // （`#170` 的逐位契约不变）。
+        limiter: false,
     };
     // ⭐ `#170`：与 `--export-wav` **同一个**渲染入口 —— 工程目录（若知道）是相对
     //    `sampler.path` 的第一个候选根。`project_dir = None` ⇒ `&[]` 资产池 ＋ 旧根，

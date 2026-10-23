@@ -24,8 +24,8 @@
 //!
 //! | # | 判据（本文件断言什么） |
 //! | :-: | :--- |
-//! | L1 | 生产路径：两个读数**逐位等于**同一份快照的 `PdcPlan` 读数（夹具 = 400 / 433），且两者**不同** |
-//! | L2 | 差分臂：只差"母线限制器 33 帧回填"的两份快照**渲染逐位相同**（指纹相等），而读数相差恰好 33 |
+//! | L1 | **默认档**（关）：两个读数都等于 `PdcPlan` 的 400 / 400；**开启档**：400 / 433，且两者不同 |
+//! | L2 | **开关双态**：同一夹具 off/on ⇒ 读数差恰好 33，**音频也真的后移 33**（on[33..] 与 off[..] 逐位相同） |
 //! | L3 | 冷值：`EngineRuntime::new` 之后、任何量子之前，两个读数（权威与镜像）都是 0 |
 //! | L4 | 快照边界更新 + 镜像静止点等号：换一份延迟表不同的快照 ⇒ 读数换成**新**计划的值；静止点 `mirror.read() == stats()` |
 //! | L5 | 内部一致性：逐支路 `armed_pdc_delay(v) == plan.compensation(v)` 且 `L_max − D(v) == arrival(v)`；`输出 ≥ 对齐` |
@@ -37,8 +37,12 @@
 //! | E1 | 快照边界把 `output_latency` 写成 `total_latency` | 四条判据**全红**（`left: 400 right: 433` 一族） |
 //! | E2 | 两个字段的右值互换 | 四条判据**全红**（`left: (433, 400) right: (400, 433)`） |
 //! | E3 | 镜像 `publish` 漏存 `engine_output_latency_frames` | `stats_mirror` 的漂移闸门判据红 ＋ 本文件 L3+L4 的镜像等号红 |
-//! | E4 | 删掉 `EngineSnapshot::from_project` 的母线限制器 33 帧回填 | 四条判据**全红**（`left: 400 right: 433`） |
+//! | E4 | 删掉**开启档**的母线限制器 33 帧回填 | 开启档断言红（`left: 400 right: 433` 一族） |
 //! | E5 | 删掉 `EngineRuntime::new` 的**冷镜像发布** | ⛔ **没红**（全 crate 全目标仍绿）：镜像的构造初值与引擎冷值逐字段相同 ⇒ 那条发布是冗余的（见报告） |
+//!
+//! ⚠ `#302` 起默认档限制器**关**：上表 E1–E4 的逐字红行测于"默认开"的旧口径，
+//! 本票**没有**重跑它们 ⇒ 它们不是本票的证据。本票的证据是 L1/L2 的双态读数与
+//! `crates/yeban-app/tests/monitor_export_offset.rs` 的 `best_offset = 0 / 33`。
 //!
 //! ⚠ 覆盖边界（诚实登记）：
 //! 1. 跑的是**回调函数体**（`EngineRuntime::process_quantum`），不是 cpal 回调线程
@@ -103,15 +107,16 @@ fn engine_latency_readings_are_the_armed_plans_latency() {
         "夹具的第二条轨必须上报 {TRACK_LATENCY} 帧设备延迟"
     );
 
+    // --- 默认（限制器关）：两个读数相等，都是 L_max = 400 ---
     let snapshot = EngineSnapshot::from_project(&project, 1).expect("夹具工程必须能编译成快照");
     let plan_l_max = snapshot.pdc().total_latency();
     let plan_output = snapshot.pdc().output_latency();
     assert_eq!(plan_l_max, TRACK_LATENCY, "对齐基准 = 最长支路 = 400");
     assert_eq!(
-        plan_output,
-        TRACK_LATENCY + BUS_LIMITER_LATENCY_FRAMES,
-        "引擎输出延迟 = L_max ＋ 母线限制器回填的 33 帧"
+        plan_output, TRACK_LATENCY,
+        "默认关：引擎输出延迟 = L_max（母线限制器不跑、不回填 33）"
     );
+    assert!(!snapshot.limiter_enabled(), "默认快照必须是关的");
 
     let render = render_snapshot(snapshot, 2);
     assert_eq!(
@@ -122,95 +127,142 @@ fn engine_latency_readings_are_the_armed_plans_latency() {
         render.stats.engine_output_latency_frames, plan_output,
         "读数必须等于已武装快照的 `PdcPlan::output_latency()`"
     );
-    // 字面值：让"两个字段被同一个数填了"这种错误也在字面上可见。
+    // 字面值：默认档两个字段都必须是 400。
     assert_eq!(render.stats.pdc_alignment_frames, 400);
-    assert_eq!(render.stats.engine_output_latency_frames, 433);
-    assert_ne!(
+    assert_eq!(render.stats.engine_output_latency_frames, 400);
+    assert_eq!(
         render.stats.pdc_alignment_frames, render.stats.engine_output_latency_frames,
-        "两个读数是两个不同的数（差 master 自身的 33 帧）"
+        "默认关：两个读数相等（没有 master 自身的 33 帧）"
     );
     assert!(
         render.nonzero() > 0,
         "夹具必须真的出声，否则本判据只是在一个静音渲染上读计划"
     );
 
+    // --- 开启（限制器 on）：输出延迟 = 400 + 33，两个读数必须不同 ---
+    let on = EngineSnapshot::from_project_with_limiter(&project, 1, true).expect("开启快照");
+    let on_plan_l_max = on.pdc().total_latency();
+    let on_plan_output = on.pdc().output_latency();
+    assert!(
+        on.limiter_enabled(),
+        "开启快照必须报告 limiter_enabled = true"
+    );
+    assert_eq!(on_plan_l_max, TRACK_LATENCY, "开启也不改对齐基准");
+    assert_eq!(
+        on_plan_output,
+        TRACK_LATENCY + BUS_LIMITER_LATENCY_FRAMES,
+        "开启：引擎输出延迟 = L_max ＋ 回填的 33 帧"
+    );
+    let on_render = render_snapshot(on, 2);
+    assert_eq!(on_render.stats.pdc_alignment_frames, 400);
+    assert_eq!(on_render.stats.engine_output_latency_frames, 433);
+    assert_ne!(
+        on_render.stats.pdc_alignment_frames, on_render.stats.engine_output_latency_frames,
+        "开启时两个读数是两个不同的数（差 master 自身的 33 帧）"
+    );
+    assert!(on_render.nonzero() > 0, "开启态夹具也必须真的出声");
+
     println!(
-        "[engine-latency] L1 生产路径：非零样本={} 对齐 L_max={} 引擎输出={} \
-         （计划 total_latency={} output_latency={}；母线限制器回填={}）",
+        "[engine-latency] L1：默认非零样本={} 对齐={} 输出={}；开启非零样本={} 对齐={} 输出={} \
+         （计划 total_latency={}；开启 output_latency={}；母线限制器回填={}）",
         render.nonzero(),
         render.stats.pdc_alignment_frames,
         render.stats.engine_output_latency_frames,
+        on_render.nonzero(),
+        on_render.stats.pdc_alignment_frames,
+        on_render.stats.engine_output_latency_frames,
         plan_l_max,
-        plan_output,
+        on_plan_output,
         BUS_LIMITER_LATENCY_FRAMES,
     );
 }
 
-/// L2：差分臂 —— 只差"母线限制器 33 帧回填"的两份快照**渲染逐位相同**，
-/// 而 `engine_output_latency_frames` 相差**恰好** 33 帧。
+/// L2：**开关的双态判据**（任务单 `#302`）—— 同一夹具只改 `limiter_enabled`：
 ///
-/// 这是"这个读数携带了输出里看不见的信息"的机械形式：如果两个读数是由音频
-/// 输出反推的，它们就不可能在一对**逐位相同**的渲染上给出不同的值。
+/// - 读数差**恰好 33 帧**（`engine_output_latency_frames`，`pdc_alignment` 不动）；
+/// - **音频也真的差 33 帧**：开启态的 `[33..]` 与关闭态的 `[..]` 逐位相同。
+///
+/// ⚠ 旧名 `output_latency_reading_separates_two_snapshots_that_render_identically`
+/// 已不成立：那 33 帧现在**同时**是"读数"和"音频上的真实后移"（默认关、开启 on）。
+/// 这正是 `#302` 要的语义：读数不再是一个渲染里看不见的声明。
 #[test]
-fn output_latency_reading_separates_two_snapshots_that_render_identically() {
+fn limiter_switch_moves_the_reading_and_the_audio_by_exactly_33_frames() {
     let (mut project, _first, second) = base_project();
     attach_latency_device(&mut project, second, TRACK_LATENCY);
+    // ⭐ 让限制器**透明**（峰值 < 阈值 0.9）：本判据要量的是"开关带来的 33 帧
+    // 时间差"，不是压限量。12 dB 余量足够让中性音符落在阈值以下。
+    for track in project.tracks.values_mut() {
+        track.volume_db = -12.0;
+    }
 
-    let backfilled = EngineSnapshot::from_project(&project, 1).expect("生产路径快照");
-    let raw = LatencyTable::from_project(&project);
-    let explicit =
-        EngineSnapshot::from_project_with_latencies(&project, 1, &raw).expect("注入路径快照");
+    let off = EngineSnapshot::from_project(&project, 1).expect("默认（关）快照");
+    let on = EngineSnapshot::from_project_with_limiter(&project, 1, true).expect("开启快照");
 
     // 渲染会**接管**快照所有权 ⇒ 先取出计划读数。
-    let alignment_a = backfilled.pdc().total_latency();
-    let output_a = backfilled.pdc().output_latency();
-    let alignment_b = explicit.pdc().total_latency();
-    let output_b = explicit.pdc().output_latency();
+    let alignment_off = off.pdc().total_latency();
+    let output_off = off.pdc().output_latency();
+    let alignment_on = on.pdc().total_latency();
+    let output_on = on.pdc().output_latency();
 
-    let a = render_snapshot(backfilled, 8);
-    let b = render_snapshot(explicit, 8);
+    let a = render_snapshot(off, 8);
+    let b = render_snapshot(on, 8);
 
-    assert!(a.nonzero() > 0, "夹具必须真的出声（防空转假绿）");
+    assert!(
+        a.nonzero() > 0 && b.nonzero() > 0,
+        "两侧都必须真的出声（防空转假绿）"
+    );
     assert_eq!(
-        a.fingerprint(),
-        b.fingerprint(),
-        "这 33 帧接在总线求和之后 ⇒ 两份快照的渲染必须逐位相同"
+        (alignment_off, output_off),
+        (400, 400),
+        "默认关：L_max 与输出延迟都是 400"
+    );
+    assert_eq!(
+        (alignment_on, output_on),
+        (400, 433),
+        "开启：L_max 仍是 400，输出延迟是 433"
+    );
+    assert_eq!(
+        b.stats.engine_output_latency_frames,
+        a.stats.engine_output_latency_frames + BUS_LIMITER_LATENCY_FRAMES,
+        "读数之差必须**恰好**是母线限制器的 33 帧"
     );
     assert_eq!(
         a.stats.pdc_alignment_frames, b.stats.pdc_alignment_frames,
-        "两份快照的对齐基准 `L_max` 必须相同"
+        "对齐基准 `L_max` 不受开关影响"
     );
-    assert_eq!(
-        a.stats.engine_output_latency_frames,
-        b.stats.engine_output_latency_frames + BUS_LIMITER_LATENCY_FRAMES,
-        "读数之差必须**恰好**是母线限制器的 33 帧"
+
+    // 音频真的后移 33 帧：on[33..] == off[..]，逐位比较。
+    let frames = a.frames().min(b.frames());
+    assert!(
+        frames > BUS_LIMITER_LATENCY_FRAMES as usize,
+        "渲染太短，比较不到对齐段"
     );
-    assert_eq!((alignment_a, output_a), (400, 433));
-    assert_eq!((alignment_b, output_b), (400, 400));
+    let mut mismatch = 0usize;
+    for index in 0..frames - BUS_LIMITER_LATENCY_FRAMES as usize {
+        if b.left[index + BUS_LIMITER_LATENCY_FRAMES as usize].to_bits() != a.left[index].to_bits()
+            || b.right[index + BUS_LIMITER_LATENCY_FRAMES as usize].to_bits()
+                != a.right[index].to_bits()
+        {
+            mismatch += 1;
+        }
+    }
     assert_eq!(
-        (
-            a.stats.pdc_alignment_frames,
-            a.stats.engine_output_latency_frames
-        ),
-        (alignment_a, output_a)
+        mismatch, 0,
+        "开启态的 [33..] 必须与关闭态的 [..] 逐位相同（实测不匹配 {mismatch} 帧）"
     );
-    assert_eq!(
-        (
-            b.stats.pdc_alignment_frames,
-            b.stats.engine_output_latency_frames
-        ),
-        (alignment_b, output_b)
+    assert_ne!(
+        a.fingerprint(),
+        b.fingerprint(),
+        "两态的整段指纹必须不同（33 帧后移必须可见）"
     );
 
     println!(
-        "[engine-latency] L2 差分臂：指纹 {} == {}（逐位相同）；\
-         读数 对齐 {}→{} / 输出 {}→{}（差 {} = 母线限制器回填）",
-        a.fingerprint(),
-        b.fingerprint(),
+        "[engine-latency] L2 开关双态：关闭 对齐/输出={}/{}；开启={}/{}；\
+         音频后移={} 帧（逐位不匹配={mismatch}）",
         a.stats.pdc_alignment_frames,
+        a.stats.engine_output_latency_frames,
         b.stats.pdc_alignment_frames,
         b.stats.engine_output_latency_frames,
-        a.stats.engine_output_latency_frames,
         BUS_LIMITER_LATENCY_FRAMES,
     );
 }
@@ -255,8 +307,8 @@ fn engine_latency_readings_track_the_armed_snapshot_and_the_mirror() {
             first.pdc_alignment_frames,
             first.engine_output_latency_frames
         ),
-        (TRACK_LATENCY, TRACK_LATENCY + BUS_LIMITER_LATENCY_FRAMES),
-        "第一个量子之后读数必须是生产路径的计划值"
+        (TRACK_LATENCY, TRACK_LATENCY),
+        "默认关：第一个量子之后两个读数都必须是 L_max（没有 33 回填）"
     );
     assert!(
         first.engine_output_latency_frames >= first.pdc_alignment_frames,
@@ -352,13 +404,13 @@ fn engine_latency_readings_track_the_armed_snapshot_and_the_mirror() {
     );
 }
 
-/// 反向自检：**没有**任何设备延迟上报时，对齐基准是 0 而引擎输出延迟**仍**是 33 帧
-/// （母线限制器接在总线上，与工程有没有设备链无关）。
+/// 反向自检：**没有**任何设备延迟上报时，开关仍必须可见：
+/// 默认关 ⇒ 两个读数都是 0；显式开启 ⇒ 引擎输出延迟是 33、对齐基准仍是 0。
 ///
 /// 这条把"读数是计划的投影"与"读数是某个常数"分开：同一个夹具下只有
-/// `engine_output_latency_frames` 非零 ⇒ 两者不能被同一个硬编码值满足。
+/// `engine_output_latency_frames` 随开关变化 ⇒ 两者不能被同一个硬编码值满足。
 #[test]
-fn output_latency_survives_a_project_without_any_reported_device_latency() {
+fn limiter_switch_is_visible_without_any_reported_device_latency() {
     let (project, first, second) = base_project();
     assert!(
         project.tracks[&first].devices.is_empty() && project.tracks[&second].devices.is_empty(),
@@ -373,8 +425,19 @@ fn output_latency_survives_a_project_without_any_reported_device_latency() {
     let render = support::render(&project, 2);
     assert_eq!(render.stats.pdc_alignment_frames, 0, "对齐基准 = 0");
     assert_eq!(
-        render.stats.engine_output_latency_frames, BUS_LIMITER_LATENCY_FRAMES,
-        "引擎输出延迟仍必须是母线限制器的 33 帧"
+        render.stats.engine_output_latency_frames, 0,
+        "默认关：没有设备延迟 ⇒ 引擎输出延迟也是 0"
+    );
+
+    let on = EngineSnapshot::from_project_with_limiter(&project, 1, true).expect("开启快照");
+    let on_render = render_snapshot(on, 2);
+    assert_eq!(
+        on_render.stats.pdc_alignment_frames, 0,
+        "开启也不改对齐基准"
+    );
+    assert_eq!(
+        on_render.stats.engine_output_latency_frames, BUS_LIMITER_LATENCY_FRAMES,
+        "开启：引擎输出延迟必须是母线限制器的 33 帧"
     );
     assert_eq!(
         BUS_LIMITER_LATENCY_FRAMES, 33,
@@ -385,7 +448,10 @@ fn output_latency_survives_a_project_without_any_reported_device_latency() {
     assert_eq!(project.tracks.len(), 3);
 
     println!(
-        "[engine-latency] 反向自检：无设备延迟工程 ⇒ 对齐={} 引擎输出={}（= 母线限制器前瞻环长）",
-        render.stats.pdc_alignment_frames, render.stats.engine_output_latency_frames,
+        "[engine-latency] 反向自检：无设备延迟工程 ⇒ 默认对齐/输出={}/{}；开启对齐/输出={}/{}（= 母线限制器前瞻环长）",
+        render.stats.pdc_alignment_frames,
+        render.stats.engine_output_latency_frames,
+        on_render.stats.pdc_alignment_frames,
+        on_render.stats.engine_output_latency_frames,
     );
 }

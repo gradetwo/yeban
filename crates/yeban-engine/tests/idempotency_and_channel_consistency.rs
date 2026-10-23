@@ -198,7 +198,9 @@
 
 mod support;
 
-use support::{MixSpec, NoteSpec, note_project, pdc_rebind_fixture, render, tuned_project};
+use support::{
+    MixSpec, NoteSpec, note_project, pdc_rebind_fixture, render, render_with_limiter, tuned_project,
+};
 use yeban_engine::block::DEFAULT_BLOCK_FRAMES;
 use yeban_engine::meter::meter_channel;
 use yeban_engine::mixer::{BUS_LIMITER_LATENCY_FRAMES, LIMITER_CEILING, PanLaw, pan_gains};
@@ -670,7 +672,7 @@ fn a_centred_mono_track_is_bit_identical_in_both_channels() {
 #[test]
 fn the_stereo_linked_limiter_keeps_a_centred_mono_bus_bit_identical() {
     let notes = [NoteSpec::at(0, 960, 69, 127)];
-    let rendered = render(&tuned_project(&notes, MixSpec::volume(6.0)).project, 120);
+    let rendered = render_with_limiter(&tuned_project(&notes, MixSpec::volume(6.0)).project, 120);
 
     assert!(
         rendered.stats.limiter_gain_reductions > 0,
@@ -701,7 +703,7 @@ fn the_stereo_linked_limiter_keeps_a_centred_mono_bus_bit_identical() {
 fn a_hard_left_pan_leaves_the_right_channel_bitwise_zero_through_the_limiter() {
     let notes = [NoteSpec::at(0, 960, 69, 127)];
     // 透明档：−6 dB ⇒ 全左峰值 4.94e-1，**低于**阈值（限制器不参与）。
-    let quiet = render(
+    let quiet = render_with_limiter(
         &tuned_project(
             &notes,
             MixSpec {
@@ -713,7 +715,7 @@ fn a_hard_left_pan_leaves_the_right_channel_bitwise_zero_through_the_limiter() {
         120,
     );
     // 压限档：+6 dB ⇒ 全左峰值 9.00e-1，越过阈值（限制器真的在压）。
-    let loud = render(
+    let loud = render_with_limiter(
         &tuned_project(
             &notes,
             MixSpec {

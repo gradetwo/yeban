@@ -520,6 +520,7 @@ fn cli_render(
         seed: project.rng_seed,
         use_engine_source: true,
         bit_depth: BitDepth::Int24,
+        limiter: false,
     };
     crate::render_core::render_project_f32_with_assets_under(project, options, None, assets, None)
         .expect("CLI 导出腿必须能渲染这份工程")

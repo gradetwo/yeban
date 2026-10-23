@@ -676,10 +676,10 @@ pub struct EngineStats {
     ///
     /// 它是"进入总线求和节点之前的最长支路延迟"，也就是那些延迟线要补齐的目标
     /// （逐节点的补偿量 `D(v)` 由 [`EngineRuntime::armed_pdc_delay`] 可读）。
-    /// **不含**接在总线求和**之后**的 `master` 自身延迟 —— 母线前瞻限制器的
-    /// [`BUS_LIMITER_LATENCY_FRAMES`](crate::mixer::BUS_LIMITER_LATENCY_FRAMES) = 33 帧
-    /// [ADR-0001 D44(b)]。问"喂进引擎第 0 帧的信号第几帧出现在输出"要读
-    /// [`Self::engine_output_latency_frames`]。
+    /// **不含**接在总线求和**之后**的 `master` 自身延迟 —— 母线前瞻限制器
+    /// **开启时**的 [`BUS_LIMITER_LATENCY_FRAMES`](crate::mixer::BUS_LIMITER_LATENCY_FRAMES)
+    /// = 33 帧 [ADR-0001 D44(b)]；默认档限制器关。问"喂进引擎第 0 帧的信号第几帧
+    /// 出现在输出"要读 [`Self::engine_output_latency_frames`]。
     ///
     /// 取**已武装快照**的计划值（快照边界覆写；还没有任何快照被处理时是 `0`）。
     /// 它与 [`Self::engine_output_latency_frames`] 是**两个不同的数**：把后者当成
@@ -698,10 +698,10 @@ pub struct EngineStats {
     /// 必须把设备侧读数（[`crate::latency`]）与这个数相加。
     ///
     /// 取**已武装快照**的计划值（快照边界覆写；还没有任何快照被处理时是 `0`）。
-    /// 生产路径（[`crate::snapshot::EngineSnapshot::from_project`]）在 `master` 上回填
-    /// 母线限制器的 33 帧 [ADR-0001 D44(b)]，因此它通常**大于**
-    /// [`Self::pdc_alignment_frames`]；显式注入延迟表的那条路径
-    /// （`from_project_with_latencies`）**不**追加那 33 帧 ⇒ 两者相等。
+    /// ⭐ 任务单 `#302` 起**默认档限制器关**（[`crate::snapshot::EngineSnapshot::from_project`]）：
+    /// 不回填 33 帧、实时侧整段旁通 ⇒ 它**等于** [`Self::pdc_alignment_frames`]。
+    /// 只有显式开启（`from_project_with_limiter(.., true)`）时，`master` 才回填
+    /// 母线限制器的 33 帧 [ADR-0001 D44(b)] ⇒ 它比对齐基准大 33。
     pub engine_output_latency_frames: u32,
     /// **节拍器累计触发过的咔哒声次数**（[`crate::metronome`]）。
     ///
@@ -2351,6 +2351,13 @@ pub struct EngineRuntime {
     /// 位置：**逐轨汇流之后、母线电平之前** ⇒ 母线电平读数（[`EngineStats::meter_frames`]）
     /// 就是**限制后**的读数，而逐轨电平仍是**声相之前**的单声道读数。
     limiter: BusLimiter,
+    /// ⭐ **上一份已武装快照的 `limiter_enabled`**（任务单 `#302`）。
+    ///
+    /// 用途只有一个：在快照边界检测 `false ↔ true` 的**切换**，并在切换时
+    /// `limiter.reset()` —— 否则从 on 切到 off 再切回 on，33 帧环里会留着
+    /// **上一段音频**（跨位置/跨快照的残留），那正是"关掉开关之后还能听见
+    /// 33 帧前的旧声音"这一类缺陷。复位是零分配、零锁的定长数组清零。
+    limiter_was_enabled: bool,
     /// **内部 PDC 延迟线池** [ARCH-PDC-001, ROAD-M2-004]。
     ///
     /// 位置：**每轨输出之后、汇入母线之前**（规范 §3.4 第 3 条的字面位置：
@@ -2928,6 +2935,7 @@ impl EngineRuntime {
             // 统计镜像：**构造期**分配一次（回调内只做原子存）[MUST-GATE-001]。
             put!(stats_mirror, Arc::new(EngineStatsMirror::new()));
             put!(limiter, BusLimiter::new());
+            put!(limiter_was_enabled, false);
             // PDC 延迟线池：**构造期**按上限预分配（回调内绝不再分配）。
             put!(
                 pdc,
@@ -3955,6 +3963,7 @@ impl EngineRuntime {
             transport,
             transport_mirror,
             limiter,
+            limiter_was_enabled,
             limiter_gain_reductions,
             limiter_max_reduction,
             limiter_current_reduction,
@@ -4379,6 +4388,15 @@ impl EngineRuntime {
                 // `u32` 拷贝；**零分配、零锁、零 I/O、零日志** [MUST-GATE-001]。
                 *pdc_alignment_frames = current.pdc().total_latency();
                 *engine_output_latency_frames = current.pdc().output_latency();
+
+                // ⭐ 任务单 `#302`：限制器开关在**快照边界**切换。
+                // on → off：不再喂环；off → on：先把旧环清掉（否则前 33 帧是
+                // 上一段音频）。同态切换⛔ 不 reset（避免每量子清一次 33×2 数组）。
+                let limiter_enabled = current.limiter_enabled();
+                if limiter_enabled != *limiter_was_enabled {
+                    limiter.reset();
+                    *limiter_was_enabled = limiter_enabled;
+                }
 
                 // --- 2c) 声相增益：在**构造期语义**下算一次（`cos`/`sin` 属超越函数类,
                 // 不进逐样本路径）。`pan_law` 与 `pan` 在整份快照的生命周期内不变。
@@ -4912,7 +4930,14 @@ impl EngineRuntime {
                 // 非有限样本被收进有限域。零分配、零锁、零 I/O、零日志
                 // [MUST-GATE-001]：只是一次 `is_finite` 判定的分支与一次赋值。
                 saturate_bus_to_finite(&mut left[..limiter_frames], &mut right[..limiter_frames]);
-                limiter.process_stereo(&mut left[..limiter_frames], &mut right[..limiter_frames]);
+                // ⭐ 任务单 `#302`：默认 `false` ⇒ **整段旁通**（连 33 帧环一起），
+                // 监听与导出在样本层对齐；`true` ⇒ 老行为（输出后移 33 帧）。
+                // ⚠ 旁通时**不喂环**：环里不能留下上一段音频；开关切换时的复位
+                // 见上面快照边界的 `limiter_was_enabled`。
+                if *limiter_was_enabled {
+                    limiter
+                        .process_stereo(&mut left[..limiter_frames], &mut right[..limiter_frames]);
+                }
             }
             let reduced = limiter.reduction_count().saturating_sub(before);
             if reduced > 0 {

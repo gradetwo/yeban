@@ -242,10 +242,12 @@ fn audible_fixture(send_db: Option<f32>, return_db: Option<f32>) -> SendFixture 
 /// ⚠ 这个常数是"**没有 `SendGain` 事件的工程不得被本票改字节**"的机械证据：
 /// ⭐ `#300` **修对、⛔ 回归**：中性中心 `0.707 → 1.0`（监视源侧 +3.0103 dB）⇒
 /// 同一"没有 SendGain 事件"的夹具的 FNV 由 `0xe0b87258510f06dd` 变为
-/// `0x02f55eafe3b4bba1`。夹具与判据本身一字未改：它仍钉"没有 SendGain 事件 ⇒
-/// 与基线逐位相同"，只是基线随 `#300` 的**裁决**（监听对齐导出）前移。
-/// 若这条变红 ⇒ 要么发送量路径被误动，要么中性中心口径回归。
-const PRE_CHANGE_SEND_FIXTURE_FNV: u64 = 0x02f5_5eaf_e3b4_bba1;
+/// `0x02f55eafe3b4bba1`。
+/// ⭐ `#302` **再一次修对、⛔ 回归**：默认档去掉母线限制器的 33 帧环 ⇒ 时序前移
+/// 33 帧 ⇒ FNV 变为 `0x6225f9d56eb8a48d`；峰值不变（`0.000774794`）。
+/// 夹具与判据本身一字未改：它仍钉"没有 SendGain 事件 ⇒ 与基线逐位相同"。
+/// 若这条变红 ⇒ 要么发送量路径被误动，要么默认档限制器/时序回归。
+const PRE_CHANGE_SEND_FIXTURE_FNV: u64 = 0x6225_f9d5_6eb8_a48d;
 
 /// 事件驱动的渲染夹具（保留事件生产端 ⇒ 可以在量子之间真的发 `SetParam`）。
 ///
@@ -421,13 +423,13 @@ fn s2_a_four_step_ramp_on_the_send_edge() {
 
 /// 判据 ③︙**正对照**：不发任何事件 ⇒ 与**改前**逐位相同（冻结指纹 ＋ 表读数为证）。
 #[test]
-fn s3_the_send_fixture_without_events_is_bit_identical_to_the_pre_change_engine() {
+fn s3_the_send_fixture_without_events_is_bit_identical_to_the_post_302_engine() {
     let fixture = audible_fixture(Some(-60.0), None);
     let rendered = support::render(&fixture.project, 375);
     let mut rig = SendRig::new(&fixture.project);
     rig.frames(375 * 128);
     println!(
-        "[#261/③] 无事件指纹 support={:#018x} / rig={:#018x}（改前基准 {:#018x}）；峰值 {:.9}",
+        "[#261/③] 无事件指纹 support={:#018x} / rig={:#018x}（#302 重钉基准 {:#018x}）；峰值 {:.9}",
         rendered.fingerprint(),
         rig.fingerprint(),
         PRE_CHANGE_SEND_FIXTURE_FNV,
@@ -441,7 +443,7 @@ fn s3_the_send_fixture_without_events_is_bit_identical_to_the_pre_change_engine(
     assert_eq!(
         rendered.fingerprint(),
         PRE_CHANGE_SEND_FIXTURE_FNV,
-        "没有 SendGain 事件的工程必须与改前逐位相同"
+        "没有 SendGain 事件的工程必须与 #302 重钉基准逐位相同"
     );
     assert_eq!(
         rig.runtime.armed_send_slot_count(),

@@ -76,11 +76,12 @@ fn click_len() -> usize {
     usize::try_from(SAMPLE_RATE * 4 / 1_000).expect("192 帧")
 }
 
-/// 母线限制器的**输出延迟**（帧）：环长 [`yeban_engine::mixer::LOOKAHEAD_SAMPLES`]。
+/// 母线限制器的**输出延迟**（帧）。
 ///
-/// 咔哒声混在限制器之前 ⇒ 它在输出里整体晚这么多帧（与音乐同一条延迟，
-/// 对齐关系不变）。判据把它写进预测，而不是放宽窗口。
-const LIMITER_DELAY: usize = yeban_engine::mixer::LOOKAHEAD_SAMPLES;
+/// ⭐ `#302`：默认档限制器关（监听整段旁通 33 帧环）⇒ 全链路 **0 帧延迟**。
+/// 旧值 `LOOKAHEAD_SAMPLES = 33` 只适用于"限制器开"的档；默认档的咔哒声不再后移。
+/// 保留常量名是为了让下面所有 `+ LIMITER_DELAY` 的时序读数**只有一处**需要改。
+const LIMITER_DELAY: usize = 0;
 
 /// 逐帧差异（左或右任一不同即为差异帧）。
 fn diff_frames(enabled: &Render, disabled: &Render) -> Vec<usize> {

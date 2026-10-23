@@ -42,9 +42,12 @@ const FRAMES: usize = 48_000;
 const QUANTA: usize = FRAMES / 128;
 /// 修好之后中性声相下监听/导出的**唯一**期望比：`1.0`（逐位相等；容差 `1e-6`）。
 const UNITY_RATIO: f64 = 1.0;
-/// `pan = -0.5` 的监听输出逐位指纹（FNV-1a 64）—— **`#300` 之前**实测的基线。
-/// 中心口径只影响 `pan == 0` ⇒ 修后必须逐位相同。
-const PAN_HALF_MONITORING_FNV: u64 = 0xc5dd_6500_ff68_31f8;
+/// `pan = -0.5` 的监听输出逐位指纹（FNV-1a 64）—— **`#302` 之后**实测的基线。
+///
+/// ⚠ 与 `#300` 的 `0xc5dd6500ff6831f8` 不同：`#302` 把母线限制器的默认档改成
+/// **关**（监听整段旁通 33 帧环）⇒ 同一段音频的**时序前移 33 帧**，指纹必然变；
+/// 峰值不变（`0.717288196 / 0.297110528`）。这是**修对**，不是回归。
+const PAN_HALF_MONITORING_FNV: u64 = 0xbf50_497c_599f_f028;
 
 /// 单轨中性 fixture：`pan = 0`、`volume_db = 0`、无设备、无自动化。
 fn neutral_project() -> YebanProjectV1 {
@@ -221,14 +224,17 @@ fn fnv1a_monitoring(left: &[f32], right: &[f32]) -> u64 {
     hash
 }
 
-/// ⭐ `#300` 的**范围守卫**：中心口径只改 `pan == 0`。
+/// ⭐ `#300` 的**范围守卫**（`#302` 重钉）：中心口径只改 `pan == 0`。
 ///
 /// 同一 fixture 只把 Lead 轨的 `pan` 从 `0.0` 改成 `-0.5` ⇒ 走的是**同一个**
-/// `pan_gains(pan, law)` 调用（`centered_pan_gains` 对 `pan != 0` 原样转发）
-/// ⇒ 读数必须与 `#300` 之前**逐位相同**。基线 [`PAN_HALF_MONITORING_FNV`] 是修前
-/// 实测值；若有人把中心规则扩散到 `pan != 0`（例如无条件 `(1, 1)`），这条会红。
+/// `pan_gains(pan, law)` 调用（`centered_pan_gains` 对 `pan != 0` 原样转发）。
+///
+/// ⚠ 基线在 `#302` 之后重钉：默认档去掉 33 帧限制器环 ⇒ 时序前移 33 帧 ⇒
+/// 指纹由 `0xc5dd6500ff6831f8` 变为 [`PAN_HALF_MONITORING_FNV`]；**峰值未变**
+/// （`0.717288196 / 0.297110528`）⇒ 声相曲线本身没有被改。这是**修对**。
+/// 若有人把中心规则扩散到 `pan != 0`（例如无条件 `(1, 1)`），这条仍会红。
 #[test]
-fn pan_off_centre_keeps_the_pre_300_monitoring_readings() {
+fn pan_off_centre_keeps_the_monitoring_gain_readings_after_the_302_re_pin() {
     let mut project = neutral_project();
     for track in project.tracks.values_mut() {
         if track.kind != TrackKind::Master {

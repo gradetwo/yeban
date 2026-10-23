@@ -747,6 +747,25 @@ pub fn render(project: &YebanProjectV1, quanta: usize) -> Render {
     render_with(project, quanta, 1, |_, _| {})
 }
 
+/// 同 [`render`]，但**显式打开母线限制器**（`limiter_enabled = true`）。
+///
+/// 任务单 `#302` 起生产默认是**关**（监听与导出在样本层对齐），因此"限制器真的
+/// 压了/真的后移 33 帧"这一类判据必须显式 opt-in，而不是依赖默认档。
+#[must_use]
+pub fn render_with_limiter(project: &YebanProjectV1, quanta: usize) -> Render {
+    render_with_limiter_and(project, quanta, |_, _| {})
+}
+
+/// 同 [`render_with_limiter`]，但允许在每个量子边界执行一个动作。
+pub fn render_with_limiter_and<F>(project: &YebanProjectV1, quanta: usize, at: F) -> Render
+where
+    F: FnMut(usize, &mut Runtime),
+{
+    let snapshot = EngineSnapshot::from_project_with_limiter(project, 1, true)
+        .expect("夹具工程必须能编译成快照");
+    render_snapshot_with(snapshot, quanta, at)
+}
+
 /// 同 [`render`]，但允许在每个量子边界执行一个动作（用于"快照切换"判据）。
 pub fn render_with<F>(project: &YebanProjectV1, quanta: usize, revision: u64, at: F) -> Render
 where

@@ -39,7 +39,6 @@ mod support;
 use std::sync::Arc;
 
 use yeban_engine::audio_clip::{AudioClipError, AudioClipSchedule, AudioClipSpan, AudioPcm};
-use yeban_engine::mixer::BUS_LIMITER_LATENCY_FRAMES;
 use yeban_engine::snapshot::EngineSnapshot;
 use yeban_engine::synth::{samples_per_tick, tick_to_sample};
 use yeban_model::YebanProjectV1;
@@ -194,9 +193,8 @@ fn an_audio_clip_without_pcm_and_a_removed_clip_are_both_silent() {
 /// 走带从 tick 0 自由跑 400 个量子（51 200 帧）⇒ 三段：
 ///
 /// * **前** `[0, 12 000)`：全零（tick 480 之前不放）；
-/// * **中** `[12 000 + 33, 36 000)`：全非零（33 = 母线限制器的前瞻输出延迟
-///   [`BUS_LIMITER_LATENCY_FRAMES`]；它与音频摆放无关，是全链路常量）；
-/// * **后** `[36 000 + 33, 51 200)`：全零（摆放终点硬切）。
+/// * **中** `[12 000, 36 000)`：全非零（`#302` 起默认档限制器关 ⇒ 无 33 帧延迟）；
+/// * **后** `[36 000, 51 200)`：全零（摆放终点硬切）。
 ///
 /// ⚠ **素材用斜坡而不是常量**：常量 PCM 下"每个量子都从素材帧 0 重读"与"按绝对帧
 /// 读"给出**同一个**值 ⇒ 游标错误会被常量掩盖。斜坡（`帧号 × 1e-6`）让输出值成为
@@ -218,7 +216,9 @@ fn the_play_cursor_is_derived_from_the_transport_position() {
     let end =
         usize::try_from(tick_to_sample(START_TICK + DURATION_TICKS, per_tick).expect("tick 换算"))
             .expect("帧号放得进 usize");
-    let latency = BUS_LIMITER_LATENCY_FRAMES as usize;
+    // ⭐ `#302`：默认档限制器关 ⇒ 全链路 **0 帧延迟**（旧的 33 是限制器前瞻环）。
+    // 时序前移 33 帧是**修对**：监听与导出在样本层对齐。
+    let latency = 0usize;
 
     // 斜坡：素材第 n 帧 = (n + 1) × 1e-6（＋1 让**第一帧**就非零 ⇒ "首个非零帧"
     // 与"起声帧"重合；峰值 96 001 × 1e-6 = 0.096，远低于限制器阈值）。
@@ -278,7 +278,7 @@ fn the_play_cursor_is_derived_from_the_transport_position() {
     assert_eq!(
         first,
         Some(start + latency),
-        "音频必须恰好在摆放起点（＋全链路固定 33 帧）开始"
+        "音频必须恰好在摆放起点开始（#302 默认档无限制器延迟）"
     );
     assert!(before_ok, "起点之前必须逐位静音");
     assert_eq!(
@@ -305,7 +305,9 @@ fn a_short_asset_leaves_a_silent_tail() {
     let end =
         usize::try_from(tick_to_sample(START_TICK + DURATION_TICKS, per_tick).expect("tick 换算"))
             .expect("帧号放得进 usize");
-    let latency = BUS_LIMITER_LATENCY_FRAMES as usize;
+    // ⭐ `#302`：默认档限制器关 ⇒ 全链路 **0 帧延迟**（旧的 33 是限制器前瞻环）。
+    // 时序前移 33 帧是**修对**：监听与导出在样本层对齐。
+    let latency = 0usize;
     // 素材只有 5 000 帧 ⇒ 摆放的 24 000 帧里后 19 000 帧必须是静音尾巴。
     let asset_frames = 5_000usize;
     let snapshot = snapshot_with_pcm(&fixture.project, mono_pcm(0.5, asset_frames, rate));

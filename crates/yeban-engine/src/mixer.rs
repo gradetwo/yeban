@@ -104,16 +104,19 @@
 //!
 //! ### 2.2 延迟的归属（**已回填**，不再是待办）
 //!
-//! 限制器的 [`LOOKAHEAD_SAMPLES`] = **33 帧**延迟**已经**按 [ADR-0001 D44(b)] 回填：
-//! [`crate::snapshot::EngineSnapshot::from_project`] 在**构造期**用
-//! [`crate::graph::LatencyTable::add`] 把它登记到 `master` 节点的自身延迟上。
+//! 限制器的 [`LOOKAHEAD_SAMPLES`] = **33 帧**延迟**只在限制器开启时**按
+//! [ADR-0001 D44(b)] 回填：`EngineSnapshot::from_project_with_limiter(.., true)`
+//! 在**构造期**用 [`crate::graph::LatencyTable::add`] 把它登记到 `master` 的自身延迟上。
+//!
+//! ⭐ **任务单 `#302` 起默认关**：`from_project` 不跑限制器、不回填 ⇒
+//! [`crate::graph::PdcPlan::output_latency`] 等于
+//! [`crate::graph::PdcPlan::total_latency`]，监听与导出在样本层对齐。需要限制器的
+//! 调用方显式用 `from_project_with_limiter(.., true)`。
 //!
 //! 它接在**总线求和之后**（`rt.rs` 的步骤 3b），因此 PDC 的对齐基准
 //! [`crate::graph::PdcPlan::total_latency`]（= `L(master)`）**不含**这 33 帧 ——
-//! 支路的 `D(v)` 一位没变 ⇒ **渲染逐位不变**（判据：
-//! `tests/pdc_mix_path.rs` 的 P3）。这 33 帧出现在
-//! [`crate::graph::PdcPlan::output_latency`]（= `arrival(master)`）里，也就是
-//! "引擎输出相对工程时间轴的固定后移"。
+//! 支路的 `D(v)` 一位没变 ⇒ **开启前后渲染只差 33 帧时间**（判据：
+//! `tests/pdc_mix_path.rs`）。
 
 // 母线限制器的唯一实现住在 yeban-dsp；这里只做转发（类型 + 五个规范常量）。
 // ⚠ 名字保留 `BusLimiter`：它是引擎内全部调用点与判据使用的公共面，改名会让
@@ -130,8 +133,9 @@ pub use yeban_dsp::limiter::{
 /// 单位是帧而不是时间：环是定长数组，采样率变了帧数不变。
 ///
 /// [ADR-0001 D44(b)] 要求"引擎链路上每一段延迟都可被 PDC 看见" ⇒
-/// [`crate::snapshot::EngineSnapshot::from_project`] 在**构造期**把它加到 `master`
-/// 节点的自身延迟上。因为它发生在**总线求和之后**，它只进
+/// `EngineSnapshot::from_project_with_limiter(.., true)` 在**构造期**把它加到
+/// `master` 节点的自身延迟上；默认档（`from_project`，任务单 `#302`）**不跑
+/// 限制器、不回填**。因为它发生在**总线求和之后**，它只进
 /// [`crate::graph::PdcPlan::output_latency`]，**不**进
 /// [`crate::graph::PdcPlan::total_latency`]、也**不**产生任何 `D(v)`。
 pub const BUS_LIMITER_LATENCY_FRAMES: u32 = LOOKAHEAD_SAMPLES as u32;

@@ -695,8 +695,10 @@ fn judgement_body() -> ExitCode {
 
     // ---- 装配（**允许分配**：全部发生在打开设备之前）----
     let fixture = note_project(&saturated_notes());
-    let snapshot =
-        EngineSnapshot::from_project(&fixture.project, 1).expect("夹具工程必须能编译成快照");
+    // ⭐ `#302`：默认档限制器关；本判据的旧窗口（含"输出延迟 = 对齐 + 33"）
+    // 必须显式 opt-in，否则限制器/延迟这两条覆盖度断言会变成"什么都没覆盖"。
+    let snapshot = EngineSnapshot::from_project_with_limiter(&fixture.project, 1, true)
+        .expect("夹具工程必须能编译成快照");
     let slot = SnapshotSlot::new(snapshot);
     let (retire, mut queue) = retire_channel(64);
     let (_sender, receiver) = event_channel(64);
@@ -755,7 +757,8 @@ fn judgement_body() -> ExitCode {
     let mut switches = 0u64;
     for revision in 2..=64u64 {
         // 发布在窗口**之外**：控制线程允许分配。
-        let next = EngineSnapshot::from_project(&fixture.project, revision).expect("快照");
+        let next = EngineSnapshot::from_project_with_limiter(&fixture.project, revision, true)
+            .expect("快照");
         slot.publish(next);
         let (allocations, deallocations) = measure("snapshot swap + quantum", || {
             runtime.process_quantum(&mut output, 2);
@@ -782,8 +785,8 @@ fn judgement_body() -> ExitCode {
     // 见证方式与场景 ⑰c 同族：读数必须等于**最后一份已武装快照**的计划值。
     // 它同时证明"窗口里真的发生了重新武装"（否则读数会停在构造初值 0）。
     let latency_stats = runtime.stats();
-    let fixture_plan =
-        EngineSnapshot::from_project(&fixture.project, 64).expect("最后一份等价快照");
+    let fixture_plan = EngineSnapshot::from_project_with_limiter(&fixture.project, 64, true)
+        .expect("最后一份等价快照");
     let (want_alignment, want_output) = (
         fixture_plan.pdc().total_latency(),
         fixture_plan.pdc().output_latency(),
@@ -865,8 +868,8 @@ fn judgement_body() -> ExitCode {
             resonance: 0.4,
         },
     );
-    let mix_snapshot =
-        EngineSnapshot::from_project(&mix_fixture.project, 1).expect("混音链夹具必须能编译成快照");
+    let mix_snapshot = EngineSnapshot::from_project_with_limiter(&mix_fixture.project, 1, true)
+        .expect("混音链夹具必须能编译成快照");
     let mix_slot = SnapshotSlot::new(mix_snapshot);
     let (mix_retire, _mix_queue) = retire_channel(8);
     let (_sender, mix_receiver) = event_channel(64);
@@ -3070,8 +3073,8 @@ fn judgement_body() -> ExitCode {
              （实得 {guard_gain:e}）⇒ 否则本场景落在非上溢区间，是空转"
         ));
     }
-    let guard_snapshot =
-        EngineSnapshot::from_project(&guard_fixture.project, 1).expect("守卫夹具快照必须能编译");
+    let guard_snapshot = EngineSnapshot::from_project_with_limiter(&guard_fixture.project, 1, true)
+        .expect("守卫夹具快照必须能编译");
     let guard_slot = SnapshotSlot::new(guard_snapshot);
     let (guard_retire, mut guard_queue) = retire_channel(8);
     let (_guard_sender, guard_receiver) = event_channel(64);

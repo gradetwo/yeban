@@ -98,7 +98,7 @@ use yeban_render::render::{
     db_to_linear, track_latencies,
 };
 
-use yeban_engine::mixer::{PanLaw, pan_gains};
+use yeban_engine::mixer::{BusLimiter, LOOKAHEAD_SAMPLES, PanLaw, pan_gains};
 use yeban_engine::snapshot::EngineSnapshot;
 use yeban_engine::synth::SynthEngine;
 
@@ -318,6 +318,9 @@ pub struct RenderProjectOutput {
     /// 空 = 本次渲染**没有**走模型 SFZ 链条（没有 `TrackV3.sampler`，或走了 `--sfz` 旁路 /
     /// 最小音源）。有内容 = 每条 `PendingSfz` 都真的读了盘并摊平（缺样本也**如实登记**）。
     pub sfz_decoded: Vec<(EntityId, crate::sfz_load::SfzDecodeReport)>,
+    /// ⭐ 任务单 `#302`：母线限制器**累计压过的帧数**（立体声联动按帧计；
+    /// `limiter: false` 时恒为 `0`）。这是"on 态真的在工作"的机械读数。
+    pub limiter_reductions: u64,
     /// ⭐ 任务单 `#226`：**逐源峰值**（键 = 源节点 = 轨，值 = 该源输出的 `max |sample|`），
     /// 按 `EntityId` 升序（与计划节点同序 ⇒ 同一工程每次同一顺序）。
     ///
@@ -524,8 +527,17 @@ pub fn render_project_f32_with_plans_under(
         None
     };
 
+    // ⭐ 任务单 `#302`：限制器开启时要**多渲 33 帧**，用于补偿它自己的前瞻延迟
+    // （丢前 33 帧之后输出长度与时间轴都不变）。默认关 ⇒ 逐字节不变。
+    let render_frames = if options.limiter {
+        options
+            .frames
+            .saturating_add(u64::try_from(LOOKAHEAD_SAMPLES).unwrap_or(0))
+    } else {
+        options.frames
+    };
     let options_render = RenderOptions {
-        frames: options.frames,
+        frames: render_frames,
         sample_rate: options.sample_rate,
         channels: options.channels,
         seed: options.seed,
@@ -950,6 +962,54 @@ pub fn render_project_f32_with_plans_under(
         }
     }
 
+    // ---- 3c. ⭐ 母线限制器（任务单 `#302`；默认关）----
+    //
+    // 位置与实时腿一致：**主总线推子/声相之后**、量化/抖动之前。器件本身带
+    // `LOOKAHEAD_SAMPLES` 帧前瞻延迟 ⇒ 这里做**同一段延迟的补偿**：
+    // 上面多渲了 33 帧，限制之后丢掉前 33 帧，输出仍是用户请求的 `options.frames`。
+    // 默认关 ⇒ 整段不跑、样本一位不动。
+    let mut limiter_reductions = 0u64;
+    if options.limiter {
+        if options.channels.max(1) != 2 {
+            return Err(WavExportError::Render(format!(
+                "母线限制器只支持立体声导出（请求的 channels = {}）",
+                options.channels
+            )));
+        }
+        let requested = usize::try_from(options.frames).unwrap_or(0);
+        let extra = LOOKAHEAD_SAMPLES;
+        let total = output.samples.len() / 2;
+        if total < requested + extra {
+            return Err(WavExportError::Render(format!(
+                "限制器补偿需要 {requested} + {extra} 帧，计划只给出 {total} 帧"
+            )));
+        }
+        let mut left = Vec::with_capacity(total);
+        let mut right = Vec::with_capacity(total);
+        for pair in output.samples.as_chunks::<2>().0 {
+            left.push(pair[0]);
+            right.push(pair[1]);
+        }
+        let mut limiter = BusLimiter::new();
+        let mut offset = 0usize;
+        while offset < total {
+            let frames = (total - offset).min(128);
+            limiter.process_stereo(
+                &mut left[offset..offset + frames],
+                &mut right[offset..offset + frames],
+            );
+            offset += frames;
+        }
+        limiter_reductions = limiter.reduction_count();
+        let mut limited = Vec::with_capacity(requested * 2);
+        for frame in 0..requested {
+            limited.push(left[extra + frame]);
+            limited.push(right[extra + frame]);
+        }
+        output.samples = limited;
+        output.frames = options.frames;
+    }
+
     // 主总线增益/自动化是**执行之后**才乘的，而 `RenderOutput::digest` 在 `execute`
     // 里就按当时（未乘主推子）的样本算好了。`RenderProjectOutput::digest` 的文档是
     // “渲染输出的位级摘要” ⇒ 对**最终**样本重算，否则摘要与 `samples` 分叉。
@@ -977,6 +1037,7 @@ pub fn render_project_f32_with_plans_under(
         audio_clips_skipped: audio_skipped,
         sfz_decoded,
         source_peaks,
+        limiter_reductions,
     })
 }
 

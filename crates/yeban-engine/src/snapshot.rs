@@ -609,6 +609,24 @@ pub struct EngineSnapshot {
     /// 因 [`MAX_NOTES_PER_TRACK`] 容量上限而被丢弃的音符条数（构造期计数）。
     note_schedule_drops: u64,
     pdc: PdcPlan,
+    /// ⭐ **母线限制器是否在这份快照里真的跑**（任务单 `#302`；默认 `false`）。
+    ///
+    /// [ARCH-PDC-001] / [ADR-0001 D44(b)] 要求"链路上每一段延迟都可被 PDC 看见"。
+    /// 本字段与控制流是**同一个事实**：
+    ///
+    /// - `true` ⇒ [`Self::from_project_with_limiter`] 已把
+    ///   [`crate::mixer::BUS_LIMITER_LATENCY_FRAMES`] 回填到 `master` 的自身延迟，
+    ///   `PdcPlan::output_latency()` 因此比 `total_latency()` 多 33 帧；实时侧
+    ///   **真的**调用 `BusLimiter::process_stereo`（输出后移 33 帧）；
+    /// - `false` ⇒ 不回填、实时侧**整段旁通**限制器（连 33 帧环一起）⇒
+    ///   `output_latency() == total_latency()`，监听输出与导出在**样本层**对齐。
+    ///
+    /// ⚠ 默认是 `false`（任务单 `#302` 的裁决）：限制器进母线会让监听相对导出
+    /// 后移 33 帧（0.688 ms @48 kHz），而导出/母带链路默认**没有**这个器件
+    /// （`yeban-render` / `render_core` 无 `BusLimiter`）。"默认关"让两条路径
+    /// 在样本层一致；需要限制器的调用方用 [`Self::from_project_with_limiter`]
+    /// 显式打开。
+    limiter_enabled: bool,
     /// ⭐ **实时路由计划**（任务单 `#154`）：`routing_graph` 的边在这里被编译成
     /// "每个可渲染节点送到哪里、乘多少线性增益"的纯数据。
     ///
@@ -658,7 +676,12 @@ impl EngineSnapshot {
     /// 1. 模型字段 `DeviceDefinition::latency_samples` 的设备链之和
     ///    （[`LatencyTable::from_project`]）；
     /// 2. 母线总线限制器的固定 33 帧（[`crate::mixer::BUS_LIMITER_LATENCY_FRAMES`]），
-    ///    在**构造期**加到 `master` 节点上 [ADR-0001 D44(b)]。
+    ///    **只在限制器开启时**加到 `master` 节点上 [ADR-0001 D44(b)]。
+    ///
+    /// ⚠ **默认关**（任务单 `#302`）：本入口**不**回填那 33 帧，实时侧也**不**跑
+    /// 限制器 ⇒ `output_latency() == total_latency()`，监听与导出在样本层对齐。
+    /// 需要限制器的调用方用 [`from_project_with_limiter`](Self::from_project_with_limiter)
+    /// 显式打开。
     ///
     /// 需要注入测量值/构造合成场景时用
     /// [`from_project_with_latencies`](Self::from_project_with_latencies)
@@ -670,19 +693,43 @@ impl EngineSnapshot {
     /// - [`SnapshotError::Pdc`]：路由图成环 / 边端点缺失；
     /// - [`SnapshotError::Model`]：`RoutingGraph::validate()` 失败。
     pub fn from_project(project: &YebanProjectV1, revision: u64) -> Result<Self, SnapshotError> {
+        Self::from_project_with_limiter(project, revision, false)
+    }
+
+    /// 同 [`from_project`](Self::from_project)，但可显式打开/关闭**母线限制器**。
+    ///
+    /// 这是任务单 `#302` 的**唯一开关入口**：
+    ///
+    /// - `limiter_enabled == false`（默认）：**不**回填 33 帧、实时侧整段旁通
+    ///   限制器 ⇒ `output_latency() == total_latency()`，监听与导出在样本层对齐；
+    /// - `limiter_enabled == true`：把
+    ///   [`crate::mixer::BUS_LIMITER_LATENCY_FRAMES`] 回填到 `master` 的自身延迟
+    ///   （[ADR-0001 D44(b)]），实时侧真的跑限制器 ⇒ 输出后移 33 帧；
+    ///   `output_latency() == total_latency() + 33`。
+    ///
+    /// ⚠ 开关**不是工程字段**：它是每次会话/每次渲染的选择，⛔ 不写进
+    /// `project.schema.json`（任务单 `#302` 的边界）。
+    ///
+    /// # Errors
+    ///
+    /// 同 [`from_project`](Self::from_project)。
+    pub fn from_project_with_limiter(
+        project: &YebanProjectV1,
+        revision: u64,
+        limiter_enabled: bool,
+    ) -> Result<Self, SnapshotError> {
         let mut latencies = LatencyTable::from_project(project);
-        // [ADR-0001 D44(b)]："引擎链路上每一段延迟都可被 PDC 看见" ⇒ 母线限制器的
-        // 前瞻环长（33 帧）登记到 `master` 节点的**自身**延迟上。
-        //
-        // ⚠ 它接在**总线求和之后**（`rt::render_block` 步骤 3b），所以 `PdcPlan`
-        // 只用 `L(master)` 做支路对齐基准、**不**给任何支路插延迟线 ⇒ 这段回填
-        // 对**渲染输出零影响**（判据：`tests/pdc_mix_path.rs` 的 P3）。
-        // 它出现在 `PdcPlan::output_latency()`（引擎输出的固定后移）里。
-        latencies.add(
-            project.master_bus_track_id,
-            crate::mixer::BUS_LIMITER_LATENCY_FRAMES,
-        );
-        Self::from_project_with_latencies(project, revision, &latencies)
+        if limiter_enabled {
+            // [ADR-0001 D44(b)]：限制器真的在链路上 ⇒ 33 帧必须对 PDC 可见。
+            // 它接在总线求和之后，只进 `PdcPlan::output_latency()`，
+            // **不**产生任何支路 `D(v)`（判据：`tests/pdc_mix_path.rs` 的 P3）。
+            latencies.add(
+                project.master_bus_track_id,
+                crate::mixer::BUS_LIMITER_LATENCY_FRAMES,
+            );
+        }
+        let snapshot = Self::from_project_with_latencies(project, revision, &latencies)?;
+        Ok(snapshot.with_limiter_enabled(limiter_enabled))
     }
 
     /// 同 [`from_project`](Self::from_project)，但延迟表由调用方显式提供。
@@ -840,6 +887,7 @@ impl EngineSnapshot {
             scheduled_notes: 0,
             note_schedule_drops: 0,
             pdc,
+            limiter_enabled: false,
             routing: routing_plan,
             metronome: None,
             // ⛔ `from_parts` **不**填音频片段：摆放只能由 [`Self::from_project`] 投影、
@@ -924,6 +972,23 @@ impl EngineSnapshot {
         self.sfz_pending.remove(&track);
         self.sfz.insert(track, plan);
         self
+    }
+
+    /// 显式设置“母线限制器是否真的跑”（任务单 `#302`；见 [`Self::limiter_enabled`]）。
+    ///
+    /// ⚠ 只给 [`Self::from_project_with_limiter`] 与判据用：它**不**改 `PdcPlan`
+    /// （33 帧回填是构造期在延迟表上做的）。单独调用本函数不会让输出后移 33 帧，
+    /// 也不会让 `output_latency()` 多 33 帧 —— 两者必须由同一个构造入口保证一致。
+    #[must_use]
+    pub const fn with_limiter_enabled(mut self, enabled: bool) -> Self {
+        self.limiter_enabled = enabled;
+        self
+    }
+
+    /// 母线限制器是否在这份快照里真的跑（见 [`Self::limiter_enabled`]）。
+    #[must_use]
+    pub const fn limiter_enabled(&self) -> bool {
+        self.limiter_enabled
     }
 
     /// 覆盖声相衰减律（**投影自 `audio_config.pan_law`**；低层构造默认默认律）。
@@ -2624,21 +2689,25 @@ mod tests {
         assert_eq!(snapshot.track(&light).map(|p| p.latency_samples()), Some(0));
     }
 
-    /// 判据 (ii)：**母线限制器的 33 帧被回填到 `master` 节点**，但它接在总线求和
-    /// **之后** ⇒ 支路的 `D(v)` 与渲染输出**一位不动** [ADR-0001 D44(b)]。
+    /// 判据 (ii)：**母线限制器的 33 帧只在 `limiter_enabled == true` 时回填到
+    /// `master` 节点**，且它接在总线求和**之后** ⇒ 支路的 `D(v)` 一位不动
+    /// [ADR-0001 D44(b)]（任务单 `#302` 起默认关）。
     ///
-    /// 这里用纯数据把三件事钉死（样本级的形式见 `tests/pdc_mix_path.rs` 的 P3）：
+    /// 这里用纯数据把四件事钉死（样本级的形式见 `tests/pdc_mix_path.rs` 的 P3）：
     ///
-    /// 1. 生产路径（[`EngineSnapshot::from_project`]）的 `output_latency()` 恰好比
-    ///    对齐基准 `total_latency()` 多 33 帧；
-    /// 2. 显式注入路径（[`EngineSnapshot::from_project_with_latencies`]）**不**追加，
+    /// 1. 默认路径（[`EngineSnapshot::from_project`]）**不**回填：`output_latency()`
+    ///    等于 `total_latency()`（32），且 `limiter_enabled() == false`；
+    /// 2. 开启路径（[`EngineSnapshot::from_project_with_limiter`]）的
+    ///    `output_latency()` 恰好比对齐基准多 33 帧；
+    /// 3. 显式注入路径（[`EngineSnapshot::from_project_with_latencies`]）**不**追加，
     ///    它拿到什么就是什么；
-    /// 3. 两条路径的 `compensation` **逐节点相同** ⇒ 实时侧武装的延迟线一模一样。
+    /// 4. 默认/开启两条路径的 `compensation` **逐节点相同** ⇒ 实时侧武装的延迟线
+    ///    一模一样（回填只影响 `arrival(master)`）。
     ///
-    /// 注入：删掉 `from_project` 里的 `latencies.add(..)` ⇒ 第 1 组断言红；
-    /// 把 `add` 挪到别的节点（例如 `heavy`）⇒ 第 3 组断言红。
+    /// 注入：删掉开启路径里的 `latencies.add(..)` ⇒ 第 2 组断言红；
+    /// 把 `add` 挪到别的节点（例如 `heavy`）⇒ 第 4 组断言红。
     #[test]
-    fn project_snapshot_backfills_the_bus_limiter_latency_without_moving_branches() {
+    fn project_snapshot_backfills_the_bus_limiter_latency_only_when_enabled() {
         use yeban_model::{DeviceDefinition, DeviceKind};
 
         let heavy = EntityId::new();
@@ -2691,30 +2760,53 @@ mod tests {
         let limiter = crate::mixer::BUS_LIMITER_LATENCY_FRAMES;
         assert_eq!(limiter, 33, "母线限制器的前瞻环长是 33 帧");
 
-        // --- 1) 生产路径：master 带上这 33 帧 ---
-        let backfilled = EngineSnapshot::from_project(&project, 1).expect("投影成功");
+        // --- 1) 默认路径：限制器关 ⇒ 不回填、读数等于 L_max ---
+        let default_off = EngineSnapshot::from_project(&project, 1).expect("投影成功");
+        assert!(
+            !default_off.limiter_enabled(),
+            "默认快照的限制器必须是关的（任务单 #302）"
+        );
         assert_eq!(
-            backfilled.pdc().total_latency(),
+            default_off.pdc().total_latency(),
             32,
             "对齐基准仍是 32（母线限制器在求和之后，不进 L_max）"
         );
         assert_eq!(
-            backfilled.pdc().output_latency(),
-            32 + limiter,
-            "引擎输出延迟 = L_max + 33"
+            default_off.pdc().output_latency(),
+            32,
+            "默认关：引擎输出延迟 = L_max（没有 33 帧回填）"
         );
 
-        // --- 2) 显式注入路径：拿到什么就是什么（不追加） ---
+        // --- 2) 开启路径：master 带上这 33 帧 ---
+        let backfilled =
+            EngineSnapshot::from_project_with_limiter(&project, 1, true).expect("投影成功");
+        assert!(
+            backfilled.limiter_enabled(),
+            "显式开启的快照必须报告 limiter_enabled = true"
+        );
+        assert_eq!(
+            backfilled.pdc().total_latency(),
+            32,
+            "开启限制器也不改对齐基准（它仍在求和之后）"
+        );
+        assert_eq!(
+            backfilled.pdc().output_latency(),
+            32 + limiter,
+            "开启限制器：引擎输出延迟 = L_max + 33"
+        );
+
+        // --- 3) 显式注入路径：拿到什么就是什么（不追加） ---
         let raw_table = LatencyTable::from_project(&project);
         let explicit =
             EngineSnapshot::from_project_with_latencies(&project, 1, &raw_table).expect("投影成功");
+        assert!(!explicit.limiter_enabled(), "显式注入路径默认限制器关");
         assert_eq!(
             explicit.pdc().output_latency(),
             32,
             "显式注入路径不追加母线限制器延迟"
         );
 
-        // --- 3) 支路对齐量逐节点相同（这就是"渲染输出不变"的纯数值形式） ---
+        // --- 4) 支路对齐量逐节点相同（开启只改 arrival(master)） ---
         for node in [heavy, light] {
             assert_eq!(
                 backfilled.pdc().compensation(&node),
@@ -2746,6 +2838,11 @@ mod tests {
         assert_eq!(
             backfilled.pdc().arrival(&master),
             explicit.pdc().arrival(&master).map(|value| value + limiter)
+        );
+        assert_eq!(
+            default_off.pdc().arrival(&master),
+            explicit.pdc().arrival(&master),
+            "默认关与显式注入的 arrival(master) 必须相同（都没有 33）"
         );
     }
 

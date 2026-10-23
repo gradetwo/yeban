@@ -777,6 +777,13 @@ impl Rig {
         Self::with_capacities(project, revision, meter_capacity, 64, 64)
     }
 
+    /// 同 [`Self::new`]，但显式打开母线限制器（`#302` 的 ⑥c 覆盖窗用）。
+    fn new_with_limiter(project: &YebanProjectV1, revision: u64, meter_capacity: usize) -> Self {
+        let snapshot = EngineSnapshot::from_project_with_limiter(project, revision, true)
+            .expect("夹具工程必须能编译成快照");
+        Self::from_snapshot(snapshot, meter_capacity, 64, 64)
+    }
+
     /// 显式给出**全部四个**通道容量。
     ///
     /// 为什么需要它：⑯ 要把事件通道压到"每量子一整批（`SCRATCH_EVENTS`）"的边界，
@@ -1387,7 +1394,7 @@ fn scenario_mix_chain(report: &mut Report) {
         .expect("`tuned_project` 的母线在 tracks 里")
         .volume_db = 6.0;
 
-    let mut rig = Rig::new(&fixture.project, 1, 8192);
+    let mut rig = Rig::new_with_limiter(&fixture.project, 1, 8192);
     rig.preheat();
 
     let mut scenario = Scenario::new("⑥限制器/混音链");

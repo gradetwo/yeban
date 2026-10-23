@@ -106,6 +106,16 @@ pub struct WavExportOptions {
     /// 唯一落盘点 [`write_interleaved_wav`] 用它选量化器与容器格式，
     /// ⛔ 位深**不再**硬编码在里面（[`WavExportOptions::resolve`] 是唯一解析处）。
     pub bit_depth: BitDepth,
+    /// ⭐ **母线限制器**（任务单 `#302`；默认 `false` = 关）。
+    ///
+    /// - `false`（默认）：导出与今天**逐字节相同**（限制器不在母带链上）；
+    /// - `true`：在**主总线推子/自动化之后**、量化/抖动之前，对整条立体声母带
+    ///   跑一次 `yeban_engine::mixer::BusLimiter`。它带 33 帧前瞻延迟 ⇒ 本路径
+    ///   **补偿**这 33 帧（多渲 33 帧、丢掉前 33 帧），所以输出长度与时间轴不变。
+    ///
+    /// ⚠ 这是**每次调用**的开关：⛔ 不写进 `project.schema.json`（任务单 `#302`
+    /// 的硬边界），由 CLI `--limiter` / MCP `yeban_render` 的 `limiter` 参数传入。
+    pub limiter: bool,
 }
 
 /// `--wav-seconds` / UI 缺省时长（秒）。
@@ -123,6 +133,7 @@ impl Default for WavExportOptions {
             seed: 1,
             use_engine_source: true,
             bit_depth: BitDepth::Int24,
+            limiter: false,
         }
     }
 }
@@ -1777,6 +1788,7 @@ mod tests {
                 seed: 1,
                 use_engine_source: true,
                 bit_depth: BitDepth::Float32,
+                limiter: false,
             };
             export_wav_with_sfz_file_and_assets(&project, &path, options, None, &assets)
                 .unwrap_or_else(|error| panic!("{tag} 必须导出成功: {error}"));
