@@ -550,27 +550,34 @@ pub enum AutomationTarget {
 pub struct MacroMapping {
     /// 被映射的自动化目标。
     pub target: AutomationTarget,
-    /// 映射深度 0.0..=1.0。
+    /// 映射振幅，**目标单位**（`#297` 裁决）。
+    ///
+    /// `获得值 = 目标静态值 + depth × macro_value`（`macro_value` 是 0..=1 的
+    /// 宏位置）⇒ `depth` 是"宏走到 1.0 时相对目标静态值的偏移"，单位与目标相同
+    /// （增益的 dB、声相的位置、设备参数的原生单位）。例如增益目标 `depth = 6.0`
+    /// 且 `macro_value = 1.0` ⇒ `+6 dB`。
+    ///
+    /// 这**不是**归一化比例：早先的 `0.0..=1.0` 值域把它当成了标量，级联点因此
+    /// 只能写归一化值（任务单 `#293` 登记的缺口；`#297` 接线时裁决改成目标单位）。
+    /// 旧文档里的 `depth = 0.8` 仍然合法，但含义从"80%"变成"目标单位的 0.8"。
     pub depth: f32,
 }
 
 impl MacroMapping {
     /// 校验映射深度。
     ///
+    /// `depth` 的单位由目标决定（dB / 位置 / 参数原生单位），模型层只知道它必须
+    /// 有限；取值域属于设备/参数层，⛔ 不再在这里套一个 `0.0..=1.0`。
+    ///
     /// # Errors
     ///
-    /// 深度非有限或越出 0.0..=1.0 → [`ModelError::NonFiniteValue`] / [`ModelError::ProbabilityOutOfRange`]
-    /// 以外的语义错误，统一报 [`ModelError::NonFiniteValue`] 或
-    /// [`ModelError::MacroDepthOutOfRange`]。
+    /// 深度非有限 → [`ModelError::NonFiniteValue`]。
     pub fn validate(&self) -> Result<(), ModelError> {
         if !self.depth.is_finite() {
             return Err(ModelError::NonFiniteValue {
                 field: "macro.mapping.depth",
                 value: f64::from(self.depth),
             });
-        }
-        if !(0.0..=1.0).contains(&self.depth) {
-            return Err(ModelError::MacroDepthOutOfRange { value: self.depth });
         }
         Ok(())
     }
@@ -3342,7 +3349,7 @@ mod tests {
         ),
         (
             "src/project.rs::MacroMapping::depth",
-            "非有限拒绝（macro.mapping.depth）；0.0..=1.0 外报 MacroDepthOutOfRange",
+            "非有限拒绝（macro.mapping.depth）；有限值一律接受（深度是目标单位，模型不可知）",
             probe_macro_mapping_depth,
         ),
         (
@@ -4019,13 +4026,10 @@ mod tests {
             depth,
         };
         rejects_non_finite_f32("macro.mapping.depth", |value| mapping(value).validate())?;
-        for bad in [1.5_f32, -0.5] {
-            rejects_matching("深度越界", mapping(bad).validate(), |error| {
-                matches!(error, ModelError::MacroDepthOutOfRange { .. })
-            })?;
-        }
-        for good in [0.0_f32, 1.0] {
-            accepts("闭区间深度", mapping(good).validate())?;
+        // `#297` 裁决：深度是**目标单位**的振幅，不再是 0..=1 的归一化标量。
+        // 增益的 `+6 dB` 就是 `depth = 6.0`；负振幅（反相摆动）同样合法。
+        for good in [0.0_f32, 1.0, 6.0, -6.0, f32::MAX, -f32::MAX] {
+            accepts("目标单位深度", mapping(good).validate())?;
         }
         Ok(())
     }

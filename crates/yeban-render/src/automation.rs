@@ -37,9 +37,13 @@
 //! - 只接 [`AutomationTarget::TrackVolume`]（含主总线）、[`AutomationTarget::SendGain`]、
 //!   [`AutomationTarget::TrackPan`] 与 [`AutomationTarget::DeviceParam`] 里**插入链能改的
 //!   标量字段**（[`APPLIED_DEVICE_PARAM_NAMES`]：41 个拼写 = 22 个字段，含别名；
-//!   通道条 14 ＋ Freeverb 4 ＋ 卷积标量 4）；`Macro` 仍由调用方如实登记为不支持，
-//!   **压缩**与**卷积 IR 形状**（`conv_ir_decay*` / `conv_ir_seed`）也如实登记
-//!   （⛔ 不冒充已支持）；
+//!   通道条 14 ＋ Freeverb 4 ＋ 卷积标量 4）；**压缩**与**卷积 IR 形状**
+//!   （`conv_ir_decay*` / `conv_ir_seed`）如实登记（⛔ 不冒充已支持）；
+//! - `#297` 起 [`AutomationTarget::Macro`] **接上了离线渲染**，口径是
+//!   `目标当前值 + depth × macro_value`（`depth` 是目标单位的振幅）。只有**存在
+//!   `Macro` 泳道**时才做动态级联：没有宏泳道的静态宏不参与渲染（`yeban_set_macro`
+//!   已经把级联物化进目标泳道，再算一次就是双计）。⚠ 若同一个宏**既有** `Macro`
+//!   泳道、又已被 `set_macro` 物化，两条路径会叠加（本单未去重；现有夹具无此组合）；
 //! - 设备参数自动化的形状**不同**（任务单 `#266`）：它改的是**器件参数**、要重算系数
 //!   ⇒ 只在**块边界**调 [`crate::inserts::InsertRuntime::apply_device_params`]，
 //!   ⛔ 不逐样本平滑，也 ⛔ 不乘样本；单位是**原生绝对值**（`_db` = dB、`_hz` = Hz、
@@ -59,7 +63,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use yeban_dsp::channel_strip::ChannelStripParams;
 use yeban_dsp::smoothing::ParamSmoother;
-use yeban_model::{AutomationTarget, EntityId, PPQ, TrackV3, YebanProjectV1};
+use yeban_model::{AutomationLane, AutomationTarget, EntityId, PPQ, TrackV3, YebanProjectV1};
 
 use crate::inserts::{
     DeviceParamFamily, DeviceParamField, ForcedInsertInstances, convolution_source_params,
@@ -93,6 +97,118 @@ pub fn tick_at_frame(frame: u64, bpm: f64, sample_rate: u32) -> u64 {
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
     let tick = ticks.floor() as u64;
     tick
+}
+
+/// 一条 `Macro` 泳道对**某个目标**的级联贡献（任务单 `#297`）。
+///
+/// 只由**存在的 `Macro` 泳道**产生：没有 `Macro` 泳道的静态宏继续不参与渲染 ——
+/// `yeban_set_macro` 已经把级联**物化**进目标泳道，再无条件算一次就是同一份映射
+/// **双计**。因此本类型只在"目标有一条映射到它的 `Macro` 泳道"时才非空。
+#[derive(Clone, Debug)]
+struct MacroLaneSource {
+    /// 映射振幅，**目标单位**（[`yeban_model::MacroMapping::depth`]）。
+    depth: f32,
+    /// 宏位置曲线（`0.0..=1.0`；`value_at` 是模型层的唯一插值）。
+    lane: AutomationLane,
+}
+
+/// 一个目标上的全部宏级联贡献（`#297`）。
+///
+/// 求值口径逐字照裁决：`获得值 = 目标静态值 + depth × macro_value`。
+/// 同一目标被多条宏泳道映射时**相加**（每条映射都是独立的一路摆动）。
+#[derive(Clone, Debug, Default)]
+struct MacroCascade {
+    /// 每一路映射的振幅与宏曲线。
+    sources: Vec<MacroLaneSource>,
+}
+
+impl MacroCascade {
+    /// 扫描工程里**全部 `Macro` 泳道**，收集映射到 `target` 的贡献。
+    ///
+    /// - 只认 `read_enabled` 且有点的宏泳道（关掉/空泳道 = 此刻没有宏值）；
+    /// - 目标为 `Macro` 的映射**不在这里递归**：嵌套宏本切片不消费，判定侧
+    ///   （[`unsupported_lane_reason`]）也把它报成 `macro`；
+    /// - 只收集 `depth != 0.0` 的映射（`0.0` 的摆动恒为 0，收进来只会多一次乘法）。
+    fn for_target(project: &YebanProjectV1, target: &AutomationTarget) -> Self {
+        let mut sources = Vec::new();
+        for track in project.tracks.values() {
+            for (lane_target, lane) in &track.automation_lanes {
+                let AutomationTarget::Macro {
+                    track_id,
+                    macro_index,
+                } = lane_target
+                else {
+                    continue;
+                };
+                if !lane.read_enabled || lane.points.is_empty() {
+                    continue;
+                }
+                let Some(macro_track) = project.tracks.get(track_id) else {
+                    continue;
+                };
+                let Some(macro_parameter) = macro_track.macros.get(*macro_index) else {
+                    continue;
+                };
+                for mapping in &macro_parameter.mappings {
+                    if mapping.target == *target
+                        && !matches!(mapping.target, AutomationTarget::Macro { .. })
+                        && mapping.depth != 0.0
+                    {
+                        sources.push(MacroLaneSource {
+                            depth: mapping.depth,
+                            lane: lane.clone(),
+                        });
+                    }
+                }
+            }
+        }
+        Self { sources }
+    }
+
+    /// 这一目标上是否有宏级联（哪怕此刻所有点都是 0）。
+    fn has_sources(&self) -> bool {
+        !self.sources.is_empty()
+    }
+
+    /// 级联在 `tick` 处的偏移（**目标单位**）。
+    fn offset_at(&self, tick: u64) -> f32 {
+        let mut offset = 0.0_f32;
+        for source in &self.sources {
+            if let Some(value) = source.lane.value_at(tick)
+                && value.is_finite()
+            {
+                offset += source.depth * value;
+            }
+        }
+        offset
+    }
+
+    /// 级联是否**处处**为 0（⇒ 目标可与没有宏泳道时逐位相同）。
+    ///
+    /// 分段插值在两端的点都为 0 时整段恒 0（边界是保持）⇒ 所有点都是 `0.0`
+    /// 就是充要条件。
+    fn is_zero(&self) -> bool {
+        self.sources
+            .iter()
+            .all(|source| source.lane.points.values().all(|point| point.value == 0.0))
+    }
+
+    /// 宏曲线上的点数（读数用）。
+    fn points(&self) -> usize {
+        self.sources
+            .iter()
+            .map(|source| source.lane.points.len())
+            .sum()
+    }
+}
+
+/// 工程里是否有**可求值**的宏泳道映射到 `target`（任务单 `#297`）。
+///
+/// 调用方用它决定"目标自己没有泳道时还要不要挂自动化"（总线推子等）；
+/// 扫描器共享的是同一个 [`MacroCascade`] 实现，⛔ 不各自再拼一份映射表。
+#[must_use]
+pub fn macro_cascade_reaches(project: &YebanProjectV1, target: &AutomationTarget) -> bool {
+    MacroCascade::for_target(project, target).has_sources()
 }
 
 /// 一条音轨的音量自动化（`TrackVolume`）。
@@ -130,6 +246,8 @@ pub struct TrackGainAutomation {
     evaluable: bool,
     /// 泳道的点数（读数用；恒等时也保留）。
     points: usize,
+    /// 映射到本目标的宏级联（`#297`；空 = 没有 `Macro` 泳道映射到它）。
+    macro_cascade: MacroCascade,
     /// 已被求值的块数（读数用）。
     blocks: u64,
     /// 最近一次块级曲线值（dB）。
@@ -185,7 +303,8 @@ impl TrackGainAutomation {
             _ => true,
         };
         let lane = project.automation_lane(&target);
-        let (evaluable, points, identity) = match lane {
+        let macro_cascade = MacroCascade::for_target(project, &target);
+        let (evaluable, points, lane_identity) = match lane {
             None => (false, 0, true),
             Some(lane) if !lane.read_enabled => (false, lane.points.len(), true),
             Some(lane) if lane.points.is_empty() => (false, 0, true),
@@ -201,6 +320,12 @@ impl TrackGainAutomation {
                 (target_exists, lane.points.len(), identity)
             }
         };
+        // `#297`：宏级联是非恒等的一条独立来源 —— 即便目标自己没有泳道，
+        // 只要有一条 `Macro` 泳道映射到它，曲线就不再处处等于静态值。
+        // 全部宏点都是 0 时偏移恒 0 ⇒ 仍走恒等快路径（正对照的机械保证）。
+        let identity = !target_exists || (lane_identity && macro_cascade.is_zero());
+        let evaluable = target_exists && (evaluable || macro_cascade.has_sources());
+        let points = points + macro_cascade.points();
         // 最小求值工程：只放本轨，泳道键/值原样克隆（`automation_value_at` 的目标
         // 对账只看 `tracks` 里有没有这条轨）。没有泳道时也放一条空轨，保证目标对账
         // 与真实工程同解。`SendGain` 还要求那条**路由边**存在，因此克隆它（逐字段，
@@ -234,6 +359,7 @@ impl TrackGainAutomation {
             sample_rate,
             evaluable,
             points,
+            macro_cascade,
             blocks: 0,
             last_db: None,
         };
@@ -249,10 +375,29 @@ impl TrackGainAutomation {
         if self.identity {
             return;
         }
-        if let Ok(Some(value)) = self.evaluator.automation_value_at(&self.target, 0) {
+        if let Some(value) = self.composed_db_at(0) {
             let ratio = automation_ratio(value, self.static_gain);
             self.smoother.snap_to(ratio);
         }
+    }
+
+    /// 本目标在 `tick` 处的**有效 dB**：目标泳道（若有）＋ 宏级联偏移。
+    ///
+    /// - 目标有可求值泳道 ⇒ 基值 = 泳道值；
+    /// - 没有（无泳道 / 关掉 / 空泳道）但存在宏级联 ⇒ 基值 = 静态值；
+    /// - 两者都没有 ⇒ `None`（下游走静态快路径）。
+    fn composed_db_at(&self, tick: u64) -> Option<f32> {
+        let lane_value = match self.evaluator.automation_value_at(&self.target, tick) {
+            Ok(Some(value)) if value.is_finite() => Some(value),
+            _ => None,
+        };
+        let offset = self.macro_cascade.offset_at(tick);
+        let value = match lane_value {
+            Some(value) => value + offset,
+            None if self.macro_cascade.has_sources() => self.static_db + offset,
+            None => return None,
+        };
+        value.is_finite().then_some(value)
     }
 
     /// 复位到“全新构造”的状态（同一个计划连续执行时调用）。
@@ -394,16 +539,15 @@ impl TrackGainAutomation {
     fn begin_block(&mut self, first_frame: u64) {
         self.blocks = self.blocks.saturating_add(1);
         let tick = tick_at_frame(first_frame, self.bpm, self.sample_rate);
-        // 唯一入口：目标对账 + `read_enabled` 闸 + 曲线插值都在模型层。
-        let value = self.evaluator.automation_value_at(&self.target, tick);
-        let target = match value {
-            Ok(Some(value)) if value.is_finite() => {
+        // 唯一入口：目标对账 + `read_enabled` 闸 + 曲线插值都在模型层；
+        // `#297` 的宏级联在同一处叠加（⛔ 没有第二份插值）。
+        let target = match self.composed_db_at(tick) {
+            Some(value) => {
                 self.last_db = Some(value);
                 automation_ratio(value, self.static_gain)
             }
-            // `Ok(None)`：泳道被关掉 / 空泳道；`Err(_)`：目标在文档里不存在。
-            // 两者都表示“此刻没有自动化值” ⇒ 退回静态推子（比率 1.0）。
-            _ => 1.0,
+            // 没有自动化值（也没有宏级联）⇒ 退回静态推子（比率 1.0）。
+            None => 1.0,
         };
         self.smoother.set_target(target);
     }
@@ -617,6 +761,8 @@ pub struct TrackPanAutomation {
     evaluable: bool,
     /// 泳道的点数（读数用）。
     points: usize,
+    /// 映射到本目标的宏级联（`#297`；空 = 没有 `Macro` 泳道映射到它）。
+    macro_cascade: MacroCascade,
     /// 已被求值的块数（读数用）。
     blocks: u64,
     /// 最近一次块级曲线值（声相位置）。
@@ -633,7 +779,8 @@ impl TrackPanAutomation {
         let target = AutomationTarget::TrackPan { track_id };
         let static_pan = project.tracks.get(&track_id).map_or(0.0, |track| track.pan);
         let lane = project.automation_lane(&target);
-        let (evaluable, points, identity) = match lane {
+        let macro_cascade = MacroCascade::for_target(project, &target);
+        let (evaluable, points, lane_identity) = match lane {
             None => (false, 0, true),
             Some(lane) if !lane.read_enabled => (false, lane.points.len(), true),
             Some(lane) if lane.points.is_empty() => (false, 0, true),
@@ -647,6 +794,10 @@ impl TrackPanAutomation {
                 (true, lane.points.len(), identity)
             }
         };
+        // `#297`：宏级联是独立来源；全部宏点为 0 ⇒ 偏移恒 0，仍走恒等快路径。
+        let identity = lane_identity && macro_cascade.is_zero();
+        let evaluable = evaluable || macro_cascade.has_sources();
+        let points = points + macro_cascade.points();
         // 最小求值工程：只放本轨（`automation_value_at` 的目标对账只看 `tracks`）。
         let mut evaluator = YebanProjectV1::default();
         let mut track = TrackV3 {
@@ -670,6 +821,7 @@ impl TrackPanAutomation {
             sample_rate,
             evaluable,
             points,
+            macro_cascade,
             blocks: 0,
             last_pan: None,
         };
@@ -684,12 +836,34 @@ impl TrackPanAutomation {
         if self.identity {
             return;
         }
-        let start = match self.evaluator.automation_value_at(&self.target, 0) {
-            Ok(Some(value)) if value.is_finite() => value,
-            _ => self.static_pan,
-        };
+        let start = self.composed_pan_at(0).unwrap_or(self.static_pan);
         self.smoother
             .snap_to(if start.is_finite() { start } else { 0.0 });
+    }
+
+    /// 本目标在 `tick` 处的**有效声相位置**：目标泳道（若有）＋ 宏级联偏移。
+    ///
+    /// 宏级联存在时把结果钳到 `-1.0..=1.0`（位置值域）；没有宏级联时与接线前
+    /// 逐位相同（⛔ 不因为本单去钳一条既有泳道）。
+    fn composed_pan_at(&self, tick: u64) -> Option<f32> {
+        let lane_value = match self.evaluator.automation_value_at(&self.target, tick) {
+            Ok(Some(value)) if value.is_finite() => Some(value),
+            _ => None,
+        };
+        let offset = self.macro_cascade.offset_at(tick);
+        let value = match lane_value {
+            Some(value) => value + offset,
+            None if self.macro_cascade.has_sources() => self.static_pan + offset,
+            None => return None,
+        };
+        if !value.is_finite() {
+            return None;
+        }
+        if self.macro_cascade.has_sources() {
+            Some(value.clamp(-1.0, 1.0))
+        } else {
+            Some(value)
+        }
     }
 
     /// 复位到“全新构造”的状态（同一个计划连续执行时调用）。
@@ -791,15 +965,16 @@ impl TrackPanAutomation {
     fn begin_block(&mut self, first_frame: u64) {
         self.blocks = self.blocks.saturating_add(1);
         let tick = tick_at_frame(first_frame, self.bpm, self.sample_rate);
-        // 唯一入口：目标对账 + `read_enabled` 闸 + 曲线插值都在模型层。
-        let pan = match self.evaluator.automation_value_at(&self.target, tick) {
-            Ok(Some(value)) if value.is_finite() => {
+        // 唯一入口：目标对账 + `read_enabled` 闸 + 曲线插值都在模型层；
+        // `#297` 的宏级联在同一处叠加。
+        let pan = match self.composed_pan_at(tick) {
+            Some(value) => {
                 self.last_pan = Some(value);
                 value
             }
-            // `Ok(None)` / `Err(_)`：此刻没有自动化值 ⇒ 退回静态声相（源侧已被关掉，
+            // 此刻没有自动化值（也没有宏级联）⇒ 退回静态声相（源侧已被关掉，
             // 所以这里必须是静态位置，而不是居中）。
-            _ => self.static_pan,
+            None => self.static_pan,
         };
         self.smoother.set_target(pan);
     }
@@ -1013,8 +1188,10 @@ pub fn device_param_lane_is_applicable(
 /// "不在保留子图里的不可达轨（`TrackVolume` / `TrackPan` 都没有落点）"。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LaneResidual {
-    /// `Macro`：宏的级联量纲尚未接线（`MacroMapping` 只有 `depth`，参数值域住在
-    /// 设备/参数层），因此本渲染器不消费宏泳道。
+    /// `Macro`：宏泳道**没有可落点**（`#297`）。
+    ///
+    /// 落点 = 宏存在 ∧ 至少一条 mapping ∧ **每条** mapping 的目标都落点（递归判定；
+    /// 目标是 `Macro` 或成环、空 mappings 都仍报本残差）。
     Macro,
     /// `DeviceParam`：没有插入链落点（名字不是通道条 / Freeverb / 卷积标量字段、
     /// 设备被旁通、或指向的不是该器件族的来源设备）。
@@ -1057,7 +1234,8 @@ impl LaneResidual {
 ///   ⚠ 有入边的**总线轨**仍是 `busTrack` —— 总线声相是 `#296` B2 明确不做的后续项；
 /// - `DeviceParam`：节点在计划里且参数名有**插入链落点**（通道条 / Freeverb 标量 /
 ///   卷积标量；`#266`/`#267`/`#293`）；
-/// - `Macro`：永不落点（量纲未接线）。
+/// - `Macro`：宏存在、至少一条 mapping、且每条 mapping 的目标本身有落点
+///   （`#297`；目标是 `Macro` / 成环 / 空 mappings ⇒ 仍报 `macro`）。
 ///
 /// ⛔ 这里是判定落点的**唯一处**：`yeban-mcp` 的 `AutomationReport` 与
 /// `yeban_edit_automation` 的读侧都调它 —— 第二份 match 就是第二份会漂移的事实。
@@ -1104,8 +1282,74 @@ pub fn unsupported_lane_reason(
                 Some(LaneResidual::DeviceParamNotChannelStrip)
             }
         }
-        AutomationTarget::Macro { .. } => Some(LaneResidual::Macro),
+        AutomationTarget::Macro {
+            track_id,
+            macro_index,
+        } => {
+            if macro_lane_lands(
+                project,
+                *track_id,
+                *macro_index,
+                source_nodes,
+                rendered_edges,
+                rendered_nodes,
+            ) {
+                None
+            } else {
+                Some(LaneResidual::Macro)
+            }
+        }
     }
+}
+
+/// 一条 `Macro` 泳道是否**真的会落点**（任务单 `#297` 的唯一判定）。
+///
+/// 条件（裁决逐条）：宏存在 ∧ 至少一条 mapping ∧ 每条 mapping 的目标都落点。
+/// - 目标本身是 `Macro` ⇒ `false`（嵌套宏本切片不消费；也正因如此，
+///   这个判定**不会递归进宏链**，自指/成环不会栈溢出）；
+/// - `visiting` 仍显式记录已经走过的目标：即便将来改成递归消费嵌套宏，
+///   环会被在这里挡住（⛔ 不是靠调用深度兜底）。
+fn macro_lane_lands(
+    project: &YebanProjectV1,
+    track_id: EntityId,
+    macro_index: usize,
+    source_nodes: &[EntityId],
+    rendered_edges: &[EntityId],
+    rendered_nodes: &[EntityId],
+) -> bool {
+    let Some(track) = project.tracks.get(&track_id) else {
+        return false;
+    };
+    let Some(macro_parameter) = track.macros.get(macro_index) else {
+        return false;
+    };
+    if macro_parameter.mappings.is_empty() {
+        return false;
+    }
+    let mut visiting = BTreeSet::new();
+    visiting.insert(AutomationTarget::Macro {
+        track_id,
+        macro_index,
+    });
+    macro_parameter.mappings.iter().all(|mapping| {
+        let target = mapping.target;
+        if !visiting.insert(target) {
+            return false;
+        }
+        let lands = match target {
+            AutomationTarget::Macro { .. } => false,
+            _ => unsupported_lane_reason(
+                project,
+                &target,
+                source_nodes,
+                rendered_edges,
+                rendered_nodes,
+            )
+            .is_none(),
+        };
+        visiting.remove(&target);
+        lands
+    })
 }
 
 /// 一条音轨上的**设备参数**自动化（`AutomationTarget::DeviceParam`）。
@@ -1161,6 +1405,8 @@ pub struct DeviceParamAutomation {
     evaluable: bool,
     /// 泳道的点数（读数用）。
     points: usize,
+    /// 映射到本目标的宏级联（`#297`；空 = 没有 `Macro` 泳道映射到它）。
+    macro_cascade: MacroCascade,
     /// 已被求值的块数（只统计非恒等路径）。
     blocks: u64,
     /// 最近一次块级曲线值（原生绝对值；开关是 `0.0`/`1.0`）。
@@ -1192,6 +1438,7 @@ impl DeviceParamAutomation {
             |(name, _device_id, field, static_value)| (name, Some(field), static_value),
         );
         let lane = project.automation_lane(&target);
+        let macro_cascade = MacroCascade::for_target(project, &target);
         let (evaluable, points, curve_identity) = match lane {
             None => (false, 0, true),
             Some(lane) if !lane.read_enabled => (false, lane.points.len(), true),
@@ -1223,6 +1470,11 @@ impl DeviceParamAutomation {
             track.devices = track_ref.devices.clone();
         }
         evaluator.tracks.insert(track_id, track);
+        // `#297`：宏级联是独立来源；全部宏点为 0 ⇒ 偏移恒 0，仍走恒等快路径
+        // （不强制实例化器件、一个参数都不改）。
+        let identity = !applicable || (curve_identity && macro_cascade.is_zero());
+        let evaluable = evaluable || macro_cascade.has_sources();
+        let points = points + macro_cascade.points();
         Self {
             target,
             track_id,
@@ -1230,12 +1482,13 @@ impl DeviceParamAutomation {
             param_name,
             field,
             static_value,
-            identity: !applicable || curve_identity,
+            identity,
             evaluator,
             bpm: project.bpm,
             sample_rate,
             evaluable,
             points,
+            macro_cascade,
             blocks: 0,
             last_value: None,
         }
@@ -1328,14 +1581,51 @@ impl DeviceParamAutomation {
         }
         self.blocks = self.blocks.saturating_add(1);
         let tick = tick_at_frame(first_frame, self.bpm, self.sample_rate);
-        // 唯一入口：目标对账 + `read_enabled` 闸 + 曲线插值都在模型层。
-        let value = match self.evaluator.automation_value_at(&self.target, tick) {
+        // 唯一入口：目标对账 + `read_enabled` 闸 + 曲线插值都在模型层；
+        // `#297` 的宏级联在同一处叠加（目标没有泳道时基值 = 静态值）。
+        let mut value = match self.evaluator.automation_value_at(&self.target, tick) {
             Ok(Some(value)) if value.is_finite() => value,
             _ => self.static_value,
         };
+        value += self.macro_cascade.offset_at(tick);
+        if !value.is_finite() {
+            value = self.static_value;
+        }
         self.last_value = Some(value);
         Some(value)
     }
+}
+
+/// 工程里**被 `Macro` 泳道映射到的目标**（去重；`Macro` 目标本身除外）。
+///
+/// 只从**存在的 `Macro` 泳道**出发：没有宏泳道的静态宏不参与渲染（否则与
+/// `yeban_set_macro` 物化进目标泳道的级联双计）。关掉/空泳道也算"存在"——
+/// 它产出的自动化是恒等的，调用方按既有快路径跳过。
+fn macro_mapped_targets(project: &YebanProjectV1) -> BTreeSet<AutomationTarget> {
+    let mut targets = BTreeSet::new();
+    for track in project.tracks.values() {
+        for lane_target in track.automation_lanes.keys() {
+            let AutomationTarget::Macro {
+                track_id,
+                macro_index,
+            } = lane_target
+            else {
+                continue;
+            };
+            let Some(macro_track) = project.tracks.get(track_id) else {
+                continue;
+            };
+            let Some(macro_parameter) = macro_track.macros.get(*macro_index) else {
+                continue;
+            };
+            for mapping in &macro_parameter.mappings {
+                if !matches!(mapping.target, AutomationTarget::Macro { .. }) {
+                    targets.insert(mapping.target);
+                }
+            }
+        }
+    }
+    targets
 }
 
 /// 扫描工程里**全部** `DeviceParam` 泳道，按轨分组（按轨身份升序）。
@@ -1343,12 +1633,16 @@ impl DeviceParamAutomation {
 /// 两个导出（MCP 的 `yeban_render_master` 与 app 的 `--export-wav`）都调它 ⇒
 /// "哪些设备参数泳道要被接上"只有一份实现。**没有落点的泳道也会返回**（恒等）：
 /// 调用方按 [`DeviceParamAutomation::is_identity`] 决定是否强制实例化器件。
+///
+/// `#297`：宏泳道映射到的设备参数也会被包含（它可能没有自己的泳道）。
 #[must_use]
 pub fn device_param_automations(
     project: &YebanProjectV1,
     sample_rate: u32,
 ) -> BTreeMap<EntityId, Vec<DeviceParamAutomation>> {
-    let mut out: BTreeMap<EntityId, Vec<DeviceParamAutomation>> = BTreeMap::new();
+    // `#297`：除了既有 `DeviceParam` 泳道，宏泳道映射到的设备参数也要接上
+    // （它可能没有自己的泳道）。按 `(轨, 槽, 参数)` 去重，构造顺序与接线前一致。
+    let mut wanted: BTreeSet<(EntityId, usize, usize)> = BTreeSet::new();
     for (track_id, track) in &project.tracks {
         for target in track.automation_lanes.keys() {
             if let AutomationTarget::DeviceParam {
@@ -1357,17 +1651,31 @@ pub fn device_param_automations(
                 ..
             } = target
             {
-                out.entry(*track_id)
-                    .or_default()
-                    .push(DeviceParamAutomation::new(
-                        project,
-                        *track_id,
-                        *slot_index,
-                        *param_index,
-                        sample_rate,
-                    ));
+                wanted.insert((*track_id, *slot_index, *param_index));
             }
         }
+    }
+    for target in macro_mapped_targets(project) {
+        if let AutomationTarget::DeviceParam {
+            track_id,
+            slot_index,
+            param_index,
+        } = target
+        {
+            wanted.insert((track_id, slot_index, param_index));
+        }
+    }
+    let mut out: BTreeMap<EntityId, Vec<DeviceParamAutomation>> = BTreeMap::new();
+    for (track_id, slot_index, param_index) in wanted {
+        out.entry(track_id)
+            .or_default()
+            .push(DeviceParamAutomation::new(
+                project,
+                track_id,
+                slot_index,
+                param_index,
+                sample_rate,
+            ));
     }
     out
 }
@@ -1427,16 +1735,26 @@ pub fn send_gain_automations(
     project: &YebanProjectV1,
     sample_rate: u32,
 ) -> BTreeMap<EntityId, SendGainAutomation> {
-    let mut out = BTreeMap::new();
+    // `#297`：既有 `SendGain` 泳道 ＋ 宏泳道映射到的发送边。
+    let mut wanted: BTreeSet<(EntityId, EntityId)> = BTreeSet::new();
     for (track_id, track) in &project.tracks {
         for target in track.automation_lanes.keys() {
             if let AutomationTarget::SendGain { edge_id, .. } = target {
-                out.insert(
-                    *edge_id,
-                    SendGainAutomation::new(project, *track_id, *edge_id, sample_rate),
-                );
+                wanted.insert((*track_id, *edge_id));
             }
         }
+    }
+    for target in macro_mapped_targets(project) {
+        if let AutomationTarget::SendGain { track_id, edge_id } = target {
+            wanted.insert((track_id, edge_id));
+        }
+    }
+    let mut out = BTreeMap::new();
+    for (track_id, edge_id) in wanted {
+        out.insert(
+            edge_id,
+            SendGainAutomation::new(project, track_id, edge_id, sample_rate),
+        );
     }
     out
 }
@@ -1451,18 +1769,28 @@ pub fn pan_automations(
     project: &YebanProjectV1,
     sample_rate: u32,
 ) -> BTreeMap<EntityId, TrackPanAutomation> {
-    let mut out = BTreeMap::new();
+    // `#297`：既有 `TrackPan` 泳道所在轨 ＋ 宏泳道映射到的轨。
+    let mut wanted: BTreeSet<EntityId> = BTreeSet::new();
     for (track_id, track) in &project.tracks {
         if track
             .automation_lanes
             .keys()
             .any(|target| matches!(target, AutomationTarget::TrackPan { .. }))
         {
-            out.insert(
-                *track_id,
-                TrackPanAutomation::new(project, *track_id, sample_rate),
-            );
+            wanted.insert(*track_id);
         }
+    }
+    for target in macro_mapped_targets(project) {
+        if let AutomationTarget::TrackPan { track_id } = target {
+            wanted.insert(track_id);
+        }
+    }
+    let mut out = BTreeMap::new();
+    for track_id in wanted {
+        out.insert(
+            track_id,
+            TrackPanAutomation::new(project, track_id, sample_rate),
+        );
     }
     out
 }
@@ -1487,7 +1815,8 @@ mod tests {
     use crate::inserts::{ConvolutionField, DeviceParamField, ReverbField, StripField};
     use yeban_model::{
         AutomationLane, AutomationPoint, AutomationWriteMode, CurveType, DeviceDefinition,
-        DeviceKind, ParameterValue, RoutingEdge, RoutingKind, TrackKind,
+        DeviceKind, MacroMapping, MacroParameter, ParameterValue, RoutingEdge, RoutingKind,
+        TrackKind,
     };
 
     fn point(id: u128, tick: u64, value: f32) -> AutomationPoint {
@@ -1528,6 +1857,128 @@ mod tests {
         }
         project.tracks.insert(track_id, track);
         (project, track_id)
+    }
+
+    /// 一条 `TrackVolume` 目标 ＋ 一条映射到它的 `Macro` 泳道（任务单 `#297`）。
+    fn project_with_macro_lane(
+        lane_value: f32,
+        depth: f32,
+        read_enabled: bool,
+    ) -> (YebanProjectV1, EntityId) {
+        let track_id = EntityId::from_str("01J8Z5Q0R7K3M9X2V4B6N8P001").expect("ULID");
+        let mut project = YebanProjectV1::default();
+        let volume = AutomationTarget::TrackVolume { track_id };
+        let macro_target = AutomationTarget::Macro {
+            track_id,
+            macro_index: 0,
+        };
+        let mut points = std::collections::BTreeMap::new();
+        let only = point(0, 0, lane_value);
+        points.insert(only.id, only);
+        let mut track = TrackV3 {
+            id: track_id,
+            volume_db: -6.0,
+            ..TrackV3::default()
+        };
+        track.macros = vec![MacroParameter {
+            name: "Macro".to_owned(),
+            value: 0.0,
+            mappings: vec![MacroMapping {
+                target: volume,
+                depth,
+            }],
+        }];
+        track.automation_lanes.insert(
+            macro_target,
+            AutomationLane {
+                target: macro_target,
+                points,
+                read_enabled,
+                write_mode: AutomationWriteMode::Off,
+                domain: None,
+            },
+        );
+        project.tracks.insert(track_id, track);
+        (project, track_id)
+    }
+
+    /// ⭐ `#297` 判据 2/3：宏泳道按**目标单位**级联；`macro_value = 0` 时逐位恒等。
+    #[test]
+    fn a_macro_lane_cascades_in_target_units_and_zero_is_identity() {
+        // depth = 6 dB、宏位置 1.0、静态推子 −6 dB ⇒ 有效值 0 dB
+        // ⇒ 比率 = db_to_linear(0) / db_to_linear(-6)。
+        let (project, track_id) = project_with_macro_lane(1.0, 6.0, true);
+        let mut automation = TrackGainAutomation::new(&project, track_id, 48_000);
+        assert!(!automation.is_identity(), "有非零宏级联 ⇒ 不得走恒等快路径");
+        assert!(automation.is_evaluable());
+        let expected = db_to_linear(0.0) / db_to_linear(-6.0);
+        let mut buffer = vec![0.25_f32; 256];
+        automation.apply_ratio_block(&mut buffer, 0, 256, 1);
+        assert!(
+            (buffer[0] - 0.25 * expected).abs() < 1e-6,
+            "首样本 {} 应等于 0.25 × {expected}",
+            buffer[0]
+        );
+
+        // 正对照：同一条宏泳道，宏位置恒 0 ⇒ 与"没有宏泳道"逐位相同。
+        let (zero_project, zero_track) = project_with_macro_lane(0.0, 6.0, true);
+        let zero = TrackGainAutomation::new(&zero_project, zero_track, 48_000);
+        assert!(zero.is_identity(), "全 0 的宏点必须走恒等快路径");
+        let mut untouched = vec![0.25_f32; 256];
+        let mut zero = zero;
+        zero.apply_ratio_block(&mut untouched, 0, 256, 1);
+        assert_eq!(untouched, vec![0.25_f32; 256], "恒等时一个样本都不许动");
+
+        // 关掉的宏泳道 = 没有宏值 ⇒ 同样恒等。
+        let (disabled_project, disabled_track) = project_with_macro_lane(1.0, 6.0, false);
+        assert!(TrackGainAutomation::new(&disabled_project, disabled_track, 48_000).is_identity());
+    }
+
+    /// ⭐ `#297` 判据 3/4：`Macro` 泳道的落点判定 —— 每条 mapping 都要落点，
+    /// 空 mappings 与自指 mapping 一律报 `macro` 且**不得递归**（自指会栈溢出）。
+    #[test]
+    fn macro_lane_lands_only_when_every_mapping_lands() {
+        let (project, track_id) = project_with_macro_lane(1.0, 6.0, true);
+        let target = AutomationTarget::Macro {
+            track_id,
+            macro_index: 0,
+        };
+        let source_nodes = [track_id];
+        let rendered_nodes = [track_id];
+        assert_eq!(
+            unsupported_lane_reason(&project, &target, &source_nodes, &[], &rendered_nodes),
+            None,
+            "TrackVolume 在计划里 ⇒ 宏泳道有落点"
+        );
+
+        let mut empty = project.clone();
+        empty.tracks.get_mut(&track_id).expect("track").macros[0]
+            .mappings
+            .clear();
+        assert_eq!(
+            unsupported_lane_reason(&empty, &target, &source_nodes, &[], &rendered_nodes),
+            Some(LaneResidual::Macro),
+            "空 mappings 没有落点"
+        );
+
+        let mut self_reference = project.clone();
+        self_reference
+            .tracks
+            .get_mut(&track_id)
+            .expect("track")
+            .macros[0]
+            .mappings = vec![MacroMapping { target, depth: 1.0 }];
+        // 自指：必须直接报 macro，而不是递归到栈溢出。
+        assert_eq!(
+            unsupported_lane_reason(
+                &self_reference,
+                &target,
+                &source_nodes,
+                &[],
+                &rendered_nodes
+            ),
+            Some(LaneResidual::Macro)
+        );
     }
 
     #[test]

@@ -423,7 +423,8 @@ use yeban_render::engine_source::{ArmedSfzInput, ArmedSfzSample, EngineTimbre, E
 // 第二份白名单（`yeban-engine` 的投影是同一份规则的来源，但 MCP 不能依赖它）。
 use yeban_render::automation::{
     APPLIED_DEVICE_PARAM_NAMES, LaneResidual, TrackGainAutomation, TrackPanAutomation,
-    centered_pan_gains, device_param_automations, forced_insert_instances, send_gain_automations,
+    centered_pan_gains, device_param_automations, forced_insert_instances, macro_cascade_reaches,
+    send_gain_automations,
 };
 use yeban_render::inserts::{
     project_inserts_with_forced_instances, resolve_device_param, track_has_unhandled_dsp,
@@ -2429,6 +2430,7 @@ pub fn build(
             .automation_lanes
             .keys()
             .any(|target| matches!(target, AutomationTarget::TrackVolume { .. }))
+            || macro_cascade_reaches(project, &AutomationTarget::TrackVolume { track_id: node })
         {
             // 恒等泳道也挂：`apply_gain_block` 的恒等快路径一个样本都不多碰。
             stage =

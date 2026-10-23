@@ -90,7 +90,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use yeban_model::{AssetHash, EntityId, YebanProjectV1};
 use yeban_render::automation::{
     TrackGainAutomation, TrackPanAutomation, device_param_automations, forced_insert_instances,
-    pan_automations, send_gain_automations,
+    macro_cascade_reaches, pan_automations, send_gain_automations,
 };
 use yeban_render::inserts::project_inserts_with_forced_instances;
 use yeban_render::render::{
@@ -605,6 +605,10 @@ pub fn render_project_f32_with_plans_under(
             .automation_lanes
             .keys()
             .any(|target| matches!(target, yeban_model::AutomationTarget::TrackVolume { .. }))
+            || macro_cascade_reaches(
+                project,
+                &yeban_model::AutomationTarget::TrackVolume { track_id: node },
+            )
         {
             stage = stage.with_gain_automation(TrackGainAutomation::new(
                 project,

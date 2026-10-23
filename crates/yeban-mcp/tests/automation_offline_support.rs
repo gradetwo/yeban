@@ -26,7 +26,10 @@ use serde_json::{Value, json};
 use yeban_mcp::dispatch::Dispatcher;
 use yeban_mcp::security::{BearerToken, Channel, RunMode, ScopeSet};
 use yeban_model::samples::filled_project;
-use yeban_model::{DeviceDefinition, DeviceKind, EntityId, ParameterValue, YebanProjectV1};
+use yeban_model::{
+    AutomationTarget, DeviceDefinition, DeviceKind, EntityId, MacroMapping, ParameterValue,
+    YebanProjectV1,
+};
 
 /// 临时目录（`Drop` 删掉自己；工作树里不留临时文件）。
 struct Scratch {
@@ -190,6 +193,120 @@ fn a_macro_point_is_reported_as_not_applied_and_the_export_agrees() {
         .expect("导出读数里必须有 Macro 泳道");
     assert_eq!(macro_lane["supported"], false, "{macro_lane}");
     assert_eq!(macro_lane["applied"], false, "{macro_lane}");
+}
+
+/// `#297`：把样本轨的宏映射改成 `TrackVolume`、`depth = 6.0`（dB），并清掉目标泳道，
+/// 让"宏位置 = 0"的基线就是静态推子。
+fn volume_macro_fixture() -> (YebanProjectV1, EntityId) {
+    let mut project = filled_project();
+    let lead = lead_track(&project);
+    let track = project.tracks.get_mut(&lead).expect("lead");
+    track.automation_lanes.clear();
+    track.macros[0].mappings = vec![MacroMapping {
+        target: AutomationTarget::TrackVolume { track_id: lead },
+        depth: 6.0,
+    }];
+    project.validate().expect("宏量纲夹具必须合法");
+    (project, lead)
+}
+
+/// 往 `Macro` 泳道写一个 tick 0 的点。
+fn write_macro_point(dispatcher: &mut Dispatcher, track: EntityId, value: f64) -> Value {
+    let response = call(
+        dispatcher,
+        "yeban_edit_automation",
+        json!({
+            "trackId": track.to_canonical_string(),
+            "lane": "Macro",
+            "macroIndex": 0,
+            "point": {"tick": 0, "value": value, "curve": "Linear"},
+        }),
+    );
+    assert_eq!(response["status"], "success", "{response}");
+    response["data"].clone()
+}
+
+fn mono_peak(path: &Path) -> f32 {
+    let (samples, _rate, _description) =
+        yeban_render::wav::read_plain_wav_mono_f32(path).expect("读回导出 WAV");
+    samples
+        .iter()
+        .fold(0.0_f32, |peak, sample| peak.max(sample.abs()))
+}
+
+/// ⭐ `#297` 判据 1/2/3/4（端到端）：`Macro` 泳道按 `静态值 + depth × macro_value`
+/// 真的改音频；`macro_value = 0` 与"无宏泳道"逐字节相同；`macro_value = 1` 的读数
+/// 落在静态值 + depth 上；写侧与导出侧都不再报 `macro`。
+#[test]
+fn a_supported_macro_lane_changes_the_export_in_target_units() {
+    let scratch = Scratch::new("macro-dimension");
+    let (project, lead) = volume_macro_fixture();
+
+    // ① 无宏泳道基线。
+    let mut baseline_dispatcher = dispatcher(project.clone(), &scratch.project());
+    let baseline_out = scratch.dir.join("baseline.wav");
+    let baseline = render(&mut baseline_dispatcher, &baseline_out);
+
+    // ② 宏位置恒 0 ⇒ 正对照（逐字节等于无泳道）。
+    let mut zero_dispatcher = dispatcher(project.clone(), &scratch.project());
+    let zero_data = write_macro_point(&mut zero_dispatcher, lead, 0.0);
+    assert_eq!(zero_data["appliedInOfflineRender"], true, "{zero_data}");
+    assert!(zero_data["residualReason"].is_null(), "{zero_data}");
+    let zero_out = scratch.dir.join("zero.wav");
+    let zero = render(&mut zero_dispatcher, &zero_out);
+    assert_eq!(
+        zero["sha256"], baseline["sha256"],
+        "宏位置恒 0 必须逐字节等于无宏泳道"
+    );
+    assert_eq!(zero["masterDigest"], baseline["masterDigest"]);
+
+    // ③ 宏位置恒 1 ⇒ 静态推子 −3 dB + 6 dB = +3 dB，真的改音频。
+    let mut one_dispatcher = dispatcher(project, &scratch.project());
+    let one_data = write_macro_point(&mut one_dispatcher, lead, 1.0);
+    assert_eq!(one_data["appliedInOfflineRender"], true, "{one_data}");
+    assert!(one_data["residualReason"].is_null(), "{one_data}");
+    let one_out = scratch.dir.join("one.wav");
+    let one = render(&mut one_dispatcher, &one_out);
+    assert_ne!(
+        one["sha256"], baseline["sha256"],
+        "宏位置 1 必须真的改文件字节"
+    );
+    assert_ne!(
+        one["masterDigest"], baseline["masterDigest"],
+        "宏位置 1 必须真的改母带样本"
+    );
+
+    // 读数：两端的峰值（+6 dB 相对静态基线）。
+    let baseline_peak = mono_peak(&baseline_out);
+    let zero_peak = mono_peak(&zero_out);
+    let one_peak = mono_peak(&one_out);
+    println!(
+        "### #297 macro lane peaks: baseline={baseline_peak:.6} zero={zero_peak:.6} one={one_peak:.6} ratio={:.6}",
+        one_peak / zero_peak
+    );
+    assert!(
+        (zero_peak - baseline_peak).abs() < 1e-6,
+        "正对照峰值必须相同"
+    );
+    assert!(one_peak > zero_peak * 1.5, "宏位置 1 必须显著更响");
+
+    // ④ 导出读数：Macro 泳道 supported/applied，且不再登记 `automationLanes`。
+    let lanes = one["automation"]["tracks"]
+        .as_array()
+        .expect("tracks")
+        .iter()
+        .flat_map(|track| track["lanes"].as_array().expect("lanes").iter())
+        .collect::<Vec<_>>();
+    let macro_lane = lanes
+        .iter()
+        .find(|lane| lane["target"] == "Macro")
+        .expect("导出读数里必须有 Macro 泳道");
+    assert_eq!(macro_lane["supported"], true, "{macro_lane}");
+    assert_eq!(macro_lane["applied"], true, "{macro_lane}");
+    assert!(
+        !unsupported_has_automation_lanes(&one),
+        "Macro 已被消费 ⇒ `automationLanes` 不该再登记: {one}"
+    );
 }
 
 /// ⭐ 判据 3（`#296` 更新）：写**主总线** `TrackPan` ⇒ 写侧说 `true`、无残差，

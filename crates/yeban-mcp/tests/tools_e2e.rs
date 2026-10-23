@@ -576,11 +576,11 @@ fn idempotent_merge_does_not_apply_the_batch_twice() {
 /// **类别⑤（幂等性）**：`yeban_set_macro` 用**逐字节同一份实参**走两次
 /// `tools/call → 提案 → 合并`，第二次不得改变工程。
 ///
-/// 为什么单列一条：级联起点（tick 0）的幅值是 `old_value × depth`（"参数此刻在哪"），
+/// 为什么单列一条：级联起点（tick 0）的幅值是
+/// `目标当前值 + old_value × depth`（`#297` 起的真实单位；"参数此刻在哪"），
 /// 同值时重算这条公式会让第二次调用把它**自己在第一次调用里写下**的起点改写掉
-/// ⇒ 一小节的斜坡被压平。改动前实测（真二进制 stdio，模型样本容器）：
-/// 第一次把 `DeviceParam` 泳道写成 `tick 0 = 0.4` / `tick 3840 = 0.264`，
-/// 同参第二次改成 `tick 0 = 0.264`，工程 digest 由 `eb637dbb…` 变成 `fa4c5905…`。
+/// ⇒ 一小节的斜坡被压平。（归一化时代的实测是 `0.4 / 0.264` 两点、digest
+/// `eb637dbb… → fa4c5905…`；`#297` 改了单位，机制与判据不变。）
 /// 本判据量的是**工程字节**（不是"返回了 Ok"）。
 #[test]
 fn set_macro_same_value_replay_leaves_the_project_byte_identical() {
