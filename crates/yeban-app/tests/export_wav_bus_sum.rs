@@ -371,3 +371,83 @@ fn the_bus_emits_its_own_source_and_its_incoming_edge_summed() {
         }
     }
 }
+
+/// ⭐ `#296`：app 侧**总线推子**（`RenderPlan` 的输出级）真的乘在**入边求和**上。
+///
+/// 夹具：`midi → aux → master`（aux 自己无音源）＋ `midi → master` 直连。aux 的
+/// `volume_db` 从 `-6 dB` 改成 `0 dB` ⇒ **发送那一路**的贡献必须是
+/// `10^(6/20) = 1.9952623` 倍（直连那一路不经过 aux，必须先用"无发送"基线减掉）。
+/// `digest` 必须真的变。修前（总线推子没有落点）两次读数会**完全相同**（−6 dB 只
+/// 作用在 aux 自己的源上，而它的源是静音的）。
+#[test]
+fn the_bus_fader_scales_the_incoming_send_on_export_wav() {
+    let fixture = Fixture::new("fader");
+    let aux = fixture_id("A0");
+    let baseline_project = fixture_project(&fixture, false, false);
+    let quiet_project = fixture_project(&fixture, false, true);
+    assert_eq!(
+        quiet_project.tracks.get(&aux).expect("Aux").volume_db,
+        -6.0,
+        "夹具的 aux 推子必须是 -6 dB（`midi_track` 的默认值）"
+    );
+    let options = WavExportOptions {
+        frames: FRAMES,
+        ..WavExportOptions::default()
+    };
+    let quiet = render_project_f32_with_assets_under(
+        &quiet_project,
+        options,
+        None,
+        &[],
+        Some(fixture.dir.as_path()),
+    )
+    .expect("只发送的工程必须能渲染");
+    let quiet_peak = quiet
+        .samples
+        .iter()
+        .fold(0.0_f32, |acc, value| acc.max(value.abs()));
+    let mut loud_project = quiet_project;
+    loud_project.tracks.get_mut(&aux).expect("Aux").volume_db = 0.0;
+    loud_project.validate().expect("改过推子的工程必须合法");
+    let loud = render_project_f32_with_assets_under(
+        &loud_project,
+        options,
+        None,
+        &[],
+        Some(fixture.dir.as_path()),
+    )
+    .expect("只发送的工程必须能渲染");
+    let loud_peak = loud
+        .samples
+        .iter()
+        .fold(0.0_f32, |acc, value| acc.max(value.abs()));
+    let baseline = render_project_f32_with_assets_under(
+        &baseline_project,
+        options,
+        None,
+        &[],
+        Some(fixture.dir.as_path()),
+    )
+    .expect("无发送的基线必须能渲染");
+    let baseline_peak = baseline
+        .samples
+        .iter()
+        .fold(0.0_f32, |acc, value| acc.max(value.abs()));
+    let quiet_send = quiet_peak - baseline_peak;
+    let loud_send = loud_peak - baseline_peak;
+    let ratio = loud_send / quiet_send;
+    println!(
+        "[296/bus-fader] baseline(no send) peak={baseline_peak:.9} quiet(-6 dB) peak={quiet_peak:.9} \
+         loud(0 dB) peak={loud_peak:.9} send_ratio={ratio:.9} quiet_digest={} loud_digest={}",
+        quiet.digest, loud.digest
+    );
+    assert!(quiet_send > 0.0, "只发送档的发送那一路必须非静音");
+    assert!(
+        (ratio - 1.995_262_3).abs() < 1e-3,
+        "推子 0 dB / -6 dB 的**发送贡献**比必须是 1.9952623，实测 {ratio}"
+    );
+    assert_ne!(
+        quiet.digest, loud.digest,
+        "总线推子必须真的改变母带样本（digest 不同）"
+    );
+}

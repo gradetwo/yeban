@@ -5179,15 +5179,26 @@ fn the_known_unsupported_list_is_not_decoration() {
         }),
     ));
     // ④ `automationLanes`：**有可求值点**、但目标落在**没有落点**的地方。
-    //    ⭐ `#257` 之后 `TrackPan` 在**源节点**上已支持 ⇒ 这里改用**主总线**上的
-    //    `TrackPan`（母带没有声相落点，仍不支持；与同文件的 master-only 判据同口径）。
+    //    ⭐ `#296`：主总线 `TrackPan` 已有落点、总线轨 `TrackVolume`（可达）也有 ⇒
+    //    这里改用**不可达轨**（在图里、但没有任何边通向 master ⇒ 被计划剪枝）上的
+    //    `TrackVolume`：它仍如实报 `busTrack` ⇒ `automationLanes`。
     //    ⚠ 空泳道**不**触发（#243 修的第一处谎）：一条没有点的曲线没有“少做了什么”。
     triggers.push((
         "automationLanes",
         Box::new(|| {
             let mut project = project(&Spec::default());
-            let master = id(1);
-            let target = AutomationTarget::TrackPan { track_id: master };
+            let ghost = id(7);
+            project.tracks.insert(
+                ghost,
+                TrackV3 {
+                    id: ghost,
+                    name: "Ghost".to_owned(),
+                    kind: TrackKind::Midi,
+                    ..TrackV3::default()
+                },
+            );
+            project.routing_graph.nodes.push(ghost);
+            let target = AutomationTarget::TrackVolume { track_id: ghost };
             let point = AutomationPoint {
                 id: id(120),
                 tick: 0,
@@ -5203,8 +5214,8 @@ fn the_known_unsupported_list_is_not_decoration() {
             };
             project
                 .tracks
-                .get_mut(&master)
-                .expect("Master")
+                .get_mut(&ghost)
+                .expect("Ghost")
                 .automation_lanes
                 .insert(target, lane);
             project.validate().expect("夹具合法");
@@ -5298,16 +5309,10 @@ fn the_known_unsupported_list_is_not_decoration() {
             render_or_ok(&project, "sidechain")
         }),
     ));
-    // ⑩ `masterPan`：主总线轨的 pan != 0。
-    triggers.push((
-        "masterPan",
-        Box::new(|| {
-            let mut project = project(&Spec::default());
-            project.tracks.get_mut(&id(1)).expect("Master").pan = 0.5;
-            project.validate().expect("夹具合法");
-            render_or_ok(&project, "master-pan")
-        }),
-    ));
+    // ⑩ `masterPan` **已退役**（`#296`）：主总线 `pan != 0` 现在真的改变母带左右
+    //    声道（静态声相走计划的输出级、`TrackPan` 自动化在执行之后乘绝对增益）
+    //    ⇒ 清单里没有它、这里也**没有**触发器。
+    //    正向判据见 `a_master_pan_lane_moves_the_master_stereo_image`。
     // ⑪ `audioClips`：工程**声明**了资产、会话池里没有它的字节。
     triggers.push((
         "audioClips",
@@ -5700,6 +5705,18 @@ fn four_window_peaks(samples: &[f32], frames: u64) -> [f32; 4] {
     peaks
 }
 
+/// 左右两个声道的峰值（交错立体声）。
+fn stereo_peaks(samples: &[f32]) -> (f32, f32) {
+    let mut left = 0.0f32;
+    let mut right = 0.0f32;
+    let (pairs, _tail) = samples.as_chunks::<2>();
+    for pair in pairs {
+        left = left.max(pair[0].abs());
+        right = right.max(pair[1].abs());
+    }
+    (left, right)
+}
+
 fn assert_strictly_increasing(peaks: &[f32; 4], context: &str) {
     println!("### {context}: 4 段峰值 = {peaks:?}");
     assert!(
@@ -5842,6 +5859,61 @@ fn a_lane_that_is_flat_at_the_static_value_is_byte_identical_to_no_lane() {
     assert_eq!(result["data"]["automation"]["unsupportedLanes"], 0);
 }
 
+/// ⭐ `#296` 判据（“只对总线挂 gain”）：**普通源轨**上的巨大 `TrackVolume` 泳道
+/// 仍走**源侧**，⛔ 不走 `RenderPlan` 的输出级 —— 否则同一份推子会乘两次。
+///
+/// 夹具：静态 `-20 dB` ＋ 常值 `0 dB` 泳道（R55 比率 10×）⇒ 输出等于“0 dB 静态、
+/// 无泳道”的那条轨（峰值相对差 ≤ 1e-4）；若输出级也乘了 `-20 dB`，峰值会掉回
+/// 基线的 1/10。
+#[test]
+fn a_huge_volume_lane_on_an_ordinary_track_stays_source_side() {
+    let scratch = Scratch::new("automation-source-side");
+    let lead = id(2);
+    let quiet = project(&Spec {
+        volume_db: -20.0,
+        ..Spec::default()
+    });
+    let (_, quiet_samples, _) = render_samples(&scratch, "source-side-quiet", &quiet);
+    let quiet_peak = quiet_samples
+        .iter()
+        .fold(0.0f32, |peak, sample| peak.max(sample.abs()));
+    let unity = project(&Spec {
+        volume_db: 0.0,
+        ..Spec::default()
+    });
+    let (unity_result, unity_samples, _) = render_samples(&scratch, "source-side-unity", &unity);
+    let unity_peak = unity_samples
+        .iter()
+        .fold(0.0f32, |peak, sample| peak.max(sample.abs()));
+    let project = with_volume_lane(
+        project(&Spec {
+            volume_db: -20.0,
+            ..Spec::default()
+        }),
+        lead,
+        &[(0, 0.0), (1_920, 0.0)],
+        true,
+        220,
+    );
+    let (result, samples, sha) = render_samples(&scratch, "source-side", &project);
+    let peak = samples
+        .iter()
+        .fold(0.0f32, |peak, sample| peak.max(sample.abs()));
+    println!(
+        "### 普通轨 -20 dB + 0 dB 泳道: peak={peak:.9} unity_peak={unity_peak:.9} \
+         quiet_peak={quiet_peak:.9} sha={sha} digest={} unity_digest={}",
+        result["data"]["masterDigest"], unity_result["data"]["masterDigest"]
+    );
+    assert!(
+        (peak - unity_peak).abs() <= unity_peak * 1e-4,
+        "源侧只乘一次 ⇒ 必须回到 0 dB 静态的峰值: peak={peak} unity={unity_peak} quiet={quiet_peak}"
+    );
+    assert!(
+        peak > quiet_peak * 5.0,
+        "若输出级又乘了一次静态推子，峰值会掉回基线: peak={peak} quiet={quiet_peak}"
+    );
+}
+
 /// ⭐ 判据 6：`mute:true` + 一条 0 dB 的音量泳道 ⇒ 仍全静音、`audible:false`。
 #[test]
 fn a_zero_db_lane_does_not_resurrect_a_muted_track() {
@@ -5950,12 +6022,77 @@ fn an_empty_lane_is_visible_in_the_reading_but_not_reported_as_unsupported() {
     );
 }
 
-/// ⭐ 判据 9（第二处谎）：**master-only** 的不可支持泳道（`TrackPan`）必须被报出来。
+/// ⭐ `#296` 判据 4：**静态**主总线 `pan`（没有自动化泳道）也真的被乘 —— 这是
+/// `masterPan` 键退役的**依据**（不是"决定不报它"）。
+///
+/// `master.pan = +0.5` ⇒ 右声道峰值 > 左声道；`sha`/`masterDigest` 与居中基线不同；
+/// `unsupported` 里**不再**出现 `masterPan`（它已不在 `KNOWN_UNSUPPORTED_KEYS` 里）。
 #[test]
-fn a_master_only_unsupported_lane_is_reported() {
+fn a_static_master_pan_is_applied_and_not_reported() {
+    let scratch = Scratch::new("master-pan-static");
+    let master = id(1);
+    let baseline = project(&Spec::default());
+    let (base_result, base_samples, base_sha) =
+        render_samples(&scratch, "master-pan-static-base", &baseline);
+    let (base_left, base_right) = stereo_peaks(&base_samples);
+    assert!(
+        (base_left - base_right).abs() <= base_left * 1e-4,
+        "正对照（居中）左右峰值必须相等: L={base_left} R={base_right}"
+    );
+    let mut project = baseline;
+    project.tracks.get_mut(&master).expect("Master").pan = 0.5;
+    project.validate().expect("夹具合法");
+    let (result, samples, sha) = render_samples(&scratch, "master-pan-static", &project);
+    let (left, right) = stereo_peaks(&samples);
+    let data = &result["data"];
+    println!(
+        "### 静态 masterPan(+0.5): L={left:.9} R={right:.9} ratio={:.6} sha={sha} \
+         digest={} baseline_sha={base_sha} baseline_digest={} unsupported={}",
+        right / left,
+        data["masterDigest"],
+        base_result["data"]["masterDigest"],
+        data["unsupported"]
+    );
+    assert!(
+        left > 0.0 && right > 0.0,
+        "母带必须非静音: L={left} R={right}"
+    );
+    assert_ne!(left, right, "静态主总线声相必须让左右声道不再相等");
+    assert!(right > left, "pan=+0.5 必须右重: L={left} R={right}");
+    assert_ne!(sha, base_sha, "静态主总线声相必须真的改变文件字节");
+    assert_ne!(
+        data["masterDigest"], base_result["data"]["masterDigest"],
+        "静态主总线声相必须真的改变母带样本"
+    );
+    assert!(
+        !data["unsupported"]
+            .as_array()
+            .expect("unsupported")
+            .iter()
+            .any(|value| value == "masterPan"),
+        "masterPan 已退役 ⇒ 不许再出现在 unsupported: {data}"
+    );
+}
+
+/// ⭐ `#296` 判据 3：**主总线 `TrackPan`** 现在真的移动立体声像（裁决 A）。
+///
+/// `pan = +0.5` 的常值泳道 ⇒ 右声道峰值 > 左声道（等功率曲线 `θ = 0.375π`：
+/// `cos = 0.3827` / `sin = 0.9239`）；正对照（同一工程删掉泳道）左右**相等**。
+/// `sha`/`masterDigest` 与基线都必须真的改变 —— 证明不是"登记成支持了却不动音频"。
+#[test]
+fn a_master_pan_lane_moves_the_master_stereo_image() {
     let scratch = Scratch::new("automation-master-pan");
     let master = id(1);
-    let mut project = project(&Spec::default());
+    let baseline = project(&Spec::default());
+    let (base_result, base_samples, base_sha) =
+        render_samples(&scratch, "master-pan-base", &baseline);
+    let (base_left, base_right) = stereo_peaks(&base_samples);
+    // WAV 是 24-bit TPDF 抖动后的字节 ⇒ 左右只差 ≤ 1 LSB（不是逐位相等）。
+    assert!(
+        (base_left - base_right).abs() <= base_left * 1e-4,
+        "正对照（居中）左右峰值必须相等（≤ 1e-4 相对差）: L={base_left} R={base_right}"
+    );
+    let mut project = baseline.clone();
     let target = AutomationTarget::TrackPan { track_id: master };
     let point = AutomationPoint {
         id: id(190),
@@ -5979,24 +6116,42 @@ fn a_master_only_unsupported_lane_is_reported() {
             },
         );
     project.validate().expect("夹具合法");
-    let (result, _, _) = render_samples(&scratch, "master-pan-auto", &project);
+    let (result, samples, sha) = render_samples(&scratch, "master-pan-auto", &project);
+    let (left, right) = stereo_peaks(&samples);
     let data = &result["data"];
     println!(
-        "### master-only TrackPan: unsupported={} automation={}",
-        data["unsupported"], data["automation"]
+        "### master TrackPan(+0.5): L={left:.9} R={right:.9} ratio={:.6} sha={sha} \
+         digest={} baseline_sha={base_sha} baseline_digest={} unsupported={} automation={}",
+        right / left,
+        data["masterDigest"],
+        base_result["data"]["masterDigest"],
+        data["unsupported"],
+        data["automation"]
     );
     assert!(
-        data["unsupported"]
+        left > 0.0 && right > 0.0,
+        "母带必须非静音: L={left} R={right}"
+    );
+    assert_ne!(left, right, "主总线声相必须让左右声道不再相等");
+    assert!(right > left, "pan=+0.5 必须右重: L={left} R={right}");
+    assert_ne!(sha, base_sha, "主总线声相必须真的改变文件字节");
+    assert_ne!(
+        data["masterDigest"], base_result["data"]["masterDigest"],
+        "主总线声相必须真的改变母带样本"
+    );
+    assert!(
+        !data["unsupported"]
             .as_array()
             .expect("unsupported")
             .iter()
             .any(|value| value == "automationLanes"),
-        "master-only 的不可支持泳道必须被报出来: {data}"
+        "主总线 TrackPan 已应用 ⇒ 不许再登记 automationLanes: {data}"
     );
-    assert_eq!(data["automation"]["unsupportedLanes"], 1);
+    assert_eq!(data["automation"]["unsupportedLanes"], 0);
+    assert_eq!(data["automation"]["tracks"][0]["lanes"][0]["applied"], true);
     assert_eq!(
-        data["automation"]["tracks"][0]["lanes"][0]["applied"],
-        false
+        data["automation"]["tracks"][0]["lanes"][0]["supported"],
+        true
     );
     assert_eq!(
         data["automation"]["tracks"][0]["lanes"][0]["evaluable"],
@@ -6004,10 +6159,13 @@ fn a_master_only_unsupported_lane_is_reported() {
     );
 }
 
-/// ⭐ 判据 9（第二处谎）：**bus-only** 的 `TrackVolume` 泳道（总线没有源、静态音量也
-/// 没有落点）必须被报出来，而不是静默丢掉。
+/// ⭐ `#296` 判据 1：**可达总线轨**的 `TrackVolume` 泳道在**输出级**真的被乘。
+///
+/// 夹具与 `#257` 的 bus-only 判据同一个（`lead → bus → master`），但这次总线**能到达
+/// 母带** ⇒ `supported:true`、`sha`/`masterDigest` 真的改变、4 段峰值按
+/// `-24 dB → 0 dB` 单调上升。正对照（同工程删掉泳道）的 `sha` 是三段里唯一不动的。
 #[test]
-fn a_bus_only_volume_lane_is_reported_as_unsupported() {
+fn a_reachable_bus_volume_lane_is_applied_at_the_output_stage() {
     let scratch = Scratch::new("automation-bus");
     let master = id(1);
     let lead = id(2);
@@ -6045,21 +6203,50 @@ fn a_bus_only_volume_lane_is_reported_as_unsupported() {
             gain_db: None,
         },
     );
+    // ⭐ 让信号**只**经总线到母带：删掉默认夹具的 `lead → master` 直连，否则
+    // 直达声会盖住总线推子的读数（单调性测不出来）。`lead → bus → master` 保留。
+    project.routing_graph.edges.remove(&id(40));
+    project.validate().expect("总线夹具合法");
+    // 正对照：同一张图、**没有**泳道（总线静态 0 dB）。
+    let baseline = project.clone();
+    let (base_result, base_samples, base_sha) = render_samples(&scratch, "bus-base", &baseline);
+    let base_frames = base_result["data"]["frames"].as_u64().expect("frames");
+    let base_peaks = four_window_peaks(&base_samples, base_frames);
+    // 被测：总线轨上 `-24 dB → 0 dB` 的 TrackVolume 泳道。
     let project = with_volume_lane(project, bus, &[(0, -24.0), (1_920, 0.0)], true, 200);
-    let (result, _, _) = render_samples(&scratch, "bus-auto", &project);
+    let (result, samples, sha) = render_samples(&scratch, "bus-auto", &project);
     let data = &result["data"];
+    let frames = data["frames"].as_u64().expect("frames");
+    let peaks = four_window_peaks(&samples, frames);
+    assert_strictly_increasing(&peaks, "总线推子渐强");
+    assert!(
+        peaks[3] / peaks[0] >= 3.0,
+        "总线推子渐强比值必须 >= 3.0: {peaks:?}"
+    );
+    // ⚠ 末段峰值与静态基线**不逐字相等**：音符包络在 1 s 末段已经衰减，而 4 等段
+    // 峰值取的是窗口内的最大值 ⇒ `base_peaks` 只作为读数报出，不拿它当判据。
     println!(
-        "### bus-only TrackVolume: unsupported={} automation={}",
-        data["unsupported"], data["automation"]
+        "### 可达总线 TrackVolume: peaks={peaks:?} base_peaks={base_peaks:?} sha={sha} \
+         digest={} base_sha={base_sha} base_digest={} unsupported={} automation={}",
+        data["masterDigest"],
+        base_result["data"]["masterDigest"],
+        data["unsupported"],
+        data["automation"]
+    );
+    assert_ne!(sha, base_sha, "总线推子必须真的改变文件字节");
+    assert_ne!(
+        data["masterDigest"], base_result["data"]["masterDigest"],
+        "总线推子必须真的改变母带样本"
     );
     assert!(
-        data["unsupported"]
+        !data["unsupported"]
             .as_array()
             .expect("unsupported")
             .iter()
             .any(|value| value == "automationLanes"),
-        "bus-only 的音量泳道必须被报出来: {data}"
+        "可达总线的音量泳道已应用 ⇒ 不许再登记 automationLanes: {data}"
     );
+    assert_eq!(data["automation"]["unsupportedLanes"], 0);
     let bus_report = data["automation"]["tracks"]
         .as_array()
         .expect("tracks")
@@ -6068,8 +6255,8 @@ fn a_bus_only_volume_lane_is_reported_as_unsupported() {
         .expect("读数必须包含 bus 轨");
     assert_eq!(bus_report["lanes"][0]["target"], "TrackVolume");
     assert_eq!(bus_report["lanes"][0]["evaluable"], true);
-    assert_eq!(bus_report["lanes"][0]["applied"], false);
-    assert_eq!(bus_report["lanes"][0]["supported"], false);
+    assert_eq!(bus_report["lanes"][0]["applied"], true);
+    assert_eq!(bus_report["lanes"][0]["supported"], true);
 }
 
 /// ⭐ 判据 10：同工程两次渲染的 `masterDigest` 相同（自动化不引入熵源）。

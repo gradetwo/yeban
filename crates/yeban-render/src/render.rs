@@ -49,6 +49,10 @@
 //!   紧接在**求和之后**处理（源节点是"声源之后"）; 顺序差异见该模块头 §2。
 //!   ⚠ 实时引擎的**主总线**插入是"下混成单声道 → 链 → 复制两路"（裁决 (甲)）,
 //!   离线是真立体声 ⇒ 两边的**宽度/尾巴形状**有差异（与 `#155`/`#158` 同族）。
+//! - **输出级**（[`OutputStage`]，任务单 `#296`）：插入链**之后**、母线求和**之前**的
+//!   一级。本单只让**总线节点**有推子（`TrackVolume`）、**主总线**有声相；主总线的
+//!   `TrackPan` 自动化与推子由调用方在执行之后乘（主总线是终端节点）。其它节点是
+//!   恒等输出级 ⇒ `render_node` 的最后一级一个样本都不碰（零默认回归）。
 
 use std::collections::BTreeMap;
 use std::fmt::Debug;
@@ -57,7 +61,10 @@ use rayon::prelude::*;
 use sha2::{Digest, Sha256};
 use yeban_model::{EntityId, RoutingEdge, RoutingGraph, TrackV3};
 
-use crate::automation::{AUTOMATION_BLOCK_SIZE, DeviceParamAutomation, SendGainAutomation};
+use crate::automation::{
+    AUTOMATION_BLOCK_SIZE, DeviceParamAutomation, SendGainAutomation, TrackGainAutomation,
+    centered_pan_gains,
+};
 use crate::inserts::{InsertChain, InsertRuntime};
 use crate::pdc::{self, DelayLine, PdcError};
 use crate::sum;
@@ -320,6 +327,135 @@ struct NodeState {
     /// 有**非恒等**设备参数泳道的轨，对应器件在编译期被强制实例化
     /// （`#266` 通道条 / `#293` Freeverb 与卷积）⇒ 有器件可改。
     inserts: Option<InsertRuntime>,
+    /// 本节点的**输出级**（任务单 `#296`）：插入链之后、母线求和之前。
+    output: OutputStage,
+}
+
+/// 节点的**输出级**：通道条的最后一级（源 → 插入 → 推子 → 声相 → 母线）。
+///
+/// ## 本单只开两格（保守范围）
+///
+/// - **推子**（静态 `gain` ＋ 可选 [`TrackGainAutomation`]）：只对**总线节点**启用
+///   （`render_node` 的 `incoming` 非空、且不是主总线）。源节点的音量**仍在源侧**
+///   （引擎的 `track_gain` / 音频片段的 `combined_gain_db` / MCP 的 `TrackSource`），
+///   ⛔ 本单不搬家 —— 因此普通轨的 `TrackVolume` 行为与本单之前逐位相同；
+/// - **声相**（静态 `(pan_left, pan_right)`）：只对**主总线**启用。总线轨的声相 /
+///   mute / solo 是 `#296` 明确不做的后续项（任务单 B2）。
+///
+/// ## 恒等快路径
+///
+/// `gain == 1.0`、没有非恒等的推子自动化、`(left, right) == (1.0, 1.0)` ⇒
+/// [`Self::apply`] 在第一条判据就返回：**一个样本都不读不写**。没有输出级的工程
+/// （含默认夹具）因此与接线前逐位相同。
+#[derive(Clone, Debug)]
+pub struct OutputStage {
+    /// 静态线性推子增益。
+    gain: f32,
+    /// 本节点的 `TrackVolume` 自动化（总线轨；`None` = 没有可求值泳道）。
+    gain_automation: Option<TrackGainAutomation>,
+    /// 左声道声相增益。
+    pan_left: f32,
+    /// 右声道声相增益。
+    pan_right: f32,
+}
+
+impl Default for OutputStage {
+    /// 与 [`OutputStage::new`] 相同：恒等（`gain = 1.0`、`pan = (1, 1)`）。
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl OutputStage {
+    /// 恒等输出级（`gain = 1.0`、无声相）。
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            gain: 1.0,
+            gain_automation: None,
+            pan_left: 1.0,
+            pan_right: 1.0,
+        }
+    }
+
+    /// 设静态推子（线性增益；非有限值退回恒等）。
+    #[must_use]
+    pub fn with_gain(mut self, gain: f32) -> Self {
+        self.gain = if gain.is_finite() { gain } else { 1.0 };
+        self
+    }
+
+    /// 挂上该节点的 `TrackVolume` 自动化（求值 / 5 ms 平滑 / 恒等判定都在
+    /// [`TrackGainAutomation`]；本层⛔ 不复制）。
+    #[must_use]
+    pub fn with_gain_automation(mut self, automation: TrackGainAutomation) -> Self {
+        self.gain_automation = Some(automation);
+        self
+    }
+
+    /// 设静态声相：**位置**经调用方给的既有等功率曲线，并由
+    /// [`centered_pan_gains`] 统一中心规则（`pan == 0` ⇒ `(1.0, 1.0)`，⛔ 不是
+    /// `pan_gains(0)` 的 0.707）。
+    #[must_use]
+    pub fn with_pan<F>(mut self, pan: f32, curve: F) -> Self
+    where
+        F: Fn(f32) -> (f32, f32),
+    {
+        let (left, right) = centered_pan_gains(pan, curve);
+        self.pan_left = left;
+        self.pan_right = right;
+        self
+    }
+
+    /// 恒等 ⇒ [`Self::apply`] 一个样本都不碰。
+    #[must_use]
+    pub fn is_identity(&self) -> bool {
+        self.gain == 1.0
+            && self.pan_left == 1.0
+            && self.pan_right == 1.0
+            && self
+                .gain_automation
+                .as_ref()
+                .is_none_or(TrackGainAutomation::is_identity)
+    }
+
+    /// 在**插入链之后**应用这一级：先推子（含可选 R55 自动化），后声相。
+    ///
+    /// 声相口径与源侧静态声相**同一形状**：第 0 声道左、第 1 声道右；非中心时
+    /// 其余声道不参与（置 0）。
+    fn apply(&mut self, out: &mut [f32], first_frame: u64, frames: usize, channels: usize) {
+        if channels == 0 || frames == 0 || self.is_identity() {
+            return;
+        }
+        let frames = frames.min(out.len() / channels);
+        if frames == 0 {
+            return;
+        }
+        match self.gain_automation.as_mut() {
+            Some(automation) => {
+                automation.apply_gain_block(out, first_frame, frames, channels, self.gain);
+            }
+            None => {
+                if self.gain != 1.0 {
+                    for sample in &mut out[..frames * channels] {
+                        *sample *= self.gain;
+                    }
+                }
+            }
+        }
+        if self.pan_left != 1.0 || self.pan_right != 1.0 {
+            for frame in 0..frames {
+                let base = frame * channels;
+                out[base] *= self.pan_left;
+                if channels > 1 {
+                    out[base + 1] *= self.pan_right;
+                }
+                for channel in 2..channels {
+                    out[base + channel] = 0.0;
+                }
+            }
+        }
+    }
 }
 
 /// 编译后的执行计划。
@@ -678,6 +814,9 @@ impl RenderPlan {
                     delay_lines: Vec::new(),
                     scratch: vec![0.0; block_width],
                     inserts,
+                    // 默认恒等：没有调用方挂总线推子 / 主总线声相时，`render_node`
+                    // 的最后一级一个样本都不碰（零音频回归）。
+                    output: OutputStage::new(),
                 }
             })
             .collect();
@@ -794,6 +933,19 @@ impl RenderPlan {
         false
     }
 
+    /// 给一个节点挂**输出级**（任务单 `#296`：总线推子 / 主总线声相）。
+    ///
+    /// 落点是 `render_node` 的**插入链之后**。恒等输出级可以挂（一个样本都不碰）；
+    /// 返回 `false` = 该节点不在保留子图（被剪枝或未知）⇒ 调用方据此如实登记，
+    /// 而不是谎称"推子已应用"。
+    pub fn attach_output_stage(&mut self, node: EntityId, stage: OutputStage) -> bool {
+        let Some(slot) = self.slot_of.get(&node).copied() else {
+            return false;
+        };
+        self.states[slot].output = stage;
+        true
+    }
+
     /// 保留子图里全部入边身份（按 `(层号, EntityId)` 与归约顺序）。
     ///
     /// 读数层用它判定一条 `SendGain` 泳道的落点是否真的会进这次渲染 ——
@@ -893,6 +1045,10 @@ impl RenderPlan {
             if let Some(inserts) = &mut state.inserts {
                 inserts.reset();
             }
+            // 输出级的推子自动化（任务单 `#296`）同样是跨执行存活的时间状态。
+            if let Some(automation) = state.output.gain_automation.as_mut() {
+                automation.reset_for_execution();
+            }
         }
 
         // ---- 1. 先校验整张源表, 再装载 ----
@@ -982,7 +1138,8 @@ impl RenderPlan {
     }
 }
 
-/// 渲染一个节点的一块：**输入端求和**（自己的源 ＋ 全部入边）→ 插入链 → 输出。
+/// 渲染一个节点的一块：**输入端求和**（自己的源 ＋ 全部入边）→ 插入链 → **输出级**
+/// （[`OutputStage`]，任务单 `#296`）。
 ///
 /// ⭐ 任务单 `#240`（Logic Pro 的通道条语义）：Logic 的通道条只有一种形状 ——
 /// `输入端求和 → 插入链 → 输出`，软件音源的输出就接在**输入端**。因此这里**不是**
@@ -1007,6 +1164,7 @@ fn render_node(
         delay_lines,
         scratch,
         inserts,
+        output,
     } = state;
 
     // ---- 输入端: 自己的源（若有）先写进来 ----
@@ -1090,6 +1248,17 @@ fn render_node(
             }
         }
     }
+    // ---- 输出级（任务单 `#296`）：**插入链之后**、母线求和之前 ----
+    //
+    // 这是"通道条"的最后一级（源 → 插入 → 推子 → 声相 → 母线）。本单只让
+    // 总线节点有推子、主总线有声相（见 [`OutputStage`] 的文档）；恒等时
+    // `apply` 第一条判据就返回 ⇒ 其它节点、以及没有接线过的计划逐位不变。
+    output.apply(
+        buffer,
+        context.first_frame,
+        context.frames,
+        context.channels,
+    );
     Ok(())
 }
 

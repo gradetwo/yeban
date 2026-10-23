@@ -1008,8 +1008,9 @@ pub fn device_param_lane_is_applicable(
 /// 这是 [`unsupported_lane_reason`] 的返回值，也是 `yeban_edit_automation` 读侧
 /// `residualReason` 的**唯一**字面量来源（⛔ 不在 MCP 侧再拼一份）。
 ///
-/// ⚠ 名字 `BusTrack` 的口径是"**该轨在渲染计划里没有源落点**"：它同时覆盖
-/// "有入边的总线轨"与"不在保留子图里的不可达轨"（两者都不是 `source_nodes`）。
+/// ⚠ 名字 `BusTrack` 的口径是"**该轨在渲染计划里没有落点**"：它同时覆盖
+/// "有入边的总线轨上的 `TrackPan`（任务单 `#296` B2：总线声相本单不做）"与
+/// "不在保留子图里的不可达轨（`TrackVolume` / `TrackPan` 都没有落点）"。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LaneResidual {
     /// `Macro`：宏的级联量纲尚未接线（`MacroMapping` 只有 `depth`，参数值域住在
@@ -1021,12 +1022,13 @@ pub enum LaneResidual {
     /// ⚠ 名字里的 `NotChannelStrip` 是**外部契约的稳定串**，本单 `#293` 扩到
     /// Freeverb/卷积后**不改**：它仍是“离线插入链没有这个落点”的唯一残差值。
     DeviceParamNotChannelStrip,
-    /// 目标轨**没有源落点**（有入边的总线轨，或不在渲染计划里的不可达轨）。
+    /// 目标轨**没有落点**：
+    /// - `TrackVolume`：不在渲染计划里（不可达轨）。计划内的总线轨与源轨**都有**落点
+    ///   （总线轨是 `#296` 新增的输出级推子；源轨是源侧静态推子）；
+    /// - `TrackPan`：有入边的总线轨（`#296` B2：总线声相本单不做）或不可达轨。
     BusTrack,
     /// `SendGain` 的路由边不在**保留子图**里（被剪枝）。
     PrunedEdge,
-    /// `TrackPan` 落在**主总线**上（主总线没有声相级；与 `masterPan` 同一条缺口）。
-    MasterPan,
 }
 
 impl LaneResidual {
@@ -1038,7 +1040,6 @@ impl LaneResidual {
             Self::DeviceParamNotChannelStrip => "deviceParamNotChannelStrip",
             Self::BusTrack => "busTrack",
             Self::PrunedEdge => "prunedEdge",
-            Self::MasterPan => "masterPan",
         }
     }
 }
@@ -1049,9 +1050,11 @@ impl LaneResidual {
 /// `RenderPlan::edge_ids()`），因此本函数与 `yeban_render_master` 的
 /// `AutomationReport`（`data.automation[].supported`）是**同一份事实**：
 ///
-/// - `TrackVolume`：主总线，或计划里的源节点；
+/// - `TrackVolume`：主总线，或**计划里的任何节点**（`#296`；源节点在源侧乘、总线节点
+///   在新增的输出级乘；只有**不可达轨**仍为 `busTrack`）；
 /// - `SendGain`：边在保留子图里（`#256`）；
-/// - `TrackPan`：非主总线的源节点（`#257`；主总线没有声相级）；
+/// - `TrackPan`：主总线（`#296` 起有声相落点）或计划里的源节点（`#257`）；
+///   ⚠ 有入边的**总线轨**仍是 `busTrack` —— 总线声相是 `#296` B2 明确不做的后续项；
 /// - `DeviceParam`：节点在计划里且参数名有**插入链落点**（通道条 / Freeverb 标量 /
 ///   卷积标量；`#266`/`#267`/`#293`）；
 /// - `Macro`：永不落点（量纲未接线）。
@@ -1068,7 +1071,9 @@ pub fn unsupported_lane_reason(
 ) -> Option<LaneResidual> {
     match target {
         AutomationTarget::TrackVolume { track_id } => {
-            if *track_id == project.master_bus_track_id || source_nodes.contains(track_id) {
+            // ⭐ `#296`：计划里的**总线轨**也有落点了（`render_node` 的输出级推子）。
+            // 因此判据从"有源落点"改成"在保留子图里"：不可达轨仍如实报 `busTrack`。
+            if *track_id == project.master_bus_track_id || rendered_nodes.contains(track_id) {
                 None
             } else {
                 Some(LaneResidual::BusTrack)
@@ -1082,11 +1087,12 @@ pub fn unsupported_lane_reason(
             }
         }
         AutomationTarget::TrackPan { track_id } => {
-            if *track_id == project.master_bus_track_id {
-                Some(LaneResidual::MasterPan)
-            } else if source_nodes.contains(track_id) {
+            if *track_id == project.master_bus_track_id || source_nodes.contains(track_id) {
+                // ⭐ `#296`：主总线现在有真正的声相落点（静态 `pan` 与 `TrackPan`
+                // 自动化都乘在母带样本上）；源节点仍走 `#257` 的源侧门。
                 None
             } else {
+                // 有入边的总线轨：总线声相是 `#296` B2（本单不做）⇒ 继续如实登记。
                 Some(LaneResidual::BusTrack)
             }
         }

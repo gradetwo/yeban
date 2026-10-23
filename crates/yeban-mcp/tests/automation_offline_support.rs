@@ -13,8 +13,8 @@
 //! | :--- | :--- |
 //! | 写 `TrackVolume` ⇒ `appliedInOfflineRender:true`，导出 `unsupported` 不含 `automationLanes` | [`a_track_volume_point_is_reported_as_applied_and_the_export_agrees`] |
 //! | 写 `Macro` ⇒ `false` ＋ `"macro"`，导出真的登记 `automationLanes` | [`a_macro_point_is_reported_as_not_applied_and_the_export_agrees`] |
-//! | 写**主总线** `TrackPan` ⇒ `false` ＋ `"masterPan"`，导出真的登记 | [`master_pan_is_reported_as_not_applied_and_the_export_agrees`] |
-//! | 写**总线轨** `TrackVolume` ⇒ `false` ＋ `"busTrack"`（同一个探针的另一支） | [`a_bus_track_volume_point_is_reported_as_not_applied`] |
+//! | 写**主总线** `TrackPan` ⇒ `true`、无残差，导出**不**登记（`#296` 起有声相落点） | [`master_pan_is_reported_as_applied_and_the_export_agrees`] |
+//! | 写**不可达总线轨** `TrackVolume` ⇒ `false` ＋ `"busTrack"`（`#296` 正对照：可达总线已转 supported） | [`an_unreachable_bus_track_volume_point_is_still_reported_as_not_applied`] |
 //! | 写**非通道条** `DeviceParam` ⇒ `false` ＋ `"deviceParamNotChannelStrip"` | [`a_non_channel_strip_device_param_is_reported_as_not_applied`] |
 //!
 //! 边界：本文件只证"写侧读数"与"导出读数"**同源且一致**，⛔ 不证听感。
@@ -192,22 +192,24 @@ fn a_macro_point_is_reported_as_not_applied_and_the_export_agrees() {
     assert_eq!(macro_lane["applied"], false, "{macro_lane}");
 }
 
-/// ⭐ 判据 3：写**主总线** `TrackPan` ⇒ 写侧说 `false` ＋ `"masterPan"`，导出真的登记。
+/// ⭐ 判据 3（`#296` 更新）：写**主总线** `TrackPan` ⇒ 写侧说 `true`、无残差，
+/// 导出读数 `supported:true` 且**不再**登记 `automationLanes`。主总线声相现在
+/// 真的有落点（静态 `pan` 走计划的输出级，自动化在执行之后乘绝对左右增益）。
 #[test]
-fn master_pan_is_reported_as_not_applied_and_the_export_agrees() {
+fn master_pan_is_reported_as_applied_and_the_export_agrees() {
     let scratch = Scratch::new("master-pan");
     let project = filled_project();
     let master = project.master_bus_track_id;
     let mut dispatcher = dispatcher(project, &scratch.project());
 
     let data = write_point(&mut dispatcher, master, "TrackPan", json!({}));
-    assert_eq!(data["appliedInOfflineRender"], false, "{data}");
-    assert_eq!(data["residualReason"], "masterPan", "{data}");
+    assert_eq!(data["appliedInOfflineRender"], true, "{data}");
+    assert!(data["residualReason"].is_null(), "{data}");
 
     let rendered = render(&mut dispatcher, &scratch.wav());
     assert!(
-        unsupported_has_automation_lanes(&rendered),
-        "写侧说主总线声相不应用 ⇒ 导出必须真的登记: {rendered}"
+        !unsupported_has_automation_lanes(&rendered),
+        "主总线声相真的被应用 ⇒ 导出不许再登记 automationLanes: {rendered}"
     );
     let lanes = rendered["automation"]["tracks"][0]["lanes"]
         .as_array()
@@ -216,13 +218,16 @@ fn master_pan_is_reported_as_not_applied_and_the_export_agrees() {
         .iter()
         .find(|lane| lane["target"] == "TrackPan")
         .expect("导出读数里必须有主总线 TrackPan 泳道");
-    assert_eq!(pan_lane["supported"], false, "{pan_lane}");
+    assert_eq!(pan_lane["supported"], true, "{pan_lane}");
+    assert_eq!(pan_lane["applied"], true, "{pan_lane}");
 }
 
-/// ⭐ 同一个探针的另一支：**总线轨**（Aux 有入边 ⇒ 不是源节点）的 `TrackVolume`
-/// 也没有落点 —— 写侧与导出同样一致。
+/// ⭐ 同一个探针的另一支（**`#296` 正对照**）：样本里的 Aux 只有 `lead → aux`、
+/// **没有 `aux → master`** ⇒ 它到不了母带、被计划剪枝 ⇒ `TrackVolume` 仍**没有**
+/// 落点（`busTrack`）。⚠ 有 `aux → master` 的**可达**总线轨已转成 `supported:true`
+/// （见 `render_master.rs` 的 `a_reachable_bus_volume_lane_is_applied_at_the_output_stage`）。
 #[test]
-fn a_bus_track_volume_point_is_reported_as_not_applied() {
+fn an_unreachable_bus_track_volume_point_is_still_reported_as_not_applied() {
     let scratch = Scratch::new("bus-volume");
     let project = filled_project();
     let bus = project
@@ -233,11 +238,19 @@ fn a_bus_track_volume_point_is_reported_as_not_applied() {
         .id;
     let mut dispatcher = dispatcher(project, &scratch.project());
 
+    // 正对照的机械锚：写泳道**之前**的导出字节。
+    let baseline = render(&mut dispatcher, &scratch.wav());
+    let baseline_sha = baseline["sha256"].clone();
+
     let data = write_point(&mut dispatcher, bus, "TrackVolume", json!({}));
     assert_eq!(data["appliedInOfflineRender"], false, "{data}");
     assert_eq!(data["residualReason"], "busTrack", "{data}");
 
     let rendered = render(&mut dispatcher, &scratch.wav());
+    assert_eq!(
+        rendered["sha256"], baseline_sha,
+        "不可达 Aux 的泳道没有落点 ⇒ 一个字节都不许变: {rendered}"
+    );
     assert!(
         unsupported_has_automation_lanes(&rendered),
         "总线轨的音量没有源落点 ⇒ 导出必须真的登记: {rendered}"

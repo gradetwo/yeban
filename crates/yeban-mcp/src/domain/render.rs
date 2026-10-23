@@ -38,7 +38,8 @@
 //! `gain_db` 门控、参与 [ARCH-PDC-001] 的延迟对齐）、MIDI 音符（起止 tick、音高、力度、
 //! 微时值、**概率触发**、**连击**——见下）、placement 的 `start_tick`（缺省 0）、`muted`、音轨 `volume_db` /
 //! `pan`（等功率 −3 dB）/ `mute` / `solo`（见下）、**未旁通设备的 `latency_samples`**
-//! （PDC 对齐）、边增益 `gain_db`、Master 轨的 `volume_db`、确定性 TPDF 抖动与
+//! （PDC 对齐）、边增益 `gain_db`、Master 轨的 `volume_db` 与 **`pan`**（`#296`）、
+//! 总线轨的 `volume_db`（`#296`，输出级推子）、确定性 TPDF 抖动与
 //! 24-bit 量化、RIFF/RF64/BW64 容器与 `bext` 元数据、峰值归一化。
 //!
 //! **明确没做**（只要工程里真的出现，就会同时出现在响应的 `unsupported` 与
@@ -49,13 +50,12 @@
 //! | `audioClips` | **收窄后的口径**：仅当工程在 `assets` 索引里**声明**了这个资产、而会话 CAS 池里**没有它的字节**时才登记（`Domain::open_in_memory` 注入的会话就是这种形态）。此时该片段当静音，且响应 `data.audio.assets[].bytesPresent = false` 如实说明。读 `.yeban` 容器时索引与字节由 `store` 双向校验必然同时存在，因此这一项在真实容器工程上**不会**出现 |
 //! | `deviceChainDsp` | 设备链里**本切片没有消费**的参数（**压缩** / 未知旋钮）没有求值；增益、EQ、低通、Freeverb、卷积已求值 |
 //! | `externalPlugins` | `DeviceKind::ExternalInstrument/ExternalEffect` 没有宿主 |
-//! | `automationLanes` | ⭐ `#243` / `#256` / `#257` / `#266` / `#267` / `#293`：**仅**指仍有可求值点、但本渲染器不消费的自动化目标（`Macro`；`DeviceParam` 里**不是**插入链落点的名字（**压缩** / **卷积 IR 形状** `conv_ir_decay*`、`conv_ir_seed` / 未知旋钮）、或指向旁通/非对应器件族来源设备的情形），以及 `TrackVolume` 落在**总线轨**上（总线没有源、静态音量也没有落点）、`SendGain` 落在**被剪枝的边**上、`TrackPan` 落在**主总线**上的情形。`TrackVolume` 在源节点与主总线上**真的被求值**；`SendGain` 在保留子图的入边归约里**真的被求值**（任务单 `#256`）；`TrackPan` 在源节点的源输出之后**真的被求值**（任务单 `#257`）；`DeviceParam` 的通道条 / Freeverb / 卷积标量字段（`data.appliedDeviceParamNames` 逐条列出）在该节点的插入链上**真的被求值**（`#266` 开一个名字 / `#267` 扩到通道条整组 / `#293` 扩到混响与卷积标量，块边界 `set_params`）；空泳道与 `readEnabled:false` 的泳道**不**登记（一条没有点的曲线没有“少做了什么”）。逐泳道的支持/应用读数见 `data.automation` |
+//! | `automationLanes` | ⭐ `#243` / `#256` / `#257` / `#266` / `#267` / `#293`：**仅**指仍有可求值点、但本渲染器不消费的自动化目标（`Macro`；`DeviceParam` 里**不是**插入链落点的名字（**压缩** / **卷积 IR 形状** `conv_ir_decay*`、`conv_ir_seed` / 未知旋钮）、或指向旁通/非对应器件族来源设备的情形），以及 `TrackVolume` 落在**不可达轨**上（不在保留子图）、`SendGain` 落在**被剪枝的边**上、`TrackPan` 落在**有入边的总线轨**上（任务单 `#296` B2：总线声相本单不做）的情形。`TrackVolume` 在源节点、主总线与**总线轨**（`#296` 的新增输出级推子）上**真的被求值**；`TrackPan` 在**主总线**上也真的被求值（`#296`）；`SendGain` 在保留子图的入边归约里**真的被求值**（任务单 `#256`）；`TrackPan` 在源节点的源输出之后**真的被求值**（任务单 `#257`）；`DeviceParam` 的通道条 / Freeverb / 卷积标量字段（`data.appliedDeviceParamNames` 逐条列出）在该节点的插入链上**真的被求值**（`#266` 开一个名字 / `#267` 扩到通道条整组 / `#293` 扩到混响与卷积标量，块边界 `set_params`）；空泳道与 `readEnabled:false` 的泳道**不**登记（一条没有点的曲线没有“少做了什么”）。逐泳道的支持/应用读数见 `data.automation` |
 //! | `noteSlide` | 滑音没有实现 |
 //! | `notePitchBend` | 弯音曲线没有求值 |
 //! | `noteLyrics` | 歌词/音素没有歌声合成 |
 //! | `busTrackClips` | 非源节点（总线/主轨）上的片段没有渲染（只有源节点有音源） |
 //! | `sidechainRouting` | 侧链边按普通音频边处理（`yeban-render` 的既有边界） |
-//! | `masterPan` | Master 轨的 `pan` 没有应用（母带输出的声相由总线求和决定）。⚠ `master` 的 `volume_db` **有**应用，`TrackVolume` 自动化也走第二个站点（执行之后）。⚠ `#257`：`TrackPan` 落在**主总线**上的泳道因此仍登记 `automationLanes`（`supported: false`）—— 主总线没有声相落点 |
 //! | `sfzAmplitude` | ⭐ `#274`：命中区域的 **`amplitude_oncc*`（CC 调制那一半）** 没有求值 —— 静态 `amplitude` 已由引擎的 SFZ 支路应用；CC 增量需要 CC 状态，本层没有。**只**在真的声明了 CC 调制时出现（静态 `amplitude=50` ⇒ ⛔ 不报） |
 //! | `sfzTuneCcModulation` | ⭐ `#223`：命中区域的 **`tune` 的 CC 调制**（`tune*ccN`，`pitch*ccN` 亦归此族）没有求值 —— 基准 `tune` 已烘进 `pitch_ratio`，CC 增量需要 CC 状态，本层没有。只在真的声明时出现 |
 //! | `sfzVolumeCcModulation` | ⭐ `#223`：命中区域的 **`volume` 的 CC 调制**（`volume*ccN` / `gain_ccN`）没有求值 —— 基准 `volume` 已折进 `total_gain()`，CC 增量（dB）需要 CC 状态，本层没有。只在真的声明时出现 |
@@ -430,8 +430,8 @@ use yeban_render::inserts::{
 };
 use yeban_render::mastering;
 use yeban_render::render::{
-    AudioSource, BlockContext, L1_BLOCK_SIZE, RenderError, RenderOptions, RenderOutput, RenderPlan,
-    db_to_linear, track_latencies,
+    AudioSource, BlockContext, L1_BLOCK_SIZE, OutputStage, RenderError, RenderOptions,
+    RenderOutput, RenderPlan, db_to_linear, track_latencies,
 };
 // **响度计量的唯一实现**在 `yeban-dsp::loudness`（ITU-R BS.1770-4 的 K 加权 +
 // 门限积分）。本模块**不复制**它一个表达式：走 `yeban-render` 的再导出，因为
@@ -585,16 +585,24 @@ pub const SAMPLER_MIXED_SOURCE_KIND: &str = "sfz-sampler+audio-clip";
 /// | `sfzRegionEnvelope` | 引擎真的应用 `ampeg_*`（`#92`） |
 /// | `sfzRegionLayering` | 引擎把**每一条**命中区域都建成声部并叠加（⛔ 不再只取第一条） |
 ///
+/// ⭐ `#296`：**13 → 12** —— `masterPan` 退役。理由不是"我们决定不报它"，而是
+/// 主总线的 `pan` **真的被乘了**：静态 `pan` 走 `RenderPlan` 的新增输出级
+/// （`OutputStage::with_pan` + `centered_pan_gains`，`pan == 0` ⇒ `(1,1)`），
+/// `TrackPan` 自动化在执行之后按块乘绝对左右增益（用户可见的功能缺失补上了）。
+///
+/// | 退役的键 | 为什么不再报 |
+/// | :--- | :--- |
+/// | `masterPan` | 主总线 `pan != 0` 现在真的改变母带左右声道（`#296`） |
+///
 /// ⚠ `sfzAmplitude` **收窄不退役**：静态 `amplitude` 已由引擎应用，但
 /// `amplitude_oncc*` 需要 CC 状态（本层没有）⇒ 只有 **CC 那一半**仍登记。
 /// `sfzTuneCcModulation` / `sfzVolumeCcModulation` 同理（模型没有 CC 状态）。
-pub const KNOWN_UNSUPPORTED_KEYS: [&str; 13] = [
+pub const KNOWN_UNSUPPORTED_KEYS: [&str; 12] = [
     "audioClips",
     "automationLanes",
     "busTrackClips",
     "deviceChainDsp",
     "externalPlugins",
-    "masterPan",
     "noteLyrics",
     "notePitchBend",
     "noteSlide",
@@ -1602,10 +1610,13 @@ pub struct AutomationReport {
 impl AutomationReport {
     /// 扫描工程，生成读数。
     ///
-    /// - `source_nodes` 用来判定 `TrackVolume` 的落点是否可应用（源节点 / 主总线）；
+    /// - `source_nodes` 用来判定非主总线的 `TrackPan` 是否有源侧落点（`#257`）；
+    ///   有入边的**总线轨**仍因此拿不到 `TrackPan` 落点（`#296` B2）；
     /// - `rendered_edges` 是**保留子图里的入边身份**（`RenderPlan::edge_ids()`）——
     ///   `SendGain` 只有落在这张表里才算“会被累加”（任务单 `#256`）；
     /// - `rendered_nodes` 是**保留子图里的全部节点**（`RenderPlan::nodes()`）——
+    ///   `TrackVolume` 在计划里的**任何**节点上都有落点（源轨在源侧、总线轨在
+    ///   `#296` 的输出级、主总线在执行之后；只有不可达轨仍 `busTrack`）；
     ///   `DeviceParam` 的落点是该节点的插入链（通道条 / Freeverb / 卷积标量），因此
     ///   只有节点在计划里、且参数名有落点（`device_param_lane_is_applicable`）才算
     ///   “会被应用”（`#266`/`#267`/`#293`）。
@@ -2400,15 +2411,66 @@ pub fn build(
     for automation in device_automations.into_values().flatten() {
         plan.attach_device_param_automation(automation);
     }
+    // ⭐ 任务单 `#296`：总线的**输出级推子**（`render_node` 的插入链之后）。
+    //
+    // 只挂"计划里、非源节点、非主总线"的节点 —— 源节点的音量仍在源侧（引擎的
+    // `track_gain` / 片段增益 / `TrackSource` 的 R55），主总线的推子仍在第 9 步
+    // （执行之后）；本层⛔ 不搬家 ⇒ 普通 MIDI/音频轨的行为与本单之前**逐位相同**。
+    // 没有落点（不在保留子图）时 `attach_output_stage` 返回 `false`，本层不谎称应用。
+    for &node in &nodes {
+        if node == project.master_bus_track_id || source_nodes.contains(&node) {
+            continue;
+        }
+        let Some(track) = project.tracks.get(&node) else {
+            continue;
+        };
+        let mut stage = OutputStage::new().with_gain(db_to_linear(track.volume_db));
+        if track
+            .automation_lanes
+            .keys()
+            .any(|target| matches!(target, AutomationTarget::TrackVolume { .. }))
+        {
+            // 恒等泳道也挂：`apply_gain_block` 的恒等快路径一个样本都不多碰。
+            stage =
+                stage.with_gain_automation(TrackGainAutomation::new(project, node, sample_rate));
+        }
+        plan.attach_output_stage(node, stage);
+    }
+    // ⭐ 任务单 `#296`：主总线的**声相**（裁决 A / B3 / B4）。
+    //
+    // 静态声相走计划的输出级，曲线是**既有**的 [`pan_gains`] 且 `pan == 0` 由
+    // `centered_pan_gains` 统一成 `(1, 1)`（⛔ 0.707）。`TrackPan` 自动化非恒等时
+    // **关掉静态声相**，改由执行之后乘绝对左右增益 —— 与 `#257` 的源侧纪律同一条
+    // （否则同一位置会乘两次）。恒等路径：`master.pan == 0` ⇒ 输出级是恒等，一个
+    // 样本都不碰。
+    let mut master_pan_automation: Option<TrackPanAutomation> = None;
+    if let Some(master) = project.tracks.get(&project.master_bus_track_id) {
+        let automation = TrackPanAutomation::new(project, master.id, sample_rate);
+        let static_pan = if automation.is_identity() {
+            master.pan
+        } else {
+            0.0
+        };
+        plan.attach_output_stage(
+            master.id,
+            OutputStage::new().with_pan(static_pan, pan_gains),
+        );
+        if !automation.is_identity() {
+            master_pan_automation = Some(automation);
+        }
+    }
     let mut output = plan
         .execute(registry)
         .map_err(|error| render_error("渲染执行", &error))?;
-    // 9. Master 轨增益 (在源侧无法表达: 它是总线节点)。pan 无法应用 ⇒ 登记。
+    // 9. Master 轨增益 (在源侧无法表达: 它是总线节点)。
     //
     //    ⭐ 这是音量自动化的**第二个站点**：主总线没有源，`TrackVolume` 泳道不能在
     //    `TrackSource` 里乘。这里在整段母带上按 128 帧块求值 + 逐样本平滑，乘
     //    `静态主推子 × R55 比率`（`mute` 时静态主推子是 0.0）。
     //    恒等快路径仍走**原来那一句** `scale_in_place`，因此没有自动化的工程逐字节不变。
+    //    ⭐ `#296`：主总线的**声相**不再登记为不支持 —— 静态 `pan` 在计划的输出级里
+    //    乘，`TrackPan` 自动化在下面（推子之后）按块乘绝对左右增益（裁决 B4：
+    //    推子 → 声相）。
     if let Some(master) = project.tracks.get(&project.master_bus_track_id) {
         let master_gain = if master.mute {
             0.0
@@ -2430,8 +2492,11 @@ pub fn build(
                 master_gain,
             );
         }
-        if master.pan != 0.0 {
-            note_unsupported(&mut unsupported, &mut counts, "masterPan");
+        // ⭐ `#296`：非恒等的 `TrackPan` 泳道（静态声相已在计划里被关掉 ⇒ 这里乘的
+        // 是**绝对**左右增益，不是比率）。恒等 ⇒ `None`，一个样本都不碰。
+        if let Some(automation) = master_pan_automation.as_mut() {
+            let frames = output.samples.len() / MASTER_CHANNELS;
+            automation.apply_pan_block(&mut output.samples, 0, frames, MASTER_CHANNELS, pan_gains);
         }
     }
     // 9-master-digest. 主总线增益/自动化是**执行之后**才乘的，而 `RenderOutput::digest`

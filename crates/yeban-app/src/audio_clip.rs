@@ -319,6 +319,10 @@ fn clip_frame_span(start_tick: u64, duration_ticks: u64, bpm: f64, sample_rate: 
 /// `static_pan_suppressed` 与 [`crate::render_core::track_pan_of`] 同一个开关（任务单
 /// `#257`）：这条轨有**非恒等**的 `TrackPan` 自动化 ⇒ 片段增益里不带静态声相
 /// （`(1.0, 1.0)`），声相由源输出之后的自动化门**只乘一次**。
+///
+/// `static_volume_suppressed`（任务单 `#296`）：这条轨是**总线节点**（有入边）⇒
+/// 推子改由 `RenderPlan` 的输出级乘，片段增益里**不带** `TrackV3::volume_db`
+/// （可闻门仍在）。否则"自有音源"会被乘两次。
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn resolve_track_clips(
     project: &YebanProjectV1,
@@ -329,6 +333,7 @@ pub(crate) fn resolve_track_clips(
     cache: &mut BTreeMap<AssetHash, AssetResolution>,
     skipped: &mut Vec<String>,
     static_pan_suppressed: bool,
+    static_volume_suppressed: bool,
 ) -> TrackClips {
     let empty = TrackClips {
         sources: Vec::new(),
@@ -341,7 +346,9 @@ pub(crate) fn resolve_track_clips(
     // solo 语义与 MCP 的 `build_source` 同式（只作用于源轨）。
     let any_solo = project.tracks.values().any(|candidate| candidate.solo);
     let audible = !track.mute && (!any_solo || track.solo || track.solo_safe);
-    let track_volume_db = if track.volume_db.is_finite() {
+    let track_volume_db = if static_volume_suppressed {
+        0.0
+    } else if track.volume_db.is_finite() {
         track.volume_db
     } else {
         0.0
