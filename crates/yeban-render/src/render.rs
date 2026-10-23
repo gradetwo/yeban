@@ -281,6 +281,26 @@ pub struct BusInput {
     pub delay_frames: u32,
 }
 
+/// 一个节点的插入链**动态级读数**（任务单 `#303`；只读）。
+///
+/// 全部字段读自 `yeban_dsp::ChannelStrip` 自己的计数器（见
+/// [`RenderPlan::insert_meter_readings`]）—— 判据里的"GR 读数"就是这里出来的数。
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct InsertMeterReading {
+    /// 节点身份。
+    pub node: EntityId,
+    /// 通道条处理过的帧数（0 = 本题没有通道条）。
+    pub strip_frames: u64,
+    /// 被压缩过的帧数（压缩器每帧一次 `process_gain`）。
+    pub gain_reductions: u64,
+    /// 全程最大增益衰减（dB，`≥ 0`；0 = 从未压过）。
+    pub max_reduction_db: f32,
+    /// 读完那一刻的增益衰减（dB，`≥ 0`）。
+    pub current_reduction_db: f32,
+    /// 检波器看到的输入电平（dBFS，**声相之前**；见 `inserts` 模块头 §1.1）。
+    pub detector_level_db: f32,
+}
+
 /// 一条入边在固定归约顺序里的位置。
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Contribution {
@@ -942,6 +962,32 @@ impl RenderPlan {
             }
         }
         out
+    }
+
+    /// 每个**有通道条运行态**的节点的动态级读数（任务单 `#303`；只读，⛔ 不改音频）。
+    ///
+    /// 读的是器件自己的计数器（`ChannelStrip::gain_reduction_count` 等），因此这些数
+    /// 与判据里的"GR 读数"是**同一个**来源，⛔ 不是第二套测量。返回顺序 = 节点槽位序
+    /// （`(层号, EntityId)`），输出稳定。
+    ///
+    /// ⚠ `execute` **之前**调用得到全零（器件还没有推进）；一次 `execute` 之后读到的
+    /// 是**本次**渲染的累计值（`execute` 开头会 `reset` 器件状态）。
+    #[must_use]
+    pub fn insert_meter_readings(&self) -> Vec<InsertMeterReading> {
+        self.states
+            .iter()
+            .filter_map(|state| {
+                let meter = state.inserts.as_ref()?.strip_meter()?;
+                Some(InsertMeterReading {
+                    node: state.node,
+                    strip_frames: meter.strip_frames,
+                    gain_reductions: meter.gain_reductions,
+                    max_reduction_db: meter.max_reduction_db,
+                    current_reduction_db: meter.current_reduction_db,
+                    detector_level_db: meter.detector_level_db,
+                })
+            })
+            .collect()
     }
 
     /// 某个总线节点的**归约顺序**（[`BusInput`] 列表, 按 `(source_node, edge_id)`

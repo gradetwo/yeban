@@ -24,16 +24,44 @@
 //!
 //! ## 1. 本切片接了什么 / 没接什么
 //!
-//! **接**：通道条的**输入增益 → 3 段 EQ → 低通滤波 → 输出增益**（与引擎同一个
-//! `yeban_dsp::ChannelStrip`）＋ Freeverb ＋ 卷积混响。
+//! **接**：通道条的**输入增益 → 3 段 EQ → 低通滤波 → 动态（压缩）→ 输出增益**
+//! （与引擎同一个 `yeban_dsp::ChannelStrip`）＋ Freeverb ＋ 卷积混响。
 //!
-//! **没接**（刻意，仍待裁决）：
+//! ### 1.1 ⭐ 压缩级接通（任务单 `#303`；**这是行为变更**）
 //!
-//! - **压缩**：实时侧的检波器看到的是**声相之前**的单声道信号（能量 1.0），离线侧
-//!   接在声相与求和之后（等功率居中时每声道 −3 dB）⇒ 同一个阈值在两条路上压缩量
-//!   不同。这不是"接上就完"的线性器件，需要单独裁决检波电平的口径；在那之前
-//!   **整级不执行**，写了压缩参数的名字会被 [`track_has_unhandled_dsp`] 判成
-//!   "仍有未消费的参数"⇒ MCP 如实登记 `deviceChainDsp`。
+//! `#303` 之前 [`InsertChain::effective_strip`] 无条件写
+//! `params.compressor_enabled = false`（旧 `:357`）⇒ 离线导出里**压缩级整级不执行**，
+//! 只有压缩参数的通道条被判成空链。三条前置裁决之后接通：
+//!
+//! 1. **检波参考点 = 声相之前**（与实时 `crates/yeban-engine/src/rt.rs:1857-1867`
+//!    → `:1888-1903` 同序：插入 → PDC → 声相）。离线为此加一条 **pre-pan tap**：
+//!    **会执行压缩的纯源轨**把声相从源侧搬到 [`crate::render::OutputStage`]
+//!    （插入链之后），源侧 `pan` 取 `(1, 1)` ⇒ 检波器看到的就是声相之前的信号。
+//!    ⚠ 总线 / 主总线的声相本来就在输出级 ⇒ 它们的插入点**一直**在声相之前。
+//!    ⭐ 这条搬迁**只对会压缩的轨生效**（[`compressing_nodes`]）：其余轨的声相
+//!    仍在源侧，**一个落点都不改**。
+//! 2. **接上就生效，没有"启用压缩"开关**（与 Logic Pro 一致）：写了一组压缩参数
+//!    （`threshold_db` / `ratio` / … 或显式 `compressor_enabled`）⇒ 该级执行；
+//!    一个都没写 ⇒ 不执行。
+//! 3. **无 lookahead、零延迟**：`yeban_dsp::compressor::Compressor::latency_samples()
+//!    == 0`（`compressor.rs:679-690`）⇒ **PDC 一条不动**。
+//!
+//! **旧工程兼容说明（行为变更，⛔ 不是回归）**：`#303` 之前导出的工程若写了压缩参数，
+//! 那台压缩器**从未执行**（母带里没有压缩）；`#303` 起同一份工程**会真的压** ⇒
+//! 导出字节与旧版本不同。没有写压缩参数的工程**逐字节不变**（`compressing_nodes` 为空）。
+//!
+//! ⚠ **旧 §1 那句话已作废**：原文写"离线接在声相与求和之后（等功率居中时每声道
+//! −3 dB）"—— **"−3 dB"这一半今天已经是假的**：[`crate::automation::centered_pan_gains`]
+//! 对 `pan == 0` 返回 `(1.0, 1.0)`（`#255` 之后的裁决，⛔ 0.707），所以居中信号在两条
+//! 路上本来就是同一个电平。仍在的差异只有"声相 ≠ 0 时声相乘在哪一级"的浮点结合顺序
+//! （见 §2）。
+//!
+//! **没接**：
+//!
+//! - **压缩参数的自动化**：静态投影消费压缩的 14 个拼写（[`is_supported_param`] 认它们），
+//!   但 [`StripField`] / [`DeviceParamField`] 刻意**不含**这些字段 ⇒ 指向压缩参数的
+//!   `DeviceParam` 泳道仍报 `deviceParamNotChannelStrip`（与 `#293` 的边界同款：
+//!   静态生效 ≠ 可自动化）。
 //! - **未知旋钮 / 外部器件**：同一条如实登记口径。
 //! - **主总线插入**（⚠ 本节在任务单 `#173` **已接通**，原文见 §1 的修订段）：
 //!   本模块的 [`crate::render::RenderPlan`] 现在给**每个**节点挂链，**包括 master**。
@@ -52,16 +80,22 @@
 //! ## 2. 顺序差异（⚠ 必须登记）
 //!
 //! ```text
-//! 实时：声源 → 插入（单声道）→ 声相 → 母线求和
-//! 离线：声源 → 声相 → 母线求和 → 插入（立体声）
+//! 实时：声源 → 插入（单声道）→ PDC → 声相 → 母线求和
+//! 离线：声源 → [会压缩的纯源轨：插入 → 声相；其余轨：声相 → 插入] → 母线求和
 //! ```
 //!
 //! - **增益 / EQ / 滤波逐声道线性等价**：声相是每声道的常数增益，线性时不变器件
 //!   与常数乘法可交换（`F(p·x) = p·F(x)`），所以这三级的**位置**差异不改变可听结果
 //!   （只差浮点舍入顺序）。低通的两声道各有一份状态，居中信号下与实时的单声道
 //!   滤波器逐样本同值。
-//! - **压缩仍然整级不执行**：见 §1 —— 检波器在声相之前/之后看到的电平不同，接上会
-//!   让同一个阈值在导出里少压（居中时低 3 dB），这不是本切片能单方面裁决的差异。
+//! - **压缩的检波参考点已对齐**（§1.1 的 pre-pan tap）：会压缩的纯源轨插入在声相
+//!   之前 ⇒ 检波电平与实时同一个口径（声相之前的能量 `1.0`；居中时 `pan = (1,1)`
+//!   本来就逐位相同）。⚠ 剩余差异两条，都**只影响会压缩的轨**：
+//!   (a) 实时是**单声道**插入、离线是**立体声联动**插入（检波 `max(l², r²)`）⇒
+//!   逐轨单声道源在居中/硬声相下都与实时同解，只有**总线立体声内容**才不同；
+//!   (b) 同一节点有 MIDI ＋ 音频片段时，**会压缩的**轨把声相乘在**求和之后**
+//!   （整条通道），而其余轨仍是逐源乘 ⇒ 两者只差浮点结合顺序（实测 ≤ 1 ulp；
+//!   读数见 `crates/yeban-app/tests/compressor_export.rs`）。
 //! - **Freeverb 的干湿比与宽度会有差异**：实时侧把**声相之前**的单声道信号同时喂给
 //!   L/R 再取中值；离线侧拿到的是**声相之后**的立体声（可能左右不同）。湿路径的输入
 //!   因此不同，`width` 的展开也不同。这是**听得见的口径差**，不是 bug；人耳验收时要
@@ -205,8 +239,8 @@ impl ConvolutionPlan {
 pub struct InsertChain {
     /// 通道条参数（增益 / EQ / 滤波 / 压缩）；`None` = 没有通道条来源。
     ///
-    /// ⚠ 投影**如实**保留引擎给出的 `compressor_enabled`，但离线运行态会把它关掉
-    /// （见 §1 的裁决）；是否真的执行某一级由 [`Self::is_empty`] 与运行态共同决定。
+    /// ⚠ 投影**如实**保留引擎给出的 `compressor_enabled`；`#303` 起运行态**照它执行**
+    /// （之前是无条件关掉）。是否真的执行某一级由 [`Self::is_empty`] 与运行态共同决定。
     strip: Option<ChannelStripParams>,
     /// Freeverb 参数；`None` = 本轨没有混响。
     reverb: Option<ReverbParams>,
@@ -329,39 +363,53 @@ impl InsertChain {
 
     /// 本链是否为空（没有任何**离线会执行**的器件）。
     ///
-    /// 只有压缩参数的通道条不算非空：压缩级在离线侧整级不执行（§1）。
+    /// ⭐ `#303`：**只有压缩参数的通道条算非空** —— 压缩级现在真的执行（§1.1）。
+    /// 反过来说，`compressor_enabled: 0` 且增益/EQ/滤波全关仍是空链（逐位不退化）。
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.effective_strip().is_none() && self.reverb.is_none() && self.convolution.is_none()
     }
 
+    /// 本链是否会执行**压缩级**（读数用：pre-pan tap 的判据就是它）。
+    ///
+    /// `true` 的条件：投影里有通道条、且 `compressor_enabled` 为真（写了一组压缩参数，
+    /// 或显式 `compressor_enabled != 0`）—— 与 [`Self::effective_strip`] 同一份参数，
+    /// ⛔ 不是第二套判定。
+    #[must_use]
+    pub fn compresses(&self) -> bool {
+        self.effective_strip()
+            .is_some_and(|params| params.compressor_enabled)
+    }
+
     /// 投影出来的通道条参数（判据用：把"将要交给器件的那个数"变成可读的）。
     ///
-    /// ⚠ 这里保留投影的**原样**（包括 `compressor_enabled`）；运行态会把压缩级关掉。
+    /// ⚠ 这里保留投影的**原样**（包括 `compressor_enabled`）；`#303` 起运行态照它执行
+    /// （之前是无条件关掉）。
     #[must_use]
     pub const fn strip(&self) -> Option<ChannelStripParams> {
         self.strip
     }
 
-    /// 实际会交给运行态的通道条参数：压缩级关掉，且"三级全关 + 增益 0 dB"⇒ `None`。
+    /// 实际会交给运行态的通道条参数：`compressor_enabled` **照投影执行**，
+    /// 且"三级全关 + 增益 0 dB"⇒ `None`。
     ///
     /// 例外：[`Self::force_strip`] 为真时**恒返回 `Some`** —— 那是"有设备参数泳道要改
     /// 这台器件"的编译期声明（任务单 `#266`），此时"全恒等参数"不是"没有器件"，
     /// 而是"器件此刻是恒等、等泳道来改它"。
     fn effective_strip(&self) -> Option<ChannelStripParams> {
-        let mut params = match self.strip {
+        let params = match self.strip {
             Some(params) => params,
             None if self.force_strip => forced_identity_strip(),
             None => return None,
         };
-        params.compressor_enabled = false;
         if self.force_strip {
             return Some(params);
         }
         let identity = params.input_gain_db == 0.0
             && params.output_gain_db == 0.0
             && !params.eq_enabled
-            && !params.filter_enabled;
+            && !params.filter_enabled
+            && !params.compressor_enabled;
         if identity { None } else { Some(params) }
     }
 
@@ -474,6 +522,29 @@ pub fn project_inserts_with_forced_strips(
     project_inserts_with_forced_instances(tracks, sample_rate, &forced)
 }
 
+/// 本工程里**离线会执行压缩级**的节点集合（任务单 `#303` 的 pre-pan tap 预扫描）。
+///
+/// ## 为什么需要"预扫描"
+///
+/// 两个导出（app 的 `render_core` / MCP 的 `domain::render`）必须在**构造音源之前**
+/// 知道"哪些轨会压缩" —— 因为"检波器看声相之前"这条裁决要求把**这些轨**的声相从
+/// 源侧搬到 `RenderPlan` 的输出级。插入链本身在音源之后才投影，所以这里用
+/// **同一份投影入口**（[`strip_source_params`]，与 `from_devices` 同一条"首个来源"
+/// 规则）做一次轻量预扫描：⛔ 不建运行态、⛔ 不烘卷积 IR。
+///
+/// 返回集合与 [`InsertChain::compresses`] 在**同一份工程 + 同一份设备链**上必须同解；
+/// 判据 `compressing_nodes_agree_with_the_compiled_chains`（`tests/insert_chain.rs`）钉住。
+#[must_use]
+pub fn compressing_nodes(tracks: &BTreeMap<EntityId, TrackV3>) -> BTreeSet<EntityId> {
+    tracks
+        .iter()
+        .filter(|(_, track)| {
+            strip_source_params(track).is_some_and(|params| params.compressor_enabled)
+        })
+        .map(|(&id, _)| id)
+        .collect()
+}
+
 /// 本轨是否仍有**离线路径没有消费**的设备参数（MCP 的 `deviceChainDsp` 登记口径）。
 ///
 /// 返回 `true` 的条件（任一成立）：
@@ -482,11 +553,12 @@ pub fn project_inserts_with_forced_strips(
 ///   后者是音源，其参数由音源负责）；
 /// - 有**非旁通**设备一个参数都没写（"没有参数可求值"不是"已经求值"—— 与既有
 ///   MCP 判据的口径一致，保留 `deviceChainDsp` 登记）；
-/// - 有**非旁通**设备的任一参数名不在本切片的白名单里（**压缩** / 未知第三方旋钮）。
+/// - 有**非旁通**设备的任一参数名不在本切片的白名单里（未知第三方旋钮 / 刻意不认的
+///   `filter_cutoff_hz` / `reverb_mix` / `reverb_width`）。
 ///
 /// 全部非旁通设备都是本切片认识并**真的执行**的内置效果器参数 ⇒ `false` ⇒ MCP
-/// 不再登记 `deviceChainDsp`（报一个已经做到的键就是假话）。增益 / EQ / 滤波已由
-/// 通道条执行；压缩仍整级不执行（§1），因此它的名字**仍然**登记。
+/// 不再登记 `deviceChainDsp`（报一个已经做到的键就是假话）。增益 / EQ / 滤波 / 压缩
+/// 都已被通道条执行（压缩自 `#303` 起，见 §1.1）⇒ 它们的名字**不再**登记。
 #[must_use]
 pub fn track_has_unhandled_dsp(track: &TrackV3) -> bool {
     track.devices.iter().any(|device| {
@@ -507,14 +579,40 @@ pub fn track_has_unhandled_dsp(track: &TrackV3) -> bool {
 ///
 /// 它**不是**另一张表：名字来自 [`DeviceParamField::from_name`]（通道条 / 混响 /
 /// 卷积标量的三张拼写表）＋ 三个**构造期** IR 形状名字（`conv_ir_decay*` /
-/// `conv_ir_seed`，静态投影会消费它们，但自动化不落点）。刻意**不含**压缩的七个
-/// 名字（`threshold*` / `ratio` / `knee*` / `detector*` / `attack*` / `release*` /
-/// `makeup*`）与 `reverb_mix` / `reverb_width`：压缩与单声道检波口径绑定（§1）；
-/// 后两个名字引擎同样不认。写这些名字的设备会被 [`track_has_unhandled_dsp`] 如实登记。
+/// `conv_ir_seed`，静态投影会消费它们，但自动化不落点）＋ 压缩的 14 个拼写
+/// （[`STRIP_COMPRESSOR_SPELLINGS`]：`#303` 起静态投影**执行**它们）。
+///
+/// ⚠ 这**不是**"可自动化名单"：压缩的 14 个拼写被消费，但 [`DeviceParamField`]
+/// **不认**它们 ⇒ `DeviceParam` 泳道仍不可落点（[`crate::automation::APPLIED_DEVICE_PARAM_NAMES`]
+/// 保持 41 个拼写，⛔ 不变）。刻意**不**在里面的仍是 `reverb_mix` / `reverb_width`
+/// （引擎同样不认）。写这些名字的设备会被 [`track_has_unhandled_dsp`] 如实登记。
 fn is_supported_param(name: &str) -> bool {
     DeviceParamField::from_name(name).is_some()
         || matches!(name, "conv_ir_decay_s" | "conv_ir_decay" | "conv_ir_seed")
+        || STRIP_COMPRESSOR_SPELLINGS.contains(&name)
 }
+
+/// 压缩级**静态投影**认的全部拼写（14 条）。
+///
+/// 与 [`StripProjection::apply`] 的压缩分支**逐字同集**（判据
+/// `strip_names_are_the_engine_whitelist` 双向钉住）：静态投影消费它们，
+/// ⛔ 但 [`StripField`] / [`DeviceParamField`] 不含它们（自动化**不接压缩**）。
+const STRIP_COMPRESSOR_SPELLINGS: &[&str] = &[
+    "compressor_enabled",
+    "threshold_db",
+    "threshold",
+    "ratio",
+    "knee_db",
+    "knee",
+    "detector_s",
+    "detector",
+    "attack_s",
+    "attack",
+    "release_s",
+    "release",
+    "makeup_db",
+    "makeup",
+];
 
 /// 本轨通道条的**来源设备下标**：`from_devices` 的"首个含已识别通道条名字的设备"规则。
 ///
@@ -591,9 +689,10 @@ pub fn sanitised_output_gain_db(value: f32) -> f32 {
 /// 同一个目标字段。⛔ 刻意**不含**：
 ///
 /// - **压缩级**（`threshold_db` / `ratio` / `knee_db` / `detector_s` / `attack_s` /
-///   `release_s` / `makeup_db` 与 `compressor_enabled`）：离线侧整级不执行（§1），
-///   改它不会改一个字节 —— 接上就是假话。它们的名字也不在 [`is_supported_param`] 里，
-///   因此 [`track_has_unhandled_dsp`] 仍会登记 `deviceChainDsp`；
+///   `release_s` / `makeup_db` 与 `compressor_enabled`）：自 `#303` 起静态投影**执行**
+///   它们（[`STRIP_COMPRESSOR_SPELLINGS`]），但**自动化不接**这一级 —— 那是一条独立的
+///   切片（`#293` 对混响/卷积标量做的正是那件事），本单只接**静态执行** ⇒ 指过来的
+///   泳道仍报 `deviceParamNotChannelStrip`；
 /// - **混响 / 卷积**（`reverb_*` / `conv_*`）：它们不是**通道条**字段，而是
 ///   [`ReverbField`] / [`ConvolutionField`] 的落点（`#293`）。其中卷积的 IR 形状
 ///   （`conv_ir_decay*` / `conv_ir_seed`）是构造期烘焙、不可自动化；其余标量由对应
@@ -1432,7 +1531,7 @@ fn convolution_of(device: &DeviceDefinition, sample_rate: u32) -> Option<Convolu
 /// 构造期把全部缓冲与器件状态准备好；逐块处理**零分配**。器件状态跨块存活，
 /// 因此 [`Self::reset`] 必须在每次 `execute` 开始时调用（复位契约）。
 pub(crate) struct InsertRuntime {
-    /// 通道条状态（增益 → EQ → 低通 → 动态 → 增益；压缩级在离线侧关闭）。
+    /// 通道条状态（输入增益 → EQ → 低通 → **动态** → 输出增益；动态级自 `#303` 起执行）。
     strip: Option<ChannelStrip>,
     /// Freeverb 状态；`None` = 不动（`mix = 0` 或没有）。
     reverb: Option<Reverb>,
@@ -1444,7 +1543,37 @@ pub(crate) struct InsertRuntime {
     right: Vec<f32>,
 }
 
+/// 通道条**动态级**的只读读数（任务单 `#303`；[`crate::render::InsertMeterReading`]
+/// 的原料）。
+///
+/// 全部来自器件自己的计数器 —— ⛔ 本层不另做测量。
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct StripMeter {
+    /// 通道条处理过的帧数（自本次 `execute` 起）。
+    pub(crate) strip_frames: u64,
+    /// 被压缩过的帧数。
+    pub(crate) gain_reductions: u64,
+    /// 全程最大增益衰减（dB，`≥ 0`）。
+    pub(crate) max_reduction_db: f32,
+    /// 读到的那一刻的增益衰减（dB，`≥ 0`）。
+    pub(crate) current_reduction_db: f32,
+    /// 检波器看到的电平（dBFS）。
+    pub(crate) detector_level_db: f32,
+}
+
 impl InsertRuntime {
+    /// 通道条的动态级读数；`None` = 本题没有通道条运行态。
+    pub(crate) fn strip_meter(&self) -> Option<StripMeter> {
+        let strip = self.strip.as_ref()?;
+        Some(StripMeter {
+            strip_frames: strip.processed_frames(),
+            gain_reductions: strip.gain_reduction_count(),
+            max_reduction_db: strip.max_gain_reduction_db(),
+            current_reduction_db: strip.current_gain_reduction_db(),
+            detector_level_db: strip.detector_level_db(),
+        })
+    }
+
     /// 从一条非空链构造运行态（`block_size` 是单块帧数，`sample_rate` 是采样率）。
     ///
     /// **只在控制路径调用**（允许分配：卷积核与混响延迟线在这里建起来）。

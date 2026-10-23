@@ -208,6 +208,20 @@ fn device(seed: u32, latency_samples: u32, bypassed: bool) -> DeviceDefinition {
     }
 }
 
+/// 一台**内置效果器** + 参数表（`#303` 的压缩判据用；⛔ 与逐测试的局部闭包无关）。
+fn effect(seed: u32, params: &[(&str, f32)]) -> DeviceDefinition {
+    let mut device = device(seed, 0, false);
+    device.kind = DeviceKind::InternalEffect;
+    for (name, value) in params {
+        device.params.push(yeban_model::ParameterValue {
+            name: (*name).to_owned(),
+            value: *value,
+            unit: None,
+        });
+    }
+    device
+}
+
 /// "Master + 一条 MIDI 轨 → Master"的工程（判据全部建立在它上面）。
 fn project(spec: &Spec) -> YebanProjectV1 {
     let master = id(1);
@@ -2743,15 +2757,16 @@ fn the_requested_format_changes_the_container_but_not_the_audio() {
     assert_eq!(&fs::read(&bw64_path).expect("bw64")[..4], b"BW64");
 }
 
-/// 判据 12b：离线插入链真的消费增益 / 低通；压缩仍整级不执行、仍登记。
+/// 判据 12b（⭐ `#303` 之后）：离线插入链消费增益 / 低通 / **压缩**。
 ///
 /// 三个读数都必须从工具响应现算：
 /// 1. 写了 `input_gain_db` / `cutoff_hz` 的 `InternalEffect` ⇒ `unsupported` **不含**
 ///    `deviceChainDsp`，且 `masterDigest` 与无设备基线不同（真的改了音频）；
-/// 2. 只写压缩参数 ⇒ `deviceChainDsp` 仍登记，且 `masterDigest` 与基线**逐位相同**
-///    （压缩级没有被偷偷执行）。
+/// 2. ⭐ `#303`：只写压缩参数 ⇒ `deviceChainDsp` **不再登记**（压缩已被求值），且
+///    `masterDigest` 与基线**不同**（压缩级真的执行了）。⚠ 修前这一条是反向的：
+///    `masterDigest` 与基线**逐位相同**（`17e3db37…`，压缩整级不执行）。
 #[test]
-fn offline_inserts_consume_gain_and_filter_but_still_report_the_compressor() {
+fn offline_inserts_consume_gain_filter_and_the_compressor() {
     let scratch = Scratch::new("strip");
     let render_spec = |spec: &Spec, tag: &str| -> Value {
         let (mut dispatcher, auth) =
@@ -2823,13 +2838,27 @@ fn offline_inserts_consume_gain_and_filter_but_still_report_the_compressor() {
         },
         "compressor",
     );
-    assert!(
+    println!(
+        "### #303 compressor: baseline_digest={} compressor_digest={} reported={} \
+         peak_before={} peak_after={} sha={}",
+        baseline["data"]["masterDigest"],
+        compressor["data"]["masterDigest"],
         reported(&compressor),
-        "压缩没有被求值 ⇒ 必须登记: {compressor}"
+        baseline["data"]["peak"]["after"],
+        compressor["data"]["peak"]["after"],
+        compressor["data"]["sha256"]
     );
-    assert_eq!(
+    assert!(
+        !reported(&compressor),
+        "压缩已被离线插入链消费 ⇒ 不许再登记 deviceChainDsp: {compressor}"
+    );
+    assert_ne!(
         compressor["data"]["masterDigest"], baseline["data"]["masterDigest"],
-        "压缩级离线不执行 ⇒ 母带必须与无设备基线逐位相同"
+        "压缩级自 #303 起执行 ⇒ 母带必须与无设备基线**不同**（修前是逐位相同）"
+    );
+    assert_ne!(
+        compressor["data"]["sha256"], baseline["data"]["sha256"],
+        "压缩必须改变文件字节（⛔ 不是只改了一个读数）"
     );
 }
 
@@ -6612,5 +6641,136 @@ fn the_engine_source_failure_reason_is_registered_in_the_vocabulary() {
     assert!(
         vocabulary.contains("GOLDEN_REASONS") && vocabulary.contains("\"engineSource\""),
         "`engineSource` 必须登记在 tests/fault_vocabulary.rs 的黄金表里"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// ⭐ 任务单 `#303`：压缩级接通（pre-pan tap 的两条端到端判据）
+// ---------------------------------------------------------------------------
+
+/// 整段母带的**能量**（样本平方和；两声道一起算）。
+///
+/// 比较"压缩 / 不压缩"用它而不是峰值：峰值只看个别样本，能量对整段稳定，
+/// 而 pan 的左右增益在分子分母里**同时出现** ⇒ 比值与声相无关（这正是判据 5 的算术）。
+fn master_energy(samples: &[f32]) -> f64 {
+    samples
+        .iter()
+        .map(|&sample| f64::from(sample) * f64::from(sample))
+        .sum()
+}
+
+/// 判据 5（`#303` 裁决一）：**压缩量不受声相影响** ⇒ 检波器在声相**之前**。
+///
+/// 同一份音符、三档声相（`0` / `+0.8` / `−0.8`），各渲两遍（有 / 无压缩）：
+/// 能量比 `E_compressed / E_dry` = 压缩增益的均方（pan 增益抵消）。
+/// 三档必须相等；修前压缩不执行 ⇒ 三档都是 1（这不是通过，只是"没压"）。
+#[test]
+fn the_compression_amount_does_not_depend_on_pan() {
+    let scratch = Scratch::new("compressor-pan");
+    let compressor = |seed: u32| {
+        effect(
+            seed,
+            &[
+                ("threshold_db", -30.0),
+                ("ratio", 4.0),
+                ("knee_db", 0.0),
+                ("attack_s", 0.002),
+                ("release_s", 0.050),
+                ("makeup_db", 0.0),
+            ],
+        )
+    };
+    let mut ratios = Vec::new();
+    for (index, pan) in [0.0f32, 0.8, -0.8].into_iter().enumerate() {
+        let dry = project(&Spec {
+            pan,
+            ..Spec::default()
+        });
+        let wet = project(&Spec {
+            pan,
+            devices: vec![compressor(90 + index as u32)],
+            ..Spec::default()
+        });
+        let (dry_result, dry_samples, dry_sha) =
+            render_samples(&scratch, &format!("dry-{index}"), &dry);
+        let (wet_result, wet_samples, wet_sha) =
+            render_samples(&scratch, &format!("wet-{index}"), &wet);
+        let dry_energy = master_energy(&dry_samples);
+        let wet_energy = master_energy(&wet_samples);
+        let ratio = wet_energy / dry_energy;
+        println!(
+            "### #303 pan={pan:+.3}: E_dry={dry_energy:.9e} E_wet={wet_energy:.9e} \
+             ratio={ratio:.9} dry_sha={dry_sha} wet_sha={wet_sha} \
+             dry_digest={} wet_digest={}",
+            dry_result["data"]["masterDigest"], wet_result["data"]["masterDigest"]
+        );
+        assert!(
+            ratio < 0.5,
+            "pan={pan}: 压缩必须真的压（能量比应远小于 1），实得 {ratio}"
+        );
+        ratios.push((pan, ratio));
+    }
+    let (base_pan, base_ratio) = ratios[0];
+    for (pan, ratio) in &ratios[1..] {
+        let relative = (ratio - base_ratio).abs() / base_ratio;
+        assert!(
+            relative < 1.0e-5,
+            "pan={pan} 的压缩量 {ratio} 与 pan={base_pan} 的 {base_ratio} 不同（相对差 {relative:.3e}）\
+             —— 检波器不在声相之前"
+        );
+    }
+    println!("### #303 三档能量比: {ratios:?}（必须相等 ⇒ 检波在声相前）");
+}
+
+/// 判据（`#303` 边界 ①）：被压缩轨的 `sources[].peak` 是**插入链之前**的读数。
+///
+/// 两个断言：
+/// 1. 居中轨（`pan = 0`）：**有 / 无压缩**的 `sources[].peak` **逐位相等** —— 探针在
+///    `inserts.process` **之前**，压缩不改它；
+/// 2. 会压缩的轨把声相搬到输出级 ⇒ `pan = +0.8` 时源读数仍是**声相之前** ⇒ 与居中档
+///    逐位相等（修前声相在源里，这一条会差 3–6 dB）。
+#[test]
+fn a_compressed_track_source_peak_is_taken_before_the_insert_chain() {
+    let scratch = Scratch::new("compressor-source-peak");
+    let compressor = |seed: u32| effect(seed, &[("threshold_db", -30.0), ("ratio", 4.0)]);
+
+    let dry = project(&Spec::default());
+    let wet = project(&Spec {
+        devices: vec![compressor(80)],
+        ..Spec::default()
+    });
+    let panned = project(&Spec {
+        pan: 0.8,
+        devices: vec![compressor(81)],
+        ..Spec::default()
+    });
+    let (dry_result, _, dry_sha) = render_samples(&scratch, "peak-dry", &dry);
+    let (wet_result, _, wet_sha) = render_samples(&scratch, "peak-wet", &wet);
+    let (panned_result, _, panned_sha) = render_samples(&scratch, "peak-panned", &panned);
+
+    let peak = |result: &Value| -> f64 {
+        result["data"]["sources"][0]["peak"]
+            .as_f64()
+            .unwrap_or_else(|| panic!("sources[0].peak 必须是数: {result}"))
+    };
+    let (dry_peak, wet_peak, panned_peak) =
+        (peak(&dry_result), peak(&wet_result), peak(&panned_result));
+    println!(
+        "### #303 源峰值读数: dry={dry_peak:.9} wet={wet_peak:.9} wet(pan=+0.8)={panned_peak:.9}；\
+         dry_sha={dry_sha} wet_sha={wet_sha} panned_sha={panned_sha}；\
+         dry_peak_after={} wet_peak_after={}",
+        dry_result["data"]["peak"]["after"], wet_result["data"]["peak"]["after"]
+    );
+    assert_eq!(
+        dry_peak, wet_peak,
+        "压缩开关不得改变源峰值读数（探针在插入链之前）"
+    );
+    assert_eq!(
+        dry_peak, panned_peak,
+        "会压缩的轨的源峰值是声相之前的读数 ⇒ 与居中档逐位相等（修前会差 3–6 dB）"
+    );
+    assert_ne!(
+        wet_result["data"]["masterDigest"], dry_result["data"]["masterDigest"],
+        "同一条判据必须同时证明压缩真的改了母带（不是'什么都没发生'）"
     );
 }

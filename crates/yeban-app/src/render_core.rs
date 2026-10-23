@@ -578,6 +578,15 @@ pub fn render_project_f32_with_plans_under(
     )
     .map_err(|error| WavExportError::Render(error.to_string()))?;
 
+    // ⭐ 任务单 `#303`：**会执行压缩**的轨（pre-pan tap 的唯一判据）。
+    // 与 MCP 的 `yeban_render_master` 共用**同一份** `InsertChain::compresses()`
+    // （⛔ 本层不复制"哪些参数算压缩"的判定）。
+    let compressing: std::collections::BTreeSet<EntityId> = inserts
+        .iter()
+        .filter(|(_, chain)| chain.compresses())
+        .map(|(&node, _)| node)
+        .collect();
+
     // ---- 1b. ⭐ 发送增益自动化（`SendGain`，任务单 `#256`）----
     //
     // 落点是**这条路由边的入边归约**（`RenderPlan::render_node`），因此与 MCP 的
@@ -665,6 +674,39 @@ pub fn render_project_f32_with_plans_under(
         }
     }
 
+    // ⭐ 任务单 `#303`：**pre-pan tap** —— 会执行压缩的**纯源轨**把声相搬到输出级。
+    //
+    // 实时的检波器在**声相之前**（`crates/yeban-engine/src/rt.rs:1857-1867` →
+    // `:1888-1903`：插入 → PDC → 声相）。离线侧纯源轨的声相原本在源里（下面三个源
+    // 分支与音频片段的增益），那会让压缩器看到**声相之后**的电平。这里给这些轨挂一个
+    // **只含声相**的 [`OutputStage`]（`render_node` 里在插入链之后执行），并在下方把
+    // 源侧声相关掉（`suppress_static_pan`）⇒ 插入点与实时同序。
+    //
+    // 边界（⛔ 不是"所有轨都搬家"）：只对 `compressing` 生效 ⇒ 没有压缩参数的工程
+    // **一个落点都不改**（逐字节不变）。总线/主总线不在这里 —— 它们的声相本来就在
+    // 输出级，插入点一直就在声相之前。
+    for &node in &compressing {
+        if bus_nodes.contains(&node) || node == project.master_bus_track_id {
+            continue;
+        }
+        let Some(track) = project.tracks.get(&node) else {
+            continue;
+        };
+        let pan_automation = all_pan_automations
+            .get(&node)
+            .filter(|automation| !automation.is_identity());
+        let static_pan = if pan_automation.is_some() {
+            0.0
+        } else {
+            track.pan
+        };
+        let mut stage = OutputStage::new().with_pan(static_pan, |pan| pan_gains(pan, pan_law));
+        if let Some(automation) = pan_automation.cloned() {
+            stage = stage.with_pan_automation(automation, move |pan| pan_gains(pan, pan_law));
+        }
+        plan.attach_output_stage(node, stage);
+    }
+
     // ---- 2. 每条非 master 轨道一个源 ----
     //
     // 默认走**引擎乐器**：先投影快照（`EngineSnapshot::from_project`），再按轨武装
@@ -707,11 +749,18 @@ pub fn render_project_f32_with_plans_under(
     // 而不是只乘自有源。`pan_gates` 只留源轨的自动化；总线那份已在 1d 取走。
     let mut pan_gates: BTreeMap<EntityId, TrackPanAutomation> = all_pan_automations;
     pan_gates.retain(|track_id, _| !bus_nodes.contains(track_id));
+    // ⭐ 任务单 `#303`：会压缩的纯源轨，声相自动化也搬到输出级（见 1d-2 的 pre-pan tap）；
+    // 留在源侧会被乘两次，而且会把检波器推到声相之后。
+    pan_gates.retain(|track_id, _| !compressing.contains(track_id));
     pan_gates.retain(|_, automation| !automation.is_identity());
     // ⭐ B2：总线轨的静态声相**一律**在输出级乘（整条通道），源侧必须关掉，否则
     // 自有源会被乘两次；源轨只在"有非恒等 `TrackPan` 泳道"时关（`#257` 纪律）。
-    let suppress_static_pan =
-        |track_id: EntityId| bus_nodes.contains(&track_id) || pan_gates.contains_key(&track_id);
+    // ⭐ `#303`：会压缩的纯源轨同样把声相交给输出级（pre-pan tap）。
+    let suppress_static_pan = |track_id: EntityId| {
+        bus_nodes.contains(&track_id)
+            || pan_gates.contains_key(&track_id)
+            || compressing.contains(&track_id)
+    };
     let mut sources: BTreeMap<EntityId, Box<dyn AudioSource>> = BTreeMap::new();
     let mut source_label: String = if let Some((instrument, sfz_path)) = sfz.as_ref() {
         let mut labels: Vec<String> = Vec::new();

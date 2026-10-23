@@ -2383,19 +2383,24 @@ fn a_device_param_lane_on_an_unhandled_name_does_not_land_but_registers_device_c
     );
 }
 
-/// ⭐ `#267`/`#293` 判据：**插入链之外**的名字（压缩的 `threshold_db`、卷积 IR 形状
-/// 的 `conv_ir_decay_s`）⇒ **不落点**（母带与“清掉泳道”逐字节相同），但**不沉默**。
+/// ⭐ `#267`/`#293`/`#303` 判据：**静态投影消费、但自动化不落点**的名字
+/// （压缩的 `threshold_db`、卷积 IR 形状的 `conv_ir_decay_s`）⇒ **不落点**
+/// （母带与“清掉泳道”逐字节相同），但**不沉默**（靠 `automationLanes` 登记）。
 ///
-/// ⚠ 两者"不沉默"的**键不同**，这是本判据逐字钉住的事实（⛔ 不把两者混成一句）：
+/// ⚠ `#303` 改变了 `threshold_db` 的两格（`unresolved` 与 `deviceChainDsp`），
+/// 这里逐字钉住（⛔ 不把两者混成一句）：
 ///
-/// | 名字 | `unresolved` | `deviceChainDsp` | 为什么 |
-/// | :--- | :--- | :--- | :--- |
-/// | `threshold_db` | `"paramNotSupported"` | **登记** | 压缩级离线整级不执行，且名字不在 `is_supported_param` 里 ⇒ 设备链确实"还有没消费的参数" |
-/// | `conv_ir_decay_s` | `null` | **不登记** | 名字**被卷积的静态投影消费**（`is_supported_param` 认它）⇒ 设备链没有"没消费的参数"；但它**是构造期 IR 形状** ⇒ 自动化不落点，靠 `automationLanes` 登记 |
+/// | 名字 | `supported` / `applied` | `unresolved` | `deviceChainDsp` | 为什么 |
+/// | :--- | :--- | :--- | :--- | :--- |
+/// | `threshold_db` | `false` / `false` | `null` | **不登记** | ⭐ 压缩级自 `#303` 起**执行**（静态投影消费它）⇒ 设备链没有"没消费的参数"、名字也解析得到；但自动化**不落点**（`StripField` 不含压缩）⇒ 靠 `automationLanes` 登记 |
+/// | `conv_ir_decay_s` | `false` / `false` | `null` | **不登记** | 名字**被卷积的静态投影消费** ⇒ 设备链没有"没消费的参数"；但它是**构造期 IR 形状** ⇒ 自动化不落点 |
+///
+/// ⚠ 修前 `threshold_db` 那一行是 `unresolved: "paramNotSupported"` ＋ `deviceChainDsp`
+/// **登记**（压缩整级不执行）—— 那是 `#303` 的**行为变更**，不是回归。
 #[test]
 fn names_outside_the_insert_chain_do_not_land_but_are_never_silent() {
     for (param_name, static_value, to, expect_code, expect_chain_dsp) in [
-        ("threshold_db", -20.0_f32, -40.0_f32, true, true),
+        ("threshold_db", -20.0_f32, -40.0_f32, false, false),
         ("conv_ir_decay_s", 0.5, 2.0, false, false),
     ] {
         let scratch = Scratch::new("device-param-outside");
@@ -2446,7 +2451,13 @@ fn names_outside_the_insert_chain_do_not_land_but_are_never_silent() {
         let lane = &data["automation"]["tracks"][0]["lanes"][0];
         assert_eq!(lane["target"], "DeviceParam", "{param_name}");
         assert_eq!(lane["resolvedParamName"], param_name);
-        assert_eq!(lane["supported"], false, "{param_name} 不许被报成支持");
+        // `supported` 的口径 = "这条**自动化泳道**有没有落点"（静态消费 ≠ 可自动化）：
+        // 两个名字都不可落点 ⇒ false；`threshold_db` 的 `unresolved` 自 `#303` 起是 `null`
+        // （名字被静态投影认得），但 `automationLanes` 仍登记。
+        assert_eq!(
+            lane["supported"], false,
+            "{param_name}: 自动化不可落点 ⇒ supported=false"
+        );
         assert_eq!(lane["applied"], false, "{param_name} 不许被报成应用");
         if expect_code {
             assert_eq!(lane["unresolved"], "paramNotSupported", "{param_name}");

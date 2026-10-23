@@ -48,7 +48,7 @@
 //! | 键 | 含义 |
 //! | :--- | :--- |
 //! | `audioClips` | **收窄后的口径**：仅当工程在 `assets` 索引里**声明**了这个资产、而会话 CAS 池里**没有它的字节**时才登记（`Domain::open_in_memory` 注入的会话就是这种形态）。此时该片段当静音，且响应 `data.audio.assets[].bytesPresent = false` 如实说明。读 `.yeban` 容器时索引与字节由 `store` 双向校验必然同时存在，因此这一项在真实容器工程上**不会**出现 |
-//! | `deviceChainDsp` | 设备链里**本切片没有消费**的参数（**压缩** / 未知旋钮）没有求值；增益、EQ、低通、Freeverb、卷积已求值 |
+//! | `deviceChainDsp` | 设备链里**本切片没有消费**的参数（未知旋钮 / `filter_cutoff_hz` / `reverb_mix` / `reverb_width`）没有求值；增益、EQ、低通、**压缩**、Freeverb、卷积已求值（压缩自 `#303`；`#303` 之前它**一整级不执行**） |
 //! | `externalPlugins` | `DeviceKind::ExternalInstrument/ExternalEffect` 没有宿主 |
 //! | `automationLanes` | ⭐ `#243` / `#256` / `#257` / `#266` / `#267` / `#293`：**仅**指仍有可求值点、但本渲染器不消费的自动化目标（`Macro`；`DeviceParam` 里**不是**插入链落点的名字（**压缩** / **卷积 IR 形状** `conv_ir_decay*`、`conv_ir_seed` / 未知旋钮）、或指向旁通/非对应器件族来源设备的情形），以及 `TrackVolume` 落在**不可达轨**上（不在保留子图）、`SendGain` 落在**被剪枝的边**上、`TrackPan` 落在**有入边的总线轨**上（任务单 `#296` B2：总线声相本单不做）的情形。`TrackVolume` 在源节点、主总线与**总线轨**（`#296` 的新增输出级推子）上**真的被求值**；`TrackPan` 在**主总线**上也真的被求值（`#296`）；`SendGain` 在保留子图的入边归约里**真的被求值**（任务单 `#256`）；`TrackPan` 在源节点的源输出之后**真的被求值**（任务单 `#257`）；`DeviceParam` 的通道条 / Freeverb / 卷积标量字段（`data.appliedDeviceParamNames` 逐条列出）在该节点的插入链上**真的被求值**（`#266` 开一个名字 / `#267` 扩到通道条整组 / `#293` 扩到混响与卷积标量，块边界 `set_params`）；空泳道与 `readEnabled:false` 的泳道**不**登记（一条没有点的曲线没有“少做了什么”）。逐泳道的支持/应用读数见 `data.automation` |
 //! | `noteSlide` | 滑音没有实现 |
@@ -427,7 +427,8 @@ use yeban_render::automation::{
     send_gain_automations,
 };
 use yeban_render::inserts::{
-    project_inserts_with_forced_instances, resolve_device_param, track_has_unhandled_dsp,
+    compressing_nodes, project_inserts_with_forced_instances, resolve_device_param,
+    track_has_unhandled_dsp,
 };
 use yeban_render::mastering;
 use yeban_render::render::{
@@ -2221,6 +2222,11 @@ pub fn build(
     let nodes = probe.nodes;
     let source_nodes = probe.source_nodes;
     let rendered_edges = probe.rendered_edges;
+    // ⭐ 任务单 `#303`：**会执行压缩**的轨（pre-pan tap 的唯一判据）。
+    // 与 CLI 的 `render_core` 共用**同一份** `yeban_render::inserts::compressing_nodes`
+    // （⛔ 本层不复制"哪些参数算压缩"的判定）。必须在**构造音源之前**算出来：
+    // 这些轨的声相要搬到输出级（插入链之后），源侧取 `(1, 1)`。
+    let compressing = compressing_nodes(&project.tracks);
     // 4b. 组装音源 + 采集"明确没渲染"的部分 + 得到时间轴末端。
     let mut unsupported: BTreeSet<&'static str> = BTreeSet::new();
     let mut counts: BTreeMap<&'static str, u64> = BTreeMap::new();
@@ -2325,6 +2331,7 @@ pub fn build(
             &mut sampler_steals,
             &mut unsupported,
             &mut counts,
+            compressing.contains(&node),
         )?;
         end_tick = end_tick.max(report.end_tick);
         reports.push(report);
@@ -2379,8 +2386,9 @@ pub fn build(
     }
     // 8. 真编译 + 真执行。
     let options = RenderOptions::l1(frames, MASTER_CHANNELS, sample_rate, project.rng_seed);
-    // 每轨插入链：从 `TrackV3.devices` 投影（通道条增益/EQ/低通 + Freeverb + 卷积混响；
-    // 压缩级缺省不执行，见 `yeban_render::inserts` 模块头 §1）。
+    // 每轨插入链：从 `TrackV3.devices` 投影（通道条增益/EQ/低通/**压缩** + Freeverb
+    // + 卷积混响）。⭐ 压缩自 `#303` 起**执行**（见 `yeban_render::inserts` 模块头 §1.1；
+    // 会压缩的源轨由 `compressing` 把声相搬到输出级 ⇒ 检波器在声相之前）。
     // ⚠ **主总线也挂**（`#173` 起 `project_inserts` 不过滤 master）——旧注释写
     // "主总线上的设备链不挂"已陈（`#244` 实测点出，此处更正）。实时引擎的逐轨循环
     // 跳过 master 是**另一件事**，不要拿它推这条行为的结论。
@@ -2415,37 +2423,52 @@ pub fn build(
     // ⭐ 任务单 `#296` ＋ B2：总线的**输出级**（`render_node` 的插入链之后）——
     // 推子 / `mute` / `solo` / 静态声相 / `TrackPan` 自动化。
     //
-    // 只挂"计划里、非源节点、非主总线"的节点 —— 源节点的音量与声相仍在源侧（引擎的
+    // 挂"计划里、非源节点、非主总线"的节点 —— 源节点的音量与声相仍在源侧（引擎的
     // `track_gain` / 片段增益 / `TrackSource` 的 R55 与 `pan_automation`），主总线的
     // 推子与声相自动化仍在第 9 步（执行之后）；本层⛔ 不搬家 ⇒ 普通 MIDI/音频轨的
     // 行为与 `#296` 之前**逐位相同**。
+    //
+    // ⭐ `#303` 的**例外**：`compressing` 里的**源节点**也挂一个**只含声相**的输出级
+    // （pre-pan tap，见 `inserts` 模块头 §1.1）。它们的推子仍在源侧（`is_source` 分支
+    // ⛔ 不乘 bus_gain），源侧声相已在 `build_source` 关掉 ⇒ 只乘一次、且在插入之后。
     //
     // ⭐ B2b/B2c：总线的 `mute`/`solo`（含 `solo_safe`）是**静态字段**，折进输出级的
     // 静态 `gain`（静音 ⇒ `0.0`，整条总线 ×0）。`any_solo` 与源轨同一条扫描（含 master）。
     // ⭐ B2a：静态 `pan` 与 `TrackPan` 泳道在**同一处**落点；泳道非恒等时静态声相关掉。
     // 没有落点（不在保留子图）时 `attach_output_stage` 返回 `false`，本层不谎称应用。
     for &node in &nodes {
-        if node == project.master_bus_track_id || source_nodes.contains(&node) {
+        if node == project.master_bus_track_id {
+            continue;
+        }
+        let is_source = source_nodes.contains(&node);
+        // 源节点只在"会执行压缩"时进这里（`#303` 的 pre-pan tap）；否则一律不挂。
+        if is_source && !compressing.contains(&node) {
             continue;
         }
         let Some(track) = project.tracks.get(&node) else {
             continue;
         };
-        let bus_gain = if track_is_audible(track, any_solo) {
-            db_to_linear(track.volume_db)
-        } else {
-            0.0
-        };
-        let mut stage = OutputStage::new().with_gain(bus_gain);
-        if track
-            .automation_lanes
-            .keys()
-            .any(|target| matches!(target, AutomationTarget::TrackVolume { .. }))
-            || macro_cascade_reaches(project, &AutomationTarget::TrackVolume { track_id: node })
-        {
-            // 恒等泳道也挂：`apply_gain_block` 的恒等快路径一个样本都不多碰。
-            stage =
-                stage.with_gain_automation(TrackGainAutomation::new(project, node, sample_rate));
+        let mut stage = OutputStage::new();
+        if !is_source {
+            let bus_gain = if track_is_audible(track, any_solo) {
+                db_to_linear(track.volume_db)
+            } else {
+                0.0
+            };
+            stage = stage.with_gain(bus_gain);
+            if track
+                .automation_lanes
+                .keys()
+                .any(|target| matches!(target, AutomationTarget::TrackVolume { .. }))
+                || macro_cascade_reaches(project, &AutomationTarget::TrackVolume { track_id: node })
+            {
+                // 恒等泳道也挂：`apply_gain_block` 的恒等快路径一个样本都不多碰。
+                stage = stage.with_gain_automation(TrackGainAutomation::new(
+                    project,
+                    node,
+                    sample_rate,
+                ));
+            }
         }
         let pan_automation = TrackPanAutomation::new(project, node, sample_rate);
         let static_pan = if pan_automation.is_identity() {
@@ -3158,6 +3181,11 @@ struct TrackSource {
 /// ⛔ **不含**该轨插入链（`render_node` 在探针之后才 `inserts.process`）
 /// 与路由边增益。因此 `sources[].peak` 与 `peak.after` 不是同一个数：
 /// 前者是单条轨的输出，后者是母带求和之后的样本峰值。
+///
+/// ⭐ `#303` 的边界（实测读数在 `tests/render_master.rs` 的
+/// `a_compressed_track_source_peak_is_taken_before_the_insert_chain`）：**会执行压缩的
+/// 源轨**把声相搬到了输出级 ⇒ 这类轨的 `sources[].peak` 是**声相之前**的读数
+/// （`pan == 0` 时与搬前逐位相同）。插入链在探针之后 ⇒ **压缩本身**永远不改这个数。
 struct PeakTap {
     inner: TrackSource,
     /// 峰值位型（非负有限 `f32` 的位型与数值同序 ⇒ `fetch_max` 就是"取更大"）。
@@ -3674,6 +3702,8 @@ fn build_source(
     sampler_steals: &mut BTreeMap<EntityId, Arc<AtomicU64>>,
     unsupported: &mut BTreeSet<&'static str>,
     counts: &mut BTreeMap<&'static str, u64>,
+    // ⭐ `#303`：本轨会执行压缩 ⇒ 源侧**不带声相**（pre-pan tap；输出级负责声相）。
+    pre_pan: bool,
 ) -> Result<(TrackSource, SourceReport), Fault> {
     // solo 语义（B2 起也作用于辅助返回总线 —— 见 `build` 的输出级）；判据与源轨
     // 同一条 `track_is_audible`：只要工程里有任一音轨 solo, 未 solo 且非 solo-safe
@@ -3683,9 +3713,17 @@ fn build_source(
     // 非恒等时把静态声相关掉（`pan = 0` ⇒ `(track_gain, track_gain)`），
     // 改由源输出之后的门乘自动化位置的绝对左右增益（同一份 `pan_gains` 曲线，
     // 且只乘一次）。恒等 ⇒ 源侧静态声相原样保留 ⇒ 无泳道工程的字节逐位不变。
+    //
+    // ⭐ `#303`：会执行压缩的轨（`pre_pan`）把**静态与自动化声相都**交给输出级
+    // （`InsertChain::compresses` 的判据，见 `inserts` 模块头 §1.1）：源侧 `pan = 0`
+    // 且不挂 `pan_automation` ⇒ 压缩器的检波器看到**声相之前**的电平（与实时同序）。
     let pan_automation = TrackPanAutomation::new(project, track.id, sample_rate);
-    let pan_identity = pan_automation.is_identity();
-    let source_pan = if pan_identity { track.pan } else { 0.0 };
+    let pan_identity = pan_automation.is_identity() || pre_pan;
+    let source_pan = if pan_identity {
+        if pre_pan { 0.0 } else { track.pan }
+    } else {
+        0.0
+    };
     // ⚠ `#274`：采样器轨与 CPU 轨**共用**同一个引擎源 ⇒ 轨增益由引擎的
     //   `NoteSchedule::track_gain` 乘，本层只给等功率那一半（见下面 `midi` 的装配）。
     //   旧的 `SamplerTrackSource`（自带 `gain_l/gain_r`）已退休。
@@ -3693,8 +3731,10 @@ fn build_source(
     //    这条判据只看 `TrackV3.sampler` 是否为 `Some`，与 app 的
     //    `sfz_pending()` → `arm_pending_sfz` 那条链的入口条件**同一个字段**。
     let sampler_bound = track.sampler.is_some();
-    // 设备链: 通道条（增益 / EQ / 低通）、Freeverb、卷积已经由 `yeban-render` 消费；
-    // 只有**本切片没有消费**的参数（压缩 / 未知旋钮 / 外部器件）仍要如实登记。
+    // 设备链: 通道条（增益 / EQ / 低通 / **压缩**）、Freeverb、卷积已经由
+    // `yeban-render` 消费（压缩自 `#303` 起）；只有**本切片没有消费**的参数
+    // （未知旋钮 / `filter_cutoff_hz` / `reverb_mix` / `reverb_width` / 外部器件）
+    // 仍要如实登记。
     if track_has_unhandled_dsp(track) {
         note_unsupported(unsupported, counts, "deviceChainDsp");
     }

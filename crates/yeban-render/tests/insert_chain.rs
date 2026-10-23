@@ -1,14 +1,18 @@
-//! **离线插入链**的判据：通道条（增益 → 3 段 EQ → 低通）＋ Freeverb ＋ 卷积混响。
+//! **离线插入链**的判据：通道条（增益 → 3 段 EQ → 低通 → **压缩**）＋ Freeverb
+//! ＋ 卷积混响。
 //!
-//! 通道条的**压缩**级刻意不执行（实时检波在声相之前、离线在求和之后；见
-//! `src/inserts.rs` §1），判据同时钉住"增益/滤波被消费"与"压缩仍登记"。
+//! ⭐ 任务单 `#303` 起**压缩级执行**（之前整级不执行；见 `src/inserts.rs` §1.1）。
+//! 本文件因此同时钉住三件事：① 压缩真的压（阈值以上）/ 真的不动（阈值以下）；
+//! ② 零延迟（帧数与冲激位置不变、PDC 一条不动）；③ 没有压缩参数的工程**逐字节不变**
+//! （正对照，母带摘要钉成常量）。
 //!
 //! 这些判据量的是**导出母带的样本**，不是"投影出来的参数"：每条都给出两档读数
 //! （有器件 / 无器件基线），因此"接线了"与"没接线"在读数上是可区分的两件事。
 //!
-//! 顺序差异（实时 = 单声道插入 → 声相；离线 = 声相 → 求和 → 立体声插入）登记在
-//! `src/inserts.rs` 的模块头 §2。本文件的 EQ 判据用**逐声道线性等价**的那条
-//! （纯正弦的基频带能量），混响/卷积判据量的是**尾音**，不声称与实时侧逐位相同。
+//! 顺序差异（实时 = 单声道插入 → 声相；离线 = 会压缩的纯源轨插入 → 声相、其余
+//! 轨声相 → 求和 → 立体声插入）登记在 `src/inserts.rs` 的模块头 §2。本文件的 EQ 判据
+//! 用**逐声道线性等价**的那条（纯正弦的基频带能量），混响/卷积判据量的是**尾音**，
+//! 不声称与实时侧逐位相同。
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -17,11 +21,12 @@ use yeban_model::{
     TrackV3,
 };
 use yeban_render::inserts::{
-    InsertChain, project_inserts, project_inserts_with_forced_strips, strip_source_params,
-    strip_source_slot, track_has_unhandled_dsp,
+    InsertChain, compressing_nodes, project_inserts, project_inserts_with_forced_strips,
+    strip_source_params, strip_source_slot, track_has_unhandled_dsp,
 };
 use yeban_render::render::{
-    AudioSource, BlockContext, RenderError, RenderOptions, RenderOutput, RenderPlan,
+    AudioSource, BlockContext, InsertMeterReading, RenderError, RenderOptions, RenderOutput,
+    RenderPlan,
 };
 
 /// 判据统一用 48 kHz（卷积 IR = 4 800 帧 = 0.1 s，与实时引擎同值）。
@@ -644,22 +649,30 @@ fn the_strip_projection_mirrors_the_engine_whitelist() {
     let not_recognised = InsertChain::from_devices(&[effect(&[("filter_cutoff_hz", 800.0)])], SR);
     assert!(not_recognised.is_empty());
 
-    // 只有压缩参数 ⇒ 投影里有通道条，但离线没有可执行级 ⇒ 空链；
-    // 压缩名字仍由 `track_has_unhandled_dsp` 登记（见下一个判据）。
+    // ⭐ `#303`：只有压缩参数 ⇒ **非空链**（压缩级自本单起真的执行）。
     let compressor_only = InsertChain::from_devices(&[effect(&[("threshold_db", -30.0)])], SR);
     assert!(compressor_only.strip().is_some(), "压缩仍是通道条的一部分");
     assert!(
-        compressor_only.is_empty(),
-        "压缩级离线不执行 ⇒ 不得挂运行态"
+        !compressor_only.is_empty(),
+        "压缩级已接通（#303）⇒ 只有压缩参数的链必须挂运行态"
     );
+    assert!(compressor_only.compresses(), "`threshold_db` ⇒ 压缩级执行");
+    // 显式写 0 的开关仍然关：全恒等 ⇒ 空链（`#303` ⛔ 不改变这条默认口径）。
+    let disabled = InsertChain::from_devices(&[effect(&[("compressor_enabled", 0.0)])], SR);
+    assert!(
+        disabled.is_empty(),
+        "`compressor_enabled: 0` 且三级全关 ⇒ 空链"
+    );
+    assert!(!disabled.compresses());
 }
 
 /// 机制判据：通道条白名单逐名对账（引擎 `insert.rs` 的**冻结副本**）。
 ///
 /// `yeban-render` 不能依赖 `yeban-engine`（依赖方向门），因此这里保存一份逐字抄写的
-/// 名单。每个通道条名字都必须被投影认下；除以压缩为界外，其余名字都不得再登记
-/// `deviceChainDsp`。压缩的 13 个名字与三个刻意不认的名字（`filter_cutoff_hz` /
-/// `reverb_mix` / `reverb_width`）都必须是"仍登记"。
+/// 名单。每个通道条名字都必须被投影认下、都**已被消费**（⛔ 不许再登记
+/// `deviceChainDsp`）。⚠ `#303` 之前压缩的 14 个拼写是例外（整级不执行 ⇒ 仍登记）；
+/// 三个刻意不认的名字（`filter_cutoff_hz` / `reverb_mix` / `reverb_width`）**现在仍是**
+/// "仍登记"的那一档（引擎同样不认它们）。
 #[test]
 fn strip_names_are_the_engine_whitelist() {
     const STRIP_NAMES: &[&str] = &[
@@ -692,18 +705,21 @@ fn strip_names_are_the_engine_whitelist() {
         "eq_high_freq",
         "high_freq",
     ];
+    // ⭐ `#303`：28 个通道条拼写**全部**被消费（压缩从"整级不执行"变成"执行"）。
     for &name in STRIP_NAMES {
         let chain = InsertChain::from_devices(&[effect(&[(name, 0.5)])], SR);
         assert!(chain.strip().is_some(), "`{name}` 必须被通道条投影认下");
-        let consumed = !track_has_unhandled_dsp(&track(vec![effect(&[(name, 0.5)])]));
-        if name == "compressor_enabled" {
-            assert!(!consumed, "压缩级离线不执行 ⇒ `{name}` 仍须登记");
-            assert!(chain.is_empty(), "没有其它可执行级 ⇒ 链必须是空的");
-        } else {
-            assert!(consumed, "`{name}` 已被消费，不该再登记 `deviceChainDsp`");
-        }
+        assert!(
+            !track_has_unhandled_dsp(&track(vec![effect(&[(name, 0.5)])])),
+            "`{name}` 已被消费，不该再登记 `deviceChainDsp`"
+        );
+        assert!(
+            !chain.is_empty(),
+            "`{name}` 是开关/参数之一 ⇒ 链里至少有一个可执行级"
+        );
     }
 
+    // 压缩的 14 个拼写：单写任何一个都会让压缩级执行（投影的 `compressor_seen` 规则）。
     const COMPRESSOR_NAMES: &[&str] = &[
         "compressor_enabled",
         "threshold_db",
@@ -724,10 +740,13 @@ fn strip_names_are_the_engine_whitelist() {
         let devices = [effect(&[(name, -20.0)])];
         let chain = InsertChain::from_devices(&devices, SR);
         assert!(chain.strip().is_some(), "`{name}` 仍是引擎认的通道条名字");
-        assert!(chain.is_empty(), "`{name}` 单独出现时没有可执行级");
         assert!(
-            track_has_unhandled_dsp(&track(vec![effect(&[(name, -20.0)])])),
-            "`{name}` 没有被求值 ⇒ 必须登记"
+            chain.compresses(),
+            "`{name}` 单独出现 ⇒ 压缩级必须执行（#303）"
+        );
+        assert!(
+            !track_has_unhandled_dsp(&track(vec![effect(&[(name, -20.0)])])),
+            "`{name}` 已被离线求值 ⇒ 不许再登记 `deviceChainDsp`"
         );
     }
 
@@ -855,10 +874,11 @@ fn unhandled_device_classification_matches_the_slice_boundary() {
         "内置乐器是音源，不是插入链来源"
     );
 
+    // ⭐ `#303`：压缩已被离线插入链消费 ⇒ 不再登记。
     let compressor = track(vec![effect(&[("threshold_db", -12.0), ("ratio", 4.0)])]);
     assert!(
-        track_has_unhandled_dsp(&compressor),
-        "压缩留 S2 ⇒ 必须仍登记"
+        !track_has_unhandled_dsp(&compressor),
+        "压缩已接通（#303）⇒ 不许再登记 deviceChainDsp"
     );
 
     let gain_and_compressor = track(vec![effect(&[
@@ -866,9 +886,13 @@ fn unhandled_device_classification_matches_the_slice_boundary() {
         ("threshold_db", -12.0),
     ])]);
     assert!(
-        track_has_unhandled_dsp(&gain_and_compressor),
-        "同一台设备里增益被消费不掩护压缩仍留 S2"
+        !track_has_unhandled_dsp(&gain_and_compressor),
+        "增益与压缩都被消费 ⇒ 不应登记"
     );
+
+    // 正对照：刻意不认的名字仍必须登记（否则这条判据变成"什么都不登记"）。
+    let unknown = track(vec![effect(&[("mystery", 1.0)])]);
+    assert!(track_has_unhandled_dsp(&unknown), "未知旋钮必须仍登记");
 }
 
 /// 判据：非立体声 + 非空插入链 ⇒ 如实失败（不静默跳过混响/卷积）。
@@ -1113,4 +1137,336 @@ fn forcing_one_track_does_not_materialise_other_tracks() {
         assert_eq!(empty[id].is_empty(), chain.is_empty());
         assert_eq!(empty[id].is_forced_strip(), chain.is_forced_strip());
     }
+}
+
+// ---------------------------------------------------------------------------
+// ⭐ 任务单 `#303`：压缩级接通（渲染侧判据）
+// ---------------------------------------------------------------------------
+
+/// 与 [`render`] 相同，但把计划留下以读**动态级读数**（插入链器件自己的计数器）。
+fn render_with_readings(
+    routing: &RoutingGraph,
+    master: EntityId,
+    inserts: &BTreeMap<EntityId, InsertChain>,
+    frames: usize,
+    mono: Vec<f32>,
+    source_node: EntityId,
+) -> (RenderOutput, Vec<InsertMeterReading>, u32) {
+    let options = RenderOptions::l1(frames as u64, 2, SR, 0x155).with_threads(1);
+    let mut plan = RenderPlan::compile_with_latencies_and_inserts(
+        routing,
+        master,
+        options,
+        &BTreeMap::new(),
+        inserts,
+    )
+    .expect("编译");
+    let longest_path = plan.longest_path_frames();
+    let mut sources: BTreeMap<EntityId, Box<dyn AudioSource>> = BTreeMap::new();
+    sources.insert(source_node, Box::new(BufferSource::new(mono)));
+    let output = plan.execute(sources).expect("渲染");
+    (output, plan.insert_meter_readings(), longest_path)
+}
+
+/// 一条压缩器的参数：**硬膝**（`knee_db: 0`）+ 短起振/释放，读数可手算对账。
+///
+/// 静态曲线（`knee = 0`）：`GR = (1 − 1/R)·(x − T)`，`x` 是检波器看到的 RMS dBFS。
+fn hard_knee_compressor(threshold_db: f32) -> DeviceDefinition {
+    effect(&[
+        ("threshold_db", threshold_db),
+        ("ratio", 4.0),
+        ("knee_db", 0.0),
+        ("detector_s", 0.005),
+        ("attack_s", 0.002),
+        ("release_s", 0.050),
+        ("makeup_db", 0.0),
+    ])
+}
+
+/// 判据 1 / 2（`#303` 的核心）：**阈值以上真的被压、阈值以下一个字节都不动**。
+///
+/// 读数（全部可手算）：
+/// - 高幅正弦 `A = 0.5` ⇒ 检波器读到真 RMS `20·log10(0.5/√2) = −9.03 dBFS`；
+///   `T = −24 dBFS`、`R = 4` ⇒ 稳态 `GR = 0.75·(−9.03 + 24) = 11.23 dB`；
+/// - 低幅正弦 `A = 0.02` ⇒ RMS `−36.99 dBFS < T` ⇒ `GR = 0` ⇒ 与无设备基线**逐字节相同**。
+///
+/// 这一条同时是"复现 / 修后"的机械判据：修前 `threshold_db` 被 `effective_strip` 无条件
+/// 关掉 ⇒ 第一档读数会等于基线（0 dB）。
+#[test]
+fn the_compressor_reduces_above_threshold_and_is_transparent_below_it() {
+    let master = node(0xFF);
+    let track_node = node(1);
+    let routing = graph(
+        &[master, track_node],
+        &[(track_node, master, RoutingKind::TrackToBus)],
+    );
+    let frames = 24_000; // 0.5 s：起振/释放都走完，稳态窗口从 0.25 s 起
+    let steady = (frames / 2)..frames;
+
+    // ⚠ 用**只有淡入**的稳态正弦（`burst` 的 5 ms 淡出会让渲染末尾的检波器读数
+    // 掉下去，那是"读数取样点"的问题，不是器件问题）。`detector_level_db` 是
+    // `execute` 之后读的快照 ⇒ 末尾必须仍在稳态。
+    let fade = (SR as usize / 200).max(1);
+    let loud: Vec<f32> = (0..frames)
+        .map(|index| {
+            let envelope = if index < fade {
+                index as f32 / fade as f32
+            } else {
+                1.0
+            };
+            let phase = core::f64::consts::TAU * 440.0 * index as f64 / f64::from(SR);
+            (0.5f64 * f64::from(envelope) * phase.sin()) as f32
+        })
+        .collect();
+    let baseline = render(
+        &routing,
+        master,
+        &BTreeMap::new(),
+        frames,
+        loud.clone(),
+        track_node,
+    );
+    let plain_rms = rms(&baseline.samples, steady.start, steady.end);
+
+    let mut tracks = BTreeMap::new();
+    tracks.insert(track_node, track(vec![hard_knee_compressor(-24.0)]));
+    let inserts = project_inserts(&tracks, SR);
+    let chain = inserts.get(&track_node).expect("压缩参数必须投影出非空链");
+    assert!(chain.compresses(), "`threshold_db` ⇒ 压缩级执行");
+    let (compressed, readings, longest_path) =
+        render_with_readings(&routing, master, &inserts, frames, loud, track_node);
+
+    let compressed_rms = rms(&compressed.samples, steady.start, steady.end);
+    let gain_db = 20.0 * (compressed_rms / plain_rms).log10();
+    let read = readings
+        .iter()
+        .find(|reading| reading.node == track_node)
+        .expect("本轨必须有通道条读数");
+    println!(
+        "压缩读数: 基线 RMS = {plain_rms:.6} / 压缩后 = {compressed_rms:.6} ⇒ {gain_db:+.3} dB；\
+         器件读数 maxReduction = {:.3} dB / currentReduction = {:.3} dB / reductions = {} / \
+         stripFrames = {} / detector = {:.3} dBFS / longestPath = {longest_path}",
+        read.max_reduction_db,
+        read.current_reduction_db,
+        read.gain_reductions,
+        read.strip_frames,
+        read.detector_level_db
+    );
+    // 手算 11.23 dB；检波器纹波与弹道残差都在 ±1.0 dB 内（窗口 0.25 s 之后）。
+    assert!(
+        (gain_db - (-11.23)).abs() < 1.0,
+        "稳态增益衰减必须是 −11.23±1.0 dB（手算 (1−1/4)·(−9.03+24)），实得 {gain_db:+.3} dB"
+    );
+    assert!(
+        read.max_reduction_db > 10.0,
+        "器件自己的最大衰减读数必须 > 10 dB，实得 {}",
+        read.max_reduction_db
+    );
+    assert!(
+        read.gain_reductions > 0 && read.gain_reductions <= read.strip_frames,
+        "被压帧数必须在 (0, stripFrames] 内，实得 {}/{}",
+        read.gain_reductions,
+        read.strip_frames
+    );
+    assert!(
+        read.gain_reductions >= read.strip_frames - 1_000,
+        "稳态正弦（淡入 240 帧）⇒ 至少 95.8% 的帧被压，实得 {}/{}",
+        read.gain_reductions,
+        read.strip_frames
+    );
+    assert!(
+        (read.detector_level_db - (-9.03)).abs() < 1.0,
+        "检波器电平必须是 −9.03±1.0 dBFS（声相之前的真 RMS），实得 {}",
+        read.detector_level_db
+    );
+
+    // ---- 阈值以下：一个字节都不动（压缩增益恒 1.0，乘 1.0 是 IEEE 恒等）----
+    let quiet = burst(440.0, frames, frames, 0.02);
+    let quiet_baseline = render(
+        &routing,
+        master,
+        &BTreeMap::new(),
+        frames,
+        quiet.clone(),
+        track_node,
+    );
+    let (quiet_compressed, quiet_readings, _) =
+        render_with_readings(&routing, master, &inserts, frames, quiet, track_node);
+    let quiet_read = quiet_readings
+        .iter()
+        .find(|reading| reading.node == track_node)
+        .expect("本轨必须有通道条读数");
+    println!(
+        "阈值以下读数: digest 基线 = {} / 压缩后 = {}；maxReduction = {:.6} dB / reductions = {}",
+        hex(&quiet_baseline.digest),
+        hex(&quiet_compressed.digest),
+        quiet_read.max_reduction_db,
+        quiet_read.gain_reductions
+    );
+    assert_eq!(
+        quiet_compressed.digest, quiet_baseline.digest,
+        "阈值以下必须与无压缩逐字节相同（母带）"
+    );
+    assert_eq!(
+        quiet_read.max_reduction_db, 0.0,
+        "阈值以下不得出现任何增益衰减"
+    );
+    assert_eq!(quiet_read.gain_reductions, 0, "阈值以下不得计一次压缩");
+}
+
+/// 判据 3（`#303` 裁决三）：**无 lookahead、零延迟** ⇒ 输出帧数不变、冲激不移位、
+/// PDC 关键路径仍是 `0`。
+///
+/// 阈值取 `0 dBFS`（冲激 `0.5` 的 RMS 远低于它）⇒ 压缩器逐位透明，于是"逐字节相同"
+/// 这一条同时是"没有延迟线"的判据：任何前视/延迟都会让冲激位置或总帧数变化。
+#[test]
+fn a_compressor_adds_no_latency_and_does_not_touch_pdc() {
+    let master = node(0xFF);
+    let track_node = node(1);
+    let routing = graph(
+        &[master, track_node],
+        &[(track_node, master, RoutingKind::TrackToBus)],
+    );
+    let frames = 24_000;
+    let impulse_at = 1_000usize;
+    let mut mono = vec![0.0f32; frames];
+    mono[impulse_at] = 0.5;
+
+    let baseline = render(
+        &routing,
+        master,
+        &BTreeMap::new(),
+        frames,
+        mono.clone(),
+        track_node,
+    );
+    let mut tracks = BTreeMap::new();
+    tracks.insert(
+        track_node,
+        track(vec![effect(&[
+            ("threshold_db", 0.0),
+            ("ratio", 4.0),
+            ("knee_db", 0.0),
+        ])]),
+    );
+    let inserts = project_inserts(&tracks, SR);
+    let (compressed, readings, longest_path) =
+        render_with_readings(&routing, master, &inserts, frames, mono, track_node);
+
+    // 器件自己的契约（`yeban_dsp` 是**同一个**器件；这里读的是公开 API）。
+    let strip = yeban_dsp::channel_strip::ChannelStrip::new(
+        yeban_dsp::channel_strip::ChannelStripParams::DEFAULT,
+        SR as f32,
+    );
+    println!(
+        "零延迟读数: frames 基线 = {} / 压缩后 = {}（请求 {frames}）；digest 基线 = {} / 压缩后 = {}；\
+         ChannelStrip::latency_samples = {}；longestPath = {longest_path}；reductions = {}",
+        baseline.frames,
+        compressed.frames,
+        hex(&baseline.digest),
+        hex(&compressed.digest),
+        strip.latency_samples(),
+        readings
+            .iter()
+            .find(|reading| reading.node == track_node)
+            .map_or(0, |reading| reading.gain_reductions)
+    );
+    assert_eq!(strip.latency_samples(), 0, "通道条/压缩器的延迟契约是 0");
+    assert_eq!(
+        compressed.frames, frames as u64,
+        "零延迟 ⇒ 输出帧数必须等于请求帧数"
+    );
+    assert_eq!(
+        compressed.frames, baseline.frames,
+        "零延迟 ⇒ 有/无压缩的输出帧数必须相同"
+    );
+    assert_eq!(
+        compressed.digest, baseline.digest,
+        "阈上不触发时压缩器必须逐位透明（任何延迟都会破坏这一条）"
+    );
+    assert_eq!(longest_path, 0, "压缩器不进 PDC 表 ⇒ L_max 仍是 0");
+}
+
+/// 正对照（`#303` 判据 4）：**没有 `threshold_db` 的工程**逐字节等于改前。
+///
+/// `NO_COMPRESSOR_MASTER_DIGEST` 在 `#303` 改动**之前**（`main` @ `164af592`）与**之后**
+/// 各用同一份夹具实测：两次**逐字节相同**（`11f47f5b…`）。`#303` 只改"会压缩的链"，
+/// 这条必须一字不变。
+/// 夹具刻意用增益级（唯一的超越函数是 `db_to_linear` → `libm`，跨平台可复现）。
+const NO_COMPRESSOR_MASTER_DIGEST: &str =
+    "11f47f5b2abf50437868a7064403f799f7b9489a40ccf199caf75dde66263625";
+
+#[test]
+fn a_project_without_compressor_params_keeps_its_master_bytes() {
+    let master = node(0xFF);
+    let track_node = node(1);
+    let routing = graph(
+        &[master, track_node],
+        &[(track_node, master, RoutingKind::TrackToBus)],
+    );
+    let frames = 24_000;
+    let mono = burst(440.0, frames, frames, 0.3);
+
+    let mut tracks = BTreeMap::new();
+    tracks.insert(track_node, track(vec![effect(&[("input_gain_db", -6.0)])]));
+    let inserts = project_inserts(&tracks, SR);
+    assert!(!inserts.is_empty(), "增益级必须投影出非空链");
+    assert!(
+        inserts.values().all(|chain| !chain.compresses()),
+        "没有压缩参数 ⇒ 任何链都不得执行压缩级"
+    );
+    assert!(
+        compressing_nodes(&tracks).is_empty(),
+        "预扫描也必须判成'没有会压缩的轨'"
+    );
+    let rendered = render(&routing, master, &inserts, frames, mono, track_node);
+    println!(
+        "正对照读数（无 threshold_db）: digest = {}",
+        hex(&rendered.digest)
+    );
+    assert_eq!(
+        hex(&rendered.digest),
+        NO_COMPRESSOR_MASTER_DIGEST,
+        "没有压缩参数的工程必须逐字节等于 #303 之前的母带"
+    );
+}
+
+/// 机制判据：pre-pan tap 的**预扫描**（[`compressing_nodes`]）与编译出来的链同解。
+///
+/// 两个导出（app / MCP）在构造音源之前只拿得到预扫描 —— 它与
+/// [`InsertChain::compresses`] 漂移的话，"声相搬家"和"真的压缩"就会落在不同的轨上。
+#[test]
+fn compressing_nodes_agree_with_the_compiled_chains() {
+    let compressor = node(2);
+    let gain_only = node(3);
+    let eq_only = node(4);
+    let explicit_off = node(5);
+    let threshold_alias = node(6);
+    let mut tracks = BTreeMap::new();
+    tracks.insert(compressor, track(vec![hard_knee_compressor(-18.0)]));
+    tracks.insert(gain_only, track(vec![effect(&[("input_gain_db", -3.0)])]));
+    tracks.insert(eq_only, track(vec![effect(&[("eq_low_gain", 6.0)])]));
+    tracks.insert(
+        explicit_off,
+        track(vec![effect(&[("compressor_enabled", 0.0)])]),
+    );
+    tracks.insert(
+        threshold_alias,
+        track(vec![effect(&[("threshold", -12.0)])]),
+    );
+
+    let inserts = project_inserts(&tracks, SR);
+    let from_chains: BTreeSet<EntityId> = inserts
+        .iter()
+        .filter(|(_, chain)| chain.compresses())
+        .map(|(&id, _)| id)
+        .collect();
+    let pre_scan = compressing_nodes(&tracks);
+    println!("预扫描读数: compressing_nodes = {pre_scan:?}；来自链 = {from_chains:?}");
+    assert_eq!(pre_scan, from_chains, "预扫描与编译出来的链必须同解");
+    assert_eq!(
+        pre_scan,
+        BTreeSet::from([compressor, threshold_alias]),
+        "只有真的写了压缩参数的轨会压缩（显式 0 的开关不算）"
+    );
 }

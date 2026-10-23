@@ -37,8 +37,9 @@
 //! - 只接 [`AutomationTarget::TrackVolume`]（含主总线）、[`AutomationTarget::SendGain`]、
 //!   [`AutomationTarget::TrackPan`] 与 [`AutomationTarget::DeviceParam`] 里**插入链能改的
 //!   标量字段**（[`APPLIED_DEVICE_PARAM_NAMES`]：41 个拼写 = 22 个字段，含别名；
-//!   通道条 14 ＋ Freeverb 4 ＋ 卷积标量 4）；**压缩**与**卷积 IR 形状**
-//!   （`conv_ir_decay*` / `conv_ir_seed`）如实登记（⛔ 不冒充已支持）；
+//!   通道条 14 ＋ Freeverb 4 ＋ 卷积标量 4）；**压缩**（`#303` 起静态执行，但自动化
+//!   落点不在本单）与**卷积 IR 形状**（`conv_ir_decay*` / `conv_ir_seed`）如实登记
+//!   （⛔ 不冒充已支持）；
 //! - `#297` 起 [`AutomationTarget::Macro`] **接上了离线渲染**，口径是
 //!   `目标当前值 + depth × macro_value`（`depth` 是目标单位的振幅）。只有**存在
 //!   `Macro` 泳道**时才做动态级联：没有宏泳道的静态宏不参与渲染（`yeban_set_macro`
@@ -1006,9 +1007,10 @@ impl TrackPanAutomation {
 /// ## 为什么**不**是别的名字
 ///
 /// - **压缩**（`threshold_db` / `ratio` / `knee_db` / `detector_s` / `attack_s` /
-///   `release_s` / `makeup_db` / `compressor_enabled`）：离线侧**整级不执行**
-///   （`inserts.rs` 模块头 §1：检波器在声相前后的电平口径未裁决）⇒ 改它一个字节都
-///   不会变。接上就是假话；
+///   `release_s` / `makeup_db` / `compressor_enabled`）：⭐ `#303` 起**静态投影执行**
+///   它们（`inserts.rs` 模块头 §1.1），但**自动化落点不在本单**（那是独立的一票）⇒
+///   指向它们的 `DeviceParam` 泳道仍不可落点（`unsupported_lane_reason` 报
+///   `deviceParamNotChannelStrip`），本名单 ⛔ 不收它们；
 /// - **卷积 IR 形状**（`conv_ir_decay_s` / `conv_ir_decay` / `conv_ir_seed`）：那是
 ///   **构造期烘焙**，换值要重新合成 IR 并走 `set_impulse_response`（分配入口）⇒
 ///   每 128 帧重烘会破坏“IR 构造期烘好 / `process` 零分配”的架构契约；
