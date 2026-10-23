@@ -61,7 +61,7 @@
 //! | ㉔ | 环音符**窃取淡出窗口**：16 条 `NoteOn` **先走一个量子**灌满池（⚠ 触发量子与窃取量子必须错开，否则被窃取者电平 ≈ 0 ⇒ 3 ms release 立刻 Idle、`pending` 被回收丢掉）＋ 第 17 条**软窃取** ＋ **窗口内**推新音符自己的 `NoteOff`（3 个窗口：窃取量子 / 松键量子 / 64 量子回收），全部走 `note_project(&[])`（**零**已调度音符 ⇒ 声音只可能来自环音符） | `rt.rs::render_block` 的 `EngineEvent::NoteOn` 分支（灌满 + 软窃取，`pending` 挂起）＋ `EngineEvent::NoteOff` 分支 ＋ ⭐ `polysynth.rs::PolySynth::note_off` 的**挂起匹配**支路（`pending.is_some() && pending_freq_hz == freq_hz` ⇒ `pending_released = true`）与提升点的 `Adsr::gate_off()`。⚠ ⭐ 本行曾写"既有场景没有一条走到这条支路"—— **注入实测证否**：在挂起支路注入一次 `Vec::with_capacity(1)` 时 ⑯ 也红（`alloc=15`）⇒ ⑯ **偶然**覆盖 15 次，但⛔ 不断言、⛔ 不确定、且池里混着已调度音符 ⇒ ㉔ 把它做成**确定性 + 带断言**的覆盖。行为判据在 `rt.rs` 的 `a_release_for_the_stolen_note_works_inside_the_fade_window_and_after_promotion` 与 `tests/two_path_gain.rs` |
 //! | ㉙ | 每轨 **SFZ 音源** 10 000 量子（一条轨、两条区域覆盖两个音高）＋ **1 次换采样率**（48 → 44.1 kHz）＋ ⭐ **1 000 量子 CC 探针腿**（`#107`：先发一条 `ControlChange`，之后逐块读数的探针恒为 `Some`） | `SynthEngine::render_track_with_cc` 的 **SFZ 分支**（`SfzVoicePool::trigger_note` 的区域扫描 → `SfzVoicePool::render_into_with_cc` 的逐声部线性插值＋增益乘加＋`ampeg_run_with_cc_and_velocity(probe = Some)` 的 CC 求值分支）与快照边界（`begin_snapshot` 的器件重武装；⛔ **不**重建摊平表 —— 那是控制侧、窗口外）＋ `rt.rs::render_block` 的 `EngineEvent::ControlChange` 分支（写 `ControlChangeState`：一次表写 ＋ 一次位或）。⚠ 与 ㉓ 的**结构差别**：鼓机是"触发一次、器件内部推进"，SFZ 是"**多声部**（每条匹配区域一个）＋**跨量子延续的源位置**" ⇒ 池的扫描与逐声部循环都要落在零分配量程内。覆盖度见证＝窗口内总能量 > 0（③ 腿另有 `control_change(1) == Some(64)` 与 `events_applied` ＋1 两条）。行为判据在 `tests/sfz_instrument.rs` 的 S63／S64（起音帧数逐帧等于规范公式） |
 //! | ㊷ | **实时音频片段**（`ClipContent::Audio`，任务单 `#135`）1 000 量子：单声道 `0.5` 常量 PCM（`Arc<[f32]>`，48 kHz，5 s ⇒ 覆盖**整段**摆放）＋ 摆放起点 tick 0 / 时值 9 600 tick（240 000 帧） | `rt.rs::render_branch` 的 ⭐ 音频片段累加分支（`audio_clip::mix_into`：绝对帧 → 素材帧 → 交织下标 → 一次乘加）＋ 快照构造期的摆放投影（`project_audio_clips` 的 tick→帧换算、增益门、全序排序；这些在**窗口之外**，但窗口里读到的区间与 PCM 只来自它们）。⚠ **没有**逐样本游标可覆盖：位置由走带绝对帧导出 ⇒ `EngineRuntime` **＋0 B**。覆盖度见证＝窗口**最后一个**量子 256 个样本全非零且峰值 ≈ `0.5 × 1/√2`。行为判据在 `tests/audio_clip_render.rs` |
-//! | ㊸ | **发送/总线路由** 2 000 量子（任务单 `#154`：轨 A `SendToAux` → aux 总线暂存 → `BusToMaster` → master） | `rt.rs::render_branch` 的按边搬运（`render_panned_into` → `route_panned`）与逐轨循环之后的总线转发阶段；两段都只用**构造期预分配**的总线暂存池（`Box<[_; 16]>`）⇒ 四元组全 0。覆盖度见证＝`uses_buses == true` 且窗口内总能量 > 0。行为判据在 `tests/bus_routing.rs` |
+//! | ㊸ | **发送/总线路由** 2 000 量子（任务单 `#154`：轨 A `SendToAux` → aux 总线暂存 → `BusToMaster` → master；⭐ `#299` 起 aux 还挂**非恒等**的 pan 与一条 `mute=true` 的 aux，主总线也挂非恒等 pan） | `rt.rs::render_branch` 的按边搬运（`render_panned_into` → `route_panned`）、逐轨循环之后的总线转发阶段，以及 3a⁗ 的 `BusOutputStage`（gate×pan）与 3a'⁰ 的主总线 pan；全部只用**构造期预分配**的总线暂存池（`Box<[_; 16]>`）与快照标量 ⇒ 四元组全 0。覆盖度见证＝`uses_buses == true`、窗口内总能量 > 0、且 `㊸d` 断言三条非恒等分支都武装。行为判据在 `tests/bus_routing.rs` 与 `tests/bus_pan_mute_solo.rs` |
 //! | ㊹ | **总线插入链** 2 000 量子（任务单 `#158`：轨 A `SendToAux` → **挂湿混响**的 aux → `BusToMaster` → master） | `rt.rs::render_branch` 的"处理型总线"判定（三次定长武装表扫描 ＋ `RoutingPlan::has_incoming_audio`）＋ 3a⁗ 的"下混 → `process_insert_chain`（通道条/混响/卷积）→ 复制两路 → 计量"；所有缓冲都在构造期预分配（混响延迟线在 `EngineRuntime::new`）⇒ 四元组全 0。覆盖度见证＝`uses_buses == true`、窗口内总能量 > 0、且 `insert_reverb_frames` 在窗口内**恰好**增加 `2 000 × 128`（每量子每节点一次；路径没跑到时它是 0，逐轨＋转发各跑一次时是 2×）。行为判据在 `tests/bus_insert.rs` |
 //! | ㊺ | **主总线插入链** 2 000 量子（任务单 `#173`：主总线轨挂 EQ ＋ 湿混响 ＋ 卷积混响三台设备，轨 A 直连 master） | `rt.rs::render_branch` 的 3a⁗⁗（`has_armed_insert_devices(master)` → 下混 `(L+R)·0.5` → `process_insert_chain`（通道条/混响/卷积）→ 复制两路 → `master_insert_frames += frames`）；主总线的槽位是**构造期**预分配的 `INSERT_SLOTS = 17` 那一格（混响延迟线/IR 频谱在 `EngineRuntime::new` 建好）⇒ 四元组全 0。覆盖度见证＝`master_insert_frames` 与三个 `insert_*_frames` 在窗口内**都恰好**增加 `2 000 × 128`（路径没跑到时它们是 0；每量子跑两遍时是 2×）。行为判据在 `tests/master_insert.rs`（M1~M5） |
 //!
@@ -3981,6 +3981,7 @@ fn scenario_bus_routing(report: &mut Report) {
     let master = fixture.master;
     let track = fixture.track;
     let aux = EntityId::new();
+    let muted_aux = EntityId::new();
     let mut project = fixture.project;
     project.tracks.insert(
         aux,
@@ -3988,35 +3989,67 @@ fn scenario_bus_routing(report: &mut Report) {
             id: aux,
             name: "Aux".to_owned(),
             kind: TrackKind::AuxReturn,
+            // ⭐ `#299`：非恒等总线声相 —— 覆盖 3a⁗ 的 gate×pan 非恒等分支。
+            pan: -0.5,
             ..TrackV3::default()
         },
     );
+    project.tracks.insert(
+        muted_aux,
+        TrackV3 {
+            id: muted_aux,
+            name: "MutedAux".to_owned(),
+            kind: TrackKind::AuxReturn,
+            // ⭐ `#299`：gate == 0 的非恒等分支（整条总线静音）。
+            mute: true,
+            ..TrackV3::default()
+        },
+    );
+    project
+        .tracks
+        .get_mut(&master)
+        .expect("夹具的 master")
+        // ⭐ `#299`：主总线输出级声相 —— 覆盖 3a'⁰ 的非恒等分支。
+        .pan = 0.5;
     project.routing_graph.nodes.push(aux);
-    let send = EntityId::new();
-    project.routing_graph.edges.insert(
-        send,
-        RoutingEdge {
-            id: send,
-            source_node: track,
-            destination_node: aux,
-            kind: RoutingKind::SendToAux,
-            gain_db: None,
-        },
-    );
-    let back = EntityId::new();
-    project.routing_graph.edges.insert(
-        back,
-        RoutingEdge {
-            id: back,
-            source_node: aux,
-            destination_node: master,
-            kind: RoutingKind::BusToMaster,
-            gain_db: None,
-        },
-    );
-    // 构造期（窗口之外）确认：这份夹具真的启用了总线暂存池。
+    project.routing_graph.nodes.push(muted_aux);
+    for destination in [aux, muted_aux] {
+        let send = EntityId::new();
+        project.routing_graph.edges.insert(
+            send,
+            RoutingEdge {
+                id: send,
+                source_node: track,
+                destination_node: destination,
+                kind: RoutingKind::SendToAux,
+                gain_db: None,
+            },
+        );
+        let back = EntityId::new();
+        project.routing_graph.edges.insert(
+            back,
+            RoutingEdge {
+                id: back,
+                source_node: destination,
+                destination_node: master,
+                kind: RoutingKind::BusToMaster,
+                gain_db: None,
+            },
+        );
+    }
+    // 构造期（窗口之外）确认：这份夹具真的启用了总线暂存池，并且三条非恒等
+    // 输出级分支（aux pan / aux mute gate / master pan）都**武装成非恒等**。
     let snapshot = EngineSnapshot::from_project(&project, 1).expect("夹具必须能编译成快照");
     let uses_buses = snapshot.routing().uses_buses();
+    let bus_pan_active = snapshot
+        .bus_outputs()
+        .iter()
+        .any(|stage| stage.pan_left() != 1.0 || stage.pan_right() != 1.0);
+    let bus_gate_active = snapshot
+        .bus_outputs()
+        .iter()
+        .any(|stage| stage.gate() == 0.0);
+    let master_pan_active = snapshot.master_pan_left() != 1.0 || snapshot.master_pan_right() != 1.0;
     drop(snapshot);
     let mut rig = Rig::new(&project, 1, 64);
     rig.preheat();
@@ -4035,7 +4068,9 @@ fn scenario_bus_routing(report: &mut Report) {
     let mut scenario = Scenario::new("㊸总线路由");
     scenario.absorb(BUS_ROUTING_QUANTA, &reading);
     scenario.note(format!(
-        "{BUS_ROUTING_QUANTA} 量子；uses_buses={uses_buses}；窗口内总能量={energy:.6}"
+        "{BUS_ROUTING_QUANTA} 量子；uses_buses={uses_buses}；窗口内总能量={energy:.6}；\
+         bus_pan_active={bus_pan_active}、bus_gate_active={bus_gate_active}、\
+         master_pan_active={master_pan_active}"
     ));
     report.scenario(
         "㊸",
@@ -4047,6 +4082,17 @@ fn scenario_bus_routing(report: &mut Report) {
         "覆盖度：夹具启用总线暂存池且窗口内真的出声（⇒ 零分配读数不是空转分支）",
         uses_buses && energy > 0.0,
         format!("uses_buses={uses_buses}、窗口内总能量={energy:.6}"),
+    );
+    // ⭐ `#299`：非恒等的 bus pan / bus mute gate / master pan 三条分支都真在窗口里
+    // 被走到（它们只做乘法，不分配 ⇒ 四元组必须仍然全 0）。
+    report.assert(
+        "㊸d",
+        "覆盖度：非恒等 bus pan ＋ bus mute gate ＋ master pan 三条分支都在窗口内被武装",
+        bus_pan_active && bus_gate_active && master_pan_active,
+        format!(
+            "bus_pan_active={bus_pan_active}、bus_gate_active={bus_gate_active}、\
+             master_pan_active={master_pan_active}"
+        ),
     );
 }
 

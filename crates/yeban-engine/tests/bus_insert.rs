@@ -577,10 +577,16 @@ fn b6_the_bus_convolution_tail_is_audible() {
 /// `armed_strips` ＋392、`reverb_pool` ＋1 312、`armed_reverbs` ＋24、
 /// `armed_convs` ＋24、`armed_conv_ir_hashes` ＋8、新计数 `master_insert_frames` ＋8
 /// ＝ 1 768，其余 24 B 是字段对齐的填充。**门槛不变**：181 936 < 196 608（余 14 672）。
-/// `EngineSnapshot` **＋0**（主总线的设备投影在 `inserts` 映射里本来就有）。
+/// `EngineSnapshot` 在 `#173` 时 **＋0**（主总线的设备投影在 `inserts` 映射里本来就有）；
+/// ⭐ `#299` 起为 **4608 B**（＋32，见下面 `#299` 那一段）。
 ///
 /// 这里同时打印三件器件的 `size_of`（"左右各一套"要各自再备 16 份的那三种类型），
 /// 作为裁决里"缓存翻倍"的量化背景。
+/// ⭐ 任务单 `#299` 的**代价**：`EngineSnapshot` **4576 → 4608 B**（＋32）——
+/// 主总线声相两个 `f32`（＋8）＋ 与 `routing.slots()` 平行的 `Vec<BusOutputStage>`（＋24）。
+/// `EngineRuntime` **不变**（仍是 186720 B）：新增的两个主总线声相 `f32` 落在既有对齐填充里。
+/// 分项：`Vec` 只是三个词（ptr/len/cap），真实表在堆上（每条总线 12 B，≤16 条 ⇒ ≤192 B），
+/// 与 `track_scratch` / `routing_buses` 同一条"构造期预分配、回调零分配"纪律。
 #[test]
 fn b5_sizes_stay_under_the_192_kib_red_line() {
     let runtime = core::mem::size_of::<EngineRuntime>();
@@ -603,7 +609,11 @@ fn b5_sizes_stay_under_the_192_kib_red_line() {
         "EngineRuntime 必须是 186720 B（#261：逐边发送量表 ＋4784 B；\
          #173 的主总线插入 ＋1792 仍在里面；见本判据文档）"
     );
-    assert_eq!(snapshot, 4_576, "EngineSnapshot 必须仍是 4576 B（＋0）");
+    assert_eq!(
+        snapshot, 4_608,
+        "EngineSnapshot 必须是 4608 B（#299：主总线声相 2×f32 ＋ 总线 stage Vec ＝＋32；\
+         见本判据文档）"
+    );
     assert_eq!(voice, 40, "SfzVoice 必须仍是 40 B");
     assert_eq!(pool, 1_712, "SfzVoicePool 必须仍是 1712 B");
     assert_eq!(region, 6_160, "PreparedRegion 必须仍是 6160 B");

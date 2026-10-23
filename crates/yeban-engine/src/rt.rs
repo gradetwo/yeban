@@ -2132,11 +2132,37 @@ fn render_branch(
                     }
                 }
             }
+            // ⭐ 任务单 `#299`：本条总线的**输出级**（构造期按"有入边 + 模型
+            // pan/mute/solo/solo_safe"算好的 `gate × pan`）。位置是离线
+            // `OutputStage` 的同一点：**插入链之后**（上面的 `process_bus_inserts`
+            // 段）、再次搬运**之前**。与 `routing.slots()` 逐下标平行。
+            //
+            // **恒等快路**：`gate == 1 && pan == (1,1)`（默认/中性总线）⇒ 仍走
+            // `copy_from_slice`，**一个样本都不改** ⇒ 既有输出逐位不变。
+            // 非恒等时逐帧 **先 gate、后 pan** 两次乘（与离线 `OutputStage::apply`
+            // 的 gain→pan 同序）；零分配、零锁、零 I/O [MUST-GATE-001]。
+            let bus_output = current.bus_output_stage(index).copied().unwrap_or_default();
             {
                 let (first, second) = share.reverb_scratch.split_at_mut(1);
                 let (bus_left, bus_right) = share.routing_buses[index].stereo_mut();
-                first[0][..frames].copy_from_slice(bus_left);
-                second[0][..frames].copy_from_slice(bus_right);
+                if bus_output.is_identity() {
+                    first[0][..frames].copy_from_slice(bus_left);
+                    second[0][..frames].copy_from_slice(bus_right);
+                } else {
+                    let frames = frames
+                        .min(bus_left.len())
+                        .min(bus_right.len())
+                        .min(first[0].len())
+                        .min(second[0].len());
+                    for frame in 0..frames {
+                        let mut left = bus_left[frame] * bus_output.gate();
+                        let mut right = bus_right[frame] * bus_output.gate();
+                        left *= bus_output.pan_left();
+                        right *= bus_output.pan_right();
+                        first[0][frame] = left;
+                        second[0][frame] = right;
+                    }
+                }
             }
             route_panned(
                 routes,
@@ -2444,11 +2470,20 @@ pub struct EngineRuntime {
     /// ⛔ 不是"换过几次采样率"。⛔ 不 panic、⛔ 不静默。
     send_capacity_drops: u64,
     /// 本快照武装的**主总线线性增益**（构造期由
-    /// [`crate::snapshot::EngineSnapshot::master_gain`] 算好）。
+    /// [`crate::snapshot::EngineSnapshot::master_gain`] 算好；⭐ 任务单 `#299` 起
+    /// 含 `mute ⇒ 0.0`）。
     ///
     /// 与声相增益表同一个理由：`dB → 线性` 含 `exp2`（超越函数类），只能在快照
     /// 边界读一次；逐样本路径只做乘法（见 [`Self::armed_master_gain`]）。
     armed_master_gain: f32,
+    /// 本快照武装的**主总线输出级声相**（任务单 `#299`；构造期
+    /// [`crate::snapshot::EngineSnapshot::master_pan_left`] / `_right` 算好）。
+    ///
+    /// 与 [`Self::armed_master_gain`] 同族：`cos`/`sin` 属超越函数类，只在快照边界
+    /// 读一次；逐样本只做左右各一次乘。中性（`(1,1)`）⇒ 实时侧整段跳过。
+    armed_master_pan_left: f32,
+    /// 见 [`Self::armed_master_pan_left`]（右声道）。
+    armed_master_pan_right: f32,
     /// 本快照是否开启节拍器（`transport.metronome_enabled` 的投影）。
     ///
     /// `false`（默认）时**整段咔哒声代码不被执行** ⇒ 输出与接线前逐字节相同。
@@ -2957,6 +2992,8 @@ impl EngineRuntime {
             put!(send_automation_resets, 0);
             put!(send_capacity_drops, 0);
             put!(armed_master_gain, 1.0);
+            put!(armed_master_pan_left, 1.0);
+            put!(armed_master_pan_right, 1.0);
             put!(armed_metronome_enabled, false);
             put!(armed_metronome_ticks_per_beat, 0);
             put!(armed_metronome_beats_per_bar, 0);
@@ -3805,6 +3842,16 @@ impl EngineRuntime {
         self.armed_master_gain
     }
 
+    /// 本快照武装的**主总线输出级声相** `(pan_left, pan_right)`（任务单 `#299`；
+    /// 诊断/判据用）。
+    ///
+    /// 与 [`Self::armed_master_gain`] 同族：判据不必从音频输出反推"模型字段真的
+    /// 走到了实时侧"。`(1.0, 1.0)`（默认 `pan = 0`）时逐样本路径**整段跳过**。
+    #[must_use]
+    pub const fn armed_master_pan(&self) -> (f32, f32) {
+        (self.armed_master_pan_left, self.armed_master_pan_right)
+    }
+
     /// 本快照武装的**节拍器开关**（`transport.metronome_enabled` 的投影；
     /// 诊断/判据用）。
     ///
@@ -3972,6 +4019,8 @@ impl EngineRuntime {
             engine_output_latency_frames,
             armed_revision,
             armed_master_gain,
+            armed_master_pan_left,
+            armed_master_pan_right,
             armed_metronome_enabled,
             armed_metronome_ticks_per_beat,
             armed_metronome_beats_per_bar,
@@ -4430,12 +4479,15 @@ impl EngineRuntime {
                     }
                 }
 
-                // --- 2c') 主总线推子：与声相表同一个形状（构造期标量，逐样本只乘）---
-                // `dB → 线性` 已经在快照构造期算完（`EngineSnapshot::master_gain`）；
-                // 这里只把这个 `f32` **读**进实时侧。主总线**不**进声相表（见上面
-                // 的 `*id == master` 分支）：母带的声相由总线求和决定，与 `yeban-mcp`
-                // 的 `masterPan` 登记同一口径。
+                // --- 2c') 主总线推子 ＋ ⭐ 输出级声相（任务单 `#299`）：构造期标量 ---
+                // `dB → 线性` / `cos`/`sin` 已经在快照构造期算完
+                // （`EngineSnapshot::master_gain` / `master_pan_left` / `master_pan_right`）；
+                // 这里只把三个 `f32` **读**进实时侧。主总线**不**进逐轨声相表（见上面
+                // 的 `*id == master` 分支）：它的声相是**母线级**的一级，落点在
+                // 3a'⁰（`scale_bus` 之前），与离线 `OutputStage` 的"先声相、后推子"同序。
                 *armed_master_gain = current.master_gain();
+                *armed_master_pan_left = current.master_pan_left();
+                *armed_master_pan_right = current.master_pan_right();
 
                 // --- 2c'') 每轨**插入器件**（通道条）：与声相表同一个形状 ---
                 // [crate::insert]。计划（哪条轨挂通道条、参数是多少）在**控制线程**的
@@ -4774,12 +4826,27 @@ impl EngineRuntime {
                 render_metronome_quantum(metronome, plan, transport, block, frames);
             }
 
+            // --- 3a'⁰) 主总线**输出级声相**（任务单 `#299`）：推子**之前** ---
+            // 位置与离线 `OutputStage` 的 `apply` 同序：**先声相、后推子**
+            // （`render_core.rs` 的 OutputStage 在 `render_node` 里先乘 pan，
+            //  主总线推子在执行之后才乘）。两个增益都在**构造期**算好
+            // （[`EngineSnapshot::master_pan_left`]；`cos`/`sin` 属超越函数类），
+            // 实时侧只有逐帧两次乘（[`pan_bus`]）—— 零分配、零锁、零 I/O、
+            // 零除法、零超越函数 [MUST-GATE-001]。
+            // `(1.0, 1.0)`（默认 `pan = 0`）时**整段跳过** ⇒ 中性主总线的输出与
+            // 接线前**逐位**相同。这个对在整份快照的生命周期内不变。
+            let (master_pan_left, master_pan_right) =
+                (*armed_master_pan_left, *armed_master_pan_right);
+            if master_pan_left != 1.0 || master_pan_right != 1.0 {
+                pan_bus(block, master_pan_left, master_pan_right);
+            }
+
             // --- 3a'') 主总线推子：**逐轨汇流之后、母线限制器之前** ---
-            // 增益在**构造期**算好（[`EngineSnapshot::master_gain`]；`exp2` 属超越函数类），
-            // 实时侧只有一次乘（[`scale_bus`]）—— 零分配、零锁、零 I/O、零除法、零超越函数
-            // [MUST-GATE-001]。
-            // `== 1.0`（默认 0 dB）时**整段跳过** ⇒ 单位增益下的输出与接线前**逐位**相同。
-            // 这个数在整份快照的生命周期内不变（快照不可变，见 2c'）。
+            // 增益在**构造期**算好（[`EngineSnapshot::master_gain`]；`exp2` 属超越函数类；
+            // ⭐ `#299` 起 `mute` 折成 `0.0`），实时侧只有一次乘（[`scale_bus`]）——
+            // 零分配、零锁、零 I/O、零除法、零超越函数 [MUST-GATE-001]。
+            // `== 1.0`（默认 0 dB、未静音）时**整段跳过** ⇒ 单位增益下的输出与接线前
+            // **逐位**相同。这个数在整份快照的生命周期内不变（快照不可变，见 2c'）。
             let master_gain = *armed_master_gain;
             if master_gain != 1.0 {
                 scale_bus(block, master_gain);
@@ -5221,6 +5288,34 @@ fn scale_bus(block: &mut AudioBlock<DEFAULT_BLOCK_FRAMES>, gain: f32) {
     for (l, r) in left.iter_mut().zip(right.iter_mut()) {
         *l *= gain;
         *r *= gain;
+    }
+}
+
+/// ⭐ 主总线**输出级声相**（任务单 `#299`）：左右各一次乘，**不是**单声道声相。
+///
+/// ## 为什么是"平衡"而不是"等功率落点"
+///
+/// 主总线拿到的是**已经声相过**的立体声和；这一级与离线
+/// `yeban_render::OutputStage::apply` 的声相段**逐字同形**：
+/// `out[L] *= pan_left; out[R] *= pan_right`。两个增益由构造期的
+/// [`crate::mixer::centered_pan_gains`] 给出（`pan == 0 ⇒ (1,1)`）。
+///
+/// ## 位置与顺序
+///
+/// 调用点是 [`EngineRuntime::render_block`] 的步骤 3a'⁰：主总线插入链
+/// （3a⁗⁗）与节拍器（3a'）**之后**、推子（3a''）与母线限制器（3b）**之前**。
+/// 先声相、后推子 —— 与离线 `OutputStage`（先 pan）再主推子（执行之后）同序。
+///
+/// ## 实时约束
+///
+/// 逐帧两次乘；左右都是 `1.0` 时调用点**整段跳过**（见 3a'⁰ 的判据）
+/// ⇒ 中性主总线一个样本都不碰。零分配、零锁、零 I/O、零超越函数 [MUST-GATE-001]。
+fn pan_bus(block: &mut AudioBlock<DEFAULT_BLOCK_FRAMES>, pan_left: f32, pan_right: f32) {
+    // 与 `scale_bus` 同源：`stereo_mut()` 只给出**有效帧**。
+    let (left, right) = block.stereo_mut();
+    for (l, r) in left.iter_mut().zip(right.iter_mut()) {
+        *l *= pan_left;
+        *r *= pan_right;
     }
 }
 

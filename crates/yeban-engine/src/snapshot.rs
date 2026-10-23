@@ -89,7 +89,7 @@ use crate::drums::DrumsParams;
 use crate::graph::{LatencyTable, PdcError, PdcPlan};
 use crate::insert::InsertParams;
 use crate::metronome::MetronomePlan;
-use crate::mixer::{PanLaw, pan_gains};
+use crate::mixer::{PanLaw, centered_pan_gains, pan_gains};
 use crate::routing::RoutingPlan;
 use crate::sfz_instrument::{PendingSfz, SfzPlan};
 use crate::synth::{
@@ -303,6 +303,144 @@ impl TrackParams {
     }
 }
 
+/// ⭐ **一条总线节点的输出级**（任务单 `#299`）：`gate × pan`，全部在**构造期**算好。
+///
+/// ## 语义（与离线 `yeban-render` 的 `OutputStage` 同一条）
+///
+/// 离线把"有入边的非主轨"称作**总线节点**：它的 `mute`/`solo`/`solo_safe` 折成
+/// **整条总线**的 0/1 门（`track_gain_of` → `track_is_audible`，见
+/// `crates/yeban-app/src/render_core.rs` 的 1d 段），静态 `pan` 用
+/// [`centered_pan_gains`]（`pan == 0 ⇒ (1,1)`）乘在**整条总线**上。本结构体是前两者
+/// 在实时侧的投影（⚠ **不含推子**：引擎的总线 `volume_db` 仍只乘自有源，
+/// 与离线 B2 不一致，登记为下一票）。
+///
+/// ## 为什么不是逐块重算
+///
+/// `track_is_audible` 需要 `any_solo`（扫全部轨道），`pan` 需要 `cos`/`sin`
+/// ⇒ 两者都属**构造期**（[MUST-GATE-001] / [ADR-0001 D32]）。实时侧只读这三个
+/// `f32` 并做乘法；`is_identity()` 为真时**一个样本都不碰**。
+///
+/// ## 落点
+///
+/// [`crate::rt`] 的 3a⁗ 转发阶段：总线插入链**之后**、`route_panned` **之前**
+/// （与离线"插入链之后、母线求和之前"同一个位置）。
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct BusOutputStage {
+    /// 可闻门：可闻 `1.0`、不可闻 `0.0`（`track_is_audible` 的 0/1 投影）。
+    gate: f32,
+    /// 左声道声相增益（构造期 [`centered_pan_gains`]）。
+    pan_left: f32,
+    /// 右声道声相增益（构造期 [`centered_pan_gains`]）。
+    pan_right: f32,
+}
+
+impl BusOutputStage {
+    /// 恒等输出级（`gate = 1`、`pan = (1,1)`）—— 默认工程/中性总线。
+    #[must_use]
+    pub const fn identity() -> Self {
+        Self {
+            gate: 1.0,
+            pan_left: 1.0,
+            pan_right: 1.0,
+        }
+    }
+
+    /// 从模型参数投影（**构造期**；`any_solo` 由调用方按全工程扫一次）。
+    #[must_use]
+    pub fn from_params(params: &TrackParams, any_solo: bool, law: PanLaw) -> Self {
+        let gate = if crate::synth::track_is_audible(
+            params.is_muted(),
+            params.is_soloed(),
+            params.is_solo_safe(),
+            any_solo,
+        ) {
+            1.0
+        } else {
+            0.0
+        };
+        let (pan_left, pan_right) = centered_pan_gains(params.pan(), law);
+        Self {
+            gate,
+            pan_left,
+            pan_right,
+        }
+    }
+
+    /// 恒等 ⇒ 实时侧连拷贝循环都不改（走 `copy_from_slice`）。
+    #[must_use]
+    pub const fn is_identity(&self) -> bool {
+        self.gate == 1.0 && self.pan_left == 1.0 && self.pan_right == 1.0
+    }
+
+    /// 可闻门（0/1 线性）。
+    #[must_use]
+    pub const fn gate(&self) -> f32 {
+        self.gate
+    }
+
+    /// 左声道声相增益。
+    #[must_use]
+    pub const fn pan_left(&self) -> f32 {
+        self.pan_left
+    }
+
+    /// 右声道声相增益。
+    #[must_use]
+    pub const fn pan_right(&self) -> f32 {
+        self.pan_right
+    }
+}
+
+impl Default for BusOutputStage {
+    /// 与 [`Self::identity`] 相同。
+    fn default() -> Self {
+        Self::identity()
+    }
+}
+
+/// 全工程 `any_solo`（**构造期**一次）：与 [`project_schedules`] 和离线
+/// `render_core.rs` 的扫描**同一条**（扫**全部**轨道，含 master）。
+fn any_solo_in(tracks: &BTreeMap<EntityId, TrackParams>) -> bool {
+    tracks.values().any(TrackParams::is_soloed)
+}
+
+/// 主总线输出级声相（**构造期**；缺 master ⇒ 恒等）。
+fn master_pan_of(
+    tracks: &BTreeMap<EntityId, TrackParams>,
+    master: EntityId,
+    law: PanLaw,
+) -> (f32, f32) {
+    tracks
+        .get(&master)
+        .map_or((1.0, 1.0), |params| centered_pan_gains(params.pan(), law))
+}
+
+/// 与 `routing.slots()` **逐下标平行**的总线输出级表（**构造期**）。
+///
+/// 只有"有入边的非 master 节点"（`RoutingPlan::has_incoming_audio`）参与；
+/// 其余槽位恒等 ⇒ 实时侧走 `copy_from_slice` 快路，逐位不变。
+fn bus_output_stages(
+    tracks: &BTreeMap<EntityId, TrackParams>,
+    routing: &RoutingPlan,
+    law: PanLaw,
+) -> Vec<BusOutputStage> {
+    let any_solo = any_solo_in(tracks);
+    routing
+        .slots()
+        .iter()
+        .map(|node| {
+            if !routing.has_incoming_audio(node) {
+                return BusOutputStage::identity();
+            }
+            tracks
+                .get(node)
+                .map_or_else(BusOutputStage::identity, |params| {
+                    BusOutputStage::from_params(params, any_solo, law)
+                })
+        })
+        .collect()
+}
+
 /// 不可变引擎快照：音频线程在每个渲染量子边界读取的唯一权威运行态
 /// [ARCH-RT-002, ROAD-M2-002]。
 ///
@@ -411,27 +549,52 @@ pub struct EngineSnapshot {
     /// 投影进来之后，"声相定律影响输出"才是端到端可判据的；曲线本身仍在构造期
     /// 展开成两个 `f32`（[`TrackParams::pan_gains`]），实时侧只做乘法。
     pan_law: PanLaw,
-    /// 主总线**线性增益**（`master_bus_track_id` 那条轨的 `volume_db` 投影）。
+    /// 主总线**线性推子**（`master_bus_track_id` 那条轨的 `volume_db` 投影；
+    /// `mute` 折成 `0.0`）—— 任务单 `#299` 起含静音。
     ///
     /// 为什么主总线需要**自己**的增益：[`TrackParams::volume_db`] 对普通轨在
     /// **合成期**生效（逐音符增益，调用点见 [`crate::synth::track_gain`]），
     /// 而母线**没有音源**（`rt::render_block` 的逐轨循环显式跳过母线）
-    /// ⇒ 母线的 `volume_db` 在接线前不参与任何混音，主控推子改变不了输出。
+    /// ⇒ 母线的 `volume_db` 不参与任何逐轨混音，主控推子改变不了输出。
     ///
-    /// 口径（与 `yeban-mcp` 的离线母带同源：`crates/yeban-mcp/src/domain/render.rs`
-    /// 的 "Master 轨增益"一段）：
+    /// 口径（与 `yeban-app` 离线导出同源：`crates/yeban-app/src/render_core.rs`
+    /// 的 3b 段 `master_gain = if master.mute { 0.0 } else { db_to_linear(..) }`）：
     ///
     /// - 取 `master` 那条 [`TrackParams::volume_db`]；`master` 不在 `tracks` 里
     ///   （例如只有母线的空工程）⇒ **单位增益** `1.0`；
     /// - **非有限** dB 按静音 `0.0`（与 [`crate::synth::track_gain`] 同口径）；
-    /// - ⛔ **不看 `mute`**：本仓库对主总线静音没有语义（母线不合成任何音符），
-    ///   接线它只会把"静音"变成一个假入口（见 `line/app-mixer` 的裁决）；
-    /// - ⛔ **不看 `pan`**：母带的声相由总线求和决定（`yeban-mcp` 把 `masterPan`
-    ///   登记为 `unsupported`，口径相同）。
+    /// - ⭐ **`mute == true` ⇒ `0.0`**（任务单 `#299`）：离线导出一直是这样
+    ///   （`render_core.rs:920`），实时监听此前**没接线** ⇒ 主总线静音只在导出里生效。
+    ///   现在两条腿同口径；
+    /// - ⛔ **不看 `solo` / `solo_safe`**：离线主总线也不看（`render_core.rs:920`
+    ///   只判 `mute`）。若看，任何一条轨 solo 都会把**整条母线**静音 —— 那不是 solo；
+    /// - ⛔ **不看 `pan`**：声相是**另一级** [`Self::master_pan_left`]（离线也是
+    ///   OutputStage 的独立一级，顺序为**先声相、后推子**；本引擎的落点见
+    ///   `rt::render_block` 的 3a'⁰ → 3a''）。
     ///
     /// `dB → 线性` 含 `exp2`，属 [ADR-0001 D32] 的**超越函数类**，因此只在
     /// **构造期**算这一次；实时侧只读这个 `f32` 并做乘法（[MUST-GATE-001]）。
     master_gain: f32,
+    /// 主总线**输出级声相**的左声道线性增益（任务单 `#299`）。
+    ///
+    /// 构造期用 [`centered_pan_gains`]（`pan == 0`（含非有限）⇒ **逐位** `1.0`，
+    /// 否则与 [`pan_gains`] 逐位相同）。离线同一条规则
+    /// （`yeban_render::automation::centered_pan_gains`）。
+    ///
+    /// ⚠ 中性主总线 ⇒ `(1.0, 1.0)` ⇒ 实时侧整段跳过 ⇒ 输出逐位不变。
+    /// ⛔ **不是** [`TrackParams::pan_gains`]：后者在 `pan == 0` 给 `√2/2`
+    /// （逐轨源的等功率中心口径），用在这里会让中性主总线莫名低 3 dB。
+    master_pan_left: f32,
+    /// 主总线**输出级声相**的右声道线性增益（见 [`Self::master_pan_left`]）。
+    master_pan_right: f32,
+    /// ⭐ **每条总线节点的输出级**（任务单 `#299`），与 [`Self::routing`] 的
+    /// `slots()` **逐下标平行**；非总线节点（没有入边）恒为
+    /// [`BusOutputStage::identity`]。
+    ///
+    /// 为什么进快照：`mute`/`solo`/`solo_safe` 的 0/1 门需要扫全部轨道的
+    /// `any_solo`，`pan` 需要 `cos`/`sin` ⇒ 都只能在**构造期**算（[MUST-GATE-001]）。
+    /// 实时侧每量子每条总线只多一次 `is_identity` 判定；恒等时零样本操作。
+    bus_outputs: Vec<BusOutputStage>,
     /// 当前快照里已调度的音符总条数（诊断/判据用）。
     scheduled_notes: usize,
     /// 因 [`MAX_NOTES_PER_TRACK`] 容量上限而被丢弃的音符条数（构造期计数）。
@@ -627,9 +790,21 @@ impl EngineSnapshot {
         let routing_plan = RoutingPlan::compile(routing, master, &tracks, pdc.order());
         // 主总线推子：**构造期**算一次（`dB → 线性` 含 `exp2`，属超越函数类，
         // 不进逐样本路径）。口径见 `EngineSnapshot::master_gain` 的字段文档。
-        let master_gain = tracks
-            .get(&master)
-            .map_or(1.0, |params| crate::synth::track_gain(params.volume_db()));
+        // ⭐ `#299`：`mute` 折成 `0.0`（与离线 `render_core.rs:920` 同口径）。
+        let master_gain = tracks.get(&master).map_or(1.0, |params| {
+            if params.is_muted() {
+                0.0
+            } else {
+                crate::synth::track_gain(params.volume_db())
+            }
+        });
+        // ⭐ `#299`：主总线声相与每条总线节点的输出级 —— 都只在**构造期**算
+        //（`cos`/`sin` 属超越函数类；`any_solo` 要扫全部轨道）。
+        // 低层构造默认律；生产路径由 `from_project` 随后的 `with_pan_law` 按
+        // `audio_config.pan_law` 重算。
+        let pan_law = PanLaw::default();
+        let (master_pan_left, master_pan_right) = master_pan_of(&tracks, master, pan_law);
+        let bus_outputs = bus_output_stages(&tracks, &routing_plan, pan_law);
         Ok(Self {
             revision,
             sample_rate,
@@ -648,8 +823,11 @@ impl EngineSnapshot {
             // ⛔ 待摊平项同理：只有 [`Self::from_project`]（模型有 `sampler` 时）或
             // [`Self::with_sfz_pending`] 会填它（任务单 `#78`）。
             sfz_pending: BTreeMap::new(),
-            pan_law: PanLaw::default(),
+            pan_law,
             master_gain,
+            master_pan_left,
+            master_pan_right,
+            bus_outputs,
             scheduled_notes: 0,
             note_schedule_drops: 0,
             pdc,
@@ -740,9 +918,18 @@ impl EngineSnapshot {
     }
 
     /// 覆盖声相衰减律（**投影自 `audio_config.pan_law`**；低层构造默认默认律）。
+    ///
+    /// ⭐ `#299`：律变了 ⇒ **主总线声相**与**每条总线节点的输出级**都要重算
+    /// （它们的 `(pan_l, pan_r)` 是构造期展开的 `cos/sin`）。重算在控制线程，
+    /// 实时侧只读结果。
     #[must_use]
-    pub const fn with_pan_law(mut self, law: PanLaw) -> Self {
+    pub fn with_pan_law(mut self, law: PanLaw) -> Self {
         self.pan_law = law;
+        let (master_pan_left, master_pan_right) = master_pan_of(&self.tracks, self.master, law);
+        self.master_pan_left = master_pan_left;
+        self.master_pan_right = master_pan_right;
+        let bus_outputs = bus_output_stages(&self.tracks, &self.routing, law);
+        self.bus_outputs = bus_outputs;
         self
     }
 
@@ -1025,13 +1212,44 @@ impl EngineSnapshot {
         self.pan_law
     }
 
-    /// 主总线**线性增益**（构造期由 `master` 那条 [`TrackParams::volume_db`] 算出）。
+    /// 主总线**线性推子**（构造期由 `master` 那条 [`TrackParams::volume_db`] 算出；
+    /// `mute` 折成 `0.0`）。
     ///
-    /// 口径（含"不看 `mute` / 不看 `pan`"以及 `master` 不在 `tracks` 里的退化情形）
-    /// 见字段文档。实时侧唯一的用途是**一次乘**（`rt::scale_bus`）。
+    /// 口径（含"`mute` ⇒ 0 / 不看 `solo`、`solo_safe` / 不看 `pan`"以及 `master`
+    /// 不在 `tracks` 里的退化情形）见字段文档。实时侧唯一的用途是**一次乘**
+    /// （`rt::scale_bus`）。
     #[must_use]
     pub const fn master_gain(&self) -> f32 {
         self.master_gain
+    }
+
+    /// 主总线**输出级声相**的左声道线性增益（任务单 `#299`；构造期
+    /// [`centered_pan_gains`]）。`pan == 0` ⇒ **逐位** `1.0`。
+    #[must_use]
+    pub const fn master_pan_left(&self) -> f32 {
+        self.master_pan_left
+    }
+
+    /// 主总线**输出级声相**的右声道线性增益（见 [`Self::master_pan_left`]）。
+    #[must_use]
+    pub const fn master_pan_right(&self) -> f32 {
+        self.master_pan_right
+    }
+
+    /// ⭐ 第 `slot` 条总线节点的输出级（**与 [`Self::routing`] 的 `slots()`
+    /// 逐下标平行**）；越界 ⇒ `None`。
+    ///
+    /// 实时侧用 `Option<&BusOutputStage>` 的 `unwrap_or_default()`（恒等）兜底
+    /// ⇒ 越界**不 panic**、也不改变任何样本。
+    #[must_use]
+    pub fn bus_output_stage(&self, slot: usize) -> Option<&BusOutputStage> {
+        self.bus_outputs.get(slot)
+    }
+
+    /// 全部总线输出级（与 `routing().slots()` 同长；判据/诊断用）。
+    #[must_use]
+    pub fn bus_outputs(&self) -> &[BusOutputStage] {
+        &self.bus_outputs
     }
 
     /// 本快照已调度的音符总条数。
@@ -2061,8 +2279,8 @@ mod tests {
         let snapshot = EngineSnapshot::from_project(&project, 4).expect("投影成功");
         assert_eq!(snapshot.master_gain(), 0.0, "非有限 dB 必须按静音处理");
 
-        // 5) `mute` / `pan` 刻意**不**参与：主总线静音无语义（母线不合成音符），
-        //    主总线声相待裁决（`yeban-mcp` 把 `masterPan` 登记为 unsupported）。
+        // 5) ⭐ `#299`：`mute` 折成 `0.0`；`pan` **不改**这个增益（它是另一级
+        //    `master_pan_*`），主总线 `solo`/`solo_safe` 不参与（与离线同口径）。
         let mut project = simple_project();
         let master = project.master_bus_track_id;
         project.tracks.insert(
@@ -2079,9 +2297,32 @@ mod tests {
         let snapshot = EngineSnapshot::from_project(&project, 5).expect("投影成功");
         assert_eq!(
             snapshot.master_gain().to_bits(),
-            1.0f32.to_bits(),
-            "母线 mute / pan 不得改变主总线增益"
+            0.0f32.to_bits(),
+            "母线 mute 必须把推子折成 0.0"
         );
+        // `pan = 1.0`（非恒等）只改声相那一级，⛔ 不改推子；1.0 是硬右。
+        let expected_pan = crate::mixer::pan_gains(1.0, PanLaw::default());
+        assert_eq!(
+            (
+                snapshot.master_pan_left().to_bits(),
+                snapshot.master_pan_right().to_bits()
+            ),
+            (expected_pan.0.to_bits(), expected_pan.1.to_bits()),
+            "主总线 pan 必须落在 mixer::pan_gains 曲线上"
+        );
+        // 主总线 solo 不参与：把 solo 打开，推子不变（仍是 mute 的 0）。
+        project.tracks.get_mut(&master).expect("母线参数").solo = true;
+        let snapshot = EngineSnapshot::from_project(&project, 6).expect("投影成功");
+        assert_eq!(
+            snapshot.master_gain().to_bits(),
+            0.0f32.to_bits(),
+            "主总线 solo 不得改变推子（离线也不看）"
+        );
+        // 不静音 + 非 0 dB：pan 仍只改声相，推子只看 volume_db。
+        project.tracks.get_mut(&master).expect("母线参数").mute = false;
+        project.tracks.get_mut(&master).expect("母线参数").volume_db = -6.0;
+        let snapshot = EngineSnapshot::from_project(&project, 7).expect("投影成功");
+        assert_eq!(snapshot.master_gain(), expected, "推子仍只看 volume_db");
     }
 
     #[test]

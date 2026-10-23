@@ -207,6 +207,35 @@ pub fn pan_gains(pan: f32, law: PanLaw) -> (f32, f32) {
     }
 }
 
+/// **输出级的声相位置恒等规则**：`pan == 0`（或非有限）⇒ `(1.0, 1.0)`，否则走 [`pan_gains`]。
+///
+/// ## 为什么输出级（总线／主总线）用这条规则，而**逐轨源**不用
+///
+/// 这是两条**并存**的口径，不是本函数对 [`pan_gains`] 的替代：
+///
+/// - **逐轨源**（`TrackParams::pan_gains`）在 `pan == 0` 时给 `(√2/2, √2/2)`
+///   ⇒ 居中 = 每声道 −3.01 dB（本模块文档 §1 的等功率口径）；
+/// - **总线输出级**（总线与主总线的整条通道）在 `pan == 0` 时给 `(1.0, 1.0)`
+///   ⇒ 中性声相**一个样本都不碰**。这条规则与离线渲染的
+///   `yeban_render::automation::centered_pan_gains` **同一条**：离线把总线的
+///   `pan` 挂在输出级，`pan == 0` 必须恒等，否则"中性总线"会莫名低 3 dB。
+///
+/// ⚠ **这就是 `#299` 勘察发现的那条既有差**：一轨摆在正中时，引擎**源侧**
+/// 用 `(√2/2, √2/2)`、离线**源侧**用 `(1.0, 1.0)` ⇒ 监听比导出低 3 dB。
+/// 本单只把输出级对齐（离线同规则），**⛔ 不改源侧**（那会改掉中性总线的逐位基线）。
+/// 该差已量成 `√2/2 = 0.7071068`（`crates/yeban-app/tests/neutral_pan_leg.rs`），
+/// 登记为下一票。
+///
+/// **必须只在构造期调用**（`cos`/`sin` 属超越函数类 [ADR-0001 D32]）。
+#[must_use]
+pub fn centered_pan_gains(pan: f32, law: PanLaw) -> (f32, f32) {
+    if !pan.is_finite() || pan == 0.0 {
+        (1.0, 1.0)
+    } else {
+        pan_gains(pan, law)
+    }
+}
+
 /// 盲听 A/B 的等功率交叉淡化时长（毫秒）—— [ARCH-RT-005] / [RSK-30]。
 ///
 /// 规范值 **30 ms**；48 kHz 下折合 [`crossfade_len_frames`] = **1440** 采样点。
@@ -425,6 +454,40 @@ mod tests {
             "居中的左增益必须是 √2/2: {left}"
         );
         assert!((left - right).abs() < 1e-7, "居中必须左右对称");
+    }
+
+    /// ⭐ 输出级的中心恒等：`pan == 0` ⇒ **逐位** `(1, 1)`；非零 ⇒ 与 `pan_gains` 逐位相同。
+    ///
+    /// 这条判据同时是"中性总线/中性主总线不衰减"的**构造期**证据：
+    /// 实时侧只看这对增益的 `!= 1.0` 分支，因此 `(1,1)` 就意味着一个样本都不碰。
+    #[test]
+    fn centered_pan_gains_is_exactly_identity_at_the_centre_and_the_curve_elsewhere() {
+        let law = PanLaw::ConstantPowerMinus3dB;
+        for pan in [0.0f32, -0.0] {
+            let (left, right) = centered_pan_gains(pan, law);
+            assert_eq!(
+                (left.to_bits(), right.to_bits()),
+                (1.0f32.to_bits(), 1.0f32.to_bits()),
+                "pan={pan}（含 -0.0）必须逐位恒等 (1,1)"
+            );
+        }
+        for pan in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            let (left, right) = centered_pan_gains(pan, law);
+            assert_eq!(
+                (left.to_bits(), right.to_bits()),
+                (1.0f32.to_bits(), 1.0f32.to_bits()),
+                "非有限 pan={pan} 必须退回恒等 (1,1)"
+            );
+        }
+        for pan in [-1.0f32, -0.5, 0.25, 0.5, 1.0] {
+            let centered = centered_pan_gains(pan, law);
+            let raw = pan_gains(pan, law);
+            assert_eq!(
+                (centered.0.to_bits(), centered.1.to_bits()),
+                (raw.0.to_bits(), raw.1.to_bits()),
+                "非零 pan={pan} 必须与 pan_gains 逐位相同（同一条曲线）"
+            );
+        }
     }
 
     /// 等功率性：`gain_l² + gain_r² == 1` 在整条 `pan` 范围上成立（0.1 步长扫描）。
