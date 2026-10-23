@@ -17098,3 +17098,36 @@ empty 7
 | ⭐ ⚠ **C** | ⭐ 若 A＝"⭐ 有" ⇒ ⭐ **`masterPan` 可先做**（⭐ S/M、⭐ identity 快路、⭐ 基线不变、⭐ 但要 `yeban-engine` 另票） | ⭐ 可派 |
 
 ⭐ ⚠ **本条状态词⛔ 未动**（⭐ 项数与状态词一个字未动）✓ ⚠ **仍待补**: ⭐ ⭐ **上面 A／B 两个裁决**（⭐ **要人**）＋ ⭐ **`bus→master` 夹具**（⭐ 若做 C 之后）＋ ⭐ `Macro` 量纲 ＋ ⭐ **压缩器检波口径** ＋ ⭐ **`68569dd5`／⭐ `#293` 的 CI 判决** ＋ ⭐ ⚠ **仍需人类**：⭐ 真声卡核验 ＋ ⭐ 听三对 ＋ ⭐ 真 MIDI ＋ ⭐ 物理回环线 ✓
+
+---
+
+## R1060 实测追加（2026-10-23）：⚠ **纠正 R1059 的一句** —— ⭐ 真的 reachable bus 夹具**存在**（⭐ `render_master.rs:6010`）
+
+⭐ ⚠ ⭐ ⭐ **一、⭐ R1059 我写的（⭐ 逐字）**: ⭐ ⭐ **"⚠ ⭐ 一条**弱判据**（⭐ 它自己查出来的、⭐ 很重要）: ⭐ 现有的 `busTrack` 测试用的是**被剪枝的 Aux**…"** **** ⇒ ⭐ ⚠ ⭐ ⭐ **而 ⭐ 那只对 ⭐ `automation_offline_support.rs:225-250` **一条** 成立** **** ✓
+
+⭐ ⭐ **二、⭐ 而 ⭐ 另有一条**真 reachable bus**夹具（⭐ 它自己补正的）**: ⭐ ⭐ **`crates/yeban-mcp/tests/render_master.rs:6010` `a_bus_only_volume_lane_is_reported_as_unsupported`** ****:
+| ⭐ | ⭐ 内容 |
+| :-- | :--- |
+| ⭐ `:6015-6022` | ⭐ 建 `AuxReturn` 轨（⭐ `volume_db` 默认 0） |
+| ⭐ `:6023-6047` | ⭐ ⭐ **两条边：⭐ `lead→bus`（`SendToAux`）＋ ⭐ `bus→master`（`BusToMaster`）** |
+| ⭐ `:6048` | ⭐ 给它加 `TrackVolume` 泳道 `[(0,-24.0),(1920,0.0)]` |
+| ⭐ 当前断言 | ⭐ `unsupported` 含 `automationLanes`、⭐ 该 lane `supported=false`／`applied=false`、⭐ ⚠ **不 pin `sha`／`digest`** |
+⇒ ⭐ ⭐ **即：⭐ 这条才是**本单合适的复现夹具****、⭐ 而 ⭐ 实现后应改为 ⭐ **`supported=true` ＋ ⭐ 音频真变** ✓
+
+⭐ ⚠ ⭐ ⭐ **三、⭐ 而 ⭐ 两条**都要一起**（⭐ 这决定 `LaneResidual::BusTrack` ⛔ 能整条删）**:
+| ⭐ | ⭐ 夹具 | ⭐ 修后 |
+| :-- | :--- | :--- |
+| ⭐ ⭐ **reachable bus**（⭐ `render_master.rs:6010`） | ⭐ ⭐ **转 `supported:true`** |
+| ⭐ ⚠ **不可达 Aux**（⭐ `automation_offline_support.rs:225`、⭐ `filled_project` 的 Aux **无 `aux→master`** ⇒ ⭐ 被 `render.rs:553-572` 剪枝） | ⭐ ⚠ ⭐ ⭐ **继续报 `busTrack`** ⇒ ⭐ **正好当"⭐ 别的仍不支持"⭐的正对照** |
+⇒ ⭐ ⭐ **所以 `unsupported_lane_reason` 的 `TrackVolume` 分支要区分"⭐ 计划节点（⭐ 有输出级）"⭐与"⭐ 不在 `rendered_nodes`（⭐ 不可达）"** ⇒ ⭐ ⭐ **⛔ 能只把 `source_nodes` 条件改成 `rendered_nodes` 了事** ✓
+
+⭐ ⚠ ⭐ ⭐ **四、⭐ 补正的读数（⭐ 逐字、⭐ 均 `RC=0`）**:
+| ⭐ | ⭐ 夹具 | ⭐ 逐字 |
+| :-- | :--- | :--- |
+| ⭐ **reachable bus** | ⭐ `### bus-only TrackVolume: unsupported=["automationLanes"]`、⭐ `appliedLanes:0`、⭐ `evaluableLanes:1`、⭐ `unsupportedLanes:1`、⭐ lane `firstValue:-24.0,lastValue:0.0,supported:false` |
+| ⭐ **master `TrackPan`** | ⭐ `### master-only TrackPan: unsupported=["automationLanes"]`、⭐ lane `firstValue:0.5,supported:false` |
+⇒ ⭐ ⭐ **即：⭐ 当前这两个泳道**一个样本都不改** ✓
+
+⭐ ⚠ ⭐ ⭐ **五、⭐ 而 ⭐ R1059 的**结论不变**（⭐ 逐条）**: ⭐ ① ⭐ `busTrack` 是**真架构缺口**（⭐ `render_node` 只做"⭐ 源 → ⭐ 入边按固定序求和（⭐ 仅边增益）→ ⭐ 插入链"、⭐ `grep -c volume_db` ＝ **0**）② ⭐ `masterPan` 是**字段存在、⭐ 无人应用** ③ ⭐ **同一个"⭐ 级"、⭐ ⛔ 同一处补丁**（⭐ `masterPan` **S/M**、⭐ `busTrack` **M/L**）④ ⭐ **母带常量不应变**（⭐ identity 快路）⑤ ⭐ ⚠ **但响应契约会变**（⭐ `KNOWN_UNSUPPORTED_KEYS` **13 → 12**、⭐ `masterPan` 键消失）✓
+
+⭐ ⚠ **本条状态词⛔ 未动**（⭐ 项数与状态词一个字未动）✓ ⚠ **仍待补**: ⭐ ⭐ **A／B 两条语义裁决**（⭐ **要人**）＋ ⭐ **`68569dd5`／⭐ `#293` 的 CI 判决** ＋ ⭐ `Macro` 量纲 ＋ ⭐ **压缩器检波口径** ＋ ⭐ ⚠ **仍需人类**：⭐ 真声卡核验 ＋ ⭐ 听三对 ＋ ⭐ 真 MIDI ＋ ⭐ 物理回环线 ✓
