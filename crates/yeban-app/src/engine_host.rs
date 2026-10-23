@@ -118,7 +118,7 @@ use yeban_engine::block::DEFAULT_BLOCK_FRAMES;
 use yeban_engine::device::{DeviceError, EngineConfig, OutputStreamHandle, ShareMode};
 use yeban_engine::level::db_to_gain;
 use yeban_engine::meter::{DEFAULT_METER_CAPACITY, MeterCollector, meter_channel};
-use yeban_engine::mixer::{PanLaw, pan_gains};
+use yeban_engine::mixer::{PanLaw, centered_pan_gains};
 use yeban_engine::param::{
     MASTER_GAIN_SLOT, PARAM_SLOTS, SEND_GAIN_SLOT, SEND_SLOTS, TRACK_GAIN_SLOT,
     TRACK_PAN_LEFT_SLOT, TRACK_PAN_RIGHT_SLOT,
@@ -1428,7 +1428,7 @@ impl EngineHost {
     /// ⭐ 原文**保留**（第 278 条：不删原文、不弱化原判据），但它已与代码**漂移** ——
     /// [`Self::publish_automation`] 的声相分支（`#250` 勘察点名的 `TrackPan` 采样段）
     /// **已经把 `TrackPan` 发布进引擎**：逐轨左/右**两条绝对增益**事件，值由同一个
-    /// `pan_gains` 与 `PanLaw::from_model(工程)` 算好（超越函数不进音频线程）。
+    /// `centered_pan_gains` 与 `PanLaw::from_model(工程)` 算好（超越函数不进音频线程）。
     /// ⇒ “这里**不**碰 `TrackPan`”**不再成立**；`TrackVolume` 那一支没有改动。
     /// ⛔ 离线导出侧的声相自动化是**另一条**执行路径（`#257`，
     /// `yeban_render::automation::TrackPanAutomation`），两者共用同一条曲线、
@@ -1487,8 +1487,8 @@ impl EngineHost {
     /// * ⭐ **`#260`**：音量与声相是**两块并列的采样**（各自独立的 `if let`）⇒
     ///   只有声相泳道（或只有音量泳道）的轨也各自下发；⛔ 声相**不**因音量泳道缺失 /
     ///   关闭 / 这一跳没有值 / 值非法而被跳过（修前正是那样，`continue` 跳过了整段）；
-    /// * 声相值由引擎公开的 [`pan_gains`] 与 [`PanLaw::from_model`] 在**控制侧**算好
-    ///   （超越函数⛔ 不进音频线程），并 `max(0.0)` 钳位（硬右的左增益实测是负的）；
+    /// * 声相值由引擎公开的 [`centered_pan_gains`] 与 [`PanLaw::from_model`] 在**控制侧**
+    ///   算好（超越函数⛔ 不进音频线程），并 `max(0.0)` 钳位（硬右的左增益实测是负的）；
     /// * 返回**实际写入**的事件条数（没写进去的记进 [`Self::automation_counts`] 的第二个数）。
     ///   ⛔ **不加 `#[must_use]`**：生产调用点（`host.rs` 的 `tick`）刻意忽略返回值，
     ///   加了会在 `-D warnings` 下把整条腿弄红。
@@ -1559,9 +1559,13 @@ impl EngineHost {
 
             // ---- 2. 声相（裁决 P4=(b)）：一条轨**两条**事件（左 / 右**绝对**增益）----
             //
-            // 语义是**替换**：泳道给的是声相位置，这里的 `pan_gains` 就是引擎在快照边界
-            // 用的同一个公开函数（同一个衰减律，`PanLaw::from_model(工程)`）⇒ 值域与
-            // 引擎内部一致，⛔ 不做任何分量相除。
+            // 语义是**替换**：泳道给的是声相位置，这里的 `centered_pan_gains` 就是引擎在
+            // 快照边界用的同一个公开函数（同一个衰减律，`PanLaw::from_model(工程)`
+            // ⇒ `pan == 0` 逐位 `(1, 1)`，`pan != 0` 走曲线）⇒ 值域与引擎内部一致，
+            // ⛔ 不做任何分量相除。
+            // ⭐ `#300`：修前这里用**裸** `pan_gains` ⇒ 自动化经过 `pan == 0` 时发
+            // `0.707/0.707`，而源侧静态已是 `(1, 1)` / 离线自动化也是 `(1, 1)`
+            // ⇒ "自动化过中心"仍差 3 dB。现在两条腿共用同一条落点规则。
             // ⚠ 母线**不**进声相表（引擎的 `armed_pan_gains` 明确排除它）⇒ 这里也跳过，
             // 否则两条事件会被判未映射（计数），读数上像缺陷。
             // ⭐ `#260`：这一段**不再**嵌在音量块里（见上）—— 没有音量泳道也照样采样。
@@ -1572,8 +1576,8 @@ impl EngineHost {
                     && let Ok(Some(pan)) = project.automation_value_at(&pan_target, tick)
                 {
                     let (left, right) =
-                        pan_gains(pan, PanLaw::from_model(project.audio_config.pan_law));
-                    // ⚠ **必须 clamp 到 `>= 0`**：硬右时 `pan_gains(1.0).0` 实测是
+                        centered_pan_gains(pan, PanLaw::from_model(project.audio_config.pan_law));
+                    // ⚠ **必须 clamp 到 `>= 0`**：硬右时曲线左增益实测是
                     // `-4.371139e-8`（f32 的 `π/2` 不精确，见 `mixer` 的端点判据）⇒
                     // 不 clamp 会被引擎"有限且非负"的值规则拒掉（静默丢失）。
                     for (slot, value) in [

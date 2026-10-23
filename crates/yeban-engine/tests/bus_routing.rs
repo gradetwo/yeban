@@ -60,8 +60,12 @@ use yeban_model::{
 /// `libm::exp2f`/`log2f`）⇒ **一个常数对三档都成立**。本机（macOS aarch64）实测
 /// `0x28f6507e83c45b3d`；⭐ 下一轮 CI 的 Linux/Windows 腿必须读出**同一个值**，
 /// 若不同 ⇒ 链路上还有**别的宿主依赖**（是本判据要抓的真缺陷，不是本文件的错）。
+/// ⭐ `#300` **修对、⛔ 回归**：中性源侧中心 `0.707 → 1.0`（监听对齐导出，+3.0103 dB）
+/// ⇒ 同一既有混音夹具的 FNV 由 `0x28f6507e83c45b3d` 变为 **`0x4be67b6b4bee4fad`**；
+/// peak 由 `0.9000465` 微升到 `0.9000658`（母线限制器把上升压在 0.9 附近）。
+/// 夹具、路由图、默认直连与判据本身一字未改。
 const fn existing_mix_fnv() -> Option<u64> {
-    Some(0x28f6_507e_83c4_5b3d)
+    Some(0x4be6_7b6b_4bee_4fad)
 }
 
 /// 既有混音夹具在 **`#233` 之前**实测的 `sha256`（外部 `shasum -a 256` 对原始 `f32` 字节，
@@ -307,8 +311,8 @@ fn r1b_existing_mix_fixture_matches_the_pre_change_baseline() {
         "默认路径必须与显式单位 TrackToBus 逐位相同（与平台无关）"
     );
     assert!(
-        (out.peak() - 0.900_046_5).abs() <= 1.0e-6,
-        "既有夹具的峰值必须仍是 0.9000465，实测 {}",
+        (out.peak() - 0.900_065_8).abs() <= 1.0e-6,
+        "既有夹具的峰值必须是 0.9000658（`#300` 重标定；修前 0.9000465），实测 {}",
         out.peak()
     );
     if let Some(expected) = baseline {

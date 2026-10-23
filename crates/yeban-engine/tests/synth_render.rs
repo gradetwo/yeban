@@ -166,7 +166,17 @@ fn velocity_gate_and_monotonic_loudness() {
     let velocities = [0u8, 1, 32, 64, 127];
     let mut rms = Vec::new();
     for velocity in velocities {
-        let fixture = note_project(&[NoteSpec::at(0, 960, 69, velocity)]);
+        let mut fixture = note_project(&[NoteSpec::at(0, 960, 69, velocity)]);
+        let track = fixture.track;
+        // ⚠ `#300` 夹具重标定：中性中心 `0.707 → 1.0`（+3.01 dB）⇒ 轨音量 −3.0103 dB，
+        // 让力度 127 那一档仍留在母线限制器的透明区（否则"力度→增益线性"被压限打破，
+        // 判据失去归因力）。⛔ 判据本身没删、没跳过；五个力度同乘一个常数 ⇒ 比值不变。
+        fixture
+            .project
+            .tracks
+            .get_mut(&track)
+            .expect("夹具里必须有那条 MIDI 轨")
+            .volume_db = -3.0103;
         let rendered = render(&fixture.project, 120);
         let (value, _) = rms_peak(&rendered.left);
         rms.push(value);

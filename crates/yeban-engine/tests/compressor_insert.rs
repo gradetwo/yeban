@@ -104,8 +104,16 @@ fn dump(name: &str, left: &[f32], right: &[f32]) -> (std::path::PathBuf, usize) 
 /// 任何一份不同 ⇒ 插入链对"没有已识别压缩器参数的工程"也生效了。
 #[test]
 fn projects_without_recognised_compressor_params_are_bit_identical() {
-    let fixture = note_project(&NOTES);
+    let mut fixture = note_project(&NOTES);
     let track = fixture.track;
+    // ⚠ `#300` 夹具重标定：中性中心 `0.707 → 1.0`（+3.01 dB）⇒ 轨音量 −3.0103 dB，
+    // 保住"整体低于母线限制器阈值"这个前提（⛔ 判据本身没删、没跳过）。
+    fixture
+        .project
+        .tracks
+        .get_mut(&track)
+        .expect("夹具里必须有那条 MIDI 轨")
+        .volume_db = -3.0103;
 
     let bare = render(&fixture.project, QUANTA);
 
@@ -271,7 +279,14 @@ fn recognised_compressor_is_armed_into_the_realtime_path() {
 /// 但器件被接到了一条不参与混音的分支上。
 #[test]
 fn an_armed_compressor_changes_the_output_and_only_attenuates() {
-    let (project, track) = armed_project();
+    let (mut project, track) = armed_project();
+    // ⚠ `#300` 夹具重标定：中性中心 `0.707 → 1.0`（+3.01 dB）⇒ 轨音量 −3.0103 dB，
+    // 保住"未武装的夹具整体低于母线限制器阈值"这个归因前提（判据本身没删、没跳过）。
+    project
+        .tracks
+        .get_mut(&track)
+        .expect("夹具里必须有那条 MIDI 轨")
+        .volume_db = -3.0103;
     let mut unarmed_project = project.clone();
     mount(&mut unarmed_project, track, Vec::new());
 

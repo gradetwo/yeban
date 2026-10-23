@@ -122,8 +122,9 @@ fn realtime_transport_plays_an_audio_clip() {
         rendered.left.iter().filter(|s| **s != 0.0).count()
     );
     assert!(nonzero > 0, "实时走带里音频摆放必须真的发声");
-    // 声相居中：等功率 −3 dB ⇒ 每声道 `0.5 × 1/√2`。
-    let expected = 0.5 * std::f32::consts::FRAC_1_SQRT_2;
+    // 声相居中（`#300`）：`pan == 0` ⇒ 恒等 `(1, 1)`（⛔ 不再是等功率 −3 dB）
+    // ⇒ 每声道 = 素材值 × 1.0。修前这里期望 `0.5 × 1/√2 = 0.35355338`（实测现为 0.5）。
+    let expected = 0.5;
     assert!(
         (peak - expected).abs() < 1e-6,
         "峰值必须等于 素材值 × 居中声相增益（期望 {expected}, 实测 {peak}）"
@@ -253,7 +254,8 @@ fn the_play_cursor_is_derived_from_the_transport_position() {
     let mut value_ok = true;
     for position in positions {
         let asset_frame = position - latency - start;
-        let expected = ((asset_frame as f32) + 1.0) * RAMP_SCALE * std::f32::consts::FRAC_1_SQRT_2;
+        // `#300`：中心声相是恒等 ⇒ 只乘 1.0（修前这里还乘 `1/√2`）。
+        let expected = ((asset_frame as f32) + 1.0) * RAMP_SCALE;
         let actual = rendered.left[position];
         let error = (actual - expected).abs();
         value_report.push(format!(

@@ -2530,7 +2530,8 @@ fn scenario_audio_clip(report: &mut Report) {
         .output
         .iter()
         .fold(0.0f32, |peak, sample| peak.max(sample.abs()));
-    let expected_peak = 0.5 * std::f32::consts::FRAC_1_SQRT_2;
+    // `#300`：中心声相是恒等 `(1, 1)` ⇒ 峰值 = 素材 0.5 × 1.0（修前还乘 `1/√2`）。
+    let expected_peak = 0.5;
     let stats = rig.stats();
     scenario.note(format!(
         "PCM 单声道 0.5 @ {rate} Hz；最后量子的非零样本={nonzero}/{} 峰值={peak:.9}         （期望 {expected_peak:.9}）；走带位置帧={}",
@@ -2544,7 +2545,7 @@ fn scenario_audio_clip(report: &mut Report) {
     );
     report.assert(
         "㊷b",
-        "覆盖度：音频片段真的在实时窗口里出声（最后一个量子 256 个样本全非零、峰值 = 素材 × 居中声相增益）",
+        "覆盖度：音频片段真的在实时窗口里出声（最后一个量子 256 个样本全非零、峰值 = 素材 × 1.0；`#300` 中心恒等）",
         nonzero == rig.output.len() && (peak - expected_peak).abs() < 1e-6,
         format!(
             "非零样本={nonzero}（要求 {}）峰值={peak:.9}（要求 {expected_peak:.9}）",

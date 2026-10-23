@@ -1,16 +1,16 @@
-//! ⭐ 任务单 `#299` 的**边界读数**：中性声相下「监听 ≠ 导出」的 **−3 dB**。
+//! ⭐ 任务单 `#300` 的**正向判据**：中性声相下**监听 = 导出**（逐位）。
 //!
-//! ## 这条判据钉住的是一个**既有缺陷**，不是本单的修复
+//! ## 修的是什么（`#299` 量到的既有缺陷）
 //!
-//! 逐字事实（本单勘察，`#299` 报告 §5）：
+//! 逐字事实（`#299` 报告 §5）：
 //!
 //! > **`pan == 0` 时、引擎源侧仍是 `0.707/0.707`、而离线是 `1/1` ⇒ 所以「监听 ≠ 导出」
 //! > 在中性声相上就已经存在、⛔ 本单引入**
 //!
-//! 也就是说：**一轨摆在正中、监听比导出低 3 dB**。`#299` 只对齐总线的
-//! pan／mute／solo，⛔ 不碰源侧声相（碰了会改中性总线的逐位基线，也超出本单）。
-//! 本文件把这个差**量成一个数**，并把它登记为**下一票**；未来那一票修好时，
-//! 本判据的期望值必须跟着改（它现在的绿＝"缺陷仍在"）。
+//! `#299` 把差量成一个数（监听 `0.548988640` / 导出 `0.776387155`、ratio `√2/2`、
+//! −3.0103 dB）并登记为下一票；`#300` 按人类裁决把引擎源侧的中心口径改成
+//! `centered_pan_gains`（`pan == 0` ⇒ 逐位 `(1, 1)`，与离线同一条）⇒ 本文件现在钉的是
+//! **修好之后的事实**：ratio = `1.000000`。
 //!
 //! ## 量什么
 //!
@@ -21,7 +21,9 @@
 //! - **导出**：`render_project_f32_with_assets_under`（app 的离线渲染，引擎音源）；
 //! - 读数：左右各自的**峰值绝对值**（单位：f32 满幅）与 `engine / offline` 的比。
 //!
-//! 期望：两侧都 L == R（居中），比值 = `√2/2 = 0.70710678`（−3.0103 dB）。
+//! 期望：两侧都 L == R（居中），比值 = **`1.000000`**（浮点差 ≤ `1e-6`）。
+//! ⚠ 边界：`pan != 0` 的轨不受本单影响（中心口径只改 `pan == 0`），逐位读数在
+//! `yeban-engine/tests/bus_pan_mute_solo.rs` 的 B4／B5（`pan = -1.0 / -0.5`）里原样通过。
 
 use std::collections::BTreeMap;
 
@@ -38,7 +40,11 @@ use yeban_model::{
 
 const FRAMES: usize = 48_000;
 const QUANTA: usize = FRAMES / 128;
-const CENTRE_GAIN: f64 = core::f64::consts::FRAC_1_SQRT_2;
+/// 修好之后中性声相下监听/导出的**唯一**期望比：`1.0`（逐位相等；容差 `1e-6`）。
+const UNITY_RATIO: f64 = 1.0;
+/// `pan = -0.5` 的监听输出逐位指纹（FNV-1a 64）—— **`#300` 之前**实测的基线。
+/// 中心口径只影响 `pan == 0` ⇒ 修后必须逐位相同。
+const PAN_HALF_MONITORING_FNV: u64 = 0xc5dd_6500_ff68_31f8;
 
 /// 单轨中性 fixture：`pan = 0`、`volume_db = 0`、无设备、无自动化。
 fn neutral_project() -> YebanProjectV1 {
@@ -159,9 +165,12 @@ fn peak(channel: &[f32]) -> f32 {
         .fold(0.0f32, |peak, sample| peak.max(sample.abs()))
 }
 
-/// ⭐ 边界判据：中性声相下监听比导出**低 `√2/2`**（既有缺陷，见模块文档）。
+/// ⭐ 核心判据：中性声相下监听 **=** 导出（`ratio = 1.000000`，浮点差 ≤ `1e-6`）。
+///
+/// 修前（`#299`）这里是 `0.707106805`（−3.0103 dB）；`#300` 把源侧中心口径对齐到
+/// 离线之后，两侧**同一份**样本，ratio 逐位 `1.000000000`。
 #[test]
-fn neutral_monitoring_is_minus_3db_against_export_until_the_next_ticket() {
+fn monitoring_matches_export_at_neutral_pan() {
     let project = neutral_project();
     let (mon_l, mon_r) = render_monitoring(&project);
     let (exp_l, exp_r) = render_export(&project);
@@ -172,10 +181,9 @@ fn neutral_monitoring_is_minus_3db_against_export_until_the_next_ticket() {
     let ratio_r = f64::from(mon_peak_r) / f64::from(exp_peak_r);
 
     println!(
-        "[#299/neutral-leg] 监听 L/R = {mon_peak_l:.9} / {mon_peak_r:.9}；\
+        "[#300/neutral-leg] 监听 L/R = {mon_peak_l:.9} / {mon_peak_r:.9}；\
          导出 L/R = {exp_peak_l:.9} / {exp_peak_r:.9}；\
-         ratio L/R = {ratio_l:.9} / {ratio_r:.9}（期望 √2/2 = {CENTRE_GAIN:.9}，\
-         = −3.0103 dB）"
+         ratio L/R = {ratio_l:.9} / {ratio_r:.9}（期望 {UNITY_RATIO:.9}，修前 0.707106805）"
     );
 
     assert!(mon_peak_l > 1e-3, "监听必须真的出声（否则比值是真空的）");
@@ -188,10 +196,54 @@ fn neutral_monitoring_is_minus_3db_against_export_until_the_next_ticket() {
         (exp_peak_l - exp_peak_r).abs() <= 1e-9,
         "导出居中必须左右相等：{exp_peak_l} vs {exp_peak_r}"
     );
-    // 本判据钉的是**既有差**：比值必须仍是 −3.0103 dB。
-    // ⚠ 下一票修好源侧中心口径时，这个断言会变红 —— 那是**正确的**，改期望值即可。
+    // 修好之后的事实：监听与导出在**中性声相**上逐位同量（容差 1e-6）。
+    // ⚠ 若有人把源侧中心口径改回 `0.707`，这条会变红 —— 那正是它要抓的回归。
     assert!(
-        (ratio_l - CENTRE_GAIN).abs() < 1e-6 && (ratio_r - CENTRE_GAIN).abs() < 1e-6,
-        "中性声相下监听/导出的比必须仍是 √2/2（既有 −3 dB 缺陷）；实测 {ratio_l} / {ratio_r}"
+        (ratio_l - UNITY_RATIO).abs() < 1e-6 && (ratio_r - UNITY_RATIO).abs() < 1e-6,
+        "中性声相下监听/导出的比必须是 1.0（监听对齐导出）；实测 {ratio_l} / {ratio_r}"
+    );
+    // 顺带钉住"两侧峰值都 < 1.0 ⇒ 中性夹具不削波"（`#300` 的响度变化读数）。
+    assert!(
+        mon_peak_l < 1.0 && exp_peak_l < 1.0,
+        "中性夹具不得削波：监听 {mon_peak_l} / 导出 {exp_peak_l}"
+    );
+}
+
+/// 逐位指纹（FNV-1a 64，按 `f32::to_bits` 的小端字节；左声道全部在前、右声道在后）。
+fn fnv1a_monitoring(left: &[f32], right: &[f32]) -> u64 {
+    let mut hash = 0xcbf2_9ce4_8422_2325_u64;
+    for sample in left.iter().chain(right.iter()) {
+        for byte in sample.to_bits().to_le_bytes() {
+            hash ^= u64::from(byte);
+            hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+    }
+    hash
+}
+
+/// ⭐ `#300` 的**范围守卫**：中心口径只改 `pan == 0`。
+///
+/// 同一 fixture 只把 Lead 轨的 `pan` 从 `0.0` 改成 `-0.5` ⇒ 走的是**同一个**
+/// `pan_gains(pan, law)` 调用（`centered_pan_gains` 对 `pan != 0` 原样转发）
+/// ⇒ 读数必须与 `#300` 之前**逐位相同**。基线 [`PAN_HALF_MONITORING_FNV`] 是修前
+/// 实测值；若有人把中心规则扩散到 `pan != 0`（例如无条件 `(1, 1)`），这条会红。
+#[test]
+fn pan_off_centre_keeps_the_pre_300_monitoring_readings() {
+    let mut project = neutral_project();
+    for track in project.tracks.values_mut() {
+        if track.kind != TrackKind::Master {
+            track.pan = -0.5;
+        }
+    }
+    let (left, right) = render_monitoring(&project);
+    let fingerprint = fnv1a_monitoring(&left, &right);
+    println!(
+        "[#300/pan-half] 监听 L/R 峰值 = {:.9} / {:.9}；指纹 = {fingerprint:#018x}（修前基线 {PAN_HALF_MONITORING_FNV:#018x}）",
+        peak(&left),
+        peak(&right)
+    );
+    assert_eq!(
+        fingerprint, PAN_HALF_MONITORING_FNV,
+        "pan = -0.5 的监听读数必须与 `#300` 之前逐位相同（中心口径只影响居中）"
     );
 }

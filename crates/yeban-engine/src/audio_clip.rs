@@ -65,12 +65,12 @@
 //!   `素材帧 = 绝对帧 − span.start + span.source_offset` ⇒ 实时监听里音频片段**真的循环**。
 //!   非循环 / `end >= duration` / `loop_config.enabled == false` 的工程仍只产生一个
 //!   `source_offset == 0` 的 span ⇒ 与展开之前**逐位相同**。
-//! - ⚠ **声相在 `pan == 0` 时与离线路径差 −3.01 dB**（如实登记，⛔ 不是本单引入）：
+//! - ✅ **声相在 `pan == 0` 时与离线路径同一条**（任务单 `#300` 修好；修前差 −3.01 dB）：
 //!   离线 `yeban-app::audio_clip` 在 `pan == 0.0` 时用 `(gain, gain)`（单位增益），
-//!   而引擎的**逐轨混音**对**所有**音源（含 MIDI）都用等功率居中
-//!   `(1/√2, 1/√2)`（[`crate::mixer::PanLaw`] 的既有口径，见 `TrackParams::pan_gains`）。
-//!   本单让音频片段吃**引擎既有那条**声相路径 ⇒ 与 MIDI 同径，而不是另开一条
-//!   "音频专用声相"。要改成离线口径就得同时改 MIDI 的声相，那是另一张票。
+//!   引擎的**逐轨混音**现在对**所有**音源（含 MIDI 与音频片段）也走
+//!   [`centered_pan_gains`](crate::mixer::centered_pan_gains) ⇒ `pan == 0` 逐位 `(1, 1)`，
+//!   `pan != 0` 仍走等功率曲线（与修前逐位相同）。修前的 −3.0103 dB 差由
+//!   `crates/yeban-app/tests/neutral_pan_leg.rs` 量出并已在本单对齐（`#299` 登记）。
 //! - **不读盘**：`from_project` 只能把摆放投影成"带资产哈希、**没有** PCM 的 span"
 //!   （与 SFZ 的 `PendingSfz` 同款分工）⇒ 控制侧拿到解码后的 PCM 后调
 //!   [`crate::snapshot::EngineSnapshot::with_audio_asset`] 注入。

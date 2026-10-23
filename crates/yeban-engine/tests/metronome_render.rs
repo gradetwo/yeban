@@ -123,7 +123,15 @@ fn disabled_metronome_leaves_the_mix_path_untouched() {
         NoteSpec::at(2_400, 480, 72, 32),
     ];
     let fixture = note_project(&notes);
+    let track = fixture.track;
     let mut project = fixture.project;
+    // ⚠ `#300` 夹具重标定：中性中心 `0.707 → 1.0`（+3.01 dB）⇒ 轨音量 −3.0103 dB，
+    // 保住"关掉节拍器时母线限制器一次都不压"这个前提（判据本身没删、没跳过）。
+    project
+        .tracks
+        .get_mut(&track)
+        .expect("夹具里必须有那条 MIDI 轨")
+        .volume_db = -3.0103;
     assert!(
         !project.transport.metronome_enabled,
         "夹具的前提：默认工程**关**节拍器（模型默认值）"

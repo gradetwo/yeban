@@ -89,7 +89,7 @@ use crate::drums::DrumsParams;
 use crate::graph::{LatencyTable, PdcError, PdcPlan};
 use crate::insert::InsertParams;
 use crate::metronome::MetronomePlan;
-use crate::mixer::{PanLaw, centered_pan_gains, pan_gains};
+use crate::mixer::{PanLaw, centered_pan_gains};
 use crate::routing::RoutingPlan;
 use crate::sfz_instrument::{PendingSfz, SfzPlan};
 use crate::synth::{
@@ -289,17 +289,26 @@ impl TrackParams {
         self.latency_samples
     }
 
-    /// 本轨的声相增益 `(左, 右)`：由 `pan` 与**声相定律**在**构造期**算出。
+    /// 本轨的**源侧**声相增益 `(左, 右)`：由 `pan` 与**声相定律**在**构造期**算出。
     ///
     /// 为什么在这里算而不是在实时侧算：`cos`/`sin` 属 [ADR-0001 D32] 的
     /// **超越函数类**（4096 ulp 预算），实时侧只允许 IEEE 精确类乘法。
-    /// 实时侧因此只读这两个已算好的 `f32`（见 [`crate::mixer::pan_gains`]）。
+    /// 实时侧因此只读这两个已算好的 `f32`（见 [`crate::mixer::centered_pan_gains`]）。
     ///
-    /// 口径（默认律 `ConstantPowerMinus3dB`）：`cos θ` / `sin θ`、`θ = (pan+1)·π/4`；
-    /// 居中 ⇒ `(√2/2, √2/2)`（每声道 −3.01 dB）。详见 [`crate::mixer`] 模块文档 §1。
+    /// 口径（任务单 `#300`，与**离线导出同一条**）：
+    ///
+    /// - `pan == 0`（含非有限）⇒ **逐位** `(1.0, 1.0)`（中性声相一个样本都不衰减）；
+    /// - 否则走等功率曲线 `cos θ` / `sin θ`、`θ = (pan+1)·π/4`（[`crate::mixer::pan_gains`]）。
+    ///
+    /// ⚠ 这条规则在 `pan = 0` 与 `pan = ±ε` 之间有一个 **3.01 dB** 的台阶 ——
+    /// 那正是离线 `yeban_render::automation::centered_pan_gains` 的既有行为。
+    /// 本单把监听**对齐到导出**（导出是成品、有钉死摘要），而不是反过来。
+    /// `#299` 量到的"监听比导出低 `3.0103 dB`"就是修前源侧用裸 [`crate::mixer::pan_gains`] 的后果：
+    /// 同一中性 fixture 监听 `0.548988640` / 导出 `0.776387155`；修后两侧都是
+    /// `0.776387155`（判据 `monitoring_matches_export_at_neutral_pan`）。
     #[must_use]
     pub fn pan_gains(&self, law: PanLaw) -> (f32, f32) {
-        pan_gains(self.pan, law)
+        centered_pan_gains(self.pan, law)
     }
 }
 
@@ -578,12 +587,12 @@ pub struct EngineSnapshot {
     /// 主总线**输出级声相**的左声道线性增益（任务单 `#299`）。
     ///
     /// 构造期用 [`centered_pan_gains`]（`pan == 0`（含非有限）⇒ **逐位** `1.0`，
-    /// 否则与 [`pan_gains`] 逐位相同）。离线同一条规则
+    /// 否则与 [`crate::mixer::pan_gains`] 逐位相同）。离线同一条规则
     /// （`yeban_render::automation::centered_pan_gains`）。
     ///
     /// ⚠ 中性主总线 ⇒ `(1.0, 1.0)` ⇒ 实时侧整段跳过 ⇒ 输出逐位不变。
-    /// ⛔ **不是** [`TrackParams::pan_gains`]：后者在 `pan == 0` 给 `√2/2`
-    /// （逐轨源的等功率中心口径），用在这里会让中性主总线莫名低 3 dB。
+    /// ⭐ `#300` 起 [`TrackParams::pan_gains`] 也用**同一条**规则（源侧对齐导出），
+    /// 因此"主总线 vs 逐轨源"不再是两条口径；两者只在**落点位置**上不同。
     master_pan_left: f32,
     /// 主总线**输出级声相**的右声道线性增益（见 [`Self::master_pan_left`]）。
     master_pan_right: f32,

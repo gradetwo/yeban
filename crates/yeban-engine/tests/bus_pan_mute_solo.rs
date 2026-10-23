@@ -42,11 +42,13 @@ use yeban_model::{
     RoutingGraph, RoutingKind, TrackKind, TrackV3, YebanProjectV1,
 };
 
-/// 改动前（`1271f7d0`）的中性夹具指纹 —— 本单的**正对照**。
+/// 中性夹具指纹 —— 本单的**正对照**。
 ///
-/// 同一夹具在改动前实测 `0xa12e1a18f4d24439`（无总线与中性总线**同一个值**，
-/// 与 `tests/bus_routing.rs` 的 R2 同一条事实：中性总线路由逐位等价于直连）。
-const NEUTRAL_FINGERPRINT: u64 = 0xa12e_1a18_f4d2_4439;
+/// ⭐ `#300` **修对、⛔ 回归**：中性源侧中心口径由 `(0.707, 0.707)` 改为 `(1, 1)`
+/// （监听对齐导出，+3.0103 dB）⇒ 同一夹具的指纹由 `0xa12e1a18f4d24439` 变为
+/// `0x7293e67b46fb34dd`。**不是**别的东西动了：中性直连与中性总线仍**逐位相等**
+/// （`b1` 的下半条判据原样成立），`pan != 0` 的 B4／B5 读数一字未变。
+const NEUTRAL_FINGERPRINT: u64 = 0x7293_e67b_46fb_34dd;
 
 /// 离线（app，`#298` 提交信息里的实测值）在 `pan = -0.5` 的 L/R 峰值比。
 const OFFLINE_PAN_HALF_RATIO: f64 = 2.414_213_181;

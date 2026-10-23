@@ -1964,13 +1964,11 @@ fn render_branch(
                 *share.pan_automation_frames =
                     share.pan_automation_frames.wrapping_add(frames as u64);
             } else {
-                let (gain_l, gain_r) = pan_index.map_or(
-                    (
-                        core::f32::consts::FRAC_1_SQRT_2,
-                        core::f32::consts::FRAC_1_SQRT_2,
-                    ),
-                    |index| (share.pan_gains[index].1, share.pan_gains[index].2),
-                );
+                // 找不到槽位（超出 `MAX_TRACK_SLOTS`）⇒ **居中**：`#300` 起中心口径
+                // 与源侧同一条（`(1, 1)`，⛔ 不再是 `√2/2`）。
+                let (gain_l, gain_r) = pan_index.map_or((1.0f32, 1.0f32), |index| {
+                    (share.pan_gains[index].1, share.pan_gains[index].2)
+                });
                 {
                     let (first, second) = share.reverb_scratch.split_at_mut(1);
                     render_panned_into(
@@ -2026,13 +2024,10 @@ fn render_branch(
             }
             *share.pan_automation_frames = share.pan_automation_frames.wrapping_add(frames as u64);
         } else {
-            let (gain_l, gain_r) = pan_index.map_or(
-                (
-                    core::f32::consts::FRAC_1_SQRT_2,
-                    core::f32::consts::FRAC_1_SQRT_2,
-                ),
-                |index| (share.pan_gains[index].1, share.pan_gains[index].2),
-            );
+            // 找不到槽位 ⇒ **居中**：`#300` 起中心口径与源侧同一条（`(1, 1)`）。
+            let (gain_l, gain_r) = pan_index.map_or((1.0f32, 1.0f32), |index| {
+                (share.pan_gains[index].1, share.pan_gains[index].2)
+            });
             if single_unit_to_master {
                 sum_into_bus(out, &share.track_scratch[..frames], gain_l, gain_r);
             } else {
@@ -2945,11 +2940,7 @@ impl EngineRuntime {
             put!(armed_pan_law, PanLaw::default());
             put!(
                 armed_pan_gains,
-                [(
-                    EntityId::default(),
-                    core::f32::consts::FRAC_1_SQRT_2,
-                    core::f32::consts::FRAC_1_SQRT_2,
-                ); MAX_TRACK_SLOTS]
+                [(EntityId::default(), 1.0f32, 1.0f32); MAX_TRACK_SLOTS]
             );
             put!(armed_pan_slots, 0);
             // 声相平滑器：**构造期**预分配（回调内绝不再分配）。`with_default_time`
@@ -8442,13 +8433,10 @@ mod tests {
                     );
                     *pan_automation_frames = pan_automation_frames.wrapping_add(frames as u64);
                 } else {
-                    let (gain_l, gain_r) = pan_index.map_or(
-                        (
-                            core::f32::consts::FRAC_1_SQRT_2,
-                            core::f32::consts::FRAC_1_SQRT_2,
-                        ),
-                        |index| (pan_gains[index].1, pan_gains[index].2),
-                    );
+                    // 找不到槽位 ⇒ **居中**：`#300` 起中心口径与源侧同一条（`(1, 1)`）。
+                    let (gain_l, gain_r) = pan_index.map_or((1.0f32, 1.0f32), |index| {
+                        (pan_gains[index].1, pan_gains[index].2)
+                    });
                     sum_into_bus(out, &track_scratch[..frames], gain_l, gain_r);
                 }
             }

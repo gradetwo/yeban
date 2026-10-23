@@ -114,8 +114,16 @@ fn dump(name: &str, left: &[f32], right: &[f32]) -> (std::path::PathBuf, usize) 
 /// 即投影出来的另两级都没开。这正是"沉默地启用平坦 EQ"这类缺陷的机械判据。
 #[test]
 fn projects_without_recognised_channel_strip_params_are_bit_identical() {
-    let fixture = note_project(&NOTES);
+    let mut fixture = note_project(&NOTES);
     let track = fixture.track;
+    // ⚠ `#300` 夹具重标定：中性中心 `0.707 → 1.0`（+3.01 dB）⇒ 轨音量 −3.0103 dB，
+    // 保住"整体低于母线限制器阈值"这个前提（⛔ 判据本身没删、没跳过）。
+    fixture
+        .project
+        .tracks
+        .get_mut(&track)
+        .expect("夹具里必须有那条 MIDI 轨")
+        .volume_db = -3.0103;
 
     let bare = render(&fixture.project, QUANTA);
 

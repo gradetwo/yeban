@@ -6,9 +6,9 @@
 //!
 //! | 编号 | 判据 | 怎么变红（注入） |
 //! | :--- | :--- | :--- |
-//! | M1 | 居中等功率：左/右有效值相等，且**恰好**是"全左"的 √2/2 | 把声相改回等增益复制 |
-//! | M2 | 左/右声相增益落在 `cos θ`/`sin θ` 上（含全左时右声道**逐位**静音） | 声相取反 / 忽略 `pan` |
-//! | M3 | 声相是全链路的**标量**变换（中心 = 硬左 × √2/2，逐样本同容差） | 逐样本加噪/加抖动 |
+//! | M1 | **居中 = 恒等**（任务单 `#300`）：左/右有效值相等，且与"全左"同量（⛔ 不再是 √2/2） | 把源侧中心口径改回 `0.707` |
+//! | M2 | **非中心**位置的左/右增益落在 `cos θ`/`sin θ` 上（含全左时右声道**逐位**静音）；中心逐位等于全左 | 声相取反 / 忽略 `pan` |
+//! | M3 | 声相是全链路的**标量**变换（中心 = 硬左 × 1.0，逐样本同容差） | 逐样本加噪/加抖动 |
 //! | M4 | 过阈值夹具经母线限制器后峰值 **≤ 天花板**，且限制器**确实压过**样本 | 把阈值乘 10 / 摘掉限制器 |
 //! | M5 | 未过阈值的工程**逐位**不被篡改（`reductions == 0` + 两次渲染逐位一致） | 在母线里加抖动/旁路重采样 |
 //! | M6 | 同输入两次渲染**逐位相同**（含混音链全部器件） | 引入真熵源 |
@@ -23,18 +23,17 @@ mod support;
 
 use support::{MixSpec, NoteSpec, empty_project, render, render_with, rms_peak, tuned_project};
 
-/// 声相定律的声明值：等功率 −3 dB 居中 ⇒ `cos(π/4) = sin(π/4) = √2/2`。
-const CENTRE_GAIN: f64 = core::f64::consts::FRAC_1_SQRT_2;
+/// 任务单 `#300` 之后中性声相的**唯一**期望比：`1.0`（源侧中心 = 离线中心 = 恒等）。
+const UNITY_RATIO: f64 = 1.0;
 
-/// M1 + M3：**居中等功率**，且中心是"全左"的 `√2/2` 标量缩放。
+/// M1 + M3：**居中 = 恒等**（任务单 `#300`），且中心与"全左"同量（⛔ 不再是 `√2/2`）。
 ///
-/// ⚠ 夹具必须整体**低于限制器阈值**（这里用 −6 dB）：一个力度 127 的音符在全左时
-/// 峰值实测 **0.90005** —— 恰好越过阈值，于是"全左"那一版被限制器压了、
-/// "居中"那一版没有，两者的比值就不再是 `√2/2`（第一版实测 0.7126 > 0.7071）。
-/// 这条不是噪声，是**限制器的非线性**：判据若不断言"整段在透明区"，它测的是
-/// 两个不同增益下的比值，而不是声相定律。
+/// 修前这里钉的是等功率 −3 dB 中心（`centre = hard_left × √2/2`）。`#300` 按人类裁决
+/// 把源侧中心口径对齐到离线（`pan == 0 ⇒ (1, 1)`）⇒ 期望值变成 `1.0`。
+/// ⚠ 夹具必须整体**低于限制器阈值**（这里用 −6 dB）：否则测的是限制器的非线性
+/// （`centre` 与 `hard_left` 走不同增益，一个被压一个没被压，比值就不是声相定律）。
 #[test]
-fn centre_pan_is_equal_power_and_exactly_half_sqrt_two_of_hard_left() {
+fn centre_pan_is_unity_gain_and_matches_hard_left() {
     // 同一个音符（力度 127、−6 dB）在三个声相位置各渲染一次。
     let notes = [NoteSpec::at(0, 960, 69, 127)];
     let quiet = |pan: f32| MixSpec {
@@ -88,11 +87,12 @@ fn centre_pan_is_equal_power_and_exactly_half_sqrt_two_of_hard_left() {
         (centre_l - centre_r).abs() <= 1e-12,
         "居中必须左右**完全**对称: {centre_l} vs {centre_r}"
     );
-    // 声相是全链路的标量：居中 = 全左 × √2/2（容差只吸收 f32 乘法与 f64 求和）。
+    // 声相是全链路的标量：居中 = 全左 × 1.0（`#300`；修前是 √2/2）。
+    // 容差只吸收 f32 乘法与 f64 求和。
     let ratio = centre_l / hard_l;
     assert!(
-        (ratio - CENTRE_GAIN).abs() < 1e-6,
-        "居中的有效值必须是全左的 √2/2 = {CENTRE_GAIN}, 实际比值 {ratio}"
+        (ratio - UNITY_RATIO).abs() < 1e-6,
+        "居中的有效值必须与全左同量（×{UNITY_RATIO}），实际比值 {ratio}"
     );
     let ratio_right = hard_r / hard_l;
     assert!(
@@ -101,9 +101,10 @@ fn centre_pan_is_equal_power_and_exactly_half_sqrt_two_of_hard_left() {
     );
 }
 
-/// M2：左/右声相增益落在声明的 `cos θ` / `sin θ` 曲线上；全左时右声道**逐位**静音。
+/// M2：**非中心**位置的左/右增益落在声明的 `cos θ` / `sin θ` 曲线上；全左时右声道
+/// **逐位**静音；中心（`#300`）是恒等 ⇒ 左声道**逐位**等于全左。
 #[test]
-fn pan_gains_follow_the_declared_cosine_sine_curve() {
+fn pan_gains_outside_the_centre_follow_the_declared_cosine_sine_curve() {
     let notes = [NoteSpec::at(0, 960, 69, 127)];
     let quiet = |pan: f32| MixSpec {
         volume_db: -6.0,
@@ -142,17 +143,17 @@ fn pan_gains_follow_the_declared_cosine_sine_curve() {
         "全左/全右必须对称: {hard_l} vs {hard_r}"
     );
 
-    // 3) 中心：`cos(π/4) = sin(π/4) = √2/2` ⇒ 左样本 = 全左样本 × √2/2。
+    // 3) 中心（任务单 `#300`）：`pan == 0` ⇒ `(1, 1)` ⇒ 左样本**逐位**等于全左样本
+    //    （两侧乘的都是 `1.0`）。修前这里期望的是 `×√2/2`，那是被本单修掉的中心口径。
     let centre = render(&tuned_project(&notes, quiet(0.0)).project, 60);
     let mut worst = 0.0f64;
     for (centre_sample, hard_sample) in centre.left.iter().zip(hard_left.left.iter()) {
-        let expected = f64::from(*hard_sample) * CENTRE_GAIN;
-        worst = worst.max((f64::from(*centre_sample) - expected).abs());
+        worst = worst.max((f64::from(*centre_sample) - f64::from(*hard_sample)).abs());
     }
-    println!("[engine-mix] M2 worst |centre - hard_left*√2/2| = {worst:e}");
+    println!("[engine-mix] M2 worst |centre - hard_left| = {worst:e}");
     assert!(
         worst < 1e-6,
-        "居中样本必须等于全左样本 × √2/2（最大偏差 {worst:e}）"
+        "居中样本必须等于全左样本（×1.0；最大偏差 {worst:e}）"
     );
 
     // 4) 中右（pan = 0.5）：θ = 3π/8 ⇒ (cos, sin) 比值 = tan(3π/8)。
@@ -419,14 +420,18 @@ fn master_fader_scales_the_rendered_output_sample_by_sample() {
 
 /// M9：主总线推子在**母线限制器之前**（[`yeban_engine`] 的接线位置决定，见 `rt::scale_bus`）。
 ///
-/// 判别力来源：音轨 +6 dB 时，0 dB 主总线的信号**越过**阈值 ⇒ 限制器真的压；
+/// 判别力来源：音轨 **+3 dB** 时，0 dB 主总线的信号**越过**阈值 ⇒ 限制器真的压；
 /// 主总线 −6 dB 先把它拉回阈值以下 ⇒ 限制器**不再**介入（`reductions == 0`）。
 /// 若把推子移到限制器**之后**，两次渲染的限制器都会介入，`reductions == 0`
 /// 这一半立即变红。这条判据把"位置"这个设计选择钉成可执行的事实。
+///
+/// ⚠ **`#300` 夹具重标定**：中性中心从 `0.707` 改为 `1.0`（+3.01 dB）⇒ 本夹具的
+/// 音轨音量从 `+6 dB` 降到 **`+3 dB`**，让"0 dB 臂仍越阈值、−6 dB 臂回到透明区"
+/// 这个前提与修前**同一量级**（⛔ 判据本身没删、没跳过）。
 #[test]
 fn master_fader_sits_upstream_of_the_bus_limiter() {
     let notes = [NoteSpec::at(0, 960, 69, 127)];
-    let fixture = tuned_project(&notes, MixSpec::volume(6.0));
+    let fixture = tuned_project(&notes, MixSpec::volume(3.0));
     let master = fixture.master;
 
     let mut unity_project = fixture.project.clone();
@@ -503,7 +508,9 @@ fn limiter_current_reduction_is_a_gauge_that_agrees_with_the_running_maximum() {
     // 96 tick = 2 400 样本 ≈ 18.75 个量子；渲染 60 个量子 ⇒ 音符结束后还有
     // ~41 个量子的**释放尾巴**（`LIMITER_RELEASE_PER_SAMPLE` = 5.0e-5/样本）。
     let notes = [NoteSpec::at(0, 96, 69, 127)];
-    let loud = tuned_project(&notes, MixSpec::volume(6.0));
+    // ⚠ `#300` 夹具重标定：中性中心 `0.707 → 1.0`（+3.01 dB）⇒ 音轨音量 `+6 → +3 dB`，
+    // 保持"音符结束后 ~41 个量子内释放走到底"的前提（⛔ 判据本身没删、没跳过）。
+    let loud = tuned_project(&notes, MixSpec::volume(3.0));
 
     // `render_with` 的 `at` 在**每个量子的渲染之前**被调用 ⇒ `at(k)` 观察到的是
     // 第 k−1 个量子结束时的读数；渲染结束后再补上最后一个量子（`Render::stats`）

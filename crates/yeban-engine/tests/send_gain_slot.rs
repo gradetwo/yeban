@@ -240,11 +240,12 @@ fn audible_fixture(send_db: Option<f32>, return_db: Option<f32>) -> SendFixture 
 ///    左右两声道都在内）。
 ///
 /// ⚠ 这个常数是"**没有 `SendGain` 事件的工程不得被本票改字节**"的机械证据：
-/// 加 `RouteTarget::edge` 字段、建发送量武装表都**不许**动这里一位。
-/// ⚠ 与 `bus_routing.rs` 的 `existing_mix_fnv` 同一条纪律：`#233` 之后链路里没有
-/// 宿主 libm 依赖 ⇒ 一个常数对三档平台都成立；若 CI 的 Linux/Windows 腿读出不同值，
-/// 那是"链路上还有别的宿主依赖"的真缺陷，⛔ 不是本文件的错。
-const PRE_CHANGE_SEND_FIXTURE_FNV: u64 = 0xe0b8_7258_510f_06dd;
+/// ⭐ `#300` **修对、⛔ 回归**：中性中心 `0.707 → 1.0`（监视源侧 +3.0103 dB）⇒
+/// 同一"没有 SendGain 事件"的夹具的 FNV 由 `0xe0b87258510f06dd` 变为
+/// `0x02f55eafe3b4bba1`。夹具与判据本身一字未改：它仍钉"没有 SendGain 事件 ⇒
+/// 与基线逐位相同"，只是基线随 `#300` 的**裁决**（监听对齐导出）前移。
+/// 若这条变红 ⇒ 要么发送量路径被误动，要么中性中心口径回归。
+const PRE_CHANGE_SEND_FIXTURE_FNV: u64 = 0x02f5_5eaf_e3b4_bba1;
 
 /// 事件驱动的渲染夹具（保留事件生产端 ⇒ 可以在量子之间真的发 `SetParam`）。
 ///
