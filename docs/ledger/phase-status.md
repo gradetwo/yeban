@@ -17038,3 +17038,34 @@ empty 7
 ★ ⭐ ⚠ **要定论得**逐测试二进制计时**（⭐ `cargo test -- --report-time` ⚠ 或 ⭐ 逐个 `--test <name>`）⇒ ⭐ **记成待查、⭐ 有明确方法** ✓
 
 ⭐ ⚠ **本条状态词⛔ 未动**（⭐ 项数与状态词一个字未动）✓ ⚠ **仍待补**: ⭐ **`windows` 的判决** ＋ ⭐ **逐测试二进制的计时**（⭐ 才能定哪个慢）＋ ⭐ **其余 7 字段端到端音频** ＋ ⭐ `Macro` 量纲 ＋ ⭐ ⚠ **仍需人类**：⭐ 真声卡核验 ＋ ⭐ 听三对 ＋ ⭐ 真 MIDI ＋ ⭐ 物理回环线 ✓
+
+---
+
+## R1058 实测追加（2026-10-23）：⭐⭐ **`#294` 落地** —— ⭐ `#293` 剩下的 **7 个字段**全部有逐字段端到端音频 ＋ ⭐ **零恒等字段**
+
+⭐ **合并**: ⭐ base `cc5e46f1` ⇒ ⭐ `FINAL=68569dd5`（⭐ **1 文件 ＋367**、⭐ **只加测试、⭐ ⛔ 零产品代码**）⇒ ⭐ 主干 ff ✓ ⭐ 读数：⭐ **`1404 passed`**（⭐ render＋app、⭐ 109 结果行、⭐ 4 ignored）＋ ⭐ `in-process-mcp` **945 passed** ＋ ⭐ 门 **25 层全 0** ＋ ⭐ 守卫 18 ＋ ⭐ 轻门 ＋ ⭐ `validate_schemas` ✓ ⭐ 树已拆 ✓
+
+⭐ ⚠ ⭐ ⭐ **一、⭐ 那 7 个字段是谁（⭐ 逐字）**: ⭐ `reverb_size`／⭐ `reverb_damp`／⭐ `reverb_predelay_s`／⭐ `conv_predelay_s`／⭐ `conv_dry`／⭐ `conv_wet`／⭐ `conv_ir_gain_db` ⇒ ⭐ ⭐ **即 `ReverbField::ALL` ＋ ⭐ `ConvolutionField::ALL`（⭐ 8 个）⭐ 减 `reverb_wet`** ★ ⭐ 而 ⭐ **判据 `the_seven_remaining_fields_are_the_scalar_fields_minus_reverb_wet`⭐从 `ALL` **现读**名字 ⭐ 与 `MOD_CASES` 互钉 ⇒ ⭐ **7 个一个不漏** ✓
+
+⭐ ⭐ **二、⭐ 7/7 都真的改音频、⭐ ⛔ **没有恒等字段****（⭐ 逐字段 `sha` ＋ ⭐ `digest` ＋ ⭐ 阶梯单调）:
+| ⭐ 字段 | ⭐ `sha` base → auto | ⭐ 读数 base → auto |
+| :-- | :--- | :--- |
+| ⭐ `reverb_size` | ⭐ `33a8ebda…` → ⭐ `c5b926e4…` | ⭐ `1.52e-4 → 6.39e-4` |
+| ⭐ `reverb_damp` | ⭐ `ef741b15…` → ⭐ `44b2521e…` | ⭐ `2.65e-4 → 2.42e-4`（⭐ **降**，⭐ 对） |
+| ⭐ `reverb_predelay_s` | ⭐ `49f8a99d…` → ⭐ `199fe74b…` | ⭐ 重心 `0.193 → 0.170 s` |
+| ⭐ `conv_predelay_s` | ⭐ `2fe18be5…` → ⭐ `c4e1b9d6…` | ⭐ 重心 `0.153 → 0.103 s` |
+| ⭐ `conv_dry` | ⭐ `2ff55407…` → ⭐ `5327379a…` | ⭐ `5.26e-5 → 2.39e-3` |
+| ⭐ `conv_wet` | ⭐ `a9033fc1…` → ⭐ `2a1103b8…` | ⭐ `5.92e-8 → 1.69e-1` |
+| ⭐ `conv_ir_gain_db` | ⭐ `c895d29b…` → ⭐ `79f1baa5…` | ⭐ `6.85e-5 → 4.41e-2` |
+⇒ ⭐ ⭐ **每个都同时改了**24-bit 文件 `sha256`** 与**浮点母带 `digest`**** ⇒ ⭐ **⛔ 只是"⭐ 落点登记了"** ✓
+
+⭐ ⚠ ⭐ ⭐ **三、⭐ 一条**发现（⭐ 它自己写的、⭐ 很值钱）**: ⚠ ⭐ ⭐ **`conv_dry` 若读**总 RMS**、⭐ 0→1 反而**下降****（⭐ `0.3516 → 0.3487 → 0.3477`）⇒ ⭐ ⭐ **因为湿路比干路响 ⇒ ⭐ 干湿相加是**混音读数**、⭐ ⛔ 是 `dry` 的方向**** **** ⇒ ⭐ **判据因此把 IR 增益压到 `−60 dB` 单独读干路**（⭐ 注释 `device_param_automation_export.rs:1082-1088`）✓
+★ ⭐ ⭐ **即：⭐ "⭐ 一个参数的值变大"⛔ 蕴含"⭐ 某个读数变大"** —— ⭐ **得先问那个读数在测什么** ✓
+
+⭐ ⚠ ⭐ ⭐ **四、⭐ 正对照三条 ＋ ⭐ 母带常量未变**: ⭐ ① ⭐ `flat` 泳道（⭐ 处处＝⭐ 静态 `from`）⇒ ⭐ `flat_sha == base_sha` ② ⭐ `readEnabled:false` ⇒ ⭐ 同 ③ ⭐ ⭐ **`conv_wet` 静态 0 ⇒ ⭐ 与"⭐ 根本没有那台设备"⭐的工程 `base_sha == bare_sha`** **** ⇒ ⭐ **逐位相同** ✓
+★ ⭐ 母带五个常量（⭐ `DEFAULT_MASTER_DIGEST`／⭐ `SHA256`／⭐ `PAN_RAMP`／⭐ `SEND_RAMP`／⭐ `DEVICE_RAMP`）⭐ **一位未动**（⭐ `git diff --name-only main..HEAD` 只有测试文件）✓
+
+⭐ ⚠ ⭐ ⭐ **五、⭐ 注入有牙 ＋ ⭐ `trim-target.sh` 首次实战成功**: ⭐ 注入（⭐ `Convolution::IrGainDb` 忽略泳道值）⇒ ⭐ ⭐ **`auto_sha == base_sha` ⇒ ⭐ `assertion left != right failed: conv_ir_gain_db: 泳道必须真的改字节`** **** ⇒ ⭐ 还原 `66dbd9af…` ＋ ⭐ `touch` ＋ ⭐ 重跑 7 passed ✓
+★ ⭐ ⭐ **而 ⭐ 它的 worktree target 从 **36623 MB** 被 `trim-target.sh` 裁到 **4788 MB**（⭐ 释放 **31835 MB**）** ⇒ ⭐ ⭐ **那个脚本**第一次实战、⭐ 省了 **31.8 GB**** **** ✓
+
+⭐ ⚠ **本条状态词⛔ 未动**（⭐ 项数与状态词一个字未动）✓ ⚠ **仍待补**: ⭐ **`68569dd5` 的判决** ＋ ⭐ **MCP 路径下逐字段音频**（⭐ 待开票）＋ ⭐ **`conv_dry` 干湿交互**（⭐ 值得单独一条）＋ ⭐ **`reverb_damp` 只有宽带 RMS、⭐ 无 HF 频谱** ＋ ⭐ `Macro` 量纲 ＋ ⭐ ⚠ **仍需人类**：⭐ 真声卡核验 ＋ ⭐ 听三对 ＋ ⭐ 真 MIDI ＋ ⭐ 物理回环线 ✓
