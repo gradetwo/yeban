@@ -6159,6 +6159,262 @@ fn a_master_pan_lane_moves_the_master_stereo_image() {
     );
 }
 
+/// `lead → bus → master` 的总线夹具（`bus` 是一条 `AuxReturn`，没有自己的源）。
+///
+/// 直连 `lead → master`（`id(40)`）被删掉，信号**只**经总线到母带 —— 这样总线的
+/// 推子 / mute / solo / 声相读数不会被直达声盖住。
+fn bus_project() -> YebanProjectV1 {
+    let master = id(1);
+    let lead = id(2);
+    let bus = id(3);
+    let mut project = project(&Spec::default());
+    project.tracks.insert(
+        bus,
+        TrackV3 {
+            id: bus,
+            name: "Bus".to_owned(),
+            kind: TrackKind::AuxReturn,
+            ..TrackV3::default()
+        },
+    );
+    project.routing_graph.nodes.push(bus);
+    let to_bus = id(50);
+    project.routing_graph.edges.insert(
+        to_bus,
+        RoutingEdge {
+            id: to_bus,
+            source_node: lead,
+            destination_node: bus,
+            kind: RoutingKind::SendToAux,
+            gain_db: None,
+        },
+    );
+    let from_bus = id(51);
+    project.routing_graph.edges.insert(
+        from_bus,
+        RoutingEdge {
+            id: from_bus,
+            source_node: bus,
+            destination_node: master,
+            kind: RoutingKind::BusToMaster,
+            gain_db: None,
+        },
+    );
+    project.routing_graph.edges.remove(&id(40));
+    project.validate().expect("总线夹具合法");
+    project
+}
+
+/// 给一条轨加一条 `TrackPan` 泳道（点按 tick 升序插入）。
+fn with_pan_lane(
+    mut project: YebanProjectV1,
+    track_id: EntityId,
+    points: &[(u64, f32)],
+    read_enabled: bool,
+    first_point_seed: u32,
+) -> YebanProjectV1 {
+    let target = AutomationTarget::TrackPan { track_id };
+    let mut map = BTreeMap::new();
+    for (index, (tick, value)) in points.iter().enumerate() {
+        let point = AutomationPoint {
+            id: id(first_point_seed + index as u32),
+            tick: *tick,
+            value: *value,
+            curve: CurveType::Linear,
+        };
+        map.insert(point.id, point);
+    }
+    let lane = AutomationLane {
+        target,
+        points: map,
+        read_enabled,
+        write_mode: AutomationWriteMode::Off,
+        domain: None,
+    };
+    project
+        .tracks
+        .get_mut(&track_id)
+        .expect("目标音轨必须存在")
+        .automation_lanes
+        .insert(target, lane);
+    project.validate().expect("带声相泳道的夹具必须合法");
+    project
+}
+
+/// 左右声道在 `[start, start + frames)` 内的 RMS（独立实现，单位：样本）。
+fn stereo_window_rms(samples: &[f32], channels: usize, start: usize, frames: usize) -> (f64, f64) {
+    let available = samples.len() / channels;
+    let mut left = 0.0f64;
+    let mut right = 0.0f64;
+    let mut count = 0usize;
+    for frame in start..(start + frames).min(available) {
+        let l = f64::from(samples[frame * channels]);
+        let r = f64::from(samples[frame * channels + 1]);
+        left += l * l;
+        right += r * r;
+        count += 1;
+    }
+    if count == 0 {
+        return (0.0, 0.0);
+    }
+    ((left / count as f64).sqrt(), (right / count as f64).sqrt())
+}
+
+/// ⭐ B2：**中性总线**（`pan = 0` / `mute = solo = false` / 无泳道）的总线输出级是
+/// 恒等 ⇒ `lead → bus → master` 与 `lead → master` **逐字节相同**。
+///
+/// 这是"B2 不改既有工程"的机械锚：只要总线的三个静态字段保持中性、且没有
+/// `TrackPan` 泳道，B2 的输出级就一个样本都不碰。
+#[test]
+fn a_neutral_bus_is_bit_identical_to_the_direct_baseline() {
+    let scratch = Scratch::new("bus-neutral");
+    let (result, _samples, sha) = render_samples(&scratch, "neutral-bus", &bus_project());
+    println!(
+        "### 中性总线: sha={sha} digest={}（直连基线 {DEFAULT_MASTER_SHA256} / {DEFAULT_MASTER_DIGEST}）",
+        result["data"]["masterDigest"]
+    );
+    assert_eq!(
+        sha, DEFAULT_MASTER_SHA256,
+        "中性总线的整文件 sha 必须等于直连基线"
+    );
+    assert_eq!(
+        result["data"]["masterDigest"], DEFAULT_MASTER_DIGEST,
+        "中性总线的母带样本摘要必须等于直连基线"
+    );
+}
+
+/// ⭐ B2b：总线 `mute = true` ⇒ **整条总线**输出为 0（入边 ＋ 自有源一起静音）。
+#[test]
+fn a_bus_mute_silences_the_whole_bus() {
+    let scratch = Scratch::new("bus-mute");
+    let (base, _samples, base_sha) = render_samples(&scratch, "mute-base", &bus_project());
+    let mut project = bus_project();
+    project.tracks.get_mut(&id(3)).expect("Bus").mute = true;
+    project.validate().expect("静音总线夹具合法");
+    let (result, samples, sha) = render_samples(&scratch, "mute-on", &project);
+    let muted_peak = peak(&samples);
+    let frames = result["data"]["frames"].as_u64().expect("frames");
+    let muted_windows = four_window_peaks(&samples, frames);
+    println!(
+        "### 总线 mute: base_sha={base_sha} sha={sha} peak={muted_peak:.9}          four_windows={muted_windows:?} base_peak={:.9}",
+        peak(&_samples)
+    );
+    assert!(
+        muted_peak <= DITHER_ONLY_PEAK,
+        "总线 mute ⇒ 输出只剩抖动噪声: peak={muted_peak}"
+    );
+    assert_ne!(sha, base_sha, "总线 mute 必须真的改变文件字节");
+    assert_ne!(result["data"]["masterDigest"], base["data"]["masterDigest"]);
+}
+
+/// ⭐ B2c：一条源轨 solo ⇒ **未 solo 的总线**静音；总线 `solo_safe = true` ⇒ 仍可闻。
+///
+/// 两条读数合起来钉住既有语义 `audible = !mute && (!any_solo || solo || solo_safe)`：
+/// 没有 `solo_safe` 时总线被 `any_solo` 门掉，加了 `solo_safe` 后母带与"无 solo 的
+/// 正对照"**逐字节相同**。
+#[test]
+fn a_bus_is_muted_by_another_tracks_solo_unless_it_is_solo_safe() {
+    let scratch = Scratch::new("bus-solo");
+    let (_base, _base_samples, base_sha) = render_samples(&scratch, "solo-base", &bus_project());
+
+    let mut soloed = bus_project();
+    soloed.tracks.get_mut(&id(2)).expect("Lead").solo = true;
+    soloed.validate().expect("solo 夹具合法");
+    let (_solo_result, solo_samples, solo_sha) = render_samples(&scratch, "solo-on", &soloed);
+    let solo_peak = peak(&solo_samples);
+    println!("### 源轨 solo / 总线未 solo: sha={solo_sha} peak={solo_peak:.9}");
+    assert!(
+        solo_peak <= DITHER_ONLY_PEAK,
+        "未 solo 的总线必须被 any_solo 门掉: peak={solo_peak}"
+    );
+    assert_ne!(solo_sha, base_sha, "总线被 solo 门掉必须改变文件字节");
+
+    let mut safe = bus_project();
+    safe.tracks.get_mut(&id(2)).expect("Lead").solo = true;
+    safe.tracks.get_mut(&id(3)).expect("Bus").solo_safe = true;
+    safe.validate().expect("solo_safe 夹具合法");
+    let (_safe_result, safe_samples, safe_sha) = render_samples(&scratch, "solo-safe", &safe);
+    println!(
+        "### 源轨 solo / 总线 solo_safe: sha={safe_sha} peak={:.9}",
+        peak(&safe_samples)
+    );
+    assert!(
+        peak(&safe_samples) > 0.1,
+        "solo_safe 的总线必须仍可闻: peak={}",
+        peak(&safe_samples)
+    );
+    assert_eq!(
+        safe_sha, base_sha,
+        "solo_safe 的总线 + 唯一源轨 solo ⇒ 与无 solo 正对照逐字节相同"
+    );
+}
+
+/// ⭐ B2a 静态：总线 `pan = -0.5` ⇒ 整条总线左重；比值 = `tan(3π/8)`。
+#[test]
+fn a_bus_static_pan_moves_the_whole_bus() {
+    let scratch = Scratch::new("bus-pan-static");
+    let mut project = bus_project();
+    project.tracks.get_mut(&id(3)).expect("Bus").pan = -0.5;
+    project.validate().expect("声相夹具合法");
+    let (result, samples, sha) = render_samples(&scratch, "pan-static", &project);
+    let (left, right) = stereo_peaks(&samples);
+    let ratio = left / right;
+    let expected = (3.0_f32 * core::f32::consts::FRAC_PI_8).tan();
+    println!(
+        "### 总线静态 pan(-0.5): L={left:.9} R={right:.9} ratio={ratio:.9} \
+         expected={expected:.9} sha={sha} digest={}",
+        result["data"]["masterDigest"]
+    );
+    assert!(
+        (ratio - expected).abs() < 1.0e-4,
+        "总线 pan(-0.5) 的 L/R 必须等于 tan(3π/8)={expected}: ratio={ratio}"
+    );
+}
+
+/// ⭐ B2a 泳道：总线的 `TrackPan` 泳道（`-1 → +1`）在输出级真的被应用。
+#[test]
+fn a_bus_pan_lane_is_applied_at_the_output_stage() {
+    let scratch = Scratch::new("bus-pan-lane");
+    let bus = id(3);
+    let project = with_pan_lane(bus_project(), bus, &[(0, -1.0), (1_920, 1.0)], true, 300);
+    let (result, samples, sha) = render_samples(&scratch, "pan-lane", &project);
+    let data = &result["data"];
+    let frames = usize::try_from(data["frames"].as_u64().expect("frames")).expect("frames");
+    // 只看两端的 1/4：中间 1/2 正在扫过中心，会把 L/R 比拉平（实测 2.198，不是判据坏了）。
+    let quarter = frames / 4;
+    let (early_l, early_r) = stereo_window_rms(&samples, 2, 0, quarter);
+    let (late_l, late_r) = stereo_window_rms(&samples, 2, frames - quarter, quarter);
+    println!(
+        "### 总线 TrackPan 泳道: early L/R={early_l:.9}/{early_r:.9} \
+         late L/R={late_l:.9}/{late_r:.9} sha={sha} automation={}",
+        data["automation"]
+    );
+    assert!(
+        early_l > early_r * 3.0,
+        "泳道起点(-1)必须左重: L={early_l} R={early_r}"
+    );
+    assert!(
+        late_r > late_l * 3.0,
+        "泳道终点(+1)必须右重: L={late_l} R={late_r}"
+    );
+    assert_eq!(data["automation"]["lanes"], 1);
+    assert_eq!(data["automation"]["evaluableLanes"], 1);
+    assert_eq!(data["automation"]["appliedLanes"], 1);
+    assert_eq!(data["automation"]["unsupportedLanes"], 0);
+    let lane = &data["automation"]["tracks"][0]["lanes"][0];
+    assert_eq!(lane["target"], "TrackPan");
+    assert_eq!(lane["supported"], true);
+    assert_eq!(lane["applied"], true);
+    assert!(
+        !data["unsupported"]
+            .as_array()
+            .expect("unsupported")
+            .iter()
+            .any(|value| value == "automationLanes"),
+        "可达总线的声相泳道已应用 ⇒ 不许再登记 automationLanes: {data}"
+    );
+}
+
 /// ⭐ `#296` 判据 1：**可达总线轨**的 `TrackVolume` 泳道在**输出级**真的被乘。
 ///
 /// 夹具与 `#257` 的 bus-only 判据同一个（`lead → bus → master`），但这次总线**能到达

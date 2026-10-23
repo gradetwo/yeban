@@ -584,18 +584,26 @@ pub fn render_project_f32_with_plans_under(
         plan.attach_device_param_automation(automation);
     }
 
-    // ---- 1d. ⭐ 输出级（任务单 `#296`）：总线推子 ＋ 主总线声相 ----
+    // ---- 1d. ⭐ 输出级（任务单 `#296` ＋ B2）：总线推子 / 声相 / mute / solo ＋ 主总线声相 ----
     //
     // 与 MCP 的 `yeban_render_master` **同一份** `RenderPlan::attach_output_stage`：
-    // - **总线轨**（有入边的非主轨）挂推子（静态 `track_gain_of` ＋ 可选的
-    //   `TrackVolume` 自动化），落点是插入链之后；源侧推子已在 `snapshot` 投影／
-    //   三个源分支里被置成 1.0（`mute`/`solo` 门保留），因此**不会乘两次**；
+    // - **总线轨**（有入边的非主轨）挂
+    //   ① 推子（静态 `track_gain_of` ＋ 可选的 `TrackVolume` 自动化）——`track_gain_of`
+    //      已经含 `mute`/`solo`/`solo_safe` 门，因此静音/独奏是**整条总线** ×0；
+    //   ② 声相（静态 `pan`，或有非恒等 `TrackPan` 泳道时挂自动化、静态关成中心）；
+    //   落点都是插入链之后。源侧推子已在 `snapshot` 投影／三个源分支里被置成 1.0
+    //   （`mute`/`solo` 门保留），声相也关掉（见 2a-pre）⇒ **不会乘两次**；
     // - **主总线**挂声相（既有等功率曲线 ＋ `centered_pan_gains` 的中心规则）；
     //   `TrackPan` 非恒等时静态声相被关掉，改由执行之后乘绝对左右增益（`#257` 纪律）。
     //
-    // 没有总线 / `master.pan == 0` 的工程：两个 `OutputStage` 都是恒等 ⇒
+    // 没有总线 / 中性总线 / `master.pan == 0` 的工程：输出级是恒等 ⇒
     // `render_node` 的最后一级一个样本都不碰 ⇒ 默认路径逐位不变。
     let any_solo = project.tracks.values().any(|track| track.solo);
+    let pan_law = PanLaw::from_model(project.audio_config.pan_law);
+    // ⭐ B2：总线的声相自动化与源轨共用**同一份**扫描器（`pan_automations`），
+    // 但落点不同 —— 总线在输出级（整条通道），源轨在源输出之后。这里先建全表，
+    // 总线取走自己那一份；源侧的表在 2a-pre 再把总线剔掉。
+    let all_pan_automations = pan_automations(project, options.sample_rate);
     for &node in &bus_nodes {
         let Some(track) = project.tracks.get(&node) else {
             continue;
@@ -616,10 +624,18 @@ pub fn render_project_f32_with_plans_under(
                 options.sample_rate,
             ));
         }
+        // ⭐ B2a：总线声相 —— 静态 `pan` 与 `TrackPan` 泳道**同一处**落点。泳道非恒等
+        // 时静态声相关掉（`pan = 0` ⇒ `(1,1)`），由自动化逐块乘绝对左右增益；否则
+        // 静态 `pan` 乘在**整条总线**（自有源 ＋ 入边）上。
+        let bus_pan = all_pan_automations.get(&node).filter(|a| !a.is_identity());
+        let static_pan = if bus_pan.is_some() { 0.0 } else { track.pan };
+        stage = stage.with_pan(static_pan, |pan| pan_gains(pan, pan_law));
+        if let Some(automation) = bus_pan.cloned() {
+            stage = stage.with_pan_automation(automation, move |pan| pan_gains(pan, pan_law));
+        }
         // 不在保留子图（不可达）⇒ 返回 false；本层不改任何东西。
         plan.attach_output_stage(node, stage);
     }
-    let pan_law = PanLaw::from_model(project.audio_config.pan_law);
     let mut master_pan_automation: Option<TrackPanAutomation> = None;
     if let Some(master) = project.tracks.get(&project.master_bus_track_id) {
         let automation = TrackPanAutomation::new(project, master.id, options.sample_rate);
@@ -675,12 +691,15 @@ pub fn render_project_f32_with_plans_under(
     // 恒等（没有泳道 / 关掉 / 空泳道 / 处处等于静态 `pan`）⇒ 这张表里没有它，
     // 源侧静态声相原样保留 ⇒ 产物逐字节不变。
     //
-    // ⚠ 有入边的总线轨**不进**这张表：总线声相是 `#296` B2（本单不做），与 MCP
-    // 的 `busTrack` 残差同口径。app 侧不发明第三种落点。
-    let mut pan_gates: BTreeMap<EntityId, TrackPanAutomation> =
-        pan_automations(project, options.sample_rate);
+    // ⭐ B2：有入边的总线轨**不进**这张表 —— 它们的声相在**输出级**（整条通道），
+    // 而不是只乘自有源。`pan_gates` 只留源轨的自动化；总线那份已在 1d 取走。
+    let mut pan_gates: BTreeMap<EntityId, TrackPanAutomation> = all_pan_automations;
     pan_gates.retain(|track_id, _| !bus_nodes.contains(track_id));
     pan_gates.retain(|_, automation| !automation.is_identity());
+    // ⭐ B2：总线轨的静态声相**一律**在输出级乘（整条通道），源侧必须关掉，否则
+    // 自有源会被乘两次；源轨只在"有非恒等 `TrackPan` 泳道"时关（`#257` 纪律）。
+    let suppress_static_pan =
+        |track_id: EntityId| bus_nodes.contains(&track_id) || pan_gates.contains_key(&track_id);
     let mut sources: BTreeMap<EntityId, Box<dyn AudioSource>> = BTreeMap::new();
     let mut source_label: String = if let Some((instrument, sfz_path)) = sfz.as_ref() {
         let mut labels: Vec<String> = Vec::new();
@@ -720,7 +739,7 @@ pub fn render_project_f32_with_plans_under(
             .with_pan(track_pan_of(
                 project,
                 track_id,
-                pan_gates.contains_key(&track_id),
+                suppress_static_pan(track_id),
             ));
             labels.push(track_source.sample_source());
             sources.insert(track_id, Box::new(track_source));
@@ -735,7 +754,7 @@ pub fn render_project_f32_with_plans_under(
             // 采样器源）。⭐ `#274`：MCP 的采样器轨也走同一个 `EngineTrackSource` ⇒
             // 分流取消，全部走 [`track_pan_of`]（它内部是 `audio_clip::track_pan_gains`）。
             // `render_track` 输出的是**声相之前**的单声道 ⇒ 在这里注入 pan（`#251` 的落点不变）。
-            let pan = track_pan_of(project, track_id, pan_gates.contains_key(&track_id));
+            let pan = track_pan_of(project, track_id, suppress_static_pan(track_id));
             sources.insert(
                 track_id,
                 // ⭐ `Arc::clone` 是**指针复制**（ADR：实时侧只借快照）：摊平表的 PCM 留在
@@ -775,7 +794,7 @@ pub fn render_project_f32_with_plans_under(
                         .with_pan(track_pan_of(
                             project,
                             track_id,
-                            pan_gates.contains_key(&track_id),
+                            suppress_static_pan(track_id),
                         )),
                 ),
             );
@@ -803,7 +822,7 @@ pub fn render_project_f32_with_plans_under(
             assets,
             &mut audio_cache,
             &mut audio_skipped,
-            pan_gates.contains_key(&track_id),
+            suppress_static_pan(track_id),
             // ⭐ `#296`：总线轨的推子改由输出级乘 ⇒ 片段增益里不带 track volume。
             bus_nodes.contains(&track_id),
         );

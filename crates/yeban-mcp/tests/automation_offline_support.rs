@@ -15,6 +15,7 @@
 //! | 写 `Macro` ⇒ `false` ＋ `"macro"`，导出真的登记 `automationLanes` | [`a_macro_point_is_reported_as_not_applied_and_the_export_agrees`] |
 //! | 写**主总线** `TrackPan` ⇒ `true`、无残差，导出**不**登记（`#296` 起有声相落点） | [`master_pan_is_reported_as_applied_and_the_export_agrees`] |
 //! | 写**不可达总线轨** `TrackVolume` ⇒ `false` ＋ `"busTrack"`（`#296` 正对照：可达总线已转 supported） | [`an_unreachable_bus_track_volume_point_is_still_reported_as_not_applied`] |
+//! | 写**不可达总线轨** `TrackPan` ⇒ `false` ＋ `"busTrack"`（B2 正对照：可达总线已转 supported） | [`an_unreachable_bus_track_pan_point_is_still_reported_as_not_applied`] |
 //! | 写**非通道条** `DeviceParam` ⇒ `false` ＋ `"deviceParamNotChannelStrip"` | [`a_non_channel_strip_device_param_is_reported_as_not_applied`] |
 //!
 //! 边界：本文件只证"写侧读数"与"导出读数"**同源且一致**，⛔ 不证听感。
@@ -371,6 +372,42 @@ fn an_unreachable_bus_track_volume_point_is_still_reported_as_not_applied() {
     assert!(
         unsupported_has_automation_lanes(&rendered),
         "总线轨的音量没有源落点 ⇒ 导出必须真的登记: {rendered}"
+    );
+}
+
+/// ⭐ B2 正对照：**不可达** Aux 的 `TrackPan` 泳道仍报 `busTrack`。
+///
+/// B2 把 `TrackPan` 的判据从"源节点"改成"保留子图里的任何节点" ⇒ 可达总线转
+/// `supported:true`；但**不可达**的总线（样本里的 Aux 没有 `aux → master`）不在
+/// `rendered_nodes` 里，必须继续如实报 `busTrack`，且一个字节都不许变。
+#[test]
+fn an_unreachable_bus_track_pan_point_is_still_reported_as_not_applied() {
+    let scratch = Scratch::new("bus-pan");
+    let project = filled_project();
+    let bus = project
+        .tracks
+        .values()
+        .find(|track| track.kind == yeban_model::TrackKind::AuxReturn)
+        .expect("样本里必须有 Aux 轨")
+        .id;
+    let mut dispatcher = dispatcher(project, &scratch.project());
+
+    // 正对照的机械锚：写泳道**之前**的导出字节。
+    let baseline = render(&mut dispatcher, &scratch.wav());
+    let baseline_sha = baseline["sha256"].clone();
+
+    let data = write_point(&mut dispatcher, bus, "TrackPan", json!({}));
+    assert_eq!(data["appliedInOfflineRender"], false, "{data}");
+    assert_eq!(data["residualReason"], "busTrack", "{data}");
+
+    let rendered = render(&mut dispatcher, &scratch.wav());
+    assert_eq!(
+        rendered["sha256"], baseline_sha,
+        "不可达 Aux 的声相泳道没有落点 ⇒ 一个字节都不许变: {rendered}"
+    );
+    assert!(
+        unsupported_has_automation_lanes(&rendered),
+        "总线轨的声相没有落点 ⇒ 导出必须真的登记: {rendered}"
     );
 }
 

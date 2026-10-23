@@ -2412,11 +2412,17 @@ pub fn build(
     for automation in device_automations.into_values().flatten() {
         plan.attach_device_param_automation(automation);
     }
-    // ⭐ 任务单 `#296`：总线的**输出级推子**（`render_node` 的插入链之后）。
+    // ⭐ 任务单 `#296` ＋ B2：总线的**输出级**（`render_node` 的插入链之后）——
+    // 推子 / `mute` / `solo` / 静态声相 / `TrackPan` 自动化。
     //
-    // 只挂"计划里、非源节点、非主总线"的节点 —— 源节点的音量仍在源侧（引擎的
-    // `track_gain` / 片段增益 / `TrackSource` 的 R55），主总线的推子仍在第 9 步
-    // （执行之后）；本层⛔ 不搬家 ⇒ 普通 MIDI/音频轨的行为与本单之前**逐位相同**。
+    // 只挂"计划里、非源节点、非主总线"的节点 —— 源节点的音量与声相仍在源侧（引擎的
+    // `track_gain` / 片段增益 / `TrackSource` 的 R55 与 `pan_automation`），主总线的
+    // 推子与声相自动化仍在第 9 步（执行之后）；本层⛔ 不搬家 ⇒ 普通 MIDI/音频轨的
+    // 行为与 `#296` 之前**逐位相同**。
+    //
+    // ⭐ B2b/B2c：总线的 `mute`/`solo`（含 `solo_safe`）是**静态字段**，折进输出级的
+    // 静态 `gain`（静音 ⇒ `0.0`，整条总线 ×0）。`any_solo` 与源轨同一条扫描（含 master）。
+    // ⭐ B2a：静态 `pan` 与 `TrackPan` 泳道在**同一处**落点；泳道非恒等时静态声相关掉。
     // 没有落点（不在保留子图）时 `attach_output_stage` 返回 `false`，本层不谎称应用。
     for &node in &nodes {
         if node == project.master_bus_track_id || source_nodes.contains(&node) {
@@ -2425,7 +2431,12 @@ pub fn build(
         let Some(track) = project.tracks.get(&node) else {
             continue;
         };
-        let mut stage = OutputStage::new().with_gain(db_to_linear(track.volume_db));
+        let bus_gain = if track_is_audible(track, any_solo) {
+            db_to_linear(track.volume_db)
+        } else {
+            0.0
+        };
+        let mut stage = OutputStage::new().with_gain(bus_gain);
         if track
             .automation_lanes
             .keys()
@@ -2435,6 +2446,16 @@ pub fn build(
             // 恒等泳道也挂：`apply_gain_block` 的恒等快路径一个样本都不多碰。
             stage =
                 stage.with_gain_automation(TrackGainAutomation::new(project, node, sample_rate));
+        }
+        let pan_automation = TrackPanAutomation::new(project, node, sample_rate);
+        let static_pan = if pan_automation.is_identity() {
+            track.pan
+        } else {
+            0.0
+        };
+        stage = stage.with_pan(static_pan, pan_gains);
+        if !pan_automation.is_identity() {
+            stage = stage.with_pan_automation(pan_automation, pan_gains);
         }
         plan.attach_output_stage(node, stage);
     }
@@ -3630,6 +3651,14 @@ fn push_unique_candidate(tried: &mut Vec<PathBuf>, candidate: PathBuf) {
     }
 }
 
+/// 音轨可闻门：静音，或"有轨道独奏而自己既不独奏也不独奏安全"时为 `false`。
+///
+/// 与 `yeban-engine::synth::track_is_audible` **同式**；⛔ MCP 不依赖 `yeban-engine`
+/// （依赖方向门禁），所以这里是本 crate 的**唯一**一份（源轨与总线轨共用）。
+fn track_is_audible(track: &TrackV3, any_solo: bool) -> bool {
+    !track.mute && (!any_solo || track.solo || track.solo_safe)
+}
+
 /// 由一条音轨构造音频源 + 报告，并把"没渲染的部分"登记进 `unsupported`。
 #[allow(clippy::too_many_arguments)]
 fn build_source(
@@ -3646,9 +3675,10 @@ fn build_source(
     unsupported: &mut BTreeSet<&'static str>,
     counts: &mut BTreeMap<&'static str, u64>,
 ) -> Result<(TrackSource, SourceReport), Fault> {
-    // solo 语义（只作用于源轨；辅助返回总线不参与判定 —— 登记在 notes 的边界里）:
-    // 只要工程里有任一音轨 solo, 未 solo 且非 solo-safe 的源轨就不发声。
-    let audible = !track.mute && (!any_solo || track.solo || track.solo_safe);
+    // solo 语义（B2 起也作用于辅助返回总线 —— 见 `build` 的输出级）；判据与源轨
+    // 同一条 `track_is_audible`：只要工程里有任一音轨 solo, 未 solo 且非 solo-safe
+    // 的轨就不发声。`any_solo` 扫全部轨（含主总线）。
+    let audible = track_is_audible(track, any_solo);
     // ⭐ `#257`：本轨的 `TrackPan` 自动化。**先**构造它，再决定源侧静态声相 ——
     // 非恒等时把静态声相关掉（`pan = 0` ⇒ `(track_gain, track_gain)`），
     // 改由源输出之后的门乘自动化位置的绝对左右增益（同一份 `pan_gains` 曲线，

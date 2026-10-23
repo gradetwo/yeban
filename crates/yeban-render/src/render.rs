@@ -49,10 +49,12 @@
 //!   紧接在**求和之后**处理（源节点是"声源之后"）; 顺序差异见该模块头 §2。
 //!   ⚠ 实时引擎的**主总线**插入是"下混成单声道 → 链 → 复制两路"（裁决 (甲)）,
 //!   离线是真立体声 ⇒ 两边的**宽度/尾巴形状**有差异（与 `#155`/`#158` 同族）。
-//! - **输出级**（[`OutputStage`]，任务单 `#296`）：插入链**之后**、母线求和**之前**的
-//!   一级。本单只让**总线节点**有推子（`TrackVolume`）、**主总线**有声相；主总线的
-//!   `TrackPan` 自动化与推子由调用方在执行之后乘（主总线是终端节点）。其它节点是
-//!   恒等输出级 ⇒ `render_node` 的最后一级一个样本都不碰（零默认回归）。
+//! - **输出级**（[`OutputStage`]，任务单 `#296` / B2）：插入链**之后**、母线求和**之前**
+//!   的一级。`#296` 让**总线节点**有推子（`TrackVolume`）、**主总线**有声相；B2 再把
+//!   **总线**的静态声相 / `TrackPan` 自动化 / `mute` / `solo` 接到同一级（`mute`/`solo`
+//!   由调用方折算进静态 `gain`，输出级只乘 0/1 与推子）。主总线的 `TrackPan` 自动化与
+//!   推子仍由调用方在执行之后乘（主总线是终端节点）。其它节点是恒等输出级 ⇒
+//!   `render_node` 的最后一级一个样本都不碰（零默认回归）。
 
 use std::collections::BTreeMap;
 use std::fmt::Debug;
@@ -63,7 +65,7 @@ use yeban_model::{EntityId, RoutingEdge, RoutingGraph, TrackV3};
 
 use crate::automation::{
     AUTOMATION_BLOCK_SIZE, DeviceParamAutomation, SendGainAutomation, TrackGainAutomation,
-    centered_pan_gains,
+    TrackPanAutomation, centered_pan_gains,
 };
 use crate::inserts::{InsertChain, InsertRuntime};
 use crate::pdc::{self, DelayLine, PdcError};
@@ -331,22 +333,45 @@ struct NodeState {
     output: OutputStage,
 }
 
+/// 声相曲线（`pan → (左, 右)`）的持有者。
+///
+/// [`TrackPanAutomation::apply_pan_block`] 要逐帧把位置换成左右增益；曲线由调用方
+/// 提供（CLI 走 `PanLaw`，MCP 走自己的等功率函数），本层⛔ 不复制曲线。用 `Arc`
+/// 而不是 `Box` 是为了让 [`OutputStage`] 仍可 `Clone`（`Box<dyn Fn>` 不可 `Clone`）。
+#[derive(Clone)]
+struct PanCurve(std::sync::Arc<dyn Fn(f32) -> (f32, f32) + Send + Sync>);
+
+impl Debug for PanCurve {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str("PanCurve(..)")
+    }
+}
+
+impl PanCurve {
+    fn gains(&self, pan: f32) -> (f32, f32) {
+        (self.0)(pan)
+    }
+}
+
 /// 节点的**输出级**：通道条的最后一级（源 → 插入 → 推子 → 声相 → 母线）。
 ///
-/// ## 本单只开两格（保守范围）
+/// ## 本单开的格子（`#296` ＋ B2）
 ///
 /// - **推子**（静态 `gain` ＋ 可选 [`TrackGainAutomation`]）：只对**总线节点**启用
 ///   （`render_node` 的 `incoming` 非空、且不是主总线）。源节点的音量**仍在源侧**
 ///   （引擎的 `track_gain` / 音频片段的 `combined_gain_db` / MCP 的 `TrackSource`），
-///   ⛔ 本单不搬家 —— 因此普通轨的 `TrackVolume` 行为与本单之前逐位相同；
-/// - **声相**（静态 `(pan_left, pan_right)`）：只对**主总线**启用。总线轨的声相 /
-///   mute / solo 是 `#296` 明确不做的后续项（任务单 B2）。
+///   ⛔ 本层不搬家 —— 因此普通轨的 `TrackVolume` 行为与 `#296` 之前逐位相同。
+///   B2 起调用方把总线的 `mute` / `solo`（含 `solo_safe`）折进这个静态 `gain`
+///   （静音 ⇒ `0.0`），因此它们是**整条总线**的 0/1 门，而不是只染自有源；
+/// - **声相**（静态 `(pan_left, pan_right)` ＋ 可选 [`TrackPanAutomation`]）：
+///   `#296` 只对**主总线**启用；B2 起**总线节点**也启用（静态与泳道同一处落点）。
+///   非恒等泳道时调用方把静态声相关掉（`pan = 0`），由本层逐块乘绝对左右增益。
 ///
 /// ## 恒等快路径
 ///
-/// `gain == 1.0`、没有非恒等的推子自动化、`(left, right) == (1.0, 1.0)` ⇒
-/// [`Self::apply`] 在第一条判据就返回：**一个样本都不读不写**。没有输出级的工程
-/// （含默认夹具）因此与接线前逐位相同。
+/// `gain == 1.0`、没有非恒等的推子自动化、`(left, right) == (1.0, 1.0)`、没有非恒等
+/// 的声相自动化 ⇒ [`Self::apply`] 在第一条判据就返回：**一个样本都不读不写**。没有
+/// 输出级的工程（含默认夹具）因此与接线前逐位相同。
 #[derive(Clone, Debug)]
 pub struct OutputStage {
     /// 静态线性推子增益。
@@ -357,6 +382,10 @@ pub struct OutputStage {
     pan_left: f32,
     /// 右声道声相增益。
     pan_right: f32,
+    /// 本节点的 `TrackPan` 自动化（总线轨；`None` = 没有可求值泳道）。
+    pan_automation: Option<TrackPanAutomation>,
+    /// 声相曲线（与 `pan_automation` 同时存在；`None` 表示没有泳道）。
+    pan_curve: Option<PanCurve>,
 }
 
 impl Default for OutputStage {
@@ -367,7 +396,7 @@ impl Default for OutputStage {
 }
 
 impl OutputStage {
-    /// 恒等输出级（`gain = 1.0`、无声相）。
+    /// 恒等输出级（`gain = 1.0`、无声相、无自动化）。
     #[must_use]
     pub const fn new() -> Self {
         Self {
@@ -375,6 +404,8 @@ impl OutputStage {
             gain_automation: None,
             pan_left: 1.0,
             pan_right: 1.0,
+            pan_automation: None,
+            pan_curve: None,
         }
     }
 
@@ -407,6 +438,21 @@ impl OutputStage {
         self
     }
 
+    /// 挂上该节点的 `TrackPan` 自动化（求值 / 5 ms 平滑 / 恒等判定都在
+    /// [`TrackPanAutomation`]；本层⛔ 不复制曲线与插值）。
+    ///
+    /// 调用方前置条件：非恒等时静态声相已被关掉（`with_pan(0.0, ..)`），否则同一
+    /// 位置会乘两次。恒等泳道**不要**挂（挂了也只是走恒等快路，但会多一次判定）。
+    #[must_use]
+    pub fn with_pan_automation<F>(mut self, automation: TrackPanAutomation, curve: F) -> Self
+    where
+        F: Fn(f32) -> (f32, f32) + Send + Sync + 'static,
+    {
+        self.pan_automation = Some(automation);
+        self.pan_curve = Some(PanCurve(std::sync::Arc::new(curve)));
+        self
+    }
+
     /// 恒等 ⇒ [`Self::apply`] 一个样本都不碰。
     #[must_use]
     pub fn is_identity(&self) -> bool {
@@ -417,12 +463,14 @@ impl OutputStage {
                 .gain_automation
                 .as_ref()
                 .is_none_or(TrackGainAutomation::is_identity)
+            && self
+                .pan_automation
+                .as_ref()
+                .is_none_or(TrackPanAutomation::is_identity)
     }
 
-    /// 在**插入链之后**应用这一级：先推子（含可选 R55 自动化），后声相。
-    ///
-    /// 声相口径与源侧静态声相**同一形状**：第 0 声道左、第 1 声道右；非中心时
-    /// 其余声道不参与（置 0）。
+    /// 在**插入链之后**应用这一级：先推子（含可选 R55 自动化），后声相（静态或
+    /// `TrackPan` 自动化 —— 二者在非恒等时互斥，调用方负责关静态那一半）。
     fn apply(&mut self, out: &mut [f32], first_frame: u64, frames: usize, channels: usize) {
         if channels == 0 || frames == 0 || self.is_identity() {
             return;
@@ -454,6 +502,13 @@ impl OutputStage {
                     out[base + channel] = 0.0;
                 }
             }
+        }
+        // 非恒等 `TrackPan` 泳道：静态声相已被调用方关掉 ⇒ 这里乘的是**绝对**左右
+        // 增益（与 `#257` 的源侧门同一条纪律，⛔ 不乘第二次）。
+        if let Some(automation) = self.pan_automation.as_mut()
+            && let Some(curve) = self.pan_curve.as_ref()
+        {
+            automation.apply_pan_block(out, first_frame, frames, channels, |pan| curve.gains(pan));
         }
     }
 }
@@ -1047,6 +1102,10 @@ impl RenderPlan {
             }
             // 输出级的推子自动化（任务单 `#296`）同样是跨执行存活的时间状态。
             if let Some(automation) = state.output.gain_automation.as_mut() {
+                automation.reset_for_execution();
+            }
+            // B2：输出级的声相自动化同样要复位（平滑器回到 tick 0 的曲线值）。
+            if let Some(automation) = state.output.pan_automation.as_mut() {
                 automation.reset_for_execution();
             }
         }
