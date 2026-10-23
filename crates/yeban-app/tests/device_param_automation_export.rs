@@ -981,3 +981,370 @@ fn a_reverb_wet_zero_source_really_changes_the_export_when_automated() {
         "湿尾必须远高于干尾: {tail:.9e} vs {base_tail:.9e}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// ⭐ `#294`：`#293` 剩下的 **7 个字段**逐个端到端音频
+// （混响 4 ＋ 卷积 4 = 8 个字段，减去 `#293` 已做过的 `reverb_wet`）。
+//
+// `#293` 已给 `reverb_wet` 一条端到端判据；其它 7 个字段只有落点/镜像/单调判据
+// （`inserts.rs` 的 `*_field_clamp_is_the_device_clamp` 与 `automation.rs` 的
+// `every_applied_name_*`），**没有**“静态基线 vs 有泳道”的音频读数。本切片按
+// 同一条形状补齐：每个字段都给 `base sha` / `auto sha` / `digest` / 分段读数，
+// 且把“泳道恒等于静态值 ⇒ 逐字节等于无泳道”与“`readEnabled:false` ⇒ 逐字节
+// 等于无泳道”两条正对照逐字段跑一遍。
+//
+// 单调读数按字段的**物理方向**选，不统一硬套峰值：
+// - `size`：尾音电平 —— 反馈变长 ⇒ 同一尾窗的能量变大；
+// - `damp`：尾音电平 —— 高频阻尼变强 ⇒ 同一尾窗的能量变小；
+// - `predelay`（混响/卷积）：尾音**能量重心**（秒）—— 湿路被整体推迟 ⇒ 重心变大
+//   （两者的湿路都是 LTI，推迟不改变包络形状）；
+// - `conv_dry`：整段 RMS —— 干路电平变大；
+// - `conv_wet` / `conv_ir_gain_db`：卷积尾窗 RMS —— 湿路电平/IR 增益变大。
+// ---------------------------------------------------------------------------
+
+/// 单调读数。窗口单位：帧（48 kHz）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ModRead {
+    /// `[start, end)` 的 RMS（左右声道合并，与 `window_rms` 同口径）。
+    WindowRms { start: usize, end: usize },
+    /// `[start, end)` 内 `|x|²` 的能量重心，单位：秒。
+    Centroid { start: usize, end: usize },
+}
+
+/// 字段对读数的作用方向。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ModDirection {
+    Rising,
+    Falling,
+}
+
+/// 一个字段一条端到端用例。
+struct ModCase {
+    name: &'static str,
+    /// 源设备的静态参数表。`params[0]` 就是被测名字（泳道指向 `param_index = 0`）。
+    params: &'static [(&'static str, f32)],
+    from: f32,
+    mid: f32,
+    to: f32,
+    read: ModRead,
+    direction: ModDirection,
+}
+
+const MOD_CASES: &[ModCase] = &[
+    ModCase {
+        name: "reverb_size",
+        params: &[("reverb_size", 0.2)],
+        from: 0.2,
+        mid: 0.6,
+        to: 1.0,
+        // 0.30 s … 0.60 s：0.1 s 音符结束后、`to` 已保持的尾窗。
+        read: ModRead::WindowRms {
+            start: 14_400,
+            end: 28_800,
+        },
+        direction: ModDirection::Rising,
+    },
+    ModCase {
+        name: "reverb_damp",
+        params: &[("reverb_damp", 0.0)],
+        from: 0.0,
+        mid: 0.5,
+        to: 1.0,
+        read: ModRead::WindowRms {
+            start: 14_400,
+            end: 28_800,
+        },
+        direction: ModDirection::Falling,
+    },
+    ModCase {
+        name: "reverb_predelay_s",
+        params: &[("reverb_predelay", 0.0)],
+        from: 0.0,
+        mid: 0.05,
+        to: 0.1,
+        read: ModRead::Centroid {
+            start: 4_800,
+            end: 43_200,
+        },
+        direction: ModDirection::Rising,
+    },
+    ModCase {
+        name: "conv_predelay_s",
+        params: &[("conv_predelay_s", 0.0)],
+        from: 0.0,
+        mid: 0.05,
+        to: 0.1,
+        read: ModRead::Centroid {
+            start: 4_800,
+            end: 24_000,
+        },
+        direction: ModDirection::Rising,
+    },
+    ModCase {
+        name: "conv_dry",
+        // 干路电平要**单独**读：把 IR 增益压到 −60 dB，湿路近似静音，整段 RMS
+        // 就只随 `dry` 走。⚠ 不这么做会读出**反方向**：同一夹具、源电平 0.5、
+        // IR 增益 0 dB 时，dry 0→0.5→1 的总 RMS 是 0.3516→0.3487→0.3477
+        // （湿路比干路响，干湿相加后总 RMS 反而下降）—— 那是混音读数的形状，
+        // 不是 `dry` 这个字段的方向。
+        params: &[("conv_dry", 0.0), ("conv_ir_gain_db", -60.0)],
+        from: 0.0,
+        mid: 0.5,
+        to: 1.0,
+        read: ModRead::WindowRms {
+            start: 0,
+            end: 48_000,
+        },
+        direction: ModDirection::Rising,
+    },
+    ModCase {
+        name: "conv_wet",
+        params: &[("conv_wet", 0.0)],
+        from: 0.0,
+        mid: 0.5,
+        to: 1.0,
+        // 0.11 s … 0.30 s：干路已结束（0.1 s），只剩卷积尾（IR 0.1 s）。
+        read: ModRead::WindowRms {
+            start: 5_280,
+            end: 14_400,
+        },
+        direction: ModDirection::Rising,
+    },
+    ModCase {
+        name: "conv_ir_gain_db",
+        params: &[("conv_ir_gain_db", -60.0)],
+        from: -60.0,
+        mid: -18.0,
+        to: 24.0,
+        read: ModRead::WindowRms {
+            start: 5_280,
+            end: 14_400,
+        },
+        direction: ModDirection::Rising,
+    },
+];
+
+fn mod_read(read: ModRead, samples: &[f32]) -> f64 {
+    match read {
+        ModRead::WindowRms { start, end } => window_rms(samples, start, end),
+        ModRead::Centroid { start, end } => {
+            let mut moment = 0.0f64;
+            let mut energy = 0.0f64;
+            for frame in start..end {
+                let mut power = 0.0f64;
+                for channel in 0..2 {
+                    let value = f64::from(samples[frame * 2 + channel]);
+                    power += value * value;
+                }
+                moment += frame as f64 * power;
+                energy += power;
+            }
+            if energy == 0.0 {
+                0.0
+            } else {
+                moment / energy / 48_000.0
+            }
+        }
+    }
+}
+
+/// 3 点常量阶梯：`base`（无泳道，静态 `from`）→ `mid` → `to`。
+///
+/// 返回 `mid` / `to` 两个读数（`base` 由调用方传入）。⛔ 不用一条渐变曲线读
+/// “单调”：渐变把参数与时间混在一起，而常量泳道让读数的**唯一自变量**就是字段值。
+fn mod_ladder(scratch: &Scratch, bytes: &[u8], case: &ModCase, base: f64, seed: u32) -> (f64, f64) {
+    let mut reads = [0.0f64; 2];
+    for (slot, value) in [case.mid, case.to].into_iter().enumerate() {
+        let fixture = project(
+            &Tune {
+                points: &[(0, value), (960, value), (ONE_SECOND_TICKS, value)],
+                read_enabled: true,
+                params: case.params,
+                insert_lane: true,
+            },
+            bytes,
+            seed + slot as u32,
+        );
+        let (samples, _, _) = export(scratch, &format!("ladder-{slot}"), &fixture, bytes);
+        reads[slot] = mod_read(case.read, &samples);
+    }
+    assert!(
+        match case.direction {
+            ModDirection::Rising => base < reads[0] && reads[0] < reads[1],
+            ModDirection::Falling => base > reads[0] && reads[0] > reads[1],
+        },
+        "{}: 常量阶梯必须按 {:?} 单调（base={base:.9e}, mid={:.9e}, to={:.9e}）",
+        case.name,
+        case.direction,
+        reads[0],
+        reads[1]
+    );
+    (reads[0], reads[1])
+}
+
+/// ⭐ `#294` 判据 1/2/3：**每个剩余标量字段**一条端到端判据（静态基线 vs 有泳道）。
+///
+/// 每条都断言：
+/// 1. 非恒等泳道 ⇒ `sha256` 与浮点母带 `digest` **都变**（自动化真的落了地）；
+/// 2. 泳道恒等于静态值 ⇒ **逐字节**等于无泳道（⛔ 不是“乘 1.0 近似”）；
+/// 3. `readEnabled:false` ⇒ **逐字节**等于无泳道；
+/// 4. 常量阶梯（`from` / `mid` / `to`）⇒ 读数按该字段的物理方向**严格单调**。
+///
+/// `conv_wet` 另加 `#293` 那条正对照：静态 `conv_wet: 0` 的链不建运行态器件 ⇒
+/// 基线与“同一段素材、根本没有那台设备”的工程**逐位相同**。
+#[test]
+fn every_remaining_scalar_field_really_changes_the_export_and_moves_monotonically() {
+    let names: Vec<&str> = MOD_CASES.iter().map(|case| case.name).collect();
+    println!("### #294 fields ({}) = {names:?}", names.len());
+    let scratch = Scratch::new("mod-fields");
+    // 0.1 s 的 440 Hz 音符 + 0.9 s 静音：湿路的尾巴与干路（0..0.1 s）分开可读。
+    // 源电平 0.05（⛔ 不是 0.5）：IR 是峰值归一化的，默认 `wet = 0.25`/`dry = 1`
+    // 时干湿相加会撞 24-bit 满刻度，撞顶会把“分段读数”读成 1.0（实测 0.25 时
+    // `conv_predelay_s` 的四段峰值首段仍是 1.0）。0.05 下所有读数都不撞顶。
+    let bytes = wav_f32(2, 48_000, &tone_burst(48_000, 4_800, 0.05));
+
+    for (index, case) in MOD_CASES.iter().enumerate() {
+        let seed = 1_000 + (index as u32) * 10;
+
+        // 1) 静态基线：设备参数静态 `from`，没有泳道。
+        let baseline = project(
+            &Tune {
+                points: &[],
+                read_enabled: false,
+                params: case.params,
+                insert_lane: false,
+            },
+            &bytes,
+            seed,
+        );
+        let (base_samples, base_sha, base_digest) = export(&scratch, "base", &baseline, &bytes);
+        let base_read = mod_read(case.read, &base_samples);
+        let base_peaks = four_window_peaks(&base_samples);
+
+        // 2) 有泳道：0 → `to`（0.25 s 内到顶，之后保持 `to`）。
+        let automated = project(
+            &Tune {
+                points: &[(0, case.from), (480, case.to), (ONE_SECOND_TICKS, case.to)],
+                read_enabled: true,
+                params: case.params,
+                insert_lane: true,
+            },
+            &bytes,
+            seed + 1,
+        );
+        let (samples, sha, digest) = export(&scratch, "auto", &automated, &bytes);
+        let read = mod_read(case.read, &samples);
+        let peaks = four_window_peaks(&samples);
+        println!(
+            "### #294 {}: base_sha={base_sha} auto_sha={sha} \
+             base_digest={base_digest} auto_digest={digest} \
+             read(base)={base_read:.9e} read(auto)={read:.9e} \
+             base_peaks={base_peaks:?} auto_peaks={peaks:?}",
+            case.name
+        );
+        assert_ne!(sha, base_sha, "{}: 泳道必须真的改字节", case.name);
+        assert_ne!(digest, base_digest, "{}: 浮点母带必须真的不同", case.name);
+
+        // 3) 正对照：泳道处处等于静态值 ⇒ 逐字节等于无泳道。
+        let flat = project(
+            &Tune {
+                points: &[
+                    (0, case.from),
+                    (960, case.from),
+                    (ONE_SECOND_TICKS, case.from),
+                ],
+                read_enabled: true,
+                params: case.params,
+                insert_lane: true,
+            },
+            &bytes,
+            seed + 2,
+        );
+        let (flat_samples, flat_sha, flat_digest) = export(&scratch, "flat", &flat, &bytes);
+        assert_eq!(
+            flat_sha, base_sha,
+            "{}: 恒等泳道必须逐字节等于无泳道",
+            case.name
+        );
+        assert_eq!(flat_digest, base_digest, "{}", case.name);
+        assert_eq!(
+            four_window_peaks(&flat_samples),
+            base_peaks,
+            "{}: 恒等泳道的分段读数也必须相同",
+            case.name
+        );
+
+        // 4) 正对照：`readEnabled:false` ⇒ 逐字节等于无泳道。
+        let disabled = project(
+            &Tune {
+                points: &[(0, case.from), (480, case.to), (ONE_SECOND_TICKS, case.to)],
+                read_enabled: false,
+                params: case.params,
+                insert_lane: true,
+            },
+            &bytes,
+            seed + 3,
+        );
+        let (_, disabled_sha, disabled_digest) = export(&scratch, "disabled", &disabled, &bytes);
+        assert_eq!(
+            disabled_sha, base_sha,
+            "{}: readEnabled:false 必须逐字节等于无泳道",
+            case.name
+        );
+        assert_eq!(disabled_digest, base_digest, "{}", case.name);
+
+        // 5) `conv_wet` 的 `#293` 正对照：静态 wet=0 ⇒ 与“根本没有那台设备”逐位相同。
+        if case.name == "conv_wet" {
+            let bare = project(
+                &Tune {
+                    points: &[],
+                    read_enabled: false,
+                    params: &[],
+                    insert_lane: false,
+                },
+                &bytes,
+                seed + 4,
+            );
+            let (_, bare_sha, bare_digest) = export(&scratch, "bare", &bare, &bytes);
+            assert_eq!(
+                base_digest, bare_digest,
+                "静态 conv_wet=0 ⇒ 必须与无设备工程逐位相同（不建器件）"
+            );
+            assert_eq!(base_sha, bare_sha);
+        }
+
+        // 6) 单调：常量阶梯。
+        let (mid_read, to_read) = mod_ladder(&scratch, &bytes, case, base_read, seed + 5);
+        println!(
+            "### #294 {} ladder: from={} -> {base_read:.9e}, mid={} -> {mid_read:.9e}, \
+             to={} -> {to_read:.9e}",
+            case.name, case.from, case.mid, case.to
+        );
+    }
+}
+
+/// ⭐ `#294`：这 7 个名字就是“混响/卷积的 8 个可自动化字段减去 `reverb_wet`”
+/// （`#293` 唯一做过端到端音频的那一个）。⚠ 卷积的 `conv_wet` **仍在**这 7 个里：
+/// `#293` 只做了 `reverb_wet`。
+///
+/// ⛔ 不手抄第二份清单：名字从 `ReverbField::ALL` / `ConvolutionField::ALL` 现读，
+/// 因此本判据与 `MOD_CASES` 互为对方的机械锚（任一边漏一个字段都会红）。
+#[test]
+fn the_seven_remaining_fields_are_the_scalar_fields_minus_reverb_wet() {
+    use yeban_render::inserts::{ConvolutionField, ReverbField};
+
+    let mut expected: Vec<&str> = Vec::new();
+    for field in ReverbField::ALL {
+        if *field != ReverbField::Wet {
+            expected.push(field.canonical_name());
+        }
+    }
+    for field in ConvolutionField::ALL {
+        expected.push(field.canonical_name());
+    }
+    let covered: Vec<&str> = MOD_CASES.iter().map(|case| case.name).collect();
+    println!("### #294 expected={expected:?}");
+    println!("### #294 covered={covered:?}");
+    assert_eq!(expected.len(), 7, "混响 3 ＋ 卷积 4 = 7");
+    assert_eq!(covered, expected, "MOD_CASES 必须逐字覆盖这 7 个字段");
+}
