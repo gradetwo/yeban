@@ -3,7 +3,7 @@
 > 由 `python3 scripts/gates/license_inventory.py` 从 `cargo metadata --locked` 生成。
 > CI 用 `--check` 对账：加依赖/升版本后忘记重新生成，这一项会变红。
 
-- `Cargo.lock` SHA-256（前 16 位）: `170f215416099de3`
+- `Cargo.lock` SHA-256（前 16 位）: `8dc1b05cd1b405f1`
 - 外部依赖包数: **634**（不含 27 个 workspace 成员）
 - 许可来源: 各包 `Cargo.toml` 的 `license` 字段（SPDX 表达式，未经人工改写）
 
@@ -127,7 +127,7 @@
 | `chacha20` | `0.10.2` | `MIT OR Apache-2.0` | 传递 | — |
 | `chrono` | `0.4.45` | `MIT OR Apache-2.0` | 传递 | — |
 | `clang-sys` | `1.9.1` | `Apache-2.0` | 传递 | — |
-| `clipboard-win` | `5.4.1` | `BSL-1.0` | 传递 | — |
+| `clipboard-win` | `5.4.3` | `BSL-1.0` | 传递 | — |
 | `clru` | `0.6.3` | `MIT` | 传递 | — |
 | `codespan-reporting` | `0.13.1` | `Apache-2.0` | 传递 | — |
 | `color_quant` | `1.1.0` | `MIT` | 传递 | — |
