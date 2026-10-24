@@ -82,7 +82,7 @@
 
 | 项 | 真做的 | 缩水的（口径写在响应 `unsupported` 里） |
 | :--- | :--- | :--- |
-| 音源 | 确定性的正弦基波 + 线性包络 | 不是 SFZ 采样器、没有多振荡器/滤波/效果器；**本模型版本的 `DeviceKind` 里也没有 SFZ 变体** ⇒ `sfzSampler` 登记为"能力不在本切片" |
+| 音源 | 确定性的正弦基波 + 线性包络 | 不是 SFZ 采样器、没有多振荡器/滤波/效果器；**本模型版本的 `DeviceKind` 里也没有 SFZ 变体** ⇒ 当时 `sfzSampler` 登记为"能力不在本切片"；⚠ **该键已在 `#221` 退役**（SFZ 采样器现已可用），现行全集以 `crates/yeban-mcp/src/domain/render.rs` 的 `KNOWN_UNSUPPORTED_KEYS` 为唯一事实源 |
 | 设备链 | `latency_samples` 进了 PDC（相位对齐是真的） | 设备**参数**（cutoff/resonance…）没有求值 ⇒ `deviceChainDsp` |
 | 外部插件 | 延迟照算 | 没有宿主、没有参数 ⇒ `externalPlugins` |
 | 自动化 | 工程里的自动化泳道被**如实登记** | 曲线没有求值（连静态值也不代偿） ⇒ `automationLanes` |
@@ -333,7 +333,7 @@ arguments.path 存在        → 原样使用（空串/纯空白 ⇒ INVALID_PAR
 | :--- | :--- | :--- |
 | P1（承接 `tools-domain`） | "十工具领域实现未接线" | **本轮关闭**：`yeban_render_master` 的渲染本体已接线，**本 crate 的工具路径上不再有任何实现级出口** |
 | P8 | `BUSY` 不可达 | 仍 pending（单线程同步架构；异步渲染管线落地后才可达） |
-| pending | `sfzSampler` | 本模型的 `DeviceKind` **没有** SFZ 变体；实现 SFZ 播放需要 `yeban-sfz` 接线（别的所有者） |
+| 已退役（`#221`） | 采样器绑定那个键 | **不再登记** —— SFZ 采样器现已可用（`TrackV3.sampler` → 引擎 SFZ 支路）。本条保留为历史；现行全集以 `KNOWN_UNSUPPORTED_KEYS` 为唯一事实源 |
 | pending | `noteRatchet` 展开 / `probability` 确定性触发（`rng_seed` 已就绪）/ 弯音曲线 / 滑音 / 歌词-音素歌声合成 | 都已**登记**为 `unsupported`，未实现；`probability` 的确定性 PRNG 基础设施（`yeban_dsp::noise::Rng` + `rng::dither_seed`）已在，接线成本低 |
 | pending | placement 循环的第二遍及以后 | 当前只渲染第一遍；展开需要"循环次数 × 内容"的长度语义（工程模型里有 `LoopConfig`，缺的是渲染语义） |
 
