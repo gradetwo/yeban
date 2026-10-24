@@ -564,6 +564,20 @@ pub fn ops_items() -> Value {
                 true,
             ),
             op(
+                "setClipGain",
+                "改音频片段的增益（目标 `clipId` 在操作对象里，⛔ 不读顶层 `clipId`；MIDI 片段会被拒）",
+                &["kind", "clipId", "gainDb"],
+                json!({
+                    "kind": kind("setClipGain"),
+                    "clipId": id("目标音频片段身份（必须存在且内容是 Audio）"),
+                    "gainDb": {
+                        "type": "number",
+                        "description": "新增益 (dB)；任意有限值（模型没有 dB 范围），收窄到 f32 后非有限则拒",
+                    },
+                }),
+                true,
+            ),
+            op(
                 "setTrackName",
                 "改音轨显示名（身份 `trackId` 不变；空串 = 显式清空）",
                 &["kind", "trackId", "name"],

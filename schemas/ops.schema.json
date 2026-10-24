@@ -182,6 +182,16 @@
         },
         {
           "required": [
+            "SetClipGain"
+          ],
+          "properties": {
+            "SetClipGain": {
+              "type": "object"
+            }
+          }
+        },
+        {
+          "required": [
             "SetDeviceBypassed"
           ],
           "properties": {

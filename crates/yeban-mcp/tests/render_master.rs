@@ -5026,8 +5026,8 @@ fn the_tool_surface_binds_two_different_samplers_and_query_reads_them_back() {
     assert_eq!(kinds.len(), OP_KINDS.len(), "分支数必须等于 OP_KINDS");
     assert_eq!(
         kinds.len(),
-        38,
-        "验收 `#220` 的 35 个 ⇒ `#327` 的 `setTitle` 后为 38"
+        39,
+        "验收 `#220` 的 35 个 ⇒ `#327` 的 `setTitle` 后为 38 ⇒ `#328` 的 `setClipGain` 后为 39"
     );
     // ⚠ 发布的**分支顺序**与 `OP_KINDS` 的顺序**不同**（`op_schema::ops_items` 按
     // 可读性分组，`OP_KINDS` 按桶分组；`#177` 的判据只要求"集合相同 + 分支数相同"）

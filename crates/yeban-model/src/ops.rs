@@ -51,9 +51,9 @@ use crate::error::ModelError;
 use crate::ids::{AssetHash, EntityId};
 use crate::music::MidiNote;
 use crate::project::{
-    AssetMetadata, AutomationLane, AutomationPoint, AutomationTarget, ClipPlacement, ClipPoolEntry,
-    DeviceDefinition, MAX_BPM, MIN_BPM, RoutingEdge, SamplerBinding, SceneV3, SectionV3, TrackV3,
-    TransportConfig, YebanProjectV1,
+    AssetMetadata, AutomationLane, AutomationPoint, AutomationTarget, ClipContent, ClipPlacement,
+    ClipPoolEntry, DeviceDefinition, MAX_BPM, MIN_BPM, RoutingEdge, SamplerBinding, SceneV3,
+    SectionV3, TrackV3, TransportConfig, YebanProjectV1,
 };
 
 /// 操作来源 [ARCH-OPS-001]。
@@ -308,6 +308,35 @@ pub enum Op {
         old_name: String,
         /// 修改后的显示名。
         new_name: String,
+    },
+    /// 设置**音频片段的增益**（`ClipContent::Audio::gain_db`，单位 dB）。
+    ///
+    /// ⚠ **本变体补上了什么**：`gain_db` 在创建时由 `yeban_import_audio` 的
+    /// `gainDb` 写一次（`crates/yeban-mcp/src/domain/import_audio.rs:396` 解析、
+    /// `:501` 落进 `ClipContent::Audio`），而 `Op` 全集此前**没有任何变体写得进它**
+    /// ⇒ ⭐ **音频片段建得出、增益改不了**。这是 `ARCH-OPS-001` 那一族的又一处
+    /// （与 [`Op::SetClipName`] / [`Op::SetTitle`] 同型）。
+    ///
+    /// ⚠ **寻址与内容类型门**：目标由载荷自带的 `clip_id`（`clip_pool` 的键）给出。
+    /// 片段必须**存在**（[`ModelError::ClipNotFound`]）且内容必须是
+    /// `ClipContent::Audio`，否则 [`ModelError::ClipContentKindMismatch`] ——
+    /// MIDI 片段没有 `gain_db` 可读，**⛔ 不 panic、⛔ 不静默**。
+    ///
+    /// ⚠ **值域照抄现状**：`ClipContent::validate` 对 `gain_db` **只**查有限性
+    /// （字段名 `clip.audio.gain_db`，`crates/yeban-model/src/project.rs:1040-1047`），
+    /// **没有任何 min/max、没有 dB 上下限** ⇒ 本变体收**任意有限 `f32`**，
+    /// ⛔ 不发明范围；非有限（NaN/±Inf）由前置条件拒（[`ModelError::NonFiniteValue`]）。
+    ///
+    /// ⚠ 命名用 `old_*` / `new_*`（**set** 类，照 [`Op::SetRoutingGain`] /
+    /// [`Op::SetClipName`]），⛔ **不是** `previous_*`；`f32` 的比较是**逐位**的
+    /// （`same_f32`，`-0.0` 与 `0.0` 位不同 ⇒ 陈旧载荷一律 `OpStateMismatch`）。
+    SetClipGain {
+        /// 目标片段身份（即 `clip_pool` 的键）。
+        clip_id: EntityId,
+        /// 修改前的增益 (dB)。
+        old_gain_db: f32,
+        /// 修改后的增益 (dB)。
+        new_gain_db: f32,
     },
     /// 切换**设备旁通**（[`DeviceDefinition::bypassed`]）。
     ///
@@ -942,6 +971,7 @@ impl Op {
             Self::AddClip { .. } => "AddClip",
             Self::RemoveClip { .. } => "RemoveClip",
             Self::SetClipName { .. } => "SetClipName",
+            Self::SetClipGain { .. } => "SetClipGain",
             Self::AddRoutingNode { .. } => "AddRoutingNode",
             Self::RemoveRoutingNode { .. } => "RemoveRoutingNode",
             Self::AddClipPlacement { .. } => "AddClipPlacement",
@@ -1212,6 +1242,33 @@ impl Op {
                 // 同一口径）⇒ 陈旧载荷必被拒。
                 if clip.name != *old_name {
                     return Err(ModelError::OpStateMismatch { op: self.name() });
+                }
+                Ok(())
+            }
+            Self::SetClipGain {
+                clip_id,
+                old_gain_db,
+                new_gain_db,
+            } => {
+                let clip = doc
+                    .clip_pool
+                    .get(clip_id)
+                    .ok_or(ModelError::ClipNotFound { id: *clip_id })?;
+                // ⚠ 内容类型门必须**早于**陈旧载荷比较：MIDI 片段没有 `gain_db` 可读
+                // ⇒ 报 `ClipContentKindMismatch`（⛔ 不 panic、⛔ 不静默当作 0 dB）。
+                let ClipContent::Audio { gain_db, .. } = &clip.content else {
+                    return Err(ModelError::ClipContentKindMismatch { id: *clip_id });
+                };
+                // `f32` 逐位比较（`-0.0` 与 `0.0` 位不同）⇒ 陈旧载荷必被拒。
+                if !same_f32(*gain_db, *old_gain_db) {
+                    return Err(ModelError::OpStateMismatch { op: self.name() });
+                }
+                // ⚠ 值域**照抄现状**：只查有限性，**没有** dB 上下限（见枚举文档）。
+                if !new_gain_db.is_finite() {
+                    return Err(ModelError::NonFiniteValue {
+                        field: "clip.audio.gain_db",
+                        value: f64::from(*new_gain_db),
+                    });
                 }
                 Ok(())
             }
@@ -1849,6 +1906,17 @@ impl Op {
                 old_name: new_name.clone(),
                 new_name: old_name.clone(),
             },
+            // 纯结构化取反：`f32` 是 `Copy`，只交换"前 / 后"两个增益
+            // （与 [`Op::SetRoutingGain`] 同型；⛔ 不伪造旧值）。
+            Self::SetClipGain {
+                clip_id,
+                old_gain_db,
+                new_gain_db,
+            } => Self::SetClipGain {
+                clip_id: *clip_id,
+                old_gain_db: *new_gain_db,
+                new_gain_db: *old_gain_db,
+            },
             Self::AddClip { clip } => Self::RemoveClip {
                 clip_id: clip.id,
                 // `ClipPoolEntry` 含 `String`/`BTreeMap`, 不是 `Copy` ⇒ 逆操作必须克隆
@@ -2168,6 +2236,25 @@ impl Op {
                     .get_mut(clip_id)
                     .ok_or(ModelError::ClipNotFound { id: *clip_id })?;
                 clip.name = new_name.clone();
+                Ok(())
+            }
+            // 只写那**一个** `gain_db` 字段：⛔ 不碰 `id` / `name` / `asset`、
+            // ⛔ 不动 `clip_pool` 的键、⛔ 不碰任何摆放。
+            Self::SetClipGain {
+                clip_id,
+                new_gain_db,
+                ..
+            } => {
+                let clip = doc
+                    .clip_pool
+                    .get_mut(clip_id)
+                    .ok_or(ModelError::ClipNotFound { id: *clip_id })?;
+                // 前置条件已经做过同一道内容类型门；apply 也**必*要**自己做一遍
+                // （⛔ 不 assume 调用方一定先跑 precondition —— `apply` 是公开面）。
+                let ClipContent::Audio { gain_db, .. } = &mut clip.content else {
+                    return Err(ModelError::ClipContentKindMismatch { id: *clip_id });
+                };
+                *gain_db = *new_gain_db;
                 Ok(())
             }
             Self::RemoveClip { clip_id, .. } => {
@@ -3260,6 +3347,15 @@ mod tests {
                 clip_id: f.clip,
                 old_name: "Clip".to_owned(),
                 new_name: "Clip (renamed)".to_owned(),
+            },
+            // 改**音频片段**增益：**建得出、改不了**的那一半（`import_audio` 只在创建时写
+            // `gainDb`）。⚠ 目标必须是**音频**片段（`f.audio_clip`，夹具里 `gain_db = 0.0`
+            // 且**没有任何摆放**引用它）—— 内容类型门由本变体自己判；MIDI 片段会红
+            // `ClipContentKindMismatch`（那条由专项判据覆盖，⛔ 不放进 showcase）。
+            Op::SetClipGain {
+                clip_id: f.audio_clip,
+                old_gain_db: 0.0,
+                new_gain_db: -6.0,
             },
             // 改设备显示名：**唯一的改名通路**（此前只能"删 + 加"，而 `devices` 是
             // `Vec` ⇒ 增删还会移位下标）。
@@ -6623,6 +6719,157 @@ mod tests {
             assert!(
                 same_len_stale.precondition(&doc).is_err(),
                 "等长但内容不同的旧值必须被拒"
+            );
+        }
+    }
+
+    /// `[ARCH-OPS-001]` / `[MODEL-AST-002]`：**音频片段增益可改且可逆**。
+    ///
+    /// 为什么必须有它：`ClipContent::Audio::gain_db` 在创建时由 `yeban_import_audio`
+    /// 的 `gainDb` 写一次（`crates/yeban-mcp/src/domain/import_audio.rs:396` / `:501`），
+    /// 而 `Op` 全集此前**没有**写它的变体 ⇒ ⭐ **音频片段建得出、增益改不了**。
+    ///
+    /// 七条读数：
+    /// ① 改动**只**落在 `gain_db`（与"同工程只换 gain"的克隆**逐字节**比较）；
+    /// ② `inverse` 应用之后**逐字节**回到原状；
+    /// ③ 陈旧的 `old_gain_db` 必须报 `OpStateMismatch`，且文档逐字节不动；
+    /// ④ **位不同**的旧值（`-0.0` vs `+0.0`）也被拒（逐位，⛔ 不是 `==`）；
+    /// ⑤ 目标是 **MIDI 片段** ⇒ `ClipContentKindMismatch`（⛔ panic、⛔ 静默），文档不动；
+    /// ⑥ 新值非有限 ⇒ `NonFiniteValue { field: "clip.audio.gain_db" }`，文档不动；
+    /// ⑦ **值域敞开**：有限极值照收（现状只有有限性检查，**没有** dB 上下限）。
+    #[test]
+    fn set_clip_gain_is_reversible_and_rejects_a_stale_old_gain_and_a_midi_clip() {
+        let f = fixture();
+        let mut doc = fixture_document();
+        let before = serde_json::to_vec(&doc).expect("序列化");
+        let old_gain_db = match &doc.clip_pool[&f.audio_clip].content {
+            ClipContent::Audio { gain_db, .. } => *gain_db,
+            ClipContent::Midi { .. } => panic!("夹具的 audio_clip 必须是音频片段"),
+        };
+        assert_eq!(old_gain_db, 0.0, "夹具口径");
+
+        // ① 改动只落在 gain_db 上。
+        let op = Op::SetClipGain {
+            clip_id: f.audio_clip,
+            old_gain_db,
+            new_gain_db: -6.0,
+        };
+        op.precondition(&doc).expect("前置条件必须成立");
+        op.apply(&mut doc).expect("必须能应用");
+        let mut expected = fixture_document();
+        let ClipContent::Audio { gain_db, .. } = &mut expected
+            .clip_pool
+            .get_mut(&f.audio_clip)
+            .expect("条目")
+            .content
+        else {
+            panic!("夹具的 audio_clip 必须是音频片段");
+        };
+        *gain_db = -6.0;
+        assert_eq!(
+            serde_json::to_vec(&doc).expect("s"),
+            serde_json::to_vec(&expected).expect("s"),
+            "改动必须**只**落在 gain_db 上（⛔ 不碰 name / asset / 摆放）"
+        );
+
+        // ② 逆操作逐字节回到原状。
+        op.apply_inverse(&mut doc).expect("逆必须能应用");
+        assert_eq!(
+            serde_json::to_vec(&doc).expect("s"),
+            before,
+            "逆操作之后必须逐字节回到原状"
+        );
+
+        // ③ 陈旧的 old_gain_db 被拒，且文档逐字节不动。
+        let stale = Op::SetClipGain {
+            clip_id: f.audio_clip,
+            old_gain_db: 1.5,
+            new_gain_db: -3.0,
+        };
+        let stale_before = serde_json::to_vec(&doc).expect("s");
+        let error = stale.apply(&mut doc).expect_err("陈旧旧值必须被拒");
+        assert!(
+            matches!(error, ModelError::OpStateMismatch { .. }),
+            "必须报 OpStateMismatch, 实际 {error:?}"
+        );
+        assert_eq!(
+            serde_json::to_vec(&doc).expect("s"),
+            stale_before,
+            "被拒之后文档必须逐字节不动"
+        );
+
+        // ④ `-0.0` 与 `+0.0` 数值相等但**位不同** ⇒ 逐位比较必须拒。
+        assert!(!same_f32(-0.0, 0.0));
+        let signed_zero_stale = Op::SetClipGain {
+            clip_id: f.audio_clip,
+            old_gain_db: -0.0,
+            new_gain_db: -3.0,
+        };
+        assert!(
+            signed_zero_stale.precondition(&doc).is_err(),
+            "-0.0 与 +0.0 位不同, 必须判为陈旧载荷"
+        );
+
+        // ⑤ 目标是 MIDI 片段 ⇒ 内容类型门（⛔ panic ⛔ 静默）。
+        let midi_target = Op::SetClipGain {
+            clip_id: f.clip,
+            old_gain_db: 0.0,
+            new_gain_db: -3.0,
+        };
+        let midi_before = serde_json::to_vec(&doc).expect("s");
+        let error = midi_target.apply(&mut doc).expect_err("MIDI 片段必须被拒");
+        assert_eq!(
+            error,
+            ModelError::ClipContentKindMismatch { id: f.clip },
+            "必须报既有的 ClipContentKindMismatch（⛔ 新变体）"
+        );
+        assert_eq!(
+            serde_json::to_vec(&doc).expect("s"),
+            midi_before,
+            "被拒之后文档必须逐字节不动"
+        );
+
+        // ⑥ 非有限新值 ⇒ NonFiniteValue("clip.audio.gain_db")。
+        for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            let non_finite = Op::SetClipGain {
+                clip_id: f.audio_clip,
+                old_gain_db,
+                new_gain_db: bad,
+            };
+            let error = non_finite
+                .precondition(&doc)
+                .expect_err("非有限新增益必须被拒");
+            assert!(
+                matches!(
+                    error,
+                    ModelError::NonFiniteValue {
+                        field: "clip.audio.gain_db",
+                        ..
+                    }
+                ),
+                "必须报 NonFiniteValue(\"clip.audio.gain_db\"), 实际 {error:?}"
+            );
+        }
+
+        // ⑦ 值域敞开：有限极值照收，且读回**逐位**相同（⛔ 不发明 dB 范围）。
+        for extreme in [f32::MIN, f32::MAX, f32::MIN_POSITIVE, -0.0] {
+            let op = Op::SetClipGain {
+                clip_id: f.audio_clip,
+                old_gain_db,
+                new_gain_db: extreme,
+            };
+            op.precondition(&doc)
+                .expect("有限极值必须被接受（dB 无模型级范围）");
+            let mut landed = fixture_document();
+            op.apply(&mut landed).expect("必须能应用");
+            let ClipContent::Audio { gain_db, .. } = &landed.clip_pool[&f.audio_clip].content
+            else {
+                panic!("夹具的 audio_clip 必须是音频片段");
+            };
+            assert_eq!(
+                gain_db.to_bits(),
+                extreme.to_bits(),
+                "读回必须逐位等于写入的有限极值（实测值 {extreme}）"
             );
         }
     }

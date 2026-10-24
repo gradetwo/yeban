@@ -3265,6 +3265,8 @@ mod tests {
         "src/music.rs::MidiNote::probability",
         "src/ops.rs::Op::SetRoutingGain.old_gain_db",
         "src/ops.rs::Op::SetRoutingGain.new_gain_db",
+        "src/ops.rs::Op::SetClipGain.old_gain_db",
+        "src/ops.rs::Op::SetClipGain.new_gain_db",
         "src/ops.rs::Op::SetParam.old_val",
         "src/ops.rs::Op::SetParam.new_val",
         "src/ops.rs::Op::SetMacro.old_val",
@@ -3311,6 +3313,16 @@ mod tests {
             "src/ops.rs::Op::SetRoutingGain.new_gain_db",
             "非有限拒绝（routing.edge.gain_db）；有限极值接受（dB 无模型级范围）",
             probe_set_routing_gain_new,
+        ),
+        (
+            "src/ops.rs::Op::SetClipGain.old_gain_db",
+            "旧值只做逐位比较：NaN 与 -0.0 都不可能等于文档里的 +0.0 ⇒ OpStateMismatch",
+            probe_set_clip_gain_old,
+        ),
+        (
+            "src/ops.rs::Op::SetClipGain.new_gain_db",
+            "非有限拒绝（clip.audio.gain_db）；有限极值接受（dB 无模型级范围）",
+            probe_set_clip_gain_new,
         ),
         (
             "src/ops.rs::Op::SetParam.old_val",
@@ -4251,6 +4263,27 @@ mod tests {
         (doc, fixture)
     }
 
+    /// 在 [`numeric_fixture`] 上加一条**音频片段**（`SetClipGain` 探针专用）。
+    ///
+    /// ⚠ 不并进 `numeric_fixture` 本体：那两条"被拒之后片段池必须为空"的判据
+    /// 直接读它的 `clip_pool`（并进共享夹具会让它们红）。
+    fn numeric_fixture_with_audio_gain() -> (YebanProjectV1, EntityId) {
+        let (mut doc, _) = numeric_fixture();
+        let audio_clip = fixture_id(905);
+        doc.clip_pool.insert(
+            audio_clip,
+            ClipPoolEntry {
+                id: audio_clip,
+                name: "Gain".to_owned(),
+                content: ClipContent::Audio {
+                    asset: AssetHash::of_bytes(b"numeric-gain"),
+                    gain_db: 0.0,
+                },
+            },
+        );
+        (doc, audio_clip)
+    }
+
     /// 施加 `op` 并断言它被拒绝、文档逐字节不动、且被拒之后文档仍合法。
     fn apply_rejected(
         doc: &mut YebanProjectV1,
@@ -4647,6 +4680,74 @@ mod tests {
                 new_gain_db: value,
             };
             apply_accepted(&mut doc, &op, "SetRoutingGain(有限或 None)")?;
+        }
+        Ok(())
+    }
+
+    /// `SetClipGain` 的**旧值**：只做逐位比较（NaN 与 `-0.0` 都不可能等于文档现值）。
+    fn probe_set_clip_gain_old() -> Result<(), String> {
+        let (mut doc, audio_clip) = numeric_fixture_with_audio_gain();
+        for value in NON_FINITE_F32 {
+            let op = Op::SetClipGain {
+                clip_id: audio_clip,
+                old_gain_db: value,
+                new_gain_db: -3.0,
+            };
+            match apply_rejected(&mut doc, &op, "SetClipGain(old 非有限)") {
+                Ok(ModelError::OpStateMismatch { .. }) => {}
+                Ok(other) => {
+                    return Err(format!(
+                        "非有限旧增益必须报 OpStateMismatch, 实际 {other:?}"
+                    ));
+                }
+                Err(reason) => return Err(reason),
+            }
+        }
+        // 数值相等但**位不同**：`-0.0` != `+0.0`（逐位，⛔ 不是 `==`）。
+        let signed_zero = Op::SetClipGain {
+            clip_id: audio_clip,
+            old_gain_db: -0.0,
+            new_gain_db: -3.0,
+        };
+        match apply_rejected(&mut doc, &signed_zero, "SetClipGain(old -0.0 vs +0.0)") {
+            Ok(ModelError::OpStateMismatch { .. }) => Ok(()),
+            Ok(other) => Err(format!(
+                "-0.0 与 +0.0 位不同, 必须报 OpStateMismatch, 实际 {other:?}"
+            )),
+            Err(reason) => Err(reason),
+        }
+    }
+
+    /// `SetClipGain` 的**新值**：非有限拒绝（`clip.audio.gain_db`）；有限极值接受。
+    fn probe_set_clip_gain_new() -> Result<(), String> {
+        let (mut doc, audio_clip) = numeric_fixture_with_audio_gain();
+        for value in NON_FINITE_F32 {
+            let op = Op::SetClipGain {
+                clip_id: audio_clip,
+                old_gain_db: 0.0,
+                new_gain_db: value,
+            };
+            match apply_rejected(&mut doc, &op, "SetClipGain(new 非有限)") {
+                Ok(ModelError::NonFiniteValue {
+                    field: "clip.audio.gain_db",
+                    ..
+                }) => {}
+                Ok(other) => {
+                    return Err(format!(
+                        "非有限新增益必须报 NonFiniteValue(\"clip.audio.gain_db\"), 实际 {other:?}"
+                    ));
+                }
+                Err(reason) => return Err(reason),
+            }
+        }
+        for value in [-f32::MAX, f32::MAX, f32::MIN_POSITIVE, -0.0, -60.0, 12.0] {
+            let (mut doc, audio_clip) = numeric_fixture_with_audio_gain();
+            let op = Op::SetClipGain {
+                clip_id: audio_clip,
+                old_gain_db: 0.0,
+                new_gain_db: value,
+            };
+            apply_accepted(&mut doc, &op, "SetClipGain(有限极值)")?;
         }
         Ok(())
     }

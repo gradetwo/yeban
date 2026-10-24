@@ -1077,6 +1077,7 @@ pub const OP_KINDS: &[&str] = &[
     SET_TITLE_KIND,
     SET_TRACK_NAME_KIND,
     SET_CLIP_NAME_KIND,
+    SET_CLIP_GAIN_KIND,
     SET_DEVICE_NAME_KIND,
     SET_DEVICE_BYPASSED_KIND,
     SET_CLIP_PLACEMENT_MUTED_KIND,
@@ -1104,7 +1105,7 @@ pub const OP_KINDS: &[&str] = &[
 /// `domain::plan_edit_notes` 用它决定"缺参时要不要响亮拒绝"。
 ///
 /// ⚠ 两份真相（本清单 vs 谓词的 `match`）由判据
-/// `every_catalog_kind_parses_and_round_trips` 在**全部 38 个 kind** 上对账
+/// `every_catalog_kind_parses_and_round_trips` 在**全部 39 个 kind** 上对账
 /// （`OP_KINDS` 里每个 kind 的最小合法形状 → 解析 → 与本清单比对），
 /// 因此"加了一个 kind 却忘了决定它读不读 `clipId`"会立刻变红。
 pub const ENVELOPE_CLIP_KINDS: &[&str] = &[
@@ -1130,7 +1131,7 @@ pub const ENVELOPE_CLIP_KINDS: &[&str] = &[
 /// [`ENVELOPE_CLIP_KINDS`] 去掉 `removeClip` 之后的子集，且这条包含关系由判据钉住。
 ///
 /// 两份真相（本清单 vs 谓词的 `match`）由判据
-/// `every_catalog_kind_compiles_to_exactly_one_op_variant` 在**全部 38 个 kind** 上
+/// `every_catalog_kind_compiles_to_exactly_one_op_variant` 在**全部 39 个 kind** 上
 /// 对账（`OP_KINDS` 里每个 kind 的规范形状 → 解析 → 与本清单比对），因此"加了一个
 /// kind 却忘了决定它读不读音符"会立刻变红。
 pub const NOTE_LEVEL_KINDS: &[&str] = &["add", "delete", "move", "velocity", SET_NOTE_TIMING_KIND];
@@ -1691,6 +1692,37 @@ pub const SET_CLIP_NAME_NAME_FIELD: &str = "name";
 /// 设置片段名形态允许出现的**全部**键（判别键 + 两个必填）。
 pub const SET_CLIP_NAME_FIELDS: [&str; 3] =
     ["kind", SET_CLIP_NAME_CLIP_FIELD, SET_CLIP_NAME_NAME_FIELD];
+
+/// `ops[].kind` 的**设置音频片段增益**形态名（写 [`Op::SetClipGain`]）。
+///
+/// 与模型 `Op` 变体名同词（`SetClipGain` 的小驼峰），与 [`SET_CLIP_NAME_KIND`]
+/// 同一条规则。⭐ 本形态补的是「音频片段建得出、增益改不了」—— `gain_db` 此前只在
+/// `yeban_import_audio` 创建时由 `gainDb` 写一次。
+///
+/// ⚠ 它是**池级、自带片段寻址**的形态：`clipId` 在操作对象里（同
+/// [`SET_CLIP_NAME_KIND`]），⛔ 不是工具顶层的 `clipId`（那个由 `#177` 的
+/// `x-envelope.clipId` 管）。
+pub const SET_CLIP_GAIN_KIND: &str = "setClipGain";
+
+/// 设置片段增益形态的**目标片段**字段名（`ops[].clipId`，必填，ULID）。
+///
+/// 与 [`SET_CLIP_NAME_CLIP_FIELD`] **同一个字面量**（同一个词 = 同一个意思）——
+/// 目标都是 `clip_pool` 的键。
+pub const SET_CLIP_GAIN_CLIP_FIELD: &str = SET_CLIP_NAME_CLIP_FIELD;
+
+/// 设置片段增益形态的**新增益**字段名（`ops[].gainDb`，必填，数字，单位 dB）。
+///
+/// ⚠ **⛔ 本层不发明** dB 范围：模型的 `ClipContent::validate` 对 `gain_db`
+/// **只**查有限性（字段名 `clip.audio.gain_db`，`crates/yeban-model/src/project.rs:1040-1047`），
+/// **没有** min/max；契约里 `gain_db` 也是裸 `{"type":"number"}`
+/// （`schemas/project.schema.json`）⇒ 本形态收**任意有限 `f32`**，非有限由
+/// `read_number` 在**收窄之后**拒（`data.reason = "nonFiniteValue"`），
+/// 与 `setParam` / `setRoutingGain` 同一条口径。
+pub const SET_CLIP_GAIN_GAIN_FIELD: &str = "gainDb";
+
+/// 设置片段增益形态允许出现的**全部**键（判别键 + 两个必填）。
+pub const SET_CLIP_GAIN_FIELDS: [&str; 3] =
+    ["kind", SET_CLIP_GAIN_CLIP_FIELD, SET_CLIP_GAIN_GAIN_FIELD];
 
 /// `ops[].kind` 的**设置设备名**形态名（写 [`Op::SetDeviceName`]）。
 pub const SET_DEVICE_NAME_KIND: &str = "setDeviceName";
@@ -2707,6 +2739,29 @@ pub enum NoteOp {
         /// 修改后的显示名。
         new_name: String,
     },
+    /// 设置**音频片段增益**（[`Op::SetClipGain`]，寻址到一个 `clip_id`）。
+    ///
+    /// ⭐ **本形态补上了什么**：`ClipContent::Audio::gain_db` 此前**只在创建时**由
+    /// `yeban_import_audio` 的 `gainDb` 写一次（`domain/import_audio.rs:396` / `:501`）
+    /// ⇒ ⭐ **音频片段建得出、增益改不了**。改增益只能删片段 + 重新导入，而那会换掉
+    /// `clip_id`、并让每一处摆放悬空。
+    ///
+    /// ⚠ **内容类型门是硬前置，不是礼貌**：`old_gain_db` 必须从**当前文档**读，而
+    /// MIDI 片段**没有**这个字段 ⇒ 目标必须是 [`ClipContent::Audio`]，否则
+    /// [`compile`] 在构造 `Op` **之前**就响亮拒绝（模型侧同一道门报
+    /// `ClipContentKindMismatch`）。⛔ 不 panic、⛔ 不静默当作 0 dB。
+    ///
+    /// ⚠ **值域照抄现状**：模型只查有限性（`clip.audio.gain_db`），**没有** dB 范围
+    /// ⇒ 本层也⛔ 不发明；非有限由 `read_number` 在**收窄到 `f32` 之后**拒
+    /// （`nonFiniteValue`）。撤销载荷 `old_gain_db` 由 [`compile`] 从当前文档读。
+    SetClipGain {
+        /// 目标片段身份。
+        clip_id: EntityId,
+        /// 修改前的增益 (dB，来自当前文档)。
+        old_gain_db: f32,
+        /// 修改后的增益 (dB)。
+        new_gain_db: f32,
+    },
     /// 设置摆放**长度**（[`Op::SetClipPlacementDuration`]，寻址到一条音轨上的一个摆放）。
     ///
     /// ⭐ **本形态补上了什么**：⭐ 在它之前 `ClipPlacement::duration_ticks` **只在创建时**能给
@@ -3255,6 +3310,7 @@ impl NoteOp {
             Self::SetTitle { .. } => SET_TITLE_KIND,
             Self::SetTrackName { .. } => SET_TRACK_NAME_KIND,
             Self::SetClipName { .. } => SET_CLIP_NAME_KIND,
+            Self::SetClipGain { .. } => SET_CLIP_GAIN_KIND,
             Self::SetDeviceName { .. } => SET_DEVICE_NAME_KIND,
             Self::SetDeviceBypassed { .. } => SET_DEVICE_BYPASSED_KIND,
             Self::SetClipPlacementMuted { .. } => SET_CLIP_PLACEMENT_MUTED_KIND,
@@ -3781,6 +3837,17 @@ fn parse_one(item: &Value) -> Result<NoteOp, Fault> {
                 new_name: read_required_string(object, SET_CLIP_NAME_NAME_FIELD)?,
             })
         }
+        SET_CLIP_GAIN_KIND => {
+            reject_set_clip_gain_fields(object)?;
+            Ok(NoteOp::SetClipGain {
+                clip_id: read_id(object, SET_CLIP_GAIN_CLIP_FIELD)?,
+                // ⚠ `old_gain_db` 是**占位**：真值由 `compile` 从当前文档读
+                // （MIDI 片段读不到它 ⇒ compile 必须**先**做内容类型门）。
+                old_gain_db: 0.0,
+                // `read_number` 在**收窄到 f32 之后**判有限性（`1e300 ⇒ inf` 也被拒）。
+                new_gain_db: read_number(object, SET_CLIP_GAIN_GAIN_FIELD)?,
+            })
+        }
         SET_TRACK_NAME_KIND => {
             reject_set_track_name_fields(object)?;
             Ok(NoteOp::SetTrackName {
@@ -4230,6 +4297,16 @@ fn reject_set_clip_name_fields(object: &Map<String, Value>) -> Result<(), Fault>
         &SET_CLIP_NAME_FIELDS,
         SET_CLIP_NAME_KIND,
         "unknownSetClipNameField",
+    )
+}
+
+/// 拒绝 `setClipGain` 里 [`SET_CLIP_GAIN_FIELDS`] 之外的键。
+fn reject_set_clip_gain_fields(object: &Map<String, Value>) -> Result<(), Fault> {
+    reject_unknown_keys(
+        object,
+        &SET_CLIP_GAIN_FIELDS,
+        SET_CLIP_GAIN_KIND,
+        "unknownSetClipGainField",
     )
 }
 
@@ -6986,6 +7063,31 @@ pub fn compile(
                     new_name: new_name.clone(),
                 }
             }
+            NoteOp::SetClipGain {
+                clip_id,
+                new_gain_db,
+                ..
+            } => {
+                // 撤销载荷来自**当前文档**，⛔ 不信调用方声明。
+                let clip = project.clip_pool.get(clip_id).ok_or_else(|| {
+                    Fault::domain(ErrorCode::ClipNotFound, format!("片段不存在: {clip_id}"))
+                })?;
+                // ⚠ 内容类型门必须**早于**构造 `Op`：MIDI 片段**没有** `gain_db` 可读，
+                // `old_gain_db` 无从取得 ⇒ ⛔ 用占位 0.0 冒充（那会让撤销把 MIDI 片段
+                // 的"假旧值"写回一个不存在的字段）；⭐ 这是「必须早」的机械理由，
+                // 不是礼貌。模型侧同一道门报 `ClipContentKindMismatch`。
+                let ClipContent::Audio { gain_db, .. } = &clip.content else {
+                    return Err(Fault::domain(
+                        ErrorCode::ClipNotFound,
+                        format!("片段 {clip_id} 不是音频片段, 没有 gain_db 可改"),
+                    ));
+                };
+                Op::SetClipGain {
+                    clip_id: *clip_id,
+                    old_gain_db: *gain_db,
+                    new_gain_db: *new_gain_db,
+                }
+            }
             NoteOp::SetAuthor { new_author, .. } => {
                 // 撤销载荷来自**当前文档**（模型只查"陈旧载荷"这一条，且是**逐字节**比较）。
                 // ⚠ 模型**没有**空串/长度校验 ⇒ 本层也⛔ 不发明（`new_author` 原样收下）。
@@ -9599,7 +9701,9 @@ mod tests {
         // 与真实 `kind` 同步。
         // 本票（`#327` 标题）新增 `setTitle`（顶层文档字段，与 `setAuthor` 同族）后为 38
         // —— 同样与真实 `kind` 同步。
-        assert_eq!(OP_KINDS.len(), 38);
+        // 本票（`#328` 音频片段增益）新增 `setClipGain`（池级，池条目的 `gain_db`）后为 39
+        // —— 同样与真实 `kind` 同步。
+        assert_eq!(OP_KINDS.len(), 39);
         assert_eq!(TrackFlag::NAMES, [SET_TRACK_MUTE_KIND, SET_TRACK_SOLO_KIND]);
         assert!(OP_KINDS.contains(&SET_TRACK_MUTE_KIND));
         assert!(OP_KINDS.contains(&SET_TRACK_SOLO_KIND));
@@ -14476,7 +14580,7 @@ mod tests {
     fn every_catalog_kind_parses_and_round_trips() {
         let ulid = "01J8ZQ00000000000000000999";
         // 每个 kind 的**最小合法形状**（只到解析期为止；文档相关的前置条件在 `compile`）。
-        let table: [(&str, serde_json::Value); 38] = [
+        let table: [(&str, serde_json::Value); 39] = [
             (
                 "add",
                 serde_json::json!({"note": {"startTick": 0, "pitch": 60, "durationTicks": 480}}),
@@ -14546,6 +14650,10 @@ mod tests {
             (
                 "setClipName",
                 serde_json::json!({"clipId": ulid, "name": "A"}),
+            ),
+            (
+                "setClipGain",
+                serde_json::json!({"clipId": ulid, "gainDb": -6.0}),
             ),
             (
                 "setDeviceName",
@@ -14646,6 +14754,7 @@ mod tests {
                 "setTitle",
                 "setTrackName",
                 "setClipName",
+                "setClipGain",
                 "setDeviceName",
                 "setDeviceBypassed",
                 "setClipPlacementMuted",
@@ -15022,7 +15131,7 @@ mod tests {
             Value,
             &'a str,
         );
-        let rows: [Row<'_>; 39] = [
+        let rows: [Row<'_>; 40] = [
             (
                 "add",
                 None,
@@ -15180,6 +15289,18 @@ mod tests {
                 None,
                 serde_json::json!({"clipId": clip.to_canonical_string(), "name": "Renamed"}),
                 "SetClipName",
+            ),
+            (
+                "setClipGain",
+                None,
+                // ⚠ 目标必须是一条**音频**条目：`clipId` 自带寻址（⛔ 不读顶层 `clipId`），
+                // 而 `compile` 要**从文档**读 `old_gain_db` ⇒ 预置这条真实音频条目。
+                Some(audio_entry.clone()),
+                serde_json::json!({
+                    "clipId": audio_entry.id.to_canonical_string(),
+                    "gainDb": -6.0,
+                }),
+                "SetClipGain",
             ),
             (
                 "setDeviceName",
@@ -15342,7 +15463,7 @@ mod tests {
         assert_eq!(
             rows.len(),
             OP_KINDS.len() + 1,
-            "38 个 kind ＋ 1 个额外载荷分支"
+            "39 个 kind ＋ 1 个额外载荷分支"
         );
 
         let mut seen: Vec<&str> = Vec::new();
@@ -15390,8 +15511,8 @@ mod tests {
         // ⚠ 本数是**去重后的变体数**（`add` 的三种形态共用 `AddNote`）⇒ 与
         // `rows.len()` 可以不同，也与 `OP_KINDS.len()` 不同。本轮新增
         // `setNoteTiming`（独占一个变体）⇒ 37 → **38**；`#327` 的 `setTitle`（独占一个
-        // 变体）⇒ 38 → **39**。
-        assert_eq!(seen.len(), 39);
+        // 变体）⇒ 38 → **39**；`#328` 的 `setClipGain`（独占一个变体）⇒ 39 → **40**。
+        assert_eq!(seen.len(), 40);
         // ⭐ `#179`：音符级分支集合**恰好是五个**，且逐字等于发布清单。
         assert_eq!(
             NOTE_LEVEL_KINDS,
@@ -15401,7 +15522,7 @@ mod tests {
         assert_eq!(
             note_level_seen.len(),
             5,
-            "全部 38 个 kind 里 `is_note_level()` 为真的必须**恰好五个**，实际: {note_level_seen:?}"
+            "全部 39 个 kind 里 `is_note_level()` 为真的必须**恰好五个**，实际: {note_level_seen:?}"
         );
         assert_eq!(
             note_level_seen,
@@ -16262,6 +16383,147 @@ mod tests {
         let not_string = parse_ops(&serde_json::json!([{"kind": SET_TITLE_KIND, "title": 3}]))
             .expect_err("非字符串必须被拒");
         assert_eq!(reason_of(&not_string).as_deref(), Some("valueMustBeString"));
+    }
+
+    /// `setClipGain`：解析 → 编译到**正是** `Op::SetClipGain` → `old_gain_db` 来自
+    /// **当前文档** → 一步撤销逐字节复原；**MIDI 片段**被内容类型门响亮拒绝。
+    ///
+    /// ⭐ 本判据对着「音频片段建得出、增益改不了」：`ClipContent::Audio::gain_db`
+    /// 此前只在 `yeban_import_audio` 创建时由 `gainDb` 写一次
+    /// （`domain/import_audio.rs:396` / `:501`）。
+    ///
+    /// 注入（实测红）：① `compile` 用解析期的占位 `0.0` 而不是文档现值 ⇒
+    /// `old_gain_db` 那条断言红；② 去掉 `compile` 的内容类型门 ⇒ MIDI 那条断言红
+    /// （模型会报 `ClipContentKindMismatch`，而本层先拒的文案不是那一句）。
+    #[test]
+    fn set_clip_gain_compiles_the_document_value_and_gates_midi() {
+        let mut project = filled_project();
+        // 顶层 `trackId`/`clipId` 仍指向 MIDI 材料（工具的签名口径），但本形态**自带**
+        // `clipId` ⇒ 目标音频片段与顶层那对身份无关（`reads_envelope_clip() == false`）。
+        let (track_id, clip_id) = lead_clip(&project);
+        let audio_clip = project
+            .clip_pool
+            .values()
+            .find(|entry| matches!(&entry.content, ClipContent::Audio { .. }))
+            .expect("夹具必须有音频片段")
+            .clone();
+        let audio_id = audio_clip.id;
+        let gain_before = match &project.clip_pool[&audio_id].content {
+            ClipContent::Audio { gain_db, .. } => *gain_db,
+            ClipContent::Midi { .. } => panic!("夹具的音频片段必须是 Audio"),
+        };
+        let bytes_before = serde_json::to_string(&project).expect("序列化");
+
+        assert_eq!(SET_CLIP_GAIN_KIND, "setClipGain");
+        assert_eq!(SET_CLIP_GAIN_FIELDS, ["kind", "clipId", "gainDb"]);
+        assert_eq!(SET_CLIP_GAIN_GAIN_FIELD, "gainDb");
+        // ---- ① 解析 + ② 编译到**正是** `Op::SetClipGain`，`old_gain_db` 来自文档 ----
+        let ops = parse_ops(&serde_json::json!([{
+            "kind": SET_CLIP_GAIN_KIND,
+            "clipId": audio_id.to_canonical_string(),
+            "gainDb": -6.0,
+        }]))
+        .expect("规范形状必须被接受");
+        assert_eq!(ops[0].kind_name(), SET_CLIP_GAIN_KIND);
+        assert!(!ops[0].is_note_level(), "改增益不读不写音符");
+        assert!(
+            !ops[0].reads_envelope_clip(),
+            "本形态的 `clipId` 在操作对象里（自带寻址，⛔ 不是工具顶层那个）"
+        );
+
+        let compiled = compile(&project, &track_id, &clip_id, &ops).expect("编译");
+        assert_eq!(compiled.len(), 1);
+        match &compiled[0] {
+            Op::SetClipGain {
+                clip_id,
+                old_gain_db,
+                new_gain_db,
+            } => {
+                assert_eq!(*clip_id, audio_id);
+                assert_eq!(
+                    old_gain_db.to_bits(),
+                    gain_before.to_bits(),
+                    "old 必须等于**文档现值**（⛔ 不信调用方声明）"
+                );
+                assert_eq!(*new_gain_db, -6.0);
+            }
+            other => panic!("应当是 SetClipGain: {other:?}"),
+        }
+
+        // ---- ③ 施加 ⇒ 读回逐位；逆 ⇒ 逐字节回原状 ----
+        compiled[0].apply(&mut project).expect("设置增益");
+        match &project.clip_pool[&audio_id].content {
+            ClipContent::Audio { gain_db, .. } => {
+                assert_eq!(gain_db.to_bits(), (-6.0_f32).to_bits(), "读回必须逐位相同")
+            }
+            ClipContent::Midi { .. } => panic!("目标不得变成 MIDI"),
+        }
+        assert!(project.validate().is_ok(), "改增益后工程必须仍合法");
+        compiled[0].apply_inverse(&mut project).expect("逆操作");
+        assert_eq!(
+            serde_json::to_string(&project).expect("序列化"),
+            bytes_before,
+            "一步撤销必须逐字节回到原状"
+        );
+
+        // ---- ④ MIDI 片段 ⇒ 内容类型门（响亮、⛔ panic ⛔ 静默）----
+        let midi = parse_ops(&serde_json::json!([{
+            "kind": SET_CLIP_GAIN_KIND,
+            "clipId": clip_id.to_canonical_string(),
+            "gainDb": -6.0,
+        }]))
+        .expect("解析期不查文档");
+        let fault = compile(&project, &track_id, &clip_id, &midi).expect_err("MIDI 片段必须被拒");
+        assert_eq!(
+            fault.domain_code(),
+            Some(ErrorCode::ClipNotFound),
+            "内容类型门复用既有的 CLIP_NOT_FOUND（模型同一个变体也这么映射）"
+        );
+        println!("### 逐字：MIDI 片段调 setClipGain ⇒ {fault:?}");
+        let message = format!("{fault:?}");
+        assert!(
+            message.contains("不是音频片段, 没有 gain_db 可改"),
+            "逐字错误必须点明内容类型门: {message}"
+        );
+        assert_eq!(
+            serde_json::to_string(&project).expect("序列化"),
+            bytes_before,
+            "被拒之后文档必须逐字节不动"
+        );
+
+        // ---- ⑤ 未知键 / 非数字 / 收窄成 inf 都响亮拒绝 ----
+        let unknown = parse_ops(&serde_json::json!([{
+            "kind": SET_CLIP_GAIN_KIND,
+            "clipId": audio_id.to_canonical_string(),
+            "gainDb": -3.0,
+            "trackId": audio_id.to_canonical_string(),
+        }]))
+        .expect_err("未知键必须被拒");
+        assert_eq!(
+            reason_of(&unknown).as_deref(),
+            Some("unknownSetClipGainField")
+        );
+
+        let not_number = parse_ops(&serde_json::json!([{
+            "kind": SET_CLIP_GAIN_KIND,
+            "clipId": audio_id.to_canonical_string(),
+            "gainDb": "loud",
+        }]))
+        .expect_err("非数字必须被拒");
+        assert_eq!(reason_of(&not_number).as_deref(), Some("valueMustBeNumber"));
+
+        // `1e300` 是有限 f64，但收窄到 f32 后是 `inf` ⇒ 必须在**收窄之后**拒。
+        let narrowed = parse_ops(&serde_json::json!([{
+            "kind": SET_CLIP_GAIN_KIND,
+            "clipId": audio_id.to_canonical_string(),
+            "gainDb": 1e300,
+        }]))
+        .expect_err("收窄成 inf 必须被拒");
+        assert_eq!(
+            reason_of(&narrowed).as_deref(),
+            Some("nonFiniteValue"),
+            "与 setParam/setRoutingGain 同一条口径"
+        );
     }
 
     /// 三个形态的**字面名与支持集合**被钉住。
