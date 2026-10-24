@@ -210,6 +210,82 @@ impl MidiImportLosses {
     pub fn dropped_events(&self) -> usize {
         self.aux_events.values().map(|count| count.dropped).sum()
     }
+
+    /// 24 类 aux 事件的逐类字段串（`<kind>-read=N <kind>-dropped=N …`）。
+    ///
+    /// ⭐ `#319`：这是**唯一**的逐类格式化处 —— [`MidiImportReport::summary`]（CLI）
+    /// 与 GUI 的 `loss_detail="…"` 字段**共用**它 ⇒ ⛔ 不是第二份格式化。
+    ///
+    /// 只有 `read > 0` 的类才打印（`#318` 起的 CLI 口径）；每类前带一个空格 ⇒
+    /// 空表返回空串，非空表可直接拼在上一字段之后。字段里的 `=` / 空格在 GUI 回执里
+    /// 整体落在**引号内**，不参与回执语法（同 `clipping_note` 先例）。
+    #[must_use]
+    pub fn aux_fields(&self) -> String {
+        let mut out = String::new();
+        for (kind, count) in &self.aux_events {
+            if count.read == 0 {
+                continue;
+            }
+            out.push_str(&format!(
+                " {}-read={} {}-dropped={}",
+                kind.key(),
+                count.read,
+                kind.key(),
+                count.dropped
+            ));
+        }
+        out
+    }
+
+    /// 明细字段的完整值（GUI 回执的 `loss_detail="…"`）：4 项上下文 ＋ 按音符 4 项
+    /// ＋ [`Self::aux_fields`] 的 24 类逐类读数。
+    ///
+    /// ⭐ `#319`：CLI 的 `imported-midi:` 行尾部也**直接拼这一串**
+    /// （[`MidiImportReport::summary`]）⇒ 两个出口的明细来自**同一个格式化函数**。
+    #[must_use]
+    pub fn loss_detail(&self) -> String {
+        format!(
+            "format={} file-tracks={} track-partitions-dropped={} channels={} \
+             note-channel-read={} note-channel-dropped={} note-off-velocity-read={} \
+             note-off-velocity-dropped={}{}",
+            self.format.number(),
+            self.file_tracks,
+            self.track_partitions_dropped,
+            self.distinct_channels,
+            self.note_channel_values.read,
+            self.note_channel_values.dropped,
+            self.note_off_velocity_values.read,
+            self.note_off_velocity_values.dropped,
+            self.aux_fields(),
+        )
+    }
+
+    /// 损失摘要的**可见短句**（GUI 专用行的文本；唯一写者是
+    /// `host::apply_module_receipt_with_alerts`）。
+    ///
+    /// 单位逐项命名：`类` = `dropped > 0` 的 aux 事件类数；`条` = 24 类的 `dropped` 之和；
+    /// `通道值` / `释放力度` = 按音符计的 `dropped`。⚠ 不含歌词（`#317` 的读数，本单不做）。
+    /// 无 aux 丢失时省略"0 类 / 0 条"那一截，只留按音符的两项（仍然如实说）。
+    #[must_use]
+    pub fn loss_summary(&self) -> String {
+        let classes = self
+            .aux_events
+            .values()
+            .filter(|count| count.dropped > 0)
+            .count();
+        let events = self.dropped_events();
+        if events == 0 {
+            format!(
+                "⚠ 导入丢失：通道值 {}、释放力度 {}",
+                self.note_channel_values.dropped, self.note_off_velocity_values.dropped
+            )
+        } else {
+            format!(
+                "⚠ 导入丢失：{classes} 类 / {events} 条；通道值 {}、释放力度 {}",
+                self.note_channel_values.dropped, self.note_off_velocity_values.dropped
+            )
+        }
+    }
 }
 
 /// 导入计划（**纯函数产物**：提交之前的一切）。
@@ -277,11 +353,12 @@ impl MidiImportReport {
             OpOrigin::UserUi => "user-ui",
             _ => "other",
         };
-        let mut line = format!(
+        // ⭐ `#319`：`format=` 起的整段尾部（上下文 ＋ 按音符 ＋ 24 类逐类）由
+        // [`MidiImportLosses::loss_detail`] **唯一**格式化；GUI 的 `loss_detail="…"`
+        // 字段读的是**同一串** ⇒ 两个出口不可能各说各话（CLI 行逐字不变）。
+        format!(
             "imported-midi: path={} notes={} lyrics={} attached={} dropped={} non-utf8={} \
-             empty={} track={} clip={} commit={} origin={origin} format={} file-tracks={} \
-             track-partitions-dropped={} channels={} note-channel-read={} \
-             note-channel-dropped={} note-off-velocity-read={} note-off-velocity-dropped={}",
+             empty={} track={} clip={} commit={} origin={origin} {}",
             self.path
                 .as_ref()
                 .map_or_else(|| "<bytes>".to_owned(), |path| path.display().to_string()),
@@ -294,28 +371,8 @@ impl MidiImportReport {
             self.track_id.to_canonical_string(),
             self.clip_id.to_canonical_string(),
             self.commit.to_canonical_string(),
-            self.losses.format.number(),
-            self.losses.file_tracks,
-            self.losses.track_partitions_dropped,
-            self.losses.distinct_channels,
-            self.losses.note_channel_values.read,
-            self.losses.note_channel_values.dropped,
-            self.losses.note_off_velocity_values.read,
-            self.losses.note_off_velocity_values.dropped,
-        );
-        for (kind, count) in &self.losses.aux_events {
-            if count.read == 0 {
-                continue;
-            }
-            line.push_str(&format!(
-                " {}-read={} {}-dropped={}",
-                kind.key(),
-                count.read,
-                kind.key(),
-                count.dropped
-            ));
-        }
-        line
+            self.losses.loss_detail(),
+        )
     }
 }
 

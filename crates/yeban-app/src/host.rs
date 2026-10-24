@@ -6062,10 +6062,12 @@ fn module_error_fields(code: &str, message: &str) -> Vec<String> {
 
 /// 把一条回执写进界面（**唯一**的写入点：成功与失败都从这里过）。
 ///
-/// 它同时把母带削波警示行清空 —— 除 `export-wav` 的成功分支以外，任何模块动作
-/// 都不该留下上一条导出的削波提示（否则"打开工程"之后窗口里还挂着旧工程的读数）。
+/// 它同时把**两条**专用行（母带削波警示 / 导入损失摘要）清空 —— 除各自唯一的
+/// 成功分支以外，任何模块动作都不该留下上一条动作的读数（否则"打开工程"之后窗口里
+/// 还挂着旧工程的数字）。⭐ `#319`：两条行**互斥**，由这个唯一写入点保证
+/// （每次动作都同时写两条，没给的那一条写空串）。
 fn apply_module_receipt(ui: &MainWindow, receipt: &str, ok: bool) {
-    apply_module_receipt_with_clipping_warning(ui, receipt, ok, "");
+    apply_module_receipt_with_alerts(ui, receipt, ok, "", "");
 }
 
 /// 与 [`apply_module_receipt`] 相同，但**同一次**写入里带上削波警示行的文本。
@@ -6079,9 +6081,25 @@ fn apply_module_receipt_with_clipping_warning(
     ok: bool,
     clipping_warning: &str,
 ) {
+    apply_module_receipt_with_alerts(ui, receipt, ok, clipping_warning, "");
+}
+
+/// 两条专用行的**同一次**写入（互斥：每次动作都给两条赋值，没给的那条是空串）。
+///
+/// - `clipping_warning`：`export-wav` 削波时的可见短句（`#230`）；
+/// - `import_losses`：`import-midi` 成功时的损失摘要（`#319`，与 CLI 的
+///   `imported-midi:` 行读**同一个** `MidiImportLosses`）。
+fn apply_module_receipt_with_alerts(
+    ui: &MainWindow,
+    receipt: &str,
+    ok: bool,
+    clipping_warning: &str,
+    import_losses: &str,
+) {
     ui.set_module_status(receipt.into());
     ui.set_module_status_succeeded(ok);
     ui.set_module_clipping_warning(clipping_warning.into());
+    ui.set_module_import_losses(import_losses.into());
 }
 
 /// 母带削波警示行的**可见短句**（`""` = 不削波 ⇒ 不显示）。
@@ -6385,15 +6403,23 @@ pub fn wire_module_actions_with_capture(
                 return;
             };
             let project = port.project();
-            let (receipt, ok) = match crate::import_midi::import_midi_file(
+            let (receipt, ok, loss_line) = match crate::import_midi::import_midi_file(
                 port,
                 &project,
                 &source,
                 &crate::import_midi::MidiImportOptions::default(),
                 now_ms(),
             ) {
-                Ok(report) => (
-                    module_receipt(
+                Ok(report) => {
+                    // ⭐ `#319`：GUI 的第二个出口。两样东西读的是**同一份**
+                    // `report.losses`（同一个 `MidiImportLosses`，⛔ 不重解析 SMF、
+                    // ⛔ 不重数事件）：
+                    // ① 回执末尾两个**明细字段**（引号包住，`=`/空格不参与回执语法）；
+                    // ② 界面那条**可见摘要行**（`module-import-losses`）。
+                    // 明细与 CLI 的 `imported-midi:` 行尾部共用
+                    // `MidiImportLosses::loss_detail()`／`aux_fields()` ⇒ 没有第二份格式化。
+                    let loss_line = report.losses.loss_summary();
+                    let receipt = module_receipt(
                         "import-midi",
                         &[
                             "outcome=ok".to_owned(),
@@ -6416,19 +6442,22 @@ pub fn wire_module_actions_with_capture(
                                     _ => "other",
                                 }
                             ),
+                            format!("losses=\"{loss_line}\""),
+                            format!("loss_detail=\"{}\"", report.losses.loss_detail()),
                         ],
-                    ),
-                    true,
-                ),
+                    );
+                    (receipt, true, loss_line)
+                }
                 Err(error) => (
                     module_receipt(
                         "import-midi",
                         &module_error_fields("import-midi", &error.to_string()),
                     ),
                     false,
+                    String::new(),
                 ),
             };
-            apply_module_receipt(&ui, &receipt, ok);
+            apply_module_receipt_with_alerts(&ui, &receipt, ok, "", &loss_line);
             module_trace("import-midi", started, &receipt);
         });
     }

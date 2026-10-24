@@ -50,6 +50,15 @@ export component ModuleActions inherits Rectangle {
     // 这一行不再与那 216px 的前缀抢宽度。唯一写者 = 宿主 `host::wire_module_actions`
     // 的 `export-wav` 分支：削波 ⇒ 写短句；不削波 / 其它模块动作 ⇒ 写空串。
     in property <string> clipping-warning: "";
+    // ⭐ 任务单 `#319`：**MIDI 文件导入的损失摘要行**（空串 = 不显示）。
+    //
+    // 与 `clipping-warning` **同一物理槽位**（`y = 448`、264×16）—— 版面实测（1440×900）
+    // 右栏只剩 11px，放不下第四条独立行。两条**互斥**：唯一写者
+    // `host::apply_module_receipt_with_alerts` 每次动作同时写两条，没给的那条写空串
+    // ⇒ 任一时刻最多一条非空（判据 `tests/import_midi_losses_ui.rs` 两臂断言）。
+    // 文本由宿主从 `MidiImportReport.losses` 生成（与 CLI 的 `imported-midi:` 行同一个
+    // `MidiImportLosses`）；完整逐类读数在回执的 `loss_detail="…"` 字段与读屏值里。
+    in property <string> import-losses: "";
 
     // 五个入口各一条回调。**都不带参数**：目标路径 / 端口由宿主解析
     // （`YEBAN_UI_<动作>_PATH`、`YEBAN_UI_MIDI_IN_PORT`，缺省在工作目录 / 端口 `0`），
@@ -320,5 +329,32 @@ export component ModuleActions inherits Rectangle {
         accessible-label: "母带削波警示（削波样本数 / 建议减多少 dB）";
         // 可见文本 = `accessible-value`（读屏与判据读同一串字节，⛔ 不是第二份）。
         accessible-value: root.clipping-warning;
+    }
+
+    // ------------------------------------------------- 导入损失摘要行（⭐ `#319`）
+    // 与上面那条削波警示**共用** `y = 448` 这个槽位（版面实测：1440×900 的右栏只剩
+    // 11px，放不下第四条独立 16px 行；1440 档 448+16=464 < 475 才装得下）。
+    // 两条**互斥**：唯一写者 `host::apply_module_receipt_with_alerts` 每次动作同时写
+    // 两条、没给的那条写空串 ⇒ 任一时刻最多一条 `visible` ⇒ 不可能叠字。
+    // 文本由宿主从 `MidiImportReport.losses` 生成（与 CLI 的 `imported-midi:` 行读
+    // **同一个** `MidiImportLosses`）；完整 24 类明细在回执的 `loss_detail="…"` 字段与
+    // `module-last-status` 的 `accessible-value` 里（同 `#230` 的 `clipping_note` 先例）。
+    // 默认空串 ⇒ `visible: false` ⇒ 不进运行时树、零像素（默认帧指纹不变）。
+    UiText {
+        x: Tokens.space-4;
+        y: 448px;
+        width: parent.width - 2 * Tokens.space-4;
+        height: 16px;
+        visible: root.import-losses != "";
+        text: root.import-losses;
+        color: Tokens.ink-1;
+        font-size: Tokens.font-size-xs;
+        overflow: clip;
+        accessible-role: text;
+        accessible-id: "module-import-losses";
+        // 静态标签（与 `elements.rs` 的注册表标签逐字相同）；⛔ 不绑动态文本。
+        accessible-label: "最近一次 MIDI 文件导入的损耗摘要（类数 / 事件数 / 音符通道 / 释放力度）";
+        // 可见文本 = `accessible-value`（读屏与判据读同一串字节，⛔ 不是第二份）。
+        accessible-value: root.import-losses;
     }
 }

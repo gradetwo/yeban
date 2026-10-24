@@ -79,6 +79,10 @@ component AiRail inherits Rectangle {
     // ⭐ 任务单 `#230`：母带削波警示行的**可见短句**（空串 = 不显示）。
     // 唯一写者 = 宿主 `host::wire_module_actions` 的 `export-wav` 分支。
     in property <string> module-clipping-warning: "";
+    // ⭐ 任务单 `#319`：MIDI 文件导入的损失摘要行（空串 = 不显示）。
+    // 与削波警示**同一物理槽位**（`y = 448`）、互斥；唯一写者 =
+    // `host::apply_module_receipt_with_alerts`（每次动作两条都写，没给的写空串）。
+    in property <string> module-import-losses: "";
 
     background: Tokens.bg-panel;
     border-width: 1px;
@@ -257,6 +261,7 @@ component AiRail inherits Rectangle {
         midi-in-status: root.module-midi-in-status;
         midi-in-status-succeeded: root.module-midi-in-status-succeeded;
         clipping-warning: root.module-clipping-warning;
+        import-losses: root.module-import-losses;
 
         export-wav => { root.export-wav(); }
         import-midi => { root.import-midi(); }
@@ -466,6 +471,11 @@ export component MainWindow inherits Window {
     // `module-clipping-warning`）。空串 = 不显示；削波导出 ⇒ 一行短句。
     // 完整读数仍在 `module-status` 的 `clipping_note="…"` 字段里（`#229` 的数据通道）。
     in-out property <string> module-clipping-warning: "";
+    // ⭐ 任务单 `#319`：MIDI 文件导入的损失摘要行（`ui/module_actions.slint` 的
+    // `module-import-losses`，与削波警示共用 `y = 448`、互斥）。空串 = 不显示；
+    // 完整 24 类明细在 `module-status` 的 `loss_detail="…"` 字段里（同一个
+    // `MidiImportLosses`，与 CLI 的 `imported-midi:` 行同源）。
+    in-out property <string> module-import-losses: "";
     // 六条入口回调（事件源 = `ui/module_actions.slint` 的五个 `TouchArea` ＋
     // `ui/console/mixer_console.slint` 的 `midi_export_area`）。
     // 宿主 `host::wire_module_actions` 把它们落到**已经存在的**六个模块实现上：
@@ -1307,6 +1317,8 @@ export component MainWindow inherits Window {
                 module-midi-in-status-succeeded: root.module-midi-in-status-succeeded;
                 // ⭐ `#230`：母带削波警示行（空串 ⇒ 不显示）。
                 module-clipping-warning: root.module-clipping-warning;
+                // ⭐ `#319`：导入损失摘要行（与削波行同一槽位、互斥；空串 ⇒ 不显示）。
+                module-import-losses: root.module-import-losses;
                 export-wav => { root.export-wav(); }
                 import-midi => { root.import-midi(); }
                 load-sfz => { root.load-sfz(); }
@@ -1680,6 +1692,8 @@ export component MainWindow inherits Window {
         // ⭐ `#230`：抽屉是 `AiRail` 的第二个实例；警示行必须读到**同一格**
         // `MainWindow.module-clipping-warning`（否则 1024 档抽屉里的导出点不出提示）。
         module-clipping-warning: root.module-clipping-warning;
+        // ⭐ `#319`：同理 —— 1024 档抽屉里按「导入 MIDI」也必须看到损失摘要。
+        module-import-losses: root.module-import-losses;
     }
 
     // AI 编曲提案审核抽屉 (§10 Musical PR)

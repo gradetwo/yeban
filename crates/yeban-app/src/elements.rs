@@ -532,6 +532,21 @@ impl ElementRegistry {
             "母带削波警示（削波样本数 / 建议减多少 dB）",
             true,
         );
+        // ⭐ 任务单 `#319`：**MIDI 文件导入的损失摘要行**（`module_actions.slint` 的
+        // `module-import-losses`，`y = 448` —— 与削波警示**同一槽位**、互斥）。
+        //
+        // 空串 ⇒ `visible: false` ⇒ 默认帧里不在运行时树、不画像素（与 `#230` 同款）。
+        // 唯一写者 = `host::apply_module_receipt_with_alerts`：每次动作同时写两条，
+        // 没给的那条写空串 ⇒ 任一时刻最多一条可见。
+        // 动态区：每次导入的读数不同 ⇒ 截图遮罩按它的包围盒置黑。
+        registry.add(
+            "module-import-losses",
+            ElementKind::Text,
+            "module_actions.slint",
+            // 与 `.slint` 的 `accessible-label` 逐字相同。
+            "最近一次 MIDI 文件导入的损耗摘要（类数 / 事件数 / 音符通道 / 释放力度）",
+            true,
+        );
 
         // ⭐ **导出 MIDI**（任务单 `#90` 甲）—— 第六条模块入口。
         //
