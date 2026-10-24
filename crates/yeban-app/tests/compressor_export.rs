@@ -1185,3 +1185,189 @@ fn each_compressor_lane_endpoint_is_byte_identical_to_the_same_static_value() {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// ⭐ 任务单 `#308`：静态 `compressor_enabled = 0` ＋ `compressor_enabled` 的 0→1 泳道，
+// **检波点**在声相之前还是之后。
+//
+// ## 读数口径（⚠ 与任务单 §2.2 的映射相反；本判据按**代码口径**，已登记）
+//
+// 检波器是 `max(l², r²)`（`crates/yeban-dsp/src/compressor.rs:735`）：
+// - 插入在声相**之后** ⇒ 检波看到 `max(|gL|, |gR|)·x` ⇒ `GR` **随 pan 变**；
+// - 插入在声相**之前**（`#303` 的 pre-pan tap）⇒ 检波看到两声道同值的 `x` ⇒
+//   `GR` **与 pan 无关**。
+// `#303` 的判据 `the_compression_amount_does_not_depend_on_pan`（本文件 `:377-420`）
+// 用的就是"不变 ⇒ 声相前"。⚠ 任务单原文"变⇒前／不变⇒后"是反的；`#308` 轮次已裁决
+// 按代码口径。
+//
+// ## 预判（⚠ 不是读数）
+//
+// 静态关 ⇒ `compresses()`（`inserts.rs:387-390`）与 `compressing_nodes()`
+// （`inserts.rs:546-554`）都判 false ⇒ `render_core.rs:688` 不挂 pre-pan tap、
+// `:759` 不压源侧声相 ⇒ 插入链在**声相之后** ⇒ 预判 `GR` 随 pan 变：
+// `pan=0` 约 `4.4846 dB`、`pan=±0.5` 约 `3.9687 dB`（Δ≈0.516 dB）。
+//
+// ## 量法
+//
+// 干声 = **同 pan、同一台设备、静态关、无泳道**（链为空 ⇒ 声相路径与湿声逐位相同）；
+// 湿声 = 同工程 ＋ 泳道 `(0,0)(0.5 s,0)(1 s,1)`。窗口 `0.6–0.9 s`（帧 `28800..43200`）
+// 在开关打开之后 ⇒ 稳态 `GR`。
+// ⚠ **对 `#307` 的读数口径说明**：`#307` 的窗口是 `(4800, 43200)`，混进了 0–0.5 s
+// 未压缩段 ⇒ 它读的是**混合平均**（`−7.635 dB` 那一档），⛔ 不是稳态 `GR`。
+// 那**不推翻** `#307` 的判据：它的 from/lane/to 三档用**同一窗口**，自洽。
+// ---------------------------------------------------------------------------
+
+/// `#307` 的 `compressor_enabled` case 的静态参数（`COMP_CASES[0]`，本文件 `:664-674`）。
+const PRE_PAN_PROBE_PARAMS: &[(&str, f32)] =
+    &[("compressor_enabled", 0.0), ("threshold_db", -12.0)];
+
+/// 正对照：静态开（其余同 [`PRE_PAN_PROBE_PARAMS`]）。
+const PRE_PAN_STATIC_ON_PARAMS: &[(&str, f32)] =
+    &[("compressor_enabled", 1.0), ("threshold_db", -12.0)];
+
+/// 稳态窗口（帧）：0.6–0.9 s @48 kHz，开关（0.5 s）之后。
+const PRE_PAN_PROBE_WINDOW: (usize, usize) = (28_800, 43_200);
+
+/// 单声道窗口 RMS（`channel ∈ {0,1}`）。
+fn window_rms_channel(samples: &[f32], start: usize, end: usize, channel: usize) -> f64 {
+    let mut sum = 0.0f64;
+    let mut count = 0usize;
+    for frame in start..end {
+        let value = f64::from(samples[frame * 2 + channel]);
+        sum += value * value;
+        count += 1;
+    }
+    assert!(count > 0, "窗口必须非空");
+    (sum / count as f64).sqrt()
+}
+
+/// ⭐ `#308` 判据：静态关 ＋ 0→1 泳道 ⇒ **检波在声相之后**（`GR` 随 pan 变）。
+///
+/// ⚠ 这是**缺陷的读数登记**（与 `#303` 的 pre-pan 裁决、实时 `rt.rs` 的"插入→声相"同序
+/// 不一致；触发面 = 静态关的压缩器被泳道打开），⛔ 不是批准它。判据钉住现状。
+#[test]
+fn a_lane_that_switches_a_statically_disabled_compressor_on_leaves_the_detector_after_the_pan() {
+    let bytes = constant_asset(0.5);
+    let (start, end) = PRE_PAN_PROBE_WINDOW;
+
+    let mut lane_grs: Vec<(f32, f64)> = Vec::new();
+    for pan in [0.0f32, 0.5, -0.5] {
+        let dry_project = project(
+            &Tune {
+                pan,
+                params: PRE_PAN_PROBE_PARAMS,
+                midi: false,
+                audio: true,
+            },
+            &bytes,
+        );
+        let mut wet_project = dry_project.clone();
+        add_device_lane(
+            &mut wet_project,
+            &[(0, 0.0), (960, 0.0), (ONE_SECOND_TICKS, 1.0)],
+            true,
+        );
+        let dry = render(&dry_project, &bytes);
+        let wet = render(&wet_project, &bytes);
+        assert_ne!(
+            wet.digest, dry.digest,
+            "pan={pan}: 静态关 ＋ 0→1 泳道必须真的改母带（#307 已实测）"
+        );
+        let dry_read = window_rms(&dry.samples, start, end);
+        let wet_read = window_rms(&wet.samples, start, end);
+        // 增益衰减取正号：GR = −20·log10(wet/dry)（同 pan ⇒ 比值只含压缩增益）。
+        let gr = -20.0 * (wet_read / dry_read).log10();
+        let gr_l = -20.0
+            * (window_rms_channel(&wet.samples, start, end, 0)
+                / window_rms_channel(&dry.samples, start, end, 0))
+            .log10();
+        let gr_r = -20.0
+            * (window_rms_channel(&wet.samples, start, end, 1)
+                / window_rms_channel(&dry.samples, start, end, 1))
+            .log10();
+        println!(
+            "### #308 app 静态关+泳道 pan={pan:+.1}: dry={dry_read:.9e} wet={wet_read:.9e} \
+             GR={gr:+.6} dB (L={gr_l:+.6} R={gr_r:+.6}) | digest wet={} dry={}",
+            wet.digest, dry.digest
+        );
+        lane_grs.push((pan, gr));
+    }
+
+    // 正对照：静态开（无泳道）⇒ `#303` 的 pre-pan tap ⇒ 三档 GR 必须相等。
+    let mut static_grs: Vec<(f32, f64)> = Vec::new();
+    for pan in [0.0f32, 0.5, -0.5] {
+        let dry = render(
+            &project(
+                &Tune {
+                    pan,
+                    params: PRE_PAN_PROBE_PARAMS,
+                    midi: false,
+                    audio: true,
+                },
+                &bytes,
+            ),
+            &bytes,
+        );
+        let wet = render(
+            &project(
+                &Tune {
+                    pan,
+                    params: PRE_PAN_STATIC_ON_PARAMS,
+                    midi: false,
+                    audio: true,
+                },
+                &bytes,
+            ),
+            &bytes,
+        );
+        let dry_read = window_rms(&dry.samples, start, end);
+        let wet_read = window_rms(&wet.samples, start, end);
+        let gr = -20.0 * (wet_read / dry_read).log10();
+        println!("### #308 app 静态开（正对照）pan={pan:+.1}: GR={gr:+.6} dB");
+        static_grs.push((pan, gr));
+    }
+
+    let gr_at = |pan: f32| {
+        lane_grs
+            .iter()
+            .find(|(value, _)| *value == pan)
+            .map(|(_, gr)| *gr)
+            .expect("三档 pan 必须都有读数")
+    };
+    let (gr_0, gr_plus, gr_minus) = (gr_at(0.0), gr_at(0.5), gr_at(-0.5));
+    let delta = gr_0 - gr_plus;
+    println!(
+        "### #308 app 汇总: GR(0)={gr_0:+.6} GR(+0.5)={gr_plus:+.6} GR(-0.5)={gr_minus:+.6} dB; \
+         Δ(0,+0.5)={delta:+.6} dB; |+0.5 − −0.5|={:.3e}",
+        (gr_plus - gr_minus).abs()
+    );
+
+    // ⭐ 判据 1（复现 #307 的 −4.484 dB 档）：稳态 GR 必须落在手算值上。
+    assert!(
+        (gr_0 - 4.4846).abs() < 0.02,
+        "复现 #307 的 −4.484 dB 档失败：GR(pan=0) = {gr_0:+.6} dB（手算 4.4846）"
+    );
+    // ⭐ 判据 2（核心读数）：静态关 ＋ 泳道开 ⇒ GR 随 pan 变 ⇒ 检波在声相**之后**。
+    assert!(
+        (0.40..0.65).contains(&delta),
+        "预判：检波在声相后 ⇒ GR(0) 应比 GR(±0.5) 大约 0.516 dB；实测 Δ = {delta:+.6} dB \
+         （若 ≈0 ⇒ 检波在声相前 ⇒ 预判错了，按第 313 条改写）"
+    );
+    assert!(
+        (gr_plus - gr_minus).abs() < 1.0e-3,
+        "±0.5 的 max(|gL|,|gR|) 相同 ⇒ 两档 GR 必须对称：{gr_plus:+.6} vs {gr_minus:+.6}"
+    );
+    // ⭐ 判据 3（判据有判别力）：静态开的 pre-pan tap 下三档必须相等（`#303` 口径）。
+    let static_base = static_grs[0].1;
+    for (pan, gr) in &static_grs {
+        assert!(
+            (gr - 4.4846).abs() < 0.02,
+            "静态开 pan={pan}: 手算 4.4846 dB，实测 {gr:+.6}"
+        );
+        let relative = (gr - static_base).abs() / static_base;
+        assert!(
+            relative < 1.0e-5,
+            "静态开 pan={pan}: pre-pan tap 下压缩量必须与 pan 无关（相对差 {relative:.3e}）"
+        );
+    }
+}

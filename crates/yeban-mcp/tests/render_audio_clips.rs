@@ -3591,3 +3591,198 @@ fn each_compressor_lane_endpoint_is_byte_identical_to_the_same_static_value_in_t
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// ⭐ 任务单 `#308`：静态 `compressor_enabled = 0` ＋ 0→1 泳道时，**检波点**在哪（MCP 路）。
+//
+// 与 app 侧 `crates/yeban-app/tests/compressor_export.rs` 的 `#308` 判据**同一口径**：
+// 检波器是 `max(l², r²)`（`crates/yeban-dsp/src/compressor.rs:735`）⇒
+// 插入在声相**之后** ⇒ `GR` 随 pan 变；插入在声相**之前**（pre-pan tap）⇒ `GR` 与 pan 无关。
+// ⚠ 任务单 §2.2 的"变⇒前／不变⇒后"是反的；本判据按代码口径（`#303` 判据：不变 ⇒ 声相前）。
+//
+// ## 预判（⚠ 不是读数）
+//
+// 静态关 ⇒ `compressing_nodes()`（`inserts.rs:546-554`）为空 ⇒ `domain/render.rs:2229`
+// 的 `compressing` 为空 ⇒ `:2445` 不给源节点挂输出级、`build_source` 的 `pre_pan = false`
+// （`:3706-3723`）⇒ 声相留在源侧 ⇒ 插入链在声相之后 ⇒ 预判 `GR` 随 pan 变：
+// `pan=0` 约 `4.4846 dB`、`pan=±0.5` 约 `3.9687 dB`（Δ≈0.516 dB）。
+//
+// ## 量法
+//
+// 干声 = 同 pan、同一台设备、静态关、无泳道（链为空）；湿声 = 同工程 ＋
+// `(0,0)(0.5 s,0)(1 s,1)` 泳道。窗口 `0.6–0.9 s`（开关之后的稳态）。
+// ⚠ **对 `#307` 的读数口径说明**：`#307` 的窗口 `(4800, 43200)` 混进 0–0.5 s 未压缩段 ⇒
+// 读的是**混合平均**（`−7.635 dB`），⛔ 不是稳态 `GR`；它的三档用同一窗口 ⇒ 自洽，不推翻。
+// ---------------------------------------------------------------------------
+
+/// `#307` 的 `compressor_enabled` case 的静态参数（`MCP_COMP_CASES[0]`）。
+const PRE_PAN_PROBE_PARAMS: &[(&str, f32)] =
+    &[("compressor_enabled", 0.0), ("threshold_db", -12.0)];
+
+/// 正对照：静态开（其余同 [`PRE_PAN_PROBE_PARAMS`]）。
+const PRE_PAN_STATIC_ON_PARAMS: &[(&str, f32)] =
+    &[("compressor_enabled", 1.0), ("threshold_db", -12.0)];
+
+/// 稳态窗口（帧）：0.6–0.9 s @48 kHz。
+const PRE_PAN_PROBE_WINDOW: (usize, usize) = (28_800, 43_200);
+
+/// 夹具音轨 `pan` 置成目标值（`fixture` 硬编码 `pan: 0.0`，`render_audio_clips.rs:281`）。
+fn probe_fixture(bytes: &[u8], pan: f32) -> Fixture {
+    let mut fixture = fixture(bytes.to_vec(), &Tune::default());
+    fixture
+        .project
+        .tracks
+        .get_mut(&id(2))
+        .expect("Lead 音轨必须存在")
+        .pan = pan;
+    fixture.project.validate().expect("声相夹具必须合法");
+    fixture
+}
+
+/// 单声道窗口 RMS（`channel ∈ {0,1}`，MCP 侧 24-bit 解码后的样本）。
+fn mcp_window_rms_channel(samples: &[f32], start: usize, end: usize, channel: usize) -> f64 {
+    let mut sum = 0.0f64;
+    let mut count = 0usize;
+    for frame in start..end {
+        let value = f64::from(samples[frame * 2 + channel]);
+        sum += value * value;
+        count += 1;
+    }
+    assert!(count > 0, "窗口必须非空");
+    (sum / count as f64).sqrt()
+}
+
+/// ⭐ `#308`（MCP）：静态关 ＋ 0→1 泳道 ⇒ **检波在声相之后**（`GR` 随 pan 变）。
+///
+/// ⚠ 这是**缺陷的读数登记**（与 `#303` 的 pre-pan 裁决不一致），⛔ 不是批准它。
+#[test]
+fn a_lane_that_switches_a_statically_disabled_compressor_on_leaves_the_mcp_detector_after_the_pan()
+{
+    let scratch = Scratch::new("compressor-pre-pan-308");
+    let bytes = wav_f32(2, 48_000, &constant(48_000, 0.5));
+    let (start, end) = PRE_PAN_PROBE_WINDOW;
+    let lane_on = [(0u64, 0.0f32), (960, 0.0), (ONE_SECOND_TICKS, 1.0)];
+
+    let mut lane_grs: Vec<(f32, f64)> = Vec::new();
+    for pan in [0.0f32, 0.5, -0.5] {
+        let dry = render_mcp(
+            &with_strip(probe_fixture(&bytes, pan), PRE_PAN_PROBE_PARAMS, None),
+            &scratch,
+            &format!("pre-pan-{pan:+.1}-dry"),
+        );
+        let wet = render_mcp(
+            &with_strip(
+                probe_fixture(&bytes, pan),
+                PRE_PAN_PROBE_PARAMS,
+                Some(StripLaneSpec {
+                    points: &lane_on,
+                    read_enabled: true,
+                    first_point_seed: 1_300,
+                }),
+            ),
+            &scratch,
+            &format!("pre-pan-{pan:+.1}-wet"),
+        );
+        assert_ne!(
+            wet.master_digest, dry.master_digest,
+            "pan={pan}: 静态关 ＋ 0→1 泳道必须真的改 MCP 母带（#307 已实测）"
+        );
+        if pan == 0.0 {
+            let data = wet.response_data();
+            let lane = &data["automation"]["tracks"][0]["lanes"][0];
+            println!("### #308 MCP pan=0 泳道读数: {lane}");
+            assert_eq!(
+                lane["resolvedParamName"], "compressor_enabled",
+                "泳道必须解析到开关字段: {data}"
+            );
+            assert_eq!(lane["supported"], true, "{data}");
+            assert_eq!(lane["applied"], true, "{data}");
+        }
+        let dry_samples = payload_samples(&dry);
+        let wet_samples = payload_samples(&wet);
+        let dry_read = mcp_window_rms(&dry_samples, start, end);
+        let wet_read = mcp_window_rms(&wet_samples, start, end);
+        // GR = −20·log10(wet/dry)（同 pan ⇒ 比值只含压缩增益）。
+        let gr = -20.0 * (wet_read / dry_read).log10();
+        let gr_l = -20.0
+            * (mcp_window_rms_channel(&wet_samples, start, end, 0)
+                / mcp_window_rms_channel(&dry_samples, start, end, 0))
+            .log10();
+        let gr_r = -20.0
+            * (mcp_window_rms_channel(&wet_samples, start, end, 1)
+                / mcp_window_rms_channel(&dry_samples, start, end, 1))
+            .log10();
+        println!(
+            "### #308 MCP 静态关+泳道 pan={pan:+.1}: dry={dry_read:.9e} wet={wet_read:.9e} \
+             GR={gr:+.6} dB (L={gr_l:+.6} R={gr_r:+.6}) | digest wet={} dry={}",
+            wet.master_digest, dry.master_digest
+        );
+        lane_grs.push((pan, gr));
+    }
+
+    // 正对照：静态开（无泳道）⇒ `#303` 的 pre-pan tap ⇒ 三档 GR 必须相等。
+    let mut static_grs: Vec<(f32, f64)> = Vec::new();
+    for pan in [0.0f32, 0.5, -0.5] {
+        let dry = render_mcp(
+            &with_strip(probe_fixture(&bytes, pan), PRE_PAN_PROBE_PARAMS, None),
+            &scratch,
+            &format!("pre-pan-static-{pan:+.1}-dry"),
+        );
+        let wet = render_mcp(
+            &with_strip(probe_fixture(&bytes, pan), PRE_PAN_STATIC_ON_PARAMS, None),
+            &scratch,
+            &format!("pre-pan-static-{pan:+.1}-wet"),
+        );
+        let dry_samples = payload_samples(&dry);
+        let wet_samples = payload_samples(&wet);
+        let dry_read = mcp_window_rms(&dry_samples, start, end);
+        let wet_read = mcp_window_rms(&wet_samples, start, end);
+        let gr = -20.0 * (wet_read / dry_read).log10();
+        println!("### #308 MCP 静态开（正对照）pan={pan:+.1}: GR={gr:+.6} dB");
+        static_grs.push((pan, gr));
+    }
+
+    let gr_at = |pan: f32| {
+        lane_grs
+            .iter()
+            .find(|(value, _)| *value == pan)
+            .map(|(_, gr)| *gr)
+            .expect("三档 pan 必须都有读数")
+    };
+    let (gr_0, gr_plus, gr_minus) = (gr_at(0.0), gr_at(0.5), gr_at(-0.5));
+    let delta = gr_0 - gr_plus;
+    println!(
+        "### #308 MCP 汇总: GR(0)={gr_0:+.6} GR(+0.5)={gr_plus:+.6} GR(-0.5)={gr_minus:+.6} dB; \
+         Δ(0,+0.5)={delta:+.6} dB; |+0.5 − −0.5|={:.3e}",
+        (gr_plus - gr_minus).abs()
+    );
+
+    // ⭐ 判据 1（复现 #307 的 −4.484 dB 档）。
+    assert!(
+        (gr_0 - 4.4846).abs() < 0.02,
+        "复现 #307 的 −4.484 dB 档失败：MCP GR(pan=0) = {gr_0:+.6} dB（手算 4.4846）"
+    );
+    // ⭐ 判据 2（核心读数）：GR 随 pan 变 ⇒ 检波在声相**之后**。
+    assert!(
+        (0.40..0.65).contains(&delta),
+        "预判：检波在声相后 ⇒ GR(0) 应比 GR(±0.5) 大约 0.516 dB；实测 Δ = {delta:+.6} dB \
+         （若 ≈0 ⇒ 检波在声相前 ⇒ 预判错了，按第 313 条改写）"
+    );
+    assert!(
+        (gr_plus - gr_minus).abs() < 1.0e-3,
+        "±0.5 的 max(|gL|,|gR|) 相同 ⇒ 两档 GR 必须对称：{gr_plus:+.6} vs {gr_minus:+.6}"
+    );
+    // ⭐ 判据 3（判据有判别力）：静态开的 pre-pan tap 下三档必须相等。
+    let static_base = static_grs[0].1;
+    for (pan, gr) in &static_grs {
+        assert!(
+            (gr - 4.4846).abs() < 0.02,
+            "静态开 pan={pan}: 手算 4.4846 dB，实测 {gr:+.6}"
+        );
+        let relative = (gr - static_base).abs() / static_base;
+        assert!(
+            relative < 1.0e-5,
+            "静态开 pan={pan}: pre-pan tap 下压缩量必须与 pan 无关（相对差 {relative:.3e}）"
+        );
+    }
+}
