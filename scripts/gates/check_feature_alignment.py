@@ -1083,6 +1083,7 @@ def main() -> int:
         + "，".join(f"{category} {derived[category]}" for category in CATEGORIES)
         + f"；{citations_checked} 处行号交叉引用全部落在目标行"
         + f"；{source_checked} 处源码引用点名了**存在**的构件"
+        + f"；射程仅 {len(SOURCE_CITATION_DOCS)} 个活表（仓库 docs/** 共 {len(list((Path(__file__).resolve().parents[2] / 'docs').rglob('*.md')))} 个 .md，其余按构造未纳入、未假装通过）"
         + f"（另有 {source_skipped} 处路径歧义 / 未点名构件，按构造跳过、未假装通过；"
         + f"{source_hints} 处历史更正的行号已漂移，不判红；"
         + f"附录 {source_appendix} 处行号未判（不参与成败）；"
