@@ -176,7 +176,7 @@
 
 `deviceChainDsp`、`externalPlugins`、`automationLanes`、`clipLoopRepetition`、
 `noteProbability`、`noteRatchet`、`noteSlide`、`notePitchBend`、`noteLyrics`、
-`busTrackClips`、`sidechainRouting`、`masterPan`、`sfzSampler` —— 与 `mcp-render-notes.md`
+`busTrackClips`、`sidechainRouting`、`masterPan`、`sfzSampler` —— ⚠ **这是当时的快照**（其中 `clipLoopRepetition`／`noteProbability`／`noteRatchet`／`masterPan`／`sfzSampler` 后已退役），当时与 `mcp-render-notes.md`
 §2 完全一致。**唯一的变化**是 `audioClips` 的语义被收窄：它现在**只**在
 "工程声明了资产、会话池里没有字节"时出现（见 §3.2 最后两行）。
 
