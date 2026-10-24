@@ -2865,10 +2865,14 @@ fn an_explicitly_disabled_compressor_is_reported_applied_but_the_master_is_uncha
 //    （threshold = −6 dB，电平 ≈ −6.02 dBFS）；
 // 4. `compressor_enabled` 是开关 ⇒ 只做**开/关之差**，⛔ 三点单调。
 //
-// ⚠ **唯一登记项（不是「字段测不了」）**：`compressor_enabled` 的 **0→1 泳道**被
-// **静态** `compressor_enabled` 的编译期判据 `yeban_render::inserts::compressing_nodes`
-// 挡住（`#304` 已登记、本单不扩）⇒ 方向判据用**静态 0 vs 1**（与 `#305` 同），
-// flat/`readEnabled:false` 两条正对照也分别取静态 1 / 静态 0。
+// ⚠ **`#306` 的一条登记已被 `#307` 实测更正**（原文：「`compressor_enabled` 的 **0→1
+// 泳道**被**静态** `compressor_enabled` 的编译期判据 `compressing_nodes` 挡住」）：
+// 该判据只 gate **pre-pan tap 的先后**（`crates/yeban-render/src/inserts.rs:72-73`；
+// `automation.rs:1030-1031` 明写「`compressor_enabled` 自己的泳道可以把这一级打开」）⇒
+// `pan = 0` 时对音频**恒等**，0→1 的泳道**有落点**（`#307` 判据实测：`masterDigest` 变、
+// 泳道 JSON `applied:true`）。`#304` 的边界（`pan != 0` 时检波参考点按静态位判）仍在、
+// `#307` 不扩。上面的**方向**判据仍用**静态 0 vs 1**：那是「字段值能改音频」，
+// 与「泳道落点」是两件事（后者见本文件 `#307` 的两条判据）。
 // ===========================================================================
 
 /// 阶跃发生的位置（0.2 s @ 48 kHz；与 `#305` 同一位置）。
@@ -3377,5 +3381,213 @@ fn the_seven_mcp_cases_are_the_compressor_fields_minus_threshold() {
             StripField::from_name(name).is_some(),
             "{name} 必须是名字表认下的规范名"
         );
+    }
+}
+
+// ===========================================================================
+// ⭐ 任务单 `#307`：7 个压缩字段的**非恒等泳道落点**判据（MCP 路径）。
+//
+// `#306` 只证了「字段的静态值能改 MCP 母带」；泳道落点只证过 `threshold_db`
+// （`#304`）。本片照 `#304` 的形状给这 7 个字段各一条，与 app 侧 `#307` 同一口径：
+// ① **落点**：泳道 `from → to` ⇒ `masterDigest` 与 `sha256` 都变，窗口读数严格落在
+//    静态 `from` 与静态 `to` 之间，且 MCP 泳道 JSON 如实报
+//    `resolvedParamName/supported/applied/unresolved`；
+// ② **端点**：泳道恒等于端点值 ⇒ 逐字节等于**同值静态**（`from` 与 `to` 各一次）。
+//
+// ⚠ `compressor_enabled` 用 **hold** 曲线：开关语义是 `> 0` 即开 ⇒ 均匀斜坡下第一个块
+// 就开了 ⇒ 泳道读数与 `to` 端点只差 `1.3e-7`（实测 `2.983693409e-1` vs
+// `2.983693015e-1`）；hold 0.5 s 才有可观余量（实测 `4.151938749e-1` = −7.635 dB）。
+// ===========================================================================
+
+/// 泳道点列：`(0, from) → (0.5 s, mid) → (1 s, to)`；`compressor_enabled` 用 hold
+/// （前 0.5 s 保持 `from`，之后才升到 `to`）。
+fn mcp_lane_curve(case: &McpCompCase) -> Vec<(u64, f32)> {
+    if case.name == "compressor_enabled" {
+        vec![
+            (0, case.from),
+            (960, case.from),
+            (ONE_SECOND_TICKS, case.to),
+        ]
+    } else {
+        vec![(0, case.from), (960, case.mid), (ONE_SECOND_TICKS, case.to)]
+    }
+}
+
+/// ⭐ `#307` 判据 1（MCP）：7 个字段各一条非恒等泳道落点判据。
+#[test]
+fn each_compressor_lane_lands_strictly_between_its_static_endpoints_in_the_mcp_master() {
+    let scratch = Scratch::new("compressor-lane-landing");
+    for case in MCP_COMP_CASES {
+        let bytes = wav_f32(2, 48_000, &(case.samples)());
+        let (start, end) = case.window;
+
+        let dry = render_mcp(
+            &fixture(bytes.clone(), &Tune::default()),
+            &scratch,
+            &format!("{}-dry", case.name),
+        );
+        let dry_read = mcp_window_rms(&payload_samples(&dry), start, end);
+        assert!(dry_read > 0.0, "{}: 干声窗口必须非零", case.name);
+        let db = |rms: f64| 20.0 * (rms / dry_read).log10();
+
+        let from_fixture = with_strip(
+            fixture(bytes.clone(), &Tune::default()),
+            &comp_params_with(case, case.from),
+            None,
+        );
+        let from_out = render_mcp(&from_fixture, &scratch, &format!("{}-from", case.name));
+        let from_read = mcp_window_rms(&payload_samples(&from_out), start, end);
+
+        let to_fixture = with_strip(
+            fixture(bytes.clone(), &Tune::default()),
+            &comp_params_with(case, case.to),
+            None,
+        );
+        let to_out = render_mcp(&to_fixture, &scratch, &format!("{}-to", case.name));
+        let to_read = mcp_window_rms(&payload_samples(&to_out), start, end);
+
+        let lane_fixture = with_strip(
+            fixture(bytes.clone(), &Tune::default()),
+            &comp_params_with(case, case.from),
+            Some(StripLaneSpec {
+                points: &mcp_lane_curve(case),
+                read_enabled: true,
+                first_point_seed: 940,
+            }),
+        );
+        let lane_out = render_mcp(&lane_fixture, &scratch, &format!("{}-lane", case.name));
+        let lane_data = lane_out.response_data();
+        let lane = &lane_data["automation"]["tracks"][0]["lanes"][0];
+        let lane_read = mcp_window_rms(&payload_samples(&lane_out), start, end);
+
+        println!(
+            "### #307 MCP {} 泳道 from/mid/to={}/{}/{} | 读数 from={from_read:.9e}({:+.3}dB) \
+             lane={lane_read:.9e}({:+.3}dB) to={to_read:.9e}({:+.3}dB) | \
+             sha from={} lane={} to={} | digest from={} lane={} to={} | lane={lane}",
+            case.name,
+            case.from,
+            case.mid,
+            case.to,
+            db(from_read),
+            db(lane_read),
+            db(to_read),
+            from_out.sha256,
+            lane_out.sha256,
+            to_out.sha256,
+            from_out.master_digest,
+            lane_out.master_digest,
+            to_out.master_digest
+        );
+
+        // MCP 的额外一条：泳道必须被**解析**且**应用**（⛔ 报 applied 而静默无效）。
+        assert_eq!(
+            lane["target"], "DeviceParam",
+            "{}: 泳道目标必须是 DeviceParam: {lane_data}",
+            case.name
+        );
+        assert_eq!(lane["resolvedParamName"], case.name, "{lane_data}");
+        assert_eq!(lane["supported"], true, "{lane_data}");
+        assert_eq!(lane["applied"], true, "{lane_data}");
+        assert_eq!(lane["readEnabled"], true, "{lane_data}");
+        assert_eq!(lane["unresolved"], Value::Null, "{lane_data}");
+
+        assert_ne!(
+            lane_out.master_digest, from_out.master_digest,
+            "{}: 泳道必须真的改 MCP 浮点母带（否则字段没有落点）",
+            case.name
+        );
+        assert_ne!(
+            lane_out.sha256, from_out.sha256,
+            "{}: 泳道必须真的改 MCP 文件字节",
+            case.name
+        );
+        assert_ne!(
+            lane_out.master_digest, to_out.master_digest,
+            "{}: 泳道不得退化成静态 to",
+            case.name
+        );
+        assert_ne!(
+            lane_out.sha256, to_out.sha256,
+            "{}: 同上（文件字节）",
+            case.name
+        );
+
+        let low = from_read.min(to_read);
+        let high = from_read.max(to_read);
+        assert!(
+            lane_read > low && lane_read < high,
+            "{}: MCP 泳道读数必须严格落在静态端点之间（from={from_read:.9e} lane={lane_read:.9e} to={to_read:.9e}）",
+            case.name
+        );
+        if case.rising {
+            assert!(
+                lane_read > from_read && lane_read < to_read,
+                "{}: 升方向必须 from < lane < to",
+                case.name
+            );
+        } else {
+            assert!(
+                lane_read < from_read && lane_read > to_read,
+                "{}: 降方向必须 from > lane > to",
+                case.name
+            );
+        }
+    }
+}
+
+/// ⭐ `#307` 判据 2（MCP）：端点对账 —— 泳道恒等于端点值 ⇒ 逐字节等于同值静态。
+///
+/// `from` 与 `to` 各一次（`enabled` 的 `to` 是**平泳道@`1`**，⛔ 不是 hold 曲线）。
+#[test]
+fn each_compressor_lane_endpoint_is_byte_identical_to_the_same_static_value_in_the_mcp_master() {
+    let scratch = Scratch::new("compressor-lane-endpoints");
+    for case in MCP_COMP_CASES {
+        let bytes = wav_f32(2, 48_000, &(case.samples)());
+        for (label, value) in [("from", case.from), ("to", case.to)] {
+            let static_fixture = with_strip(
+                fixture(bytes.clone(), &Tune::default()),
+                &comp_params_with(case, value),
+                None,
+            );
+            let static_out = render_mcp(
+                &static_fixture,
+                &scratch,
+                &format!("{}-{label}-static", case.name),
+            );
+            let flat_points = [(0u64, value), (960, value), (ONE_SECOND_TICKS, value)];
+            let flat_fixture = with_strip(
+                fixture(bytes.clone(), &Tune::default()),
+                &comp_params_with(case, case.from),
+                Some(StripLaneSpec {
+                    points: &flat_points,
+                    read_enabled: true,
+                    first_point_seed: 950,
+                }),
+            );
+            let flat_out = render_mcp(
+                &flat_fixture,
+                &scratch,
+                &format!("{}-{label}-flat", case.name),
+            );
+            println!(
+                "### #307 MCP {} 端点 {label}={value}: 平泳道 sha={} digest={} | \
+                 静态 sha={} digest={}",
+                case.name,
+                flat_out.sha256,
+                flat_out.master_digest,
+                static_out.sha256,
+                static_out.master_digest
+            );
+            assert_eq!(
+                flat_out.master_digest, static_out.master_digest,
+                "{}: 平泳道@{label} 必须逐字节等于同值静态（MCP 浮点母带）",
+                case.name
+            );
+            assert_eq!(
+                flat_out.sha256, static_out.sha256,
+                "{}: 平泳道@{label} 必须逐字节等于同值静态（MCP 文件字节）",
+                case.name
+            );
+        }
     }
 }

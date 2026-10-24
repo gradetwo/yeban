@@ -1009,3 +1009,179 @@ fn the_seven_cases_are_the_compressor_fields_minus_threshold() {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// ⭐ 任务单 `#307`：7 个压缩字段的**非恒等泳道落点**判据。
+//
+// `#305` 证的是「字段的静态值能改音频」；「字段被泳道从 A 拉到 B 真的落点」到本单
+// 之前只证过 `threshold_db`（`#304`）。本片按 `#304` 的形状给这 7 个字段各一条：
+// ① **落点**：泳道 `from → to` ⇒ 24-bit `sha256` 与浮点 `digest` 都变，且窗口读数
+//    **严格落在**静态 `from` 与静态 `to` 之间（三档读数：静态 from ／ 泳道 ／ 静态 to）；
+// ② **端点**：泳道恒等于端点值 ⇒ 逐字节等于**同值静态**（`from` 与 `to` 各一次）；
+// ③ **正对照**：泳道恒等于 `from` ⇒ 逐字节等于静态 `from`（②的 from 半边）。
+//
+// ⚠ `compressor_enabled` 的泳道曲线与其它 6 个字段**不同**（hold 0.5 s）：
+// **开关语义是 `> 0` 即开** ⇒ 均匀斜坡下第一个块就开了 ⇒ 泳道读数与 `to` 端点只差
+// `1.3e-7`（实测 `2.983693409e-1` vs `2.983693015e-1`，相对 1.3e-7），跨平台不可靠；
+// hold 0.5 s 才有可观余量（实测 `4.151938543e-1` = −7.635 dB，两端 `−6.021` / `−10.505`）。
+// ⚠ `#306` 曾登记「`compressor_enabled` 的 0→1 泳道被静态 `compressing_nodes` gate
+// 挡住」——本片实测该 gate 只 gate **pre-pan tap 的先后**
+// （`crates/yeban-render/src/inserts.rs:72-73`），`pan = 0` 时对音频恒等 ⇒ 该登记在本片
+// **更正**（同一段更正也在 MCP 侧的 `#306` 注释里）；`#304` 的 `pan != 0` 边界仍在、本单不扩。
+// ---------------------------------------------------------------------------
+
+/// 泳道点列：`(0, from) → (0.5 s, mid) → (1 s, to)`。
+///
+/// ⚠ `compressor_enabled` 用 **hold**：前 0.5 s 保持 `from`（关），之后才升到 `to`
+/// —— 逐字理由见上面 §「开关语义是 `> 0` 即开」。
+fn lane_curve(case: &CompCase) -> Vec<(u64, f32)> {
+    if case.name == "compressor_enabled" {
+        vec![
+            (0, case.from),
+            (960, case.from),
+            (ONE_SECOND_TICKS, case.to),
+        ]
+    } else {
+        vec![(0, case.from), (960, case.mid), (ONE_SECOND_TICKS, case.to)]
+    }
+}
+
+/// ⭐ `#307` 判据 1：7 个字段各一条**非恒等泳道落点**判据。
+///
+/// 每条断言：泳道的 `sha256` 与浮点 `digest` **既不等于**静态 `from`、**也不等于**
+/// 静态 `to`（后者抓「退化成端点」），且窗口读数严格落在两端点之间（方向按 `case.rising`）。
+/// 三档读数（静态 from ／ 泳道 ／ 静态 to，相对干声 dB）逐条打印。
+#[test]
+fn each_compressor_lane_lands_strictly_between_its_static_endpoints() {
+    for case in COMP_CASES {
+        let bytes = case.material.bytes();
+        let (start, end) = case.window;
+
+        let dry = render(
+            &project(
+                &Tune {
+                    params: &[],
+                    midi: false,
+                    audio: true,
+                    ..Tune::default()
+                },
+                &bytes,
+            ),
+            &bytes,
+        );
+        let dry_read = window_rms(&dry.samples, start, end);
+        assert!(dry_read > 0.0, "{}: 干声窗口必须非零", case.name);
+        let db = |rms: f64| 20.0 * (rms / dry_read).log10();
+
+        let static_from = project_with(case, case.from, &bytes);
+        let from_out = render(&static_from, &bytes);
+        let from_sha = export_sha(&static_from, &bytes, "lane-static-from");
+        let from_read = window_rms(&from_out.samples, start, end);
+
+        let static_to = project_with(case, case.to, &bytes);
+        let to_out = render(&static_to, &bytes);
+        let to_sha = export_sha(&static_to, &bytes, "lane-static-to");
+        let to_read = window_rms(&to_out.samples, start, end);
+
+        let mut lane = project_with(case, case.from, &bytes);
+        add_device_lane(&mut lane, &lane_curve(case), true);
+        let lane_out = render(&lane, &bytes);
+        let lane_sha = export_sha(&lane, &bytes, "lane-ramp");
+        let lane_read = window_rms(&lane_out.samples, start, end);
+
+        println!(
+            "### #307 {} 泳道 from/mid/to={}/{}/{} | 读数 from={from_read:.9e}({:+.3}dB) \
+             lane={lane_read:.9e}({:+.3}dB) to={to_read:.9e}({:+.3}dB) | \
+             sha from={from_sha} lane={lane_sha} to={to_sha} | digest from={} lane={} to={}",
+            case.name,
+            case.from,
+            case.mid,
+            case.to,
+            db(from_read),
+            db(lane_read),
+            db(to_read),
+            from_out.digest,
+            lane_out.digest,
+            to_out.digest
+        );
+
+        assert_ne!(
+            lane_out.digest, from_out.digest,
+            "{}: 泳道必须真的改浮点母带（否则字段没有落点）",
+            case.name
+        );
+        assert_ne!(
+            lane_sha, from_sha,
+            "{}: 泳道必须真的改文件字节（否则字段没有落点）",
+            case.name
+        );
+        assert_ne!(
+            lane_out.digest, to_out.digest,
+            "{}: 泳道不得退化成静态 to（否则「移动」没有被证）",
+            case.name
+        );
+        assert_ne!(lane_sha, to_sha, "{}: 同上（文件字节）", case.name);
+
+        let low = from_read.min(to_read);
+        let high = from_read.max(to_read);
+        assert!(
+            lane_read > low && lane_read < high,
+            "{}: 泳道读数必须严格落在静态端点之间（from={from_read:.9e} lane={lane_read:.9e} to={to_read:.9e}）",
+            case.name
+        );
+        if case.rising {
+            assert!(
+                lane_read > from_read && lane_read < to_read,
+                "{}: 升方向必须 from < lane < to（from={from_read:.9e} lane={lane_read:.9e} to={to_read:.9e}）",
+                case.name
+            );
+        } else {
+            assert!(
+                lane_read < from_read && lane_read > to_read,
+                "{}: 降方向必须 from > lane > to（from={from_read:.9e} lane={lane_read:.9e} to={to_read:.9e}）",
+                case.name
+            );
+        }
+    }
+}
+
+/// ⭐ `#307` 判据 2/3：**端点对账** —— 泳道恒等于端点值 ⇒ 逐字节等于**同值静态**。
+///
+/// `from` 与 `to` 各一次（`enabled` 的 `to` 就是**平泳道@`1`**，⛔ 不是 hold 曲线）。
+/// `from` 那一半同时是判据 2 的正对照「泳道恒等于 from ⇒ 逐字节等于静态 from」。
+/// 这是**第一次**比 `to` 端点：`#305` 的平泳道只在 `from` 值上比过。
+#[test]
+fn each_compressor_lane_endpoint_is_byte_identical_to_the_same_static_value() {
+    for case in COMP_CASES {
+        let bytes = case.material.bytes();
+        for (label, value) in [("from", case.from), ("to", case.to)] {
+            let static_endpoint = project_with(case, value, &bytes);
+            let static_out = render(&static_endpoint, &bytes);
+            let static_sha = export_sha(&static_endpoint, &bytes, "endpoint-static");
+
+            let mut flat = project_with(case, case.from, &bytes);
+            add_device_lane(
+                &mut flat,
+                &[(0, value), (960, value), (ONE_SECOND_TICKS, value)],
+                true,
+            );
+            let flat_out = render(&flat, &bytes);
+            let flat_sha = export_sha(&flat, &bytes, "endpoint-flat");
+            println!(
+                "### #307 {} 端点 {label}={value}: 平泳道 sha={flat_sha} digest={} | \
+                 静态 sha={static_sha} digest={}",
+                case.name, flat_out.digest, static_out.digest
+            );
+            assert_eq!(
+                flat_out.digest, static_out.digest,
+                "{}: 平泳道@{label} 必须逐字节等于同值静态（浮点母带）",
+                case.name
+            );
+            assert_eq!(
+                flat_sha, static_sha,
+                "{}: 平泳道@{label} 必须逐字节等于同值静态（文件 sha256）",
+                case.name
+            );
+        }
+    }
+}
