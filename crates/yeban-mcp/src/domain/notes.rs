@@ -1074,6 +1074,7 @@ pub const OP_KINDS: &[&str] = &[
     SET_TRANSPORT_CONFIG_KIND,
     SET_TEMPO_KIND,
     SET_AUTHOR_KIND,
+    SET_TITLE_KIND,
     SET_TRACK_NAME_KIND,
     SET_CLIP_NAME_KIND,
     SET_DEVICE_NAME_KIND,
@@ -1103,7 +1104,7 @@ pub const OP_KINDS: &[&str] = &[
 /// `domain::plan_edit_notes` 用它决定"缺参时要不要响亮拒绝"。
 ///
 /// ⚠ 两份真相（本清单 vs 谓词的 `match`）由判据
-/// `every_catalog_kind_parses_and_round_trips` 在**全部 37 个 kind** 上对账
+/// `every_catalog_kind_parses_and_round_trips` 在**全部 38 个 kind** 上对账
 /// （`OP_KINDS` 里每个 kind 的最小合法形状 → 解析 → 与本清单比对），
 /// 因此"加了一个 kind 却忘了决定它读不读 `clipId`"会立刻变红。
 pub const ENVELOPE_CLIP_KINDS: &[&str] = &[
@@ -1129,7 +1130,7 @@ pub const ENVELOPE_CLIP_KINDS: &[&str] = &[
 /// [`ENVELOPE_CLIP_KINDS`] 去掉 `removeClip` 之后的子集，且这条包含关系由判据钉住。
 ///
 /// 两份真相（本清单 vs 谓词的 `match`）由判据
-/// `every_catalog_kind_compiles_to_exactly_one_op_variant` 在**全部 37 个 kind** 上
+/// `every_catalog_kind_compiles_to_exactly_one_op_variant` 在**全部 38 个 kind** 上
 /// 对账（`OP_KINDS` 里每个 kind 的规范形状 → 解析 → 与本清单比对），因此"加了一个
 /// kind 却忘了决定它读不读音符"会立刻变红。
 pub const NOTE_LEVEL_KINDS: &[&str] = &["add", "delete", "move", "velocity", SET_NOTE_TIMING_KIND];
@@ -1630,6 +1631,26 @@ pub const SET_AUTHOR_AUTHOR_FIELD: &str = "author";
 
 /// 设置署名形态允许出现的**全部**键（判别键 + 一个必填）。
 pub const SET_AUTHOR_FIELDS: [&str; 2] = ["kind", SET_AUTHOR_AUTHOR_FIELD];
+
+/// `ops[].kind` 的**设置标题**形态名（写 [`Op::SetTitle`]）。
+///
+/// 与模型 `Op` 变体名同词（`SetTitle` 的小驼峰），与 [`SET_AUTHOR_KIND`] 同一条规则。
+///
+/// ⚠ 它是**顶层文档字段**形态（与 [`SET_TRANSPORT_CONFIG_KIND`] / [`SET_TEMPO_KIND`] /
+/// [`SET_AUTHOR_KIND`] 同族）：不读不写音符，也不寻址音轨。
+pub const SET_TITLE_KIND: &str = "setTitle";
+
+/// 设置标题形态的**新标题**字段名（`ops[].title`，必填，字符串）。
+///
+/// ⚠ **⛔ 本层不发明**"非空"或"长度上限"：模型 `Op::SetTitle` 的校验**只有**
+/// "文档现值必须逐字节等于 `old_title`"（陈旧载荷 ⇒ `OpStateMismatch`），而
+/// `schemas/project.schema.json` 的 `title` 是**裸 `{"type":"string"}`**（必需，
+/// 但无 `minLength`、无 `maxLength`、无 `pattern`）⇒ 空串是一个**合法的明示值**
+/// （"显式清空标题"）。故本形态**照抄模型口径**：收任意字符串。
+pub const SET_TITLE_TITLE_FIELD: &str = "title";
+
+/// 设置标题形态允许出现的**全部**键（判别键 + 一个必填）。
+pub const SET_TITLE_FIELDS: [&str; 2] = ["kind", SET_TITLE_TITLE_FIELD];
 
 /// `ops[].kind` 的**设置音轨名**形态名（写 [`Op::SetTrackName`]）。
 pub const SET_TRACK_NAME_KIND: &str = "setTrackName";
@@ -2625,6 +2646,25 @@ pub enum NoteOp {
         /// 修改后的署名。
         new_author: String,
     },
+    /// 设置**作品标题**（[`Op::SetTitle`]，顶层 `title`）。
+    ///
+    /// 与 [`Self::SetTransportConfig`] / [`Self::SetTempo`] / [`Self::SetAuthor`] 同族
+    /// （顶层文档字段），载荷是 **`String`**（⛔ 不是 `Copy`）。
+    ///
+    /// ⭐ **本形态补上了什么**：`title` 是**必需**的顶层字段，而工具面此前**没有任何
+    /// 通路能改它** —— 它只在 `yeban_create_project` 里被写一次
+    /// （`domain/project_create.rs:370`）⇒ ⭐ **工程建得出、标题改不了**。
+    ///
+    /// ⚠ 模型**只有**一条前置条件：文档现值必须**逐字节**等于 `old_title`
+    /// （否则 `OpStateMismatch`）⇒ ⛔ **没有**空串/长度校验 ⇒ 本层也**不发明**它们
+    /// （见 [`SET_TITLE_TITLE_FIELD`] 的文档）。撤销载荷 `old_title` 由 [`compile`]
+    /// 从**当前文档**读（`project.title`）。
+    SetTitle {
+        /// 修改前的标题（来自当前文档）。
+        old_title: String,
+        /// 修改后的标题。
+        new_title: String,
+    },
     /// 设置**音轨名字**（[`Op::SetTrackName`]，寻址到一条音轨）。
     ///
     /// ⭐ **本形态补上了什么**：⭐ 在它之前工具面**只有 [建轨][Self::AddTrack] 时能给名字**
@@ -3212,6 +3252,7 @@ impl NoteOp {
             Self::SetTransportConfig { .. } => SET_TRANSPORT_CONFIG_KIND,
             Self::SetTempo { .. } => SET_TEMPO_KIND,
             Self::SetAuthor { .. } => SET_AUTHOR_KIND,
+            Self::SetTitle { .. } => SET_TITLE_KIND,
             Self::SetTrackName { .. } => SET_TRACK_NAME_KIND,
             Self::SetClipName { .. } => SET_CLIP_NAME_KIND,
             Self::SetDeviceName { .. } => SET_DEVICE_NAME_KIND,
@@ -3757,6 +3798,14 @@ fn parse_one(item: &Value) -> Result<NoteOp, Fault> {
                 new_author: read_required_string(object, SET_AUTHOR_AUTHOR_FIELD)?,
             })
         }
+        SET_TITLE_KIND => {
+            reject_set_title_fields(object)?;
+            Ok(NoteOp::SetTitle {
+                // ⚠ `old_title` 是**占位**：真值由 `compile` 从当前文档读。
+                old_title: String::new(),
+                new_title: read_required_string(object, SET_TITLE_TITLE_FIELD)?,
+            })
+        }
         SET_TRANSPORT_CONFIG_KIND => Ok(NoteOp::SetTransportConfig {
             new_config: parse_transport_config(object)?,
         }),
@@ -4199,6 +4248,16 @@ fn reject_set_author_fields(object: &Map<String, Value>) -> Result<(), Fault> {
         &SET_AUTHOR_FIELDS,
         SET_AUTHOR_KIND,
         "unknownSetAuthorField",
+    )
+}
+
+/// 拒绝 `setTitle` 里 [`SET_TITLE_FIELDS`] 之外的键。
+fn reject_set_title_fields(object: &Map<String, Value>) -> Result<(), Fault> {
+    reject_unknown_keys(
+        object,
+        &SET_TITLE_FIELDS,
+        SET_TITLE_KIND,
+        "unknownSetTitleField",
     )
 }
 
@@ -6935,6 +6994,14 @@ pub fn compile(
                     new_author: new_author.clone(),
                 }
             }
+            NoteOp::SetTitle { new_title, .. } => {
+                // 撤销载荷来自**当前文档**（照 `setAsset` 的 `old_asset` 口径，⛔ 不信调用方）。
+                // 模型只查"陈旧载荷"这一条，且是**逐字节**比较。
+                Op::SetTitle {
+                    old_title: project.title.clone(),
+                    new_title: new_title.clone(),
+                }
+            }
             NoteOp::SetTransportConfig { new_config } => {
                 // 撤销载荷来自**当前文档**（模型 `apply` 的前置条件读同一个字段）；
                 // 本层不自己写 `Op::invert`（那是模型的唯一事实源）。
@@ -9530,7 +9597,9 @@ mod tests {
         // 后为 21 —— 同样与真实 `kind` 同步。
         // 本票（音符时间位置）新增 `setNoteTiming`（第五个音符级形态）后为 37 —— 同样
         // 与真实 `kind` 同步。
-        assert_eq!(OP_KINDS.len(), 37);
+        // 本票（`#327` 标题）新增 `setTitle`（顶层文档字段，与 `setAuthor` 同族）后为 38
+        // —— 同样与真实 `kind` 同步。
+        assert_eq!(OP_KINDS.len(), 38);
         assert_eq!(TrackFlag::NAMES, [SET_TRACK_MUTE_KIND, SET_TRACK_SOLO_KIND]);
         assert!(OP_KINDS.contains(&SET_TRACK_MUTE_KIND));
         assert!(OP_KINDS.contains(&SET_TRACK_SOLO_KIND));
@@ -14407,7 +14476,7 @@ mod tests {
     fn every_catalog_kind_parses_and_round_trips() {
         let ulid = "01J8ZQ00000000000000000999";
         // 每个 kind 的**最小合法形状**（只到解析期为止；文档相关的前置条件在 `compile`）。
-        let table: [(&str, serde_json::Value); 37] = [
+        let table: [(&str, serde_json::Value); 38] = [
             (
                 "add",
                 serde_json::json!({"note": {"startTick": 0, "pitch": 60, "durationTicks": 480}}),
@@ -14469,6 +14538,7 @@ mod tests {
             ),
             ("setTempo", serde_json::json!({"bpm": 140.0})),
             ("setAuthor", serde_json::json!({"author": "A"})),
+            ("setTitle", serde_json::json!({"title": "T"})),
             (
                 "setTrackName",
                 serde_json::json!({"trackId": ulid, "name": "A"}),
@@ -14573,6 +14643,7 @@ mod tests {
                 "setTransportConfig",
                 "setTempo",
                 "setAuthor",
+                "setTitle",
                 "setTrackName",
                 "setClipName",
                 "setDeviceName",
@@ -14951,7 +15022,7 @@ mod tests {
             Value,
             &'a str,
         );
-        let rows: [Row<'_>; 38] = [
+        let rows: [Row<'_>; 39] = [
             (
                 "add",
                 None,
@@ -15088,6 +15159,13 @@ mod tests {
                 None,
                 serde_json::json!({"author": "New Author"}),
                 "SetAuthor",
+            ),
+            (
+                "setTitle",
+                None,
+                None,
+                serde_json::json!({"title": "夜半 标题"}),
+                "SetTitle",
             ),
             (
                 "setTrackName",
@@ -15264,7 +15342,7 @@ mod tests {
         assert_eq!(
             rows.len(),
             OP_KINDS.len() + 1,
-            "37 个 kind ＋ 1 个额外载荷分支"
+            "38 个 kind ＋ 1 个额外载荷分支"
         );
 
         let mut seen: Vec<&str> = Vec::new();
@@ -15311,8 +15389,9 @@ mod tests {
         }
         // ⚠ 本数是**去重后的变体数**（`add` 的三种形态共用 `AddNote`）⇒ 与
         // `rows.len()` 可以不同，也与 `OP_KINDS.len()` 不同。本轮新增
-        // `setNoteTiming`（独占一个变体）⇒ 37 → **38**。
-        assert_eq!(seen.len(), 38);
+        // `setNoteTiming`（独占一个变体）⇒ 37 → **38**；`#327` 的 `setTitle`（独占一个
+        // 变体）⇒ 38 → **39**。
+        assert_eq!(seen.len(), 39);
         // ⭐ `#179`：音符级分支集合**恰好是五个**，且逐字等于发布清单。
         assert_eq!(
             NOTE_LEVEL_KINDS,
@@ -15322,7 +15401,7 @@ mod tests {
         assert_eq!(
             note_level_seen.len(),
             5,
-            "全部 37 个 kind 里 `is_note_level()` 为真的必须**恰好五个**，实际: {note_level_seen:?}"
+            "全部 38 个 kind 里 `is_note_level()` 为真的必须**恰好五个**，实际: {note_level_seen:?}"
         );
         assert_eq!(
             note_level_seen,
@@ -16100,7 +16179,92 @@ mod tests {
         assert_eq!(reason_of(&not_string).as_deref(), Some("valueMustBeString"));
     }
 
-    /// 两个形态的**字面名与支持集合**被钉住。
+    /// `setTitle`：解析 → 编译到**正是** `Op::SetTitle` → `old_title` 来自**当前文档**
+    /// → 撤销一步逐字节恢复；陈旧 `old_title` 被拒；空串/非 ASCII 照收（模型无约束）。
+    ///
+    /// ⭐ 本判据对着「工程建得出、标题改不了」：`title` 此前唯一的结构写点是
+    /// `domain/project_create.rs:370`（`yeban_create_project`）。
+    ///
+    /// 注入（实测红）：① 编译成 `SetAuthor` ⇒ 那条 `Op::SetTitle` 匹配断言红；
+    /// ② `old_title` 用解析期的占位空串而不是文档现值 ⇒ 陈旧标题那条断言红。
+    #[test]
+    fn set_title_compiles_the_document_value_and_inverts_byte_for_byte() {
+        let mut project = filled_project();
+        let (track_id, clip_id) = lead_clip(&project);
+        let title_before = project.title.clone();
+        let author_before = project.author.clone();
+        let bpm_before = project.bpm;
+        let bytes_before = serde_json::to_string(&project).expect("序列化");
+
+        // ---- ① 解析：`old_title` 是占位，真值在编译期读文档 ----
+        let ops = parse_ops(&serde_json::json!([
+            {"kind": SET_TITLE_KIND, "title": "夜半 · Yeban"}
+        ]))
+        .expect("规范形状必须被接受");
+        assert_eq!(ops[0].kind_name(), SET_TITLE_KIND, "kind 必须回环一致");
+        assert!(!ops[0].is_note_level(), "顶层文档字段不读不写音符");
+
+        // ---- ② 编译到**正是** `Op::SetTitle`，且 `old_title` == 文档现值 ----
+        let compiled = compile(&project, &track_id, &clip_id, &ops).expect("编译");
+        assert_eq!(compiled.len(), 1);
+        match &compiled[0] {
+            Op::SetTitle {
+                old_title,
+                new_title,
+            } => {
+                assert_eq!(
+                    old_title, &title_before,
+                    "old 必须等于**文档现值**（⛔ 不信调用方声明）"
+                );
+                assert_eq!(new_title, "夜半 · Yeban");
+            }
+            other => panic!("应当是 SetTitle: {other:?}"),
+        }
+
+        compiled[0].apply(&mut project).expect("设置标题");
+        assert_eq!(project.title, "夜半 · Yeban");
+        assert_eq!(project.author, author_before, "改标题 ⛔ 不碰 author");
+        assert_eq!(project.bpm, bpm_before, "改标题 ⛔ 不碰 bpm");
+        assert!(project.validate().is_ok());
+        compiled[0].apply_inverse(&mut project).expect("逆操作");
+        assert_eq!(project.title, title_before, "逆操作必须回到原标题");
+        assert_eq!(
+            serde_json::to_string(&project).expect("序列化"),
+            bytes_before,
+            "一步撤销必须逐字节回到原状"
+        );
+
+        // ---- 空串是**合法的明示值**（模型与 schema 都没有"非空"约束）----
+        let empty = parse_ops(&serde_json::json!([{"kind": SET_TITLE_KIND, "title": ""}]))
+            .expect("空串必须被接受（⛔ 本层不发明模型没有的约束）");
+        let compiled_empty = compile(&project, &track_id, &clip_id, &empty).expect("编译");
+        let mut doc = project.clone();
+        compiled_empty[0].apply(&mut doc).expect("清空标题");
+        assert_eq!(doc.title, "", "空串必须如实落地");
+        assert!(doc.validate().is_ok(), "空标题的工程必须仍然合法");
+
+        // ---- 陈旧 `old_title` ⇒ `OpStateMismatch`（逐字节比较）----
+        let stale = Op::SetTitle {
+            old_title: "别的标题".to_owned(),
+            new_title: "X".to_owned(),
+        };
+        let mut doc = project.clone();
+        assert!(stale.apply(&mut doc).is_err(), "陈旧标题必须被拒");
+        assert_eq!(doc.title, title_before, "被拒之后文档必须不动");
+
+        // ---- 未知键 / 非字符串 响亮拒绝 ----
+        let unknown = parse_ops(&serde_json::json!([
+            {"kind": SET_TITLE_KIND, "title": "T", "author": "A"}
+        ]))
+        .expect_err("未知键必须被拒");
+        assert_eq!(reason_of(&unknown).as_deref(), Some("unknownSetTitleField"));
+
+        let not_string = parse_ops(&serde_json::json!([{"kind": SET_TITLE_KIND, "title": 3}]))
+            .expect_err("非字符串必须被拒");
+        assert_eq!(reason_of(&not_string).as_deref(), Some("valueMustBeString"));
+    }
+
+    /// 三个形态的**字面名与支持集合**被钉住。
     #[test]
     fn top_level_field_kinds_are_pinned() {
         assert_eq!(SET_TEMPO_KIND, "setTempo");
@@ -16109,9 +16273,16 @@ mod tests {
         assert_eq!(SET_AUTHOR_KIND, "setAuthor");
         assert_eq!(SET_AUTHOR_FIELDS, ["kind", "author"]);
         assert_eq!(SET_AUTHOR_AUTHOR_FIELD, "author");
+        assert_eq!(SET_TITLE_KIND, "setTitle");
+        assert_eq!(SET_TITLE_FIELDS, ["kind", "title"]);
+        assert_eq!(SET_TITLE_TITLE_FIELD, "title");
         assert_ne!(
             SET_TEMPO_KIND, SET_AUTHOR_KIND,
             "速度与署名是**两个不同**的顶层字段, 共用一个 kind 会让调用方分不开"
+        );
+        assert_ne!(
+            SET_AUTHOR_KIND, SET_TITLE_KIND,
+            "署名与标题是**两个不同**的顶层字段, 共用一个 kind 会让调用方分不开"
         );
     }
 

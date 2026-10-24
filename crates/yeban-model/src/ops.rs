@@ -599,6 +599,29 @@ pub enum Op {
         /// 修改后的署名。
         new_author: String,
     },
+    /// 设置**作品标题**（顶层 `title`，`[MODEL-AST-002]`）。
+    ///
+    /// 为什么必须有这个变体：`title` 是**顶层唯一权威**且**必需**的字段
+    /// （`schemas/project.schema.json` 的 `required` 里有它），而 `Op` 全集此前
+    /// **没有任何变体写得进它** —— 全仓唯一的**结构写**点是创建工程时的
+    /// `domain/project_create.rs:370` ⇒ ⭐ **工程建得出、标题改不了**。
+    /// 它与 [`Op::SetAuthor`] / [`Op::SetTempo`] 同族（顶层文档字段），载荷是
+    /// **`String`**（⛔ 不是 `Copy`）⇒ `apply` 与 `structural_inverse` 都必须**克隆**
+    /// （照 `SetAuthor` 那类含 `String` 载荷的先例）。
+    ///
+    /// ⚠ **本变体不收窄值域**：`title` 在契约里是裸 `{"type": "string"}`
+    /// （无 `minLength` / `maxLength` / `pattern`），`YebanProjectV1::validate`
+    /// 也**不查**它 ⇒ 空串与任意 UTF-8 都是**合法**的明示值（同 [`Op::SetAuthor`]，
+    /// ⛔ 不发明"非空"或长度上限）。
+    ///
+    /// ⚠ 命名用 `old_*` / `new_*`（**set** 类，照 [`Op::SetAuthor`]），⛔ **不是**
+    /// `previous_*` —— 后者在本仓是 **delete / remove** 类的惯例。
+    SetTitle {
+        /// 修改前的标题。
+        old_title: String,
+        /// 修改后的标题。
+        new_title: String,
+    },
     /// 声明（或更新）一条**资产索引**（`[MODEL-AST-007]` / `[MUST-GATE-014]`）。
     ///
     /// ⚠ 本变体是**三处已登记缺口的共同根**：在它之前，模型**没有任何 `Op` 能写
@@ -943,6 +966,7 @@ impl Op {
             Self::SetTransportConfig { .. } => "SetTransportConfig",
             Self::SetTempo { .. } => "SetTempo",
             Self::SetAuthor { .. } => "SetAuthor",
+            Self::SetTitle { .. } => "SetTitle",
             Self::SetAsset { .. } => "SetAsset",
             Self::RemoveAsset { .. } => "RemoveAsset",
             Self::SetTrackSolo { .. } => "SetTrackSolo",
@@ -1496,6 +1520,17 @@ impl Op {
                 }
                 Ok(())
             }
+            Self::SetTitle {
+                old_title,
+                new_title: _,
+            } => {
+                // 与 `SetAuthor` 同一条口径：`String` 逐字节比较，陈旧标题必被拒。
+                // ⚠ `title` 在契约与 `validate` 里都**没有**长度/非空约束 ⇒ 这里也⛔ 不发明。
+                if doc.title != *old_title {
+                    return Err(ModelError::OpStateMismatch { op: self.name() });
+                }
+                Ok(())
+            }
             Self::SetMacro {
                 track_id,
                 macro_index,
@@ -1910,6 +1945,14 @@ impl Op {
             } => Self::SetAuthor {
                 old_author: new_author.clone(),
                 new_author: old_author.clone(),
+            },
+            // 同 `SetAuthor`：`String` 不是 `Copy` ⇒ 克隆交换（⛔ 不伪造旧值）。
+            Self::SetTitle {
+                old_title,
+                new_title,
+            } => Self::SetTitle {
+                old_title: new_title.clone(),
+                new_title: old_title.clone(),
             },
             // ⭐ **照 [`Op::SetSection`] 的先例**（⛔ 不是纯交换）：`old_asset` 为 `None`
             // 表示"创建"，而**创建态没有可交换的旧值** ⇒ 逆操作**必须是删除变体**。
@@ -2378,6 +2421,11 @@ impl Op {
             // 只写那**一个**顶层字段：⛔ 不碰 `title`、⛔ 不碰 `bpm`。
             Self::SetAuthor { new_author, .. } => {
                 doc.author = new_author.clone();
+                Ok(())
+            }
+            // 只写那**一个**顶层字段：⛔ 不碰 `author`、⛔ 不碰 `bpm`、⛔ 不碰 `id`。
+            Self::SetTitle { new_title, .. } => {
+                doc.title = new_title.clone();
                 Ok(())
             }
             // 只取走那**一个**索引项：⛔ 不碰 `clip_pool`、⛔ 不碰归档里的字节。
@@ -3172,6 +3220,12 @@ mod tests {
             Op::SetAuthor {
                 old_author: String::new(),
                 new_author: "Yeban Author".to_owned(),
+            },
+            // 标题：夹具的 `title` 是 `"Ops Fixture"`（见 `fixture_document`）⇒ 前置条件成立。
+            // ⭐ 本变体补的是「建得出、改不了」的那**最后一个**顶层文档字段（`title`）。
+            Op::SetTitle {
+                old_title: "Ops Fixture".to_owned(),
+                new_title: "夜半 · Yeban".to_owned(),
             },
             // 改名：**唯一的名字通路**（此前只能删轨重建 ⇒ 换 `EntityId`）。
             // 音轨色标：**此前只能在建轨时给**（`AddTrack` 的载荷）⇒ 改色只能删轨重建。
@@ -6573,6 +6627,95 @@ mod tests {
         }
     }
 
+    /// `[MODEL-AST-002]` / `[ARCH-OPS-001]`：**标题可改且可逆**。
+    ///
+    /// 为什么必须有它：`title` 是**必需**的顶层字段，而 `Op` 全集此前没有写它的变体
+    /// ⇒ 唯一的结构写点是创建工程时的 `domain/project_create.rs:370`
+    /// ⇒ ⭐ **工程建得出、标题改不了**。本判据钉住改的那一半。
+    ///
+    /// 五条读数：
+    /// ① 改动**只**落在 `title`（与"同工程只换 title"的克隆**逐字节**比较）；
+    /// ② `inverse` 应用之后**逐字节**回到原状（`String` 克隆往返不丢字节）；
+    /// ③ 陈旧的 `old_title` 必须报 `OpStateMismatch`，且文档逐字节不动；
+    /// ④ **等长但内容不同**的旧标题也被拒（证明是逐字节，不是"长度相同就算相等"）；
+    /// ⑤ **空串是合法的明示值**（契约是裸 `{"type":"string"}`、`validate` 不查标题
+    ///    ⇒ ⛔ 本变体不发明"非空"约束）。
+    #[test]
+    fn set_title_is_reversible_and_rejects_a_stale_old_title() {
+        let mut doc = fixture_document();
+        let before = serde_json::to_vec(&doc).expect("序列化");
+        let old_title = doc.title.clone();
+        assert_eq!(old_title, "Ops Fixture", "夹具口径");
+
+        // ① 改动只落在 title 上（用非 ASCII，证明逐字节而不是逐字符）。
+        let new_title = "夜半 · Yeban".to_owned();
+        let op = Op::SetTitle {
+            old_title: old_title.clone(),
+            new_title: new_title.clone(),
+        };
+        op.precondition(&doc).expect("前置条件必须成立");
+        op.apply(&mut doc).expect("必须能应用");
+        assert_eq!(doc.title, new_title, "title 必须变成新值");
+        let mut expected = fixture_document();
+        expected.title = new_title.clone();
+        assert_eq!(
+            serde_json::to_vec(&doc).expect("s"),
+            serde_json::to_vec(&expected).expect("s"),
+            "改动必须**只**落在 title 上（⛔ 不碰 author / bpm / id）"
+        );
+
+        // ② 逆操作逐字节回到原状。
+        op.apply_inverse(&mut doc).expect("逆必须能应用");
+        assert_eq!(
+            serde_json::to_vec(&doc).expect("s"),
+            before,
+            "逆操作之后必须逐字节回到原状"
+        );
+
+        // ③ 陈旧的 old_title 被拒，且文档逐字节不动。
+        let stale = Op::SetTitle {
+            old_title: "别的标题".to_owned(),
+            new_title: new_title.clone(),
+        };
+        let stale_before = serde_json::to_vec(&doc).expect("s");
+        let error = stale.apply(&mut doc).expect_err("陈旧旧值必须被拒");
+        assert!(
+            matches!(error, ModelError::OpStateMismatch { .. }),
+            "必须报 OpStateMismatch, 实际 {error:?}"
+        );
+        assert_eq!(
+            serde_json::to_vec(&doc).expect("s"),
+            stale_before,
+            "被拒之后文档必须逐字节不动"
+        );
+
+        // ④ 等长但内容不同的旧值也必须被拒（逐字节，不是"长度相同就算相等"）。
+        let same_len: String = "x".repeat(old_title.len());
+        assert_ne!(same_len, old_title, "构造的旧值必须真的不同");
+        let same_len_stale = Op::SetTitle {
+            old_title: same_len,
+            new_title: new_title.clone(),
+        };
+        assert!(
+            same_len_stale.precondition(&doc).is_err(),
+            "等长但内容不同的旧值必须被拒"
+        );
+
+        // ⑤ 空串是**合法的明示值** —— 契约与 `validate` 都没有"非空"约束。
+        let empty = Op::SetTitle {
+            old_title: old_title.clone(),
+            new_title: String::new(),
+        };
+        empty.precondition(&doc).expect("空串标题必须是合法载荷");
+        let mut cleared = fixture_document();
+        empty.apply(&mut cleared).expect("清空标题必须能应用");
+        assert_eq!(cleared.title, "", "空串必须如实落地");
+        assert!(
+            cleared.validate().is_ok(),
+            "空标题的工程必须仍然合法（⛔ 不发明非空约束）"
+        );
+    }
+
     /// **全变体往返审计**（`[ARCH-OPS-001]` 的通则，机械化）。
     ///
     /// 指标（对象 + 单位）：对 `showcase_ops()` 里**每一个** `Op` 实例（单位 = 条），
@@ -6717,18 +6860,19 @@ mod tests {
         assert!(failures.is_empty(), "有变体未能逐字节往返: {failures:#?}");
     }
 
-    /// 三条**新 `set` 类**（`SetTransportConfig` / `SetTempo` / `SetAuthor`）的
+    /// 四条**新 `set` 类**（`SetTransportConfig` / `SetTempo` / `SetAuthor` / `SetTitle`）的
     /// `old_*` 相等口径**在合法文档上必须一致**（`[ARCH-OPS-001]` 的"陈旧载荷必被拒"）。
     ///
-    /// ⚠ 三条的**手段不同**，这是实测事实（⛔ 不是推断）：
+    /// ⚠ 四条里前三条的**手段不同**，这是实测事实（⛔ 不是推断）：
     /// * `SetTransportConfig` —— 派生的 `PartialEq`（⚙ 内部是逐字段、浮点用 `==`）；
     /// * `SetTempo` —— `same_f64`（**逐位**，`to_bits`）；
-    /// * `SetAuthor` —— `String` 的 `==`（**逐字节**）。
+    /// * `SetAuthor` —— `String` 的 `==`（**逐字节**）；
+    /// * `SetTitle` —— 同 `SetAuthor`（`String` 逐字节）。
     ///
     /// 差异只可能出在**浮点**上：`same_f64` 让 `-0.0` 与 `+0.0` 不等，而 `==` 让它们相等。
     /// ⚠ 但 `bpm` 的合法区间是 `MIN_BPM..=MAX_BPM`（`20.0..=999.0`）⇒ 一份 `validate()`
     /// 通过的文档里 `doc.bpm == ±0.0` **不可能** ⇒ ⭐ **那条差异路径不可达**。
-    /// 本判据把这句话**机械地钉住**：在合法文档上，三者对"相等"与"不等"给出**同一**判定。
+    /// 本判据把这句话**机械地钉住**：在合法文档上，四者对"相等"与"不等"给出**同一**判定。
     /// 若将来谁把 `same_f64` 改成 `==`、或把 `MIN_BPM` 调成 `0.0`，本判据会说话。
     #[test]
     fn set_class_old_equality_agrees_on_valid_documents() {
@@ -6788,10 +6932,22 @@ mod tests {
         };
         assert!(same.precondition(&doc).is_ok(), "③ 相等时必须接受");
 
-        // ④ 合法文档上：`doc.bpm` 与 `0.0` 的关系（证明 `-0.0` 那条路**不可达**）。
+        // ④ `SetTitle`：与 `SetAuthor` 同一条 `String` 逐字节口径。
+        let op = Op::SetTitle {
+            old_title: format!("{}x", doc.title),
+            new_title: doc.title.clone(),
+        };
+        assert!(op.precondition(&doc).is_err(), "④ 不同标题必须被拒");
+        let same = Op::SetTitle {
+            old_title: doc.title.clone(),
+            new_title: doc.title.clone(),
+        };
+        assert!(same.precondition(&doc).is_ok(), "④ 相等时必须接受");
+
+        // ⑤ 合法文档上：`doc.bpm` 与 `0.0` 的关系（证明 `-0.0` 那条路**不可达**）。
         assert!(
             (MIN_BPM..=MAX_BPM).contains(&doc.bpm),
-            "④ 合法文档的 bpm 必在区间内 ⇒ `-0.0 == 0.0` 那条差异不可达"
+            "⑤ 合法文档的 bpm 必在区间内 ⇒ `-0.0 == 0.0` 那条差异不可达"
         );
     }
 

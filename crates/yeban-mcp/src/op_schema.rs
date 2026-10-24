@@ -585,6 +585,16 @@ pub fn ops_items() -> Value {
                 true,
             ),
             op(
+                "setTitle",
+                "写工程标题（`title` 是必需顶层字段；模型没有空串/长度校验）",
+                &["kind", "title"],
+                json!({
+                    "kind": kind("setTitle"),
+                    "title": { "type": "string", "description": "新标题（可空串）" },
+                }),
+                true,
+            ),
+            op(
                 "setAutomationLane",
                 "写一条自动化泳道自己的属性，或 `remove:true` 取走它（目标音轨 = 顶层 `trackId`）",
                 &["kind", "lane"],

@@ -372,6 +372,16 @@
         },
         {
           "required": [
+            "SetTitle"
+          ],
+          "properties": {
+            "SetTitle": {
+              "type": "object"
+            }
+          }
+        },
+        {
+          "required": [
             "SetAsset"
           ],
           "properties": {
