@@ -35,6 +35,10 @@
 //!   ⚠ **音素**（`MidiNote::phonemes`）仍**不导出**：SMF 只有一种文本槽，
 //!   把 SVS 的对齐数据写进歌词槽等于把对齐数据**伪装成歌词** ⇒ 由
 //!   `yeban_export_midi` 的 `unsupported`（`phonemes`）如实登记。
+//! - ⭐ `#317`：**回读侧也读** `FF 05` ⇒ [`ParsedMidi::lyrics`]（严格 UTF-8、非空、
+//!   按 `(tick, text)` 排序）；空文本与非 UTF-8 分别计入
+//!   [`ParsedMidi::empty_lyrics`] / [`ParsedMidi::non_utf8_lyrics`]（⛔ lossy）。
+//!   ⚠ 解析器**只读不归属**：一条歌词属于哪颗音符由 `yeban-app` 的导入映射决定。
 //! - 歌词文本**不裁剪**：`Some("")` 不写事件，`Some(" ")` 原样写（不发明
 //!   "空白算空"的规则）; 同一 tick 多条按**文本字节序**排，导出字节仍只由内容决定。
 //! - 只导出 Metrical (PPQ) 时间分度; SMPTE 时间码文件在回读时被拒绝
@@ -754,6 +758,20 @@ impl ParsedNote {
     }
 }
 
+/// 回读得到的一条 `FF 05` 歌词事件。
+///
+/// ⭐ `#317`：**只在解析层读出来**，⛔ 不在这里发明"这条歌词属于哪颗音符"的归属 ——
+/// 那是 `yeban-app` 的 `plan_midi_import` 的事（SMF 只把歌词锚在**时间**上）。
+/// 文本按**严格 UTF-8** 解码：解码失败的事件不进本结构，只计入
+/// [`ParsedMidi::non_utf8_lyrics`]。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ParsedLyric {
+    /// 这条事件在**文件里**的绝对 tick（⛔ 已换算到模型 960 PPQ 之前）。
+    pub tick: u64,
+    /// 严格 UTF-8 解码后的文本（**非空**；空事件只计入 [`ParsedMidi::empty_lyrics`]）。
+    pub text: String,
+}
+
 /// 回读结果。
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ParsedMidi {
@@ -765,6 +783,15 @@ pub struct ParsedMidi {
     pub tempos: Vec<MidiTempo>,
     /// 全部音符, 按 `(start_tick, channel, key, velocity)` 排序。
     pub notes: Vec<ParsedNote>,
+    /// ⭐ `#317`：可归属的歌词事件（**非空**且严格 UTF-8），按 `(tick, text)` 排序。
+    ///
+    /// 多条轨道的事件会合并到这一个列表里（与 [`Self::notes`] 的全轨合并同口径）；
+    /// ⛔ 不丢、⛔ 不去重。空 `FF 05` 与非 UTF-8 事件不在这里（见下面两个计数）。
+    pub lyrics: Vec<ParsedLyric>,
+    /// `FF 05` 的负载**不是**合法 UTF-8 的事件数（⛔ 不做 lossy 替换、⛔ 不猜文本）。
+    pub non_utf8_lyrics: usize,
+    /// `FF 05` 的负载是**空**的事件数（空文本没有音节可写，⛔ 不是"丢失"）。
+    pub empty_lyrics: usize,
 }
 
 /// SMF 里的一个 chunk: fourcc 与它在文件里的负载范围。
@@ -857,6 +884,11 @@ pub fn parse_smf(bytes: &[u8]) -> Result<ParsedMidi, MidiError> {
 
     let mut notes = Vec::new();
     let mut tempos = Vec::new();
+    // ⭐ `#317`：`FF 05` 的三种命运在此分叉 —— 可解码的非空文本进 `lyrics`，
+    // 空文本与非 UTF-8 各自计数（⛔ lossy、⛔ 静默丢）。
+    let mut lyrics = Vec::new();
+    let mut non_utf8_lyrics = 0usize;
+    let mut empty_lyrics = 0usize;
     for track in &smf.tracks {
         let mut tick = 0u64;
         // (channel, key) -> (start_tick, velocity); 用 Vec 保序, 便于"后开先关"匹配。
@@ -882,6 +914,17 @@ pub fn parse_smf(bytes: &[u8]) -> Result<ParsedMidi, MidiError> {
                         _ => {}
                     }
                 }
+                // ⭐ `#317`：歌词的**唯一**读取点。严格 UTF-8（⛔ `from_utf8_lossy`）：
+                // 解不出来的字节**不冒充**文本，只让计数加一。
+                TrackEventKind::Meta(MetaMessage::Lyric(bytes)) => match std::str::from_utf8(bytes)
+                {
+                    Ok("") => empty_lyrics += 1,
+                    Ok(text) => lyrics.push(ParsedLyric {
+                        tick,
+                        text: text.to_owned(),
+                    }),
+                    Err(_) => non_utf8_lyrics += 1,
+                },
                 TrackEventKind::Meta(MetaMessage::Tempo(mpqn)) => tempos.push(MidiTempo {
                     tick,
                     microseconds_per_quarter: Some(mpqn.as_int()),
@@ -928,11 +971,21 @@ pub fn parse_smf(bytes: &[u8]) -> Result<ParsedMidi, MidiError> {
     }
 
     notes.sort_by_key(|note| note.key());
+    // 确定性：歌词按 `(tick, text)` 排序（同一 tick 内按文本字节序）。归属只看
+    // tick 上的**计数**，因此排序不影响"唯一才归属"的判定。
+    lyrics.sort_by(|left, right| {
+        left.tick
+            .cmp(&right.tick)
+            .then_with(|| left.text.cmp(&right.text))
+    });
     Ok(ParsedMidi {
         format,
         ppq,
         tempos,
         notes,
+        lyrics,
+        non_utf8_lyrics,
+        empty_lyrics,
     })
 }
 
@@ -1043,6 +1096,92 @@ mod tests {
 
         let parsed = parse_smf(&bytes).expect("回读");
         assert_eq!(parsed.notes.len(), 2, "歌词事件不影响音符回读");
+    }
+
+    /// ⭐ `#317` 判据 1: 回读侧把 `FF 05` 读成 `(文件 tick, 文本)`，tick 是**生效起点**
+    ///（第三颗 `micro_timing_ticks = -12` ⇒ 1908），⛔ 不是模型 960 PPQ 换算后的值。
+    #[test]
+    fn parser_reads_ff05_lyrics_with_their_file_ticks() {
+        let mut first = note(0, 60, 480, 100);
+        first.syllable = Some("do".to_owned());
+        let mut second = note(960, 64, 480, 100);
+        second.syllable = Some("re".to_owned());
+        let mut third = note(1920, 67, 480, 100);
+        third.micro_timing_ticks = Some(-12);
+        third.syllable = Some("mi".to_owned());
+        let mut fourth = note(2880, 72, 480, 100);
+        fourth.syllable = Some("fa".to_owned());
+        let bytes = export(
+            MidiFormat::SingleTrack,
+            vec![track_from_notes("", 0, &[first, second, third, fourth])],
+        )
+        .to_smf_bytes()
+        .expect("导出");
+        let parsed = parse_smf(&bytes).expect("回读");
+        assert_eq!(
+            parsed.lyrics,
+            vec![
+                ParsedLyric {
+                    tick: 0,
+                    text: "do".to_owned(),
+                },
+                ParsedLyric {
+                    tick: 960,
+                    text: "re".to_owned(),
+                },
+                ParsedLyric {
+                    tick: 1908,
+                    text: "mi".to_owned(),
+                },
+                ParsedLyric {
+                    tick: 2880,
+                    text: "fa".to_owned(),
+                },
+            ],
+            "歌词按 (tick, text) 排序；tick = 音符的生效起点（含 micro -12）"
+        );
+        assert_eq!(
+            (parsed.non_utf8_lyrics, parsed.empty_lyrics),
+            (0, 0),
+            "四条都是非空合法 UTF-8"
+        );
+        assert_eq!(parsed.notes.len(), 4, "歌词不影响音符回读");
+    }
+
+    /// ⭐ `#317` 判据 2: 空 `FF 05` 只计数（没有音节可写），非 UTF-8 **严格拒绝**
+    /// —— ⛔ `from_utf8_lossy`，⛔ 猜文本；两者都不进 `lyrics`。
+    #[test]
+    fn parser_counts_empty_and_non_utf8_lyrics_without_guessing() {
+        fn hand_built(lyric: &[u8]) -> Vec<u8> {
+            let mut payload = vec![0x00, 0x90, 0x3C, 0x40, 0x00, 0xFF, 0x05];
+            payload.push(u8::try_from(lyric.len()).expect("测试文本很短"));
+            payload.extend_from_slice(lyric);
+            payload.extend_from_slice(&[0x60, 0x80, 0x3C, 0x00, 0x00, 0xFF, 0x2F, 0x00]);
+            let mut bytes = Vec::new();
+            bytes.extend_from_slice(b"MThd");
+            bytes.extend_from_slice(&6u32.to_be_bytes());
+            bytes.extend_from_slice(&0u16.to_be_bytes());
+            bytes.extend_from_slice(&1u16.to_be_bytes());
+            bytes.extend_from_slice(&96u16.to_be_bytes());
+            bytes.extend_from_slice(b"MTrk");
+            bytes.extend_from_slice(
+                &u32::try_from(payload.len())
+                    .expect("测试负载很短")
+                    .to_be_bytes(),
+            );
+            bytes.extend_from_slice(&payload);
+            bytes
+        }
+
+        let empty = parse_smf(&hand_built(b"")).expect("空歌词是合法 SMF");
+        assert!(empty.lyrics.is_empty(), "空文本没有音节");
+        assert_eq!((empty.empty_lyrics, empty.non_utf8_lyrics), (1, 0));
+        assert_eq!(empty.notes.len(), 1, "音符照常回读");
+
+        let invalid = parse_smf(&hand_built(&[0xFF, 0xFE])).expect("非 UTF-8 歌词是合法 SMF");
+        assert!(invalid.lyrics.is_empty(), "⛔ lossy：不产生替换文本");
+        assert_eq!((invalid.empty_lyrics, invalid.non_utf8_lyrics), (0, 1));
+        assert_eq!(invalid.notes.len(), 1, "音符照常回读");
     }
 
     /// ⭐ `#312` 判据 2: `None` / `Some("")` 都**不写**歌词事件（空文本没有内容），
@@ -2118,9 +2257,13 @@ mod tests {
                     ppq: 480,
                     tempos: Vec::new(),
                     notes: Vec::new(),
+                    lyrics: Vec::new(),
+                    non_utf8_lyrics: 0,
+                    empty_lyrics: 0,
                 }
             ),
-            "ParsedMidi { format: Parallel, ppq: 480, tempos: [], notes: [] }"
+            "ParsedMidi { format: Parallel, ppq: 480, tempos: [], notes: [], lyrics: [], \
+             non_utf8_lyrics: 0, empty_lyrics: 0 }"
         );
         assert_eq!(
             format!(

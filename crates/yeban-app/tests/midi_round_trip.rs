@@ -29,8 +29,8 @@
 //! | **轨归属**（哪条轨） | ❌ **丢失**（只对**导入的副本**）：副本一律落到"第一条非 master 音轨的第一个摆放"；原有轨道各自的音符**一颗不动** | ② `MTrk` 数**仍是 4**、通道 1 仍是 3 颗/通道 0 变 15 颗；③ 目标片段 6 + 9 颗、别的轨一颗不变；③b **按身份**挑出的 9 颗副本正是"落点轨"里的新音符 |
 //! | **MIDI 通道** | ❌ **丢失**（只对副本）：`MidiNote` 没有通道字段 ⇒ 副本一律落在通道 0；原件保留各自通道 | ② 副本 `(0, …)` 与原件 `(1, …)` 同时存在且通道集合恰为 `{0, 1}`；③b 身份切分 |
 //! | `micro_timing_ticks` | ❌ 字段丢失，但**微时值已并入 tick** ⇒ 位置不丢 | ③ `start_tick == 2868` 且 `micro_timing_ticks == None`；③b 副本逐颗 `micro == None` |
-//! | `probability` / `ratchet` / 弯音 / 滑音 | ❌ 导入侧不读（导出侧也不写：导出写"作者写下的音符"，不做触发/连击判定） | ③b：夹具里那颗**确实** `expressive == true`（先断言，否则该行空转），而 9 颗副本逐颗 `expressive == false` |
-//! | 歌词 `syllable` | ⚠ ⭐ `#312`：**导出侧真的写**（F1 里有 `FF 05`），**导入侧还没读**（`parse_smf` 忽略 `MetaMessage::Lyric`）⇒ 副本仍 `expressive == false`；这一行**不再**声称"SMF 没有载体" | ① 之后对 F1 的 `FF 05 02 6C 61` 断言 + ③b 的 `!row.expressive` |
+//! | `probability` / `ratchet` / 弯音 / 滑音 | ❌ 导入侧不读（导出侧也不写：导出写"作者写下的音符"，不做触发/连击判定） | ③b：夹具里那颗**确实** `expressive == true`（先断言，否则该行空转），而 9 颗副本逐颗 `expressive == false`（歌词已单列） |
+//! | 歌词 `syllable` | ✅ ⭐ `#317`：**唯一才归属** —— 按文件 tick，恰 1 颗**起点**音符 ∧ 恰 1 条非空严格 UTF-8 词 ⇒ 写进那颗音符；和弦 / 一 tick 多词**不猜**，逐条报 `dropped`；空 `FF 05` 与非 UTF-8 分别计数（⛔ lossy） | ① 之后对 F1 的 `FF 05 02 6C 61` 断言；③b **恰 1 颗**副本 `start == 0` 且 `syllable == Some("la")`，其余 None；⑤ filled 端到端 4 次 `"syllable"` / 4 条 `FF 05`；⑥ 和弦正对照 4 颗 4 词 ⇒ `dropped=4`、0 归属 |
 //! | 非 960 PPQ 的文件 | ⚠ 按整数比例换算到 960（`scale_ticks`），不能整除时**截断** | 由 `import_midi.rs` 的单元判据覆盖（480 ⇒ ×2），本文件不重复 |
 //!
 //! ## 规范来源 (Normative)
@@ -55,7 +55,7 @@ use std::time::{Duration, Instant};
 
 use yeban_app::bridge::demo_project;
 use yeban_app::open::open_project_file;
-use yeban_midi::midi::{MidiFormat, ParsedMidi, parse_smf, track_chunks};
+use yeban_midi::midi::{MidiFormat, ParsedLyric, ParsedMidi, parse_smf, track_chunks};
 use yeban_model::container::write_project_container;
 use yeban_model::ids::AssetHash;
 use yeban_model::{ClipContent, ClipPlacement, ClipPoolEntry, EntityId, LoopConfig, MidiNote};
@@ -125,6 +125,26 @@ fn field(line: &str, key: &str) -> Option<String> {
 
 fn line_with<'a>(text: &'a str, prefix: &str) -> Option<&'a str> {
     text.lines().find(|line| line.starts_with(prefix))
+}
+
+/// 数一段字节里出现某个子序列多少次（**单位 = 匹配次数**，⛔ 不是行数）。
+fn occurrences(haystack: &[u8], needle: &[u8]) -> usize {
+    haystack
+        .windows(needle.len())
+        .filter(|window| *window == needle)
+        .count()
+}
+
+/// 读 `.yeban` 容器里的**原始** `project.json` 字节（⛔ 不经过反序列化 ⇒ 可数字节出现次数）。
+fn project_json_of(path: &Path) -> Vec<u8> {
+    let bytes = std::fs::read(path).expect("读容器");
+    let archive =
+        yeban_model::container::read_container(&bytes, &Default::default()).expect("容器必须可读");
+    archive
+        .get("project.json")
+        .expect("容器必须有 project.json")
+        .data
+        .clone()
 }
 
 /// 把工程写成一个真 `.yeban` 容器（与生产写出路径**同一个**函数）。
@@ -233,6 +253,37 @@ fn round_trip_fixture() -> (YebanProjectV1, EntityId, EntityId) {
     (project, target, clip_id)
 }
 
+/// ⭐ `#317` 和弦夹具：清掉落点片段的全部音符，只留 **tick 960 的 4 颗**（音高
+/// `64/67/72/76`），并按 `syllables` 给它们挂词。⛔ 不依赖别的轨道有音符
+///（`demo_project` 只有这一个 MIDI 片段）。
+fn lyric_chord_project(syllables: [Option<&str>; 4]) -> YebanProjectV1 {
+    let mut project = demo_project();
+    let track_id = *project
+        .tracks
+        .keys()
+        .find(|id| **id != project.master_bus_track_id)
+        .expect("有一条非 master 音轨");
+    let clip_id = project.tracks[&track_id]
+        .clips
+        .values()
+        .next()
+        .expect("落点轨有摆放")
+        .clip_id;
+    let entry = project.clip_pool.get_mut(&clip_id).expect("片段在池里");
+    let ClipContent::Midi { notes } = &mut entry.content else {
+        panic!("演示夹具的落点必须是 MIDI 片段");
+    };
+    notes.clear();
+    for (pitch, syllable) in [64_u8, 67, 72, 76].into_iter().zip(syllables) {
+        let id = EntityId::new();
+        let mut note = MidiNote::new(id, 960, pitch, 480);
+        note.syllable = syllable.map(str::to_owned);
+        assert!(notes.insert(id, note).is_none(), "身份必须唯一");
+    }
+    assert_eq!(project.validate(), Ok(()), "和弦夹具必须合法");
+    project
+}
+
 /// 模型侧一颗音符的可观测元组 `(pitch, velocity, start_tick, duration_ticks, micro_timing_ticks)`。
 type ModelNote = (u8, u8, u64, u64, Option<i16>);
 
@@ -268,8 +319,11 @@ struct NoteRow {
     start: u64,
     duration: u64,
     micro: Option<i16>,
-    /// 往返后**留不住**的表现力字段（概率 / 连击 / 弯音 / 滑音：导入侧不读；歌词：
-    /// ⭐ `#312` **导出侧会写** `FF 05`、导入侧还没读）：任一非默认即 `true`。
+    /// ⭐ `#317`：导入侧现在会读 `FF 05` —— 这个字段是**唯一归属**的结果，
+    /// 与"留不住的表现力字段"分开量（否则"歌词读到了"会被误读成"回归"）。
+    syllable: Option<String>,
+    /// 往返后**留不住**的表现力字段（概率 / 连击 / 弯音 / 滑音：导入侧不读；
+    /// ⛔ **不含**歌词：`syllable` 单独占一栏）。
     expressive: bool,
 }
 
@@ -289,11 +343,11 @@ fn clip_rows(project: &YebanProjectV1, track: EntityId, clip: EntityId) -> Vec<N
             start: note.start_tick,
             duration: note.duration_ticks,
             micro: note.micro_timing_ticks,
+            syllable: note.syllable.clone(),
             expressive: note.probability.is_some()
                 || note.ratchet.is_some()
                 || note.slide.is_some()
                 || !note.pitch_bend_curve.is_empty()
-                || note.syllable.is_some()
                 || !note.phonemes.is_empty(),
         })
         .collect();
@@ -364,9 +418,9 @@ fn export_import_export_round_trips_every_note_item_by_item() {
     let bytes1 = std::fs::read(&f1).expect("读 F1");
     let n1 = note_multiset(&bytes1);
 
-    // ⭐ `#312`：导出侧**真的**把歌词写进文件 —— 夹具给落点片段第一颗音符挂了
-    // `syllable = "la"`。因此下面"导入副本 expressive == false"只证明**导入侧
-    // 还没读 lyric meta**，⛔ 不再（错误地）证明"SMF 里没有载体"。
+    // ⭐ `#312`/`#317`：导出侧**真的**把歌词写进文件，导入侧现在**也读** —— 夹具给
+    // 落点片段第一颗音符挂了 `syllable = "la"`，F1 里就恰好一条 `FF 05 02 6C 61`；
+    // 导入后它必须**唯一归属**回 tick 0 的那颗副本（③b 断言）。
     let lyric = [0xFF_u8, 0x05, 0x02, b'l', b'a'];
     assert_eq!(
         bytes1
@@ -589,8 +643,31 @@ fn export_import_export_round_trips_every_note_item_by_item() {
     );
     assert!(
         imported.iter().all(|row| !row.expressive),
-        "副本上的表现力字段必须为空：概率/连击/弯音/滑音是导出侧不写，歌词是\
-         ⭐ `#312` 后**导出侧写了、导入侧还没读**（`parse_smf` 忽略 lyric meta）: {imported:?}"
+        "副本上的**非歌词**表现力字段必须为空（概率/连击/弯音/滑音是导出侧不写、\
+         导入侧不读）: {imported:?}"
+    );
+    // ⭐ `#317`：歌词**唯一才归属** —— F1 只有一条 `la`（tick 0，该 tick 恰 1 颗起点音符）
+    // ⇒ 9 颗副本里**恰 1 颗**拿到它，其余仍是 None（⛔ 猜、⛔ 复制）。
+    let lyric_copies: Vec<&NoteRow> = imported
+        .iter()
+        .filter(|row| row.syllable.is_some())
+        .collect();
+    assert_eq!(
+        lyric_copies.len(),
+        1,
+        "F1 的唯一一条歌词只能归属一颗副本: {imported:?}"
+    );
+    assert_eq!(lyric_copies[0].start, 0, "歌词必须落在同 tick 的副本上");
+    assert_eq!(
+        lyric_copies[0].syllable.as_deref(),
+        Some("la"),
+        "文本必须逐字保真: {imported:?}"
+    );
+    assert!(
+        imported
+            .iter()
+            .all(|row| row.syllable.is_none() || row.start == 0),
+        "别的副本不许拿到音节: {imported:?}"
     );
     // 对照：原有那颗**带**表现力字段的音符必须原样还在（⛔ 导入不是"把整个工程洗一遍"）。
     assert!(
@@ -602,7 +679,8 @@ fn export_import_export_round_trips_every_note_item_by_item() {
 
     eprintln!(
         "[midi-round-trip] n1={} n2={} ppq={}/*{}*/ 头={:02X}{:02X} channels={:?} 落点={} 颗 \
-         （按身份认出的副本={} 颗，全部 micro=None 且 expressive=false；原有表现力音符 {} 颗仍在）",
+         （按身份认出的副本={} 颗，micro=None、非歌词 expressive=false、歌词唯一归属 {} 颗；\
+         原有表现力音符 {} 颗仍在）",
         n1.len(),
         n2.len(),
         p1.ppq,
@@ -612,8 +690,259 @@ fn export_import_export_round_trips_every_note_item_by_item() {
         channels,
         landed.len(),
         imported.len(),
+        lyric_copies.len(),
         after_rows.iter().filter(|row| row.expressive).count()
     );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// ⭐ `#317` **C6 主判据（端到端）**：`filled` 导出 **143 B** ⇒ 导入 **default** 工程
+/// ⇒ `project.json` 里 `"syllable"` **4 次** ⇒ 重导出 **4 条 `FF 05`**，且
+/// `(tick, text)` 逐字 = `(0,do)(960,re)(1908,mi)(2880,fa)`（`1908` 含 `micro -12`）。
+///
+/// ⚠ **落点必须是 default(demo) 工程**：导入 filled 工程会读到**原件**的 4 个
+/// `"syllable"`（导入件一个都没有）⇒ 那就成了一个会自己满足自己的夹具。
+#[test]
+fn filled_export_imports_its_four_lyrics_and_reexports_them_at_the_same_ticks() {
+    let dir = scratch_dir("lyrics-filled");
+    let filled = dir.join("Filled.mid");
+    let run = invoke(&[
+        "--project-sample",
+        "filled",
+        "--export-midi",
+        filled.to_str().expect("utf8"),
+    ]);
+    assert_eq!(run.code, 0, "filled 导出必须成功; stderr={}", run.stderr);
+    let bytes = std::fs::read(&filled).expect("读 filled.mid");
+    assert_eq!(bytes.len(), 143, "filled 导出的字节契约是 143 B");
+    assert_eq!(
+        AssetHash::of_bytes(&bytes).as_str(),
+        "82077185a8fbe59674036f3ba00385f25cee95676b9df71f975c5fd27b262440",
+        "导出侧一个字节都不许变（#312 的 143 B 契约）"
+    );
+    assert_eq!(
+        occurrences(&bytes, &[0xFF, 0x05]),
+        4,
+        "filled 导出里有 4 条 FF 05（夹具非空转）"
+    );
+    let exported = parsed(&bytes);
+    assert_eq!(
+        exported.lyrics,
+        vec![
+            ParsedLyric {
+                tick: 0,
+                text: "do".to_owned(),
+            },
+            ParsedLyric {
+                tick: 960,
+                text: "re".to_owned(),
+            },
+            ParsedLyric {
+                tick: 1908,
+                text: "mi".to_owned(),
+            },
+            ParsedLyric {
+                tick: 2880,
+                text: "fa".to_owned(),
+            },
+        ],
+        "filled 的歌词 tick 是音符的生效起点（1908 = 1920 - 12）"
+    );
+
+    let re = dir.join("Re.mid");
+    let saved = dir.join("filled-imported.yeban");
+    let run = invoke(&[
+        "--project-sample",
+        "default",
+        "--import-midi",
+        filled.to_str().expect("utf8"),
+        "--export-midi",
+        re.to_str().expect("utf8"),
+        "--save-as",
+        saved.to_str().expect("utf8"),
+    ]);
+    assert_eq!(
+        run.code, 0,
+        "导入 + 重导出 + 保存必须成功; stderr={}",
+        run.stderr
+    );
+    let line = line_with(&run.stdout, "imported-midi:").expect("必须有 imported-midi 行");
+    for (key, expected) in [
+        ("lyrics", "4"),
+        ("attached", "4"),
+        ("dropped", "0"),
+        ("non-utf8", "0"),
+        ("empty", "0"),
+    ] {
+        assert_eq!(
+            field(line, key).as_deref(),
+            Some(expected),
+            "报告字段 {key} 必须是 {expected}: {line}"
+        );
+    }
+
+    // 落盘工程的原始 JSON：`"syllable"` 恰好 4 次且都是非 null（⛔ 量到原件的 4 次）。
+    let json = project_json_of(&saved);
+    assert_eq!(
+        occurrences(&json, b"\"syllable\""),
+        4,
+        "导入后 project.json 里必须有 4 个 syllable 键（落点是 default 工程）"
+    );
+    assert_eq!(
+        occurrences(&json, b"\"syllable\":\""),
+        4,
+        "4 个都必须是**非 null** 的音节（⛔ 只数键、⛔ 把 null 算进去）"
+    );
+
+    // 重导出：4 条 FF 05，tick/text 逐字相等（与输入文件同一组读数）。
+    let re_bytes = std::fs::read(&re).expect("读重导出");
+    assert_eq!(
+        occurrences(&re_bytes, &[0xFF, 0x05]),
+        4,
+        "重导出必须仍有 4 条 FF 05（零丢失、零膨胀）"
+    );
+    let round_tripped = parsed(&re_bytes);
+    assert_eq!(
+        round_tripped.lyrics, exported.lyrics,
+        "重导出的 (tick, text) 必须与导入的文件逐字相同"
+    );
+    assert!(
+        round_tripped
+            .notes
+            .iter()
+            .any(|note| note.start_tick == 1908),
+        "1908 的微时值位置必须在重导出里保留: {:?}",
+        round_tripped.notes
+    );
+
+    eprintln!(
+        "[midi-round-trip/lyrics] filled={} B sha 82077185…; 导入后 syllable 键={} 非 null={}; \
+         重导出 FF05={} ticks={:?}",
+        bytes.len(),
+        occurrences(&json, b"\"syllable\""),
+        occurrences(&json, b"\"syllable\":\""),
+        occurrences(&re_bytes, &[0xFF, 0x05]),
+        round_tripped
+            .lyrics
+            .iter()
+            .map(|lyric| lyric.tick)
+            .collect::<Vec<_>>()
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// ⭐ `#317` **和弦正对照**（`#316` 实测的形状）：tick 960 有 **4 颗起点音符**。
+///
+/// - 4 条词 ⇒ 归属 **0**、`dropped=4`（⛔ 按文件序配对：文本序 `laa,re,si,sol`
+///   与音高序 `64,67,72,76` 不同，一一配对会 4/4 全错）；
+/// - 只有 1 条词 ⇒ 仍归属 **0**、`dropped=1`（⛔ 一颗词复制给四颗）。
+///
+/// 两种都断言落盘 `project.json` 里 `"syllable"` = **0** 次、重导出 `FF 05` = **0** 条
+///（零错配、零膨胀）。
+#[test]
+fn a_chord_with_lyrics_attaches_none_and_reports_every_dropped_lyric() {
+    let dir = scratch_dir("lyrics-chord");
+    let cases: [(&str, [Option<&str>; 4], &str, &str); 2] = [
+        (
+            "four",
+            [Some("laa"), Some("re"), Some("si"), Some("sol")],
+            "4",
+            "4",
+        ),
+        ("one", [Some("laa"), None, None, None], "1", "1"),
+    ];
+    for (tag, syllables, expected_read, expected_dropped) in cases {
+        let project = lyric_chord_project(syllables);
+        let container = write_container(&dir, &format!("chord-{tag}.yeban"), &project);
+        let mid = dir.join(format!("chord-{tag}.mid"));
+        let run = invoke(&[
+            "--open",
+            container.to_str().expect("utf8"),
+            "--export-midi",
+            mid.to_str().expect("utf8"),
+        ]);
+        assert_eq!(run.code, 0, "[{tag}] 导出必须成功; stderr={}", run.stderr);
+        let bytes = std::fs::read(&mid).expect("读和弦 MIDI");
+        let chord = parsed(&bytes);
+        assert_eq!(chord.notes.len(), 4, "[{tag}] 文件里必须恰 4 颗音符");
+        assert!(
+            chord.notes.iter().all(|note| note.start_tick == 960),
+            "[{tag}] 4 颗都在 tick 960: {:?}",
+            chord.notes
+        );
+        assert_eq!(
+            chord.notes.iter().map(|note| note.key).collect::<Vec<_>>(),
+            vec![64, 67, 72, 76],
+            "[{tag}] 音高序"
+        );
+        assert_eq!(
+            chord.lyrics.len(),
+            expected_read.parse::<usize>().expect("数字"),
+            "[{tag}] 文件里的歌词条数"
+        );
+        if tag == "four" {
+            assert_eq!(
+                chord
+                    .lyrics
+                    .iter()
+                    .map(|lyric| lyric.text.as_str())
+                    .collect::<Vec<_>>(),
+                vec!["laa", "re", "si", "sol"],
+                "4 条词的**文本序**与音高序不同 ⇒ 文件序配对必然全错"
+            );
+        }
+
+        let saved = dir.join(format!("chord-{tag}-imported.yeban"));
+        let re = dir.join(format!("chord-{tag}-re.mid"));
+        let run = invoke(&[
+            "--project-sample",
+            "default",
+            "--import-midi",
+            mid.to_str().expect("utf8"),
+            "--export-midi",
+            re.to_str().expect("utf8"),
+            "--save-as",
+            saved.to_str().expect("utf8"),
+        ]);
+        assert_eq!(
+            run.code, 0,
+            "[{tag}] 导入 + 重导出必须成功; stderr={}",
+            run.stderr
+        );
+        let line = line_with(&run.stdout, "imported-midi:").expect("必须有 imported-midi 行");
+        for (key, expected) in [
+            ("lyrics", expected_read),
+            ("attached", "0"),
+            ("dropped", expected_dropped),
+            ("non-utf8", "0"),
+            ("empty", "0"),
+        ] {
+            assert_eq!(
+                field(line, key).as_deref(),
+                Some(expected),
+                "[{tag}] 报告字段 {key}: {line}"
+            );
+        }
+
+        let json = project_json_of(&saved);
+        assert_eq!(
+            occurrences(&json, b"\"syllable\""),
+            0,
+            "[{tag}] 和弦不归属 ⇒ project.json 里一个 syllable 都不许有"
+        );
+        let re_bytes = std::fs::read(&re).expect("读重导出");
+        assert_eq!(
+            occurrences(&re_bytes, &[0xFF, 0x05]),
+            0,
+            "[{tag}] 零膨胀：重导出不许凭空多出 FF 05"
+        );
+        eprintln!(
+            "[midi-round-trip/chord-{tag}] notes=4 tick=960 词={expected_read} ⇒ attached=0 \
+             dropped={expected_dropped}；落盘 syllable=0，重导出 FF05=0"
+        );
+    }
 
     let _ = std::fs::remove_dir_all(&dir);
 }

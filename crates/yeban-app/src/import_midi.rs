@@ -30,8 +30,8 @@
 //!
 //! ⚠ 本节是**读数**，⛔ 不是评判：每一条都由 `grep` / 类型可从本文件的实现复算。
 //!
-//! 1. **只消费 [`ParsedMidi::notes`] 与 [`ParsedMidi::ppq`]** —— 生产代码里出现的
-//!    `parsed.*` 字段**只有**这两个（见 [`plan_midi_import`]）。⭐ 由此可复算：
+//! 1. **只消费 [`ParsedMidi::notes`] / [`ParsedMidi::lyrics`] / [`ParsedMidi::ppq`]** ——
+//!    生产代码里出现的 `parsed.*` 字段**只有**这三个（见 [`plan_midi_import`]）。⭐ 由此可复算：
 //!    `grep -n 'parsed\.' crates/yeban-app/src/import_midi.rs` 的结果里⛔ 不出现
 //!    `parsed.tempos` / `parsed.format`。
 //! 2. **tempo map 不参与映射**：`ParsedMidi::tempos`（[`yeban_midi::midi::MidiTempo`]）
@@ -43,9 +43,14 @@
 //! 4. **单一目标**：全部音符进**同一个**音轨与**同一个**片段 —— 目标由
 //!    [`MidiImportOptions`] 决定（`None` 时取第一条非 master 音轨、该轨的第一个摆放）。
 //!    ⛔ 不按通道 / ⛔ 不按文件里的轨道拆分。
-//! 5. **支持的输入范围**：⛔ 本文件不复述"支持哪些格式" —— 那是
+//! 5. **歌词只做"唯一才归属"**（⭐ `#317`）：按**文件 tick** 看，恰 1 颗**起点**音符
+//!    ∧ 恰 1 条非空严格 UTF-8 歌词 ⇒ 写进那颗音符的 `syllable`；其余逐条计入
+//!    [`MidiLyricCounts::dropped`]。⛔ 按文件序猜和弦、⛔ 一颗词复制给多颗、
+//!    ⛔ 认"正在发声"的音符。空 `FF 05` 与非 UTF-8 分别计入 `empty` / `non_utf8`。
+//! 6. **支持的输入范围**：⛔ 本文件不复述"支持哪些格式" —— 那是
 //!    [`yeban_midi::midi::parse_smf`] 及其错误变体的事（⭐ 指路，⛔ 不手抄）。
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use yeban_midi::midi::{ParsedMidi, parse_smf};
@@ -65,6 +70,36 @@ pub struct MidiImportOptions {
     pub clip_id: Option<EntityId>,
 }
 
+/// ⭐ `#317`：一次导入的歌词读数（**唯一**计算点在 [`plan_midi_import`]）。
+///
+/// 分桶互不重叠，且恒有 **`read == attached + dropped`**：
+/// - `read`：非空、严格 UTF-8 解码成功的 `FF 05` 条数（可归属的候选）；
+/// - `attached`：唯一归属到一颗音符的条数（该 tick **恰 1 颗起点音符** ∧ 恰 1 条候选歌词）；
+/// - `dropped`：没有归属的候选条数（和弦 / 一 tick 多词 / 无音符）；
+/// - `non_utf8`：负载不是合法 UTF-8 的 `FF 05` 条数（⛔ lossy、⛔ 猜）；
+/// - `empty`：负载为空的 `FF 05` 条数（没有音节可写）。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct MidiLyricCounts {
+    /// 可归属的候选条数（非空 + 严格 UTF-8）。
+    pub read: usize,
+    /// 唯一归属的条数。
+    pub attached: usize,
+    /// 未归属的候选条数。
+    pub dropped: usize,
+    /// 非 UTF-8 的 `FF 05` 条数。
+    pub non_utf8: usize,
+    /// 空 `FF 05` 条数。
+    pub empty: usize,
+}
+
+impl MidiLyricCounts {
+    /// 自检：`read == attached + dropped`（分桶既不重叠也不漏）。
+    #[must_use]
+    pub const fn is_consistent(self) -> bool {
+        self.read == self.attached + self.dropped
+    }
+}
+
 /// 导入计划（**纯函数产物**：提交之前的一切）。
 #[derive(Clone, Debug, PartialEq)]
 pub struct MidiImportPlan {
@@ -78,6 +113,8 @@ pub struct MidiImportPlan {
     pub clip_id: EntityId,
     /// 文件的时间分度（PPQ）。
     pub ppq: u16,
+    /// ⭐ `#317`：歌词的读取／归属／丢弃读数。
+    pub lyrics: MidiLyricCounts,
 }
 
 /// 导入报告（形态照 `MidiExportReport`：路径／条数／目标／提交身份／**来源**）。
@@ -95,10 +132,16 @@ pub struct MidiImportReport {
     pub commit: EntityId,
     /// 本次编辑的**来源标记**（本切片恒为 [`OpOrigin::MidiInput`]）。
     pub origin: OpOrigin,
+    /// ⭐ `#317`：歌词的读取／归属／丢弃读数（⛔ 不沉默地少做）。
+    pub lyrics: MidiLyricCounts,
 }
 
 impl MidiImportReport {
     /// 一行可读摘要（CLI 打印它；`origin` 用可检索的短名）。
+    ///
+    /// ⭐ `#317`：`lyrics= attached= dropped=` 是三类**互不重叠**的读数；
+    /// `non-utf8=` / `empty=` 是另外两类（见 [`MidiLyricCounts`]）。恒等式
+    /// `lyrics == attached + dropped` 由 [`MidiLyricCounts::is_consistent`] 自检。
     #[must_use]
     pub fn summary(&self) -> String {
         let origin = match self.origin {
@@ -107,11 +150,17 @@ impl MidiImportReport {
             _ => "other",
         };
         format!(
-            "imported-midi: path={} notes={} track={} clip={} commit={} origin={origin}",
+            "imported-midi: path={} notes={} lyrics={} attached={} dropped={} non-utf8={} \
+             empty={} track={} clip={} commit={} origin={origin}",
             self.path
                 .as_ref()
                 .map_or_else(|| "<bytes>".to_owned(), |path| path.display().to_string()),
             self.notes,
+            self.lyrics.read,
+            self.lyrics.attached,
+            self.lyrics.dropped,
+            self.lyrics.non_utf8,
+            self.lyrics.empty,
             self.track_id.to_canonical_string(),
             self.clip_id.to_canonical_string(),
             self.commit.to_canonical_string(),
@@ -154,9 +203,23 @@ pub fn scale_ticks(tick: u64, ppq: u16) -> u64 {
 
 /// **纯映射**：`ParsedNote` ⇒ `Op::AddNote`（⛔ 不改工程、⛔ 不提交）。
 ///
-/// ⚠ **只消费 `parsed.notes` 与 `parsed.ppq`**（⭐ 可由本函数体 `grep 'parsed\.'` 复算）；
-/// [`ParsedMidi::tempos`] 与 [`ParsedMidi::format`] ⛔ 不参与映射 ——
-/// 完整口径见本模块文档的"口径"一节。
+/// ⚠ **只消费 `parsed.notes` / `parsed.lyrics` / `parsed.ppq`**（⭐ 可由本函数体
+/// `grep 'parsed\.'` 复算）；[`ParsedMidi::tempos`] 与 [`ParsedMidi::format`] ⛔ 不参与映射
+/// —— 完整口径见本模块文档的"口径"一节。
+///
+/// ## ⭐ `#317` 歌词归属：**唯一才归属**
+///
+/// 一条歌词只在**同时**满足下面两条时写进对应 [`MidiNote::syllable`]：
+///
+/// 1. 该 **tick 恰有 1 颗起点音符**（`note.start_tick == lyric.tick`）；
+/// 2. 该 tick **恰有 1 条非空、严格 UTF-8 的歌词**。
+///
+/// ⚠ 语义边界（`#316` 实测的结论，写在这里而不只写在报告里）：
+/// **只认起点 == tick 的音符、⛔ 不认正在发声（跨过该 tick）的音符。**
+/// 因此 `filled` 的 4/4 全部归属；4 颗音符同一 tick 的 4 条词**一条都不归属**
+/// （⛔ 按文件序配对 —— `#316` 实测文本序与音高序不同，配对会 4/4 全错）；
+/// 4 颗音符只有 1 条词也**不归属**（⛔ 一颗词复制给四颗 = 零膨胀的反面）。
+/// 未归属的候选**逐条计入** [`MidiLyricCounts::dropped`]，⛔ 不沉默。
 ///
 /// # Errors
 ///
@@ -170,6 +233,26 @@ pub fn plan_midi_import(
         return Err(MidiImportError::Empty("解析出的音符数为 0".to_owned()));
     }
     let (track_id, clip_id) = destination(project, options)?;
+
+    // ⭐ `#317`：按**文件 tick** 建两张计数表（⛔ `scale_ticks` 之后 —— 归属是文件里的
+    // 时间关系，不是模型的 960 PPQ 关系）。只数**起点**，⛔ 不数正在发声的音符。
+    let mut note_count_at: BTreeMap<u64, usize> = BTreeMap::new();
+    for note in &parsed.notes {
+        *note_count_at.entry(note.start_tick).or_insert(0) += 1;
+    }
+    let mut lyric_count_at: BTreeMap<u64, usize> = BTreeMap::new();
+    for lyric in &parsed.lyrics {
+        *lyric_count_at.entry(lyric.tick).or_insert(0) += 1;
+    }
+    // 可归属的 tick → 文本。两个恰为 1 才进表；其余一律留在 `dropped`。
+    let mut attachable: BTreeMap<u64, &str> = BTreeMap::new();
+    for lyric in &parsed.lyrics {
+        if note_count_at.get(&lyric.tick) == Some(&1) && lyric_count_at.get(&lyric.tick) == Some(&1)
+        {
+            attachable.insert(lyric.tick, lyric.text.as_str());
+        }
+    }
+
     // 预分配：音符条数在解析后就已知（⛔ 不让 `Vec` 为 1000 个 Op 反复扩容）。
     let mut ops: Vec<Op> = Vec::with_capacity(parsed.notes.len());
     ops.extend(parsed.notes.iter().map(|note| {
@@ -182,6 +265,9 @@ pub fn plan_midi_import(
             end.saturating_sub(start).max(1),
         );
         model_note.velocity = note.velocity;
+        if let Some(text) = attachable.get(&note.start_tick) {
+            model_note.syllable = Some((*text).to_owned());
+        }
         Op::AddNote {
             track_id,
             clip_id,
@@ -189,12 +275,25 @@ pub fn plan_midi_import(
         }
     }));
     let notes = ops.len();
+    let lyrics = MidiLyricCounts {
+        read: parsed.lyrics.len(),
+        attached: attachable.len(),
+        dropped: parsed.lyrics.len() - attachable.len(),
+        non_utf8: parsed.non_utf8_lyrics,
+        empty: parsed.empty_lyrics,
+    };
+    // 分桶自检：既不重叠也不漏（`read == attached + dropped`）。
+    debug_assert!(
+        lyrics.is_consistent(),
+        "歌词分桶必须满足 read == attached + dropped: {lyrics:?}"
+    );
     Ok(MidiImportPlan {
         ops,
         notes,
         track_id,
         clip_id,
         ppq: parsed.ppq,
+        lyrics,
     })
 }
 
@@ -263,6 +362,7 @@ pub fn import_midi_bytes(
         clip_id: plan.clip_id,
         commit,
         origin: OpOrigin::MidiInput,
+        lyrics: plan.lyrics,
     })
 }
 
@@ -289,16 +389,50 @@ pub fn import_midi_file(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use yeban_midi::midi::{MidiFormat, MidiTempo, ParsedNote};
+    use yeban_midi::midi::{MidiFormat, MidiTempo, ParsedLyric, ParsedNote};
 
     /// 造一份**直接可用的** `ParsedMidi`（⛔ 不需要真的编码 SMF：本判据测的是**映射**）。
     fn parsed(ppq: u16, notes: Vec<ParsedNote>) -> ParsedMidi {
+        parsed_with_lyrics(ppq, notes, Vec::new(), 0, 0)
+    }
+
+    /// 同上，另带歌词读数（⛔ 不经 `parse_smf`，本判据只测归属）。
+    fn parsed_with_lyrics(
+        ppq: u16,
+        notes: Vec<ParsedNote>,
+        lyrics: Vec<ParsedLyric>,
+        non_utf8_lyrics: usize,
+        empty_lyrics: usize,
+    ) -> ParsedMidi {
         ParsedMidi {
             format: MidiFormat::SingleTrack,
             ppq,
             tempos: Vec::<MidiTempo>::new(),
             notes,
+            lyrics,
+            non_utf8_lyrics,
+            empty_lyrics,
         }
+    }
+
+    fn lyric(tick: u64, text: &str) -> ParsedLyric {
+        ParsedLyric {
+            tick,
+            text: text.to_owned(),
+        }
+    }
+
+    fn syllables(plan: &MidiImportPlan) -> Vec<(u64, Option<String>)> {
+        let mut rows: Vec<(u64, Option<String>)> = plan
+            .ops
+            .iter()
+            .map(|op| match op {
+                Op::AddNote { note, .. } => (note.start_tick, note.syllable.clone()),
+                other => panic!("必须是 AddNote: {other:?}"),
+            })
+            .collect();
+        rows.sort_by_key(|row| row.0);
+        rows
     }
 
     fn note(key: u8, velocity: u8, start: u64, end: u64) -> ParsedNote {
@@ -351,6 +485,208 @@ mod tests {
             mapped,
             vec![(60, 100, 960, 960), (64, 64, 0, 480)],
             "tick 乘 2、音高与力度原样、时值取 end-start（同乘 2）"
+        );
+    }
+
+    /// ⭐ `#317` 判据 a（`filled` 形状）：一 tick 一颗音符、一条词 ⇒ **4/4 全部归属**，
+    /// `syllable` 逐颗落到**同一 tick** 的那颗音符上（按 `do/re/mi/fa` 的文件 tick）。
+    #[test]
+    fn lyrics_attach_when_each_tick_has_exactly_one_note_and_one_lyric() {
+        let project = yeban_model::samples::filled_project();
+        let plan = plan_midi_import(
+            &project,
+            &parsed_with_lyrics(
+                960,
+                vec![
+                    note(60, 100, 0, 480),
+                    note(64, 100, 960, 1440),
+                    note(67, 100, 1920, 2400),
+                    note(72, 100, 2880, 3360),
+                ],
+                vec![
+                    lyric(0, "do"),
+                    lyric(960, "re"),
+                    lyric(1920, "mi"),
+                    lyric(2880, "fa"),
+                ],
+                0,
+                0,
+            ),
+            &MidiImportOptions::default(),
+        )
+        .expect("必须有目标");
+        assert_eq!(
+            plan.lyrics,
+            MidiLyricCounts {
+                read: 4,
+                attached: 4,
+                dropped: 0,
+                non_utf8: 0,
+                empty: 0,
+            },
+            "4 条候选、4 条唯一归属"
+        );
+        assert!(plan.lyrics.is_consistent(), "read == attached + dropped");
+        assert_eq!(
+            syllables(&plan),
+            vec![
+                (0, Some("do".to_owned())),
+                (960, Some("re".to_owned())),
+                (1920, Some("mi".to_owned())),
+                (2880, Some("fa".to_owned())),
+            ],
+            "音节必须落到同一 tick 的那颗音符上"
+        );
+    }
+
+    /// ⭐ `#317` 判据 b（和弦正对照，`#316` 实测的形状）：**同一 tick 4 颗起点音符 ＋
+    /// 4 条词** ⇒ 一条都不归属（⛔ 按文件序一一配对 —— 文本序与音高序不同，4/4 会全错），
+    /// 4 条**逐条**计入 `dropped`；⛔ 零错配、⛔ 零膨胀。
+    #[test]
+    fn a_chord_with_four_lyrics_attaches_none_and_reports_all_four_as_dropped() {
+        let project = yeban_model::samples::filled_project();
+        let plan = plan_midi_import(
+            &project,
+            &parsed_with_lyrics(
+                960,
+                vec![
+                    note(64, 100, 960, 1440),
+                    note(67, 100, 960, 1440),
+                    note(72, 100, 960, 1440),
+                    note(76, 100, 960, 1440),
+                ],
+                vec![
+                    lyric(960, "laa"),
+                    lyric(960, "re"),
+                    lyric(960, "si"),
+                    lyric(960, "sol"),
+                ],
+                0,
+                0,
+            ),
+            &MidiImportOptions::default(),
+        )
+        .expect("必须有目标");
+        assert_eq!(
+            plan.lyrics,
+            MidiLyricCounts {
+                read: 4,
+                attached: 0,
+                dropped: 4,
+                non_utf8: 0,
+                empty: 0,
+            },
+            "和弦 ⇒ 0 归属、4 条 dropped"
+        );
+        assert!(plan.lyrics.is_consistent(), "read == attached + dropped");
+        assert_eq!(
+            syllables(&plan)
+                .iter()
+                .filter(|row| row.1.is_some())
+                .count(),
+            0,
+            "⛔ 猜：4 颗音符一条都不许拿到音节"
+        );
+    }
+
+    /// ⭐ `#317` 判据 c（单颗带词的和弦）：4 颗起点音符只有 1 条词 ⇒ **也不归属**
+    /// （那个 tick 有 4 颗音符 ⇒ 唯一性不成立），`dropped` 报 **1**；⛔ 复制给四颗。
+    #[test]
+    fn one_lyric_on_a_four_note_chord_is_dropped_instead_of_copied() {
+        let project = yeban_model::samples::filled_project();
+        let plan = plan_midi_import(
+            &project,
+            &parsed_with_lyrics(
+                960,
+                vec![
+                    note(64, 100, 960, 1440),
+                    note(67, 100, 960, 1440),
+                    note(72, 100, 960, 1440),
+                    note(76, 100, 960, 1440),
+                ],
+                vec![lyric(960, "laa")],
+                0,
+                0,
+            ),
+            &MidiImportOptions::default(),
+        )
+        .expect("必须有目标");
+        assert_eq!(
+            plan.lyrics,
+            MidiLyricCounts {
+                read: 1,
+                attached: 0,
+                dropped: 1,
+                non_utf8: 0,
+                empty: 0,
+            },
+            "1 条词 + 4 颗音符 ⇒ 不归属、dropped=1"
+        );
+        assert_eq!(
+            syllables(&plan)
+                .iter()
+                .filter(|row| row.1.is_some())
+                .count(),
+            0,
+            "⛔ 不许把一颗词复制给四颗音符（零膨胀）"
+        );
+    }
+
+    /// ⭐ `#317` 语义边界（`#316`）：**只认起点 == tick 的音符、⛔ 不认正在发声的音符**。
+    /// 一颗从 0 响到 960 的音符跨过了 tick 480，但 480 上没有任何音符**起点** ⇒ dropped=1。
+    #[test]
+    fn a_note_that_only_spans_the_lyric_tick_is_not_its_owner() {
+        let project = yeban_model::samples::filled_project();
+        let plan = plan_midi_import(
+            &project,
+            &parsed_with_lyrics(
+                960,
+                vec![note(60, 100, 0, 960)],
+                vec![lyric(480, "mid")],
+                0,
+                0,
+            ),
+            &MidiImportOptions::default(),
+        )
+        .expect("必须有目标");
+        assert_eq!(plan.lyrics.read, 1);
+        assert_eq!(plan.lyrics.attached, 0, "⛔ 正在发声 ≠ 起点");
+        assert_eq!(plan.lyrics.dropped, 1);
+        assert!(syllables(&plan).iter().all(|row| row.1.is_none()));
+    }
+
+    /// ⭐ `#317` 分桶自检：`read == attached + dropped` 恒成立；空／非 UTF-8 的计数
+    /// **原样**从解析层传进报告（⛔ 被并进 dropped、⛔ 静默丢）。
+    #[test]
+    fn the_lyric_buckets_are_disjoint_and_read_equals_attached_plus_dropped() {
+        let project = yeban_model::samples::filled_project();
+        let plan = plan_midi_import(
+            &project,
+            &parsed_with_lyrics(
+                960,
+                vec![note(60, 100, 0, 480), note(64, 100, 960, 1440)],
+                vec![lyric(0, "do"), lyric(960, "re"), lyric(960, "sol")],
+                2,
+                1,
+            ),
+            &MidiImportOptions::default(),
+        )
+        .expect("必须有目标");
+        assert_eq!(
+            plan.lyrics,
+            MidiLyricCounts {
+                read: 3,
+                attached: 1,
+                dropped: 2,
+                non_utf8: 2,
+                empty: 1,
+            }
+        );
+        assert!(plan.lyrics.is_consistent(), "read == attached + dropped");
+        assert_eq!(
+            plan.lyrics.read,
+            plan.lyrics.attached + plan.lyrics.dropped,
+            "恒等式必须逐字成立"
         );
     }
 

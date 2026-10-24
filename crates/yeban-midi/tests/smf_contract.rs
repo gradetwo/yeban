@@ -1684,6 +1684,14 @@ fn filled_sample_writes_its_four_syllables_as_lyric_events() {
     let parsed = parse_smf(&bytes).expect("回读");
     assert_eq!(parsed.notes.len(), 4);
     assert_eq!(parsed.ppq, 960);
+    // ⭐ `#317`：导入侧读 `FF 05` **一个导出字节都不许改** —— 这份 143 B 的字节契约
+    // 在 `#312` 已 `success`，本单只加回读，不碰编码器。
+    assert_eq!(bytes.len(), 143, "filled 导出必须仍是 143 B");
+    assert_eq!(
+        yeban_model::AssetHash::of_bytes(&bytes).as_str(),
+        "82077185a8fbe59674036f3ba00385f25cee95676b9df71f975c5fd27b262440",
+        "filled 导出字节的 sha256 必须一位不变"
+    );
 }
 
 /// ⭐ `#312` **正对照（两条，缺一不可）**：
