@@ -21,7 +21,9 @@ use yeban_model::{
     DeviceDefinition, DeviceKind, EntityId, ParameterValue, RoutingEdge, RoutingGraph, RoutingKind,
     TrackV3, YebanProjectV1,
 };
-use yeban_render::automation::{device_param_automations, forced_insert_instances};
+use yeban_render::automation::{
+    compressing_nodes_with_lanes, device_param_automations, forced_insert_instances,
+};
 use yeban_render::inserts::{
     InsertChain, compressing_nodes, project_inserts, project_inserts_with_forced_instances,
     project_inserts_with_forced_strips, strip_source_params, strip_source_slot,
@@ -1750,5 +1752,103 @@ fn compressing_nodes_agree_with_the_compiled_chains() {
         pre_scan,
         BTreeSet::from([compressor, threshold_alias]),
         "只有真的写了压缩参数的轨会压缩（显式 0 的开关不算）"
+    );
+}
+
+/// ⭐ `#309` 机制判据：pre-pan tap 的**并集**判据必须**精度匹配**。
+///
+/// 生产判据 = [`compressing_nodes_with_lanes`]（静态投影 ∪ 非恒等
+/// `compressor_enabled` 泳道）。本判据钉的是**粒度的结果**，⛔ 不是"有泳道就搬"：
+///
+/// 1. 静态关 ＋ 非恒等 `compressor_enabled` 泳道（`0 → 1`）⇒ 静态预扫描**仍空**、
+///    并集**含该轨**（`#308` 的缺陷面 / `#309` 的修法）；
+/// 2. **平泳道**（`0 → 0`）⇒ identity ⇒ 并集仍空；
+/// 3. 只自动化 `threshold_db`（静态关）⇒ 压缩级不执行（`#304` 边界 1）⇒ 并集仍空
+///    —— ⚠ 这一条正是 [`forced_insert_instances`] 的**反例**：它按"任一非恒等 strip
+///    泳道"置位，会把这条 EQ/增益粒度的轨也搬进输出级；
+/// 4. `read_enabled: false` 的非恒等泳道 ⇒ 并集仍空；
+/// 5. 静态开（无泳道）⇒ 并集仍含该轨（静态那一半没被并集弄丢）。
+#[test]
+fn compressing_nodes_with_lanes_counts_only_a_nonidentity_compressor_enabled_lane() {
+    let devices = || {
+        vec![effect(&[
+            ("compressor_enabled", 0.0),
+            ("threshold_db", -12.0),
+        ])]
+    };
+    let track_id = node(1);
+    let union = |project: &YebanProjectV1| {
+        let automations = device_param_automations(project, SR);
+        let nodes = compressing_nodes_with_lanes(&project.tracks, &automations);
+        let forced = forced_insert_instances(&automations);
+        (nodes, forced)
+    };
+
+    // 0. 静态关、无泳道：静态与并集都空。
+    let plain = project_with_device_automation(devices(), 0, &[]);
+    let (nodes, forced) = union(&plain);
+    assert!(forced.strip.is_empty());
+    assert!(nodes.is_empty(), "没有泳道 ⇒ 不压缩：{nodes:?}");
+
+    // 1. 静态关 ＋ `compressor_enabled` 的 0→1 泳道：静态空、并集含该轨。
+    let ramp = project_with_device_automation(devices(), 0, &[(0, 0.0), (1920, 1.0)]);
+    let automations = device_param_automations(&ramp, SR);
+    assert!(
+        compressing_nodes(&ramp.tracks).is_empty(),
+        "静态预扫描必须仍空（这是 #308 的缺陷面）"
+    );
+    assert_eq!(
+        compressing_nodes_with_lanes(&ramp.tracks, &automations),
+        BTreeSet::from([track_id]),
+        "非恒等 `compressor_enabled` 泳道 ⇒ 该轨会压缩 ⇒ 并集必须含它"
+    );
+
+    // 2. 平泳道（0→0）＝ identity ⇒ 不置位。
+    let flat = project_with_device_automation(devices(), 0, &[(0, 0.0), (1920, 0.0)]);
+    let (nodes, _) = union(&flat);
+    assert!(nodes.is_empty(), "平泳道是恒等 ⇒ 不得搬声相：{nodes:?}");
+
+    // 3. 只自动化 `threshold_db`（静态关）⇒ 压缩级不执行 ⇒ 不置位；
+    //    ⚠ 同一条轨在 `forced_insert_instances` 里**会**被置位（粗粒度的反例）。
+    let threshold_only = project_with_device_automation(devices(), 1, &[(0, -24.0), (1920, -6.0)]);
+    let (nodes, forced) = union(&threshold_only);
+    assert!(
+        forced.strip.contains(&track_id),
+        "对照：粗粒度扫描器会把这条轨置位（所以 ⛔ 不能拿它当 pre-pan 判据）"
+    );
+    assert!(
+        nodes.is_empty(),
+        "静态关时 `threshold_db` 泳道听不出 ⇒ 不得搬声相：{nodes:?}"
+    );
+
+    // 4. `read_enabled: false` 的非恒等泳道 ⇒ 整段忽略 ⇒ 不置位。
+    let target = AutomationTarget::DeviceParam {
+        track_id,
+        slot_index: 0,
+        param_index: 0,
+    };
+    let mut disabled = project_with_device_automation(devices(), 0, &[(0, 0.0), (1920, 1.0)]);
+    disabled
+        .tracks
+        .get_mut(&track_id)
+        .expect("轨必须存在")
+        .automation_lanes
+        .get_mut(&target)
+        .expect("泳道必须存在")
+        .read_enabled = false;
+    let (nodes, _) = union(&disabled);
+    assert!(
+        nodes.is_empty(),
+        "read_enabled:false ⇒ 不得搬声相：{nodes:?}"
+    );
+
+    // 5. 静态开（无泳道）⇒ 静态那一半仍然在并集里。
+    let static_on =
+        project_with_device_automation(vec![effect(&[("compressor_enabled", 1.0)])], 0, &[]);
+    let (nodes, _) = union(&static_on);
+    assert_eq!(
+        nodes,
+        BTreeSet::from([track_id]),
+        "静态开 ⇒ 并集必须含它（静态那一半没丢）"
     );
 }

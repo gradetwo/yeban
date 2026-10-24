@@ -68,9 +68,10 @@ use yeban_dsp::smoothing::ParamSmoother;
 use yeban_model::{AutomationLane, AutomationTarget, EntityId, PPQ, TrackV3, YebanProjectV1};
 
 use crate::inserts::{
-    DeviceParamFamily, DeviceParamField, ForcedInsertInstances, convolution_source_params,
-    convolution_source_slot, forced_identity_strip, resolve_device_param, reverb_source_params,
-    reverb_source_slot, strip_source_params, strip_source_slot,
+    DeviceParamFamily, DeviceParamField, ForcedInsertInstances, StripField,
+    convolution_source_params, convolution_source_slot, forced_identity_strip,
+    resolve_device_param, reverb_source_params, reverb_source_slot, strip_source_params,
+    strip_source_slot,
 };
 use crate::render::{L1_BLOCK_SIZE, db_to_linear};
 
@@ -1031,7 +1032,11 @@ impl TrackPanAutomation {
 ///    把这一级打开。
 /// 2. 把静态关闭的压缩器从 `0` 自动到 `1` 时，pre-pan tap 的编译期判据
 ///    [`crate::inserts::compressing_nodes`] 仍看**静态** `compressor_enabled`
-///    ⇒ `pan != 0` 的轨检波参考点会不同。`#304` 明确登记、⛔ 不扩到预扫描。
+///    ⇒ `pan != 0` 的轨检波参考点会不同。`#304` 明确登记、当时 ⛔ 不扩到预扫描。
+///    ⭐ `#309` 起这一条**已修**：pre-pan tap 的判据改为
+///    [`compressing_nodes_with_lanes`]（静态投影 ∪ 非恒等 `compressor_enabled`
+///    泳道）⇒ `pan != 0` 时检波器仍在声相之前（三档 `GR` 相对差 < 1e-5，
+///    app/MCP 的 `#308` 判据改名后钉住）。
 pub const APPLIED_DEVICE_PARAM_NAMES: &[&str] = &[
     // 通道条（27 = 14 个增益/EQ/滤波字段，含别名）。
     "input_gain_db",
@@ -1759,6 +1764,45 @@ pub fn forced_strip_tracks(
     automations: &BTreeMap<EntityId, Vec<DeviceParamAutomation>>,
 ) -> BTreeSet<EntityId> {
     forced_insert_instances(automations).strip
+}
+
+/// 一条 `DeviceParam` 泳道是否是**非恒等**的 `compressor_enabled` 开关（`#309`）。
+///
+/// `#308` 的缺陷：pre-pan tap 的判据（[`crate::inserts::compressing_nodes`] /
+/// [`crate::inserts::InsertChain::compresses`]）只看静态投影 ⇒ 静态关的压缩器被
+/// 泳道 `0 → 1` 打开时，检波器仍留在声相之后（`GR` 随 pan 变，Δ = `+0.515761 dB`）。
+///
+/// ⚠ **精度必须匹配**：⛔ 不能拿 [`forced_insert_instances`] 的 `strip` 族当判据 ——
+/// 它的粒度是"任一非恒等通道条泳道"（EQ / 增益轨也会被置位），用它会**静默扩大**
+/// "把声相搬进输出级"的改动面。这里只认 [`StripField::CompressorEnabled`]。
+#[must_use]
+pub fn switches_compressor(automation: &DeviceParamAutomation) -> bool {
+    !automation.is_identity()
+        && automation.field() == Some(DeviceParamField::Strip(StripField::CompressorEnabled))
+}
+
+/// 会执行压缩的轨 = **静态投影会压缩** ∪ **有一条非恒等 `compressor_enabled` 泳道**。
+///
+/// 这是 pre-pan tap 的**唯一**生产判据（app 的 `render_core` 与 MCP 的
+/// `domain::render` 共用）。静态那一半原样来自
+/// [`crate::inserts::compressing_nodes`]（与 [`crate::inserts::InsertChain::compresses`]
+/// 同解，`tests/insert_chain.rs` 钉住）；泳道那一半来自 [`switches_compressor`]。
+///
+/// 恒等泳道（`read_enabled:false` / 空 / 每点钳制后等于静态值 / 宏级联不落点）不置位；
+/// 只自动化了 `threshold_db` 等其它压缩参数的轨也**不**置位 —— 静态关时那台压缩器
+/// 仍然不执行（`#304` 边界 1），检波参考点无需搬。
+#[must_use]
+pub fn compressing_nodes_with_lanes(
+    tracks: &BTreeMap<EntityId, TrackV3>,
+    automations: &BTreeMap<EntityId, Vec<DeviceParamAutomation>>,
+) -> BTreeSet<EntityId> {
+    let mut nodes = crate::inserts::compressing_nodes(tracks);
+    for (track_id, list) in automations {
+        if list.iter().any(switches_compressor) {
+            nodes.insert(*track_id);
+        }
+    }
+    nodes
 }
 
 /// 扫描工程里**全部** `SendGain` 泳道，给每条边构造一个求值器（按边身份升序）。

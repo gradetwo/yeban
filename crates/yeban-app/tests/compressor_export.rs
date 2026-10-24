@@ -1187,8 +1187,8 @@ fn each_compressor_lane_endpoint_is_byte_identical_to_the_same_static_value() {
 }
 
 // ---------------------------------------------------------------------------
-// ⭐ 任务单 `#308`：静态 `compressor_enabled = 0` ＋ `compressor_enabled` 的 0→1 泳道，
-// **检波点**在声相之前还是之后。
+// ⭐ 任务单 `#308` / `#309`：静态 `compressor_enabled = 0` ＋ `compressor_enabled` 的
+// 0→1 泳道，**检波点**在声相之前。
 //
 // ## 读数口径（⚠ 与任务单 §2.2 的映射相反；本判据按**代码口径**，已登记）
 //
@@ -1200,12 +1200,15 @@ fn each_compressor_lane_endpoint_is_byte_identical_to_the_same_static_value() {
 // 用的就是"不变 ⇒ 声相前"。⚠ 任务单原文"变⇒前／不变⇒后"是反的；`#308` 轮次已裁决
 // 按代码口径。
 //
-// ## 预判（⚠ 不是读数）
+// ## `#308` 登记的缺陷 / `#309` 的修法
 //
-// 静态关 ⇒ `compresses()`（`inserts.rs:387-390`）与 `compressing_nodes()`
-// （`inserts.rs:546-554`）都判 false ⇒ `render_core.rs:688` 不挂 pre-pan tap、
-// `:759` 不压源侧声相 ⇒ 插入链在**声相之后** ⇒ 预判 `GR` 随 pan 变：
-// `pan=0` 约 `4.4846 dB`、`pan=±0.5` 约 `3.9687 dB`（Δ≈0.516 dB）。
+// `#308` 实测（修前）：静态关时 `compresses()`（`inserts.rs:387-390`）与
+// `compressing_nodes()`（`inserts.rs:546-554`）都判 false ⇒ 不挂 pre-pan tap ⇒
+// 插入链在**声相之后** ⇒ `GR` 随 pan 变（`pan=0` `+4.484314`、`pan=±0.5`
+// `+3.968553 dB`，Δ = `+0.515761 dB`）。
+// ⭐ `#309` 起 pre-pan 判据 = `compressing_nodes_with_lanes`（`automation.rs`）：
+// 静态投影 ∪ **非恒等 `compressor_enabled` 泳道** ⇒ 该轨的声相搬进输出级
+// （插入链之后）⇒ 检波器回到**声相之前**（三档 `GR` 相等，相对差 < 1e-5）。
 //
 // ## 量法
 //
@@ -1241,12 +1244,13 @@ fn window_rms_channel(samples: &[f32], start: usize, end: usize, channel: usize)
     (sum / count as f64).sqrt()
 }
 
-/// ⭐ `#308` 判据：静态关 ＋ 0→1 泳道 ⇒ **检波在声相之后**（`GR` 随 pan 变）。
+/// ⭐ `#308`/`#309` 判据：静态关 ＋ 0→1 泳道 ⇒ **检波在声相之前**（`GR` 与 pan 无关）。
 ///
-/// ⚠ 这是**缺陷的读数登记**（与 `#303` 的 pre-pan 裁决、实时 `rt.rs` 的"插入→声相"同序
-/// 不一致；触发面 = 静态关的压缩器被泳道打开），⛔ 不是批准它。判据钉住现状。
+/// `#308` 先把它当**缺陷读数**钉住（`GR` 随 pan 变、Δ = `+0.515761 dB`）；
+/// ⭐ `#309` 修了 pre-pan 判据（并集看非恒等 `compressor_enabled` 泳道）后，
+/// 本判据改名为 `keeps...before`，断言翻成"三档相等（相对差 < 1e-5）"。
 #[test]
-fn a_lane_that_switches_a_statically_disabled_compressor_on_leaves_the_detector_after_the_pan() {
+fn a_lane_that_switches_a_statically_disabled_compressor_on_keeps_the_detector_before_the_pan() {
     let bytes = constant_asset(0.5);
     let (start, end) = PRE_PAN_PROBE_WINDOW;
 
@@ -1286,7 +1290,7 @@ fn a_lane_that_switches_a_statically_disabled_compressor_on_leaves_the_detector_
                 / window_rms_channel(&dry.samples, start, end, 1))
             .log10();
         println!(
-            "### #308 app 静态关+泳道 pan={pan:+.1}: dry={dry_read:.9e} wet={wet_read:.9e} \
+            "### #308/#309 app 静态关+泳道 pan={pan:+.1}: dry={dry_read:.9e} wet={wet_read:.9e} \
              GR={gr:+.6} dB (L={gr_l:+.6} R={gr_r:+.6}) | digest wet={} dry={}",
             wet.digest, dry.digest
         );
@@ -1323,7 +1327,7 @@ fn a_lane_that_switches_a_statically_disabled_compressor_on_leaves_the_detector_
         let dry_read = window_rms(&dry.samples, start, end);
         let wet_read = window_rms(&wet.samples, start, end);
         let gr = -20.0 * (wet_read / dry_read).log10();
-        println!("### #308 app 静态开（正对照）pan={pan:+.1}: GR={gr:+.6} dB");
+        println!("### #308/#309 app 静态开（正对照）pan={pan:+.1}: GR={gr:+.6} dB");
         static_grs.push((pan, gr));
     }
 
@@ -1337,7 +1341,7 @@ fn a_lane_that_switches_a_statically_disabled_compressor_on_leaves_the_detector_
     let (gr_0, gr_plus, gr_minus) = (gr_at(0.0), gr_at(0.5), gr_at(-0.5));
     let delta = gr_0 - gr_plus;
     println!(
-        "### #308 app 汇总: GR(0)={gr_0:+.6} GR(+0.5)={gr_plus:+.6} GR(-0.5)={gr_minus:+.6} dB; \
+        "### #308/#309 app 汇总: GR(0)={gr_0:+.6} GR(+0.5)={gr_plus:+.6} GR(-0.5)={gr_minus:+.6} dB; \
          Δ(0,+0.5)={delta:+.6} dB; |+0.5 − −0.5|={:.3e}",
         (gr_plus - gr_minus).abs()
     );
@@ -1347,11 +1351,21 @@ fn a_lane_that_switches_a_statically_disabled_compressor_on_leaves_the_detector_
         (gr_0 - 4.4846).abs() < 0.02,
         "复现 #307 的 −4.484 dB 档失败：GR(pan=0) = {gr_0:+.6} dB（手算 4.4846）"
     );
-    // ⭐ 判据 2（核心读数）：静态关 ＋ 泳道开 ⇒ GR 随 pan 变 ⇒ 检波在声相**之后**。
+    // ⭐ 判据 2（核心读数，`#309`）：静态关 ＋ 泳道开 ⇒ 检波在声相**之前**
+    // ⇒ 三档 `GR` 必须相等（相对差 < 1e-5）。`#308` 修前这里读的是
+    // Δ(0,+0.5) = `+0.515761 dB`（旧断言把它钉成“检波在声相后”）。
+    let lane_base = lane_grs[0].1;
+    for (pan, gr) in &lane_grs {
+        let relative = (gr - lane_base).abs() / lane_base;
+        assert!(
+            relative < 1.0e-5,
+            "pan={pan}: pre-pan tap 下压缩量必须与 pan 无关（相对差 {relative:.3e}）；\
+             GR(0)={gr_0:+.6} GR(+0.5)={gr_plus:+.6} GR(-0.5)={gr_minus:+.6}"
+        );
+    }
     assert!(
-        (0.40..0.65).contains(&delta),
-        "预判：检波在声相后 ⇒ GR(0) 应比 GR(±0.5) 大约 0.516 dB；实测 Δ = {delta:+.6} dB \
-         （若 ≈0 ⇒ 检波在声相前 ⇒ 预判错了，按第 313 条改写）"
+        delta.abs() <= lane_base * 1.0e-5,
+        "Δ(0,+0.5) 必须 ≤ 1e-5 相对（#308 修前 +0.515761 dB）：{delta:+.6} dB"
     );
     assert!(
         (gr_plus - gr_minus).abs() < 1.0e-3,

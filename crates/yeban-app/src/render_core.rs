@@ -89,8 +89,9 @@ use std::sync::atomic::{AtomicU32, Ordering};
 
 use yeban_model::{AssetHash, EntityId, YebanProjectV1};
 use yeban_render::automation::{
-    TrackGainAutomation, TrackPanAutomation, device_param_automations, forced_insert_instances,
-    macro_cascade_reaches, pan_automations, send_gain_automations,
+    TrackGainAutomation, TrackPanAutomation, compressing_nodes_with_lanes,
+    device_param_automations, forced_insert_instances, macro_cascade_reaches, pan_automations,
+    send_gain_automations,
 };
 use yeban_render::inserts::project_inserts_with_forced_instances;
 use yeban_render::render::{
@@ -578,14 +579,14 @@ pub fn render_project_f32_with_plans_under(
     )
     .map_err(|error| WavExportError::Render(error.to_string()))?;
 
-    // ⭐ 任务单 `#303`：**会执行压缩**的轨（pre-pan tap 的唯一判据）。
-    // 与 MCP 的 `yeban_render_master` 共用**同一份** `InsertChain::compresses()`
-    // （⛔ 本层不复制"哪些参数算压缩"的判定）。
-    let compressing: std::collections::BTreeSet<EntityId> = inserts
-        .iter()
-        .filter(|(_, chain)| chain.compresses())
-        .map(|(&node, _)| node)
-        .collect();
+    // ⭐ 任务单 `#303` / `#309`：**会执行压缩**的轨（pre-pan tap 的唯一判据）。
+    // 与 MCP 的 `yeban_render_master` 共用**同一份**
+    // `compressing_nodes_with_lanes` —— 静态投影（`InsertChain::compresses()` 同解的
+    // `compressing_nodes`）∪ **非恒等 `compressor_enabled` 泳道**。
+    // ⭐ `#308` 的缺陷：只看静态位 ⇒ 静态关的压缩器被泳道 `0 → 1` 打开时，声相仍
+    // 留在源侧、检波器落到声相之后（`GR` 随 pan 变，Δ = `+0.515761 dB`）。
+    // ⛔ 本层不复制"哪些参数算压缩"的判定。
+    let compressing = compressing_nodes_with_lanes(&project.tracks, &device_automations);
 
     // ---- 1b. ⭐ 发送增益自动化（`SendGain`，任务单 `#256`）----
     //

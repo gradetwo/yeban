@@ -3593,19 +3593,23 @@ fn each_compressor_lane_endpoint_is_byte_identical_to_the_same_static_value_in_t
 }
 
 // ---------------------------------------------------------------------------
-// ⭐ 任务单 `#308`：静态 `compressor_enabled = 0` ＋ 0→1 泳道时，**检波点**在哪（MCP 路）。
+// ⭐ 任务单 `#308` / `#309`：静态 `compressor_enabled = 0` ＋ 0→1 泳道时，
+// **检波点**在声相之前（MCP 路）。
 //
-// 与 app 侧 `crates/yeban-app/tests/compressor_export.rs` 的 `#308` 判据**同一口径**：
+// 与 app 侧 `crates/yeban-app/tests/compressor_export.rs` 的判据**同一口径**：
 // 检波器是 `max(l², r²)`（`crates/yeban-dsp/src/compressor.rs:735`）⇒
 // 插入在声相**之后** ⇒ `GR` 随 pan 变；插入在声相**之前**（pre-pan tap）⇒ `GR` 与 pan 无关。
 // ⚠ 任务单 §2.2 的"变⇒前／不变⇒后"是反的；本判据按代码口径（`#303` 判据：不变 ⇒ 声相前）。
 //
-// ## 预判（⚠ 不是读数）
+// ## `#308` 登记的缺陷 / `#309` 的修法
 //
-// 静态关 ⇒ `compressing_nodes()`（`inserts.rs:546-554`）为空 ⇒ `domain/render.rs:2229`
-// 的 `compressing` 为空 ⇒ `:2445` 不给源节点挂输出级、`build_source` 的 `pre_pan = false`
-// （`:3706-3723`）⇒ 声相留在源侧 ⇒ 插入链在声相之后 ⇒ 预判 `GR` 随 pan 变：
-// `pan=0` 约 `4.4846 dB`、`pan=±0.5` 约 `3.9687 dB`（Δ≈0.516 dB）。
+// `#308` 实测（修前）：静态关 ⇒ `compressing_nodes()`（`inserts.rs:546-554`）为空 ⇒
+// `domain/render.rs` 的 `compressing` 为空 ⇒ 不给源节点挂输出级、`build_source` 的
+// `pre_pan = false` ⇒ 声相留在源侧 ⇒ 插入链在声相之后 ⇒ `GR` 随 pan 变
+// （`pan=0` `+4.484314`、`pan=±0.5` `+3.968553 dB`，Δ = `+0.515761 dB`）。
+// ⭐ `#309` 起 pre-pan 判据 = `compressing_nodes_with_lanes`（`automation.rs`）：
+// 静态投影 ∪ **非恒等 `compressor_enabled` 泳道** ⇒ 该轨 `pre_pan = true`
+// ⇒ 检波器回到**声相之前**（三档 `GR` 相等，相对差 < 1e-5）。
 //
 // ## 量法
 //
@@ -3652,11 +3656,13 @@ fn mcp_window_rms_channel(samples: &[f32], start: usize, end: usize, channel: us
     (sum / count as f64).sqrt()
 }
 
-/// ⭐ `#308`（MCP）：静态关 ＋ 0→1 泳道 ⇒ **检波在声相之后**（`GR` 随 pan 变）。
+/// ⭐ `#308`/`#309`（MCP）：静态关 ＋ 0→1 泳道 ⇒ **检波在声相之前**（`GR` 与 pan 无关）。
 ///
-/// ⚠ 这是**缺陷的读数登记**（与 `#303` 的 pre-pan 裁决不一致），⛔ 不是批准它。
+/// `#308` 先把它当**缺陷读数**钉住（`GR` 随 pan 变、Δ = `+0.515761 dB`）；
+/// ⭐ `#309` 修了 pre-pan 判据（并集看非恒等 `compressor_enabled` 泳道）后，
+/// 本判据改名为 `keeps...before`，断言翻成"三档相等（相对差 < 1e-5）"。
 #[test]
-fn a_lane_that_switches_a_statically_disabled_compressor_on_leaves_the_mcp_detector_after_the_pan()
+fn a_lane_that_switches_a_statically_disabled_compressor_on_keeps_the_mcp_detector_before_the_pan()
 {
     let scratch = Scratch::new("compressor-pre-pan-308");
     let bytes = wav_f32(2, 48_000, &constant(48_000, 0.5));
@@ -3690,7 +3696,7 @@ fn a_lane_that_switches_a_statically_disabled_compressor_on_leaves_the_mcp_detec
         if pan == 0.0 {
             let data = wet.response_data();
             let lane = &data["automation"]["tracks"][0]["lanes"][0];
-            println!("### #308 MCP pan=0 泳道读数: {lane}");
+            println!("### #308/#309 MCP pan=0 泳道读数: {lane}");
             assert_eq!(
                 lane["resolvedParamName"], "compressor_enabled",
                 "泳道必须解析到开关字段: {data}"
@@ -3713,7 +3719,7 @@ fn a_lane_that_switches_a_statically_disabled_compressor_on_leaves_the_mcp_detec
                 / mcp_window_rms_channel(&dry_samples, start, end, 1))
             .log10();
         println!(
-            "### #308 MCP 静态关+泳道 pan={pan:+.1}: dry={dry_read:.9e} wet={wet_read:.9e} \
+            "### #308/#309 MCP 静态关+泳道 pan={pan:+.1}: dry={dry_read:.9e} wet={wet_read:.9e} \
              GR={gr:+.6} dB (L={gr_l:+.6} R={gr_r:+.6}) | digest wet={} dry={}",
             wet.master_digest, dry.master_digest
         );
@@ -3738,7 +3744,7 @@ fn a_lane_that_switches_a_statically_disabled_compressor_on_leaves_the_mcp_detec
         let dry_read = mcp_window_rms(&dry_samples, start, end);
         let wet_read = mcp_window_rms(&wet_samples, start, end);
         let gr = -20.0 * (wet_read / dry_read).log10();
-        println!("### #308 MCP 静态开（正对照）pan={pan:+.1}: GR={gr:+.6} dB");
+        println!("### #308/#309 MCP 静态开（正对照）pan={pan:+.1}: GR={gr:+.6} dB");
         static_grs.push((pan, gr));
     }
 
@@ -3752,7 +3758,7 @@ fn a_lane_that_switches_a_statically_disabled_compressor_on_leaves_the_mcp_detec
     let (gr_0, gr_plus, gr_minus) = (gr_at(0.0), gr_at(0.5), gr_at(-0.5));
     let delta = gr_0 - gr_plus;
     println!(
-        "### #308 MCP 汇总: GR(0)={gr_0:+.6} GR(+0.5)={gr_plus:+.6} GR(-0.5)={gr_minus:+.6} dB; \
+        "### #308/#309 MCP 汇总: GR(0)={gr_0:+.6} GR(+0.5)={gr_plus:+.6} GR(-0.5)={gr_minus:+.6} dB; \
          Δ(0,+0.5)={delta:+.6} dB; |+0.5 − −0.5|={:.3e}",
         (gr_plus - gr_minus).abs()
     );
@@ -3762,11 +3768,21 @@ fn a_lane_that_switches_a_statically_disabled_compressor_on_leaves_the_mcp_detec
         (gr_0 - 4.4846).abs() < 0.02,
         "复现 #307 的 −4.484 dB 档失败：MCP GR(pan=0) = {gr_0:+.6} dB（手算 4.4846）"
     );
-    // ⭐ 判据 2（核心读数）：GR 随 pan 变 ⇒ 检波在声相**之后**。
+    // ⭐ 判据 2（核心读数，`#309`）：静态关 ＋ 泳道开 ⇒ 检波在声相**之前**
+    // ⇒ 三档 `GR` 必须相等（相对差 < 1e-5）。`#308` 修前这里读的是
+    // Δ(0,+0.5) = `+0.515761 dB`（旧断言把它钉成“检波在声相后”）。
+    let lane_base = lane_grs[0].1;
+    for (pan, gr) in &lane_grs {
+        let relative = (gr - lane_base).abs() / lane_base;
+        assert!(
+            relative < 1.0e-5,
+            "pan={pan}: pre-pan tap 下压缩量必须与 pan 无关（相对差 {relative:.3e}）；\
+             GR(0)={gr_0:+.6} GR(+0.5)={gr_plus:+.6} GR(-0.5)={gr_minus:+.6}"
+        );
+    }
     assert!(
-        (0.40..0.65).contains(&delta),
-        "预判：检波在声相后 ⇒ GR(0) 应比 GR(±0.5) 大约 0.516 dB；实测 Δ = {delta:+.6} dB \
-         （若 ≈0 ⇒ 检波在声相前 ⇒ 预判错了，按第 313 条改写）"
+        delta.abs() <= lane_base * 1.0e-5,
+        "Δ(0,+0.5) 必须 ≤ 1e-5 相对（#308 修前 +0.515761 dB）：{delta:+.6} dB"
     );
     assert!(
         (gr_plus - gr_minus).abs() < 1.0e-3,

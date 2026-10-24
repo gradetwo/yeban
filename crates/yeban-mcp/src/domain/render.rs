@@ -423,12 +423,11 @@ use yeban_render::engine_source::{ArmedSfzInput, ArmedSfzSample, EngineTimbre, E
 // 第二份白名单（`yeban-engine` 的投影是同一份规则的来源，但 MCP 不能依赖它）。
 use yeban_render::automation::{
     APPLIED_DEVICE_PARAM_NAMES, LaneResidual, TrackGainAutomation, TrackPanAutomation,
-    centered_pan_gains, device_param_automations, forced_insert_instances, macro_cascade_reaches,
-    send_gain_automations,
+    centered_pan_gains, compressing_nodes_with_lanes, device_param_automations,
+    forced_insert_instances, macro_cascade_reaches, send_gain_automations,
 };
 use yeban_render::inserts::{
-    compressing_nodes, project_inserts_with_forced_instances, resolve_device_param,
-    track_has_unhandled_dsp,
+    project_inserts_with_forced_instances, resolve_device_param, track_has_unhandled_dsp,
 };
 use yeban_render::mastering;
 use yeban_render::render::{
@@ -2222,11 +2221,18 @@ pub fn build(
     let nodes = probe.nodes;
     let source_nodes = probe.source_nodes;
     let rendered_edges = probe.rendered_edges;
-    // ⭐ 任务单 `#303`：**会执行压缩**的轨（pre-pan tap 的唯一判据）。
-    // 与 CLI 的 `render_core` 共用**同一份** `yeban_render::inserts::compressing_nodes`
-    // （⛔ 本层不复制"哪些参数算压缩"的判定）。必须在**构造音源之前**算出来：
+    // ⭐ 任务单 `#303` / `#309`：**会执行压缩**的轨（pre-pan tap 的唯一判据）。
+    // 与 CLI 的 `render_core` 共用**同一份**
+    // `yeban_render::automation::compressing_nodes_with_lanes`：
+    // 静态投影（`compressing_nodes`）∪ **非恒等 `compressor_enabled` 泳道**。
+    // ⭐ `#308` 的缺陷：只看静态位 ⇒ 静态关的压缩器被泳道 `0 → 1` 打开时，检波器
+    // 仍落在声相之后（`GR` 随 pan 变，Δ = `+0.515761 dB`）。
+    // ⛔ 本层不复制"哪些参数算压缩"的判定。必须在**构造音源之前**算出来：
     // 这些轨的声相要搬到输出级（插入链之后），源侧取 `(1, 1)`。
-    let compressing = compressing_nodes(&project.tracks);
+    // 设备参数扫描器必须**先**算（并集要看非恒等泳道）；下面第 8 步复用它。
+    let device_automations = device_param_automations(project, sample_rate);
+    let forced = forced_insert_instances(&device_automations);
+    let compressing = compressing_nodes_with_lanes(&project.tracks, &device_automations);
     // 4b. 组装音源 + 采集"明确没渲染"的部分 + 得到时间轴末端。
     let mut unsupported: BTreeSet<&'static str> = BTreeSet::new();
     let mut counts: BTreeMap<&'static str, u64> = BTreeMap::new();
@@ -2396,9 +2402,8 @@ pub fn build(
     // ⭐ 任务单 `#266`/`#293`：有**非恒等** `DeviceParam` 泳道的轨，对应器件被**强制
     // 实例化**（通道条：`effective_strip` 在全恒等参数下也返回 `Some`；Freeverb/卷积：
     // 静态 `wet = 0` 时 `is_active()` 为假，但块边界仍需有器件可改）。扫描器与 app 的
-    // `--export-wav` 共用同一份（`yeban-render::automation`）。
-    let device_automations = device_param_automations(project, sample_rate);
-    let forced = forced_insert_instances(&device_automations);
+    // `--export-wav` 共用同一份（`yeban-render::automation`），已在构造音源之前算好
+    // （`#309` 起 pre-pan 判据也要读它）。
     let inserts = project_inserts_with_forced_instances(&project.tracks, sample_rate, &forced);
     let mut plan = RenderPlan::compile_with_latencies_and_inserts(
         &project.routing_graph,

@@ -38,8 +38,10 @@
 //!    **会执行压缩的纯源轨**把声相从源侧搬到 [`crate::render::OutputStage`]
 //!    （插入链之后），源侧 `pan` 取 `(1, 1)` ⇒ 检波器看到的就是声相之前的信号。
 //!    ⚠ 总线 / 主总线的声相本来就在输出级 ⇒ 它们的插入点**一直**在声相之前。
-//!    ⭐ 这条搬迁**只对会压缩的轨生效**（[`compressing_nodes`]）：其余轨的声相
-//!    仍在源侧，**一个落点都不改**。
+//!    ⭐ 这条搬迁**只对会压缩的轨生效**（生产判据 =
+//!    [`crate::automation::compressing_nodes_with_lanes`]：静态投影
+//!    [`compressing_nodes`] ∪ 非恒等 `compressor_enabled` 泳道，`#309` 起）：
+//!    其余轨的声相仍在源侧，**一个落点都不改**。
 //! 2. **接上就生效，没有"启用压缩"开关**（与 Logic Pro 一致）：写了一组压缩参数
 //!    （`threshold_db` / `ratio` / … 或显式 `compressor_enabled`）⇒ 该级执行；
 //!    一个都没写 ⇒ 不执行。
@@ -48,7 +50,7 @@
 //!
 //! **旧工程兼容说明（行为变更，⛔ 不是回归）**：`#303` 之前导出的工程若写了压缩参数，
 //! 那台压缩器**从未执行**（母带里没有压缩）；`#303` 起同一份工程**会真的压** ⇒
-//! 导出字节与旧版本不同。没有写压缩参数的工程**逐字节不变**（`compressing_nodes` 为空）。
+//! 导出字节与旧版本不同。没有写压缩参数的工程**逐字节不变**（会压缩的轨集合为空）。
 //!
 //! ⚠ **旧 §1 那句话已作废**：原文写"离线接在声相与求和之后（等功率居中时每声道
 //! −3 dB）"—— **"−3 dB"这一半今天已经是假的**：[`crate::automation::centered_pan_gains`]
@@ -66,11 +68,13 @@
 //! [`StripField::SPELLINGS`]，成为**唯一名字表**的一部分（⛔ 不再有第二张
 //! `STRIP_COMPRESSOR_SPELLINGS`）。`DeviceParam` 泳道改的是同一台
 //! `ChannelStrip` 的压缩参数；`Compressor::set_params` 的"弹道状态不重置"是这条
-//! 接线的依据（逐字见 `yeban-dsp/src/compressor.rs`）。⚠ 两个登记边界：
-//! 静态 `compressor_enabled == false` 时，非 `compressor_enabled` 的压缩参数泳道
-//! 仍会**报 applied 但听不出**（与 `eq_enabled: 0` ＋ EQ 参数泳道同款）；把静态关闭的
-//! 压缩器从 `0` 自动到 `1` 时，[`compressing_nodes`] 的 pre-pan tap 仍按静态位判
-//! （`#304` 明确登记、⛔ 本单不扩）。
+//! 接线的依据（逐字见 `yeban-dsp/src/compressor.rs`）。⚠ 两条边界（一条**已修**）：
+//! ① 静态 `compressor_enabled == false` 时，非 `compressor_enabled` 的压缩参数泳道
+//! 仍会**报 applied 但听不出**（与 `eq_enabled: 0` ＋ EQ 参数泳道同款）；
+//! ② 把静态关闭的压缩器从 `0` 自动到 `1` 时，pre-pan tap 的预扫描曾只看静态位
+//! （`#304` 登记）；⭐ `#309` 起生产判据改为
+//! [`crate::automation::compressing_nodes_with_lanes`]（静态 ∪ 非恒等
+//! `compressor_enabled` 泳道）⇒ 该轨的检波器仍在声相之前，⛔ 不再是登记边界。
 //! - **主总线插入**（⚠ 本节在任务单 `#173` **已接通**，原文见 §1 的修订段）：
 //!   本模块的 [`crate::render::RenderPlan`] 现在给**每个**节点挂链，**包括 master**。
 //!   - **为什么改**：`#173` 之前实时引擎的逐轨循环**跳过 master**
@@ -530,7 +534,12 @@ pub fn project_inserts_with_forced_strips(
     project_inserts_with_forced_instances(tracks, sample_rate, &forced)
 }
 
-/// 本工程里**离线会执行压缩级**的节点集合（任务单 `#303` 的 pre-pan tap 预扫描）。
+/// 本工程里**静态投影**会执行压缩级的节点集合（任务单 `#303` 的 pre-pan tap 预扫描）。
+///
+/// ⚠ 自 `#309` 起这**不是**生产判据的完整答案：pre-pan tap 还要看**非恒等
+/// `compressor_enabled` 泳道**（静态关的压缩器可以被泳道打开）。生产唯一入口是
+/// [`crate::automation::compressing_nodes_with_lanes`]，它把本函数（静态那一半）与
+/// 泳道那一半取并集；本函数保留为"静态投影"的可读投影与判据的对照。
 ///
 /// ## 为什么需要"预扫描"
 ///
