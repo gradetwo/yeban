@@ -1181,9 +1181,11 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
     // ---- 本线的 SFZ 两条扩展（`crates/yeban-mcp/src/domain/sfz.rs`） ----
     //
     // 缺口是**实测**出来的，不是从词面推的（`AGENTS.md` §6.3）：`grep` 全仓
-    // `yeban-mcp` 的 17 个工具 ⇒ `yeban_load_sfz` / `yeban_render_sfz_wav` 一个都不存在，
-    // 而 `yeban_render_master` 的 `unsupported` 里**明写** `sfzSampler`
+    // `yeban-mcp` 当时的全部工具 ⇒ `yeban_load_sfz` / `yeban_render_sfz_wav` 一个都不存在，
+    // 而当时 `yeban_render_master` 的 `unsupported` 里**明写**采样器绑定这个键
     // （`domain/render.rs` 模块头："本模型版本（`DeviceKind`）里没有 SFZ 设备变体"）。
+    // ⚠ 那个键已在 `#221` **退役**（采样器现在真的被渲染）：现行全集以
+    // `domain/render.rs` 的 `KNOWN_UNSUPPORTED_KEYS` 为**唯一事实源**，里面没有它。
     // 因此"用 SFZ 音色导出 WAV"在工具面**没有通路** —— 这两条补的就是它。
     ToolSpec {
         spec_id: "MCP-TOOL-EXT-SFZ-LOAD",

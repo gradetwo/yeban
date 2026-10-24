@@ -5,13 +5,17 @@
 //! `AGENTS.md` §6.3 要求先 `grep` 交付形态再下结论。本线开工时实测：
 //!
 //! ```text
-//! grep -rn "sfz" crates/yeban-mcp/src/            ⇒ 只有 render.rs 的 unsupported 键 "sfzSampler"
+//! grep -rn "sfz" crates/yeban-mcp/src/            ⇒ 当时只有 render.rs 的一个 unsupported 键
 //! grep -rn "yeban_load_sfz\|yeban_render_sfz_wav" crates/ ⇒ 0 命中
 //! ```
 //!
+//! 上面那个键就是**采样器绑定**，已在 `#221` **退役**（采样器现在真的被渲染）——
+//! 现行 `unsupported` 全集以 `domain/render.rs` 的 `KNOWN_UNSUPPORTED_KEYS` 为
+//! **唯一事实源**，里面没有它。
+//!
 //! `yeban_render_master` **能**导 WAV（真走 `yeban-render`，见 `render.rs` 的模块头），
-//! 但它的 `unsupported` 里**明写** `sfzSampler`（"本模型版本（`DeviceKind`）里**没有**
-//! SFZ 设备变体"）⇒ 工具面**没有**任何通路让 SFZ 音色参与导出。本模块补的就是这一条。
+//! 但当时它的 `unsupported` 里**明写**"本模型版本（`DeviceKind`）里**没有** SFZ 设备
+//! 变体"⇒ 工具面**没有**任何通路让 SFZ 音色参与导出。本模块补的就是这一条。
 //!
 //! ## 数据流（每一段都复用既有设施，⛔ 无旁路）
 //!
