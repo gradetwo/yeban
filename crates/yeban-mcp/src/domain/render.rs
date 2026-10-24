@@ -50,10 +50,10 @@
 //! | `audioClips` | **收窄后的口径**：仅当工程在 `assets` 索引里**声明**了这个资产、而会话 CAS 池里**没有它的字节**时才登记（`Domain::open_in_memory` 注入的会话就是这种形态）。此时该片段当静音，且响应 `data.audio.assets[].bytesPresent = false` 如实说明。读 `.yeban` 容器时索引与字节由 `store` 双向校验必然同时存在，因此这一项在真实容器工程上**不会**出现 |
 //! | `deviceChainDsp` | 设备链里**本切片没有消费**的参数（未知旋钮 / `filter_cutoff_hz` / `reverb_mix` / `reverb_width`）没有求值；增益、EQ、低通、**压缩**、Freeverb、卷积已求值（压缩自 `#303`；`#303` 之前它**一整级不执行**） |
 //! | `externalPlugins` | `DeviceKind::ExternalInstrument/ExternalEffect` 没有宿主 |
-//! | `automationLanes` | ⭐ `#243` / `#256` / `#257` / `#266` / `#267` / `#293` / `#304`：**仅**指仍有可求值点、但本渲染器不消费的自动化目标（`Macro`；`DeviceParam` 里**不是**插入链落点的名字（**卷积 IR 形状** `conv_ir_decay*`、`conv_ir_seed` / 未知旋钮）、或指向旁通/非对应器件族来源设备的情形），以及 `TrackVolume` 落在**不可达轨**上（不在保留子图）、`SendGain` 落在**被剪枝的边**上、`TrackPan` 落在**有入边的总线轨**上（任务单 `#296` B2：总线声相本单不做）的情形。`TrackVolume` 在源节点、主总线与**总线轨**（`#296` 的新增输出级推子）上**真的被求值**；`TrackPan` 在**主总线**上也真的被求值（`#296`）；`SendGain` 在保留子图的入边归约里**真的被求值**（任务单 `#256`）；`TrackPan` 在源节点的源输出之后**真的被求值**（任务单 `#257`）；`DeviceParam` 的通道条（**含压缩**）/ Freeverb / 卷积标量字段（`data.appliedDeviceParamNames` 逐条列出）在该节点的插入链上**真的被求值**（`#266` 开一个名字 / `#267` 扩到通道条整组 / `#293` 扩到混响与卷积标量 / ⭐ `#304` 扩到压缩 8 字段，块边界 `set_params`）；空泳道与 `readEnabled:false` 的泳道**不**登记（一条没有点的曲线没有“少做了什么”）。逐泳道的支持/应用读数见 `data.automation` |
+//! | `automationLanes` | ⭐ `#243` / `#256` / `#257` / `#266` / `#267` / `#293` / `#297` / `#298` / `#304`：**残差桶** —— **仅**指仍有可求值点、但**这次渲染没有落点**的泳道（空泳道与 `readEnabled:false` 的泳道**不**登记）。具体是：`DeviceParam` 的名字不是插入链落点（**卷积 IR 形状** `conv_ir_decay*` / `conv_ir_seed` / 未知旋钮），或指向旁通/非对应器件族的来源设备；`TrackVolume` / `TrackPan` 落在**不可达轨**（不在保留子图）；`SendGain` 落在**被剪枝的边**；`Macro` 泳道没有落点（宏不存在 / 空 mappings / 某条 mapping 的目标本身无落点 / 目标是嵌套 `Macro`）。**已经有落点的都真的被求值、不在此列**：源节点 / 主总线 / **可达总线轨**的 `TrackVolume` 与 `TrackPan`（`#296` / `#298` 的输出级）；保留子图入边的 `SendGain`（`#256`）；`DeviceParam` 的通道条（**含压缩**）/ Freeverb / 卷积标量字段（`data.appliedDeviceParamNames` 逐条列出；`#266` / `#267` / `#293` / `#304`）；**有落点的 `Macro` 泳道按目标单位级联**（`#297`）。逐泳道的支持/应用读数见 `data.automation` |
 //! | `noteSlide` | 滑音没有实现 |
 //! | `notePitchBend` | 弯音曲线没有求值 |
-//! | `noteLyrics` | 歌词/音素没有歌声合成 |
+//! | `noteLyrics` | **母带不会唱**：没有歌声合成（SVS 不存在），`syllable` / `phonemes` 不出声。⚠ 歌词**不是**"没有载体"：`syllable`（非空）已能写成 SMF `FF 05` 歌词元事件（`#312`），导入侧也按"唯一才归属"读回（`#317`）；`phonemes` 仍无 SMF 载体（SMF 只有一种文本槽，写进去等于把 SVS 对齐数据伪装成歌词 ⇒ 导出侧另报键 `phonemes`）。触发条件不变：任一音符带 `syllable` 或非空 `phonemes` 就登记 |
 //! | `busTrackClips` | 非源节点（总线/主轨）上的片段没有渲染（只有源节点有音源） |
 //! | `sidechainRouting` | 侧链边按普通音频边处理（`yeban-render` 的既有边界）。⚠ `#315`：**这个键的判据是"图里有没有这种数据"**（一条两端都到不了 master 的悬挂边也照报），**说不出"发生了什么事"**。真的发生了什么事看两个读数：`data.sidechainEdgesSummedAsOrdinaryAudio`（**真的被当成普通音频边求和进母带了几条**）与 `data.sidechainEdgesInRoutingGraph`（声明了几条）。修前这两个数**都不存在** ⇒ "报不支持却悄悄 +6.0206 dB"在响应里连一个字都没有（`#314` 的缺陷） |
 //! | `sfzAmplitude` | ⭐ `#274`：命中区域的 **`amplitude_oncc*`（CC 调制那一半）** 没有求值 —— 静态 `amplitude` 已由引擎的 SFZ 支路应用；CC 增量需要 CC 状态，本层没有。**只**在真的声明了 CC 调制时出现（静态 `amplitude=50` ⇒ ⛔ 不报） |
@@ -907,7 +907,7 @@ fn json_f32(value: Option<f32>) -> Value {
 ///
 /// ## 为什么走 `warnings[]` 而不是 `unsupported`
 ///
-/// `unsupported` / `KNOWN_UNSUPPORTED_KEYS`（`#221`/`#223`，现 17 项）的口径是
+/// `unsupported` / `KNOWN_UNSUPPORTED_KEYS`（`#221`/`#223`，现 12 项）的口径是
 /// "**我们会静默少做什么**"（第 324 条：清单必须逐项可触发）。削波不是"少做了什么"
 /// —— 渲染把工程里的一切都算对了，**结果本身**就是过载的。把它塞进
 /// `KNOWN_UNSUPPORTED_KEYS` 会让那份清单的含义漂移（"不支持削波"？说不通），
@@ -1490,10 +1490,14 @@ impl AudioAssetReport {
 ///
 /// - `evaluable` = 泳道有点 **且** `readEnabled == true`（`automation_value_at` 的
 ///   三个“无值”出口里的两个）；空泳道与关掉的泳道因此**不可求值**；
-/// - `supported` = 本渲染器真的消费这个目标。首期支持 `TrackVolume`、`SendGain`
-///   与 `TrackPan`：`TrackVolume` 只有两类落点（源节点 / 主总线），`SendGain` 的落点是
-///   那条**入边**在 `RenderPlan` 里的归约（任务单 `#256`），`TrackPan` 的落点是
-///   **源节点**的源输出之后（任务单 `#257`；主总线没有声相落点 ⇒ 仍不支持）；
+/// - `supported` = 本渲染器真的消费这个目标（唯一判定是
+///   `yeban_render::automation::unsupported_lane_reason`）：`TrackVolume` / `TrackPan`
+///   在主总线与保留子图里的**任何节点**（源轨、可达总线轨）上都有落点（`#296` /
+///   `#298` 的输出级）；`SendGain` 的落点是那条**入边**在 `RenderPlan` 里的归约
+///   （`#256`）；`DeviceParam` 的落点是该节点的插入链（通道条 — 含压缩 — /
+///   Freeverb / 卷积标量，`#266` / `#267` / `#293` / `#304`）；`Macro` 的落点是
+///   "宏存在 ∧ 至少一条 mapping ∧ 每条 mapping 的目标都落点"（`#297`）。不可达轨、
+///   被剪枝的边、没有落点的名字与宏仍登记 `automationLanes`；
 /// - `applied` = `evaluable && supported`；
 /// - `unsupported` = `evaluable && !supported`（调用方据此登记 `automationLanes`）。
 ///
@@ -2314,13 +2318,15 @@ pub fn build(
     //    唯一的泳道连报都不报；空泳道又会被一律报成 `automationLanes`。现在：
     //    - 空泳道 / `readEnabled:false` / 所有点都等于静态推子 ⇒ 可求值但无效果，
     //      读数里可见，**不**进 `unsupported`；
-    //    - 有可求值点、但不是 `TrackVolume`/`SendGain`/`TrackPan`/`DeviceParam`，或
-    //      `TrackVolume` 落在不可应用的总线轨上、`SendGain` 落在被剪枝的边上 ⇒
-    //      进 `unsupported`（`automationLanes`）；
-    //    - 源节点与主总线上的 `TrackVolume`、保留子图入边上的 `SendGain`、源节点上的
-    //      `TrackPan`、计划节点上的 `DeviceParam`（通道条字段整组，`#267`）真的
-    //      被应用（见 `TrackSource`、第 9 步、`RenderPlan::attach_send_automation`
-    //      与 `RenderPlan::attach_device_param_automation`）。
+    //    - 有可求值点、但这次渲染**没有落点**（`DeviceParam` 名字不是插入链落点 /
+    //      `TrackVolume`、`TrackPan` 落在不可达轨 / `SendGain` 落在被剪枝的边 /
+    //      `Macro` 没有可落点）⇒ 进 `unsupported`（`automationLanes`）；
+    //    - 主总线与**可达总线轨**上的 `TrackVolume` / `TrackPan`（`#296` / `#298`）、
+    //      保留子图入边上的 `SendGain`（`#256`）、计划节点上的 `DeviceParam`
+    //      （通道条/混响/卷积字段，`#266`/`#267`/`#293`/`#304`）、以及有落点的
+    //      `Macro` 泳道（`#297`）真的被应用（见 `TrackSource`、第 9 步、
+    //      `RenderPlan::attach_send_automation` 与
+    //      `RenderPlan::attach_device_param_automation`）。
     let automation =
         AutomationReport::from_project(project, &source_nodes, &rendered_edges, &nodes);
     if automation.unsupported > 0 {

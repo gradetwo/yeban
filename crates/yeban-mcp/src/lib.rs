@@ -48,9 +48,10 @@
 //! 十个工具**全部接了真实现**，包括 `yeban_render_master` 的渲染本体：
 //! 它真的调用 `yeban-render`（拓扑分层并行 + 固定顺序归约 + TPDF 抖动 +
 //! RIFF/RF64/BW64 容器 + BWF `bext`），并把产物按 `ARCH-SEC-004` 的
-//! 同目录临时文件 + `fsync` + `rename` 原子落盘。明确的**能力边界**（音频片段、
-//! 设备链 DSP、自动化曲线、连击/概率/弯音/歌词、循环重复……）同时写进
-//! `docs/ledger/mcp-render-notes.md` 与每次响应的 `unsupported` 载荷。
+//! 同目录临时文件 + `fsync` + `rename` 原子落盘。明确的**能力边界**同时写进
+//! `docs/ledger/mcp-render-notes.md` 与每次响应的 `unsupported` 载荷；**全集与逐项
+//! 口径**以 `domain::render::KNOWN_UNSUPPORTED_KEYS` 的模块文档为唯一事实源
+//! （音频片段、连击、概率、循环重复已真的求值，⛔ 不在这份清单里）。
 //! 逐工具的"真做 / 半做 / 未接线"表在 `docs/ledger/tools-domain-notes.md`。
 //!
 //! ```text
@@ -112,8 +113,8 @@
 //! 最长延迟路径。`dryRun` 走同一条**只读**渲染路径，因此预览里的数字是实测值，
 //! 且一个字节都不落盘。
 //!
-//! 明确的**能力边界**（设备链 DSP、自动化曲线、弯音/歌词、
-//! 循环重复、侧链键控……；本模型版本里没有 SFZ 设备变体）逐条写在
+//! 明确的**能力边界**（设备链 DSP 里未消费的参数、自动化里没有落点的残差、
+//! 弯音/滑音/歌词、侧链键控……）逐条写在
 //! `docs/ledger/mcp-render-notes.md`，只要工程里真的出现就会出现在响应的
 //! `unsupported` / `unsupportedCounts` 载荷里 —— 不声称渲染了没渲染的东西。
 //!
