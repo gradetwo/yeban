@@ -508,7 +508,14 @@ fn render_master() -> Value {
              ⭐ `#268`（`ADR-0011`）：顶层 `midiSource` **明说** MIDI 音源是\
              `yeban-engine` 的 `SynthEngine`（`kind:\"engine-instrument\"`、\
              `engineTimbre:true`），与界面/CLI 的 `--export-wav` 同一个音色；\
-             带 SFZ 采样器的轨由采样器发声，见 `sources[].sampler`。",
+             带 SFZ 采样器的轨由采样器发声，见 `sources[].sampler`。\
+             ⭐ `#315`：`sidechainEdgesSummedAsOrdinaryAudio` / `sidechainEdgesInRoutingGraph`\
+             是**读数**——前者数\"侧链边里有几条**真的**被当成普通音频边求和进了母带\"\
+             （⚠ 与 `unsupported` 里的 `sidechainRouting` **不是一回事**：那个键只说\
+             \"图里有没有这种数据\"、悬挂边也照报；本字段在悬挂边上读 `0`），后者数\
+             \"路由图里声明了几条\"。两者对照读：**声明了 N 条、求和了 M 条**。\
+             口径逐字：`M` 说的是\"这条边走了普通音频求和路径\"、⛔ 不是\"+6 dB 了几路\"\
+             （只有一条侧链边时 `M = 1`，而其音频与同形 `TrackToBus` 基线**逐字节相同**）。",
         ),
         &[
             "rendered",
@@ -550,6 +557,8 @@ fn render_master() -> Value {
             "bwf",
             "unsupported",
             "unsupportedCounts",
+            "sidechainEdgesSummedAsOrdinaryAudio",
+            "sidechainEdgesInRoutingGraph",
             "projectDigest",
             "renderedAtUnixMs",
         ],
@@ -600,6 +609,16 @@ fn render_master() -> Value {
         && let Some(Value::Object(properties)) = map.get_mut("properties")
     {
         properties.insert("midiSource".to_owned(), json!({"type": "object"}));
+        // ⭐ `#315`：两个侧链读数同样是**单独插入**（同一处递归上限），
+        // 与 Required 里的两条一一对应。
+        properties.insert(
+            "sidechainEdgesSummedAsOrdinaryAudio".to_owned(),
+            json!({"type": "integer"}),
+        );
+        properties.insert(
+            "sidechainEdgesInRoutingGraph".to_owned(),
+            json!({"type": "integer"}),
+        );
     }
     schema
 }

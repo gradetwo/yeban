@@ -55,7 +55,7 @@
 //! | `notePitchBend` | 弯音曲线没有求值 |
 //! | `noteLyrics` | 歌词/音素没有歌声合成 |
 //! | `busTrackClips` | 非源节点（总线/主轨）上的片段没有渲染（只有源节点有音源） |
-//! | `sidechainRouting` | 侧链边按普通音频边处理（`yeban-render` 的既有边界） |
+//! | `sidechainRouting` | 侧链边按普通音频边处理（`yeban-render` 的既有边界）。⚠ `#315`：**这个键的判据是"图里有没有这种数据"**（一条两端都到不了 master 的悬挂边也照报），**说不出"发生了什么事"**。真的发生了什么事看两个读数：`data.sidechainEdgesSummedAsOrdinaryAudio`（**真的被当成普通音频边求和进母带了几条**）与 `data.sidechainEdgesInRoutingGraph`（声明了几条）。修前这两个数**都不存在** ⇒ "报不支持却悄悄 +6.0206 dB"在响应里连一个字都没有（`#314` 的缺陷） |
 //! | `sfzAmplitude` | ⭐ `#274`：命中区域的 **`amplitude_oncc*`（CC 调制那一半）** 没有求值 —— 静态 `amplitude` 已由引擎的 SFZ 支路应用；CC 增量需要 CC 状态，本层没有。**只**在真的声明了 CC 调制时出现（静态 `amplitude=50` ⇒ ⛔ 不报） |
 //! | `sfzTuneCcModulation` | ⭐ `#223`：命中区域的 **`tune` 的 CC 调制**（`tune*ccN`，`pitch*ccN` 亦归此族）没有求值 —— 基准 `tune` 已烘进 `pitch_ratio`，CC 增量需要 CC 状态，本层没有。只在真的声明时出现 |
 //! | `sfzVolumeCcModulation` | ⭐ `#223`：命中区域的 **`volume` 的 CC 调制**（`volume*ccN` / `gain_ccN`）没有求值 —— 基准 `volume` 已折进 `total_gain()`，CC 增量（dB）需要 CC 状态，本层没有。只在真的声明时出现 |
@@ -1903,6 +1903,26 @@ pub struct RenderArtifact {
     /// 这份读数与 `unsupported` 是**互补**的：`automationLanes` 只说“有没消费的泳道”，
     /// 这里把每条泳道的 `points` / `readEnabled` / `supported` / `applied` 逐条列出。
     pub automation: AutomationReport,
+    /// ⭐ `#315`：**真的被当成普通音频边求和进母带**的侧链边条数（读数，⛔ 不改音频）。
+    ///
+    /// 口径逐字：⭐ **这条边走了普通音频求和路径**、⛔ **不是"+6 dB 了几路"**
+    /// （C case：只有一条侧链边时 `N = 1`，而其音频与同形 `TrackToBus` 基线
+    /// **逐字节相同** —— 一路求和本来就不加倍）。
+    ///
+    /// ⚠ 反例正是"从路由图数"：D case（悬挂侧链边，两端都到不了 master）图上 1 条
+    /// ⇒ 报 1 是假话（音频逐字节等于基线）⇒ 所以必须走 `RenderPlan::edge_ids()`：
+    /// `NodeState.incoming` 里的**每一条**都在 `render_node` 里被无条件累加，
+    /// 而 `edge_ids()` 列出的正是这一张表（剪枝过的边根本不在里面）。
+    ///
+    /// ⇒ 与 [`Self::sidechain_edges_in_routing_graph`] 对照读："声明了 N 条、求和了 M 条"。
+    /// 两者与 `unsupported` 里的 `sidechainRouting` **不是一件事**：那个键是"图里有没有"，
+    /// 这两个数是"实际发生了什么"（D case ⇒ `1 声明 / 0 求和` 且 `sidechainRouting` 仍报）。
+    pub sidechain_edges_summed_as_ordinary_audio: usize,
+    /// ⭐ `#315`：路由图里**声明**了多少条侧链边（含被剪枝 / 悬挂、到不了 master 的）。
+    ///
+    /// 只用来与 [`Self::sidechain_edges_summed_as_ordinary_audio`] 对照：
+    /// 声明了 N 条、真的求和了 M 条，差额就是"到不了母带所以一个字节都没参与"的那些。
+    pub sidechain_edges_in_routing_graph: usize,
     /// 明确没渲染的部分（键序字典序，来自 `BTreeSet`）。
     pub unsupported: BTreeSet<&'static str>,
     /// 每个"没渲染"部分的出现次数。
@@ -2141,6 +2161,23 @@ impl RenderArtifact {
                     .collect(),
             ),
         );
+        // ⭐ `#315`：侧链边的**两个读数** —— "声明了 N 条、求和了 M 条"。
+        //
+        // ⚠ 它们**不是** `unsupported` 的替代品，也**不是**它的重复：
+        //   - `unsupported` 里的 `sidechainRouting` 的判据是"**图里有没有这种数据**"
+        //     （D case 的悬挂边照样报）—— 它说不出"那条边已经 +6 dB 了"；
+        //   - 这两个数说的是"**实际发生了什么事**"：`M` 条侧链边真的走进了某个节点的
+        //     入边求和（⇒ 与同形 `TrackToBus` 边逐位等价）。
+        //   ⇒ 修前响应**只有**前者的"不支持"，于是"报不支持却悄悄 +6.0206 dB"是一个
+        //     没有任何一个键能揭穿的组合。两条一起读才是实话。
+        map.insert(
+            "sidechainEdgesSummedAsOrdinaryAudio".to_owned(),
+            Value::from(self.sidechain_edges_summed_as_ordinary_audio),
+        );
+        map.insert(
+            "sidechainEdgesInRoutingGraph".to_owned(),
+            Value::from(self.sidechain_edges_in_routing_graph),
+        );
         map.insert(
             "projectDigest".to_owned(),
             Value::from(self.project_digest.clone()),
@@ -2221,6 +2258,33 @@ pub fn build(
     let nodes = probe.nodes;
     let source_nodes = probe.source_nodes;
     let rendered_edges = probe.rendered_edges;
+    // ⭐ `#315`：两个侧链读数（"声明了 N 条、求和了 M 条"）。**纯读**，⛔ 不碰一个样本。
+    //
+    // ⚠ **求和条数必须从 `edge_ids()` 数，⛔ 不能从路由图数** —— 反例正是"从路由图数"：
+    //    D case（悬挂侧链边，两端都到不了 master）图上 1 条 ⇒ 报 1 是假话
+    //    （音频逐字节等于基线）⇒ 所以必须走 `edge_ids()`（剪枝过的边不在里面）。
+    //    ⭐ 一个**看起来更简单**的算法会在这一条上**重复它正在修的错**：
+    //    "读数该从哪取"决定了"读到的数是不是真的"。
+    //
+    // `rendered_edges` 就是 `RenderPlan::edge_ids()`（见 `probe_subgraph`），
+    // 而 `render_node` 对每一个 `incoming` 条目无条件累加 ⇒ 它就是"真的被加进某个
+    // 节点输入缓冲的边"的全集；再按 `kind` 过滤即得侧链边条数。
+    let sidechain_edges_in_routing_graph = project
+        .routing_graph
+        .edges
+        .values()
+        .filter(|edge| edge.kind == RoutingKind::Sidechain)
+        .count();
+    let sidechain_edges_summed_as_ordinary_audio = rendered_edges
+        .iter()
+        .filter(|edge_id| {
+            project
+                .routing_graph
+                .edges
+                .get(edge_id)
+                .is_some_and(|edge| edge.kind == RoutingKind::Sidechain)
+        })
+        .count();
     // ⭐ 任务单 `#303` / `#309`：**会执行压缩**的轨（pre-pan tap 的唯一判据）。
     // 与 CLI 的 `render_core` 共用**同一份**
     // `yeban_render::automation::compressing_nodes_with_lanes`：
@@ -2697,6 +2761,8 @@ pub fn build(
         project_digest,
         rendered_at_unix_ms: now_ms,
         automation,
+        sidechain_edges_summed_as_ordinary_audio,
+        sidechain_edges_in_routing_graph,
         unsupported,
         unsupported_counts: counts,
     })

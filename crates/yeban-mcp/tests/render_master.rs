@@ -29,6 +29,7 @@
 //! | 13a | 音频导出的 `bext` **不含作者字段**（`bwf` **实测键名**里无 `author`/`artist`/`credit`/`copyright`），且 `originatorReference` == 工程 ULID | 往 `bwf` 加一个作者键 |
 //! | 13b | 工程作者（`setAuthor` 真的写进去的唯一标记）**不出现在音频产物字节里** | 把 `project.author` 写进 `bext` / `codingHistory` / 任何 chunk |
 //! | 13c | 同一标记**不出现在 MIDI 导出字节里**（解回真字节后 `windows(n)` 找） | 把 `project.author` 写进任何 SMF 元事件（轨道名/文本/版权） |
+//! | 14 | ⭐ `#315` 侧链边的**两个读数**：`sidechainEdgesSummedAsOrdinaryAudio`（**真的被当成普通音频边求和了几条**，取自 `RenderPlan::edge_ids()`）vs `sidechainEdgesInRoutingGraph`（路由图里声明了几条）。B 平行侧链 ⇒ `1/1` 且 +6.0206 dB；B2 两条 ⇒ `2/2`；**D 悬挂边 ⇒ `0/1` 且 `unsupported` 仍报 `sidechainRouting`**；**C 只有侧链 ⇒ `1/1` 但字节等于 `TrackToBus` 基线**（字段说的是"走了求和路径"、⛔ 不是"+6 dB 了几路"） | 从路由图数求和条数（D 会读成 1）/ 把 C 的 `1` 读成"加倍了" / 把 `unsupported` 的发射条件改成"求和过才报" / 加字段时顺手改了音频 |
 //!
 //! ## 临时目录纪律
 //!
@@ -6773,4 +6774,231 @@ fn a_compressed_track_source_peak_is_taken_before_the_insert_chain() {
         wet_result["data"]["masterDigest"], dry_result["data"]["masterDigest"],
         "同一条判据必须同时证明压缩真的改了母带（不是'什么都没发生'）"
     );
+}
+
+// ===========================================================================
+// 任务单 `#315`：侧链边的两个读数 —— "声明了 N 条、求和了 M 条"
+// ===========================================================================
+
+/// 给工程加一条侧链边（`source → destination`）。
+fn with_sidechain_edge(
+    mut project: YebanProjectV1,
+    seed: u32,
+    source: EntityId,
+    destination: EntityId,
+) -> YebanProjectV1 {
+    project.routing_graph.edges.insert(
+        id(seed),
+        RoutingEdge {
+            id: id(seed),
+            source_node: source,
+            destination_node: destination,
+            kind: RoutingKind::Sidechain,
+            gain_db: None,
+        },
+    );
+    project.validate().expect("带侧链边的夹具必须合法");
+    project
+}
+
+/// 从一份 `data` 里读出两个侧链读数 `(求和条数, 声明条数)`。
+fn sidechain_readings(result: &Value) -> (u64, u64) {
+    let data = &result["data"];
+    let read = |field: &str| -> u64 {
+        data[field].as_u64().unwrap_or_else(|| {
+            panic!("`{field}` 必须是读数（整数），实测 {result}");
+        })
+    };
+    (
+        read("sidechainEdgesSummedAsOrdinaryAudio"),
+        read("sidechainEdgesInRoutingGraph"),
+    )
+}
+
+/// ⭐ `#315` 判据 1：**求和条数**必须数"真的进了入边归约的边"，不是"图上声明了几条"。
+///
+/// 五个 case（与 `#314` 的 A/B/B2/C/D 同形）：
+///
+/// | case | 路由图 | 求和 / 声明 | 音频 |
+/// | :--- | :--- | :--- | :--- |
+/// | A 基线 | `TrackToBus L→M` | `0 / 0` | 锚 |
+/// | B 平行侧链 | ＋`Sidechain L→M` | `1 / 1` | **+6.0206 dB** |
+/// | B2 两条平行侧链 | ＋`Sidechain ×2 L→M` | `2 / 2` | **+9.5424 dB** |
+/// | C 只有侧链 | `Sidechain L→M` | `1 / 1` | **等于 A（逐字节）** |
+/// | D 悬挂侧链 | ＋`Sidechain G1→G2`（两端都到不了 master） | `0 / 1` | **等于 A（逐字节）** |
+///
+/// ⚠ 反例正是"从路由图数"：D 图上 1 条 ⇒ 报 1 是假话（音频逐字节等于基线）
+/// ⇒ 所以必须走 `RenderPlan::edge_ids()`。一个**看起来更简单**的算法会在这一条上
+/// **重复它正在修的错**。
+///
+/// ⚠ 语义边界（C case）：`M = 1` 说的是"这条边走了普通音频求和路径"、
+/// ⛔ **不是**"+6 dB 了几路"—— 一路求和本来就不加倍，C 的字节与 A 逐字节相同。
+#[test]
+fn sidechain_readings_separate_declared_edges_from_summed_edges() {
+    let master = id(1);
+    let lead = id(2);
+
+    // A 基线。
+    let baseline = render_or_ok(&project(&Spec::default()), "315-baseline");
+
+    // B 侧链平行边（与既有触发器 ⑨ 同形）。
+    let parallel = with_sidechain_edge(project(&Spec::default()), 42, lead, master);
+    let b = render_or_ok(&parallel, "315-parallel");
+
+    // B2 两条侧链平行边（三路求和）。
+    let two = with_sidechain_edge(
+        with_sidechain_edge(project(&Spec::default()), 42, lead, master),
+        43,
+        lead,
+        master,
+    );
+    let b2 = render_or_ok(&two, "315-two");
+
+    // C 只有侧链边（拿掉 TrackToBus）。
+    let mut only = project(&Spec::default());
+    only.routing_graph.edges.remove(&id(40));
+    let only = with_sidechain_edge(only, 42, lead, master);
+    let c = render_or_ok(&only, "315-only");
+
+    // D 悬挂侧链边：两端都是图里的节点，但都到不了 master。
+    let mut dangling = project(&Spec::default());
+    for (seed, name, kind) in [
+        (4, "GhostA", TrackKind::Midi),
+        (5, "GhostB", TrackKind::AuxReturn),
+    ] {
+        dangling.tracks.insert(
+            id(seed),
+            TrackV3 {
+                id: id(seed),
+                name: name.to_owned(),
+                kind,
+                ..TrackV3::default()
+            },
+        );
+        dangling.routing_graph.nodes.push(id(seed));
+    }
+    let dangling = with_sidechain_edge(dangling, 44, id(4), id(5));
+    let d = render_or_ok(&dangling, "315-dangling");
+
+    assert_eq!(sidechain_readings(&baseline), (0, 0), "A: {baseline}");
+    assert_eq!(sidechain_readings(&b), (1, 1), "B: {b}");
+    assert_eq!(sidechain_readings(&b2), (2, 2), "B2: {b2}");
+    assert_eq!(sidechain_readings(&c), (1, 1), "C: {c}");
+    // ⭐ D：声明了 1 条、**求和了 0 条**（悬挂边在剪枝阶段就没了）。
+    assert_eq!(sidechain_readings(&d), (0, 1), "D: {d}");
+
+    // ⭐ `unsupported` 的**发射条件一个字节都没动**：D（0 条参与）仍然报。
+    for (tag, result) in [("B", &b), ("B2", &b2), ("C", &c), ("D", &d)] {
+        let keys = result["data"]["unsupported"]
+            .as_array()
+            .unwrap_or_else(|| panic!("{tag}: unsupported 必须是数组: {result}"));
+        assert!(
+            keys.iter().any(|key| key == "sidechainRouting"),
+            "{tag}: `sidechainRouting` 的判据是'图里有没有这种数据' ⇒ 必须继续报: {result}"
+        );
+        assert_eq!(
+            result["data"]["unsupportedCounts"]["sidechainRouting"], 1,
+            "{tag}: `unsupportedCounts` 是'登记次数'（恒 1），⛔ 不随边数变: {result}"
+        );
+    }
+    assert_eq!(
+        baseline["data"]["unsupported"],
+        json!([]),
+        "A 没有侧链边 ⇒ 不许报: {baseline}"
+    );
+
+    // ⭐ 峰值：求和路数真的等于 dB —— `2.000000000` ⇒ +6.0206 dB、`3` ⇒ +9.5424 dB。
+    let peak = |result: &Value| -> f64 {
+        result["data"]["peak"]["before"]
+            .as_f64()
+            .unwrap_or_else(|| panic!("peak.before 必须是数: {result}"))
+    };
+    let baseline_peak = peak(&baseline);
+    let b_ratio = peak(&b) / baseline_peak;
+    let b2_ratio = peak(&b2) / baseline_peak;
+    let b_db = 20.0 * b_ratio.log10();
+    let b2_db = 20.0 * b2_ratio.log10();
+    println!(
+        "### #315 读数: A={:?} B={:?} B2={:?} C={:?} D={:?}; \
+         peak_before A={baseline_peak:.9} B={:.9} B2={:.9}; \
+         ratio B={b_ratio:.9} ({b_db:+.6} dB) B2={b2_ratio:.9} ({b2_db:+.6} dB)",
+        sidechain_readings(&baseline),
+        sidechain_readings(&b),
+        sidechain_readings(&b2),
+        sidechain_readings(&c),
+        sidechain_readings(&d),
+        peak(&b),
+        peak(&b2),
+    );
+    assert!(
+        (b_ratio - 2.0).abs() < 1e-6,
+        "B 是两路求和 ⇒ 峰值比必须 ≈ 2（+6.0206 dB），实测 {b_ratio:.9}"
+    );
+    assert!(
+        (b2_ratio - 3.0).abs() < 1e-6,
+        "B2 是三路求和 ⇒ 峰值比必须 ≈ 3（+9.5424 dB），实测 {b2_ratio:.9}"
+    );
+
+    // ⭐ **语义边界**：C 的 `1` 不是"加倍" —— 只有一条边时它走的就是普通求和路径，
+    // 字节与同形 `TrackToBus` 基线**逐字节相同**（sha256 是硬判据）。
+    let sha = |result: &Value| -> String {
+        result["data"]["sha256"]
+            .as_str()
+            .unwrap_or_else(|| panic!("sha256 必须是字符串: {result}"))
+            .to_owned()
+    };
+    println!(
+        "### #315 sha256: A={} C={} D={}",
+        sha(&baseline),
+        sha(&c),
+        sha(&d)
+    );
+    assert_eq!(
+        sha(&c),
+        sha(&baseline),
+        "C 只有一条侧链边 ⇒ 与 A 逐字节相同"
+    );
+    assert_eq!(
+        sha(&d),
+        sha(&baseline),
+        "D 悬挂边到不了 master ⇒ 与 A 逐字节相同"
+    );
+    assert_ne!(
+        sha(&b),
+        sha(&baseline),
+        "B 必须真的改了字节（否则这条判据是空转）"
+    );
+}
+
+/// ⭐ `#315` 判据 2：两个读数必须**声明在 `outputSchema` 里**（否则 agent 读不到它们）。
+#[test]
+fn sidechain_readings_are_declared_in_the_output_schema() {
+    let project = with_sidechain_edge(project(&Spec::default()), 42, id(2), id(1));
+    let result = render_or_ok(&project, "315-schema");
+    let schema = yeban_mcp::tools::catalog()["tools"]
+        .as_array()
+        .expect("tools")
+        .iter()
+        .find(|tool| tool["name"] == "yeban_render_master")
+        .expect("render_master 必须在 tools/list 里")["outputSchema"]
+        .clone();
+    let declared = yeban_mcp::output_schema::declared_fields(&schema);
+    for field in [
+        "sidechainEdgesSummedAsOrdinaryAudio",
+        "sidechainEdgesInRoutingGraph",
+    ] {
+        assert!(
+            declared.iter().any(|name| name == field),
+            "`{field}` 必须被 outputSchema 声明，实测已声明 {declared:?}"
+        );
+        assert_eq!(
+            schema["properties"][field]["type"], "integer",
+            "`{field}` 的类型必须是 integer: {schema}"
+        );
+        assert_eq!(result["data"][field], 1, "B: {result}");
+    }
+    yeban_mcp::output_schema::validate_complete(&schema, &result["data"]).unwrap_or_else(
+        |violation| panic!("render_master 的真实响应违反自己的 schema: {violation}"),
+    );
+    println!("### #315 outputSchema 已声明: {declared:?}");
 }
