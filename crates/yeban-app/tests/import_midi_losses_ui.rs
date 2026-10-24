@@ -1,4 +1,5 @@
-//! ⭐ 任务单 `#319`：**GUI 导入回执里的损失读数**（`#318` 的第二个出口）。
+//! ⭐ 任务单 `#319`／`#320`：**GUI 导入回执里的损失与歌词读数**（`#318`／`#317`
+//! 的第二个出口）。
 //!
 //! ## 本文件要证的三句话
 //!
@@ -9,7 +10,9 @@
 //!    - 右栏 `module-import-losses` 一行**可见摘要**（与削波警示同一槽位、互斥）；
 //! 3. **与 CLI 同源**：GUI 的 `loss_detail` 必须**逐字等于** CLI `imported-midi:` 行
 //!    `origin=midi-input ` 之后的尾部 —— 同一份 `MidiImportLosses`、同一个
-//!    `MidiImportLosses::loss_detail()`／`aux_fields()`，⛔ 不是第二份格式化。
+//!    `MidiImportLosses::loss_detail()`／`aux_fields()`，⛔ 不是第二份格式化；
+//!    `lyrics_detail` 必须**逐字等于** CLI 行里 `lyrics=` 起、`track=` 前的五字段
+//!    —— 同一份 `MidiLyricCounts`、同一个 `Display`（`#320`）。
 //!
 //! ## 平台约束
 //!
@@ -48,11 +51,12 @@ const BIN: &str = env!("CARGO_BIN_EXE_yeban-app");
 /// 可见摘要行的语义 ID（`ui/module_actions.slint` ↔ `src/elements.rs` 两处逐字相同）。
 const LOSS_ID: &str = "module-import-losses";
 
-/// 316 B 夹具的**期望摘要**（24 类 aux、29 条事件、5 颗音符、每颗都丢通道值与释放力度）。
+/// 316 B 夹具的**期望摘要**（24 类 aux、29 条事件、5 颗音符、每颗都丢通道值与释放力度，
+/// 2 条歌词候选里 1 条未归属）。
 ///
 /// ⚠ 这是**夹具的期望值**（与 `tests/midi_round_trip.rs` 的逐类期望表同源），
 /// ⛔ 不是从 GUI 回执反推的"第二份判定"。
-const EXPECTED_SUMMARY: &str = "⚠ 导入丢失：24 类 / 29 条；通道值 5、释放力度 5";
+const EXPECTED_SUMMARY: &str = "⚠ 导入丢失：24 类/29 条；歌词未归属 1；通道/力度5/5";
 
 /// 三档窗口（与 `tests/pane_no_overlap.rs` / `tests/gui_clipping_warning.rs` 同一组）。
 const TIERS: &[(u32, u32)] = &[(1920, 1080), (1440, 900), (1024, 800)];
@@ -380,6 +384,27 @@ fn behavior_arm() {
         detail, cli_tail,
         "GUI `loss_detail` 必须逐字等于 CLI 行 `origin=midi-input ` 之后的尾部（同一个格式化函数）"
     );
+    // ---- ②b 歌词五字段：GUI `lyrics_detail` 逐字等于 CLI 行那五个字段（`#320`）----
+    let cli_lyrics_start = cli_line.find("lyrics=").expect("CLI 行必须有 `lyrics=`");
+    let cli_lyrics_rest = &cli_line[cli_lyrics_start..];
+    let cli_lyrics_end = cli_lyrics_rest
+        .find(" track=")
+        .expect("CLI 行的歌词字段必须在 `track=` 前结束");
+    let cli_lyrics = &cli_lyrics_rest[..cli_lyrics_end];
+    let lyrics_detail = field_of(&receipt, "lyrics_detail");
+    assert_eq!(
+        lyrics_detail, cli_lyrics,
+        "GUI `lyrics_detail` 必须逐字等于 CLI 行 lyrics= 起、track= 前的五字段（同一个 Display）"
+    );
+    assert_eq!(
+        lyrics_detail, "lyrics=2 attached=1 dropped=1 non-utf8=0 empty=0",
+        "316 B 夹具的歌词五字段必须逐项"
+    );
+    report_line(&format!(
+        "[#320 同源] GUI lyrics_detail={lyrics_detail:?} == CLI 五字段（{} 字节）",
+        lyrics_detail.len()
+    ));
+
     // ⚠ 这里**不能**对回执做 `field_of("channels")`：`loss_detail` 是**引号内**的
     // 一整个值（同 `clipping_note` 先例），里面也含 `channels=` —— 顶层取值器不解析
     // 引号，会取到引号里的那一截。上下文读数在下一条的 `detail` 上逐项断言。
@@ -440,7 +465,8 @@ fn behavior_arm() {
     let node = node_of(&tree, LOSS_ID);
     assert_eq!(node.role.as_str(), "text", "损失行的角色");
     assert_eq!(
-        node.label, "最近一次 MIDI 文件导入的损耗摘要（类数 / 事件数 / 音符通道 / 释放力度）",
+        node.label,
+        "最近一次 MIDI 文件导入的损耗摘要（类数 / 事件数 / 歌词丢失 / 音符通道 / 释放力度）",
         "损失行的 `accessible-label` 必须与注册表逐字相同"
     );
     assert_eq!(

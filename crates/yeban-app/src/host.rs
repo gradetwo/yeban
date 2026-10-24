@@ -6087,8 +6087,9 @@ fn apply_module_receipt_with_clipping_warning(
 /// 两条专用行的**同一次**写入（互斥：每次动作都给两条赋值，没给的那条是空串）。
 ///
 /// - `clipping_warning`：`export-wav` 削波时的可见短句（`#230`）；
-/// - `import_losses`：`import-midi` 成功时的损失摘要（`#319`，与 CLI 的
-///   `imported-midi:` 行读**同一个** `MidiImportLosses`）。
+/// - `import_losses`：`import-midi` 成功时的损失摘要（`#319`；`#320` 起同一行也带
+///   歌词的非零丢失桶。与 CLI 的 `imported-midi:` 行读**同一个**
+///   `MidiImportLosses`／`MidiLyricCounts`）。
 fn apply_module_receipt_with_alerts(
     ui: &MainWindow,
     receipt: &str,
@@ -6411,14 +6412,15 @@ pub fn wire_module_actions_with_capture(
                 now_ms(),
             ) {
                 Ok(report) => {
-                    // ⭐ `#319`：GUI 的第二个出口。两样东西读的是**同一份**
-                    // `report.losses`（同一个 `MidiImportLosses`，⛔ 不重解析 SMF、
-                    // ⛔ 不重数事件）：
-                    // ① 回执末尾两个**明细字段**（引号包住，`=`/空格不参与回执语法）；
+                    // ⭐ `#319`／⭐ `#320`：GUI 的第二个出口。读的是**同一份**
+                    // `report.losses` 与 `report.lyrics`（同一个 `MidiImportLosses`／
+                    // `MidiLyricCounts`，⛔ 不重解析 SMF、⛔ 不重数事件）：
+                    // ① 回执末尾三个**明细字段**（引号包住，`=`/空格不参与回执语法）；
                     // ② 界面那条**可见摘要行**（`module-import-losses`）。
                     // 明细与 CLI 的 `imported-midi:` 行尾部共用
-                    // `MidiImportLosses::loss_detail()`／`aux_fields()` ⇒ 没有第二份格式化。
-                    let loss_line = report.losses.loss_summary();
+                    // `MidiImportLosses::loss_detail()`／`aux_fields()`；歌词五字段共用
+                    // `MidiLyricCounts` 的 `Display` ⇒ 没有第二份格式化。
+                    let loss_line = report.losses.loss_summary(report.lyrics);
                     let receipt = module_receipt(
                         "import-midi",
                         &[
@@ -6444,6 +6446,9 @@ pub fn wire_module_actions_with_capture(
                             ),
                             format!("losses=\"{loss_line}\""),
                             format!("loss_detail=\"{}\"", report.losses.loss_detail()),
+                            // ⭐ `#320`：五个歌词读数的**唯一**格式化（`Display`）。
+                            // 逐字等于 CLI 行里 `lyrics=` 起、`track=` 前的那一段。
+                            format!("lyrics_detail=\"{}\"", report.lyrics),
                         ],
                     );
                     (receipt, true, loss_line)

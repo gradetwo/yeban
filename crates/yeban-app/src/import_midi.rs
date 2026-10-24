@@ -107,6 +107,48 @@ impl MidiLyricCounts {
     pub const fn is_consistent(self) -> bool {
         self.read == self.attached + self.dropped
     }
+
+    /// ⭐ `#320`：可见行只列**非零的歌词丢失桶**（`dropped` / `non_utf8` / `empty`）。
+    ///
+    /// 全零 ⇒ 空串（可见行不凭空多出"歌词…0"）。`read` / `attached` 是正向上下文，
+    /// 留在 [`core::fmt::Display`] 的完整五字段里（CLI 行与 GUI `lyrics_detail`）。
+    ///
+    /// 只有 `dropped` 时用最清楚的一版（`歌词未归属 1`）；一旦 `non_utf8` / `empty`
+    /// 也非零，改用斜杠紧凑版（`歌词未归属1/非UTF8 1/空2`）—— 实测后者在不带
+    /// `通道/力度` 时 `spare=14`，带则溢出 264px（见 [`MidiImportLosses::loss_summary`]）。
+    #[must_use]
+    pub fn loss_fragment(self) -> String {
+        if self.dropped == 0 && self.non_utf8 == 0 && self.empty == 0 {
+            return String::new();
+        }
+        if self.non_utf8 == 0 && self.empty == 0 {
+            return format!("歌词未归属 {}", self.dropped);
+        }
+        let mut parts: Vec<String> = Vec::new();
+        if self.dropped > 0 {
+            parts.push(format!("未归属{}", self.dropped));
+        }
+        if self.non_utf8 > 0 {
+            parts.push(format!("非UTF8 {}", self.non_utf8));
+        }
+        if self.empty > 0 {
+            parts.push(format!("空{}", self.empty));
+        }
+        format!("歌词{}", parts.join("/"))
+    }
+}
+
+impl core::fmt::Display for MidiLyricCounts {
+    /// ⭐ `#320`：`lyrics= attached= dropped= non-utf8= empty=` 五字段的唯一格式化。
+    ///
+    /// 逐字与 `#317`／`#318` 起的 CLI 行相同（`imported-midi:` 行里的这一段）。
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(
+            formatter,
+            "lyrics={} attached={} dropped={} non-utf8={} empty={}",
+            self.read, self.attached, self.dropped, self.non_utf8, self.empty
+        )
+    }
 }
 
 /// ⭐ `#318`：一类丢失的**两列读数**。
@@ -264,25 +306,50 @@ impl MidiImportLosses {
     /// `host::apply_module_receipt_with_alerts`）。
     ///
     /// 单位逐项命名：`类` = `dropped > 0` 的 aux 事件类数；`条` = 24 类的 `dropped` 之和；
-    /// `通道值` / `释放力度` = 按音符计的 `dropped`。⚠ 不含歌词（`#317` 的读数，本单不做）。
-    /// 无 aux 丢失时省略"0 类 / 0 条"那一截，只留按音符的两项（仍然如实说）。
+    /// `通道` / `力度` = 按音符计的 `dropped`；`歌词…` = [`MidiLyricCounts`] 的
+    /// **非零丢失桶**（`dropped` / `non_utf8` / `empty`；全零 ⇒ 这一截省略）。
+    /// 无 aux 丢失时省略"0 类 / 0 条"那一截，只留按音符与歌词的读数（仍然如实说）。
+    ///
+    /// ⭐ `#320` 版面（**实测**，⛔ 推算）：`#319` 原文右沿 1881 / 行右沿 1912
+    /// （余 31px）；原文＋歌词 ⇒ `spare=1`（1px，过不了 `#319` 自己的 **3px** 门）。
+    /// 压缩后可放：最紧 4px、推荐 7–11px、换前缀 17px。本行取
+    /// `⚠ 导入丢失：24 类/29 条；歌词未归属 1；通道/力度5/5`（`spare=7`）——
+    /// 保既有六项语义（导入丢失 / 类数 / 事件数 / 歌词未归属 / 通道 / 释放力度），
+    /// 只压缩空格与标签词，⛔ 不丢桶（丢通道/力度那一版已否）。`3px` 门是硬约束。
     #[must_use]
-    pub fn loss_summary(&self) -> String {
+    pub fn loss_summary(&self, lyrics: MidiLyricCounts) -> String {
         let classes = self
             .aux_events
             .values()
             .filter(|count| count.dropped > 0)
             .count();
         let events = self.dropped_events();
-        if events == 0 {
-            format!(
-                "⚠ 导入丢失：通道值 {}、释放力度 {}",
-                self.note_channel_values.dropped, self.note_off_velocity_values.dropped
-            )
+        let lyric_loss = lyrics.loss_fragment();
+        let channels = self.note_channel_values.dropped;
+        let velocities = self.note_off_velocity_values.dropped;
+        if lyric_loss.is_empty() {
+            // ⚠ 无歌词丢失 ⇒ **逐字保持 `#319` 的旧文本**（不凭空多出"歌词…0"）。
+            if events == 0 {
+                format!("⚠ 导入丢失：通道值 {channels}、释放力度 {velocities}")
+            } else {
+                format!(
+                    "⚠ 导入丢失：{classes} 类 / {events} 条；通道值 {channels}、释放力度 {velocities}"
+                )
+            }
+        } else if lyrics.non_utf8 > 0 || lyrics.empty > 0 {
+            // ⚠ 非 UTF-8 / 空桶也非零 ⇒ 歌词丢失优先占可见位：这一版已是 264px
+            // 内的上限（`spare=14`），再加 `通道/力度` 会溢出 ⇒ 后两项留在
+            // `loss_detail="…"`（⛔ 不是从数据通道里删除）。
+            if events == 0 {
+                format!("⚠ 导入丢失：{lyric_loss}")
+            } else {
+                format!("⚠ 导入丢失：{classes} 类/{events} 条；{lyric_loss}")
+            }
+        } else if events == 0 {
+            format!("⚠ 导入丢失：{lyric_loss}；通道/力度{channels}/{velocities}")
         } else {
             format!(
-                "⚠ 导入丢失：{classes} 类 / {events} 条；通道值 {}、释放力度 {}",
-                self.note_channel_values.dropped, self.note_off_velocity_values.dropped
+                "⚠ 导入丢失：{classes} 类/{events} 条；{lyric_loss}；通道/力度{channels}/{velocities}"
             )
         }
     }
@@ -357,17 +424,14 @@ impl MidiImportReport {
         // [`MidiImportLosses::loss_detail`] **唯一**格式化；GUI 的 `loss_detail="…"`
         // 字段读的是**同一串** ⇒ 两个出口不可能各说各话（CLI 行逐字不变）。
         format!(
-            "imported-midi: path={} notes={} lyrics={} attached={} dropped={} non-utf8={} \
-             empty={} track={} clip={} commit={} origin={origin} {}",
+            "imported-midi: path={} notes={} {} track={} clip={} commit={} origin={origin} {}",
             self.path
                 .as_ref()
                 .map_or_else(|| "<bytes>".to_owned(), |path| path.display().to_string()),
             self.notes,
-            self.lyrics.read,
-            self.lyrics.attached,
-            self.lyrics.dropped,
-            self.lyrics.non_utf8,
-            self.lyrics.empty,
+            // ⭐ `#320`：五个歌词读数由 `MidiLyricCounts` 的 `Display` **唯一**格式化；
+            // GUI 的 `lyrics_detail="…"` 打印同一串 ⇒ CLI 行逐字不变。
+            self.lyrics,
             self.track_id.to_canonical_string(),
             self.clip_id.to_canonical_string(),
             self.commit.to_canonical_string(),
@@ -1054,6 +1118,133 @@ mod tests {
         assert_eq!(losses.dropped_events(), 7);
         assert_eq!(plan.notes, 2);
         assert_eq!(plan.lyrics, MidiLyricCounts::default());
+    }
+
+    /// ⭐ `#320`：歌词五字段只有一个 `Display`（CLI 与 GUI 回执共用）。
+    #[test]
+    fn lyric_counts_print_the_five_fields_once() {
+        let counts = MidiLyricCounts {
+            read: 2,
+            attached: 1,
+            dropped: 1,
+            non_utf8: 0,
+            empty: 0,
+        };
+        assert_eq!(
+            counts.to_string(),
+            "lyrics=2 attached=1 dropped=1 non-utf8=0 empty=0"
+        );
+        assert_eq!(
+            MidiLyricCounts::default().to_string(),
+            "lyrics=0 attached=0 dropped=0 non-utf8=0 empty=0"
+        );
+    }
+
+    /// 造一份"24 类 / 29 条"的损失表（与 316 B 夹具同形），只测可见摘要文本。
+    fn all_kinds_losses() -> MidiImportLosses {
+        let mut aux_events = BTreeMap::new();
+        for (index, kind) in MidiAuxEventKind::ALL.iter().copied().enumerate() {
+            let read = if index == 0 { 6 } else { 1 };
+            aux_events.insert(
+                kind,
+                MidiLossCount {
+                    read,
+                    dropped: read,
+                },
+            );
+        }
+        MidiImportLosses {
+            format: MidiFormat::Parallel,
+            file_tracks: 3,
+            track_partitions_dropped: 2,
+            distinct_channels: 2,
+            note_channel_values: MidiLossCount {
+                read: 5,
+                dropped: 5,
+            },
+            note_off_velocity_values: MidiLossCount {
+                read: 5,
+                dropped: 5,
+            },
+            aux_events,
+        }
+    }
+
+    /// ⭐ `#320`：可见摘要保**既有六项语义**（导入丢失 / 类数 / 事件数 / 歌词未归属 /
+    /// 通道 / 释放力度），并按需列出 `non_utf8` / `empty` 这两个丢失桶（⛔ 沉默）。
+    /// 歌词全零时**逐字保持 `#319` 的旧文本**。
+    #[test]
+    fn the_visible_loss_summary_keeps_the_six_items_and_adds_nonzero_lyric_losses() {
+        let losses = all_kinds_losses();
+        assert_eq!(
+            losses.loss_summary(MidiLyricCounts {
+                read: 2,
+                attached: 1,
+                dropped: 1,
+                non_utf8: 0,
+                empty: 0,
+            }),
+            "⚠ 导入丢失：24 类/29 条；歌词未归属 1；通道/力度5/5",
+            "316 B 夹具的可见摘要（`spare=7` 那一版）"
+        );
+        assert_eq!(
+            losses.loss_summary(MidiLyricCounts {
+                read: 3,
+                attached: 2,
+                dropped: 1,
+                non_utf8: 1,
+                empty: 2,
+            }),
+            "⚠ 导入丢失：24 类/29 条；歌词未归属1/非UTF8 1/空2",
+            "非 UTF-8 / 空桶 > 0 时必须逐桶说出来（通道/力度留在 loss_detail）"
+        );
+        assert_eq!(
+            losses.loss_summary(MidiLyricCounts {
+                read: 2,
+                attached: 2,
+                dropped: 0,
+                non_utf8: 0,
+                empty: 0,
+            }),
+            "⚠ 导入丢失：24 类 / 29 条；通道值 5、释放力度 5",
+            "无歌词丢失 ⇒ 旧文本逐字不变"
+        );
+
+        let no_aux = MidiImportLosses {
+            format: MidiFormat::SingleTrack,
+            file_tracks: 1,
+            track_partitions_dropped: 0,
+            distinct_channels: 1,
+            note_channel_values: MidiLossCount {
+                read: 5,
+                dropped: 5,
+            },
+            note_off_velocity_values: MidiLossCount {
+                read: 5,
+                dropped: 5,
+            },
+            aux_events: BTreeMap::new(),
+        };
+        assert_eq!(
+            no_aux.loss_summary(MidiLyricCounts {
+                read: 2,
+                attached: 1,
+                dropped: 1,
+                non_utf8: 0,
+                empty: 0,
+            }),
+            "⚠ 导入丢失：歌词未归属 1；通道/力度5/5"
+        );
+        assert_eq!(
+            no_aux.loss_summary(MidiLyricCounts {
+                read: 2,
+                attached: 2,
+                dropped: 0,
+                non_utf8: 0,
+                empty: 0,
+            }),
+            "⚠ 导入丢失：通道值 5、释放力度 5"
+        );
     }
 
     /// 判据 b（拒绝空导入）：文件里没有音符 ⇒ `Empty`，⛔ 不发出空提交。

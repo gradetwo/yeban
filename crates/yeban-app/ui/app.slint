@@ -471,10 +471,11 @@ export component MainWindow inherits Window {
     // `module-clipping-warning`）。空串 = 不显示；削波导出 ⇒ 一行短句。
     // 完整读数仍在 `module-status` 的 `clipping_note="…"` 字段里（`#229` 的数据通道）。
     in-out property <string> module-clipping-warning: "";
-    // ⭐ 任务单 `#319`：MIDI 文件导入的损失摘要行（`ui/module_actions.slint` 的
-    // `module-import-losses`，与削波警示共用 `y = 448`、互斥）。空串 = 不显示；
-    // 完整 24 类明细在 `module-status` 的 `loss_detail="…"` 字段里（同一个
-    // `MidiImportLosses`，与 CLI 的 `imported-midi:` 行同源）。
+    // ⭐ 任务单 `#319`／`#320`：MIDI 文件导入的损失摘要行（`ui/module_actions.slint`
+    // 的 `module-import-losses`，与削波警示共用 `y = 448`、互斥）。空串 = 不显示；
+    // 完整 24 类明细与歌词五字段在 `module-status` 的 `loss_detail="…"`／
+    // `lyrics_detail="…"` 字段里（同一个 `MidiImportLosses`／`MidiLyricCounts`，
+    // 与 CLI 的 `imported-midi:` 行同源）。
     in-out property <string> module-import-losses: "";
     // 六条入口回调（事件源 = `ui/module_actions.slint` 的五个 `TouchArea` ＋
     // `ui/console/mixer_console.slint` 的 `midi_export_area`）。

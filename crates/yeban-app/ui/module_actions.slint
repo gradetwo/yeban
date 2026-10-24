@@ -331,14 +331,23 @@ export component ModuleActions inherits Rectangle {
         accessible-value: root.clipping-warning;
     }
 
-    // ------------------------------------------------- 导入损失摘要行（⭐ `#319`）
+    // ------------------------------------------------- 导入损失摘要行（⭐ `#319`／`#320`）
     // 与上面那条削波警示**共用** `y = 448` 这个槽位（版面实测：1440×900 的右栏只剩
     // 11px，放不下第四条独立 16px 行；1440 档 448+16=464 < 475 才装得下）。
     // 两条**互斥**：唯一写者 `host::apply_module_receipt_with_alerts` 每次动作同时写
     // 两条、没给的那条写空串 ⇒ 任一时刻最多一条 `visible` ⇒ 不可能叠字。
-    // 文本由宿主从 `MidiImportReport.losses` 生成（与 CLI 的 `imported-midi:` 行读
-    // **同一个** `MidiImportLosses`）；完整 24 类明细在回执的 `loss_detail="…"` 字段与
-    // `module-last-status` 的 `accessible-value` 里（同 `#230` 的 `clipping_note` 先例）。
+    // 文本由宿主从 `MidiImportReport.losses` ＋ `report.lyrics` 生成（与 CLI 的
+    // `imported-midi:` 行读**同一个** `MidiImportLosses`／`MidiLyricCounts`）；完整
+    // 24 类明细与歌词五字段在回执的 `loss_detail="…"`／`lyrics_detail="…"` 里
+    // （同 `#230` 的 `clipping_note` 先例）。
+    //
+    // ⭐ `#320` 版面是**实测**、⛔ 推算：`#319` 原文右沿 1881 / 行右沿 1912（余 31px）；
+    // 原文＋歌词 ⇒ `spare=1`（1px，过不了 `#319` 自己的 **3px** 门）⇒ 压缩后可放、
+    // 最紧 4px、推荐 7–11px、换前缀 17px。本行取
+    // `⚠ 导入丢失：24 类/29 条；歌词未归属 1；通道/力度5/5`（`spare=7`）：
+    // 保既有六项语义（导入丢失 / 类数 / 事件数 / 歌词未归属 / 通道 / 释放力度），
+    // 只压缩空格与标签词，⛔ 不丢桶（丢通道/力度那一版已否）。`3px` 门是硬约束。
+    //
     // 默认空串 ⇒ `visible: false` ⇒ 不进运行时树、零像素（默认帧指纹不变）。
     UiText {
         x: Tokens.space-4;
@@ -353,7 +362,7 @@ export component ModuleActions inherits Rectangle {
         accessible-role: text;
         accessible-id: "module-import-losses";
         // 静态标签（与 `elements.rs` 的注册表标签逐字相同）；⛔ 不绑动态文本。
-        accessible-label: "最近一次 MIDI 文件导入的损耗摘要（类数 / 事件数 / 音符通道 / 释放力度）";
+        accessible-label: "最近一次 MIDI 文件导入的损耗摘要（类数 / 事件数 / 歌词丢失 / 音符通道 / 释放力度）";
         // 可见文本 = `accessible-value`（读屏与判据读同一串字节，⛔ 不是第二份）。
         accessible-value: root.import-losses;
     }
