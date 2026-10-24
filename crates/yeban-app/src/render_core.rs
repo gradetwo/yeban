@@ -581,8 +581,8 @@ pub fn render_project_f32_with_plans_under(
 
     // ⭐ 任务单 `#303` / `#309`：**会执行压缩**的轨（pre-pan tap 的唯一判据）。
     // 与 MCP 的 `yeban_render_master` 共用**同一份**
-    // `compressing_nodes_with_lanes` —— 静态投影（`InsertChain::compresses()` 同解的
-    // `compressing_nodes`）∪ **非恒等 `compressor_enabled` 泳道**。
+    // `compressing_nodes_with_lanes` —— 静态投影（`InsertChain::compresses_statically()`
+    // 同解的 `statically_compressing_nodes`）∪ **非恒等 `compressor_enabled` 泳道**。
     // ⭐ `#308` 的缺陷：只看静态位 ⇒ 静态关的压缩器被泳道 `0 → 1` 打开时，声相仍
     // 留在源侧、检波器落到声相之后（`GR` 随 pan 变，Δ = `+0.515761 dB`）。
     // ⛔ 本层不复制"哪些参数算压缩"的判定。

@@ -40,7 +40,7 @@
 //!    ⚠ 总线 / 主总线的声相本来就在输出级 ⇒ 它们的插入点**一直**在声相之前。
 //!    ⭐ 这条搬迁**只对会压缩的轨生效**（生产判据 =
 //!    [`crate::automation::compressing_nodes_with_lanes`]：静态投影
-//!    [`compressing_nodes`] ∪ 非恒等 `compressor_enabled` 泳道，`#309` 起）：
+//!    [`statically_compressing_nodes`] ∪ 非恒等 `compressor_enabled` 泳道，`#309` 起）：
 //!    其余轨的声相仍在源侧，**一个落点都不改**。
 //! 2. **接上就生效，没有"启用压缩"开关**（与 Logic Pro 一致）：写了一组压缩参数
 //!    （`threshold_db` / `ratio` / … 或显式 `compressor_enabled`）⇒ 该级执行；
@@ -382,13 +382,19 @@ impl InsertChain {
         self.effective_strip().is_none() && self.reverb.is_none() && self.convolution.is_none()
     }
 
-    /// 本链是否会执行**压缩级**（读数用：pre-pan tap 的判据就是它）。
+    /// 本链的**静态投影**是否会执行**压缩级**（读数用；⛔ 不是生产判据）。
+    ///
+    /// ⚠ `statically` 是边界，⛔ 不是修饰：pre-pan tap 的**生产唯一判据**是
+    /// [`crate::automation::compressing_nodes_with_lanes`]（静态 ∪ 非恒等
+    /// `compressor_enabled` 泳道，`#309` 起）。本方法只看静态投影 ⇒ 静态关而泳道
+    /// `0 → 1` 时返回 `false`（那正是 `#308` 的缺陷面）；⛔ **拿它做 pre-pan 判据会
+    /// 退回 `#308`**。要判"这条轨会不会压缩"请用上面那个并集入口。
     ///
     /// `true` 的条件：投影里有通道条、且 `compressor_enabled` 为真（写了一组压缩参数，
     /// 或显式 `compressor_enabled != 0`）—— 与 [`Self::effective_strip`] 同一份参数，
     /// ⛔ 不是第二套判定。
     #[must_use]
-    pub fn compresses(&self) -> bool {
+    pub fn compresses_statically(&self) -> bool {
         self.effective_strip()
             .is_some_and(|params| params.compressor_enabled)
     }
@@ -549,10 +555,11 @@ pub fn project_inserts_with_forced_strips(
 /// **同一份投影入口**（[`strip_source_params`]，与 `from_devices` 同一条"首个来源"
 /// 规则）做一次轻量预扫描：⛔ 不建运行态、⛔ 不烘卷积 IR。
 ///
-/// 返回集合与 [`InsertChain::compresses`] 在**同一份工程 + 同一份设备链**上必须同解；
-/// 判据 `compressing_nodes_agree_with_the_compiled_chains`（`tests/insert_chain.rs`）钉住。
+/// 返回集合与 [`InsertChain::compresses_statically`] 在**同一份工程 + 同一份设备链**上
+/// 必须同解；判据 `statically_compressing_nodes_agree_with_the_compiled_chains`
+/// （`tests/insert_chain.rs`）钉住。
 #[must_use]
-pub fn compressing_nodes(tracks: &BTreeMap<EntityId, TrackV3>) -> BTreeSet<EntityId> {
+pub fn statically_compressing_nodes(tracks: &BTreeMap<EntityId, TrackV3>) -> BTreeSet<EntityId> {
     tracks
         .iter()
         .filter(|(_, track)| {

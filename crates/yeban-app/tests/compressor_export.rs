@@ -1024,7 +1024,7 @@ fn the_seven_cases_are_the_compressor_fields_minus_threshold() {
 // **开关语义是 `> 0` 即开** ⇒ 均匀斜坡下第一个块就开了 ⇒ 泳道读数与 `to` 端点只差
 // `1.3e-7`（实测 `2.983693409e-1` vs `2.983693015e-1`，相对 1.3e-7），跨平台不可靠；
 // hold 0.5 s 才有可观余量（实测 `4.151938543e-1` = −7.635 dB，两端 `−6.021` / `−10.505`）。
-// ⚠ `#306` 曾登记「`compressor_enabled` 的 0→1 泳道被静态 `compressing_nodes` gate
+// ⚠ `#306` 曾登记「`compressor_enabled` 的 0→1 泳道被静态预扫描 `statically_compressing_nodes` gate
 // 挡住」——本片实测该 gate 只 gate **pre-pan tap 的先后**
 // （`crates/yeban-render/src/inserts.rs:72-73`），`pan = 0` 时对音频恒等 ⇒ 该登记在本片
 // **更正**（同一段更正也在 MCP 侧的 `#306` 注释里）；`#304` 的 `pan != 0` 边界仍在、本单不扩。
@@ -1202,8 +1202,8 @@ fn each_compressor_lane_endpoint_is_byte_identical_to_the_same_static_value() {
 //
 // ## `#308` 登记的缺陷 / `#309` 的修法
 //
-// `#308` 实测（修前）：静态关时 `compresses()`（`inserts.rs:387-390`）与
-// `compressing_nodes()`（`inserts.rs:546-554`）都判 false ⇒ 不挂 pre-pan tap ⇒
+// `#308` 实测（修前）：静态关时 `compresses_statically()`（现名）与
+// `statically_compressing_nodes()`（现名）都判 false ⇒ 不挂 pre-pan tap ⇒
 // 插入链在**声相之后** ⇒ `GR` 随 pan 变（`pan=0` `+4.484314`、`pan=±0.5`
 // `+3.968553 dB`，Δ = `+0.515761 dB`）。
 // ⭐ `#309` 起 pre-pan 判据 = `compressing_nodes_with_lanes`（`automation.rs`）：

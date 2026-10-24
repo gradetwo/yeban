@@ -15,6 +15,7 @@
 //! 不声称与实时侧逐位相同。
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::path::Path;
 
 use yeban_model::{
     AutomationLane, AutomationPoint, AutomationTarget, AutomationWriteMode, CurveType,
@@ -25,9 +26,9 @@ use yeban_render::automation::{
     compressing_nodes_with_lanes, device_param_automations, forced_insert_instances,
 };
 use yeban_render::inserts::{
-    InsertChain, compressing_nodes, project_inserts, project_inserts_with_forced_instances,
-    project_inserts_with_forced_strips, strip_source_params, strip_source_slot,
-    track_has_unhandled_dsp,
+    InsertChain, project_inserts, project_inserts_with_forced_instances,
+    project_inserts_with_forced_strips, statically_compressing_nodes, strip_source_params,
+    strip_source_slot, track_has_unhandled_dsp,
 };
 use yeban_render::render::{
     AudioSource, BlockContext, InsertMeterReading, RenderError, RenderOptions, RenderOutput,
@@ -661,14 +662,17 @@ fn the_strip_projection_mirrors_the_engine_whitelist() {
         !compressor_only.is_empty(),
         "压缩级已接通（#303）⇒ 只有压缩参数的链必须挂运行态"
     );
-    assert!(compressor_only.compresses(), "`threshold_db` ⇒ 压缩级执行");
+    assert!(
+        compressor_only.compresses_statically(),
+        "`threshold_db` ⇒ 压缩级执行"
+    );
     // 显式写 0 的开关仍然关：全恒等 ⇒ 空链（`#303` ⛔ 不改变这条默认口径）。
     let disabled = InsertChain::from_devices(&[effect(&[("compressor_enabled", 0.0)])], SR);
     assert!(
         disabled.is_empty(),
         "`compressor_enabled: 0` 且三级全关 ⇒ 空链"
     );
-    assert!(!disabled.compresses());
+    assert!(!disabled.compresses_statically());
 }
 
 /// 机制判据：通道条白名单逐名对账（引擎 `insert.rs` 的**冻结副本**）。
@@ -746,7 +750,7 @@ fn strip_names_are_the_engine_whitelist() {
         let chain = InsertChain::from_devices(&devices, SR);
         assert!(chain.strip().is_some(), "`{name}` 仍是引擎认的通道条名字");
         assert!(
-            chain.compresses(),
+            chain.compresses_statically(),
             "`{name}` 单独出现 ⇒ 压缩级必须执行（#303）"
         );
         assert!(
@@ -1328,7 +1332,7 @@ fn the_compressor_reduces_above_threshold_and_is_transparent_below_it() {
     tracks.insert(track_node, track(vec![hard_knee_compressor(-24.0)]));
     let inserts = project_inserts(&tracks, SR);
     let chain = inserts.get(&track_node).expect("压缩参数必须投影出非空链");
-    assert!(chain.compresses(), "`threshold_db` ⇒ 压缩级执行");
+    assert!(chain.compresses_statically(), "`threshold_db` ⇒ 压缩级执行");
     let (compressed, readings, longest_path) =
         render_with_readings(&routing, master, &inserts, frames, loud, track_node);
 
@@ -1696,11 +1700,11 @@ fn a_project_without_compressor_params_keeps_its_master_bytes() {
     let inserts = project_inserts(&tracks, SR);
     assert!(!inserts.is_empty(), "增益级必须投影出非空链");
     assert!(
-        inserts.values().all(|chain| !chain.compresses()),
+        inserts.values().all(|chain| !chain.compresses_statically()),
         "没有压缩参数 ⇒ 任何链都不得执行压缩级"
     );
     assert!(
-        compressing_nodes(&tracks).is_empty(),
+        statically_compressing_nodes(&tracks).is_empty(),
         "预扫描也必须判成'没有会压缩的轨'"
     );
     let rendered = render(&routing, master, &inserts, frames, mono, track_node);
@@ -1715,12 +1719,13 @@ fn a_project_without_compressor_params_keeps_its_master_bytes() {
     );
 }
 
-/// 机制判据：pre-pan tap 的**预扫描**（[`compressing_nodes`]）与编译出来的链同解。
+/// 机制判据：pre-pan tap 的**静态预扫描**（[`statically_compressing_nodes`]）与编译出来的链同解。
 ///
-/// 两个导出（app / MCP）在构造音源之前只拿得到预扫描 —— 它与
-/// [`InsertChain::compresses`] 漂移的话，"声相搬家"和"真的压缩"就会落在不同的轨上。
+/// 两个导出（app / MCP）在构造音源之前只拿得到静态预扫描 —— 它与
+/// [`InsertChain::compresses_statically`] 漂移的话，"声相搬家"和"真的压缩"就会落在不同的轨上。
+/// ⚠ 它只钉**静态那一半**；完整生产判据是 [`compressing_nodes_with_lanes`]（`#309` 起）。
 #[test]
-fn compressing_nodes_agree_with_the_compiled_chains() {
+fn statically_compressing_nodes_agree_with_the_compiled_chains() {
     let compressor = node(2);
     let gain_only = node(3);
     let eq_only = node(4);
@@ -1742,11 +1747,11 @@ fn compressing_nodes_agree_with_the_compiled_chains() {
     let inserts = project_inserts(&tracks, SR);
     let from_chains: BTreeSet<EntityId> = inserts
         .iter()
-        .filter(|(_, chain)| chain.compresses())
+        .filter(|(_, chain)| chain.compresses_statically())
         .map(|(&id, _)| id)
         .collect();
-    let pre_scan = compressing_nodes(&tracks);
-    println!("预扫描读数: compressing_nodes = {pre_scan:?}；来自链 = {from_chains:?}");
+    let pre_scan = statically_compressing_nodes(&tracks);
+    println!("预扫描读数: statically_compressing_nodes = {pre_scan:?}；来自链 = {from_chains:?}");
     assert_eq!(pre_scan, from_chains, "预扫描与编译出来的链必须同解");
     assert_eq!(
         pre_scan,
@@ -1794,7 +1799,7 @@ fn compressing_nodes_with_lanes_counts_only_a_nonidentity_compressor_enabled_lan
     let ramp = project_with_device_automation(devices(), 0, &[(0, 0.0), (1920, 1.0)]);
     let automations = device_param_automations(&ramp, SR);
     assert!(
-        compressing_nodes(&ramp.tracks).is_empty(),
+        statically_compressing_nodes(&ramp.tracks).is_empty(),
         "静态预扫描必须仍空（这是 #308 的缺陷面）"
     );
     assert_eq!(
@@ -1850,5 +1855,74 @@ fn compressing_nodes_with_lanes_counts_only_a_nonidentity_compressor_enabled_lan
         nodes,
         BTreeSet::from([track_id]),
         "静态开 ⇒ 并集必须含它（静态那一半没丢）"
+    );
+}
+
+/// 判据（`#310`）：`pub fn` 名字以 `compress` 开头时，**必须**说清它看的是哪一半 ——
+/// 静态投影含 `statically`，并集/泳道含 `_with_lanes`。
+///
+/// 为什么需要它：`compresses()` / `compressing_nodes()` 的名字读起来像"会压缩"，而
+/// 实现只看**静态** `compressor_enabled` ⇒ 静态关 ＋ `0 → 1` 泳道时它们判 `false`，
+/// 未来调用者拿它做 pre-pan 判据就会**退回 `#308`**。`#309` 的机制判据只钉并集、
+/// **不钉"未来调用者"**；名字是编译器唯一看得见的防线，所以把这条命名规则变成
+/// 源码扫描判据（先例：`quantifier_lower_bounds.rs:760` 读 `src/`）。
+///
+/// ⚠ 本判据扫的是**真实源文件**，⛔ 不是一份抄写的名单；新增静态语义的压缩函数
+/// 若不带 `statically` 会当场红。
+#[test]
+fn pub_functions_about_compression_say_whether_they_mean_statically() {
+    /// 规则本体：正/反对照都走这一个函数（⛔ 两边各写一套）。
+    fn name_says_which_half(name: &str) -> bool {
+        !name.starts_with("compress") || name.contains("statically") || name.contains("_with_lanes")
+    }
+
+    // 正对照：本单之后真实存在的两个 `compress` 前缀名字都过。
+    assert!(name_says_which_half("compresses_statically"));
+    assert!(name_says_which_half("compressing_nodes_with_lanes"));
+    // 反对照：改名前的旧名字必须被判红（否则本判据是惰性的）。
+    assert!(!name_says_which_half("compresses"));
+    assert!(!name_says_which_half("compressing_nodes"));
+
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut scanned = 0usize;
+    let mut seen: BTreeSet<String> = BTreeSet::new();
+    for entry in std::fs::read_dir(&root).expect("读 src/") {
+        let path = entry.expect("目录项").path();
+        if path.extension().is_none_or(|ext| ext != "rs") {
+            continue;
+        }
+        let source = std::fs::read_to_string(&path).expect("读源文件");
+        scanned += 1;
+        for (index, line) in source.lines().enumerate() {
+            let trimmed = line.trim_start();
+            let rest = trimmed
+                .strip_prefix("pub fn ")
+                .or_else(|| trimmed.strip_prefix("pub const fn "))
+                .or_else(|| trimmed.strip_prefix("pub(crate) fn "));
+            let Some(rest) = rest else { continue };
+            let name = rest
+                .split(|c: char| c == '(' || c == '<' || c.is_whitespace())
+                .next()
+                .expect("函数名");
+            if !name.starts_with("compress") {
+                continue;
+            }
+            seen.insert(name.to_owned());
+            assert!(
+                name_says_which_half(name),
+                "{}:{}: `{name}` 的名字没说清是静态还是并集 ⇒ 静态语义必须含 `statically`、\
+                 并集必须含 `_with_lanes`（#310；否则未来调用者会退回 #308）",
+                path.display(),
+                index + 1
+            );
+        }
+    }
+    assert!(
+        scanned >= 7,
+        "至少扫到 7 个源文件（与 `quantifier_lower_bounds.rs` 同一条下界），实际 {scanned}"
+    );
+    assert!(
+        seen.contains("compresses_statically") && seen.contains("compressing_nodes_with_lanes"),
+        "本判据必须真的扫到 `compresses_statically` 与 `compressing_nodes_with_lanes`：{seen:?}"
     );
 }

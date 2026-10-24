@@ -1031,7 +1031,7 @@ impl TrackPanAutomation {
 ///    用 **GR == 0** 把这条"静默假话"变成读数；`compressor_enabled` 自己的泳道可以
 ///    把这一级打开。
 /// 2. 把静态关闭的压缩器从 `0` 自动到 `1` 时，pre-pan tap 的编译期判据
-///    [`crate::inserts::compressing_nodes`] 仍看**静态** `compressor_enabled`
+///    [`crate::inserts::statically_compressing_nodes`] 仍看**静态** `compressor_enabled`
 ///    ⇒ `pan != 0` 的轨检波参考点会不同。`#304` 明确登记、当时 ⛔ 不扩到预扫描。
 ///    ⭐ `#309` 起这一条**已修**：pre-pan tap 的判据改为
 ///    [`compressing_nodes_with_lanes`]（静态投影 ∪ 非恒等 `compressor_enabled`
@@ -1768,8 +1768,8 @@ pub fn forced_strip_tracks(
 
 /// 一条 `DeviceParam` 泳道是否是**非恒等**的 `compressor_enabled` 开关（`#309`）。
 ///
-/// `#308` 的缺陷：pre-pan tap 的判据（[`crate::inserts::compressing_nodes`] /
-/// [`crate::inserts::InsertChain::compresses`]）只看静态投影 ⇒ 静态关的压缩器被
+/// `#308` 的缺陷：pre-pan tap 的判据（[`crate::inserts::statically_compressing_nodes`] /
+/// [`crate::inserts::InsertChain::compresses_statically`]）只看静态投影 ⇒ 静态关的压缩器被
 /// 泳道 `0 → 1` 打开时，检波器仍留在声相之后（`GR` 随 pan 变，Δ = `+0.515761 dB`）。
 ///
 /// ⚠ **精度必须匹配**：⛔ 不能拿 [`forced_insert_instances`] 的 `strip` 族当判据 ——
@@ -1785,7 +1785,8 @@ pub fn switches_compressor(automation: &DeviceParamAutomation) -> bool {
 ///
 /// 这是 pre-pan tap 的**唯一**生产判据（app 的 `render_core` 与 MCP 的
 /// `domain::render` 共用）。静态那一半原样来自
-/// [`crate::inserts::compressing_nodes`]（与 [`crate::inserts::InsertChain::compresses`]
+/// [`crate::inserts::statically_compressing_nodes`]（与
+/// [`crate::inserts::InsertChain::compresses_statically`]
 /// 同解，`tests/insert_chain.rs` 钉住）；泳道那一半来自 [`switches_compressor`]。
 ///
 /// 恒等泳道（`read_enabled:false` / 空 / 每点钳制后等于静态值 / 宏级联不落点）不置位；
@@ -1796,7 +1797,7 @@ pub fn compressing_nodes_with_lanes(
     tracks: &BTreeMap<EntityId, TrackV3>,
     automations: &BTreeMap<EntityId, Vec<DeviceParamAutomation>>,
 ) -> BTreeSet<EntityId> {
-    let mut nodes = crate::inserts::compressing_nodes(tracks);
+    let mut nodes = crate::inserts::statically_compressing_nodes(tracks);
     for (track_id, list) in automations {
         if list.iter().any(switches_compressor) {
             nodes.insert(*track_id);

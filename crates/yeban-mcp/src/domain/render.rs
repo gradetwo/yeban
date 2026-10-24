@@ -2224,7 +2224,7 @@ pub fn build(
     // ⭐ 任务单 `#303` / `#309`：**会执行压缩**的轨（pre-pan tap 的唯一判据）。
     // 与 CLI 的 `render_core` 共用**同一份**
     // `yeban_render::automation::compressing_nodes_with_lanes`：
-    // 静态投影（`compressing_nodes`）∪ **非恒等 `compressor_enabled` 泳道**。
+    // 静态投影（`statically_compressing_nodes`）∪ **非恒等 `compressor_enabled` 泳道**。
     // ⭐ `#308` 的缺陷：只看静态位 ⇒ 静态关的压缩器被泳道 `0 → 1` 打开时，检波器
     // 仍落在声相之后（`GR` 随 pan 变，Δ = `+0.515761 dB`）。
     // ⛔ 本层不复制"哪些参数算压缩"的判定。必须在**构造音源之前**算出来：
@@ -3720,7 +3720,8 @@ fn build_source(
     // 且只乘一次）。恒等 ⇒ 源侧静态声相原样保留 ⇒ 无泳道工程的字节逐位不变。
     //
     // ⭐ `#303`：会执行压缩的轨（`pre_pan`）把**静态与自动化声相都**交给输出级
-    // （`InsertChain::compresses` 的判据，见 `inserts` 模块头 §1.1）：源侧 `pan = 0`
+    // （`pre_pan` 来自 `compressing_nodes_with_lanes`，见 `inserts` 模块头 §1.1；
+    // ⛔ 不是静态 `compresses_statically`）：源侧 `pan = 0`
     // 且不挂 `pan_automation` ⇒ 压缩器的检波器看到**声相之前**的电平（与实时同序）。
     let pan_automation = TrackPanAutomation::new(project, track.id, sample_rate);
     let pan_identity = pan_automation.is_identity() || pre_pan;
