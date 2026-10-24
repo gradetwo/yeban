@@ -39,6 +39,17 @@ pub const RATCHET_MAX: u8 = 16;
 /// 微时值偏移的合法绝对值上界（含）：±240 tick = ±1/16 音符 @960 PPQ。
 pub const MICRO_TIMING_MAX_ABS: i16 = 240;
 
+/// 弯音曲线单个点的 `cents` 合法绝对值上界（含）：±1200 = ±1 个八度。
+///
+/// 值域与四条形状规则的**唯一**权威是 `docs/adr/ADR-0012-pitch-bend-curve-contract.md`
+/// （D2/D3/D4）；本常量是 D2 里那个数的机械载体，判据
+/// `pitch_bend_curve_constant_and_messages_are_pinned` 把常量与三条报文一起钉住。
+///
+/// ⚠ 这是**模型**的界（音乐上可表达的弯音），⛔ 不是 MIDI 线格式的默认界（±2 半音）：
+/// 模型存的是作者意图，导出映射是另一件事（SMF 导出今天**不导出**弯音，
+/// 见 `crates/yeban-midi/src/export.rs` 的边界表）。
+pub const PITCH_BEND_CENTS_MAX_ABS: i16 = 1200;
+
 /// 默认力度。
 pub const DEFAULT_VELOCITY: u8 = 100;
 
@@ -180,6 +191,20 @@ pub struct MidiNote {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub slide: Option<SlideConfig>,
     /// 弯音曲线 `(tick, cents)` 序列，按 tick 升序；空表示无弯音。
+    ///
+    /// 坐标与形状的**唯一**权威是 `docs/adr/ADR-0012-pitch-bend-curve-contract.md`：
+    ///
+    /// - `tick` 是**音符局部**坐标（`0` = 本音符起点 `start_tick`），不是工程坐标；
+    /// - `cents` 相对 [`Self::pitch`]，`-PITCH_BEND_CENTS_MAX_ABS..=+PITCH_BEND_CENTS_MAX_ABS`
+    ///   （±1200 = ±1 个八度，含端点）；
+    /// - 非空 ⇒ **首点 `tick == 0`**（曲线必须从音符起点开始，⛔ 不做"起点之前"的外插）；
+    /// - tick **严格**升序（同一 tick 两个值 = 一个时刻两个音高，拒绝）；
+    /// - 相邻点之间**线性**插值，末点之后**保持**末值（D5：这是消费侧规则，`validate` 不查）；
+    /// - 点落在鸣响区间之外**允许**且永不采样（D6：`Op::SetNoteTiming` 缩短时值
+    ///   不该让一条合规曲线事后变成非法）。
+    ///
+    /// 其中「首点 `tick == 0`」「tick 严格升序」「`cents` ±1200」三条由
+    /// [`MidiNote::validate`] 机械拒绝；插值与末点保持是消费侧规则（D5）。
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub pitch_bend_curve: Vec<(u64, i16)>,
     /// 歌词音节。
@@ -254,6 +279,47 @@ impl MidiNote {
         }
         if let Some(slide) = self.slide {
             slide.validate()?;
+        }
+        self.validate_pitch_bend_curve()?;
+        Ok(())
+    }
+
+    /// 弯音曲线的**形状**校验（`ADR-0012` D2/D3/D4 的机械那一半）。
+    ///
+    /// 检查顺序**就是**优先级（判据 `pitch_bend_curve_error_order_is_pinned` 钉住它）：
+    ///
+    /// 1. 非空 ⇒ 首点 `tick == 0`（曲线必须从音符起点开始，⛔ 不做起点之前的外插）；
+    /// 2. tick **严格**升序（同一 tick 两次 ⇒ 一个时刻两个音高，拒绝）；
+    /// 3. 每个点 `cents ∈ -PITCH_BEND_CENTS_MAX_ABS..=PITCH_BEND_CENTS_MAX_ABS`。
+    ///
+    /// ⚠ **刻意不查**末点 tick 是否 ≤ `duration_ticks`：鸣响区间之外的点**永远不会被采样**，
+    /// 而 `Op::SetNoteTiming` 缩短时值会让一条本来合规的曲线"越界" ⇒ 合法编辑被事后判非法。
+    /// 这条**非规则**写在 `ADR-0012` D6，⛔ 不要"顺手补上"。
+    ///
+    /// # Errors
+    ///
+    /// 违反上述任一条即返回对应的 [`ModelError`] 变体。
+    fn validate_pitch_bend_curve(&self) -> Result<(), ModelError> {
+        let Some(&(first_tick, _)) = self.pitch_bend_curve.first() else {
+            return Ok(());
+        };
+        if first_tick != 0 {
+            return Err(ModelError::PitchBendFirstTickNotZero { tick: first_tick });
+        }
+        for pair in self.pitch_bend_curve.windows(2) {
+            let (previous, _) = pair[0];
+            let (tick, _) = pair[1];
+            if tick <= previous {
+                return Err(ModelError::PitchBendTicksNotAscending { previous, tick });
+            }
+        }
+        for &(tick, cents) in &self.pitch_bend_curve {
+            if !(-PITCH_BEND_CENTS_MAX_ABS..=PITCH_BEND_CENTS_MAX_ABS).contains(&cents) {
+                return Err(ModelError::PitchBendCentsOutOfRange {
+                    value: i32::from(cents),
+                    tick,
+                });
+            }
         }
         Ok(())
     }
@@ -506,6 +572,169 @@ mod tests {
                 "目标音高 {target_pitch} 是闭区间的端点, 必须合法"
             );
         }
+    }
+
+    /// 弯音曲线的**合法形状**必须放行（正对照）。
+    ///
+    /// 合法集刻意包含四种形状：空集（无弯音）、单点（常量弯音）、仓里两个夹具的形状、
+    /// 以及**越过时值**的点（`ADR-0012` D6 的非规则：永不采样 ⇒ 必须合法）。
+    #[test]
+    fn pitch_bend_curves_with_the_documented_shape_are_accepted() {
+        let cases: [Vec<(u64, i16)>; 6] = [
+            Vec::new(),
+            vec![(0, 0)],
+            vec![(0, 0), (240, 200)],
+            vec![(0, 0), (240, 100)],
+            vec![
+                (0, -PITCH_BEND_CENTS_MAX_ABS),
+                (1, PITCH_BEND_CENTS_MAX_ABS),
+            ],
+            // D6：时值之外的点允许存在（`duration_ticks` 默认 960，这里写 10_000）。
+            vec![(0, 0), (10_000, 100)],
+        ];
+        for curve in cases {
+            let note = MidiNote {
+                pitch_bend_curve: curve.clone(),
+                ..MidiNote::default()
+            };
+            assert_eq!(note.validate(), Ok(()), "合规曲线必须放行: {curve:?}");
+        }
+    }
+
+    /// D4：非空曲线的**首点**必须 `tick == 0`（曲线从音符起点开始）。
+    #[test]
+    fn a_pitch_bend_curve_must_start_at_the_note_onset() {
+        for first_tick in [1_u64, 240, 960, u64::MAX] {
+            let note = MidiNote {
+                // `saturating_add`：`u64::MAX` 那一条不该因为测试自己构造溢出而假红
+                // （规则 1 先判，第二点的值在这条用例里不参与裁决）。
+                pitch_bend_curve: vec![(first_tick, 0), (first_tick.saturating_add(1), 100)],
+                ..MidiNote::default()
+            };
+            assert_eq!(
+                note.validate(),
+                Err(ModelError::PitchBendFirstTickNotZero { tick: first_tick }),
+                "首点 tick {first_tick} 不在起点, 必须拒绝"
+            );
+        }
+    }
+
+    /// D3：tick 必须**严格**升序；同一 tick 两次也算违反（一个时刻两个音高）。
+    #[test]
+    fn pitch_bend_ticks_must_be_strictly_ascending() {
+        let equal = MidiNote {
+            pitch_bend_curve: vec![(0, 0), (240, 10), (240, 20)],
+            ..MidiNote::default()
+        };
+        assert_eq!(
+            equal.validate(),
+            Err(ModelError::PitchBendTicksNotAscending {
+                previous: 240,
+                tick: 240
+            })
+        );
+
+        let descending = MidiNote {
+            pitch_bend_curve: vec![(0, 0), (240, 10), (120, 20)],
+            ..MidiNote::default()
+        };
+        assert_eq!(
+            descending.validate(),
+            Err(ModelError::PitchBendTicksNotAscending {
+                previous: 240,
+                tick: 120
+            })
+        );
+    }
+
+    /// D2：`cents` 是**闭区间** `-1200..=1200` —— 两端点放行，越界一点即拒。
+    #[test]
+    fn pitch_bend_cents_stay_within_one_octave() {
+        for bad in [1201_i16, -1201, i16::MAX, i16::MIN] {
+            let note = MidiNote {
+                pitch_bend_curve: vec![(0, bad)],
+                ..MidiNote::default()
+            };
+            assert_eq!(
+                note.validate(),
+                Err(ModelError::PitchBendCentsOutOfRange {
+                    value: i32::from(bad),
+                    tick: 0
+                }),
+                "cents {bad} 越界, 必须拒绝"
+            );
+        }
+        for good in [-PITCH_BEND_CENTS_MAX_ABS, 0, PITCH_BEND_CENTS_MAX_ABS] {
+            let note = MidiNote {
+                pitch_bend_curve: vec![(0, good)],
+                ..MidiNote::default()
+            };
+            assert_eq!(note.validate(), Ok(()), "cents {good} 是闭区间端点");
+        }
+    }
+
+    /// 三条规则的**检查顺序**被钉住：一个输入同时违反多条时报第一条。
+    ///
+    /// 为什么需要：顺序未钉住时，把 `cents` 循环挪到 `tick` 检查之前会让报错变脸，
+    /// 而"哪一个先报"是调用方（MCP 的错误码映射）能观察到的行为。
+    #[test]
+    fn pitch_bend_curve_error_order_is_pinned() {
+        // 首点非 0 且 cents 越界 ⇒ 报首点（规则 1 先于规则 3）。
+        let both = MidiNote {
+            pitch_bend_curve: vec![(5, i16::MAX)],
+            ..MidiNote::default()
+        };
+        assert_eq!(
+            both.validate(),
+            Err(ModelError::PitchBendFirstTickNotZero { tick: 5 })
+        );
+
+        // tick 重复且 cents 越界 ⇒ 报升序（规则 2 先于规则 3）。
+        let duplicated = MidiNote {
+            pitch_bend_curve: vec![(0, i16::MAX), (0, 0)],
+            ..MidiNote::default()
+        };
+        assert_eq!(
+            duplicated.validate(),
+            Err(ModelError::PitchBendTicksNotAscending {
+                previous: 0,
+                tick: 0
+            })
+        );
+    }
+
+    /// 常量与三条**报文**逐字钉住（常量只有一个来源，报文里手抄的 1200 必须与它同值）。
+    #[test]
+    fn pitch_bend_curve_constant_and_messages_are_pinned() {
+        assert_eq!(PITCH_BEND_CENTS_MAX_ABS, 1200);
+        assert_eq!(
+            ModelError::PitchBendFirstTickNotZero { tick: 7 }.to_string(),
+            "pitch bend first tick 7 is not 0 (the curve must start at the note onset)"
+        );
+        assert_eq!(
+            ModelError::PitchBendTicksNotAscending {
+                previous: 7,
+                tick: 5
+            }
+            .to_string(),
+            "pitch bend ticks are not strictly ascending: 7 then 5"
+        );
+        assert_eq!(
+            ModelError::PitchBendCentsOutOfRange {
+                value: 1201,
+                tick: 0
+            }
+            .to_string(),
+            "pitch bend 1201 cents out of range -1200..=1200 (at tick 0)"
+        );
+        // 报文里的界与常量同值：改了常量却忘了改报文 ⇒ 这条红。
+        assert!(
+            ModelError::PitchBendCentsOutOfRange { value: 1, tick: 0 }
+                .to_string()
+                .contains(&format!(
+                    "-{PITCH_BEND_CENTS_MAX_ABS}..={PITCH_BEND_CENTS_MAX_ABS}"
+                ))
+        );
     }
 
     #[test]

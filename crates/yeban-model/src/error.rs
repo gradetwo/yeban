@@ -48,6 +48,31 @@ pub enum ModelError {
         value: i32,
     },
 
+    /// 弯音曲线**首点**的 tick 不是 0（曲线必须从音符起点开始）。
+    #[error("pitch bend first tick {tick} is not 0 (the curve must start at the note onset)")]
+    PitchBendFirstTickNotZero {
+        /// 实际收到的首点 tick。
+        tick: u64,
+    },
+
+    /// 弯音曲线的 tick 不**严格**升序（同一 tick 出现两次也算）。
+    #[error("pitch bend ticks are not strictly ascending: {previous} then {tick}")]
+    PitchBendTicksNotAscending {
+        /// 前一个（本来应当更小的）tick。
+        previous: u64,
+        /// 违反升序的当前 tick。
+        tick: u64,
+    },
+
+    /// 弯音曲线的 `cents` 越界 (允许 -1200..=1200，即 ±1 个八度)。
+    #[error("pitch bend {value} cents out of range -1200..=1200 (at tick {tick})")]
+    PitchBendCentsOutOfRange {
+        /// 实际收到的 `cents`（`i16` 提升到 `i32`，与 [`Self::MicroTimingOutOfRange`] 同口径）。
+        value: i32,
+        /// 该点所在的 tick。
+        tick: u64,
+    },
+
     /// 时长为零：音符必须有正时长。
     #[error("duration must be non-zero")]
     ZeroDuration,

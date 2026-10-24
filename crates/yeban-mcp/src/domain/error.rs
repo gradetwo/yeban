@@ -166,7 +166,11 @@ pub fn code_for_model(error: &ModelError) -> ErrorCode {
         | ModelError::TimeSignatureDenominatorUnsupported { .. }
         | ModelError::PanOutOfRange { .. }
         | ModelError::MacroValueOutOfRange { .. }
-        | ModelError::MacroDepthOutOfRange { .. } => ErrorCode::OutOfRange,
+        | ModelError::MacroDepthOutOfRange { .. }
+        // 弯音曲线的 `cents` 是**音高偏移的量**（±1 八度）⇒ 与音域越界同组。
+        // 形状错误（首点不在起点 / tick 不升序）不是"量越界"而是"载荷形状不合法"
+        // ⇒ 落在下面的 INVALID_PARAMETER_RANGE 组（见 `ADR-0012`）。
+        | ModelError::PitchBendCentsOutOfRange { .. } => ErrorCode::OutOfRange,
         ModelError::NoteNotFound { .. }
         | ModelError::ClipPlacementNotFound { .. }
         | ModelError::RoutingEdgeNotFound { .. }
@@ -180,7 +184,9 @@ pub fn code_for_model(error: &ModelError) -> ErrorCode {
         | ModelError::BlockSizeUnsupported { .. }
         | ModelError::InvalidHash { .. }
         | ModelError::InvalidEntityId { .. }
-        | ModelError::NonFiniteValue { .. } => ErrorCode::InvalidParameterRange,
+        | ModelError::NonFiniteValue { .. }
+        | ModelError::PitchBendFirstTickNotZero { .. }
+        | ModelError::PitchBendTicksNotAscending { .. } => ErrorCode::InvalidParameterRange,
         ModelError::SchemaVersionTooNew { .. }
         | ModelError::ReaderTooOld { .. }
         | ModelError::DuplicateEntityId { .. }
@@ -266,6 +272,17 @@ mod tests {
                 required: 9,
                 actual: 1,
             },
+            // `#311a`（`ADR-0012`）新增的三个弯音曲线形状错误：值越界 → `OUT_OF_RANGE`，
+            // 形状不合法 → `INVALID_PARAMETER_RANGE`。三条都必须在**契约 enum 之内**。
+            ModelError::PitchBendCentsOutOfRange {
+                value: 1201,
+                tick: 0,
+            },
+            ModelError::PitchBendFirstTickNotZero { tick: 240 },
+            ModelError::PitchBendTicksNotAscending {
+                previous: 240,
+                tick: 120,
+            },
         ];
         for error in &samples {
             let code = code_for_model(error);
@@ -274,6 +291,25 @@ mod tests {
                 "{error:?} 映射到了契约外的码 {code}"
             );
         }
+        // 两组的**具体**码也钉住（`is_schema_contract` 只查"在枚举内"，不查分到哪一组）。
+        assert_eq!(
+            code_for_model(&ModelError::PitchBendCentsOutOfRange {
+                value: 1201,
+                tick: 0
+            }),
+            ErrorCode::OutOfRange
+        );
+        assert_eq!(
+            code_for_model(&ModelError::PitchBendFirstTickNotZero { tick: 1 }),
+            ErrorCode::InvalidParameterRange
+        );
+        assert_eq!(
+            code_for_model(&ModelError::PitchBendTicksNotAscending {
+                previous: 2,
+                tick: 2
+            }),
+            ErrorCode::InvalidParameterRange
+        );
     }
 
     #[test]
