@@ -17,8 +17,9 @@
 //! ## 平台约束
 //!
 //! `slint::platform::set_platform` 是**线程局部**的，`Tier1Window::install` 每线程
-//! 只能成功一次 ⇒ 本二进制只有一个 `#[test]`，内部按"行为臂 / 三档几何臂"各起线程
-//! （与 `tests/gui_clipping_warning.rs` 同款）。
+//! 只能成功一次 ⇒ 本二进制只有一个 **GUI** `#[test]`，内部按"行为臂 / 三档几何臂"各起线程
+//! （与 `tests/gui_clipping_warning.rs` 同款）。`#321` 的取值器判据是纯函数，另有三个
+//! `#[test]`（不碰 slint，可与 GUI 臂并行跑）。
 
 #[path = "../src/live_surface.rs"]
 // 本判据只用到 `live_surface.rs` 的一部分 ⇒ 其余项在本测试目标里是 dead_code
@@ -108,21 +109,52 @@ fn line_with<'a>(text: &'a str, prefix: &str) -> Option<&'a str> {
     text.lines().find(|line| line.starts_with(prefix))
 }
 
-/// 取 GUI 回执里的一个字段（引号值取到闭合引号，普通值取到下一个 `:`）。
-fn field_of(receipt: &str, key: &str) -> String {
+/// 一条回执的**顶层**字段取值（引号感知）；缺席返回 `None`。
+///
+/// ## 口径（`#321`）
+///
+/// 回执语法是 `module:action=…:key=value:…`（`host.rs::module_receipt`）。字段名只认
+/// **顶层**位置：`key=` 必须紧跟一个**顶层** `:`（引号内的 `:` 不算起点）；值是引号时
+/// 跳到**第一个闭合引号**（引号内的 `channels=` / `format=` 一律**不是**字段名），
+/// 普通值取到下一个 `:`。
+///
+/// ## 引号里的 `"`（写死的契约）
+///
+/// 回执**没有转义**（`host.rs` 只做 `format!("message=\"{message}\"")`）⇒ 本取值器把
+/// 第一个 `"` 当闭合引号。值里真带 `"` 时，闭合引号后的那个字节不是 `:` ⇒ 其后的字段
+/// **一律取不到**（`None`），由调用方按"缺席即失败"处理。⛔ 本判据不改 producer 去加
+/// 转义（那会动逐字断言与 CLI 同源）；需要转义时另立单。
+fn field_of_opt(receipt: &str, key: &str) -> Option<String> {
     let needle = format!("{key}=");
-    let start = receipt
-        .find(&needle)
-        .unwrap_or_else(|| panic!("回执里没有字段 `{key}`: {receipt}"))
-        + needle.len();
-    let rest = &receipt[start..];
-    if let Some(quoted) = rest.strip_prefix('"') {
-        let end = quoted.find('"').expect("引号必须闭合");
-        quoted[..end].to_owned()
-    } else {
-        let end = rest.find(':').unwrap_or(rest.len());
-        rest[..end].to_owned()
+    let mut in_quotes = false;
+    for (index, byte) in receipt.bytes().enumerate() {
+        match byte {
+            b'"' => in_quotes = !in_quotes,
+            b':' if !in_quotes => {
+                let start = index + 1;
+                if receipt[start..].starts_with(&needle) {
+                    let value_start = start + needle.len();
+                    let rest = &receipt[value_start..];
+                    if let Some(quoted) = rest.strip_prefix('"') {
+                        let end = quoted.find('"').expect("引号必须闭合");
+                        return Some(quoted[..end].to_owned());
+                    }
+                    let end = rest.find(':').unwrap_or(rest.len());
+                    return Some(rest[..end].to_owned());
+                }
+            }
+            _ => {}
+        }
     }
+    None
+}
+
+/// 取一个字段；缺席即判据失败（⛔ 不返回空串 —— "没找到"与"值是空的"必须可分）。
+///
+/// `#321` 起走 [`field_of_opt`]：只认顶层字段；引号内的同名键**不会**再被误取
+/// （`field_of("channels")` 对 `loss_detail="… channels=2 …"` 会 panic，而不是返回 `2"`）。
+fn field_of(receipt: &str, key: &str) -> String {
+    field_of_opt(receipt, key).unwrap_or_else(|| panic!("回执里没有字段 `{key}`: {receipt}"))
 }
 
 /// 取 CLI 行里的一个 `key=value`（值到下一个空白为止）。
@@ -405,9 +437,12 @@ fn behavior_arm() {
         lyrics_detail.len()
     ));
 
-    // ⚠ 这里**不能**对回执做 `field_of("channels")`：`loss_detail` 是**引号内**的
-    // 一整个值（同 `clipping_note` 先例），里面也含 `channels=` —— 顶层取值器不解析
-    // 引号，会取到引号里的那一截。上下文读数在下一条的 `detail` 上逐项断言。
+    // ⭐ `#321`：`channels` 在 `loss_detail` 的**引号内**、**不是顶层字段** ⇒
+    // 顶层取值器取不到它（`field_of_opt("channels")` 必须为 `None`；`field_of("channels")`
+    // 会 panic —— 缺席即判据失败）。数字仍从 `detail` 用 `cli_field` 取 ⇒
+    // **这是语义正确解，不是绕过**。
+    assert_eq!(field_of_opt(&receipt, "channels"), None, "{receipt}");
+    assert_eq!(field_of_opt(&receipt, "lyrics"), None, "{receipt}");
     assert!(
         detail.contains(&format!("channels={}", cli_field(cli_line, "channels"))),
         "两个出口的上下文读数必须同源: {detail}"
@@ -675,4 +710,48 @@ fn the_gui_import_receipt_reports_the_same_losses_as_the_cli() {
         })
         .collect();
     assert_eq!(geometry.len(), TIERS.len(), "三档几何都必须跑过");
+}
+
+/// `#321` 负向判据：**引号内的键 ⛔ 可被顶层取到**。
+///
+/// 这条回执是判据 ① 的最小形状：`loss_detail` 的整串里含 `channels=` / `format=`。
+/// 修前实测（`/tmp/mod-fq-repro.log`）：`field_of("channels") == "2\""`、
+/// `field_of("format") == "1 channels=2\""`（各自把闭合引号也带进值里）。
+/// 修后两者都必须是 `None`，而 `loss_detail` 仍是整串（引号内的 `=` 不切）。
+#[test]
+fn quoted_values_do_not_expose_their_inner_keys_to_the_top_level() {
+    let receipt = concat!(
+        r#"module:action=import-midi:outcome=ok:losses="⚠ 导入丢失：…""#,
+        r#":loss_detail="format=1 channels=2""#,
+        r#":lyrics_detail="lyrics=2 attached=1 dropped=1 non-utf8=0 empty=0""#
+    );
+    assert_eq!(field_of_opt(receipt, "channels"), None);
+    assert_eq!(field_of_opt(receipt, "format"), None);
+    assert_eq!(field_of_opt(receipt, "lyrics"), None);
+    assert_eq!(
+        field_of(receipt, "loss_detail"),
+        "format=1 channels=2",
+        "引号内的 `=` 不切；引号值整体去掉引号"
+    );
+    assert_eq!(
+        field_of(receipt, "lyrics_detail"),
+        "lyrics=2 attached=1 dropped=1 non-utf8=0 empty=0"
+    );
+}
+
+/// `#321` 负向判据：缺席 ⇒ `field_of` 仍 panic（⛔ 不返回空串，⛔ 不返回 `None`）。
+#[test]
+#[should_panic(expected = "回执里没有字段 `channels`")]
+fn a_key_inside_quotes_is_still_absent_for_the_panicking_getter() {
+    let receipt = r#"module:action=import-midi:outcome=ok:loss_detail="format=1 channels=2""#;
+    let _ = field_of(receipt, "channels");
+}
+
+/// `#321` 契约：回执**没有转义** ⇒ 第一个 `"` 就是闭合引号；值里带 `"` 会让其后的
+/// 字段不可达（`None`）。这条把取舍钉死（⛔ silently 猜第二个引号）。
+#[test]
+fn the_first_closing_quote_is_the_contract_and_an_inner_quote_hides_the_rest() {
+    let receipt = r#"module:action=x:message="他说"停":outcome=ok"#;
+    assert_eq!(field_of_opt(receipt, "message").as_deref(), Some("他说"));
+    assert_eq!(field_of_opt(receipt, "outcome"), None);
 }

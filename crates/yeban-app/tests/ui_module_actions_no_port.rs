@@ -119,15 +119,42 @@ fn receipt_field_end(receipt: &str, at: usize, skip: &str) -> Option<usize> {
     None
 }
 
+/// 一条回执的**顶层**字段取值（引号感知，`#321`）；缺席返回 `None`。
+///
+/// 字段名只认**顶层**位置（`key=` 必须紧跟一个**顶层** `:`；引号内的 `:` 不算起点）：
+/// 引号值跳到**第一个闭合引号**（引号内的 `channels=` 等一律不是字段名），普通值仍按
+/// [`receipt_field_end`] 的"已知字段名 + `=`"边界取。引号值**保留引号**（本文件既有约定）。
+///
+/// ## 引号里的 `"`（写死的契约）
+///
+/// 回执没有转义 ⇒ 第一个 `"` 即闭合引号；值里真带 `"` 时其后的字段取不到（`None`）。
+fn field_of_opt(receipt: &str, key: &str) -> Option<String> {
+    let needle = format!("{key}=");
+    let mut in_quotes = false;
+    for (index, byte) in receipt.bytes().enumerate() {
+        match byte {
+            b'"' => in_quotes = !in_quotes,
+            b':' if !in_quotes => {
+                let start = index + 1;
+                if receipt[start..].starts_with(&needle) {
+                    let value_start = start + needle.len();
+                    if receipt[value_start..].starts_with('"') {
+                        let close = receipt[value_start + 1..].find('"').expect("引号必须闭合");
+                        return Some(receipt[value_start..=value_start + 1 + close].to_owned());
+                    }
+                    let end = receipt_field_end(receipt, value_start, key).unwrap_or(receipt.len());
+                    return Some(receipt[value_start..end].to_owned());
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
 /// 取一个字段；缺席即判据失败（⛔ 不返回空串）。
 fn field_of(receipt: &str, key: &str) -> String {
-    let needle = format!("{key}=");
-    let start = receipt
-        .find(&needle)
-        .unwrap_or_else(|| panic!("回执里没有字段 `{key}`: {receipt}"))
-        + needle.len();
-    let end = receipt_field_end(receipt, start, key).unwrap_or(receipt.len());
-    receipt[start..end].to_owned()
+    field_of_opt(receipt, key).unwrap_or_else(|| panic!("回执里没有字段 `{key}`: {receipt}"))
 }
 
 #[test]
@@ -218,4 +245,25 @@ fn without_an_undo_port_the_editing_entry_refuses_and_the_read_only_entries_stil
             std::env::remove_var(key);
         }
     }
+}
+
+/// `#321` 负向判据：**引号内的键 ⛔ 可被顶层取到**（本文件的取值器也必须引号感知）。
+///
+/// 修前：`field_of("channels")` 会命中 `loss_detail` 引号内的 `channels=`，取到
+/// `2"`（把闭合引号也带进值里）而不是"缺席"。修后必须是 `None`，而 `loss_detail`
+/// 仍是整串（引号内的 `=` 不切）。
+#[test]
+fn a_quoted_value_does_not_expose_its_inner_keys_to_the_top_level() {
+    let receipt = concat!(
+        r#"module:action=import-midi:outcome=ok:losses="…""#,
+        r#":loss_detail="format=1 channels=2""#,
+        r#":lyrics_detail="lyrics=2 attached=1 dropped=1 non-utf8=0 empty=0""#
+    );
+    assert_eq!(field_of_opt(receipt, "channels"), None);
+    assert_eq!(field_of_opt(receipt, "format"), None);
+    assert_eq!(field_of(receipt, "loss_detail"), "\"format=1 channels=2\"");
+    assert_eq!(
+        field_of(receipt, "lyrics_detail"),
+        "\"lyrics=2 attached=1 dropped=1 non-utf8=0 empty=0\""
+    );
 }
