@@ -2830,3 +2830,552 @@ fn an_explicitly_disabled_compressor_is_reported_applied_but_the_master_is_uncha
     assert_eq!(lane["applied"], true, "{data}");
     assert_eq!(lane["unresolved"], Value::Null, "{data}");
 }
+
+// ===========================================================================
+// ⭐ 任务单 `#306`：压缩 8 字段里除 `threshold_db` 外的 **7 个**，在 **MCP 路径**
+// （`yeban_render_master` 的 `Domain::render::build`）上各自一条音频判据。
+//
+// `#305` 用同一张表覆盖了 app 导出（`crates/yeban-app/tests/compressor_export.rs`），
+// 但 MCP 逐字段仍是空白 —— 这是 `#305` 自报的弱点②。本片照搬它的三条判据形状：
+// ① 7 字段 × 静态基线 vs 另一个静态值（`masterDigest` ＋ `sha256` ＋ 窗口 RMS 都动）；
+// ② 7 字段 ×（flat lane ＋ `readEnabled:false`）⇒ `masterDigest` 与 `sha256`
+//    **逐字节等于无泳道**；
+// ③ 机械锚：这 7 个 case 就是 `StripField` 的 8 个变体减 `ThresholdDb`。
+//
+// ## 与 app 侧的三处**结构差异**（⛔ 不是判据差异）
+//
+// 1. app 有 f32 母带样本（`RenderProjectOutput::samples`）⇒ 窗口 RMS 直接读浮点；
+//    MCP 的 `RenderArtifact` 只有 24-bit 产物字节 ⇒ 先用独立的 `decode_i24` 解码
+//    （`payload_samples`，本文件既有），再读窗口。量化噪声 ≈ 1 LSB ≈ 1.2e-7，
+//    对 0.05…0.5 的 DC 素材是 1e-6 量级 ⇒ **方向与 0.001 dB 的读数不受影响**。
+// 2. app 的 `sha` 靠真落盘 `--export-wav` 后读文件；MCP 的 `sha256` 是
+//    `render::build` 内存产物字节的哈希（`dryRun` 语义，不落盘）——
+//    两者都是**整份 RIFF 字节**的 SHA-256，口径相同。
+// 3. 夹具的素材相位/工程种子不同（MCP 是 L=R=+v，app 是 L=+v/R=−v）⇒
+//    **绝对 `masterDigest` / `sha256` 不可比**；检波器读 `max(l², r²)`、窗口读两声道
+//    平方和 ⇒ **窗口 dB 与方向可比**。方向表就是 `#305` 的 app 表。
+//
+// ## ⚠ 四条「受素材约束」的显式登记（⛔ 不是「字段测不了」）
+//
+// **0 个字段测不了、0 个 `#[ignore]`**：7/7 都有可观测素材。四条约束原样继承：
+// 1. `detector_s` 只在**阶跃**上可观测（稳态对称平均与 τ 无关）；
+// 2. `release_s` 在**常量**素材上不可观测（target == gain，不走 release 分支），
+//    且**下阶跃到 0** 时输出恒为 0 ⇒ 素材必须是 `0.5 → 0.05`；
+// 3. `knee_db` 在高于 `threshold + knee/2` 时不可观测（膝上公式不含 W）⇒ 必须近阈值
+//    （threshold = −6 dB，电平 ≈ −6.02 dBFS）；
+// 4. `compressor_enabled` 是开关 ⇒ 只做**开/关之差**，⛔ 三点单调。
+//
+// ⚠ **唯一登记项（不是「字段测不了」）**：`compressor_enabled` 的 **0→1 泳道**被
+// **静态** `compressor_enabled` 的编译期判据 `yeban_render::inserts::compressing_nodes`
+// 挡住（`#304` 已登记、本单不扩）⇒ 方向判据用**静态 0 vs 1**（与 `#305` 同），
+// flat/`readEnabled:false` 两条正对照也分别取静态 1 / 静态 0。
+// ===========================================================================
+
+/// 阶跃发生的位置（0.2 s @ 48 kHz；与 `#305` 同一位置）。
+const COMP_STEP_AT: usize = 9_600;
+
+/// 交错立体声阶跃素材：`at` 前 `before`、之后 `after`（L=R）。
+///
+/// ⚠ `after` 必须非零：`release_s` 只在“目标增益回到 1”时被选中，输入 0 时输出恒 0。
+fn step_samples(frames: usize, before: f32, after: f32, at: usize) -> Vec<f32> {
+    let mut out = Vec::with_capacity(frames * 2);
+    for index in 0..frames {
+        let value = if index < at { before } else { after };
+        out.push(value);
+        out.push(value);
+    }
+    out
+}
+
+/// 交错立体声缓冲在 `[start, end)` 帧上的 RMS（两声道合并，与 `#305` 同口径）。
+fn mcp_window_rms(samples: &[f32], start: usize, end: usize) -> f64 {
+    let mut sum = 0.0f64;
+    let mut count = 0usize;
+    for frame in start..end {
+        for channel in 0..2 {
+            let value = f64::from(samples[frame * 2 + channel]);
+            sum += value * value;
+            count += 1;
+        }
+    }
+    assert!(count > 0, "窗口必须非空");
+    (sum / count as f64).sqrt()
+}
+
+/// 一个字段一条用例；`params[0]` **就是**被测字段（泳道也指向 `param_index = 0`）。
+struct McpCompCase {
+    name: &'static str,
+    params: &'static [(&'static str, f32)],
+    from: f32,
+    mid: f32,
+    to: f32,
+    samples: fn() -> Vec<f32>,
+    /// 读数窗口（帧，48 kHz）。
+    window: (usize, usize),
+    /// 字段值从 `from` 增到 `to` 时，窗口 RMS 是否上升（＝ `#305` app 表的方向）。
+    rising: bool,
+}
+
+/// 1 s 常量素材（L=R）。
+fn steady_comp(level: f32) -> Vec<f32> {
+    constant(48_000, level)
+}
+
+/// ⭐ 7 个字段 / 7 条判据 —— **逐字照搬** `#305` 的 `COMP_CASES`
+/// （`crates/yeban-app/tests/compressor_export.rs:662-785`），只把素材换成 MCP 的
+/// 「解码后的 24-bit 样本」这一层。
+const MCP_COMP_CASES: &[McpCompCase] = &[
+    McpCompCase {
+        name: "compressor_enabled",
+        params: &[("compressor_enabled", 0.0), ("threshold_db", -12.0)],
+        from: 0.0,
+        mid: 1.0,
+        to: 1.0, // 开关：第三个点与第二个点同值（⛔ 不做三点单调）
+        samples: || steady_comp(0.5),
+        window: (4_800, 43_200),
+        rising: false,
+    },
+    McpCompCase {
+        name: "ratio",
+        params: &[
+            ("ratio", 2.0),
+            ("threshold_db", -24.0),
+            ("knee_db", 0.0),
+            ("detector_s", 0.000_5),
+            ("attack_s", 0.000_1),
+            ("release_s", 0.05),
+            ("makeup_db", 0.0),
+        ],
+        from: 2.0,
+        mid: 4.0,
+        to: 8.0,
+        samples: || steady_comp(0.5),
+        window: (4_800, 43_200),
+        rising: false,
+    },
+    McpCompCase {
+        name: "knee_db",
+        params: &[
+            ("knee_db", 0.0),
+            ("threshold_db", -6.0),
+            ("ratio", 4.0),
+            ("detector_s", 0.000_5),
+            ("attack_s", 0.000_1),
+            ("release_s", 0.05),
+            ("makeup_db", 0.0),
+        ],
+        from: 0.0,
+        mid: 12.0,
+        to: 24.0,
+        samples: || steady_comp(0.5),
+        window: (4_800, 43_200),
+        rising: false,
+    },
+    McpCompCase {
+        name: "detector_s",
+        params: &[
+            ("detector_s", 0.000_5),
+            ("threshold_db", -24.0),
+            ("ratio", 4.0),
+            ("knee_db", 0.0),
+            ("attack_s", 0.000_1),
+            ("release_s", 0.05),
+            ("makeup_db", 0.0),
+        ],
+        from: 0.000_5,
+        mid: 0.005,
+        to: 0.05,
+        samples: || step_samples(48_000, 0.0, 0.5, COMP_STEP_AT),
+        window: (COMP_STEP_AT, COMP_STEP_AT + 96), // 2 ms
+        rising: true,
+    },
+    McpCompCase {
+        name: "attack_s",
+        params: &[
+            ("attack_s", 0.000_1),
+            ("threshold_db", -24.0),
+            ("ratio", 4.0),
+            ("knee_db", 0.0),
+            ("detector_s", 0.000_5),
+            ("release_s", 0.05),
+            ("makeup_db", 0.0),
+        ],
+        from: 0.000_1,
+        mid: 0.01,
+        to: 0.1,
+        samples: || step_samples(48_000, 0.0, 0.5, COMP_STEP_AT),
+        window: (COMP_STEP_AT, COMP_STEP_AT + 960), // 20 ms
+        rising: true,
+    },
+    McpCompCase {
+        name: "release_s",
+        params: &[
+            ("release_s", 0.05),
+            ("threshold_db", -24.0),
+            ("ratio", 4.0),
+            ("knee_db", 0.0),
+            ("detector_s", 0.000_5),
+            ("attack_s", 0.000_1),
+            ("makeup_db", 0.0),
+        ],
+        from: 0.05,
+        mid: 0.2,
+        to: 1.0,
+        // ⛔ 不是 0：输出 = 0 × gain 恒为 0，release 读不出。
+        samples: || step_samples(48_000, 0.5, 0.05, COMP_STEP_AT),
+        window: (COMP_STEP_AT, COMP_STEP_AT + 960), // 20 ms
+        rising: false,
+    },
+    McpCompCase {
+        name: "makeup_db",
+        params: &[
+            ("makeup_db", 0.0),
+            ("threshold_db", -6.0),
+            ("ratio", 4.0),
+            ("knee_db", 0.0),
+            ("detector_s", 0.000_5),
+            ("attack_s", 0.000_1),
+            ("release_s", 0.05),
+        ],
+        from: 0.0,
+        mid: 6.0,
+        to: 12.0,
+        // 电平 −26.02 dBFS 在阈值 −6 以下 ⇒ 压缩增益恒 0，读数只随 makeup 走。
+        samples: || steady_comp(0.05),
+        window: (4_800, 43_200),
+        rising: true,
+    },
+];
+
+/// 把 case 的 `params[0]` 换成 `value`（其余固定参数一字不改）。
+fn comp_params_with(case: &McpCompCase, value: f32) -> Vec<(&'static str, f32)> {
+    let mut params = case.params.to_vec();
+    params[0].1 = value;
+    params
+}
+
+/// 一条 `DeviceParam` 泳道的形状：点列 + `read_enabled` + 首点 id 种子。
+struct StripLaneSpec<'a> {
+    points: &'a [(u64, f32)],
+    read_enabled: bool,
+    first_point_seed: u32,
+}
+
+/// 在夹具的音轨上放一台通道条（`params` 原样写入），可选挂一条
+/// `DeviceParam { slot: 0, param: 0 }` 泳道。
+///
+/// ⚠ 现有 `with_device_param_lane` 只会建**单参数**设备；压缩用例需要「一台设备带全
+/// 7 个固定参数 + 泳道指向 `params[0]`」⇒ 本 helper 是那条路的推广，⛔ 不是第二份
+/// 工程构造函数（仍用 `fixture` / `pool` / `build_with`）。
+fn with_strip(
+    mut fixture: Fixture,
+    params: &[(&str, f32)],
+    lane: Option<StripLaneSpec<'_>>,
+) -> Fixture {
+    let track_id = id(2);
+    let track = fixture
+        .project
+        .tracks
+        .get_mut(&track_id)
+        .expect("Lead 音轨必须存在");
+    track.devices.push(DeviceDefinition {
+        id: id(101),
+        name: "strip".to_owned(),
+        kind: DeviceKind::InternalEffect,
+        bypassed: false,
+        params: params
+            .iter()
+            .map(|(name, value)| ParameterValue {
+                name: (*name).to_owned(),
+                value: *value,
+                unit: None,
+            })
+            .collect(),
+        latency_samples: 0,
+    });
+    if let Some(lane) = lane {
+        let points = lane.points;
+        let target = AutomationTarget::DeviceParam {
+            track_id,
+            slot_index: 0,
+            param_index: 0,
+        };
+        let mut map = BTreeMap::new();
+        for (index, (tick, value)) in points.iter().enumerate() {
+            let point = AutomationPoint {
+                id: id(lane.first_point_seed + index as u32),
+                tick: *tick,
+                value: *value,
+                curve: CurveType::Linear,
+            };
+            map.insert(point.id, point);
+        }
+        track.automation_lanes.insert(
+            target,
+            AutomationLane {
+                target,
+                points: map,
+                read_enabled: lane.read_enabled,
+                write_mode: AutomationWriteMode::Off,
+                domain: None,
+            },
+        );
+    }
+    fixture
+        .project
+        .validate()
+        .expect("带通道条的 MCP 夹具必须合法");
+    fixture
+}
+
+/// 走 MCP 领域渲染本体（`render::build`），返回产物（不落盘）。
+fn render_mcp(fixture: &Fixture, scratch: &Scratch, tag: &str) -> RenderArtifact {
+    let out = scratch.join(&format!("{tag}.wav"));
+    build_with(&fixture.project, &pool(fixture), &out, args(&out))
+        .unwrap_or_else(|error| panic!("{tag}: MCP 渲染必须成功: {error:?}"))
+}
+
+/// ⭐ `#306` 判据 1：7 个字段各一条 **MCP** 端到端音频判据。
+///
+/// 每条断言与 `#305` 同形：24-bit 文件 `sha256` **与**浮点 `masterDigest` 都变；
+/// 窗口 RMS（相对干声的 dB）按 app 表的方向严格单调（开关只有两档）。
+#[test]
+fn each_compressor_field_moves_the_mcp_master_in_the_same_direction_as_the_app_export() {
+    let scratch = Scratch::new("compressor-fields");
+    for case in MCP_COMP_CASES {
+        let samples = (case.samples)();
+        let bytes = wav_f32(2, 48_000, &samples);
+        let (start, end) = case.window;
+
+        // 干声：同一段素材、根本没有设备。窗口 dB 的分母。
+        let dry_fixture = fixture(bytes.clone(), &Tune::default());
+        let dry = render_mcp(&dry_fixture, &scratch, &format!("{}-dry", case.name));
+        let dry_read = mcp_window_rms(&payload_samples(&dry), start, end);
+        assert!(dry_read > 0.0, "{}: 干声窗口必须非零", case.name);
+
+        let base_fixture = with_strip(
+            fixture(bytes.clone(), &Tune::default()),
+            &comp_params_with(case, case.from),
+            None,
+        );
+        let base = render_mcp(&base_fixture, &scratch, &format!("{}-base", case.name));
+        let base_read = mcp_window_rms(&payload_samples(&base), start, end);
+        let base_gain = 20.0 * (base_read / dry_read).log10();
+        println!(
+            "### MCP #306 {} base: value={} sha={} digest={} rms={:.9e} gain={base_gain:+.3} dB",
+            case.name, case.from, base.sha256, base.master_digest, base_read
+        );
+
+        // 开关只取一个非从值（mid == to）；其余字段取 mid、to 两个点。
+        let variants: Vec<f32> = if (case.mid - case.to).abs() < f32::EPSILON {
+            vec![case.mid]
+        } else {
+            vec![case.mid, case.to]
+        };
+        let mut previous = base_read;
+        for value in variants {
+            let variant_fixture = with_strip(
+                fixture(bytes.clone(), &Tune::default()),
+                &comp_params_with(case, value),
+                None,
+            );
+            let variant = render_mcp(
+                &variant_fixture,
+                &scratch,
+                &format!("{}-{value}", case.name),
+            );
+            let read = mcp_window_rms(&payload_samples(&variant), start, end);
+            let gain = 20.0 * (read / dry_read).log10();
+            println!(
+                "### MCP #306 {} variant: value={} sha={} digest={} rms={:.9e} gain={gain:+.3} dB",
+                case.name, value, variant.sha256, variant.master_digest, read
+            );
+            assert_ne!(
+                variant.master_digest, base.master_digest,
+                "{}={value}: MCP 浮点母带必须真的不同（否则字段没有落地）",
+                case.name
+            );
+            assert_ne!(
+                variant.sha256, base.sha256,
+                "{}={value}: MCP 24-bit 文件字节必须真的不同（⛔ 只改了一个读数）",
+                case.name
+            );
+            if case.rising {
+                assert!(
+                    read > previous,
+                    "{}={value}: MCP 窗口 RMS 必须严格上升（上一个 {previous:.9e}，本个 {read:.9e}）",
+                    case.name
+                );
+            } else {
+                assert!(
+                    read < previous,
+                    "{}={value}: MCP 窗口 RMS 必须严格下降（上一个 {previous:.9e}，本个 {read:.9e}）",
+                    case.name
+                );
+            }
+            // `makeup_db` 是唯一可以手算到 0.001 dB 的字段（阈下 ⇒ GR 恒 0）。
+            if case.name == "makeup_db" {
+                assert!(
+                    (gain - f64::from(value)).abs() < 0.01,
+                    "makeup_db={value}: 窗口增益必须精确等于写入值，实得 {gain:+.6} dB"
+                );
+            }
+            previous = read;
+        }
+    }
+}
+
+/// ⭐ `#306` 判据 2：**恒等正对照** —— 7 个字段各一条“泳道处处等于静态值”
+/// ⇒ MCP 的 `masterDigest` **与** `sha256` 逐字节等于无泳道；再加一条
+/// `readEnabled:false` 的**非恒等**泳道 ⇒ 同样逐字节等于无泳道。
+#[test]
+fn a_flat_lane_for_every_compressor_field_is_byte_identical_in_the_mcp_master() {
+    let scratch = Scratch::new("compressor-flat");
+    for case in MCP_COMP_CASES {
+        let bytes = wav_f32(2, 48_000, &(case.samples)());
+
+        // 开关的恒等对照取“开”（静态 1）；其余字段取静态 `from`。
+        let flat_value = if case.name == "compressor_enabled" {
+            1.0
+        } else {
+            case.from
+        };
+        let static_flat = with_strip(
+            fixture(bytes.clone(), &Tune::default()),
+            &comp_params_with(case, flat_value),
+            None,
+        );
+        let static_flat_out = render_mcp(
+            &static_flat,
+            &scratch,
+            &format!("{}-static-flat", case.name),
+        );
+        let flat = with_strip(
+            fixture(bytes.clone(), &Tune::default()),
+            &comp_params_with(case, flat_value),
+            Some(StripLaneSpec {
+                points: &[
+                    (0, flat_value),
+                    (960, flat_value),
+                    (ONE_SECOND_TICKS, flat_value),
+                ],
+                read_enabled: true,
+                first_point_seed: 900,
+            }),
+        );
+        let flat_out = render_mcp(&flat, &scratch, &format!("{}-flat-lane", case.name));
+        println!(
+            "### MCP #306 {} flat: value={flat_value} static_sha={} lane_sha={} \
+             static_digest={} lane_digest={}",
+            case.name,
+            static_flat_out.sha256,
+            flat_out.sha256,
+            static_flat_out.master_digest,
+            flat_out.master_digest
+        );
+        assert_eq!(
+            flat_out.master_digest, static_flat_out.master_digest,
+            "{}: 恒等泳道必须逐字节等于无泳道（MCP 浮点母带）",
+            case.name
+        );
+        assert_eq!(
+            flat_out.sha256, static_flat_out.sha256,
+            "{}: 恒等泳道必须逐字节等于无泳道（MCP 文件 sha256）",
+            case.name
+        );
+
+        // `readEnabled:false`：非恒等泳道（from → to）也必须被整段忽略。
+        let static_from = with_strip(
+            fixture(bytes.clone(), &Tune::default()),
+            &comp_params_with(case, case.from),
+            None,
+        );
+        let static_from_out = render_mcp(
+            &static_from,
+            &scratch,
+            &format!("{}-static-from", case.name),
+        );
+        let disabled = with_strip(
+            fixture(bytes.clone(), &Tune::default()),
+            &comp_params_with(case, case.from),
+            Some(StripLaneSpec {
+                points: &[(0, case.from), (960, case.to), (ONE_SECOND_TICKS, case.to)],
+                read_enabled: false,
+                first_point_seed: 920,
+            }),
+        );
+        let disabled_out = render_mcp(&disabled, &scratch, &format!("{}-disabled-lane", case.name));
+        println!(
+            "### MCP #306 {} readDisabled: static_sha={} lane_sha={} static_digest={} \
+             lane_digest={}",
+            case.name,
+            static_from_out.sha256,
+            disabled_out.sha256,
+            static_from_out.master_digest,
+            disabled_out.master_digest
+        );
+        assert_eq!(
+            disabled_out.master_digest, static_from_out.master_digest,
+            "{}: readEnabled:false 必须逐字节等于无泳道（MCP 浮点母带）",
+            case.name
+        );
+        assert_eq!(
+            disabled_out.sha256, static_from_out.sha256,
+            "{}: readEnabled:false 必须逐字节等于无泳道（MCP 文件 sha256）",
+            case.name
+        );
+    }
+}
+
+/// ⭐ `#306` 判据 3：这 7 个 case 就是“压缩 8 字段减去 `threshold_db`”。
+///
+/// 与 `#305` 同一条机械锚：名字从 [`StripField`] 的 8 个**变体**现读
+/// `canonical_name()`，再与 `MCP_COMP_CASES` 互钉。⛔ 不手抄第二张拼写表；
+/// 另加一条：每个 case 的 `params[0].0` 必须**逐字等于** `case.name`
+/// （否则“基线 vs 变体”改的就不是被测字段）。
+#[test]
+fn the_seven_mcp_cases_are_the_compressor_fields_minus_threshold() {
+    use std::collections::BTreeSet;
+
+    use yeban_render::inserts::StripField;
+
+    const EIGHT: [StripField; 8] = [
+        StripField::CompressorEnabled,
+        StripField::ThresholdDb,
+        StripField::Ratio,
+        StripField::KneeDb,
+        StripField::DetectorS,
+        StripField::AttackS,
+        StripField::ReleaseS,
+        StripField::MakeupDb,
+    ];
+    let covered: BTreeSet<&str> = MCP_COMP_CASES.iter().map(|case| case.name).collect();
+    let mut expected = BTreeSet::new();
+    for field in EIGHT {
+        if field != StripField::ThresholdDb {
+            expected.insert(field.canonical_name());
+        }
+    }
+    println!("### MCP #306 covered={covered:?}");
+    println!("### MCP #306 expected={expected:?}");
+    assert_eq!(EIGHT.len(), 8, "压缩字段是 8 个");
+    assert_eq!(StripField::ALL.len(), 22, "通道条共 22 个字段");
+    assert_eq!(MCP_COMP_CASES.len(), 7, "除 threshold_db 外是 7 个");
+    assert_eq!(covered, expected, "MCP_COMP_CASES 必须逐字覆盖这 7 个字段");
+    assert!(
+        !covered.contains("threshold_db"),
+        "threshold_db 已由 #304 覆盖"
+    );
+    for case in MCP_COMP_CASES {
+        assert_eq!(
+            case.params[0].0, case.name,
+            "每个 case 的 params[0] 必须是被测字段本身"
+        );
+    }
+    for name in &covered {
+        assert!(
+            StripField::from_name(name).is_some(),
+            "{name} 必须是名字表认下的规范名"
+        );
+    }
+}
