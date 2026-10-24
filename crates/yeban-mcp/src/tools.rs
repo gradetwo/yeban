@@ -1160,7 +1160,7 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
     ToolSpec {
         spec_id: "MCP-TOOL-EXT-EXPORT-MIDI",
         name: "yeban_export_midi",
-        summary: "把活跃工程经 yeban-midi 的共享 SMF 映射导出成字节 (base64 回传, 只读不落盘)",
+        summary: "把活跃工程经 yeban-midi 的共享 SMF 映射导出成字节 (base64 回传, 只读不落盘)。⭐ `#312`: `note.syllable`（非空）真的写成 `FF 05` 歌词元事件, 条数是响应里的 `data.lyrics`（与编码器同一个判定, ⛔ 不是「想写几条」）; ⚠ `phonemes` 没有 SMF 载体（写进去等于把 SVS 对齐数据伪装成歌词）⇒ **只在工程真带 phonemes 时**进 `data.unsupported` / `data.unsupportedCounts`（键 `phonemes`, 计数 = 带 phonemes 的音符数）",
         scope: Scope::AppAdmin,
         // 只读：字节作为工具结果回传，工程状态一位都不改（落盘出口仍是 app CLI，D47）。
         side_effect: SideEffect::ReadOnly,

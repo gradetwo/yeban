@@ -33,6 +33,16 @@
 //! - 映射的全部边界（静音摆放跳过、音频片段不导出、主总线不导出、`micro_timing_ticks`
 //!   并入起点、`probability` / `ratchet` 不导出……）由 `yeban-midi` 的模块文档**唯一**登记，
 //!   本模块一个字节都不重新解释。
+//! - ⭐ `#312`：**歌词真的进文件**——`MidiNote::syllable`（非空）由共享编码器写成
+//!   `FF 05` 歌词元事件；响应里的 `data.lyrics` 是**实际写出**的条数（读
+//!   `MidiExport::lyric_events`，与编码器共用同一个"什么算一条歌词"的判定）。
+//!   ⚠ `MidiNote::phonemes` **没有** SMF 载体（SMF 只有一种文本槽，写进去等于把
+//!   SVS 对齐数据伪装成歌词）⇒ 它们进 `data.unsupported` / `data.unsupportedCounts`
+//!   的 `phonemes`（**只在**工程真的带 phonemes 时出现；计数 = 带 phonemes 的音符数，
+//!   同样读 `MidiExport::notes_with_phonemes`，⛔ 不在本层重数）。
+//!   ⚠ 这不是"SMF 导出损失表"：`probability` / `ratchet` / `slide` / `pitch_bend_curve`
+//!   是**演奏**语义（导出写"作者写下的音符"，不做触发/连击判定），不是载体装不下的
+//!   音符**数据**；把它们塞进 `unsupported` 会让这张表的含义漂移（另一票再议）。
 
 use serde_json::{Value, json};
 
@@ -76,6 +86,10 @@ pub struct MidiExportArtifact {
     pub notes: usize,
     /// tempo map 的事件条数。
     pub tempos: usize,
+    /// ⭐ `#312`：**实际写进 SMF** 的歌词元事件（`FF 05`）条数。
+    pub lyrics: usize,
+    /// ⭐ `#312`：带 `phonemes` 的音符数（SMF 无载体 ⇒ 进 `unsupported` 的 `phonemes`）。
+    pub phoneme_notes: u64,
     /// 字节的 SHA-256（与容器 CAS 的 `AssetHash` 同一口径，调用方可直接做完整性核对）。
     pub sha256: String,
 }
@@ -87,7 +101,7 @@ impl MidiExportArtifact {
     /// 因此"预览说的"与"真做的"逐字段相同 —— 这是 `tests/extension_tools.rs` 的 ② 号口径。
     #[must_use]
     pub fn data(&self) -> Value {
-        json!({
+        let mut data = json!({
             // 读数（与 `yeban_midi::export::MidiExportReport` 同名的三个计数口径一致）。
             "format": format_name(self.format),
             "formatNumber": self.format.number(),
@@ -95,6 +109,8 @@ impl MidiExportArtifact {
             "tracks": self.tracks,
             "notes": self.notes,
             "tempos": self.tempos,
+            // ⭐ `#312`：歌词是**真的写进文件**的读数（不是"想写几条"）。
+            "lyrics": self.lyrics,
             // 载荷：字节长度 + base64 正文 + SHA-256（调用方三样都要，缺一都要再问一次）。
             "bytes": self.bytes.len(),
             "encoding": BASE64_ENCODING,
@@ -105,7 +121,18 @@ impl MidiExportArtifact {
             "encoder": ENCODER_SOURCE,
             // 只读：工程状态一位都没改（`mod.rs` 的 `project_after` 对它返回 `None`）。
             "readOnly": true,
-        })
+        });
+        // ⭐ `#312`：只有**真的**带 phonemes 才登记（空数组 = 没有少做什么）。
+        // 与 `yeban_render_master` 的 `unsupported` / `unsupportedCounts` 同一形状。
+        let mut unsupported: Vec<Value> = Vec::new();
+        let mut counts = serde_json::Map::new();
+        if self.phoneme_notes > 0 {
+            unsupported.push(Value::from("phonemes"));
+            counts.insert("phonemes".to_owned(), Value::from(self.phoneme_notes));
+        }
+        data["unsupported"] = Value::Array(unsupported);
+        data["unsupportedCounts"] = Value::Object(counts);
+        data
     }
 }
 
@@ -129,6 +156,9 @@ pub fn plan(project: &YebanProjectV1) -> Result<MidiExportArtifact, Fault> {
         tracks: export.tracks.len(),
         notes: export.tracks.iter().map(|track| track.notes.len()).sum(),
         tempos: export.tempos.len(),
+        // ⭐ `#312`：两个读数都从**共享映射**取（⛔ 本层不重数"什么算一条歌词"）。
+        lyrics: export.lyric_events(),
+        phoneme_notes: export.notes_with_phonemes(),
         sha256: AssetHash::of_bytes(&bytes).as_str().to_owned(),
         bytes,
     })
@@ -289,6 +319,44 @@ mod tests {
             artifact.bytes.len(),
             artifact.data()["bytes"].as_u64().expect("bytes") as usize
         );
+    }
+
+    /// ⭐ `#312`：`filled` 样本的 4 条歌词是**真的**写进字节的条数；响应里的
+    /// `lyrics` 读的是它（不是模型的"想写几条"）。样本没有 phonemes ⇒
+    /// `unsupported` 是空数组，`unsupportedCounts` 是空对象。
+    #[test]
+    fn the_artifact_reports_the_lyrics_it_actually_wrote() {
+        let artifact = plan(&filled_project()).expect("filled 样本必须可导出");
+        assert_eq!(artifact.lyrics, 4, "do/re/mi/fa 四条");
+        let data = artifact.data();
+        assert_eq!(data["lyrics"], 4);
+        assert_eq!(data["unsupported"], json!([]));
+        assert_eq!(data["unsupportedCounts"], json!({}));
+    }
+
+    /// ⭐ `#312`：带 `phonemes` 的音符进 `unsupported`（`phonemes`）与
+    /// `unsupportedCounts`（音符数）；歌词本身仍然照写（两条通路互不影响）。
+    #[test]
+    fn phonemes_are_registered_as_a_carrier_gap() {
+        let mut project = filled_project();
+        let mut touched = 0_u64;
+        for clip in project.clip_pool.values_mut() {
+            if let yeban_model::project::ClipContent::Midi { notes } = &mut clip.content {
+                for note in notes.values_mut() {
+                    if touched == 0 && note.syllable.is_some() {
+                        note.phonemes = vec!["l".to_owned(), "a".to_owned()];
+                        touched += 1;
+                    }
+                }
+            }
+        }
+        assert_eq!(touched, 1, "filled 样本里必须有一颗带音节可挂");
+        let artifact = plan(&project).expect("带 phonemes 的工程仍必须可导出");
+        assert_eq!(artifact.phoneme_notes, 1);
+        assert_eq!(artifact.lyrics, 4, "phonemes 不影响 syllable 的歌词事件");
+        let data = artifact.data();
+        assert_eq!(data["unsupported"], json!(["phonemes"]));
+        assert_eq!(data["unsupportedCounts"], json!({ "phonemes": 1 }));
     }
 
     #[test]

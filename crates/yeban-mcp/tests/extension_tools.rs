@@ -1647,6 +1647,136 @@ fn export_midi_round_trips_in_memory_through_the_shared_mapping() {
     assert_eq!(dispatcher.domain().commit_count(), commits_before);
 }
 
+/// 一份已知夹具上的歌词事件定位：`FF 05 <len> <text>` 的**完整**字节序列
+/// （`filled` 的歌词是 2 字节 ASCII ⇒ 长度字节恰好 = `text.len()`）。
+///
+/// 更一般的逐事件解析在 `yeban-midi` 的 `smf_contract.rs`（独立 VLQ 走一遍），
+/// 这里只证明"MCP 回传的字节里真的有这四条"。
+fn ff05_text_positions(bytes: &[u8], text: &[u8]) -> Vec<usize> {
+    bytes
+        .windows(text.len() + 3)
+        .enumerate()
+        .filter_map(|(index, window)| {
+            (window[0] == 0xFF
+                && window[1] == 0x05
+                && usize::from(window[2]) == text.len()
+                && &window[3..] == text)
+                .then_some(index)
+        })
+        .collect()
+}
+
+/// ⭐ `#312` **三处读数，逐条**：
+///
+/// ① **模型**：`filled` 样本的 4 颗 lead 音符带 `syllable`（do/re/mi/fa）——
+///    直接从 `clip_pool` 数，不经过导出器；
+/// ② **文件**：MCP 回传的 SMF 字节里恰好 4 条 `FF 05`，文本依次是 do/re/mi/fa
+///    （音符的 `micro_timing_ticks = -12` 只改 tick，不改文本）；
+/// ③ **MCP 响应**：`data.lyrics == 4`，`data.unsupported == []`。
+///
+/// 另外：给一颗音符挂 `phonemes` ⇒ `unsupported == ["phonemes"]`、
+/// `unsupportedCounts == {"phonemes": 1}`，而歌词仍然 4（两条通路互不影响）。
+#[test]
+fn export_midi_carries_lyrics_and_reports_phoneme_gaps() {
+    // ① 模型侧（独立事实源）。
+    let project = filled_project();
+    let mut model_lyrics: Vec<(u64, String)> = Vec::new();
+    for clip in project.clip_pool.values() {
+        if let ClipContent::Midi { notes } = &clip.content {
+            for note in notes.values() {
+                if let Some(text) = &note.syllable {
+                    model_lyrics.push((note.start_tick, text.clone()));
+                }
+            }
+        }
+    }
+    model_lyrics.sort();
+    assert_eq!(
+        model_lyrics,
+        vec![
+            (0, "do".to_owned()),
+            (960, "re".to_owned()),
+            (1920, "mi".to_owned()),
+            (2880, "fa".to_owned()),
+        ],
+        "模型侧：4 颗音符各带一个音节（tick 尚未并入 micro）"
+    );
+
+    let mut dispatcher = dispatcher_with_project(project);
+    let response = call_tool(&mut dispatcher, "yeban_export_midi", serde_json::json!({}));
+    assert_eq!(response["status"], "success", "{response}");
+    let data = &response["data"];
+
+    // ③ MCP 响应。
+    assert_eq!(data["lyrics"], 4, "实际写出的 FF 05 条数");
+    assert_eq!(data["notes"], 4);
+    assert_eq!(
+        data["unsupported"],
+        serde_json::json!([]),
+        "filled 样本没有 phonemes ⇒ 空数组（不是恒报）"
+    );
+    assert_eq!(data["unsupportedCounts"], serde_json::json!({}));
+
+    // ② 文件（base64 解回来的**真实字节**）。
+    let bytes = decode_base64(data["content"].as_str().expect("content"));
+    assert_eq!(
+        u64::try_from(bytes.len()).expect("小尺寸"),
+        data["bytes"].as_u64().expect("bytes")
+    );
+    let mut positions = Vec::new();
+    for text in [b"do".as_slice(), b"re", b"mi", b"fa"] {
+        let found = ff05_text_positions(&bytes, text);
+        assert_eq!(
+            found.len(),
+            1,
+            "`{}` 必须恰好一条 FF 05: {found:?}",
+            String::from_utf8_lossy(text)
+        );
+        positions.push(found[0]);
+    }
+    assert!(
+        positions.windows(2).all(|pair| pair[0] < pair[1]),
+        "四条歌词按 tick 升序落盘: {positions:?}"
+    );
+    // 三处读数（`--nocapture` 时可见；`#312` 报告的逐条证据就取这一行）。
+    eprintln!(
+        "[#312] model={model_lyrics:?} response.lyrics={} file.ff05_offsets={positions:?} \
+         response.bytes={}",
+        data["lyrics"], data["bytes"]
+    );
+
+    // 挂一颗 phonemes：它**没有** SMF 载体 ⇒ 进 unsupported；歌词仍照写。
+    let mut with_phonemes = filled_project();
+    let mut touched = false;
+    for clip in with_phonemes.clip_pool.values_mut() {
+        if let ClipContent::Midi { notes } = &mut clip.content {
+            for note in notes.values_mut() {
+                if !touched && note.syllable.is_some() {
+                    note.phonemes = vec!["l".to_owned(), "a".to_owned()];
+                    touched = true;
+                }
+            }
+        }
+    }
+    assert!(touched, "filled 样本里必须有一颗带音节可挂");
+    let mut dispatcher = dispatcher_with_project(with_phonemes);
+    let response = call_tool(&mut dispatcher, "yeban_export_midi", serde_json::json!({}));
+    assert_eq!(response["status"], "success", "{response}");
+    assert_eq!(
+        response["data"]["lyrics"], 4,
+        "phonemes 不影响 syllable 的歌词事件"
+    );
+    assert_eq!(
+        response["data"]["unsupported"],
+        serde_json::json!(["phonemes"]),
+        "SMF 没有 phonemes 的载体 ⇒ 必须响亮登记"
+    );
+    assert_eq!(
+        response["data"]["unsupportedCounts"],
+        serde_json::json!({ "phonemes": 1 })
+    );
+}
+
 /// ② 号口径对新工具同样成立：`dryRun` 预览与真做**逐字段一致**，且状态一位不变。
 #[test]
 fn export_midi_dry_run_preview_equals_the_real_call() {
@@ -1667,6 +1797,9 @@ fn export_midi_dry_run_preview_equals_the_real_call() {
         "tracks",
         "notes",
         "tempos",
+        "lyrics",
+        "unsupported",
+        "unsupportedCounts",
         "bytes",
         "encoding",
         "content",

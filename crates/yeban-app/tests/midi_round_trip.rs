@@ -29,7 +29,8 @@
 //! | **轨归属**（哪条轨） | ❌ **丢失**（只对**导入的副本**）：副本一律落到"第一条非 master 音轨的第一个摆放"；原有轨道各自的音符**一颗不动** | ② `MTrk` 数**仍是 4**、通道 1 仍是 3 颗/通道 0 变 15 颗；③ 目标片段 6 + 9 颗、别的轨一颗不变；③b **按身份**挑出的 9 颗副本正是"落点轨"里的新音符 |
 //! | **MIDI 通道** | ❌ **丢失**（只对副本）：`MidiNote` 没有通道字段 ⇒ 副本一律落在通道 0；原件保留各自通道 | ② 副本 `(0, …)` 与原件 `(1, …)` 同时存在且通道集合恰为 `{0, 1}`；③b 身份切分 |
 //! | `micro_timing_ticks` | ❌ 字段丢失，但**微时值已并入 tick** ⇒ 位置不丢 | ③ `start_tick == 2868` 且 `micro_timing_ticks == None`；③b 副本逐颗 `micro == None` |
-//! | `probability` / `ratchet` / 歌词 / 弯音 / 滑音 | ❌ SMF 里没有载体（导出侧也从不写） | ③b：夹具里那颗**确实** `expressive == true`（先断言，否则该行空转），而 9 颗副本逐颗 `expressive == false` |
+//! | `probability` / `ratchet` / 弯音 / 滑音 | ❌ 导入侧不读（导出侧也不写：导出写"作者写下的音符"，不做触发/连击判定） | ③b：夹具里那颗**确实** `expressive == true`（先断言，否则该行空转），而 9 颗副本逐颗 `expressive == false` |
+//! | 歌词 `syllable` | ⚠ ⭐ `#312`：**导出侧真的写**（F1 里有 `FF 05`），**导入侧还没读**（`parse_smf` 忽略 `MetaMessage::Lyric`）⇒ 副本仍 `expressive == false`；这一行**不再**声称"SMF 没有载体" | ① 之后对 F1 的 `FF 05 02 6C 61` 断言 + ③b 的 `!row.expressive` |
 //! | 非 960 PPQ 的文件 | ⚠ 按整数比例换算到 960（`scale_ticks`），不能整除时**截断** | 由 `import_midi.rs` 的单元判据覆盖（480 ⇒ ×2），本文件不重复 |
 //!
 //! ## 规范来源 (Normative)
@@ -203,7 +204,8 @@ fn round_trip_fixture() -> (YebanProjectV1, EntityId, EntityId) {
         );
     assert_eq!(project.validate(), Ok(()), "夹具必须是合法工程");
 
-    // 给**落点片段**里的一颗音符挂上 SMF **载不下**的表现力字段：
+    // 给**落点片段**里的一颗音符挂上**往返留不住**的表现力字段（概率/连击 +
+    // 歌词：⭐ `#312` 起导出侧会写 `FF 05`、导入侧还没读）：
     // 这样"往返后它们为空"就不是空转的断言（夹具侧会先断言它确实是 `true`）。
     let destination_track = *project
         .tracks
@@ -266,7 +268,8 @@ struct NoteRow {
     start: u64,
     duration: u64,
     micro: Option<i16>,
-    /// SMF **载不下**的表现力字段（概率 / 连击 / 歌词 / 弯音 / 滑音：任一非默认即 `true`）。
+    /// 往返后**留不住**的表现力字段（概率 / 连击 / 弯音 / 滑音：导入侧不读；歌词：
+    /// ⭐ `#312` **导出侧会写** `FF 05`、导入侧还没读）：任一非默认即 `true`。
     expressive: bool,
 }
 
@@ -360,6 +363,19 @@ fn export_import_export_round_trips_every_note_item_by_item() {
     assert_eq!(run.code, 0, "导出必须成功; stderr={}", run.stderr);
     let bytes1 = std::fs::read(&f1).expect("读 F1");
     let n1 = note_multiset(&bytes1);
+
+    // ⭐ `#312`：导出侧**真的**把歌词写进文件 —— 夹具给落点片段第一颗音符挂了
+    // `syllable = "la"`。因此下面"导入副本 expressive == false"只证明**导入侧
+    // 还没读 lyric meta**，⛔ 不再（错误地）证明"SMF 里没有载体"。
+    let lyric = [0xFF_u8, 0x05, 0x02, b'l', b'a'];
+    assert_eq!(
+        bytes1
+            .windows(lyric.len())
+            .filter(|window| *window == lyric)
+            .count(),
+        1,
+        "F1 里必须恰好一条 `FF 05 02 6C 61`（`la`）"
+    );
 
     // 夹具的非平凡性 + 导出侧的 PPQ / 拍号（**独立**于实现的期望值）。
     assert_eq!(
@@ -543,7 +559,7 @@ fn export_import_export_round_trips_every_note_item_by_item() {
     let before_rows = clip_rows(&project, destination_track, destination_clip);
     assert!(
         before_rows.iter().any(|row| row.expressive),
-        "夹具必须带一颗 SMF 载不下的表现力音符（否则下面那条损耗断言是空转的）: {before_rows:?}"
+        "夹具必须带一颗往返留不住的表现力音符（否则下面那条损耗断言是空转的）: {before_rows:?}"
     );
     let after_rows = clip_rows(&after, destination_track, destination_clip);
     let imported = imported_rows(&before_rows, &after_rows);
@@ -573,7 +589,8 @@ fn export_import_export_round_trips_every_note_item_by_item() {
     );
     assert!(
         imported.iter().all(|row| !row.expressive),
-        "SMF 没有载体的表现力字段在副本上必须为空（概率/连击/歌词/弯音/滑音）: {imported:?}"
+        "副本上的表现力字段必须为空：概率/连击/弯音/滑音是导出侧不写，歌词是\
+         ⭐ `#312` 后**导出侧写了、导入侧还没读**（`parse_smf` 忽略 lyric meta）: {imported:?}"
     );
     // 对照：原有那颗**带**表现力字段的音符必须原样还在（⛔ 导入不是"把整个工程洗一遍"）。
     assert!(

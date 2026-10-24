@@ -32,7 +32,9 @@
 //! | `velocity` | `NoteOn` 的 `vel`（`NoteOff` 的力度恒为 0） |
 //! | `micro_timing_ticks` | **并入起始 tick**（由 `yeban_render::midi::effective_start` 做，与实时引擎的 `placement_start + note.start_tick + micro` 同口径） |
 //! | `id` | 不写进 SMF（只用于错误上报） |
-//! | `probability` / `ratchet` / `slide` / `pitch_bend_curve` / `syllable` / `phonemes` | **不导出**（`midi.rs` 已登记的边界；导出写"作者写下的音符"，不做触发/连击判定） |
+//! | `syllable`（非空） | ⭐ `#312`：`FF 05` 歌词元事件，在音符**生效起点**、`NoteOn` **之前**，UTF-8 原样（见 `midi.rs` 的 `lyric_text`） |
+//! | `phonemes` | ⭐ **不导出**：SMF 只有一种文本槽，写进去等于把 SVS 对齐数据伪装成歌词 ⇒ `yeban_export_midi` 的 `unsupported`（`phonemes`）如实登记 |
+//! | `probability` / `ratchet` / `slide` / `pitch_bend_curve` | **不导出**（`midi.rs` 已登记的边界；导出写"作者写下的音符"，不做触发/连击判定） |
 //!
 //! ### tick → tick（**没有**任何节拍换算）
 //!
@@ -540,6 +542,15 @@ mod tests {
         );
         assert_eq!(parsed.tempos[0].numerator, Some(4));
         assert_eq!(parsed.tempos[0].denominator_pow2, Some(2));
+    }
+
+    /// ⭐ `#312`: `filled` 样本的 4 颗 lead 音符各带一个音节（do/re/mi/fa）⇒
+    /// 4 条歌词事件；样本里没有一颗音符带 `phonemes` ⇒ 0。
+    #[test]
+    fn filled_sample_carries_four_lyric_events_and_no_phonemes() {
+        let export = export_from_project(&filled_project()).expect("filled 样本必须可导出");
+        assert_eq!(export.lyric_events(), 4, "do/re/mi/fa 四条歌词事件");
+        assert_eq!(export.notes_with_phonemes(), 0, "样本没有 phonemes");
     }
 
     /// 判据 ⑥: 多条含 MIDI 的轨道 ⇒ 每轨一条 `MTrk`，通道按身份升序 `0,1,…`。

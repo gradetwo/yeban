@@ -27,8 +27,16 @@
 //! ## 边界（这次没有证明什么）
 //!
 //! - 拍号变更 (`TimeSignature`)、调号、滑音 (`SlideConfig`)、弯音曲线、
-//!   连击 (`ratchet`)、触发概率 (< 1.0)、歌词与音素**不导出**;
-//!   登记在 notes 的 `pending`。`micro_timing_ticks` 会并入起始 tick。
+//!   连击 (`ratchet`)、触发概率 (< 1.0) **不导出**; 登记在 notes 的 `pending`。
+//!   `micro_timing_ticks` 会并入起始 tick。
+//! - ⭐ `#312`：**歌词**（`MidiNote::syllable`，非空）写成 `FF 05` 歌词元事件，
+//!   位置是音符的**生效起点**（`micro_timing_ticks` 已并入）、排在同一 tick 的
+//!   `NoteOn` **之前**，文本按 UTF-8 原样。
+//!   ⚠ **音素**（`MidiNote::phonemes`）仍**不导出**：SMF 只有一种文本槽，
+//!   把 SVS 的对齐数据写进歌词槽等于把对齐数据**伪装成歌词** ⇒ 由
+//!   `yeban_export_midi` 的 `unsupported`（`phonemes`）如实登记。
+//! - 歌词文本**不裁剪**：`Some("")` 不写事件，`Some(" ")` 原样写（不发明
+//!   "空白算空"的规则）; 同一 tick 多条按**文本字节序**排，导出字节仍只由内容决定。
 //! - 只导出 Metrical (PPQ) 时间分度; SMPTE 时间码文件在回读时被拒绝
 //!   ([`MidiError::UnsupportedTimecode`])。
 //! - 回读是**严格**的: 未闭合的音符与未匹配的 `NoteOff` 都是错误, 而不是被忽略。
@@ -310,7 +318,11 @@ impl TempoGroup {
 }
 
 /// 内部规范化事件。
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+///
+/// ⚠ 自 `#312` 起**不再** `Copy`: 歌词事件的文本是工程里的字符串（`String`），
+/// 让它直接住在事件里（而不是靠一个只在单条轨道内有效的下标），排序键就能含文本
+/// ⇒ 导出字节仍然只由**内容**决定（见 [`RawEvent::tie_break`]）。
+#[derive(Clone, Debug, PartialEq, Eq)]
 enum RawEvent {
     NoteOn {
         tick: u64,
@@ -322,6 +334,15 @@ enum RawEvent {
         tick: u64,
         channel: u8,
         key: u8,
+    },
+    /// ⭐ `#312`：SMF 歌词元事件（`FF 05`）。文本按 UTF-8 原样写；
+    /// 每颗 [`lyric_text`] 命中的音符**恰好一条**，位置是它的**生效起点**
+    /// （`micro_timing_ticks` 已并入），且排在同一 tick 的 `NoteOn` **之前**
+    /// （SMF 只把歌词锚在**时间**上，⛔ 不把它绑到某一颗具体音符：和弦上同一 tick
+    /// 可能有多条歌词）。
+    Lyric {
+        tick: u64,
+        text: String,
     },
     Tempo {
         tick: u64,
@@ -340,56 +361,81 @@ enum RawEvent {
 }
 
 impl RawEvent {
-    fn tick(self) -> u64 {
+    fn tick(&self) -> u64 {
         match self {
             Self::NoteOn { tick, .. }
             | Self::NoteOff { tick, .. }
+            | Self::Lyric { tick, .. }
             | Self::Tempo { tick, .. }
-            | Self::TimeSignature { tick, .. } => tick,
+            | Self::TimeSignature { tick, .. } => *tick,
         }
     }
 
-    /// 同一 tick 内的全序键: `(rank, 组, 组内序, 值)`。
+    /// 同一 tick 内的全序键: `(rank, 组, 组内序, 值, 文本)`。
     ///
     /// 必须给出**全序**, 否则同一 tick 的多个事件会按输入顺序落到文件里,
     /// 让"同一工程两次导出字节不同"。
     ///
-    /// tempo map 的两类事件同属 `rank 2`, 且以 `(组, 组内序)` 排序:
-    /// 一条记录的 `Tempo` 是组内序 `0`、它的拍号是组内序 `1`
-    /// ⇒ 两者**相邻**, 而回读时"拍号挂到紧邻的前一条未配拍号的 tempo"
-    /// 恰好把它配回同一条记录。组号由内容决定 (见 `to_smf_bytes`), 因此字节仍然
-    /// 只由内容决定。
-    fn tie_break(self) -> (u8, u32, u8, u32) {
+    /// `rank` 的顺序是 **NoteOff (0) < Lyric (1) < NoteOn (2) < tempo map (3)**:
+    ///
+    /// - 歌词在 `NoteOn` **之前**（SMF 的惯例："文本先于它所描述的音符"）——
+    ///   但 SMF 只把歌词锚在**时间**上，⛔ 没有"这条歌词属于哪颗音符"的字段;
+    /// - 同一 tick 多条歌词按**文本字节序**排（键的最后一元是 `&str`），
+    ///   因此和弦上两颗音符各带一个音节时，字节仍只由内容决定;
+    /// - tempo map 的两类事件以 `(组, 组内序)` 排序: 一条记录的 `Tempo` 是组内序 `0`、
+    ///   它的拍号是组内序 `1` ⇒ 两者**相邻**, 而回读时"拍号挂到紧邻的前一条
+    ///   未配拍号的 tempo"恰好把它配回同一条记录。组号由内容决定
+    ///   (见 `to_smf_bytes`), 因此字节仍然只由内容决定。
+    fn tie_break(&self) -> (u8, u32, u8, u32, &str) {
         match self {
-            Self::NoteOff { channel, key, .. } => (0, u32::from(channel), 0, u32::from(key)),
+            Self::NoteOff { channel, key, .. } => (0, u32::from(*channel), 0, u32::from(*key), ""),
+            Self::Lyric { text, .. } => (1, 0, 0, 0, text.as_str()),
             Self::NoteOn {
                 channel,
                 key,
                 velocity,
                 ..
             } => (
-                1,
-                u32::from(channel),
+                2,
+                u32::from(*channel),
                 0,
-                (u32::from(key) << 8) | u32::from(velocity),
+                (u32::from(*key) << 8) | u32::from(*velocity),
+                "",
             ),
             Self::Tempo {
                 group,
                 microseconds_per_quarter,
                 ..
-            } => (2, group, 0, microseconds_per_quarter),
+            } => (3, *group, 0, *microseconds_per_quarter, ""),
             Self::TimeSignature {
                 group,
                 numerator,
                 denominator_pow2,
                 ..
             } => (
-                2,
-                group,
+                3,
+                *group,
                 1,
-                (u32::from(numerator) << 8) | u32::from(denominator_pow2),
+                (u32::from(*numerator) << 8) | u32::from(*denominator_pow2),
+                "",
             ),
         }
+    }
+}
+
+/// ⭐ `#312`：**什么算一条歌词事件**的唯一定义 —— 导出编码器与
+/// `yeban_export_midi` 的读数都调它，不写第二份判定。
+///
+/// - `syllable: Some(非空)` ⇒ 一条 `FF 05`（UTF-8 原样，不裁剪、不替换）;
+/// - `syllable: None` 或 `Some("")` ⇒ **没有事件**（空文本没有内容可写）；
+/// - `phonemes` **不在这里**：SMF 只有一种文本槽，把 SVS 的对齐数据写进歌词槽
+///   等于**把对齐数据伪装成歌词** ⇒ 它们仍不导出，由 `yeban_export_midi` 的
+///   `unsupported` 如实登记（`phonemes`）。
+#[must_use]
+pub fn lyric_text(note: &MidiNote) -> Option<&str> {
+    match note.syllable.as_deref() {
+        Some(text) if !text.is_empty() => Some(text),
+        _ => None,
     }
 }
 
@@ -422,11 +468,19 @@ fn validate_note(note: &MidiNote, channel: u8) -> Result<(), MidiError> {
 
 /// 把一条轨道的音符展开成规范化事件。
 fn track_events(track: &MidiExportTrack) -> Result<Vec<RawEvent>, MidiError> {
-    let mut events = Vec::with_capacity(track.notes.len() * 2);
+    let mut events = Vec::with_capacity(track.notes.len() * 3);
     for note in &track.notes {
         validate_note(note, track.channel)?;
         let start = effective_start(note);
         let end = start.saturating_add(note.duration_ticks);
+        // ⭐ `#312`：歌词写在**生效起点**（与 NoteOn 同一个 tick），排序键保证它
+        // 落在 NoteOn 之前。⛔ 不写 `phonemes`（见 [`lyric_text`]）。
+        if let Some(text) = lyric_text(note) {
+            events.push(RawEvent::Lyric {
+                tick: start,
+                text: text.to_owned(),
+            });
+        }
         events.push(RawEvent::NoteOn {
             tick: start,
             channel: track.channel,
@@ -444,8 +498,15 @@ fn track_events(track: &MidiExportTrack) -> Result<Vec<RawEvent>, MidiError> {
 }
 
 /// 按 `(tick, tie_break)` 全序排序 —— 导出字节因此只由内容决定。
+///
+/// 用 `sort_by`（而不是 `sort_by_key`）：排序键里含歌词的 `&str`（借用自事件），
+/// 让它只在比较期间借出，不要求键活过整个排序。
 fn sort_events(events: &mut [RawEvent]) {
-    events.sort_by_key(|event| (event.tick(), event.tie_break()));
+    events.sort_by(|left, right| {
+        left.tick()
+            .cmp(&right.tick())
+            .then_with(|| left.tie_break().cmp(&right.tie_break()))
+    });
 }
 
 /// 把绝对 tick 序列折成 delta, 并按 VLQ 上限校验。
@@ -564,39 +625,44 @@ impl MidiExport {
                 });
             }
             for (event, delta) in events.iter().zip(&delta_list) {
-                let kind = match *event {
+                let kind = match event {
                     RawEvent::NoteOn {
                         channel,
                         key,
                         velocity,
                         ..
                     } => TrackEventKind::Midi {
-                        channel: u4::new(channel),
+                        channel: u4::new(*channel),
                         message: MidiMessage::NoteOn {
-                            key: u7::new(key),
-                            vel: u7::new(velocity),
+                            key: u7::new(*key),
+                            vel: u7::new(*velocity),
                         },
                     },
                     RawEvent::NoteOff { channel, key, .. } => TrackEventKind::Midi {
-                        channel: u4::new(channel),
+                        channel: u4::new(*channel),
                         message: MidiMessage::NoteOff {
-                            key: u7::new(key),
+                            key: u7::new(*key),
                             vel: u7::new(0),
                         },
                     },
+                    // ⭐ `#312`：`FF 05` 歌词元事件。文本按 UTF-8 原样写
+                    // （`midly` 自己写 meta 长度 VLQ，不截断、不转义）。
+                    RawEvent::Lyric { text, .. } => {
+                        TrackEventKind::Meta(MetaMessage::Lyric(text.as_bytes()))
+                    }
                     RawEvent::Tempo {
                         microseconds_per_quarter,
                         ..
-                    } => {
-                        TrackEventKind::Meta(MetaMessage::Tempo(u24::new(microseconds_per_quarter)))
-                    }
+                    } => TrackEventKind::Meta(MetaMessage::Tempo(u24::new(
+                        *microseconds_per_quarter,
+                    ))),
                     RawEvent::TimeSignature {
                         numerator,
                         denominator_pow2,
                         ..
                     } => TrackEventKind::Meta(MetaMessage::TimeSignature(
-                        numerator,
-                        denominator_pow2,
+                        *numerator,
+                        *denominator_pow2,
                         24,
                         8,
                     )),
@@ -619,6 +685,37 @@ impl MidiExport {
         smf.write_std(&mut out)
             .map_err(|error| MidiError::Encode(error.to_string()))?;
         Ok(out)
+    }
+}
+
+impl MidiExport {
+    /// ⭐ `#312`：`to_smf_bytes` **会写出**的 `FF 05` 条数。
+    ///
+    /// 与编码器共用 [`lyric_text`] 这唯一判定 ⇒ "响应报几条"与"文件里几条"
+    /// 不可能漂移。空字符串的 `syllable` 不计（没有内容可写）。
+    #[must_use]
+    pub fn lyric_events(&self) -> usize {
+        self.tracks
+            .iter()
+            .flat_map(|track| track.notes.iter())
+            .filter(|note| lyric_text(note).is_some())
+            .count()
+    }
+
+    /// ⭐ `#312`：带 `phonemes` 的音符数 —— SMF **没有**载体承载它们
+    /// （只有一种文本槽，写进歌词槽等于把对齐数据伪装成歌词）。
+    ///
+    /// `yeban_export_midi` 的 `data.unsupported` / `data.unsupportedCounts`
+    /// 直接读这个数（⛔ 不在 MCP 层重数一遍）。
+    #[must_use]
+    pub fn notes_with_phonemes(&self) -> u64 {
+        let count = self
+            .tracks
+            .iter()
+            .flat_map(|track| track.notes.iter())
+            .filter(|note| !note.phonemes.is_empty())
+            .count();
+        u64::try_from(count).unwrap_or(u64::MAX)
     }
 }
 
@@ -907,6 +1004,123 @@ mod tests {
             tempos: vec![MidiTempo::with_time_signature(120.0, 4, 2)],
             tracks,
         }
+    }
+
+    /// 在字节里找一段子序列（判据用；只找**唯一**的歌词/音符前缀）。
+    fn position(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+        haystack
+            .windows(needle.len())
+            .position(|window| window == needle)
+    }
+
+    /// ⭐ `#312` 判据 1: 非空 `syllable` 写成 `FF 05`，排在同一 tick 的 `NoteOn`
+    /// **之前**，文本按 UTF-8 原样（`"啊"` = `E5 95 8A`）。
+    #[test]
+    fn lyric_syllables_become_ff05_events_before_their_note_on() {
+        let mut first = note(0, 60, 480, 100);
+        first.syllable = Some("la".to_owned());
+        let mut second = note(960, 62, 480, 100);
+        second.syllable = Some("啊".to_owned());
+        let source = export(
+            MidiFormat::SingleTrack,
+            vec![track_from_notes("", 0, &[first, second])],
+        );
+        assert_eq!(source.lyric_events(), 2, "两颗音符各一条歌词");
+        let bytes = source.to_smf_bytes().expect("导出");
+        let chunks = track_chunks(&bytes).expect("chunk 布局");
+        let lane = &bytes[chunks[1].payload.clone()];
+
+        let la = [0xFF, 0x05, 0x02, b'l', b'a'];
+        let ah = [0xFF, 0x05, 0x03, 0xE5, 0x95, 0x8A];
+        let la_at = position(lane, &la).expect("`la` 的 FF 05 必须在");
+        let ah_at = position(lane, &ah).expect("`啊` 的 FF 05 必须在（UTF-8 原样）");
+        assert!(la_at < ah_at, "两条歌词按 tick 升序落盘");
+        let first_note_on = position(lane, &[0x90, 60, 100]).expect("第一颗 NoteOn 必须在");
+        assert!(
+            la_at < first_note_on,
+            "同一 tick 的歌词必须排在 NoteOn **之前**"
+        );
+
+        let parsed = parse_smf(&bytes).expect("回读");
+        assert_eq!(parsed.notes.len(), 2, "歌词事件不影响音符回读");
+    }
+
+    /// ⭐ `#312` 判据 2: `None` / `Some("")` 都**不写**歌词事件（空文本没有内容），
+    /// 因此无歌词的导出里一条 `FF 05` 都没有（与加这个能力之前逐字节相同）。
+    #[test]
+    fn absent_or_empty_syllable_writes_no_lyric_event() {
+        let plain = note(0, 60, 480, 100);
+        let mut empty = note(480, 62, 480, 100);
+        empty.syllable = Some(String::new());
+        let source = export(
+            MidiFormat::SingleTrack,
+            vec![track_from_notes("", 0, &[plain, empty])],
+        );
+        assert_eq!(source.lyric_events(), 0);
+        let bytes = source.to_smf_bytes().expect("导出");
+        let chunks = track_chunks(&bytes).expect("chunk 布局");
+        let lane = &bytes[chunks[1].payload.clone()];
+        assert!(
+            position(lane, &[0xFF, 0x05]).is_none(),
+            "没有非空 syllable ⇒ 一条 `FF 05` 都不许有"
+        );
+    }
+
+    /// ⭐ `#312` 判据 3: 同一 tick 的多条歌词按**文本字节序**排 —— 即使调用方
+    /// 把音符按相反顺序喂进来，导出字节也相同（`ARCH-DET-001`）。
+    #[test]
+    fn lyrics_at_the_same_tick_are_ordered_by_text() {
+        let mut late = note(0, 64, 480, 100);
+        late.syllable = Some("b".to_owned());
+        let mut early = note(0, 60, 480, 100);
+        early.syllable = Some("a".to_owned());
+        let source = export(
+            MidiFormat::SingleTrack,
+            vec![track_from_notes("", 0, &[late, early])],
+        );
+        let bytes = source.to_smf_bytes().expect("导出");
+        let chunks = track_chunks(&bytes).expect("chunk 布局");
+        let lane = &bytes[chunks[1].payload.clone()];
+        let a_at = position(lane, &[0xFF, 0x05, 0x01, b'a']).expect("`a` 的歌词");
+        let b_at = position(lane, &[0xFF, 0x05, 0x01, b'b']).expect("`b` 的歌词");
+        assert!(a_at < b_at, "同一 tick 的多条歌词按文本字节序");
+
+        // 反过来喂一遍：字节必须相同（排序键只由内容决定）。
+        let mut late = note(0, 64, 480, 100);
+        late.syllable = Some("b".to_owned());
+        let mut early = note(0, 60, 480, 100);
+        early.syllable = Some("a".to_owned());
+        let reversed = export(
+            MidiFormat::SingleTrack,
+            vec![track_from_notes("", 0, &[early, late])],
+        );
+        assert_eq!(
+            reversed.to_smf_bytes().expect("导出"),
+            bytes,
+            "输入顺序不得改变字节"
+        );
+    }
+
+    /// ⭐ `#312` 判据 4: 两个读数（`lyric_events` / `notes_with_phonemes`）是
+    /// 编码器与 MCP 共用的**唯一**判定：空 syllable 不计、phonemes 只看非空。
+    #[test]
+    fn the_lyric_and_phoneme_counts_are_the_single_shared_readout() {
+        let mut with_lyric = note(0, 60, 480, 100);
+        with_lyric.syllable = Some("la".to_owned());
+        with_lyric.phonemes = vec!["l".to_owned(), "a".to_owned()];
+        let mut empty = note(480, 62, 480, 100);
+        empty.syllable = Some(String::new());
+        let plain = note(960, 64, 480, 100);
+        let source = export(
+            MidiFormat::SingleTrack,
+            vec![track_from_notes("", 0, &[with_lyric, empty, plain])],
+        );
+        assert_eq!(source.lyric_events(), 1, "只有 `la` 一条（空串不算）");
+        assert_eq!(
+            source.notes_with_phonemes(),
+            1,
+            "只有一颗音符带非空 phonemes"
+        );
     }
 
     /// 判据 1: 导出的字节能被解析回**同一个音符集合** (格式 1, 多通道)。

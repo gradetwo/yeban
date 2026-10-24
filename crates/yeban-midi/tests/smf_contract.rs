@@ -1610,3 +1610,149 @@ fn no_needle_is_bound_to_a_variable_before_being_searched() {
         "[R187-PROBE b31:smf_contract::no_needle_is_bound_to_a_variable] arms_ran={arms_ran} of 13"
     );
 }
+
+// ---------------------------------------------------------------------------
+// ⭐ `#312`：歌词真的进了文件（`FF 05`），而"没有歌词"的字节一个都不动
+// ---------------------------------------------------------------------------
+
+/// 数一份 SMF 里的歌词元事件（`FF 05`）：`(tick, 文本字节)`，按文件顺序。
+///
+/// 走本 crate 的**独立** VLQ 解码器逐事件前进（⛔ 不借 `midly`）：这是"编码器
+/// 写出去的字节"与"另一个实现读到的歌词"之间的对账，而不是"`midly` 读自己"。
+fn lyric_events(bytes: &[u8]) -> Vec<(u64, Vec<u8>)> {
+    let chunks = track_chunks(bytes).expect("chunk 布局");
+    let mut out = Vec::new();
+    for chunk in &chunks[1..] {
+        let lane = &bytes[chunk.payload.clone()];
+        let mut tick = 0u64;
+        let mut cursor = 0usize;
+        let mut status = 0u8;
+        while cursor < lane.len() {
+            let delta = vlq::decode(lane, &mut cursor).expect("delta");
+            tick += u64::from(delta);
+            let first = lane[cursor];
+            if first == 0xFF {
+                cursor += 1;
+                let kind = lane[cursor];
+                cursor += 1;
+                let len = vlq::decode(lane, &mut cursor).expect("meta 长度");
+                let len = usize::try_from(len).expect("小尺寸");
+                if kind == 0x05 {
+                    out.push((tick, lane[cursor..cursor + len].to_vec()));
+                }
+                cursor += len;
+            } else if first & 0x80 != 0 {
+                status = first;
+                cursor += 1 + channel_data_len(status);
+            } else {
+                cursor += channel_data_len(status);
+            }
+        }
+    }
+    out
+}
+
+/// 一个通道状态字节后面跟几个数据字节（导出只会出现 `8n`/`9n`，这里按规范全覆盖）。
+fn channel_data_len(status: u8) -> usize {
+    match status & 0xF0 {
+        0xC0 | 0xD0 => 1,
+        _ => 2,
+    }
+}
+
+/// ⭐ `#312` 判据：歌词真的进了文件 —— `filled` 样本的 4 颗音符
+/// （`syllable = do/re/mi/fa`）⇒ 4 条 `FF 05`，tick 与音符的**生效起点**一致
+/// （第三颗 `micro_timing_ticks = -12` ⇒ 1908）。
+#[test]
+fn filled_sample_writes_its_four_syllables_as_lyric_events() {
+    let project = yeban_model::samples::filled_project();
+    let bytes = yeban_midi::export::export_from_project(&project)
+        .expect("filled 样本必须可投影")
+        .to_smf_bytes()
+        .expect("编码");
+    assert_eq!(
+        lyric_events(&bytes),
+        vec![
+            (0, b"do".to_vec()),
+            (960, b"re".to_vec()),
+            (1908, b"mi".to_vec()),
+            (2880, b"fa".to_vec()),
+        ],
+        "歌词按音符的生效起点落盘（micro_timing_ticks 已并入）"
+    );
+    // 音符本身不受影响（回读面仍然只数音符）。
+    let parsed = parse_smf(&bytes).expect("回读");
+    assert_eq!(parsed.notes.len(), 4);
+    assert_eq!(parsed.ppq, 960);
+}
+
+/// ⭐ `#312` **正对照（两条，缺一不可）**：
+///
+/// 1. **无歌词工程**（`demo_project`）⇒ 导出字节与加歌词能力之前**逐字节相同**；
+/// 2. **把 `filled` 样本的歌词去掉** ⇒ 字节等于加能力之前 `filled` 的字节
+///    （即"旧代码的 filled 导出" == "新代码的去歌词 filled 导出"）。
+///
+/// 两条 sha256 常量是**在加能力之前**（`main` = `e6a877a8` 的代码）实测的：
+/// `demo` = 133 字节、`filled` = 119 字节。
+#[test]
+fn lyrics_do_not_change_the_bytes_of_projects_without_them() {
+    const DEMO_SHA256: &str = "050417dc89acef85037b0ebcea8824347289e73da02504ecb8037750dfcea5c9";
+    const FILLED_BEFORE_SHA256: &str =
+        "8603e360e4c13f1de705bde3e414eecc66216a08a04c65bb8dd40c93335d9de1";
+
+    let demo_bytes = yeban_midi::export::export_from_project(&yeban_model::samples::demo_project())
+        .expect("投影")
+        .to_smf_bytes()
+        .expect("编码");
+    assert_eq!(
+        yeban_model::AssetHash::of_bytes(&demo_bytes).as_str(),
+        DEMO_SHA256,
+        "无歌词工程的导出必须逐字节等于改前（{} 字节）",
+        demo_bytes.len()
+    );
+    assert!(
+        lyric_events(&demo_bytes).is_empty(),
+        "无歌词工程不许凭空出现歌词事件"
+    );
+
+    let mut stripped = yeban_model::samples::filled_project();
+    for clip in stripped.clip_pool.values_mut() {
+        if let yeban_model::project::ClipContent::Midi { notes } = &mut clip.content {
+            for note in notes.values_mut() {
+                note.syllable = None;
+                note.phonemes.clear();
+            }
+        }
+    }
+    let stripped_bytes = yeban_midi::export::export_from_project(&stripped)
+        .expect("投影")
+        .to_smf_bytes()
+        .expect("编码");
+    assert_eq!(
+        yeban_model::AssetHash::of_bytes(&stripped_bytes).as_str(),
+        FILLED_BEFORE_SHA256,
+        "去歌词的 filled 必须等于改前 filled 的字节（{} 字节）",
+        stripped_bytes.len()
+    );
+    assert!(lyric_events(&stripped_bytes).is_empty());
+
+    // 而**带**歌词的同一工程必须真的不同（否则上面两条正对照是空转）。
+    let filled_bytes =
+        yeban_midi::export::export_from_project(&yeban_model::samples::filled_project())
+            .expect("投影")
+            .to_smf_bytes()
+            .expect("编码");
+    assert_ne!(
+        yeban_model::AssetHash::of_bytes(&filled_bytes).as_str(),
+        FILLED_BEFORE_SHA256,
+        "带歌词的 filled 必须写出额外的 FF 05（本单的目的）"
+    );
+    // 每条歌词的增量恒为 **6 字节**：`FF 05` + 1 字节长度 + 2 字节文本 = 5 字节，
+    // 外加它自己的 delta；而同一 tick 的 `NoteOn` 的 delta 从"到该 tick 的距离"
+    // 变成 0（正好少掉同样多的 delta 字节）⇒ 净 +6。
+    assert_eq!(
+        filled_bytes.len() - stripped_bytes.len(),
+        4 * 6,
+        "4 条 2 字节文本的歌词 ⇒ +24 字节"
+    );
+}
