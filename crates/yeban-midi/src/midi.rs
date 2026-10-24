@@ -39,6 +39,11 @@
 //!   按 `(tick, text)` 排序）；空文本与非 UTF-8 分别计入
 //!   [`ParsedMidi::empty_lyrics`] / [`ParsedMidi::non_utf8_lyrics`]（⛔ lossy）。
 //!   ⚠ 解析器**只读不归属**：一条歌词属于哪颗音符由 `yeban-app` 的导入映射决定。
+//! - ⭐ `#318`：**其余事件不静默丢弃** —— [`ParsedMidi::aux_events`] 按
+//!   [`MidiAuxEventKind`] 的 24 类逐一计数（read），[`ParsedMidi::tracks`] 给出
+//!   `MTrk` 条数。本 crate 只**读**这些数；"丢掉几条"由 `yeban-app` 的导入报告成对给出
+//!   （今天 `dropped == read`）。⚠ **值一样 ≠ 没丢**：tempo 等于工程 bpm 也仍是丢
+//!   （没被消费）。
 //! - 歌词文本**不裁剪**：`Some("")` 不写事件，`Some(" ")` 原样写（不发明
 //!   "空白算空"的规则）; 同一 tick 多条按**文本字节序**排，导出字节仍只由内容决定。
 //! - 只导出 Metrical (PPQ) 时间分度; SMPTE 时间码文件在回读时被拒绝
@@ -772,6 +777,165 @@ pub struct ParsedLyric {
     pub text: String,
 }
 
+/// SMF 里**除音符与歌词之外**、解析器读到但 [`ParsedMidi`] 不承载内容的事件种类
+/// （⭐ `#318`）。
+///
+/// ⚠ 单位 = **事件条数**（⛔ 字节、⛔ tick）。
+///
+/// 这是 `#317` 那张"其余静默丢弃"清单的**闭集**：每个变体对应 SMF 的一种具名事件，
+/// [`MidiAuxEventCounts`] 对每条事件**恰加一**（互不重叠、不漏）。`EndOfTrack`
+/// **不在表里**：它是结构终止符，没有内容可丢（`midly` 消费它，本解析器不把它当载荷）。
+///
+/// ⚠ **"值一样"不等于"没丢"**：例如 [`Self::Tempo`] 即使 `µs/四分音符` 恰好等于
+/// 工程的 `bpm`，它也**仍是丢** —— 导入路径**没有消费**它（`project.bpm` 是唯一权威）。
+/// 判据是"有没有被消费"，⛔ 不是"数值等不等"。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum MidiAuxEventKind {
+    /// `FF 51` tempo。丢掉：`project.bpm` 是唯一权威（导出只写 tick 0 一条）。
+    Tempo,
+    /// `FF 58` 拍号。丢掉：`project.time_signature` 是唯一权威。
+    TimeSignature,
+    /// `FF 03` 轨名。丢掉：导入落进**已有**音轨/片段，不改名、不建轨。
+    TrackName,
+    /// `FF 06` marker。丢掉：模型没有 marker 实体。
+    Marker,
+    /// `FF 59` 调号。丢掉：模型没有调号字段。
+    KeySignature,
+    /// `B0` 控制器。丢掉：导入路径没有 CC→自动化映射。
+    ControlChange,
+    /// `C0` 音色切换。丢掉：导入路径不从文件选音色（SFZ 绑定在工程侧）。
+    ProgramChange,
+    /// `E0` 弯音。丢掉：`MidiNote::pitch_bend_curve` 存在，但导入不把文件弯音映射成
+    /// 音符局部曲线（那会是**能力**，不是读数）。
+    PitchBend,
+    /// `A0` 复音触后。丢掉：模型没有该字段。
+    PolyAftertouch,
+    /// `D0` 通道触后。丢掉：模型没有该字段。
+    ChannelAftertouch,
+    /// `F0` SysEx。丢掉：模型没有承载。
+    SysEx,
+    /// `F7` escape。丢掉：模型没有承载。
+    Escape,
+    /// `FF 01` 文本。丢掉：模型没有承载。
+    Text,
+    /// `FF 02` 版权。丢掉：模型没有承载。
+    Copyright,
+    /// `FF 04` 乐器名。丢掉：模型没有承载。
+    InstrumentName,
+    /// `FF 00` 轨号。丢掉：模型没有承载。
+    TrackNumber,
+    /// `FF 07` cue point。丢掉：模型没有承载。
+    CuePoint,
+    /// `FF 08` 音色名。丢掉：模型没有承载。
+    ProgramName,
+    /// `FF 09` 设备名。丢掉：模型没有承载。
+    DeviceName,
+    /// `FF 20` MIDI 通道前缀。丢掉：模型没有承载。
+    MidiChannelPrefix,
+    /// `FF 21` MIDI 端口。丢掉：模型没有承载。
+    MidiPort,
+    /// `FF 54` SMPTE 偏移。丢掉：模型没有承载。
+    SmpteOffset,
+    /// `FF 7F` 音序器私有。丢掉：模型没有承载。
+    SequencerSpecific,
+    /// 未识别的 meta id。丢掉：模型没有承载（且本解析器不猜它的语义）。
+    UnknownMeta,
+}
+
+impl MidiAuxEventKind {
+    /// 全部变体，按**报告行里的固定顺序**排列（与枚举声明顺序一致）。
+    pub const ALL: [Self; 24] = [
+        Self::Tempo,
+        Self::TimeSignature,
+        Self::TrackName,
+        Self::Marker,
+        Self::KeySignature,
+        Self::ControlChange,
+        Self::ProgramChange,
+        Self::PitchBend,
+        Self::PolyAftertouch,
+        Self::ChannelAftertouch,
+        Self::SysEx,
+        Self::Escape,
+        Self::Text,
+        Self::Copyright,
+        Self::InstrumentName,
+        Self::TrackNumber,
+        Self::CuePoint,
+        Self::ProgramName,
+        Self::DeviceName,
+        Self::MidiChannelPrefix,
+        Self::MidiPort,
+        Self::SmpteOffset,
+        Self::SequencerSpecific,
+        Self::UnknownMeta,
+    ];
+
+    /// 变体个数（计数数组的长度；报告遍历它）。
+    pub const COUNT: usize = Self::ALL.len();
+
+    /// 报告里用的稳定键名（kebab-case；⛔ 随枚举声明顺序变化 —— 顺序即 `ALL`）。
+    #[must_use]
+    pub const fn key(self) -> &'static str {
+        match self {
+            Self::Tempo => "tempo",
+            Self::TimeSignature => "time-signature",
+            Self::TrackName => "track-name",
+            Self::Marker => "marker",
+            Self::KeySignature => "key-signature",
+            Self::ControlChange => "control-change",
+            Self::ProgramChange => "program-change",
+            Self::PitchBend => "pitch-bend",
+            Self::PolyAftertouch => "poly-aftertouch",
+            Self::ChannelAftertouch => "channel-aftertouch",
+            Self::SysEx => "sysex",
+            Self::Escape => "escape",
+            Self::Text => "text",
+            Self::Copyright => "copyright",
+            Self::InstrumentName => "instrument-name",
+            Self::TrackNumber => "track-number",
+            Self::CuePoint => "cue-point",
+            Self::ProgramName => "program-name",
+            Self::DeviceName => "device-name",
+            Self::MidiChannelPrefix => "midi-channel-prefix",
+            Self::MidiPort => "midi-port",
+            Self::SmpteOffset => "smpte-offset",
+            Self::SequencerSpecific => "sequencer-specific",
+            Self::UnknownMeta => "unknown-meta",
+        }
+    }
+}
+
+/// [`MidiAuxEventKind`] 的计数器：每条被读到的事件**恰加一**。
+///
+/// ⚠ 本结构只存 **read**（解析器读到的条数）；"丢掉几条"由 `yeban-app` 的
+/// `MidiImportLosses` 成对给出。今天 `dropped == read`（**无任何真支持**）；
+/// 支持某一类时**必须**把那一类的 `dropped` 改成 0（并把 `dropped == read` 判据改掉），
+/// ⛔ 不许删掉判据。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct MidiAuxEventCounts {
+    counts: [usize; MidiAuxEventKind::COUNT],
+}
+
+impl MidiAuxEventCounts {
+    /// 读到的该类事件条数。
+    #[must_use]
+    pub const fn count(self, kind: MidiAuxEventKind) -> usize {
+        self.counts[kind as usize]
+    }
+
+    /// 记一条（解析器内部用；`yeban-app` 只读）。
+    pub fn record(&mut self, kind: MidiAuxEventKind) {
+        self.counts[kind as usize] += 1;
+    }
+
+    /// 全部 aux 事件条数之和。
+    #[must_use]
+    pub fn total(self) -> usize {
+        self.counts.iter().sum()
+    }
+}
+
 /// 回读结果。
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ParsedMidi {
@@ -779,6 +943,13 @@ pub struct ParsedMidi {
     pub format: MidiFormat,
     /// 时间分度 (PPQ)。
     pub ppq: u16,
+    /// 文件里的 `MTrk` 条数（`MThd` 的轨道数；⭐ `#318` 的"轨分区"读数用它）。
+    pub tracks: usize,
+    /// ⭐ `#318`：除音符/歌词外、读到但 [`ParsedMidi`] **不承载内容**的事件计数。
+    ///
+    /// 这是"其余静默丢弃"变成读数的地方；每个 [`MidiAuxEventKind`] 恰加一。
+    /// ⚠ `EndOfTrack` 不计数（结构终止符，没有载荷）。
+    pub aux_events: MidiAuxEventCounts,
     /// tempo map（按 tick 升序, 按文件里出现的顺序）。
     pub tempos: Vec<MidiTempo>,
     /// 全部音符, 按 `(start_tick, channel, key, velocity)` 排序。
@@ -884,6 +1055,10 @@ pub fn parse_smf(bytes: &[u8]) -> Result<ParsedMidi, MidiError> {
 
     let mut notes = Vec::new();
     let mut tempos = Vec::new();
+    // ⭐ `#318`：除音符/歌词外的事件**逐类计数**（read 列）。导入侧把每一类都如实
+    // 报成 dropped；今天没有一类被消费。⛔ 这些事件的内容不进 `ParsedMidi`
+    // —— 这里只让"丢了几条"变成可读的数，⛔ 不是新增支持。
+    let mut aux_events = MidiAuxEventCounts::default();
     // ⭐ `#317`：`FF 05` 的三种命运在此分叉 —— 可解码的非空文本进 `lyrics`，
     // 空文本与非 UTF-8 各自计数（⛔ lossy、⛔ 静默丢）。
     let mut lyrics = Vec::new();
@@ -909,60 +1084,129 @@ pub fn parse_smf(bytes: &[u8]) -> Result<ParsedMidi, MidiError> {
                             }
                         }
                         MidiMessage::NoteOff { key, .. } => {
+                            // ⚠ 这里的 `..` 包含 note-off 的**释放力度**：模型没有
+                            // 承载它的字段 ⇒ 导入侧按"每颗音符一个"如实报丢
+                            // （`note-off-velocity-*`），⛔ 不冒充已处理。
                             close_note(&mut open, &mut notes, channel, key.as_int(), tick)?;
                         }
-                        _ => {}
+                        MidiMessage::Aftertouch { .. } => {
+                            aux_events.record(MidiAuxEventKind::PolyAftertouch);
+                        }
+                        MidiMessage::Controller { .. } => {
+                            aux_events.record(MidiAuxEventKind::ControlChange);
+                        }
+                        MidiMessage::ProgramChange { .. } => {
+                            aux_events.record(MidiAuxEventKind::ProgramChange);
+                        }
+                        MidiMessage::ChannelAftertouch { .. } => {
+                            aux_events.record(MidiAuxEventKind::ChannelAftertouch);
+                        }
+                        MidiMessage::PitchBend { .. } => {
+                            aux_events.record(MidiAuxEventKind::PitchBend);
+                        }
                     }
                 }
-                // ⭐ `#317`：歌词的**唯一**读取点。严格 UTF-8（⛔ `from_utf8_lossy`）：
-                // 解不出来的字节**不冒充**文本，只让计数加一。
-                TrackEventKind::Meta(MetaMessage::Lyric(bytes)) => match std::str::from_utf8(bytes)
-                {
-                    Ok("") => empty_lyrics += 1,
-                    Ok(text) => lyrics.push(ParsedLyric {
-                        tick,
-                        text: text.to_owned(),
-                    }),
-                    Err(_) => non_utf8_lyrics += 1,
-                },
-                TrackEventKind::Meta(MetaMessage::Tempo(mpqn)) => tempos.push(MidiTempo {
-                    tick,
-                    microseconds_per_quarter: Some(mpqn.as_int()),
-                    numerator: None,
-                    denominator_pow2: None,
-                }),
-                TrackEventKind::Meta(MetaMessage::TimeSignature(
-                    numerator,
-                    denominator_pow2,
-                    _clocks,
-                    _notes,
-                )) => {
-                    // 配对按**出现顺序**, 且只看**紧邻的前一条**记录:
-                    // 拍号挂到紧邻的那条同 tick、有 tempo、还没配拍号的记录上。
-                    // 没有这样的前驱 ⇒ 这条拍号**如实**落成"只有拍号"的记录,
-                    // **不**凭空合成 tempo (R5 修掉的正是合成)。
-                    let attached = match tempos.last_mut() {
-                        Some(last)
-                            if last.tick == tick
-                                && last.microseconds_per_quarter.is_some()
-                                && last.numerator.is_none() =>
-                        {
-                            last.numerator = Some(numerator);
-                            last.denominator_pow2 = Some(denominator_pow2);
-                            true
-                        }
-                        _ => false,
-                    };
-                    if !attached {
+                TrackEventKind::SysEx(_) => {
+                    aux_events.record(MidiAuxEventKind::SysEx);
+                }
+                TrackEventKind::Escape(_) => {
+                    aux_events.record(MidiAuxEventKind::Escape);
+                }
+                TrackEventKind::Meta(meta) => match meta {
+                    // ⭐ `#317`：歌词的**唯一**读取点。严格 UTF-8（⛔ `from_utf8_lossy`）：
+                    // 解不出来的字节**不冒充**文本，只让计数加一。
+                    MetaMessage::Lyric(bytes) => match std::str::from_utf8(bytes) {
+                        Ok("") => empty_lyrics += 1,
+                        Ok(text) => lyrics.push(ParsedLyric {
+                            tick,
+                            text: text.to_owned(),
+                        }),
+                        Err(_) => non_utf8_lyrics += 1,
+                    },
+                    MetaMessage::Tempo(mpqn) => {
+                        aux_events.record(MidiAuxEventKind::Tempo);
                         tempos.push(MidiTempo {
                             tick,
-                            microseconds_per_quarter: None,
-                            numerator: Some(numerator),
-                            denominator_pow2: Some(denominator_pow2),
+                            microseconds_per_quarter: Some(mpqn.as_int()),
+                            numerator: None,
+                            denominator_pow2: None,
                         });
                     }
-                }
-                _ => {}
+                    MetaMessage::TimeSignature(numerator, denominator_pow2, _clocks, _notes) => {
+                        aux_events.record(MidiAuxEventKind::TimeSignature);
+                        // 配对按**出现顺序**, 且只看**紧邻的前一条**记录:
+                        // 拍号挂到紧邻的那条同 tick、有 tempo、还没配拍号的记录上。
+                        // 没有这样的前驱 ⇒ 这条拍号**如实**落成"只有拍号"的记录,
+                        // **不**凭空合成 tempo (R5 修掉的正是合成)。
+                        let attached = match tempos.last_mut() {
+                            Some(last)
+                                if last.tick == tick
+                                    && last.microseconds_per_quarter.is_some()
+                                    && last.numerator.is_none() =>
+                            {
+                                last.numerator = Some(numerator);
+                                last.denominator_pow2 = Some(denominator_pow2);
+                                true
+                            }
+                            _ => false,
+                        };
+                        if !attached {
+                            tempos.push(MidiTempo {
+                                tick,
+                                microseconds_per_quarter: None,
+                                numerator: Some(numerator),
+                                denominator_pow2: Some(denominator_pow2),
+                            });
+                        }
+                    }
+                    // `FF 2F 00` 是结构终止符：没有载荷可丢，⛔ 不进 aux 计数。
+                    MetaMessage::EndOfTrack => {}
+                    MetaMessage::TrackNumber(_) => {
+                        aux_events.record(MidiAuxEventKind::TrackNumber);
+                    }
+                    MetaMessage::Text(_) => {
+                        aux_events.record(MidiAuxEventKind::Text);
+                    }
+                    MetaMessage::Copyright(_) => {
+                        aux_events.record(MidiAuxEventKind::Copyright);
+                    }
+                    MetaMessage::TrackName(_) => {
+                        aux_events.record(MidiAuxEventKind::TrackName);
+                    }
+                    MetaMessage::InstrumentName(_) => {
+                        aux_events.record(MidiAuxEventKind::InstrumentName);
+                    }
+                    MetaMessage::Marker(_) => {
+                        aux_events.record(MidiAuxEventKind::Marker);
+                    }
+                    MetaMessage::CuePoint(_) => {
+                        aux_events.record(MidiAuxEventKind::CuePoint);
+                    }
+                    MetaMessage::ProgramName(_) => {
+                        aux_events.record(MidiAuxEventKind::ProgramName);
+                    }
+                    MetaMessage::DeviceName(_) => {
+                        aux_events.record(MidiAuxEventKind::DeviceName);
+                    }
+                    MetaMessage::MidiChannel(_) => {
+                        aux_events.record(MidiAuxEventKind::MidiChannelPrefix);
+                    }
+                    MetaMessage::MidiPort(_) => {
+                        aux_events.record(MidiAuxEventKind::MidiPort);
+                    }
+                    MetaMessage::SmpteOffset(_) => {
+                        aux_events.record(MidiAuxEventKind::SmpteOffset);
+                    }
+                    MetaMessage::KeySignature(..) => {
+                        aux_events.record(MidiAuxEventKind::KeySignature);
+                    }
+                    MetaMessage::SequencerSpecific(_) => {
+                        aux_events.record(MidiAuxEventKind::SequencerSpecific);
+                    }
+                    MetaMessage::Unknown(..) => {
+                        aux_events.record(MidiAuxEventKind::UnknownMeta);
+                    }
+                },
             }
         }
         if let Some(&(_, key, start_tick, _)) = open.first() {
@@ -981,6 +1225,8 @@ pub fn parse_smf(bytes: &[u8]) -> Result<ParsedMidi, MidiError> {
     Ok(ParsedMidi {
         format,
         ppq,
+        tracks: smf.tracks.len(),
+        aux_events,
         tempos,
         notes,
         lyrics,
@@ -1182,6 +1428,143 @@ mod tests {
         assert!(invalid.lyrics.is_empty(), "⛔ lossy：不产生替换文本");
         assert_eq!((invalid.empty_lyrics, invalid.non_utf8_lyrics), (0, 1));
         assert_eq!(invalid.notes.len(), 1, "音符照常回读");
+    }
+
+    /// ⭐ `#318`：解析器把**除音符/歌词外的每一类事件**各数一遍，且**不漏不重**
+    ///（24 个具名 kind；`EndOfTrack` 是结构终止符，⛔ 不数）。
+    ///
+    /// 字节**手工拼**（⛔ 借导出器）：导出器只写少数几类，用它构造会让"没写"与
+    /// "没读"混在一起。控制臂是"同一条夹具有 3 条 `MTrk`、5 类出现两次"：计数若
+    /// 塌成 0 或只数第一轨，下面每一条都会红。
+    #[test]
+    fn parser_counts_every_aux_event_kind_once_per_event() {
+        fn vlq(mut value: u32) -> Vec<u8> {
+            let mut out = vec![u8::try_from(value & 0x7F).expect("7 bit")];
+            value >>= 7;
+            while value > 0 {
+                out.push(0x80 | u8::try_from(value & 0x7F).expect("7 bit"));
+                value >>= 7;
+            }
+            out.reverse();
+            out
+        }
+        fn meta(kind: u8, payload: &[u8]) -> Vec<u8> {
+            let mut out = vec![0xFF, kind, u8::try_from(payload.len()).expect("短负载")];
+            out.extend_from_slice(payload);
+            out
+        }
+        fn track(events: &[(u32, Vec<u8>)]) -> Vec<u8> {
+            let mut body = Vec::new();
+            for (delta, event) in events {
+                body.extend(vlq(*delta));
+                body.extend_from_slice(event);
+            }
+            let mut out = b"MTrk".to_vec();
+            out.extend_from_slice(&u32::try_from(body.len()).expect("短轨").to_be_bytes());
+            out.extend(body);
+            out
+        }
+
+        let conductor = track(&[
+            (0, meta(0x00, &[0x00, 0x01])),          // TrackNumber
+            (0, meta(0x03, b"Conductor")),           // TrackName
+            (0, meta(0x51, &[0x03, 0xD0, 0x90])),    // Tempo 250000
+            (0, meta(0x58, &[6, 3, 24, 8])),         // TimeSignature 6/8
+            (0, meta(0x59, &[2, 0])),                // KeySignature 2♯ major
+            (0, meta(0x06, b"Verse")),               // Marker
+            (0, meta(0x01, b"text")),                // Text
+            (0, meta(0x02, b"(c)")),                 // Copyright
+            (0, meta(0x04, b"Piano")),               // InstrumentName
+            (0, meta(0x07, b"Cue")),                 // CuePoint
+            (0, meta(0x08, b"P1")),                  // ProgramName
+            (0, meta(0x09, b"Dev")),                 // DeviceName
+            (0, meta(0x20, &[1])),                   // MidiChannelPrefix
+            (0, meta(0x21, &[0])),                   // MidiPort
+            (0, meta(0x54, &[0; 5])),                // SmpteOffset
+            (0, meta(0x7F, &[1, 2, 3])),             // SequencerSpecific
+            (0, meta(0x60, &[0xAB])),                // Unknown meta id
+            (0, vec![0xF0, 0x03, 0x01, 0x02, 0xF7]), // SysEx
+            (0, vec![0xF7, 0x02, 0x03, 0x04]),       // Escape
+            (0, vec![0xB0, 7, 100]),                 // ControlChange
+            (0, vec![0xC0, 33]),                     // ProgramChange
+            (0, vec![0xD0, 40]),                     // ChannelAftertouch
+            (0, vec![0xA0, 60, 33]),                 // PolyAftertouch
+            (0, vec![0xE0, 0x00, 0x40]),             // PitchBend 8192
+            (480, meta(0x51, &[0x07, 0xA1, 0x20])),  // Tempo 500000
+            (1440, meta(0x06, b"Chorus")),           // Marker (2nd)
+            (0, meta(0x58, &[3, 2, 24, 8])),         // TimeSignature 3/4 (2nd)
+            (0, meta(0x2F, &[])),                    // EndOfTrack
+        ]);
+        let lead = track(&[
+            (0, meta(0x03, b"Lead")), // TrackName (2nd)
+            (0, vec![0x90, 60, 100]),
+            (480, vec![0x80, 60, 64]),
+            (0, meta(0x05, b"re")), // Lyric（不进 aux）
+            (0, meta(0x2F, &[])),
+        ]);
+        let bass = track(&[
+            (0, meta(0x03, b"Bass")), // TrackName (3rd)
+            (0, vec![0x91, 48, 110]),
+            (960, vec![0x81, 48, 8]),
+            (0, meta(0x2F, &[])),
+        ]);
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(b"MThd");
+        bytes.extend_from_slice(&6u32.to_be_bytes());
+        bytes.extend_from_slice(&1u16.to_be_bytes()); // format 1
+        bytes.extend_from_slice(&3u16.to_be_bytes()); // 3 tracks
+        bytes.extend_from_slice(&960u16.to_be_bytes());
+        bytes.extend_from_slice(&conductor);
+        bytes.extend_from_slice(&lead);
+        bytes.extend_from_slice(&bass);
+
+        let parsed = parse_smf(&bytes).expect("自造 SMF 必须可解析");
+        assert_eq!(parsed.format, MidiFormat::Parallel);
+        assert_eq!(parsed.tracks, 3, "三条 MTrk 必须逐条数进来");
+        assert_eq!(parsed.notes.len(), 2, "音符照常回读（不受计数影响）");
+        assert_eq!(parsed.lyrics.len(), 1, "歌词照常回读（不进 aux）");
+        assert_eq!(parsed.aux_events.count(MidiAuxEventKind::Tempo), 2);
+        assert_eq!(parsed.aux_events.count(MidiAuxEventKind::TimeSignature), 2);
+        assert_eq!(parsed.aux_events.count(MidiAuxEventKind::TrackName), 3);
+        assert_eq!(parsed.aux_events.count(MidiAuxEventKind::Marker), 2);
+        let expected: [(MidiAuxEventKind, usize); MidiAuxEventKind::COUNT] = [
+            (MidiAuxEventKind::Tempo, 2),
+            (MidiAuxEventKind::TimeSignature, 2),
+            (MidiAuxEventKind::TrackName, 3),
+            (MidiAuxEventKind::Marker, 2),
+            (MidiAuxEventKind::KeySignature, 1),
+            (MidiAuxEventKind::ControlChange, 1),
+            (MidiAuxEventKind::ProgramChange, 1),
+            (MidiAuxEventKind::PitchBend, 1),
+            (MidiAuxEventKind::PolyAftertouch, 1),
+            (MidiAuxEventKind::ChannelAftertouch, 1),
+            (MidiAuxEventKind::SysEx, 1),
+            (MidiAuxEventKind::Escape, 1),
+            (MidiAuxEventKind::Text, 1),
+            (MidiAuxEventKind::Copyright, 1),
+            (MidiAuxEventKind::InstrumentName, 1),
+            (MidiAuxEventKind::TrackNumber, 1),
+            (MidiAuxEventKind::CuePoint, 1),
+            (MidiAuxEventKind::ProgramName, 1),
+            (MidiAuxEventKind::DeviceName, 1),
+            (MidiAuxEventKind::MidiChannelPrefix, 1),
+            (MidiAuxEventKind::MidiPort, 1),
+            (MidiAuxEventKind::SmpteOffset, 1),
+            (MidiAuxEventKind::SequencerSpecific, 1),
+            (MidiAuxEventKind::UnknownMeta, 1),
+        ];
+        let mut total = 0usize;
+        for (kind, want) in expected {
+            assert_eq!(
+                parsed.aux_events.count(kind),
+                want,
+                "{} 的 read 条数（控制臂：源文件里确实有 {want} 条）",
+                kind.key()
+            );
+            total += want;
+        }
+        assert_eq!(parsed.aux_events.total(), total, "总数 = 逐类之和");
+        assert_eq!(total, 29, "夹具的 aux 事件总数口径：29 条");
     }
 
     /// ⭐ `#312` 判据 2: `None` / `Some("")` 都**不写**歌词事件（空文本没有内容），
@@ -2255,6 +2638,8 @@ mod tests {
                 ParsedMidi {
                     format: MidiFormat::Parallel,
                     ppq: 480,
+                    tracks: 0,
+                    aux_events: MidiAuxEventCounts::default(),
                     tempos: Vec::new(),
                     notes: Vec::new(),
                     lyrics: Vec::new(),
@@ -2262,8 +2647,10 @@ mod tests {
                     empty_lyrics: 0,
                 }
             ),
-            "ParsedMidi { format: Parallel, ppq: 480, tempos: [], notes: [], lyrics: [], \
-             non_utf8_lyrics: 0, empty_lyrics: 0 }"
+            "ParsedMidi { format: Parallel, ppq: 480, tracks: 0, aux_events: \
+             MidiAuxEventCounts { counts: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, \
+             0, 0, 0, 0, 0, 0, 0] }, tempos: [], notes: [], lyrics: [], non_utf8_lyrics: 0, \
+             empty_lyrics: 0 }"
         );
         assert_eq!(
             format!(

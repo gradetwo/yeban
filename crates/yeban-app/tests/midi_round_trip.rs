@@ -55,7 +55,9 @@ use std::time::{Duration, Instant};
 
 use yeban_app::bridge::demo_project;
 use yeban_app::open::open_project_file;
-use yeban_midi::midi::{MidiFormat, ParsedLyric, ParsedMidi, parse_smf, track_chunks};
+use yeban_midi::midi::{
+    MidiAuxEventKind, MidiFormat, ParsedLyric, ParsedMidi, parse_smf, track_chunks,
+};
 use yeban_model::container::write_project_container;
 use yeban_model::ids::AssetHash;
 use yeban_model::{ClipContent, ClipPlacement, ClipPoolEntry, EntityId, LoopConfig, MidiNote};
@@ -1030,6 +1032,339 @@ fn the_import_ignores_the_files_conductor_metadata() {
         p4.tempos[0].denominator_pow2,
         p4.tempos[0].microseconds_per_quarter,
         p4.notes.len()
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// 手工拼一份**含全部 24 类 aux 事件**的 SMF：format 1、3 轨、960 PPQ、
+/// 5 音符、2 歌词（1 唯一归属 + 1 因跨轨同 tick 双起点而不归属）。
+///
+/// ⛔ 借导出器构造：导出器只写 `FF 03` / `FF 51` / `FF 58` / `FF 05` 四类，
+/// 用它会让"没写"与"没读"混在一起（本判据要的是后者）。
+fn all_aux_events_smf() -> Vec<u8> {
+    fn vlq(mut value: u32) -> Vec<u8> {
+        let mut out = vec![u8::try_from(value & 0x7F).expect("7 bit")];
+        value >>= 7;
+        while value > 0 {
+            out.push(0x80 | u8::try_from(value & 0x7F).expect("7 bit"));
+            value >>= 7;
+        }
+        out.reverse();
+        out
+    }
+    fn meta(kind: u8, payload: &[u8]) -> Vec<u8> {
+        let mut out = vec![0xFF, kind, u8::try_from(payload.len()).expect("短负载")];
+        out.extend_from_slice(payload);
+        out
+    }
+    fn track(events: &[(u32, Vec<u8>)]) -> Vec<u8> {
+        let mut body = Vec::new();
+        for (delta, event) in events {
+            body.extend(vlq(*delta));
+            body.extend_from_slice(event);
+        }
+        let mut out = b"MTrk".to_vec();
+        out.extend_from_slice(&u32::try_from(body.len()).expect("短轨").to_be_bytes());
+        out.extend(body);
+        out
+    }
+
+    let conductor = track(&[
+        (0, meta(0x00, &[0x00, 0x01])),          // TrackNumber
+        (0, meta(0x03, b"Conductor")),           // TrackName
+        (0, meta(0x51, &[0x03, 0xD0, 0x90])),    // Tempo 250000（240 BPM）
+        (0, meta(0x58, &[6, 3, 24, 8])),         // TimeSignature 6/8
+        (0, meta(0x59, &[2, 0])),                // KeySignature 2♯ major
+        (0, meta(0x06, b"Verse")),               // Marker
+        (0, meta(0x05, b"la")),                  // Lyric（tick 0 有 2 颗起点音符 ⇒ 不归属）
+        (0, meta(0x01, b"a text meta")),         // Text
+        (0, meta(0x02, b"(c) 2026")),            // Copyright
+        (0, meta(0x04, b"Piano")),               // InstrumentName
+        (0, meta(0x07, b"Cue")),                 // CuePoint
+        (0, meta(0x08, b"P1")),                  // ProgramName
+        (0, meta(0x09, b"Dev")),                 // DeviceName
+        (0, meta(0x20, &[1])),                   // MidiChannelPrefix
+        (0, meta(0x21, &[0])),                   // MidiPort
+        (0, meta(0x54, &[0; 5])),                // SmpteOffset
+        (0, meta(0x7F, &[1, 2, 3])),             // SequencerSpecific
+        (0, meta(0x60, &[0xAB])),                // Unknown meta id
+        (0, vec![0xF0, 0x03, 0x01, 0x02, 0xF7]), // SysEx
+        (0, vec![0xF7, 0x02, 0x03, 0x04]),       // Escape
+        (480, vec![0xE0, 0x00, 0x40]),           // PitchBend 8192
+        (0, vec![0xB0, 7, 100]),                 // ControlChange
+        (0, vec![0xD0, 40]),                     // ChannelAftertouch
+        (0, vec![0xA0, 60, 33]),                 // PolyAftertouch
+        (0, vec![0xC0, 33]),                     // ProgramChange
+        (480, meta(0x51, &[0x07, 0xA1, 0x20])),  // Tempo 500000（120 BPM）
+        (1440, meta(0x06, b"Chorus")),           // Marker（第 2 条）
+        (0, meta(0x58, &[3, 2, 24, 8])),         // TimeSignature 3/4（第 2 条）
+        (0, meta(0x2F, &[])),                    // EndOfTrack
+    ]);
+    let lead = track(&[
+        (0, meta(0x03, b"Lead")), // TrackName
+        (0, vec![0x90, 60, 100]),
+        (480, vec![0x80, 60, 64]),
+        (0, vec![0x90, 64, 90]),
+        (0, meta(0x05, b"re")), // tick 480 恰 1 颗起点音符 ⇒ 唯一归属
+        (480, vec![0x80, 64, 32]),
+        (0, vec![0x90, 67, 80]),
+        (480, vec![0x80, 67, 16]),
+        (0, meta(0x2F, &[])),
+    ]);
+    let bass = track(&[
+        (0, meta(0x03, b"Bass")), // TrackName
+        (0, vec![0x91, 48, 110]),
+        (960, vec![0x81, 48, 8]),
+        (0, vec![0x91, 52, 100]),
+        (960, vec![0x81, 52, 4]),
+        (0, meta(0x2F, &[])),
+    ]);
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(b"MThd");
+    bytes.extend_from_slice(&6u32.to_be_bytes());
+    bytes.extend_from_slice(&1u16.to_be_bytes()); // format 1
+    bytes.extend_from_slice(&3u16.to_be_bytes()); // 3 tracks
+    bytes.extend_from_slice(&960u16.to_be_bytes());
+    bytes.extend_from_slice(&conductor);
+    bytes.extend_from_slice(&lead);
+    bytes.extend_from_slice(&bass);
+    bytes
+}
+
+/// ⭐ `#318` **端到端主判据**：导入一份含**全部 24 类 aux 事件**的文件 ⇒
+/// `imported-midi:` 行逐类说出 `read` / `dropped`，而重导出的文件**不再有**那些事件。
+///
+/// 判据分三层：
+/// 1. **控制臂**：先按字节独立数一遍**源文件**（⛔ 读解析器），证明夹具真的有那些事件；
+/// 2. **报告**：逐类 `read == 期望` 且 `dropped == read`（今天无任何真支持）；
+/// 3. **后果**：重导出里 `FF 59` / `FF 06` / CC / 弯音 / 触后 / PC / SysEx / Escape
+///    逐条为 0；`tempo` / 拍号是**工程的** 120 BPM / 4/4；`MTrk` 从 3 变 1 条音符轨；
+///    音符通道从 {0,1} 变 {0}。⛔ 只报数不看后果 = 读数可能量的是别的东西。
+#[test]
+fn the_import_reports_every_aux_event_kind_as_read_and_dropped() {
+    let dir = scratch_dir("aux-readout");
+    let bytes = all_aux_events_smf();
+    let mid = dir.join("all-aux.mid");
+    std::fs::write(&mid, &bytes).expect("写夹具");
+
+    // ── ① 控制臂：独立按字节数源文件（单位 = 子序列出现次数） ──
+    for (needle, expected, label) in [
+        (vec![0xFF, 0x00], 1, "FF 00 track number"),
+        (vec![0xFF, 0x01], 1, "FF 01 text"),
+        (vec![0xFF, 0x02], 1, "FF 02 copyright"),
+        (vec![0xFF, 0x03], 3, "FF 03 track name"),
+        (vec![0xFF, 0x04], 1, "FF 04 instrument name"),
+        (vec![0xFF, 0x05], 2, "FF 05 lyric"),
+        (vec![0xFF, 0x06], 2, "FF 06 marker"),
+        (vec![0xFF, 0x07], 1, "FF 07 cue point"),
+        (vec![0xFF, 0x08], 1, "FF 08 program name"),
+        (vec![0xFF, 0x09], 1, "FF 09 device name"),
+        (vec![0xFF, 0x20], 1, "FF 20 midi channel prefix"),
+        (vec![0xFF, 0x21], 1, "FF 21 midi port"),
+        (vec![0xFF, 0x51], 2, "FF 51 tempo"),
+        (vec![0xFF, 0x54], 1, "FF 54 smpte offset"),
+        (vec![0xFF, 0x58], 2, "FF 58 time signature"),
+        (vec![0xFF, 0x59], 1, "FF 59 key signature"),
+        (vec![0xFF, 0x60], 1, "FF 60 unknown meta"),
+        (vec![0xFF, 0x7F], 1, "FF 7F sequencer specific"),
+        (vec![0xB0, 7, 100], 1, "CC"),
+        (vec![0xC0, 33], 1, "program change"),
+        (vec![0xD0, 40], 1, "channel aftertouch"),
+        (vec![0xA0, 60, 33], 1, "poly aftertouch"),
+        (vec![0xE0, 0x00, 0x40], 1, "pitch bend"),
+        (vec![0xF0, 0x03, 0x01, 0x02, 0xF7], 1, "SysEx"),
+        (vec![0xF7, 0x02, 0x03, 0x04], 1, "escape"),
+    ] {
+        assert_eq!(
+            occurrences(&bytes, &needle),
+            expected,
+            "控制臂：源文件里 {label} 必须恰 {expected} 次（⛔ 不靠解析器）"
+        );
+    }
+
+    // ── ② 导入 + 重导出 ──
+    let out = dir.join("out.mid");
+    let saved = dir.join("out.yeban");
+    let run = invoke(&[
+        "--project-sample",
+        "default",
+        "--import-midi",
+        mid.to_str().expect("utf8"),
+        "--export-midi",
+        out.to_str().expect("utf8"),
+        "--save-as",
+        saved.to_str().expect("utf8"),
+    ]);
+    assert_eq!(run.code, 0, "导入 + 重导出必须成功; stderr={}", run.stderr);
+    let line = line_with(&run.stdout, "imported-midi:").expect("必须有 imported-midi 行");
+    for (key, expected) in [
+        ("notes", "5"),
+        ("lyrics", "2"),
+        ("attached", "1"),
+        ("dropped", "1"),
+        ("non-utf8", "0"),
+        ("empty", "0"),
+        ("format", "1"),
+        ("file-tracks", "3"),
+        ("track-partitions-dropped", "2"),
+        ("channels", "2"),
+        ("note-channel-read", "5"),
+        ("note-channel-dropped", "5"),
+        ("note-off-velocity-read", "5"),
+        ("note-off-velocity-dropped", "5"),
+    ] {
+        assert_eq!(
+            field(line, key).as_deref(),
+            Some(expected),
+            "报告字段 {key}: {line}"
+        );
+    }
+
+    // ── ③ 逐类 read/dropped（24 类，一个不缺） ──
+    let expected: [(MidiAuxEventKind, usize); MidiAuxEventKind::COUNT] = [
+        (MidiAuxEventKind::Tempo, 2),
+        (MidiAuxEventKind::TimeSignature, 2),
+        (MidiAuxEventKind::TrackName, 3),
+        (MidiAuxEventKind::Marker, 2),
+        (MidiAuxEventKind::KeySignature, 1),
+        (MidiAuxEventKind::ControlChange, 1),
+        (MidiAuxEventKind::ProgramChange, 1),
+        (MidiAuxEventKind::PitchBend, 1),
+        (MidiAuxEventKind::PolyAftertouch, 1),
+        (MidiAuxEventKind::ChannelAftertouch, 1),
+        (MidiAuxEventKind::SysEx, 1),
+        (MidiAuxEventKind::Escape, 1),
+        (MidiAuxEventKind::Text, 1),
+        (MidiAuxEventKind::Copyright, 1),
+        (MidiAuxEventKind::InstrumentName, 1),
+        (MidiAuxEventKind::TrackNumber, 1),
+        (MidiAuxEventKind::CuePoint, 1),
+        (MidiAuxEventKind::ProgramName, 1),
+        (MidiAuxEventKind::DeviceName, 1),
+        (MidiAuxEventKind::MidiChannelPrefix, 1),
+        (MidiAuxEventKind::MidiPort, 1),
+        (MidiAuxEventKind::SmpteOffset, 1),
+        (MidiAuxEventKind::SequencerSpecific, 1),
+        (MidiAuxEventKind::UnknownMeta, 1),
+    ];
+    for (kind, want) in expected {
+        let key = kind.key();
+        let read_key = format!("{key}-read");
+        let dropped_key = format!("{key}-dropped");
+        let want_text = want.to_string();
+        assert_eq!(
+            field(line, &read_key).as_deref(),
+            Some(want_text.as_str()),
+            "{} 的 read: {line}",
+            kind.key()
+        );
+        assert_eq!(
+            field(line, &dropped_key).as_deref(),
+            Some(want_text.as_str()),
+            "{} 的 dropped（今天必须 == read）: {line}",
+            kind.key()
+        );
+    }
+
+    // ── ④ 后果：重导出不再带那些事件，conductor / 轨分区 / 通道被工程的取代 ──
+    let out_bytes = std::fs::read(&out).expect("读重导出");
+    for (needle, label) in [
+        (vec![0xFF, 0x00], "track number"),
+        (vec![0xFF, 0x06], "marker"),
+        (vec![0xFF, 0x59], "key signature"),
+        (vec![0xFF, 0x01], "text"),
+        (vec![0xFF, 0x02], "copyright"),
+        (vec![0xFF, 0x04], "instrument name"),
+        (vec![0xFF, 0x07], "cue point"),
+        (vec![0xFF, 0x08], "program name"),
+        (vec![0xFF, 0x09], "device name"),
+        (vec![0xFF, 0x20], "midi channel prefix"),
+        (vec![0xFF, 0x21], "midi port"),
+        (vec![0xFF, 0x54], "smpte offset"),
+        (vec![0xFF, 0x60], "unknown meta"),
+        (vec![0xFF, 0x7F], "sequencer specific"),
+        // ⚠ 不用单字节 status：`MThd` 的 PPQ 960 = `03 C0` 会让 `C0` 假阳性。
+        (vec![0xB0, 7, 100], "CC"),
+        (vec![0xC0, 33], "program change"),
+        (vec![0xD0, 40], "channel aftertouch"),
+        (vec![0xA0, 60, 33], "poly aftertouch"),
+        (vec![0xE0, 0x00, 0x40], "pitch bend"),
+        (vec![0xF0, 0x03, 0x01, 0x02, 0xF7], "SysEx"),
+        (vec![0xF7, 0x02, 0x03, 0x04], "escape"),
+    ] {
+        assert_eq!(
+            occurrences(&out_bytes, &needle),
+            0,
+            "重导出不许再有 {label}（源文件里有，导入没消费）"
+        );
+    }
+    assert_eq!(
+        occurrences(&out_bytes, &[0xFF, 0x51]),
+        1,
+        "只有工程的一条 tempo"
+    );
+    assert_eq!(
+        occurrences(&out_bytes, &[0xFF, 0x58]),
+        1,
+        "只有工程的一条拍号"
+    );
+    assert_eq!(
+        occurrences(&out_bytes, &[0xFF, 0x05]),
+        1,
+        "只保留唯一归属的那条词"
+    );
+    assert_eq!(
+        occurrences(&out_bytes, &[0xFF, 0x03]),
+        2,
+        "conductor + 工程的音符轨名"
+    );
+
+    let exported = parsed(&out_bytes);
+    assert_eq!(
+        exported.tracks, 2,
+        "conductor + 1 条音符轨（源的 3 条被合并）"
+    );
+    assert_eq!(exported.notes.len(), 11, "工程原有 6 颗 + 文件里的 5 颗");
+    assert_eq!(
+        exported.tempos[0].microseconds_per_quarter,
+        Some(500_000),
+        "120 BPM = 工程的 bpm（文件的 250000/500000 都被忽略）"
+    );
+    assert_eq!(
+        (
+            exported.tempos[0].numerator,
+            exported.tempos[0].denominator_pow2
+        ),
+        (Some(4), Some(2)),
+        "4/4 = 工程的拍号（文件的 6/8、3/4 都被忽略）"
+    );
+    assert!(
+        exported.notes.iter().all(|note| note.channel == 0),
+        "通道 {{0,1}} ⇒ 全部 0（模型没有 channel 字段）"
+    );
+    assert_eq!(exported.lyrics.len(), 1, "只保留 tick 480 的唯一归属词");
+    assert_eq!(exported.lyrics[0].text, "re");
+    assert_eq!(
+        exported.aux_events.count(MidiAuxEventKind::Tempo),
+        1,
+        "重导出只剩工程 conductor 的一条 tempo"
+    );
+    assert_eq!(
+        exported.aux_events.count(MidiAuxEventKind::TimeSignature),
+        1
+    );
+    assert_eq!(exported.aux_events.count(MidiAuxEventKind::TrackName), 2);
+    assert_eq!(
+        exported.aux_events.total(),
+        4,
+        "重导出的 aux 事件只有 tempo 1 + 拍号 1 + 轨名 2"
+    );
+
+    eprintln!(
+        "[midi-round-trip/aux-readout] 源 316 B：24 类 aux（29 条）+ 通道 {{0,1}} + 3 轨 ⇒ \
+         报告逐类 read/dropped；重导出弃掉全部源 aux、合并成 {} 条 MTrk、通道 {{0}}",
+        exported.tracks
     );
 
     let _ = std::fs::remove_dir_all(&dir);

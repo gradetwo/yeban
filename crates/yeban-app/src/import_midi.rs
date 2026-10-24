@@ -30,10 +30,11 @@
 //!
 //! ⚠ 本节是**读数**，⛔ 不是评判：每一条都由 `grep` / 类型可从本文件的实现复算。
 //!
-//! 1. **只消费 [`ParsedMidi::notes`] / [`ParsedMidi::lyrics`] / [`ParsedMidi::ppq`]** ——
-//!    生产代码里出现的 `parsed.*` 字段**只有**这三个（见 [`plan_midi_import`]）。⭐ 由此可复算：
-//!    `grep -n 'parsed\.' crates/yeban-app/src/import_midi.rs` 的结果里⛔ 不出现
-//!    `parsed.tempos` / `parsed.format`。
+//! 1. **音符映射只消费 [`ParsedMidi::notes`] / [`ParsedMidi::lyrics`] / [`ParsedMidi::ppq`]**；
+//!    ⭐ `#318` 的丢失读数另**只读** `format` / `tracks` / `aux_events`（⛔ 不参与映射）。
+//!    由此可复算：`grep -n 'parsed\.' crates/yeban-app/src/import_midi.rs` 里
+//!    ⛔ 不出现 `parsed.tempos`（tempo/拍号是作为 `aux_events` 的计数被报成**丢**，
+//!    ⛔ 不是被消费）。
 //! 2. **tempo map 不参与映射**：`ParsedMidi::tempos`（[`yeban_midi::midi::MidiTempo`]）
 //!    在本文件的**生产**代码里⛔ 一处都不出现；它只作为**判据夹具**出现在 `#[cfg(test)]` 里。
 //!    ⇒ 音符的**绝对 tick**（以及音符之间的相对 tick）按 `ppq` 换算后**原样**落到工程上，
@@ -49,11 +50,19 @@
 //!    ⛔ 认"正在发声"的音符。空 `FF 05` 与非 UTF-8 分别计入 `empty` / `non_utf8`。
 //! 6. **支持的输入范围**：⛔ 本文件不复述"支持哪些格式" —— 那是
 //!    [`yeban_midi::midi::parse_smf`] 及其错误变体的事（⭐ 指路，⛔ 不手抄）。
+//! 7. **其余事件只报读数、⛔ 不新增支持**（⭐ `#318`）：[`ParsedMidi::aux_events`] 把
+//!    24 类具名事件逐一计数（[`MidiAuxEventKind`]），本文件把它们**全部**报成
+//!    `dropped`（今天 `dropped == read`）。报告字段：`format=` / `file-tracks=` /
+//!    `track-partitions-dropped=` / `channels=`（上下文，总是打印）＋ 每类
+//!    `<kind>-read=N <kind>-dropped=N`（仅 `read>0`）＋ `note-channel-*` /
+//!    `note-off-velocity-*`（按音符计）。
+//!    ⚠ **"值一样"不等于"没丢"**：`tempo` 的数值即使恰好等于工程 `bpm`，它也仍是丢
+//!    （没被消费）。支持某一类时把它的 `dropped` 改成 0，并**改掉**判据；⛔ 不许删判据。
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
-use yeban_midi::midi::{ParsedMidi, parse_smf};
+use yeban_midi::midi::{MidiAuxEventKind, MidiFormat, ParsedMidi, parse_smf};
 use yeban_model::{EntityId, MidiNote, Op, OpOrigin, YebanProjectV1};
 
 use crate::undo::UndoPort;
@@ -100,6 +109,109 @@ impl MidiLyricCounts {
     }
 }
 
+/// ⭐ `#318`：一类丢失的**两列读数**。
+///
+/// `read` 是文件里读到的条数（判据另按字节独立数一遍做控制臂）；
+/// `dropped` 是导入路径**没有**落进工程的条数。今天每一类都 `dropped == read`。
+///
+/// ⚠ **"值一样"不等于"没丢"**：`tempo` 的数值即使恰好等于工程 `bpm`，它也**仍是丢**
+/// —— 判据是"**有没有被消费**"，⛔ 不是"数值一不一样"。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct MidiLossCount {
+    /// 文件里读到的条数。
+    pub read: usize,
+    /// 导入路径没有落进工程的条数。
+    pub dropped: usize,
+}
+
+impl MidiLossCount {
+    /// 两列的自然约束：`dropped <= read`。
+    #[must_use]
+    pub const fn is_consistent(self) -> bool {
+        self.dropped <= self.read
+    }
+
+    /// 今天**全损**：读到多少就丢多少。
+    ///
+    /// ⚠ 这是一条**会过期**的判据：支持某一类时，必须把那一类的 `dropped` 改成
+    /// `<= read` 的真值（通常 0），并**改掉** `dropped == read` 的断言；
+    /// ⛔ 不许把判据删掉 —— 它过期时应当自己说出来。
+    #[must_use]
+    pub const fn is_total_loss(self) -> bool {
+        self.dropped == self.read
+    }
+}
+
+/// ⭐ `#318`：一次导入的**其余丢失读数**（音符 / 歌词以外）。
+///
+/// ## 今天为什么每一项都是"丢"（⛔ 不是"已处理"）
+///
+/// - `tempo` / 拍号：工程的 `bpm` / `time_signature` 是唯一权威 ⇒ 文件里的值
+///   **不被消费**。⚠ **值恰好等于工程值也仍是丢**：判据是"有没有被消费"，
+///   ⛔ 不是"数值一不一样"。
+/// - `FF 03` 轨名 / `FF 06` marker / `FF 59` 调号 / CC / 弯音 / 触后 /
+///   Program Change / SysEx / Escape / 其余 meta：模型或导入映射没有落点 ⇒ 全丢。
+/// - 轨分区：全部音符进**同一个**音轨与同一个片段 ⇒ 文件 N 条 `MTrk` 只剩 1 个落点，
+///   `N-1` 个分区丢失。
+/// - 音符通道：[`MidiNote`] 没有 channel 字段 ⇒ 每颗音符的通道值都丢
+///   （只作为解析排序键残留）。
+/// - 释放力度：`NoteOff` 的 velocity 被解析器忽略 ⇒ 每颗被关闭音符都丢。
+///
+/// `format` / `file_tracks` / `distinct_channels` 是**上下文读数**（⛔ 损失），
+/// 但报告**总是**打印它们（值为 0 也不是"没有这个读数"）。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MidiImportLosses {
+    /// 文件格式（读数；`format 2` / SMPTE 在解析层已**响亮拒绝**）。
+    pub format: MidiFormat,
+    /// 文件里的 `MTrk` 条数。
+    pub file_tracks: usize,
+    /// 被合并进单目标的轨分区条数 = `file_tracks - 1`。
+    pub track_partitions_dropped: usize,
+    /// 音符里出现过的**不同**通道值个数（读数，⛔ 不是损失）。
+    pub distinct_channels: usize,
+    /// 每颗音符的通道值（read = 音符数）。
+    pub note_channel_values: MidiLossCount,
+    /// 每颗被关闭音符的释放力度（read = 音符数）。
+    pub note_off_velocity_values: MidiLossCount,
+    /// 24 类 aux 事件，逐类 read/dropped（今天 `dropped == read`）。
+    pub aux_events: BTreeMap<MidiAuxEventKind, MidiLossCount>,
+}
+
+impl MidiImportLosses {
+    /// 自检：每条 `dropped <= read`；`track_partitions_dropped + 1 == file_tracks`。
+    #[must_use]
+    pub fn is_consistent(&self) -> bool {
+        self.file_tracks >= 1
+            && self.track_partitions_dropped + 1 == self.file_tracks
+            && self.note_channel_values.is_consistent()
+            && self.note_off_velocity_values.is_consistent()
+            && self.aux_events.values().all(|count| count.is_consistent())
+    }
+
+    /// 今天**没有一类**被支持 ⇒ 每条 `dropped == read`（含音符通道 / 释放力度）。
+    ///
+    /// ⚠ 这条判据**会过期**：支持某一类时它应该红，提醒把那类的 `dropped` 改成 0；
+    /// ⛔ 不是把这条判据删掉。
+    #[must_use]
+    pub fn is_total_loss(&self) -> bool {
+        self.note_channel_values.is_total_loss()
+            && self.note_off_velocity_values.is_total_loss()
+            && self.aux_events.values().all(|count| count.is_total_loss())
+    }
+
+    /// 24 类 aux 事件的 read 条数之和（⛔ 不含音符通道 / 释放力度）。
+    #[must_use]
+    pub fn read_events(&self) -> usize {
+        self.aux_events.values().map(|count| count.read).sum()
+    }
+
+    /// 24 类 aux 事件的 dropped 条数之和（⛔ 不含音符通道 / 释放力度）。
+    #[must_use]
+    pub fn dropped_events(&self) -> usize {
+        self.aux_events.values().map(|count| count.dropped).sum()
+    }
+}
+
 /// 导入计划（**纯函数产物**：提交之前的一切）。
 #[derive(Clone, Debug, PartialEq)]
 pub struct MidiImportPlan {
@@ -115,6 +227,8 @@ pub struct MidiImportPlan {
     pub ppq: u16,
     /// ⭐ `#317`：歌词的读取／归属／丢弃读数。
     pub lyrics: MidiLyricCounts,
+    /// ⭐ `#318`：音符/歌词以外的**逐类丢失读数**（⛔ 不沉默地少做）。
+    pub losses: MidiImportLosses,
 }
 
 /// 导入报告（形态照 `MidiExportReport`：路径／条数／目标／提交身份／**来源**）。
@@ -134,6 +248,9 @@ pub struct MidiImportReport {
     pub origin: OpOrigin,
     /// ⭐ `#317`：歌词的读取／归属／丢弃读数（⛔ 不沉默地少做）。
     pub lyrics: MidiLyricCounts,
+    /// ⭐ `#318`：音符/歌词以外的逐类丢失读数（`format` / `file-tracks` /
+    /// `track-partitions-dropped` / `channels` 是上下文，其余是 read/dropped 两列）。
+    pub losses: MidiImportLosses,
 }
 
 impl MidiImportReport {
@@ -142,6 +259,17 @@ impl MidiImportReport {
     /// ⭐ `#317`：`lyrics= attached= dropped=` 是三类**互不重叠**的读数；
     /// `non-utf8=` / `empty=` 是另外两类（见 [`MidiLyricCounts`]）。恒等式
     /// `lyrics == attached + dropped` 由 [`MidiLyricCounts::is_consistent`] 自检。
+    ///
+    /// ⭐ `#318`：在歌词五读数之后追加——
+    /// - **上下文（总是打印）**：`format=` / `file-tracks=` / `track-partitions-dropped=` /
+    ///   `channels=`（值再小也不是"没有这个读数"）；
+    /// - **每个 aux 事件类**（仅 `read>0` 才打印，避免普通文件变长）：
+    ///   `<kind>-read=N <kind>-dropped=N`（键名见 [`MidiAuxEventKind::key`]）；
+    /// - **两个按音符计的属性**：`note-channel-*` / `note-off-velocity-*`
+    ///   （`read == dropped == notes`，今天）。
+    ///
+    /// ⚠ `dropped == read` 今天对每一类成立（**无任何真支持**）。支持某一类时改它的
+    /// `dropped` 并改掉判据；⛔ 不许删判据。
     #[must_use]
     pub fn summary(&self) -> String {
         let origin = match self.origin {
@@ -149,9 +277,11 @@ impl MidiImportReport {
             OpOrigin::UserUi => "user-ui",
             _ => "other",
         };
-        format!(
+        let mut line = format!(
             "imported-midi: path={} notes={} lyrics={} attached={} dropped={} non-utf8={} \
-             empty={} track={} clip={} commit={} origin={origin}",
+             empty={} track={} clip={} commit={} origin={origin} format={} file-tracks={} \
+             track-partitions-dropped={} channels={} note-channel-read={} \
+             note-channel-dropped={} note-off-velocity-read={} note-off-velocity-dropped={}",
             self.path
                 .as_ref()
                 .map_or_else(|| "<bytes>".to_owned(), |path| path.display().to_string()),
@@ -164,7 +294,28 @@ impl MidiImportReport {
             self.track_id.to_canonical_string(),
             self.clip_id.to_canonical_string(),
             self.commit.to_canonical_string(),
-        )
+            self.losses.format.number(),
+            self.losses.file_tracks,
+            self.losses.track_partitions_dropped,
+            self.losses.distinct_channels,
+            self.losses.note_channel_values.read,
+            self.losses.note_channel_values.dropped,
+            self.losses.note_off_velocity_values.read,
+            self.losses.note_off_velocity_values.dropped,
+        );
+        for (kind, count) in &self.losses.aux_events {
+            if count.read == 0 {
+                continue;
+            }
+            line.push_str(&format!(
+                " {}-read={} {}-dropped={}",
+                kind.key(),
+                count.read,
+                kind.key(),
+                count.dropped
+            ));
+        }
+        line
     }
 }
 
@@ -287,6 +438,54 @@ pub fn plan_midi_import(
         lyrics.is_consistent(),
         "歌词分桶必须满足 read == attached + dropped: {lyrics:?}"
     );
+
+    // ⭐ `#318`：把解析器数到的每一类 aux 事件原样变成 read/dropped 两列。
+    // ⚠ 今天**没有任何一类被消费** ⇒ `dropped == read` 对每一类都成立。
+    // ⚠ **"值一样"不等于"没丢"**：`tempo` 即使数值恰好等于工程 bpm 也仍是丢
+    // （`project.bpm` 是唯一权威，文件里的值没被消费）。支持某一类时把它的
+    // `dropped` 改成 0，并**改掉** `dropped == read` 的判据；⛔ 不许删判据。
+    let mut aux_events: BTreeMap<MidiAuxEventKind, MidiLossCount> = BTreeMap::new();
+    for kind in MidiAuxEventKind::ALL {
+        let read = parsed.aux_events.count(kind);
+        aux_events.insert(
+            kind,
+            MidiLossCount {
+                read,
+                dropped: read,
+            },
+        );
+    }
+    let distinct_channels = parsed
+        .notes
+        .iter()
+        .map(|note| note.channel)
+        .collect::<BTreeSet<u8>>()
+        .len();
+    let losses = MidiImportLosses {
+        format: parsed.format,
+        file_tracks: parsed.tracks,
+        track_partitions_dropped: parsed.tracks.saturating_sub(1),
+        distinct_channels,
+        // 每颗音符都带一个通道值，而 `MidiNote` 没有 channel 字段 ⇒ 全丢。
+        note_channel_values: MidiLossCount {
+            read: notes,
+            dropped: notes,
+        },
+        // 每颗音符都有一条关闭事件，它的释放力度被解析器忽略 ⇒ 全丢。
+        note_off_velocity_values: MidiLossCount {
+            read: notes,
+            dropped: notes,
+        },
+        aux_events,
+    };
+    debug_assert!(
+        losses.is_consistent(),
+        "丢失读数必须满足 dropped <= read 且轨分区 + 1 == file_tracks: {losses:?}"
+    );
+    debug_assert!(
+        losses.is_total_loss(),
+        "今天没有一类被支持 ⇒ 每条 dropped == read（支持一类时改这里，⛔ 别删判据）: {losses:?}"
+    );
     Ok(MidiImportPlan {
         ops,
         notes,
@@ -294,6 +493,7 @@ pub fn plan_midi_import(
         clip_id,
         ppq: parsed.ppq,
         lyrics,
+        losses,
     })
 }
 
@@ -363,6 +563,7 @@ pub fn import_midi_bytes(
         commit,
         origin: OpOrigin::MidiInput,
         lyrics: plan.lyrics,
+        losses: plan.losses,
     })
 }
 
@@ -389,7 +590,9 @@ pub fn import_midi_file(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use yeban_midi::midi::{MidiFormat, MidiTempo, ParsedLyric, ParsedNote};
+    use yeban_midi::midi::{
+        MidiAuxEventCounts, MidiAuxEventKind, MidiFormat, MidiTempo, ParsedLyric, ParsedNote,
+    };
 
     /// 造一份**直接可用的** `ParsedMidi`（⛔ 不需要真的编码 SMF：本判据测的是**映射**）。
     fn parsed(ppq: u16, notes: Vec<ParsedNote>) -> ParsedMidi {
@@ -407,6 +610,8 @@ mod tests {
         ParsedMidi {
             format: MidiFormat::SingleTrack,
             ppq,
+            tracks: 1,
+            aux_events: MidiAuxEventCounts::default(),
             tempos: Vec::<MidiTempo>::new(),
             notes,
             lyrics,
@@ -688,6 +893,110 @@ mod tests {
             plan.lyrics.attached + plan.lyrics.dropped,
             "恒等式必须逐字成立"
         );
+    }
+
+    /// ⭐ `#318`：报告把**每一类** aux 事件都成对报出（read/dropped），且今天
+    /// 每类 `dropped == read` —— 没有一类被冒充成"已处理"。
+    ///
+    /// 控制臂：计数不是零（tempo=2、marker=1…），所以"全损"不是"没有数据"造出来的
+    /// 恒真；`read_events() == 7` 是夹具里**真的**有 7 条 event 的读数。
+    #[test]
+    fn the_loss_report_pairs_read_and_dropped_for_every_aux_kind() {
+        let project = yeban_model::samples::filled_project();
+        let mut aux = MidiAuxEventCounts::default();
+        aux.record(MidiAuxEventKind::Tempo);
+        aux.record(MidiAuxEventKind::Tempo);
+        aux.record(MidiAuxEventKind::TrackName);
+        aux.record(MidiAuxEventKind::Marker);
+        aux.record(MidiAuxEventKind::ControlChange);
+        aux.record(MidiAuxEventKind::PitchBend);
+        aux.record(MidiAuxEventKind::UnknownMeta);
+        let parsed = ParsedMidi {
+            format: MidiFormat::Parallel,
+            ppq: 960,
+            tracks: 3,
+            aux_events: aux,
+            tempos: Vec::new(),
+            notes: vec![
+                ParsedNote {
+                    channel: 0,
+                    key: 60,
+                    velocity: 100,
+                    start_tick: 0,
+                    end_tick: 480,
+                },
+                ParsedNote {
+                    channel: 1,
+                    key: 48,
+                    velocity: 110,
+                    start_tick: 0,
+                    end_tick: 960,
+                },
+            ],
+            lyrics: Vec::new(),
+            non_utf8_lyrics: 0,
+            empty_lyrics: 0,
+        };
+        let plan =
+            plan_midi_import(&project, &parsed, &MidiImportOptions::default()).expect("必须有目标");
+        let losses = &plan.losses;
+        assert_eq!(losses.format, MidiFormat::Parallel);
+        assert_eq!(losses.file_tracks, 3);
+        assert_eq!(
+            losses.track_partitions_dropped, 2,
+            "3 条 MTrk 进 1 个目标 ⇒ 2 个分区丢失"
+        );
+        assert_eq!(losses.distinct_channels, 2, "音符里出现过 {{0,1}} 两个通道");
+        assert_eq!(
+            losses.note_channel_values,
+            MidiLossCount {
+                read: 2,
+                dropped: 2,
+            },
+            "每颗音符一个通道值，模型没有字段 ⇒ 全丢"
+        );
+        assert_eq!(
+            losses.note_off_velocity_values,
+            MidiLossCount {
+                read: 2,
+                dropped: 2,
+            },
+            "每颗音符一条关闭事件，释放力度没有字段 ⇒ 全丢"
+        );
+        assert_eq!(
+            losses.aux_events.len(),
+            MidiAuxEventKind::COUNT,
+            "24 类一个不缺（即使 read=0 也在表里）"
+        );
+        assert_eq!(
+            losses.aux_events[&MidiAuxEventKind::Tempo],
+            MidiLossCount {
+                read: 2,
+                dropped: 2,
+            }
+        );
+        assert_eq!(
+            losses.aux_events[&MidiAuxEventKind::Marker],
+            MidiLossCount {
+                read: 1,
+                dropped: 1,
+            }
+        );
+        for (kind, count) in &losses.aux_events {
+            assert_eq!(
+                count.dropped,
+                count.read,
+                "{} 今天必须全损（支持它时改这里，⛔ 不是删判据）",
+                kind.key()
+            );
+            assert!(count.is_consistent(), "{}: dropped <= read", kind.key());
+        }
+        assert!(losses.is_consistent());
+        assert!(losses.is_total_loss());
+        assert_eq!(losses.read_events(), 7, "夹具里真的 7 条 aux 事件");
+        assert_eq!(losses.dropped_events(), 7);
+        assert_eq!(plan.notes, 2);
+        assert_eq!(plan.lyrics, MidiLyricCounts::default());
     }
 
     /// 判据 b（拒绝空导入）：文件里没有音符 ⇒ `Empty`，⛔ 不发出空提交。
