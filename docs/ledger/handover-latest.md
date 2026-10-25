@@ -1,4 +1,93 @@
-# 交接（夜半第三阶段 · 2026-10-14 · 覆盖台账 R307–R467）
+# 交接（夜半第三阶段 · 2026-10-14 · 覆盖台账 R307–R1144）
+
+---
+
+## ⭐ ⭐ ⭐ §0.5 最新交接（**2026-10-26 06:26**，台账 R1131–R1144）—— 新会话先读这一节
+
+> 本节是**当前**状态。下面 §1／§1.9 是历史快照（2026-10-16／2026-10-20），⛔ 不要当成今天的事实。
+> 权威台账仍是 `docs/ledger/phase-status.md` 的尾部（R1131–R1144）；⚠ 它是单行巨石，**⛔ 不要 `grep -n`**。
+
+### 0.5.1 硬状态（此刻已核验）
+
+| 项 | 值 |
+| :--- | :--- |
+| 主干 | **`cb8dcef9`**（已推；`git status --porcelain` = **0 行**） |
+| 磁盘可用 | **112 Gi**（`bash scripts/dev/trim-target.sh` 刚从 32 Gi 拉回，target 93.8 GB → 11.3 GB） |
+| 工作树 | 3：主 ＋ `.worktrees/mcp-import`（**在飞**）＋ `.worktrees/website`（`d79a8b41`，与本任务无关） |
+| 待裁 | **0 项**（今天所有分岔我都自己裁了，见 §0.5.7，**可一句话推翻**） |
+
+### 0.5.2 ⚠ 在飞的一线（**磁盘上的状态才算数**）
+
+`.worktrees/mcp-import`，分支 `line/mcp-import`，基 `cb8dcef9`，**未提交**：4 个 M ＋ 1 个 `??`。
+票 **`#344`**：把 MIDI 导入的**纯映射**从 `crates/yeban-app/src/import_midi.rs` **搬进 `crates/yeban-midi/src/import.rs`**（与既有的 `export.rs` 对称），app 侧 `pub use` 保持既有测试不变；`MidiImportLosses::aux_reasons` 必须仍是 `BTreeMap<String,String>` 的**纯数据**（下一单要在它上面加工具）。
+**接手动作**：`git -C .worktrees/mcp-import status` 看它做到哪；要么接着做完（行为不变是这一单的全部，⛔ 不许放松任何断言），要么 `git worktree remove` ＋ `git branch -D line/mcp-import` 重开。**⛔ 不要盲信这段文字胜过磁盘。**
+
+### 0.5.3 ⏳ 未读回的判决（**未读回 ＝ 没有判决**）
+
+| 提交 | 状态 |
+| :--- | :--- |
+| `cb8dcef9`（Windows 修复） | **in_progress** ⇒ 接手后第一件事：`gh run list --limit 5 --json headSha,status,conclusion` 并读 **windows 腿**的 `test (yeban-mcp 的 .yeban.lock Windows 分支)` |
+| `afd21606`（`#342`） | in_progress |
+| `0afe692c`／`f56daa24`／`fca9d035` | **failure —— 全是 windows 腿**，病因已由 `cb8dcef9` 修（见 §0.5.5） |
+
+### 0.5.4 本轮落的（R1131–R1144，全部已 ff 合并、已推）
+
+| 提交 | 内容 |
+| :--- | :--- |
+| `a15e693f` | **`#311b` 音高随时间真的发声**（弯音／滑音；空曲线母带逐字节不变；`size_of::<PolyVoice>()` 仍 296） |
+| `e44aff3c` | **`#311c` 工具面能写 `pitchBendCurve`／`slide`**（端到端 880.000 Hz） |
+| `9c604228` | **`#334` 原地改音符音高形状**（`Op::SetNotePitchShape`，`EntityId` 不变） |
+| `91c5be4c` | **`#335` 只用工具面做出四小节曲子并测它**（产物 `target/acceptance-335/yeban-335-piece.wav`，−2.810 dBFS／−12.737 LUFS） |
+| `501faffa` | **`#336` 改已有摆放的循环**（`Op::SetClipPlacementLoop`） |
+| `891e1104` | **`#338` 改工程拍号**（`Op::SetTimeSignature`；节拍器几何实测，母带不受影响） |
+| `85e0f670` | **`#337` 侧链边不再是音频**（`+6.020600 dB` → 0，与"没有这条边"逐字节相同；新增 `sidechainEdgesDeclaredWithoutKeyInput`） |
+| `6984ef53` | **`#341` 内容校验判据**（贝斯 cents／和弦音分离 52–77 dB／12 个 onset 0 帧误差） |
+| `f56daa24` | **`#343` 两个编辑工具自述提交模型** |
+| `c1a07c55` | **`#340` 守卫不再"看不见就放过"**（193/204 → 204/204） |
+| `afd21606` | **`#342` marker→段落、轨名、导体元数据**（我否掉了"覆盖全局速度"） |
+| `cb8dcef9` | **Windows 修复**（`relative_to_src` 归一化分隔符 ＋ 一条平台无关判据） |
+
+### 0.5.5 ⭐ ⭐ 本轮最贵的收获：**"绿"有四种，只有一种算数**
+
+| 假绿 | 症状 | 怎么识破 |
+| :--- | :--- | :--- |
+| **空绿** | 纯文档提交 ⇒ `plan` 判无 crate ⇒ **所有 rust 腿 `skipped`**，`conclusion: success` | 必须读 **job 级** `conclusion != "skipped"`；`7015367d`／`570a01d2` 的 success 就是这种 |
+| **跳过绿** | `run-gates.sh light` 对重依赖 crate（含 `yeban-mcp`）打印 `[skip] 含重依赖 ⇒ 本机不编译` | `light` **通过 ≠ 那些 crate 被验证**；显式 `cargo clippy -p <crate>` 不可省 |
+| **空转绿** | `line-gate.sh` 的 cargo 半段曾经**一行没跑**却打印"快速自检通过"（`target-lock.sh` 用 `"$@" &` ⇒ 后台任务 stdin=/dev/null ⇒ `bash -s` 读到空脚本） | 已修（`fca9d035`，`"$@" <&0 &`）。**新写的脚本必须自己证明"它真的跑了"** |
+| **平台绿** | 本机与 Linux 绿、**Windows 红**（`relative_to_src` 找 `"/src/"`，Windows 是反斜杠） | 判据里**喂一条合成的 Windows 路径**；本机永远抓不到 |
+
+### 0.5.6 ⭐ 产能改造（本轮新增，已落库）
+
+- `scripts/dev/target-lock.sh -- <一条 cargo 命令>`：共享 target 的**单写者锁**（`mkdir` 自旋 ＋ 陈旧回收 ＋ **有界持有** ＋ **释放前先杀子进程**）。**⛔ 任何人不得手删锁目录**；卡住就报集成者。
+- `scripts/dev/line-gate.sh`：推前快速自检。改动 crate **跑测试**、反向依赖只 `cargo check --tests`。⚠ 它**明说"这不是判决"**。
+- `scripts/dev/trim-target.sh`：**唯一**允许 `rm -rf target/**` 的入口；有 cargo／rustc 在跑**或锁被持有**就拒绝。
+- 为什么需要锁：共享 target 里 **4759 个 `.d` 中有 671 个指向 `.worktrees/…`** —— cargo 按 `.d` 里**绝对源码路径**的 mtime 判"要不要重编" ⇒ **A 工作树编出的产物会被 B 当成自己的**。这是本轮 `E0599`／`E0004`／"测试二进制被删"的机制解释。
+
+### 0.5.7 ⭐ 今天我自己裁的（**人类可一句话推翻**）
+
+| 裁了什么 | 依据 |
+| :--- | :--- |
+| 接口只收**新值**，`old_*` 由文档填（`#334` 返工） | 邻居 `notes.rs:4534`/`:10243` 的既有明文 |
+| **侧链边是键输入、不是音频**；本仓无检测器输入 ⇒ 停止求和 ＋ 诚实上报，⛔ 不发明 DSP | Logic 语义（依据，非截图） |
+| **导入 MIDI 只在目标"没有内容"时才采纳全局 tempo／拍号** | 全局字段被覆盖会重排整首歌 |
+| 两个编辑工具**必须自述提交模型** | `#335` 墙 5 |
+| `#342` 的映射搬进 `yeban-midi::import`（而非新 crate） | `yeban-midi` **本来就**依赖 model，且 `export.rs` 早就在做同类映射 |
+
+### 0.5.8 ⭐ 下一个该做什么（**已按"导入工具做出来之后有多要紧"排序**）
+
+1. ⭐ ⭐ **`yeban_import_midi` 工具**（**今天 MCP 一条 MIDI 导入通路都没有** —— 只有 `yeban_export_midi` 与 `yeban_midi_input_probe`）。前置就是 §0.5.2 的 `#344`。加工具会动工具计数棘轮（23 → 24）、`schemas/mcp-tools.schema.json`、契约与测试。
+2. **多轨拆分**：N 个 `MTrk` 现在全并进 1 条轨 —— 结构性损失最大。
+3. **tempo map**（要模型字段 ＋ `Op`）；4. **拍号 map**；5. 音符通道；6. 调号；7. 程序／音色名；8. 弯音归属；9. CC→自动化；10. 归档类。
+11. 队列其余：**真键输入**（侧链求值）／`setTimeSignature` 派发层 e2e／拍号对母带的**执行的** A/B／运行期 reason 的调用点传播／`fault_vocabulary` 的 `Unclassified` 覆盖面／`project.schema.json` 的 `prefixItems`。
+12. ⚠ **人类专属、机器做不了**：真声卡核验／听那首 6 秒曲子（`target/acceptance-335/`）／听三对／真 MIDI 键盘／物理回环线。
+
+### 0.5.9 ⚠ 方法（本轮九次"我把自己的代码描述错了"换来的）
+
+**同一种错法九次**：`add` 什么都收／`run()` 在哪／活文档几处／扫描器只认 `json!`／十四类元数据／MCP 能导入 MIDI／`SectionV3` 拒重叠／`yeban-midi` 不依赖 model／根 `Cargo.toml` 要改 members。
+
+★ **药方只有一条**：**写票之前 `grep`，⛔ 不靠回忆。** 九次里有八次是线读代码顶回来的 —— 这正是"一树一线 ＋ 必须自证"的价值，⛔ 不要把线当成执行器。
+★ 派单时必须写进票里的四句：① 每条 `must` 都先对代码核验，假了就直说；② 注入证明每条判据真的会红 ＋ 还原到 `sha256 == HEAD`；③ 明写"绿 ≠ 对"的那一处；④ 诚实列出"没跑哪些腿"。
+
 
 > ⭐ 权威台账是 `docs/ledger/phase-status.md` 的 **R307–R467**（单行巨石、⚠ **⛔ 不要 `grep -n` 它** —— 行长得会烧光上下文；用 `python3 scripts/gates/check_phase_status.py` 或 `command grep -o`）。
 > ⭐ ⭐ **新会话第一件事: 读台账尾部（R440–R467）＋ 本文件的 §1／§3／§4。**
