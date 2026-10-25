@@ -36,11 +36,40 @@ import argparse
 import hashlib
 import pathlib
 import json
+import os
 import sys
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
 SCHEMAS = REPO / "schemas"
+
+
+def resolve_samples_dir(raw: str) -> Path:
+    """把 `--samples-dir` 解析成绝对路径。
+
+    ⚠ **为什么不是直接 `REPO / raw`**：本仓的执行纪律（`AGENTS.md` §5.2）要求
+    **共享 `CARGO_TARGET_DIR`**（私有 target 会重编 Slint），于是 Rust 侧导出的样本
+    实际落在 `$CARGO_TARGET_DIR/schema-samples`，而**工作树里的 `target/` 可能根本
+    不存在**。文档里那句
+
+        python3 scripts/gates/validate_schemas.py --samples-dir target/schema-samples
+
+    在工作树里因此会 exit=1：`样本目录不存在: <工作树>/target/schema-samples`。
+    2026-10-25 三次实测撞上（`#311c`／`#334`／`#336` 各一次），每次都要临时改成
+    绝对路径才能跑 —— 一条文档化的门禁命令在自己的纪律下跑不起来，是门禁的缺陷，
+    不是使用者的错。
+
+    ⇒ 相对路径的**首段是 `target`** 且 `CARGO_TARGET_DIR` 已设置时，把 `target`
+    换成该环境变量；其余情况（含绝对路径、含首段不是 `target` 的相对路径）维持
+    以仓库根为基准的老行为 ⇒ ⛔ 不改变任何既有调用方的语义。
+    """
+    path = Path(raw)
+    if path.is_absolute():
+        return path.resolve()
+    target_env = os.environ.get("CARGO_TARGET_DIR")
+    if target_env and path.parts[:1] == ("target",):
+        return (Path(target_env) / Path(*path.parts[1:])).resolve()
+    return (REPO / path).resolve()
 
 SAMPLE_SCHEMA_MAP = {
     "project": "project.schema.json",
@@ -316,7 +345,7 @@ def main() -> int:
         verify_repo_asset_manifests(schemas, problems)
 
     if args.samples_dir:
-        samples_dir = (REPO / args.samples_dir).resolve()
+        samples_dir = resolve_samples_dir(args.samples_dir)
         if not samples_dir.is_dir():
             problems.append(f"样本目录不存在: {samples_dir}")
         else:
