@@ -7,6 +7,26 @@
 > 本节是**当前**状态。下面 §1／§1.9 是历史快照（2026-10-16／2026-10-20），⛔ 不要当成今天的事实。
 > 权威台账仍是 `docs/ledger/phase-status.md` 的尾部（R1131–R1144）；⚠ 它是单行巨石，**⛔ 不要 `grep -n`**。
 
+### 0.5.0 ⛔ 铁的约束 ＋ 进入状态的第一件事（先看这一节，再看 §0）
+
+- ⭐ ⭐ **目标 ⛔ 不得标 `complete`、⭐ ⛔ 不得标 `blocked`**（上限 9999、已 unblock）。**人类不说停就不停**：一块做完 ⇒ 继续找下一项。
+- ⭐ ⭐ **遇到需要人类裁决的事 ⇒ 登记为待裁并跳过，继续做下一件**；⛔ 不要停在那里等。
+- ⭐ 每一件的固定动作：**worktree ⇒ 实现 ⇒ 四门 ⇒ 提交 ⇒ 快进合并 ⇒ 推主干 ⇒ 读回 CI 判决 ⇒ 入册 `phase-status.md` ⇒ 拆 worktree**。
+- ⭐ **人类专属、机器做不了**（⛔ 不要假装做过）：真声卡核验／**听那首 6 秒曲子**（`target/acceptance-335/yeban-335-piece.wav`，1,728,694 字节，`sha256 5ee14e03…`，−2.810 dBFS／−12.737 LUFS）／听三对／真 MIDI 键盘／物理回环线。
+
+**进入状态（五条命令，⛔ 不要凭记忆）**：
+
+```bash
+cd /Users/crow/work/music/yeban
+git log --oneline -1 && git status --porcelain          # 主干与脏不脏
+git worktree list                                        # 有哪些线（在飞的那条以磁盘为准）
+git -C .worktrees/mcp-import log --oneline -1 && git -C .worktrees/mcp-import status --porcelain
+XDG_CACHE_HOME=/Users/crow/work/music/.cache gh run list --limit 6 --json headSha,status,conclusion
+python3 scripts/guards/policy_check.py && bash scripts/gates/run-gates.sh light
+```
+
+⚠ 环境（**每次编译前 export，否则会重编 Slint**）：`CARGO_HOME=/Users/crow/work/music/.cargo-home`、`RUSTUP_TOOLCHAIN=stable`、`XDG_CACHE_HOME=/Users/crow/work/music/.cache`、`RUST_MIN_STACK=16777216`、`CARGO_TARGET_DIR=/Users/crow/work/music/yeban/target`；**每一条 cargo 命令都包在 `bash scripts/dev/target-lock.sh -- <cmd>` 里**（原因见 §0.5.6）。
+
 ### 0.5.1 硬状态（此刻已核验）
 
 | 项 | 值 |
