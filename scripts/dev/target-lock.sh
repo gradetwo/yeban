@@ -90,8 +90,38 @@ cleanup() {
     rm -rf "$LOCK" 2>/dev/null || true
   fi
 }
-trap cleanup EXIT INT TERM
 
-"$@"
+# ⚠ ## 为什么子进程要**在后台起、并由陷阱先杀**
+#
+# 2026-10-26 实测缺陷：一条线用 `target-lock.sh -- bash -c 'cargo …; cargo …'` 把几条
+# 命令包在一起好逐个记 exit code。那层包装被杀时，本脚本的 EXIT/TERM 陷阱**把锁删了**，
+# 而 `bash -c` 里那个 `cargo clippy` **还在跑** ⇒ **锁已释放、编译还活着** ⇒ 另一条线
+# 立刻拿到锁开始编 ⇒ 两个 cargo 打同一个 target ⇒ 对方读到 `E599`（别人的 rlib 冒充
+# 自己的）。⇒ 释放锁**必须**等于"编译真的结束了"。
+#
+# 所以子进程后台起、记住 pid；INT/TERM 先杀它、等它退出，**然后**才删锁。
+child=""
+cleanup() {
+  if [ -n "$child" ] && kill -0 "$child" 2>/dev/null; then
+    kill -TERM "$child" 2>/dev/null || true
+    # 给它 10 秒体面退出，再强杀 —— 只在收到信号时走这条，正常路径用 wait 的返回值。
+    for _ in 1 2 3 4 5 6 7 8 9 10; do
+      kill -0 "$child" 2>/dev/null || break
+      sleep 1
+    done
+    kill -KILL "$child" 2>/dev/null || true
+  fi
+  if [ "$acquired" = "1" ]; then
+    rm -rf "$LOCK" 2>/dev/null || true
+  fi
+}
+trap cleanup EXIT
+trap 'cleanup; exit 130' INT
+trap 'cleanup; exit 143' TERM
+
+"$@" &
+child=$!
+wait "$child"
 rc=$?
+child=""
 exit "$rc"
