@@ -70,7 +70,9 @@ fi
 echo "== 基线: $BASE .. $(git rev-parse --short HEAD)"
 
 # ---- 1. 改动的 crate -------------------------------------------------------
-CHANGED=$(git diff --name-only "$BASE"...HEAD | sed -n 's#^crates/\([^/]*\)/.*#\1#p' | sort -u)
+# ⚠ 必须同时看**已提交**、**未提交**与**未跟踪**：只比 `BASE...HEAD` 会让"还没提交的改动"
+# 完全看不见 ⇒ 集合为空 ⇒ 门禁**假绿**（本脚本第一版就是这个错，2026-10-25 当场修）。
+CHANGED=$( { git diff --name-only "$BASE" -- . ; git ls-files --others --exclude-standard ; } | sed -n 's#^crates/\([^/]*\)/.*#\1#p' | sort -u )
 if [ -z "$CHANGED" ]; then
   echo "== 没有任何 crate 改动（只动了非 crates/** 的文件）⇒ 只跑守卫与轻门"
 fi
