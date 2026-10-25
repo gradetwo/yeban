@@ -181,9 +181,26 @@ INSIDE
 lock_rc=$?
 [ "$lock_rc" = "0" ] || fail=1
 
-# 守卫与轻门不碰 target，放在锁外跑（可以与别的线的编译并行）
-run guards python3 scripts/guards/policy_check.py || fail=1
-run light bash scripts/gates/run-gates.sh light || fail=1
+# 守卫与轻门不碰 target，放在锁外跑（可以与别的线的编译并行）。
+#
+# ⚠ 这里本来调 `run()`，而我重写锁内那段时**把那个函数的定义一起删掉了** ——
+# 于是脚本必然以 `run: command not found` + exit 1 收场（2026-10-26 由 `#341` 线
+# 实测报出）。教训：重写一段**区间**时，被删掉的东西里可能有区间外的调用方。
+# 现在不依赖任何辅助函数，直接内联，并把两段输出各自留一行 rc。
+gate_one() {
+  local name="$1"; shift
+  local log="/tmp/line-gate.${name}.$$.out"
+  if "$@" >"$log" 2>&1; then
+    echo "[$name] ok"
+    return 0
+  fi
+  local rc=$?
+  echo "[$name] ⛔ rc=$rc"
+  tail -20 "$log" | sed 's/^/    /'
+  return "$rc"
+}
+gate_one guards python3 scripts/guards/policy_check.py || fail=1
+gate_one light bash scripts/gates/run-gates.sh light || fail=1
 
 echo
 if [ "$fail" = "0" ]; then
