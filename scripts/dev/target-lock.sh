@@ -32,6 +32,14 @@ set -uo pipefail
 LOCK="${CARGO_TARGET_DIR:-target}/.yeban-build.lock"
 TIMEOUT="${YEBAN_LOCK_TIMEOUT:-7200}"
 POLL="${YEBAN_LOCK_POLL:-5}"
+# 单次持有的**上限**。超过它即判定为孤儿并**响亮**回收。
+#
+# ⚠ 为什么需要它（2026-10-25 实测教训）：我为了解一个"看起来卡住"的锁**手删了锁目录**，
+# 而那个锁当时**真的被持有** ⇒ 造成**两写者窗口**（同时 2 个 `cargo test` ＋ 2 个
+# `cargo check` 打同一个 target）⇒ 只好杀掉所有构建收场。正确的解不是手删，而是
+# **让工具自己有界**：任何一次持有都不该超过这个上限（今夜最长的合法持有约 20 分钟），
+# 超了就当作孤儿，**打印持锁者的完整信息**再夺回。
+MAX_HOLD="${YEBAN_LOCK_MAX_HOLD:-3600}"
 
 if [ "${1:-}" = "--" ]; then
   shift
@@ -48,9 +56,9 @@ start=$(date +%s)
 while :; do
   if mkdir "$LOCK" 2>/dev/null; then
     acquired=1
-    printf 'pid=%s\nhost=%s\nsince=%s\ncmd=%s\n' \
+    printf 'pid=%s\nhost=%s\nsince=%s\nsince_epoch=%s\ncmd=%s\n' \
       "$$" "$(hostname 2>/dev/null || echo unknown)" \
-      "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >"$LOCK/owner" 2>/dev/null || true
+      "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$(date +%s)" "$*" >"$LOCK/owner" 2>/dev/null || true
     break
   fi
   # 陈旧锁回收：持锁方是同机且 pid 已不存在 ⇒ 夺回。
@@ -63,6 +71,13 @@ while :; do
     continue
   fi
   now=$(date +%s)
+  # 有界持有：超过 MAX_HOLD 一律当孤儿**响亮**回收（见文件头那段实测教训）
+  held_since=$(sed -n 's/^since_epoch=//p' "$LOCK/owner" 2>/dev/null | head -1)
+  if [ -n "$held_since" ] && [ $((now - held_since)) -ge "$MAX_HOLD" ]; then
+    echo "[target-lock] ⚠ 回收超期锁：已持有 $((now - held_since))s ≥ 上限 ${MAX_HOLD}s；持锁者 $(cat "$LOCK/owner" 2>/dev/null | tr '\n' ' ')" >&2
+    rm -rf "$LOCK" 2>/dev/null || true
+    continue
+  fi
   if [ $((now - start)) -ge "$TIMEOUT" ]; then
     echo "[target-lock] ⛔ 等锁超时（${TIMEOUT}s）：持锁者 $(cat "$LOCK/owner" 2>/dev/null | tr '\n' ' ')" >&2
     exit 75
