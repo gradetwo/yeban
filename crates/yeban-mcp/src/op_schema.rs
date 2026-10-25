@@ -39,6 +39,11 @@
 
 use serde_json::{Value, json};
 
+use yeban_model::music::{
+    MICRO_TIMING_MAX_ABS, MIDI_PITCH_MAX, MIDI_VELOCITY_MAX, PROBABILITY_MAX, PROBABILITY_MIN,
+    RATCHET_MAX, RATCHET_MIN,
+};
+
 use crate::domain::extension_pure::LANE_NAMES;
 use crate::domain::notes::{DEVICE_KINDS, LANE_WRITE_MODES, OP_KINDS};
 use crate::effect_params;
@@ -95,7 +100,7 @@ fn note_object() -> Value {
             "pitch": {
                 "type": "integer",
                 "minimum": 0,
-                "maximum": 127,
+                "maximum": MIDI_PITCH_MAX,
                 "description": "音高（MIDI 0..=127）",
             },
             "durationTicks": {
@@ -106,25 +111,28 @@ fn note_object() -> Value {
             "velocity": {
                 "type": "integer",
                 "minimum": 0,
-                "maximum": 127,
+                "maximum": MIDI_VELOCITY_MAX,
                 "description": "力度（可选；缺省 `DEFAULT_VELOCITY`）",
             },
             "probability": {
                 "type": "number",
+                // ⚠ 这一对**刻意保留整数拼法**（`0` / `1`）：改成 f32 常量会让
+                // `tools/list` 的字节从 `0`/`1` 变成 `0.0`/`1.0`。区间由判据
+                // `expressive_schema_bounds_reconcile_with_the_model` 做**数值**对账。
                 "minimum": 0,
                 "maximum": 1,
                 "description": "确定性概率触发（可选）",
             },
             "ratchet": {
                 "type": "integer",
-                "minimum": 1,
-                "maximum": 16,
+                "minimum": RATCHET_MIN,
+                "maximum": RATCHET_MAX,
                 "description": "连击细分（可选）",
             },
             "microTimingTicks": {
                 "type": "integer",
-                "minimum": -240,
-                "maximum": 240,
+                "minimum": -MICRO_TIMING_MAX_ABS,
+                "maximum": MICRO_TIMING_MAX_ABS,
                 "description": "起点偏移（可选，tick）",
             },
         },
@@ -344,7 +352,11 @@ pub fn ops_items() -> Value {
                 json!({
                     "kind": kind("velocity"),
                     "noteId": id("目标音符身份"),
-                    "velocity": { "type": "integer", "minimum": 0, "maximum": 127 },
+                    "velocity": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": MIDI_VELOCITY_MAX,
+                    },
                 }),
                 false,
             ),
@@ -379,20 +391,20 @@ pub fn ops_items() -> Value {
                     "noteId": id("目标音符身份"),
                     "probability": {
                         "type": ["number", "null"],
-                        "minimum": 0.0,
-                        "maximum": 1.0,
+                        "minimum": PROBABILITY_MIN,
+                        "maximum": PROBABILITY_MAX,
                         "description": "触发概率 0.0..=1.0 且有限；null = 清空 = 必然触发",
                     },
                     "ratchet": {
                         "type": ["integer", "null"],
-                        "minimum": 1,
-                        "maximum": 16,
+                        "minimum": RATCHET_MIN,
+                        "maximum": RATCHET_MAX,
                         "description": "连击次数 1..=16；null = 清空 = 等价于 1",
                     },
                     "microTimingTicks": {
                         "type": ["integer", "null"],
-                        "minimum": -240,
-                        "maximum": 240,
+                        "minimum": -MICRO_TIMING_MAX_ABS,
+                        "maximum": MICRO_TIMING_MAX_ABS,
                         "description": "起点微偏移 -240..=240 tick；null = 清空 = 无偏移",
                     },
                 }),

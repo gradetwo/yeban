@@ -28,21 +28,40 @@ pub enum ModelError {
     },
 
     /// 概率字段越界 (允许 0.0..=1.0，且必须有限)。
-    #[error("probability {value} out of range 0.0..=1.0")]
+    ///
+    /// 区间**不在这里写字面**：两个端点来自 [`crate::music::PROBABILITY_MIN`] /
+    /// [`crate::music::PROBABILITY_MAX`]（与校验、MCP 预判、广播 schema 同源）。
+    #[error(
+        "probability {value} out of range {:?}..={:?}",
+        crate::music::PROBABILITY_MIN,
+        crate::music::PROBABILITY_MAX
+    )]
     ProbabilityOutOfRange {
         /// 实际收到的概率值。
         value: f32,
     },
 
     /// ratchet 连击数越界 (允许 1..=16)。
-    #[error("ratchet {value} out of range 1..=16")]
+    ///
+    /// 区间来自 [`crate::music::RATCHET_MIN`] / [`crate::music::RATCHET_MAX`]。
+    #[error(
+        "ratchet {value} out of range {}..={}",
+        crate::music::RATCHET_MIN,
+        crate::music::RATCHET_MAX
+    )]
     RatchetOutOfRange {
         /// 实际收到的连击数。
         value: u8,
     },
 
     /// 微时值偏移越界 (允许 -240..=240 tick，即 ±1/16 音符 @960 PPQ)。
-    #[error("micro timing {value} ticks out of range -240..=240")]
+    ///
+    /// 区间来自 [`crate::music::MICRO_TIMING_MAX_ABS`]。
+    #[error(
+        "micro timing {value} ticks out of range -{}..={}",
+        crate::music::MICRO_TIMING_MAX_ABS,
+        crate::music::MICRO_TIMING_MAX_ABS
+    )]
     MicroTimingOutOfRange {
         /// 实际收到的 tick 偏移。
         value: i32,

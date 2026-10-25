@@ -746,7 +746,9 @@ use std::str::FromStr as _;
 
 use serde_json::{Map, Value};
 
-use yeban_model::music::{MICRO_TIMING_MAX_ABS, RATCHET_MAX, RATCHET_MIN};
+use yeban_model::music::{
+    MICRO_TIMING_MAX_ABS, PROBABILITY_MAX, PROBABILITY_MIN, RATCHET_MAX, RATCHET_MIN,
+};
 use yeban_model::{
     AssetHash, AutomationLane, AutomationTarget, AutomationValueDomain, AutomationWriteMode,
     ClipContent, ClipPlacement, ClipPoolEntry, DeviceDefinition, DeviceKind, EntityId,
@@ -6688,15 +6690,18 @@ fn read_probability(object: &Map<String, Value>) -> Result<Option<f32>, Fault> {
             format!("`{PROBABILITY_FIELD}` 必须是数字, 实际收到 {value}"),
         )
     })?;
-    if raw.is_nan() || raw < 0.0 || raw > 1.0 {
+    if raw.is_nan() || raw < f64::from(PROBABILITY_MIN) || raw > f64::from(PROBABILITY_MAX) {
         return Err(Fault::domain_with_data(
             ErrorCode::OutOfRange,
-            format!("`{PROBABILITY_FIELD}` 越界: {raw} 不在 0.0..=1.0"),
+            // `{:?}` 对 f32 打印 `0.0` / `1.0`（Display 会打印 `0` / `1`）⇒ 报文逐字不变。
+            format!(
+                "`{PROBABILITY_FIELD}` 越界: {raw} 不在 {PROBABILITY_MIN:?}..={PROBABILITY_MAX:?}"
+            ),
             serde_json::json!({
                 "field": PROBABILITY_FIELD,
                 "value": raw,
-                "min": 0.0,
-                "max": 1.0,
+                "min": PROBABILITY_MIN,
+                "max": PROBABILITY_MAX,
             }),
         ));
     }
@@ -13748,6 +13753,285 @@ mod tests {
                 );
             }
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // 值域的"两份字面"：机械对账（#330）
+    //
+    // 三个表现力字段的区间**只允许**有一个来源：`yeban_model::music` 的常量。
+    // 下面三条判据把"模型 / MCP 预判 / 广播 schema / 报文"四侧钉在一起：
+    // (a) schema 的 min/max 与常量**数值**对账（⛔ 不比拼法：`add.probability`
+    //     刻意保留整数 `0/1`，改拼法会让 `tools/list` 动字节）；
+    // (b) 边界值穿四层逐值一致（含 MCP 单独的预判 —— 只测 `add` 解析会漏掉
+    //     "MCP 放松、模型收紧"那种分叉，因为解析结果被模型校验再兜一次）；
+    // (c) 报文（模型 Display 与 MCP 越界报文）与常量对账。
+    // -----------------------------------------------------------------------
+
+    /// `ops` item schema 里某个分支某字段的 `(minimum, maximum)`（**数值**口径，
+    /// 与 JSON 里写的是 `16` 还是 `16.0` 无关）。
+    fn schema_bounds(kind_name: &str, field: &str) -> (f64, f64) {
+        let items = crate::op_schema::ops_items();
+        let branch = items["oneOf"]
+            .as_array()
+            .expect("`oneOf` 必须是数组")
+            .iter()
+            .find(|branch| branch["properties"]["kind"]["const"].as_str() == Some(kind_name))
+            .unwrap_or_else(|| panic!("schema 里必须有 `{kind_name}` 分支"));
+        // `add` 把音符载荷嵌在 `properties.note.properties` 下；其余分支是平铺的。
+        let direct = &branch["properties"][field];
+        let property = if direct.is_object() {
+            direct
+        } else {
+            &branch["properties"]["note"]["properties"][field]
+        };
+        assert!(
+            !property.is_null(),
+            "schema 的 `{kind_name}` 分支必须声明 `{field}`"
+        );
+        (
+            property["minimum"].as_f64().expect("minimum 必须是数字"),
+            property["maximum"].as_f64().expect("maximum 必须是数字"),
+        )
+    }
+
+    /// 三个表现力字段（探针表的字段维）。
+    #[derive(Clone, Copy, Debug)]
+    enum ExpressionRange {
+        Probability,
+        Ratchet,
+        MicroTiming,
+    }
+
+    impl ExpressionRange {
+        const fn field(self) -> &'static str {
+            match self {
+                Self::Probability => PROBABILITY_FIELD,
+                Self::Ratchet => RATCHET_FIELD,
+                Self::MicroTiming => MICRO_TIMING_FIELD,
+            }
+        }
+
+        /// 把探针值变成该字段的 JSON 形状（概率是小数，另外两个是整数）。
+        fn json(self, value: f64) -> Value {
+            match self {
+                Self::Probability => serde_json::json!(value),
+                Self::Ratchet | Self::MicroTiming => serde_json::json!(value as i64),
+            }
+        }
+    }
+
+    /// 探针表：票面那 11 个边界值 ＋ 两个补洞探针（`-0.001` 守概率下界、
+    /// `0.5` 守中段），`bool` = 修前/修后都必须给出的结论。
+    const EXPRESSIVE_PROBES: [(ExpressionRange, f64, bool); 13] = [
+        (ExpressionRange::Probability, 0.0, true),
+        (ExpressionRange::Probability, 1.0, true),
+        (ExpressionRange::Probability, 0.999, true),
+        (ExpressionRange::Probability, 1.001, false),
+        (ExpressionRange::Probability, -0.001, false),
+        (ExpressionRange::Probability, 0.5, true),
+        (ExpressionRange::Ratchet, 1.0, true),
+        (ExpressionRange::Ratchet, 16.0, true),
+        (ExpressionRange::Ratchet, 17.0, false),
+        (ExpressionRange::Ratchet, 0.0, false),
+        (ExpressionRange::MicroTiming, -240.0, true),
+        (ExpressionRange::MicroTiming, 240.0, true),
+        (ExpressionRange::MicroTiming, 241.0, false),
+    ];
+
+    /// 第一层：MCP **自己的**预判（`read_*`），不含模型兜底。
+    fn mcp_read_accepts(field: ExpressionRange, value: f64) -> bool {
+        let mut object = Map::new();
+        object.insert(field.field().to_owned(), field.json(value));
+        match field {
+            ExpressionRange::Probability => read_probability(&object).is_ok(),
+            ExpressionRange::Ratchet => read_ratchet(&object).is_ok(),
+            ExpressionRange::MicroTiming => read_micro_timing(&object).is_ok(),
+        }
+    }
+
+    /// 第二层：`add` 的 JSON 解析（MCP 预判 ＋ 模型校验的合取）。
+    fn add_accepts(field: ExpressionRange, value: f64) -> bool {
+        let mut item = add_json(0, 60);
+        item["note"][field.field()] = field.json(value);
+        parse_ops(&Value::Array(vec![item])).is_ok()
+    }
+
+    /// 第三层：`setNoteExpression` 的 JSON 解析（同一份 MCP 预判的另一条入口）。
+    fn set_note_expression_accepts(field: ExpressionRange, value: f64) -> bool {
+        let mut item = serde_json::json!({
+            "kind": SET_NOTE_EXPRESSION_KIND,
+            "noteId": deterministic_id("expressive-range-probe"),
+            PROBABILITY_FIELD: Value::Null,
+            RATCHET_FIELD: Value::Null,
+            MICRO_TIMING_FIELD: Value::Null,
+        });
+        item[field.field()] = field.json(value);
+        parse_ops(&Value::Array(vec![item])).is_ok()
+    }
+
+    /// 第四层：模型自己的 `MidiNote::validate`。
+    fn model_accepts(field: ExpressionRange, value: f64) -> bool {
+        let mut note = MidiNote::new(deterministic_id("expressive-range-probe"), 0, 60, 480);
+        note.velocity = 100;
+        match field {
+            ExpressionRange::Probability => note.probability = Some(value as f32),
+            ExpressionRange::Ratchet => {
+                note.ratchet = Some(u8::try_from(value as i64).expect("探针在 u8 内"));
+            }
+            ExpressionRange::MicroTiming => {
+                note.micro_timing_ticks = Some(i16::try_from(value as i64).expect("探针在 i16 内"));
+            }
+        }
+        note.validate().is_ok()
+    }
+
+    /// 第五层：模型 `Op::SetNoteExpression::precondition`（`#329` 新增的第二份
+    /// 概率字面就在那里）。
+    fn op_precondition_accepts(field: ExpressionRange, value: f64) -> bool {
+        let project = filled_project();
+        let (track_id, clip_id) = lead_clip(&project);
+        let notes = project.clip_pool[&clip_id]
+            .content
+            .notes()
+            .expect("样本片段必须是 MIDI");
+        let note_id = *notes.keys().next().expect("样本片段必须至少一个音符");
+        let current = notes.get(&note_id).expect("音符存在").clone();
+        let (new_probability, new_ratchet, new_micro_timing_ticks) = match field {
+            ExpressionRange::Probability => (
+                Some(value as f32),
+                current.ratchet,
+                current.micro_timing_ticks,
+            ),
+            ExpressionRange::Ratchet => (
+                current.probability,
+                Some(u8::try_from(value as i64).expect("探针在 u8 内")),
+                current.micro_timing_ticks,
+            ),
+            ExpressionRange::MicroTiming => (
+                current.probability,
+                current.ratchet,
+                Some(i16::try_from(value as i64).expect("探针在 i16 内")),
+            ),
+        };
+        let op = Op::SetNoteExpression {
+            track_id,
+            clip_id,
+            note_id,
+            old_probability: current.probability,
+            old_ratchet: current.ratchet,
+            old_micro_timing_ticks: current.micro_timing_ticks,
+            new_probability,
+            new_ratchet,
+            new_micro_timing_ticks,
+        };
+        op.precondition(&project).is_ok()
+    }
+
+    /// (a) 广播 schema 的 8 组 min/max 与模型常量**数值**对账。
+    ///
+    /// 修前注入（实测，D）：只把 `add.ratchet.maximum` 从 `16` 改成 `15`
+    /// ⇒ `cargo test -p yeban-mcp --locked --no-fail-fast` 的 39 个 test 二进制
+    /// 全绿 ⇒ 本判据就是为那一条裸着的字面加的。
+    #[test]
+    fn expressive_schema_bounds_reconcile_with_the_model() {
+        let pitch_max = f64::from(yeban_model::music::MIDI_PITCH_MAX);
+        let velocity_max = f64::from(yeban_model::music::MIDI_VELOCITY_MAX);
+        let probability_min = f64::from(PROBABILITY_MIN);
+        let probability_max = f64::from(PROBABILITY_MAX);
+        let ratchet_min = f64::from(RATCHET_MIN);
+        let ratchet_max = f64::from(RATCHET_MAX);
+        let micro_min = f64::from(-MICRO_TIMING_MAX_ABS);
+        let micro_max = f64::from(MICRO_TIMING_MAX_ABS);
+        for (kind_name, field, expected) in [
+            ("add", PROBABILITY_FIELD, (probability_min, probability_max)),
+            ("add", RATCHET_FIELD, (ratchet_min, ratchet_max)),
+            ("add", MICRO_TIMING_FIELD, (micro_min, micro_max)),
+            ("add", "pitch", (0.0, pitch_max)),
+            ("add", "velocity", (0.0, velocity_max)),
+            (
+                "setNoteExpression",
+                PROBABILITY_FIELD,
+                (probability_min, probability_max),
+            ),
+            (
+                "setNoteExpression",
+                RATCHET_FIELD,
+                (ratchet_min, ratchet_max),
+            ),
+            (
+                "setNoteExpression",
+                MICRO_TIMING_FIELD,
+                (micro_min, micro_max),
+            ),
+            ("velocity", "velocity", (0.0, velocity_max)),
+        ] {
+            assert_eq!(
+                schema_bounds(kind_name, field),
+                expected,
+                "`{kind_name}.{field}` 的广播区间必须与模型常量同源"
+            );
+        }
+    }
+
+    /// (b) 边界值穿**五层**逐值一致（票面的"四层"＋ MCP 单独的预判这一层）。
+    ///
+    /// 修前注入（实测，C1）：只把模型 `music.rs` 的概率上界从 `1.0` 改成 `1.2`
+    /// ⇒ model 28/28、MCP 5/5 全绿；修后本判据在 `1.001` 处红（MCP 拒绝、
+    /// `MidiNote::validate` 接受、`Op::precondition` 拒绝）。
+    #[test]
+    fn expressive_boundaries_agree_across_every_layer() {
+        for (field, value, expected) in EXPRESSIVE_PROBES {
+            let read = mcp_read_accepts(field, value);
+            let add = add_accepts(field, value);
+            let expression = set_note_expression_accepts(field, value);
+            let model = model_accepts(field, value);
+            let op = op_precondition_accepts(field, value);
+            println!(
+                "[range] {field:?} {value} => expected={expected} mcp={read} add={add} \
+                 setNoteExpression={expression} model={model} op={op}"
+            );
+            assert_eq!(read, expected, "{field:?} {value}: MCP 预判");
+            assert_eq!(add, expected, "{field:?} {value}: `add` 解析");
+            assert_eq!(
+                expression, expected,
+                "{field:?} {value}: `setNoteExpression` 解析"
+            );
+            assert_eq!(model, expected, "{field:?} {value}: `MidiNote::validate`");
+            assert_eq!(
+                op, expected,
+                "{field:?} {value}: `Op::SetNoteExpression::precondition`"
+            );
+        }
+    }
+
+    /// (c) 三条模型 `Display` 报文与 MCP 的 probability 越界报文：逐字且与常量同源。
+    #[test]
+    fn expressive_range_messages_speak_the_model_bounds() {
+        assert_eq!(
+            yeban_model::ModelError::ProbabilityOutOfRange { value: 1.5 }.to_string(),
+            format!("probability 1.5 out of range {PROBABILITY_MIN:?}..={PROBABILITY_MAX:?}")
+        );
+        assert_eq!(
+            yeban_model::ModelError::RatchetOutOfRange { value: 17 }.to_string(),
+            format!("ratchet 17 out of range {RATCHET_MIN}..={RATCHET_MAX}")
+        );
+        assert_eq!(
+            yeban_model::ModelError::MicroTimingOutOfRange { value: 241 }.to_string(),
+            format!(
+                "micro timing 241 ticks out of range -{MICRO_TIMING_MAX_ABS}..={MICRO_TIMING_MAX_ABS}"
+            )
+        );
+        // 本轮把 MCP 的 probability 报文改成 `{:?}` 拼常量 ⇒ 字节必须不变。
+        let mut object = Map::new();
+        object.insert(PROBABILITY_FIELD.to_owned(), serde_json::json!(1.001));
+        let fault = read_probability(&object).expect_err("1.001 必须被拒绝");
+        let Fault::Domain { message, data, .. } = &fault else {
+            panic!("必须是领域失败");
+        };
+        assert_eq!(message.as_str(), "`probability` 越界: 1.001 不在 0.0..=1.0");
+        let data = data.as_ref().expect("必须带 data");
+        assert_eq!(data["min"], 0.0);
+        assert_eq!(data["max"], 1.0);
     }
 
     /// `note` 里的未知键 ⇒ 响亮拒绝（列出支持集合），**绝不**静默丢弃。

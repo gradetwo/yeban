@@ -1183,7 +1183,9 @@ impl Op {
                 // ⚠ 值域**照抄** `MidiNote::validate` 的同三条（⛔ 不自造新错误变体）：
                 // 否则 `apply` 会写出一份 `validate()` 拒绝的文档。
                 if let Some(probability) = new_probability
-                    && (!probability.is_finite() || !(0.0..=1.0).contains(probability))
+                    && (!probability.is_finite()
+                        || !(crate::music::PROBABILITY_MIN..=crate::music::PROBABILITY_MAX)
+                            .contains(probability))
                 {
                     return Err(ModelError::ProbabilityOutOfRange {
                         value: *probability,

@@ -39,6 +39,16 @@ pub const RATCHET_MAX: u8 = 16;
 /// 微时值偏移的合法绝对值上界（含）：±240 tick = ±1/16 音符 @960 PPQ。
 pub const MICRO_TIMING_MAX_ABS: i16 = 240;
 
+/// `probability` 的合法下界（含）。
+///
+/// 与 [`PROBABILITY_MAX`] 一起是概率值域的**唯一**机械载体：模型的两处校验
+/// （[`MidiNote::validate`] 与 `Op::SetNoteExpression` 的前置条件）以及 MCP 的
+/// 工具面预判、广播 schema 都从这两个常量派生 —— ⛔ 不再各写一份字面区间。
+pub const PROBABILITY_MIN: f32 = 0.0;
+
+/// `probability` 的合法上界（含）：与 [`PROBABILITY_MIN`] 同源，见那里的说明。
+pub const PROBABILITY_MAX: f32 = 1.0;
+
 /// 弯音曲线单个点的 `cents` 合法绝对值上界（含）：±1200 = ±1 个八度。
 ///
 /// 值域与四条形状规则的**唯一**权威是 `docs/adr/ADR-0012-pitch-bend-curve-contract.md`
@@ -258,7 +268,9 @@ impl MidiNote {
         }
         if let Some(probability) = self.probability {
             // `RangeInclusive::contains` 对 NaN 恒为 false，因此 NaN 会被这里拦下。
-            if !probability.is_finite() || !(0.0..=1.0).contains(&probability) {
+            if !probability.is_finite()
+                || !(PROBABILITY_MIN..=PROBABILITY_MAX).contains(&probability)
+            {
                 return Err(ModelError::ProbabilityOutOfRange { value: probability });
             }
         }
