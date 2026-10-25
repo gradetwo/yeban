@@ -53,7 +53,7 @@ use crate::music::{MidiNote, SlideConfig};
 use crate::project::{
     AssetMetadata, AutomationLane, AutomationPoint, AutomationTarget, ClipContent, ClipPlacement,
     ClipPoolEntry, DeviceDefinition, LoopConfig, MAX_BPM, MIN_BPM, RoutingEdge, SamplerBinding,
-    SceneV3, SectionV3, TrackV3, TransportConfig, YebanProjectV1,
+    SceneV3, SectionV3, TimeSignature, TrackV3, TransportConfig, YebanProjectV1,
 };
 
 /// 操作来源 [ARCH-OPS-001]。
@@ -816,6 +816,46 @@ pub enum Op {
         /// 修改后的标题。
         new_title: String,
     },
+    /// 设置**工程拍号**（顶层 `time_signature`，`[MODEL-AST-002]`）。
+    ///
+    /// 为什么必须有这个变体：`YebanProjectV1::time_signature` 是模型层**一等字段**，
+    /// [`YebanProjectV1::validate`] 真的判它，而且它已有真实消费者（引擎的
+    /// `MetronomePlan::new(sample_rate, project.time_signature)`、本仓 MCP 的
+    /// `section_build::ticks_per_bar`、`export_midi` 的 SMF 拍号元事件、宿主的
+    /// 小节/时间码投影）。⭐ 但在它之前，`Op` 全集**没有任何变体写得进它** ——
+    /// 唯一的入口是创建工程时的 `arguments.timeSignature`
+    /// （`crates/yeban-mcp/src/domain/project_create.rs` 的模块文档逐字写着
+    /// 「← 只在这里能设」）⇒ ⭐ **工程建得出、拍号改不了**，打开之后永远钉在创建时的值。
+    /// 这是 `ARCH-OPS-001` 那一族的又一处（与 [`Op::SetTempo`] / [`Op::SetTitle`]
+    /// 同型：顶层文档字段，只能创建时给定）。
+    ///
+    /// ⚠ **值域照抄 [`TimeSignature::validate`]，⛔ 不在这里写第二张表**：
+    /// “什么算合法拍号”（分子区间 + 分母允许集合）只由那一个函数定义，它分别以
+    /// [`ModelError::TimeSignatureNumeratorOutOfRange`] /
+    /// [`ModelError::TimeSignatureDenominatorUnsupported`] 报告两类越界。
+    /// 本变体的前置条件**调用**那个校验器，因此全仓只有一份真相
+    /// （`schemas/project.schema.json` 的同一条边界也是它）。⛔ 不要在这里抄一份
+    /// 数字表 —— 那会成为第二份会漂移的真相。
+    ///
+    /// ⚠ **`old_*` 从当前文档读**：调用方声明的旧状态⛔ 不被采信 —— 前置条件只拿它做
+    /// **陈旧载荷**比较（[`ModelError::OpStateMismatch`]）；相等判定是
+    /// [`TimeSignature`] 的派生 `PartialEq`（两个 `u8` 字段逐值）。
+    ///
+    /// ⚠ 本变体只写这一个字段：⛔ 不碰 `bpm` / `title` / `author` / `transport` /
+    /// `audio_config` / `tracks` / `clip_pool`。
+    /// 与 [`Op::SetTempo`] 的**对照**（实测事实，⛔ 不要当成推断）：本渲染器是
+    /// **tick 基**的，改拍号**不会**改变任何音符/摆放的 tick 长度 ⇒ 离线母带的
+    /// 采样级产物不变；拍号驱动的是**栅格几何**（节拍器的 `ticks_per_beat` /
+    /// `beats_per_bar`、小节长度、SMF 元事件），不是"把已有内容伸长"。
+    ///
+    /// ⚠ 命名用 `old_*` / `new_*`（**set** 类，照 [`Op::SetTempo`]），⛔ **不是**
+    /// `previous_*` —— 后者在本仓是 **delete / remove** 类的惯例。
+    SetTimeSignature {
+        /// 修改前的拍号（来自当前文档）。
+        old_time_signature: TimeSignature,
+        /// 修改后的拍号（由 [`TimeSignature::validate`] 判决）。
+        new_time_signature: TimeSignature,
+    },
     /// 声明（或更新）一条**资产索引**（`[MODEL-AST-007]` / `[MUST-GATE-014]`）。
     ///
     /// ⚠ 本变体是**三处已登记缺口的共同根**：在它之前，模型**没有任何 `Op` 能写
@@ -1166,6 +1206,7 @@ impl Op {
             Self::SetTempo { .. } => "SetTempo",
             Self::SetAuthor { .. } => "SetAuthor",
             Self::SetTitle { .. } => "SetTitle",
+            Self::SetTimeSignature { .. } => "SetTimeSignature",
             Self::SetAsset { .. } => "SetAsset",
             Self::RemoveAsset { .. } => "RemoveAsset",
             Self::SetTrackSolo { .. } => "SetTrackSolo",
@@ -1853,6 +1894,23 @@ impl Op {
                 }
                 Ok(())
             }
+            Self::SetTimeSignature {
+                old_time_signature,
+                new_time_signature,
+            } => {
+                // ① 载荷自身必须是一份**合法**拍号 —— 走模型**唯一**的校验器
+                //    （⛔ 不在这里复制 `1..=32` / `{1,2,4,8,16,32}` 的表：那会成为
+                //    第二份会漂移的真相）。与 `SetTempo` 同口径：⛔ 不靠 apply 之后的
+                //    `YebanProjectV1::validate` 兜底 —— 那会让"施加成功但文档非法"
+                //    成为可能。
+                new_time_signature.validate()?;
+                // ② 文档现值必须等于 `old_time_signature`（⛔ 不信调用方声明的旧状态）。
+                //    `TimeSignature` 的相等是派生 `PartialEq`（两个 `u8` 字段逐值）。
+                if doc.time_signature != *old_time_signature {
+                    return Err(ModelError::OpStateMismatch { op: self.name() });
+                }
+                Ok(())
+            }
             Self::SetMacro {
                 track_id,
                 macro_index,
@@ -2339,6 +2397,15 @@ impl Op {
             } => Self::SetTitle {
                 old_title: new_title.clone(),
                 new_title: old_title.clone(),
+            },
+            // 纯结构化取反：只交换"前 / 后"两个拍号（与 `SetTempo` 同型）。
+            // `TimeSignature` 是 `Copy` ⇒ 直接解引用，⛔ 不需要克隆。
+            Self::SetTimeSignature {
+                old_time_signature,
+                new_time_signature,
+            } => Self::SetTimeSignature {
+                old_time_signature: *new_time_signature,
+                new_time_signature: *old_time_signature,
             },
             // ⭐ **照 [`Op::SetSection`] 的先例**（⛔ 不是纯交换）：`old_asset` 为 `None`
             // 表示"创建"，而**创建态没有可交换的旧值** ⇒ 逆操作**必须是删除变体**。
@@ -2874,6 +2941,15 @@ impl Op {
             // 只写那**一个**顶层字段：⛔ 不碰 `author`、⛔ 不碰 `bpm`、⛔ 不碰 `id`。
             Self::SetTitle { new_title, .. } => {
                 doc.title = new_title.clone();
+                Ok(())
+            }
+            // 只写那**一个**顶层字段：⛔ 不碰 `bpm` / `title` / `author` / `transport` /
+            // `audio_config` / `tracks` / `clip_pool`。⚠ 改的是**栅格几何**（节拍器 / 小节
+            // 长度 / SMF 元事件），⛔ 不移动任何 tick（本渲染器是 tick 基的）。
+            Self::SetTimeSignature {
+                new_time_signature, ..
+            } => {
+                doc.time_signature = *new_time_signature;
                 Ok(())
             }
             // 只取走那**一个**索引项：⛔ 不碰 `clip_pool`、⛔ 不碰归档里的字节。
@@ -3717,6 +3793,16 @@ mod tests {
             Op::SetTitle {
                 old_title: "Ops Fixture".to_owned(),
                 new_title: "夜半 · Yeban".to_owned(),
+            },
+            // 拍号：夹具的 `time_signature` 是 `YebanProjectV1::default()`（4/4）⇒
+            // 前置条件成立。⭐ 本变体补的是「建得出、改不了」的顶层字段（创建之后
+            // 唯一的写点只有 `yeban_open_project` 的 `timeSignature` 实参）。
+            Op::SetTimeSignature {
+                old_time_signature: TimeSignature::default(),
+                new_time_signature: TimeSignature {
+                    numerator: 6,
+                    denominator: 8,
+                },
             },
             // 改名：**唯一的名字通路**（此前只能删轨重建 ⇒ 换 `EntityId`）。
             // 音轨色标：**此前只能在建轨时给**（`AddTrack` 的载荷）⇒ 改色只能删轨重建。
@@ -7974,8 +8060,185 @@ mod tests {
         );
     }
 
-    /// **全变体往返审计**（`[ARCH-OPS-001]` 的通则，机械化）。
+    /// `[MODEL-AST-002]` / `[ARCH-OPS-001]`：**拍号可改、可逆，且陈旧载荷必被拒**。
     ///
+    /// 为什么必须有它：`time_signature` 是顶层一等字段、`validate()` 真的判它，而 `Op`
+    /// 全集此前**没有**写它的变体 ⇒ 唯一入口是创建工程时的 `timeSignature` 实参
+    /// （`domain/project_create.rs` 逐字「← 只在这里能设」）⇒ **工程建得出、拍号改不了**。
+    ///
+    /// 四条读数（对象 + 单位 = 一份 `fixture_document()` 的逐字节序列化）：
+    /// ① 改动**只**落在 `time_signature`（与"同工程只换拍号"的克隆**逐字节**比较）；
+    /// ② 逆操作之后**逐字节**回到原状（撤销必须还原**上一个**拍号，不是默认 4/4）；
+    /// ③ 陈旧的 `old_time_signature` ⇒ `OpStateMismatch`，且文档逐字节不动；
+    /// ④ 分子相同、分母不同（4/4 vs 4/8）也被判成陈旧（逐字段相等，不是"看起来像"）。
+    #[test]
+    fn set_time_signature_is_reversible_and_rejects_a_stale_signature() {
+        let mut doc = fixture_document();
+        let before = serde_json::to_vec(&doc).expect("序列化");
+        let old_signature = doc.time_signature;
+        assert_eq!(
+            old_signature,
+            TimeSignature::default(),
+            "夹具口径 = 模型默认 4/4"
+        );
+
+        // ① 改动只落在 time_signature 上。
+        let new_signature = TimeSignature {
+            numerator: 6,
+            denominator: 8,
+        };
+        let op = Op::SetTimeSignature {
+            old_time_signature: old_signature,
+            new_time_signature: new_signature,
+        };
+        op.precondition(&doc).expect("前置条件必须成立");
+        op.apply(&mut doc).expect("必须能应用");
+        assert_eq!(doc.time_signature, new_signature, "拍号必须变成新值");
+        let mut expected = fixture_document();
+        expected.time_signature = new_signature;
+        assert_eq!(
+            serde_json::to_vec(&doc).expect("s"),
+            serde_json::to_vec(&expected).expect("s"),
+            "改动必须**只**落在 time_signature 上（⛔ 不碰 bpm/title/author/transport/tracks）"
+        );
+        assert!(
+            doc.validate().is_ok(),
+            "改完的文档必须仍然合法（6/8 是合法拍号）"
+        );
+
+        // ② 逆操作逐字节回到原状（还原的是**上一个**拍号，不是 `default()`）。
+        op.apply_inverse(&mut doc).expect("逆必须能应用");
+        assert_eq!(doc.time_signature, old_signature, "撤销必须还原旧拍号");
+        assert_eq!(
+            serde_json::to_vec(&doc).expect("s"),
+            before,
+            "逆操作之后必须逐字节回到原状"
+        );
+
+        // ③ 陈旧 old_time_signature 被拒，且文档逐字节不动。
+        let stale = Op::SetTimeSignature {
+            old_time_signature: TimeSignature {
+                numerator: 3,
+                denominator: 4,
+            },
+            new_time_signature: new_signature,
+        };
+        let stale_before = serde_json::to_vec(&doc).expect("s");
+        let error = stale.apply(&mut doc).expect_err("陈旧旧值必须被拒");
+        assert_eq!(
+            error,
+            ModelError::OpStateMismatch {
+                op: "SetTimeSignature"
+            },
+            "必须报 OpStateMismatch 且点名本变体"
+        );
+        assert_eq!(
+            serde_json::to_vec(&doc).expect("s"),
+            stale_before,
+            "被拒之后文档必须逐字节不动"
+        );
+
+        // ④ 分子相同、分母不同也是陈旧载荷（逐字段相等）。
+        let same_numerator = Op::SetTimeSignature {
+            old_time_signature: TimeSignature {
+                numerator: old_signature.numerator,
+                denominator: 8,
+            },
+            new_time_signature: new_signature,
+        };
+        assert_eq!(
+            same_numerator.precondition(&doc),
+            Err(ModelError::OpStateMismatch {
+                op: "SetTimeSignature"
+            }),
+            "4/4 与 4/8 不是同一个拍号 ⇒ 陈旧载荷必被拒"
+        );
+    }
+
+    /// **边界与值域的单一真相**：`SetTimeSignature` 的接受/拒绝集合必须与
+    /// [`TimeSignature::validate`] **逐点相同**（期望值从校验器**现算**，⛔ 不在测试里
+    /// 重抄一张 `1..=32` / `{1,2,4,8,16,32}` 的表）。
+    ///
+    /// 指标（对象 + 单位）：`(分子, 分母)` 候选对（单位 = 对）上，
+    /// 「`op.apply` 的判决」与「`TimeSignature::validate` 的判决」是否**逐点一致**；
+    /// 拒绝时连**错误变体**也要求相同（证明 `Op` 真的**调用**了那个校验器，
+    /// 而不是自己另写了一套边界）。
+    ///
+    /// 注入（实测红）：把 `precondition` 里的 `new_time_signature.validate()?` 删掉
+    /// ⇒ 所有非法对的 `apply` 变成功，本判据红；把分子上界从 `32` 改成 `31` ⇒
+    /// `(32, 4)` 一行红（`validate` 放行、`Op` 拒绝）。
+    #[test]
+    fn set_time_signature_accepts_exactly_what_the_model_validator_accepts() {
+        let candidates = [
+            (0u8, 4u8),
+            (1, 1),
+            (1, 2),
+            (1, 4),
+            (1, 8),
+            (1, 16),
+            (1, 32),
+            (2, 32),
+            (3, 4),
+            (4, 4),
+            (5, 8),
+            (6, 8),
+            (7, 16),
+            (12, 8),
+            (31, 2),
+            (32, 32),
+            (33, 4),
+            (4, 0),
+            (4, 3),
+            (4, 5),
+            (4, 7),
+            (4, 64),
+            (255, 255),
+        ];
+        let mut accepted = 0usize;
+        let mut rejected = 0usize;
+        for (numerator, denominator) in candidates {
+            let signature = TimeSignature {
+                numerator,
+                denominator,
+            };
+            let expected = signature.validate();
+            let mut doc = fixture_document();
+            let op = Op::SetTimeSignature {
+                old_time_signature: doc.time_signature,
+                new_time_signature: signature,
+            };
+            match (op.apply(&mut doc), expected) {
+                (Ok(()), Ok(())) => {
+                    accepted += 1;
+                    assert_eq!(
+                        doc.time_signature, signature,
+                        "{numerator}/{denominator} 校验通过 ⇒ 必须真的落进文档"
+                    );
+                }
+                (Err(actual), Err(expected)) => {
+                    rejected += 1;
+                    assert_eq!(
+                        actual, expected,
+                        "{numerator}/{denominator} 必须报与校验器**同一个**错误"
+                    );
+                    assert_eq!(
+                        doc.time_signature,
+                        TimeSignature::default(),
+                        "{numerator}/{denominator} 被拒之后文档不得改动"
+                    );
+                }
+                (actual, expected) => panic!(
+                    "{numerator}/{denominator}: `Op` 的判决与 `TimeSignature::validate` 不一致 \
+                     —— op={actual:?}, validate={expected:?}"
+                ),
+            }
+        }
+        // 防空：两侧都必须真的被走到（否则"逐点一致"可能只是"全是同一边"）。
+        assert!(accepted >= 8, "接受侧样本太少: {accepted}");
+        assert!(rejected >= 8, "拒绝侧样本太少: {rejected}");
+    }
+
+    /// **全变体往返审计**（`[ARCH-OPS-001]` 的通则，机械化）。    ///
     /// 指标（对象 + 单位）：对 `showcase_ops()` 里**每一个** `Op` 实例（单位 = 条），
     /// `apply` ⇒ `apply_inverse` 之后，工程的**逐字节**序列化是否回到原位。
     ///

@@ -422,6 +422,16 @@
         },
         {
           "required": [
+            "SetTimeSignature"
+          ],
+          "properties": {
+            "SetTimeSignature": {
+              "type": "object"
+            }
+          }
+        },
+        {
+          "required": [
             "SetAsset"
           ],
           "properties": {

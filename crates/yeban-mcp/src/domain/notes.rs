@@ -762,8 +762,8 @@ use yeban_model::{
     AssetHash, AutomationLane, AutomationTarget, AutomationValueDomain, AutomationWriteMode,
     ClipContent, ClipPlacement, ClipPoolEntry, DeviceDefinition, DeviceKind, EntityId,
     LaunchQuantization, LoopConfig, MidiNote, Op, ParameterValue, RoutingEdge, RoutingKind,
-    SamplerBinding, SceneV3, SectionV3, SlideConfig, TrackKind, TrackV3, TransportConfig,
-    YebanProjectV1,
+    SamplerBinding, SceneV3, SectionV3, SlideConfig, TimeSignature, TrackKind, TrackV3,
+    TransportConfig, YebanProjectV1,
 };
 // 设备参数的**序数 → 稳定身份**解析与**名字白名单**只有一份：`#263` 落在 render 里。
 // ⛔ 本层不复制第二份（否则 `paramNotSupported` 会有两个字面量来源）。
@@ -774,6 +774,11 @@ use super::extension_pure::LaneKind;
 // ⚠ `setAsset` 的许可判定**复用** `import_audio` 的那一份（⛔ 不复制第二套）。
 use super::ids::deterministic_id;
 use super::import_audio::require_allowed_licence;
+// ⚠ `setTimeSignature` 的**解析与形状/值域判定**复用 `project_create` 的那一份
+// （`create:true` 的 `timeSignature` 实参）—— ⛔ 本层不写第二个 "N/D" 解析器，
+// 也不抄 `1..=32` / `{1,2,4,8,16,32}` 的表（模型的 `TimeSignature::validate` 是
+// 唯一事实源，`parse_time_signature` 只是它的形状层）。
+use super::project_create::{TIME_SIGNATURE_PARAM, parse_time_signature};
 use crate::tools::ErrorCode;
 
 /// `create: true` 且没给 `clipName` 时的片段名（**不是**身份，只是给人看的标签）。
@@ -1243,6 +1248,7 @@ pub const OP_KINDS: &[&str] = &[
     SET_TEMPO_KIND,
     SET_AUTHOR_KIND,
     SET_TITLE_KIND,
+    SET_TIME_SIGNATURE_KIND,
     SET_TRACK_NAME_KIND,
     SET_CLIP_NAME_KIND,
     SET_CLIP_GAIN_KIND,
@@ -1274,7 +1280,7 @@ pub const OP_KINDS: &[&str] = &[
 /// `domain::plan_edit_notes` 用它决定"缺参时要不要响亮拒绝"。
 ///
 /// ⚠ 两份真相（本清单 vs 谓词的 `match`）由判据
-/// `every_catalog_kind_parses_and_round_trips` 在**全部 42 个 kind** 上对账
+/// `every_catalog_kind_parses_and_round_trips` 在**全部 43 个 kind** 上对账
 /// （`OP_KINDS` 里每个 kind 的最小合法形状 → 解析 → 与本清单比对），
 /// 因此"加了一个 kind 却忘了决定它读不读 `clipId`"会立刻变红。
 pub const ENVELOPE_CLIP_KINDS: &[&str] = &[
@@ -1303,7 +1309,7 @@ pub const ENVELOPE_CLIP_KINDS: &[&str] = &[
 /// [`ENVELOPE_CLIP_KINDS`] 去掉 `removeClip` 之后的子集，且这条包含关系由判据钉住。
 ///
 /// 两份真相（本清单 vs 谓词的 `match`）由判据
-/// `every_catalog_kind_compiles_to_exactly_one_op_variant` 在**全部 42 个 kind** 上
+/// `every_catalog_kind_compiles_to_exactly_one_op_variant` 在**全部 43 个 kind** 上
 /// 对账（`OP_KINDS` 里每个 kind 的规范形状 → 解析 → 与本清单比对），因此"加了一个
 /// kind 却忘了决定它读不读音符"会立刻变红。
 pub const NOTE_LEVEL_KINDS: &[&str] = &[
@@ -1832,6 +1838,29 @@ pub const SET_TITLE_TITLE_FIELD: &str = "title";
 
 /// 设置标题形态允许出现的**全部**键（判别键 + 一个必填）。
 pub const SET_TITLE_FIELDS: [&str; 2] = ["kind", SET_TITLE_TITLE_FIELD];
+
+/// `ops[].kind` 的**设置工程拍号**形态名（写 [`Op::SetTimeSignature`]）。
+///
+/// 与模型 `Op` 变体名同词（`SetTimeSignature` 的小驼峰），与 [`SET_TITLE_KIND`]
+/// 同一条规则。
+///
+/// ⚠ 它是**顶层文档字段**形态（与 [`SET_TRANSPORT_CONFIG_KIND`] / [`SET_TEMPO_KIND`] /
+/// [`SET_AUTHOR_KIND`] / [`SET_TITLE_KIND`] 同族）：不读不写音符，也不寻址音轨。
+pub const SET_TIME_SIGNATURE_KIND: &str = "setTimeSignature";
+
+/// 设置拍号形态的**新拍号**字段名（`ops[].timeSignature`，必填，`"N/D"` 文本）。
+///
+/// ⚠ **与 `yeban_open_project` 的 `create:true` 实参逐字同词** —— 直接引用
+/// [`TIME_SIGNATURE_PARAM`]（`"timeSignature"`），⛔ 本层不另起拼写
+/// （`ADR-0001` D48：同一个词必须同一个意思）。形状/取值也**复用**那一个解析器
+/// [`parse_time_signature`]（它只认 `N/D` 两半、每半按十进制整数解析）⇒
+/// 接受集合与 `create:true` **逐点相同**：形状错误 ⇒ `INVALID_PARAMETER_RANGE`，
+/// 取值越界 ⇒ `OUT_OF_RANGE`（判定取值的唯一入口是模型
+/// [`TimeSignature::validate`]）。
+pub const SET_TIME_SIGNATURE_FIELD: &str = TIME_SIGNATURE_PARAM;
+
+/// 设置拍号形态允许出现的**全部**键（判别键 + 一个必填）。
+pub const SET_TIME_SIGNATURE_FIELDS: [&str; 2] = ["kind", SET_TIME_SIGNATURE_FIELD];
 
 /// `ops[].kind` 的**设置音轨名**形态名（写 [`Op::SetTrackName`]）。
 pub const SET_TRACK_NAME_KIND: &str = "setTrackName";
@@ -2963,6 +2992,30 @@ pub enum NoteOp {
         /// 修改后的标题。
         new_title: String,
     },
+    /// 设置**工程拍号**（[`Op::SetTimeSignature`]，顶层 `time_signature`）。
+    ///
+    /// 与 [`Self::SetTransportConfig`] / [`Self::SetTempo`] / [`Self::SetAuthor`] /
+    /// [`Self::SetTitle`] 同族（**顶层文档字段**，不读不写音符、不寻址音轨）。
+    ///
+    /// ⭐ **本形态补上了什么**：`time_signature` 是模型层一等字段（`validate()` 真的判它，
+    /// 引擎的节拍器 / 小节长度 / SMF 元事件都消费它），而工具面此前**唯一的写点**是
+    /// `yeban_open_project` 的 `create:true` 实参 `timeSignature` ⇒ ⭐ **工程建得出、
+    /// 拍号改不了**。本形态把同一个词接到 `yeban_edit_notes` 上。
+    ///
+    /// ⚠ **载荷只有新值**（与 [`Self::SetTempo`] / [`Self::SetTitle`] 同口径）：
+    /// 线上**没有** `oldTimeSignature` 键 —— 旧值由 [`compile`] 从**当前文档**读
+    /// （`project.time_signature`），⛔ 不信调用方声明。把旧值写进载荷是**未知键**，
+    /// 由 [`reject_set_time_signature_fields`] 响亮拒绝。
+    ///
+    /// ⚠ **值域不在本层**：形状（`"N/D"`）由 [`parse_time_signature`] 判，取值由它
+    /// 内部调用的模型 [`TimeSignature::validate`] 判 ⇒ ⛔ 本层不复制那张值域表
+    /// （它只引用校验器，不重述分子/分母的合法集合）。
+    SetTimeSignature {
+        /// 修改前的拍号（来自当前文档）。
+        old_time_signature: TimeSignature,
+        /// 修改后的拍号（已过模型校验器）。
+        new_time_signature: TimeSignature,
+    },
     /// 设置**音轨名字**（[`Op::SetTrackName`]，寻址到一条音轨）。
     ///
     /// ⭐ **本形态补上了什么**：⭐ 在它之前工具面**只有 [建轨][Self::AddTrack] 时能给名字**
@@ -3605,6 +3658,7 @@ impl NoteOp {
             Self::SetTempo { .. } => SET_TEMPO_KIND,
             Self::SetAuthor { .. } => SET_AUTHOR_KIND,
             Self::SetTitle { .. } => SET_TITLE_KIND,
+            Self::SetTimeSignature { .. } => SET_TIME_SIGNATURE_KIND,
             Self::SetTrackName { .. } => SET_TRACK_NAME_KIND,
             Self::SetClipName { .. } => SET_CLIP_NAME_KIND,
             Self::SetClipGain { .. } => SET_CLIP_GAIN_KIND,
@@ -4232,6 +4286,25 @@ fn parse_one(item: &Value) -> Result<NoteOp, Fault> {
                 new_title: read_required_string(object, SET_TITLE_TITLE_FIELD)?,
             })
         }
+        SET_TIME_SIGNATURE_KIND => {
+            reject_set_time_signature_fields(object)?;
+            // ⚠ **缺键 ⛔ 不等于"用默认 4/4"**：`parse_time_signature(None)` 的缺省语义
+            // 只属于 `create:true` 的**可选**实参；本形态是**单字段设值** ⇒ 缺键响亮拒绝
+            // （与 `setTempo` 缺 `bpm` 同口径）。
+            let value = object.get(SET_TIME_SIGNATURE_FIELD).ok_or_else(|| {
+                missing(
+                    SET_TIME_SIGNATURE_FIELD,
+                    "\"N/D\" 形状的拍号文本 (例: \"3/4\"、\"6/8\")",
+                )
+            })?;
+            Ok(NoteOp::SetTimeSignature {
+                // ⚠ `old_time_signature` 是**占位**：真值由 `compile` 从当前文档读。
+                old_time_signature: TimeSignature::default(),
+                // ⭐ 形状 + 取值都走 `create:true` 用的**同一个**解析器
+                // （内部唯一判定 = `TimeSignature::validate`）⇒ ⛔ 没有第二张值域表。
+                new_time_signature: parse_time_signature(Some(value))?,
+            })
+        }
         SET_TRANSPORT_CONFIG_KIND => Ok(NoteOp::SetTransportConfig {
             new_config: parse_transport_config(object)?,
         }),
@@ -4740,6 +4813,19 @@ fn reject_set_title_fields(object: &Map<String, Value>) -> Result<(), Fault> {
         &SET_TITLE_FIELDS,
         SET_TITLE_KIND,
         "unknownSetTitleField",
+    )
+}
+
+/// 拒绝 `setTimeSignature` 里 [`SET_TIME_SIGNATURE_FIELDS`] 之外的键。
+///
+/// 最像"写对了"的错法是把旧值也写进载荷（`oldTimeSignature` / `oldNumerator` …）——
+/// 那会被静默忽略，而调用方以为前置条件由自己声明 ⇒ 本形态**响亮拒绝**。
+fn reject_set_time_signature_fields(object: &Map<String, Value>) -> Result<(), Fault> {
+    reject_unknown_keys(
+        object,
+        &SET_TIME_SIGNATURE_FIELDS,
+        SET_TIME_SIGNATURE_KIND,
+        "unknownSetTimeSignatureField",
     )
 }
 
@@ -7926,6 +8012,22 @@ pub fn compile(
                     new_title: new_title.clone(),
                 }
             }
+            NoteOp::SetTimeSignature {
+                new_time_signature, ..
+            } => {
+                // 撤销载荷来自**当前文档**（⛔ 不信调用方声明 —— 线上也没有旧值键）。
+                // ⚠ 值域已由 `parse_time_signature` → `TimeSignature::validate` 判过；
+                // 这里对**同一个**校验器再走一遍，是为了让"手工构造的 `NoteOp`"
+                // （绕过解析器的路径，判据会这么用）也不会编译出一条 `apply` 必被拒的 op
+                // —— 与 `setTempo` 在 `compile` 里重查区间同一条口径。
+                new_time_signature
+                    .validate()
+                    .map_err(|error| from_model("拍号校验", &error))?;
+                Op::SetTimeSignature {
+                    old_time_signature: project.time_signature,
+                    new_time_signature: *new_time_signature,
+                }
+            }
             NoteOp::SetTransportConfig { new_config } => {
                 // 撤销载荷来自**当前文档**（模型 `apply` 的前置条件读同一个字段）；
                 // 本层不自己写 `Op::invert`（那是模型的唯一事实源）。
@@ -11022,7 +11124,9 @@ mod tests {
         // —— 同样与真实 `kind` 同步。
         // 本票（`#336` 摆放循环）新增 `setClipPlacementLoop`（摆放属性级，⛔ 不是
         // 音符级）后为 42 —— 同样与真实 `kind` 同步。
-        assert_eq!(OP_KINDS.len(), 42);
+        // 本票（`#338` 工程拍号）新增 `setTimeSignature`（顶层文档字段，与 `setTempo`
+        // 同族）后为 43 —— 同样与真实 `kind` 同步。
+        assert_eq!(OP_KINDS.len(), 43);
         assert_eq!(TrackFlag::NAMES, [SET_TRACK_MUTE_KIND, SET_TRACK_SOLO_KIND]);
         assert!(OP_KINDS.contains(&SET_TRACK_MUTE_KIND));
         assert!(OP_KINDS.contains(&SET_TRACK_SOLO_KIND));
@@ -16794,7 +16898,7 @@ mod tests {
     fn every_catalog_kind_parses_and_round_trips() {
         let ulid = "01J8ZQ00000000000000000999";
         // 每个 kind 的**最小合法形状**（只到解析期为止；文档相关的前置条件在 `compile`）。
-        let table: [(&str, serde_json::Value); 42] = [
+        let table: [(&str, serde_json::Value); 43] = [
             (
                 "add",
                 serde_json::json!({"note": {"startTick": 0, "pitch": 60, "durationTicks": 480}}),
@@ -16874,6 +16978,10 @@ mod tests {
             ("setTempo", serde_json::json!({"bpm": 140.0})),
             ("setAuthor", serde_json::json!({"author": "A"})),
             ("setTitle", serde_json::json!({"title": "T"})),
+            (
+                "setTimeSignature",
+                serde_json::json!({"timeSignature": "6/8"}),
+            ),
             (
                 "setTrackName",
                 serde_json::json!({"trackId": ulid, "name": "A"}),
@@ -16995,6 +17103,7 @@ mod tests {
                 "setTempo",
                 "setAuthor",
                 "setTitle",
+                "setTimeSignature",
                 "setTrackName",
                 "setClipName",
                 "setClipGain",
@@ -17375,7 +17484,7 @@ mod tests {
             Value,
             &'a str,
         );
-        let rows: [Row<'_>; 43] = [
+        let rows: [Row<'_>; 44] = [
             (
                 "add",
                 None,
@@ -17542,6 +17651,13 @@ mod tests {
                 None,
                 serde_json::json!({"title": "夜半 标题"}),
                 "SetTitle",
+            ),
+            (
+                "setTimeSignature",
+                None,
+                None,
+                serde_json::json!({"timeSignature": "6/8"}),
+                "SetTimeSignature",
             ),
             (
                 "setTrackName",
@@ -17743,11 +17859,11 @@ mod tests {
         assert_eq!(
             rows.len(),
             OP_KINDS.len() + 1,
-            "42 个 kind ＋ 1 个额外载荷分支"
+            "43 个 kind ＋ 1 个额外载荷分支"
         );
 
         let mut seen: Vec<&str> = Vec::new();
-        // ⭐ `#179`：在**全部 42 个 kind**上对账 `is_note_level()` 与发布的
+        // ⭐ `#179`：在**全部 43 个 kind**上对账 `is_note_level()` 与发布的
         // `NOTE_LEVEL_KINDS`（⛔ 不是手抄的第二份清单，也不是"断言它非空"）。
         let mut note_level_seen: Vec<&str> = Vec::new();
         for (label, clip_override, preset, payload, expected) in rows {
@@ -17794,8 +17910,9 @@ mod tests {
         // 变体）⇒ 38 → **39**；`#328` 的 `setClipGain`（独占一个变体）⇒ 39 → **40**；
         // `#329` 的 `setNoteExpression`（独占一个变体）⇒ 40 → **41**；
         // `#334` 的 `setNotePitchShape`（独占一个变体）⇒ 41 → **42**；
-        // `#336` 的 `setClipPlacementLoop`（独占一个变体）⇒ 42 → **43**。
-        assert_eq!(seen.len(), 43);
+        // `#336` 的 `setClipPlacementLoop`（独占一个变体）⇒ 42 → **43**；
+        // `#338` 的 `setTimeSignature`（独占一个变体）⇒ 43 → **44**。
+        assert_eq!(seen.len(), 44);
         // ⭐ `#179`：音符级分支集合**恰好是七个**，且逐字等于发布清单。
         assert_eq!(
             NOTE_LEVEL_KINDS,
@@ -17813,7 +17930,7 @@ mod tests {
         assert_eq!(
             note_level_seen.len(),
             7,
-            "全部 42 个 kind 里 `is_note_level()` 为真的必须**恰好七个**，实际: {note_level_seen:?}"
+            "全部 43 个 kind 里 `is_note_level()` 为真的必须**恰好七个**，实际: {note_level_seen:?}"
         );
         assert_eq!(
             note_level_seen,
@@ -18674,6 +18791,360 @@ mod tests {
         let not_string = parse_ops(&serde_json::json!([{"kind": SET_TITLE_KIND, "title": 3}]))
             .expect_err("非字符串必须被拒");
         assert_eq!(reason_of(&not_string).as_deref(), Some("valueMustBeString"));
+    }
+
+    /// `setTimeSignature`：解析 → 编译到**正是** `Op::SetTimeSignature` → `old_*` 来自
+    /// **当前文档** → 一步撤销逐字节复原；陈旧载荷被拒且文档不动。
+    ///
+    /// ⭐ 本判据对着「工程建得出、拍号改不了」：`time_signature` 此前唯一的**结构写**点是
+    /// `yeban_open_project` 的 `timeSignature` 实参（`domain/project_create.rs` 的模块
+    /// 文档逐字「← 只在这里能设」）。
+    ///
+    /// 注入（实测红）：① 编译成 `SetTempo` / `SetTitle` ⇒ 那条 `Op::SetTimeSignature`
+    /// 匹配断言红；② 把 `compile` 里的 `old_time_signature` 换回解析期的占位默认值 ⇒
+    /// 陈旧载荷那条断言红；③ 把 `parse_time_signature` 换成自写的 `N/D` 解析器而**不**调
+    /// `validate` ⇒ `0/4` / `4/3` 的 `OUT_OF_RANGE` 断言红。
+    #[test]
+    fn set_time_signature_compiles_the_document_value_and_inverts_byte_for_byte() {
+        let mut project = filled_project();
+        let (track_id, clip_id) = lead_clip(&project);
+        let signature_before = project.time_signature;
+        let bpm_before = project.bpm;
+        let title_before = project.title.clone();
+        let bytes_before = serde_json::to_string(&project).expect("序列化");
+
+        // ---- ① 解析：旧值是占位，真值在编译期读文档 ----
+        let ops = parse_ops(&serde_json::json!([
+            {"kind": SET_TIME_SIGNATURE_KIND, "timeSignature": "6/8"}
+        ]))
+        .expect("规范形状必须被接受");
+        assert_eq!(
+            ops[0].kind_name(),
+            SET_TIME_SIGNATURE_KIND,
+            "kind 必须回环一致"
+        );
+        assert!(!ops[0].is_note_level(), "顶层文档字段不读不写音符");
+        assert!(!ops[0].reads_envelope_clip(), "不读顶层 clipId");
+
+        // ---- ② 编译到**正是** `Op::SetTimeSignature`，旧值 == 文档现值 ----
+        let compiled = compile(&project, &track_id, &clip_id, &ops).expect("编译");
+        assert_eq!(compiled.len(), 1);
+        let expected_new = TimeSignature {
+            numerator: 6,
+            denominator: 8,
+        };
+        match &compiled[0] {
+            Op::SetTimeSignature {
+                old_time_signature,
+                new_time_signature,
+            } => {
+                assert_eq!(
+                    old_time_signature, &signature_before,
+                    "old 必须等于**文档现值**（⛔ 不信调用方声明）"
+                );
+                assert_eq!(new_time_signature, &expected_new);
+            }
+            other => panic!("应当是 SetTimeSignature: {other:?}"),
+        }
+
+        // ---- ③ 施加：只改拍号；一步撤销逐字节复原（⛔ 不是回到默认 4/4）----
+        compiled[0].apply(&mut project).expect("设置拍号");
+        assert_eq!(project.time_signature, expected_new);
+        assert_eq!(project.bpm, bpm_before, "改拍号 ⛔ 不碰 bpm");
+        assert_eq!(project.title, title_before, "改拍号 ⛔ 不碰 title");
+        assert!(project.validate().is_ok());
+        compiled[0].apply_inverse(&mut project).expect("逆操作");
+        assert_eq!(
+            project.time_signature, signature_before,
+            "逆操作必须回到**原**拍号"
+        );
+        assert_eq!(
+            serde_json::to_string(&project).expect("序列化"),
+            bytes_before,
+            "一步撤销必须逐字节回到原状"
+        );
+
+        // ---- ④ 陈旧载荷被拒，文档逐字节不动 ----
+        let stale = Op::SetTimeSignature {
+            old_time_signature: TimeSignature {
+                numerator: 3,
+                denominator: 4,
+            },
+            new_time_signature: expected_new,
+        };
+        let mut doc = project.clone();
+        let stale_bytes = serde_json::to_string(&doc).expect("序列化");
+        assert!(stale.apply(&mut doc).is_err(), "陈旧拍号必须被拒");
+        assert_eq!(
+            serde_json::to_string(&doc).expect("序列化"),
+            stale_bytes,
+            "被拒之后文档必须逐字节不动"
+        );
+
+        // ---- ⑤ 未知键（含旧值键）/ 缺键 / 形状 / 取值 ----
+        for payload in [
+            serde_json::json!({
+                "kind": SET_TIME_SIGNATURE_KIND,
+                "timeSignature": "6/8",
+                "oldTimeSignature": "4/4",
+            }),
+            serde_json::json!({
+                "kind": SET_TIME_SIGNATURE_KIND,
+                "timeSignature": "6/8",
+                "numerator": 6,
+            }),
+        ] {
+            let fault = parse_ops(&serde_json::json!([payload])).expect_err("未知键必须被拒");
+            assert_eq!(
+                reason_of(&fault).as_deref(),
+                Some("unknownSetTimeSignatureField"),
+                "旧值键必须被响亮拒绝（线协议不带 old*）"
+            );
+        }
+        // 缺键 ⛔ 不等于"用默认 4/4"（默认语义只属于 `create:true` 的可选实参）。
+        let missing_key = parse_ops(&serde_json::json!([{"kind": SET_TIME_SIGNATURE_KIND}]))
+            .expect_err("缺键必须被拒");
+        assert_eq!(
+            missing_key.domain_code(),
+            Some(ErrorCode::InvalidParameterRange)
+        );
+        assert!(
+            format!("{missing_key:?}").contains("timeSignature"),
+            "缺键报文必须点名 timeSignature: {missing_key:?}"
+        );
+        // 形状错误（≠ 取值错误）：同一批字符串都必须是 INVALID_PARAMETER_RANGE。
+        for shape in ["34", "3-4", "3/", "/4", " 3/4", "3/4 ", "3.0/4", "a/b"] {
+            let fault = parse_ops(&serde_json::json!([
+                {"kind": SET_TIME_SIGNATURE_KIND, "timeSignature": shape}
+            ]))
+            .expect_err("形状非法必须被拒");
+            assert_eq!(
+                fault.domain_code(),
+                Some(ErrorCode::InvalidParameterRange),
+                "{shape:?} 必须是形状错误"
+            );
+        }
+        // 取值越界 ⇒ OUT_OF_RANGE（唯一判定入口是模型 `TimeSignature::validate`）。
+        for value in ["0/4", "33/4", "4/3", "4/64"] {
+            let fault = parse_ops(&serde_json::json!([
+                {"kind": SET_TIME_SIGNATURE_KIND, "timeSignature": value}
+            ]))
+            .expect_err("取值越界必须被拒");
+            assert_eq!(
+                fault.domain_code(),
+                Some(ErrorCode::OutOfRange),
+                "{value:?} 必须是取值错误"
+            );
+        }
+    }
+
+    /// **拍号的边界就是模型的边界**：`setTimeSignature` 的接受/拒绝集合与
+    /// `TimeSignature::validate` **逐点相同**。
+    ///
+    /// 指标（对象 + 单位）：`(分子, 分母)` 候选对（单位 = 对）上，「`parse_ops` 是否接受」
+    /// 与「`TimeSignature::validate` 是否通过」是否**逐点一致**。期望值由**校验器现算**
+    /// （⛔ 不在测试里重抄 `1..=32` / `{1,2,4,8,16,32}` 的表 —— 那会变成第三份真相）；
+    /// 拒绝时还要求错误码是 `OUT_OF_RANGE`（`code_for_model` 把两个模型错误都映到那里），
+    /// 证明形状层**没有吞掉**取值越界。
+    ///
+    /// 注入（实测红）：在 `parse_time_signature` 去掉 `.validate()` ⇒ `0/4` / `4/3`
+    /// 一行红；把模型上界 `32` 改成 `31` ⇒ `32/32` 一行红（`validate` 与 `Op` 同时变，
+    /// 但候选表里的 `31/2` 与 `32/32` 会把差异读出来）。
+    #[test]
+    fn set_time_signature_accepts_exactly_what_the_model_validator_accepts() {
+        let mut accepted = 0usize;
+        let mut rejected = 0usize;
+        for (numerator, denominator) in [
+            (0u8, 4u8),
+            (1, 1),
+            (1, 2),
+            (1, 4),
+            (1, 8),
+            (1, 16),
+            (1, 32),
+            (2, 32),
+            (3, 4),
+            (4, 4),
+            (5, 8),
+            (6, 8),
+            (7, 16),
+            (12, 8),
+            (31, 2),
+            (32, 32),
+            (33, 4),
+            (4, 0),
+            (4, 3),
+            (4, 5),
+            (4, 7),
+            (4, 64),
+            (255, 255),
+        ] {
+            let signature = TimeSignature {
+                numerator,
+                denominator,
+            };
+            let expected = signature.validate().is_ok();
+            let text = format!("{numerator}/{denominator}");
+            let parsed = parse_ops(&serde_json::json!([
+                {"kind": SET_TIME_SIGNATURE_KIND, "timeSignature": text}
+            ]));
+            match parsed {
+                Ok(ops) => {
+                    accepted += 1;
+                    assert!(expected, "{text} 被接受，但模型校验器拒绝它");
+                    // 接受 ⇒ 编译出的新拍号必须逐字段等于输入（⛔ 不被形状层改写）。
+                    let project = filled_project();
+                    let (track_id, clip_id) = lead_clip(&project);
+                    let compiled = compile(&project, &track_id, &clip_id, &ops).expect("编译");
+                    match &compiled[0] {
+                        Op::SetTimeSignature {
+                            new_time_signature, ..
+                        } => assert_eq!(new_time_signature, &signature, "{text}"),
+                        other => panic!("应当是 SetTimeSignature: {other:?}"),
+                    }
+                }
+                Err(fault) => {
+                    rejected += 1;
+                    assert!(!expected, "{text} 被拒，但模型校验器接受它");
+                    assert_eq!(
+                        fault.domain_code(),
+                        Some(ErrorCode::OutOfRange),
+                        "{text}: 取值越界必须是 OUT_OF_RANGE"
+                    );
+                }
+            }
+        }
+        assert!(
+            accepted >= 8 && rejected >= 8,
+            "两侧都要真的被走到: accepted={accepted}, rejected={rejected}"
+        );
+
+        // ---- 绕过解析器的手工 `NoteOp` 也不能编译出一条 `apply` 必被拒的 op ----
+        let project = filled_project();
+        let (track_id, clip_id) = lead_clip(&project);
+        let hand_built = [NoteOp::SetTimeSignature {
+            old_time_signature: project.time_signature,
+            new_time_signature: TimeSignature {
+                numerator: 0,
+                denominator: 4,
+            },
+        }];
+        let fault = compile(&project, &track_id, &clip_id, &hand_built)
+            .expect_err("手工构造的非法拍号也必须被 compile 拒");
+        assert_eq!(fault.domain_code(), Some(ErrorCode::OutOfRange));
+    }
+
+    /// **拍号的行为后果（诚实范围）**：它改的是**栅格几何**，不是已渲染时值 ——
+    /// 本渲染器是 **tick 基**的。
+    ///
+    /// 指标（对象 + 单位）：
+    /// * `crate::domain::section_build::ticks_per_bar(&project)` = **一小节的 tick 数**
+    ///   （现算 = `PPQ × 分子 × 4 ÷ 分母`，与引擎节拍器的
+    ///   `ticks_per_beat × beats_per_bar` 是**同一个乘积**）：4/4 ⇒ 3840、
+    ///   6/8 ⇒ 2880、3/2 ⇒ 5760；
+    /// * 工程里**所有 tick 载荷**（音符 `start_tick` / `duration_ticks`、摆放
+    ///   `start_tick` / `duration_ticks`；单位 = tick）在改拍号前后**逐条不变**。
+    ///
+    /// 为什么"离线母带不受影响"是**结论而非口号**：`yeban-render` 的**音频母带**路径
+    /// 不读 `time_signature`（全 crate 的命中只有实验性的 `.logicx` / `.als` 导出，
+    /// 见 `crates/yeban-render/src/logic.rs` / `als.rs`）；渲染器消费的是 tick 栅格 ⇒
+    /// tick 载荷不变 ＋ 音频资产字节不变 ⇒ 母带逐样本不变。
+    ///
+    /// **唯一的真实听感差异**来自节拍器：引擎的
+    /// `MetronomePlan::new(sample_rate, project.time_signature)`
+    /// （`crates/yeban-engine/src/snapshot.rs`）把分母变成 `ticks_per_beat`、分子变成
+    /// `beats_per_bar` ⇒ 咔哒声的**拍点间距与强拍周期**变了。
+    /// ⚠ 本文件**够不到**那个类型（`yeban-mcp` 不得依赖 `yeban-engine`，
+    /// `check_mcp_dependency_direction.py` 的红线）⇒ 这里断言的是**同一个乘积**在本
+    /// crate 的消费者上的读数；节拍器本体的几何由引擎自己的判据
+    /// `grid_follows_the_time_signature_denominator`（`crates/yeban-engine/src/
+    /// metronome.rs`：4/4 ⇒ 960、6/8 ⇒ 480、3/2 ⇒ 1920）钉住，本线**不复制**它。
+    ///
+    /// 注入（实测红）：把 `Op::SetTimeSignature` 的 `commit` 改成同时改写音符 tick ⇒
+    /// 第二条断言红；把 `ticks_per_bar` 换成写死的 3840 ⇒ 6/8 那条断言红。
+    #[test]
+    fn the_meter_changes_bar_geometry_but_not_any_tick_payload() {
+        use crate::domain::section_build::ticks_per_bar;
+
+        fn tick_payloads(project: &YebanProjectV1) -> Vec<(u64, u64)> {
+            let mut ticks = Vec::new();
+            for entry in project.clip_pool.values() {
+                if let Some(notes) = entry.content.notes() {
+                    for note in notes.values() {
+                        ticks.push((note.start_tick, note.duration_ticks));
+                    }
+                }
+            }
+            for track in project.tracks.values() {
+                for placement in track.clips.values() {
+                    ticks.push((placement.start_tick, placement.duration_ticks));
+                }
+            }
+            ticks.sort_unstable();
+            ticks
+        }
+
+        let mut project = filled_project();
+        let (track_id, clip_id) = lead_clip(&project);
+        assert_eq!(
+            project.time_signature,
+            TimeSignature::default(),
+            "样本工程的拍号是模型默认 4/4"
+        );
+        assert_eq!(
+            ticks_per_bar(&project),
+            3_840,
+            "4/4 的一小节 = 4 拍 × 960 tick"
+        );
+        let ticks_before = tick_payloads(&project);
+        assert!(
+            ticks_before.len() >= 4,
+            "样本里必须有 note / placement 的 tick 载荷（现读 {} 条）",
+            ticks_before.len()
+        );
+
+        // 4/4 → 6/8：小节变短（2880），但**没有任何 tick 载荷**移动。
+        for (requested, expected_ticks_per_bar) in
+            [("6/8", 2_880u64), ("3/2", 5_760), ("4/4", 3_840)]
+        {
+            let ops = parse_ops(&serde_json::json!([
+                {"kind": SET_TIME_SIGNATURE_KIND, "timeSignature": requested}
+            ]))
+            .expect("规范形状必须被接受");
+            let compiled = compile(&project, &track_id, &clip_id, &ops).expect("编译");
+            compiled[0].apply(&mut project).expect("设置拍号");
+            assert_eq!(
+                (
+                    project.time_signature.numerator,
+                    project.time_signature.denominator
+                ),
+                {
+                    let (numerator, denominator) = requested.split_once('/').expect("N/D");
+                    (
+                        numerator.parse::<u8>().expect("分子"),
+                        denominator.parse::<u8>().expect("分母"),
+                    )
+                },
+                "{requested} 必须真的落进文档"
+            );
+            assert_eq!(
+                ticks_per_bar(&project),
+                expected_ticks_per_bar,
+                "{requested} 的小节 tick 数"
+            );
+            assert_eq!(
+                tick_payloads(&project),
+                ticks_before,
+                "{requested}: 改拍号 ⛔ 不移动任何音符/摆放的 tick（本渲染器是 tick 基的）"
+            );
+            assert!(project.validate().is_ok());
+            compiled[0].apply_inverse(&mut project).expect("逆操作");
+        }
+        assert_eq!(
+            project.time_signature,
+            TimeSignature::default(),
+            "三轮往返之后拍号必须回到 4/4"
+        );
     }
 
     /// `setClipGain`：解析 → 编译到**正是** `Op::SetClipGain` → `old_gain_db` 来自

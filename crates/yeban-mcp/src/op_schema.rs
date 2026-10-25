@@ -754,6 +754,19 @@ pub fn ops_items() -> Value {
                 true,
             ),
             op(
+                "setTimeSignature",
+                "写工程拍号（顶层 `time_signature`；同一份 `\"N/D\"` 文本与 `yeban_open_project` 的 `timeSignature` 逐字同词同义，值域由模型 `TimeSignature::validate` 判）",
+                &["kind", "timeSignature"],
+                json!({
+                    "kind": kind("setTimeSignature"),
+                    "timeSignature": {
+                        "type": "string",
+                        "description": "新拍号 \"N/D\" 文本（例 \"3/4\"、\"6/8\"）。形状错误 ⇒ `INVALID_PARAMETER_RANGE`；取值越界 ⇒ `OUT_OF_RANGE`。⛔ 这里不复制值域表：判定它的唯一入口是模型 `TimeSignature::validate`",
+                    },
+                }),
+                true,
+            ),
+            op(
                 "setAutomationLane",
                 "写一条自动化泳道自己的属性，或 `remove:true` 取走它（目标音轨 = 顶层 `trackId`）",
                 &["kind", "lane"],

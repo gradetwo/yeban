@@ -41,7 +41,7 @@ use yeban_mcp::undo_session::read_rust_sources;
 /// 黄金表：每个 `Op` 变体**必须**在哪些工具模块里有一个构造点。
 ///
 /// 读法：删掉任一处登记的构造点 ⇒ 本判据红。
-pub const EXPECTED_SITES: [(&str, &[&str]); 50] = [
+pub const EXPECTED_SITES: [(&str, &[&str]); 51] = [
     ("AddNote", &["domain/notes.rs"]),
     ("DeleteNote", &["domain/notes.rs"]),
     ("MoveNote", &["domain/notes.rs"]),
@@ -94,6 +94,9 @@ pub const EXPECTED_SITES: [(&str, &[&str]); 50] = [
     ("SetTempo", &["domain/notes.rs"]),
     ("SetAuthor", &["domain/notes.rs"]),
     ("SetTitle", &["domain/notes.rs"]),
+    // ⭐ `#338`：工程拍号此前只能在 `yeban_open_project` 的 `create:true` 实参里给
+    // ⇒ `setTimeSignature` 的 `parse_one` / `compile` 构造 `Op::SetTimeSignature`。
+    ("SetTimeSignature", &["domain/notes.rs"]),
     ("SetTrackName", &["domain/notes.rs"]),
     ("SetClipName", &["domain/notes.rs"]),
     ("SetClipGain", &["domain/notes.rs"]),
@@ -423,8 +426,8 @@ fn every_op_variant_has_a_registered_construction_site() {
     assert_eq!(names.len(), EXPECTED_SITES.len(), "变体名不得重复");
     assert_eq!(
         names.len(),
-        50,
-        "登记表有 50 条（⭐ 它**不是**模型变体数 —— 模型全集由 \
+        51,
+        "登记表有 51 条（⭐ 它**不是**模型变体数 —— 模型全集由 \
          `every_model_op_variant_is_registered_or_declared_unreachable` 管）"
     );
 }
