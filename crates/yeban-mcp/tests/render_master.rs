@@ -7234,6 +7234,44 @@ fn a_bend_written_through_the_tool_surface_bends_the_master() {
     let old_note = id(30).to_canonical_string();
     let new_note = id(31).to_canonical_string();
 
+    // ⓪ 判据 5（线上形态）：未知键仍然响亮拒绝，且 `data.supportedNoteFields`
+    //    **在真实的 `tools/call` 响应里**就是 10 条 —— `notes.rs` 的单测只证明
+    //    `Fault` 载荷，本层证明 `ToolResponse` 的出海口没有把它丢掉。
+    let rejected = call_tool(
+        &mut dispatcher,
+        &auth,
+        "yeban_edit_notes",
+        json!({
+            "trackId": lead,
+            "clipId": clip,
+            "ops": [{"kind": "add", "note": {
+                "startTick": 0,
+                "pitch": 69,
+                "durationTicks": 480,
+                "slyde": {"durationTicks": 480, "targetPitch": 81},
+            }}],
+        }),
+    );
+    assert_eq!(rejected["status"], "error", "未知键必须拒绝: {rejected}");
+    assert_eq!(
+        rejected["error"]["code"], "INVALID_PARAMETER_RANGE",
+        "{rejected}"
+    );
+    assert_eq!(rejected["error"]["data"]["field"], "slyde");
+    assert_eq!(
+        rejected["error"]["data"]["supportedNoteFields"]
+            .as_array()
+            .expect("supportedNoteFields")
+            .len(),
+        10,
+        "线上 `supportedNoteFields` 必须如实是 10 条: {rejected}"
+    );
+    assert_eq!(
+        rejected["error"]["data"]["unsupportedNoteFields"],
+        json!(["syllable", "phonemes"]),
+        "仍然没有通路的只有 syllable / phonemes: {rejected}"
+    );
+
     let written = call_tool(
         &mut dispatcher,
         &auth,

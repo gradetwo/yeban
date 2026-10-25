@@ -537,3 +537,68 @@ fn op_schema_is_the_same_object_the_catalog_publishes() {
             .expect("ops 必须带 items 构造器"),
     );
 }
+
+/// `#311c`：`add.note` 的**公布** schema 必须真的广告 `pitchBendCurve` / `slide`，
+/// 且 `slide` 的必填集与曲线枚举与解析器同源。
+///
+/// 为什么单独一条：只测解析器（`notes.rs` 的单测）会漏掉"能力可达但**不可发现**"——
+/// 外部 Agent 按 `tools/list` 写载荷，schema 里没有的键它不会写。本条钉住
+/// `note_object()` 的公告面与 `add.note` 的必填集（两个新字段都必须是**可选**的）。
+#[test]
+fn the_published_add_note_schema_advertises_bend_and_slide() {
+    let items = published_ops_items();
+    let add = items["oneOf"]
+        .as_array()
+        .expect("oneOf")
+        .iter()
+        .find(|branch| branch["title"] == "add")
+        .expect("add 分支");
+    let note = &add["properties"]["note"];
+    let properties = &note["properties"];
+
+    let required: Vec<&str> = note["required"]
+        .as_array()
+        .expect("note.required")
+        .iter()
+        .filter_map(Value::as_str)
+        .collect();
+    assert_eq!(
+        required,
+        vec!["startTick", "pitch", "durationTicks"],
+        "两个新字段必须是**可选**的（与 parse_note 的缺省 = 模型默认一致）"
+    );
+
+    assert_eq!(
+        properties["pitchBendCurve"]["type"], "array",
+        "`pitchBendCurve` 必须公布: {properties}"
+    );
+    assert_eq!(properties["pitchBendCurve"]["items"]["minItems"], 2);
+    assert_eq!(properties["pitchBendCurve"]["items"]["maxItems"], 2);
+    assert_eq!(
+        properties["pitchBendCurve"]["items"]["items"]["type"], "integer",
+        "`[tick, cents]` 的两项都必须是整数"
+    );
+
+    let slide = &properties["slide"];
+    assert_eq!(slide["type"], "object", "`slide` 必须公布: {properties}");
+    assert_eq!(
+        slide["additionalProperties"], false,
+        "`slide` 的未知键口径必须是封闭的（与 read_slide 的响亮拒绝一致）"
+    );
+    let slide_required: Vec<&str> = slide["required"]
+        .as_array()
+        .expect("slide.required")
+        .iter()
+        .filter_map(Value::as_str)
+        .collect();
+    assert_eq!(
+        slide_required,
+        vec!["durationTicks", "targetPitch"],
+        "`slide` 的两个必填键必须与 `read_slide` 同源"
+    );
+    assert_eq!(
+        slide["properties"]["curve"]["enum"],
+        serde_json::json!(yeban_mcp::domain::extension_pure::CURVE_NAMES),
+        "`slide.curve` 的枚举必须引用规范名表（⛔ 手抄第二份）"
+    );
+}
