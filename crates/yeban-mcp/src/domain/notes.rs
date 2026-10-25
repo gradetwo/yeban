@@ -747,7 +747,8 @@ use std::str::FromStr as _;
 use serde_json::{Map, Value};
 
 use yeban_model::music::{
-    MICRO_TIMING_MAX_ABS, PROBABILITY_MAX, PROBABILITY_MIN, RATCHET_MAX, RATCHET_MIN,
+    MICRO_TIMING_MAX_ABS, MIDI_PITCH_MAX, MIDI_VELOCITY_MAX, PROBABILITY_MAX, PROBABILITY_MIN,
+    RATCHET_MAX, RATCHET_MIN,
 };
 use yeban_model::{
     AssetHash, AutomationLane, AutomationTarget, AutomationValueDomain, AutomationWriteMode,
@@ -3789,7 +3790,7 @@ fn parse_one(item: &Value) -> Result<NoteOp, Fault> {
         }),
         "velocity" => Ok(NoteOp::Velocity {
             note_id: read_id(object, "noteId")?,
-            velocity: read_range(object, "velocity", 0, 127)?,
+            velocity: read_range(object, "velocity", 0, MIDI_VELOCITY_MAX)?,
         }),
         SET_NOTE_TIMING_KIND => {
             reject_set_note_timing_fields(object)?;
@@ -6547,11 +6548,11 @@ fn parse_note(object: &Map<String, Value>) -> Result<MidiNote, Fault> {
         }
     };
     let start_tick = read_u64(object, "startTick")?;
-    let pitch = read_range(object, "pitch", 0, 127)?;
+    let pitch = read_range(object, "pitch", 0, MIDI_PITCH_MAX)?;
     let duration_ticks = read_u64(object, "durationTicks")?;
     let velocity = match object.get("velocity") {
         None => yeban_model::music::DEFAULT_VELOCITY,
-        Some(_) => read_range(object, "velocity", 0, 127)?,
+        Some(_) => read_range(object, "velocity", 0, MIDI_VELOCITY_MAX)?,
     };
     let mut note = MidiNote::new(id, start_tick, pitch, duration_ticks);
     note.velocity = velocity;
@@ -6842,7 +6843,7 @@ pub fn compile(
                 // 音域与时间轴越界在**这里**就报 OUT_OF_RANGE（§7.2 给本工具声明的码），
                 // 而不是让模型层的 OpStateMismatch 冒泡成 CONFLICT。
                 let shifted_pitch = i16::from(current.pitch) + i16::from(*delta_pitch);
-                if !(0..=127).contains(&shifted_pitch) {
+                if !(0..=i16::from(MIDI_PITCH_MAX)).contains(&shifted_pitch) {
                     return Err(Fault::domain_with_data(
                         ErrorCode::OutOfRange,
                         format!(
@@ -9076,6 +9077,7 @@ fn read_id(object: &Map<String, Value>, field: &str) -> Result<EntityId, Fault> 
 mod tests {
     use super::*;
     use yeban_model::AutomationPoint;
+    use yeban_model::project::{MAX_BPM, MIN_BPM};
     use yeban_model::samples::filled_project;
 
     fn lead_clip(project: &YebanProjectV1) -> (EntityId, EntityId) {
@@ -13964,6 +13966,7 @@ mod tests {
                 (micro_min, micro_max),
             ),
             ("velocity", "velocity", (0.0, velocity_max)),
+            ("setTempo", "bpm", (MIN_BPM, MAX_BPM)),
         ] {
             assert_eq!(
                 schema_bounds(kind_name, field),
@@ -14032,6 +14035,230 @@ mod tests {
         let data = data.as_ref().expect("必须带 data");
         assert_eq!(data["min"], 0.0);
         assert_eq!(data["max"], 1.0);
+    }
+
+    // -----------------------------------------------------------------------
+    // 值域的"两份字面"：`pitch` / `velocity` / `bpm`（#331，照 #330 先例）
+    //
+    // 四个解析点（`add.pitch` / `add.velocity` / `velocity` / `move` 的平移前置）
+    // 与一处 `scene_launch` 的 tempo 区间此前各写一份 `127` / `999.0`。
+    // 下面三条判据把"模型常量 / MCP 预判 / 广播 schema / 报文"钉在一起。
+    // -----------------------------------------------------------------------
+
+    fn add_pitch_accepts(pitch: u8) -> bool {
+        parse_ops(&Value::Array(vec![serde_json::json!({
+            "kind": "add",
+            "note": {"startTick": 0, "pitch": pitch, "durationTicks": 480},
+        })]))
+        .is_ok()
+    }
+
+    fn add_velocity_accepts(velocity: u8) -> bool {
+        parse_ops(&Value::Array(vec![serde_json::json!({
+            "kind": "add",
+            "note": {
+                "startTick": 0,
+                "pitch": 60,
+                "durationTicks": 480,
+                "velocity": velocity,
+            },
+        })]))
+        .is_ok()
+    }
+
+    fn velocity_op_accepts(velocity: u8) -> bool {
+        parse_ops(&Value::Array(vec![serde_json::json!({
+            "kind": "velocity",
+            "noteId": deterministic_id("pitch-velocity-probe"),
+            "velocity": velocity,
+        })]))
+        .is_ok()
+    }
+
+    fn model_pitch_accepts(pitch: u8) -> bool {
+        let mut note = MidiNote::new(deterministic_id("pitch-velocity-probe"), 0, pitch, 480);
+        note.velocity = 100;
+        note.validate().is_ok()
+    }
+
+    fn model_velocity_accepts(velocity: u8) -> bool {
+        let mut note = MidiNote::new(deterministic_id("pitch-velocity-probe"), 0, 60, 480);
+        note.velocity = velocity;
+        note.validate().is_ok()
+    }
+
+    /// `move` 的平移前置（`compile` 里的 `0..=MIDI_PITCH_MAX`）。
+    fn move_pitch_accepts(base_pitch: u8, delta_pitch: i8) -> bool {
+        let mut project = filled_project();
+        let (track_id, clip_id) = lead_clip(&project);
+        let note_id = *project.clip_pool[&clip_id]
+            .content
+            .notes()
+            .expect("样本片段必须是 MIDI")
+            .keys()
+            .next()
+            .expect("样本片段必须至少一个音符");
+        project
+            .clip_pool
+            .get_mut(&clip_id)
+            .expect("片段存在")
+            .content
+            .notes_mut()
+            .expect("样本片段必须是 MIDI")
+            .get_mut(&note_id)
+            .expect("音符存在")
+            .pitch = base_pitch;
+        let ops = parse_ops(&Value::Array(vec![serde_json::json!({
+            "kind": "move",
+            "noteId": note_id.to_canonical_string(),
+            "deltaTick": 0,
+            "deltaPitch": delta_pitch,
+        })]))
+        .expect("解析");
+        compile(&project, &track_id, &clip_id, &ops).is_ok()
+    }
+
+    /// 3 个值 × 3 个 MCP 入口 ＋ 模型校验：逐值同结论（127 含、128 拒）。
+    ///
+    /// 修前注入（实测，本单）：只把 `notes.rs:3792`/`6550`/`6554` 的
+    /// `0, 127` 之一改成 `0, 126` ⇒ 全套 39 个 MCP test 二进制
+    /// **989 passed / 0 failed 全绿** ⇒ 本判据就是为那三处裸字面加的。
+    #[test]
+    fn pitch_and_velocity_boundaries_agree_across_every_layer() {
+        for (value, expected) in [(0_u8, true), (127, true), (128, false)] {
+            assert_eq!(add_pitch_accepts(value), expected, "`add.pitch` = {value}");
+            assert_eq!(
+                add_velocity_accepts(value),
+                expected,
+                "`add.velocity` = {value}"
+            );
+            assert_eq!(
+                velocity_op_accepts(value),
+                expected,
+                "`velocity.velocity` = {value}"
+            );
+            assert_eq!(model_pitch_accepts(value), expected, "模型 pitch = {value}");
+            assert_eq!(
+                model_velocity_accepts(value),
+                expected,
+                "模型 velocity = {value}"
+            );
+        }
+
+        // 越界报文与 `data.max` 也必须指向模型常量（不是第二个字面）。
+        let pitch_fault = parse_ops(&Value::Array(vec![serde_json::json!({
+            "kind": "add",
+            "note": {"startTick": 0, "pitch": 128, "durationTicks": 480},
+        })]))
+        .expect_err("音高越界");
+        let Fault::Domain { message, data, .. } = &pitch_fault else {
+            panic!("必须是领域失败");
+        };
+        assert_eq!(
+            message.as_str(),
+            format!("`pitch` 越界: 128 不在 0..={MIDI_PITCH_MAX}")
+        );
+        assert_eq!(
+            data.as_ref().expect("必须带 data")["max"].as_u64(),
+            Some(u64::from(MIDI_PITCH_MAX))
+        );
+
+        let velocity_fault = parse_ops(&Value::Array(vec![serde_json::json!({
+            "kind": "velocity",
+            "noteId": deterministic_id("pitch-velocity-probe"),
+            "velocity": 128,
+        })]))
+        .expect_err("力度越界");
+        let Fault::Domain { message, data, .. } = &velocity_fault else {
+            panic!("必须是领域失败");
+        };
+        assert_eq!(
+            message.as_str(),
+            format!("`velocity` 越界: 128 不在 0..={MIDI_VELOCITY_MAX}")
+        );
+        assert_eq!(
+            data.as_ref().expect("必须带 data")["max"].as_u64(),
+            Some(u64::from(MIDI_VELOCITY_MAX))
+        );
+    }
+
+    /// `move` 的两个端点都**含**：127+0 收、127+1 拒、0+0 收、0−1 拒。
+    ///
+    /// 修前注入（实测，本单）：只把 `notes.rs:6845` 的 `0..=127` 改成
+    /// `0..=126` ⇒ 同一套 39 个 test 二进制全绿。
+    #[test]
+    fn move_pitch_boundaries_are_inclusive_at_both_ends() {
+        for (base, delta, expected) in [
+            (127_u8, 0_i8, true),
+            (127, 1, false),
+            (0, 0, true),
+            (0, -1, false),
+        ] {
+            assert_eq!(
+                move_pitch_accepts(base, delta),
+                expected,
+                "move {base} + {delta}"
+            );
+        }
+    }
+
+    /// `bpm` 四值穿过 `setTempo` 的 `compile` 前置（模型常量是唯一区间来源）。
+    #[test]
+    fn bpm_boundaries_agree_between_schema_and_compile() {
+        let project = filled_project();
+        let (track_id, clip_id) = lead_clip(&project);
+        for (bpm, expected) in [
+            (19.0_f64, false),
+            (20.0, true),
+            (999.0, true),
+            (1000.0, false),
+        ] {
+            let ops = parse_ops(&Value::Array(vec![serde_json::json!({
+                "kind": SET_TEMPO_KIND,
+                "bpm": bpm,
+            })]))
+            .expect("解析不查区间");
+            assert_eq!(
+                compile(&project, &track_id, &clip_id, &ops).is_ok(),
+                expected,
+                "bpm = {bpm}"
+            );
+        }
+    }
+
+    /// (c) `bpm` 的 schema 描述与发布端点逐字＝模型常量。
+    ///
+    /// ⚠ `setScene.tempo` 的 schema **没有** `minimum`/`maximum`（只有描述）——
+    /// 给它加数字字段会动 `tools/list` 字节，因此 (a) 只对账 `setTempo.bpm`。
+    #[test]
+    fn bpm_schema_and_messages_speak_the_model_bounds() {
+        let items = crate::op_schema::ops_items();
+        let branches = items["oneOf"].as_array().expect("`oneOf` 必须是数组");
+        let branch = |name: &str| {
+            branches
+                .iter()
+                .find(|branch| branch["properties"]["kind"]["const"].as_str() == Some(name))
+                .unwrap_or_else(|| panic!("schema 里必须有 `{name}` 分支"))
+        };
+
+        let set_tempo = branch("setTempo");
+        let expected = format!("写工程速度（BPM {MIN_BPM:?}..={MAX_BPM:?}）");
+        assert!(
+            set_tempo["description"]
+                .as_str()
+                .expect("description")
+                .starts_with(&expected),
+            "`setTempo` 描述必须拼常量: {set_tempo}"
+        );
+        let set_scene = branch("setScene");
+        let expected = format!("速度覆盖（BPM {MIN_BPM}..={MAX_BPM}）；null = 清空 = 跟随工程速度");
+        assert_eq!(
+            set_scene["properties"]["scene"]["properties"]["tempo"]["description"].as_str(),
+            Some(expected.as_str()),
+            "`setScene.tempo` 描述必须拼常量"
+        );
+        // 已发布端点：20.0 / 999.0（`#330` 的 `project_create` 判据同口径）。
+        assert_eq!((MIN_BPM, MAX_BPM), (20.0, 999.0));
     }
 
     /// `note` 里的未知键 ⇒ 响亮拒绝（列出支持集合），**绝不**静默丢弃。

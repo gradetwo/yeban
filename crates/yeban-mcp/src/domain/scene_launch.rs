@@ -31,6 +31,7 @@ use std::str::FromStr as _;
 
 use serde_json::{Map, Value};
 
+use yeban_model::project::{MAX_BPM, MIN_BPM};
 use yeban_model::{EntityId, LaunchQuantization, TimeSignature, YebanProjectV1};
 
 use super::error::Fault;
@@ -154,10 +155,10 @@ pub fn resolve(project: &YebanProjectV1, scene_id_text: &str) -> Result<Resolved
         Some(tempo) => (tempo, "sceneOverride"),
         None => (project.bpm, "project"),
     };
-    if !tempo_bpm.is_finite() || !(20.0..=999.0).contains(&tempo_bpm) {
+    if !tempo_bpm.is_finite() || !(MIN_BPM..=MAX_BPM).contains(&tempo_bpm) {
         return Err(Fault::domain_with_data(
             ErrorCode::OutOfRange,
-            format!("场景启动的 tempo 必须在 20.0..=999.0 且有限（实测 {tempo_bpm}）"),
+            format!("场景启动的 tempo 必须在 {MIN_BPM:?}..={MAX_BPM:?} 且有限（实测 {tempo_bpm}）"),
             serde_json::json!({
                 "reason": "sceneTempoOutOfRange",
                 "sceneId": scene_id_text,
@@ -217,6 +218,72 @@ mod tests {
         let resolved = resolve(&project, &id.to_canonical_string()).expect("解析");
         assert_eq!(resolved.tempo_source, "project");
         assert_eq!(resolved.request.tempo_bpm, project.bpm);
+    }
+
+    /// 场景 tempo 的四值边界：19 / 20 / 999 / 1000（＋ 非有限）逐值同结论。
+    ///
+    /// 修前注入（实测，本单）：只把 `scene_launch.rs:157` 的 `999.0` 改成
+    /// `998.0` ⇒ 全套 39 个 MCP test 二进制 989 passed / 0 failed 全绿。
+    #[test]
+    fn scene_tempo_bounds_follow_the_model_constants() {
+        for (bpm, accepted) in [
+            (MIN_BPM - 1.0, false),
+            (MIN_BPM, true),
+            (MAX_BPM, true),
+            (MAX_BPM + 1.0, false),
+            (f64::NAN, false),
+        ] {
+            let (mut project, id) = project_with_scene();
+            project.scenes.get_mut(&id).expect("场景").tempo = Some(bpm);
+            let result = resolve(&project, &id.to_canonical_string());
+            assert_eq!(result.is_ok(), accepted, "scene tempo = {bpm}");
+            if let Err(error) = result {
+                match error {
+                    Fault::Domain {
+                        code,
+                        message,
+                        data,
+                    } => {
+                        assert_eq!(code, ErrorCode::OutOfRange, "{bpm}");
+                        let data = data.expect("带结构化 data");
+                        assert_eq!(data["reason"], "sceneTempoOutOfRange");
+                        assert_eq!(data["sceneId"], id.to_canonical_string());
+                        if bpm.is_finite() {
+                            assert_eq!(
+                                message.as_str(),
+                                format!(
+                                    "场景启动的 tempo 必须在 {MIN_BPM:?}..={MAX_BPM:?} 且有限（实测 {bpm}）"
+                                )
+                            );
+                        }
+                    }
+                    other => panic!("必须是领域错误: {other:?}"),
+                }
+            }
+        }
+    }
+
+    /// 发布文案逐字：`20.0..=999.0` 与 `#330` 之前的字节完全相同。
+    #[test]
+    fn scene_tempo_out_of_range_message_keeps_its_published_bytes() {
+        let (mut project, id) = project_with_scene();
+        project.scenes.get_mut(&id).expect("场景").tempo = Some(MAX_BPM + 1.0);
+        let error = resolve(&project, &id.to_canonical_string()).expect_err("1000 必须被拒");
+        let Fault::Domain {
+            code,
+            message,
+            data,
+            ..
+        } = error
+        else {
+            panic!("必须是领域失败");
+        };
+        assert_eq!(code, ErrorCode::OutOfRange);
+        assert_eq!(
+            message,
+            "场景启动的 tempo 必须在 20.0..=999.0 且有限（实测 1000）"
+        );
+        assert_eq!(data.expect("带结构化 data")["tempoBpm"], 1000.0);
     }
 
     #[test]

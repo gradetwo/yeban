@@ -89,6 +89,7 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 use serde_json::Value;
+use yeban_model::project::{MAX_BPM, MIN_BPM};
 use yeban_model::{
     ClipContent, ClipPlacement, ClipPoolEntry, EntityId, LoopConfig, MidiNote, Op, RoutingEdge,
     RoutingGraph, RoutingKind, TimeSignature, TrackKind, TrackV3, YebanProjectV1,
@@ -317,10 +318,6 @@ pub fn parse_config(
     Ok(config)
 }
 
-/// 模型层 BPM 下界（与 `yeban_model::project::MIN_BPM` 同值）。
-const MIN_BPM: f64 = 20.0;
-/// 模型层 BPM 上界（与 `yeban_model::project::MAX_BPM` 同值）。
-const MAX_BPM: f64 = 999.0;
 /// 一拍（4/4 的一拍）= 一个四分音符 = `PPQ` tick。
 const PPQ: u64 = yeban_model::PPQ;
 

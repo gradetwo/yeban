@@ -43,6 +43,7 @@ use yeban_model::music::{
     MICRO_TIMING_MAX_ABS, MIDI_PITCH_MAX, MIDI_VELOCITY_MAX, PROBABILITY_MAX, PROBABILITY_MIN,
     RATCHET_MAX, RATCHET_MIN,
 };
+use yeban_model::project::{MAX_BPM, MIN_BPM};
 
 use crate::domain::extension_pure::LANE_NAMES;
 use crate::domain::notes::{DEVICE_KINDS, LANE_WRITE_MODES, OP_KINDS};
@@ -295,7 +296,7 @@ fn scene_object() -> Value {
             "name": non_empty("场景名（`create:true` 时必填）"),
             "tempo": {
                 "type": ["number", "null"],
-                "description": "速度覆盖（BPM 20..=999）；null = 清空 = 跟随工程速度",
+                "description": format!("速度覆盖（BPM {MIN_BPM}..={MAX_BPM}）；null = 清空 = 跟随工程速度"),
             },
             "color": {
                 "type": ["string", "null"],
@@ -504,14 +505,14 @@ pub fn ops_items() -> Value {
             ),
             op(
                 "setTempo",
-                "写工程速度（BPM 20.0..=999.0）",
+                &format!("写工程速度（BPM {MIN_BPM:?}..={MAX_BPM:?}）"),
                 &["kind", "bpm"],
                 json!({
                     "kind": kind("setTempo"),
                     "bpm": {
                         "type": "number",
-                        "minimum": 20.0,
-                        "maximum": 999.0,
+                        "minimum": MIN_BPM,
+                        "maximum": MAX_BPM,
                         "description": "新速度（BPM；模型 `BpmOutOfRange` 判）",
                     },
                 }),
