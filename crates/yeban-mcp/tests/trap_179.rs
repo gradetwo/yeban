@@ -15,9 +15,9 @@
 //! | 判据 | 对象 | 读数 |
 //! | :--- | :--- | :--- |
 //! | [`six_property_forms_succeed_on_an_audio_clip`] | 六个属性级形态 + **音频**顶层 `clipId` | 6 条 `status:"success"` ＋ 6 个 `projectDigest` 变化 ＋ 6 条标题（`音轨级编辑: 1 步`） |
-//! | [`four_note_forms_are_still_blocked_on_an_audio_clip`] | 五个音符形态 + **音频** `clipId` | 5 条 `CLIP_NOT_FOUND`（逐字含"不是 MIDI 片段"） |
+//! | [`four_note_forms_are_still_blocked_on_an_audio_clip`] | 七个音符形态 + **音频** `clipId` | 7 条 `CLIP_NOT_FOUND`（逐字含"不是 MIDI 片段"） |
 //! | [`the_four_note_forms_are_byte_identical_on_a_midi_clip`] | 四个**基线**音符形态 + **MIDI** 片段 | 4 个合并后 `projectDigest`（收窄前录下、收窄后逐字相等） |
-//! | [`the_note_level_predicate_is_exactly_six`] | `NOTE_LEVEL_KINDS` / `ENVELOPE_CLIP_KINDS` | 6 个成员 ＋ 子集关系（唯一非音符的 `clipId` 读者 = `removeClip`） |
+//! | [`the_note_level_predicate_is_exactly_seven`] | `NOTE_LEVEL_KINDS` / `ENVELOPE_CLIP_KINDS` | 7 个成员 ＋ 子集关系（唯一非音符的 `clipId` 读者 = `removeClip`） |
 //!
 //! 复跑读数：`cargo test -p yeban-mcp --test trap_179 -- --nocapture`
 
@@ -311,6 +311,13 @@ fn four_note_forms_are_still_blocked_on_an_audio_clip() {
                 "probability": null, "ratchet": null, "microTimingTicks": null,
             }),
         ),
+        (
+            "setNotePitchShape",
+            json!({
+                "kind": "setNotePitchShape", "noteId": ghost_text,
+                "newPitchBendCurve": [], "newSlide": null,
+            }),
+        ),
     ];
     for (kind, op) in cases {
         let proposals_before = dispatcher.domain().proposal_count();
@@ -454,7 +461,7 @@ fn the_four_note_forms_are_byte_identical_on_a_midi_clip() {
 /// 注入（实测红）：把 `NOTE_LEVEL_KINDS` 加回任一属性级形态，或把谓词改回收窄前的
 /// 反选清单 ⇒ 本判据红；`six_property_forms_succeed_on_an_audio_clip` 的标题断言也红。
 #[test]
-fn the_note_level_predicate_is_exactly_six() {
+fn the_note_level_predicate_is_exactly_seven() {
     assert_eq!(
         NOTE_LEVEL_KINDS,
         [
@@ -463,11 +470,12 @@ fn the_note_level_predicate_is_exactly_six() {
             "move",
             "velocity",
             "setNoteTiming",
-            "setNoteExpression"
+            "setNoteExpression",
+            "setNotePitchShape"
         ],
-        "音符级 kind 必须逐字是六个音符形态（⛔ 不是从常量自己比出来的长度）"
+        "音符级 kind 必须逐字是七个音符形态（⛔ 不是从常量自己比出来的长度）"
     );
-    assert_eq!(NOTE_LEVEL_KINDS.len(), 6, "恰好六个");
+    assert_eq!(NOTE_LEVEL_KINDS.len(), 7, "恰好七个");
     // 每个成员都在 `OP_KINDS` 目录里（不是幽灵名字）。
     for kind in NOTE_LEVEL_KINDS {
         assert!(OP_KINDS.contains(kind), "`{kind}` 必须在 `OP_KINDS` 目录里");

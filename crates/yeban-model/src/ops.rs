@@ -49,7 +49,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::ModelError;
 use crate::ids::{AssetHash, EntityId};
-use crate::music::MidiNote;
+use crate::music::{MidiNote, SlideConfig};
 use crate::project::{
     AssetMetadata, AutomationLane, AutomationPoint, AutomationTarget, ClipContent, ClipPlacement,
     ClipPoolEntry, DeviceDefinition, MAX_BPM, MIN_BPM, RoutingEdge, SamplerBinding, SceneV3,
@@ -297,6 +297,65 @@ pub enum Op {
         new_ratchet: Option<u8>,
         /// 修改后的微时值偏移（`None` = 清空 = 无偏移）。
         new_micro_timing_ticks: Option<i16>,
+    },
+    /// 设置一个**已有音符**的**音高形状**（弯音曲线 ＋ 滑音），一条 `Op` 整体替换。
+    ///
+    /// ⚠ **本变体补上了什么**：⭐ 这两个字段在**建音符时**能由 [`Op::AddNote`] 的载荷
+    /// 收下（`#311c` 起 `pitchBendCurve` / `slide` 是 `add.note` 的成员键），而 `Op` 全集
+    /// 此前**没有任何变体写得进它们** ⇒ ⭐ **音符建得出、形状改不了**：改一条弯音曲线
+    /// 只能"删 + 加"，而删除再添加会**换掉 `EntityId`** —— 概率触发的哈希恰好只使用
+    /// `id`（见 [`MidiNote::triggers`]），所以那还会**改变触发结果**。这是
+    /// `ARCH-OPS-001` 那一族的又一处（与 [`Op::SetNoteExpression`] /
+    /// [`Op::SetNoteTiming`] 同型）。
+    ///
+    /// ⚠ **整体替换而不是逐字段**：弯音与滑音是**一个作者选择**（"这个音符的音高
+    /// 形状"），照 [`Op::SetTransportConfig`] 的同一条裁决 —— 拆成两条 `Op` 会让
+    /// "撤销一步"只回退其中一个字段、留下一个作者**从未选过**的组合 ⇒ 故这里是**一条**
+    /// `Op`，两个字段一起移动。
+    ///
+    /// ⚠ **故意的不对称（字段类型本来就不对称）**：`MidiNote::pitch_bend_curve` 是普通
+    /// `Vec`，所以"无弯音"**只有一种拼法 —— 空 `Vec`**，⛔ 不是 `None`；而
+    /// `MidiNote::slide` 是 `Option`，`None` 是模型自己定义的一等状态（无滑音）。因此
+    /// `new_bend` 的类型是 `Vec<(u64, i16)>`（⛔ **不是** `Option<Vec<…>>`）—— 若做成
+    /// `Option`，同一件事会有两种拼法（`None` 与 `Some(vec![])`），而它们在
+    /// `MidiNote` 上并不等价（后者序列化成 `[]`、前者不落盘）⇒ 载荷必须与模型字段
+    /// 一一对应，只留一个"无弯音"的拼法。
+    ///
+    /// ⚠ **`old_*` 从当前文档读**：调用方声明的旧状态⛔ **不被采信** —— 模型前置条件
+    /// 只拿它做**陈旧载荷**比较（[`ModelError::OpStateMismatch`]）；相等判定是模型字段
+    /// 自己的 `==`（`SlideConfig` 与 `CurveType` 都是 `Copy + PartialEq + Eq`，
+    /// `Vec<(u64, i16)>` 是值比较）⇒ 逐点、逐字段，⛔ 没有浮点逐位的问题（这里没有
+    /// `f32` 字段）。
+    ///
+    /// ⚠ **值域照抄 [`MidiNote::validate`]**（⛔ 不自造新错误变体）：
+    /// `slide.target_pitch` ∈ `0..=127`（[`ModelError::PitchOutOfRange`]）；
+    /// `slide.duration_ticks` ≠ 0（[`ModelError::ZeroDuration`]）；
+    /// 弯音 tick **严格**升序（[`ModelError::PitchBendTicksNotAscending`]）先于
+    /// `cents` ∈ `±1200`（[`ModelError::PitchBendCentsOutOfRange`]）—— 即
+    /// `ADR-0012` D7 的**顺序即优先级**，与 `MidiNote::validate` 同一份实现
+    /// （[`crate::music::validate_pitch_bend_curve`]）。模型的相对顺序是
+    /// **先滑音、后弯音**，本变体照抄。
+    ///
+    /// ⚠ 本变体只写这两个字段：⛔ 不碰 `id` / `start_tick` / `duration_ticks` /
+    /// `pitch` / `velocity` / `probability` / `ratchet` / `micro_timing_ticks` /
+    /// `syllable` / `phonemes`。
+    /// ⚠ 命名用 `old_*` / `new_*`（**set** 类，照 [`Op::SetNoteExpression`]），⛔ **不是**
+    /// `previous_*`（那是 delete / remove 类的惯例）。
+    SetNotePitchShape {
+        /// 所属音轨。
+        track_id: EntityId,
+        /// 所属片段。
+        clip_id: EntityId,
+        /// 音符身份。
+        note_id: EntityId,
+        /// 修改前的弯音曲线（来自当前文档；空 `Vec` = 无弯音）。
+        old_bend: Vec<(u64, i16)>,
+        /// 修改前的滑音（来自当前文档；`None` = 无滑音）。
+        old_slide: Option<SlideConfig>,
+        /// 修改后的弯音曲线（空 `Vec` = 清空 = 无弯音；⛔ 没有第二种拼法）。
+        new_bend: Vec<(u64, i16)>,
+        /// 修改后的滑音（`None` = 清空 = 无滑音）。
+        new_slide: Option<SlideConfig>,
     },
     /// 在音轨时间轴上摆放片段。
     AddClipPlacement {
@@ -1018,6 +1077,7 @@ impl Op {
             Self::ModifyNoteVelocity { .. } => "ModifyNoteVelocity",
             Self::SetNoteTiming { .. } => "SetNoteTiming",
             Self::SetNoteExpression { .. } => "SetNoteExpression",
+            Self::SetNotePitchShape { .. } => "SetNotePitchShape",
             Self::AddClip { .. } => "AddClip",
             Self::RemoveClip { .. } => "RemoveClip",
             Self::SetClipName { .. } => "SetClipName",
@@ -1204,6 +1264,32 @@ impl Op {
                         value: i32::from(*micro_timing),
                     });
                 }
+                Ok(())
+            }
+            Self::SetNotePitchShape {
+                track_id,
+                clip_id,
+                note_id,
+                old_bend,
+                old_slide,
+                new_bend,
+                new_slide,
+            } => {
+                doc.track(track_id)?;
+                let current = doc.note(clip_id, note_id)?;
+                // 两个旧值必须**同时**对上：它们是一次形状编辑的完整撤销载荷。
+                // `Vec` / `Option<SlideConfig>` 都是值比较（`SlideConfig` 是 `Eq`）。
+                if *old_bend != current.pitch_bend_curve || *old_slide != current.slide {
+                    return Err(ModelError::OpStateMismatch { op: self.name() });
+                }
+                // ⚠ 值域**照抄** `MidiNote::validate`（⛔ 不自造新错误变体）：
+                // 顺序也照抄它 —— 先滑音（`SlideConfig::validate`：目标音高 → 时值），
+                // 后弯音（升序 → `cents`，`ADR-0012` D7），否则 `commit` 会写出一份
+                // `validate()` 拒绝的文档。
+                if let Some(slide) = new_slide {
+                    slide.validate()?;
+                }
+                crate::music::validate_pitch_bend_curve(new_bend)?;
                 Ok(())
             }
             Self::AddClipPlacement {
@@ -1960,6 +2046,25 @@ impl Op {
                 new_ratchet: *old_ratchet,
                 new_micro_timing_ticks: *old_micro_timing_ticks,
             },
+            // 纯结构化取反：只交换"前 / 后"四个值（与 `SetNoteExpression` 同型）。
+            // `Vec` 用 `clone`（`old`/`new` 都是 `&Vec`，取反后仍然自包含）。
+            Self::SetNotePitchShape {
+                track_id,
+                clip_id,
+                note_id,
+                old_bend,
+                old_slide,
+                new_bend,
+                new_slide,
+            } => Self::SetNotePitchShape {
+                track_id: *track_id,
+                clip_id: *clip_id,
+                note_id: *note_id,
+                old_bend: new_bend.clone(),
+                old_slide: *new_slide,
+                new_bend: old_bend.clone(),
+                new_slide: *old_slide,
+            },
             Self::AddClipPlacement {
                 track_id,
                 placement,
@@ -2447,6 +2552,20 @@ impl Op {
                 note.probability = *new_probability;
                 note.ratchet = *new_ratchet;
                 note.micro_timing_ticks = *new_micro_timing_ticks;
+                Ok(())
+            }
+            // 只写那两个**音高形状**字段：⛔ 不碰 `id` / 时间 / 音高 / 力度 /
+            // 三个表现力字段 / 歌词。弯音的空 `Vec` 就是"无弯音"（唯一拼法）。
+            Self::SetNotePitchShape {
+                clip_id,
+                note_id,
+                new_bend,
+                new_slide,
+                ..
+            } => {
+                let note = doc.note_mut(clip_id, note_id)?;
+                note.pitch_bend_curve.clone_from(new_bend);
+                note.slide = *new_slide;
                 Ok(())
             }
             Self::AddClipPlacement {
@@ -3290,6 +3409,22 @@ mod tests {
                 new_probability: Some(0.75),
                 new_ratchet: Some(3),
                 new_micro_timing_ticks: Some(-17),
+            },
+            // 音高形状：**建音符时能收、之后改不了**（`pitchBendCurve` / `slide` 只在
+            // `AddNote` 的载荷里）。目标仍是 `f.note` —— 上面两条只改时间/表现力字段，
+            // ⛔ 不碰弯音/滑音 ⇒ 旧值仍是空曲线 / `None`（逆操作要能把它还原回去）。
+            Op::SetNotePitchShape {
+                track_id: f.lead,
+                clip_id: f.clip,
+                note_id: f.note,
+                old_bend: Vec::new(),
+                old_slide: None,
+                new_bend: vec![(0, 0), (240, 200)],
+                new_slide: Some(SlideConfig {
+                    duration_ticks: 240,
+                    target_pitch: 72,
+                    curve: crate::music::CurveType::SCurve,
+                }),
             },
             Op::AddClipPlacement {
                 track_id: f.bass,
@@ -7308,6 +7443,325 @@ mod tests {
         for (candidate, expected) in cases {
             let error = candidate.apply(&mut doc).expect_err("目标缺失必须被拒");
             assert_eq!(error, expected, "必须复用既有错误变体（⛔ 造新变体）");
+        }
+    }
+
+    /// `SetNotePitchShape`：只写弯音/滑音两个字段、身份不变、陈旧载荷必被拒、
+    /// 值域错误**复用模型既有变体**、清空与"不变"可区分（`#334`）。
+    ///
+    /// 八条读数：
+    /// ① 改动**只**落在这两个字段上（与"同工程只换这两个字段"的克隆**逐字节**比较），
+    ///    且 `EntityId` **不变** —— 这正是本变体存在的理由（删 + 加会换身份，而那会
+    ///    改变 `MidiNote::triggers` 的确定性哈希结果）；
+    /// ② 逆操作**逐字节**回到原状；
+    /// ③ 两个旧值**任一**对不上 ⇒ `OpStateMismatch`，文档逐字节不动；
+    /// ④ 弯音边界：±1200 收、±1201 拒（`PitchBendCentsOutOfRange`），tick `[0,480]`
+    ///    收、`[480,480]`/`[480,240]` 拒（`PitchBendTicksNotAscending`），首点 240 收
+    ///    （D4），末点超过时值也收（D6）；
+    /// ⑤ 错误顺序照抄模型：升序**先于** `cents`（`[(0,1201),(0,0)]` 报升序，D7）；
+    /// ⑥ 滑音边界：`target_pitch` 127 收 / 128 拒（`PitchOutOfRange`），
+    ///    `duration_ticks` 0 拒（`ZeroDuration`）；
+    /// ⑦ 清空：弯音 `[]`、滑音 `None` 都合法，且与"值不变"可区分；
+    /// ⑧ 目标缺失/片段类型不符 ⇒ 既有错误（⛔ 新变体）。
+    #[test]
+    fn set_note_pitch_shape_writes_two_fields_and_rejects_stale_and_out_of_range() {
+        let f = fixture();
+        let slide = SlideConfig {
+            duration_ticks: 240,
+            target_pitch: 72,
+            curve: crate::music::CurveType::SCurve,
+        };
+        let bend = vec![(0u64, 0i16), (240, 200)];
+
+        // 枚举变体不支持结构体更新语法 ⇒ 用闭包固定三个身份，四个"前/后"值作参数。
+        let mk = |old_bend: &[(u64, i16)],
+                  old_slide: Option<SlideConfig>,
+                  new_bend: &[(u64, i16)],
+                  new_slide: Option<SlideConfig>| {
+            Op::SetNotePitchShape {
+                track_id: f.lead,
+                clip_id: f.clip,
+                note_id: f.note,
+                old_bend: old_bend.to_vec(),
+                old_slide,
+                new_bend: new_bend.to_vec(),
+                new_slide,
+            }
+        };
+
+        let mut doc = fixture_document();
+        let before = serde_json::to_vec(&doc).expect("序列化");
+        let original = doc.note(&f.clip, &f.note).expect("音符").clone();
+        assert!(original.pitch_bend_curve.is_empty(), "夹具口径：无弯音");
+        assert_eq!(original.slide, None, "夹具口径：无滑音");
+
+        // ① 只改两个字段 + 身份不变 + 结果过 `validate()`。
+        let op = mk(&[], None, &bend, Some(slide));
+        op.precondition(&doc).expect("前置条件必须成立");
+        op.apply(&mut doc).expect("必须能应用");
+        let landed = doc.note(&f.clip, &f.note).expect("音符");
+        assert_eq!(landed.id, f.note, "身份必须不变（这是本变体的全部意义）");
+        assert_eq!(landed.pitch_bend_curve, bend, "弯音必须逐点读回");
+        assert_eq!(landed.slide, Some(slide), "滑音必须逐字段读回");
+        landed
+            .validate()
+            .expect("写出来的音符必须过模型自己的 `validate()`");
+        let mut expected = fixture_document();
+        let target = expected.note_mut(&f.clip, &f.note).expect("音符");
+        target.pitch_bend_curve = bend.clone();
+        target.slide = Some(slide);
+        assert_eq!(
+            serde_json::to_vec(&doc).expect("序列化"),
+            serde_json::to_vec(&expected).expect("序列化"),
+            "改动必须**只**落在这两个音高形状字段上（⛔ 不碰 id / 时间 / 音高 / 力度 / 表情 / 歌词）"
+        );
+
+        // ② 逆操作逐字节回到原状。
+        op.apply_inverse(&mut doc).expect("逆必须能应用");
+        assert_eq!(
+            serde_json::to_vec(&doc).expect("序列化"),
+            before,
+            "逆操作之后必须逐字节回到原状"
+        );
+
+        // ③ 两个旧值任一不符 ⇒ OpStateMismatch，且文档不动。
+        for (label, stale) in [
+            ("弯音", mk(&[(0, 1)], None, &bend, Some(slide))),
+            (
+                "滑音",
+                mk(
+                    &[],
+                    Some(SlideConfig {
+                        duration_ticks: 480,
+                        target_pitch: 60,
+                        curve: crate::music::CurveType::Linear,
+                    }),
+                    &bend,
+                    None,
+                ),
+            ),
+        ] {
+            let snapshot = serde_json::to_vec(&doc).expect("序列化");
+            assert_eq!(
+                stale.precondition(&doc).expect_err("陈旧载荷必须被拒"),
+                ModelError::OpStateMismatch {
+                    op: "SetNotePitchShape"
+                },
+                "{label}: 陈旧载荷必须报 OpStateMismatch"
+            );
+            assert_eq!(
+                serde_json::to_vec(&doc).expect("序列化"),
+                snapshot,
+                "{label}: 被拒之后文档必须逐字节不动"
+            );
+        }
+
+        // ④⑤ 弯音形状与值域：接受的正对照 + 拒绝的**精确**模型变体。
+        // 三元组直接写会撞 `clippy::type_complexity` ⇒ 按 clippy 建议提取别名
+        // （与同文件 `set_note_expression...` 的 `type OutOfRange` 同一做法）。
+        type BendReject = (Vec<(u64, i16)>, ModelError, &'static str);
+        let rejected: Vec<BendReject> = vec![
+            (
+                vec![(0, 1_201)],
+                ModelError::PitchBendCentsOutOfRange {
+                    value: 1_201,
+                    tick: 0,
+                },
+                "cents 上界 1201",
+            ),
+            (
+                vec![(0, -1_201)],
+                ModelError::PitchBendCentsOutOfRange {
+                    value: -1_201,
+                    tick: 0,
+                },
+                "cents 下界 -1201",
+            ),
+            (
+                vec![(0, 1_201), (0, 0)],
+                ModelError::PitchBendTicksNotAscending {
+                    previous: 0,
+                    tick: 0,
+                },
+                "升序先于 cents（ADR-0012 D7）",
+            ),
+        ];
+        for (curve, expected_error, label) in rejected {
+            let fresh = fixture_document();
+            assert_eq!(
+                mk(&[], None, &curve, None)
+                    .precondition(&fresh)
+                    .expect_err("必须被拒"),
+                expected_error,
+                "{label}: 必须复用模型既有变体"
+            );
+        }
+        // 接受的正对照：`[0,480]`（含 cents 端点 ±1200）、首点 240（D4）、
+        // 末点超过时值（D6）都必须合法。
+        for curve in [
+            vec![(0u64, 0i16), (480, 480)],
+            vec![(0, -1_200), (480, 1_200)],
+            vec![(240, 200)],
+            vec![(0, 0), (960, 200)],
+        ] {
+            let mut fresh = fixture_document();
+            mk(&[], None, &curve, None)
+                .apply(&mut fresh)
+                .unwrap_or_else(|error| panic!("曲线 {curve:?} 必须被接受, 实际 {error:?}"));
+            fresh
+                .note(&f.clip, &f.note)
+                .expect("音符")
+                .validate()
+                .expect("合法");
+        }
+        for (curve, label) in [
+            (vec![(480u64, 0i16), (480, 0)], "重复 tick"),
+            (vec![(480u64, 0i16), (240, 0)], "倒退 tick"),
+        ] {
+            let fresh = fixture_document();
+            assert_eq!(
+                mk(&[], None, &curve, None)
+                    .precondition(&fresh)
+                    .expect_err("必须被拒"),
+                ModelError::PitchBendTicksNotAscending {
+                    previous: curve[0].0,
+                    tick: curve[1].0,
+                },
+                "{label}: 必须复用模型既有变体"
+            );
+        }
+
+        // ⑥ 滑音边界：target 127 收 / 128 拒；duration 0 拒。
+        for target in [0u8, 127] {
+            let mut fresh = fixture_document();
+            mk(
+                &[],
+                None,
+                &[],
+                Some(SlideConfig {
+                    duration_ticks: 480,
+                    target_pitch: target,
+                    curve: crate::music::CurveType::Linear,
+                }),
+            )
+            .apply(&mut fresh)
+            .unwrap_or_else(|error| panic!("target_pitch {target} 必须被接受, 实际 {error:?}"));
+        }
+        for (slide, expected_error) in [
+            (
+                SlideConfig {
+                    duration_ticks: 480,
+                    target_pitch: 128,
+                    curve: crate::music::CurveType::Linear,
+                },
+                ModelError::PitchOutOfRange { value: 128 },
+            ),
+            (
+                SlideConfig {
+                    duration_ticks: 0,
+                    target_pitch: 60,
+                    curve: crate::music::CurveType::Linear,
+                },
+                ModelError::ZeroDuration,
+            ),
+        ] {
+            let fresh = fixture_document();
+            assert_eq!(
+                mk(&[], None, &[], Some(slide))
+                    .precondition(&fresh)
+                    .expect_err("必须被拒"),
+                expected_error,
+                "滑音值域必须复用模型既有变体"
+            );
+        }
+
+        // ⑦ 清空 vs 不变：两者都合法，但结果可区分。
+        let mut clear_doc = fixture_document();
+        mk(&[], None, &bend, Some(slide))
+            .apply(&mut clear_doc)
+            .expect("先写入形状");
+        let unchanged = mk(&bend, Some(slide), &bend, Some(slide));
+        let changed_before = serde_json::to_vec(&clear_doc).expect("序列化");
+        unchanged.apply(&mut clear_doc).expect("原值写回必须合法");
+        assert_eq!(
+            serde_json::to_vec(&clear_doc).expect("序列化"),
+            changed_before,
+            "\"不变\"必须真的什么都不改"
+        );
+        let clear = mk(&bend, Some(slide), &[], None);
+        clear.apply(&mut clear_doc).expect("清空必须合法");
+        let cleared = clear_doc.note(&f.clip, &f.note).expect("音符");
+        assert!(
+            cleared.pitch_bend_curve.is_empty(),
+            "弯音清空的唯一拼法是空 Vec"
+        );
+        assert_eq!(cleared.slide, None, "滑音清空是 None");
+        cleared.validate().expect("清空后的音符仍然合法");
+        assert_ne!(
+            serde_json::to_vec(&clear_doc).expect("序列化"),
+            changed_before,
+            "清空必须与\"不变\"可区分"
+        );
+
+        // ⑧ 目标缺失 / 片段类型不符 ⇒ 既有错误。
+        let ghost = EntityId::from_str("01J8ZQ00000000000000000999").expect("ULID");
+        let cases: Vec<(Op, ModelError)> = vec![
+            (
+                Op::SetNotePitchShape {
+                    track_id: f.lead,
+                    clip_id: f.clip,
+                    note_id: ghost,
+                    old_bend: Vec::new(),
+                    old_slide: None,
+                    new_bend: Vec::new(),
+                    new_slide: None,
+                },
+                ModelError::NoteNotFound { id: ghost },
+            ),
+            (
+                Op::SetNotePitchShape {
+                    track_id: f.lead,
+                    clip_id: ghost,
+                    note_id: f.note,
+                    old_bend: Vec::new(),
+                    old_slide: None,
+                    new_bend: Vec::new(),
+                    new_slide: None,
+                },
+                ModelError::ClipNotFound { id: ghost },
+            ),
+            (
+                Op::SetNotePitchShape {
+                    track_id: f.lead,
+                    clip_id: f.audio_clip,
+                    note_id: f.note,
+                    old_bend: Vec::new(),
+                    old_slide: None,
+                    new_bend: Vec::new(),
+                    new_slide: None,
+                },
+                ModelError::ClipContentKindMismatch { id: f.audio_clip },
+            ),
+            (
+                Op::SetNotePitchShape {
+                    track_id: ghost,
+                    clip_id: f.clip,
+                    note_id: f.note,
+                    old_bend: Vec::new(),
+                    old_slide: None,
+                    new_bend: Vec::new(),
+                    new_slide: None,
+                },
+                ModelError::TrackNotFound { id: ghost },
+            ),
+        ];
+        for (candidate, expected) in cases {
+            let mut fresh = fixture_document();
+            assert_eq!(
+                candidate.apply(&mut fresh).expect_err("目标缺失必须被拒"),
+                expected,
+                "必须复用既有错误变体（⛔ 造新变体）"
+            );
         }
     }
 

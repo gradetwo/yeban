@@ -41,7 +41,7 @@ use yeban_mcp::undo_session::read_rust_sources;
 /// 黄金表：每个 `Op` 变体**必须**在哪些工具模块里有一个构造点。
 ///
 /// 读法：删掉任一处登记的构造点 ⇒ 本判据红。
-pub const EXPECTED_SITES: [(&str, &[&str]); 48] = [
+pub const EXPECTED_SITES: [(&str, &[&str]); 49] = [
     ("AddNote", &["domain/notes.rs"]),
     ("DeleteNote", &["domain/notes.rs"]),
     ("MoveNote", &["domain/notes.rs"]),
@@ -52,6 +52,9 @@ pub const EXPECTED_SITES: [(&str, &[&str]); 48] = [
     // ⭐ `#329`：三个表现力字段此前只在 `add` 时能给 ⇒ `setNoteExpression` 的
     // `parse_one` / `compile` 在 `domain/notes.rs` 构造 `Op::SetNoteExpression`。
     ("SetNoteExpression", &["domain/notes.rs"]),
+    // ⭐ `#334`：弯音曲线 / 滑音此前只在 `add` 时能给（改形状只能删 + 加，会换身份）
+    // ⇒ `setNotePitchShape` 的 `parse_one` / `compile` 构造 `Op::SetNotePitchShape`。
+    ("SetNotePitchShape", &["domain/notes.rs"]),
     (
         "AddClip",
         &[
@@ -416,8 +419,8 @@ fn every_op_variant_has_a_registered_construction_site() {
     assert_eq!(names.len(), EXPECTED_SITES.len(), "变体名不得重复");
     assert_eq!(
         names.len(),
-        48,
-        "登记表有 48 条（⭐ 它**不是**模型变体数 —— 模型全集由 \
+        49,
+        "登记表有 49 条（⭐ 它**不是**模型变体数 —— 模型全集由 \
          `every_model_op_variant_is_registered_or_declared_unreachable` 管）"
     );
 }

@@ -86,6 +86,53 @@ fn non_empty(description: &str) -> Value {
     json!({ "type": "string", "minLength": 1, "description": description })
 }
 
+/// 一条弯音曲线的 JSON schema（`add.note.pitchBendCurve` 与 `setNotePitchShape`
+/// 的 `newPitchBendCurve` **共用**这一份；⛔ 不复制第二套边界/形状）。
+fn pitch_bend_curve_schema(description: &str) -> Value {
+    json!({
+        "type": "array",
+        "description": description,
+        "items": {
+            "type": "array",
+            "minItems": 2,
+            "maxItems": 2,
+            "items": {
+                "type": "integer",
+                "description": "第 0 项 = tick（≥ 0），第 1 项 = cents（±1200）",
+            },
+        },
+    })
+}
+
+/// 一个滑音对象的 JSON schema（`add.note.slide` 与 `setNotePitchShape` 的滑音字段
+/// **共用**这一份；⛔ 不复制第二套边界/形状）。
+fn slide_schema(description: &str) -> Value {
+    json!({
+        "type": "object",
+        "description": description,
+        "required": ["durationTicks", "targetPitch"],
+        "properties": {
+            "durationTicks": {
+                "type": "integer",
+                "minimum": 1,
+                "description": "滑音时值（tick，必须非零）",
+            },
+            "targetPitch": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": MIDI_PITCH_MAX,
+                "description": "滑音结束时的目标音高（MIDI 0..=127）",
+            },
+            "curve": {
+                "type": "string",
+                "enum": CURVE_NAMES,
+                "description": "曲线形状（可选，缺省 Linear）；只接受这四个规范名，别名/小写拼写一律拒绝",
+            },
+        },
+        "additionalProperties": false,
+    })
+}
+
 /// `add` 的 `note` 对象（`parse_note` 的字段全集，多一个键就响亮拒绝）。
 fn note_object() -> Value {
     json!({
@@ -136,46 +183,11 @@ fn note_object() -> Value {
                 "maximum": MICRO_TIMING_MAX_ABS,
                 "description": "起点偏移（可选，tick）",
             },
-            "pitchBendCurve": {
-                "type": "array",
-                "description": format!(
-                    "弯音曲线（可选，缺省 = 无弯音）：`[tick, cents]` 二元组数组。tick 是**音符局部**坐标（0 = 音符起点）且严格升序；首点可为任意 tick ≥ 0（首点之前 cents 取 0）；cents 相对 `pitch`，闭区间 -{max}..={max}。形状/值域由模型 `MidiNote::validate` 把关（`ADR-0012` D1-D7）",
-                    max = PITCH_BEND_CENTS_MAX_ABS
-                ),
-                "items": {
-                    "type": "array",
-                    "minItems": 2,
-                    "maxItems": 2,
-                    "items": {
-                        "type": "integer",
-                        "description": "第 0 项 = tick（≥ 0），第 1 项 = cents（±1200）",
-                    },
-                },
-            },
-            "slide": {
-                "type": "object",
-                "description": "滑音（可选，缺省 = 无滑音）。`durationTicks` 与 `targetPitch` **必填**（没有目标的滑音不是滑音）；未知键响亮拒绝",
-                "required": ["durationTicks", "targetPitch"],
-                "properties": {
-                    "durationTicks": {
-                        "type": "integer",
-                        "minimum": 1,
-                        "description": "滑音时值（tick，必须非零）",
-                    },
-                    "targetPitch": {
-                        "type": "integer",
-                        "minimum": 0,
-                        "maximum": MIDI_PITCH_MAX,
-                        "description": "滑音结束时的目标音高（MIDI 0..=127）",
-                    },
-                    "curve": {
-                        "type": "string",
-                        "enum": CURVE_NAMES,
-                        "description": "曲线形状（可选，缺省 Linear）；只接受这四个规范名，别名/小写拼写一律拒绝",
-                    },
-                },
-                "additionalProperties": false,
-            },
+            "pitchBendCurve": pitch_bend_curve_schema(&format!(
+                "弯音曲线（可选，缺省 = 无弯音）：`[tick, cents]` 二元组数组。tick 是**音符局部**坐标（0 = 音符起点）且严格升序；首点可为任意 tick ≥ 0（首点之前 cents 取 0）；cents 相对 `pitch`，闭区间 -{max}..={max}。形状/值域由模型 `MidiNote::validate` 把关（`ADR-0012` D1-D7）",
+                max = PITCH_BEND_CENTS_MAX_ABS
+            )),
+            "slide": slide_schema("滑音（可选，缺省 = 无滑音）。`durationTicks` 与 `targetPitch` **必填**（没有目标的滑音不是滑音）；未知键响亮拒绝"),
         },
         "additionalProperties": false,
     })
@@ -447,6 +459,28 @@ pub fn ops_items() -> Value {
                         "minimum": -MICRO_TIMING_MAX_ABS,
                         "maximum": MICRO_TIMING_MAX_ABS,
                         "description": "起点微偏移 -240..=240 tick；null = 清空 = 无偏移",
+                    },
+                }),
+                true,
+            ),
+            op(
+                "setNotePitchShape",
+                "整体替换一个已有音符的**音高形状**（弯音曲线 ＋ 滑音）。⚠ 载荷**只带新值**：`newPitchBendCurve` 与 `newSlide` **全部必填**；两个旧值由服务端从**当前文档**读（与 `setNoteExpression` 同一条纪律），把 `oldPitchBendCurve` / `oldSlide` 写进来是**未知键**、响亮拒绝。弯音\"无\"**只有**空数组一种拼法（`newPitchBendCurve: []`，⛔ 无 `null`），滑音用 `newSlide: null` 清空；两者同时存在时**相加**（`ADR-0012` D9）。操作对象上的多余键被响亮拒绝",
+                &[
+                    "kind",
+                    "noteId",
+                    "newPitchBendCurve",
+                    "newSlide",
+                ],
+                json!({
+                    "kind": kind("setNotePitchShape"),
+                    "noteId": id("目标音符身份"),
+                    "newPitchBendCurve": pitch_bend_curve_schema(
+                        "修改后的弯音曲线（空数组 = 清空 = 无弯音；数值边界由模型 `MidiNote::validate` 把关）"
+                    ),
+                    "newSlide": {
+                        "description": "修改后的滑音（null = 清空 = 无滑音）",
+                        "oneOf": [{ "type": "null" }, slide_schema("修改后的滑音对象")],
                     },
                 }),
                 true,

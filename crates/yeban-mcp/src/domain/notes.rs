@@ -975,6 +975,59 @@ pub const SET_NOTE_EXPRESSION_FIELDS: [&str; 5] = [
     SET_NOTE_EXPRESSION_MICRO_TIMING_FIELD,
 ];
 
+/// `ops[].kind` 的**音符音高形状**形态名（写 [`Op::SetNotePitchShape`]）。
+///
+/// ⚠ 与模型 `Op` 变体名同词（`SetNotePitchShape` 的小驼峰）。
+///
+/// ⚠ **本形态补上了什么**：`pitchBendCurve` / `slide` 此前**只在 `add` 的 `note`
+/// 对象里**能给一次（`#311c`），之后**没有任何通路** ⇒ ⭐ **音符建得出、音高形状改不了**：
+/// 改一条弯音曲线只能删 + 加，而那会**换掉音符身份** —— `MidiNote::triggers` 的
+/// 确定性哈希只用 `id` ⇒ 触发结果会跟着变。两个字段都有**听觉重量**
+/// （`yeban_render_master` 真的求值它们，且同时存在时**相加**，`ADR-0012` D9）。
+///
+/// ⚠ **整体替换而不是逐字段**：弯音与滑音是**一个作者选择**（照
+/// [`SET_TRANSPORT_CONFIG_KIND`] 的同一条裁决）⇒ 两个新值一起移动，一条 `Op` 一步撤销。
+///
+/// ⚠ **载荷只带新值**（与 [`SET_NOTE_EXPRESSION_KIND`] 同一条口径）：两个旧值由
+/// [`compile`] 从**当前文档**读后填进模型 `Op`，⛔ 不采信调用方声明。把
+/// `oldPitchBendCurve` / `oldSlide` 写进载荷是**未知键**，响亮拒绝 —— 那正是
+/// `oldProbability` 对 `setNoteExpression` 的待遇（同一个教训：最像"写对了"的错法
+/// 就是把旧值也写进来，而它会被静默忽略）。
+pub const SET_NOTE_PITCH_SHAPE_KIND: &str = "setNotePitchShape";
+
+/// 音符音高形状形态的**目标音符**字段名（`ops[].noteId`，必填，ULID）。
+///
+/// 与 [`SET_NOTE_EXPRESSION_NOTE_FIELD`] **同一个字面量**。
+pub const SET_NOTE_PITCH_SHAPE_NOTE_FIELD: &str = SET_NOTE_EXPRESSION_NOTE_FIELD;
+
+/// 音符音高形状形态的**新弯音曲线**字段名（必填，`[[tick, cents], ...]`）。
+///
+/// ⚠ 名字刻意保留 `add` 路径的 `pitchBendCurve` 词面（同一个概念 = 同一个词），
+/// 只加 `new*` 前缀。形状与值域由**同一个**读取器把关
+/// （[`read_pitch_bend_curve_value`]），⛔ 不复制第二套。
+///
+/// ⚠ "无弯音"**只有一种拼法 —— 空数组 `[]`**；`null` 这里是**形状错误**
+/// （模型的 `pitch_bend_curve` 是 `Vec`，⛔ 不是 `Option`）。
+pub const SET_NOTE_PITCH_SHAPE_NEW_BEND_FIELD: &str = "newPitchBendCurve";
+
+/// 音符音高形状形态的**新滑音**字段名（必填，对象或 `null` = 清空）。
+pub const SET_NOTE_PITCH_SHAPE_NEW_SLIDE_FIELD: &str = "newSlide";
+
+/// 音符音高形状形态允许出现的**全部**键（判别键 + 一个身份 + 两个必填新值）。
+///
+/// ⚠ 两个值**全部必填**（照 `setNoteExpression` 的三个新值）：`null` 只对 `slide`
+/// 有意义（`null` = 清空 = 模型的 `None`）；弯音用**空数组**表示无弯音。
+/// ⚠ **旧值不在载荷里**：它们由 [`compile`] 从**当前文档**读（与 `setNoteExpression`
+/// 的三个旧值同一条纪律）。把 `oldPitchBendCurve` / `oldSlide` 写进来是**未知键**，
+/// 走 [`reject_set_note_pitch_shape_fields`]（reuse 同一条拒绝路径），响亮拒绝并列出
+/// 本集合 —— ⛔ 不静默忽略。
+pub const SET_NOTE_PITCH_SHAPE_FIELDS: [&str; 4] = [
+    "kind",
+    SET_NOTE_PITCH_SHAPE_NOTE_FIELD,
+    SET_NOTE_PITCH_SHAPE_NEW_BEND_FIELD,
+    SET_NOTE_PITCH_SHAPE_NEW_SLIDE_FIELD,
+];
+
 /// `yeban_edit_notes` 的**摆放**实参名（`arguments.placement`，可选）。
 ///
 /// 语义：把**已经在 `clip_pool` 里**的片段摆到 `trackId` 的时间轴上
@@ -1176,6 +1229,7 @@ pub const OP_KINDS: &[&str] = &[
     "velocity",
     SET_NOTE_TIMING_KIND,
     SET_NOTE_EXPRESSION_KIND,
+    SET_NOTE_PITCH_SHAPE_KIND,
     REMOVE_CLIP_KIND,
     REMOVE_ASSET_KIND,
     SET_ASSET_KIND,
@@ -1219,7 +1273,7 @@ pub const OP_KINDS: &[&str] = &[
 /// `domain::plan_edit_notes` 用它决定"缺参时要不要响亮拒绝"。
 ///
 /// ⚠ 两份真相（本清单 vs 谓词的 `match`）由判据
-/// `every_catalog_kind_parses_and_round_trips` 在**全部 40 个 kind** 上对账
+/// `every_catalog_kind_parses_and_round_trips` 在**全部 41 个 kind** 上对账
 /// （`OP_KINDS` 里每个 kind 的最小合法形状 → 解析 → 与本清单比对），
 /// 因此"加了一个 kind 却忘了决定它读不读 `clipId`"会立刻变红。
 pub const ENVELOPE_CLIP_KINDS: &[&str] = &[
@@ -1229,24 +1283,26 @@ pub const ENVELOPE_CLIP_KINDS: &[&str] = &[
     "velocity",
     SET_NOTE_TIMING_KIND,
     SET_NOTE_EXPRESSION_KIND,
+    SET_NOTE_PITCH_SHAPE_KIND,
     REMOVE_CLIP_KIND,
 ];
 
 /// **读/写音符**的 kind 清单 —— [`NoteOp::is_note_level`] 的**唯一发布面**。
 ///
-/// ⭐ `#179`：本集合收窄到音符号形态之后，现在是**六个**（`add` / `delete` /
-/// `move` / `velocity` / `setNoteTiming` / `setNoteExpression`），也就是
-/// [`ENVELOPE_CLIP_KINDS`] 里除池级 `removeClip` 之外的六个。其余 34 个形态
+/// ⭐ `#179`：本集合收窄到音符号形态之后，现在是**七个**（`add` / `delete` /
+/// `move` / `velocity` / `setNoteTiming` / `setNoteExpression` /
+/// `setNotePitchShape`），也就是
+/// [`ENVELOPE_CLIP_KINDS`] 里除池级 `removeClip` 之外的七个。其余 33 个形态
 /// （音轨属性级 / 设备级 / 摆放属性级 / 路由级 / 段落级 / 场景级 / 资产级 /
 /// 文档级 / 音轨实体级 / 池级）**一个音符都不读**，因此不要求片段是 MIDI。
 ///
 /// ⚠ 与 [`ENVELOPE_CLIP_KINDS`] **不是**同一个清单：`removeClip` 读顶层 `clipId`
 /// 却**不**读音符（它取走整条池条目，音频条目同样取得走）；反过来，本清单里的
-/// 六个形态必然是顶层 `clipId` 的消费者 —— 因此本清单是
+/// 七个形态必然是顶层 `clipId` 的消费者 —— 因此本清单是
 /// [`ENVELOPE_CLIP_KINDS`] 去掉 `removeClip` 之后的子集，且这条包含关系由判据钉住。
 ///
 /// 两份真相（本清单 vs 谓词的 `match`）由判据
-/// `every_catalog_kind_compiles_to_exactly_one_op_variant` 在**全部 40 个 kind** 上
+/// `every_catalog_kind_compiles_to_exactly_one_op_variant` 在**全部 41 个 kind** 上
 /// 对账（`OP_KINDS` 里每个 kind 的规范形状 → 解析 → 与本清单比对），因此"加了一个
 /// kind 却忘了决定它读不读音符"会立刻变红。
 pub const NOTE_LEVEL_KINDS: &[&str] = &[
@@ -1256,6 +1312,7 @@ pub const NOTE_LEVEL_KINDS: &[&str] = &[
     "velocity",
     SET_NOTE_TIMING_KIND,
     SET_NOTE_EXPRESSION_KIND,
+    SET_NOTE_PITCH_SHAPE_KIND,
 ];
 
 /// `setParam` 能写的**静态目标**（[`Op::SetParam`] 里"有静态值可写"的那三个）。
@@ -2760,6 +2817,28 @@ pub enum NoteOp {
         /// 新微时值偏移（`None` = 清空 = 无偏移）。
         new_micro_timing_ticks: Option<i16>,
     },
+    /// 设置音符的**音高形状**（[`Op::SetNotePitchShape`]）：弯音曲线 ＋ 滑音。
+    ///
+    /// ⭐ **本形态补上了什么**：`pitchBendCurve` / `slide` 此前**只在 `add` 的 `note`
+    /// 对象里**能给一次，之后**没有任何通路** ⇒ 改形状只能删 + 加，而那会**换掉音符
+    /// 身份**（`MidiNote::triggers` 的确定性哈希只用 `id`）。
+    ///
+    /// ⚠ **整体替换而不是逐字段**（照 [`Self::SetNoteExpression`] / [`Self::SetTransportConfig`]）：
+    /// 两个新值**全部必填**；`slide` 的 `null` = 清空 = 模型的 `None`；弯音的"无"**只有**
+    /// 空数组一种拼法（模型的 `pitch_bend_curve` 是 `Vec`，⛔ 不是 `Option`）。
+    ///
+    /// ⚠ **载荷只带新值**：两个旧值由 [`compile`] 从**当前文档**读（与
+    /// [`Self::SetNoteExpression`] 同一条纪律），⛔ 不采信调用方声明。值域照抄模型
+    /// （`slide.targetPitch` 0..=127、`slide.durationTicks` ≠ 0、弯音 tick 严格升序
+    /// 先于 `cents` ±1200），模型侧再判一次同一份实现。
+    SetNotePitchShape {
+        /// 音符身份。
+        note_id: EntityId,
+        /// 新弯音曲线（空 `Vec` = 清空 = 无弯音）。
+        new_bend: Vec<(u64, i16)>,
+        /// 新滑音（`None` = 清空 = 无滑音）。
+        new_slide: Option<SlideConfig>,
+    },
     /// 写**静态混音值**（[`Op::SetParam`]）：音轨音量 / 声相，或设备参数。
     ///
     /// 这是本枚举里第一个**音轨级**（而非音符级）的形态：它不读、不写任何音符，
@@ -3449,6 +3528,7 @@ impl NoteOp {
             Self::Velocity { .. } => "velocity",
             Self::SetTiming { .. } => SET_NOTE_TIMING_KIND,
             Self::SetNoteExpression { .. } => SET_NOTE_EXPRESSION_KIND,
+            Self::SetNotePitchShape { .. } => SET_NOTE_PITCH_SHAPE_KIND,
             Self::SetParam { .. } => SET_PARAM_KIND,
             Self::SetTrackFlag { flag, .. } => flag.kind_name(),
             Self::SetTransportConfig { .. } => SET_TRANSPORT_CONFIG_KIND,
@@ -3517,6 +3597,7 @@ impl NoteOp {
                 | Self::Velocity { .. }
                 | Self::SetTiming { .. }
                 | Self::SetNoteExpression { .. }
+                | Self::SetNotePitchShape { .. }
         )
     }
 
@@ -3615,6 +3696,7 @@ impl NoteOp {
                 | Self::Velocity { .. }
                 | Self::SetTiming { .. }
                 | Self::SetNoteExpression { .. }
+                | Self::SetNotePitchShape { .. }
                 | Self::RemoveClip
         )
     }
@@ -3884,6 +3966,23 @@ fn parse_one(item: &Value) -> Result<NoteOp, Fault> {
                     object,
                     SET_NOTE_EXPRESSION_MICRO_TIMING_FIELD,
                     read_micro_timing,
+                )?,
+            })
+        }
+        SET_NOTE_PITCH_SHAPE_KIND => {
+            // ⚠ 未知键拒绝**先**跑：旧值（`oldPitchBendCurve` / `oldSlide`）不在
+            // 载荷里 —— 它们由 `compile` 从当前文档读（与 `setNoteExpression` 同口径）。
+            reject_set_note_pitch_shape_fields(object)?;
+            Ok(NoteOp::SetNotePitchShape {
+                note_id: read_id(object, SET_NOTE_PITCH_SHAPE_NOTE_FIELD)?,
+                // 弯音在滑音之前（解析顺序，与模型"先滑音后弯音"的值域顺序是两件事）。
+                new_bend: read_required_pitch_bend_curve(
+                    object,
+                    SET_NOTE_PITCH_SHAPE_NEW_BEND_FIELD,
+                )?,
+                new_slide: read_required_nullable_slide(
+                    object,
+                    SET_NOTE_PITCH_SHAPE_NEW_SLIDE_FIELD,
                 )?,
             })
         }
@@ -4423,6 +4522,22 @@ fn reject_set_note_expression_fields(object: &Map<String, Value>) -> Result<(), 
         &SET_NOTE_EXPRESSION_FIELDS,
         SET_NOTE_EXPRESSION_KIND,
         "unknownSetNoteExpressionField",
+    )
+}
+
+/// 拒绝 `setNotePitchShape` 里 [`SET_NOTE_PITCH_SHAPE_FIELDS`] 之外的键。
+///
+/// 与同族 `reject_*_fields` 同一口径（拼错的键必须被拒绝、⛔ 不能静默忽略）：
+/// 最像"写对了"的错法是把**旧值**（`oldPitchBendCurve` / `oldSlide`）写进载荷 ——
+/// 它们由 [`compile`] 从当前文档读，写在这里只会被静默忽略，而调用方以为前置条件
+/// 由自己声明（与 `setNoteExpression` 的 `oldProbability` 是同一条教训）；
+/// 其次是 `add` 的内层键名（`pitchBendCurve` / `slide`）或简称（`newBend`）。
+fn reject_set_note_pitch_shape_fields(object: &Map<String, Value>) -> Result<(), Fault> {
+    reject_unknown_keys(
+        object,
+        &SET_NOTE_PITCH_SHAPE_FIELDS,
+        SET_NOTE_PITCH_SHAPE_KIND,
+        "unknownSetNotePitchShapeField",
     )
 }
 
@@ -6759,22 +6874,54 @@ fn read_micro_timing(object: &Map<String, Value>) -> Result<Option<i16>, Fault> 
 /// 形状错误同口径：报文说清"哪个字段、第几项、收到了什么"，`data` 只放可寻址的
 /// 坐标（⛔ 不发明一个新的 `reason` 词 —— 那会把 `fault_vocabulary` 的冻结面
 /// 为一条普通形状错误扩一次）。
-fn pitch_bend_shape_error(index: usize, detail: String) -> Fault {
+fn pitch_bend_shape_error(field: &str, index: usize, detail: String) -> Fault {
     Fault::domain_with_data(
         ErrorCode::InvalidParameterRange,
         detail,
         serde_json::json!({
-            "field": PITCH_BEND_CURVE_FIELD,
+            "field": field,
             "index": index,
         }),
     )
 }
 
-/// 读可选的 `note.pitchBendCurve`（缺省 = `Vec::new()` = 无弯音）。
+/// 读 `add.note.pitchBendCurve`（缺省 = `Vec::new()` = 无弯音）。
+///
+/// ⚠ 这是**可选**那一半：缺键 = 无弯音（`add` 的既有语义）。`setNotePitchShape` 的
+/// **一个**弯音字段（`newPitchBendCurve`）是**必填**的，它走
+/// [`read_required_pitch_bend_curve`] —— 两者共用同一个核心
+/// [`read_pitch_bend_curve_value`]（⛔ 不写第二份解析器）。
+fn read_pitch_bend_curve(object: &Map<String, Value>) -> Result<Vec<(u64, i16)>, Fault> {
+    let Some(value) = object.get(PITCH_BEND_CURVE_FIELD) else {
+        return Ok(Vec::new());
+    };
+    read_pitch_bend_curve_value(value, PITCH_BEND_CURVE_FIELD)
+}
+
+/// 读一个**必填**的弯音曲线字段（`field` 必须是 [`SET_NOTE_PITCH_SHAPE_FIELDS`] 的一员）。
+///
+/// ⚠ **缺键 ⛔ 不等于空数组**：本形态是整体替换（照 `setNoteExpression`）⇒ 每个值都
+/// 必须被**显式陈述**。"无弯音"只有一种拼法 —— **空数组 `[]`**（模型的
+/// `pitch_bend_curve` 是 `Vec`，⛔ 不是 `Option`）；`null` 在这里是**形状错误**，
+/// 不是"清空"。
+fn read_required_pitch_bend_curve(
+    object: &Map<String, Value>,
+    field: &str,
+) -> Result<Vec<(u64, i16)>, Fault> {
+    let value = object.get(field).ok_or_else(|| {
+        missing(
+            field,
+            "[[tick, cents], ...]（空数组 = 无弯音；⛔ 不收 null）",
+        )
+    })?;
+    read_pitch_bend_curve_value(value, field)
+}
+
+/// 弯音曲线解析的**唯一**核心：结构 → tick 升序 → `cents` 闭区间。
 ///
 /// 形状是 `[tick, cents]` 二元组数组；语义与边界照抄
 /// `docs/adr/ADR-0012-pitch-bend-curve-contract.md`（模型
-/// `MidiNote::validate_pitch_bend_curve` 是权威）：
+/// [`crate::domain::notes`] 的 `MidiNote::validate` 是权威）：
 ///
 /// 1. **结构**：数组、每项恰好两个整数、`tick >= 0` —— 不满足 ⇒
 ///    `INVALID_PARAMETER_RANGE`，报文与 `data.index` 指向出错的项；
@@ -6793,16 +6940,13 @@ fn pitch_bend_shape_error(index: usize, detail: String) -> Fault {
 /// - 模型 `MidiNote::pitch_bend_curve` 自己**没有**长度上界；在门面层发明一个音乐上
 ///   的数字（例如"最多 4096 点"）会拒绝一条模型认为合法、作者也可能真的要的密集曲线，
 ///   且与 `ops` 数组本身"没有条数上限"的既有口径不一致。
-fn read_pitch_bend_curve(object: &Map<String, Value>) -> Result<Vec<(u64, i16)>, Fault> {
-    let Some(value) = object.get(PITCH_BEND_CURVE_FIELD) else {
-        return Ok(Vec::new());
-    };
+fn read_pitch_bend_curve_value(value: &Value, field: &str) -> Result<Vec<(u64, i16)>, Fault> {
     let Some(pairs) = value.as_array() else {
         return Err(Fault::domain_with_data(
             ErrorCode::InvalidParameterRange,
-            format!("`{PITCH_BEND_CURVE_FIELD}` 必须是 [tick, cents] 数组, 实际收到 {value}"),
+            format!("`{field}` 必须是 [tick, cents] 数组, 实际收到 {value}"),
             serde_json::json!({
-                "field": PITCH_BEND_CURVE_FIELD,
+                "field": field,
             }),
         ));
     };
@@ -6811,35 +6955,37 @@ fn read_pitch_bend_curve(object: &Map<String, Value>) -> Result<Vec<(u64, i16)>,
     for (index, pair) in pairs.iter().enumerate() {
         let Some(items) = pair.as_array() else {
             return Err(pitch_bend_shape_error(
+                field,
                 index,
-                format!(
-                    "`{PITCH_BEND_CURVE_FIELD}[{index}]` 必须是 [tick, cents] 二元组, 实际收到 {pair}"
-                ),
+                format!("`{field}[{index}]` 必须是 [tick, cents] 二元组, 实际收到 {pair}"),
             ));
         };
         if items.len() != 2 {
             return Err(pitch_bend_shape_error(
+                field,
                 index,
                 format!(
-                    "`{PITCH_BEND_CURVE_FIELD}[{index}]` 必须恰好 2 个元素 [tick, cents], 实际 {} 个",
+                    "`{field}[{index}]` 必须恰好 2 个元素 [tick, cents], 实际 {} 个",
                     items.len()
                 ),
             ));
         }
         let Some(tick) = items[0].as_u64() else {
             return Err(pitch_bend_shape_error(
+                field,
                 index,
                 format!(
-                    "`{PITCH_BEND_CURVE_FIELD}[{index}][0]` 的 tick 必须是非负整数, 实际收到 {}",
+                    "`{field}[{index}][0]` 的 tick 必须是非负整数, 实际收到 {}",
                     items[0]
                 ),
             ));
         };
         let Some(cents) = items[1].as_i64() else {
             return Err(pitch_bend_shape_error(
+                field,
                 index,
                 format!(
-                    "`{PITCH_BEND_CURVE_FIELD}[{index}][1]` 的 cents 必须是整数, 实际收到 {}",
+                    "`{field}[{index}][1]` 的 cents 必须是整数, 实际收到 {}",
                     items[1]
                 ),
             ));
@@ -6854,10 +7000,10 @@ fn read_pitch_bend_curve(object: &Map<String, Value>) -> Result<Vec<(u64, i16)>,
             return Err(Fault::domain_with_data(
                 ErrorCode::InvalidParameterRange,
                 format!(
-                    "`{PITCH_BEND_CURVE_FIELD}[{index}]` 的 tick 必须严格大于前一个 tick: {tick} 不大于 {previous}"
+                    "`{field}[{index}]` 的 tick 必须严格大于前一个 tick: {tick} 不大于 {previous}"
                 ),
                 serde_json::json!({
-                    "field": PITCH_BEND_CURVE_FIELD,
+                    "field": field,
                     "index": index,
                     "previousTick": previous,
                     "tick": tick,
@@ -6873,11 +7019,11 @@ fn read_pitch_bend_curve(object: &Map<String, Value>) -> Result<Vec<(u64, i16)>,
             return Err(Fault::domain_with_data(
                 ErrorCode::OutOfRange,
                 format!(
-                    "`{PITCH_BEND_CURVE_FIELD}[{index}][1]` 的 cents 越界: {cents} 不在 {}..={}",
+                    "`{field}[{index}][1]` 的 cents 越界: {cents} 不在 {}..={}",
                     -bound, bound
                 ),
                 serde_json::json!({
-                    "field": PITCH_BEND_CURVE_FIELD,
+                    "field": field,
                     "index": index,
                     "tick": tick,
                     "value": cents,
@@ -6897,6 +7043,33 @@ fn read_pitch_bend_curve(object: &Map<String, Value>) -> Result<Vec<(u64, i16)>,
 
 /// 读可选的 `note.slide`（缺省 = `None` = 无滑音）。
 ///
+/// ⚠ 这是**可选**那一半（`add` 的既有语义）。`setNotePitchShape` 的**一个**滑音字段
+/// （`newSlide`）是**必填**的，它走 [`read_required_nullable_slide`]；两者共用同一个
+/// 核心 [`read_slide_value`]（⛔ 不写第二份解析器）。
+fn read_slide(object: &Map<String, Value>) -> Result<Option<SlideConfig>, Fault> {
+    let Some(value) = object.get(SLIDE_FIELD) else {
+        return Ok(None);
+    };
+    read_slide_value(value, SLIDE_FIELD).map(Some)
+}
+
+/// 读一个**必填但可为 `null`** 的滑音字段（`null` = 清空 = 模型的 `None`）。
+fn read_required_nullable_slide(
+    object: &Map<String, Value>,
+    field: &str,
+) -> Result<Option<SlideConfig>, Fault> {
+    match object.get(field) {
+        None => Err(missing(
+            field,
+            "滑音对象或 null（null = 清空 = 无滑音；缺键 ⛔ 不等于 null）",
+        )),
+        Some(Value::Null) => Ok(None),
+        Some(value) => read_slide_value(value, field).map(Some),
+    }
+}
+
+/// 滑音对象解析的**唯一**核心。
+///
 /// 形状：`{ "durationTicks": <非零 tick>, "targetPitch": <0..=127>, "curve": <规范名?> }`。
 ///
 /// - `durationTicks` / `targetPitch` **必填**（决定 + 理由）：没有目标的滑音不是滑音，
@@ -6908,18 +7081,15 @@ fn read_pitch_bend_curve(object: &Map<String, Value>) -> Result<Vec<(u64, i16)>,
 ///   后 `durationTicks`（`ADR-0012` D9 之下 `SlideConfig` 是唯一语义源）。
 /// - `curve` 的拼写/别名判定**复用** `crate::domain::automation::parse_curve`
 ///   （名字表 `extension_pure::CURVE_NAMES`），⛔ 不复制第二套。
-fn read_slide(object: &Map<String, Value>) -> Result<Option<SlideConfig>, Fault> {
-    let Some(value) = object.get(SLIDE_FIELD) else {
-        return Ok(None);
-    };
+fn read_slide_value(value: &Value, field: &str) -> Result<SlideConfig, Fault> {
     let Some(slide) = value.as_object() else {
         return Err(Fault::domain_with_data(
             ErrorCode::InvalidParameterRange,
             format!(
-                "`{SLIDE_FIELD}` 必须是对象 {{durationTicks, targetPitch, curve?}}, 实际收到 {value}"
+                "`{field}` 必须是对象 {{durationTicks, targetPitch, curve?}}, 实际收到 {value}"
             ),
             serde_json::json!({
-                "field": SLIDE_FIELD,
+                "field": field,
                 "supportedSlideFields": SLIDE_FIELDS,
             }),
         ));
@@ -6930,9 +7100,9 @@ fn read_slide(object: &Map<String, Value>) -> Result<Option<SlideConfig>, Fault>
     {
         return Err(Fault::domain_with_data(
             ErrorCode::InvalidParameterRange,
-            format!("`{SLIDE_FIELD}` 不接受字段 `{unknown}`（不是可选项缺失, 而是拼写/不支持）"),
+            format!("`{field}` 不接受字段 `{unknown}`（不是可选项缺失, 而是拼写/不支持）"),
             serde_json::json!({
-                "field": format!("{SLIDE_FIELD}.{unknown}"),
+                "field": format!("{field}.{unknown}"),
                 "supportedSlideFields": SLIDE_FIELDS,
                 "hint": "未知键不静默忽略: 去掉它, 或改用 supportedSlideFields 里的字段",
             }),
@@ -6940,27 +7110,24 @@ fn read_slide(object: &Map<String, Value>) -> Result<Option<SlideConfig>, Fault>
     }
     let target_raw = slide.get(SLIDE_TARGET_PITCH_FIELD).ok_or_else(|| {
         missing(
-            &format!("{SLIDE_FIELD}.{SLIDE_TARGET_PITCH_FIELD}"),
+            &format!("{field}.{SLIDE_TARGET_PITCH_FIELD}"),
             "整数 MIDI 音高 0..=127（滑音没有目标就不是滑音）",
         )
     })?;
-    let duration_raw = slide.get(SLIDE_DURATION_FIELD).ok_or_else(|| {
-        missing(
-            &format!("{SLIDE_FIELD}.{SLIDE_DURATION_FIELD}"),
-            "非零整数 tick",
-        )
-    })?;
+    let duration_raw = slide
+        .get(SLIDE_DURATION_FIELD)
+        .ok_or_else(|| missing(&format!("{field}.{SLIDE_DURATION_FIELD}"), "非零整数 tick"))?;
     let target = target_raw.as_i64().ok_or_else(|| {
         Fault::domain(
             ErrorCode::InvalidParameterRange,
-            format!("`{SLIDE_FIELD}.{SLIDE_TARGET_PITCH_FIELD}` 必须是整数, 实际收到 {target_raw}"),
+            format!("`{field}.{SLIDE_TARGET_PITCH_FIELD}` 必须是整数, 实际收到 {target_raw}"),
         )
     })?;
     let duration = duration_raw.as_u64().ok_or_else(|| {
         Fault::domain(
             ErrorCode::InvalidParameterRange,
             format!(
-                "`{SLIDE_FIELD}.{SLIDE_DURATION_FIELD}` 必须是非负整数 tick, 实际收到 {duration_raw}"
+                "`{field}.{SLIDE_DURATION_FIELD}` 必须是非负整数 tick, 实际收到 {duration_raw}"
             ),
         )
     })?;
@@ -6969,10 +7136,10 @@ fn read_slide(object: &Map<String, Value>) -> Result<Option<SlideConfig>, Fault>
         return Err(Fault::domain_with_data(
             ErrorCode::OutOfRange,
             format!(
-                "`{SLIDE_FIELD}.{SLIDE_TARGET_PITCH_FIELD}` 越界: {target} 不在 0..={MIDI_PITCH_MAX}"
+                "`{field}.{SLIDE_TARGET_PITCH_FIELD}` 越界: {target} 不在 0..={MIDI_PITCH_MAX}"
             ),
             serde_json::json!({
-                "field": format!("{SLIDE_FIELD}.{SLIDE_TARGET_PITCH_FIELD}"),
+                "field": format!("{field}.{SLIDE_TARGET_PITCH_FIELD}"),
                 "value": target,
                 "min": 0,
                 "max": MIDI_PITCH_MAX,
@@ -6982,21 +7149,21 @@ fn read_slide(object: &Map<String, Value>) -> Result<Option<SlideConfig>, Fault>
     if duration == 0 {
         return Err(Fault::domain_with_data(
             ErrorCode::OutOfRange,
-            format!("`{SLIDE_FIELD}.{SLIDE_DURATION_FIELD}` 越界: 0 不在 1..=u64::MAX"),
+            format!("`{field}.{SLIDE_DURATION_FIELD}` 越界: 0 不在 1..=u64::MAX"),
             serde_json::json!({
-                "field": format!("{SLIDE_FIELD}.{SLIDE_DURATION_FIELD}"),
+                "field": format!("{field}.{SLIDE_DURATION_FIELD}"),
                 "value": 0,
                 "min": 1,
             }),
         ));
     }
-    let curve = super::automation::parse_curve(slide.get(SLIDE_CURVE_FIELD), SLIDE_FIELD)?;
-    Ok(Some(SlideConfig {
+    let curve = super::automation::parse_curve(slide.get(SLIDE_CURVE_FIELD), field)?;
+    Ok(SlideConfig {
         duration_ticks: duration,
         // 区间已判（0..=127），`unwrap_or` 只是不 panic 的构造。
         target_pitch: u8::try_from(target).unwrap_or(MIDI_PITCH_MAX),
         curve,
-    }))
+    })
 }
 
 /// 读可选的 `note.probability`（缺省 = `None` = 必然触发）。
@@ -7251,6 +7418,28 @@ pub fn compile(
                     new_probability: *new_probability,
                     new_ratchet: *new_ratchet,
                     new_micro_timing_ticks: *new_micro_timing_ticks,
+                }
+            }
+            NoteOp::SetNotePitchShape {
+                note_id,
+                new_bend,
+                new_slide,
+            } => {
+                // ⚠ 两个旧值**从当前文档读**（与 `setNoteExpression` 的三个旧值同一条
+                // 纪律）：载荷里没有旧值字段，所以本层没有"调用方声明"可采信 ——
+                // 模型 `OpStateMismatch` 仍然守着撤销/重放时的陈旧载荷（同一批里对同一
+                // 音符连写两次时，第二次的前置条件会对不上）。
+                let current = project
+                    .note(clip_id, note_id)
+                    .map_err(|error| from_model("音符查找", &error))?;
+                Op::SetNotePitchShape {
+                    track_id: *track_id,
+                    clip_id: *clip_id,
+                    note_id: *note_id,
+                    old_bend: current.pitch_bend_curve.clone(),
+                    old_slide: current.slide,
+                    new_bend: new_bend.clone(),
+                    new_slide: *new_slide,
                 }
             }
             NoteOp::SetParam { lane, value } => {
@@ -9823,7 +10012,7 @@ mod tests {
         assert_eq!(lane_fault_data(&fault)["reason"], "paramIndexOutOfRange");
     }
 
-    /// ⭐ `#179`：`is_note_level()` **恰好**是六个音符形态（`#329` 起）。
+    /// ⭐ `#179`：`is_note_level()` **恰好**是七个音符形态（`#334` 起）。
     ///
     /// 六个**属性级**形态（`setClipName` / `setDeviceName` / `setDeviceBypassed` /
     /// `setClipPlacementMuted` / `setTrackColor` / `setClipPlacementDuration`）改的是
@@ -9835,9 +10024,9 @@ mod tests {
     /// 全红；把 `Add`/`Delete`/`Move`/`Velocity`/`SetTiming` 任一从正选里去掉 ⇒ 对应的
     /// `is_note_level` 断言红。
     #[test]
-    fn note_level_is_exactly_the_six_note_forms() {
+    fn note_level_is_exactly_the_seven_note_forms() {
         let ulid = "01J8ZQ00000000000000000999";
-        // 六个音符形态：解析后 `is_note_level()` 必须为真。
+        // 七个音符形态：解析后 `is_note_level()` 必须为真。
         let note_forms = [
             (
                 "add",
@@ -9862,6 +10051,10 @@ mod tests {
             (
                 "setNoteExpression",
                 serde_json::json!({"kind": "setNoteExpression", "noteId": ulid, "probability": null, "ratchet": null, "microTimingTicks": null}),
+            ),
+            (
+                "setNotePitchShape",
+                serde_json::json!({"kind": "setNotePitchShape", "noteId": ulid, "newPitchBendCurve": [], "newSlide": null}),
             ),
         ];
         for (kind, payload) in note_forms {
@@ -9912,7 +10105,7 @@ mod tests {
                 "`{kind}` 改的是属性（不读音符）, ⛔ 不得算作音符级"
             );
         }
-        // 发布清单本身：逐字 + 恰好六个（⛔ 不是常量自比）。
+        // 发布清单本身：逐字 + 恰好七个（⛔ 不是常量自比）。
         assert_eq!(
             NOTE_LEVEL_KINDS,
             [
@@ -9921,12 +10114,13 @@ mod tests {
                 "move",
                 "velocity",
                 "setNoteTiming",
-                "setNoteExpression"
+                "setNoteExpression",
+                "setNotePitchShape"
             ],
-            "音符级清单必须逐字是这六个"
+            "音符级清单必须逐字是这七个"
         );
-        assert_eq!(NOTE_LEVEL_KINDS.len(), 6);
-        // 六个音符形态必然是顶层 `clipId` 的消费者（清单之间的包含关系）。
+        assert_eq!(NOTE_LEVEL_KINDS.len(), 7);
+        // 七个音符形态必然是顶层 `clipId` 的消费者（清单之间的包含关系）。
         for kind in NOTE_LEVEL_KINDS {
             assert!(
                 ENVELOPE_CLIP_KINDS.contains(kind),
@@ -10197,6 +10391,283 @@ mod tests {
         assert_eq!(fault.domain_code(), Some(ErrorCode::EntityNotFound));
     }
 
+    /// `setNotePitchShape`：载荷**只带新值**（旧值从当前文档读）、未知键响亮拒绝、
+    /// 清空与不变可区分（`#334`）。
+    ///
+    /// 判据钉七件事：① 规范形状（只有 `kind`/`noteId`/两个 `new*`）解析 → 编译到
+    /// **正是** `Op::SetNotePitchShape`，且 `old_bend` / `old_slide` 等于**文档现值**
+    /// （⛔ 不是把调用方声明抄进 `Op`，因为载荷里根本没有旧值）；
+    /// ② 把旧值（`oldPitchBendCurve` / `oldSlide`）写进载荷是**未知键** ⇒
+    /// `INVALID_PARAMETER_RANGE`，`reason = unknownSetNotePitchShapeField`，
+    /// `supportedFields` 如实是四键且报文点名字段（与 `oldProbability` 同一条纪律）；
+    /// ③ 该 op 在**没有旧值声明**时是 truthful 的：第二次编译读到的 `old_*` 是**第一次
+    /// 写后**的文档值（旧值随文档走，不靠调用方）；④ 缺键 ⛔ 不等于 `null`；
+    /// ⑤ 弯音的 `null` 是**形状错误**（"无"只有 `[]` 一种拼法）；
+    /// ⑥ 值域错误复用模型的变体（`OUT_OF_RANGE` / `INVALID_PARAMETER_RANGE`）；
+    /// ⑦ 清空（`[]` / `null`）合法、与"原值写回"可区分，且一步撤销逐字节复原。
+    ///
+    /// 注入（实测红）：把 `old_bend` 写成 `Vec::new()` 常量（而不是读文档）⇒ ①/③ 红；
+    /// 删掉 [`reject_set_note_pitch_shape_fields`] 调用 ⇒ ② 红（旧值会被静默忽略）。
+    #[test]
+    fn set_note_pitch_shape_compiles_new_values_only_and_rejects_old_keys() {
+        let mut project = filled_project();
+        let (track_id, clip_id) = lead_clip(&project);
+        let note_id = *project.clip_pool[&clip_id]
+            .content
+            .notes()
+            .expect("MIDI 片段")
+            .keys()
+            .next()
+            .expect("样本音符");
+        // 先把文档推到**非空形状** ⇒ "旧值真从文档读"才有牙（占位常量会全绿）。
+        {
+            let notes = project
+                .clip_pool
+                .get_mut(&clip_id)
+                .expect("样本片段")
+                .content
+                .notes_mut()
+                .expect("MIDI 片段");
+            let note = notes.get_mut(&note_id).expect("样本音符");
+            note.pitch_bend_curve = vec![(0, 0), (240, 200)];
+            note.slide = Some(SlideConfig {
+                duration_ticks: 240,
+                target_pitch: 72,
+                curve: yeban_model::music::CurveType::SCurve,
+            });
+        }
+        let bytes_before = serde_json::to_vec(&project).expect("序列化");
+
+        // ① 规范形状（**只有**新值）→ 解析 → 编译。
+        let canonical = serde_json::json!({
+            "kind": SET_NOTE_PITCH_SHAPE_KIND,
+            "noteId": note_id,
+            "newPitchBendCurve": [[0, 0], [480, 1_200]],
+            "newSlide": null,
+        });
+        let ops = parse_ops(&serde_json::json!([canonical])).expect("规范形状必须被接受");
+        assert_eq!(ops.len(), 1);
+        assert_eq!(ops[0].kind_name(), SET_NOTE_PITCH_SHAPE_KIND);
+        assert!(ops[0].is_note_level(), "它读/写一个音符");
+        assert!(ops[0].reads_envelope_clip(), "它用顶层 `clipId` 定位片段");
+
+        let compiled = compile(&project, &track_id, &clip_id, &ops).expect("编译");
+        assert_eq!(compiled.len(), 1);
+        match &compiled[0] {
+            Op::SetNotePitchShape {
+                old_bend,
+                old_slide,
+                new_bend,
+                new_slide,
+                ..
+            } => {
+                assert_eq!(
+                    old_bend,
+                    &vec![(0u64, 0i16), (240, 200)],
+                    "old 必须等于**文档现值**（载荷里没有旧值）"
+                );
+                assert_eq!(
+                    *old_slide,
+                    Some(SlideConfig {
+                        duration_ticks: 240,
+                        target_pitch: 72,
+                        curve: yeban_model::music::CurveType::SCurve,
+                    }),
+                    "old_slide 必须等于文档现值"
+                );
+                assert_eq!(new_bend, &vec![(0u64, 0i16), (480, 1_200)]);
+                assert_eq!(*new_slide, None, "`null` = 清空滑音");
+            }
+            other => panic!("必须编译成 `Op::SetNotePitchShape`, 实际 {other:?}"),
+        }
+        assert_eq!(
+            SET_NOTE_PITCH_SHAPE_FIELDS,
+            ["kind", "noteId", "newPitchBendCurve", "newSlide"],
+            "线上契约只有这四个键（⛔ 没有 old*）"
+        );
+
+        // ② 旧值写进载荷 ⇒ 未知键（与 `oldProbability` 同一条纪律）。
+        for key in ["oldPitchBendCurve", "oldSlide"] {
+            let mut object = canonical.as_object().expect("对象").clone();
+            object.insert(key.to_owned(), Value::Null);
+            let fault =
+                parse_ops(&serde_json::json!([Value::Object(object)])).expect_err("旧值必须被拒");
+            assert_eq!(fault.domain_code(), Some(ErrorCode::InvalidParameterRange));
+            {
+                let data = lane_fault_data(&fault);
+                assert_eq!(data["reason"], "unknownSetNotePitchShapeField");
+                assert_eq!(data["unsupportedFields"], serde_json::json!([key]));
+                assert_eq!(
+                    data["supportedFields"],
+                    serde_json::json!(SET_NOTE_PITCH_SHAPE_FIELDS)
+                );
+            }
+            let value = fault.into_result().expect("带内");
+            assert!(
+                value["error"]["message"]
+                    .as_str()
+                    .is_some_and(|message| message.contains(key)),
+                "报文必须点名 `{key}`: {value}"
+            );
+        }
+        // 同族的其它错拼也响亮拒绝（`add` 的内层键名 / 简称）。
+        for key in ["pitchBendCurve", "slide", "oldBend", "newBend"] {
+            let mut object = canonical.as_object().expect("对象").clone();
+            object.insert(key.to_owned(), Value::Null);
+            let fault =
+                parse_ops(&serde_json::json!([Value::Object(object)])).expect_err("未知键必须被拒");
+            assert_eq!(fault.domain_code(), Some(ErrorCode::InvalidParameterRange));
+            assert_eq!(
+                lane_fault_data(&fault)["reason"],
+                "unknownSetNotePitchShapeField",
+                "{key}: 未知键 reason"
+            );
+        }
+
+        // ③ truthful 不需要旧值：写一次，再从**写后的**文档编译第二个 op —— 它的
+        // `old_*` 必须等于第一个 op 的**新值**（旧值跟着文档走）。
+        compiled[0].apply(&mut project).expect("应用");
+        let second = parse_ops(&serde_json::json!([{
+            "kind": SET_NOTE_PITCH_SHAPE_KIND,
+            "noteId": note_id,
+            "newPitchBendCurve": [],
+            "newSlide": null,
+        }]))
+        .expect("第二个 op 合法");
+        let second = compile(&project, &track_id, &clip_id, &second).expect("编译");
+        match &second[0] {
+            Op::SetNotePitchShape {
+                old_bend,
+                old_slide,
+                ..
+            } => {
+                assert_eq!(
+                    old_bend,
+                    &vec![(0u64, 0i16), (480, 1_200)],
+                    "第二次编译的 old 必须是第一次写后的文档值"
+                );
+                assert_eq!(*old_slide, None);
+            }
+            other => panic!("第二个 op 必须仍是 `Op::SetNotePitchShape`, 实际 {other:?}"),
+        }
+
+        // ④ 缺键 ⛔ 不等于 null（本形态只有两个新值键）。
+        for missing in ["newPitchBendCurve", "newSlide"] {
+            let mut object = canonical.as_object().expect("对象").clone();
+            object.remove(missing);
+            let fault =
+                parse_ops(&serde_json::json!([Value::Object(object)])).expect_err("缺键必须被拒");
+            assert_eq!(
+                fault.domain_code(),
+                Some(ErrorCode::InvalidParameterRange),
+                "{missing}: 缺键"
+            );
+        }
+
+        // ⑤ 弯音的 `null` 是形状错误（"无弯音"只有空数组一种拼法）。
+        let mut object = canonical.as_object().expect("对象").clone();
+        object.insert("newPitchBendCurve".to_owned(), Value::Null);
+        let fault = parse_ops(&serde_json::json!([Value::Object(object)]))
+            .expect_err("弯音的 null 必须被拒");
+        assert_eq!(fault.domain_code(), Some(ErrorCode::InvalidParameterRange));
+        assert_eq!(
+            lane_fault_data(&fault)["field"],
+            SET_NOTE_PITCH_SHAPE_NEW_BEND_FIELD
+        );
+
+        // ⑥ 值域错误复用模型既有变体。
+        for (field, payload, code) in [
+            (
+                "newPitchBendCurve",
+                serde_json::json!({"newPitchBendCurve": [[0, 1_201]]}),
+                ErrorCode::OutOfRange,
+            ),
+            (
+                "newPitchBendCurve",
+                serde_json::json!({"newPitchBendCurve": [[480, 0], [480, 0]]}),
+                ErrorCode::InvalidParameterRange,
+            ),
+            (
+                "newSlide.targetPitch",
+                serde_json::json!({"newSlide": {"durationTicks": 240, "targetPitch": 128}}),
+                ErrorCode::OutOfRange,
+            ),
+            (
+                "newSlide.durationTicks",
+                serde_json::json!({"newSlide": {"durationTicks": 0, "targetPitch": 60}}),
+                ErrorCode::OutOfRange,
+            ),
+        ] {
+            let mut object = canonical.as_object().expect("对象").clone();
+            for (key, value) in payload.as_object().expect("对象") {
+                object.insert(key.clone(), value.clone());
+            }
+            let fault = parse_ops(&serde_json::json!([Value::Object(object)]))
+                .expect_err("越界/形状错误必须被拒");
+            assert_eq!(fault.domain_code(), Some(code), "{field}");
+            assert_eq!(lane_fault_data(&fault)["field"], field);
+        }
+
+        // ⑦ 清空 vs 原值写回可区分 → 撤销逐字节复原。
+        let after_write = serde_json::to_vec(&project).expect("序列化");
+        // `new == old`（原值写回）合法且**不改文档** —— 载荷没有旧值，怎么证明？
+        // 再写一次同一形状，文档字节必须不变。
+        let unchanged = parse_ops(&serde_json::json!([{
+            "kind": SET_NOTE_PITCH_SHAPE_KIND,
+            "noteId": note_id,
+            "newPitchBendCurve": [[0, 0], [480, 1_200]],
+            "newSlide": null,
+        }]))
+        .expect("原值写回必须合法");
+        let unchanged = compile(&project, &track_id, &clip_id, &unchanged).expect("编译");
+        unchanged[0].apply(&mut project).expect("原值写回");
+        assert_eq!(
+            serde_json::to_vec(&project).expect("序列化"),
+            after_write,
+            "原值写回必须真的什么都不改"
+        );
+
+        // 清空：弯音 `[]`、滑音 `null`。
+        let clear = parse_ops(&serde_json::json!([{
+            "kind": SET_NOTE_PITCH_SHAPE_KIND,
+            "noteId": note_id,
+            "newPitchBendCurve": [],
+            "newSlide": null,
+        }]))
+        .expect("清空形状合法");
+        let clear = compile(&project, &track_id, &clip_id, &clear).expect("编译");
+        assert!(matches!(
+            &clear[0],
+            Op::SetNotePitchShape {
+                new_bend,
+                new_slide: None,
+                ..
+            } if new_bend.is_empty()
+        ));
+        clear[0].apply(&mut project).expect("清空");
+        let cleared = project.note(&clip_id, &note_id).expect("音符");
+        assert!(cleared.pitch_bend_curve.is_empty(), "空 Vec = 无弯音");
+        assert_eq!(cleared.slide, None);
+        assert_ne!(
+            serde_json::to_vec(&project).expect("序列化"),
+            after_write,
+            "清空必须与\"原值写回\"可区分"
+        );
+        clear[0].apply_inverse(&mut project).expect("逆操作");
+        assert_eq!(
+            serde_json::to_vec(&project).expect("序列化"),
+            after_write,
+            "清空的一步撤销必须逐字节回到写后的状态"
+        );
+        // 撤销第一个 op（此时文档里是写后的状态）。
+        compiled[0].apply_inverse(&mut project).expect("逆操作");
+        assert_eq!(
+            serde_json::to_vec(&project).expect("序列化"),
+            bytes_before,
+            "一步撤销必须逐字节回到最初的状态"
+        );
+    }
+
     /// `ops[].kind == "setTrackMute"` / `"setTrackSolo"` 的**规范**形状：
     /// 解析 → 编译 → 真的改工程 → 逆操作回原。
     ///
@@ -10404,7 +10875,9 @@ mod tests {
         // —— 同样与真实 `kind` 同步。
         // 本票（`#329` 音符表现力）新增 `setNoteExpression`（第六个音符级形态）后为 40
         // —— 同样与真实 `kind` 同步。
-        assert_eq!(OP_KINDS.len(), 40);
+        // 本票（`#334` 音高形状）新增 `setNotePitchShape`（第七个音符级形态）后为 41
+        // —— 同样与真实 `kind` 同步。
+        assert_eq!(OP_KINDS.len(), 41);
         assert_eq!(TrackFlag::NAMES, [SET_TRACK_MUTE_KIND, SET_TRACK_SOLO_KIND]);
         assert!(OP_KINDS.contains(&SET_TRACK_MUTE_KIND));
         assert!(OP_KINDS.contains(&SET_TRACK_SOLO_KIND));
@@ -16176,7 +16649,7 @@ mod tests {
     fn every_catalog_kind_parses_and_round_trips() {
         let ulid = "01J8ZQ00000000000000000999";
         // 每个 kind 的**最小合法形状**（只到解析期为止；文档相关的前置条件在 `compile`）。
-        let table: [(&str, serde_json::Value); 40] = [
+        let table: [(&str, serde_json::Value); 41] = [
             (
                 "add",
                 serde_json::json!({"note": {"startTick": 0, "pitch": 60, "durationTicks": 480}}),
@@ -16201,6 +16674,14 @@ mod tests {
                     "probability": 0.5,
                     "ratchet": 2,
                     "microTimingTicks": -12,
+                }),
+            ),
+            (
+                "setNotePitchShape",
+                serde_json::json!({
+                    "noteId": ulid,
+                    "newPitchBendCurve": [[0, 0], [240, 200]],
+                    "newSlide": null,
                 }),
             ),
             ("removeClip", serde_json::json!({})),
@@ -16345,6 +16826,7 @@ mod tests {
                 "velocity",
                 "setNoteTiming",
                 "setNoteExpression",
+                "setNotePitchShape",
                 "removeClip",
                 "removeAsset",
                 "setAsset",
@@ -16737,7 +17219,7 @@ mod tests {
             Value,
             &'a str,
         );
-        let rows: [Row<'_>; 41] = [
+        let rows: [Row<'_>; 42] = [
             (
                 "add",
                 None,
@@ -16788,6 +17270,17 @@ mod tests {
                     "microTimingTicks": -12,
                 }),
                 "SetNoteExpression",
+            ),
+            (
+                "setNotePitchShape",
+                None,
+                None,
+                serde_json::json!({
+                    "noteId": note,
+                    "newPitchBendCurve": [[0, 0], [240, 200]],
+                    "newSlide": {"durationTicks": 240, "targetPitch": 72},
+                }),
+                "SetNotePitchShape",
             ),
             (
                 "setAsset",
@@ -17081,11 +17574,11 @@ mod tests {
         assert_eq!(
             rows.len(),
             OP_KINDS.len() + 1,
-            "40 个 kind ＋ 1 个额外载荷分支"
+            "41 个 kind ＋ 1 个额外载荷分支"
         );
 
         let mut seen: Vec<&str> = Vec::new();
-        // ⭐ `#179`：在**全部 40 个 kind**上对账 `is_note_level()` 与发布的
+        // ⭐ `#179`：在**全部 41 个 kind**上对账 `is_note_level()` 与发布的
         // `NOTE_LEVEL_KINDS`（⛔ 不是手抄的第二份清单，也不是"断言它非空"）。
         let mut note_level_seen: Vec<&str> = Vec::new();
         for (label, clip_override, preset, payload, expected) in rows {
@@ -17130,9 +17623,10 @@ mod tests {
         // `rows.len()` 可以不同，也与 `OP_KINDS.len()` 不同。本轮新增
         // `setNoteTiming`（独占一个变体）⇒ 37 → **38**；`#327` 的 `setTitle`（独占一个
         // 变体）⇒ 38 → **39**；`#328` 的 `setClipGain`（独占一个变体）⇒ 39 → **40**；
-        // `#329` 的 `setNoteExpression`（独占一个变体）⇒ 40 → **41**。
-        assert_eq!(seen.len(), 41);
-        // ⭐ `#179`：音符级分支集合**恰好是六个**，且逐字等于发布清单。
+        // `#329` 的 `setNoteExpression`（独占一个变体）⇒ 40 → **41**；
+        // `#334` 的 `setNotePitchShape`（独占一个变体）⇒ 41 → **42**。
+        assert_eq!(seen.len(), 42);
+        // ⭐ `#179`：音符级分支集合**恰好是七个**，且逐字等于发布清单。
         assert_eq!(
             NOTE_LEVEL_KINDS,
             [
@@ -17141,14 +17635,15 @@ mod tests {
                 "move",
                 "velocity",
                 "setNoteTiming",
-                "setNoteExpression"
+                "setNoteExpression",
+                "setNotePitchShape"
             ],
-            "音符级 kind 必须恰好是六个音符形态（字面表，⛔ 不是常量自比）"
+            "音符级 kind 必须恰好是七个音符形态（字面表，⛔ 不是常量自比）"
         );
         assert_eq!(
             note_level_seen.len(),
-            6,
-            "全部 40 个 kind 里 `is_note_level()` 为真的必须**恰好六个**，实际: {note_level_seen:?}"
+            7,
+            "全部 41 个 kind 里 `is_note_level()` 为真的必须**恰好七个**，实际: {note_level_seen:?}"
         );
         assert_eq!(
             note_level_seen,

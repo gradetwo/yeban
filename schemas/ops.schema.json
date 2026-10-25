@@ -142,6 +142,16 @@
         },
         {
           "required": [
+            "SetNotePitchShape"
+          ],
+          "properties": {
+            "SetNotePitchShape": {
+              "type": "object"
+            }
+          }
+        },
+        {
+          "required": [
             "AddClipPlacement"
           ],
           "properties": {

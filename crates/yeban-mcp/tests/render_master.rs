@@ -7434,3 +7434,339 @@ fn a_bend_written_through_the_tool_surface_bends_the_master() {
         "工具面写进去的滑音必须让末频落在 880 Hz，实测 {slide_last}"
     );
 }
+
+/// ⭐ 判据（`#334`）：`setNotePitchShape` **原地**改已有音符的音高形状 —— 身份不变，
+/// 弯音与滑音各走一遍母带，清空后逐字节回到基线。
+///
+/// 与 `#311c` 那条 `a_bend_written_through_the_tool_surface_bends_the_master` 的
+/// 分工（两条都保留，⛔ 不合并）：
+///
+/// - `#311c` 走的是 `delete` + `add` ⇒ 证明**建**得出带曲线的音符；
+/// - 本条走的是 `setNotePitchShape` ⇒ 证明**改**得动**同一个**音符：音符身份
+///   （`id(30)`）全程不变（这正是本变体存在的理由 —— 删 + 加会换 `EntityId`，
+///   而 `MidiNote::triggers` 的确定性哈希只用 `id`）。
+///
+/// 七条腿：
+/// 1. **线上契约**：载荷**只带新值**；把 `oldPitchBendCurve` / `oldSlide` 写进来是
+///    **未知键** ⇒ `INVALID_PARAMETER_RANGE` / `unknownSetNotePitchShapeField`，
+///    `unsupportedFields` 点名字段、`supportedFields` 恰好是四个键；
+/// 2. **基线**：默认夹具（无弯音）的整文件 `sha256` / `masterDigest` 逐位等于
+///    `#214`/`#255`/`#268` 钉死的常量，末段主频 440 Hz；
+/// 3. **原地写弯音**：一次 `setNotePitchShape` + merge ⇒ 同一 `noteId` 仍在、弯音逐点
+///    落库、滑音仍为空；
+/// 4. **弯音音频**：末段主频 ≈ **880 Hz**（高一个八度），880 幅度远大于 440；
+/// 5. **清空弯音**：`newPitchBendCurve: []` + merge ⇒ 弯音键不再落盘，再次渲染的
+///    `sha256` / `masterDigest` 逐位回到基线；
+/// 6. **滑音音频**（补上旧报告的最弱点）：`newPitchBendCurve: []` ＋
+///    `newSlide: {durationTicks: 960, targetPitch: 81}` ⇒ 同一个音符的末段主频
+///    ≈ **880 Hz**（滑音真的被求值，不只是在文档里）；
+/// 7. **清空滑音**：`newSlide: null` ⇒ 母带再次逐字节回到基线。
+#[test]
+fn a_pitch_shape_written_in_place_by_the_tool_surface_bends_the_master() {
+    let scratch = Scratch::new("tool-surface-pitch-shape");
+    let lead = id(2).to_canonical_string();
+    let clip = id(10).to_canonical_string();
+    let note = id(30).to_canonical_string();
+    let (mut dispatcher, auth) =
+        dispatcher_with(&project(&Spec::default()), &scratch.join("demo.yeban"));
+
+    // ① 线上契约：旧值不在载荷里；写进来必须被**未知键**拒绝。
+    for old_key in ["oldPitchBendCurve", "oldSlide"] {
+        let mut op = serde_json::json!({
+            "kind": "setNotePitchShape",
+            "noteId": note,
+            "newPitchBendCurve": [],
+            "newSlide": null,
+        });
+        op.as_object_mut()
+            .expect("对象")
+            .insert(old_key.to_owned(), Value::Null);
+        let rejected = call_tool(
+            &mut dispatcher,
+            &auth,
+            "yeban_edit_notes",
+            json!({"trackId": lead, "clipId": clip, "ops": [op]}),
+        );
+        assert_eq!(rejected["status"], "error", "旧值必须被拒: {rejected}");
+        assert_eq!(
+            rejected["error"]["code"], "INVALID_PARAMETER_RANGE",
+            "旧值是未知键（⛔ 不是 CONFLICT 的陈旧载荷）: {rejected}"
+        );
+        assert_eq!(
+            rejected["error"]["data"]["reason"], "unknownSetNotePitchShapeField",
+            "{rejected}"
+        );
+        assert_eq!(
+            rejected["error"]["data"]["unsupportedFields"],
+            json!([old_key]),
+            "未支持键必须点名字段: {rejected}"
+        );
+        assert_eq!(
+            rejected["error"]["data"]["supportedFields"]
+                .as_array()
+                .expect("supportedFields")
+                .len(),
+            4,
+            "支持集合恰好是 kind/noteId/两个 new*: {rejected}"
+        );
+    }
+
+    // ② 基线：默认夹具没有弯音/滑音 ⇒ 逐字节等于钉死的常量、末段 440 Hz。
+    let base_out = scratch.join("base.wav");
+    let base = call(
+        &mut dispatcher,
+        &auth,
+        json!({"format": "wav", "sampleRate": 48000, "path": base_out.display().to_string()}),
+    );
+    assert_eq!(base["status"], "success", "{base}");
+    assert_eq!(
+        base["data"]["sha256"], DEFAULT_MASTER_SHA256,
+        "无形状的基线整文件 sha256 必须逐位等于钉死的常量"
+    );
+    assert_eq!(
+        base["data"]["masterDigest"], DEFAULT_MASTER_DIGEST,
+        "无形状的基线母带位级摘要必须逐位等于钉死的常量"
+    );
+    let base_audio = wav_left_channel(&base_out);
+    let base_last = master_dominant(&base_audio[30_000..47_000], 400.0, 960.0);
+    println!("### [MCP-334] 基线末段主频 = {base_last:.3} Hz（期望 440）");
+    assert!(
+        (base_last - 440.0).abs() <= 2.0,
+        "无弯音的基线末段主频必须 ≈440 Hz，实测 {base_last}"
+    );
+
+    // ③ 原地写弯音：**不** delete + add，同一 `noteId` 保持。
+    let written = call_tool(
+        &mut dispatcher,
+        &auth,
+        "yeban_edit_notes",
+        json!({
+            "trackId": lead,
+            "clipId": clip,
+            "ops": [{
+                "kind": "setNotePitchShape",
+                "noteId": note,
+                "newPitchBendCurve": [[0, 0], [960, 1_200]],
+                "newSlide": null,
+            }],
+        }),
+    );
+    assert_eq!(
+        written["status"], "success",
+        "原地写音高形状必须成功: {written}"
+    );
+    let proposal_id = written["data"]["proposal"]["proposalId"]
+        .as_str()
+        .expect("proposalId")
+        .to_owned();
+    let merged = call_tool(
+        &mut dispatcher,
+        &auth,
+        "yeban_merge_proposal",
+        json!({"proposalId": proposal_id, "commitMessage": "tool-surface pitch shape"}),
+    );
+    assert_eq!(merged["status"], "success", "合并必须成功: {merged}");
+
+    let view = call_tool(&mut dispatcher, &auth, "yeban_query_project", json!({}));
+    assert_eq!(view["status"], "success", "{view}");
+    let notes = &view["data"]["project"]["clip_pool"][&clip]["content"]["Midi"]["notes"];
+    let stored = &notes[&note];
+    assert_eq!(
+        stored["pitch_bend_curve"],
+        json!([[0, 0], [960, 1_200]]),
+        "弯音必须逐点落进**同一个**音符: {stored}"
+    );
+    assert!(
+        stored.get("slide").is_none(),
+        "`newSlide: null` ⇒ 滑音仍为空（不落盘）: {stored}"
+    );
+    assert!(
+        notes
+            .as_object()
+            .expect("notes")
+            .keys()
+            .all(|key| key == &note),
+        "夹具里必须**仍只有一个**音符（⛔ 删 + 加会换身份）: {notes}"
+    );
+
+    // ④ 弯音音频：末段主频高一个八度。
+    let bent_out = scratch.join("bent.wav");
+    let rendered = call(
+        &mut dispatcher,
+        &auth,
+        json!({"format": "wav", "sampleRate": 48000, "path": bent_out.display().to_string()}),
+    );
+    assert_eq!(rendered["status"], "success", "{rendered}");
+    assert_ne!(
+        rendered["data"]["sha256"], DEFAULT_MASTER_SHA256,
+        "原地写弯音之后母带字节必须变（⛔ 不许静默忽略）"
+    );
+    assert_ne!(
+        rendered["data"]["masterDigest"], DEFAULT_MASTER_DIGEST,
+        "原地写弯音之后母带样本必须变"
+    );
+    let audio = wav_left_channel(&bent_out);
+    let last = master_dominant(&audio[30_000..47_000], 800.0, 960.0);
+    let magnitude_880 = master_magnitude(&audio[30_000..47_000], 880.0, 48_000.0);
+    let magnitude_440 = master_magnitude(&audio[30_000..47_000], 440.0, 48_000.0);
+    println!(
+        "### [MCP-334] 原地弯音末段主频 = {last:.3} Hz（期望 ≈880）；880 幅度 = {magnitude_880:.9}、440 幅度 = {magnitude_440:.9}"
+    );
+    assert!(
+        (last - 880.0).abs() <= 2.0,
+        "原地写的 +1200 cents 必须让末段主频 ≈880 Hz（高一个八度），实测 {last}"
+    );
+    assert!(
+        magnitude_880 > 10.0 * magnitude_440,
+        "末段 880 必须远大于 440（否则只是漏音，不是真的弯）"
+    );
+
+    // ⑤ 清空弯音 ⇒ 母带逐字节回到基线。
+    let cleared = call_tool(
+        &mut dispatcher,
+        &auth,
+        "yeban_edit_notes",
+        json!({
+            "trackId": lead,
+            "clipId": clip,
+            "ops": [{
+                "kind": "setNotePitchShape",
+                "noteId": note,
+                "newPitchBendCurve": [],
+                "newSlide": null,
+            }],
+        }),
+    );
+    assert_eq!(cleared["status"], "success", "清空必须成功: {cleared}");
+    let clear_id = cleared["data"]["proposal"]["proposalId"]
+        .as_str()
+        .expect("proposalId")
+        .to_owned();
+    let clear_merged = call_tool(
+        &mut dispatcher,
+        &auth,
+        "yeban_merge_proposal",
+        json!({"proposalId": clear_id, "commitMessage": "clear pitch shape"}),
+    );
+    assert_eq!(clear_merged["status"], "success", "{clear_merged}");
+    let after_clear = call_tool(&mut dispatcher, &auth, "yeban_query_project", json!({}));
+    let cleared_note =
+        &after_clear["data"]["project"]["clip_pool"][&clip]["content"]["Midi"]["notes"][&note];
+    assert!(
+        cleared_note.get("pitch_bend_curve").is_none(),
+        "清空后弯音键不得落盘: {cleared_note}"
+    );
+    let restored_out = scratch.join("restored.wav");
+    let restored = call(
+        &mut dispatcher,
+        &auth,
+        json!({"format": "wav", "sampleRate": 48000, "path": restored_out.display().to_string()}),
+    );
+    assert_eq!(restored["status"], "success", "{restored}");
+    assert_eq!(
+        restored["data"]["sha256"], DEFAULT_MASTER_SHA256,
+        "清空弯音后整文件 sha256 必须逐位回到基线（⛔ 留残渣）"
+    );
+    assert_eq!(
+        restored["data"]["masterDigest"], DEFAULT_MASTER_DIGEST,
+        "清空弯音后母带位级摘要必须逐位回到基线"
+    );
+
+    // ⑥ 滑音音频：同一条 op 通道，弯音留空、滑音滑到 A5（目标 81 ⇒ 880 Hz）。
+    let slid = call_tool(
+        &mut dispatcher,
+        &auth,
+        "yeban_edit_notes",
+        json!({
+            "trackId": lead,
+            "clipId": clip,
+            "ops": [{
+                "kind": "setNotePitchShape",
+                "noteId": note,
+                "newPitchBendCurve": [],
+                "newSlide": {"durationTicks": 960, "targetPitch": 81, "curve": "Linear"},
+            }],
+        }),
+    );
+    assert_eq!(slid["status"], "success", "原地写滑音必须成功: {slid}");
+    let slid_id = slid["data"]["proposal"]["proposalId"]
+        .as_str()
+        .expect("proposalId")
+        .to_owned();
+    let slid_merged = call_tool(
+        &mut dispatcher,
+        &auth,
+        "yeban_merge_proposal",
+        json!({"proposalId": slid_id, "commitMessage": "tool-surface slide in place"}),
+    );
+    assert_eq!(slid_merged["status"], "success", "{slid_merged}");
+    let slid_view = call_tool(&mut dispatcher, &auth, "yeban_query_project", json!({}));
+    let slid_note =
+        &slid_view["data"]["project"]["clip_pool"][&clip]["content"]["Midi"]["notes"][&note];
+    assert_eq!(
+        slid_note["slide"]["target_pitch"], 81,
+        "滑音必须逐字段落进**同一个**音符: {slid_note}"
+    );
+    assert_eq!(slid_note["slide"]["duration_ticks"], 960);
+    let slid_out = scratch.join("slid.wav");
+    let slid_rendered = call(
+        &mut dispatcher,
+        &auth,
+        json!({"format": "wav", "sampleRate": 48000, "path": slid_out.display().to_string()}),
+    );
+    assert_eq!(slid_rendered["status"], "success", "{slid_rendered}");
+    let slid_audio = wav_left_channel(&slid_out);
+    let slid_last = master_dominant(&slid_audio[30_000..47_000], 800.0, 960.0);
+    println!("### [MCP-334] 原地滑音末段主频 = {slid_last:.3} Hz（目标 81 ⇒ 880）");
+    assert!(
+        (slid_last - 880.0).abs() <= 2.0,
+        "原地写的滑音必须让末段主频 ≈880 Hz，实测 {slid_last}"
+    );
+
+    // ⑦ 清空滑音 ⇒ 母带再次逐字节回到基线。
+    let slid_cleared = call_tool(
+        &mut dispatcher,
+        &auth,
+        "yeban_edit_notes",
+        json!({
+            "trackId": lead,
+            "clipId": clip,
+            "ops": [{
+                "kind": "setNotePitchShape",
+                "noteId": note,
+                "newPitchBendCurve": [],
+                "newSlide": null,
+            }],
+        }),
+    );
+    assert_eq!(slid_cleared["status"], "success", "{slid_cleared}");
+    let slid_clear_id = slid_cleared["data"]["proposal"]["proposalId"]
+        .as_str()
+        .expect("proposalId")
+        .to_owned();
+    let slid_clear_merged = call_tool(
+        &mut dispatcher,
+        &auth,
+        "yeban_merge_proposal",
+        json!({"proposalId": slid_clear_id, "commitMessage": "clear slide"}),
+    );
+    assert_eq!(
+        slid_clear_merged["status"], "success",
+        "{slid_clear_merged}"
+    );
+    let final_out = scratch.join("final.wav");
+    let final_render = call(
+        &mut dispatcher,
+        &auth,
+        json!({"format": "wav", "sampleRate": 48000, "path": final_out.display().to_string()}),
+    );
+    assert_eq!(final_render["status"], "success", "{final_render}");
+    assert_eq!(
+        final_render["data"]["sha256"], DEFAULT_MASTER_SHA256,
+        "清空滑音后整文件 sha256 必须逐位回到基线"
+    );
+    assert_eq!(
+        final_render["data"]["masterDigest"], DEFAULT_MASTER_DIGEST,
+        "清空滑音后母带位级摘要必须逐位回到基线"
+    );
+}

@@ -318,25 +318,7 @@ impl MidiNote {
     ///
     /// 违反上述任一条即返回对应的 [`ModelError`] 变体。
     fn validate_pitch_bend_curve(&self) -> Result<(), ModelError> {
-        if self.pitch_bend_curve.is_empty() {
-            return Ok(());
-        }
-        for pair in self.pitch_bend_curve.windows(2) {
-            let (previous, _) = pair[0];
-            let (tick, _) = pair[1];
-            if tick <= previous {
-                return Err(ModelError::PitchBendTicksNotAscending { previous, tick });
-            }
-        }
-        for &(tick, cents) in &self.pitch_bend_curve {
-            if !(-PITCH_BEND_CENTS_MAX_ABS..=PITCH_BEND_CENTS_MAX_ABS).contains(&cents) {
-                return Err(ModelError::PitchBendCentsOutOfRange {
-                    value: i32::from(cents),
-                    tick,
-                });
-            }
-        }
-        Ok(())
+        validate_pitch_bend_curve(&self.pitch_bend_curve)
     }
 
     /// **确定性**概率触发判定 [MODEL-AST-005, ARCH-DET-001]。
@@ -362,6 +344,45 @@ impl MidiNote {
             }
         }
     }
+}
+
+/// 校验一条弯音曲线的**形状** —— `ADR-0012` D2／D3 的机械那一半。
+///
+/// 这是**唯一**一份实现：[`MidiNote::validate`] 与 [`crate::ops::Op::SetNotePitchShape`]
+/// 的前置条件都调它（⛔ 不许各写一份：两份必然漂移，ADR-0001 D28）。
+///
+/// 检查顺序**就是**优先级（`pitch_bend_curve_error_order_is_pinned` 钉住它）：
+///
+/// 1. tick **严格**升序（同一 tick 两次 ⇒ 一个时刻两个音高，拒绝）；
+/// 2. 每个点 `cents ∈ -PITCH_BEND_CENTS_MAX_ABS..=PITCH_BEND_CENTS_MAX_ABS`。
+///
+/// ⚠ **首点之前取 0**（D4）与**末点之后保持末值**（D5）是**消费侧**语义，不在这里判；
+/// 末点 tick 是否 ≤ `duration_ticks` **刻意不查**（D6：`Op::SetNoteTiming` 缩短时值时
+/// 不该让一条合规曲线事后变成非法，⛔ 不要"顺手补上"）。
+///
+/// # Errors
+///
+/// 违反上述任一条即返回对应的 [`ModelError`] 变体。
+pub(crate) fn validate_pitch_bend_curve(curve: &[(u64, i16)]) -> Result<(), ModelError> {
+    if curve.is_empty() {
+        return Ok(());
+    }
+    for pair in curve.windows(2) {
+        let (previous, _) = pair[0];
+        let (tick, _) = pair[1];
+        if tick <= previous {
+            return Err(ModelError::PitchBendTicksNotAscending { previous, tick });
+        }
+    }
+    for &(tick, cents) in curve {
+        if !(-PITCH_BEND_CENTS_MAX_ABS..=PITCH_BEND_CENTS_MAX_ABS).contains(&cents) {
+            return Err(ModelError::PitchBendCentsOutOfRange {
+                value: i32::from(cents),
+                tick,
+            });
+        }
+    }
+    Ok(())
 }
 
 impl Default for MidiNote {
