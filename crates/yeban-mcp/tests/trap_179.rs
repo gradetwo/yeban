@@ -17,7 +17,7 @@
 //! | [`six_property_forms_succeed_on_an_audio_clip`] | 六个属性级形态 + **音频**顶层 `clipId` | 6 条 `status:"success"` ＋ 6 个 `projectDigest` 变化 ＋ 6 条标题（`音轨级编辑: 1 步`） |
 //! | [`four_note_forms_are_still_blocked_on_an_audio_clip`] | 五个音符形态 + **音频** `clipId` | 5 条 `CLIP_NOT_FOUND`（逐字含"不是 MIDI 片段"） |
 //! | [`the_four_note_forms_are_byte_identical_on_a_midi_clip`] | 四个**基线**音符形态 + **MIDI** 片段 | 4 个合并后 `projectDigest`（收窄前录下、收窄后逐字相等） |
-//! | [`the_note_level_predicate_is_exactly_five`] | `NOTE_LEVEL_KINDS` / `ENVELOPE_CLIP_KINDS` | 5 个成员 ＋ 子集关系（唯一非音符的 `clipId` 读者 = `removeClip`） |
+//! | [`the_note_level_predicate_is_exactly_six`] | `NOTE_LEVEL_KINDS` / `ENVELOPE_CLIP_KINDS` | 6 个成员 ＋ 子集关系（唯一非音符的 `clipId` 读者 = `removeClip`） |
 //!
 //! 复跑读数：`cargo test -p yeban-mcp --test trap_179 -- --nocapture`
 
@@ -271,7 +271,8 @@ fn six_property_forms_succeed_on_an_audio_clip() {
 /// 判据 ②（§2.2）：**音符形态仍拦** —— 音频片段 + 音符形态 ⇒ 各一条
 /// `CLIP_NOT_FOUND`，且报文逐字是"不是 MIDI 片段"那条（⛔ 不是"片段不存在"）。
 ///
-/// ⚠ 本线新增的 `setNoteTiming` 也读目标音符，因此音频片段上同样必须响亮失败。
+/// ⚠ 本线新增的 `setNoteTiming` / `setNoteExpression` 也读目标音符，因此音频片段上
+/// 同样必须响亮失败。
 #[test]
 fn four_note_forms_are_still_blocked_on_an_audio_clip() {
     let (mut dispatcher, auth, project) = dispatcher();
@@ -301,6 +302,13 @@ fn four_note_forms_are_still_blocked_on_an_audio_clip() {
             json!({
                 "kind": "setNoteTiming", "noteId": ghost_text,
                 "startTick": 0, "durationTicks": 480,
+            }),
+        ),
+        (
+            "setNoteExpression",
+            json!({
+                "kind": "setNoteExpression", "noteId": ghost_text,
+                "probability": null, "ratchet": null, "microTimingTicks": null,
             }),
         ),
     ];
@@ -435,24 +443,31 @@ fn the_four_note_forms_are_byte_identical_on_a_midi_clip() {
     }
 }
 
-/// 判据 ④（§2.4）：收窄**可机械核** —— 发布的音符级清单**逐字**是五个，
+/// 判据 ④（§2.4）：收窄**可机械核** —— 发布的音符级清单**逐字**是六个，
 /// 且它与"读顶层 `clipId` 的清单"的包含关系成立（音符形态必然是 `clipId`
 /// 的消费者；池级 `removeClip` 读 `clipId` 却**不**读音符）。
 ///
-/// ⚠ 谓词与清单在**全部 39 个 kind**上的对账住在 `src/domain/notes.rs` 的
+/// ⚠ 谓词与清单在**全部 40 个 kind**上的对账住在 `src/domain/notes.rs` 的
 /// `every_catalog_kind_compiles_to_exactly_one_op_variant`（那里才有 kind → 规范
 /// 形状的完整表）。本判据钉住**发布面**的逐字值。
 ///
 /// 注入（实测红）：把 `NOTE_LEVEL_KINDS` 加回任一属性级形态，或把谓词改回收窄前的
 /// 反选清单 ⇒ 本判据红；`six_property_forms_succeed_on_an_audio_clip` 的标题断言也红。
 #[test]
-fn the_note_level_predicate_is_exactly_five() {
+fn the_note_level_predicate_is_exactly_six() {
     assert_eq!(
         NOTE_LEVEL_KINDS,
-        ["add", "delete", "move", "velocity", "setNoteTiming"],
-        "音符级 kind 必须逐字是五个音符形态（⛔ 不是从常量自己比出来的长度）"
+        [
+            "add",
+            "delete",
+            "move",
+            "velocity",
+            "setNoteTiming",
+            "setNoteExpression"
+        ],
+        "音符级 kind 必须逐字是六个音符形态（⛔ 不是从常量自己比出来的长度）"
     );
-    assert_eq!(NOTE_LEVEL_KINDS.len(), 5, "恰好五个");
+    assert_eq!(NOTE_LEVEL_KINDS.len(), 6, "恰好六个");
     // 每个成员都在 `OP_KINDS` 目录里（不是幽灵名字）。
     for kind in NOTE_LEVEL_KINDS {
         assert!(OP_KINDS.contains(kind), "`{kind}` 必须在 `OP_KINDS` 目录里");

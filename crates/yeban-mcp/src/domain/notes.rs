@@ -862,6 +862,52 @@ pub const SET_NOTE_TIMING_FIELDS: [&str; 4] = [
     SET_NOTE_TIMING_DURATION_FIELD,
 ];
 
+/// `ops[].kind` 的**音符表现力**形态名（写 [`Op::SetNoteExpression`]）。
+///
+/// ⚠ 与模型 `Op` 变体名同词（`SetNoteExpression` 的小驼峰）。
+///
+/// ⚠ **本形态补上了什么**：`probability` / `ratchet` / `micro_timing_ticks` 此前**只在
+/// `add` 时**由 `note` 对象给定，之后**没有任何通路** ⇒ ⭐ **音符建得出、表情改不了**：
+/// 改一个概率只能删 + 加，而那会**换掉音符身份** —— `MidiNote::triggers` 的确定性哈希
+/// 只用 `id` ⇒ 触发结果会跟着变。三个字段都有**行为重量**（`yeban_render_master` 真的
+/// 消费它们：概率触发、连击细分、起点偏移）。
+///
+/// ⚠ **整体替换而不是逐字段**（照 [`SET_TRANSPORT_CONFIG_KIND`]）：三个键**全部必填**，
+/// `null` = 清空 = 模型的 `None`（必然触发／等价于 1／无偏移）—— ⛔ 缺键**不等于** `null`
+/// （缺键是"没陈述这个字段"，而本形态没有"保留现值"的合并语义）。
+pub const SET_NOTE_EXPRESSION_KIND: &str = "setNoteExpression";
+
+/// 音符表现力形态的**目标音符**字段名（`ops[].noteId`，必填，ULID）。
+///
+/// 与 [`SET_NOTE_TIMING_NOTE_FIELD`] **同一个字面量**（同一个词 = 同一个意思）。
+pub const SET_NOTE_EXPRESSION_NOTE_FIELD: &str = SET_NOTE_TIMING_NOTE_FIELD;
+
+/// 音符表现力形态的**概率**字段名（`ops[].probability`，必填，`0.0..=1.0` 的数字或 `null`）。
+///
+/// ⚠ 与 `add.note.probability` **同一个字面量**；值域照抄 `MidiNote::validate`
+/// （有限 ∧ `0.0..=1.0`），越界报既有的 `ProbabilityOutOfRange` ⇒ 契约码 `OUT_OF_RANGE`
+/// （⛔ 本层不另造区间）。
+pub const SET_NOTE_EXPRESSION_PROBABILITY_FIELD: &str = PROBABILITY_FIELD;
+
+/// 音符表现力形态的**连击**字段名（`ops[].ratchet`，必填，`1..=16` 的整数或 `null`）。
+pub const SET_NOTE_EXPRESSION_RATCHET_FIELD: &str = RATCHET_FIELD;
+
+/// 音符表现力形态的**微时序**字段名（`ops[].microTimingTicks`，必填，
+/// `-240..=240` 的整数或 `null`）。
+pub const SET_NOTE_EXPRESSION_MICRO_TIMING_FIELD: &str = MICRO_TIMING_FIELD;
+
+/// 音符表现力形态允许出现的**全部**键（判别键 + 一个身份 + 三个必填值）。
+///
+/// ⚠ 三个旧值**不在**这里：它们由 [`compile`] 从**当前文档**读（⛔ 不信调用方声明），
+/// 与 `delete` / `velocity` / `setNoteTiming` 的撤销载荷同一条纪律。
+pub const SET_NOTE_EXPRESSION_FIELDS: [&str; 5] = [
+    "kind",
+    SET_NOTE_EXPRESSION_NOTE_FIELD,
+    SET_NOTE_EXPRESSION_PROBABILITY_FIELD,
+    SET_NOTE_EXPRESSION_RATCHET_FIELD,
+    SET_NOTE_EXPRESSION_MICRO_TIMING_FIELD,
+];
+
 /// `yeban_edit_notes` 的**摆放**实参名（`arguments.placement`，可选）。
 ///
 /// 语义：把**已经在 `clip_pool` 里**的片段摆到 `trackId` 的时间轴上
@@ -1062,6 +1108,7 @@ pub const OP_KINDS: &[&str] = &[
     "move",
     "velocity",
     SET_NOTE_TIMING_KIND,
+    SET_NOTE_EXPRESSION_KIND,
     REMOVE_CLIP_KIND,
     REMOVE_ASSET_KIND,
     SET_ASSET_KIND,
@@ -1105,7 +1152,7 @@ pub const OP_KINDS: &[&str] = &[
 /// `domain::plan_edit_notes` 用它决定"缺参时要不要响亮拒绝"。
 ///
 /// ⚠ 两份真相（本清单 vs 谓词的 `match`）由判据
-/// `every_catalog_kind_parses_and_round_trips` 在**全部 39 个 kind** 上对账
+/// `every_catalog_kind_parses_and_round_trips` 在**全部 40 个 kind** 上对账
 /// （`OP_KINDS` 里每个 kind 的最小合法形状 → 解析 → 与本清单比对），
 /// 因此"加了一个 kind 却忘了决定它读不读 `clipId`"会立刻变红。
 pub const ENVELOPE_CLIP_KINDS: &[&str] = &[
@@ -1114,27 +1161,35 @@ pub const ENVELOPE_CLIP_KINDS: &[&str] = &[
     "move",
     "velocity",
     SET_NOTE_TIMING_KIND,
+    SET_NOTE_EXPRESSION_KIND,
     REMOVE_CLIP_KIND,
 ];
 
 /// **读/写音符**的 kind 清单 —— [`NoteOp::is_note_level`] 的**唯一发布面**。
 ///
-/// ⭐ `#179`：本集合收窄到音符号形态之后，现在是**五个**（`add` / `delete` /
-/// `move` / `velocity` / `setNoteTiming`），也就是 [`ENVELOPE_CLIP_KINDS`] 里除
-/// 池级 `removeClip` 之外的五个。其余 32 个形态
+/// ⭐ `#179`：本集合收窄到音符号形态之后，现在是**六个**（`add` / `delete` /
+/// `move` / `velocity` / `setNoteTiming` / `setNoteExpression`），也就是
+/// [`ENVELOPE_CLIP_KINDS`] 里除池级 `removeClip` 之外的六个。其余 34 个形态
 /// （音轨属性级 / 设备级 / 摆放属性级 / 路由级 / 段落级 / 场景级 / 资产级 /
 /// 文档级 / 音轨实体级 / 池级）**一个音符都不读**，因此不要求片段是 MIDI。
 ///
 /// ⚠ 与 [`ENVELOPE_CLIP_KINDS`] **不是**同一个清单：`removeClip` 读顶层 `clipId`
 /// 却**不**读音符（它取走整条池条目，音频条目同样取得走）；反过来，本清单里的
-/// 五个形态必然是顶层 `clipId` 的消费者 —— 因此本清单是
+/// 六个形态必然是顶层 `clipId` 的消费者 —— 因此本清单是
 /// [`ENVELOPE_CLIP_KINDS`] 去掉 `removeClip` 之后的子集，且这条包含关系由判据钉住。
 ///
 /// 两份真相（本清单 vs 谓词的 `match`）由判据
-/// `every_catalog_kind_compiles_to_exactly_one_op_variant` 在**全部 39 个 kind** 上
+/// `every_catalog_kind_compiles_to_exactly_one_op_variant` 在**全部 40 个 kind** 上
 /// 对账（`OP_KINDS` 里每个 kind 的规范形状 → 解析 → 与本清单比对），因此"加了一个
 /// kind 却忘了决定它读不读音符"会立刻变红。
-pub const NOTE_LEVEL_KINDS: &[&str] = &["add", "delete", "move", "velocity", SET_NOTE_TIMING_KIND];
+pub const NOTE_LEVEL_KINDS: &[&str] = &[
+    "add",
+    "delete",
+    "move",
+    "velocity",
+    SET_NOTE_TIMING_KIND,
+    SET_NOTE_EXPRESSION_KIND,
+];
 
 /// `setParam` 能写的**静态目标**（[`Op::SetParam`] 里"有静态值可写"的那三个）。
 ///
@@ -2614,6 +2669,30 @@ pub enum NoteOp {
         /// 新时值（tick，必须 ≥ 1；`0` 由模型拒绝）。
         duration_ticks: u64,
     },
+    /// 设置音符的**三个表现力字段**（[`Op::SetNoteExpression`]）：触发概率 / 连击 /
+    /// 微时序。
+    ///
+    /// ⭐ **本形态补上了什么**：三个字段此前**只在 `add` 的 `note` 对象里**能给一次，
+    /// 之后**没有任何通路** ⇒ ⭐ **音符建得出、表情改不了**。改一个概率只能删 + 加，
+    /// 而那会换掉音符身份（`MidiNote::triggers` 的确定性哈希只用 `id`）。
+    ///
+    /// ⚠ **整体替换而不是逐字段**（照 [`Self::SetTransportConfig`]）：三个值**全部必填**，
+    /// `null` = 清空 = 模型的 `None`；缺键会被 [`reject_set_note_expression_fields`] 响亮
+    /// 拒绝（⛔ 不把"没陈述"静默当成"清空"）。
+    ///
+    /// 载荷只有**新值**：三个旧值由 [`compile`] 从**当前文档**读（⛔ 不信调用方声明）。
+    /// 值域照抄模型（`0.0..=1.0` 且有限 / `1..=16` / `-240..=240`）—— 越界在解析期就报
+    /// `OUT_OF_RANGE`（与 `add.note.*` 同一份读数），模型侧再判一次同一区间。
+    SetNoteExpression {
+        /// 音符身份。
+        note_id: EntityId,
+        /// 新触发概率（`None` = 清空 = 必然触发）。
+        new_probability: Option<f32>,
+        /// 新连击次数（`None` = 清空 = 等价于 1）。
+        new_ratchet: Option<u8>,
+        /// 新微时值偏移（`None` = 清空 = 无偏移）。
+        new_micro_timing_ticks: Option<i16>,
+    },
     /// 写**静态混音值**（[`Op::SetParam`]）：音轨音量 / 声相，或设备参数。
     ///
     /// 这是本枚举里第一个**音轨级**（而非音符级）的形态：它不读、不写任何音符，
@@ -3302,6 +3381,7 @@ impl NoteOp {
             Self::Move { .. } => "move",
             Self::Velocity { .. } => "velocity",
             Self::SetTiming { .. } => SET_NOTE_TIMING_KIND,
+            Self::SetNoteExpression { .. } => SET_NOTE_EXPRESSION_KIND,
             Self::SetParam { .. } => SET_PARAM_KIND,
             Self::SetTrackFlag { flag, .. } => flag.kind_name(),
             Self::SetTransportConfig { .. } => SET_TRANSPORT_CONFIG_KIND,
@@ -3369,6 +3449,7 @@ impl NoteOp {
                 | Self::Move { .. }
                 | Self::Velocity { .. }
                 | Self::SetTiming { .. }
+                | Self::SetNoteExpression { .. }
         )
     }
 
@@ -3466,6 +3547,7 @@ impl NoteOp {
                 | Self::Move { .. }
                 | Self::Velocity { .. }
                 | Self::SetTiming { .. }
+                | Self::SetNoteExpression { .. }
                 | Self::RemoveClip
         )
     }
@@ -3713,6 +3795,29 @@ fn parse_one(item: &Value) -> Result<NoteOp, Fault> {
                 note_id: read_id(object, SET_NOTE_TIMING_NOTE_FIELD)?,
                 start_tick: read_required_u64(object, SET_NOTE_TIMING_START_FIELD)?,
                 duration_ticks: read_required_u64(object, SET_NOTE_TIMING_DURATION_FIELD)?,
+            })
+        }
+        SET_NOTE_EXPRESSION_KIND => {
+            reject_set_note_expression_fields(object)?;
+            Ok(NoteOp::SetNoteExpression {
+                note_id: read_id(object, SET_NOTE_EXPRESSION_NOTE_FIELD)?,
+                // ⚠ 三个值**必填、可为 null**（`null` = 清空 = 模型的 `None`）；
+                // 缺键是响亮失败（整体替换没有"保留现值"语义）。
+                new_probability: read_required_nullable(
+                    object,
+                    SET_NOTE_EXPRESSION_PROBABILITY_FIELD,
+                    read_probability,
+                )?,
+                new_ratchet: read_required_nullable(
+                    object,
+                    SET_NOTE_EXPRESSION_RATCHET_FIELD,
+                    read_ratchet,
+                )?,
+                new_micro_timing_ticks: read_required_nullable(
+                    object,
+                    SET_NOTE_EXPRESSION_MICRO_TIMING_FIELD,
+                    read_micro_timing,
+                )?,
             })
         }
         SET_PARAM_KIND => Ok(NoteOp::SetParam {
@@ -4237,6 +4342,20 @@ fn reject_set_note_timing_fields(object: &Map<String, Value>) -> Result<(), Faul
         &SET_NOTE_TIMING_FIELDS,
         SET_NOTE_TIMING_KIND,
         "unknownSetNoteTimingField",
+    )
+}
+
+/// 拒绝 `setNoteExpression` 里 [`SET_NOTE_EXPRESSION_FIELDS`] 之外的键。
+///
+/// 与同族 `reject_*_fields` 同一口径（拼错的键必须被拒绝、⛔ 不能静默忽略）：
+/// 最像"写对了"的错法是把三个旧值（`oldProbability` 等）也写进来 —— 那会被静默忽略，
+/// 而调用方以为前置条件由自己声明。
+fn reject_set_note_expression_fields(object: &Map<String, Value>) -> Result<(), Fault> {
+    reject_unknown_keys(
+        object,
+        &SET_NOTE_EXPRESSION_FIELDS,
+        SET_NOTE_EXPRESSION_KIND,
+        "unknownSetNoteExpressionField",
     )
 }
 
@@ -6471,6 +6590,23 @@ fn reject_unknown_note_fields(object: &Map<String, Value>) -> Result<(), Fault> 
     ))
 }
 
+/// 读一个**必填但可为 `null`** 的表现力字段（`setNoteExpression` 专用）。
+///
+/// ⚠ **缺键不是 `null`**：本形态是**整体替换**（照 `setTransportConfig`）⇒ 三个键都必须
+/// 被**显式陈述**；"保留现值"没有可表达的形态（那需要三态载荷 `Option<Option<T>>`）。
+/// `null` = 清空 = 模型的 `None`（必然触发／等价于 1／无偏移）。
+fn read_required_nullable<T>(
+    object: &Map<String, Value>,
+    field: &str,
+    read: impl FnOnce(&Map<String, Value>) -> Result<Option<T>, Fault>,
+) -> Result<Option<T>, Fault> {
+    match object.get(field) {
+        None => Err(missing(field, "该字段的值或 null（缺键 ⛔ 不等于 null）")),
+        Some(Value::Null) => Ok(None),
+        Some(_) => read(object),
+    }
+}
+
 /// 读可选的 `note.ratchet`（缺省 = `None` = 等价于 1）。
 ///
 /// 取值的**权威**判定在模型层（[`MidiNote::validate`] 的 `RATCHET_MIN..=RATCHET_MAX`）；
@@ -6761,6 +6897,30 @@ pub fn compile(
                     old_duration_ticks: current.duration_ticks,
                     new_start_tick: *start_tick,
                     new_duration_ticks: *duration_ticks,
+                }
+            }
+            NoteOp::SetNoteExpression {
+                note_id,
+                new_probability,
+                new_ratchet,
+                new_micro_timing_ticks,
+            } => {
+                // 三个旧值都来自**当前文档**（模型前置条件逐位/逐值比较）⇒ 本层
+                // ⛔ 不采信调用方声明的旧状态。缺失的音符由 `project.note` 报
+                // `NoteNotFound` ⇒ `ENTITY_NOT_FOUND`（既有错误，⛔ 新码）。
+                let current = project
+                    .note(clip_id, note_id)
+                    .map_err(|error| from_model("音符查找", &error))?;
+                Op::SetNoteExpression {
+                    track_id: *track_id,
+                    clip_id: *clip_id,
+                    note_id: *note_id,
+                    old_probability: current.probability,
+                    old_ratchet: current.ratchet,
+                    old_micro_timing_ticks: current.micro_timing_ticks,
+                    new_probability: *new_probability,
+                    new_ratchet: *new_ratchet,
+                    new_micro_timing_ticks: *new_micro_timing_ticks,
                 }
             }
             NoteOp::SetParam { lane, value } => {
@@ -9332,7 +9492,7 @@ mod tests {
         assert_eq!(lane_fault_data(&fault)["reason"], "paramIndexOutOfRange");
     }
 
-    /// ⭐ `#179`：`is_note_level()` **恰好**是五个音符形态。
+    /// ⭐ `#179`：`is_note_level()` **恰好**是六个音符形态（`#329` 起）。
     ///
     /// 六个**属性级**形态（`setClipName` / `setDeviceName` / `setDeviceBypassed` /
     /// `setClipPlacementMuted` / `setTrackColor` / `setClipPlacementDuration`）改的是
@@ -9344,10 +9504,10 @@ mod tests {
     /// 全红；把 `Add`/`Delete`/`Move`/`Velocity`/`SetTiming` 任一从正选里去掉 ⇒ 对应的
     /// `is_note_level` 断言红。
     #[test]
-    fn note_level_is_exactly_the_five_note_forms() {
+    fn note_level_is_exactly_the_six_note_forms() {
         let ulid = "01J8ZQ00000000000000000999";
-        // 五个音符形态：解析后 `is_note_level()` 必须为真。
-        let five = [
+        // 六个音符形态：解析后 `is_note_level()` 必须为真。
+        let note_forms = [
             (
                 "add",
                 serde_json::json!({"kind": "add", "note": {"startTick": 0, "pitch": 60, "durationTicks": 480}}),
@@ -9368,8 +9528,12 @@ mod tests {
                 "setNoteTiming",
                 serde_json::json!({"kind": "setNoteTiming", "noteId": ulid, "startTick": 0, "durationTicks": 480}),
             ),
+            (
+                "setNoteExpression",
+                serde_json::json!({"kind": "setNoteExpression", "noteId": ulid, "probability": null, "ratchet": null, "microTimingTicks": null}),
+            ),
         ];
-        for (kind, payload) in five {
+        for (kind, payload) in note_forms {
             let ops = parse_ops(&serde_json::json!([payload]))
                 .unwrap_or_else(|fault| panic!("`{kind}` 必须能解析: {fault:?}"));
             assert_eq!(ops.len(), 1);
@@ -9417,14 +9581,21 @@ mod tests {
                 "`{kind}` 改的是属性（不读音符）, ⛔ 不得算作音符级"
             );
         }
-        // 发布清单本身：逐字 + 恰好五个（⛔ 不是常量自比）。
+        // 发布清单本身：逐字 + 恰好六个（⛔ 不是常量自比）。
         assert_eq!(
             NOTE_LEVEL_KINDS,
-            ["add", "delete", "move", "velocity", "setNoteTiming"],
-            "音符级清单必须逐字是这五个"
+            [
+                "add",
+                "delete",
+                "move",
+                "velocity",
+                "setNoteTiming",
+                "setNoteExpression"
+            ],
+            "音符级清单必须逐字是这六个"
         );
-        assert_eq!(NOTE_LEVEL_KINDS.len(), 5);
-        // 五个音符形态必然是顶层 `clipId` 的消费者（清单之间的包含关系）。
+        assert_eq!(NOTE_LEVEL_KINDS.len(), 6);
+        // 六个音符形态必然是顶层 `clipId` 的消费者（清单之间的包含关系）。
         for kind in NOTE_LEVEL_KINDS {
             assert!(
                 ENVELOPE_CLIP_KINDS.contains(kind),
@@ -9496,6 +9667,203 @@ mod tests {
             }
             other => panic!("必须编译成 `Op::SetNoteTiming`, 实际 {other:?}"),
         }
+    }
+
+    /// `setNoteExpression`：解析 → 编译到**正是** `Op::SetNoteExpression` → 三个旧值来自
+    /// **当前文档** → 一步撤销逐字节复原（`#329`）。
+    ///
+    /// 判据钉七件事：① 三个键**全必填**、`null` = 清空（模型的一等 `None`）；
+    /// ② 未知键（含把旧值写进载荷的 `oldProbability`）响亮拒绝；③ 缺键 ⛔ 不等于 `null`
+    /// （整体替换没有"保留现值"语义）；④ 三个旧值都来自当前文档 —— 先把文档推到
+    /// **任何占位常量都不同**的状态，作为这条判据的牙；⑤ 越界在**解析期**报
+    /// `OUT_OF_RANGE` 并逐字点名 `field`；⑥ 音符不存在 ⇒ `ENTITY_NOT_FOUND`（既有码）；
+    /// ⑦ 撤销逐字节复原。
+    ///
+    /// 注入（实测红）：① 把 `old_probability` 写死成 `None` ⇒ ④ 的断言红；
+    /// ② 删掉 `reject_set_note_expression_fields` 的调用 ⇒ ② 的未知键判据红。
+    #[test]
+    fn set_note_expression_reads_old_values_from_the_document_and_inverts() {
+        let mut project = filled_project();
+        let (track_id, clip_id) = lead_clip(&project);
+        let note_id = *project.clip_pool[&clip_id]
+            .content
+            .notes()
+            .expect("MIDI 片段")
+            .keys()
+            .next()
+            .expect("样本音符");
+        // 先把文档推到**任何占位常量都不同**的状态 ⇒ "旧值真从文档读"才有牙。
+        {
+            let notes = project
+                .clip_pool
+                .get_mut(&clip_id)
+                .expect("样本片段")
+                .content
+                .notes_mut()
+                .expect("MIDI 片段");
+            let note = notes.get_mut(&note_id).expect("样本音符");
+            note.probability = Some(0.25);
+            note.ratchet = Some(3);
+            note.micro_timing_ticks = Some(-17);
+        }
+        let bytes_before = serde_json::to_vec(&project).expect("序列化");
+
+        // ① 规范形状：三个键全给。
+        let ops = parse_ops(&serde_json::json!([{
+            "kind": SET_NOTE_EXPRESSION_KIND,
+            "noteId": note_id,
+            "probability": 0.75,
+            "ratchet": 2,
+            "microTimingTicks": 12,
+        }]))
+        .expect("规范形状必须被接受");
+        assert_eq!(ops.len(), 1);
+        assert_eq!(ops[0].kind_name(), SET_NOTE_EXPRESSION_KIND);
+        assert!(ops[0].is_note_level(), "它读/写一个音符");
+        assert!(ops[0].reads_envelope_clip(), "它用顶层 `clipId` 定位片段");
+
+        // ② 旧值不是载荷的一部分：写进来就响亮失败。
+        let fault = parse_ops(&serde_json::json!([{
+            "kind": SET_NOTE_EXPRESSION_KIND,
+            "noteId": note_id,
+            "probability": 0.75,
+            "ratchet": 2,
+            "microTimingTicks": 12,
+            "oldProbability": 0.25,
+        }]))
+        .expect_err("未知键必须被拒");
+        assert_eq!(fault.domain_code(), Some(ErrorCode::InvalidParameterRange));
+        assert_eq!(
+            lane_fault_data(&fault)["reason"],
+            "unknownSetNoteExpressionField"
+        );
+
+        // ③ 缺键 ⛔ 不等于 null。
+        let missing = parse_ops(&serde_json::json!([{
+            "kind": SET_NOTE_EXPRESSION_KIND,
+            "noteId": note_id,
+            "probability": null,
+            "ratchet": null,
+        }]))
+        .expect_err("缺键必须被拒");
+        assert_eq!(
+            missing.domain_code(),
+            Some(ErrorCode::InvalidParameterRange)
+        );
+
+        // ④ 编译到**正是**该变体，三个旧值来自当前文档。
+        let compiled = compile(&project, &track_id, &clip_id, &ops).expect("编译");
+        assert_eq!(compiled.len(), 1);
+        match &compiled[0] {
+            Op::SetNoteExpression {
+                old_probability,
+                old_ratchet,
+                old_micro_timing_ticks,
+                new_probability,
+                new_ratchet,
+                new_micro_timing_ticks,
+                ..
+            } => {
+                assert_eq!(
+                    old_probability.map(f32::to_bits),
+                    Some(0.25_f32.to_bits()),
+                    "old 必须等于**文档现值**（⛔ 不信调用方声明）"
+                );
+                assert_eq!(*old_ratchet, Some(3));
+                assert_eq!(*old_micro_timing_ticks, Some(-17));
+                assert_eq!(new_probability.map(f32::to_bits), Some(0.75_f32.to_bits()));
+                assert_eq!(*new_ratchet, Some(2));
+                assert_eq!(*new_micro_timing_ticks, Some(12));
+            }
+            other => panic!("必须编译成 `Op::SetNoteExpression`, 实际 {other:?}"),
+        }
+
+        // ⑤ 应用 → 读回逐位 → 逆操作逐字节复原。
+        compiled[0].apply(&mut project).expect("应用");
+        let note = project.note(&clip_id, &note_id).expect("音符");
+        assert_eq!(note.probability.map(f32::to_bits), Some(0.75_f32.to_bits()));
+        assert_eq!(note.ratchet, Some(2));
+        assert_eq!(note.micro_timing_ticks, Some(12));
+        compiled[0].apply_inverse(&mut project).expect("逆操作");
+        assert_eq!(
+            serde_json::to_vec(&project).expect("序列化"),
+            bytes_before,
+            "一步撤销必须逐字节回到原状"
+        );
+
+        // ⑥ `null` = 清空（三个键都显式陈述）。
+        let clear = parse_ops(&serde_json::json!([{
+            "kind": SET_NOTE_EXPRESSION_KIND,
+            "noteId": note_id,
+            "probability": null,
+            "ratchet": null,
+            "microTimingTicks": null,
+        }]))
+        .expect("null 必须被接受");
+        let compiled = compile(&project, &track_id, &clip_id, &clear).expect("编译");
+        compiled[0].apply(&mut project).expect("清空");
+        let note = project.note(&clip_id, &note_id).expect("音符");
+        assert_eq!(note.probability, None, "null = 清空 = 必然触发");
+        assert_eq!(note.ratchet, None, "null = 清空 = 等价于 1");
+        assert_eq!(note.micro_timing_ticks, None, "null = 清空 = 无偏移");
+        compiled[0].apply_inverse(&mut project).expect("逆操作");
+        assert_eq!(
+            serde_json::to_vec(&project).expect("序列化"),
+            bytes_before,
+            "清空一步撤销也必须逐字节回到原状"
+        );
+
+        // ⑦ 越界在**解析期**报 `OUT_OF_RANGE` 并逐字点名 field。
+        for (field, payload) in [
+            (
+                "probability",
+                serde_json::json!({"probability": 1.5, "ratchet": 2, "microTimingTicks": 0}),
+            ),
+            (
+                "probability",
+                serde_json::json!({"probability": -0.5, "ratchet": 2, "microTimingTicks": 0}),
+            ),
+            (
+                "ratchet",
+                serde_json::json!({"probability": 0.5, "ratchet": 0, "microTimingTicks": 0}),
+            ),
+            (
+                "ratchet",
+                serde_json::json!({"probability": 0.5, "ratchet": 17, "microTimingTicks": 0}),
+            ),
+            (
+                "microTimingTicks",
+                serde_json::json!({"probability": 0.5, "ratchet": 2, "microTimingTicks": -241}),
+            ),
+            (
+                "microTimingTicks",
+                serde_json::json!({"probability": 0.5, "ratchet": 2, "microTimingTicks": 241}),
+            ),
+        ] {
+            let mut object = payload.as_object().expect("对象").clone();
+            object.insert("kind".to_owned(), Value::from(SET_NOTE_EXPRESSION_KIND));
+            object.insert("noteId".to_owned(), serde_json::json!(note_id));
+            let fault =
+                parse_ops(&serde_json::json!([Value::Object(object)])).expect_err("越界值必须被拒");
+            assert_eq!(fault.domain_code(), Some(ErrorCode::OutOfRange), "{field}");
+            assert_eq!(lane_fault_data(&fault)["field"], field);
+        }
+
+        // ⑧ 音符不存在 ⇒ 既有错误 `ENTITY_NOT_FOUND`（⛔ 新码）。
+        let ghost = deterministic_id("ghost-note");
+        let fault = compile(
+            &project,
+            &track_id,
+            &clip_id,
+            &[NoteOp::SetNoteExpression {
+                note_id: ghost,
+                new_probability: None,
+                new_ratchet: None,
+                new_micro_timing_ticks: None,
+            }],
+        )
+        .expect_err("音符不存在");
+        assert_eq!(fault.domain_code(), Some(ErrorCode::EntityNotFound));
     }
 
     /// `ops[].kind == "setTrackMute"` / `"setTrackSolo"` 的**规范**形状：
@@ -9703,7 +10071,9 @@ mod tests {
         // —— 同样与真实 `kind` 同步。
         // 本票（`#328` 音频片段增益）新增 `setClipGain`（池级，池条目的 `gain_db`）后为 39
         // —— 同样与真实 `kind` 同步。
-        assert_eq!(OP_KINDS.len(), 39);
+        // 本票（`#329` 音符表现力）新增 `setNoteExpression`（第六个音符级形态）后为 40
+        // —— 同样与真实 `kind` 同步。
+        assert_eq!(OP_KINDS.len(), 40);
         assert_eq!(TrackFlag::NAMES, [SET_TRACK_MUTE_KIND, SET_TRACK_SOLO_KIND]);
         assert!(OP_KINDS.contains(&SET_TRACK_MUTE_KIND));
         assert!(OP_KINDS.contains(&SET_TRACK_SOLO_KIND));
@@ -14580,7 +14950,7 @@ mod tests {
     fn every_catalog_kind_parses_and_round_trips() {
         let ulid = "01J8ZQ00000000000000000999";
         // 每个 kind 的**最小合法形状**（只到解析期为止；文档相关的前置条件在 `compile`）。
-        let table: [(&str, serde_json::Value); 39] = [
+        let table: [(&str, serde_json::Value); 40] = [
             (
                 "add",
                 serde_json::json!({"note": {"startTick": 0, "pitch": 60, "durationTicks": 480}}),
@@ -14597,6 +14967,15 @@ mod tests {
             (
                 "setNoteTiming",
                 serde_json::json!({"noteId": ulid, "startTick": 0, "durationTicks": 480}),
+            ),
+            (
+                "setNoteExpression",
+                serde_json::json!({
+                    "noteId": ulid,
+                    "probability": 0.5,
+                    "ratchet": 2,
+                    "microTimingTicks": -12,
+                }),
             ),
             ("removeClip", serde_json::json!({})),
             (
@@ -14739,6 +15118,7 @@ mod tests {
                 "move",
                 "velocity",
                 "setNoteTiming",
+                "setNoteExpression",
                 "removeClip",
                 "removeAsset",
                 "setAsset",
@@ -15131,7 +15511,7 @@ mod tests {
             Value,
             &'a str,
         );
-        let rows: [Row<'_>; 40] = [
+        let rows: [Row<'_>; 41] = [
             (
                 "add",
                 None,
@@ -15170,6 +15550,18 @@ mod tests {
                     "durationTicks": sample_note.duration_ticks + 240,
                 }),
                 "SetNoteTiming",
+            ),
+            (
+                "setNoteExpression",
+                None,
+                None,
+                serde_json::json!({
+                    "noteId": note,
+                    "probability": 0.5,
+                    "ratchet": 2,
+                    "microTimingTicks": -12,
+                }),
+                "SetNoteExpression",
             ),
             (
                 "setAsset",
@@ -15463,11 +15855,11 @@ mod tests {
         assert_eq!(
             rows.len(),
             OP_KINDS.len() + 1,
-            "39 个 kind ＋ 1 个额外载荷分支"
+            "40 个 kind ＋ 1 个额外载荷分支"
         );
 
         let mut seen: Vec<&str> = Vec::new();
-        // ⭐ `#179`：在**全部 36 个 kind**上对账 `is_note_level()` 与发布的
+        // ⭐ `#179`：在**全部 40 个 kind**上对账 `is_note_level()` 与发布的
         // `NOTE_LEVEL_KINDS`（⛔ 不是手抄的第二份清单，也不是"断言它非空"）。
         let mut note_level_seen: Vec<&str> = Vec::new();
         for (label, clip_override, preset, payload, expected) in rows {
@@ -15511,18 +15903,26 @@ mod tests {
         // ⚠ 本数是**去重后的变体数**（`add` 的三种形态共用 `AddNote`）⇒ 与
         // `rows.len()` 可以不同，也与 `OP_KINDS.len()` 不同。本轮新增
         // `setNoteTiming`（独占一个变体）⇒ 37 → **38**；`#327` 的 `setTitle`（独占一个
-        // 变体）⇒ 38 → **39**；`#328` 的 `setClipGain`（独占一个变体）⇒ 39 → **40**。
-        assert_eq!(seen.len(), 40);
-        // ⭐ `#179`：音符级分支集合**恰好是五个**，且逐字等于发布清单。
+        // 变体）⇒ 38 → **39**；`#328` 的 `setClipGain`（独占一个变体）⇒ 39 → **40**；
+        // `#329` 的 `setNoteExpression`（独占一个变体）⇒ 40 → **41**。
+        assert_eq!(seen.len(), 41);
+        // ⭐ `#179`：音符级分支集合**恰好是六个**，且逐字等于发布清单。
         assert_eq!(
             NOTE_LEVEL_KINDS,
-            ["add", "delete", "move", "velocity", "setNoteTiming"],
-            "音符级 kind 必须恰好是五个音符形态（字面表，⛔ 不是常量自比）"
+            [
+                "add",
+                "delete",
+                "move",
+                "velocity",
+                "setNoteTiming",
+                "setNoteExpression"
+            ],
+            "音符级 kind 必须恰好是六个音符形态（字面表，⛔ 不是常量自比）"
         );
         assert_eq!(
             note_level_seen.len(),
-            5,
-            "全部 39 个 kind 里 `is_note_level()` 为真的必须**恰好五个**，实际: {note_level_seen:?}"
+            6,
+            "全部 40 个 kind 里 `is_note_level()` 为真的必须**恰好六个**，实际: {note_level_seen:?}"
         );
         assert_eq!(
             note_level_seen,

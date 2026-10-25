@@ -3267,6 +3267,8 @@ mod tests {
         "src/ops.rs::Op::SetRoutingGain.new_gain_db",
         "src/ops.rs::Op::SetClipGain.old_gain_db",
         "src/ops.rs::Op::SetClipGain.new_gain_db",
+        "src/ops.rs::Op::SetNoteExpression.old_probability",
+        "src/ops.rs::Op::SetNoteExpression.new_probability",
         "src/ops.rs::Op::SetParam.old_val",
         "src/ops.rs::Op::SetParam.new_val",
         "src/ops.rs::Op::SetMacro.old_val",
@@ -3323,6 +3325,16 @@ mod tests {
             "src/ops.rs::Op::SetClipGain.new_gain_db",
             "非有限拒绝（clip.audio.gain_db）；有限极值接受（dB 无模型级范围）",
             probe_set_clip_gain_new,
+        ),
+        (
+            "src/ops.rs::Op::SetNoteExpression.old_probability",
+            "旧值只做逐位比较：NaN 与 -0.0 都不可能等于文档里的 +0.0 ⇒ OpStateMismatch",
+            probe_set_note_expression_old,
+        ),
+        (
+            "src/ops.rs::Op::SetNoteExpression.new_probability",
+            "非有限与 0.0..=1.0 外都报 ProbabilityOutOfRange；区间端点接受",
+            probe_set_note_expression_new,
         ),
         (
             "src/ops.rs::Op::SetParam.old_val",
@@ -4284,6 +4296,39 @@ mod tests {
         (doc, audio_clip)
     }
 
+    /// 在 [`numeric_fixture`] 上加一条**MIDI 片段 + 一个音符**
+    /// （`SetNoteExpression` 探针专用）。
+    ///
+    /// ⚠ 不并进 `numeric_fixture` 本体：本文件有多条判据直接读它的 `tracks` /
+    /// `clip_pool`（"被拒之后片段池必须为空"之类），并进共享夹具会让它们红
+    /// （同 [`numeric_fixture_with_audio_gain`] 的理由）。
+    fn numeric_fixture_with_note() -> (YebanProjectV1, EntityId, EntityId, EntityId) {
+        let (mut doc, _) = numeric_fixture();
+        let track = fixture_id(906);
+        let clip = fixture_id(907);
+        let note = fixture_id(908);
+        doc.tracks.insert(
+            track,
+            TrackV3 {
+                id: track,
+                name: "Notes".to_owned(),
+                kind: TrackKind::Midi,
+                ..TrackV3::default()
+            },
+        );
+        doc.clip_pool.insert(
+            clip,
+            ClipPoolEntry {
+                id: clip,
+                name: "Notes".to_owned(),
+                content: ClipContent::Midi {
+                    notes: BTreeMap::from([(note, MidiNote::new(note, 0, 60, 480))]),
+                },
+            },
+        );
+        (doc, track, clip, note)
+    }
+
     /// 施加 `op` 并断言它被拒绝、文档逐字节不动、且被拒之后文档仍合法。
     fn apply_rejected(
         doc: &mut YebanProjectV1,
@@ -4748,6 +4793,127 @@ mod tests {
                 new_gain_db: value,
             };
             apply_accepted(&mut doc, &op, "SetClipGain(有限极值)")?;
+        }
+        Ok(())
+    }
+
+    /// `SetNoteExpression` 的**旧概率**：只做逐位比较（NaN 与 `-0.0` 都不可能等于
+    /// 文档现值）。
+    fn probe_set_note_expression_old() -> Result<(), String> {
+        let (mut doc, track, clip, note) = numeric_fixture_with_note();
+        for value in NON_FINITE_F32 {
+            let op = Op::SetNoteExpression {
+                track_id: track,
+                clip_id: clip,
+                note_id: note,
+                old_probability: Some(value),
+                old_ratchet: None,
+                old_micro_timing_ticks: None,
+                new_probability: Some(0.5),
+                new_ratchet: None,
+                new_micro_timing_ticks: None,
+            };
+            match apply_rejected(&mut doc, &op, "SetNoteExpression(old 非有限)") {
+                Ok(ModelError::OpStateMismatch { .. }) => {}
+                Ok(other) => {
+                    return Err(format!(
+                        "非有限旧概率必须报 OpStateMismatch, 实际 {other:?}"
+                    ));
+                }
+                Err(reason) => return Err(reason),
+            }
+        }
+        // 数值相等但**位不同**：`-0.0` != `+0.0`（逐位，⛔ 不是 `==`）。
+        let mut doc = {
+            let (mut doc, _, _, _) = numeric_fixture_with_note();
+            let set_zero = Op::SetNoteExpression {
+                track_id: track,
+                clip_id: clip,
+                note_id: note,
+                old_probability: None,
+                old_ratchet: None,
+                old_micro_timing_ticks: None,
+                new_probability: Some(0.0),
+                new_ratchet: None,
+                new_micro_timing_ticks: None,
+            };
+            set_zero
+                .apply(&mut doc)
+                .map_err(|error| format!("写 +0.0 失败: {error}"))?;
+            doc
+        };
+        let signed_zero = Op::SetNoteExpression {
+            track_id: track,
+            clip_id: clip,
+            note_id: note,
+            old_probability: Some(-0.0),
+            old_ratchet: None,
+            old_micro_timing_ticks: None,
+            new_probability: Some(0.5),
+            new_ratchet: None,
+            new_micro_timing_ticks: None,
+        };
+        match apply_rejected(
+            &mut doc,
+            &signed_zero,
+            "SetNoteExpression(old -0.0 vs +0.0)",
+        ) {
+            Ok(ModelError::OpStateMismatch { .. }) => Ok(()),
+            Ok(other) => Err(format!(
+                "-0.0 与 +0.0 位不同, 必须报 OpStateMismatch, 实际 {other:?}"
+            )),
+            Err(reason) => Err(reason),
+        }
+    }
+
+    /// `SetNoteExpression` 的**新概率**：非有限与 `0.0..=1.0` 外都报
+    /// `ProbabilityOutOfRange`（与 [`MidiNote::validate`] 同一条口径）；端点接受。
+    fn probe_set_note_expression_new() -> Result<(), String> {
+        let (mut doc, track, clip, note) = numeric_fixture_with_note();
+        for value in [
+            f32::NAN,
+            f32::INFINITY,
+            f32::NEG_INFINITY,
+            -0.001,
+            1.001,
+            f32::MIN,
+            f32::MAX,
+        ] {
+            let op = Op::SetNoteExpression {
+                track_id: track,
+                clip_id: clip,
+                note_id: note,
+                old_probability: None,
+                old_ratchet: None,
+                old_micro_timing_ticks: None,
+                new_probability: Some(value),
+                new_ratchet: None,
+                new_micro_timing_ticks: None,
+            };
+            match apply_rejected(&mut doc, &op, "SetNoteExpression(概率越界)") {
+                Ok(ModelError::ProbabilityOutOfRange { .. }) => {}
+                Ok(other) => {
+                    return Err(format!(
+                        "越界新概率必须报 ProbabilityOutOfRange, 实际 {other:?}"
+                    ));
+                }
+                Err(reason) => return Err(reason),
+            }
+        }
+        for value in [0.0, f32::MIN_POSITIVE, 0.5, 1.0] {
+            let (mut doc, track, clip, note) = numeric_fixture_with_note();
+            let op = Op::SetNoteExpression {
+                track_id: track,
+                clip_id: clip,
+                note_id: note,
+                old_probability: None,
+                old_ratchet: None,
+                old_micro_timing_ticks: None,
+                new_probability: Some(value),
+                new_ratchet: None,
+                new_micro_timing_ticks: None,
+            };
+            apply_accepted(&mut doc, &op, "SetNoteExpression(概率端点)")?;
         }
         Ok(())
     }

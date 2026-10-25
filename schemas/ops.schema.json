@@ -132,6 +132,16 @@
         },
         {
           "required": [
+            "SetNoteExpression"
+          ],
+          "properties": {
+            "SetNoteExpression": {
+              "type": "object"
+            }
+          }
+        },
+        {
+          "required": [
             "AddClipPlacement"
           ],
           "properties": {

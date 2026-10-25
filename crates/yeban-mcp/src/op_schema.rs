@@ -365,6 +365,40 @@ pub fn ops_items() -> Value {
                 true,
             ),
             op(
+                "setNoteExpression",
+                "整体替换一个已有音符的三个表现力字段（触发概率 / 连击 / 微时序）。⚠ 三个键**全部必填**（缺键 ⛔ 不等于 `null`）：`null` = 清空 = 模型的 `None`（必然触发 / 等价于 1 / 无偏移）。三个旧值由服务端从**当前文档**读取（⛔ 不信调用方），操作对象上的多余键被响亮拒绝",
+                &[
+                    "kind",
+                    "noteId",
+                    "probability",
+                    "ratchet",
+                    "microTimingTicks",
+                ],
+                json!({
+                    "kind": kind("setNoteExpression"),
+                    "noteId": id("目标音符身份"),
+                    "probability": {
+                        "type": ["number", "null"],
+                        "minimum": 0.0,
+                        "maximum": 1.0,
+                        "description": "触发概率 0.0..=1.0 且有限；null = 清空 = 必然触发",
+                    },
+                    "ratchet": {
+                        "type": ["integer", "null"],
+                        "minimum": 1,
+                        "maximum": 16,
+                        "description": "连击次数 1..=16；null = 清空 = 等价于 1",
+                    },
+                    "microTimingTicks": {
+                        "type": ["integer", "null"],
+                        "minimum": -240,
+                        "maximum": 240,
+                        "description": "起点微偏移 -240..=240 tick；null = 清空 = 无偏移",
+                    },
+                }),
+                true,
+            ),
+            op(
                 "insertDevice",
                 "在目标音轨的设备链里插入一台设备。要得到 EQ / 混响 / 卷积混响：`device.kind:\"InternalEffect\"` + `bypassed:false` + 在 `device.params` 里写 `eq_*` / `reverb_*` / `conv_*` 名字（名字、单位、值域、缺省值见 `device.params.items`）",
                 &["kind", "trackId", "device"],

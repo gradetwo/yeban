@@ -250,6 +250,54 @@ pub enum Op {
         /// 修改后的时值 tick（必须 ≥ 1）。
         new_duration_ticks: u64,
     },
+    /// 设置一个**已有音符**的三个表现力字段（`probability` / `ratchet` /
+    /// `micro_timing_ticks`，`[MODEL-AST-005]`）。
+    ///
+    /// ⚠ **本变体补上了什么**：⭐ 这三个字段在**建音符时**由 [`Op::AddNote`] 的载荷收下，
+    /// 而 `Op` 全集此前**没有任何变体写得进它们** ⇒ ⭐ **音符建得出、表情改不了**：
+    /// 改一个概率只能"删 + 加"，而删除再添加会**换掉 `EntityId`** —— 概率触发的哈希
+    /// 恰好只使用 `id`（见 [`MidiNote::triggers`]），所以那还会**改变触发结果**。
+    /// 这是 `ARCH-OPS-001` 那一族的又一处（与 [`Op::SetNoteTiming`] /
+    /// [`Op::SetClipGain`] 同型）。
+    ///
+    /// ⚠ **整体替换而不是逐字段**：三个字段是**一个作者选择**（照
+    /// [`Op::SetTransportConfig`] 的同一条裁决）—— 拆成三条 `Op` 会让"撤销一步"只回退
+    /// 其中一个字段、留下一个作者**从未选过**的组合 ⇒ 故这里是**一条** `Op`。
+    ///
+    /// ⚠ **三个 `old_*` 从当前文档读**（调用方声明的旧状态一律不被采信）；
+    /// 相等判定：`probability` 是 `f32` ⇒ **逐位**（[`same_optional_f32`]，`-0.0` 与
+    /// `0.0` 位不同 ⇒ 陈旧载荷必被拒）；`ratchet` / `micro_timing_ticks` 是整数 ⇒ `==`。
+    ///
+    /// ⚠ **值域照抄 [`MidiNote::validate`]**（⛔ 不发明）：`probability` ∈ `0.0..=1.0`
+    /// 且有限（[`ModelError::ProbabilityOutOfRange`]）；`ratchet` ∈ `1..=16`
+    /// （[`ModelError::RatchetOutOfRange`]）；`micro_timing_ticks` ∈ `-240..=240`
+    /// （[`ModelError::MicroTimingOutOfRange`]）。`None` 是**一等状态**
+    /// （必然触发／等价于 1／无偏移）⇒ 载荷里的 `None` ⛔ 不是"缺省"。
+    ///
+    /// ⚠ 本变体只写这三个字段：⛔ 不碰 `id` / `start_tick` / `duration_ticks` / `pitch` /
+    /// `velocity` / `slide` / `pitch_bend_curve` / `syllable` / `phonemes`。
+    /// ⚠ 命名用 `old_*` / `new_*`（**set** 类，照 [`Op::SetClipGain`]），⛔ **不是**
+    /// `previous_*`（那是 delete / remove 类的惯例）。
+    SetNoteExpression {
+        /// 所属音轨。
+        track_id: EntityId,
+        /// 所属片段。
+        clip_id: EntityId,
+        /// 音符身份。
+        note_id: EntityId,
+        /// 修改前的触发概率（`None` = 必然触发）。
+        old_probability: Option<f32>,
+        /// 修改前的连击次数（`None` = 等价于 1）。
+        old_ratchet: Option<u8>,
+        /// 修改前的微时值偏移（`None` = 无偏移）。
+        old_micro_timing_ticks: Option<i16>,
+        /// 修改后的触发概率（`None` = 清空 = 必然触发）。
+        new_probability: Option<f32>,
+        /// 修改后的连击次数（`None` = 清空 = 等价于 1）。
+        new_ratchet: Option<u8>,
+        /// 修改后的微时值偏移（`None` = 清空 = 无偏移）。
+        new_micro_timing_ticks: Option<i16>,
+    },
     /// 在音轨时间轴上摆放片段。
     AddClipPlacement {
         /// 目标音轨。
@@ -911,9 +959,10 @@ fn same_f64(left: f64, right: f64) -> bool {
     left.to_bits() == right.to_bits()
 }
 
-/// 判断两个增益 `Option<f32>` 是否逐位相同。
+/// 判断两个**可选** `f32` 是否逐位相同（`SetClipGain` 的增益与
+/// `SetNoteExpression` 的概率共用同一条口径）。
 #[must_use]
-fn same_gain(left: Option<f32>, right: Option<f32>) -> bool {
+fn same_optional_f32(left: Option<f32>, right: Option<f32>) -> bool {
     match (left, right) {
         (None, None) => true,
         (Some(a), Some(b)) => same_f32(a, b),
@@ -968,6 +1017,7 @@ impl Op {
             Self::MoveNote { .. } => "MoveNote",
             Self::ModifyNoteVelocity { .. } => "ModifyNoteVelocity",
             Self::SetNoteTiming { .. } => "SetNoteTiming",
+            Self::SetNoteExpression { .. } => "SetNoteExpression",
             Self::AddClip { .. } => "AddClip",
             Self::RemoveClip { .. } => "RemoveClip",
             Self::SetClipName { .. } => "SetClipName",
@@ -1106,6 +1156,51 @@ impl Op {
                 // 与 `MidiNote::validate` 同一条 `ZeroDuration` 口径（⛔ 不自造新错误变体）。
                 if *new_duration_ticks == 0 {
                     return Err(ModelError::ZeroDuration);
+                }
+                Ok(())
+            }
+            Self::SetNoteExpression {
+                track_id,
+                clip_id,
+                note_id,
+                old_probability,
+                old_ratchet,
+                old_micro_timing_ticks,
+                new_probability,
+                new_ratchet,
+                new_micro_timing_ticks,
+            } => {
+                doc.track(track_id)?;
+                let current = doc.note(clip_id, note_id)?;
+                // 三个旧值必须**同时**对上：它们是一次表达编辑的完整撤销载荷。
+                // `probability` 逐位（`-0.0` 与 `0.0` 位不同）；两个整数直接比较。
+                if !same_optional_f32(*old_probability, current.probability)
+                    || *old_ratchet != current.ratchet
+                    || *old_micro_timing_ticks != current.micro_timing_ticks
+                {
+                    return Err(ModelError::OpStateMismatch { op: self.name() });
+                }
+                // ⚠ 值域**照抄** `MidiNote::validate` 的同三条（⛔ 不自造新错误变体）：
+                // 否则 `apply` 会写出一份 `validate()` 拒绝的文档。
+                if let Some(probability) = new_probability
+                    && (!probability.is_finite() || !(0.0..=1.0).contains(probability))
+                {
+                    return Err(ModelError::ProbabilityOutOfRange {
+                        value: *probability,
+                    });
+                }
+                if let Some(ratchet) = new_ratchet
+                    && !(crate::music::RATCHET_MIN..=crate::music::RATCHET_MAX).contains(ratchet)
+                {
+                    return Err(ModelError::RatchetOutOfRange { value: *ratchet });
+                }
+                if let Some(micro_timing) = new_micro_timing_ticks
+                    && !(-crate::music::MICRO_TIMING_MAX_ABS..=crate::music::MICRO_TIMING_MAX_ABS)
+                        .contains(micro_timing)
+                {
+                    return Err(ModelError::MicroTimingOutOfRange {
+                        value: i32::from(*micro_timing),
+                    });
                 }
                 Ok(())
             }
@@ -1350,7 +1445,7 @@ impl Op {
                     .edges
                     .get(edge_id)
                     .ok_or(ModelError::RoutingEdgeNotFound { id: *edge_id })?;
-                if !same_gain(current.gain_db, *old_gain_db) {
+                if !same_optional_f32(current.gain_db, *old_gain_db) {
                     return Err(ModelError::OpStateMismatch { op: self.name() });
                 }
                 if let Some(gain_db) = new_gain_db
@@ -1841,6 +1936,28 @@ impl Op {
                 new_start_tick: *old_start_tick,
                 new_duration_ticks: *old_duration_ticks,
             },
+            // 纯结构化取反：只交换"前 / 后"六个值（与 `SetNoteTiming` 同型）。
+            Self::SetNoteExpression {
+                track_id,
+                clip_id,
+                note_id,
+                old_probability,
+                old_ratchet,
+                old_micro_timing_ticks,
+                new_probability,
+                new_ratchet,
+                new_micro_timing_ticks,
+            } => Self::SetNoteExpression {
+                track_id: *track_id,
+                clip_id: *clip_id,
+                note_id: *note_id,
+                old_probability: *new_probability,
+                old_ratchet: *new_ratchet,
+                old_micro_timing_ticks: *new_micro_timing_ticks,
+                new_probability: *old_probability,
+                new_ratchet: *old_ratchet,
+                new_micro_timing_ticks: *old_micro_timing_ticks,
+            },
             Self::AddClipPlacement {
                 track_id,
                 placement,
@@ -2312,6 +2429,22 @@ impl Op {
                 let note = doc.note_mut(clip_id, note_id)?;
                 note.start_tick = *new_start_tick;
                 note.duration_ticks = *new_duration_ticks;
+                Ok(())
+            }
+            // 只写那**三个**表现力字段：⛔ 不碰 `id` / `start_tick` / `duration_ticks` /
+            // 音高 / 力度 / 滑音 / 弯音曲线 / 歌词。
+            Self::SetNoteExpression {
+                clip_id,
+                note_id,
+                new_probability,
+                new_ratchet,
+                new_micro_timing_ticks,
+                ..
+            } => {
+                let note = doc.note_mut(clip_id, note_id)?;
+                note.probability = *new_probability;
+                note.ratchet = *new_ratchet;
+                note.micro_timing_ticks = *new_micro_timing_ticks;
                 Ok(())
             }
             Self::AddClipPlacement {
@@ -3141,6 +3274,20 @@ mod tests {
                 old_duration_ticks: 480,
                 new_start_tick: 240,
                 new_duration_ticks: 960,
+            },
+            // 三个表现力字段：**建音符时能收、之后改不了**（`AddNote` 是唯一入口）。
+            // 目标仍是 `f.note` —— 上面那条 `SetNoteTiming` 只改起点/时值，⛔ 不碰这三个
+            // 字段 ⇒ 旧值仍是 `None`；`None` 是一等状态，逆操作要能把它还原回去。
+            Op::SetNoteExpression {
+                track_id: f.lead,
+                clip_id: f.clip,
+                note_id: f.note,
+                old_probability: None,
+                old_ratchet: None,
+                old_micro_timing_ticks: None,
+                new_probability: Some(0.75),
+                new_ratchet: Some(3),
+                new_micro_timing_ticks: Some(-17),
             },
             Op::AddClipPlacement {
                 track_id: f.bass,
@@ -5111,9 +5258,9 @@ mod tests {
         // 一个 ULP 也必须不同。
         assert!(!same_f32(1.0, f32::from_bits(1.0_f32.to_bits() + 1)));
         // `Option` 形态走同一把尺子（`SetRoutingGain` 用它）。
-        assert!(same_gain(None, None));
-        assert!(!same_gain(None, Some(0.0)));
-        assert!(!same_gain(Some(0.0), Some(-0.0)));
+        assert!(same_optional_f32(None, None));
+        assert!(!same_optional_f32(None, Some(0.0)));
+        assert!(!same_optional_f32(Some(0.0), Some(-0.0)));
     }
 
     /// 音高平移的合法区间是**闭区间** `0..=127`：上端点 127 必须可达。
@@ -6871,6 +7018,294 @@ mod tests {
                 extreme.to_bits(),
                 "读回必须逐位等于写入的有限极值（实测值 {extreme}）"
             );
+        }
+    }
+
+    /// `SetNoteExpression` 只写三个表现力字段，且"陈旧载荷必被拒"（`#329`）。
+    ///
+    /// 七条读数：① 改动**只**落在这三个字段上（与"同工程只换这三个字段"的克隆
+    /// **逐字节**比较）；② 逆操作**逐字节**回到原状；③ 三个旧值**任一**对不上 ⇒
+    /// `OpStateMismatch`，文档逐字节不动；④ `probability` 是**逐位**比较
+    /// （`-0.0` 与 `+0.0` 位不同 ⇒ 陈旧）；⑤ `None` 是**一等状态**（改回 `None` 合法，
+    /// 逆操作把 `Some` 还原）；⑥ 值域**照抄** [`MidiNote::validate`] 三条（越界报
+    /// **既有**错误变体，⛔ 不自造）；⑦ 音符/片段不存在、片段不是 MIDI ⇒ 既有错误。
+    #[test]
+    fn set_note_expression_writes_three_fields_and_rejects_stale_or_out_of_range() {
+        fn write(
+            doc: &mut YebanProjectV1,
+            f: &Fixture,
+            probability: Option<f32>,
+            ratchet: Option<u8>,
+            micro: Option<i16>,
+        ) {
+            let note = doc
+                .clip_pool
+                .get_mut(&f.clip)
+                .expect("夹具片段")
+                .content
+                .notes_mut()
+                .expect("MIDI 片段")
+                .get_mut(&f.note)
+                .expect("夹具音符");
+            note.probability = probability;
+            note.ratchet = ratchet;
+            note.micro_timing_ticks = micro;
+        }
+
+        let f = fixture();
+        let mut doc = fixture_document();
+        let before = serde_json::to_vec(&doc).expect("序列化");
+        let original = doc.note(&f.clip, &f.note).expect("音符").clone();
+        assert_eq!(original.probability, None, "夹具口径");
+        assert_eq!(original.ratchet, None, "夹具口径");
+        assert_eq!(original.micro_timing_ticks, None, "夹具口径");
+
+        // 枚举变体不支持结构体更新语法（E0436）⇒ 用闭包把三个身份固定住，
+        // 六个"前 / 后"值作为参数。
+        let mk = |old_p: Option<f32>,
+                  old_r: Option<u8>,
+                  old_m: Option<i16>,
+                  new_p: Option<f32>,
+                  new_r: Option<u8>,
+                  new_m: Option<i16>| {
+            Op::SetNoteExpression {
+                track_id: f.lead,
+                clip_id: f.clip,
+                note_id: f.note,
+                old_probability: old_p,
+                old_ratchet: old_r,
+                old_micro_timing_ticks: old_m,
+                new_probability: new_p,
+                new_ratchet: new_r,
+                new_micro_timing_ticks: new_m,
+            }
+        };
+
+        let op = mk(None, None, None, Some(0.75), Some(3), Some(-17));
+        op.precondition(&doc).expect("前置条件必须成立");
+        op.apply(&mut doc).expect("必须能应用");
+
+        // ① 改动只落在这三个字段上。
+        let mut expected = fixture_document();
+        write(&mut expected, &f, Some(0.75), Some(3), Some(-17));
+        assert_eq!(
+            serde_json::to_vec(&doc).expect("s"),
+            serde_json::to_vec(&expected).expect("s"),
+            "改动必须**只**落在这三个表现力字段上（⛔ 不碰 id / 时间 / 音高 / 力度 / 滑音）"
+        );
+
+        // 读回**逐位**（`f32` 不用 `==`）。
+        let landed = doc.note(&f.clip, &f.note).expect("音符");
+        assert_eq!(
+            landed.probability.map(f32::to_bits),
+            Some(0.75_f32.to_bits()),
+            "probability 读回必须逐位相同"
+        );
+        assert_eq!(landed.ratchet, Some(3));
+        assert_eq!(landed.micro_timing_ticks, Some(-17));
+
+        // ② 逆操作逐字节回到原状。
+        op.apply_inverse(&mut doc).expect("逆必须能应用");
+        assert_eq!(
+            serde_json::to_vec(&doc).expect("s"),
+            before,
+            "逆操作之后必须逐字节回到原状"
+        );
+
+        // ③ 三个旧值**任一**对不上 ⇒ OpStateMismatch，且文档不动。
+        for (label, stale) in [
+            (
+                "概率",
+                mk(Some(0.5), None, None, Some(0.75), Some(3), Some(-17)),
+            ),
+            (
+                "连击",
+                mk(None, Some(1), None, Some(0.75), Some(3), Some(-17)),
+            ),
+            (
+                "微时序",
+                mk(None, None, Some(0), Some(0.75), Some(3), Some(-17)),
+            ),
+        ] {
+            let snapshot = serde_json::to_vec(&doc).expect("s");
+            let error = stale.apply(&mut doc).expect_err("陈旧旧值必须被拒");
+            assert!(
+                matches!(error, ModelError::OpStateMismatch { .. }),
+                "{label}: 必须报 OpStateMismatch, 实际 {error:?}"
+            );
+            assert_eq!(
+                serde_json::to_vec(&doc).expect("s"),
+                snapshot,
+                "{label}: 被拒之后文档必须逐字节不动"
+            );
+        }
+
+        // ④ `-0.0` 与 `+0.0` 数值相等但**位不同** ⇒ 逐位比较必须拒。
+        let mut signed_zero_doc = fixture_document();
+        let set_zero = mk(None, None, None, Some(0.0), None, None);
+        set_zero.apply(&mut signed_zero_doc).expect("写 +0.0");
+        let signed_zero_stale = mk(Some(-0.0), None, None, Some(0.5), None, None);
+        assert!(
+            signed_zero_stale.precondition(&signed_zero_doc).is_err(),
+            "-0.0 与 +0.0 位不同, 必须判为陈旧载荷"
+        );
+
+        // ⑤ `None` 是一等状态：写回 None 合法，逆操作把 Some 还原。
+        let mut clear_doc = fixture_document();
+        set_zero.apply(&mut clear_doc).expect("先写 Some(0.0)");
+        let clear = mk(Some(0.0), None, None, None, None, None);
+        clear.apply(&mut clear_doc).expect("清空必须合法");
+        assert_eq!(
+            clear_doc.note(&f.clip, &f.note).expect("音符").probability,
+            None,
+            "None 是明确的一等状态"
+        );
+        clear.apply_inverse(&mut clear_doc).expect("逆必须能应用");
+        assert_eq!(
+            clear_doc
+                .note(&f.clip, &f.note)
+                .expect("音符")
+                .probability
+                .map(f32::to_bits),
+            Some(0.0_f32.to_bits()),
+            "逆操作必须把 Some(0.0) 还原"
+        );
+
+        // ⑥ 值域照抄 `MidiNote::validate` 三条：越界报**既有**变体。
+        // ⚠ 三元组直接写在 `Vec` 上会撞 `clippy::type_complexity` ⇒ 按 clippy 的建议
+        // 提取别名（与 `notes.rs` 的 `type Row<'a>` 同一做法，⛔ 不用 `#[allow]` 掩盖）。
+        type OutOfRange = (Op, fn(&ModelError) -> bool, &'static str);
+        let out_of_range: Vec<OutOfRange> = vec![
+            (
+                mk(None, None, None, Some(1.5), None, None),
+                |error| matches!(error, ModelError::ProbabilityOutOfRange { .. }),
+                "0..=1 上界",
+            ),
+            (
+                mk(None, None, None, Some(f32::NAN), None, None),
+                |error| matches!(error, ModelError::ProbabilityOutOfRange { .. }),
+                "NaN",
+            ),
+            (
+                mk(None, None, None, Some(f32::INFINITY), None, None),
+                |error| matches!(error, ModelError::ProbabilityOutOfRange { .. }),
+                "∞",
+            ),
+            (
+                mk(None, None, None, None, Some(0), None),
+                |error| matches!(error, ModelError::RatchetOutOfRange { .. }),
+                "连击下界 0",
+            ),
+            (
+                mk(None, None, None, None, Some(17), None),
+                |error| matches!(error, ModelError::RatchetOutOfRange { .. }),
+                "连击上界 17",
+            ),
+            (
+                mk(None, None, None, None, None, Some(-241)),
+                |error| matches!(error, ModelError::MicroTimingOutOfRange { .. }),
+                "微时序下界 -241",
+            ),
+            (
+                mk(None, None, None, None, None, Some(241)),
+                |error| matches!(error, ModelError::MicroTimingOutOfRange { .. }),
+                "微时序上界 241",
+            ),
+        ];
+        for (candidate, matches_error, label) in out_of_range {
+            let snapshot = serde_json::to_vec(&doc).expect("s");
+            let error = candidate.precondition(&doc).expect_err("越界值必须被拒");
+            assert!(
+                matches_error(&error),
+                "{label}: 必须报既有变体, 实际 {error:?}"
+            );
+            assert_eq!(
+                serde_json::to_vec(&doc).expect("s"),
+                snapshot,
+                "{label}: 被拒之后文档必须逐字节不动"
+            );
+        }
+        // 区间端点照收，读回逐位相同。
+        for (probability, ratchet, micro) in [
+            (Some(0.0), Some(1), Some(-240)),
+            (Some(1.0), Some(16), Some(240)),
+        ] {
+            let mut landed_doc = fixture_document();
+            mk(None, None, None, probability, ratchet, micro)
+                .apply(&mut landed_doc)
+                .expect("端点必须被接受");
+            let landed = landed_doc.note(&f.clip, &f.note).expect("音符");
+            assert_eq!(
+                landed.probability.map(f32::to_bits),
+                probability.map(f32::to_bits)
+            );
+            assert_eq!(landed.ratchet, ratchet);
+            assert_eq!(landed.micro_timing_ticks, micro);
+        }
+
+        // ⑦ 音符/片段不存在、片段不是 MIDI ⇒ 既有错误（⛔ 新变体）。
+        let ghost = EntityId::from_str("01J8ZQ00000000000000000999").expect("ULID");
+        let cases: Vec<(Op, ModelError)> = vec![
+            (
+                Op::SetNoteExpression {
+                    track_id: f.lead,
+                    clip_id: f.clip,
+                    note_id: ghost,
+                    old_probability: None,
+                    old_ratchet: None,
+                    old_micro_timing_ticks: None,
+                    new_probability: Some(0.5),
+                    new_ratchet: None,
+                    new_micro_timing_ticks: None,
+                },
+                ModelError::NoteNotFound { id: ghost },
+            ),
+            (
+                Op::SetNoteExpression {
+                    track_id: f.lead,
+                    clip_id: ghost,
+                    note_id: f.note,
+                    old_probability: None,
+                    old_ratchet: None,
+                    old_micro_timing_ticks: None,
+                    new_probability: Some(0.5),
+                    new_ratchet: None,
+                    new_micro_timing_ticks: None,
+                },
+                ModelError::ClipNotFound { id: ghost },
+            ),
+            (
+                Op::SetNoteExpression {
+                    track_id: f.lead,
+                    clip_id: f.audio_clip,
+                    note_id: f.note,
+                    old_probability: None,
+                    old_ratchet: None,
+                    old_micro_timing_ticks: None,
+                    new_probability: Some(0.5),
+                    new_ratchet: None,
+                    new_micro_timing_ticks: None,
+                },
+                ModelError::ClipContentKindMismatch { id: f.audio_clip },
+            ),
+            (
+                Op::SetNoteExpression {
+                    track_id: ghost,
+                    clip_id: f.clip,
+                    note_id: f.note,
+                    old_probability: None,
+                    old_ratchet: None,
+                    old_micro_timing_ticks: None,
+                    new_probability: Some(0.5),
+                    new_ratchet: None,
+                    new_micro_timing_ticks: None,
+                },
+                ModelError::TrackNotFound { id: ghost },
+            ),
+        ];
+        for (candidate, expected) in cases {
+            let error = candidate.apply(&mut doc).expect_err("目标缺失必须被拒");
+            assert_eq!(error, expected, "必须复用既有错误变体（⛔ 造新变体）");
         }
     }
 
