@@ -1,5 +1,9 @@
 //! **`#335` 验收：只用 MCP 工具面做一首曲子，然后量它。**
 //!
+//! ⭐ `#341` 在本文件上补了**内容判据**（贝斯每小节根音 / 和声每小节三和弦 /
+//! 打击每次起音的位置）—— `#335` 只对主音做过音高内容检查，其余三轨只被量过
+//! "有没有声、在哪几小节有声"。见下方 `#341` 一节。
+//!
 //! 在此之前，每一个能力都有自己的判据（工程 / 音轨 / 片段 / 音符表现力 / 弯音 / 滑音 /
 //! 设备 / 自动化 / 段落 / 母带导出），但没有一条判据证明**这些能力能拼成一首曲子**。
 //! 本文件补的就是这一条：它**不构造任何模型结构体**，整首曲子经由
@@ -36,6 +40,9 @@
 //! | 颤音 | 主音独奏母带两个窗口的主频 | Hz | 440×2^(±60/1200) = **455.5 Hz / 425.0 Hz**，各 ±2 Hz，且高频窗口 − 低频窗口 > 25 Hz |
 //! | 滑音 | 主音独奏母带两个窗口的主频 | Hz | 起点 ≈440 Hz（±6）、末段 ≈880 Hz（±3） |
 //! | 循环 | 打击独奏母带逐小节 RMS | dBFS | 四个小节都 `> −45 dBFS`（循环没展开 ⇒ 只有第 1 小节有声） |
+//! | 贝斯内容 | 独奏贝斯母带每小节**拍 1** 窗的 DFT 主频 | Hz → 音分 | 期望 `440×2^((p−69)/12)`（MIDI 45/41/48/43 = A2/F2/C3/G2），**±30 音分**；见 `#341` 一节 |
+//! | 和声内容 | 独奏和声母带（**混响保持开启**）每小节整小节窗的单频幅度 | dBFS（等效正弦幅度） | 三个和弦音各 `≥ −40 dBFS` 且比同窗非和弦探针高 `≥20 dB`；探针 `≤ −50 dBFS` |
+//! | 打击起音 | 独奏打击母带每小节三次击打的起音帧 | 帧 / tick（1 tick = 25 帧） | 5 ms RMS 窗、5 ms 跳步、局部峰值 −20 dB 的首个越限窗，误差 `≤ ±240 帧 = ±5 ms` |
 //! | 段落 | `yeban_query_project` 的 `sections` | tick | `Intro` 0..5_760、`Drop` 5_760..11_520，逐 tick 相等 |
 //! | 自动化 | 自动化开/关两次母带的逐小节 RMS | dBFS | 第 1 小节：开 < 关 − 1 dB；第 4 小节：开 > 关 + 0.5 dB（−46→−6 dB 的渐强方向） |
 //! | 混响 | 混响开/旁通两次母带的 `sha256` 与样本差 | 哈希 / dBFS | 哈希不同且差 > −40 dBFS |
@@ -54,6 +61,17 @@
 //!   就得重挑窗口。
 //! - **循环**的逐小节 RMS 只证明四小节都有能量。它抓不住"循环区间取错了半拍"
 //!   （只要每小节都有能量就绿）。
+//! - **贝斯内容**的 ±30 音分不是"调音精度"判据：`dominant` 的 1 Hz 网格在 F2 上
+//!   就是 ±9.9 音分，30 音分 ≈ 3 个量化格。它抓得住任何 ≥30 音分的移调（半音
+//!   100 / 五度 700 / 八度 1200），抓不住 <30 音分的走音（F2 上 <1.5 Hz），也不
+//!   评价这个音在音乐上是否是"对的贝斯音"。
+//! - **和声内容**的探针音是每小节根音 + 1 个半音（A#3 / F#3 / C#4 / G#3），与三个
+//!   和弦音的基频和奇次谐波都不重合。混响**不旁通**（内容判据量的是这条轨在曲子里
+//!   实际发出的声）；"存在"由绝对下限 + 与探针的分离度两条一起判，"不存在"由探针
+//!   的绝对上限单独判 —— 否则宽带混响就能满足"存在"。探针只是**每小节一个频点**的
+//!   抽查，不是"所有非和弦音都为零"的全称判据。
+//! - **打击起音**只判位置，不判音色：36/38 只差 2 个半音（65.4/73.4 Hz），5 ms 检测窗
+//!   分辨不了，所以"这一击是 kick 还是 snare"落在"仍不能抓"里；力度与音色也不判。
 //! - **自动化/混响**的 A/B 只证明"这个开关对母带有影响"。它不证明影响**恰好**是
 //!   作者要的增益/湿度；A/B 的方向性断言（第 1 小节 vs 第 4 小节）才把"渐强方向"
 //!   钉住。
@@ -72,6 +90,73 @@
 //! | 循环 | 四小节打击独奏 RMS −23.0016 / −23.0016 / −23.0016 / −23.0016 dBFS | 1 小节的内容铺满 4 小节 |
 //! | 自动化 | bar1 开 −15.85 / 关 −13.85 dBFS；bar4 开 −13.23 / 关 −13.94 dBFS | 方向与 −46→−6 dB 一致 |
 //! | 混响旁通差 | −25.05 dBFS | 和声轨 Freeverb 对母带真的有贡献 |
+//!
+//! ## `#341` 内容判据：为什么能证明"出的是该出的声"，以及它抓不到什么
+//!
+//! `#335` 的缺口（它自己在"阈值会漏掉什么"里就写了）：除了主音的颤音/滑音，**没有
+//! 任何一条判据检查音高内容**。贝斯被移调一个八度、和声换掉和弦、打击挪半拍，
+//! 时长 / 峰值 / 响度 / 逐轨静音差 / 循环逐小节 RMS / 段落 / 自动化 / 混响**全都
+//! 照样绿**。本单补的就是这三条 —— 主音的音高 `#335` 已经量过（颤音两窗、滑音两端），
+//! 它既是当时**唯一**的内容判据，也正是另外三条成为缺口的原因：先例已经证明"这件事
+//! 能测"，只是没有推广到其它轨。
+//!
+//! 方法（曲子是合成的、渲染是确定性的 ⇒ 加窗 DFT + 峰值/幅度比较是合法的）：
+//!
+//! 1. **隔离**：贝斯与和声各自 `setTrackSolo` 后重新渲染；打击直接复用 D 节已有的
+//!    独奏母带（不多渲染一次）。⛔ 不尝试用频谱分离四条轨 —— 那会在"哪条轨的哪个
+//!    泛音"上引入歧义。
+//! 2. **贝斯**：每小节拍 1 的音符内部取 16_384 帧窗（跳过 50 ms 起振，长 341 ms），
+//!    以 1 Hz 步长找 DFT 主频，再换算成相对 `440×2^((p−69)/12)` 的音分差。搜索带是
+//!    期望频率的 0.45×…2.2×：升/降八度都落在带内，而 3 次谐波（3×）被排除在外
+//!    （HOLLOW 是奇次谐波波表、没有 2 次谐波 ⇒ 带内最强的峰只能是基频）。
+//! 3. **和声**：每小节整小节 72_000 帧窗，在三个期望和弦音的**精确频率**上量单 bin
+//!    幅度；同窗再量一个非和弦探针（根音 + 1 个半音）。混响保持开启，探针就是这条轨
+//!    的"混响/泄漏地板"。
+//! 4. **打击**：5 ms RMS 窗、5 ms 跳步扫描；局部峰值 −20 dB 的首个越限窗左沿即起音。
+//!    期望起音都在 5 ms 网格上，所以检测没有网格误差；允差 ±5 ms 只是"哪个窗先越限"。
+//!
+//! ### 注入证明（判据真的会咬）
+//!
+//! 每条判据都做过"**只改 `build_piece` 的蓝图、不改测量**"的注入，先红后还原
+//! （还原后 `sha256` 与 `git show HEAD:<path>` 相同；本轮实际哈希见本单报告）：
+//!
+//! | 注入（只改蓝图） | 红在哪 |
+//! | :--- | :--- |
+//! | 贝斯根音全部 +12 半音（八度） | 贝斯内容：主频翻倍（≈220 / 174.6 / 261.6 / 196 Hz）⇒ Δ ≈ +1200 音分 |
+//! | 和声 bar1 三和弦整体 +12 半音（`[69,72,76]`） | 和声内容：期望的 A3/C4/E4 频点消失（"存在"那条） |
+//! | 和声 bar1 额外加一个 A#3（探针音） | 和声内容：探针幅度 > −50 dBFS（"不存在"那条） |
+//! | 打击 snare 从 tick 960 挪到 1200 | 打击起音：起音帧 30_000 ≠ 24_000（误差 6_000 帧 = 125 ms） |
+//!
+//! 上表四条**不会**让 `#335` 的任何旧断言变红：它们只改内容，不改时长 / 峰值 /
+//! 响度 / 逐轨差 / 循环 RMS / 段落 / 自动化 / 混响。这就是"绿 ≠ 对"的机械版本。
+//!
+//! ### 本机实测读数（`#341`，stable，48 kHz / 24-bit；由判据自己打印）
+//!
+//! | 量 | 实测 | 期望 / 阈值 |
+//! | :--- | :--- | :--- |
+//! | 贝斯根音 | **110.5 / 87.3 / 130.9 / 98.1 Hz**（+7.9 / −0.4 / +0.7 / +1.8 音分） | 110.000 / 87.307 / 130.813 / 97.999 Hz，±30 音分 |
+//! | 和声和弦音 | bar1 −25.18 / −24.77 / −25.48；bar2 −26.46 / −25.18 / −24.76；bar3 −24.76 / −25.48 / −25.85；bar4 −25.56 / −25.89 / −25.65 dBFS | 各 ≥ −40 dBFS 且比探针高 ≥20 dB |
+//! | 和声探针 | bar1 −101.87 / bar2 −86.31 / bar3 −78.05 / bar4 −81.59 dBFS（分离 ≥76.4 / 59.8 / 52.2 / 55.7 dB） | ≤ −50 dBFS |
+//! | 打击起音 | 12 次全部**误差 0 帧**（绝对 tick 0/960/1920/2880/…/10560） | 每小节 0/960/1920 tick，±240 帧（±5 ms） |
+//!
+//! 贝斯在 bar1 的 +7.9 音分是**测量网格**造成的：`dominant` 从 `110×0.45 = 49.5`
+//! 起按 1 Hz 步进，110.000 不在网格上，最近的 110.5 胜出；它没有 1 Hz 以上的
+//! 判据含义（真实基频由引擎的 `note_to_hz` 决定）。其余三格都在 ±2 音分内。
+//!
+//! ### 这些新判据仍不能抓（⛔ 别把绿当成品味判决）
+//!
+//! - **节奏感 / 律动**：起音判据只证明三次击打落在 tick 0 / 960 / 1920。它不证明这个
+//!   节奏型好听，也不判 <5 ms 的微时序（蓝图没有，判据也没有）。
+//! - **音色 / 配器**：打击的 36/38 在 5 ms 检测窗里不可分；判据不证明它是 kick/snare，
+//!   更不证明音色合适。贝斯/和声也只判基频，不判泛音、力度、连奏。
+//! - **声部排列（voicing）与额外音**：和声判据只检查"这三个频点在不在"、探针那一个
+//!   频点干不干净。它抓不住"在期望频点之外又叠了一个八度"或"另加一个恰好避开探针的
+//!   和弦外音"—— 那些仍会绿。它也完全不评价声部间距/转位是否音乐上合适。
+//! - **和弦是否是"对的"和弦**：判据对的是**蓝图**（Am/F/C/G），不是**品味**。一个在
+//!   音乐上更妙的进行，只要不是蓝图里的那四个，判据就会红；反过来，蓝图本身平庸时
+//!   判据全绿。它验证的是"实现忠实于意图"，⛔ 不是"意图本身正确"。
+//! - **混音 / 平衡**：内容判据只看单轨独奏里的频率与位置，不看四条轨之间的平衡、
+//!   声场、动态 —— 那仍然要靠响度回归带与听感。
 //!
 //! 稳定产物（未跟踪，**不进仓库**）：`target/acceptance-335/yeban-335-piece.wav`
 //! （1_728_694 字节，sha256 见判据末尾的 `### [335] 产物` 行与同目录的
@@ -198,6 +283,92 @@ const AUTOMATION_RAMP_IN_DB: f64 = 1.0;
 
 /// 自动化方向性判据：第 4 小节"开"必须比"关"至少大这么多 dB（渐强终点）。
 const AUTOMATION_RAMP_OUT_DB: f64 = 0.5;
+
+// ---------------------------------------------------------------------------
+// `#341` 内容判据：**期望表**与阈值
+//
+// ⚠ 期望表是**独立于 `build_piece` 的字面量**，不是从构造代码里 import 的常量。
+// 理由就是本单的注入实验：把蓝图的贝斯移调一个八度、把某个和弦换掉、把打击挪 240
+// tick，期望表必须**不动**，判据才会红。若两边共用一个常量，改蓝图会同时改期望，
+// 判据就是空转的。
+// ---------------------------------------------------------------------------
+
+/// 贝斯每小节**拍 1** 的根音（MIDI 音号；蓝图：A2 / F2 / C3 / G2）。
+const EXPECTED_BASS_ROOTS: [u8; 4] = [45, 41, 48, 43];
+
+/// 和声每小节的**三和弦**（MIDI 音号；蓝图：Am / F / C / G）。
+const EXPECTED_HARMONY_CHORDS: [[u8; 3]; 4] =
+    [[57, 60, 64], [53, 57, 60], [60, 64, 67], [55, 59, 62]];
+
+/// 打击每小节的**三次击打**：`(小节内 tick, MIDI 音号)`（kick 36 / snare 38 / kick 36）。
+const EXPECTED_PERCUSSION_HITS: [(u64, u8); 3] = [(0, 36), (960, 38), (1920, 36)];
+
+/// 贝斯根音的测量窗起点（相对小节起点，帧）：96 tick = 50 ms，跳过 5 ms 起振。
+const BASS_WINDOW_OFFSET_FRAMES: usize = 2_400;
+
+/// 贝斯根音的测量窗长度（帧）：16_384 帧 ≈ 341 ms；F2（87.31 Hz）上约 29.7 个周期。
+///
+/// 窗在**拍 1 的音符内部**（该音符长 960 tick = 24_000 帧）：2_400 + 16_384 = 18_784 < 24_000。
+const BASS_WINDOW_FRAMES: usize = 16_384;
+
+/// 贝斯根音允差（音分）：**±30 音分**。
+///
+/// 频率换算 `f = 440×2^((p−69)/12)`：A2=110.000、F2=87.307、C3=130.813、G2=97.999 Hz。
+/// ±30 音分 = A2 ±1.91 Hz、F2 ±1.51 Hz、C3 ±2.27 Hz、G2 ±1.70 Hz。`dominant` 的
+/// 搜索步长是 1 Hz（网格量化最多 ±0.5 Hz = F2 上 ±9.9 音分），30 音分 ≈ 3 个量化格。
+///
+/// **会抓**：任何 ≥30 音分的移调 —— 八度（1200）、五度（700）、半音（100）都在内，
+/// 也就是"贝斯被移调了"这一类缺陷。
+/// **不会抓**：<30 音分的走音/漂移（F2 上 <1.5 Hz），例如合成器整体调音偏 20 音分；
+/// 也不评价这个音在音乐上是否是"对的贝斯音"（见模块文档末的"仍不能抓"）。
+const BASS_TOLERANCE_CENTS: f64 = 30.0;
+
+/// 和声内容判据的窗长（帧）：**整小节** = 2_880 tick = 72_000 帧 = 1.5 s。
+///
+/// 窗从 bar 起点开始：三个和弦音都从 bar 起点起振并持续整小节。0.667 Hz 的 bin 宽
+/// 使三个和弦音（相隔 ≥3 个半音）互不重叠，1 Hz 的探针也不会被相邻音的主瓣扫到。
+const HARMONY_WINDOW_FRAMES: usize = 72_000;
+
+/// 一个期望和弦音**存在**的绝对下限：等效正弦幅度 ≥ −40 dBFS。
+///
+/// 实测和弦音在 −24.8…−26.5 dBFS（见读数表），−40 留了 ≥13.5 dB 余量；它排除了
+/// "只有混响底噪"这一档，但单靠它还不够（见下一条）。
+const HARMONY_TONE_PRESENCE_DBFS: f64 = -40.0;
+
+/// 期望和弦音必须比**同小节同长度窗的探针音**（根音 + 1 个半音）高这么多 dB。
+///
+/// 混响会把和弦能量抹到邻频；"某频点有能量"因此不能证明该和弦音存在。探针频点
+/// 与三个和弦音的**基频和奇次谐波**都不重合（HOLLOW 波表只有奇次谐波：1/3/5/7/9/11），
+/// 所以它上面的能量只可能来自混响/泄漏。实测分离度 52…77 dB，取 20 dB 作门限。
+const HARMONY_TONE_ABOVE_PROBE_DB: f64 = 20.0;
+
+/// 探针音**不存在**的绝对上限：等效正弦幅度 ≤ −50 dBFS。
+///
+/// 实测探针在 −78…−102 dBFS；−50 留了 ≥28 dB 余量。该门限与上一条一起，才使
+/// "和弦音存在"不能靠宽带混响满足。
+const HARMONY_PROBE_ABSENCE_DBFS: f64 = -50.0;
+
+/// 打击起音检测的 RMS 窗长（帧）：240 = 5 ms。
+const ONSET_WINDOW_FRAMES: usize = 240;
+
+/// 打击起音检测的跳步（帧）：240 = 5 ms。所有期望起音（960 tick 的倍数 ⇒ 24_000 帧
+/// 的倍数）都落在跳步网格上，因此检测值可以精确等于期望值。
+const ONSET_HOP_FRAMES: usize = 240;
+
+/// 打击起音搜索半径（帧）：12_000 = 480 tick = 半拍。半拍内不会碰到相邻击打。
+const ONSET_SEARCH_FRAMES: usize = 12_000;
+
+/// 起音判定门限：局部峰值 RMS − **20 dB**。5 ms 线性 attack 使起音后第一个 5 ms
+/// 窗已经比稳态低不超过约 6 dB（实测见读数表），20 dB 既能在 attack 内触发，又不会被
+/// 静音段的数值噪声触发。
+const ONSET_RELATIVE_DB: f64 = 20.0;
+
+/// 允许的起音误差（帧）：±240 帧 = ±5 ms = ±9.6 tick。
+///
+/// 检测窗的量化误差是 0（起音都在 5 ms 网格上）；±5 ms 是给"第几个窗越过门限"留的
+/// 一个窗宽。它抓得住"挪 240 tick"（=6_000 帧，是允差的 25 倍），抓不住 <5 ms 的
+/// 微时序（那本来也不在蓝图里）。
+const ONSET_TOLERANCE_FRAMES: usize = 240;
 
 // ---------------------------------------------------------------------------
 // 临时目录与稳定产物目录
@@ -445,6 +616,68 @@ fn dominant(samples: &[f32], lo: f64, hi: f64) -> f64 {
         freq += 1.0;
     }
     best
+}
+
+/// MIDI 音号 → 频率（Hz）：`f = 440 × 2^((p − 69) / 12)`（十二平均律；A4 = MIDI 69 = 440 Hz）。
+///
+/// 与引擎 `yeban_dsp::math::note_to_hz` 同一个公式；本文件不 import 模型/引擎，
+/// 只按蓝图算术独立算一遍。
+fn midi_hz(pitch: u8) -> f64 {
+    440.0 * 2f64.powf((f64::from(pitch) - 69.0) / 12.0)
+}
+
+/// 两个频率的音分差：`1200 × log2(measured / expected)`；正 = 实测偏高。
+fn cents(measured_hz: f64, expected_hz: f64) -> f64 {
+    1_200.0 * (measured_hz / expected_hz).log2()
+}
+
+/// 单 bin 的 Hann 窗 DFT 幅度 → **等效正弦幅度**（dBFS；1.0 = 满刻度）。
+///
+/// `magnitude` 对幅度 `A`、正好落在 bin 中心的正弦返回 `A/2`（Hann 窗均值 ≈1/2，
+/// 归一化系数是 `2/N`），因此这里乘 2 才回到"若这个频点只有一个正弦，它的幅度是多少"。
+/// 单位口径：这一频点的等效正弦幅度 / 满刻度，取 20·log10。
+fn tone_dbfs(samples: &[f32], freq_hz: f64) -> f64 {
+    let amplitude = 2.0 * magnitude(samples, freq_hz, 48_000.0);
+    if amplitude <= 0.0 {
+        f64::NEG_INFINITY
+    } else {
+        20.0 * amplitude.log10()
+    }
+}
+
+/// 一次打击的**起音帧**（帧号；1 tick = 25 帧）。
+///
+/// 规则（先写成字，再写成代码）：
+/// 1. 在 `[expected − ONSET_SEARCH_FRAMES, expected + ONSET_SEARCH_FRAMES]` 里以
+///    `ONSET_HOP_FRAMES`（5 ms）为跳步、`ONSET_WINDOW_FRAMES`（5 ms）为窗算 RMS（dBFS）；
+/// 2. 先取区间内**最大**窗 RMS 作为这次击打的局部峰值（击打是自己的，不跨击打）；
+/// 3. 再取**第一个** RMS ≥ 局部峰值 − `ONSET_RELATIVE_DB`（20 dB）的窗**左沿**作为起音。
+///
+/// 搜索区间从静音开始（上一击的 50 ms release 早已走完），所以"第一个过门限的窗"
+/// 不会落在上一击的尾巴上。区间也到不了下一击（间距 24_000 帧，半径 12_000 帧）。
+fn detect_onset_frame(samples: &[f32], channels: usize, expected_frame: usize) -> usize {
+    let start = expected_frame.saturating_sub(ONSET_SEARCH_FRAMES);
+    let end = expected_frame + ONSET_SEARCH_FRAMES;
+    let mut local_peak = f64::NEG_INFINITY;
+    let mut hop = start;
+    while hop + ONSET_WINDOW_FRAMES <= end {
+        local_peak = local_peak.max(window_rms_dbfs(samples, channels, hop, ONSET_WINDOW_FRAMES));
+        hop += ONSET_HOP_FRAMES;
+    }
+    assert!(
+        local_peak.is_finite() && local_peak > f64::NEG_INFINITY,
+        "期望帧 {expected_frame} ± {ONSET_SEARCH_FRAMES} 内没有能量（局部峰值 {local_peak} dBFS）"
+    );
+    let threshold = local_peak - ONSET_RELATIVE_DB;
+    let mut hop = start;
+    while hop + ONSET_WINDOW_FRAMES <= end {
+        let rms = window_rms_dbfs(samples, channels, hop, ONSET_WINDOW_FRAMES);
+        if rms >= threshold {
+            return hop;
+        }
+        hop += ONSET_HOP_FRAMES;
+    }
+    panic!("期望帧 {expected_frame} ± {ONSET_SEARCH_FRAMES} 内没有窗越过 {threshold:.3} dBFS");
 }
 
 // ---------------------------------------------------------------------------
@@ -925,6 +1158,8 @@ fn a_four_bar_piece_built_only_from_mcp_tool_calls_renders_measurably() {
     let baseline = render_master(&mut dispatcher, &auth, &master_path, "baseline");
     let (baseline_samples, channels) = read_master(&master_path);
     assert_eq!(channels, 2, "母带必须是立体声");
+    // 一小节的帧数：2_880 tick × 25 帧/tick = 72_000 帧（后面的内容判据与小节 RMS 共用）。
+    let bar_frames = usize::try_from(BAR_TICKS * FRAMES_PER_TICK).expect("一小节帧数");
 
     // 时长：帧数先看响应，再看磁盘文件的真实帧数（不是同一个来源）。
     let reported_frames = baseline["data"]["frames"]
@@ -1065,6 +1300,159 @@ fn a_four_bar_piece_built_only_from_mcp_tool_calls_renders_measurably() {
     assert_eq!(contributions.len(), 4, "四条轨必须逐条被量过");
 
     // =====================================================================
+    // C2. `#341` 内容：贝斯每小节的根音（独奏贝斯母带）
+    // =====================================================================
+    //
+    // 量什么：每小节**拍 1** 的音符中部 16_384 帧窗里的 DFT 主频（Hz），换算成相对
+    // `EXPECTED_BASS_ROOTS` 期望频率的音分差。为什么只取拍 1：第 3 拍是根音 +7（五度），
+    // 整小节窗的主频可能在根音与五度之间摆；拍 1 的窗里只有根音。为什么独奏：`dominant`
+    // 找整段最强频率，只有把另外三条轨拿掉，"主频"才只可能是贝斯（与 C/E 同一做法）。
+    edit_and_merge(
+        &mut dispatcher,
+        &auth,
+        json!({
+            "trackId": piece.bass,
+            "ops": [{"kind": "setTrackSolo", "value": true}],
+        }),
+        "solo bass (content)",
+    );
+    let bass_content_path = scratch.join("bass-content.wav");
+    render_master(&mut dispatcher, &auth, &bass_content_path, "bass content");
+    edit_and_merge(
+        &mut dispatcher,
+        &auth,
+        json!({
+            "trackId": piece.bass,
+            "ops": [{"kind": "setTrackSolo", "value": false}],
+        }),
+        "unsolo bass (content)",
+    );
+    let (bass_content_samples, bass_content_channels) = read_master(&bass_content_path);
+    let bass_left = left_channel(&bass_content_samples, bass_content_channels);
+    assert!(
+        peak(&bass_left) > 0.001,
+        "贝斯独奏母带不能是静音（峰值 {}）",
+        peak(&bass_left)
+    );
+    let mut bass_bar_hz = Vec::new();
+    let mut bass_bar_cents = Vec::new();
+    for (bar, root) in EXPECTED_BASS_ROOTS.iter().enumerate() {
+        let expected_hz = midi_hz(*root);
+        let window_start = bar * bar_frames + BASS_WINDOW_OFFSET_FRAMES;
+        let window = &bass_left[window_start..window_start + BASS_WINDOW_FRAMES];
+        // 搜索带覆盖期望频率的 ±1 个多八度（低到 0.45×、高到 2.2×）：升/降八度、
+        // 换和弦音都能落在带内，测出来的是**实际主频**，不是"期望附近的噪声"。
+        let measured_hz = dominant(window, expected_hz * 0.45, expected_hz * 2.2);
+        let delta_cents = cents(measured_hz, expected_hz);
+        println!(
+            "### [341] 贝斯: bar{} root MIDI {root} = 期望 {expected_hz:.3} Hz，\
+             实测主频 {measured_hz:.1} Hz（Δ {delta_cents:+.1} 音分，允差 ±{BASS_TOLERANCE_CENTS}）",
+            bar + 1
+        );
+        assert!(
+            delta_cents.abs() <= BASS_TOLERANCE_CENTS,
+            "第 {} 小节的贝斯根音必须是 MIDI {root} = {expected_hz:.3} Hz（±{BASS_TOLERANCE_CENTS} 音分），\
+             实测主频 {measured_hz:.1} Hz（Δ {delta_cents:+.1} 音分）",
+            bar + 1
+        );
+        bass_bar_hz.push(measured_hz);
+        bass_bar_cents.push(delta_cents);
+    }
+
+    // =====================================================================
+    // C3. `#341` 内容：和声每小节的三和弦（独奏和声母带，混响**保持开启**）
+    // =====================================================================
+    //
+    // 怎么处理混响：蓝图给和声轨装了一台 `reverb_wet = 0.45` 的 Freeverb，且本判据
+    // 不旁通它 —— 内容判据要量的是"这条轨在曲子里实际发出的声"。混响会把和弦能量
+    // 抹宽，于是"某频点有能量"本身不能证明和弦音存在。判据因此同时量一个**同小节、
+    // 同长度窗、不在和弦里**的探针音（根音 + 1 个半音）：该频点与三个和弦音的基频和
+    // **奇次谐波**（HOLLOW 波表只有 1/3/5/7/9/11 次）都不重合，上面的能量只可能来自
+    // 混响/泄漏。存在的判据 = 和弦音绝对幅度 ≥ −40 dBFS 且比探针高 ≥20 dB；不存在的
+    // 判据 = 探针 ≤ −50 dBFS。两条一起，宽带混响无法满足"存在"。
+    assert_eq!(
+        HARMONY_WINDOW_FRAMES, bar_frames,
+        "和声内容窗必须与一小节等长（帧）"
+    );
+    edit_and_merge(
+        &mut dispatcher,
+        &auth,
+        json!({
+            "trackId": piece.harmony,
+            "ops": [{"kind": "setTrackSolo", "value": true}],
+        }),
+        "solo harmony (content)",
+    );
+    let harmony_content_path = scratch.join("harmony-content.wav");
+    render_master(
+        &mut dispatcher,
+        &auth,
+        &harmony_content_path,
+        "harmony content",
+    );
+    edit_and_merge(
+        &mut dispatcher,
+        &auth,
+        json!({
+            "trackId": piece.harmony,
+            "ops": [{"kind": "setTrackSolo", "value": false}],
+        }),
+        "unsolo harmony (content)",
+    );
+    let (harmony_content_samples, harmony_content_channels) = read_master(&harmony_content_path);
+    let harmony_left = left_channel(&harmony_content_samples, harmony_content_channels);
+    assert!(
+        peak(&harmony_left) > 0.001,
+        "和声独奏母带不能是静音（峰值 {}）",
+        peak(&harmony_left)
+    );
+    let mut harmony_tones_dbfs: Vec<Vec<f64>> = Vec::new();
+    let mut harmony_probes_dbfs: Vec<f64> = Vec::new();
+    for (bar, chord) in EXPECTED_HARMONY_CHORDS.iter().enumerate() {
+        let window = &harmony_left[bar * HARMONY_WINDOW_FRAMES..(bar + 1) * HARMONY_WINDOW_FRAMES];
+        let probe_pitch = chord[0] + 1;
+        let probe_hz = midi_hz(probe_pitch);
+        let probe_dbfs = tone_dbfs(window, probe_hz);
+        // "不存在"先判：这是"存在"不能靠宽带混响满足的那一半。
+        assert!(
+            probe_dbfs <= HARMONY_PROBE_ABSENCE_DBFS,
+            "第 {} 小节的非和弦探针 MIDI {probe_pitch}（{probe_hz:.3} Hz）必须不存在：\
+             等效正弦幅度必须 ≤ {HARMONY_PROBE_ABSENCE_DBFS} dBFS，实测 {probe_dbfs:.2} dBFS",
+            bar + 1
+        );
+        let mut tones = Vec::new();
+        for pitch in chord {
+            let expected_hz = midi_hz(*pitch);
+            let dbfs = tone_dbfs(window, expected_hz);
+            let separation_db = dbfs - probe_dbfs;
+            println!(
+                "### [341] 和声: bar{} MIDI {pitch} = {expected_hz:.3} Hz，实测 {dbfs:.2} dBFS；\
+                 探针 MIDI {probe_pitch} = {probe_hz:.3} Hz 处 {probe_dbfs:.2} dBFS（分离 {separation_db:.1} dB）",
+                bar + 1
+            );
+            assert!(
+                dbfs >= HARMONY_TONE_PRESENCE_DBFS,
+                "第 {} 小节的和弦音 MIDI {pitch}（{expected_hz:.3} Hz）必须存在：\
+                 等效正弦幅度必须 ≥ {HARMONY_TONE_PRESENCE_DBFS} dBFS，实测 {dbfs:.2} dBFS",
+                bar + 1
+            );
+            assert!(
+                separation_db >= HARMONY_TONE_ABOVE_PROBE_DB,
+                "第 {} 小节的和弦音 MIDI {pitch} 必须比非和弦探针高 ≥{HARMONY_TONE_ABOVE_PROBE_DB} dB：\
+                 实测和弦音 {dbfs:.2} dBFS / 探针 {probe_dbfs:.2} dBFS（分离 {separation_db:.1} dB）",
+                bar + 1
+            );
+            tones.push(dbfs);
+        }
+        println!(
+            "### [341] 和声: bar{} 和弦音 dBFS = {tones:?}，探针 {probe_dbfs:.2} dBFS",
+            bar + 1
+        );
+        harmony_tones_dbfs.push(tones);
+        harmony_probes_dbfs.push(probe_dbfs);
+    }
+
+    // =====================================================================
     // D. 打击的循环：独奏打击，逐小节都必须是响的
     // =====================================================================
     //
@@ -1091,7 +1479,6 @@ fn a_four_bar_piece_built_only_from_mcp_tool_calls_renders_measurably() {
         "unsolo percussion",
     );
     let (percussion_samples, percussion_channels) = read_master(&percussion_path);
-    let bar_frames = usize::try_from(BAR_TICKS * FRAMES_PER_TICK).expect("一小节帧数");
     let mut bar_rms = Vec::new();
     for bar in 0..usize::try_from(BARS).expect("小节数") {
         bar_rms.push(window_rms_dbfs(
@@ -1108,6 +1495,38 @@ fn a_four_bar_piece_built_only_from_mcp_tool_calls_renders_measurably() {
             "循环必须铺满 4 小节：第 {} 小节的打击 RMS 必须 > {LOOP_BAR_FLOOR_DBFS} dBFS，实测 {value:.3}",
             bar + 1
         );
+    }
+
+    // ---- 起音位置（`#341` 内容判据，复用上面这份打击独奏母带，不再多渲染一次）----
+    //
+    // 量什么：每次击打的**起音帧**（帧号；1 tick = 25 帧，1 帧 = 1/48 ms）。
+    // 期望：蓝图每小节的 (0, kick 36) / (960, snare 38) / (1920, kick 36)，循环 4 遍。
+    // 检测规则见 `detect_onset_frame`（5 ms RMS 窗、5 ms 跳步、局部峰值 −20 dB 的首个
+    // 越限窗）。MIDI 36/38 只用于读数：5 ms 检测窗分辨不了相差 2 个半音的 65.4/73.4 Hz，
+    // 所以本判据只判**位置**，不判"这一击是 kick 还是 snare"（见模块文档"仍不能抓"）。
+    let mut percussion_onset_ticks = Vec::new();
+    for bar in 0..usize::try_from(BARS).expect("小节数") {
+        for (local_tick, pitch) in EXPECTED_PERCUSSION_HITS {
+            let bar_tick = u64::try_from(bar).expect("小节下标") * BAR_TICKS + local_tick;
+            let expected_frame = usize::try_from(bar_tick * FRAMES_PER_TICK).expect("期望起音帧");
+            let detected_frame =
+                detect_onset_frame(&percussion_samples, percussion_channels, expected_frame);
+            let error_frames = detected_frame.abs_diff(expected_frame);
+            let detected_tick = detected_frame as f64 / FRAMES_PER_TICK as f64;
+            let error_ms = error_frames as f64 / 48.0;
+            println!(
+                "### [341] 打击: bar{} tick {local_tick}（MIDI {pitch}）→ 起音帧 \
+                 {detected_frame} = tick {detected_tick:.1}（误差 {error_frames} 帧 = {error_ms:.2} ms）",
+                bar + 1
+            );
+            assert!(
+                error_frames <= ONSET_TOLERANCE_FRAMES,
+                "第 {} 小节 tick {local_tick} 的击打必须落在这里（±{ONSET_TOLERANCE_FRAMES} 帧 = ±5 ms），\
+                 实测起音帧 {detected_frame}（误差 {error_frames} 帧 = {error_ms:.2} ms）",
+                bar + 1
+            );
+            percussion_onset_ticks.push(detected_tick);
+        }
     }
 
     // =====================================================================
@@ -1388,6 +1807,15 @@ fn a_four_bar_piece_built_only_from_mcp_tool_calls_renders_measurably() {
     report.insert("slideStartHz".to_owned(), json!(slide_start_hz));
     report.insert("slideEndHz".to_owned(), json!(slide_end_hz));
     report.insert("loopBarRmsDbfs".to_owned(), json!(bar_rms));
+    // `#341` 内容判据的读数（单位：Hz / 音分 / dBFS / tick）。
+    report.insert("bassBarHz".to_owned(), json!(bass_bar_hz));
+    report.insert("bassBarCents".to_owned(), json!(bass_bar_cents));
+    report.insert("harmonyBarTonesDbfs".to_owned(), json!(harmony_tones_dbfs));
+    report.insert("harmonyProbeDbfs".to_owned(), json!(harmony_probes_dbfs));
+    report.insert(
+        "percussionOnsetTicks".to_owned(),
+        json!(percussion_onset_ticks),
+    );
     report.insert(
         "automationBar1Dbfs".to_owned(),
         json!({"on": bar1_on, "off": bar1_off}),
