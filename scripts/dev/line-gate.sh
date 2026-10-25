@@ -117,12 +117,20 @@ if [ -z "$REVERSED" ] && [ -n "$CHANGED" ]; then
   echo "⚠ 没算出反向依赖（cargo metadata 可能失败）—— 只测改动的 crate，请自己确认这够"
 fi
 
-CRATES=$( { [ -n "$CHANGED" ] && echo "$CHANGED"; [ -n "$REVERSED" ] && echo "$REVERSED" | tr ' ' '\n'; } | sed '/^$/d' | sort -u )
+# 两者**区别对待**（2026-10-26，R1138）：改动的 crate 要**跑**它们的测试；反向依赖只要
+# **编过**就够了 —— 反向依赖的风险是"编译被弄坏"（`E0599` 那一类），而它们的测试在 CI
+# 里跑。`cargo check --tests` 不做链接，省掉的正是最贵的那一段（`yeban-app` 的测试二进制
+# 一个就上百 MB，链接是四小时里最长的一根柱子）。
+CHANGED_PKGS=$( { [ -n "$CHANGED" ] && echo "$CHANGED"; } | sed '/^$/d' | sort -u )
+REVERSED_ONLY=$( { [ -n "$REVERSED" ] && echo "$REVERSED" | tr ' ' '\n'; } | sed '/^$/d' | sort -u | comm -23 - <(echo "$CHANGED_PKGS") )
+CRATES=$( { echo "$CHANGED_PKGS"; echo "$REVERSED_ONLY"; } | sed '/^$/d' | sort -u )
 if [ -z "$CRATES" ]; then
   echo "== 待编/待测集合为空"
 else
-  echo "== 待编/待测 crate（$(echo "$CRATES" | wc -l | tr -d ' ') 个）:"
-  echo "$CRATES" | sed 's/^/   /'
+  echo "== 改动的 crate（跑测试，$(echo "$CHANGED_PKGS" | sed '/^$/d' | wc -l | tr -d ' ') 个）:"
+  [ -n "$CHANGED_PKGS" ] && echo "$CHANGED_PKGS" | sed 's/^/   /'
+  echo "== 反向依赖（只 check --tests，$(echo "$REVERSED_ONLY" | sed '/^$/d' | wc -l | tr -d ' ') 个）:"
+  [ -n "$REVERSED_ONLY" ] && echo "$REVERSED_ONLY" | sed 's/^/   /'
 fi
 if [ "$LIST_ONLY" = "1" ]; then
   exit 0
@@ -140,38 +148,36 @@ if [ -n "$CHANGED" ]; then
 fi
 
 # ---- 4. 在共享 target 的单写者锁里跑 --------------------------------------
-CRATE_ARGS=()
-if [ -n "$CRATES" ]; then
-  # shellcheck disable=SC2207
-  CRATE_ARGS=($(echo "$CRATES" | sed 's/^/-p /' | tr '\n' ' '))
-fi
-
-run() {
-  local name="$1"; shift
-  "$@" >"/tmp/line-gate.$$.out" 2>&1
-  local rc=$?
-  if [ "$rc" = "0" ]; then
-    echo "[$name] ok"
-  else
-    echo "[$name] ⛔ rc=$rc"
-    tail -20 "/tmp/line-gate.$$.out" | sed 's/^/    /'
-  fi
-  return "$rc"
-}
+# 两条清单分别用；环境变量导出给锁内的子 shell（bash 3.2 没有 `export -f`）。
+export CHANGED_PKGS REVERSED_ONLY
 
 fail=0
-bash scripts/dev/target-lock.sh -- bash -c '
-  set -uo pipefail
-  fail=0
-  if [ "'"${#CRATE_ARGS[@]}"'" -gt 0 ]; then
-    cargo fmt '"${CRATE_ARGS[*]}"' -- --check || fail=1
-    cargo clippy '"${CRATE_ARGS[*]}"' --lib --tests --locked -- -D warnings || fail=1
-    cargo test '"${CRATE_ARGS[*]}"' --locked --no-fail-fast || fail=1
-  else
-    echo "(无 crate 改动 ⇒ 跳过 fmt/clippy/test)"
-  fi
-  exit $fail
-'
+bash scripts/dev/target-lock.sh -- bash -s <<'INSIDE'
+set -uo pipefail
+fail=0
+args() { sed 's/^/-p /' | tr '\n' ' '; }
+
+if [ -n "${CHANGED_PKGS:-}" ]; then
+  # shellcheck disable=SC2046
+  cargo fmt $(echo "$CHANGED_PKGS" | args) -- --check || fail=1
+  # shellcheck disable=SC2046
+  cargo clippy $(echo "$CHANGED_PKGS" | args) --lib --tests --locked -- -D warnings || fail=1
+  # 改动的 crate：**跑**测试
+  # shellcheck disable=SC2046
+  cargo test $(echo "$CHANGED_PKGS" | args) --locked --no-fail-fast || fail=1
+else
+  echo "(无 crate 改动 ⇒ 跳过 fmt/clippy/test)"
+fi
+
+if [ -n "${REVERSED_ONLY:-}" ]; then
+  # 反向依赖：只要求**编得过**（`--tests` 但不链接）。风险是"编译被弄坏"（E0599 那一类），
+  # 它们的测试由 CI 跑；链接是四小时里最长的一根柱子，这里刻意不做。
+  # shellcheck disable=SC2046
+  cargo check $(echo "$REVERSED_ONLY" | args) --tests --locked || fail=1
+fi
+
+exit $fail
+INSIDE
 lock_rc=$?
 [ "$lock_rc" = "0" ] || fail=1
 
