@@ -8,15 +8,26 @@
 //! **一个 `reason` 写下了、也从没有任何判据提到它** —— 改坏它（改名、改条件、
 //! 甚至把整条分支删掉换成别的 reason）没有任何东西会红。
 //!
-//! 本文件把这件事变成机制，用**两条**判据：
+//! 本文件把这件事变成机制，用**三条**判据：
 //!
 //! | 判据 | 性质 | 它挡住的改动 |
 //! | :--- | :--- | :--- |
-//! | [`the_reason_vocabulary_is_the_published_list`] | 生产区的 `reason` 字面量集合 **==** 黄金表 | 偷偷改名 / 新增 / 删除一个 `reason` |
+//! | [`the_reason_vocabulary_is_the_published_list`] | 生产区**可分类**的 `reason` 集合 **==** 黄金表 | 偷偷改名 / 新增 / 删除一个 `reason` |
 //! | [`every_reason_is_asserted_somewhere`] | 黄金表里的每一个都被**某条判据**提到（少数登记为不可达） | 新增一个零覆盖的 `reason` |
+//! | [`every_reason_occurrence_is_classified_or_explicitly_registered`] | 每一次 `"reason"` 出现都必须分类；看不见的**逐条登记** | 换一种扫描器看不见的写法（#340 的盲区） |
 //!
 //! ⚠ 口径（刻意宽松，因此"零覆盖"是**下界**，不会把已覆盖的误报为缺口）：
 //! 判据侧 = 任何一处 `"<reason>"` 字面量出现（`assert_eq!` / `json!` / 注释都算）。
+//!
+//! ## #340：为什么站点普查是必须的
+//!
+//! 旧扫描器只认 `"reason": "字面量"`（键后**紧跟**字符串）。生产区里 204 个
+//! `"reason"` 键站点中有 **11 个**不是这个形状（变量 / `format!` / `map.insert` /
+//! 外部枚举的 `as_str()`），旧实现**静默**漏掉它们 —— 守卫因此"绿"在看不见的地方。
+//! 现在每次出现都被分类；`Dynamic`（运行时才定值）与 `ArgumentName`（只是参数名）
+//! 必须逐条登记并写明退役条件，`Unclassified` 直接红并点名 file:line。
+//! 新扫描器解析出了旧实现看不见的两条真实 reason：
+//! `placementFieldNotApplicable` / `unknownPlacementField`（词表 144 → 146）。
 //!
 //! ## 登记为"本平台不可达"的那一个
 //!
@@ -33,19 +44,23 @@
 //!
 //! | 面 | reason 数 | 规范行数 | SHA-256 |
 //! | :--- | ---: | ---: | :--- |
-//! | `reason`（字面 `json!` 第一层键，含顺序） | 148 | 668 | `480018afbd8c47dd9db4c4d3d4ffb4e082748ecbe44e3638547a2bbb8f9dd22a` |
+//! | `reason`（**可分类**面：字面量 ＋ 可解析的字面量 `let`，含顺序） | 150 | 680 | `6f13316b51ef974e2443a909c4eb9fdeeaf97139b11fef6da5365de4de40e259` |
 //!
 //! ⚠ `#274`：摘要随"登记位置搬进 provider"重钉（集合不变、顺序变了）；
 //! 见 `FROZEN_REASON_SURFACE_SHA256` 的沿革注释。
+//! ⚠ `#340`：摘要**只覆盖可分类面**。9 处运行时站点（`format!` / 转发入参 /
+//! 外部枚举 `as_str()`）不贡献值，逐条登记在 `EXEMPT_DYNAMIC_REASON_SITES`。
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
 use yeban_mcp::undo_session::read_rust_sources;
 
-/// 本轮开工基线上**生产区**里出现的全部 `reason` 字面量（排序）。
+/// 本轮开工基线上**生产区**里**可分类**的全部 `reason` 值（排序）：
+/// 字面量 ＋ 同函数内可解析的字面量 `let`（#340 起）。运行时站点不进这张表，
+/// 由 [`EXEMPT_DYNAMIC_REASON_SITES`] 逐条登记。
 /// 这是黄金表：任何改名 / 新增 / 删除都必须**故意**改这一行。
-pub const GOLDEN_REASONS: [&str; 144] = [
+pub const GOLDEN_REASONS: [&str; 146] = [
     "assetChannelLayout",
     "assetDecodeFailed",
     "assetHashMismatch",
@@ -114,6 +129,11 @@ pub const GOLDEN_REASONS: [&str; 144] = [
     "placementAlreadyAtStartTick",
     "placementAlreadyExists",
     "placementClipMismatch",
+    // ⭐ `#340`：这两条 reasons 一直在生产区里，只是旧扫描器**看不见** ——
+    // 它们经 `"reason": reason` 给出（`let reason = ...`），旧实现只认
+    // `"reason": "字面量"`。现在由可解析的 `let` 抽出，词表因此 144 → 146
+    // （增的是**真实存在**的词，不是发明；两条都有 `src` 判据断言）。
+    "placementFieldNotApplicable",
     "placementIdConflict",
     "placementIsNotCreation",
     "placementNotFound",
@@ -167,6 +187,9 @@ pub const GOLDEN_REASONS: [&str; 144] = [
     "unknownLaneField",
     "unknownLaneTarget",
     "unknownLaunchQuantization",
+    // ⭐ `#340`：同 `placementFieldNotApplicable`，经 `"reason": reason` 隐藏在
+    // `let reason = if ... { ... } else { ... }` 后面；现在被可解析 `let` 抽出。
+    "unknownPlacementField",
     "unknownPlacementKind",
     "unknownPointField",
     "unknownPointRemovalField",
@@ -251,55 +274,509 @@ struct Reasons {
     rejected: Vec<(String, String, &'static str)>,
 }
 
-/// 扫出 `"reason": "<字面量>"` 的全部字面量，并**分别**报出接受与拒掉的数量。
-///
-/// 过滤规则（**保留**，⛔ 不放宽）：值必须非空、且全部落在 `[A-Za-z0-9_]`。
-/// 被它拒掉的值进 [`Reasons::rejected`]，⛔ 不再静默丢弃。
-fn reasons_in(source: &str, text: &str) -> Reasons {
+// ---------------------------------------------------------------------------
+// #340：`"reason"` **站点**扫描器
+// ---------------------------------------------------------------------------
+//
+// 旧实现只认 `"reason": "字面量"`：键后面必须**紧跟**一个字符串字面量。
+// 于是这些真实形状被**静默忽略**（不是报错，是当它不存在）：
+//
+//   * `"reason": reason`（变量 / 函数参数 / 枚举 `as_str()`）
+//   * `"reason": format!("{kind}RequiresPlacementId")`
+//   * `preview.insert("reason".to_owned(), Value::from(reason.clone()))`
+//   * `"reason": error.as_str()`
+//
+// 一个看不见的站点会让"词表一致"变成假绿。现在每个 `"reason"` 出现都必须落到
+// 下面五类之一；`Dynamic`（运行时才算得出来）与 `ArgumentName`（只是参数名）
+// 必须**逐条**登记，`Unclassified`（没有已知形状）直接判红并点名 file:line。
+
+/// 一次 `"reason"` 出现的分类结果。
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ReasonOccurrenceKind {
+    /// 值表达式是字符串字面量（直接写，或经 `Value::from(...)`）。
+    Literal(String),
+    /// 值由同一个函数里的 `let` 绑定，且初始式是单个字面量或 `if cond { "a" } else { "b" }`。
+    Resolved(Vec<String>),
+    /// 值是运行时算出来的（转发入参 / `format!` / 外部枚举的 `as_str()`），扫描器看不见。
+    Dynamic(String),
+    /// `"reason"` 是**参数名 / 入参键名**，不是 `data.reason` 的值键。
+    ArgumentName(String),
+    /// 没有任何已知形状 ⇒ 判据必须红（带 file:line）。
+    Unclassified(String),
+}
+
+impl ReasonOccurrenceKind {
+    /// 这条站点贡献的 reason 值；看不见的值**不贡献**（由 census 判据点名）。
+    fn values(&self) -> Vec<String> {
+        match self {
+            Self::Literal(value) => vec![value.clone()],
+            Self::Resolved(values) => values.clone(),
+            Self::Dynamic(_) | Self::ArgumentName(_) | Self::Unclassified(_) => Vec::new(),
+        }
+    }
+}
+
+/// 生产区里一次 `"reason"` 出现：位置 ＋ 分类。
+struct ReasonOccurrence {
+    path: String,
+    line: usize,
+    offset: usize,
+    kind: ReasonOccurrenceKind,
+}
+
+/// 把绝对路径折成 `src/` 之后的相对路径（豁免表按它匹配）。
+fn relative_to_src(path: &str) -> String {
+    path.rfind("/src/").map_or_else(
+        || path.to_owned(),
+        |at| path[at + "/src/".len()..].to_owned(),
+    )
+}
+
+/// 扫出 `"reason"` 的**每一次**出现并分类（注释／字符串内部不算）。
+fn reason_occurrences(
+    path: &str,
+    text: &str,
+    consts: &BTreeMap<String, String>,
+) -> Vec<ReasonOccurrence> {
     let bytes = text.as_bytes();
     let needle = b"\"reason\"";
-    let mut accepted = BTreeSet::new();
-    let mut rejected: Vec<(String, String, &'static str)> = Vec::new();
     let mask = skipped_offsets(text);
+    let mut out = Vec::new();
     let mut from = 0usize;
     while let Some(offset) = find(&bytes[from..], needle) {
         let at = from + offset;
-        // ⭐ R94：命中的 `"reason"` 若落在注释／字符串**内部** ⇒ 跳过（提取仍用原文）。
+        from = at + 1;
+        // ⭐ R94：命中的 `"reason"` 若落在注释／字符串**内部** ⇒ 跳过。
         if is_skipped(&mask, at) {
-            from = at + needle.len();
             continue;
         }
-        let start = at + needle.len();
-        let mut index = start;
-        // 跳过空白与冒号
-        while index < bytes.len() && (bytes[index] == b' ' || bytes[index] == b':') {
-            index += 1;
+        let mut cursor = at + needle.len();
+        while cursor < bytes.len() && (bytes[cursor] == b' ' || bytes[cursor] == b'\t') {
+            cursor += 1;
         }
-        if index < bytes.len() && bytes[index] == b'"' {
-            let value_start = index + 1;
-            if let Some(end) = bytes[value_start..].iter().position(|byte| *byte == b'"') {
-                let value = &text[value_start..value_start + end];
-                if !value.is_empty()
-                    && value
-                        .bytes()
-                        .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
-                {
-                    accepted.insert(value.to_owned());
-                } else {
-                    // ⚠ 这里曾经是**静默丢弃**。现在它进显式读数，由判据断言为 0。
-                    rejected.push((
-                        value.to_owned(),
-                        source.to_owned(),
-                        if value.is_empty() {
-                            "emptyReasonValue"
-                        } else {
-                            "reasonValueOutsideTheAlphanumericUnderscoreSet"
-                        },
-                    ));
+        let kind = if bytes.get(cursor) == Some(&b':') {
+            classify_value_expr(take_value_expr(text, cursor + 1), &text[..at], consts)
+        } else if text[cursor..].starts_with("=>") {
+            // 样本夹具按**参数名** `reason` 匹配，右侧是夹具入参，不是 `data.reason`。
+            ReasonOccurrenceKind::ArgumentName(trimmed_line(text, at))
+        } else if text[cursor..].starts_with(".to_owned()") {
+            let mut next = cursor + ".to_owned()".len();
+            while next < bytes.len() && bytes[next].is_ascii_whitespace() {
+                next += 1;
+            }
+            if bytes.get(next) == Some(&b',') {
+                classify_value_expr(take_value_expr(text, next + 1), &text[..at], consts)
+            } else {
+                ReasonOccurrenceKind::Unclassified(trimmed_line(text, at))
+            }
+        } else if bytes.get(cursor) == Some(&b',') && text[..at].trim_end().ends_with("insert(") {
+            classify_value_expr(take_value_expr(text, cursor + 1), &text[..at], consts)
+        } else if bytes.get(cursor) == Some(&b']')
+            && bytes.get(cursor + 1) == Some(&b'=')
+            && bytes.get(cursor + 2) != Some(&b'=')
+        {
+            classify_value_expr(take_value_expr(text, cursor + 2), &text[..at], consts)
+        } else if matches!(
+            bytes.get(cursor),
+            Some(&b',') | Some(&b')') | Some(&b';') | Some(&b']')
+        ) {
+            ReasonOccurrenceKind::ArgumentName(trimmed_line(text, at))
+        } else {
+            ReasonOccurrenceKind::Unclassified(trimmed_line(text, at))
+        };
+        out.push(ReasonOccurrence {
+            path: path.to_owned(),
+            line: line_number(text, at),
+            offset: at,
+            kind,
+        });
+    }
+    out
+}
+
+/// 从 `start` 起取一个**值表达式**：到顶层 `,` / `;` / 闭括号 / 换行为止。
+fn take_value_expr(text: &str, start: usize) -> &str {
+    let bytes = text.as_bytes();
+    let mut depth = 0i32;
+    let mut index = start;
+    let mut in_string = false;
+    let mut escaped = false;
+    while index < bytes.len() {
+        let byte = bytes[index];
+        if in_string {
+            if escaped {
+                escaped = false;
+            } else if byte == b'\\' {
+                escaped = true;
+            } else if byte == b'"' {
+                in_string = false;
+            }
+            index += 1;
+            continue;
+        }
+        match byte {
+            b'"' => in_string = true,
+            b'(' | b'{' | b'[' => depth += 1,
+            b')' | b'}' | b']' => {
+                if depth == 0 {
+                    break;
+                }
+                depth -= 1;
+            }
+            b',' | b';' if depth == 0 => break,
+            b'\n' if depth == 0 => break,
+            _ => {}
+        }
+        index += 1;
+    }
+    text[start..index].trim()
+}
+
+/// 给值表达式分类；看不见的值统一带上**规范化后的原表达式**（豁免表按它匹配）。
+fn classify_value_expr(
+    expr: &str,
+    prefix: &str,
+    consts: &BTreeMap<String, String>,
+) -> ReasonOccurrenceKind {
+    match classify_value_inner(expr, prefix, consts) {
+        ReasonOccurrenceKind::Dynamic(_) => ReasonOccurrenceKind::Dynamic(normalize_expr(expr)),
+        other => other,
+    }
+}
+
+fn classify_value_inner(
+    expr: &str,
+    prefix: &str,
+    consts: &BTreeMap<String, String>,
+) -> ReasonOccurrenceKind {
+    let expr = expr.trim();
+    if let Some(inner) = direct_value_from_argument(expr) {
+        return classify_value_inner(inner, prefix, consts);
+    }
+    if expr.starts_with("format!(") {
+        return ReasonOccurrenceKind::Dynamic(String::new());
+    }
+    if expr.starts_with('"') {
+        if let Some((value, consumed)) = parse_string_literal(expr)
+            && expr[consumed..].trim().is_empty()
+        {
+            return ReasonOccurrenceKind::Literal(value);
+        }
+        return ReasonOccurrenceKind::Dynamic(String::new());
+    }
+    let ident_end = expr
+        .find(|ch: char| !(ch.is_ascii_alphanumeric() || ch == '_'))
+        .unwrap_or(expr.len());
+    let ident = &expr[..ident_end];
+    if !is_simple_ident(ident) {
+        return ReasonOccurrenceKind::Dynamic(String::new());
+    }
+    let rest = expr[ident_end..].trim();
+    if let Some(method) = rest.strip_prefix('.') {
+        let method = method.trim_start();
+        if let Some(after) = method
+            .strip_prefix("clone()")
+            .or_else(|| method.strip_prefix("to_owned()"))
+            && after.trim().is_empty()
+        {
+            return resolve_reason_ident(ident, prefix, consts);
+        }
+        return ReasonOccurrenceKind::Dynamic(String::new());
+    }
+    if !rest.is_empty() {
+        return ReasonOccurrenceKind::Dynamic(String::new());
+    }
+    resolve_reason_ident(ident, prefix, consts)
+}
+
+/// `Value::from(<arg>)` ⇒ `<arg>`（只接受**整个表达式**就是这一次调用）。
+fn direct_value_from_argument(expr: &str) -> Option<&str> {
+    let inner = expr.strip_prefix("Value::from(")?.strip_suffix(')')?;
+    let inner = inner.trim();
+    (!inner.is_empty()).then_some(inner)
+}
+
+/// 常量优先，其次同函数内的字面量 `let`；都不是 ⇒ `Dynamic`（⛔ 不猜）。
+fn resolve_reason_ident(
+    ident: &str,
+    prefix: &str,
+    consts: &BTreeMap<String, String>,
+) -> ReasonOccurrenceKind {
+    if let Some(value) = consts.get(ident) {
+        return ReasonOccurrenceKind::Literal(value.clone());
+    }
+    if let Some(values) = local_literal_binding(prefix, ident) {
+        return ReasonOccurrenceKind::Resolved(values);
+    }
+    ReasonOccurrenceKind::Dynamic(String::new())
+}
+
+/// 解析一个 Rust 字符串字面量（含转义），返回（值, 消耗的字节数）。
+fn parse_string_literal(text: &str) -> Option<(String, usize)> {
+    let mut chars = text.char_indices();
+    let (_, first) = chars.next()?;
+    if first != '"' {
+        return None;
+    }
+    let mut out = String::new();
+    while let Some((index, ch)) = chars.next() {
+        match ch {
+            '"' => return Some((out, index + 1)),
+            '\\' => {
+                let (_, escaped) = chars.next()?;
+                match escaped {
+                    '"' => out.push('"'),
+                    '\\' => out.push('\\'),
+                    'n' => out.push('\n'),
+                    't' => out.push('\t'),
+                    'r' => out.push('\r'),
+                    other => out.push(other),
                 }
             }
+            other => out.push(other),
         }
-        from = start;
+    }
+    None
+}
+
+fn normalize_expr(expr: &str) -> String {
+    expr.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn line_number(text: &str, at: usize) -> usize {
+    text[..at].bytes().filter(|byte| *byte == b'\n').count() + 1
+}
+
+fn trimmed_line(text: &str, at: usize) -> String {
+    let start = text[..at].rfind('\n').map_or(0, |index| index + 1);
+    let end = text[at..].find('\n').map_or(text.len(), |index| at + index);
+    text[start..end].trim().to_owned()
+}
+
+fn is_simple_ident(value: &str) -> bool {
+    let mut bytes = value.bytes();
+    match bytes.next() {
+        Some(first) if first.is_ascii_alphabetic() || first == b'_' => {}
+        _ => return false,
+    }
+    bytes.all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+}
+
+/// 最近的同名 `let`（同一函数内）若初始式**只由字面量组成**，返回其中的字面量。
+///
+/// 只接受两种形状：①单个字面量；②`if <ident> { "a" } else { "b" }`。
+/// 其余（调用、`format!`、变量转发）一律算 `Dynamic` —— 宁可红，⛔ 不猜。
+fn local_literal_binding(prefix: &str, ident: &str) -> Option<Vec<String>> {
+    let needle = format!("let {ident}");
+    let mut found: Option<Vec<String>> = None;
+    let mut from = 0usize;
+    while let Some(offset) = prefix[from..].find(&needle) {
+        let at = from + offset;
+        from = at + needle.len();
+        let after = at + needle.len();
+        let boundary_ok = prefix[after..]
+            .chars()
+            .next()
+            .is_none_or(|ch| !(ch.is_ascii_alphanumeric() || ch == '_'));
+        if !boundary_ok {
+            continue;
+        }
+        if crosses_function_boundary(prefix, at) {
+            // ⚠ 这里曾经是 `break`：先遇到**上一个函数**里的同名 `let` 就停，
+            // 于是站点所在函数里的 `let`（在后面的行）永远轮不到 ⇒
+            // `unknownPlacementField` 被静默漏掉（#340 第一轮实测红）。
+            // 正确的做法是**跳过**跨函数的候选，继续往后找到同函数的那一个。
+            continue;
+        }
+        // 最近的同名绑定说了算；它是动态的 ⇒ ⛔ 不许回退到更早的字面量绑定。
+        found = let_initializer(prefix, after).and_then(literal_only_values);
+    }
+    found
+}
+
+fn crosses_function_boundary(prefix: &str, at: usize) -> bool {
+    prefix[at..].lines().skip(1).any(|line| {
+        let line = line.trim_start();
+        line.starts_with("fn ")
+            || line.starts_with("pub fn ")
+            || line.starts_with("pub(crate) fn ")
+            || line.starts_with("async fn ")
+            || line.starts_with("const fn ")
+    })
+}
+
+/// `let <ident> [ : 类型 ] = <初始式> ;` ⇒ 初始式。
+fn let_initializer(prefix: &str, after_ident: usize) -> Option<&str> {
+    let bytes = prefix.as_bytes();
+    let mut index = after_ident;
+    while index < bytes.len() && bytes[index].is_ascii_whitespace() {
+        index += 1;
+    }
+    if bytes.get(index) == Some(&b':') {
+        // 跳过类型标注（类型里不会出现 `=`）。
+        index += 1;
+        while index < bytes.len() && bytes[index] != b'=' {
+            index += 1;
+        }
+    }
+    if bytes.get(index) != Some(&b'=') {
+        return None;
+    }
+    index += 1;
+    let start = index;
+    let mut depth = 0i32;
+    let mut in_string = false;
+    let mut escaped = false;
+    while index < bytes.len() {
+        let byte = bytes[index];
+        if in_string {
+            if escaped {
+                escaped = false;
+            } else if byte == b'\\' {
+                escaped = true;
+            } else if byte == b'"' {
+                in_string = false;
+            }
+            index += 1;
+            continue;
+        }
+        match byte {
+            b'"' => in_string = true,
+            b'(' | b'{' | b'[' => depth += 1,
+            b')' | b'}' | b']' => depth -= 1,
+            b';' if depth == 0 => return Some(prefix[start..index].trim()),
+            _ => {}
+        }
+        index += 1;
+    }
+    None
+}
+
+fn literal_only_values(init: &str) -> Option<Vec<String>> {
+    let init = init.trim();
+    if init.starts_with('"') {
+        let (value, consumed) = parse_string_literal(init)?;
+        return init[consumed..].trim().is_empty().then(|| vec![value]);
+    }
+    let rest = init.strip_prefix("if ")?;
+    let brace = rest.find('{')?;
+    if !is_simple_ident(rest[..brace].trim()) {
+        return None;
+    }
+    let (first, consumed) = take_braced_block(&rest[brace..])?;
+    let after = rest[brace + consumed..].trim_start();
+    let after = after.strip_prefix("else")?.trim_start();
+    let (second, consumed) = take_braced_block(after)?;
+    if !after[consumed..].trim().is_empty() {
+        return None;
+    }
+    let mut values = literal_block_values(first)?;
+    values.extend(literal_block_values(second)?);
+    Some(values)
+}
+
+fn take_braced_block(text: &str) -> Option<(&str, usize)> {
+    let bytes = text.as_bytes();
+    if bytes.first() != Some(&b'{') {
+        return None;
+    }
+    let mut depth = 0i32;
+    let mut index = 0usize;
+    let mut in_string = false;
+    let mut escaped = false;
+    while index < bytes.len() {
+        let byte = bytes[index];
+        if in_string {
+            if escaped {
+                escaped = false;
+            } else if byte == b'\\' {
+                escaped = true;
+            } else if byte == b'"' {
+                in_string = false;
+            }
+            index += 1;
+            continue;
+        }
+        match byte {
+            b'"' => in_string = true,
+            b'{' => depth += 1,
+            b'}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some((&text[1..index], index + 1));
+                }
+            }
+            _ => {}
+        }
+        index += 1;
+    }
+    None
+}
+
+fn literal_block_values(block: &str) -> Option<Vec<String>> {
+    let block = block.trim();
+    let (value, consumed) = parse_string_literal(block)?;
+    block[consumed..].trim().is_empty().then(|| vec![value])
+}
+
+/// 生产区里的 `const NAME: &str = "字面量";`（`pub` / `pub(crate)` 也收）。
+///
+/// ⚠ 按**名字**解析、不看模块路径：两个模块里同名常量会取后者。本仓今天没有
+/// reason 由常量给出（这条路径由 `the_reason_site_scanner_classifies_every_known_shape`
+/// 的合成样本覆盖）；真出现同名歧义时，把它改成带模块路径的键。
+fn string_constants(files: &[(String, String)]) -> BTreeMap<String, String> {
+    let mut out = BTreeMap::new();
+    for (_path, text) in files {
+        for line in production_region(text).lines() {
+            let line = line.trim();
+            let body = line
+                .strip_prefix("pub(crate) const ")
+                .or_else(|| line.strip_prefix("pub const "))
+                .or_else(|| line.strip_prefix("const "));
+            let Some(body) = body else { continue };
+            let Some((name, rest)) = body.split_once(':') else {
+                continue;
+            };
+            if !is_simple_ident(name.trim()) {
+                continue;
+            }
+            let Some(eq) = rest.find('=') else { continue };
+            let value_expr = rest[eq + 1..].trim();
+            let Some((value, consumed)) = parse_string_literal(value_expr) else {
+                continue;
+            };
+            if value_expr[consumed..].trim() == ";" {
+                out.insert(name.trim().to_owned(), value);
+            }
+        }
+    }
+    out
+}
+
+/// 抽出全部**可分类**的 reason 值，并**分别**报出接受与拒掉的数量。
+///
+/// 看不见的站点（`Dynamic` / `ArgumentName`）在这里不贡献值；由
+/// `every_reason_occurrence_is_classified_or_explicitly_registered` 逐条点名。
+fn reasons_in(source: &str, text: &str, consts: &BTreeMap<String, String>) -> Reasons {
+    let mut accepted = BTreeSet::new();
+    let mut rejected: Vec<(String, String, &'static str)> = Vec::new();
+    for occurrence in reason_occurrences(source, text, consts) {
+        for value in occurrence.kind.values() {
+            if !value.is_empty()
+                && value
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+            {
+                accepted.insert(value);
+            } else {
+                let why = if value.is_empty() {
+                    "emptyReasonValue"
+                } else {
+                    "reasonValueOutsideTheAlphanumericUnderscoreSet"
+                };
+                rejected.push((value, source.to_owned(), why));
+            }
+        }
     }
     Reasons { accepted, rejected }
 }
@@ -310,6 +787,207 @@ fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
     }
     (0..=haystack.len() - needle.len())
         .find(|index| &haystack[*index..*index + needle.len()] == needle)
+}
+
+// ---------------------------------------------------------------------------
+// #340：看不见的站点**逐条登记**（⛔ 不是静默过滤）
+// ---------------------------------------------------------------------------
+
+/// 一条**运行时才算得出来**的 `"reason"` 站点。
+///
+/// 这些站点的值不是字面量：可能是**调用方送进来的入参**、`format!` 拼出来的、
+/// 或**另一个 crate 的枚举**回答的。扫描器不猜 —— 逐条登记，并由
+/// [`every_reason_occurrence_is_classified_or_explicitly_registered`] 断言
+/// "实测站点集合 == 这张表**逐条**相等"（多一个、少一个、次数变了都红）。
+struct DynamicReasonSite {
+    /// `src/` 之后的路径（如 `domain/notes.rs`）。
+    file: &'static str,
+    /// **规范化**后的值表达式（空白折叠成单空格）。
+    expr: &'static str,
+    /// 该表达式在本文件出现的次数。
+    occurrences: usize,
+    /// 值从哪来（为什么静态看不见）。
+    forwards: &'static str,
+    /// 什么改动能让这一条**退役**（从表里删掉）。
+    retires_when: &'static str,
+}
+
+/// 生产区实测 **9 次出现 / 7 个 distinct 表达式**（2026-10-25，#340 开工）。
+///
+/// ⚠ 这张表是**显式盲区清单**，不是"这些值不重要"：每一条都写清值从哪来、怎么退役。
+/// ⛔ 不许为了让判据变绿而把新的动态站点塞进来 —— 能给出常量/枚举的，先给出名字。
+const EXEMPT_DYNAMIC_REASON_SITES: [DynamicReasonSite; 7] = [
+    DynamicReasonSite {
+        file: "domain/import_audio.rs",
+        expr: "error.as_str()",
+        occurrences: 1,
+        forwards: "`extension_pure::select_import_source` 的错误枚举经 `as_str()` 给出的逐字串；\
+                   值的定义在同 crate 的**另一个类型**里，扫描器不做类型/方法解析。",
+        retires_when: "在本层用 `match` 把每个枚举值写成字面量（或给该枚举登记一张可解析的值表），\
+                       站点随即变成 `Literal`。",
+    },
+    DynamicReasonSite {
+        file: "domain/mod.rs",
+        expr: "Value::from(reason.clone())",
+        occurrences: 1,
+        forwards: "`Plan::Reject` 预览里的 `reason`：这是 `yeban_reject_proposal` **调用方送进来的\
+                   入参**（用户数据），不是本层产出的故障词。",
+        retires_when: "把 `Plan::Reject.reason` 换成闭合枚举（每个值一个常量）；在此之前它没有\
+                       可冻结的词汇表。",
+    },
+    DynamicReasonSite {
+        file: "domain/mod.rs",
+        expr: "reason",
+        occurrences: 1,
+        forwards: "`apply_reject` 的 `reason` 参数：同上，是**入库的用户数据**，经响应原样返回。",
+        retires_when: "同上：改成闭合枚举/常量，而不是自由字符串。",
+    },
+    DynamicReasonSite {
+        file: "domain/notes.rs",
+        expr: "reason",
+        occurrences: 3,
+        forwards: "三处 `reject_unknown_fields` / `read_non_empty_string` 的 `reason` 参数与\
+                   `UnresolvedReason` 的绑定：词由**调用点或别的 crate** 给出。",
+        retires_when: "把参数改成枚举/常量、或让扫描器做调用点传播；两种都不在本轮边界内。",
+    },
+    DynamicReasonSite {
+        file: "domain/notes.rs",
+        expr: "format!(\"{reason}MustBeString\")",
+        occurrences: 1,
+        forwards: "在 `reason` 参数后面拼 `MustBeString` 后缀：**运行时组合**，字面量只有后缀。",
+        retires_when: "让每个调用点各传两条完整 reason（空串分支 / 非字符串分支），删掉拼接。",
+    },
+    DynamicReasonSite {
+        file: "domain/notes.rs",
+        expr: "reason.as_str()",
+        occurrences: 1,
+        forwards: "`UnresolvedReason::as_str()`（定义在 `yeban-render`）的逐字串；跨 crate 枚举，\
+                   本扫描器只读 `yeban-mcp/src`。",
+        retires_when: "在 MCP 侧为这三个值登记字面量（或让扫描器跨 crate 解析 `as_str` 的 match）。",
+    },
+    DynamicReasonSite {
+        file: "domain/notes.rs",
+        expr: "format!(\"{kind}RequiresPlacementId\")",
+        occurrences: 1,
+        forwards: "按 `kind`（`move` / `remove`）拼 `RequiresPlacementId` 后缀：**运行时组合**。",
+        retires_when: "改成 `match kind` 的两个字面量（或枚举），站点随即变成 `Literal`。",
+    },
+];
+
+/// 一处 `"reason"` 只是**参数名 / 入参键名**（⛔ 不是 `data.reason` 值键）的出现。
+struct ReasonArgumentNameUse {
+    file: &'static str,
+    /// 该行里必须出现的稳定片段（同一行可能有别的 `"reason"`）。
+    marker: &'static str,
+    occurrences: usize,
+    why: &'static str,
+}
+
+/// 生产区实测 **3 处**（2026-10-25，#340 开工）：它们都不是故障数据的 reason 值。
+const REASON_ARGUMENT_NAME_USES: [ReasonArgumentNameUse; 3] = [
+    ReasonArgumentNameUse {
+        file: "tools.rs",
+        marker: "param(\"reason\", \"string\"",
+        occurrences: 1,
+        why: "`yeban_reject_proposal` 的**工具参数名**（`MCP-TOOL` 契约里的入参），不是 `data.reason`。",
+    },
+    ReasonArgumentNameUse {
+        file: "samples.rs",
+        marker: "\"reason\" => Value::from(",
+        occurrences: 1,
+        why: "规范样本按**参数名**匹配 `reason`，右侧是夹具入参（`织体过密`），不是故障词。",
+    },
+    ReasonArgumentNameUse {
+        file: "domain/mod.rs",
+        marker: "arg_str(call, \"reason\")",
+        occurrences: 1,
+        why: "读取调用方入参的**键名** `reason`；值本身由调用方给出，不是本层的词。",
+    },
+];
+
+// 站点普查的冻结读数。口径：`production_region` 里 `"reason"` 的**出现次数**
+// （不是行数：一行里可能有两个；也不是 distinct 值数）。新增/删除任何站点都必须
+// **故意**改这些数 —— 这是"看全了"这件事本身的机械契约。
+const REASON_OCCURRENCES_TOTAL: usize = 207;
+const REASON_KEY_SITES_TOTAL: usize = 204;
+const REASON_LITERAL_SITES_TOTAL: usize = 193;
+const REASON_RESOLVED_SITES_TOTAL: usize = 2;
+const REASON_DYNAMIC_SITES_TOTAL: usize = 9;
+const REASON_ARGUMENT_NAME_TOTAL: usize = 3;
+
+/// 把"看不见的站点"折成失败字符串：未登记的 `Dynamic` / `ArgumentName` /
+/// 任何 `Unclassified` **都点名 file:line**；陈旧的登记项同样变红。
+fn unexplained_reason_sites(occurrences: &[ReasonOccurrence]) -> Vec<String> {
+    let mut failures = Vec::new();
+    let mut dynamic: BTreeMap<(String, String), Vec<usize>> = BTreeMap::new();
+    let mut arguments = vec![0usize; REASON_ARGUMENT_NAME_USES.len()];
+    for occurrence in occurrences {
+        let file = relative_to_src(&occurrence.path);
+        match &occurrence.kind {
+            ReasonOccurrenceKind::Dynamic(expr) => dynamic
+                .entry((file, expr.clone()))
+                .or_default()
+                .push(occurrence.line),
+            ReasonOccurrenceKind::ArgumentName(context) => {
+                let matched = REASON_ARGUMENT_NAME_USES.iter().position(|entry| {
+                    entry.file == file.as_str() && context.contains(entry.marker)
+                });
+                match matched {
+                    Some(index) => arguments[index] += 1,
+                    None => failures.push(format!(
+                        "{file}:{} 的 `\"reason\"` 只是参数名, 但没有登记（{context}）",
+                        occurrence.line
+                    )),
+                }
+            }
+            ReasonOccurrenceKind::Unclassified(context) => failures.push(format!(
+                "{file}:{} 无法归类 `\"reason\"` 站点（{context}）",
+                occurrence.line
+            )),
+            ReasonOccurrenceKind::Literal(_) | ReasonOccurrenceKind::Resolved(_) => {}
+        }
+    }
+    for ((file, expr), lines) in &dynamic {
+        let at = lines.first().copied().unwrap_or_default();
+        match EXEMPT_DYNAMIC_REASON_SITES
+            .iter()
+            .find(|entry| entry.file == file.as_str() && entry.expr == expr)
+        {
+            None => failures.push(format!(
+                "{file}:{at} 的动态 `\"reason\"` 站点 `{expr}` 没有登记（出现 {} 次）",
+                lines.len()
+            )),
+            Some(entry) if entry.occurrences != lines.len() => failures.push(format!(
+                "{file}:{at} 的动态 `\"reason\"` 站点 `{expr}` 出现 {} 次，登记 {} 次",
+                lines.len(),
+                entry.occurrences
+            )),
+            Some(_) => {}
+        }
+    }
+    for entry in EXEMPT_DYNAMIC_REASON_SITES {
+        if !dynamic.contains_key(&(entry.file.to_owned(), entry.expr.to_owned())) {
+            failures.push(format!(
+                "{} 的登记项 `{}` 已经不存在（陈旧豁免, 必须删掉）",
+                entry.file, entry.expr
+            ));
+        }
+        assert!(
+            !entry.forwards.trim().is_empty() && !entry.retires_when.trim().is_empty(),
+            "`{}` 的动态站点登记必须写清值从哪来**且**怎么退役",
+            entry.expr
+        );
+    }
+    for (index, entry) in REASON_ARGUMENT_NAME_USES.iter().enumerate() {
+        assert!(!entry.why.trim().is_empty(), "参数名登记必须带理由");
+        if arguments[index] != entry.occurrences {
+            failures.push(format!(
+                "{} 的参数名 `\"reason\"`（marker `{}`）出现 {} 次，登记 {} 次",
+                entry.file, entry.marker, arguments[index], entry.occurrences
+            ));
+        }
+    }
+    failures
 }
 
 // ⭐ **显式豁免**：允许被字符集过滤**拒掉**的 reason 形态（每条带理由）。
@@ -377,13 +1055,14 @@ const EXEMPT_REJECTED_REASONS: [(&str, &str); 6] = [
 fn the_reason_character_filter_rejects_nothing() {
     let files = read_rust_sources(&[manifest_dir().join("src")]);
     assert!(!files.is_empty(), "必须真的读到源码");
+    let consts = string_constants(&files);
 
     let mut rejected: Vec<(String, String, &'static str)> = Vec::new();
     let mut accepted_total = 0usize;
     for (_path, text) in &files {
         // ⚠ 生产区与测试区**都**要扫：过滤在两处是同一条代码路径。
         for region in [production_region(text), test_region(text)] {
-            let scanned = reasons_in(_path, &region);
+            let scanned = reasons_in(_path, &region, &consts);
             accepted_total += scanned.accepted.len();
             rejected.extend(scanned.rejected);
         }
@@ -442,9 +1121,10 @@ fn the_reason_character_filter_rejects_nothing() {
 fn the_reason_vocabulary_is_the_published_list() {
     let files = read_rust_sources(&[manifest_dir().join("src")]);
     assert!(!files.is_empty(), "必须真的读到源码");
+    let consts = string_constants(&files);
     let mut found = BTreeSet::new();
     for (path, text) in &files {
-        found.extend(reasons_in(path, &production_region(text)).accepted);
+        found.extend(reasons_in(path, &production_region(text), &consts).accepted);
     }
     let golden: BTreeSet<String> = GOLDEN_REASONS.iter().map(|r| (*r).to_owned()).collect();
     let added: Vec<&String> = found.difference(&golden).collect();
@@ -461,10 +1141,11 @@ fn the_reason_vocabulary_is_the_published_list() {
 fn every_reason_is_asserted_somewhere() {
     let src = read_rust_sources(&[manifest_dir().join("src")]);
     let tests = read_rust_sources(&[manifest_dir().join("tests")]);
+    let consts = string_constants(&src);
     // 判据侧 = 单元判据区 + 集成判据文件（**宽松**：出现字面量即算"提到"）。
     let mut mentioned: BTreeSet<String> = BTreeSet::new();
     for (path, text) in &src {
-        mentioned.extend(reasons_in(path, &test_region(text)).accepted);
+        mentioned.extend(reasons_in(path, &test_region(text), &consts).accepted);
         for reason in GOLDEN_REASONS {
             if test_region(text).contains(&format!("\"{reason}\"")) {
                 mentioned.insert(reason.to_owned());
@@ -502,7 +1183,7 @@ fn every_reason_is_asserted_somewhere() {
 /// 每条 `reason` 在生产区**字面 `json!` 对象**里带的同级键（排序）。
 /// ⚠ 口径：只收字面 `json!` 里的键；运行时 `map.insert(...)` 加进去的键不在内。
 /// 空数组 = 该 reason 的 `data` 里**没有**同级键（或 Data 由别的构造方式给出）。
-pub const GOLDEN_REASON_PAYLOADS: [(&str, &[&str]); 144] = [
+pub const GOLDEN_REASON_PAYLOADS: [(&str, &[&str]); 146] = [
     (
         "assetChannelLayout",
         &[
@@ -692,6 +1373,18 @@ pub const GOLDEN_REASON_PAYLOADS: [(&str, &[&str]); 144] = [
             "placementKind",
             "reason",
             "trackId",
+        ],
+    ),
+    // ⭐ `#340`：旧扫描器看不见 `"reason": reason`，这两条因此从未进过载荷表。
+    // 键集合取自它们共同的 `json!` 对象（`reject_placement_fields` / 循环区间拒答）。
+    (
+        "placementFieldNotApplicable",
+        &[
+            "field",
+            "hint",
+            "placementKind",
+            "reason",
+            "supportedPlacementFields",
         ],
     ),
     (
@@ -900,6 +1593,16 @@ pub const GOLDEN_REASON_PAYLOADS: [(&str, &[&str]); 144] = [
         &["allowed", "field", "reason", "received"],
     ),
     (
+        "unknownPlacementField",
+        &[
+            "field",
+            "hint",
+            "placementKind",
+            "reason",
+            "supportedPlacementFields",
+        ],
+    ),
+    (
         "unknownPlacementKind",
         &[
             "field",
@@ -1064,7 +1767,7 @@ pub const GOLDEN_REASON_PAYLOADS: [(&str, &[&str]); 144] = [
 
 /// **非标识符形状**的 `reason` 值（成功路径上的说明性字段），4 条。
 ///
-/// 为什么单列一张表：上面 84 条的黄金表按口径只收**标识符形状**
+/// 为什么单列一张表：上面 146 条的黄金表按口径只收**标识符形状**
 /// （`[A-Za-z0-9_]+`）的值 —— 那是"错误分类用的机器可读 reason"。生产区里另有 4 个
 /// `"reason"` 是**人话/带连字符**的（`no-history` / `no-redo` / 两条中文说明），
 /// 它们同样进 `data`，改了没有任何东西会红。本表把它们也钉住，并**如实登记口径边界**。
@@ -1160,57 +1863,26 @@ fn is_skipped(mask: &[bool], at: usize) -> bool {
     mask.get(at).copied().unwrap_or(false)
 }
 
-fn reason_payloads(text: &str) -> BTreeMap<String, BTreeSet<String>> {
+/// 每条 reason 的**字面 `json!` 同级键**（#340：值只取**可分类**的站点）。
+///
+/// 值来源与 [`reasons_in`] 完全同一条扫描器：字面量 ＋ 同函数内可解析的字面量 `let`。
+/// 看不见的站点（`Dynamic` / `ArgumentName`）不贡献值 —— 它们由
+/// `every_reason_occurrence_is_classified_or_explicitly_registered` 逐条点名，
+/// ⛔ 不是在这里静默丢掉。
+fn reason_payloads(
+    text: &str,
+    consts: &BTreeMap<String, String>,
+) -> BTreeMap<String, BTreeSet<String>> {
     let mut out: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
-    let joined = text;
-    let bytes = joined.as_bytes();
-    // R94：逐命中点判断是否落在注释／字符串内部（⛔ 不再只跳过"整行以 `//` 开头"）。
-    let mask = skipped_offsets(joined);
-    let mut line_start = 0usize;
-    while line_start < joined.len() {
-        let line_end = joined[line_start..]
-            .find('\n')
-            .map_or(joined.len(), |skip| line_start + skip);
-        let line = &joined[line_start..line_end];
-        {
-            let mut cursor = 0usize;
-            while let Some(offset) = find(&line.as_bytes()[cursor..], b"\"reason\"") {
-                let at = cursor + offset;
-                if is_skipped(&mask, line_start + at) {
-                    cursor = at + 1;
-                    continue;
-                }
-                let mut index = at + b"\"reason\"".len();
-                while index < line.len()
-                    && (line.as_bytes()[index] == b' ' || line.as_bytes()[index] == b':')
-                {
-                    index += 1;
-                }
-                if index < line.len() && line.as_bytes()[index] == b'"' {
-                    let value_start = index + 1;
-                    if let Some(len) = line.as_bytes()[value_start..]
-                        .iter()
-                        .position(|b| *b == b'"')
-                    {
-                        let reason = line[value_start..value_start + len].to_owned();
-                        let absolute = line_start + at;
-                        out.entry(reason).or_default();
-                        if let Some(open) = joined[..absolute].rfind("json!(") {
-                            let keys = json_object_keys(&joined[open + "json!".len()..]);
-                            out.get_mut(&line[value_start..value_start + len])
-                                .expect("刚插入")
-                                .extend(keys);
-                        }
-                    }
-                }
-                cursor = at + 1;
-            }
+    for occurrence in reason_occurrences("<payload>", text, consts) {
+        let keys = text[..occurrence.offset]
+            .rfind("json!(")
+            .map_or_else(BTreeSet::new, |open| {
+                json_object_keys(&text[open + "json!".len()..])
+            });
+        for reason in occurrence.kind.values() {
+            out.entry(reason).or_default().extend(keys.iter().cloned());
         }
-        if line_end >= joined.len() {
-            break;
-        }
-        line_start = line_end + 1;
-        let _ = bytes;
     }
     out
 }
@@ -1280,9 +1952,10 @@ fn json_object_keys(from_open_paren: &str) -> BTreeSet<String> {
 #[test]
 fn the_reason_payload_shape_is_the_published_table() {
     let files = read_rust_sources(&[manifest_dir().join("src")]);
+    let consts = string_constants(&files);
     let mut found: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     for (_path, text) in &files {
-        for (reason, keys) in reason_payloads(&production_region(text)) {
+        for (reason, keys) in reason_payloads(&production_region(text), &consts) {
             found.entry(reason).or_default().extend(keys);
         }
     }
@@ -1375,73 +2048,54 @@ fn the_reason_payload_shape_is_the_published_table() {
 /// `sceneCount` 键 ⇒ 148 个 reason / 668 行；新摘要
 /// `480018afbd8c47dd9db4c4d3d4ffb4e082748ecbe44e3638547a2bbb8f9dd22a`
 /// 同样由判据自己报出后照抄。
+///
+/// ⭐ `#340` 重钉：扫描器开始解析 `"reason": reason` 的**字面量 `let`**
+/// （`let reason = "..."` / `let reason = if cond { "a" } else { "b" }`）⇒
+/// 两条一直存在、但旧摘要**看不见**的 reason 进入规范文本：
+/// `placementFieldNotApplicable` / `unknownPlacementField` ⇒ 148 → 150 个 reason、
+/// 668 → 680 行（两条各带 5 个同级键）。这是**真实增读**，不是新增词：
+/// 两条都有 `src` 判据断言（`notes.rs` 的 `inapplicable_and_misspelled_...` 等）。
+/// 看不见的运行时站点（9 处 `Dynamic`）**不进**规范文本，由站点普查登记 ——
+/// 本摘要因此是"**可分类**面"的字节契约，不是全集的伪装。新摘要
+/// `6f13316b51ef974e2443a909c4eb9fdeeaf97139b11fef6da5365de4de40e259`
+/// 由判据自己报出后照抄。
 pub const FROZEN_REASON_SURFACE_SHA256: &str =
-    "480018afbd8c47dd9db4c4d3d4ffb4e082748ecbe44e3638547a2bbb8f9dd22a";
+    "6f13316b51ef974e2443a909c4eb9fdeeaf97139b11fef6da5365de4de40e259";
 
 /// 规范形式里的 reason 数 / 规范行数（与摘要一起构成"两端"读数）。
-pub const REASON_SURFACE_REASONS: usize = 148;
+pub const REASON_SURFACE_REASONS: usize = 150;
 /// 规范行数（每个 reason 一行 ＋ 每个键一行）。
-pub const REASON_SURFACE_LINES: usize = 668;
+pub const REASON_SURFACE_LINES: usize = 680;
 
 /// 单文件里的 `reason` 面：**保留出现顺序**的 `(reason, keys)`。
 ///
 /// 与 [`reason_payloads`] 的唯一区别是"顺序"：那个返回 `BTreeMap`（排序 ⇒
 /// 对键序不敏感），这个保留源码顺序 ⇒ 对**键序**敏感（摘要要的就是这一位）。
-fn reason_surface_in(text: &str) -> Vec<(String, Vec<String>)> {
+///
+/// #340：值来源与 [`reasons_in`] 同一条扫描器，因此**可解析的字面量 `let`**
+/// （`"reason": reason`）也进这份规范文本；看不见的运行时站点由站点普查点名为**豁免**，
+/// 它们不贡献值 —— 摘要因此是"**可分类**的 reason 面"，不是一个假装完整的全集。
+fn reason_surface_in(text: &str, consts: &BTreeMap<String, String>) -> Vec<(String, Vec<String>)> {
     let region = production_region(text);
     let mut order: Vec<(String, Vec<String>)> = Vec::new();
-    let mask = skipped_offsets(&region);
-    let mut line_start = 0usize;
-    while line_start < region.len() {
-        let line_end = region[line_start..]
-            .find('\n')
-            .map_or(region.len(), |skip| line_start + skip);
-        let line = &region[line_start..line_end];
-        {
-            let mut cursor = 0usize;
-            while let Some(offset) = find(&line.as_bytes()[cursor..], b"\"reason\"") {
-                let at = cursor + offset;
-                if is_skipped(&mask, line_start + at) {
-                    cursor = at + 1;
-                    continue;
-                }
-                let mut index = at + b"\"reason\"".len();
-                while index < line.len()
-                    && (line.as_bytes()[index] == b' ' || line.as_bytes()[index] == b':')
-                {
-                    index += 1;
-                }
-                if index < line.len() && line.as_bytes()[index] == b'"' {
-                    let value_start = index + 1;
-                    if let Some(len) = line.as_bytes()[value_start..]
-                        .iter()
-                        .position(|byte| *byte == b'"')
-                    {
-                        let reason = line[value_start..value_start + len].to_owned();
-                        let absolute = line_start + at;
-                        let mut keys: Vec<String> = Vec::new();
-                        if let Some(open) = region[..absolute].rfind("json!(") {
-                            keys = json_object_key_order(&region[open + "json!".len()..]);
-                        }
-                        match order.iter_mut().find(|(name, _keys)| *name == reason) {
-                            Some((_name, merged)) => {
-                                for key in keys {
-                                    if !merged.contains(&key) {
-                                        merged.push(key);
-                                    }
-                                }
-                            }
-                            None => order.push((reason, keys)),
+    for occurrence in reason_occurrences("<surface>", &region, consts) {
+        let keys = region[..occurrence.offset]
+            .rfind("json!(")
+            .map_or_else(Vec::new, |open| {
+                json_object_key_order(&region[open + "json!".len()..])
+            });
+        for reason in occurrence.kind.values() {
+            match order.iter_mut().find(|(name, _keys)| *name == reason) {
+                Some((_name, merged)) => {
+                    for key in &keys {
+                        if !merged.contains(key) {
+                            merged.push(key.clone());
                         }
                     }
                 }
-                cursor = at + 1;
+                None => order.push((reason, keys.clone())),
             }
         }
-        if line_end >= region.len() {
-            break;
-        }
-        line_start = line_end + 1;
     }
     order
 }
@@ -1506,11 +2160,12 @@ fn json_object_key_order(from_open_paren: &str) -> Vec<String> {
 
 /// 把整个生产区折成**规范文本**（跨文件按路径排序，键序保留）。
 fn reason_surface(files: &[(String, String)]) -> String {
+    let consts = string_constants(files);
     let mut order: Vec<(String, Vec<String>)> = Vec::new();
     let mut sorted: Vec<&(String, String)> = files.iter().collect();
     sorted.sort_by(|left, right| left.0.cmp(&right.0));
     for (_path, text) in sorted {
-        for (reason, keys) in reason_surface_in(text) {
+        for (reason, keys) in reason_surface_in(text, &consts) {
             match order.iter_mut().find(|(name, _keys)| *name == reason) {
                 Some((_name, merged)) => {
                     for key in keys {
@@ -1624,7 +2279,8 @@ fn the_reason_scanners_skip_comments_and_string_intervals() {
     let sample = "fn f() {\n    // 文档里写 \"reason\": \"fakeInComment\",\n    \
                   let s = \"示例: \\\"reason\\\": \\\"fakeInString\\\"\";\n    \
                   let data = serde_json::json!({ \"reason\": \"realOne\" });\n}\n";
-    let scanned = reasons_in("<sample>", sample);
+    let consts = BTreeMap::new();
+    let scanned = reasons_in("<sample>", sample, &consts);
     assert!(
         scanned.rejected.is_empty(),
         "合成样本里的 reason 都落在字符集内, ⛔ 不该有被拒的: {:?}",
@@ -1636,10 +2292,10 @@ fn the_reason_scanners_skip_comments_and_string_intervals() {
         vec!["realOne"],
         "只有真站点该被读到（注释与字符串里的引文必须跳过）"
     );
-    let payloads = reason_payloads(sample);
+    let payloads = reason_payloads(sample, &consts);
     assert_eq!(payloads.len(), 1, "载荷扫描器同样只该看到一个 reason");
     assert!(payloads.contains_key("realOne"));
-    let surface = reason_surface_in(sample);
+    let surface = reason_surface_in(sample, &consts);
     assert_eq!(surface.len(), 1, "规范形式同理");
     assert_eq!(surface[0].0, "realOne");
 
@@ -1664,4 +2320,229 @@ fn the_reason_scanners_skip_comments_and_string_intervals() {
         FROZEN_REASON_SURFACE_SHA256,
         "加入区间掩码后摘要必须**逐位不变**（否则就是掩码改变了口径）"
     );
+}
+
+/// #340 已知形状的**全量自证**：旧扫描器只认 `"reason": "字面量"`，本判据把
+/// 变量 / `format!` / 常量 / `map.insert` / `Value::from` / 参数名逐个喂给它。
+///
+/// 已知红（实测）：把 [`reason_occurrences`] 换回旧实现 ⇒
+/// `local_two` / `REASON_CONST` / `either` / `map.insert` 四条**读不到**，本判据红。
+/// 已知红（实测）：把 `resolve_reason_ident` 的常量分支删掉 ⇒ `constThree` 变
+/// `Dynamic`，本判据红。
+#[test]
+fn the_reason_site_scanner_classifies_every_known_shape() {
+    let sample = "const REASON_CONST: &str = \"constThree\";\n\
+fn f(flag: bool) {\n\
+    let local_two = \"localTwo\";\n\
+    let either = if flag { \"branchA\" } else { \"branchB\" };\n\
+    let dynamic = pick();\n\
+    let _ = serde_json::json!({ \"reason\": \"literalOne\" });\n\
+    map.insert(\"reason\".to_owned(), Value::from(\"mapFour\"));\n\
+    let _ = serde_json::json!({ \"reason\": local_two });\n\
+    let _ = serde_json::json!({ \"reason\": REASON_CONST });\n\
+    let _ = serde_json::json!({ \"reason\": either });\n\
+    let _ = serde_json::json!({ \"reason\": dynamic });\n\
+    let _ = serde_json::json!({ \"reason\": format!(\"{prefix}Suffix\") });\n\
+    param(\"reason\", \"string\", true, \"说明\");\n\
+}\n";
+    let consts = string_constants(&[("<sample>".to_owned(), sample.to_owned())]);
+    assert_eq!(
+        consts.get("REASON_CONST").map(String::as_str),
+        Some("constThree"),
+        "常量解析器必须真的读到 `const NAME: &str = \"...\";`"
+    );
+    let occurrences = reason_occurrences("<sample>", sample, &consts);
+    assert_eq!(occurrences.len(), 8, "样本里恰好 8 次 `\"reason\"` 出现");
+    let kind_at = |line: usize| {
+        occurrences
+            .iter()
+            .find(|occurrence| occurrence.line == line)
+            .map(|occurrence| occurrence.kind.clone())
+    };
+    assert_eq!(
+        kind_at(6),
+        Some(ReasonOccurrenceKind::Literal("literalOne".to_owned()))
+    );
+    assert_eq!(
+        kind_at(7),
+        Some(ReasonOccurrenceKind::Literal("mapFour".to_owned()))
+    );
+    assert_eq!(
+        kind_at(8),
+        Some(ReasonOccurrenceKind::Resolved(vec!["localTwo".to_owned()]))
+    );
+    assert_eq!(
+        kind_at(9),
+        Some(ReasonOccurrenceKind::Literal("constThree".to_owned()))
+    );
+    assert_eq!(
+        kind_at(10),
+        Some(ReasonOccurrenceKind::Resolved(vec![
+            "branchA".to_owned(),
+            "branchB".to_owned()
+        ]))
+    );
+    assert_eq!(
+        kind_at(11),
+        Some(ReasonOccurrenceKind::Dynamic("dynamic".to_owned()))
+    );
+    assert_eq!(
+        kind_at(12),
+        Some(ReasonOccurrenceKind::Dynamic(
+            "format!(\"{prefix}Suffix\")".to_owned()
+        ))
+    );
+    assert!(
+        matches!(kind_at(13), Some(ReasonOccurrenceKind::ArgumentName(_))),
+        "参数名 `reason` 必须归到 ArgumentName, ⛔ 不是故障词"
+    );
+
+    // 判据侧的读数：可分类的值真的进了词表；看不见的值**没有**被编造。
+    let scanned = reasons_in("<sample>", sample, &consts);
+    assert_eq!(
+        scanned.accepted,
+        [
+            "branchA",
+            "branchB",
+            "constThree",
+            "literalOne",
+            "localTwo",
+            "mapFour"
+        ]
+        .into_iter()
+        .map(str::to_owned)
+        .collect::<BTreeSet<_>>(),
+        "可解析的值必须全部进词表"
+    );
+    assert!(
+        !scanned.accepted.contains("dynamic") && !scanned.accepted.contains("Suffix"),
+        "运行时拼接的值 ⛔ 不许被当成字面量"
+    );
+}
+
+/// #340 的**牙齿**：一个旧扫描器看不见、新扫描器也归类不了的站点必须**红**。
+///
+/// 旧扫描器在同样输入上会**静默通过**：`"reason": pick_reason()` 的键后面不是
+/// `"`，它连一次"命中失败"都不记。
+#[test]
+fn an_unclassifiable_reason_site_is_red_naming_file_and_line() {
+    let sample = "fn f() {\n    let data = serde_json::json!({ \"reason\": pick_reason() });\n}\n";
+    let occurrences = reason_occurrences(
+        "crates/yeban-mcp/src/domain/example.rs",
+        sample,
+        &BTreeMap::new(),
+    );
+    assert_eq!(occurrences.len(), 1);
+    assert_eq!(occurrences[0].line, 2);
+    let failures = unexplained_reason_sites(&occurrences);
+    assert!(
+        failures
+            .iter()
+            .any(|failure| failure.contains("domain/example.rs:2")),
+        "未登记的动态站点必须**带 file:line** 变红: {failures:?}"
+    );
+}
+
+/// #340 的反向自证：换上**字面量**的新 reason 仍然必须被词表判据抓住。
+#[test]
+fn a_reason_outside_the_frozen_set_is_still_a_violation() {
+    let sample =
+        "fn f() {\n    let _ = serde_json::json!({ \"reason\": \"notFrozenAnywhere\" });\n}\n";
+    let scanned = reasons_in("<sample>", sample, &BTreeMap::new());
+    assert!(scanned.rejected.is_empty());
+    let golden: BTreeSet<String> = GOLDEN_REASONS
+        .iter()
+        .map(|reason| (*reason).to_owned())
+        .collect();
+    let added: Vec<&str> = scanned
+        .accepted
+        .difference(&golden)
+        .map(String::as_str)
+        .collect();
+    assert_eq!(
+        added,
+        vec!["notFrozenAnywhere"],
+        "冻结集之外的字面量必须被报成新增（这条判据证明词表比较没有失灵）"
+    );
+}
+
+/// #340 的**站点普查**：生产区每一次 `"reason"` 出现都必须可分类，
+/// 或逐条登记在两张显式表（[`EXEMPT_DYNAMIC_REASON_SITES`] /
+/// [`REASON_ARGUMENT_NAME_USES`]）里。
+///
+/// 为什么这是 #340 的核心：旧扫描器在"值不是字面量"时**什么都不说** ——
+/// 它不报错、不计数、不列清单，于是词表绿在一个它没看见的站台上。
+/// 本判据让"看不见"必须**有人签字**：新站点 ⇒ 红并点名 file:line；
+/// 旧登记项消失 ⇒ 红（陈旧豁免）。
+///
+/// 注入（实测红）：在 `automation.rs` 的生产区里加
+/// `json!({ "reason": dynamic_reason })`（`dynamic_reason` 来自 `String::from(...)`）⇒
+/// 旧守卫 6/6 全绿；本判据红并点名 `domain/automation.rs:855`。
+#[test]
+fn every_reason_occurrence_is_classified_or_explicitly_registered() {
+    let files = read_rust_sources(&[manifest_dir().join("src")]);
+    assert!(!files.is_empty(), "必须真的读到源码");
+    let consts = string_constants(&files);
+    let mut occurrences = Vec::new();
+    for (path, text) in &files {
+        occurrences.extend(reason_occurrences(path, &production_region(text), &consts));
+    }
+
+    // 先把"看不见的站点"变成失败读数（带 file:line），再报规模 —— 顺序很重要：
+    // 只报计数的话，新站点的位置还得二次搜索。
+    let failures = unexplained_reason_sites(&occurrences);
+    assert!(
+        failures.is_empty(),
+        "站点分类失败（新站点必须可分类或**逐条**登记）:\n{}",
+        failures.join("\n")
+    );
+
+    let literal = occurrences
+        .iter()
+        .filter(|occurrence| matches!(occurrence.kind, ReasonOccurrenceKind::Literal(_)))
+        .count();
+    let resolved = occurrences
+        .iter()
+        .filter(|occurrence| matches!(occurrence.kind, ReasonOccurrenceKind::Resolved(_)))
+        .count();
+    let dynamic = occurrences
+        .iter()
+        .filter(|occurrence| matches!(occurrence.kind, ReasonOccurrenceKind::Dynamic(_)))
+        .count();
+    let argument = occurrences
+        .iter()
+        .filter(|occurrence| matches!(occurrence.kind, ReasonOccurrenceKind::ArgumentName(_)))
+        .count();
+    let unclassified = occurrences
+        .iter()
+        .filter(|occurrence| matches!(occurrence.kind, ReasonOccurrenceKind::Unclassified(_)))
+        .count();
+
+    assert_eq!(
+        unclassified, 0,
+        "`Unclassified` 必须是 0（上面已经逐条点名）"
+    );
+    assert_eq!(
+        literal + resolved + dynamic,
+        REASON_KEY_SITES_TOTAL,
+        "`\"reason\"` **键站点**数（值键 + insert/索引赋值）"
+    );
+    assert_eq!(
+        argument, REASON_ARGUMENT_NAME_TOTAL,
+        "`\"reason\"` **参数名**出现数"
+    );
+    assert_eq!(
+        literal + resolved + dynamic + argument + unclassified,
+        REASON_OCCURRENCES_TOTAL,
+        "`\"reason\"` 总出现数（键站点 + 参数名 + 未分类）"
+    );
+    assert_eq!(
+        literal, REASON_LITERAL_SITES_TOTAL,
+        "字面量值站点数（直接字面量或 `Value::from(\"…\")`）"
+    );
+    assert_eq!(
+        resolved, REASON_RESOLVED_SITES_TOTAL,
+        "可解析 `let` 站点数（`let reason = ...`）"
+    );
+    assert_eq!(dynamic, REASON_DYNAMIC_SITES_TOTAL, "已登记的运行时站点数");
 }
