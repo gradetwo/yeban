@@ -29,6 +29,15 @@
 #     bash scripts/dev/trim-target.sh <dir>    # 指定 target 目录（例如某棵 worktree）
 #
 # 有 cargo/rustc 在跑时**直接退出**（删除正在写的产物会把构建搞坏）。
+#
+# ## ⚠ 2026-10-25 实测：这道闸被**绕过**过一次，代价由别人付
+#
+# 我在构建进行中**手跑** `rm -rf target/debug/incremental`（⛔ 没走本脚本），37 G 是省下来了，
+# 但三条线的构建随后以 `failed to move dependency graph from …/dep-graph.part.bin` ＋
+# `failed to create query cache …: No such file or directory` 收场 —— 那是**目录被从底下抽走**
+# 的签名，不是并发、不是锁失效。一条线把它误诊成"共享 target 又坏了"，多花了一轮。
+# ⇒ ⭐ **任何 `rm -rf target/**` 都必须走本脚本**（它按进程名精确匹配 cargo/rustc），
+#   而且现在**锁被持有也拒绝**（见下）。
 set -u
 
 dry=0
@@ -58,6 +67,14 @@ for pid in $(pgrep -x cargo 2>/dev/null) $(pgrep -x rustc 2>/dev/null); do
 done
 if [ -n "$running" ]; then
     echo "trim-target: ⛔ 有 cargo/rustc 在跑（pid:${running}）⇒ 不裁（删除正在写的产物会搞坏构建）" >&2
+    exit 1
+fi
+
+# 锁被持有也拒绝：可能"还没有 cargo 进程"但某条线已经拿到锁、正要开始编。
+# ⚠ `pgrep -x cargo` 抓不到那个窗口，所以闸要看锁。
+lock_dir="$target/.yeban-build.lock"
+if [ -d "$lock_dir" ]; then
+    echo "trim-target: ⛔ 共享 target 的锁被持有 ⇒ 不裁；持锁者 $(cat "$lock_dir/owner" 2>/dev/null | tr '\n' ' ')" >&2
     exit 1
 fi
 
