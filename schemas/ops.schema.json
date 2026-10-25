@@ -252,6 +252,16 @@
         },
         {
           "required": [
+            "SetClipPlacementLoop"
+          ],
+          "properties": {
+            "SetClipPlacementLoop": {
+              "type": "object"
+            }
+          }
+        },
+        {
+          "required": [
             "MoveClipPlacement"
           ],
           "properties": {

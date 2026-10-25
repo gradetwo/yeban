@@ -650,6 +650,30 @@ pub fn ops_items() -> Value {
                 true,
             ),
             op(
+                "setClipPlacementLoop",
+                "整体替换一条摆放的循环配置（`LoopConfig` 三项全部必填；旧值由服务端从当前文档读，载荷只带新值）",
+                &[
+                    "kind",
+                    "trackId",
+                    "placementId",
+                    "loopEnabled",
+                    "loopStartTick",
+                    "loopEndTick",
+                ],
+                json!({
+                    "kind": kind("setClipPlacementLoop"),
+                    "trackId": id("摆放所在的音轨身份"),
+                    "placementId": id("摆放身份"),
+                    "loopEnabled": {
+                        "type": "boolean",
+                        "description": "是否启用循环（整体替换的一部分，必填）",
+                    },
+                    "loopStartTick": uint("循环起点（摆放相对 tick，必填）"),
+                    "loopEndTick": uint("循环终点（摆放相对 tick，不含；必填）"),
+                }),
+                true,
+            ),
+            op(
                 "setDeviceBypassed",
                 "切换一台设备的旁通（旁通设备不计入 PDC、也不武装效果器）",
                 &["kind", "trackId", "deviceId", "bypassed"],

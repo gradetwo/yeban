@@ -1249,6 +1249,7 @@ pub const OP_KINDS: &[&str] = &[
     SET_DEVICE_NAME_KIND,
     SET_DEVICE_BYPASSED_KIND,
     SET_CLIP_PLACEMENT_MUTED_KIND,
+    SET_CLIP_PLACEMENT_LOOP_KIND,
     SET_TRACK_COLOR_KIND,
     SET_TRACK_SAMPLER_KIND,
     SET_CLIP_PLACEMENT_DURATION_KIND,
@@ -1273,7 +1274,7 @@ pub const OP_KINDS: &[&str] = &[
 /// `domain::plan_edit_notes` 用它决定"缺参时要不要响亮拒绝"。
 ///
 /// ⚠ 两份真相（本清单 vs 谓词的 `match`）由判据
-/// `every_catalog_kind_parses_and_round_trips` 在**全部 41 个 kind** 上对账
+/// `every_catalog_kind_parses_and_round_trips` 在**全部 42 个 kind** 上对账
 /// （`OP_KINDS` 里每个 kind 的最小合法形状 → 解析 → 与本清单比对），
 /// 因此"加了一个 kind 却忘了决定它读不读 `clipId`"会立刻变红。
 pub const ENVELOPE_CLIP_KINDS: &[&str] = &[
@@ -1302,7 +1303,7 @@ pub const ENVELOPE_CLIP_KINDS: &[&str] = &[
 /// [`ENVELOPE_CLIP_KINDS`] 去掉 `removeClip` 之后的子集，且这条包含关系由判据钉住。
 ///
 /// 两份真相（本清单 vs 谓词的 `match`）由判据
-/// `every_catalog_kind_compiles_to_exactly_one_op_variant` 在**全部 41 个 kind** 上
+/// `every_catalog_kind_compiles_to_exactly_one_op_variant` 在**全部 42 个 kind** 上
 /// 对账（`OP_KINDS` 里每个 kind 的规范形状 → 解析 → 与本清单比对），因此"加了一个
 /// kind 却忘了决定它读不读音符"会立刻变红。
 pub const NOTE_LEVEL_KINDS: &[&str] = &[
@@ -1965,6 +1966,46 @@ pub const SET_CLIP_PLACEMENT_MUTED_FIELDS: [&str; 4] = [
     SET_CLIP_PLACEMENT_MUTED_TRACK_FIELD,
     SET_CLIP_PLACEMENT_MUTED_PLACEMENT_FIELD,
     SET_CLIP_PLACEMENT_MUTED_MUTED_FIELD,
+];
+
+/// `ops[].kind` 的**设置摆放循环**形态名（写 [`Op::SetClipPlacementLoop`]，`#336`）。
+///
+/// ⭐ **本形态补上了什么**：⭐ 在它之前 [`ClipPlacement::loop_config`] **只在创建时**
+/// 能给（`placement` 的 `add` 形态带 `loopEnabled` / `loopStartTick` / `loopEndTick`）
+/// ⇒ ⭐ **创建之后改不了循环**；⭐ 而 `setClipPlacementDuration` 只改长度、重建摆放会
+/// **换掉摆放身份**。这是 [`SET_CLIP_PLACEMENT_MUTED_KIND`] 文档里"`loopConfig` 是
+/// 结构体要另议"那句的另议结果。
+pub const SET_CLIP_PLACEMENT_LOOP_KIND: &str = "setClipPlacementLoop";
+
+/// 设置摆放循环形态的**目标音轨**字段名（`ops[].trackId`，必填，ULID）。
+pub const SET_CLIP_PLACEMENT_LOOP_TRACK_FIELD: &str = "trackId";
+
+/// 设置摆放循环形态的**目标摆放**字段名（`ops[].placementId`，必填，ULID）。
+pub const SET_CLIP_PLACEMENT_LOOP_PLACEMENT_FIELD: &str = "placementId";
+
+/// 设置摆放循环形态允许出现的**全部**键（判别键 + 目标音轨 + 目标摆放 + 三项循环配置）。
+///
+/// ⚠ **三项循环配置的字面名复用 `add` 形态的 `placement.*` 常量**
+/// （[`LOOP_ENABLED_FIELD`] / [`LOOP_START_TICK_FIELD`] / [`LOOP_END_TICK_FIELD`]）：
+/// "同一个词必须同一个意思"（`ADR-0001` D48）—— 本形态只是把**同一组字段**从
+/// **创建**挪到**整体替换**，⛔ 不另造三个同义拼写。三个都**必填**：
+/// ⭐ 本形态是**整体替换**（与 `setNoteExpression` / `setNotePitchShape` 同形），
+/// ⛔ 不是"合并式 patch"（后者是 `setScene` / `setSection` 的形状）⇒ 缺一个就是
+/// 伪造作者的选择（`ADR-0001` D43：`enabled` 缺省会把打开的循环静默关掉、
+/// 区间缺省会把循环静默搬回 tick 0）。
+///
+/// ⚠ **⛔ 没有 `oldLoopConfig` / `oldEnabled` / `oldStartTick` / `oldEndTick`，
+/// 也没有任何别的旧值键**：载荷**只带新值**，旧值由 [`compile`] 从**当前文档**读
+/// （与 `setNoteExpression` / `setNotePitchShape` 同一条纪律，见 `#334`）。
+/// 写旧值键 ⇒ 未知键，[`reject_set_clip_placement_loop_fields`] **响亮拒绝**并列出
+/// 本支持集合（⛔ 绝不静默忽略）。
+pub const SET_CLIP_PLACEMENT_LOOP_FIELDS: [&str; 6] = [
+    "kind",
+    SET_CLIP_PLACEMENT_LOOP_TRACK_FIELD,
+    SET_CLIP_PLACEMENT_LOOP_PLACEMENT_FIELD,
+    LOOP_ENABLED_FIELD,
+    LOOP_START_TICK_FIELD,
+    LOOP_END_TICK_FIELD,
 ];
 
 /// `ops[].kind` 的**设置音轨色标**形态名（写 [`Op::SetTrackColor`]）。
@@ -3078,6 +3119,35 @@ pub enum NoteOp {
         /// 修改后的静音状态。
         new_muted: bool,
     },
+    /// **整体替换**一条摆放的循环配置（[`Op::SetClipPlacementLoop`]，`#336`）。
+    ///
+    /// ⭐ **本形态补上了什么**：⭐ 在它之前 [`ClipPlacement::loop_config`] **只在创建时**
+    /// 能给（`placement` 的 `add` 形态带 `loopEnabled` / `loopStartTick` /
+    /// `loopEndTick`）⇒ ⭐ **创建之后改不了循环**；⭐ 改一个已有摆放的循环此前只能
+    /// "`placement.kind: "remove"` + 新的 `add`"，⭐ 而那会**换掉摆放身份**。
+    /// `setClipPlacementDuration` 只写长度（文档逐字登记了它**有意**不碰
+    /// `loop_config`），本形态就是那处"另议"。
+    ///
+    /// ⚠ **载荷只带新值**（三项全部必填）：⛔ 没有 `oldLoopConfig` / `oldEnabled` /
+    /// 任何旧值键 —— 旧值由 [`compile`] 从**当前文档**读（与 `setNoteExpression` /
+    /// `setNotePitchShape` 同一条纪律，见 `#334`）。⭐ 整体替换、⛔ 不是逐字段合并。
+    ///
+    /// ⚠ **合法性口径镜像 `add`**：模型侧调用的是 [`Op::AddClipPlacement`] 所调用的
+    /// **同一个** [`LoopConfig::validate`] ⇒ ⛔ 本层不另立"什么是一个合法循环"，
+    /// 也⛔ 不规范化任何值。`enabled == false` / `end_tick >= duration_ticks` 等
+    /// 退化形态原样写进文档，由唯一一份展开语义（`ClipPlacement::loop_repeat`）
+    /// 按"恰好一遍"处理。
+    /// ⛔ 不碰 `clipId` / `startTick` / `durationTicks` / `muted`。
+    SetClipPlacementLoop {
+        /// 目标音轨（摆放的容器）。
+        track_id: EntityId,
+        /// 目标摆放身份。
+        placement_id: EntityId,
+        /// 修改前的**整份**循环配置（来自当前文档）。
+        old_loop_config: LoopConfig,
+        /// 修改后的**整份**循环配置（整体替换）。
+        new_loop_config: LoopConfig,
+    },
     /// 切换**设备旁通**（[`Op::SetDeviceBypassed`]，寻址到一条音轨上的一台设备）。
     ///
     /// ⭐ **本形态补上了什么**：⭐ 在它之前 `DeviceDefinition::bypassed` **只能**在
@@ -3541,6 +3611,7 @@ impl NoteOp {
             Self::SetDeviceName { .. } => SET_DEVICE_NAME_KIND,
             Self::SetDeviceBypassed { .. } => SET_DEVICE_BYPASSED_KIND,
             Self::SetClipPlacementMuted { .. } => SET_CLIP_PLACEMENT_MUTED_KIND,
+            Self::SetClipPlacementLoop { .. } => SET_CLIP_PLACEMENT_LOOP_KIND,
             Self::SetTrackColor { .. } => SET_TRACK_COLOR_KIND,
             Self::SetTrackSampler { .. } => SET_TRACK_SAMPLER_KIND,
             Self::SetClipPlacementDuration { .. } => SET_CLIP_PLACEMENT_DURATION_KIND,
@@ -4079,6 +4150,23 @@ fn parse_one(item: &Value) -> Result<NoteOp, Fault> {
                 new_muted: read_required_bool(object, SET_CLIP_PLACEMENT_MUTED_MUTED_FIELD)?,
             })
         }
+        SET_CLIP_PLACEMENT_LOOP_KIND => {
+            reject_set_clip_placement_loop_fields(object)?;
+            Ok(NoteOp::SetClipPlacementLoop {
+                track_id: read_id(object, SET_CLIP_PLACEMENT_LOOP_TRACK_FIELD)?,
+                placement_id: read_id(object, SET_CLIP_PLACEMENT_LOOP_PLACEMENT_FIELD)?,
+                // ⚠ `old_loop_config` 是**占位**：真值由 `compile` 从当前文档读
+                // （⛔ 载荷只带新值；旧值键会被 `reject_set_clip_placement_loop_fields`
+                // 当作未知键响亮拒绝）。
+                old_loop_config: LoopConfig::default(),
+                new_loop_config: LoopConfig {
+                    // ⚠ 三个键**全部必填**（整体替换，⛔ 不是合并式 patch）。
+                    enabled: read_required_bool(object, LOOP_ENABLED_FIELD)?,
+                    start_tick: read_required_u64(object, LOOP_START_TICK_FIELD)?,
+                    end_tick: read_required_u64(object, LOOP_END_TICK_FIELD)?,
+                },
+            })
+        }
         SET_DEVICE_BYPASSED_KIND => {
             reject_set_device_bypassed_fields(object)?;
             Ok(NoteOp::SetDeviceBypassed {
@@ -4571,6 +4659,22 @@ fn reject_set_clip_placement_muted_fields(object: &Map<String, Value>) -> Result
         &SET_CLIP_PLACEMENT_MUTED_FIELDS,
         SET_CLIP_PLACEMENT_MUTED_KIND,
         "unknownSetClipPlacementMutedField",
+    )
+}
+
+/// 拒绝 `setClipPlacementLoop` 里 [`SET_CLIP_PLACEMENT_LOOP_FIELDS`] 之外的键。
+///
+/// 与同族 `reject_*_fields` 同一口径（拼错的键必须被拒绝、⛔ 不能静默忽略）：
+/// 最像"写对了"的错法是把**旧值**写进载荷（`oldLoopConfig` / `oldEnabled` /
+/// `oldStartTick` / `oldEndTick`）—— 它们由 [`compile`] 从当前文档读，写在这里只会被
+/// 静默忽略，而调用方以为前置条件由自己声明（`#334` 的 `oldPitchBendCurve` /
+/// `oldSlide` 与 `setNoteExpression` 的 `oldProbability` 是同一条教训）。
+fn reject_set_clip_placement_loop_fields(object: &Map<String, Value>) -> Result<(), Fault> {
+    reject_unknown_keys(
+        object,
+        &SET_CLIP_PLACEMENT_LOOP_FIELDS,
+        SET_CLIP_PLACEMENT_LOOP_KIND,
+        "unknownSetClipPlacementLoopField",
     )
 }
 
@@ -7641,6 +7745,45 @@ pub fn compile(
                     placement_id: *placement_id,
                     old_muted: placement.muted,
                     new_muted: *new_muted,
+                }
+            }
+            NoteOp::SetClipPlacementLoop {
+                track_id,
+                placement_id,
+                new_loop_config,
+                ..
+            } => {
+                // 撤销载荷来自**当前文档**（模型只查"陈旧载荷"这一条，`LoopConfig`
+                // 是 `PartialEq + Eq` ⇒ 逐字段值比较）。⛔ 不信调用方 —— 线上没有
+                // 旧值键可给（`reject_set_clip_placement_loop_fields` 会拒）。
+                let track = project.track(track_id).map_err(|_| {
+                    Fault::domain_with_data(
+                        ErrorCode::EntityNotFound,
+                        format!("工程里没有身份 {track_id} 的音轨, 没有摆放可以改循环"),
+                        serde_json::json!({
+                            "trackId": track_id.to_canonical_string(),
+                            "reason": "placementTrackNotFound",
+                            "hint": "音轨的身份由 `yeban_query_project` 的 `tracks` 字段报出",
+                        }),
+                    )
+                })?;
+                let placement = track.clips.get(placement_id).ok_or_else(|| {
+                    Fault::domain_with_data(
+                        ErrorCode::ClipNotFound,
+                        format!("音轨 {track_id} 上没有身份 {placement_id} 的摆放"),
+                        serde_json::json!({
+                            "trackId": track_id.to_canonical_string(),
+                            "placementId": placement_id.to_canonical_string(),
+                            "reason": "clipPlacementNotFound",
+                            "hint": "摆放身份由 `yeban_query_project` 的 `tracks[].clips` 报出",
+                        }),
+                    )
+                })?;
+                Op::SetClipPlacementLoop {
+                    track_id: *track_id,
+                    placement_id: *placement_id,
+                    old_loop_config: placement.loop_config,
+                    new_loop_config: *new_loop_config,
                 }
             }
             NoteOp::SetDeviceBypassed {
@@ -10877,7 +11020,9 @@ mod tests {
         // —— 同样与真实 `kind` 同步。
         // 本票（`#334` 音高形状）新增 `setNotePitchShape`（第七个音符级形态）后为 41
         // —— 同样与真实 `kind` 同步。
-        assert_eq!(OP_KINDS.len(), 41);
+        // 本票（`#336` 摆放循环）新增 `setClipPlacementLoop`（摆放属性级，⛔ 不是
+        // 音符级）后为 42 —— 同样与真实 `kind` 同步。
+        assert_eq!(OP_KINDS.len(), 42);
         assert_eq!(TrackFlag::NAMES, [SET_TRACK_MUTE_KIND, SET_TRACK_SOLO_KIND]);
         assert!(OP_KINDS.contains(&SET_TRACK_MUTE_KIND));
         assert!(OP_KINDS.contains(&SET_TRACK_SOLO_KIND));
@@ -16649,7 +16794,7 @@ mod tests {
     fn every_catalog_kind_parses_and_round_trips() {
         let ulid = "01J8ZQ00000000000000000999";
         // 每个 kind 的**最小合法形状**（只到解析期为止；文档相关的前置条件在 `compile`）。
-        let table: [(&str, serde_json::Value); 41] = [
+        let table: [(&str, serde_json::Value); 42] = [
             (
                 "add",
                 serde_json::json!({"note": {"startTick": 0, "pitch": 60, "durationTicks": 480}}),
@@ -16766,6 +16911,16 @@ mod tests {
                 }),
             ),
             (
+                "setClipPlacementLoop",
+                serde_json::json!({
+                    "trackId": ulid,
+                    "placementId": ulid,
+                    "loopEnabled": true,
+                    "loopStartTick": 0,
+                    "loopEndTick": 480,
+                }),
+            ),
+            (
                 "setTrackColor",
                 serde_json::json!({"trackId": ulid, "color": "#22AA88"}),
             ),
@@ -16846,6 +17001,7 @@ mod tests {
                 "setDeviceName",
                 "setDeviceBypassed",
                 "setClipPlacementMuted",
+                "setClipPlacementLoop",
                 "setTrackColor",
                 "setTrackSampler",
                 "setClipPlacementDuration",
@@ -17219,7 +17375,7 @@ mod tests {
             Value,
             &'a str,
         );
-        let rows: [Row<'_>; 42] = [
+        let rows: [Row<'_>; 43] = [
             (
                 "add",
                 None,
@@ -17449,6 +17605,19 @@ mod tests {
                 "SetClipPlacementMuted",
             ),
             (
+                "setClipPlacementLoop",
+                None,
+                None,
+                serde_json::json!({
+                    "trackId": placement_track.to_canonical_string(),
+                    "placementId": placed.to_canonical_string(),
+                    "loopEnabled": true,
+                    "loopStartTick": 0,
+                    "loopEndTick": 480,
+                }),
+                "SetClipPlacementLoop",
+            ),
+            (
                 "setTrackColor",
                 None,
                 None,
@@ -17574,11 +17743,11 @@ mod tests {
         assert_eq!(
             rows.len(),
             OP_KINDS.len() + 1,
-            "41 个 kind ＋ 1 个额外载荷分支"
+            "42 个 kind ＋ 1 个额外载荷分支"
         );
 
         let mut seen: Vec<&str> = Vec::new();
-        // ⭐ `#179`：在**全部 41 个 kind**上对账 `is_note_level()` 与发布的
+        // ⭐ `#179`：在**全部 42 个 kind**上对账 `is_note_level()` 与发布的
         // `NOTE_LEVEL_KINDS`（⛔ 不是手抄的第二份清单，也不是"断言它非空"）。
         let mut note_level_seen: Vec<&str> = Vec::new();
         for (label, clip_override, preset, payload, expected) in rows {
@@ -17624,8 +17793,9 @@ mod tests {
         // `setNoteTiming`（独占一个变体）⇒ 37 → **38**；`#327` 的 `setTitle`（独占一个
         // 变体）⇒ 38 → **39**；`#328` 的 `setClipGain`（独占一个变体）⇒ 39 → **40**；
         // `#329` 的 `setNoteExpression`（独占一个变体）⇒ 40 → **41**；
-        // `#334` 的 `setNotePitchShape`（独占一个变体）⇒ 41 → **42**。
-        assert_eq!(seen.len(), 42);
+        // `#334` 的 `setNotePitchShape`（独占一个变体）⇒ 41 → **42**；
+        // `#336` 的 `setClipPlacementLoop`（独占一个变体）⇒ 42 → **43**。
+        assert_eq!(seen.len(), 43);
         // ⭐ `#179`：音符级分支集合**恰好是七个**，且逐字等于发布清单。
         assert_eq!(
             NOTE_LEVEL_KINDS,
@@ -17643,7 +17813,7 @@ mod tests {
         assert_eq!(
             note_level_seen.len(),
             7,
-            "全部 41 个 kind 里 `is_note_level()` 为真的必须**恰好七个**，实际: {note_level_seen:?}"
+            "全部 42 个 kind 里 `is_note_level()` 为真的必须**恰好七个**，实际: {note_level_seen:?}"
         );
         assert_eq!(
             note_level_seen,

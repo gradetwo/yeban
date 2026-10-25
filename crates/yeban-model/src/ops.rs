@@ -52,8 +52,8 @@ use crate::ids::{AssetHash, EntityId};
 use crate::music::{MidiNote, SlideConfig};
 use crate::project::{
     AssetMetadata, AutomationLane, AutomationPoint, AutomationTarget, ClipContent, ClipPlacement,
-    ClipPoolEntry, DeviceDefinition, MAX_BPM, MIN_BPM, RoutingEdge, SamplerBinding, SceneV3,
-    SectionV3, TrackV3, TransportConfig, YebanProjectV1,
+    ClipPoolEntry, DeviceDefinition, LoopConfig, MAX_BPM, MIN_BPM, RoutingEdge, SamplerBinding,
+    SceneV3, SectionV3, TrackV3, TransportConfig, YebanProjectV1,
 };
 
 /// 操作来源 [ARCH-OPS-001]。
@@ -579,6 +579,64 @@ pub enum Op {
         /// 修改后的静音状态。
         new_muted: bool,
     },
+    /// **整体替换**一条摆放的循环配置（[`ClipPlacement::loop_config`]）。
+    ///
+    /// ⚠ **本变体补上了什么**（任务单 `#336`，直接来自 `#335` 的实测报告）：
+    /// ⭐ **在它出现之前，[`ClipPlacement::loop_config`] 只在创建时能给** ——
+    /// [`Op::AddClipPlacement`] 的载荷带它，[`Op::SetClipPlacementDuration`] **只写长度**、
+    /// [`Op::SetClipPlacementMuted`] 明文**不碰它**（见该变体的文档：
+    /// "`loop_config` 是结构体（要另议）"）⇒ ⭐ **改一个已有摆放的循环**只能
+    /// "`RemoveClipPlacement` + 新的 `AddClipPlacement`"，⭐ 而那会**换掉摆放身份**
+    /// （`EntityId`）—— 与 `D27` 补 `AddClip`、[`Op::SetTrackName`] /
+    /// [`Op::SetClipName`] / [`Op::SetDeviceName`] / [`Op::SetDeviceBypassed`] /
+    /// [`Op::SetClipPlacementMuted`] / [`Op::SetClipPlacementDuration`] 同型的 `ARCH-OPS-001` 缺口。
+    /// 本票就是 [`Op::SetClipPlacementMuted`] 文档里那句"要另议"的**另议结果**。
+    ///
+    /// ⚠ **为何安全（完全可逆）**：[`LoopConfig`] 是三个标量的 `Copy` 结构体
+    /// （`enabled` / `start_tick` / `end_tick`），且派生了 `PartialEq + Eq`
+    /// ⇒ 载荷带上整份旧配置就能**逐字段**复原，⛔ 不读历史、⛔ 不经过任何规范化。
+    ///
+    /// ⚠ **前置条件**：① 音轨与摆放都必须存在（[`ModelError::TrackNotFound`] /
+    /// [`ModelError::ClipPlacementNotFound`]）；② 文档**当前**的 `loop_config` 必须
+    /// **逐字段等于** `old_loop_config`，否则 [`ModelError::OpStateMismatch`]
+    /// （⛔ **不信调用方声明的旧值** —— 旧值由工具面从当前文档读，见
+    /// `yeban-mcp` 的 `compile`）；③ `new_loop_config` 必须过
+    /// [`LoopConfig::validate`]（即 `enabled && end_tick <= start_tick` ⇒
+    /// [`ModelError::ZeroDuration`]）。
+    ///
+    /// ## 合法性裁决：**逐字镜像 `add`，不另立第二套"合法循环"**
+    ///
+    /// ⚠ 本变体**重复使用** [`Op::AddClipPlacement`] 所调用的**同一个**
+    /// [`LoopConfig::validate`]（经 [`ClipPlacement::validate`]），⭐ 因此
+    /// [`LoopConfig`] 的**接受集合逐字相同**：`add` 收的形态本变体一定收，
+    /// `add` 拒的形态本变体一定拒，⛔ 没有第二种"合法循环"的定义。
+    ///
+    /// ⚠ **不合法但可表达的形态一律不在这里拒绝、也⛔ 不在这里规范化**：
+    /// 按 `[ADR-0010 D2]`（`yeban-model` 的 `loop_plan.rs` 逐字实现）：
+    /// `enabled == false`、`end_tick >= duration_ticks`（含**恰好覆盖**）都仍是
+    /// **恰好一遍**；`end_tick <= start_tick` 在没有启用循环时同样只是一遍。
+    /// 本变体把这些**原样写进文档**，由唯一一份展开语义（[`ClipPlacement::loop_repeat`]）
+    /// 决定"播放几遍"。⚠ 若在这里另立一套"必须 `start < end < duration`"的校验，
+    /// 就会出现**两种写法各自定义什么是一个合法循环** —— 那个模式在本仓已经咬过人。
+    /// ⭐ 有一条判据把"退化配置经本变体与经 `add` 的渲染结果逐字节相同"钉住。
+    ///
+    /// ⚠ 本变体只写**这一个字段**：⛔ 不碰 `id` / `clip_id` / `start_tick` /
+    /// `duration_ticks` / `muted`。
+    /// ⚠ **寻址用 `track_id` + `placement_id` 双定位**（摆放住在音轨里）—— 但本条
+    /// **不必防下标移位**：[`TrackV3::clips`] 是 **`BTreeMap<EntityId, ClipPlacement>`**
+    /// （键 = 摆放身份，稳定），与 `devices`（`Vec`）那处不同。
+    /// ⚠ 命名用 `old_*` / `new_*`（**set** 类，照 [`Op::SetClipPlacementMuted`] /
+    /// [`Op::SetClipPlacementDuration`]），⛔ **不是** `previous_*`。
+    SetClipPlacementLoop {
+        /// 目标音轨（摆放的容器）。
+        track_id: EntityId,
+        /// 目标摆放身份（即 `clips` 的键）。
+        placement_id: EntityId,
+        /// 修改前的**整份**循环配置（必须等于文档现值）。
+        old_loop_config: LoopConfig,
+        /// 修改后的**整份**循环配置（整体替换，⛔ 不是逐字段合并）。
+        new_loop_config: LoopConfig,
+    },
     /// 平移摆放。
     MoveClipPlacement {
         /// 目标音轨。
@@ -1088,6 +1146,7 @@ impl Op {
             Self::RemoveClipPlacement { .. } => "RemoveClipPlacement",
             Self::MoveClipPlacement { .. } => "MoveClipPlacement",
             Self::SetClipPlacementMuted { .. } => "SetClipPlacementMuted",
+            Self::SetClipPlacementLoop { .. } => "SetClipPlacementLoop",
             Self::SetClipPlacementDuration { .. } => "SetClipPlacementDuration",
             Self::AddTrack { .. } => "AddTrack",
             Self::RemoveTrack { .. } => "RemoveTrack",
@@ -1362,6 +1421,29 @@ impl Op {
                 if current.muted != *old_muted {
                     return Err(ModelError::OpStateMismatch { op: self.name() });
                 }
+                Ok(())
+            }
+            Self::SetClipPlacementLoop {
+                track_id,
+                placement_id,
+                old_loop_config,
+                new_loop_config,
+            } => {
+                let track = doc.track(track_id)?;
+                let current = track
+                    .clips
+                    .get(placement_id)
+                    .ok_or(ModelError::ClipPlacementNotFound { id: *placement_id })?;
+                // ⚠ `LoopConfig` 派生 `PartialEq + Eq` ⇒ 逐字段值比较（陈旧载荷必被拒）。
+                // ⛔ 旧值**只**从文档读，调用方声明的 `old_loop_config` 只是"我以为现值是它"。
+                if current.loop_config != *old_loop_config {
+                    return Err(ModelError::OpStateMismatch { op: self.name() });
+                }
+                // ⚠ **镜像 `add` 的唯一一条校验**：`AddClipPlacement` 调
+                // [`ClipPlacement::validate`] ⇒ 其中对循环配置的那一半就是
+                // [`LoopConfig::validate`]。这里调用**同一个**函数、⛔ 不另立第二套
+                // "什么是一个合法循环"（退化形态由渲染层按单遍处理，见变体文档）。
+                new_loop_config.validate()?;
                 Ok(())
             }
             Self::MoveClipPlacement {
@@ -2103,6 +2185,18 @@ impl Op {
                 old_muted: *new_muted,
                 new_muted: *old_muted,
             },
+            Self::SetClipPlacementLoop {
+                track_id,
+                placement_id,
+                old_loop_config,
+                new_loop_config,
+            } => Self::SetClipPlacementLoop {
+                track_id: *track_id,
+                placement_id: *placement_id,
+                // `LoopConfig: Copy` ⇒ 交换两份整配置即完全可逆。
+                old_loop_config: *new_loop_config,
+                new_loop_config: *old_loop_config,
+            },
             Self::MoveClipPlacement {
                 track_id,
                 placement_id,
@@ -2608,6 +2702,19 @@ impl Op {
             } => {
                 if let Some(placement) = doc.track_mut(track_id)?.clips.get_mut(placement_id) {
                     placement.muted = *new_muted;
+                }
+                Ok(())
+            }
+            // 只写那**一个**结构体字段：⛔ 不碰 `id` / `clip_id` / `start_tick` /
+            // `duration_ticks` / `muted`。⭐ 整体替换，⛔ 不是逐字段合并。
+            Self::SetClipPlacementLoop {
+                track_id,
+                placement_id,
+                new_loop_config,
+                ..
+            } => {
+                if let Some(placement) = doc.track_mut(track_id)?.clips.get_mut(placement_id) {
+                    placement.loop_config = *new_loop_config;
                 }
                 Ok(())
             }
@@ -3438,6 +3545,19 @@ mod tests {
                 placement_id: f.placement,
                 old_muted: false,
                 new_muted: true,
+            },
+            // 摆放循环（`#336`）：**此前创建之后改不了**（`loop_config` 只在 `add` 载荷里）。
+            // ⚠ 同样必须在 `RemoveClipPlacement` **之前**（它要求摆放还在），且旧值必须
+            // 等于夹具现值（缺省关闭 0..0）。
+            Op::SetClipPlacementLoop {
+                track_id: f.lead,
+                placement_id: f.placement,
+                old_loop_config: LoopConfig::default(),
+                new_loop_config: LoopConfig {
+                    enabled: true,
+                    start_tick: 0,
+                    end_tick: 1920,
+                },
             },
             // 摆放长度：**此前创建之后改不了**（`MoveClipPlacement` 只写 `start_tick`）。
             // ⚠ 同样必须放在下面那条 `RemoveClipPlacement` **之前**（⭐ 它会把 `f.placement`
