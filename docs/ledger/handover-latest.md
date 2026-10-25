@@ -16,11 +16,20 @@
 | 工作树 | 3：主 ＋ `.worktrees/mcp-import`（**在飞**）＋ `.worktrees/website`（`d79a8b41`，与本任务无关） |
 | 待裁 | **0 项**（今天所有分岔我都自己裁了，见 §0.5.7，**可一句话推翻**） |
 
-### 0.5.2 ⚠ 在飞的一线（**磁盘上的状态才算数**）
+### 0.5.2 ⭐ 在飞的一线（**已提交，磁盘状态才算数**）
 
-`.worktrees/mcp-import`，分支 `line/mcp-import`，基 `cb8dcef9`，**未提交**：4 个 M ＋ 1 个 `??`。
-票 **`#344`**：把 MIDI 导入的**纯映射**从 `crates/yeban-app/src/import_midi.rs` **搬进 `crates/yeban-midi/src/import.rs`**（与既有的 `export.rs` 对称），app 侧 `pub use` 保持既有测试不变；`MidiImportLosses::aux_reasons` 必须仍是 `BTreeMap<String,String>` 的**纯数据**（下一单要在它上面加工具）。
-**接手动作**：`git -C .worktrees/mcp-import status` 看它做到哪；要么接着做完（行为不变是这一单的全部，⛔ 不许放松任何断言），要么 `git worktree remove` ＋ `git branch -D line/mcp-import` 重开。**⛔ 不要盲信这段文字胜过磁盘。**
+`.worktrees/mcp-import`，分支 `line/mcp-import`，基 `cb8dcef9`，**HEAD = `5957627e`**，`git status --porcelain` **空**。
+票 **`#344`**：把 MIDI 导入的**纯映射**从 `crates/yeban-app/src/import_midi.rs` **搬进 `crates/yeban-midi/src/import.rs`**（与既有 `export.rs` 对称）。**已完成的部分**：映射 ＋ 18 个单元测试已搬；app 保留 `import_midi_bytes`／`import_midi_file`／`MidiImportReport` ＋ 4 条 `UndoPort` 绑定的测试，并 `pub use` 重新导出，既有调用方与集成测试**断言不变**；新增 `test-fixtures` 特性（app 的 dev-dep 打开它）。读数：app 的 `import_midi` 模块 22→4，`yeban-midi::import` 18 passed，`midi_round_trip` 11 passed，`import_midi_losses_ui` 4 passed，`cargo test -p yeban-app` **937 passed / 0 failed**；`cargo tree -p yeban-app -e normal | grep -c yeban-mcp` = **0**。
+
+**⚠ 它的下一步（确切动作，按顺序）**：
+
+1. `bash scripts/dev/target-lock.sh -- cargo clippy -p yeban-midi -p yeban-app --lib --tests --locked -- -D warnings`（票里写的 `-p yeban-import` 已作废 —— 没有那个 crate）。
+2. `bash scripts/dev/target-lock.sh -- cargo test -p yeban-midi --locked`；`bash scripts/gates/run-gates.sh light`；`bash scripts/dev/line-gate.sh`。
+3. 票要求的 `import_target_is_empty` 注入证明**还没做**（什么都没注入，所以没有待还原的东西）。
+4. 票里 `grep -c yeban-import == 1` 那条判据**作废**。
+5. 全绿后：`git -C .worktrees/mcp-import rebase b1b29f72`（或当时的 trunk）⇒ `git merge --ff-only line/mcp-import` ⇒ 推 ⇒ 读回 CI ⇒ 入册 ⇒ `git worktree remove .worktrees/mcp-import` ＋ `git branch -D line/mcp-import`。
+
+**⛔ 不要盲信这段文字胜过磁盘**：`git -C .worktrees/mcp-import log --oneline -1` 与 `status --porcelain` 是权威。
 
 ### 0.5.3 ⏳ 未读回的判决（**未读回 ＝ 没有判决**）
 
