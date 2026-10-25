@@ -487,7 +487,7 @@
         "yeban_edit_automation": {
           "title": "yeban_edit_automation",
           "type": "object",
-          "description": "读某条自动化泳道的点与值 (走**唯一**求值入口 automation_value_at) 并写入一个点 (Op::SetAutomationPoint, 可逆)。lane 只接受与 project.json 逐字相同的变体名。",
+          "description": "读某条自动化泳道的点与值 (走**唯一**求值入口 automation_value_at) 并写入一个点 (Op::SetAutomationPoint, 可逆)。lane 只接受与 project.json 逐字相同的变体名。⭐ 给 point 时**本调用直接提交**到当前文档 (OpOrigin::McpEdit): 不创建提案、没有 proposalId、不需要 yeban_merge_proposal; 成功响应 data.applied 为 true。",
           "properties": {
             "trackId": {
               "type": "string",

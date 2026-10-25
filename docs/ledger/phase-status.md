@@ -19347,3 +19347,24 @@ X System.IO.IOException: A device which does not exist
 ⭐ ⚠ ⭐ ⭐ **五、⭐ 它自己列的"⭐ 仍然抓不到"（⭐ 我要求的就是这个 ⚠）**: ⭐ **运行期拼出来的 reason 仍然不可见** —— ⭐ 9 个已登记动态站点转发出去的值（⭐ `moveRequiresPlacementId`／⭐ `removeRequiresPlacementId`／⭐ `slotOutOfRange`／⭐ `paramIndexOutOfRange`／⭐ `paramNotSupported`／⭐ `*MustBeNonEmptyString`／⭐ `*MustBeString` ⚠）**有些 src 测试断言了、⭐ 但都不在本守卫的黄金词汇表里**；⭐ `error.as_str()` 的值集合**扫描器完全不知道**；⭐ 常量只按名字解析（⭐ 无模块路径 ⚠）；⭐ 局部解析只支持两种形状（⭐ `let mut`／⭐ `match`／⭐ 多语句初始化一律算动态、⭐ 不登记就红 ⚠）；⭐ **没有调用点传播** ✓ ⭐ 退掉每条例外的办法：⭐ 在站点把值**命名**成常量／枚举，⭐ 或实现调用点传播 ✓
 
 ⭐ ⚠ **本条状态词⛔ 未动** ✓ ⚠ **在飞**: ⭐ **无** ✓ ⚠ **仍待补**: ⭐ 真键输入（⭐ 侧链求值 ⚠）＋ ⭐ `setTimeSignature` 派发层 e2e ＋ ⭐ 拍号对母带的**执行的** A/B ＋ ⭐ 运行期 reason 的调用点传播 ＋ ⭐ 十四类导入 ＋ ⭐ 其余见 R1136 ✓
+
+---
+
+## R1142 实测追加（2026-10-26）：⭐ **两个编辑工具自述提交模型**（⭐ `#343` ⚠）＋ ⚠ ⭐ **我的快路门 cargo 那一半**整段空转**（⭐ 已修 ⚠）**
+
+⭐ **合并**: ⭐ `ba15967b` **rebase 到 `fca9d035`** ⇒ ⭐ `f56daa24`（⭐ **2 文件 ＋68／−1** ⚠）⇒ ⭐ 主干 ff ✓ ⭐ 我自己补的 `schemas/mcp-tools.schema.json:490` 同行描述（⭐ `#343` 边界外、⭐ 我作为集成者改 ⚠）⇒ ⭐ 契约校验 4 份 **rc=0** ✓
+
+⭐ ⚠ ⭐ ⭐ **一、⭐ 读数（⭐ 单位 ＝ 描述**值**的 UTF-8 字节，⭐ ⛔ 源码行字节 ⚠）**: ⭐ `yeban_edit_automation` **89 B／37 字符 → 294 B／172 字符**（⭐ ＋205 B ⚠），⭐ 新增那句点名 **`OpOrigin::McpEdit`／⭐ "⭐ 不创建提案"／⭐ "⭐ 没有 `proposalId`"／⭐ "⭐ 不需要 `yeban_merge_proposal`"／⭐ "⭐ `data.applied` ⭐为 true"**；⭐ 而 ⭐ `yeban_edit_notes` **3913 B/2521 字符 未改** —— ⭐ 它**本来就说**了"⭐ 永远写入隔离提案分支，⭐ 必须 `yeban_merge_proposal` 才落到 main（⭐ `data.pendingMerge` 恒为 true ⚠）" ⇒ ⭐ **再写一遍只会加长一个 3.9 KB 的字符串**（⭐ 我工单里写的"2 KB"是低估 ⚠）✓
+★ ⭐ 判据：⭐ `extension_tools.rs` 的 `both_edit_tools_state_their_commit_model_in_the_description`（⭐ 67 行 ⚠）⇒ ⭐ **删掉新句 ⇒ 红**（⭐ `必须写明 直接提交` ⚠）＊**改掉 `edit_notes` 的 merge 子句 ⇒ 红** ⇒ ⭐ 两次都还原到 `sha256 == HEAD` 且 mtime 变 ✓
+
+⭐ ⚠ ⭐ ⭐ **二、⭐⭐ 而 ⭐ 它查出一条"⭐⭐ 没人会注意到"⭐⭐ 的事实**（⭐ 逐字 ⚠）: ⭐ 改之前，⭐ **删掉 `edit_automation` 整段描述**只会让 `tools.rs:1829` 的 `!spec.summary.is_empty()` 变红 ⇒ ⭐ ⭐ **即：⭐ 这条描述此前**没有任何判据在看它**** ⚠ ⭐ 唯一的描述类钉子只有 `trap_175.rs:397-410` 钉 `edit_notes` 的一句话（⭐ 未动、⭐ 仍绿 ⚠）；⭐ `contract.rs` **零**描述断言；⭐ `validate_schemas.py` 不看描述；⭐ `samples::registry_sample()` 不带描述 ⇒ ⭐ ⭐ **"⭐ 没人会注意到"⭐本身就是一条要登记的事实** ✓
+★ ⭐ 而 ⭐ 更值得记：⭐ ⭐ **schema 里还有一份独立的描述**（⭐ `mcp-tools.schema.json:490`，⭐ 措辞本来就和 `tools.rs` 不同 ⚠）**也沉默** ⇒ ⭐ 那个工具从前有**两份都不说**的描述 ⇒ ⭐ 现已都补上 ✓
+
+⭐ ⚠ ⭐ ⭐ **三、⭐⭐⭐ 最重的一条：⭐ `line-gate.sh` 的 cargo 那一半**整段空转****（⭐ 由 `#343` 用探针抓出 ⚠）: ⭐ `target-lock.sh` 用 `"$@" &` 起子进程 ⇒ ⭐ ⭐ **非交互 shell 里后台任务默认拿到 `stdin=/dev/null`** ⚠ ⇒ ⭐ 而 ⭐ `line-gate.sh` 是 `bash -s <<'INSIDE'` 把锁内脚本**从 stdin 喂进去**的 ⇒ ⭐ **bash 读到空脚本、⭐ 立刻 exit 0** ⇒ ⭐ ⭐ **fmt／⭐ clippy／⭐ test／⭐ check 一行都没跑，⭐ 而它打印"⭐ 快速自检通过"** ⚠ ✓
+★ ⭐ 修法（⭐ `fca9d035` ⚠）：⭐ `"$@" <&0 &` ⇒ ⭐ 探针实测：⭐ **heredoc 穿过锁现在会打印它的正文（⭐ 修前不打印 ⚠）**、⭐ 文件式正文仍可用、⭐ argv 形式不受影响 ✓
+★★ ⭐ ⭐ **而 ⭐ 我为此又欠两笔过程错**：⭐ **①** 我先前"⭐ 验证被修好那一段"⭐用的副本**把锁段换成了 `true`** ⇒ ⭐ **恰好跳过了唯一坏掉的那条路** ⚠；⭐ **②** 我第一次尝试打这个补丁时，⭐ 命令链**卡在一个锁探针上** ⇒ ⭐ **补丁根本没执行，⭐ 而我一度以为执行了** ⚠ ⇒ ⭐ ⭐ **两条与代码 bug 同一个错法：⭐ 因为命令返回了，⭐ 就以为那一步完成了** ✓
+★ ⭐ `#343` 自己那一半 cargo 是**用逐条显式锁命令**覆盖的 ⇒ ⭐ **它的结论站得住**，⭐ 不依赖那个假绿 ✓
+
+⭐ ⚠ ⭐ ⭐ **四、⭐ 仍未证**: ⭐ **客户端是否真的读并照那句话行事** —— 这是真正的验收问题，⭐ 本机量不出来 ⚠ ＋ ⭐ 判据是**短语级**（⭐ 合法的改写会让它因错误的理由变红 ⚠）＋ ⭐ 无 CI 判决 ✓
+
+⭐ ⚠ **本条状态词⛔ 未动** ✓ ⚠ **在飞**: ⭐ `#342`（⭐ MIDI 元数据导入，⭐ 已放行 `crates/yeban-app/src/import_midi.rs` ＋ 两个测试 ⚠）✓ ⚠ **仍待补**: ⭐ ⭐ **`yeban_import_midi` 工具**（⭐ 今天 MCP ⛔ 没有任何 MIDI 导入通路 ⚠）＋ ⭐ 真键输入 ＋ ⭐ `setTimeSignature` 派发层 e2e ＋ ⭐ 其余见 R1136 ✓
