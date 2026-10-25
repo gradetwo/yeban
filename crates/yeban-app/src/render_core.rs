@@ -87,7 +87,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 
-use yeban_model::{AssetHash, EntityId, YebanProjectV1};
+use yeban_model::{AssetHash, EntityId, RoutingKind, YebanProjectV1};
 use yeban_render::automation::{
     TrackGainAutomation, TrackPanAutomation, compressing_nodes_with_lanes,
     device_param_automations, forced_insert_instances, macro_cascade_reaches, pan_automations,
@@ -431,6 +431,22 @@ pub fn render_project_f32_with_plans(
     render_project_f32_with_plans_under(project, options, sfz, assets, plans, None)
 }
 
+/// 路由图里**有音频入边**的非主轨节点（总线推子的落点集合）。
+///
+/// ⭐ 任务单 `#337`：只数**音频边**。`Sidechain` 是键输入、不搬音频 ⇒ 它不能让一个节点
+/// 变成"总线"（否则多一条侧链边就会改变推子相对插入链的位置，进而改变压缩器检波器
+/// 看到的电平）。这与 `yeban_render::RenderPlan` 的音频子图是**同一条**边界。
+fn audio_bus_nodes(project: &YebanProjectV1) -> BTreeSet<EntityId> {
+    project
+        .routing_graph
+        .edges
+        .values()
+        .filter(|edge| edge.kind != RoutingKind::Sidechain)
+        .map(|edge| edge.destination_node)
+        .filter(|node| *node != project.master_bus_track_id && project.tracks.contains_key(node))
+        .collect()
+}
+
 /// 与 [`render_project_f32_with_plans`] 相同，但**知道工程文件所在目录**
 /// （任务单 `#168`：相对 SFZ 路径的第一个候选根）。
 ///
@@ -463,15 +479,14 @@ pub fn render_project_f32_with_plans_under(
     // **源侧**搬到 `RenderPlan` 的**输出级**（插入链之后），这样推子乘的是
     // "自有音源 ＋ 入边求和"整条通道，而不是只乘自己的那一份。
     //
-    // 口径与计划的剪枝同解：任何一条入边的源只要能到达这个节点，就能经它到达
-    // master ⇒ 两端都会被保留。因此"图里有入边"＝"计划里 `incoming` 非空"。
-    let bus_nodes: BTreeSet<EntityId> = project
-        .routing_graph
-        .edges
-        .values()
-        .map(|edge| edge.destination_node)
-        .filter(|node| *node != project.master_bus_track_id && project.tracks.contains_key(node))
-        .collect();
+    // 口径与计划的剪枝同解：任何一条**音频**入边的源只要能到达这个节点，就能经它到达
+    // master ⇒ 两端都会被保留。因此"图里有音频入边"＝"计划里 `incoming` 非空"。
+    //
+    // ⭐ 任务单 `#337`：`Sidechain` 边**不搬音频** ⇒ 它**不能**让目的节点变成"总线"。
+    // 否则同一份工程只因为多了一条侧链边，推子就从源侧搬到输出级（推子在插入链之前
+    // vs 之后）⇒ 会改变压缩器检波器看到的电平 ⇒ "加侧链 vs 去掉侧链"的母带不再相同。
+    // 这与 `RenderPlan` 的音频子图是**同一条**边界（`edge.kind != Sidechain`）。
+    let bus_nodes = audio_bus_nodes(project);
     // ---- 0. 引擎装载（**慢路径校验先行**：引擎文档要求先做慢路径校验，再进入渲染循环）----
     //
     // 为什么提前：`arm_from_snapshot` 在**没有可武装的轨/音色/鼓**时返回 `NoMasterBus`；
@@ -727,10 +742,11 @@ pub fn render_project_f32_with_plans_under(
     // 本单在渲染器里定义了那个缺失的语义（源进输入端、与入边同权相加），因此这层
     // 绕法**不再需要**：aux 既注册源，也仍然接受入边。
     //
-    // ⚠ `Sidechain`：渲染器一直把它当**普通音频边**处理（`render.rs` 模块头已登记
-    // "侧链键控语义未实现"）。因此侧链的目标节点现在也能有自己的源 —— 两路会在输入端
-    // 相加，而不是像修前那样报"有入边, 不能注册样本源"。**键控**仍然未实现，
-    // 这条边界没有变化；没有把任何一路**丢掉**。
+    // ⚠ `Sidechain`（任务单 `#337`）：侧链边**不是音频边** —— 它是键输入的数据形态，
+    // 而本切片没有键输入消费面。`RenderPlan` 因此不把侧链边放进 `incoming`；侧链的目标
+    // 节点只按"自己有没有真正的音频入边"参与源/总线判定。**键控**仍未实现，侧链边
+    // 保留为"声明了、尚未求值"的数据（MCP 的 `yeban_render_master` 响应里如实报
+    // `sidechainEdgesDeclaredWithoutKeyInput`），⛔ 不再把源材料悄悄加进目的轨。
     let renderable: Vec<EntityId> = plan
         .nodes()
         .into_iter()
@@ -1386,6 +1402,82 @@ mod tests {
                 .map(|value| value.to_bits())
                 .collect::<Vec<_>>(),
             "⭐ 注入档必须 ＝ 单位增益输出 × 轨增益（逐位相同）"
+        );
+    }
+
+    /// ⭐ `#337`：`Sidechain` 边**不得**让目的节点成为"总线"（否则推子相对插入链的
+    /// 位置会因一条不搬音频的边而改变 ⇒ 压缩器检波器看到的电平变了）。
+    ///
+    /// 负对照：把同一条边改成 `TrackToBus` ⇒ 它**必须**成为总线。没有这半边，
+    /// 判据可能是"这个函数永远返回空集"的假绿。
+    #[test]
+    fn a_sidechain_edge_does_not_make_its_destination_a_bus() {
+        use yeban_model::{RoutingEdge, RoutingKind, TrackKind};
+
+        let mut project = yeban_model::samples::filled_project();
+        let master = project.master_bus_track_id;
+        let lead = *project
+            .tracks
+            .keys()
+            .find(|id| **id != master)
+            .expect("filled_project 必须有非主总线轨");
+        let bus = EntityId::new();
+        project.tracks.insert(
+            bus,
+            TrackV3 {
+                id: bus,
+                name: "SidechainTarget".to_owned(),
+                kind: TrackKind::AuxReturn,
+                ..TrackV3::default()
+            },
+        );
+        project.routing_graph.nodes.push(bus);
+        project.routing_graph.edges.clear();
+        let audio = EntityId::new();
+        project.routing_graph.edges.insert(
+            audio,
+            RoutingEdge {
+                id: audio,
+                source_node: lead,
+                destination_node: master,
+                kind: RoutingKind::TrackToBus,
+                gain_db: None,
+            },
+        );
+        let sidechain = EntityId::new();
+        project.routing_graph.edges.insert(
+            sidechain,
+            RoutingEdge {
+                id: sidechain,
+                source_node: lead,
+                destination_node: bus,
+                kind: RoutingKind::Sidechain,
+                gain_db: None,
+            },
+        );
+        project.validate().expect("夹具合法");
+
+        assert!(
+            !audio_bus_nodes(&project).contains(&bus),
+            "只有侧链入边的目的节点不是总线"
+        );
+
+        // 负对照：同一个目的节点的一条**普通音频边**必须让它成为总线。
+        let ordinary = EntityId::new();
+        project.routing_graph.edges.insert(
+            ordinary,
+            RoutingEdge {
+                id: ordinary,
+                source_node: lead,
+                destination_node: bus,
+                kind: RoutingKind::TrackToBus,
+                gain_db: None,
+            },
+        );
+        project.validate().expect("夹具合法");
+        assert!(
+            audio_bus_nodes(&project).contains(&bus),
+            "普通音频边必须让目的节点成为总线（负对照）"
         );
     }
 }

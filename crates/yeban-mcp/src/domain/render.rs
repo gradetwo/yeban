@@ -55,7 +55,7 @@
 //! | ~~`notePitchBend`~~ | ⭐ **已退役（`#311b`）**：弯音曲线由引擎**真的求值**（音符局部 64 样本网格重算 `phase_inc`），因此**不再**登记。判据见 `yeban-engine/tests/pitch_bend.rs` 与 `render_master.rs` 的 `the_master_bends...` |
 //! | `noteLyrics` | **母带不会唱**：没有歌声合成（SVS 不存在），`syllable` / `phonemes` 不出声。⚠ 歌词**不是**"没有载体"：`syllable`（非空）已能写成 SMF `FF 05` 歌词元事件（`#312`），导入侧也按"唯一才归属"读回（`#317`）；`phonemes` 仍无 SMF 载体（SMF 只有一种文本槽，写进去等于把 SVS 对齐数据伪装成歌词 ⇒ 导出侧另报键 `phonemes`）。触发条件不变：任一音符带 `syllable` 或非空 `phonemes` 就登记 |
 //! | `busTrackClips` | 非源节点（总线/主轨）上的片段没有渲染（只有源节点有音源） |
-//! | `sidechainRouting` | 侧链边按普通音频边处理（`yeban-render` 的既有边界）。⚠ `#315`：**这个键的判据是"图里有没有这种数据"**（一条两端都到不了 master 的悬挂边也照报），**说不出"发生了什么事"**。真的发生了什么事看两个读数：`data.sidechainEdgesSummedAsOrdinaryAudio`（**真的被当成普通音频边求和进母带了几条**）与 `data.sidechainEdgesInRoutingGraph`（声明了几条）。修前这两个数**都不存在** ⇒ "报不支持却悄悄 +6.0206 dB"在响应里连一个字都没有（`#314` 的缺陷） |
+//! | `sidechainRouting` | 侧链边是**键输入**的数据形态，本渲染器**没有键输入消费面**（压缩器的检波器只读它自己正在压缩的那一路，`Compressor::process_gain` 不接受第二个输入）。⚠ `#315`：**这个键的判据是"图里有没有这种数据"**（一条两端都到不了 master 的悬挂边也照报），**说不出"发生了什么事"**。`#337` 起侧链边**不再**被当成普通音频边求和（修前平行时会 +6.0206 dB），因此"实际发生了什么"要看三个读数：`data.sidechainEdgesSummedAsOrdinaryAudio`（**真的被当成普通音频边求和进母带了几条**，修后恒 `0`）、`data.sidechainEdgesInRoutingGraph`（声明了几条）、以及 `data.sidechainEdgesDeclaredWithoutKeyInput`（**声明了、但没有键输入路径**的条数）。`0 / 0 / 0` = 没有侧链；`0 / N / N` = N 条侧链声明了，但一条都没有被求值（本切片没有检波器可喂）。修前 `#315` 的两个数**都不存在** ⇒ "报不支持却悄悄 +6.0206 dB"在响应里连一个字都没有（`#314` 的缺陷） |
 //! | `sfzAmplitude` | ⭐ `#274`：命中区域的 **`amplitude_oncc*`（CC 调制那一半）** 没有求值 —— 静态 `amplitude` 已由引擎的 SFZ 支路应用；CC 增量需要 CC 状态，本层没有。**只**在真的声明了 CC 调制时出现（静态 `amplitude=50` ⇒ ⛔ 不报） |
 //! | `sfzTuneCcModulation` | ⭐ `#223`：命中区域的 **`tune` 的 CC 调制**（`tune*ccN`，`pitch*ccN` 亦归此族）没有求值 —— 基准 `tune` 已烘进 `pitch_ratio`，CC 增量需要 CC 状态，本层没有。只在真的声明时出现 |
 //! | `sfzVolumeCcModulation` | ⭐ `#223`：命中区域的 **`volume` 的 CC 调制**（`volume*ccN` / `gain_ccN`）没有求值 —— 基准 `volume` 已折进 `total_gain()`，CC 增量（dB）需要 CC 状态，本层没有。只在真的声明时出现 |
@@ -1907,24 +1907,36 @@ pub struct RenderArtifact {
     pub automation: AutomationReport,
     /// ⭐ `#315`：**真的被当成普通音频边求和进母带**的侧链边条数（读数，⛔ 不改音频）。
     ///
-    /// 口径逐字：⭐ **这条边走了普通音频求和路径**、⛔ **不是"+6 dB 了几路"**
-    /// （C case：只有一条侧链边时 `N = 1`，而其音频与同形 `TrackToBus` 基线
-    /// **逐字节相同** —— 一路求和本来就不加倍）。
+    /// ⭐ `#337`：这个读数现在**恒为 `0`** —— `yeban-render` 把 `Sidechain` 边从音频
+    /// 子图里拿掉了（可达性 / PDC / 分层 / `incoming` 全都不收它）。保留该字段是为了
+    /// 兼容既有消费者，并让"修前求和了几条"这个事实仍可被对照读出。
     ///
-    /// ⚠ 反例正是"从路由图数"：D case（悬挂侧链边，两端都到不了 master）图上 1 条
-    /// ⇒ 报 1 是假话（音频逐字节等于基线）⇒ 所以必须走 `RenderPlan::edge_ids()`：
-    /// `NodeState.incoming` 里的**每一条**都在 `render_node` 里被无条件累加，
-    /// 而 `edge_ids()` 列出的正是这一张表（剪枝过的边根本不在里面）。
+    /// ⚠ 它**单独读会误导**：`0` 既可能是"工程里没有侧链"，也可能是"有侧链、但一条都
+    /// 没有被求值"。所以必须与 [`Self::sidechain_edges_declared_without_key_input`]
+    /// （和 [`Self::sidechain_edges_in_routing_graph`]）一起读。
     ///
-    /// ⇒ 与 [`Self::sidechain_edges_in_routing_graph`] 对照读："声明了 N 条、求和了 M 条"。
-    /// 两者与 `unsupported` 里的 `sidechainRouting` **不是一件事**：那个键是"图里有没有"，
-    /// 这两个数是"实际发生了什么"（D case ⇒ `1 声明 / 0 求和` 且 `sidechainRouting` 仍报）。
+    /// 口径逐字：⭐ **这条边走了普通音频求和路径**、⛔ **不是"+6 dB 了几路"**。
+    /// 反例正是"从路由图数"：D case（悬挂侧链边，两端都到不了 master）图上 1 条
+    /// ⇒ 报 1 是假话 ⇒ 所以必须走 `RenderPlan::edge_ids()`：`NodeState.incoming` 里的
+    /// **每一条**都在 `render_node` 里被无条件累加，而 `edge_ids()` 列出的正是这一张表。
     pub sidechain_edges_summed_as_ordinary_audio: usize,
     /// ⭐ `#315`：路由图里**声明**了多少条侧链边（含被剪枝 / 悬挂、到不了 master 的）。
     ///
-    /// 只用来与 [`Self::sidechain_edges_summed_as_ordinary_audio`] 对照：
-    /// 声明了 N 条、真的求和了 M 条，差额就是"到不了母带所以一个字节都没参与"的那些。
+    /// 与另外两个读数对照读：声明了 N 条里，真的求和了 M 条（修后恒 0）、
+    /// 没有键输入路径的有 K 条。差额是"连图上的音频子图都没进"的悬挂边。
     pub sidechain_edges_in_routing_graph: usize,
+    /// ⭐ `#337`：**声明了、但没有键输入路径**的侧链边条数。
+    ///
+    /// 这是"侧链到底做没做事"的读数：本切片没有任何检波器/键输入消费面
+    /// （`yeban-dsp` 的压缩器只从**正在压缩的那一路**取检波输入，`process_gain(left,
+    /// right)` 没有第二个输入；`yeban-render` 也没有把任何信号送进第二个输入），
+    /// 因此**每一条**声明的侧链边都"没有键输入路径"。
+    ///
+    /// ⇒ 与 [`Self::sidechain_edges_summed_as_ordinary_audio`] 一起读：
+    /// `(0, 0)` = 工程里没有侧链；`(0, N)` = N 条侧链声明了、但一条都没有被求值
+    /// （"你的侧链现在什么都不做"）—— 这正是"问题看起来消失了"与"问题仍然存在"
+    /// 的分界。⛔ 不要把这个数读成"求和了"。
+    pub sidechain_edges_declared_without_key_input: usize,
     /// 明确没渲染的部分（键序字典序，来自 `BTreeSet`）。
     pub unsupported: BTreeSet<&'static str>,
     /// 每个"没渲染"部分的出现次数。
@@ -2180,6 +2192,12 @@ impl RenderArtifact {
             "sidechainEdgesInRoutingGraph".to_owned(),
             Value::from(self.sidechain_edges_in_routing_graph),
         );
+        // ⭐ `#337`：与"求和了几条"互补的第三个读数。修后求和恒 0，单看它会以为
+        // "问题消失了"；这个数说"声明了 N 条、**一条都没有键输入路径**"。
+        map.insert(
+            "sidechainEdgesDeclaredWithoutKeyInput".to_owned(),
+            Value::from(self.sidechain_edges_declared_without_key_input),
+        );
         map.insert(
             "projectDigest".to_owned(),
             Value::from(self.project_digest.clone()),
@@ -2260,7 +2278,8 @@ pub fn build(
     let nodes = probe.nodes;
     let source_nodes = probe.source_nodes;
     let rendered_edges = probe.rendered_edges;
-    // ⭐ `#315`：两个侧链读数（"声明了 N 条、求和了 M 条"）。**纯读**，⛔ 不碰一个样本。
+    // ⭐ `#315` / `#337`：三个侧链读数（"声明了 N 条、求和了 M 条、没有键输入路径 K 条"）。
+    // **纯读**，⛔ 不碰一个样本。
     //
     // ⚠ **求和条数必须从 `edge_ids()` 数，⛔ 不能从路由图数** —— 反例正是"从路由图数"：
     //    D case（悬挂侧链边，两端都到不了 master）图上 1 条 ⇒ 报 1 是假话
@@ -2271,12 +2290,22 @@ pub fn build(
     // `rendered_edges` 就是 `RenderPlan::edge_ids()`（见 `probe_subgraph`），
     // 而 `render_node` 对每一个 `incoming` 条目无条件累加 ⇒ 它就是"真的被加进某个
     // 节点输入缓冲的边"的全集；再按 `kind` 过滤即得侧链边条数。
+    //
+    // ⭐ `#337` 起 `yeban-render` 不再把 `Sidechain` 放进 `edge_ids()` ⇒
+    // `sidechain_edges_summed_as_ordinary_audio` **恒为 0**。它单独读会造成
+    // "问题消失了"的误判，因此必须同时报"N 条声明了、但没有键输入路径"。
     let sidechain_edges_in_routing_graph = project
         .routing_graph
         .edges
         .values()
         .filter(|edge| edge.kind == RoutingKind::Sidechain)
         .count();
+    // ⭐ `#337`：本渲染器**没有键输入消费面**（`yeban-dsp` 的压缩器检波器只读自己
+    // 正在压缩的那一路；`yeban-render` 没有把任何第二路信号送进检波器）。⇒ 每一条
+    // **声明**的侧链边都没有键输入路径。这个等式是当前事实，⛔ 不是省事的复制：
+    // 将来真有键输入时，这里必须改成"声明条数 − 真的接上键输入的条数"，并同步改
+    // `yeban-render` 的 `edge_ids()` 语义与本字段的文档。
+    let sidechain_edges_declared_without_key_input = sidechain_edges_in_routing_graph;
     let sidechain_edges_summed_as_ordinary_audio = rendered_edges
         .iter()
         .filter(|edge_id| {
@@ -2767,6 +2796,7 @@ pub fn build(
         automation,
         sidechain_edges_summed_as_ordinary_audio,
         sidechain_edges_in_routing_graph,
+        sidechain_edges_declared_without_key_input,
         unsupported,
         unsupported_counts: counts,
     })

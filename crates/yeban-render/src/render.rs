@@ -41,7 +41,11 @@
 //! - 所有节点缓冲声道数一致 (`RenderOptions::channels`); 单声道源需要自己复制到
 //!   各声道。真正的 per-node 声道布局不在本切片内。
 //! - 只渲染**能到达 Master** 的子图; 悬挂节点被剪掉 (这也会让"不需要的源"不必注册)。
-//! - 侧链 (`RoutingKind::Sidechain`) 只按普通音频边处理, 侧链键控语义未实现。
+//! - 侧链 (`RoutingKind::Sidechain`) **不是音频边**: 它是"键输入"的数据形态, 而本切片
+//!   还没有任何检波器/键输入消费面 ([`crate::inserts`] 的压缩器检波器只读**自己**的
+//!   输入)。因此侧链边**不进**可达性、PDC、分层或入边归约 —— 它对目的节点的可闻输出
+//!   贡献**恰好 0**（任务单 `#337`；修前它被当成普通音频边求和, 平行时 +6.0206 dB）。
+//!   侧链边在路由图里仍然**合法**, 保留为"声明了、但尚未求值"的键输入。
 //! - 渲染失败时并行收集的是"某一个"错误, 不承诺是哪一个 (成功路径的确定性不受影响)。
 //! - **插入链** (`crate::inserts`) 给**每个**节点挂 —— 包括**主总线**（任务单 `#173`
 //!   起; 此前主总线刻意是 `None`）, 且只支持立体声
@@ -61,7 +65,7 @@ use std::fmt::Debug;
 
 use rayon::prelude::*;
 use sha2::{Digest, Sha256};
-use yeban_model::{EntityId, RoutingEdge, RoutingGraph, TrackV3};
+use yeban_model::{EntityId, RoutingEdge, RoutingGraph, RoutingKind, TrackV3};
 
 use crate::automation::{
     AUTOMATION_BLOCK_SIZE, DeviceParamAutomation, SendGainAutomation, TrackGainAutomation,
@@ -762,8 +766,15 @@ impl RenderPlan {
         }
 
         // ---- 1. 只保留能到达 Master 的子图 (悬挂节点被剪掉) ----
+        //
+        // ⭐ 任务单 `#337`：可达性只沿**音频边**传播。侧链边不搬音频 ⇒ 一条只以侧链边
+        // 连到 master 路径上的源**不**因为那条边被保留（否则它会出现在 `nodes()` /
+        // `sourceNodes` 里，却没有任何可闻去向）。
         let mut predecessors: BTreeMap<EntityId, Vec<EntityId>> = BTreeMap::new();
         for edge in graph.edges.values() {
+            if edge.kind == RoutingKind::Sidechain {
+                continue;
+            }
             predecessors
                 .entry(edge.destination_node)
                 .or_default()
@@ -791,11 +802,17 @@ impl RenderPlan {
         {
             return Err(RenderError::UnsupportedInsertChannels(options.channels));
         }
+        // ⭐ 任务单 `#337`：**音频子图 = 非侧链边**。侧链边从这里开始就出局 ⇒ 它既不进
+        // PDC 延迟分配（侧链源的高延迟不许拖慢真正的音频支路）、也不进分层/入边归约。
+        // 这是"侧链贡献恰好 0"的唯一落点：`render_node` 对 `incoming` 的每一条无条件
+        // 累加，因此**不在 `incoming` 里**就是**不可闻**的硬保证。
         let edges: Vec<&RoutingEdge> = graph
             .edges
             .values()
             .filter(|edge| {
-                keep.contains(&edge.source_node) && keep.contains(&edge.destination_node)
+                edge.kind != RoutingKind::Sidechain
+                    && keep.contains(&edge.source_node)
+                    && keep.contains(&edge.destination_node)
             })
             .collect();
 
@@ -1047,7 +1064,10 @@ impl RenderPlan {
         true
     }
 
-    /// 保留子图里全部入边身份（按 `(层号, EntityId)` 与归约顺序）。
+    /// 保留子图里全部**音频入边**身份（按 `(层号, EntityId)` 与归约顺序）。
+    ///
+    /// ⭐ 任务单 `#337`：`Sidechain` 边**不在**这张表里 —— 它不搬音频，本切片也没有
+    /// 键输入消费面。读数层因此可以拿它数"真的进了求和的边"：侧链边的计数恒为 0。
     ///
     /// 读数层用它判定一条 `SendGain` 泳道的落点是否真的会进这次渲染 ——
     /// 与 [`Self::nodes`] 是同一份剪枝事实，⛔ 不复制图算法。
@@ -1723,6 +1743,105 @@ mod tests {
         assert_ne!(
             by_source, by_edge,
             "测试图必须让两种键给出不同顺序, 否则判据没有区分力"
+        );
+    }
+
+    /// ⭐ 任务单 `#337`：**侧链边不是音频边**。
+    ///
+    /// 构造同一张图两次：一次只有普通的 `lead → bus → master` 音频链，一次额外加两条
+    /// 侧链边 ——（a）`lead → bus` 的**平行**侧链（修前会让 bus 多收一份 `lead`）与
+    /// （b）`key → bus` 的侧链，且 `key` 自身带 **128 帧延迟**（修前它会进 PDC，把
+    /// `lead → bus` 那条真正的音频边补偿 128 帧）。
+    ///
+    /// 期望：两份计划的节点、边、归约顺序、PDC 与**执行输出**全部逐位相同，且
+    /// `key` 因为只有侧链边而被剪枝（`nodes()` 里没有它 ⇒ 也不需要为它注册源）。
+    /// 注入"把侧链边当音频边"（去掉 `RoutingKind::Sidechain` 过滤）⇒ 本判据变红：
+    /// `edge_ids()` 多出两条、`bus` 多一份贡献、`key` 需要源（`MissingSource`）。
+    #[test]
+    fn sidechain_edges_carry_no_audio_into_their_destination() {
+        let master = ulid(0xFFFF);
+        let lead = ulid(1);
+        let bus = ulid(2);
+        let key = ulid(3);
+
+        let audio = vec![edge(lead, bus, None), edge(bus, master, None)];
+        let without_sidechain = graph(&[master, lead, bus], audio.clone());
+
+        let mut parallel = edge(lead, bus, None);
+        parallel.kind = RoutingKind::Sidechain;
+        let mut from_key = edge(key, bus, None);
+        from_key.kind = RoutingKind::Sidechain;
+        let parallel_id = parallel.id;
+        let from_key_id = from_key.id;
+        let mut with_sidechain = audio.into_iter().collect::<Vec<_>>();
+        with_sidechain.push(parallel);
+        with_sidechain.push(from_key);
+        let with_sidechain = graph(&[master, lead, bus, key], with_sidechain);
+
+        let mut latencies = BTreeMap::new();
+        latencies.insert(key, 128u32);
+        let options = RenderOptions::l1(256, 1, 48_000, 0).with_threads(1);
+        let plain =
+            RenderPlan::compile_with_latencies(&without_sidechain, master, options, &latencies)
+                .expect("普通音频图必须编译");
+        let sidechained =
+            RenderPlan::compile_with_latencies(&with_sidechain, master, options, &latencies)
+                .expect("带侧链边的图必须编译");
+
+        // 侧链边一个字节都不改可达性/分层/归约/边表。
+        assert_eq!(plain.nodes(), sidechained.nodes(), "侧链边不得改变保留节点");
+        assert_eq!(
+            plain.nodes(),
+            vec![lead, bus, master],
+            "只有侧链边的 `key` 必须被剪枝"
+        );
+        assert_eq!(
+            plain.edge_ids(),
+            sidechained.edge_ids(),
+            "侧链边不得进入入边表"
+        );
+        assert!(
+            !sidechained.edge_ids().contains(&parallel_id)
+                && !sidechained.edge_ids().contains(&from_key_id),
+            "两条侧链边都不许出现在 `edge_ids()`（它是 `incoming` 的全集）"
+        );
+        assert_eq!(
+            sidechained
+                .bus_reduction_order(bus)
+                .expect("bus 有入边")
+                .len(),
+            1,
+            "bus 只有 `lead` 一条真正的音频入边"
+        );
+        assert_eq!(plain.longest_path_frames(), 0, "普通音频链没有延迟");
+        assert_eq!(
+            sidechained.longest_path_frames(),
+            0,
+            "`key` 的 128 帧延迟在侧链上 ⇒ 不得进 PDC 关键路径"
+        );
+
+        // 执行级判据：输出逐位相同，且第一帧就是 `lead` 的 0.5（没有被侧链源的延迟拖后）。
+        let sources = || {
+            let mut map: BTreeMap<EntityId, Box<dyn AudioSource>> = BTreeMap::new();
+            map.insert(lead, Box::new(ConstantSource(0.5)));
+            map
+        };
+        let mut plain = plain;
+        let mut sidechained = sidechained;
+        let plain_output = plain.execute(sources()).expect("普通图执行");
+        let sidechained_output = sidechained.execute(sources()).expect("带侧链图执行");
+        assert_eq!(
+            plain_output.samples, sidechained_output.samples,
+            "侧链边的存在不得改变母带样本"
+        );
+        assert_eq!(
+            plain_output.digest, sidechained_output.digest,
+            "侧链边的存在不得改变母带摘要"
+        );
+        assert_eq!(
+            sidechained_output.samples[0].to_bits(),
+            0.5f32.to_bits(),
+            "第一帧必须仍是 `lead` 的样本（侧链源的 128 帧延迟不许漏进音频路径）"
         );
     }
 

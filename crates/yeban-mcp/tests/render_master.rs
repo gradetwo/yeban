@@ -29,7 +29,7 @@
 //! | 13a | 音频导出的 `bext` **不含作者字段**（`bwf` **实测键名**里无 `author`/`artist`/`credit`/`copyright`），且 `originatorReference` == 工程 ULID | 往 `bwf` 加一个作者键 |
 //! | 13b | 工程作者（`setAuthor` 真的写进去的唯一标记）**不出现在音频产物字节里** | 把 `project.author` 写进 `bext` / `codingHistory` / 任何 chunk |
 //! | 13c | 同一标记**不出现在 MIDI 导出字节里**（解回真字节后 `windows(n)` 找） | 把 `project.author` 写进任何 SMF 元事件（轨道名/文本/版权） |
-//! | 14 | ⭐ `#315` 侧链边的**两个读数**：`sidechainEdgesSummedAsOrdinaryAudio`（**真的被当成普通音频边求和了几条**，取自 `RenderPlan::edge_ids()`）vs `sidechainEdgesInRoutingGraph`（路由图里声明了几条）。B 平行侧链 ⇒ `1/1` 且 +6.0206 dB；B2 两条 ⇒ `2/2`；**D 悬挂边 ⇒ `0/1` 且 `unsupported` 仍报 `sidechainRouting`**；**C 只有侧链 ⇒ `1/1` 但字节等于 `TrackToBus` 基线**（字段说的是"走了求和路径"、⛔ 不是"+6 dB 了几路"） | 从路由图数求和条数（D 会读成 1）/ 把 C 的 `1` 读成"加倍了" / 把 `unsupported` 的发射条件改成"求和过才报" / 加字段时顺手改了音频 |
+//! | 14 | ⭐ `#315`/`#337` 侧链边的**三个读数**：`sidechainEdgesSummedAsOrdinaryAudio`（真的被当普通音频边求和了几条，取自 `RenderPlan::edge_ids()`；`#337` 起恒 `0`）/ `sidechainEdgesInRoutingGraph`（路由图里声明了几条）/ `sidechainEdgesDeclaredWithoutKeyInput`（声明了但**没有键输入路径**的条数）。A `(0,0,0)`；B 平行侧链 `(0,1,1)` 且母带与 A 逐字节相同；B2 `(0,2,2)`；D 悬挂边 `(0,1,1)` 且 `unsupported` 仍报 `sidechainRouting` | 把侧链边当音频边求和（B 与 A 的字节不再相等，且求和读数变 1）/ 从路由图数求和条数 / 把"没有键输入路径"读数恒写成 0 / 让 `bus_nodes` 把侧链边当成音频入边（推子位置改变 ⇒ 加侧链与去侧链母带不同） |
 //!
 //! ## 临时目录纪律
 //!
@@ -6795,8 +6795,9 @@ fn with_sidechain_edge(
     project
 }
 
-/// 从一份 `data` 里读出两个侧链读数 `(求和条数, 声明条数)`。
-fn sidechain_readings(result: &Value) -> (u64, u64) {
+/// 从一份 `data` 里读出三个侧链读数
+/// `(求和条数, 声明条数, 声明了但没有键输入路径的条数)`。
+fn sidechain_readings(result: &Value) -> (u64, u64, u64) {
     let data = &result["data"];
     let read = |field: &str| -> u64 {
         data[field].as_u64().unwrap_or_else(|| {
@@ -6806,53 +6807,138 @@ fn sidechain_readings(result: &Value) -> (u64, u64) {
     (
         read("sidechainEdgesSummedAsOrdinaryAudio"),
         read("sidechainEdgesInRoutingGraph"),
+        read("sidechainEdgesDeclaredWithoutKeyInput"),
     )
 }
 
-/// ⭐ `#315` 判据 1：**求和条数**必须数"真的进了入边归约的边"，不是"图上声明了几条"。
+/// 把默认夹具改成 `lead → bus → master`：目的节点是**总线**（缺陷原文
+/// "kick 送进 bass bus 的侧链"的形状）。
+fn project_with_bus_route() -> YebanProjectV1 {
+    let master = id(1);
+    let lead = id(2);
+    let bus = id(3);
+    let mut project = project(&Spec::default());
+    project.tracks.insert(
+        bus,
+        TrackV3 {
+            id: bus,
+            name: "BassBus".to_owned(),
+            kind: TrackKind::AuxReturn,
+            ..TrackV3::default()
+        },
+    );
+    project.routing_graph.nodes = vec![lead, bus, master];
+    project.routing_graph.edges.clear();
+    project.routing_graph.edges.insert(
+        id(41),
+        RoutingEdge {
+            id: id(41),
+            source_node: lead,
+            destination_node: bus,
+            kind: RoutingKind::TrackToBus,
+            gain_db: None,
+        },
+    );
+    project.routing_graph.edges.insert(
+        id(42),
+        RoutingEdge {
+            id: id(42),
+            source_node: bus,
+            destination_node: master,
+            kind: RoutingKind::BusToMaster,
+            gain_db: None,
+        },
+    );
+    project
+        .validate()
+        .expect("`lead → bus → master` 夹具必须合法");
+    project
+}
+
+/// 加一条**普通音频边**（`TrackToBus`）到同一个目的节点。
+fn with_track_to_bus_edge(
+    mut project: YebanProjectV1,
+    seed: u32,
+    source: EntityId,
+    destination: EntityId,
+) -> YebanProjectV1 {
+    project.routing_graph.edges.insert(
+        id(seed),
+        RoutingEdge {
+            id: id(seed),
+            source_node: source,
+            destination_node: destination,
+            kind: RoutingKind::TrackToBus,
+            gain_db: None,
+        },
+    );
+    project.validate().expect("加普通音频边后工程必须合法");
+    project
+}
+
+/// 渲染一次并返回 `(响应, 产物字节)`。产物在返回前读走，临时目录随后删除。
+fn render_bytes(project: &YebanProjectV1, tag: &str) -> (Value, Vec<u8>) {
+    let scratch = Scratch::new(&format!("known-{tag}"));
+    let (mut dispatcher, auth) = dispatcher_with(project, &scratch.join("p.yeban"));
+    let out = scratch.join("out.wav");
+    let result = call(
+        &mut dispatcher,
+        &auth,
+        json!({"format": "wav", "sampleRate": 48000, "path": out.display().to_string()}),
+    );
+    assert_eq!(
+        result["status"], "success",
+        "`{tag}` 必须渲染成功: {result}"
+    );
+    let bytes = fs::read(&out).expect("读回渲染产物");
+    (result, bytes)
+}
+
+/// 读 `peak.before`（归一化前浮点母带峰值，线性满量程）。
+fn peak_before(result: &Value) -> f32 {
+    result["data"]["peak"]["before"]
+        .as_f64()
+        .map(|value| value as f32)
+        .unwrap_or_else(|| panic!("peak.before 必须是数: {result}"))
+}
+
+/// 读 `peak.before` 并保留 `f32` 位型（逐位相等判据用）。
+fn peak_before_bits(result: &Value) -> u64 {
+    u64::from(peak_before(result).to_bits())
+}
+
+/// ⭐ `#315`/`#337` 判据 3：**读数必须把三种状态分开**。
 ///
-/// 五个 case（与 `#314` 的 A/B/B2/C/D 同形）：
-///
-/// | case | 路由图 | 求和 / 声明 | 音频 |
+/// | case | 路由图 | `(求和, 声明, 无键输入)` | 母带（修后） |
 /// | :--- | :--- | :--- | :--- |
-/// | A 基线 | `TrackToBus L→M` | `0 / 0` | 锚 |
-/// | B 平行侧链 | ＋`Sidechain L→M` | `1 / 1` | **+6.0206 dB** |
-/// | B2 两条平行侧链 | ＋`Sidechain ×2 L→M` | `2 / 2` | **+9.5424 dB** |
-/// | C 只有侧链 | `Sidechain L→M` | `1 / 1` | **等于 A（逐字节）** |
-/// | D 悬挂侧链 | ＋`Sidechain G1→G2`（两端都到不了 master） | `0 / 1` | **等于 A（逐字节）** |
+/// | A 基线 | `TrackToBus L→M` | `(0,0,0)` | 锚 |
+/// | B 平行侧链 | ＋`Sidechain L→M` | `(0,1,1)` | **等于 A（逐字节）** |
+/// | B2 两条平行侧链 | ＋`Sidechain ×2 L→M` | `(0,2,2)` | **等于 A（逐字节）** |
+/// | D 悬挂侧链 | ＋`Sidechain G1→G2`（两端都到不了 master） | `(0,1,1)` | **等于 A（逐字节）** |
 ///
-/// ⚠ 反例正是"从路由图数"：D 图上 1 条 ⇒ 报 1 是假话（音频逐字节等于基线）
-/// ⇒ 所以必须走 `RenderPlan::edge_ids()`。一个**看起来更简单**的算法会在这一条上
-/// **重复它正在修的错**。
-///
-/// ⚠ 语义边界（C case）：`M = 1` 说的是"这条边走了普通音频求和路径"、
-/// ⛔ **不是**"+6 dB 了几路"—— 一路求和本来就不加倍，C 的字节与 A 逐字节相同。
+/// ⚠ 修前 B/B2 是 `(1,1)` / `(2,2)` 且母带 **+6.0206 / +9.5424 dB**；这正是本单改掉
+/// 的声音。`(0,1,1)` 与 `(0,0,0)` 的对照让"没有侧链"与"有侧链但一条都没求值"
+/// 不可能被读成同一件事 —— 单看求和的 `0` 会以为缺陷凭空消失了。
 #[test]
 fn sidechain_readings_separate_declared_edges_from_summed_edges() {
     let master = id(1);
     let lead = id(2);
 
     // A 基线。
-    let baseline = render_or_ok(&project(&Spec::default()), "315-baseline");
+    let baseline = render_or_ok(&project(&Spec::default()), "337-baseline");
 
     // B 侧链平行边（与既有触发器 ⑨ 同形）。
     let parallel = with_sidechain_edge(project(&Spec::default()), 42, lead, master);
-    let b = render_or_ok(&parallel, "315-parallel");
+    let b = render_or_ok(&parallel, "337-parallel");
 
-    // B2 两条侧链平行边（三路求和）。
+    // B2 两条侧链平行边。
     let two = with_sidechain_edge(
         with_sidechain_edge(project(&Spec::default()), 42, lead, master),
         43,
         lead,
         master,
     );
-    let b2 = render_or_ok(&two, "315-two");
-
-    // C 只有侧链边（拿掉 TrackToBus）。
-    let mut only = project(&Spec::default());
-    only.routing_graph.edges.remove(&id(40));
-    let only = with_sidechain_edge(only, 42, lead, master);
-    let c = render_or_ok(&only, "315-only");
+    let b2 = render_or_ok(&two, "337-two");
 
     // D 悬挂侧链边：两端都是图里的节点，但都到不了 master。
     let mut dangling = project(&Spec::default());
@@ -6872,17 +6958,17 @@ fn sidechain_readings_separate_declared_edges_from_summed_edges() {
         dangling.routing_graph.nodes.push(id(seed));
     }
     let dangling = with_sidechain_edge(dangling, 44, id(4), id(5));
-    let d = render_or_ok(&dangling, "315-dangling");
+    let d = render_or_ok(&dangling, "337-dangling");
 
-    assert_eq!(sidechain_readings(&baseline), (0, 0), "A: {baseline}");
-    assert_eq!(sidechain_readings(&b), (1, 1), "B: {b}");
-    assert_eq!(sidechain_readings(&b2), (2, 2), "B2: {b2}");
-    assert_eq!(sidechain_readings(&c), (1, 1), "C: {c}");
-    // ⭐ D：声明了 1 条、**求和了 0 条**（悬挂边在剪枝阶段就没了）。
-    assert_eq!(sidechain_readings(&d), (0, 1), "D: {d}");
+    assert_eq!(sidechain_readings(&baseline), (0, 0, 0), "A: {baseline}");
+    assert_eq!(sidechain_readings(&b), (0, 1, 1), "B: {b}");
+    assert_eq!(sidechain_readings(&b2), (0, 2, 2), "B2: {b2}");
+    // ⭐ D：声明了 1 条、**求和了 0 条**（悬挂边在剪枝阶段就没了），但它仍然
+    // "没有键输入路径" ⇒ 第三个读数是 1。
+    assert_eq!(sidechain_readings(&d), (0, 1, 1), "D: {d}");
 
     // ⭐ `unsupported` 的**发射条件一个字节都没动**：D（0 条参与）仍然报。
-    for (tag, result) in [("B", &b), ("B2", &b2), ("C", &c), ("D", &d)] {
+    for (tag, result) in [("B", &b), ("B2", &b2), ("D", &d)] {
         let keys = result["data"]["unsupported"]
             .as_array()
             .unwrap_or_else(|| panic!("{tag}: unsupported 必须是数组: {result}"));
@@ -6901,74 +6987,201 @@ fn sidechain_readings_separate_declared_edges_from_summed_edges() {
         "A 没有侧链边 ⇒ 不许报: {baseline}"
     );
 
-    // ⭐ 峰值：求和路数真的等于 dB —— `2.000000000` ⇒ +6.0206 dB、`3` ⇒ +9.5424 dB。
-    let peak = |result: &Value| -> f64 {
-        result["data"]["peak"]["before"]
-            .as_f64()
-            .unwrap_or_else(|| panic!("peak.before 必须是数: {result}"))
-    };
-    let baseline_peak = peak(&baseline);
-    let b_ratio = peak(&b) / baseline_peak;
-    let b2_ratio = peak(&b2) / baseline_peak;
-    let b_db = 20.0 * b_ratio.log10();
-    let b2_db = 20.0 * b2_ratio.log10();
-    println!(
-        "### #315 读数: A={:?} B={:?} B2={:?} C={:?} D={:?}; \
-         peak_before A={baseline_peak:.9} B={:.9} B2={:.9}; \
-         ratio B={b_ratio:.9} ({b_db:+.6} dB) B2={b2_ratio:.9} ({b2_db:+.6} dB)",
-        sidechain_readings(&baseline),
-        sidechain_readings(&b),
-        sidechain_readings(&b2),
-        sidechain_readings(&c),
-        sidechain_readings(&d),
-        peak(&b),
-        peak(&b2),
-    );
-    assert!(
-        (b_ratio - 2.0).abs() < 1e-6,
-        "B 是两路求和 ⇒ 峰值比必须 ≈ 2（+6.0206 dB），实测 {b_ratio:.9}"
-    );
-    assert!(
-        (b2_ratio - 3.0).abs() < 1e-6,
-        "B2 是三路求和 ⇒ 峰值比必须 ≈ 3（+9.5424 dB），实测 {b2_ratio:.9}"
-    );
-
-    // ⭐ **语义边界**：C 的 `1` 不是"加倍" —— 只有一条边时它走的就是普通求和路径，
-    // 字节与同形 `TrackToBus` 基线**逐字节相同**（sha256 是硬判据）。
+    // ⭐ 母带：侧链边一条都不许进音频 ⇒ B/B2/D 与 A 的整份文件字节、母带摘要、
+    // 归一化前峰值全部相同（修前 B/B2 分别是 ×2 / ×3）。
     let sha = |result: &Value| -> String {
         result["data"]["sha256"]
             .as_str()
             .unwrap_or_else(|| panic!("sha256 必须是字符串: {result}"))
             .to_owned()
     };
+    let digest = |result: &Value| -> String {
+        result["data"]["masterDigest"]
+            .as_str()
+            .unwrap_or_else(|| panic!("masterDigest 必须是字符串: {result}"))
+            .to_owned()
+    };
+    let baseline_peak = peak_before_bits(&baseline);
     println!(
-        "### #315 sha256: A={} C={} D={}",
+        "### #337 读数: A={:?} B={:?} B2={:?} D={:?}; \
+         sha256 A={} B={} B2={} D={}; peak_before_bits A={:#010x} B={:#010x} \
+         B2={:#010x} D={:#010x}",
+        sidechain_readings(&baseline),
+        sidechain_readings(&b),
+        sidechain_readings(&b2),
+        sidechain_readings(&d),
         sha(&baseline),
-        sha(&c),
-        sha(&d)
-    );
-    assert_eq!(
-        sha(&c),
-        sha(&baseline),
-        "C 只有一条侧链边 ⇒ 与 A 逐字节相同"
-    );
-    assert_eq!(
-        sha(&d),
-        sha(&baseline),
-        "D 悬挂边到不了 master ⇒ 与 A 逐字节相同"
-    );
-    assert_ne!(
         sha(&b),
-        sha(&baseline),
-        "B 必须真的改了字节（否则这条判据是空转）"
+        sha(&b2),
+        sha(&d),
+        baseline_peak,
+        peak_before_bits(&b),
+        peak_before_bits(&b2),
+        peak_before_bits(&d),
+    );
+    for (tag, result) in [("B", &b), ("B2", &b2), ("D", &d)] {
+        assert_eq!(sha(result), sha(&baseline), "{tag}: 侧链边不得改变文件字节");
+        assert_eq!(
+            digest(result),
+            digest(&baseline),
+            "{tag}: 侧链边不得改变母带样本摘要"
+        );
+        assert_eq!(
+            peak_before_bits(result),
+            baseline_peak,
+            "{tag}: 侧链边不得改变归一化前峰值"
+        );
+    }
+}
+
+/// ⭐ `#337` 判据 1（承重）：**给同一工程加一条 `Sidechain` 边，母带逐字节不变**。
+///
+/// 两个形状：
+/// * 目的节点 = master（修前 B case：+6.0206 dB）；
+/// * 目的节点 = **非 master 总线**（缺陷原文 "kick 送进 bass bus 的侧链" 的形状；
+///   修前该总线会多收一份 `lead`，+6.0206 dB 并一路传到 master）。
+///
+/// **"effectively the same" 的口径与容差**（单位先命名）：
+/// * `sha256`：整个 WAV 文件字节的 SHA-256（64 位十六进制）；
+/// * `masterDigest`：抖动/量化**之前**的浮点母带样本的位级 SHA-256；
+/// * `peak.before`：归一化前样本峰值 `max |sample|`（线性满量程，1.0 = 0 dBFS）。
+///
+/// 容差 = **0**：断言两份产物 `Vec<u8>` 完全相等、`masterDigest` 字符串相等、
+/// `peak.before` 的 `f32` 位型相等。为什么这个容差藏不住真实贡献：
+/// 修前的缺陷是 **+6.0206 dB = 幅度 ×2**，比 24-bit 量化的一个 LSB 大约 2^6 倍；
+/// 而且 `masterDigest` 覆盖**每一个 f32 位型**，任何非零贡献都会改变它 ——
+/// 这里根本没有"数值容差"可以藏东西，只有按位的相等/不等。
+#[test]
+fn a_sidechain_edge_adds_nothing_to_the_master() {
+    let master = id(1);
+    let lead = id(2);
+
+    // (a) 目的节点 = master。
+    let plain = project(&Spec::default());
+    let sidechained = with_sidechain_edge(plain.clone(), 42, lead, master);
+    let (plain_result, plain_bytes) = render_bytes(&plain, "337-inaudible-plain");
+    let (sc_result, sc_bytes) = render_bytes(&sidechained, "337-inaudible-sc");
+    assert_eq!(
+        plain_bytes, sc_bytes,
+        "侧链边不得改变母带文件的一个字节（修前这里是 +6.0206 dB）"
+    );
+    assert_eq!(
+        plain_result["data"]["masterDigest"], sc_result["data"]["masterDigest"],
+        "侧链边不得改变母带样本摘要"
+    );
+    assert_eq!(
+        peak_before_bits(&plain_result),
+        peak_before_bits(&sc_result),
+        "侧链边不得改变归一化前峰值"
+    );
+    assert_eq!(sidechain_readings(&plain_result), (0, 0, 0));
+    assert_eq!(sidechain_readings(&sc_result), (0, 1, 1));
+
+    // (b) 目的节点 = 非 master 总线。
+    let bus = id(3);
+    let bus_plain = project_with_bus_route();
+    let bus_sidechained = with_sidechain_edge(bus_plain.clone(), 43, lead, bus);
+    let (bus_plain_result, bus_plain_bytes) = render_bytes(&bus_plain, "337-bus-plain");
+    let (bus_sc_result, bus_sc_bytes) = render_bytes(&bus_sidechained, "337-bus-sc");
+    assert_eq!(
+        bus_plain_bytes, bus_sc_bytes,
+        "总线目的节点：侧链边不得改变母带文件的一个字节"
+    );
+    assert_eq!(
+        bus_plain_result["data"]["masterDigest"], bus_sc_result["data"]["masterDigest"],
+        "总线目的节点：侧链边不得改变母带样本摘要"
+    );
+    assert_eq!(
+        peak_before_bits(&bus_plain_result),
+        peak_before_bits(&bus_sc_result),
+        "总线目的节点：侧链边不得改变归一化前峰值"
+    );
+    assert_eq!(sidechain_readings(&bus_plain_result), (0, 0, 0));
+    assert_eq!(sidechain_readings(&bus_sc_result), (0, 1, 1));
+    println!(
+        "### #337 承重: direct sha={} bus sha={} direct peak={:#010x} bus peak={:#010x}",
+        plain_result["data"]["sha256"].as_str().unwrap_or("?"),
+        bus_plain_result["data"]["sha256"].as_str().unwrap_or("?"),
+        peak_before_bits(&plain_result),
+        peak_before_bits(&bus_plain_result),
     );
 }
 
-/// ⭐ `#315` 判据 2：两个读数必须**声明在 `outputSchema` 里**（否则 agent 读不到它们）。
+/// ⭐ `#337` 判据 2（负对照）：给**同一个目的节点**加一条普通音频边
+/// （`TrackToBus`）**必须**改变母带。没有这一条，判据 1 可能是"路由整体不搬音频"的假绿。
+///
+/// 测量：`peak.before` 是归一化前峰值（线性满量程）；比值 ×2 ⇒ `20·log10(2)` =
+/// **+6.0206 dB**。修前侧链边给出的正是同一个数（`#314` 的读数）。
+#[test]
+fn an_ordinary_edge_to_the_same_destination_changes_the_master() {
+    let master = id(1);
+    let lead = id(2);
+    let plain = project(&Spec::default());
+    let doubled = with_track_to_bus_edge(plain.clone(), 43, lead, master);
+
+    let (plain_result, plain_bytes) = render_bytes(&plain, "337-control-plain");
+    let (doubled_result, doubled_bytes) = render_bytes(&doubled, "337-control-doubled");
+    assert_ne!(
+        plain_bytes, doubled_bytes,
+        "普通音频边必须真的改变母带（否则本文件的侧链判据是空转）"
+    );
+    assert_ne!(
+        plain_result["data"]["masterDigest"], doubled_result["data"]["masterDigest"],
+        "普通音频边必须改变母带样本摘要"
+    );
+    let plain_peak = f64::from(peak_before(&plain_result));
+    let doubled_peak = f64::from(peak_before(&doubled_result));
+    let ratio = doubled_peak / plain_peak;
+    let db = 20.0 * ratio.log10();
+    println!(
+        "### #337 负对照: peak_before plain={plain_peak:.9} doubled={doubled_peak:.9} \
+         ratio={ratio:.9} ({db:+.6} dB)"
+    );
+    assert!(
+        (ratio - 2.0).abs() < 1e-6,
+        "平行的普通边 = 两路求和 ⇒ 峰值比必须 ≈ 2（+6.0206 dB），实测 {ratio:.9}"
+    );
+}
+
+/// ⭐ `#337` 判据 1 的结构面：**只有侧链边**的工程不再因为那条边而有可闻输出。
+///
+/// "只有侧链"与"把侧链边拿掉"必须给出**同一种**结局：`RENDER_FAILED`（0 帧）。
+/// 修前前者会渲染出一份母带（侧链被当成唯一音频边），后者才是 0 帧失败 ——
+/// 这个差异本身就是"侧链建立了可闻通路"的证据。
+#[test]
+fn a_sidechain_only_project_has_no_audible_route() {
+    let master = id(1);
+    let lead = id(2);
+    let mut only = project(&Spec::default());
+    only.routing_graph.edges.remove(&id(40));
+    let without_sidechain = only.clone();
+    let with_sidechain = with_sidechain_edge(only, 42, lead, master);
+
+    for (tag, project) in [
+        ("without", &without_sidechain),
+        ("sidechain", &with_sidechain),
+    ] {
+        let scratch = Scratch::new(&format!("337-only-{tag}"));
+        let (mut dispatcher, auth) = dispatcher_with(project, &scratch.join("p.yeban"));
+        let out = scratch.join("out.wav");
+        let result = call(
+            &mut dispatcher,
+            &auth,
+            json!({"format": "wav", "sampleRate": 48000, "path": out.display().to_string()}),
+        );
+        assert_domain_error(&result, "RENDER_FAILED", tag);
+        assert!(!out.exists(), "{tag}: 没有可闻通路时不许写出文件: {result}");
+    }
+}
+
+/// ⭐ `#315`/`#337` 判据 2/3：三个读数必须**声明在 `outputSchema` 里**（否则 agent
+/// 读不到它们），且两个状态必须给出不同的读数。
 #[test]
 fn sidechain_readings_are_declared_in_the_output_schema() {
-    let project = with_sidechain_edge(project(&Spec::default()), 42, id(2), id(1));
-    let result = render_or_ok(&project, "315-schema");
+    let plain = project(&Spec::default());
+    let none = render_or_ok(&plain, "337-schema-none");
+    let with_sidechain = with_sidechain_edge(plain, 42, id(2), id(1));
+    let result = render_or_ok(&with_sidechain, "337-schema-one");
     let schema = yeban_mcp::tools::catalog()["tools"]
         .as_array()
         .expect("tools")
@@ -6980,6 +7193,7 @@ fn sidechain_readings_are_declared_in_the_output_schema() {
     for field in [
         "sidechainEdgesSummedAsOrdinaryAudio",
         "sidechainEdgesInRoutingGraph",
+        "sidechainEdgesDeclaredWithoutKeyInput",
     ] {
         assert!(
             declared.iter().any(|name| name == field),
@@ -6989,12 +7203,20 @@ fn sidechain_readings_are_declared_in_the_output_schema() {
             schema["properties"][field]["type"], "integer",
             "`{field}` 的类型必须是 integer: {schema}"
         );
-        assert_eq!(result["data"][field], 1, "B: {result}");
     }
-    yeban_mcp::output_schema::validate_complete(&schema, &result["data"]).unwrap_or_else(
-        |violation| panic!("render_master 的真实响应违反自己的 schema: {violation}"),
-    );
-    println!("### #315 outputSchema 已声明: {declared:?}");
+    // 两个方向：没有侧链 vs 声明了 1 条但没有键输入路径。
+    assert_eq!(none["data"]["sidechainEdgesSummedAsOrdinaryAudio"], 0);
+    assert_eq!(none["data"]["sidechainEdgesInRoutingGraph"], 0);
+    assert_eq!(none["data"]["sidechainEdgesDeclaredWithoutKeyInput"], 0);
+    assert_eq!(result["data"]["sidechainEdgesSummedAsOrdinaryAudio"], 0);
+    assert_eq!(result["data"]["sidechainEdgesInRoutingGraph"], 1);
+    assert_eq!(result["data"]["sidechainEdgesDeclaredWithoutKeyInput"], 1);
+    for data in [&none["data"], &result["data"]] {
+        yeban_mcp::output_schema::validate_complete(&schema, data).unwrap_or_else(|violation| {
+            panic!("render_master 的真实响应违反自己的 schema: {violation}")
+        });
+    }
+    println!("### #337 outputSchema 已声明: {declared:?}");
 }
 
 // ===========================================================================
