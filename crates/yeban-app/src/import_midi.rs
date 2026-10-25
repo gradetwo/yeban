@@ -35,9 +35,13 @@
 //!    `microseconds_per_quarter` / `numerator` 字段）· `parsed.track_names` ·
 //!    `parsed.markers` · `parsed.end_tick`。其余读数仍只读 `format` / `tracks` /
 //!    `aux_events`（⛔ 不参与映射）。
-//! 2. **tempo / 拍号只采纳"唯一值且在 tick 0"**：`project.bpm` 与
-//!    `project.time_signature` 都是**单标量**，所以 map（多条、或首条不在 0）**不**
-//!    被压成一个值 —— 整类报 `dropped` 并在 `<kind>-reason="…"` 里列出每个值。
+//! 2. **tempo / 拍号只在"目标工程没有内容"时采纳**：`project.bpm` 与
+//!    `project.time_signature` 都是**单标量**，而且前者是**全局**的 —— 改它会重新
+//!    计时整首曲子。所以两个条件同时成立才写：① 文件只有**唯一条生效值且在 tick 0**；
+//!    ② [`import_target_is_empty`]（无段落 / 无 MIDI 音符 / 无音频片段 / 无自动化点；
+//!    落点片段与摆放**不算内容**）。否则整类报 `dropped`，原因里**点名**文件的值与
+//!    tick，并说明"工程已有内容，因此没有覆盖全局值"。map（多条、或首条不在 0）同样
+//!    整类报 `dropped` 并列出每个值。
 //!    音符的**绝对 tick** 仍按 `ppq` 换算后**原样**落到工程上，⛔ 不做与速度有关的换算。
 //! 3. **不量化**：[`scale_ticks`] 是**纯比例**换算（`tick × MODEL_PPQ ÷ ppq`），
 //!    ⛔ 不吸附到工程网格；`ppq` 除不尽时按整数除法**截断**。
@@ -55,11 +59,15 @@
 //!      最后一个到 [`ParsedMidi::end_tick`]。同一 tick 的后一条顶掉前一条（被顶掉的
 //!      逐条计入 `dropped`）；末尾与 `end_tick` 重合（**零长度**）落不下去、也计入
 //!      `dropped`；非 UTF-8 文本仍是**边界**（前一段在它那里结束），只丢名字。
+//!      ⚠ **段落是追加的**：工程里**已有**的段落一个字不动，本导入**不**清空、也
+//!      **不**检查它们 —— 不重叠只对**本次导入产生的那一组**成立（模型
+//!      `SectionV3::validate` 与 `YebanProjectV1::validate` 都不查重叠）。
 //!    - `FF 03` 轨名 → 目标音轨的 `TrackV3::name`：去重后**恰一个**非空、严格 UTF-8
 //!      名字才落（多个 `MTrk` 同名是同一个名字）；多个不同名字 / 空名 / 非 UTF-8
 //!      一律不落（⛔ 挑一个）。
-//!    - `FF 51` tempo → `project.bpm`（单标量）：只有**唯一条生效 tempo 且 tick 0** 能落。
-//!    - `FF 58` 拍号 → `project.time_signature`（单标量）：同上。
+//!    - `FF 51` tempo → `project.bpm`（单标量）：**唯一条生效 tempo 且 tick 0** 且目标
+//!      工程没有内容时才落；否则一字不动并报出"会采纳的值"。
+//!    - `FF 58` 拍号 → `project.time_signature`（单标量）：同一条内容门槛。
 //! 8. **其余 20 类只报读数、⛔ 不新增支持**（`#318`）：[`ParsedMidi::aux_events`] 把
 //!    24 类具名事件逐一计数，本文件逐类给出 `read` / `dropped`；无落点的类
 //!    `dropped == read`。报告字段：`format=` / `file-tracks=` /
@@ -78,7 +86,9 @@ use yeban_midi::midi::{
     MidiAuxEventKind, MidiFormat, ParsedMarker, ParsedMidi, ParsedTrackName, parse_smf,
 };
 use yeban_model::project::{MAX_BPM, MIN_BPM};
-use yeban_model::{EntityId, MidiNote, Op, OpOrigin, SectionV3, TimeSignature, YebanProjectV1};
+use yeban_model::{
+    ClipContent, EntityId, MidiNote, Op, OpOrigin, SectionV3, TimeSignature, YebanProjectV1,
+};
 
 use crate::undo::UndoPort;
 
@@ -571,13 +581,94 @@ struct ScalarAdoption {
     reason: Option<String>,
 }
 
+/// 导入目标是否**没有内容**（`#342` 修订：决定 bpm / 拍号能不能被采纳）。
+///
+/// ## 精确口径
+///
+/// "没有内容" = **没有任何会因 bpm/拍号改变而被重新计时或重新划小节的东西**：
+///
+/// 1. `project.sections` 为空（段落是 tick 区间）；
+/// 2. `clip_pool` 里**没有**带音符的 MIDI 片段；
+/// 3. `clip_pool` 里**没有**音频片段（`ClipContent::Audio`）；
+/// 4. 任何音轨的自动化泳道**没有点**（自动化点是 tick 坐标）。
+///
+/// ⚠ **落点片段 / 摆放不算内容**：`destination()` 要求导入有一个落点（CLI 与 GUI
+/// 都走 `MidiImportOptions::default()`），空 MIDI 片段 + 摆放只是"槽位"。
+/// ⇒ 字面上的"任何音轨上都没有摆放"在本导入路径里**不可达**；把零摆放当条件会
+/// 让"采纳"分支永远进不去。
+#[must_use]
+pub fn import_target_is_empty(project: &YebanProjectV1) -> bool {
+    project.sections.is_empty()
+        && !project
+            .clip_pool
+            .values()
+            .any(|entry| match &entry.content {
+                ClipContent::Midi { notes } => !notes.is_empty(),
+                ClipContent::Audio { .. } => true,
+            })
+        && project.tracks.values().all(|track| {
+            track
+                .automation_lanes
+                .values()
+                .all(|lane| lane.points.is_empty())
+        })
+}
+
+/// 测试夹具：一个**没有内容**的工程（演示工程去掉段落 / 音符 / 音频片段 /
+/// 自动化点，保留音轨、空 MIDI 片段与落点 ⇒ 导入有落点且 bpm/拍号可被采纳）。
+#[cfg(test)]
+pub(crate) fn content_free_project() -> YebanProjectV1 {
+    let mut project = crate::bridge::demo_project();
+    project.sections.clear();
+    for entry in project.clip_pool.values_mut() {
+        if let ClipContent::Midi { notes } = &mut entry.content {
+            notes.clear();
+        }
+    }
+    let audio_clips: BTreeSet<EntityId> = project
+        .clip_pool
+        .iter()
+        .filter(|(_, entry)| matches!(&entry.content, ClipContent::Audio { .. }))
+        .map(|(id, _)| *id)
+        .collect();
+    for track in project.tracks.values_mut() {
+        track
+            .clips
+            .retain(|_, placement| !audio_clips.contains(&placement.clip_id));
+        for lane in track.automation_lanes.values_mut() {
+            lane.points.clear();
+        }
+    }
+    project.clip_pool.retain(|id, _| !audio_clips.contains(id));
+    project.validate().expect("content-free 夹具必须整体合法");
+    debug_assert!(import_target_is_empty(&project));
+    project
+}
+
 /// `FF 51` tempo → `project.bpm`（**单标量**）。
 ///
 /// **只有**"唯一条生效 tempo 且在 tick 0"能落：SMF 在第一条 tempo 之前隐含
 /// 120 BPM，所以首条落在 tick > 0 的文件已经有**两个** tempo ⇒ 整类 dropped。
 /// 同一 tick 的多条按文件顺序后出现者胜出（MIDI 的生效语义）⇒ 生效 map 用
 /// `BTreeMap`（`insert` 覆盖 = 后者胜出）。
-fn adopt_tempo(parsed: &ParsedMidi, project: &YebanProjectV1) -> ScalarAdoption {
+///
+/// ⚠ `#342` 修订：即使文件只有一个可采纳的值，**只有目标工程没有内容**
+/// （[`import_target_is_empty`]）时才写 `project.bpm`；否则 `bpm` 一字不动，
+/// 并把"若工程为空会采纳的值"作为**响亮的损失**报出（含值与 tick）。
+///
+/// ## 精度（`#342` 如实登记，⛔ 不"修"）
+///
+/// `bpm = 60_000_000 / mpqn` 是精确的 f64 除法；90 BPM 的文件（`mpqn = 666667`）
+/// 会存成 `89.9999550000225`。**这不是错误数据**：666667 µs/四分音符**就是**
+/// 89.999955… BPM。重导出时 [`yeban_midi::midi::MidiTempo::from_bpm`] 四舍五入回
+/// 同一个 `mpqn`（对全部 16_777_215 个合法 `mpqn` 穷举实测成立）⇒ **MIDI 字节不变**。
+/// 长尾只在 `project.json` / MCP 的原始 `bpm` 读数里可见；GUI 的 `{:.2}` 标签
+/// （`ViewState::bpm_display`）显示 `90.00`。
+fn adopt_tempo(
+    parsed: &ParsedMidi,
+    project: &YebanProjectV1,
+    target_empty: bool,
+) -> ScalarAdoption {
     let read = parsed.aux_events.count(MidiAuxEventKind::Tempo);
     debug_assert_eq!(
         read,
@@ -604,6 +695,18 @@ fn adopt_tempo(parsed: &ParsedMidi, project: &YebanProjectV1) -> ScalarAdoption 
     if let (1, Some((&0, &microseconds_per_quarter))) = (effective.len(), effective.iter().next()) {
         return match bpm_from_microseconds(microseconds_per_quarter) {
             Some(bpm) if (MIN_BPM..=MAX_BPM).contains(&bpm) => {
+                if !target_empty {
+                    return ScalarAdoption {
+                        op: None,
+                        dropped: read,
+                        reason: Some(format!(
+                            "tempo-not-adopted-non-empty-project: the file's single tempo \
+                             ({bpm:.2} BPM @0) was NOT written to project.bpm — the project \
+                             already has content (sections / MIDI notes / audio clips / \
+                             automation points) and rewriting the global tempo would re-time it"
+                        )),
+                    };
+                }
                 let op = if project.bpm == bpm {
                     None
                 } else {
@@ -671,7 +774,14 @@ fn meter_label(numerator: u8, denominator_pow2: u8) -> String {
 ///
 /// 与 [`adopt_tempo`] 同一条规则：只有"唯一条生效拍号且在 tick 0"能落；SMF 在
 /// 第一条拍号之前隐含 **4/4** ⇒ 首条在 tick > 0 的文件已经有两个拍号。
-fn adopt_time_signature(parsed: &ParsedMidi, project: &YebanProjectV1) -> ScalarAdoption {
+///
+/// ⚠ `#342` 修订：与 tempo 同一条内容门槛（[`import_target_is_empty`]）——
+/// 非空工程的 `time_signature` 一字不动，文件里的值作为响亮损失报出。
+fn adopt_time_signature(
+    parsed: &ParsedMidi,
+    project: &YebanProjectV1,
+    target_empty: bool,
+) -> ScalarAdoption {
     let read = parsed.aux_events.count(MidiAuxEventKind::TimeSignature);
     debug_assert_eq!(
         read,
@@ -709,6 +819,19 @@ fn adopt_time_signature(parsed: &ParsedMidi, project: &YebanProjectV1) -> Scalar
             },
         };
         if candidate.validate().is_ok() {
+            if !target_empty {
+                return ScalarAdoption {
+                    op: None,
+                    dropped: read,
+                    reason: Some(format!(
+                        "time-signature-not-adopted-non-empty-project: the file's single \
+                         meter ({} @0) was NOT written to project.time_signature — the \
+                         project already has content (sections / MIDI notes / audio clips / \
+                         automation points) and rewriting the global meter would re-bar it",
+                        meter_label(numerator, denominator_pow2)
+                    )),
+                };
+            }
             let op = if project.time_signature == candidate {
                 None
             } else {
@@ -1109,8 +1232,9 @@ pub fn plan_midi_import(
     // ⭐ `#342`：四类有落点的元数据各走一个**纯** helper（只读 `parsed` + `project`）；
     // 音符 ops 先入队，元数据 ops 后入队 —— 同一批 `commit_ops_with_origin` 提交，
     // 因此"改 bpm / 拍号 / 轨名 / 建段落"与音符**同生共死**（全应用或全不应用）。
-    let mut tempo = adopt_tempo(parsed, project);
-    let mut time_signature = adopt_time_signature(parsed, project);
+    let target_empty = import_target_is_empty(project);
+    let mut tempo = adopt_tempo(parsed, project, target_empty);
+    let mut time_signature = adopt_time_signature(parsed, project, target_empty);
     let mut track_name = adopt_track_name(parsed, project, track_id);
     let (sections, marker_dropped, marker_reason) =
         plan_sections(&parsed.markers, parsed.end_tick, parsed.ppq);
@@ -1641,7 +1765,8 @@ mod tests {
     /// （1 条有名字并落地、1 条非 UTF-8 落不下）、CC / 弯音 / 未知 meta 各 1。
     #[test]
     fn the_loss_report_pairs_read_and_dropped_for_every_aux_kind() {
-        let project = yeban_model::samples::filled_project();
+        // 只有"没有内容"的工程才允许采纳单值 tempo/拍号 ⇒ 本夹具测那条分支。
+        let project = content_free_project();
         let mut parsed = parsed(
             960,
             vec![
@@ -1886,7 +2011,7 @@ mod tests {
     /// 判据：**唯一条 tick 0** tempo 与拍号真的落进两个单标量；等值时**不**发空操作。
     #[test]
     fn a_single_tick_zero_tempo_and_meter_are_adopted() {
-        let mut project = yeban_model::samples::filled_project();
+        let mut project = content_free_project();
         project.bpm = 120.0;
         project.time_signature = TimeSignature {
             numerator: 4,
@@ -1948,6 +2073,154 @@ mod tests {
             "现值已等于文件值 ⇒ 不发空操作: {:?}",
             plan.ops
         );
+    }
+
+    /// 判据（`#342` 修订）：**非空工程**的 `bpm` / `time_signature` 一字不动，
+    /// 文件里的单值 tempo / 拍号作为**响亮损失**报出（原因点名值与 tick，并说明
+    /// "工程已有内容，因此没有覆盖"）。
+    #[test]
+    fn a_non_empty_project_keeps_bpm_and_meter_and_names_the_values_it_did_not_adopt() {
+        let mut project = yeban_model::samples::filled_project();
+        project.bpm = 90.0;
+        project.time_signature = TimeSignature {
+            numerator: 4,
+            denominator: 4,
+        };
+        assert!(!import_target_is_empty(&project), "filled 工程必须有内容");
+        let mut parsed = two_notes(960);
+        parsed = recording(parsed, MidiAuxEventKind::Tempo, 1);
+        parsed = recording(parsed, MidiAuxEventKind::TimeSignature, 1);
+        parsed.tempos = vec![MidiTempo {
+            tick: 0,
+            microseconds_per_quarter: Some(250_000), // 240 BPM
+            numerator: Some(6),
+            denominator_pow2: Some(3), // 6/8
+        }];
+
+        let plan = plan_midi_import(&project, &parsed, &MidiImportOptions::default())
+            .expect("非空工程也能导入音符");
+        assert!(
+            !plan
+                .ops
+                .iter()
+                .any(|op| matches!(op, Op::SetTempo { .. } | Op::SetTimeSignature { .. })),
+            "非空工程 ⛔ 不许改全局 bpm / 拍号: {:?}",
+            plan.ops
+        );
+        assert_eq!(
+            plan.losses.aux_events[&MidiAuxEventKind::Tempo],
+            MidiLossCount {
+                read: 1,
+                dropped: 1,
+            }
+        );
+        let tempo_reason = &plan.losses.aux_reasons[&MidiAuxEventKind::Tempo];
+        assert!(
+            tempo_reason.contains("240.00 BPM @0")
+                && tempo_reason.contains("already has content")
+                && tempo_reason.contains("NOT written"),
+            "tempo 原因必须点名值与 tick，并说明工程已有内容: {tempo_reason}"
+        );
+        assert_eq!(
+            plan.losses.aux_events[&MidiAuxEventKind::TimeSignature],
+            MidiLossCount {
+                read: 1,
+                dropped: 1,
+            }
+        );
+        let meter_reason = &plan.losses.aux_reasons[&MidiAuxEventKind::TimeSignature];
+        assert!(
+            meter_reason.contains("6/8 @0")
+                && meter_reason.contains("already has content")
+                && meter_reason.contains("NOT written"),
+            "拍号原因必须点名值与 tick，并说明工程已有内容: {meter_reason}"
+        );
+    }
+
+    /// 判据：`import_target_is_empty` 的**定义有牙** —— 四个维度各自都能把
+    /// "没有内容"翻成"有内容"（否则内容门槛可能只在一种情况下生效）。
+    #[test]
+    fn the_content_free_definition_has_teeth() {
+        assert!(
+            import_target_is_empty(&content_free_project()),
+            "夹具必须是'没有内容'"
+        );
+        assert!(
+            !import_target_is_empty(&yeban_model::samples::filled_project()),
+            "filled 工程有音符 ⇒ 不是'没有内容'"
+        );
+
+        // ① 一条 MIDI 音符。
+        let mut notes = content_free_project();
+        let clip_id = *notes.clip_pool.keys().next().expect("有一个片段");
+        if let ClipContent::Midi { notes: map } =
+            &mut notes.clip_pool.get_mut(&clip_id).unwrap().content
+        {
+            let note_id = EntityId::new();
+            map.insert(note_id, MidiNote::new(note_id, 0, 60, 960));
+        }
+        assert!(!import_target_is_empty(&notes), "一条音符就算内容");
+
+        // ② 一个音频片段。
+        let mut audio = content_free_project();
+        let audio_id = EntityId::new();
+        audio.clip_pool.insert(
+            audio_id,
+            yeban_model::ClipPoolEntry {
+                id: audio_id,
+                name: "Audio".to_owned(),
+                content: ClipContent::Audio {
+                    asset: yeban_model::ids::AssetHash::of_bytes(b"content-free-test"),
+                    gain_db: 0.0,
+                },
+            },
+        );
+        assert!(!import_target_is_empty(&audio), "音频片段就算内容");
+
+        // ③ 一个段落。
+        let mut sections = content_free_project();
+        let section_id = EntityId::new();
+        sections.sections.insert(
+            section_id,
+            SectionV3 {
+                id: section_id,
+                name: "Intro".to_owned(),
+                start_tick: 0,
+                end_tick: 960,
+                color: None,
+            },
+        );
+        assert!(!import_target_is_empty(&sections), "段落就算内容");
+
+        // ④ 一个自动化点。
+        let mut automation = content_free_project();
+        let track_id = *automation
+            .tracks
+            .keys()
+            .find(|id| **id != automation.master_bus_track_id)
+            .expect("有一条非 master 音轨");
+        let track = automation.tracks.get_mut(&track_id).expect("目标音轨");
+        let target = *track
+            .automation_lanes
+            .keys()
+            .next()
+            .expect("演示夹具有一条自动化泳道");
+        let point_id = EntityId::new();
+        track
+            .automation_lanes
+            .get_mut(&target)
+            .expect("泳道存在")
+            .points
+            .insert(
+                point_id,
+                yeban_model::AutomationPoint {
+                    id: point_id,
+                    tick: 0,
+                    value: -6.0,
+                    curve: yeban_model::CurveType::Linear,
+                },
+            );
+        assert!(!import_target_is_empty(&automation), "自动化点就算内容");
     }
 
     /// 判据（父单）：**两条 tempo / 两条拍号**必须响亮报丢并列出**两个值**，
@@ -2626,8 +2899,8 @@ mod tempo_pin_tests {
         );
         assert_eq!(parsed_file.tempos[0].tick, 0, "唯一条 tempo 必须在 tick 0");
 
-        // 工程侧：`bpm = 90`（⭐ 与文件里的 240 明显不同）。
-        let mut project = yeban_model::samples::filled_project();
+        // 工程侧：**没有内容**（否则内容门槛会拒绝采纳）+ `bpm = 90`。
+        let mut project = content_free_project();
         project.bpm = 90.0;
         let session = crate::undo::UndoSession::open(
             "<判据:单值 tempo 落进 bpm>",

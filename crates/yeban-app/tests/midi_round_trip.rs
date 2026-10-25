@@ -958,7 +958,8 @@ fn a_chord_with_lyrics_attaches_none_and_reports_every_dropped_lyric() {
 #[test]
 fn the_import_adopts_an_unambiguous_single_conductor() {
     let dir = scratch_dir("conductor");
-    let (project, _track, _clip) = round_trip_fixture();
+    // `#342` 修订：采纳 bpm/拍号要求目标工程**没有内容** ⇒ 用 content-free 目的地。
+    let project = content_free_destination();
     let fixture = write_container(&dir, "fixture.yeban", &project);
     let fixture_arg = fixture.to_str().expect("utf8");
 
@@ -993,7 +994,7 @@ fn the_import_adopts_an_unambiguous_single_conductor() {
         "90 BPM ⇒ 666667 µs"
     );
 
-    // 导入 3/4 + 120 BPM 的工程 ⇒ 重导出**采纳米文件**的 conductor。
+    // 导入一个**没有内容**的工程 ⇒ 重导出**采纳文件**的 conductor。
     let f4 = dir.join("F4.mid");
     let run = invoke(&[
         "--open",
@@ -1037,8 +1038,8 @@ fn the_import_adopts_an_unambiguous_single_conductor() {
     assert_eq!(p4.ppq, 960);
     assert_eq!(
         p4.notes.len(),
-        9 + p3.notes.len(),
-        "工程原有 9 颗 + 文件里的 {} 颗",
+        p3.notes.len(),
+        "content-free 工程原有 0 颗 + 文件里的 {} 颗",
         p3.notes.len()
     );
 
@@ -1140,24 +1141,13 @@ fn single_track_smf(
 #[test]
 fn a_marker_track_lands_sections_track_name_bpm_and_meter_in_the_document() {
     let dir = scratch_dir("metadata-round-trip");
-    // 目的地：清空演示工程的段落（否则断言会被预置段落污染），音轨名先设成别的值。
-    let mut project = demo_project();
-    project.sections.clear();
-    project.bpm = 120.0;
-    project.time_signature = TimeSignature {
-        numerator: 4,
-        denominator: 4,
-    };
+    // 目的地：**没有内容**（否则 bpm/拍号不会被采纳），音轨名先设成别的值。
+    let project = content_free_destination();
     let destination_track = *project
         .tracks
         .keys()
         .find(|id| **id != project.master_bus_track_id)
         .expect("有一条非 master 音轨");
-    project
-        .tracks
-        .get_mut(&destination_track)
-        .expect("目标音轨")
-        .name = "Original".to_owned();
     let container = write_container(&dir, "dest.yeban", &project);
     let container_arg = container.to_str().expect("utf8");
 
@@ -1294,6 +1284,35 @@ fn metadata_destination() -> YebanProjectV1 {
     project
 }
 
+/// 目的地工程（`#342` **采纳臂**）：在 [`metadata_destination`] 之上**去掉全部内容**
+/// （音符 / 音频片段 / 自动化点；段落已被它清空），但保留**空 MIDI 片段 + 摆放**
+/// —— 导入必须有落点。判定与 `import_midi::import_target_is_empty` 同一口径。
+fn content_free_destination() -> YebanProjectV1 {
+    let mut project = metadata_destination();
+    for entry in project.clip_pool.values_mut() {
+        if let ClipContent::Midi { notes } = &mut entry.content {
+            notes.clear();
+        }
+    }
+    let audio_clips: Vec<EntityId> = project
+        .clip_pool
+        .iter()
+        .filter(|(_, entry)| matches!(&entry.content, ClipContent::Audio { .. }))
+        .map(|(id, _)| *id)
+        .collect();
+    for track in project.tracks.values_mut() {
+        track
+            .clips
+            .retain(|_, placement| !audio_clips.contains(&placement.clip_id));
+        for lane in track.automation_lanes.values_mut() {
+            lane.points.clear();
+        }
+    }
+    project.clip_pool.retain(|id, _| !audio_clips.contains(id));
+    project.validate().expect("content-free 目的地必须合法");
+    project
+}
+
 /// 导入一份夹具并回读保存的工程（`--open <dest> --import-midi <mid> --save-as`）。
 fn import_and_reopen(
     tag: &str,
@@ -1390,6 +1409,56 @@ fn two_meter_changes_are_a_loud_loss_and_the_project_meter_is_not_silently_repla
     assert!(
         line.contains("5/8 @0") && line.contains("3/4 @960"),
         "损失条目必须**点名两个值与 tick**: {line}"
+    );
+}
+
+/// ⭐ `#342` 修订：**非空工程**的 `bpm` / `time_signature` 必须**逐位不变**，
+/// 文件里的单值 tempo / 拍号作为响亮损失点名（含值与 tick），并说明工程已有内容。
+#[test]
+fn a_non_empty_project_keeps_bpm_and_meter_byte_identical_and_names_the_values() {
+    let destination = metadata_destination();
+    assert!(
+        !yeban_app::import_midi::import_target_is_empty(&destination),
+        "metadata_destination 必须是有内容的工程（否则本判据测的是采纳臂）"
+    );
+    // 100 BPM @0、7/8 @0 —— 与目的地的 120 / 4-4 都不同。
+    let bytes = single_track_smf(
+        None,
+        &[(0, 600_000)],
+        &[(0, 7, 3)],
+        &[],
+        &[(0, 480, 60)],
+        960,
+    );
+    let (opened, line) = import_and_reopen("non-empty-globals", &destination, &bytes);
+    let line = line.as_str();
+
+    // ⭐ **逐位**不变（f64 用 `to_bits`，不是 `==`）。
+    assert_eq!(
+        opened.bpm.to_bits(),
+        destination.bpm.to_bits(),
+        "非空工程的 `project.bpm` 必须逐位不变（{} vs {}）",
+        opened.bpm,
+        destination.bpm
+    );
+    assert_eq!(
+        opened.time_signature, destination.time_signature,
+        "非空工程的 `project.time_signature` 必须一字不变"
+    );
+
+    assert_eq!(field(line, "tempo-read").as_deref(), Some("1"), "{line}");
+    assert_eq!(field(line, "tempo-dropped").as_deref(), Some("1"), "{line}");
+    assert!(
+        line.contains("100.00 BPM @0") && line.contains("already has content"),
+        "tempo 损失必须点名值与 tick，并说明工程已有内容: {line}"
+    );
+    assert!(
+        line.contains("time-signature-dropped=1"),
+        "文件里的 7/8 必须报成损失: {line}"
+    );
+    assert!(
+        line.contains("7/8 @0") && line.contains("time-signature-not-adopted-non-empty-project"),
+        "拍号损失必须点名值与 tick: {line}"
     );
 }
 
