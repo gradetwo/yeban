@@ -119,7 +119,11 @@ trap cleanup EXIT
 trap 'cleanup; exit 130' INT
 trap 'cleanup; exit 143' TERM
 
-"$@" &
+# ⚠ `<&0` 不是多余的：非交互 shell 里**后台任务默认拿到 stdin=/dev/null**。少了它，
+# 任何"把脚本从 stdin 喂进去"的调用（`bash -s <<'EOF' … EOF`）会读到**空脚本**、
+# 立刻 exit 0 —— 看起来成功、其实一行没跑。`line-gate.sh` 正是这么调它的，
+# 于是它的 cargo 那一半**整段空转**（2026-10-26 由 `#343` 线用探针实测抓出）。
+"$@" <&0 &
 child=$!
 wait "$child"
 rc=$?
