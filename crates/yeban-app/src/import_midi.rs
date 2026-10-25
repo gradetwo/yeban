@@ -30,15 +30,15 @@
 //!
 //! ⚠ 本节是**读数**，⛔ 不是评判：每一条都由 `grep` / 类型可从本文件的实现复算。
 //!
-//! 1. **音符映射只消费 [`ParsedMidi::notes`] / [`ParsedMidi::lyrics`] / [`ParsedMidi::ppq`]**；
-//!    ⭐ `#318` 的丢失读数另**只读** `format` / `tracks` / `aux_events`（⛔ 不参与映射）。
-//!    由此可复算：`grep -n 'parsed\.' crates/yeban-app/src/import_midi.rs` 里
-//!    ⛔ 不出现 `parsed.tempos`（tempo/拍号是作为 `aux_events` 的计数被报成**丢**，
-//!    ⛔ 不是被消费）。
-//! 2. **tempo map 不参与映射**：`ParsedMidi::tempos`（[`yeban_midi::midi::MidiTempo`]）
-//!    在本文件的**生产**代码里⛔ 一处都不出现；它只作为**判据夹具**出现在 `#[cfg(test)]` 里。
-//!    ⇒ 音符的**绝对 tick**（以及音符之间的相对 tick）按 `ppq` 换算后**原样**落到工程上，
-//!    ⛔ 不做任何与速度有关的换算。
+//! 1. **音符映射消费** [`ParsedMidi::notes`] / [`ParsedMidi::lyrics`] / [`ParsedMidi::ppq`]；
+//!    ⭐ `#342` 起**另有四类元数据有落点**（见第 7 条）：`parsed.tempos`（只取
+//!    `microseconds_per_quarter` / `numerator` 字段）· `parsed.track_names` ·
+//!    `parsed.markers` · `parsed.end_tick`。其余读数仍只读 `format` / `tracks` /
+//!    `aux_events`（⛔ 不参与映射）。
+//! 2. **tempo / 拍号只采纳"唯一值且在 tick 0"**：`project.bpm` 与
+//!    `project.time_signature` 都是**单标量**，所以 map（多条、或首条不在 0）**不**
+//!    被压成一个值 —— 整类报 `dropped` 并在 `<kind>-reason="…"` 里列出每个值。
+//!    音符的**绝对 tick** 仍按 `ppq` 换算后**原样**落到工程上，⛔ 不做与速度有关的换算。
 //! 3. **不量化**：[`scale_ticks`] 是**纯比例**换算（`tick × MODEL_PPQ ÷ ppq`），
 //!    ⛔ 不吸附到工程网格；`ppq` 除不尽时按整数除法**截断**。
 //! 4. **单一目标**：全部音符进**同一个**音轨与**同一个**片段 —— 目标由
@@ -50,25 +50,50 @@
 //!    ⛔ 认"正在发声"的音符。空 `FF 05` 与非 UTF-8 分别计入 `empty` / `non_utf8`。
 //! 6. **支持的输入范围**：⛔ 本文件不复述"支持哪些格式" —— 那是
 //!    [`yeban_midi::midi::parse_smf`] 及其错误变体的事（⭐ 指路，⛔ 不手抄）。
-//! 7. **其余事件只报读数、⛔ 不新增支持**（⭐ `#318`）：[`ParsedMidi::aux_events`] 把
-//!    24 类具名事件逐一计数（[`MidiAuxEventKind`]），本文件把它们**全部**报成
-//!    `dropped`（今天 `dropped == read`）。报告字段：`format=` / `file-tracks=` /
+//! 7. **四类元数据有落点**（⭐ `#342`，⛔ 全是"无歧义才落"）：
+//!    - `FF 06` marker → [`yeban_model::SectionV3`]：相邻 marker 之间一个 tick 区间，
+//!      最后一个到 [`ParsedMidi::end_tick`]。同一 tick 的后一条顶掉前一条（被顶掉的
+//!      逐条计入 `dropped`）；末尾与 `end_tick` 重合（**零长度**）落不下去、也计入
+//!      `dropped`；非 UTF-8 文本仍是**边界**（前一段在它那里结束），只丢名字。
+//!    - `FF 03` 轨名 → 目标音轨的 `TrackV3::name`：去重后**恰一个**非空、严格 UTF-8
+//!      名字才落（多个 `MTrk` 同名是同一个名字）；多个不同名字 / 空名 / 非 UTF-8
+//!      一律不落（⛔ 挑一个）。
+//!    - `FF 51` tempo → `project.bpm`（单标量）：只有**唯一条生效 tempo 且 tick 0** 能落。
+//!    - `FF 58` 拍号 → `project.time_signature`（单标量）：同上。
+//! 8. **其余 20 类只报读数、⛔ 不新增支持**（`#318`）：[`ParsedMidi::aux_events`] 把
+//!    24 类具名事件逐一计数，本文件逐类给出 `read` / `dropped`；无落点的类
+//!    `dropped == read`。报告字段：`format=` / `file-tracks=` /
 //!    `track-partitions-dropped=` / `channels=`（上下文，总是打印）＋ 每类
-//!    `<kind>-read=N <kind>-dropped=N`（仅 `read>0`）＋ `note-channel-*` /
+//!    `<kind>-read=N <kind>-dropped=N`（仅 `read>0`）＋ 有损失时的
+//!    `<kind>-reason="<精确原因，含具体值>"` ＋ `note-channel-*` /
 //!    `note-off-velocity-*`（按音符计）。
-//!    ⚠ **"值一样"不等于"没丢"**：`tempo` 的数值即使恰好等于工程 `bpm`，它也仍是丢
-//!    （没被消费）。支持某一类时把它的 `dropped` 改成 0，并**改掉**判据；⛔ 不许删判据。
+//!    ⚠ **"值一样"不等于"没丢"**：判据是"有没有被写进工程"。`dropped` 是**事件
+//!    条数**里没有落进工程的条数；同一 tick 被顶掉的事件只在**从未生效**时算落地
+//!    （见第 7 条的 marker 规则）。
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
-use yeban_midi::midi::{MidiAuxEventKind, MidiFormat, ParsedMidi, parse_smf};
-use yeban_model::{EntityId, MidiNote, Op, OpOrigin, YebanProjectV1};
+use yeban_midi::midi::{
+    MidiAuxEventKind, MidiFormat, ParsedMarker, ParsedMidi, ParsedTrackName, parse_smf,
+};
+use yeban_model::project::{MAX_BPM, MIN_BPM};
+use yeban_model::{EntityId, MidiNote, Op, OpOrigin, SectionV3, TimeSignature, YebanProjectV1};
 
 use crate::undo::UndoPort;
 
 /// 模型的每四分音符 tick 数（960 PPQ）。导入时把文件的 PPQ 换算到它。
 pub const MODEL_PPQ: u64 = 960;
+
+/// ⭐ `#342`：今天**有落点**的四类 aux 事件。
+///
+/// 其余 20 类由 [`MidiImportLosses::is_total_loss`] 钉住"仍全损"。
+const STORABLE_KINDS: [MidiAuxEventKind; 4] = [
+    MidiAuxEventKind::Tempo,
+    MidiAuxEventKind::TimeSignature,
+    MidiAuxEventKind::TrackName,
+    MidiAuxEventKind::Marker,
+];
 
 /// 导入选项。
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -154,10 +179,12 @@ impl core::fmt::Display for MidiLyricCounts {
 /// ⭐ `#318`：一类丢失的**两列读数**。
 ///
 /// `read` 是文件里读到的条数（判据另按字节独立数一遍做控制臂）；
-/// `dropped` 是导入路径**没有**落进工程的条数。今天每一类都 `dropped == read`。
+/// `dropped` 是导入路径**没有**落进工程的条数。
 ///
-/// ⚠ **"值一样"不等于"没丢"**：`tempo` 的数值即使恰好等于工程 `bpm`，它也**仍是丢**
-/// —— 判据是"**有没有被消费**"，⛔ 不是"数值一不一样"。
+/// ⭐ `#342`：四类有落点的类别（tempo / 拍号 / 轨名 / marker）**可能**
+/// `dropped < read`；其余 20 类与音符通道 / 释放力度仍是 `dropped == read`。
+///
+/// ⚠ **"值一样"不等于"没丢"**：判据是"**有没有被写进工程**"，⛔ 不是"数值一不一样"。
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct MidiLossCount {
     /// 文件里读到的条数。
@@ -173,11 +200,10 @@ impl MidiLossCount {
         self.dropped <= self.read
     }
 
-    /// 今天**全损**：读到多少就丢多少。
+    /// 读到多少就丢多少（某一类**完全没有**落点时的读数）。
     ///
-    /// ⚠ 这是一条**会过期**的判据：支持某一类时，必须把那一类的 `dropped` 改成
-    /// `<= read` 的真值（通常 0），并**改掉** `dropped == read` 的断言；
-    /// ⛔ 不许把判据删掉 —— 它过期时应当自己说出来。
+    /// ⚠ 这是一条**会过期**的判据：某一类从"无落点"变成"有落点"时，它必须变成
+    /// `false`，相应断言要**改掉**；⛔ 不许把判据删掉 —— 它过期时应当自己说出来。
     #[must_use]
     pub const fn is_total_loss(self) -> bool {
         self.dropped == self.read
@@ -186,13 +212,17 @@ impl MidiLossCount {
 
 /// ⭐ `#318`：一次导入的**其余丢失读数**（音符 / 歌词以外）。
 ///
-/// ## 今天为什么每一项都是"丢"（⛔ 不是"已处理"）
+/// ## 每一类今天**有没有**落点（`#342` 重新核对；⛔ 不是"值一样就算没丢"）
 ///
-/// - `tempo` / 拍号：工程的 `bpm` / `time_signature` 是唯一权威 ⇒ 文件里的值
-///   **不被消费**。⚠ **值恰好等于工程值也仍是丢**：判据是"有没有被消费"，
-///   ⛔ 不是"数值一不一样"。
-/// - `FF 03` 轨名 / `FF 06` marker / `FF 59` 调号 / CC / 弯音 / 触后 /
-///   Program Change / SysEx / Escape / 其余 meta：模型或导入映射没有落点 ⇒ 全丢。
+/// - `tempo` / 拍号：落点是工程的 `bpm` / `time_signature`（都是**单标量**）⇒
+///   **只有**"唯一条生效值在 tick 0"能落；map 整类 `dropped` 并在
+///   [`Self::aux_reasons`] 里列出每个值。
+/// - `FF 03` 轨名：落点是目标音轨的 `TrackV3::name`；去重后恰一个非空、严格
+///   UTF-8 名字才落。
+/// - `FF 06` marker：落点是 `YebanProjectV1::sections` 的 `SectionV3` 区间；
+///   零长度 / 非 UTF-8 的逐条 `dropped`。
+/// - `FF 59` 调号 / CC / 弯音 / 触后 / Program Change / SysEx / Escape / 其余 meta：
+///   模型或导入映射没有落点 ⇒ **全丢**（原因见 [`Self::aux_reasons`]）。
 /// - 轨分区：全部音符进**同一个**音轨与同一个片段 ⇒ 文件 N 条 `MTrk` 只剩 1 个落点，
 ///   `N-1` 个分区丢失。
 /// - 音符通道：[`MidiNote`] 没有 channel 字段 ⇒ 每颗音符的通道值都丢
@@ -215,12 +245,22 @@ pub struct MidiImportLosses {
     pub note_channel_values: MidiLossCount,
     /// 每颗被关闭音符的释放力度（read = 音符数）。
     pub note_off_velocity_values: MidiLossCount,
-    /// 24 类 aux 事件，逐类 read/dropped（今天 `dropped == read`）。
+    /// 24 类 aux 事件，逐类 read/dropped。
+    ///
+    /// ⭐ `#342`：`tempo` / `time-signature` / `track-name` / `marker` 四类
+    /// **可能** `dropped < read`（部分内容真的进了工程）；其余 20 类仍是全损。
     pub aux_events: BTreeMap<MidiAuxEventKind, MidiLossCount>,
+    /// ⭐ `#342`：`dropped > 0` 的类别的**精确原因**（键 = 与报告字段同一个稳定键
+    /// [`MidiAuxEventKind::key`]，⛔ 不翻译；值是含**具体数值**的一句话）。
+    ///
+    /// 这是**结构化数据**（`String`），不是排版：MCP 可以把键与值原样放进响应；
+    /// GUI/CLI 只在 `loss_detail` 里打印它（**不进** 264px 的可见摘要行）。
+    pub aux_reasons: BTreeMap<MidiAuxEventKind, String>,
 }
 
 impl MidiImportLosses {
-    /// 自检：每条 `dropped <= read`；`track_partitions_dropped + 1 == file_tracks`。
+    /// 自检：每条 `dropped <= read`；`track_partitions_dropped + 1 == file_tracks`；
+    /// 原因表只给 `dropped > 0` 的类别（⛔ 不许给"没丢"的类别编故事）。
     #[must_use]
     pub fn is_consistent(&self) -> bool {
         self.file_tracks >= 1
@@ -228,17 +268,31 @@ impl MidiImportLosses {
             && self.note_channel_values.is_consistent()
             && self.note_off_velocity_values.is_consistent()
             && self.aux_events.values().all(|count| count.is_consistent())
+            && self.aux_reasons.iter().all(|(kind, reason)| {
+                !reason.is_empty()
+                    && self
+                        .aux_events
+                        .get(kind)
+                        .is_some_and(|count| count.dropped > 0)
+            })
     }
 
-    /// 今天**没有一类**被支持 ⇒ 每条 `dropped == read`（含音符通道 / 释放力度）。
+    /// ⭐ `#342`：**仍然没有落点**的类别一律全损 ⇒ 这条判据为真。
     ///
-    /// ⚠ 这条判据**会过期**：支持某一类时它应该红，提醒把那类的 `dropped` 改成 0；
-    /// ⛔ 不是把这条判据删掉。
+    /// 四类有落点的事件（[`STORABLE_KINDS`]）**不参与**：它们可能部分落地
+    /// （例如 2 条 marker 里 1 条是零长度）。音符通道 / 释放力度今天仍是全损。
+    ///
+    /// ⚠ 这仍是一条**会过期**的判据：若某类从"有落点"退回"全损"、或反过来，
+    /// 它应该红 —— ⛔ 不是把它删掉。
     #[must_use]
     pub fn is_total_loss(&self) -> bool {
         self.note_channel_values.is_total_loss()
             && self.note_off_velocity_values.is_total_loss()
-            && self.aux_events.values().all(|count| count.is_total_loss())
+            && self
+                .aux_events
+                .iter()
+                .filter(|(kind, _)| !STORABLE_KINDS.contains(kind))
+                .all(|(_, count)| count.is_total_loss())
     }
 
     /// 24 类 aux 事件的 read 条数之和（⛔ 不含音符通道 / 释放力度）。
@@ -261,6 +315,12 @@ impl MidiImportLosses {
     /// 只有 `read > 0` 的类才打印（`#318` 起的 CLI 口径）；每类前带一个空格 ⇒
     /// 空表返回空串，非空表可直接拼在上一字段之后。字段里的 `=` / 空格在 GUI 回执里
     /// 整体落在**引号内**，不参与回执语法（同 `clipping_note` 先例）。
+    ///
+    /// ⭐ `#342`：`dropped > 0` 的类别追加 `<kind>-reason=<精确原因>`（含具体数值）。
+    /// 原因原样存在于 [`Self::aux_reasons`]（结构化数据）；打印前经 [`receipt_safe`]
+    /// 处理 —— 回执的 `loss_detail="…"` 是**引号定界**且解析器不认转义 ⇒
+    /// ⛔ 原因里不能再出现 `"`（连**包住原因的引号**也不行：那会提前闭合
+    /// `loss_detail`），换行/制表也换成空格。
     #[must_use]
     pub fn aux_fields(&self) -> String {
         let mut out = String::new();
@@ -275,6 +335,9 @@ impl MidiImportLosses {
                 kind.key(),
                 count.dropped
             ));
+            if let Some(reason) = self.aux_reasons.get(kind) {
+                out.push_str(&format!(" {}-reason={}", kind.key(), receipt_safe(reason)));
+            }
         }
         out
     }
@@ -411,8 +474,9 @@ impl MidiImportReport {
     /// - **两个按音符计的属性**：`note-channel-*` / `note-off-velocity-*`
     ///   （`read == dropped == notes`，今天）。
     ///
-    /// ⚠ `dropped == read` 今天对每一类成立（**无任何真支持**）。支持某一类时改它的
-    /// `dropped` 并改掉判据；⛔ 不许删判据。
+    /// ⚠ `dropped == read` 今天只对**无落点**的 20 类成立；四类有落点的类别
+    /// （`#342`）`dropped` 可能小于 `read`，且 `dropped > 0` 时会多一段
+    /// `<kind>-reason=<精确原因>`。⛔ 不许删判据。
     #[must_use]
     pub fn summary(&self) -> String {
         let origin = match self.origin {
@@ -473,11 +537,493 @@ pub fn scale_ticks(tick: u64, ppq: u16) -> u64 {
     tick.saturating_mul(MODEL_PPQ) / ppq
 }
 
-/// **纯映射**：`ParsedNote` ⇒ `Op::AddNote`（⛔ 不改工程、⛔ 不提交）。
+/// 回执里**安全**的一串。
 ///
-/// ⚠ **只消费 `parsed.notes` / `parsed.lyrics` / `parsed.ppq`**（⭐ 可由本函数体
-/// `grep 'parsed\.'` 复算）；[`ParsedMidi::tempos`] 与 [`ParsedMidi::format`] ⛔ 不参与映射
-/// —— 完整口径见本模块文档的"口径"一节。
+/// GUI 的 `loss_detail="…"` 是**引号定界**，而回执解析器（`host::module_receipt`）
+/// 不认转义 ⇒ 原因里的 `"` 与换行若原样进串会把回执截断。数据本身仍原样留在
+/// [`MidiImportLosses::aux_reasons`]；这里只改**打印**形态。
+fn receipt_safe(text: &str) -> String {
+    text.chars()
+        .map(|ch| match ch {
+            '"' => '\'',
+            '\n' | '\r' | '\t' => ' ',
+            other => other,
+        })
+        .collect()
+}
+
+/// `FF 51` 的 `mpqn` ⇒ BPM。`0` 没有定义（除零）⇒ `None`。
+fn bpm_from_microseconds(microseconds_per_quarter: u32) -> Option<f64> {
+    if microseconds_per_quarter == 0 {
+        None
+    } else {
+        Some(60_000_000.0 / f64::from(microseconds_per_quarter))
+    }
+}
+
+/// 单个标量的采纳结果：要追加的 op（可能不需要）+ `dropped` 条数 + 原因。
+struct ScalarAdoption {
+    /// 需要写进工程的操作（`None` = 现值已经等于文件值，或落不下去）。
+    op: Option<Op>,
+    /// 没有落进工程的**事件条数**（⛔ 不是"不同值个数"）。
+    dropped: usize,
+    /// `dropped > 0` 时的精确原因（含具体值；⛔ 空串）。
+    reason: Option<String>,
+}
+
+/// `FF 51` tempo → `project.bpm`（**单标量**）。
+///
+/// **只有**"唯一条生效 tempo 且在 tick 0"能落：SMF 在第一条 tempo 之前隐含
+/// 120 BPM，所以首条落在 tick > 0 的文件已经有**两个** tempo ⇒ 整类 dropped。
+/// 同一 tick 的多条按文件顺序后出现者胜出（MIDI 的生效语义）⇒ 生效 map 用
+/// `BTreeMap`（`insert` 覆盖 = 后者胜出）。
+fn adopt_tempo(parsed: &ParsedMidi, project: &YebanProjectV1) -> ScalarAdoption {
+    let read = parsed.aux_events.count(MidiAuxEventKind::Tempo);
+    debug_assert_eq!(
+        read,
+        parsed
+            .tempos
+            .iter()
+            .filter(|record| record.microseconds_per_quarter.is_some())
+            .count(),
+        "每条 `FF 51` 必须恰产生一条带 mpqn 的记录"
+    );
+    let mut effective: BTreeMap<u64, u32> = BTreeMap::new();
+    for record in &parsed.tempos {
+        if let Some(microseconds_per_quarter) = record.microseconds_per_quarter {
+            effective.insert(record.tick, microseconds_per_quarter);
+        }
+    }
+    if read == 0 {
+        return ScalarAdoption {
+            op: None,
+            dropped: 0,
+            reason: None,
+        };
+    }
+    if let (1, Some((&0, &microseconds_per_quarter))) = (effective.len(), effective.iter().next()) {
+        return match bpm_from_microseconds(microseconds_per_quarter) {
+            Some(bpm) if (MIN_BPM..=MAX_BPM).contains(&bpm) => {
+                let op = if project.bpm == bpm {
+                    None
+                } else {
+                    Some(Op::SetTempo {
+                        old_bpm: project.bpm,
+                        new_bpm: bpm,
+                    })
+                };
+                ScalarAdoption {
+                    op,
+                    dropped: 0,
+                    reason: None,
+                }
+            }
+            Some(bpm) => ScalarAdoption {
+                op: None,
+                dropped: read,
+                reason: Some(format!(
+                    "tempo-out-of-model-range: the file's single tempo is {bpm:.2} BPM, \
+                         outside the model's {MIN_BPM:.0}..={MAX_BPM:.0} BPM; project.bpm untouched"
+                )),
+            },
+            None => ScalarAdoption {
+                op: None,
+                dropped: read,
+                reason: Some(
+                    "tempo-undefined: the file's single tempo event has \
+                         microseconds-per-quarter = 0 (no BPM is defined); project.bpm untouched"
+                        .to_owned(),
+                ),
+            },
+        };
+    }
+    let mut values = Vec::new();
+    if effective.keys().next().is_some_and(|tick| *tick > 0) {
+        values.push("120.00 BPM @0 (SMF default: no tempo event)".to_owned());
+    }
+    for (tick, microseconds_per_quarter) in &effective {
+        values.push(match bpm_from_microseconds(*microseconds_per_quarter) {
+            Some(bpm) => format!("{bpm:.2} BPM @{tick}"),
+            None => format!("undefined (mpqn=0) @{tick}"),
+        });
+    }
+    ScalarAdoption {
+        op: None,
+        dropped: read,
+        reason: Some(format!(
+            "tempo-map-not-representable: {}; project.bpm is a single scalar \
+             ⇒ a tempo map has no home",
+            values.join("; ")
+        )),
+    }
+}
+
+/// 拍号的文本形态（分母是 SMF 的以 2 为底的幂）。
+fn meter_label(numerator: u8, denominator_pow2: u8) -> String {
+    if denominator_pow2 <= 5 {
+        format!("{numerator}/{}", 1u8 << denominator_pow2)
+    } else {
+        format!("{numerator}/(2^{denominator_pow2})")
+    }
+}
+
+/// `FF 58` 拍号 → `project.time_signature`（**单标量**）。
+///
+/// 与 [`adopt_tempo`] 同一条规则：只有"唯一条生效拍号且在 tick 0"能落；SMF 在
+/// 第一条拍号之前隐含 **4/4** ⇒ 首条在 tick > 0 的文件已经有两个拍号。
+fn adopt_time_signature(parsed: &ParsedMidi, project: &YebanProjectV1) -> ScalarAdoption {
+    let read = parsed.aux_events.count(MidiAuxEventKind::TimeSignature);
+    debug_assert_eq!(
+        read,
+        parsed
+            .tempos
+            .iter()
+            .filter(|record| record.numerator.is_some() && record.denominator_pow2.is_some())
+            .count(),
+        "每条 `FF 58` 必须恰产生一条带分子的记录"
+    );
+    let mut effective: BTreeMap<u64, (u8, u8)> = BTreeMap::new();
+    for record in &parsed.tempos {
+        if let (Some(numerator), Some(denominator_pow2)) =
+            (record.numerator, record.denominator_pow2)
+        {
+            effective.insert(record.tick, (numerator, denominator_pow2));
+        }
+    }
+    if read == 0 {
+        return ScalarAdoption {
+            op: None,
+            dropped: 0,
+            reason: None,
+        };
+    }
+    if let (1, Some((&0, &(numerator, denominator_pow2)))) =
+        (effective.len(), effective.iter().next())
+    {
+        let candidate = TimeSignature {
+            numerator,
+            denominator: if denominator_pow2 <= 5 {
+                1u8 << denominator_pow2
+            } else {
+                0
+            },
+        };
+        if candidate.validate().is_ok() {
+            let op = if project.time_signature == candidate {
+                None
+            } else {
+                Some(Op::SetTimeSignature {
+                    old_time_signature: project.time_signature,
+                    new_time_signature: candidate,
+                })
+            };
+            return ScalarAdoption {
+                op,
+                dropped: 0,
+                reason: None,
+            };
+        }
+        return ScalarAdoption {
+            op: None,
+            dropped: read,
+            reason: Some(format!(
+                "time-signature-out-of-model-range: the file's single meter is {}, outside \
+                     the model's numerator 1..=32 / denominator 1,2,4,8,16,32; \
+                     project.time_signature untouched",
+                meter_label(numerator, denominator_pow2)
+            )),
+        };
+    }
+    let mut values = Vec::new();
+    if effective.keys().next().is_some_and(|tick| *tick > 0) {
+        values.push("4/4 @0 (SMF default: no time-signature event)".to_owned());
+    }
+    for (tick, &(numerator, denominator_pow2)) in &effective {
+        values.push(format!(
+            "{} @{tick}",
+            meter_label(numerator, denominator_pow2)
+        ));
+    }
+    ScalarAdoption {
+        op: None,
+        dropped: read,
+        reason: Some(format!(
+            "time-signature-map-not-representable: {}; project.time_signature is a single \
+             scalar ⇒ a meter map has no home",
+            values.join("; ")
+        )),
+    }
+}
+
+/// `FF 03` 轨名 → `TrackV3::name`（导入的**唯一**落点音轨）。
+///
+/// **去重规则**：把所有 `MTrk` 的轨名当**一个集合**看；集合里**恰一个**非空、
+/// 严格 UTF-8 名字时采用它（多个 `MTrk` 同名 = 同一个名字，不算冲突）。
+/// 多个不同名字 / 空名 / 非 UTF-8 一律**不挑**（⛔ 拿第一条冒充整份文件）。
+/// **不做截断**：模型的 `name` 是 `String`，没有长度上限 ⇒ 字节原样保留。
+fn adopt_track_name(
+    parsed: &ParsedMidi,
+    project: &YebanProjectV1,
+    track_id: EntityId,
+) -> ScalarAdoption {
+    let events: &[ParsedTrackName] = &parsed.track_names;
+    if events.is_empty() {
+        return ScalarAdoption {
+            op: None,
+            dropped: 0,
+            reason: None,
+        };
+    }
+    let distinct: BTreeSet<&str> = events
+        .iter()
+        .filter_map(|event| event.text.as_deref())
+        .filter(|text| !text.is_empty())
+        .collect();
+    let empty = events
+        .iter()
+        .filter(|event| event.text.as_deref() == Some(""))
+        .count();
+    let non_utf8 = events.iter().filter(|event| event.text.is_none()).count();
+    if let (1, Some(name)) = (distinct.len(), distinct.iter().next()) {
+        let name = *name;
+        let landed = events
+            .iter()
+            .filter(|event| event.text.as_deref() == Some(name))
+            .count();
+        let dropped = events.len() - landed;
+        let reason = if dropped == 0 {
+            None
+        } else {
+            let mut parts = Vec::new();
+            if empty > 0 {
+                parts.push(format!("{empty} empty track-name event(s)"));
+            }
+            if non_utf8 > 0 {
+                parts.push(format!("{non_utf8} non-UTF-8 track-name event(s)"));
+            }
+            Some(format!(
+                "track-name-not-representable: {}; the single project track keeps the name \
+                 `{name}` (empty / non-UTF-8 names are never adopted)",
+                parts.join(" + ")
+            ))
+        };
+        let current = project
+            .tracks
+            .get(&track_id)
+            .map(|track| track.name.clone())
+            .unwrap_or_default();
+        let op = if current == name {
+            None
+        } else {
+            Some(Op::SetTrackName {
+                track_id,
+                old_name: current,
+                new_name: name.to_owned(),
+            })
+        };
+        return ScalarAdoption {
+            op,
+            dropped,
+            reason,
+        };
+    }
+    let mut parts = Vec::new();
+    if !distinct.is_empty() {
+        parts.push(format!(
+            "{} distinct names [{}]",
+            distinct.len(),
+            distinct
+                .iter()
+                .map(|name| format!("`{name}`"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
+    if empty > 0 {
+        parts.push(format!("{empty} empty name(s)"));
+    }
+    if non_utf8 > 0 {
+        parts.push(format!("{non_utf8} non-UTF-8 name(s)"));
+    }
+    ScalarAdoption {
+        op: None,
+        dropped: events.len(),
+        reason: Some(format!(
+            "track-name-not-representable: {}; one TrackV3::name cannot carry them all",
+            parts.join(" + ")
+        )),
+    }
+}
+
+/// 由 marker 派生的一个段落（tick 已换算到模型的 960 PPQ）。
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct PlannedSection {
+    /// marker 文本（⛔ 不发明名字；空文本就是空名字，模型与 schema 都允许）。
+    name: String,
+    /// 起始 tick（模型 PPQ）。
+    start_tick: u64,
+    /// 结束 tick（模型 PPQ；恒 `> start_tick`）。
+    end_tick: u64,
+}
+
+/// `FF 06` marker → `SectionV3` 区间（**纯函数**）。
+///
+/// ## 区间规则（⛔ 不重叠是**构造保证**，不是事后检查）
+///
+/// 1. marker 按 tick **稳定**排序（同 tick 保持文件顺序）；
+/// 2. 同一 tick 的多条只留**最后一条**（MIDI 的生效语义），更早的逐条计入 dropped；
+/// 3. 相邻两个边界之间是一个段落；最后一个边界到 [`ParsedMidi::end_tick`]；
+/// 4. `end <= start`（零长度：末尾 marker 与文件结束重合，或低 PPQ 缩放后塌陷）
+///    ⇒ 该段落**落不下去**，逐条计入 dropped 并写明 tick；
+/// 5. 非 UTF-8 的 marker **仍是边界**（前一段在它的 tick 结束），只丢名字；
+/// 6. 因此产出的区间**两两不重叠**、且按 tick 升序 —— `SectionV3::validate`
+///    只拒绝 `end <= start`，**不查重叠**，重叠只能靠这里的构造保证。
+///
+/// ⚠ marker 的 tick **不可能 < 0**（SMF 的 delta 是无符号数），也**不可能 >
+/// `end_tick`**（`end_tick` 是全部事件 tick 的最大值）⇒ 边界检查就是第 4 条。
+fn plan_sections(
+    markers: &[ParsedMarker],
+    end_tick: u64,
+    ppq: u16,
+) -> (Vec<PlannedSection>, usize, Option<String>) {
+    if markers.is_empty() {
+        return (Vec::new(), 0, None);
+    }
+    let mut sorted: Vec<&ParsedMarker> = markers.iter().collect();
+    sorted.sort_by_key(|marker| marker.tick);
+    // (tick, 该 tick 的全部 marker（文件顺序）)；组内最后一条是生效的边界。
+    let mut groups: Vec<(u64, Vec<&ParsedMarker>)> = Vec::new();
+    for marker in &sorted {
+        match groups.last_mut() {
+            Some((tick, events)) if *tick == marker.tick => events.push(marker),
+            _ => groups.push((marker.tick, vec![marker])),
+        }
+    }
+
+    let mut sections = Vec::new();
+    let mut dropped = 0usize;
+    let mut details = Vec::new();
+    for (index, (tick, events)) in groups.iter().enumerate() {
+        let winner = events.last().expect("分组非空");
+        let next_tick = groups.get(index + 1).map_or(end_tick, |(next, _)| *next);
+        let start = scale_ticks(*tick, ppq);
+        let end = scale_ticks(next_tick, ppq);
+        if events.len() > 1 {
+            dropped += events.len() - 1;
+            let superseded = events[..events.len() - 1]
+                .iter()
+                .map(|event| match event.text.as_deref() {
+                    Some(name) => format!("`{name}`"),
+                    None => "<non-UTF-8>".to_owned(),
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            details.push(format!(
+                "{} marker(s) @{} superseded by a later marker at the same tick: {}",
+                events.len() - 1,
+                tick,
+                superseded
+            ));
+        }
+        match (&winner.text, end > start) {
+            (Some(name), true) => sections.push(PlannedSection {
+                name: name.clone(),
+                start_tick: start,
+                end_tick: end,
+            }),
+            (Some(name), false) => {
+                dropped += 1;
+                details.push(format!(
+                    "zero-length section @{} (`{name}`): file ticks {}..{} collapse to model \
+                     ticks {start}..{end}",
+                    tick, tick, next_tick
+                ));
+            }
+            (None, _) => {
+                dropped += 1;
+                details.push(format!(
+                    "marker @{} is not valid UTF-8: its tick still ends the previous section, \
+                     but no SectionV3::name can be written",
+                    tick
+                ));
+            }
+        }
+    }
+    debug_assert_eq!(
+        dropped,
+        markers.len() - sections.len(),
+        "每个 marker 要么落成一个段落、要么恰计入一次 dropped"
+    );
+    let reason = if dropped == 0 {
+        None
+    } else {
+        Some(format!("marker-not-representable: {}", details.join("; ")))
+    };
+    (sections, dropped, reason)
+}
+
+/// 无落点的类别**为什么**落不下去（稳定的一句话；MCP 可逐字引用）。
+///
+/// ⚠ 这与 [`MidiAuxEventKind`] 的变体文档是**同一个事实的两处表达**：变体文档给
+/// 人读，这里给报告/MCP 读。改一边必须改另一边（`aux_reasons` 的值来自这里）。
+fn static_loss_reason(kind: MidiAuxEventKind) -> &'static str {
+    match kind {
+        // 四类有落点：它们的动态原因由 helper 给；这里的文本只是兜底（⛔ 不应出现）。
+        MidiAuxEventKind::Tempo => "tempo map has no home: project.bpm is a single scalar",
+        MidiAuxEventKind::TimeSignature => {
+            "meter map has no home: project.time_signature is a single scalar"
+        }
+        MidiAuxEventKind::TrackName => "track names cannot all land in one TrackV3::name",
+        MidiAuxEventKind::Marker => "marker cannot become a SectionV3 (zero-length / non-UTF-8)",
+        MidiAuxEventKind::KeySignature => "the model has no key-signature field",
+        MidiAuxEventKind::ControlChange => {
+            "no CC-to-automation mapping: automation lanes only target \
+             TrackVolume/TrackPan/SendGain/DeviceParam/Macro"
+        }
+        MidiAuxEventKind::ProgramChange => {
+            "TrackV3::sampler is a sampler file path, not a MIDI program number"
+        }
+        MidiAuxEventKind::PitchBend => {
+            "a channel pitch bend applies to every sounding note; there is no honest \
+             per-note attribution rule"
+        }
+        MidiAuxEventKind::PolyAftertouch => "the model has no poly-aftertouch field",
+        MidiAuxEventKind::ChannelAftertouch => "the model has no channel-aftertouch field",
+        MidiAuxEventKind::SysEx => "the model has no SysEx payload carrier",
+        MidiAuxEventKind::Escape => "the model has no escape payload carrier",
+        MidiAuxEventKind::Text => "the model has no text-meta field",
+        MidiAuxEventKind::Copyright => "project.author/title are not a copyright notice",
+        MidiAuxEventKind::InstrumentName => {
+            "TrackV3::sampler is a path; the model has no instrument-name field"
+        }
+        MidiAuxEventKind::TrackNumber => "the model has no track-number field",
+        MidiAuxEventKind::CuePoint => {
+            "the model has no cue-point entity (cue points are not SectionV3 ranges)"
+        }
+        MidiAuxEventKind::ProgramName => "the model has no program-name field",
+        MidiAuxEventKind::DeviceName => "the model has no device-name field",
+        MidiAuxEventKind::MidiChannelPrefix => "MidiNote has no channel field",
+        MidiAuxEventKind::MidiPort => "the model has no MIDI-port field",
+        MidiAuxEventKind::SmpteOffset => "the model has no SMPTE-offset field",
+        MidiAuxEventKind::SequencerSpecific => "the model has no sequencer-specific carrier",
+        MidiAuxEventKind::UnknownMeta => {
+            "unrecognised meta id: the model has no carrier and the parser does not guess \
+             its meaning"
+        }
+    }
+}
+
+/// **纯映射**：`ParsedMidi` ⇒ 一批 `Op`（⛔ 不改工程、⛔ 不提交、⛔ 不碰文件系统）。
+///
+/// ⚠ 消费的字段（⭐ 可由本文件 `grep 'parsed\.'` 复算）：`notes` / `lyrics` / `ppq`
+/// 加 `#342` 的四类元数据 `tempos`（**只按字段过滤**）/ `track_names` / `markers` /
+/// `end_tick`；`format` / `tracks` / `aux_events` 只进丢失读数（⛔ 不参与映射）。
+/// 完整口径见本模块文档的"口径"一节。
+///
+/// 产物是**结构化**的：`ops`（音符 + `SetTempo` / `SetTimeSignature` /
+/// `SetTrackName` / `SetSection`）与 [`MidiImportLosses`]（含逐类
+/// [`MidiImportLosses::aux_reasons`]）。⛔ 不打印、⛔ 不读路径 —— 未来的
+/// `yeban_import_midi` 工具可以直接序列化它。
 ///
 /// ## ⭐ `#317` 歌词归属：**唯一才归属**
 ///
@@ -560,21 +1106,65 @@ pub fn plan_midi_import(
         "歌词分桶必须满足 read == attached + dropped: {lyrics:?}"
     );
 
-    // ⭐ `#318`：把解析器数到的每一类 aux 事件原样变成 read/dropped 两列。
-    // ⚠ 今天**没有任何一类被消费** ⇒ `dropped == read` 对每一类都成立。
-    // ⚠ **"值一样"不等于"没丢"**：`tempo` 即使数值恰好等于工程 bpm 也仍是丢
-    // （`project.bpm` 是唯一权威，文件里的值没被消费）。支持某一类时把它的
-    // `dropped` 改成 0，并**改掉** `dropped == read` 的判据；⛔ 不许删判据。
+    // ⭐ `#342`：四类有落点的元数据各走一个**纯** helper（只读 `parsed` + `project`）；
+    // 音符 ops 先入队，元数据 ops 后入队 —— 同一批 `commit_ops_with_origin` 提交，
+    // 因此"改 bpm / 拍号 / 轨名 / 建段落"与音符**同生共死**（全应用或全不应用）。
+    let mut tempo = adopt_tempo(parsed, project);
+    let mut time_signature = adopt_time_signature(parsed, project);
+    let mut track_name = adopt_track_name(parsed, project, track_id);
+    let (sections, marker_dropped, marker_reason) =
+        plan_sections(&parsed.markers, parsed.end_tick, parsed.ppq);
+    for adoption in [&mut track_name, &mut tempo, &mut time_signature] {
+        if let Some(op) = adoption.op.take() {
+            ops.push(op);
+        }
+    }
+    for section in &sections {
+        let section_id = EntityId::new();
+        ops.push(Op::SetSection {
+            section_id,
+            old_section: None,
+            new_section: SectionV3 {
+                id: section_id,
+                name: section.name.clone(),
+                start_tick: section.start_tick,
+                end_tick: section.end_tick,
+                color: None,
+            },
+        });
+    }
+
+    // ⭐ `#318` / `#342`：逐类 read/dropped。四类有落点的类用 helper 的读数与原因；
+    // 其余 20 类今天**没有家** ⇒ `dropped == read`，原因是 `static_loss_reason` 的
+    // 稳定一句话（含模型事实，MCP 可逐字引用）。
     let mut aux_events: BTreeMap<MidiAuxEventKind, MidiLossCount> = BTreeMap::new();
+    let mut aux_reasons: BTreeMap<MidiAuxEventKind, String> = BTreeMap::new();
+    let stored = [
+        (MidiAuxEventKind::Tempo, &tempo),
+        (MidiAuxEventKind::TimeSignature, &time_signature),
+        (MidiAuxEventKind::TrackName, &track_name),
+    ];
     for kind in MidiAuxEventKind::ALL {
         let read = parsed.aux_events.count(kind);
-        aux_events.insert(
-            kind,
-            MidiLossCount {
-                read,
-                dropped: read,
-            },
+        let (dropped, reason) = if kind == MidiAuxEventKind::Marker {
+            (marker_dropped, marker_reason.clone())
+        } else if let Some((_, adoption)) = stored.iter().find(|(stored, _)| *stored == kind) {
+            (adoption.dropped, adoption.reason.clone())
+        } else {
+            (read, None)
+        };
+        debug_assert!(
+            dropped <= read,
+            "{}: dropped={dropped} > read={read}（⛔ 丢掉的事件数不可能超过读到的）",
+            kind.key()
         );
+        aux_events.insert(kind, MidiLossCount { read, dropped });
+        if dropped > 0 {
+            aux_reasons.insert(
+                kind,
+                reason.unwrap_or_else(|| static_loss_reason(kind).to_owned()),
+            );
+        }
     }
     let distinct_channels = parsed
         .notes
@@ -598,6 +1188,7 @@ pub fn plan_midi_import(
             dropped: notes,
         },
         aux_events,
+        aux_reasons,
     };
     debug_assert!(
         losses.is_consistent(),
@@ -605,7 +1196,7 @@ pub fn plan_midi_import(
     );
     debug_assert!(
         losses.is_total_loss(),
-        "今天没有一类被支持 ⇒ 每条 dropped == read（支持一类时改这里，⛔ 别删判据）: {losses:?}"
+        "无落点的类别必须仍全损（有落点的四类不受这条约束；⛔ 别删判据）: {losses:?}"
     );
     Ok(MidiImportPlan {
         ops,
@@ -734,10 +1325,36 @@ mod tests {
             tracks: 1,
             aux_events: MidiAuxEventCounts::default(),
             tempos: Vec::<MidiTempo>::new(),
+            track_names: Vec::new(),
+            markers: Vec::new(),
+            end_tick: 0,
             notes,
             lyrics,
             non_utf8_lyrics,
             empty_lyrics,
+        }
+    }
+
+    /// 往夹具的 aux 计数里记 `count` 条 `kind`（测试只关心"读到了几条"）。
+    fn recording(mut parsed: ParsedMidi, kind: MidiAuxEventKind, count: usize) -> ParsedMidi {
+        for _ in 0..count {
+            parsed.aux_events.record(kind);
+        }
+        parsed
+    }
+
+    fn marker(tick: u64, text: Option<&str>) -> ParsedMarker {
+        ParsedMarker {
+            tick,
+            text: text.map(str::to_owned),
+        }
+    }
+
+    fn track_name(track: usize, tick: u64, text: Option<&str>) -> ParsedTrackName {
+        ParsedTrackName {
+            track,
+            tick,
+            text: text.map(str::to_owned),
         }
     }
 
@@ -1016,29 +1633,18 @@ mod tests {
         );
     }
 
-    /// ⭐ `#318`：报告把**每一类** aux 事件都成对报出（read/dropped），且今天
-    /// 每类 `dropped == read` —— 没有一类被冒充成"已处理"。
+    /// ⭐ `#342`：报告把**每一类** aux 事件成对报出（read/dropped），有落点的四类
+    /// 用**实际落地**的读数，没有落点的类仍 `dropped == read` 并给出精确原因。
     ///
-    /// 控制臂：计数不是零（tempo=2、marker=1…），所以"全损"不是"没有数据"造出来的
-    /// 恒真；`read_events() == 7` 是夹具里**真的**有 7 条 event 的读数。
+    /// 夹具（⛔ 借导出器）：2 条 tempo（120 → 150，**map** ⇒ 落不下）、1 条 3/4 @0
+    /// （唯一条 tick 0 ⇒ **落地**）、2 个不同轨名（⇒ 落不下）、2 条 marker
+    /// （1 条有名字并落地、1 条非 UTF-8 落不下）、CC / 弯音 / 未知 meta 各 1。
     #[test]
     fn the_loss_report_pairs_read_and_dropped_for_every_aux_kind() {
         let project = yeban_model::samples::filled_project();
-        let mut aux = MidiAuxEventCounts::default();
-        aux.record(MidiAuxEventKind::Tempo);
-        aux.record(MidiAuxEventKind::Tempo);
-        aux.record(MidiAuxEventKind::TrackName);
-        aux.record(MidiAuxEventKind::Marker);
-        aux.record(MidiAuxEventKind::ControlChange);
-        aux.record(MidiAuxEventKind::PitchBend);
-        aux.record(MidiAuxEventKind::UnknownMeta);
-        let parsed = ParsedMidi {
-            format: MidiFormat::Parallel,
-            ppq: 960,
-            tracks: 3,
-            aux_events: aux,
-            tempos: Vec::new(),
-            notes: vec![
+        let mut parsed = parsed(
+            960,
+            vec![
                 ParsedNote {
                     channel: 0,
                     key: 60,
@@ -1054,10 +1660,41 @@ mod tests {
                     end_tick: 960,
                 },
             ],
-            lyrics: Vec::new(),
-            non_utf8_lyrics: 0,
-            empty_lyrics: 0,
-        };
+        );
+        parsed.format = MidiFormat::Parallel;
+        parsed.tracks = 3;
+        for (kind, count) in [
+            (MidiAuxEventKind::Tempo, 2),
+            (MidiAuxEventKind::TimeSignature, 1),
+            (MidiAuxEventKind::TrackName, 2),
+            (MidiAuxEventKind::Marker, 2),
+            (MidiAuxEventKind::ControlChange, 1),
+            (MidiAuxEventKind::PitchBend, 1),
+            (MidiAuxEventKind::UnknownMeta, 1),
+        ] {
+            parsed = recording(parsed, kind, count);
+        }
+        parsed.tempos = vec![
+            MidiTempo {
+                tick: 0,
+                microseconds_per_quarter: Some(500_000),
+                numerator: Some(3),
+                denominator_pow2: Some(2),
+            },
+            MidiTempo {
+                tick: 480,
+                microseconds_per_quarter: Some(400_000),
+                numerator: None,
+                denominator_pow2: None,
+            },
+        ];
+        parsed.track_names = vec![
+            track_name(0, 0, Some("Lead")),
+            track_name(1, 0, Some("Bass")),
+        ];
+        parsed.markers = vec![marker(0, Some("Intro")), marker(960, None)];
+        parsed.end_tick = 1440;
+
         let plan =
             plan_midi_import(&project, &parsed, &MidiImportOptions::default()).expect("必须有目标");
         let losses = &plan.losses;
@@ -1089,35 +1726,557 @@ mod tests {
             MidiAuxEventKind::COUNT,
             "24 类一个不缺（即使 read=0 也在表里）"
         );
+
+        // ---- 四类有落点：读到的条数 vs 真正落地的条数 ----
         assert_eq!(
             losses.aux_events[&MidiAuxEventKind::Tempo],
             MidiLossCount {
                 read: 2,
                 dropped: 2,
-            }
+            },
+            "tempo map（120→150）没有家"
+        );
+        assert!(
+            losses.aux_reasons[&MidiAuxEventKind::Tempo].contains("120.00")
+                && losses.aux_reasons[&MidiAuxEventKind::Tempo].contains("150.00"),
+            "tempo 的原因必须**列出两个值**: {:?}",
+            losses.aux_reasons[&MidiAuxEventKind::Tempo]
+        );
+        assert_eq!(
+            losses.aux_events[&MidiAuxEventKind::TimeSignature],
+            MidiLossCount {
+                read: 1,
+                dropped: 0,
+            },
+            "唯一条 3/4 @0 ⇒ 落进 project.time_signature"
+        );
+        assert!(
+            !losses
+                .aux_reasons
+                .contains_key(&MidiAuxEventKind::TimeSignature),
+            "落地的类别不许编一条丢失原因"
+        );
+        assert_eq!(
+            losses.aux_events[&MidiAuxEventKind::TrackName],
+            MidiLossCount {
+                read: 2,
+                dropped: 2,
+            },
+            "两个不同轨名不能都落进一个 TrackV3::name"
+        );
+        assert!(
+            losses.aux_reasons[&MidiAuxEventKind::TrackName].contains("Lead")
+                && losses.aux_reasons[&MidiAuxEventKind::TrackName].contains("Bass"),
+            "轨名原因必须列出全部不同名字"
         );
         assert_eq!(
             losses.aux_events[&MidiAuxEventKind::Marker],
             MidiLossCount {
-                read: 1,
+                read: 2,
+                dropped: 1,
+            },
+            "1 条 marker 落成段落，非 UTF-8 那条落不下"
+        );
+        assert!(
+            losses.aux_reasons[&MidiAuxEventKind::Marker].contains("not valid UTF-8"),
+            "marker 原因必须精确到「非 UTF-8」: {:?}",
+            losses.aux_reasons[&MidiAuxEventKind::Marker]
+        );
+
+        // ---- 20 类无落点：仍全损，且每类都有一条稳定原因（MCP 可逐字引用） ----
+        for kind in [
+            MidiAuxEventKind::ControlChange,
+            MidiAuxEventKind::PitchBend,
+            MidiAuxEventKind::UnknownMeta,
+        ] {
+            assert_eq!(
+                losses.aux_events[&kind],
+                MidiLossCount {
+                    read: 1,
+                    dropped: 1,
+                },
+                "{} 今天全损",
+                kind.key()
+            );
+            assert_eq!(
+                losses.aux_reasons[&kind],
+                static_loss_reason(kind),
+                "无落点的类别必须有原因（键 = {}）",
+                kind.key()
+            );
+        }
+        assert!(losses.is_consistent());
+        assert!(
+            losses.is_total_loss(),
+            "无落点的类别必须仍全损（有落点的四类不参与这条判据）"
+        );
+        assert_eq!(losses.read_events(), 10, "夹具里真的 10 条 aux 事件");
+        assert_eq!(losses.dropped_events(), 2 + 2 + 1 + 3, "落地的只有 3/4");
+
+        // ---- 后果：段落真的进了 ops（tick 已换算；非 UTF-8 只结束前一段） ----
+        let sections: Vec<(&str, u64, u64)> = plan
+            .ops
+            .iter()
+            .filter_map(|op| match op {
+                Op::SetSection { new_section, .. } => Some((
+                    new_section.name.as_str(),
+                    new_section.start_tick,
+                    new_section.end_tick,
+                )),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            sections,
+            vec![("Intro", 0_u64, 960_u64)],
+            "只有 Intro 落成段落；非 UTF-8 的 marker 在 960 结束前一段"
+        );
+        assert!(plan.ops.iter().any(|op| matches!(
+            op,
+            Op::SetTimeSignature {
+                new_time_signature: TimeSignature {
+                    numerator: 3,
+                    denominator: 4
+                },
+                ..
+            }
+        )));
+        assert_eq!(plan.notes, 2);
+        assert_eq!(plan.lyrics, MidiLyricCounts::default());
+    }
+
+    /// 一个最小 `ParsedMidi`：2 颗音符、指定 ppq（元数据由调用方填）。
+    fn two_notes(ppq: u16) -> ParsedMidi {
+        parsed(
+            ppq,
+            vec![
+                ParsedNote {
+                    channel: 0,
+                    key: 60,
+                    velocity: 100,
+                    start_tick: 0,
+                    end_tick: 480,
+                },
+                ParsedNote {
+                    channel: 0,
+                    key: 64,
+                    velocity: 90,
+                    start_tick: 480,
+                    end_tick: 960,
+                },
+            ],
+        )
+    }
+
+    /// 从 ops 里读段落区间 `(name, start, end)`（模型 PPQ）。
+    fn section_rows(plan: &MidiImportPlan) -> Vec<(String, u64, u64)> {
+        plan.ops
+            .iter()
+            .filter_map(|op| match op {
+                Op::SetSection { new_section, .. } => Some((
+                    new_section.name.clone(),
+                    new_section.start_tick,
+                    new_section.end_tick,
+                )),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// 判据：**唯一条 tick 0** tempo 与拍号真的落进两个单标量；等值时**不**发空操作。
+    #[test]
+    fn a_single_tick_zero_tempo_and_meter_are_adopted() {
+        let mut project = yeban_model::samples::filled_project();
+        project.bpm = 120.0;
+        project.time_signature = TimeSignature {
+            numerator: 4,
+            denominator: 4,
+        };
+        let mut parsed = two_notes(960);
+        parsed = recording(parsed, MidiAuxEventKind::Tempo, 1);
+        parsed = recording(parsed, MidiAuxEventKind::TimeSignature, 1);
+        parsed.tempos = vec![MidiTempo {
+            tick: 0,
+            microseconds_per_quarter: Some(600_000), // 100 BPM
+            numerator: Some(7),
+            denominator_pow2: Some(3), // 7/8
+        }];
+
+        let plan =
+            plan_midi_import(&project, &parsed, &MidiImportOptions::default()).expect("有目标");
+        assert!(
+            plan.ops.iter().any(|op| matches!(
+                op,
+                Op::SetTempo { old_bpm, new_bpm } if *old_bpm == 120.0 && *new_bpm == 100.0
+            )),
+            "唯一 tick 0 tempo ⇒ SetTempo 120 ⇒ 100: {:?}",
+            plan.ops
+        );
+        assert!(
+            plan.ops.iter().any(|op| matches!(
+                op,
+                Op::SetTimeSignature { new_time_signature, .. }
+                    if new_time_signature.numerator == 7 && new_time_signature.denominator == 8
+            )),
+            "唯一 tick 0 拍号 ⇒ SetTimeSignature 7/8: {:?}",
+            plan.ops
+        );
+        assert_eq!(
+            plan.losses.aux_events[&MidiAuxEventKind::Tempo].dropped,
+            0,
+            "落地的 tempo 不是损失"
+        );
+        assert_eq!(
+            plan.losses.aux_events[&MidiAuxEventKind::TimeSignature].dropped,
+            0
+        );
+        assert!(plan.losses.aux_reasons.is_empty(), "没有损失就没有原因");
+
+        // 等值：现值已经是文件值 ⇒ 不发 SetTempo / SetTimeSignature（⛔ 空操作）。
+        let mut same = project.clone();
+        same.bpm = 100.0;
+        same.time_signature = TimeSignature {
+            numerator: 7,
+            denominator: 8,
+        };
+        let plan = plan_midi_import(&same, &parsed, &MidiImportOptions::default()).expect("有目标");
+        assert!(
+            !plan
+                .ops
+                .iter()
+                .any(|op| matches!(op, Op::SetTempo { .. } | Op::SetTimeSignature { .. })),
+            "现值已等于文件值 ⇒ 不发空操作: {:?}",
+            plan.ops
+        );
+    }
+
+    /// 判据（父单）：**两条 tempo / 两条拍号**必须响亮报丢并列出**两个值**，
+    /// ⛔ 不许静默挑一个。工程的两个单标量必须**原样不动**。
+    #[test]
+    fn two_tempo_and_meter_changes_are_loud_losses_that_name_every_value() {
+        let mut project = yeban_model::samples::filled_project();
+        project.bpm = 120.0;
+        project.time_signature = TimeSignature {
+            numerator: 4,
+            denominator: 4,
+        };
+        let mut parsed = two_notes(960);
+        parsed = recording(parsed, MidiAuxEventKind::Tempo, 2);
+        parsed = recording(parsed, MidiAuxEventKind::TimeSignature, 2);
+        parsed.tempos = vec![
+            MidiTempo {
+                tick: 0,
+                microseconds_per_quarter: Some(600_000), // 100 BPM
+                numerator: Some(5),
+                denominator_pow2: Some(3), // 5/8
+            },
+            MidiTempo {
+                tick: 960,
+                microseconds_per_quarter: Some(400_000), // 150 BPM
+                numerator: Some(3),
+                denominator_pow2: Some(2), // 3/4
+            },
+        ];
+
+        let plan =
+            plan_midi_import(&project, &parsed, &MidiImportOptions::default()).expect("有目标");
+        assert!(
+            !plan
+                .ops
+                .iter()
+                .any(|op| matches!(op, Op::SetTempo { .. } | Op::SetTimeSignature { .. })),
+            "map 没有家 ⇒ ⛔ 不发一个'挑出来的'单值: {:?}",
+            plan.ops
+        );
+        let tempo = &plan.losses.aux_events[&MidiAuxEventKind::Tempo];
+        assert_eq!((tempo.read, tempo.dropped), (2, 2), "两条都丢");
+        let tempo_reason = &plan.losses.aux_reasons[&MidiAuxEventKind::Tempo];
+        assert!(
+            tempo_reason.contains("100.00 BPM @0") && tempo_reason.contains("150.00 BPM @960"),
+            "tempo 原因必须同时点名两个值与 tick: {tempo_reason}"
+        );
+        let meter = &plan.losses.aux_events[&MidiAuxEventKind::TimeSignature];
+        assert_eq!((meter.read, meter.dropped), (2, 2), "两条都丢");
+        let meter_reason = &plan.losses.aux_reasons[&MidiAuxEventKind::TimeSignature];
+        assert!(
+            meter_reason.contains("5/8 @0") && meter_reason.contains("3/4 @960"),
+            "拍号原因必须同时点名两个值与 tick: {meter_reason}"
+        );
+        assert!(
+            meter_reason.contains("single scalar"),
+            "原因必须说明为什么没有家: {meter_reason}"
+        );
+
+        // 首条在 tick > 0 也一样：SMF 隐含 120 BPM / 4/4 ⇒ 仍是两个值。
+        let mut late = two_notes(960);
+        late = recording(late, MidiAuxEventKind::Tempo, 1);
+        late = recording(late, MidiAuxEventKind::TimeSignature, 1);
+        late.tempos = vec![MidiTempo {
+            tick: 960,
+            microseconds_per_quarter: Some(400_000),
+            numerator: Some(3),
+            denominator_pow2: Some(2),
+        }];
+        let plan =
+            plan_midi_import(&project, &late, &MidiImportOptions::default()).expect("有目标");
+        let tempo_reason = &plan.losses.aux_reasons[&MidiAuxEventKind::Tempo];
+        assert!(
+            tempo_reason.contains("120.00 BPM @0 (SMF default")
+                && tempo_reason.contains("150.00 BPM @960"),
+            "首条 tempo 在 tick > 0 ⇒ 隐含 120 + 150: {tempo_reason}"
+        );
+        let meter_reason = &plan.losses.aux_reasons[&MidiAuxEventKind::TimeSignature];
+        assert!(
+            meter_reason.contains("4/4 @0 (SMF default") && meter_reason.contains("3/4 @960"),
+            "首条拍号在 tick > 0 ⇒ 隐含 4/4 + 3/4: {meter_reason}"
+        );
+    }
+
+    /// 判据：marker → `SectionV3` 区间，**逐 tick 逐名字**；区间两两不重叠
+    /// （`SectionV3::validate` **不查重叠**，这里靠构造保证并断言）。
+    #[test]
+    fn markers_become_sections_with_exact_ticks_names_and_no_overlap() {
+        let project = yeban_model::samples::filled_project();
+        let mut parsed = two_notes(960);
+        parsed = recording(parsed, MidiAuxEventKind::Marker, 3);
+        parsed.markers = vec![
+            marker(0, Some("Intro")),
+            // 名字里带引号 / 换行 / 破折号：模型要**逐字节**保留（转义是序列化层的事）。
+            marker(960, Some("Sec \"1\"\n—")),
+            marker(1920, Some("Outro")),
+        ];
+        parsed.end_tick = 2880;
+
+        let plan =
+            plan_midi_import(&project, &parsed, &MidiImportOptions::default()).expect("有目标");
+        let rows = section_rows(&plan);
+        assert_eq!(
+            rows,
+            vec![
+                ("Intro".to_owned(), 0, 960),
+                ("Sec \"1\"\n—".to_owned(), 960, 1920),
+                ("Outro".to_owned(), 1920, 2880),
+            ],
+            "一个 marker 一个段落；名字逐字节保留、区间到下一个 marker / end_tick"
+        );
+        for pair in rows.windows(2) {
+            assert!(
+                pair[0].2 <= pair[1].1,
+                "相邻段落不许重叠: {:?} 与 {:?}",
+                pair[0],
+                pair[1]
+            );
+        }
+        assert_eq!(
+            plan.losses.aux_events[&MidiAuxEventKind::Marker],
+            MidiLossCount {
+                read: 3,
+                dropped: 0,
+            }
+        );
+        assert!(
+            !plan
+                .losses
+                .aux_reasons
+                .contains_key(&MidiAuxEventKind::Marker)
+        );
+    }
+
+    /// 判据：零长度（末尾 marker 与 `end_tick` 重合）与同 tick 顶替都必须**响亮**
+    /// 报丢，⛔ 不许生成 `end <= start` 的 `SectionV3`（那会被模型拒绝）。
+    #[test]
+    fn zero_length_and_superseded_markers_are_loud_losses() {
+        let project = yeban_model::samples::filled_project();
+
+        // ① 末尾 marker @960 == end_tick ⇒ 零长度。
+        let mut parsed = two_notes(960);
+        parsed = recording(parsed, MidiAuxEventKind::Marker, 2);
+        parsed.markers = vec![marker(0, Some("A")), marker(960, Some("B"))];
+        parsed.end_tick = 960;
+        let plan =
+            plan_midi_import(&project, &parsed, &MidiImportOptions::default()).expect("有目标");
+        assert_eq!(section_rows(&plan), vec![("A".to_owned(), 0, 960)]);
+        assert_eq!(
+            plan.losses.aux_events[&MidiAuxEventKind::Marker],
+            MidiLossCount {
+                read: 2,
                 dropped: 1,
             }
         );
-        for (kind, count) in &losses.aux_events {
-            assert_eq!(
-                count.dropped,
-                count.read,
-                "{} 今天必须全损（支持它时改这里，⛔ 不是删判据）",
-                kind.key()
-            );
-            assert!(count.is_consistent(), "{}: dropped <= read", kind.key());
-        }
-        assert!(losses.is_consistent());
-        assert!(losses.is_total_loss());
-        assert_eq!(losses.read_events(), 7, "夹具里真的 7 条 aux 事件");
-        assert_eq!(losses.dropped_events(), 7);
-        assert_eq!(plan.notes, 2);
-        assert_eq!(plan.lyrics, MidiLyricCounts::default());
+        let reason = &plan.losses.aux_reasons[&MidiAuxEventKind::Marker];
+        assert!(
+            reason.contains("zero-length") && reason.contains("B"),
+            "零长度必须点名 tick 与名字: {reason}"
+        );
+
+        // ② 同一 tick 两条 ⇒ 后一条胜出，前一条逐条报"顶替"。
+        let mut parsed = two_notes(960);
+        parsed = recording(parsed, MidiAuxEventKind::Marker, 3);
+        parsed.markers = vec![
+            marker(0, Some("A")),
+            marker(0, Some("B")),
+            marker(960, Some("C")),
+        ];
+        parsed.end_tick = 1920;
+        let plan =
+            plan_midi_import(&project, &parsed, &MidiImportOptions::default()).expect("有目标");
+        assert_eq!(
+            section_rows(&plan),
+            vec![("B".to_owned(), 0, 960), ("C".to_owned(), 960, 1920)],
+            "同一 tick 后一条胜出（MIDI 生效语义）"
+        );
+        assert_eq!(
+            plan.losses.aux_events[&MidiAuxEventKind::Marker],
+            MidiLossCount {
+                read: 3,
+                dropped: 1,
+            }
+        );
+        let reason = &plan.losses.aux_reasons[&MidiAuxEventKind::Marker];
+        assert!(
+            reason.contains("superseded") && reason.contains("A"),
+            "顶替必须点名: {reason}"
+        );
+
+        // ③ 低 PPQ 缩放把 1 tick 的区间塌成 0 长度 ⇒ 同样响亮报丢。
+        let mut parsed = two_notes(1920);
+        parsed = recording(parsed, MidiAuxEventKind::Marker, 2);
+        parsed.markers = vec![marker(0, Some("A")), marker(1, Some("B"))];
+        parsed.end_tick = 2;
+        let plan =
+            plan_midi_import(&project, &parsed, &MidiImportOptions::default()).expect("有目标");
+        assert_eq!(
+            section_rows(&plan),
+            vec![("B".to_owned(), 0, 1)],
+            "0..1 缩放后塌成 0..0 ⇒ 只有 B 落成 0..1"
+        );
+        assert_eq!(plan.losses.aux_events[&MidiAuxEventKind::Marker].dropped, 1);
+        assert!(
+            plan.losses.aux_reasons[&MidiAuxEventKind::Marker].contains("zero-length"),
+            "缩放塌陷也必须报零长度"
+        );
+    }
+
+    /// 判据：没有 marker 的文件**不新增**段落（也**不**编一条损失）。
+    #[test]
+    fn a_file_without_markers_adds_no_sections() {
+        let project = yeban_model::samples::filled_project();
+        let parsed = two_notes(960);
+        let plan =
+            plan_midi_import(&project, &parsed, &MidiImportOptions::default()).expect("有目标");
+        assert!(section_rows(&plan).is_empty(), "没有 marker ⇒ 没有新段落");
+        assert_eq!(
+            plan.losses.aux_events[&MidiAuxEventKind::Marker],
+            MidiLossCount {
+                read: 0,
+                dropped: 0,
+            }
+        );
+        assert!(
+            !plan
+                .losses
+                .aux_reasons
+                .contains_key(&MidiAuxEventKind::Marker)
+        );
+    }
+
+    /// 判据：轨名**去重后才采纳**，多个不同名字 / 空名 / 非 UTF-8 都不挑。
+    #[test]
+    fn track_names_are_adopted_only_when_one_distinct_name_remains() {
+        let mut project = yeban_model::samples::filled_project();
+        let track_id = *project
+            .tracks
+            .keys()
+            .find(|id| **id != project.master_bus_track_id)
+            .expect("有一条非 master 音轨");
+        project.tracks.get_mut(&track_id).expect("目标音轨").name = "Original".to_owned();
+        let options = MidiImportOptions {
+            track_id: Some(track_id),
+            clip_id: None,
+        };
+
+        // ① 两个 MTrk 同名 ⇒ 去重成一个名字，落地（不算损失）。
+        let mut parsed = two_notes(960);
+        parsed = recording(parsed, MidiAuxEventKind::TrackName, 2);
+        parsed.track_names = vec![
+            track_name(0, 0, Some("Piano")),
+            track_name(1, 0, Some("Piano")),
+        ];
+        let plan = plan_midi_import(&project, &parsed, &options).expect("有目标");
+        assert!(
+            plan.ops.iter().any(|op| matches!(
+                op,
+                Op::SetTrackName { new_name, old_name, .. }
+                    if new_name == "Piano" && old_name == "Original"
+            )),
+            "同名去重后恰一个名字 ⇒ 采用: {:?}",
+            plan.ops
+        );
+        assert_eq!(
+            plan.losses.aux_events[&MidiAuxEventKind::TrackName],
+            MidiLossCount {
+                read: 2,
+                dropped: 0,
+            },
+            "同名去重 = 两条都落地"
+        );
+
+        // ② 两个不同名字 ⇒ ⛔ 不挑，逐条报丢。
+        let mut parsed = two_notes(960);
+        parsed = recording(parsed, MidiAuxEventKind::TrackName, 2);
+        parsed.track_names = vec![
+            track_name(0, 0, Some("Lead")),
+            track_name(1, 0, Some("Bass")),
+        ];
+        let plan = plan_midi_import(&project, &parsed, &options).expect("有目标");
+        assert!(
+            !plan
+                .ops
+                .iter()
+                .any(|op| matches!(op, Op::SetTrackName { .. })),
+            "两个不同名字 ⇒ ⛔ 改名"
+        );
+        assert_eq!(
+            plan.losses.aux_events[&MidiAuxEventKind::TrackName],
+            MidiLossCount {
+                read: 2,
+                dropped: 2,
+            }
+        );
+        let reason = &plan.losses.aux_reasons[&MidiAuxEventKind::TrackName];
+        assert!(
+            reason.contains("Lead") && reason.contains("Bass"),
+            "原因必须列出两个名字: {reason}"
+        );
+
+        // ③ 一个合法名字 + 空名 + 非 UTF-8 ⇒ 采用合法的那个，另两条报丢。
+        let mut parsed = two_notes(960);
+        parsed = recording(parsed, MidiAuxEventKind::TrackName, 3);
+        parsed.track_names = vec![
+            track_name(0, 0, Some("Piano")),
+            track_name(1, 0, Some("")),
+            track_name(2, 0, None),
+        ];
+        let plan = plan_midi_import(&project, &parsed, &options).expect("有目标");
+        assert!(
+            plan.ops.iter().any(|op| matches!(
+                op,
+                Op::SetTrackName { new_name, .. } if new_name == "Piano"
+            )),
+            "唯一非空合法名字 ⇒ 采用"
+        );
+        assert_eq!(
+            plan.losses.aux_events[&MidiAuxEventKind::TrackName],
+            MidiLossCount {
+                read: 3,
+                dropped: 2,
+            }
+        );
+        let reason = &plan.losses.aux_reasons[&MidiAuxEventKind::TrackName];
+        assert!(
+            reason.contains("1 empty") && reason.contains("1 non-UTF-8"),
+            "原因必须分别点名空名与非 UTF-8: {reason}"
+        );
     }
 
     /// ⭐ `#320`：歌词五字段只有一个 `Display`（CLI 与 GUI 回执共用）。
@@ -1167,6 +2326,8 @@ mod tests {
                 dropped: 5,
             },
             aux_events,
+            // 本夹具只测**可见摘要文本**；原因表不参与 `loss_summary`。
+            aux_reasons: BTreeMap::new(),
         }
     }
 
@@ -1224,6 +2385,7 @@ mod tests {
                 dropped: 5,
             },
             aux_events: BTreeMap::new(),
+            aux_reasons: BTreeMap::new(),
         };
         assert_eq!(
             no_aux.loss_summary(MidiLyricCounts {
@@ -1396,8 +2558,19 @@ mod tempo_pin_tests {
     use super::*;
     use crate::undo::UndoPort;
 
-    /// 造一份**只差 tempo** 的最小 SMF：1 条轨、960 PPQ、一个 C4 音符、⭐ 指定 tempo。
-    fn smf_with_tempo(micros: u32) -> Vec<u8> {
+    /// 造一份**只差 tempo** 的最小 SMF：1 条轨、960 PPQ、一个 C4 音符、⭐ 指定的
+    /// `(tick, µs/四分音符)` 序列（tick 是全轨绝对 tick）。
+    fn smf_with_tempos(tempos: &[(u32, u32)]) -> Vec<u8> {
+        fn vlq(mut value: u32) -> Vec<u8> {
+            let mut out = vec![u8::try_from(value & 0x7F).expect("7 bit")];
+            value >>= 7;
+            while value > 0 {
+                out.push(0x80 | u8::try_from(value & 0x7F).expect("7 bit"));
+                value >>= 7;
+            }
+            out.reverse();
+            out
+        }
         let mut bytes: Vec<u8> = Vec::new();
         bytes.extend_from_slice(b"MThd");
         bytes.extend_from_slice(&6u32.to_be_bytes());
@@ -1405,10 +2578,18 @@ mod tempo_pin_tests {
         bytes.extend_from_slice(&1u16.to_be_bytes()); // 1 条轨
         bytes.extend_from_slice(&960u16.to_be_bytes()); // 960 PPQ
         let mut track: Vec<u8> = Vec::new();
-        // `FF 51 03 <3 字节大端 µs/四分音符>`
-        track.extend_from_slice(&[0x00, 0xFF, 0x51, 0x03]);
-        track.extend_from_slice(&micros.to_be_bytes()[1..]);
-        track.extend_from_slice(&[0x00, 0x90, 0x3C, 0x64]); // note on C4 vel 100
+        let mut cursor = 0u32;
+        for &(tick, micros) in tempos {
+            track.extend(vlq(tick - cursor));
+            cursor = tick;
+            // `FF 51 03 <3 字节大端 µs/四分音符>`
+            track.extend_from_slice(&[0xFF, 0x51, 0x03]);
+            track.extend_from_slice(&micros.to_be_bytes()[1..]);
+        }
+        // 音符在 tempo 之后（tick 仍是 0 或已推进的 cursor —— 用 delta 对齐到 960）。
+        let note_tick = 960u32.max(cursor);
+        track.extend(vlq(note_tick - cursor));
+        track.extend_from_slice(&[0x90, 0x3C, 0x64]); // note on C4 vel 100
         track.extend_from_slice(&[0x87, 0x40, 0x80, 0x3C, 0x40]); // delta 960: note off
         track.extend_from_slice(&[0x00, 0xFF, 0x2F, 0x00]); // end of track
         bytes.extend_from_slice(b"MTrk");
@@ -1417,64 +2598,114 @@ mod tempo_pin_tests {
         bytes
     }
 
-    /// ⭐ **D2 主判据**：⭐ **导入**一份带**极端**变速的 SMF ⇒ ⭐ **工程的 `bpm` 一字不变**。
+    /// ⭐ `#342` **主判据（单值可以落）**：文件只有**唯一条 tick 0 tempo** ⇒ 它就是
+    /// 整份文件的 tempo ⇒ 落进 `project.bpm`（`SetTempo`）。
     ///
     /// ## 这条判据在什么条件下会红（**有牙**）
     ///
-    /// ⭐ ⭐ 有人让导入路径**消费 `parsed.tempos`**、并把值**真的写进** `project.bpm`
-    /// ⇒ ⭐ 第二条断言红。⭐ **已实测注入**（把 240 BPM 写进 `bpm` ⇒ 红；见交付报告）。
+    /// 把 `adopt_tempo` 的 tick 0 分支删掉（或把 `Op::SetTempo` 从不入队）⇒ 第二条
+    /// 断言红。**已实测注入**（见交付报告的注入/还原证据）。
     ///
-    /// ## ⭐ 控制臂（**在同一条判据里**，⛔ 不放别处）
+    /// ## 控制臂
     ///
-    /// ⭐ 断言 **音符确实进来了**（`report.notes == 1`）＋ ⭐ **文件确实带的是那个极端 tempo**
-    /// （重新解析它读回 250_000）⇒ ⭐ 否则"`bpm` 没变"可能只是因为**导入压根没发生**（恒真）。
+    /// 先解析文件确认它**真的**带 250_000 µs（240 BPM）＋ 断言音符真的进来了
+    /// （`report.notes == 1`）⇒ 否则"bpm 变了"可能只是别的原因。
     #[test]
-    fn importing_a_tempo_changing_smf_does_not_touch_the_projects_bpm() {
-        // ⭐ 极端值：250_000 µs/四分音符 = **240 BPM**（与工程侧 90 BPM 明显不同）。
+    fn a_single_tick_zero_tempo_is_adopted_into_the_project_bpm() {
+        // 250_000 µs/四分音符 = **240 BPM**（与工程侧 90 BPM 明显不同）。
         const EXTREME_MICROS: u32 = 250_000;
-        let bytes = smf_with_tempo(EXTREME_MICROS);
+        let bytes = smf_with_tempos(&[(0, EXTREME_MICROS)]);
 
         // ⭐ 控制臂（前置）：文件**真的**携带 240 BPM，⛔ 不是"看起来极端"。
         let parsed_file = yeban_midi::midi::parse_smf(&bytes).expect("解析自造 SMF");
-        assert_eq!(
-            parsed_file.tempos.len(),
-            1,
-            "⭐ 控制臂前置：文件必须真的带一条 tempo（⛔ 不然后面什么都没测）"
-        );
+        assert_eq!(parsed_file.tempos.len(), 1, "文件必须真的带一条 tempo");
         assert_eq!(
             parsed_file.tempos[0].microseconds_per_quarter,
             Some(EXTREME_MICROS),
-            "⭐ 控制臂前置：文件带的必须是那个**极端** tempo"
+            "文件带的必须是那个极端 tempo"
         );
+        assert_eq!(parsed_file.tempos[0].tick, 0, "唯一条 tempo 必须在 tick 0");
 
-        // 工程侧：`bpm = 90`（⭐ 与文件里的 240 明显不同 ⇒ 若被导入就会看得出来）。
+        // 工程侧：`bpm = 90`（⭐ 与文件里的 240 明显不同）。
         let mut project = yeban_model::samples::filled_project();
         project.bpm = 90.0;
-        let session =
-            crate::undo::UndoSession::open("<判据:tempo 不导入>", "yeban-app", project.clone(), 1)
-                .expect("打开会话");
+        let session = crate::undo::UndoSession::open(
+            "<判据:单值 tempo 落进 bpm>",
+            "yeban-app",
+            project.clone(),
+            1,
+        )
+        .expect("打开会话");
         let port = UndoPort::new(session);
 
         let report = import_midi_bytes(&port, &project, &bytes, &MidiImportOptions::default(), 10)
-            .expect("极端变速的 SMF 必须能导入");
+            .expect("单 tempo 的 SMF 必须能导入");
 
-        // ⭐ 控制臂：导入**真的发生了**。
         assert_eq!(
             report.notes, 1,
-            "⭐ 控制臂：音符必须真的进来了（⛔ 否则'`bpm` 没变'可能只是没导入）"
+            "⭐ 控制臂：音符必须真的进来了（⛔ 否则'`bpm` 变了'可能只是没导入）"
         );
-
-        // ⭐ **主断言**：权威工程的 `bpm` 一字不变。
+        assert_eq!(
+            (
+                report.losses.aux_events[&MidiAuxEventKind::Tempo].read,
+                report.losses.aux_events[&MidiAuxEventKind::Tempo].dropped
+            ),
+            (1, 0),
+            "唯一条 tick 0 tempo ⇒ 落地，不是损失"
+        );
+        // ⭐ 主断言：工程的 `bpm` = 文件里的 240。
         assert_eq!(
             port.project().bpm,
-            90.0,
-            "⭐ D2：导入⛔ 不许改工程的 `bpm`（工程的 tempo 是**单一标量** `project.bpm`，\
-             而 MIDI tempo map 可携带任意多条带 tick 的变速 ⇒ 若导入就会同时持有**两条真相**）"
+            240.0,
+            "唯一条 tick 0 tempo 是整份文件的 tempo ⇒ 落进 `project.bpm`（单标量能承载）"
         );
         assert_eq!(
             port.project().transport.count_in_bars,
             project.transport.count_in_bars,
-            "⭐ 相邻字段（同一 `TransportConfig`）也必须一字不变 —— 证明改的不是别处"
+            "⭐ 相邻字段（同一 `TransportConfig`）必须一字不变 —— 证明改的不是别处"
+        );
+    }
+
+    /// ⭐ `#342`：**两段 tempo** 的 map 没有家 ⇒ `project.bpm` **一字不变**，整类
+    /// `dropped` 且原因**点名两个值**（⛔ 不许静默挑一个）。
+    #[test]
+    fn a_tempo_map_does_not_touch_the_project_bpm_and_names_every_value() {
+        // 240 BPM @0，120 BPM @960（两个值都与工程的 90 不同）。
+        let bytes = smf_with_tempos(&[(0, 250_000), (960, 500_000)]);
+        let parsed_file = yeban_midi::midi::parse_smf(&bytes).expect("解析自造 SMF");
+        assert_eq!(parsed_file.tempos.len(), 2, "控制臂：文件真的有两条 tempo");
+
+        let mut project = yeban_model::samples::filled_project();
+        project.bpm = 90.0;
+        let session = crate::undo::UndoSession::open(
+            "<判据:tempo map 不落>",
+            "yeban-app",
+            project.clone(),
+            1,
+        )
+        .expect("打开会话");
+        let port = UndoPort::new(session);
+        let report = import_midi_bytes(&port, &project, &bytes, &MidiImportOptions::default(), 10)
+            .expect("两段 tempo 的 SMF 必须能导入");
+
+        assert_eq!(report.notes, 1, "控制臂：音符必须真的进来了");
+        assert_eq!(
+            port.project().bpm,
+            90.0,
+            "tempo map 没有家 ⇒ ⛔ 不许挑一个值写进单标量 `project.bpm`"
+        );
+        assert_eq!(
+            (
+                report.losses.aux_events[&MidiAuxEventKind::Tempo].read,
+                report.losses.aux_events[&MidiAuxEventKind::Tempo].dropped
+            ),
+            (2, 2),
+            "两条 tempo 都丢"
+        );
+        let reason = &report.losses.aux_reasons[&MidiAuxEventKind::Tempo];
+        assert!(
+            reason.contains("240.00 BPM @0") && reason.contains("120.00 BPM @960"),
+            "损失原因必须**点名两个值**与它们的 tick: {reason}"
         );
     }
 }

@@ -5,7 +5,7 @@
 //!
 //! 1. **修前红**（`/tmp/319-red.log`）：`host::wire_module_actions` 的 `import-midi`
 //!    成功回执只写 `outcome/path/notes/track/clip/commit/origin`，**损失一个字不提**；
-//! 2. **修后**：同一份 316 B 夹具（24 类 aux、29 条事件、5 颗音符）⇒
+//! 2. **修后**：同一份 316 B 夹具（24 类 aux、29 条事件里 **28 条 loss**、5 颗音符）⇒
 //!    - 回执行末尾 `losses="…"` 与 `loss_detail="…"`；
 //!    - 右栏 `module-import-losses` 一行**可见摘要**（与削波警示同一槽位、互斥）；
 //! 3. **与 CLI 同源**：GUI 的 `loss_detail` 必须**逐字等于** CLI `imported-midi:` 行
@@ -52,12 +52,13 @@ const BIN: &str = env!("CARGO_BIN_EXE_yeban-app");
 /// 可见摘要行的语义 ID（`ui/module_actions.slint` ↔ `src/elements.rs` 两处逐字相同）。
 const LOSS_ID: &str = "module-import-losses";
 
-/// 316 B 夹具的**期望摘要**（24 类 aux、29 条事件、5 颗音符、每颗都丢通道值与释放力度，
+/// 316 B 夹具的**期望摘要**（24 类 aux、29 条事件里 **28 条 loss** —— ⭐ `#342` 起
+/// 唯一的 `Verse` marker 落成一个段落 ⇒ 5 颗音符、每颗都丢通道值与释放力度，
 /// 2 条歌词候选里 1 条未归属）。
 ///
 /// ⚠ 这是**夹具的期望值**（与 `tests/midi_round_trip.rs` 的逐类期望表同源），
 /// ⛔ 不是从 GUI 回执反推的"第二份判定"。
-const EXPECTED_SUMMARY: &str = "⚠ 导入丢失：24 类/29 条；歌词未归属 1；通道/力度5/5";
+const EXPECTED_SUMMARY: &str = "⚠ 导入丢失：24 类/28 条；歌词未归属 1；通道/力度5/5";
 
 /// 三档窗口（与 `tests/pane_no_overlap.rs` / `tests/gui_clipping_warning.rs` 同一组）。
 const TIERS: &[(u32, u32)] = &[(1920, 1080), (1440, 900), (1024, 800)];

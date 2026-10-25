@@ -41,9 +41,14 @@
 //!   ⚠ 解析器**只读不归属**：一条歌词属于哪颗音符由 `yeban-app` 的导入映射决定。
 //! - ⭐ `#318`：**其余事件不静默丢弃** —— [`ParsedMidi::aux_events`] 按
 //!   [`MidiAuxEventKind`] 的 24 类逐一计数（read），[`ParsedMidi::tracks`] 给出
-//!   `MTrk` 条数。本 crate 只**读**这些数；"丢掉几条"由 `yeban-app` 的导入报告成对给出
-//!   （今天 `dropped == read`）。⚠ **值一样 ≠ 没丢**：tempo 等于工程 bpm 也仍是丢
-//!   （没被消费）。
+//!   `MTrk` 条数。本 crate 只**读**这些数；"丢掉几条"由 `yeban-app` 的导入报告成对给出。
+//! - ⭐ `#342`：**能落地的四类把内容也读出来** —— [`ParsedMidi::markers`]
+//!   （`FF 06`，含文件 tick 与严格 UTF-8 文本）、[`ParsedMidi::track_names`]
+//!   （`FF 03`）、[`ParsedMidi::tempos`]（`FF 51`/`FF 58` 的 tick 与值）、
+//!   [`ParsedMidi::end_tick`]（文件最后一个事件的 tick）。落点是 `yeban-app`：
+//!   marker → `SectionV3`、轨名 → `TrackV3::name`、唯一 tick 0 tempo/拍号 →
+//!   `project.bpm` / `project.time_signature`（都是**单标量** ⇒ 只有不带 map 的文件
+//!   能落）。⚠ **值一样 ≠ 没丢**：判据是"有没有被写进工程"。
 //! - 歌词文本**不裁剪**：`Some("")` 不写事件，`Some(" ")` 原样写（不发明
 //!   "空白算空"的规则）; 同一 tick 多条按**文本字节序**排，导出字节仍只由内容决定。
 //! - 只导出 Metrical (PPQ) 时间分度; SMPTE 时间码文件在回读时被拒绝
@@ -777,36 +782,86 @@ pub struct ParsedLyric {
     pub text: String,
 }
 
-/// SMF 里**除音符与歌词之外**、解析器读到但 [`ParsedMidi`] 不承载内容的事件种类
-/// （⭐ `#318`）。
+/// 回读得到的一条 `FF 06` marker 事件。
+///
+/// ⭐ `#342`：**只在解析层读出来**，⛔ 不在这里发明"这条 marker 到哪结束"——
+/// 区间由 `yeban-app` 的 `plan_midi_import` 按相邻 marker 的 tick 决定。
+///
+/// 与歌词的差别：非法 UTF-8 的 marker **仍保留在列表里**（`text == None`），因为它
+/// 的 **tick 仍然是一个段落边界**；丢掉它会让下一段跨过那条边界（比丢文本更糟）。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ParsedMarker {
+    /// 这条事件在**文件里**的绝对 tick（⛔ 已换算到模型 960 PPQ 之前）。
+    pub tick: u64,
+    /// 严格 UTF-8 文本；`None` = 负载**不是**合法 UTF-8（⛔ `from_utf8_lossy`、⛔ 猜）。
+    pub text: Option<String>,
+}
+
+/// 回读得到的一条 `FF 03` 轨名事件。
+///
+/// ⭐ `#342`：轨名是**每条 `MTrk` 自己的**属性，所以带上 `track`（文件里的 `MTrk`
+/// 下标，0 起）。导入落点只有**一条** `TrackV3` ⇒ 去重规则在 `yeban-app` 里。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ParsedTrackName {
+    /// 这条事件所在的 `MTrk` 下标（文件顺序，0 起；⛔ 不是模型的 `EntityId`）。
+    pub track: usize,
+    /// 这条事件在**文件里**的绝对 tick。
+    pub tick: u64,
+    /// 严格 UTF-8 文本；`None` = 非法 UTF-8（⛔ lossy）。
+    pub text: Option<String>,
+}
+
+/// SMF 里**除音符与歌词之外**、解析器读到的事件种类（⭐ `#318`，`#342` 改写口径）。
 ///
 /// ⚠ 单位 = **事件条数**（⛔ 字节、⛔ tick）。
 ///
-/// 这是 `#317` 那张"其余静默丢弃"清单的**闭集**：每个变体对应 SMF 的一种具名事件，
+/// 这是"其余静默丢弃"清单的**闭集**：每个变体对应 SMF 的一种具名事件，
 /// [`MidiAuxEventCounts`] 对每条事件**恰加一**（互不重叠、不漏）。`EndOfTrack`
 /// **不在表里**：它是结构终止符，没有内容可丢（`midly` 消费它，本解析器不把它当载荷）。
 ///
-/// ⚠ **"值一样"不等于"没丢"**：例如 [`Self::Tempo`] 即使 `µs/四分音符` 恰好等于
-/// 工程的 `bpm`，它也**仍是丢** —— 导入路径**没有消费**它（`project.bpm` 是唯一权威）。
-/// 判据是"有没有被消费"，⛔ 不是"数值等不等"。
+/// ## 每一类今天有没有落点（`#342` 实测，⛔ 不再用"值一样就不算丢"当判据）
+///
+/// 判据是"导入路径**有没有把它写进工程**"。`yeban-app` 的 `plan_midi_import` 今天
+/// 能落地的只有四类，且都要求文件**只表达一个值**：
+///
+/// - [`Self::Tempo`] → `project.bpm`（`f64` **单标量**）。只有"唯一条生效 tempo 且
+///   在 tick 0"能落；**tempo map 无处可住** ⇒ 多条时整类报成 `dropped` 并列出全部值。
+/// - [`Self::TimeSignature`] → `project.time_signature`（**单标量**）。同上。
+/// - [`Self::TrackName`] → `TrackV3::name`。文件里**去重后恰一个非空合法名字**才落
+///   （`MTrk` 很多、名字只有一种时，那个名字就是整份文件的名字）。
+/// - [`Self::Marker`] → `YebanProjectV1::sections` 的一个 `SectionV3`
+///   （相邻 marker 之间是一个 tick 区间）。零长度 / 非 UTF-8 的 marker 落不下去，
+///   逐条报 `dropped`。
+/// - 其余 20 类：模型**没有**对应字段或没有映射规则 ⇒ 今天**全部**是 dropped。
+///
+/// ⚠ **"值一样"不等于"没丢"**：`tempo` 就算数值恰好等于工程 `bpm`，只要文件不能
+/// 表达成"唯一条 tick 0 tempo"，它仍是丢。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum MidiAuxEventKind {
-    /// `FF 51` tempo。丢掉：`project.bpm` 是唯一权威（导出只写 tick 0 一条）。
+    /// `FF 51` tempo → `project.bpm`（单标量）；只有"唯一条生效 tempo 在 tick 0"能落。
+    /// tempo map（多条或首条不在 0）没有家 ⇒ 整类 dropped 且报告列出每个值。
     Tempo,
-    /// `FF 58` 拍号。丢掉：`project.time_signature` 是唯一权威。
+    /// `FF 58` 拍号 → `project.time_signature`（单标量）；只有"唯一条生效拍号在 tick 0"
+    /// 能落。拍号 map（如 4/4 → 3/4）没有家 ⇒ 整类 dropped 且报告列出每个值。
     TimeSignature,
-    /// `FF 03` 轨名。丢掉：导入落进**已有**音轨/片段，不改名、不建轨。
+    /// `FF 03` 轨名 → `TrackV3::name`（导入**唯一**落点音轨）。去重后恰一个非空、
+    /// 严格 UTF-8 的名字才落；多个不同名字 / 空名 / 非 UTF-8 ⇒ 该条 dropped。
     TrackName,
-    /// `FF 06` marker。丢掉：模型没有 marker 实体。
+    /// `FF 06` marker → `YebanProjectV1::sections`（相邻 marker 之间一个 tick 区间）。
+    /// 末尾与 `end_tick` 重合（零长度）/ 同一 tick 被后一条顶掉 / 非 UTF-8 ⇒ dropped。
     Marker,
-    /// `FF 59` 调号。丢掉：模型没有调号字段。
+    /// `FF 59` 调号。丢掉：`YebanProjectV1` / `TrackV3` / `MidiNote` **都没有**调号字段，
+    /// 也没有 `Op` 写它 ⇒ 模型里没有家（加字段是另一个决定）。
     KeySignature,
-    /// `B0` 控制器。丢掉：导入路径没有 CC→自动化映射。
+    /// `B0` 控制器。丢掉：自动化泳道只认 `TrackVolume`/`TrackPan`/`SendGain`/
+    /// `DeviceParam`/`Macro` 五个目标，**没有** CC→目标 的映射规则 ⇒ 映射等于发明语义。
     ControlChange,
-    /// `C0` 音色切换。丢掉：导入路径不从文件选音色（SFZ 绑定在工程侧）。
+    /// `C0` 音色切换。丢掉：`TrackV3::sampler` 是外部采样器**文件路径**，不是 program
+    /// number；两者不是一回事。
     ProgramChange,
-    /// `E0` 弯音。丢掉：`MidiNote::pitch_bend_curve` 存在，但导入不把文件弯音映射成
-    /// 音符局部曲线（那会是**能力**，不是读数）。
+    /// `E0` 弯音。模型有 `MidiNote::pitch_bend_curve`，但一条弯音作用于**整个通道上
+    /// 正在发声的所有音符**；把它塞给单颗音符需要一条"归属"规则（单音？全部？重叠时？）
+    /// ⇒ 今天不发明，整类 dropped。
     PitchBend,
     /// `A0` 复音触后。丢掉：模型没有该字段。
     PolyAftertouch,
@@ -818,23 +873,26 @@ pub enum MidiAuxEventKind {
     Escape,
     /// `FF 01` 文本。丢掉：模型没有承载。
     Text,
-    /// `FF 02` 版权。丢掉：模型没有承载。
+    /// `FF 02` 版权。丢掉：工程的 `author`/`title` 不是版权声明，语义不同。
     Copyright,
-    /// `FF 04` 乐器名。丢掉：模型没有承载。
+    /// `FF 04` 乐器名。丢掉：`TrackV3::sampler` 是路径；乐器名没有承载。
     InstrumentName,
-    /// `FF 00` 轨号。丢掉：模型没有承载。
+    /// `FF 00` 轨号。丢掉：模型没有该字段。
     TrackNumber,
-    /// `FF 07` cue point。丢掉：模型没有承载。
+    /// `FF 07` cue point。丢掉：cue 是混音提示点，与 `SectionV3`（曲式区间）语义不同，
+    /// 且模型没有 cue 实体。
     CuePoint,
-    /// `FF 08` 音色名。丢掉：模型没有承载。
+    /// `FF 08` 音色名。丢掉：模型没有该字段。
     ProgramName,
-    /// `FF 09` 设备名。丢掉：模型没有承载。
+    /// `FF 09` 设备名。丢掉：模型没有该字段。
     DeviceName,
-    /// `FF 20` MIDI 通道前缀。丢掉：模型没有承载。
+    /// `FF 20` MIDI 通道前缀。丢掉：`MidiNote` 没有 channel 字段（见导入报告的
+    /// `note-channel-values`）。
     MidiChannelPrefix,
-    /// `FF 21` MIDI 端口。丢掉：模型没有承载。
+    /// `FF 21` MIDI 端口。丢掉：模型没有该字段。
     MidiPort,
-    /// `FF 54` SMPTE 偏移。丢掉：模型没有承载。
+    /// `FF 54` SMPTE 偏移。丢掉：模型没有该字段（SMPTE **时间分度**在解析层已拒绝，
+    /// 但这条是 offset，另一件事）。
     SmpteOffset,
     /// `FF 7F` 音序器私有。丢掉：模型没有承载。
     SequencerSpecific,
@@ -909,9 +967,9 @@ impl MidiAuxEventKind {
 /// [`MidiAuxEventKind`] 的计数器：每条被读到的事件**恰加一**。
 ///
 /// ⚠ 本结构只存 **read**（解析器读到的条数）；"丢掉几条"由 `yeban-app` 的
-/// `MidiImportLosses` 成对给出。今天 `dropped == read`（**无任何真支持**）；
-/// 支持某一类时**必须**把那一类的 `dropped` 改成 0（并把 `dropped == read` 判据改掉），
-/// ⛔ 不许删掉判据。
+/// `MidiImportLosses` 成对给出。⭐ `#342`：四类（tempo / 拍号 / 轨名 / marker）现在
+/// **可能** `dropped < read`（内容真的进了工程）；其余 20 类仍是全损。
+/// ⛔ 判据不许删 —— 它要能在"某一类从有落点退回全损"时自己说出来。
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct MidiAuxEventCounts {
     counts: [usize; MidiAuxEventKind::COUNT],
@@ -945,13 +1003,30 @@ pub struct ParsedMidi {
     pub ppq: u16,
     /// 文件里的 `MTrk` 条数（`MThd` 的轨道数；⭐ `#318` 的"轨分区"读数用它）。
     pub tracks: usize,
-    /// ⭐ `#318`：除音符/歌词外、读到但 [`ParsedMidi`] **不承载内容**的事件计数。
+    /// ⭐ `#318`：除音符/歌词外、读到的事件计数（read 列）。
     ///
     /// 这是"其余静默丢弃"变成读数的地方；每个 [`MidiAuxEventKind`] 恰加一。
     /// ⚠ `EndOfTrack` 不计数（结构终止符，没有载荷）。
+    /// ⭐ `#342`：`tempo` / `time-signature` / `track-name` / `marker` 四类的内容由
+    /// [`Self::tempos`] / [`Self::track_names`] / [`Self::markers`] **同时**读出；
+    /// **落不落进工程**由 `yeban-app` 决定（这里只保证"读到"与"读全"）。
     pub aux_events: MidiAuxEventCounts,
-    /// tempo map（按 tick 升序, 按文件里出现的顺序）。
+    /// tempo / 拍号记录（按**文件里出现的顺序**，逐 `MTrk` 拼接）。
+    ///
+    /// ⚠ 两条独立事件的配对（同一 tick 的 tempo 与拍号合进一条记录）是导出侧的
+    /// 历史形状；导入侧**按字段过滤**取各自的序列（`microseconds_per_quarter` /
+    /// `numerator`），⛔ 不假设"一条记录 = 一条事件"。
     pub tempos: Vec<MidiTempo>,
+    /// ⭐ `#342`：全部 `FF 03` 轨名事件（**文件顺序**，⛔ 不去重、⛔ 不丢非 UTF-8）。
+    pub track_names: Vec<ParsedTrackName>,
+    /// ⭐ `#342`：全部 `FF 06` marker 事件（**文件顺序**，⛔ 不排序、⛔ 不去重）。
+    ///
+    /// 非 UTF-8 的 marker 也在表里（`text == None`）：它的 tick 仍是段落边界。
+    pub markers: Vec<ParsedMarker>,
+    /// ⭐ `#342`：文件里**最后一个事件**的绝对 tick（含 `EndOfTrack` 的 delta）。
+    ///
+    /// 最后一个 marker 的区间右端用它（SMF 的"文件结束"）。
+    pub end_tick: u64,
     /// 全部音符, 按 `(start_tick, channel, key, velocity)` 排序。
     pub notes: Vec<ParsedNote>,
     /// ⭐ `#317`：可归属的歌词事件（**非空**且严格 UTF-8），按 `(tick, text)` 排序。
@@ -1055,16 +1130,21 @@ pub fn parse_smf(bytes: &[u8]) -> Result<ParsedMidi, MidiError> {
 
     let mut notes = Vec::new();
     let mut tempos = Vec::new();
-    // ⭐ `#318`：除音符/歌词外的事件**逐类计数**（read 列）。导入侧把每一类都如实
-    // 报成 dropped；今天没有一类被消费。⛔ 这些事件的内容不进 `ParsedMidi`
-    // —— 这里只让"丢了几条"变成可读的数，⛔ 不是新增支持。
+    // ⭐ `#318`：除音符/歌词外的事件**逐类计数**（read 列）。
+    // ⭐ `#342`：marker / 轨名的**内容**也在这里读出（tick + 严格 UTF-8 文本）；
+    // 落不落进工程由 `yeban-app` 决定，本 crate ⛔ 不依赖模型。
     let mut aux_events = MidiAuxEventCounts::default();
     // ⭐ `#317`：`FF 05` 的三种命运在此分叉 —— 可解码的非空文本进 `lyrics`，
     // 空文本与非 UTF-8 各自计数（⛔ lossy、⛔ 静默丢）。
     let mut lyrics = Vec::new();
     let mut non_utf8_lyrics = 0usize;
     let mut empty_lyrics = 0usize;
-    for track in &smf.tracks {
+    // ⭐ `#342`：`FF 06` / `FF 03` 的内容；非法 UTF-8 保留在表里（`text == None`），
+    // 因为 marker 的 tick 仍是段落边界。
+    let mut markers = Vec::new();
+    let mut track_names = Vec::new();
+    let mut end_tick = 0u64;
+    for (track_index, track) in smf.tracks.iter().enumerate() {
         let mut tick = 0u64;
         // (channel, key) -> (start_tick, velocity); 用 Vec 保序, 便于"后开先关"匹配。
         let mut open: Vec<(u8, u8, u64, u8)> = Vec::new();
@@ -1170,14 +1250,26 @@ pub fn parse_smf(bytes: &[u8]) -> Result<ParsedMidi, MidiError> {
                     MetaMessage::Copyright(_) => {
                         aux_events.record(MidiAuxEventKind::Copyright);
                     }
-                    MetaMessage::TrackName(_) => {
+                    MetaMessage::TrackName(bytes) => {
                         aux_events.record(MidiAuxEventKind::TrackName);
+                        // ⭐ `#342`：轨名属于**这条 `MTrk`**，所以带上 `track_index`。
+                        track_names.push(ParsedTrackName {
+                            track: track_index,
+                            tick,
+                            text: std::str::from_utf8(bytes).ok().map(str::to_owned),
+                        });
                     }
                     MetaMessage::InstrumentName(_) => {
                         aux_events.record(MidiAuxEventKind::InstrumentName);
                     }
-                    MetaMessage::Marker(_) => {
+                    MetaMessage::Marker(bytes) => {
                         aux_events.record(MidiAuxEventKind::Marker);
+                        // ⭐ `#342`：非法 UTF-8 **仍入表**（`text == None`）—— 它的
+                        // tick 仍是段落边界，丢掉它会让下一段跨过那条边界。
+                        markers.push(ParsedMarker {
+                            tick,
+                            text: std::str::from_utf8(bytes).ok().map(str::to_owned),
+                        });
                     }
                     MetaMessage::CuePoint(_) => {
                         aux_events.record(MidiAuxEventKind::CuePoint);
@@ -1212,6 +1304,9 @@ pub fn parse_smf(bytes: &[u8]) -> Result<ParsedMidi, MidiError> {
         if let Some(&(_, key, start_tick, _)) = open.first() {
             return Err(MidiError::UnclosedNote { start_tick, key });
         }
+        // ⭐ `#342`：`tick` 已经加过这条 `MTrk` 的**全部** delta（含 `EndOfTrack`
+        // 之前的尾巴）⇒ 它是这条轨的结束 tick；文件结束 = 各轨的最大值。
+        end_tick = end_tick.max(tick);
     }
 
     notes.sort_by_key(|note| note.key());
@@ -1228,6 +1323,9 @@ pub fn parse_smf(bytes: &[u8]) -> Result<ParsedMidi, MidiError> {
         tracks: smf.tracks.len(),
         aux_events,
         tempos,
+        track_names,
+        markers,
+        end_tick,
         notes,
         lyrics,
         non_utf8_lyrics,
@@ -1565,6 +1663,122 @@ mod tests {
         }
         assert_eq!(parsed.aux_events.total(), total, "总数 = 逐类之和");
         assert_eq!(total, 29, "夹具的 aux 事件总数口径：29 条");
+    }
+
+    /// ⭐ `#342`：解析器把 `FF 06` marker 与 `FF 03` 轨名的**内容**也读出来 ——
+    /// tick + 严格 UTF-8 文本（非法 UTF-8 = `None`，**仍在表里**，因为 tick 仍是
+    /// 段落边界），以及文件最后一个事件的 `end_tick`（含 `EndOfTrack` 的尾巴）。
+    ///
+    /// 控制臂：3 条 marker（1 条非 UTF-8、1 条空文本）+ 2 条轨名 + 两条轨的 EOT
+    /// 在**不同** tick（480 / 1200）⇒ `end_tick` 若塌成 0 或只取第一条轨，下面每条都红。
+    #[test]
+    fn parser_reads_marker_and_track_name_content_and_the_file_end_tick() {
+        fn vlq(mut value: u32) -> Vec<u8> {
+            let mut out = vec![u8::try_from(value & 0x7F).expect("7 bit")];
+            value >>= 7;
+            while value > 0 {
+                out.push(0x80 | u8::try_from(value & 0x7F).expect("7 bit"));
+                value >>= 7;
+            }
+            out.reverse();
+            out
+        }
+        fn meta(kind: u8, payload: &[u8]) -> Vec<u8> {
+            let mut out = vec![0xFF, kind, u8::try_from(payload.len()).expect("短负载")];
+            out.extend_from_slice(payload);
+            out
+        }
+        fn track(events: &[(u32, Vec<u8>)]) -> Vec<u8> {
+            let mut body = Vec::new();
+            for (delta, event) in events {
+                body.extend(vlq(*delta));
+                body.extend_from_slice(event);
+            }
+            let mut out = b"MTrk".to_vec();
+            out.extend_from_slice(&u32::try_from(body.len()).expect("短轨").to_be_bytes());
+            out.extend(body);
+            out
+        }
+
+        let conductor = track(&[
+            (0, meta(0x03, b"Conductor")),    // TrackName（轨 0）
+            (0, meta(0x06, b"Intro")),        // Marker @0
+            (0, meta(0x06, b"")),             // Marker @0，空文本
+            (480, meta(0x06, &[0xFF, 0xFE])), // Marker @480，非法 UTF-8
+            (0, meta(0x2F, &[])),             // EOT @480
+        ]);
+        let piano = track(&[
+            (0, meta(0x03, b"Piano")), // TrackName（轨 1）
+            (0, vec![0x90, 60, 100]),  // NoteOn @0
+            (960, vec![0x80, 60, 0]),  // NoteOff @960
+            (0, meta(0x06, b"Outro")), // Marker @960
+            (240, meta(0x2F, &[])),    // EOT @1200
+        ]);
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(b"MThd");
+        bytes.extend_from_slice(&6u32.to_be_bytes());
+        bytes.extend_from_slice(&1u16.to_be_bytes()); // format 1
+        bytes.extend_from_slice(&2u16.to_be_bytes()); // 2 tracks
+        bytes.extend_from_slice(&96u16.to_be_bytes());
+        bytes.extend_from_slice(&conductor);
+        bytes.extend_from_slice(&piano);
+
+        let parsed = parse_smf(&bytes).expect("回读");
+        assert_eq!(
+            parsed.markers,
+            vec![
+                ParsedMarker {
+                    tick: 0,
+                    text: Some("Intro".to_owned()),
+                },
+                ParsedMarker {
+                    tick: 0,
+                    text: Some(String::new()),
+                },
+                ParsedMarker {
+                    tick: 480,
+                    // ⛔ lossy：非法 UTF-8 不产替换文本，但 tick 不许丢。
+                    text: None,
+                },
+                ParsedMarker {
+                    tick: 960,
+                    text: Some("Outro".to_owned()),
+                },
+            ],
+            "marker 按**文件顺序**（逐 MTrk 拼接），⛔ 不排序、⛔ 去重、⛔ 丢弃非法 UTF-8"
+        );
+        assert_eq!(
+            parsed.track_names,
+            vec![
+                ParsedTrackName {
+                    track: 0,
+                    tick: 0,
+                    text: Some("Conductor".to_owned()),
+                },
+                ParsedTrackName {
+                    track: 1,
+                    tick: 0,
+                    text: Some("Piano".to_owned()),
+                },
+            ],
+            "轨名带 MTrk 下标（控制臂：两条轨名字不同）"
+        );
+        assert_eq!(
+            parsed.end_tick, 1200,
+            "文件结束 = 各轨 EOT tick 的最大值（480 vs 1200）"
+        );
+        assert_eq!(
+            parsed.aux_events.count(MidiAuxEventKind::Marker),
+            parsed.markers.len(),
+            "每条 marker 恰计一次（含非 UTF-8）"
+        );
+        assert_eq!(parsed.aux_events.count(MidiAuxEventKind::Marker), 4);
+        assert_eq!(
+            parsed.aux_events.count(MidiAuxEventKind::TrackName),
+            parsed.track_names.len(),
+            "每条轨名恰计一次"
+        );
+        assert_eq!(parsed.aux_events.count(MidiAuxEventKind::TrackName), 2);
     }
 
     /// ⭐ `#312` 判据 2: `None` / `Some("")` 都**不写**歌词事件（空文本没有内容），
@@ -2641,6 +2855,9 @@ mod tests {
                     tracks: 0,
                     aux_events: MidiAuxEventCounts::default(),
                     tempos: Vec::new(),
+                    track_names: Vec::new(),
+                    markers: Vec::new(),
+                    end_tick: 0,
                     notes: Vec::new(),
                     lyrics: Vec::new(),
                     non_utf8_lyrics: 0,
@@ -2649,8 +2866,8 @@ mod tests {
             ),
             "ParsedMidi { format: Parallel, ppq: 480, tracks: 0, aux_events: \
              MidiAuxEventCounts { counts: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, \
-             0, 0, 0, 0, 0, 0, 0] }, tempos: [], notes: [], lyrics: [], non_utf8_lyrics: 0, \
-             empty_lyrics: 0 }"
+             0, 0, 0, 0, 0, 0, 0] }, tempos: [], track_names: [], markers: [], end_tick: 0, \
+             notes: [], lyrics: [], non_utf8_lyrics: 0, empty_lyrics: 0 }"
         );
         assert_eq!(
             format!(

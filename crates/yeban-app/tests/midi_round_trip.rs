@@ -949,13 +949,14 @@ fn a_chord_with_lyrics_attaches_none_and_reports_every_dropped_lyric() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// **判据（损耗表第 4 行）**：导入**不读**文件的 conductor（tempo / 拍号）。
+/// **判据（`#342` 改写）**：**唯一 tick 0** 的 conductor 落进工程的两个单标量。
 ///
-/// 做法：造一份 6/8、90 BPM 的文件导入 3/4、120 BPM 的工程 ⇒ 重导出的文件必须
-/// **仍是工程的 3/4 / 120 BPM**（⛔ 不是文件里的 6/8 / 90 BPM）。
-/// 这一条把"拍号/tempo 由工程携带"这句话变成可执行的断言，而不是散文。
+/// 做法：6/8、90 BPM 的文件导入 3/4、120 BPM 的工程 ⇒ 重导出必须是 **6/8 / 90 BPM**
+/// （⛔ 不再是"工程的 3/4 / 120 胜出"—— 单值有家）。这一条把"单值有家、map 没家"
+/// 里的**单值**那一半变成可执行断言；map 的那一半见
+/// `import_midi.rs` 的 `two_tempo_and_meter_changes_are_loud_losses_that_name_every_value`。
 #[test]
-fn the_import_ignores_the_files_conductor_metadata() {
+fn the_import_adopts_an_unambiguous_single_conductor() {
     let dir = scratch_dir("conductor");
     let (project, _track, _clip) = round_trip_fixture();
     let fixture = write_container(&dir, "fixture.yeban", &project);
@@ -978,6 +979,12 @@ fn the_import_ignores_the_files_conductor_metadata() {
     ]);
     assert_eq!(run.code, 0, "stderr={}", run.stderr);
     let p3 = parsed(&std::fs::read(&f3).expect("读 F3"));
+    assert_eq!(
+        p3.tempos.len(),
+        1,
+        "控制臂：文件只有唯一条 tick 0 conductor（否则本判据测的不是单值）"
+    );
+    assert_eq!(p3.tempos[0].tick, 0);
     assert_eq!(p3.tempos[0].numerator, Some(6), "F3 的拍号分子");
     assert_eq!(p3.tempos[0].denominator_pow2, Some(3), "6/8 ⇒ dd=3");
     assert_eq!(
@@ -986,7 +993,7 @@ fn the_import_ignores_the_files_conductor_metadata() {
         "90 BPM ⇒ 666667 µs"
     );
 
-    // 导入 3/4 + 120 BPM 的工程 ⇒ 重导出必须**仍是工程的** conductor。
+    // 导入 3/4 + 120 BPM 的工程 ⇒ 重导出**采纳米文件**的 conductor。
     let f4 = dir.join("F4.mid");
     let run = invoke(&[
         "--open",
@@ -997,20 +1004,36 @@ fn the_import_ignores_the_files_conductor_metadata() {
         f4.to_str().expect("utf8"),
     ]);
     assert_eq!(run.code, 0, "stderr={}", run.stderr);
+    let imported = line_with(&run.stdout, "imported-midi:").expect("必须有 imported-midi 行");
+    assert_eq!(
+        field(imported, "tempo-read").as_deref(),
+        Some("1"),
+        "control arm: 文件真的带一条 tempo: {imported}"
+    );
+    assert_eq!(
+        field(imported, "tempo-dropped").as_deref(),
+        Some("0"),
+        "唯一 tick 0 tempo ⇒ 落地，不是损失: {imported}"
+    );
+    assert_eq!(
+        field(imported, "time-signature-dropped").as_deref(),
+        Some("0"),
+        "唯一 tick 0 拍号 ⇒ 落地，不是损失: {imported}"
+    );
     let bytes4 = std::fs::read(&f4).expect("读 F4");
     let p4 = parsed(&bytes4);
     assert_eq!(
         p4.tempos[0].numerator,
-        Some(3),
-        "损耗：文件的 6/8 被忽略（工程的 3/4 胜出）"
+        Some(6),
+        "落地：文件的 6/8 进 `project.time_signature`（⛔ 不再是工程的 3/4）"
     );
-    assert_eq!(p4.tempos[0].denominator_pow2, Some(2), "3/4 ⇒ dd=2");
+    assert_eq!(p4.tempos[0].denominator_pow2, Some(3), "6/8 ⇒ dd=3");
     assert_eq!(
         p4.tempos[0].microseconds_per_quarter,
-        Some(500_000),
-        "损耗：文件的 90 BPM 被忽略（工程的 120 BPM 胜出）"
+        Some(666_667),
+        "落地：文件的 90 BPM 进 `project.bpm`（⛔ 不再是工程的 120）"
     );
-    // 而**音符**确实导进来了（损耗只发生在 conductor，⛔ 不是整条链路没做事）。
+    // 而**音符**确实导进来了（conductor 的落地没有把音符吞掉）。
     assert_eq!(p4.ppq, 960);
     assert_eq!(
         p4.notes.len(),
@@ -1020,7 +1043,7 @@ fn the_import_ignores_the_files_conductor_metadata() {
     );
 
     eprintln!(
-        "[midi-round-trip/conductor] F3={}/{:?}/{:?} ⇒ F4={}/{:?}/{:?}（文件的 conductor 被忽略，音符 {} 颗导进来了）",
+        "[midi-round-trip/conductor] F3={}/{:?}/{:?} ⇒ F4={}/{:?}/{:?}（单值 conductor 落地，音符 {} 颗）",
         p3.tempos[0]
             .numerator
             .map_or_else(|| "-".to_owned(), |value| value.to_string()),
@@ -1035,6 +1058,411 @@ fn the_import_ignores_the_files_conductor_metadata() {
     );
 
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// 手工拼一份 **format 0 / 960 PPQ / 1 条 MTrk** 的 SMF（⭐ `#342` 判据夹具）。
+///
+/// `events` 按 tick **稳定**排序后写成 delta 序列（同一 tick 保持插入顺序 ⇒
+/// `NoteOff` 排在同一个 tick 的 `NoteOn` 之前）。⛔ 不借导出器：判据要能独立于
+/// "导出侧写了什么"构造（导出器只写 `FF 03` / `FF 51` / `FF 58` / `FF 05`）。
+fn single_track_smf(
+    track_name: Option<&str>,
+    tempos: &[(u32, u32)],
+    meters: &[(u32, u8, u8)],
+    markers: &[(u32, &[u8])],
+    notes: &[(u32, u32, u8)],
+    end_tick: u32,
+) -> Vec<u8> {
+    fn vlq(mut value: u32) -> Vec<u8> {
+        let mut out = vec![u8::try_from(value & 0x7F).expect("7 bit")];
+        value >>= 7;
+        while value > 0 {
+            out.push(0x80 | u8::try_from(value & 0x7F).expect("7 bit"));
+            value >>= 7;
+        }
+        out.reverse();
+        out
+    }
+    fn meta(kind: u8, payload: &[u8]) -> Vec<u8> {
+        let mut out = vec![0xFF, kind, u8::try_from(payload.len()).expect("短负载")];
+        out.extend_from_slice(payload);
+        out
+    }
+    let mut events: Vec<(u32, Vec<u8>)> = Vec::new();
+    if let Some(name) = track_name {
+        events.push((0, meta(0x03, name.as_bytes())));
+    }
+    for &(tick, microseconds_per_quarter) in tempos {
+        events.push((
+            tick,
+            meta(0x51, &microseconds_per_quarter.to_be_bytes()[1..]),
+        ));
+    }
+    for &(tick, numerator, denominator_pow2) in meters {
+        events.push((tick, meta(0x58, &[numerator, denominator_pow2, 24, 8])));
+    }
+    for &(tick, text) in markers {
+        events.push((tick, meta(0x06, text)));
+    }
+    for &(start, end, key) in notes {
+        events.push((start, vec![0x90, key, 100]));
+        events.push((end, vec![0x80, key, 0]));
+    }
+    events.push((end_tick, meta(0x2F, &[])));
+    events.sort_by_key(|(tick, _)| *tick);
+
+    let mut track: Vec<u8> = Vec::new();
+    let mut cursor = 0_u32;
+    for (tick, event) in events {
+        track.extend(vlq(tick - cursor));
+        cursor = tick;
+        track.extend(event);
+    }
+    let mut bytes: Vec<u8> = Vec::new();
+    bytes.extend_from_slice(b"MThd");
+    bytes.extend_from_slice(&6u32.to_be_bytes());
+    bytes.extend_from_slice(&0u16.to_be_bytes()); // format 0
+    bytes.extend_from_slice(&1u16.to_be_bytes()); // 1 条轨
+    bytes.extend_from_slice(&960u16.to_be_bytes());
+    bytes.extend_from_slice(b"MTrk");
+    bytes.extend_from_slice(&u32::try_from(track.len()).expect("短轨").to_be_bytes());
+    bytes.extend_from_slice(&track);
+    bytes
+}
+
+/// ⭐ `#342` **主判据（端到端）**：一份手工拼的 SMF 导入后，`.yeban` 文档里
+/// **逐项**含有：3 个段落（tick 与名字）、音轨名、bpm、拍号；且这些信息在
+/// `imported-midi:` 行里**不是**损失。
+///
+/// 夹具：`Piano` 轨名 / 100 BPM @0 / 7/8 @0 / marker `Intro`@0、`Verse`@960、
+/// `Sec "1"\n—`@1920（**引号 + 换行 + 破折号**）/ 4 颗音符 / EOT@2880。
+/// ⇒ 段落 = `[0,960) [960,1920) [1920,2880)`（最后一个延伸到文件结束）。
+#[test]
+fn a_marker_track_lands_sections_track_name_bpm_and_meter_in_the_document() {
+    let dir = scratch_dir("metadata-round-trip");
+    // 目的地：清空演示工程的段落（否则断言会被预置段落污染），音轨名先设成别的值。
+    let mut project = demo_project();
+    project.sections.clear();
+    project.bpm = 120.0;
+    project.time_signature = TimeSignature {
+        numerator: 4,
+        denominator: 4,
+    };
+    let destination_track = *project
+        .tracks
+        .keys()
+        .find(|id| **id != project.master_bus_track_id)
+        .expect("有一条非 master 音轨");
+    project
+        .tracks
+        .get_mut(&destination_track)
+        .expect("目标音轨")
+        .name = "Original".to_owned();
+    let container = write_container(&dir, "dest.yeban", &project);
+    let container_arg = container.to_str().expect("utf8");
+
+    let marker_text = "Sec \"1\"\n—".as_bytes();
+    let bytes = single_track_smf(
+        Some("Piano"),
+        &[(0, 600_000)], // 100 BPM
+        &[(0, 7, 3)],    // 7/8
+        &[(0, b"Intro"), (960, b"Verse"), (1920, marker_text)],
+        &[
+            (0, 480, 60),
+            (480, 960, 64),
+            (960, 1440, 67),
+            (1440, 1920, 72),
+        ],
+        2880,
+    );
+    let mid = dir.join("metadata.mid");
+    std::fs::write(&mid, &bytes).expect("写夹具");
+    let saved = dir.join("after.yeban");
+
+    let run = invoke(&[
+        "--open",
+        container_arg,
+        "--import-midi",
+        mid.to_str().expect("utf8"),
+        "--save-as",
+        saved.to_str().expect("utf8"),
+    ]);
+    assert_eq!(run.code, 0, "导入 + 保存必须成功; stderr={}", run.stderr);
+    let line = line_with(&run.stdout, "imported-midi:").expect("必须有 imported-midi 行");
+    for (key, want) in [
+        ("marker-read", "3"),
+        ("marker-dropped", "0"),
+        ("track-name-read", "1"),
+        ("track-name-dropped", "0"),
+        ("tempo-read", "1"),
+        ("tempo-dropped", "0"),
+        ("time-signature-read", "1"),
+        ("time-signature-dropped", "0"),
+    ] {
+        assert_eq!(
+            field(line, key).as_deref(),
+            Some(want),
+            "报告 {key}: {line}"
+        );
+    }
+
+    let opened = open_project_file(&saved).expect("回读保存的工程");
+    // ---- 段落：tick 与名字逐项 ----
+    let mut sections: Vec<(String, u64, u64)> = opened
+        .sections
+        .values()
+        .map(|section| (section.name.clone(), section.start_tick, section.end_tick))
+        .collect();
+    sections.sort_by_key(|(_, start, _)| *start);
+    assert_eq!(
+        sections,
+        vec![
+            ("Intro".to_owned(), 0, 960),
+            ("Verse".to_owned(), 960, 1920),
+            // ⭐ 名字逐字节保留（引号 / 换行 / 破折号都不在模型层转义）。
+            ("Sec \"1\"\n—".to_owned(), 1920, 2880),
+        ],
+        "marker → SectionV3：区间到下一个 marker / end_tick"
+    );
+    for pair in sections.windows(2) {
+        assert!(
+            pair[0].2 <= pair[1].1,
+            "导入的段落两两不重叠: {:?} 与 {:?}",
+            pair[0],
+            pair[1]
+        );
+    }
+    assert_eq!(
+        opened
+            .sections
+            .values()
+            .filter(|section| section.end_tick <= section.start_tick)
+            .count(),
+        0,
+        "⛔ 不许有 end <= start 的段落（模型会拒绝整份工程）"
+    );
+
+    // ---- 音轨名 / bpm / 拍号 ----
+    assert_eq!(
+        opened.tracks[&destination_track].name, "Piano",
+        "唯一一个非空轨名 ⇒ 落进目标音轨的 TrackV3::name"
+    );
+    assert_eq!(opened.bpm, 100.0, "唯一 tick 0 tempo ⇒ project.bpm");
+    assert_eq!(
+        opened.time_signature,
+        TimeSignature {
+            numerator: 7,
+            denominator: 8
+        },
+        "唯一 tick 0 拍号 ⇒ project.time_signature"
+    );
+    assert_eq!(opened.validate(), Ok(()), "落盘后的工程必须整体合法");
+
+    eprintln!(
+        "[#342/round-trip] 段落={:?}；轨名={}；bpm={}；拍号={}/{}；line={}",
+        sections,
+        opened.tracks[&destination_track].name,
+        opened.bpm,
+        opened.time_signature.numerator,
+        opened.time_signature.denominator,
+        line
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// 目的地工程（`#342` 判据共用）：清空演示工程的段落、120 BPM、4/4，
+/// 目标音轨名先设成 `Original`（这样"轨名被采纳"才可观测）。
+fn metadata_destination() -> YebanProjectV1 {
+    let mut project = demo_project();
+    project.sections.clear();
+    project.bpm = 120.0;
+    project.time_signature = TimeSignature {
+        numerator: 4,
+        denominator: 4,
+    };
+    let destination_track = *project
+        .tracks
+        .keys()
+        .find(|id| **id != project.master_bus_track_id)
+        .expect("有一条非 master 音轨");
+    project
+        .tracks
+        .get_mut(&destination_track)
+        .expect("目标音轨")
+        .name = "Original".to_owned();
+    project
+}
+
+/// 导入一份夹具并回读保存的工程（`--open <dest> --import-midi <mid> --save-as`）。
+fn import_and_reopen(
+    tag: &str,
+    destination: &YebanProjectV1,
+    bytes: &[u8],
+) -> (YebanProjectV1, String) {
+    let dir = scratch_dir(tag);
+    let container = write_container(&dir, "dest.yeban", destination);
+    let mid = dir.join("fixture.mid");
+    std::fs::write(&mid, bytes).expect("写夹具");
+    let saved = dir.join("after.yeban");
+    let run = invoke(&[
+        "--open",
+        container.to_str().expect("utf8"),
+        "--import-midi",
+        mid.to_str().expect("utf8"),
+        "--save-as",
+        saved.to_str().expect("utf8"),
+    ]);
+    assert_eq!(run.code, 0, "导入 + 保存必须成功; stderr={}", run.stderr);
+    let line = line_with(&run.stdout, "imported-midi:")
+        .expect("必须有 imported-midi 行")
+        .to_owned();
+    let opened = open_project_file(&saved).expect("回读保存的工程");
+    let _ = std::fs::remove_dir_all(&dir);
+    (opened, line)
+}
+
+/// ⭐ `#342`：**两条 tempo** 的 map 没有家 ⇒ `project.bpm` **原样**（120），
+/// `imported-midi:` 行**点名两个值**（⛔ 不许静默挑一个）。
+#[test]
+fn two_tempo_changes_are_a_loud_loss_and_the_project_bpm_is_not_silently_replaced() {
+    let destination = metadata_destination();
+    // 100 BPM @0 → 150 BPM @960；两个值都与目的地工程的 120 不同。
+    let bytes = single_track_smf(
+        None,
+        &[(0, 600_000), (960, 400_000)],
+        &[(0, 4, 2)],
+        &[],
+        &[(0, 480, 60), (480, 960, 64)],
+        960,
+    );
+    let (opened, line) = import_and_reopen("two-tempos", &destination, &bytes);
+    let line = line.as_str();
+    assert_eq!(
+        opened.bpm, 120.0,
+        "tempo map 没有家 ⇒ ⛔ 不许把 100 或 150 写进单标量 `project.bpm`"
+    );
+    assert_eq!(field(line, "tempo-read").as_deref(), Some("2"), "{line}");
+    assert_eq!(field(line, "tempo-dropped").as_deref(), Some("2"), "{line}");
+    assert!(
+        line.contains("100.00 BPM @0") && line.contains("150.00 BPM @960"),
+        "损失条目必须**点名两个值与 tick**: {line}"
+    );
+    assert!(
+        line.contains("tempo-reason="),
+        "必须给出精确原因（MCP 可逐字引用）: {line}"
+    );
+}
+
+/// ⭐ `#342`：**两条拍号**（5/8 → 3/4）的 map 没有家 ⇒ `project.time_signature`
+/// **原样**（4/4），损失条目**点名两个值**（⛔ 不许静默挑一个）。
+#[test]
+fn two_meter_changes_are_a_loud_loss_and_the_project_meter_is_not_silently_replaced() {
+    let destination = metadata_destination();
+    let bytes = single_track_smf(
+        None,
+        &[(0, 500_000)],           // 120 BPM（只有一条 tempo ⇒ 会落地）
+        &[(0, 5, 3), (960, 3, 2)], // 5/8 → 3/4
+        &[],
+        &[(0, 480, 60), (480, 960, 64)],
+        960,
+    );
+    let (opened, line) = import_and_reopen("two-meters", &destination, &bytes);
+    let line = line.as_str();
+    assert_eq!(
+        opened.time_signature,
+        TimeSignature {
+            numerator: 4,
+            denominator: 4
+        },
+        "meter map 没有家 ⇒ ⛔ 不许把 5/8 或 3/4 写进单标量 `project.time_signature`"
+    );
+    assert_eq!(
+        field(line, "time-signature-read").as_deref(),
+        Some("2"),
+        "{line}"
+    );
+    assert_eq!(
+        field(line, "time-signature-dropped").as_deref(),
+        Some("2"),
+        "{line}"
+    );
+    assert!(
+        line.contains("5/8 @0") && line.contains("3/4 @960"),
+        "损失条目必须**点名两个值与 tick**: {line}"
+    );
+}
+
+/// ⭐ `#342`：同 tick 顶替 + 末尾零长度必须**响亮**报丢、⛔ 不许变成段落；
+/// 原因里的引号在回执里被换成 `'`（回执是引号定界，不认转义）。
+#[test]
+fn zero_length_and_duplicate_markers_are_reported_and_never_become_sections() {
+    let destination = metadata_destination();
+    // A@0 被同 tick 的 B 顶掉；C@960 与 end_tick=960 重合 ⇒ 零长度。
+    let bytes = single_track_smf(
+        None,
+        &[(0, 500_000)],
+        &[(0, 4, 2)],
+        &[(0, b"A"), (0, b"B"), (960, b"bad\"name")],
+        &[(0, 480, 60)],
+        960,
+    );
+    let (opened, line) = import_and_reopen("zero-length", &destination, &bytes);
+    let line = line.as_str();
+    let mut sections: Vec<(String, u64, u64)> = opened
+        .sections
+        .values()
+        .map(|section| (section.name.clone(), section.start_tick, section.end_tick))
+        .collect();
+    sections.sort_by_key(|(_, start, _)| *start);
+    assert_eq!(
+        sections,
+        vec![("B".to_owned(), 0, 960)],
+        "同 tick 后一条胜出；零长度的 C 不生成段落"
+    );
+    assert_eq!(field(line, "marker-read").as_deref(), Some("3"), "{line}");
+    assert_eq!(
+        field(line, "marker-dropped").as_deref(),
+        Some("2"),
+        "{line}"
+    );
+    assert!(
+        line.contains("superseded") && line.contains("`A`"),
+        "同 tick 顶替必须点名被顶掉的 A: {line}"
+    );
+    assert!(
+        line.contains("zero-length") && line.contains("bad'name"),
+        "零长度必须点名 C，且回执里的引号已被换成 ' : {line}"
+    );
+    assert!(
+        !line.contains("bad\"name"),
+        "回执不许带着原始引号（会把 loss_detail 截断）: {line}"
+    );
+}
+
+/// ⭐ `#342`：没有 marker 的文件**不新增**段落（也**不**编一条丢失原因）。
+#[test]
+fn a_file_without_markers_adds_no_sections() {
+    let destination = metadata_destination();
+    let bytes = single_track_smf(
+        None,
+        &[(0, 500_000)],
+        &[(0, 4, 2)],
+        &[],
+        &[(0, 480, 60), (480, 960, 64)],
+        960,
+    );
+    let (opened, line) = import_and_reopen("no-markers", &destination, &bytes);
+    let line = line.as_str();
+    assert!(opened.sections.is_empty(), "没有 marker ⇒ 一个段落都不新增");
+    // `aux_fields` 的口径：`read == 0` 的类别**不打印** ⇒ 不是 `marker-read=0`，而是缺席。
+    assert_eq!(field(line, "marker-read").as_deref(), None, "{line}");
+    assert!(
+        !line.contains("marker-read=")
+            && !line.contains("marker-dropped=")
+            && !line.contains("marker-reason="),
+        "read=0 的类别不许出现，更不许编一条原因: {line}"
+    );
 }
 
 /// 手工拼一份**含全部 24 类 aux 事件**的 SMF：format 1、3 轨、960 PPQ、
@@ -1137,7 +1565,7 @@ fn all_aux_events_smf() -> Vec<u8> {
 ///
 /// 判据分三层：
 /// 1. **控制臂**：先按字节独立数一遍**源文件**（⛔ 读解析器），证明夹具真的有那些事件；
-/// 2. **报告**：逐类 `read == 期望` 且 `dropped == read`（今天无任何真支持）；
+/// 2. **报告**：逐类 `read == 期望`、`dropped == 期望`（⭐ `#342`：四类可能部分落地）；
 /// 3. **后果**：重导出里 `FF 59` / `FF 06` / CC / 弯音 / 触后 / PC / SysEx / Escape
 ///    逐条为 0；`tempo` / 拍号是**工程的** 120 BPM / 4/4；`MTrk` 从 3 变 1 条音符轨；
 ///    音符通道从 {0,1} 变 {0}。⛔ 只报数不看后果 = 读数可能量的是别的东西。
@@ -1221,51 +1649,69 @@ fn the_import_reports_every_aux_event_kind_as_read_and_dropped() {
         );
     }
 
-    // ── ③ 逐类 read/dropped（24 类，一个不缺） ──
-    let expected: [(MidiAuxEventKind, usize); MidiAuxEventKind::COUNT] = [
-        (MidiAuxEventKind::Tempo, 2),
-        (MidiAuxEventKind::TimeSignature, 2),
-        (MidiAuxEventKind::TrackName, 3),
-        (MidiAuxEventKind::Marker, 2),
-        (MidiAuxEventKind::KeySignature, 1),
-        (MidiAuxEventKind::ControlChange, 1),
-        (MidiAuxEventKind::ProgramChange, 1),
-        (MidiAuxEventKind::PitchBend, 1),
-        (MidiAuxEventKind::PolyAftertouch, 1),
-        (MidiAuxEventKind::ChannelAftertouch, 1),
-        (MidiAuxEventKind::SysEx, 1),
-        (MidiAuxEventKind::Escape, 1),
-        (MidiAuxEventKind::Text, 1),
-        (MidiAuxEventKind::Copyright, 1),
-        (MidiAuxEventKind::InstrumentName, 1),
-        (MidiAuxEventKind::TrackNumber, 1),
-        (MidiAuxEventKind::CuePoint, 1),
-        (MidiAuxEventKind::ProgramName, 1),
-        (MidiAuxEventKind::DeviceName, 1),
-        (MidiAuxEventKind::MidiChannelPrefix, 1),
-        (MidiAuxEventKind::MidiPort, 1),
-        (MidiAuxEventKind::SmpteOffset, 1),
-        (MidiAuxEventKind::SequencerSpecific, 1),
-        (MidiAuxEventKind::UnknownMeta, 1),
+    // ── ③ 逐类 read/dropped（24 类，一个不缺；⭐ `#342`：四类可能部分落地） ──
+    //
+    // 本夹具是 `#342` 之前的形状：2 tempo（240@0 → 120@960）、2 拍号（6/8@0 →
+    // 3/4@2400）、3 个不同轨名、2 marker（`Verse`@0 → `Chorus`@2400，后者与
+    // `end_tick=2400` 重合 ⇒ 零长度）。⇒ 四类里只有 **1 条 marker** 落地。
+    let expected: [(MidiAuxEventKind, usize, usize); MidiAuxEventKind::COUNT] = [
+        (MidiAuxEventKind::Tempo, 2, 2),
+        (MidiAuxEventKind::TimeSignature, 2, 2),
+        (MidiAuxEventKind::TrackName, 3, 3),
+        (MidiAuxEventKind::Marker, 2, 1),
+        (MidiAuxEventKind::KeySignature, 1, 1),
+        (MidiAuxEventKind::ControlChange, 1, 1),
+        (MidiAuxEventKind::ProgramChange, 1, 1),
+        (MidiAuxEventKind::PitchBend, 1, 1),
+        (MidiAuxEventKind::PolyAftertouch, 1, 1),
+        (MidiAuxEventKind::ChannelAftertouch, 1, 1),
+        (MidiAuxEventKind::SysEx, 1, 1),
+        (MidiAuxEventKind::Escape, 1, 1),
+        (MidiAuxEventKind::Text, 1, 1),
+        (MidiAuxEventKind::Copyright, 1, 1),
+        (MidiAuxEventKind::InstrumentName, 1, 1),
+        (MidiAuxEventKind::TrackNumber, 1, 1),
+        (MidiAuxEventKind::CuePoint, 1, 1),
+        (MidiAuxEventKind::ProgramName, 1, 1),
+        (MidiAuxEventKind::DeviceName, 1, 1),
+        (MidiAuxEventKind::MidiChannelPrefix, 1, 1),
+        (MidiAuxEventKind::MidiPort, 1, 1),
+        (MidiAuxEventKind::SmpteOffset, 1, 1),
+        (MidiAuxEventKind::SequencerSpecific, 1, 1),
+        (MidiAuxEventKind::UnknownMeta, 1, 1),
     ];
-    for (kind, want) in expected {
+    let mut stored_kinds = 0_usize;
+    for (kind, read_want, dropped_want) in expected {
         let key = kind.key();
         let read_key = format!("{key}-read");
         let dropped_key = format!("{key}-dropped");
-        let want_text = want.to_string();
         assert_eq!(
             field(line, &read_key).as_deref(),
-            Some(want_text.as_str()),
+            Some(read_want.to_string().as_str()),
             "{} 的 read: {line}",
             kind.key()
         );
         assert_eq!(
             field(line, &dropped_key).as_deref(),
-            Some(want_text.as_str()),
-            "{} 的 dropped（今天必须 == read）: {line}",
+            Some(dropped_want.to_string().as_str()),
+            "{} 的 dropped: {line}",
             kind.key()
         );
+        if dropped_want < read_want {
+            stored_kinds += 1;
+            assert!(
+                line.contains(&format!("{key}-reason=")),
+                "有损失但没落地全量的类别必须带原因（{key}）: {line}"
+            );
+        }
+        if dropped_want > 0 {
+            assert!(
+                line.contains(&format!("{key}-reason=")),
+                "dropped>0 的类别必须带精确原因（{key}）: {line}"
+            );
+        }
     }
+    assert_eq!(stored_kinds, 1, "本夹具里只有 marker 部分落地（1/2）");
 
     // ── ④ 后果：重导出不再带那些事件，conductor / 轨分区 / 通道被工程的取代 ──
     let out_bytes = std::fs::read(&out).expect("读重导出");
