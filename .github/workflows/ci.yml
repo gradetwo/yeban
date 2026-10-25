@@ -381,6 +381,53 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # ⭐ 盘回收（2026-10-25，R1132 实测教训）。
+      #
+      # ## 为什么这里需要它
+      #
+      # 本 job 是**唯一**会跑"合并特性 app 腿"的地方（`test (合并特性, yeban-app)`），
+      # 那一跳要编 ~40 个 `yeban-app` 测试二进制，每个都静态链上整条 Slint / winit /
+      # wgpu-free 软件光栅栈 ⇒ **链接体积是本仓最大的一处**。
+      #
+      # `#327`（f744cc01）/ `#328`（21cb45d2）/ `#329`（f0616d17）三连红，日志逐字:
+      #     collect2: fatal error: ld terminated with signal 7 [Bus error], core dumped
+      #     ##[warning]You are running out of disk space. … Free space left: 42 MB
+      # 而同 job 的 `clippy --workspace` / `test --workspace` / doctests **三步全 success**
+      # ⇒ 不是代码、不是链接参数，是**盘被前几步吃掉**。
+      #
+      # ## 为什么它偏偏在"加一个 Op"时复燃
+      #
+      # 这三单都碰了 `schemas/**` ⇒ `plan` 判 `workspace_wide` ⇒ **矩阵腿被整体剪掉**，
+      # 只剩本 job ⇒ 于是"唯一那条最重的腿"也是"唯一在跑的那条腿"。**每次加 `Op` 都会
+      # 再走一遍这条路**，所以这不是偶发。
+      #
+      # ## 为什么回收而不是 `debug = 0`
+      #
+      # 关 debuginfo 也能把链接体积压下来，但它**改变了被构建的东西**（panic 回溯失去行号）。
+      # 回收 runner 预装垃圾**语义上是惰性的**：删的都是本仓永远不用的 SDK。
+      # ⚠ 只删确定的四个目录；**绝不**碰 `/opt/hostedtoolcache`（Rust 工具链就在里面）。
+      - name: 回收 runner 预装垃圾（合并特性 app 腿之前必须留够链接空间）
+        run: |
+          set -euo pipefail
+          echo "== 回收前 =="
+          df -h / | tail -1
+          for path in \
+            /usr/share/dotnet \
+            /usr/local/lib/android \
+            /opt/ghc \
+            /usr/local/share/boost
+          do
+            if [ -e "$path" ]; then
+              echo "removing $path ($(du -sh "$path" 2>/dev/null | cut -f1 || echo '?'))"
+              sudo rm -rf "$path" || true
+            fi
+          done
+          sudo apt-get clean || true
+          echo "== 回收后 =="
+          df -h / | tail -1
+          # ⚠ 盘这一项**必须留读数**：下次若仍红，要能一眼看出是"回收没生效"还是"回收了也不够"
+          #（后者才需要动链接体积，例如给测试 profile 关 debuginfo）。
+
       - name: 安装 Linux 桌面构建依赖 (Slint / winit / cpal 需要)
         run: |
           set -euo pipefail
