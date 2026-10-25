@@ -80,8 +80,8 @@ use thiserror::Error;
 use yeban_dsp::math::note_to_hz;
 use yeban_model::project::DEFAULT_BPM;
 use yeban_model::{
-    AssetHash, BlockSize, ClipContent, EntityId, ModelError, RoutingGraph, TrackKind, TrackV3,
-    YebanProjectV1,
+    AssetHash, BlockSize, ClipContent, EntityId, MidiNote, ModelError, RoutingGraph, TrackKind,
+    TrackV3, YebanProjectV1,
 };
 
 use crate::audio_clip::{AudioClipError, AudioClipSchedule, AudioPcm, project_audio_clips};
@@ -93,7 +93,8 @@ use crate::mixer::{PanLaw, centered_pan_gains};
 use crate::routing::RoutingPlan;
 use crate::sfz_instrument::{PendingSfz, SfzPlan};
 use crate::synth::{
-    MAX_NOTES_PER_TRACK, NoteSchedule, ScheduledNote, ToneParams, tick_to_sample, velocity_gain,
+    BendPoint, MAX_NOTES_PER_TRACK, NO_PITCH_SHAPE, NoteSchedule, PitchShape, ScheduledNote,
+    SlideSpan, ToneParams, tick_to_sample, velocity_gain,
 };
 
 /// 退役队列默认容量（条）。一帧 60Hz 内被替换的快照远不会超过这个数。
@@ -1441,6 +1442,10 @@ fn project_schedules(project: &YebanProjectV1) -> (BTreeMap<EntityId, NoteSchedu
             track.volume_db,
         );
         let mut notes: Vec<ScheduledNote> = Vec::new();
+        // ⭐ `#311b`：本轨的**音高形状旁表**（`ScheduledNote::pitch_shape` 是它的下标）。
+        // 一个音符的曲线只在这里建**一次**，它的 `ratchet` 子脉冲与循环副本共享同一下标
+        //（`D10`：局部时间各自从自己的起点算 ⇒ 每个副本从 0 重放）。
+        let mut pitch_shapes: Vec<PitchShape> = Vec::new();
 
         for placement in track.clips.values() {
             if placement.muted {
@@ -1463,6 +1468,17 @@ fn project_schedules(project: &YebanProjectV1) -> (BTreeMap<EntityId, NoteSchedu
                 }
                 let ratchet = u64::from(note.ratchet.unwrap_or(1).clamp(1, 16));
                 let micro = i128::from(note.micro_timing_ticks.unwrap_or(0));
+                // ⭐ `#311b`：弯音/滑音的 `(tick, cents)` 在**构造期**换算成音符局部
+                // **样本**偏移（实时侧因此不做 tick 数学）。空曲线 ＋ 无滑音
+                // ⇒ `NO_PITCH_SHAPE` ⇒ 本音符与接线前**逐位相同**。
+                let pitch_shape = match project_pitch_shape(note, samples_per_tick) {
+                    #[allow(clippy::cast_possible_truncation)]
+                    Some(shape) if pitch_shapes.len() < usize::from(NO_PITCH_SHAPE) => {
+                        pitch_shapes.push(shape);
+                        (pitch_shapes.len() - 1) as u16
+                    }
+                    _ => NO_PITCH_SHAPE,
+                };
 
                 // ⭐ `#246` / [ADR-0010 D5]：循环展开**只**由 `yeban-model` 决定
                 // （`ClipPlacement::note_copies`）。没有循环计划时它返回原样一遍
@@ -1500,15 +1516,18 @@ fn project_schedules(project: &YebanProjectV1) -> (BTreeMap<EntityId, NoteSchedu
                             dropped = dropped.saturating_add(1);
                             continue;
                         }
-                        notes.push(ScheduledNote::new(
-                            start_sample,
-                            end_sample,
-                            note.pitch,
-                            note.velocity,
-                            note_to_hz(f32::from(note.pitch)),
-                            velocity_gain(note.velocity) * gain,
-                            sample_rate_f32,
-                        ));
+                        notes.push(
+                            ScheduledNote::new(
+                                start_sample,
+                                end_sample,
+                                note.pitch,
+                                note.velocity,
+                                note_to_hz(f32::from(note.pitch)),
+                                velocity_gain(note.velocity) * gain,
+                                sample_rate_f32,
+                            )
+                            .with_pitch_shape(pitch_shape),
+                        );
                     }
                 }
             }
@@ -1520,10 +1539,50 @@ fn project_schedules(project: &YebanProjectV1) -> (BTreeMap<EntityId, NoteSchedu
         // ⭐ 轨增益门**一并**写进调度表（与上面 `velocity_gain(v) * gain` 里那一份
         // **同一个来源**）：鼓机/复音读含轨门的 `note.gain`，SFZ 声部读这里的
         // `track_gain`（力度那一半由乐器层拥有 ⇒ ⛔ 不重复计）。
-        schedules.insert(*id, NoteSchedule::from_sorted(notes).with_track_gain(gain));
+        schedules.insert(
+            *id,
+            NoteSchedule::from_sorted(notes)
+                .with_track_gain(gain)
+                // ⭐ `#311b`：旁表随调度表一起进快照（空表 ⇒ 复音支路传 `None` 探针）。
+                .with_pitch_shapes(pitch_shapes),
+        );
     }
 
     (schedules, dropped)
+}
+
+/// ⭐ 把一个音符的**弯音曲线 ＋ 滑音**投影成 [`PitchShape`]（`#311b`，构造期一次）。
+///
+/// - 坐标：模型层的 `tick` 是**音符局部**的（`ADR-0012` D1），这里乘
+///   `samples_per_tick` 并四舍五入（与 `tick_to_sample` 同一个算式）⇒ 播放侧的
+///   局部时间从每个 `ScheduledNote` 自己的 `start_sample` 算起（`D10`：副本/子脉冲
+///   各自从 0 重放）。
+/// - 空（无弯音点且无滑音）⇒ `None`（投影**不建表项**，下标保持 `NO_PITCH_SHAPE`）。
+/// - 任一 `tick → 样本` 换算失败（非法 BPM/采样率组合）⇒ 整个形状 `None`：
+///   与投影对非法音符的既有处置（`tick_to_sample` 返回 `None` 就跳过）同口径，
+///   ⛔ 不发明一个"半个形状"。
+/// - 滑音的 `target_cents = (target_pitch − pitch) × 100`：十二平均律里一个半音
+///   **恰好** 100 音分 ⇒ 端点精确（`D9`）。
+fn project_pitch_shape(note: &MidiNote, samples_per_tick: f64) -> Option<PitchShape> {
+    if note.pitch_bend_curve.is_empty() && note.slide.is_none() {
+        return None;
+    }
+    let mut bend = Vec::with_capacity(note.pitch_bend_curve.len());
+    for &(tick, cents) in &note.pitch_bend_curve {
+        bend.push(BendPoint::new(
+            tick_to_sample(tick, samples_per_tick)?,
+            f32::from(cents),
+        ));
+    }
+    let slide = match &note.slide {
+        None => None,
+        Some(slide) => Some(SlideSpan::new(
+            tick_to_sample(slide.duration_ticks, samples_per_tick)?,
+            (f32::from(slide.target_pitch) - f32::from(note.pitch)) * 100.0,
+            slide.curve,
+        )),
+    };
+    Some(PitchShape::new(bend, slide))
 }
 
 /// 饱和自增（**不回绕**）：到 `u64::MAX` 就停住，返回新值。

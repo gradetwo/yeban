@@ -44,9 +44,13 @@
 //! 同一口径下沉一层，`data.supportedNoteFields` 逐条列出支持集合。
 //!
 //! **登记边界（本线未接线，绝不静默）**：模型里还有四个表现力字段没有工具面通路 ——
-//! `slide` / `pitchBendCurve` / `syllable` / `phonemes`。渲染器对它们一律如实登记进
-//! 响应的 `unsupported`（`noteSlide` / `notePitchBend` / `noteLyrics`），而工具面
-//! 现在会**响亮拒绝**这四个键（`data.unsupportedNoteFields`），不再吞掉。
+//! `slide` / `pitchBendCurve` / `syllable` / `phonemes`。工具面会**响亮拒绝**这四个键
+//! （`data.unsupportedNoteFields`），不再吞掉。
+//!
+//! ⚠ ⭐ **`#311b` 之后渲染器不再登记 `noteSlide` / `notePitchBend`**：这两个字段
+//! 已经由引擎**真的求值**（滑音末频落在目标音高、弯音曲线按音符局部 64 样本网格
+//! 重算 `phase_inc`）⇒ 母带里听得到。仍然为真的只有 `noteLyrics`（没有歌声合成）。
+//! ⛔ 工具面的写入通路**仍不存在**（`#311c`），所以"工具面拒绝"这一半不变。
 //!
 //! ## 材料创建形态（`arguments.create: true`）—— 关闭 needs-8 的 MIDI 那一半
 //!

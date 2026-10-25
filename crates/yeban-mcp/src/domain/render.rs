@@ -51,8 +51,8 @@
 //! | `deviceChainDsp` | 设备链里**本切片没有消费**的参数（未知旋钮 / `filter_cutoff_hz` / `reverb_mix` / `reverb_width`）没有求值；增益、EQ、低通、**压缩**、Freeverb、卷积已求值（压缩自 `#303`；`#303` 之前它**一整级不执行**） |
 //! | `externalPlugins` | `DeviceKind::ExternalInstrument/ExternalEffect` 没有宿主 |
 //! | `automationLanes` | ⭐ `#243` / `#256` / `#257` / `#266` / `#267` / `#293` / `#297` / `#298` / `#304`：**残差桶** —— **仅**指仍有可求值点、但**这次渲染没有落点**的泳道（空泳道与 `readEnabled:false` 的泳道**不**登记）。具体是：`DeviceParam` 的名字不是插入链落点（**卷积 IR 形状** `conv_ir_decay*` / `conv_ir_seed` / 未知旋钮），或指向旁通/非对应器件族的来源设备；`TrackVolume` / `TrackPan` 落在**不可达轨**（不在保留子图）；`SendGain` 落在**被剪枝的边**；`Macro` 泳道没有落点（宏不存在 / 空 mappings / 某条 mapping 的目标本身无落点 / 目标是嵌套 `Macro`）。**已经有落点的都真的被求值、不在此列**：源节点 / 主总线 / **可达总线轨**的 `TrackVolume` 与 `TrackPan`（`#296` / `#298` 的输出级）；保留子图入边的 `SendGain`（`#256`）；`DeviceParam` 的通道条（**含压缩**）/ Freeverb / 卷积标量字段（`data.appliedDeviceParamNames` 逐条列出；`#266` / `#267` / `#293` / `#304`）；**有落点的 `Macro` 泳道按目标单位级联**（`#297`）。逐泳道的支持/应用读数见 `data.automation` |
-//! | `noteSlide` | 滑音没有实现 |
-//! | `notePitchBend` | 弯音曲线没有求值 |
+//! | ~~`noteSlide`~~ | ⭐ **已退役（`#311b`）**：滑音由引擎**真的求值**（`SlideSpan` 进 `NoteSchedule`，末频精确落在目标音高），因此**不再**登记 —— 报一个已经做到的键就是假话。判据见 `yeban-engine/tests/pitch_bend.rs` |
+//! | ~~`notePitchBend`~~ | ⭐ **已退役（`#311b`）**：弯音曲线由引擎**真的求值**（音符局部 64 样本网格重算 `phase_inc`），因此**不再**登记。判据见 `yeban-engine/tests/pitch_bend.rs` 与 `render_master.rs` 的 `the_master_bends...` |
 //! | `noteLyrics` | **母带不会唱**：没有歌声合成（SVS 不存在），`syllable` / `phonemes` 不出声。⚠ 歌词**不是**"没有载体"：`syllable`（非空）已能写成 SMF `FF 05` 歌词元事件（`#312`），导入侧也按"唯一才归属"读回（`#317`）；`phonemes` 仍无 SMF 载体（SMF 只有一种文本槽，写进去等于把 SVS 对齐数据伪装成歌词 ⇒ 导出侧另报键 `phonemes`）。触发条件不变：任一音符带 `syllable` 或非空 `phonemes` 就登记 |
 //! | `busTrackClips` | 非源节点（总线/主轨）上的片段没有渲染（只有源节点有音源） |
 //! | `sidechainRouting` | 侧链边按普通音频边处理（`yeban-render` 的既有边界）。⚠ `#315`：**这个键的判据是"图里有没有这种数据"**（一条两端都到不了 master 的悬挂边也照报），**说不出"发生了什么事"**。真的发生了什么事看两个读数：`data.sidechainEdgesSummedAsOrdinaryAudio`（**真的被当成普通音频边求和进母带了几条**）与 `data.sidechainEdgesInRoutingGraph`（声明了几条）。修前这两个数**都不存在** ⇒ "报不支持却悄悄 +6.0206 dB"在响应里连一个字都没有（`#314` 的缺陷） |
@@ -598,15 +598,13 @@ pub const SAMPLER_MIXED_SOURCE_KIND: &str = "sfz-sampler+audio-clip";
 /// ⚠ `sfzAmplitude` **收窄不退役**：静态 `amplitude` 已由引擎应用，但
 /// `amplitude_oncc*` 需要 CC 状态（本层没有）⇒ 只有 **CC 那一半**仍登记。
 /// `sfzTuneCcModulation` / `sfzVolumeCcModulation` 同理（模型没有 CC 状态）。
-pub const KNOWN_UNSUPPORTED_KEYS: [&str; 12] = [
+pub const KNOWN_UNSUPPORTED_KEYS: [&str; 10] = [
     "audioClips",
     "automationLanes",
     "busTrackClips",
     "deviceChainDsp",
     "externalPlugins",
     "noteLyrics",
-    "notePitchBend",
-    "noteSlide",
     "sidechainRouting",
     "sfzAmplitude",
     "sfzTuneCcModulation",
@@ -3876,12 +3874,10 @@ fn build_source(
                         notes_silenced = notes_silenced.saturating_add(1);
                         continue;
                     }
-                    if note.slide.is_some() {
-                        note_unsupported(unsupported, counts, "noteSlide");
-                    }
-                    if !note.pitch_bend_curve.is_empty() {
-                        note_unsupported(unsupported, counts, "notePitchBend");
-                    }
+                    // ⭐ `#311b`：`noteSlide` / `notePitchBend` **不再是**"没做"——
+                    // 两个字段都由引擎的 `NoteSchedule` 真的求值（弯音曲线 ＋ 滑音，
+                    // 相加），母带里听得到。因此这里**一次也不登记**：报一个已经
+                    // 做到的键就是假话（与 `clipLoopRepetition` 退役同一条纪律）。
                     if note.syllable.is_some() || !note.phonemes.is_empty() {
                         note_unsupported(unsupported, counts, "noteLyrics");
                     }

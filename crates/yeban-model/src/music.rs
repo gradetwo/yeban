@@ -51,9 +51,10 @@ pub const PROBABILITY_MAX: f32 = 1.0;
 
 /// 弯音曲线单个点的 `cents` 合法绝对值上界（含）：±1200 = ±1 个八度。
 ///
-/// 值域与四条形状规则的**唯一**权威是 `docs/adr/ADR-0012-pitch-bend-curve-contract.md`
-/// （D2/D3/D4）；本常量是 D2 里那个数的机械载体，判据
-/// `pitch_bend_curve_constant_and_messages_are_pinned` 把常量与三条报文一起钉住。
+/// 值域与形状规则的**唯一**权威是 `docs/adr/ADR-0012-pitch-bend-curve-contract.md`
+/// （D2/D3；D4 自 2026-10-25 裁决为"首点可任意 `tick ≥ 0`、首点之前 `cents = 0`"，
+/// 模型侧不再有首点规则）；本常量是 D2 里那个数的机械载体，判据
+/// `pitch_bend_curve_constant_and_messages_are_pinned` 把常量与两条报文一起钉住。
 ///
 /// ⚠ 这是**模型**的界（音乐上可表达的弯音），⛔ 不是 MIDI 线格式的默认界（±2 半音）：
 /// 模型存的是作者意图，导出映射是另一件事（SMF 导出今天**不导出**弯音，
@@ -296,13 +297,17 @@ impl MidiNote {
         Ok(())
     }
 
-    /// 弯音曲线的**形状**校验（`ADR-0012` D2/D3/D4 的机械那一半）。
+    /// 弯音曲线的**形状**校验（`ADR-0012` D2/D3 的机械那一半；D4 自 2026-10-25 裁决改成
+    /// "首点可任意 `tick ≥ 0`、首点之前 `cents = 0`"，因此**不再**有首点检查）。
     ///
     /// 检查顺序**就是**优先级（判据 `pitch_bend_curve_error_order_is_pinned` 钉住它）：
     ///
-    /// 1. 非空 ⇒ 首点 `tick == 0`（曲线必须从音符起点开始，⛔ 不做起点之前的外插）；
-    /// 2. tick **严格**升序（同一 tick 两次 ⇒ 一个时刻两个音高，拒绝）；
-    /// 3. 每个点 `cents ∈ -PITCH_BEND_CENTS_MAX_ABS..=PITCH_BEND_CENTS_MAX_ABS`。
+    /// 1. tick **严格**升序（同一 tick 两次 ⇒ 一个时刻两个音高，拒绝）；
+    /// 2. 每个点 `cents ∈ -PITCH_BEND_CENTS_MAX_ABS..=PITCH_BEND_CENTS_MAX_ABS`。
+    ///
+    /// ⚠ **首点之前取 0**（D4）是**消费侧**语义：模型不计算音频 ⇒ 曲线 `[(240, 200)]`
+    /// 必须合法，`tick < 240` 的部分由播放侧读作 `0`（`yeban-engine` 的
+    /// `NoteSchedule::cents_at`，判据 `pitch_bend_leading_zero_before_the_first_point`）。
     ///
     /// ⚠ **刻意不查**末点 tick 是否 ≤ `duration_ticks`：鸣响区间之外的点**永远不会被采样**，
     /// 而 `Op::SetNoteTiming` 缩短时值会让一条本来合规的曲线"越界" ⇒ 合法编辑被事后判非法。
@@ -312,11 +317,8 @@ impl MidiNote {
     ///
     /// 违反上述任一条即返回对应的 [`ModelError`] 变体。
     fn validate_pitch_bend_curve(&self) -> Result<(), ModelError> {
-        let Some(&(first_tick, _)) = self.pitch_bend_curve.first() else {
+        if self.pitch_bend_curve.is_empty() {
             return Ok(());
-        };
-        if first_tick != 0 {
-            return Err(ModelError::PitchBendFirstTickNotZero { tick: first_tick });
         }
         for pair in self.pitch_bend_curve.windows(2) {
             let (previous, _) = pair[0];
@@ -588,11 +590,12 @@ mod tests {
 
     /// 弯音曲线的**合法形状**必须放行（正对照）。
     ///
-    /// 合法集刻意包含四种形状：空集（无弯音）、单点（常量弯音）、仓里两个夹具的形状、
-    /// 以及**越过时值**的点（`ADR-0012` D6 的非规则：永不采样 ⇒ 必须合法）。
+    /// 合法集刻意包含五种形状：空集（无弯音）、单点（常量弯音）、仓里两个夹具的形状、
+    /// **首点不在 0** 的形状（`ADR-0012` D4 的裁决：首点可任意 `tick ≥ 0`，首点之前
+    /// 由播放侧取 `0`），以及**越过时值**的点（D6 的非规则：永不采样 ⇒ 必须合法）。
     #[test]
     fn pitch_bend_curves_with_the_documented_shape_are_accepted() {
-        let cases: [Vec<(u64, i16)>; 6] = [
+        let cases: [Vec<(u64, i16)>; 8] = [
             Vec::new(),
             vec![(0, 0)],
             vec![(0, 0), (240, 200)],
@@ -603,6 +606,9 @@ mod tests {
             ],
             // D6：时值之外的点允许存在（`duration_ticks` 默认 960，这里写 10_000）。
             vec![(0, 0), (10_000, 100)],
+            // ⭐ D4（2026-10-25 裁决）：首点**不必**是 tick 0；`tick < 240` 的部分取 0。
+            vec![(240, 200)],
+            vec![(240, 200), (480, 0)],
         ];
         for curve in cases {
             let note = MidiNote {
@@ -613,20 +619,27 @@ mod tests {
         }
     }
 
-    /// D4：非空曲线的**首点**必须 `tick == 0`（曲线从音符起点开始）。
+    /// D4（裁决后的形态）：首点**可以**晚于音符起点 —— 模型**不**拒绝，也**不**改写它。
+    ///
+    /// 首点之前的 `cents = 0` 是**播放侧**语义（`yeban-engine` 的
+    /// `NoteSchedule::cents_at`，判据 `pitch_bend_leading_zero_before_the_first_point`）；
+    /// 模型这一侧必须证明的是"它一个字都没被改"（⛔ 不补 `(0, 0)`、⛔ 不裁剪）。
     #[test]
-    fn a_pitch_bend_curve_must_start_at_the_note_onset() {
-        for first_tick in [1_u64, 240, 960, u64::MAX] {
+    fn a_pitch_bend_curve_may_start_after_the_note_onset() {
+        for first_tick in [1_u64, 240, 960, u64::MAX - 1] {
+            let curve = vec![(first_tick, 0), (first_tick + 1, 100)];
             let note = MidiNote {
-                // `saturating_add`：`u64::MAX` 那一条不该因为测试自己构造溢出而假红
-                // （规则 1 先判，第二点的值在这条用例里不参与裁决）。
-                pitch_bend_curve: vec![(first_tick, 0), (first_tick.saturating_add(1), 100)],
+                pitch_bend_curve: curve.clone(),
                 ..MidiNote::default()
             };
             assert_eq!(
                 note.validate(),
-                Err(ModelError::PitchBendFirstTickNotZero { tick: first_tick }),
-                "首点 tick {first_tick} 不在起点, 必须拒绝"
+                Ok(()),
+                "首点 tick {first_tick} 不在起点也必须合法（D4）"
+            );
+            assert_eq!(
+                note.pitch_bend_curve, curve,
+                "D4：模型⛔ 不许替用户补 `(0, 0)`、⛔ 不许裁剪首点"
             );
         }
     }
@@ -685,23 +698,29 @@ mod tests {
         }
     }
 
-    /// 三条规则的**检查顺序**被钉住：一个输入同时违反多条时报第一条。
+    /// **检查顺序**被钉住：一个输入同时违反多条时报第一条（D4 撤掉后只剩两条规则：
+    /// 升序 → `cents`）。
     ///
     /// 为什么需要：顺序未钉住时，把 `cents` 循环挪到 `tick` 检查之前会让报错变脸，
     /// 而"哪一个先报"是调用方（MCP 的错误码映射）能观察到的行为。
     #[test]
     fn pitch_bend_curve_error_order_is_pinned() {
-        // 首点非 0 且 cents 越界 ⇒ 报首点（规则 1 先于规则 3）。
-        let both = MidiNote {
+        // ⭐ D4 已撤：`[(5, i16::MAX)]` 的"首点不在 0"**不再是错误** ⇒ 报的是
+        // `cents`（且报文里的 tick 就是 5 —— 证明模型确实走到了第二点，而不是
+        // 某个"首点检查"的残留）。
+        let late_and_loud = MidiNote {
             pitch_bend_curve: vec![(5, i16::MAX)],
             ..MidiNote::default()
         };
         assert_eq!(
-            both.validate(),
-            Err(ModelError::PitchBendFirstTickNotZero { tick: 5 })
+            late_and_loud.validate(),
+            Err(ModelError::PitchBendCentsOutOfRange {
+                value: i32::from(i16::MAX),
+                tick: 5
+            })
         );
 
-        // tick 重复且 cents 越界 ⇒ 报升序（规则 2 先于规则 3）。
+        // tick 重复且 cents 越界 ⇒ 报升序（规则 1 先于规则 2）。
         let duplicated = MidiNote {
             pitch_bend_curve: vec![(0, i16::MAX), (0, 0)],
             ..MidiNote::default()
@@ -715,14 +734,13 @@ mod tests {
         );
     }
 
-    /// 常量与三条**报文**逐字钉住（常量只有一个来源，报文里手抄的 1200 必须与它同值）。
+    /// 常量与两条**报文**逐字钉住（常量只有一个来源，报文里手抄的 1200 必须与它同值）。
+    ///
+    /// ⚠ `PitchBendFirstTickNotZero` 的报文已随 D4（2026-10-25）一起**删除**：
+    /// 断言一个不存在的变体是编译不过的，所以这里少了那一条 —— 这就是"撤旧 D4"的机械后果。
     #[test]
     fn pitch_bend_curve_constant_and_messages_are_pinned() {
         assert_eq!(PITCH_BEND_CENTS_MAX_ABS, 1200);
-        assert_eq!(
-            ModelError::PitchBendFirstTickNotZero { tick: 7 }.to_string(),
-            "pitch bend first tick 7 is not 0 (the curve must start at the note onset)"
-        );
         assert_eq!(
             ModelError::PitchBendTicksNotAscending {
                 previous: 7,

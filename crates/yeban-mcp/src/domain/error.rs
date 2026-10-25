@@ -168,8 +168,10 @@ pub fn code_for_model(error: &ModelError) -> ErrorCode {
         | ModelError::MacroValueOutOfRange { .. }
         | ModelError::MacroDepthOutOfRange { .. }
         // 弯音曲线的 `cents` 是**音高偏移的量**（±1 八度）⇒ 与音域越界同组。
-        // 形状错误（首点不在起点 / tick 不升序）不是"量越界"而是"载荷形状不合法"
+        // 形状错误（tick 不升序）不是"量越界"而是"载荷形状不合法"
         // ⇒ 落在下面的 INVALID_PARAMETER_RANGE 组（见 `ADR-0012`）。
+        // ⚠ `#311b`：`PitchBendFirstTickNotZero` 随 D4 的 2026-10-25 裁决**已删除**
+        //（首点可以任意 `tick ≥ 0`）⇒ 本 match 少一支，且**没有** `_` 兜底。
         | ModelError::PitchBendCentsOutOfRange { .. } => ErrorCode::OutOfRange,
         ModelError::NoteNotFound { .. }
         | ModelError::ClipPlacementNotFound { .. }
@@ -185,7 +187,6 @@ pub fn code_for_model(error: &ModelError) -> ErrorCode {
         | ModelError::InvalidHash { .. }
         | ModelError::InvalidEntityId { .. }
         | ModelError::NonFiniteValue { .. }
-        | ModelError::PitchBendFirstTickNotZero { .. }
         | ModelError::PitchBendTicksNotAscending { .. } => ErrorCode::InvalidParameterRange,
         ModelError::SchemaVersionTooNew { .. }
         | ModelError::ReaderTooOld { .. }
@@ -272,13 +273,13 @@ mod tests {
                 required: 9,
                 actual: 1,
             },
-            // `#311a`（`ADR-0012`）新增的三个弯音曲线形状错误：值越界 → `OUT_OF_RANGE`，
-            // 形状不合法 → `INVALID_PARAMETER_RANGE`。三条都必须在**契约 enum 之内**。
+            // `#311a`（`ADR-0012`）的弯音曲线形状错误：值越界 → `OUT_OF_RANGE`，
+            // 形状不合法 → `INVALID_PARAMETER_RANGE`。两条都必须在**契约 enum 之内**。
+            // ⚠ `#311b`：`PitchBendFirstTickNotZero` 已随 D4 撤掉 ⇒ 样本里**没有**它。
             ModelError::PitchBendCentsOutOfRange {
                 value: 1201,
                 tick: 0,
             },
-            ModelError::PitchBendFirstTickNotZero { tick: 240 },
             ModelError::PitchBendTicksNotAscending {
                 previous: 240,
                 tick: 120,
@@ -298,10 +299,6 @@ mod tests {
                 tick: 0
             }),
             ErrorCode::OutOfRange
-        );
-        assert_eq!(
-            code_for_model(&ModelError::PitchBendFirstTickNotZero { tick: 1 }),
-            ErrorCode::InvalidParameterRange
         );
         assert_eq!(
             code_for_model(&ModelError::PitchBendTicksNotAscending {

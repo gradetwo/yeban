@@ -5245,11 +5245,13 @@ mod tests {
 
     /// `#311a`：弯音曲线的形状规则必须**在入口上**生效，而不只是单测里。
     ///
-    /// 三条腿：
-    /// - **写入路径** `Op::AddClip` ⇒ 非法曲线被拒，且文档**逐字节不动**（片段池仍为空）；
+    /// 三条腿（⭐ `#311b`：腿 ① 随 `ADR-0012` D4 的 2026-10-25 裁决换成"首点可以晚"）：
+    /// - **写入路径** `Op::AddClip` ⇒ `[(240, 200)]`（首点不在 0）**必须写入成功**
+    ///   ——D4 已改成"首点任意 `tick ≥ 0`、首点之前取 0"，模型⛔ 不再拒绝它；
+    ///   真正的非法形状（倒序）仍在**同一个入口**被拒，且文档**逐字节不动**；
     /// - **读取路径的等价物** `YebanProjectV1::validate()`（加载器读完之后调的就是它）
     ///   ⇒ 绕开 `Op` 直接入池的非法曲线必须被报出来；
-    /// - **正对照**：同一条夹具换成合规曲线 ⇒ 两个入口都通过。
+    /// - **正对照**：两条合规曲线（含首点晚于 0 的那条）⇒ 两个入口都通过。
     #[test]
     fn pitch_bend_curve_rules_reach_the_clip_entry_points() {
         fn note_with(curve: Vec<(u64, i16)>) -> MidiNote {
@@ -5269,16 +5271,45 @@ mod tests {
             }
         }
 
-        // ① 写入路径：首点不在起点 ⇒ 拒绝，且文档不动。
+        // ① 写入路径（D4 裁决后的形态）：首点不在 0 ⇒ **合法**，曲线原样入池。
         let (mut doc, _) = numeric_fixture();
-        let before = serde_json::to_vec(&doc).expect("序列化");
-        let error = Op::AddClip {
+        Op::AddClip {
             clip: clip_with(vec![(240, 200)]),
         }
         .apply(&mut doc)
-        .expect_err("首点不在起点的曲线必须在写入入口被拒");
+        .expect("D4：首点 tick 240 的曲线必须可写入（首点之前由播放侧取 0）");
+        doc.validate()
+            .expect("D4：写入之后工程必须合法（validate 不查首点）");
+        let stored = doc
+            .clip_pool
+            .values()
+            .find_map(|entry| match &entry.content {
+                ClipContent::Midi { notes } => notes.values().next().cloned(),
+                ClipContent::Audio { .. } => None,
+            })
+            .expect("片段池里必须有那个音符");
+        assert_eq!(
+            stored.pitch_bend_curve,
+            vec![(240, 200)],
+            "D4：模型⛔ 不许替用户补 `(0, 0)`"
+        );
+
+        // ①b 写入路径仍在守真正的非法形状：倒序 ⇒ 拒绝，且文档不动。
+        let (mut doc, _) = numeric_fixture();
+        let before = serde_json::to_vec(&doc).expect("序列化");
+        let error = Op::AddClip {
+            clip: clip_with(vec![(0, 0), (240, 10), (120, 20)]),
+        }
+        .apply(&mut doc)
+        .expect_err("倒序曲线必须在写入入口被拒");
         assert!(
-            matches!(error, ModelError::PitchBendFirstTickNotZero { tick: 240 }),
+            matches!(
+                error,
+                ModelError::PitchBendTicksNotAscending {
+                    previous: 240,
+                    tick: 120
+                }
+            ),
             "实际 {error:?}"
         );
         assert_eq!(serde_json::to_vec(&doc).expect("序列化"), before);
@@ -5305,14 +5336,16 @@ mod tests {
         );
 
         // ③ 正对照：合规曲线 ⇒ 写入与 `validate` 都通过。
-        let (mut doc, _) = numeric_fixture();
-        Op::AddClip {
-            clip: clip_with(vec![(0, 0), (240, 200)]),
+        for curve in [vec![(0, 0), (240, 200)], vec![(240, 200)]] {
+            let (mut doc, _) = numeric_fixture();
+            Op::AddClip {
+                clip: clip_with(curve.clone()),
+            }
+            .apply(&mut doc)
+            .expect("合规曲线必须可写入");
+            doc.validate().expect("合规曲线的工程必须合法");
+            assert_eq!(doc.clip_pool.len(), 1, "曲线 {curve:?}");
         }
-        .apply(&mut doc)
-        .expect("合规曲线必须可写入");
-        doc.validate().expect("合规曲线的工程必须合法");
-        assert_eq!(doc.clip_pool.len(), 1);
     }
 
     /// 类别 1：`Op::AddClip` 与 `YebanProjectV1::insert_clip` 曾经**不校验载荷**。

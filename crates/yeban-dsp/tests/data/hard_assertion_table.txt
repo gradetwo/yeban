@@ -2,7 +2,7 @@
 # 分类口径：float_bits ＝ 判据体内有 to_bits()；integer_count ＝ 只比整数/长度
 # class：hard ＝ 产线可达集无宿主 libm 超越函数；platform ＝ 有（只在本架构有意义）
 #        no_callee ＝ 不调用本 crate 产线函数
-# 合计 270 条：float_bits 70 ／ integer_count 200；其中 hard 64 ／ platform 3
+# 合计 274 条：float_bits 71 ／ integer_count 203；其中 hard 65 ／ platform 3
 # 列：kind | class | reach | host | file | test
 integer_count | no_callee | 0 | - | src/block.rs | accumulate_matches_scalar_reference
 integer_count | no_callee | 0 | - | src/block.rs | mismatched_lengths_are_truncated_instead_of_panicking
@@ -232,20 +232,24 @@ integer_count | no_callee | 0 | - | src/oversample.rs | the_odd_phase_is_the_hal
 integer_count | no_callee | 0 | - | src/oversample.rs | the_upsample_phase_order_puts_the_prototype_peak_at_its_centre_tap
 integer_count | no_callee | 0 | - | src/oversample.rs | upsample_kills_the_image_above_the_base_nyquist
 integer_count | no_callee | 0 | - | src/polysynth.rs | a4_puts_its_energy_in_the_440_hz_bin
+integer_count | no_callee | 0 | - | src/polysynth.rs | a_full_octave_bend_moves_the_spectral_peak_from_440_to_880
 integer_count | no_callee | 0 | - | src/polysynth.rs | a_sample_rate_change_keeps_the_envelope_time_scale
 integer_count | no_callee | 0 | - | src/polysynth.rs | a_sample_rate_change_retunes_a_pending_note
-float_bits | hard | 32 | - | src/polysynth.rs | a_sample_rate_change_retunes_the_sounding_voices
+float_bits | hard | 35 | - | src/polysynth.rs | a_sample_rate_change_retunes_the_sounding_voices
 integer_count | no_callee | 0 | - | src/polysynth.rs | a_stolen_voice_starts_its_new_note_with_the_configured_release
+float_bits | hard | 32 | - | src/polysynth.rs | an_empty_pitch_probe_is_bit_identical_to_plain_render
 integer_count | no_callee | 0 | - | src/polysynth.rs | an_empty_recipe_list_still_yields_one_table
 integer_count | no_callee | 0 | - | src/polysynth.rs | an_off_second_oscillator_is_bit_identical
 float_bits | hard | 2 | - | src/polysynth.rs | bypass_is_not_a_transparent_filter
 integer_count | no_callee | 0 | - | src/polysynth.rs | default_params_match_the_moved_engine_tone
 integer_count | no_callee | 0 | - | src/polysynth.rs | hard_stealing_jumps_more_than_soft_stealing
+integer_count | no_callee | 0 | - | src/polysynth.rs | note_off_pairs_by_the_base_frequency_while_the_note_is_bent
 integer_count | no_callee | 0 | - | src/polysynth.rs | note_off_releases_only_the_matching_requested_frequency
 integer_count | no_callee | 0 | - | src/polysynth.rs | render_is_bit_identical_under_any_block_split
 integer_count | no_callee | 0 | - | src/polysynth.rs | stealing_is_deterministic
 integer_count | no_callee | 0 | - | src/polysynth.rs | the_earliest_voice_is_stolen_first
-float_bits | hard | 28 | - | src/polysynth.rs | the_playhead_saturates_at_the_end_of_the_timeline
+integer_count | no_callee | 0 | - | src/polysynth.rs | the_pitch_grid_is_anchored_to_the_note_and_not_to_the_caller_block
+float_bits | hard | 31 | - | src/polysynth.rs | the_playhead_saturates_at_the_end_of_the_timeline
 integer_count | no_callee | 0 | - | src/polysynth.rs | the_second_oscillator_adds_its_own_fundamental
 integer_count | no_callee | 0 | - | src/polysynth.rs | the_voice_size_is_pinned_after_adding_the_requested_frequency
 integer_count | no_callee | 0 | - | src/polysynth.rs | ties_on_start_sample_are_broken_by_the_smallest_index

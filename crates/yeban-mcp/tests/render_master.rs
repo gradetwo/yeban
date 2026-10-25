@@ -5254,34 +5254,26 @@ fn the_known_unsupported_list_is_not_decoration() {
             render_or_ok(&project, "automation")
         }),
     ));
-    // ⑤ `noteSlide` / ⑥ `notePitchBend` / ⑦ `noteLyrics`：音符上的三种没有实现的表达。
-    for (key, mutate) in [("noteSlide", 0u8), ("notePitchBend", 1), ("noteLyrics", 2)] {
-        triggers.push((
-            key,
-            Box::new(move || {
-                let mut project = project(&Spec::default());
-                for clip in project.clip_pool.values_mut() {
-                    if let ClipContent::Midi { notes } = &mut clip.content {
-                        for note in notes.values_mut() {
-                            match mutate {
-                                0 => {
-                                    note.slide = Some(yeban_model::SlideConfig {
-                                        duration_ticks: 240,
-                                        target_pitch: 72,
-                                        curve: yeban_model::CurveType::Linear,
-                                    });
-                                }
-                                1 => note.pitch_bend_curve = vec![(0, 0), (240, 200)],
-                                _ => note.syllable = Some("la".to_owned()),
-                            }
-                        }
+    // ⑤ `noteLyrics`：音符上**唯一**还没有实现的表达。
+    // ⚠ ⭐ `#311b`：`noteSlide` / `notePitchBend` **已退役** —— 两个字段由引擎
+    // 真的求值（滑音末频落在目标音高、弯音曲线进 `NoteSchedule` 并被器件按
+    // 音符局部 64 样本网格重算），所以清单里没有它们、这里也**没有**触发器。
+    // 正向判据见 `tests/pitch_bend.rs`（引擎）与本文件的弯音母带判据。
+    triggers.push((
+        "noteLyrics",
+        Box::new(|| {
+            let mut project = project(&Spec::default());
+            for clip in project.clip_pool.values_mut() {
+                if let ClipContent::Midi { notes } = &mut clip.content {
+                    for note in notes.values_mut() {
+                        note.syllable = Some("la".to_owned());
                     }
                 }
-                project.validate().expect("夹具合法");
-                render_or_ok(&project, key)
-            }),
-        ));
-    }
+            }
+            project.validate().expect("夹具合法");
+            render_or_ok(&project, "noteLyrics")
+        }),
+    ));
     // ⑧ `busTrackClips`：主总线轨上摆一个片段。
     triggers.push((
         "busTrackClips",
@@ -7003,4 +6995,216 @@ fn sidechain_readings_are_declared_in_the_output_schema() {
         |violation| panic!("render_master 的真实响应违反自己的 schema: {violation}"),
     );
     println!("### #315 outputSchema 已声明: {declared:?}");
+}
+
+// ===========================================================================
+// 任务单 `#311b`：音高随时间变化（弯音曲线 ＋ 滑音）在**母带**里真的发声
+// ===========================================================================
+
+/// 从 24-bit PCM WAV 里读**左声道**（RIFF 块遍历 + `fmt ` 声道数；`data` 3 B/样本）。
+///
+/// 只为判据服务：⛔ 不是第二份 WAV 解码器（产品路径的读写在 `yeban-render`）。
+fn wav_left_channel(path: &Path) -> Vec<f32> {
+    let bytes = fs::read(path).expect("读母带");
+    assert_eq!(&bytes[0..4], b"RIFF", "RIFF 头");
+    assert_eq!(&bytes[8..12], b"WAVE", "WAVE 标记");
+    let mut position = 12usize;
+    let mut channels = 1usize;
+    let mut data: &[u8] = &[];
+    while position + 8 <= bytes.len() {
+        let id = &bytes[position..position + 4];
+        let length = u32::from_le_bytes(
+            bytes[position + 4..position + 8]
+                .try_into()
+                .expect("chunk 长度 4 B"),
+        ) as usize;
+        let body = &bytes[position + 8..position + 8 + length];
+        if id == b"fmt " {
+            channels = usize::from(u16::from_le_bytes([body[2], body[3]])).max(1);
+            let bits = u16::from_le_bytes([body[14], body[15]]);
+            assert_eq!(bits, 24, "MCP 母带是 24-bit PCM");
+        }
+        if id == b"data" {
+            data = body;
+        }
+        position += 8 + length + (length & 1);
+    }
+    assert!(!data.is_empty(), "必须有 data 块");
+    data.chunks_exact(3 * channels)
+        .map(|frame| {
+            let raw = i32::from_le_bytes([
+                frame[0],
+                frame[1],
+                frame[2],
+                if frame[2] & 0x80 == 0 { 0x00 } else { 0xFF },
+            ]);
+            #[allow(clippy::cast_precision_loss)]
+            let value = raw as f32 / 8_388_608.0;
+            value
+        })
+        .collect()
+}
+
+/// 单 bin 的加窗（Hann）DFT 幅度。
+fn master_magnitude(samples: &[f32], freq_hz: f64, sample_rate: f64) -> f64 {
+    let n = samples.len();
+    let mut re = 0.0f64;
+    let mut im = 0.0f64;
+    for (index, sample) in samples.iter().enumerate() {
+        #[allow(clippy::cast_precision_loss)]
+        let position = index as f64;
+        #[allow(clippy::cast_precision_loss)]
+        let hann = 0.5 - 0.5 * (core::f64::consts::TAU * position / n as f64).cos();
+        let phase = core::f64::consts::TAU * freq_hz * position / sample_rate;
+        re += hann * f64::from(*sample) * phase.cos();
+        im += hann * f64::from(*sample) * phase.sin();
+    }
+    (re * re + im * im).sqrt() / n as f64 * 2.0
+}
+
+/// 在 `[lo, hi]` 里按 1 Hz 步长找幅度最大的频率。
+fn master_dominant(samples: &[f32], lo: f64, hi: f64) -> f64 {
+    let mut best = lo;
+    let mut best_magnitude = f64::NEG_INFINITY;
+    let mut freq = lo;
+    while freq <= hi {
+        let magnitude = master_magnitude(samples, freq, 48_000.0);
+        if magnitude > best_magnitude {
+            best_magnitude = magnitude;
+            best = freq;
+        }
+        freq += 1.0;
+    }
+    best
+}
+
+/// 给夹具里**每一个** MIDI 音符挂同一条弯音曲线（夹具只有一个音）。
+fn master_with_bend(mut project: YebanProjectV1, curve: Vec<(u64, i16)>) -> YebanProjectV1 {
+    for clip in project.clip_pool.values_mut() {
+        if let ClipContent::Midi { notes } = &mut clip.content {
+            for note in notes.values_mut() {
+                note.pitch_bend_curve = curve.clone();
+            }
+        }
+    }
+    project.validate().expect("夹具合法");
+    project
+}
+
+/// 给夹具里**每一个** MIDI 音符挂同一个滑音（夹具只有一个音）。
+fn master_with_slide(
+    mut project: YebanProjectV1,
+    target_pitch: u8,
+    duration_ticks: u64,
+) -> YebanProjectV1 {
+    for clip in project.clip_pool.values_mut() {
+        if let ClipContent::Midi { notes } = &mut clip.content {
+            for note in notes.values_mut() {
+                note.slide = Some(yeban_model::SlideConfig {
+                    duration_ticks,
+                    target_pitch,
+                    curve: CurveType::Linear,
+                });
+            }
+        }
+    }
+    project.validate().expect("夹具合法");
+    project
+}
+
+/// 渲染一份工程并返回 `(响应 JSON, 母带左声道)`。
+fn render_master_audio(project: &YebanProjectV1, tag: &str) -> (Value, Vec<f32>) {
+    let scratch = Scratch::new(&format!("bend-{tag}"));
+    let (mut dispatcher, auth) = dispatcher_with(project, &scratch.join("p.yeban"));
+    let out = scratch.join("master.wav");
+    let result = call(
+        &mut dispatcher,
+        &auth,
+        json!({"format": "wav", "sampleRate": 48000, "path": out.display().to_string()}),
+    );
+    assert_eq!(
+        result["status"], "success",
+        "`{tag}` 必须渲染成功: {result}"
+    );
+    let samples = wav_left_channel(&out);
+    (result, samples)
+}
+
+/// ⭐ 判据（`#311b`）：**正对照逐字节不变** ＋ 弯音/滑音真的把母带推到 880 Hz。
+///
+/// 三条腿：
+/// 1. **空曲线**（默认夹具，`pitch_bend_curve` 为空、`slide = None`）⇒ 整文件
+///    `sha256` 与母带位级摘要**逐位等于改前钉死的常量**
+///    （`DEFAULT_MASTER_SHA256` / `DEFAULT_MASTER_DIGEST`）⇒ "一次浮点都不加"；
+/// 2. **弯音** `[(0,0),(960,1200)]` ⇒ `sha256` 变、母带末段主频 **≈880 Hz**，
+///    且 `unsupported` **不再**登记 `notePitchBend`（真的做到了才退役）；
+/// 3. **滑音** `target_pitch = 81`（A5）⇒ `sha256` 变、末段主频 **≈880 Hz**，
+///    且 `unsupported` **不再**登记 `noteSlide`。
+#[test]
+fn the_master_bends_from_440_to_880_and_the_empty_curve_stays_bit_identical() {
+    // ① 正对照（硬判据）：默认夹具没有曲线 ⇒ 逐字节等于改前常量。
+    let base = project(&Spec::default());
+    let (flat, flat_audio) = render_master_audio(&base, "flat");
+    assert_eq!(
+        flat["data"]["sha256"], DEFAULT_MASTER_SHA256,
+        "空曲线 ⇒ 整文件 sha256 必须与改前逐字节相同"
+    );
+    assert_eq!(
+        flat["data"]["masterDigest"], DEFAULT_MASTER_DIGEST,
+        "空曲线 ⇒ 母带位级摘要必须与改前逐字节相同"
+    );
+    assert_eq!(flat_audio.len(), 48_000, "1 s @48 kHz");
+    let flat_last = master_dominant(&flat_audio[30_000..47_000], 400.0, 960.0);
+    println!("### [MCP-311b] 空曲线末段主频 = {flat_last:.3} Hz（期望 440）");
+
+    // ② 弯音：tick 960 = 0.5 s 处到 +1200 ⇒ 后 0.5 s 保持 880 Hz。
+    let bent = master_with_bend(base.clone(), vec![(0, 0), (960, 1_200)]);
+    let (bent_json, bent_audio) = render_master_audio(&bent, "bend");
+    assert_ne!(
+        bent_json["data"]["sha256"], DEFAULT_MASTER_SHA256,
+        "写了弯音曲线之后母带字节必须变（⛔ 不许静默忽略）"
+    );
+    assert_ne!(
+        bent_json["data"]["masterDigest"], DEFAULT_MASTER_DIGEST,
+        "写了弯音曲线之后母带样本必须变"
+    );
+    let unsupported = bent_json["data"]["unsupported"]
+        .as_array()
+        .expect("unsupported");
+    assert!(
+        !unsupported.iter().any(|key| key == "notePitchBend"),
+        "弯音已经真的求值 ⇒ ⛔ 不许再登记 notePitchBend: {unsupported:?}"
+    );
+    let bent_last = master_dominant(&bent_audio[30_000..47_000], 800.0, 960.0);
+    let bent_880 = master_magnitude(&bent_audio[30_000..47_000], 880.0, 48_000.0);
+    let bent_440 = master_magnitude(&bent_audio[30_000..47_000], 440.0, 48_000.0);
+    println!(
+        "### [MCP-311b] 弯音末段主频 = {bent_last:.3} Hz（期望 ≈880）；880 幅度 = {bent_880:.9}、440 幅度 = {bent_440:.9}"
+    );
+    assert!(
+        (bent_last - 880.0).abs() <= 2.0,
+        "弯音末段主频必须 ≈880 Hz，实测 {bent_last}"
+    );
+    assert!(bent_880 > 10.0 * bent_440, "末段 880 必须远大于 440");
+
+    // ③ 滑音到 A5（+1200）：末频 ＝ 目标。
+    let slid = master_with_slide(base, 81, 960);
+    let (slid_json, slid_audio) = render_master_audio(&slid, "slide");
+    assert_ne!(
+        slid_json["data"]["sha256"], DEFAULT_MASTER_SHA256,
+        "写了滑音之后母带字节必须变"
+    );
+    let unsupported = slid_json["data"]["unsupported"]
+        .as_array()
+        .expect("unsupported");
+    assert!(
+        !unsupported.iter().any(|key| key == "noteSlide"),
+        "滑音已经真的求值 ⇒ ⛔ 不许再登记 noteSlide: {unsupported:?}"
+    );
+    let slid_last = master_dominant(&slid_audio[30_000..47_000], 800.0, 960.0);
+    println!("### [MCP-311b] 滑音末段主频 = {slid_last:.3} Hz（目标 81 ⇒ 880）");
+    assert!(
+        (slid_last - 880.0).abs() <= 2.0,
+        "滑音末频必须精确落在目标音高（880 Hz），实测 {slid_last}"
+    );
 }

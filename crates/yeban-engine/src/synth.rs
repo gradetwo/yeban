@@ -95,6 +95,16 @@
 //!   `docs/ledger/engine-sound-notes.md` 的 needs；
 //! - **没有滑音/弯音/歌词/音素**：`MidiNote::slide`/`pitch_bend_curve`/`phonemes`
 //!   不参与合成；
+//! - ⭐ ⭐ **追加修订段（任务单 `#311b`，台账第 278 条：⛔ 不改上一条原文）**：上一条
+//!   描述的是 `#311b` **之前**的事实，现仍逐字保留。自 `#311b` 起
+//!   `MidiNote::pitch_bend_curve` 与 `MidiNote::slide` **已经真的发声**：
+//!   [`crate::snapshot::project_schedules`] 在构造期把它们投影成每轨的
+//!   [`PitchShape`] 旁表（音符局部**样本**偏移 ＋ 音分；滑音的 `target_cents =
+//!   (target_pitch − pitch) × 100`），[`ScheduledNote::pitch_shape`] 只带 `u16` 下标；
+//!   实时侧的 [`SynthEngine::render_track`] 把 `Option<&dyn Fn(u16, u64) -> f32>`
+//!   探针交给器件（与 `cc` 探针同形），器件在**音符局部 64 样本**网格上重算
+//!   `phase_inc`。空曲线 ⇒ 旁表为空 ⇒ 探针 `None` ⇒ 与接线前**逐位相同**。
+//!   ⚠ `phonemes` 仍**不**参与合成（没有歌声合成），`noteLyrics` 仍登记为未做。
 //! - **没有采样播放/SFZ**：`ClipContent::Audio` 与 `yeban-sfz` 的乐器都还没有接到
 //!   声部池上（需要采样加载 + 重采样，见 notes 的 pending）；
 //! - ⭐ ⭐ **追加修订段（任务单 `#135`，台账第 278 条：⛔ 不改上一条原文）**：上一条
@@ -137,7 +147,10 @@ use yeban_dsp::oscillator::{GLASS, HOLLOW, METALLIC, ORGAN, VOCAL};
 use yeban_dsp::polysynth::{
     NoteEvent, PolySynth, PolySynthParams, PolySynthTables, phase_increment, steal_fade_frames_for,
 };
-use yeban_model::{DeviceDefinition, DeviceKind, EntityId, PPQ};
+// ⭐ `#311b`：音高形状的**哨兵**（`u16::MAX`）—— 再导出，让 `crate::snapshot` 与
+// 引擎的判据不必各自写一遍"没有形状"的魔数。
+pub use yeban_dsp::polysynth::NO_PITCH_SHAPE;
+use yeban_model::{CurveType, DeviceDefinition, DeviceKind, EntityId, PPQ};
 
 use crate::drums::{DRUM_SLOTS, DrumHit, DrumMachine, DrumNoteMap, DrumsParams};
 use crate::sfz_instrument::{PreparedSfz, SfzVoicePool};
@@ -654,6 +667,12 @@ impl Default for ToneParams {
 ///
 /// 全部字段在 [`crate::snapshot`] 的投影里由模型算出：实时侧只做整数比较与
 /// 逐样本合成，不做 tick 换算、不做音高换算（见模块文档 §1）。
+///
+/// ## ⭐ `pitch_shape`（`#311b`）：音高随时间变化的那条通道
+///
+/// 只带**下标**（[`NO_PITCH_SHAPE`] = 无），曲线本体在 [`NoteSchedule::pitch_shapes`]
+/// 的旁表里 —— 内联 `Vec` 会破 `Copy`，而本结构在触发路径上逐音符拷贝
+/// （48 处 `NoteEvent::new`、11 处 `ScheduledNote::new` 一个字都不用改）。
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ScheduledNote {
     /// 起点（绝对样本位置，从工程 tick 0 起算）。
@@ -670,6 +689,11 @@ pub struct ScheduledNote {
     phase_inc: u32,
     /// 逐样本增益：`velocity/127 × db_to_gain(track.volume_db) × 可闻门`。
     gain: f32,
+    /// ⭐ 音高形状下标（[`NoteSchedule::pitch_shapes`]；[`NO_PITCH_SHAPE`] = 无）。
+    ///
+    /// 它**不参与**任何音频算式，只被投影写、被触发路径读一次
+    /// （`NoteEvent::with_pitch_shape`）；`Copy`/`PartialEq` 因此都不受影响。
+    pitch_shape: u16,
 }
 
 impl ScheduledNote {
@@ -677,6 +701,9 @@ impl ScheduledNote {
     ///
     /// `phase_inc` 在此处由 `freq_hz`/`sample_rate` 推出，而不是由调用方传入：
     /// 相位定标是**合成器的不变量**，不该让每个调用点各自记住 `2³²`。
+    ///
+    /// 音高形状默认 [`NO_PITCH_SHAPE`]（无弯音/滑音）⇒ 既有 11 个调用点与
+    /// 全部手工夹具**一个字都不用改**。
     #[must_use]
     pub fn new(
         start_sample: u64,
@@ -695,7 +722,21 @@ impl ScheduledNote {
             freq_hz,
             phase_inc: phase_increment(freq_hz, sample_rate),
             gain,
+            pitch_shape: NO_PITCH_SHAPE,
         }
+    }
+
+    /// ⭐ 挂一个音高形状下标（`#311b`；由 [`crate::snapshot`] 的投影调用）。
+    #[must_use]
+    pub const fn with_pitch_shape(mut self, shape: u16) -> Self {
+        self.pitch_shape = shape;
+        self
+    }
+
+    /// ⭐ 本音符的音高形状下标（[`NO_PITCH_SHAPE`] = 无）。
+    #[must_use]
+    pub const fn pitch_shape(&self) -> u16 {
+        self.pitch_shape
     }
 
     /// 起点（绝对样本位置）。
@@ -757,6 +798,200 @@ impl ScheduledNote {
 // 一次 `f64` 乘除 + `round`：这一步**不在**逐样本路径上（构造期一次），
 // `round` 本身是 IEEE 精确类（D32 §1）。
 
+/// ⭐ **弯音曲线上的一个点**（`#311b`）：音符局部**样本**偏移 ＋ 音分。
+///
+/// 坐标原本是模型层的 `(tick, cents)`（`ADR-0012` D1：tick 是**音符局部**坐标）；
+/// [`crate::snapshot`] 在构造期用 `samples_per_tick` 把它换算成样本偏移 ——
+/// 实时侧因此**不做任何 tick 数学**（与模块文档 §1 同一条纪律）。
+///
+/// ⚠ 相邻两个点的样本偏移可能**相等**（BPM/采样率极端时 1 tick 不足 1 样本，
+/// 而模型只保证 tick 严格升序）：求值时对 `span == 0` 有专门的兜底，⛔ 不会除零。
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct BendPoint {
+    /// 音符局部样本偏移（`tick × samples_per_tick` 四舍五入）。
+    offset_samples: u64,
+    /// 相对 `MidiNote::pitch` 的音分偏移（模型已保证 `-1200..=1200`）。
+    cents: f32,
+}
+
+impl BendPoint {
+    /// 组装一个弯音点（构造期；偏移与音分都是模型投影算好的）。
+    #[must_use]
+    pub const fn new(offset_samples: u64, cents: f32) -> Self {
+        Self {
+            offset_samples,
+            cents,
+        }
+    }
+
+    /// 音符局部样本偏移。
+    #[must_use]
+    pub const fn offset_samples(&self) -> u64 {
+        self.offset_samples
+    }
+
+    /// 音分偏移。
+    #[must_use]
+    pub const fn cents(&self) -> f32 {
+        self.cents
+    }
+}
+
+/// ⭐ **滑音段**（`#311b`；`ADR-0012` D9 的落地形态）。
+///
+/// `cents(t) = target_cents × curve.ease(t / end_samples)`，`t >= end_samples` 之后
+/// **保持** `target_cents`（与 D5 的"末点之后保持末值"同一条口径）。
+/// `target_cents = (target_pitch − pitch) × 100`：十二平均律里一个半音**恰好** 100
+/// 音分，因此端点**精确**落在目标音高上（⛔ 不是用 `log2` 反算出的近似值）。
+///
+/// `curve` 的类型是模型层的 [`CurveType`]，`ease` **只在模型层实现一份** ——
+/// 本模块（乃至 `yeban-dsp`）⛔ 不复制公式。
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SlideSpan {
+    /// 滑音时长（音符局部样本数）；模型保证 `duration_ticks != 0`，这里再防一次 0。
+    end_samples: u64,
+    /// 目标音高相对本音符的音分偏移（`(target − pitch) × 100`）。
+    target_cents: f32,
+    /// 曲线形状（`CurveType::ease` 是唯一实现）。
+    curve: CurveType,
+}
+
+impl SlideSpan {
+    /// 组装一个滑音段（构造期）。
+    #[must_use]
+    pub const fn new(end_samples: u64, target_cents: f32, curve: CurveType) -> Self {
+        Self {
+            end_samples,
+            target_cents,
+            curve,
+        }
+    }
+
+    /// 滑音时长（音符局部样本数）。
+    #[must_use]
+    pub const fn end_samples(&self) -> u64 {
+        self.end_samples
+    }
+
+    /// 目标音分偏移。
+    #[must_use]
+    pub const fn target_cents(&self) -> f32 {
+        self.target_cents
+    }
+
+    /// 曲线形状。
+    #[must_use]
+    pub const fn curve(&self) -> CurveType {
+        self.curve
+    }
+
+    /// 音符局部 `local` 处的滑音音分。
+    #[must_use]
+    pub fn cents_at(&self, local: u64) -> f32 {
+        if self.end_samples == 0 || local >= self.end_samples {
+            return self.target_cents;
+        }
+        #[allow(clippy::cast_precision_loss)]
+        let t = local as f32 / self.end_samples as f32;
+        self.target_cents * self.curve.ease(t)
+    }
+}
+
+/// ⭐ **一个音符的音高形状**（`#311b`）：弯音曲线 ＋ 滑音，**相加**（`D9`）。
+///
+/// ## 坐标与求值口径（逐条对应 ADR）
+///
+/// - **D1**：点偏移是**音符局部**的 ⇒ 每个 `ScheduledNote`（含 `ratchet` 子脉冲与
+///   循环副本）的局部时间从**它自己的** `start_sample` 算起 ⇒ **每个副本从 0 重放**
+///   曲线（`D10`：每次重击是一段新生命）。
+/// - **D4**（2026-10-25 裁决）：`local` 小于**首点**偏移 ⇒ 弯音部分取 **0**
+///   （逻辑上的"弯音是绝对状态、默认值 0"，⛔ 不是外插首值）。
+/// - **D5**：相邻点之间**线性**插值（单位 cents）；末点之后**保持**末值。
+/// - **D9**：`total = bend + slide`（两条独立通路、叠加）。
+///
+/// ## 为什么不是"逐样本"求值
+///
+/// 本结构只在**控制率**上被调用（`yeban-dsp` 的音符局部 64 样本网格），
+/// 逐样本路径上一次都不经过它。这是保"块切分无关"的前提，见
+/// `yeban_dsp::polysynth::PITCH_UPDATE_SAMPLES` 的文档。
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct PitchShape {
+    /// 弯音点（构造期已按样本偏移**升序**；空 = 无弯音）。
+    bend: Vec<BendPoint>,
+    /// 滑音（`None` = 无滑音）。
+    slide: Option<SlideSpan>,
+}
+
+impl PitchShape {
+    /// 组装一个音高形状（构造期；`bend` 必须已按偏移升序）。
+    #[must_use]
+    pub const fn new(bend: Vec<BendPoint>, slide: Option<SlideSpan>) -> Self {
+        Self { bend, slide }
+    }
+
+    /// 弯音点（只读；诊断/判据用）。
+    #[must_use]
+    pub fn bend(&self) -> &[BendPoint] {
+        &self.bend
+    }
+
+    /// 滑音段（只读；诊断/判据用）。
+    #[must_use]
+    pub const fn slide(&self) -> Option<&SlideSpan> {
+        self.slide.as_ref()
+    }
+
+    /// 本形状是否**恒为 0**（空弯音 ＋ 无滑音）⇒ 投影可以不给它建表项。
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.bend.is_empty() && self.slide.is_none()
+    }
+
+    /// ⭐ 音符局部 `local` 处的**总音分**（弯音 ＋ 滑音；`D9`）。
+    #[must_use]
+    pub fn cents_at(&self, local: u64) -> f32 {
+        self.bend_cents_at(local) + self.slide_cents_at(local)
+    }
+
+    /// 弯音部分（`D4` 首点前取 0、`D5` 线性插值、末点后保持）。
+    #[must_use]
+    pub fn bend_cents_at(&self, local: u64) -> f32 {
+        let Some(first) = self.bend.first() else {
+            return 0.0;
+        };
+        // ⭐ D4：首点之前**取 0**（⛔ 不外插首值）。
+        if local < first.offset_samples {
+            return 0.0;
+        }
+        // 最后一个 `offset <= local` 的下标（bend 非空且 local >= 首点 ⇒ >= 1）。
+        let index = self
+            .bend
+            .partition_point(|point| point.offset_samples <= local);
+        let lower = &self.bend[index - 1];
+        let Some(upper) = self.bend.get(index) else {
+            // ⭐ D5：末点之后**保持**末值。
+            return lower.cents;
+        };
+        let span = upper.offset_samples - lower.offset_samples;
+        if span == 0 {
+            // 两个 tick 落到同一个样本（极端 BPM/采样率）：取后一个点的值，
+            // ⛔ 不除零（那会产出 NaN 并让整条声部静音）。
+            return upper.cents;
+        }
+        #[allow(clippy::cast_precision_loss)]
+        let t = (local - lower.offset_samples) as f32 / span as f32;
+        lower.cents + (upper.cents - lower.cents) * t
+    }
+
+    /// 滑音部分（`D9`；端点精确）。
+    #[must_use]
+    pub fn slide_cents_at(&self, local: u64) -> f32 {
+        self.slide
+            .as_ref()
+            .map_or(0.0, |slide| slide.cents_at(local))
+    }
+}
+
 /// 单轨的音符调度表（按 `start_sample` 升序，构造期分配、实时侧只读）。
 ///
 /// # ⭐ 本表携带**两个**增益量（归属裁决见 `phase-status.md` 的 R711）
@@ -780,6 +1015,12 @@ pub struct NoteSchedule {
     /// "没有轨参数"就是"不衰减"。⚠ 产品路径的值由
     /// [`crate::snapshot::project_schedules`] 写入（与 `note.gain` 里那一份同源）。
     track_gain: f32,
+    /// ⭐ **音高形状旁表**（`#311b`）：`ScheduledNote::pitch_shape` 是它的下标。
+    ///
+    /// 空 = 本轨没有一个音符带弯音/滑音 ⇒ 引擎传 `None` 探针 ⇒ 器件走**今天这条**
+    /// 路径（一次浮点都不加）。容量受 [`MAX_NOTES_PER_TRACK`] 约束 ⇒ 下标远小于
+    /// `u16::MAX`（`u16::MAX` 留给 `NO_PITCH_SHAPE` 当哨兵）。
+    pitch_shapes: Vec<PitchShape>,
 }
 
 impl Default for NoteSchedule {
@@ -788,6 +1029,7 @@ impl Default for NoteSchedule {
         Self {
             notes: Vec::new(),
             track_gain: 1.0,
+            pitch_shapes: Vec::new(),
         }
     }
 }
@@ -802,7 +1044,38 @@ impl NoteSchedule {
         Self {
             notes,
             track_gain: 1.0,
+            pitch_shapes: Vec::new(),
         }
+    }
+
+    /// ⭐ 写入本轨的音高形状旁表（构造期；见 [`Self::pitch_shapes`]）。
+    #[must_use]
+    pub fn with_pitch_shapes(mut self, pitch_shapes: Vec<PitchShape>) -> Self {
+        self.pitch_shapes = pitch_shapes;
+        self
+    }
+
+    /// ⭐ 本轨的音高形状旁表（只读）。
+    #[must_use]
+    pub fn pitch_shapes(&self) -> &[PitchShape] {
+        &self.pitch_shapes
+    }
+
+    /// ⭐ 本轨是否有**任何**音高形状（判断"要不要传探针"的唯一入口）。
+    #[must_use]
+    pub fn has_pitch_shapes(&self) -> bool {
+        !self.pitch_shapes.is_empty()
+    }
+
+    /// ⭐ 形状 `shape` 在音符局部 `local` 处的总音分（弯音 ＋ 滑音）。
+    ///
+    /// 下标越界 / 哨兵 [`NO_PITCH_SHAPE`] ⇒ **0.0**（⛔ 不 panic：这是实时路径）。
+    /// 本函数**不分配**、只读，可在音频线程上调用（控制率，每声部每 64 样本一次）。
+    #[must_use]
+    pub fn cents_at(&self, shape: u16, local: u64) -> f32 {
+        self.pitch_shapes
+            .get(usize::from(shape))
+            .map_or(0.0, |pitch_shape| pitch_shape.cents_at(local))
     }
 
     /// ⭐ 写入本轨的**轨增益门**（构造期；见类型文档的两增益量表）。
@@ -2098,7 +2371,10 @@ impl SynthEngine {
                                         note.end_sample,
                                         note.freq_hz,
                                         note.gain,
-                                    ),
+                                    )
+                                    // ⭐ `#311b`：形状下标随触发进声部（`NO_PITCH_SHAPE`
+                                    // = 无弯音/滑音 ⇒ 与接线前逐位相同）。
+                                    .with_pitch_shape(note.pitch_shape),
                                     tables,
                                 );
                                 *notes_triggered = notes_triggered.saturating_add(1);
@@ -2128,7 +2404,21 @@ impl SynthEngine {
                 // 复音：整数相位 + ADSR + 可选低通（器件内）。
                 None => {
                     slot.sfz.silence();
-                    slot.synth.render(tables, position, out);
+                    // ⭐ `#311b`：有音高形状才传探针。探针把"形状下标 ＋ 音符局部
+                    // 样本"映成音分，**借用**本轨调度表的旁表（⛔ 不 clone、⛔ 不分配）；
+                    // 空表 ⇒ 参数为 `None` ⇒ 器件走**今天这条**路径（逐位相同）。
+                    match schedule {
+                        Some(schedule) if schedule.has_pitch_shapes() => {
+                            let probe = |shape: u16, local: u64| schedule.cents_at(shape, local);
+                            slot.synth.render_with_pitch(
+                                tables,
+                                position,
+                                out,
+                                Some(&probe as &dyn Fn(u16, u64) -> f32),
+                            );
+                        }
+                        _ => slot.synth.render(tables, position, out),
+                    }
                 }
             },
         }

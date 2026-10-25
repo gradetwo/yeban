@@ -50,7 +50,8 @@
 //!
 //! ## 3. 实时侧纪律（[ARCH-RT-001] / `MUST-GATE-001`）
 //!
-//! [`PolySynth::render`] 与 [`PolySynth::note_on`] 是实时路径：
+//! [`PolySynth::render`]（及其带音高探针的形态 [`PolySynth::render_with_pitch`]）
+//! 与 [`PolySynth::note_on`] 是实时路径：
 //!
 //! | 禁令 | 本模块的做法 |
 //! | :--- | :--- |
@@ -75,7 +76,13 @@
 //!    与块切分**构造性无关**（判据：`determinism.rs` 的多种切分逐位比对）；
 //! 3. **相位推进用整数**：`phase.wrapping_add(inc)` 无累积误差、不受 FTZ/DAZ 影响。
 //!    浮点相位累加会在长音符上漂移，且漂移量取决于累加次数 —— 那正是非确定性的来源；
-//! 4. **窃取选择是全序**：`(优先级, start_sample, 下标)` 三级比较，任何平台同解。
+//! 4. **窃取选择是全序**：`(优先级, start_sample, 下标)` 三级比较，任何平台同解；
+//! 5. ⭐ **音高网格的控制率运算**（`#311b`，§9）：每声部每 [`PITCH_UPDATE_SAMPLES`]
+//!    个**音符局部**样本做一次 `exp2(cents/1200)`（libm）＋ 一次
+//!    [`phase_increment`] 的 `f64` 乘除与 `round` ＋ 一次 [`crate::oscillator::level_for_freq`]
+//!    （纯整数循环）⇒ 按 `ADR-0001` D32 属于**超越函数类（T）**，与
+//!    `set_sample_rate` 的 `retune` 同一类；**逐样本路径仍然一次都没有**。
+//!    网格锚在音符局部时间 ⇒ 与块切分**构造性无关**（§9 第 2 条）。
 //!
 //! ## 5. 与规范的一处**刻意偏离**（不改，登记）
 //!
@@ -165,6 +172,43 @@
 //! 新分支的运行期零分配是被测的）；行为判据两条 —— 释放时标在
 //! `a_stolen_voice_starts_its_new_note_with_the_configured_release`，
 //! 挂起包络的换采样率重算在 `a_sample_rate_change_retunes_a_pending_note`。
+//!
+//! ## 9. ⭐ **音高随时间变化**：弯音曲线 ＋ 滑音（`#311b`，`ADR-0012` D4/D5/D9/D10）
+//!
+//! 本器件过去**没有音高输入口**：`inc` 在 `note_on` 里由 `resolve_osc` 算一次，
+//! 之后只由 [`PolySynth::set_sample_rate`] 重算 ⇒ 一个音符的增量是常量。
+//! 现在多一条**控制率**通道：
+//!
+//! | 环节 | 落点 |
+//! | :--- | :--- |
+//! | 曲线本体 | **不在器件里**（任意长 `Vec` 会破 `Copy`）：引擎的 `NoteSchedule::pitch_shapes` 旁表 |
+//! | 身份 | [`PolyVoice::pitch_shape`]：`u16` 下标（[`NO_PITCH_SHAPE`] = 无），由 [`NoteEvent::with_pitch_shape`] 带进来 |
+//! | 值 | [`PolySynth::render_with_pitch`] 的探针 `Option<&dyn Fn(u16, u64) -> f32>`（音符局部样本 → 音分），与引擎的 `cc` 探针同形 |
+//! | 生效 | 每 [`PITCH_UPDATE_SAMPLES`]（**64**）个**音符局部**样本：`inc = phase_increment(level_freq × 2^(cents/1200))`，`level` 同步 |
+//!
+//! 五条明说的口径（每条都有判据）：
+//!
+//! 1. **相位连续**：网格只换 `inc`／`level`，相位仍是整数累加器 ⇒ 频率是阶梯、
+//!    相位不跳（`pitch_updates_land_on_the_note_local_grid_*`）。
+//! 2. **网格锚在音符、⛔ 不在调用块**：离线导出已提交的判据要求"64/128/256 帧
+//!    三种切法 ⇒ 三个位级摘要必须相同"（`crates/yeban-render/src/engine_source.rs`）
+//!    ⇒ 把网格钉在 `render` 的调用块上会推翻它（判据
+//!    `the_pitch_grid_is_anchored_to_the_note_and_not_to_the_caller_block`）。
+//! 3. **配对键不变**：`voice.freq_hz` 与 `osc.level_freq` **永不**被弯音改写
+//!    ⇒ [`PolySynth::note_off`] 仍按 base 频率配对、`retune` 仍从 base 重算
+//!    （判据 `note_off_pairs_by_the_base_frequency_while_the_note_is_bent`）。
+//! 4. **窃取窗口冻结**：淡出分支在 `continue` 之前不调用音高更新 ⇒ 被窃取者的
+//!    最后 3 ms 保持窃取前的 `inc`；新音符的形状**立刻**写进槽位（与
+//!    `pending_freq_hz` 同一时机），提升点 `local == 0` 落进网格 ⇒ 用新曲线起振。
+//! 5. **空 ⇒ 逐位不变**：没有形状的声部**一次探针调用都没有**，`pitch = None` 时
+//!    整个分支不存在（判据 `an_empty_pitch_probe_is_bit_identical_to_plain_render`）。
+//!
+//! ⚠ 两条登记（⛔ 不声称）：
+//!
+//! - 换采样率时 [`OscState::retune`] 先把 `inc` 算回**未弯**值，最迟 64 样本
+//!   （@48 kHz ≈ 1.33 ms）后由网格修正 —— 一段极短的音高毛刺；
+//! - 控制率是 **0.75 kHz**（@48 kHz）：最陡的 1200 cents / 0.5 s ⇒ **3.2 cents/步**。
+//!   听感未测（本机不跑人耳判据）。
 
 use crate::MIN_SAMPLE_RATE;
 use crate::envelope::{Adsr, AdsrStage, STEAL_RELEASE_SECONDS};
@@ -194,6 +238,23 @@ const PHASE_ONE: f64 = 4_294_967_296.0;
 
 /// 失谐的上界（音分）：±4 个八度。超出即钳制，非有限值按 0 取。
 const MAX_DETUNE_CENTS: f32 = 4_800.0;
+
+/// ⭐ **音高更新网格的步长（音符局部样本数）** —— `#311b`。
+///
+/// 弯音/滑音的 `phase_inc` 不是逐样本重算（那要在逐样本路径上做 `exp2`），
+/// 而是每 `64` 个**音符局部样本**重算一次：
+///
+/// - 网格锚在**音符自己的起点**（`local = now − start_sample` 的 `local`），
+///   ⛔ **不是**调用方的块边界。这一点是**必须**的：离线导出侧
+///   （`crates/yeban-render/src/engine_source.rs`）已提交的判据是"同一个源用
+///   64 / 128 / 256 帧三种切法渲染同一段总帧数 ⇒ 三个位级摘要**必须相同**"，
+///   而"逐 `render` 调用重算"会让弯音音符的输出随块切分变化 ⇒ 直接推翻它。
+/// - 相位**连续**：`phase` 仍是整数累加器，网格只换 `inc`（频率是阶梯，相位没有跳变）。
+/// - 量化步长（算出来的数）：1200 cents / 0.5 s @48 kHz ⇒ `24000 / 64 = 375` 次更新
+///   ⇒ 最陡处 **3.2 cents/步**（`0.75 kHz` 控制率）。
+/// - 换采样率时 [`OscState::retune`] 先把 `inc` 算回**未弯**值，最迟 `64` 样本
+///   （@48 kHz ≈ **1.33 ms**）后由本网格修正 —— 登记在模块文档 §8。
+pub const PITCH_UPDATE_SAMPLES: u64 = 64;
 
 /// 单条振荡器支路的设置（[`PolySynthParams`] 的一半）。
 ///
@@ -554,16 +615,37 @@ impl PolySynthTables {
 /// `crate::snapshot` 完成）；相位定标是**合成器的不变量**，因此
 /// `phase_inc` 由本模块的 [`phase_increment`] 从 `freq_hz`/`sample_rate` 推出，
 /// 不让每个调用点各自记住 `2³²`。
+///
+/// ## ⭐ `pitch_shape`：音高**随时间**变化的那条通道（`#311b`）
+///
+/// 本结构只带**形状下标**，⛔ 不带曲线本身：曲线是任意长的 `Vec`，塞进来会破
+/// `Copy`，而 `NoteEvent` 在实时触发路径上逐音符拷贝。曲线的**值**由
+/// [`PolySynth::render_with_pitch`] 的**探针**在控制率上求值
+/// （`Option<&dyn Fn(u16, u64) -> f32>`，与引擎的 `cc` 探针同形）。
+///
+/// - [`NO_PITCH_SHAPE`]（`u16::MAX`）= 本音符没有形状 ⇒ ⛔ 一次探针调用都不发生；
+/// - 下标越界由探针自己返回 `0`（防 `panic`，见引擎的 `NoteSchedule::cents_at`）。
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct NoteEvent {
     start_sample: u64,
     end_sample: u64,
     freq_hz: f32,
     gain: f32,
+    /// ⭐ 音高形状下标（`#311b`）；[`NO_PITCH_SHAPE`] = 无。
+    pitch_shape: u16,
 }
+
+/// ⭐ **没有音高形状**（`#311b`）：`NoteEvent::new` 的默认值，也是空槽声部的哨兵。
+///
+/// 取值 `u16::MAX` 而不是 `0`：`0` 是一个**合法的**旁表下标，用它当哨兵会让
+/// "第 0 条曲线"与"没有曲线"混为一谈。
+pub const NO_PITCH_SHAPE: u16 = u16::MAX;
 
 impl NoteEvent {
     /// 组装一次触发请求。非有限 `gain` ⇒ `0.0`（绝不把 `NaN` 灌进声部）。
+    ///
+    /// 音高形状默认 [`NO_PITCH_SHAPE`]（= 无弯音/滑音）⇒ 本构造的既有 48 个调用点
+    /// **一个字都不用改**，且输出逐位不变。
     #[must_use]
     pub fn new(start_sample: u64, end_sample: u64, freq_hz: f32, gain: f32) -> Self {
         Self {
@@ -571,7 +653,21 @@ impl NoteEvent {
             end_sample,
             freq_hz,
             gain: if gain.is_finite() { gain } else { 0.0 },
+            pitch_shape: NO_PITCH_SHAPE,
         }
+    }
+
+    /// ⭐ 给本音符挂一个**音高形状下标**（`#311b`；构造期/控制侧调用）。
+    #[must_use]
+    pub const fn with_pitch_shape(mut self, shape: u16) -> Self {
+        self.pitch_shape = shape;
+        self
+    }
+
+    /// ⭐ 本音符的音高形状下标（[`NO_PITCH_SHAPE`] = 无）。
+    #[must_use]
+    pub const fn pitch_shape(&self) -> u16 {
+        self.pitch_shape
     }
 
     /// 起点（绝对样本位置）。
@@ -703,6 +799,27 @@ impl OscState {
         self.inc = phase_increment(self.level_freq, sample_rate);
         self.level = crate::oscillator::level_for_freq(self.level_freq, sample_rate);
     }
+
+    /// ⭐ 把本支路**弯到 `cents` 音分**（`#311b`；控制率调用，每
+    /// [`PITCH_UPDATE_SAMPLES`] 个音符局部样本一次）。
+    ///
+    /// 只动 `inc` 与 `level` —— 与 [`Self::retune`] 同一对口子，理由相同：相位/波表/
+    /// 增益一个比特都不碰，因此**相位连续**（频率换挡、相位不跳）。
+    ///
+    /// - 以 `level_freq`（＝ `freq_hz × 失谐比`，**未弯**）为基准 ⇒ 失谐与弯音**相乘**、
+    ///   ⛔ 不是相加；`level_freq` 自己**永远不被改写**（`note_off` 的配对键与
+    ///   换采样率的 [`Self::retune`] 都依赖它保持 base 值）。
+    /// - 非有限/非正倍率 ⇒ **保留原 `inc`**（绝不把 `NaN` 变成频率）；
+    ///   `cents` 的有限性由探针负责（引擎侧只做 `+ ×` 与 `ease`）。
+    fn bend_to(&mut self, cents: f32, sample_rate: f32) {
+        let ratio = crate::math::exp2(cents / 1_200.0);
+        if !(ratio.is_finite() && ratio > 0.0) {
+            return;
+        }
+        let freq = self.level_freq * ratio;
+        self.inc = phase_increment(freq, sample_rate);
+        self.level = crate::oscillator::level_for_freq(freq, sample_rate);
+    }
 }
 
 /// 一个**已挂起**的新音符：窃取淡出走完的那一帧才启用。
@@ -768,6 +885,20 @@ struct PolyVoice {
     /// 匹配不到它），⭐ 记在这里；⭐ 提升点见它为 `true` 就补一次
     /// [`Adsr::gate_off`] ⇒ ⭐ 新音符不会带着 `gate` 一直发声。
     pending_released: bool,
+    /// ⭐ **音高形状下标**（`#311b`；[`NO_PITCH_SHAPE`] = 无弯音/滑音）。
+    ///
+    /// ⚠ **它长在声部上、⛔ 不在 [`PendingNote`] 上**：`PendingNote` 现在**恰好**
+    /// 是 `128` 字节（字段和就是 128，没有可用的 padding），加一个 `u16` 会把
+    /// `Option<PendingNote>` 从 `128` 撑到 `136`，进而把本结构从 `296` 撑到 `304`
+    /// （实测，见判据 `the_voice_size_is_pinned_after_adding_the_requested_frequency`）。
+    /// 而本结构有**尾部 2 字节 padding**（字段和 294 ⇒ 296）⇒ `u16` 放进来
+    /// **零增长**（实测 `296`）。
+    ///
+    /// 被窃取时新音符的形状**立刻**写到这里（与 `pending_freq_hz` 同一时机），
+    /// 但**淡出窗口内不做音高更新**（`render` 的淡出分支在 `continue` 之前就把
+    /// 旧音符的 `inc` 留在原处）⇒ 旧音符的最后 3 ms 保持窃取前的频率，
+    /// ⛔ 不会误用新音符的曲线。
+    pitch_shape: u16,
 }
 
 impl PolyVoice {
@@ -785,6 +916,7 @@ impl PolyVoice {
         pending: None,
         pending_freq_hz: f32::NAN,
         pending_released: false,
+        pitch_shape: NO_PITCH_SHAPE,
     };
 
     /// 推进两条在用的振荡器支路的相位。
@@ -794,6 +926,16 @@ impl PolyVoice {
         if osc2_on {
             self.osc2.phase = self.osc2.phase.wrapping_add(self.osc2.inc);
         }
+    }
+
+    /// ⭐ 在**音符局部**网格点上把两条支路弯到 `cents`（`#311b`）。
+    ///
+    /// 局部时间 `local = now − start_sample` 由调用方算（`now >= start_sample`
+    /// 已由 `render` 的循环头保证）。相位与包络一个比特都不碰 ⇒ 相位连续。
+    #[inline]
+    fn apply_pitch(&mut self, cents: f32, sample_rate: f32) {
+        self.osc1.bend_to(cents, sample_rate);
+        self.osc2.bend_to(cents, sample_rate);
     }
 }
 
@@ -1196,7 +1338,7 @@ impl<const VOICES: usize> PolySynth<VOICES> {
         };
 
         if let Some(index) = self.voices.iter().position(|voice| !voice.active) {
-            let voice = self.fresh_voice(&pending);
+            let voice = self.fresh_voice(&pending, note.pitch_shape);
             self.voices[index] = voice;
             self.notes_triggered = self.notes_triggered.saturating_add(1);
             return;
@@ -1221,7 +1363,7 @@ impl<const VOICES: usize> PolySynth<VOICES> {
         let fade_frames = self.steal_fade_frames;
         if fade_frames == 0 || !self.voices[best].active {
             // 硬窃取（注入路径 / 显式配置）：直接覆盖，不留淡出。
-            let voice = self.fresh_voice(&pending);
+            let voice = self.fresh_voice(&pending, note.pitch_shape);
             self.voices[best] = voice;
             return;
         }
@@ -1243,12 +1385,21 @@ impl<const VOICES: usize> PolySynth<VOICES> {
         // 指向新音符的释放走 `pending_freq_hz` 那一支路。
         victim.pending_freq_hz = pending.freq_hz;
         victim.pending_released = false;
+        // ⭐ **音高形状**立刻换成新音符的（`#311b`）：它与 `pending_released` 同一
+        // 时机写、与 `pending_freq_hz` 同一语义（"槽位为谁保留"）。淡出窗口内
+        // `render` 的淡出分支在 `continue` 之前不调用 `apply_pitch` ⇒ 旧音符的最后
+        // 3 ms 保持窃取前的 `inc`，⛔ 不会误用新音符的曲线 [`PolyVoice::pitch_shape`]。
+        victim.pitch_shape = note.pitch_shape;
     }
 
     /// 渲染本器件的下一个块（**实时路径**）。`out.len()` 就是本块的有效帧数。
     ///
     /// `position` 是 `out[0]` 对应的**绝对样本位置**（由调用方的播放头给出）——
     /// 声部只在 `now >= start_sample` 时发声，`gate` 由 `now < end_sample` 决定。
+    ///
+    /// 本方法是 [`Self::render_with_pitch`] 传 `pitch = None` 的**薄包装**：
+    /// 没有音高形状时它与接线前**逐位相同**（判据
+    /// `an_empty_pitch_probe_is_bit_identical_to_plain_render`）。
     ///
     /// **实时路径**：零分配、零释放、零锁、零阻塞 I/O、零日志
     /// [ARCH-RT-001 / `MUST-GATE-001`]。
@@ -1260,12 +1411,52 @@ impl<const VOICES: usize> PolySynth<VOICES> {
     /// 起振**，那是一次静默的错误发声）。饱和把末端定义成一个总函数：所有越界帧
     /// 共用 `u64::MAX`，输出仍然有限、仍然确定。
     pub fn render(&mut self, tables: &PolySynthTables, position: u64, out: &mut [f32]) {
+        self.render_with_pitch(tables, position, out, None);
+    }
+
+    /// ⭐ **带音高探针的渲染入口**（`#311b`）：语义、状态推进与实时纪律**逐字**沿用
+    /// [`Self::render`]（见那份文档 —— 本函数只多**一个**参数）。
+    ///
+    /// ## 探针契约
+    ///
+    /// `pitch(shape, local) -> cents`：
+    /// - `shape` ＝ 声部上的 [`PolyVoice::pitch_shape`]（触发时由
+    ///   [`NoteEvent::with_pitch_shape`] 带进来）；
+    /// - `local` ＝ **音符局部**样本位置（`now − start_sample`，`now >= start_sample`）；
+    /// - 返回**相对本音符 base 音高**的音分偏移（弯音＋滑音已经在探针里相加，
+    ///   见引擎的 `NoteSchedule::cents_at`）；非有限值由探针负责，器件侧
+    ///   [`OscState::bend_to`] 还会再挡一次。
+    ///
+    /// ## 网格：音符局部 `64` 样本（⛔ 不是调用块）
+    ///
+    /// `inc` 只在 `local % `[`PITCH_UPDATE_SAMPLES`]` == 0` 的帧重算 ⇒
+    /// **相位连续**（频率阶梯、相位不跳），且**与块切分无关**：离线导出已提交的
+    /// 判据要求"64/128/256 帧三种切法 ⇒ 三个位级摘要必须相同"
+    /// （`crates/yeban-render/src/engine_source.rs`），把网格钉在调用块上会推翻它。
+    ///
+    /// ## 逐位无损的三条
+    ///
+    /// 1. `pitch == None` 或 `pitch_shape == NO_PITCH_SHAPE` ⇒ **一次**探针调用都没有、
+    ///    **一次**浮点运算都不加；
+    /// 2. 窃取淡出窗口内**不更新**（旧音符保持窃取前的 `inc`，⛔ 不会误用新曲线）；
+    /// 3. `voice.freq_hz` / `osc.level_freq` **永不改写** ⇒ [`Self::note_off`] 的配对键与
+    ///    [`Self::set_sample_rate`] 的 `retune` 都还是 base 频率。
+    ///
+    /// **实时路径**：零分配、零释放、零锁、零 I/O（探针是 `&dyn Fn` 借用）。
+    pub fn render_with_pitch(
+        &mut self,
+        tables: &PolySynthTables,
+        position: u64,
+        out: &mut [f32],
+        pitch: Option<&dyn Fn(u16, u64) -> f32>,
+    ) {
         out.fill(0.0);
         if !self.voices.iter().any(|voice| voice.active) {
             return;
         }
         let filter_bypass = self.params.filter_bypass;
         let osc2_on = self.params.osc2.is_on();
+        let sample_rate = self.sample_rate;
         for (frame, output) in out.iter_mut().enumerate() {
             #[allow(clippy::cast_possible_truncation)]
             let now = position.saturating_add(frame as u64);
@@ -1334,6 +1525,19 @@ impl<const VOICES: usize> PolySynth<VOICES> {
                         continue;
                     }
                 }
+                // --- ⭐ 音高网格（`#311b`）：音符局部 64 样本，⛔ 不是调用块 ---
+                //
+                // 位置在淡出分支**之后**：淡出窗口内的旧音符不更新（保持窃取前的
+                // `inc`）；刚提升的新音符此刻 `start_sample = pending.start_sample.max(now)`
+                // ⇒ `local == 0` ⇒ 本帧就落进网格 ⇒ 用**新音符自己的**曲线起振。
+                if let Some(probe) = pitch
+                    && voice.pitch_shape != NO_PITCH_SHAPE
+                {
+                    let local = now - voice.start_sample;
+                    if local.is_multiple_of(PITCH_UPDATE_SAMPLES) {
+                        voice.apply_pitch(probe(voice.pitch_shape, local), sample_rate);
+                    }
+                }
                 let gate = now < voice.end_sample;
                 let envelope = voice.env.process(gate);
                 if !voice.env.is_active() {
@@ -1398,8 +1602,12 @@ impl<const VOICES: usize> PolySynth<VOICES> {
     /// （含三段系数的 `exp`，每次触发一次）。**两条窃取路径与这条空槽路径因此装的
     /// 是同一份构造**：`pending.env` 在淡出走完的那一帧被原样搬进声部
     /// （见 [`Self::render`]），这里只是同一件事在"槽位本来就空"时的形态。
+    ///
+    /// ⭐ `pitch_shape` 由调用方给（`#311b`）：[`PendingNote`] **刻意不带**它
+    /// （加上去会把 `Option<PendingNote>` 从 128 撑到 136 ⇒ `PolyVoice` 296→304），
+    /// 因此形状从 [`NoteEvent`] 直接进声部 —— 见 [`PolyVoice::pitch_shape`]。
     #[must_use]
-    fn fresh_voice(&self, pending: &PendingNote) -> PolyVoice {
+    fn fresh_voice(&self, pending: &PendingNote, pitch_shape: u16) -> PolyVoice {
         PolyVoice {
             active: true,
             osc1: pending.osc1,
@@ -1416,6 +1624,7 @@ impl<const VOICES: usize> PolySynth<VOICES> {
             //（⭐ 与 `NaN` 的 `==` 恒为假 ⇒ `note_off` 的第二支路永不命中）。
             pending_freq_hz: f32::NAN,
             pending_released: false,
+            pitch_shape,
         }
     }
 
@@ -1569,13 +1778,21 @@ mod tests {
     /// 判据（⭐ `size_of` **实测并钉死**，⛔ 不写在注释里）：⭐ `PolyVoice` 的字节数。
     ///
     /// ⚠ 口径：⭐ `note_off` 的配对字段 `freq_hz: f32`、⭐ 挂起音符两支路的新字段
-    /// `pending_freq_hz: f32` ＋ `pending_released: bool` 都长在 `PolyVoice` 上
-    /// ⇒ ⭐ 本判据把它们一起钉住；⭐ 若未来有人再加字段，⭐ 这条会红并提示重新测量。
+    /// `pending_freq_hz: f32` ＋ `pending_released: bool`、⭐ `#311b` 的
+    /// `pitch_shape: u16` 都长在 `PolyVoice` 上 ⇒ ⭐ 本判据把它们一起钉住；
+    /// ⭐ 若未来有人再加字段，⭐ 这条会红并提示重新测量。
     ///
     /// ⚠ ⭐ **加字段不一定改 `size_of`**：⭐ `PolyVoice` 是默认 `repr(Rust)` ⇒ ⭐ 编译器
-    /// **可以重排字段**填进对内部的填充字节 ⇒ ⭐ 本次加 `pending_freq_hz`（4 B）＋
-    /// `pending_released`（1 B）之后实测**仍是 `296`**（⭐ 增量被既有填充吞掉 ⇒
-    /// ⭐ 每个声部 `0` 字节净增；⭐ 对内部字节布局的断言见本判据的实测值，⛔ 不是推算）。
+    /// **可以重排字段**填进对内部的填充字节 ⇒ ⭐ 加 `pending_freq_hz`（4 B）＋
+    /// `pending_released`（1 B）之后实测**仍是 `296`**；⭐ `#311b` 再加
+    /// `pitch_shape: u16` **也还是 `296`**（字段和 294 → 296，正好填进尾部 padding
+    /// ⇒ ⭐ 每个声部 `0` 字节净增；⭐ 对内部字节布局的断言见本判据的实测值，⛔ 不是推算）。
+    ///
+    /// ⚠ **为什么不是加在 `PendingNote` 上**：那一只现在**恰好** 128 字节（没有可用的
+    /// padding）⇒ 加 `u16` 会把 `Option<PendingNote>` 撑到 `136`、本结构撑到 `304`
+    /// （本机临时探针实测 `PendingPlus=136 / VoicePlus=304 / VoiceBendOnly=296`）。
+    /// 因此 `#311b` 选择把形状只放在声部上、被窃取时直接改写
+    /// [`PolyVoice::pitch_shape`]（淡出窗口内不更新音高）。
     ///
     /// ⚠ **每槽成本**：⭐ `VOICES_PER_TRACK = 16` ⇒ ⭐ 一个轨道槽的声部池 = `296 × 16`
     /// = **`4736`** 字节（⭐ 跨 16 个音轨 = `75776` 字节；⭐ 本判据钉住单声部这一格）。
@@ -1583,13 +1800,249 @@ mod tests {
     fn the_voice_size_is_pinned_after_adding_the_requested_frequency() {
         let size = core::mem::size_of::<PolyVoice>();
         eprintln!("DIAGNOSTIC PolyVoice size_of = {size}");
-        // ⭐ **实测值**（本机 48 kHz 构建，⭐ 2026-10-12 加的 `pending_*` 两字段之后重取）：⭐ `296` 字节。
+        // ⭐ **实测值**（本机 48 kHz 构建，⭐ 2026-10-25 加 `pitch_shape: u16` 之后重取）：⭐ `296` 字节。
         // ⭐ 加 `freq_hz: f32` 之前是 `292`；⭐ `pending_freq_hz` ＋ `pending_released`
-        // 两字段实测落进既有填充 ⇒ ⭐ 读数**不动**（⭐ 每个声部净增 0 字节）。
+        // 两字段实测落进既有填充；⭐ `pitch_shape: u16` 填进尾部 2 B padding。
         assert_eq!(
             size, 296,
             "size_of::<PolyVoice>() = {size}（⭐ 实测 296；⭐ 上一票 296 = 加 freq_hz 之前的 292 + 4）\
              ⇒ 布局变了 ⇒ 重新测量并把新值钉在这里"
+        );
+    }
+
+    /// ⭐ **判据（`#311b` 的正对照）**：没有音高形状 ⇒ `render_with_pitch(…, None)`
+    /// 与 [`PolySynth::render`] **逐位相同**，且探针**一次都不被调用**。
+    ///
+    /// 两条腿都必要：
+    /// - "逐位相同"证明加这条通道没有动默认音频（空曲线的工程因此逐字节不变）；
+    /// - "零调用"证明它不是靠"乘 1.0"蒙对的 —— 有形状但探针给 `0.0` 的那一臂
+    ///   **也**逐位相同（`exp2(0) == 1.0` 精确、`phase_increment(440×1.0)` 与触发路径
+    ///   同一个算式），这一臂反过来钉住"网格重算本身不引入噪声"。
+    #[test]
+    fn an_empty_pitch_probe_is_bit_identical_to_plain_render() {
+        let tables = tables();
+        let build = || {
+            let mut synth = PolySynth::<VOICES_PER_SLOT>::new(48_000);
+            synth.set_params(PolySynthParams::new(), &tables);
+            synth.note_on(NoteEvent::new(0, 96_000, 440.0, 1.0), &tables);
+            synth
+        };
+        let mut plain = build();
+        let mut reference = vec![0.0f32; 512];
+        plain.render(&tables, 0, &mut reference);
+
+        // ① 无探针：与 `render` 逐位相同。
+        let mut none_arm = build();
+        let mut with_none = vec![0.0f32; 512];
+        none_arm.render_with_pitch(&tables, 0, &mut with_none, None);
+        assert_eq!(
+            with_none.iter().map(|s| s.to_bits()).collect::<Vec<_>>(),
+            reference.iter().map(|s| s.to_bits()).collect::<Vec<_>>(),
+            "render_with_pitch(None) 必须与 render 逐位相同"
+        );
+
+        // ② 有探针但声部**没有**形状 ⇒ 探针零调用，输出仍逐位相同。
+        let mut shape_none = build();
+        let calls = core::cell::Cell::new(0u32);
+        let probe = |_shape: u16, _local: u64| -> f32 {
+            calls.set(calls.get() + 1);
+            0.0
+        };
+        let mut with_shape_none = vec![0.0f32; 512];
+        shape_none.render_with_pitch(
+            &tables,
+            0,
+            &mut with_shape_none,
+            Some(&probe as &dyn Fn(u16, u64) -> f32),
+        );
+        assert_eq!(calls.get(), 0, "没有形状的声部⛔ 不许调用探针");
+        assert_eq!(
+            with_shape_none
+                .iter()
+                .map(|s| s.to_bits())
+                .collect::<Vec<_>>(),
+            reference.iter().map(|s| s.to_bits()).collect::<Vec<_>>(),
+            "没有形状 ⇒ 逐位相同"
+        );
+
+        // ③ 有形状、探针恒返回 0 ⇒ 逐位相同（网格重算不引入数值差）。
+        let mut zero_bend = {
+            let mut synth = PolySynth::<VOICES_PER_SLOT>::new(48_000);
+            synth.set_params(PolySynthParams::new(), &tables);
+            synth.note_on(
+                NoteEvent::new(0, 96_000, 440.0, 1.0).with_pitch_shape(0),
+                &tables,
+            );
+            synth
+        };
+        let zero = |_shape: u16, _local: u64| -> f32 { 0.0 };
+        let mut with_zero = vec![0.0f32; 512];
+        zero_bend.render_with_pitch(
+            &tables,
+            0,
+            &mut with_zero,
+            Some(&zero as &dyn Fn(u16, u64) -> f32),
+        );
+        assert_eq!(
+            with_zero.iter().map(|s| s.to_bits()).collect::<Vec<_>>(),
+            reference.iter().map(|s| s.to_bits()).collect::<Vec<_>>(),
+            "探针恒 0 的弯音声部必须与未弯逐位相同（exp2(0) 精确为 1）"
+        );
+    }
+
+    /// ⭐ **判据（`#311b`）**：音高网格**按音符局部样本**走、且与块切分无关。
+    ///
+    /// 量什么：同一事件、同一探针（`cents = local × 0.01`），用 **1 次 1024 帧** 与
+    /// **64 次 16 帧 / 4 次 256 帧** 渲染同一段，三种切法的样本位模式必须**逐位相同**。
+    ///
+    /// 这条正是离线导出侧已提交的不变量（`engine_source.rs`："64/128/256 帧三种切法
+    /// ⇒ 三个位级摘要必须相同"）在器件这一层的对应物：把网格钉在**调用块**上会让它红。
+    #[test]
+    fn the_pitch_grid_is_anchored_to_the_note_and_not_to_the_caller_block() {
+        let tables = tables();
+        let frames_total = 1024usize;
+        let probe = |_shape: u16, local: u64| -> f32 {
+            #[allow(clippy::cast_precision_loss)]
+            {
+                (local as f32) * 0.01
+            }
+        };
+        let render_with = |chunk: usize| -> Vec<u32> {
+            let mut synth = PolySynth::<VOICES_PER_SLOT>::new(48_000);
+            synth.set_params(PolySynthParams::new(), &tables);
+            synth.note_on(
+                NoteEvent::new(0, 96_000, 440.0, 1.0).with_pitch_shape(0),
+                &tables,
+            );
+            let mut bits = Vec::with_capacity(frames_total);
+            let mut buffer = vec![0.0f32; chunk];
+            let mut position = 0u64;
+            while position < frames_total as u64 {
+                synth.render_with_pitch(
+                    &tables,
+                    position,
+                    &mut buffer,
+                    Some(&probe as &dyn Fn(u16, u64) -> f32),
+                );
+                bits.extend(buffer.iter().map(|sample| sample.to_bits()));
+                #[allow(clippy::cast_possible_truncation)]
+                {
+                    position += chunk as u64;
+                }
+            }
+            bits
+        };
+        let whole = render_with(frames_total);
+        let at_16 = render_with(16);
+        let at_256 = render_with(256);
+        assert_eq!(whole, at_16, "16 帧切法与整块必须逐位相同");
+        assert_eq!(whole, at_256, "256 帧切法与整块必须逐位相同");
+    }
+
+    /// ⭐ **判据（`#311b` 的"弯音真的发声"器件级那一半）**：`+1200 cents` ⇒
+    /// 谱峰从 **440 Hz** 移到 **880 Hz**（读数给数，⛔ 只说"变了"不算）。
+    #[test]
+    fn a_full_octave_bend_moves_the_spectral_peak_from_440_to_880() {
+        let tables = tables();
+        let render = |cents: f32| -> Vec<f32> {
+            let mut synth = PolySynth::<VOICES_PER_SLOT>::new(48_000);
+            synth.set_params(PolySynthParams::new(), &tables);
+            synth.note_on(
+                NoteEvent::new(0, 96_000, 440.0, 1.0).with_pitch_shape(0),
+                &tables,
+            );
+            let probe = move |_shape: u16, _local: u64| cents;
+            let mut out = vec![0.0f32; 8_192];
+            synth.render_with_pitch(
+                &tables,
+                0,
+                &mut out,
+                Some(&probe as &dyn Fn(u16, u64) -> f32),
+            );
+            out
+        };
+        let flat = render(0.0);
+        let bent = render(1_200.0);
+        // 跳过 5 ms attack 的前 256 帧，其余整段参与单 bin DFT。
+        let flat = &flat[256..];
+        let bent = &bent[256..];
+        let flat_440 = bin_magnitude(flat, 440.0, 48_000.0);
+        let flat_880 = bin_magnitude(flat, 880.0, 48_000.0);
+        let bent_440 = bin_magnitude(bent, 440.0, 48_000.0);
+        let bent_880 = bin_magnitude(bent, 880.0, 48_000.0);
+        eprintln!(
+            "### [bend] flat 440={flat_440:.9} 880={flat_880:.9} | bent 440={bent_440:.9} 880={bent_880:.9}"
+        );
+        assert!(
+            flat_440 > 10.0 * flat_880,
+            "未弯时谱峰在 440（440={flat_440}, 880={flat_880}）"
+        );
+        assert!(
+            bent_880 > 10.0 * bent_440,
+            "+1200 cents 之后谱峰必须在 880（440={bent_440}, 880={bent_880}）"
+        );
+    }
+
+    /// ⭐ **判据（`#311b`）**：弯音进行中 `note_off` 的配对键**仍是 base 频率**。
+    ///
+    /// 逐字：`note_off(base)` ⇒ **1**；`note_off(880.0)`（弯后的频率）⇒ **0**，
+    /// 且声部**不动**；命中后包络进 `Release`、松键能被回收（⛔ 不漏释放）。
+    ///
+    /// 这条钉的是"弯音⛔ 写 `voice.freq_hz`／`osc.level_freq`，只写 `inc`／`level`"。
+    #[test]
+    fn note_off_pairs_by_the_base_frequency_while_the_note_is_bent() {
+        let tables = tables();
+        let mut synth = PolySynth::<VOICES_PER_SLOT>::new(48_000);
+        synth.set_params(PolySynthParams::new(), &tables);
+        synth.note_on(
+            NoteEvent::new(0, 96_000, 440.0, 1.0).with_pitch_shape(0),
+            &tables,
+        );
+        let probe = |_shape: u16, _local: u64| -> f32 { 1_200.0 };
+        let mut out = vec![0.0f32; 512];
+        synth.render_with_pitch(
+            &tables,
+            0,
+            &mut out,
+            Some(&probe as &dyn Fn(u16, u64) -> f32),
+        );
+        assert!(out.iter().any(|sample| *sample != 0.0), "前置：真的在响");
+
+        // 弯后的频率不是配对键 ⇒ 报 0，⛔ 不动声部。
+        assert_eq!(synth.note_off(880.0), 0, "⛔ 880.0（弯后）不是配对键");
+        assert_eq!(synth.active_voices(), 1, "不命中⛔ 不许动声部");
+        assert!(
+            matches!(
+                synth.debug_voice(0).map(|voice| voice.2),
+                Some(AdsrStage::Attack | AdsrStage::Decay)
+            ),
+            "不命中时声部必须仍在起振/衰减段（⛔ 没有被误释放）：{:?}",
+            synth.debug_voice(0).map(|voice| voice.2)
+        );
+
+        // base 频率才是配对键 ⇒ 报 1，进 Release。
+        assert_eq!(synth.note_off(440.0), 1, "base 频率必须配对成功");
+        assert_eq!(
+            synth.debug_voice(0).map(|voice| voice.2),
+            Some(AdsrStage::Release),
+            "命中后必须进 release 段"
+        );
+
+        // 松键有效：7 200 帧（50 ms 释放的 3 倍余量）之后声部可回收。
+        let mut tiny = [0.0f32; 1];
+        for frame in 0..7_200u64 {
+            synth.render_with_pitch(
+                &tables,
+                frame,
+                &mut tiny,
+                Some(&probe as &dyn Fn(u16, u64) -> f32),
+            );
+        }
+        synth.retire_finished(7_200);
+        assert_eq!(
+            synth.active_voices(),
+            0,
+            "弯音中的松键必须真能回收（⛔ 不是挂音）"
         );
     }
 

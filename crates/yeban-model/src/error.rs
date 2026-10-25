@@ -67,13 +67,6 @@ pub enum ModelError {
         value: i32,
     },
 
-    /// 弯音曲线**首点**的 tick 不是 0（曲线必须从音符起点开始）。
-    #[error("pitch bend first tick {tick} is not 0 (the curve must start at the note onset)")]
-    PitchBendFirstTickNotZero {
-        /// 实际收到的首点 tick。
-        tick: u64,
-    },
-
     /// 弯音曲线的 tick 不**严格**升序（同一 tick 出现两次也算）。
     #[error("pitch bend ticks are not strictly ascending: {previous} then {tick}")]
     PitchBendTicksNotAscending {
