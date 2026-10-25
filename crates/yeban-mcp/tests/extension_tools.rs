@@ -205,6 +205,73 @@ fn write_audio_fixture(tag: &str, bytes: &[u8]) -> PathBuf {
 }
 
 // ---------------------------------------------------------------------------
+// ⑩ `#343`：两个编辑工具各自的**提交模型**必须在描述里说得出来
+// ---------------------------------------------------------------------------
+
+/// 判据 ⑩ `#343`：`tools/list` 里 `yeban_edit_notes` 与 `yeban_edit_automation`
+/// 必须各自声明**提交模型**，而且说的必须是**相反**的两种模型。
+///
+/// ## 它挡住的缺陷
+///
+/// `#335` 的外部试跑把"两套提交模型混用"列为第五道墙：`yeban_edit_notes` 是
+/// 提案 + 合并，`yeban_edit_automation` 直接提交（`OpOrigin::McpEdit`），而工具
+/// 描述对后者**一字未提** ⇒ 客户端从 `tools/list` 分不清"这次编辑落地了没有"。
+///
+/// ## 为什么钉**性质**而不是整串
+///
+/// 描述是 3.9 KB 量级的散文（`yeban_edit_notes` 一条就 3913 B），措辞会继续演化。
+/// 这里只要求两类句子：
+///
+/// - 提案工具点名**下一步**（`yeban_merge_proposal`）；
+/// - 直接工具点名**这次调用做了什么**（直接提交 / `OpOrigin::McpEdit` / 不创建提案）
+///   以及响应里"这一笔落地了"的读数（`data.applied`）。
+///
+/// 删掉任一句 ⇒ 本判据变红；改别处的措辞 ⇒ 不会误红。`#343` 的注入实验就是
+/// 把直接工具那一句删掉后跑红、还原后跑绿。
+#[test]
+fn both_edit_tools_state_their_commit_model_in_the_description() {
+    let catalog = tools::catalog();
+    let descriptors = catalog["tools"].as_array().expect("tools 必须是数组");
+    let description = |name: &str| -> &str {
+        descriptors
+            .iter()
+            .find(|tool| tool["name"] == name)
+            .unwrap_or_else(|| panic!("`{name}` 必须注册"))["description"]
+            .as_str()
+            .unwrap_or_else(|| panic!("`{name}` 的 description 必须是字符串"))
+    };
+
+    // 提案模型：写入隔离分支，客户端下一步必须 merge。
+    let notes = description("yeban_edit_notes");
+    assert!(
+        notes.contains("yeban_merge_proposal"),
+        "yeban_edit_notes 的描述必须点名合并工具（提案模型）: {notes}"
+    );
+
+    // 直接模型：本调用内提交到当前文档，不产生提案、无需 merge。
+    let automation = description("yeban_edit_automation");
+    for required in ["直接提交", "McpEdit", "不创建提案"] {
+        assert!(
+            automation.contains(required),
+            "yeban_edit_automation 的描述必须写明 `{required}`（直接提交模型）: {automation}"
+        );
+    }
+    assert!(
+        automation.contains("data.applied"),
+        "yeban_edit_automation 的描述必须点名 data.applied（落地读数）: {automation}"
+    );
+
+    // 先命名指标再读数：这两个数数的是 `description` 值（UTF-8 字节），
+    // ⛔ 不是源码行字节（`edit_notes` 的源行含 20 个 `\"` 转义）。
+    println!(
+        "### #343 description 字节数（UTF-8, tools/list 的 description 值）\n\
+         yeban_edit_notes = {} B\nyeban_edit_automation = {} B",
+        notes.len(),
+        automation.len(),
+    );
+}
+
+// ---------------------------------------------------------------------------
 // ① / ⑤ 可发现性
 // ---------------------------------------------------------------------------
 

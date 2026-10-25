@@ -961,7 +961,7 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
     ToolSpec {
         spec_id: "MCP-TOOL-EXT-AUTOMATION",
         name: "yeban_edit_automation",
-        summary: "读某条自动化泳道的点与值 (唯一求值入口) 并写入一个点 (Op, 可逆)",
+        summary: "读某条自动化泳道的点与值 (唯一求值入口) 并写入一个点 (Op, 可逆)。⭐ 给 `point` 时**本调用直接提交**到当前文档 (`OpOrigin::McpEdit`): ⛔ 不创建提案、没有 `proposalId`、不需要 `yeban_merge_proposal`; 成功响应 `data.applied` 为 `true`。",
         scope: Scope::AppAdmin,
         // 按**最坏情况**声明：给了 `point` 就改工程状态。只读调用在响应里如实标
         // `readOnly: true`（不给 `point` 时一位都不改）。
