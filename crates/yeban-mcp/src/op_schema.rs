@@ -40,12 +40,12 @@
 use serde_json::{Value, json};
 
 use yeban_model::music::{
-    MICRO_TIMING_MAX_ABS, MIDI_PITCH_MAX, MIDI_VELOCITY_MAX, PROBABILITY_MAX, PROBABILITY_MIN,
-    RATCHET_MAX, RATCHET_MIN,
+    MICRO_TIMING_MAX_ABS, MIDI_PITCH_MAX, MIDI_VELOCITY_MAX, PITCH_BEND_CENTS_MAX_ABS,
+    PROBABILITY_MAX, PROBABILITY_MIN, RATCHET_MAX, RATCHET_MIN,
 };
 use yeban_model::project::{MAX_BPM, MIN_BPM};
 
-use crate::domain::extension_pure::LANE_NAMES;
+use crate::domain::extension_pure::{CURVE_NAMES, LANE_NAMES};
 use crate::domain::notes::{DEVICE_KINDS, LANE_WRITE_MODES, OP_KINDS};
 use crate::effect_params;
 
@@ -135,6 +135,46 @@ fn note_object() -> Value {
                 "minimum": -MICRO_TIMING_MAX_ABS,
                 "maximum": MICRO_TIMING_MAX_ABS,
                 "description": "起点偏移（可选，tick）",
+            },
+            "pitchBendCurve": {
+                "type": "array",
+                "description": format!(
+                    "弯音曲线（可选，缺省 = 无弯音）：`[tick, cents]` 二元组数组。tick 是**音符局部**坐标（0 = 音符起点）且严格升序；首点可为任意 tick ≥ 0（首点之前 cents 取 0）；cents 相对 `pitch`，闭区间 -{max}..={max}。形状/值域由模型 `MidiNote::validate` 把关（`ADR-0012` D1-D7）",
+                    max = PITCH_BEND_CENTS_MAX_ABS
+                ),
+                "items": {
+                    "type": "array",
+                    "minItems": 2,
+                    "maxItems": 2,
+                    "items": {
+                        "type": "integer",
+                        "description": "第 0 项 = tick（≥ 0），第 1 项 = cents（±1200）",
+                    },
+                },
+            },
+            "slide": {
+                "type": "object",
+                "description": "滑音（可选，缺省 = 无滑音）。`durationTicks` 与 `targetPitch` **必填**（没有目标的滑音不是滑音）；未知键响亮拒绝",
+                "required": ["durationTicks", "targetPitch"],
+                "properties": {
+                    "durationTicks": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "description": "滑音时值（tick，必须非零）",
+                    },
+                    "targetPitch": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": MIDI_PITCH_MAX,
+                        "description": "滑音结束时的目标音高（MIDI 0..=127）",
+                    },
+                    "curve": {
+                        "type": "string",
+                        "enum": CURVE_NAMES,
+                        "description": "曲线形状（可选，缺省 Linear）；只接受这四个规范名，别名/小写拼写一律拒绝",
+                    },
+                },
+                "additionalProperties": false,
             },
         },
         "additionalProperties": false,

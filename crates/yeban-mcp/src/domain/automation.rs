@@ -338,10 +338,14 @@ pub fn curve_name(curve: CurveType) -> &'static str {
 
 /// `curve` 实参 → 模型 `CurveType`（只接受规范名，别名一律拒绝）。
 ///
+/// `pub(crate)`：`#311c` 的 `note.slide.curve`（`domain::notes::read_slide`）**复用**
+/// 这一份拼写/别名判定（名字表 `extension_pure::CURVE_NAMES`），⛔ 不复制第二套
+/// —— 两份实现必然漂移（`ADR-0001` D28）。
+///
 /// # Errors
 ///
 /// 未知名字 → `INVALID_PARAMETER_RANGE`。
-fn parse_curve(raw: Option<&Value>, context: &str) -> Result<CurveType, Fault> {
+pub(crate) fn parse_curve(raw: Option<&Value>, context: &str) -> Result<CurveType, Fault> {
     let Some(value) = raw else {
         return Ok(CurveType::Linear);
     };

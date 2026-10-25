@@ -43,14 +43,18 @@
 //! `note` 对象是自由形状，多写的键被原样吞掉。现在 [`reject_unknown_note_fields`] 把
 //! 同一口径下沉一层，`data.supportedNoteFields` 逐条列出支持集合。
 //!
-//! **登记边界（本线未接线，绝不静默）**：模型里还有四个表现力字段没有工具面通路 ——
-//! `slide` / `pitchBendCurve` / `syllable` / `phonemes`。工具面会**响亮拒绝**这四个键
+//! **登记边界（绝不静默）**：模型里还有**两个**表现力字段没有工具面通路 ——
+//! `syllable` / `phonemes`（没有歌声合成）。工具面会**响亮拒绝**这两个键
 //! （`data.unsupportedNoteFields`），不再吞掉。
 //!
 //! ⚠ ⭐ **`#311b` 之后渲染器不再登记 `noteSlide` / `notePitchBend`**：这两个字段
 //! 已经由引擎**真的求值**（滑音末频落在目标音高、弯音曲线按音符局部 64 样本网格
 //! 重算 `phase_inc`）⇒ 母带里听得到。仍然为真的只有 `noteLyrics`（没有歌声合成）。
-//! ⛔ 工具面的写入通路**仍不存在**（`#311c`），所以"工具面拒绝"这一半不变。
+//!
+//! ⭐ **`#311c` 把写入通路接上了**：`add.note` 的 [`PITCH_BEND_CURVE_FIELD`] /
+//! [`SLIDE_FIELD`] 现在真的进 [`MidiNote`]，`data.supportedNoteFields` 从 8 条变 10 条。
+//! 工具面拒绝的面因此**只剩** `syllable` / `phonemes` —— 再说 `slide` / `pitchBendCurve`
+//! "没有通路"就是假话（[`reject_unknown_note_fields`] 的 `unsupportedNoteFields` 同口径）。
 //!
 //! ## 材料创建形态（`arguments.create: true`）—— 关闭 needs-8 的 MIDI 那一半
 //!
@@ -751,14 +755,15 @@ use std::str::FromStr as _;
 use serde_json::{Map, Value};
 
 use yeban_model::music::{
-    MICRO_TIMING_MAX_ABS, MIDI_PITCH_MAX, MIDI_VELOCITY_MAX, PROBABILITY_MAX, PROBABILITY_MIN,
-    RATCHET_MAX, RATCHET_MIN,
+    MICRO_TIMING_MAX_ABS, MIDI_PITCH_MAX, MIDI_VELOCITY_MAX, PITCH_BEND_CENTS_MAX_ABS,
+    PROBABILITY_MAX, PROBABILITY_MIN, RATCHET_MAX, RATCHET_MIN,
 };
 use yeban_model::{
     AssetHash, AutomationLane, AutomationTarget, AutomationValueDomain, AutomationWriteMode,
     ClipContent, ClipPlacement, ClipPoolEntry, DeviceDefinition, DeviceKind, EntityId,
     LaunchQuantization, LoopConfig, MidiNote, Op, ParameterValue, RoutingEdge, RoutingKind,
-    SamplerBinding, SceneV3, SectionV3, TrackKind, TrackV3, TransportConfig, YebanProjectV1,
+    SamplerBinding, SceneV3, SectionV3, SlideConfig, TrackKind, TrackV3, TransportConfig,
+    YebanProjectV1,
 };
 // 设备参数的**序数 → 稳定身份**解析与**名字白名单**只有一份：`#263` 落在 render 里。
 // ⛔ 本层不复制第二份（否则 `paramNotSupported` 会有两个字面量来源）。
@@ -818,6 +823,59 @@ pub const RATCHET_FIELD: &str = "ratchet";
 /// `crate::domain::render_math::note_frame_span`）。
 pub const MICRO_TIMING_FIELD: &str = "microTimingTicks";
 
+/// `add` 音符对象里的**弯音曲线**字段名（`ops[].note.pitchBendCurve`，可选）。
+///
+/// 形状是 `[tick, cents]` 二元组的数组；坐标与值域的**唯一**权威是
+/// `docs/adr/ADR-0012-pitch-bend-curve-contract.md`：
+///
+/// - `tick` 是**音符局部**坐标（D1），首点可以是任意 `tick >= 0`（D4：首点之前
+///   `cents` 取 `0`，因此 `[[240, 200]]` 合法）；
+/// - `cents` 相对 `note.pitch`，闭区间
+///   `-PITCH_BEND_CENTS_MAX_ABS..=PITCH_BEND_CENTS_MAX_ABS`（D2，±1200）；
+/// - tick **严格**升序（D3，重复 tick 即错）；点落在鸣响区间之外**允许**（D6，
+///   那些点永不采样）；
+/// - 检查顺序**照抄**模型（升序先于 `cents`，D7）⇒ 同一份输入在两层报同一个错误。
+///
+/// 取值的权威判定仍在模型层（[`MidiNote::validate`] → `validate_pitch_bend_curve`）；
+/// 本层只额外把 `field` / `index` 放进拒绝载荷里。
+///
+/// ⚠ `#311c` 之前这个键会被 [`reject_unknown_note_fields`] **响亮拒绝**（工具面
+/// 没有写入通路）；现在它是 [`NOTE_FIELDS`] 的一员，母带渲染器与引擎**真的**求值它
+/// （`#311b`：音符局部 64 样本网格重算 `phase_inc`）。
+pub const PITCH_BEND_CURVE_FIELD: &str = "pitchBendCurve";
+
+/// `add` 音符对象里的**滑音**字段名（`ops[].note.slide`，可选）。
+///
+/// 形状：`{ "durationTicks": <非零 tick>, "targetPitch": <0..=127>,
+/// "curve": <四个规范名之一，可选，缺省 Linear> }`。
+///
+/// 曲线词表**只有一份**：`crate::domain::automation::parse_curve`（名字表
+/// `extension_pure::CURVE_NAMES`，与模型 `CurveType` 的双射由判据
+/// `every_name_table_agrees_with_the_model_enum` 钉住）—— 本层⛔ 不复制第二套拼写。
+///
+/// 语义与求值在模型/引擎：`slide` 与 `pitch_bend_curve` 同时存在时**相加**（`ADR-0012`
+/// D9），曲线的数学只有 `CurveType::ease` 一份实现。
+pub const SLIDE_FIELD: &str = "slide";
+
+/// `slide` 对象里的**时值**字段名（可选字段 `slide` 的必填子字段，单位 tick）。
+pub const SLIDE_DURATION_FIELD: &str = "durationTicks";
+
+/// `slide` 对象里的**目标音高**字段名（必填，MIDI `0..=127`）。
+pub const SLIDE_TARGET_PITCH_FIELD: &str = "targetPitch";
+
+/// `slide` 对象里的**曲线形状**字段名（可选，缺省 `Linear`）。
+pub const SLIDE_CURVE_FIELD: &str = "curve";
+
+/// `slide` 对象**允许**出现的全部键。
+///
+/// 与 `note` 顶层同一口径：集合之外的键**响亮拒绝**并列出这一份支持集合，
+/// 绝不静默丢弃。
+pub const SLIDE_FIELDS: [&str; 3] = [
+    SLIDE_DURATION_FIELD,
+    SLIDE_TARGET_PITCH_FIELD,
+    SLIDE_CURVE_FIELD,
+];
+
 /// `add.note` 对象**允许**出现的全部键。
 ///
 /// 与 [`parse_note`] 真正读取的键**同源**（判据 `expressive_note_field_names_are_pinned`
@@ -833,6 +891,8 @@ pub const NOTE_FIELDS: &[&str] = &[
     PROBABILITY_FIELD,
     RATCHET_FIELD,
     MICRO_TIMING_FIELD,
+    PITCH_BEND_CURVE_FIELD,
+    SLIDE_FIELD,
 ];
 
 /// `ops[].kind` 的**音符时间位置**形态名（写 [`Op::SetNoteTiming`]）。
@@ -6563,6 +6623,17 @@ fn parse_note(object: &Map<String, Value>) -> Result<MidiNote, Fault> {
     note.probability = read_probability(object)?;
     note.ratchet = read_ratchet(object)?;
     note.micro_timing_ticks = read_micro_timing(object)?;
+    // 先按**模型 `validate` 的前半段**判一次（音高/力度/概率/连击/微时序/时值）。
+    // 模型 `validate` 的顺序是：… → 时值 → 滑音 → 弯音，而滑音/弯音的读取在下面 ⇒
+    // 这一句让"时值早于滑音/弯音"这条优先级在两层一致（例如 `durationTicks:0` +
+    // 一条非法曲线，模型报 `ZeroDuration`，本层也报它，⛔ 不是曲线错误）。
+    note.validate()
+        .map_err(|error| from_model("音符校验", &error))?;
+    // 顺序照抄模型：滑音先、弯音后（`ADR-0012` D7）。
+    note.slide = read_slide(object)?;
+    note.pitch_bend_curve = read_pitch_bend_curve(object)?;
+    // 读取器与模型同口径；再校验一次是让"`parse_note` 只产出合法音符"这条不变式
+    // 不依赖两份实现永远同步（成本是一次 O(曲线点数) 的扫描，不在实时路径上）。
     note.validate()
         .map_err(|error| from_model("音符校验", &error))?;
     Ok(note)
@@ -6590,8 +6661,10 @@ fn reject_unknown_note_fields(object: &Map<String, Value>) -> Result<(), Fault> 
         serde_json::json!({
             "field": unknown,
             "supportedNoteFields": NOTE_FIELDS,
-            // 模型里有、但工具面**还没有**通路的四个表现力字段: 说出来, 不要吞掉。
-            "unsupportedNoteFields": ["slide", "pitchBendCurve", "syllable", "phonemes"],
+            // 模型里有、但工具面**仍然没有**写入通路的两个表现力字段: 说出来, 不要吞掉。
+            // ⚠ `slide` / `pitchBendCurve` 已由 `#311c` 接上通路 ⇒ ⛔ 不许再列在这里
+            // （把它们说成"不支持"就是假话）。
+            "unsupportedNoteFields": ["syllable", "phonemes"],
             "hint": "未知键不静默忽略: 去掉它, 或改用 supportedNoteFields 里的字段",
         }),
     ))
@@ -6677,6 +6750,253 @@ fn read_micro_timing(object: &Map<String, Value>) -> Result<Option<i16>, Fault> 
         ));
     }
     Ok(Some(i16::try_from(number).unwrap_or(MICRO_TIMING_MAX_ABS)))
+}
+
+/// 曲线形状错误的统一出口：`INVALID_PARAMETER_RANGE` + `field` / `index`。
+///
+/// 所有形状错误都是"载荷不是 `[tick, cents]`"这一族（⛔ 不是量越界），
+/// 与 `ADR-0012` D7 的契约码分组一致。与 `read_probability` / `read_ratchet` 的
+/// 形状错误同口径：报文说清"哪个字段、第几项、收到了什么"，`data` 只放可寻址的
+/// 坐标（⛔ 不发明一个新的 `reason` 词 —— 那会把 `fault_vocabulary` 的冻结面
+/// 为一条普通形状错误扩一次）。
+fn pitch_bend_shape_error(index: usize, detail: String) -> Fault {
+    Fault::domain_with_data(
+        ErrorCode::InvalidParameterRange,
+        detail,
+        serde_json::json!({
+            "field": PITCH_BEND_CURVE_FIELD,
+            "index": index,
+        }),
+    )
+}
+
+/// 读可选的 `note.pitchBendCurve`（缺省 = `Vec::new()` = 无弯音）。
+///
+/// 形状是 `[tick, cents]` 二元组数组；语义与边界照抄
+/// `docs/adr/ADR-0012-pitch-bend-curve-contract.md`（模型
+/// `MidiNote::validate_pitch_bend_curve` 是权威）：
+///
+/// 1. **结构**：数组、每项恰好两个整数、`tick >= 0` —— 不满足 ⇒
+///    `INVALID_PARAMETER_RANGE`，报文与 `data.index` 指向出错的项；
+/// 2. **tick 严格升序**（D3）—— 重复或倒退 ⇒ `INVALID_PARAMETER_RANGE`；
+/// 3. **`cents` ∈ ±1200**（D2）—— 越界 ⇒ `OUT_OF_RANGE`。
+///
+/// ⚠ 2 与 3 是**两遍**扫描，不是逐点一起判：模型先扫全部窗口再扫全部 `cents`
+/// （`ADR-0012` D7），逐点判会让 `[[0, 99999], [0, 0]]` 在本层报 `cents`、在模型
+/// 报"不升序"—— 同一份输入两层说法不同。这里的顺序是**模型顺序**。
+///
+/// ⚠ **不对点数设上界**（决定 + 理由，刻意写在这里）：
+/// - 解析不在实时路径上（这里跑在工具调用的调用方线程，音频回调用的是模型里那份
+///   `Vec`），所以一次 O(n) 扫描不会造成 xrun；
+/// - 传输层已经对**整个请求体**设了 1 MiB 上限（`transport::http::MAX_REQUEST_BODY_BYTES`）
+///   ⇒ 曲线点数天然被它携带的请求大小夹住；
+/// - 模型 `MidiNote::pitch_bend_curve` 自己**没有**长度上界；在门面层发明一个音乐上
+///   的数字（例如"最多 4096 点"）会拒绝一条模型认为合法、作者也可能真的要的密集曲线，
+///   且与 `ops` 数组本身"没有条数上限"的既有口径不一致。
+fn read_pitch_bend_curve(object: &Map<String, Value>) -> Result<Vec<(u64, i16)>, Fault> {
+    let Some(value) = object.get(PITCH_BEND_CURVE_FIELD) else {
+        return Ok(Vec::new());
+    };
+    let Some(pairs) = value.as_array() else {
+        return Err(Fault::domain_with_data(
+            ErrorCode::InvalidParameterRange,
+            format!("`{PITCH_BEND_CURVE_FIELD}` 必须是 [tick, cents] 数组, 实际收到 {value}"),
+            serde_json::json!({
+                "field": PITCH_BEND_CURVE_FIELD,
+            }),
+        ));
+    };
+    // 第一遍：结构。`tick` 用 `as_u64` ⇒ 负数/小数/字符串在这里就落成"不是非负整数"。
+    let mut raw: Vec<(u64, i64)> = Vec::with_capacity(pairs.len());
+    for (index, pair) in pairs.iter().enumerate() {
+        let Some(items) = pair.as_array() else {
+            return Err(pitch_bend_shape_error(
+                index,
+                format!(
+                    "`{PITCH_BEND_CURVE_FIELD}[{index}]` 必须是 [tick, cents] 二元组, 实际收到 {pair}"
+                ),
+            ));
+        };
+        if items.len() != 2 {
+            return Err(pitch_bend_shape_error(
+                index,
+                format!(
+                    "`{PITCH_BEND_CURVE_FIELD}[{index}]` 必须恰好 2 个元素 [tick, cents], 实际 {} 个",
+                    items.len()
+                ),
+            ));
+        }
+        let Some(tick) = items[0].as_u64() else {
+            return Err(pitch_bend_shape_error(
+                index,
+                format!(
+                    "`{PITCH_BEND_CURVE_FIELD}[{index}][0]` 的 tick 必须是非负整数, 实际收到 {}",
+                    items[0]
+                ),
+            ));
+        };
+        let Some(cents) = items[1].as_i64() else {
+            return Err(pitch_bend_shape_error(
+                index,
+                format!(
+                    "`{PITCH_BEND_CURVE_FIELD}[{index}][1]` 的 cents 必须是整数, 实际收到 {}",
+                    items[1]
+                ),
+            ));
+        };
+        raw.push((tick, cents));
+    }
+    // 第二遍：tick 严格升序（D3；顺序照抄模型 D7：升序先于 cents）。
+    for index in 1..raw.len() {
+        let (previous, _) = raw[index - 1];
+        let (tick, _) = raw[index];
+        if tick <= previous {
+            return Err(Fault::domain_with_data(
+                ErrorCode::InvalidParameterRange,
+                format!(
+                    "`{PITCH_BEND_CURVE_FIELD}[{index}]` 的 tick 必须严格大于前一个 tick: {tick} 不大于 {previous}"
+                ),
+                serde_json::json!({
+                    "field": PITCH_BEND_CURVE_FIELD,
+                    "index": index,
+                    "previousTick": previous,
+                    "tick": tick,
+                }),
+            ));
+        }
+    }
+    // 第三遍：`cents` 闭区间 ±`PITCH_BEND_CENTS_MAX_ABS`（D2）。
+    let bound = i64::from(PITCH_BEND_CENTS_MAX_ABS);
+    let mut curve = Vec::with_capacity(raw.len());
+    for (index, (tick, cents)) in raw.into_iter().enumerate() {
+        if !(-bound..=bound).contains(&cents) {
+            return Err(Fault::domain_with_data(
+                ErrorCode::OutOfRange,
+                format!(
+                    "`{PITCH_BEND_CURVE_FIELD}[{index}][1]` 的 cents 越界: {cents} 不在 {}..={}",
+                    -bound, bound
+                ),
+                serde_json::json!({
+                    "field": PITCH_BEND_CURVE_FIELD,
+                    "index": index,
+                    "tick": tick,
+                    "value": cents,
+                    "min": -bound,
+                    "max": bound,
+                }),
+            ));
+        }
+        // 区间已判（±1200 必然落进 i16），这里的 `unwrap_or` 只是不 panic 的构造。
+        curve.push((
+            tick,
+            i16::try_from(cents).unwrap_or(PITCH_BEND_CENTS_MAX_ABS),
+        ));
+    }
+    Ok(curve)
+}
+
+/// 读可选的 `note.slide`（缺省 = `None` = 无滑音）。
+///
+/// 形状：`{ "durationTicks": <非零 tick>, "targetPitch": <0..=127>, "curve": <规范名?> }`。
+///
+/// - `durationTicks` / `targetPitch` **必填**（决定 + 理由）：没有目标的滑音不是滑音，
+///   没有时值也无从排程；缺键 ⛔ 不折算成模型默认（`SlideConfig::default()` 的
+///   `target_pitch = 0` 是"由调用方随后覆盖"的占位值，不是作者选择）。
+/// - `curve` 可选，缺省 `Linear`（模型 `CurveType::default`）。
+/// - 未知键**响亮拒绝**并列出 [`SLIDE_FIELDS`]（与 `note` 顶层同一口径）。
+/// - 值域照抄模型 `SlideConfig::validate`，且**检查顺序一致**：先 `targetPitch`、
+///   后 `durationTicks`（`ADR-0012` D9 之下 `SlideConfig` 是唯一语义源）。
+/// - `curve` 的拼写/别名判定**复用** `crate::domain::automation::parse_curve`
+///   （名字表 `extension_pure::CURVE_NAMES`），⛔ 不复制第二套。
+fn read_slide(object: &Map<String, Value>) -> Result<Option<SlideConfig>, Fault> {
+    let Some(value) = object.get(SLIDE_FIELD) else {
+        return Ok(None);
+    };
+    let Some(slide) = value.as_object() else {
+        return Err(Fault::domain_with_data(
+            ErrorCode::InvalidParameterRange,
+            format!(
+                "`{SLIDE_FIELD}` 必须是对象 {{durationTicks, targetPitch, curve?}}, 实际收到 {value}"
+            ),
+            serde_json::json!({
+                "field": SLIDE_FIELD,
+                "supportedSlideFields": SLIDE_FIELDS,
+            }),
+        ));
+    };
+    if let Some(unknown) = slide
+        .keys()
+        .find(|key| !SLIDE_FIELDS.contains(&key.as_str()))
+    {
+        return Err(Fault::domain_with_data(
+            ErrorCode::InvalidParameterRange,
+            format!("`{SLIDE_FIELD}` 不接受字段 `{unknown}`（不是可选项缺失, 而是拼写/不支持）"),
+            serde_json::json!({
+                "field": format!("{SLIDE_FIELD}.{unknown}"),
+                "supportedSlideFields": SLIDE_FIELDS,
+                "hint": "未知键不静默忽略: 去掉它, 或改用 supportedSlideFields 里的字段",
+            }),
+        ));
+    }
+    let target_raw = slide.get(SLIDE_TARGET_PITCH_FIELD).ok_or_else(|| {
+        missing(
+            &format!("{SLIDE_FIELD}.{SLIDE_TARGET_PITCH_FIELD}"),
+            "整数 MIDI 音高 0..=127（滑音没有目标就不是滑音）",
+        )
+    })?;
+    let duration_raw = slide.get(SLIDE_DURATION_FIELD).ok_or_else(|| {
+        missing(
+            &format!("{SLIDE_FIELD}.{SLIDE_DURATION_FIELD}"),
+            "非零整数 tick",
+        )
+    })?;
+    let target = target_raw.as_i64().ok_or_else(|| {
+        Fault::domain(
+            ErrorCode::InvalidParameterRange,
+            format!("`{SLIDE_FIELD}.{SLIDE_TARGET_PITCH_FIELD}` 必须是整数, 实际收到 {target_raw}"),
+        )
+    })?;
+    let duration = duration_raw.as_u64().ok_or_else(|| {
+        Fault::domain(
+            ErrorCode::InvalidParameterRange,
+            format!(
+                "`{SLIDE_FIELD}.{SLIDE_DURATION_FIELD}` 必须是非负整数 tick, 实际收到 {duration_raw}"
+            ),
+        )
+    })?;
+    // 顺序照抄 `SlideConfig::validate`：先 targetPitch，再 durationTicks。
+    if !(0..=i64::from(MIDI_PITCH_MAX)).contains(&target) {
+        return Err(Fault::domain_with_data(
+            ErrorCode::OutOfRange,
+            format!(
+                "`{SLIDE_FIELD}.{SLIDE_TARGET_PITCH_FIELD}` 越界: {target} 不在 0..={MIDI_PITCH_MAX}"
+            ),
+            serde_json::json!({
+                "field": format!("{SLIDE_FIELD}.{SLIDE_TARGET_PITCH_FIELD}"),
+                "value": target,
+                "min": 0,
+                "max": MIDI_PITCH_MAX,
+            }),
+        ));
+    }
+    if duration == 0 {
+        return Err(Fault::domain_with_data(
+            ErrorCode::OutOfRange,
+            format!("`{SLIDE_FIELD}.{SLIDE_DURATION_FIELD}` 越界: 0 不在 1..=u64::MAX"),
+            serde_json::json!({
+                "field": format!("{SLIDE_FIELD}.{SLIDE_DURATION_FIELD}"),
+                "value": 0,
+                "min": 1,
+            }),
+        ));
+    }
+    let curve = super::automation::parse_curve(slide.get(SLIDE_CURVE_FIELD), SLIDE_FIELD)?;
+    Ok(Some(SlideConfig {
+        duration_ticks: duration,
+        // 区间已判（0..=127），`unwrap_or` 只是不 panic 的构造。
+        target_pitch: u8::try_from(target).unwrap_or(MIDI_PITCH_MAX),
+        curve,
+    }))
 }
 
 /// 读可选的 `note.probability`（缺省 = `None` = 必然触发）。
@@ -13646,10 +13966,19 @@ mod tests {
 
     /// 字段名的字面拼写被钉住（工具面的实参名是契约的一部分，改名会让既有 Agent 静默降级），
     /// 且支持集合与 `parse_note` 真正读的键**同源**（多报一个键就是假话）。
+    ///
+    /// `#311c`：8 → **10**（`pitchBendCurve` / `slide`）。长度是硬读数的判据 ——
+    /// 只 `contains` 不加长度不够：把某个旧键从表里删掉但把新键加上，集合仍是 10
+    /// 条却少读一个字段（`unknown_note_fields...` 只测未知键，测不到这种"漏报"）。
     #[test]
     fn expressive_note_field_names_are_pinned() {
         assert_eq!(RATCHET_FIELD, "ratchet");
         assert_eq!(MICRO_TIMING_FIELD, "microTimingTicks");
+        assert_eq!(PITCH_BEND_CURVE_FIELD, "pitchBendCurve");
+        assert_eq!(SLIDE_FIELD, "slide");
+        assert_eq!(SLIDE_DURATION_FIELD, "durationTicks");
+        assert_eq!(SLIDE_TARGET_PITCH_FIELD, "targetPitch");
+        assert_eq!(SLIDE_CURVE_FIELD, "curve");
         for expected in [
             "id",
             "startTick",
@@ -13659,6 +13988,8 @@ mod tests {
             "probability",
             "ratchet",
             "microTimingTicks",
+            "pitchBendCurve",
+            "slide",
         ] {
             assert!(
                 NOTE_FIELDS.contains(&expected),
@@ -13667,7 +13998,7 @@ mod tests {
         }
         assert_eq!(
             NOTE_FIELDS.len(),
-            8,
+            10,
             "支持集合不得多报未读的键: {NOTE_FIELDS:?}"
         );
     }
@@ -14268,12 +14599,19 @@ mod tests {
     /// `note` 里的未知键 ⇒ 响亮拒绝（列出支持集合），**绝不**静默丢弃。
     ///
     /// 与顶层实参口径同源（`tools.rs` 的 `UnknownParam`：拼错的参数必须被拒绝、不能静默
-    /// 忽略）—— 同一条纪律不许只守一层。`slide` / `pitchBendCurve` / `syllable` /
-    /// `phonemes` 四个模型字段**仍然**没有工具面通路，它们必须**响亮地**说出来，
-    /// 而不是原样吞掉。
+    /// 忽略）—— 同一条纪律不许只守一层。`#311c` 之后只剩 `syllable` / `phonemes`
+    /// 两个模型字段**仍然**没有工具面通路；`slide` / `pitchBendCurve` 已经接线，
+    /// 因此 ⛔ 不许再出现在 `unsupportedNoteFields` 里（把它们说成"不支持"就是假话）。
     #[test]
     fn unknown_note_fields_are_rejected_with_the_supported_set() {
-        for unknown in ["slyde", "ratchett", "microtimingticks", "noteId", "slide"] {
+        // ⚠ `"slide"` 已在 `#311c` 从"未知键"样本里移除 —— 它现在是**合法字段**。
+        for unknown in [
+            "slyde",
+            "ratchett",
+            "microtimingticks",
+            "noteId",
+            "pitchbend",
+        ] {
             let mut item = add_json(0, 60);
             item["note"][unknown] = serde_json::json!(1);
             let fault = parse_ops(&Value::Array(vec![item])).expect_err("必须拒绝");
@@ -14288,13 +14626,386 @@ mod tests {
             let data = data.as_ref().expect("必须带 data");
             assert_eq!(data["field"], unknown);
             let supported = data["supportedNoteFields"].as_array().expect("必须是数组");
-            for expected in ["startTick", "pitch", "ratchet", "microTimingTicks"] {
+            assert_eq!(
+                supported.len(),
+                10,
+                "支持集合必须如实报 10 条（8 → +pitchBendCurve +slide）: {data}"
+            );
+            for expected in [
+                "startTick",
+                "pitch",
+                "ratchet",
+                "microTimingTicks",
+                "pitchBendCurve",
+                "slide",
+            ] {
                 assert!(
                     supported.iter().any(|value| value == expected),
                     "支持集合必须含 {expected}: {data}"
                 );
             }
+            assert_eq!(
+                data["unsupportedNoteFields"],
+                serde_json::json!(["syllable", "phonemes"]),
+                "仍然没有通路的只有 syllable / phonemes: {data}"
+            );
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // 弯音曲线 / 滑音字段（`add.note.pitchBendCurve` / `add.note.slide`）
+    // —— `#311b` 已让引擎真的求值，`#311c` 补上工具面写入通路
+    // -----------------------------------------------------------------------
+
+    /// 一条带曲线/滑音的 `add` 音符的完整读回：先解析、再编译、再 `apply`，
+    /// 最后从**工程文档**里读回那个音符（⛔ 不只看解析结果）。
+    ///
+    /// `note_id` 显式给出，才能从 `BTreeMap` 里定位"这一次 add 的那一个音符"。
+    fn apply_bent_note(curve: Value, slide: Value) -> (YebanProjectV1, EntityId, Value, Vec<Op>) {
+        let note_id = EntityId::from_str("01ARZ3NDEKTSV4RRFFQ69G5FAV").expect("ULID");
+        let mut item = add_json(0, 69);
+        item["note"]["id"] = serde_json::json!(note_id.to_canonical_string());
+        item["note"]["pitchBendCurve"] = curve.clone();
+        item["note"]["slide"] = slide.clone();
+        item["note"]["durationTicks"] = serde_json::json!(1_920);
+        let ops = parse_ops(&Value::Array(vec![item])).expect("解析");
+        let project = filled_project();
+        let (track_id, clip_id) = lead_clip(&project);
+        let compiled = compile(&project, &track_id, &clip_id, &ops).expect("编译");
+        let mut after = project.clone();
+        Op::Batch {
+            ops: compiled.clone(),
+            description: "bend-slide 判据".to_owned(),
+        }
+        .apply(&mut after)
+        .expect("施加");
+        (after, note_id, curve, compiled)
+    }
+
+    /// 判据 1（往返 + D4）：`add` 带着**首点 tick = 240** 的曲线与一条滑音，
+    /// 落地后工程里的音符逐字段等于请求里的值。
+    ///
+    /// 首点 240 是 `ADR-0012` D4 的故意样本：它在 2026-10-25 之前会被模型拒绝
+    /// （`PitchBendFirstTickNotZero`），今天是**合法**的，前 240 tick 由消费侧读作 0。
+    #[test]
+    fn bend_curve_and_slide_round_trip_into_the_project() {
+        let curve = serde_json::json!([[240, 200], [480, -300], [960, 0]]);
+        let slide = serde_json::json!({
+            "durationTicks": 480,
+            "targetPitch": 81,
+            "curve": "SCurve",
+        });
+        let (after, note_id, curve_json, compiled) = apply_bent_note(curve, slide);
+        let note = after
+            .clip_pool
+            .values()
+            .find_map(|entry| entry.content.notes().and_then(|notes| notes.get(&note_id)))
+            .expect("工程里必须有这次 add 的音符");
+        assert_eq!(
+            note.pitch_bend_curve,
+            vec![(240u64, 200i16), (480, -300), (960, 0)],
+            "曲线必须逐点落进工程（首点 240 是 D4 的合法形态）"
+        );
+        assert_eq!(
+            note.slide,
+            Some(SlideConfig {
+                duration_ticks: 480,
+                target_pitch: 81,
+                curve: yeban_model::CurveType::SCurve,
+            }),
+            "滑音必须逐字段落进工程（curve 走 canonical 名字表）"
+        );
+        // 编译出来的 `Op::AddNote` 也逐字段相等（不是"只在解析结果里有"）。
+        match &compiled[0] {
+            Op::AddNote { note, .. } => {
+                assert_eq!(
+                    note.pitch_bend_curve,
+                    vec![(240, 200), (480, -300), (960, 0)]
+                );
+                assert_eq!(
+                    note.slide
+                        .map(|slide| (slide.duration_ticks, slide.target_pitch)),
+                    Some((480, 81))
+                );
+            }
+            other => panic!("必须是 AddNote, 实际 {other:?}"),
+        }
+        // 曲线/滑音的 JSON 字面量原样（防止 helper 自己改写了样本）。
+        assert_eq!(
+            curve_json,
+            serde_json::json!([[240, 200], [480, -300], [960, 0]])
+        );
+    }
+
+    /// 判据 2a（`cents` 闭区间）：-1200 / 0 / +1200 收，-1201 / +1201 拒，
+    /// 且拒绝码是 `OUT_OF_RANGE`、`data` 报出错的下标。
+    #[test]
+    fn bend_curve_cents_boundaries_are_inclusive() {
+        let note_id = "01ARZ3NDEKTSV4RRFFQ69G5FAV";
+        for (cents, accepted) in [
+            (-1_200i64, true),
+            (0, true),
+            (1_200, true),
+            (-1_201, false),
+            (1_201, false),
+        ] {
+            let mut item = add_json(0, 60);
+            item["note"]["id"] = serde_json::json!(note_id);
+            item["note"]["pitchBendCurve"] = serde_json::json!([[0, 0], [480, cents]]);
+            let parsed = parse_ops(&Value::Array(vec![item]));
+            assert_eq!(
+                parsed.is_ok(),
+                accepted,
+                "cents = {cents} 的接受性必须与 D2 一致"
+            );
+            if let Err(fault) = parsed {
+                assert_eq!(fault.domain_code(), Some(ErrorCode::OutOfRange), "{cents}");
+                let Fault::Domain { data, .. } = &fault else {
+                    panic!("必须是领域失败");
+                };
+                let data = data.as_ref().expect("必须带 data");
+                assert_eq!(data["index"], 1, "必须报出错的下标: {data}");
+                assert_eq!(data["field"], PITCH_BEND_CURVE_FIELD);
+                assert_eq!(data["min"], -1_200);
+                assert_eq!(data["max"], 1_200);
+            }
+        }
+    }
+
+    /// 判据 2b（tick 严格升序）：`[0, 480]` 收、`[480, 480]` 拒、`[480, 240]` 拒；
+    /// 拒绝码是 `INVALID_PARAMETER_RANGE`（形状，不是量），报文点名字段与下标。
+    #[test]
+    fn bend_curve_ticks_must_be_strictly_ascending() {
+        for (ticks, accepted) in [
+            ([0u64, 480], true),
+            ([480, 480], false),
+            ([480, 240], false),
+        ] {
+            let mut item = add_json(0, 60);
+            item["note"]["pitchBendCurve"] = serde_json::json!([[ticks[0], 10], [ticks[1], 20]]);
+            let parsed = parse_ops(&Value::Array(vec![item]));
+            assert_eq!(parsed.is_ok(), accepted, "ticks = {ticks:?}");
+            if let Err(fault) = parsed {
+                assert_eq!(
+                    fault.domain_code(),
+                    Some(ErrorCode::InvalidParameterRange),
+                    "升序是形状错误（ADR-0012 D7）"
+                );
+                let Fault::Domain { message, .. } = &fault else {
+                    panic!("必须是领域失败");
+                };
+                assert!(
+                    message.contains(PITCH_BEND_CURVE_FIELD) && message.contains("[1]"),
+                    "报文必须点名字段与出错下标: {message}"
+                );
+            }
+        }
+    }
+
+    /// 判据 2c（结构）：不是数组 / 不是二元组 / 长度不是 2 / tick 不是非负整数 /
+    /// cents 不是整数 ⇒ 全部 `INVALID_PARAMETER_RANGE`。
+    #[test]
+    fn bend_curve_shape_errors_are_loud() {
+        for bad in [
+            serde_json::json!(1),
+            serde_json::json!("[[0,0]]"),
+            serde_json::json!([[0]]),
+            serde_json::json!([[0, 0, 0]]),
+            serde_json::json!([["0", 0]]),
+            serde_json::json!([[-1, 0]]),
+            serde_json::json!([[0, 1.5]]),
+            serde_json::json!([[0, "x"]]),
+            serde_json::json!([{}]),
+        ] {
+            let mut item = add_json(0, 60);
+            item["note"]["pitchBendCurve"] = bad.clone();
+            let fault = parse_ops(&Value::Array(vec![item])).expect_err("必须拒绝");
+            assert_eq!(
+                fault.domain_code(),
+                Some(ErrorCode::InvalidParameterRange),
+                "输入 {bad}"
+            );
+        }
+    }
+
+    /// 判据 2d（错误优先级）：`[[0, 99999], [0, 0]]` 同时违反"升序"与"cents"，
+    /// 两层都必须报**升序**（模型 `validate` 先扫窗口、再扫 cents，`ADR-0012` D7）。
+    /// 修法注入：把 `read_pitch_bend_curve` 的两遍扫描合并成逐点判 ⇒ 本判据红。
+    #[test]
+    fn bend_curve_error_order_matches_the_model() {
+        let mut item = add_json(0, 60);
+        item["note"]["pitchBendCurve"] = serde_json::json!([[0, 99_999], [0, 0]]);
+        let fault = parse_ops(&Value::Array(vec![item])).expect_err("必须拒绝");
+        assert_eq!(
+            fault.domain_code(),
+            Some(ErrorCode::InvalidParameterRange),
+            "先报升序 ⇒ INVALID_PARAMETER_RANGE，⛔ 不是 cents 的 OUT_OF_RANGE"
+        );
+        // 模型对**同一份**载荷报的也是升序（`cents` 取 `i16::MAX`，同样越界）。
+        let model_error = MidiNote {
+            pitch_bend_curve: vec![(0, i16::MAX), (0, 0)],
+            ..MidiNote::new(
+                EntityId::from_str("01ARZ3NDEKTSV4RRFFQ69G5FAV").expect("ULID"),
+                0,
+                60,
+                480,
+            )
+        }
+        .validate()
+        .expect_err("模型必须拒绝");
+        assert!(
+            matches!(
+                model_error,
+                yeban_model::ModelError::PitchBendTicksNotAscending { .. }
+            ),
+            "模型必须报升序: {model_error:?}"
+        );
+    }
+
+    /// 判据 2e / 长数组决定：**不设点数上界**。一条 512 点的合法曲线逐点保留
+    /// （若日后有人加一个"最多 4096 点"之类的门面层上界，本判据只会在越界时红，
+    /// 所以这里同时钉住"上界不存在"这份决定的可观察后果：大数组不被拒）。
+    #[test]
+    fn long_bend_curves_are_accepted_and_preserved() {
+        let points: Vec<Value> = (0..512u64)
+            .map(|index| {
+                let cents = i64::try_from(index).unwrap_or(0) - 1_200;
+                serde_json::json!([index * 2, cents])
+            })
+            .collect();
+        let mut item = add_json(0, 60);
+        item["note"]["pitchBendCurve"] = Value::Array(points);
+        let ops = parse_ops(&Value::Array(vec![item])).expect("解析");
+        let NoteOp::Add { note } = &ops[0] else {
+            panic!("必须是 add");
+        };
+        assert_eq!(note.pitch_bend_curve.len(), 512, "512 点必须逐点保留");
+        assert_eq!(note.pitch_bend_curve[511], (1_022, -689));
+    }
+
+    /// 判据 3（滑音边界）：`durationTicks = 0` 拒、`targetPitch = 127` 收 / 128 拒、
+    /// 未知曲线名拒且列出允许名、非规范拼写（小写 `linear`）拒、缺必填键拒、
+    /// 对象内未知键拒且列出 `supportedSlideFields`。
+    #[test]
+    fn slide_boundaries_and_curve_spelling_are_loud() {
+        let base = serde_json::json!({"durationTicks": 480, "targetPitch": 81});
+        // 正对照：完整滑音可解析。
+        let mut item = add_json(0, 60);
+        item["note"]["slide"] = base.clone();
+        let ops = parse_ops(&Value::Array(vec![item])).expect("基线滑音必须可解析");
+        let NoteOp::Add { note } = &ops[0] else {
+            panic!("必须是 add");
+        };
+        assert_eq!(
+            note.slide,
+            Some(SlideConfig {
+                duration_ticks: 480,
+                target_pitch: 81,
+                curve: yeban_model::CurveType::Linear,
+            }),
+            "缺省 curve = Linear"
+        );
+
+        // 边界：targetPitch 127 收 / 128 拒；durationTicks 0 拒。
+        for (slide, accepted, code) in [
+            (
+                serde_json::json!({"durationTicks": 480, "targetPitch": 127}),
+                true,
+                None,
+            ),
+            (
+                serde_json::json!({"durationTicks": 480, "targetPitch": 128}),
+                false,
+                Some(ErrorCode::OutOfRange),
+            ),
+            (
+                serde_json::json!({"durationTicks": 0, "targetPitch": 81}),
+                false,
+                Some(ErrorCode::OutOfRange),
+            ),
+        ] {
+            let mut item = add_json(0, 60);
+            item["note"]["slide"] = slide.clone();
+            let parsed = parse_ops(&Value::Array(vec![item]));
+            assert_eq!(parsed.is_ok(), accepted, "slide = {slide}");
+            if let Err(fault) = parsed {
+                assert_eq!(fault.domain_code(), code, "slide = {slide}");
+            }
+        }
+
+        // 未知曲线名 ⇒ 拒，且 `allowed` 列出四个规范名。
+        let mut item = add_json(0, 60);
+        item["note"]["slide"] = serde_json::json!({
+            "durationTicks": 480, "targetPitch": 81, "curve": "Sine",
+        });
+        let fault = parse_ops(&Value::Array(vec![item])).expect_err("未知曲线必须拒绝");
+        assert_eq!(fault.domain_code(), Some(ErrorCode::InvalidParameterRange));
+        let Fault::Domain { data, .. } = &fault else {
+            panic!("必须是领域失败");
+        };
+        let data = data.as_ref().expect("必须带 data");
+        assert_eq!(
+            data["allowed"],
+            serde_json::json!(["Linear", "Exponential", "Logarithmic", "SCurve"]),
+            "必须列出与模型枚举双射的四个规范名: {data}"
+        );
+        assert_eq!(data["field"], "slide.curve");
+
+        // 非规范拼写（小写）必须拒 —— 别名不留情面。
+        for spelling in ["linear", "Linear ", "SCurve ", "s_curve"] {
+            let mut item = add_json(0, 60);
+            item["note"]["slide"] = serde_json::json!({
+                "durationTicks": 480, "targetPitch": 81, "curve": spelling,
+            });
+            let fault = parse_ops(&Value::Array(vec![item])).expect_err("别名必须拒绝");
+            assert_eq!(
+                fault.domain_code(),
+                Some(ErrorCode::InvalidParameterRange),
+                "拼写 {spelling:?}"
+            );
+        }
+
+        // 缺必填键：没有目标的滑音不是滑音，没有时值也无从排程。
+        for partial in [
+            serde_json::json!({"durationTicks": 480}),
+            serde_json::json!({"targetPitch": 81}),
+            serde_json::json!({}),
+        ] {
+            let mut item = add_json(0, 60);
+            item["note"]["slide"] = partial.clone();
+            let fault = parse_ops(&Value::Array(vec![item])).expect_err("缺必填必须拒绝");
+            assert_eq!(
+                fault.domain_code(),
+                Some(ErrorCode::InvalidParameterRange),
+                "slide = {partial}"
+            );
+        }
+
+        // 对象内未知键 ⇒ 拒并列出支持集合。
+        let mut item = add_json(0, 60);
+        item["note"]["slide"] = serde_json::json!({
+            "durationTicks": 480, "targetPitch": 81, "bend": 1,
+        });
+        let fault = parse_ops(&Value::Array(vec![item])).expect_err("未知键必须拒绝");
+        assert_eq!(fault.domain_code(), Some(ErrorCode::InvalidParameterRange));
+        let Fault::Domain { data, .. } = &fault else {
+            panic!("必须是领域失败");
+        };
+        assert_eq!(
+            data.as_ref().expect("必须带 data")["supportedSlideFields"],
+            serde_json::json!(["durationTicks", "targetPitch", "curve"])
+        );
+    }
+
+    /// 判据：两个字段缺省时是模型的零值（`Vec::new()` / `None`），⛔ 不是"缺键报错"。
+    #[test]
+    fn add_without_bend_or_slide_keeps_the_model_defaults() {
+        let ops = parse_ops(&Value::Array(vec![add_json(0, 60)])).expect("解析");
+        let NoteOp::Add { note } = &ops[0] else {
+            panic!("必须是 add");
+        };
+        assert!(note.pitch_bend_curve.is_empty(), "缺省 = 无弯音");
+        assert_eq!(note.slide, None, "缺省 = 无滑音");
     }
 
     // -----------------------------------------------------------------------
