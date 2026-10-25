@@ -326,10 +326,44 @@ struct ReasonOccurrence {
 
 /// 把绝对路径折成 `src/` 之后的相对路径（豁免表按它匹配）。
 fn relative_to_src(path: &str) -> String {
-    path.rfind("/src/").map_or_else(
-        || path.to_owned(),
-        |at| path[at + "/src/".len()..].to_owned(),
+    // ⚠ **必须先归一化分隔符**：`Path` 在 Windows 上渲染成 `D:\a\...\src\domain\notes.rs`，
+    // 而登记表用的是正斜杠相对路径（`domain/notes.rs`）。少了这一步，`rfind("/src/")` 返回
+    // `None` ⇒ 退化成**整条绝对路径** ⇒ 每一条登记都对不上 ⇒ 普查在 Windows 上**全红**，
+    // 而在 macOS/Linux 上全绿（2026-10-26 实测：`#340` 合并后 Windows 腿红了三次，
+    // 而本地与 Linux 一直是绿的）。这类缺陷**本机永远抓不到**，所以判据必须喂它一条
+    // 合成的 Windows 路径（见 `relative_to_src_normalises_windows_separators`）。
+    let normalized = path.replace('\\', "/");
+    normalized.rfind("/src/").map_or_else(
+        || normalized.clone(),
+        |at| normalized[at + "/src/".len()..].to_owned(),
     )
+}
+
+/// `relative_to_src` 在**两种分隔符**下必须给出同一个相对路径。
+///
+/// ⚠ 这条判据存在的唯一目的，是让**本机**（macOS/Linux）抓住一个**只在 Windows 上**
+/// 出现的缺陷。`#340` 的普查在 Windows 上全红、在本机与 Linux 上全绿 —— 因为 `Path`
+/// 在 Windows 上渲染成反斜杠，而登记表用正斜杠。本机跑不到 Windows ⇒ **喂它一条合成的
+/// Windows 路径**，把平台差异变成一条不依赖平台的断言。
+#[test]
+fn relative_to_src_normalises_windows_separators() {
+    assert_eq!(
+        relative_to_src("/repo/crates/yeban-mcp/src/domain/notes.rs"),
+        "domain/notes.rs",
+        "正斜杠路径"
+    );
+    assert_eq!(
+        relative_to_src(r"D:\a\yeban\yeban\crates\yeban-mcp\src\domain\notes.rs"),
+        "domain/notes.rs",
+        "Windows 绝对路径必须与正斜杠路径给出同一个相对路径"
+    );
+    assert_eq!(
+        relative_to_src(r"crates\yeban-mcp\src\tools.rs"),
+        "tools.rs",
+        "Windows 相对路径"
+    );
+    // 不含 `/src/` 的路径：归一化后原样返回，⛔ panic、⛔ 不吞
+    assert_eq!(relative_to_src(r"D:\a\b\Cargo.toml"), "D:/a/b/Cargo.toml");
 }
 
 /// 扫出 `"reason"` 的**每一次**出现并分类（注释／字符串内部不算）。
