@@ -208,14 +208,15 @@ pub struct MidiNote {
     /// - `tick` 是**音符局部**坐标（`0` = 本音符起点 `start_tick`），不是工程坐标；
     /// - `cents` 相对 [`Self::pitch`]，`-PITCH_BEND_CENTS_MAX_ABS..=+PITCH_BEND_CENTS_MAX_ABS`
     ///   （±1200 = ±1 个八度，含端点）；
-    /// - 非空 ⇒ **首点 `tick == 0`**（曲线必须从音符起点开始，⛔ 不做"起点之前"的外插）；
+    /// - 首点可以是**任意** `tick ≥ 0`；`tick` 小于首点的部分 `cents` 一律取 `0`
+    ///   （D4 的 2026-10-25 裁决，⛔ 不再要求首点 `tick == 0`）；
     /// - tick **严格**升序（同一 tick 两个值 = 一个时刻两个音高，拒绝）；
     /// - 相邻点之间**线性**插值，末点之后**保持**末值（D5：这是消费侧规则，`validate` 不查）；
     /// - 点落在鸣响区间之外**允许**且永不采样（D6：`Op::SetNoteTiming` 缩短时值
     ///   不该让一条合规曲线事后变成非法）。
     ///
-    /// 其中「首点 `tick == 0`」「tick 严格升序」「`cents` ±1200」三条由
-    /// [`MidiNote::validate`] 机械拒绝；插值与末点保持是消费侧规则（D5）。
+    /// 其中「tick 严格升序」「`cents` ±1200」两条由 [`MidiNote::validate`] 机械拒绝；
+    /// 插值、首点之前取 0、末点之后保持都是**消费侧**规则（D4／D5）。
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub pitch_bend_curve: Vec<(u64, i16)>,
     /// 歌词音节。

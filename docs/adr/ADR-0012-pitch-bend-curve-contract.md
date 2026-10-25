@@ -218,13 +218,15 @@ D5／D6 **不可**机械校验：它们是消费侧语义与刻意的非规则�
 弯音把"已经滑到目标音的那个声部"再整体推偏。Logic 没有"弯音优先于滑音"这类仲裁规则。
 
 **裁决**：`cents(local) = bend_cents(local) + slide_cents(local)`；两者单位同为音分，直接相加。
-滑音的形状用**模型里唯一实现过的**曲线语义（`CurveType`，现为 `ease`）—— `#311b` **不**在
-DSP 里复制一份曲线数学，滑音的值由引擎的 `SlideSpan::cents_at` 算好再相加。
+滑音的形状用**模型层的** `CurveType` 表示（`Linear`／`Exponential`／`Logarithmic`／`SCurve`
+四档，默认 `Linear`），而曲线的数学只有 `CurveType::ease` **一份**实现 —— `#311b` **不**在 DSP
+里复制一份；滑音的值由引擎的 `SlideSpan::cents_at` 算好再相加。
 
 - 实现落点：`crates/yeban-engine/src/synth.rs` 的 `PitchShape::cents_at`
   （`bend_cents_at + slide_cents_at`）。
-- 判据：`crates/yeban-engine/tests/pitch_bend.rs` 的 `[B4]` —— 弯音 `+1200` 与滑音 `+1200`
-  同时开 ⇒ 末段主频 **`1760.000 Hz`**（440 × 2^(2400/1200)），同段 880 Hz 幅度 ≈ `2e-9`。
+- 判据：`crates/yeban-engine/tests/pitch_bend.rs` 的 `slide_and_bend_add_up`（`[B4]`）——
+  弯音 `+1200` 与滑音 `+1200` 同时开 ⇒ 末段主频 **`1760.000 Hz`**（440 × 2^(2400/1200)），
+  同段 880 Hz 幅度 ≈ `2e-9`；`a_slide_reaches_the_target_pitch`（`[B3]`）单独给 `880.000 Hz`。
 - 代价（如实记）：一个"弯音推到顶、滑音也到顶"的音符能到 **±2400 音分（两个八度）**，
   这是 D2 的 `±1200` 上界**管不到**的 —— D2 约束的是曲线上的 `cents` 值，不是总和。
   没有为总音分再设一个上界：它是两条合法输入的合法叠加，再设界会变成"两条都合法却合起来非法"。
