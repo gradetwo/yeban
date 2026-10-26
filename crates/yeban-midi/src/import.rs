@@ -1199,10 +1199,10 @@ fn count_losses(
     tempo: &ScalarAdoption,
     time_signature: &ScalarAdoption,
     track_name: &ScalarAdoption,
-    marker_dropped: usize,
-    marker_reason: Option<String>,
+    marker: (usize, Option<String>),
     track_partitions_dropped: usize,
 ) -> MidiImportLosses {
+    let (marker_dropped, marker_reason) = marker;
     let mut aux_events: BTreeMap<MidiAuxEventKind, MidiLossCount> = BTreeMap::new();
     let mut aux_reasons: BTreeMap<MidiAuxEventKind, String> = BTreeMap::new();
     let stored = [
@@ -1448,8 +1448,7 @@ pub fn plan_midi_import(
         &tempo,
         &time_signature,
         &track_name,
-        marker_dropped,
-        marker_reason,
+        (marker_dropped, marker_reason),
         track_partitions_dropped,
     );
     debug_assert!(
