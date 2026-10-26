@@ -1037,6 +1037,7 @@ pub fn adopt_key_signature(
     if read == 0 {
         return ScalarAdoption {
             op: None,
+            ops: Vec::new(),
             dropped: 0,
             reason: None,
         };
@@ -1050,6 +1051,7 @@ pub fn adopt_key_signature(
             if !target_empty {
                 return ScalarAdoption {
                     op: None,
+                    ops: Vec::new(),
                     dropped: read,
                     reason: Some(format!(
                         "key-signature-not-adopted-non-empty-project: the file's single key signature ({sharps_flats} sf, minor={is_minor} @0) was NOT written to project.key_signature — the project already has content (sections / MIDI notes / audio clips / automation points)",
@@ -1066,12 +1068,14 @@ pub fn adopt_key_signature(
             };
             return ScalarAdoption {
                 op,
+                ops: Vec::new(),
                 dropped: 0,
                 reason: None,
             };
         }
         return ScalarAdoption {
             op: None,
+            ops: Vec::new(),
             dropped: read,
             reason: Some(format!(
                 "key-signature-out-of-model-range: the file's single key signature is sharps_flats={sharps_flats}, outside -7..=7; project.key_signature untouched"
@@ -1084,6 +1088,7 @@ pub fn adopt_key_signature(
     }
     ScalarAdoption {
         op: None,
+        ops: Vec::new(),
         dropped: read,
         reason: Some(format!(
             "key-signature-map-not-representable: {}; project.key_signature is a single scalar ⇒ a key-signature map has no home",

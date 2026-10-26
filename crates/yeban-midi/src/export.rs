@@ -380,7 +380,7 @@ mod tests {
         assert_eq!(parsed.key_signatures.len(), 1);
         assert_eq!(parsed.key_signatures[0].tick, 0);
         assert_eq!(parsed.key_signatures[0].sharps_flats, -3);
-        assert_eq!(parsed.key_signatures[0].is_minor, false);
+        assert!(!parsed.key_signatures[0].is_minor);
     }
 
     /// 判据 ②: 音符数量 / 音高 / tick / 力度 / 时值 **逐音符**与工程一致。
