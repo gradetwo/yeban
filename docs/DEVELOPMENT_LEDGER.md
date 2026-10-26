@@ -11275,3 +11275,39 @@ $ python3 scripts/gates/check_phase_status.py   # 退出 0
   - `scripts/gates/run-gates.sh light`: 全部轻量门禁通过。
   - CI Run `40376425548` (`4518a19e`): **`conclusion: success`**（总耗时 27m52s），全平台全作业（Linux `rust (yeban-mcp)`、`rust (yeban-ui-mcp)`、`deny`、`checks`、`lockfile`、`plan`、`windows` 18 步、`macos` 16 步）全部通过。
 
+---
+
+## 2026-10-27：ADR-0016 落地：yeban_propose_section 支持理论和声与走向生成
+
+- **需求规范 ID**: `[MCP-TOOL-005]` `[ARCH-DET-001]` `[ADR-0016]`
+- **实施工作线**: `line/propose-section-theory` (`497e69e2`)，落地 `ADR-0016`。
+- **背景与目标**:
+  - `yeban_propose_section` 此前仅支持基于既有工程材料（`materialSource: "project"`）展开，当工程为空且无任何音轨/片段时，段落生成无法提取任何和声音高，导致从零创作段落陷入冷启动死锁；
+  - 依照 `ADR-0016`，新增 `materialSource: "theory"` 与可选的 `progression`（自定义罗马数字走向，如 `i-VI-III-VII`），基于 `yeban-theory` 的级数展开与四部和声声部连接（四部/三部配器），直接从零生成确定性的段落多轨骨架；
+  - 缺省（`materialSource: "project"`）保持 100% 逐字节向后兼容。
+- **实施**:
+  - `crates/yeban-mcp/src/domain/section_build.rs`:
+    - 新增 `PlanOptions { material_source, progression }`；
+    - 当 `materialSource == "theory"` 时，解析罗马数字走向并计算各小节和弦，生成声部连接（Bass, Tenor/Alto, Soprano）的多轨完整配器骨架；
+    - 为每个声部生成确定性音轨身份、片段池条目、摆放以及连往 Master 总线的路由边，整图保持 DAG；
+    - 边界与错误映射：走向解析失败或和声无可行解映射为 `INVALID_PARAMETER_RANGE`，并带详细 `theoryStep` 与原因说明；
+  - `crates/yeban-mcp/src/domain/section.rs`:
+    - 增加 `plan_with_options` 暴露给领域层；
+  - `crates/yeban-mcp/src/domain/mod.rs`:
+    - `plan_propose_section` 解析 `materialSource` 与 `progression` 参数；
+  - `crates/yeban-mcp/src/tools.rs`:
+    - 注册表更新 `yeban_propose_section` 参数说明与 schema；
+  - `schemas/mcp-tools.schema.json`:
+    - 登记 `DocumentedToolArguments.yeban_propose_section` 的 `materialSource` 与 `progression`；
+  - `crates/yeban-mcp/verify/section_pure.rs`:
+    - 新增纯函数判据（覆盖不同和弦走向、三部/四部配器、确定性音符与音轨校验）；测试由 32 条扩展至 38 条；
+  - `docs/adr/ADR-0016-propose-section-theory-generation.md`:
+    - 状态由 `Proposed` 正式裁决为 `Accepted`。
+- **验证**:
+  - `cargo fmt --check`: 格式化通过。
+  - `python3 scripts/guards/policy_check.py`: 18 项守卫全部通过。
+  - `scripts/gates/run-gates.sh light`: 全部轻量门禁通过。
+  - `verify/section_pure.rs`: 38 passed / 0 failed。
+  - CI Run `40378569228` (`497e69e2`): **`conclusion: success`**（总耗时 40m59s），全平台全作业通过（Linux `rust (workspace 全量)` 14 steps、`windows` 18 steps、`macos` 18 steps、`deny` 6 steps、`checks` 15 steps、`lockfile` 6 steps、`plan` 5 steps 全部通过）。
+
+
