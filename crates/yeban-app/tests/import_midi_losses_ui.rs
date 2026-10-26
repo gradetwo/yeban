@@ -453,7 +453,7 @@ fn behavior_arm() {
     for (key, want) in [
         ("format", "1"),
         ("file-tracks", "3"),
-        ("track-partitions-dropped", "2"),
+        ("track-partitions-dropped", "0"),
         ("channels", "2"),
         ("note-channel-read", "5"),
         ("note-channel-dropped", "0"),

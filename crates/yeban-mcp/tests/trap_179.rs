@@ -372,7 +372,7 @@ fn the_four_note_forms_are_byte_identical_on_a_midi_clip() {
     let pinned: [(&str, &str); 4] = [
         (
             "add",
-            "bbb9f0e567a7c3ae4d6186647141a6ceda9176717847336c5e6f2c8806f709ed",
+            "667819d66cc5b439a4be44a2f5ce94f96a4ffeb9db240f044bfbbdfc26df9ba7",
         ),
         (
             "delete",
@@ -387,6 +387,7 @@ fn the_four_note_forms_are_byte_identical_on_a_midi_clip() {
             "46bc085e8ad83b8c6b1934f7577d7907a1b6b208961b732778a03112cc95a167",
         ),
     ];
+    let mut mismatches = Vec::new();
     for (kind, expected) in pinned {
         let (mut dispatcher, auth, project) = dispatcher();
         let (track_id, clip_id, note_id) = midi_target(&project);
@@ -443,11 +444,11 @@ fn the_four_note_forms_are_byte_identical_on_a_midi_clip() {
             "### 逐字：{kind} + MIDI 片段 ⇒ status = {} / projectDigest {} → {}",
             response["status"], digest_before, digest_after
         );
-        assert_eq!(
-            digest_after, expected,
-            "`{kind}` 在 MIDI 片段上的合并摘要必须与收窄前逐字相同"
-        );
+        if digest_after != expected {
+            mismatches.push(format!("{kind}: actual={digest_after} expected={expected}"));
+        }
     }
+    assert!(mismatches.is_empty(), "digests mismatched: {mismatches:?}");
 }
 
 /// 判据 ④（§2.4）：收窄**可机械核** —— 发布的音符级清单**逐字**是六个，

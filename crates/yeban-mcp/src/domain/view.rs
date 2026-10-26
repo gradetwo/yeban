@@ -39,6 +39,8 @@ pub const SELECTORS: [&str; 24] = [
     "rng_seed",
     "master_bus_track_id",
     "time_signature",
+    "tempo_map",
+    "time_signature_map",
     "audio_config",
     "transport",
     "metadata",
