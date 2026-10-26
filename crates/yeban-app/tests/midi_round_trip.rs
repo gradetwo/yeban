@@ -583,9 +583,7 @@ fn export_import_export_round_trips_every_note_item_by_item() {
     let split_track = *after
         .tracks
         .keys()
-        .find(|id| {
-            **id != project.master_bus_track_id && **id != destination_track && **id != second_track
-        })
+        .find(|id| !project.tracks.contains_key(id))
         .expect("多轨拆分必须创建了新音轨");
     let split_clip = after.tracks[&split_track]
         .clips
