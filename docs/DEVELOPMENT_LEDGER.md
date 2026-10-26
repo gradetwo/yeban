@@ -10988,3 +10988,35 @@ $ python3 scripts/gates/check_phase_status.py   # 退出 0
   - `cargo-local.sh clippy -p yeban-mcp --all-targets -- -D warnings`: 零告警。
 
 - **CI 判决读回 (commit `ef70e750`)**: Run `40348367043` 100% SUCCESS 全绿 (`checks` 1m23s, `plan` 12s, `lockfile` 20s, `deny` 45s, `rust (yeban-midi)` 1m1s).
+
+
+---
+
+## 2026-10-26：MCP MIDI 导入元数据采纳与速度拍号端到端集成双线落地
+
+### 1. 工作线 1: `line/mcp-import-metadata-adoption` (`24a6e93c`)
+- **需求规范 ID**: `[MCP-TOOL-EXT-IMPORT-MIDI]` `[ARCH-EXT-002]`
+- **目标**: 完善 `yeban_import_midi` 对 SMF 导体轨元数据采纳结果（Title 与 Author/Copyright）的捕获、上报与活跃工程生效。
+- **实施**:
+  - `crates/yeban-mcp/src/domain/import_midi.rs`:
+    - `MidiImport` 结构体新增 `pub adopted_title: Option<String>` 字段。
+    - `plan()` 函数解析 `plan.ops` 中的 `Op::SetTitle` 与 `Op::SetAuthor`，并补充当值相同未发 op 时（`read > 0 && dropped == 0`）的回退读取，消除此前硬编码 `adopted_copyright = None` 的缺口。
+    - `describe()` 输出 JSON 视图补充 `"adoptedTitle": import.adopted_title`。
+  - `crates/yeban-mcp/src/tools.rs`:
+    - 更新 `yeban_import_midi` 的 summary，明确五个 `adopted*` 字段与 `losses.aux_events` 的对应契约。
+  - `crates/yeban-mcp/tests/import_midi_tool.rs`:
+    - 新增 `test_import_midi_adopts_title_and_copyright`，验证 dryRun 预览、真实执行、工程全局 `title`/`author` 生效、版权零丢失（attached）以及 `yeban_undo` 撤销后逐字节还原。
+- **验证**:
+  - `cargo-local.sh test -p yeban-mcp --test import_midi_tool`: 5 项测试全绿。
+
+### 2. 工作线 2: `line/mcp-tempo-meter-e2e` (`56aa5988`)
+- **需求规范 ID**: `[MCP-TOOL-003]` `[ARCH-EXT-002]`
+- **目标**: 在 `crates/yeban-mcp/tests/tools_e2e.rs` 中为 `setTempoPoint` 与 `setTimeSignaturePoint` 建立完整的端到端闭环测试。
+- **实施**:
+  - `crates/yeban-mcp/tests/tools_e2e.rs`:
+    - `tempo_and_time_signature_points_propagate_from_tools_call_to_exported_smf`: 从 `create: true` 新工程出发，经由 `yeban_edit_notes` 提案写入 4 个映射点（3840→144 BPM / 7680→96 BPM，3840→"3/4" / 7680→"6/8"），合并后断言 `tempo_map` 与 `time_signature_map`，再走 `yeban_export_midi` 导出 SMF 并解析断言 Conductor 轨（轨 0）在对应 tick 包含正确的 `FF 51 03` 速度与 `FF 58 04` 拍号元事件。
+    - `tempo_and_time_signature_points_at_tick_zero_are_rejected_loudly`: 验证 tick 0 被响亮拒绝（`INVALID_PARAMETER_RANGE` + `reason: "tempoMapZeroTick"`），不产生提案与脏改动。
+    - `tempo_and_time_signature_points_deletion_is_reverted_by_undo`: 验证 `bpm: null` 与 `timeSignature: null` 删除映射点，以及一次 `yeban_undo` 撤销后两点完整恢复。
+- **验证**:
+  - `cargo-local.sh test -p yeban-mcp --test tools_e2e -- tempo_and_time_signature_points`: 3 项端到端测试全绿。
+  - `clippy -p yeban-mcp --all-targets -- -D warnings`: 零告警。
