@@ -11153,3 +11153,22 @@ $ python3 scripts/gates/check_phase_status.py   # 退出 0
   - `cargo-local.sh test -p yeban-mcp --test import_midi_tool`: 7 passed, 0 failed.
   - `cargo-local.sh clippy -p yeban-mcp --all-targets -- -D warnings`: 零告警通过。
 
+---
+
+## 2026-10-27：yeban-app 导入后重导出 aux_events.total 断言同步修复落地
+
+- **需求规范 ID**: `[ARCH-EXT-002]`
+- **实施工作线**: `line/app-midi-aux-total` (`c2ffc80e`)，经 subagent `qodercli` (`Qwen3.8-Flash`) 自主研发与本地轻量门禁通过后由集成者落地。
+- **背景与目标**:
+  - CI Run `40362606790` 的 `rust (yeban-app)` 作业在 `midi_round_trip.rs:1929` 中 `the_import_reports_every_aux_event_kind_as_read_and_dropped` 处失败：
+    - 断言 `exported.aux_events.total() == 9`（实际为 10）。
+    - 根因：在 `[ARCH-EXT-002]` 将导入 SMF 的 `FF 02` 版权采纳为 `project.author` 并重导出后，导体轨多出 1 条 `MidiAuxEventKind::Copyright` 元事件。此时 aux 总数恰为：Tempo (1) + TimeSignature (1) + Copyright (1) + TrackName (3) + ControlChange (4) = 10。
+- **实施**:
+  - `crates/yeban-app/tests/midi_round_trip.rs`:
+    - 明确新增 `assert_eq!(exported.aux_events.count(MidiAuxEventKind::Copyright), 1, "重导出包含工程 author 的一条 copyright");`。
+    - 将 `exported.aux_events.total()` 的期望值由 `9` 调整为 `10`，消息同步更新为 `"重导出的 aux 事件包含 tempo 1 + 拍号 1 + 版权 1 + 轨名 3 + CC 4"`。
+- **验证**:
+  - `cargo fmt --check`: 格式化通过。
+  - `python3 scripts/guards/policy_check.py`: 18 项全部通过。
+
+
