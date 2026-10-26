@@ -31,7 +31,7 @@
 //!   真正做转换的是 `yeban_decode::resample_interleaved`（rubato sinc，
 //!   口径见 `docs/ledger/decode-core-notes.md` §6 与 `ADR-0001` D26）。
 
-use super::render_math::ticks_to_frames;
+use super::render_math::frames_at_tick;
 
 /// 一个音频片段摆放的**时间轴帧区间** `[start, end)`。
 ///
@@ -52,9 +52,28 @@ pub fn clip_frame_span(
     bpm: f64,
     sample_rate: u32,
 ) -> (i64, i64) {
-    let start = saturating_i64(ticks_to_frames(start_tick, ppq, bpm, sample_rate));
+    clip_frame_span_with_tempo(
+        start_tick,
+        duration_ticks,
+        ppq,
+        &yeban_model::time_math::TempoMap::constant(bpm),
+        sample_rate,
+    )
+}
+
+/// 同 [`clip_frame_span`]，但 tick → 帧读 `tempo`（空表与本函数逐位相同；
+/// 非空走模型层的分段常速换算，`#339`，[ADR-0021]）。
+#[must_use]
+pub fn clip_frame_span_with_tempo(
+    start_tick: u64,
+    duration_ticks: u64,
+    ppq: u64,
+    tempo: &yeban_model::time_math::TempoMap,
+    sample_rate: u32,
+) -> (i64, i64) {
+    let start = saturating_i64(frames_at_tick(start_tick, ppq, tempo, sample_rate));
     let end_tick = start_tick.saturating_add(duration_ticks.max(1));
-    let end = saturating_i64(ticks_to_frames(end_tick, ppq, bpm, sample_rate));
+    let end = saturating_i64(frames_at_tick(end_tick, ppq, tempo, sample_rate));
     (start, end.max(start.saturating_add(1)))
 }
 

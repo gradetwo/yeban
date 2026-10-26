@@ -83,4 +83,4 @@ pub use samples::{SampleExportError, export_all, export_to_default_dir};
 pub use session::{
     PluginProcess, SessionRuntimeState, SessionStateError, TaskId, TaskKind, TaskProgress, WindowId,
 };
-pub use time_math::frames_to_ticks_ceil;
+pub use time_math::{TempoMap, frames_to_ticks_ceil};

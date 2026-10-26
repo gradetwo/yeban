@@ -1750,6 +1750,18 @@ pub fn now_unix_ms() -> u64 {
 }
 
 impl YebanProjectV1 {
+    /// 把 `bpm` ＋ `tempo_map` 投影成播放/渲染用的时间基准（`#339`）。
+    ///
+    /// 空映射 ⇒ [`TempoMap::is_constant`](crate::time_math::TempoMap::is_constant)
+    /// 为真，换算与 [`crate::time_math::ticks_to_frames`] **逐位相同** —— 无变速
+    /// 工程的样本一个都不变。映射点直接克隆（`BTreeMap` ⇒ 顺序确定
+    /// [MODEL-AST-003]），本方法不做任何校验（工程已由
+    /// [`Self::validate`] 拒绝 tick 0 / 非有限 / 越界的速度点）。
+    #[must_use]
+    pub fn tempo(&self) -> crate::time_math::TempoMap {
+        crate::time_math::TempoMap::new(self.bpm, self.tempo_map.clone())
+    }
+
     /// 把一个**新建**工程的创建时刻写进元数据 —— 全仓**唯一**的写入口（`#215`）。
     ///
     /// 只由"创建"这一刻调用一次：内置样本落成新工程（GUI 的新建按钮 / CLI 的
@@ -3450,7 +3462,7 @@ mod tests {
     ///
     /// 量什么：`crates/yeban-model/src/**/*.rs` 里**承载数值**的字段声明条数 ——
     /// 类型原文里出现 `f32`／`f64` 标识符（含 `Option<f32>`／`Vec<f32>`／`[f64; 4]`），
-    /// 或类型是数值类型别名（`type X = f32;`）。单位：条（实测 27）。
+    /// 或类型是数值类型别名（`type X = f32;`）。单位：条（实测 36）。
     const NUMERIC_FIELD_INVENTORY: &[&str] = &[
         // `ModelError` 的 `value` 是**输出载体**（错误里携带的被拒值），不是入口：
         // 它不进文档、不需要判据，故在 `NUMERIC_FIELD_POLICY` 里显式豁免。
@@ -3492,6 +3504,8 @@ mod tests {
         "src/project.rs::SceneV3::tempo",
         "src/project.rs::RoutingEdge::gain_db",
         "src/project.rs::YebanProjectV1::bpm",
+        // `#339`：`TempoMap` 是 `bpm` ＋ `tempo_map` 的播放投影（tick 0 的基准速度）。
+        "src/time_math.rs::TempoMap::base_bpm",
     ];
 
     /// 一个数值字段的判定探针：`Err(理由)` 表示判定不成立。
@@ -3646,6 +3660,11 @@ mod tests {
             "src/project.rs::YebanProjectV1::bpm",
             "非有限拒绝（bpm）；20.0..=999.0 外报 BpmOutOfRange",
             probe_project_bpm,
+        ),
+        (
+            "src/time_math.rs::TempoMap::base_bpm",
+            "投影自 `YebanProjectV1::bpm`；非有限或 <= 0 时正反向换算都返回 None",
+            probe_tempo_map_base_bpm,
         ),
     ];
 
@@ -4419,6 +4438,25 @@ mod tests {
         }
         for good in [MIN_BPM, 120.0, MAX_BPM] {
             accepts("闭区间 bpm 端点", project(good).validate())?;
+        }
+        Ok(())
+    }
+
+    /// `TempoMap::base_bpm`（`#339`）：病态基准速度让**两个方向**都没有答案；
+    /// 合法值在无变速时与恒定速度的正向换算一致。
+    fn probe_tempo_map_base_bpm() -> Result<(), String> {
+        for bad in NON_FINITE_F64.into_iter().chain([0.0, -120.0]) {
+            let tempo = crate::time_math::TempoMap::constant(bad);
+            if tempo.frames_at_tick(960, crate::PPQ, 48_000).is_some() {
+                return Err(format!("病态基准速度 {bad} 必须没有帧换算"));
+            }
+            if tempo.ticks_at_frame(48_000, crate::PPQ, 48_000).is_some() {
+                return Err(format!("病态基准速度 {bad} 必须没有反向换算"));
+            }
+        }
+        let tempo = crate::time_math::TempoMap::constant(120.0);
+        if tempo.frames_at_tick(960, crate::PPQ, 48_000) != Some(24_000) {
+            return Err("120 BPM 下 tick 960 必须是 24 000 帧".to_owned());
         }
         Ok(())
     }

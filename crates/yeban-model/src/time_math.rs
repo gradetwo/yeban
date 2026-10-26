@@ -60,6 +60,217 @@
 //!
 //! 结果下界是 **1**：`ClipPlacement::validate` 拒绝零时值，而 0 帧素材也不该产出
 //! 一个会被模型层拒掉的 0（本函数对 0 帧返回 `Some(1)`，与既有实现对账）。
+//!
+//! ## 分段常速：[`TempoMap`]（`#339`）
+//!
+//! `YebanProjectV1::tempo_map` 早已能写（`setTempoPoint`／MIDI 导入），但渲染器与
+//! 引擎此前**只读** `project.bpm` ⇒ 变速被静默忽略。[`TempoMap`] 是那份映射的
+//! 播放投影：`base_bpm` 在 tick 0 生效，点 `(tick, bpm)` 表示**从该 tick 起**换成
+//! `bpm`。空表**逐位委托** [`ticks_to_frames`]（既有工程一个样本都不变）。
+//!
+//! 非空表按段累加**未取整**的帧数，最后只 `round` 一次：
+//!
+//! ```text
+//! frames(tick) = round( Σ 段长tick × 60 × sample_rate / (段bpm × ppq) )
+//! ```
+//!
+//! 逐段取整会在每个变速点引入最多半帧的累积误差；只取整一次让整条时间轴仍是
+//! 同一把尺子。求值顺序固定（段的遍历顺序 = tick 升序），没有超越函数 ⇒ 与
+//! 本模块其余换算同一套跨平台可复现论证。
+
+use std::collections::BTreeMap;
+
+/// 分段常速的时间基准（`YebanProjectV1::bpm` ＋ `tempo_map` 的播放投影）。
+///
+/// 语义：`tick 0` 用 [`base_bpm`](Self::base_bpm)；映射点 `(tick, bpm)` 表示
+/// **从该 tick 起**（含该 tick）速度变为 `bpm`。模型层校验映射点 `tick > 0`、
+/// `bpm` 有限且落在 `MIN_BPM..=MAX_BPM`，本类型仍对病态输入返回 `None`，
+/// 与 [`ticks_to_frames`] 同口径（⛔ 不 panic、⛔ 不发明一个 0）。
+///
+/// ⚠ 空表是**兼容性承诺**：[`frames_at_tick`](Self::frames_at_tick) 直接调用
+/// [`ticks_to_frames`]，因此与 `#339` 之前逐位相同。所有"无变速"工程都走这条路径。
+#[derive(Clone, Debug, PartialEq)]
+pub struct TempoMap {
+    base_bpm: f64,
+    points: BTreeMap<u64, f64>,
+}
+
+impl TempoMap {
+    /// 由基准速度与映射点构造。不校验 —— 病态值在换算时返回 `None`。
+    #[must_use]
+    pub fn new(base_bpm: f64, points: BTreeMap<u64, f64>) -> Self {
+        Self { base_bpm, points }
+    }
+
+    /// 只有基准速度（空映射）。空表路径与 [`ticks_to_frames`] 逐位相同。
+    #[must_use]
+    pub fn constant(bpm: f64) -> Self {
+        Self {
+            base_bpm: bpm,
+            points: BTreeMap::new(),
+        }
+    }
+
+    /// 是否没有映射点（所有 tick 同一速度）。
+    #[must_use]
+    pub fn is_constant(&self) -> bool {
+        self.points.is_empty()
+    }
+
+    /// tick 0 的速度。
+    #[must_use]
+    pub const fn base_bpm(&self) -> f64 {
+        self.base_bpm
+    }
+
+    /// 某个 tick 起生效的速度（映射点本身含在该段内）。
+    #[must_use]
+    pub fn bpm_at_tick(&self, tick: u64) -> f64 {
+        self.points
+            .range(..=tick)
+            .next_back()
+            .map_or(self.base_bpm, |(_, bpm)| *bpm)
+    }
+
+    /// tick → 帧（分段累加、**只取整一次**）。
+    ///
+    /// 空表 ⇒ 逐位等于 [`ticks_to_frames`]（兼容性承诺）。
+    /// 病态输入（`ppq == 0`、`sample_rate == 0`、任一经过的 `bpm` 非有限或 `<= 0`）
+    /// ⇒ `None`。结果饱和到 `u64::MAX`（⛔ 不回绕）。
+    #[must_use]
+    pub fn frames_at_tick(&self, tick: u64, ppq: u64, sample_rate: u32) -> Option<u64> {
+        if self.points.is_empty() {
+            return ticks_to_frames(tick, self.base_bpm, ppq, sample_rate);
+        }
+        if ppq == 0 || sample_rate == 0 || !valid_bpm(self.base_bpm) {
+            return None;
+        }
+        if tick == 0 {
+            return Some(0);
+        }
+        let mut frames = 0.0f64;
+        let mut cursor = 0u64;
+        let mut bpm = self.base_bpm;
+        for (&point_tick, &point_bpm) in &self.points {
+            if point_tick >= tick {
+                break;
+            }
+            if !valid_bpm(point_bpm) {
+                return None;
+            }
+            frames += tick_span_frames(point_tick - cursor, bpm, ppq, sample_rate)?;
+            cursor = point_tick;
+            bpm = point_bpm;
+        }
+        frames += tick_span_frames(tick - cursor, bpm, ppq, sample_rate)?;
+        round_frames(frames)
+    }
+
+    /// 帧 → tick（**向下取整**；[`frames_at_tick`](Self::frames_at_tick) 的逆方向）。
+    ///
+    /// 用途：自动化曲线的**块起点**读数（每块最多 128 帧，块级取一次）。
+    /// 空表路径与 `yeban-render` 既有的 `tick_at_frame` **同一条算式、同一个顺序**
+    /// ⇒ 无变速工程的自动化读数逐位不变。
+    #[must_use]
+    pub fn ticks_at_frame(&self, frame: u64, ppq: u64, sample_rate: u32) -> Option<u64> {
+        if ppq == 0 || sample_rate == 0 || !valid_bpm(self.base_bpm) {
+            return None;
+        }
+        if self.points.is_empty() {
+            return floor_ticks(frame, self.base_bpm, ppq, sample_rate);
+        }
+        #[allow(clippy::cast_precision_loss)]
+        let frame = frame as f64;
+        let mut frames_before = 0.0f64;
+        let mut cursor = 0u64;
+        let mut bpm = self.base_bpm;
+        for (&point_tick, &point_bpm) in &self.points {
+            if !valid_bpm(point_bpm) {
+                return None;
+            }
+            let span_frames = tick_span_frames(point_tick - cursor, bpm, ppq, sample_rate)?;
+            let next = frames_before + span_frames;
+            if frame < next {
+                let local = ticks_in_span(frame - frames_before, bpm, ppq, sample_rate)?;
+                return Some(cursor.saturating_add(local.min(point_tick - cursor)));
+            }
+            frames_before = next;
+            cursor = point_tick;
+            bpm = point_bpm;
+        }
+        let local = ticks_in_span(frame - frames_before, bpm, ppq, sample_rate)?;
+        Some(cursor.saturating_add(local))
+    }
+}
+
+/// 合法速度：有限且 `> 0`（与 [`ticks_to_frames`] 同口径，⛔ 不额外的范围钳制）。
+#[must_use]
+fn valid_bpm(bpm: f64) -> bool {
+    bpm.is_finite() && bpm > 0.0
+}
+
+/// 一段 `delta_ticks` 在 `bpm` 下的**未取整**帧数。
+///
+/// 运算顺序是契约的一部分：`delta × 60 × sr / (bpm × ppq)`（先乘、后除）。
+/// 只有 `+ - * /`，没有超越函数 ⇒ 跨平台逐位相同。
+#[must_use]
+fn tick_span_frames(delta_ticks: u64, bpm: f64, ppq: u64, sample_rate: u32) -> Option<f64> {
+    #[allow(clippy::cast_precision_loss)]
+    let delta = delta_ticks as f64;
+    #[allow(clippy::cast_precision_loss)]
+    let ppq = ppq as f64;
+    let frames = delta * 60.0 * f64::from(sample_rate) / (bpm * ppq);
+    frames.is_finite().then_some(frames)
+}
+
+/// 未取整帧数 → `u64`（四舍五入、饱和；与 [`tick_to_sample`] 同一套哨兵）。
+#[must_use]
+fn round_frames(frames: f64) -> Option<u64> {
+    let rounded = frames.round();
+    if !rounded.is_finite() || rounded < 0.0 {
+        return None;
+    }
+    if rounded >= u64::MAX as f64 {
+        return Some(u64::MAX);
+    }
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let rounded = rounded as u64;
+    Some(rounded)
+}
+
+/// 一帧偏移 → 段内 tick（向下取整，夹到 `u64`）。
+#[must_use]
+fn ticks_in_span(frames: f64, bpm: f64, ppq: u64, sample_rate: u32) -> Option<u64> {
+    #[allow(clippy::cast_precision_loss)]
+    let ppq = ppq as f64;
+    let ticks = frames * bpm * ppq / (60.0 * f64::from(sample_rate));
+    if !ticks.is_finite() || ticks < 0.0 {
+        return None;
+    }
+    if ticks >= u64::MAX as f64 {
+        return Some(u64::MAX);
+    }
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let ticks = ticks.floor() as u64;
+    Some(ticks)
+}
+
+/// 空表（恒定速度）的帧 → tick：与 `yeban-render::automation::tick_at_frame`
+/// **同一条算式与顺序**（`frame × ppq × bpm / (sr × 60)`，向下取整）。
+#[must_use]
+fn floor_ticks(frame: u64, bpm: f64, ppq: u64, sample_rate: u32) -> Option<u64> {
+    #[allow(clippy::cast_precision_loss)]
+    let ticks = (frame as f64) * (ppq as f64) * bpm / (f64::from(sample_rate) * 60.0);
+    if !ticks.is_finite() || ticks < 0.0 {
+        return None;
+    }
+    if ticks >= u64::MAX as f64 {
+        return Some(u64::MAX);
+    }
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let ticks = ticks.floor() as u64;
+    Some(ticks)
+}
 
 /// 每 tick 的帧数：`60 × sample_rate / (bpm × ppq)`（**唯一实现**）。
 ///
@@ -178,7 +389,9 @@ pub fn frames_to_ticks_ceil(frames: u64, ppq: u64, bpm: f64, sample_rate: u32) -
 
 #[cfg(test)]
 mod tests {
-    use super::{frames_to_ticks_ceil, samples_per_tick, tick_to_sample, ticks_to_frames};
+    use super::{
+        TempoMap, frames_to_ticks_ceil, samples_per_tick, tick_to_sample, ticks_to_frames,
+    };
     use crate::PPQ;
 
     /// 手算对照：`0.5 s @ 48 kHz @ 960 PPQ @ 120 BPM`。
@@ -314,5 +527,97 @@ mod tests {
         assert_eq!(tick_to_sample(1_000, -1.0), None);
         assert_eq!(tick_to_sample(1_000, f64::NAN), None);
         assert_eq!(tick_to_sample(1_000, f64::INFINITY), None);
+    }
+
+    /// **兼容性承诺**：空 `TempoMap` 与 [`ticks_to_frames`] 逐位相同。
+    ///
+    /// 覆盖病态与饱和分支；任何一格不等都意味着"没有变速的工程"会改变母带。
+    #[test]
+    fn an_empty_tempo_map_is_bit_identical_to_constant_bpm() {
+        for bpm in [20.0f64, 60.0, 120.0, 128.0, 999.0, 0.0, -1.0, f64::NAN] {
+            for rate in [44_100u32, 48_000, 96_000, 192_000, 0] {
+                for tick in [0u64, 1, 168, 959, 960, 1_920, 7_680, 10_000_000] {
+                    assert_eq!(
+                        TempoMap::constant(bpm).frames_at_tick(tick, PPQ, rate),
+                        ticks_to_frames(tick, bpm, PPQ, rate),
+                        "bpm={bpm} rate={rate} tick={tick}"
+                    );
+                }
+                let tick = 1_234_567u64;
+                let expected = if bpm.is_finite() && bpm > 0.0 && rate != 0 {
+                    #[allow(clippy::cast_precision_loss)]
+                    let ticks = (tick as f64) * (PPQ as f64) * bpm / (f64::from(rate) * 60.0);
+                    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+                    Some(ticks.floor() as u64)
+                } else {
+                    None
+                };
+                assert_eq!(
+                    TempoMap::constant(bpm).ticks_at_frame(tick, PPQ, rate),
+                    expected,
+                    "空表反向必须与恒定速度的 floor 公式一致: bpm={bpm} rate={rate}"
+                );
+            }
+        }
+    }
+
+    /// 分段常速的正向：`120 → 240` 的变速点让后半段每 tick 只占一半帧。
+    ///
+    /// 手算 @ 48 kHz / 960 PPQ：tick 960 = 1 个四分音符 = 0.5 s = **24 000** 帧；
+    /// tick 1920 的后半段（960 tick @ 240 BPM = 0.25 s）= **12 000** 帧 ⇒ 36 000。
+    #[test]
+    fn tempo_map_frames_are_piecewise_constant() {
+        let mut points = std::collections::BTreeMap::new();
+        points.insert(960u64, 240.0f64);
+        let tempo = TempoMap::new(120.0, points);
+
+        assert_eq!(tempo.bpm_at_tick(0), 120.0);
+        assert_eq!(tempo.bpm_at_tick(959), 120.0);
+        assert_eq!(tempo.bpm_at_tick(960), 240.0);
+        assert_eq!(tempo.bpm_at_tick(10_000), 240.0);
+
+        assert_eq!(tempo.frames_at_tick(960, PPQ, 48_000), Some(24_000));
+        assert_eq!(tempo.frames_at_tick(1_920, PPQ, 48_000), Some(36_000));
+        // 变速点之前与恒定 120 BPM 逐位相同（逐段累加的唯一一段）。
+        assert_eq!(
+            tempo.frames_at_tick(480, PPQ, 48_000),
+            ticks_to_frames(480, 120.0, PPQ, 48_000)
+        );
+    }
+
+    /// 反向：帧 → tick 是正向的逆（允许 1 tick 的块级取整误差）。
+    #[test]
+    fn tempo_map_inverse_tracks_the_forward_mapping() {
+        let mut points = std::collections::BTreeMap::new();
+        points.insert(960u64, 240.0f64);
+        points.insert(2_880, 90.0);
+        let tempo = TempoMap::new(120.0, points);
+        for tick in [0u64, 1, 479, 960, 961, 1_920, 2_880, 5_760, 10_000] {
+            let frame = tempo.frames_at_tick(tick, PPQ, 48_000).expect("合法");
+            let back = tempo.ticks_at_frame(frame, PPQ, 48_000).expect("合法");
+            assert!(
+                back.abs_diff(tick) <= 1,
+                "tick={tick} frame={frame} back={back}"
+            );
+        }
+    }
+
+    /// 病态映射点：任一经过的非有限/非正速度 ⇒ 整个换算没有答案。
+    #[test]
+    fn tempo_map_rejects_degenerate_points() {
+        let mut points = std::collections::BTreeMap::new();
+        points.insert(960u64, f64::NAN);
+        let tempo = TempoMap::new(120.0, points);
+        // 变速点之前：只是一段 120 BPM。
+        assert_eq!(tempo.frames_at_tick(480, PPQ, 48_000), Some(12_000));
+        // tick 恰在坏的变速点上：位置由之前的段决定（该点本身零长度），仍可回答。
+        assert_eq!(tempo.frames_at_tick(960, PPQ, 48_000), Some(24_000));
+        // 越过坏的变速点：该段无法求值 ⇒ 没有答案。
+        assert_eq!(tempo.frames_at_tick(1_920, PPQ, 48_000), None);
+        assert_eq!(
+            TempoMap::constant(120.0).frames_at_tick(960, 0, 48_000),
+            None
+        );
+        assert_eq!(TempoMap::constant(120.0).frames_at_tick(960, PPQ, 0), None);
     }
 }

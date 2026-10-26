@@ -50,6 +50,21 @@ pub fn ticks_to_frames(end_tick: u64, ppq: u64, bpm: f64, sample_rate: u32) -> u
     yeban_model::time_math::ticks_to_frames(end_tick, bpm, ppq, sample_rate).unwrap_or(0)
 }
 
+/// tick → 帧（读传入的 [`yeban_model::time_math::TempoMap`]）。
+///
+/// 空表走 [`ticks_to_frames`] 的同一条恒定 BPM 路径（逐位相同）；非空走模型层的
+/// 分段常速换算（`#339`，[ADR-0021]）。`None` 仍映射成 `0`（与 [`ticks_to_frames`]
+/// 同一个哨兵口径）。
+#[must_use]
+pub fn frames_at_tick(
+    tick: u64,
+    ppq: u64,
+    tempo: &yeban_model::time_math::TempoMap,
+    sample_rate: u32,
+) -> u64 {
+    tempo.frames_at_tick(tick, ppq, sample_rate).unwrap_or(0)
+}
+
 /// 峰值（最大绝对值）。
 ///
 /// 非有限样本**不计入**：`NaN` 参与比较会让"全零 ⇒ 峰值 0"这条边界失效，
@@ -221,15 +236,35 @@ pub fn note_frame_span(
     bpm: f64,
     sample_rate: u32,
 ) -> (i64, i64) {
+    note_frame_span_with_tempo(
+        start_tick,
+        duration_ticks,
+        micro_timing_ticks,
+        ppq,
+        &yeban_model::time_math::TempoMap::constant(bpm),
+        sample_rate,
+    )
+}
+
+/// 同 [`note_frame_span`]，但 tick → 帧读 `tempo`（空表与本函数逐位相同）。
+#[must_use]
+pub fn note_frame_span_with_tempo(
+    start_tick: u64,
+    duration_ticks: u64,
+    micro_timing_ticks: i64,
+    ppq: u64,
+    tempo: &yeban_model::time_math::TempoMap,
+    sample_rate: u32,
+) -> (i64, i64) {
     let shifted = i128::from(start_tick) + i128::from(micro_timing_ticks);
     let clamped = if shifted <= 0 {
         0
     } else {
         u64::try_from(shifted).unwrap_or(u64::MAX)
     };
-    let start = ticks_to_frames(clamped, ppq, bpm, sample_rate);
+    let start = frames_at_tick(clamped, ppq, tempo, sample_rate);
     let end_tick = clamped.saturating_add(duration_ticks.max(1));
-    let end = ticks_to_frames(end_tick, ppq, bpm, sample_rate);
+    let end = frames_at_tick(end_tick, ppq, tempo, sample_rate);
     // `start` 是**饱和**过的帧数（[`ticks_to_frames`] 的 `frames >= u64::MAX as f64`
     // 分支返回 `u64::MAX`）⇒ "至少 1 帧"这条下界必须用饱和加法表达。
     // 写成 `start + 1` 时 `start == u64::MAX` 会**整数溢出 panic**；工具参数

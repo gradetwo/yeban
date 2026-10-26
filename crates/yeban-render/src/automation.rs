@@ -65,6 +65,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use yeban_dsp::channel_strip::ChannelStripParams;
 use yeban_dsp::smoothing::ParamSmoother;
+use yeban_model::time_math::TempoMap;
 use yeban_model::{AutomationLane, AutomationTarget, EntityId, PPQ, TrackV3, YebanProjectV1};
 
 use crate::inserts::{
@@ -241,8 +242,8 @@ pub struct TrackGainAutomation {
     evaluator: YebanProjectV1,
     /// 5 ms 一阶低通。
     smoother: ParamSmoother,
-    /// 工程速度（tick ↔ 帧）。
-    bpm: f64,
+    /// 工程速度表（tick ↔ 帧；空表 = 恒定 `project.bpm`，与接线前逐位相同）。
+    tempo: TempoMap,
     /// 采样率。
     sample_rate: u32,
     /// 泳道是否可求值（有点且 `read_enabled`）。
@@ -358,7 +359,7 @@ impl TrackGainAutomation {
             identity,
             evaluator,
             smoother,
-            bpm: project.bpm,
+            tempo: project.tempo(),
             sample_rate,
             evaluable,
             points,
@@ -541,7 +542,10 @@ impl TrackGainAutomation {
     /// 一块开始：求一次曲线值，把平滑器目标设成对应比率。
     fn begin_block(&mut self, first_frame: u64) {
         self.blocks = self.blocks.saturating_add(1);
-        let tick = tick_at_frame(first_frame, self.bpm, self.sample_rate);
+        let tick = self
+            .tempo
+            .ticks_at_frame(first_frame, PPQ, self.sample_rate)
+            .unwrap_or(0);
         // 唯一入口：目标对账 + `read_enabled` 闸 + 曲线插值都在模型层；
         // `#297` 的宏级联在同一处叠加（⛔ 没有第二份插值）。
         let target = match self.composed_db_at(tick) {
@@ -756,8 +760,8 @@ pub struct TrackPanAutomation {
     evaluator: YebanProjectV1,
     /// 5 ms 一阶低通（平滑的是**声相位置**，不是增益）。
     smoother: ParamSmoother,
-    /// 工程速度（tick ↔ 帧）。
-    bpm: f64,
+    /// 工程速度表（tick ↔ 帧；空表 = 恒定 `project.bpm`，与接线前逐位相同）。
+    tempo: TempoMap,
     /// 采样率。
     sample_rate: u32,
     /// 泳道是否可求值（有点且 `read_enabled`）。
@@ -820,7 +824,7 @@ impl TrackPanAutomation {
             identity,
             evaluator,
             smoother,
-            bpm: project.bpm,
+            tempo: project.tempo(),
             sample_rate,
             evaluable,
             points,
@@ -967,7 +971,10 @@ impl TrackPanAutomation {
     /// 一块开始：求一次曲线值，把平滑器目标设成该声相位置。
     fn begin_block(&mut self, first_frame: u64) {
         self.blocks = self.blocks.saturating_add(1);
-        let tick = tick_at_frame(first_frame, self.bpm, self.sample_rate);
+        let tick = self
+            .tempo
+            .ticks_at_frame(first_frame, PPQ, self.sample_rate)
+            .unwrap_or(0);
         // 唯一入口：目标对账 + `read_enabled` 闸 + 曲线插值都在模型层；
         // `#297` 的宏级联在同一处叠加。
         let pan = match self.composed_pan_at(tick) {
@@ -1438,8 +1445,8 @@ pub struct DeviceParamAutomation {
     identity: bool,
     /// 只含本轨的最小求值工程（含设备链，`validate_against` 要按序数取）。
     evaluator: YebanProjectV1,
-    /// 工程速度（tick ↔ 帧）。
-    bpm: f64,
+    /// 工程速度表（tick ↔ 帧；空表 = 恒定 `project.bpm`，与接线前逐位相同）。
+    tempo: TempoMap,
     /// 采样率。
     sample_rate: u32,
     /// 泳道是否可求值（有点且 `read_enabled`）。
@@ -1525,7 +1532,7 @@ impl DeviceParamAutomation {
             static_value,
             identity,
             evaluator,
-            bpm: project.bpm,
+            tempo: project.tempo(),
             sample_rate,
             evaluable,
             points,
@@ -1621,7 +1628,10 @@ impl DeviceParamAutomation {
             return None;
         }
         self.blocks = self.blocks.saturating_add(1);
-        let tick = tick_at_frame(first_frame, self.bpm, self.sample_rate);
+        let tick = self
+            .tempo
+            .ticks_at_frame(first_frame, PPQ, self.sample_rate)
+            .unwrap_or(0);
         // 唯一入口：目标对账 + `read_enabled` 闸 + 曲线插值都在模型层；
         // `#297` 的宏级联在同一处叠加（目标没有泳道时基值 = 静态值）。
         let mut value = match self.evaluator.automation_value_at(&self.target, tick) {

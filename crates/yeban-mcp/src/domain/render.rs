@@ -2570,7 +2570,7 @@ pub fn build(
     //    工程量纲唯一决定（＝修改前的同一条公式，逐字节不变）。
     let frames = request
         .frames
-        .unwrap_or_else(|| math::ticks_to_frames(end_tick, PPQ, project.bpm, sample_rate));
+        .unwrap_or_else(|| math::frames_at_tick(end_tick, PPQ, &project.tempo(), sample_rate));
     if frames == 0 {
         return Err(render_failed(
             "工程里没有可渲染的内容 (0 帧)",
@@ -4084,6 +4084,8 @@ fn build_source(
     // 同一条 `track_is_audible`：只要工程里有任一音轨 solo, 未 solo 且非 solo-safe
     // 的轨就不发声。`any_solo` 扫全部轨（含主总线）。
     let audible = track_is_audible(track, any_solo);
+    // `#339`：本轨的 tick → 帧换算读工程的速度点（空表 = 恒定 BPM，逐位不变）。
+    let tempo = project.tempo();
     // ⭐ `#257`：本轨的 `TrackPan` 自动化。**先**构造它，再决定源侧静态声相 ——
     // 非恒等时把静态声相关掉（`pan = 0` ⇒ `(track_gain, track_gain)`），
     // 改由源输出之后的门乘自动化位置的绝对左右增益（同一份 `pan_gains` 曲线，
@@ -4212,12 +4214,12 @@ fn build_source(
                             // tick→sample 换算），本层⛔ 不再排一份自己的音源参数。
                             if sampler_bound {
                                 // 采样器音源要的是"起在哪、多长、多高、多重"。
-                                let (start, end) = math::note_frame_span(
+                                let (start, end) = math::note_frame_span_with_tempo(
                                     base_tick.saturating_add(pulse.saturating_mul(step)),
                                     step,
                                     micro,
                                     PPQ,
-                                    project.bpm,
+                                    &tempo,
                                     sample_rate,
                                 );
                                 let origin = u64::try_from(start.max(0)).unwrap_or(0);
@@ -4276,11 +4278,11 @@ fn build_source(
                         }),
                     ));
                 };
-                let (base_start, base_end) = clip_math::clip_frame_span(
+                let (base_start, base_end) = clip_math::clip_frame_span_with_tempo(
                     placement.start_tick,
                     placement.duration_ticks,
                     PPQ,
-                    project.bpm,
+                    &tempo,
                     sample_rate,
                 );
                 let entry = per_asset
@@ -4292,26 +4294,26 @@ fn build_source(
                     // 循环区间 `[start, end)` 对应的素材段（`source_offset`），
                     // 第一遍之前的内容（若有）原样播一遍。
                     let base_start_frames =
-                        math::ticks_to_frames(placement.start_tick, PPQ, project.bpm, sample_rate);
-                    let region_start_frames = math::ticks_to_frames(
+                        math::frames_at_tick(placement.start_tick, PPQ, &tempo, sample_rate);
+                    let region_start_frames = math::frames_at_tick(
                         placement.start_tick.saturating_add(repeat.start_tick),
                         PPQ,
-                        project.bpm,
+                        &tempo,
                         sample_rate,
                     );
-                    let region_end_frames = math::ticks_to_frames(
+                    let region_end_frames = math::frames_at_tick(
                         placement.start_tick.saturating_add(repeat.end_tick),
                         PPQ,
-                        project.bpm,
+                        &tempo,
                         sample_rate,
                     );
                     let period_frames = region_end_frames.saturating_sub(region_start_frames);
-                    let base_end_frames = math::ticks_to_frames(
+                    let base_end_frames = math::frames_at_tick(
                         placement
                             .start_tick
                             .saturating_add(placement.duration_ticks),
                         PPQ,
-                        project.bpm,
+                        &tempo,
                         sample_rate,
                     );
                     if period_frames == 0 {
