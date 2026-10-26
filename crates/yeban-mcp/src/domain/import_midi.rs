@@ -58,6 +58,10 @@ pub struct MidiImport {
     pub adopted_tempo_bpm: Option<f64>,
     /// 采纳到工程全局 `time_signature` 的拍号 `(numerator, denominator)`（未采纳为 `None`）。
     pub adopted_time_signature: Option<(u8, u8)>,
+    /// 采纳到工程全局 `tempo_map` 的变速映射点 (tick -> BPM)（未采纳为 None）。
+    pub adopted_tempo_map: Option<std::collections::BTreeMap<u64, f64>>,
+    /// 采纳到工程全局 `time_signature_map` 的拍号映射点 (tick -> (num, den))（未采纳为 None）。
+    pub adopted_time_signature_map: Option<std::collections::BTreeMap<u64, (u8, u8)>>,
     /// 采纳到工程全局 `key_signature` 的调号 `(sharps_flats, is_minor)`（未采纳为 `None`）。
     pub adopted_key_signature: Option<(i8, bool)>,
     /// 采纳到目标音轨 `TrackV3::name` 的轨名（未采纳为 `None`）。
@@ -188,6 +192,10 @@ pub fn plan(project: &YebanProjectV1, arguments: &Map<String, Value>) -> Result<
 
     let mut adopted_tempo_bpm = None;
     let mut adopted_time_signature = None;
+    let mut adopted_tempo_map: std::collections::BTreeMap<u64, f64> =
+        std::collections::BTreeMap::new();
+    let mut adopted_time_signature_map: std::collections::BTreeMap<u64, (u8, u8)> =
+        std::collections::BTreeMap::new();
     let mut adopted_key_signature = None;
     let mut adopted_track_name = None;
     let mut adopted_title = None;
@@ -196,11 +204,25 @@ pub fn plan(project: &YebanProjectV1, arguments: &Map<String, Value>) -> Result<
     for op in &plan.ops {
         match op {
             Op::SetTempo { new_bpm, .. } => adopted_tempo_bpm = Some(*new_bpm),
+            Op::SetTempoPoint {
+                tick,
+                new_bpm: Some(bpm),
+                ..
+            } => {
+                adopted_tempo_map.insert(*tick, *bpm);
+            }
             Op::SetTimeSignature {
                 new_time_signature, ..
             } => {
                 adopted_time_signature =
                     Some((new_time_signature.numerator, new_time_signature.denominator));
+            }
+            Op::SetTimeSignaturePoint {
+                tick,
+                new_time_signature: Some(ts),
+                ..
+            } => {
+                adopted_time_signature_map.insert(*tick, (ts.numerator, ts.denominator));
             }
             Op::SetKeySignature {
                 new_key_signature, ..
@@ -253,6 +275,35 @@ pub fn plan(project: &YebanProjectV1, arguments: &Map<String, Value>) -> Result<
             .key_signature
             .map(|ks| (ks.sharps_flats, ks.is_minor));
     }
+    // ⭐ [ARCH-EXT-002]：变速映射点的采纳门槛同调号（目标为空 + 整类零丢失）。
+    // ops 里没有 `SetTempoPoint`（文件全部变速都落在 tick 0 ⇒ 只写 `project.bpm`）时，
+    // 若文件读入多于一条变速且零丢失，回退读工程现值 `tempo_map`。
+    if adopted_tempo_map.is_empty()
+        && target_empty
+        && !project.tempo_map.is_empty()
+        && plan
+            .losses
+            .aux_events
+            .get(&MidiAuxEventKind::Tempo)
+            .is_some_and(|c| c.read > 1 && c.dropped == 0)
+    {
+        adopted_tempo_map = project.tempo_map.clone();
+    }
+    if adopted_time_signature_map.is_empty()
+        && target_empty
+        && !project.time_signature_map.is_empty()
+        && plan
+            .losses
+            .aux_events
+            .get(&MidiAuxEventKind::TimeSignature)
+            .is_some_and(|c| c.read > 1 && c.dropped == 0)
+    {
+        adopted_time_signature_map = project
+            .time_signature_map
+            .iter()
+            .map(|(t, ts)| (*t, (ts.numerator, ts.denominator)))
+            .collect();
+    }
     if adopted_track_name.is_none()
         && plan
             .losses
@@ -302,6 +353,9 @@ pub fn plan(project: &YebanProjectV1, arguments: &Map<String, Value>) -> Result<
         losses: plan.losses,
         adopted_tempo_bpm,
         adopted_time_signature,
+        adopted_tempo_map: (!adopted_tempo_map.is_empty()).then_some(adopted_tempo_map),
+        adopted_time_signature_map: (!adopted_time_signature_map.is_empty())
+            .then_some(adopted_time_signature_map),
         adopted_key_signature,
         adopted_track_name,
         adopted_title,
@@ -335,6 +389,12 @@ pub fn describe(import: &MidiImport) -> Value {
         "lossTotal": import.losses.loss_total(),
         "adoptedTempoBpm": import.adopted_tempo_bpm,
         "adoptedTimeSignature": import.adopted_time_signature.map(|(n, d)| json!({ "numerator": n, "denominator": d })),
+        "adoptedTempoMap": import.adopted_tempo_map.as_ref().map(|m| {
+            m.iter().map(|(t, bpm)| (t.to_string(), json!(*bpm))).collect::<std::collections::BTreeMap<String, Value>>()
+        }),
+        "adoptedTimeSignatureMap": import.adopted_time_signature_map.as_ref().map(|m| {
+            m.iter().map(|(t, (num, den))| (t.to_string(), json!({ "numerator": num, "denominator": den }))).collect::<std::collections::BTreeMap<String, Value>>()
+        }),
         "adoptedKeySignature": import.adopted_key_signature.map(|(sf, m)| json!({ "sharpsFlats": sf, "isMinor": m })),
         "adoptedTrackName": import.adopted_track_name,
         "adoptedTitle": import.adopted_title,
