@@ -52,13 +52,13 @@ const BIN: &str = env!("CARGO_BIN_EXE_yeban-app");
 /// 可见摘要行的语义 ID（`ui/module_actions.slint` ↔ `src/elements.rs` 两处逐字相同）。
 const LOSS_ID: &str = "module-import-losses";
 
-/// 316 B 夹具的**期望摘要**（24 类 aux、29 条事件里 **28 条 loss** —— ⭐ `#342` 起
-/// 唯一的 `Verse` marker 落成一个段落 ⇒ 5 颗音符保留通道值、丢释放力度，
-/// 2 条歌词候选里 1 条未归属）。
+/// 316 B 夹具的**期望摘要**（23 类有 loss 的 aux、29 条事件里 **27 条 loss** —— ⭐ `#342` 起
+/// 唯一的 `Verse` marker 落成一个段落，⭐ ADR-0015 起 CC 7 映射为音量自动化泳道，
+/// 5 颗音符保留通道值、丢释放力度，2 条歌词候选里 1 条未归属）。
 ///
 /// ⚠ 这是**夹具的期望值**（与 `tests/midi_round_trip.rs` 的逐类期望表同源），
 /// ⛔ 不是从 GUI 回执反推的"第二份判定"。
-const EXPECTED_SUMMARY: &str = "⚠ 导入丢失：24 类/28 条；歌词未归属 1；通道/力度0/5";
+const EXPECTED_SUMMARY: &str = "⚠ 导入丢失：23 类/27 条；歌词未归属 1；通道/力度0/5";
 
 /// 三档窗口（与 `tests/pane_no_overlap.rs` / `tests/gui_clipping_warning.rs` 同一组）。
 const TIERS: &[(u32, u32)] = &[(1920, 1080), (1440, 900), (1024, 800)];

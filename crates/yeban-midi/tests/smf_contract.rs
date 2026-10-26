@@ -427,6 +427,7 @@ fn encoder_boundaries_are_rejected_precisely() {
             name: String::new(),
             channel: 0,
             notes: vec![note(0, 60, 120)],
+            control_changes: Vec::new(),
         }],
         key_signature: None,
     };
@@ -450,6 +451,7 @@ fn encoder_boundaries_are_rejected_precisely() {
             name: String::new(),
             channel: 0,
             notes: vec![note(beyond, 60, 120)],
+            control_changes: Vec::new(),
         }],
         ..base.clone()
     };
@@ -467,6 +469,7 @@ fn encoder_boundaries_are_rejected_precisely() {
             name: String::new(),
             channel: 16,
             notes: vec![note(0, 60, 120)],
+            control_changes: Vec::new(),
         }],
         ..base
     };
@@ -489,6 +492,7 @@ fn encoder_boundaries_are_rejected_precisely() {
             name: String::new(),
             channel: 0,
             notes: vec![note(0, 60, 120)],
+            control_changes: Vec::new(),
         }],
         key_signature: None,
     };
@@ -514,6 +518,7 @@ fn single_track_export(ppq: u16) -> MidiExport {
             name: String::new(),
             channel: 0,
             notes: vec![note(0, 60, 120)],
+            control_changes: Vec::new(),
         }],
         key_signature: None,
     }
@@ -597,6 +602,7 @@ fn half_a_time_signature_is_rejected_instead_of_dropped() {
                 name: String::new(),
                 channel: 0,
                 notes: vec![note(0, 60, 120)],
+                control_changes: Vec::new(),
             }],
             key_signature: None,
         };
@@ -625,6 +631,7 @@ fn half_a_time_signature_is_rejected_instead_of_dropped() {
             name: String::new(),
             channel: 0,
             notes: vec![note(0, 60, 120)],
+            control_changes: Vec::new(),
         }],
         key_signature: None,
     };
@@ -815,6 +822,7 @@ fn a_note_at_the_end_of_the_tick_axis_is_refused_not_wrapped() {
             name: String::new(),
             channel: 0,
             notes: vec![note(u64::MAX, 60, 120)],
+            control_changes: Vec::new(),
         }],
         ..single_track_export(DEFAULT_PPQ)
     };
@@ -899,11 +907,13 @@ fn format_zero_with_several_tracks_writes_no_track_name() {
                 name: "A".to_owned(),
                 channel: 0,
                 notes: vec![note(0, 60, 120)],
+                control_changes: Vec::new(),
             },
             MidiExportTrack {
                 name: "B".to_owned(),
                 channel: 1,
                 notes: vec![note(0, 64, 120)],
+                control_changes: Vec::new(),
             },
         ],
         ..single_track_export(DEFAULT_PPQ)
@@ -920,6 +930,7 @@ fn format_zero_with_several_tracks_writes_no_track_name() {
             name: "A".to_owned(),
             channel: 0,
             notes: vec![note(0, 60, 120)],
+            control_changes: Vec::new(),
         }],
         ..single_track_export(DEFAULT_PPQ)
     };
@@ -941,6 +952,7 @@ fn pitch_127_is_accepted_and_128_is_rejected() {
             name: String::new(),
             channel: 0,
             notes: vec![note(0, 127, 120)],
+            control_changes: Vec::new(),
         }],
         ..single_track_export(DEFAULT_PPQ)
     };
@@ -952,6 +964,7 @@ fn pitch_127_is_accepted_and_128_is_rejected() {
             name: String::new(),
             channel: 0,
             notes: vec![note(0, 128, 120)],
+            control_changes: Vec::new(),
         }],
         ..single_track_export(DEFAULT_PPQ)
     };
@@ -1125,6 +1138,7 @@ fn time_signature_meta_fields_round_trip_at_their_extremes() {
             name: String::new(),
             channel: 0,
             notes: vec![note(0, 60, 120)],
+            control_changes: Vec::new(),
         }],
         key_signature: None,
     };
@@ -1349,6 +1363,7 @@ fn a_minimal_export_is_pinned_byte_for_byte() {
             name: String::new(),
             channel: 0,
             notes: vec![note(0, 60, 480)],
+            control_changes: Vec::new(),
         }],
         key_signature: None,
     };
@@ -1696,11 +1711,72 @@ fn filled_sample_writes_its_four_syllables_as_lyric_events() {
     // ⭐ `#317`：导入侧读 `FF 05` **一个导出字节都不许改** —— 这份 143 B 的字节契约
     // 在 `#312` 已 `success`；后随 `[MODEL-AST-005]` 补齐 `tempo_map`/`time_signature_map`
     // 导出，filled 样本在 tick 7680 的变更点（132 BPM / 3/4）如实写入 conductor 轨 (+16 B) ⇒ 159 B。
-    assert_eq!(bytes.len(), 159, "filled 导出必须是 159 B");
+    //
+    // ⭐ **ADR-0015 D3** 又改了一次：`filled` 样本的首轨**本来就带**一条 `TrackVolume`
+    // 泳道（tick 0 = `-6.0` dB、tick 3840 = `0.0` dB）⇒ 如实导出成两条 CC 7，
+    // `-6 dB ⇒ round(127·10^-0.15) = 90`、`0 dB ⇒ 127`（手算值，⛔ 不与换算函数自比），
+    // 净 +9 B（两条事件各 4 B，外加末尾 delta 由 1 字节 VLQ 长成 2 字节）。
+    // **没有**自动化泳道的工程一个字节都不动 —— 由下面的"清空 CC 必须回到 159 B"钉住。
+    assert_eq!(
+        parsed
+            .control_changes
+            .iter()
+            .map(|cc| (cc.tick, cc.controller, cc.value))
+            .collect::<Vec<(u64, u8, u8)>>(),
+        vec![(0, 7, 90), (3840, 7, 127)],
+        "音量泳道的两个作者点 ⇒ 两条 CC 7，值按 ADR-0015 D3 的逆向公式"
+    );
+    assert_eq!(bytes.len(), 168, "filled 导出必须是 168 B");
     assert_eq!(
         yeban_model::AssetHash::of_bytes(&bytes).as_str(),
-        "4825c0a7bab0362547836af3249acac5e7d2de3fef812f4620c426f92aef7da2",
+        "8643d792aa5b0ba1aa419f0b2799084a0749bf5454cb8b22b5d474b78e7eb265",
         "filled 导出字节的 sha256 必须一位不变"
+    );
+    assert_eq!(
+        yeban_model::AssetHash::of_bytes(&export_without_control_changes(&project)).as_str(),
+        "4825c0a7bab0362547836af3249acac5e7d2de3fef812f4620c426f92aef7da2",
+        "把 CC 表清空必须逐字节回到 ADR-0015 之前的 159 B ⇒ 新增的字节**只**是 CC 事件"
+    );
+}
+
+/// ⭐ ADR-0015 D3 的**参照投影**：同一工程、同一条码路径，但把每条轨的 CC 表清空。
+///
+/// 用途是"新增字节只来自 CC 事件"这类逐字节对照：⛔ 不是第二条导出实现。
+fn export_without_control_changes(project: &yeban_model::YebanProjectV1) -> Vec<u8> {
+    let mut export = yeban_midi::export::export_from_project(project).expect("投影");
+    for track in &mut export.tracks {
+        track.control_changes.clear();
+    }
+    export.to_smf_bytes().expect("编码")
+}
+
+/// ⭐ ADR-0015 D3 判据：带读通的 `TrackVolume` / `TrackPan` 泳道 ⇒ 逐点写成 CC 7 / CC 10；
+/// 读通关闭的泳道与 SMF 里没有对应控制器的目标（`DeviceParam`）**一律不写**。
+#[test]
+fn readable_volume_and_pan_lanes_are_written_as_control_changes() {
+    let bytes = yeban_midi::export::export_from_project(&yeban_model::samples::demo_project())
+        .expect("投影")
+        .to_smf_bytes()
+        .expect("编码");
+    let parsed = parse_smf(&bytes).expect("回读");
+    assert_eq!(
+        parsed
+            .control_changes
+            .iter()
+            .map(|cc| (cc.tick, cc.controller, cc.value))
+            .collect::<Vec<(u64, u8, u8)>>(),
+        vec![(0, 7, 106), (1920, 7, 80), (3840, 7, 120)],
+        "demo 首轨的三条音量点 -3.2 / -8.0 / -1.0 dB ⇒ 106 / 80 / 120（手算：\
+         round(127·10^{{-0.08, -0.2, -0.025}}）；slot 0 的 DeviceParam 泳道读通关闭 ⇒ 不写"
+    );
+    assert_eq!(
+        bytes.len(),
+        146,
+        "demo 导出必须是 146 B（改前 133 B + 13 B 的 CC）"
+    );
+    assert_eq!(
+        yeban_model::AssetHash::of_bytes(&bytes).as_str(),
+        "35278a8e052e772e68dc3e684d8aa0c31d6c9ee4d020ad7aae5e4076f26c54c7"
     );
 }
 
@@ -1712,6 +1788,11 @@ fn filled_sample_writes_its_four_syllables_as_lyric_events() {
 ///
 /// 两条 sha256 常量是**在加能力之前**（`main` = `e6a877a8` 的代码）实测的：
 /// `demo` = 133 字节、`filled` = 119 字节。
+///
+/// ⭐ **ADR-0015 D3** 之后这里走 [`export_without_control_changes`]：那两个样本工程
+/// **带着**自动化泳道，如实导出会多出 CC 字节。"歌词不许动无歌词工程的字节"这条
+/// 不变式与 CC 无关 ⇒ 把 CC 这一层单独剥掉再比（CC 本身由
+/// `readable_volume_and_pan_lanes_are_written_as_control_changes` 与 filled 那条判据钉）。
 #[test]
 fn lyrics_do_not_change_the_bytes_of_projects_without_them() {
     const DEMO_SHA256: &str = "050417dc89acef85037b0ebcea8824347289e73da02504ecb8037750dfcea5c9";
@@ -1720,14 +1801,12 @@ fn lyrics_do_not_change_the_bytes_of_projects_without_them() {
     const FILLED_BEFORE_SHA256: &str =
         "13504bce31ff552fc74a2de432e8ad93430614eb1cb0815639a161b3af0506cb";
 
-    let demo_bytes = yeban_midi::export::export_from_project(&yeban_model::samples::demo_project())
-        .expect("投影")
-        .to_smf_bytes()
-        .expect("编码");
+    let demo_bytes = export_without_control_changes(&yeban_model::samples::demo_project());
     assert_eq!(
         yeban_model::AssetHash::of_bytes(&demo_bytes).as_str(),
         DEMO_SHA256,
-        "无歌词工程的导出必须逐字节等于改前（{} 字节）",
+        "无歌词工程的导出（⛔ 不含 ADR-0015 新写的 CC，那部分由上一条判据单独钉）\
+         必须逐字节等于改前（{} 字节）",
         demo_bytes.len()
     );
     assert!(
@@ -1744,10 +1823,7 @@ fn lyrics_do_not_change_the_bytes_of_projects_without_them() {
             }
         }
     }
-    let stripped_bytes = yeban_midi::export::export_from_project(&stripped)
-        .expect("投影")
-        .to_smf_bytes()
-        .expect("编码");
+    let stripped_bytes = export_without_control_changes(&stripped);
     assert_eq!(
         yeban_model::AssetHash::of_bytes(&stripped_bytes).as_str(),
         FILLED_BEFORE_SHA256,
@@ -1757,11 +1833,7 @@ fn lyrics_do_not_change_the_bytes_of_projects_without_them() {
     assert!(lyric_events(&stripped_bytes).is_empty());
 
     // 而**带**歌词的同一工程必须真的不同（否则上面两条正对照是空转）。
-    let filled_bytes =
-        yeban_midi::export::export_from_project(&yeban_model::samples::filled_project())
-            .expect("投影")
-            .to_smf_bytes()
-            .expect("编码");
+    let filled_bytes = export_without_control_changes(&yeban_model::samples::filled_project());
     assert_ne!(
         yeban_model::AssetHash::of_bytes(&filled_bytes).as_str(),
         FILLED_BEFORE_SHA256,
