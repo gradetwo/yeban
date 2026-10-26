@@ -34,7 +34,8 @@
 //! | `id` | 不写进 SMF（只用于错误上报） |
 //! | `syllable`（非空） | ⭐ `#312`：`FF 05` 歌词元事件，在音符**生效起点**、`NoteOn` **之前**，UTF-8 原样（见 `midi.rs` 的 `lyric_text`） |
 //! | `phonemes` | ⭐ **不导出**：SMF 只有一种文本槽，写进去等于把 SVS 对齐数据伪装成歌词 ⇒ `yeban_export_midi` 的 `unsupported`（`phonemes`）如实登记 |
-//! | `probability` / `ratchet` / `slide` / `pitch_bend_curve` | **不导出**（`midi.rs` 已登记的边界；导出写"作者写下的音符"，不做触发/连击判定） |
+//! | `pitch_bend_curve`（非空） | ⭐ ADR-0014 D3：逐点 `E0` 弯音，绝对 tick = 生效起点 + 音符局部 tick，±2 半音换算（1 音分 = 8192/200）；末点非 0 时在音符结束处补一条居中复位 |
+//! | `probability` / `ratchet` / `slide` | **不导出**（`midi.rs` 已登记的边界；导出写"作者写下的音符"，不做触发/连击判定） |
 //!
 //! ### tick → tick（**没有**任何节拍换算）
 //!
@@ -1215,6 +1216,135 @@ mod tests {
             ],
             "音符通道在导出并导入后完整保留"
         );
+    }
+
+    /// 判据 (ADR-0014 D3): `pitch_bend_curve` 逐点写成 `E0` 弯音事件（绝对 tick =
+    /// 生效起点 + 音符局部 tick，±2 半音换算并钳位）；**末点非 0** 时在音符结束处
+    /// 补一条居中（0 音分）复位，末点已是 0 则不补。
+    #[test]
+    fn pitch_bend_curve_exports_as_events_with_a_trailing_reset_only_when_needed() {
+        let mut project = YebanProjectV1::default();
+        let clip_id = EntityId::new();
+        let first = EntityId::new();
+        let second = EntityId::new();
+        let mut note_a = MidiNote::new(first, 0, 60, 480);
+        // 末点 200 音分 ⇒ 音符结束 (tick 480) 处必须有复位事件。
+        note_a.pitch_bend_curve = vec![(0, 0), (120, 200)];
+        let mut note_b = MidiNote::new(second, 960, 61, 480);
+        // 末点已是 0 ⇒ 不再补复位。
+        note_b.pitch_bend_curve = vec![(120, 0)];
+        let mut notes: BTreeMap<EntityId, MidiNote> = BTreeMap::new();
+        notes.insert(first, note_a);
+        notes.insert(second, note_b);
+        project.clip_pool.insert(
+            clip_id,
+            yeban_model::project::ClipPoolEntry {
+                id: clip_id,
+                name: "Bends".to_owned(),
+                content: ClipContent::Midi { notes },
+            },
+        );
+        let track_id = EntityId::new();
+        let placement_id = EntityId::new();
+        let mut track = yeban_model::project::TrackV3 {
+            id: track_id,
+            name: "BendTrack".to_owned(),
+            ..yeban_model::project::TrackV3::default()
+        };
+        track.clips.insert(
+            placement_id,
+            ClipPlacement {
+                id: placement_id,
+                clip_id,
+                start_tick: 0,
+                duration_ticks: 1920,
+                ..ClipPlacement::default()
+            },
+        );
+        project.insert_track(track).expect("插入音轨");
+
+        let bytes = export_from_project(&project)
+            .expect("投影")
+            .to_smf_bytes()
+            .expect("编码");
+        let parsed = parse_smf(&bytes).expect("回读");
+        // 换算（与解析侧同一对公式）：200 音分 ⇒ 8191（8192 越界被钳）⇒ 回读 199；
+        // 0 音分 ⇒ 中心 ⇒ 回读 0。
+        let bends: Vec<(u64, i16)> = parsed
+            .pitch_bends
+            .iter()
+            .map(|bend| (bend.tick, bend.cents))
+            .collect();
+        assert_eq!(
+            bends,
+            vec![(0, 0), (120, 199), (480, 0), (1080, 0)],
+            "曲线逐点写出；480 是末点非 0 的复位，1080 之后没有多余的 0"
+        );
+    }
+
+    /// 判据 (ADR-0014 D2+D3 闭环): 带弯音曲线的单音音符导出 ⇒ 回读 ⇒ 导入，
+    /// 曲线按**音符局部 tick** 回到 `AddNote` 的 `pitch_bend_curve`。
+    #[test]
+    fn a_single_note_pitch_bend_curve_survives_export_and_reimport() {
+        use yeban_model::Op;
+
+        let mut project = YebanProjectV1::default();
+        let clip_id = EntityId::new();
+        let note_id = EntityId::new();
+        let mut note = MidiNote::new(note_id, 0, 60, 960);
+        note.pitch_bend_curve = vec![(0, 0), (240, 200), (480, -400)];
+        let mut notes: BTreeMap<EntityId, MidiNote> = BTreeMap::new();
+        notes.insert(note_id, note);
+        project.clip_pool.insert(
+            clip_id,
+            yeban_model::project::ClipPoolEntry {
+                id: clip_id,
+                name: "Solo".to_owned(),
+                content: ClipContent::Midi { notes },
+            },
+        );
+        let track_id = EntityId::new();
+        let placement_id = EntityId::new();
+        let mut track = yeban_model::project::TrackV3 {
+            id: track_id,
+            name: "BendSolo".to_owned(),
+            ..yeban_model::project::TrackV3::default()
+        };
+        track.clips.insert(
+            placement_id,
+            ClipPlacement {
+                id: placement_id,
+                clip_id,
+                start_tick: 0,
+                duration_ticks: 960,
+                ..ClipPlacement::default()
+            },
+        );
+        project.insert_track(track).expect("插入音轨");
+
+        let bytes = export_from_project(&project)
+            .expect("投影")
+            .to_smf_bytes()
+            .expect("编码");
+        let parsed = parse_smf(&bytes).expect("回读");
+        let plan = crate::import::plan_midi_import(
+            &crate::import::content_free_project(),
+            &parsed,
+            &crate::import::MidiImportOptions::default(),
+        )
+        .expect("导入计划");
+        let curves: Vec<Vec<(u64, i16)>> = plan
+            .ops
+            .iter()
+            .filter_map(|op| match op {
+                Op::AddNote { note, .. } => Some(note.pitch_bend_curve.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(curves.len(), 1, "只导出了那一颗音符");
+        // 200 音分经 14-bit 量化往返成 199；-400 音分超出 ±2 半音默认范围被钳成 -200；
+        // 末点非 0 的复位落在 tick 960 = 音符**结束**（区间左闭右开）⇒ 不归属。
+        assert_eq!(curves[0], vec![(0, 0), (240, 199), (480, -200)]);
     }
 
     /// 判据 (类别③ 静默丢弃 vs 明确 Err): 一条轨道里的**音频片段**不会截断它
