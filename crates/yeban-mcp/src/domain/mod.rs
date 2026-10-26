@@ -59,6 +59,7 @@ pub mod extension_audit;
 pub mod extension_pure;
 pub mod ids;
 pub mod import_audio;
+pub mod import_midi;
 pub mod lock;
 pub mod macros;
 pub mod midi_input;
@@ -1067,6 +1068,8 @@ pub enum Plan {
         /// 只读规划的产物（SMF 字节 + 计数 + SHA-256）。
         export: Box<export_midi::MidiExportArtifact>,
     },
+    /// `yeban_import_midi` [MCP-TOOL-EXT-IMPORT-MIDI]
+    ImportMidi(Box<import_midi::MidiImport>),
     /// `yeban_load_sfz`：装载一份 SFZ 乐器进**会话态**（不改工程、不落盘）。
     LoadSfz {
         /// 已经解析好的装载产物（`apply` 把它登记进会话 registry）。
@@ -1121,6 +1124,7 @@ impl Plan {
             Self::ListProposals { .. } => "list_proposals",
             Self::ImportAudio { .. } => "import_audio",
             Self::ExportMidi { .. } => "export_midi",
+            Self::ImportMidi(_) => "import_midi",
             Self::LoadSfz { .. } => "load_sfz",
             Self::RenderSfzWav { .. } => "render_sfz_wav",
             Self::RecordWav { .. } => "record_wav",
@@ -1142,6 +1146,7 @@ impl Plan {
             Self::EditAutomation { edit } => usize::from(edit.write.is_some()),
             // 真登记才提交；幂等命中（内容已存在）一位都不改。
             Self::ImportAudio { import } => usize::from(!import.ops.is_empty()),
+            Self::ImportMidi(_) => 1,
             // 宿主动作：提交恰好一条 `Op::Batch`；撤销 / 重做不动图谱。
             Self::Host(action) => match action {
                 HostAction::Commit { ops, .. } => usize::from(!ops.is_empty()),
@@ -1211,6 +1216,7 @@ impl Plan {
             Self::EditAutomation { edit } => edit.write.is_some(),
             // 真登记才改工程；幂等命中（内容已存在）一位都不改。
             Self::ImportAudio { import } => !import.ops.is_empty(),
+            Self::ImportMidi(import) => !import.ops.is_empty(),
             // 宿主动作：撤销 / 重做真的动工程字节；提交在携带 op 时才算（空批不改文档）。
             Self::Host(action) => match action {
                 HostAction::Commit { ops, .. } => !ops.is_empty(),
@@ -1310,6 +1316,18 @@ impl Plan {
                 for op in &import.ops {
                     op.apply(&mut simulated)
                         .map_err(|failure| error::from_model("音频登记模拟", &failure))?;
+                }
+                Ok(Some(simulated))
+            }
+            Self::ImportMidi(import) => {
+                if import.ops.is_empty() {
+                    return Ok(None);
+                }
+                let current = domain.active_project().ok_or_else(no_active_project)?;
+                let mut simulated = current.clone();
+                for op in &import.ops {
+                    op.apply(&mut simulated)
+                        .map_err(|failure| error::from_model("MIDI 导入模拟", &failure))?;
                 }
                 Ok(Some(simulated))
             }
@@ -1695,6 +1713,15 @@ impl Plan {
                 preview.insert("readOnly".to_owned(), Value::from(true));
                 preview.insert("result".to_owned(), data);
             }
+            Self::ImportMidi(import) => {
+                let data = import_midi::describe(import);
+                if let Value::Object(fields) = data {
+                    for (key, value) in fields {
+                        preview.insert(key, value);
+                    }
+                }
+                preview.insert("wouldApply".to_owned(), Value::from(true));
+            }
             // 宿主动作没有工具信封可预览；顶部的 `plan` 键 + 下面的工程摘要已足够。
             // （`plan` 永不产出这个变体，因此这条分支在实践中不可达。）
             Self::Host(_) => {}
@@ -1949,6 +1976,7 @@ pub fn plan(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
         "yeban_import_audio" => plan_import_audio(domain, call),
         "yeban_export_diagnostics" => plan_export_diagnostics(domain, call),
         "yeban_export_midi" => plan_export_midi(domain, call),
+        "yeban_import_midi" => plan_import_midi(domain, call),
         "yeban_load_sfz" => plan_load_sfz(domain, call),
         "yeban_render_sfz_wav" => plan_render_sfz_wav(domain, call),
         "yeban_record_wav" => plan_record_wav(domain, call),
@@ -1979,6 +2007,42 @@ fn parse_steps(call: &ToolCall) -> Result<usize, Fault> {
             ErrorCode::InvalidParameterRange,
             format!("`steps` 超出 usize 表示范围: {raw}"),
         )
+    })
+}
+
+/// 从实参里解析可选的 26 字符 ULID 字符串。
+pub fn parse_optional_entity_id(
+    arguments: &Map<String, Value>,
+    key: &str,
+) -> Result<Option<EntityId>, Fault> {
+    use std::str::FromStr as _;
+    match arguments.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(s)) => {
+            let id = EntityId::from_str(s).map_err(|err| {
+                Fault::domain(
+                    ErrorCode::InvalidParameterRange,
+                    format!("parameter '{key}' is not a valid 26-character ULID: {err}"),
+                )
+            })?;
+            Ok(Some(id))
+        }
+        Some(_) => Err(Fault::domain(
+            ErrorCode::InvalidParameterRange,
+            format!("parameter '{key}' must be a string"),
+        )),
+    }
+}
+
+/// 提交记录的人话摘要（用于工具结果的 `commit` 键）。
+pub fn commit_summary(commit: &yeban_model::Commit) -> Value {
+    serde_json::json!({
+        "id": commit.id.to_canonical_string(),
+        "branch": commit.branch_id,
+        "message": commit.message,
+        "parents": commit.parents.iter().map(|p| p.to_canonical_string()).collect::<Vec<_>>(),
+        "parentCount": commit.parents.len(),
+        "isMerge": commit.parents.len() > 1,
     })
 }
 
@@ -3050,6 +3114,13 @@ fn plan_export_midi(domain: &Domain, _call: &ToolCall) -> Result<Plan, Fault> {
     })
 }
 
+/// `yeban_import_midi`：把磁盘上的 SMF 导入进空的 MIDI 片段。
+fn plan_import_midi(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
+    let project = require_active(domain)?;
+    let import = import_midi::plan(project, &call.arguments)?;
+    Ok(Plan::ImportMidi(Box::new(import)))
+}
+
 // ---------------------------------------------------------------------------
 // 本线的 SFZ 两条扩展的 plan（`domain/sfz.rs`）
 // ---------------------------------------------------------------------------
@@ -3471,6 +3542,7 @@ fn apply_inner(domain: &mut Domain, plan: Plan) -> Result<ToolResponse, Fault> {
         Plan::Diagnostics { export } => diagnostics::apply(domain, &export),
         // 只读：字节在 `plan` 里就编好了，`apply` 原样回传（一位都不改、不落盘）。
         Plan::ExportMidi { export } => Ok(ToolResponse::success(export.data())),
+        Plan::ImportMidi(import) => import_midi::apply(domain, &import),
         // 只读：读数在 `plan` 里就收完了，`apply` 原样回传（一位都不改、不落盘）。
         Plan::MidiInputProbe { report } => Ok(ToolResponse::success(report.data())),
         Plan::LoadSfz { load } => apply_load_sfz(domain, *load),
@@ -4570,6 +4642,11 @@ mod tests {
             ("yeban_export_diagnostics", serde_json::json!({})),
             // SMF 导出：**只读**且没有可调参数 —— `filled_project` 有 MIDI 内容 ⇒ 规划成功。
             ("yeban_export_midi", serde_json::json!({})),
+            // SMF 导入：夹具 `filled_project` 的目标 MIDI 片段非空 ⇒ 规划阶段即报 `CONFLICT`。
+            (
+                "yeban_import_midi",
+                serde_json::json!({"path": unique_path()}),
+            ),
             // SFZ 装载：指向一份**真 SFZ 文件** ⇒ 规划成功（真的读盘 + 解析）。
             (
                 "yeban_load_sfz",
@@ -4639,6 +4716,10 @@ mod tests {
                 "yeban_open_project" => {
                     let fault = outcome.expect_err("路径不存在");
                     assert_eq!(fault.domain_code(), Some(ErrorCode::FileNotFound));
+                }
+                "yeban_import_midi" => {
+                    let fault = outcome.expect_err("目标 MIDI 片段非空");
+                    assert_eq!(fault.domain_code(), Some(ErrorCode::Conflict));
                 }
                 "yeban_undo" | "yeban_redo" => {
                     let fault = outcome.expect_err("没有历史");

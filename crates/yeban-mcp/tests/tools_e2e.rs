@@ -1432,6 +1432,11 @@ fn no_tool_answers_with_a_blanket_not_implemented() {
         ),
         // SMF 导出：只读且无参数（活跃工程有 MIDI 内容 ⇒ 带内成功）。
         ("yeban_export_midi", json!({})),
+        // SMF 导入：活跃工程的默认 MIDI 片段非空 ⇒ 带内 `CONFLICT`（不是实现级出口）。
+        (
+            "yeban_import_midi",
+            json!({ "path": scratch.text("missing.mid") }),
+        ),
         // SFZ 装载：指向 scratch 里一份**真 SFZ** ⇒ 带内成功（真的读盘 + 解析）。
         (
             "yeban_load_sfz",
