@@ -15,7 +15,7 @@
 //! | 工程侧 | SMF 侧 |
 //! | :--- | :--- |
 //! | 输出格式 | 恒为 **SMF 1**（[`MidiFormat::Parallel`]）：第 0 条 `MTrk` 是 conductor（tempo map） |
-//! | `project.bpm` + `project.time_signature` | conductor 轨上 **tick 0** 的 `Tempo` + `TimeSignature` 元事件 |
+//! | `project.bpm` + `project.time_signature` (+ `tempo_map` / `time_signature_map`) | conductor 轨上的 `Tempo` + `TimeSignature` 元事件（tick 0 基准及后续变更点） |
 //! | 每条**非主总线**轨道（`tracks` 的 `BTreeMap` 身份升序） | 一条 `MTrk`（`TrackName` = `TrackV3::name`；空名不写 meta） |
 //! | 该轨道的通道号 | 按**被导出的顺序**取 `i % 16`（第 0 条 → 通道 0，第 1 条 → 通道 1 …） |
 //! | 主总线轨道（`master_bus_track_id`） | **不导出**（它是声学出口，不是内容轨；与 `bridge` 的投影口径一致） |
@@ -197,20 +197,53 @@ fn smf_ppq() -> Result<u16, MidiExportError> {
     Ok(project)
 }
 
-/// tempo map：工程只有一个顶层 `bpm` ⇒ **恰好一条** tick 0 事件（含拍号）。
+/// tempo map：包含 tick 0 的基准 BPM 和拍号，以及 `tempo_map` / `time_signature_map` 在 `tick > 0` 的变更点。
 ///
 /// # Errors
 ///
 /// [`MidiExportError::UnsupportedTimeSignature`]。
-fn tempo_map(project: &YebanProjectV1) -> Result<MidiTempo, MidiExportError> {
+fn tempo_map(project: &YebanProjectV1) -> Result<Vec<MidiTempo>, MidiExportError> {
     let denominator = project.time_signature.denominator;
     let pow2 = denominator_pow2(denominator)
         .ok_or(MidiExportError::UnsupportedTimeSignature { denominator })?;
-    Ok(MidiTempo::with_time_signature(
-        project.bpm,
-        project.time_signature.numerator,
-        pow2,
-    ))
+    let base = MidiTempo::with_time_signature(project.bpm, project.time_signature.numerator, pow2);
+
+    let mut tempos = vec![base];
+    let mut points: BTreeMap<u64, MidiTempo> = BTreeMap::new();
+    for (&tick, &bpm) in &project.tempo_map {
+        if tick == 0 {
+            continue;
+        }
+        let mpqn = MidiTempo::from_bpm(bpm).microseconds_per_quarter;
+        points.insert(
+            tick,
+            MidiTempo {
+                tick,
+                microseconds_per_quarter: mpqn,
+                numerator: None,
+                denominator_pow2: None,
+            },
+        );
+    }
+    for (&tick, ts) in &project.time_signature_map {
+        if tick == 0 {
+            continue;
+        }
+        let pow2 =
+            denominator_pow2(ts.denominator).ok_or(MidiExportError::UnsupportedTimeSignature {
+                denominator: ts.denominator,
+            })?;
+        let entry = points.entry(tick).or_insert_with(|| MidiTempo {
+            tick,
+            microseconds_per_quarter: None,
+            numerator: None,
+            denominator_pow2: None,
+        });
+        entry.numerator = Some(ts.numerator);
+        entry.denominator_pow2 = Some(pow2);
+    }
+    tempos.extend(points.into_values());
+    Ok(tempos)
 }
 
 /// 把一条轨道的全部摆放展开成**绝对 tick** 的音符列表。
@@ -261,7 +294,7 @@ fn track_notes(
 /// [`MidiExportError`]：无 MIDI 内容 / 悬空片段引用 / 拍号不可表达 / PPQ 漂移。
 pub fn export_from_project(project: &YebanProjectV1) -> Result<MidiExport, MidiExportError> {
     let ppq = smf_ppq()?;
-    let tempos = vec![tempo_map(project)?];
+    let tempos = tempo_map(project)?;
 
     let mut tracks: Vec<MidiExportTrack> = Vec::new();
     for track in project.tracks.values() {
@@ -381,6 +414,98 @@ mod tests {
         assert_eq!(parsed.key_signatures[0].tick, 0);
         assert_eq!(parsed.key_signatures[0].sharps_flats, -3);
         assert!(!parsed.key_signatures[0].is_minor);
+    }
+
+    /// 判据 (`[MODEL-AST-005]`): `tempo_map` 与 `time_signature_map` 在 `tick > 0` 的变更点
+    /// 导出到 conductor track，SMF 读取面读回完全一致。
+    #[test]
+    fn tempo_map_and_time_signature_map_export_to_smf_conductor_track_and_round_trip() {
+        let mut project = yeban_model::samples::demo_project();
+        project.bpm = 120.0;
+        project.time_signature = yeban_model::TimeSignature {
+            numerator: 4,
+            denominator: 4,
+        };
+        // tick 960: 仅变速度
+        project.tempo_map.insert(960, 140.0);
+        // tick 1920: 速度与拍号同时变更
+        project.tempo_map.insert(1920, 90.0);
+        project.time_signature_map.insert(
+            1920,
+            yeban_model::TimeSignature {
+                numerator: 3,
+                denominator: 4,
+            },
+        );
+        // tick 2880: 仅变拍号
+        project.time_signature_map.insert(
+            2880,
+            yeban_model::TimeSignature {
+                numerator: 6,
+                denominator: 8,
+            },
+        );
+
+        let export = export_from_project(&project).expect("导出");
+        assert_eq!(export.tempos.len(), 4, "tick 0 + 3 个变化点");
+
+        // tick 0: 120 BPM, 4/4
+        assert_eq!(export.tempos[0].tick, 0);
+        assert_eq!(export.tempos[0].microseconds_per_quarter, Some(500_000));
+        assert_eq!(export.tempos[0].numerator, Some(4));
+        assert_eq!(export.tempos[0].denominator_pow2, Some(2));
+
+        // tick 960: 140 BPM, 无拍号
+        assert_eq!(export.tempos[1].tick, 960);
+        assert_eq!(
+            export.tempos[1].microseconds_per_quarter,
+            MidiTempo::from_bpm(140.0).microseconds_per_quarter
+        );
+        assert_eq!(export.tempos[1].numerator, None);
+        assert_eq!(export.tempos[1].denominator_pow2, None);
+
+        // tick 1920: 90 BPM, 3/4
+        assert_eq!(export.tempos[2].tick, 1920);
+        assert_eq!(
+            export.tempos[2].microseconds_per_quarter,
+            MidiTempo::from_bpm(90.0).microseconds_per_quarter
+        );
+        assert_eq!(export.tempos[2].numerator, Some(3));
+        assert_eq!(export.tempos[2].denominator_pow2, Some(2));
+
+        // tick 2880: 无速度, 6/8
+        assert_eq!(export.tempos[3].tick, 2880);
+        assert_eq!(export.tempos[3].microseconds_per_quarter, None);
+        assert_eq!(export.tempos[3].numerator, Some(6));
+        assert_eq!(export.tempos[3].denominator_pow2, Some(3));
+
+        let bytes = export.to_smf_bytes().expect("编码");
+        let parsed = parse_smf(&bytes).expect("回读");
+
+        assert_eq!(parsed.tempos.len(), 4, "回读出 4 条 tempo/meter 记录");
+        assert_eq!(
+            parsed.tempos, export.tempos,
+            "回读的 tempos 必须与导出的完全一致"
+        );
+    }
+
+    /// 判据 (`[MODEL-AST-005]`): `time_signature_map` 中不可表达的分母（非 2 的幂）被拒绝。
+    #[test]
+    fn unsupported_time_signature_in_map_is_rejected() {
+        let mut project = yeban_model::samples::demo_project();
+        project.time_signature_map.insert(
+            960,
+            yeban_model::TimeSignature {
+                numerator: 7,
+                denominator: 5,
+            },
+        );
+        match export_from_project(&project) {
+            Err(MidiExportError::UnsupportedTimeSignature { denominator }) => {
+                assert_eq!(denominator, 5);
+            }
+            other => panic!("期望 UnsupportedTimeSignature {{ denominator: 5 }}, 得到 {other:?}"),
+        }
     }
 
     /// 判据 ②: 音符数量 / 音高 / tick / 力度 / 时值 **逐音符**与工程一致。
@@ -558,7 +683,7 @@ mod tests {
         ];
         assert_eq!(keys, expected, "micro_timing_ticks = -12 ⇒ 起点 1920 - 12");
         let parsed = parse_smf(&export.to_smf_bytes().expect("编码")).expect("回读");
-        assert_eq!(parsed.tempos.len(), 1, "顶层 bpm ⇒ 恰好一条 tempo 事件");
+        assert_eq!(parsed.tempos.len(), 2, "tick 0 基准 + tick 7680 变更点");
         assert_eq!(parsed.tempos[0].tick, 0);
         assert_eq!(
             parsed.tempos[0].microseconds_per_quarter,
@@ -567,6 +692,14 @@ mod tests {
         );
         assert_eq!(parsed.tempos[0].numerator, Some(4));
         assert_eq!(parsed.tempos[0].denominator_pow2, Some(2));
+        assert_eq!(parsed.tempos[1].tick, 7680);
+        assert_eq!(
+            parsed.tempos[1].microseconds_per_quarter,
+            Some(454_545),
+            "filled 样本在 tick 7680 的 132 BPM ⇒ 60_000_000 / 132 = 454_545"
+        );
+        assert_eq!(parsed.tempos[1].numerator, Some(3));
+        assert_eq!(parsed.tempos[1].denominator_pow2, Some(2));
     }
 
     /// ⭐ `#312`: `filled` 样本的 4 颗 lead 音符各带一个音节（do/re/mi/fa）⇒
