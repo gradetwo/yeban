@@ -10932,3 +10932,57 @@ $ python3 scripts/gates/check_phase_status.py   # 退出 0
 **为什么值得记。** 一个共享脚本的**默认值**，能让**任何** sibling 在**不知情**的情况下制造体积巨大的误提交风险 —— 受害的不是调用者，是仓库的历史。而且事后保护很弱：`G12` 守卫会红，但那时文件**已经进了索引或历史**（`scripts/guards/policy_check.py:418` 把 `.cargo-home` 列进 `cache_dirs`、`:426` 判红），历史里的大对象要清除就得重写历史。⇒ 结论两条：① 缓存目录的位置必须**从仓库之外推导**，且这个"不在仓库里"要**机械地比对仓库根**，不能只靠相对层级；② "脚本能建出目录"与"沙箱允许写"是**两把尺子** —— 沙箱可能只是不抛错（本轮 `mkdir -p ... || true` 就是这样沉默的）。
 
 **本轮未核实的事（明确标注）。** ① **446 MB 未复核**（来源只有任务书；目录已删；已提交文件里没有这个数字）。② **"上一票真的在仓库内重建过一个 446 MB 的 `.cargo-home`"未复核**：我复测的 3 种脚本位置都没有建进探针仓库内；我**没有**找到一种布局能复现"缓存落在仓库内"。③ 我**没有**在本机跑 `light` 的完整通过态：`fmt` 红由另一条线的未格式化 Rust 文件造成，我按"不碰另一条线"的硬约束**没有**去格式化或回退那两个文件，也没有改动自己以外的任何 `.rs`。④ `du -sk` 的 925 MiB 是**代理指标**（磁盘占用），不是那 446 MB 的复核。
+
+
+---
+
+## 2026-10-26：MCP 音乐创作功能补齐与 SMF 元数据往返双线落地
+
+### 1. 读回 CI 判决 (commit `c9815000`)
+- **Workflow Run**: `40339364440` (push on `main`)
+- **结论**: 100% SUCCESS 全绿
+- **Jobs**:
+  - `deny (cargo-deny 开源合规)`: 43s (success)
+  - `plan (受影响集合)`: 9s (success)
+  - `lockfile (确定性 Cargo.lock)`: 21s (success)
+  - `checks (fmt / 红线守卫 / schema)`: 1m8s (success)
+  - `windows (yeban-mcp / yeban-model / yeban-dsp / yeban-render / yeban-decode / yeban-app / yeban-sfz)`: 35m11s (success)
+  - `rust (yeban-ui-mcp)`: 2m43s (success)
+  - `macos (yeban-mcp / yeban-model / yeban-dsp / yeban-render / yeban-decode / yeban-app / yeban-sfz / yeban-engine)`: 29m20s (success)
+  - `rust (yeban-mcp)`: 13m17s (success, 563+ tests)
+
+### 2. 工作线 1: `line/midi-metadata-roundtrip` (`6d1ca072`)
+- **需求规范 ID**: `[ARCH-EXT-002]`
+- **目标**: 完善 SMF 导体轨 (Conductor Track) 的工程元数据往返（Title / TrackName 与 Author / Copyright Notice）。
+- **实施**:
+  - `crates/yeban-midi/src/midi.rs`:
+    - `RawEvent` 引入 `Copyright { tick: u64, text: String }` 变体，支持 `FF 02` 版权元事件编码与解码。
+    - `MidiExport` 结构体增加 `title: Option<String>` 与 `copyright: Option<String>`。
+    - 并行模式（`MidiFormat::Parallel`）下导体轨名称若存在工程标题则写出工程标题（非空），若有作者则在 tick 0 写出 `FF 02` 版权事件。
+  - `crates/yeban-midi/src/export.rs`:
+    - `export_from_project` 将工程 `title` 与 `author` 传入 `MidiExport`。
+  - `crates/yeban-midi/src/import.rs`:
+    - 空工程导入时，导体轨若有非默认轨名采纳为 `project.title`；若有 `FF 02` 版权采纳为 `project.author`。
+    - `STORABLE_KINDS` 从 7 项扩展为 8 项（加入 `Copyright`），被采纳的版权记入 `attached` 不记全损。
+- **验证**:
+  - `cargo-local.sh test -p yeban-midi`: 307 项测试全部通过（含 real_world_smf 与 smf_contract 往返契约）。
+
+### 3. 工作线 2: `line/mcp-tempo-meter-ops` (`8f795b05`)
+- **需求规范 ID**: `[MCP-TOOL-003]`
+- **目标**: 在 MCP 工具面的 `yeban_edit_notes` 中补齐 `setTempoPoint` 和 `setTimeSignaturePoint`，使模型层剩余的不可达 Op（`SetKeySignature`、`SetTempoPoint`、`SetTimeSignaturePoint`）在 MCP 面全部可达，清空 `KNOWN_UNREACHABLE`。
+- **实施**:
+  - `crates/yeban-mcp/src/domain/notes.rs`:
+    - 实现 `NoteOp::SetTempoPoint` 与 `NoteOp::SetTimeSignaturePoint` 解析与编译逻辑。
+    - 支持新增时间点、修改时间点、`null` 删除时间点，校验未知字段，严格检查 tick ≥ 1（tick 0 报错 `tempoMapZeroTick` 归顶层速度/拍号管）。
+  - `crates/yeban-mcp/src/op_schema.rs` & `tools.rs`:
+    - 登记 `setTempoPoint` 与 `setTimeSignaturePoint` 参数形状与帮助说明。
+  - `crates/yeban-mcp/tests/op_reachability.rs`:
+    - `EXPECTED_SITES` 扩至 54 条（补齐 `SetKeySignature`、`SetTempoPoint`、`SetTimeSignaturePoint`）。
+    - `KNOWN_UNREACHABLE` 从 3 条彻底清空至 `[]`，达成 100% 模型 Op 变体在 MCP 工具面全部可达！
+  - `crates/yeban-mcp/tests/fault_vocabulary.rs`:
+    - 冻结表更新为 155 条 `reason`（新增 `tempoMapZeroTick`、`tempoPointNotFound`、`timeSignaturePointNotFound`）。
+- **验证**:
+  - `cargo-local.sh test -p yeban-mcp --lib domain::notes`: 168 项测试通过。
+  - `cargo-local.sh test -p yeban-mcp --test op_reachability`: 8 项测试通过。
+  - `cargo-local.sh test -p yeban-mcp --test fault_vocabulary`: 12 项测试通过。
+  - `cargo-local.sh clippy -p yeban-mcp --all-targets -- -D warnings`: 零告警。
