@@ -6781,3 +6781,313 @@ fn the_idempotency_key_boundary_is_emptiness_and_256_codepoints() {
         );
     }
 }
+
+/// `#347` `[MCP-TOOL-002]` `[MCP-TOOL-008]` `[ARCH-DET-001]`：
+/// `setTimeSignature` 通过 JSON-RPC 分发层走完整提案生命周期
+/// （`yeban_edit_notes` -> `yeban_merge_proposal` -> `yeban_query_project` -> `yeban_undo` / `yeban_redo`），
+/// 并且通过真执行的 A/B 母带渲染测试证明：基于 tick 的离线母带渲染对工程拍号变化保持位级一致（bit-identical）。
+#[test]
+fn set_time_signature_dispatches_through_proposal_lifecycle_and_master_render_ab_is_bit_identical()
+{
+    // -----------------------------------------------------------------------
+    // 1. Setup
+    // -----------------------------------------------------------------------
+    let scratch = Scratch::new("set-time-signature-e2e");
+    let (mut first, auth) = dispatcher();
+    let (_project_path, _opened) = open(&scratch, &mut first, &auth);
+
+    let active_project = first.domain().active_project().expect("活跃工程必须存在");
+    let initial_canonical_bytes =
+        yeban_mcp::undo_session::canonical_project_bytes(active_project).expect("规范化工程字节");
+    let initial_pretty_bytes = project_bytes(&first);
+    let initial_time_signature = active_project.time_signature;
+    assert_eq!(initial_time_signature.numerator, 4, "初始拍号分子必须是 4");
+    assert_eq!(
+        initial_time_signature.denominator, 4,
+        "初始拍号分母必须是 4"
+    );
+
+    let queried_initial = call(
+        &mut first,
+        &auth,
+        "yeban_query_project",
+        json!({ "fields": ["time_signature"] }),
+    );
+    assert_eq!(queried_initial["status"], "success", "{queried_initial}");
+    assert_eq!(
+        queried_initial["data"]["project"]["time_signature"],
+        json!({ "numerator": 4, "denominator": 4 }),
+        "初始查询拍号必须是 4/4: {queried_initial}"
+    );
+
+    // -----------------------------------------------------------------------
+    // 2. Baseline Master Render (Arm A — 4/4)
+    // -----------------------------------------------------------------------
+    let render_a_path = scratch.join("master-4-4.wav");
+    let render_a = call(
+        &mut first,
+        &auth,
+        "yeban_render_master",
+        json!({
+            "format": "wav",
+            "sampleRate": 48_000,
+            "path": scratch.text("master-4-4.wav"),
+        }),
+    );
+    assert_eq!(render_a["status"], "success", "{render_a}");
+    assert_eq!(render_a["data"]["rendered"], true, "{render_a}");
+    let master_digest_4_4 = render_a["data"]["masterDigest"]
+        .as_str()
+        .expect("masterDigest 必须是字符串")
+        .to_owned();
+    assert!(
+        !master_digest_4_4.is_empty(),
+        "Arm A 的 masterDigest 不得为空"
+    );
+    let wav_4_4 = fs::read(&render_a_path).expect("读取 Arm A WAV 文件");
+    assert!(
+        wav_4_4.len() > 44,
+        "Arm A WAV 文件长度必须大于 44 字节头部: {} 字节",
+        wav_4_4.len()
+    );
+
+    // -----------------------------------------------------------------------
+    // 3. Dispatch-layer `setTimeSignature` Proposal & Merge (4/4 -> 6/8)
+    // -----------------------------------------------------------------------
+    let track_id = first
+        .domain()
+        .active_project()
+        .expect("活跃工程")
+        .tracks
+        .keys()
+        .next()
+        .expect("工程至少有一条音轨")
+        .to_canonical_string();
+    let proposal_count_before = first.domain().proposal_count();
+
+    // 3a. dryRun: true 不得创建提案、不得改变工程状态
+    let dry_run = call(
+        &mut first,
+        &auth,
+        "yeban_edit_notes",
+        json!({
+            "trackId": track_id,
+            "ops": [{ "kind": "setTimeSignature", "timeSignature": "6/8" }],
+            "dryRun": true,
+        }),
+    );
+    assert_eq!(dry_run["status"], "success", "{dry_run}");
+    assert_eq!(
+        first.domain().proposal_count(),
+        proposal_count_before,
+        "dryRun 调用不得增加提案数"
+    );
+    assert_eq!(
+        first
+            .domain()
+            .active_project()
+            .expect("活跃工程")
+            .time_signature,
+        initial_time_signature,
+        "dryRun 调用不得改变活跃工程拍号"
+    );
+
+    // 3b. 真实创建提案
+    let edit = call(
+        &mut first,
+        &auth,
+        "yeban_edit_notes",
+        json!({
+            "trackId": track_id,
+            "ops": [{ "kind": "setTimeSignature", "timeSignature": "6/8" }],
+        }),
+    );
+    assert_eq!(edit["status"], "success", "{edit}");
+    assert_eq!(edit["data"]["pendingMerge"], true, "{edit}");
+    assert_eq!(
+        first.domain().proposal_count(),
+        proposal_count_before + 1,
+        "真实调用必须新建一条提案"
+    );
+    let proposal_id = edit["data"]["proposal"]["proposalId"]
+        .as_str()
+        .expect("proposalId 必须是字符串")
+        .to_owned();
+
+    // 3c. 合并提案
+    let merged = call(
+        &mut first,
+        &auth,
+        "yeban_merge_proposal",
+        json!({
+            "proposalId": proposal_id,
+            "commitMessage": "set meter to 6/8",
+        }),
+    );
+    assert_eq!(merged["status"], "success", "{merged}");
+    assert_eq!(merged["data"]["merged"], true, "{merged}");
+
+    // 3d. 查询工程确认 6/8
+    let queried_6_8 = call(
+        &mut first,
+        &auth,
+        "yeban_query_project",
+        json!({ "fields": ["time_signature"] }),
+    );
+    assert_eq!(queried_6_8["status"], "success", "{queried_6_8}");
+    assert_eq!(
+        queried_6_8["data"]["project"]["time_signature"],
+        json!({ "numerator": 6, "denominator": 8 }),
+        "合并后查询工程拍号必须是 6/8: {queried_6_8}"
+    );
+    let current_signature = first
+        .domain()
+        .active_project()
+        .expect("活跃工程")
+        .time_signature;
+    assert_eq!(
+        current_signature,
+        yeban_model::TimeSignature {
+            numerator: 6,
+            denominator: 8,
+        },
+        "活跃工程内存中拍号必须更新为 6/8"
+    );
+    assert_ne!(
+        initial_time_signature, current_signature,
+        "合并后的 6/8 拍号必须与初始 4/4 拍号不同"
+    );
+
+    // -----------------------------------------------------------------------
+    // 4. Executed A/B Master Render Comparison (Arm B — 6/8 vs Arm A — 4/4)
+    // -----------------------------------------------------------------------
+    let render_b_path = scratch.join("master-6-8.wav");
+    let render_b = call(
+        &mut first,
+        &auth,
+        "yeban_render_master",
+        json!({
+            "format": "wav",
+            "sampleRate": 48_000,
+            "path": scratch.text("master-6-8.wav"),
+        }),
+    );
+    assert_eq!(render_b["status"], "success", "{render_b}");
+    assert_eq!(render_b["data"]["rendered"], true, "{render_b}");
+    let master_digest_6_8 = render_b["data"]["masterDigest"]
+        .as_str()
+        .expect("masterDigest 必须是字符串");
+    assert_eq!(
+        master_digest_6_8, master_digest_4_4,
+        "Arm B (6/8) 与 Arm A (4/4) 的 masterDigest 必须完全相同"
+    );
+    let wav_6_8 = fs::read(&render_b_path).expect("读取 Arm B WAV 文件");
+    assert_eq!(
+        wav_6_8, wav_4_4,
+        "Arm B 与 Arm A 的母带 WAV 字节必须逐字节完全一致（证明离线渲染器是基于 tick 的，不依赖拍号）"
+    );
+
+    // -----------------------------------------------------------------------
+    // 5. Undo / Redo Round-Trip
+    // -----------------------------------------------------------------------
+    let undone = call(&mut first, &auth, "yeban_undo", json!({ "steps": 1 }));
+    assert_eq!(undone["status"], "success", "{undone}");
+    assert_eq!(
+        first
+            .domain()
+            .active_project()
+            .expect("活跃工程")
+            .time_signature,
+        initial_time_signature,
+        "撤销后拍号必须复原为 4/4"
+    );
+    let canonical_undone = yeban_mcp::undo_session::canonical_project_bytes(
+        first.domain().active_project().expect("活跃工程"),
+    )
+    .expect("撤销后规范化工程字节");
+    assert_eq!(
+        canonical_undone, initial_canonical_bytes,
+        "撤销后规范化工程字节必须逐字节复原到初始状态"
+    );
+    assert_eq!(
+        project_bytes(&first),
+        initial_pretty_bytes,
+        "撤销后格式化 JSON 工程必须逐字节复原到初始状态"
+    );
+
+    let redone = call(&mut first, &auth, "yeban_redo", json!({ "steps": 1 }));
+    assert_eq!(redone["status"], "success", "{redone}");
+    assert_eq!(
+        first
+            .domain()
+            .active_project()
+            .expect("活跃工程")
+            .time_signature,
+        yeban_model::TimeSignature {
+            numerator: 6,
+            denominator: 8,
+        },
+        "重做后拍号必须重新变为 6/8"
+    );
+
+    // -----------------------------------------------------------------------
+    // 6. Dispatch-layer Rejection of Invalid Time Signature
+    // -----------------------------------------------------------------------
+    let invalid_denom = call(
+        &mut first,
+        &auth,
+        "yeban_edit_notes",
+        json!({
+            "trackId": track_id,
+            "ops": [{ "kind": "setTimeSignature", "timeSignature": "4/3" }],
+        }),
+    );
+    assert_domain_error(
+        &invalid_denom,
+        ErrorCode::OutOfRange.as_str(),
+        "非法分母 4/3 必须被拒绝为 OUT_OF_RANGE",
+    );
+
+    let invalid_num = call(
+        &mut first,
+        &auth,
+        "yeban_edit_notes",
+        json!({
+            "trackId": track_id,
+            "ops": [{ "kind": "setTimeSignature", "timeSignature": "0/4" }],
+        }),
+    );
+    assert_domain_error(
+        &invalid_num,
+        ErrorCode::OutOfRange.as_str(),
+        "越界分子 0/4 必须被拒绝为 OUT_OF_RANGE",
+    );
+
+    let malformed_shape = call(
+        &mut first,
+        &auth,
+        "yeban_edit_notes",
+        json!({
+            "trackId": track_id,
+            "ops": [{ "kind": "setTimeSignature", "timeSignature": "6-8" }],
+        }),
+    );
+    assert_domain_error(
+        &malformed_shape,
+        ErrorCode::InvalidParameterRange.as_str(),
+        "非法形状 6-8 必须被拒绝为 INVALID_PARAMETER_RANGE",
+    );
+
+    assert_eq!(
+        first
+            .domain()
+            .active_project()
+            .expect("活跃工程")
+            .time_signature,
+        yeban_model::TimeSignature {
+            numerator: 6,
+            denominator: 8,
+        },
+        "非法拍号调用被拒绝后，活跃工程拍号必须保持为 6/8"
+    );
+}
