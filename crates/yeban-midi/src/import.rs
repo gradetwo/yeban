@@ -1351,27 +1351,29 @@ pub fn adopt_copyright(
             reason: None,
         };
     }
-    let text = unique_conductor_text(&parsed.copyrights, None);
-    if target_empty && project.author.is_empty() {
-        if let Some(new_author) = text {
-            let dropped = read - 1;
-            let reason = (dropped > 0).then(|| {
-                format!(
-                    "copyright-partially-adopted: the conductor copyright `{new_author}` was \
-                     written to project.author; {dropped} other copyright event(s) of the file \
-                     (duplicates / empty / non-UTF-8) have no second carrier"
-                )
-            });
-            return ScalarAdoption {
-                op: Some(Op::SetAuthor {
-                    old_author: project.author.clone(),
-                    new_author,
-                }),
-                ops: Vec::new(),
-                dropped,
-                reason,
-            };
-        }
+    let text = if target_empty && project.author.is_empty() {
+        unique_conductor_text(&parsed.copyrights, None)
+    } else {
+        None
+    };
+    if let Some(new_author) = text {
+        let dropped = read - 1;
+        let reason = (dropped > 0).then(|| {
+            format!(
+                "copyright-partially-adopted: the conductor copyright `{new_author}` was \
+                 written to project.author; {dropped} other copyright event(s) of the file \
+                 (duplicates / empty / non-UTF-8) have no second carrier"
+            )
+        });
+        return ScalarAdoption {
+            op: Some(Op::SetAuthor {
+                old_author: project.author.clone(),
+                new_author,
+            }),
+            ops: Vec::new(),
+            dropped,
+            reason,
+        };
     }
     let blocker = if !target_empty {
         "the project already has content (sections / MIDI notes / audio clips / automation points)"
