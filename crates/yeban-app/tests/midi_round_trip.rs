@@ -1920,6 +1920,11 @@ fn the_import_reports_every_aux_event_kind_as_read_and_dropped() {
         exported.aux_events.count(MidiAuxEventKind::TimeSignature),
         1
     );
+    assert_eq!(
+        exported.aux_events.count(MidiAuxEventKind::Copyright),
+        1,
+        "重导出包含工程 author 的一条 copyright"
+    );
     assert_eq!(exported.aux_events.count(MidiAuxEventKind::TrackName), 3);
     assert_eq!(
         exported.aux_events.count(MidiAuxEventKind::ControlChange),
@@ -1928,8 +1933,8 @@ fn the_import_reports_every_aux_event_kind_as_read_and_dropped() {
     );
     assert_eq!(
         exported.aux_events.total(),
-        9,
-        "重导出的 aux 事件包含 tempo 1 + 拍号 1 + 轨名 3 + CC 4"
+        10,
+        "重导出的 aux 事件包含 tempo 1 + 拍号 1 + 版权 1 + 轨名 3 + CC 4"
     );
     assert_eq!(exported.control_changes.len(), 4);
     assert!(
