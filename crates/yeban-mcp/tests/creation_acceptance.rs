@@ -1860,7 +1860,7 @@ fn a_four_bar_piece_built_only_from_mcp_tool_calls_renders_measurably() {
 ///
 /// 这份清单是判据的一部分（`assert!(WALLS.len() >= 5)`）：工具面改善之后，作者应当
 /// **主动**回来删掉对应的墙，而不是让它们烂在文档里。
-pub const WALLS: [&str; 8] = [
+pub const WALLS: [&str; 7] = [
     "① 创建片段（`create:true`）与摆放（`placement`）必须分两次调用 + 两次\
      `yeban_merge_proposal`：同给是 `INVALID_PARAMETER_RANGE` / `placementIsNotCreation`\
      （`domain/mod.rs` 的 `plan_edit_notes`）。4 条轨因此要 **8** 次提案合并才搭得完\
@@ -1869,27 +1869,22 @@ pub const WALLS: [&str; 8] = [
     "② 一条 `yeban_edit_notes` 调用只有一个顶层 `trackId`：`setTrackMute` / `setParam` /\
      `setTrackSolo` 都只作用于它。想把三条轨一起静音（做\"主音独奏\"）没有一次调用能表达——\
      本文件用 `setTrackSolo` 绕开（solo 的语义是\"其余全部让路\"），否则要 3 次提案 + 3 次合并。",
-    "③ `yeban_edit_notes` 的 `ops` 里**没有**改 `ClipPlacement.loop_config` 的 op：改时长\
-     有 `setClipPlacementDuration`，但循环区间/开关只存在于 `placement` 参数的 `add` 形态。\
-     本文件绕法：`placement:{kind:\"remove\"}` 摘掉种子摆放，再单独\
-     `placement:{kind:\"add\", loopEnabled:true, loopStartTick:0, loopEndTick:2880}` 重摆。\
-     想改一条**已有**摆放的循环，只能 remove + add 两步。",
-    "④ 设备链**没有 CRUD 工具**：装/拆/改旁通只能经 `yeban_edit_notes` 的\
+    "③ 设备链**没有 CRUD 工具**：装/拆/改旁通只能经 `yeban_edit_notes` 的\
      `insertDevice` / `removeDevice` / `setDeviceBypassed` op；`yeban_query_engine_state`\
-     是只读的。本文件按这条唯一通路装混响并用它做 A/B。",
-    "⑤ 段落的建/改/删**没有专用工具**，全部挤在 `yeban_edit_notes` 的 `setSection` /\
+     是只读的。本文件按这条唯一通路装混响并用它做 A/B（注：原先的'改已有摆放循环'\
+     已在 `#336` 由 `setClipPlacementLoop` 彻底消除）。",
+    "④ 段落的建/改/删**没有专用工具**，全部挤在 `yeban_edit_notes` 的 `setSection` /\
      `removeSection` op 里；`create:true` 时必须由调用方自己编一个 26 字符 `sectionId`。\
      想按名字找段落只能拉全量 `yeban_query_project` 再自己遍历 `sections`（没有\"按名字\"\
      或\"按 tick 区间\"的查询）。本文件在第一次编辑批里连建两个段落，省掉两次往返。",
-    "⑥ 主音的颤音曲线只能整体写（`add.note.pitchBendCurve` 或 `setNotePitchShape` 的\
-     `newPitchBendCurve`），**没有**逐点增删的 op；改一个点要整条重写。本文件的曲线是\
-     构造期生成的 33 点数组，一次写入；拍号/速度那类顶层字段则只能经 `yeban_open_project`\
-     的 `timeSignature`（模型 `Op` 全集没有写拍号的变体——这是文档里承认的缺口）。",
-    "⑦ 两种提交模型混用：`yeban_edit_notes` 是\"提案 + `yeban_merge_proposal`\"，而\
+    "⑤ 主音的颤音曲线只能整体写（`add.note.pitchBendCurve` 或 `setNotePitchShape` 的\
+     `newPitchBendCurve`），**没有**逐点增删的 op；改一个点要整条重写（注：原先'拍号\
+     没有 op'的缺口已由 `#338` 的 `setTimeSignature` / `setTimeSignaturePoint` 闭环）。",
+    "⑥ 两种提交模型混用：`yeban_edit_notes` 是\"提案 + `yeban_merge_proposal`\"，而\
      `yeban_edit_automation` 是**直接提交**（`OpOrigin::McpEdit`，没有提案、没有 merge）。\
      本文件因此有 8 次 merge（搭曲子）和 2 次无 merge 的自动化写点；把一次编辑从 `ops`\
      挪到自动化工具，响应里就少一整套 `proposal` / `pendingMerge` 字段。",
-    "⑧ `yeban_render_master` 的 `sources[].peak` 已经给了**一次渲染**里的逐源峰值\
+    "⑦ `yeban_render_master` 的 `sources[].peak` 已经给了**一次渲染**里的逐源峰值\
      （本文件用它证明每轨在基线里可闻），但\"拿掉这条轨后母带变了多少\"没有读数：\
      逐轨**贡献**只能靠 N 次静音/独奏渲染 + 本地逐样本比较（本文件 4 次静音 + 2 次独奏）。\
      这不是工具错误，是测量成本；它说明工具面没有\"分轨贡献/差值\"的一眼读法。",
