@@ -3885,6 +3885,18 @@ mod tests {
                     curve: crate::music::CurveType::SCurve,
                 }),
             },
+            // 单点弯音（ADR-0019）：上面那条刚写了 `(0, 0)` 与 `(240, 200)`，
+            // 这里在空着的 tick 480 **插入**一个点（`old_cents: None`）⇒ 前置条件
+            // 成立；逆操作把 `old/new` 对调 ⇒ 删掉同一个点。第二遍重放会被
+            // "该 tick 已经有点"拒绝 ⇒ 归入值变换（幂等）。
+            Op::SetNotePitchBendPoint {
+                track_id: f.lead,
+                clip_id: f.clip,
+                note_id: f.note,
+                tick: 480,
+                old_cents: None,
+                new_cents: Some(-100),
+            },
             Op::AddClipPlacement {
                 track_id: f.bass,
                 placement: new_placement,
