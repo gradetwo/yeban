@@ -896,7 +896,6 @@ pub enum Op {
         /// 修改后的调号（由 [`KeySignature::validate`] 判决）。
         new_key_signature: Option<KeySignature>,
     },
-    },
     /// 声明（或更新）一条**资产索引**（`[MODEL-AST-007]` / `[MUST-GATE-014]`）。
     ///
     /// ⚠ 本变体是**三处已登记缺口的共同根**：在它之前，模型**没有任何 `Op` 能写
