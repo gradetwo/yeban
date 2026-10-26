@@ -11220,3 +11220,32 @@ $ python3 scripts/gates/check_phase_status.py   # 退出 0
 
 
 
+
+---
+
+## 2026-10-27：MIDI 导入乐器名与音色名损失精确记账与 ADR-0013 D3 落地
+
+- **需求规范 ID**: `[ARCH-EXT-002]` `[MCP-TOOL-EXT-IMPORT-MIDI]`
+- **实施工作线**: `line/mcp-import-instrument-program-losses` (`6a1511c0`)，经 subagent `qodercli` (`Qwen3.8-Flash`) 方案勘察与 `qoderclicn` (`DeepSeek-Flash`) 实施、审核后合并落地。
+- **背景与目标**:
+  - `ADR-0013` D1/D2 定义了多轨拆分新建音轨的命名回退机制（`FF 03 TrackName -> FF 04 InstrumentName -> FF 08 ProgramName -> 机器名 Track {n}`）；
+  - 此前 `STORABLE_KINDS` 仅有 8 类，未包含 `InstrumentName` 与 `ProgramName`。即使拆分音轨成功采纳了乐器名或音色名作为轨名，`losses` 依然按全损报告（`dropped == read`），与实际落地事实脱节；
+  - 依照 `ADR-0013` D3 ("损失读数精确记账契约")，将 `InstrumentName` 与 `ProgramName` 纳入有落点的可采纳类别，精准统计拆轨中实际采纳的条数并从 `dropped` 中扣除（`dropped = read.saturating_sub(attached)`），未被采纳（或存在歧义/全损）的元事件则如实全损上报并附带原因。
+- **实施**:
+  - `crates/yeban-midi/src/import.rs`:
+    - `STORABLE_KINDS` 由 8 项扩充至 10 项（新增 `MidiAuxEventKind::InstrumentName` 与 `MidiAuxEventKind::ProgramName`）。
+    - `STORABLE_KIND_KEYS` 同步由 8 项扩充至 10 项（新增 `"instrument-name"` 与 `"program-name"`）。
+    - 重构 `split_track_name`，返回 `(String, Option<MidiAuxEventKind>)`，指明该音轨名称来源于哪类元事件（或回退机器名 `None`）。新增辅助函数 `adopted_name_events` 精确计算拆分轨上被采纳的元事件数。
+    - `plan_midi_import` 在 `split_tracks: true` 遍历后续音轨时，分别累加 `instrument_names_attached` 与 `program_names_attached`。
+    - `build_losses` 接收上述采纳计数，针对 `InstrumentName` 与 `ProgramName` 精确计算 `dropped = read.saturating_sub(attached)`；当整类全被采纳时移除损失原因，有损失时提供明确说明文案。
+    - `static_loss_reason` 同步更新两类事件的说明（从"模型无字段"更新为"未被采纳为拆分音轨名"）。
+    - 单元测试 `storable_kinds_consistency` 更新断言长度为 10；`split_track_naming_follows_the_adr_0013_fallback_chain` 测试新增对 `InstrumentName` (7 读 / 5 丢) 与 `ProgramName` (4 读 / 2 丢) 的精确损失读数断言。
+  - `crates/yeban-midi/src/midi.rs`:
+    - 更新 `MidiAuxEventKind` 注释说明（"八类" -> "十类"），明确记录 `InstrumentName` 与 `ProgramName` 在拆分新建音轨时的落点通道与损失记账规则。
+  - `docs/adr/ADR-0013-midi-track-name-fallback-order.md`:
+    - 状态由 `Proposed` 正式更新为 `Approved`（经常设授权裁决并完全落地 D1/D2/D3）。
+- **验证**:
+  - `cargo fmt --check`: 格式化通过。
+  - `python3 scripts/guards/policy_check.py`: 18 项守卫全部绿灯通过。
+  - `cargo-local.sh test -p yeban-midi`: 307 个测试全部通过（213 库单元测试 + 50 mxl + 9 real_world + 35 smf_contract 全部 ok，0 failed）。
+  - `cargo-local.sh clippy -p yeban-midi --lib --tests -- -D warnings`: 零告警通过。
