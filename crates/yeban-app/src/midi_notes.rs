@@ -449,6 +449,7 @@ pub fn write_notes(
         &MidiImportOptions {
             track_id: track,
             clip_id: None,
+            ..Default::default()
         },
     )
     .map_err(|error| MidiNoteError::Destination(error.to_string()))?;
@@ -504,6 +505,7 @@ pub fn live_destination(project: &YebanProjectV1) -> Result<(EntityId, EntityId)
         &MidiImportOptions {
             track_id: None,
             clip_id: None,
+            ..Default::default()
         },
     )
     .map_err(|error| MidiNoteError::Destination(error.to_string()))

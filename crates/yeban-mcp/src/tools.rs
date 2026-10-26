@@ -1200,6 +1200,12 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
                 false,
                 "可选的目标片段 EntityId (26 字符 ULID)；缺省由 destination 选择目标音轨上的首个 MIDI 片段",
             ),
+            param(
+                "splitTracks",
+                "boolean",
+                false,
+                "可选的目标行为：是否将多轨 SMF 中的后续音符轨道拆分到新轨道，缺省为 true",
+            ),
         ],
         errors: &[
             ErrorCode::NoActiveProject,

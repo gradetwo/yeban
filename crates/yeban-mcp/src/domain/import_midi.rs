@@ -106,6 +106,10 @@ pub fn plan(project: &YebanProjectV1, arguments: &Map<String, Value>) -> Result<
 
     let track_id_opt = super::parse_optional_entity_id(arguments, "trackId")?;
     let clip_id_opt = super::parse_optional_entity_id(arguments, "clipId")?;
+    let split_tracks = arguments
+        .get("splitTracks")
+        .and_then(Value::as_bool)
+        .unwrap_or(true);
 
     if let Some(track_id) = track_id_opt
         && !project.tracks.contains_key(&track_id)
@@ -121,6 +125,7 @@ pub fn plan(project: &YebanProjectV1, arguments: &Map<String, Value>) -> Result<
         &MidiImportOptions {
             track_id: track_id_opt,
             clip_id: clip_id_opt,
+            split_tracks,
         },
     )
     .map_err(map_import_error)?;
@@ -172,6 +177,7 @@ pub fn plan(project: &YebanProjectV1, arguments: &Map<String, Value>) -> Result<
         &MidiImportOptions {
             track_id: Some(track_id),
             clip_id: Some(clip_id),
+            split_tracks,
         },
     )
     .map_err(map_import_error)?;
