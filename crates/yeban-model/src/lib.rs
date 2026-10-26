@@ -73,7 +73,7 @@ pub use ops::{Op, OpOrigin, StampedOp};
 pub use project::{
     AssetMetadata, AutomationLane, AutomationPoint, AutomationTarget, AutomationUnit,
     AutomationValueDomain, AutomationWriteMode, BitDepth, BlockSize, ClipContent, ClipPlacement,
-    ClipPoolEntry, DeviceDefinition, DeviceKind, LaunchQuantization, LoopConfig,
+    ClipPoolEntry, DeviceDefinition, DeviceKind, KeySignature, LaunchQuantization, LoopConfig,
     MIN_READER_VERSION, MacroMapping, MacroParameter, MediaKind, PanLaw, ParameterValue,
     ProjectAudioConfig, ProjectMetadata, READER_SCHEMA_VERSION, RoutingEdge, RoutingGraph,
     RoutingKind, SCHEMA_VERSION, SampleRate, SamplerBinding, SceneV3, SectionV3, TimeSignature,

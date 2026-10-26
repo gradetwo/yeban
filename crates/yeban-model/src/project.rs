@@ -132,6 +132,41 @@ impl Default for TimeSignature {
     }
 }
 
+/// 调号 [MODEL-AST-002]（遵循 MIDI 标准：升降号数 + 调式）。
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct KeySignature {
+    /// 升降号数量（-7 到 +7：负数表示降号数量，正数表示升号数量，0 为 C 大调 / A 小调）。
+    pub sharps_flats: i8,
+    /// 是否为小调（false = 大调 Major, true = 小调 Minor）。
+    pub is_minor: bool,
+}
+
+impl KeySignature {
+    /// 校验调号取值范围。
+    ///
+    /// # Errors
+    ///
+    /// 升降号数量越界 → [`ModelError::KeySignatureSharpsFlatsOutOfRange`]。
+    pub fn validate(&self) -> Result<(), ModelError> {
+        if !(-7..=7).contains(&self.sharps_flats) {
+            return Err(ModelError::KeySignatureSharpsFlatsOutOfRange {
+                value: self.sharps_flats,
+            });
+        }
+        Ok(())
+    }
+}
+
+impl Default for KeySignature {
+    /// 默认 C 大调（0 个升降号，大调）。
+    fn default() -> Self {
+        Self {
+            sharps_flats: 0,
+            is_minor: false,
+        }
+    }
+}
+
 /// 位深 [MODEL-AST-002]（规范枚举，序列化为精确字符串）。
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum BitDepth {
@@ -1616,6 +1651,9 @@ pub struct YebanProjectV1 {
     pub time_signature: TimeSignature,
     /// 拍号变化映射（tick > 0）。
     pub time_signature_map: BTreeMap<u64, TimeSignature>,
+    /// 调号 [MODEL-AST-002]（遵循 MIDI 标准：升降号数 + 调式）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key_signature: Option<KeySignature>,
     /// 音频配置 —— **采样率与声相律的唯一来源**。
     pub audio_config: ProjectAudioConfig,
     /// 确定性随机种子（`probability` 触发判定等算法的跨机一致性）[MODEL-AST-005]。
@@ -1678,6 +1716,7 @@ impl Default for YebanProjectV1 {
             tempo_map: BTreeMap::new(),
             time_signature: TimeSignature::default(),
             time_signature_map: BTreeMap::new(),
+            key_signature: None,
             audio_config: ProjectAudioConfig::default(),
             rng_seed: DEFAULT_RNG_SEED,
             metadata: ProjectMetadata::default(),
@@ -1796,6 +1835,9 @@ impl YebanProjectV1 {
                 return Err(ModelError::TempoMapZeroTick { tick: 0 });
             }
             ts.validate()?;
+        }
+        if let Some(ref ks) = self.key_signature {
+            ks.validate()?;
         }
 
         if self.tracks.is_empty() {
@@ -2312,6 +2354,55 @@ mod tests {
                 "分子 {numerator} 是闭区间的端点, 必须合法"
             );
         }
+    }
+
+    #[test]
+    fn key_signature_validation_accepts_valid_range_and_rejects_out_of_range() {
+        for sharps_flats in -7..=7 {
+            for is_minor in [false, true] {
+                let ks = KeySignature {
+                    sharps_flats,
+                    is_minor,
+                };
+                assert_eq!(
+                    ks.validate(),
+                    Ok(()),
+                    "调号 {sharps_flats} (小调={is_minor}) 在 -7..=7 范围内必须合法"
+                );
+            }
+        }
+        for out_of_range in [-8_i8, 8, -128, 127] {
+            let ks = KeySignature {
+                sharps_flats: out_of_range,
+                is_minor: false,
+            };
+            assert_eq!(
+                ks.validate(),
+                Err(ModelError::KeySignatureSharpsFlatsOutOfRange {
+                    value: out_of_range
+                }),
+                "调号 {out_of_range} 超出 -7..=7 范围必须被拒"
+            );
+        }
+
+        let mut doc = YebanProjectV1::default();
+        assert_eq!(doc.key_signature, None);
+        assert_eq!(doc.validate(), Ok(()));
+
+        doc.key_signature = Some(KeySignature {
+            sharps_flats: 4,
+            is_minor: true,
+        });
+        assert_eq!(doc.validate(), Ok(()));
+
+        doc.key_signature = Some(KeySignature {
+            sharps_flats: 9,
+            is_minor: false,
+        });
+        assert_eq!(
+            doc.validate(),
+            Err(ModelError::KeySignatureSharpsFlatsOutOfRange { value: 9 })
+        );
     }
 
     #[test]

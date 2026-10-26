@@ -178,6 +178,8 @@ pub struct MidiExport {
     pub tempos: Vec<MidiTempo>,
     /// 轨道。
     pub tracks: Vec<MidiExportTrack>,
+    /// 调号 [MODEL-AST-002]（写入 conductor 轨的首个元事件之一）。
+    pub key_signature: Option<yeban_model::project::KeySignature>,
 }
 
 /// 导出失败的原因。
@@ -372,6 +374,11 @@ enum RawEvent {
         numerator: u8,
         denominator_pow2: u8,
     },
+    KeySignature {
+        tick: u64,
+        sharps_flats: i8,
+        is_minor: bool,
+    },
 }
 
 impl RawEvent {
@@ -381,7 +388,8 @@ impl RawEvent {
             | Self::NoteOff { tick, .. }
             | Self::Lyric { tick, .. }
             | Self::Tempo { tick, .. }
-            | Self::TimeSignature { tick, .. } => *tick,
+            | Self::TimeSignature { tick, .. }
+            | Self::KeySignature { tick, .. } => *tick,
         }
     }
 
@@ -431,6 +439,17 @@ impl RawEvent {
                 *group,
                 1,
                 (u32::from(*numerator) << 8) | u32::from(*denominator_pow2),
+                "",
+            ),
+            Self::KeySignature {
+                sharps_flats,
+                is_minor,
+                ..
+            } => (
+                3,
+                0,
+                2,
+                (((*sharps_flats as u8) as u32) << 8) | if *is_minor { 1 } else { 0 },
                 "",
             ),
         }
@@ -591,6 +610,13 @@ impl MidiExport {
                 });
             }
         }
+        if let Some(ks) = self.key_signature {
+            tempo_events.push(RawEvent::KeySignature {
+                tick: 0,
+                sharps_flats: ks.sharps_flats,
+                is_minor: ks.is_minor,
+            });
+        }
         sort_events(&mut tempo_events);
 
         // 每条输出轨道 = 一串规范化事件。
@@ -681,6 +707,11 @@ impl MidiExport {
                         24,
                         8,
                     )),
+                    RawEvent::KeySignature {
+                        sharps_flats,
+                        is_minor,
+                        ..
+                    } => TrackEventKind::Meta(MetaMessage::KeySignature(*sharps_flats, *is_minor)),
                 };
                 lane.push(TrackEvent {
                     delta: u28::new(*delta),
@@ -1041,6 +1072,19 @@ pub struct ParsedMidi {
     pub non_utf8_lyrics: usize,
     /// `FF 05` 的负载是**空**的事件数（空文本没有音节可写，⛔ 不是"丢失"）。
     pub empty_lyrics: usize,
+    /// 全部 `FF 59` 调号事件（**文件顺序**）。
+    pub key_signatures: Vec<ParsedKeySignature>,
+}
+
+/// 回读的一条 `FF 59` 调号事件。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ParsedKeySignature {
+    /// 绝对 tick。
+    pub tick: u64,
+    /// 升降号数量（-7 到 +7）。
+    pub sharps_flats: i8,
+    /// 是否为小调（false = Major, true = Minor）。
+    pub is_minor: bool,
 }
 
 /// SMF 里的一个 chunk: fourcc 与它在文件里的负载范围。
@@ -1146,6 +1190,7 @@ pub fn parse_smf(bytes: &[u8]) -> Result<ParsedMidi, MidiError> {
     // 因为 marker 的 tick 仍是段落边界。
     let mut markers = Vec::new();
     let mut track_names = Vec::new();
+    let mut key_signatures = Vec::new();
     let mut end_tick = 0u64;
     for (track_index, track) in smf.tracks.iter().enumerate() {
         let mut tick = 0u64;
@@ -1299,8 +1344,13 @@ pub fn parse_smf(bytes: &[u8]) -> Result<ParsedMidi, MidiError> {
                     MetaMessage::SmpteOffset(_) => {
                         aux_events.record(MidiAuxEventKind::SmpteOffset);
                     }
-                    MetaMessage::KeySignature(..) => {
+                    MetaMessage::KeySignature(sf, mi) => {
                         aux_events.record(MidiAuxEventKind::KeySignature);
+                        key_signatures.push(ParsedKeySignature {
+                            tick,
+                            sharps_flats: sf,
+                            is_minor: mi,
+                        });
                     }
                     MetaMessage::SequencerSpecific(_) => {
                         aux_events.record(MidiAuxEventKind::SequencerSpecific);
@@ -1340,6 +1390,7 @@ pub fn parse_smf(bytes: &[u8]) -> Result<ParsedMidi, MidiError> {
         lyrics,
         non_utf8_lyrics,
         empty_lyrics,
+        key_signatures,
     })
 }
 
@@ -1412,6 +1463,7 @@ mod tests {
             ppq: DEFAULT_PPQ,
             tempos: vec![MidiTempo::with_time_signature(120.0, 4, 2)],
             tracks,
+            key_signature: None,
         }
     }
 
@@ -1966,6 +2018,7 @@ mod tests {
             tempos: Vec::new(),
             // 轨道名为空 -> 不写 TrackName meta, 于是 MTrk 的第一个事件就是这颗音符。
             tracks: vec![track_from_notes("", 0, &[note(boundary, 60, 120, 64)])],
+            key_signature: None,
         };
         let bytes = source.to_smf_bytes().expect("导出");
 
@@ -2051,6 +2104,7 @@ mod tests {
                 },
             ],
             tracks: vec![track_from_notes("T", 0, &[note(0, 60, 960, 64)])],
+            key_signature: None,
         };
         let bytes = source.to_smf_bytes().expect("导出");
         let parsed = parse_smf(&bytes).expect("回读");
@@ -2071,6 +2125,37 @@ mod tests {
         // conductor 轨道存在 -> 格式 1 有两条 MTrk
         let chunks = track_chunks(&bytes).expect("chunk 布局");
         assert_eq!(chunks.len(), 3, "MThd + conductor + 一条音符轨");
+    }
+
+    /// 判据 5d: 调号事件写进 conductor 轨并在回读时忠实保留。
+    #[test]
+    fn key_signature_round_trips_to_smf_conductor_track() {
+        let ks = yeban_model::project::KeySignature {
+            sharps_flats: -3,
+            is_minor: true,
+        };
+        let source = MidiExport {
+            format: MidiFormat::Parallel,
+            ppq: DEFAULT_PPQ,
+            tempos: vec![MidiTempo::with_time_signature(120.0, 4, 2)],
+            tracks: vec![track_from_notes("T", 0, &[note(0, 60, 960, 64)])],
+            key_signature: Some(ks),
+        };
+        let bytes = source.to_smf_bytes().expect("导出");
+        let parsed = parse_smf(&bytes).expect("回读");
+        assert_eq!(parsed.aux_events.count(MidiAuxEventKind::KeySignature), 1);
+        assert_eq!(parsed.key_signatures.len(), 1);
+        assert_eq!(parsed.key_signatures[0].tick, 0);
+        assert_eq!(parsed.key_signatures[0].sharps_flats, -3);
+        assert!(parsed.key_signatures[0].is_minor);
+
+        // 字节级核验：conductor 轨包含 `FF 59 02 FD 01` (0xFD == -3i8 as u8)
+        assert!(
+            bytes
+                .windows(5)
+                .any(|window| window == [0xFF, 0x59, 0x02, 0xFD, 0x01]),
+            "SMF 导出的字节必须包含 0xFF 0x59 0x02 sf mi 元事件"
+        );
     }
 
     /// 判据 5b (R5): 同一 tick 上"只有拍号"的记录与"tempo + 拍号"的记录
@@ -2098,6 +2183,7 @@ mod tests {
                 },
             ],
             tracks: vec![track_from_notes("T", 0, &[note(0, 60, 960, 64)])],
+            key_signature: None,
         };
         let bytes = source.to_smf_bytes().expect("导出");
         let parsed = parse_smf(&bytes).expect("回读");
@@ -2138,6 +2224,7 @@ mod tests {
                 },
             ],
             tracks: vec![track_from_notes("T", 0, &[note(0, 60, 960, 64)])],
+            key_signature: None,
         };
         let parsed = parse_smf(&source.to_smf_bytes().expect("导出")).expect("回读");
         // 记录**多重集**相等（`tick, tempo, 拍号` 三者成组比较 ⇒ 配对也在此断言里）。
@@ -2441,6 +2528,7 @@ mod tests {
             ppq: DEFAULT_PPQ,
             tempos: vec![first, second],
             tracks: vec![track_from_notes("T", 0, &[note(0, 60, 960, 64)])],
+            key_signature: None,
         };
         let forward = build(tempo_only, signature_only);
         let reverse = build(signature_only, tempo_only);
@@ -2752,6 +2840,7 @@ mod tests {
                 channel: 16,
                 notes: vec![note(0, 200, 480, 100)],
             }],
+            key_signature: None,
         };
         assert_eq!(
             source.to_smf_bytes(),
@@ -2771,6 +2860,7 @@ mod tests {
             ppq: 0,
             tempos: Vec::new(),
             tracks: Vec::new(),
+            key_signature: None,
         };
         assert_eq!(
             source.to_smf_bytes(),
@@ -2855,9 +2945,10 @@ mod tests {
                     ppq: 960,
                     tempos: Vec::new(),
                     tracks: Vec::new(),
+                    key_signature: None,
                 }
             ),
-            "MidiExport { format: SingleTrack, ppq: 960, tempos: [], tracks: [] }"
+            "MidiExport { format: SingleTrack, ppq: 960, tempos: [], tracks: [], key_signature: None }"
         );
         assert_eq!(
             format!(
@@ -2875,12 +2966,13 @@ mod tests {
                     lyrics: Vec::new(),
                     non_utf8_lyrics: 0,
                     empty_lyrics: 0,
+                    key_signatures: Vec::new(),
                 }
             ),
             "ParsedMidi { format: Parallel, ppq: 480, tracks: 0, aux_events: \
              MidiAuxEventCounts { counts: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, \
              0, 0, 0, 0, 0, 0, 0] }, tempos: [], track_names: [], markers: [], end_tick: 0, \
-             notes: [], lyrics: [], non_utf8_lyrics: 0, empty_lyrics: 0 }"
+             notes: [], lyrics: [], non_utf8_lyrics: 0, empty_lyrics: 0, key_signatures: [] }"
         );
         assert_eq!(
             format!(
@@ -2954,6 +3046,7 @@ mod tests {
             ppq: DEFAULT_PPQ,
             tempos: Vec::new(),
             tracks: vec![with_nan()],
+            key_signature: None,
         };
         assert!(
             export() != export(),
@@ -3079,12 +3172,14 @@ mod tests {
             ppq: DEFAULT_PPQ,
             tempos: Vec::new(),
             tracks: vec![lane("A", 0), lane("B", 1)],
+            key_signature: None,
         };
         let reversed = MidiExport {
             format: MidiFormat::Parallel,
             ppq: DEFAULT_PPQ,
             tempos: Vec::new(),
             tracks: vec![lane("B", 1), lane("A", 0)],
+            key_signature: None,
         };
         assert!(forward == forward.clone(), "对照臂：同一顺序必须相等");
         assert!(
@@ -3111,6 +3206,7 @@ mod tests {
                 },
             ],
             tracks: Vec::new(),
+            key_signature: None,
         };
         assert!(
             with_tempos(0, 100) != with_tempos(100, 0),
@@ -3151,6 +3247,7 @@ mod tests {
             ppq: DEFAULT_PPQ,
             tempos: Vec::new(),
             tracks: Vec::new(),
+            key_signature: None,
         };
         // 单字段差异 ①：只改 `format`。
         assert!(
@@ -3167,6 +3264,17 @@ mod tests {
                 ..base.clone()
             },
             "只改 `ppq` 就必须不相等"
+        );
+        // 单字段差异 ③：只改 `key_signature`。
+        assert!(
+            base != MidiExport {
+                key_signature: Some(yeban_model::project::KeySignature {
+                    sharps_flats: 1,
+                    is_minor: false
+                }),
+                ..base.clone()
+            },
+            "只改 `key_signature` 就必须不相等"
         );
         // 对照臂：原样拷贝必须相等。
         assert!(base == base.clone(), "对照臂：同值必须相等");

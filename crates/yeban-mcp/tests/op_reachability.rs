@@ -160,7 +160,7 @@ pub const EXPECTED_SITES: [(&str, &[&str]); 51] = [
 /// （`yeban_edit_notes` 的 `setTrackSampler` 有 `parse_one` / `compile` 构造点，
 /// 已移进上面的 `EXPECTED_SITES`）。判据仍双向守着：谁把一条**可达**的变体塞回这里，
 /// 或把一条**不可达**的变体写进 `EXPECTED_SITES`，都会红。
-const KNOWN_UNREACHABLE: [(&str, &str); 2] = [
+const KNOWN_UNREACHABLE: [(&str, &str); 3] = [
     (
         "SetTempoPoint",
         "工具面（yeban_edit_notes）尚未提供单独编辑 tempo map 时间点的动作，目前通过 yeban_import_midi 从 MIDI 导入自动构造",
@@ -168,6 +168,10 @@ const KNOWN_UNREACHABLE: [(&str, &str); 2] = [
     (
         "SetTimeSignaturePoint",
         "工具面（yeban_edit_notes）尚未提供单独编辑 time signature map 时间点的动作，目前通过 yeban_import_midi 从 MIDI 导入自动构造",
+    ),
+    (
+        "SetKeySignature",
+        "工具面尚未提供单独编辑调号的动作，目前通过 yeban_import_midi 从 MIDI 导入自动构造",
     ),
 ];
 // ⭐ 历史: 本清单的清空**是证明过的**（临时加回一条 ⇒ 反向断言逐字报"`SetTempo` 既在

@@ -165,6 +165,7 @@ pub fn code_for_model(error: &ModelError) -> ErrorCode {
         | ModelError::BpmOutOfRange { .. }
         | ModelError::TimeSignatureNumeratorOutOfRange { .. }
         | ModelError::TimeSignatureDenominatorUnsupported { .. }
+        | ModelError::KeySignatureSharpsFlatsOutOfRange { .. }
         | ModelError::PanOutOfRange { .. }
         | ModelError::MacroValueOutOfRange { .. }
         | ModelError::MacroDepthOutOfRange { .. }

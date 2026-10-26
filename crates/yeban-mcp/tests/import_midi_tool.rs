@@ -288,6 +288,7 @@ fn create_multitrack_smf_file() -> PathBuf {
                 notes: vec![yeban_model::MidiNote::new(EntityId::new(), 480, 48, 480)],
             },
         ],
+        key_signature: None,
     };
     let bytes = export.to_smf_bytes().expect("SMF 编码");
     let path = std::env::temp_dir().join(format!(

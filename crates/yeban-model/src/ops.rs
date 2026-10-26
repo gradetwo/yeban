@@ -52,8 +52,8 @@ use crate::ids::{AssetHash, EntityId};
 use crate::music::{MidiNote, SlideConfig};
 use crate::project::{
     AssetMetadata, AutomationLane, AutomationPoint, AutomationTarget, ClipContent, ClipPlacement,
-    ClipPoolEntry, DeviceDefinition, LoopConfig, MAX_BPM, MIN_BPM, RoutingEdge, SamplerBinding,
-    SceneV3, SectionV3, TimeSignature, TrackV3, TransportConfig, YebanProjectV1,
+    ClipPoolEntry, DeviceDefinition, KeySignature, LoopConfig, MAX_BPM, MIN_BPM, RoutingEdge,
+    SamplerBinding, SceneV3, SectionV3, TimeSignature, TrackV3, TransportConfig, YebanProjectV1,
 };
 
 /// 操作来源 [ARCH-OPS-001]。
@@ -886,6 +886,16 @@ pub enum Op {
         /// 修改后的拍号（`None` 表示删除该映射点）。
         new_time_signature: Option<TimeSignature>,
     },
+    /// 设置工程调号 [MODEL-AST-002]。
+    ///
+    /// 遵循 MIDI 标准：升降号数量（-7 到 +7）与调式（大调 / 小调）。
+    /// 为 `None` 表示未设定调号。
+    SetKeySignature {
+        /// 修改前的调号（来自当前文档）。
+        old_key_signature: Option<KeySignature>,
+        /// 修改后的调号（由 [`KeySignature::validate`] 判决）。
+        new_key_signature: Option<KeySignature>,
+    },
     /// 声明（或更新）一条**资产索引**（`[MODEL-AST-007]` / `[MUST-GATE-014]`）。
     ///
     /// ⚠ 本变体是**三处已登记缺口的共同根**：在它之前，模型**没有任何 `Op` 能写
@@ -1249,6 +1259,7 @@ impl Op {
             Self::SetTitle { .. } => "SetTitle",
             Self::SetTimeSignature { .. } => "SetTimeSignature",
             Self::SetTimeSignaturePoint { .. } => "SetTimeSignaturePoint",
+            Self::SetKeySignature { .. } => "SetKeySignature",
             Self::SetAsset { .. } => "SetAsset",
             Self::RemoveAsset { .. } => "RemoveAsset",
             Self::SetTrackSolo { .. } => "SetTrackSolo",
@@ -2001,6 +2012,18 @@ impl Op {
                 }
                 Ok(())
             }
+            Self::SetKeySignature {
+                old_key_signature,
+                new_key_signature,
+            } => {
+                if let Some(ks) = new_key_signature {
+                    ks.validate()?;
+                }
+                if doc.key_signature != *old_key_signature {
+                    return Err(ModelError::OpStateMismatch { op: self.name() });
+                }
+                Ok(())
+            }
             Self::SetMacro {
                 track_id,
                 macro_index,
@@ -2514,6 +2537,13 @@ impl Op {
                 tick: *tick,
                 old_time_signature: *new_time_signature,
                 new_time_signature: *old_time_signature,
+            },
+            Self::SetKeySignature {
+                old_key_signature,
+                new_key_signature,
+            } => Self::SetKeySignature {
+                old_key_signature: *new_key_signature,
+                new_key_signature: *old_key_signature,
             },
             // ⭐ **照 [`Op::SetSection`] 的先例**（⛔ 不是纯交换）：`old_asset` 为 `None`
             // 表示"创建"，而**创建态没有可交换的旧值** ⇒ 逆操作**必须是删除变体**。
@@ -3084,6 +3114,12 @@ impl Op {
                         doc.time_signature_map.remove(tick);
                     }
                 }
+                Ok(())
+            }
+            Self::SetKeySignature {
+                new_key_signature, ..
+            } => {
+                doc.key_signature = *new_key_signature;
                 Ok(())
             }
             // 只取走那**一个**索引项：⛔ 不碰 `clip_pool`、⛔ 不碰归档里的字节。
@@ -3951,6 +3987,14 @@ mod tests {
                     denominator: 4,
                 }),
             },
+            // 调号：夹具的 `key_signature` 缺省为 `None` ⇒ 前置条件成立。
+            Op::SetKeySignature {
+                old_key_signature: None,
+                new_key_signature: Some(KeySignature {
+                    sharps_flats: 2,
+                    is_minor: false,
+                }),
+            },
             // 改名：**唯一的名字通路**（此前只能删轨重建 ⇒ 换 `EntityId`）。
             // 音轨色标：**此前只能在建轨时给**（`AddTrack` 的载荷）⇒ 改色只能删轨重建。
             // ⚠ `old_color: None` 对应夹具的 `TrackV3::default()`（⭐ `color` 默认 `None`
@@ -4193,6 +4237,7 @@ mod tests {
             "RemoveSection",
             "SetScene",
             "RemoveScene",
+            "SetKeySignature",
             "Batch",
         ] {
             assert!(names.contains(&expected), "脚本缺少变体 {expected}");
@@ -8595,6 +8640,103 @@ mod tests {
         // 防空：两侧都必须真的被走到（否则"逐点一致"可能只是"全是同一边"）。
         assert!(accepted >= 8, "接受侧样本太少: {accepted}");
         assert!(rejected >= 8, "拒绝侧样本太少: {rejected}");
+    }
+
+    /// `[MODEL-AST-002]` / `[ARCH-OPS-001]`：**调号可设、可改、可清空、可逆，且陈旧与非法载荷必被拒**。
+    #[test]
+    fn set_key_signature_is_reversible_and_rejects_stale_or_invalid() {
+        let mut doc = fixture_document();
+        let before = serde_json::to_vec(&doc).expect("序列化");
+        assert_eq!(doc.key_signature, None, "夹具初始调号为 None");
+
+        // ① None -> Some 设定调号
+        let a_minor = KeySignature {
+            sharps_flats: 0,
+            is_minor: true,
+        };
+        let op1 = Op::SetKeySignature {
+            old_key_signature: None,
+            new_key_signature: Some(a_minor),
+        };
+        op1.precondition(&doc).expect("前置条件必须成立");
+        op1.apply(&mut doc).expect("必须能应用");
+        assert_eq!(doc.key_signature, Some(a_minor));
+
+        // 逆操作还原
+        let inv1 = op1.invert(&doc).expect("求逆");
+        inv1.apply(&mut doc).expect("逆操作应用");
+        assert_eq!(
+            serde_json::to_vec(&doc).expect("s"),
+            before,
+            "逆操作之后必须逐字节回到原状"
+        );
+
+        // ② Some -> Some 修改调号
+        op1.apply(&mut doc).expect("重新应用 op1");
+        let eb_major = KeySignature {
+            sharps_flats: -3,
+            is_minor: false,
+        };
+        let op2 = Op::SetKeySignature {
+            old_key_signature: Some(a_minor),
+            new_key_signature: Some(eb_major),
+        };
+        op2.apply(&mut doc).expect("修改调号");
+        assert_eq!(doc.key_signature, Some(eb_major));
+
+        let inv2 = op2.invert(&doc).expect("求逆");
+        inv2.apply(&mut doc).expect("逆操作还原到 a_minor");
+        assert_eq!(doc.key_signature, Some(a_minor));
+
+        // ③ Some -> None 清空调号
+        let op3 = Op::SetKeySignature {
+            old_key_signature: Some(a_minor),
+            new_key_signature: None,
+        };
+        op3.apply(&mut doc).expect("清空调号");
+        assert_eq!(doc.key_signature, None);
+        assert_eq!(
+            serde_json::to_vec(&doc).expect("s"),
+            before,
+            "清空并逐字节回到原状"
+        );
+
+        // ④ 陈旧载荷必被拒
+        let stale = Op::SetKeySignature {
+            old_key_signature: Some(eb_major),
+            new_key_signature: Some(a_minor),
+        };
+        let doc_before_stale = serde_json::to_vec(&doc).expect("s");
+        assert_eq!(
+            stale.precondition(&doc),
+            Err(ModelError::OpStateMismatch {
+                op: "SetKeySignature"
+            })
+        );
+        assert_eq!(
+            stale.apply(&mut doc),
+            Err(ModelError::OpStateMismatch {
+                op: "SetKeySignature"
+            })
+        );
+        assert_eq!(
+            serde_json::to_vec(&doc).expect("s"),
+            doc_before_stale,
+            "陈旧载荷被拒后文档不动"
+        );
+
+        // ⑤ 越界载荷必被校验器拒绝
+        let invalid = Op::SetKeySignature {
+            old_key_signature: None,
+            new_key_signature: Some(KeySignature {
+                sharps_flats: 8,
+                is_minor: false,
+            }),
+        };
+        assert_eq!(
+            invalid.precondition(&doc),
+            Err(ModelError::KeySignatureSharpsFlatsOutOfRange { value: 8 })
+        );
     }
 
     /// **全变体往返审计**（`[ARCH-OPS-001]` 的通则，机械化）。    ///

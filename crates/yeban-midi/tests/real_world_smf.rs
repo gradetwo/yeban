@@ -207,6 +207,13 @@ fn reexport(parsed: &ParsedMidi, format: MidiFormat) -> MidiExport {
                 notes,
             })
             .collect(),
+        key_signature: parsed
+            .key_signatures
+            .first()
+            .map(|ks| yeban_model::project::KeySignature {
+                sharps_flats: ks.sharps_flats,
+                is_minor: ks.is_minor,
+            }),
     }
 }
 
@@ -687,6 +694,7 @@ fn tempo_map_round_trips_faithfully() {
             channel: 0,
             notes: vec![MidiNote::new(EntityId::new(), 0, 60, 120)],
         }],
+        key_signature: None,
     };
     let round = parse_smf(&distinct.to_smf_bytes().expect("编码")).expect("回读");
     assert_eq!(

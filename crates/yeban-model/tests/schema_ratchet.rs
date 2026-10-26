@@ -128,6 +128,7 @@ const D43_EXEMPT_REQUIRED_PATHS: &[&str] = &[
     "#.clip_pool.*.content.Midi.notes.*.pitch_bend_curve",
     "#.clip_pool.*.content.Midi.notes.*.syllable",
     "#.clip_pool.*.content.Midi.notes.*.phonemes",
+    "#.key_signature",
 ];
 
 /// **已退役**的"契约收紧待办"登记表（曾经 = notes §5.1/§5.2 的 12 项）。
@@ -998,8 +999,8 @@ fn direction_b_d43_exempt_paths_tolerate_missing_keys() {
 
     assert_eq!(
         D43_EXEMPT_REQUIRED_PATHS.len(),
-        20,
-        "D43 豁免集 = §5.4 的 18 项 ＋ 任务单 `#76` 的 `tracks[*].sampler` ＋ `#348` 的 `channel`（逐项对应见常量上的表）"
+        21,
+        "D43 豁免集 = §5.4 的 18 项 ＋ 任务单 `#76` 的 `tracks[*].sampler` ＋ `#348` 的 `channel` ＋ 任务单 `#350` 的 `key_signature`（逐项对应见常量上的表）"
     );
     assert!(
         present_paths >= 8,

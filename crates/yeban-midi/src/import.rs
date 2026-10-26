@@ -80,25 +80,32 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::midi::{MidiAuxEventKind, MidiFormat, ParsedMarker, ParsedMidi, ParsedTrackName};
 use yeban_model::project::{MAX_BPM, MIN_BPM};
 use yeban_model::{
-    ClipContent, ClipPlacement, ClipPoolEntry, EntityId, MidiNote, Op, RoutingEdge, RoutingKind,
-    SectionV3, TimeSignature, TrackKind, TrackV3, YebanProjectV1,
+    ClipContent, ClipPlacement, ClipPoolEntry, EntityId, KeySignature, MidiNote, Op, RoutingEdge,
+    RoutingKind, SectionV3, TimeSignature, TrackKind, TrackV3, YebanProjectV1,
 };
 
 /// 模型的每四分音符 tick 数（960 PPQ）。导入时把文件的 PPQ 换算到它。
 pub const MODEL_PPQ: u64 = 960;
 
-/// ⭐ `#342`：今天**有落点**的四类 aux 事件。
+/// ⭐ `#342` / `#350`：今天**有落点**的五类 aux 事件。
 ///
-/// 其余 20 类由 [`MidiImportLosses::is_total_loss`] 钉住"仍全损"。
-pub const STORABLE_KINDS: [MidiAuxEventKind; 4] = [
+/// 其余 19 类由 [`MidiImportLosses::is_total_loss`] 钉住"仍全损"。
+pub const STORABLE_KINDS: [MidiAuxEventKind; 5] = [
     MidiAuxEventKind::Tempo,
     MidiAuxEventKind::TimeSignature,
     MidiAuxEventKind::TrackName,
     MidiAuxEventKind::Marker,
+    MidiAuxEventKind::KeySignature,
 ];
 
-/// 今天有落点的四类 aux 事件的稳定键名（与 [`STORABLE_KINDS`] 对应）。
-pub const STORABLE_KIND_KEYS: &[&str] = &["tempo", "time-signature", "track-name", "marker"];
+/// 今天有落点的五类 aux 事件的稳定键名（与 [`STORABLE_KINDS`] 对应）。
+pub const STORABLE_KIND_KEYS: &[&str] = &[
+    "tempo",
+    "time-signature",
+    "track-name",
+    "marker",
+    "key-signature",
+];
 
 /// 导入选项。
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1001,6 +1008,95 @@ pub fn adopt_time_signature(
     }
 }
 
+/// `FF 59` 调号采纳计算（同 [`adopt_key_signature`]）。
+#[inline]
+fn key_signature_adoption_op(
+    parsed: &ParsedMidi,
+    project: &YebanProjectV1,
+    target_empty: bool,
+) -> ScalarAdoption {
+    adopt_key_signature(parsed, project, target_empty)
+}
+
+/// `FF 59` 调号 → `project.key_signature`（**单标量**）。
+///
+/// 只有"唯一条生效调号且在 tick 0"能落。
+/// 门槛：与 tempo / 拍号同一条内容门槛（[`import_target_is_empty`]）——
+/// 目标工程没有内容（无段落 / 无音符 / 无音频片段 / 无自动化点）时才采纳；
+/// 否则不修改工程，作为丢失原因报出。
+pub fn adopt_key_signature(
+    parsed: &ParsedMidi,
+    project: &YebanProjectV1,
+    target_empty: bool,
+) -> ScalarAdoption {
+    let read = parsed.aux_events.count(MidiAuxEventKind::KeySignature);
+    let mut effective: BTreeMap<u64, (i8, bool)> = BTreeMap::new();
+    for record in &parsed.key_signatures {
+        effective.insert(record.tick, (record.sharps_flats, record.is_minor));
+    }
+    if read == 0 {
+        return ScalarAdoption {
+            op: None,
+            ops: Vec::new(),
+            dropped: 0,
+            reason: None,
+        };
+    }
+    if let (1, Some((&0, &(sharps_flats, is_minor)))) = (effective.len(), effective.iter().next()) {
+        let candidate = KeySignature {
+            sharps_flats,
+            is_minor,
+        };
+        if candidate.validate().is_ok() {
+            if !target_empty {
+                return ScalarAdoption {
+                    op: None,
+                    ops: Vec::new(),
+                    dropped: read,
+                    reason: Some(format!(
+                        "key-signature-not-adopted-non-empty-project: the file's single key signature ({sharps_flats} sf, minor={is_minor} @0) was NOT written to project.key_signature — the project already has content (sections / MIDI notes / audio clips / automation points)",
+                    )),
+                };
+            }
+            let op = if project.key_signature == Some(candidate) {
+                None
+            } else {
+                Some(Op::SetKeySignature {
+                    old_key_signature: project.key_signature,
+                    new_key_signature: Some(candidate),
+                })
+            };
+            return ScalarAdoption {
+                op,
+                ops: Vec::new(),
+                dropped: 0,
+                reason: None,
+            };
+        }
+        return ScalarAdoption {
+            op: None,
+            ops: Vec::new(),
+            dropped: read,
+            reason: Some(format!(
+                "key-signature-out-of-model-range: the file's single key signature is sharps_flats={sharps_flats}, outside -7..=7; project.key_signature untouched"
+            )),
+        };
+    }
+    let mut values = Vec::new();
+    for (tick, &(sharps_flats, is_minor)) in &effective {
+        values.push(format!("{sharps_flats} sf (minor={is_minor}) @{tick}"));
+    }
+    ScalarAdoption {
+        op: None,
+        ops: Vec::new(),
+        dropped: read,
+        reason: Some(format!(
+            "key-signature-map-not-representable: {}; project.key_signature is a single scalar ⇒ a key-signature map has no home",
+            values.join("; ")
+        )),
+    }
+}
+
 /// `FF 03` 轨名采纳计算（同 [`adopt_track_name`]）。
 #[inline]
 fn track_name_adoption_op(
@@ -1236,12 +1332,14 @@ fn plan_sections(
 /// 人读，这里给报告/MCP 读。改一边必须改另一边（`aux_reasons` 的值来自这里）。
 fn static_loss_reason(kind: MidiAuxEventKind) -> &'static str {
     match kind {
-        // 四类有落点：它们的动态原因由 helper 给；这里的文本只是兜底（⛔ 不应出现）。
+        // 五类有落点：它们的动态原因由 helper 给；这里的文本只是兜底（⛔ 不应出现）。
         MidiAuxEventKind::Tempo => "tempo not adopted into project",
         MidiAuxEventKind::TimeSignature => "time signature not adopted into project",
         MidiAuxEventKind::TrackName => "track names cannot all land in one TrackV3::name",
         MidiAuxEventKind::Marker => "marker cannot become a SectionV3 (zero-length / non-UTF-8)",
-        MidiAuxEventKind::KeySignature => "the model has no key-signature field",
+        MidiAuxEventKind::KeySignature => {
+            "key-signature map has no home: project.key_signature is a single scalar"
+        }
         MidiAuxEventKind::ControlChange => {
             "no CC-to-automation mapping: automation lanes only target \
              TrackVolume/TrackPan/SendGain/DeviceParam/Macro"
@@ -1307,12 +1405,14 @@ fn attach_lyrics(parsed: &ParsedMidi) -> (BTreeMap<u64, &str>, MidiLyricCounts) 
 }
 
 /// 丢失统计计算（按类汇总 `aux_events` 及通道/力度损失）。
+#[allow(clippy::too_many_arguments)]
 fn count_losses(
     parsed: &ParsedMidi,
     notes: usize,
     tempo: &ScalarAdoption,
     time_signature: &ScalarAdoption,
     track_name: &ScalarAdoption,
+    key_signature: &ScalarAdoption,
     marker: (usize, Option<String>),
     track_partitions_dropped: usize,
 ) -> MidiImportLosses {
@@ -1323,6 +1423,7 @@ fn count_losses(
         (MidiAuxEventKind::Tempo, tempo),
         (MidiAuxEventKind::TimeSignature, time_signature),
         (MidiAuxEventKind::TrackName, track_name),
+        (MidiAuxEventKind::KeySignature, key_signature),
     ];
     for kind in MidiAuxEventKind::ALL {
         let read = parsed.aux_events.count(kind);
@@ -1531,9 +1632,15 @@ pub fn plan_midi_import(
     let mut tempo = tempo_adoption_op(parsed, project, target_empty);
     let mut time_signature = time_signature_adoption_op(parsed, project, target_empty);
     let mut track_name = track_name_adoption_op(parsed, project, dest_track_id);
+    let mut key_signature = key_signature_adoption_op(parsed, project, target_empty);
     let (sections, marker_dropped, marker_reason) =
         plan_sections(&parsed.markers, parsed.end_tick, parsed.ppq);
-    for adoption in [&mut track_name, &mut tempo, &mut time_signature] {
+    for adoption in [
+        &mut track_name,
+        &mut tempo,
+        &mut time_signature,
+        &mut key_signature,
+    ] {
         ops.extend(adoption.all_ops());
     }
     for section in &sections {
@@ -1563,6 +1670,7 @@ pub fn plan_midi_import(
         &tempo,
         &time_signature,
         &track_name,
+        &key_signature,
         (marker_dropped, marker_reason),
         track_partitions_dropped,
     );
@@ -1710,6 +1818,7 @@ pub mod tests {
             tracks: 1,
             aux_events: MidiAuxEventCounts::default(),
             tempos: Vec::<MidiTempo>::new(),
+            key_signatures: Vec::new(),
             track_names: Vec::new(),
             markers: Vec::new(),
             end_tick: 0,
@@ -1832,8 +1941,8 @@ pub mod tests {
     /// `STORABLE_KINDS` 与 `STORABLE_KIND_KEYS` 的一致性契约。
     #[test]
     fn storable_kinds_consistency() {
-        assert_eq!(STORABLE_KINDS.len(), 4);
-        assert_eq!(STORABLE_KIND_KEYS.len(), 4);
+        assert_eq!(STORABLE_KINDS.len(), 5);
+        assert_eq!(STORABLE_KIND_KEYS.len(), 5);
         for (kind, &key) in STORABLE_KINDS.iter().zip(STORABLE_KIND_KEYS) {
             assert_eq!(kind.key(), key);
         }
@@ -2471,7 +2580,7 @@ pub mod tests {
 #[cfg(test)]
 pub mod metadata_adoption_tests {
     use super::*;
-    use crate::midi::{MidiAuxEventKind, MidiTempo, ParsedNote};
+    use crate::midi::{MidiAuxEventKind, MidiTempo, ParsedKeySignature, ParsedNote};
 
     /// 一个最小 `ParsedMidi`：2 颗音符、指定 ppq（元数据由调用方填）。
     fn two_notes(ppq: u16) -> ParsedMidi {
@@ -2481,6 +2590,7 @@ pub mod metadata_adoption_tests {
             tracks: 1,
             aux_events: crate::midi::MidiAuxEventCounts::default(),
             tempos: Vec::<MidiTempo>::new(),
+            key_signatures: Vec::new(),
             track_names: Vec::new(),
             markers: Vec::new(),
             end_tick: 0,
@@ -3233,6 +3343,7 @@ pub mod metadata_adoption_tests {
             tracks: 3,
             aux_events,
             tempos: Vec::new(),
+            key_signatures: Vec::new(),
             track_names: vec![
                 track_name(1, 0, Some("Lead Synth")),
                 track_name(2, 0, Some("Sub Bass")),
@@ -3351,6 +3462,7 @@ pub mod metadata_adoption_tests {
             tracks: 3,
             aux_events,
             tempos: Vec::new(),
+            key_signatures: Vec::new(),
             track_names: vec![
                 track_name(1, 0, Some("Lead Synth")),
                 track_name(2, 0, Some("Sub Bass")),
@@ -3423,6 +3535,7 @@ pub mod metadata_adoption_tests {
             tracks: 2,
             aux_events: crate::midi::MidiAuxEventCounts::default(),
             tempos: Vec::new(),
+            key_signatures: Vec::new(),
             track_names: Vec::new(), // 无轨名元事件
             markers: Vec::new(),
             end_tick: 480,
@@ -3458,5 +3571,168 @@ pub mod metadata_adoption_tests {
         if let Op::AddTrack { track } = add_track_op {
             assert_eq!(track.name, "Track 2");
         }
+    }
+
+    /// 判据（`#350`）：**唯一条 tick 0** 调号在空工程中落进 `project.key_signature`；等值时不发空操作。
+    #[test]
+    fn a_single_tick_zero_key_signature_is_adopted_in_empty_project() {
+        let mut project = content_free_project();
+        project.key_signature = None;
+        let mut parsed = two_notes(960);
+        parsed = recording(parsed, MidiAuxEventKind::KeySignature, 1);
+        parsed.key_signatures = vec![ParsedKeySignature {
+            tick: 0,
+            sharps_flats: 2, // D Major (2 升)
+            is_minor: false,
+        }];
+
+        let plan =
+            plan_midi_import(&project, &parsed, &MidiImportOptions::default()).expect("有目标");
+        assert!(
+            plan.ops.iter().any(|op| matches!(
+                op,
+                Op::SetKeySignature {
+                    old_key_signature: None,
+                    new_key_signature: Some(KeySignature {
+                        sharps_flats: 2,
+                        is_minor: false,
+                    }),
+                }
+            )),
+            "唯一 tick 0 调号 ⇒ SetKeySignature None -> Some(2, false): {:?}",
+            plan.ops
+        );
+        assert_eq!(
+            plan.losses.aux_events[&MidiAuxEventKind::KeySignature].dropped,
+            0,
+            "落地的 key_signature 不是损失"
+        );
+        assert!(plan.losses.aux_reasons.is_empty(), "没有损失就没有原因");
+
+        // 等值：现值已经是文件值 ⇒ 不发 SetKeySignature（空操作）。
+        let mut same = project.clone();
+        same.key_signature = Some(KeySignature {
+            sharps_flats: 2,
+            is_minor: false,
+        });
+        let plan = plan_midi_import(&same, &parsed, &MidiImportOptions::default()).expect("有目标");
+        assert!(
+            !plan
+                .ops
+                .iter()
+                .any(|op| matches!(op, Op::SetKeySignature { .. })),
+            "现值已等于文件值 ⇒ 不发空操作: {:?}",
+            plan.ops
+        );
+    }
+
+    /// 判据（`#350`）：非空工程保留原调号，文件里的调号作为响亮损失报出。
+    #[test]
+    fn a_non_empty_project_keeps_key_signature_and_reports_loss() {
+        let mut project = yeban_model::samples::filled_project();
+        project.key_signature = Some(KeySignature {
+            sharps_flats: -1,
+            is_minor: false,
+        });
+        assert!(!import_target_is_empty(&project), "filled 工程必须有内容");
+        let mut parsed = two_notes(960);
+        parsed = recording(parsed, MidiAuxEventKind::KeySignature, 1);
+        parsed.key_signatures = vec![ParsedKeySignature {
+            tick: 0,
+            sharps_flats: 3,
+            is_minor: true, // F# minor
+        }];
+
+        let plan = plan_midi_import(&project, &parsed, &MidiImportOptions::default())
+            .expect("非空工程也能导入音符");
+        assert!(
+            !plan
+                .ops
+                .iter()
+                .any(|op| matches!(op, Op::SetKeySignature { .. })),
+            "非空工程不得改全局调号: {:?}",
+            plan.ops
+        );
+        assert_eq!(
+            plan.losses.aux_events[&MidiAuxEventKind::KeySignature],
+            MidiLossCount {
+                read: 1,
+                dropped: 1,
+            }
+        );
+        let reason = &plan.losses.aux_reasons[&MidiAuxEventKind::KeySignature];
+        assert!(
+            reason.contains("3 sf, minor=true @0")
+                && reason.contains("already has content")
+                && reason.contains("NOT written"),
+            "调号原因必须点名值与 tick，并说明工程已有内容: {reason}"
+        );
+    }
+
+    /// 判据（`#350`）：调号 map（多条调号或 tick > 0）与超界调号作为响亮损失报出。
+    #[test]
+    fn key_signature_map_and_out_of_range_are_loud_losses() {
+        let project = content_free_project();
+
+        // 1. 调号 map（两条不同调号）
+        let mut parsed_map = two_notes(960);
+        parsed_map = recording(parsed_map, MidiAuxEventKind::KeySignature, 2);
+        parsed_map.key_signatures = vec![
+            ParsedKeySignature {
+                tick: 0,
+                sharps_flats: 0,
+                is_minor: false,
+            },
+            ParsedKeySignature {
+                tick: 960,
+                sharps_flats: 1,
+                is_minor: false,
+            },
+        ];
+        let plan = plan_midi_import(&project, &parsed_map, &MidiImportOptions::default()).unwrap();
+        assert!(
+            !plan
+                .ops
+                .iter()
+                .any(|op| matches!(op, Op::SetKeySignature { .. })),
+            "调号 map 不得采纳"
+        );
+        assert_eq!(
+            plan.losses.aux_events[&MidiAuxEventKind::KeySignature],
+            MidiLossCount {
+                read: 2,
+                dropped: 2,
+            }
+        );
+        let reason = &plan.losses.aux_reasons[&MidiAuxEventKind::KeySignature];
+        assert!(
+            reason.contains("key-signature-map-not-representable")
+                && reason.contains("0 sf (minor=false) @0")
+                && reason.contains("1 sf (minor=false) @960"),
+            "map 原因必须列出全部调号事件: {reason}"
+        );
+
+        // 2. 超界调号（sharps_flats = 8）
+        let mut parsed_oor = two_notes(960);
+        parsed_oor = recording(parsed_oor, MidiAuxEventKind::KeySignature, 1);
+        parsed_oor.key_signatures = vec![ParsedKeySignature {
+            tick: 0,
+            sharps_flats: 8,
+            is_minor: false,
+        }];
+        let plan = plan_midi_import(&project, &parsed_oor, &MidiImportOptions::default()).unwrap();
+        assert!(
+            !plan
+                .ops
+                .iter()
+                .any(|op| matches!(op, Op::SetKeySignature { .. })),
+            "超界调号不得采纳"
+        );
+        let reason = &plan.losses.aux_reasons[&MidiAuxEventKind::KeySignature];
+        assert!(
+            reason.contains("key-signature-out-of-model-range")
+                && reason.contains("sharps_flats=8"),
+            "超界原因必须点名: {reason}"
+        );
     }
 }
