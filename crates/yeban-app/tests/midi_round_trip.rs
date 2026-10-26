@@ -571,25 +571,48 @@ fn export_import_export_round_trips_every_note_item_by_item() {
     let landed = clip_notes(&after, destination_track, destination_clip);
     assert_eq!(
         landed.len(),
-        original_destination_notes + n1.len(),
-        "损耗的**形状**：全部导入音符落在同一个摆放上（{original_destination_notes} + 9）"
+        original_destination_notes + 6,
+        "损耗的**形状**：落点音轨摆放保留原有 6 颗 + 导入的第 1 轨 6 颗音符（第 2 轨 3 颗按轨拆分到新轨）"
     );
-    assert!(
-        landed.iter().any(|note| note.2 == 2868 && note.4.is_none()),
-        "绝对 tick 保真（1920 + 960 - 12 = 2868），但 `micro_timing_ticks` 字段丢失（None）: {landed:?}"
-    );
-    for (pitch, velocity) in [(36_u8, 33_u8), (38, 77), (41, 127)] {
-        assert!(
-            landed
-                .iter()
-                .any(|note| note.0 == pitch && note.1 == velocity),
-            "音高 {pitch} / 力度 {velocity} 必须原样落进工程: {landed:?}"
-        );
-    }
     assert!(
         landed.iter().all(|note| note.2 != 1920 || note.4.is_none()),
         "导入的音符一律没有微时值: {landed:?}"
     );
+
+    // 多轨拆分创建的新音轨包含第 2 轨的 3 颗音符（含绝对 tick 保真与 micro_timing_ticks 丢失）
+    let split_track = *after
+        .tracks
+        .keys()
+        .find(|id| {
+            **id != project.master_bus_track_id && **id != destination_track && **id != second_track
+        })
+        .expect("多轨拆分必须创建了新音轨");
+    let split_clip = after.tracks[&split_track]
+        .clips
+        .values()
+        .next()
+        .expect("新音轨必须有摆放")
+        .clip_id;
+    let split_notes = clip_notes(&after, split_track, split_clip);
+    assert_eq!(
+        split_notes.len(),
+        3,
+        "第二条音轨的 3 颗音符按轨拆分进入新音轨: {split_notes:?}"
+    );
+    assert!(
+        split_notes
+            .iter()
+            .any(|note| note.2 == 2868 && note.4.is_none()),
+        "绝对 tick 保真（1920 + 960 - 12 = 2868），但 `micro_timing_ticks` 字段丢失（None）: {split_notes:?}"
+    );
+    for (pitch, velocity) in [(36_u8, 33_u8), (38, 77), (41, 127)] {
+        assert!(
+            split_notes
+                .iter()
+                .any(|note| note.0 == pitch && note.1 == velocity),
+            "音高 {pitch} / 力度 {velocity} 必须在拆分音轨原样落进工程: {split_notes:?}"
+        );
+    }
     // 第二条 MIDI 轨**一颗都没被改**（导入只动落点）。
     assert_eq!(
         clip_notes(&after, second_track, second_clip),
@@ -617,23 +640,41 @@ fn export_import_export_round_trips_every_note_item_by_item() {
     let imported = imported_rows(&before_rows, &after_rows);
     assert_eq!(
         imported.len(),
-        n1.len(),
-        "按身份认出的副本必须恰好是文件里的 {} 颗（⛔ 不是按数值猜的）",
-        n1.len()
+        6,
+        "落点音轨按身份认出的第 1 轨副本必须恰好是 6 颗（第 2 轨 3 颗拆分到新轨）"
     );
     let mut copy_tuples: Vec<(u8, u8, u64, u64)> = imported
         .iter()
         .map(|row| (row.pitch, row.velocity, row.start, row.duration))
         .collect();
     copy_tuples.sort_unstable();
-    let mut file_tuples: Vec<(u8, u8, u64, u64)> = n1
+    let mut file_tuples_track1: Vec<(u8, u8, u64, u64)> = n1
         .iter()
+        .filter(|note| note.0 == 0)
         .map(|&(_, key, velocity, start, duration)| (key, velocity, start, duration))
         .collect();
-    file_tuples.sort_unstable();
+    file_tuples_track1.sort_unstable();
     assert_eq!(
-        copy_tuples, file_tuples,
-        "逐项：副本的音高/力度/起止/时值必须与文件逐颗相同"
+        copy_tuples, file_tuples_track1,
+        "逐项：落点音轨副本的音高/力度/起止/时值必须与文件第 1 轨逐颗相同"
+    );
+
+    // 拆分音轨上的 3 颗副本与文件第 2 轨逐颗相同
+    let split_rows = clip_rows(&after, split_track, split_clip);
+    let mut split_tuples: Vec<(u8, u8, u64, u64)> = split_rows
+        .iter()
+        .map(|row| (row.pitch, row.velocity, row.start, row.duration))
+        .collect();
+    split_tuples.sort_unstable();
+    let mut file_tuples_track2: Vec<(u8, u8, u64, u64)> = n1
+        .iter()
+        .filter(|note| note.0 == 1)
+        .map(|&(_, key, velocity, start, duration)| (key, velocity, start, duration))
+        .collect();
+    file_tuples_track2.sort_unstable();
+    assert_eq!(
+        split_tuples, file_tuples_track2,
+        "逐项：拆分音轨副本的音高/力度/起止/时值必须与文件第 2 轨逐颗相同"
     );
     assert!(
         imported.iter().all(|row| row.micro.is_none()),
@@ -645,7 +686,7 @@ fn export_import_export_round_trips_every_note_item_by_item() {
          导入侧不读）: {imported:?}"
     );
     // ⭐ `#317`：歌词**唯一才归属** —— F1 只有一条 `la`（tick 0，该 tick 恰 1 颗起点音符）
-    // ⇒ 9 颗副本里**恰 1 颗**拿到它，其余仍是 None（⛔ 猜、⛔ 复制）。
+    // ⇒ 6 颗副本里**恰 1 颗**拿到它，其余仍是 None（⛔ 猜、⛔ 复制）。
     let lyric_copies: Vec<&NoteRow> = imported
         .iter()
         .filter(|row| row.syllable.is_some())
@@ -1827,15 +1868,12 @@ fn the_import_reports_every_aux_event_kind_as_read_and_dropped() {
     );
     assert_eq!(
         occurrences(&out_bytes, &[0xFF, 0x03]),
-        2,
-        "conductor + 工程的音符轨名"
+        3,
+        "conductor + 两条工程音符轨名（多轨拆分创建新轨）"
     );
 
     let exported = parsed(&out_bytes);
-    assert_eq!(
-        exported.tracks, 2,
-        "conductor + 1 条音符轨（源的 3 条被合并）"
-    );
+    assert_eq!(exported.tracks, 3, "conductor + 2 条音符轨（多轨拆分）");
     assert_eq!(exported.notes.len(), 11, "工程原有 6 颗 + 文件里的 5 颗");
     assert_eq!(
         exported.tempos[0].microseconds_per_quarter,
@@ -1868,16 +1906,16 @@ fn the_import_reports_every_aux_event_kind_as_read_and_dropped() {
         exported.aux_events.count(MidiAuxEventKind::TimeSignature),
         1
     );
-    assert_eq!(exported.aux_events.count(MidiAuxEventKind::TrackName), 2);
+    assert_eq!(exported.aux_events.count(MidiAuxEventKind::TrackName), 3);
     assert_eq!(
         exported.aux_events.total(),
-        4,
-        "重导出的 aux 事件只有 tempo 1 + 拍号 1 + 轨名 2"
+        5,
+        "重导出的 aux 事件只有 tempo 1 + 拍号 1 + 轨名 3"
     );
 
     eprintln!(
         "[midi-round-trip/aux-readout] 源 316 B：24 类 aux（29 条）+ 通道 {{0,1}} + 3 轨 ⇒ \
-         报告逐类 read/dropped；重导出弃掉全部源 aux、合并成 {} 条 MTrk、通道 {{0}}",
+         报告逐类 read/dropped；重导出弃掉全部源 aux、拆分成 {} 条 MTrk、通道 {{0,1}}",
         exported.tracks
     );
 
