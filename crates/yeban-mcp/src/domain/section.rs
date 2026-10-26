@@ -37,8 +37,8 @@ use super::section_build::{BuildCode, BuildFault};
 use crate::tools::ErrorCode;
 
 pub use super::section_build::{
-    MAX_BARS, MAX_PARTS, NOTE_NAMES, NOTE_PITCH_CLASSES, Scale, SectionPlan, available_presets,
-    detect_cycle, mode_names, parse_scale, preset_parts, ticks_per_bar,
+    MAX_BARS, MAX_PARTS, NOTE_NAMES, NOTE_PITCH_CLASSES, PlanOptions, Scale, SectionPlan,
+    available_presets, detect_cycle, mode_names, parse_scale, preset_parts, ticks_per_bar,
     unwired_for_section_op_kinds,
 };
 
@@ -78,15 +78,48 @@ pub fn plan(
     bars: u64,
     scale: Option<&str>,
 ) -> Result<SectionPlan, Fault> {
-    super::section_build::plan(project, section_name, style_preset, bars, scale).map_err(|fault| {
-        match fault {
-            BuildFault::Domain {
-                code,
-                message,
-                data,
-            } => Fault::domain_with_data(error_code(code), message, data),
-            BuildFault::Model { context, error } => from_model(context, &error),
-        }
+    plan_with_options(
+        project,
+        section_name,
+        style_preset,
+        bars,
+        scale,
+        PlanOptions::default(),
+    )
+}
+
+/// 规划一个章节骨架（带 [`PlanOptions`]，`ADR-0016`）。
+///
+/// `materialSource: "theory"` 时由 `yeban-theory` 的走向展开与声部连接生成
+/// 3/4 声部骨架；缺省（`"project"`）时行为与 [`plan`] 逐字节相同。
+///
+/// # Errors
+///
+/// 同 [`plan`]；理论路径的走向 / 音阶 / 声部连接失败映射到
+/// `INVALID_PARAMETER_RANGE`（`data.theoryStep` 说明是哪一步）。
+pub fn plan_with_options(
+    project: &YebanProjectV1,
+    section_name: &str,
+    style_preset: &str,
+    bars: u64,
+    scale: Option<&str>,
+    options: PlanOptions<'_>,
+) -> Result<SectionPlan, Fault> {
+    super::section_build::plan_with_options(
+        project,
+        section_name,
+        style_preset,
+        bars,
+        scale,
+        options,
+    )
+    .map_err(|fault| match fault {
+        BuildFault::Domain {
+            code,
+            message,
+            data,
+        } => Fault::domain_with_data(error_code(code), message, data),
+        BuildFault::Model { context, error } => from_model(context, &error),
     })
 }
 

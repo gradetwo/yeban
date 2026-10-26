@@ -709,7 +709,7 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
     ToolSpec {
         spec_id: "MCP-TOOL-005",
         name: "yeban_propose_section",
-        summary: "在隔离分支 `ai/proposal-{ulid}` 创建章节配器骨架与声部连接",
+        summary: "在隔离分支 `ai/proposal-{ulid}` 创建章节配器骨架与声部连接 (材料来源: 工程片段池或乐理生成)",
         scope: Scope::AppAdmin,
         side_effect: SideEffect::ProjectState,
         params: &[
@@ -717,6 +717,18 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
             param("stylePreset", "string", true, "风格预设"),
             param("bars", "integer", true, "小节数"),
             param("scale", "string", false, "音阶"),
+            param(
+                "materialSource",
+                "string",
+                false,
+                "材料来源 [ADR-0016]: \"project\" (缺省) = 从 `clip_pool` 的可用 MIDI 材料装配; \"theory\" = 由 `yeban-theory` 的走向展开 + 声部连接生成 3/4 声部骨架 (空 `clip_pool` 也可用; 给了它就不再读片段池)。其余取值 ⇒ `INVALID_PARAMETER_RANGE`",
+            ),
+            param(
+                "progression",
+                "string",
+                false,
+                "自定义罗马数字走向 (例 \"i-VI-III-VII\"), 只被 `materialSource:\"theory\"` 消费; 缺省 = 该流派登记的首选走向, 流派没有登记时兜底 \"I-V-vi-IV\"。解析失败或声部连接无可行解 ⇒ `INVALID_PARAMETER_RANGE` (带 `theoryStep`)",
+            ),
             param("dryRun", "boolean", false, "只读模拟校验"),
             param(
                 INCLUDE_OPS_PARAM,

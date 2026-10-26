@@ -2406,7 +2406,20 @@ fn plan_propose_section(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault>
     })?;
     let bars = arg_u64(call, "bars")?.unwrap_or(0);
     let scale = arg_str(call, "scale");
-    let section_plan = section::plan(project, section_name, style_preset, bars, scale)?;
+    // `ADR-0016`：材料来源与自定义走向都是可选键；缺省 = 既有 `'project'` 路径。
+    let material_source = arg_str(call, "materialSource");
+    let progression = arg_str(call, "progression");
+    let section_plan = section::plan_with_options(
+        project,
+        section_name,
+        style_preset,
+        bars,
+        scale,
+        section::PlanOptions {
+            material_source,
+            progression,
+        },
+    )?;
     propose_draft(
         domain,
         project,
