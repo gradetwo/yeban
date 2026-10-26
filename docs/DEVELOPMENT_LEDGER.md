@@ -10986,3 +10986,5 @@ $ python3 scripts/gates/check_phase_status.py   # 退出 0
   - `cargo-local.sh test -p yeban-mcp --test op_reachability`: 8 项测试通过。
   - `cargo-local.sh test -p yeban-mcp --test fault_vocabulary`: 12 项测试通过。
   - `cargo-local.sh clippy -p yeban-mcp --all-targets -- -D warnings`: 零告警。
+
+- **CI 判决读回 (commit `ef70e750`)**: Run `40348367043` 100% SUCCESS 全绿 (`checks` 1m23s, `plan` 12s, `lockfile` 20s, `deny` 45s, `rust (yeban-midi)` 1m1s).
