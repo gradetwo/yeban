@@ -2274,7 +2274,7 @@ pub mod tests {
         assert_eq!(losses.read_events(), 10, "夹具里真的 10 条 aux 事件");
         assert_eq!(
             losses.dropped_events(),
-            0 + 2 + 1 + 3,
+            2 + 1 + 3,
             "落地的是 tempo map (2) 与 3/4 (1)"
         );
 
