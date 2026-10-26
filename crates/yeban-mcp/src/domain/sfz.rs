@@ -1523,6 +1523,8 @@ pub fn collect_notes(
     let mut notes: Vec<SfzNote> = Vec::new();
     let mut silenced = 0u64;
     let any_solo = project.tracks.values().any(|track| track.solo);
+    // `#339`：排程的 tick → 帧换算读工程的速度点（空表 = 恒定 BPM，逐位不变）。
+    let tempo = project.tempo();
     for track in project.tracks.values() {
         let audible = !track.mute && (!any_solo || track.solo || track.solo_safe);
         let track_gain = if audible {
@@ -1564,12 +1566,12 @@ pub fn collect_notes(
                 let step = (note.duration_ticks / ratchet).max(1);
                 let base_tick = placement.start_tick.saturating_add(note.start_tick);
                 for pulse in 0..ratchet {
-                    let (start, end) = math::note_frame_span(
+                    let (start, end) = math::note_frame_span_with_tempo(
                         base_tick.saturating_add(pulse.saturating_mul(step)),
                         step,
                         micro,
                         PPQ,
-                        project.bpm,
+                        &tempo,
                         sample_rate,
                     );
                     let start_frame = u64::try_from(start.max(0)).unwrap_or(0);

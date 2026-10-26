@@ -205,7 +205,11 @@ impl EngineTimbre {
     /// [`EngineSourceError`]：工程没有可用的主总线 / 路由图非法 / PDC 失败。
     pub fn from_project(project: &YebanProjectV1) -> Result<Self, EngineSourceError> {
         Ok(Self {
-            snapshot: Arc::new(EngineSnapshot::from_project(project, 1)?),
+            snapshot: Arc::new(EngineSnapshot::from_project_with_tempo(
+                project,
+                1,
+                &project.tempo(),
+            )?),
             armed: BTreeMap::new(),
         })
     }
@@ -249,7 +253,8 @@ impl EngineTimbre {
     where
         F: FnMut(EntityId, &str) -> ArmedSfzInput,
     {
-        let snapshot = EngineSnapshot::from_project(project, 1)?;
+        // `#339`：离线渲染读 `tempo_map`（空表与 `from_project` 逐位相同）。
+        let snapshot = EngineSnapshot::from_project_with_tempo(project, 1, &project.tempo())?;
         Self::from_snapshot_armed(snapshot, engine_hz, provider)
     }
 

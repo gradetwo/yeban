@@ -85,9 +85,10 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use thiserror::Error;
+use yeban_model::time_math::TempoMap;
 use yeban_model::{AssetHash, ClipContent, EntityId, YebanProjectV1};
 
-use crate::synth::{samples_per_tick, tick_to_sample, track_gain, track_gain_scale};
+use crate::synth::{TickTimebase, track_gain, track_gain_scale};
 
 /// 实时音频片段的**注入/形状**错误（全部发生在**控制线程**的构造期）。
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
@@ -342,8 +343,18 @@ impl AudioClipSchedule {
 /// ⇒ 输出与接线前**逐位相同**。
 #[must_use]
 pub fn project_audio_clips(project: &YebanProjectV1) -> BTreeMap<EntityId, AudioClipSchedule> {
+    project_audio_clips_with_tempo(project, &TempoMap::constant(project.bpm))
+}
+
+/// 同 [`project_audio_clips`]，但 tick → 帧换算读传入的 `tempo_map`
+/// （`#339`，[ADR-0021]）。空表 ⇒ 与 [`project_audio_clips`] **逐位相同**。
+#[must_use]
+pub fn project_audio_clips_with_tempo(
+    project: &YebanProjectV1,
+    tempo: &TempoMap,
+) -> BTreeMap<EntityId, AudioClipSchedule> {
     let sample_rate = project.audio_config.sample_rate.hz();
-    let per_tick = samples_per_tick(project.bpm, sample_rate);
+    let timebase = TickTimebase::new(tempo, sample_rate);
     let any_solo = project.tracks.values().any(|track| track.solo);
     let mut schedules: BTreeMap<EntityId, AudioClipSchedule> = BTreeMap::new();
 
@@ -367,13 +378,13 @@ pub fn project_audio_clips(project: &YebanProjectV1) -> BTreeMap<EntityId, Audio
             let ClipContent::Audio { asset, gain_db } = &entry.content else {
                 continue;
             };
-            let Some(start) = tick_to_sample(placement.start_tick, per_tick) else {
+            let Some(start) = timebase.sample_at(placement.start_tick) else {
                 continue;
             };
             let end_tick = placement
                 .start_tick
                 .saturating_add(placement.duration_ticks.max(1));
-            let Some(end) = tick_to_sample(end_tick, per_tick) else {
+            let Some(end) = timebase.sample_at(end_tick) else {
                 continue;
             };
             // 终点至少 `start + 1`：与离线 `clip_frame_span` 同一条守卫。
@@ -402,24 +413,24 @@ pub fn project_audio_clips(project: &YebanProjectV1) -> BTreeMap<EntityId, Audio
                     // 都从素材的 `region_start - base_start` 帧开始读。
                     let region_start_tick = placement.start_tick.saturating_add(repeat.start_tick);
                     let region_end_tick = placement.start_tick.saturating_add(repeat.end_tick);
-                    let Some(region_start) = tick_to_sample(region_start_tick, per_tick) else {
+                    let Some(region_start) = timebase.sample_at(region_start_tick) else {
                         push(&mut spans, start, end, 0);
                         placements = placements.saturating_add(1);
                         continue;
                     };
-                    let Some(region_end) = tick_to_sample(region_end_tick, per_tick) else {
+                    let Some(region_end) = timebase.sample_at(region_end_tick) else {
                         push(&mut spans, start, end, 0);
                         placements = placements.saturating_add(1);
                         continue;
                     };
                     let period = region_end.saturating_sub(region_start);
-                    let base_end = tick_to_sample(
-                        placement
-                            .start_tick
-                            .saturating_add(placement.duration_ticks),
-                        per_tick,
-                    )
-                    .unwrap_or(end);
+                    let base_end = timebase
+                        .sample_at(
+                            placement
+                                .start_tick
+                                .saturating_add(placement.duration_ticks),
+                        )
+                        .unwrap_or(end);
                     if period == 0 {
                         // tick 太短、帧换算后不足一帧 ⇒ 没有可重复的区间，
                         // 按单遍播放（不静默丢内容；与 MCP 同一条守卫）。

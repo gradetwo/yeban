@@ -2473,6 +2473,58 @@ pub fn samples_per_tick(bpm: f64, sample_rate: u32) -> f64 {
     yeban_model::time_math::samples_per_tick(bpm, PPQ, sample_rate)
 }
 
+/// tick → 帧的**构造期**适配层：空 tempo_map 走恒定 BPM 旧路径（逐位不变），
+/// 非空走模型层的分段常速换算（`#339`，[ADR-0021]）。
+///
+/// 为什么要有这一层：投影代码（`project_schedules` / `project_audio_clips`）在
+/// `#339` 之前直接乘每 tick 帧数，`project.tempo_map` 因此**静默无效**。把
+/// "有没有变速"这一个分支收在这里，投影本身只调 `sample_at`。
+///
+/// ⚠ 空表的路径**必须**继续用 [`tick_to_sample`]：它的 `round` + 饱和口径是与
+/// 既有母带逐位一致的判据（`TempoMap::frames_at_tick` 的空表分支虽然也委托给
+/// 同一个函数，但这里直接用省一次分支且让"空表 = 旧行为"在代码上是显然的）。
+#[derive(Clone, Copy)]
+pub(crate) struct TickTimebase<'a> {
+    tempo: &'a yeban_model::time_math::TempoMap,
+    constant_per_tick: f64,
+    sample_rate: u32,
+}
+
+impl<'a> TickTimebase<'a> {
+    pub(crate) fn new(tempo: &'a yeban_model::time_math::TempoMap, sample_rate: u32) -> Self {
+        Self {
+            tempo,
+            constant_per_tick: samples_per_tick(tempo.base_bpm(), sample_rate),
+            sample_rate,
+        }
+    }
+
+    /// 绝对 tick → 绝对帧。
+    pub(crate) fn sample_at(&self, tick: u64) -> Option<u64> {
+        if self.tempo.is_constant() {
+            tick_to_sample(tick, self.constant_per_tick)
+        } else {
+            self.tempo.frames_at_tick(tick, PPQ, self.sample_rate)
+        }
+    }
+
+    /// 相对 `anchor` 的本地 tick 偏移 → 本地帧偏移（弯音/滑音的局部坐标用）。
+    ///
+    /// 空表 ⇒ 与 [`tick_to_sample`] 同式（逐位不变）；非空 ⇒ 先各自换算成绝对帧
+    /// 再相减（`frames_at_tick` 每段只舍入一次，差值因此仍单调）。
+    pub(crate) fn local_sample(&self, anchor: u64, local: u64) -> Option<u64> {
+        if self.tempo.is_constant() {
+            tick_to_sample(local, self.constant_per_tick)
+        } else {
+            let end =
+                self.tempo
+                    .frames_at_tick(anchor.saturating_add(local), PPQ, self.sample_rate)?;
+            let start = self.tempo.frames_at_tick(anchor, PPQ, self.sample_rate)?;
+            end.checked_sub(start)
+        }
+    }
+}
+
 /// 线性增益：`velocity / 127`（IEEE 精确类除法）。
 #[must_use]
 pub fn velocity_gain(velocity: u8) -> f32 {

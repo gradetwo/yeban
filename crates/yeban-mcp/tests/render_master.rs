@@ -8317,3 +8317,68 @@ fn a_pre_muted_track_reports_null_contributions() {
         "Lead 必须仍被量出贡献: {lead}"
     );
 }
+
+/// ⭐ 判据（`#339` / `ADR-0021`）：`tempo_map` 真的改变**母带长度与起点**。
+///
+/// 夹具改成"摆放 1920..5760、音符在摆放起点"，再写一个 `{960: 240 BPM}` 的点：
+/// `[0, 960)` @120 = 24 000 帧、`[960, 5760)` @240 = 60 000 帧 ⇒ 总长 **84 000** 帧
+/// （恒定 120 BPM 会是 144 000）。声音必须从第 36 000 帧起。
+#[test]
+fn a_tempo_point_changes_the_master_length_and_onset() {
+    let mut mapped = project(&Spec {
+        end_tick: 3_840,
+        ..Spec::default()
+    });
+    let lead = id(2);
+    let placement = id(20);
+    mapped
+        .tracks
+        .get_mut(&lead)
+        .expect("Lead 轨")
+        .clips
+        .get_mut(&placement)
+        .expect("摆放")
+        .start_tick = 1_920;
+    mapped.tempo_map.insert(960, 240.0);
+
+    let (rendered, audio) = render_master_audio(&mapped, "tempo-map");
+    assert_eq!(
+        rendered["data"]["frames"], 84_000,
+        "分段常速：24 000 + 60 000 帧: {rendered}"
+    );
+    assert_eq!(audio.len(), 84_000, "WAV 左声道逐帧长度必须一致");
+    // 写盘的 24-bit 负载带 TPDF 抖动 ⇒ 数字静音区是 ±1 LSB，不是逐位 0。
+    let before_peak = audio[..36_000]
+        .iter()
+        .fold(0.0f32, |peak, &sample| peak.max(sample.abs()));
+    let after_peak = audio[36_000..]
+        .iter()
+        .fold(0.0f32, |peak, &sample| peak.max(sample.abs()));
+    assert!(
+        before_peak < 1e-4,
+        "变速后的音符起点是 36 000 帧 —— 之前只许有抖动底噪，实测峰值 {before_peak}"
+    );
+    assert!(
+        after_peak > 0.01,
+        "36 000 帧之后必须出声（恒定 BPM 的 48 000 起点会在这里漏音），实测峰值 {after_peak}"
+    );
+
+    // 正对照：同一份工程**不写**速度点 ⇒ 仍是每 tick 25 帧的 144 000 帧。
+    let mut constant = project(&Spec {
+        end_tick: 3_840,
+        ..Spec::default()
+    });
+    constant
+        .tracks
+        .get_mut(&lead)
+        .expect("Lead 轨")
+        .clips
+        .get_mut(&placement)
+        .expect("摆放")
+        .start_tick = 1_920;
+    let (flat, _) = render_master_audio(&constant, "tempo-map-flat");
+    assert_eq!(
+        flat["data"]["frames"], 144_000,
+        "空 tempo_map 必须保持恒定 BPM 的旧长度: {flat}"
+    );
+}

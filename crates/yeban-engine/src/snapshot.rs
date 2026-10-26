@@ -79,12 +79,15 @@ use std::thread::ThreadId;
 use thiserror::Error;
 use yeban_dsp::math::note_to_hz;
 use yeban_model::project::DEFAULT_BPM;
+use yeban_model::time_math::TempoMap;
 use yeban_model::{
     AssetHash, BlockSize, ClipContent, EntityId, MidiNote, ModelError, RoutingGraph, TrackKind,
     TrackV3, YebanProjectV1,
 };
 
-use crate::audio_clip::{AudioClipError, AudioClipSchedule, AudioPcm, project_audio_clips};
+use crate::audio_clip::{
+    AudioClipError, AudioClipSchedule, AudioPcm, project_audio_clips_with_tempo,
+};
 use crate::drums::DrumsParams;
 use crate::graph::{LatencyTable, PdcError, PdcPlan};
 use crate::insert::InsertParams;
@@ -94,7 +97,7 @@ use crate::routing::RoutingPlan;
 use crate::sfz_instrument::{PendingSfz, SfzPlan};
 use crate::synth::{
     BendPoint, MAX_NOTES_PER_TRACK, NO_PITCH_SHAPE, NoteSchedule, PitchShape, ScheduledNote,
-    SlideSpan, ToneParams, tick_to_sample, velocity_gain,
+    SlideSpan, ToneParams, velocity_gain,
 };
 
 /// 退役队列默认容量（条）。一帧 60Hz 内被替换的快照远不会超过这个数。
@@ -750,6 +753,49 @@ impl EngineSnapshot {
         revision: u64,
         latencies: &LatencyTable,
     ) -> Result<Self, SnapshotError> {
+        Self::from_project_with_latencies_and_tempo(
+            project,
+            revision,
+            latencies,
+            &TempoMap::constant(project.bpm),
+        )
+    }
+
+    /// **离线**入口：同 [`from_project`](Self::from_project)，但音符/音频摆放的
+    /// tick → 帧换算读工程的 `tempo_map`（分段常速，`#339`，[ADR-0021]）。
+    ///
+    /// - 空 `tempo_map` ⇒ 与 [`from_project`](Self::from_project) **逐位相同**
+    ///   （内部走恒定 BPM 旧路径）。
+    /// - 非空 ⇒ 每个音符起点/终点、采样器与 SFZ 的排程、音频片段区间都按
+    ///   `TempoMap::frames_at_tick` 换算。
+    ///
+    /// ⚠ **只给离线渲染用**：实时走带（`EngineRuntime` 的位置推进、节拍器、
+    /// 循环边界）仍是恒定 BPM，故 [`from_project`](Self::from_project) 保持恒定
+    /// 速度口径 —— 两者混用会让"听到的时间"与"走带显示的时间"不一致。
+    /// 实时侧对齐登记在 `docs/DEVELOPMENT_LEDGER.md`。
+    ///
+    /// # Errors
+    ///
+    /// 同 [`from_project`](Self::from_project)。
+    pub fn from_project_with_tempo(
+        project: &YebanProjectV1,
+        revision: u64,
+        tempo: &TempoMap,
+    ) -> Result<Self, SnapshotError> {
+        Self::from_project_with_latencies_and_tempo(
+            project,
+            revision,
+            &LatencyTable::from_project(project),
+            tempo,
+        )
+    }
+
+    fn from_project_with_latencies_and_tempo(
+        project: &YebanProjectV1,
+        revision: u64,
+        latencies: &LatencyTable,
+        tempo: &TempoMap,
+    ) -> Result<Self, SnapshotError> {
         let master = project.master_bus_track_id;
         if master.is_nil() || !project.routing_graph.nodes.contains(&master) {
             return Err(SnapshotError::NoMasterBus);
@@ -787,11 +833,11 @@ impl EngineSnapshot {
             }
         }
         let block = project.audio_config.block_size.frames() as usize;
-        let (schedules, dropped) = project_schedules(project);
+        let (schedules, dropped) = project_schedules(project, tempo);
         // ⭐ 任务单 `#135`：`ClipContent::Audio` 的摆放**现在真的进快照**（绝对帧区间 ＋
         // 增益 ＋ 素材哈希）；PCM 仍由控制侧解码后经 [`Self::with_audio_asset`] 注入
         // ⇒ 引擎⛔ 不读盘、回调里⛔ 不解码（见 [`crate::audio_clip`]）。
-        let audio_clips = project_audio_clips(project);
+        let audio_clips = project_audio_clips_with_tempo(project, tempo);
         Self::from_parts(
             revision,
             project.audio_config.sample_rate.hz(),
@@ -1422,11 +1468,14 @@ impl Drop for EngineSnapshot {
 /// 播一遍（pickup）；`enabled == false`、`end <= start`、`end >= D`（含恰好覆盖）
 /// 仍**逐位单遍**。每条副本逐遍走原来的 ratchet/pulse 路径，副本计入
 /// [`MAX_NOTES_PER_TRACK`] 的丢弃计数（[`EngineSnapshot::note_schedule_drops`]）。
-fn project_schedules(project: &YebanProjectV1) -> (BTreeMap<EntityId, NoteSchedule>, u64) {
+fn project_schedules(
+    project: &YebanProjectV1,
+    tempo: &TempoMap,
+) -> (BTreeMap<EntityId, NoteSchedule>, u64) {
     let sample_rate = project.audio_config.sample_rate.hz();
     #[allow(clippy::cast_precision_loss)]
     let sample_rate_f32 = sample_rate as f32;
-    let samples_per_tick = crate::synth::samples_per_tick(project.bpm, sample_rate);
+    let timebase = crate::synth::TickTimebase::new(tempo, sample_rate);
     let any_solo = project.tracks.values().any(|track| track.solo);
     let mut schedules: BTreeMap<EntityId, NoteSchedule> = BTreeMap::new();
     let mut dropped = 0u64;
@@ -1468,10 +1517,14 @@ fn project_schedules(project: &YebanProjectV1) -> (BTreeMap<EntityId, NoteSchedu
                 }
                 let ratchet = u64::from(note.ratchet.unwrap_or(1).clamp(1, 16));
                 let micro = i128::from(note.micro_timing_ticks.unwrap_or(0));
+                // `#339`：弯音的局部时间按**这个音符首次出现的绝对起点**换算
+                // （变速工程里同一 tick 偏移对应的帧数取决于它落在哪一段）。
+                let anchor_tick = u64::try_from(placement_start + i128::from(note.start_tick))
+                    .unwrap_or(u64::MAX);
                 // ⭐ `#311b`：弯音/滑音的 `(tick, cents)` 在**构造期**换算成音符局部
                 // **样本**偏移（实时侧因此不做 tick 数学）。空曲线 ＋ 无滑音
                 // ⇒ `NO_PITCH_SHAPE` ⇒ 本音符与接线前**逐位相同**。
-                let pitch_shape = match project_pitch_shape(note, samples_per_tick) {
+                let pitch_shape = match project_pitch_shape(note, &timebase, anchor_tick) {
                     #[allow(clippy::cast_possible_truncation)]
                     Some(shape) if pitch_shapes.len() < usize::from(NO_PITCH_SHAPE) => {
                         pitch_shapes.push(shape);
@@ -1503,10 +1556,9 @@ fn project_schedules(project: &YebanProjectV1) -> (BTreeMap<EntityId, NoteSchedu
                         }
                         #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
                         let (start_tick, end_tick) = (start_tick as u64, end_tick as u64);
-                        let (Some(start_sample), Some(end_sample)) = (
-                            tick_to_sample(start_tick, samples_per_tick),
-                            tick_to_sample(end_tick, samples_per_tick),
-                        ) else {
+                        let (Some(start_sample), Some(end_sample)) =
+                            (timebase.sample_at(start_tick), timebase.sample_at(end_tick))
+                        else {
                             continue;
                         };
                         if end_sample <= start_sample {
@@ -1563,21 +1615,25 @@ fn project_schedules(project: &YebanProjectV1) -> (BTreeMap<EntityId, NoteSchedu
 ///   ⛔ 不发明一个"半个形状"。
 /// - 滑音的 `target_cents = (target_pitch − pitch) × 100`：十二平均律里一个半音
 ///   **恰好** 100 音分 ⇒ 端点精确（`D9`）。
-fn project_pitch_shape(note: &MidiNote, samples_per_tick: f64) -> Option<PitchShape> {
+fn project_pitch_shape(
+    note: &MidiNote,
+    timebase: &crate::synth::TickTimebase<'_>,
+    anchor_tick: u64,
+) -> Option<PitchShape> {
     if note.pitch_bend_curve.is_empty() && note.slide.is_none() {
         return None;
     }
     let mut bend = Vec::with_capacity(note.pitch_bend_curve.len());
     for &(tick, cents) in &note.pitch_bend_curve {
         bend.push(BendPoint::new(
-            tick_to_sample(tick, samples_per_tick)?,
+            timebase.local_sample(anchor_tick, tick)?,
             f32::from(cents),
         ));
     }
     let slide = match &note.slide {
         None => None,
         Some(slide) => Some(SlideSpan::new(
-            tick_to_sample(slide.duration_ticks, samples_per_tick)?,
+            timebase.local_sample(anchor_tick, slide.duration_ticks)?,
             (f32::from(slide.target_pitch) - f32::from(note.pitch)) * 100.0,
             slide.curve,
         )),
