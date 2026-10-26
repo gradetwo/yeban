@@ -11070,3 +11070,34 @@ $ python3 scripts/gates/check_phase_status.py   # 退出 0
   - `cargo-local.sh test -p yeban-mcp --test import_midi_tool`: 6 passed, 0 failed.
   - `cargo fmt --check`: 格式化通过。
   - `python3 scripts/guards/policy_check.py`: 18 项全部通过。
+
+
+---
+
+## 2026-10-27：MCP yeban_edit_notes 音素序列 (phonemes) 支持闭环落地
+
+- **需求规范 ID**: `[MCP-TOOL-006]` `[MODEL-AST-005]`
+- **实施工作线**: `line/mcp-section-style-info` (`2f9cc4c6`)，经 subagent `qoderclicn` (`Qwen3.8-Flash`) 自主研发与本地轻量门禁通过后由集成者落地。
+- **背景与目标**:
+  - `yeban_model::MidiNote` 模型层定义了 13 个表现力字段，此前 MCP `yeban_edit_notes` 工具面已打通 12 个字段，仅剩歌声合成音素序列 `phonemes: Vec<String>` 未连通（`reject_unknown_note_fields` 中的 `unsupportedNoteFields` 仅剩 `["phonemes"]`）。
+  - 本次变更打通 `phonemes` 的一等解析、严格形状校验、写入通路与 JSON Schema 暴露，使模型层音符表现力字段 100% 连通，`unsupportedNoteFields` 彻底归零为 `[]`。
+- **实施**:
+  - `crates/yeban-mcp/src/domain/notes.rs`:
+    - 新增 `pub const PHONEMES_FIELD: &str = "phonemes";`，登记进 `NOTE_FIELDS`（扩充为 13 个）。
+    - 严谨实现 `read_phonemes(object: &Map<String, Value>) -> Result<Vec<String>, Fault>`：缺省返回空 `Vec`；非数组或数组内混有非字符串元素返回 `INVALID_PARAMETER_RANGE` 领域错误。
+    - 在 `parse_note` 中将解析的音素序列赋予 `note.phonemes`。
+    - `reject_unknown_note_fields` 中的 `unsupportedNoteFields` 彻底清空为 `[]`（保持诚实说明：歌声合成尚未支持，但在 AST / 表现力元数据层面 100% 打通）。
+    - 单元测试：更新 `expressive_note_field_names_are_pinned`（13 键），更新 `all_unsupported_note_fields_are_reported_in_the_error_payload` 断言 `unsupportedNoteFields` 为 `[]`，新增 `phonemes_reach_the_add_note_op_and_validate_types` 覆盖正反例。
+  - `crates/yeban-mcp/src/op_schema.rs`:
+    - `note_object()` 补充 `"phonemes": { "type": "array", "items": { "type": "string" }, "description": "歌声合成音素序列 (可选)" }`。
+  - `crates/yeban-mcp/src/tools.rs`:
+    - 同步更新 `yeban_edit_notes` 文档，记录 `phonemes` 字段与 13 个支持字段。
+  - `crates/yeban-mcp/tests/tools_e2e.rs`:
+    - 新增 `test_e2e_note_phonemes_round_trip` 端到端集成测试：覆盖 `phonemes` 提案添加、合并落盘、回读验证，以及非法输入拦截与工程不可变性。
+  - `crates/yeban-mcp/tests/render_master.rs`:
+    - 同步更新在线表面断言为 13 个支持字段，未支持字段为空集。
+- **验证**:
+  - `cargo-local.sh test -p yeban-mcp --test tools_e2e -- phonemes`: 1 passed, 0 failed.
+  - `cargo-local.sh test -p yeban-mcp --test render_master -- the_mcp_surface`: 1 passed, 0 failed.
+  - `cargo fmt --check`: 格式化通过。
+  - `python3 scripts/guards/policy_check.py`: 18 项全部通过。
