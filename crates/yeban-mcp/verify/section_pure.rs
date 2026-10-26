@@ -42,6 +42,16 @@
 //! - `every_theory_genre_maps_to_a_voice_count_from_its_own_chords`：182 条流派逐条比对
 //!   "声部数 = theory 给的和弦构成音数"；
 //! - `the_preset_catalogue_is_the_theory_library`：候选清单**就是** `GenreLibrary::ids()`。
+//!
+//! `ADR-0016`（`materialSource: "theory"`）再加三条判据：
+//!
+//! - `theory_is_explicitly_opt_in_and_project_path_is_unchanged`：缺省仍是 `'project'`
+//!   （空池 ⇒ `CLIP_NOT_FOUND`），显式 `'project'` 逐字节等于缺省路径；
+//! - `theory_generates_a_deterministic_skeleton_on_an_empty_pool`：空池上生成 3/4 声部，
+//!   起点/时值对齐 theory 自己展开的 `ChordSpan`、力度固定 96、重复调用逐字节相同、
+//!   声部连接是 DAG；
+//! - `theory_honours_custom_progression_and_scale`：`progression` / `scale` 真的进展开
+//!   （时值与身份写死断言），非法走向映射成 `INVALID_PARAMETER_RANGE`。
 
 // 本文件是 `rustc --test` 的 **crate root**, 不是库; 被包含模块的公开 API 在这里
 // 没有"外部消费者", 因此 `dead_code` 会误报。真实判定由 CI 的
@@ -55,9 +65,11 @@ mod section_build;
 
 use std::collections::BTreeMap;
 
-use yeban_model::{EntityId, Op, RoutingGraph, samples::filled_project};
+use yeban_model::{EntityId, Op, RoutingGraph, TrackKind, samples::filled_project};
 
-use section_build::{BuildCode, BuildFault, SectionPlan, detect_cycle, plan};
+use section_build::{
+    BuildCode, BuildFault, PlanOptions, SectionPlan, detect_cycle, plan, plan_with_options,
+};
 
 /// 把一份规划的整批 op 施加到样本工程的克隆体上。
 fn applied(
@@ -72,6 +84,20 @@ fn applied(
     .apply(&mut after)
     .expect("整批必须能施加");
     after
+}
+
+/// 空 `clip_pool` 的工程夹具（`ADR-0016` 的从零创作场景）。
+///
+/// 只清 `clip_pool` 会留下悬空摆放（`validate()` 以 `ClipNotFound` 拒绝），
+/// 因此音轨上的摆放必须一起清掉。
+fn empty_pool_project() -> yeban_model::YebanProjectV1 {
+    let mut project = filled_project();
+    project.clip_pool.clear();
+    for track in project.tracks.values_mut() {
+        track.clips.clear();
+    }
+    project.validate().expect("空材料池夹具必须合法");
+    project
 }
 
 #[test]
@@ -262,4 +288,269 @@ fn the_preset_catalogue_is_the_theory_library() {
         data["availablePresets"],
         serde_json::json!(GenreLibrary::ids())
     );
+}
+
+/// `ADR-0016` D2：`'theory'` 是**显式** opt-in。
+///
+/// - 缺省路径（`materialSource` 缺省）在空池上仍然报 `CLIP_NOT_FOUND`；
+/// - 显式 `'project'` 忽略 `progression`，且逐字节等于缺省路径；
+/// - 未知来源是契约内错误，并回显已接受取值。
+#[test]
+fn theory_is_explicitly_opt_in_and_project_path_is_unchanged() {
+    let empty = empty_pool_project();
+    let fault = plan(&empty, "Chorus", "synthwave", 4, None).expect_err("缺省路径必须仍报缺料");
+    assert_eq!(fault.domain_code(), Some(BuildCode::ClipNotFound));
+
+    let project = filled_project();
+    let default = plan(&project, "Chorus", "synthwave", 4, None).expect("缺省路径");
+    let explicit = plan_with_options(
+        &project,
+        "Chorus",
+        "synthwave",
+        4,
+        None,
+        PlanOptions {
+            material_source: Some("project"),
+            progression: Some("I-V"),
+        },
+    )
+    .expect("显式 project");
+    assert_eq!(
+        default, explicit,
+        "`'project'` 必须忽略 progression 并逐字节等于缺省路径"
+    );
+
+    let fault = plan_with_options(
+        &empty,
+        "Chorus",
+        "synthwave",
+        4,
+        None,
+        PlanOptions {
+            material_source: Some("improvisation"),
+            progression: None,
+        },
+    )
+    .expect_err("未知材料来源");
+    assert_eq!(fault.domain_code(), Some(BuildCode::InvalidParameterRange));
+    let BuildFault::Domain { data, .. } = fault else {
+        panic!("必须是领域失败");
+    };
+    assert_eq!(data["materialSource"], "improvisation");
+    assert_eq!(data["accepted"], serde_json::json!(["project", "theory"]));
+}
+
+/// `ADR-0016` D2/D3/D4（独立口径）：空 `clip_pool` 上 `'theory'` 真的生成
+/// 3/4 声部骨架。期望的和弦跨度由 theory **自己**展开（写死 4/4 + 4 小节），
+/// 逐音断言起点/时值/力度与和弦音归属；同一请求逐字节可重复，
+/// 且生成结果与 `clip_pool` 内容无关（理论路径不读材料池）。
+#[test]
+fn theory_generates_a_deterministic_skeleton_on_an_empty_pool() {
+    use yeban_theory::genre::GenreLibrary;
+    use yeban_theory::pitch::PitchClass;
+    use yeban_theory::progression::{Meter, Progression};
+
+    let empty = empty_pool_project();
+    let filled = filled_project();
+    for (style, voice_count) in [("synthwave", 3usize), ("funk", 4)] {
+        let options = PlanOptions {
+            material_source: Some("theory"),
+            progression: None,
+        };
+        let planned =
+            plan_with_options(&empty, "Chorus", style, 4, None, options).expect("理论生成");
+        assert_eq!(planned.part_track_ids.len(), voice_count, "{style} 的声部数");
+        assert_eq!(planned.part_clip_ids.len(), voice_count);
+        assert_eq!(planned.placement_ids.len(), voice_count);
+        assert_eq!(planned.routing_edge_ids.len(), voice_count);
+        assert!(
+            planned.unwired.is_empty(),
+            "两条材料路径的装配必须同构: {:?}",
+            planned.unwired
+        );
+
+        // 确定性：同一请求重复调用逐字节相同；空池与满池产出同一份 op 序列
+        // （理论路径**不得**读取 `clip_pool`）。
+        let repeated =
+            plan_with_options(&empty, "Chorus", style, 4, None, options).expect("重复调用");
+        assert_eq!(planned, repeated, "{style}: 同一请求必须产出同一份规划");
+        let from_filled = plan_with_options(&filled, "Chorus", style, 4, None, options)
+            .expect("满池理论生成");
+        assert_eq!(
+            planned.ops, from_filled.ops,
+            "{style}: 理论路径不得读取 clip_pool"
+        );
+
+        // 独立口径：期望的 `ChordSpan` 由 theory 展开（C 调、4/4、4 小节）。
+        let rule = GenreLibrary::get(style).expect("theory 流派");
+        let scale = rule.primary_scale(PitchClass::C).expect("theory 音阶");
+        let spans = Progression::parse(rule.progression_at(0).expect("首选走向"))
+            .expect("theory 走向")
+            .with_meter(Meter {
+                numerator: 4,
+                denominator: 4,
+            })
+            .with_bars(4)
+            .expect("4 小节")
+            .expand(&scale)
+            .expect("展开");
+        assert!(!spans.is_empty());
+
+        let after = applied(&empty, &planned);
+        after.validate().expect("施加后必须合法");
+        let mut minted_notes: Vec<EntityId> = Vec::new();
+        for (index, (clip_id, track_id)) in planned
+            .part_clip_ids
+            .iter()
+            .zip(planned.part_track_ids.iter())
+            .enumerate()
+        {
+            let notes = after.clip_pool[clip_id]
+                .content
+                .notes()
+                .expect("理论片段必须是 MIDI");
+            assert_eq!(notes.len(), spans.len(), "{style} 声部 {index} 的音符数");
+            minted_notes.extend(notes.keys().copied());
+            let mut by_onset: Vec<(u64, u64, u8, u8)> = notes
+                .values()
+                .map(|note| {
+                    (
+                        note.start_tick,
+                        note.duration_ticks,
+                        note.pitch,
+                        note.velocity,
+                    )
+                })
+                .collect();
+            by_onset.sort_unstable();
+            for (note, span) in by_onset.iter().zip(spans.iter()) {
+                assert_eq!(note.0, span.start_tick, "{style}: 起点必须对齐 ChordSpan");
+                assert_eq!(
+                    note.1, span.duration_ticks,
+                    "{style}: 时值必须对齐 ChordSpan"
+                );
+                assert_eq!(note.3, 96, "{style}: 理论路径的力度固定为 96");
+                let chord_tones: Vec<u8> = span
+                    .chord
+                    .pitch_classes()
+                    .iter()
+                    .map(|pitch_class| pitch_class.semitones())
+                    .collect();
+                assert!(
+                    chord_tones.contains(&(note.2 % 12)),
+                    "{style}: 音高 {} 不是和弦构成音 {chord_tones:?}",
+                    note.2
+                );
+            }
+            let track = after.tracks.get(track_id).expect("声部音轨");
+            assert_eq!(track.kind, TrackKind::Midi);
+            assert!(track.name.starts_with("Chorus · "), "{}", track.name);
+        }
+        // D3：派生音符身份不得是 nil，也不得撞车。
+        for (index, id) in minted_notes.iter().enumerate() {
+            assert!(!id.is_nil(), "{style}: 理论音符身份不得是 nil");
+            assert!(
+                !minted_notes[index + 1..].contains(id),
+                "{style}: 理论音符身份不得撞车: {id}"
+            );
+        }
+
+        // D4：每个声部一条 `声部 → 主总线` 的边，整图必须是 DAG。
+        let bus = empty.master_bus_track_id;
+        let mut added_edges: BTreeMap<EntityId, yeban_model::RoutingEdge> = BTreeMap::new();
+        for (index, edge_id) in planned.routing_edge_ids.iter().enumerate() {
+            let edge = after
+                .routing_graph
+                .edges
+                .get(edge_id)
+                .unwrap_or_else(|| panic!("{style}: 第 {index} 条边必须存在"));
+            assert_eq!(edge.source_node, planned.part_track_ids[index]);
+            assert_eq!(edge.destination_node, bus);
+            assert_eq!(edge.kind, yeban_model::RoutingKind::TrackToBus);
+            assert_eq!(edge.gain_db, None);
+            added_edges.insert(*edge_id, *edge);
+        }
+        let graph = RoutingGraph {
+            nodes: after.routing_graph.nodes.clone(),
+            edges: added_edges,
+        };
+        assert!(
+            detect_cycle(&graph).is_none(),
+            "{style}: 声部连接必须是 DAG: {:?}",
+            detect_cycle(&graph)
+        );
+    }
+}
+
+/// `ADR-0016` D1/D3：`progression` 覆盖与 `scale` 都真的进 theory 展开。
+///
+/// 4/4 + 4 小节的自定义走向 ⇒ 每个和弦恰好一小节（3840 tick），起点写死；
+/// `A minor` 的 `i` 级必须给出 A/C/E 三个音级。非法走向映射成契约内错误，
+/// `data.theoryStep` 指出失败发生在 theory 的哪一步。
+#[test]
+fn theory_honours_custom_progression_and_scale() {
+    let empty = empty_pool_project();
+    let options = PlanOptions {
+        material_source: Some("theory"),
+        progression: Some("i-VII-VI-VII"),
+    };
+    let planned = plan_with_options(&empty, "Chorus", "synthwave", 4, Some("A minor"), options)
+        .expect("自定义走向");
+    assert_eq!(planned.part_track_ids.len(), 3);
+    let after = applied(&empty, &planned);
+    for clip_id in &planned.part_clip_ids {
+        let notes = after.clip_pool[clip_id].content.notes().expect("MIDI");
+        let mut typed: Vec<(u64, u64, u8)> = notes
+            .values()
+            .map(|note| (note.start_tick, note.duration_ticks, note.pitch))
+            .collect();
+        typed.sort_unstable();
+        assert_eq!(
+            typed.iter().map(|note| (note.0, note.1)).collect::<Vec<_>>(),
+            vec![(0, 3840), (3840, 3840), (7680, 3840), (11520, 3840)],
+            "4/4 + 4 小节 ⇒ 每和弦一小节"
+        );
+        let first_degree = typed[0].2 % 12;
+        assert!(
+            [9, 0, 4].contains(&first_degree),
+            "A minor 的 i 级必须是 A/C/E, 实际音级 {first_degree}"
+        );
+    }
+
+    // 流派首选走向（synthwave 的 `i-VI-III-VII`）是另一份规划：
+    // 走向必须真的进身份种子，而不是仅仅算一遍丢掉。
+    let default = plan_with_options(
+        &empty,
+        "Chorus",
+        "synthwave",
+        4,
+        Some("A minor"),
+        PlanOptions {
+            material_source: Some("theory"),
+            progression: None,
+        },
+    )
+    .expect("默认走向");
+    assert_ne!(planned.section_id, default.section_id);
+    assert_ne!(planned.part_clip_ids, default.part_clip_ids);
+    assert_eq!(planned.part_track_ids.len(), default.part_track_ids.len());
+
+    let fault = plan_with_options(
+        &empty,
+        "Chorus",
+        "synthwave",
+        4,
+        None,
+        PlanOptions {
+            material_source: Some("theory"),
+            progression: Some("not-a-degree"),
+        },
+    )
+    .expect_err("非法走向");
+    assert_eq!(fault.domain_code(), Some(BuildCode::InvalidParameterRange));
+    let BuildFault::Domain { data, .. } = fault else {
+        panic!("必须是领域失败");
+    };
+    assert_eq!(data["theoryStep"], "Progression::parse");
+    assert!(data["theoryError"].is_string());
 }

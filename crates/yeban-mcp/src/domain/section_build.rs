@@ -48,9 +48,24 @@
 //!   被多个声部使用时不会出现"两个片段共享同一个音符身份"。
 //!
 //! 这不是"凭空造音乐"：音符、时值、力度、表现力字段都来自工程里**真实存在**的材料，
-//! 本层只做音级平移（含**音阶内收拢**）与身份派生。真正的"写旋律"在
-//! `line/theory-core` 一侧（它的台账 §pending-5 明确写了"没有把 `yeban_propose_section`
-//! 接起来"）。
+//! 本层只做音级平移（含**音阶内收拢**）与身份派生。
+//!
+//! ## 第二条材料来源：`materialSource: "theory"`（`ADR-0016`）
+//!
+//! 上面的 `'project'` 路径只装配工程里已有的材料，空 `clip_pool` 时它是**死锁**的
+//! （`CLIP_NOT_FOUND`）。`ADR-0016` 因此加了一条**显式 opt-in** 的理论生成路径：
+//!
+//! `Progression::expand`（罗马数字走向在目标调式上展开成整数 tick 的 `ChordSpan`）
+//! → `voice_leading::realize`（束搜索给出确定性的声部进行）
+//! → 每个声部一张 `BTreeMap<EntityId, MidiNote>`，装进各自的 `Op::AddClip`。
+//!
+//! - 目标调式：调用给了 `scale` 就用它；否则取流派 `primary_scale(C)`；
+//! - 走向：`progression` 覆盖 > 流派 `progression_at(0)` > `"I-V-vi-IV"`；
+//! - 声部数 / 声部名 / 音轨 / 摆放 / 路由装配与 `'project'` 路径**同一套**；
+//! - 失败（走向/音阶/声部连接）映射到 `INVALID_PARAMETER_RANGE`，不泄漏 `TheoryError`。
+//!
+//! 缺省（`None` / `"project"`）时本节的逻辑**一个字节都不参与** —— 兼容性契约见
+//! `ADR-0016` D2。
 //!
 //! ## 乐理语义从哪来（`ADR-0001` **D49** ⇒ 关闭 needs-6）
 //!
@@ -94,8 +109,9 @@ use yeban_model::{
 use yeban_theory::TheoryError;
 use yeban_theory::genre::{GenreLibrary, GenreRule};
 use yeban_theory::pitch::PitchClass;
-use yeban_theory::progression::Progression;
+use yeban_theory::progression::{Meter as TheoryMeter, Progression};
 use yeban_theory::scale::{Scale as TheoryScale, ScaleKind};
+use yeban_theory::voice_leading::{self, VoicingConstraints};
 
 use super::ids::deterministic_id;
 
@@ -120,6 +136,12 @@ const PARTS_THREE: [&str; 3] = ["Bass", "Alto", "Soprano"];
 
 /// 四声部名（低 → 高）：`Bass / Tenor / Alto / Soprano`。
 const PARTS_FOUR: [&str; 4] = ["Bass", "Tenor", "Alto", "Soprano"];
+
+/// 理论生成路径在流派没有登记任何典型走向时的兜底走向（`ADR-0016` D1）。
+const FALLBACK_PROGRESSION: &str = "I-V-vi-IV";
+
+/// 理论生成路径的固定力度（`ADR-0016` 未决第 3 条：theory 没有力度概念）。
+const THEORY_VELOCITY: u8 = 96;
 
 /// 音名表（含等音写法）。
 ///
@@ -428,15 +450,14 @@ fn part_names(style_preset: &str, count: usize) -> Result<&'static [&'static str
     }
 }
 
-/// 查风格预设：**存在性由 theory 判定**，声部数由 theory 的和弦材料推出。
+/// 查风格预设的 theory 规则：**存在性由 theory 判定**。
 ///
 /// # Errors
 ///
-/// - 未知预设（`GenreLibrary::get` 返回 `TheoryError::GenreNotFound`）→
-///   [`BuildCode::StyleNotFound`]，`data.availablePresets` = theory 的完整清单；
-/// - 该流派的和声材料推不出可命名的声部数 → [`BuildCode::Conflict`]。
-pub fn preset_parts(style_preset: &str) -> Result<&'static [&'static str], BuildFault> {
-    let rule = GenreLibrary::get(style_preset).map_err(|_| {
+/// 未知预设（`GenreLibrary::get` 返回 `TheoryError::GenreNotFound`）→
+/// [`BuildCode::StyleNotFound`]，`data.availablePresets` = theory 的完整清单。
+fn genre_rule(style_preset: &str) -> Result<&'static GenreRule, BuildFault> {
+    GenreLibrary::get(style_preset).map_err(|_| {
         BuildFault::domain(
             BuildCode::StyleNotFound,
             format!("未知风格预设 `{style_preset}`"),
@@ -446,7 +467,17 @@ pub fn preset_parts(style_preset: &str) -> Result<&'static [&'static str], Build
                 "presetCount": GenreLibrary::len(),
             }),
         )
-    })?;
+    })
+}
+
+/// 查风格预设：**存在性由 theory 判定**，声部数由 theory 的和弦材料推出。
+///
+/// # Errors
+///
+/// - 未知预设 → [`BuildCode::StyleNotFound`]；
+/// - 该流派的和声材料推不出可命名的声部数 → [`BuildCode::Conflict`]。
+pub fn preset_parts(style_preset: &str) -> Result<&'static [&'static str], BuildFault> {
+    let rule = genre_rule(style_preset)?;
     let count = genre_voice_count(rule)?;
     part_names(style_preset, count)
 }
@@ -459,6 +490,22 @@ fn theory_conflict(style_preset: &str, step: &str, error: TheoryError) -> BuildF
     BuildFault::domain(
         BuildCode::Conflict,
         format!("流派 `{style_preset}` 的规则在 theory 的 {step} 阶段失败: {error}"),
+        json!({
+            "stylePreset": style_preset,
+            "theoryStep": step,
+            "theoryError": error.to_string(),
+        }),
+    )
+}
+
+/// 理论**生成**阶段的失败（走向 / 音阶 / 声部连接）→ `INVALID_PARAMETER_RANGE`。
+///
+/// `ADR-0016` D2：理论层的 `TheoryError` 不得泄漏成传输层异常，必须映射到契约
+/// 错误码的"参数范围"族；`data.theoryStep` 说明是哪一步，`theoryError` 是原文。
+fn theory_invalid(style_preset: &str, step: &str, error: TheoryError) -> BuildFault {
+    BuildFault::domain(
+        BuildCode::InvalidParameterRange,
+        format!("理论生成在 theory 的 {step} 阶段失败: {error}"),
         json!({
             "stylePreset": style_preset,
             "theoryStep": step,
@@ -776,7 +823,257 @@ fn transposed_notes(
     out
 }
 
+/// `materialSource` 的已接受取值（`ADR-0016` D1）。
+///
+/// 缺省（`None`）等价于 `"project"`：既有工程材料路径。`"theory"` 是**显式**
+/// opt-in 的理论生成路径 —— 不选它就不会凭空生成任何材料（D2）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum MaterialSource {
+    /// 从 `clip_pool` 装配（缺省）。
+    Project,
+    /// 由 `yeban-theory` 的走向展开 + 声部连接生成。
+    Theory,
+}
+
+impl MaterialSource {
+    /// 解析 `materialSource`；未知取值 ⇒ `INVALID_PARAMETER_RANGE`。
+    fn parse(raw: Option<&str>) -> Result<Self, BuildFault> {
+        match raw {
+            None | Some("project") => Ok(Self::Project),
+            Some("theory") => Ok(Self::Theory),
+            Some(other) => Err(BuildFault::domain(
+                BuildCode::InvalidParameterRange,
+                format!("`materialSource` 必须是 \"project\" 或 \"theory\", 实际 `{other}`"),
+                json!({
+                    "materialSource": other,
+                    "accepted": ["project", "theory"],
+                }),
+            )),
+        }
+    }
+}
+
+/// `plan` 的扩展选项（`ADR-0016`）。
+///
+/// 默认值 = 既有 `'project'` 路径，因此 [`plan`] 的调用方不需要任何改动。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PlanOptions<'a> {
+    /// 材料来源：`None` / `Some("project")` = 工程材料池；`Some("theory")` = 乐理生成。
+    pub material_source: Option<&'a str>,
+    /// 自定义罗马数字走向；**只**被 `'theory'` 消费（`'project'` 路径忽略它，D2）。
+    pub progression: Option<&'a str>,
+}
+
+/// 一个声部的身份（两条材料路径共用）。
+struct PartPlan {
+    track_id: EntityId,
+    clip_id: EntityId,
+    placement_id: EntityId,
+    edge_id: EntityId,
+    name: String,
+    color: Option<String>,
+}
+
+/// 声部身份（低 → 高，顺序 = `parts`）。
+fn part_plans(
+    section_id: EntityId,
+    section_name: &str,
+    parts: &[&str],
+    bus: EntityId,
+) -> Vec<PartPlan> {
+    parts
+        .iter()
+        .enumerate()
+        .map(|(index, part)| {
+            let name = format!("{section_name} · {part}");
+            PartPlan {
+                track_id: deterministic_id(&format!("part:{section_id}:{index}:{part}")),
+                clip_id: deterministic_id(&format!("clip:{section_id}:{index}:{part}")),
+                placement_id: deterministic_id(&format!("placement:{section_id}:{index}:{part}")),
+                edge_id: deterministic_id(&format!("edge:{section_id}:{index}:{part}:{bus}")),
+                name,
+                color: COLORS.get(index % COLORS.len()).map(|c| (*c).to_owned()),
+            }
+        })
+        .collect()
+}
+
+/// `'project'` 路径的材料内容：每个声部轮转取一条真实材料（等于既有行为）。
+///
+/// 材料选择、移调量与音阶内收拢都没动，只是把"挑材料"从装配相位抽成一个
+/// 可单独测试的函数。
+fn project_contents(
+    project: &YebanProjectV1,
+    scale: Option<&Scale>,
+    theory_scale: Option<&TheoryScale>,
+    part_plans: &[PartPlan],
+) -> Result<Vec<BTreeMap<EntityId, MidiNote>>, BuildFault> {
+    let materials = usable_materials(project);
+    if materials.is_empty() {
+        return Err(BuildFault::domain(
+            BuildCode::ClipNotFound,
+            "片段池 `clip_pool` 里没有可用作配器材料的条目 (需要 MIDI 且至少一个音符)",
+            json!({
+                "missing": "usableClipPoolEntries",
+                "acceptedContent": "Midi clip with at least one note",
+                "clipPoolEntries": project
+                    .clip_pool
+                    .keys()
+                    .map(EntityId::to_canonical_string)
+                    .collect::<Vec<_>>(),
+                "clipPoolEntryCount": project.clip_pool.len(),
+                "requiredParts": part_plans.len(),
+                "why": "配器骨架的每个声部都要一条真实片段池条目; 本线不做'凭空造 id', \
+                        也不退回含糊的 unwired",
+            }),
+        ));
+    }
+    Ok(part_plans
+        .iter()
+        .enumerate()
+        .map(|(index, part)| {
+            let material = materials[index % materials.len()];
+            let delta = scale.map_or(0, |scale| {
+                (scale.tonic.semitones() + 12 - material.root_pc) % 12
+            });
+            transposed_notes(project, material.id, part.clip_id, delta, theory_scale)
+        })
+        .collect())
+}
+
+/// `'theory'` 路径在展开前的输入：目标音阶 + 走向文本（都来自 theory）。
+struct TheoryInput {
+    /// 展开用的音阶（缺省 = 流派 `primary_scale(REFERENCE_TONIC)`）。
+    scale: TheoryScale,
+    /// 归一化音阶文本（进 `section_id` 种子）。
+    scale_label: String,
+    /// 走向原文（自定义覆盖 > 流派第 0 条 > 兜底）。
+    progression_text: String,
+}
+
+impl TheoryInput {
+    /// 段落身份的调式/走向后缀。
+    fn scale_key(&self) -> String {
+        format!("{}:theory:{}", self.scale_label, self.progression_text)
+    }
+}
+
+/// 选调式与走向（纯函数；失败只可能是 theory 的流派数据自相矛盾）。
+fn theory_inputs(
+    style_preset: &str,
+    scale: Option<&Scale>,
+    progression_override: Option<&str>,
+) -> Result<TheoryInput, BuildFault> {
+    let rule = genre_rule(style_preset)?;
+    let theory_scale = match scale {
+        Some(scale) => scale.theory_scale(),
+        None => rule
+            .primary_scale(REFERENCE_TONIC)
+            .map_err(|error| theory_invalid(style_preset, "primary_scale", error))?,
+    };
+    let scale_label = match scale {
+        Some(scale) => scale.canonical(),
+        None => format!("{} {}", theory_scale.tonic, theory_scale.kind.name()),
+    };
+    let progression_text = match progression_override {
+        Some(text) => text.to_owned(),
+        None => rule
+            .progression_at(0)
+            .unwrap_or(FALLBACK_PROGRESSION)
+            .to_owned(),
+    };
+    Ok(TheoryInput {
+        scale: theory_scale,
+        scale_label,
+        progression_text,
+    })
+}
+
+/// `'theory'` 路径的内容：走向展开 → 声部连接 → 每声部一张确定性音符表。
+///
+/// 每个和弦跨满 `ChordSpan` 的时值（块状和声节奏），音符起点/时值都是
+/// 960 PPQ 的整数 tick；身份由 `section_id + 声部序 + 和弦序` 派生。
+fn theory_contents(
+    project: &YebanProjectV1,
+    style_preset: &str,
+    bars: u64,
+    theory: &TheoryInput,
+    section_id: EntityId,
+    voice_count: usize,
+) -> Result<Vec<BTreeMap<EntityId, MidiNote>>, BuildFault> {
+    let progression = Progression::parse(&theory.progression_text)
+        .map_err(|error| theory_invalid(style_preset, "Progression::parse", error))?;
+    let meter = TheoryMeter {
+        numerator: project.time_signature.numerator,
+        denominator: project.time_signature.denominator,
+    };
+    let bars_u32 = u32::try_from(bars).map_err(|_| {
+        BuildFault::domain(
+            BuildCode::OutOfRange,
+            format!("`bars` 超出 theory 的 u32 范围: {bars}"),
+            json!({ "bars": bars }),
+        )
+    })?;
+    let spans = progression
+        .with_meter(meter)
+        .with_bars(bars_u32)
+        .map_err(|error| theory_invalid(style_preset, "Progression::with_bars", error))?
+        .expand(&theory.scale)
+        .map_err(|error| theory_invalid(style_preset, "Progression::expand", error))?;
+    let voiced = match voice_count {
+        3 => voice_leading::realize_three_voices(&spans),
+        4 => voice_leading::realize(&spans, &VoicingConstraints::FOUR_VOICES),
+        other => {
+            return Err(BuildFault::domain(
+                BuildCode::Conflict,
+                format!("理论生成只支持 3/4 声部, 实际 {other}"),
+                json!({
+                    "stylePreset": style_preset,
+                    "voiceCount": other,
+                    "namedVoiceCounts": [3, 4],
+                }),
+            ));
+        }
+    }
+    .map_err(|error| theory_invalid(style_preset, "voice_leading::realize", error))?;
+    if voiced.voicings.len() != spans.len()
+        || voiced
+            .voicings
+            .iter()
+            .any(|voices| voices.len() != voice_count)
+    {
+        return Err(BuildFault::domain(
+            BuildCode::Conflict,
+            "theory 的声部连接结果与和弦跨度/声部数不一致",
+            json!({
+                "chordSpans": spans.len(),
+                "voicings": voiced.voicings.len(),
+                "voiceCount": voice_count,
+            }),
+        ));
+    }
+    Ok((0..voice_count)
+        .map(|voice| {
+            let mut notes = BTreeMap::new();
+            for (chord, span) in spans.iter().enumerate() {
+                let pitch = voiced.voicings[chord][voice].value();
+                let id = deterministic_id(&format!("theory-note:{section_id}:{voice}:{chord}"));
+                let note = MidiNote {
+                    velocity: THEORY_VELOCITY,
+                    ..MidiNote::new(id, span.start_tick, pitch, span.duration_ticks)
+                };
+                notes.insert(id, note);
+            }
+            notes
+        })
+        .collect())
+}
+
 /// 规划一个章节骨架（段落 + 声部音轨 + 片段池条目 + 摆放 + 声部连接）。
+///
+/// 这是**缺省材料来源**（`'project'`）的入口，行为与 `ADR-0016` 之前逐字节相同。
+/// 理论生成用 [`plan_with_options`] 并给
+/// `PlanOptions { material_source: Some("theory"), .. }`。
 ///
 /// 返回前会把这**整批** op 施加到一个克隆体上并跑 `validate()` ——
 /// 半成品绝不交给调用方。
@@ -799,6 +1096,39 @@ pub fn plan(
     bars: u64,
     scale: Option<&str>,
 ) -> Result<SectionPlan, BuildFault> {
+    plan_with_options(
+        project,
+        section_name,
+        style_preset,
+        bars,
+        scale,
+        PlanOptions::default(),
+    )
+}
+
+/// 规划一个章节骨架（带 [`PlanOptions`]，`ADR-0016`）。
+///
+/// `options.material_source`：
+/// - `None` / `Some("project")` ⇒ 从 `clip_pool` 装配（逐字节保持 [`plan`] 的既有行为）；
+/// - `Some("theory")` ⇒ 由 theory 的走向展开 + 声部连接生成（空池也可用）；
+/// - 其余取值 ⇒ `INVALID_PARAMETER_RANGE`。
+///
+/// `options.progression` 只被 `'theory'` 消费：给了就用它（`Progression::parse`），
+/// 否则取流派首选走向（`GenreRule::progression_at(0)`，再兜底 `"I-V-vi-IV"`）。
+///
+/// # Errors
+///
+/// 同 [`plan`]；理论路径额外的失败（走向 / 音阶 / 声部连接）映射到
+/// `INVALID_PARAMETER_RANGE`，`data.theoryStep` 说明是哪一步。
+pub fn plan_with_options(
+    project: &YebanProjectV1,
+    section_name: &str,
+    style_preset: &str,
+    bars: u64,
+    scale: Option<&str>,
+    options: PlanOptions<'_>,
+) -> Result<SectionPlan, BuildFault> {
+    let material_source = MaterialSource::parse(options.material_source)?;
     // 1. 参数与工程前置条件（顺序即错误码优先级，判据钉住它）。
     //    风格与声部数都来自 theory（见 `preset_parts` / `genre_voice_count`）。
     let parts = preset_parts(style_preset)?;
@@ -835,26 +1165,16 @@ pub fn plan(
         ));
     }
     let bus = master_bus(project)?;
-    let materials = usable_materials(project);
-    if materials.is_empty() {
-        return Err(BuildFault::domain(
-            BuildCode::ClipNotFound,
-            "片段池 `clip_pool` 里没有可用作配器材料的条目 (需要 MIDI 且至少一个音符)",
-            json!({
-                "missing": "usableClipPoolEntries",
-                "acceptedContent": "Midi clip with at least one note",
-                "clipPoolEntries": project
-                    .clip_pool
-                    .keys()
-                    .map(EntityId::to_canonical_string)
-                    .collect::<Vec<_>>(),
-                "clipPoolEntryCount": project.clip_pool.len(),
-                "requiredParts": parts.len(),
-                "why": "配器骨架的每个声部都要一条真实片段池条目; 本线不做'凭空造 id', \
-                        也不退回含糊的 unwired",
-            }),
-        ));
-    }
+    // 1b. 材料来源：`'theory'` 的调式/走向在这里定下来（纯计算，不进错误优先级）。
+    //     `'project'` 的材料选择在 4a 相位（既有的 `CLIP_NOT_FOUND` 语义不变）。
+    let theory_input = match material_source {
+        MaterialSource::Project => None,
+        MaterialSource::Theory => Some(theory_inputs(
+            style_preset,
+            scale.as_ref(),
+            options.progression,
+        )?),
+    };
 
     // 2. 时间轴与身份（确定性：同一请求 ⇒ 同一份载荷）。
     let ticks_per_bar = ticks_per_bar(project);
@@ -866,9 +1186,12 @@ pub fn plan(
         .unwrap_or(0);
     let end_tick = start_tick.saturating_add(ticks_per_bar.saturating_mul(bars));
     let span = end_tick.saturating_sub(start_tick);
-    let scale_key = scale
-        .as_ref()
-        .map_or_else(|| "-".to_owned(), Scale::canonical);
+    let scale_key = match &theory_input {
+        Some(theory) => theory.scale_key(),
+        None => scale
+            .as_ref()
+            .map_or_else(|| "-".to_owned(), Scale::canonical),
+    };
     let section_id = deterministic_id(&format!(
         "section:{section_name}:{style_preset}:{bars}:{start_tick}:{scale_key}"
     ));
@@ -880,32 +1203,21 @@ pub fn plan(
         color: None,
     };
 
-    // 3. 每个声部的身份（一次算清，后面几个相位都用它）。
-    struct Part {
-        track_id: EntityId,
-        clip_id: EntityId,
-        placement_id: EntityId,
-        edge_id: EntityId,
-        name: String,
-        color: Option<String>,
-        material: Material,
-    }
-    let part_plans: Vec<Part> = parts
-        .iter()
-        .enumerate()
-        .map(|(index, part)| {
-            let name = format!("{section_name} · {part}");
-            Part {
-                track_id: deterministic_id(&format!("part:{section_id}:{index}:{part}")),
-                clip_id: deterministic_id(&format!("clip:{section_id}:{index}:{part}")),
-                placement_id: deterministic_id(&format!("placement:{section_id}:{index}:{part}")),
-                edge_id: deterministic_id(&format!("edge:{section_id}:{index}:{part}:{bus}")),
-                name,
-                color: COLORS.get(index % COLORS.len()).map(|c| (*c).to_owned()),
-                material: materials[index % materials.len()],
-            }
-        })
-        .collect();
+    // 3. 每个声部的身份（两条材料路径共用；一次算清，后面几个相位都用它）。
+    let part_plans = part_plans(section_id, section_name, parts, bus);
+
+    // 3b. 材料内容：`materialSource` 决定来源，其余装配完全相同。
+    let contents = match &theory_input {
+        Some(theory) => theory_contents(
+            project,
+            style_preset,
+            bars,
+            theory,
+            section_id,
+            part_plans.len(),
+        )?,
+        None => project_contents(project, scale.as_ref(), theory_scale.as_ref(), &part_plans)?,
+    };
 
     // 4. 组批（顺序 = 施加顺序；子操作的前置条件按顺序被模型层检查）。
     let mut ops: Vec<Op> = Vec::with_capacity(1 + part_plans.len() * 5);
@@ -914,25 +1226,15 @@ pub fn plan(
         old_section: project.sections.get(&section_id).cloned(),
         new_section: section,
     });
-    // 4a. 片段池条目：内容取自真实材料（等音类移调到目标主音 + 收进 target 音阶），
+    // 4a. 片段池条目：内容由 `materialSource` 决定（`'project'` = 真实材料的
+    //     等音类移调 + 音阶内收拢；`'theory'` = 走向展开 + 声部连接的音符），
     //     身份是确定性派生。
-    for part in &part_plans {
-        let delta = scale.as_ref().map_or(0, |scale| {
-            (scale.tonic.semitones() + 12 - part.material.root_pc) % 12
-        });
+    for (part, notes) in part_plans.iter().zip(contents) {
         ops.push(Op::AddClip {
             clip: ClipPoolEntry {
                 id: part.clip_id,
                 name: part.name.clone(),
-                content: ClipContent::Midi {
-                    notes: transposed_notes(
-                        project,
-                        part.material.id,
-                        part.clip_id,
-                        delta,
-                        theory_scale.as_ref(),
-                    ),
-                },
+                content: ClipContent::Midi { notes },
             },
         });
     }

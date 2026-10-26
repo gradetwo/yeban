@@ -86,8 +86,8 @@ enum BoundStatus {
     Unbounded(&'static str),
 }
 
-/// 24 条 string 参数声明（`TOOLS` 里 `json_type == "string"` 的**不同名**）。
-const STRING_PARAM_BOUNDS: [(&str, BoundStatus); 25] = [
+/// 27 条 string 参数声明（`TOOLS` 里 `json_type == "string"` 的**不同名**）。
+const STRING_PARAM_BOUNDS: [(&str, BoundStatus); 27] = [
     ("idempotencyKey", BoundStatus::Length(None, Some(256))),
     ("name", BoundStatus::Length(Some(1), None)),
     ("license", BoundStatus::Length(Some(1), None)),
@@ -162,6 +162,14 @@ const STRING_PARAM_BOUNDS: [(&str, BoundStatus); 25] = [
         "stylePreset",
         BoundStatus::Unbounded(
             "风格预设名：同 `scale`（未知值走词表校验），长度维无界。收口面：`schemas/**`。",
+        ),
+    ),
+    // ADR-0016：`yeban_propose_section` 的两个新增可选实参。
+    ("materialSource", BoundStatus::WordList),
+    (
+        "progression",
+        BoundStatus::Parsed(
+            "罗马数字走向：`Degree::parse` 词表 + 分隔符（`-` / 空格 / `,` / `|`）",
         ),
     ),
 ];
