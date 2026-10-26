@@ -215,6 +215,9 @@ fn reexport(parsed: &ParsedMidi, format: MidiFormat) -> MidiExport {
                 sharps_flats: ks.sharps_flats,
                 is_minor: ks.is_minor,
             }),
+        // 真文件回环只比音符与 tempo map：标题/版权不参与（保持默认 conductor 名）。
+        title: None,
+        copyright: None,
     }
 }
 
@@ -697,6 +700,8 @@ fn tempo_map_round_trips_faithfully() {
             control_changes: Vec::new(),
         }],
         key_signature: None,
+        title: None,
+        copyright: None,
     };
     let round = parse_smf(&distinct.to_smf_bytes().expect("编码")).expect("回读");
     assert_eq!(
