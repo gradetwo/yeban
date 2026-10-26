@@ -831,7 +831,7 @@ pub struct ParsedMarker {
     pub text: Option<String>,
 }
 
-/// 回读得到的一条 `FF 03` 轨名事件。
+/// 回读得到的一条 `FF 03` 轨名 / `FF 04` 乐器名 / `FF 08` 程序名事件（ADR-0013）。
 ///
 /// ⭐ `#342`：轨名是**每条 `MTrk` 自己的**属性，所以带上 `track`（文件里的 `MTrk`
 /// 下标，0 起）。导入落点只有**一条** `TrackV3` ⇒ 去重规则在 `yeban-app` 里。
@@ -1053,6 +1053,10 @@ pub struct ParsedMidi {
     pub tempos: Vec<MidiTempo>,
     /// ⭐ `#342`：全部 `FF 03` 轨名事件（**文件顺序**，⛔ 不去重、⛔ 不丢非 UTF-8）。
     pub track_names: Vec<ParsedTrackName>,
+    /// ⭐ ADR-0013：全部 `FF 04` 乐器名事件（**文件顺序**，⛔ 不去重、⛔ 不丢非 UTF-8）。
+    pub instrument_names: Vec<ParsedTrackName>,
+    /// ⭐ ADR-0013：全部 `FF 08` 程序名事件（**文件顺序**，⛔ 不去重、⛔ 不丢非 UTF-8）。
+    pub program_names: Vec<ParsedTrackName>,
     /// ⭐ `#342`：全部 `FF 06` marker 事件（**文件顺序**，⛔ 不排序、⛔ 不去重）。
     ///
     /// 非 UTF-8 的 marker 也在表里（`text == None`）：它的 tick 仍是段落边界。
@@ -1190,6 +1194,9 @@ pub fn parse_smf(bytes: &[u8]) -> Result<ParsedMidi, MidiError> {
     // 因为 marker 的 tick 仍是段落边界。
     let mut markers = Vec::new();
     let mut track_names = Vec::new();
+    // ⭐ ADR-0013：`FF 04` / `FF 08` 的内容也读出（与轨名同形状），供拆分规划器回退。
+    let mut instrument_names = Vec::new();
+    let mut program_names = Vec::new();
     let mut key_signatures = Vec::new();
     let mut end_tick = 0u64;
     for (track_index, track) in smf.tracks.iter().enumerate() {
@@ -1314,8 +1321,14 @@ pub fn parse_smf(bytes: &[u8]) -> Result<ParsedMidi, MidiError> {
                             text: std::str::from_utf8(bytes).ok().map(str::to_owned),
                         });
                     }
-                    MetaMessage::InstrumentName(_) => {
+                    MetaMessage::InstrumentName(bytes) => {
                         aux_events.record(MidiAuxEventKind::InstrumentName);
+                        // ⭐ ADR-0013：与轨名同形状读出，供拆分新轨命名回退链使用。
+                        instrument_names.push(ParsedTrackName {
+                            track: track_index,
+                            tick,
+                            text: std::str::from_utf8(bytes).ok().map(str::to_owned),
+                        });
                     }
                     MetaMessage::Marker(bytes) => {
                         aux_events.record(MidiAuxEventKind::Marker);
@@ -1329,8 +1342,14 @@ pub fn parse_smf(bytes: &[u8]) -> Result<ParsedMidi, MidiError> {
                     MetaMessage::CuePoint(_) => {
                         aux_events.record(MidiAuxEventKind::CuePoint);
                     }
-                    MetaMessage::ProgramName(_) => {
+                    MetaMessage::ProgramName(bytes) => {
                         aux_events.record(MidiAuxEventKind::ProgramName);
+                        // ⭐ ADR-0013：与轨名同形状读出，供拆分新轨命名回退链使用。
+                        program_names.push(ParsedTrackName {
+                            track: track_index,
+                            tick,
+                            text: std::str::from_utf8(bytes).ok().map(str::to_owned),
+                        });
                     }
                     MetaMessage::DeviceName(_) => {
                         aux_events.record(MidiAuxEventKind::DeviceName);
@@ -1384,6 +1403,8 @@ pub fn parse_smf(bytes: &[u8]) -> Result<ParsedMidi, MidiError> {
         aux_events,
         tempos,
         track_names,
+        instrument_names,
+        program_names,
         markers,
         end_tick,
         notes,
@@ -1689,6 +1710,25 @@ mod tests {
         assert_eq!(parsed.aux_events.count(MidiAuxEventKind::TimeSignature), 2);
         assert_eq!(parsed.aux_events.count(MidiAuxEventKind::TrackName), 3);
         assert_eq!(parsed.aux_events.count(MidiAuxEventKind::Marker), 2);
+        // ⭐ ADR-0013：`FF 04` / `FF 08` 的**内容**与计数同时读出（同形状 ParsedTrackName）。
+        assert_eq!(
+            parsed.instrument_names,
+            vec![ParsedTrackName {
+                track: 0,
+                tick: 0,
+                text: Some("Piano".to_owned()),
+            }],
+            "夹具在首轨 tick 0 有一条 FF 04 Piano"
+        );
+        assert_eq!(
+            parsed.program_names,
+            vec![ParsedTrackName {
+                track: 0,
+                tick: 0,
+                text: Some("P1".to_owned()),
+            }],
+            "夹具在首轨 tick 0 有一条 FF 08 P1"
+        );
         let expected: [(MidiAuxEventKind, usize); MidiAuxEventKind::COUNT] = [
             (MidiAuxEventKind::Tempo, 2),
             (MidiAuxEventKind::TimeSignature, 2),
@@ -2960,6 +3000,8 @@ mod tests {
                     aux_events: MidiAuxEventCounts::default(),
                     tempos: Vec::new(),
                     track_names: Vec::new(),
+                    instrument_names: Vec::new(),
+                    program_names: Vec::new(),
                     markers: Vec::new(),
                     end_tick: 0,
                     notes: Vec::new(),
@@ -2971,7 +3013,8 @@ mod tests {
             ),
             "ParsedMidi { format: Parallel, ppq: 480, tracks: 0, aux_events: \
              MidiAuxEventCounts { counts: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, \
-             0, 0, 0, 0, 0, 0, 0] }, tempos: [], track_names: [], markers: [], end_tick: 0, \
+             0, 0, 0, 0, 0, 0, 0] }, tempos: [], track_names: [], instrument_names: [], \
+             program_names: [], markers: [], end_tick: 0, \
              notes: [], lyrics: [], non_utf8_lyrics: 0, empty_lyrics: 0, key_signatures: [] }"
         );
         assert_eq!(
