@@ -11124,3 +11124,32 @@ $ python3 scripts/gates/check_phase_status.py   # 退出 0
 - **验证**:
   - `cargo fmt --check`: 格式化通过。
   - `python3 scripts/guards/policy_check.py`: 18 项全部通过。
+
+---
+
+## 2026-10-27：yeban_import_midi 变速与拍号映射点采纳与状态闭环落地
+
+- **需求规范 ID**: `[MCP-TOOL-EXT-IMPORT-MIDI]` `[ARCH-EXT-002]`
+- **实施工作线**: `line/mcp-import-tempo-meter-map` (`953cd4bd`)，经 subagent `qoderclicn` (`Qwen3.8-Flash`) 自主研发与本地轻量门禁通过后由集成者落地。
+- **背景与目标**:
+  - `yeban_import_midi` 原先仅支持标量元数据采纳上报，未能将导入 SMF 中 `tick > 0` 的变速映射点与拍号映射点上报给工具面与调用方。
+  - 依据 `[MCP-TOOL-EXT-IMPORT-MIDI]` 与 `[ARCH-EXT-002]`，需将 `Op::SetTempoPoint` 与 `Op::SetTimeSignaturePoint` 采纳的映射表分别收拢为 `adoptedTempoMap` 与 `adoptedTimeSignatureMap`，并在 `dryRun` 与真实执行中如实上报，同时支持 `yeban_undo` 完整还原。
+- **实施**:
+  - `crates/yeban-mcp/src/domain/import_midi.rs`:
+    - `MidiImport` 结构体新增字段 `adopted_tempo_map: Option<std::collections::BTreeMap<u64, f64>>` 与 `adopted_time_signature_map: Option<std::collections::BTreeMap<u64, (u8, u8)>>`。
+    - `plan()` 中从生成的 `Op::SetTempoPoint` 与 `Op::SetTimeSignaturePoint` 收集变速与拍号点；当目标为空且整类零丢失时，若未产生增量 op 则回退读工程现值 `tempo_map` / `time_signature_map`。
+    - `describe()` 中向返回 JSON 对象新增 `adoptedTempoMap` 与 `adoptedTimeSignatureMap`（以 tick 为字符串键的字典形式呈现）。
+  - `crates/yeban-mcp/src/tools.rs`:
+    - 同步更新 `yeban_import_midi` 的 summary，明确记录 `adoptedTempoMap` 与 `adoptedTimeSignatureMap` 的字段形态与口径。
+  - `crates/yeban-mcp/tests/import_midi_tool.rs`:
+    - 新增单元测试 `test_import_midi_adopts_tempo_map_and_time_signature_map`：
+      - 构建带多点变速与拍号的 SMF 文件（tick 0: 120 BPM, 4/4; tick 3840: 144 BPM, 3/4）。
+      - 验证 `dryRun` 预览如实报出 tick 3840 变速点（容差内）与拍号点，工程状态未变。
+      - 验证真实调用将映射点写入活跃工程 `tempo_map` 与 `time_signature_map`，两类元事件零丢失。
+      - 验证 `yeban_undo` 撤销后工程两张映射表完全还原为空。
+- **验证**:
+  - `cargo fmt --check`: 格式化通过。
+  - `python3 scripts/guards/policy_check.py`: 18 项全部通过。
+  - `cargo-local.sh test -p yeban-mcp --test import_midi_tool`: 7 passed, 0 failed.
+  - `cargo-local.sh clippy -p yeban-mcp --all-targets -- -D warnings`: 零告警通过。
+
