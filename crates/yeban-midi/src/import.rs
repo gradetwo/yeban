@@ -1286,6 +1286,7 @@ fn attach_lyrics(parsed: &ParsedMidi) -> (BTreeMap<u64, &str>, MidiLyricCounts) 
 }
 
 /// 丢失统计计算（按类汇总 `aux_events` 及通道/力度损失）。
+#[allow(clippy::too_many_arguments)]
 fn count_losses(
     parsed: &ParsedMidi,
     notes: usize,
