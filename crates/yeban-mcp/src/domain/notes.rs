@@ -6246,40 +6246,45 @@ fn resolve_set_param_device(
     let resolved = match resolve_device_param(project, track_id, slot_index, param_index) {
         Ok(resolved) => resolved,
         Err(reason) => {
-            let (code, field, detail) = match reason {
-                UnresolvedReason::TrackNotFound => (
+            return Err(match reason {
+                UnresolvedReason::TrackNotFound => Fault::domain_with_data(
                     ErrorCode::EntityNotFound,
-                    "trackId",
                     format!("`{SET_PARAM_KIND}` 的设备参数寻址失败: 音轨 {track_text} 不存在"),
+                    serde_json::json!({
+                        "hint": "音轨的身份由 `yeban_query_project` 的 `tracks` 字段报出",
+                        "reason": "trackNotFound",
+                        "trackId": track_text,
+                    }),
                 ),
-                UnresolvedReason::SlotOutOfRange => (
+                UnresolvedReason::SlotOutOfRange => Fault::domain_with_data(
                     ErrorCode::OutOfRange,
-                    SET_PARAM_SLOT_FIELD,
                     format!(
                         "`{SET_PARAM_KIND}` 的设备参数寻址越界: 音轨 {track_text} 的第 \
                          {slot_index} 槽不存在"
                     ),
+                    serde_json::json!({
+                        "field": SET_PARAM_SLOT_FIELD,
+                        "reason": "slotOutOfRange",
+                        "trackId": track_text,
+                        "slotIndex": slot_index,
+                        "paramIndex": param_index,
+                    }),
                 ),
-                UnresolvedReason::ParamIndexOutOfRange => (
+                UnresolvedReason::ParamIndexOutOfRange => Fault::domain_with_data(
                     ErrorCode::OutOfRange,
-                    SET_PARAM_PARAM_FIELD,
                     format!(
                         "`{SET_PARAM_KIND}` 的设备参数寻址越界: 音轨 {track_text} 第 \
                          {slot_index} 槽的设备没有第 {param_index} 个参数"
                     ),
+                    serde_json::json!({
+                        "field": SET_PARAM_PARAM_FIELD,
+                        "reason": "paramIndexOutOfRange",
+                        "trackId": track_text,
+                        "slotIndex": slot_index,
+                        "paramIndex": param_index,
+                    }),
                 ),
-            };
-            return Err(Fault::domain_with_data(
-                code,
-                detail,
-                serde_json::json!({
-                    "field": field,
-                    "reason": reason.as_str(),
-                    "trackId": track_text,
-                    "slotIndex": slot_index,
-                    "paramIndex": param_index,
-                }),
-            ));
+            });
         }
     };
     if let Some(reason) = resolved.unresolved_reason() {
@@ -9743,16 +9748,28 @@ fn reject_placement_fields(
 /// 形状不对 ⇒ `INVALID_PARAMETER_RANGE`。
 fn require_placement_id(object: &Map<String, Value>, kind: &str) -> Result<EntityId, Fault> {
     let Some(value) = object.get("placementId") else {
-        return Err(Fault::domain_with_data(
-            ErrorCode::InvalidParameterRange,
-            format!("`{PLACEMENT_FIELD}` 的 `{kind}` 形态必须给出 `placementId`"),
-            serde_json::json!({
-                "reason": format!("{kind}RequiresPlacementId"),
-                "field": format!("{PLACEMENT_FIELD}.placementId"),
-                "placementKind": kind,
-                "hint": "`placementId` 缺省派生只属于 `add` 形态; `move`/`remove` 必须指名已有摆放",
-            }),
-        ));
+        return Err(match kind {
+            "move" => Fault::domain_with_data(
+                ErrorCode::InvalidParameterRange,
+                format!("`{PLACEMENT_FIELD}` 的 `{kind}` 形态必须给出 `placementId`"),
+                serde_json::json!({
+                    "reason": "moveRequiresPlacementId",
+                    "field": format!("{PLACEMENT_FIELD}.placementId"),
+                    "placementKind": kind,
+                    "hint": "`placementId` 缺省派生只属于 `add` 形态; `move`/`remove` 必须指名已有摆放",
+                }),
+            ),
+            _ => Fault::domain_with_data(
+                ErrorCode::InvalidParameterRange,
+                format!("`{PLACEMENT_FIELD}` 的 `{kind}` 形态必须给出 `placementId`"),
+                serde_json::json!({
+                    "reason": "removeRequiresPlacementId",
+                    "field": format!("{PLACEMENT_FIELD}.placementId"),
+                    "placementKind": kind,
+                    "hint": "`placementId` 缺省派生只属于 `add` 形态; `move`/`remove` 必须指名已有摆放",
+                }),
+            ),
+        });
     };
     let text = value.as_str().ok_or_else(|| {
         Fault::domain(

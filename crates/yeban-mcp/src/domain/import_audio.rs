@@ -385,14 +385,20 @@ pub fn plan(
         .ok_or_else(|| Fault::domain(ErrorCode::InvalidParameterRange, "`name` 必须是字符串"))?;
     let asset_hash_arg = arguments.get("assetHash").and_then(Value::as_str);
     let path_arg = arguments.get("path").and_then(Value::as_str);
-    let source =
-        extension_pure::select_import_source(asset_hash_arg, path_arg).map_err(|error| {
-            Fault::domain_with_data(
+    let source = extension_pure::select_import_source(asset_hash_arg, path_arg).map_err(
+        |error| match error {
+            extension_pure::SourceSelectionError::Neither => Fault::domain_with_data(
                 ErrorCode::InvalidParameterRange,
                 error.message(),
-                serde_json::json!({ "reason": error.as_str() }),
-            )
-        })?;
+                serde_json::json!({ "reason": "sourceMissing" }),
+            ),
+            extension_pure::SourceSelectionError::Both => Fault::domain_with_data(
+                ErrorCode::InvalidParameterRange,
+                error.message(),
+                serde_json::json!({ "reason": "sourceAmbiguous" }),
+            ),
+        },
+    )?;
     let gain_db = parse_gain(arguments)?;
     // ⚠ `license` 是**必填**：`MUST-GATE-014` 要求资产许可**逐条可查**，而
     // `yeban_decode::asset_index` 的契约明文写着"本 crate 不会凭空编一个许可字符串"
