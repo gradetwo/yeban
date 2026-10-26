@@ -330,6 +330,28 @@ fn test_import_midi_multitrack_split_vs_no_split() {
     assert_eq!(data["noteCount"], 2);
     assert_eq!(data["losses"]["track_partitions_dropped"], 0);
 
+    let created_tracks = data["createdTracks"]
+        .as_array()
+        .unwrap_or_else(|| panic!("拆分导入必须报出 createdTracks 数组: {data}"));
+    assert_eq!(
+        created_tracks.len(),
+        1,
+        "1 条目标轨 + 1 条拆分新建轨 ⇒ createdTracks 恰 1 项: {data}"
+    );
+    assert!(
+        created_tracks[0]["trackId"].is_string(),
+        "createdTracks[0].trackId 必须是字符串: {data}"
+    );
+    assert!(
+        created_tracks[0]["clipId"].is_string(),
+        "createdTracks[0].clipId 必须是字符串: {data}"
+    );
+    assert!(
+        created_tracks[0]["name"].is_string(),
+        "createdTracks[0].name 必须是字符串: {data}"
+    );
+    assert_eq!(created_tracks[0]["name"], "Track Two", "{data}");
+
     let after_project = dispatcher.domain().active_project().unwrap();
     assert_eq!(
         after_project.tracks.len(),
@@ -369,6 +391,11 @@ fn test_import_midi_multitrack_split_vs_no_split() {
     let data_no_split = &res_no_split["data"];
     assert_eq!(data_no_split["noteCount"], 2);
     assert_eq!(data_no_split["losses"]["track_partitions_dropped"], 2);
+    assert_eq!(
+        data_no_split["createdTracks"],
+        json!([]),
+        "splitTracks: false 时 createdTracks 必须为空数组"
+    );
 
     let no_split_project = dispatcher.domain().active_project().unwrap();
     assert_eq!(
