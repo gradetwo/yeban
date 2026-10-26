@@ -501,6 +501,23 @@ pub fn ops_items() -> Value {
                 true,
             ),
             op(
+                "setPitchBendPoint",
+                "增删改一个音符的**单个**弯音点：`cents` 是整数 ⇒ 在 `tick` 处插入或改值；`cents` 是 `null` ⇒ 删除该 tick 的点（该 tick 本来没有点 ⇒ `ENTITY_NOT_FOUND` / `pitchBendPointNotFound`）。`tick` 是**绝对** tick（与 `pitchBendCurve` 的键同一坐标系），`cents` ∈ ±1200（与 `add` 的 `pitchBendCurve` 同一份值域）。⚠ 载荷**只带新值**：旧值由服务端从**当前文档**读，写 `oldCents` 进来是**未知键**、响亮拒绝。要整条替换曲线仍用 `setNotePitchShape`。操作对象上的多余键被响亮拒绝",
+                &["kind", "noteId", "tick", "cents"],
+                json!({
+                    "kind": kind("setPitchBendPoint"),
+                    "noteId": id("目标音符身份"),
+                    "tick": uint("弯音点所在的**绝对** tick（与 `pitchBendCurve` 的键同一坐标系）"),
+                    "cents": {
+                        "type": ["integer", "null"],
+                        "minimum": -PITCH_BEND_CENTS_MAX_ABS,
+                        "maximum": PITCH_BEND_CENTS_MAX_ABS,
+                        "description": "音分 ±1200；null = 删除该 tick 的点",
+                    },
+                }),
+                true,
+            ),
+            op(
                 "insertDevice",
                 "在目标音轨的设备链里插入一台设备。要得到 EQ / 混响 / 卷积混响：`device.kind:\"InternalEffect\"` + `bypassed:false` + 在 `device.params` 里写 `eq_*` / `reverb_*` / `conv_*` 名字（名字、单位、值域、缺省值见 `device.params.items`）",
                 &["kind", "trackId", "device"],

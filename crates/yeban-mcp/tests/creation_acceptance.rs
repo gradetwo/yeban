@@ -1858,7 +1858,7 @@ fn a_four_bar_piece_built_only_from_mcp_tool_calls_renders_measurably() {
 /// **墙清单**：每一堵都是本次真的撞到的（工具名 / 实参 / 精确错误或观察 / 绕法），
 /// 按"多疼"从高到低排。⛔ 不要为了让清单好看而删条目。
 ///
-/// 这份清单是判据的一部分（`assert!(WALLS.len() >= 5)`）：工具面改善之后，作者应当
+/// 这份清单是判据的一部分（数组长度即契约）：工具面改善之后，作者应当
 /// **主动**回来删掉对应的墙，而不是让它们烂在文档里。
 ///
 /// ⭐ 原 WALL ①（`create:true` 与 `placement` 必须分两次调用，同给报
@@ -1866,8 +1866,11 @@ fn a_four_bar_piece_built_only_from_mcp_tool_calls_renders_measurably() {
 /// `Op::AddClip` + `Op::AddClipPlacement`。⭐ 原 WALL ②（一次调用只有一个顶层
 /// `trackId`）已由可选的 `ops[].trackId` 消除（判据
 /// `edit_notes_per_op_track_id_batches_three_tracks_in_one_proposal`）。
-/// 两条均从清单移除（编号保持历史原样）。
-pub const WALLS: [&str; 5] = [
+/// ⭐ 原 WALL ⑤（弯音曲线只能整体写）已由 `ADR-0019` 消除：`setPitchBendPoint`
+/// op 可逐点插入 / 改值 / 删除（判据
+/// `edit_notes_set_pitch_bend_point_inserts_updates_and_deletes_one_point`）。
+/// 三条均从清单移除（编号保持历史原样）。
+pub const WALLS: [&str; 4] = [
     "③ 设备链**没有 CRUD 工具**：装/拆/改旁通只能经 `yeban_edit_notes` 的\
      `insertDevice` / `removeDevice` / `setDeviceBypassed` op；`yeban_query_engine_state`\
      是只读的。本文件按这条唯一通路装混响并用它做 A/B（注：原先的'改已有摆放循环'\
@@ -1876,9 +1879,6 @@ pub const WALLS: [&str; 5] = [
      `removeSection` op 里；`create:true` 时必须由调用方自己编一个 26 字符 `sectionId`。\
      想按名字找段落只能拉全量 `yeban_query_project` 再自己遍历 `sections`（没有\"按名字\"\
      或\"按 tick 区间\"的查询）。本文件在第一次编辑批里连建两个段落，省掉两次往返。",
-    "⑤ 主音的颤音曲线只能整体写（`add.note.pitchBendCurve` 或 `setNotePitchShape` 的\
-     `newPitchBendCurve`），**没有**逐点增删的 op；改一个点要整条重写（注：原先'拍号\
-     没有 op'的缺口已由 `#338` 的 `setTimeSignature` / `setTimeSignaturePoint` 闭环）。",
     "⑥ 两种提交模型混用：`yeban_edit_notes` 是\"提案 + `yeban_merge_proposal`\"，而\
      `yeban_edit_automation` 是**直接提交**（`OpOrigin::McpEdit`，没有提案、没有 merge）。\
      本文件因此有 8 次 merge（搭曲子）和 2 次无 merge 的自动化写点；把一次编辑从 `ops`\

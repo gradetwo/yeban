@@ -4159,6 +4159,260 @@ fn edit_notes_per_op_track_id_batches_three_tracks_in_one_proposal() {
     );
 }
 
+/// **工具面真的能逐点编辑弯音曲线**（ADR-0019，抹平创作墙 ⑤）：在
+/// `setPitchBendPoint` 之前，模型层的 `MidiNote::pitch_bend_curve` 只能被
+/// `yeban_edit_notes` 的 `add` 整条写入，**没有任何工具能对既有音符增删改单个点**
+/// （要改第 3 个点就得删掉整个音符重建）。
+///
+/// 判据的牙齿：
+/// 1. 撤销载荷 `old_cents` 必须来自**当前文档**（不是调用方声明）；
+/// 2. 删除用 `cents: null`（与 `setTempoPoint` 同形），删除不存在的 tick ⇒
+///    结构化 `pitchBendPointNotFound`，而不是静默成功；
+/// 3. 越界（±1200 之外）与未知键都响亮拒绝；
+/// 4. 两次合并后撤销两次 ⇒ 逐字节回到提案之前的工程。
+#[test]
+fn edit_notes_set_pitch_bend_point_inserts_updates_and_deletes_one_point() {
+    let scratch = Scratch::new("pitch-bend-point-e2e");
+    let (mut dispatcher, auth) = dispatcher();
+    open(&scratch, &mut dispatcher, &auth);
+
+    let project = dispatcher.domain().active_project().expect("工程");
+    let clip = project
+        .clip_pool
+        .values()
+        .find(|entry| entry.content.notes().is_some_and(|notes| !notes.is_empty()))
+        .expect("样本里必须有带音符的 MIDI 片段")
+        .id;
+    let clip_text = clip.to_canonical_string();
+    let note_id = project
+        .clip_pool
+        .get(&clip)
+        .and_then(|entry| entry.content.notes())
+        .and_then(|notes| notes.values().next())
+        .expect("片段里必须至少有一个音符")
+        .id;
+    let note_text = note_id.to_canonical_string();
+    let track_text = project
+        .tracks
+        .values()
+        .find(|track| {
+            track
+                .clips
+                .values()
+                .any(|placement| placement.clip_id == clip)
+        })
+        .or_else(|| {
+            project
+                .tracks
+                .values()
+                .find(|track| track.kind == yeban_model::TrackKind::Midi)
+        })
+        .expect("样本里必须有摆放该片段的音轨")
+        .id
+        .to_canonical_string();
+    let curve_before = project
+        .clip_pool
+        .get(&clip)
+        .and_then(|entry| entry.content.notes())
+        .and_then(|notes| notes.get(&note_id))
+        .expect("音符必须存在")
+        .pitch_bend_curve
+        .clone();
+    assert!(
+        curve_before.is_empty(),
+        "夹具音符的弯音曲线必须为空 (插入路径才无歧义): {curve_before:?}"
+    );
+
+    let bytes_before = project_bytes(&dispatcher);
+
+    // ① 一次提案里插两个点：两个 `old_cents` 都必须如实是 null。
+    let created = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_edit_notes",
+        json!({
+            "trackId": track_text, "clipId": clip_text, "includeOps": true,
+            "ops": [
+                {"kind": "setPitchBendPoint", "noteId": note_text, "tick": 120, "cents": 300},
+                {"kind": "setPitchBendPoint", "noteId": note_text, "tick": 240, "cents": -300}
+            ]
+        }),
+    );
+    assert_eq!(created["status"], "success", "{created}");
+    let ops = created["data"]["proposal"]["ops"]
+        .as_array()
+        .expect("ops 数组");
+    assert_eq!(
+        ops[0]["op"]["SetNotePitchBendPoint"]["old_cents"],
+        Value::Null,
+        "插入时撤销载荷必须是 null: {created}"
+    );
+    assert_eq!(
+        ops[0]["op"]["SetNotePitchBendPoint"]["new_cents"], 300,
+        "{created}"
+    );
+    assert_eq!(
+        ops[1]["op"]["SetNotePitchBendPoint"]["old_cents"],
+        Value::Null,
+        "{created}"
+    );
+    assert_eq!(
+        ops[1]["op"]["SetNotePitchBendPoint"]["new_cents"], -300,
+        "{created}"
+    );
+    assert_eq!(
+        created["data"]["proposal"]["title"], "音符编辑: 2 步",
+        "描述必须如实说这是音符级编辑: {created}"
+    );
+    assert_eq!(project_bytes(&dispatcher), bytes_before, "提案不得改工程");
+
+    let proposal_id = created["data"]["proposal"]["proposalId"]
+        .as_str()
+        .expect("id")
+        .to_owned();
+    let merged = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_merge_proposal",
+        json!({ "proposalId": proposal_id, "commitMessage": "插入两个弯音点" }),
+    );
+    assert_eq!(merged["status"], "success", "{merged}");
+    let view = call(&mut dispatcher, &auth, "yeban_query_project", json!({}));
+    assert_eq!(view["status"], "success", "{view}");
+    let stored =
+        &view["data"]["project"]["clip_pool"][&clip_text]["content"]["Midi"]["notes"][&note_text];
+    assert_eq!(
+        stored["pitch_bend_curve"],
+        json!([[120, 300], [240, -300]]),
+        "插入的两个点必须真的落进文档: {stored}"
+    );
+
+    // ② 改一个点 + 删一个点：撤销载荷必须来自当前文档。
+    let mutated = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_edit_notes",
+        json!({
+            "trackId": track_text, "clipId": clip_text, "includeOps": true,
+            "ops": [
+                {"kind": "setPitchBendPoint", "noteId": note_text, "tick": 120, "cents": -50},
+                {"kind": "setPitchBendPoint", "noteId": note_text, "tick": 240, "cents": null}
+            ]
+        }),
+    );
+    assert_eq!(mutated["status"], "success", "{mutated}");
+    let ops = mutated["data"]["proposal"]["ops"]
+        .as_array()
+        .expect("ops 数组");
+    assert_eq!(
+        ops[0]["op"]["SetNotePitchBendPoint"]["old_cents"], 300,
+        "改值的撤销载荷必须等于文档现值: {mutated}"
+    );
+    assert_eq!(
+        ops[0]["op"]["SetNotePitchBendPoint"]["new_cents"], -50,
+        "{mutated}"
+    );
+    assert_eq!(
+        ops[1]["op"]["SetNotePitchBendPoint"]["old_cents"], -300,
+        "删除的撤销载荷必须等于文档现值: {mutated}"
+    );
+    assert_eq!(
+        ops[1]["op"]["SetNotePitchBendPoint"]["new_cents"],
+        Value::Null,
+        "{mutated}"
+    );
+    let proposal_id = mutated["data"]["proposal"]["proposalId"]
+        .as_str()
+        .expect("id")
+        .to_owned();
+    let merged = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_merge_proposal",
+        json!({ "proposalId": proposal_id, "commitMessage": "改一个删一个" }),
+    );
+    assert_eq!(merged["status"], "success", "{merged}");
+    let view = call(&mut dispatcher, &auth, "yeban_query_project", json!({}));
+    let stored =
+        &view["data"]["project"]["clip_pool"][&clip_text]["content"]["Midi"]["notes"][&note_text];
+    assert_eq!(
+        stored["pitch_bend_curve"],
+        json!([[120, -50]]),
+        "改值与删除必须真的落进文档: {stored}"
+    );
+
+    // ③ 三条响亮失败。
+    let ghost = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_edit_notes",
+        json!({
+            "trackId": track_text, "clipId": clip_text,
+            "ops": [{"kind": "setPitchBendPoint", "noteId": note_text, "tick": 999, "cents": null}]
+        }),
+    );
+    assert_domain_error(&ghost, "ENTITY_NOT_FOUND", "删除不存在的弯音点");
+    assert_eq!(
+        ghost["error"]["data"]["reason"], "pitchBendPointNotFound",
+        "{ghost}"
+    );
+    assert_eq!(ghost["error"]["data"]["tick"], 999, "{ghost}");
+
+    let unknown = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_edit_notes",
+        json!({
+            "trackId": track_text, "clipId": clip_text,
+            "ops": [{"kind": "setPitchBendPoint", "noteId": note_text, "tick": 120,
+                     "cents": 0, "curve": "linear"}]
+        }),
+    );
+    assert_domain_error(&unknown, "INVALID_PARAMETER_RANGE", "未知键");
+    assert_eq!(
+        unknown["error"]["data"]["reason"], "unknownSetPitchBendPointField",
+        "{unknown}"
+    );
+
+    let too_far = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_edit_notes",
+        json!({
+            "trackId": track_text, "clipId": clip_text,
+            "ops": [{"kind": "setPitchBendPoint", "noteId": note_text, "tick": 120, "cents": 1201}]
+        }),
+    );
+    assert_domain_error(&too_far, "OUT_OF_RANGE", "cents 越界");
+    assert_eq!(too_far["error"]["data"]["field"], "cents", "{too_far}");
+
+    let non_integer = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_edit_notes",
+        json!({
+            "trackId": track_text, "clipId": clip_text,
+            "ops": [{"kind": "setPitchBendPoint", "noteId": note_text, "tick": 120, "cents": 12.5}]
+        }),
+    );
+    assert_domain_error(&non_integer, "INVALID_PARAMETER_RANGE", "非整数音分");
+    assert_eq!(
+        non_integer["error"]["data"]["reason"], "centsMustBeInteger",
+        "{non_integer}"
+    );
+
+    // ④ 两次合并 ⇒ 撤销两次回到提案之前的工程（逐字节）。
+    for _ in 0..2 {
+        let undone = call(&mut dispatcher, &auth, "yeban_undo", json!({}));
+        assert_eq!(undone["status"], "success", "{undone}");
+    }
+    assert_eq!(
+        project_bytes(&dispatcher),
+        bytes_before,
+        "撤销必须逐字节复原 (两个提案一起可逆)"
+    );
+}
+
 /// **工具面真的能取走一整条音轨**：`ops[].kind == "removeTrack"` 走完
 /// `tools/call` → 提案 → 合并 → 撤销 的整条管线，而且它**自带寻址**（顶层
 /// `trackId` / `clipId` 的内容不被读取）。

@@ -1050,6 +1050,37 @@ pub const SET_NOTE_PITCH_SHAPE_FIELDS: [&str; 4] = [
     SET_NOTE_PITCH_SHAPE_NEW_SLIDE_FIELD,
 ];
 
+/// `ops[].kind` 的**逐点弯音**形态名（写 [`Op::SetNotePitchBendPoint`]，ADR-0019）。
+///
+/// ⚠ **本形态补上了什么**：`setNotePitchShape` 只能**整条重写**曲线 ⇒ 改一个点要
+/// 重传全部点，"删掉一个点"还要先读回整条曲线（用"缺席"表达删除）。本形态让调用方
+/// 只描述**这一个** tick：
+///
+/// - `cents` 是整数 ⇒ 在 `tick` 处插入或改值（该 tick 原先有没有点由本层从当前文档读）；
+/// - `cents` 是 `null` ⇒ 删除该 tick 的点；
+/// - **缺键** ⛔ 不等于 `null`（照 `setNoteExpression` / `setTempoPoint` 的口径）。
+///
+/// ⚠ 值域与 `add` 的 `pitchBendCurve` **同一份**（±1200 音分，`ADR-0012` D2），
+/// ⛔ 不复制第二张表。
+pub const SET_PITCH_BEND_POINT_KIND: &str = "setPitchBendPoint";
+
+/// 逐点弯音形态的**目标音符**字段名（`ops[].noteId`，必填，ULID）。
+pub const SET_PITCH_BEND_POINT_NOTE_FIELD: &str = SET_NOTE_PITCH_SHAPE_NOTE_FIELD;
+
+/// 逐点弯音形态的**点坐标**字段名（绝对 tick，必填，非负整数）。
+pub const SET_PITCH_BEND_POINT_TICK_FIELD: &str = "tick";
+
+/// 逐点弯音形态的**音分**字段名（必填、可为 `null` = 删除该点）。
+pub const SET_PITCH_BEND_POINT_CENTS_FIELD: &str = "cents";
+
+/// 逐点弯音形态允许出现的**全部**键（判别键 + 一个身份 + 坐标 + 音分）。
+pub const SET_PITCH_BEND_POINT_FIELDS: [&str; 4] = [
+    "kind",
+    SET_PITCH_BEND_POINT_NOTE_FIELD,
+    SET_PITCH_BEND_POINT_TICK_FIELD,
+    SET_PITCH_BEND_POINT_CENTS_FIELD,
+];
+
 /// `yeban_edit_notes` 的**摆放**实参名（`arguments.placement`，可选）。
 ///
 /// 语义：把**已经在 `clip_pool` 里**的片段摆到 `trackId` 的时间轴上
@@ -1265,6 +1296,7 @@ pub const OP_KINDS: &[&str] = &[
     SET_NOTE_TIMING_KIND,
     SET_NOTE_EXPRESSION_KIND,
     SET_NOTE_PITCH_SHAPE_KIND,
+    SET_PITCH_BEND_POINT_KIND,
     REMOVE_CLIP_KIND,
     REMOVE_ASSET_KIND,
     SET_ASSET_KIND,
@@ -1313,7 +1345,7 @@ pub const OP_KINDS: &[&str] = &[
 /// `domain::plan_edit_notes` 用它决定"缺参时要不要响亮拒绝"。
 ///
 /// ⚠ 两份真相（本清单 vs 谓词的 `match`）由判据
-/// `every_catalog_kind_parses_and_round_trips` 在**全部 46 个 kind** 上对账
+/// `every_catalog_kind_parses_and_round_trips` 在**全部 47 个 kind** 上对账
 /// （`OP_KINDS` 里每个 kind 的最小合法形状 → 解析 → 与本清单比对），
 /// 因此"加了一个 kind 却忘了决定它读不读 `clipId`"会立刻变红。
 pub const ENVELOPE_CLIP_KINDS: &[&str] = &[
@@ -1324,25 +1356,26 @@ pub const ENVELOPE_CLIP_KINDS: &[&str] = &[
     SET_NOTE_TIMING_KIND,
     SET_NOTE_EXPRESSION_KIND,
     SET_NOTE_PITCH_SHAPE_KIND,
+    SET_PITCH_BEND_POINT_KIND,
     REMOVE_CLIP_KIND,
 ];
 
 /// **读/写音符**的 kind 清单 —— [`NoteOp::is_note_level`] 的**唯一发布面**。
 ///
-/// ⭐ `#179`：本集合收窄到音符号形态之后，现在是**七个**（`add` / `delete` /
+/// ⭐ `#179`：本集合收窄到音符号形态之后，现在是**八个**（`add` / `delete` /
 /// `move` / `velocity` / `setNoteTiming` / `setNoteExpression` /
-/// `setNotePitchShape`），也就是
-/// [`ENVELOPE_CLIP_KINDS`] 里除池级 `removeClip` 之外的七个。其余 33 个形态
+/// `setNotePitchShape` / `setPitchBendPoint`），也就是
+/// [`ENVELOPE_CLIP_KINDS`] 里除池级 `removeClip` 之外的八个。其余 33 个形态
 /// （音轨属性级 / 设备级 / 摆放属性级 / 路由级 / 段落级 / 场景级 / 资产级 /
 /// 文档级 / 音轨实体级 / 池级）**一个音符都不读**，因此不要求片段是 MIDI。
 ///
 /// ⚠ 与 [`ENVELOPE_CLIP_KINDS`] **不是**同一个清单：`removeClip` 读顶层 `clipId`
 /// 却**不**读音符（它取走整条池条目，音频条目同样取得走）；反过来，本清单里的
-/// 七个形态必然是顶层 `clipId` 的消费者 —— 因此本清单是
+/// 八个形态必然是顶层 `clipId` 的消费者 —— 因此本清单是
 /// [`ENVELOPE_CLIP_KINDS`] 去掉 `removeClip` 之后的子集，且这条包含关系由判据钉住。
 ///
 /// 两份真相（本清单 vs 谓词的 `match`）由判据
-/// `every_catalog_kind_compiles_to_exactly_one_op_variant` 在**全部 46 个 kind** 上
+/// `every_catalog_kind_compiles_to_exactly_one_op_variant` 在**全部 47 个 kind** 上
 /// 对账（`OP_KINDS` 里每个 kind 的规范形状 → 解析 → 与本清单比对），因此"加了一个
 /// kind 却忘了决定它读不读音符"会立刻变红。
 pub const NOTE_LEVEL_KINDS: &[&str] = &[
@@ -1353,6 +1386,7 @@ pub const NOTE_LEVEL_KINDS: &[&str] = &[
     SET_NOTE_TIMING_KIND,
     SET_NOTE_EXPRESSION_KIND,
     SET_NOTE_PITCH_SHAPE_KIND,
+    SET_PITCH_BEND_POINT_KIND,
 ];
 
 /// `setParam` 能写的**静态目标**（[`Op::SetParam`] 里"有静态值可写"的那三个）。
@@ -3023,6 +3057,21 @@ pub enum NoteOp {
         /// 新滑音（`None` = 清空 = 无滑音）。
         new_slide: Option<SlideConfig>,
     },
+    /// 增删改**单个**弯音点（[`Op::SetNotePitchBendPoint`]，ADR-0019）。
+    ///
+    /// ⭐ **本形态补上了什么**：`setNotePitchShape` 只能整条重写曲线 ⇒ 改一个点要
+    /// 重传全部点、删一个点要先读回整条曲线。本形态只描述**这一个** tick。
+    ///
+    /// ⚠ `cents` 的 `null` = 删除该 tick 的点（缺键 ⛔ 不等于 `null`）；旧值由
+    /// [`compile`] 从**当前文档**读（⛔ 不信调用方声明）。
+    SetNotePitchBendPoint {
+        /// 音符身份。
+        note_id: EntityId,
+        /// 弯音点所在的 tick（绝对 tick，与 `pitch_bend_curve` 的键同一坐标系）。
+        tick: u64,
+        /// 新的音分；`None` = 删除该 tick 的点。
+        cents: Option<i16>,
+    },
     /// 写**静态混音值**（[`Op::SetParam`]）：音轨音量 / 声相，或设备参数。
     ///
     /// 这是本枚举里第一个**音轨级**（而非音符级）的形态：它不读、不写任何音符，
@@ -3822,6 +3871,7 @@ impl NoteOp {
             Self::SetTiming { .. } => SET_NOTE_TIMING_KIND,
             Self::SetNoteExpression { .. } => SET_NOTE_EXPRESSION_KIND,
             Self::SetNotePitchShape { .. } => SET_NOTE_PITCH_SHAPE_KIND,
+            Self::SetNotePitchBendPoint { .. } => SET_PITCH_BEND_POINT_KIND,
             Self::SetParam { .. } => SET_PARAM_KIND,
             Self::SetTrackFlag { flag, .. } => flag.kind_name(),
             Self::SetTransportConfig { .. } => SET_TRANSPORT_CONFIG_KIND,
@@ -3896,6 +3946,7 @@ impl NoteOp {
                 | Self::SetTiming { .. }
                 | Self::SetNoteExpression { .. }
                 | Self::SetNotePitchShape { .. }
+                | Self::SetNotePitchBendPoint { .. }
         )
     }
 
@@ -4034,6 +4085,7 @@ impl NoteOp {
                 | Self::SetTiming { .. }
                 | Self::SetNoteExpression { .. }
                 | Self::SetNotePitchShape { .. }
+                | Self::SetNotePitchBendPoint { .. }
                 | Self::RemoveClip
         )
     }
@@ -4324,6 +4376,15 @@ fn parse_one(item: &Value) -> Result<NoteOp, Fault> {
                     object,
                     SET_NOTE_PITCH_SHAPE_NEW_SLIDE_FIELD,
                 )?,
+            })
+        }
+        SET_PITCH_BEND_POINT_KIND => {
+            reject_set_pitch_bend_point_fields(object)?;
+            Ok(NoteOp::SetNotePitchBendPoint {
+                note_id: read_id(object, SET_PITCH_BEND_POINT_NOTE_FIELD)?,
+                tick: read_required_u64(object, SET_PITCH_BEND_POINT_TICK_FIELD)?,
+                // ⚠ 必填、可为 `null`（`null` = 删除该点；缺键 ⛔ 不等于 `null`）。
+                cents: read_required_pitch_bend_cents(object, SET_PITCH_BEND_POINT_CENTS_FIELD)?,
             })
         }
         SET_PARAM_KIND => Ok(NoteOp::SetParam {
@@ -5036,6 +5097,20 @@ fn reject_set_note_pitch_shape_fields(object: &Map<String, Value>) -> Result<(),
         &SET_NOTE_PITCH_SHAPE_FIELDS,
         SET_NOTE_PITCH_SHAPE_KIND,
         "unknownSetNotePitchShapeField",
+    )
+}
+
+/// 拒绝 `setPitchBendPoint` 里 [`SET_PITCH_BEND_POINT_FIELDS`] 之外的键。
+///
+/// 与同族 `reject_*_fields` 同一口径：最像"写对了"的错法是把曲线**数组**写进
+/// `newPitchBendCurve`（那是 `setNotePitchShape` 的载荷），或把旧值 `oldCents`
+/// 写进来 —— 它们由 [`compile`] 从当前文档读，写在这里只会被静默忽略。
+fn reject_set_pitch_bend_point_fields(object: &Map<String, Value>) -> Result<(), Fault> {
+    reject_unknown_keys(
+        object,
+        &SET_PITCH_BEND_POINT_FIELDS,
+        SET_PITCH_BEND_POINT_KIND,
+        "unknownSetPitchBendPointField",
     )
 }
 
@@ -7742,6 +7817,56 @@ fn read_pitch_bend_curve_value(value: &Value, field: &str) -> Result<Vec<(u64, i
     Ok(curve)
 }
 
+/// 读一个**必填但可为 `null`** 的弯音音分（`null` = 删除该 tick 的点）。
+///
+/// 值域与 [`read_pitch_bend_curve_value`] 的 `cents` 那一遍**同一份**
+/// （±`PITCH_BEND_CENTS_MAX_ABS`，`ADR-0012` D2）；⛔ 不写第二张值域表。
+fn read_required_pitch_bend_cents(
+    object: &Map<String, Value>,
+    field: &str,
+) -> Result<Option<i16>, Fault> {
+    let raw = object.get(field).ok_or_else(|| {
+        missing(
+            field,
+            "整数音分或 null（null = 删除该 tick 的点；缺键 ⛔ 不等于 null）",
+        )
+    })?;
+    if raw.is_null() {
+        return Ok(None);
+    }
+    let cents = raw.as_i64().ok_or_else(|| {
+        Fault::domain_with_data(
+            ErrorCode::InvalidParameterRange,
+            format!("`{field}` 必须是整数音分, 实际收到 {raw}"),
+            serde_json::json!({
+                "field": field,
+                "reason": "centsMustBeInteger",
+                "received": raw,
+            }),
+        )
+    })?;
+    let bound = i64::from(PITCH_BEND_CENTS_MAX_ABS);
+    if !(-bound..=bound).contains(&cents) {
+        return Err(Fault::domain_with_data(
+            ErrorCode::OutOfRange,
+            format!(
+                "`{field}` 的 cents 越界: {cents} 不在 {}..={}",
+                -bound, bound
+            ),
+            serde_json::json!({
+                "field": field,
+                "value": cents,
+                "min": -bound,
+                "max": bound,
+            }),
+        ));
+    }
+    // 区间已判（±1200 必然落进 i16）⇒ 这里的构造不会失败。
+    Ok(Some(
+        i16::try_from(cents).unwrap_or(PITCH_BEND_CENTS_MAX_ABS),
+    ))
+}
+
 /// 读可选的 `note.slide`（缺省 = `None` = 无滑音）。
 ///
 /// ⚠ 这是**可选**那一半（`add` 的既有语义）。`setNotePitchShape` 的**一个**滑音字段
@@ -8145,6 +8270,46 @@ pub fn compile(
                     old_slide: current.slide,
                     new_bend: new_bend.clone(),
                     new_slide: *new_slide,
+                }
+            }
+            NoteOp::SetNotePitchBendPoint {
+                note_id,
+                tick,
+                cents,
+            } => {
+                // 撤销载荷来自**当前文档**（模型 `apply` 的前置条件读同一个点、且
+                // 逐位比较）⇒ 本层不采信调用方声明的旧状态。
+                let current = project
+                    .note(clip_id, note_id)
+                    .map_err(|error| from_model("音符查找", &error))?;
+                let old_cents = current
+                    .pitch_bend_curve
+                    .iter()
+                    .find_map(|&(t, cents)| (t == *tick).then_some(cents));
+                // ⚠ "删除一个不存在的点"（旧值与新值都是 `None`）在这里就报
+                // `pitchBendPointNotFound` —— 模型侧同一条形状报的是泛化的
+                // `OpStateMismatch`，而本层能给出**带 tick 的结构化理由**
+                // （与 `setTempoPoint` 的 `tempoPointNotFound` 同口径）。
+                if old_cents.is_none() && cents.is_none() {
+                    return Err(Fault::domain_with_data(
+                        ErrorCode::EntityNotFound,
+                        format!(
+                            "音符 {note_id} 的弯音曲线在 tick {tick} 没有点, 没有东西可以删除"
+                        ),
+                        serde_json::json!({
+                            "reason": "pitchBendPointNotFound",
+                            "tick": tick,
+                            "hint": "曲线现值由 `yeban_query_project` 的 `pitchBendCurve` 报出; 新增请用整数音分, 删除用 null",
+                        }),
+                    ));
+                }
+                Op::SetNotePitchBendPoint {
+                    track_id: *track_id,
+                    clip_id: *clip_id,
+                    note_id: *note_id,
+                    tick: *tick,
+                    old_cents,
+                    new_cents: *cents,
                 }
             }
             NoteOp::SetParam {
@@ -11051,7 +11216,7 @@ mod tests {
         assert_eq!(lane_fault_data(&fault)["reason"], "paramIndexOutOfRange");
     }
 
-    /// ⭐ `#179`：`is_note_level()` **恰好**是七个音符形态（`#334` 起）。
+    /// ⭐ `#179`：`is_note_level()` **恰好**是八个音符形态（ADR-0019 起）。
     ///
     /// 六个**属性级**形态（`setClipName` / `setDeviceName` / `setDeviceBypassed` /
     /// `setClipPlacementMuted` / `setTrackColor` / `setClipPlacementDuration`）改的是
@@ -11063,9 +11228,9 @@ mod tests {
     /// 全红；把 `Add`/`Delete`/`Move`/`Velocity`/`SetTiming` 任一从正选里去掉 ⇒ 对应的
     /// `is_note_level` 断言红。
     #[test]
-    fn note_level_is_exactly_the_seven_note_forms() {
+    fn note_level_is_exactly_the_note_forms() {
         let ulid = "01J8ZQ00000000000000000999";
-        // 七个音符形态：解析后 `is_note_level()` 必须为真。
+        // 八个音符形态：解析后 `is_note_level()` 必须为真。
         let note_forms = [
             (
                 "add",
@@ -11094,6 +11259,10 @@ mod tests {
             (
                 "setNotePitchShape",
                 serde_json::json!({"kind": "setNotePitchShape", "noteId": ulid, "newPitchBendCurve": [], "newSlide": null}),
+            ),
+            (
+                "setPitchBendPoint",
+                serde_json::json!({"kind": "setPitchBendPoint", "noteId": ulid, "tick": 120, "cents": 50}),
             ),
         ];
         for (kind, payload) in note_forms {
@@ -11144,7 +11313,7 @@ mod tests {
                 "`{kind}` 改的是属性（不读音符）, ⛔ 不得算作音符级"
             );
         }
-        // 发布清单本身：逐字 + 恰好七个（⛔ 不是常量自比）。
+        // 发布清单本身：逐字 + 恰好八个（⛔ 不是常量自比）。
         assert_eq!(
             NOTE_LEVEL_KINDS,
             [
@@ -11154,12 +11323,13 @@ mod tests {
                 "velocity",
                 "setNoteTiming",
                 "setNoteExpression",
-                "setNotePitchShape"
+                "setNotePitchShape",
+                "setPitchBendPoint"
             ],
-            "音符级清单必须逐字是这七个"
+            "音符级清单必须逐字是这八个"
         );
-        assert_eq!(NOTE_LEVEL_KINDS.len(), 7);
-        // 七个音符形态必然是顶层 `clipId` 的消费者（清单之间的包含关系）。
+        assert_eq!(NOTE_LEVEL_KINDS.len(), 8);
+        // 八个音符形态必然是顶层 `clipId` 的消费者（清单之间的包含关系）。
         for kind in NOTE_LEVEL_KINDS {
             assert!(
                 ENVELOPE_CLIP_KINDS.contains(kind),
@@ -12077,7 +12247,9 @@ mod tests {
         // 本票新增 `setKeySignature`（顶层文档字段，与 `setTimeSignature` 同族）后为 44 —— 同样与真实 `kind` 同步。
         // 本票新增 `setTempoPoint` 与 `setTimeSignaturePoint`（两个**映射点**形态，
         // 补上 `tempo_map` / `time_signature_map` 在工具面无通路）后为 46 —— 同样与真实 `kind` 同步。
-        assert_eq!(OP_KINDS.len(), 46);
+        // 本票（`ADR-0019` 逐点弯音）新增 `setPitchBendPoint`（第八个音符级形态）后为 47
+        // —— 同样与真实 `kind` 同步。
+        assert_eq!(OP_KINDS.len(), 47);
         assert!(OP_KINDS.contains(&SET_KEY_SIGNATURE_KIND));
         assert_eq!(TrackFlag::NAMES, [SET_TRACK_MUTE_KIND, SET_TRACK_SOLO_KIND]);
         assert!(OP_KINDS.contains(&SET_TRACK_MUTE_KIND));
@@ -18026,7 +18198,7 @@ mod tests {
     fn every_catalog_kind_parses_and_round_trips() {
         let ulid = "01J8ZQ00000000000000000999";
         // 每个 kind 的**最小合法形状**（只到解析期为止；文档相关的前置条件在 `compile`）。
-        let table: [(&str, serde_json::Value); 46] = [
+        let table: [(&str, serde_json::Value); 47] = [
             (
                 "add",
                 serde_json::json!({"note": {"startTick": 0, "pitch": 60, "durationTicks": 480}}),
@@ -18060,6 +18232,10 @@ mod tests {
                     "newPitchBendCurve": [[0, 0], [240, 200]],
                     "newSlide": null,
                 }),
+            ),
+            (
+                "setPitchBendPoint",
+                serde_json::json!({"noteId": ulid, "tick": 120, "cents": 50}),
             ),
             ("removeClip", serde_json::json!({})),
             (
@@ -18230,6 +18406,7 @@ mod tests {
                 "setNoteTiming",
                 "setNoteExpression",
                 "setNotePitchShape",
+                "setPitchBendPoint",
                 "removeClip",
                 "removeAsset",
                 "setAsset",
@@ -18627,7 +18804,7 @@ mod tests {
             Value,
             &'a str,
         );
-        let rows: [Row<'_>; 47] = [
+        let rows: [Row<'_>; 48] = [
             (
                 "add",
                 None,
@@ -18689,6 +18866,17 @@ mod tests {
                     "newSlide": {"durationTicks": 240, "targetPitch": 72},
                 }),
                 "SetNotePitchShape",
+            ),
+            (
+                "setPitchBendPoint",
+                None,
+                None,
+                serde_json::json!({
+                    "noteId": note,
+                    "tick": 120,
+                    "cents": 50,
+                }),
+                "SetNotePitchBendPoint",
             ),
             (
                 "setAsset",
@@ -19026,11 +19214,11 @@ mod tests {
         assert_eq!(
             rows.len(),
             OP_KINDS.len() + 1,
-            "46 个 kind ＋ 1 个额外载荷分支"
+            "47 个 kind ＋ 1 个额外载荷分支"
         );
 
         let mut seen: Vec<&str> = Vec::new();
-        // ⭐ `#179`：在**全部 46 个 kind**上对账 `is_note_level()` 与发布的
+        // ⭐ `#179`：在**全部 47 个 kind**上对账 `is_note_level()` 与发布的
         // `NOTE_LEVEL_KINDS`（⛔ 不是手抄的第二份清单，也不是"断言它非空"）。
         let mut note_level_seen: Vec<&str> = Vec::new();
         for (label, clip_override, preset, payload, expected) in rows {
@@ -19080,9 +19268,10 @@ mod tests {
         // `#336` 的 `setClipPlacementLoop`（独占一个变体）⇒ 42 → **43**；
         // `#338` 的 `setTimeSignature`（独占一个变体）⇒ 43 → **44**。
         // 本票的 `setKeySignature`（独占一个变体）⇒ 44 → **45**。
-        // 本票的 `setTempoPoint` / `setTimeSignaturePoint`（各独占一个变体）⇒ 45 → **47**。
-        assert_eq!(seen.len(), 47);
-        // ⭐ `#179`：音符级分支集合**恰好是七个**，且逐字等于发布清单。
+        // 本票的 `setTempoPoint` / `setTimeSignaturePoint`（各独占一个变体）⇒ 45 → **47**；
+        // `ADR-0019` 的 `setPitchBendPoint`（独占一个变体）⇒ 47 → **48**。
+        assert_eq!(seen.len(), 48);
+        // ⭐ `#179`：音符级分支集合**恰好是八个**，且逐字等于发布清单。
         assert_eq!(
             NOTE_LEVEL_KINDS,
             [
@@ -19092,14 +19281,15 @@ mod tests {
                 "velocity",
                 "setNoteTiming",
                 "setNoteExpression",
-                "setNotePitchShape"
+                "setNotePitchShape",
+                "setPitchBendPoint"
             ],
-            "音符级 kind 必须恰好是七个音符形态（字面表，⛔ 不是常量自比）"
+            "音符级 kind 必须恰好是八个音符形态（字面表，⛔ 不是常量自比）"
         );
         assert_eq!(
             note_level_seen.len(),
-            7,
-            "全部 46 个 kind 里 `is_note_level()` 为真的必须**恰好七个**，实际: {note_level_seen:?}"
+            8,
+            "全部 47 个 kind 里 `is_note_level()` 为真的必须**恰好八个**，实际: {note_level_seen:?}"
         );
         assert_eq!(
             note_level_seen,

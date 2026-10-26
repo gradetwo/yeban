@@ -152,6 +152,16 @@
         },
         {
           "required": [
+            "SetNotePitchBendPoint"
+          ],
+          "properties": {
+            "SetNotePitchBendPoint": {
+              "type": "object"
+            }
+          }
+        },
+        {
+          "required": [
             "AddClipPlacement"
           ],
           "properties": {
@@ -402,16 +412,6 @@
         },
         {
           "required": [
-            "SetTempoPoint"
-          ],
-          "properties": {
-            "SetTempoPoint": {
-              "type": "object"
-            }
-          }
-        },
-        {
-          "required": [
             "SetAuthor"
           ],
           "properties": {
@@ -436,6 +436,16 @@
           ],
           "properties": {
             "SetTimeSignature": {
+              "type": "object"
+            }
+          }
+        },
+        {
+          "required": [
+            "SetTempoPoint"
+          ],
+          "properties": {
+            "SetTempoPoint": {
               "type": "object"
             }
           }

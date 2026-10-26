@@ -44,7 +44,7 @@
 //!
 //! | 面 | reason 数 | 规范行数 | SHA-256 |
 //! | :--- | ---: | ---: | :--- |
-//! | `reason`（**可分类**面：字面量 ＋ 可解析的字面量 `let`，含顺序） | 159 | 720 | `554c947ed735a9d3ce7712a65ed5e7bb21341d450eb97caca78f3e7ebaacc537` |
+//! | `reason`（**可分类**面：字面量 ＋ 可解析的字面量 `let`，含顺序） | 161 | 728 | `c5056c369e24f34a11ab7349d5af96f4a552f6431c1ebe9a8b18353c6635514d` |
 //!
 //! ⚠ `#274`：摘要随"登记位置搬进 provider"重钉（集合不变、顺序变了）；
 //! 见 `FROZEN_REASON_SURFACE_SHA256` 的沿革注释。
@@ -62,7 +62,7 @@ use yeban_mcp::undo_session::read_rust_sources;
 /// 字面量 ＋ 同函数内可解析的字面量 `let`（#340 起）。运行时站点不进这张表，
 /// 由 [`EXEMPT_DYNAMIC_REASON_SITES`] 逐条登记。
 /// 这是黄金表：任何改名 / 新增 / 删除都必须**故意**改这一行。
-pub const GOLDEN_REASONS: [&str; 155] = [
+pub const GOLDEN_REASONS: [&str; 157] = [
     "assetChannelLayout",
     "assetDecodeFailed",
     "assetHashMismatch",
@@ -76,6 +76,8 @@ pub const GOLDEN_REASONS: [&str; 155] = [
     "automationPointNotFound",
     "automationTickAmbiguous",
     "bpmOutOfRange",
+    // ⭐ `ADR-0019`：`setPitchBendPoint` 的 `cents` 只收整数音分。
+    "centsMustBeInteger",
     // ⭐ MCP-TOOL-003：`setTempoPoint` / `setTimeSignaturePoint` 的三条字面站点
     // （tick 0 必拒、删除不存在的映射点必点名）。`unknownSetTempoPointField` /
     // `unknownSetTimeSignaturePointField` **不在**本表：它们作为参数传给
@@ -140,6 +142,8 @@ pub const GOLDEN_REASONS: [&str; 155] = [
     "nonFiniteValue",
     "paramIndexOutOfRange",
     "pcmBudgetExceeded",
+    // ⭐ `ADR-0019`：删除一个不存在的弯音点必须点名 tick（同 `tempoPointNotFound`）。
+    "pitchBendPointNotFound",
     "placementAlreadyAtStartTick",
     "placementAlreadyExists",
     "placementClipMismatch",
@@ -937,13 +941,13 @@ const REASON_ARGUMENT_NAME_USES: [ReasonArgumentNameUse; 3] = [
 // 站点普查的冻结读数。口径：`production_region` 里 `"reason"` 的**出现次数**
 // （不是行数：一行里可能有两个；也不是 distinct 值数）。新增/删除任何站点都必须
 // **故意**改这些数 —— 这是"看全了"这件事本身的机械契约。
-const REASON_OCCURRENCES_TOTAL: usize = 219;
+const REASON_OCCURRENCES_TOTAL: usize = 221;
 // ⭐ MCP-TOOL-003：键站点 208 → 216、字面站点 200 → 208 —— 新形态在
 // `domain/notes.rs` / `tools.rs` 里新增的 8 处字面 `"reason"` 站点
 // （tick 0、`bpmOutOfRange` 复用、`tempoPointNotFound`、`timeSignaturePointNotFound`
 // 与描述文本里的键形状；逐文件拆分以扫描器读数为准，此处不手数）。
-const REASON_KEY_SITES_TOTAL: usize = 216;
-const REASON_LITERAL_SITES_TOTAL: usize = 208;
+const REASON_KEY_SITES_TOTAL: usize = 218;
+const REASON_LITERAL_SITES_TOTAL: usize = 210;
 const REASON_RESOLVED_SITES_TOTAL: usize = 2;
 const REASON_DYNAMIC_SITES_TOTAL: usize = 6;
 const REASON_ARGUMENT_NAME_TOTAL: usize = 3;
@@ -1216,7 +1220,7 @@ fn every_reason_is_asserted_somewhere() {
 /// 每条 `reason` 在生产区**字面 `json!` 对象**里带的同级键（排序）。
 /// ⚠ 口径：只收字面 `json!` 里的键；运行时 `map.insert(...)` 加进去的键不在内。
 /// 空数组 = 该 reason 的 `data` 里**没有**同级键（或 Data 由别的构造方式给出）。
-pub const GOLDEN_REASON_PAYLOADS: [(&str, &[&str]); 155] = [
+pub const GOLDEN_REASON_PAYLOADS: [(&str, &[&str]); 157] = [
     (
         "assetChannelLayout",
         &[
@@ -1273,6 +1277,8 @@ pub const GOLDEN_REASON_PAYLOADS: [(&str, &[&str]); 155] = [
         &["candidatePointIds", "lane", "reason", "tick"],
     ),
     ("bpmOutOfRange", &["max", "min", "reason", "received"]),
+    // ⭐ `ADR-0019`：`cents` 只收整数音分（键按源码顺序）。
+    ("centsMustBeInteger", &["field", "reason", "received"]),
     // ⭐ MCP-TOOL-003：三条新字面站点的载荷形状（键按**源码顺序**）。
     ("tempoMapZeroTick", &["reason", "tick"]),
     ("tempoPointNotFound", &["reason", "tick", "hint"]),
@@ -1405,6 +1411,8 @@ pub const GOLDEN_REASON_PAYLOADS: [(&str, &[&str]); 155] = [
         "pcmBudgetExceeded",
         &["budget", "budgetDetail", "budgetGate", "reason"],
     ),
+    // ⭐ `ADR-0019`：删除不存在的弯音点（键按源码顺序）。
+    ("pitchBendPointNotFound", &["reason", "tick", "hint"]),
     (
         "placementAlreadyAtStartTick",
         &[
@@ -2146,13 +2154,19 @@ fn the_reason_payload_shape_is_the_published_table() {
 /// （reason 集合大小不变，仍是 159；新 reason 带 5 个同级键 ⇒ 717 → 720 行）。
 /// 新摘要 `554c947ed735a9d3ce7712a65ed5e7bb21341d450eb97caca78f3e7ebaacc537`
 /// 由判据自己报出后照抄。
+///
+/// ⭐ `ADR-0019` 重钉：`setPitchBendPoint` 落地 ⇒ 2 条新字面站点进入规范文本
+/// （`centsMustBeInteger` / `pitchBendPointNotFound`，各带 3 个同级键）
+/// ⇒ 159 → 161 个 reason、720 → 728 行。新摘要
+/// `c5056c369e24f34a11ab7349d5af96f4a552f6431c1ebe9a8b18353c6635514d`
+/// 由判据自己报出后照抄。
 pub const FROZEN_REASON_SURFACE_SHA256: &str =
-    "554c947ed735a9d3ce7712a65ed5e7bb21341d450eb97caca78f3e7ebaacc537";
+    "c5056c369e24f34a11ab7349d5af96f4a552f6431c1ebe9a8b18353c6635514d";
 
 /// 规范形式里的 reason 数 / 规范行数（与摘要一起构成"两端"读数）。
-pub const REASON_SURFACE_REASONS: usize = 159;
+pub const REASON_SURFACE_REASONS: usize = 161;
 /// 规范行数（每个 reason 一行 ＋ 每个键一行）。
-pub const REASON_SURFACE_LINES: usize = 720;
+pub const REASON_SURFACE_LINES: usize = 728;
 
 /// 单文件里的 `reason` 面：**保留出现顺序**的 `(reason, keys)`。
 ///

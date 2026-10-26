@@ -357,6 +357,34 @@ pub enum Op {
         /// 修改后的滑音（`None` = 清空 = 无滑音）。
         new_slide: Option<SlideConfig>,
     },
+    /// 增删改**单个**弯音点（ADR-0019）。
+    ///
+    /// 为什么需要独立变体：[`Op::SetNotePitchShape`] 只能**整条重写**曲线，改一个点要
+    /// 重传全部点，而"删掉一个点"只能靠"整条里没有那个 tick"表达 ⇒ 调用方必须先读回
+    /// 整条曲线。本变体让调用方只描述**这一个**点。
+    ///
+    /// - `old_cents: None, new_cents: Some(cents)` ⇒ 在 `tick` 插入新点（该 tick 必须**没有**点）；
+    /// - `old_cents: Some(old), new_cents: Some(new)` ⇒ 改 `tick` 处的值；
+    /// - `old_cents: Some(old), new_cents: None` ⇒ 删除 `tick` 处的点；
+    /// - `old_cents: None, new_cents: None` ⇒ 无意义 ⇒ [`ModelError::OpStateMismatch`]。
+    ///
+    /// 值域照抄 [`crate::music::validate_pitch_bend_curve`] 的 `cents` 那一半
+    /// ([`ModelError::PitchBendCentsOutOfRange`])。⚠ 升序由**插入位置**保证：`commit`
+    /// 用二分查找定位，⛔ 不重排、⛔ 不覆盖相邻点。
+    SetNotePitchBendPoint {
+        /// 所属音轨。
+        track_id: EntityId,
+        /// 所属片段。
+        clip_id: EntityId,
+        /// 音符身份。
+        note_id: EntityId,
+        /// 弯音点所在的 tick（**绝对** tick，与 `pitch_bend_curve` 的键同一坐标系）。
+        tick: u64,
+        /// 修改前的 `cents`（`None` 表示原先该 tick **没有**点）。
+        old_cents: Option<i16>,
+        /// 修改后的 `cents`（`None` 表示删除该 tick 的点）。
+        new_cents: Option<i16>,
+    },
     /// 在音轨时间轴上摆放片段。
     AddClipPlacement {
         /// 目标音轨。
@@ -1226,6 +1254,7 @@ impl Op {
             Self::SetNoteTiming { .. } => "SetNoteTiming",
             Self::SetNoteExpression { .. } => "SetNoteExpression",
             Self::SetNotePitchShape { .. } => "SetNotePitchShape",
+            Self::SetNotePitchBendPoint { .. } => "SetNotePitchBendPoint",
             Self::AddClip { .. } => "AddClip",
             Self::RemoveClip { .. } => "RemoveClip",
             Self::SetClipName { .. } => "SetClipName",
@@ -1443,6 +1472,41 @@ impl Op {
                     slide.validate()?;
                 }
                 crate::music::validate_pitch_bend_curve(new_bend)?;
+                Ok(())
+            }
+            Self::SetNotePitchBendPoint {
+                track_id,
+                clip_id,
+                note_id,
+                tick,
+                old_cents,
+                new_cents,
+            } => {
+                doc.track(track_id)?;
+                let current = doc.note(clip_id, note_id)?;
+                if old_cents.is_none() && new_cents.is_none() {
+                    return Err(ModelError::OpStateMismatch { op: self.name() });
+                }
+                // ⭐ 现值必须逐位等于 `old_cents`（⛔ 不信调用方声明的旧状态）。
+                // `None` 的含义是"该 tick 没有点"，与 `pitch_bend_curve` 的**缺席**
+                // 同一语义 —— 因此这里比较的是"有没有这个 tick 的点"。
+                let actual = current
+                    .pitch_bend_curve
+                    .iter()
+                    .find_map(|&(t, cents)| (t == *tick).then_some(cents));
+                if actual != *old_cents {
+                    return Err(ModelError::OpStateMismatch { op: self.name() });
+                }
+                if let Some(cents) = new_cents
+                    && !(-crate::music::PITCH_BEND_CENTS_MAX_ABS
+                        ..=crate::music::PITCH_BEND_CENTS_MAX_ABS)
+                        .contains(cents)
+                {
+                    return Err(ModelError::PitchBendCentsOutOfRange {
+                        value: i32::from(*cents),
+                        tick: *tick,
+                    });
+                }
                 Ok(())
             }
             Self::AddClipPlacement {
@@ -2318,6 +2382,22 @@ impl Op {
                 new_bend: old_bend.clone(),
                 new_slide: *old_slide,
             },
+            // 纯结构化取反：只交换"前 / 后"两个 `Option<i16>`。
+            Self::SetNotePitchBendPoint {
+                track_id,
+                clip_id,
+                note_id,
+                tick,
+                old_cents,
+                new_cents,
+            } => Self::SetNotePitchBendPoint {
+                track_id: *track_id,
+                clip_id: *clip_id,
+                note_id: *note_id,
+                tick: *tick,
+                old_cents: *new_cents,
+                new_cents: *old_cents,
+            },
             Self::AddClipPlacement {
                 track_id,
                 placement,
@@ -2865,6 +2945,32 @@ impl Op {
                 let note = doc.note_mut(clip_id, note_id)?;
                 note.pitch_bend_curve.clone_from(new_bend);
                 note.slide = *new_slide;
+                Ok(())
+            }
+            // 只动 `pitch_bend_curve` 里的**一个**点：⛔ 不碰 `slide`、⛔ 不碰其他字段。
+            // 二分定位 ⇒ 插入/覆盖/删除都不破坏升序（`precondition` 已钉住旧值）。
+            Self::SetNotePitchBendPoint {
+                clip_id,
+                note_id,
+                tick,
+                new_cents,
+                ..
+            } => {
+                let note = doc.note_mut(clip_id, note_id)?;
+                let index = note
+                    .pitch_bend_curve
+                    .binary_search_by_key(tick, |&(t, _)| t);
+                match (index, new_cents) {
+                    (Ok(index), Some(cents)) => note.pitch_bend_curve[index].1 = *cents,
+                    (Ok(index), None) => {
+                        note.pitch_bend_curve.remove(index);
+                    }
+                    (Err(index), Some(cents)) => {
+                        note.pitch_bend_curve.insert(index, (*tick, *cents))
+                    }
+                    // `precondition` 已拒绝"两边都 None"以及"删一个不存在的点"。
+                    (Err(_), None) => unreachable!("precondition 已钉住旧点存在"),
+                }
                 Ok(())
             }
             Self::AddClipPlacement {
@@ -8366,6 +8472,239 @@ mod tests {
             ),
         ];
         for (candidate, expected) in cases {
+            let mut fresh = fixture_document();
+            assert_eq!(
+                candidate.apply(&mut fresh).expect_err("目标缺失必须被拒"),
+                expected,
+                "必须复用既有错误变体（⛔ 造新变体）"
+            );
+        }
+    }
+
+    /// `SetNotePitchBendPoint`（ADR-0019）：**逐点**插入 / 改值 / 删除弯音点。
+    ///
+    /// 七条读数：
+    /// ① 插入按 tick **升序**落位（前面 / 中间 / 末尾三个位置），⛔ 不重排邻居；
+    /// ② 改值只换**那一个** tick 的 cents；③ 删点只让**那一个** tick 消失；
+    /// ④ 三种形态的逆操作都**逐字节**回到原状；
+    /// ⑤ 陈旧载荷（旧值与现值不符）⇒ `OpStateMismatch`，文档不动；
+    /// ⑥ `cents` 越界 ⇒ `PitchBendCentsOutOfRange`（`tick` 是**这一个**点）；
+    /// ⑦ 两边都 `None` ⇒ `OpStateMismatch`；目标缺失 ⇒ 既有错误变体。
+    #[test]
+    fn set_note_pitch_bend_point_inserts_updates_and_deletes_one_point() {
+        let f = fixture();
+        let seeded = vec![(0u64, 0i16), (240, 100), (480, 200)];
+
+        let mk =
+            |tick: u64, old_cents: Option<i16>, new_cents: Option<i16>| Op::SetNotePitchBendPoint {
+                track_id: f.lead,
+                clip_id: f.clip,
+                note_id: f.note,
+                tick,
+                old_cents,
+                new_cents,
+            };
+
+        let mut doc = fixture_document();
+        doc.note_mut(&f.clip, &f.note)
+            .expect("音符")
+            .pitch_bend_curve = seeded.clone();
+        let before = serde_json::to_vec(&doc).expect("序列化");
+
+        // ① 插入：前面 / 中间 / 末尾。
+        for (tick, cents, expected) in [
+            (60u64, 40i16, vec![(0, 0), (60, 40), (240, 100), (480, 200)]),
+            (120, -50, vec![(0, 0), (120, -50), (240, 100), (480, 200)]),
+            (960, 300, vec![(0, 0), (240, 100), (480, 200), (960, 300)]),
+        ] {
+            let mut fresh = fixture_document();
+            fresh
+                .note_mut(&f.clip, &f.note)
+                .expect("音符")
+                .pitch_bend_curve = seeded.clone();
+            let snapshot = serde_json::to_vec(&fresh).expect("序列化");
+            let op = mk(tick, None, Some(cents));
+            op.apply(&mut fresh)
+                .unwrap_or_else(|error| panic!("tick {tick} 插入必须合法, 实际 {error:?}"));
+            let note = fresh.note(&f.clip, &f.note).expect("音符");
+            assert_eq!(note.id, f.note, "身份必须不变");
+            assert_eq!(
+                note.pitch_bend_curve, expected,
+                "tick {tick}: 必须按升序落位, ⛔ 不重排邻居"
+            );
+            note.validate()
+                .expect("写出来的音符必须过模型自己的 `validate()`");
+            op.apply_inverse(&mut fresh).expect("逆必须能应用");
+            assert_eq!(
+                serde_json::to_vec(&fresh).expect("序列化"),
+                snapshot,
+                "tick {tick}: 插入的逆必须逐字节回到原状"
+            );
+        }
+
+        // ② 改值：只动这一个 tick 的 cents。
+        let mut updated = fixture_document();
+        updated
+            .note_mut(&f.clip, &f.note)
+            .expect("音符")
+            .pitch_bend_curve = seeded.clone();
+        let op = mk(240, Some(100), Some(-300));
+        op.apply(&mut updated).expect("改值必须合法");
+        assert_eq!(
+            updated
+                .note(&f.clip, &f.note)
+                .expect("音符")
+                .pitch_bend_curve,
+            vec![(0, 0), (240, -300), (480, 200)],
+            "改值必须只动这一个 tick"
+        );
+        op.apply_inverse(&mut updated).expect("逆必须能应用");
+        assert_eq!(
+            updated
+                .note(&f.clip, &f.note)
+                .expect("音符")
+                .pitch_bend_curve,
+            seeded,
+            "改值的逆必须逐字节回到原状"
+        );
+
+        // ③ 删点：只让这一个 tick 消失。
+        let mut deleted = fixture_document();
+        deleted
+            .note_mut(&f.clip, &f.note)
+            .expect("音符")
+            .pitch_bend_curve = seeded.clone();
+        let op = mk(240, Some(100), None);
+        op.apply(&mut deleted).expect("删点必须合法");
+        assert_eq!(
+            deleted
+                .note(&f.clip, &f.note)
+                .expect("音符")
+                .pitch_bend_curve,
+            vec![(0, 0), (480, 200)],
+            "删点必须只让这一个 tick 消失"
+        );
+        op.apply_inverse(&mut deleted).expect("逆必须能应用");
+        assert_eq!(
+            deleted
+                .note(&f.clip, &f.note)
+                .expect("音符")
+                .pitch_bend_curve,
+            seeded,
+            "删点的逆必须逐字节回到原状"
+        );
+
+        // ⑤ 陈旧载荷：旧值与现值不符（含"有→无"与"无→有"两个方向）。
+        for (label, stale) in [
+            ("已有点的旧值不符", mk(240, Some(101), Some(0))),
+            ("把不存在的点当已存在", mk(120, Some(0), Some(0))),
+            ("把已有点当不存在", mk(240, None, Some(0))),
+        ] {
+            assert_eq!(
+                stale.precondition(&doc).expect_err("陈旧载荷必须被拒"),
+                ModelError::OpStateMismatch {
+                    op: "SetNotePitchBendPoint"
+                },
+                "{label}"
+            );
+            assert_eq!(
+                serde_json::to_vec(&doc).expect("序列化"),
+                before,
+                "{label}: 被拒之后文档必须逐字节不动"
+            );
+        }
+
+        // ⑥ 值域：边界 ±1200 收，±1201 拒；`tick` 必须是**这一个**点的 tick。
+        for (cents, expected_error) in [
+            (
+                1_201i16,
+                ModelError::PitchBendCentsOutOfRange {
+                    value: 1_201,
+                    tick: 120,
+                },
+            ),
+            (
+                -1_201,
+                ModelError::PitchBendCentsOutOfRange {
+                    value: -1_201,
+                    tick: 120,
+                },
+            ),
+        ] {
+            let fresh = fixture_document();
+            assert_eq!(
+                mk(120, None, Some(cents))
+                    .precondition(&fresh)
+                    .expect_err("越界必须被拒"),
+                expected_error
+            );
+        }
+        for cents in [-1_200i16, 0, 1_200] {
+            let mut fresh = fixture_document();
+            mk(120, None, Some(cents))
+                .apply(&mut fresh)
+                .unwrap_or_else(|error| panic!("cents {cents} 必须被接受, 实际 {error:?}"));
+        }
+
+        // ⑦ 两边都 `None` ⇒ 无意义。
+        let fresh = fixture_document();
+        assert_eq!(
+            mk(120, None, None)
+                .precondition(&fresh)
+                .expect_err("两边都 None 必须被拒"),
+            ModelError::OpStateMismatch {
+                op: "SetNotePitchBendPoint"
+            }
+        );
+
+        // ⑧ 目标缺失 / 片段类型不符 ⇒ 既有错误变体。
+        let ghost = EntityId::from_str("01J8ZQ00000000000000000999").expect("ULID");
+        for (candidate, expected) in [
+            (
+                Op::SetNotePitchBendPoint {
+                    track_id: f.lead,
+                    clip_id: f.clip,
+                    note_id: ghost,
+                    tick: 120,
+                    old_cents: None,
+                    new_cents: Some(0),
+                },
+                ModelError::NoteNotFound { id: ghost },
+            ),
+            (
+                Op::SetNotePitchBendPoint {
+                    track_id: f.lead,
+                    clip_id: ghost,
+                    note_id: f.note,
+                    tick: 120,
+                    old_cents: None,
+                    new_cents: Some(0),
+                },
+                ModelError::ClipNotFound { id: ghost },
+            ),
+            (
+                Op::SetNotePitchBendPoint {
+                    track_id: f.lead,
+                    clip_id: f.audio_clip,
+                    note_id: f.note,
+                    tick: 120,
+                    old_cents: None,
+                    new_cents: Some(0),
+                },
+                ModelError::ClipContentKindMismatch { id: f.audio_clip },
+            ),
+            (
+                Op::SetNotePitchBendPoint {
+                    track_id: ghost,
+                    clip_id: f.clip,
+                    note_id: f.note,
+                    tick: 120,
+                    old_cents: None,
+                    new_cents: Some(0),
+                },
+                ModelError::TrackNotFound { id: ghost },
+            ),
+        ] {
             let mut fresh = fixture_document();
             assert_eq!(
                 candidate.apply(&mut fresh).expect_err("目标缺失必须被拒"),
