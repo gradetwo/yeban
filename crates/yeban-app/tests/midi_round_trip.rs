@@ -754,13 +754,13 @@ fn filled_export_imports_its_four_lyrics_and_reexports_them_at_the_same_ticks() 
     let bytes = std::fs::read(&filled).expect("读 filled.mid");
     assert_eq!(
         bytes.len(),
-        168,
-        "filled 导出的字节契约是 168 B (含 tempo_map 与 CC 7 音量点)"
+        206,
+        "filled 导出的字节契约是 206 B (含 conductor 轨 title / author, tempo_map 与 CC 7 音量点)"
     );
     assert_eq!(
         AssetHash::of_bytes(&bytes).as_str(),
-        "8643d792aa5b0ba1aa419f0b2799084a0749bf5454cb8b22b5d474b78e7eb265",
-        "导出侧一个字节都不许变（#312 的 143 B 契约 + tempo map 16 B + CC 7 9 B）"
+        "e38eadb987ed160a7b43c61f4965ebe2f8c7837da9064a5cafe960d51cfc648c",
+        "导出侧一个字节都不许变（#312 的 143 B 契约 + tempo map 16 B + CC 7 9 B + conductor title/author 38 B）"
     );
     assert_eq!(
         occurrences(&bytes, &[0xFF, 0x05]),
@@ -1833,7 +1833,6 @@ fn the_import_reports_every_aux_event_kind_as_read_and_dropped() {
         (vec![0xFF, 0x06], "marker"),
         (vec![0xFF, 0x59], "key signature"),
         (vec![0xFF, 0x01], "text"),
-        (vec![0xFF, 0x02], "copyright"),
         (vec![0xFF, 0x04], "instrument name"),
         (vec![0xFF, 0x07], "cue point"),
         (vec![0xFF, 0x08], "program name"),
@@ -1856,6 +1855,11 @@ fn the_import_reports_every_aux_event_kind_as_read_and_dropped() {
             "重导出不许再有 {label}（源文件里有，导入没消费）"
         );
     }
+    assert_eq!(
+        occurrences(&out_bytes, &[0xFF, 0x02]),
+        1,
+        "copyright 经 project.author 消费并如实重导出"
+    );
     assert_eq!(
         occurrences(&out_bytes, &[0xB0, 7, 100]),
         1,
