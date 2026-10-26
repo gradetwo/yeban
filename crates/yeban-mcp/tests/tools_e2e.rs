@@ -7276,6 +7276,137 @@ fn test_e2e_note_channel_syllable_and_key_signature() {
     );
 }
 
+/// `note.phonemes` 的端到端闭环：字符串数组经提案 → 合并 → 逐值读回，
+/// 非法形状在提案期就被响亮拒绝且工程一字不动。
+#[test]
+fn test_e2e_note_phonemes_round_trip() {
+    let scratch = Scratch::new("note-phonemes");
+    let (mut dispatcher, auth) = dispatcher();
+    open(&scratch, &mut dispatcher, &auth);
+
+    let track_id = macro_track(&dispatcher);
+    let clip_id = dispatcher
+        .domain()
+        .active_project()
+        .expect("工程")
+        .clip_pool
+        .values()
+        .find(|entry| entry.content.notes().is_some())
+        .expect("MIDI 片段")
+        .id
+        .to_canonical_string();
+
+    let expected: Vec<String> = vec!["l".to_owned(), "a".to_owned(), "夜".to_owned()];
+    let add_res = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_edit_notes",
+        json!({
+            "trackId": track_id,
+            "clipId": clip_id,
+            "ops": [
+                {
+                    "kind": "add",
+                    "note": {
+                        "startTick": 9600,
+                        "pitch": 64,
+                        "durationTicks": 480,
+                        "syllable": "夜半",
+                        "phonemes": expected.clone()
+                    }
+                }
+            ]
+        }),
+    );
+    assert_eq!(add_res["status"], "success", "{add_res}");
+    let proposal_id = add_res["data"]["proposal"]["proposalId"]
+        .as_str()
+        .expect("proposalId")
+        .to_owned();
+
+    let merge_res = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_merge_proposal",
+        json!({
+            "proposalId": proposal_id,
+            "commitMessage": "add note with phonemes"
+        }),
+    );
+    assert_eq!(merge_res["status"], "success", "{merge_res}");
+
+    let note_count_after_merge;
+    {
+        let project = dispatcher.domain().active_project().expect("工程");
+        let clip_entry = project
+            .clip_pool
+            .get(&EntityId::from_str(&clip_id).expect("clip id"))
+            .expect("clip");
+        let notes = clip_entry.content.notes().expect("midi notes");
+        note_count_after_merge = notes.len();
+        let added_note = notes
+            .values()
+            .find(|note| note.start_tick == 9600 && note.pitch == 64)
+            .expect("找到添加的音符");
+        assert_eq!(added_note.phonemes, expected, "音素序列必须逐值读回");
+        assert_eq!(added_note.syllable.as_deref(), Some("夜半"));
+    }
+
+    // 非法形状：非数组、以及数组里混非字符串 ⇒ INVALID_PARAMETER_RANGE，工程不动
+    for bad in [
+        json!("la"),
+        json!(1),
+        json!({}),
+        json!(["l", 1]),
+        json!(["l", null]),
+    ] {
+        let rejected = call(
+            &mut dispatcher,
+            &auth,
+            "yeban_edit_notes",
+            json!({
+                "trackId": track_id,
+                "clipId": clip_id,
+                "ops": [
+                    {
+                        "kind": "add",
+                        "note": {
+                            "startTick": 10080,
+                            "pitch": 65,
+                            "durationTicks": 240,
+                            "phonemes": bad
+                        }
+                    }
+                ]
+            }),
+        );
+        assert_domain_error(
+            &rejected,
+            ErrorCode::InvalidParameterRange.as_str(),
+            &format!("非法 phonemes {bad} 必须被拒绝"),
+        );
+    }
+
+    {
+        let project = dispatcher.domain().active_project().expect("工程");
+        let clip_entry = project
+            .clip_pool
+            .get(&EntityId::from_str(&clip_id).expect("clip id"))
+            .expect("clip");
+        let notes = clip_entry.content.notes().expect("midi notes");
+        assert_eq!(
+            notes.len(),
+            note_count_after_merge,
+            "被拒绝的调用不得新增任何音符"
+        );
+        let kept = notes
+            .values()
+            .find(|note| note.start_tick == 9600 && note.pitch == 64)
+            .expect("先前合并的音符");
+        assert_eq!(kept.phonemes, expected, "被拒绝的调用不得改动既有音素");
+    }
+}
+
 // ---------------------------------------------------------------------------
 // ⭐ MCP-TOOL-003：`setTempoPoint` / `setTimeSignaturePoint` 端到端闭环
 // ---------------------------------------------------------------------------

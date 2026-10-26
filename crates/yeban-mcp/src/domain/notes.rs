@@ -43,9 +43,9 @@
 //! `note` 对象是自由形状，多写的键被原样吞掉。现在 [`reject_unknown_note_fields`] 把
 //! 同一口径下沉一层，`data.supportedNoteFields` 逐条列出支持集合。
 //!
-//! **登记边界（绝不静默）**：模型里还有**两个**表现力字段没有工具面通路 ——
+//! **登记边界（绝不静默）**：模型里曾有两个表现力字段没有工具面通路 ——
 //! `syllable` / `phonemes`（没有歌声合成）。工具面会**响亮拒绝**这两个键
-//! （`data.unsupportedNoteFields`），不再吞掉。
+//! （`data.unsupportedNoteFields`），不再吞掉；两者后来都接上了通路（见下）。
 //!
 //! ⚠ ⭐ **`#311b` 之后渲染器不再登记 `noteSlide` / `notePitchBend`**：这两个字段
 //! 已经由引擎**真的求值**（滑音末频落在目标音高、弯音曲线按音符局部 64 样本网格
@@ -53,8 +53,9 @@
 //!
 //! ⭐ **`#311c` 把写入通路接上了**：`add.note` 的 [`PITCH_BEND_CURVE_FIELD`] /
 //! [`SLIDE_FIELD`] 现在真的进 [`MidiNote`]，`data.supportedNoteFields` 从 8 条变 10 条。
-//! 工具面拒绝的面因此**只剩** `syllable` / `phonemes` —— 再说 `slide` / `pitchBendCurve`
-//! "没有通路"就是假话（[`reject_unknown_note_fields`] 的 `unsupportedNoteFields` 同口径）。
+//! 此后 [`SYLLABLE_FIELD`] 与 [`PHONEMES_FIELD`] 也逐一接上 ⇒ 模型的表现力字段
+//! **全部**有工具面通路，`data.unsupportedNoteFields` 现为空集（再说某个键
+//! "没有通路"就是假话，[`reject_unknown_note_fields`] 同口径）。
 //!
 //! ## 材料创建形态（`arguments.create: true`）—— 关闭 needs-8 的 MIDI 那一半
 //!
@@ -887,6 +888,12 @@ pub const CHANNEL_FIELD: &str = "channel";
 /// `add` 音符对象里的**歌词音节**字段名（`ops[].note.syllable`，可选，字符串）。
 pub const SYLLABLE_FIELD: &str = "syllable";
 
+/// `add` 音符对象里的**音素序列**字段名（`ops[].note.phonemes`，可选，字符串数组）。
+///
+/// 缺省 = 空数组 = 逐字节等于接线之前的行为（模型侧与 `pitch_bend_curve` 对偶，
+/// `Vec::is_empty` 时不写进归档）。语义与求值在模型/渲染层，本层只做形状搬运。
+pub const PHONEMES_FIELD: &str = "phonemes";
+
 /// `add.note` 对象**允许**出现的全部键。
 ///
 /// 与 [`parse_note`] 真正读取的键**同源**（判据 `expressive_note_field_names_are_pinned`
@@ -906,6 +913,7 @@ pub const NOTE_FIELDS: &[&str] = &[
     PITCH_BEND_CURVE_FIELD,
     SLIDE_FIELD,
     SYLLABLE_FIELD,
+    PHONEMES_FIELD,
 ];
 
 /// `ops[].kind` 的**音符时间位置**形态名（写 [`Op::SetNoteTiming`]）。
@@ -7282,6 +7290,7 @@ fn parse_note(object: &Map<String, Value>) -> Result<MidiNote, Fault> {
     note.ratchet = read_ratchet(object)?;
     note.micro_timing_ticks = read_micro_timing(object)?;
     note.syllable = read_syllable(object)?;
+    note.phonemes = read_phonemes(object)?;
     // 先按**模型 `validate` 的前半段**判一次（音高/力度/概率/连击/微时序/时值）。
     // 模型 `validate` 的顺序是：… → 时值 → 滑音 → 弯音，而滑音/弯音的读取在下面 ⇒
     // 这一句让"时值早于滑音/弯音"这条优先级在两层一致（例如 `durationTicks:0` +
@@ -7321,8 +7330,9 @@ fn reject_unknown_note_fields(object: &Map<String, Value>) -> Result<(), Fault> 
             "field": unknown,
             "supportedNoteFields": NOTE_FIELDS,
             // 模型里有、但工具面**仍然没有**写入通路的表现力字段: 说出来, 不要吞掉。
-            // ⚠ `slide` / `pitchBendCurve` / `channel` / `syllable` 已接上通路 ⇒ ⛔ 不许再列在这里。
-            "unsupportedNoteFields": ["phonemes"],
+            // ⚠ `slide` / `pitchBendCurve` / `channel` / `syllable` / `phonemes` 全部已接上
+            // 通路 ⇒ 集合为空; 再往里塞一个已经能写的键就是假话。
+            "unsupportedNoteFields": [],
             "hint": "未知键不静默忽略: 去掉它, 或改用 supportedNoteFields 里的字段",
         }),
     ))
@@ -7370,6 +7380,33 @@ fn read_syllable(object: &Map<String, Value>) -> Result<Option<String>, Fault> {
         )
     })?;
     Ok(Some(text.to_owned()))
+}
+
+/// 读可选的 `note.phonemes`（音素序列，缺省 = 空数组 = 无音素）。
+///
+/// 形状在这里判（必须是数组、每项必须是字符串 ⇒ 带上 `phonemes` 字段名的
+/// `INVALID_PARAMETER_RANGE`）；语义与求值在模型/渲染层，本层⛔ 不发明音素词表。
+fn read_phonemes(object: &Map<String, Value>) -> Result<Vec<String>, Fault> {
+    let Some(value) = object.get(PHONEMES_FIELD) else {
+        return Ok(Vec::new());
+    };
+    let items = value.as_array().ok_or_else(|| {
+        Fault::domain(
+            ErrorCode::InvalidParameterRange,
+            format!("`{PHONEMES_FIELD}` 必须是字符串数组, 实际收到 {value}"),
+        )
+    })?;
+    items
+        .iter()
+        .map(|item| {
+            item.as_str().map(ToOwned::to_owned).ok_or_else(|| {
+                Fault::domain(
+                    ErrorCode::InvalidParameterRange,
+                    format!("`{PHONEMES_FIELD}` 中的每个音素必须是字符串, 实际收到 {item}"),
+                )
+            })
+        })
+        .collect()
 }
 
 /// 读一个**必填但可为 `null`** 的表现力字段（`setNoteExpression` 专用）。
@@ -15233,6 +15270,8 @@ mod tests {
         assert_eq!(SLIDE_DURATION_FIELD, "durationTicks");
         assert_eq!(SLIDE_TARGET_PITCH_FIELD, "targetPitch");
         assert_eq!(SLIDE_CURVE_FIELD, "curve");
+        assert_eq!(SYLLABLE_FIELD, "syllable");
+        assert_eq!(PHONEMES_FIELD, "phonemes");
         for expected in [
             "id",
             "startTick",
@@ -15246,6 +15285,7 @@ mod tests {
             "pitchBendCurve",
             "slide",
             "syllable",
+            "phonemes",
         ] {
             assert!(
                 NOTE_FIELDS.contains(&expected),
@@ -15254,7 +15294,7 @@ mod tests {
         }
         assert_eq!(
             NOTE_FIELDS.len(),
-            12,
+            13,
             "支持集合不得多报未读的键: {NOTE_FIELDS:?}"
         );
     }
@@ -15447,6 +15487,76 @@ mod tests {
             item["note"]["syllable"] = bad;
             let fault = parse_ops(&Value::Array(vec![item])).expect_err("非字符串必须被拒");
             assert_eq!(fault.domain_code(), Some(ErrorCode::InvalidParameterRange));
+        }
+    }
+
+    /// `phonemes` 字段：可选、字符串数组搬进 `MidiNote` 并进入 `Op::AddNote`；
+    /// 非数组、或数组里混进非字符串，都报 `INVALID_PARAMETER_RANGE`；缺省 = 空数组。
+    #[test]
+    fn phonemes_reach_the_add_note_op_and_validate_types() {
+        for sequence in [
+            vec!["l".to_owned(), "a".to_owned()],
+            vec![],
+            vec!["夜".to_owned()],
+            vec!["a".to_owned(), "".to_owned(), "b".to_owned()],
+        ] {
+            let mut item = add_json(0, 60);
+            item["note"]["phonemes"] = serde_json::json!(sequence);
+            let ops = parse_ops(&Value::Array(vec![item])).expect("字符串数组合法");
+            let NoteOp::Add { note } = &ops[0] else {
+                panic!("必须是 add");
+            };
+            assert_eq!(note.phonemes, sequence);
+
+            let project = filled_project();
+            let (track_id, clip_id) = lead_clip(&project);
+            let compiled = compile(&project, &track_id, &clip_id, &ops).expect("编译");
+            match &compiled[0] {
+                Op::AddNote { note, .. } => {
+                    assert_eq!(note.phonemes, sequence);
+                }
+                other => panic!("必须是 AddNote, 实际 {other:?}"),
+            }
+        }
+
+        // 缺省为空 Vec
+        let item = add_json(0, 60);
+        let ops = parse_ops(&Value::Array(vec![item])).expect("缺省合法");
+        let NoteOp::Add { note } = &ops[0] else {
+            panic!("必须是 add");
+        };
+        assert!(note.phonemes.is_empty(), "缺省必须是不写 ⇒ 空数组");
+
+        // 非数组
+        for bad in [
+            serde_json::Value::Null,
+            serde_json::json!("la"),
+            serde_json::json!(1),
+            serde_json::json!(true),
+            serde_json::json!({}),
+        ] {
+            let mut item = add_json(0, 60);
+            item["note"]["phonemes"] = bad;
+            let fault = parse_ops(&Value::Array(vec![item])).expect_err("非数组必须被拒");
+            assert_eq!(fault.domain_code(), Some(ErrorCode::InvalidParameterRange));
+        }
+
+        // 数组里混非字符串
+        for bad in [
+            serde_json::json!(["l", 1]),
+            serde_json::json!(["l", null]),
+            serde_json::json!(["l", true]),
+            serde_json::json!(["l", ["a"]]),
+            serde_json::json!(["l", {}]),
+        ] {
+            let mut item = add_json(0, 60);
+            item["note"]["phonemes"] = bad.clone();
+            let fault = parse_ops(&Value::Array(vec![item])).expect_err("非字符串音素必须被拒");
+            assert_eq!(
+                fault.domain_code(),
+                Some(ErrorCode::InvalidParameterRange),
+                "{bad}"
+            );
         }
     }
 
@@ -15957,9 +16067,9 @@ mod tests {
     /// `note` 里的未知键 ⇒ 响亮拒绝（列出支持集合），**绝不**静默丢弃。
     ///
     /// 与顶层实参口径同源（`tools.rs` 的 `UnknownParam`：拼错的参数必须被拒绝、不能静默
-    /// 忽略）—— 同一条纪律不许只守一层。`#311c` 之后只剩 `syllable` / `phonemes`
-    /// 两个模型字段**仍然**没有工具面通路；`slide` / `pitchBendCurve` 已经接线，
-    /// 因此 ⛔ 不许再出现在 `unsupportedNoteFields` 里（把它们说成"不支持"就是假话）。
+    /// 忽略）—— 同一条纪律不许只守一层。`#311c` 之后 `syllable` / `phonemes` 也接上了
+    /// 工具面通路 ⇒ `unsupportedNoteFields` 是**空集**；把它们或 `slide` / `pitchBendCurve`
+    /// 再说成"不支持"就是假话。
     #[test]
     fn unknown_note_fields_are_rejected_with_the_supported_set() {
         // ⚠ `"slide"` 已在 `#311c` 从"未知键"样本里移除 —— 它现在是**合法字段**。
@@ -15984,7 +16094,7 @@ mod tests {
             let data = data.as_ref().expect("必须带 data");
             assert_eq!(data["field"], unknown);
             let supported = data["supportedNoteFields"].as_array().expect("必须是数组");
-            assert_eq!(supported.len(), 12, "支持集合必须如实报 12 条: {data}");
+            assert_eq!(supported.len(), 13, "支持集合必须如实报 13 条: {data}");
             for expected in [
                 "startTick",
                 "pitch",
@@ -15994,6 +16104,7 @@ mod tests {
                 "pitchBendCurve",
                 "slide",
                 "syllable",
+                "phonemes",
             ] {
                 assert!(
                     supported.iter().any(|value| value == expected),
@@ -16002,8 +16113,8 @@ mod tests {
             }
             assert_eq!(
                 data["unsupportedNoteFields"],
-                serde_json::json!(["phonemes"]),
-                "仍然没有通路的只有 phonemes: {data}"
+                serde_json::json!([]),
+                "模型的表现力字段已全部接上通路 ⇒ 这个集合必须是空集: {data}"
             );
         }
     }

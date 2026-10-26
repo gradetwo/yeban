@@ -198,6 +198,11 @@ fn note_object() -> Value {
                 "type": "string",
                 "description": "歌词音节（可选，字符串）",
             },
+            "phonemes": {
+                "type": "array",
+                "items": { "type": "string" },
+                "description": "音素序列（可选，字符串数组；缺省 = 空 = 无音素）",
+            },
         },
         "additionalProperties": false,
     })
