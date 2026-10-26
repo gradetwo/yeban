@@ -3947,15 +3947,16 @@ fn decode_base64_for_assertions(text: &str) -> Vec<u8> {
 /// ## 做法（为什么不是"编码标记再找子串"）
 ///
 /// 返回的 `content` 是 base64 ⇒ 解回**真字节**（本地解码器，见其文档），
-/// 在真字节上找标记。⚠ 编码后再找子串的方案被我**实测否决**：base64 不保子串。
+/// 判据 13：[ARCH-EXT-002] 工程作者在 MIDI 导出中作为 Conductor 轨（轨 0）版权元事件（FF 02）写入
 ///
-/// ## 什么改动会让它红（注入）
-///
-/// 在 SMF 里写任何携带 `project.author` 的元事件（`FF 01` 文本 / `FF 02` 版权 /
-/// 轨名 `FF 03`）⇒ 标记出现在字节里 ⇒ 红。⚠ **前提是标记真的进了工程**：
-/// 先断言 `setAuthor` ＋ 合并之后 `project.author` 就是标记（否则这条判据恒真）。
+/// 历史背景：早期曾裁定「维持现状（MIDI 也不写作者）」，并以负向断言防范泄漏；
+/// 在落地 [ARCH-EXT-002] 后，工程作者正式作为 SMF Conductor 轨标准版权通知（FF 02, tick 0）导出，
+/// 且被 `yeban_import_midi` / `yeban_midi::parse_smf` 往返读回。
+/// 此处显式更新判据为正向断言：
+/// 1. 作者子串必须在 SMF 导出字节中存在；
+/// 2. `yeban_midi::midi::parse_smf` 解析导出的字节后，`parsed.copyrights` 中必须存在且仅存在一条轨 0 tick 0 的版权记录，内容等于作者标记。
 #[test]
-fn the_midi_export_never_embeds_the_project_author_bytes() {
+fn the_midi_export_embeds_the_project_author_as_conductor_copyright() {
     const AUTHOR_MARKER: &str = "yeban-author-probe-midi-0123456789abcdef";
     let scratch = Scratch::new("midi-author-bytes");
     let (mut dispatcher, auth) =
@@ -4010,11 +4011,27 @@ fn the_midi_export_never_embeds_the_project_author_bytes() {
         "解回来的长度必须等于报出的字节数（证明解码器与产出一致，不是空解）"
     );
     assert!(
-        !bytes
+        bytes
             .windows(AUTHOR_MARKER.len())
             .any(|window| window == AUTHOR_MARKER.as_bytes()),
-        "⭐ 工程作者 `{AUTHOR_MARKER}` 出现在 MIDI 导出字节里了 —— \
-         裁定是「维持现状（MIDI 也不写作者）」; 若要改，请**显式**改这条判据"
+        "⭐ [ARCH-EXT-002] 工程作者 `{AUTHOR_MARKER}` 必须作为元事件字节写入导出的 SMF"
+    );
+    let parsed = yeban_midi::midi::parse_smf(&bytes).expect("导出的 SMF 必须能被 parse_smf 解析");
+    assert_eq!(
+        parsed.copyrights.len(),
+        1,
+        "导出的 SMF 应当包含且仅包含 1 条版权声明元事件: {:?}",
+        parsed.copyrights
+    );
+    assert_eq!(
+        parsed.copyrights[0].track, 0,
+        "版权声明必须在 Conductor 轨（轨 0）"
+    );
+    assert_eq!(parsed.copyrights[0].tick, 0, "版权声明必须在 tick 0");
+    assert_eq!(
+        parsed.copyrights[0].text.as_deref(),
+        Some(AUTHOR_MARKER),
+        "版权声明文本必须与工程作者严格一致"
     );
 }
 
