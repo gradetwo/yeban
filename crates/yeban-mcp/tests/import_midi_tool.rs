@@ -6,7 +6,9 @@
 //! 3. 错误处理覆盖：CONFLICT（目标片段非空）、FILE_NOT_FOUND（文件不存在）、
 //!    INVALID_PARAMETER_RANGE（空路径、损坏的 MIDI 字节）、NO_ACTIVE_PROJECT（无活跃工程）；
 //! 4. ⭐ [ARCH-EXT-002]：导体轨标题 / 版权声明在**空工程**上的采纳上报
-//!    （`adoptedTitle` / `adoptedCopyright`、dryRun 不落盘、undo 还原）。
+//!    （`adoptedTitle` / `adoptedCopyright`、dryRun 不落盘、undo 还原）；
+//! 5. ⭐ [ARCH-EXT-002]：tick > 0 变速 / 拍号映射点的采纳上报
+//!    （`adoptedTempoMap` / `adoptedTimeSignatureMap`、dryRun 不落盘、undo 还原）。
 
 use std::fs;
 use std::path::PathBuf;
@@ -603,6 +605,155 @@ fn test_import_midi_adopts_title_and_copyright() {
         let project = dispatcher.domain().active_project().expect("活跃工程");
         assert!(project.title.is_empty(), "撤销后 project.title 必须还原");
         assert!(project.author.is_empty(), "撤销后 project.author 必须还原");
+    }
+
+    let _ = fs::remove_file(smf_path);
+}
+
+/// 造一份**带多点变速 / 拍号映射**的 SMF：tick 0 = 120 BPM + 4/4，
+/// tick 3840 = 144 BPM + 3/4（源 PPQ 与工程同为 960 ⇒ tick 逐一对齐）。
+fn create_tempo_meter_map_smf_file() -> PathBuf {
+    use yeban_midi::midi::{DEFAULT_PPQ, MidiExport, MidiExportTrack, MidiFormat, MidiTempo};
+    let mut late = MidiTempo::with_time_signature(144.0, 3, 2);
+    late.tick = 3840;
+    let export = MidiExport {
+        format: MidiFormat::Parallel,
+        ppq: DEFAULT_PPQ,
+        tempos: vec![MidiTempo::with_time_signature(120.0, 4, 2), late],
+        tracks: vec![MidiExportTrack {
+            name: "Keys".to_string(),
+            channel: 0,
+            notes: vec![yeban_model::MidiNote::new(EntityId::new(), 0, 60, 480)],
+            control_changes: Vec::new(),
+        }],
+        key_signature: None,
+        title: None,
+        copyright: None,
+    };
+    let bytes = export.to_smf_bytes().expect("SMF 编码");
+    let path = std::env::temp_dir().join(format!(
+        "yeban-test-import-tempomap-{}-{}.mid",
+        std::process::id(),
+        EntityId::new().to_canonical_string()
+    ));
+    fs::write(&path, bytes).expect("写带变速/拍号映射的 SMF 文件");
+    path
+}
+
+/// 判据（[MCP-TOOL-EXT-IMPORT-MIDI] / [ARCH-EXT-002]）：tick > 0 的变速与拍号映射点
+/// 被采纳进 `project.tempo_map` / `project.time_signature_map`，响应逐条回报
+/// `adoptedTempoMap` / `adoptedTimeSignatureMap`；dryRun 不落盘；一次 undo 完全还原。
+#[test]
+fn test_import_midi_adopts_tempo_map_and_time_signature_map() {
+    let smf_path = create_tempo_meter_map_smf_file();
+    let mut dispatcher = dispatcher_with_project(yeban_midi::import::content_free_project());
+
+    let before_bytes = project_bytes(&dispatcher);
+    let before_commits = dispatcher.domain().commit_count();
+
+    // 144 BPM 经 mpqn（四舍五入到微秒）往返 ⇒ 143.9999...，按容差断言。
+    let bpm_144_tolerance = 0.001;
+
+    // 1. dryRun：预览如实报出将要采纳的两张映射点表，工程一位都不动。
+    let dry_res = call_tool(
+        &mut dispatcher,
+        "yeban_import_midi",
+        json!({
+            "path": smf_path.to_str().expect("str"),
+            "dryRun": true,
+        }),
+    );
+    assert_eq!(dry_res["status"], "success", "{dry_res}");
+    let preview = &dry_res["data"]["preview"];
+    let preview_tempo = preview["adoptedTempoMap"]["3840"]
+        .as_f64()
+        .unwrap_or_else(|| panic!("dryRun 预览必须报出 tick 3840 的变速点: {preview}"));
+    assert!(
+        (preview_tempo - 144.0).abs() < bpm_144_tolerance,
+        "预览变速点必须约 144 BPM, 实际 {preview_tempo}"
+    );
+    assert_eq!(
+        preview["adoptedTimeSignatureMap"]["3840"],
+        json!({ "numerator": 3, "denominator": 4 }),
+        "{preview}"
+    );
+    assert_eq!(dry_res["data"]["stateUnchanged"], true);
+    assert_eq!(dispatcher.domain().commit_count(), before_commits);
+    assert_eq!(project_bytes(&dispatcher), before_bytes);
+    {
+        let project = dispatcher.domain().active_project().expect("活跃工程");
+        assert!(
+            project.tempo_map.is_empty(),
+            "dryRun 不得写 project.tempo_map"
+        );
+        assert!(
+            project.time_signature_map.is_empty(),
+            "dryRun 不得写 project.time_signature_map"
+        );
+    }
+
+    // 2. 真实执行：映射点确实进活跃工程。
+    let real_res = call_tool(
+        &mut dispatcher,
+        "yeban_import_midi",
+        json!({
+            "path": smf_path.to_str().expect("str"),
+        }),
+    );
+    assert_eq!(real_res["status"], "success", "{real_res}");
+    let data = &real_res["data"];
+    assert_eq!(data["applied"], true);
+    let data_tempo = data["adoptedTempoMap"]["3840"]
+        .as_f64()
+        .unwrap_or_else(|| panic!("响应必须报出 tick 3840 的变速点: {data}"));
+    assert!(
+        (data_tempo - 144.0).abs() < bpm_144_tolerance,
+        "响应变速点必须约 144 BPM, 实际 {data_tempo}"
+    );
+    assert_eq!(
+        data["adoptedTimeSignatureMap"]["3840"],
+        json!({ "numerator": 3, "denominator": 4 }),
+        "{data}"
+    );
+    // 两类元事件整类读入且零丢失（采纳了，⛔ 不重复计成丢失）。
+    assert_eq!(data["losses"]["aux_events"]["tempo"]["dropped"], 0);
+    assert_eq!(data["losses"]["aux_events"]["time-signature"]["dropped"], 0);
+    {
+        let project = dispatcher.domain().active_project().expect("活跃工程");
+        let adopted = project
+            .tempo_map
+            .get(&3840)
+            .unwrap_or_else(|| panic!("tick 3840 变速点必须进 project.tempo_map"));
+        assert!(
+            (adopted - 144.0).abs() < bpm_144_tolerance,
+            "project.tempo_map[3840] 必须约 144 BPM, 实际 {adopted}"
+        );
+        assert_eq!(
+            project.time_signature_map.get(&3840),
+            Some(&yeban_model::project::TimeSignature {
+                numerator: 3,
+                denominator: 4,
+            }),
+            "tick 3840 拍号点必须进 project.time_signature_map"
+        );
+    }
+    assert_eq!(dispatcher.domain().commit_count(), before_commits + 1);
+    assert_ne!(project_bytes(&dispatcher), before_bytes);
+
+    // 3. 撤销：一次 undo 完全还原，两张映射回到空。
+    let undo_res = call_tool(&mut dispatcher, "yeban_undo", json!({"steps": 1}));
+    assert_eq!(undo_res["status"], "success", "{undo_res}");
+    assert_eq!(project_bytes(&dispatcher), before_bytes);
+    {
+        let project = dispatcher.domain().active_project().expect("活跃工程");
+        assert!(
+            project.tempo_map.is_empty(),
+            "撤销后 project.tempo_map 必须还原"
+        );
+        assert!(
+            project.time_signature_map.is_empty(),
+            "撤销后 project.time_signature_map 必须还原"
+        );
     }
 
     let _ = fs::remove_file(smf_path);
