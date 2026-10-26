@@ -405,15 +405,17 @@ fn reason_occurrences(
             }
         } else if bytes.get(cursor) == Some(&b',') && text[..at].trim_end().ends_with("insert(") {
             classify_value_expr(take_value_expr(text, cursor + 1), &text[..at], consts)
-        } else if bytes.get(cursor) == Some(&b']')
-            && bytes.get(cursor + 1) == Some(&b'=')
-            && bytes.get(cursor + 2) != Some(&b'=')
-        {
-            classify_value_expr(take_value_expr(text, cursor + 2), &text[..at], consts)
-        } else if matches!(
-            bytes.get(cursor),
-            Some(&b',') | Some(&b')') | Some(&b';') | Some(&b']')
-        ) {
+        } else if bytes.get(cursor) == Some(&b']') {
+            let mut next = cursor + 1;
+            while next < bytes.len() && (bytes[next] == b' ' || bytes[next] == b'\t') {
+                next += 1;
+            }
+            if bytes.get(next) == Some(&b'=') && bytes.get(next + 1) != Some(&b'=') {
+                classify_value_expr(take_value_expr(text, next + 1), &text[..at], consts)
+            } else {
+                ReasonOccurrenceKind::ArgumentName(trimmed_line(text, at))
+            }
+        } else if matches!(bytes.get(cursor), Some(&b',') | Some(&b')') | Some(&b';')) {
             ReasonOccurrenceKind::ArgumentName(trimmed_line(text, at))
         } else {
             ReasonOccurrenceKind::Unclassified(trimmed_line(text, at))
@@ -2357,10 +2359,10 @@ fn the_reason_scanners_skip_comments_and_string_intervals() {
 }
 
 /// #340 已知形状的**全量自证**：旧扫描器只认 `"reason": "字面量"`，本判据把
-/// 变量 / `format!` / 常量 / `map.insert` / `Value::from` / 参数名逐个喂给它。
+/// 变量 / `format!` / 常量 / `map.insert`（两种） / `]=` / `]==` / `=>` / `Value::from` / 参数名逐个喂给它。
 ///
 /// 已知红（实测）：把 [`reason_occurrences`] 换回旧实现 ⇒
-/// `local_two` / `REASON_CONST` / `either` / `map.insert` 四条**读不到**，本判据红。
+/// `local_two` / `REASON_CONST` / `either` / `map.insert` 等读不到，本判据红。
 /// 已知红（实测）：把 `resolve_reason_ident` 的常量分支删掉 ⇒ `constThree` 变
 /// `Dynamic`，本判据红。
 #[test]
@@ -2372,6 +2374,10 @@ fn f(flag: bool) {\n\
     let dynamic = pick();\n\
     let _ = serde_json::json!({ \"reason\": \"literalOne\" });\n\
     map.insert(\"reason\".to_owned(), Value::from(\"mapFour\"));\n\
+    map.insert(\"reason\", \"fromInsertBare\");\n\
+    obj[\"reason\"] = Value::from(\"fromIndexAssign\");\n\
+    let _ = obj[\"reason\"] == \"literal\";\n\
+    let _ = match key { \"reason\" => Value::from(arg), _ => Value::Null };\n\
     let _ = serde_json::json!({ \"reason\": local_two });\n\
     let _ = serde_json::json!({ \"reason\": REASON_CONST });\n\
     let _ = serde_json::json!({ \"reason\": either });\n\
@@ -2386,7 +2392,7 @@ fn f(flag: bool) {\n\
         "常量解析器必须真的读到 `const NAME: &str = \"...\";`"
     );
     let occurrences = reason_occurrences("<sample>", sample, &consts);
-    assert_eq!(occurrences.len(), 8, "样本里恰好 8 次 `\"reason\"` 出现");
+    assert_eq!(occurrences.len(), 12, "样本里恰好 12 次 `\"reason\"` 出现");
     let kind_at = |line: usize| {
         occurrences
             .iter()
@@ -2403,31 +2409,47 @@ fn f(flag: bool) {\n\
     );
     assert_eq!(
         kind_at(8),
-        Some(ReasonOccurrenceKind::Resolved(vec!["localTwo".to_owned()]))
+        Some(ReasonOccurrenceKind::Literal("fromInsertBare".to_owned()))
     );
     assert_eq!(
         kind_at(9),
+        Some(ReasonOccurrenceKind::Literal("fromIndexAssign".to_owned()))
+    );
+    assert!(
+        matches!(kind_at(10), Some(ReasonOccurrenceKind::ArgumentName(_))),
+        "obj[\"reason\"] == ... 判定必须归到 ArgumentName (line 410 ]== 穿透到 ] 分支)"
+    );
+    assert!(
+        matches!(kind_at(11), Some(ReasonOccurrenceKind::ArgumentName(_))),
+        "\"reason\" => ... match 模式匹配必须归到 ArgumentName (line 394 => 分支)"
+    );
+    assert_eq!(
+        kind_at(12),
+        Some(ReasonOccurrenceKind::Resolved(vec!["localTwo".to_owned()]))
+    );
+    assert_eq!(
+        kind_at(13),
         Some(ReasonOccurrenceKind::Literal("constThree".to_owned()))
     );
     assert_eq!(
-        kind_at(10),
+        kind_at(14),
         Some(ReasonOccurrenceKind::Resolved(vec![
             "branchA".to_owned(),
             "branchB".to_owned()
         ]))
     );
     assert_eq!(
-        kind_at(11),
+        kind_at(15),
         Some(ReasonOccurrenceKind::Dynamic("dynamic".to_owned()))
     );
     assert_eq!(
-        kind_at(12),
+        kind_at(16),
         Some(ReasonOccurrenceKind::Dynamic(
             "format!(\"{prefix}Suffix\")".to_owned()
         ))
     );
     assert!(
-        matches!(kind_at(13), Some(ReasonOccurrenceKind::ArgumentName(_))),
+        matches!(kind_at(17), Some(ReasonOccurrenceKind::ArgumentName(_))),
         "参数名 `reason` 必须归到 ArgumentName, ⛔ 不是故障词"
     );
 
@@ -2439,6 +2461,8 @@ fn f(flag: bool) {\n\
             "branchA",
             "branchB",
             "constThree",
+            "fromIndexAssign",
+            "fromInsertBare",
             "literalOne",
             "localTwo",
             "mapFour"
@@ -2449,31 +2473,191 @@ fn f(flag: bool) {\n\
         "可解析的值必须全部进词表"
     );
     assert!(
-        !scanned.accepted.contains("dynamic") && !scanned.accepted.contains("Suffix"),
-        "运行时拼接的值 ⛔ 不许被当成字面量"
+        !scanned.accepted.contains("dynamic")
+            && !scanned.accepted.contains("Suffix")
+            && !scanned.accepted.contains("literal")
+            && !scanned.accepted.contains("arg"),
+        "运行时拼接的值与参数名 ⛔ 不许被当成字面量"
     );
 }
 
 /// #340 的**牙齿**：一个旧扫描器看不见、新扫描器也归类不了的站点必须**红**。
 ///
-/// 旧扫描器在同样输入上会**静默通过**：`"reason": pick_reason()` 的键后面不是
-/// `"`，它连一次"命中失败"都不记。
+/// 覆盖双重防线：
+/// 1. 未登记的动态站点（`{ "reason": pick_reason() }`，归为 `Dynamic`），必须报"没有登记"并点名 file:line；
+/// 2. 真正的 `Unclassified` 站点（由 [`reason_occurrences`] 两个未分类分支构造）：
+///    - 分支 (a)（line 404）：`.to_owned()` 后面未接逗号（如 `let key = "reason".to_owned();`）；
+///    - 分支 (b)（line 419）：其它未知语法（如 `let matched = key == "reason" && ready;`）。
+///
+///    这两类站点 `values()` 必须为空（不污染词表），且 [`unexplained_reason_sites`] 必须点名
+///    file:line 并报"无法归类 `\"reason\"` 站点（<行上下文>）"。
 #[test]
 fn an_unclassifiable_reason_site_is_red_naming_file_and_line() {
-    let sample = "fn f() {\n    let data = serde_json::json!({ \"reason\": pick_reason() });\n}\n";
-    let occurrences = reason_occurrences(
+    // 1. 未登记的动态站点（Dynamic 分支）
+    let dynamic_sample =
+        "fn f() {\n    let data = serde_json::json!({ \"reason\": pick_reason() });\n}\n";
+    let dynamic_occurrences = reason_occurrences(
         "crates/yeban-mcp/src/domain/example.rs",
-        sample,
+        dynamic_sample,
         &BTreeMap::new(),
     );
-    assert_eq!(occurrences.len(), 1);
-    assert_eq!(occurrences[0].line, 2);
-    let failures = unexplained_reason_sites(&occurrences);
+    assert_eq!(dynamic_occurrences.len(), 1);
+    assert_eq!(dynamic_occurrences[0].line, 2);
     assert!(
-        failures
+        matches!(&dynamic_occurrences[0].kind, ReasonOccurrenceKind::Dynamic(expr) if expr == "pick_reason()"),
+        "带有 `:` 但非常量的动态站点必须归类为 Dynamic: {:?}",
+        dynamic_occurrences[0].kind
+    );
+    assert!(
+        dynamic_occurrences[0].kind.values().is_empty(),
+        "动态站点的 values() 必须为空"
+    );
+    let dynamic_failures = unexplained_reason_sites(&dynamic_occurrences);
+    assert!(
+        dynamic_failures.iter().any(|failure| {
+            failure.contains("domain/example.rs:2")
+                && failure.contains("没有登记")
+                && failure.contains("pick_reason()")
+        }),
+        "未登记的动态站点必须**带 file:line 与'没有登记'**变红: {dynamic_failures:?}"
+    );
+
+    // 2. 真正无法归类的站点 分支 (a)：.to_owned() 后面不是逗号
+    let unclassified_branch_a_sample = "fn f() {\n    let key = \"reason\".to_owned();\n}\n";
+    let occurrences_a = reason_occurrences(
+        "crates/yeban-mcp/src/domain/example.rs",
+        unclassified_branch_a_sample,
+        &BTreeMap::new(),
+    );
+    assert_eq!(occurrences_a.len(), 1);
+    assert_eq!(occurrences_a[0].line, 2);
+    assert_eq!(
+        occurrences_a[0].kind,
+        ReasonOccurrenceKind::Unclassified("let key = \"reason\".to_owned();".to_owned())
+    );
+    assert!(
+        occurrences_a[0].kind.values().is_empty(),
+        "无法归类的站点 values() 必须为空"
+    );
+    let failures_a = unexplained_reason_sites(&occurrences_a);
+    let expected_failure_a =
+        "domain/example.rs:2 无法归类 `\"reason\"` 站点（let key = \"reason\".to_owned();）";
+    assert!(
+        failures_a
             .iter()
-            .any(|failure| failure.contains("domain/example.rs:2")),
-        "未登记的动态站点必须**带 file:line** 变红: {failures:?}"
+            .any(|failure| failure == expected_failure_a),
+        ".to_owned() 未接逗号的未分类站点必须生成点名 file:line 的红条 `{expected_failure_a}`: {failures_a:?}"
+    );
+
+    // 3. 真正无法归类的站点 分支 (b)：后面是其它未知 token（例如 &&）
+    let unclassified_branch_b_sample =
+        "fn f(key: &str, ready: bool) {\n    let matched = key == \"reason\" && ready;\n}\n";
+    let occurrences_b = reason_occurrences(
+        "crates/yeban-mcp/src/domain/example.rs",
+        unclassified_branch_b_sample,
+        &BTreeMap::new(),
+    );
+    assert_eq!(occurrences_b.len(), 1);
+    assert_eq!(occurrences_b[0].line, 2);
+    assert_eq!(
+        occurrences_b[0].kind,
+        ReasonOccurrenceKind::Unclassified("let matched = key == \"reason\" && ready;".to_owned())
+    );
+    assert!(
+        occurrences_b[0].kind.values().is_empty(),
+        "无法归类的站点 values() 必须为空"
+    );
+    let failures_b = unexplained_reason_sites(&occurrences_b);
+    let expected_failure_b = "domain/example.rs:2 无法归类 `\"reason\"` 站点（let matched = key == \"reason\" && ready;）";
+    assert!(
+        failures_b
+            .iter()
+            .any(|failure| failure == expected_failure_b),
+        "其它未知语法的未分类站点必须生成点名 file:line 的红条 `{expected_failure_b}`: {failures_b:?}"
+    );
+}
+
+/// 针对 #340 遗留的覆盖面缺口：自证 `ReasonOccurrenceKind::Unclassified` 的两个分支，
+/// 以及所有关键语法分支（`=>`、裸 `insert`、`]=`、`]==`）。
+#[test]
+fn unclassified_reason_sites_and_all_key_syntaxes_are_covered() {
+    let sample = "fn syntax_coverage() {\n\
+    let to_owned_standalone = \"reason\".to_owned();\n\
+    let other_token = key == \"reason\" && ready;\n\
+    let _ = match key { \"reason\" => Value::from(arg), _ => Value::Null };\n\
+    map.insert(\"reason\", \"fromInsertBare\");\n\
+    obj[\"reason\"] = Value::from(\"fromIndexAssign\");\n\
+    let _ = obj[\"reason\"] == \"literal\";\n\
+}\n";
+    let consts = BTreeMap::new();
+    let occurrences = reason_occurrences("crates/yeban-mcp/src/domain/example.rs", sample, &consts);
+    assert_eq!(occurrences.len(), 6, "覆盖 6 种边界语法的 6 处 reason 出现");
+
+    // 1. .to_owned() 后面不是逗号 -> Unclassified
+    assert_eq!(
+        occurrences[0].kind,
+        ReasonOccurrenceKind::Unclassified(
+            "let to_owned_standalone = \"reason\".to_owned();".to_owned()
+        )
+    );
+    assert!(occurrences[0].kind.values().is_empty());
+
+    // 2. 其它非已知 token（&&） -> Unclassified
+    assert_eq!(
+        occurrences[1].kind,
+        ReasonOccurrenceKind::Unclassified(
+            "let other_token = key == \"reason\" && ready;".to_owned()
+        )
+    );
+    assert!(occurrences[1].kind.values().is_empty());
+
+    // 3. => match 分支 -> ArgumentName
+    assert_eq!(
+        occurrences[2].kind,
+        ReasonOccurrenceKind::ArgumentName(
+            "let _ = match key { \"reason\" => Value::from(arg), _ => Value::Null };".to_owned()
+        )
+    );
+    assert!(occurrences[2].kind.values().is_empty());
+
+    // 4. insert("reason", ...) -> Literal
+    assert_eq!(
+        occurrences[3].kind,
+        ReasonOccurrenceKind::Literal("fromInsertBare".to_owned())
+    );
+    assert_eq!(
+        occurrences[3].kind.values(),
+        vec!["fromInsertBare".to_owned()]
+    );
+
+    // 5. obj["reason"] = ... -> Literal
+    assert_eq!(
+        occurrences[4].kind,
+        ReasonOccurrenceKind::Literal("fromIndexAssign".to_owned())
+    );
+    assert_eq!(
+        occurrences[4].kind.values(),
+        vec!["fromIndexAssign".to_owned()]
+    );
+
+    // 6. obj["reason"] == ... -> ArgumentName
+    assert_eq!(
+        occurrences[5].kind,
+        ReasonOccurrenceKind::ArgumentName("let _ = obj[\"reason\"] == \"literal\";".to_owned())
+    );
+    assert!(occurrences[5].kind.values().is_empty());
+
+    // 两个 Unclassified 站点经 unexplained_reason_sites 均精确变红
+    let failures = unexplained_reason_sites(&occurrences[0..2]);
+    let expected_failure_1 = "domain/example.rs:2 无法归类 `\"reason\"` 站点（let to_owned_standalone = \"reason\".to_owned();）";
+    let expected_failure_2 = "domain/example.rs:3 无法归类 `\"reason\"` 站点（let other_token = key == \"reason\" && ready;）";
+    assert!(
+        failures.iter().any(|f| f == expected_failure_1),
+        "分支 1 必须精确生成'无法归类'报错: {failures:?}"
+    );
+    assert!(
+        failures.iter().any(|f| f == expected_failure_2),
+        "分支 2 必须精确生成'无法归类'报错: {failures:?}"
     );
 }
 
