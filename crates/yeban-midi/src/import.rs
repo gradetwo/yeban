@@ -1477,6 +1477,38 @@ fn count_losses(
     }
 }
 
+/// ADR-0013 D1/D2：多轨拆分新建音轨的命名回退链。
+///
+/// 优先级：`FF 03` 轨名 → `FF 04` 乐器名 → `FF 08` 程序名 → 机器名
+/// `Track {n}`。每一类内：该 `MTrk` 上**去重后恰一个**非空、严格 UTF-8 的名字
+/// 才算有效；出现多个互不相同的同类名字 ⇒ 判为歧义，⛔ 不随意挑选，
+/// 回退到下一个优先级（D2）。
+fn split_track_name(parsed: &ParsedMidi, track_index: usize) -> String {
+    for events in [
+        &parsed.track_names,
+        &parsed.instrument_names,
+        &parsed.program_names,
+    ] {
+        let mut candidates: BTreeSet<&str> = BTreeSet::new();
+        for event in events {
+            if event.track != track_index {
+                continue;
+            }
+            if let Some(text) = event.text.as_deref().filter(|s| !s.is_empty()) {
+                candidates.insert(text);
+            }
+        }
+        if candidates.len() == 1 {
+            return candidates
+                .into_iter()
+                .next()
+                .expect("非空集合必有唯一元素")
+                .to_owned();
+        }
+    }
+    format!("Track {}", track_index + 1)
+}
+
 /// **纯映射**：`ParsedMidi` ⇒ 一批 `Op`（⛔ 不改工程、⛔ 不提交、⛔ 不碰文件系统）。
 ///
 /// 产物是**结构化**的：`ops`（音符 + `SetTempo` / `SetTimeSignature` /
@@ -1520,14 +1552,8 @@ pub fn plan_midi_import(
             let placement_id = derive_note_id();
             let edge_id = derive_note_id();
 
-            let track_name = parsed
-                .track_names
-                .iter()
-                .find(|tn| tn.track == track_index)
-                .and_then(|tn| tn.text.as_deref())
-                .filter(|s| !s.is_empty())
-                .map(str::to_owned)
-                .unwrap_or_else(|| format!("Track {}", track_index + 1));
+            // ⭐ ADR-0013：D1/D2 回退链（FF 03 → FF 04 → FF 08 → 机器名）。
+            let track_name = split_track_name(parsed, track_index);
 
             let track_duration = parsed
                 .notes
@@ -1820,6 +1846,8 @@ pub mod tests {
             tempos: Vec::<MidiTempo>::new(),
             key_signatures: Vec::new(),
             track_names: Vec::new(),
+            instrument_names: Vec::new(),
+            program_names: Vec::new(),
             markers: Vec::new(),
             end_tick: 0,
             notes,
@@ -2592,6 +2620,8 @@ pub mod metadata_adoption_tests {
             tempos: Vec::<MidiTempo>::new(),
             key_signatures: Vec::new(),
             track_names: Vec::new(),
+            instrument_names: Vec::new(),
+            program_names: Vec::new(),
             markers: Vec::new(),
             end_tick: 0,
             notes: vec![
@@ -2648,6 +2678,11 @@ pub mod metadata_adoption_tests {
             tick,
             text: text.map(str::to_owned),
         }
+    }
+
+    fn text_meta(track: usize, tick: u64, text: Option<&str>) -> ParsedTrackName {
+        // ADR-0013：`FF 04` / `FF 08` 与 `FF 03` 同形状（`ParsedTrackName`），复用夹具。
+        track_name(track, tick, text)
     }
 
     fn recording(mut parsed: ParsedMidi, kind: MidiAuxEventKind, count: usize) -> ParsedMidi {
@@ -3348,6 +3383,8 @@ pub mod metadata_adoption_tests {
                 track_name(1, 0, Some("Lead Synth")),
                 track_name(2, 0, Some("Sub Bass")),
             ],
+            instrument_names: Vec::new(),
+            program_names: Vec::new(),
             markers: Vec::new(),
             end_tick: 960,
             notes: vec![
@@ -3467,6 +3504,8 @@ pub mod metadata_adoption_tests {
                 track_name(1, 0, Some("Lead Synth")),
                 track_name(2, 0, Some("Sub Bass")),
             ],
+            instrument_names: Vec::new(),
+            program_names: Vec::new(),
             markers: Vec::new(),
             end_tick: 960,
             notes: vec![
@@ -3537,6 +3576,8 @@ pub mod metadata_adoption_tests {
             tempos: Vec::new(),
             key_signatures: Vec::new(),
             track_names: Vec::new(), // 无轨名元事件
+            instrument_names: Vec::new(),
+            program_names: Vec::new(),
             markers: Vec::new(),
             end_tick: 480,
             notes: vec![
@@ -3571,6 +3612,92 @@ pub mod metadata_adoption_tests {
         if let Op::AddTrack { track } = add_track_op {
             assert_eq!(track.name, "Track 2");
         }
+    }
+
+    /// ⭐ ADR-0013 D1/D2：拆分新建音轨的命名回退链
+    /// `FF 03` → `FF 04` → `FF 08` → 机器名，以及"同类多个不同名字 = 歧义 ⇒ 下一级"。
+    ///
+    /// 控制臂：六个拆分轨各命中回退链的一个不同分支（乐器名次选 / 程序名末选 /
+    /// 轨名首选 / 同类歧义降级 / 空与非 UTF-8 不参与 / 三级全歧义兜底），
+    /// 实现若退化成"总取第一类"或"同类总取第一条"就会红。
+    #[test]
+    fn split_track_naming_follows_the_adr_0013_fallback_chain() {
+        let project = yeban_model::samples::filled_project();
+        let note = |track: usize| ParsedNote {
+            track,
+            channel: 0,
+            key: 60,
+            velocity: 100,
+            start_tick: 0,
+            end_tick: 480,
+        };
+        // aux 读数如实记录（dropped ≤ read 不变式）：3 条 FF 03 / 7 条 FF 04 / 4 条 FF 08。
+        let mut aux_events = crate::midi::MidiAuxEventCounts::default();
+        for (kind, count) in [
+            (MidiAuxEventKind::TrackName, 3),
+            (MidiAuxEventKind::InstrumentName, 7),
+            (MidiAuxEventKind::ProgramName, 4),
+        ] {
+            for _ in 0..count {
+                aux_events.record(kind);
+            }
+        }
+        let parsed = ParsedMidi {
+            format: MidiFormat::Parallel,
+            ppq: 960,
+            tracks: 7,
+            aux_events,
+            tempos: Vec::new(),
+            key_signatures: Vec::new(),
+            track_names: vec![
+                text_meta(3, 0, Some("Lead")),
+                text_meta(5, 0, Some("")), // 空名 ⇒ 无效（D2）
+                text_meta(5, 48, None),    // 非 UTF-8 ⇒ 无效（D2）
+            ],
+            instrument_names: vec![
+                text_meta(1, 0, Some("Violin I")),
+                text_meta(3, 0, Some("Saw")),
+                text_meta(4, 0, Some("A")),
+                text_meta(4, 24, Some("B")), // 同类两个不同名字 ⇒ 歧义（D2）
+                text_meta(5, 0, Some("Cello")),
+                text_meta(6, 0, Some("A")),
+                text_meta(6, 24, Some("B")), // 歧义
+            ],
+            program_names: vec![
+                text_meta(2, 0, Some("Grand Piano")),
+                text_meta(4, 0, Some("Brass")),
+                text_meta(6, 0, Some("P1")),
+                text_meta(6, 24, Some("P2")), // 歧义 ⇒ 机器兜底名
+            ],
+            markers: Vec::new(),
+            end_tick: 480,
+            notes: (0..7).map(note).collect(),
+            lyrics: Vec::new(),
+            non_utf8_lyrics: 0,
+            empty_lyrics: 0,
+        };
+
+        let plan = plan_midi_import(&project, &parsed, &MidiImportOptions::default()).unwrap();
+        let names: Vec<String> = plan
+            .ops
+            .iter()
+            .filter_map(|op| match op {
+                Op::AddTrack { track } => Some(track.name.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            names,
+            vec![
+                "Violin I".to_owned(),    // D1：无 FF 03，FF 04 次选生效
+                "Grand Piano".to_owned(), // D1：无 FF 03/04，FF 08 末选生效
+                "Lead".to_owned(),        // D1：FF 03 优先于 FF 04
+                "Brass".to_owned(),       // D2：FF 04 歧义 ⇒ 降到 FF 08
+                "Cello".to_owned(),       // D2：空 / 非 UTF-8 的 FF 03 不参与匹配
+                "Track 7".to_owned(),     // 三级全歧义 ⇒ 机器兜底名（track_index + 1）
+            ],
+            "拆分新轨命名必须按 D1/D2 逐 MTrk 下标 1..6 发射"
+        );
     }
 
     /// 判据（`#350`）：**唯一条 tick 0** 调号在空工程中落进 `project.key_signature`；等值时不发空操作。
