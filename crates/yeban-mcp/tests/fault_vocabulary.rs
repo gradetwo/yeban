@@ -44,12 +44,14 @@
 //!
 //! | 面 | reason 数 | 规范行数 | SHA-256 |
 //! | :--- | ---: | ---: | :--- |
-//! | `reason`（**可分类**面：字面量 ＋ 可解析的字面量 `let`，含顺序） | 150 | 680 | `6f13316b51ef974e2443a909c4eb9fdeeaf97139b11fef6da5365de4de40e259` |
+//! | `reason`（**可分类**面：字面量 ＋ 可解析的字面量 `let`，含顺序） | 156 | 706 | `36f254b59f3b307b9b3d0d2dc198cc9ac9a4ef9bd0783ce6871fb58d80a34e67` |
 //!
 //! ⚠ `#274`：摘要随"登记位置搬进 provider"重钉（集合不变、顺序变了）；
 //! 见 `FROZEN_REASON_SURFACE_SHA256` 的沿革注释。
-//! ⚠ `#340`：摘要**只覆盖可分类面**。9 处运行时站点（`format!` / 转发入参 /
+//! ⚠ `#340`：摘要**只覆盖可分类面**。运行时站点（`format!` / 转发入参 /
 //! 外部枚举 `as_str()`）不贡献值，逐条登记在 `EXEMPT_DYNAMIC_REASON_SITES`。
+//! ⚠ `#341`：三个 `as_str()` / `format!` 站点退役成 `match` 字面量 ⇒ 运行时站点
+//! 9 → 6 处、可分类面 150 → 156 个 reason（摘要同批重钉）。
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
@@ -60,7 +62,7 @@ use yeban_mcp::undo_session::read_rust_sources;
 /// 字面量 ＋ 同函数内可解析的字面量 `let`（#340 起）。运行时站点不进这张表，
 /// 由 [`EXEMPT_DYNAMIC_REASON_SITES`] 逐条登记。
 /// 这是黄金表：任何改名 / 新增 / 删除都必须**故意**改这一行。
-pub const GOLDEN_REASONS: [&str; 146] = [
+pub const GOLDEN_REASONS: [&str; 152] = [
     "assetChannelLayout",
     "assetDecodeFailed",
     "assetHashMismatch",
@@ -123,8 +125,10 @@ pub const GOLDEN_REASONS: [&str; 146] = [
     "midiInputSecondsOutOfRange",
     "midiInputSecondsTypeMismatch",
     "midiInputUnknownPort",
+    "moveRequiresPlacementId",
     "moveRequiresStartTick",
     "nonFiniteValue",
+    "paramIndexOutOfRange",
     "pcmBudgetExceeded",
     "placementAlreadyAtStartTick",
     "placementAlreadyExists",
@@ -145,6 +149,7 @@ pub const GOLDEN_REASONS: [&str; 146] = [
     "recordDrainFailed",
     "removeClipIsNotPlacement",
     "removeClipTakesNoOtherOps",
+    "removeRequiresPlacementId",
     "removeTakesNoProperties",
     "removeTrackIsNotPlacement",
     "removeTrackTakesNoOtherOps",
@@ -171,6 +176,9 @@ pub const GOLDEN_REASONS: [&str; 146] = [
     "sfzParseFailed",
     "sfzPathIsDirectory",
     "sfzReadFailed",
+    "slotOutOfRange",
+    "sourceAmbiguous",
+    "sourceMissing",
     "staticLaneNotApplicable",
     "tempoUnusable",
     "trackNotFound",
@@ -848,20 +856,11 @@ struct DynamicReasonSite {
     retires_when: &'static str,
 }
 
-/// 生产区实测 **9 次出现 / 7 个 distinct 表达式**（2026-10-25，#340 开工）。
+/// 生产区实测 **6 次出现 / 4 个 distinct 表达式**（2026-10-26，#340 开工，动态站点退役后）。
 ///
 /// ⚠ 这张表是**显式盲区清单**，不是"这些值不重要"：每一条都写清值从哪来、怎么退役。
 /// ⛔ 不许为了让判据变绿而把新的动态站点塞进来 —— 能给出常量/枚举的，先给出名字。
-const EXEMPT_DYNAMIC_REASON_SITES: [DynamicReasonSite; 7] = [
-    DynamicReasonSite {
-        file: "domain/import_audio.rs",
-        expr: "error.as_str()",
-        occurrences: 1,
-        forwards: "`extension_pure::select_import_source` 的错误枚举经 `as_str()` 给出的逐字串；\
-                   值的定义在同 crate 的**另一个类型**里，扫描器不做类型/方法解析。",
-        retires_when: "在本层用 `match` 把每个枚举值写成字面量（或给该枚举登记一张可解析的值表），\
-                       站点随即变成 `Literal`。",
-    },
+const EXEMPT_DYNAMIC_REASON_SITES: [DynamicReasonSite; 4] = [
     DynamicReasonSite {
         file: "domain/mod.rs",
         expr: "Value::from(reason.clone())",
@@ -892,21 +891,6 @@ const EXEMPT_DYNAMIC_REASON_SITES: [DynamicReasonSite; 7] = [
         occurrences: 1,
         forwards: "在 `reason` 参数后面拼 `MustBeString` 后缀：**运行时组合**，字面量只有后缀。",
         retires_when: "让每个调用点各传两条完整 reason（空串分支 / 非字符串分支），删掉拼接。",
-    },
-    DynamicReasonSite {
-        file: "domain/notes.rs",
-        expr: "reason.as_str()",
-        occurrences: 1,
-        forwards: "`UnresolvedReason::as_str()`（定义在 `yeban-render`）的逐字串；跨 crate 枚举，\
-                   本扫描器只读 `yeban-mcp/src`。",
-        retires_when: "在 MCP 侧为这三个值登记字面量（或让扫描器跨 crate 解析 `as_str` 的 match）。",
-    },
-    DynamicReasonSite {
-        file: "domain/notes.rs",
-        expr: "format!(\"{kind}RequiresPlacementId\")",
-        occurrences: 1,
-        forwards: "按 `kind`（`move` / `remove`）拼 `RequiresPlacementId` 后缀：**运行时组合**。",
-        retires_when: "改成 `match kind` 的两个字面量（或枚举），站点随即变成 `Literal`。",
     },
 ];
 
@@ -944,11 +928,11 @@ const REASON_ARGUMENT_NAME_USES: [ReasonArgumentNameUse; 3] = [
 // 站点普查的冻结读数。口径：`production_region` 里 `"reason"` 的**出现次数**
 // （不是行数：一行里可能有两个；也不是 distinct 值数）。新增/删除任何站点都必须
 // **故意**改这些数 —— 这是"看全了"这件事本身的机械契约。
-const REASON_OCCURRENCES_TOTAL: usize = 207;
-const REASON_KEY_SITES_TOTAL: usize = 204;
-const REASON_LITERAL_SITES_TOTAL: usize = 193;
+const REASON_OCCURRENCES_TOTAL: usize = 211;
+const REASON_KEY_SITES_TOTAL: usize = 208;
+const REASON_LITERAL_SITES_TOTAL: usize = 200;
 const REASON_RESOLVED_SITES_TOTAL: usize = 2;
-const REASON_DYNAMIC_SITES_TOTAL: usize = 9;
+const REASON_DYNAMIC_SITES_TOTAL: usize = 6;
 const REASON_ARGUMENT_NAME_TOTAL: usize = 3;
 
 /// 把"看不见的站点"折成失败字符串：未登记的 `Dynamic` / `ArgumentName` /
@@ -1219,7 +1203,7 @@ fn every_reason_is_asserted_somewhere() {
 /// 每条 `reason` 在生产区**字面 `json!` 对象**里带的同级键（排序）。
 /// ⚠ 口径：只收字面 `json!` 里的键；运行时 `map.insert(...)` 加进去的键不在内。
 /// 空数组 = 该 reason 的 `data` 里**没有**同级键（或 Data 由别的构造方式给出）。
-pub const GOLDEN_REASON_PAYLOADS: [(&str, &[&str]); 146] = [
+pub const GOLDEN_REASON_PAYLOADS: [(&str, &[&str]); 152] = [
     (
         "assetChannelLayout",
         &[
@@ -1374,12 +1358,20 @@ pub const GOLDEN_REASON_PAYLOADS: [(&str, &[&str]); 146] = [
         &["field", "ports", "reason", "requested"],
     ),
     (
+        "moveRequiresPlacementId",
+        &["field", "hint", "placementKind", "reason"],
+    ),
+    (
         "moveRequiresStartTick",
         &["field", "placementKind", "reason"],
     ),
     (
         "nonFiniteValue",
         &["field", "narrowedToF32", "reason", "value"],
+    ),
+    (
+        "paramIndexOutOfRange",
+        &["field", "paramIndex", "reason", "slotIndex", "trackId"],
     ),
     (
         "pcmBudgetExceeded",
@@ -1470,6 +1462,10 @@ pub const GOLDEN_REASON_PAYLOADS: [(&str, &[&str]); 146] = [
     ("removeClipIsNotPlacement", &["hint", "reason"]),
     ("removeClipTakesNoOtherOps", &["hint", "opKinds", "reason"]),
     (
+        "removeRequiresPlacementId",
+        &["field", "hint", "placementKind", "reason"],
+    ),
+    (
         "removeTakesNoProperties",
         &["field", "properties", "reason"],
     ),
@@ -1527,6 +1523,12 @@ pub const GOLDEN_REASON_PAYLOADS: [(&str, &[&str]); 146] = [
         "samplerUnreadable",
         &["cause", "hint", "path", "reason", "resolvedPath", "tried"],
     ),
+    (
+        "slotOutOfRange",
+        &["field", "paramIndex", "reason", "slotIndex", "trackId"],
+    ),
+    ("sourceAmbiguous", &["reason"]),
+    ("sourceMissing", &["reason"]),
     (
         "staticLaneNotApplicable",
         &["allowed", "field", "reason", "received"],
@@ -1803,7 +1805,7 @@ pub const GOLDEN_REASON_PAYLOADS: [(&str, &[&str]); 146] = [
 
 /// **非标识符形状**的 `reason` 值（成功路径上的说明性字段），4 条。
 ///
-/// 为什么单列一张表：上面 146 条的黄金表按口径只收**标识符形状**
+/// 为什么单列一张表：上面 152 条的黄金表按口径只收**标识符形状**
 /// （`[A-Za-z0-9_]+`）的值 —— 那是"错误分类用的机器可读 reason"。生产区里另有 4 个
 /// `"reason"` 是**人话/带连字符**的（`no-history` / `no-redo` / 两条中文说明），
 /// 它们同样进 `data`，改了没有任何东西会红。本表把它们也钉住，并**如实登记口径边界**。
@@ -2095,13 +2097,22 @@ fn the_reason_payload_shape_is_the_published_table() {
 /// 本摘要因此是"**可分类**面"的字节契约，不是全集的伪装。新摘要
 /// `6f13316b51ef974e2443a909c4eb9fdeeaf97139b11fef6da5365de4de40e259`
 /// 由判据自己报出后照抄。
+///
+/// ⭐ `#341` 重钉：三个 `Dynamic` 站点退役成 `match` 字面量
+/// （`import_audio.rs` 的 `error.as_str()`、`notes.rs` 的 `reason.as_str()` 与
+/// `format!("{kind}RequiresPlacementId")`）⇒ 它们**一直产出**的 6 条 reason 第一次
+/// 进入规范文本：`sourceMissing` / `sourceAmbiguous` / `slotOutOfRange` /
+/// `paramIndexOutOfRange` / `moveRequiresPlacementId` / `removeRequiresPlacementId`
+/// ⇒ 150 → 156 个 reason、680 → 706 行。新摘要
+/// `36f254b59f3b307b9b3d0d2dc198cc9ac9a4ef9bd0783ce6871fb58d80a34e67`
+/// 由判据自己报出后照抄。
 pub const FROZEN_REASON_SURFACE_SHA256: &str =
-    "6f13316b51ef974e2443a909c4eb9fdeeaf97139b11fef6da5365de4de40e259";
+    "36f254b59f3b307b9b3d0d2dc198cc9ac9a4ef9bd0783ce6871fb58d80a34e67";
 
 /// 规范形式里的 reason 数 / 规范行数（与摘要一起构成"两端"读数）。
-pub const REASON_SURFACE_REASONS: usize = 150;
+pub const REASON_SURFACE_REASONS: usize = 156;
 /// 规范行数（每个 reason 一行 ＋ 每个键一行）。
-pub const REASON_SURFACE_LINES: usize = 680;
+pub const REASON_SURFACE_LINES: usize = 706;
 
 /// 单文件里的 `reason` 面：**保留出现顺序**的 `(reason, keys)`。
 ///
