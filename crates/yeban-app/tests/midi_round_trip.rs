@@ -754,10 +754,14 @@ fn filled_export_imports_its_four_lyrics_and_reexports_them_at_the_same_ticks() 
     ]);
     assert_eq!(run.code, 0, "filled 导出必须成功; stderr={}", run.stderr);
     let bytes = std::fs::read(&filled).expect("读 filled.mid");
-    assert_eq!(bytes.len(), 143, "filled 导出的字节契约是 143 B");
+    assert_eq!(
+        bytes.len(),
+        159,
+        "filled 导出的字节契约是 159 B (含 tempo_map 变更点)"
+    );
     assert_eq!(
         AssetHash::of_bytes(&bytes).as_str(),
-        "82077185a8fbe59674036f3ba00385f25cee95676b9df71f975c5fd27b262440",
+        "4825c0a7bab0362547836af3249acac5e7d2de3fef812f4620c426f92aef7da2",
         "导出侧一个字节都不许变（#312 的 143 B 契约）"
     );
     assert_eq!(
