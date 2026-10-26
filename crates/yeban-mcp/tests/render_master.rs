@@ -30,6 +30,7 @@
 //! | 13b | 工程作者（`setAuthor` 真的写进去的唯一标记）**不出现在音频产物字节里** | 把 `project.author` 写进 `bext` / `codingHistory` / 任何 chunk |
 //! | 13c | 同一标记**不出现在 MIDI 导出字节里**（解回真字节后 `windows(n)` 找） | 把 `project.author` 写进任何 SMF 元事件（轨道名/文本/版权） |
 //! | 14 | ⭐ `#315`/`#337` 侧链边的**三个读数**：`sidechainEdgesSummedAsOrdinaryAudio`（真的被当普通音频边求和了几条，取自 `RenderPlan::edge_ids()`；`#337` 起恒 `0`）/ `sidechainEdgesInRoutingGraph`（路由图里声明了几条）/ `sidechainEdgesDeclaredWithoutKeyInput`（声明了但**没有键输入路径**的条数）。A `(0,0,0)`；B 平行侧链 `(0,1,1)` 且母带与 A 逐字节相同；B2 `(0,2,2)`；D 悬挂边 `(0,1,1)` 且 `unsupported` 仍报 `sidechainRouting` | 把侧链边当音频边求和（B 与 A 的字节不再相等，且求和读数变 1）/ 从路由图数求和条数 / 把"没有键输入路径"读数恒写成 0 / 让 `bus_nodes` 把侧链边当成音频入边（推子位置改变 ⇒ 加侧链与去侧链母带不同） |
+//! | 15 | ⭐ `ADR-0020`：`contributions: true` 报的逐轨贡献 == **独立**"只静音该轨 + 再渲染"的本地逐样本差（< 1e-9 dB）；开关不改 `sha256` / `masterDigest` / 磁盘字节；渲染前已静音的轨 ⇒ `alreadyMuted: true` + `null`，且不为它渲染 | 读数是估读/常数 / 开关参与母带构建 / 在归一化后的母带上比 |
 //!
 //! ## 临时目录纪律
 //!
@@ -456,6 +457,30 @@ fn peak(samples: &[f32]) -> f32 {
     samples
         .iter()
         .fold(0.0f32, |acc, sample| acc.max(sample.abs()))
+}
+
+/// 两次母带样本的逐样本差（RMS / 峰值，dBFS）；逐样本全等 ⇒ `(None, None)`。
+///
+/// **独立实现**：`ADR-0020` 的判据用它当"工具内读数"的 oracle ——
+/// 与 `domain::render::delta_levels` 同一量纲（`20·log10`，满量程 = 0 dBFS），
+/// 但代码路径隔着一次真实的"静音 + 再渲染"。
+fn sample_delta_dbfs(reference: &[f32], other: &[f32]) -> (Option<f64>, Option<f64>) {
+    assert_eq!(reference.len(), other.len(), "两次渲染必须同样长");
+    let mut sum_squares = 0.0f64;
+    let mut peak = 0.0f64;
+    for (baseline, other) in reference.iter().zip(other) {
+        let delta = f64::from(*baseline) - f64::from(*other);
+        sum_squares += delta * delta;
+        peak = peak.max(delta.abs());
+    }
+    let to_db = |amplitude: f64| (amplitude > 0.0).then(|| 20.0 * amplitude.log10());
+    if reference.is_empty() {
+        return (None, None);
+    }
+    (
+        to_db((sum_squares / reference.len() as f64).sqrt()),
+        to_db(peak),
+    )
 }
 
 /// 每声道 RMS（独立实现）。
@@ -7229,7 +7254,11 @@ fn sidechain_readings_are_declared_in_the_output_schema() {
     assert_eq!(result["data"]["sidechainEdgesInRoutingGraph"], 1);
     assert_eq!(result["data"]["sidechainEdgesDeclaredWithoutKeyInput"], 1);
     for data in [&none["data"], &result["data"]] {
-        yeban_mcp::output_schema::validate_complete(&schema, data).unwrap_or_else(|violation| {
+        // ⚠ `ADR-0020` 之后 `yeban_render_master` 有**两条形状**：缺省 `false` 时响应里
+        // 没有 `contributions` / `contributionsBasis` ⇒ 这里只能核 `required` 与已出现
+        // 字段的类型（`validate`）。"声明的字段都出现"由 `props_176` 的
+        // `contributions: true` 响应与 ADR-0020 的专项判据负责。
+        yeban_mcp::output_schema::validate(&schema, data).unwrap_or_else(|violation| {
             panic!("render_master 的真实响应违反自己的 schema: {violation}")
         });
     }
@@ -8083,5 +8112,208 @@ fn time_signature_change_leaves_master_audio_bit_identical() {
     assert_eq!(
         base_res["data"]["frames"], res_6_8["data"]["frames"],
         "4/4 与 6/8 帧数必须相同"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 判据 15（⭐ `ADR-0020`，消除 creation_acceptance 的 WALL ⑦）：逐轨贡献读数
+// ---------------------------------------------------------------------------
+
+/// 工具内读数必须等于**独立**的"真静音一次 + 本地逐样本比"，且开关不改写盘字节。
+///
+/// 可被什么注入破坏：
+/// - 把 `data.contributions` 写成估读/常数 ⇒ 与独立测量不等；
+/// - 让 `contributions` 参与母带构建（例如先把某轨静音）⇒ `sha256` / `masterDigest` 变；
+/// - 只报最响的一条或跳过无贡献的轨 ⇒ 行数不符；
+/// - 在归一化后的母带上比 ⇒ 差值被归一化增益缩放。
+#[test]
+fn contributions_match_an_independent_mute_render() {
+    let scratch = Scratch::new("contrib");
+    let fixture = two_track_clip_project(0.0, -6.0);
+    let (mut dispatcher, auth) = dispatcher_with(&fixture, &scratch.join("contrib.yeban"));
+
+    // ① 缺省路径：响应里**没有** `contributions`（与加这个开关之前同形）。
+    let plain_path = scratch.join("plain.wav");
+    let plain = call(
+        &mut dispatcher,
+        &auth,
+        json!({
+            "format": "wav",
+            "sampleRate": 48000,
+            "path": plain_path.display().to_string(),
+        }),
+    );
+    assert_eq!(plain["status"], "success", "{plain}");
+    assert!(
+        plain["data"].get("contributions").is_none(),
+        "缺省不许出现 contributions 键: {}",
+        plain["data"]
+    );
+    assert!(
+        plain["data"].get("contributionsBasis").is_none(),
+        "缺省不许出现 contributionsBasis 键: {}",
+        plain["data"]
+    );
+    let plain_sha = plain["data"]["sha256"].as_str().expect("sha256").to_owned();
+    let plain_digest = plain["data"]["masterDigest"]
+        .as_str()
+        .expect("masterDigest")
+        .to_owned();
+    let reference = verify_file_shape(&plain, &plain_path);
+
+    // ② 同一个工程 + `contributions: true`。写盘字节必须一位不变。
+    let with_path = scratch.join("with-contrib.wav");
+    let with = call(
+        &mut dispatcher,
+        &auth,
+        json!({
+            "format": "wav",
+            "sampleRate": 48000,
+            "path": with_path.display().to_string(),
+            "contributions": true,
+        }),
+    );
+    assert_eq!(with["status"], "success", "{with}");
+    let data = &with["data"];
+    assert_eq!(
+        data["sha256"],
+        plain_sha.as_str(),
+        "逐轨贡献不许改文件字节: {data}"
+    );
+    assert_eq!(
+        data["masterDigest"],
+        plain_digest.as_str(),
+        "逐轨贡献不许改母带位级摘要: {data}"
+    );
+    assert_eq!(
+        file_sha256(&with_path),
+        plain_sha,
+        "磁盘上的母带必须与不加开关时逐字节相同"
+    );
+    let basis = &data["contributionsBasis"];
+    assert_eq!(basis["normalize"], false, "基线必须不归一化: {basis}");
+    assert_eq!(basis["frames"], data["frames"], "{basis}");
+    assert_eq!(
+        basis["renders"], 3,
+        "1 次基线 + 2 条未静音轨 = 3 次额外渲染: {basis}"
+    );
+
+    // ③ 每条非 master 轨一行，数值 == 独立测量的逐样本差。
+    let rows = data["contributions"]
+        .as_array()
+        .unwrap_or_else(|| panic!("contributions 必须是数组: {data}"));
+    assert_eq!(rows.len(), 2, "Lead + Pad 各一行（Master 不参与）: {data}");
+    for (seed, name) in [(2u32, "Lead"), (3u32, "Pad")] {
+        let track_id = id(seed);
+        let row = rows
+            .iter()
+            .find(|row| row["trackId"] == json!(track_id.to_canonical_string()))
+            .unwrap_or_else(|| panic!("{name} 必须有一行: {data}"));
+        assert_eq!(row["name"], name, "{row}");
+        assert_eq!(row["alreadyMuted"], false, "{row}");
+
+        // 独立路径：换一份工程把这条轨**真的**静音，再走同一条工具链渲染。
+        let mut muted_project = fixture.clone();
+        muted_project
+            .tracks
+            .get_mut(&track_id)
+            .expect("轨存在")
+            .mute = true;
+        let muted_project_path = scratch.join(&format!("muted-{name}.yeban"));
+        let (mut muted_dispatcher, muted_auth) =
+            dispatcher_with(&muted_project, &muted_project_path);
+        let muted_path = scratch.join(&format!("muted-{name}.wav"));
+        let muted = call(
+            &mut muted_dispatcher,
+            &muted_auth,
+            json!({
+                "format": "wav",
+                "sampleRate": 48000,
+                "path": muted_path.display().to_string(),
+            }),
+        );
+        assert_eq!(muted["status"], "success", "{muted}");
+        let muted_samples = verify_file_shape(&muted, &muted_path);
+        let (independent_rms, independent_peak) = sample_delta_dbfs(&reference, &muted_samples);
+        let reported_rms = row["deltaRmsDbfs"]
+            .as_f64()
+            .unwrap_or_else(|| panic!("{name} 必须有 deltaRmsDbfs: {row}"));
+        let reported_peak = row["deltaPeakDbfs"]
+            .as_f64()
+            .unwrap_or_else(|| panic!("{name} 必须有 deltaPeakDbfs: {row}"));
+        println!(
+            "### ADR-0020 {name}: reported rms={reported_rms:.6} peak={reported_peak:.6} \
+             independent rms={independent_rms:?} peak={independent_peak:?}"
+        );
+        let expected_rms = independent_rms.expect("静音一条可闻轨必须改变母带");
+        let expected_peak = independent_peak.expect("静音一条可闻轨必须改变母带");
+        assert!(
+            (reported_rms - expected_rms).abs() < 1.0e-9,
+            "{name} 的 deltaRmsDbfs 必须与独立测量一致: {reported_rms} vs {expected_rms}"
+        );
+        assert!(
+            (reported_peak - expected_peak).abs() < 1.0e-9,
+            "{name} 的 deltaPeakDbfs 必须与独立测量一致: {reported_peak} vs {expected_peak}"
+        );
+        assert!(
+            reported_rms > -40.0,
+            "{name} 必须在母带里真的留下能量, 实测 {reported_rms} dBFS"
+        );
+    }
+}
+
+/// 渲染前已经静音的轨：`alreadyMuted: true` + 两个差值 `null`，且**不**为它渲染。
+///
+/// 顺带钉住"归一化请求仍用**未归一化**基线"：`normalize: true` 时母带被放大，
+/// 但 `contributionsBasis.normalize` 仍是 `false`（否则差值会被归一化增益缩放）。
+#[test]
+fn a_pre_muted_track_reports_null_contributions() {
+    let scratch = Scratch::new("contrib-pre-muted");
+    let mut fixture = two_track_clip_project(0.0, -6.0);
+    fixture.tracks.get_mut(&id(3)).expect("Pad").mute = true;
+    let (mut dispatcher, auth) = dispatcher_with(&fixture, &scratch.join("pre-muted.yeban"));
+    let path = scratch.join("pre-muted.wav");
+    let rendered = call(
+        &mut dispatcher,
+        &auth,
+        json!({
+            "format": "wav",
+            "sampleRate": 48000,
+            "normalize": true,
+            "path": path.display().to_string(),
+            "contributions": true,
+        }),
+    );
+    assert_eq!(rendered["status"], "success", "{rendered}");
+    let data = &rendered["data"];
+    assert_eq!(
+        data["normalize"]["applied"], true,
+        "本判据要覆盖归一化路径: {data}"
+    );
+    let basis = &data["contributionsBasis"];
+    assert_eq!(
+        basis["normalize"], false,
+        "贡献基线必须始终不归一化: {basis}"
+    );
+    assert_eq!(
+        basis["renders"], 2,
+        "1 次基线 + 1 条未静音轨（已静音的 Pad 不渲染）= 2: {basis}"
+    );
+    let rows = data["contributions"].as_array().expect("contributions");
+    let pad = rows
+        .iter()
+        .find(|row| row["trackId"] == json!(id(3).to_canonical_string()))
+        .unwrap_or_else(|| panic!("Pad 必须有一行: {data}"));
+    assert_eq!(pad["alreadyMuted"], true, "{pad}");
+    assert_eq!(pad["deltaRmsDbfs"], Value::Null, "{pad}");
+    assert_eq!(pad["deltaPeakDbfs"], Value::Null, "{pad}");
+    let lead = rows
+        .iter()
+        .find(|row| row["trackId"] == json!(id(2).to_canonical_string()))
+        .unwrap_or_else(|| panic!("Lead 必须有一行: {data}"));
+    assert_eq!(lead["alreadyMuted"], false, "{lead}");
+    assert!(
+        lead["deltaRmsDbfs"].as_f64().is_some_and(|rms| rms > -40.0),
+        "Lead 必须仍被量出贡献: {lead}"
     );
 }

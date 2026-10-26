@@ -356,6 +356,25 @@
 //! ⛔ 本切片**不**改任何缺省：既有钉死常量一位不动（判据
 //! `the_default_rendering_path_stays_bit_identical_with_an_explicit_frame_count`）。
 //!
+//! ## 逐轨贡献（⭐ `ADR-0020`；`contributions`，⛔ 缺省不变）
+//!
+//! `sources[].peak` 只给**一次渲染**里的逐源峰值；"拿掉这条轨后母带变了多少"此前
+//! 只能靠调用方自己做 N 次静音渲染 + 本地逐样本比较（`creation_acceptance.rs` 的
+//! WALL ⑦）。`contributions: true` 让工具自己做这件事：
+//!
+//! - **基线** = 本请求关掉归一化 / 目标响度 / 显式路径，帧数**钉成**母带的 `frames`
+//!   （静音"最晚结束"的轨不许改变时间轴长度）；
+//! - 对每条**非 master** 轨各渲染一次"只静音该轨"，与基线**逐样本**比，报逐样本差的
+//!   RMS / 峰值（dBFS）。逐样本全等 ⇒ `null`；渲染前已静音 ⇒ `alreadyMuted: true`
+//!   且两个差值为 `null`（⛔ 不假装量过）；
+//! - 成本 = `1 + 未静音的非 master 轨数` 次额外渲染，如实写在
+//!   `data.contributionsBasis.renders`；
+//! - ⛔ **不改**母带字节：`sha256` / `masterDigest` 与 `contributions: false` 逐字节相同；
+//! - 缺省 `false` ⇒ 响应里**不出现** `contributions` / `contributionsBasis` 两键。
+//!
+//! ⚠ 差值取自最终 24-bit 负载 ⇒ 它证明"这条轨留下多少能量"，
+//! ⛔ 不证明"这条轨在音乐上该不该被听见"。
+//!
 //! ## 可观测性（响应 `data` 里的数字全部是实测值）
 //!
 //! `frames` / `channels` / `sampleRate` / `bytes`（容器总字节）/ `headerBytes` /
@@ -369,7 +388,7 @@
 //!
 //! | 状况 | 出口 |
 //! | :--- | :--- |
-//! | `format` 不在白名单 / `sampleRate` 不在模型集合 / `normalize` 非布尔 / `path` 非字符串 / **`targetLufs` 非数字或不在 `[-70, 0]`** / **⭐ `frames` 非正整数或 `durationSeconds` 非有限正数或两者冲突** / 输出路径为工程或锁文件 | `INVALID_PARAMETER_RANGE`（带内） |
+//! | `format` 不在白名单 / `sampleRate` 不在模型集合 / `normalize` 非布尔 / `path` 非字符串 / **`targetLufs` 非数字或不在 `[-70, 0]`** / **⭐ `frames` 非正整数或 `durationSeconds` 非有限正数或两者冲突** / **`contributions` 非布尔** / 输出路径为工程或锁文件 | `INVALID_PARAMETER_RANGE`（带内） |
 //! | 没有活跃工程 | `NO_ACTIVE_PROJECT`（带内） |
 //! | 0 帧、**显式帧数或工程末端推导**超出帧数上限、路由图非法、缺音轨/片段 | `RENDER_FAILED`（带内，`data` 带原因与规范 ID；超限带 `maxFrames`） |
 //! | **母带响度未达标或测不出** | `RENDER_FAILED`（`data.reason = "loudnessTargetMissed"`，`data` 带实测/目标/差值/容差） |
@@ -655,6 +674,14 @@ pub struct RenderRequest {
     pub target_lufs_bits: Option<u32>,
     /// 显式输出路径（`None` = 按缺省规则从工程路径派生）。
     pub path: Option<PathBuf>,
+    /// ⭐ `ADR-0020`：是否额外报**逐轨贡献**（默认 `false`）。
+    ///
+    /// `true` 时 [`track_contributions`] 会额外做 `1 + N` 次渲染（`N` = **未静音**的
+    /// 非 master 音轨数）：一次**未归一化基线**，然后每条轨各一次"只静音该轨"的渲染。
+    /// 它**不**改写盘字节（`sha256` / `masterDigest` 与 `false` 时逐字节相同），
+    /// 只往响应里加 `data.contributions` / `data.contributionsBasis`。
+    /// ⚠ 缺省时响应里**没有**这两个键，但 `data.request` 的回显多一个 `contributions: false`。
+    pub contributions: bool,
 }
 
 impl RenderRequest {
@@ -719,6 +746,7 @@ impl RenderRequest {
             },
             "bitDepth": OUTPUT_BIT_DEPTH,
             "channels": MASTER_CHANNELS,
+            "contributions": self.contributions,
         })
     }
 
@@ -1200,6 +1228,17 @@ pub fn validate(arguments: &Map<String, Value>) -> Result<RenderRequest, Fault> 
         // 上限与工程末端推导**同一处**闸门（`RENDER_FAILED` + `maxFrames`）。
         frame_ceiling(frames)?;
     }
+    // ⭐ `ADR-0020`：逐轨贡献开关。缺省 `false` ⇒ 渲染路径与响应逐字节不变。
+    let contributions = match arguments.get("contributions") {
+        None => false,
+        Some(Value::Bool(flag)) => *flag,
+        Some(other) => {
+            return Err(Fault::domain(
+                ErrorCode::InvalidParameterRange,
+                format!("`contributions` 必须是布尔值, 实际收到 {other}"),
+            ));
+        }
+    };
     Ok(RenderRequest {
         format_index,
         sample_rate,
@@ -1208,6 +1247,7 @@ pub fn validate(arguments: &Map<String, Value>) -> Result<RenderRequest, Fault> 
         duration_seconds_bits,
         target_lufs_bits,
         path,
+        contributions,
     })
 }
 
@@ -1779,6 +1819,47 @@ fn automation_write_mode_name(mode: AutomationWriteMode) -> &'static str {
     }
 }
 
+/// ⭐ `ADR-0020`：一条轨对母带的**贡献读数**（"拿掉它，母带变了多少"）。
+///
+/// ## 量的是什么（对象 ＋ 单位）
+///
+/// `delta_rms_dbfs` / `delta_peak_dbfs` = 两次渲染**母带样本之差**的 RMS / 峰值，
+/// 单位 dBFS（`20·log10(x)`，满量程 = 0 dBFS）。两次渲染除"该轨 `mute`"外全部相同：
+/// **同一**采样率 / 帧数 / 格式，且都**不归一化**（归一化会把差值按不同增益缩放，
+/// 于是"变了多少"变成"归一化算法变了多少"）。
+///
+/// ## 它诚实地说不了什么
+///
+/// - 差值来自**最终** 24-bit PCM 负载 ⇒ 逐样本差恒为 0 时报 `null`（⛔ 不报 `-inf`）。
+/// - 它证明"这条轨在母带里留下多少能量"，⛔ 不证明"这条轨在音乐上该不该被听见"。
+/// - 工程里有别的轨处于 solo 时，静音一条**非 solo** 轨不会改变母带 ⇒ 该轨报 `null`。
+pub struct TrackContribution {
+    /// 被静音的那条轨。
+    pub track_id: EntityId,
+    /// 轨名（响应里便于人读；⛔ 不参与寻址）。
+    pub name: String,
+    /// 渲染**之前**这条轨已经是 `mute = true`（贡献无法判定 ⇒ 两个差值为 `null`）。
+    pub already_muted: bool,
+    /// 母带样本差值的 RMS（dBFS）；`null` = 一个 24-bit 样本都没变。
+    pub delta_rms_dbfs: Option<f64>,
+    /// 母带样本差值的峰值（dBFS）；`null` = 一个 24-bit 样本都没变。
+    pub delta_peak_dbfs: Option<f64>,
+}
+
+impl TrackContribution {
+    /// 响应里的形状。
+    #[must_use]
+    pub fn to_value(&self) -> Value {
+        serde_json::json!({
+            "trackId": self.track_id.to_canonical_string(),
+            "name": self.name,
+            "alreadyMuted": self.already_muted,
+            "deltaRmsDbfs": self.delta_rms_dbfs,
+            "deltaPeakDbfs": self.delta_peak_dbfs,
+        })
+    }
+}
+
 /// 渲染产物：**已经编码好的容器字节** + 全部实测数字。
 ///
 /// 它由 [`build`] 产出（只读计算），由 `domain::apply` 落盘。
@@ -1821,6 +1902,11 @@ pub struct RenderArtifact {
     pub source_nodes: Vec<EntityId>,
     /// 每个源节点的报告。
     pub sources: Vec<SourceReport>,
+    /// ⭐ `ADR-0020`：逐轨贡献读数；`None` = 调用方没要（`contributions` 缺省）。
+    ///
+    /// 由 `plan_render_master` 在 [`build`] 之后调 [`track_contributions`] 填 ——
+    /// ⛔ 不在 `build` 里做，因为 `build` 是"一次渲染"，而这里要 `N + 1` 次。
+    pub contributions: Option<Vec<TrackContribution>>,
     /// **真的参与渲染**的音频片段摆放数（全部源节点合计）。
     pub audio_clips: u64,
     /// 被**确定性**概率判定判为"不触发"、因而不发声的 MIDI 音符数
@@ -1957,6 +2043,13 @@ impl core::fmt::Debug for RenderArtifact {
             .field("file_bytes", &self.bytes.len())
             .field("sha256", &self.sha256)
             .field("unsupported", &self.unsupported)
+            .field(
+                "contributions",
+                &self
+                    .contributions
+                    .as_ref()
+                    .map_or("None".to_owned(), |rows| format!("{} rows", rows.len())),
+            )
             .finish_non_exhaustive()
     }
 }
@@ -2022,6 +2115,28 @@ impl RenderArtifact {
             "sources".to_owned(),
             Value::Array(self.sources.iter().map(SourceReport::to_value).collect()),
         );
+        // ⭐ `ADR-0020`：逐轨贡献。**只有**调用方给了 `contributions: true` 才出现；
+        // 缺省时整块不出现 ⇒ 响应与加这个开关之前逐字节相同（`request` 回显除外）。
+        if let Some(rows) = &self.contributions {
+            map.insert(
+                "contributions".to_owned(),
+                Value::Array(rows.iter().map(TrackContribution::to_value).collect()),
+            );
+            map.insert(
+                "contributionsBasis".to_owned(),
+                serde_json::json!({
+                    "method": "对每条非 master 轨各渲染一次\"只静音该轨\", 与同一份基线逐样本比",
+                    "metric": "两次母带样本逐样本差的 RMS / 峰值, 单位 dBFS (20·log10, 满量程 = 0 dBFS)",
+                    "domain": "解码后的 24-bit PCM 负载",
+                    "normalize": false,
+                    "frames": self.frames,
+                    "renders": 1 + rows.iter().filter(|row| !row.already_muted).count(),
+                    "nullMeans": "逐样本差恒为 0（这条轨没有留下任何 24-bit 级变化）, \
+                                  或渲染前这条轨已经是 mute",
+                    "doesNotProve": "这条轨在音乐上该不该被听见",
+                }),
+            );
+        }
         // ⭐ `#251`（S0）：MIDI 音源**显式**说明 —— 不再只靠 `sources[].kind` 的间接标签。
         // ⭐ `#268`（`ADR-0011`，第 324 条）：正弦振荡器**已退休** ⇒ 这段文案必须
         //    逐字改成实话。`kind` 与 `engineTimbre` 也跟着变：旧值（`builtin-sine` /
@@ -2772,6 +2887,9 @@ pub fn build(
         node_count: nodes.len(),
         source_nodes,
         sources: reports,
+        // ⭐ `ADR-0020`：一次渲染给不出"拿掉某轨差多少"；由调用方（`plan_render_master`）
+        // 在 `build` 之后按需填。这样 `build` 仍然只做**一次**渲染。
+        contributions: None,
         audio_clips,
         notes_silenced,
         notes_ratcheted,
@@ -2800,6 +2918,154 @@ pub fn build(
         unsupported,
         unsupported_counts: counts,
     })
+}
+
+/// ⭐ `ADR-0020`：**逐轨贡献**读数 —— "把这一轨静音，母带变了多少"。
+///
+/// 对每条**非 master** 轨各渲染一次"只静音该轨"，与**同一份基线**逐样本比。
+/// 基线 = 本请求关掉归一化 / 目标响度 / 显式路径，并把帧数**钉成** `master.frames`
+/// —— 静音"最晚结束"的那条轨不能让时间轴变短（否则两次渲染长度不同，差值无意义）。
+///
+/// 逐条渲染而不是在 `build` 里做：`build` 是"**一次**渲染"，这里要 `1 + N` 次。
+/// ⛔ 一个字节都不改 `master`；成本如实进 `data.contributionsBasis.renders`。
+///
+/// # Errors
+///
+/// `RENDER_FAILED`：额外渲染失败，或两次渲染的位深 / 负载长度不一致。
+pub fn track_contributions(
+    project: &YebanProjectV1,
+    project_path: &Path,
+    master: &RenderArtifact,
+    request: &RenderRequest,
+    now_ms: u64,
+    assets: &dyn AssetStore,
+) -> Result<Vec<TrackContribution>, Fault> {
+    let basis = RenderRequest {
+        format_index: request.format_index,
+        sample_rate: request.sample_rate,
+        normalize: false,
+        frames: Some(master.frames),
+        duration_seconds_bits: None,
+        target_lufs_bits: None,
+        path: None,
+        contributions: false,
+    };
+    let baseline = build(project, project_path, &basis, now_ms, assets)?;
+    let reference = decode_master_payload(&baseline)?;
+    let mut rows = Vec::with_capacity(project.tracks.len());
+    // `tracks` 是 `BTreeMap` ⇒ 行序是身份的确定序（跨进程/跨重启一致）[MODEL-AST-003]。
+    for (&track_id, track) in &project.tracks {
+        if track_id == project.master_bus_track_id {
+            continue;
+        }
+        if track.mute {
+            // 渲染**之前**就已经静音 ⇒ "拿掉它"没有可测的变化，⛔ 不假装量过。
+            rows.push(TrackContribution {
+                track_id,
+                name: track.name.clone(),
+                already_muted: true,
+                delta_rms_dbfs: None,
+                delta_peak_dbfs: None,
+            });
+            continue;
+        }
+        let mut muted_project = project.clone();
+        muted_project
+            .tracks
+            .get_mut(&track_id)
+            .expect("轨来自同一份 tracks 遍历")
+            .mute = true;
+        let muted = build(&muted_project, project_path, &basis, now_ms, assets)?;
+        let muted_samples = decode_master_payload(&muted)?;
+        let (delta_rms_dbfs, delta_peak_dbfs) = delta_levels(&reference, &muted_samples)?;
+        rows.push(TrackContribution {
+            track_id,
+            name: track.name.clone(),
+            already_muted: false,
+            delta_rms_dbfs,
+            delta_peak_dbfs,
+        });
+    }
+    Ok(rows)
+}
+
+/// 从母带容器字节里解出 24-bit PCM 负载（符号扩展后除以 2^23）。
+fn decode_master_payload(artifact: &RenderArtifact) -> Result<Vec<f32>, Fault> {
+    if artifact.bit_depth != OUTPUT_BIT_DEPTH {
+        return Err(render_failed(
+            format!("逐轨贡献只解码 {OUTPUT_BIT_DEPTH}-bit 负载"),
+            serde_json::json!({ "bitDepth": artifact.bit_depth }),
+        ));
+    }
+    let end = artifact
+        .header_bytes
+        .checked_add(artifact.payload_bytes)
+        .ok_or_else(|| {
+            render_failed(
+                "母带负载区间溢出",
+                serde_json::json!({
+                    "headerBytes": artifact.header_bytes,
+                    "payloadBytes": artifact.payload_bytes,
+                }),
+            )
+        })?;
+    let payload = artifact
+        .bytes
+        .get(artifact.header_bytes..end)
+        .ok_or_else(|| {
+            render_failed(
+                "母带负载区间超出文件字节",
+                serde_json::json!({
+                    "bytes": artifact.bytes.len(),
+                    "headerBytes": artifact.header_bytes,
+                    "payloadBytes": artifact.payload_bytes,
+                }),
+            )
+        })?;
+    if payload.len() % 3 != 0 {
+        return Err(render_failed(
+            "母带负载字节数不是 3 的倍数",
+            serde_json::json!({ "payloadBytes": payload.len() }),
+        ));
+    }
+    let mut samples = Vec::with_capacity(payload.len() / 3);
+    for sample in payload.as_chunks::<3>().0 {
+        // 24-bit 小端 ⇒ 先零扩展到 i32，再左移 8 位把符号位送到 bit 31，
+        // 算术右移 8 位完成符号扩展（与本文件测试的 `decode_i24` 同一口径）。
+        let raw = i32::from_le_bytes([sample[0], sample[1], sample[2], 0]) << 8 >> 8;
+        samples.push(raw as f32 / 8_388_608.0);
+    }
+    Ok(samples)
+}
+
+/// 两次母带样本的逐样本差（RMS / 峰值，dBFS）；逐样本全等 ⇒ `None`。
+fn delta_levels(reference: &[f32], muted: &[f32]) -> Result<(Option<f64>, Option<f64>), Fault> {
+    if reference.len() != muted.len() {
+        return Err(render_failed(
+            "逐轨贡献的两次渲染负载长度不同",
+            serde_json::json!({
+                "referenceSamples": reference.len(),
+                "mutedSamples": muted.len(),
+            }),
+        ));
+    }
+    if reference.is_empty() {
+        return Ok((None, None));
+    }
+    let mut sum_squares = 0.0_f64;
+    let mut peak = 0.0_f64;
+    for (baseline, muted) in reference.iter().zip(muted) {
+        let delta = f64::from(*baseline) - f64::from(*muted);
+        sum_squares += delta * delta;
+        peak = peak.max(delta.abs());
+    }
+    let rms = (sum_squares / reference.len() as f64).sqrt();
+    Ok((dbfs(rms), dbfs(peak)))
+}
+
+/// 线性幅度 → dBFS；0 ⇒ `None`（⛔ 不报 `-inf`）。
+fn dbfs(amplitude: f64) -> Option<f64> {
+    (amplitude > 0.0).then(|| 20.0 * amplitude.log10())
 }
 
 /// **落盘字节的唯一编码器**：TPDF 抖动 → 24-bit PCM → RIFF/RF64/BW64 容器（+ 可选 `bext`）。

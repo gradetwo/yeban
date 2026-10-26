@@ -28,6 +28,13 @@
 //! 因此那份 schema 的 `required` 只列**两种形状都有**的字段，并在 `description`
 //! 里逐字说明缺的是哪几个 —— 写成"理想形状"会让幂等合并的那次响应**违反自己的 schema**。
 //!
+//! ⚠ 第二种**按参数分支**的形状（`ADR-0020`）：`yeban_render_master` 的
+//! `contributions` 缺省 `false` ⇒ 响应里**没有** `contributions` / `contributionsBasis`；
+//! 打开时才出现。这两键同样只进 `properties`、不进 `required`，而
+//! [`validate_complete`] 的"全字段"反校必须用 `contributions: true` 的那次响应
+//! （`tests/props_176.rs` 与 `tests/render_master.rs` 各有一处）。
+//! ⛔ 缺省形状用 [`validate`]（它只核 `required` 与已出现字段的类型）。
+//!
 //! ## 校验器只做三件事（并**被真的跑**）
 //!
 //! 1. 顶层 `type`；
@@ -520,7 +527,13 @@ fn render_master() -> Value {
              三者对照读：`0 / 0 / 0` = 没有侧链；`0 / N / N` = N 条侧链声明了、但一条都\
              没有被求值（\"你的侧链现在什么都不做\"）。⛔ 单看 `0` 会以为问题消失了。\
              口径逐字：`sidechainEdgesSummedAsOrdinaryAudio` 说的是\"这条边走了普通音频\
-             求和路径\"、⛔ 不是\"+6 dB 了几路\"。",
+             求和路径\"、⛔ 不是\"+6 dB 了几路\"。\
+             ⭐ `ADR-0020`：请求给 `contributions: true` 时**额外**出现\
+             `contributions[]`（每条非 master 轨一行：`{trackId, name, alreadyMuted,\
+             deltaRmsDbfs, deltaPeakDbfs}`，两次**未归一化**母带逐样本差的 RMS / 峰值，\
+             单位 dBFS；逐样本无差异或渲染前已静音 ⇒ null）与 `contributionsBasis`\
+             （口径说明 + `renders` = 实际渲染次数）。缺省时**两个键都不出现**\
+             ⇒ 不在 `required` 列表里；开关⛔ 不改写盘字节。",
         ),
         &[
             "rendered",
@@ -629,6 +642,9 @@ fn render_master() -> Value {
             "sidechainEdgesDeclaredWithoutKeyInput".to_owned(),
             json!({"type": "integer"}),
         );
+        // ⭐ `ADR-0020`：可选键 ⇒ ⛔ 不进 `required`（缺省时它们不存在）。
+        properties.insert("contributions".to_owned(), json!({"type": "array"}));
+        properties.insert("contributionsBasis".to_owned(), json!({"type": "object"}));
     }
     schema
 }
