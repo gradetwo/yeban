@@ -31,6 +31,7 @@
             "yeban_import_audio",
             "yeban_export_diagnostics",
             "yeban_export_midi",
+            "yeban_import_midi",
             "yeban_load_sfz",
             "yeban_render_sfz_wav",
             "yeban_record_wav",
@@ -185,6 +186,25 @@
             "properties": {
               "arguments": {
                 "$ref": "#/definitions/ExtensionToolArguments/$defs/yeban_export_midi"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "name"
+            ],
+            "properties": {
+              "name": {
+                "const": "yeban_import_midi"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "arguments": {
+                "$ref": "#/definitions/ExtensionToolArguments/$defs/yeban_import_midi"
               }
             }
           }
@@ -679,6 +699,36 @@
               "maxLength": 256
             }
           }
+        },
+        "yeban_import_midi": {
+          "title": "yeban_import_midi",
+          "type": "object",
+          "description": "MCP-TOOL-EXT-IMPORT-MIDI — 导入磁盘上的 Standard MIDI File (.mid) 到指定的空 MIDI 片段，采纳单值头元数据并上报非音符损失。",
+          "properties": {
+            "path": {
+              "type": "string",
+              "description": "源标准 MIDI 文件 (.mid) 磁盘路径。"
+            },
+            "trackId": {
+              "type": "string",
+              "description": "可选的目标音轨 EntityId (26 字符 ULID)；缺省由 destination 选择首条含 MIDI 片段的音轨。"
+            },
+            "clipId": {
+              "type": "string",
+              "description": "可选的目标片段 EntityId (26 字符 ULID)；缺省由 destination 选择目标音轨上的首个 MIDI 片段。"
+            },
+            "dryRun": {
+              "type": "boolean",
+              "default": false
+            },
+            "idempotencyKey": {
+              "type": "string",
+              "maxLength": 256
+            }
+          },
+          "required": [
+            "path"
+          ]
         },
         "yeban_load_sfz": {
           "title": "yeban_load_sfz",

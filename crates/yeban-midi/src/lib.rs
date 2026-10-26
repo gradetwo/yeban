@@ -18,6 +18,7 @@
 #![forbid(unsafe_code)]
 
 pub mod export;
+pub mod import;
 pub mod midi;
 /// MusicXML (`.musicxml`) 的**只读**导入 MVP —— 手写 pull parser，零新依赖。
 ///

@@ -5003,8 +5003,8 @@ fn the_tool_surface_binds_two_different_samplers_and_query_reads_them_back() {
     assert_eq!(tools.len(), TOOL_COUNT, "工具面条数必须等于 TOOL_COUNT");
     assert_eq!(
         tools.len(),
-        23,
-        "`#220` 的逐字读数曾是 22；`#290` 新增 `yeban_launch_scene` ⇒ 23"
+        24,
+        "`#220` 的逐字读数曾是 22；`#290` 新增 `yeban_launch_scene` ⇒ 23；`#345` 新增 `yeban_import_midi` ⇒ 24"
     );
 
     // ---- ② `yeban_edit_notes` 的 kind 表：与 `OP_KINDS` 逐字同序 ----

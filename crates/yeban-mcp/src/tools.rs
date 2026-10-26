@@ -10,15 +10,15 @@
 //! 这两份契约在"错误码"上**不一致**（见 [`ErrorCode`] 的说明），本模块的处置是
 //! "两份都实现、把差异钉成常量、让判据把它暴露出来"，而不是悄悄选一边。
 //!
-//! ## 二十三个工具 = 规范表格的十个 + 十三条**扩展**（ADR-0001 D45 / D46 + 后续线）
+//! ## 二十四个工具 = 规范表格的十个 + 十四条**扩展**（ADR-0001 D45 / D46 + 后续线）
 //!
 //! 扩展段的**唯一清单**是 [`EXTENSION_NAMES`]：D45 的撤销 / 重做 2 条、D46 的三类能力 3 条、
-//! D56 的诊断包 1 条、SMF 导出 1 条、SFZ 装载与 SFZ 音色导出 2 条、录音导出 1 条、
-//! 物理 MIDI 输入探针 1 条、未合并提案清单 1 条（`#176`）、场景启动 1 条（`#290`）= **13** 条。
+//! D56 的诊断包 1 条、SMF 导出 1 条、SMF 导入 1 条、SFZ 装载与 SFZ 音色导出 2 条、录音导出 1 条、
+//! 物理 MIDI 输入探针 1 条、未合并提案清单 1 条（`#176`）、场景启动 1 条（`#290`）= **14** 条。
 //!
 //! `ADR-0001` **D46** 明文："十工具是**起点不是上限**；扩充时必须同步
 //! `schemas/mcp-tools.schema.json`（契约是唯一权威定义）"。**D45** 则要求撤销入口
-//! "UI+MCP 两侧同接，共用同一实现"。于是本注册表多出十三条扩展：
+//! "UI+MCP 两侧同接，共用同一实现"。于是本注册表多出十四条扩展：
 //!
 //! | 工具 | 作用 | 规范 ID |
 //! | :--- | :--- | :--- |
@@ -29,6 +29,7 @@
 //! | `yeban_import_audio` | 音频素材登记成 `clip_pool` 条目（`yeban-decode`） | `MCP-TOOL-EXT-IMPORT-AUDIO` |
 //! | `yeban_export_diagnostics` | 诊断包采集（zip） | `MCP-TOOL-EXT-DIAGNOSTICS` |
 //! | `yeban_export_midi` | 共享 SMF 映射导出（base64 回传，只读） | `MCP-TOOL-EXT-EXPORT-MIDI` |
+//! | `yeban_import_midi` | 导入 SMF 文件到空 MIDI 音轨/片段并上报损失 | `MCP-TOOL-EXT-IMPORT-MIDI` |
 //! | `yeban_load_sfz` | 装载 SFZ 乐器进会话 registry（读盘 + 解析 + 区域摘要） | `MCP-TOOL-EXT-SFZ-LOAD` |
 //! | `yeban_render_sfz_wav` | 用已装载的 SFZ 区域把活跃工程的 MIDI 音符导出成 24-bit WAV | `MCP-TOOL-EXT-SFZ-WAV` |
 //! | `yeban_record_wav` | `ARCH-REC-001` 三段（无锁环 + 后台抽干）录一段测试音成 24-bit WAV | `MCP-TOOL-EXT-RECORD-WAV` |
@@ -94,16 +95,16 @@ pub const IDEMPOTENCY_KEY_PARAM: &str = "idempotencyKey";
 pub const INCLUDE_OPS_PARAM: &str = "includeOps";
 
 /// 工具集规模（规范表格的 10 个 + `ADR-0001` D45/D46 的扩展）。
-pub const TOOL_COUNT: usize = 23;
+pub const TOOL_COUNT: usize = 24;
 
 /// **规范表格**里的工具数（`MCP-TOOL-001..010`）。
 pub const DOCUMENTED_TOOL_COUNT: usize = 10;
 
 /// 扩展工具数（`MCP-TOOL-EXT-*`）：D45 的撤销入口 2 条 + D46 的三类能力 3 条
-/// + D56 的诊断包 1 条 + SMF 导出 1 条 + SFZ 装载 / SFZ 音色导出 2 条
+/// + D56 的诊断包 1 条 + SMF 导出 1 条 + SMF 导入 1 条 + SFZ 装载 / SFZ 音色导出 2 条
 /// + 录音导出 1 条 + **物理 MIDI 输入探针 1 条**（`ADR-0006`，`midi-input` 默认关）
-/// + **未合并提案清单 1 条**（`#176`，`#174` 坑②）。
-pub const EXTENSION_TOOL_COUNT: usize = 13;
+/// + **未合并提案清单 1 条**（`#176`，`#174` 坑②）+ **场景启动 1 条**（`#290`）。
+pub const EXTENSION_TOOL_COUNT: usize = 14;
 
 /// 扩展工具的规范 ID 前缀。
 ///
@@ -124,6 +125,7 @@ pub const EXTENSION_NAMES: [&str; EXTENSION_TOOL_COUNT] = [
     "yeban_import_audio",
     "yeban_export_diagnostics",
     "yeban_export_midi",
+    "yeban_import_midi",
     "yeban_load_sfz",
     "yeban_render_sfz_wav",
     "yeban_record_wav",
@@ -1178,6 +1180,37 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
             ErrorCode::RenderFailed,
         ],
     },
+    ToolSpec {
+        spec_id: "MCP-TOOL-EXT-IMPORT-MIDI",
+        name: "yeban_import_midi",
+        summary: "从磁盘读取 Standard MIDI File (.mid) 解析并导入进指定的空 MIDI 片段，采纳单值头元数据并原子提交到撤销历史",
+        scope: Scope::AppAdmin,
+        side_effect: SideEffect::ProjectState,
+        params: &[
+            param("path", "string", true, "源标准 MIDI 文件 (.mid) 磁盘路径"),
+            param(
+                "trackId",
+                "string",
+                false,
+                "可选的目标音轨 EntityId (26 字符 ULID)；缺省由 destination 选择首条含 MIDI 片段的音轨",
+            ),
+            param(
+                "clipId",
+                "string",
+                false,
+                "可选的目标片段 EntityId (26 字符 ULID)；缺省由 destination 选择目标音轨上的首个 MIDI 片段",
+            ),
+        ],
+        errors: &[
+            ErrorCode::NoActiveProject,
+            ErrorCode::FileNotFound,
+            ErrorCode::IoError,
+            ErrorCode::InvalidParameterRange,
+            ErrorCode::TrackNotFound,
+            ErrorCode::ClipNotFound,
+            ErrorCode::Conflict,
+        ],
+    },
     // ---- 本线的 SFZ 两条扩展（`crates/yeban-mcp/src/domain/sfz.rs`） ----
     //
     // 缺口是**实测**出来的，不是从词面推的（`AGENTS.md` §6.3）：`grep` 全仓
@@ -1415,7 +1448,7 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
     },
 ];
 
-/// 按名查找工具（`const` 数组上的线性查找；23 个元素，无需哈希表）。
+/// 按名查找工具（`const` 数组上的线性查找；24 个元素，无需哈希表）。
 #[must_use]
 pub fn tool(name: &str) -> Option<&'static ToolSpec> {
     TOOLS.iter().find(|spec| spec.name == name)

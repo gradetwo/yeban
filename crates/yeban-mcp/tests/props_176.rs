@@ -184,8 +184,8 @@ fn list_proposals_is_discoverable_and_the_counts_move_with_it() {
     );
     assert_eq!(
         tools::TOOL_COUNT,
-        23,
-        "10 个规范工具 + 13 个扩展 = 23（#176 新增 1 条、#290 新增场景启动 1 条）"
+        24,
+        "10 个规范工具 + 14 个扩展 = 24（#176 新增 1 条、#290 新增场景启动 1 条、#345 新增 MIDI 导入 1 条）"
     );
     assert_eq!(
         registry["count"],
@@ -224,7 +224,7 @@ fn list_proposals_is_discoverable_and_the_counts_move_with_it() {
         "### 契约 enum 尾部\n{:?}",
         &enum_names[enum_names.len().saturating_sub(3)..]
     );
-    assert_eq!(enum_names.len(), 23, "契约 enum 的工具个数");
+    assert_eq!(enum_names.len(), 24, "契约 enum 的工具个数");
     assert_eq!(enum_names, tools::tool_names(), "enum 顺序 = 注册表顺序");
 }
 
