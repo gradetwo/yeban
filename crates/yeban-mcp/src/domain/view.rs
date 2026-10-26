@@ -28,7 +28,7 @@ use crate::tools::ErrorCode;
 /// - **顶层字段**（`tracks` / `bpm` / …）；
 /// - **一层下钻**（`tracks.id`）：根是"实体集合对象"时，按 BTreeMap 键序展开成
 ///   `{id: {leaf: value}}`；根是普通对象（如 `routing_graph`）时，直接取 `leaf`。
-pub const SELECTORS: [&str; 24] = [
+pub const SELECTORS: [&str; 27] = [
     "id",
     "title",
     "author",
@@ -39,6 +39,9 @@ pub const SELECTORS: [&str; 24] = [
     "rng_seed",
     "master_bus_track_id",
     "time_signature",
+    "tempo_map",
+    "time_signature_map",
+    "key_signature",
     "audio_config",
     "transport",
     "metadata",

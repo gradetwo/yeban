@@ -978,6 +978,112 @@ mod tests {
         assert_eq!(channels[19], 3);
     }
 
+    /// 判据 (音符通道往返保留): 音符显式指定的 channel（如 0, 1, 9）在导出到 SMF 并在导入回工程时得到完整保留 [MODEL-AST-005] [ARCH-EXT-002]。
+    #[test]
+    fn note_channels_are_preserved_across_export_and_import_round_trip() {
+        use yeban_model::Op;
+
+        let mut project = YebanProjectV1::default();
+        let clip_id = EntityId::new();
+        let mut notes: BTreeMap<EntityId, MidiNote> = BTreeMap::new();
+
+        // 创建携带不同 channel 的音符（0, 1, 9）以及未指定 channel (None) 的音符
+        let channels_to_test = [Some(0u8), Some(1), Some(9), None];
+        for (i, &ch) in channels_to_test.iter().enumerate() {
+            let note_id = EntityId::new();
+            let mut note = MidiNote::new(
+                note_id,
+                u64::try_from(i).expect("i < 4") * 480,
+                60 + u8::try_from(i).expect("i < 4"),
+                480,
+            );
+            note.channel = ch;
+            notes.insert(note_id, note);
+        }
+
+        project.clip_pool.insert(
+            clip_id,
+            yeban_model::project::ClipPoolEntry {
+                id: clip_id,
+                name: "MultiChannelClip".to_owned(),
+                content: ClipContent::Midi { notes },
+            },
+        );
+
+        let track_id = EntityId::new();
+        let placement_id = EntityId::new();
+        let mut track = yeban_model::project::TrackV3 {
+            id: track_id,
+            name: "ChannelTrack".to_owned(),
+            ..yeban_model::project::TrackV3::default()
+        };
+        track.clips.insert(
+            placement_id,
+            ClipPlacement {
+                id: placement_id,
+                clip_id,
+                start_tick: 0,
+                duration_ticks: 3840,
+                ..ClipPlacement::default()
+            },
+        );
+        project.insert_track(track).expect("插入音轨");
+
+        // 1. 导出为 SMF 字节
+        let export = export_from_project(&project).expect("投影");
+        let bytes = export.to_smf_bytes().expect("编码");
+
+        // 2. SMF 解析验证：SMF 事件中的通道应与显式指定的一致（按 SMF 排序键按 channel 分组）
+        let parsed = parse_smf(&bytes).expect("回读");
+        let mut parsed_by_tick = parsed.notes.clone();
+        parsed_by_tick.sort_by_key(|n| n.start_tick);
+        let parsed_channels_by_tick: Vec<(u64, u8)> = parsed_by_tick
+            .iter()
+            .map(|n| (n.start_tick, n.channel))
+            .collect();
+        assert_eq!(
+            parsed_channels_by_tick,
+            vec![(0, 0), (480, 1), (960, 9), (1440, 0)],
+            "SMF 事件通道匹配预期（None 遵循轨道默认通道 0）"
+        );
+
+        // 3. 导入回工程计划验证
+        let empty_proj = crate::import::content_free_project();
+        let import_plan = crate::import::plan_midi_import(
+            &empty_proj,
+            &parsed,
+            &crate::import::MidiImportOptions::default(),
+        )
+        .expect("导入计划成功");
+
+        // 检查丢失统计：note_channel_values dropped 必须为 0
+        assert_eq!(import_plan.losses.note_channel_values.read, 4);
+        assert_eq!(import_plan.losses.note_channel_values.dropped, 0);
+
+        // 检查生成的 AddNote 操作中的 note.channel（按 start_tick 对齐）
+        let mut imported_by_tick: Vec<(u64, Option<u8>)> = import_plan
+            .ops
+            .iter()
+            .filter_map(|op| match op {
+                Op::AddNote { note, .. } => Some((note.start_tick, note.channel)),
+                _ => None,
+            })
+            .collect();
+        imported_by_tick.sort_by_key(|(tick, _)| *tick);
+
+        // 导入时所有 notes 的 channel 字段被填入从 SMF 解析出来的通道号
+        assert_eq!(
+            imported_by_tick,
+            vec![
+                (0, Some(0)),
+                (480, Some(1)),
+                (960, Some(9)),
+                (1440, Some(0)),
+            ],
+            "音符通道在导出并导入后完整保留"
+        );
+    }
+
     /// 判据 (类别③ 静默丢弃 vs 明确 Err): 一条轨道里的**音频片段**不会截断它
     /// 后面的 MIDI 摆放。
     ///

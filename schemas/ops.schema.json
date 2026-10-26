@@ -402,6 +402,16 @@
         },
         {
           "required": [
+            "SetTempoPoint"
+          ],
+          "properties": {
+            "SetTempoPoint": {
+              "type": "object"
+            }
+          }
+        },
+        {
+          "required": [
             "SetAuthor"
           ],
           "properties": {
@@ -426,6 +436,16 @@
           ],
           "properties": {
             "SetTimeSignature": {
+              "type": "object"
+            }
+          }
+        },
+        {
+          "required": [
+            "SetTimeSignaturePoint"
+          ],
+          "properties": {
+            "SetTimeSignaturePoint": {
               "type": "object"
             }
           }

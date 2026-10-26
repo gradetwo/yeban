@@ -384,10 +384,18 @@ pub fn filled_project() -> YebanProjectV1 {
         title: "Yeban Model Core Sample".to_owned(),
         author: "Yeban Project Contributors".to_owned(),
         bpm: 128.0,
+        tempo_map: BTreeMap::from([(7680, 132.0)]),
         time_signature: TimeSignature {
             numerator: 4,
             denominator: 4,
         },
+        time_signature_map: BTreeMap::from([(
+            7680,
+            TimeSignature {
+                numerator: 3,
+                denominator: 4,
+            },
+        )]),
         key_signature: None,
         audio_config: ProjectAudioConfig {
             sample_rate: SampleRate::Hz48000,

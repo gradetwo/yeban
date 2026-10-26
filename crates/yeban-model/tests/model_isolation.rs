@@ -87,16 +87,16 @@ use yeban_model::{EntityId, PPQ, YebanProjectV1};
 const FROZEN_PROJECT_JSON_SHA256: [(&str, &str); 2] = [
     (
         "project.default.json",
-        "20b2008210bb0dd0d509977af14a745b7f7e17f87b546741855a90276aa44172",
+        "b5be4416ea61f8aef1c0c2f23bbb5bd01991ef350d451df01c22128e184f8bb3",
     ),
     (
         "project.filled.json",
-        "08fa2a9ec3ce6955f87307a2d6e122d188152cd41a1e4c46c1ab89fe9408c411",
+        "f7c0b635611dc7610e628b9878e8b957d9f5e74c50ea71dc68e1d97c8ed76538",
     ),
 ];
 
 /// `YebanProjectV1` 的**顶层**键集合（`serde_json::to_value` 的键，已排序）。
-const FROZEN_PROJECT_TOP_LEVEL_KEYS: [&str; 19] = [
+const FROZEN_PROJECT_TOP_LEVEL_KEYS: [&str; 21] = [
     "assets",
     "audio_config",
     "author",
@@ -111,7 +111,9 @@ const FROZEN_PROJECT_TOP_LEVEL_KEYS: [&str; 19] = [
     "scenes",
     "schema_version",
     "sections",
+    "tempo_map",
     "time_signature",
+    "time_signature_map",
     "title",
     "tracks",
     "transport",
@@ -120,10 +122,10 @@ const FROZEN_PROJECT_TOP_LEVEL_KEYS: [&str; 19] = [
 
 /// 工程 JSON 的**递归键路径集合**（`a.b.*` 形式，已排序）的 SHA-256。
 const FROZEN_PROJECT_KEY_PATH_SHA256: &str =
-    "95f70eb8b25de522229bca832ca2d48ebbfe55cbc46db9260defbc1f689bcbd4";
+    "537de4890b30683f98ab35dc52f23de5694bec837e5750bc08248113de5a34bb";
 
 /// 上面那个集合的元素个数（防止"哈希对了但集合空了"这类退化）。
-const FROZEN_PROJECT_KEY_PATH_COUNT: usize = 223;
+const FROZEN_PROJECT_KEY_PATH_COUNT: usize = 229;
 
 /// 本机配置 JSON 的键集合（冻结：加字段即红）。
 const FROZEN_LOCAL_CONFIG_KEYS: [&str; 4] = [
@@ -2088,8 +2090,8 @@ fn session_writers_do_not_rewrite_the_payload_they_are_given() {
 fn history_dag_and_container_zip_bytes_are_frozen() {
     const DAG_SHA256: &str = "54c9212169a07d34e54ab58114090e88d86f06371c53002f91f3295e8c5cbc32";
     const DAG_LEN: usize = 911;
-    const ZIP_SHA256: &str = "ff233cbbf667a1e1a831a439f0730ad7bd17f5adf4117ec5eb1ec37393ac661a";
-    const ZIP_LEN: usize = 5448;
+    const ZIP_SHA256: &str = "057a08100d0977aceffefcc3cb5816fb6ab6e92d53558481cf14e8ec6fc3ff1b";
+    const ZIP_LEN: usize = 5537;
 
     let id1 = EntityId::from_str("01J8ZQ00000000000000000001").expect("id1");
     let id2 = EntityId::from_str("01J8ZQ00000000000000000002").expect("id2");

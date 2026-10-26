@@ -27,6 +27,13 @@ pub enum ModelError {
         value: u16,
     },
 
+    /// MIDI 通道越界 (允许 0..=15)。
+    #[error("note channel {channel} out of range 0..=15")]
+    NoteChannelOutOfRange {
+        /// 实际收到的通道号。
+        channel: u8,
+    },
+
     /// 概率字段越界 (允许 0.0..=1.0，且必须有限)。
     ///
     /// 区间**不在这里写字面**：两个端点来自 [`crate::music::PROBABILITY_MIN`] /
@@ -126,6 +133,13 @@ pub enum ModelError {
     BpmOutOfRange {
         /// 实际收到的速度值。
         value: f64,
+    },
+
+    /// 速度或拍号映射点的 tick 必须大于 0 (tick 0 由顶层 `bpm`/`time_signature` 承载)。
+    #[error("tempo and time signature map point tick must be greater than 0, got {tick}")]
+    TempoMapZeroTick {
+        /// 违规的 tick 值（通常为 0）。
+        tick: u64,
     },
 
     /// 拍号分子越界 (允许 1..=32)。

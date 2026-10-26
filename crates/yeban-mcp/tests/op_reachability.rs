@@ -160,12 +160,19 @@ pub const EXPECTED_SITES: [(&str, &[&str]); 51] = [
 /// （`yeban_edit_notes` 的 `setTrackSampler` 有 `parse_one` / `compile` 构造点，
 /// 已移进上面的 `EXPECTED_SITES`）。判据仍双向守着：谁把一条**可达**的变体塞回这里，
 /// 或把一条**不可达**的变体写进 `EXPECTED_SITES`，都会红。
-const KNOWN_UNREACHABLE: [(&str, &str); 0] = [
-    // ⭐ 历史（不再有活条目，保留形状让下一条欠账有地方登记）：
-    // - `#77` 登记 `SetTrackSampler`（"工具面还没有采样器绑定通路"）；
-    // - `#221` 还清它 —— 工具面现在有通路，因此这条理由**已经不成立**，必须删掉。
-    //
-    // ⭐ 更早还清过的四条：`SetTempo` / `SetAuthor` / `SetAsset`（步 ②）/ `RemoveAsset`（步 ③）。
+const KNOWN_UNREACHABLE: [(&str, &str); 3] = [
+    (
+        "SetTempoPoint",
+        "工具面（yeban_edit_notes）尚未提供单独编辑 tempo map 时间点的动作，目前通过 yeban_import_midi 从 MIDI 导入自动构造",
+    ),
+    (
+        "SetTimeSignaturePoint",
+        "工具面（yeban_edit_notes）尚未提供单独编辑 time signature map 时间点的动作，目前通过 yeban_import_midi 从 MIDI 导入自动构造",
+    ),
+    (
+        "SetKeySignature",
+        "工具面尚未提供单独编辑调号的动作，目前通过 yeban_import_midi 从 MIDI 导入自动构造",
+    ),
 ];
 // ⭐ 历史: 本清单的清空**是证明过的**（临时加回一条 ⇒ 反向断言逐字报"`SetTempo` 既在
 // `KNOWN_UNREACHABLE` 又在 `EXPECTED_SITES` ⇒ 两处矛盾，请二选一" ⇒ 然后恢复）。

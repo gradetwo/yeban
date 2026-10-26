@@ -30,6 +30,9 @@ pub const MIDI_PITCH_MAX: u8 = 127;
 /// MIDI 力度的合法上界（含）。
 pub const MIDI_VELOCITY_MAX: u8 = 127;
 
+/// MIDI 通道的合法上界（含，0..=15）。
+pub const MIDI_CHANNEL_MAX: u8 = 15;
+
 /// `ratchet` 连击数的合法下界（含）。
 pub const RATCHET_MIN: u8 = 1;
 
@@ -195,6 +198,9 @@ pub struct MidiNote {
     pub pitch: u8,
     /// 力度 0..=127。
     pub velocity: u8,
+    /// MIDI 通道 0..=15；`None` 表示遵循所属轨道默认通道。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub channel: Option<u8>,
     /// 触发概率：`None` = 必然触发；`Some(0.0)` = 永不触发；必须在 0.0..=1.0 且有限。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub probability: Option<f32>,
@@ -243,6 +249,7 @@ impl MidiNote {
             duration_ticks,
             pitch,
             velocity: DEFAULT_VELOCITY,
+            channel: None,
             probability: None,
             ratchet: None,
             micro_timing_ticks: None,
@@ -256,7 +263,7 @@ impl MidiNote {
     /// 校验全部取值范围 [MODEL-AST-005]。
     ///
     /// 校验项与规范一一对应：
-    /// `pitch`/`velocity` ∈ 0..=127；`probability` ∈ 0.0..=1.0 且有限；
+    /// `pitch`/`velocity` ∈ 0..=127；`channel` ∈ 0..=15（若指定）；`probability` ∈ 0.0..=1.0 且有限；
     /// `ratchet` ∈ 1..=16；`micro_timing_ticks` ∈ -240..=240；`duration_ticks` ≠ 0；
     /// 滑音配置合法。
     ///
@@ -273,6 +280,11 @@ impl MidiNote {
             return Err(ModelError::VelocityOutOfRange {
                 value: u16::from(self.velocity),
             });
+        }
+        if let Some(channel) = self.channel
+            && channel > MIDI_CHANNEL_MAX
+        {
+            return Err(ModelError::NoteChannelOutOfRange { channel });
         }
         if let Some(probability) = self.probability {
             // `RangeInclusive::contains` 对 NaN 恒为 false，因此 NaN 会被这里拦下。
@@ -488,6 +500,44 @@ mod tests {
             ..MidiNote::default()
         };
         assert_eq!(max.validate(), Ok(()));
+    }
+
+    #[test]
+    fn channel_validation() {
+        // None 合法（缺省为轨道默认通道）
+        let default_note = MidiNote {
+            channel: None,
+            ..MidiNote::default()
+        };
+        assert_eq!(default_note.validate(), Ok(()));
+
+        // 0..=15 合法
+        for ch in 0..=MIDI_CHANNEL_MAX {
+            let note = MidiNote {
+                channel: Some(ch),
+                ..MidiNote::default()
+            };
+            assert_eq!(note.validate(), Ok(()), "通道 {ch} 必须合法");
+        }
+
+        // 16+ 越界拒绝
+        let bad = MidiNote {
+            channel: Some(16),
+            ..MidiNote::default()
+        };
+        assert_eq!(
+            bad.validate(),
+            Err(ModelError::NoteChannelOutOfRange { channel: 16 })
+        );
+
+        let bad_max = MidiNote {
+            channel: Some(u8::MAX),
+            ..MidiNote::default()
+        };
+        assert_eq!(
+            bad_max.validate(),
+            Err(ModelError::NoteChannelOutOfRange { channel: u8::MAX })
+        );
     }
 
     #[test]

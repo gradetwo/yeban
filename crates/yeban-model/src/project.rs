@@ -1645,8 +1645,12 @@ pub struct YebanProjectV1 {
     pub author: String,
     /// 速度 20.0..=999.0（顶层唯一权威）。
     pub bpm: f64,
+    /// 速度变化映射（tick > 0）。
+    pub tempo_map: BTreeMap<u64, f64>,
     /// 拍号（顶层唯一权威）。
     pub time_signature: TimeSignature,
+    /// 拍号变化映射（tick > 0）。
+    pub time_signature_map: BTreeMap<u64, TimeSignature>,
     /// 调号 [MODEL-AST-002]（遵循 MIDI 标准：升降号数 + 调式）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub key_signature: Option<KeySignature>,
@@ -1709,7 +1713,9 @@ impl Default for YebanProjectV1 {
             title: "Untitled".to_owned(),
             author: String::new(),
             bpm: DEFAULT_BPM,
+            tempo_map: BTreeMap::new(),
             time_signature: TimeSignature::default(),
+            time_signature_map: BTreeMap::new(),
             key_signature: None,
             audio_config: ProjectAudioConfig::default(),
             rng_seed: DEFAULT_RNG_SEED,
@@ -1809,7 +1815,27 @@ impl YebanProjectV1 {
         if !(MIN_BPM..=MAX_BPM).contains(&self.bpm) {
             return Err(ModelError::BpmOutOfRange { value: self.bpm });
         }
+        for (tick, bpm) in &self.tempo_map {
+            if *tick == 0 {
+                return Err(ModelError::TempoMapZeroTick { tick: 0 });
+            }
+            if !bpm.is_finite() {
+                return Err(ModelError::NonFiniteValue {
+                    field: "tempo_map.bpm",
+                    value: *bpm,
+                });
+            }
+            if !(MIN_BPM..=MAX_BPM).contains(bpm) {
+                return Err(ModelError::BpmOutOfRange { value: *bpm });
+            }
+        }
         self.time_signature.validate()?;
+        for (tick, ts) in &self.time_signature_map {
+            if *tick == 0 {
+                return Err(ModelError::TempoMapZeroTick { tick: 0 });
+            }
+            ts.validate()?;
+        }
         if let Some(ref ks) = self.key_signature {
             ks.validate()?;
         }
@@ -2230,6 +2256,84 @@ mod tests {
             };
             assert_eq!(ok.validate(), Ok(()), "分母 {denominator} 应合法");
         }
+    }
+
+    #[test]
+    fn tempo_map_constraints_are_enforced() {
+        let mut project = YebanProjectV1::default();
+        project.tempo_map.insert(0, 140.0);
+        assert_eq!(
+            project.validate(),
+            Err(ModelError::TempoMapZeroTick { tick: 0 })
+        );
+
+        let mut project = YebanProjectV1::default();
+        project.tempo_map.insert(960, 19.9);
+        assert_eq!(
+            project.validate(),
+            Err(ModelError::BpmOutOfRange { value: 19.9 })
+        );
+
+        let mut project = YebanProjectV1::default();
+        project.tempo_map.insert(960, f64::NAN);
+        assert!(matches!(
+            project.validate(),
+            Err(ModelError::NonFiniteValue {
+                field: "tempo_map.bpm",
+                ..
+            })
+        ));
+
+        let mut project = YebanProjectV1::default();
+        project.tempo_map.insert(960, 140.0);
+        project.tempo_map.insert(1920, 160.0);
+        assert_eq!(project.validate(), Ok(()));
+    }
+
+    #[test]
+    fn time_signature_map_constraints_are_enforced() {
+        let mut project = YebanProjectV1::default();
+        project.time_signature_map.insert(
+            0,
+            TimeSignature {
+                numerator: 3,
+                denominator: 4,
+            },
+        );
+        assert_eq!(
+            project.validate(),
+            Err(ModelError::TempoMapZeroTick { tick: 0 })
+        );
+
+        let mut project = YebanProjectV1::default();
+        project.time_signature_map.insert(
+            960,
+            TimeSignature {
+                numerator: 0,
+                denominator: 4,
+            },
+        );
+        assert_eq!(
+            project.validate(),
+            Err(ModelError::TimeSignatureNumeratorOutOfRange { value: 0 })
+        );
+
+        let mut project = YebanProjectV1::default();
+        project.time_signature_map.insert(
+            960,
+            TimeSignature {
+                numerator: 3,
+                denominator: 4,
+            },
+        );
+        project.time_signature_map.insert(
+            1920,
+            TimeSignature {
+                numerator: 6,
+                denominator: 8,
+            },
+        );
+        assert_eq!(project.validate(), Ok(()));
     }
 
     /// 拍号分子是**闭区间** `1..=32`：两个端点都必须放行。
@@ -3370,6 +3474,8 @@ mod tests {
         "src/ops.rs::Op::SetMacro.new_val",
         "src/ops.rs::Op::SetTempo.old_bpm",
         "src/ops.rs::Op::SetTempo.new_bpm",
+        "src/ops.rs::Op::SetTempoPoint.new_bpm",
+        "src/ops.rs::Op::SetTempoPoint.old_bpm",
         "src/project.rs::ParameterValue::value",
         "src/project.rs::MacroMapping::depth",
         "src/project.rs::MacroParameter::value",
@@ -3460,6 +3566,16 @@ mod tests {
             "src/ops.rs::Op::SetTempo.new_bpm",
             "非有限与 20.0..=999.0 外都报 BpmOutOfRange；区间端点接受",
             probe_set_tempo_new,
+        ),
+        (
+            "src/ops.rs::Op::SetTempoPoint.new_bpm",
+            "非有限报 NonFiniteValue；20.0..=999.0 外报 BpmOutOfRange",
+            probe_set_tempo_point_new,
+        ),
+        (
+            "src/ops.rs::Op::SetTempoPoint.old_bpm",
+            "旧值只做逐位比较：NaN ⇒ OpStateMismatch",
+            probe_set_tempo_point_old,
         ),
         (
             "src/project.rs::ParameterValue::value",
@@ -4706,6 +4822,74 @@ mod tests {
             op.apply(&mut probe)
                 .map_err(|error| format!("端点 {value} 必须被接受, 实际 {error:?}"))?;
             if probe.bpm != value {
+                return Err(format!("端点 {value} 必须被写进文档"));
+            }
+        }
+        Ok(())
+    }
+
+    fn probe_set_tempo_point_old() -> Result<(), String> {
+        let (mut doc, _f) = numeric_fixture();
+        for value in NON_FINITE_F64 {
+            let op = Op::SetTempoPoint {
+                tick: 960,
+                old_bpm: Some(value),
+                new_bpm: Some(130.0),
+            };
+            match apply_rejected(&mut doc, &op, "SetTempoPoint(old_bpm 非有限)") {
+                Ok(ModelError::OpStateMismatch { .. }) => {}
+                Ok(other) => {
+                    return Err(format!("非有限旧值必须报 OpStateMismatch, 实际 {other:?}"));
+                }
+                Err(reason) => return Err(reason),
+            }
+        }
+        Ok(())
+    }
+
+    fn probe_set_tempo_point_new() -> Result<(), String> {
+        let (mut doc, _f) = numeric_fixture();
+        for value in NON_FINITE_F64 {
+            let op = Op::SetTempoPoint {
+                tick: 960,
+                old_bpm: None,
+                new_bpm: Some(value),
+            };
+            match apply_rejected(&mut doc, &op, "SetTempoPoint(new_bpm 非有限)") {
+                Ok(ModelError::NonFiniteValue {
+                    field: "tempo_map.bpm",
+                    ..
+                }) => {}
+                Ok(other) => {
+                    return Err(format!("非有限新值必须报 NonFiniteValue, 实际 {other:?}"));
+                }
+                Err(reason) => return Err(reason),
+            }
+        }
+        for value in [MIN_BPM - 1.0, MAX_BPM + 1.0, 0.0, -1.0] {
+            let op = Op::SetTempoPoint {
+                tick: 960,
+                old_bpm: None,
+                new_bpm: Some(value),
+            };
+            match apply_rejected(&mut doc, &op, "SetTempoPoint(new_bpm 越界)") {
+                Ok(ModelError::BpmOutOfRange { .. }) => {}
+                Ok(other) => {
+                    return Err(format!("越界新值必须报 BpmOutOfRange, 实际 {other:?}"));
+                }
+                Err(reason) => return Err(reason),
+            }
+        }
+        for value in [MIN_BPM, MAX_BPM] {
+            let mut probe = numeric_fixture().0;
+            let op = Op::SetTempoPoint {
+                tick: 960,
+                old_bpm: None,
+                new_bpm: Some(value),
+            };
+            op.apply(&mut probe)
+                .map_err(|error| format!("端点 {value} 必须被接受, 实际 {error:?}"))?;
+            if probe.tempo_map.get(&960) != Some(&value) {
                 return Err(format!("端点 {value} 必须被写进文档"));
             }
         }
