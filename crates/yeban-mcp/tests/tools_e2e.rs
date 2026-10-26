@@ -7275,3 +7275,408 @@ fn test_e2e_note_channel_syllable_and_key_signature() {
         })
     );
 }
+
+// ---------------------------------------------------------------------------
+// ⭐ MCP-TOOL-003：`setTempoPoint` / `setTimeSignaturePoint` 端到端闭环
+// ---------------------------------------------------------------------------
+
+/// 测试侧的**独立** base64 解码器（RFC 4648 §4）—— 与被测的编码器分开写。
+///
+/// 与 `tests/extension_tools.rs` 的 `decode_base64` 同职责（判据本地，测试文件
+/// 之间不共享代码）：只有"另一份实现"才能证明字节层面的往返。
+fn decode_base64(text: &str) -> Vec<u8> {
+    let mut out = Vec::new();
+    let mut buffer = 0_u32;
+    let mut bits = 0_u32;
+    for byte in text.bytes() {
+        if byte == b'=' {
+            break;
+        }
+        let value = match byte {
+            b'A'..=b'Z' => byte - b'A',
+            b'a'..=b'z' => byte - b'a' + 26,
+            b'0'..=b'9' => byte - b'0' + 52,
+            b'+' => 62,
+            b'/' => 63,
+            other => panic!("非法的 base64 字符: {other}"),
+        };
+        buffer = (buffer << 6) | u32::from(value);
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            out.push(((buffer >> bits) & 0xFF) as u8);
+        }
+    }
+    out
+}
+
+/// `needle` 在 `haystack` 里出现的**次数**（逐字节滑窗）。
+fn count_needle(haystack: &[u8], needle: &[u8]) -> usize {
+    haystack
+        .windows(needle.len())
+        .filter(|window| *window == needle)
+        .count()
+}
+
+/// `FF 51 03 <mpqn 三字节大端>`：SMF 速度元事件的完整字节。
+fn ff51_pattern(mpqn: u32) -> Vec<u8> {
+    let be = mpqn.to_be_bytes();
+    vec![0xFF, 0x51, 0x03, be[1], be[2], be[3]]
+}
+
+/// `FF 58 04 <分子> <分母的 2 幂> 24 8`：SMF 拍号元事件的完整字节
+/// （尾部两条是 MIDI Clocks/24 per quarter 与 32nd notes/quarter 的固定惯例值）。
+fn ff58_pattern(numerator: u8, denominator_pow2: u8) -> Vec<u8> {
+    vec![0xFF, 0x58, 0x04, numerator, denominator_pow2, 24, 8]
+}
+
+/// 从零建一份**新工程**（`create: true`，缺省 120 BPM / 4/4），返回 `(路径, trackId)`。
+///
+/// `trackId` 取主总线之外的第一条音轨 —— `setTempoPoint` / `setTimeSignaturePoint`
+/// 是**顶层文档字段**形态（不寻址音轨，但工具签名仍要求 `trackId` 存在）。
+fn create_fresh_project(
+    scratch: &Scratch,
+    dispatcher: &mut Dispatcher,
+    auth: &str,
+) -> (PathBuf, String) {
+    let path = scratch.join("tempo-meter.yeban");
+    assert!(!path.exists(), "前提: 目标路径必须不存在");
+    let created = call(
+        dispatcher,
+        auth,
+        "yeban_open_project",
+        json!({
+            "path": path.display().to_string(),
+            "create": true,
+            "title": "TempoMeter",
+            "bpm": 120.0,
+        }),
+    );
+    assert_eq!(created["status"], "success", "{created}");
+    let bus = dispatcher
+        .domain()
+        .active_project()
+        .expect("活跃工程")
+        .master_bus_track_id;
+    let track_id = dispatcher
+        .domain()
+        .active_project()
+        .expect("活跃工程")
+        .tracks
+        .keys()
+        .find(|id| *id != &bus)
+        .expect("新工程必须有主总线之外的音轨")
+        .to_canonical_string();
+    (path, track_id)
+}
+
+/// 用 `yeban_edit_notes` 造一条提案并合并，断言两步都成功。
+fn propose_and_merge(
+    dispatcher: &mut Dispatcher,
+    auth: &str,
+    track: &str,
+    ops: Value,
+    message: &str,
+) {
+    let created = call(
+        dispatcher,
+        auth,
+        "yeban_edit_notes",
+        json!({ "trackId": track, "ops": ops }),
+    );
+    assert_eq!(created["status"], "success", "{created}");
+    let proposal_id = created["data"]["proposal"]["proposalId"]
+        .as_str()
+        .expect("proposalId")
+        .to_owned();
+    let merged = call(
+        dispatcher,
+        auth,
+        "yeban_merge_proposal",
+        json!({ "proposalId": proposal_id, "commitMessage": message }),
+    );
+    assert_eq!(merged["status"], "success", "{merged}");
+    assert_eq!(merged["data"]["merged"], true, "{merged}");
+}
+
+/// 判据 ①+④：新工程经 `tools/call` 写入**四个映射点** ⇒ 合并后 `tempo_map` /
+/// `time_signature_map` 精确含这些点，且 `yeban_export_midi` 的 SMF 字节里
+/// **conductor 轨（轨 0）**在 tick 3840 / 7680 恰好各含一条 Tempo 与 TimeSignature
+/// 元事件 [MCP-TOOL-003] [ARCH-EXT-002]。
+#[test]
+fn tempo_and_time_signature_points_propagate_from_tools_call_to_exported_smf() {
+    let scratch = Scratch::new("tempo-meter-export");
+    let (mut dispatcher, auth) = dispatcher();
+    let (_path, track_id) = create_fresh_project(&scratch, &mut dispatcher, &auth);
+
+    propose_and_merge(
+        &mut dispatcher,
+        &auth,
+        &track_id,
+        json!([
+            {"kind": "setTempoPoint", "tick": 3840, "bpm": 144.0},
+            {"kind": "setTempoPoint", "tick": 7680, "bpm": 96.0},
+            {"kind": "setTimeSignaturePoint", "tick": 3840, "timeSignature": "3/4"},
+            {"kind": "setTimeSignaturePoint", "tick": 7680, "timeSignature": "6/8"},
+        ]),
+        "merge tempo & meter points",
+    );
+
+    // ---- 活跃工程的两个 map 必须**精确**等于写入的点 ----
+    let project = dispatcher.domain().active_project().expect("活跃工程");
+    let expected_tempo: BTreeMap<u64, f64> =
+        [(3840u64, 144.0f64), (7680, 96.0)].into_iter().collect();
+    assert_eq!(project.tempo_map, expected_tempo, "{project:?}");
+    let expected_meter: BTreeMap<u64, yeban_model::TimeSignature> = [
+        (
+            3840u64,
+            yeban_model::TimeSignature {
+                numerator: 3,
+                denominator: 4,
+            },
+        ),
+        (
+            7680,
+            yeban_model::TimeSignature {
+                numerator: 6,
+                denominator: 8,
+            },
+        ),
+    ]
+    .into_iter()
+    .collect();
+    assert_eq!(project.time_signature_map, expected_meter, "{project:?}");
+
+    // ---- ④ 端到端导出：base64 → 真字节 → `parse_smf` 回读 ----
+    let exported = call(&mut dispatcher, &auth, "yeban_export_midi", json!({}));
+    assert_eq!(exported["status"], "success", "{exported}");
+    assert_eq!(
+        exported["data"]["tempos"], 3,
+        "tick 0 基准 + 2 个变化点: {}",
+        exported["data"]
+    );
+    let bytes = decode_base64(exported["data"]["content"].as_str().expect("content"));
+    let parsed = yeban_midi::midi::parse_smf(&bytes).expect("导出的字节必须能被 SMF 读取面读回");
+
+    // 回读记录：tick 3840 与 7680 各一条**速度 + 拍号同 tick 配对**的记录。
+    let at = |tick: u64| -> &yeban_midi::midi::MidiTempo {
+        parsed
+            .tempos
+            .iter()
+            .find(|record| record.tick == tick)
+            .unwrap_or_else(|| panic!("回读缺 tick {tick}: {:?}", parsed.tempos))
+    };
+    assert_eq!(
+        at(3840).microseconds_per_quarter,
+        yeban_midi::midi::MidiTempo::from_bpm(144.0).microseconds_per_quarter
+    );
+    assert_eq!(
+        (at(3840).numerator, at(3840).denominator_pow2),
+        (Some(3), Some(2))
+    );
+    assert_eq!(
+        at(7680).microseconds_per_quarter,
+        yeban_midi::midi::MidiTempo::from_bpm(96.0).microseconds_per_quarter
+    );
+    assert_eq!(
+        (at(7680).numerator, at(7680).denominator_pow2),
+        (Some(6), Some(3))
+    );
+    assert_eq!(
+        at(0).microseconds_per_quarter,
+        Some(500_000),
+        "tick 0 基准 = 120 BPM"
+    );
+    assert_eq!(
+        (at(0).numerator, at(0).denominator_pow2),
+        (Some(4), Some(2))
+    );
+
+    // ---- conductor 轨必须是**轨 0**，且元事件只出现在那一条 MTrk 里 ----
+    let chunks = yeban_midi::midi::track_chunks(&bytes).expect("chunk 切分");
+    let mtrks: Vec<&yeban_midi::midi::TrackChunk> = chunks
+        .iter()
+        .filter(|chunk| chunk.fourcc == *b"MTrk")
+        .collect();
+    assert!(
+        mtrks.len() >= 2,
+        "SMF 1: conductor + 至少一条音符轨, 实际 {} 条 MTrk",
+        mtrks.len()
+    );
+    let conductor = &bytes[mtrks[0].payload.clone()];
+    let expected_patterns: Vec<Vec<u8>> = vec![
+        ff51_pattern(
+            yeban_midi::midi::MidiTempo::from_bpm(120.0)
+                .microseconds_per_quarter
+                .expect("120 BPM 必须可表达"),
+        ),
+        ff51_pattern(
+            yeban_midi::midi::MidiTempo::from_bpm(144.0)
+                .microseconds_per_quarter
+                .expect("144 BPM 必须可表达"),
+        ),
+        ff51_pattern(
+            yeban_midi::midi::MidiTempo::from_bpm(96.0)
+                .microseconds_per_quarter
+                .expect("96 BPM 必须可表达"),
+        ),
+        ff58_pattern(3, 2),
+        ff58_pattern(6, 3),
+        ff58_pattern(4, 2),
+    ];
+    for pattern in &expected_patterns {
+        assert_eq!(
+            count_needle(conductor, pattern),
+            1,
+            "conductor 轨必须恰好一条 {:?}: {bytes:?}",
+            &pattern[..2.min(pattern.len())]
+        );
+    }
+    for lane in &mtrks[1..] {
+        let payload = &bytes[lane.payload.clone()];
+        assert_eq!(
+            count_needle(payload, &[0xFF, 0x51, 0x03]),
+            0,
+            "音符轨不得写 Tempo 元事件"
+        );
+        assert_eq!(
+            count_needle(payload, &[0xFF, 0x58, 0x04]),
+            0,
+            "音符轨不得写 TimeSignature 元事件"
+        );
+    }
+}
+
+/// 判据 ②（边界防线）：`tick: 0` 在**解析期**就被响亮拒绝 ——
+/// `INVALID_PARAMETER_RANGE` + `reason: "tempoMapZeroTick"`，不建提案、不改工程。
+#[test]
+fn tempo_and_time_signature_points_at_tick_zero_are_rejected_loudly() {
+    let scratch = Scratch::new("tempo-meter-zero");
+    let (mut dispatcher, auth) = dispatcher();
+    let (_path, track_id) = create_fresh_project(&scratch, &mut dispatcher, &auth);
+    let proposals_before = dispatcher.domain().proposal_count();
+    let bytes_before = project_bytes(&dispatcher);
+
+    for (kind, payload) in [
+        ("setTempoPoint", json!({ "tick": 0u64, "bpm": 120.0 })),
+        (
+            "setTimeSignaturePoint",
+            json!({ "tick": 0u64, "timeSignature": "3/4" }),
+        ),
+    ] {
+        let mut op = payload;
+        op["kind"] = Value::from(kind);
+        let refused = call(
+            &mut dispatcher,
+            &auth,
+            "yeban_edit_notes",
+            json!({ "trackId": &track_id, "ops": [op] }),
+        );
+        assert_domain_error(
+            &refused,
+            "INVALID_PARAMETER_RANGE",
+            &format!("`{kind}` 的 tick 0 必须被响亮拒绝"),
+        );
+        assert_eq!(
+            refused["error"]["data"]["reason"], "tempoMapZeroTick",
+            "{refused}"
+        );
+        assert_eq!(refused["error"]["data"]["tick"], 0, "{refused}");
+    }
+
+    assert_eq!(
+        dispatcher.domain().proposal_count(),
+        proposals_before,
+        "被拒绝的形态不得留下提案"
+    );
+    assert_eq!(
+        project_bytes(&dispatcher),
+        bytes_before,
+        "被拒绝的调用不得改动工程"
+    );
+}
+
+/// 判据 ③（删除与撤销）：`bpm: null` / `timeSignature: null` 删除 tick 3840 的点 ⇒
+/// 合并后该点从两个 map 消失（tick 7680 保留）；`yeban_undo` 撤销后**恢复如初**。
+#[test]
+fn tempo_and_time_signature_points_deletion_is_reverted_by_undo() {
+    let scratch = Scratch::new("tempo-meter-undo");
+    let (mut dispatcher, auth) = dispatcher();
+    let (_path, track_id) = create_fresh_project(&scratch, &mut dispatcher, &auth);
+
+    propose_and_merge(
+        &mut dispatcher,
+        &auth,
+        &track_id,
+        json!([
+            {"kind": "setTempoPoint", "tick": 3840, "bpm": 144.0},
+            {"kind": "setTempoPoint", "tick": 7680, "bpm": 96.0},
+            {"kind": "setTimeSignaturePoint", "tick": 3840, "timeSignature": "3/4"},
+            {"kind": "setTimeSignaturePoint", "tick": 7680, "timeSignature": "6/8"},
+        ]),
+        "merge tempo & meter points",
+    );
+
+    // 删除 tick 3840 的两个点（`null` 是删除的唯一拼法）。
+    propose_and_merge(
+        &mut dispatcher,
+        &auth,
+        &track_id,
+        json!([
+            {"kind": "setTempoPoint", "tick": 3840, "bpm": null},
+            {"kind": "setTimeSignaturePoint", "tick": 3840, "timeSignature": null},
+        ]),
+        "delete tick 3840 points",
+    );
+    {
+        let project = dispatcher.domain().active_project().expect("活跃工程");
+        assert_eq!(
+            project.tempo_map,
+            [(7680u64, 96.0f64)]
+                .into_iter()
+                .collect::<BTreeMap<u64, f64>>(),
+            "tick 3840 必须已删除且 7680 保留: {project:?}"
+        );
+        assert_eq!(
+            project
+                .time_signature_map
+                .keys()
+                .copied()
+                .collect::<Vec<u64>>(),
+            vec![7680],
+            "tick 3840 的拍号点必须已删除"
+        );
+    }
+
+    // 撤销删除 ⇒ 两个点逐位恢复。
+    let undone = call(&mut dispatcher, &auth, "yeban_undo", json!({ "steps": 1 }));
+    assert_eq!(undone["status"], "success", "{undone}");
+    let project = dispatcher.domain().active_project().expect("活跃工程");
+    assert_eq!(
+        project.tempo_map,
+        [(3840u64, 144.0f64), (7680, 96.0)]
+            .into_iter()
+            .collect::<BTreeMap<u64, f64>>(),
+        "撤销后速度点必须恢复如初: {project:?}"
+    );
+    assert_eq!(
+        project
+            .time_signature_map
+            .get(&3840)
+            .expect("撤销后 3840 的拍号点"),
+        &yeban_model::TimeSignature {
+            numerator: 3,
+            denominator: 4,
+        }
+    );
+    assert_eq!(
+        project
+            .time_signature_map
+            .get(&7680)
+            .expect("撤销后 7680 的拍号点"),
+        &yeban_model::TimeSignature {
+            numerator: 6,
+            denominator: 8,
+        }
+    );
+}
