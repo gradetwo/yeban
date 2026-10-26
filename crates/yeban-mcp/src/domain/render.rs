@@ -3064,8 +3064,12 @@ fn delta_levels(reference: &[f32], muted: &[f32]) -> Result<(Option<f64>, Option
 }
 
 /// 线性幅度 → dBFS；0 ⇒ `None`（⛔ 不报 `-inf`）。
+///
+/// ⚠ 与 [`crate::domain::render_math::amplitude_dbfs`] 同口径：用 `libm`（纯 Rust）而不是
+/// 宿主 `log10`，否则逐轨贡献读数会变成跨平台假设 [ARCH-DET-001]；本 crate 的生产区
+/// 也因此在 `probe_authenticity` 的超越函数守卫下保持为空。
 fn dbfs(amplitude: f64) -> Option<f64> {
-    (amplitude > 0.0).then(|| 20.0 * amplitude.log10())
+    (amplitude > 0.0).then(|| 20.0 * libm::log10(amplitude))
 }
 
 /// **落盘字节的唯一编码器**：TPDF 抖动 → 24-bit PCM → RIFF/RF64/BW64 容器（+ 可选 `bext`）。
