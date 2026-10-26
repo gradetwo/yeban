@@ -376,15 +376,15 @@ fn the_four_note_forms_are_byte_identical_on_a_midi_clip() {
         ),
         (
             "delete",
-            "ffb678803f200eeb6648816389e053830785a24824559ce004f709d037064889",
+            "e32c6683d5d30ad7af8d6eb28f16d09009d4cc870a37ae6c0616b1202ec7de83",
         ),
         (
             "move",
-            "23e7b64b45097bc14a77e120d939818b6bf967d1418364ba4368c30e5edd3f3f",
+            "f80a93faadcd3705985d3d0b36ec40cc23b5103d78edb6267573e0ff181bb405",
         ),
         (
             "velocity",
-            "46bc085e8ad83b8c6b1934f7577d7907a1b6b208961b732778a03112cc95a167",
+            "2e1732e86b8c384fdf095bc6a0c58992acabe3398d0300901efaa93c73ac0820",
         ),
     ];
     let mut mismatches = Vec::new();

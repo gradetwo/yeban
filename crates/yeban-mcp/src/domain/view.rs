@@ -233,6 +233,8 @@ pub fn project_view(project: &YebanProjectV1, fields: &[String]) -> Result<Value
             None => {
                 if let Some(value) = object.get(selector) {
                     out.insert(selector.clone(), value.clone());
+                } else {
+                    out.insert(selector.clone(), Value::Null);
                 }
             }
             Some((root, leaf)) => {
