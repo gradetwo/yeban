@@ -59,7 +59,8 @@ use std::str::FromStr;
 
 use midly::num::{u4, u7, u15, u24, u28};
 use midly::{
-    Format, Header, MetaMessage, MidiMessage, Smf, Timing, Track, TrackEvent, TrackEventKind,
+    Format, Header, MetaMessage, MidiMessage, PitchBend, Smf, Timing, Track, TrackEvent,
+    TrackEventKind,
 };
 use yeban_model::{EntityId, MidiNote};
 
@@ -360,6 +361,13 @@ enum RawEvent {
         tick: u64,
         text: String,
     },
+    /// ⭐ ADR-0014 D3：通道弯音（`E0`）。`cents` 是音分（±2 半音的默认弯音范围），
+    /// 由音符的 `pitch_bend_curve` 逐点展开；同一通道内的先后由 tick 全序决定。
+    PitchBend {
+        tick: u64,
+        channel: u8,
+        cents: i16,
+    },
     Tempo {
         tick: u64,
         /// tempo map 里的**组号**: 同一条 [`MidiTempo`] 的两个事件共享它 ⇒
@@ -387,6 +395,7 @@ impl RawEvent {
             Self::NoteOn { tick, .. }
             | Self::NoteOff { tick, .. }
             | Self::Lyric { tick, .. }
+            | Self::PitchBend { tick, .. }
             | Self::Tempo { tick, .. }
             | Self::TimeSignature { tick, .. }
             | Self::KeySignature { tick, .. } => *tick,
@@ -398,12 +407,17 @@ impl RawEvent {
     /// 必须给出**全序**, 否则同一 tick 的多个事件会按输入顺序落到文件里,
     /// 让"同一工程两次导出字节不同"。
     ///
-    /// `rank` 的顺序是 **NoteOff (0) < Lyric (1) < NoteOn (2) < tempo map (3)**:
+    /// `rank` 的顺序是
+    /// **NoteOff (0) < Lyric (1) < PitchBend (2) < NoteOn (3) < tempo map (4)**:
     ///
     /// - 歌词在 `NoteOn` **之前**（SMF 的惯例："文本先于它所描述的音符"）——
     ///   但 SMF 只把歌词锚在**时间**上，⛔ 没有"这条歌词属于哪颗音符"的字段;
     /// - 同一 tick 多条歌词按**文本字节序**排（键的最后一元是 `&str`），
     ///   因此和弦上两颗音符各带一个音节时，字节仍只由内容决定;
+    /// - 弯音在 `NoteOn` **之前**（ADR-0014 D3：起点处的曲线点要先设好，音符才以
+    ///   弯音后的音高发声）、在 `NoteOff` 之后（收尾复位不许跑到关音前面）；
+    ///   同 tick 同通道的多条弯音按**音分值**升序排（键的第四元由 `cents` 平移而得），
+    ///   因此字节仍只由内容决定;
     /// - tempo map 的两类事件以 `(组, 组内序)` 排序: 一条记录的 `Tempo` 是组内序 `0`、
     ///   它的拍号是组内序 `1` ⇒ 两者**相邻**, 而回读时"拍号挂到紧邻的前一条
     ///   未配拍号的 tempo"恰好把它配回同一条记录。组号由内容决定
@@ -412,13 +426,21 @@ impl RawEvent {
         match self {
             Self::NoteOff { channel, key, .. } => (0, u32::from(*channel), 0, u32::from(*key), ""),
             Self::Lyric { text, .. } => (1, 0, 0, 0, text.as_str()),
+            Self::PitchBend { channel, cents, .. } => (
+                2,
+                u32::from(*channel),
+                0,
+                // 平移到非负：i16::MIN ⇒ 0，保持音分大小的升序全序。
+                (i32::from(*cents) - i32::from(i16::MIN)) as u32,
+                "",
+            ),
             Self::NoteOn {
                 channel,
                 key,
                 velocity,
                 ..
             } => (
-                2,
+                3,
                 u32::from(*channel),
                 0,
                 (u32::from(*key) << 8) | u32::from(*velocity),
@@ -428,14 +450,14 @@ impl RawEvent {
                 group,
                 microseconds_per_quarter,
                 ..
-            } => (3, *group, 0, *microseconds_per_quarter, ""),
+            } => (4, *group, 0, *microseconds_per_quarter, ""),
             Self::TimeSignature {
                 group,
                 numerator,
                 denominator_pow2,
                 ..
             } => (
-                3,
+                4,
                 *group,
                 1,
                 (u32::from(*numerator) << 8) | u32::from(*denominator_pow2),
@@ -446,7 +468,7 @@ impl RawEvent {
                 is_minor,
                 ..
             } => (
-                3,
+                4,
                 0,
                 2,
                 (((*sharps_flats as u8) as u32) << 8) | if *is_minor { 1 } else { 0 },
@@ -514,6 +536,25 @@ fn track_events(track: &MidiExportTrack) -> Result<Vec<RawEvent>, MidiError> {
                 tick: start,
                 text: text.to_owned(),
             });
+        }
+        // ⭐ ADR-0014 D3：逐点写 `pitch_bend_curve`（音符局部 tick ⇒ 绝对 tick）。
+        // 末点不是 0 音分时在**音符结束处**补一条居中复位，⛔ 不让弯音泄漏到
+        // 同通道的后续音符。
+        if let Some(&(_, last_cents)) = note.pitch_bend_curve.last() {
+            for &(rel_tick, cents) in &note.pitch_bend_curve {
+                events.push(RawEvent::PitchBend {
+                    tick: start.saturating_add(rel_tick),
+                    channel,
+                    cents,
+                });
+            }
+            if last_cents != 0 {
+                events.push(RawEvent::PitchBend {
+                    tick: end,
+                    channel,
+                    cents: 0,
+                });
+            }
         }
         events.push(RawEvent::NoteOn {
             tick: start,
@@ -691,6 +732,16 @@ impl MidiExport {
                     RawEvent::Lyric { text, .. } => {
                         TrackEventKind::Meta(MetaMessage::Lyric(text.as_bytes()))
                     }
+                    // ⭐ ADR-0014 D3：音分 ⇒ `midly` 的**居中** 14-bit 值（0 = 中心）。
+                    // ±2 半音默认范围：1 音分 = 8192/200；整除截断，越界钳位。
+                    RawEvent::PitchBend { channel, cents, .. } => TrackEventKind::Midi {
+                        channel: u4::new(*channel),
+                        message: MidiMessage::PitchBend {
+                            bend: PitchBend::from_int(
+                                (i32::from(*cents) * 8192 / 200).clamp(-8192, 8191) as i16,
+                            ),
+                        },
+                    },
                     RawEvent::Tempo {
                         microseconds_per_quarter,
                         ..
@@ -893,9 +944,9 @@ pub enum MidiAuxEventKind {
     /// `C0` 音色切换。丢掉：`TrackV3::sampler` 是外部采样器**文件路径**，不是 program
     /// number；两者不是一回事。
     ProgramChange,
-    /// `E0` 弯音。模型有 `MidiNote::pitch_bend_curve`，但一条弯音作用于**整个通道上
-    /// 正在发声的所有音符**；把它塞给单颗音符需要一条"归属"规则（单音？全部？重叠时？）
-    /// ⇒ 今天不发明，整类 dropped。
+    /// `E0` 弯音。⭐ ADR-0014 D2：导入侧**有落点** —— 同轨同通道上**恰一颗**发声
+    /// 音符时归属该音符的 `MidiNote::pitch_bend_curve`（与歌词同一条"唯一才归属"
+    /// 原则）；0 颗或多颗（和弦复音共用通道）时无法诚实判定 ⇒ 逐条 dropped。
     PitchBend,
     /// `A0` 复音触后。丢掉：模型没有该字段。
     PolyAftertouch,
@@ -1078,6 +1129,8 @@ pub struct ParsedMidi {
     pub empty_lyrics: usize,
     /// 全部 `FF 59` 调号事件（**文件顺序**）。
     pub key_signatures: Vec<ParsedKeySignature>,
+    /// 全部 `E0` 弯音事件（**文件顺序**）。
+    pub pitch_bends: Vec<ParsedPitchBend>,
 }
 
 /// 回读的一条 `FF 59` 调号事件。
@@ -1089,6 +1142,19 @@ pub struct ParsedKeySignature {
     pub sharps_flats: i8,
     /// 是否为小调（false = Major, true = Minor）。
     pub is_minor: bool,
+}
+
+/// 回读得到的一条 `E0` 弯音事件。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ParsedPitchBend {
+    /// 这条事件所在的 `MTrk` 下标（文件顺序，0 起；⛔ 不是模型的 `EntityId`）。
+    pub track: usize,
+    /// MIDI 通道（0..=15）。
+    pub channel: u8,
+    /// 这条事件在**文件里**的绝对 tick（⛔ 已换算到模型 960 PPQ 之前）。
+    pub tick: u64,
+    /// 弯音深度（音分，±1200 截断）。
+    pub cents: i16,
 }
 
 /// SMF 里的一个 chunk: fourcc 与它在文件里的负载范围。
@@ -1198,6 +1264,7 @@ pub fn parse_smf(bytes: &[u8]) -> Result<ParsedMidi, MidiError> {
     let mut instrument_names = Vec::new();
     let mut program_names = Vec::new();
     let mut key_signatures = Vec::new();
+    let mut pitch_bends = Vec::new();
     let mut end_tick = 0u64;
     for (track_index, track) in smf.tracks.iter().enumerate() {
         let mut tick = 0u64;
@@ -1243,8 +1310,18 @@ pub fn parse_smf(bytes: &[u8]) -> Result<ParsedMidi, MidiError> {
                         MidiMessage::ChannelAftertouch { .. } => {
                             aux_events.record(MidiAuxEventKind::ChannelAftertouch);
                         }
-                        MidiMessage::PitchBend { .. } => {
+                        MidiMessage::PitchBend { bend } => {
                             aux_events.record(MidiAuxEventKind::PitchBend);
+                            // `as_int()` 已是**居中**的 14-bit 值（-8192..=8191，0 = 中心）；
+                            // SMF 弯音默认范围 ±2 半音 ⇒ 换算成音分并截断到 ±1200。
+                            let cents =
+                                (i32::from(bend.as_int()) * 200 / 8192).clamp(-1200, 1200) as i16;
+                            pitch_bends.push(ParsedPitchBend {
+                                track: track_index,
+                                channel,
+                                tick,
+                                cents,
+                            });
                         }
                     }
                 }
@@ -1412,6 +1489,7 @@ pub fn parse_smf(bytes: &[u8]) -> Result<ParsedMidi, MidiError> {
         non_utf8_lyrics,
         empty_lyrics,
         key_signatures,
+        pitch_bends,
     })
 }
 
@@ -1706,6 +1784,17 @@ mod tests {
         assert_eq!(parsed.tracks, 3, "三条 MTrk 必须逐条数进来");
         assert_eq!(parsed.notes.len(), 2, "音符照常回读（不受计数影响）");
         assert_eq!(parsed.lyrics.len(), 1, "歌词照常回读（不进 aux）");
+        // 夹具在首轨 tick 0 有一条 E0 弯音（LSB 0x00 / MSB 0x40 ⇒ 14-bit 原值 8192 = 中心 ⇒ 0 音分）。
+        assert_eq!(
+            parsed.pitch_bends,
+            vec![ParsedPitchBend {
+                track: 0,
+                channel: 0,
+                tick: 0,
+                cents: 0,
+            }],
+            "夹具在首轨 tick 0 有一条 E0 弯音"
+        );
         assert_eq!(parsed.aux_events.count(MidiAuxEventKind::Tempo), 2);
         assert_eq!(parsed.aux_events.count(MidiAuxEventKind::TimeSignature), 2);
         assert_eq!(parsed.aux_events.count(MidiAuxEventKind::TrackName), 3);
@@ -3009,13 +3098,15 @@ mod tests {
                     non_utf8_lyrics: 0,
                     empty_lyrics: 0,
                     key_signatures: Vec::new(),
+                    pitch_bends: Vec::new(),
                 }
             ),
             "ParsedMidi { format: Parallel, ppq: 480, tracks: 0, aux_events: \
              MidiAuxEventCounts { counts: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, \
              0, 0, 0, 0, 0, 0, 0] }, tempos: [], track_names: [], instrument_names: [], \
              program_names: [], markers: [], end_tick: 0, \
-             notes: [], lyrics: [], non_utf8_lyrics: 0, empty_lyrics: 0, key_signatures: [] }"
+             notes: [], lyrics: [], non_utf8_lyrics: 0, empty_lyrics: 0, key_signatures: [], \
+             pitch_bends: [] }"
         );
         assert_eq!(
             format!(

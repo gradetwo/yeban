@@ -87,24 +87,26 @@ use yeban_model::{
 /// 模型的每四分音符 tick 数（960 PPQ）。导入时把文件的 PPQ 换算到它。
 pub const MODEL_PPQ: u64 = 960;
 
-/// ⭐ `#342` / `#350`：今天**有落点**的五类 aux 事件。
+/// ⭐ `#342` / `#350`：今天**有落点**的六类 aux 事件（弯音自 ADR-0014 D2 起有落点）。
 ///
-/// 其余 19 类由 [`MidiImportLosses::is_total_loss`] 钉住"仍全损"。
-pub const STORABLE_KINDS: [MidiAuxEventKind; 5] = [
+/// 其余 18 类由 [`MidiImportLosses::is_total_loss`] 钉住"仍全损"。
+pub const STORABLE_KINDS: [MidiAuxEventKind; 6] = [
     MidiAuxEventKind::Tempo,
     MidiAuxEventKind::TimeSignature,
     MidiAuxEventKind::TrackName,
     MidiAuxEventKind::Marker,
     MidiAuxEventKind::KeySignature,
+    MidiAuxEventKind::PitchBend,
 ];
 
-/// 今天有落点的五类 aux 事件的稳定键名（与 [`STORABLE_KINDS`] 对应）。
+/// 今天有落点的六类 aux 事件的稳定键名（与 [`STORABLE_KINDS`] 对应）。
 pub const STORABLE_KIND_KEYS: &[&str] = &[
     "tempo",
     "time-signature",
     "track-name",
     "marker",
     "key-signature",
+    "pitch-bend",
 ];
 
 /// 导入选项。
@@ -245,7 +247,9 @@ impl MidiLossCount {
 ///   UTF-8 名字才落。
 /// - `FF 06` marker：落点是 `YebanProjectV1::sections` 的 `SectionV3` 区间；
 ///   零长度 / 非 UTF-8 的逐条 `dropped`。
-/// - `FF 59` 调号 / CC / 弯音 / 触后 / Program Change / SysEx / Escape / 其余 meta：
+/// - `E0` 弯音：落点是**唯一发声音符**的 `MidiNote::pitch_bend_curve`
+///   （ADR-0014 D2，与歌词同一条"唯一才归属"原则）；0 颗或多颗发声的条 `dropped`。
+/// - `FF 59` 调号 / CC / 触后 / Program Change / SysEx / Escape / 其余 meta：
 ///   模型或导入映射没有落点 ⇒ **全丢**（原因见 [`Self::aux_reasons`]）。
 /// - 轨分区：全部音符进**同一个**音轨与同一个片段 ⇒ 文件 N 条 `MTrk` 只剩 1 个落点，
 ///   `N-1` 个分区丢失。
@@ -1332,7 +1336,8 @@ fn plan_sections(
 /// 人读，这里给报告/MCP 读。改一边必须改另一边（`aux_reasons` 的值来自这里）。
 fn static_loss_reason(kind: MidiAuxEventKind) -> &'static str {
     match kind {
-        // 五类有落点：它们的动态原因由 helper 给；这里的文本只是兜底（⛔ 不应出现）。
+        // 六类有落点：它们的动态原因由 helper 给；这里的文本只是兜底。
+        // （弯音的兜底即 D2 的真实原因：非唯一发声的条数落不下去。）
         MidiAuxEventKind::Tempo => "tempo not adopted into project",
         MidiAuxEventKind::TimeSignature => "time signature not adopted into project",
         MidiAuxEventKind::TrackName => "track names cannot all land in one TrackV3::name",
@@ -1348,8 +1353,9 @@ fn static_loss_reason(kind: MidiAuxEventKind) -> &'static str {
             "TrackV3::sampler is a sampler file path, not a MIDI program number"
         }
         MidiAuxEventKind::PitchBend => {
-            "a channel pitch bend applies to every sounding note; there is no honest \
-             per-note attribution rule"
+            "a pitch bend whose track and channel have zero or several sounding notes at its \
+             tick cannot be honestly attributed to one note (ADR-0014 D2: only a unique \
+             sounding note adopts it)"
         }
         MidiAuxEventKind::PolyAftertouch => "the model has no poly-aftertouch field",
         MidiAuxEventKind::ChannelAftertouch => "the model has no channel-aftertouch field",
@@ -1404,6 +1410,48 @@ fn attach_lyrics(parsed: &ParsedMidi) -> (BTreeMap<u64, &str>, MidiLyricCounts) 
     (attachable, lyrics)
 }
 
+/// ⭐ ADR-0014 D2：弯音归属计算 —— 与歌词（`#317`）同一条**唯一才归属**原则。
+///
+/// 对每条 `ParsedPitchBend`，在**同轨同通道**上找发声区间
+/// （`start_tick <= tick < end_tick`）覆盖它的音符：
+///
+/// - **恰一颗**（单音旋律线）⇒ 归属该音符，局部坐标
+///   `rel_tick = scale_ticks(bend.tick) - scale_ticks(note.start_tick)`（ADR-0012
+///   的音符局部 tick）；同 tick 后来者覆盖，序列保持 tick 严格升序；
+/// - 0 颗（空档）或 >1 颗（复音共用通道）⇒ 不归属（记入丢失，⛔ 不猜）。
+///
+/// 返回与 `parsed.notes` **下标对齐**的逐音符弯音序列，以及归属成功的事件条数。
+fn attach_pitch_bends(parsed: &ParsedMidi) -> (Vec<Vec<(u64, i16)>>, usize) {
+    let mut curves: Vec<Vec<(u64, i16)>> = vec![Vec::new(); parsed.notes.len()];
+    let mut attached = 0usize;
+    for bend in &parsed.pitch_bends {
+        let sounding: Vec<usize> = parsed
+            .notes
+            .iter()
+            .enumerate()
+            .filter(|(_, note)| {
+                note.track == bend.track
+                    && note.channel == bend.channel
+                    && note.start_tick <= bend.tick
+                    && bend.tick < note.end_tick
+            })
+            .map(|(index, _)| index)
+            .collect();
+        let [index] = sounding.as_slice() else {
+            continue;
+        };
+        let rel_tick = scale_ticks(bend.tick, parsed.ppq)
+            .saturating_sub(scale_ticks(parsed.notes[*index].start_tick, parsed.ppq));
+        let curve = &mut curves[*index];
+        match curve.binary_search_by_key(&rel_tick, |&(tick, _)| tick) {
+            Ok(position) => curve[position].1 = bend.cents,
+            Err(position) => curve.insert(position, (rel_tick, bend.cents)),
+        }
+        attached += 1;
+    }
+    (curves, attached)
+}
+
 /// 丢失统计计算（按类汇总 `aux_events` 及通道/力度损失）。
 #[allow(clippy::too_many_arguments)]
 fn count_losses(
@@ -1415,6 +1463,7 @@ fn count_losses(
     key_signature: &ScalarAdoption,
     marker: (usize, Option<String>),
     track_partitions_dropped: usize,
+    pitch_bends_attached: usize,
 ) -> MidiImportLosses {
     let (marker_dropped, marker_reason) = marker;
     let mut aux_events: BTreeMap<MidiAuxEventKind, MidiLossCount> = BTreeMap::new();
@@ -1429,6 +1478,9 @@ fn count_losses(
         let read = parsed.aux_events.count(kind);
         let (dropped, reason) = if kind == MidiAuxEventKind::Marker {
             (marker_dropped, marker_reason.clone())
+        } else if kind == MidiAuxEventKind::PitchBend {
+            // ⭐ ADR-0014 D2：唯一发声归属的弯音进了音符，其余报丢（read == attached + dropped）。
+            (read.saturating_sub(pitch_bends_attached), None)
         } else if let Some((_, adoption)) = stored.iter().find(|(stored, _)| *stored == kind) {
             (adoption.dropped, adoption.reason.clone())
         } else {
@@ -1530,6 +1582,8 @@ pub fn plan_midi_import(
     let (dest_track_id, dest_clip_id) = destination(project, options)?;
 
     let (attachable, lyrics) = attach_lyrics(parsed);
+    // ⭐ ADR-0014 D2：弯音的逐音符归属（唯一发声才归属）。
+    let (bend_curves, bends_attached) = attach_pitch_bends(parsed);
 
     let note_tracks: Vec<usize> = {
         let mut set = BTreeSet::new();
@@ -1617,7 +1671,7 @@ pub fn plan_midi_import(
         }
     }
 
-    ops.extend(parsed.notes.iter().map(|note| {
+    ops.extend(parsed.notes.iter().enumerate().map(|(note_index, note)| {
         let (target_track_id, target_clip_id) = track_destinations
             .get(&note.track)
             .copied()
@@ -1638,6 +1692,7 @@ pub fn plan_midi_import(
         if let Some(text) = attachable.get(&note.start_tick) {
             model_note.syllable = Some((*text).to_owned());
         }
+        model_note.pitch_bend_curve = bend_curves[note_index].clone();
         Op::AddNote {
             track_id: target_track_id,
             clip_id: target_clip_id,
@@ -1699,6 +1754,7 @@ pub fn plan_midi_import(
         &key_signature,
         (marker_dropped, marker_reason),
         track_partitions_dropped,
+        bends_attached,
     );
     debug_assert!(
         losses.is_consistent(),
@@ -1845,6 +1901,7 @@ pub mod tests {
             aux_events: MidiAuxEventCounts::default(),
             tempos: Vec::<MidiTempo>::new(),
             key_signatures: Vec::new(),
+            pitch_bends: Vec::new(),
             track_names: Vec::new(),
             instrument_names: Vec::new(),
             program_names: Vec::new(),
@@ -1969,8 +2026,8 @@ pub mod tests {
     /// `STORABLE_KINDS` 与 `STORABLE_KIND_KEYS` 的一致性契约。
     #[test]
     fn storable_kinds_consistency() {
-        assert_eq!(STORABLE_KINDS.len(), 5);
-        assert_eq!(STORABLE_KIND_KEYS.len(), 5);
+        assert_eq!(STORABLE_KINDS.len(), 6);
+        assert_eq!(STORABLE_KIND_KEYS.len(), 6);
         for (kind, &key) in STORABLE_KINDS.iter().zip(STORABLE_KIND_KEYS) {
             assert_eq!(kind.key(), key);
         }
@@ -2209,6 +2266,128 @@ pub mod tests {
             plan.lyrics.read,
             plan.lyrics.attached + plan.lyrics.dropped,
             "恒等式必须逐字成立"
+        );
+    }
+
+    /// 一条首轨首通道的弯音事件夹具（ADR-0014 D2 判据专用）。
+    fn bend(tick: u64, cents: i16) -> crate::midi::ParsedPitchBend {
+        crate::midi::ParsedPitchBend {
+            track: 0,
+            channel: 0,
+            tick,
+            cents,
+        }
+    }
+
+    /// 把 `AddNote` 折成 `(起始 tick, 弯音曲线)` 并按起点排序。
+    fn bend_curves(plan: &MidiImportPlan) -> Vec<(u64, Vec<(u64, i16)>)> {
+        let mut rows: Vec<(u64, Vec<(u64, i16)>)> = plan
+            .ops
+            .iter()
+            .filter_map(|op| match op {
+                Op::AddNote { note, .. } => Some((note.start_tick, note.pitch_bend_curve.clone())),
+                _ => None,
+            })
+            .collect();
+        rows.sort_by_key(|row| row.0);
+        rows
+    }
+
+    /// ⭐ ADR-0014 D2 判据 a（单音归属）：同轨同通道**不重叠**的音符序列，每条弯音
+    /// 恰好落进一颗音符 ⇒ `rel_tick = scale_ticks(bend) - scale_ticks(note.start)`
+    /// 逐点挂进 `pitch_bend_curve`（480 PPQ ⇒ tick 全部乘 2），`dropped == 0`。
+    #[test]
+    fn a_pitch_bend_over_a_unique_sounding_note_attaches_with_note_local_ticks() {
+        let project = yeban_model::samples::filled_project();
+        let mut parsed = parsed(480, vec![note(60, 100, 0, 480), note(64, 100, 480, 960)]);
+        parsed.pitch_bends = vec![
+            bend(0, 120),    // 第一颗：rel 0*2 = 0
+            bend(120, 200),  // 第一颗：rel (240-0) = 240
+            bend(480, 800),  // 第二颗起点（第一颗 end=480 **不含**）：rel 0
+            bend(720, -400), // 第二颗：rel (1440-960) = 480
+        ];
+        let bends = parsed.pitch_bends.len();
+        let parsed = recording(parsed, MidiAuxEventKind::PitchBend, bends);
+        let plan =
+            plan_midi_import(&project, &parsed, &MidiImportOptions::default()).expect("必须有目标");
+        assert_eq!(
+            bend_curves(&plan),
+            vec![
+                (0, vec![(0, 120), (240, 200)]),
+                (960, vec![(0, 800), (480, -400)]),
+            ],
+            "弯音必须挂到唯一发声的那颗音符上，坐标是音符局部 tick"
+        );
+        assert_eq!(
+            plan.losses.aux_events[&MidiAuxEventKind::PitchBend],
+            MidiLossCount {
+                read: 4,
+                dropped: 0,
+            },
+            "全部归属 ⇒ 一条不丢"
+        );
+        assert!(
+            !plan
+                .losses
+                .aux_reasons
+                .contains_key(&MidiAuxEventKind::PitchBend),
+            "没丢的类别不许编原因"
+        );
+    }
+
+    /// ⭐ ADR-0014 D2 判据 b（空档不归属）：弯音 tick 不在任何发声区间 ⇒ 不归属，
+    /// 逐条计入 `dropped`，原因用静态兜底文案。
+    #[test]
+    fn a_pitch_bend_in_a_gap_between_notes_is_dropped() {
+        let project = yeban_model::samples::filled_project();
+        let mut parsed = parsed(960, vec![note(60, 100, 0, 480)]);
+        parsed.pitch_bends = vec![bend(600, 50)]; // 600 在第一颗 end=480 之后
+        let bends = parsed.pitch_bends.len();
+        let parsed = recording(parsed, MidiAuxEventKind::PitchBend, bends);
+        let plan =
+            plan_midi_import(&project, &parsed, &MidiImportOptions::default()).expect("必须有目标");
+        assert_eq!(
+            bend_curves(&plan),
+            vec![(0, Vec::new())],
+            "空档弯音不许挂到任何音符上"
+        );
+        assert_eq!(
+            plan.losses.aux_events[&MidiAuxEventKind::PitchBend],
+            MidiLossCount {
+                read: 1,
+                dropped: 1,
+            },
+            "read == attached + dropped（attached = 0）"
+        );
+        assert_eq!(
+            plan.losses.aux_reasons[&MidiAuxEventKind::PitchBend],
+            static_loss_reason(MidiAuxEventKind::PitchBend),
+        );
+    }
+
+    /// ⭐ ADR-0014 D2 判据 c（复音不归属）：同通道同时发声 **2** 颗 ⇒ 弯音命中多颗
+    /// ⇒ ⛔ 不复制给两颗、⛔ 不挑一颗，整条计入 `dropped`。
+    #[test]
+    fn a_pitch_bend_over_several_sounding_notes_is_dropped_not_copied() {
+        let project = yeban_model::samples::filled_project();
+        let mut parsed = parsed(960, vec![note(60, 100, 0, 960), note(64, 100, 240, 720)]);
+        parsed.pitch_bends = vec![bend(480, 100)]; // 两颗音符都在发声
+        let bends = parsed.pitch_bends.len();
+        let parsed = recording(parsed, MidiAuxEventKind::PitchBend, bends);
+        let plan =
+            plan_midi_import(&project, &parsed, &MidiImportOptions::default()).expect("必须有目标");
+        assert_eq!(
+            bend_curves(&plan),
+            vec![(0, Vec::new()), (240, Vec::new())],
+            "复音弯音一条都不许挂"
+        );
+        assert_eq!(
+            plan.losses.aux_events[&MidiAuxEventKind::PitchBend],
+            MidiLossCount {
+                read: 1,
+                dropped: 1,
+            },
+            "read == attached + dropped（attached = 0）"
         );
     }
 
@@ -2619,6 +2798,7 @@ pub mod metadata_adoption_tests {
             aux_events: crate::midi::MidiAuxEventCounts::default(),
             tempos: Vec::<MidiTempo>::new(),
             key_signatures: Vec::new(),
+            pitch_bends: Vec::new(),
             track_names: Vec::new(),
             instrument_names: Vec::new(),
             program_names: Vec::new(),
@@ -3379,6 +3559,7 @@ pub mod metadata_adoption_tests {
             aux_events,
             tempos: Vec::new(),
             key_signatures: Vec::new(),
+            pitch_bends: Vec::new(),
             track_names: vec![
                 track_name(1, 0, Some("Lead Synth")),
                 track_name(2, 0, Some("Sub Bass")),
@@ -3500,6 +3681,7 @@ pub mod metadata_adoption_tests {
             aux_events,
             tempos: Vec::new(),
             key_signatures: Vec::new(),
+            pitch_bends: Vec::new(),
             track_names: vec![
                 track_name(1, 0, Some("Lead Synth")),
                 track_name(2, 0, Some("Sub Bass")),
@@ -3575,6 +3757,7 @@ pub mod metadata_adoption_tests {
             aux_events: crate::midi::MidiAuxEventCounts::default(),
             tempos: Vec::new(),
             key_signatures: Vec::new(),
+            pitch_bends: Vec::new(),
             track_names: Vec::new(), // 无轨名元事件
             instrument_names: Vec::new(),
             program_names: Vec::new(),
@@ -3649,6 +3832,7 @@ pub mod metadata_adoption_tests {
             aux_events,
             tempos: Vec::new(),
             key_signatures: Vec::new(),
+            pitch_bends: Vec::new(),
             track_names: vec![
                 text_meta(3, 0, Some("Lead")),
                 text_meta(5, 0, Some("")), // 空名 ⇒ 无效（D2）
