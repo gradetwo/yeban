@@ -11190,5 +11190,33 @@ $ python3 scripts/gates/check_phase_status.py   # 退出 0
   - `cargo fmt --check`: 格式化通过。
   - `python3 scripts/guards/policy_check.py`: 18 项全部通过。
 
+---
+
+## 2026-10-27：yeban_import_midi 多轨拆分新建音轨结构化回报闭环落地
+
+- **需求规范 ID**: `[MCP-TOOL-EXT-IMPORT-MIDI]` `[ARCH-EXT-002]`
+- **实施工作线**: `line/mcp-import-created-tracks` (`3ae8e782`)，经 subagent `qoderclicn` (`Qwen3.8-Flash`) 自主研发与本地轻量门禁通过后由集成者落地。
+- **背景与目标**:
+  - 在进行多轨 MIDI 文件导入（`splitTracks: true`）时，`yeban-midi` 会规划为后续音轨自动创建新音轨、路由节点、新片段及摆放；然而原先 `yeban_import_midi` 的工具响应 `data` 仅回报首个目标音轨的 `trackId` 与 `clipId`，未能将拆轨后额外创建的音轨列表回报给调用方，导致 AI Agent 创作编曲时难以直接寻址新建音轨。
+  - 依据 `[MCP-TOOL-EXT-IMPORT-MIDI]` 与 `[ARCH-EXT-002]`，在规划产物中精准识别 `Op::AddTrack` 与对应的 `Op::AddClipPlacement`，将新建音轨的 `trackId`、`name`、`clipId` 结构化聚合为 `createdTracks` 并回显在响应中；若未拆轨或单轨导入则如实回报空数组 `[]`。
+- **实施**:
+  - `crates/yeban-mcp/src/domain/import_midi.rs`:
+    - 定义结构体 `CreatedTrackInfo { track_id, track_name, clip_id }`。
+    - `MidiImport` 新增字段 `created_tracks: Vec<CreatedTrackInfo>`。
+    - `plan()` 中遍历 `plan.ops` 关联 `Op::AddTrack` 与 `Op::AddClipPlacement`，收集所有拆分新建音轨。
+    - `describe()` 响应 JSON 中新增 `createdTracks` 数组映射（含 `trackId`、`name`、`clipId` 字符串字段）。
+  - `crates/yeban-mcp/src/tools.rs`:
+    - 同步更新 `yeban_import_midi` 的工具摘要说明，明确记录 `createdTracks` 的语义与结构。
+  - `crates/yeban-mcp/tests/import_midi_tool.rs`:
+    - `test_import_midi_multitrack_split_vs_no_split` 中新增断言：
+      - 拆分导入时正向断言 `createdTracks` 数组长度为 1，且 `trackId`、`clipId`、`name` 均为有效字符串（`name == "Track Two"`）。
+      - `splitTracks: false` 时正向断言 `createdTracks == []`。
+- **验证**:
+  - `cargo fmt --check`: 格式化通过。
+  - `python3 scripts/guards/policy_check.py`: 18 项全部通过。
+  - `cargo-local.sh test -p yeban-mcp --test import_midi_tool`: 7 passed, 0 failed.
+  - `cargo-local.sh clippy -p yeban-mcp --all-targets -- -D warnings`: 零告警通过。
+
+
 
 
