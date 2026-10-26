@@ -1,6 +1,6 @@
 //! 判据（任务单 `#129`，无头腿）：**"新建工程"的落盘部分真的写出
-//! 1148 B／0 音轨 ＋ 1 主总线 ＋ 一个真实的创建时刻**（`#161` 前是 884 B／0 轨，
-//! `#215` 前是 1136 B／创建时刻 `0`）。
+//! 1187 B／0 音轨 ＋ 1 主总线 ＋ 一个真实的创建时刻**（`#161` 前是 884 B／0 轨，
+//! `#215` 前是 1136 B／创建时刻 `0`，`#349` 补齐 tempo_map/time_signature_map 后为 1187 B）。
 //!
 //! ## 这个文件为什么存在（以及它**不**测什么）
 //!
@@ -62,7 +62,7 @@ impl Drop for Scratch {
 }
 
 /// ⭐ 本单的**核心读数**：`host::create_new_project_file` 写出的文件是
-/// **1148 字节 / 0 音轨 ＋ 1 主总线**，且它与 CLI `--project-sample empty --save-as <path>`
+/// **1187 字节 / 0 音轨 ＋ 1 主总线**，且它与 CLI `--project-sample empty --save-as <path>`
 /// 是同一条落点（`save::save_archive_file` + `samples::default_project()`）。
 ///
 /// ⚠ `#161` 重钉（前 → 后 ＋ 原因）：884 B → **1136 B**。原因 = `default_project()`
@@ -74,8 +74,11 @@ impl Drop for Scratch {
 /// 现在写真实创建时刻：`"created_at_unix_ms":0`（1 位）→ 13 位 UNIX 毫秒。
 /// `modified_at_unix_ms` 仍是 `0`（本单**不**改"保存时刷新修改时刻"那条裁决）
 /// ⇒ 只差这一个数字的 12 个字符。同一份**文件**导出两次仍逐字节相同。
+///
+/// ⚠ `#349` 重钉（前 → 后 ＋ 原因）：**1148 B → 1187 B**（`+39 B`）。原因 = 根 AST
+/// 显式引入 `tempo_map: {}` 与 `time_signature_map: {}`。
 #[test]
-fn create_new_project_file_writes_the_1148_byte_master_bus_container() {
+fn create_new_project_file_writes_the_1187_byte_master_bus_container() {
     let scratch = Scratch::new();
     let path = scratch.join("brand-new.yeban");
 
@@ -89,12 +92,12 @@ fn create_new_project_file_writes_the_1148_byte_master_bus_container() {
         report.temp_name,
     ));
 
-    // ---- ② 字节数：1148（与 CLI `--save-as` 的产物同一条落点；`#161` 前是 884，
-    //          `#215` 前是 1136）----
+    // ---- ② 字节数：1187（与 CLI `--save-as` 的产物同一条落点；`#161` 前是 884，
+    //          `#215` 前是 1136，`#349` 前是 1148）----
     assert_eq!(
-        size, 1148,
-        "新建工程的容器必须恰是 1148 字节（`#161`：自带主总线 → 1136；`#215`：\
-         创建时刻 0 → 13 位毫秒数 ⇒ +12 B）；\
+        size, 1187,
+        "新建工程的容器必须恰是 1187 字节（`#161`：自带主总线 → 1136；`#215`：\
+         创建时刻 0 → 13 位毫秒数 ⇒ +12 B；`#349`：tempo_map/time_signature_map ⇒ +39 B）；\
          实得 {size} 字节 ⇒ 空工程对象 / 图谱 / 资产池 / 创建时刻有一项变了"
     );
     assert_eq!(
@@ -165,7 +168,7 @@ fn create_new_project_file_writes_the_1148_byte_master_bus_container() {
     assert_eq!(
         project, expected,
         "写出去又读回来的工程必须**除创建时刻外逐字段**等于 `samples::default_project()` \
-         （它就是 1148 B／0 音轨 ＋ 1 主总线那条的模型侧对象）；\
+         （它就是 1187 B／0 音轨 ＋ 1 主总线那条的模型侧对象）；\
          实得 created_at={}",
         project.metadata.created_at_unix_ms
     );

@@ -529,11 +529,11 @@ fn export_import_export_round_trips_every_note_item_by_item() {
         );
     }
 
-    // ── ② 损耗：导入的**副本**丢掉轨归属（堆在落点轨），但音符**通道完整保留** ──
+    // ── ② 损耗：导入的**副本**按轨拆分保留（每个非主总线轨道独立落盘），音符**通道完整保留** ──
     assert_eq!(
         track_chunks(&bytes2).expect("chunk").len(),
-        4,
-        "两条轨都还有音符 ⇒ 仍是 MThd + conductor + 2 条 MTrk"
+        5,
+        "两条轨都还有音符 + 导入拆分新轨 ⇒ 仍是 MThd + conductor + 3 条 MTrk"
     );
     assert_eq!(
         n2.iter().filter(|note| note.0 == 1).count(),
@@ -1700,7 +1700,7 @@ fn the_import_reports_every_aux_event_kind_as_read_and_dropped() {
         ("empty", "0"),
         ("format", "1"),
         ("file-tracks", "3"),
-        ("track-partitions-dropped", "2"),
+        ("track-partitions-dropped", "0"),
         ("channels", "2"),
         ("note-channel-read", "5"),
         ("note-channel-dropped", "0"),

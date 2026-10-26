@@ -1,6 +1,6 @@
 //! 判据（任务单 `#129`，界面腿）：GUI 里「打开工程」**旁边**有一个「新建工程」入口，
-//! 点下去 ⇒ 问一次保存对话框 ⇒ 落一个 **1148 B／0 音轨 ＋ 1 主总线** 的 `.yeban`
-//! （`#215`：创建时刻已写进文件；`#161` 前是 884 B、`#215` 前是 1136 B）
+//! 点下去 ⇒ 问一次保存对话框 ⇒ 落一个 **1187 B／0 音轨 ＋ 1 主总线** 的 `.yeban`
+//! （`#215`：创建时刻已写进文件；`#161` 前是 884 B、`#215` 前是 1136 B，`#349` 补齐 tempo_map/time_signature_map 后为 1187 B）
 //! ⇒ **就地换成新工程**（视图清空 / 标题目标路径跟着走）；取消不动一位；
 //! **没有对话框** ⇒ 如实报错。
 //!
@@ -29,7 +29,7 @@
 //! - `.slint` 的 `accessible-action-default` / `TouchArea.clicked` 不调 `root.new-project()`
 //!   （**断开入口**）⇒ 对话框一次没被问 ⇒ 正向腿红；
 //! - `host::wire_new_project` 不接回调 / 不写 `module-status` ⇒ 同上；
-//! - 落盘改成 `filled_project()`（3 轨）⇒ 1148 B / `tracks=0` 两条红；
+//! - 落盘改成 `filled_project()`（3 轨）⇒ 1187 B / `tracks=0` 两条红；
 //! - **没有对话框**那一支改成静默 `return` ⇒ 反向腿红（回执为空）；
 //! - 新建后**不换工程**（只写文件）⇒ 指纹 / 行数 / `after` 三条红。
 //!
@@ -382,7 +382,7 @@ fn the_gui_new_project_entry_writes_an_empty_container_and_swaps_it_in() {
     );
 
     // =====================================================================
-    // 判据 ⑤（正向腿）：点一下 ⇒ 问一次对话框 ⇒ **1148 B** 落盘
+    // 判据 ⑤（正向腿）：点一下 ⇒ 问一次对话框 ⇒ **1187 B** 落盘
     // ⇒ **换成 0 音轨 ＋ 1 主总线的新工程**
     // =====================================================================
     //
@@ -441,17 +441,18 @@ fn the_gui_new_project_entry_writes_an_empty_container_and_swaps_it_in() {
         window.get_module_status_succeeded(),
         "界面上的新建必须成功: {receipt}"
     );
-    // ② 落盘：**1148 B**（无后缀的落点被补成 `.yeban`；`#161` 前是 884 B，
-    //    `#215` 前是 1136 B —— 创建时刻从 `0` 变成 13 位毫秒数 ⇒ `+12 B`）。
+    // ② 落盘：**1187 B**（无后缀的落点被补成 `.yeban`；`#161` 前是 884 B，
+    //    `#215` 前是 1136 B —— 创建时刻从 `0` 变成 13 位毫秒数 ⇒ `+12 B`；
+    //    `#349` 补齐 tempo_map/time_signature_map 后为 1187 B）。
     assert!(
         final_path.exists(),
         "⛔ 新建必须写出 `{}`（用户敲的 `brand-new` 必须被补成 `.yeban`）",
         final_path.display()
     );
     assert_eq!(
-        size, 1148,
-        "新建工程的容器必须恰是 1148 字节（`#161`：自带主总线 → 1136；\
-         `#215`：创建时刻不再是 `0` ⇒ +12 B）；实得 {size} 字节"
+        size, 1187,
+        "新建工程的容器必须恰是 1187 字节（`#161`：自带主总线 → 1136；\
+         `#215`：创建时刻不再是 `0` ⇒ +12 B；`#349`：tempo_map/time_signature_map ⇒ +39 B）；实得 {size} 字节"
     );
     // ③ 回执：成功的字段可读（`tracks` 是**回读**界面行数，不是回显入参）。
     assert!(receipt.contains("outcome=ok"), "{receipt}");
@@ -459,7 +460,7 @@ fn the_gui_new_project_entry_writes_an_empty_container_and_swaps_it_in() {
         receipt.contains(&format!("path={}", final_path.display())),
         "{receipt}"
     );
-    assert!(receipt.contains("bytes=1148"), "{receipt}");
+    assert!(receipt.contains("bytes=1187"), "{receipt}");
     assert!(receipt.contains("tracks=0"), "{receipt}");
     // ④ **换成新工程**：端口里的工程 = `default_project()` ＋ 同一个创建时刻
     //    （指纹逐字节相等），工程里 0 条音轨 ＋ 1 条主总线；界面音轨行 0 行。
