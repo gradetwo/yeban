@@ -1035,7 +1035,7 @@ pub struct ParsedTrackName {
 /// ## 每一类今天有没有落点（`#342` 实测，⛔ 不再用"值一样就不算丢"当判据）
 ///
 /// 判据是"导入路径**有没有把它写进工程**"。`yeban-midi` 的 `plan_midi_import` 今天
-/// 能落地的是八类（[`crate::import::STORABLE_KINDS`]），前四类都要求文件**只表达一个值**：
+/// 能落地的是十类（[`crate::import::STORABLE_KINDS`]）：
 ///
 /// - [`Self::Tempo`] → `project.bpm`（`f64` **单标量**）。只有"唯一条生效 tempo 且
 ///   在 tick 0"能落；**tempo map 无处可住** ⇒ 多条时整类报成 `dropped` 并列出全部值。
@@ -1053,7 +1053,11 @@ pub struct ParsedTrackName {
 /// - [`Self::Copyright`] → `project.author`（⭐ [ARCH-EXT-002]：仅当导入**空工程**
 ///   且 `project.author` 为空时采纳 conductor 轨（第 0 轨）上唯一一条有效版权文本；
 ///   其余情形逐条 `dropped`）。
-/// - 其余 16 类：模型**没有**对应字段或没有映射规则 ⇒ 今天**全部**是 dropped。
+/// - [`Self::InstrumentName`] → 多轨拆分新建音轨的 `TrackV3::name`（⭐ ADR-0013 D1/D2/D3：
+///   当前轨无有效 TrackName 时回退采纳唯一有效 InstrumentName；未采纳逐条 `dropped`）。
+/// - [`Self::ProgramName`] → 多轨拆分新建音轨的 `TrackV3::name`（⭐ ADR-0013 D1/D2/D3：
+///   当前轨无有效 TrackName 与 InstrumentName 时回退采纳唯一有效 ProgramName；未采纳逐条 `dropped`）。
+/// - 其余 14 类：模型**没有**对应字段或没有映射规则 ⇒ 今天**全部**是 dropped。
 ///
 /// ⚠ **"值一样"不等于"没丢"**：`tempo` 就算数值恰好等于工程 `bpm`，只要文件不能
 /// 表达成"唯一条 tick 0 tempo"，它仍是丢。
@@ -1102,14 +1106,16 @@ pub enum MidiAuxEventKind {
     /// 导入**空工程**且 `project.author` 为空时采纳为 `project.author`（该条记入
     /// attached，不进 dropped）；其余情形逐条 `dropped`。
     Copyright,
-    /// `FF 04` 乐器名。丢掉：`TrackV3::sampler` 是路径；乐器名没有承载。
+    /// `FF 04` 乐器名。⭐ ADR-0013 D1/D2/D3：多轨拆分时若该轨无有效轨名，回退采纳为音轨名
+    /// （已采纳记入落地）；其余情形逐条 `dropped`。
     InstrumentName,
     /// `FF 00` 轨号。丢掉：模型没有该字段。
     TrackNumber,
     /// `FF 07` cue point。丢掉：cue 是混音提示点，与 `SectionV3`（曲式区间）语义不同，
     /// 且模型没有 cue 实体。
     CuePoint,
-    /// `FF 08` 音色名。丢掉：模型没有该字段。
+    /// `FF 08` 音色名。⭐ ADR-0013 D1/D2/D3：多轨拆分时若该轨无有效轨名与乐器名，回退采纳为音轨名
+    /// （已采纳记入落地）；其余情形逐条 `dropped`。
     ProgramName,
     /// `FF 09` 设备名。丢掉：模型没有该字段。
     DeviceName,

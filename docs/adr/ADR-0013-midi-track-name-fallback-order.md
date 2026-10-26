@@ -1,6 +1,6 @@
 # ADR-0013 — 标准 MIDI 文件（SMF）多轨导入音轨名回退机制与损失读数
 
-- **状态**: **Proposed**
+- **状态**: **Approved** (经 2026-10-25 常设授权裁决并完全落地 D1/D2/D3)
 - **决定者**: 人类负责人（根据 `AGENTS.md` §5.7 规范缺口裁决原则）
 - **关联**: `[ARCH-EXT-002]`（MIDI 互操作与导入规范）；`crates/yeban-midi/src/midi.rs`（SMF 解析器）；`crates/yeban-midi/src/import.rs`（多轨拆分规划器 `plan_midi_import`）；`docs/ledger/handover-latest.md` §0.5.8 优先级 7；
 - **日期**: 2026-10-26

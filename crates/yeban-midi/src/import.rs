@@ -70,7 +70,7 @@
 //!    - `FF 03` 导体轨名（⛔ 默认名 "Yeban Conductor"）/ 回退 `FF 01` 文本 →
 //!      `project.title`（⭐ [ARCH-EXT-002]）：同样要求"工程无内容 ∧ title 为空 ∧
 //!      唯一有效文本"；它**不改**任何 aux 类别的 read/dropped 口径。
-//! 8. **其余 16 类只报读数、⛔ 不新增支持**（`#318`）：[`ParsedMidi::aux_events`] 把
+//! 8. **其余 14 类只报读数、⛔ 不新增支持**（`#318`）：[`ParsedMidi::aux_events`] 把
 //!    24 类具名事件逐一计数，本文件逐类给出 `read` / `dropped`；无落点的类
 //!    `dropped == read`。报告字段：`format=` / `file-tracks=` /
 //!    `track-partitions-dropped=` / `channels=`（上下文，总是打印）＋ 每类
@@ -94,12 +94,12 @@ use yeban_model::{
 /// 模型的每四分音符 tick 数（960 PPQ）。导入时把文件的 PPQ 换算到它。
 pub const MODEL_PPQ: u64 = 960;
 
-/// ⭐ `#342` / `#350`：今天**有落点**的八类 aux 事件（弯音自 ADR-0014 D2 起有落点；
+/// ⭐ `#342` / `#350`：今天**有落点**的十类 aux 事件（弯音自 ADR-0014 D2 起有落点；
 /// 控制器自 ADR-0015 D2 起 CC 7 / CC 10 有落点；版权自 [ARCH-EXT-002] 起可进
-/// `project.author`）。
+/// `project.author`；乐器名 / 程序名自 ADR-0013 D3 起可作拆分新轨的名字）。
 ///
-/// 其余 16 类由 [`MidiImportLosses::is_total_loss`] 钉住"仍全损"。
-pub const STORABLE_KINDS: [MidiAuxEventKind; 8] = [
+/// 其余 14 类由 [`MidiImportLosses::is_total_loss`] 钉住"仍全损"。
+pub const STORABLE_KINDS: [MidiAuxEventKind; 10] = [
     MidiAuxEventKind::Tempo,
     MidiAuxEventKind::TimeSignature,
     MidiAuxEventKind::TrackName,
@@ -108,9 +108,11 @@ pub const STORABLE_KINDS: [MidiAuxEventKind; 8] = [
     MidiAuxEventKind::PitchBend,
     MidiAuxEventKind::ControlChange,
     MidiAuxEventKind::Copyright,
+    MidiAuxEventKind::InstrumentName,
+    MidiAuxEventKind::ProgramName,
 ];
 
-/// 今天有落点的八类 aux 事件的稳定键名（与 [`STORABLE_KINDS`] 对应）。
+/// 今天有落点的十类 aux 事件的稳定键名（与 [`STORABLE_KINDS`] 对应）。
 pub const STORABLE_KIND_KEYS: &[&str] = &[
     "tempo",
     "time-signature",
@@ -120,6 +122,8 @@ pub const STORABLE_KIND_KEYS: &[&str] = &[
     "pitch-bend",
     "control-change",
     "copyright",
+    "instrument-name",
+    "program-name",
 ];
 
 /// ⭐ ADR-0015 D2：通道音量控制器号 → `AutomationTarget::TrackVolume`。
@@ -254,8 +258,8 @@ impl core::fmt::Display for MidiLyricCounts {
 /// `read` 是文件里读到的条数（判据另按字节独立数一遍做控制臂）；
 /// `dropped` 是导入路径**没有**落进工程的条数。
 ///
-/// ⭐ `#342` 起有落点的**八类**（tempo / 拍号 / 轨名 / marker / 调号 / 弯音 / 控制器 /
-/// 版权，见 [`STORABLE_KINDS`]）**可能** `dropped < read`；其余 16 类与音符通道 / 释放力度
+/// ⭐ `#342` 起有落点的**十类**（tempo / 拍号 / 轨名 / marker / 调号 / 弯音 / 控制器 /
+/// 版权 / 乐器名 / 程序名，见 [`STORABLE_KINDS`]）**可能** `dropped < read`；其余 14 类与音符通道 / 释放力度
 /// 仍是 `dropped == read`。
 ///
 /// ⚠ **"值一样"不等于"没丢"**：判据是"**有没有被写进工程**"，⛔ 不是"数值一不一样"。
@@ -322,9 +326,9 @@ pub struct MidiImportLosses {
     pub note_off_velocity_values: MidiLossCount,
     /// 24 类 aux 事件，逐类 read/dropped。
     ///
-    /// ⭐ `#342` / ADR-0014 / ADR-0015 / [ARCH-EXT-002]：有落点的**八类**（tempo / 拍号 /
-    /// 轨名 / marker / 调号 / 弯音 / 控制器 / 版权）**可能** `dropped < read`（部分内容真的进了工程）；
-    /// 其余 16 类仍是全损。
+    /// ⭐ `#342` / ADR-0014 / ADR-0015 / [ARCH-EXT-002] / ADR-0013：有落点的**十类**（tempo / 拍号 /
+    /// 轨名 / marker / 调号 / 弯音 / 控制器 / 版权 / 乐器名 / 程序名）**可能** `dropped < read`
+    /// （部分内容真的进了工程）；其余 14 类仍是全损。
     pub aux_events: BTreeMap<MidiAuxEventKind, MidiLossCount>,
     /// ⭐ `#342`：`dropped > 0` 的类别的**精确原因**（键 = 与报告字段同一个稳定键
     /// [`MidiAuxEventKind::key`]，⛔ 不翻译；值是含**具体数值**的一句话）。
@@ -355,7 +359,7 @@ impl MidiImportLosses {
 
     /// ⭐ `#342`：**仍然没有落点**的类别一律全损 ⇒ 这条判据为真。
     ///
-    /// 四类有落点的事件（[`STORABLE_KINDS`]）以及已有落点的音符通道（当
+    /// 十类有落点的事件（[`STORABLE_KINDS`]）以及已有落点的音符通道（当
     /// [`channel_is_stored_on_note()`] 为真）**不参与**：它们可能部分或完全落地。
     /// 释放力度今天仍是全损。
     ///
@@ -1599,7 +1603,7 @@ fn plan_cc_lanes(
 /// 人读，这里给报告/MCP 读。改一边必须改另一边（`aux_reasons` 的值来自这里）。
 fn static_loss_reason(kind: MidiAuxEventKind) -> &'static str {
     match kind {
-        // 八类有落点：它们的动态原因由 helper 给；这里的文本只是兜底。
+        // 十类有落点：它们的动态原因由 helper 给；这里的文本只是兜底。
         // （弯音的兜底即 D2 的真实原因：非唯一发声的条数落不下去。）
         MidiAuxEventKind::Tempo => "tempo not adopted into project",
         MidiAuxEventKind::TimeSignature => "time signature not adopted into project",
@@ -1628,18 +1632,24 @@ fn static_loss_reason(kind: MidiAuxEventKind) -> &'static str {
         MidiAuxEventKind::SysEx => "the model has no SysEx payload carrier",
         MidiAuxEventKind::Escape => "the model has no escape payload carrier",
         MidiAuxEventKind::Text => "the model has no text-meta field",
-        // ⭐ [ARCH-EXT-002]：Copyright 是有落点的八类之一，`dropped > 0` 时的动态原因
+        // ⭐ [ARCH-EXT-002]：Copyright 是有落点的十类之一，`dropped > 0` 时的动态原因
         // 恒由 adopt_copyright 点名（未采纳 / 部分采纳都给出）⇒ 这条兜底文本不可达，
         // 措辞与其余有落点类同族。
         MidiAuxEventKind::Copyright => "copyright not adopted into project.author",
+        // ⭐ ADR-0013 D3：乐器名 / 程序名只能在拆分多轨时落成新建音轨的 `TrackV3::name`
+        // （`FF 03` → `FF 04` → `FF 08` 回退链）；未被采纳的条目逐条报丢。
         MidiAuxEventKind::InstrumentName => {
-            "TrackV3::sampler is a path; the model has no instrument-name field"
+            "instrument name not adopted as a split track's name (ADR-0013 D3: only a new \
+             track's unique valid FF 04 name lands in TrackV3::name)"
         }
         MidiAuxEventKind::TrackNumber => "the model has no track-number field",
         MidiAuxEventKind::CuePoint => {
             "the model has no cue-point entity (cue points are not SectionV3 ranges)"
         }
-        MidiAuxEventKind::ProgramName => "the model has no program-name field",
+        MidiAuxEventKind::ProgramName => {
+            "program name not adopted as a split track's name (ADR-0013 D3: only a new \
+             track's unique valid FF 08 name lands in TrackV3::name, after FF 03 / FF 04)"
+        }
         MidiAuxEventKind::DeviceName => "the model has no device-name field",
         MidiAuxEventKind::MidiChannelPrefix => "MidiNote has no channel field",
         MidiAuxEventKind::MidiPort => "the model has no MIDI-port field",
@@ -1735,6 +1745,8 @@ fn count_losses(
     track_partitions_dropped: usize,
     pitch_bends_attached: usize,
     cc_attached: usize,
+    instrument_names_attached: usize,
+    program_names_attached: usize,
 ) -> MidiImportLosses {
     let (marker_dropped, marker_reason) = marker;
     let mut aux_events: BTreeMap<MidiAuxEventKind, MidiLossCount> = BTreeMap::new();
@@ -1758,6 +1770,13 @@ fn count_losses(
             // ⭐ ADR-0015 D2：CC 7 / CC 10 进了自动化泳道，其余控制器报丢
             // （read == attached + dropped）。
             (read.saturating_sub(cc_attached), None)
+        } else if kind == MidiAuxEventKind::InstrumentName {
+            // ⭐ ADR-0013 D3：被拆出新轨采纳为 `TrackV3::name` 的乐器名记入 attached，
+            // 其余（首轨 / 被更高优先级覆盖 / 歧义 / 非 UTF-8）逐条报丢。
+            (read.saturating_sub(instrument_names_attached), None)
+        } else if kind == MidiAuxEventKind::ProgramName {
+            // ⭐ ADR-0013 D3：同乐器名，只有被拆出新轨采纳的条目记入 attached。
+            (read.saturating_sub(program_names_attached), None)
         } else if let Some((_, adoption)) = stored.iter().find(|(stored, _)| *stored == kind) {
             (adoption.dropped, adoption.reason.clone())
         } else {
@@ -1812,11 +1831,14 @@ fn count_losses(
 /// `Track {n}`。每一类内：该 `MTrk` 上**去重后恰一个**非空、严格 UTF-8 的名字
 /// 才算有效；出现多个互不相同的同类名字 ⇒ 判为歧义，⛔ 不随意挑选，
 /// 回退到下一个优先级（D2）。
-fn split_track_name(parsed: &ParsedMidi, track_index: usize) -> String {
-    for events in [
-        &parsed.track_names,
-        &parsed.instrument_names,
-        &parsed.program_names,
+///
+/// 返回 `(名字, 采纳来源)`：来源为 `Some(kind)` 时，该 `MTrk` 上文本等于该名字的
+/// 事件即"已落地"（ADR-0013 D3 的 attached 记账）；机器兜底名 ⇒ `None`。
+fn split_track_name(parsed: &ParsedMidi, track_index: usize) -> (String, Option<MidiAuxEventKind>) {
+    for (kind, events) in [
+        (MidiAuxEventKind::TrackName, &parsed.track_names),
+        (MidiAuxEventKind::InstrumentName, &parsed.instrument_names),
+        (MidiAuxEventKind::ProgramName, &parsed.program_names),
     ] {
         let mut candidates: BTreeSet<&str> = BTreeSet::new();
         for event in events {
@@ -1828,14 +1850,25 @@ fn split_track_name(parsed: &ParsedMidi, track_index: usize) -> String {
             }
         }
         if candidates.len() == 1 {
-            return candidates
+            let name = candidates
                 .into_iter()
                 .next()
                 .expect("非空集合必有唯一元素")
                 .to_owned();
+            return (name, Some(kind));
         }
     }
-    format!("Track {}", track_index + 1)
+    (format!("Track {}", track_index + 1), None)
+}
+
+/// ADR-0013 D3：某个 `MTrk` 上文本等于已采纳名字的事件条数（这些条目已落地）。
+///
+/// 去重后只有一个候选值时，该轨所有有效条目的文本都等于它 ⇒ 全部算 attached。
+fn adopted_name_events(events: &[ParsedTrackName], track_index: usize, name: &str) -> usize {
+    events
+        .iter()
+        .filter(|event| event.track == track_index && event.text.as_deref() == Some(name))
+        .count()
 }
 
 /// **纯映射**：`ParsedMidi` ⇒ 一批 `Op`（⛔ 不改工程、⛔ 不提交、⛔ 不碰文件系统）。
@@ -1876,6 +1909,10 @@ pub fn plan_midi_import(
     let first_track = note_tracks[0];
     track_destinations.insert(first_track, (dest_track_id, dest_clip_id));
 
+    // ⭐ ADR-0013 D3：拆分新轨采纳的乐器名 / 程序名条数（首轨不参与，见 D4）。
+    let mut instrument_names_attached = 0usize;
+    let mut program_names_attached = 0usize;
+
     if options.split_tracks {
         for &track_index in &note_tracks[1..] {
             let new_track_id = derive_note_id();
@@ -1884,7 +1921,19 @@ pub fn plan_midi_import(
             let edge_id = derive_note_id();
 
             // ⭐ ADR-0013：D1/D2 回退链（FF 03 → FF 04 → FF 08 → 机器名）。
-            let track_name = split_track_name(parsed, track_index);
+            let (track_name, adopted_kind) = split_track_name(parsed, track_index);
+            // ⭐ ADR-0013 D3：只有真正被采纳为轨名的那一类才记 attached。
+            match adopted_kind {
+                Some(MidiAuxEventKind::InstrumentName) => {
+                    instrument_names_attached +=
+                        adopted_name_events(&parsed.instrument_names, track_index, &track_name);
+                }
+                Some(MidiAuxEventKind::ProgramName) => {
+                    program_names_attached +=
+                        adopted_name_events(&parsed.program_names, track_index, &track_name);
+                }
+                _ => {}
+            }
 
             let track_duration = parsed
                 .notes
@@ -2045,6 +2094,8 @@ pub fn plan_midi_import(
         track_partitions_dropped,
         bends_attached,
         cc_attached,
+        instrument_names_attached,
+        program_names_attached,
     );
     debug_assert!(
         losses.is_consistent(),
@@ -2052,7 +2103,7 @@ pub fn plan_midi_import(
     );
     debug_assert!(
         losses.is_total_loss(),
-        "无落点的类别必须仍全损（有落点的四类不受这条约束；⛔ 别删判据）: {losses:?}"
+        "无落点的类别必须仍全损（有落点的十类不受这条约束；⛔ 别删判据）: {losses:?}"
     );
     Ok(MidiImportPlan {
         ops,
@@ -2320,9 +2371,11 @@ pub mod tests {
     #[test]
     fn storable_kinds_consistency() {
         // ⭐ ADR-0015 D2：`ControlChange` 自 6 项起加入可落点集合；
-        // ⭐ [ARCH-EXT-002]：`Copyright` 自 7 项起加入（采纳进 `project.author`）⇒ 共 8 项。
-        assert_eq!(STORABLE_KINDS.len(), 8);
-        assert_eq!(STORABLE_KIND_KEYS.len(), 8);
+        // ⭐ [ARCH-EXT-002]：`Copyright` 自 7 项起加入（采纳进 `project.author`）；
+        // ⭐ ADR-0013 D3：`InstrumentName` / `ProgramName` 自第 9、10 项起加入
+        // （拆分新轨可采纳为 `TrackV3::name`）⇒ 共 10 项。
+        assert_eq!(STORABLE_KINDS.len(), 10);
+        assert_eq!(STORABLE_KIND_KEYS.len(), 10);
         for (kind, &key) in STORABLE_KINDS.iter().zip(STORABLE_KIND_KEYS) {
             assert_eq!(kind.key(), key);
         }
@@ -4548,6 +4601,43 @@ pub mod metadata_adoption_tests {
             ],
             "拆分新轨命名必须按 D1/D2 逐 MTrk 下标 1..6 发射"
         );
+
+        // ⭐ ADR-0013 D3：只有真正被采纳为拆分新轨名的条目记入 attached，其余如实报丢。
+        assert_eq!(
+            plan.losses.aux_events[&MidiAuxEventKind::InstrumentName],
+            MidiLossCount {
+                read: 7,
+                dropped: 5,
+            },
+            "track 1（Violin I）与 track 5（Cello）各采纳 1 条 FF 04；其余 5 条（含歧义）全报丢"
+        );
+        assert_eq!(
+            plan.losses.aux_events[&MidiAuxEventKind::ProgramName],
+            MidiLossCount {
+                read: 4,
+                dropped: 2,
+            },
+            "track 2（Grand Piano）与 track 4（Brass）各采纳 1 条 FF 08；track 6 的歧义两条报丢"
+        );
+        assert_eq!(
+            plan.losses.aux_events[&MidiAuxEventKind::TrackName],
+            MidiLossCount {
+                read: 3,
+                dropped: 2,
+            },
+            "首轨沿用既有落点名：只有 `Lead` 落地，空名 / 非 UTF-8 报丢"
+        );
+        assert_eq!(
+            plan.losses.aux_reasons[&MidiAuxEventKind::InstrumentName],
+            static_loss_reason(MidiAuxEventKind::InstrumentName),
+            "未被采纳的乐器名必须给出稳定原因"
+        );
+        assert_eq!(
+            plan.losses.aux_reasons[&MidiAuxEventKind::ProgramName],
+            static_loss_reason(MidiAuxEventKind::ProgramName),
+            "未被采纳的程序名必须给出稳定原因"
+        );
+        assert!(plan.losses.is_consistent());
     }
 
     /// 判据（`#350`）：**唯一条 tick 0** 调号在空工程中落进 `project.key_signature`；等值时不发空操作。
