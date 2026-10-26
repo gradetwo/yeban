@@ -11020,3 +11020,25 @@ $ python3 scripts/gates/check_phase_status.py   # 退出 0
 - **验证**:
   - `cargo-local.sh test -p yeban-mcp --test tools_e2e -- tempo_and_time_signature_points`: 3 项端到端测试全绿。
   - `clippy -p yeban-mcp --all-targets -- -D warnings`: 零告警。
+
+
+---
+
+## 2026-10-26：MCP MIDI 导出 Conductor 轨版权判据显式更新与闭环落地
+
+- **需求规范 ID**: `[ARCH-EXT-002]` `[MCP-TOOL-EXT-EXPORT-MIDI]`
+- **实施工作线**: `line/mcp-author-export-assertion` (`de9540e0`)
+- **背景与原因**:
+  - CI Run `40351362953` (`0c886400`) 在 `rust (yeban-mcp)` 中，测试 `render_master::the_midi_export_never_embeds_the_project_author_bytes` 失败。
+  - 该旧测试为历史负向防护判据（断言 MIDI 导出绝不包含 `AUTHOR_MARKER` 字节），且其自身注释明确写道：`"⭐ 工程作者 {AUTHOR_MARKER} 出现在 MIDI 导出字节里了 —— 裁定是「维持现状（MIDI 也不写作者）」; 若要改，请显式改这条判据"`。
+  - 在落地 `[ARCH-EXT-002]` 导体轨作者元数据往返规范后，`project.author` 已确定性地作为 Conductor 轨（轨 0, tick 0）的 `FF 02` 版权通知元事件导出。
+- **改动**:
+  - `crates/yeban-mcp/tests/render_master.rs`:
+    - 将测试更名为 `the_midi_export_embeds_the_project_author_as_conductor_copyright`。
+    - 显式更新为正向断言：
+      1. 作者子串在导出的 SMF 真字节中必须存在；
+      2. 经 `yeban_midi::midi::parse_smf` 回读解析后，`parsed.copyrights` 中必须存在且仅存在 1 条记录，位于 `track: 0`, `tick: 0`，且 `text.as_deref() == Some(AUTHOR_MARKER)`。
+- **验证**:
+  - `cargo-local.sh test -p yeban-mcp --test render_master -- the_midi_export`: 1 passed, 0 failed.
+  - `cargo fmt --check`: 格式化通过。
+  - `python3 scripts/guards/policy_check.py`: 18 项全部通过。
