@@ -917,6 +917,7 @@ fn build_project(
         title: data.bundle.clone(),
         author: String::new(),
         bpm: data.bpm,
+        tempo_map: BTreeMap::new(),
         time_signature: TimeSignature {
             numerator: u8::try_from(data.numerator).map_err(|_| {
                 ImportLogicError::InvalidProject {
@@ -929,6 +930,8 @@ fn build_project(
                 }
             })?,
         },
+        time_signature_map: BTreeMap::new(),
+        key_signature: None,
         audio_config: ProjectAudioConfig {
             sample_rate,
             ..ProjectAudioConfig::default()
