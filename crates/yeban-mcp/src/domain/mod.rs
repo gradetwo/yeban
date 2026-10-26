@@ -2536,9 +2536,20 @@ fn plan_edit_notes(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
     } else {
         notes::parse_ops(raw_ops)?
     };
-    let self_addressed_only = notes::NoteOp::all_self_addressed(&note_ops);
     let creating = arg_bool(call, notes::CREATE_PARAM, false);
     let placement_raw = call.arguments.get(notes::PLACEMENT_FIELD);
+    // ⭐ 占位 envelope 身份的两条路: ① 批内**全是**自带寻址形态（`removeTrack` / 设备
+    // 形态, 逐字节旧行为）; ② 批内**每条**要么自带寻址、要么自带 `ops[].trackId`
+    // （`setParam` / `setTrackMute` / `setTrackSolo` 的逐条点名形态）, 且没有 `placement`
+    // 在场、也不是 `create`（那两件事的语义挂在顶层身份上, 占位身份会把它们引向 nil）。
+    // 判定住在 `notes::NoteOp::all_ops_address_their_own_track`（与 `compile` 同一份真相）。
+    let self_addressed_only = if notes::NoteOp::all_self_addressed(&note_ops) {
+        true
+    } else {
+        placement_raw.is_none()
+            && !creating
+            && notes::NoteOp::all_ops_address_their_own_track(&note_ops)
+    };
     // ⭐ `#177` 坑④：顶层 `clipId` 从"无条件必填"改成"按 `ops[].kind` 条件必需"。
     // 唯一真相是 `NoteOp::reads_envelope_clip()`（`compile` 真正读 `clip_id` 的那几个臂）
     // ∪ `placement` 在场（摆放编辑要核对它引用的片段）∪ `create:true`（它是新建身份）。
