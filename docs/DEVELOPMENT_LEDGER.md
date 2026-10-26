@@ -11338,5 +11338,48 @@ $ python3 scripts/gates/check_phase_status.py   # 退出 0
   - `scripts/gates/run-gates.sh light`: 全部轻量门禁通过。
   - CI Run `40390138238` (`733b3f52`): **`conclusion: success`**（总耗时 28m23s），Linux `rust (yeban-mcp)` (7m7s)、`rust (yeban-ui-mcp)` (2m43s)、`windows` (28m6s)、`macos` (27m27s)、`deny` (45s)、`checks` (1m11s)、`lockfile` (21s)、`plan` (11s) 全部 100% 绿灯通过。
 
+## 2026-10-27：WALL ① 消除：`yeban_edit_notes` 的 `create: true` 可与 `placement` 同给（单提案原子建＋摆）
+
+- **需求规范 ID**: `[MCP-TOOL-006]` `WALL ①` `[ADR-0018]`
+- **实施工作线**: `line/edit-notes-create-with-placement` (`903e88d5`)
+- **背景与目标**:
+  - `creation_acceptance.rs` 墙清单里最疼的一堵：`create: true` 与 `placement` 被 `placementIsNotCreation` 硬性互斥，建材料与摆上时间轴必须两轮提案往返（4 轨工程 = 8 次提案/合并）；
+  - `Op::AddClipPlacement` 本身不要求片段在调用前的静态工程里已存在，只要同批紧跟在 `Op::AddClip` 之后即可原子且可逆。
+- **实施**:
+  - `crates/yeban-mcp/src/domain/notes.rs`：新增 `parse_placement_for_create`；`placement.kind` 仅允许 `add`（显式 `move`/`remove` ⇒ `INVALID_PARAMETER_RANGE` / `createPlacementKindMustBeAdd`）；`startTick` 缺省 0；`durationTicks` 缺省由批内音符 `start_tick + duration_ticks` 的最大值推导（空片段且未显式给 ⇒ `durationNotDerivable`）；`placementId` 与既有摆放冲突 ⇒ `CONFLICT`；
+  - `crates/yeban-mcp/src/domain/mod.rs`：`create: true` + `placement` ⇒ `compiled = [Op::AddClip, Op::AddClipPlacement]`，标题形如 `新建并摆放 MIDI 片段: …`；
+  - `crates/yeban-mcp/src/tools.rs`、`op_schema.rs`、`schemas/mcp-tools.schema.json`：登记放行后的参数语义；
+  - `crates/yeban-mcp/tests/tools_e2e.rs`：新增 `edit_notes_create_and_place_in_one_proposal_is_atomic_and_undoable`（一次提案 ⇒ 一条 merge ⇒ 一次 undo 逐字节复原）；
+  - `crates/yeban-mcp/tests/fault_vocabulary.rs`：`placementIsNotCreation` 退役、`createPlacementKindMustBeAdd` 登场（reason 集合仍 159 个，同级键使行数 717 → **720**，摘要重钉为 `554c947e…`）；
+  - `crates/yeban-mcp/tests/creation_acceptance.rs`：WALL ① 标注已消除。
+- **验证**:
+  - `cargo fmt --check` / `scripts/gates/run-gates.sh light` / `python3 scripts/guards/policy_check.py`（18 条）全部通过。
+  - CI Run `40409688245` (`903e88d5`): **`conclusion: success`**（22:05:23Z → 22:48:19Z，总耗时 **42m56s**）；作业级读数：`rust (workspace 全量)` **42m35s / 14 steps**、`windows` **35m53s / 18 steps**、`macos` **25m38s / 18 steps**、`deny` 6 steps、`checks` 15 steps、`lockfile` 6 steps、`plan` 5 steps —— 全部 `success`；
+  - 防假绿核对：workspace 作业日志里 **403 条 `test result:`** 行（`grep -c`），耗时非 0 ⇒ 不是空绿；另一条同名矩阵作业 `rust (${{ matrix.crate }})` 是 `skipped` 的**重复**矩阵（真正跑全量的是 `rust (workspace 全量)`），不是跳过绿。
+
+## 2026-10-27：WALL ③/④ 消除：`yeban_propose_section` 的 `includeMelody` / `includeDrums`
+
+- **需求规范 ID**: `[MCP-TOOL-005]` `[ARCH-DET-001]` `[ADR-0017]`（`WALL ③` 旋律 / `WALL ④` 鼓组）
+- **实施工作线**: `line/propose-section-melody-drums` (`36843ca9`)
+- **背景与目标**:
+  - `yeban-theory` 里 `GenreRule::drum_pattern` / `swung_styled_drum_pattern` 与 `melody_over_chords`
+    早已是确定性纯函数，但没有任何 MCP 工具能调用 ⇒ AI 只能手写旋律与鼓点（`creation_acceptance.rs` 墙清单的 ③/④）。
+- **实施**:
+  - `crates/yeban-mcp/src/domain/section.rs`、`section_build.rs`：两个 opt-in 布尔入参（缺省 `false`），
+    为 `true` 时各追加一条音轨（`"{section} · Drums"` / `"{section} · Melody"`），鼓点映射 GM（36/38/42/51）、
+    时值 120 ticks、力度按 accent 分级；旋律受 `MelodyConstraints::DEFAULT`（60..=84，最大跳进 7 半音）约束；
+    两条轨都用 `Op::AddRoutingEdge` 直连主总线并过 `detect_cycle` 校验。
+  - 身份全部走 `deterministic_id`（`theory-drum:…` / `theory-melody:…`）；两个参数都缺省时 `plan` / `ops` / 身份
+    **逐字节不变**；`materialSource: "project"` + 任一为 `true` ⇒ `INVALID_PARAMETER_RANGE` 且给出明确 hint。
+  - `crates/yeban-mcp/verify/section_pure.rs`（409 行）为纯函数判据；`schemas/mcp-tools.schema.json`
+    与 `tools.rs` 登记两个新参数。
+- **验证**:
+  - CI Run `40409808558` (`36843ca9`): **`conclusion: success`**（22:06:18Z → 23:01:50Z）；
+    作业级读数：`rust (workspace 全量)` **55m11s**、`windows` **35m49s**、`macos` **26m27s**、`checks` 65s、
+    `deny` 83s、`lockfile` 22s、`plan` 11s —— 全部 `success`。
+  - 防假绿核对：workspace 作业日志 **1,559,963 字节 / 403 条 `test result:` / 0 条 `test result: FAILED`**
+    （`gh api …/actions/jobs/<id>/logs` 下载后现数）⇒ 真跑过，不是空绿；`rust (${{ matrix.crate }})` 仍是
+    `skipped` 的重复矩阵。
+
 
 
