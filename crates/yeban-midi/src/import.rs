@@ -242,8 +242,7 @@ impl MidiLossCount {
 ///   模型或导入映射没有落点 ⇒ **全丢**（原因见 [`Self::aux_reasons`]）。
 /// - 轨分区：全部音符进**同一个**音轨与同一个片段 ⇒ 文件 N 条 `MTrk` 只剩 1 个落点，
 ///   `N-1` 个分区丢失。
-/// - 音符通道：[`MidiNote`] 没有 channel 字段 ⇒ 每颗音符的通道值都丢
-///   （只作为解析排序键残留）。
+/// - 音符通道：[`MidiNote`] 的 channel 字段保存每颗音符的通道值（`#348` [MODEL-AST-005]）。
 /// - 释放力度：`NoteOff` 的 velocity 被解析器忽略 ⇒ 每颗被关闭音符都丢。
 ///
 /// `format` / `file_tracks` / `distinct_channels` 是**上下文读数**（⛔ 损失），
@@ -296,14 +295,15 @@ impl MidiImportLosses {
 
     /// ⭐ `#342`：**仍然没有落点**的类别一律全损 ⇒ 这条判据为真。
     ///
-    /// 四类有落点的事件（[`STORABLE_KINDS`]）**不参与**：它们可能部分落地
-    /// （例如 2 条 marker 里 1 条是零长度）。音符通道 / 释放力度今天仍是全损。
+    /// 四类有落点的事件（[`STORABLE_KINDS`]）以及已有落点的音符通道（当
+    /// [`channel_is_stored_on_note()`] 为真）**不参与**：它们可能部分或完全落地。
+    /// 释放力度今天仍是全损。
     ///
     /// ⚠ 这仍是一条**会过期**的判据：若某类从"有落点"退回"全损"、或反过来，
     /// 它应该红 —— ⛔ 不是把它删掉。
     #[must_use]
     pub fn is_total_loss(&self) -> bool {
-        self.note_channel_values.is_total_loss()
+        (channel_is_stored_on_note() || self.note_channel_values.is_total_loss())
             && self.note_off_velocity_values.is_total_loss()
             && self
                 .aux_events
@@ -632,10 +632,10 @@ pub fn content_free_project() -> YebanProjectV1 {
 
 /// 音符实体是否存储 MIDI 通道号。
 ///
-/// 契约说明：当前 `MidiNote` 模型无通道字段，通道值全损。
+/// 契约说明：`#348` [MODEL-AST-005] [ARCH-EXT-002] 为 `MidiNote` 增加了 `channel: Option<u8>` 字段，导入时保留音符通道。
 #[inline]
 const fn channel_is_stored_on_note() -> bool {
-    false
+    true
 }
 
 /// 派生新实体 ID。
@@ -1391,6 +1391,9 @@ pub fn plan_midi_import(
             end.saturating_sub(start).max(1),
         );
         model_note.velocity = note.velocity;
+        if channel_is_stored_on_note() {
+            model_note.channel = Some(note.channel);
+        }
         if let Some(text) = attachable.get(&note.start_tick) {
             model_note.syllable = Some((*text).to_owned());
         }
@@ -2048,9 +2051,9 @@ pub mod tests {
             losses.note_channel_values,
             MidiLossCount {
                 read: 2,
-                dropped: 2,
+                dropped: 0,
             },
-            "每颗音符一个通道值，模型没有字段 ⇒ 全丢"
+            "每颗音符一个通道值，已保存在 MidiNote.channel ⇒ dropped 为 0"
         );
         assert_eq!(
             losses.note_off_velocity_values,
@@ -2181,6 +2184,15 @@ pub mod tests {
             }
         )));
         assert_eq!(plan.notes, 2);
+        let note_channels: Vec<Option<u8>> = plan
+            .ops
+            .iter()
+            .filter_map(|op| match op {
+                Op::AddNote { note, .. } => Some(note.channel),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(note_channels, vec![Some(0), Some(1)], "音符通道被如实保留");
         assert_eq!(plan.lyrics, MidiLyricCounts::default());
     }
 

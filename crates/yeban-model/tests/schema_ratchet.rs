@@ -23,7 +23,7 @@
 //! 手抄的第二份事实源会在契约改动后变成谎言（同
 //! `src/samples.rs::schema_op_variant_names` 的理由），所以这里一个 `required` 名都不手抄。
 //!
-//! ## 判据清单（9 条 + 1 条 `#[ignore]`）
+//! ## 判据清单（11 条 + 1 条 `#[ignore]`）
 //!
 //! | # | 判据 | 方向 | 测的是什么 |
 //! | :-- | :--- | :--- | :--- |
@@ -37,7 +37,8 @@
 //! | ⑧ | [`ref_resolver_and_required_name_check_have_teeth`] | 契约自身 | 用**合成 schema** 证明 ⑦ 的解析器真的会报错（不是永真判据） |
 //! | ⑨ | [`no_vacuous_required_paths_in_the_ratchet`] | 反空洞 | 每一条"必达"的 `required` 都被夹具真实触达（不许有静默盲区） |
 //! | ⑩ | [`pitch_bend_curve_prefix_items_matches_model_bounds`] | 契约与模型边界 | 验证 `pitch_bend_curve` 的 `prefixItems` 与模型常量严格对齐 |
-//! | ⑪ | [`print_contract_ratchet_table_for_the_notes`]（`#[ignore]`） | — | 生成 notes 引用的**真实错误文本**表；不进 CI |
+//! | ⑪ | [`note_channel_schema_matches_model_bounds`] | 契约与模型边界 | 验证 `channel` 属性的 `minimum`/`maximum` 与模型常量严格对齐 |
+//! | ⑫ | [`print_contract_ratchet_table_for_the_notes`]（`#[ignore]`） | — | 生成 notes 引用的**真实错误文本**表；不进 CI |
 //!
 //! ## schema 路径记号（本文件的唯一记号，两个方向共用）
 //!
@@ -120,6 +121,7 @@ const D43_EXEMPT_REQUIRED_PATHS: &[&str] = &[
     "#.scenes.*.color",
     "#.routing_graph.edges[].gain_db",
     "#.clip_pool.*.content.Midi.notes.*.probability",
+    "#.clip_pool.*.content.Midi.notes.*.channel",
     "#.clip_pool.*.content.Midi.notes.*.ratchet",
     "#.clip_pool.*.content.Midi.notes.*.micro_timing_ticks",
     "#.clip_pool.*.content.Midi.notes.*.slide",
@@ -996,8 +998,8 @@ fn direction_b_d43_exempt_paths_tolerate_missing_keys() {
 
     assert_eq!(
         D43_EXEMPT_REQUIRED_PATHS.len(),
-        19,
-        "D43 豁免集 = §5.4 的 18 项 ＋ 任务单 `#76` 的 `tracks[*].sampler`（逐项对应见常量上的表）"
+        20,
+        "D43 豁免集 = §5.4 的 18 项 ＋ 任务单 `#76` 的 `tracks[*].sampler` ＋ `#348` 的 `channel`（逐项对应见常量上的表）"
     );
     assert!(
         present_paths >= 8,
@@ -1402,6 +1404,27 @@ fn pitch_bend_curve_prefix_items_matches_model_bounds() {
     assert_eq!(
         cents_spec.get("maximum").and_then(Value::as_i64),
         Some(i64::from(yeban_model::music::MAX_PITCH_BEND_CENTS))
+    );
+}
+
+/// 契约中的 `channel` 属性与模型层的 MIDI 通道合法边界完全一致 [MODEL-AST-005, ARCH-EXT-002]。
+#[test]
+fn note_channel_schema_matches_model_bounds() {
+    let schema = load_schema();
+    let channel_spec = schema
+        .pointer(
+            "/properties/clip_pool/additionalProperties/properties/content/oneOf/0/properties/Midi/properties/notes/additionalProperties/properties/channel",
+        )
+        .expect("契约中必须存在 channel 属性定义");
+
+    assert_eq!(
+        channel_spec.get("type").and_then(Value::as_str),
+        Some("integer")
+    );
+    assert_eq!(channel_spec.get("minimum").and_then(Value::as_i64), Some(0));
+    assert_eq!(
+        channel_spec.get("maximum").and_then(Value::as_i64),
+        Some(i64::from(yeban_model::music::MIDI_CHANNEL_MAX))
     );
 }
 

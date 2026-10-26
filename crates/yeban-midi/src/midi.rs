@@ -484,7 +484,8 @@ fn validate_note(note: &MidiNote, channel: u8) -> Result<(), MidiError> {
 fn track_events(track: &MidiExportTrack) -> Result<Vec<RawEvent>, MidiError> {
     let mut events = Vec::with_capacity(track.notes.len() * 3);
     for note in &track.notes {
-        validate_note(note, track.channel)?;
+        let channel = note.channel.unwrap_or(track.channel);
+        validate_note(note, channel)?;
         let start = effective_start(note);
         let end = start.saturating_add(note.duration_ticks);
         // ⭐ `#312`：歌词写在**生效起点**（与 NoteOn 同一个 tick），排序键保证它
@@ -497,13 +498,13 @@ fn track_events(track: &MidiExportTrack) -> Result<Vec<RawEvent>, MidiError> {
         }
         events.push(RawEvent::NoteOn {
             tick: start,
-            channel: track.channel,
+            channel,
             key: note.pitch,
             velocity: note.velocity,
         });
         events.push(RawEvent::NoteOff {
             tick: end,
-            channel: track.channel,
+            channel,
             key: note.pitch,
         });
     }

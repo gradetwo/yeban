@@ -53,12 +53,12 @@ const BIN: &str = env!("CARGO_BIN_EXE_yeban-app");
 const LOSS_ID: &str = "module-import-losses";
 
 /// 316 B 夹具的**期望摘要**（24 类 aux、29 条事件里 **28 条 loss** —— ⭐ `#342` 起
-/// 唯一的 `Verse` marker 落成一个段落 ⇒ 5 颗音符、每颗都丢通道值与释放力度，
+/// 唯一的 `Verse` marker 落成一个段落 ⇒ 5 颗音符保留通道值、丢释放力度，
 /// 2 条歌词候选里 1 条未归属）。
 ///
 /// ⚠ 这是**夹具的期望值**（与 `tests/midi_round_trip.rs` 的逐类期望表同源），
 /// ⛔ 不是从 GUI 回执反推的"第二份判定"。
-const EXPECTED_SUMMARY: &str = "⚠ 导入丢失：24 类/28 条；歌词未归属 1；通道/力度5/5";
+const EXPECTED_SUMMARY: &str = "⚠ 导入丢失：24 类/28 条；歌词未归属 1；通道/力度0/5";
 
 /// 三档窗口（与 `tests/pane_no_overlap.rs` / `tests/gui_clipping_warning.rs` 同一组）。
 const TIERS: &[(u32, u32)] = &[(1920, 1080), (1440, 900), (1024, 800)];
@@ -456,7 +456,7 @@ fn behavior_arm() {
         ("track-partitions-dropped", "2"),
         ("channels", "2"),
         ("note-channel-read", "5"),
-        ("note-channel-dropped", "5"),
+        ("note-channel-dropped", "0"),
         ("note-off-velocity-read", "5"),
         ("note-off-velocity-dropped", "5"),
     ] {

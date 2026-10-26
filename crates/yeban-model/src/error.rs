@@ -27,6 +27,13 @@ pub enum ModelError {
         value: u16,
     },
 
+    /// MIDI 通道越界 (允许 0..=15)。
+    #[error("note channel {channel} out of range 0..=15")]
+    NoteChannelOutOfRange {
+        /// 实际收到的通道号。
+        channel: u8,
+    },
+
     /// 概率字段越界 (允许 0.0..=1.0，且必须有限)。
     ///
     /// 区间**不在这里写字面**：两个端点来自 [`crate::music::PROBABILITY_MIN`] /
