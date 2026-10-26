@@ -132,6 +132,9 @@ D5／D6 **不可**机械校验：它们是消费侧语义与刻意的非规则�
 1. **JSON Schema 的 `cents` 界**：`schemas/project.schema.json` 的 `pitch_bend_curve` 现在是
    `items: { type: integer }`（两个元素同一个约束）。只约束第二个元素要改成 `prefixItems`，属结构性改动；
    本切片不动 `schemas/**`（任务单 `#311` §3 的边界）⇒ 留给集成者。
+   ✅ **已落地**（2026-10-26）：已在 `schemas/project.schema.json` 实施 `prefixItems`
+   （元素 0 为非负 tick，元素 1 为 `-1200..=1200` cents，`items: false, minItems: 2, maxItems: 2`；
+   `tests/schema_ratchet.rs` 遍历器已支持并以专用单元测试钉住边界）。
 2. **`#311b` 的求值口径**：逐块重算 `phase_inc` 的块长、ramp 的插值形式（线性 / 指数），
    以及 `ratchet` 子脉冲与循环重复在 D1 的局部坐标下是否各自从 0 重放曲线。
    ✅ **已裁决**（2026-10-25，见 **D10** 与 **D11**）。
@@ -195,7 +198,7 @@ D5／D6 **不可**机械校验：它们是消费侧语义与刻意的非规则�
 
 - `#311b`（DSP 内核）**解锁**：三条已定，内核可以写。
 - `project.schema.json` 的 `prefixItems`（原"未决 1"）：`cents` 上界随 D2 定为 `±1200`，
-  首点约束随 D4 改为**无**。
+  首点约束随 D4 改为**无**。✅ **已落地**（2026-10-26）：已在 `schemas/project.schema.json` 用 `prefixItems` 实施。
 
 ### 仍未决（不在本裁决范围）
 
