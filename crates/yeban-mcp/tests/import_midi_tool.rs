@@ -281,11 +281,13 @@ fn create_multitrack_smf_file() -> PathBuf {
                 name: "Track One".to_string(),
                 channel: 0,
                 notes: vec![yeban_model::MidiNote::new(EntityId::new(), 0, 60, 480)],
+                control_changes: Vec::new(),
             },
             MidiExportTrack {
                 name: "Track Two".to_string(),
                 channel: 1,
                 notes: vec![yeban_model::MidiNote::new(EntityId::new(), 480, 48, 480)],
+                control_changes: Vec::new(),
             },
         ],
         key_signature: None,

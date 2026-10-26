@@ -55,12 +55,14 @@
 
 #![allow(unused_imports)] // 宽集合：缺失由编译器点名，多余由本行放行（账本第 339-341 轮）
 
-use crate::midi::{DEFAULT_PPQ, MidiError, MidiExport, MidiExportTrack, MidiFormat, MidiTempo};
+use crate::midi::{
+    DEFAULT_PPQ, ExportControlChange, MidiError, MidiExport, MidiExportTrack, MidiFormat, MidiTempo,
+};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use yeban_model::music::MidiNote;
 use yeban_model::project::{ClipContent, ClipPlacement, YebanProjectV1};
-use yeban_model::{EntityId, PPQ};
+use yeban_model::{AutomationTarget, EntityId, PPQ, TrackV3};
 
 /// SMF 的通道号是 4 bit ⇒ 一个文件最多 16 个可区分的通道。
 ///
@@ -288,6 +290,78 @@ fn track_notes(
     Ok(notes)
 }
 
+/// ⭐ ADR-0015 D3：音量泳道的分贝 ⇒ CC 7（0..=127）。
+///
+/// 导入侧换算（`import::cc7_to_decibels`，`dB = 40·log10(v/127)`）的**逆**：
+/// `v = round(127 · 10^(dB/40))`，钳到 `0..=127`。
+///
+/// ⚠ 往返**不是**逐位恒等：CC 只有 128 格，而 dB 是连续量，且导入侧把结果钳在泳道
+/// 固有值域 `[-60.0, 12.0]` 内。实测下端口径（由
+/// `cc_value_survives_the_lane_round_trip_above_the_decibel_floor` 钉住）：
+/// `CC 7 = 0..=4` 换算都 ≤ `-60.07 dB` ⇒ 全部钳成 `-60.0`，再回到 **4**；`CC 7 ≥ 5`
+/// 逐格往返恒等。工程里作者手画的音量点本来就没有"CC 7 = 0"这个语义，这里按公式如实换算。
+#[must_use]
+pub fn decibels_to_cc7(db: f32) -> u8 {
+    if !db.is_finite() {
+        return 0;
+    }
+    libm::roundf(127.0 * libm::powf(10.0, db / 40.0)).clamp(0.0, 127.0) as u8
+}
+
+/// ⭐ ADR-0015 D3：声相泳道的双极值 ⇒ CC 10（0..=127）。
+///
+/// 导入侧换算（`import::cc10_to_pan`）的**逆**：左半边（`pan ≤ 0`）按 64 格展开、
+/// 右半边按 63 格展开 ⇒ `-1.0 → 0`、`0.0 → 64`、`+1.0 → 127`。
+#[must_use]
+pub fn pan_to_cc10(pan: f32) -> u8 {
+    if !pan.is_finite() {
+        return 64;
+    }
+    let raw = if pan <= 0.0 {
+        64.0 + pan * 64.0
+    } else {
+        64.0 + pan * 63.0
+    };
+    libm::roundf(raw).clamp(0.0, 127.0) as u8
+}
+
+/// ⭐ ADR-0015 D3：一条音轨的 `TrackVolume` / `TrackPan` 泳道 ⇒ 待写出的 CC 事件。
+///
+/// 逐点写出（一个采样点一条 CC），tick 原样取点的位置 —— 工程时钟与 SMF 分度在此
+/// 都是模型 960 PPQ（[`crate::export::MidiExportError::PpqMismatch`] 钉住两边一致），
+/// ⛔ 不再换算。泳道 `read_enabled = false` 时**不写**：关掉读通的自动化在引擎里
+/// 不参与混音，写成 CC 等于把它假装生效。
+///
+/// 顺序按 `(tick, 控制器号)` 稳定排好，再由编码器按内容全序落盘 ⇒ 同一工程两次导出
+/// 字节相同 [MODEL-AST-003]。
+fn track_control_changes(track: &TrackV3) -> Vec<ExportControlChange> {
+    let mut events: Vec<ExportControlChange> = track
+        .automation_lanes
+        .values()
+        .filter(|lane| lane.read_enabled)
+        .flat_map(|lane| {
+            let (controller, convert): (u8, fn(f32) -> u8) = match lane.target {
+                AutomationTarget::TrackVolume { .. } => {
+                    (crate::import::CC_CHANNEL_VOLUME, decibels_to_cc7)
+                }
+                AutomationTarget::TrackPan { .. } => (crate::import::CC_PAN, pan_to_cc10),
+                // 其余目标（发送增益 / 设备参数 / 宏）在 SMF 里没有对应的控制器号 ⇒ 不写。
+                _ => return Vec::new(),
+            };
+            lane.points
+                .values()
+                .map(move |point| ExportControlChange {
+                    tick: point.tick,
+                    controller,
+                    value: convert(point.value),
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    events.sort_by_key(|event| (event.tick, event.controller, event.value));
+    events
+}
+
 /// 把工程投影成 [`MidiExport`]（**不碰磁盘**）。
 ///
 /// # Errors
@@ -312,6 +386,7 @@ pub fn export_from_project(project: &YebanProjectV1) -> Result<MidiExport, MidiE
             name: track.name.clone(),
             channel,
             notes,
+            control_changes: track_control_changes(track),
         });
     }
 
@@ -333,6 +408,7 @@ mod tests {
     use super::*;
     use crate::midi::{MidiError, parse_smf, track_chunks};
     use yeban_model::samples::filled_project;
+    use yeban_model::{AutomationPoint, AutomationWriteMode, CurveType};
 
     /// 演示夹具（`bridge::demo_project()`）的 MIDI 事实。
     ///
@@ -1696,6 +1772,278 @@ mod tests {
             std::panic::catch_unwind(|| assert_every_midi_export_error_arm_is_covered(&duplicated))
                 .is_err(),
             "重复臂的坏表必须被拒"
+        );
+    }
+
+    /// ⭐ ADR-0015 D3 换算端点：期望值是**手算读数**（⛔ 不与 `cc7_to_decibels` 自比）。
+    #[test]
+    fn decibels_and_pan_convert_to_the_adr_cc_values() {
+        assert_eq!(decibels_to_cc7(0.0), 127, "0 dB ⇒ 满格");
+        assert_eq!(
+            decibels_to_cc7(-6.0),
+            90,
+            "round(127·10^-0.15) = round(89.909) ⇒ 90"
+        );
+        assert_eq!(
+            decibels_to_cc7(-60.0),
+            4,
+            "round(127·10^-1.5) = round(4.016) ⇒ **不是** 0（登记的不对称，见函数文档）"
+        );
+        assert_eq!(decibels_to_cc7(-120.0), 0, "低到 CC 表达不出 ⇒ 钳到 0");
+        assert_eq!(decibels_to_cc7(12.0), 127, "值域上端仍在满格内");
+        assert_eq!(
+            decibels_to_cc7(f32::NAN),
+            0,
+            "非有限读数 ⇒ 当作静音，⛔ 不拿 NaN 猜一个控制器值"
+        );
+        assert_eq!(pan_to_cc10(-1.0), 0, "极左");
+        assert_eq!(pan_to_cc10(0.0), 64, "居中");
+        assert_eq!(pan_to_cc10(1.0), 127, "极右");
+        assert_eq!(pan_to_cc10(2.0), 127, "越界 ⇒ 钳位");
+        assert_eq!(pan_to_cc10(f32::NAN), 64, "非有限读数 ⇒ 居中");
+    }
+
+    /// ⭐ ADR-0015 D3 往返：CC → 泳道值 → CC 逐格回到原值，**下端有一截塌缩**。
+    ///
+    /// 实测边界（本判据把它钉住，⛔ 不是"应当恒等"的愿望）：音量泳道的固有值域下限是
+    /// `-60 dB`，而 CC 7 = `0..=4` 换算下来都 ≤ `-60.07 dB` ⇒ 全部被钳到 `-60.0`，
+    /// 再按公式回到 **4**。`CC 10` 的双极换算没有值域钳位 ⇒ `0..=127` 全程逐格往返。
+    #[test]
+    fn cc_value_survives_the_lane_round_trip_above_the_decibel_floor() {
+        for value in 5..=127_u8 {
+            assert_eq!(
+                decibels_to_cc7(crate::import::cc7_to_decibels(value)),
+                value,
+                "CC 7 = {value} 往返"
+            );
+        }
+        assert_eq!(
+            decibels_to_cc7(crate::import::cc7_to_decibels(4)),
+            4,
+            "CC 7 = 4 ⇒ -60.07 dB 被钳到 -60.0 ⇒ 回到 4（塌缩区间的**上端**）"
+        );
+        for value in 0..=3_u8 {
+            assert_eq!(
+                decibels_to_cc7(crate::import::cc7_to_decibels(value)),
+                4,
+                "CC 7 = {value} 低于 -60 dB 下限 ⇒ 与 0 一起塌回 4（已登记的不对称）"
+            );
+        }
+        for value in 0..=127_u8 {
+            assert_eq!(
+                pan_to_cc10(crate::import::cc10_to_pan(value)),
+                value,
+                "CC 10 = {value} 往返"
+            );
+        }
+    }
+
+    /// 造一条只关心"目标 + 读通 + 点位"的泳道（ADR-0015 D3 判据夹具）。
+    fn lane(
+        target: AutomationTarget,
+        read_enabled: bool,
+        points: &[(u64, f32)],
+    ) -> yeban_model::AutomationLane {
+        let entries = points
+            .iter()
+            .enumerate()
+            .map(|(index, &(tick, value))| {
+                let id = crate::midi::entity_id(&format!("01J8ZQ0000000000000000{index:04}"))
+                    .expect("夹具 ULID");
+                (
+                    id,
+                    AutomationPoint {
+                        id,
+                        tick,
+                        value,
+                        curve: CurveType::Linear,
+                    },
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+        yeban_model::AutomationLane {
+            target,
+            points: entries,
+            read_enabled,
+            write_mode: AutomationWriteMode::Off,
+            domain: None,
+        }
+    }
+
+    /// 一条带四条泳道（音量/声相/发送/设备）的音轨夹具。
+    fn lane_track(read_enabled: bool) -> TrackV3 {
+        let track_id = crate::midi::entity_id("01J8ZQ000000000000000000A1").expect("ULID");
+        let edge_id = crate::midi::entity_id("01J8ZQ000000000000000000A2").expect("ULID");
+        let mut track = TrackV3 {
+            id: track_id,
+            ..TrackV3::default()
+        };
+        track.automation_lanes.insert(
+            AutomationTarget::TrackVolume { track_id },
+            lane(
+                AutomationTarget::TrackVolume { track_id },
+                read_enabled,
+                &[(0, -6.0), (960, 0.0)],
+            ),
+        );
+        track.automation_lanes.insert(
+            AutomationTarget::TrackPan { track_id },
+            lane(
+                AutomationTarget::TrackPan { track_id },
+                read_enabled,
+                &[(480, 1.0)],
+            ),
+        );
+        track.automation_lanes.insert(
+            AutomationTarget::SendGain { track_id, edge_id },
+            lane(
+                AutomationTarget::SendGain { track_id, edge_id },
+                true,
+                &[(0, -3.0)],
+            ),
+        );
+        track.automation_lanes.insert(
+            AutomationTarget::DeviceParam {
+                track_id,
+                slot_index: 0,
+                param_index: 0,
+            },
+            lane(
+                AutomationTarget::DeviceParam {
+                    track_id,
+                    slot_index: 0,
+                    param_index: 0,
+                },
+                true,
+                &[(0, 1.0)],
+            ),
+        );
+        track
+    }
+
+    /// ⭐ ADR-0015 D3 判据：只有**读通的** `TrackVolume` / `TrackPan` 泳道进 SMF；其余目标
+    /// 在 SMF 里没有对应控制器号 ⇒ 一个字都不写。写出顺序按 `(tick, 控制器号)`。
+    #[test]
+    fn only_readable_volume_and_pan_lanes_become_control_changes() {
+        let events = track_control_changes(&lane_track(true));
+        assert_eq!(
+            events,
+            vec![
+                ExportControlChange {
+                    tick: 0,
+                    controller: crate::import::CC_CHANNEL_VOLUME,
+                    value: 90
+                },
+                ExportControlChange {
+                    tick: 480,
+                    controller: crate::import::CC_PAN,
+                    value: 127
+                },
+                ExportControlChange {
+                    tick: 960,
+                    controller: crate::import::CC_CHANNEL_VOLUME,
+                    value: 127
+                },
+            ],
+            "音量与声相按 tick 交错；发送增益与设备参数泳道不进 SMF"
+        );
+
+        assert_eq!(
+            track_control_changes(&lane_track(false)),
+            Vec::new(),
+            "关掉读通的自动化在引擎里不参与混音 ⇒ 不许假装生效写成 CC"
+        );
+    }
+
+    /// ⭐ ADR-0015 D3 往返：`MidiExportTrack` 的 CC 表 ⇒ SMF 字节 ⇒ 回读，控制器号/值/
+    /// tick/通道逐项相等；且同一 tick 上 CC 排在 `NoteOn` **之前**。
+    #[test]
+    fn control_change_events_round_trip_and_precede_the_note_on_at_the_same_tick() {
+        let note_id = crate::midi::entity_id("01J8ZQ000000000000000000B1").expect("ULID");
+        let mut note = MidiNote::new(note_id, 0, 60, 480);
+        note.velocity = 100;
+        let export = MidiExport {
+            format: MidiFormat::Parallel,
+            ppq: DEFAULT_PPQ,
+            tempos: Vec::new(),
+            tracks: vec![MidiExportTrack {
+                name: "A".to_owned(),
+                channel: 3,
+                notes: vec![note],
+                control_changes: vec![
+                    ExportControlChange {
+                        tick: 0,
+                        controller: 10,
+                        value: 12,
+                    },
+                    ExportControlChange {
+                        tick: 0,
+                        controller: 7,
+                        value: 100,
+                    },
+                ],
+            }],
+            key_signature: None,
+        };
+        let bytes = export.to_smf_bytes().expect("编码");
+        let parsed = parse_smf(&bytes).expect("回读");
+        assert_eq!(parsed.notes.len(), 1, "夹具的一颗音符");
+        let track = parsed.notes[0].track;
+        assert_eq!(
+            parsed
+                .control_changes
+                .iter()
+                .map(|cc| (cc.track, cc.channel, cc.tick, cc.controller, cc.value))
+                .collect::<Vec<(usize, u8, u64, u8, u8)>>(),
+            vec![(track, 3, 0, 7, 100), (track, 3, 0, 10, 12),],
+            "CC 必须逐字节回读一致，且按控制器号升序（内容全序 ⇒ ⛔ 不靠输入顺序）"
+        );
+        let cc_at = bytes
+            .windows(3)
+            .position(|window| window == [0xB3, 7, 100])
+            .expect("CC 7 的字节必须在文件里");
+        let note_on_at = bytes
+            .windows(3)
+            .position(|window| window == [0x93, 60, 100])
+            .expect("NoteOn 的字节必须在文件里");
+        assert!(
+            cc_at < note_on_at,
+            "同一 tick 上 CC 必须排在 NoteOn 之前（ADR-0015 D3 的排序位）"
+        );
+    }
+
+    /// ⭐ ADR-0015 D3 越界防线：`midly` 的 `u7::new` 是**掩码** ⇒ 128 会静默回绕成 0。
+    /// 编码器必须响亮拒绝，⛔ 不写回绕后的字节。
+    #[test]
+    fn an_out_of_range_control_byte_is_rejected_instead_of_masked() {
+        let export = MidiExport {
+            format: MidiFormat::Parallel,
+            ppq: DEFAULT_PPQ,
+            tempos: Vec::new(),
+            tracks: vec![MidiExportTrack {
+                name: "A".to_owned(),
+                channel: 0,
+                notes: vec![MidiNote::new(
+                    crate::midi::entity_id("01J8ZQ000000000000000000B2").expect("ULID"),
+                    0,
+                    60,
+                    480,
+                )],
+                control_changes: vec![ExportControlChange {
+                    tick: 0,
+                    controller: 128,
+                    value: 200,
+                }],
+            }],
+            key_signature: None,
+        };
+        assert_eq!(
+            export.to_smf_bytes(),
+            Err(MidiError::ControlByteOutOfRange {
+                controller: 128,
+                value: 200
+            }),
+            "越界的控制器字节必须被点名拒绝（掩码会把 128 写成 0）"
         );
     }
 }

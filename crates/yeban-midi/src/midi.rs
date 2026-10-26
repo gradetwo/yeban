@@ -67,6 +67,21 @@ use yeban_model::{EntityId, MidiNote};
 /// 默认 PPQ（夜半的整数时钟基准 [MODEL-AST-001]）。
 pub const DEFAULT_PPQ: u16 = 960;
 
+/// ⭐ ADR-0015 D3：导出侧的一条控制器事件 —— **已经**是 7 位线的 `(controller, value)`。
+///
+/// 为什么这里不放 dB / 双极值：`midi.rs` 是 SMF **编码器**，只认 MIDI 字节语义；
+/// 把自动化泳道换算成 CC 数值是映射层（`export.rs`）的事，两个单位放一起会造出
+/// 第二份会漂移的换算事实源。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ExportControlChange {
+    /// 绝对 tick。
+    pub tick: u64,
+    /// 控制器号（0..=127）。
+    pub controller: u8,
+    /// 控制器值（0..=127）。
+    pub value: u8,
+}
+
 /// 一个待导出的轨道。
 ///
 /// 只有 `PartialEq`（没有 `Eq`）: 内含的 `yeban_model::MidiNote` 带 `probability: Option<f32>`。
@@ -78,6 +93,11 @@ pub struct MidiExportTrack {
     pub channel: u8,
     /// 音符（来自 `yeban_model::MidiNote`, 单一事实源）。
     pub notes: Vec<MidiNote>,
+    /// ⭐ ADR-0015 D3：控制器事件（CC 7 音量 / CC 10 声相，由泳道换算而来）。
+    ///
+    /// 通道取本轨的 `channel`；空表 ⇒ **一个 CC 事件都不写** ⇒ 没有自动化泳道的工程
+    /// 导出字节与改动前逐位相同。
+    pub control_changes: Vec<ExportControlChange>,
 }
 
 /// tempo map 里的一条记录。
@@ -243,6 +263,17 @@ pub enum MidiError {
         /// 分母的以 2 为底的幂；`None` = 没给。
         denominator_pow2: Option<u8>,
     },
+    /// ⭐ ADR-0015 D3：控制器号或控制器值超过 **7 位**字段上限（0..=127）。
+    ///
+    /// 为什么必须拒绝而不是钳位：`midly` 的 `u7::new` 是**掩码**（`raw & 0x7F`）而不是
+    /// 拒绝 ⇒ 越界的 `128` 会静默回绕成 `0`（与 [`Self::InvalidPpq`] 点名过的 `u15`
+    /// 同一个坑）。控制器号与值都是作者给的数据，钳位会**改写**它。
+    ControlByteOutOfRange {
+        /// 越界的控制器号（⛔ 两个字段一起报，读数只有一条）。
+        controller: u8,
+        /// 越界的控制器值。
+        value: u8,
+    },
 }
 
 impl core::fmt::Display for MidiError {
@@ -276,6 +307,9 @@ impl core::fmt::Display for MidiError {
                 "tick {tick} 的拍号只给了一半: numerator = {numerator:?}, \
                  denominator_pow2 = {denominator_pow2:?}"
             ),
+            Self::ControlByteOutOfRange { controller, value } => {
+                write!(f, "控制器字节越界: controller {controller}, value {value}")
+            }
         }
     }
 }
@@ -368,6 +402,14 @@ enum RawEvent {
         channel: u8,
         cents: i16,
     },
+    /// ⭐ ADR-0015 D3：控制器改变（`B0`）。`controller` / `value` 都是 7 位线值
+    /// （0..=127），由泳道换算而来（CC 7 = 音量、CC 10 = 声相）。
+    ControlChange {
+        tick: u64,
+        channel: u8,
+        controller: u8,
+        value: u8,
+    },
     Tempo {
         tick: u64,
         /// tempo map 里的**组号**: 同一条 [`MidiTempo`] 的两个事件共享它 ⇒
@@ -396,6 +438,7 @@ impl RawEvent {
             | Self::NoteOff { tick, .. }
             | Self::Lyric { tick, .. }
             | Self::PitchBend { tick, .. }
+            | Self::ControlChange { tick, .. }
             | Self::Tempo { tick, .. }
             | Self::TimeSignature { tick, .. }
             | Self::KeySignature { tick, .. } => *tick,
@@ -408,7 +451,8 @@ impl RawEvent {
     /// 让"同一工程两次导出字节不同"。
     ///
     /// `rank` 的顺序是
-    /// **NoteOff (0) < Lyric (1) < PitchBend (2) < NoteOn (3) < tempo map (4)**:
+    /// **NoteOff (0) < Lyric (1) < PitchBend (2) < ControlChange (3) < NoteOn (4)
+    /// < tempo map (5)**:
     ///
     /// - 歌词在 `NoteOn` **之前**（SMF 的惯例："文本先于它所描述的音符"）——
     ///   但 SMF 只把歌词锚在**时间**上，⛔ 没有"这条歌词属于哪颗音符"的字段;
@@ -418,6 +462,9 @@ impl RawEvent {
     ///   弯音后的音高发声）、在 `NoteOff` 之后（收尾复位不许跑到关音前面）；
     ///   同 tick 同通道的多条弯音按**音分值**升序排（键的第四元由 `cents` 平移而得），
     ///   因此字节仍只由内容决定;
+    /// - 控制器同样在 `NoteOn` **之前**（ADR-0015 D3：音量/声相要先就位，音符才以
+    ///   该通道状态发声）；同 tick 同通道的多条 CC 按 `(控制器号, 值)` 升序排，
+    ///   第四元由两者拼成 ⇒ 两条**不同**的 CC 永远比不出平局;
     /// - tempo map 的两类事件以 `(组, 组内序)` 排序: 一条记录的 `Tempo` 是组内序 `0`、
     ///   它的拍号是组内序 `1` ⇒ 两者**相邻**, 而回读时"拍号挂到紧邻的前一条
     ///   未配拍号的 tempo"恰好把它配回同一条记录。组号由内容决定
@@ -434,13 +481,25 @@ impl RawEvent {
                 (i32::from(*cents) - i32::from(i16::MIN)) as u32,
                 "",
             ),
+            Self::ControlChange {
+                channel,
+                controller,
+                value,
+                ..
+            } => (
+                3,
+                u32::from(*channel),
+                0,
+                (u32::from(*controller) << 8) | u32::from(*value),
+                "",
+            ),
             Self::NoteOn {
                 channel,
                 key,
                 velocity,
                 ..
             } => (
-                3,
+                4,
                 u32::from(*channel),
                 0,
                 (u32::from(*key) << 8) | u32::from(*velocity),
@@ -450,14 +509,14 @@ impl RawEvent {
                 group,
                 microseconds_per_quarter,
                 ..
-            } => (4, *group, 0, *microseconds_per_quarter, ""),
+            } => (5, *group, 0, *microseconds_per_quarter, ""),
             Self::TimeSignature {
                 group,
                 numerator,
                 denominator_pow2,
                 ..
             } => (
-                4,
+                5,
                 *group,
                 1,
                 (u32::from(*numerator) << 8) | u32::from(*denominator_pow2),
@@ -468,7 +527,7 @@ impl RawEvent {
                 is_minor,
                 ..
             } => (
-                4,
+                5,
                 0,
                 2,
                 (((*sharps_flats as u8) as u32) << 8) | if *is_minor { 1 } else { 0 },
@@ -523,7 +582,27 @@ fn validate_note(note: &MidiNote, channel: u8) -> Result<(), MidiError> {
 
 /// 把一条轨道的音符展开成规范化事件。
 fn track_events(track: &MidiExportTrack) -> Result<Vec<RawEvent>, MidiError> {
-    let mut events = Vec::with_capacity(track.notes.len() * 3);
+    let mut events = Vec::with_capacity(track.notes.len() * 3 + track.control_changes.len());
+    // ⭐ ADR-0015 D3：控制器事件写在**本轨通道**上（自动化泳道属于音轨，MIDI 的通道 CC
+    // 属于通道 —— 一轨一通道 ⇒ 没有第二个通道可选）。`u4::new` / `u7::new` 都是**掩码**，
+    // 越界会静默回绕 ⇒ 先响亮拒绝（同 `InvalidPpq` 的理由）。
+    for cc in &track.control_changes {
+        if track.channel > 15 {
+            return Err(MidiError::ChannelOutOfRange(track.channel));
+        }
+        if cc.controller > 127 || cc.value > 127 {
+            return Err(MidiError::ControlByteOutOfRange {
+                controller: cc.controller,
+                value: cc.value,
+            });
+        }
+        events.push(RawEvent::ControlChange {
+            tick: cc.tick,
+            channel: track.channel,
+            controller: cc.controller,
+            value: cc.value,
+        });
+    }
     for note in &track.notes {
         let channel = note.channel.unwrap_or(track.channel);
         validate_note(note, channel)?;
@@ -742,6 +821,20 @@ impl MidiExport {
                             ),
                         },
                     },
+                    // ⭐ ADR-0015 D3：`B0` 控制器事件。两个字节都是 7 位线
+                    // （`track_events` 已拒绝越界值，这里不再钳位、也不再掩码）。
+                    RawEvent::ControlChange {
+                        channel,
+                        controller,
+                        value,
+                        ..
+                    } => TrackEventKind::Midi {
+                        channel: u4::new(*channel),
+                        message: MidiMessage::Controller {
+                            controller: u7::new(*controller),
+                            value: u7::new(*value),
+                        },
+                    },
                     RawEvent::Tempo {
                         microseconds_per_quarter,
                         ..
@@ -907,7 +1000,7 @@ pub struct ParsedTrackName {
 /// ## 每一类今天有没有落点（`#342` 实测，⛔ 不再用"值一样就不算丢"当判据）
 ///
 /// 判据是"导入路径**有没有把它写进工程**"。`yeban-app` 的 `plan_midi_import` 今天
-/// 能落地的只有四类，且都要求文件**只表达一个值**：
+/// 能落地的是七类（[`crate::import::STORABLE_KINDS`]），前四类都要求文件**只表达一个值**：
 ///
 /// - [`Self::Tempo`] → `project.bpm`（`f64` **单标量**）。只有"唯一条生效 tempo 且
 ///   在 tick 0"能落；**tempo map 无处可住** ⇒ 多条时整类报成 `dropped` 并列出全部值。
@@ -917,7 +1010,12 @@ pub struct ParsedTrackName {
 /// - [`Self::Marker`] → `YebanProjectV1::sections` 的一个 `SectionV3`
 ///   （相邻 marker 之间是一个 tick 区间）。零长度 / 非 UTF-8 的 marker 落不下去，
 ///   逐条报 `dropped`。
-/// - 其余 20 类：模型**没有**对应字段或没有映射规则 ⇒ 今天**全部**是 dropped。
+/// - [`Self::KeySignature`] → `project.key_signature`（**单标量**，同前两类的门槛）。
+/// - [`Self::PitchBend`] → 音符的 `pitch_bend_curve`（ADR-0014 D2：只归属"该 tick 唯一
+///   在发声"的那颗音符，空档 / 复音逐条报 `dropped`）。
+/// - [`Self::ControlChange`] → 音轨的自动化泳道（ADR-0015 D2：**只有** CC 7 →
+///   `TrackVolume`、CC 10 → `TrackPan` 有落点；其余控制器号没有对应目标 ⇒ 逐条 `dropped`）。
+/// - 其余 17 类：模型**没有**对应字段或没有映射规则 ⇒ 今天**全部**是 dropped。
 ///
 /// ⚠ **"值一样"不等于"没丢"**：`tempo` 就算数值恰好等于工程 `bpm`，只要文件不能
 /// 表达成"唯一条 tick 0 tempo"，它仍是丢。
@@ -938,8 +1036,10 @@ pub enum MidiAuxEventKind {
     /// `FF 59` 调号。丢掉：`YebanProjectV1` / `TrackV3` / `MidiNote` **都没有**调号字段，
     /// 也没有 `Op` 写它 ⇒ 模型里没有家（加字段是另一个决定）。
     KeySignature,
-    /// `B0` 控制器。丢掉：自动化泳道只认 `TrackVolume`/`TrackPan`/`SendGain`/
-    /// `DeviceParam`/`Macro` 五个目标，**没有** CC→目标 的映射规则 ⇒ 映射等于发明语义。
+    /// `B0` 控制器。⭐ ADR-0015 D1/D2：解析层**全部读出**（⛔ 不筛控制器号），导入侧
+    /// 只有 **CC 7**（通道音量）与 **CC 10**（声相）有落点 —— 它们换算成自动化泳道的
+    /// 采样点；其余控制器（CC 1 调制、CC 64 延音踏板…）在模型里**没有**对应目标 ⇒
+    /// 逐条 `dropped`。
     ControlChange,
     /// `C0` 音色切换。丢掉：`TrackV3::sampler` 是外部采样器**文件路径**，不是 program
     /// number；两者不是一回事。
@@ -1052,8 +1152,9 @@ impl MidiAuxEventKind {
 /// [`MidiAuxEventKind`] 的计数器：每条被读到的事件**恰加一**。
 ///
 /// ⚠ 本结构只存 **read**（解析器读到的条数）；"丢掉几条"由 `yeban-app` 的
-/// `MidiImportLosses` 成对给出。⭐ `#342`：四类（tempo / 拍号 / 轨名 / marker）现在
-/// **可能** `dropped < read`（内容真的进了工程）；其余 20 类仍是全损。
+/// `MidiImportLosses` 成对给出。⭐ ADR-0014 / ADR-0015 之后**有落点的七类**
+/// （tempo / 拍号 / 轨名 / marker / 调号 / 弯音 / 控制器）**可能** `dropped < read`
+/// （内容真的进了工程）；其余 17 类仍是全损。
 /// ⛔ 判据不许删 —— 它要能在"某一类从有落点退回全损"时自己说出来。
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct MidiAuxEventCounts {
@@ -1131,6 +1232,26 @@ pub struct ParsedMidi {
     pub key_signatures: Vec<ParsedKeySignature>,
     /// 全部 `E0` 弯音事件（**文件顺序**）。
     pub pitch_bends: Vec<ParsedPitchBend>,
+    /// ⭐ ADR-0015 D1：全部 `B0` 控制器事件（**文件顺序**，⛔ 不筛选控制器号）。
+    ///
+    /// 解析层只负责"读到"；**哪些控制器有落点**（CC 7 → 音量、CC 10 → 声相、其余报丢）
+    /// 由 `yeban-midi` 的 `plan_midi_import` 决定（与 [`Self::pitch_bends`] 同一分工）。
+    pub control_changes: Vec<ParsedControlChange>,
+}
+
+/// 回读得到的一条 `B0` 控制器事件（⭐ ADR-0015 D1）。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ParsedControlChange {
+    /// 这条事件所在的 `MTrk` 下标（文件顺序，0 起；⛔ 不是模型的 `EntityId`）。
+    pub track: usize,
+    /// MIDI 通道（0..=15）。
+    pub channel: u8,
+    /// 这条事件在**文件里**的绝对 tick（⛔ 已换算到模型 960 PPQ 之前）。
+    pub tick: u64,
+    /// 控制器号（0..=127）。
+    pub controller: u8,
+    /// 控制器值（0..=127）。
+    pub value: u8,
 }
 
 /// 回读的一条 `FF 59` 调号事件。
@@ -1265,6 +1386,8 @@ pub fn parse_smf(bytes: &[u8]) -> Result<ParsedMidi, MidiError> {
     let mut program_names = Vec::new();
     let mut key_signatures = Vec::new();
     let mut pitch_bends = Vec::new();
+    // ⭐ ADR-0015 D1：`B0` 的内容与计数同时读出（落不落进工程由 `plan_midi_import` 决定）。
+    let mut control_changes = Vec::new();
     let mut end_tick = 0u64;
     for (track_index, track) in smf.tracks.iter().enumerate() {
         let mut tick = 0u64;
@@ -1301,8 +1424,18 @@ pub fn parse_smf(bytes: &[u8]) -> Result<ParsedMidi, MidiError> {
                         MidiMessage::Aftertouch { .. } => {
                             aux_events.record(MidiAuxEventKind::PolyAftertouch);
                         }
-                        MidiMessage::Controller { .. } => {
+                        MidiMessage::Controller { controller, value } => {
                             aux_events.record(MidiAuxEventKind::ControlChange);
+                            // ⭐ ADR-0015 D1：计数之外**还把内容读出来**（控制器号与值都是
+                            // 7 位线，`as_int()` 已在解析层保证 < 128）。落不落进工程由
+                            // `plan_midi_import` 决定，这里 ⛔ 不筛控制器号。
+                            control_changes.push(ParsedControlChange {
+                                track: track_index,
+                                channel,
+                                tick,
+                                controller: controller.as_int(),
+                                value: value.as_int(),
+                            });
                         }
                         MidiMessage::ProgramChange { .. } => {
                             aux_events.record(MidiAuxEventKind::ProgramChange);
@@ -1490,6 +1623,7 @@ pub fn parse_smf(bytes: &[u8]) -> Result<ParsedMidi, MidiError> {
         empty_lyrics,
         key_signatures,
         pitch_bends,
+        control_changes,
     })
 }
 
@@ -1533,6 +1667,7 @@ pub fn track_from_notes(
         name: name.into(),
         channel,
         notes: notes.to_vec(),
+        control_changes: Vec::new(),
     }
 }
 
@@ -1796,6 +1931,19 @@ mod tests {
             "夹具在首轨 tick 0 有一条 E0 弯音"
         );
         assert_eq!(parsed.aux_events.count(MidiAuxEventKind::Tempo), 2);
+        // ⭐ ADR-0015 D1：夹具在首轨 tick 0 有一条 `B0 07 64`（CC 7 = 100）—— 计数之外
+        // 内容也必须读出来（控制器号与值逐字面）。
+        assert_eq!(
+            parsed.control_changes,
+            vec![ParsedControlChange {
+                track: 0,
+                channel: 0,
+                tick: 0,
+                controller: 7,
+                value: 100,
+            }],
+            "夹具在首轨 tick 0 有一条 CC 7 = 100"
+        );
         assert_eq!(parsed.aux_events.count(MidiAuxEventKind::TimeSignature), 2);
         assert_eq!(parsed.aux_events.count(MidiAuxEventKind::TrackName), 3);
         assert_eq!(parsed.aux_events.count(MidiAuxEventKind::Marker), 2);
@@ -2720,7 +2868,7 @@ mod tests {
     /// 判据 (类别⑥ 通道一致性 / 字节全序): 同一 tick 上音符的**关闭**必须先于
     /// **开启**写出 —— 跨通道时也一样。
     ///
-    /// `RawEvent::tie_break` 给 `NoteOff` 的 rank 是 `0`、`NoteOn` 是 `1`，
+    /// `RawEvent::tie_break` 给 `NoteOff` 的 rank 是 `0`、`NoteOn` 是 `4`，
     /// 这条全序就是"先关后开"的实现。补的是哪个缺口（本票注入实测）：把
     /// `NoteOff` 的 rank 从 `0` 改成 `1`（注入 M21）后全部判据**保持绿** ——
     /// 既有的 `note_off_precedes_note_on_at_the_same_tick` 用的是**同通道同音高**
@@ -2756,6 +2904,54 @@ mod tests {
             close < open,
             "同一 tick 480 上必须先写 NoteOff (ch1) 再写 NoteOn (ch0); \
              实际 NoteOff 在 {close}, NoteOn 在 {open}: {payload:02X?}"
+        );
+    }
+
+    /// 判据 (⭐ ADR-0015 D3 的排序位): 同一 tick 上 `ControlChange` 必须排在
+    /// `NoteOff` / `Lyric` **之后**、`NoteOn` **之前** —— 先关掉上一颗、写完该 tick 的
+    /// 歌词，再让新音符一发声就带上新音量（CC 若排在 NoteOn 之后，那颗音符的开头一帧
+    /// 仍按旧控制器值发声）。
+    ///
+    /// 补的是哪个缺口：把 `tie_break` 里 CC 的 rank 从 `3` 顶成 `4`（与 `NoteOn` 同 rank）
+    /// 后，同 tick 的比较会退到通道/键值分支 ⇒ 只有这条按内容定位字节的判据能看见。
+    #[test]
+    fn a_control_change_lands_between_the_lyric_and_the_note_on_at_one_tick() {
+        let mut starting = note(480, 62, 480, 100);
+        starting.syllable = Some("di".to_owned());
+        let source = export(
+            MidiFormat::SingleTrack,
+            vec![
+                track_from_notes("A", 0, &[note(0, 60, 480, 100)]),
+                MidiExportTrack {
+                    name: "B".to_owned(),
+                    channel: 0,
+                    notes: vec![starting],
+                    control_changes: vec![ExportControlChange {
+                        tick: 480,
+                        controller: 7,
+                        value: 100,
+                    }],
+                },
+            ],
+        );
+        let bytes = source.to_smf_bytes().expect("导出");
+        let chunks = track_chunks(&bytes).expect("chunk 布局");
+        let payload = &bytes[chunks[1].payload.clone()];
+        let find = |needle: &[u8]| {
+            payload
+                .windows(needle.len())
+                .position(|window| window == needle)
+                .unwrap_or_else(|| panic!("负载里找不到 {needle:02X?}: {payload:02X?}"))
+        };
+        // tick 480 上四件事同 tick：A 轨的音符收尾、B 轨的歌词、CC 7、B 轨的 NoteOn。
+        let close = find(&[0x80, 0x3C, 0x00]); // NoteOff ch0 key 60
+        let lyric = find(&[0xFF, 0x05, 0x02, b'd', b'i']); // Lyric "di"
+        let change = find(&[0xB0, 7, 100]); // CC 7 = 100
+        let open = find(&[0x90, 0x3E, 100]); // NoteOn ch0 key 62 vel 100
+        assert!(
+            close < lyric && lyric < change && change < open,
+            "同一 tick 上必须 NoteOff < Lyric < ControlChange < NoteOn; \
+             实际 {close} / {lyric} / {change} / {open}: {payload:02X?}"
         );
     }
 
@@ -2833,8 +3029,15 @@ mod tests {
                 },
                 "tick 0 的拍号只给了一半: numerator = Some(4), denominator_pow2 = None",
             ),
+            (
+                MidiError::ControlByteOutOfRange {
+                    controller: 128,
+                    value: 200,
+                },
+                "控制器字节越界: controller 128, value 200",
+            ),
         ];
-        assert_eq!(cases.len(), 14, "MidiError 的变体数");
+        assert_eq!(cases.len(), 15, "MidiError 的变体数");
         assert_every_midi_error_arm_is_covered(&cases);
         for (error, expected) in cases {
             assert_eq!(error.to_string(), expected, "{error:?} 的 Display 文案");
@@ -2968,6 +3171,7 @@ mod tests {
                 name: String::new(),
                 channel: 16,
                 notes: vec![note(0, 200, 480, 100)],
+                control_changes: Vec::new(),
             }],
             key_signature: None,
         };
@@ -3001,9 +3205,9 @@ mod tests {
     /// **编译期穷举探针**：给 `MidiError` 的每个变体一个唯一编号 ⇒ **新增一个变体**
     /// 就让这个 `match` 变成非穷举、**编译失败**。
     ///
-    /// ⚠️ 为什么需要它：黄金表里的 `assert_eq!(cases.len(), 14, …)` 只自校验**表**的
+    /// ⚠️ 为什么需要它：黄金表里的 `assert_eq!(cases.len(), 15, …)` 只自校验**表**的
     /// 长度，⛔ 读不到枚举本身 —— "加了变体、也加了产线 `Display` 臂、却忘了往表里加
-    /// 一行"这种情形它抓不到（表长仍是 14）。下面的
+    /// 一行"这种情形它抓不到（表长仍是 15）。下面的
     /// `assert_every_midi_error_arm_is_covered` 把表与穷举探针绑在一起。
     /// ⛔ **不许给这个 `match` 加 `_ =>` 通配臂**（R51）：加了以后新增变体也能编译过，
     /// 探针立刻**静默失效**，而**所有判据仍然全绿**。
@@ -3023,6 +3227,7 @@ mod tests {
             MidiError::UnclosedNote { .. } => 11,
             MidiError::UnmatchedNoteOff { .. } => 12,
             MidiError::HalfTimeSignature { .. } => 13,
+            MidiError::ControlByteOutOfRange { .. } => 14,
         }
     }
 
@@ -3035,7 +3240,7 @@ mod tests {
         arms.sort_unstable();
         assert_eq!(
             arms,
-            (0..14).collect::<Vec<u8>>(),
+            (0..15).collect::<Vec<u8>>(),
             "黄金表必须逐臂恰好一次（缺一臂或不重复都红）"
         );
     }
@@ -3062,9 +3267,10 @@ mod tests {
                     name: "A".to_owned(),
                     channel: 0,
                     notes: Vec::new(),
+                    control_changes: Vec::new(),
                 }
             ),
-            "MidiExportTrack { name: \"A\", channel: 0, notes: [] }"
+            "MidiExportTrack { name: \"A\", channel: 0, notes: [], control_changes: [] }"
         );
         assert_eq!(
             format!(
@@ -3099,6 +3305,7 @@ mod tests {
                     empty_lyrics: 0,
                     key_signatures: Vec::new(),
                     pitch_bends: Vec::new(),
+                    control_changes: Vec::new(),
                 }
             ),
             "ParsedMidi { format: Parallel, ppq: 480, tracks: 0, aux_events: \
@@ -3106,7 +3313,7 @@ mod tests {
              0, 0, 0, 0, 0, 0, 0] }, tempos: [], track_names: [], instrument_names: [], \
              program_names: [], markers: [], end_tick: 0, \
              notes: [], lyrics: [], non_utf8_lyrics: 0, empty_lyrics: 0, key_signatures: [], \
-             pitch_bends: [] }"
+             pitch_bends: [], control_changes: [] }"
         );
         assert_eq!(
             format!(
@@ -3169,6 +3376,7 @@ mod tests {
                 probability: Some(f32::NAN),
                 ..MidiNote::new(note_id, 0, 60, 480)
             }],
+            control_changes: Vec::new(),
         };
         assert!(
             with_nan() != with_nan(),
@@ -3195,6 +3403,7 @@ mod tests {
                 probability: Some(0.5),
                 ..MidiNote::new(note_id, 0, 60, 480)
             }],
+            control_changes: Vec::new(),
         };
         assert!(finite() == finite(), "有限概率 ⇒ 两份相同的轨道必须相等");
     }
@@ -3216,6 +3425,7 @@ mod tests {
                 probability: Some(probability),
                 ..MidiNote::new(note_id, 0, 60, 480)
             }],
+            control_changes: Vec::new(),
         };
 
         // IEEE：`-0.0 == 0.0` ⇒ 两个**符号位不同**的轨道必须相等。
@@ -3242,6 +3452,7 @@ mod tests {
             name: "A".to_owned(),
             channel: 0,
             notes: vec![MidiNote::new(note_id, 0, 60, 480)],
+            control_changes: Vec::new(),
         };
         assert!(none != track(0.0), "None 与 Some(0.0) 必须不等");
     }
@@ -3265,6 +3476,7 @@ mod tests {
             name: "A".to_owned(),
             channel: 3,
             notes: vec![note],
+            control_changes: Vec::new(),
         };
 
         let mut clone = original.clone();
@@ -3300,6 +3512,7 @@ mod tests {
             name: name.to_owned(),
             channel,
             notes: Vec::new(),
+            control_changes: Vec::new(),
         };
         let forward = MidiExport {
             format: MidiFormat::Parallel,
@@ -3427,7 +3640,7 @@ mod tests {
         assert!(
             std::panic::catch_unwind(|| assert_every_midi_error_arm_is_covered(&too_short))
                 .is_err(),
-            "缺臂的坏表必须被拒（本 crate 有 14 个变体）"
+            "缺臂的坏表必须被拒（本 crate 有 15 个变体）"
         );
     }
 

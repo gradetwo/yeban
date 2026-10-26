@@ -754,13 +754,13 @@ fn filled_export_imports_its_four_lyrics_and_reexports_them_at_the_same_ticks() 
     let bytes = std::fs::read(&filled).expect("读 filled.mid");
     assert_eq!(
         bytes.len(),
-        159,
-        "filled 导出的字节契约是 159 B (含 tempo_map 变更点)"
+        168,
+        "filled 导出的字节契约是 168 B (含 tempo_map 与 CC 7 音量点)"
     );
     assert_eq!(
         AssetHash::of_bytes(&bytes).as_str(),
-        "4825c0a7bab0362547836af3249acac5e7d2de3fef812f4620c426f92aef7da2",
-        "导出侧一个字节都不许变（#312 的 143 B 契约）"
+        "8643d792aa5b0ba1aa419f0b2799084a0749bf5454cb8b22b5d474b78e7eb265",
+        "导出侧一个字节都不许变（#312 的 143 B 契约 + tempo map 16 B + CC 7 9 B）"
     );
     assert_eq!(
         occurrences(&bytes, &[0xFF, 0x05]),
@@ -1768,7 +1768,7 @@ fn the_import_reports_every_aux_event_kind_as_read_and_dropped() {
         (MidiAuxEventKind::TrackName, 3, 3),
         (MidiAuxEventKind::Marker, 2, 1),
         (MidiAuxEventKind::KeySignature, 1, 1),
-        (MidiAuxEventKind::ControlChange, 1, 1),
+        (MidiAuxEventKind::ControlChange, 1, 0),
         (MidiAuxEventKind::ProgramChange, 1, 1),
         (MidiAuxEventKind::PitchBend, 1, 1),
         (MidiAuxEventKind::PolyAftertouch, 1, 1),
@@ -1807,10 +1807,12 @@ fn the_import_reports_every_aux_event_kind_as_read_and_dropped() {
         );
         if dropped_want < read_want {
             stored_kinds += 1;
-            assert!(
-                line.contains(&format!("{key}-reason=")),
-                "有损失但没落地全量的类别必须带原因（{key}）: {line}"
-            );
+            if dropped_want > 0 {
+                assert!(
+                    line.contains(&format!("{key}-reason=")),
+                    "有损失但没落地全量的类别必须带原因（{key}）: {line}"
+                );
+            }
         }
         if dropped_want > 0 {
             assert!(
@@ -1819,7 +1821,10 @@ fn the_import_reports_every_aux_event_kind_as_read_and_dropped() {
             );
         }
     }
-    assert_eq!(stored_kinds, 1, "本夹具里只有 marker 部分落地（1/2）");
+    assert_eq!(
+        stored_kinds, 2,
+        "本夹具里 marker 部分落地（1/2），CC 7 消费落地（1/1）"
+    );
 
     // ── ④ 后果：重导出不再带那些事件，conductor / 轨分区 / 通道被工程的取代 ──
     let out_bytes = std::fs::read(&out).expect("读重导出");
@@ -1838,8 +1843,6 @@ fn the_import_reports_every_aux_event_kind_as_read_and_dropped() {
         (vec![0xFF, 0x54], "smpte offset"),
         (vec![0xFF, 0x60], "unknown meta"),
         (vec![0xFF, 0x7F], "sequencer specific"),
-        // ⚠ 不用单字节 status：`MThd` 的 PPQ 960 = `03 C0` 会让 `C0` 假阳性。
-        (vec![0xB0, 7, 100], "CC"),
         (vec![0xC0, 33], "program change"),
         (vec![0xD0, 40], "channel aftertouch"),
         (vec![0xA0, 60, 33], "poly aftertouch"),
@@ -1853,6 +1856,11 @@ fn the_import_reports_every_aux_event_kind_as_read_and_dropped() {
             "重导出不许再有 {label}（源文件里有，导入没消费）"
         );
     }
+    assert_eq!(
+        occurrences(&out_bytes, &[0xB0, 7, 100]),
+        1,
+        "CC 7 经音量泳道消费并如实重导出"
+    );
     assert_eq!(
         occurrences(&out_bytes, &[0xFF, 0x51]),
         1,
@@ -1910,10 +1918,18 @@ fn the_import_reports_every_aux_event_kind_as_read_and_dropped() {
     );
     assert_eq!(exported.aux_events.count(MidiAuxEventKind::TrackName), 3);
     assert_eq!(
-        exported.aux_events.total(),
-        5,
-        "重导出的 aux 事件只有 tempo 1 + 拍号 1 + 轨名 3"
+        exported.aux_events.count(MidiAuxEventKind::ControlChange),
+        1,
+        "重导出带回 1 条 CC 7"
     );
+    assert_eq!(
+        exported.aux_events.total(),
+        6,
+        "重导出的 aux 事件包含 tempo 1 + 拍号 1 + 轨名 3 + CC 1"
+    );
+    assert_eq!(exported.control_changes.len(), 1);
+    assert_eq!(exported.control_changes[0].controller, 7);
+    assert_eq!(exported.control_changes[0].value, 100);
 
     eprintln!(
         "[midi-round-trip/aux-readout] 源 316 B：24 类 aux（29 条）+ 通道 {{0,1}} + 3 轨 ⇒ \

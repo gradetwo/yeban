@@ -16,6 +16,9 @@ path = "src/lib.rs"
 # 纯数据模型（零 GUI、零系统库）。本 crate **只**需要它 + `midly` ⇒ 因此 MCP 也能依赖它。
 yeban-model.workspace = true
 midly = { workspace = true, features = ["std"] }
+# ADR-0015 D2 的 CC 7 → dB 换算走纯 Rust `log10`（与 `yeban-dsp` / `yeban-engine`
+# 同口径 [ARCH-DET-001]：不依赖平台 libm，跨架构结果一致）。
+libm.workspace = true
 
 [lints]
 workspace = true
