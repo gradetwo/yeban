@@ -11171,4 +11171,24 @@ $ python3 scripts/gates/check_phase_status.py   # 退出 0
   - `cargo fmt --check`: 格式化通过。
   - `python3 scripts/guards/policy_check.py`: 18 项全部通过。
 
+---
+
+## 2026-10-27：拍号变更对离线母带渲染样本一致性 A/B 测试闭环落地
+
+- **需求规范 ID**: `[ARCH-DET-001]` `[MCP-TOOL-008]`
+- **实施工作线**: `line/render-time-signature-parity` (`e32b44fd`)，经 subagent `qodercli` (`Qwen3.8-Flash`) 自主研发与本地轻量门禁通过后由集成者落地。
+- **背景与目标**:
+  - 闭环 `handover-latest.md` §0.5.8 line 110 列出的待办事项：`拍号对母带的执行的 A/B`。
+  - 在 DAW 声学与乐理模型中，工程拍号（如 4/4、3/4、6/8）仅决定小节线、拍子划分与视觉节拍网格；MIDI 音符在绝对 tick 时间轴上发声。在离线母带渲染中，除非显式启用节拍器（离线默认不启用），工程拍号的修改绝不应影响音频 PCM 数据或样本级别哈希。
+- **实施**:
+  - `crates/yeban-mcp/tests/render_master.rs`:
+    - 新增测试 `time_signature_change_leaves_master_audio_bit_identical`：
+      - 基于标准 `Spec::default()` 渲染基线 4/4 工程，取得 `masterDigest` 与 `frames`。
+      - 分别构建拍号为 3/4 与 6/8 的变体工程，使用 `yeban_render_master` 执行渲染。
+      - 正向断言：基线 4/4、变体 3/4、变体 6/8 三者的 `masterDigest` 逐位完全一致（`0/64` 差异），总帧数 `frames` 完全一致。
+- **验证**:
+  - `cargo fmt --check`: 格式化通过。
+  - `python3 scripts/guards/policy_check.py`: 18 项全部通过。
+
+
 
