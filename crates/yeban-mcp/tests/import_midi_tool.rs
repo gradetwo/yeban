@@ -378,7 +378,130 @@ fn test_import_midi_multitrack_split_vs_no_split() {
     let _ = fs::remove_file(smf_path);
 }
 
-/// 导体轨标题（`FF 03` @track 0）与版权（`FF 02` @track 0）都写进 SMF。
+/// 造一份**带唯一 tick 0 调号**（`FF 59`：2 升、大调 = D Major）的 SMF（`Parallel`：
+/// track 0 是导体轨，调号写在导体轨首元事件）。
+fn create_key_signature_smf_file() -> PathBuf {
+    use yeban_midi::midi::{DEFAULT_PPQ, MidiExport, MidiExportTrack, MidiFormat, MidiTempo};
+    let export = MidiExport {
+        format: MidiFormat::Parallel,
+        ppq: DEFAULT_PPQ,
+        tempos: vec![MidiTempo::with_time_signature(120.0, 4, 2)],
+        tracks: vec![MidiExportTrack {
+            name: "Piano".to_string(),
+            channel: 0,
+            notes: vec![yeban_model::MidiNote::new(EntityId::new(), 0, 60, 480)],
+            control_changes: Vec::new(),
+        }],
+        key_signature: Some(yeban_model::project::KeySignature {
+            sharps_flats: 2,
+            is_minor: false,
+        }),
+        title: None,
+        copyright: None,
+    };
+    let bytes = export.to_smf_bytes().expect("SMF 编码");
+    let path = std::env::temp_dir().join(format!(
+        "yeban-test-import-keysig-{}-{}.mid",
+        std::process::id(),
+        EntityId::new().to_canonical_string()
+    ));
+    fs::write(&path, bytes).expect("写带调号的 SMF 文件");
+    path
+}
+
+/// 一个**没有内容**且 `key_signature` 为空的工程（调号采纳门槛：目标工程无内容，
+/// ⛔ 不覆盖已有值，非空工程一位都不动）。
+fn project_without_key_signature() -> YebanProjectV1 {
+    let mut project = yeban_midi::import::content_free_project();
+    project.key_signature = None;
+    project
+}
+
+/// 判据（[MCP-TOOL-EXT-IMPORT-MIDI] / [ARCH-EXT-002]）：唯一 tick 0 调号在**空工程**上
+/// 被采纳进 `project.key_signature`，响应逐条回报 `adoptedKeySignature`；dryRun 不落盘；
+/// 一次 undo 完全还原。
+#[test]
+fn test_import_midi_adopts_key_signature() {
+    let smf_path = create_key_signature_smf_file();
+    let mut dispatcher = dispatcher_with_project(project_without_key_signature());
+
+    let before_bytes = project_bytes(&dispatcher);
+    let before_commits = dispatcher.domain().commit_count();
+
+    // 1. dryRun：预览如实报出将要采纳的调号，工程一位都不动。
+    let dry_res = call_tool(
+        &mut dispatcher,
+        "yeban_import_midi",
+        json!({
+            "path": smf_path.to_str().expect("str"),
+            "dryRun": true,
+        }),
+    );
+    assert_eq!(dry_res["status"], "success", "{dry_res}");
+    let preview = &dry_res["data"]["preview"];
+    assert_eq!(
+        preview["adoptedKeySignature"],
+        json!({ "sharpsFlats": 2, "isMinor": false }),
+        "{preview}"
+    );
+    assert_eq!(dry_res["data"]["stateUnchanged"], true);
+    assert_eq!(dispatcher.domain().commit_count(), before_commits);
+    assert_eq!(project_bytes(&dispatcher), before_bytes);
+    {
+        let project = dispatcher.domain().active_project().expect("活跃工程");
+        assert_eq!(
+            project.key_signature, None,
+            "dryRun 不得写 project.key_signature"
+        );
+    }
+
+    // 2. 真实执行：响应如实回报，且调号确实进活跃工程。
+    let real_res = call_tool(
+        &mut dispatcher,
+        "yeban_import_midi",
+        json!({
+            "path": smf_path.to_str().expect("str"),
+        }),
+    );
+    assert_eq!(real_res["status"], "success", "{real_res}");
+    let data = &real_res["data"];
+    assert_eq!(data["applied"], true);
+    assert_eq!(
+        data["adoptedKeySignature"],
+        json!({ "sharpsFlats": 2, "isMinor": false }),
+        "{data}"
+    );
+    // 采纳的那条调号整类落地（`dropped == 0`），⛔ 不重复计成丢失。
+    assert_eq!(data["losses"]["aux_events"]["key-signature"]["read"], 1);
+    assert_eq!(data["losses"]["aux_events"]["key-signature"]["dropped"], 0);
+    {
+        let project = dispatcher.domain().active_project().expect("活跃工程");
+        assert_eq!(
+            project.key_signature,
+            Some(yeban_model::project::KeySignature {
+                sharps_flats: 2,
+                is_minor: false,
+            }),
+            "调号必须在活跃工程生效"
+        );
+    }
+    assert_eq!(dispatcher.domain().commit_count(), before_commits + 1);
+    assert_ne!(project_bytes(&dispatcher), before_bytes);
+
+    // 3. 撤销：一次 undo 完全还原，调号回到 None。
+    let undo_res = call_tool(&mut dispatcher, "yeban_undo", json!({"steps": 1}));
+    assert_eq!(undo_res["status"], "success", "{undo_res}");
+    assert_eq!(project_bytes(&dispatcher), before_bytes);
+    {
+        let project = dispatcher.domain().active_project().expect("活跃工程");
+        assert_eq!(
+            project.key_signature, None,
+            "撤销后 project.key_signature 必须还原"
+        );
+    }
+
+    let _ = fs::remove_file(smf_path);
+}
 const META_TITLE: &str = "夜半 · Imported Title";
 const META_COPYRIGHT: &str = "(c) 2026 Yeban Test Author";
 

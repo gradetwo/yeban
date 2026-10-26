@@ -20,7 +20,7 @@ use serde_json::{Map, Value, json};
 
 use yeban_midi::import::{
     MODEL_PPQ, MidiImportError, MidiImportLosses, MidiImportOptions, MidiLyricCounts, destination,
-    plan_midi_import,
+    import_target_is_empty, plan_midi_import,
 };
 use yeban_midi::midi::{MidiAuxEventKind, parse_smf};
 use yeban_model::project::YebanProjectV1;
@@ -58,6 +58,8 @@ pub struct MidiImport {
     pub adopted_tempo_bpm: Option<f64>,
     /// 采纳到工程全局 `time_signature` 的拍号 `(numerator, denominator)`（未采纳为 `None`）。
     pub adopted_time_signature: Option<(u8, u8)>,
+    /// 采纳到工程全局 `key_signature` 的调号 `(sharps_flats, is_minor)`（未采纳为 `None`）。
+    pub adopted_key_signature: Option<(i8, bool)>,
     /// 采纳到目标音轨 `TrackV3::name` 的轨名（未采纳为 `None`）。
     pub adopted_track_name: Option<String>,
     /// 采纳到工程全局 `title` 的标题（未采纳为 `None`）。
@@ -186,6 +188,7 @@ pub fn plan(project: &YebanProjectV1, arguments: &Map<String, Value>) -> Result<
 
     let mut adopted_tempo_bpm = None;
     let mut adopted_time_signature = None;
+    let mut adopted_key_signature = None;
     let mut adopted_track_name = None;
     let mut adopted_title = None;
     let mut adopted_copyright = None;
@@ -198,6 +201,11 @@ pub fn plan(project: &YebanProjectV1, arguments: &Map<String, Value>) -> Result<
             } => {
                 adopted_time_signature =
                     Some((new_time_signature.numerator, new_time_signature.denominator));
+            }
+            Op::SetKeySignature {
+                new_key_signature, ..
+            } => {
+                adopted_key_signature = new_key_signature.map(|ks| (ks.sharps_flats, ks.is_minor));
             }
             Op::SetTrackName { new_name, .. } => {
                 adopted_track_name = Some(new_name.clone());
@@ -228,6 +236,22 @@ pub fn plan(project: &YebanProjectV1, arguments: &Map<String, Value>) -> Result<
             project.time_signature.numerator,
             project.time_signature.denominator,
         ));
+    }
+    // ⭐ [ARCH-EXT-002]：调号的采纳门槛是"目标工程无内容"（同 tempo / 拍号）。
+    // ops 里没有 `SetKeySignature` 时（文件唯一 tick 0 调号与工程现值相同 ⇒ 不发空操作）
+    // 回退读工程现值；非空工程会把整类记为 `dropped`，故 `dropped == 0` 已隐含目标为空。
+    let target_empty = import_target_is_empty(project);
+    if adopted_key_signature.is_none()
+        && target_empty
+        && plan
+            .losses
+            .aux_events
+            .get(&MidiAuxEventKind::KeySignature)
+            .is_some_and(|c| c.read > 0 && c.dropped == 0)
+    {
+        adopted_key_signature = project
+            .key_signature
+            .map(|ks| (ks.sharps_flats, ks.is_minor));
     }
     if adopted_track_name.is_none()
         && plan
@@ -278,6 +302,7 @@ pub fn plan(project: &YebanProjectV1, arguments: &Map<String, Value>) -> Result<
         losses: plan.losses,
         adopted_tempo_bpm,
         adopted_time_signature,
+        adopted_key_signature,
         adopted_track_name,
         adopted_title,
         adopted_copyright,
@@ -310,6 +335,7 @@ pub fn describe(import: &MidiImport) -> Value {
         "lossTotal": import.losses.loss_total(),
         "adoptedTempoBpm": import.adopted_tempo_bpm,
         "adoptedTimeSignature": import.adopted_time_signature.map(|(n, d)| json!({ "numerator": n, "denominator": d })),
+        "adoptedKeySignature": import.adopted_key_signature.map(|(sf, m)| json!({ "sharpsFlats": sf, "isMinor": m })),
         "adoptedTrackName": import.adopted_track_name,
         "adoptedTitle": import.adopted_title,
         "adoptedCopyright": import.adopted_copyright,
