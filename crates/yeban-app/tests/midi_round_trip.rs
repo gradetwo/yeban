@@ -1919,17 +1919,22 @@ fn the_import_reports_every_aux_event_kind_as_read_and_dropped() {
     assert_eq!(exported.aux_events.count(MidiAuxEventKind::TrackName), 3);
     assert_eq!(
         exported.aux_events.count(MidiAuxEventKind::ControlChange),
-        1,
-        "重导出带回 1 条 CC 7"
+        4,
+        "重导出带回 4 条 CC 7（3 条工程既有 + 1 条导入消费）"
     );
     assert_eq!(
         exported.aux_events.total(),
-        6,
-        "重导出的 aux 事件包含 tempo 1 + 拍号 1 + 轨名 3 + CC 1"
+        9,
+        "重导出的 aux 事件包含 tempo 1 + 拍号 1 + 轨名 3 + CC 4"
     );
-    assert_eq!(exported.control_changes.len(), 1);
-    assert_eq!(exported.control_changes[0].controller, 7);
-    assert_eq!(exported.control_changes[0].value, 100);
+    assert_eq!(exported.control_changes.len(), 4);
+    assert!(
+        exported
+            .control_changes
+            .iter()
+            .any(|cc| cc.controller == 7 && cc.value == 100),
+        "导入的 CC 7 (value=100) 如实重导出"
+    );
 
     eprintln!(
         "[midi-round-trip/aux-readout] 源 316 B：24 类 aux（29 条）+ 通道 {{0,1}} + 3 轨 ⇒ \
