@@ -497,16 +497,13 @@ fn export_import_export_round_trips_every_note_item_by_item() {
     let bytes2 = std::fs::read(&f2).expect("读 F2");
     let n2 = note_multiset(&bytes2);
 
-    // ── ①  逐项等值：`n2 == n1 ⊎ collapse(n1)`（多重集相等 ⇒ 每颗音符都在） ──
+    // ── ①  逐项等值：`n2 == n1 ⊎ n1`（多重集相等 ⇒ 每颗音符都在，通道完整保留） ──
     let mut expected = n1.clone();
-    expected.extend(
-        n1.iter()
-            .map(|&(_, key, velocity, start, duration)| (0_u8, key, velocity, start, duration)),
-    );
+    expected.extend(n1.clone());
     expected.sort_unstable();
     assert_eq!(
         n2, expected,
-        "往返后 = 原有 ⊎ 导入的副本（音高/力度/起止/时值逐项相同；导入副本的通道全为 0）"
+        "往返后 = 原有 ⊎ 导入的副本（音高/力度/起止/时值/通道逐项相同）"
     );
     assert_eq!(n2.len(), 18, "音符数恰好翻倍: 9 + 9");
 
@@ -532,7 +529,7 @@ fn export_import_export_round_trips_every_note_item_by_item() {
         );
     }
 
-    // ── ② 损耗：导入的**副本**丢掉轨归属与通道（第二条轨自己的音符一颗不动） ──
+    // ── ② 损耗：导入的**副本**丢掉轨归属（堆在落点轨），但音符**通道完整保留** ──
     assert_eq!(
         track_chunks(&bytes2).expect("chunk").len(),
         4,
@@ -540,15 +537,15 @@ fn export_import_export_round_trips_every_note_item_by_item() {
     );
     assert_eq!(
         n2.iter().filter(|note| note.0 == 1).count(),
-        3,
-        "第二条 MIDI 轨自己的 3 颗音符原样留在通道 1: {n2:?}"
+        6,
+        "第二条 MIDI 轨自己的 3 颗音符 + 导入的 3 颗通道 1 副本保留在通道 1: {n2:?}"
     );
     assert_eq!(
         n2.iter().filter(|note| note.0 == 0).count(),
-        15,
-        "第一条轨 = 原有 6 颗 + 导入的 9 颗（全部堆在同一个落点上）: {n2:?}"
+        12,
+        "第一条轨原有 6 颗 + 导入的 6 颗通道 0 副本保留在通道 0: {n2:?}"
     );
-    // 这三颗**来自第二条轨**（文件里是通道 1）：原件留在通道 1，副本落在通道 0。
+    // 这三颗来自第二条轨（文件里是通道 1）：原件和副本均在通道 1。
     for note in [(36_u8, 33_u8, 240_u64), (38, 77, 120), (41, 127, 960)] {
         let (key, velocity, duration) = note;
         let (start, duration) = match key {
@@ -556,13 +553,12 @@ fn export_import_export_round_trips_every_note_item_by_item() {
             38 => (2160, duration),
             _ => (2868, duration),
         };
-        assert!(
-            n2.contains(&(1, key, velocity, start, duration)),
-            "原件必须留在自己的通道 1: key={key} {n2:?}"
-        );
-        assert!(
-            n2.contains(&(0, key, velocity, start, duration)),
-            "损耗：副本丢掉了轨归属/通道 ⇒ 落在通道 0: key={key} {n2:?}"
+        assert_eq!(
+            n2.iter()
+                .filter(|n| **n == (1, key, velocity, start, duration))
+                .count(),
+            2,
+            "原件与副本均完整保留在通道 1: key={key} {n2:?}"
         );
     }
     assert!(
@@ -1854,9 +1850,12 @@ fn the_import_reports_every_aux_event_kind_as_read_and_dropped() {
         (Some(4), Some(2)),
         "4/4 = 工程的拍号（文件的 6/8、3/4 都被忽略）"
     );
-    assert!(
-        exported.notes.iter().all(|note| note.channel == 0),
-        "通道 {{0,1}} ⇒ 全部 0（模型没有 channel 字段）"
+    let exported_channels: std::collections::BTreeSet<u8> =
+        exported.notes.iter().map(|note| note.channel).collect();
+    assert_eq!(
+        exported_channels,
+        std::collections::BTreeSet::from([0, 1]),
+        "通道 {{0, 1}} 完整保留在音符上并重导出"
     );
     assert_eq!(exported.lyrics.len(), 1, "只保留 tick 480 的唯一归属词");
     assert_eq!(exported.lyrics[0].text, "re");
