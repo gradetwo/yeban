@@ -432,6 +432,16 @@
         },
         {
           "required": [
+            "SetKeySignature"
+          ],
+          "properties": {
+            "SetKeySignature": {
+              "type": "object"
+            }
+          }
+        },
+        {
+          "required": [
             "SetAsset"
           ],
           "properties": {

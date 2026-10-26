@@ -156,6 +156,7 @@ fn exported_bytes_have_literal_smf1_header_and_terminators() {
         tempos: Vec::new(),
         // 轨道名为空 ⇒ 不写 TrackName meta ⇒ 轨首就是音符事件的 delta。
         tracks: vec![track_from_notes("", 0, &[note(480, 60, 240)])],
+        key_signature: None,
     };
     let bytes = export.to_smf_bytes().expect("编码");
 
@@ -427,6 +428,7 @@ fn encoder_boundaries_are_rejected_precisely() {
             channel: 0,
             notes: vec![note(0, 60, 120)],
         }],
+        key_signature: None,
     };
 
     let zero_ppq = MidiExport {
@@ -488,6 +490,7 @@ fn encoder_boundaries_are_rejected_precisely() {
             channel: 0,
             notes: vec![note(0, 60, 120)],
         }],
+        key_signature: None,
     };
     let bytes = clamped.to_smf_bytes().expect("钳制后必须能编码");
     assert_eq!(
@@ -512,6 +515,7 @@ fn single_track_export(ppq: u16) -> MidiExport {
             channel: 0,
             notes: vec![note(0, 60, 120)],
         }],
+        key_signature: None,
     }
 }
 
@@ -594,6 +598,7 @@ fn half_a_time_signature_is_rejected_instead_of_dropped() {
                 channel: 0,
                 notes: vec![note(0, 60, 120)],
             }],
+            key_signature: None,
         };
         assert_eq!(
             source.to_smf_bytes(),
@@ -621,6 +626,7 @@ fn half_a_time_signature_is_rejected_instead_of_dropped() {
             channel: 0,
             notes: vec![note(0, 60, 120)],
         }],
+        key_signature: None,
     };
     let bytes = empty
         .to_smf_bytes()
@@ -1120,6 +1126,7 @@ fn time_signature_meta_fields_round_trip_at_their_extremes() {
             channel: 0,
             notes: vec![note(0, 60, 120)],
         }],
+        key_signature: None,
     };
     let bytes = source.to_smf_bytes().expect("编码");
     let records: Vec<(Option<u8>, Option<u8>)> = parse_smf(&bytes)
@@ -1343,6 +1350,7 @@ fn a_minimal_export_is_pinned_byte_for_byte() {
             channel: 0,
             notes: vec![note(0, 60, 480)],
         }],
+        key_signature: None,
     };
     let bytes = export.to_smf_bytes().expect("编码");
     assert_eq!(
@@ -1387,6 +1395,7 @@ fn the_conductor_track_documentation_matches_the_written_bytes() {
         ppq: DEFAULT_PPQ,
         tempos: Vec::new(),
         tracks: vec![track_from_notes("", 0, &[note(480, 60, 240)])],
+        key_signature: None,
     }
     .to_smf_bytes()
     .expect("编码");

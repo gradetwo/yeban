@@ -388,6 +388,7 @@ pub fn filled_project() -> YebanProjectV1 {
             numerator: 4,
             denominator: 4,
         },
+        key_signature: None,
         audio_config: ProjectAudioConfig {
             sample_rate: SampleRate::Hz48000,
             block_size: BlockSize::Frames256,

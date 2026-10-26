@@ -142,6 +142,13 @@ pub enum ModelError {
         value: u8,
     },
 
+    /// 调号升降号数量越界 (允许 -7..=7)。
+    #[error("key signature sharps_flats {value} out of range -7..=7")]
+    KeySignatureSharpsFlatsOutOfRange {
+        /// 实际收到的升降号数量。
+        value: i8,
+    },
+
     /// 采样率不在规范允许集合 `{44100,48000,88200,96000,192000}` 中。
     #[error("sample rate {value} is not one of 44100,48000,88200,96000,192000")]
     SampleRateUnsupported {

@@ -290,6 +290,7 @@ pub fn export_from_project(project: &YebanProjectV1) -> Result<MidiExport, MidiE
         ppq,
         tempos,
         tracks,
+        key_signature: project.key_signature,
     })
 }
 
@@ -356,6 +357,30 @@ mod tests {
         let parsed = parse_smf(&bytes).expect("回读");
         assert_eq!(parsed.format, MidiFormat::Parallel, "恒为 SMF 1");
         assert_eq!(parsed.notes.len(), DEMO_NOTES.len(), "六颗音符一颗不少");
+    }
+
+    /// 判据（`#350`）：工程调号导出到 conductor track，SMF 读取面读回一致。
+    #[test]
+    fn key_signature_exports_to_smf_conductor_track_and_round_trips() {
+        let mut project = yeban_model::samples::demo_project();
+        project.key_signature = Some(yeban_model::KeySignature {
+            sharps_flats: -3,
+            is_minor: false,
+        });
+        let export = export_from_project(&project).expect("导出");
+        assert_eq!(
+            export.key_signature,
+            Some(yeban_model::KeySignature {
+                sharps_flats: -3,
+                is_minor: false,
+            })
+        );
+        let bytes = export.to_smf_bytes().expect("编码");
+        let parsed = parse_smf(&bytes).expect("回读");
+        assert_eq!(parsed.key_signatures.len(), 1);
+        assert_eq!(parsed.key_signatures[0].tick, 0);
+        assert_eq!(parsed.key_signatures[0].sharps_flats, -3);
+        assert_eq!(parsed.key_signatures[0].is_minor, false);
     }
 
     /// 判据 ②: 音符数量 / 音高 / tick / 力度 / 时值 **逐音符**与工程一致。

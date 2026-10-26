@@ -24,6 +24,25 @@
     "clip_pool",
     "assets"
   ],
+  "definitions": {
+    "KeySignature": {
+      "type": "object",
+      "required": [
+        "sharps_flats",
+        "is_minor"
+      ],
+      "properties": {
+        "sharps_flats": {
+          "type": "integer",
+          "minimum": -7,
+          "maximum": 7
+        },
+        "is_minor": {
+          "type": "boolean"
+        }
+      }
+    }
+  },
   "properties": {
     "schema_version": {
       "type": "integer",
@@ -80,6 +99,9 @@
           ]
         }
       }
+    },
+    "key_signature": {
+      "$ref": "#/definitions/KeySignature"
     },
     "audio_config": {
       "type": "object",
