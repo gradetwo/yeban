@@ -11042,3 +11042,31 @@ $ python3 scripts/gates/check_phase_status.py   # 退出 0
   - `cargo-local.sh test -p yeban-mcp --test render_master -- the_midi_export`: 1 passed, 0 failed.
   - `cargo fmt --check`: 格式化通过。
   - `python3 scripts/guards/policy_check.py`: 18 项全部通过。
+
+
+---
+
+## 2026-10-27：MCP MIDI 导入调号元数据采纳与闭环落地
+
+- **需求规范 ID**: `[ARCH-EXT-002]` `[MCP-TOOL-EXT-IMPORT-MIDI]`
+- **实施工作线**: `line/mcp-import-key-sig` (`f1901261`)，经 subagent `qodercli` (`Qwen3.8-Flash`) 自主研发与本地轻量门禁通过后由集成者落地。
+- **背景与目标**:
+  - 完善 `yeban_import_midi` 对 SMF Conductor 轨调号元事件（`FF 59`）采纳结果的捕获与响应上报。
+  - 此前 `yeban_import_midi` 已经支持 `adoptedTempoBpm`、`adoptedTimeSignature`、`adoptedTrackName`、`adoptedTitle` 与 `adoptedCopyright`，但唯独缺失 `adoptedKeySignature`。
+- **实施**:
+  - `crates/yeban-mcp/src/domain/import_midi.rs`:
+    - `MidiImport` 结构体新增 `pub adopted_key_signature: Option<(i8, bool)>`。
+    - `plan()` 函数解析 `plan.ops` 中的 `Op::SetKeySignature { new_key_signature, .. }`，捕获调号 `(sharps_flats, is_minor)`。
+    - 补充当目标工程为空且 SMF 调号与工程现值相同（`read > 0 && dropped == 0`，未发冗余 Op）时的回退读取。
+    - `describe()` 输出 JSON 视图补充 `"adoptedKeySignature": import.adopted_key_signature.map(|(sf, m)| json!({ "sharpsFlats": sf, "isMinor": m }))`。
+  - `crates/yeban-mcp/src/tools.rs`:
+    - 更新 `yeban_import_midi` summary 文档，详细登记 `adoptedKeySignature` 格式与采纳契约。
+  - `crates/yeban-mcp/tests/import_midi_tool.rs`:
+    - 新增 `test_import_midi_adopts_key_signature`：
+      - dryRun 验证：预览如实报告 `adoptedKeySignature`（`{"sharpsFlats": 2, "isMinor": false}`），不修改工程。
+      - 真实执行验证：`project.key_signature` 生效，响应包含 `adoptedKeySignature`，`losses.aux_events.key_signature.dropped == 0`。
+      - 撤销验证：一次 `yeban_undo` 撤销后 `project.key_signature` 恢复为 `None`。
+- **验证**:
+  - `cargo-local.sh test -p yeban-mcp --test import_midi_tool`: 6 passed, 0 failed.
+  - `cargo fmt --check`: 格式化通过。
+  - `python3 scripts/guards/policy_check.py`: 18 项全部通过。
