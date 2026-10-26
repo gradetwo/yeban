@@ -601,4 +601,39 @@ fn the_published_add_note_schema_advertises_bend_and_slide() {
         serde_json::json!(yeban_mcp::domain::extension_pure::CURVE_NAMES),
         "`slide.curve` 的枚举必须引用规范名表（⛔ 手抄第二份）"
     );
+
+    assert_eq!(
+        properties["channel"]["type"], "integer",
+        "`channel` 必须公布: {properties}"
+    );
+    assert_eq!(properties["channel"]["minimum"], 0);
+    assert_eq!(properties["channel"]["maximum"], 15);
+
+    assert_eq!(
+        properties["syllable"]["type"], "string",
+        "`syllable` 必须公布: {properties}"
+    );
+}
+
+/// `setKeySignature` 分支在 `tools/list` 里的发布面验证。
+#[test]
+fn the_published_set_key_signature_schema_advertises_correct_fields() {
+    let items = published_ops_items();
+    let set_key = items["oneOf"]
+        .as_array()
+        .expect("oneOf")
+        .iter()
+        .find(|branch| branch["title"] == "setKeySignature")
+        .expect("setKeySignature 分支");
+    assert_eq!(set_key["additionalProperties"], false);
+    let props = &set_key["properties"];
+    assert_eq!(props["kind"]["const"], "setKeySignature");
+    let key_sig = &props["keySignature"];
+    assert_eq!(key_sig["type"], json!(["object", "null"]));
+    let ks_props = &key_sig["properties"];
+    assert_eq!(ks_props["sharpsFlats"]["type"], "integer");
+    assert_eq!(ks_props["sharpsFlats"]["minimum"], -7);
+    assert_eq!(ks_props["sharpsFlats"]["maximum"], 7);
+    assert_eq!(ks_props["isMinor"]["type"], "boolean");
+    assert_eq!(key_sig["required"], json!(["sharpsFlats", "isMinor"]));
 }

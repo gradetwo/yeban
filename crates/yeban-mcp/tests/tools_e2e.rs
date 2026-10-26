@@ -7096,3 +7096,182 @@ fn set_time_signature_dispatches_through_proposal_lifecycle_and_master_render_ab
         "非法拍号调用被拒绝后，活跃工程拍号必须保持为 6/8"
     );
 }
+
+#[test]
+fn test_e2e_note_channel_syllable_and_key_signature() {
+    let scratch = Scratch::new("note-channel-syllable-key-sig");
+    let (mut dispatcher, auth) = dispatcher();
+    open(&scratch, &mut dispatcher, &auth);
+
+    let track_id = macro_track(&dispatcher);
+    let clip_id = dispatcher
+        .domain()
+        .active_project()
+        .expect("工程")
+        .clip_pool
+        .values()
+        .find(|entry| entry.content.notes().is_some())
+        .expect("MIDI 片段")
+        .id
+        .to_canonical_string();
+
+    // 1. 在 clip 中添加带有 channel 和 syllable 的 note 并提案
+    let add_res = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_edit_notes",
+        json!({
+            "trackId": track_id,
+            "clipId": clip_id,
+            "ops": [
+                {
+                    "kind": "add",
+                    "note": {
+                        "startTick": 9600,
+                        "pitch": 64,
+                        "durationTicks": 480,
+                        "velocity": 90,
+                        "channel": 3,
+                        "syllable": "夜半"
+                    }
+                }
+            ]
+        }),
+    );
+    assert_eq!(add_res["status"], "success", "{add_res}");
+    let proposal_id = add_res["data"]["proposal"]["proposalId"]
+        .as_str()
+        .expect("proposalId")
+        .to_owned();
+
+    // 合并提案
+    let merge_res = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_merge_proposal",
+        json!({
+            "proposalId": proposal_id,
+            "commitMessage": "add note with channel and syllable"
+        }),
+    );
+    assert_eq!(merge_res["status"], "success", "{merge_res}");
+
+    // 断言活跃工程中的音符有 channel=Some(3) 和 syllable=Some("夜半")
+    {
+        let project = dispatcher.domain().active_project().expect("工程");
+        let clip_entry = project
+            .clip_pool
+            .get(&EntityId::from_str(&clip_id).expect("clip id"))
+            .expect("clip");
+        let notes = clip_entry.content.notes().expect("midi notes");
+        let added_note = notes
+            .values()
+            .find(|n| n.start_tick == 9600 && n.pitch == 64)
+            .expect("找到添加的音符");
+        assert_eq!(added_note.channel, Some(3));
+        assert_eq!(added_note.syllable.as_deref(), Some("夜半"));
+    }
+
+    // 2. setKeySignature 提案并合并：设为 D 大调 (2 个升号, 大调)
+    let set_key_res = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_edit_notes",
+        json!({
+            "trackId": track_id,
+            "ops": [
+                {
+                    "kind": "setKeySignature",
+                    "keySignature": {
+                        "sharpsFlats": 2,
+                        "isMinor": false
+                    }
+                }
+            ]
+        }),
+    );
+    assert_eq!(set_key_res["status"], "success", "{set_key_res}");
+    let key_prop_id = set_key_res["data"]["proposal"]["proposalId"]
+        .as_str()
+        .expect("proposalId")
+        .to_owned();
+
+    let merge_key_res = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_merge_proposal",
+        json!({
+            "proposalId": key_prop_id,
+            "commitMessage": "set key signature to D major"
+        }),
+    );
+    assert_eq!(merge_key_res["status"], "success", "{merge_key_res}");
+
+    assert_eq!(
+        dispatcher
+            .domain()
+            .active_project()
+            .expect("工程")
+            .key_signature,
+        Some(yeban_model::KeySignature {
+            sharps_flats: 2,
+            is_minor: false
+        })
+    );
+
+    // 3. setKeySignature 清空：keySignature = null
+    let clear_key_res = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_edit_notes",
+        json!({
+            "trackId": track_id,
+            "ops": [
+                {
+                    "kind": "setKeySignature",
+                    "keySignature": null
+                }
+            ]
+        }),
+    );
+    assert_eq!(clear_key_res["status"], "success", "{clear_key_res}");
+    let clear_prop_id = clear_key_res["data"]["proposal"]["proposalId"]
+        .as_str()
+        .expect("proposalId")
+        .to_owned();
+
+    let merge_clear_res = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_merge_proposal",
+        json!({
+            "proposalId": clear_prop_id,
+            "commitMessage": "clear key signature"
+        }),
+    );
+    assert_eq!(merge_clear_res["status"], "success", "{merge_clear_res}");
+
+    assert_eq!(
+        dispatcher
+            .domain()
+            .active_project()
+            .expect("工程")
+            .key_signature,
+        None
+    );
+
+    // 4. 撤销恢复到 D 大调
+    let undo_res = call(&mut dispatcher, &auth, "yeban_undo", json!({ "steps": 1 }));
+    assert_eq!(undo_res["status"], "success", "{undo_res}");
+    assert_eq!(
+        dispatcher
+            .domain()
+            .active_project()
+            .expect("工程")
+            .key_signature,
+        Some(yeban_model::KeySignature {
+            sharps_flats: 2,
+            is_minor: false
+        })
+    );
+}
