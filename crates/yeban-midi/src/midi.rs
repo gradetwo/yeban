@@ -841,11 +841,11 @@ pub struct ParsedTrackName {
 /// 表达成"唯一条 tick 0 tempo"，它仍是丢。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum MidiAuxEventKind {
-    /// `FF 51` tempo → `project.bpm`（单标量）；只有"唯一条生效 tempo 在 tick 0"能落。
-    /// tempo map（多条或首条不在 0）没有家 ⇒ 整类 dropped 且报告列出每个值。
+    /// `FF 51` tempo → `project.bpm` 与 `project.tempo_map`；工程为空时如实采纳（tick 0 进 bpm，tick > 0 进 tempo_map）。
+    /// 非空工程或值越界时 dropped 且报告列出每个值。
     Tempo,
-    /// `FF 58` 拍号 → `project.time_signature`（单标量）；只有"唯一条生效拍号在 tick 0"
-    /// 能落。拍号 map（如 4/4 → 3/4）没有家 ⇒ 整类 dropped 且报告列出每个值。
+    /// `FF 58` 拍号 → `project.time_signature` 与 `project.time_signature_map`；工程为空时如实采纳（tick 0 进 time_signature，tick > 0 进 time_signature_map）。
+    /// 非空工程或值越界时 dropped 且报告列出每个值。
     TimeSignature,
     /// `FF 03` 轨名 → `TrackV3::name`（导入**唯一**落点音轨）。去重后恰一个非空、
     /// 严格 UTF-8 的名字才落；多个不同名字 / 空名 / 非 UTF-8 ⇒ 该条 dropped。

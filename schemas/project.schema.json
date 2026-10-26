@@ -11,7 +11,9 @@
     "id",
     "title",
     "bpm",
+    "tempo_map",
     "time_signature",
+    "time_signature_map",
     "audio_config",
     "rng_seed",
     "metadata",
@@ -56,6 +58,15 @@
       "minimum": 20.0,
       "maximum": 999.0
     },
+    "tempo_map": {
+      "type": "object",
+      "description": "BTreeMap of tick (> 0) to tempo in BPM",
+      "additionalProperties": {
+        "type": "number",
+        "minimum": 20.0,
+        "maximum": 999.0
+      }
+    },
     "time_signature": {
       "type": "object",
       "required": [
@@ -78,6 +89,35 @@
             16,
             32
           ]
+        }
+      }
+    },
+    "time_signature_map": {
+      "type": "object",
+      "description": "BTreeMap of tick (> 0) to TimeSignature",
+      "additionalProperties": {
+        "type": "object",
+        "required": [
+          "numerator",
+          "denominator"
+        ],
+        "properties": {
+          "numerator": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 32
+          },
+          "denominator": {
+            "type": "integer",
+            "enum": [
+              1,
+              2,
+              4,
+              8,
+              16,
+              32
+            ]
+          }
         }
       }
     },

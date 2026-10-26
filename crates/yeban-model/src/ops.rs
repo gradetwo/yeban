@@ -856,6 +856,36 @@ pub enum Op {
         /// 修改后的拍号（由 [`TimeSignature::validate`] 判决）。
         new_time_signature: TimeSignature,
     },
+    /// 在指定 tick 设置或删除速度映射点（`tick > 0`）。
+    ///
+    /// - `old_bpm: None, new_bpm: Some(bpm)`: 新增速度映射点；
+    /// - `old_bpm: Some(old), new_bpm: Some(new)`: 更新速度映射点；
+    /// - `old_bpm: Some(bpm), new_bpm: None`: 删除速度映射点。
+    ///
+    /// ⚠ `tick` 必须 > 0（tick 0 必须使用 [`Op::SetTempo`]）。
+    SetTempoPoint {
+        /// 映射点所在的 tick（必须 > 0）。
+        tick: u64,
+        /// 修改前的速度（`None` 表示原先不存在该映射点）。
+        old_bpm: Option<f64>,
+        /// 修改后的速度（`None` 表示删除该映射点）。
+        new_bpm: Option<f64>,
+    },
+    /// 在指定 tick 设置或删除拍号映射点（`tick > 0`）。
+    ///
+    /// - `old_time_signature: None, new_time_signature: Some(ts)`: 新增拍号映射点；
+    /// - `old_time_signature: Some(old), new_time_signature: Some(new)`: 更新拍号映射点；
+    /// - `old_time_signature: Some(ts), new_time_signature: None`: 删除拍号映射点。
+    ///
+    /// ⚠ `tick` 必须 > 0（tick 0 必须使用 [`Op::SetTimeSignature`]）。
+    SetTimeSignaturePoint {
+        /// 映射点所在的 tick（必须 > 0）。
+        tick: u64,
+        /// 修改前的拍号（`None` 表示原先不存在该映射点）。
+        old_time_signature: Option<TimeSignature>,
+        /// 修改后的拍号（`None` 表示删除该映射点）。
+        new_time_signature: Option<TimeSignature>,
+    },
     /// 声明（或更新）一条**资产索引**（`[MODEL-AST-007]` / `[MUST-GATE-014]`）。
     ///
     /// ⚠ 本变体是**三处已登记缺口的共同根**：在它之前，模型**没有任何 `Op` 能写
@@ -1116,6 +1146,16 @@ fn same_f64(left: f64, right: f64) -> bool {
     left.to_bits() == right.to_bits()
 }
 
+/// 判断两个**可选** `f64` 是否逐位相同（`SetTempoPoint` 用）。
+#[must_use]
+fn same_optional_f64(left: Option<f64>, right: Option<f64>) -> bool {
+    match (left, right) {
+        (None, None) => true,
+        (Some(a), Some(b)) => same_f64(a, b),
+        _ => false,
+    }
+}
+
 /// 判断两个**可选** `f32` 是否逐位相同（`SetClipGain` 的增益与
 /// `SetNoteExpression` 的概率共用同一条口径）。
 #[must_use]
@@ -1204,9 +1244,11 @@ impl Op {
             Self::SetTrackSampler { .. } => "SetTrackSampler",
             Self::SetTransportConfig { .. } => "SetTransportConfig",
             Self::SetTempo { .. } => "SetTempo",
+            Self::SetTempoPoint { .. } => "SetTempoPoint",
             Self::SetAuthor { .. } => "SetAuthor",
             Self::SetTitle { .. } => "SetTitle",
             Self::SetTimeSignature { .. } => "SetTimeSignature",
+            Self::SetTimeSignaturePoint { .. } => "SetTimeSignaturePoint",
             Self::SetAsset { .. } => "SetAsset",
             Self::RemoveAsset { .. } => "RemoveAsset",
             Self::SetTrackSolo { .. } => "SetTrackSolo",
@@ -1840,6 +1882,34 @@ impl Op {
                 }
                 Ok(())
             }
+            Self::SetTempoPoint {
+                tick,
+                old_bpm,
+                new_bpm,
+            } => {
+                if *tick == 0 {
+                    return Err(ModelError::TempoMapZeroTick { tick: 0 });
+                }
+                if old_bpm.is_none() && new_bpm.is_none() {
+                    return Err(ModelError::OpStateMismatch { op: self.name() });
+                }
+                let current = doc.tempo_map.get(tick).copied();
+                if !same_optional_f64(current, *old_bpm) {
+                    return Err(ModelError::OpStateMismatch { op: self.name() });
+                }
+                if let Some(new_bpm) = new_bpm {
+                    if !new_bpm.is_finite() {
+                        return Err(ModelError::NonFiniteValue {
+                            field: "tempo_map.bpm",
+                            value: *new_bpm,
+                        });
+                    }
+                    if !(MIN_BPM..=MAX_BPM).contains(new_bpm) {
+                        return Err(ModelError::BpmOutOfRange { value: *new_bpm });
+                    }
+                }
+                Ok(())
+            }
             Self::RemoveAsset {
                 asset_hash,
                 previous_asset,
@@ -1908,6 +1978,26 @@ impl Op {
                 //    `TimeSignature` 的相等是派生 `PartialEq`（两个 `u8` 字段逐值）。
                 if doc.time_signature != *old_time_signature {
                     return Err(ModelError::OpStateMismatch { op: self.name() });
+                }
+                Ok(())
+            }
+            Self::SetTimeSignaturePoint {
+                tick,
+                old_time_signature,
+                new_time_signature,
+            } => {
+                if *tick == 0 {
+                    return Err(ModelError::TempoMapZeroTick { tick: 0 });
+                }
+                if old_time_signature.is_none() && new_time_signature.is_none() {
+                    return Err(ModelError::OpStateMismatch { op: self.name() });
+                }
+                let current = doc.time_signature_map.get(tick).copied();
+                if current != *old_time_signature {
+                    return Err(ModelError::OpStateMismatch { op: self.name() });
+                }
+                if let Some(new_ts) = new_time_signature {
+                    new_ts.validate()?;
                 }
                 Ok(())
             }
@@ -2382,6 +2472,15 @@ impl Op {
                 old_bpm: *new_bpm,
                 new_bpm: *old_bpm,
             },
+            Self::SetTempoPoint {
+                tick,
+                old_bpm,
+                new_bpm,
+            } => Self::SetTempoPoint {
+                tick: *tick,
+                old_bpm: *new_bpm,
+                new_bpm: *old_bpm,
+            },
             // `String` 不是 `Copy` ⇒ 必须克隆（与 `RemoveClip` 的 `previous_clip.clone()` 同理）。
             Self::SetAuthor {
                 old_author,
@@ -2404,6 +2503,15 @@ impl Op {
                 old_time_signature,
                 new_time_signature,
             } => Self::SetTimeSignature {
+                old_time_signature: *new_time_signature,
+                new_time_signature: *old_time_signature,
+            },
+            Self::SetTimeSignaturePoint {
+                tick,
+                old_time_signature,
+                new_time_signature,
+            } => Self::SetTimeSignaturePoint {
+                tick: *tick,
                 old_time_signature: *new_time_signature,
                 new_time_signature: *old_time_signature,
             },
@@ -2933,6 +3041,17 @@ impl Op {
                 doc.bpm = *new_bpm;
                 Ok(())
             }
+            Self::SetTempoPoint { tick, new_bpm, .. } => {
+                match new_bpm {
+                    Some(bpm) => {
+                        doc.tempo_map.insert(*tick, *bpm);
+                    }
+                    None => {
+                        doc.tempo_map.remove(tick);
+                    }
+                }
+                Ok(())
+            }
             // 只写那**一个**顶层字段：⛔ 不碰 `title`、⛔ 不碰 `bpm`。
             Self::SetAuthor { new_author, .. } => {
                 doc.author = new_author.clone();
@@ -2950,6 +3069,21 @@ impl Op {
                 new_time_signature, ..
             } => {
                 doc.time_signature = *new_time_signature;
+                Ok(())
+            }
+            Self::SetTimeSignaturePoint {
+                tick,
+                new_time_signature,
+                ..
+            } => {
+                match new_time_signature {
+                    Some(ts) => {
+                        doc.time_signature_map.insert(*tick, *ts);
+                    }
+                    None => {
+                        doc.time_signature_map.remove(tick);
+                    }
+                }
                 Ok(())
             }
             // 只取走那**一个**索引项：⛔ 不碰 `clip_pool`、⛔ 不碰归档里的字节。
@@ -3783,6 +3917,11 @@ mod tests {
                 old_bpm: crate::project::DEFAULT_BPM,
                 new_bpm: 140.0,
             },
+            Op::SetTempoPoint {
+                tick: 960,
+                old_bpm: None,
+                new_bpm: Some(135.0),
+            },
             // 署名：夹具的 `author` 是空串（`YebanProjectV1::default()`）⇒ 前置条件成立。
             Op::SetAuthor {
                 old_author: String::new(),
@@ -3803,6 +3942,14 @@ mod tests {
                     numerator: 6,
                     denominator: 8,
                 },
+            },
+            Op::SetTimeSignaturePoint {
+                tick: 960,
+                old_time_signature: None,
+                new_time_signature: Some(TimeSignature {
+                    numerator: 3,
+                    denominator: 4,
+                }),
             },
             // 改名：**唯一的名字通路**（此前只能删轨重建 ⇒ 换 `EntityId`）。
             // 音轨色标：**此前只能在建轨时给**（`AddTrack` 的载荷）⇒ 改色只能删轨重建。
@@ -7141,6 +7288,218 @@ mod tests {
                 "new_bpm={bad} 必须报 BpmOutOfRange, 实际 {error:?}"
             );
         }
+    }
+
+    #[test]
+    fn set_tempo_point_is_reversible_and_rejects_stale_or_invalid() {
+        let mut doc = fixture_document();
+        let before = serde_json::to_vec(&doc).expect("序列化");
+
+        // 1. tick 0 必须被拒
+        let bad_tick = Op::SetTempoPoint {
+            tick: 0,
+            old_bpm: None,
+            new_bpm: Some(135.0),
+        };
+        assert_eq!(
+            bad_tick.apply(&mut doc),
+            Err(ModelError::TempoMapZeroTick { tick: 0 })
+        );
+
+        // 2. 插入新速度点 (tick = 960)
+        let insert_op = Op::SetTempoPoint {
+            tick: 960,
+            old_bpm: None,
+            new_bpm: Some(135.0),
+        };
+        insert_op.apply(&mut doc).expect("插入速度点必须成功");
+        assert_eq!(doc.tempo_map.get(&960), Some(&135.0));
+
+        // 3. 逆操作使文档还原
+        insert_op.apply_inverse(&mut doc).expect("逆操作还原插入");
+        assert_eq!(doc.tempo_map.get(&960), None);
+        assert_eq!(serde_json::to_vec(&doc).expect("s"), before);
+
+        // 重新应用插入
+        insert_op.apply(&mut doc).expect("重做");
+
+        // 4. 更新速度点
+        let update_op = Op::SetTempoPoint {
+            tick: 960,
+            old_bpm: Some(135.0),
+            new_bpm: Some(150.0),
+        };
+        update_op.apply(&mut doc).expect("更新必须成功");
+        assert_eq!(doc.tempo_map.get(&960), Some(&150.0));
+
+        // 逆操作还原到 135.0
+        update_op.apply_inverse(&mut doc).expect("逆更新");
+        assert_eq!(doc.tempo_map.get(&960), Some(&135.0));
+
+        // 5. 陈旧 old_bpm 被拒
+        let stale_update = Op::SetTempoPoint {
+            tick: 960,
+            old_bpm: Some(140.0),
+            new_bpm: Some(160.0),
+        };
+        assert!(matches!(
+            stale_update.apply(&mut doc),
+            Err(ModelError::OpStateMismatch { .. })
+        ));
+
+        // 6. 删除速度点
+        let delete_op = Op::SetTempoPoint {
+            tick: 960,
+            old_bpm: Some(135.0),
+            new_bpm: None,
+        };
+        delete_op.apply(&mut doc).expect("删除必须成功");
+        assert_eq!(doc.tempo_map.get(&960), None);
+
+        // 逆操作还原删除
+        delete_op.apply_inverse(&mut doc).expect("逆删除");
+        assert_eq!(doc.tempo_map.get(&960), Some(&135.0));
+
+        // 7. old 和 new 均为 None 被拒
+        let noop = Op::SetTempoPoint {
+            tick: 960,
+            old_bpm: None,
+            new_bpm: None,
+        };
+        assert!(matches!(
+            noop.apply(&mut doc),
+            Err(ModelError::OpStateMismatch { .. })
+        ));
+    }
+
+    #[test]
+    fn set_time_signature_point_is_reversible_and_rejects_stale_or_invalid() {
+        let mut doc = fixture_document();
+        let before = serde_json::to_vec(&doc).expect("序列化");
+
+        // 1. tick 0 必须被拒
+        let bad_tick = Op::SetTimeSignaturePoint {
+            tick: 0,
+            old_time_signature: None,
+            new_time_signature: Some(TimeSignature {
+                numerator: 3,
+                denominator: 4,
+            }),
+        };
+        assert_eq!(
+            bad_tick.apply(&mut doc),
+            Err(ModelError::TempoMapZeroTick { tick: 0 })
+        );
+
+        // 2. 插入新拍号点 (tick = 960)
+        let insert_op = Op::SetTimeSignaturePoint {
+            tick: 960,
+            old_time_signature: None,
+            new_time_signature: Some(TimeSignature {
+                numerator: 3,
+                denominator: 4,
+            }),
+        };
+        insert_op.apply(&mut doc).expect("插入拍号点必须成功");
+        assert_eq!(
+            doc.time_signature_map.get(&960),
+            Some(&TimeSignature {
+                numerator: 3,
+                denominator: 4,
+            })
+        );
+
+        // 3. 逆操作使文档还原
+        insert_op.apply_inverse(&mut doc).expect("逆操作还原插入");
+        assert_eq!(doc.time_signature_map.get(&960), None);
+        assert_eq!(serde_json::to_vec(&doc).expect("s"), before);
+
+        // 重新应用插入
+        insert_op.apply(&mut doc).expect("重做");
+
+        // 4. 更新拍号点
+        let update_op = Op::SetTimeSignaturePoint {
+            tick: 960,
+            old_time_signature: Some(TimeSignature {
+                numerator: 3,
+                denominator: 4,
+            }),
+            new_time_signature: Some(TimeSignature {
+                numerator: 6,
+                denominator: 8,
+            }),
+        };
+        update_op.apply(&mut doc).expect("更新拍号点必须成功");
+        assert_eq!(
+            doc.time_signature_map.get(&960),
+            Some(&TimeSignature {
+                numerator: 6,
+                denominator: 8,
+            })
+        );
+
+        // 逆操作还原
+        update_op.apply_inverse(&mut doc).expect("逆更新");
+        assert_eq!(
+            doc.time_signature_map.get(&960),
+            Some(&TimeSignature {
+                numerator: 3,
+                denominator: 4,
+            })
+        );
+
+        // 5. 陈旧 old 被拒
+        let stale_update = Op::SetTimeSignaturePoint {
+            tick: 960,
+            old_time_signature: Some(TimeSignature {
+                numerator: 4,
+                denominator: 4,
+            }),
+            new_time_signature: Some(TimeSignature {
+                numerator: 7,
+                denominator: 8,
+            }),
+        };
+        assert!(matches!(
+            stale_update.apply(&mut doc),
+            Err(ModelError::OpStateMismatch { .. })
+        ));
+
+        // 6. 删除拍号点
+        let delete_op = Op::SetTimeSignaturePoint {
+            tick: 960,
+            old_time_signature: Some(TimeSignature {
+                numerator: 3,
+                denominator: 4,
+            }),
+            new_time_signature: None,
+        };
+        delete_op.apply(&mut doc).expect("删除拍号点必须成功");
+        assert_eq!(doc.time_signature_map.get(&960), None);
+
+        // 逆删除还原
+        delete_op.apply_inverse(&mut doc).expect("逆删除");
+        assert_eq!(
+            doc.time_signature_map.get(&960),
+            Some(&TimeSignature {
+                numerator: 3,
+                denominator: 4,
+            })
+        );
+
+        // 7. 非法新拍号被拒
+        let invalid_ts = Op::SetTimeSignaturePoint {
+            tick: 1920,
+            old_time_signature: None,
+            new_time_signature: Some(TimeSignature {
+                numerator: 0,
+                denominator: 4,
+            }),
+        };
+        assert_eq!(
+            invalid_ts.apply(&mut doc),
+            Err(ModelError::TimeSignatureNumeratorOutOfRange { value: 0 })
+        );
     }
 
     /// `[MODEL-AST-002]` / `[ARCH-OPS-001]`：**署名可改且可逆**。
