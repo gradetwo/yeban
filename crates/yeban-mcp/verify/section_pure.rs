@@ -52,6 +52,17 @@
 //!   声部连接是 DAG；
 //! - `theory_honours_custom_progression_and_scale`：`progression` / `scale` 真的进展开
 //!   （时值与身份写死断言），非法走向映射成 `INVALID_PARAMETER_RANGE`。
+//!
+//! `ADR-0017`（`includeDrums` / `includeMelody`）再加四条判据：
+//!
+//! - `drums_are_gm_mapped_and_route_to_master_in_a_dag`：鼓点逐击对齐 theory 的
+//!   `DrumPattern`（GM 键 / 起点 / 力度 / 时值），且直连主总线、整图 DAG；
+//! - `melody_stays_on_the_genre_grid_and_in_range_in_a_dag`：旋律起点/时值逐 onset
+//!   对齐 `rhythm_grid`、音高在默认音域与目标音阶内、力度按 `chord_tone` 分级；
+//! - `drums_and_melody_are_opt_in_and_legacy_plans_are_byte_identical`：缺省 / 显式
+//!   `false` 逐字节等于既有行为，`true` 只追加两条声部；
+//! - `drums_and_melody_require_the_theory_source`：`'project'` 路径上给任一项 ⇒
+//!   `INVALID_PARAMETER_RANGE`（带指出修复方式的 `hint`）。
 
 // 本文件是 `rustc --test` 的 **crate root**, 不是库; 被包含模块的公开 API 在这里
 // 没有"外部消费者", 因此 `dead_code` 会误报。真实判定由 CI 的
@@ -312,6 +323,8 @@ fn theory_is_explicitly_opt_in_and_project_path_is_unchanged() {
         PlanOptions {
             material_source: Some("project"),
             progression: Some("I-V"),
+            include_drums: None,
+            include_melody: None,
         },
     )
     .expect("显式 project");
@@ -329,6 +342,8 @@ fn theory_is_explicitly_opt_in_and_project_path_is_unchanged() {
         PlanOptions {
             material_source: Some("improvisation"),
             progression: None,
+            include_drums: None,
+            include_melody: None,
         },
     )
     .expect_err("未知材料来源");
@@ -356,6 +371,8 @@ fn theory_generates_a_deterministic_skeleton_on_an_empty_pool() {
         let options = PlanOptions {
             material_source: Some("theory"),
             progression: None,
+            include_drums: None,
+            include_melody: None,
         };
         let planned =
             plan_with_options(&empty, "Chorus", style, 4, None, options).expect("理论生成");
@@ -493,6 +510,8 @@ fn theory_honours_custom_progression_and_scale() {
     let options = PlanOptions {
         material_source: Some("theory"),
         progression: Some("i-VII-VI-VII"),
+        include_drums: None,
+        include_melody: None,
     };
     let planned = plan_with_options(&empty, "Chorus", "synthwave", 4, Some("A minor"), options)
         .expect("自定义走向");
@@ -528,6 +547,8 @@ fn theory_honours_custom_progression_and_scale() {
         PlanOptions {
             material_source: Some("theory"),
             progression: None,
+            include_drums: None,
+            include_melody: None,
         },
     )
     .expect("默认走向");
@@ -544,6 +565,8 @@ fn theory_honours_custom_progression_and_scale() {
         PlanOptions {
             material_source: Some("theory"),
             progression: Some("not-a-degree"),
+            include_drums: None,
+            include_melody: None,
         },
     )
     .expect_err("非法走向");
@@ -553,4 +576,390 @@ fn theory_honours_custom_progression_and_scale() {
     };
     assert_eq!(data["theoryStep"], "Progression::parse");
     assert!(data["theoryError"].is_string());
+}
+
+/// `ADR-0017` D1：鼓组声部是标准 GM 打击乐映射。
+///
+/// 期望击点由 **theory 自己**生成（`GenreRule::drum_pattern`），逐击比对
+/// `(tick, GM 键, 力度, 时值)`，因此"换一个鼓件表/换一个时值"会立刻变红。
+/// 同时验证该声部直连主总线且整图仍是 DAG。
+#[test]
+fn drums_are_gm_mapped_and_route_to_master_in_a_dag() {
+    use yeban_theory::genre::GenreLibrary;
+
+    let empty = empty_pool_project();
+    let options = PlanOptions {
+        material_source: Some("theory"),
+        progression: None,
+        include_drums: Some(true),
+        include_melody: None,
+    };
+    let planned = plan_with_options(&empty, "Chorus", "synthwave", 4, None, options)
+        .expect("鼓组生成");
+    assert_eq!(planned.part_track_ids.len(), 4, "3 个和声声部 + Drums");
+    assert!(planned.unwired.is_empty(), "装配必须同构: {:?}", planned.unwired);
+
+    let after = applied(&empty, &planned);
+    let index = 3;
+    let track = after
+        .tracks
+        .get(&planned.part_track_ids[index])
+        .expect("鼓组音轨");
+    assert_eq!(track.name, "Chorus · Drums");
+    assert_eq!(track.kind, TrackKind::Midi);
+
+    let notes = after.clip_pool[&planned.part_clip_ids[index]]
+        .content
+        .notes()
+        .expect("鼓组片段必须是 MIDI");
+    let mut actual: Vec<(u64, u8, u8, u64)> = notes
+        .values()
+        .map(|note| {
+            (
+                note.start_tick,
+                note.pitch,
+                note.velocity,
+                note.duration_ticks,
+            )
+        })
+        .collect();
+    actual.sort_unstable();
+
+    let rule = GenreLibrary::get("synthwave").expect("theory 流派");
+    let pattern = rule
+        .drum_pattern(4, 16)
+        .expect("鼓组型")
+        .expect("4/4 有鼓组型");
+    let mut expected: Vec<(u64, u8, u8, u64)> = pattern
+        .hits()
+        .iter()
+        .map(|hit| {
+            (
+                hit.tick,
+                hit.voice.gm_key(),
+                if hit.accent { 112 } else { 96 },
+                120,
+            )
+        })
+        .collect();
+    expected.sort_unstable();
+    assert_eq!(
+        actual, expected,
+        "GM 键 / 起点 / 力度 / 时值必须逐击对齐 theory 的鼓组型"
+    );
+    for (_, pitch, _, _) in &actual {
+        assert!(
+            [36, 38, 42, 51].contains(pitch),
+            "非标准 GM 打击乐键: {pitch}"
+        );
+    }
+
+    // 每个声部（含 Drums）都直连主总线 ⇒ 整图 DAG。
+    let bus = empty.master_bus_track_id;
+    assert_eq!(planned.routing_edge_ids.len(), planned.part_track_ids.len());
+    let mut added = BTreeMap::new();
+    for (edge_index, edge_id) in planned.routing_edge_ids.iter().enumerate() {
+        let edge = after
+            .routing_graph
+            .edges
+            .get(edge_id)
+            .unwrap_or_else(|| panic!("第 {edge_index} 条边必须存在"));
+        assert_eq!(edge.source_node, planned.part_track_ids[edge_index]);
+        assert_eq!(edge.destination_node, bus);
+        assert_eq!(edge.kind, yeban_model::RoutingKind::TrackToBus);
+        added.insert(*edge_id, *edge);
+    }
+    let graph = RoutingGraph {
+        nodes: after.routing_graph.nodes.clone(),
+        edges: added,
+    };
+    assert!(
+        detect_cycle(&graph).is_none(),
+        "鼓组接入后整图必须仍是 DAG: {:?}",
+        detect_cycle(&graph)
+    );
+
+    // 同一请求 ⇒ 同一份规划（身份与时值都由 `section_id` 确定性派生）。
+    let repeated = plan_with_options(&empty, "Chorus", "synthwave", 4, None, options)
+        .expect("重复调用");
+    assert_eq!(planned, repeated);
+}
+
+/// `ADR-0017` D1/D3：旋律落在流派节奏网格与既有和弦跨度上。
+///
+/// 起点/时值逐 onset 对齐 theory 的 `rhythm_grid`；音高在
+/// `MelodyConstraints::DEFAULT` 音域内且属于目标音阶；力度按 `chord_tone`
+/// 分 112/96。同样验证 DAG。
+#[test]
+fn melody_stays_on_the_genre_grid_and_in_range_in_a_dag() {
+    use yeban_theory::genre::GenreLibrary;
+    use yeban_theory::pitch::PitchClass;
+    use yeban_theory::progression::{Meter, Progression};
+    use yeban_theory::{MELODY_LOWER_BOUND, MELODY_UPPER_BOUND};
+
+    let empty = empty_pool_project();
+    let planned = plan_with_options(
+        &empty,
+        "Chorus",
+        "synthwave",
+        4,
+        None,
+        PlanOptions {
+            material_source: Some("theory"),
+            progression: None,
+            include_drums: None,
+            include_melody: Some(true),
+        },
+    )
+    .expect("旋律生成");
+    assert_eq!(planned.part_track_ids.len(), 4, "3 个和声声部 + Melody");
+    assert!(planned.unwired.is_empty(), "装配必须同构: {:?}", planned.unwired);
+
+    let after = applied(&empty, &planned);
+    let index = 3;
+    let track = after
+        .tracks
+        .get(&planned.part_track_ids[index])
+        .expect("旋律音轨");
+    assert_eq!(track.name, "Chorus · Melody");
+    assert_eq!(track.kind, TrackKind::Midi);
+
+    let notes = after.clip_pool[&planned.part_clip_ids[index]]
+        .content
+        .notes()
+        .expect("旋律片段必须是 MIDI");
+    let mut actual: Vec<(u64, u64, u8, u8)> = notes
+        .values()
+        .map(|note| {
+            (
+                note.start_tick,
+                note.duration_ticks,
+                note.pitch,
+                note.velocity,
+            )
+        })
+        .collect();
+    actual.sort_unstable();
+
+    // 独立口径：网格与和弦跨度都由 theory 重新算一遍。
+    let rule = GenreLibrary::get("synthwave").expect("theory 流派");
+    let grid = rule.rhythm_grid(4, 16).expect("节奏网格");
+    let hits = grid.hits();
+    let total_ticks = grid.total_ticks();
+    assert_eq!(actual.len(), hits.len(), "每个网格 onset 恰好一个旋律音");
+
+    let scale = rule.primary_scale(PitchClass::C).expect("theory 音阶");
+    let spans = Progression::parse(rule.progression_at(0).expect("首选走向"))
+        .expect("theory 走向")
+        .with_meter(Meter {
+            numerator: 4,
+            denominator: 4,
+        })
+        .with_bars(4)
+        .expect("4 小节")
+        .expand(&scale)
+        .expect("展开");
+    let scale_classes: Vec<u8> = scale
+        .pitch_classes()
+        .iter()
+        .map(|pitch_class| pitch_class.semitones())
+        .collect();
+
+    for (onset, (note, hit)) in actual.iter().zip(hits).enumerate() {
+        assert_eq!(note.0, hit.tick, "起点必须对齐网格 onset");
+        let expected_duration = hits
+            .get(onset + 1)
+            .map_or(total_ticks, |next| next.tick)
+            - hit.tick;
+        assert_eq!(note.1, expected_duration, "时值必须对齐相邻 onset");
+        assert!(
+            (MELODY_LOWER_BOUND..=MELODY_UPPER_BOUND).contains(&note.2),
+            "音高 {} 越出 MelodyConstraints::DEFAULT 音域",
+            note.2
+        );
+        let pitch_class = note.2 % 12;
+        assert!(
+            scale_classes.contains(&pitch_class),
+            "旋律音 {pitch_class} 不属于目标音阶 {scale_classes:?}"
+        );
+        let span = spans
+            .iter()
+            .find(|span| span.start_tick <= note.0 && note.0 < span.end_tick())
+            .expect("每个旋律音都必须落在某个和弦跨度里");
+        let chord_classes: Vec<u8> = span
+            .chord
+            .pitch_classes()
+            .iter()
+            .map(|pitch_class| pitch_class.semitones())
+            .collect();
+        let expected_velocity = if chord_classes.contains(&pitch_class) {
+            112
+        } else {
+            96
+        };
+        assert_eq!(
+            note.3, expected_velocity,
+            "第 {onset} 个音的力度必须按 chord_tone 分级"
+        );
+    }
+
+    let bus = empty.master_bus_track_id;
+    let mut added = BTreeMap::new();
+    for (edge_index, edge_id) in planned.routing_edge_ids.iter().enumerate() {
+        let edge = after
+            .routing_graph
+            .edges
+            .get(edge_id)
+            .unwrap_or_else(|| panic!("第 {edge_index} 条边必须存在"));
+        assert_eq!(edge.source_node, planned.part_track_ids[edge_index]);
+        assert_eq!(edge.destination_node, bus);
+        added.insert(*edge_id, *edge);
+    }
+    let graph = RoutingGraph {
+        nodes: after.routing_graph.nodes.clone(),
+        edges: added,
+    };
+    assert!(
+        detect_cycle(&graph).is_none(),
+        "旋律接入后整图必须仍是 DAG: {:?}",
+        detect_cycle(&graph)
+    );
+
+    let repeated = plan_with_options(
+        &empty,
+        "Chorus",
+        "synthwave",
+        4,
+        None,
+        PlanOptions {
+            material_source: Some("theory"),
+            progression: None,
+            include_drums: None,
+            include_melody: Some(true),
+        },
+    )
+    .expect("重复调用");
+    assert_eq!(planned, repeated, "同一 section_id ⇒ 同一条旋律");
+}
+
+/// `ADR-0017` D2：两项缺省/`false` 时逐字节等于既有行为；两项同时为 `true`
+/// 只追加两条声部，不改变既有声部的身份。
+#[test]
+fn drums_and_melody_are_opt_in_and_legacy_plans_are_byte_identical() {
+    let empty = empty_pool_project();
+    let baseline = plan_with_options(
+        &empty,
+        "Chorus",
+        "synthwave",
+        4,
+        None,
+        PlanOptions {
+            material_source: Some("theory"),
+            progression: None,
+            include_drums: None,
+            include_melody: None,
+        },
+    )
+    .expect("理论生成");
+
+    for (drums, melody) in [(None, None), (Some(false), Some(false))] {
+        let legacy = plan_with_options(
+            &empty,
+            "Chorus",
+            "synthwave",
+            4,
+            None,
+            PlanOptions {
+                material_source: Some("theory"),
+                progression: None,
+                include_drums: drums,
+                include_melody: melody,
+            },
+        )
+        .expect("缺省/显式 false");
+        assert_eq!(baseline, legacy, "缺省与显式 false 必须逐字节相同");
+    }
+
+    let full = plan_with_options(
+        &empty,
+        "Chorus",
+        "synthwave",
+        4,
+        None,
+        PlanOptions {
+            material_source: Some("theory"),
+            progression: None,
+            include_drums: Some(true),
+            include_melody: Some(true),
+        },
+    )
+    .expect("鼓组 + 旋律");
+    assert_eq!(
+        full.part_track_ids.len(),
+        baseline.part_track_ids.len() + 2,
+        "只追加 Drums / Melody 两条声部"
+    );
+    assert_eq!(
+        full.part_track_ids[..baseline.part_track_ids.len()],
+        baseline.part_track_ids[..],
+        "既有和声声部的身份不得改变"
+    );
+    assert_ne!(baseline.ops, full.ops, "追加声部必须真的出现在 op 序列里");
+
+    // `'project'` 路径同样逐字节不变。
+    let project = filled_project();
+    let default = plan(&project, "Chorus", "synthwave", 4, None).expect("缺省路径");
+    let explicit_false = plan_with_options(
+        &project,
+        "Chorus",
+        "synthwave",
+        4,
+        None,
+        PlanOptions {
+            material_source: None,
+            progression: None,
+            include_drums: Some(false),
+            include_melody: Some(false),
+        },
+    )
+    .expect("显式 false");
+    assert_eq!(default, explicit_false);
+}
+
+/// `ADR-0017` D2：`'project'` 路径上给 `includeDrums` / `includeMelody` 是
+/// 契约内错误，并带指出修复方式的 `hint`。
+#[test]
+fn drums_and_melody_require_the_theory_source() {
+    let project = filled_project();
+    for source in [None, Some("project")] {
+        for (drums, melody) in [(Some(true), None), (None, Some(true))] {
+            let fault = plan_with_options(
+                &project,
+                "Chorus",
+                "synthwave",
+                4,
+                None,
+                PlanOptions {
+                    material_source: source,
+                    progression: None,
+                    include_drums: drums,
+                    include_melody: melody,
+                },
+            )
+            .expect_err("工程材料路径不得生成鼓组/旋律");
+            assert_eq!(
+                fault.domain_code(),
+                Some(BuildCode::InvalidParameterRange),
+                "source={source:?} drums={drums:?} melody={melody:?}"
+            );
+            let BuildFault::Domain { message, data, .. } = fault else {
+                panic!("必须是领域失败");
+            };
+            assert_eq!(
+                message,
+                "旋律与鼓组理论生成仅在 materialSource: 'theory' 时支持"
+            );
+            assert_eq!(data["hint"], "请指定 materialSource: \"theory\"");
+        }
+    }
 }

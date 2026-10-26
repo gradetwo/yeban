@@ -88,15 +88,17 @@ pub fn plan(
     )
 }
 
-/// 规划一个章节骨架（带 [`PlanOptions`]，`ADR-0016`）。
+/// 规划一个章节骨架（带 [`PlanOptions`]，`ADR-0016` / `ADR-0017`）。
 ///
 /// `materialSource: "theory"` 时由 `yeban-theory` 的走向展开与声部连接生成
-/// 3/4 声部骨架；缺省（`"project"`）时行为与 [`plan`] 逐字节相同。
+/// 3/4 声部骨架；`includeDrums` / `includeMelody` 再追加鼓组／旋律声部。
+/// 缺省（`"project"` 且两项都不给）时行为与 [`plan`] 逐字节相同。
 ///
 /// # Errors
 ///
-/// 同 [`plan`]；理论路径的走向 / 音阶 / 声部连接失败映射到
-/// `INVALID_PARAMETER_RANGE`（`data.theoryStep` 说明是哪一步）。
+/// 同 [`plan`]；理论路径的走向 / 音阶 / 声部连接 / 鼓组 / 旋律失败映射到
+/// `INVALID_PARAMETER_RANGE`（`data.theoryStep` 说明是哪一步）；在 `'project'`
+/// 路径上给 `includeDrums` / `includeMelody` 也映射到 `INVALID_PARAMETER_RANGE`。
 pub fn plan_with_options(
     project: &YebanProjectV1,
     section_name: &str,

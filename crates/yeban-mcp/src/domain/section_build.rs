@@ -67,6 +67,22 @@
 //! 缺省（`None` / `"project"`）时本节的逻辑**一个字节都不参与** —— 兼容性契约见
 //! `ADR-0016` D2。
 //!
+//! ## 鼓组与旋律（`ADR-0017`，只挂在 `'theory'` 路径上）
+//!
+//! `includeDrums` / `includeMelody` 是理论生成路径的两个 **opt-in** 追加声部：
+//!
+//! - 鼓组：`GenreRule::drum_pattern`（缺失时退到 `swung_styled_drum_pattern`）
+//!   的每个 `DrumHit` → 一条 GM 打击乐音符（36/38/42/51），时值固定 120 tick，
+//!   力度按 `accent` 分 112/96；
+//! - 旋律：`GenreRule::rhythm_grid` 的网格上，`melody_over_chords` 在**同一份**
+//!   `ChordSpan` 上生成，时值/起点与网格对齐，力度按 `chord_tone` 分 112/96；
+//! - 两条声部与和声声部共用同一套 `AddTrack` / `AddClip` / `AddClipPlacement` /
+//!   `AddRoutingNode` / `ConnectRouting` 装配，因此路由图仍是 DAG。
+//!
+//! 任何一项在 `'project'` 路径上被置 `true` ⇒ `INVALID_PARAMETER_RANGE`
+//! （`data.hint` 指出要补 `materialSource: "theory"`）；两项缺省时行为与
+//! `ADR-0016` 逐字节相同。
+//!
 //! ## 乐理语义从哪来（`ADR-0001` **D49** ⇒ 关闭 needs-6）
 //!
 //! 本模块此前把风格表与调式表写成**本地常量**（`STYLE_PRESETS` 4 行 / `MODES` 12 行），
@@ -107,9 +123,11 @@ use yeban_model::{
 // `yeban-theory` 的公开面（本模块**只读**它，不复制它的逻辑）。
 // 逐个 API 的签名与用途见 `docs/ledger/theory-wiring-notes.md` §2。
 use yeban_theory::TheoryError;
+use yeban_theory::drum::{DrumPattern, default_backbeat, swung_styled_drum_pattern};
 use yeban_theory::genre::{GenreLibrary, GenreRule};
+use yeban_theory::melody::{MelodyConstraints, melody_over_chords};
 use yeban_theory::pitch::PitchClass;
-use yeban_theory::progression::{Meter as TheoryMeter, Progression};
+use yeban_theory::progression::{ChordSpan, Meter as TheoryMeter, Progression};
 use yeban_theory::scale::{Scale as TheoryScale, ScaleKind};
 use yeban_theory::voice_leading::{self, VoicingConstraints};
 
@@ -142,6 +160,21 @@ const FALLBACK_PROGRESSION: &str = "I-V-vi-IV";
 
 /// 理论生成路径的固定力度（`ADR-0016` 未决第 3 条：theory 没有力度概念）。
 const THEORY_VELOCITY: u8 = 96;
+
+/// 重音／和弦音的力度（`ADR-0017` D1：鼓组重音与旋律和弦音 112，其余 96）。
+const ACCENT_VELOCITY: u8 = 112;
+
+/// 鼓组声部名（`ADR-0017` D1：`"{section_name} · Drums"`）。
+const DRUMS_PART: &str = "Drums";
+
+/// 旋律声部名（`ADR-0017` D1：`"{section_name} · Melody"`）。
+const MELODY_PART: &str = "Melody";
+
+/// 理论生成鼓组／旋律时每小节的 onset 数（`ADR-0017` D1：16 = 十六分网格）。
+const THEORY_ONSETS_PER_BAR: u32 = 16;
+
+/// 鼓击点的固定时值：120 tick（960 PPQ ⇒ 1/32 音符，`ADR-0017` D1）。
+const DRUM_NOTE_DURATION_TICKS: u64 = 120;
 
 /// 音名表（含等音写法）。
 ///
@@ -303,6 +336,11 @@ impl BuildFault {
             message: message.into(),
             data,
         }
+    }
+
+    /// 构造一条带结构化负载的领域失败（`ADR-0017` D2 的互斥检查需要 `hint`）。
+    fn domain_with_data(code: BuildCode, message: impl Into<String>, data: Value) -> Self {
+        Self::domain(code, message, data)
     }
 }
 
@@ -853,7 +891,7 @@ impl MaterialSource {
     }
 }
 
-/// `plan` 的扩展选项（`ADR-0016`）。
+/// `plan` 的扩展选项（`ADR-0016` / `ADR-0017`）。
 ///
 /// 默认值 = 既有 `'project'` 路径，因此 [`plan`] 的调用方不需要任何改动。
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -862,6 +900,10 @@ pub struct PlanOptions<'a> {
     pub material_source: Option<&'a str>,
     /// 自定义罗马数字走向；**只**被 `'theory'` 消费（`'project'` 路径忽略它，D2）。
     pub progression: Option<&'a str>,
+    /// 追加鼓组声部（`ADR-0017` D1）；只允许与 `material_source: Some("theory")` 同给。
+    pub include_drums: Option<bool>,
+    /// 追加旋律声部（`ADR-0017` D1）；只允许与 `material_source: Some("theory")` 同给。
+    pub include_melody: Option<bool>,
 }
 
 /// 一个声部的身份（两条材料路径共用）。
@@ -949,6 +991,8 @@ struct TheoryInput {
     scale_label: String,
     /// 走向原文（自定义覆盖 > 流派第 0 条 > 兜底）。
     progression_text: String,
+    /// 该流派的规则（鼓组/旋律生成还要读它的拍号、摇摆比例与鼓组口径）。
+    rule: &'static GenreRule,
 }
 
 impl TheoryInput {
@@ -986,43 +1030,58 @@ fn theory_inputs(
         scale: theory_scale,
         scale_label,
         progression_text,
+        rule,
     })
 }
 
-/// `'theory'` 路径的内容：走向展开 → 声部连接 → 每声部一张确定性音符表。
+/// `bars` 转成 theory 的 `u32` 口径；越界 ⇒ [`BuildCode::OutOfRange`]。
+fn theory_bars(bars: u64) -> Result<u32, BuildFault> {
+    u32::try_from(bars).map_err(|_| {
+        BuildFault::domain(
+            BuildCode::OutOfRange,
+            format!("`bars` 超出 theory 的 u32 范围: {bars}"),
+            json!({ "bars": bars }),
+        )
+    })
+}
+
+/// `'theory'` 路径的和弦跨度：走向展开成整数 tick 的 [`ChordSpan`]。
 ///
-/// 每个和弦跨满 `ChordSpan` 的时值（块状和声节奏），音符起点/时值都是
-/// 960 PPQ 的整数 tick；身份由 `section_id + 声部序 + 和弦序` 派生。
-fn theory_contents(
+/// 鼓组与旋律都消费同一份跨度（`ADR-0017`：旋律必须落在**当前段落展开的**
+/// 和弦区段上），因此展开只做一次。
+fn theory_spans(
     project: &YebanProjectV1,
     style_preset: &str,
     bars: u64,
     theory: &TheoryInput,
-    section_id: EntityId,
-    voice_count: usize,
-) -> Result<Vec<BTreeMap<EntityId, MidiNote>>, BuildFault> {
+) -> Result<Vec<ChordSpan>, BuildFault> {
     let progression = Progression::parse(&theory.progression_text)
         .map_err(|error| theory_invalid(style_preset, "Progression::parse", error))?;
     let meter = TheoryMeter {
         numerator: project.time_signature.numerator,
         denominator: project.time_signature.denominator,
     };
-    let bars_u32 = u32::try_from(bars).map_err(|_| {
-        BuildFault::domain(
-            BuildCode::OutOfRange,
-            format!("`bars` 超出 theory 的 u32 范围: {bars}"),
-            json!({ "bars": bars }),
-        )
-    })?;
-    let spans = progression
+    progression
         .with_meter(meter)
-        .with_bars(bars_u32)
+        .with_bars(theory_bars(bars)?)
         .map_err(|error| theory_invalid(style_preset, "Progression::with_bars", error))?
         .expand(&theory.scale)
-        .map_err(|error| theory_invalid(style_preset, "Progression::expand", error))?;
+        .map_err(|error| theory_invalid(style_preset, "Progression::expand", error))
+}
+
+/// `'theory'` 路径的和声内容：声部连接 → 每声部一张确定性音符表。
+///
+/// 每个和弦跨满 `ChordSpan` 的时值（块状和声节奏），音符起点/时值都是
+/// 960 PPQ 的整数 tick；身份由 `section_id + 声部序 + 和弦序` 派生。
+fn theory_contents(
+    style_preset: &str,
+    section_id: EntityId,
+    voice_count: usize,
+    spans: &[ChordSpan],
+) -> Result<Vec<BTreeMap<EntityId, MidiNote>>, BuildFault> {
     let voiced = match voice_count {
-        3 => voice_leading::realize_three_voices(&spans),
-        4 => voice_leading::realize(&spans, &VoicingConstraints::FOUR_VOICES),
+        3 => voice_leading::realize_three_voices(spans),
+        4 => voice_leading::realize(spans, &VoicingConstraints::FOUR_VOICES),
         other => {
             return Err(BuildFault::domain(
                 BuildCode::Conflict,
@@ -1067,6 +1126,126 @@ fn theory_contents(
             notes
         })
         .collect())
+}
+
+/// 鼓组型：流派登记的口径优先；`Ok(None)` 时按 `ADR-0017` D1 的兜底入口
+/// 再问一次 `swung_styled_drum_pattern`。
+fn theory_drum_pattern(
+    rule: &'static GenreRule,
+    bars: u32,
+    style_preset: &str,
+) -> Result<DrumPattern, BuildFault> {
+    let pattern = rule
+        .drum_pattern(bars, THEORY_ONSETS_PER_BAR)
+        .map_err(|error| theory_invalid(style_preset, "GenreRule::drum_pattern", error))?;
+    if let Some(pattern) = pattern {
+        return Ok(pattern);
+    }
+    let permille = rule
+        .swing_permille()
+        .map_err(|error| theory_invalid(style_preset, "GenreRule::swing_permille", error))?;
+    swung_styled_drum_pattern(
+        rule.meter_value(),
+        bars,
+        THEORY_ONSETS_PER_BAR,
+        permille,
+        None,
+        default_backbeat(rule.meter_value()),
+        rule.drum_style,
+    )
+    .map_err(|error| theory_invalid(style_preset, "swung_styled_drum_pattern", error))?
+    .ok_or_else(|| {
+        BuildFault::domain(
+            BuildCode::InvalidParameterRange,
+            format!("流派 `{style_preset}` 的拍号推不出可用的鼓组型"),
+            json!({
+                "stylePreset": style_preset,
+                "theoryStep": "GenreRule::drum_pattern",
+                "bars": bars,
+                "onsetsPerBar": THEORY_ONSETS_PER_BAR,
+            }),
+        )
+    })
+}
+
+/// `'theory'` 路径的鼓组内容（`ADR-0017` D1）。
+///
+/// 每个 [`DrumHit`](yeban_theory::drum::DrumHit) 变成一条 GM 打击乐音符：
+/// 音高 = `hit.voice.gm_key()`（36/38/42/51）、起点 = `hit.tick`、
+/// 时值固定 120 tick、力度按 `accent` 分 112/96。
+fn drum_contents(
+    rule: &'static GenreRule,
+    bars: u64,
+    style_preset: &str,
+    section_id: EntityId,
+) -> Result<BTreeMap<EntityId, MidiNote>, BuildFault> {
+    let pattern = theory_drum_pattern(rule, theory_bars(bars)?, style_preset)?;
+    let mut notes = BTreeMap::new();
+    for (hit_index, hit) in pattern.hits().iter().enumerate() {
+        let id = deterministic_id(&format!(
+            "theory-drum:{section_id}:{hit_index}:{}",
+            hit.voice.name()
+        ));
+        let note = MidiNote {
+            velocity: if hit.accent {
+                ACCENT_VELOCITY
+            } else {
+                THEORY_VELOCITY
+            },
+            ..MidiNote::new(id, hit.tick, hit.voice.gm_key(), DRUM_NOTE_DURATION_TICKS)
+        };
+        notes.insert(id, note);
+    }
+    Ok(notes)
+}
+
+/// `'theory'` 路径的旋律内容（`ADR-0017` D1）。
+///
+/// 网格来自流派的 `rhythm_grid`，旋律由 `melody_over_chords` 在目标调式与
+/// 既有和弦跨度上生成；力度按 `chord_tone` 分 112/96。
+fn melody_contents(
+    theory: &TheoryInput,
+    spans: &[ChordSpan],
+    bars: u64,
+    style_preset: &str,
+    section_id: EntityId,
+) -> Result<BTreeMap<EntityId, MidiNote>, BuildFault> {
+    let grid = theory
+        .rule
+        .rhythm_grid(theory_bars(bars)?, THEORY_ONSETS_PER_BAR)
+        .map_err(|error| theory_invalid(style_preset, "GenreRule::rhythm_grid", error))?;
+    let melody = melody_over_chords(
+        &theory.scale,
+        spans,
+        &grid,
+        MelodyConstraints::DEFAULT,
+        section_seed(section_id),
+    )
+    .map_err(|error| theory_invalid(style_preset, "melody_over_chords", error))?;
+    let mut notes = BTreeMap::new();
+    for (note_index, note) in melody.notes().iter().enumerate() {
+        let id = deterministic_id(&format!("theory-melody:{section_id}:{note_index}"));
+        let midi = MidiNote {
+            velocity: if note.chord_tone {
+                ACCENT_VELOCITY
+            } else {
+                THEORY_VELOCITY
+            },
+            ..MidiNote::new(id, note.start_tick, note.pitch, note.duration_ticks)
+        };
+        notes.insert(id, midi);
+    }
+    Ok(notes)
+}
+
+/// 旋律生成的确定性种子（`ADR-0017` D3：同一 `section_id` ⇒ 同一条旋律）。
+fn section_seed(section_id: EntityId) -> u64 {
+    let raw: u128 = section_id.as_ulid().0;
+    #[allow(clippy::cast_possible_truncation)]
+    let low = raw as u64;
+    #[allow(clippy::cast_possible_truncation)]
+    let high = (raw >> 64) as u64;
+    low ^ high
 }
 
 /// 规划一个章节骨架（段落 + 声部音轨 + 片段池条目 + 摆放 + 声部连接）。
@@ -1116,10 +1295,17 @@ pub fn plan(
 /// `options.progression` 只被 `'theory'` 消费：给了就用它（`Progression::parse`），
 /// 否则取流派首选走向（`GenreRule::progression_at(0)`，再兜底 `"I-V-vi-IV"`）。
 ///
+/// `options.include_drums` / `options.include_melody`（`ADR-0017`）只在
+/// `material_source: Some("theory")` 时可取 `true`：它们把 `"· Drums"` /
+/// `"· Melody"` 两条声部追加在和声声部之后；缺省（`None` / `false`）与既有行为
+/// 逐字节相同。
+///
 /// # Errors
 ///
-/// 同 [`plan`]；理论路径额外的失败（走向 / 音阶 / 声部连接）映射到
-/// `INVALID_PARAMETER_RANGE`，`data.theoryStep` 说明是哪一步。
+/// 同 [`plan`]；理论路径额外的失败（走向 / 音阶 / 声部连接 / 鼓组 / 旋律）映射到
+/// `INVALID_PARAMETER_RANGE`，`data.theoryStep` 说明是哪一步。`include_drums` /
+/// `include_melody` 为 `true` 而 `material_source` 不是 `"theory"` ⇒
+/// `INVALID_PARAMETER_RANGE`（`data.hint` 指出要补 `materialSource`）。
 pub fn plan_with_options(
     project: &YebanProjectV1,
     section_name: &str,
@@ -1129,17 +1315,27 @@ pub fn plan_with_options(
     options: PlanOptions<'_>,
 ) -> Result<SectionPlan, BuildFault> {
     let material_source = MaterialSource::parse(options.material_source)?;
+    // `ADR-0017` D2：鼓组/旋律是理论生成能力的 opt-in，工程材料路径没有这两样。
+    let include_drums = options.include_drums == Some(true);
+    let include_melody = options.include_melody == Some(true);
+    if (include_drums || include_melody) && material_source != MaterialSource::Theory {
+        return Err(BuildFault::domain_with_data(
+            BuildCode::InvalidParameterRange,
+            "旋律与鼓组理论生成仅在 materialSource: 'theory' 时支持",
+            json!({ "hint": "请指定 materialSource: \"theory\"" }),
+        ));
+    }
     // 1. 参数与工程前置条件（顺序即错误码优先级，判据钉住它）。
     //    风格与声部数都来自 theory（见 `preset_parts` / `genre_voice_count`）。
-    let parts = preset_parts(style_preset)?;
-    if parts.is_empty() || parts.len() > MAX_PARTS {
+    let harmony_parts = preset_parts(style_preset)?;
+    if harmony_parts.is_empty() || harmony_parts.len() > MAX_PARTS {
         return Err(BuildFault::domain(
             BuildCode::Conflict,
             format!(
                 "风格预设 `{style_preset}` 的声部数 {} 不在 1..={MAX_PARTS}",
-                parts.len()
+                harmony_parts.len()
             ),
-            json!({ "parts": parts, "maxParts": MAX_PARTS }),
+            json!({ "parts": harmony_parts, "maxParts": MAX_PARTS }),
         ));
     }
     if bars == 0 || bars > MAX_BARS {
@@ -1176,6 +1372,16 @@ pub fn plan_with_options(
         )?),
     };
 
+    // 1c. 声部清单：和声声部 + 可选的鼓组/旋律（`ADR-0017` D1，追加在末尾）。
+    //     缺省两项都关 ⇒ `parts` 与 `harmony_parts` 逐项相同（D2 逐字节兼容）。
+    let mut parts: Vec<&str> = harmony_parts.to_vec();
+    if include_drums {
+        parts.push(DRUMS_PART);
+    }
+    if include_melody {
+        parts.push(MELODY_PART);
+    }
+
     // 2. 时间轴与身份（确定性：同一请求 ⇒ 同一份载荷）。
     let ticks_per_bar = ticks_per_bar(project);
     let start_tick = project
@@ -1204,18 +1410,29 @@ pub fn plan_with_options(
     };
 
     // 3. 每个声部的身份（两条材料路径共用；一次算清，后面几个相位都用它）。
-    let part_plans = part_plans(section_id, section_name, parts, bus);
+    let part_plans = part_plans(section_id, section_name, &parts, bus);
 
     // 3b. 材料内容：`materialSource` 决定来源，其余装配完全相同。
+    //     鼓组/旋律（`ADR-0017`）只追加在和声声部之后，顺序与 `parts` 一致。
     let contents = match &theory_input {
-        Some(theory) => theory_contents(
-            project,
-            style_preset,
-            bars,
-            theory,
-            section_id,
-            part_plans.len(),
-        )?,
+        Some(theory) => {
+            let spans = theory_spans(project, style_preset, bars, theory)?;
+            let mut contents =
+                theory_contents(style_preset, section_id, harmony_parts.len(), &spans)?;
+            if include_drums {
+                contents.push(drum_contents(theory.rule, bars, style_preset, section_id)?);
+            }
+            if include_melody {
+                contents.push(melody_contents(
+                    theory,
+                    &spans,
+                    bars,
+                    style_preset,
+                    section_id,
+                )?);
+            }
+            contents
+        }
         None => project_contents(project, scale.as_ref(), theory_scale.as_ref(), &part_plans)?,
     };
 

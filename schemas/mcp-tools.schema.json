@@ -42,7 +42,7 @@
         },
         "arguments": {
           "type": "object",
-          "description": "工具实参。本节的 `properties` 只声明**所有工具共有**的两个键（`dryRun` / `idempotencyKey`）；每个工具的**特有**实参由 `definitions.ToolCall.properties.name` 对应的注册表条目在 `tools/list` 的 `inputSchema` 里逐条派生（`crates/yeban-mcp/src/tools.rs` 的 `ToolSpec::input_schema`，`additionalProperties: false`）。扩展工具的实参**另有**本节下方的 `definitions.ExtensionToolArguments` 手写逐字段约束。**`yeban_render_master` 的 `targetLufs`**（响度目标, LUFS; 给了就按 ±0.5 LU 容差判定, 未达标报 `RENDER_FAILED`）就是前一条路径上的特有实参 —— 它**不是**公共键, 因此刻意不写在这里。**`yeban_propose_section` 的 `materialSource` / `progression`**（ADR-0016）同属该路径；**`yeban_edit_notes` 的 `create: true` + `placement` 组合**（ADR-0018）也同属该路径；它们的新增形状另在 `definitions.DocumentedToolArguments` 里登记（仅文档，不接线到 `allOf`）。",
+          "description": "工具实参。本节的 `properties` 只声明**所有工具共有**的两个键（`dryRun` / `idempotencyKey`）；每个工具的**特有**实参由 `definitions.ToolCall.properties.name` 对应的注册表条目在 `tools/list` 的 `inputSchema` 里逐条派生（`crates/yeban-mcp/src/tools.rs` 的 `ToolSpec::input_schema`，`additionalProperties: false`）。扩展工具的实参**另有**本节下方的 `definitions.ExtensionToolArguments` 手写逐字段约束。**`yeban_render_master` 的 `targetLufs`**（响度目标, LUFS; 给了就按 ±0.5 LU 容差判定, 未达标报 `RENDER_FAILED`）就是前一条路径上的特有实参 —— 它**不是**公共键, 因此刻意不写在这里。**`yeban_propose_section` 的 `materialSource` / `progression`**（ADR-0016）与 **`includeDrums` / `includeMelody`**（ADR-0017）同属该路径；**`yeban_edit_notes` 的 `create: true` + `placement` 组合**（ADR-0018）也同属该路径；它们的新增形状另在 `definitions.DocumentedToolArguments` 里登记（仅文档，不接线到 `allOf`）。",
           "properties": {
             "dryRun": {
               "type": "boolean",
@@ -457,13 +457,13 @@
     },
     "DocumentedToolArguments": {
       "title": "DocumentedToolArguments",
-      "description": "文档化的十个工具的**新增可选实参**形状（`ADR-0016` / `ADR-0018`）。这些键仍由 `crates/yeban-mcp/src/tools.rs` 的注册表派生并广播在 `tools/list` 的 `inputSchema` 里（注册表即契约的唯一实现）；本节只是把新增键的枚举/缺省值**机器可读地**登记在契约侧，⛔ 不接线到 `ToolCall.allOf` —— 既有十工具的参数语义不得改动（`tests/contract.rs::extension_argument_constraints_match_the_registry` 钉住这一点）。",
+      "description": "文档化的十个工具的**新增可选实参**形状（`ADR-0016` / `ADR-0017` / `ADR-0018`）。这些键仍由 `crates/yeban-mcp/src/tools.rs` 的注册表派生并广播在 `tools/list` 的 `inputSchema` 里（注册表即契约的唯一实现）；本节只是把新增键的枚举/缺省值**机器可读地**登记在契约侧，⛔ 不接线到 `ToolCall.allOf` —— 既有十工具的参数语义不得改动（`tests/contract.rs::extension_argument_constraints_match_the_registry` 钉住这一点）。",
       "type": "object",
       "$defs": {
         "yeban_propose_section": {
-          "title": "yeban_propose_section (ADR-0016 新增键)",
+          "title": "yeban_propose_section (ADR-0016 / ADR-0017 新增键)",
           "type": "object",
-          "description": "`yeban_propose_section` 的 `ADR-0016` 新增**可选**键。其余实参（`sectionName` / `stylePreset` / `bars` / `scale` / `dryRun` / `idempotencyKey`）继续由注册表派生。",
+          "description": "`yeban_propose_section` 的 `ADR-0016` / `ADR-0017` 新增**可选**键。其余实参（`sectionName` / `stylePreset` / `bars` / `scale` / `dryRun` / `idempotencyKey`）继续由注册表派生。",
           "properties": {
             "materialSource": {
               "type": "string",
@@ -477,6 +477,16 @@
             "progression": {
               "type": "string",
               "description": "自定义罗马数字走向，例如 `i-VI-III-VII`。**只**被 `materialSource: \"theory\"` 消费；`project` 路径忽略它（`ADR-0016` D2 的逐字节兼容契约）。缺省 = 该流派登记的首选走向（`progression_at(0)`），流派没有登记时兜底 `I-V-vi-IV`。解析失败或声部连接无可行解 ⇒ `INVALID_PARAMETER_RANGE`（`data.theoryStep` 说明是哪一步）。"
+            },
+            "includeDrums": {
+              "type": "boolean",
+              "default": false,
+              "description": "是否追加鼓组声部（`ADR-0017` D1）。`true` = 在段落末尾追加 `\"{sectionName} · Drums\"` 音轨，鼓点由 `GenreRule::drum_pattern`（缺失时退到 `swung_styled_drum_pattern`）生成，映射为标准 GM 打击乐键（底鼓 36 / 军鼓 38 / 踩镲 42 / 吊镲 51），时值固定 120 tick，重音 112 其余 96，并直连主总线（整图仍为 DAG）。**只**允许与 `materialSource: \"theory\"` 同给；否则 ⇒ `INVALID_PARAMETER_RANGE`（带 `hint`）。缺省 = 与既有行为逐字节相同（`ADR-0017` D2）。"
+            },
+            "includeMelody": {
+              "type": "boolean",
+              "default": false,
+              "description": "是否追加旋律声部（`ADR-0017` D1）。`true` = 在段落末尾追加 `\"{sectionName} · Melody\"` 音轨，旋律由 `melody_over_chords` 在**当前段落展开的** `ChordSpan` 与流派节奏网格上生成，音域 `MelodyConstraints::DEFAULT`，起点/时值与网格对齐，和弦音 112 其余 96，并直连主总线（整图仍为 DAG）。**只**允许与 `materialSource: \"theory\"` 同给；否则 ⇒ `INVALID_PARAMETER_RANGE`（带 `hint`）。缺省 = 与既有行为逐字节相同（`ADR-0017` D2）。"
             }
           }
         },

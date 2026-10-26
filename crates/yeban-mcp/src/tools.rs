@@ -729,6 +729,18 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
                 false,
                 "自定义罗马数字走向 (例 \"i-VI-III-VII\"), 只被 `materialSource:\"theory\"` 消费; 缺省 = 该流派登记的首选走向, 流派没有登记时兜底 \"I-V-vi-IV\"。解析失败或声部连接无可行解 ⇒ `INVALID_PARAMETER_RANGE` (带 `theoryStep`)",
             ),
+            param(
+                "includeDrums",
+                "boolean",
+                false,
+                "是否追加鼓组声部 [ADR-0017]: 缺省 false。true = 在段落末尾追加 `\"{sectionName} · Drums\"` 音轨, 鼓点由 `GenreRule::drum_pattern` (或 `swung_styled_drum_pattern`) 生成, 映射为标准 GM 打击乐键 (底鼓 36 / 军鼓 38 / 踩镲 42 / 吊镲 51), 时值固定 120 tick, 重音 112 其余 96, 并直连主总线 (整图仍为 DAG)。只允许与 `materialSource:\"theory\"` 同给; 否则 ⇒ `INVALID_PARAMETER_RANGE` (带 `hint`)",
+            ),
+            param(
+                "includeMelody",
+                "boolean",
+                false,
+                "是否追加旋律声部 [ADR-0017]: 缺省 false。true = 在段落末尾追加 `\"{sectionName} · Melody\"` 音轨, 旋律由 `melody_over_chords` 在**当前段落展开的** `ChordSpan` 与流派节奏网格上生成, 音域 `MelodyConstraints::DEFAULT`, 起点/时值与网格对齐, 和弦音 112 其余 96, 并直连主总线 (整图仍为 DAG)。只允许与 `materialSource:\"theory\"` 同给; 否则 ⇒ `INVALID_PARAMETER_RANGE` (带 `hint`)",
+            ),
             param("dryRun", "boolean", false, "只读模拟校验"),
             param(
                 INCLUDE_OPS_PARAM,
