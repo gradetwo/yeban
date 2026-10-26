@@ -11101,3 +11101,26 @@ $ python3 scripts/gates/check_phase_status.py   # 退出 0
   - `cargo-local.sh test -p yeban-mcp --test render_master -- the_mcp_surface`: 1 passed, 0 failed.
   - `cargo fmt --check`: 格式化通过。
   - `python3 scripts/guards/policy_check.py`: 18 项全部通过。
+
+
+---
+
+## 2026-10-27：yeban-app SMF 导出字节契约与 Conductor 版权断言同步更新落地
+
+- **需求规范 ID**: `[ARCH-EXT-002]`
+- **实施工作线**: `line/app-midi-copyright-assertion` (`8335bd5f`)，经 subagent `qodercli` (`Qwen3.8-Flash`) 自主研发与本地轻量门禁通过后由集成者落地。
+- **背景与目标**:
+  - CI Run `40356906437` 与 `40353512369` 中，macOS 与 Windows 平台的 `test (yeban-app 的平台分支)` 报 101 退出。经取证产物 `macos-gate-log`（`gate.log`）查明病因：
+    1. `filled_export_imports_its_four_lyrics_and_reexports_them_at_the_same_ticks` 失败：`bytes.len()` 实测为 206 字节，而测试钉死在 `[ARCH-EXT-002]` 导体轨导出元数据之前的 168 字节（差额 38 字节恰为导体轨包含的 `title` 与 `author/copyright` 元事件）。
+    2. `the_import_reports_every_aux_event_kind_as_read_and_dropped` 失败：断言重导出不许再有 `copyright`（`occurrences == 0`）；而在 `[ARCH-EXT-002]` 落地后，空工程导入导体轨 `FF 02` 版权已如实采纳进 `project.author`，并在导出时作为导体轨版权元事件输出（实测 `occurrences == 1`），因此旧的负向断言失真。
+- **实施**:
+  - `crates/yeban-app/tests/midi_round_trip.rs`:
+    - `filled_export_imports_its_four_lyrics_and_reexports_them_at_the_same_ticks`:
+      - 更新字节契约长度断言：`168` → `206`。
+      - 更新精确 SHA-256 断言为 `"e38eadb987ed160a7b43c61f4965ebe2f8c7837da9064a5cafe960d51cfc648c"`（由 `yeban_midi::export::export_from_project` 确定性推导）。
+    - `the_import_reports_every_aux_event_kind_as_read_and_dropped`:
+      - 将 `(vec![0xFF, 0x02], "copyright")` 从未消费事件的 `occurrences == 0` 循环中移除。
+      - 在循环之后新增正向断言：`assert_eq!(occurrences(&out_bytes, &[0xFF, 0x02]), 1, "copyright 经 project.author 消费并如实重导出");`。
+- **验证**:
+  - `cargo fmt --check`: 格式化通过。
+  - `python3 scripts/guards/policy_check.py`: 18 项全部通过。
