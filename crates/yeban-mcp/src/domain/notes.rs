@@ -755,15 +755,15 @@ use std::str::FromStr as _;
 use serde_json::{Map, Value};
 
 use yeban_model::music::{
-    MICRO_TIMING_MAX_ABS, MIDI_PITCH_MAX, MIDI_VELOCITY_MAX, PITCH_BEND_CENTS_MAX_ABS,
-    PROBABILITY_MAX, PROBABILITY_MIN, RATCHET_MAX, RATCHET_MIN,
+    MICRO_TIMING_MAX_ABS, MIDI_CHANNEL_MAX, MIDI_PITCH_MAX, MIDI_VELOCITY_MAX,
+    PITCH_BEND_CENTS_MAX_ABS, PROBABILITY_MAX, PROBABILITY_MIN, RATCHET_MAX, RATCHET_MIN,
 };
 use yeban_model::{
     AssetHash, AutomationLane, AutomationTarget, AutomationValueDomain, AutomationWriteMode,
     ClipContent, ClipPlacement, ClipPoolEntry, DeviceDefinition, DeviceKind, EntityId,
-    LaunchQuantization, LoopConfig, MidiNote, Op, ParameterValue, RoutingEdge, RoutingKind,
-    SamplerBinding, SceneV3, SectionV3, SlideConfig, TimeSignature, TrackKind, TrackV3,
-    TransportConfig, YebanProjectV1,
+    KeySignature, LaunchQuantization, LoopConfig, MidiNote, Op, ParameterValue, RoutingEdge,
+    RoutingKind, SamplerBinding, SceneV3, SectionV3, SlideConfig, TimeSignature, TrackKind,
+    TrackV3, TransportConfig, YebanProjectV1,
 };
 // 设备参数的**序数 → 稳定身份**解析与**名字白名单**只有一份：`#263` 落在 render 里。
 // ⛔ 本层不复制第二份（否则 `paramNotSupported` 会有两个字面量来源）。
@@ -881,6 +881,12 @@ pub const SLIDE_FIELDS: [&str; 3] = [
     SLIDE_CURVE_FIELD,
 ];
 
+/// `add` 音符对象里的 **MIDI 通道**字段名（`ops[].note.channel`，可选，`0..=15`）。
+pub const CHANNEL_FIELD: &str = "channel";
+
+/// `add` 音符对象里的**歌词音节**字段名（`ops[].note.syllable`，可选，字符串）。
+pub const SYLLABLE_FIELD: &str = "syllable";
+
 /// `add.note` 对象**允许**出现的全部键。
 ///
 /// 与 [`parse_note`] 真正读取的键**同源**（判据 `expressive_note_field_names_are_pinned`
@@ -893,11 +899,13 @@ pub const NOTE_FIELDS: &[&str] = &[
     "pitch",
     "durationTicks",
     "velocity",
+    CHANNEL_FIELD,
     PROBABILITY_FIELD,
     RATCHET_FIELD,
     MICRO_TIMING_FIELD,
     PITCH_BEND_CURVE_FIELD,
     SLIDE_FIELD,
+    SYLLABLE_FIELD,
 ];
 
 /// `ops[].kind` 的**音符时间位置**形态名（写 [`Op::SetNoteTiming`]）。
@@ -1249,6 +1257,7 @@ pub const OP_KINDS: &[&str] = &[
     SET_AUTHOR_KIND,
     SET_TITLE_KIND,
     SET_TIME_SIGNATURE_KIND,
+    SET_KEY_SIGNATURE_KIND,
     SET_TRACK_NAME_KIND,
     SET_CLIP_NAME_KIND,
     SET_CLIP_GAIN_KIND,
@@ -1861,6 +1870,32 @@ pub const SET_TIME_SIGNATURE_FIELD: &str = TIME_SIGNATURE_PARAM;
 
 /// 设置拍号形态允许出现的**全部**键（判别键 + 一个必填）。
 pub const SET_TIME_SIGNATURE_FIELDS: [&str; 2] = ["kind", SET_TIME_SIGNATURE_FIELD];
+
+/// `ops[].kind` 的**设置工程调号**形态名（写 [`Op::SetKeySignature`]）。
+///
+/// 与模型 `Op` 变体名同词（`SetKeySignature` 的小驼峰），与 [`SET_TIME_SIGNATURE_KIND`] 同一条规则。
+///
+/// ⚠ 它是**顶层文档字段**形态（与 [`SET_TRANSPORT_CONFIG_KIND`] / [`SET_TEMPO_KIND`] /
+/// [`SET_AUTHOR_KIND`] / [`SET_TITLE_KIND`] / [`SET_TIME_SIGNATURE_KIND`] 同族）：不读不写音符，也不寻址音轨。
+pub const SET_KEY_SIGNATURE_KIND: &str = "setKeySignature";
+
+/// 设置调号形态的**新调号**字段名（`ops[].keySignature`，必填，对象或 `null`）。
+pub const SET_KEY_SIGNATURE_FIELD: &str = "keySignature";
+
+/// 设置调号形态允许出现的**全部**键（判别键 + 一个必填）。
+pub const SET_KEY_SIGNATURE_FIELDS: [&str; 2] = ["kind", SET_KEY_SIGNATURE_FIELD];
+
+/// 调号对象里的**升降号数量**字段名（`ops[].keySignature.sharpsFlats`，必填，整数 `-7..=7`）。
+pub const KEY_SIGNATURE_SHARPS_FLATS_FIELD: &str = "sharpsFlats";
+
+/// 调号对象里的**调式**字段名（`ops[].keySignature.isMinor`，必填，布尔值）。
+pub const KEY_SIGNATURE_IS_MINOR_FIELD: &str = "isMinor";
+
+/// 调号对象允许出现的**全部**键。
+pub const KEY_SIGNATURE_FIELDS: [&str; 2] = [
+    KEY_SIGNATURE_SHARPS_FLATS_FIELD,
+    KEY_SIGNATURE_IS_MINOR_FIELD,
+];
 
 /// `ops[].kind` 的**设置音轨名**形态名（写 [`Op::SetTrackName`]）。
 pub const SET_TRACK_NAME_KIND: &str = "setTrackName";
@@ -3016,6 +3051,19 @@ pub enum NoteOp {
         /// 修改后的拍号（已过模型校验器）。
         new_time_signature: TimeSignature,
     },
+    /// 设置**工程调号**（[`Op::SetKeySignature`]，顶层 `key_signature`）。
+    ///
+    /// 与 [`Self::SetTransportConfig`] / [`Self::SetTempo`] / [`Self::SetAuthor`] /
+    /// [`Self::SetTitle`] / [`Self::SetTimeSignature`] 同族（**顶层文档字段**，不读不写音符、不寻址音轨）。
+    ///
+    /// 载荷只有新值：旧值由 [`compile`] 从当前文档读（`project.key_signature`），⛔ 不信调用方声明。
+    /// 把旧值写进载荷是**未知键**，由 [`reject_set_key_signature_fields`] 响亮拒绝。
+    SetKeySignature {
+        /// 修改前的调号（来自当前文档）。
+        old_key_signature: Option<KeySignature>,
+        /// 修改后的调号（由 [`KeySignature::validate`] 判决，`None` 为清空）。
+        new_key_signature: Option<KeySignature>,
+    },
     /// 设置**音轨名字**（[`Op::SetTrackName`]，寻址到一条音轨）。
     ///
     /// ⭐ **本形态补上了什么**：⭐ 在它之前工具面**只有 [建轨][Self::AddTrack] 时能给名字**
@@ -3659,6 +3707,7 @@ impl NoteOp {
             Self::SetAuthor { .. } => SET_AUTHOR_KIND,
             Self::SetTitle { .. } => SET_TITLE_KIND,
             Self::SetTimeSignature { .. } => SET_TIME_SIGNATURE_KIND,
+            Self::SetKeySignature { .. } => SET_KEY_SIGNATURE_KIND,
             Self::SetTrackName { .. } => SET_TRACK_NAME_KIND,
             Self::SetClipName { .. } => SET_CLIP_NAME_KIND,
             Self::SetClipGain { .. } => SET_CLIP_GAIN_KIND,
@@ -4305,6 +4354,19 @@ fn parse_one(item: &Value) -> Result<NoteOp, Fault> {
                 new_time_signature: parse_time_signature(Some(value))?,
             })
         }
+        SET_KEY_SIGNATURE_KIND => {
+            reject_set_key_signature_fields(object)?;
+            let value = object.get(SET_KEY_SIGNATURE_FIELD).ok_or_else(|| {
+                missing(
+                    SET_KEY_SIGNATURE_FIELD,
+                    "调号对象 ({\"sharpsFlats\": -7..=7, \"isMinor\": bool}) 或 null",
+                )
+            })?;
+            Ok(NoteOp::SetKeySignature {
+                old_key_signature: None,
+                new_key_signature: parse_key_signature(value)?,
+            })
+        }
         SET_TRANSPORT_CONFIG_KIND => Ok(NoteOp::SetTransportConfig {
             new_config: parse_transport_config(object)?,
         }),
@@ -4827,6 +4889,73 @@ fn reject_set_time_signature_fields(object: &Map<String, Value>) -> Result<(), F
         SET_TIME_SIGNATURE_KIND,
         "unknownSetTimeSignatureField",
     )
+}
+
+/// 拒绝 `setKeySignature` 里 [`SET_KEY_SIGNATURE_FIELDS`] 之外的键。
+fn reject_set_key_signature_fields(object: &Map<String, Value>) -> Result<(), Fault> {
+    reject_unknown_keys(
+        object,
+        &SET_KEY_SIGNATURE_FIELDS,
+        SET_KEY_SIGNATURE_KIND,
+        "unknownSetKeySignatureField",
+    )
+}
+
+/// 解析 `setKeySignature` 的 `keySignature` 字段。
+///
+/// 接受 `null`（清空调号 ⇒ `None`）或 `{ "sharpsFlats": i8 (-7..=7), "isMinor": bool }`。
+fn parse_key_signature(value: &Value) -> Result<Option<KeySignature>, Fault> {
+    if value.is_null() {
+        return Ok(None);
+    }
+    let object = value.as_object().ok_or_else(|| {
+        Fault::domain(
+            ErrorCode::InvalidParameterRange,
+            format!("`{SET_KEY_SIGNATURE_FIELD}` 必须是对象或 null, 实际收到 {value}"),
+        )
+    })?;
+    reject_unknown_keys(
+        object,
+        &KEY_SIGNATURE_FIELDS,
+        SET_KEY_SIGNATURE_KIND,
+        "unknownKeySignatureField",
+    )?;
+    let sf_val = object
+        .get(KEY_SIGNATURE_SHARPS_FLATS_FIELD)
+        .ok_or_else(|| missing(KEY_SIGNATURE_SHARPS_FLATS_FIELD, "整数 (-7..=7)"))?;
+    let sf = sf_val.as_i64().ok_or_else(|| {
+        Fault::domain(
+            ErrorCode::InvalidParameterRange,
+            format!("`{KEY_SIGNATURE_SHARPS_FLATS_FIELD}` 必须是整数, 实际收到 {sf_val}"),
+        )
+    })?;
+    if !(-7..=7).contains(&sf) {
+        return Err(Fault::domain_with_data(
+            ErrorCode::OutOfRange,
+            format!("`{KEY_SIGNATURE_SHARPS_FLATS_FIELD}` 越界: {sf} 不在 -7..=7"),
+            serde_json::json!({
+                "field": KEY_SIGNATURE_SHARPS_FLATS_FIELD,
+                "value": sf,
+                "min": -7,
+                "max": 7,
+            }),
+        ));
+    }
+    let is_minor_val = object
+        .get(KEY_SIGNATURE_IS_MINOR_FIELD)
+        .ok_or_else(|| missing(KEY_SIGNATURE_IS_MINOR_FIELD, "布尔值"))?;
+    let is_minor = is_minor_val.as_bool().ok_or_else(|| {
+        Fault::domain(
+            ErrorCode::InvalidParameterRange,
+            format!("`{KEY_SIGNATURE_IS_MINOR_FIELD}` 必须是布尔值, 实际收到 {is_minor_val}"),
+        )
+    })?;
+    let ks = KeySignature {
+        sharps_flats: sf as i8,
+        is_minor,
+    };
+    ks.validate().map_err(|e| from_model("调号校验", &e))?;
+    Ok(Some(ks))
 }
 
 /// 通用的"只认这几个键"检查（⛔ 多写一个键不静默丢弃）。
@@ -6925,9 +7054,11 @@ fn parse_note(object: &Map<String, Value>) -> Result<MidiNote, Fault> {
     };
     let mut note = MidiNote::new(id, start_tick, pitch, duration_ticks);
     note.velocity = velocity;
+    note.channel = read_channel(object)?;
     note.probability = read_probability(object)?;
     note.ratchet = read_ratchet(object)?;
     note.micro_timing_ticks = read_micro_timing(object)?;
+    note.syllable = read_syllable(object)?;
     // 先按**模型 `validate` 的前半段**判一次（音高/力度/概率/连击/微时序/时值）。
     // 模型 `validate` 的顺序是：… → 时值 → 滑音 → 弯音，而滑音/弯音的读取在下面 ⇒
     // 这一句让"时值早于滑音/弯音"这条优先级在两层一致（例如 `durationTicks:0` +
@@ -6966,13 +7097,56 @@ fn reject_unknown_note_fields(object: &Map<String, Value>) -> Result<(), Fault> 
         serde_json::json!({
             "field": unknown,
             "supportedNoteFields": NOTE_FIELDS,
-            // 模型里有、但工具面**仍然没有**写入通路的两个表现力字段: 说出来, 不要吞掉。
-            // ⚠ `slide` / `pitchBendCurve` 已由 `#311c` 接上通路 ⇒ ⛔ 不许再列在这里
-            // （把它们说成"不支持"就是假话）。
-            "unsupportedNoteFields": ["syllable", "phonemes"],
+            // 模型里有、但工具面**仍然没有**写入通路的表现力字段: 说出来, 不要吞掉。
+            // ⚠ `slide` / `pitchBendCurve` / `channel` / `syllable` 已接上通路 ⇒ ⛔ 不许再列在这里。
+            "unsupportedNoteFields": ["phonemes"],
             "hint": "未知键不静默忽略: 去掉它, 或改用 supportedNoteFields 里的字段",
         }),
     ))
+}
+
+/// 读可选的 `note.channel`（缺省 = `None` = 遵循所属轨道默认通道）。
+///
+/// 取值的**权威**判定在模型层（[`MidiNote::validate`] 的 `0..=MIDI_CHANNEL_MAX`）；
+/// 这里额外拦一次同类区间，好让越界带上 `field` / `value` / `min` / `max` 的 `data` 载荷，
+/// 并把"不是整数"这类 JSON 形状错误与区间错误分成两个契约码。
+fn read_channel(object: &Map<String, Value>) -> Result<Option<u8>, Fault> {
+    let Some(value) = object.get(CHANNEL_FIELD) else {
+        return Ok(None);
+    };
+    let number = value.as_i64().ok_or_else(|| {
+        Fault::domain(
+            ErrorCode::InvalidParameterRange,
+            format!("`{CHANNEL_FIELD}` 必须是整数, 实际收到 {value}"),
+        )
+    })?;
+    if !(0..=i64::from(MIDI_CHANNEL_MAX)).contains(&number) {
+        return Err(Fault::domain_with_data(
+            ErrorCode::OutOfRange,
+            format!("`{CHANNEL_FIELD}` 越界: {number} 不在 0..={MIDI_CHANNEL_MAX}"),
+            serde_json::json!({
+                "field": CHANNEL_FIELD,
+                "value": number,
+                "min": 0,
+                "max": MIDI_CHANNEL_MAX,
+            }),
+        ));
+    }
+    Ok(Some(number as u8))
+}
+
+/// 读可选的 `note.syllable`（歌词音节，缺省 = `None`）。
+fn read_syllable(object: &Map<String, Value>) -> Result<Option<String>, Fault> {
+    let Some(value) = object.get(SYLLABLE_FIELD) else {
+        return Ok(None);
+    };
+    let text = value.as_str().ok_or_else(|| {
+        Fault::domain(
+            ErrorCode::InvalidParameterRange,
+            format!("`{SYLLABLE_FIELD}` 必须是字符串, 实际收到 {value}"),
+        )
+    })?;
+    Ok(Some(text.to_owned()))
 }
 
 /// 读一个**必填但可为 `null`** 的表现力字段（`setNoteExpression` 专用）。
@@ -8026,6 +8200,18 @@ pub fn compile(
                 Op::SetTimeSignature {
                     old_time_signature: project.time_signature,
                     new_time_signature: *new_time_signature,
+                }
+            }
+            NoteOp::SetKeySignature {
+                new_key_signature, ..
+            } => {
+                if let Some(ks) = new_key_signature {
+                    ks.validate()
+                        .map_err(|error| from_model("调号校验", &error))?;
+                }
+                Op::SetKeySignature {
+                    old_key_signature: project.key_signature,
+                    new_key_signature: *new_key_signature,
                 }
             }
             NoteOp::SetTransportConfig { new_config } => {
@@ -11126,7 +11312,9 @@ mod tests {
         // 音符级）后为 42 —— 同样与真实 `kind` 同步。
         // 本票（`#338` 工程拍号）新增 `setTimeSignature`（顶层文档字段，与 `setTempo`
         // 同族）后为 43 —— 同样与真实 `kind` 同步。
-        assert_eq!(OP_KINDS.len(), 43);
+        // 本票新增 `setKeySignature`（顶层文档字段，与 `setTimeSignature` 同族）后为 44 —— 同样与真实 `kind` 同步。
+        assert_eq!(OP_KINDS.len(), 44);
+        assert!(OP_KINDS.contains(&SET_KEY_SIGNATURE_KIND));
         assert_eq!(TrackFlag::NAMES, [SET_TRACK_MUTE_KIND, SET_TRACK_SOLO_KIND]);
         assert!(OP_KINDS.contains(&SET_TRACK_MUTE_KIND));
         assert!(OP_KINDS.contains(&SET_TRACK_SOLO_KIND));
@@ -14707,11 +14895,13 @@ mod tests {
             "pitch",
             "durationTicks",
             "velocity",
+            "channel",
             "probability",
             "ratchet",
             "microTimingTicks",
             "pitchBendCurve",
             "slide",
+            "syllable",
         ] {
             assert!(
                 NOTE_FIELDS.contains(&expected),
@@ -14720,7 +14910,7 @@ mod tests {
         }
         assert_eq!(
             NOTE_FIELDS.len(),
-            10,
+            12,
             "支持集合不得多报未读的键: {NOTE_FIELDS:?}"
         );
     }
@@ -14811,6 +15001,108 @@ mod tests {
                     "{field} = {bad}"
                 );
             }
+        }
+    }
+
+    /// `channel` 字段：可选、合法取值 `0..=15` 搬进 `MidiNote` 并进入 `Op::AddNote`；
+    /// 越界（16、255 等）报 `OUT_OF_RANGE`；非整数报 `INVALID_PARAMETER_RANGE`。
+    #[test]
+    fn channel_reaches_the_add_note_op_and_validates_range() {
+        for ch in 0..=15u8 {
+            let mut item = add_json(0, 60);
+            item["note"]["channel"] = serde_json::json!(ch);
+            let ops = parse_ops(&Value::Array(vec![item])).expect("channel 0..=15 合法");
+            let NoteOp::Add { note } = &ops[0] else {
+                panic!("必须是 add");
+            };
+            assert_eq!(note.channel, Some(ch), "channel {ch} 必须正确搬进 MidiNote");
+
+            let project = filled_project();
+            let (track_id, clip_id) = lead_clip(&project);
+            let compiled = compile(&project, &track_id, &clip_id, &ops).expect("编译");
+            match &compiled[0] {
+                Op::AddNote { note, .. } => {
+                    assert_eq!(note.channel, Some(ch));
+                }
+                other => panic!("必须是 AddNote, 实际 {other:?}"),
+            }
+        }
+
+        // 缺省为 None
+        let item = add_json(0, 60);
+        let ops = parse_ops(&Value::Array(vec![item])).expect("缺省合法");
+        let NoteOp::Add { note } = &ops[0] else {
+            panic!("必须是 add");
+        };
+        assert_eq!(note.channel, None);
+
+        // 越界
+        for bad in [-1, 16, 255] {
+            let mut item = add_json(0, 60);
+            item["note"]["channel"] = serde_json::json!(bad);
+            let fault = parse_ops(&Value::Array(vec![item])).expect_err("越界必须被拒");
+            assert_eq!(fault.domain_code(), Some(ErrorCode::OutOfRange), "{bad}");
+        }
+
+        // 非整数
+        for bad in [
+            serde_json::Value::Null,
+            serde_json::json!("1"),
+            serde_json::json!(1.5),
+            serde_json::json!(true),
+            serde_json::json!([]),
+        ] {
+            let mut item = add_json(0, 60);
+            item["note"]["channel"] = bad;
+            let fault = parse_ops(&Value::Array(vec![item])).expect_err("非整数必须被拒");
+            assert_eq!(fault.domain_code(), Some(ErrorCode::InvalidParameterRange));
+        }
+    }
+
+    /// `syllable` 字段：可选、字符串搬进 `MidiNote` 并进入 `Op::AddNote`；
+    /// 非字符串报 `INVALID_PARAMETER_RANGE`。
+    #[test]
+    fn syllable_reaches_the_add_note_op_and_validates_type() {
+        for lyric in ["la", "夜", "ban", ""] {
+            let mut item = add_json(0, 60);
+            item["note"]["syllable"] = serde_json::json!(lyric);
+            let ops = parse_ops(&Value::Array(vec![item])).expect("字符串合法");
+            let NoteOp::Add { note } = &ops[0] else {
+                panic!("必须是 add");
+            };
+            assert_eq!(note.syllable.as_deref(), Some(lyric));
+
+            let project = filled_project();
+            let (track_id, clip_id) = lead_clip(&project);
+            let compiled = compile(&project, &track_id, &clip_id, &ops).expect("编译");
+            match &compiled[0] {
+                Op::AddNote { note, .. } => {
+                    assert_eq!(note.syllable.as_deref(), Some(lyric));
+                }
+                other => panic!("必须是 AddNote, 实际 {other:?}"),
+            }
+        }
+
+        // 缺省为 None
+        let item = add_json(0, 60);
+        let ops = parse_ops(&Value::Array(vec![item])).expect("缺省合法");
+        let NoteOp::Add { note } = &ops[0] else {
+            panic!("必须是 add");
+        };
+        assert_eq!(note.syllable, None);
+
+        // 非字符串
+        for bad in [
+            serde_json::Value::Null,
+            serde_json::json!(1),
+            serde_json::json!(true),
+            serde_json::json!([]),
+            serde_json::json!({}),
+        ] {
+            let mut item = add_json(0, 60);
+            item["note"]["syllable"] = bad;
+            let fault = parse_ops(&Value::Array(vec![item])).expect_err("非字符串必须被拒");
+            assert_eq!(fault.domain_code(), Some(ErrorCode::InvalidParameterRange));
         }
     }
 
@@ -15348,18 +15640,16 @@ mod tests {
             let data = data.as_ref().expect("必须带 data");
             assert_eq!(data["field"], unknown);
             let supported = data["supportedNoteFields"].as_array().expect("必须是数组");
-            assert_eq!(
-                supported.len(),
-                10,
-                "支持集合必须如实报 10 条（8 → +pitchBendCurve +slide）: {data}"
-            );
+            assert_eq!(supported.len(), 12, "支持集合必须如实报 12 条: {data}");
             for expected in [
                 "startTick",
                 "pitch",
+                "channel",
                 "ratchet",
                 "microTimingTicks",
                 "pitchBendCurve",
                 "slide",
+                "syllable",
             ] {
                 assert!(
                     supported.iter().any(|value| value == expected),
@@ -15368,8 +15658,8 @@ mod tests {
             }
             assert_eq!(
                 data["unsupportedNoteFields"],
-                serde_json::json!(["syllable", "phonemes"]),
-                "仍然没有通路的只有 syllable / phonemes: {data}"
+                serde_json::json!(["phonemes"]),
+                "仍然没有通路的只有 phonemes: {data}"
             );
         }
     }
@@ -16898,7 +17188,7 @@ mod tests {
     fn every_catalog_kind_parses_and_round_trips() {
         let ulid = "01J8ZQ00000000000000000999";
         // 每个 kind 的**最小合法形状**（只到解析期为止；文档相关的前置条件在 `compile`）。
-        let table: [(&str, serde_json::Value); 43] = [
+        let table: [(&str, serde_json::Value); 44] = [
             (
                 "add",
                 serde_json::json!({"note": {"startTick": 0, "pitch": 60, "durationTicks": 480}}),
@@ -16981,6 +17271,10 @@ mod tests {
             (
                 "setTimeSignature",
                 serde_json::json!({"timeSignature": "6/8"}),
+            ),
+            (
+                "setKeySignature",
+                serde_json::json!({"keySignature": {"sharpsFlats": 0, "isMinor": false}}),
             ),
             (
                 "setTrackName",
@@ -17104,6 +17398,7 @@ mod tests {
                 "setAuthor",
                 "setTitle",
                 "setTimeSignature",
+                "setKeySignature",
                 "setTrackName",
                 "setClipName",
                 "setClipGain",
@@ -17484,7 +17779,7 @@ mod tests {
             Value,
             &'a str,
         );
-        let rows: [Row<'_>; 44] = [
+        let rows: [Row<'_>; 45] = [
             (
                 "add",
                 None,
@@ -17658,6 +17953,13 @@ mod tests {
                 None,
                 serde_json::json!({"timeSignature": "6/8"}),
                 "SetTimeSignature",
+            ),
+            (
+                "setKeySignature",
+                None,
+                None,
+                serde_json::json!({"keySignature": {"sharpsFlats": -3, "isMinor": true}}),
+                "SetKeySignature",
             ),
             (
                 "setTrackName",
@@ -17859,7 +18161,7 @@ mod tests {
         assert_eq!(
             rows.len(),
             OP_KINDS.len() + 1,
-            "43 个 kind ＋ 1 个额外载荷分支"
+            "44 个 kind ＋ 1 个额外载荷分支"
         );
 
         let mut seen: Vec<&str> = Vec::new();
@@ -17912,7 +18214,8 @@ mod tests {
         // `#334` 的 `setNotePitchShape`（独占一个变体）⇒ 41 → **42**；
         // `#336` 的 `setClipPlacementLoop`（独占一个变体）⇒ 42 → **43**；
         // `#338` 的 `setTimeSignature`（独占一个变体）⇒ 43 → **44**。
-        assert_eq!(seen.len(), 44);
+        // 本票的 `setKeySignature`（独占一个变体）⇒ 44 → **45**。
+        assert_eq!(seen.len(), 45);
         // ⭐ `#179`：音符级分支集合**恰好是七个**，且逐字等于发布清单。
         assert_eq!(
             NOTE_LEVEL_KINDS,
@@ -17930,7 +18233,7 @@ mod tests {
         assert_eq!(
             note_level_seen.len(),
             7,
-            "全部 43 个 kind 里 `is_note_level()` 为真的必须**恰好七个**，实际: {note_level_seen:?}"
+            "全部 44 个 kind 里 `is_note_level()` 为真的必须**恰好七个**，实际: {note_level_seen:?}"
         );
         assert_eq!(
             note_level_seen,
@@ -19144,6 +19447,145 @@ mod tests {
             project.time_signature,
             TimeSignature::default(),
             "三轮往返之后拍号必须回到 4/4"
+        );
+    }
+
+    /// `setKeySignature`：解析、编译、施加、逆操作与越界校验。
+    #[test]
+    fn set_key_signature_compiles_the_document_value_and_inverts_byte_for_byte() {
+        let mut project = filled_project();
+        let (track_id, clip_id) = lead_clip(&project);
+        let signature_before = project.key_signature;
+        let bytes_before = serde_json::to_string(&project).expect("序列化");
+
+        // ---- ① 解析与编译：设置调号为降 E 小调（-3 降号，小调）----
+        let ops = parse_ops(&serde_json::json!([
+            {
+                "kind": SET_KEY_SIGNATURE_KIND,
+                "keySignature": {"sharpsFlats": -3, "isMinor": true}
+            }
+        ]))
+        .expect("规范形状必须被接受");
+        assert_eq!(ops[0].kind_name(), SET_KEY_SIGNATURE_KIND);
+        assert!(!ops[0].is_note_level());
+        assert!(!ops[0].reads_envelope_clip());
+
+        let compiled = compile(&project, &track_id, &clip_id, &ops).expect("编译");
+        assert_eq!(compiled.len(), 1);
+        let expected_new = Some(KeySignature {
+            sharps_flats: -3,
+            is_minor: true,
+        });
+        match &compiled[0] {
+            Op::SetKeySignature {
+                old_key_signature,
+                new_key_signature,
+            } => {
+                assert_eq!(old_key_signature, &signature_before);
+                assert_eq!(new_key_signature, &expected_new);
+            }
+            other => panic!("应当是 SetKeySignature: {other:?}"),
+        }
+
+        // ---- ② 施加与逆操作 ----
+        compiled[0].apply(&mut project).expect("设置调号");
+        assert_eq!(project.key_signature, expected_new);
+        assert!(project.validate().is_ok());
+
+        compiled[0].apply_inverse(&mut project).expect("逆操作");
+        assert_eq!(project.key_signature, signature_before);
+        assert_eq!(
+            serde_json::to_string(&project).expect("序列化"),
+            bytes_before,
+            "一步撤销必须逐字节回到原状"
+        );
+
+        // ---- ③ 设置为 null（清空调号）----
+        let clear_ops = parse_ops(&serde_json::json!([
+            {"kind": SET_KEY_SIGNATURE_KIND, "keySignature": null}
+        ]))
+        .expect("keySignature 为 null 必须被接受");
+        let compiled_clear = compile(&project, &track_id, &clip_id, &clear_ops).expect("编译清空");
+        match &compiled_clear[0] {
+            Op::SetKeySignature {
+                old_key_signature,
+                new_key_signature,
+            } => {
+                assert_eq!(old_key_signature, &signature_before);
+                assert_eq!(new_key_signature, &None);
+            }
+            other => panic!("应当是 SetKeySignature: {other:?}"),
+        }
+
+        // ---- ④ 陈旧载荷被拒 ----
+        let stale = Op::SetKeySignature {
+            old_key_signature: Some(KeySignature {
+                sharps_flats: 5,
+                is_minor: false,
+            }),
+            new_key_signature: expected_new,
+        };
+        let mut doc = project.clone();
+        let stale_bytes = serde_json::to_string(&doc).expect("序列化");
+        assert!(stale.apply(&mut doc).is_err(), "陈旧调号必须被拒");
+        assert_eq!(
+            serde_json::to_string(&doc).expect("序列化"),
+            stale_bytes,
+            "被拒之后文档必须逐字节不动"
+        );
+
+        // ---- ⑤ 越界 sharpsFlats 报 OUT_OF_RANGE ----
+        for bad in [-8, 8, -128, 127] {
+            let fault = parse_ops(&serde_json::json!([
+                {
+                    "kind": SET_KEY_SIGNATURE_KIND,
+                    "keySignature": {"sharpsFlats": bad, "isMinor": false}
+                }
+            ]))
+            .expect_err("越界必须被拒");
+            assert_eq!(fault.domain_code(), Some(ErrorCode::OutOfRange), "{bad}");
+        }
+
+        // ---- ⑥ 未知键 / 缺键 / 形状错误 ----
+        let fault = parse_ops(&serde_json::json!([
+            {
+                "kind": SET_KEY_SIGNATURE_KIND,
+                "keySignature": {"sharpsFlats": 0, "isMinor": false},
+                "oldKeySignature": null
+            }
+        ]))
+        .expect_err("未知键必须被拒");
+        assert_eq!(
+            reason_of(&fault).as_deref(),
+            Some("unknownSetKeySignatureField")
+        );
+
+        let fault = parse_ops(&serde_json::json!([
+            {
+                "kind": SET_KEY_SIGNATURE_KIND,
+                "keySignature": {"sharpsFlats": 0, "isMinor": false, "scale": "major"}
+            }
+        ]))
+        .expect_err("调号对象内的未知键必须被拒");
+        assert_eq!(
+            reason_of(&fault).as_deref(),
+            Some("unknownKeySignatureField")
+        );
+
+        let missing_key = parse_ops(&serde_json::json!([{"kind": SET_KEY_SIGNATURE_KIND}]))
+            .expect_err("缺键必须被拒");
+        assert_eq!(
+            missing_key.domain_code(),
+            Some(ErrorCode::InvalidParameterRange)
+        );
+
+        let missing_sub = parse_ops(&serde_json::json!([
+            {"kind": SET_KEY_SIGNATURE_KIND, "keySignature": {"sharpsFlats": 0}}
+        ]))
+        .expect_err("缺 isMinor 必须被拒");
+        assert_eq!(
+            missing_sub.domain_code(),
+            Some(ErrorCode::InvalidParameterRange)
         );
     }
 

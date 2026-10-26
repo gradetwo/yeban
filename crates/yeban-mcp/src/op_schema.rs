@@ -162,6 +162,12 @@ fn note_object() -> Value {
                 "maximum": MIDI_VELOCITY_MAX,
                 "description": "力度（可选；缺省 `DEFAULT_VELOCITY`）",
             },
+            "channel": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 15,
+                "description": "MIDI 通道（可选，0..=15；缺省遵循所属轨道默认通道）",
+            },
             "probability": {
                 "type": "number",
                 // ⚠ 这一对**刻意保留整数拼法**（`0` / `1`）：改成 f32 常量会让
@@ -188,6 +194,10 @@ fn note_object() -> Value {
                 max = PITCH_BEND_CENTS_MAX_ABS
             )),
             "slide": slide_schema("滑音（可选，缺省 = 无滑音）。`durationTicks` 与 `targetPitch` **必填**（没有目标的滑音不是滑音）；未知键响亮拒绝"),
+            "syllable": {
+                "type": "string",
+                "description": "歌词音节（可选，字符串）",
+            },
         },
         "additionalProperties": false,
     })
@@ -762,6 +772,33 @@ pub fn ops_items() -> Value {
                     "timeSignature": {
                         "type": "string",
                         "description": "新拍号 \"N/D\" 文本（例 \"3/4\"、\"6/8\"）。形状错误 ⇒ `INVALID_PARAMETER_RANGE`；取值越界 ⇒ `OUT_OF_RANGE`。⛔ 这里不复制值域表：判定它的唯一入口是模型 `TimeSignature::validate`",
+                    },
+                }),
+                true,
+            ),
+            op(
+                "setKeySignature",
+                "写工程调号（顶层 `key_signature`；`null` 表示未设定/清空调号，对象包含 `sharpsFlats` 与 `isMinor`，值域由模型 `KeySignature::validate` 判）",
+                &["kind", "keySignature"],
+                json!({
+                    "kind": kind("setKeySignature"),
+                    "keySignature": {
+                        "type": ["object", "null"],
+                        "description": "新调号对象或 null（清空调号）。`sharpsFlats` 为升降号数量（-7..=7，负数为降号，正数为升号，0 为 C 大调 / A 小调），`isMinor` 为是否小调（false = 大调, true = 小调）",
+                        "properties": {
+                            "sharpsFlats": {
+                                "type": "integer",
+                                "minimum": -7,
+                                "maximum": 7,
+                                "description": "升降号数量（-7 到 +7：负数为降号，正数为升号，0 为 C 大调 / A 小调）",
+                            },
+                            "isMinor": {
+                                "type": "boolean",
+                                "description": "是否为小调（false = 大调 Major, true = 小调 Minor）",
+                            },
+                        },
+                        "required": ["sharpsFlats", "isMinor"],
+                        "additionalProperties": false,
                     },
                 }),
                 true,

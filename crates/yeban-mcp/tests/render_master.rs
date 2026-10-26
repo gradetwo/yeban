@@ -7485,13 +7485,13 @@ fn a_bend_written_through_the_tool_surface_bends_the_master() {
             .as_array()
             .expect("supportedNoteFields")
             .len(),
-        10,
-        "线上 `supportedNoteFields` 必须如实是 10 条: {rejected}"
+        12,
+        "线上 `supportedNoteFields` 必须如实是 12 条: {rejected}"
     );
     assert_eq!(
         rejected["error"]["data"]["unsupportedNoteFields"],
-        json!(["syllable", "phonemes"]),
-        "仍然没有通路的只有 syllable / phonemes: {rejected}"
+        json!(["phonemes"]),
+        "仍然没有通路的只有 phonemes: {rejected}"
     );
 
     let written = call_tool(
