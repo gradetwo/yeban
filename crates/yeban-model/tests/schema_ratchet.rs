@@ -36,7 +36,8 @@
 //! | ⑦ | [`contract_self_check_refs_resolve_and_required_names_are_declared`] | 契约自身 | `$ref` 可解析；每个 `required` 名都在同一对象的 `properties` 里（防拼写错）；无未支持的 JSON Schema 形态 |
 //! | ⑧ | [`ref_resolver_and_required_name_check_have_teeth`] | 契约自身 | 用**合成 schema** 证明 ⑦ 的解析器真的会报错（不是永真判据） |
 //! | ⑨ | [`no_vacuous_required_paths_in_the_ratchet`] | 反空洞 | 每一条"必达"的 `required` 都被夹具真实触达（不许有静默盲区） |
-//! | ⑩ | [`print_contract_ratchet_table_for_the_notes`]（`#[ignore]`） | — | 生成 notes 引用的**真实错误文本**表；不进 CI |
+//! | ⑩ | [`pitch_bend_curve_prefix_items_matches_model_bounds`] | 契约与模型边界 | 验证 `pitch_bend_curve` 的 `prefixItems` 与模型常量严格对齐 |
+//! | ⑪ | [`print_contract_ratchet_table_for_the_notes`]（`#[ignore]`） | — | 生成 notes 引用的**真实错误文本**表；不进 CI |
 //!
 //! ## schema 路径记号（本文件的唯一记号，两个方向共用）
 //!
@@ -46,6 +47,7 @@
 //! | `.name` | `properties.name`，或 `oneOf` 分支的**标签名**（如 `content.Midi`） |
 //! | `*` | `additionalProperties` 的**每一个**条目（`BTreeMap` 值域） |
 //! | `[]` | `items` 的**每一个**元素 |
+//! | `[i]` | `prefixItems` 按位置的第 `i` 个元素 |
 //! | `oneOf[i]` | **无标签**的 `oneOf`/`anyOf` 分支（如取值域的 `null` / 对象两支） |
 //!
 //! 例：`#.tracks.*.automation_lanes[].points.*.id`。
@@ -134,8 +136,8 @@ const D43_EXEMPT_REQUIRED_PATHS: &[&str] = &[
 /// 在这里，判据 ⑥ 写成 `debt ⊆ PENDING`（单向包含）：契约收紧线落地后 `debt` 变空集，
 /// 判据不会变成跨线的定时炸弹，而**新**漂移不在表里 ⇒ 当场红。
 ///
-/// **现在（契约收紧已合并进 `main`；`schemas/project.schema.json` sha256
-/// `5eb3362ab3fb7efc9ee879a173eff30ded48b560ba01e73524114002f0f47e59`，根 `required` 18 键）
+/// **现在（契约收紧已合并进 `main`，并经 ADR-0012 实施 `prefixItems`；`schemas/project.schema.json` sha256
+/// `8c5ca136d59e5abd7807287711ce49590555b0157066933b32d1514a48efb815`，根 `required` 18 键）
 /// 这张表已清空 —— 于是判据 ⑥ 退化成一个**硬等式**：任何
 /// "实现要求但契约没要求"的字段都直接变红，没有豁免余地。**
 ///
@@ -182,10 +184,10 @@ fn is_exempt(schema_path: &str) -> bool {
 // 路径工具
 // ---------------------------------------------------------------------------
 
-/// 拼一段 schema 路径：`[]` 直接粘连，其余用 `.`。
+/// 拼一段 schema 路径：以 `[` 开头直接粘连，其余用 `.`。
 fn child_path(parent: &str, segment: &str) -> String {
-    if segment == "[]" {
-        format!("{parent}[]")
+    if segment.starts_with('[') {
+        format!("{parent}{segment}")
     } else {
         format!("{parent}.{segment}")
     }
@@ -336,7 +338,6 @@ fn walk_schema(node: &Value, root: &Value, path: &str, guaranteed: bool, facts: 
         "unevaluatedProperties",
         "propertyNames",
         "contains",
-        "prefixItems",
     ] {
         if node.get(keyword).is_some() {
             facts
@@ -391,6 +392,19 @@ fn walk_schema(node: &Value, root: &Value, path: &str, guaranteed: bool, facts: 
     }
     if let Some(spec) = node.get("items").filter(|spec| spec.is_object()) {
         walk_schema(spec, root, &child_path(path, "[]"), guaranteed, facts);
+    }
+    if let Some(items) = node.get("prefixItems").and_then(Value::as_array) {
+        for (index, spec) in items.iter().enumerate() {
+            if spec.is_object() {
+                walk_schema(
+                    spec,
+                    root,
+                    &child_path(path, &format!("[{index}]")),
+                    guaranteed,
+                    facts,
+                );
+            }
+        }
     }
     for keyword in ["oneOf", "anyOf"] {
         let Some(branches) = node.get(keyword).and_then(Value::as_array) else {
@@ -646,6 +660,22 @@ fn walk_instance(
                 &format!("{pointer}/{index}"),
                 facts,
             );
+        }
+    }
+    if let Some(prefix_specs) = schema.get("prefixItems").and_then(Value::as_array)
+        && let Some(items) = instance.and_then(Value::as_array)
+    {
+        for (index, (spec, value)) in prefix_specs.iter().zip(items.iter()).enumerate() {
+            if spec.is_object() {
+                walk_instance(
+                    spec,
+                    root,
+                    Some(value),
+                    &child_path(path, &format!("[{index}]")),
+                    &format!("{pointer}/{index}"),
+                    facts,
+                );
+            }
         }
     }
 }
@@ -1320,7 +1350,63 @@ fn no_vacuous_required_paths_in_the_ratchet() {
 }
 
 // ---------------------------------------------------------------------------
-// ⑩ 给 notes 的真实错误文本（不进 CI）
+// ⑩ 弯音曲线 prefixItems 契约与模型边界对齐
+// ---------------------------------------------------------------------------
+
+/// 契约中的 `pitch_bend_curve` 使用 Draft 2020-12 `prefixItems`，
+/// 且其元素约束与模型层的定义完全一致 [MODEL-AST-005, ADR-0012 D2 & D4]。
+#[test]
+fn pitch_bend_curve_prefix_items_matches_model_bounds() {
+    let schema = load_schema();
+    let curve_items = schema
+        .pointer(
+            "/properties/clip_pool/additionalProperties/properties/content/oneOf/0/properties/Midi/properties/notes/additionalProperties/properties/pitch_bend_curve/items",
+        )
+        .expect("契约中必须存在 pitch_bend_curve.items");
+
+    assert_eq!(
+        curve_items.get("type").and_then(Value::as_str),
+        Some("array")
+    );
+    assert_eq!(
+        curve_items.get("items").and_then(Value::as_bool),
+        Some(false)
+    );
+    assert_eq!(curve_items.get("minItems").and_then(Value::as_u64), Some(2));
+    assert_eq!(curve_items.get("maxItems").and_then(Value::as_u64), Some(2));
+
+    let prefix_items = curve_items
+        .get("prefixItems")
+        .and_then(Value::as_array)
+        .expect("pitch_bend_curve.items 必须包含 prefixItems 数组");
+    assert_eq!(prefix_items.len(), 2, "prefixItems 长度必须为 2（二元组）");
+
+    // 第一个元素：tick（非负整数，匹配 u64 tick 与 D4 无首点约束）
+    let tick_spec = &prefix_items[0];
+    assert_eq!(
+        tick_spec.get("type").and_then(Value::as_str),
+        Some("integer")
+    );
+    assert_eq!(tick_spec.get("minimum").and_then(Value::as_i64), Some(0));
+
+    // 第二个元素：cents（音分，闭区间 [-1200, 1200]，与模型常量严格一致）
+    let cents_spec = &prefix_items[1];
+    assert_eq!(
+        cents_spec.get("type").and_then(Value::as_str),
+        Some("integer")
+    );
+    assert_eq!(
+        cents_spec.get("minimum").and_then(Value::as_i64),
+        Some(i64::from(yeban_model::music::MIN_PITCH_BEND_CENTS))
+    );
+    assert_eq!(
+        cents_spec.get("maximum").and_then(Value::as_i64),
+        Some(i64::from(yeban_model::music::MAX_PITCH_BEND_CENTS))
+    );
+}
+
+// ---------------------------------------------------------------------------
+// ⑪ 给 notes 的真实错误文本（不进 CI）
 // ---------------------------------------------------------------------------
 
 /// 打印判据 ③④⑥ 的**真实**输出表，供 `docs/ledger/schema-ratchet-notes.md` 逐字引用。

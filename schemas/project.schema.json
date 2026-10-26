@@ -1044,9 +1044,18 @@
                               "type": "array",
                               "items": {
                                 "type": "array",
-                                "items": {
-                                  "type": "integer"
-                                },
+                                "prefixItems": [
+                                  {
+                                    "type": "integer",
+                                    "minimum": 0
+                                  },
+                                  {
+                                    "type": "integer",
+                                    "minimum": -1200,
+                                    "maximum": 1200
+                                  }
+                                ],
+                                "items": false,
                                 "minItems": 2,
                                 "maxItems": 2
                               }

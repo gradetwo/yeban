@@ -61,6 +61,12 @@ pub const PROBABILITY_MAX: f32 = 1.0;
 /// 见 `crates/yeban-midi/src/export.rs` 的边界表）。
 pub const PITCH_BEND_CENTS_MAX_ABS: i16 = 1200;
 
+/// 弯音音分下界（`-1200`，对应 `-PITCH_BEND_CENTS_MAX_ABS`）[MODEL-AST-005, ADR-0012 D2]。
+pub const MIN_PITCH_BEND_CENTS: i16 = -PITCH_BEND_CENTS_MAX_ABS;
+
+/// 弯音音分上界（`1200`，对应 `PITCH_BEND_CENTS_MAX_ABS`）[MODEL-AST-005, ADR-0012 D2]。
+pub const MAX_PITCH_BEND_CENTS: i16 = PITCH_BEND_CENTS_MAX_ABS;
+
 /// 默认力度。
 pub const DEFAULT_VELOCITY: u8 = 100;
 
@@ -763,6 +769,8 @@ mod tests {
     #[test]
     fn pitch_bend_curve_constant_and_messages_are_pinned() {
         assert_eq!(PITCH_BEND_CENTS_MAX_ABS, 1200);
+        assert_eq!(MIN_PITCH_BEND_CENTS, -1200);
+        assert_eq!(MAX_PITCH_BEND_CENTS, 1200);
         assert_eq!(
             ModelError::PitchBendTicksNotAscending {
                 previous: 7,
