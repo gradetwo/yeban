@@ -11250,3 +11250,28 @@ $ python3 scripts/gates/check_phase_status.py   # 退出 0
   - `python3 scripts/guards/policy_check.py`: 18 项守卫全部绿灯通过。
   - `cargo-local.sh test -p yeban-midi`: 307 个测试全部通过（213 库单元测试 + 50 mxl + 9 real_world + 35 smf_contract 全部 ok，0 failed）。
   - `cargo-local.sh clippy -p yeban-midi --lib --tests -- -D warnings`: 零告警通过。
+  - CI Run `40373188057` (`004c0947`): **`conclusion: success`**（`rust (yeban-midi)`、`deny`、`checks`、`lockfile`、`plan` 全部通过）。
+
+---
+
+## 2026-10-27：创作测试墙清单卫生收窄（8 -> 7 条）与落地留痕同步
+
+- **需求规范 ID**: `[ROAD-M4-003]`
+- **实施工作线**: `line/creation-walls-hygiene` (`4518a19e`)，经审查与门禁验证后合并落地。
+- **背景与目标**:
+  - `crates/yeban-mcp/tests/creation_acceptance.rs` 定义了硬性验收常量 `WALLS`（记录创作流程中所撞到的工具面限制与绕法，契约规定随着工具面改善作者必须主动回来删掉已消除的条目）；
+  - 此前 `#336`（`501faffa`）已为 `yeban_edit_notes` 落地了 `setClipPlacementLoop`，彻底消除了"已有摆放无法直接改循环配置、只能 remove + add 重摆"的限制；
+  - 此前 `#338`（`891e1104`）已落地 `setTimeSignature` 与 `setTimeSignaturePoint`，闭环了拍号修改只能靠 `yeban_open_project` 的缺口；
+  - 依照契约纪律主动收窄 `WALLS` 清单，更新对应条目的历史消除留痕，保持 `assert!(WALLS.len() >= 5)` 契约守护有效。
+- **实施**:
+  - `crates/yeban-mcp/tests/creation_acceptance.rs`:
+    - `WALLS` 数组类型声明由 `[&str; 8]` 更新为 `[&str; 7]`；
+    - 删去已消除的"已有摆放无法直接改循环配置"墙；
+    - 在新条目 ③（设备链无单独 CRUD 工具）中注明循环配置限制已在 `#336` 消除；
+    - 在新条目 ⑤（主音颤音曲线整体重写限制）中注明拍号 op 缺口已在 `#338` 闭环。
+- **验证**:
+  - `cargo fmt --check`: 格式化通过。
+  - `python3 scripts/guards/policy_check.py`: 18 项守卫全部通过。
+  - `scripts/gates/run-gates.sh light`: 全部轻量门禁通过。
+  - CI Run `40376425548` (`4518a19e`): **`conclusion: success`**（总耗时 27m52s），全平台全作业（Linux `rust (yeban-mcp)`、`rust (yeban-ui-mcp)`、`deny`、`checks`、`lockfile`、`plan`、`windows` 18 步、`macos` 16 步）全部通过。
+
