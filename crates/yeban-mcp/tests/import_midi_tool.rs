@@ -4,7 +4,9 @@
 //! 1. 工具在注册表、EXTENSION_NAMES、schema enum 与 $defs 中的登记与元数据；
 //! 2. dryRun 预览 vs 实际执行，以及通过 `yeban_undo` 撤销后逐字节还原工程；
 //! 3. 错误处理覆盖：CONFLICT（目标片段非空）、FILE_NOT_FOUND（文件不存在）、
-//!    INVALID_PARAMETER_RANGE（空路径、损坏的 MIDI 字节）、NO_ACTIVE_PROJECT（无活跃工程）。
+//!    INVALID_PARAMETER_RANGE（空路径、损坏的 MIDI 字节）、NO_ACTIVE_PROJECT（无活跃工程）；
+//! 4. ⭐ [ARCH-EXT-002]：导体轨标题 / 版权声明在**空工程**上的采纳上报
+//!    （`adoptedTitle` / `adoptedCopyright`、dryRun 不落盘、undo 还原）。
 
 use std::fs;
 use std::path::PathBuf;
@@ -291,6 +293,8 @@ fn create_multitrack_smf_file() -> PathBuf {
             },
         ],
         key_signature: None,
+        title: None,
+        copyright: None,
     };
     let bytes = export.to_smf_bytes().expect("SMF 编码");
     let path = std::env::temp_dir().join(format!(
@@ -370,6 +374,113 @@ fn test_import_midi_multitrack_split_vs_no_split() {
         before_tracks,
         "splitTracks: false 时音轨总数不得增加"
     );
+
+    let _ = fs::remove_file(smf_path);
+}
+
+/// 导体轨标题（`FF 03` @track 0）与版权（`FF 02` @track 0）都写进 SMF。
+const META_TITLE: &str = "夜半 · Imported Title";
+const META_COPYRIGHT: &str = "(c) 2026 Yeban Test Author";
+
+/// 造一份**带导体轨标题与版权声明**的 SMF（`Parallel`：track 0 是导体轨）。
+fn create_metadata_smf_file() -> PathBuf {
+    use yeban_midi::midi::{DEFAULT_PPQ, MidiExport, MidiExportTrack, MidiFormat, MidiTempo};
+    let export = MidiExport {
+        format: MidiFormat::Parallel,
+        ppq: DEFAULT_PPQ,
+        tempos: vec![MidiTempo::with_time_signature(120.0, 4, 2)],
+        tracks: vec![MidiExportTrack {
+            name: "Piano".to_string(),
+            channel: 0,
+            notes: vec![yeban_model::MidiNote::new(EntityId::new(), 0, 60, 480)],
+            control_changes: Vec::new(),
+        }],
+        key_signature: None,
+        title: Some(META_TITLE.to_string()),
+        copyright: Some(META_COPYRIGHT.to_string()),
+    };
+    let bytes = export.to_smf_bytes().expect("SMF 编码");
+    let path = std::env::temp_dir().join(format!(
+        "yeban-test-import-metadata-{}-{}.mid",
+        std::process::id(),
+        EntityId::new().to_canonical_string()
+    ));
+    fs::write(&path, bytes).expect("写带元数据的 SMF 文件");
+    path
+}
+
+/// 一个**没有内容**且 `title` / `author` 均为空的工程（采纳门槛：三者全满足，
+/// ⛔ 不覆盖已有值，非空工程更是一位都不动）。
+fn project_without_identity() -> YebanProjectV1 {
+    let mut project = yeban_midi::import::content_free_project();
+    project.title = String::new();
+    project.author = String::new();
+    project
+}
+
+#[test]
+fn test_import_midi_adopts_title_and_copyright() {
+    let smf_path = create_metadata_smf_file();
+    let mut dispatcher = dispatcher_with_project(project_without_identity());
+
+    let before_bytes = project_bytes(&dispatcher);
+    let before_commits = dispatcher.domain().commit_count();
+
+    // 1. dryRun：预览如实报出将要采纳的两个值，工程一位都不动。
+    let dry_res = call_tool(
+        &mut dispatcher,
+        "yeban_import_midi",
+        json!({
+            "path": smf_path.to_str().expect("str"),
+            "dryRun": true,
+        }),
+    );
+    assert_eq!(dry_res["status"], "success", "{dry_res}");
+    let preview = &dry_res["data"]["preview"];
+    assert_eq!(preview["adoptedTitle"], json!(META_TITLE), "{preview}");
+    assert_eq!(preview["adoptedCopyright"], json!(META_COPYRIGHT));
+    assert_eq!(dry_res["data"]["stateUnchanged"], true);
+    assert_eq!(dispatcher.domain().commit_count(), before_commits);
+    assert_eq!(project_bytes(&dispatcher), before_bytes);
+    {
+        let project = dispatcher.domain().active_project().expect("活跃工程");
+        assert!(project.title.is_empty(), "dryRun 不得写 project.title");
+        assert!(project.author.is_empty(), "dryRun 不得写 project.author");
+    }
+
+    // 2. 真实执行：响应如实回报，且值确实进了活跃工程。
+    let real_res = call_tool(
+        &mut dispatcher,
+        "yeban_import_midi",
+        json!({
+            "path": smf_path.to_str().expect("str"),
+        }),
+    );
+    assert_eq!(real_res["status"], "success", "{real_res}");
+    let data = &real_res["data"];
+    assert_eq!(data["applied"], true);
+    assert_eq!(data["adoptedTitle"], json!(META_TITLE), "{data}");
+    assert_eq!(data["adoptedCopyright"], json!(META_COPYRIGHT));
+    // 采纳的那条版权记入 attached（`dropped == 0`），⛔ 不重复计成丢失。
+    assert_eq!(data["losses"]["aux_events"]["copyright"]["read"], 1);
+    assert_eq!(data["losses"]["aux_events"]["copyright"]["dropped"], 0);
+    {
+        let project = dispatcher.domain().active_project().expect("活跃工程");
+        assert_eq!(project.title, META_TITLE, "标题必须在活跃工程生效");
+        assert_eq!(project.author, META_COPYRIGHT, "版权必须在活跃工程生效");
+    }
+    assert_eq!(dispatcher.domain().commit_count(), before_commits + 1);
+    assert_ne!(project_bytes(&dispatcher), before_bytes);
+
+    // 3. 撤销：一次 undo 完全还原，标题与署名回到空。
+    let undo_res = call_tool(&mut dispatcher, "yeban_undo", json!({"steps": 1}));
+    assert_eq!(undo_res["status"], "success", "{undo_res}");
+    assert_eq!(project_bytes(&dispatcher), before_bytes);
+    {
+        let project = dispatcher.domain().active_project().expect("活跃工程");
+        assert!(project.title.is_empty(), "撤销后 project.title 必须还原");
+        assert!(project.author.is_empty(), "撤销后 project.author 必须还原");
+    }
 
     let _ = fs::remove_file(smf_path);
 }

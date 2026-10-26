@@ -1183,7 +1183,7 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
     ToolSpec {
         spec_id: "MCP-TOOL-EXT-IMPORT-MIDI",
         name: "yeban_import_midi",
-        summary: "从磁盘读取 Standard MIDI File (.mid) 解析并导入进指定的空 MIDI 片段，采纳单值头元数据并原子提交到撤销历史",
+        summary: "从磁盘读取 Standard MIDI File (.mid) 解析并导入进指定的空 MIDI 片段，采纳单值头元数据并原子提交到撤销历史。⭐ [ARCH-EXT-002]：响应 `data` 逐条回报采纳结果 —— `adoptedTempoBpm` / `adoptedTimeSignature` / `adoptedTrackName` / `adoptedTitle`（导体轨名或 `FF 01` 文本 ⇒ `project.title`）/ `adoptedCopyright`（`FF 02` ⇒ `project.author`）；未采纳的一律为 `null`，⛔ 不拿没做的事填个值；未采纳的原因在 `data.losses.aux_events` 对应类别的 `reason`",
         scope: Scope::AppAdmin,
         side_effect: SideEffect::ProjectState,
         params: &[
