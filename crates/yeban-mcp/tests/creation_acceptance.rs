@@ -1860,12 +1860,11 @@ fn a_four_bar_piece_built_only_from_mcp_tool_calls_renders_measurably() {
 ///
 /// 这份清单是判据的一部分（`assert!(WALLS.len() >= 5)`）：工具面改善之后，作者应当
 /// **主动**回来删掉对应的墙，而不是让它们烂在文档里。
-pub const WALLS: [&str; 7] = [
-    "① 创建片段（`create:true`）与摆放（`placement`）必须分两次调用 + 两次\
-     `yeban_merge_proposal`：同给是 `INVALID_PARAMETER_RANGE` / `placementIsNotCreation`\
-     （`domain/mod.rs` 的 `plan_edit_notes`）。4 条轨因此要 **8** 次提案合并才搭得完\
-     （本文件实测：每轨 \"建材料\" + \"摆放\" 各一次，第一轨的种子摆放还要先 `remove`）。\
-     绕法：严格按\"先建材料、再单独摆放\"拆开。",
+///
+/// ⭐ 原 WALL ①（`create:true` 与 `placement` 必须分两次调用，同给报
+/// `placementIsNotCreation`）已由 `ADR-0018` 消除：单次提案即可原子生成
+/// `Op::AddClip` + `Op::AddClipPlacement`。因此该条从清单移除（编号保持历史原样）。
+pub const WALLS: [&str; 6] = [
     "② 一条 `yeban_edit_notes` 调用只有一个顶层 `trackId`：`setTrackMute` / `setParam` /\
      `setTrackSolo` 都只作用于它。想把三条轨一起静音（做\"主音独奏\"）没有一次调用能表达——\
      本文件用 `setTrackSolo` 绕开（solo 的语义是\"其余全部让路\"），否则要 3 次提案 + 3 次合并。",
