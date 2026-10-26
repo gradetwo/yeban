@@ -401,6 +401,10 @@ fn five_main_tools_publish_an_output_schema_their_real_responses_satisfy() {
             "format": "wav",
             "sampleRate": 48_000,
             "path": scratch.join("master.wav").display().to_string(),
+            // ⭐ `ADR-0020`：这份响应要拿去跑 `validate_complete`（"声明的每个字段都必须
+            // 出现"），所以打开逐轨贡献 —— 缺省 `false` 时响应里**没有**
+            // `contributions` / `contributionsBasis` 两键，那是另一条合法形状。
+            "contributions": true,
         }),
     );
     assert_eq!(rendered["status"], "success", "{rendered}");
@@ -427,7 +431,14 @@ fn five_main_tools_publish_an_output_schema_their_real_responses_satisfy() {
         (
             "yeban_render_master",
             &rendered,
-            &["clippedSamples", "truePeakDbfs", "peak", "sha256"],
+            &[
+                "clippedSamples",
+                "contributions",
+                "contributionsBasis",
+                "truePeakDbfs",
+                "peak",
+                "sha256",
+            ],
         ),
         (
             "yeban_undo",

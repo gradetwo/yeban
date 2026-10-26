@@ -457,7 +457,7 @@
     },
     "DocumentedToolArguments": {
       "title": "DocumentedToolArguments",
-      "description": "文档化的十个工具的**新增可选实参**形状（`ADR-0016` / `ADR-0017` / `ADR-0018`）。这些键仍由 `crates/yeban-mcp/src/tools.rs` 的注册表派生并广播在 `tools/list` 的 `inputSchema` 里（注册表即契约的唯一实现）；本节只是把新增键的枚举/缺省值**机器可读地**登记在契约侧，⛔ 不接线到 `ToolCall.allOf` —— 既有十工具的参数语义不得改动（`tests/contract.rs::extension_argument_constraints_match_the_registry` 钉住这一点）。",
+      "description": "文档化的十个工具的**新增可选实参**形状（`ADR-0016` / `ADR-0017` / `ADR-0018` / `ADR-0020`）。这些键仍由 `crates/yeban-mcp/src/tools.rs` 的注册表派生并广播在 `tools/list` 的 `inputSchema` 里（注册表即契约的唯一实现）；本节只是把新增键的枚举/缺省值**机器可读地**登记在契约侧，⛔ 不接线到 `ToolCall.allOf` —— 既有十工具的参数语义不得改动（`tests/contract.rs::extension_argument_constraints_match_the_registry` 钉住这一点）。",
       "type": "object",
       "$defs": {
         "yeban_propose_section": {
@@ -502,6 +502,18 @@
             "placement": {
               "type": "object",
               "description": "摆放编辑。与 `create: true` 同给时 `kind` 只能是 `add`（或省略），否则 `INVALID_PARAMETER_RANGE`（`reason = \"createPlacementKindMustBeAdd\"`）；`durationTicks` 缺省由新片段的全部音符推导（推不出 ⇒ `durationNotDerivable`）。完整字段形状由注册表派生。"
+            }
+          }
+        },
+        "yeban_render_master": {
+          "title": "yeban_render_master (ADR-0020 新增键)",
+          "type": "object",
+          "description": "`yeban_render_master` 的 `ADR-0020` 新增**可选**键。其余实参（`format` / `sampleRate` / `normalize` / `targetLufs` / `path` / `frames` / `durationSeconds`）继续由注册表派生。",
+          "properties": {
+            "contributions": {
+              "type": "boolean",
+              "default": false,
+              "description": "逐轨贡献读数。缺省 `false` = 不额外渲染，响应里没有 `data.contributions`，写盘字节与加这个键之前逐字节相同。`true` = 对每条非 master 轨各渲染一次\"只静音该轨\"（成本 = `1 + 未静音轨数` 次额外渲染），在 `data.contributions[]` 报 `{trackId, name, alreadyMuted, deltaRmsDbfs, deltaPeakDbfs}`：两次**未归一化**母带（同一采样率 / 帧数 / 格式）逐样本差的 RMS / 峰值，单位 dBFS；逐样本无差异或渲染前已静音 ⇒ `null`。口径见 `data.contributionsBasis`。⛔ 不改写盘字节（`sha256` / `masterDigest` 不变）。"
             }
           }
         }

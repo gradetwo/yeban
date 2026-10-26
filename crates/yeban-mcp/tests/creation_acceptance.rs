@@ -1869,8 +1869,13 @@ fn a_four_bar_piece_built_only_from_mcp_tool_calls_renders_measurably() {
 /// ⭐ 原 WALL ⑤（弯音曲线只能整体写）已由 `ADR-0019` 消除：`setPitchBendPoint`
 /// op 可逐点插入 / 改值 / 删除（判据
 /// `edit_notes_set_pitch_bend_point_inserts_updates_and_deletes_one_point`）。
-/// 三条均从清单移除（编号保持历史原样）。
-pub const WALLS: [&str; 4] = [
+/// ⭐ 原 WALL ⑦（`yeban_render_master` 没有"分轨贡献/差值"读数）已由 `ADR-0020`
+/// 消除：`contributions: true` 让响应带 `data.contributions[]`（两次**未归一化**
+/// 母带逐样本差的 RMS / 峰值，dBFS）。⚠ 本文件 C 节**继续**用 4 次静音 + 2 次独奏
+/// 独立测量 —— 有意为之：工具自己的读数不能当自己的 oracle；两者的一致性由
+/// `render_master.rs` 的 `contributions_match_an_independent_mute_render` 钉住。
+/// 四条均从清单移除（编号保持历史原样）。
+pub const WALLS: [&str; 3] = [
     "③ 设备链**没有 CRUD 工具**：装/拆/改旁通只能经 `yeban_edit_notes` 的\
      `insertDevice` / `removeDevice` / `setDeviceBypassed` op；`yeban_query_engine_state`\
      是只读的。本文件按这条唯一通路装混响并用它做 A/B（注：原先的'改已有摆放循环'\
@@ -1883,10 +1888,6 @@ pub const WALLS: [&str; 4] = [
      `yeban_edit_automation` 是**直接提交**（`OpOrigin::McpEdit`，没有提案、没有 merge）。\
      本文件因此有 8 次 merge（搭曲子）和 2 次无 merge 的自动化写点；把一次编辑从 `ops`\
      挪到自动化工具，响应里就少一整套 `proposal` / `pendingMerge` 字段。",
-    "⑦ `yeban_render_master` 的 `sources[].peak` 已经给了**一次渲染**里的逐源峰值\
-     （本文件用它证明每轨在基线里可闻），但\"拿掉这条轨后母带变了多少\"没有读数：\
-     逐轨**贡献**只能靠 N 次静音/独奏渲染 + 本地逐样本比较（本文件 4 次静音 + 2 次独奏）。\
-     这不是工具错误，是测量成本；它说明工具面没有\"分轨贡献/差值\"的一眼读法。",
 ];
 
 /// 首次跑通后钉住的母带积分响度（LUFS，ITU-R BS.1770-4 门限积分）。

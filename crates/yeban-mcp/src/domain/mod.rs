@@ -2854,7 +2854,19 @@ fn plan_render_master(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
     let request = render::validate(&call.arguments)?;
     // 资产字节的唯一来源是会话 CAS 池（`assets/{sha256}`）；`Domain` 自己实现
     // `render::AssetStore`，因此渲染层不需要认识 `Domain` 的任何内部结构。
-    let artifact = render::build(project, project_path, &request, domain.now_ms(), domain)?;
+    let mut artifact = render::build(project, project_path, &request, domain.now_ms(), domain)?;
+    // ⭐ `ADR-0020`：逐轨贡献是 `1 + N` 次**额外**渲染（不是 `build` 的一部分），
+    // 因此只在这里按需追加；缺省 `false` 时一位都不多渲染。
+    if request.contributions {
+        artifact.contributions = Some(render::track_contributions(
+            project,
+            project_path,
+            &artifact,
+            &request,
+            domain.now_ms(),
+            domain,
+        )?);
+    }
     Ok(Plan::RenderMaster {
         artifact: Box::new(artifact),
     })
