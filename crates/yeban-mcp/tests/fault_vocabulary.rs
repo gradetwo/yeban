@@ -44,7 +44,7 @@
 //!
 //! | 面 | reason 数 | 规范行数 | SHA-256 |
 //! | :--- | ---: | ---: | :--- |
-//! | `reason`（**可分类**面：字面量 ＋ 可解析的字面量 `let`，含顺序） | 159 | 717 | `5328f2d48db9937ccb00457aaf33d88b0c876b5493dd8e388eb82f17478546b8` |
+//! | `reason`（**可分类**面：字面量 ＋ 可解析的字面量 `let`，含顺序） | 159 | 720 | `554c947ed735a9d3ce7712a65ed5e7bb21341d450eb97caca78f3e7ebaacc537` |
 //!
 //! ⚠ `#274`：摘要随"登记位置搬进 provider"重钉（集合不变、顺序变了）；
 //! 见 `FROZEN_REASON_SURFACE_SHA256` 的沿革注释。
@@ -88,6 +88,8 @@ pub const GOLDEN_REASONS: [&str; 155] = [
     "clipIdRequired",
     "createIsNotReadOnly",
     "createOnlyParameter",
+    // ⭐ `ADR-0018`：`create: true` 与 `placement` 同给时，`kind` 只能是 `add`。
+    "createPlacementKindMustBeAdd",
     "createRequiresAddOps",
     "deviceIdAlreadyInTrack",
     "deviceNameRequired",
@@ -147,7 +149,6 @@ pub const GOLDEN_REASONS: [&str; 155] = [
     // （增的是**真实存在**的词，不是发明；两条都有 `src` 判据断言）。
     "placementFieldNotApplicable",
     "placementIdConflict",
-    "placementIsNotCreation",
     "placementNotFound",
     "placementWithoutTrack",
     "pointAddressIsAmbiguous",
@@ -1281,6 +1282,17 @@ pub const GOLDEN_REASON_PAYLOADS: [(&str, &[&str]); 155] = [
     ("clipIdRequired", &["hint", "reason", "requiredByKinds"]),
     ("createOnlyParameter", &["parameters", "reason"]),
     (
+        // ⭐ `ADR-0018`：`create: true` 时 `placement.kind` 只能是 `add`。
+        "createPlacementKindMustBeAdd",
+        &[
+            "field",
+            "hint",
+            "placementKind",
+            "reason",
+            "supportedPlacementKinds",
+        ],
+    ),
+    (
         "createRequiresAddOps",
         &["reason", "received", "supportedKindsWhenCreating"],
     ),
@@ -1442,7 +1454,6 @@ pub const GOLDEN_REASON_PAYLOADS: [(&str, &[&str]); 155] = [
             "trackId",
         ],
     ),
-    ("placementIsNotCreation", &["hint", "reason"]),
     (
         "placementNotFound",
         &[
@@ -2129,13 +2140,19 @@ fn the_reason_payload_shape_is_the_published_table() {
 /// ⇒ 156 → 159 个 reason、706 → 717 行。新摘要
 /// `5328f2d48db9937ccb00457aaf33d88b0c876b5493dd8e388eb82f17478546b8`
 /// 由判据自己报出后照抄。
+///
+/// ⭐ `ADR-0018` 重钉：`yeban_edit_notes` 的 `create: true` + `placement` 组合放行 ⇒
+/// `placementIsNotCreation` 退役、`createPlacementKindMustBeAdd` 登场
+/// （reason 集合大小不变，仍是 159；新 reason 带 5 个同级键 ⇒ 717 → 720 行）。
+/// 新摘要 `554c947ed735a9d3ce7712a65ed5e7bb21341d450eb97caca78f3e7ebaacc537`
+/// 由判据自己报出后照抄。
 pub const FROZEN_REASON_SURFACE_SHA256: &str =
-    "5328f2d48db9937ccb00457aaf33d88b0c876b5493dd8e388eb82f17478546b8";
+    "554c947ed735a9d3ce7712a65ed5e7bb21341d450eb97caca78f3e7ebaacc537";
 
 /// 规范形式里的 reason 数 / 规范行数（与摘要一起构成"两端"读数）。
 pub const REASON_SURFACE_REASONS: usize = 159;
 /// 规范行数（每个 reason 一行 ＋ 每个键一行）。
-pub const REASON_SURFACE_LINES: usize = 717;
+pub const REASON_SURFACE_LINES: usize = 720;
 
 /// 单文件里的 `reason` 面：**保留出现顺序**的 `(reason, keys)`。
 ///

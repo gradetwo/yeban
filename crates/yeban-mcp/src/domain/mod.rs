@@ -2440,7 +2440,10 @@ fn plan_propose_section(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault>
 /// - **创建材料**（`create: true`）：`clipId` 是**将要新建的**片段身份，
 ///   `ops` 只允许 `add`，整批折成**一条** `Op::AddClip` ⇒ 池子里多一条
 ///   "MIDI 且至少一个音符"的材料（关闭 `docs/ledger/tools-domain-notes.md:283`
-///   的 needs-8：空池工程从此能做 `yeban_propose_section`）；
+///   的 needs-8：空池工程从此能做 `yeban_propose_section`）。⭐ `ADR-0018`：
+///   若同时给了 `placement`，再追加一条 `Op::AddClipPlacement`，材料与摆放
+///   在**同一次**提案里原子生成（此时 `placement.kind` 只能是 `add`，且
+///   `durationTicks` 缺省由新片段的全部音符推导）；
 /// - **取走材料**（`ops[].kind == "removeClip"`，必须单独出现）：把顶层 `clipId`
 ///   这个**片段池条目**取走（`Op::RemoveClip`，撤销载荷 `previous_clip` 从当前文档读）
 ///   ⇒ 上一形态的镜像；此前池里的条目**没有任何工具**能取走（`yeban_query_project`
@@ -2453,6 +2456,7 @@ fn plan_propose_section(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault>
 ///   （关闭 `docs/ledger/mcp-tools-expansion-notes.md` §6 的 needs-6：
 ///   池子里的片段此前**没有任何工具**能摆上时间轴 ⇒ 渲染器一帧都不出声）。
 ///   此时 `ops` 允许是**空数组** —— "这次调用做什么"由 `placement` 承载。
+///   与 `create: true` 同给时摆的是**本次新建**的片段（`ADR-0018`）。
 /// - **音轨级编辑**（`ops[].kind` ∈ `setParam` / `setTrackMute` / `setTrackSolo` /
 ///   `setAutomationLane` / `removeAutomationPoint`）：分别写 `trackId` 那条轨的
 ///   `TrackV3::volume_db` / `pan`（`Op::SetParam`）、`TrackV3::mute` / `solo`
@@ -2512,8 +2516,10 @@ fn plan_propose_section(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault>
 ///   本形态与取走形态共用**同一个**场景级桶（见 `notes::NoteOp::is_scene_level`），
 ///   因此提案标题在两个形态上是同一个说法。
 ///
-/// `placement` 与 `create: true` **同给**是响亮失败（`placementIsNotCreation`）：
-/// 先建材料、再摆材料，两步各自成一个可审查的提案，而不是把两件事塞进一次提交。
+/// `placement` 与 `create: true` **同给**是**受支持的单次提案**（`ADR-0018`）：
+/// 一次编译同时产出 `Op::AddClip` 与 `Op::AddClipPlacement`，撤销时逆序摘除
+/// （先摘摆放、再摘材料）。`placement.kind` 此时只能是 `add`（缺省）——
+/// `move` / `remove` 找不到新片段上不存在的摆放，响亮拒绝。
 fn plan_edit_notes(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
     let project = require_active(domain)?;
     let raw_ops = call
@@ -2574,27 +2580,41 @@ fn plan_edit_notes(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
         };
         (track_id, clip_id)
     };
-    if creating && placement_raw.is_some() {
-        return Err(Fault::domain_with_data(
-            ErrorCode::InvalidParameterRange,
-            "`placement` 与 `create: true` 不能同给: 前者摆**已有**片段, 后者建**新**片段",
-            serde_json::json!({
-                "reason": "placementIsNotCreation",
-                "hint": "先 `create: true` 建材料, 再单独一次调用给 `placement` 摆它",
-            }),
-        ));
-    }
     if creating {
         let clip_name = arg_str(call, notes::CLIP_NAME_PARAM)
             .filter(|name| !name.is_empty())
             .unwrap_or(notes::DEFAULT_NEW_CLIP_NAME);
-        let compiled = notes::compile_create(project, &track_id, &clip_id, clip_name, &note_ops)?;
+        let mut compiled =
+            notes::compile_create(project, &track_id, &clip_id, clip_name, &note_ops)?;
+        // `ADR-0018`：材料与摆放可以在**同一次**提案里原子落盘。摆放跟在
+        // `Op::AddClip` 之后施加，模型的前置条件因此看得到刚建出来的片段。
+        if placement_raw.is_some() {
+            let placement = notes::parse_placement_for_create(
+                project,
+                &track_id,
+                &clip_id,
+                &note_ops,
+                &call.arguments,
+            )?;
+            compiled.push(Op::AddClipPlacement {
+                track_id,
+                placement,
+            });
+        }
         notes::check_polyphony(project, &clip_id, &compiled)?;
+        let description = if placement_raw.is_some() {
+            format!(
+                "新建并摆放 MIDI 片段: {clip_name} ({} 个音符) → 音轨 {track_id}",
+                note_ops.len()
+            )
+        } else {
+            format!("新建 MIDI 片段: {clip_name} ({} 个音符)", note_ops.len())
+        };
         return propose_draft(
             domain,
             project,
             "notes",
-            format!("新建 MIDI 片段: {clip_name} ({} 个音符)", note_ops.len()),
+            description,
             format!("edit_notes create {clip_id}"),
             compiled,
             include_ops(call),
@@ -2602,9 +2622,9 @@ fn plan_edit_notes(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
     }
     // 音轨实体级形态（`removeTrack`）**单独成一路**：摘掉一条音轨和"在同一次调用里
     // 编辑它 / 在它上面摆片段"是同一批里互相矛盾的两件事。规则住在 `notes::`
-    // （本机探针真的执行得到），判定时点是**编译之前**。它紧接在 `create` 那条守卫之后：
-    // 两条都是"这一批的形状自相矛盾"，而 `create` 是更外层的那一条（它连 `ops` 的合法
-    // 集合都变了），因此 `createRequiresAddOps` / `placementIsNotCreation` 优先。
+    // （本机探针真的执行得到），判定时点是**编译之前**。它紧接在 `create` 那条分支之后：
+    // `create` 是更外层的那一条（它连 `ops` 的合法集合都变了，且提前返回），
+    // 因此 `createRequiresAddOps` 优先。
     let removing_track = matches!(note_ops.as_slice(), [notes::NoteOp::RemoveTrack { .. }]);
     // 被取走的那条音轨身份（`removing_track` 为真时必有；否则 `None`）。
     let removed_track = match note_ops.as_slice() {

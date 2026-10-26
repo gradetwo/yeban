@@ -102,7 +102,8 @@
 //!
 //! | 情形 | 结果 |
 //! | :--- | :--- |
-//! | `placement` 与 `create: true` 同给 | `INVALID_PARAMETER_RANGE`（`reason = "placementIsNotCreation"`）—— 先 `create` 再 `place`，两步各自成一个提案 |
+//! | `create: true` 与 `placement` 同给 | **放行**（[`parse_placement_for_create`]，`ADR-0018`）：单次提案同时生成 `Op::AddClip` 与 `Op::AddClipPlacement` |
+//! | `create: true` 时 `placement.kind` 不是 `add`（`move` / `remove` / 其它） | `INVALID_PARAMETER_RANGE`（`reason = "createPlacementKindMustBeAdd"`）—— 新片段没有可平移/取走的摆放 |
 //! | `placement` 里的键不在 [`PLACEMENT_FIELDS`] | `INVALID_PARAMETER_RANGE`（`reason = "unknownPlacementField"`） |
 //! | 片段推不出长度（非 MIDI / 空 MIDI）且没给 `durationTicks` | `INVALID_PARAMETER_RANGE`（`reason = "durationNotDerivable"`）—— 不猜一个假长度 |
 //!
@@ -9935,6 +9936,9 @@ pub fn parse_placement_edit(
 /// 解析 `placement` 的 **`add` 形态**（缺省 = 对象不在场 ⇒ `None` ⇒ 不摆放 =
 /// 逐字节等于旧行为）。
 ///
+/// ⚠ `create: true` 的那条路走 [`parse_placement_for_create`]：材料还没进池子，
+/// 因此不能在这里查 `clip_pool`。两者的字段解析与校验共用 [`build_placement`]。
+///
 /// ```json
 /// {"placement": {"startTick": 0, "durationTicks": 3840,
 ///                "placementId": "<可选 26 字符 ULID>", "muted": false,
@@ -9998,7 +10002,6 @@ pub fn parse_placement(
         .get(clip_id)
         .ok_or_else(|| Fault::domain(ErrorCode::ClipNotFound, format!("片段不存在: {clip_id}")))?;
 
-    let start_tick = read_optional_u64(object, "startTick")?.unwrap_or(0);
     // 片段内容自己的长度（MIDI = 最后一个音符的结束 tick）；音频片段/空片段 = `None`。
     // 它有两个用途：`durationTicks` 的缺省、以及 `loopEndTick` 的缺省。
     let content_extent = entry.content.notes().and_then(|notes| {
@@ -10007,6 +10010,110 @@ pub fn parse_placement(
             .map(|note| note.start_tick.saturating_add(note.duration_ticks))
             .max()
     });
+    Ok(Some(build_placement(
+        object,
+        track_id,
+        track,
+        clip_id,
+        content_extent,
+        entry.content.notes().is_some(),
+    )?))
+}
+
+/// 解析 `create: true` 与 `placement` **同给**时的摆放（`ADR-0018` D1）。
+///
+/// 与 [`parse_placement`] 的唯一差别是**材料还没进池子**：`clipId` 是本次调用
+/// 即将新建的身份，因此不查 `clip_pool`，`durationTicks` 的缺省改由
+/// `ops` 里全部 `NoteOp::Add` 的最大结束 tick 推导（新片段的内容就是它们）。
+/// 其余字段（`startTick` / `placementId` / `muted` / 循环旋钮）与校验口径
+/// 全部复用同一份 [`build_placement`]。
+///
+/// # Errors
+///
+/// - `placement` 不在场 / 不是对象 / 键不在 [`PLACEMENT_ADD_FIELDS`] ⇒ `INVALID_PARAMETER_RANGE`；
+/// - `placement.kind` 不是 `add`（或省略）⇒ `INVALID_PARAMETER_RANGE`
+///   （`reason = "createPlacementKindMustBeAdd"`）；
+/// - 目标音轨不存在 ⇒ `TRACK_NOT_FOUND`；
+/// - 没有音符可推导长度且未显式给 `durationTicks` ⇒ `INVALID_PARAMETER_RANGE`
+///   （`reason = "durationNotDerivable"`）；
+/// - 其余同 [`build_placement`]（零时值、摆放身份冲突、模型 `validate` 失败）。
+pub fn parse_placement_for_create(
+    project: &YebanProjectV1,
+    track_id: &EntityId,
+    clip_id: &EntityId,
+    ops: &[NoteOp],
+    arguments: &Map<String, Value>,
+) -> Result<ClipPlacement, Fault> {
+    let raw = arguments.get(PLACEMENT_FIELD).ok_or_else(|| {
+        Fault::domain(
+            ErrorCode::InvalidParameterRange,
+            format!("`{PLACEMENT_FIELD}` 不在场"),
+        )
+    })?;
+    let object = raw.as_object().ok_or_else(|| {
+        Fault::domain(
+            ErrorCode::InvalidParameterRange,
+            format!("`{PLACEMENT_FIELD}` 必须是对象, 实际收到 {raw}"),
+        )
+    })?;
+    reject_placement_fields(object, PLACEMENT_ADD_FIELDS, PLACEMENT_KIND_ADD)?;
+    if let Some(value) = object.get(PLACEMENT_KIND_FIELD) {
+        let kind = value.as_str().ok_or_else(|| {
+            Fault::domain_with_data(
+                ErrorCode::InvalidParameterRange,
+                format!(
+                    "`{PLACEMENT_FIELD}.{PLACEMENT_KIND_FIELD}` 必须是字符串, 实际收到 {value}"
+                ),
+                serde_json::json!({
+                    "field": format!("{PLACEMENT_FIELD}.{PLACEMENT_KIND_FIELD}"),
+                    "supportedPlacementKinds": [PLACEMENT_KIND_ADD],
+                }),
+            )
+        })?;
+        if kind != PLACEMENT_KIND_ADD {
+            return Err(Fault::domain_with_data(
+                ErrorCode::InvalidParameterRange,
+                format!(
+                    "`create: true` 时 `{PLACEMENT_FIELD}.{PLACEMENT_KIND_FIELD}` 只能是 \
+                     `{PLACEMENT_KIND_ADD}`: 新片段还没有可平移 / 取走的摆放"
+                ),
+                serde_json::json!({
+                    "reason": "createPlacementKindMustBeAdd",
+                    "field": format!("{PLACEMENT_FIELD}.{PLACEMENT_KIND_FIELD}"),
+                    "placementKind": kind,
+                    "supportedPlacementKinds": [PLACEMENT_KIND_ADD],
+                    "hint": "去掉 `kind` (缺省即 `add`), 或改成 `add`; `move`/`remove` 要等片段已摆放",
+                }),
+            ));
+        }
+    }
+    let track = project
+        .track(track_id)
+        .map_err(|error| from_model("摆放的目标音轨", &error))?;
+    let content_extent = ops
+        .iter()
+        .filter_map(|op| match op {
+            NoteOp::Add { note } => Some(note.start_tick.saturating_add(note.duration_ticks)),
+            _ => None,
+        })
+        .max();
+    build_placement(object, track_id, track, clip_id, content_extent, true)
+}
+
+/// `add` 形态的**共同构造器**：`parse_placement`（材料已在池里）与
+/// `parse_placement_for_create`（材料本次新建）共用这一份字段解析与校验。
+///
+/// `content_extent` 是片段内容自己的长度（MIDI = 最后一个音符的结束 tick；
+/// 推不出 = `None`）；`is_midi` 只用于 `durationNotDerivable` 的结构化 `data`。
+fn build_placement(
+    object: &Map<String, Value>,
+    track_id: &EntityId,
+    track: &TrackV3,
+    clip_id: &EntityId,
+    content_extent: Option<u64>,
+    is_midi: bool,
+) -> Result<ClipPlacement, Fault> {
+    let start_tick = read_optional_u64(object, "startTick")?.unwrap_or(0);
     let duration_ticks = match read_optional_u64(object, "durationTicks")? {
         Some(0) => {
             return Err(Fault::domain_with_data(
@@ -10033,7 +10140,7 @@ pub fn parse_placement(
                         "reason": "durationNotDerivable",
                         "field": format!("{PLACEMENT_FIELD}.durationTicks"),
                         "clipId": clip_id.to_canonical_string(),
-                        "isMidi": entry.content.notes().is_some(),
+                        "isMidi": is_midi,
                     }),
                 ));
             }
@@ -10152,7 +10259,7 @@ pub fn parse_placement(
             ));
         }
     }
-    Ok(Some(placement))
+    Ok(placement)
 }
 
 /// 拒绝 `placement` 对象里 `allowed` 之外的键（与 [`reject_unknown_note_fields`]

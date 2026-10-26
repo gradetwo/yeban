@@ -5671,10 +5671,10 @@ fn needs_6_placement_puts_pool_material_on_the_timeline_and_the_master_hears_it(
         dup["error"]["data"]["reason"], "placementAlreadyExists",
         "{dup}"
     );
-    // (b) `placement` 与 `create: true` 同给 ⇒ INVALID_PARAMETER_RANGE。
-    //     `ops` 刻意给**一条合法 `add`** 且 `clipId` 是一个**池子里还没有**的身份：
-    //     于是"没有这道守卫"的世界里这次调用会**成功**（并静默丢掉 `placement`），
-    //     判据因此卡在 `status` 上，而不是卡在别的错误码上。
+    // (b) `create: true` + `placement.kind: "move"` ⇒ INVALID_PARAMETER_RANGE。
+    //     `ADR-0018`: create 与 placement **可以**同给（成功路径见
+    //     `edit_notes_create_and_place_in_one_proposal_is_atomic_and_undoable`），
+    //     但新片段还没有可平移 / 取走的摆放 ⇒ `kind` 只能是 `add`。
     let fresh = yeban_mcp::domain::ids::deterministic_id("clip:needs-6:create-and-place")
         .to_canonical_string();
     let both = call(
@@ -5684,12 +5684,12 @@ fn needs_6_placement_puts_pool_material_on_the_timeline_and_the_master_hears_it(
         json!({
             "trackId": track, "clipId": fresh, "create": true,
             "ops": [{"kind": "add", "note": {"startTick": 0, "pitch": 60, "durationTicks": 480}}],
-            "placement": {"startTick": 0},
+            "placement": {"kind": "move", "startTick": 0},
         }),
     );
-    assert_domain_error(&both, "INVALID_PARAMETER_RANGE", "建与摆不能同给");
+    assert_domain_error(&both, "INVALID_PARAMETER_RANGE", "新建时找不到可平移的摆放");
     assert_eq!(
-        both["error"]["data"]["reason"], "placementIsNotCreation",
+        both["error"]["data"]["reason"], "createPlacementKindMustBeAdd",
         "{both}"
     );
     // (c) `placement` 里的未知键 ⇒ INVALID_PARAMETER_RANGE + 支持集合 (不静默丢弃)。
@@ -5780,6 +5780,188 @@ fn needs_6_placement_puts_pool_material_on_the_timeline_and_the_master_hears_it(
         rendered_after_undo["data"]["sha256"].as_str(),
         Some(sha_before.as_str()),
         "撤销之后母带必须回到摆放之前的字节: {rendered_after_undo}"
+    );
+}
+
+/// **`ADR-0018`（WALL ① 关闭判据）**：`create: true` 与 `placement` 同给时，
+/// 一次提案**原子**生成 `Op::AddClip` + `Op::AddClipPlacement`。
+///
+/// 判据覆盖三件事：
+/// 1. 编译出的 op 顺序是 `AddClip` → `AddClipPlacement`，且
+///    `placement.durationTicks` 缺省由新片段的全部音符推导（最后结束 tick = 1440）；
+/// 2. 合并后材料与摆放**同时**生效（池里有 2 个音符、时间轴上有 1 条新摆放）；
+/// 3. 一次 `yeban_undo` 把两者一起摘掉，工程逐字节回到提案之前。
+///
+/// 末尾再钉一次**向后兼容**：只给 `create: true`、不给 `placement` 时，
+/// 提案仍然只有一条 `AddClip`（`ADR-0018` D2 的逐字节契约）。
+#[test]
+fn edit_notes_create_and_place_in_one_proposal_is_atomic_and_undoable() {
+    let scratch = Scratch::new("create-and-place");
+    let (mut dispatcher, auth) = dispatcher();
+    let path = scratch.join("create-and-place.yeban");
+    let created = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_open_project",
+        json!({
+            "path": path.display().to_string(),
+            "create": true,
+            "title": "CreateAndPlace",
+            "bpm": 120.0,
+        }),
+    );
+    assert_eq!(created["status"], "success", "{created}");
+
+    let track = {
+        let project = dispatcher.domain().active_project().expect("活跃工程");
+        project
+            .tracks
+            .values()
+            .find(|track| !track.clips.is_empty())
+            .map(|track| track.id.to_canonical_string())
+            .expect("默认种子必须有一条带摆放的音轨")
+    };
+    let (clips_before, pool_before) = {
+        let project = dispatcher.domain().active_project().expect("活跃工程");
+        let clips = project
+            .tracks
+            .values()
+            .find(|candidate| candidate.id.to_canonical_string() == track)
+            .map_or(0, |candidate| candidate.clips.len());
+        (clips, project.clip_pool.len())
+    };
+    let bytes_before = project_bytes(&dispatcher);
+    let clip_id =
+        yeban_mcp::domain::ids::deterministic_id("clip:adr-0018:atomic").to_canonical_string();
+
+    let proposed = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_edit_notes",
+        json!({
+            "trackId": track, "clipId": clip_id, "clipName": "Atomic", "create": true,
+            "ops": [
+                {"kind": "add", "note": {"startTick": 0, "pitch": 60, "durationTicks": 480}},
+                {"kind": "add", "note": {"startTick": 480, "pitch": 67, "durationTicks": 960}},
+            ],
+            "placement": {"startTick": 1920},
+            "includeOps": true,
+        }),
+    );
+    assert_eq!(proposed["status"], "success", "{proposed}");
+    assert_eq!(
+        proposed["data"]["willCreate"]["opKinds"],
+        json!(["AddClip", "AddClipPlacement"]),
+        "建材料与摆放必须落在同一次提案: {proposed}"
+    );
+    let ops = op_bodies(&proposed["data"]["proposal"]);
+    assert_eq!(ops.len(), 2, "一次提案恰好两条 op: {proposed}");
+    assert_eq!(
+        ops[0]["AddClip"]["clip"]["id"].as_str(),
+        Some(clip_id.as_str()),
+        "第一条必须是 AddClip: {proposed}"
+    );
+    let placement_payload = &ops[1]["AddClipPlacement"];
+    assert_eq!(
+        placement_payload["placement"]["clip_id"], clip_id,
+        "{proposed}"
+    );
+    assert_eq!(
+        placement_payload["placement"]["start_tick"], 1920,
+        "{proposed}"
+    );
+    assert_eq!(
+        placement_payload["placement"]["duration_ticks"], 1440,
+        "缺省时值 = 新片最后一个音符的结束 tick (480 + 960): {proposed}"
+    );
+    let placement_id = proposed["data"]["willCreate"]["placements"][0]["id"]
+        .as_str()
+        .expect("placement id")
+        .to_owned();
+    assert_eq!(
+        project_bytes(&dispatcher),
+        bytes_before,
+        "提案不得改工程字节"
+    );
+
+    merge(&mut dispatcher, &auth, &proposed, "新建并摆放");
+
+    {
+        let project = dispatcher.domain().active_project().expect("工程");
+        let entry = project
+            .clip_pool
+            .iter()
+            .find(|(id, _)| id.to_canonical_string() == clip_id)
+            .map(|(_, entry)| entry)
+            .expect("合并后材料必须在池子里");
+        assert_eq!(
+            entry.content.notes().map(std::collections::BTreeMap::len),
+            Some(2),
+            "新片段必须带两个音符"
+        );
+        let track_entry = project
+            .tracks
+            .values()
+            .find(|candidate| candidate.id.to_canonical_string() == track)
+            .expect("目标音轨");
+        assert_eq!(
+            track_entry.clips.len(),
+            clips_before + 1,
+            "时间轴上必须多出一条摆放"
+        );
+        let placement = track_entry
+            .clips
+            .values()
+            .find(|placement| placement.id.to_canonical_string() == placement_id)
+            .expect("摆放必须真的落在时间轴上");
+        assert_eq!(placement.clip_id.to_canonical_string(), clip_id);
+        assert_eq!(placement.start_tick, 1920);
+        assert_eq!(placement.duration_ticks, 1440);
+        assert_eq!(project.clip_pool.len(), pool_before + 1);
+    }
+
+    let undone = call(&mut dispatcher, &auth, "yeban_undo", json!({}));
+    assert_eq!(undone["status"], "success", "{undone}");
+    assert_eq!(
+        project_bytes(&dispatcher),
+        bytes_before,
+        "一次撤销必须逐字节复原 (逆序摘除摆放与材料)"
+    );
+    {
+        let project = dispatcher.domain().active_project().expect("工程");
+        assert!(
+            project
+                .clip_pool
+                .keys()
+                .all(|id| id.to_canonical_string() != clip_id),
+            "撤销后材料必须离开池子"
+        );
+        assert!(
+            project.tracks.values().all(|track| track
+                .clips
+                .values()
+                .all(|placement| placement.clip_id.to_canonical_string() != clip_id)),
+            "撤销后摆放必须离开时间轴"
+        );
+    }
+
+    // ---- 向后兼容（ADR-0018 D2）: 只 create、不给 placement ⇒ 仍只有一条 AddClip ----
+    let pool_only_id =
+        yeban_mcp::domain::ids::deterministic_id("clip:adr-0018:pool-only").to_canonical_string();
+    let material_only = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_edit_notes",
+        json!({
+            "trackId": track, "clipId": pool_only_id, "create": true,
+            "ops": [{"kind": "add", "note": {"startTick": 0, "pitch": 72, "durationTicks": 480}}],
+        }),
+    );
+    assert_eq!(material_only["status"], "success", "{material_only}");
+    assert_eq!(
+        material_only["data"]["willCreate"]["opKinds"],
+        json!(["AddClip"]),
+        "不给 placement 时行为与旧实现一致: {material_only}"
     );
 }
 

@@ -1860,15 +1860,14 @@ fn a_four_bar_piece_built_only_from_mcp_tool_calls_renders_measurably() {
 ///
 /// 这份清单是判据的一部分（`assert!(WALLS.len() >= 5)`）：工具面改善之后，作者应当
 /// **主动**回来删掉对应的墙，而不是让它们烂在文档里。
-pub const WALLS: [&str; 6] = [
-    "① 创建片段（`create:true`）与摆放（`placement`）必须分两次调用 + 两次\
-     `yeban_merge_proposal`：同给是 `INVALID_PARAMETER_RANGE` / `placementIsNotCreation`\
-     （`domain/mod.rs` 的 `plan_edit_notes`）。4 条轨因此要 **8** 次提案合并才搭得完\
-     （本文件实测：每轨 \"建材料\" + \"摆放\" 各一次，第一轨的种子摆放还要先 `remove`）。\
-     绕法：严格按\"先建材料、再单独摆放\"拆开。",
-    // ⭐ 原 WALL ②（一次调用只有一个顶层 `trackId`，`setTrackMute` / `setParam` /
-    // `setTrackSolo` 都只作用于它）**已拆除**：三个形态现在接受可选的 `ops[].trackId`
-    // 逐条点名（判据 `edit_notes_per_op_track_id_batches_three_tracks_in_one_proposal`）。
+///
+/// ⭐ 原 WALL ①（`create:true` 与 `placement` 必须分两次调用，同给报
+/// `placementIsNotCreation`）已由 `ADR-0018` 消除：单次提案即可原子生成
+/// `Op::AddClip` + `Op::AddClipPlacement`。⭐ 原 WALL ②（一次调用只有一个顶层
+/// `trackId`）已由可选的 `ops[].trackId` 消除（判据
+/// `edit_notes_per_op_track_id_batches_three_tracks_in_one_proposal`）。
+/// 两条均从清单移除（编号保持历史原样）。
+pub const WALLS: [&str; 5] = [
     "③ 设备链**没有 CRUD 工具**：装/拆/改旁通只能经 `yeban_edit_notes` 的\
      `insertDevice` / `removeDevice` / `setDeviceBypassed` op；`yeban_query_engine_state`\
      是只读的。本文件按这条唯一通路装混响并用它做 A/B（注：原先的'改已有摆放循环'\
