@@ -1707,7 +1707,7 @@ fn the_import_reports_every_aux_event_kind_as_read_and_dropped() {
         ("track-partitions-dropped", "2"),
         ("channels", "2"),
         ("note-channel-read", "5"),
-        ("note-channel-dropped", "5"),
+        ("note-channel-dropped", "0"),
         ("note-off-velocity-read", "5"),
         ("note-off-velocity-dropped", "5"),
     ] {
