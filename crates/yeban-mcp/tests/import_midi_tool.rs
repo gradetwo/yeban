@@ -291,6 +291,8 @@ fn create_multitrack_smf_file() -> PathBuf {
             },
         ],
         key_signature: None,
+        title: None,
+        copyright: None,
     };
     let bytes = export.to_smf_bytes().expect("SMF 编码");
     let path = std::env::temp_dir().join(format!(
