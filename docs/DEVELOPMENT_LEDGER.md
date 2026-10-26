@@ -11310,4 +11310,33 @@ $ python3 scripts/gates/check_phase_status.py   # 退出 0
   - `verify/section_pure.rs`: 38 passed / 0 failed。
   - CI Run `40378569228` (`497e69e2`): **`conclusion: success`**（总耗时 40m59s），全平台全作业通过（Linux `rust (workspace 全量)` 14 steps、`windows` 18 steps、`macos` 18 steps、`deny` 6 steps、`checks` 15 steps、`lockfile` 6 steps、`plan` 5 steps 全部通过）。
 
+## 2026-10-27：WALL ② 消除：yeban_edit_notes 支持 ops[].trackId 逐条指定音轨
+
+- **需求规范 ID**: `[MCP-TOOL-006]` `WALL ②`
+- **实施工作线**: `line/edit-notes-per-op-track-id` (`733b3f52`)
+- **背景与目标**:
+  - 创作流程验收测试（`crates/yeban-mcp/tests/creation_acceptance.rs`）记录的 WALL ②：单次 `yeban_edit_notes` 仅允许一个顶层 `trackId`，使得批量修改多轨混音器（如 `setTrackMute`, `setTrackSolo`, `setParam`）无法在单次往返中表达，导致例如"主音独奏/伴奏静音"必须多次提案往返；
+  - 为 `setTrackMute`、`setTrackSolo` 和 `setParam` 新增可选的逐条目标音轨字段 `ops[].trackId`（省略时 100% 逐字节回退到顶层 `trackId`）；
+  - 当批内全部操作均自备寻址（或自备 `ops[].trackId`）时，放宽顶层 `trackId`/`clipId` 的必需性，彻底消除 WALL ②。
+- **实施**:
+  - `crates/yeban-mcp/src/domain/notes.rs`:
+    - 在 `TRACK_FLAG_FIELDS` 中新增 `TRACK_FLAG_TRACK_FIELD` (`"trackId"`)；
+    - 在 `SET_PARAM_FIELDS` 中新增 `SET_PARAM_TRACK_FIELD` (`"trackId"`)；
+    - `parse_flag_op` 与 `parse_param_op` 优先取 `ops[].trackId`，缺省回退顶层 `trackId`；
+    - 新增 `NoteOp::all_ops_address_their_own_track` 判断批内操作是否全部自备音轨；
+  - `crates/yeban-mcp/src/domain/mod.rs`:
+    - `plan_edit_notes` 支持自寻址 envelope 放宽；
+  - `crates/yeban-mcp/src/op_schema.rs` & `tools.rs`:
+    - 更新 `setTrackMute` / `setTrackSolo` / `setParam` 的 schema 与参数文档；
+  - `crates/yeban-mcp/tests/tools_e2e.rs`:
+    - 新增端到端集成测试 `edit_notes_per_op_track_id_batches_three_tracks_in_one_proposal`；
+  - `crates/yeban-mcp/tests/creation_acceptance.rs`:
+    - 更新 WALL ② 注释，标注已闭环消除。
+- **验证**:
+  - `cargo fmt --check`: 格式化通过。
+  - `python3 scripts/guards/policy_check.py`: 18 项守卫全部通过。
+  - `scripts/gates/run-gates.sh light`: 全部轻量门禁通过。
+  - CI Run `40390138238` (`733b3f52`): **`conclusion: success`**（总耗时 28m23s），Linux `rust (yeban-mcp)` (7m7s)、`rust (yeban-ui-mcp)` (2m43s)、`windows` (28m6s)、`macos` (27m27s)、`deny` (45s)、`checks` (1m11s)、`lockfile` (21s)、`plan` (11s) 全部 100% 绿灯通过。
+
+
 
