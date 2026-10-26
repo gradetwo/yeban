@@ -115,6 +115,7 @@ fn test_import_midi_tool_registration() {
     assert!(defs["properties"]["path"].is_object());
     assert!(defs["properties"]["trackId"].is_object());
     assert!(defs["properties"]["clipId"].is_object());
+    assert!(defs["properties"]["splitTracks"].is_object());
 }
 
 #[test]
@@ -265,6 +266,107 @@ fn test_import_midi_fault_handling() {
         assert_eq!(res["status"], "error", "{res}");
         assert_eq!(res["error"]["code"], ErrorCode::NoActiveProject.as_str());
     }
+
+    let _ = fs::remove_file(smf_path);
+}
+
+fn create_multitrack_smf_file() -> PathBuf {
+    use yeban_midi::midi::{DEFAULT_PPQ, MidiExport, MidiExportTrack, MidiFormat, MidiTempo};
+    let export = MidiExport {
+        format: MidiFormat::Parallel,
+        ppq: DEFAULT_PPQ,
+        tempos: vec![MidiTempo::with_time_signature(120.0, 4, 2)],
+        tracks: vec![
+            MidiExportTrack {
+                name: "Track One".to_string(),
+                channel: 0,
+                notes: vec![yeban_model::MidiNote::new(EntityId::new(), 0, 60, 480)],
+            },
+            MidiExportTrack {
+                name: "Track Two".to_string(),
+                channel: 1,
+                notes: vec![yeban_model::MidiNote::new(EntityId::new(), 480, 48, 480)],
+            },
+        ],
+    };
+    let bytes = export.to_smf_bytes().expect("SMF 编码");
+    let path = std::env::temp_dir().join(format!(
+        "yeban-test-multitrack-{}-{}.mid",
+        std::process::id(),
+        EntityId::new().to_canonical_string()
+    ));
+    fs::write(&path, bytes).expect("写测试多轨 SMF 文件");
+    path
+}
+
+#[test]
+fn test_import_midi_multitrack_split_vs_no_split() {
+    let smf_path = create_multitrack_smf_file();
+    let project = project_with_notes(0);
+    let mut dispatcher = dispatcher_with_project(project);
+
+    let before_bytes = project_bytes(&dispatcher);
+    let before_tracks = dispatcher.domain().active_project().unwrap().tracks.len();
+
+    // 1. 默认 splitTracks: true 导入
+    let res = call_tool(
+        &mut dispatcher,
+        "yeban_import_midi",
+        json!({
+            "path": smf_path.to_str().expect("str"),
+        }),
+    );
+    assert_eq!(res["status"], "success", "{res}");
+    let data = &res["data"];
+    assert_eq!(data["noteCount"], 2);
+    assert_eq!(data["losses"]["track_partitions_dropped"], 0);
+
+    let after_project = dispatcher.domain().active_project().unwrap();
+    assert_eq!(
+        after_project.tracks.len(),
+        before_tracks + 1,
+        "多轨拆分必须增加一条新音轨"
+    );
+
+    let new_track = after_project
+        .tracks
+        .values()
+        .find(|t| t.name == "Track Two")
+        .expect("必须找到拆分出的 Track Two 音轨");
+    assert_eq!(new_track.kind, yeban_model::TrackKind::Midi);
+    assert_eq!(new_track.clips.len(), 1);
+
+    // 验证路由连接到 master
+    let edge_exists = after_project.routing_graph.edges.values().any(|e| {
+        e.source_node == new_track.id && e.destination_node == after_project.master_bus_track_id
+    });
+    assert!(edge_exists, "新音轨必须有连接到 master 总线的路由边");
+
+    // 2. 撤销
+    let undo_res = call_tool(&mut dispatcher, "yeban_undo", json!({ "steps": 1 }));
+    assert_eq!(undo_res["status"], "success", "{undo_res}");
+    assert_eq!(project_bytes(&dispatcher), before_bytes);
+
+    // 3. 显式 splitTracks: false 导入
+    let res_no_split = call_tool(
+        &mut dispatcher,
+        "yeban_import_midi",
+        json!({
+            "path": smf_path.to_str().expect("str"),
+            "splitTracks": false,
+        }),
+    );
+    assert_eq!(res_no_split["status"], "success", "{res_no_split}");
+    let data_no_split = &res_no_split["data"];
+    assert_eq!(data_no_split["noteCount"], 2);
+    assert_eq!(data_no_split["losses"]["track_partitions_dropped"], 2);
+
+    let no_split_project = dispatcher.domain().active_project().unwrap();
+    assert_eq!(
+        no_split_project.tracks.len(),
+        before_tracks,
+        "splitTracks: false 时音轨总数不得增加"
+    );
 
     let _ = fs::remove_file(smf_path);
 }

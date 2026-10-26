@@ -736,6 +736,8 @@ impl MidiExport {
 /// 回读得到的一个音符。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ParsedNote {
+    /// 所在 `MTrk` 轨道索引（从 0 开始）。
+    pub track: usize,
     /// MIDI 通道。
     pub channel: u8,
     /// 音高。
@@ -1158,7 +1160,7 @@ pub fn parse_smf(bytes: &[u8]) -> Result<ParsedMidi, MidiError> {
                             let key = key.as_int();
                             let vel = vel.as_int();
                             if vel == 0 {
-                                close_note(&mut open, &mut notes, channel, key, tick)?;
+                                close_note(&mut open, &mut notes, track_index, channel, key, tick)?;
                             } else {
                                 open.push((channel, key, tick, vel));
                             }
@@ -1167,7 +1169,14 @@ pub fn parse_smf(bytes: &[u8]) -> Result<ParsedMidi, MidiError> {
                             // ⚠ 这里的 `..` 包含 note-off 的**释放力度**：模型没有
                             // 承载它的字段 ⇒ 导入侧按"每颗音符一个"如实报丢
                             // （`note-off-velocity-*`），⛔ 不冒充已处理。
-                            close_note(&mut open, &mut notes, channel, key.as_int(), tick)?;
+                            close_note(
+                                &mut open,
+                                &mut notes,
+                                track_index,
+                                channel,
+                                key.as_int(),
+                                tick,
+                            )?;
                         }
                         MidiMessage::Aftertouch { .. } => {
                             aux_events.record(MidiAuxEventKind::PolyAftertouch);
@@ -1337,6 +1346,7 @@ pub fn parse_smf(bytes: &[u8]) -> Result<ParsedMidi, MidiError> {
 fn close_note(
     open: &mut Vec<(u8, u8, u64, u8)>,
     notes: &mut Vec<ParsedNote>,
+    track: usize,
     channel: u8,
     key: u8,
     tick: u64,
@@ -1349,6 +1359,7 @@ fn close_note(
     };
     let (_, _, start_tick, velocity) = open.remove(index);
     notes.push(ParsedNote {
+        track,
         channel,
         key,
         velocity,
@@ -2696,6 +2707,7 @@ mod tests {
             format!(
                 "{:?}",
                 ParsedNote {
+                    track: 0,
                     channel: 0,
                     key: 60,
                     velocity: 100,
@@ -2703,7 +2715,7 @@ mod tests {
                     end_tick: 480,
                 }
             ),
-            "ParsedNote { channel: 0, key: 60, velocity: 100, start_tick: 0, end_tick: 480 }"
+            "ParsedNote { track: 0, channel: 0, key: 60, velocity: 100, start_tick: 0, end_tick: 480 }"
         );
         assert_eq!(
             format!(

@@ -79,7 +79,10 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::midi::{MidiAuxEventKind, MidiFormat, ParsedMarker, ParsedMidi, ParsedTrackName};
 use yeban_model::project::{MAX_BPM, MIN_BPM};
-use yeban_model::{ClipContent, EntityId, MidiNote, Op, SectionV3, TimeSignature, YebanProjectV1};
+use yeban_model::{
+    ClipContent, ClipPlacement, ClipPoolEntry, EntityId, MidiNote, Op, RoutingEdge, RoutingKind,
+    SectionV3, TimeSignature, TrackKind, TrackV3, YebanProjectV1,
+};
 
 /// 模型的每四分音符 tick 数（960 PPQ）。导入时把文件的 PPQ 换算到它。
 pub const MODEL_PPQ: u64 = 960;
@@ -98,12 +101,24 @@ pub const STORABLE_KINDS: [MidiAuxEventKind; 4] = [
 pub const STORABLE_KIND_KEYS: &[&str] = &["tempo", "time-signature", "track-name", "marker"];
 
 /// 导入选项。
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MidiImportOptions {
     /// 目标音轨；`None` = 第一条**非 master** 的音轨。
     pub track_id: Option<EntityId>,
     /// 目标片段；`None` = 目标音轨的**第一个**摆放（`placement`）。
     pub clip_id: Option<EntityId>,
+    /// 是否拆分多轨（若为 true 且为多轨文件，含有音符的后续轨道将自动创建新音轨/片段/摆放/路由；若为 false，所有音符塞入目标片段）。
+    pub split_tracks: bool,
+}
+
+impl Default for MidiImportOptions {
+    fn default() -> Self {
+        Self {
+            track_id: None,
+            clip_id: None,
+            split_tracks: true,
+        }
+    }
 }
 
 /// ⭐ `#317`：一次导入的歌词读数（**唯一**计算点在 [`plan_midi_import`]/[`attach_lyrics`])。
@@ -261,12 +276,12 @@ pub struct MidiImportLosses {
 }
 
 impl MidiImportLosses {
-    /// 自检：每条 `dropped <= read`；`track_partitions_dropped + 1 == file_tracks`；
+    /// 自检：每条 `dropped <= read`；`track_partitions_dropped <= file_tracks - 1`；
     /// 原因表只给 `dropped > 0` 的类别（⛔ 不许给"没丢"的类别编故事）。
     #[must_use]
     pub fn is_consistent(&self) -> bool {
         self.file_tracks >= 1
-            && self.track_partitions_dropped + 1 == self.file_tracks
+            && self.track_partitions_dropped <= self.file_tracks.saturating_sub(1)
             && self.note_channel_values.is_consistent()
             && self.note_off_velocity_values.is_consistent()
             && self.aux_events.values().all(|count| count.is_consistent())
@@ -1186,6 +1201,7 @@ fn count_losses(
     track_name: &ScalarAdoption,
     marker_dropped: usize,
     marker_reason: Option<String>,
+    track_partitions_dropped: usize,
 ) -> MidiImportLosses {
     let mut aux_events: BTreeMap<MidiAuxEventKind, MidiLossCount> = BTreeMap::new();
     let mut aux_reasons: BTreeMap<MidiAuxEventKind, String> = BTreeMap::new();
@@ -1225,7 +1241,7 @@ fn count_losses(
     MidiImportLosses {
         format: parsed.format,
         file_tracks: parsed.tracks,
-        track_partitions_dropped: parsed.tracks.saturating_sub(1),
+        track_partitions_dropped,
         distinct_channels,
         // 每颗音符都带一个通道值，而 `MidiNote` 没有 channel 字段 ⇒ 全丢。
         note_channel_values: MidiLossCount {
@@ -1264,13 +1280,108 @@ pub fn plan_midi_import(
     if parsed.notes.is_empty() {
         return Err(MidiImportError::Empty("解析出的音符数为 0".to_owned()));
     }
-    let (track_id, clip_id) = destination(project, options)?;
+    let (dest_track_id, dest_clip_id) = destination(project, options)?;
 
     let (attachable, lyrics) = attach_lyrics(parsed);
 
-    // 预分配：音符条数在解析后就已知（⛔ 不让 `Vec` 为 1000 个 Op 反复扩容）。
-    let mut ops: Vec<Op> = Vec::with_capacity(parsed.notes.len());
+    let note_tracks: Vec<usize> = {
+        let mut set = BTreeSet::new();
+        for note in &parsed.notes {
+            set.insert(note.track);
+        }
+        set.into_iter().collect()
+    };
+
+    let mut ops: Vec<Op> = Vec::with_capacity(parsed.notes.len() + note_tracks.len() * 5);
+
+    let mut track_destinations: BTreeMap<usize, (EntityId, EntityId)> = BTreeMap::new();
+    let first_track = note_tracks[0];
+    track_destinations.insert(first_track, (dest_track_id, dest_clip_id));
+
+    if options.split_tracks {
+        for &track_index in &note_tracks[1..] {
+            let new_track_id = derive_note_id();
+            let new_clip_id = derive_note_id();
+            let placement_id = derive_note_id();
+            let edge_id = derive_note_id();
+
+            let track_name = parsed
+                .track_names
+                .iter()
+                .find(|tn| tn.track == track_index)
+                .and_then(|tn| tn.text.as_deref())
+                .filter(|s| !s.is_empty())
+                .map(str::to_owned)
+                .unwrap_or_else(|| format!("Track {}", track_index + 1));
+
+            let track_duration = parsed
+                .notes
+                .iter()
+                .filter(|n| n.track == track_index)
+                .map(|n| scale_ticks(n.end_tick.max(n.start_tick + 1), parsed.ppq))
+                .max()
+                .unwrap_or(MODEL_PPQ)
+                .max(1);
+
+            let clip_name = track_name.clone();
+
+            ops.push(Op::AddTrack {
+                track: TrackV3 {
+                    id: new_track_id,
+                    name: track_name,
+                    kind: TrackKind::Midi,
+                    ..TrackV3::default()
+                },
+            });
+            ops.push(Op::AddRoutingNode { node: new_track_id });
+            if !project
+                .routing_graph
+                .nodes
+                .contains(&project.master_bus_track_id)
+            {
+                ops.push(Op::AddRoutingNode {
+                    node: project.master_bus_track_id,
+                });
+            }
+            ops.push(Op::AddClip {
+                clip: ClipPoolEntry {
+                    id: new_clip_id,
+                    name: clip_name,
+                    content: ClipContent::Midi {
+                        notes: BTreeMap::new(),
+                    },
+                },
+            });
+            ops.push(Op::AddClipPlacement {
+                track_id: new_track_id,
+                placement: ClipPlacement {
+                    id: placement_id,
+                    clip_id: new_clip_id,
+                    start_tick: 0,
+                    duration_ticks: track_duration,
+                    ..ClipPlacement::default()
+                },
+            });
+            ops.push(Op::ConnectRouting {
+                edge: RoutingEdge {
+                    id: edge_id,
+                    source_node: new_track_id,
+                    destination_node: project.master_bus_track_id,
+                    kind: RoutingKind::TrackToBus,
+                    gain_db: None,
+                },
+            });
+
+            track_destinations.insert(track_index, (new_track_id, new_clip_id));
+        }
+    }
+
     ops.extend(parsed.notes.iter().map(|note| {
+        let (target_track_id, target_clip_id) = track_destinations
+            .get(&note.track)
+            .copied()
+            .unwrap_or((dest_track_id, dest_clip_id));
+
         let start = scale_ticks(note.start_tick, parsed.ppq);
         let end = scale_ticks(note.end_tick.max(note.start_tick + 1), parsed.ppq);
         let mut model_note = MidiNote::new(
@@ -1284,12 +1395,12 @@ pub fn plan_midi_import(
             model_note.syllable = Some((*text).to_owned());
         }
         Op::AddNote {
-            track_id,
-            clip_id,
+            track_id: target_track_id,
+            clip_id: target_clip_id,
             note: model_note,
         }
     }));
-    let notes = ops.len();
+    let notes = parsed.notes.len();
 
     // 分桶自检：既不重叠也不漏（`read == attached + dropped`）。
     debug_assert!(
@@ -1302,7 +1413,7 @@ pub fn plan_midi_import(
     let target_empty = import_target_is_empty(project);
     let mut tempo = tempo_adoption_op(parsed, project, target_empty);
     let mut time_signature = time_signature_adoption_op(parsed, project, target_empty);
-    let mut track_name = track_name_adoption_op(parsed, project, track_id);
+    let mut track_name = track_name_adoption_op(parsed, project, dest_track_id);
     let (sections, marker_dropped, marker_reason) =
         plan_sections(&parsed.markers, parsed.end_tick, parsed.ppq);
     for adoption in [&mut track_name, &mut tempo, &mut time_signature] {
@@ -1325,6 +1436,12 @@ pub fn plan_midi_import(
         });
     }
 
+    let track_partitions_dropped = if options.split_tracks {
+        0
+    } else {
+        parsed.tracks.saturating_sub(1)
+    };
+
     let losses = count_losses(
         parsed,
         notes,
@@ -1333,10 +1450,11 @@ pub fn plan_midi_import(
         &track_name,
         marker_dropped,
         marker_reason,
+        track_partitions_dropped,
     );
     debug_assert!(
         losses.is_consistent(),
-        "丢失读数必须满足 dropped <= read 且轨分区 + 1 == file_tracks: {losses:?}"
+        "丢失读数必须满足 dropped <= read 且轨分区 <= file_tracks - 1: {losses:?}"
     );
     debug_assert!(
         losses.is_total_loss(),
@@ -1345,8 +1463,8 @@ pub fn plan_midi_import(
     Ok(MidiImportPlan {
         ops,
         notes,
-        track_id,
-        clip_id,
+        track_id: dest_track_id,
+        clip_id: dest_clip_id,
         ppq: parsed.ppq,
         lyrics,
         losses,
@@ -1533,6 +1651,7 @@ pub mod tests {
 
     fn note(key: u8, velocity: u8, start: u64, end: u64) -> ParsedNote {
         ParsedNote {
+            track: 0,
             channel: 0,
             key,
             velocity,
@@ -1852,6 +1971,7 @@ pub mod tests {
             960,
             vec![
                 ParsedNote {
+                    track: 0,
                     channel: 0,
                     key: 60,
                     velocity: 100,
@@ -1859,6 +1979,7 @@ pub mod tests {
                     end_tick: 480,
                 },
                 ParsedNote {
+                    track: 0,
                     channel: 1,
                     key: 48,
                     velocity: 110,
@@ -1907,8 +2028,21 @@ pub mod tests {
         assert_eq!(losses.format, MidiFormat::Parallel);
         assert_eq!(losses.file_tracks, 3);
         assert_eq!(
-            losses.track_partitions_dropped, 2,
-            "3 条 MTrk 进 1 个目标 ⇒ 2 个分区丢失"
+            losses.track_partitions_dropped, 0,
+            "多轨拆分开启时，没有未拆分的音轨分区 ⇒ 0 个分区丢失"
+        );
+        let plan_no_split = plan_midi_import(
+            &project,
+            &parsed,
+            &MidiImportOptions {
+                split_tracks: false,
+                ..Default::default()
+            },
+        )
+        .expect("必须有目标");
+        assert_eq!(
+            plan_no_split.losses.track_partitions_dropped, 2,
+            "多轨拆分关闭时，3 条 MTrk 进 1 个目标 ⇒ 2 个分区丢失"
         );
         assert_eq!(losses.distinct_channels, 2, "音符里出现过 {{0,1}} 两个通道");
         assert_eq!(
@@ -2215,6 +2349,7 @@ pub mod metadata_adoption_tests {
             end_tick: 0,
             notes: vec![
                 ParsedNote {
+                    track: 0,
                     channel: 0,
                     key: 60,
                     velocity: 100,
@@ -2222,6 +2357,7 @@ pub mod metadata_adoption_tests {
                     end_tick: 480,
                 },
                 ParsedNote {
+                    track: 0,
                     channel: 0,
                     key: 64,
                     velocity: 90,
@@ -2731,6 +2867,7 @@ pub mod metadata_adoption_tests {
         let options = MidiImportOptions {
             track_id: Some(track_id),
             clip_id: None,
+            ..Default::default()
         };
 
         // ① 两个 MTrk 同名 ⇒ 去重成一个名字，落地（不算损失）。
@@ -2815,5 +2952,247 @@ pub mod metadata_adoption_tests {
             reason.contains("1 empty") && reason.contains("1 non-UTF-8"),
             "原因必须分别点名空名与非 UTF-8: {reason}"
         );
+    }
+
+    #[test]
+    fn multi_track_midi_import_splits_subsequent_tracks_with_notes() {
+        let project = yeban_model::samples::filled_project();
+        let (dest_track, dest_clip) = destination(&project, &MidiImportOptions::default()).unwrap();
+
+        let mut aux_events = crate::midi::MidiAuxEventCounts::default();
+        aux_events.record(MidiAuxEventKind::TrackName);
+        aux_events.record(MidiAuxEventKind::TrackName);
+
+        let parsed = ParsedMidi {
+            format: MidiFormat::Parallel,
+            ppq: 960,
+            tracks: 3,
+            aux_events,
+            tempos: Vec::new(),
+            track_names: vec![
+                track_name(1, 0, Some("Lead Synth")),
+                track_name(2, 0, Some("Sub Bass")),
+            ],
+            markers: Vec::new(),
+            end_tick: 960,
+            notes: vec![
+                ParsedNote {
+                    track: 1,
+                    channel: 0,
+                    key: 60,
+                    velocity: 100,
+                    start_tick: 0,
+                    end_tick: 480,
+                },
+                ParsedNote {
+                    track: 2,
+                    channel: 1,
+                    key: 36,
+                    velocity: 90,
+                    start_tick: 480,
+                    end_tick: 960,
+                },
+            ],
+            lyrics: Vec::new(),
+            non_utf8_lyrics: 0,
+            empty_lyrics: 0,
+        };
+
+        let plan = plan_midi_import(&project, &parsed, &MidiImportOptions::default())
+            .expect("多轨导入规划成功");
+
+        // 验证产物：新轨、新片段、新摆放、新路由
+        let mut new_track_id = None;
+        let mut new_clip_id = None;
+        let mut has_routing = false;
+
+        for op in &plan.ops {
+            match op {
+                Op::AddTrack { track } => {
+                    assert_eq!(track.name, "Sub Bass");
+                    assert_eq!(track.kind, TrackKind::Midi);
+                    new_track_id = Some(track.id);
+                }
+                Op::AddClip { clip } => {
+                    assert_eq!(clip.name, "Sub Bass");
+                    new_clip_id = Some(clip.id);
+                }
+                Op::AddClipPlacement {
+                    track_id,
+                    placement,
+                } => {
+                    assert_eq!(Some(*track_id), new_track_id);
+                    assert_eq!(Some(placement.clip_id), new_clip_id);
+                    assert_eq!(placement.start_tick, 0);
+                    assert_eq!(placement.duration_ticks, 960);
+                }
+                Op::ConnectRouting { edge } => {
+                    assert_eq!(Some(edge.source_node), new_track_id);
+                    assert_eq!(edge.destination_node, project.master_bus_track_id);
+                    assert_eq!(edge.kind, RoutingKind::TrackToBus);
+                    has_routing = true;
+                }
+                _ => {}
+            }
+        }
+
+        assert!(new_track_id.is_some(), "必须发射 Op::AddTrack");
+        assert!(new_clip_id.is_some(), "必须发射 Op::AddClip");
+        assert!(has_routing, "必须发射 Op::ConnectRouting");
+
+        // 验证音符映射：第一轨落到目标片段，第二轨落到新创建片段
+        let lead_note_op = plan
+            .ops
+            .iter()
+            .find(|op| matches!(op, Op::AddNote { note, .. } if note.pitch == 60))
+            .expect("Lead 音符操作必须存在");
+        if let Op::AddNote {
+            track_id, clip_id, ..
+        } = lead_note_op
+        {
+            assert_eq!(*track_id, dest_track);
+            assert_eq!(*clip_id, dest_clip);
+        }
+
+        let bass_note_op = plan
+            .ops
+            .iter()
+            .find(|op| matches!(op, Op::AddNote { note, .. } if note.pitch == 36))
+            .expect("Bass 音符操作必须存在");
+        if let Op::AddNote {
+            track_id, clip_id, ..
+        } = bass_note_op
+        {
+            assert_eq!(Some(*track_id), new_track_id);
+            assert_eq!(Some(*clip_id), new_clip_id);
+        }
+
+        assert_eq!(plan.notes, 2);
+        assert_eq!(plan.losses.track_partitions_dropped, 0);
+        assert!(plan.losses.is_consistent());
+    }
+
+    #[test]
+    fn multi_track_midi_import_when_split_disabled() {
+        let project = yeban_model::samples::filled_project();
+        let (dest_track, dest_clip) = destination(&project, &MidiImportOptions::default()).unwrap();
+
+        let mut aux_events = crate::midi::MidiAuxEventCounts::default();
+        aux_events.record(MidiAuxEventKind::TrackName);
+        aux_events.record(MidiAuxEventKind::TrackName);
+
+        let parsed = ParsedMidi {
+            format: MidiFormat::Parallel,
+            ppq: 960,
+            tracks: 3,
+            aux_events,
+            tempos: Vec::new(),
+            track_names: vec![
+                track_name(1, 0, Some("Lead Synth")),
+                track_name(2, 0, Some("Sub Bass")),
+            ],
+            markers: Vec::new(),
+            end_tick: 960,
+            notes: vec![
+                ParsedNote {
+                    track: 1,
+                    channel: 0,
+                    key: 60,
+                    velocity: 100,
+                    start_tick: 0,
+                    end_tick: 480,
+                },
+                ParsedNote {
+                    track: 2,
+                    channel: 1,
+                    key: 36,
+                    velocity: 90,
+                    start_tick: 480,
+                    end_tick: 960,
+                },
+            ],
+            lyrics: Vec::new(),
+            non_utf8_lyrics: 0,
+            empty_lyrics: 0,
+        };
+
+        let options = MidiImportOptions {
+            split_tracks: false,
+            ..Default::default()
+        };
+        let plan = plan_midi_import(&project, &parsed, &options).expect("多轨导入规划成功");
+
+        // 验证没有发射新建轨/片段/摆放/路由
+        assert!(
+            !plan.ops.iter().any(|op| matches!(
+                op,
+                Op::AddTrack { .. }
+                    | Op::AddClip { .. }
+                    | Op::AddClipPlacement { .. }
+                    | Op::ConnectRouting { .. }
+            )),
+            "split_tracks = false 时不得发射新建轨操作"
+        );
+
+        // 两个音符都落入同一个目标片段
+        for op in &plan.ops {
+            if let Op::AddNote {
+                track_id, clip_id, ..
+            } = op
+            {
+                assert_eq!(*track_id, dest_track);
+                assert_eq!(*clip_id, dest_clip);
+            }
+        }
+
+        assert_eq!(plan.notes, 2);
+        assert_eq!(plan.losses.track_partitions_dropped, 2);
+        assert!(plan.losses.is_consistent());
+    }
+
+    #[test]
+    fn multi_track_midi_import_fallback_track_name_when_no_meta() {
+        let project = yeban_model::samples::filled_project();
+        let parsed = ParsedMidi {
+            format: MidiFormat::Parallel,
+            ppq: 960,
+            tracks: 2,
+            aux_events: crate::midi::MidiAuxEventCounts::default(),
+            tempos: Vec::new(),
+            track_names: Vec::new(), // 无轨名元事件
+            markers: Vec::new(),
+            end_tick: 480,
+            notes: vec![
+                ParsedNote {
+                    track: 0,
+                    channel: 0,
+                    key: 60,
+                    velocity: 100,
+                    start_tick: 0,
+                    end_tick: 480,
+                },
+                ParsedNote {
+                    track: 1,
+                    channel: 1,
+                    key: 64,
+                    velocity: 90,
+                    start_tick: 0,
+                    end_tick: 480,
+                },
+            ],
+            lyrics: Vec::new(),
+            non_utf8_lyrics: 0,
+            empty_lyrics: 0,
+        };
+
+        let plan = plan_midi_import(&project, &parsed, &MidiImportOptions::default()).unwrap();
+        let add_track_op = plan
+            .ops
+            .iter()
+            .find(|op| matches!(op, Op::AddTrack { .. }))
+            .expect("第二轨必须创建新音轨");
+        if let Op::AddTrack { track } = add_track_op {
+            assert_eq!(track.name, "Track 2");
+        }
     }
 }
