@@ -41,7 +41,7 @@ use yeban_mcp::undo_session::read_rust_sources;
 /// 黄金表：每个 `Op` 变体**必须**在哪些工具模块里有一个构造点。
 ///
 /// 读法：删掉任一处登记的构造点 ⇒ 本判据红。
-pub const EXPECTED_SITES: [(&str, &[&str]); 51] = [
+pub const EXPECTED_SITES: [(&str, &[&str]); 54] = [
     ("AddNote", &["domain/notes.rs"]),
     ("DeleteNote", &["domain/notes.rs"]),
     ("MoveNote", &["domain/notes.rs"]),
@@ -146,6 +146,17 @@ pub const EXPECTED_SITES: [(&str, &[&str]); 51] = [
     // `domain/notes.rs` 的 `parse_one` / `compile` 现在有它的构造点
     // （`NoteOp::SetTrackSampler` ⇒ `Op::SetTrackSampler`），工具面因此**可达**。
     ("SetTrackSampler", &["domain/notes.rs"]),
+    // ⭐ 本票（MCP-TOOL-003）：`setKeySignature` 的欠账条目此前是**陈旧登记** ——
+    // `domain/notes.rs` 的 `parse_one` / `compile` 早已构造 `Op::SetKeySignature`，
+    // 本行把它如实补进黄金表。
+    ("SetKeySignature", &["domain/notes.rs"]),
+    // ⭐ 本票新增：`project.tempo_map` 此前在工具面**没有任何**结构写点
+    // ⇒ `setTempoPoint` 的 `parse_one` / `compile` 在 `domain/notes.rs`
+    // 构造 `Op::SetTempoPoint`。
+    ("SetTempoPoint", &["domain/notes.rs"]),
+    // ⭐ 本票新增：`project.time_signature_map` 同一条缺口
+    // ⇒ `setTimeSignaturePoint` 的 `parse_one` / `compile` 构造 `Op::SetTimeSignaturePoint`。
+    ("SetTimeSignaturePoint", &["domain/notes.rs"]),
 ];
 
 /// **模型里有、而工具面**确实**没有构造点**的 `Op` 变体（显式欠账清单）。
@@ -160,20 +171,13 @@ pub const EXPECTED_SITES: [(&str, &[&str]); 51] = [
 /// （`yeban_edit_notes` 的 `setTrackSampler` 有 `parse_one` / `compile` 构造点，
 /// 已移进上面的 `EXPECTED_SITES`）。判据仍双向守着：谁把一条**可达**的变体塞回这里，
 /// 或把一条**不可达**的变体写进 `EXPECTED_SITES`，都会红。
-const KNOWN_UNREACHABLE: [(&str, &str); 3] = [
-    (
-        "SetTempoPoint",
-        "工具面（yeban_edit_notes）尚未提供单独编辑 tempo map 时间点的动作，目前通过 yeban_import_midi 从 MIDI 导入自动构造",
-    ),
-    (
-        "SetTimeSignaturePoint",
-        "工具面（yeban_edit_notes）尚未提供单独编辑 time signature map 时间点的动作，目前通过 yeban_import_midi 从 MIDI 导入自动构造",
-    ),
-    (
-        "SetKeySignature",
-        "工具面尚未提供单独编辑调号的动作，目前通过 yeban_import_midi 从 MIDI 导入自动构造",
-    ),
-];
+///
+/// ⭐ MCP-TOOL-003：本清单**再次为空**，且这次覆盖的是模型全集闭合 ——
+/// `SetTempoPoint` / `SetTimeSignaturePoint` 由 `yeban_edit_notes` 的
+/// `setTempoPoint` / `setTimeSignaturePoint` 形态构造（`domain/notes.rs` 的
+/// `parse_one` / `compile`），`SetKeySignature` 那条是**陈旧登记**（其构造点早已存在，
+/// 本票把它补进 `EXPECTED_SITES`）。工具面因此**覆盖了模型 `Op` 全集**。
+const KNOWN_UNREACHABLE: [(&str, &str); 0] = [];
 // ⭐ 历史: 本清单的清空**是证明过的**（临时加回一条 ⇒ 反向断言逐字报"`SetTempo` 既在
 // `KNOWN_UNREACHABLE` 又在 `EXPECTED_SITES` ⇒ 两处矛盾，请二选一" ⇒ 然后恢复）。
 
@@ -433,8 +437,8 @@ fn every_op_variant_has_a_registered_construction_site() {
     assert_eq!(names.len(), EXPECTED_SITES.len(), "变体名不得重复");
     assert_eq!(
         names.len(),
-        51,
-        "登记表有 51 条（⭐ 它**不是**模型变体数 —— 模型全集由 \
+        54,
+        "登记表有 54 条（⭐ 它**不是**模型变体数 —— 模型全集由 \
          `every_model_op_variant_is_registered_or_declared_unreachable` 管）"
     );
 }

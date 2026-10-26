@@ -804,6 +804,44 @@ pub fn ops_items() -> Value {
                 true,
             ),
             op(
+                "setTempoPoint",
+                "写 `tempo_map` 里一个速度映射点（`tick` ≥ 1；`bpm` 为 `null` = 删除该点，⛔ 缺键不是删除；旧值由服务端从当前文档读）",
+                &["kind", "tick", "bpm"],
+                json!({
+                    "kind": kind("setTempoPoint"),
+                    "tick": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "description": "映射点 tick（≥ 1）。tick 0 属于工程速度本身，归 `setTempo` ⇒ `tempoMapZeroTick`",
+                    },
+                    "bpm": {
+                        "type": ["number", "null"],
+                        "minimum": 20.0,
+                        "maximum": 999.0,
+                        "description": "新 BPM（20.0..=999.0，越界 ⇒ `bpmOutOfRange`）或 `null` = 删除该映射点（点不存在 ⇒ `tempoPointNotFound`）",
+                    },
+                }),
+                true,
+            ),
+            op(
+                "setTimeSignaturePoint",
+                "写 `time_signature_map` 里一个拍号映射点（`tick` ≥ 1；`timeSignature` 为 `null` = 删除该点；`\"N/D\"` 文本与 `setTimeSignature` 逐字同词同义，值域由模型 `TimeSignature::validate` 判）",
+                &["kind", "tick", "timeSignature"],
+                json!({
+                    "kind": kind("setTimeSignaturePoint"),
+                    "tick": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "description": "映射点 tick（≥ 1）。tick 0 的拍号是顶层 `project.time_signature`，归 `setTimeSignature` ⇒ `tempoMapZeroTick`",
+                    },
+                    "timeSignature": {
+                        "type": ["string", "null"],
+                        "description": "新拍号 \"N/D\" 文本（例 \"3/4\"、\"6/8\"）或 `null` = 删除该映射点（点不存在 ⇒ `timeSignaturePointNotFound`）。形状错误 ⇒ `INVALID_PARAMETER_RANGE`；取值越界 ⇒ `OUT_OF_RANGE`。⛔ 这里不复制值域表：判定它的唯一入口是模型 `TimeSignature::validate`",
+                    },
+                }),
+                true,
+            ),
+            op(
                 "setAutomationLane",
                 "写一条自动化泳道自己的属性，或 `remove:true` 取走它（目标音轨 = 顶层 `trackId`）",
                 &["kind", "lane"],
