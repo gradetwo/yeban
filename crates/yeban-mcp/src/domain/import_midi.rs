@@ -31,6 +31,17 @@ use crate::undo_session::CommitRequest;
 
 use super::error::{self, Fault};
 
+/// 多轨拆分时新建音轨的描述信息。
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct CreatedTrackInfo {
+    /// 新建音轨的身份。
+    pub track_id: EntityId,
+    /// 新建音轨的名称。
+    pub track_name: String,
+    /// 放置在该轨上的新建片段身份。
+    pub clip_id: EntityId,
+}
+
 /// 一次 `yeban_import_midi` 的只读规划产物。
 #[derive(Debug, Clone)]
 pub struct MidiImport {
@@ -72,6 +83,8 @@ pub struct MidiImport {
     pub adopted_copyright: Option<String>,
     /// 待原子提交的模型操作序列。
     pub ops: Vec<Op>,
+    /// 多轨拆分时额外创建的音轨列表（若未拆轨或仅单轨则为空 Vec）。
+    pub created_tracks: Vec<CreatedTrackInfo>,
 }
 
 fn map_import_error(err: MidiImportError) -> Fault {
@@ -340,6 +353,31 @@ pub fn plan(project: &YebanProjectV1, arguments: &Map<String, Value>) -> Result<
         adopted_title = Some(project.title.clone());
     }
 
+    let mut created_tracks = Vec::new();
+    let mut pending_track: Option<(EntityId, String)> = None;
+    for op in &plan.ops {
+        match op {
+            Op::AddTrack { track } => {
+                pending_track = Some((track.id, track.name.clone()));
+            }
+            Op::AddClipPlacement {
+                track_id,
+                placement,
+            } => {
+                if let Some((pending_id, name)) = pending_track.take()
+                    && pending_id == *track_id
+                {
+                    created_tracks.push(CreatedTrackInfo {
+                        track_id: *track_id,
+                        track_name: name,
+                        clip_id: placement.clip_id,
+                    });
+                }
+            }
+            _ => {}
+        }
+    }
+
     Ok(MidiImport {
         path,
         byte_len: u64::try_from(bytes.len()).unwrap_or(u64::MAX),
@@ -361,6 +399,7 @@ pub fn plan(project: &YebanProjectV1, arguments: &Map<String, Value>) -> Result<
         adopted_title,
         adopted_copyright,
         ops: plan.ops,
+        created_tracks,
     })
 }
 
@@ -399,6 +438,11 @@ pub fn describe(import: &MidiImport) -> Value {
         "adoptedTrackName": import.adopted_track_name,
         "adoptedTitle": import.adopted_title,
         "adoptedCopyright": import.adopted_copyright,
+        "createdTracks": import.created_tracks.iter().map(|t| json!({
+            "trackId": t.track_id.to_canonical_string(),
+            "name": t.track_name,
+            "clipId": t.clip_id.to_canonical_string(),
+        })).collect::<Vec<_>>(),
     })
 }
 
