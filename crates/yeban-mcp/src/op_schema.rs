@@ -525,10 +525,11 @@ pub fn ops_items() -> Value {
             ),
             op(
                 "setParam",
-                "写**静态**参数：`lane:\"TrackVolume\"`（dB，有限值）/ `lane:\"TrackPan\"`（-1.0..=1.0）/ `lane:\"DeviceParam\"`（设备参数，另需 `slotIndex` + `paramIndex`）。目标音轨是工具顶层的 `trackId`；设备参数的 `value` 必须是离线渲染器**真的消费**的名字所指的那个参数（名字不在白名单 ⇒ `paramNotSupported`，⛔ 不静默写入）；多余键被静默忽略",
+                "写**静态**参数：`lane:\"TrackVolume\"`（dB，有限值）/ `lane:\"TrackPan\"`（-1.0..=1.0）/ `lane:\"DeviceParam\"`（设备参数，另需 `slotIndex` + `paramIndex`）。目标音轨缺省是工具顶层的 `trackId`，`trackId` 可逐条点名另一条音轨；设备参数的 `value` 必须是离线渲染器**真的消费**的名字所指的那个参数（名字不在白名单 ⇒ `paramNotSupported`，⛔ 不静默写入）；其余多余键被静默忽略",
                 &["kind", "lane", "value"],
                 json!({
                     "kind": kind("setParam"),
+                    "trackId": id("目标音轨身份（可选；缺省 = 工具顶层的 `trackId`）"),
                     "lane": {
                         "type": "string",
                         "enum": ["TrackVolume", "TrackPan", "DeviceParam"],
@@ -553,20 +554,22 @@ pub fn ops_items() -> Value {
             ),
             op(
                 "setTrackMute",
-                "写目标音轨的 `mute` 开关（目标 = 顶层 `trackId`）",
+                "写目标音轨的 `mute` 开关（目标缺省 = 顶层 `trackId`，`trackId` 可逐条点名另一条音轨）",
                 &["kind", "value"],
                 json!({
                     "kind": kind("setTrackMute"),
+                    "trackId": id("目标音轨身份（可选；缺省 = 工具顶层的 `trackId`）"),
                     "value": { "type": "boolean", "description": "目标态（不做真假值强转）" },
                 }),
                 true,
             ),
             op(
                 "setTrackSolo",
-                "写目标音轨的 `solo` 开关（目标 = 顶层 `trackId`）",
+                "写目标音轨的 `solo` 开关（目标缺省 = 顶层 `trackId`，`trackId` 可逐条点名另一条音轨）",
                 &["kind", "value"],
                 json!({
                     "kind": kind("setTrackSolo"),
+                    "trackId": id("目标音轨身份（可选；缺省 = 工具顶层的 `trackId`）"),
                     "value": { "type": "boolean", "description": "目标态（不做真假值强转）" },
                 }),
                 true,

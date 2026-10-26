@@ -3880,7 +3880,8 @@ fn edit_notes_track_flags_write_mute_and_solo_and_undo_restores_them() {
         .to_canonical_string();
 
     // 响亮失败：猜一个更短的名字（`setMute`）不是别名；`value` 不是布尔；
-    // 开关对象里多写一个嵌套 `trackId`（写错音轨的典型形态）。
+    // 开关对象里的蛇形 `track_id` 是未知键（逐条点名的唯一拼法是驼峰 `trackId`,
+    // ⭐ 它自 WALL ② 拆除后是**合法**的可选字段, 这里改用蛇形守住"未知键一律拒"）。
     let alias = call(
         &mut dispatcher,
         &auth,
@@ -3912,9 +3913,9 @@ fn edit_notes_track_flags_write_mute_and_solo_and_undo_restores_them() {
         &auth,
         "yeban_edit_notes",
         json!({"trackId": track_text, "clipId": clip,
-               "ops": [{"kind": "setTrackMute", "value": true, "trackId": track_text}]}),
+               "ops": [{"kind": "setTrackMute", "value": true, "track_id": track_text}]}),
     );
-    assert_domain_error(&nested, "INVALID_PARAMETER_RANGE", "嵌套 trackId");
+    assert_domain_error(&nested, "INVALID_PARAMETER_RANGE", "蛇形 track_id");
     assert_eq!(
         nested["error"]["data"]["reason"], "unknownFlagField",
         "{nested}"
@@ -4030,6 +4031,131 @@ fn edit_notes_track_flags_write_mute_and_solo_and_undo_restores_them() {
         project_bytes(&dispatcher),
         bytes_before,
         "撤销必须逐字节复原 (静音 / 独奏随模型变体一起可逆)"
+    );
+}
+
+/// ⭐ **WALL ② 拆除**：一次 `yeban_edit_notes` 里用 `ops[].trackId` 逐条点名
+/// **三条不同音轨** 做静音 / 独奏 / 音量，走完 提案 → 合并 → 撤销 的整条管线。
+/// 此前这三个形态的目标只能是顶层 `trackId` 那**一条**轨 ⇒ 跨轨批量必须拆成多个
+/// 提案；现在批内每条都自备目标时顶层 `trackId` / `clipId` **接受但不读**。
+///
+/// 注入都能让它变红：删掉 `parse_one` 开关分支的 `read_optional_id`（`unknownFlagField`）、
+/// 把 `compile` 里的 `unwrap_or(*track_id)` 改回 `*track_id`（`ops[0]` 的目标不再是 a）、
+/// 或把 `plan_edit_notes` 的批谓词门控退回 `all_self_addressed`（信封指向 decoy 轨时
+/// 回退形态会把三条全写到 decoy 上，或占位路径根本走不通）。
+#[test]
+fn edit_notes_per_op_track_id_batches_three_tracks_in_one_proposal() {
+    let scratch = Scratch::new("per-op-track-e2e");
+    let (mut dispatcher, auth) = dispatcher();
+    open(&scratch, &mut dispatcher, &auth);
+
+    let project = dispatcher.domain().active_project().expect("工程");
+    let ids: Vec<yeban_model::EntityId> = project.tracks.keys().copied().collect();
+    assert!(ids.len() >= 3, "样本里必须有至少三条音轨: {}", ids.len());
+    let (a, b, c) = (ids[0], ids[1], ids[2]);
+    let (mute_before, solo_before, volume_before) = (
+        project.track(&a).expect("音轨").mute,
+        project.track(&b).expect("音轨").solo,
+        project.track(&c).expect("音轨").volume_db,
+    );
+    // 顶层两个实参传**别的**实体：批内每条都自备 `trackId` ⇒ 它们一个字节都不被读。
+    let envelope_track = project
+        .tracks
+        .values()
+        .find(|track| track.kind == yeban_model::TrackKind::Audio)
+        .expect("样本里必须有音频轨")
+        .id;
+    let envelope_clip = project
+        .clip_pool
+        .values()
+        .next()
+        .expect("样本里必须有片段池条目")
+        .id;
+    let bytes_before = project_bytes(&dispatcher);
+
+    let created = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_edit_notes",
+        json!({
+            "trackId": envelope_track.to_canonical_string(),
+            "clipId": envelope_clip.to_canonical_string(),
+            "includeOps": true,
+            "ops": [
+                {"kind": "setTrackMute", "trackId": a.to_canonical_string(), "value": !mute_before},
+                {"kind": "setTrackSolo", "trackId": b.to_canonical_string(), "value": !solo_before},
+                {"kind": "setParam", "trackId": c.to_canonical_string(), "lane": "TrackVolume", "value": -6.5}
+            ]
+        }),
+    );
+    assert_eq!(created["status"], "success", "{created}");
+    // 目标身份逐条点名：载荷里的 `track_id` 必须是各自那条, 不是顶层 decoy。
+    assert_eq!(
+        created["data"]["proposal"]["ops"][0]["op"]["SetTrackMute"]["track_id"],
+        json!(a.to_canonical_string()),
+        "静音目标必须是 ops[].trackId 点名的音轨: {created}"
+    );
+    assert_eq!(
+        created["data"]["proposal"]["ops"][0]["op"]["SetTrackMute"]["old_mute"],
+        json!(mute_before),
+        "撤销载荷必须等于文档现值: {created}"
+    );
+    assert_eq!(
+        created["data"]["proposal"]["ops"][1]["op"]["SetTrackSolo"]["track_id"],
+        json!(b.to_canonical_string()),
+        "独奏目标必须是 ops[].trackId 点名的音轨: {created}"
+    );
+    assert_eq!(
+        created["data"]["proposal"]["ops"][2]["op"]["SetParam"]["target"],
+        json!({"TrackVolume": {"track_id": c.to_canonical_string()}}),
+        "setParam 目标必须是 ops[].trackId 点名的音轨: {created}"
+    );
+    assert_eq!(
+        created["data"]["proposal"]["ops"][2]["op"]["SetParam"]["old_val"],
+        json!(volume_before),
+        "音量撤销载荷必须等于文档现值: {created}"
+    );
+    assert_eq!(
+        created["data"]["proposal"]["title"], "音轨级编辑: 3 步",
+        "描述必须如实说这是音轨级编辑: {created}"
+    );
+    assert_eq!(project_bytes(&dispatcher), bytes_before, "提案不得改工程");
+
+    let proposal_id = created["data"]["proposal"]["proposalId"]
+        .as_str()
+        .expect("id")
+        .to_owned();
+    let merged = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_merge_proposal",
+        json!({ "proposalId": proposal_id, "commitMessage": "跨轨批量" }),
+    );
+    assert_eq!(merged["status"], "success", "{merged}");
+    let project = dispatcher.domain().active_project().expect("工程");
+    assert_eq!(
+        project.track(&a).expect("音轨").mute,
+        !mute_before,
+        "a 的静音必须真的改了"
+    );
+    assert_eq!(
+        project.track(&b).expect("音轨").solo,
+        !solo_before,
+        "b 的独奏必须真的改了"
+    );
+    assert_eq!(
+        project.track(&c).expect("音轨").volume_db,
+        -6.5,
+        "c 的音量必须真的改了"
+    );
+
+    // 可回退：撤销一次 ⇒ 逐字节回到提案之前的工程。
+    let undone = call(&mut dispatcher, &auth, "yeban_undo", json!({}));
+    assert_eq!(undone["status"], "success", "{undone}");
+    assert_eq!(
+        project_bytes(&dispatcher),
+        bytes_before,
+        "撤销必须逐字节复原 (跨轨批量随同一个提案一起可逆)"
     );
 }
 

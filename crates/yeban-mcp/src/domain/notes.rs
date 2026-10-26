@@ -164,7 +164,7 @@
 //! | 情形 | 结果 |
 //! | :--- | :--- |
 //! | `value` 不是 JSON 布尔（`1` / `"true"` / 缺字段） | `INVALID_PARAMETER_RANGE`（`reason = "valueMustBeBoolean"`）—— 不做真假值强转 |
-//! | 开关对象里有 `kind` / `value` 之外的键（含嵌套 `trackId`） | `INVALID_PARAMETER_RANGE`（`reason = "unknownFlagField"`）—— 目标音轨是**顶层** `trackId`，嵌套写它只会被静默忽略 |
+//! | 开关对象里有 `kind` / `value` / `trackId` 之外的键 | `INVALID_PARAMETER_RANGE`（`reason = "unknownFlagField"`）—— `trackId` **可选**：省略时目标音轨是**顶层** `trackId`，给了则逐条点名另一条音轨（见 [`TRACK_FLAG_TRACK_FIELD`]） |
 //!
 //! `old_mute` / `old_solo` 从**当前文档**读（不是调用方的声明），因此模型的
 //! `OpStateMismatch` 前置条件天然成立，撤销仍是模型自己的 [`Op::invert`]。
@@ -1181,6 +1181,12 @@ pub const SET_PARAM_SLOT_FIELD: &str = "slotIndex";
 /// 与 `yeban_edit_automation` 的同一字段逐字同词：它们是同一份 `device.params` 的同一个序数。
 pub const SET_PARAM_PARAM_FIELD: &str = "paramIndex";
 
+/// `setParam` 的**可选逐条目标音轨**字段名（`ops[].trackId`，缺省 = 顶层 `trackId`）。
+///
+/// 与 `insertDevice` / `removeTrack` / `setTrackName` 的同一字段逐字同词
+/// （`ADR-0001` D48）；本形态里它是**可选**的 —— 省略 = 逐字节回退到顶层 `trackId`。
+pub const SET_PARAM_TRACK_FIELD: &str = "trackId";
+
 /// `ops[].kind` 的**音轨静音**形态名（写 [`Op::SetTrackMute`]）。
 ///
 /// 与模型 `Op` 变体名同词（`SetTrackMute` 的小驼峰），与 [`SET_PARAM_KIND`] 同一条规则。
@@ -1225,11 +1231,18 @@ pub const TRANSPORT_CONFIG_FIELDS: [&str; 4] = [
 /// "这次要写进去的值"），但**类型不同**：开关只收 JSON 布尔，不做真假值强转。
 pub const TRACK_FLAG_VALUE_FIELD: &str = "value";
 
-/// 音轨开关形态允许出现的**全部**键（判别键 + 新值键）。
+/// 音轨开关形态的**可选逐条目标音轨**字段名（`ops[].trackId`，缺省 = 顶层 `trackId`）。
 ///
-/// 目标音轨**不在**这里：它是工具顶层的 `trackId`（与 `setParam` 同一条口径）。
-/// 多写一个键（尤其是嵌套的 `trackId`）是**响亮失败**，不静默丢弃。
-pub const TRACK_FLAG_FIELDS: [&str; 2] = ["kind", TRACK_FLAG_VALUE_FIELD];
+/// 与 [`SET_PARAM_TRACK_FIELD`] 逐字同词（同一个"这条操作作用于哪条音轨"的实参）；
+/// 批内每条**自备** `trackId` 时，一次调用即可对多条音轨写开关（顶层 `trackId`
+/// 对本批不被读取，可为占位身份）。
+pub const TRACK_FLAG_TRACK_FIELD: &str = "trackId";
+
+/// 音轨开关形态允许出现的**全部**键（判别键 + 新值键 + 可选的目标音轨键）。
+///
+/// `trackId` 是**可选**的：省略时目标音轨就是工具顶层的 `trackId`（旧调用逐字节
+/// 不变）。多写一个这三个之外的键仍是**响亮失败**，不静默丢弃。
+pub const TRACK_FLAG_FIELDS: [&str; 3] = ["kind", TRACK_FLAG_VALUE_FIELD, TRACK_FLAG_TRACK_FIELD];
 
 /// `ops[].kind` 的**全集**（规范顺序：四个音符 / 池级 / 音轨级 / 设备级 / 摆放形态在前，
 /// 音轨属性级、路由级、段落级与场景级形态在后）。
@@ -3012,10 +3025,15 @@ pub enum NoteOp {
     /// 写**静态混音值**（[`Op::SetParam`]）：音轨音量 / 声相，或设备参数。
     ///
     /// 这是本枚举里第一个**音轨级**（而非音符级）的形态：它不读、不写任何音符，
-    /// 目标音轨由调用方的 `trackId` 给出（见 [`compile`]）。值域判定在模型层
+    /// 目标音轨缺省由调用方的顶层 `trackId` 给出，`ops[].trackId` 可**逐条点名**
+    /// 另一条音轨（见 [`compile`]）。值域判定在模型层
     /// （[`Op::SetParam`] 的 `apply` → `validate_param_value`）；设备参数的**寻址**
     /// 与**名字白名单**在 [`compile`] 里交给 `yeban_render::inserts::resolve_device_param`。
     SetParam {
+        /// 可选的**逐条目标音轨**（`ops[].trackId`）；`None` = 回退到顶层 `trackId`
+        /// （旧调用一个字都不变）。给了就必须能在 `project.tracks` 里找到，
+        /// 否则 [`compile`] 报 `TRACK_NOT_FOUND`。
+        track_id: Option<EntityId>,
         /// 目标（"有静态值"的三个变体）。
         lane: StaticLane,
         /// 目标值；`TrackVolume` 单位 dB（有限值），`TrackPan` ∈ -1.0..=1.0，
@@ -3024,11 +3042,14 @@ pub enum NoteOp {
     },
     /// 写一个**音轨开关**（[`Op::SetTrackMute`] / [`Op::SetTrackSolo`]）。
     ///
-    /// 与 [`Self::SetParam`] 同族（音轨级、目标由顶层 `trackId` 给出），
+    /// 与 [`Self::SetParam`] 同族（音轨级、目标缺省由顶层 `trackId` 给出，
+    /// `ops[].trackId` 可逐条覆盖），
     /// 但载荷是**布尔**：模型把 `mute` / `solo` 从 `SetParam` 里分出去的理由
     /// （`f32` 写不了 `bool`）在工具面这一侧同样成立。撤销载荷 `old_*` 由
     /// [`TrackFlag::read`] 从**当前文档**读，不是调用方声明。
     SetTrackFlag {
+        /// 可选的**逐条目标音轨**（`ops[].trackId`）；`None` = 回退到顶层 `trackId`。
+        track_id: Option<EntityId>,
         /// 哪个开关。
         flag: TrackFlag,
         /// 目标态。
@@ -3949,6 +3970,45 @@ impl NoteOp {
         !ops.is_empty() && ops.iter().all(Self::is_self_addressed)
     }
 
+    /// 该形态**本条**是否自带了目标音轨（`ops[].trackId` 给了值）。
+    ///
+    /// 只对两个音轨属性形态为真（[`Self::SetParam`] / [`Self::SetTrackFlag`]），且**仅当**
+    /// `track_id` 为 `Some` —— 省略时它们照旧回退到顶层 `trackId`（⛔ 不是自带寻址）。
+    /// 与 [`Self::is_self_addressed`] 的同类形态（`removeTrack` / 设备）不同：那几个**永远**
+    /// 自带 `trackId`，这两个是**调用方选择**是否逐条点名。
+    #[must_use]
+    pub const fn addresses_own_track(&self) -> bool {
+        matches!(
+            self,
+            Self::SetParam {
+                track_id: Some(_),
+                ..
+            } | Self::SetTrackFlag {
+                track_id: Some(_),
+                ..
+            }
+        )
+    }
+
+    /// 批内**每一条**的音轨寻址都在操作对象自己身上（自带 `trackId`）。
+    ///
+    /// 这是 [`Self::all_self_addressed`] 的**加宽版**：除了原有的两种形态
+    /// （音轨实体级 + 设备级，它们永远自带 `trackId`），`setParam` / `setTrackMute` /
+    /// `setTrackSolo` 在**逐条给了** `trackId` 时也算自带 —— 于是"一次调用对多条音轨
+    /// 静音/独奏/调音"成立，顶层 `trackId` 对本批不被读取（可为占位身份，
+    /// 与 `removeTrack` / 设备形态同一条路）。
+    ///
+    /// ⚠ **向后兼容**：这三条形态**没给** `trackId` 时本方法为 `false` ⇒ 顶层
+    /// `trackId` 照旧必填、照旧是唯一目标（旧调用逐字节不变）。**空批不算**（`false`），
+    /// 与 [`Self::all_self_addressed`] 同一理由。
+    #[must_use]
+    pub fn all_ops_address_their_own_track(ops: &[Self]) -> bool {
+        !ops.is_empty()
+            && ops
+                .iter()
+                .all(|op| op.is_self_addressed() || op.addresses_own_track())
+    }
+
     /// 该形态**读**工具顶层的 `clipId`（`#177` 坑④：`clipId` 从无条件必填改成条件必需）。
     ///
     /// 只有五个音符形态与池级取走读它 —— 它们正是 [`compile`] 里 `clip_id` 的
@@ -4096,6 +4156,9 @@ impl NoteOp {
 /// （`INVALID_PARAMETER_RANGE`，`data.allowed` 给出全集）；`lane == "DeviceParam"`
 /// 时 `slotIndex` / `paramIndex` 必填，越界与名字不在白名单同样响亮失败。
 /// 值的范围判定**不在本层**（见 [`compile`]）；两个开关形态的 `value` 只收 JSON 布尔。
+/// `setParam` / `setTrackMute` / `setTrackSolo` 三个形态都接受**可选**的 `ops[].trackId`
+/// （逐条点名目标音轨；缺省 = 回退到顶层 `trackId`，旧调用逐字节不变，
+/// 见 [`NoteOp::addresses_own_track`]）。
 /// `setAutomationLane` 的**载荷**是 `lane` 对象（见 [`parse_lane_edit`]），
 /// 三个属性键各自可选（缺省 = 保留文档现值）；`removeAutomationPoint` 的**载荷**是
 /// `point` 对象（见 [`parse_point_removal`]），`tick` 与 `pointId` 恰好给一个。
@@ -4265,15 +4328,27 @@ fn parse_one(item: &Value) -> Result<NoteOp, Fault> {
         SET_PARAM_KIND => Ok(NoteOp::SetParam {
             lane: parse_static_lane(object)?,
             value: read_number(object, SET_PARAM_VALUE_FIELD)?,
+            // 可选的逐条目标音轨：缺键 = `None` = 回退到顶层 `trackId`（旧调用逐字节不变）。
+            track_id: read_optional_id(object, SET_PARAM_TRACK_FIELD)?,
         }),
-        SET_TRACK_MUTE_KIND => Ok(NoteOp::SetTrackFlag {
-            flag: TrackFlag::Mute,
-            value: parse_track_flag_value(object)?,
-        }),
-        SET_TRACK_SOLO_KIND => Ok(NoteOp::SetTrackFlag {
-            flag: TrackFlag::Solo,
-            value: parse_track_flag_value(object)?,
-        }),
+        SET_TRACK_MUTE_KIND => {
+            // 先跑未知键拒绝 + 读值（[`parse_track_flag_value`] 的刻意顺序），
+            // 再读**可选**的逐条目标音轨。
+            let value = parse_track_flag_value(object)?;
+            Ok(NoteOp::SetTrackFlag {
+                track_id: read_optional_id(object, TRACK_FLAG_TRACK_FIELD)?,
+                flag: TrackFlag::Mute,
+                value,
+            })
+        }
+        SET_TRACK_SOLO_KIND => {
+            let value = parse_track_flag_value(object)?;
+            Ok(NoteOp::SetTrackFlag {
+                track_id: read_optional_id(object, TRACK_FLAG_TRACK_FIELD)?,
+                flag: TrackFlag::Solo,
+                value,
+            })
+        }
         SET_TEMPO_KIND => {
             reject_set_tempo_fields(object)?;
             Ok(NoteOp::SetTempo {
@@ -6544,8 +6619,9 @@ fn resolve_set_param_device(
 /// 读一个**音轨开关**的目标态（`ops[].value`，只收 JSON 布尔）。
 ///
 /// 先把开关对象上**不该出现**的键拒掉（[`reject_track_flag_fields`]），再读值：
-/// 顺序是刻意的 —— 嵌套的 `trackId` 是最危险的错键（写错音轨却静默成功），
-/// 它必须在任何"值看起来没问题"的路径之前就被点名。
+/// 顺序是刻意的 —— 拼错的键必须最先被点名，⛔ 不让"值看起来没问题"的路径
+/// 把未知键吞掉。`ops[].trackId` 现在是**合法**的可选键（逐条点名目标音轨，
+/// 缺省回退到顶层 `trackId`）。
 ///
 /// `1` / `0` / `"true"` / `null` 一律**响亮失败**，不做真假值强转：模型 `TrackV3::mute`
 /// 是 `bool`，一次"猜调用方意思"的强转就是第二份语义。
@@ -6573,8 +6649,8 @@ fn parse_track_flag_value(object: &Map<String, Value>) -> Result<bool, Fault> {
 /// 拒绝开关对象里 [`TRACK_FLAG_FIELDS`] 之外的键。
 ///
 /// 与 [`reject_unknown_note_fields`] 同一口径（"拼错的键必须被拒绝, 不能静默忽略"），
-/// 只是对象更小。`data.hint` 明确写出目标音轨的正确位置（顶层 `trackId`）——
-/// 最常见的错法是把它嵌套进操作对象，那一写会被静默忽略、开关落到**别的**音轨上。
+/// 只是对象更小。`data.hint` 明确写出目标音轨的两个位置（`ops[].trackId` 逐条点名，
+/// 缺省回退到工具顶层 `trackId`）。
 fn reject_track_flag_fields(object: &Map<String, Value>) -> Result<(), Fault> {
     let mut unknown: Vec<&str> = object
         .keys()
@@ -6595,7 +6671,7 @@ fn reject_track_flag_fields(object: &Map<String, Value>) -> Result<(), Fault> {
             "reason": "unknownFlagField",
             "unsupportedFields": unknown,
             "supportedFlagFields": TRACK_FLAG_FIELDS,
-            "hint": "目标音轨是工具顶层的 `trackId`; 嵌套在操作对象里的 `trackId` 不会被读取",
+            "hint": "目标音轨是 ops[].trackId (逐条点名) 或工具顶层的 `trackId` (缺省回退)",
         }),
     ))
 }
@@ -7834,12 +7910,13 @@ fn read_probability(object: &Map<String, Value>) -> Result<Option<f32>, Fault> {
 /// `previous_note`，`MoveNote` 与 `ModifyNoteVelocity` 的前置条件会核对
 /// "音符此刻确实存在且内容一致"。
 ///
-/// `SetParam` 是**音轨级**的：目标由 `track_id` 给出，`old_val` 从当前文档读
-/// （[`AutomationTarget::static_value`]，与 `yeban_edit_automation` 的 `staticValue`
-/// 读数同一个入口），因此模型的 `OpStateMismatch` 前置条件天然成立。
+/// `SetParam` 是**音轨级**的：目标缺省由 `track_id` 给出、`ops[].trackId` 可逐条覆盖，
+/// `old_val` 从当前文档读（[`AutomationTarget::static_value`]，与 `yeban_edit_automation`
+/// 的 `staticValue` 读数同一个入口），因此模型的 `OpStateMismatch` 前置条件天然成立。
 ///
-/// [`NoteOp::SetTrackFlag`] 同样是**音轨级**的：`old_mute` / `old_solo` 由
-/// [`TrackFlag::read`] 从当前文档读（模型 `apply` 的前置条件读的是同一个字段）。
+/// [`NoteOp::SetTrackFlag`] 同样是**音轨级**的（同一套 `ops[].trackId` 覆盖 + 顶层回退）：
+/// `old_mute` / `old_solo` 由 [`TrackFlag::read`] 从当前文档读
+/// （模型 `apply` 的前置条件读的是同一个字段）。
 ///
 /// [`NoteOp::RemovePoint`] 也是**音轨级**的：目标是一条泳道上的**一个点**；
 /// `tick` 寻址在**文档**上解析（恰好一个落在该 tick 的点），`pointId` 寻址用模型身份；
@@ -7881,12 +7958,15 @@ pub fn compile(
     // `trackId` / `clipId`（那两个是"目标片段所在的音轨"的寻址）。判据
     // `remove_track_does_not_need_midi_and_ignores_the_envelope` 钉住这条。
     // 空批不算"全是"（`parse_ops` 本来就挡空数组）。
-    // 寻址自带的形态（`removeTrack` 与两个设备形态）不读工具顶层的 `trackId` /
+    // 寻址自带的形态（`removeTrack` 与两个设备形态，以及**逐条给了** `trackId` 的
+    // `setParam` / `setTrackMute` / `setTrackSolo`）不读工具顶层的 `trackId` /
     // `clipId`：它们的寻址在操作对象自己身上。判据
     // `remove_track_does_not_need_midi_and_ignores_the_envelope` 与
     // `device_ops_do_not_need_the_envelope_ids_or_midi` 钉住这条。
+    // ⚠ 那三个音轨属性形态**没给** `trackId` 时本判据为假 ⇒ 顶层 `trackId` 照旧被查、
+    // 照旧是唯一目标（旧调用逐字节不变）。
     // 空批不算"全是"（`parse_ops` 本来就挡空数组）。
-    let self_addressed_only = NoteOp::all_self_addressed(ops);
+    let self_addressed_only = NoteOp::all_ops_address_their_own_track(ops);
     // ⭐ `#177` 坑④：片段池查找**只**在批里真的有形态读顶层 `clipId` 时发生。
     // 这正是"`clipId` 按 `ops[].kind` 条件必需"在编译层的另一半：不读它的形态
     // （`addTrack` / 路由级 / 段落级 / 场景级 / 资产级 / 文档级 / 音轨属性级）拿到的是
@@ -8066,17 +8146,32 @@ pub fn compile(
                     new_slide: *new_slide,
                 }
             }
-            NoteOp::SetParam { lane, value } => {
+            NoteOp::SetParam {
+                lane,
+                value,
+                track_id: op_track_id,
+            } => {
+                // 逐条目标音轨：`ops[].trackId` 给了就以它为目标；没给则回退到顶层
+                // `trackId`（旧调用逐字节不变）。显式点名时**先**核验音轨真的在
+                // `project.tracks` 里 —— 不存在必须在这里就报 `TRACK_NOT_FOUND`
+                // （与入口那次顶层查找同一个错误码、同一个 `from_model` 入口），
+                // ⛔ 不让它冒泡成更难懂的静态值/设备寻址错误。
+                let target_track = op_track_id.unwrap_or(*track_id);
+                if op_track_id.is_some() {
+                    project
+                        .track(&target_track)
+                        .map_err(|error| from_model("音轨查找", &error))?;
+                }
                 // 设备参数先过 render 的**唯一**解析入口（越界 / 名字不在白名单都在这里
                 // 变成带 `reason` 的领域错误），再落到模型目标上。
                 let lane = match *lane {
                     StaticLane::DeviceParam {
                         slot_index,
                         param_index,
-                    } => resolve_set_param_device(project, *track_id, slot_index, param_index)?,
+                    } => resolve_set_param_device(project, target_track, slot_index, param_index)?,
                     other => other,
                 };
-                let target = lane.target(*track_id);
+                let target = lane.target(target_track);
                 // 撤销载荷来自**唯一**的静态值入口 (`AutomationTarget::static_value`)：
                 // 本层不自己读 `track.volume_db` / `track.pan` / 设备参数（那会是第二份真相）。
                 let old_val = target
@@ -8088,12 +8183,26 @@ pub fn compile(
                     new_val: *value,
                 }
             }
-            NoteOp::SetTrackFlag { flag, value } => {
+            NoteOp::SetTrackFlag {
+                flag,
+                value,
+                track_id: op_track_id,
+            } => {
                 // 撤销载荷来自**当前文档**（模型 `apply` 的前置条件读同一个字段）；
                 // 本层不自己写 `Op::invert`（那是模型的唯一事实源）。
-                // `track` 在这里必然是 `Some`：本形态**不是**音轨实体级，因此上面那条
-                // "要不要查顶层 `trackId`"的分支一定取了音轨（见 `track_entity_only`）。
-                flag.compile(*track_id, flag.read(track.expect("非音轨实体级必查音轨")), *value)
+                // 逐条目标音轨：`ops[].trackId` 优先于顶层 `trackId`（同 `SetParam`）。
+                let target_track = op_track_id.unwrap_or(*track_id);
+                let current = match op_track_id {
+                    // 显式点名：目标必须真的在 `project.tracks` 里，否则 `TRACK_NOT_FOUND`
+                    // （与入口那次顶层查找同一错误码、同一 `from_model` 入口）。
+                    Some(_) => project
+                        .track(&target_track)
+                        .map_err(|error| from_model("音轨查找", &error))?,
+                    // 没点名：`track` 在这里必然是 `Some` —— 批内只要有**一条**回退形态，
+                    // `all_ops_address_their_own_track` 就为假，入口那条分支一定取了音轨。
+                    None => track.expect("批内有回退形态时必查顶层音轨"),
+                };
+                flag.compile(target_track, flag.read(current), *value)
             }
             NoteOp::SetTempo { new_bpm, .. } => {
                 // 撤销载荷来自**当前文档**（模型的前提条件读同一个字段、且是**逐位**比较）
@@ -10377,6 +10486,19 @@ fn read_i8(object: &Map<String, Value>, field: &str) -> Result<i8, Fault> {
     })
 }
 
+/// 读一个**可选**的 `EntityId` 字段：整键缺省 = `None`（回退语义）；
+/// 给了则按 [`read_id`] 逐字解析（非字符串 / 非法 ULID 都是响亮失败，⛔ 不静默忽略）。
+///
+/// ⚠ `null` **不是**"省略"：本层的可选一律是"缺键"，写 `null` 会撞 `read_id` 的
+/// "必须是字符串"（与 `setScene` 的合并语义同口径 —— 猜调用方意思就是第二份语义）。
+fn read_optional_id(object: &Map<String, Value>, field: &str) -> Result<Option<EntityId>, Fault> {
+    if object.contains_key(field) {
+        Ok(Some(read_id(object, field)?))
+    } else {
+        Ok(None)
+    }
+}
+
 /// 读 `EntityId`。
 fn read_id(object: &Map<String, Value>, field: &str) -> Result<EntityId, Fault> {
     let value = object
@@ -11566,7 +11688,7 @@ mod tests {
         );
     }
 
-    /// 开关的**形状**错误全部响亮失败：非布尔值、缺字段、多写的键（含嵌套 `trackId`）。
+    /// 开关的**形状**错误全部响亮失败：非布尔值、缺字段、多写的键。
     ///
     /// 注入：把 `raw.as_bool()` 换成 `raw.as_bool().unwrap_or(false)` ⇒ 前两条不再红。
     #[test]
@@ -11594,11 +11716,13 @@ mod tests {
         };
         assert!(data.is_none(), "缺字段错误不该带 data: {data:?}");
 
-        // 开关对象里 `kind` / `value` 之外的键：**响亮失败**，并指出目标音轨的
-        // 正确位置是顶层 `trackId`（嵌套写它会被静默忽略 ⇒ 开关落到别的音轨上）。
+        // 开关对象里 `kind` / `value` / `trackId` 之外的键：**响亮失败**，并指出
+        // 目标音轨的两个合法位置 (`ops[].trackId` 逐条点名 / 顶层缺省回退)。
+        // ⚠ 此前"嵌套 `trackId`"也是被拒的一分子 —— 现在它是**合法**的逐条点名，
+        // 这里改用蛇形 `track_id` 守住"未知键一律拒"这条纪律。
         for payload in [
             serde_json::json!([{"kind": "setTrackMute", "value": true,
-                               "trackId": "01ARZ3NDEKTSV4RRFFQ69G5FAV"}]),
+                               "track_id": "01ARZ3NDEKTSV4RRFFQ69G5FAV"}]),
             serde_json::json!([{"kind": "setTrackSolo", "value": false, "lane": "TrackVolume"}]),
         ] {
             let fault = parse_ops(&payload).expect_err(&format!("必须被拒: {payload}"));
@@ -11631,6 +11755,158 @@ mod tests {
             serde_json::json!(OP_KINDS),
             "未知 kind 必须报出全集 (含两个新开关)"
         );
+    }
+
+    /// ⭐ **WALL ② 拆除**：一次调用里逐条点名**三条不同音轨**做静音 / 独奏 / 音量。
+    /// `ops[].trackId` 覆盖顶层目标；批内每条都自备目标时顶层两个身份是**占位**、
+    /// 一个字节都不读。省略 `ops[].trackId` 时目标逐字节回退顶层（旧调用不变）。
+    ///
+    /// 注入（实测红）：删掉 `parse_one` 开关分支的 `read_optional_id` ⇒ 未知键
+    /// `unknownFlagField`；把 `compile` 里的 `unwrap_or(*track_id)` 改回 `*track_id`
+    /// ⇒ 目标身份对不上；把批谓词退回 `all_self_addressed` ⇒ 占位身份编译成
+    /// `TrackNotFound`；把幽灵 id 的显式查轨删掉 ⇒ 撤销载荷无从取得。
+    #[test]
+    fn per_op_track_id_batches_target_each_track_and_fall_back_to_the_envelope() {
+        let project = filled_project();
+        let ids: Vec<EntityId> = project.tracks.keys().copied().collect();
+        assert!(ids.len() >= 3, "夹具至少要有三条音轨: {}", ids.len());
+        let (a, b, c) = (ids[0], ids[1], ids[2]);
+        let (mute_before, solo_before, volume_before) = (
+            project.track(&a).expect("音轨").mute,
+            project.track(&b).expect("音轨").solo,
+            project.track(&c).expect("音轨").volume_db,
+        );
+        let ghost = EntityId::from_str("01J8ZQ00000000000000000999").expect("ULID");
+        let nil = EntityId::default();
+
+        // ① 三条各点名一条音轨 ⇒ 批谓词为真，顶层身份可以是占位 nil。
+        let ops = parse_ops(&serde_json::json!([
+            {"kind": "setTrackMute", "trackId": a.to_canonical_string(), "value": !mute_before},
+            {"kind": "setTrackSolo", "trackId": b.to_canonical_string(), "value": !solo_before},
+            {"kind": "setParam", "trackId": c.to_canonical_string(), "lane": "TrackVolume", "value": -6.5},
+        ]))
+        .expect("三个形态都接受可选的 trackId");
+        assert!(
+            NoteOp::all_ops_address_their_own_track(&ops),
+            "批内每条都自备目标 ⇒ 顶层身份不该被读"
+        );
+        let compiled = compile(&project, &nil, &nil, &ops).expect("占位顶层身份必须编译得过");
+        match &compiled[0] {
+            Op::SetTrackMute {
+                track_id,
+                old_mute,
+                new_mute,
+            } => {
+                assert_eq!(*track_id, a, "撤销载荷的目标必须是点名那条轨");
+                assert_eq!(*old_mute, mute_before, "旧值必须从当前文档读");
+                assert_eq!(*new_mute, !mute_before);
+            }
+            other => panic!("应当是 SetTrackMute: {other:?}"),
+        }
+        match &compiled[1] {
+            Op::SetTrackSolo {
+                track_id,
+                old_solo,
+                new_solo,
+            } => {
+                assert_eq!(*track_id, b);
+                assert_eq!(*old_solo, solo_before, "旧值必须从当前文档读");
+                assert_eq!(*new_solo, !solo_before);
+            }
+            other => panic!("应当是 SetTrackSolo: {other:?}"),
+        }
+        match &compiled[2] {
+            Op::SetParam {
+                target,
+                old_val,
+                new_val,
+            } => {
+                assert_eq!(
+                    *target,
+                    AutomationTarget::TrackVolume { track_id: c },
+                    "setParam 的目标必须是点名那条轨"
+                );
+                assert_eq!(*old_val, volume_before, "旧值必须从当前文档读");
+                assert_eq!(*new_val, -6.5);
+            }
+            other => panic!("应当是 SetParam: {other:?}"),
+        }
+
+        // 施加 + 逆操作：三条轨各改各的，逐字节回到原样。
+        let mut project = project;
+        let bytes_before = serde_json::to_vec(&project).expect("序列化");
+        Op::Batch {
+            ops: compiled.clone(),
+            description: "跨轨批量".to_owned(),
+        }
+        .apply(&mut project)
+        .expect("施加");
+        assert_eq!(project.track(&a).expect("音轨").mute, !mute_before);
+        assert_eq!(project.track(&b).expect("音轨").solo, !solo_before);
+        assert_eq!(project.track(&c).expect("音轨").volume_db, -6.5);
+        for op in compiled.iter().rev() {
+            op.apply_inverse(&mut project).expect("逆操作");
+        }
+        assert_eq!(
+            serde_json::to_vec(&project).expect("序列化"),
+            bytes_before,
+            "逆操作必须逐字节复原三条轨"
+        );
+
+        // ② 省略 `ops[].trackId` ⇒ 目标逐字节回退顶层（旧调用不变）。
+        let fallback = parse_ops(&serde_json::json!([
+            {"kind": "setTrackMute", "value": true},
+            {"kind": "setParam", "lane": "TrackPan", "value": 0.5},
+        ]))
+        .expect("省略 trackId 的旧形状必须照旧被接受");
+        assert!(
+            !NoteOp::all_ops_address_their_own_track(&fallback),
+            "没有一条自备目标 ⇒ 顶层 trackId 照旧是唯一目标"
+        );
+        let fallback = compile(&project, &a, &nil, &fallback).expect("回退编译");
+        match &fallback[0] {
+            Op::SetTrackMute { track_id, .. } => {
+                assert_eq!(*track_id, a, "回退形态的目标必须是顶层身份");
+            }
+            other => panic!("应当是 SetTrackMute: {other:?}"),
+        }
+        match &fallback[1] {
+            Op::SetParam { target, .. } => {
+                assert_eq!(*target, AutomationTarget::TrackPan { track_id: a });
+            }
+            other => panic!("应当是 SetParam: {other:?}"),
+        }
+
+        // ③ 混合批（一条点名 + 一条回退）⇒ 批谓词为假，顶层身份照旧被查、被用作回退。
+        let mixed = parse_ops(&serde_json::json!([
+            {"kind": "setTrackMute", "trackId": b.to_canonical_string(), "value": true},
+            {"kind": "setTrackSolo", "value": true},
+        ]))
+        .expect("混合形状合法");
+        assert!(!NoteOp::all_ops_address_their_own_track(&mixed));
+        let mixed = compile(&project, &a, &nil, &mixed).expect("混合批编译");
+        match (&mixed[0], &mixed[1]) {
+            (
+                Op::SetTrackMute {
+                    track_id: muted, ..
+                },
+                Op::SetTrackSolo {
+                    track_id: soloed, ..
+                },
+            ) => {
+                assert_eq!(*muted, b, "点名那条走 `ops[].trackId`");
+                assert_eq!(*soloed, a, "没点名那条走顶层回退");
+            }
+            other => panic!("应当是开关对: {other:?}"),
+        }
+
+        // ④ 幽灵 `ops[].trackId`（合法 ULID、不在文档里）⇒ 响亮 `TRACK_NOT_FOUND`。
+        let ghost_ops = parse_ops(&serde_json::json!([
+            {"kind": "setTrackMute", "trackId": ghost.to_canonical_string(), "value": true},
+        ]))
+        .expect("解析不查文档");
+        let fault = compile(&project, &nil, &nil, &ghost_ops).expect_err("幽灵点名必须响亮失败");
+        assert_eq!(fault.domain_code(), Some(ErrorCode::TrackNotFound));
     }
 
     /// 两个开关是**音轨级**的：纯开关调用不要求片段是 MIDI（一个音符都不读），
