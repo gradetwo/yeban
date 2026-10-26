@@ -157,6 +157,7 @@ pub fn code_for_model(error: &ModelError) -> ErrorCode {
         | ModelError::ParamIndexOutOfRange { .. } => ErrorCode::IndexOutOfBounds,
         ModelError::PitchOutOfRange { .. }
         | ModelError::VelocityOutOfRange { .. }
+        | ModelError::NoteChannelOutOfRange { .. }
         | ModelError::ProbabilityOutOfRange { .. }
         | ModelError::RatchetOutOfRange { .. }
         | ModelError::MicroTimingOutOfRange { .. }
@@ -264,6 +265,7 @@ mod tests {
             },
             ModelError::MacroIndexOutOfRange { index: 3, len: 1 },
             ModelError::PitchOutOfRange { value: 200 },
+            ModelError::NoteChannelOutOfRange { channel: 16 },
             ModelError::NonFiniteValue {
                 field: "bpm",
                 value: f64::NAN,
@@ -298,6 +300,10 @@ mod tests {
                 value: 1201,
                 tick: 0
             }),
+            ErrorCode::OutOfRange
+        );
+        assert_eq!(
+            code_for_model(&ModelError::NoteChannelOutOfRange { channel: 16 }),
             ErrorCode::OutOfRange
         );
         assert_eq!(
