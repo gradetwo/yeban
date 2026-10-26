@@ -12,12 +12,16 @@
 //! 它读顶层 `clipId` 也读目标音符，因此仍在"音频片段必须响亮失败"与
 //! `NOTE_LEVEL_KINDS` 的覆盖里。四个旧形态的基线 digest 常量**逐字未动**。
 //!
+//! ⚠ 后续 `setNoteExpression` / `setNotePitchShape` 与 `ADR-0019` 的
+//! `setPitchBendPoint`（逐点弯音）又把清单推到**八个** —— 本文件的两处读数
+//! （音频片段拦截矩阵与发布清单）已同步到八个；基线四个 digest 仍然逐字未动。
+//!
 //! | 判据 | 对象 | 读数 |
 //! | :--- | :--- | :--- |
 //! | [`six_property_forms_succeed_on_an_audio_clip`] | 六个属性级形态 + **音频**顶层 `clipId` | 6 条 `status:"success"` ＋ 6 个 `projectDigest` 变化 ＋ 6 条标题（`音轨级编辑: 1 步`） |
-//! | [`four_note_forms_are_still_blocked_on_an_audio_clip`] | 七个音符形态 + **音频** `clipId` | 7 条 `CLIP_NOT_FOUND`（逐字含"不是 MIDI 片段"） |
+//! | [`four_note_forms_are_still_blocked_on_an_audio_clip`] | 八个音符形态 + **音频** `clipId` | 8 条 `CLIP_NOT_FOUND`（逐字含"不是 MIDI 片段"） |
 //! | [`the_four_note_forms_are_byte_identical_on_a_midi_clip`] | 四个**基线**音符形态 + **MIDI** 片段 | 4 个合并后 `projectDigest`（收窄前录下、收窄后逐字相等） |
-//! | [`the_note_level_predicate_is_exactly_seven`] | `NOTE_LEVEL_KINDS` / `ENVELOPE_CLIP_KINDS` | 7 个成员 ＋ 子集关系（唯一非音符的 `clipId` 读者 = `removeClip`） |
+//! | [`the_note_level_predicate_is_exactly_eight`] | `NOTE_LEVEL_KINDS` / `ENVELOPE_CLIP_KINDS` | 8 个成员 ＋ 子集关系（唯一非音符的 `clipId` 读者 = `removeClip`） |
 //!
 //! 复跑读数：`cargo test -p yeban-mcp --test trap_179 -- --nocapture`
 
@@ -318,6 +322,13 @@ fn four_note_forms_are_still_blocked_on_an_audio_clip() {
                 "newPitchBendCurve": [], "newSlide": null,
             }),
         ),
+        (
+            "setPitchBendPoint",
+            json!({
+                "kind": "setPitchBendPoint", "noteId": ghost_text,
+                "tick": 120, "cents": 50,
+            }),
+        ),
     ];
     for (kind, op) in cases {
         let proposals_before = dispatcher.domain().proposal_count();
@@ -451,7 +462,7 @@ fn the_four_note_forms_are_byte_identical_on_a_midi_clip() {
     assert!(mismatches.is_empty(), "digests mismatched: {mismatches:?}");
 }
 
-/// 判据 ④（§2.4）：收窄**可机械核** —— 发布的音符级清单**逐字**是六个，
+/// 判据 ④（§2.4）：收窄**可机械核** —— 发布的音符级清单**逐字**是八个，
 /// 且它与"读顶层 `clipId` 的清单"的包含关系成立（音符形态必然是 `clipId`
 /// 的消费者；池级 `removeClip` 读 `clipId` 却**不**读音符）。
 ///
@@ -462,7 +473,7 @@ fn the_four_note_forms_are_byte_identical_on_a_midi_clip() {
 /// 注入（实测红）：把 `NOTE_LEVEL_KINDS` 加回任一属性级形态，或把谓词改回收窄前的
 /// 反选清单 ⇒ 本判据红；`six_property_forms_succeed_on_an_audio_clip` 的标题断言也红。
 #[test]
-fn the_note_level_predicate_is_exactly_seven() {
+fn the_note_level_predicate_is_exactly_eight() {
     assert_eq!(
         NOTE_LEVEL_KINDS,
         [
@@ -472,11 +483,12 @@ fn the_note_level_predicate_is_exactly_seven() {
             "velocity",
             "setNoteTiming",
             "setNoteExpression",
-            "setNotePitchShape"
+            "setNotePitchShape",
+            "setPitchBendPoint"
         ],
-        "音符级 kind 必须逐字是七个音符形态（⛔ 不是从常量自己比出来的长度）"
+        "音符级 kind 必须逐字是八个音符形态（⛔ 不是从常量自己比出来的长度）"
     );
-    assert_eq!(NOTE_LEVEL_KINDS.len(), 7, "恰好七个");
+    assert_eq!(NOTE_LEVEL_KINDS.len(), 8, "恰好八个");
     // 每个成员都在 `OP_KINDS` 目录里（不是幽灵名字）。
     for kind in NOTE_LEVEL_KINDS {
         assert!(OP_KINDS.contains(kind), "`{kind}` 必须在 `OP_KINDS` 目录里");
