@@ -8009,3 +8009,79 @@ fn a_pitch_shape_written_in_place_by_the_tool_surface_bends_the_master() {
         "清空滑音后母带位级摘要必须逐位回到基线"
     );
 }
+
+/// 判据（[ARCH-DET-001] / [MCP-TOOL-008]）：工程拍号变更（4/4 -> 3/4 与 6/8）时，
+/// 离线母带渲染样本摘要 `masterDigest` 逐位完全相同。
+/// 拍号只影响小节划分与度量网格，音符在绝对 tick 上的音频合成保持完全声学确定性。
+#[test]
+fn time_signature_change_leaves_master_audio_bit_identical() {
+    let scratch = Scratch::new("time-sig-master-parity");
+    let (mut base_disp, base_auth) =
+        dispatcher_with(&project(&Spec::default()), &scratch.join("base.yeban"));
+    let base_path = scratch.join("base.wav");
+    let base_res = call(
+        &mut base_disp,
+        &base_auth,
+        json!({
+            "format": "wav",
+            "sampleRate": 48000,
+            "path": base_path.display().to_string(),
+        }),
+    );
+    assert_eq!(base_res["status"], "success", "{base_res}");
+
+    // 变体 1：拍号变更为 3/4
+    let mut p_3_4 = project(&Spec::default());
+    p_3_4.time_signature = yeban_model::project::TimeSignature {
+        numerator: 3,
+        denominator: 4,
+    };
+    let (mut disp_3_4, auth_3_4) = dispatcher_with(&p_3_4, &scratch.join("proj_3_4.yeban"));
+    let path_3_4 = scratch.join("proj_3_4.wav");
+    let res_3_4 = call(
+        &mut disp_3_4,
+        &auth_3_4,
+        json!({
+            "format": "wav",
+            "sampleRate": 48000,
+            "path": path_3_4.display().to_string(),
+        }),
+    );
+    assert_eq!(res_3_4["status"], "success", "{res_3_4}");
+
+    // 变体 2：拍号变更为 6/8
+    let mut p_6_8 = project(&Spec::default());
+    p_6_8.time_signature = yeban_model::project::TimeSignature {
+        numerator: 6,
+        denominator: 8,
+    };
+    let (mut disp_6_8, auth_6_8) = dispatcher_with(&p_6_8, &scratch.join("proj_6_8.yeban"));
+    let path_6_8 = scratch.join("proj_6_8.wav");
+    let res_6_8 = call(
+        &mut disp_6_8,
+        &auth_6_8,
+        json!({
+            "format": "wav",
+            "sampleRate": 48000,
+            "path": path_6_8.display().to_string(),
+        }),
+    );
+    assert_eq!(res_6_8["status"], "success", "{res_6_8}");
+
+    assert_eq!(
+        base_res["data"]["masterDigest"], res_3_4["data"]["masterDigest"],
+        "4/4 与 3/4 工程离线母带样本摘要必须逐位相同"
+    );
+    assert_eq!(
+        base_res["data"]["masterDigest"], res_6_8["data"]["masterDigest"],
+        "4/4 与 6/8 工程离线母带样本摘要必须逐位相同"
+    );
+    assert_eq!(
+        base_res["data"]["frames"], res_3_4["data"]["frames"],
+        "4/4 与 3/4 帧数必须相同"
+    );
+    assert_eq!(
+        base_res["data"]["frames"], res_6_8["data"]["frames"],
+        "4/4 与 6/8 帧数必须相同"
+    );
+}
