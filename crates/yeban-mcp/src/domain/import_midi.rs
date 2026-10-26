@@ -60,7 +60,9 @@ pub struct MidiImport {
     pub adopted_time_signature: Option<(u8, u8)>,
     /// 采纳到目标音轨 `TrackV3::name` 的轨名（未采纳为 `None`）。
     pub adopted_track_name: Option<String>,
-    /// 采纳的版权声明（当前模型无对应载体，恒为 `None`）。
+    /// 采纳到工程全局 `title` 的标题（未采纳为 `None`）。
+    pub adopted_title: Option<String>,
+    /// 采纳到工程全局 `author` 的版权声明（未采纳为 `None`）。
     pub adopted_copyright: Option<String>,
     /// 待原子提交的模型操作序列。
     pub ops: Vec<Op>,
@@ -185,7 +187,8 @@ pub fn plan(project: &YebanProjectV1, arguments: &Map<String, Value>) -> Result<
     let mut adopted_tempo_bpm = None;
     let mut adopted_time_signature = None;
     let mut adopted_track_name = None;
-    let adopted_copyright = None;
+    let mut adopted_title = None;
+    let mut adopted_copyright = None;
 
     for op in &plan.ops {
         match op {
@@ -199,6 +202,8 @@ pub fn plan(project: &YebanProjectV1, arguments: &Map<String, Value>) -> Result<
             Op::SetTrackName { new_name, .. } => {
                 adopted_track_name = Some(new_name.clone());
             }
+            Op::SetTitle { new_title, .. } => adopted_title = Some(new_title.clone()),
+            Op::SetAuthor { new_author, .. } => adopted_copyright = Some(new_author.clone()),
             _ => {}
         }
     }
@@ -234,6 +239,31 @@ pub fn plan(project: &YebanProjectV1, arguments: &Map<String, Value>) -> Result<
     {
         adopted_track_name = Some(track.name.clone());
     }
+    // ⭐ [ARCH-EXT-002]：`FF 02` 整类读入且零丢失 ⇒ 版权已进 `project.author`；
+    // ops 里没有 `SetAuthor` 时（值与工程现值相同 ⇒ 不产生写操作）回退读工程现值。
+    if adopted_copyright.is_none()
+        && plan
+            .losses
+            .aux_events
+            .get(&MidiAuxEventKind::Copyright)
+            .is_some_and(|c| c.read > 0 && c.dropped == 0)
+        && !project.author.is_empty()
+    {
+        adopted_copyright = Some(project.author.clone());
+    }
+    // ⭐ [ARCH-EXT-002]：标题的载体是 `FF 03` 导体轨名（无有效轨名时回退 `FF 01` 文本）。
+    // ops 里没有 `SetTitle` 时（值与工程现值相同 ⇒ 不产生写操作）回退读工程现值；
+    // 工程标题为空说明**什么都没采纳**，⛔ 不报成"采纳了空标题"。
+    if adopted_title.is_none()
+        && plan
+            .losses
+            .aux_events
+            .get(&MidiAuxEventKind::TrackName)
+            .is_some_and(|c| c.read > 0 && c.dropped == 0)
+        && !project.title.is_empty()
+    {
+        adopted_title = Some(project.title.clone());
+    }
 
     Ok(MidiImport {
         path,
@@ -249,6 +279,7 @@ pub fn plan(project: &YebanProjectV1, arguments: &Map<String, Value>) -> Result<
         adopted_tempo_bpm,
         adopted_time_signature,
         adopted_track_name,
+        adopted_title,
         adopted_copyright,
         ops: plan.ops,
     })
@@ -280,6 +311,7 @@ pub fn describe(import: &MidiImport) -> Value {
         "adoptedTempoBpm": import.adopted_tempo_bpm,
         "adoptedTimeSignature": import.adopted_time_signature.map(|(n, d)| json!({ "numerator": n, "denominator": d })),
         "adoptedTrackName": import.adopted_track_name,
+        "adoptedTitle": import.adopted_title,
         "adoptedCopyright": import.adopted_copyright,
     })
 }
