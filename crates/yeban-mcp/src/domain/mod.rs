@@ -2409,6 +2409,9 @@ fn plan_propose_section(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault>
     // `ADR-0016`：材料来源与自定义走向都是可选键；缺省 = 既有 `'project'` 路径。
     let material_source = arg_str(call, "materialSource");
     let progression = arg_str(call, "progression");
+    // `ADR-0017`：鼓组/旋律只在 `materialSource: "theory"` 下可用（否则领域层拒绝）。
+    let include_drums = arg_bool(call, "includeDrums", false);
+    let include_melody = arg_bool(call, "includeMelody", false);
     let section_plan = section::plan_with_options(
         project,
         section_name,
@@ -2418,6 +2421,8 @@ fn plan_propose_section(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault>
         section::PlanOptions {
             material_source,
             progression,
+            include_drums: Some(include_drums),
+            include_melody: Some(include_melody),
         },
     )?;
     propose_draft(
