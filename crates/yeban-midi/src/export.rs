@@ -400,6 +400,11 @@ pub fn export_from_project(project: &YebanProjectV1) -> Result<MidiExport, MidiE
         tempos,
         tracks,
         key_signature: project.key_signature,
+        // ⭐ [ARCH-EXT-002]：工程标题 ⇒ conductor 轨名、工程署名 ⇒ `FF 02` 版权。
+        // 空串**不传**（`None` ⇒ 编码器保留默认 conductor 名、不写版权），⛔ 不把
+        // "空标题"伪装成一个有效名字。
+        title: (!project.title.is_empty()).then(|| project.title.clone()),
+        copyright: (!project.author.is_empty()).then(|| project.author.clone()),
     })
 }
 
@@ -1984,6 +1989,8 @@ mod tests {
                 ],
             }],
             key_signature: None,
+            title: None,
+            copyright: None,
         };
         let bytes = export.to_smf_bytes().expect("编码");
         let parsed = parse_smf(&bytes).expect("回读");
@@ -2036,6 +2043,8 @@ mod tests {
                 }],
             }],
             key_signature: None,
+            title: None,
+            copyright: None,
         };
         assert_eq!(
             export.to_smf_bytes(),

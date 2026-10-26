@@ -64,7 +64,13 @@
 //!    - `FF 51` tempo → `project.bpm`（单标量）：**唯一条生效 tempo 且 tick 0** 且目标
 //!      工程没有内容时才落；否则一字不动并报出"会采纳的值"。
 //!    - `FF 58` 拍号 → `project.time_signature`（单标量）：同一条内容门槛。
-//! 8. **其余 17 类只报读数、⛔ 不新增支持**（`#318`）：[`ParsedMidi::aux_events`] 把
+//!    - `FF 02` 版权 → `project.author`（⭐ [ARCH-EXT-002]）：目标工程**无内容**且
+//!      `author` 为空、conductor 轨（第 0 轨，轨上无事件时看全部轨）上**恰一个**有效
+//!      文本才落；采纳的那条记入 attached（不进 dropped），其余情形逐条 dropped。
+//!    - `FF 03` 导体轨名（⛔ 默认名 "Yeban Conductor"）/ 回退 `FF 01` 文本 →
+//!      `project.title`（⭐ [ARCH-EXT-002]）：同样要求"工程无内容 ∧ title 为空 ∧
+//!      唯一有效文本"；它**不改**任何 aux 类别的 read/dropped 口径。
+//! 8. **其余 16 类只报读数、⛔ 不新增支持**（`#318`）：[`ParsedMidi::aux_events`] 把
 //!    24 类具名事件逐一计数，本文件逐类给出 `read` / `dropped`；无落点的类
 //!    `dropped == read`。报告字段：`format=` / `file-tracks=` /
 //!    `track-partitions-dropped=` / `channels=`（上下文，总是打印）＋ 每类
@@ -88,11 +94,12 @@ use yeban_model::{
 /// 模型的每四分音符 tick 数（960 PPQ）。导入时把文件的 PPQ 换算到它。
 pub const MODEL_PPQ: u64 = 960;
 
-/// ⭐ `#342` / `#350`：今天**有落点**的七类 aux 事件（弯音自 ADR-0014 D2 起有落点；
-/// 控制器自 ADR-0015 D2 起 CC 7 / CC 10 有落点）。
+/// ⭐ `#342` / `#350`：今天**有落点**的八类 aux 事件（弯音自 ADR-0014 D2 起有落点；
+/// 控制器自 ADR-0015 D2 起 CC 7 / CC 10 有落点；版权自 [ARCH-EXT-002] 起可进
+/// `project.author`）。
 ///
-/// 其余 17 类由 [`MidiImportLosses::is_total_loss`] 钉住"仍全损"。
-pub const STORABLE_KINDS: [MidiAuxEventKind; 7] = [
+/// 其余 16 类由 [`MidiImportLosses::is_total_loss`] 钉住"仍全损"。
+pub const STORABLE_KINDS: [MidiAuxEventKind; 8] = [
     MidiAuxEventKind::Tempo,
     MidiAuxEventKind::TimeSignature,
     MidiAuxEventKind::TrackName,
@@ -100,9 +107,10 @@ pub const STORABLE_KINDS: [MidiAuxEventKind; 7] = [
     MidiAuxEventKind::KeySignature,
     MidiAuxEventKind::PitchBend,
     MidiAuxEventKind::ControlChange,
+    MidiAuxEventKind::Copyright,
 ];
 
-/// 今天有落点的七类 aux 事件的稳定键名（与 [`STORABLE_KINDS`] 对应）。
+/// 今天有落点的八类 aux 事件的稳定键名（与 [`STORABLE_KINDS`] 对应）。
 pub const STORABLE_KIND_KEYS: &[&str] = &[
     "tempo",
     "time-signature",
@@ -111,6 +119,7 @@ pub const STORABLE_KIND_KEYS: &[&str] = &[
     "key-signature",
     "pitch-bend",
     "control-change",
+    "copyright",
 ];
 
 /// ⭐ ADR-0015 D2：通道音量控制器号 → `AutomationTarget::TrackVolume`。
@@ -245,8 +254,8 @@ impl core::fmt::Display for MidiLyricCounts {
 /// `read` 是文件里读到的条数（判据另按字节独立数一遍做控制臂）；
 /// `dropped` 是导入路径**没有**落进工程的条数。
 ///
-/// ⭐ `#342` 起有落点的**七类**（tempo / 拍号 / 轨名 / marker / 调号 / 弯音 / 控制器，
-/// 见 [`STORABLE_KINDS`]）**可能** `dropped < read`；其余 17 类与音符通道 / 释放力度
+/// ⭐ `#342` 起有落点的**八类**（tempo / 拍号 / 轨名 / marker / 调号 / 弯音 / 控制器 /
+/// 版权，见 [`STORABLE_KINDS`]）**可能** `dropped < read`；其余 16 类与音符通道 / 释放力度
 /// 仍是 `dropped == read`。
 ///
 /// ⚠ **"值一样"不等于"没丢"**：判据是"**有没有被写进工程**"，⛔ 不是"数值一不一样"。
@@ -313,9 +322,9 @@ pub struct MidiImportLosses {
     pub note_off_velocity_values: MidiLossCount,
     /// 24 类 aux 事件，逐类 read/dropped。
     ///
-    /// ⭐ `#342` / ADR-0014 / ADR-0015：有落点的**七类**（tempo / 拍号 / 轨名 / marker /
-    /// 调号 / 弯音 / 控制器）**可能** `dropped < read`（部分内容真的进了工程）；
-    /// 其余 17 类仍是全损。
+    /// ⭐ `#342` / ADR-0014 / ADR-0015 / [ARCH-EXT-002]：有落点的**八类**（tempo / 拍号 /
+    /// 轨名 / marker / 调号 / 弯音 / 控制器 / 版权）**可能** `dropped < read`（部分内容真的进了工程）；
+    /// 其余 16 类仍是全损。
     pub aux_events: BTreeMap<MidiAuxEventKind, MidiLossCount>,
     /// ⭐ `#342`：`dropped > 0` 的类别的**精确原因**（键 = 与报告字段同一个稳定键
     /// [`MidiAuxEventKind::key`]，⛔ 不翻译；值是含**具体数值**的一句话）。
@@ -1254,13 +1263,131 @@ pub fn adopt_track_name(
     }
 }
 
-/// `FF 02` 版权元数据采纳尝试。
+/// ⭐ [ARCH-EXT-002]：导出器给 conductor 轨的**默认名**（`MidiExport::title` 未给时
+/// 由编码器写入）。它是"这条轨是 conductor"的结构性记号，⛔ 不是作者起过的标题 ⇒
+/// 导入采纳 `project.title` 时把它排除在外。
+pub const DEFAULT_CONDUCTOR_NAME: &str = "Yeban Conductor";
+
+/// 第 0 轨（conductor）上"去重后恰一个非空、严格 UTF-8、且不等于 `reject`"的文本；
+/// 轨 0 上没有事件时回退到**全部轨**（ADR-0013 的"第 0 轨或全部轨"口径）。
+/// 多个互不相同的候选 ⇒ 歧义，`None`（⛔ 不挑第一条）。
+fn unique_conductor_text(events: &[ParsedTrackName], reject: Option<&str>) -> Option<String> {
+    let on_conductor: Vec<&ParsedTrackName> =
+        events.iter().filter(|event| event.track == 0).collect();
+    let pool: Vec<&ParsedTrackName> = if on_conductor.is_empty() {
+        events.iter().collect()
+    } else {
+        on_conductor
+    };
+    let distinct: BTreeSet<&str> = pool
+        .into_iter()
+        .filter_map(|event| event.text.as_deref())
+        .filter(|text| !text.is_empty())
+        .filter(|text| Some(*text) != reject)
+        .collect();
+    if distinct.len() == 1 {
+        distinct.into_iter().next().map(str::to_owned)
+    } else {
+        None
+    }
+}
+
+/// `FF 03` / `FF 01` → `project.title`（⭐ [ARCH-EXT-002]，**单标量**）。
 ///
-/// 模型中的 `project.author` / `project.title` 并不是版权声明载体，因此不予采纳。
-#[inline]
-#[allow(dead_code)]
-fn copyright_adoption_op(_parsed: &ParsedMidi, _project: &YebanProjectV1) -> Option<Op> {
-    None
+/// 采纳门槛（三条全满足，缺一不写）：
+/// 1. 导入目标是**空工程**（[`import_target_is_empty`]，与 tempo / 拍号同一条门槛）；
+/// 2. 工程当前的 `title` 为空 —— ⛔ 不覆盖作者已写好的标题；
+/// 3. conductor 轨（第 0 轨）上有**恰一个**有效名字：非空、严格 UTF-8、且 ⛔ 不是
+///    导出默认名 [`DEFAULT_CONDUCTOR_NAME`]；conductor 轨无有效轨名时回退到
+///    `FF 01` Text（同一条"唯一才采纳"规则）。
+///
+/// ⚠ 本采纳**不改任何 aux 计数**：轨名 / 文本的 read/dropped 口径照旧由各自的
+/// 类别上报（标题落进 `project.title` 是**新增**落点，不是从它们的丢失里扣）。
+pub fn adopt_title(
+    parsed: &ParsedMidi,
+    project: &YebanProjectV1,
+    target_empty: bool,
+) -> ScalarAdoption {
+    let candidate = if target_empty && project.title.is_empty() {
+        unique_conductor_text(&parsed.track_names, Some(DEFAULT_CONDUCTOR_NAME))
+            .or_else(|| unique_conductor_text(&parsed.texts, None))
+    } else {
+        None
+    };
+    let op = candidate.map(|new_title| Op::SetTitle {
+        old_title: project.title.clone(),
+        new_title,
+    });
+    ScalarAdoption {
+        op,
+        ops: Vec::new(),
+        dropped: 0,
+        reason: None,
+    }
+}
+
+/// `FF 02` → `project.author`（⭐ [ARCH-EXT-002]：版权声明携带**署名**）。
+///
+/// 采纳门槛（与 [`adopt_title`] 同族）：
+/// 1. 导入目标是**空工程**；
+/// 2. 工程当前的 `author` 为空；
+/// 3. conductor 轨（第 0 轨，轨上没有时回退全部轨）上有**恰一个**有效版权文本
+///    （非空、严格 UTF-8）。
+///
+/// 采纳时该条记入 attached（`dropped = read - 1`）；未采纳时整类 `dropped == read`，
+/// 原因**点名**是哪条门槛拦下的（⛔ 不再沿用"author 不是版权载体"的旧口径 ——
+/// 本切片经人类裁决把它改成载体）。
+pub fn adopt_copyright(
+    parsed: &ParsedMidi,
+    project: &YebanProjectV1,
+    target_empty: bool,
+) -> ScalarAdoption {
+    let read = parsed.aux_events.count(MidiAuxEventKind::Copyright);
+    if read == 0 {
+        return ScalarAdoption {
+            op: None,
+            ops: Vec::new(),
+            dropped: 0,
+            reason: None,
+        };
+    }
+    let text = unique_conductor_text(&parsed.copyrights, None);
+    if target_empty && project.author.is_empty() {
+        if let Some(new_author) = text {
+            let dropped = read - 1;
+            let reason = (dropped > 0).then(|| {
+                format!(
+                    "copyright-partially-adopted: the conductor copyright `{new_author}` was \
+                     written to project.author; {dropped} other copyright event(s) of the file \
+                     (duplicates / empty / non-UTF-8) have no second carrier"
+                )
+            });
+            return ScalarAdoption {
+                op: Some(Op::SetAuthor {
+                    old_author: project.author.clone(),
+                    new_author,
+                }),
+                ops: Vec::new(),
+                dropped,
+                reason,
+            };
+        }
+    }
+    let blocker = if !target_empty {
+        "the project already has content (sections / MIDI notes / audio clips / automation points)"
+    } else if !project.author.is_empty() {
+        "project.author is already set (never overwritten)"
+    } else {
+        "the file has zero or several distinct valid copyright texts (empty / non-UTF-8 / ambiguous are never guessed)"
+    };
+    ScalarAdoption {
+        op: None,
+        ops: Vec::new(),
+        dropped: read,
+        reason: Some(format!(
+            "copyright-not-adopted: {blocker}; project.author untouched"
+        )),
+    }
 }
 
 /// 由 marker 派生的一个段落（tick 已换算到模型的 960 PPQ）。
@@ -1470,7 +1597,7 @@ fn plan_cc_lanes(
 /// 人读，这里给报告/MCP 读。改一边必须改另一边（`aux_reasons` 的值来自这里）。
 fn static_loss_reason(kind: MidiAuxEventKind) -> &'static str {
     match kind {
-        // 七类有落点：它们的动态原因由 helper 给；这里的文本只是兜底。
+        // 八类有落点：它们的动态原因由 helper 给；这里的文本只是兜底。
         // （弯音的兜底即 D2 的真实原因：非唯一发声的条数落不下去。）
         MidiAuxEventKind::Tempo => "tempo not adopted into project",
         MidiAuxEventKind::TimeSignature => "time signature not adopted into project",
@@ -1499,7 +1626,10 @@ fn static_loss_reason(kind: MidiAuxEventKind) -> &'static str {
         MidiAuxEventKind::SysEx => "the model has no SysEx payload carrier",
         MidiAuxEventKind::Escape => "the model has no escape payload carrier",
         MidiAuxEventKind::Text => "the model has no text-meta field",
-        MidiAuxEventKind::Copyright => "project.author/title are not a copyright notice",
+        // ⭐ [ARCH-EXT-002]：Copyright 是有落点的八类之一，`dropped > 0` 时的动态原因
+        // 恒由 adopt_copyright 点名（未采纳 / 部分采纳都给出）⇒ 这条兜底文本不可达，
+        // 措辞与其余有落点类同族。
+        MidiAuxEventKind::Copyright => "copyright not adopted into project.author",
         MidiAuxEventKind::InstrumentName => {
             "TrackV3::sampler is a path; the model has no instrument-name field"
         }
@@ -1598,6 +1728,7 @@ fn count_losses(
     time_signature: &ScalarAdoption,
     track_name: &ScalarAdoption,
     key_signature: &ScalarAdoption,
+    copyright: &ScalarAdoption,
     marker: (usize, Option<String>),
     track_partitions_dropped: usize,
     pitch_bends_attached: usize,
@@ -1611,6 +1742,8 @@ fn count_losses(
         (MidiAuxEventKind::TimeSignature, time_signature),
         (MidiAuxEventKind::TrackName, track_name),
         (MidiAuxEventKind::KeySignature, key_signature),
+        // ⭐ [ARCH-EXT-002]：采纳进 `project.author` 的那条记入 attached（不进 dropped）。
+        (MidiAuxEventKind::Copyright, copyright),
     ];
     for kind in MidiAuxEventKind::ALL {
         let read = parsed.aux_events.count(kind);
@@ -1862,6 +1995,9 @@ pub fn plan_midi_import(
     let mut time_signature = time_signature_adoption_op(parsed, project, target_empty);
     let mut track_name = track_name_adoption_op(parsed, project, dest_track_id);
     let mut key_signature = key_signature_adoption_op(parsed, project, target_empty);
+    // ⭐ [ARCH-EXT-002]：导体轨名 / `FF 01` 文本 ⇒ `project.title`；`FF 02` ⇒ `project.author`。
+    let mut title = adopt_title(parsed, project, target_empty);
+    let mut copyright = adopt_copyright(parsed, project, target_empty);
     let (sections, marker_dropped, marker_reason) =
         plan_sections(&parsed.markers, parsed.end_tick, parsed.ppq);
     for adoption in [
@@ -1869,6 +2005,8 @@ pub fn plan_midi_import(
         &mut tempo,
         &mut time_signature,
         &mut key_signature,
+        &mut title,
+        &mut copyright,
     ] {
         ops.extend(adoption.all_ops());
     }
@@ -1900,6 +2038,7 @@ pub fn plan_midi_import(
         &time_signature,
         &track_name,
         &key_signature,
+        &copyright,
         (marker_dropped, marker_reason),
         track_partitions_dropped,
         bends_attached,
@@ -2053,6 +2192,8 @@ pub mod tests {
             pitch_bends: Vec::new(),
             control_changes: Vec::new(),
             track_names: Vec::new(),
+            copyrights: Vec::new(),
+            texts: Vec::new(),
             instrument_names: Vec::new(),
             program_names: Vec::new(),
             markers: Vec::new(),
@@ -2176,9 +2317,10 @@ pub mod tests {
     /// `STORABLE_KINDS` 与 `STORABLE_KIND_KEYS` 的一致性契约。
     #[test]
     fn storable_kinds_consistency() {
-        // ⭐ ADR-0015 D2：`ControlChange` 自 6 项起加入可落点集合（7 项）。
-        assert_eq!(STORABLE_KINDS.len(), 7);
-        assert_eq!(STORABLE_KIND_KEYS.len(), 7);
+        // ⭐ ADR-0015 D2：`ControlChange` 自 6 项起加入可落点集合；
+        // ⭐ [ARCH-EXT-002]：`Copyright` 自 7 项起加入（采纳进 `project.author`）⇒ 共 8 项。
+        assert_eq!(STORABLE_KINDS.len(), 8);
+        assert_eq!(STORABLE_KIND_KEYS.len(), 8);
         for (kind, &key) in STORABLE_KINDS.iter().zip(STORABLE_KIND_KEYS) {
             assert_eq!(kind.key(), key);
         }
@@ -3308,6 +3450,8 @@ pub mod metadata_adoption_tests {
             pitch_bends: Vec::new(),
             control_changes: Vec::new(),
             track_names: Vec::new(),
+            copyrights: Vec::new(),
+            texts: Vec::new(),
             instrument_names: Vec::new(),
             program_names: Vec::new(),
             markers: Vec::new(),
@@ -4073,6 +4217,8 @@ pub mod metadata_adoption_tests {
                 track_name(1, 0, Some("Lead Synth")),
                 track_name(2, 0, Some("Sub Bass")),
             ],
+            copyrights: Vec::new(),
+            texts: Vec::new(),
             instrument_names: Vec::new(),
             program_names: Vec::new(),
             markers: Vec::new(),
@@ -4196,6 +4342,8 @@ pub mod metadata_adoption_tests {
                 track_name(1, 0, Some("Lead Synth")),
                 track_name(2, 0, Some("Sub Bass")),
             ],
+            copyrights: Vec::new(),
+            texts: Vec::new(),
             instrument_names: Vec::new(),
             program_names: Vec::new(),
             markers: Vec::new(),
@@ -4270,6 +4418,8 @@ pub mod metadata_adoption_tests {
             pitch_bends: Vec::new(),
             control_changes: Vec::new(),
             track_names: Vec::new(), // 无轨名元事件
+            copyrights: Vec::new(),
+            texts: Vec::new(),
             instrument_names: Vec::new(),
             program_names: Vec::new(),
             markers: Vec::new(),
@@ -4350,6 +4500,8 @@ pub mod metadata_adoption_tests {
                 text_meta(5, 0, Some("")), // 空名 ⇒ 无效（D2）
                 text_meta(5, 48, None),    // 非 UTF-8 ⇒ 无效（D2）
             ],
+            copyrights: Vec::new(),
+            texts: Vec::new(),
             instrument_names: vec![
                 text_meta(1, 0, Some("Violin I")),
                 text_meta(3, 0, Some("Saw")),

@@ -201,6 +201,12 @@ pub struct MidiExport {
     pub tracks: Vec<MidiExportTrack>,
     /// 调号 [MODEL-AST-002]（写入 conductor 轨的首个元事件之一）。
     pub key_signature: Option<yeban_model::project::KeySignature>,
+    /// 工程标题（⭐ [ARCH-EXT-002]：`MidiFormat::Parallel` 下作为 conductor 轨的
+    /// `FF 03` 轨名写出；`None` / 空串 ⇒ 保留默认名 `"Yeban Conductor"`）。
+    pub title: Option<String>,
+    /// 版权声明（⭐ [ARCH-EXT-002]：非 `None` 且非空时写成 conductor 轨 tick 0 的
+    /// `FF 02` 版权元事件；`None` / 空串 ⇒ 不写）。
+    pub copyright: Option<String>,
 }
 
 /// 导出失败的原因。
@@ -429,6 +435,13 @@ enum RawEvent {
         sharps_flats: i8,
         is_minor: bool,
     },
+    /// ⭐ [ARCH-EXT-002]：SMF 版权元事件（`FF 02`）。工程的 `author` 作为
+    /// conductor 轨 tick 0 的版权声明写出；与 [`Self::Lyric`] 同理，文本住在
+    /// 事件里 ⇒ 排序键含文本，导出字节仍只由**内容**决定。
+    Copyright {
+        tick: u64,
+        text: String,
+    },
 }
 
 impl RawEvent {
@@ -441,7 +454,8 @@ impl RawEvent {
             | Self::ControlChange { tick, .. }
             | Self::Tempo { tick, .. }
             | Self::TimeSignature { tick, .. }
-            | Self::KeySignature { tick, .. } => *tick,
+            | Self::KeySignature { tick, .. }
+            | Self::Copyright { tick, .. } => *tick,
         }
     }
 
@@ -533,6 +547,9 @@ impl RawEvent {
                 (((*sharps_flats as u8) as u32) << 8) | if *is_minor { 1 } else { 0 },
                 "",
             ),
+            // ⭐ [ARCH-EXT-002]：版权排在调号（组内序 2）之后（组内序 3），同 tick
+            // 多条版权按**文本字节序**排 ⇒ 字节仍只由内容决定。
+            Self::Copyright { text, .. } => (5, 0, 3, 0, text.as_str()),
         }
     }
 }
@@ -737,13 +754,27 @@ impl MidiExport {
                 is_minor: ks.is_minor,
             });
         }
+        // ⭐ [ARCH-EXT-002]：工程的 `author` ⇒ conductor 轨 tick 0 的 `FF 02`。
+        // 空串没有内容可写（与歌词的"空文本不写"同一口径）。
+        if let Some(copyright) = self.copyright.as_deref().filter(|text| !text.is_empty()) {
+            tempo_events.push(RawEvent::Copyright {
+                tick: 0,
+                text: copyright.to_owned(),
+            });
+        }
         sort_events(&mut tempo_events);
 
         // 每条输出轨道 = 一串规范化事件。
         let mut lanes: Vec<(Vec<u8>, Vec<RawEvent>)> = Vec::new();
         match self.format {
             MidiFormat::Parallel => {
-                lanes.push((b"Yeban Conductor".to_vec(), tempo_events));
+                // ⭐ [ARCH-EXT-002]：conductor 轨名 = 工程标题；未给（`None` / 空串）
+                // 时保留默认名 "Yeban Conductor"。
+                let conductor_name = match self.title.as_deref() {
+                    Some(title) if !title.is_empty() => title,
+                    _ => "Yeban Conductor",
+                };
+                lanes.push((conductor_name.as_bytes().to_vec(), tempo_events));
                 for track in &self.tracks {
                     lanes.push((track.name.as_bytes().to_vec(), track_events(track)?));
                 }
@@ -856,6 +887,10 @@ impl MidiExport {
                         is_minor,
                         ..
                     } => TrackEventKind::Meta(MetaMessage::KeySignature(*sharps_flats, *is_minor)),
+                    // ⭐ [ARCH-EXT-002]：`FF 02` 版权元事件（UTF-8 原样，不截断）。
+                    RawEvent::Copyright { text, .. } => {
+                        TrackEventKind::Meta(MetaMessage::Copyright(text.as_bytes()))
+                    }
                 };
                 lane.push(TrackEvent {
                     delta: u28::new(*delta),
@@ -999,8 +1034,8 @@ pub struct ParsedTrackName {
 ///
 /// ## 每一类今天有没有落点（`#342` 实测，⛔ 不再用"值一样就不算丢"当判据）
 ///
-/// 判据是"导入路径**有没有把它写进工程**"。`yeban-app` 的 `plan_midi_import` 今天
-/// 能落地的是七类（[`crate::import::STORABLE_KINDS`]），前四类都要求文件**只表达一个值**：
+/// 判据是"导入路径**有没有把它写进工程**"。`yeban-midi` 的 `plan_midi_import` 今天
+/// 能落地的是八类（[`crate::import::STORABLE_KINDS`]），前四类都要求文件**只表达一个值**：
 ///
 /// - [`Self::Tempo`] → `project.bpm`（`f64` **单标量**）。只有"唯一条生效 tempo 且
 ///   在 tick 0"能落；**tempo map 无处可住** ⇒ 多条时整类报成 `dropped` 并列出全部值。
@@ -1015,7 +1050,10 @@ pub struct ParsedTrackName {
 ///   在发声"的那颗音符，空档 / 复音逐条报 `dropped`）。
 /// - [`Self::ControlChange`] → 音轨的自动化泳道（ADR-0015 D2：**只有** CC 7 →
 ///   `TrackVolume`、CC 10 → `TrackPan` 有落点；其余控制器号没有对应目标 ⇒ 逐条 `dropped`）。
-/// - 其余 17 类：模型**没有**对应字段或没有映射规则 ⇒ 今天**全部**是 dropped。
+/// - [`Self::Copyright`] → `project.author`（⭐ [ARCH-EXT-002]：仅当导入**空工程**
+///   且 `project.author` 为空时采纳 conductor 轨（第 0 轨）上唯一一条有效版权文本；
+///   其余情形逐条 `dropped`）。
+/// - 其余 16 类：模型**没有**对应字段或没有映射规则 ⇒ 今天**全部**是 dropped。
 ///
 /// ⚠ **"值一样"不等于"没丢"**：`tempo` 就算数值恰好等于工程 `bpm`，只要文件不能
 /// 表达成"唯一条 tick 0 tempo"，它仍是丢。
@@ -1056,9 +1094,13 @@ pub enum MidiAuxEventKind {
     SysEx,
     /// `F7` escape。丢掉：模型没有承载。
     Escape,
-    /// `FF 01` 文本。丢掉：模型没有承载。
+    /// `FF 01` 文本。⭐ [ARCH-EXT-002]：内容与计数同时读出（[`ParsedMidi::texts`]），
+    /// 导入**空工程**时可作 `project.title` 的回退载体（conductor 轨无有效轨名时）；
+    /// 未采纳时逐条 `dropped`。
     Text,
-    /// `FF 02` 版权。丢掉：工程的 `author`/`title` 不是版权声明，语义不同。
+    /// `FF 02` 版权。⭐ [ARCH-EXT-002]：内容与计数同时读出（[`ParsedMidi::copyrights`]）；
+    /// 导入**空工程**且 `project.author` 为空时采纳为 `project.author`（该条记入
+    /// attached，不进 dropped）；其余情形逐条 `dropped`。
     Copyright,
     /// `FF 04` 乐器名。丢掉：`TrackV3::sampler` 是路径；乐器名没有承载。
     InstrumentName,
@@ -1205,6 +1247,14 @@ pub struct ParsedMidi {
     pub tempos: Vec<MidiTempo>,
     /// ⭐ `#342`：全部 `FF 03` 轨名事件（**文件顺序**，⛔ 不去重、⛔ 不丢非 UTF-8）。
     pub track_names: Vec<ParsedTrackName>,
+    /// ⭐ [ARCH-EXT-002]：全部 `FF 02` 版权事件（**文件顺序**，⛔ 不去重、⛔ 不丢非 UTF-8）。
+    ///
+    /// 与轨名同形状读出；**落不落进 `project.author`** 由 `plan_midi_import` 决定。
+    pub copyrights: Vec<ParsedTrackName>,
+    /// ⭐ [ARCH-EXT-002]：全部 `FF 01` 文本事件（**文件顺序**，⛔ 不去重、⛔ 不丢非 UTF-8）。
+    ///
+    /// 与轨名同形状读出；空工程导入时可作 `project.title` 的回退载体。
+    pub texts: Vec<ParsedTrackName>,
     /// ⭐ ADR-0013：全部 `FF 04` 乐器名事件（**文件顺序**，⛔ 不去重、⛔ 不丢非 UTF-8）。
     pub instrument_names: Vec<ParsedTrackName>,
     /// ⭐ ADR-0013：全部 `FF 08` 程序名事件（**文件顺序**，⛔ 不去重、⛔ 不丢非 UTF-8）。
@@ -1381,6 +1431,10 @@ pub fn parse_smf(bytes: &[u8]) -> Result<ParsedMidi, MidiError> {
     // 因为 marker 的 tick 仍是段落边界。
     let mut markers = Vec::new();
     let mut track_names = Vec::new();
+    // ⭐ [ARCH-EXT-002]：`FF 02` / `FF 01` 的内容也读出（与轨名同形状），
+    // 供空工程导入采纳 `project.author` / `project.title`。
+    let mut copyrights = Vec::new();
+    let mut texts = Vec::new();
     // ⭐ ADR-0013：`FF 04` / `FF 08` 的内容也读出（与轨名同形状），供拆分规划器回退。
     let mut instrument_names = Vec::new();
     let mut program_names = Vec::new();
@@ -1516,11 +1570,24 @@ pub fn parse_smf(bytes: &[u8]) -> Result<ParsedMidi, MidiError> {
                     MetaMessage::TrackNumber(_) => {
                         aux_events.record(MidiAuxEventKind::TrackNumber);
                     }
-                    MetaMessage::Text(_) => {
+                    MetaMessage::Text(bytes) => {
                         aux_events.record(MidiAuxEventKind::Text);
+                        // ⭐ [ARCH-EXT-002]：与轨名同形状读出，供空工程标题回退。
+                        texts.push(ParsedTrackName {
+                            track: track_index,
+                            tick,
+                            text: std::str::from_utf8(bytes).ok().map(str::to_owned),
+                        });
                     }
-                    MetaMessage::Copyright(_) => {
+                    MetaMessage::Copyright(bytes) => {
                         aux_events.record(MidiAuxEventKind::Copyright);
+                        // ⭐ [ARCH-EXT-002]：与轨名同形状读出，落不落进 `project.author`
+                        // 由 `plan_midi_import` 决定（这里 ⛔ 不筛）。
+                        copyrights.push(ParsedTrackName {
+                            track: track_index,
+                            tick,
+                            text: std::str::from_utf8(bytes).ok().map(str::to_owned),
+                        });
                     }
                     MetaMessage::TrackName(bytes) => {
                         aux_events.record(MidiAuxEventKind::TrackName);
@@ -1613,6 +1680,8 @@ pub fn parse_smf(bytes: &[u8]) -> Result<ParsedMidi, MidiError> {
         aux_events,
         tempos,
         track_names,
+        copyrights,
+        texts,
         instrument_names,
         program_names,
         markers,
@@ -1698,6 +1767,8 @@ mod tests {
             tempos: vec![MidiTempo::with_time_signature(120.0, 4, 2)],
             tracks,
             key_signature: None,
+            title: None,
+            copyright: None,
         }
     }
 
@@ -1824,6 +1895,162 @@ mod tests {
         assert!(invalid.lyrics.is_empty(), "⛔ lossy：不产生替换文本");
         assert_eq!((invalid.empty_lyrics, invalid.non_utf8_lyrics), (0, 1));
         assert_eq!(invalid.notes.len(), 1, "音符照常回读");
+    }
+
+    /// ⭐ [ARCH-EXT-002] 判据 1（导出面）：`title` ⇒ conductor 轨的 `FF 03` 名，
+    /// `copyright` ⇒ conductor 轨 tick 0 的 `FF 02`；两者为空时分别回到默认名与
+    /// "不写版权"。UTF-8 原样写出，逐字节核对。
+    #[test]
+    fn title_and_copyright_land_on_the_conductor_track() {
+        let source = {
+            let mut base = export(
+                MidiFormat::Parallel,
+                vec![track_from_notes("Piano", 0, &[note(0, 60, 480, 100)])],
+            );
+            base.title = Some("夜半".to_owned());
+            base.copyright = Some("(c) 2026".to_owned());
+            base
+        };
+        let bytes = source.to_smf_bytes().expect("导出");
+        let chunks = track_chunks(&bytes).expect("chunk 布局");
+        let conductor = &bytes[chunks[1].payload.clone()];
+
+        // 轨名 = 标题（`FF 03 06 E5 A4 9C E5 8D 8A`），⛔ 不再写默认名。
+        assert!(
+            position(
+                conductor,
+                &[0xFF, 0x03, 0x06, 0xE5, 0xA4, 0x9C, 0xE5, 0x8D, 0x8A]
+            )
+            .is_some(),
+            "conductor 轨名必须是工程标题（UTF-8 原样）"
+        );
+        assert!(
+            position(conductor, b"Yeban Conductor").is_none(),
+            "给了标题就不许再出现默认名"
+        );
+        // 版权 = `FF 02`，delta 0（tick 0），排在轨名之后。
+        let ff02 = position(
+            conductor,
+            &[
+                0xFF, 0x02, 0x08, b'(', b'c', b')', b' ', b'2', b'0', b'2', b'6',
+            ],
+        )
+        .expect("FF 02 版权必须在");
+        let ff03 = position(conductor, &[0xFF, 0x03]).expect("FF 03 轨名必须在");
+        assert!(ff03 < ff02, "轨名是 lane 首事件，版权随 tempo map 落在其后");
+
+        // 回读：内容进 `copyrights`（轨 0、tick 0），计数照旧加一。
+        let parsed = parse_smf(&bytes).expect("回读");
+        assert_eq!(
+            parsed.copyrights,
+            vec![ParsedTrackName {
+                track: 0,
+                tick: 0,
+                text: Some("(c) 2026".to_owned()),
+            }],
+            "FF 02 必须与轨名同形状读出"
+        );
+        assert_eq!(
+            parsed
+                .track_names
+                .iter()
+                .filter(|name| name.track == 0)
+                .map(|name| name.text.clone())
+                .collect::<Vec<_>>(),
+            vec![Some("夜半".to_owned())],
+            "conductor 轨名 = 标题"
+        );
+        assert_eq!(
+            parsed.aux_events.count(MidiAuxEventKind::Copyright),
+            1,
+            "计数与内容同时读出（⛔ 读了不数、数了不读）"
+        );
+
+        // 空标题 / 空版权 ⇒ 默认名 + 不写 `FF 02`（⛔ 写空串版权）。
+        let mut empty = source.clone();
+        empty.title = Some(String::new());
+        empty.copyright = Some(String::new());
+        let bytes = empty.to_smf_bytes().expect("导出");
+        let chunks = track_chunks(&bytes).expect("chunk 布局");
+        let conductor = &bytes[chunks[1].payload.clone()];
+        assert!(
+            position(conductor, b"Yeban Conductor").is_some(),
+            "空标题 ⇒ 保留默认 conductor 名"
+        );
+        assert!(
+            position(conductor, &[0xFF, 0x02]).is_none(),
+            "空版权 ⇒ 不写 FF 02"
+        );
+        let parsed = parse_smf(&bytes).expect("回读");
+        assert!(parsed.copyrights.is_empty());
+        assert_eq!(parsed.aux_events.count(MidiAuxEventKind::Copyright), 0);
+    }
+
+    /// ⭐ [ARCH-EXT-002] 判据 2（回读面）：手写的 `FF 01` / `FF 02` 与 `FF 03` 一并
+    /// 读成 `texts` / `copyrights` / `track_names`（同形状，带 `MTrk` 下标）；
+    /// 非 UTF-8 保留在表里（`text == None`），⛔ lossy。
+    #[test]
+    fn parser_reads_ff01_and_ff02_content_per_track() {
+        fn hand_built() -> Vec<u8> {
+            let mut payload: Vec<u8> = Vec::new();
+            payload.extend_from_slice(&[0x00, 0xFF, 0x03, 0x04, b'S', b'o', b'n', b'g']);
+            payload.extend_from_slice(&[0x00, 0xFF, 0x01, 0x04, b'a', b'b', b'c', b'd']);
+            payload.extend_from_slice(&[0x00, 0xFF, 0x02, 0x03, b'(', b'c', b')']);
+            payload.extend_from_slice(&[0x00, 0xFF, 0x02, 0x02, 0xFF, 0xFE]); // 非 UTF-8 版权
+            payload.extend_from_slice(&[0x00, 0x90, 0x3C, 0x64]);
+            payload.extend_from_slice(&[0x60, 0x80, 0x3C, 0x40]);
+            payload.extend_from_slice(&[0x00, 0xFF, 0x2F, 0x00]);
+            let mut bytes = Vec::new();
+            bytes.extend_from_slice(b"MThd");
+            bytes.extend_from_slice(&6u32.to_be_bytes());
+            bytes.extend_from_slice(&0u16.to_be_bytes());
+            bytes.extend_from_slice(&1u16.to_be_bytes());
+            bytes.extend_from_slice(&960u16.to_be_bytes());
+            bytes.extend_from_slice(b"MTrk");
+            bytes.extend_from_slice(
+                &u32::try_from(payload.len())
+                    .expect("测试负载很短")
+                    .to_be_bytes(),
+            );
+            bytes.extend_from_slice(&payload);
+            bytes
+        }
+
+        let parsed = parse_smf(&hand_built()).expect("回读");
+        assert_eq!(
+            parsed.track_names,
+            vec![ParsedTrackName {
+                track: 0,
+                tick: 0,
+                text: Some("Song".to_owned()),
+            }]
+        );
+        assert_eq!(
+            parsed.texts,
+            vec![ParsedTrackName {
+                track: 0,
+                tick: 0,
+                text: Some("abcd".to_owned()),
+            }]
+        );
+        assert_eq!(
+            parsed.copyrights,
+            vec![
+                ParsedTrackName {
+                    track: 0,
+                    tick: 0,
+                    text: Some("(c)".to_owned()),
+                },
+                ParsedTrackName {
+                    track: 0,
+                    tick: 0,
+                    text: None,
+                },
+            ],
+            "⛔ lossy：非 UTF-8 版权仍入表（text == None）"
+        );
+        assert_eq!(parsed.aux_events.count(MidiAuxEventKind::Text), 1);
+        assert_eq!(parsed.aux_events.count(MidiAuxEventKind::Copyright), 2);
     }
 
     /// ⭐ `#318`：解析器把**除音符/歌词外的每一类事件**各数一遍，且**不漏不重**
@@ -2296,6 +2523,8 @@ mod tests {
             // 轨道名为空 -> 不写 TrackName meta, 于是 MTrk 的第一个事件就是这颗音符。
             tracks: vec![track_from_notes("", 0, &[note(boundary, 60, 120, 64)])],
             key_signature: None,
+            title: None,
+            copyright: None,
         };
         let bytes = source.to_smf_bytes().expect("导出");
 
@@ -2382,6 +2611,8 @@ mod tests {
             ],
             tracks: vec![track_from_notes("T", 0, &[note(0, 60, 960, 64)])],
             key_signature: None,
+            title: None,
+            copyright: None,
         };
         let bytes = source.to_smf_bytes().expect("导出");
         let parsed = parse_smf(&bytes).expect("回读");
@@ -2417,6 +2648,8 @@ mod tests {
             tempos: vec![MidiTempo::with_time_signature(120.0, 4, 2)],
             tracks: vec![track_from_notes("T", 0, &[note(0, 60, 960, 64)])],
             key_signature: Some(ks),
+            title: None,
+            copyright: None,
         };
         let bytes = source.to_smf_bytes().expect("导出");
         let parsed = parse_smf(&bytes).expect("回读");
@@ -2461,6 +2694,8 @@ mod tests {
             ],
             tracks: vec![track_from_notes("T", 0, &[note(0, 60, 960, 64)])],
             key_signature: None,
+            title: None,
+            copyright: None,
         };
         let bytes = source.to_smf_bytes().expect("导出");
         let parsed = parse_smf(&bytes).expect("回读");
@@ -2502,6 +2737,8 @@ mod tests {
             ],
             tracks: vec![track_from_notes("T", 0, &[note(0, 60, 960, 64)])],
             key_signature: None,
+            title: None,
+            copyright: None,
         };
         let parsed = parse_smf(&source.to_smf_bytes().expect("导出")).expect("回读");
         // 记录**多重集**相等（`tick, tempo, 拍号` 三者成组比较 ⇒ 配对也在此断言里）。
@@ -2806,6 +3043,8 @@ mod tests {
             tempos: vec![first, second],
             tracks: vec![track_from_notes("T", 0, &[note(0, 60, 960, 64)])],
             key_signature: None,
+            title: None,
+            copyright: None,
         };
         let forward = build(tempo_only, signature_only);
         let reverse = build(signature_only, tempo_only);
@@ -3174,6 +3413,8 @@ mod tests {
                 control_changes: Vec::new(),
             }],
             key_signature: None,
+            title: None,
+            copyright: None,
         };
         assert_eq!(
             source.to_smf_bytes(),
@@ -3194,6 +3435,8 @@ mod tests {
             tempos: Vec::new(),
             tracks: Vec::new(),
             key_signature: None,
+            title: None,
+            copyright: None,
         };
         assert_eq!(
             source.to_smf_bytes(),
@@ -3281,9 +3524,11 @@ mod tests {
                     tempos: Vec::new(),
                     tracks: Vec::new(),
                     key_signature: None,
+                    title: None,
+                    copyright: None,
                 }
             ),
-            "MidiExport { format: SingleTrack, ppq: 960, tempos: [], tracks: [], key_signature: None }"
+            "MidiExport { format: SingleTrack, ppq: 960, tempos: [], tracks: [], key_signature: None, title: None, copyright: None }"
         );
         assert_eq!(
             format!(
@@ -3295,6 +3540,8 @@ mod tests {
                     aux_events: MidiAuxEventCounts::default(),
                     tempos: Vec::new(),
                     track_names: Vec::new(),
+                    copyrights: Vec::new(),
+                    texts: Vec::new(),
                     instrument_names: Vec::new(),
                     program_names: Vec::new(),
                     markers: Vec::new(),
@@ -3310,7 +3557,8 @@ mod tests {
             ),
             "ParsedMidi { format: Parallel, ppq: 480, tracks: 0, aux_events: \
              MidiAuxEventCounts { counts: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, \
-             0, 0, 0, 0, 0, 0, 0] }, tempos: [], track_names: [], instrument_names: [], \
+             0, 0, 0, 0, 0, 0, 0] }, tempos: [], track_names: [], copyrights: [], texts: [], \
+             instrument_names: [], \
              program_names: [], markers: [], end_tick: 0, \
              notes: [], lyrics: [], non_utf8_lyrics: 0, empty_lyrics: 0, key_signatures: [], \
              pitch_bends: [], control_changes: [] }"
@@ -3389,6 +3637,8 @@ mod tests {
             tempos: Vec::new(),
             tracks: vec![with_nan()],
             key_signature: None,
+            title: None,
+            copyright: None,
         };
         assert!(
             export() != export(),
@@ -3520,6 +3770,8 @@ mod tests {
             tempos: Vec::new(),
             tracks: vec![lane("A", 0), lane("B", 1)],
             key_signature: None,
+            title: None,
+            copyright: None,
         };
         let reversed = MidiExport {
             format: MidiFormat::Parallel,
@@ -3527,6 +3779,8 @@ mod tests {
             tempos: Vec::new(),
             tracks: vec![lane("B", 1), lane("A", 0)],
             key_signature: None,
+            title: None,
+            copyright: None,
         };
         assert!(forward == forward.clone(), "对照臂：同一顺序必须相等");
         assert!(
@@ -3554,6 +3808,8 @@ mod tests {
             ],
             tracks: Vec::new(),
             key_signature: None,
+            title: None,
+            copyright: None,
         };
         assert!(
             with_tempos(0, 100) != with_tempos(100, 0),
@@ -3595,6 +3851,8 @@ mod tests {
             tempos: Vec::new(),
             tracks: Vec::new(),
             key_signature: None,
+            title: None,
+            copyright: None,
         };
         // 单字段差异 ①：只改 `format`。
         assert!(

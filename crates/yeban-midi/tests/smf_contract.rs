@@ -157,6 +157,8 @@ fn exported_bytes_have_literal_smf1_header_and_terminators() {
         // 轨道名为空 ⇒ 不写 TrackName meta ⇒ 轨首就是音符事件的 delta。
         tracks: vec![track_from_notes("", 0, &[note(480, 60, 240)])],
         key_signature: None,
+        title: None,
+        copyright: None,
     };
     let bytes = export.to_smf_bytes().expect("编码");
 
@@ -430,6 +432,8 @@ fn encoder_boundaries_are_rejected_precisely() {
             control_changes: Vec::new(),
         }],
         key_signature: None,
+        title: None,
+        copyright: None,
     };
 
     let zero_ppq = MidiExport {
@@ -495,6 +499,8 @@ fn encoder_boundaries_are_rejected_precisely() {
             control_changes: Vec::new(),
         }],
         key_signature: None,
+        title: None,
+        copyright: None,
     };
     let bytes = clamped.to_smf_bytes().expect("钳制后必须能编码");
     assert_eq!(
@@ -521,6 +527,8 @@ fn single_track_export(ppq: u16) -> MidiExport {
             control_changes: Vec::new(),
         }],
         key_signature: None,
+        title: None,
+        copyright: None,
     }
 }
 
@@ -605,6 +613,8 @@ fn half_a_time_signature_is_rejected_instead_of_dropped() {
                 control_changes: Vec::new(),
             }],
             key_signature: None,
+            title: None,
+            copyright: None,
         };
         assert_eq!(
             source.to_smf_bytes(),
@@ -634,6 +644,8 @@ fn half_a_time_signature_is_rejected_instead_of_dropped() {
             control_changes: Vec::new(),
         }],
         key_signature: None,
+        title: None,
+        copyright: None,
     };
     let bytes = empty
         .to_smf_bytes()
@@ -1141,6 +1153,8 @@ fn time_signature_meta_fields_round_trip_at_their_extremes() {
             control_changes: Vec::new(),
         }],
         key_signature: None,
+        title: None,
+        copyright: None,
     };
     let bytes = source.to_smf_bytes().expect("编码");
     let records: Vec<(Option<u8>, Option<u8>)> = parse_smf(&bytes)
@@ -1366,6 +1380,8 @@ fn a_minimal_export_is_pinned_byte_for_byte() {
             control_changes: Vec::new(),
         }],
         key_signature: None,
+        title: None,
+        copyright: None,
     };
     let bytes = export.to_smf_bytes().expect("编码");
     assert_eq!(
@@ -1411,6 +1427,8 @@ fn the_conductor_track_documentation_matches_the_written_bytes() {
         tempos: Vec::new(),
         tracks: vec![track_from_notes("", 0, &[note(480, 60, 240)])],
         key_signature: None,
+        title: None,
+        copyright: None,
     }
     .to_smf_bytes()
     .expect("编码");
@@ -1717,6 +1735,10 @@ fn filled_sample_writes_its_four_syllables_as_lyric_events() {
     // `-6 dB ⇒ round(127·10^-0.15) = 90`、`0 dB ⇒ 127`（手算值，⛔ 不与换算函数自比），
     // 净 +9 B（两条事件各 4 B，外加末尾 delta 由 1 字节 VLQ 长成 2 字节）。
     // **没有**自动化泳道的工程一个字节都不动 —— 由下面的"清空 CC 必须回到 159 B"钉住。
+    //
+    // ⭐ **[ARCH-EXT-002]** 又改了一次：`filled` 样本的 `title`（23 B）替代默认
+    // conductor 名（15 B，+9 B）、`author`（26 B）写成 conductor 轨的 `FF 02`
+    // （+31 B）⇒ 168 B → 206 B（实测）。
     assert_eq!(
         parsed
             .control_changes
@@ -1726,15 +1748,15 @@ fn filled_sample_writes_its_four_syllables_as_lyric_events() {
         vec![(0, 7, 90), (3840, 7, 127)],
         "音量泳道的两个作者点 ⇒ 两条 CC 7，值按 ADR-0015 D3 的逆向公式"
     );
-    assert_eq!(bytes.len(), 168, "filled 导出必须是 168 B");
+    assert_eq!(bytes.len(), 206, "filled 导出必须是 206 B");
     assert_eq!(
         yeban_model::AssetHash::of_bytes(&bytes).as_str(),
-        "8643d792aa5b0ba1aa419f0b2799084a0749bf5454cb8b22b5d474b78e7eb265",
+        "e38eadb987ed160a7b43c61f4965ebe2f8c7837da9064a5cafe960d51cfc648c",
         "filled 导出字节的 sha256 必须一位不变"
     );
     assert_eq!(
         yeban_model::AssetHash::of_bytes(&export_without_control_changes(&project)).as_str(),
-        "4825c0a7bab0362547836af3249acac5e7d2de3fef812f4620c426f92aef7da2",
+        "4febe10dab57d7b6fe375e6d400d07217916117dbdf6e20eb05e1b668c277115",
         "把 CC 表清空必须逐字节回到 ADR-0015 之前的 159 B ⇒ 新增的字节**只**是 CC 事件"
     );
 }
@@ -1771,12 +1793,12 @@ fn readable_volume_and_pan_lanes_are_written_as_control_changes() {
     );
     assert_eq!(
         bytes.len(),
-        146,
-        "demo 导出必须是 146 B（改前 133 B + 13 B 的 CC）"
+        173,
+        "demo 导出必须是 173 B（146 B + [ARCH-EXT-002] 的 conductor 标题与 FF 02 版权）"
     );
     assert_eq!(
         yeban_model::AssetHash::of_bytes(&bytes).as_str(),
-        "35278a8e052e772e68dc3e684d8aa0c31d6c9ee4d020ad7aae5e4076f26c54c7"
+        "1a251551838737456897162730f2d3c1a78bbc0963fa7668e45f75a622e57c78"
     );
 }
 
@@ -1789,24 +1811,29 @@ fn readable_volume_and_pan_lanes_are_written_as_control_changes() {
 /// 两条 sha256 常量是**在加能力之前**（`main` = `e6a877a8` 的代码）实测的：
 /// `demo` = 133 字节、`filled` = 119 字节。
 ///
+/// ⚠ 这两条 sha **常量本身随每一层如实新增字节重测**（不是"永不改动"的化石）：
+/// `tempo_map`/`time_signature_map`、CC、以及 ⭐ **[ARCH-EXT-002]** 的 conductor
+/// 标题名与 `FF 02` 版权都改过它们 ⇒ 现值是 [ARCH-EXT-002] 后实测。本判据此刻
+/// **不变式**仍然成立：歌词层不许动无歌词工程的字节（差值只来自歌词/元数据层）。
+///
 /// ⭐ **ADR-0015 D3** 之后这里走 [`export_without_control_changes`]：那两个样本工程
 /// **带着**自动化泳道，如实导出会多出 CC 字节。"歌词不许动无歌词工程的字节"这条
 /// 不变式与 CC 无关 ⇒ 把 CC 这一层单独剥掉再比（CC 本身由
 /// `readable_volume_and_pan_lanes_are_written_as_control_changes` 与 filled 那条判据钉）。
 #[test]
 fn lyrics_do_not_change_the_bytes_of_projects_without_them() {
-    const DEMO_SHA256: &str = "050417dc89acef85037b0ebcea8824347289e73da02504ecb8037750dfcea5c9";
+    const DEMO_SHA256: &str = "61c5cd153d3ff188a3a5a6358a8427b94db27ed2fc7e533e2c6d1f008fa55e58";
     // [MODEL-AST-005]: 支持 tempo_map 与 time_signature_map 导出后，去歌词的 filled 样本
     // 在 tick 7680 同样写入变更点（+16 B ⇒ 135 B）。
     const FILLED_BEFORE_SHA256: &str =
-        "13504bce31ff552fc74a2de432e8ad93430614eb1cb0815639a161b3af0506cb";
+        "17c02468a404b15fad7e5597b910037e282fa8bd7400584c773e43c41b3b76ab";
 
     let demo_bytes = export_without_control_changes(&yeban_model::samples::demo_project());
     assert_eq!(
         yeban_model::AssetHash::of_bytes(&demo_bytes).as_str(),
         DEMO_SHA256,
         "无歌词工程的导出（⛔ 不含 ADR-0015 新写的 CC，那部分由上一条判据单独钉）\
-         必须逐字节等于改前（{} 字节）",
+         必须逐字节等于本层基线（[ARCH-EXT-002] 后实测，{} 字节）",
         demo_bytes.len()
     );
     assert!(
