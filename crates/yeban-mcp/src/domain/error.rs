@@ -187,7 +187,8 @@ pub fn code_for_model(error: &ModelError) -> ErrorCode {
         | ModelError::InvalidHash { .. }
         | ModelError::InvalidEntityId { .. }
         | ModelError::NonFiniteValue { .. }
-        | ModelError::PitchBendTicksNotAscending { .. } => ErrorCode::InvalidParameterRange,
+        | ModelError::PitchBendTicksNotAscending { .. }
+        | ModelError::TempoMapZeroTick { .. } => ErrorCode::InvalidParameterRange,
         ModelError::SchemaVersionTooNew { .. }
         | ModelError::ReaderTooOld { .. }
         | ModelError::DuplicateEntityId { .. }

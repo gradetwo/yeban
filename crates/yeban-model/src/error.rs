@@ -128,6 +128,13 @@ pub enum ModelError {
         value: f64,
     },
 
+    /// 速度或拍号映射点的 tick 必须大于 0 (tick 0 由顶层 `bpm`/`time_signature` 承载)。
+    #[error("tempo and time signature map point tick must be greater than 0, got {tick}")]
+    TempoMapZeroTick {
+        /// 违规的 tick 值（通常为 0）。
+        tick: u64,
+    },
+
     /// 拍号分子越界 (允许 1..=32)。
     #[error("time signature numerator {value} out of range 1..=32")]
     TimeSignatureNumeratorOutOfRange {

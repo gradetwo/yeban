@@ -1405,6 +1405,72 @@ fn pitch_bend_curve_prefix_items_matches_model_bounds() {
     );
 }
 
+#[test]
+fn tempo_map_and_time_signature_map_are_in_contract_and_model() {
+    let schema = load_schema();
+    let root_props = schema
+        .get("properties")
+        .and_then(Value::as_object)
+        .expect("root properties");
+    let required = schema
+        .get("required")
+        .and_then(Value::as_array)
+        .expect("root required")
+        .iter()
+        .filter_map(Value::as_str)
+        .collect::<BTreeSet<_>>();
+
+    assert!(
+        required.contains("tempo_map"),
+        "tempo_map 必须在契约 required 中"
+    );
+    assert!(
+        required.contains("time_signature_map"),
+        "time_signature_map 必须在契约 required 中"
+    );
+
+    let tempo_map_spec = root_props.get("tempo_map").expect("tempo_map property");
+    assert_eq!(
+        tempo_map_spec.get("type").and_then(Value::as_str),
+        Some("object")
+    );
+    let tempo_additional = tempo_map_spec
+        .get("additionalProperties")
+        .expect("additionalProperties");
+    assert_eq!(
+        tempo_additional.get("type").and_then(Value::as_str),
+        Some("number")
+    );
+    assert_eq!(
+        tempo_additional.get("minimum").and_then(Value::as_f64),
+        Some(yeban_model::project::MIN_BPM)
+    );
+    assert_eq!(
+        tempo_additional.get("maximum").and_then(Value::as_f64),
+        Some(yeban_model::project::MAX_BPM)
+    );
+
+    let ts_map_spec = root_props
+        .get("time_signature_map")
+        .expect("time_signature_map property");
+    assert_eq!(
+        ts_map_spec.get("type").and_then(Value::as_str),
+        Some("object")
+    );
+    let ts_additional = ts_map_spec
+        .get("additionalProperties")
+        .expect("additionalProperties");
+    let ts_required = ts_additional
+        .get("required")
+        .and_then(Value::as_array)
+        .expect("ts required")
+        .iter()
+        .filter_map(Value::as_str)
+        .collect::<BTreeSet<_>>();
+    assert!(ts_required.contains("numerator"));
+    assert!(ts_required.contains("denominator"));
+}
+
 // ---------------------------------------------------------------------------
 // ⑪ 给 notes 的真实错误文本（不进 CI）
 // ---------------------------------------------------------------------------

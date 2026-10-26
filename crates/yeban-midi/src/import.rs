@@ -556,14 +556,27 @@ fn bpm_from_microseconds(microseconds_per_quarter: u32) -> Option<f64> {
     }
 }
 
-/// 单个标量的采纳结果：要追加的 op（可能不需要）+ `dropped` 条数 + 原因。
+/// 单个标量（或同类标量序列）的采纳结果：要追加的 ops + `dropped` 条数 + 原因。
 pub struct ScalarAdoption {
     /// 需要写进工程的操作（`None` = 现值已经等于文件值，或落不下去）。
     pub op: Option<Op>,
+    /// 多点操作（例如 SetTempoPoint / SetTimeSignaturePoint，或当有多条操作需要发射时）。
+    pub ops: Vec<Op>,
     /// 没有落进工程的**事件条数**（⛔ 不是"不同值个数"）。
     pub dropped: usize,
     /// `dropped > 0` 时的精确原因（含具体值；⛔ 空串）。
     pub reason: Option<String>,
+}
+
+impl ScalarAdoption {
+    pub fn all_ops(&mut self) -> Vec<Op> {
+        let mut list = Vec::new();
+        if let Some(op) = self.op.take() {
+            list.push(op);
+        }
+        list.append(&mut self.ops);
+        list
+    }
 }
 
 /// 导入目标是否**没有内容**（`#342` 修订：决定 bpm / 拍号能不能被采纳）。
@@ -654,16 +667,13 @@ fn tempo_adoption_op(
     adopt_tempo(parsed, project, target_empty)
 }
 
-/// `FF 51` tempo → `project.bpm`（**单标量**）。
+/// `FF 51` tempo → `project.bpm` 与 `project.tempo_map`。
 ///
-/// **只有**"唯一条生效 tempo 且在 tick 0"能落：SMF 在第一条 tempo 之前隐含
-/// 120 BPM，所以首条落在 tick > 0 的文件已经有**两个** tempo ⇒ 整类 dropped。
-/// 同一 tick 的多条按文件顺序后出现者胜出（MIDI 的生效语义）⇒ 生效 map 用
-/// `BTreeMap`（`insert` 覆盖 = 后者胜出）。
+/// tick 0 的生效值写进 `project.bpm`（若与现值不同），tick > 0 的生效值写进 `project.tempo_map`。
+/// 同一 tick 的多条按文件顺序后出现者胜出（MIDI 的生效语义）⇒ 生效 map 用 `BTreeMap`。
 ///
-/// ⚠ `#342` 修订：即使文件只有一个可采纳的值，**只有目标工程没有内容**
-/// （[`import_target_is_empty`]）时才写 `project.bpm`；否则 `bpm` 一字不动，
-/// 并把"若工程为空会采纳的值"作为**响亮的损失**报出（含值与 tick）。
+/// ⚠ `#342` 修订：只有目标工程没有内容（[`import_target_is_empty`]）时才写工程；
+/// 否则 `bpm` / `tempo_map` 一字不动，并把所有值作为**响亮的损失**报出（含值与 tick）。
 pub fn adopt_tempo(
     parsed: &ParsedMidi,
     project: &YebanProjectV1,
@@ -679,67 +689,22 @@ pub fn adopt_tempo(
             .count(),
         "每条 `FF 51` 必须恰产生一条带 mpqn 的记录"
     );
-    let mut effective: BTreeMap<u64, u32> = BTreeMap::new();
-    for record in &parsed.tempos {
-        if let Some(microseconds_per_quarter) = record.microseconds_per_quarter {
-            effective.insert(record.tick, microseconds_per_quarter);
-        }
-    }
     if read == 0 {
         return ScalarAdoption {
             op: None,
+            ops: Vec::new(),
             dropped: 0,
             reason: None,
         };
     }
-    if let (1, Some((&0, &microseconds_per_quarter))) = (effective.len(), effective.iter().next()) {
-        return match bpm_from_microseconds(microseconds_per_quarter) {
-            Some(bpm) if (MIN_BPM..=MAX_BPM).contains(&bpm) => {
-                if !target_empty {
-                    return ScalarAdoption {
-                        op: None,
-                        dropped: read,
-                        reason: Some(format!(
-                            "tempo-not-adopted-non-empty-project: the file's single tempo \
-                             ({bpm:.2} BPM @0) was NOT written to project.bpm — the project \
-                             already has content (sections / MIDI notes / audio clips / \
-                             automation points) and rewriting the global tempo would re-time it"
-                        )),
-                    };
-                }
-                let op = if project.bpm == bpm {
-                    None
-                } else {
-                    Some(Op::SetTempo {
-                        old_bpm: project.bpm,
-                        new_bpm: bpm,
-                    })
-                };
-                ScalarAdoption {
-                    op,
-                    dropped: 0,
-                    reason: None,
-                }
-            }
-            Some(bpm) => ScalarAdoption {
-                op: None,
-                dropped: read,
-                reason: Some(format!(
-                    "tempo-out-of-model-range: the file's single tempo is {bpm:.2} BPM, \
-                          outside the model's {MIN_BPM:.0}..={MAX_BPM:.0} BPM; project.bpm untouched"
-                )),
-            },
-            None => ScalarAdoption {
-                op: None,
-                dropped: read,
-                reason: Some(
-                    "tempo-undefined: the file's single tempo event has \
-                          microseconds-per-quarter = 0 (no BPM is defined); project.bpm untouched"
-                        .to_owned(),
-                ),
-            },
-        };
+    let mut effective: BTreeMap<u64, u32> = BTreeMap::new();
+    for record in &parsed.tempos {
+        if let Some(microseconds_per_quarter) = record.microseconds_per_quarter {
+            let tick = scale_ticks(record.tick, parsed.ppq);
+            effective.insert(tick, microseconds_per_quarter);
+        }
     }
+
     let mut values = Vec::new();
     if effective.keys().next().is_some_and(|tick| *tick > 0) {
         values.push("120.00 BPM @0 (SMF default: no tempo event)".to_owned());
@@ -750,14 +715,112 @@ pub fn adopt_tempo(
             None => format!("undefined (mpqn=0) @{tick}"),
         });
     }
+
+    for (tick, mpqn) in &effective {
+        if bpm_from_microseconds(*mpqn).is_none() {
+            let reason = if effective.len() == 1 && *tick == 0 {
+                "tempo-undefined: the file's single tempo event has \
+                 microseconds-per-quarter = 0 (no BPM is defined); project.bpm untouched"
+                    .to_owned()
+            } else {
+                format!(
+                    "tempo-undefined: a tempo event @{tick} has \
+                     microseconds-per-quarter = 0 (no BPM is defined); project tempo untouched"
+                )
+            };
+            return ScalarAdoption {
+                op: None,
+                ops: Vec::new(),
+                dropped: read,
+                reason: Some(reason),
+            };
+        }
+    }
+
+    for (tick, mpqn) in &effective {
+        let bpm = bpm_from_microseconds(*mpqn).unwrap();
+        if !(MIN_BPM..=MAX_BPM).contains(&bpm) {
+            let reason = if effective.len() == 1 && *tick == 0 {
+                format!(
+                    "tempo-out-of-model-range: the file's single tempo is {bpm:.2} BPM, \
+                     outside the model's {MIN_BPM:.0}..={MAX_BPM:.0} BPM; project.bpm untouched"
+                )
+            } else {
+                format!(
+                    "tempo-out-of-model-range: tempo {bpm:.2} BPM @{tick} is outside \
+                     the model's {MIN_BPM:.0}..={MAX_BPM:.0} BPM; project tempo untouched"
+                )
+            };
+            return ScalarAdoption {
+                op: None,
+                ops: Vec::new(),
+                dropped: read,
+                reason: Some(reason),
+            };
+        }
+    }
+
+    if !target_empty {
+        let reason = if effective.len() == 1 && effective.keys().next() == Some(&0) {
+            let bpm = bpm_from_microseconds(*effective.values().next().unwrap()).unwrap();
+            format!(
+                "tempo-not-adopted-non-empty-project: the file's single tempo \
+                 ({bpm:.2} BPM @0) was NOT written to project.bpm — the project \
+                 already has content (sections / MIDI notes / audio clips / \
+                 automation points) and rewriting the global tempo would re-time it"
+            )
+        } else {
+            format!(
+                "tempo-not-adopted-non-empty-project: the file's tempo map \
+                 ({}) was NOT written to project — the project already has \
+                 content (sections / MIDI notes / audio clips / automation \
+                 points) and rewriting the tempo would re-time it",
+                values.join("; ")
+            )
+        };
+        return ScalarAdoption {
+            op: None,
+            ops: Vec::new(),
+            dropped: read,
+            reason: Some(reason),
+        };
+    }
+
+    let mut op = None;
+    let mut ops = Vec::new();
+
+    if effective.keys().next().is_some_and(|tick| *tick > 0)
+        && (project.bpm - 120.0).abs() > f64::EPSILON
+    {
+        op = Some(Op::SetTempo {
+            old_bpm: project.bpm,
+            new_bpm: 120.0,
+        });
+    }
+
+    for (tick, mpqn) in &effective {
+        let bpm = bpm_from_microseconds(*mpqn).expect("already validated");
+        if *tick == 0 {
+            if (project.bpm - bpm).abs() > f64::EPSILON {
+                op = Some(Op::SetTempo {
+                    old_bpm: project.bpm,
+                    new_bpm: bpm,
+                });
+            }
+        } else {
+            ops.push(Op::SetTempoPoint {
+                tick: *tick,
+                old_bpm: None,
+                new_bpm: Some(bpm),
+            });
+        }
+    }
+
     ScalarAdoption {
-        op: None,
-        dropped: read,
-        reason: Some(format!(
-            "tempo-map-not-representable: {}; project.bpm is a single scalar \
-             ⇒ a tempo map has no home",
-            values.join("; ")
-        )),
+        op,
+        ops,
+        dropped: 0,
+        reason: None,
     }
 }
 
@@ -780,13 +843,13 @@ fn time_signature_adoption_op(
     adopt_time_signature(parsed, project, target_empty)
 }
 
-/// `FF 58` 拍号 → `project.time_signature`（**单标量**）。
+/// `FF 58` 拍号 → `project.time_signature` 与 `project.time_signature_map`。
 ///
-/// 与 [`adopt_tempo`] 同一条规则：只有"唯一条生效拍号且在 tick 0"能落；SMF 在
-/// 第一条拍号之前隐含 **4/4** ⇒ 首条在 tick > 0 的文件已经有两个拍号。
+/// tick 0 的生效值写进 `project.time_signature`（若与现值不同），tick > 0 的生效值写进 `project.time_signature_map`。
+/// 同一 tick 的多条按文件顺序后出现者胜出（MIDI 的生效语义）⇒ 生效 map 用 `BTreeMap`。
 ///
-/// ⚠ `#342` 修订：与 tempo 同一条内容门槛（[`import_target_is_empty`]）——
-/// 非空工程的 `time_signature` 一字不动，文件里的值作为响亮损失报出。
+/// ⚠ `#342` 修订：只有目标工程没有内容（[`import_target_is_empty`]）时才写工程；
+/// 否则 `time_signature` / `time_signature_map` 一字不动，并把所有值作为**响亮的损失**报出。
 pub fn adopt_time_signature(
     parsed: &ParsedMidi,
     project: &YebanProjectV1,
@@ -802,71 +865,24 @@ pub fn adopt_time_signature(
             .count(),
         "每条 `FF 58` 必须恰产生一条带分子的记录"
     );
+    if read == 0 {
+        return ScalarAdoption {
+            op: None,
+            ops: Vec::new(),
+            dropped: 0,
+            reason: None,
+        };
+    }
     let mut effective: BTreeMap<u64, (u8, u8)> = BTreeMap::new();
     for record in &parsed.tempos {
         if let (Some(numerator), Some(denominator_pow2)) =
             (record.numerator, record.denominator_pow2)
         {
-            effective.insert(record.tick, (numerator, denominator_pow2));
+            let tick = scale_ticks(record.tick, parsed.ppq);
+            effective.insert(tick, (numerator, denominator_pow2));
         }
     }
-    if read == 0 {
-        return ScalarAdoption {
-            op: None,
-            dropped: 0,
-            reason: None,
-        };
-    }
-    if let (1, Some((&0, &(numerator, denominator_pow2)))) =
-        (effective.len(), effective.iter().next())
-    {
-        let candidate = TimeSignature {
-            numerator,
-            denominator: if denominator_pow2 <= 5 {
-                1u8 << denominator_pow2
-            } else {
-                0
-            },
-        };
-        if candidate.validate().is_ok() {
-            if !target_empty {
-                return ScalarAdoption {
-                    op: None,
-                    dropped: read,
-                    reason: Some(format!(
-                        "time-signature-not-adopted-non-empty-project: the file's single \
-                         meter ({} @0) was NOT written to project.time_signature — the \
-                         project already has content (sections / MIDI notes / audio clips / \
-                         automation points) and rewriting the global meter would re-bar it",
-                        meter_label(numerator, denominator_pow2)
-                    )),
-                };
-            }
-            let op = if project.time_signature == candidate {
-                None
-            } else {
-                Some(Op::SetTimeSignature {
-                    old_time_signature: project.time_signature,
-                    new_time_signature: candidate,
-                })
-            };
-            return ScalarAdoption {
-                op,
-                dropped: 0,
-                reason: None,
-            };
-        }
-        return ScalarAdoption {
-            op: None,
-            dropped: read,
-            reason: Some(format!(
-                "time-signature-out-of-model-range: the file's single meter is {}, outside \
-                      the model's numerator 1..=32 / denominator 1,2,4,8,16,32; \
-                      project.time_signature untouched",
-                meter_label(numerator, denominator_pow2)
-            )),
-        };
-    }
+
     let mut values = Vec::new();
     if effective.keys().next().is_some_and(|tick| *tick > 0) {
         values.push("4/4 @0 (SMF default: no time-signature event)".to_owned());
@@ -877,14 +893,111 @@ pub fn adopt_time_signature(
             meter_label(numerator, denominator_pow2)
         ));
     }
+
+    for (tick, &(numerator, denominator_pow2)) in &effective {
+        let denominator = if denominator_pow2 <= 5 {
+            1u8 << denominator_pow2
+        } else {
+            0
+        };
+        let candidate = TimeSignature {
+            numerator,
+            denominator,
+        };
+        if candidate.validate().is_err() {
+            let reason = if effective.len() == 1 && *tick == 0 {
+                format!(
+                    "time-signature-out-of-model-range: the file's single meter is {}, outside \
+                     the model's numerator 1..=32 / denominator 1,2,4,8,16,32; \
+                     project.time_signature untouched",
+                    meter_label(numerator, denominator_pow2)
+                )
+            } else {
+                format!(
+                    "time-signature-out-of-model-range: meter {} @{tick} is outside \
+                     the model's numerator 1..=32 / denominator 1,2,4,8,16,32; \
+                     project time_signature untouched",
+                    meter_label(numerator, denominator_pow2)
+                )
+            };
+            return ScalarAdoption {
+                op: None,
+                ops: Vec::new(),
+                dropped: read,
+                reason: Some(reason),
+            };
+        }
+    }
+
+    if !target_empty {
+        let reason = if effective.len() == 1 && effective.keys().next() == Some(&0) {
+            let (numerator, denominator_pow2) = *effective.values().next().unwrap();
+            format!(
+                "time-signature-not-adopted-non-empty-project: the file's single \
+                 meter ({} @0) was NOT written to project.time_signature — the \
+                 project already has content (sections / MIDI notes / audio clips / \
+                 automation points) and rewriting the global meter would re-bar it",
+                meter_label(numerator, denominator_pow2)
+            )
+        } else {
+            format!(
+                "time-signature-not-adopted-non-empty-project: the file's meter map \
+                 ({}) was NOT written to project — the project already has \
+                 content (sections / MIDI notes / audio clips / automation \
+                 points) and rewriting the meter would re-bar it",
+                values.join("; ")
+            )
+        };
+        return ScalarAdoption {
+            op: None,
+            ops: Vec::new(),
+            dropped: read,
+            reason: Some(reason),
+        };
+    }
+
+    let mut op = None;
+    let mut ops = Vec::new();
+
+    if effective.keys().next().is_some_and(|tick| *tick > 0) {
+        let smf_default = TimeSignature {
+            numerator: 4,
+            denominator: 4,
+        };
+        if project.time_signature != smf_default {
+            op = Some(Op::SetTimeSignature {
+                old_time_signature: project.time_signature,
+                new_time_signature: smf_default,
+            });
+        }
+    }
+
+    for (tick, &(numerator, denominator_pow2)) in &effective {
+        let candidate = TimeSignature {
+            numerator,
+            denominator: 1u8 << denominator_pow2,
+        };
+        if *tick == 0 {
+            if project.time_signature != candidate {
+                op = Some(Op::SetTimeSignature {
+                    old_time_signature: project.time_signature,
+                    new_time_signature: candidate,
+                });
+            }
+        } else {
+            ops.push(Op::SetTimeSignaturePoint {
+                tick: *tick,
+                old_time_signature: None,
+                new_time_signature: Some(candidate),
+            });
+        }
+    }
+
     ScalarAdoption {
-        op: None,
-        dropped: read,
-        reason: Some(format!(
-            "time-signature-map-not-representable: {}; project.time_signature is a single \
-             scalar ⇒ a meter map has no home",
-            values.join("; ")
-        )),
+        op,
+        ops,
+        dropped: 0,
+        reason: None,
     }
 }
 
@@ -913,6 +1026,7 @@ pub fn adopt_track_name(
     if events.is_empty() {
         return ScalarAdoption {
             op: None,
+            ops: Vec::new(),
             dropped: 0,
             reason: None,
         };
@@ -966,6 +1080,7 @@ pub fn adopt_track_name(
         };
         return ScalarAdoption {
             op,
+            ops: Vec::new(),
             dropped,
             reason,
         };
@@ -990,6 +1105,7 @@ pub fn adopt_track_name(
     }
     ScalarAdoption {
         op: None,
+        ops: Vec::new(),
         dropped: events.len(),
         reason: Some(format!(
             "track-name-not-representable: {}; one TrackV3::name cannot carry them all",
@@ -1121,10 +1237,8 @@ fn plan_sections(
 fn static_loss_reason(kind: MidiAuxEventKind) -> &'static str {
     match kind {
         // 四类有落点：它们的动态原因由 helper 给；这里的文本只是兜底（⛔ 不应出现）。
-        MidiAuxEventKind::Tempo => "tempo map has no home: project.bpm is a single scalar",
-        MidiAuxEventKind::TimeSignature => {
-            "meter map has no home: project.time_signature is a single scalar"
-        }
+        MidiAuxEventKind::Tempo => "tempo not adopted into project",
+        MidiAuxEventKind::TimeSignature => "time signature not adopted into project",
         MidiAuxEventKind::TrackName => "track names cannot all land in one TrackV3::name",
         MidiAuxEventKind::Marker => "marker cannot become a SectionV3 (zero-length / non-UTF-8)",
         MidiAuxEventKind::KeySignature => "the model has no key-signature field",
@@ -1417,9 +1531,7 @@ pub fn plan_midi_import(
     let (sections, marker_dropped, marker_reason) =
         plan_sections(&parsed.markers, parsed.end_tick, parsed.ppq);
     for adoption in [&mut track_name, &mut tempo, &mut time_signature] {
-        if let Some(op) = adoption.op.take() {
-            ops.push(op);
-        }
+        ops.extend(adoption.all_ops());
     }
     for section in &sections {
         let section_id = derive_note_id();
@@ -2071,15 +2183,25 @@ pub mod tests {
             losses.aux_events[&MidiAuxEventKind::Tempo],
             MidiLossCount {
                 read: 2,
-                dropped: 2,
+                dropped: 0,
             },
-            "tempo map（120→150）没有家"
+            "tempo map（120→150）如实落地"
         );
         assert!(
-            losses.aux_reasons[&MidiAuxEventKind::Tempo].contains("120.00")
-                && losses.aux_reasons[&MidiAuxEventKind::Tempo].contains("150.00"),
-            "tempo 的原因必须**列出两个值**: {:?}",
-            losses.aux_reasons[&MidiAuxEventKind::Tempo]
+            !losses.aux_reasons.contains_key(&MidiAuxEventKind::Tempo),
+            "落地的类别不许编一条丢失原因"
+        );
+        assert!(
+            plan.ops.iter().any(|op| matches!(
+                op,
+                Op::SetTempoPoint {
+                    tick: 480,
+                    new_bpm: Some(bpm),
+                    ..
+                } if (*bpm - 150.0).abs() < 1e-4
+            )),
+            "tick 480 的 150 BPM 发射了 SetTempoPoint: {:?}",
+            plan.ops
         );
         assert_eq!(
             losses.aux_events[&MidiAuxEventKind::TimeSignature],
@@ -2150,7 +2272,11 @@ pub mod tests {
             "无落点的类别必须仍全损（有落点的四类不参与这条判据）"
         );
         assert_eq!(losses.read_events(), 10, "夹具里真的 10 条 aux 事件");
-        assert_eq!(losses.dropped_events(), 2 + 2 + 1 + 3, "落地的只有 3/4");
+        assert_eq!(
+            losses.dropped_events(),
+            0 + 2 + 1 + 3,
+            "落地的是 tempo map (2) 与 3/4 (1)"
+        );
 
         // ---- 后果：段落真的进了 ops（tick 已换算；非 UTF-8 只结束前一段） ----
         let sections: Vec<(&str, u64, u64)> = plan
@@ -2624,8 +2750,8 @@ pub mod metadata_adoption_tests {
         assert!(!import_target_is_empty(&automation), "自动化点就算内容");
     }
 
-    /// 判据（父单）：**两条 tempo / 两条拍号**必须响亮报丢并列出**两个值**，
-    /// ⛔ 不许静默挑一个。工程的两个单标量必须**原样不动**。
+    /// 判据：**非空工程**遇到两条 tempo / 两条拍号必须响亮报丢并列出**两个值**，
+    /// ⛔ 不许覆盖工程已有内容。工程内容必须**原样不动**。
     #[test]
     fn two_tempo_and_meter_changes_are_loud_losses_that_name_every_value() {
         let mut project = yeban_model::samples::filled_project();
@@ -2655,30 +2781,33 @@ pub mod metadata_adoption_tests {
         let plan =
             plan_midi_import(&project, &parsed, &MidiImportOptions::default()).expect("有目标");
         assert!(
-            !plan
-                .ops
-                .iter()
-                .any(|op| matches!(op, Op::SetTempo { .. } | Op::SetTimeSignature { .. })),
-            "map 没有家 ⇒ ⛔ 不发一个'挑出来的'单值: {:?}",
+            !plan.ops.iter().any(|op| matches!(
+                op,
+                Op::SetTempo { .. }
+                    | Op::SetTimeSignature { .. }
+                    | Op::SetTempoPoint { .. }
+                    | Op::SetTimeSignaturePoint { .. }
+            )),
+            "非空工程 ⛔ 不发 tempo/拍号操作: {:?}",
             plan.ops
         );
         let tempo = &plan.losses.aux_events[&MidiAuxEventKind::Tempo];
         assert_eq!((tempo.read, tempo.dropped), (2, 2), "两条都丢");
         let tempo_reason = &plan.losses.aux_reasons[&MidiAuxEventKind::Tempo];
         assert!(
-            tempo_reason.contains("100.00 BPM @0") && tempo_reason.contains("150.00 BPM @960"),
-            "tempo 原因必须同时点名两个值与 tick: {tempo_reason}"
+            tempo_reason.contains("100.00 BPM @0")
+                && tempo_reason.contains("150.00 BPM @960")
+                && tempo_reason.contains("already has content"),
+            "tempo 原因必须同时点名两个值与 tick，并说明工程已有内容: {tempo_reason}"
         );
         let meter = &plan.losses.aux_events[&MidiAuxEventKind::TimeSignature];
         assert_eq!((meter.read, meter.dropped), (2, 2), "两条都丢");
         let meter_reason = &plan.losses.aux_reasons[&MidiAuxEventKind::TimeSignature];
         assert!(
-            meter_reason.contains("5/8 @0") && meter_reason.contains("3/4 @960"),
-            "拍号原因必须同时点名两个值与 tick: {meter_reason}"
-        );
-        assert!(
-            meter_reason.contains("single scalar"),
-            "原因必须说明为什么没有家: {meter_reason}"
+            meter_reason.contains("5/8 @0")
+                && meter_reason.contains("3/4 @960")
+                && meter_reason.contains("already has content"),
+            "拍号原因必须同时点名两个值与 tick，并说明工程已有内容: {meter_reason}"
         );
 
         // 首条在 tick > 0 也一样：SMF 隐含 120 BPM / 4/4 ⇒ 仍是两个值。
@@ -2703,6 +2832,130 @@ pub mod metadata_adoption_tests {
         assert!(
             meter_reason.contains("4/4 @0 (SMF default") && meter_reason.contains("3/4 @960"),
             "首条拍号在 tick > 0 ⇒ 隐含 4/4 + 3/4: {meter_reason}"
+        );
+    }
+
+    /// 判据：在没有内容的工程中，多条 tempo 与多条拍号如实落地进
+    /// `project.bpm`/`tempo_map` 与 `project.time_signature`/`time_signature_map`，
+    /// 损失为 0。首条在 tick > 0 时如实采用 SMF 默认值并在 tick > 0 建立点。
+    #[test]
+    fn multi_tempo_and_meter_changes_are_adopted_into_maps_with_zero_loss() {
+        let mut project = content_free_project();
+        project.bpm = 120.0;
+        project.time_signature = TimeSignature {
+            numerator: 4,
+            denominator: 4,
+        };
+        let mut parsed = two_notes(960);
+        parsed = recording(parsed, MidiAuxEventKind::Tempo, 2);
+        parsed = recording(parsed, MidiAuxEventKind::TimeSignature, 2);
+        parsed.tempos = vec![
+            MidiTempo {
+                tick: 0,
+                microseconds_per_quarter: Some(600_000), // 100 BPM
+                numerator: Some(5),
+                denominator_pow2: Some(3), // 5/8
+            },
+            MidiTempo {
+                tick: 960,
+                microseconds_per_quarter: Some(400_000), // 150 BPM
+                numerator: Some(3),
+                denominator_pow2: Some(2), // 3/4
+            },
+        ];
+
+        let plan =
+            plan_midi_import(&project, &parsed, &MidiImportOptions::default()).expect("有目标");
+        assert!(
+            plan.ops.iter().any(|op| matches!(
+                op,
+                Op::SetTempo { old_bpm, new_bpm } if *old_bpm == 120.0 && *new_bpm == 100.0
+            )),
+            "tick 0 tempo 发射 SetTempo 120 => 100: {:?}",
+            plan.ops
+        );
+        assert!(
+            plan.ops.iter().any(|op| matches!(
+                op,
+                Op::SetTempoPoint { tick: 960, new_bpm: Some(bpm), .. } if (*bpm - 150.0).abs() < 1e-4
+            )),
+            "tick 960 tempo 发射 SetTempoPoint: {:?}",
+            plan.ops
+        );
+        assert!(
+            plan.ops.iter().any(|op| matches!(
+                op,
+                Op::SetTimeSignature { new_time_signature, .. }
+                    if new_time_signature.numerator == 5 && new_time_signature.denominator == 8
+            )),
+            "tick 0 拍号发射 SetTimeSignature 5/8: {:?}",
+            plan.ops
+        );
+        assert!(
+            plan.ops.iter().any(|op| matches!(
+                op,
+                Op::SetTimeSignaturePoint { tick: 960, new_time_signature: Some(ts), .. }
+                    if ts.numerator == 3 && ts.denominator == 4
+            )),
+            "tick 960 拍号发射 SetTimeSignaturePoint 3/4: {:?}",
+            plan.ops
+        );
+        assert_eq!(
+            plan.losses.aux_events[&MidiAuxEventKind::Tempo].dropped,
+            0,
+            "tempo map 如实采纳，0 丢失"
+        );
+        assert_eq!(
+            plan.losses.aux_events[&MidiAuxEventKind::TimeSignature].dropped,
+            0,
+            "time signature map 如实采纳，0 丢失"
+        );
+        assert!(
+            !plan
+                .losses
+                .aux_reasons
+                .contains_key(&MidiAuxEventKind::Tempo)
+        );
+        assert!(
+            !plan
+                .losses
+                .aux_reasons
+                .contains_key(&MidiAuxEventKind::TimeSignature)
+        );
+
+        // 首条在 tick > 0：SMF 隐含 tick 0 为 120 BPM / 4/4。
+        let mut late = two_notes(960);
+        late = recording(late, MidiAuxEventKind::Tempo, 1);
+        late = recording(late, MidiAuxEventKind::TimeSignature, 1);
+        late.tempos = vec![MidiTempo {
+            tick: 960,
+            microseconds_per_quarter: Some(400_000), // 150 BPM
+            numerator: Some(3),
+            denominator_pow2: Some(2), // 3/4
+        }];
+        let plan =
+            plan_midi_import(&project, &late, &MidiImportOptions::default()).expect("有目标");
+        assert!(
+            plan.ops.iter().any(|op| matches!(
+                op,
+                Op::SetTempoPoint { tick: 960, new_bpm: Some(bpm), .. } if (*bpm - 150.0).abs() < 1e-4
+            )),
+            "late tempo 发射 SetTempoPoint 150 @960: {:?}",
+            plan.ops
+        );
+        assert!(
+            plan.ops.iter().any(|op| matches!(
+                op,
+                Op::SetTimeSignaturePoint { tick: 960, new_time_signature: Some(ts), .. }
+                    if ts.numerator == 3 && ts.denominator == 4
+            )),
+            "late meter 发射 SetTimeSignaturePoint 3/4 @960: {:?}",
+            plan.ops
+        );
+        assert_eq!(plan.losses.aux_events[&MidiAuxEventKind::Tempo].dropped, 0);
+        assert_eq!(
+            plan.losses.aux_events[&MidiAuxEventKind::TimeSignature].dropped,
+            0
         );
     }
 
