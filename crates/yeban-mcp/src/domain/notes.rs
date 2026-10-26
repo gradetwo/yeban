@@ -1258,6 +1258,8 @@ pub const OP_KINDS: &[&str] = &[
     SET_TITLE_KIND,
     SET_TIME_SIGNATURE_KIND,
     SET_KEY_SIGNATURE_KIND,
+    SET_TEMPO_POINT_KIND,
+    SET_TIME_SIGNATURE_POINT_KIND,
     SET_TRACK_NAME_KIND,
     SET_CLIP_NAME_KIND,
     SET_CLIP_GAIN_KIND,
@@ -1289,7 +1291,7 @@ pub const OP_KINDS: &[&str] = &[
 /// `domain::plan_edit_notes` 用它决定"缺参时要不要响亮拒绝"。
 ///
 /// ⚠ 两份真相（本清单 vs 谓词的 `match`）由判据
-/// `every_catalog_kind_parses_and_round_trips` 在**全部 43 个 kind** 上对账
+/// `every_catalog_kind_parses_and_round_trips` 在**全部 46 个 kind** 上对账
 /// （`OP_KINDS` 里每个 kind 的最小合法形状 → 解析 → 与本清单比对），
 /// 因此"加了一个 kind 却忘了决定它读不读 `clipId`"会立刻变红。
 pub const ENVELOPE_CLIP_KINDS: &[&str] = &[
@@ -1318,7 +1320,7 @@ pub const ENVELOPE_CLIP_KINDS: &[&str] = &[
 /// [`ENVELOPE_CLIP_KINDS`] 去掉 `removeClip` 之后的子集，且这条包含关系由判据钉住。
 ///
 /// 两份真相（本清单 vs 谓词的 `match`）由判据
-/// `every_catalog_kind_compiles_to_exactly_one_op_variant` 在**全部 43 个 kind** 上
+/// `every_catalog_kind_compiles_to_exactly_one_op_variant` 在**全部 46 个 kind** 上
 /// 对账（`OP_KINDS` 里每个 kind 的规范形状 → 解析 → 与本清单比对），因此"加了一个
 /// kind 却忘了决定它读不读音符"会立刻变红。
 pub const NOTE_LEVEL_KINDS: &[&str] = &[
@@ -1895,6 +1897,61 @@ pub const KEY_SIGNATURE_IS_MINOR_FIELD: &str = "isMinor";
 pub const KEY_SIGNATURE_FIELDS: [&str; 2] = [
     KEY_SIGNATURE_SHARPS_FLATS_FIELD,
     KEY_SIGNATURE_IS_MINOR_FIELD,
+];
+
+/// `ops[].kind` 的**速度映射点**形态名（写 [`Op::SetTempoPoint`]）。
+///
+/// 与模型 `Op` 变体名同词（`SetTempoPoint` 的小驼峰），与 [`SET_TEMPO_KIND`] 同一条规则。
+///
+/// ⚠ 它是**顶层文档字段的映射点**形态（与 [`SET_TEMPO_KIND`] / [`SET_TIME_SIGNATURE_KIND`]
+/// 同族）：不读不写音符，也不寻址音轨。`tick == 0` 不在本形态的范围内 —— tick 0 的
+/// 时间点是**工程速度**本身，由 [`SET_TEMPO_KIND`] 写（模型 `YebanProjectV1::validate`
+/// 对 `tempo_map[0]` 报 `TempoMapZeroTick`）。
+pub const SET_TEMPO_POINT_KIND: &str = "setTempoPoint";
+
+/// 速度映射点形态的**映射点位置**字段名（`ops[].tick`，必填，整数 ≥ 1）。
+///
+/// 与 [`REMOVE_POINT_TICK_FIELD`] 逐字同词（`ADR-0001` D48："同一个词必须同一个意思"
+/// —— 都是时间轴上的 tick 坐标）。
+pub const SET_TEMPO_POINT_TICK_FIELD: &str = "tick";
+
+/// 速度映射点形态的**新速度**字段名（`ops[].bpm`，必填，数字或 `null`）。
+///
+/// 与 [`SET_TEMPO_BPM_FIELD`] **同一个字面量**：`null` = **删除**该映射点，
+/// 数字 = 新增 / 修改（值域与 [`SET_TEMPO_KIND`] 同一条 `MIN_BPM..=MAX_BPM`）。
+pub const SET_TEMPO_POINT_BPM_FIELD: &str = SET_TEMPO_BPM_FIELD;
+
+/// 速度映射点形态允许出现的**全部**键（判别键 + 两个必填）。
+pub const SET_TEMPO_POINT_FIELDS: [&str; 3] = [
+    "kind",
+    SET_TEMPO_POINT_TICK_FIELD,
+    SET_TEMPO_POINT_BPM_FIELD,
+];
+
+/// `ops[].kind` 的**拍号映射点**形态名（写 [`Op::SetTimeSignaturePoint`]）。
+///
+/// 与模型 `Op` 变体名同词（`SetTimeSignaturePoint` 的小驼峰），与
+/// [`SET_TIME_SIGNATURE_KIND`] 同一条规则。
+///
+/// ⚠ 它是**顶层文档字段的映射点**形态：tick 0 的拍号是**工程拍号**本身，
+/// 由 [`SET_TIME_SIGNATURE_KIND`] 写；本形态只覆盖 `tick >= 1` 的映射点。
+pub const SET_TIME_SIGNATURE_POINT_KIND: &str = "setTimeSignaturePoint";
+
+/// 拍号映射点形态的**映射点位置**字段名（`ops[].tick`，必填，整数 ≥ 1）。
+pub const SET_TIME_SIGNATURE_POINT_TICK_FIELD: &str = "tick";
+
+/// 拍号映射点形态的**新拍号**字段名（`ops[].timeSignature`，必填，`"N/D"` 文本或 `null`）。
+///
+/// 与 [`SET_TIME_SIGNATURE_FIELD`] **同一个字面量**：`null` = **删除**该映射点，
+/// 文本 = 新增 / 修改；形状与取值**复用同一个解析器** [`parse_time_signature`]
+/// （⛔ 本层不抄值域表）。
+pub const SET_TIME_SIGNATURE_POINT_TS_FIELD: &str = SET_TIME_SIGNATURE_FIELD;
+
+/// 拍号映射点形态允许出现的**全部**键（判别键 + 两个必填）。
+pub const SET_TIME_SIGNATURE_POINT_FIELDS: [&str; 3] = [
+    "kind",
+    SET_TIME_SIGNATURE_POINT_TICK_FIELD,
+    SET_TIME_SIGNATURE_POINT_TS_FIELD,
 ];
 
 /// `ops[].kind` 的**设置音轨名**形态名（写 [`Op::SetTrackName`]）。
@@ -3064,6 +3121,41 @@ pub enum NoteOp {
         /// 修改后的调号（由 [`KeySignature::validate`] 判决，`None` 为清空）。
         new_key_signature: Option<KeySignature>,
     },
+    /// 新增 / 修改 / 删除一个**速度映射点**（[`Op::SetTempoPoint`]，顶层 `tempo_map`）。
+    ///
+    /// 与 [`Self::SetTempo`] 同族（**顶层文档字段**、不读不写音符、不寻址音轨），
+    /// 但目标是 `tempo_map` 里 `tick >= 1` 的一个映射点：
+    /// `new_bpm: Some` = 新增 / 修改，`new_bpm: None`（载荷 `bpm: null`）= **删除**该点。
+    ///
+    /// ⚠ **tick 0 不在本形态**：tick 0 的时间点就是工程速度本身，由 [`Self::SetTempo`]
+    /// 写（模型对 `tempo_map[0]` 报 `TempoMapZeroTick`）⇒ 本层在**解析期**响亮拒绝
+    /// `tick == 0`（`tempoMapZeroTick`）。
+    /// ⚠ 撤销载荷 `old_bpm` 是**占位**：真值由 [`compile`] 从**当前文档**读
+    /// （`project.tempo_map.get(&tick)`），⛔ 不信调用方声明。
+    SetTempoPoint {
+        /// 映射点所在 tick（必须 ≥ 1）。
+        tick: u64,
+        /// 修改前的速度（**占位**：真值由 [`compile`] 从当前文档读）。
+        old_bpm: Option<f64>,
+        /// 修改后的速度（`None` = 删除该映射点）。
+        new_bpm: Option<f64>,
+    },
+    /// 新增 / 修改 / 删除一个**拍号映射点**（[`Op::SetTimeSignaturePoint`]，顶层
+    /// `time_signature_map`）。
+    ///
+    /// 与 [`Self::SetTempoPoint`] 同族（顶层文档字段的映射点、不读不写音符、不寻址音轨）：
+    /// `new_time_signature: Some` = 新增 / 修改，`None`（载荷 `timeSignature: null`）=
+    /// **删除**该映射点。⚠ tick 0 的拍号是**工程拍号**本身，由 [`Self::SetTimeSignature`] 写。
+    /// ⚠ 撤销载荷 `old_time_signature` 是**占位**：真值由 [`compile`] 从**当前文档**读
+    /// （`project.time_signature_map.get(&tick)`），⛔ 不信调用方声明。
+    SetTimeSignaturePoint {
+        /// 映射点所在 tick（必须 ≥ 1）。
+        tick: u64,
+        /// 修改前的拍号（**占位**：真值由 [`compile`] 从当前文档读）。
+        old_time_signature: Option<TimeSignature>,
+        /// 修改后的拍号（`None` = 删除该映射点）。
+        new_time_signature: Option<TimeSignature>,
+    },
     /// 设置**音轨名字**（[`Op::SetTrackName`]，寻址到一条音轨）。
     ///
     /// ⭐ **本形态补上了什么**：⭐ 在它之前工具面**只有 [建轨][Self::AddTrack] 时能给名字**
@@ -3708,6 +3800,8 @@ impl NoteOp {
             Self::SetTitle { .. } => SET_TITLE_KIND,
             Self::SetTimeSignature { .. } => SET_TIME_SIGNATURE_KIND,
             Self::SetKeySignature { .. } => SET_KEY_SIGNATURE_KIND,
+            Self::SetTempoPoint { .. } => SET_TEMPO_POINT_KIND,
+            Self::SetTimeSignaturePoint { .. } => SET_TIME_SIGNATURE_POINT_KIND,
             Self::SetTrackName { .. } => SET_TRACK_NAME_KIND,
             Self::SetClipName { .. } => SET_CLIP_NAME_KIND,
             Self::SetClipGain { .. } => SET_CLIP_GAIN_KIND,
@@ -4367,6 +4461,103 @@ fn parse_one(item: &Value) -> Result<NoteOp, Fault> {
                 new_key_signature: parse_key_signature(value)?,
             })
         }
+        SET_TEMPO_POINT_KIND => {
+            reject_set_tempo_point_fields(object)?;
+            let tick = read_required_u64(object, SET_TEMPO_POINT_TICK_FIELD)?;
+            if tick == 0 {
+                return Err(Fault::domain_with_data(
+                    ErrorCode::InvalidParameterRange,
+                    format!(
+                        "`{SET_TEMPO_POINT_TICK_FIELD}` 必须 ≥ 1: tick 0 的时间点是**工程速度本身**, \
+                         由 `{SET_TEMPO_KIND}` 形态写（模型对 `tempo_map[0]` 报 `TempoMapZeroTick`）"
+                    ),
+                    serde_json::json!({
+                        "reason": "tempoMapZeroTick",
+                        "tick": tick,
+                    }),
+                ));
+            }
+            let new_bpm = match object.get(SET_TEMPO_POINT_BPM_FIELD) {
+                // ⚠ **缺键 ≠ 删除**：`null` 是"删除该映射点"的唯一拼法 ⇒ 缺键响亮拒绝
+                // （与 `setTempo` 缺 `bpm` 同口径）。
+                None => {
+                    return Err(missing(
+                        SET_TEMPO_POINT_BPM_FIELD,
+                        "数字 (20.0..=999.0) 或 null（null = 删除该速度映射点）",
+                    ));
+                }
+                Some(Value::Null) => None,
+                Some(_) => {
+                    let bpm = read_required_finite_f64(object, SET_TEMPO_POINT_BPM_FIELD)?;
+                    // ⚠ 区间在**解析期**提前拒（模型 `Op::SetTempoPoint` 的前置条件也拒
+                    // 同一区间）：与 `setTempo` 同源，⛔ 不抄第二张表。
+                    if !(yeban_model::project::MIN_BPM..=yeban_model::project::MAX_BPM)
+                        .contains(&bpm)
+                    {
+                        return Err(Fault::domain_with_data(
+                            ErrorCode::InvalidParameterRange,
+                            format!(
+                                "速度映射点必须在 {}..={} BPM, 实际收到 {bpm}",
+                                yeban_model::project::MIN_BPM,
+                                yeban_model::project::MAX_BPM
+                            ),
+                            serde_json::json!({
+                                "reason": "bpmOutOfRange",
+                                "received": bpm,
+                                "min": yeban_model::project::MIN_BPM,
+                                "max": yeban_model::project::MAX_BPM,
+                            }),
+                        ));
+                    }
+                    Some(bpm)
+                }
+            };
+            Ok(NoteOp::SetTempoPoint {
+                tick,
+                // ⚠ `old_bpm` 是**占位**：真值由 `compile` 从当前文档读（⛔ 不信调用方）。
+                old_bpm: None,
+                new_bpm,
+            })
+        }
+        SET_TIME_SIGNATURE_POINT_KIND => {
+            reject_set_time_signature_point_fields(object)?;
+            let tick = read_required_u64(object, SET_TIME_SIGNATURE_POINT_TICK_FIELD)?;
+            if tick == 0 {
+                return Err(Fault::domain_with_data(
+                    ErrorCode::InvalidParameterRange,
+                    format!(
+                        "`{SET_TIME_SIGNATURE_POINT_TICK_FIELD}` 必须 ≥ 1: tick 0 的拍号是**工程拍号本身**, \
+                         由 `{SET_TIME_SIGNATURE_KIND}` 形态写（模型对 `time_signature_map[0]` 报 `TempoMapZeroTick`）"
+                    ),
+                    serde_json::json!({
+                        "reason": "tempoMapZeroTick",
+                        "tick": tick,
+                    }),
+                ));
+            }
+            let value = object
+                .get(SET_TIME_SIGNATURE_POINT_TS_FIELD)
+                .ok_or_else(|| {
+                    missing(
+                        SET_TIME_SIGNATURE_POINT_TS_FIELD,
+                        "\"N/D\" 形状的拍号文本 (例: \"3/4\"、\"6/8\") 或 null（null = 删除该拍号映射点）",
+                    )
+                })?;
+            let new_time_signature = if value.is_null() {
+                // ⚠ **缺键 ≠ 删除**（上面已响亮拒绝）；`null` 是"删除该映射点"的唯一拼法。
+                None
+            } else {
+                // ⭐ 形状 + 取值都走 `create:true` 用的**同一个**解析器
+                // （内部唯一判定 = `TimeSignature::validate`）⇒ ⛔ 没有第二张值域表。
+                Some(parse_time_signature(Some(value))?)
+            };
+            Ok(NoteOp::SetTimeSignaturePoint {
+                tick,
+                // ⚠ `old_time_signature` 是**占位**：真值由 `compile` 从当前文档读。
+                old_time_signature: None,
+                new_time_signature,
+            })
+        }
         SET_TRANSPORT_CONFIG_KIND => Ok(NoteOp::SetTransportConfig {
             new_config: parse_transport_config(object)?,
         }),
@@ -4898,6 +5089,33 @@ fn reject_set_key_signature_fields(object: &Map<String, Value>) -> Result<(), Fa
         &SET_KEY_SIGNATURE_FIELDS,
         SET_KEY_SIGNATURE_KIND,
         "unknownSetKeySignatureField",
+    )
+}
+
+/// 拒绝 `setTempoPoint` 里 [`SET_TEMPO_POINT_FIELDS`] 之外的键。
+///
+/// 与同族 `reject_*_fields` 同一口径（拼错的键必须被拒绝、⛔ 不能静默忽略）：
+/// 最像"写对了"的错法是把旧值写进载荷（`oldBpm`）—— 它由 [`compile`] 从当前文档读，
+/// 写在这里只会被静默忽略，而调用方以为前置条件由自己声明。
+fn reject_set_tempo_point_fields(object: &Map<String, Value>) -> Result<(), Fault> {
+    reject_unknown_keys(
+        object,
+        &SET_TEMPO_POINT_FIELDS,
+        SET_TEMPO_POINT_KIND,
+        "unknownSetTempoPointField",
+    )
+}
+
+/// 拒绝 `setTimeSignaturePoint` 里 [`SET_TIME_SIGNATURE_POINT_FIELDS`] 之外的键。
+///
+/// 与 [`reject_set_tempo_point_fields`] 同口径：`oldTimeSignature` 写进载荷是**未知键**，
+/// 响亮拒绝（撤销载荷由 [`compile`] 从当前文档读）。
+fn reject_set_time_signature_point_fields(object: &Map<String, Value>) -> Result<(), Fault> {
+    reject_unknown_keys(
+        object,
+        &SET_TIME_SIGNATURE_POINT_FIELDS,
+        SET_TIME_SIGNATURE_POINT_KIND,
+        "unknownSetTimeSignaturePointField",
     )
 }
 
@@ -8219,6 +8437,113 @@ pub fn compile(
                     new_key_signature: *new_key_signature,
                 }
             }
+            NoteOp::SetTempoPoint {
+                tick, new_bpm, ..
+            } => {
+                // ⚠ tick 0 在 `compile` 里**重查**（与 `setTempo` 重查区间同一条口径）：
+                // 手工构造的 `NoteOp`（判据会这么用）也不许编译出一条 `apply` 必被拒的 op。
+                if *tick == 0 {
+                    return Err(Fault::domain_with_data(
+                        ErrorCode::InvalidParameterRange,
+                        format!(
+                            "`{SET_TEMPO_POINT_TICK_FIELD}` 必须 ≥ 1: tick 0 的时间点由 `{SET_TEMPO_KIND}` 形态写"
+                        ),
+                        serde_json::json!({
+                            "reason": "tempoMapZeroTick",
+                            "tick": tick,
+                        }),
+                    ));
+                }
+                // ⚠ 区间与有限性**在这里提前拒**（模型自己也会拒同一区间）。
+                if new_bpm.is_some_and(|bpm| {
+                    !bpm.is_finite()
+                        || !(yeban_model::project::MIN_BPM..=yeban_model::project::MAX_BPM)
+                            .contains(&bpm)
+                }) {
+                    let bpm = new_bpm.unwrap_or(f64::NAN);
+                    return Err(Fault::domain_with_data(
+                        ErrorCode::InvalidParameterRange,
+                        format!(
+                            "速度映射点必须在 {}..={} BPM 且有限, 实际收到 {bpm}",
+                            yeban_model::project::MIN_BPM,
+                            yeban_model::project::MAX_BPM
+                        ),
+                        serde_json::json!({
+                            "reason": "bpmOutOfRange",
+                            "received": bpm,
+                            "min": yeban_model::project::MIN_BPM,
+                            "max": yeban_model::project::MAX_BPM,
+                        }),
+                    ));
+                }
+                // 撤销载荷来自**当前文档**（模型 `apply` 的前置条件读同一个映射点、
+                // 且是**逐位**比较）⇒ 本层不采信调用方声明的旧状态。
+                let old_bpm = project.tempo_map.get(tick).copied();
+                // ⚠ "删除一个不存在的映射点"（旧值与新值都是 `None`）在这里就报
+                // `tempoPointNotFound` —— 模型侧同一条形状报的是泛化的 `OpStateMismatch`，
+                // 而本层能给出**带 tick 的结构化理由**（与 `removeAutomationPoint`
+                // 的 `automationLaneNotFound` 同口径）。
+                if old_bpm.is_none() && new_bpm.is_none() {
+                    return Err(Fault::domain_with_data(
+                        ErrorCode::EntityNotFound,
+                        format!("工程的 `tempo_map` 里 tick {tick} 没有速度映射点, 没有东西可以删除"),
+                        serde_json::json!({
+                            "reason": "tempoPointNotFound",
+                            "tick": tick,
+                            "hint": "映射点身份由 `yeban_query_project` 的 `tempoMap` 报出; 新增请用数字载荷, 删除用 null",
+                        }),
+                    ));
+                }
+                Op::SetTempoPoint {
+                    tick: *tick,
+                    old_bpm,
+                    new_bpm: *new_bpm,
+                }
+            }
+            NoteOp::SetTimeSignaturePoint {
+                tick,
+                new_time_signature,
+                ..
+            } => {
+                // ⚠ tick 0 在 `compile` 里**重查**（与 `setTempoPoint` 同口径）。
+                if *tick == 0 {
+                    return Err(Fault::domain_with_data(
+                        ErrorCode::InvalidParameterRange,
+                        format!(
+                            "`{SET_TIME_SIGNATURE_POINT_TICK_FIELD}` 必须 ≥ 1: tick 0 的拍号由 `{SET_TIME_SIGNATURE_KIND}` 形态写"
+                        ),
+                        serde_json::json!({
+                            "reason": "tempoMapZeroTick",
+                            "tick": tick,
+                        }),
+                    ));
+                }
+                // ⚠ 值域对**同一个**校验器再走一遍（与 `setTimeSignature` 在 `compile`
+                // 里重查 `TimeSignature::validate` 同一条口径）。
+                if let Some(ts) = new_time_signature {
+                    ts.validate()
+                        .map_err(|error| from_model("拍号校验", &error))?;
+                }
+                let old_time_signature = project.time_signature_map.get(tick).copied();
+                if old_time_signature.is_none() && new_time_signature.is_none() {
+                    return Err(Fault::domain_with_data(
+                        ErrorCode::EntityNotFound,
+                        format!(
+                            "工程的 `time_signature_map` 里 tick {tick} 没有拍号映射点, 没有东西可以删除"
+                        ),
+                        serde_json::json!({
+                            "reason": "timeSignaturePointNotFound",
+                            "tick": tick,
+                            "hint": "映射点身份由 `yeban_query_project` 的 `timeSignatureMap` 报出; 新增用 \"N/D\" 文本, 删除用 null",
+                        }),
+                    ));
+                }
+                Op::SetTimeSignaturePoint {
+                    tick: *tick,
+                    old_time_signature,
+                    new_time_signature: *new_time_signature,
+                }
+            }
             NoteOp::SetTransportConfig { new_config } => {
                 // 撤销载荷来自**当前文档**（模型 `apply` 的前置条件读同一个字段）；
                 // 本层不自己写 `Op::invert`（那是模型的唯一事实源）。
@@ -11330,7 +11655,9 @@ mod tests {
         // 本票（`#338` 工程拍号）新增 `setTimeSignature`（顶层文档字段，与 `setTempo`
         // 同族）后为 43 —— 同样与真实 `kind` 同步。
         // 本票新增 `setKeySignature`（顶层文档字段，与 `setTimeSignature` 同族）后为 44 —— 同样与真实 `kind` 同步。
-        assert_eq!(OP_KINDS.len(), 44);
+        // 本票新增 `setTempoPoint` 与 `setTimeSignaturePoint`（两个**映射点**形态，
+        // 补上 `tempo_map` / `time_signature_map` 在工具面无通路）后为 46 —— 同样与真实 `kind` 同步。
+        assert_eq!(OP_KINDS.len(), 46);
         assert!(OP_KINDS.contains(&SET_KEY_SIGNATURE_KIND));
         assert_eq!(TrackFlag::NAMES, [SET_TRACK_MUTE_KIND, SET_TRACK_SOLO_KIND]);
         assert!(OP_KINDS.contains(&SET_TRACK_MUTE_KIND));
@@ -17205,7 +17532,7 @@ mod tests {
     fn every_catalog_kind_parses_and_round_trips() {
         let ulid = "01J8ZQ00000000000000000999";
         // 每个 kind 的**最小合法形状**（只到解析期为止；文档相关的前置条件在 `compile`）。
-        let table: [(&str, serde_json::Value); 44] = [
+        let table: [(&str, serde_json::Value); 46] = [
             (
                 "add",
                 serde_json::json!({"note": {"startTick": 0, "pitch": 60, "durationTicks": 480}}),
@@ -17292,6 +17619,14 @@ mod tests {
             (
                 "setKeySignature",
                 serde_json::json!({"keySignature": {"sharpsFlats": 0, "isMinor": false}}),
+            ),
+            (
+                "setTempoPoint",
+                serde_json::json!({"tick": 960, "bpm": 135.0}),
+            ),
+            (
+                "setTimeSignaturePoint",
+                serde_json::json!({"tick": 960, "timeSignature": "3/4"}),
             ),
             (
                 "setTrackName",
@@ -17416,6 +17751,8 @@ mod tests {
                 "setTitle",
                 "setTimeSignature",
                 "setKeySignature",
+                "setTempoPoint",
+                "setTimeSignaturePoint",
                 "setTrackName",
                 "setClipName",
                 "setClipGain",
@@ -17796,7 +18133,7 @@ mod tests {
             Value,
             &'a str,
         );
-        let rows: [Row<'_>; 45] = [
+        let rows: [Row<'_>; 47] = [
             (
                 "add",
                 None,
@@ -17977,6 +18314,23 @@ mod tests {
                 None,
                 serde_json::json!({"keySignature": {"sharpsFlats": -3, "isMinor": true}}),
                 "SetKeySignature",
+            ),
+            // ⭐ 本票：`setTempoPoint` ⇒ `Op::SetTempoPoint`（tick 960 在夹具的
+            // `tempo_map` 里**不存在** ⇒ 编译产物是"新增"形态 `old_bpm: None`）。
+            (
+                "setTempoPoint",
+                None,
+                None,
+                serde_json::json!({"tick": 960, "bpm": 135.0}),
+                "SetTempoPoint",
+            ),
+            // ⭐ 本票：`setTimeSignaturePoint` ⇒ `Op::SetTimeSignaturePoint`（同上，新增形态）。
+            (
+                "setTimeSignaturePoint",
+                None,
+                None,
+                serde_json::json!({"tick": 960, "timeSignature": "3/4"}),
+                "SetTimeSignaturePoint",
             ),
             (
                 "setTrackName",
@@ -18178,11 +18532,11 @@ mod tests {
         assert_eq!(
             rows.len(),
             OP_KINDS.len() + 1,
-            "44 个 kind ＋ 1 个额外载荷分支"
+            "46 个 kind ＋ 1 个额外载荷分支"
         );
 
         let mut seen: Vec<&str> = Vec::new();
-        // ⭐ `#179`：在**全部 43 个 kind**上对账 `is_note_level()` 与发布的
+        // ⭐ `#179`：在**全部 46 个 kind**上对账 `is_note_level()` 与发布的
         // `NOTE_LEVEL_KINDS`（⛔ 不是手抄的第二份清单，也不是"断言它非空"）。
         let mut note_level_seen: Vec<&str> = Vec::new();
         for (label, clip_override, preset, payload, expected) in rows {
@@ -18232,7 +18586,8 @@ mod tests {
         // `#336` 的 `setClipPlacementLoop`（独占一个变体）⇒ 42 → **43**；
         // `#338` 的 `setTimeSignature`（独占一个变体）⇒ 43 → **44**。
         // 本票的 `setKeySignature`（独占一个变体）⇒ 44 → **45**。
-        assert_eq!(seen.len(), 45);
+        // 本票的 `setTempoPoint` / `setTimeSignaturePoint`（各独占一个变体）⇒ 45 → **47**。
+        assert_eq!(seen.len(), 47);
         // ⭐ `#179`：音符级分支集合**恰好是七个**，且逐字等于发布清单。
         assert_eq!(
             NOTE_LEVEL_KINDS,
@@ -18250,7 +18605,7 @@ mod tests {
         assert_eq!(
             note_level_seen.len(),
             7,
-            "全部 44 个 kind 里 `is_note_level()` 为真的必须**恰好七个**，实际: {note_level_seen:?}"
+            "全部 46 个 kind 里 `is_note_level()` 为真的必须**恰好七个**，实际: {note_level_seen:?}"
         );
         assert_eq!(
             note_level_seen,
@@ -19603,6 +19958,469 @@ mod tests {
         assert_eq!(
             missing_sub.domain_code(),
             Some(ErrorCode::InvalidParameterRange)
+        );
+    }
+
+    /// `setTempoPoint`：解析 → 编译到**正是** `Op::SetTempoPoint` → `old_bpm` 来自
+    /// **当前文档** → 新增 / 修改 / 删除三条通路各自施加并**逐字节**回到原状；
+    /// tick 0、未知字段、区间外 `bpm`、删除不存在的点、陈旧载荷各自结构化拒绝。
+    ///
+    /// ⭐ 本形态补的是「速度**曲线**改不了」：`project.tempo_map` 此前在工具面
+    /// **没有任何**结构写点（`setTempo` 只写 `project.bpm`，即隐式的 tick 0）。
+    ///
+    /// 注入（实测红）：① `compile` 用解析期的占位 `None` 而不是文档现值 ⇒
+    /// 「修改已有点」那条 `old_bpm` 断言红；② 去掉「旧值与新值都是 `None`」前置门 ⇒
+    /// 删除不存在点那条断言红（那时报的会是模型泛化的 `OpStateMismatch`）；
+    /// ③ 去掉 `compile` 的 tick 0 重查 ⇒ 手工构造的 `NoteOp` 会编译出一条
+    /// `apply` 必被模型拒的 op（本判据第一条断言红）。
+    #[test]
+    fn set_tempo_point_compiles_the_document_value_and_round_trips() {
+        let mut project = filled_project();
+        let (track_id, clip_id) = lead_clip(&project);
+        let bytes_before = serde_json::to_string(&project).expect("序列化");
+
+        // ---- ① 解析与字段口径 ----
+        let ops = parse_ops(&serde_json::json!([
+            {"kind": SET_TEMPO_POINT_KIND, "tick": 960u64, "bpm": 135.0}
+        ]))
+        .expect("规范形状必须被接受");
+        assert_eq!(ops[0].kind_name(), SET_TEMPO_POINT_KIND);
+        assert!(!ops[0].is_note_level(), "速度映射点不读不写音符");
+        assert!(
+            !ops[0].reads_envelope_clip(),
+            "文档级形态: ⛔ 不读工具顶层 `clipId`"
+        );
+        assert_eq!(SET_TEMPO_POINT_KIND, "setTempoPoint");
+        assert_eq!(SET_TEMPO_POINT_FIELDS, ["kind", "tick", "bpm"]);
+
+        // ---- ② 编译到**正是** `Op::SetTempoPoint`；点不存在 ⇒ `old_bpm == None`（新增）----
+        let compiled = compile(&project, &track_id, &clip_id, &ops).expect("编译");
+        assert_eq!(compiled.len(), 1);
+        match &compiled[0] {
+            Op::SetTempoPoint {
+                tick,
+                old_bpm,
+                new_bpm,
+            } => {
+                assert_eq!(*tick, 960);
+                assert_eq!(
+                    *old_bpm,
+                    project.tempo_map.get(&960).copied(),
+                    "old 必须等于**文档现值**（⛔ 不信调用方声明）"
+                );
+                assert_eq!(*new_bpm, Some(135.0));
+            }
+            other => panic!("应当是 SetTempoPoint: {other:?}"),
+        }
+
+        // ---- ③ 新增：施加 + 一步撤销逐字节复原 ----
+        compiled[0].apply(&mut project).expect("新增映射点");
+        assert_eq!(project.tempo_map.get(&960).copied(), Some(135.0));
+        assert!(project.validate().is_ok());
+        compiled[0].apply_inverse(&mut project).expect("逆操作");
+        assert_eq!(
+            serde_json::to_string(&project).expect("序列化"),
+            bytes_before,
+            "一步撤销必须逐字节回到原状"
+        );
+
+        // ---- ④ 修改**已有**的点：`old_bpm` 必须读到文档里的现值 ----
+        project.tempo_map.insert(960, 120.0);
+        let ops = parse_ops(&serde_json::json!([
+            {"kind": SET_TEMPO_POINT_KIND, "tick": 960u64, "bpm": 135.0}
+        ]))
+        .expect("解析");
+        let compiled = compile(&project, &track_id, &clip_id, &ops).expect("编译");
+        match &compiled[0] {
+            Op::SetTempoPoint {
+                old_bpm, new_bpm, ..
+            } => {
+                assert_eq!(*old_bpm, Some(120.0), "修改通路必从文档读到旧值");
+                assert_eq!(*new_bpm, Some(135.0));
+            }
+            other => panic!("应当是 SetTempoPoint: {other:?}"),
+        }
+        let modified_before = serde_json::to_string(&project).expect("序列化");
+        compiled[0].apply(&mut project).expect("修改映射点");
+        assert_eq!(project.tempo_map.get(&960).copied(), Some(135.0));
+        compiled[0].apply_inverse(&mut project).expect("逆操作");
+        assert_eq!(
+            serde_json::to_string(&project).expect("序列化"),
+            modified_before,
+            "修改的一步撤销必须逐字节回到 120.0"
+        );
+
+        // ---- ⑤ 删除：`bpm: null` 取走映射点；撤销把它放回 ----
+        let delete_ops = parse_ops(&serde_json::json!([
+            {"kind": SET_TEMPO_POINT_KIND, "tick": 960u64, "bpm": null}
+        ]))
+        .expect("`bpm` 为 null（删除）必须被接受");
+        let compiled = compile(&project, &track_id, &clip_id, &delete_ops).expect("编译删除");
+        match &compiled[0] {
+            Op::SetTempoPoint {
+                old_bpm, new_bpm, ..
+            } => {
+                assert_eq!(*old_bpm, Some(120.0));
+                assert_eq!(*new_bpm, None, "null = 删除, 不是 0.0");
+            }
+            other => panic!("应当是 SetTempoPoint: {other:?}"),
+        }
+        compiled[0].apply(&mut project).expect("删除映射点");
+        assert_eq!(project.tempo_map.get(&960), None, "点必须真的没了");
+        compiled[0].apply_inverse(&mut project).expect("逆操作");
+        assert_eq!(project.tempo_map.get(&960).copied(), Some(120.0));
+
+        // ---- ⑥ 删除**不存在**的点 ⇒ `tempoPointNotFound`（带 tick 的结构化理由）----
+        let delete_missing = parse_ops(&serde_json::json!([
+            {"kind": SET_TEMPO_POINT_KIND, "tick": 480u64, "bpm": null}
+        ]))
+        .expect("解析");
+        let fault = compile(&project, &track_id, &clip_id, &delete_missing)
+            .expect_err("删除不存在的映射点必须被拒");
+        assert_eq!(fault.domain_code(), Some(ErrorCode::EntityNotFound));
+        assert_eq!(reason_of(&fault).as_deref(), Some("tempoPointNotFound"));
+
+        // ---- ⑦ tick 0：解析期拒（模型对 `tempo_map[0]` 报 `TempoMapZeroTick`）----
+        let fault = parse_ops(&serde_json::json!([
+            {"kind": SET_TEMPO_POINT_KIND, "tick": 0u64, "bpm": 120.0}
+        ]))
+        .expect_err("tick 0 属于 `setTempo`, 本形态必须拒");
+        assert_eq!(fault.domain_code(), Some(ErrorCode::InvalidParameterRange));
+        assert_eq!(reason_of(&fault).as_deref(), Some("tempoMapZeroTick"));
+        // 手工构造的 `NoteOp` 也过同一道门（`compile` 重查）。
+        let hand = NoteOp::SetTempoPoint {
+            tick: 0,
+            old_bpm: None,
+            new_bpm: Some(120.0),
+        };
+        let fault =
+            compile(&project, &track_id, &clip_id, &[hand]).expect_err("compile 重查 tick 0");
+        assert_eq!(reason_of(&fault).as_deref(), Some("tempoMapZeroTick"));
+
+        // ---- ⑧ 区间外 `bpm`：解析期就拒，理由点名且复用 `setTempo` 的键 ----
+        for bad in [19.999_f64, 1000.0] {
+            let fault = parse_ops(&serde_json::json!([
+                {"kind": SET_TEMPO_POINT_KIND, "tick": 960u64, "bpm": bad}
+            ]))
+            .expect_err("区间外必须被拒");
+            assert_eq!(
+                reason_of(&fault).as_deref(),
+                Some("bpmOutOfRange"),
+                "{bad} 必须报区间理由"
+            );
+        }
+        for good in [20.0_f64, 999.0] {
+            let ops = parse_ops(&serde_json::json!([
+                {"kind": SET_TEMPO_POINT_KIND, "tick": 960u64, "bpm": good}
+            ]))
+            .expect("解析");
+            compile(&project, &track_id, &clip_id, &ops)
+                .unwrap_or_else(|e| panic!("{good} 是端点、必须被接受: {e:?}"));
+        }
+
+        // ---- ⑨ 未知字段 / 缺键 ----
+        let fault = parse_ops(&serde_json::json!([
+            {"kind": SET_TEMPO_POINT_KIND, "tick": 960u64, "bpm": 135.0, "oldBpm": 120.0}
+        ]))
+        .expect_err("载荷只带新值: `oldBpm` 是未知键");
+        assert_eq!(
+            reason_of(&fault).as_deref(),
+            Some("unknownSetTempoPointField")
+        );
+
+        let fault = parse_ops(&serde_json::json!([
+            {"kind": SET_TEMPO_POINT_KIND, "tick": 960u64}
+        ]))
+        .expect_err("缺 `bpm` ≠ 删除（删除的唯一拼法是显式 null）");
+        assert_eq!(fault.domain_code(), Some(ErrorCode::InvalidParameterRange));
+
+        let fault = parse_ops(&serde_json::json!([
+            {"kind": SET_TEMPO_POINT_KIND, "bpm": 135.0}
+        ]))
+        .expect_err("缺 `tick` 必须被拒");
+        assert_eq!(fault.domain_code(), Some(ErrorCode::InvalidParameterRange));
+
+        // ---- ⑩ 陈旧载荷：模型的 `old_bpm` 是**逐位**比较 ----
+        let stale = Op::SetTempoPoint {
+            tick: 960,
+            old_bpm: Some(99.0),
+            new_bpm: Some(135.0),
+        };
+        let mut doc = project.clone();
+        let stale_bytes = serde_json::to_string(&doc).expect("序列化");
+        assert!(stale.apply(&mut doc).is_err(), "陈旧 old_bpm 必须被拒");
+        assert_eq!(
+            serde_json::to_string(&doc).expect("序列化"),
+            stale_bytes,
+            "被拒之后文档必须逐字节不动"
+        );
+    }
+
+    /// `setTimeSignaturePoint`：解析 → 编译到**正是** `Op::SetTimeSignaturePoint` →
+    /// `old_time_signature` 来自**当前文档** → 新增 / 修改 / 删除各自施加并**逐字节**
+    /// 回到原状；tick 0、未知字段、坏拍号、删除不存在的点、陈旧载荷各自结构化拒绝。
+    ///
+    /// ⭐ 本形态补的是「拍号**曲线**改不了」：`project.time_signature_map` 此前在工具面
+    /// **没有任何**结构写点（`setTimeSignature` 只写顶层 `project.time_signature`）。
+    /// `timeSignature` 与 `setTimeSignature` / `create:true` **逐字同词同义**，复用同一个
+    /// 解析器 `parse_time_signature`（内部唯一判定 = 模型 `TimeSignature::validate`）。
+    #[test]
+    fn set_time_signature_point_compiles_the_document_value_and_round_trips() {
+        let mut project = filled_project();
+        let (track_id, clip_id) = lead_clip(&project);
+        let bytes_before = serde_json::to_string(&project).expect("序列化");
+
+        // ---- ① 解析与字段口径 ----
+        let ops = parse_ops(&serde_json::json!([
+            {"kind": SET_TIME_SIGNATURE_POINT_KIND, "tick": 960u64, "timeSignature": "3/4"}
+        ]))
+        .expect("规范形状必须被接受");
+        assert_eq!(ops[0].kind_name(), SET_TIME_SIGNATURE_POINT_KIND);
+        assert!(!ops[0].is_note_level(), "拍号映射点不读不写音符");
+        assert!(
+            !ops[0].reads_envelope_clip(),
+            "文档级形态: ⛔ 不读工具顶层 `clipId`"
+        );
+        assert_eq!(SET_TIME_SIGNATURE_POINT_KIND, "setTimeSignaturePoint");
+        assert_eq!(
+            SET_TIME_SIGNATURE_POINT_FIELDS,
+            ["kind", "tick", "timeSignature"]
+        );
+
+        // ---- ② 编译到**正是** `Op::SetTimeSignaturePoint`；点不存在 ⇒ old 为 `None` ----
+        let compiled = compile(&project, &track_id, &clip_id, &ops).expect("编译");
+        assert_eq!(compiled.len(), 1);
+        match &compiled[0] {
+            Op::SetTimeSignaturePoint {
+                tick,
+                old_time_signature,
+                new_time_signature,
+            } => {
+                assert_eq!(*tick, 960);
+                assert_eq!(
+                    *old_time_signature,
+                    project.time_signature_map.get(&960).copied(),
+                    "old 必须等于**文档现值**（⛔ 不信调用方声明）"
+                );
+                assert_eq!(
+                    *new_time_signature,
+                    Some(TimeSignature {
+                        numerator: 3,
+                        denominator: 4
+                    })
+                );
+            }
+            other => panic!("应当是 SetTimeSignaturePoint: {other:?}"),
+        }
+
+        // ---- ③ 新增：施加 + 一步撤销逐字节复原 ----
+        compiled[0].apply(&mut project).expect("新增拍号点");
+        assert_eq!(
+            project.time_signature_map.get(&960).copied(),
+            Some(TimeSignature {
+                numerator: 3,
+                denominator: 4
+            })
+        );
+        assert!(project.validate().is_ok());
+        compiled[0].apply_inverse(&mut project).expect("逆操作");
+        assert_eq!(
+            serde_json::to_string(&project).expect("序列化"),
+            bytes_before,
+            "一步撤销必须逐字节回到原状"
+        );
+
+        // ---- ④ 修改**已有**的点：`old_time_signature` 必须读到文档里的现值 ----
+        project.time_signature_map.insert(
+            960,
+            TimeSignature {
+                numerator: 4,
+                denominator: 4,
+            },
+        );
+        let ops = parse_ops(&serde_json::json!([
+            {"kind": SET_TIME_SIGNATURE_POINT_KIND, "tick": 960u64, "timeSignature": "6/8"}
+        ]))
+        .expect("解析");
+        let compiled = compile(&project, &track_id, &clip_id, &ops).expect("编译");
+        match &compiled[0] {
+            Op::SetTimeSignaturePoint {
+                old_time_signature,
+                new_time_signature,
+                ..
+            } => {
+                assert_eq!(
+                    *old_time_signature,
+                    Some(TimeSignature {
+                        numerator: 4,
+                        denominator: 4
+                    }),
+                    "修改通路必从文档读到旧拍号"
+                );
+                assert_eq!(
+                    *new_time_signature,
+                    Some(TimeSignature {
+                        numerator: 6,
+                        denominator: 8
+                    })
+                );
+            }
+            other => panic!("应当是 SetTimeSignaturePoint: {other:?}"),
+        }
+        let modified_before = serde_json::to_string(&project).expect("序列化");
+        compiled[0].apply(&mut project).expect("修改拍号点");
+        assert_eq!(
+            project.time_signature_map.get(&960).copied(),
+            Some(TimeSignature {
+                numerator: 6,
+                denominator: 8
+            })
+        );
+        compiled[0].apply_inverse(&mut project).expect("逆操作");
+        assert_eq!(
+            serde_json::to_string(&project).expect("序列化"),
+            modified_before,
+            "修改的一步撤销必须逐字节回到 4/4"
+        );
+
+        // ---- ⑤ 删除：`timeSignature: null` 取走映射点；撤销把它放回 ----
+        let delete_ops = parse_ops(&serde_json::json!([
+            {"kind": SET_TIME_SIGNATURE_POINT_KIND, "tick": 960u64, "timeSignature": null}
+        ]))
+        .expect("`timeSignature` 为 null（删除）必须被接受");
+        let compiled = compile(&project, &track_id, &clip_id, &delete_ops).expect("编译删除");
+        match &compiled[0] {
+            Op::SetTimeSignaturePoint {
+                old_time_signature,
+                new_time_signature,
+                ..
+            } => {
+                assert!(old_time_signature.is_some());
+                assert_eq!(*new_time_signature, None, "null = 删除");
+            }
+            other => panic!("应当是 SetTimeSignaturePoint: {other:?}"),
+        }
+        compiled[0].apply(&mut project).expect("删除拍号点");
+        assert_eq!(project.time_signature_map.get(&960), None);
+        compiled[0].apply_inverse(&mut project).expect("逆操作");
+        assert_eq!(
+            project.time_signature_map.get(&960).copied(),
+            Some(TimeSignature {
+                numerator: 4,
+                denominator: 4
+            })
+        );
+
+        // ---- ⑥ 删除**不存在**的点 ⇒ `timeSignaturePointNotFound` ----
+        let fault = compile(
+            &project,
+            &track_id,
+            &clip_id,
+            &parse_ops(&serde_json::json!([
+                {"kind": SET_TIME_SIGNATURE_POINT_KIND, "tick": 480u64, "timeSignature": null}
+            ]))
+            .expect("解析"),
+        )
+        .expect_err("删除不存在的拍号映射点必须被拒");
+        assert_eq!(fault.domain_code(), Some(ErrorCode::EntityNotFound));
+        assert_eq!(
+            reason_of(&fault).as_deref(),
+            Some("timeSignaturePointNotFound")
+        );
+
+        // ---- ⑦ tick 0：解析期拒；`compile` 对手工构造的 `NoteOp` 重查同一条门 ----
+        let fault = parse_ops(&serde_json::json!([
+            {"kind": SET_TIME_SIGNATURE_POINT_KIND, "tick": 0u64, "timeSignature": "3/4"}
+        ]))
+        .expect_err("tick 0 的拍号是顶层 `project.time_signature`, 归 `setTimeSignature`");
+        assert_eq!(fault.domain_code(), Some(ErrorCode::InvalidParameterRange));
+        assert_eq!(reason_of(&fault).as_deref(), Some("tempoMapZeroTick"));
+        let hand = NoteOp::SetTimeSignaturePoint {
+            tick: 0,
+            old_time_signature: None,
+            new_time_signature: Some(TimeSignature {
+                numerator: 3,
+                denominator: 4,
+            }),
+        };
+        let fault =
+            compile(&project, &track_id, &clip_id, &[hand]).expect_err("compile 必重查 tick 0");
+        assert_eq!(reason_of(&fault).as_deref(), Some("tempoMapZeroTick"));
+
+        // ---- ⑧ 坏拍号：形状 ⇒ `INVALID_PARAMETER_RANGE`，取值 ⇒ `OUT_OF_RANGE` ----
+        //（分界与 `setTimeSignature` / `create:true` 完全同源：`parse_time_signature`）
+        for bad_shape in ["34", "a/b", "3/x"] {
+            let fault = parse_ops(&serde_json::json!([
+                {"kind": SET_TIME_SIGNATURE_POINT_KIND, "tick": 960u64, "timeSignature": bad_shape}
+            ]))
+            .expect_err("形状错误必须被拒");
+            assert_eq!(
+                fault.domain_code(),
+                Some(ErrorCode::InvalidParameterRange),
+                "{bad_shape}"
+            );
+        }
+        for bad_value in ["33/4", "3/5"] {
+            let fault = parse_ops(&serde_json::json!([
+                {"kind": SET_TIME_SIGNATURE_POINT_KIND, "tick": 960u64, "timeSignature": bad_value}
+            ]))
+            .expect_err("取值越界必须被拒");
+            assert_eq!(
+                fault.domain_code(),
+                Some(ErrorCode::OutOfRange),
+                "{bad_value}"
+            );
+        }
+
+        // ---- ⑨ 未知字段 / 缺键 ----
+        let fault = parse_ops(&serde_json::json!([
+            {
+                "kind": SET_TIME_SIGNATURE_POINT_KIND,
+                "tick": 960u64,
+                "timeSignature": "3/4",
+                "oldTimeSignature": null
+            }
+        ]))
+        .expect_err("载荷只带新值: `oldTimeSignature` 是未知键");
+        assert_eq!(
+            reason_of(&fault).as_deref(),
+            Some("unknownSetTimeSignaturePointField")
+        );
+
+        let fault = parse_ops(&serde_json::json!([
+            {"kind": SET_TIME_SIGNATURE_POINT_KIND, "tick": 960u64}
+        ]))
+        .expect_err("缺 `timeSignature` ≠ 删除（删除的唯一拼法是显式 null）");
+        assert_eq!(fault.domain_code(), Some(ErrorCode::InvalidParameterRange));
+
+        let fault = parse_ops(&serde_json::json!([
+            {"kind": SET_TIME_SIGNATURE_POINT_KIND, "timeSignature": "3/4"}
+        ]))
+        .expect_err("缺 `tick` 必须被拒");
+        assert_eq!(fault.domain_code(), Some(ErrorCode::InvalidParameterRange));
+
+        // ---- ⑩ 陈旧载荷：模型对 `old_time_signature` 与文档现值逐字段比较 ----
+        let stale = Op::SetTimeSignaturePoint {
+            tick: 960,
+            old_time_signature: Some(TimeSignature {
+                numerator: 7,
+                denominator: 8,
+            }),
+            new_time_signature: Some(TimeSignature {
+                numerator: 3,
+                denominator: 4,
+            }),
+        };
+        let mut doc = project.clone();
+        let stale_bytes = serde_json::to_string(&doc).expect("序列化");
+        assert!(
+            stale.apply(&mut doc).is_err(),
+            "陈旧 old_time_signature 必须被拒"
+        );
+        assert_eq!(
+            serde_json::to_string(&doc).expect("序列化"),
+            stale_bytes,
+            "被拒之后文档必须逐字节不动"
         );
     }
 
