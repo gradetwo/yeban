@@ -95,6 +95,14 @@ pub const IDEMPOTENCY_KEY_PARAM: &str = "idempotencyKey";
 /// 完整记账见 `src/payload.rs` 的文件头与 `tests/payload_budget.rs`。
 pub const INCLUDE_OPS_PARAM: &str = "includeOps";
 
+/// **成功回执**里的自述键：这次调用属于哪一种提交模型（`ADR-0032` **D1**）。
+///
+/// 取值恰好四个（`proposal` / `proposalAutoMerged` / `direct` / `none`），由
+/// `domain::commit_model_of` 从 `Plan` 推导、在 `apply_inner` 的
+/// 成功出口统一注入 —— ⛔ 任何 `apply_*` 里都不许手写这个键（那会把"易错"从
+/// 调用方的记忆里搬进生产代码）。
+pub const COMMIT_MODEL_KEY: &str = "commitModel";
+
 /// 工具集规模（规范表格的 10 个 + `ADR-0001` D45/D46 的扩展）。
 pub const TOOL_COUNT: usize = 25;
 
@@ -1858,6 +1866,29 @@ impl ToolResponse {
     #[must_use]
     pub fn success(data: Value) -> Self {
         Self::Success { data }
+    }
+
+    /// 往成功回执的 `data` 里写入 [`COMMIT_MODEL_KEY`]（`ADR-0032` **D2** 的唯一注入点）。
+    ///
+    /// 三条口径：
+    /// 1. **只作用于 `Success`** —— 失败回执没有"这次属于哪种提交模型"可说（它一位都没施加），
+    ///    原样返回；
+    /// 2. `data` 不是对象时**不强行造对象**（契约要求成功 `data` 恒为 object，那是别的判据
+    ///    守着的事；本函数⛔ 不为了让一个键存在而篡改形状）；
+    /// 3. **覆盖式写入** —— 生产代码里⛔ 任何人都不该手写这个键，真出现覆盖就是漂移，
+    ///    由 `tests/commit_model.rs` 的取值判据把它抓出来。
+    #[must_use]
+    pub fn with_commit_model(self, model: &'static str) -> Self {
+        match self {
+            Self::Success { data } => {
+                let mut data = data;
+                if let Some(object) = data.as_object_mut() {
+                    object.insert(COMMIT_MODEL_KEY.to_owned(), Value::from(model));
+                }
+                Self::Success { data }
+            }
+            failure @ Self::Failure { .. } => failure,
+        }
     }
 
     /// 失败。

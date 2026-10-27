@@ -3584,7 +3584,75 @@ fn apply_host_commit(
 }
 
 /// [`apply`] 的本体（同步会话态的那一步在外面，见上）。
+///
+/// ⭐ `ADR-0032` **D2**：这一层同时是**每条成功回执的唯一注入点** —— 先按计划算出
+/// 提交模型，再把整批 `apply_*` 交出去的结果包一层。做成 wrapper 而不是写进各个
+/// `apply_*` 的理由就是本票要治的病：逐处手写必然漏一处。
 fn apply_inner(domain: &mut Domain, plan: Plan) -> Result<ToolResponse, Fault> {
+    let model = commit_model_of(&plan);
+    apply_plan_model(domain, plan).map(|response| response.with_commit_model(model))
+}
+
+/// 成功回执 `commitModel` 的**全部**合法取值（`ADR-0032` **D1**）。
+///
+/// 与 `tools::TOOL_COUNT` 同一口径：取值集合是**读数**，加一条必须**故意**改这里
+/// 与 `tests/commit_model.rs` 的判据（那条判据钉的就是"恰好四条"）。
+pub const COMMIT_MODEL_VALUES: [&str; 4] = ["proposal", "proposalAutoMerged", "direct", "none"];
+
+/// 一个计划属于哪一种提交模型（`ADR-0032` **D1** 的映射表，`commitModel` 的唯一来源）。
+///
+/// `match` 对 [`Plan`] **穷尽** ⇒ 以后新增变体若没在这里表态就**编不过**：这就是防漂移的
+/// 机械防线，与 `ADR-0031`"词汇表是唯一权威面"同一条思路。
+///
+/// 三条边界口径（照抄 `ADR-0032` D1，⛔ 不要在这里发明新读法）：
+/// - `Plan::Merge` ⇒ `direct`。它就是"合并这一步"，要说的一句话是"工程当场变了、
+///   没有下一步"，⛔ 不是再回到 `proposal` 语义里。
+/// - `none` 只说"没有提交"，⛔ 不说"没有副作用" —— 渲染落盘、启动场景、会话态装载
+///   都写在工程之外，那条轴由既有字段（`sideEffect` / `appliedInOfflineRender` /
+///   文件路径 / `commitDelta`）继续说。
+/// - `direct` 同理只说"**当场生效、⛔ 不需要再去合并**"，⛔ 不等于"必然新增一条提交"
+///   （`LoadSfz` 改的是会话态、`Undo` 移动的是游标）；提交数请读 `commitDelta`。
+#[must_use]
+pub fn commit_model_of(plan: &Plan) -> &'static str {
+    match plan {
+        // 提案家族：`autoMerge` 把同一条轴上的两种收尾分开（`ADR-0029`）。
+        Plan::Propose { auto_merge, .. } => {
+            if *auto_merge {
+                "proposalAutoMerged"
+            } else {
+                "proposal"
+            }
+        }
+        // 当场生效、没有"下一步去合并"。
+        Plan::Merge { .. }
+        | Plan::EditAutomation { .. }
+        | Plan::Undo { .. }
+        | Plan::Redo { .. }
+        | Plan::ImportAudio { .. }
+        | Plan::ImportMidi(_)
+        | Plan::LoadSfz { .. }
+        | Plan::Host(_) => "direct",
+        // 不产生任何提交：只读读数、渲染/导出到文件、容器与会话操作、硬件探针。
+        Plan::Open(..)
+        | Plan::Save { .. }
+        | Plan::Close { .. }
+        | Plan::Query { .. }
+        | Plan::Diagnostics { .. }
+        | Plan::Reject { .. }
+        | Plan::RenderMaster { .. }
+        | Plan::EngineState { .. }
+        | Plan::LaunchScene { .. }
+        | Plan::ListProposals { .. }
+        | Plan::ExportMidi { .. }
+        | Plan::RenderSfzWav { .. }
+        | Plan::ExportStems { .. }
+        | Plan::RecordWav { .. }
+        | Plan::MidiInputProbe { .. } => "none",
+    }
+}
+
+/// [`apply_inner`] 的本体：对**每个** `Plan` 变体的唯一一次施加。
+fn apply_plan_model(domain: &mut Domain, plan: Plan) -> Result<ToolResponse, Fault> {
     match plan {
         Plan::Open(request) => apply_open(domain, *request),
         Plan::Save {
