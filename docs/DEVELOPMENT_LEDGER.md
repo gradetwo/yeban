@@ -197,7 +197,7 @@ CARGO_HOME=/Users/crow/work/music/.cargo-home RUSTUP_TOOLCHAIN=stable \
 | `G11` `midi-input` 不进 release 默认特性 | **待人类裁决** | `HD-68`（红线 6 的另一面，⛔ 集成者不擅开特性） |
 | `G12` `record_wav` 语义 | **半消除** | 回执显式指路（`notProjectBounce` + `alternatives`）已落；「接工程源」那半登记为 `HD-70`（本轮补登，见下） |
 | `G13` 编辑→合并两轮往返 | 消除 | `ADR-0029`；主干 Run `40472116248` success（workspace 全量 4505s、406 条 `test result:` / 6684 passed / 0 failed） |
-| `G14` 设备参数拼写无公告面 | `pending` | `ADR-0031` 在线；线 Run `40478327564`（`c889ecdc`）重跑中，⚠ 同分支 tip 是纯文档提交 ⇒ `40479128541` 的 success 是**空绿**（rust/macos/windows 全 `skipped`），不作判决 |
+| `G14` 设备参数拼写无公告面 | 消除 | `ADR-0031` D1 裁决**不开**设备专用工具（op 词汇是唯一权威面）+ D2 警告自带 `knownParams`；线 Run `40478327564`（`c889ecdc`）success（`rust (yeban-mcp)` 857s ⇒ 89 条 `test result:` / 2146 passed / 0 failed；windows 2087s、macos 1705s）。⚠ 同分支 tip `d67bd854` 是纯文档提交 ⇒ Run `40479128541` 的 success 是**空绿**（rust/macos/windows 全 `skipped`），判决取代码提交自己那条 run |
 | `G15` 段落无时间序读数 | 消除 | `sections.timeline`；主干 Run `40462525280` success + 夹具误红由 `4cfa0008` 修复（Run `40471370167`） |
 | `G16` 弯音曲线只能整条重写 | 消除 | `ADR-0019`（`setPitchBendPoint` 插/改/删三态 + 界外拒绝）；主干 Run `40419445566` success |
 | `G17` 两种提交模型并存 | `pending` | 候选切片：回执自述 `commitModel`（⛔ 不把 automation 改成提案模型） |
@@ -11780,9 +11780,9 @@ $ python3 scripts/gates/check_phase_status.py   # 退出 0
     `rust (workspace 全量)` 按 `plan` 矩阵 `skipped`（⛔ 不是跳过当成绿）。
   - 防假绿核对：主干 run 的 `rust (yeban-mcp)` 作业日志 **87 条 `test result:` /
     合计 2132 passed / 0 failed**（`/tmp/yeban-g15-mcp.log` 读数）。
-- **G14 剩余**：设备 CRUD 糖（`knownParams` camelCase 枚举在
-  `unrecognisedEffectParam` 预警里）仍 `pending`，因 `domain/mod.rs` / `tools.rs`
-  写者由 G13 线持有，排在 G13 落地之后。
+- **G14 剩余**：设备 CRUD 糖（`knownParams` 枚举在 `unrecognisedEffectParam` 预警里）
+  当时 `pending`，因 `domain/mod.rs` / `tools.rs` 写者由 G13 线持有，排在 G13 落地之后
+  ⇒ 现已单独成篇，见本节末尾 `## 2026-10-27：G14 消除：设备链不开第 26 台工具，拼写公告面就地补齐`。
 
 ## 2026-10-27：G18 半消除：`propose_section` 的 `scale` 确定性别名通道与单边输入精确回执
 
@@ -11892,3 +11892,58 @@ $ python3 scripts/gates/check_phase_status.py   # 退出 0
   `yeban_edit_automation` 仍是**直接提交**模型（`appliedInOfflineRender:true`，无需合并），
   两种提交模型并存 ⇒ 登记为 **G17**（候选：响应自述 `commitModel` 字段），本片 ⛔ 不把
   automation 改成提案模型。
+
+## 2026-10-27：G14 消除：设备链**不**开第 26 台工具，拼写公告面就地补齐（`ADR-0031`）
+
+- **缺口原文（`GAPS.md` G14，WALL ③）**: 外部 agent 试跑实测「插混响 ×8、Master 压缩都
+  **成功**，但手段是 `yeban_edit_notes` 的 `ops[].kind = insertDevice / removeDevice /
+  setDeviceBypassed`」，登记的影响是"能用，但设备链操作混在音符编辑工具里"；同一份报告
+  的第二半是**参数名须精确**（`reverb_size` / `reverb_damp` / `reverb_wet`、
+  `threshold_db` / `ratio` / `attack_s` / `release_s` / `makeup_db` 认，
+  `reverb_mix` / `reverb_width` **不认**）。
+- **决定（`ADR-0031`，状态 `Accepted（集成者依 2026-10-25 人类常设授权裁定）`）**:
+  - **D1 不开设备专用工具**（核心）。四条理由按绑定强度排：① `yeban-model::Op` 的四个变体
+    （`InsertDevice` / `RemoveDevice` / `SetDeviceBypassed` / `SetDeviceName`）是设备链的
+    **唯一**载体，新工具要么重复发射同一批 `Op`（= 第二套写入路径，撤销/提案/合并/多父语义
+    要重新对账），要么发明 `Op` 之外的直接改写（违反 `[ARCH-OPS-001]`）；② 批语义正是设备链
+    需要的（8 台混响 + 1 台压缩 + 改名 = 一次 `ops[]`、一次提案、一次合并；拆开就是把一次
+    意图切成 N 次往返，而 G13 刚用 `ADR-0029` 的 `autoMerge` 把这些往返压回去）；③ 提案/合并
+    控制面（`pendingMerge` / `autoMerge` / `warnings[]` / CAS）只有一条路，新工具要整套复制
+    才有等价物；④ 规范侧未授权（`MCP-TOOL-001..010` 是文档化十工具，扩展工具按 ADR 逐个
+    登记）。⇒ ⛔ 不引入新工具、不改 `TOOL_COUNT`、不动 `schemas/mcp-tools.schema.json` 的
+    工具枚举。"混在音符编辑工具里"是**命名给人的错觉**，不是能力缺失。
+  - **D2 真正的摩擦是拼写公告的时机**：`unrecognisedEffectParam` 警告此前只说"不认 + 去哪儿
+    读回"，把"那该写什么"留给调用方自己 `tools/list` 捞 ⇒ 一个未知拼写要两次往返。现在每条
+    警告自带 `knownParams`，**逐字** = `effect_params::recognised_names()`（单位：58 个拼写
+    = 32 规范名 + 26 别名，规范名在前、别名紧随；⛔ 排序 / 去重 / 只给规范名）。
+    为什么给**整张表**而不是"最像的几个"：走到这支的前提就是 `similar_spellings` 为空
+    （编辑距离全 > 2）⇒ 此刻没有任何最近邻可给（`reverb_mix` 与 `reverb_wet` 差 3）。
+    ⛔ 第四份手抄词表：表内容仍由 `recognised_names()` 单点供给，
+    `tests/effect_contract.rs` 与 `insert.rs` 字面量的对账判据继续钉住它。
+- **判据**: `crates/yeban-mcp/tests/trap_175.rs::the_warning_hands_back_the_exact_accepted_spellings`
+  （单位：拼写个数 58 / 1 个键集合 / 2 个"不许广告成可用"的反面名 —— `reverb_mix` 与一条
+  词表里根本没有影子的外部插件旋钮名）。同步面：`output_schema.rs` 的 `yeban_edit_notes`
+  描述文字 + `warnings.items.properties.knownParams`。
+- **冻结面核对（不手算）**: 新增的是 `knownParams` **键**，不是 `reason` 值 ⇒
+  `fault_vocabulary` 的 reason 摘要与词表/载荷/站点普查读数**不应漂移**。核对方式就是这条
+  run 本身：`rust (yeban-mcp)` 日志 **0 条 `test result: FAILED`** ⇒ 冻结面判据（摘要、
+  词表、载荷表、扫描器、逐条分类）全部仍在原值上通过。
+- **验证（判决取代码提交自己的 run；tip 的 success 是空绿）**:
+  - `c889ecdc`（代码）线 Run `40478327564`：**`conclusion: success`**；作业读数（耗时非 0）：
+    `rust (yeban-mcp)` 857s、`windows` 2087s、`macos` 1705s、`rust (yeban-ui-mcp)` 189s、
+    `checks` 80s、`deny` 55s、`lockfile` 21s、`plan` 10s；`rust (workspace 全量)` 按 `plan`
+    矩阵 `skipped`（⛔ 不是跳过当成绿）。防假绿核对：`rust (yeban-mcp)` 日志
+    **89 条 `test result:` / 合计 2146 passed / 0 failed**（`/tmp/effect-mcp-plain.log` 读数）。
+  - `d67bd854`（tip：只加 `ADR-0031` 一个文档文件）Run `40479128541`：`conclusion: success`
+    但 `rust (${{ matrix.crate }})` / `rust (workspace 全量)` / `macos` / `windows` **四条
+    腿全 `skipped`**（起停时刻相同、耗时 0）⇒ 这是**空绿**，只验证 `checks` / `deny` /
+    `lockfile` / `plan`，对代码不构成任何判决。**教训**：一条线里"tip 绿"⛔ 不等于"这批
+    改动绿"，纯文档 tip 会把 rust 腿整体跳过 —— 判决必须按 `headSha` 落到**改动所在的那个
+    提交**自己的 run 上读。
+  - 合并提交 `b33e9165` 主干 run：`pending`（本条写下时尚未读回；读到前 G14 的**主干**判决
+    按纪律记 `pending`，线判决已如上读回）。
+- **登记（本票不解决，只点名，`ADR-0031` D3）**: **G14b** —— 设备参数**标量值**插入后没有
+  `Op` 可改（`ops.rs:479` / `:512` 的注释写明唯一入口是 `InsertDevice`，整台
+  `DeviceDefinition` 一次性给全；改旋钮**曲线**只有 `yeban_edit_automation` 的 `DeviceParam`
+  目标）。于是"拧一下某个已插入设备的数值"Today 的做法是 `removeDevice` + `insertDevice`
+  同批重放。这不是本票引入的，也不由本票修改 ⇒ 作为 `pending` 候选切片登记。
