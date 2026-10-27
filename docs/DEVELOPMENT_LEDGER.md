@@ -197,7 +197,7 @@ CARGO_HOME=/Users/crow/work/music/.cargo-home RUSTUP_TOOLCHAIN=stable \
 | `G11` `midi-input` 不进 release 默认特性 | **待人类裁决** | `HD-68`（红线 6 的另一面，⛔ 集成者不擅开特性） |
 | `G12` `record_wav` 语义 | **半消除** | 回执显式指路（`notProjectBounce` + `alternatives`）已落；「接工程源」那半登记为 `HD-70`（本轮补登，见下） |
 | `G13` 编辑→合并两轮往返 | 消除 | `ADR-0029`；主干 Run `40472116248` success（workspace 全量 4505s、406 条 `test result:` / 6684 passed / 0 failed） |
-| `G14` 设备参数拼写无公告面 | 消除 | `ADR-0031` D1 裁决**不开**设备专用工具（op 词汇是唯一权威面）+ D2 警告自带 `knownParams`；线 Run `40478327564`（`c889ecdc`）success（`rust (yeban-mcp)` 857s ⇒ 89 条 `test result:` / 2146 passed / 0 failed；windows 2087s、macos 1705s）。⚠ 同分支 tip `d67bd854` 是纯文档提交 ⇒ Run `40479128541` 的 success 是**空绿**（rust/macos/windows 全 `skipped`），判决取代码提交自己那条 run |
+| `G14` 设备参数拼写无公告面 | 消除 | `ADR-0031` D1 裁决**不开**设备专用工具（op 词汇是唯一权威面）+ D2 警告自带 `knownParams`；线 Run `40478327564`（`c889ecdc`）success（`rust (yeban-mcp)` 857s ⇒ 89 条 `test result:` / 2146 passed / 0 failed；windows 2087s、macos 1705s）＋ **主干 Run `40485790733`（合并提交 `b33e9165`）success**（mcp 883s ⇒ 同样 89 / 2146 / 0；windows 2018s、macos 879s；`workspace 全量` skipped 不计绿；`git diff --stat c889ecdc b33e9165` ＝ 6 个 `docs/` 文件、`crates/**` 零差异 ⇒ 同一份 Rust 源码）。⚠ 同分支 tip `d67bd854` 是纯文档提交 ⇒ Run `40479128541` 的 success 是**空绿**（rust/macos/windows 全 `skipped`），判决取代码提交自己那条 run |
 | `G15` 段落无时间序读数 | 消除 | `sections.timeline`；主干 Run `40462525280` success + 夹具误红由 `4cfa0008` 修复（Run `40471370167`） |
 | `G16` 弯音曲线只能整条重写 | 消除 | `ADR-0019`（`setPitchBendPoint` 插/改/删三态 + 界外拒绝）；主干 Run `40419445566` success |
 | `G17` 两种提交模型并存 | `pending` | 候选切片：回执自述 `commitModel`（⛔ 不把 automation 改成提案模型） |
@@ -11959,8 +11959,15 @@ $ python3 scripts/gates/check_phase_status.py   # 退出 0
     `lockfile` / `plan`，对代码不构成任何判决。**教训**：一条线里"tip 绿"⛔ 不等于"这批
     改动绿"，纯文档 tip 会把 rust 腿整体跳过 —— 判决必须按 `headSha` 落到**改动所在的那个
     提交**自己的 run 上读。
-  - 合并提交 `b33e9165` 主干 run：`pending`（本条写下时尚未读回；读到前 G14 的**主干**判决
-    按纪律记 `pending`，线判决已如上读回）。
+  - 合并提交 `b33e9165` 主干 Run `40485790733`：**success**（读回时刻 2026-10-27T10:39Z）。
+    各腿耗时：`rust (yeban-mcp)` 883s、`macos` 879s、`windows` 2018s、`rust (yeban-ui-mcp)` 378s、
+    `checks` 75s、`deny` 59s、`lockfile` 17s、`plan` 11s；`rust (workspace 全量)` 按 `plan`
+    矩阵 `skipped`（⛔ 不计入绿）。防假绿核对：`rust (yeban-mcp)` 日志 **89 条 `test result:` /
+    合计 2146 passed / 0 failed**，且 `grep -ac "test result: FAILED"` ＝ **0**
+    （`/tmp/main-b33e.log` 读数）。⚠ **为什么与线 Run `40478327564` 的 89 / 2146 / 0 逐位相同**
+    —— 实测而非推断：`git diff --stat c889ecdc b33e9165` 只有 **6 个文件、全部在 `docs/`**
+    （`DEVELOPMENT_LEDGER.md` / `README.md` / `ADR-0031` / 三张 ledger 表），**`crates/**` 零差异**
+    ⇒ 合并结果的 Rust 源码树与线 tip 的**同一份**，两条 run 跑的是同一批测试。⇒ G14 的**主干**判决不再是 `pending`。
 - **登记（本票不解决，只点名，`ADR-0031` D3）**: **G14b** —— 设备参数**标量值**插入后没有
   `Op` 可改（`ops.rs:479` / `:512` 的注释写明唯一入口是 `InsertDevice`，整台
   `DeviceDefinition` 一次性给全；改旋钮**曲线**只有 `yeban_edit_automation` 的 `DeviceParam`
