@@ -87,19 +87,6 @@ fn open_fresh(dispatcher: &mut Dispatcher, auth: &str, scratch: &Scratch) -> Val
     )
 }
 
-/// 在列表里按 `proposalId` 找到那条提案的 `status`。
-fn proposal_status(list_data: &Value, proposal_id: &str) -> String {
-    list_data["proposals"]
-        .as_array()
-        .expect("`proposals` 必须是数组")
-        .iter()
-        .find(|entry| entry["proposalId"] == json!(proposal_id))
-        .unwrap_or_else(|| panic!("列表里找不到提案 {proposal_id}: {list_data}"))["status"]
-        .as_str()
-        .expect("status 是字符串")
-        .to_owned()
-}
-
 #[test]
 fn auto_merge_lands_in_one_call() {
     let scratch = Scratch::new("land");
@@ -136,17 +123,37 @@ fn auto_merge_lands_in_one_call() {
         "autoMerge 已施加 ⇒ projectUnchanged 必须是假话的反面: {data}"
     );
     assert_eq!(data["merge"]["merged"], json!(true), "{data}");
-    let proposal_id = data["proposal"]["proposalId"]
+    data["proposal"]["proposalId"]
         .as_str()
-        .expect("提案必须带 proposalId")
-        .to_owned();
-    assert_eq!(data["proposal"]["status"], json!("merged"), "{data}");
+        .expect("提案必须带 proposalId");
+    assert_eq!(
+        data["proposal"]["status"],
+        json!("merged"),
+        "merged 的权威读数是回执里的 `proposal` 投影（`ADR-0029` D3）：\
+         `list_proposals` 只列 open，不会在这条历史里给出 status"
+    );
 
     let list = call(&mut dispatcher, &auth, "yeban_list_proposals", json!({}));
+    // `list_proposals` 的既有口径是**只列未合并（open）的提案**
+    // （`note: "当前没有未合并的提案。"`），合并后的那条只在计数里留痕。
+    // ⇒ 自动合并成功的机械读数 = openCount 归零 + totalCount 仍算这条历史。
     assert_eq!(
-        proposal_status(&list, &proposal_id),
-        "merged",
-        "list_proposals 必须如实报 merged"
+        list["openCount"],
+        json!(0),
+        "autoMerge 后不该再有 open 提案: {list}"
+    );
+    assert_eq!(
+        list["totalCount"],
+        json!(1),
+        "历史计数必须包含这条已合并提案: {list}"
+    );
+    assert_eq!(
+        list["proposals"]
+            .as_array()
+            .expect("`proposals` 必须是数组")
+            .len(),
+        0,
+        "清单只列 open ⇒ 已合并的那条不得出现在这里: {list}"
     );
     // 工程**真的**变了：合并回执里的 digest 与提案创建回执（改前）不同。
     assert_ne!(
