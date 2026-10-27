@@ -598,12 +598,108 @@ fn theory_invalid(style_preset: &str, step: &str, error: TheoryError) -> BuildFa
 ///   （`minor`）、中文名（`自然小调`）与常见拼写变体，**语义与接受面都由 theory 决定**，
 ///   本模块不维护第二份调式表。
 ///
+/// ⭐ [G18] **确定性别名通道**（逐字表匹配，⛔ 不猜调用方没写的语义）：
+/// `C_minor` / `C-minor`（首段是合法音名才重写）、和弦式 `Am` / `C#m` / `Bbm` /
+/// `Fmaj` / `Gmin` / `Cminor`（后缀 `minor|major|min|maj|m`，最长优先，首段是合法
+/// 音名才重写）、两 token 写法里调式段的 `m|min→minor`、`maj→major`。
+/// 整串是**合法调式名**（如 `natural_minor`）⇒ `missingTonic` 结构化错误 + 示例；
+/// 整串是**合法音名** ⇒ `missingMode`；两者都**不猜**缺失的那一半。
+///
 /// # Errors
 ///
 /// 缺调式 / 未知音名 / 未知调式 → [`BuildCode::InvalidParameterRange`]。
 pub fn parse_scale(scale: &str) -> Result<Scale, BuildFault> {
+    /// [G18] 和弦式后缀表（最长优先；键为小写字面量，映射到 theory 认识的规范名）。
+    const MODE_SUFFIX_ALIASES: [(&str, &str); 5] = [
+        ("minor", "minor"),
+        ("major", "major"),
+        ("min", "minor"),
+        ("maj", "major"),
+        ("m", "minor"),
+    ];
+    fn known_note(token: &str) -> bool {
+        let upper = token.to_ascii_uppercase();
+        NOTE_NAMES.iter().any(|name| *name == upper)
+    }
+    /// 无空格写法的**确定性**归一（返回 `None` ⇒ 没有可用重写，⛔ 不发明）。
+    fn normalize_scale_shape(trimmed: &str) -> Option<String> {
+        if let Some(idx) = trimmed.find(['_', '-']) {
+            let (head, tail) = (&trimmed[..idx], &trimmed[idx + 1..]);
+            if !tail.is_empty() && known_note(head) {
+                return Some(format!("{} {}", head.to_ascii_uppercase(), tail));
+            }
+        }
+        let lower = trimmed.to_ascii_lowercase();
+        for (suffix, canonical) in MODE_SUFFIX_ALIASES {
+            if let Some(head) = lower.strip_suffix(suffix) {
+                if !head.is_empty() && known_note(head) && ScaleKind::parse(canonical).is_ok() {
+                    return Some(format!("{} {}", head.to_ascii_uppercase(), canonical));
+                }
+            }
+        }
+        None
+    }
+    /// 调式段解析：theory 先裁决；theory 不收时**才**查逐字别名表再问一次 theory。
+    fn parse_mode(mode: &str) -> Option<ScaleKind> {
+        if let Ok(kind) = ScaleKind::parse(mode) {
+            return Some(kind);
+        }
+        let lower = mode.trim().to_ascii_lowercase();
+        MODE_SUFFIX_ALIASES
+            .iter()
+            .find(|(alias, _)| *alias == lower)
+            .and_then(|(_, canonical)| ScaleKind::parse(canonical).ok())
+    }
+
     let trimmed = scale.trim();
-    let (note, mode) = trimmed.split_once(' ').ok_or_else(|| {
+    let effective: std::borrow::Cow<str> = if trimmed.contains(' ') {
+        std::borrow::Cow::Borrowed(trimmed)
+    } else {
+        match normalize_scale_shape(trimmed) {
+            Some(normalized) => std::borrow::Cow::Owned(normalized),
+            None => {
+                // 单边输入 ⇒ **如实**拒绝（示例给出来，⛔ 不替调用方猜主音/调式）。
+                if ScaleKind::parse(trimmed).is_ok() {
+                    return Err(BuildFault::domain(
+                        BuildCode::InvalidParameterRange,
+                        format!(
+                            "`scale` 整串 `{trimmed}` 是合法**调式**名, 缺主音；须写形如 \"C minor\""
+                        ),
+                        json!({
+                            "reason": "missingTonic",
+                            "mode": trimmed,
+                            "example": format!("C {trimmed}"),
+                            "noteNames": NOTE_NAMES,
+                        }),
+                    ));
+                }
+                if known_note(trimmed) {
+                    return Err(BuildFault::domain(
+                        BuildCode::InvalidParameterRange,
+                        format!(
+                            "`scale` 整串 `{trimmed}` 是合法**音名**, 缺调式；须写形如 \"C minor\""
+                        ),
+                        json!({
+                            "reason": "missingMode",
+                            "note": trimmed.to_ascii_uppercase(),
+                            "example": format!("{} minor", trimmed.to_ascii_uppercase()),
+                            "modes": mode_names(),
+                        }),
+                    ));
+                }
+                return Err(BuildFault::domain(
+                    BuildCode::InvalidParameterRange,
+                    format!("`scale` 必须形如 \"C minor\", 实际 `{scale}`"),
+                    json!({
+                        "reason": "missingSpaceOrMode",
+                        "noteNames": NOTE_NAMES,
+                        "modes": mode_names(),
+                    }),
+                ));
+            }
+        }
+    };
+    let (note, mode) = effective.split_once(' ').ok_or_else(|| {
         BuildFault::domain(
             BuildCode::InvalidParameterRange,
             format!("`scale` 必须形如 \"C minor\", 实际 `{scale}`"),
@@ -629,17 +725,24 @@ pub fn parse_scale(scale: &str) -> Result<Scale, BuildFault> {
             json!({ "noteNames": NOTE_NAMES, "theoryError": error.to_string() }),
         )
     })?;
-    let kind = ScaleKind::parse(mode).map_err(|error| {
-        BuildFault::domain(
-            BuildCode::InvalidParameterRange,
-            format!("未知调式 `{mode}`"),
-            json!({
-                "modes": mode_names(),
-                "modeSource": "yeban-theory::scale::ScaleKind::parse",
-                "theoryError": error.to_string(),
-            }),
-        )
-    })?;
+    let kind = match parse_mode(mode) {
+        Some(kind) => kind,
+        None => {
+            let theory_error = ScaleKind::parse(mode).err().map_or_else(
+                || String::from("别名表也没有这条写法"),
+                |error| error.to_string(),
+            );
+            return Err(BuildFault::domain(
+                BuildCode::InvalidParameterRange,
+                format!("未知调式 `{mode}`"),
+                json!({
+                    "modes": mode_names(),
+                    "modeSource": "yeban-theory::scale::ScaleKind::parse",
+                    "theoryError": theory_error,
+                }),
+            ));
+        }
+    };
     Ok(Scale { tonic, kind, note })
 }
 
@@ -1966,9 +2069,80 @@ mod tests {
             parse_scale("Db dorian").expect("等音写法").tonic,
             PitchClass::CS
         );
-        assert!(parse_scale("Cminor").is_err(), "缺空格");
+        // [G18] `Cminor`（连写）是确定性别名：音名头 ∈ NOTE_NAMES ⇒ 尾部整体作调式。
+        // 曾钉为 is_err("缺空格")，该严格性正是 G18 要移除的（不是弱化判据）。
+        assert_eq!(
+            parse_scale("Cminor").expect("G18 连写别名"),
+            parse_scale("C minor").expect("空格写法"),
+            "连写与空格写法必须解析为同一音阶"
+        );
         assert!(parse_scale("H dorian").is_err(), "未知音名");
         assert!(parse_scale("C bogus").is_err(), "未知调式");
+    }
+
+    /// [G18] 确定性别名通道：每条别名必须与**规范空格写法**逐字段相同
+    /// （⛔ 不是"能解析就行"—— 比较对象是同一音阶的规范输入）。
+    #[test]
+    fn deterministic_scale_aliases_equal_their_spaced_forms() {
+        for (alias, spaced) in [
+            ("C_minor", "C minor"),
+            ("C-minor", "C minor"),
+            ("Cminor", "C minor"),
+            ("Am", "A minor"),
+            ("C#m", "C# minor"),
+            ("Bbm", "BB minor"),
+            ("Fmaj", "F major"),
+            ("Gmin", "G minor"),
+            ("A m", "A minor"),
+            ("B maj", "B major"),
+        ] {
+            assert_eq!(
+                parse_scale(alias).unwrap_or_else(|_| panic!("别名 `{alias}` 必须被接受")),
+                parse_scale(spaced).unwrap_or_else(|_| panic!("规范写法 `{spaced}` 必须被接受")),
+                "`{alias}` 必须与 `{spaced}` 解析为同一音阶"
+            );
+        }
+        assert_eq!(
+            parse_scale("Am").expect("Am").canonical(),
+            "A natural_minor",
+            "别名归一后走 theory 的规范调式名"
+        );
+    }
+
+    /// [G18] 单边输入**如实**拒绝且**不猜**缺失的一半：错误载荷里给
+    /// `reason` + 示例，让调用方一眼看出缺主音还是缺调式。
+    #[test]
+    fn one_sided_scale_inputs_are_rejected_with_structured_reasons() {
+        let fault = parse_scale("natural_minor").expect_err("只有调式名");
+        let BuildFault::Domain { code, data, .. } = &fault else {
+            panic!("必须是领域失败: {fault:?}");
+        };
+        assert_eq!(*code, BuildCode::InvalidParameterRange);
+        assert_eq!(data["reason"], "missingTonic", "整串是合法调式 ⇒ 缺主音");
+        assert_eq!(data["mode"], "natural_minor");
+        assert_eq!(data["example"], "C natural_minor");
+
+        let fault = parse_scale("C").expect_err("只有音名");
+        let BuildFault::Domain { code, data, .. } = &fault else {
+            panic!("必须是领域失败: {fault:?}");
+        };
+        assert_eq!(*code, BuildCode::InvalidParameterRange);
+        assert_eq!(data["reason"], "missingMode", "整串是合法音名 ⇒ 缺调式");
+        assert_eq!(data["note"], "C");
+        assert_eq!(data["example"], "C minor");
+
+        // 两半都对不上 ⇒ 通用拒绝（⛔ 不猜），但同样带 reason 与字母表。
+        let fault = parse_scale("sminor").expect_err("音名不合法的后缀写法");
+        let BuildFault::Domain { data, .. } = &fault else {
+            panic!("必须是领域失败: {fault:?}");
+        };
+        assert_eq!(data["reason"], "missingSpaceOrMode");
+
+        // 别名通道**不**放宽语义侧：未知音名/未知调式照旧被拒。
+        assert!(parse_scale("H minor").is_err(), "未知音名 H");
+        assert!(parse_scale("Hm").is_err(), "未知音名头不吃别名");
+        assert!(parse_scale("C bogus").is_err(), "未知调式 bogus");
+        assert!(parse_scale("Cm bogus").is_err(), "音名段 `Cm` 不合法");
     }
 
     /// 判据 ①：`D dorian` 与 `D minor` 的输出**不同**，且差异**恰好**是音阶语义
@@ -2104,9 +2278,8 @@ mod tests {
             plan(&project, "Chorus", "lo_fi_hip_hop", 4, Some("C bogus")).expect_err("调式");
         assert_eq!(fault.domain_code(), Some(BuildCode::InvalidParameterRange));
         plan(&project, "Chorus", "lo_fi_hip_hop", 4, Some("c MINOR")).expect("大小写不敏感");
-        let fault =
-            plan(&project, "Chorus", "lo_fi_hip_hop", 4, Some("Cminor")).expect_err("缺空格");
-        assert_eq!(fault.domain_code(), Some(BuildCode::InvalidParameterRange));
+        // [G18] 连写别名通道打通后，`Cminor` 与 `C minor` 必须同样可规划。
+        plan(&project, "Chorus", "lo_fi_hip_hop", 4, Some("Cminor")).expect("G18 连写别名");
     }
 
     /// `ticks_per_bar` 在任何输入下都**不返回 0**。
