@@ -200,7 +200,7 @@ CARGO_HOME=/Users/crow/work/music/.cargo-home RUSTUP_TOOLCHAIN=stable \
 | `G5` 音色参数消费口径 | 消除 | `ADR-0027`；「G5 消除」条 |
 | `G6` 生成即增益分级 | 消除 | `ADR-0026`；「G6 消除」条 |
 | `G7` 同批建节点+连边被批前预检误拒 | 消除 | `ADR-0025`；「G7 消除」条 |
-| `G8` 生成控制粒度 | **消除（四片）** | `G8a`（音域 + `drumDensity`）`ADR-0028`；`G8b`（`voiceSubdivision` 和声声部按跨度均匀切分 1..=16）`ADR-0033`，线 Run `40523903008`（`80d854d9`）success（承判腿 `rust (workspace 全量)` 42:08 ⇒ **408 条 / 6,703 / 0**；windows 246 / 4,849 / 0；macos 246 / 4,870 / 0；矩阵腿因 `workspace_wide: true` 跳过）＋ 主干 merge `9eb4a6c5` Run `40531221961` success（全量 1:19:24 ⇒ **409 / 6,707 / 0**）；`G8c`（`voiceSubdivisions` 切分按**声部名**给值，组合而非替换）`ADR-0035`，线 Run `40549805342`（`6ec3edd3`）success（`rust (yeban-mcp)` 869s ⇒ **97 条 / 2,212 / 0**，11 条判据**逐名**读回；macos 1,322s ⇒ 248 / 4,885 / 0；windows 1,896s ⇒ 248 / 4,864 / 0；全量腿因"推送增量规划"skipped）＋ 主干 merge `793b0a3b` Run `40560362657` **success**（全量承判 2,573s ⇒ **411 / 6,725 / 0**，`voice_subdivisions_*` 11 条逐名 `... ok`；windows 2,201s ⇒ 249 / 4,871 / 0；macos 1,163s ⇒ 249 / 4,892 / 0；矩阵腿 skipped）；`G8d`（**原残余**：`onsetsPerBar` 每小节网格可调 + 缺省值由常量 16 改为**从拍号导出** `cells_per_bar(meter)`）`ADR-0036`，⚠ 它实测**比登记的重**：常量让 `GENRES` 182 条里 **28 条非 4/4** 流派的鼓/旋律今天必失败（`ProgressionTooDense`，theory 拒绝而⛔ 夹紧），线 Run `40565010797`（`bee98ef5`）success（承判腿**矩阵腿** `rust (yeban-mcp)` 938s ⇒ **101 条 / 2,242 / 0**，8 条判据在 `rust (yeban-mcp)` / windows 2,183s ⇒ 250 / 4,879 / 0 / macos 1,729s ⇒ 250 / 4,900 / 0 **三条腿上逐名** `... ok`；全量腿因本次推送增量只有 `crates/**` 而 skipped），⛔ 上一条 `cc309f7b` Run `40563735922` 是一次**真红**（`E0423`：`assert_eq` 漏 `!`，三条腿同一错误、整轮 0 条 `test result:`），主干 merge `e1409ad8` Run `40570998122` **success**（该 merge 碰根级 `schemas/**` ⇒ 承判腿 `rust (workspace 全量)` **真跑** 2,619s ⇒ **412 / 6,733 / 0**，`onsets_per_bar` 8 条逐名 `... ok`、`voice_subdivisions_*` 11 条同框仍绿；windows 1,237s ⇒ 250 / 4,879 / 0；macos 1,400s ⇒ 250 / 4,900 / 0；矩阵腿 skipped）⇒ `G8d` 的"代码 + 判据 + 线判决 + 全量判决"四件齐 |
+| `G8` 生成控制粒度 | **消除（四片）** | `G8a`（音域 + `drumDensity`）`ADR-0028`；`G8b`（`voiceSubdivision` 和声声部按跨度均匀切分 1..=16）`ADR-0033`，线 Run `40523903008`（`80d854d9`）success（承判腿 `rust (workspace 全量)` 42:08 ⇒ **408 条 / 6,703 / 0**；windows 246 / 4,849 / 0；macos 246 / 4,870 / 0；矩阵腿因 `workspace_wide: true` 跳过）＋ 主干 merge `9eb4a6c5` Run `40531221961` success（全量 1:19:24 ⇒ **409 / 6,707 / 0**）；`G8c`（`voiceSubdivisions` 切分按**声部名**给值，组合而非替换）`ADR-0035`，线 Run `40549805342`（`6ec3edd3`）success（`rust (yeban-mcp)` 869s ⇒ **97 条 / 2,212 / 0**，11 条判据**逐名**读回；macos 1,322s ⇒ 248 / 4,885 / 0；windows 1,896s ⇒ 248 / 4,864 / 0；全量腿因"推送增量规划"skipped）＋ 主干 merge `793b0a3b` Run `40560362657` **success**（全量承判 2,573s ⇒ **411 / 6,725 / 0**，`voice_subdivisions_*` 11 条逐名 `... ok`；windows 2,201s ⇒ 249 / 4,871 / 0；macos 1,163s ⇒ 249 / 4,892 / 0；矩阵腿 skipped）；`G8d`（**原残余**：`onsetsPerBar` 每小节网格可调 + 缺省值由常量 16 改为**从拍号导出** `cells_per_bar(meter)`）`ADR-0036`，⚠ 它实测**比登记的重**：常量让 `GENRES` 182 条里 **28 条非 4/4** 流派的鼓/旋律今天必失败（`ProgressionTooDense`，theory 拒绝而⛔ 夹紧），线 Run `40565010797`（`bee98ef5`）success（承判腿**矩阵腿** `rust (yeban-mcp)` 938s ⇒ **101 条 / 2,242 / 0**，8 条判据在 `rust (yeban-mcp)` / windows 2,183s ⇒ 250 / 4,879 / 0 / macos 1,729s ⇒ 250 / 4,900 / 0 **三条腿上逐名** `... ok`；全量腿因本次推送增量只有 `crates/**` 而 skipped），⛔ 上一条 `cc309f7b` Run `40563735922` 是一次**真红**（`E0423`：`assert_eq` 漏 `!`，三条腿同一错误、整轮 0 条 `test result:`），主干 merge `e1409ad8` Run `40570998122` **success**（该 merge 碰根级 `schemas/**` ⇒ 承判腿 `rust (workspace 全量)` **真跑** 2,619s ⇒ **412 / 6,733 / 0**，`onsets_per_bar` 8 条逐名 `... ok`、`voice_subdivisions_*` 11 条同框仍绿；windows 1,237s ⇒ 250 / 4,879 / 0；macos 1,400s ⇒ 250 / 4,900 / 0；矩阵腿 skipped）⇒ `G8d` 的"代码 + 判据 + 线判决 + 全量判决"四件齐；⚠ **本行的"消除（四片）"于 2026-10-28 更正为"三轴闭合"** —— `GAPS.md:139` 的五个轴里**力度**（`G8e`／`ADR-0037`）与**旋律动机·音域**（`G8f`／未开工）从未交付，见 `## 2026-10-28：G8 闭合度更正` |
 | `G9` 单轨贡献读数 / 分轨导出 | 消除 | `G9a`（`contributions`）已落，`ADR-0020`；`G9b`（`yeban_export_stems`，第 **25** 台工具）已落，`ADR-0030`；线 Run `40488580940`（tip `77ac65ec`）success（`rust (yeban-mcp)` 3070s ⇒ **91 条 `test result:` / 2170 passed / 0 failed**；`windows` 1276s ⇒ 245 / 4843 / 0；`macos` 1486s），主干合并 `f28dd13d` Run `40496066367` **success**（这次承判的腿是
 `rust (workspace 全量)` 2594s ⇒ **407 / 6698 / 0**；`macos` 245 / 4865 / 0；
 `windows` 245 / 4844 / 0；`rust (${{ matrix.crate }})` 因 `workspace_wide: true` 跳过）。
@@ -12546,6 +12546,11 @@ theory 自己的判据名就写着 `an_over_dense_request_is_an_error_not_a_sile
   **11** 条同框仍绿；`windows` 1,237s ⇒ **250 / 4,879 / 0**；`macos` 1,400s ⇒
   **250 / 4,900 / 0**；矩阵腿因 `workspace_wide: true` skipped；`checks` / `plan` / `deny` /
   `lockfile` 全 success ⇒ 上面欠的那道**全量门禁判决已补上**，`G8` 这条缺口至此闭合。
+  > ⚠ **2026-10-28 更正**：这句"至此闭合"**过度声明**。`GAPS.md:139` 给 `G8` 列的是
+  > **五**个轴（鼓密度 / **力度** / 声部节奏 / **旋律动机** / 音域），四片 `G8a`–`G8d`
+  > 只闭合了三个 ⇒ 力度与旋律动机从未交付、也从未登记，而 `ADR-0033` D4 第 3 条与
+  > `ADR-0035` 非范围第 2 条**白纸黑字**把它们推给了"下一票"。全条更正与新读数见
+  > 本节末尾的 `## 2026-10-28：G8 闭合度更正`。
   ⚠ **本次推送不合规的一次实录**（登记，不掩饰）：merge 的祖先里带着**尚未推送**的
   主干文档提交 `59ec4087`（线在 `602eabd4` 把当时本地 main 合并了进去），所以
   `e1409ad8` 这一次推送实际是"merge + 文档"挤在一起 ⇒ `59ec4087` **没有自己的 run**。
@@ -12579,6 +12584,7 @@ theory 自己的判据名就写着 `an_over_dense_request_is_an_error_not_a_sile
 | 处置 | 条数 | 是哪几条 |
 | :--- | :--- | :--- |
 | **消除** | **14** | `G1` `G2` `G4` `G5` `G6` `G7` `G8`（四片 `G8a`–`G8d`）`G9`（`G9a`＋`G9b`）`G13` `G14` `G15` `G16` `G17` `G18` |
+| ⚠ 上表 `G8` 一行**过度声明**（2026-10-28 现读 `GAPS.md:139` 更正） | — | `G8` 的五个轴里四片只闭合三个：**力度**（`G8e`，`ADR-0037` 落片中）与**旋律动机／旋律音域**（`G8f`，⛔ 未开工）从未交付；`G8` 的处置按两轴计应写作「**部分消除（三片闭合 + 两片欠**）」，⛔ 把这条当"已消除"读 |
 | **待人类裁决** | **3** | `G3`（＝`HD-67` 歌声合成路线）／`G10`（＝`HD-69` stdio 形态要不要托管引擎）／`G11`（＝`HD-68` `midi-input` 进不进 release 默认） |
 | **半消除** | **1** | `G12`（语义如实化**已落**；后半"要不要接工程源"＝`HD-70`） |
 | 合计 | **18** | 与输入文件逐条对齐，⛔ 无遗漏、⛔ 无发明 |
@@ -12701,3 +12707,92 @@ theory 自己的判据名就写着 `an_over_dense_request_is_an_error_not_a_sile
    任一边非空照旧比 `missing`/`extra`。修后 `--self-test` 与真实检查双 **exit=0**。
    ⇒ ⭐ 教训：**"清单为空"在核对类判据里必须是一条显式分支**，⛔ 用"读不到东西"兜底 ——
    兜底分支会把"确实没有"和"读的方法坏了"混成同一个红。
+
+## 2026-10-28：`G8` 闭合度更正 —— 五轴只闭合三轴（力度与旋律动机从未交付），并落 `G8e`（`ADR-0037`）
+
+**为什么要有这一节**：`G8` 在 §5.3 与完成审计表里都记作**消除（四片 `G8a`–`G8d`）**。
+本轮按第一优先级（MCP 创作功能缺口）继续做 `G8` 时现读缺口原文，发现那条"消除"是
+**过度申报**。⛔ 悄悄改写旧条目，改为就地加更正指针 ＋ 本节留全证据。
+
+### 读数（先测后改，AGENTS.md §6；单位：轴 / 处）
+
+1. **缺口原文给的是一张枚举表，⛔ 一句话**：`GAPS.md:139` 逐字为
+   「**无鼓密度/力度、无声部节奏、无旋律动机、无音域控制**」⇒ 五个轴：
+   鼓密度、**力度**、声部节奏、**旋律动机**、音域。（同条 `:140-142` 的实测把
+   "力度恒 96 / 重音 112" 与 "时值 3840 tick" 一起列成症状。）
+2. **四片实际核销了三轴**：`G8a`（`ADR-0028`）= 音域 ＋ 鼓密度；`G8b`（`ADR-0033`）＋
+   `G8c`（`ADR-0035`）= 声部节奏；`G8d`（`ADR-0036`）= 每小节网格（是声部节奏那一轴的
+   另一半）。⇒ **力度**与**旋律动机**从未交付。
+3. **欠的那两轴是被自己写下的欠条，⛔ 我新发明的说法**：
+   `ADR-0033:75-76`（D4 第 3 条）「**切分内的重音模式**——会改动力度面 … 故本票
+   **固定"力度恒 96"**」、`ADR-0035:100-101` 同一条再次推迟 ⇒ 台账把 `G8` 记成"闭合"时
+   没有回读这两张欠条。
+4. **力度那两处的现读位置**（测于 `main` = `e1311434`）：常量
+   `section_build.rs:172` `THEORY_VELOCITY: u8 = 96`、`:175` `ACCENT_VELOCITY: u8 = 112`；
+   消费点三处 = 和声 `:1544`（恒下档）、鼓 `:1642-1646`（`hit.accent`）、
+   旋律 `:1707-1711`（`note.chord_tone`）；`crates/yeban-theory/src/` 里 `velocity`
+   出现 **0** 次 ⇒ 阶梯完全长在 MCP 层。手工绕行 = 合并后第二次往返
+   `yeban_edit_notes` 的 `kind: "velocity"`（`notes.rs:4394-4397` 读 / `:8334-8342` 写）。
+5. **旋律动机／音域那一轴的形状**（`G8f`，⛔ 未开工）：和声与旋律的**音域**在 theory 侧
+   是有类型的可校验量（`crates/yeban-theory/src/melody.rs:87-104`
+   `MelodyConstraints { lower, upper, max_leap }` 与 `DEFAULT`），MCP 层却**只传常量**
+   （`section_build.rs:1699` `MelodyConstraints::DEFAULT`）⇒ "音域可调"是把既有公开面
+   接到入参，形状与 `ADR-0036` 同族。而"**动机**"（repeating cell / 主题变形）在 theory
+   与 MCP 两侧**都没有对应概念**：`grep -rl "motif\|动机" docs/adr` = **0** 命中 ⇒
+   那是新增音乐能力，⛔ 用现有字段凑（凑出来的不会叫动机）。
+
+### 落片：`G8e` = 力度两档开放为 `velocityMin` / `velocityMax`（`ADR-0037`）
+
+- 决定：既有**两级**阶梯的端点做成两个可选整数入参（`0..=127`，缺省 `96`/`112` ⇒
+  逐字节不变）；`min <= max` 在本层判；只允许与 `materialSource: "theory"` 同给，
+  ⛔ 不要求鼓/旋律在场（和声恒消费下档）；拒绝载荷**刻意不带 `reason` 键** ⇒
+  `fault_vocabulary` 的词表与规范面摘要不变（该守卫的数字必须与落地前同一组）。
+- 非范围（登记，⛔ 补齐）：逐声部力度表 `N1`、反重音／力度曲线 `N2`、把 `edit_notes`
+  的 velocity 折进同一次提案 `N3`（＝ `G13` 口径）。
+- 线：`.worktrees/section-velocity-range`（分支 `line/section-velocity-range`），
+  提交 `6dbc3a1c`；判据 5 条在 `crates/yeban-mcp/tests/section_velocity.rs`
+  （缺省逐字节 / 两档落到 theory 登记的重音集（期望值从 `drum_pattern` 独立重算）/
+  越界与倒序点名键 / 耦合 `materialSource` / 两个声明面同源）。
+- **判决**：**第一批真红 ＋ 修复批 pending**（⛔ 记为已消除）。
+  * `6dbc3a1c` Run `40597966845` ＝ **failure** —— `error[E0432]: unresolved import
+    `yeban_model::MIDI_VELOCITY_MAX`**（该常量在 `yeban_model::music`（`music.rs:31`），
+    crate 根**不 re-export**，同仓库 `op_schema.rs:42`／`notes.rs:768` 都写全路径），
+    `checks`／`rust (workspace 全量)`／macos／windows **四条腿同红**、整轮 **0 条**
+    `test result:` ⇒ 真红而⛔ 空绿（本机探针抓不到，原因见下）。
+  * `d8504f73` Run `40599247060` ＝ **pending**（在跑）。
+  本机测不了：`yeban-mcp` 拖 `yeban-render`（重依赖禁令），本地只跑到 `cargo fmt` ＋
+  `run-gates.sh light`（`门禁通过 (mode=light)`）⇒ **符号解析（导入路径／常量名）这类
+  错误在本机是量不到的**，代价正好是一整轮 CI（本次实测 ≈ 45 分钟）。
+- 同批附带一条**文档改正**（`ADR-0037` 引用）：缺口原文改为**逐字**引用
+  `GAPS.md:139`／`NOTES.md:106`（原稿把改写当成了「引用」，并把行号写成"第 5 行"，
+  实测那一行是方法标题）。
+- ⭐ **本节的祖先主干提交 `e1311434`（§0.6.1 更正＋§5 重写）已有自己的判决**：
+  Run `40593859267` ＝ **success**，且⛔ **不是空绿** —— 那一批动了 `scripts/**` ⇒
+  `plan` 给出 `workspace_wide: true`，三条代码承判腿**真跑**：
+  `rust (workspace 全量)` ≈ 2,564s ⇒ **412 条 `test result:` / 6,735 passed / 0 failed**、
+  windows ≈ 1,834s ⇒ **250 / 4,881 / 0**、macos ≈ 1,126s ⇒ **250 / 4,902 / 0**；
+  矩阵腿 `rust (${{ matrix.crate }})` skipped（`0s`，全量腿让位规则）。
+  ⚠ passed 从上一轮的 **6,733** 涨到 **6,735** ＝ `reason-propagation` 那两片带进的 2 条判据，
+  ⛔ 把这条差当成异常。判决读回的工具口径：`gh run view <run> --log --job <id>`
+  （⚠ **没有** `--log-job` 这个 flag —— 它只会打印 usage，见本轮规则第 5 条）。
+
+### 本轮新增的规则
+
+1. **缺口原文里的枚举必须逐轴建清单、逐轴核销**：`GAPS.md` 那条用顿号与斜杠列了五个轴，
+   而四片各自只核销了其中一到两个 ⇒ "本片合完了"被误当成"整条缺口合完了"。
+   处置口径：**一片落地时只改它那一轴的状态**；一条多轴缺口的"消除"必须由**所有轴**
+   各有交付物（或各有显式欠条指向别的缺口号）才能写。
+2. **"残余"登记要回读缺口原文，⛔ 只抄上一片的语气**：`G8d` 登记成的残余是
+   "每小节音头数是常量"（那是 `ADR-0033` 的一句话），而两轴整条**不在**任何残余里。
+   写残余之前先 `grep` 缺口原文的枚举，把每一轴点名一遍。
+3. **过度申报的更正是**就地加指针**＋新节留证据**，⛔ 删掉旧的错误结论**：
+   本轮给 §5.3 的 `G8` 行、完成审计结论表、以及 `G8d` 末尾"至此闭合"那句各加了一条
+   ⚠ 更正指回本节 —— 旧读数是**当时**的判决链，改掉它就等于抹掉"我如何错的"这条证据。
+4. **常量的导入路径必须现读同仓库的既有用法，⛔ 按"直觉的模块层级"写**：
+   `MIDI_VELOCITY_MAX` 我写成 `yeban_model::MIDI_VELOCITY_MAX`（crate 根没有 re-export），
+   而仓库里两处既有用法（`op_schema.rs:42`、`notes.rs:768`）都写 `yeban_model::music::…`。
+   本机编不起 `yeban-mcp` ⇒ 这道"grep 一下就有答案"的检查是**唯一**能在推送前抓到它的地方：
+   新常量的路径**先 grep 既有 import，⛔ 先编译再说**。
+5. **`gh run view --log --job <id>` 才是逐腿取读数的命令，`--log-job` 这个 flag 不存在**：
+   本仓库装的 `gh` 会打印 usage 而非报错，脚本若只看 exit code 就会把"下载失败"读成
+   "0 条 `test result:`"。判决脚本对每条腿都要区分这三态（有读数／无该行／没取到日志）。

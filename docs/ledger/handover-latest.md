@@ -35,6 +35,16 @@
 `G8d` 顺带修掉一条**实测到的既有缺陷**：常量 16 让 `GENRES` 182 条里 **28 条非 4/4** 流派的
 鼓/旋律**根本生成不出来**（theory 的 `ProgressionTooDense` 是拒绝而⛔ 夹紧）。
 
+⚠ ⭐ **上表把 `G8` 记为"消除"是过度申报，现已更正**（`docs/DEVELOPMENT_LEDGER.md`
+`## 2026-10-28：G8 闭合度更正`）：缺口原文（`GAPS.md:139`）逐字枚举的是**五个轴**
+「无鼓密度/力度、无声部节奏、无旋律动机、无音域控制」，四片只核销了**密度、声部节奏、音域**
+三轴 ⇒ 分布应读作 **消除 13 ＋ 半消除 2**（`G12` 后半 `HD-70`；`G8` 三轴闭合、两轴欠着）
+＋ **待人类裁决 3** = **18**。两条欠条：**`G8e`＝力度**（本轮落片中，`ADR-0037`，
+线 `line/section-velocity-range`，见 §0.6.2 末两行）与 **`G8f`＝旋律动机／`MelodyConstraints`
+入参**（⛔ 未开工；theory 里已有 `MelodyConstraints { lower, upper, max_leap }`，
+MCP 目前只传 `MelodyConstraints::DEFAULT`）。教训已写成规则：**一条多轴缺口的"消除"
+必须由所有轴各有交付物（或各有显式欠条指向别的缺口号）才能写。**
+
 ### 0.6.2 判决：**本轮全部读回，⛔ 欠判决**（未读回 ＝ 没有判决）
 
 | 提交 | run | 判决（承判腿 + 三读数） |
@@ -46,6 +56,25 @@
 | `1b26cdd2`（同批更早那个文档提交） | **没有自己的 run** | 实测 `gh run list --limit 30` 的 `headSha` 列**无一条**以 `1b26cdd2` 开头 ⇒ 它是 §0.6.4 第 3 条的**实录**：未推的文档提交被线树带走、落地时挤进同一次主干推送，于是它**只共享 tip 的（空绿）判决** |
 | `99f6566d`（`reason-propagation` 第一次落地 `c2dd2b89`） | `40586900647` | **failure** —— `clippy (-D warnings)` 腿 5 个编译错：4×`E0599`（`Option<String>` 没有 `as_str()`）+ 1×`dead_code`（`field expr is never read`），`rust (yeban-mcp)`／macos／windows **三条腿同红**、整轮 **0 条** `test result:` ⇒ 真红（本机探针⛔ 抓不到，原因见 §0.6.4 第 6 条） |
 | `e18be129`（修复 `007e3ff9` 后落地） | `40588472044` | **success** —— ⛔ 空绿：三条承判腿**都真跑**（steps 非 0、日志有 `test result:`）：`rust (yeban-mcp)` **101 / 2,246 / 0**、windows **250 / 4,881 / 0**、macos **250 / 4,902 / 0**；四条新判据在三条腿上**逐名** `... ok`；`rust (workspace 全量)` 因"推送增量只含 `crates/**`"skipped（本片⛔ 无跨 crate 生产改动） |
+| `e1311434`（§0.6.1 更正与 §5 重写所在的**文档批次**） | `40593859267` | **success** —— ⭐ 与上面 `ae316f19` 那行**不同类**：这一批**动了 `scripts/**`**，于是三条代码承判腿**真跑**（读数见 §0.6.2.1）⇒ 文档改动本身仍不需要代码判决，但这次 run **⛔ 当空绿用** |
+| `6dbc3a1c`（`G8e`＝`ADR-0037` 力度轴第一批） | `40597966845` | **failure** —— `E0432: unresolved import yeban_model::MIDI_VELOCITY_MAX`（该常量在 `yeban_model::music`，crate 根**不 re-export**），`checks`／`rust (workspace 全量)`／macos／windows **四条腿同红**、整轮 **0 条** `test result:` ⇒ 真红。⚠ 教训同 §0.6.4 第 1 条：**本机跑不起 `yeban-mcp`** ⇒ 常量路径这类"符号解析"错误只能靠 CI 抓，一次代价 ≈ 1 小时 |
+| `d8504f73`（`G8e` 修复：导入路径 + ADR 引用改正） | `40599247060` | **pending**（run 进行中，读数未回来 ⇒ ⛔ 写成通过）|
+
+#### 0.6.2.1 `40593859267` 的逐腿读数（文档批次为何也有代码判决）
+
+现读 `gh run view 40593859267 --json jobs` + 每条腿的 `--log --job`（单位：`test result:` 行数 / passed / failed）：
+
+| 腿 | 耗时 | 读数 |
+| :--- | :--- | :--- |
+| `rust (workspace 全量)` | 22:19:13 → 23:01:57（≈ 2,564s） | **412 / 6,735 / 0** |
+| `windows` | ≈ 1,834s | **250 / 4,881 / 0** |
+| `macos` | ≈ 1,126s | **250 / 4,902 / 0** |
+| `rust (${{ matrix.crate }})` | `0s` | **skipped**（全量腿 `workspace_wide: true` ⇒ 矩阵腿按既有规则让位） |
+
+⚠ 两件事值得下轮引用：① **passed 数从 6,733 涨到 6,735** —— 多出的 2 条是
+`e18be129`（`reason-propagation`）带进来的判据，⛔ 把它当"文档批次不该动测试数"的异常；
+② 一批只动 `docs/**` + `scripts/**` 的提交**照样会跑全量**（`plan` 见非 crate 路径 ⇒
+`workspace_wide: true`）⇒ 判"空绿"的唯一依据是**承判腿 steps/日志**，⛔ "这是文档批次所以必然空绿"。
 
 ### 0.6.3 ⭐ 待人类裁决（⛔ 集成者不代签；本轮全部**登记后跳过**，没有停等）
 
@@ -893,8 +922,9 @@ python3 scripts/guards/policy_check.py && bash scripts/gates/run-gates.sh light
 | 路径 | 分支 | 处置 |
 | :--- | :--- | :--- |
 | `/home/crow/work/qoder/yeban` | `main` | 主树（⭐ 集成者工作区，⛔ 不在这里写线代码）|
+| `/home/crow/work/qoder/yeban/.worktrees/section-velocity-range` | `line/section-velocity-range` | ⭐ **在飞**（`G8e`＝力度轴，`ADR-0037`）：tip `d8504f73`，run `40599247060` **pending** ⇒ ⛔ 落地、⛔ 拆树 |
 
-> ⭐ **2026-10-28 现读 `git worktree list` ＝ 只有上面这一行**：`line/reason-propagation` 已落地
+> ⭐ **2026-10-28 现读 `git worktree list` ＝ 上面两行**：`line/reason-propagation` 已落地
 > （`c2dd2b89` + `007e3ff9`，merge `e18be129`，run `40588472044` success）⇒ 工作树已按第 31 条拆除
 > （`worktree.sh rm` **只删目录、保留分支**，未合并的工作不会静默消失）。
 > 曾经列在这里的四条持久线（`line/mod-app`／`line/mod-mcp`／`line/mod-model`／`line/mod-engine`）
