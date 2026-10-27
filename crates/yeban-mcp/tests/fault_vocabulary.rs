@@ -588,7 +588,7 @@ fn classify_value_inner(
     // ⭐ 唯一的**组合**形状 `format!("{<入参>}<固定后缀>")`：后缀是字面量、入参可传播
     // ⇒ 值集合 = 调用点字面量各加同一个后缀。其余 `format!` 仍然看不见（⇒ `Dynamic`）。
     if let Some((ident, suffix)) = format_reason_composition(expr)
-        && let Some((helper, values)) = propagated_reasons(prefix, region, ident, suffix)
+        && let Some((helper, values)) = propagated_reasons(prefix, region, expr, ident, suffix)
     {
         return ReasonOccurrenceKind::Propagated(helper.to_owned(), suffix.to_owned(), values);
     }
@@ -648,7 +648,7 @@ fn resolve_reason_ident(
     if let Some(values) = local_literal_binding(prefix, ident) {
         return ReasonOccurrenceKind::Resolved(values);
     }
-    if let Some((helper, values)) = propagated_reasons(prefix, region, ident, "") {
+    if let Some((helper, values)) = propagated_reasons(prefix, region, ident, ident, "") {
         return ReasonOccurrenceKind::Propagated(helper.to_owned(), String::new(), values);
     }
     ReasonOccurrenceKind::Dynamic(String::new())
@@ -1153,16 +1153,21 @@ fn helper_call_sites(region: &str, helper: &str) -> Vec<HelperCallSite> {
 }
 
 /// ⭐ 由调用点把转发入参 `ident` 折成它的值集合；任一条契约不满足 ⇒ `None`（⇒ 仍算 `Dynamic`）。
+///
+/// `expr` 是站点的**值表达式原文**（未规范化）：登记表的 `expr` 列把它钉成第三道闸 ——
+/// 同名辅助函数＋同后缀，但站点写成别的形状（例如中间多包了一层 `to_string()`）就不再传播。
 fn propagated_reasons(
     prefix: &str,
     region: &str,
+    expr: &str,
     ident: &str,
     suffix: &str,
 ) -> Option<(&'static str, Vec<String>)> {
     let (helper, params) = enclosing_function(prefix)?;
-    let entry = PROPAGATED_REASON_SITES
-        .iter()
-        .find(|entry| entry.helper == helper && entry.suffix == suffix)?;
+    let normalized = normalize_expr(expr);
+    let entry = PROPAGATED_REASON_SITES.iter().find(|entry| {
+        entry.helper == helper && entry.suffix == suffix && entry.expr == normalized
+    })?;
     let last_parameter = *split_top_level_arguments(params).last()?;
     let parameter_name = last_parameter.split(':').next()?.trim();
     if parameter_name != ident {

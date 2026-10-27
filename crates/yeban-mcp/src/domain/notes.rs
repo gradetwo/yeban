@@ -11070,7 +11070,7 @@ mod tests {
             let fault = reject_unknown_keys(&object, &["name"], "clip", reason)
                 .expect_err("未知键必须响亮失败");
             assert_eq!(
-                reason_of(&fault).as_str(),
+                reason_of(&fault).as_deref(),
                 Some(reason),
                 "`{reason}` 必须**原样**转发进 `data.reason`"
             );
@@ -11124,7 +11124,7 @@ mod tests {
             let fault = read_non_empty_string("scene", &Value::from(""), "name", reason)
                 .expect_err("空串必须响亮失败");
             assert_eq!(
-                reason_of(&fault).as_str(),
+                reason_of(&fault).as_deref(),
                 Some(reason),
                 "空串分支必须原样转发 `{reason}`"
             );
@@ -11137,13 +11137,13 @@ mod tests {
             let fault = read_non_empty_string("scene", &Value::from(7), "name", reason)
                 .expect_err("非字符串必须响亮失败");
             assert_eq!(
-                reason_of(&fault).as_str(),
+                reason_of(&fault).as_deref(),
                 Some(composed_expected.as_str()),
                 "非字符串分支输出**拼接后**的词（入参已带后缀, 又加一次 —— 如实登记, ⛔ 不改词）"
             );
             let composed: String = format!("{reason}MustBeString");
             assert_eq!(
-                reason_of(&fault).as_str(),
+                reason_of(&fault).as_deref(),
                 Some(composed.as_str()),
                 "拼接规则本身：入参 ＋ 固定 `MustBeString` 后缀"
             );
