@@ -1492,7 +1492,7 @@ fn velocity_ladder(min: Option<u64>, max: Option<u64>) -> Result<(u8, u8), Build
                 "field": "velocityMin",
                 "velocityMin": lower,
                 "velocityMax": upper,
-                "hint": "上档比下档轻是反重音（演奏法），⛔ 不是力度范围的语义, 本票不支持",
+                "hint": "把 `velocityMin` 调到不大于 `velocityMax`（两档相等是合法的单档力度）；上档比下档轻是反重音（演奏法），⛔ 不是力度范围的语义, 本票不支持",
             }),
         ));
     }
