@@ -2461,6 +2461,11 @@ fn plan_propose_section(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault>
     // ⭐ `ADR-0036` D2：每小节网格是可选整数键；缺省 = 从该流派拍号导出（4/4 ⇒ 16 ⇒
     // 逐字节相同）。**上界不进这里**：那是拍号的函数，只有 theory 知道（D3）。
     let onsets_per_bar = arg_u64(call, "onsetsPerBar")?;
+    // ⭐ `ADR-0037` D1/D2：力度阶梯的两个端点都是可选整数键；**都不给 = 既有 96/112**
+    // ⇒ 逐字节相同。`0..=127` 的界与 `min <= max` 交给领域层（`velocity_ladder`），
+    // 这里⛔ 再校验一遍 —— 同一参数的界只能有一个写者。
+    let velocity_min = arg_u64(call, "velocityMin")?;
+    let velocity_max = arg_u64(call, "velocityMax")?;
     let section_plan = section::plan_with_options(
         project,
         section_name,
@@ -2476,6 +2481,8 @@ fn plan_propose_section(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault>
             voice_subdivision,
             voice_subdivisions,
             onsets_per_bar,
+            velocity_min,
+            velocity_max,
         },
     )?;
     propose_draft(

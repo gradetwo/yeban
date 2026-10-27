@@ -95,6 +95,8 @@ fn try_plan(given: Given<'_>) -> Result<SectionPlan, BuildFault> {
             voice_subdivision: None,
             voice_subdivisions: given.voice_subdivisions,
             onsets_per_bar: given.onsets_per_bar,
+            velocity_min: None,
+            velocity_max: None,
         },
     )
 }

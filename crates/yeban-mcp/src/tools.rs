@@ -744,13 +744,13 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
                 "includeDrums",
                 "boolean",
                 false,
-                "是否追加鼓组声部 [ADR-0017]: 缺省 false。true = 在段落末尾追加 `\"{sectionName} · Drums\"` 音轨, 鼓点由 `GenreRule::drum_pattern` (或 `swung_styled_drum_pattern`) 生成, 映射为标准 GM 打击乐键 (底鼓 36 / 军鼓 38 / 踩镲 42 / 吊镲 51), 时值固定 120 tick, 重音 112 其余 96, 并直连主总线 (整图仍为 DAG)。只允许与 `materialSource:\"theory\"` 同给; 否则 ⇒ `INVALID_PARAMETER_RANGE` (带 `hint`)",
+                "是否追加鼓组声部 [ADR-0017]: 缺省 false。true = 在段落末尾追加 `\"{sectionName} · Drums\"` 音轨, 鼓点由 `GenreRule::drum_pattern` (或 `swung_styled_drum_pattern`) 生成, 映射为标准 GM 打击乐键 (底鼓 36 / 军鼓 38 / 踩镲 42 / 吊镲 51), 时值固定 120 tick, 重音取 `velocityMax` (缺省 112) 其余取 `velocityMin` (缺省 96) [ADR-0037], 并直连主总线 (整图仍为 DAG)。只允许与 `materialSource:\"theory\"` 同给; 否则 ⇒ `INVALID_PARAMETER_RANGE` (带 `hint`)",
             ),
             param(
                 "includeMelody",
                 "boolean",
                 false,
-                "是否追加旋律声部 [ADR-0017]: 缺省 false。true = 在段落末尾追加 `\"{sectionName} · Melody\"` 音轨, 旋律由 `melody_over_chords` 在**当前段落展开的** `ChordSpan` 与流派节奏网格上生成, 音域 `MelodyConstraints::DEFAULT`, 起点/时值与网格对齐, 和弦音 112 其余 96, 并直连主总线 (整图仍为 DAG)。只允许与 `materialSource:\"theory\"` 同给; 否则 ⇒ `INVALID_PARAMETER_RANGE` (带 `hint`)",
+                "是否追加旋律声部 [ADR-0017]: 缺省 false。true = 在段落末尾追加 `\"{sectionName} · Melody\"` 音轨, 旋律由 `melody_over_chords` 在**当前段落展开的** `ChordSpan` 与流派节奏网格上生成, 音域 `MelodyConstraints::DEFAULT`, 起点/时值与网格对齐, 和弦音取 `velocityMax` (缺省 112) 其余取 `velocityMin` (缺省 96) [ADR-0037], 并直连主总线 (整图仍为 DAG)。只允许与 `materialSource:\"theory\"` 同给; 否则 ⇒ `INVALID_PARAMETER_RANGE` (带 `hint`)",
             ),
             param(
                 "drumDensity",
@@ -762,7 +762,7 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
                 "voiceSubdivision",
                 "integer",
                 false,
-                "和声声部的节奏切分 [ADR-0033]: 单位 = **每个和弦跨度切成几条** (不是每小节击点数, ⛔ 勿与错误载荷里的 `onsetsPerBar` 混同)。取值 1..=16, 缺省 1 = 逐字节维持既有块状和声。N>1 时每个 `ChordSpan` 均匀切成 N 条同音高、力度恒 96 的音符: `step = duration_ticks / N` 整数 tick, **最后一条吸收余数** ⇒ 跨度总时值守恒 (无缝无叠); 音符 id 种子追加切分序号。只作用于 `materialSource:\"theory\"` 的和声声部 (鼓/旋律/`\"project\"` 材料路径不受影响), 因此只允许与 `materialSource:\"theory\"` 同给; 否则 ⇒ `INVALID_PARAMETER_RANGE` (带 `hint`)。越界或非整数 ⇒ `INVALID_PARAMETER_RANGE` (带 `range`)",
+                "和声声部的节奏切分 [ADR-0033]: 单位 = **每个和弦跨度切成几条** (不是每小节击点数, ⛔ 勿与错误载荷里的 `onsetsPerBar` 混同)。取值 1..=16, 缺省 1 = 逐字节维持既有块状和声。N>1 时每个 `ChordSpan` 均匀切成 N 条同音高、力度取 `velocityMin` 档 (缺省 96) 的音符: `step = duration_ticks / N` 整数 tick, **最后一条吸收余数** ⇒ 跨度总时值守恒 (无缝无叠); 音符 id 种子追加切分序号。只作用于 `materialSource:\"theory\"` 的和声声部 (鼓/旋律/`\"project\"` 材料路径不受影响), 因此只允许与 `materialSource:\"theory\"` 同给; 否则 ⇒ `INVALID_PARAMETER_RANGE` (带 `hint`)。越界或非整数 ⇒ `INVALID_PARAMETER_RANGE` (带 `range`)",
             ),
             param(
                 "voiceSubdivisions",
@@ -775,6 +775,18 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
                 "integer",
                 false,
                 "鼓组与旋律的**每小节**音头数 [ADR-0036]: 单位 = 每小节 (⛔ 与 `voiceSubdivision`/`voiceSubdivisions` 的\"每个和弦跨度\"不是同一个量, 两者互不换算)。缺省 = **该流派拍号一小节的 16 分格位数** (4/4⇒16, 3/4⇒12, 2/4⇒8, 6/8⇒12, 7/8⇒14) —— 因此 4/4 预设不传时逐字节不变, 而非 4/4 预设也不再需要调用方自己折算。下界 1 (0 ⇒ `INVALID_PARAMETER_RANGE`); 上界 = 该拍号的格位数, 由 `yeban-theory` 判定而非本层常量: 超过它 ⇒ `INVALID_PARAMETER_RANGE` (带 `onsetsPerBar` + `maxOnsetsPerBar` + `meter` + `hint`, ⛔ 静默夹紧)。只作用于 `materialSource:\"theory\"` 的**鼓组与旋律**两条生成路径 (和声声部不受影响), 因此要求与它同给、且 `includeDrums` 或 `includeMelody` 至少一条为 true; 否则 ⇒ `INVALID_PARAMETER_RANGE` (带 `hint`)",
+            ),
+            param(
+                "velocityMin",
+                "integer",
+                false,
+                "生成音符的力度**下档** [ADR-0037]: 单位 = MIDI velocity。取值 0..=127, 缺省 96 = 逐字节维持既有输出。消费点: **和声声部的全部音符** + 鼓 (`hit.accent==false`) + 旋律 (`chord_tone==false`)。只作用于 `materialSource:\"theory\"` 的生成路径 (外部素材的力度由调用方给出, 本层不覆盖), 因此只允许与它同给; 否则 ⇒ `INVALID_PARAMETER_RANGE` (带 `hint`)。越界 ⇒ `INVALID_PARAMETER_RANGE` (带 `field` + `value` + `range`); 与 `velocityMax` 的相对界 (`min <= max`) 同样在此判定 ⇒ `INVALID_PARAMETER_RANGE` (带 `field:\"velocityMin\"` + `velocityMin` + `velocityMax` + `hint`, ⛔ 不支持反重音)。⛔ 不改音符身份 (id 种子里不含力度) ⇒ 同一次调用的音符 id 与不传时逐条对齐",
+            ),
+            param(
+                "velocityMax",
+                "integer",
+                false,
+                "生成音符的力度**上档** (重音档) [ADR-0037]: 单位 = MIDI velocity。取值 0..=127, 缺省 112 = 逐字节维持既有输出。消费点: 鼓 `hit.accent==true` 与旋律 `chord_tone==true` (即既有\"重音 112 其余 96\"里的那个 112)。约束与拒绝形状同 `velocityMin` (含 `min <= max`); 与 `velocityMin` 相等 ⇒ 全曲单档 (合法, 不视作错误)",
             ),
             param(
                 "autoMerge",

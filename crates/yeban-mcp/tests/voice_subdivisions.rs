@@ -52,6 +52,8 @@ fn plan_try(
             voice_subdivision: uniform,
             voice_subdivisions: overrides,
             onsets_per_bar: None,
+            velocity_min: None,
+            velocity_max: None,
         },
     )
 }

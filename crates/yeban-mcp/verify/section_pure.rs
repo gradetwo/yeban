@@ -337,6 +337,8 @@ fn theory_is_explicitly_opt_in_and_project_path_is_unchanged() {
             voice_subdivision: None,
             voice_subdivisions: None,
             onsets_per_bar: None,
+            velocity_min: None,
+            velocity_max: None,
         },
     )
     .expect("显式 project");
@@ -359,6 +361,8 @@ fn theory_is_explicitly_opt_in_and_project_path_is_unchanged() {
             voice_subdivision: None,
             voice_subdivisions: None,
             onsets_per_bar: None,
+            velocity_min: None,
+            velocity_max: None,
         },
     )
     .expect_err("未知材料来源");
@@ -391,6 +395,8 @@ fn theory_generates_a_deterministic_skeleton_on_an_empty_pool() {
             voice_subdivision: None,
             voice_subdivisions: None,
             onsets_per_bar: None,
+            velocity_min: None,
+            velocity_max: None,
         };
         let planned =
             plan_with_options(&empty, "Chorus", style, 4, None, options).expect("理论生成");
@@ -533,6 +539,8 @@ fn theory_honours_custom_progression_and_scale() {
         voice_subdivision: None,
         voice_subdivisions: None,
         onsets_per_bar: None,
+        velocity_min: None,
+        velocity_max: None,
     };
     let planned = plan_with_options(&empty, "Chorus", "synthwave", 4, Some("A minor"), options)
         .expect("自定义走向");
@@ -573,6 +581,8 @@ fn theory_honours_custom_progression_and_scale() {
             voice_subdivision: None,
             voice_subdivisions: None,
             onsets_per_bar: None,
+            velocity_min: None,
+            velocity_max: None,
         },
     )
     .expect("默认走向");
@@ -594,6 +604,8 @@ fn theory_honours_custom_progression_and_scale() {
             voice_subdivision: None,
             voice_subdivisions: None,
             onsets_per_bar: None,
+            velocity_min: None,
+            velocity_max: None,
         },
     )
     .expect_err("非法走向");
@@ -623,6 +635,8 @@ fn drums_are_gm_mapped_and_route_to_master_in_a_dag() {
         voice_subdivision: None,
         voice_subdivisions: None,
         onsets_per_bar: None,
+        velocity_min: None,
+        velocity_max: None,
     };
     let planned = plan_with_options(&empty, "Chorus", "synthwave", 4, None, options)
         .expect("鼓组生成");
@@ -742,6 +756,8 @@ fn melody_stays_on_the_genre_grid_and_in_range_in_a_dag() {
             voice_subdivision: None,
             voice_subdivisions: None,
             onsets_per_bar: None,
+            velocity_min: None,
+            velocity_max: None,
         },
     )
     .expect("旋律生成");
@@ -872,6 +888,8 @@ fn melody_stays_on_the_genre_grid_and_in_range_in_a_dag() {
             voice_subdivision: None,
             voice_subdivisions: None,
             onsets_per_bar: None,
+            velocity_min: None,
+            velocity_max: None,
         },
     )
     .expect("重复调用");
@@ -897,6 +915,8 @@ fn drums_and_melody_are_opt_in_and_legacy_plans_are_byte_identical() {
             voice_subdivision: None,
             voice_subdivisions: None,
             onsets_per_bar: None,
+            velocity_min: None,
+            velocity_max: None,
         },
     )
     .expect("理论生成");
@@ -916,6 +936,8 @@ fn drums_and_melody_are_opt_in_and_legacy_plans_are_byte_identical() {
                 voice_subdivision: None,
                 voice_subdivisions: None,
                 onsets_per_bar: None,
+                velocity_min: None,
+                velocity_max: None,
             },
         )
         .expect("缺省/显式 false");
@@ -936,6 +958,8 @@ fn drums_and_melody_are_opt_in_and_legacy_plans_are_byte_identical() {
             voice_subdivision: None,
             voice_subdivisions: None,
             onsets_per_bar: None,
+            velocity_min: None,
+            velocity_max: None,
         },
     )
     .expect("鼓组 + 旋律");
@@ -968,6 +992,8 @@ fn drums_and_melody_are_opt_in_and_legacy_plans_are_byte_identical() {
             voice_subdivision: None,
             voice_subdivisions: None,
             onsets_per_bar: None,
+            velocity_min: None,
+            velocity_max: None,
         },
     )
     .expect("显式 false");
@@ -995,6 +1021,8 @@ fn drums_and_melody_require_the_theory_source() {
                     voice_subdivision: None,
                     voice_subdivisions: None,
                     onsets_per_bar: None,
+                    velocity_min: None,
+                    velocity_max: None,
                 },
             )
             .expect_err("工程材料路径不得生成鼓组/旋律");
@@ -1034,6 +1062,8 @@ fn drum_density_normal_is_byte_identical_to_absent() {
             voice_subdivision: None,
             voice_subdivisions: None,
             onsets_per_bar: None,
+            velocity_min: None,
+            velocity_max: None,
         },
     )
     .expect("缺省鼓");
@@ -1052,6 +1082,8 @@ fn drum_density_normal_is_byte_identical_to_absent() {
             voice_subdivision: None,
             voice_subdivisions: None,
             onsets_per_bar: None,
+            velocity_min: None,
+            velocity_max: None,
         },
     )
     .expect("显式 normal");
@@ -1081,6 +1113,8 @@ fn sparse_drums_are_exactly_the_accented_hits() {
             voice_subdivision: None,
             voice_subdivisions: None,
             onsets_per_bar: None,
+            velocity_min: None,
+            velocity_max: None,
         },
     )
     .expect("normal 鼓");
@@ -1099,6 +1133,8 @@ fn sparse_drums_are_exactly_the_accented_hits() {
             voice_subdivision: None,
             voice_subdivisions: None,
             onsets_per_bar: None,
+            velocity_min: None,
+            velocity_max: None,
         },
     )
     .expect("sparse 鼓");
@@ -1179,6 +1215,8 @@ fn drum_density_requires_include_drums_and_rejects_unknown_values() {
                 voice_subdivision: None,
                 voice_subdivisions: None,
                 onsets_per_bar: None,
+                velocity_min: None,
+                velocity_max: None,
             },
         )
         .expect_err("drumDensity 不得脱离 includeDrums:true 单独给");
@@ -1206,6 +1244,8 @@ fn drum_density_requires_include_drums_and_rejects_unknown_values() {
             voice_subdivision: None,
             voice_subdivisions: None,
             onsets_per_bar: None,
+            velocity_min: None,
+            velocity_max: None,
         },
     )
     .expect_err("未知密度档必须拒绝");
@@ -1241,6 +1281,8 @@ fn three_voice_bass_sits_in_the_low_register() {
             voice_subdivision: None,
             voice_subdivisions: None,
             onsets_per_bar: None,
+            velocity_min: None,
+            velocity_max: None,
         },
     )
     .expect("3 声部理论段");
