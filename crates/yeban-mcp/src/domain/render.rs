@@ -498,6 +498,11 @@ pub enum SampleFormat {
     Pcm24,
     /// 32-bit IEEE 浮点、**不抖动**（`quantize(_, BitDepth::Float32, _)` 是直通分支，
     /// 非有限样本归 `0.0`）—— 分轨导出 [ARCH-DSP-003]。
+    ///
+    /// ⚠ 浮点容器同时改变 `fmt ` 的 `audioFormat`（`WAVE_FORMAT_IEEE_FLOAT`）与
+    /// **`fact` chunk 的有无**（非 PCM 容器必须带 `fact`）—— 这两处都由
+    /// `yeban-render` 的 `ContainerPlan` 按 `PcmFormat::is_float` 自动补，
+    /// ⛔ 本层不自己拼头，因此这里**不**再复制一个 `is_float` 判断。
     Float32,
 }
 
@@ -517,13 +522,6 @@ impl SampleFormat {
             Self::Pcm24 => BitDepth::Int24,
             Self::Float32 => BitDepth::Float32,
         }
-    }
-
-    /// 是否浮点容器 —— 它同时决定 `fmt ` 的 `audioFormat`（`WAVE_FORMAT_IEEE_FLOAT`）
-    /// 与 **`fact` chunk 的有无**（非 PCM 容器必须带 `fact`，`yeban-render` 的
-    /// `ContainerPlan` 按 `PcmFormat::is_float` 自动补，⛔ 本层不自己拼头）。
-    const fn is_float(self) -> bool {
-        matches!(self, Self::Float32)
     }
 }
 

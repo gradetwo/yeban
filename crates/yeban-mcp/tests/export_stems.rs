@@ -655,12 +655,7 @@ fn file_names_are_deterministic_and_carry_no_path_from_the_track_name() {
     let reported = usize::try_from(data["maxFileNameBytes"].as_u64().expect("maxFileNameBytes"))
         .expect("usize");
     assert!(
-        reported
-            >= names
-                .iter()
-                .map(|name| name.as_bytes().len())
-                .max()
-                .expect("有名字"),
+        reported >= names.iter().map(|name| name.len()).max().expect("有名字"),
         "maxFileNameBytes 必须覆盖最长的文件名"
     );
 

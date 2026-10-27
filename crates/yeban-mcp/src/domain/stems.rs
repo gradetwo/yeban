@@ -289,7 +289,7 @@ impl StemBatch {
     pub fn max_file_name_bytes(&self) -> usize {
         self.stems
             .iter()
-            .map(|row| row.file_name.as_bytes().len())
+            .map(|row| row.file_name.len())
             .max()
             .unwrap_or(0)
     }
@@ -518,7 +518,6 @@ pub fn export(
 /// `data` 里给出 `completedStems` / `failedTrackId` / `failedReason` / `orphanedFiles` /
 /// `resumeFrom`。⛔ 不用 `"reason"` 这个键名 —— 它是故障词汇表冻结面的字面量，新增一处
 /// 就要重钉一次金标（见 `docs/DEVELOPMENT_LEDGER.md` 的 `fault_vocabulary` 条目）。
-#[must_use]
 pub fn write(batch: &StemBatch) -> Result<Value, Fault> {
     for (position, row) in batch.stems.iter().enumerate() {
         if let Err(fault) = store::write_project_atomic(&row.path, &row.artifact.bytes) {
