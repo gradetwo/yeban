@@ -368,7 +368,7 @@ fn onsets_per_bar_requires_theory_source_and_one_consumer() {
             .onsets(Some(8))
             .consumers(false, true),
     );
-    assert_eq(
+    assert_eq!(
         voices(&melody_only)["Melody"].len(),
         usize::try_from(BARS).expect("BARS 进 usize") * 8,
         "旋律单独在场时 `onsetsPerBar` 必须生效",
