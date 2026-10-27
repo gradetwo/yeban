@@ -765,6 +765,12 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
                 "和声声部的节奏切分 [ADR-0033]: 单位 = **每个和弦跨度切成几条** (不是每小节击点数, ⛔ 勿与错误载荷里的 `onsetsPerBar` 混同)。取值 1..=16, 缺省 1 = 逐字节维持既有块状和声。N>1 时每个 `ChordSpan` 均匀切成 N 条同音高、力度恒 96 的音符: `step = duration_ticks / N` 整数 tick, **最后一条吸收余数** ⇒ 跨度总时值守恒 (无缝无叠); 音符 id 种子追加切分序号。只作用于 `materialSource:\"theory\"` 的和声声部 (鼓/旋律/`\"project\"` 材料路径不受影响), 因此只允许与 `materialSource:\"theory\"` 同给; 否则 ⇒ `INVALID_PARAMETER_RANGE` (带 `hint`)。越界或非整数 ⇒ `INVALID_PARAMETER_RANGE` (带 `range`)",
             ),
             param(
+                "voiceSubdivisions",
+                "object",
+                false,
+                "按**声部名**给值的切分覆盖表 [ADR-0035]: `{\"Bass\": 8, \"Soprano\": 1}`。单位与 `voiceSubdivision` 完全一致 (每个和弦跨度切成几条, 1..=16)。组合规则只有一条: 表里列出的声部用表里的值, **没列出的声部沿用 `voiceSubdivision`** (其缺省 1) —— 因此 `voiceSubdivision:4 + {\"Soprano\":1}` = 低音/内声部切 4、高音持续。键 = 该风格预设的和声声部名 (`preset_parts` 实测清单); 不是声部名的键 (含 `\"Drums\"` / `\"Melody\"`) ⇒ `INVALID_PARAMETER_RANGE` (带 `part` + `allowedParts`, ⛔ 静默忽略)。非整数或越界 ⇒ `INVALID_PARAMETER_RANGE` (带 `part` + `range`)。空对象 `{}` 合法 = 没有任何覆盖。只作用于 `materialSource:\"theory\"` 的和声声部, 因此只允许与它同给; 否则 ⇒ `INVALID_PARAMETER_RANGE` (带 `hint`)。没被改的声部音符身份与缺省路径逐字节相同",
+            ),
+            param(
                 "autoMerge",
                 "boolean",
                 false,

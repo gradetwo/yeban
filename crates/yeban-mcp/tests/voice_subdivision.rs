@@ -30,6 +30,7 @@ fn theory(voice_subdivision: Option<u64>, include_parts: bool) -> Result<Section
             include_melody: include_parts.then_some(true),
             drum_density: None,
             voice_subdivision,
+            voice_subdivisions: None,
         },
     )
 }
@@ -222,6 +223,7 @@ fn voice_subdivision_bounds_and_coupling_are_loud() {
                 include_melody: None,
                 drum_density: None,
                 voice_subdivision: Some(4),
+                voice_subdivisions: None,
             },
         )
         .expect_err("`voiceSubdivision` 不得脱离 materialSource:\"theory\" 单独给");
