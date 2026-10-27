@@ -2660,6 +2660,14 @@ fn plan_edit_notes(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
         notes::reject_duplicate_scene_targets(&note_ops)?;
         notes::compile(project, &track_id, &clip_id, &note_ops)?
     };
+    // ⭐ G2：取走音轨必须连带清掉它在路由图里的边与节点 —— 否则孤儿节点让
+    // `yeban_render_master` 整体失败（"路由图里的源节点没有对应的音轨"）。
+    // 清理排在 `RemoveTrack` **之前**（`RemoveRoutingNode` 要求先断边），
+    // 合并时整批提交、撤销时逐条反转 ⇒ 图与音轨一起回来。
+    if let Some(target) = removed_track {
+        let cleanup = notes::routing_cleanup_ops(project, &target);
+        compiled.splice(0..0, cleanup);
+    }
     let placement_description = match placement {
         Some(notes::PlacementEdit::Add(placement)) => {
             compiled.push(Op::AddClipPlacement {

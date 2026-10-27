@@ -935,7 +935,7 @@ pub fn ops_items() -> Value {
             ),
             op(
                 "removeTrack",
-                "取走一条音轨本身（连带它的摆放与自动化泳道；主总线被拒）",
+                "取走一条音轨本身（连带它的摆放与自动化泳道，并一起清掉它在路由图里的边与节点；主总线被拒）",
                 &["kind", "trackId"],
                 json!({
                     "kind": kind("removeTrack"),
