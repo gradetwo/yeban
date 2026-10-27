@@ -191,7 +191,7 @@ CARGO_HOME=/Users/crow/work/music/.cargo-home RUSTUP_TOOLCHAIN=stable \
 | `G5` 音色参数消费口径 | 消除 | `ADR-0027`；「G5 消除」条 |
 | `G6` 生成即增益分级 | 消除 | `ADR-0026`；「G6 消除」条 |
 | `G7` 同批建节点+连边被批前预检误拒 | 消除 | `ADR-0025`；「G7 消除」条 |
-| `G8` 生成控制粒度 | **半消除** | `G8a`（音域 + `drumDensity`）已落，`ADR-0028`；`G8b` 逐声部节奏粒度 `pending`（网格常量钉死在 `section_build.rs:213`） |
+| `G8` 生成控制粒度 | **消除（两片）＋一处残余** | `G8a`（音域 + `drumDensity`）`ADR-0028`；`G8b`（`voiceSubdivision` 和声声部按跨度均匀切分 1..=16）`ADR-0033`，线 Run `40523903008`（`80d854d9`）success（承判腿 `rust (workspace 全量)` 42:08 ⇒ **408 条 / 6,703 / 0**；windows 246 / 4,849 / 0；macos 246 / 4,870 / 0；矩阵腿因 `workspace_wide: true` 跳过）；⚠ 残余 = 旋律/鼓的每小节音头数仍是常量 `THEORY_ONSETS_PER_BAR = 16`（`section_build.rs:222`），登记为 `G8c` `pending` |
 | `G9` 单轨贡献读数 / 分轨导出 | 消除 | `G9a`（`contributions`）已落，`ADR-0020`；`G9b`（`yeban_export_stems`，第 **25** 台工具）已落，`ADR-0030`；线 Run `40488580940`（tip `77ac65ec`）success（`rust (yeban-mcp)` 3070s ⇒ **91 条 `test result:` / 2170 passed / 0 failed**；`windows` 1276s ⇒ 245 / 4843 / 0；`macos` 1486s），主干合并 `f28dd13d` Run `40496066367` **success**（这次承判的腿是
 `rust (workspace 全量)` 2594s ⇒ **407 / 6698 / 0**；`macos` 245 / 4865 / 0；
 `windows` 245 / 4844 / 0；`rust (${{ matrix.crate }})` 因 `workspace_wide: true` 跳过）。
@@ -203,8 +203,8 @@ CARGO_HOME=/Users/crow/work/music/.cargo-home RUSTUP_TOOLCHAIN=stable \
 | `G14` 设备参数拼写无公告面 | 消除 | `ADR-0031` D1 裁决**不开**设备专用工具（op 词汇是唯一权威面）+ D2 警告自带 `knownParams`；线 Run `40478327564`（`c889ecdc`）success（`rust (yeban-mcp)` 857s ⇒ 89 条 `test result:` / 2146 passed / 0 failed；windows 2087s、macos 1705s）＋ **主干 Run `40485790733`（合并提交 `b33e9165`）success**（mcp 883s ⇒ 同样 89 / 2146 / 0；windows 2018s、macos 879s；`workspace 全量` skipped 不计绿；`git diff --stat c889ecdc b33e9165` ＝ 6 个 `docs/` 文件、`crates/**` 零差异 ⇒ 同一份 Rust 源码）。⚠ 同分支 tip `d67bd854` 是纯文档提交 ⇒ Run `40479128541` 的 success 是**空绿**（rust/macos/windows 全 `skipped`），判决取代码提交自己那条 run |
 | `G15` 段落无时间序读数 | 消除 | `sections.timeline`；主干 Run `40462525280` success + 夹具误红由 `4cfa0008` 修复（Run `40471370167`） |
 | `G16` 弯音曲线只能整条重写 | 消除 | `ADR-0019`（`setPitchBendPoint` 插/改/删三态 + 界外拒绝）；主干 Run `40419445566` success |
-| `G17` 两种提交模型并存 | `pending` | 候选切片：回执自述 `commitModel`（⛔ 不把 automation 改成提案模型） |
-| `G18` `scale` 苛刻 / 无转调工具 | **半消除** | 别名通道已落（线 Run `40464221638` + 主干 `40471370167`）；「段间转调」`pending`（全仓 `transpose` 零命中 ⇒ `G18b`） |
+| `G17` 两种提交模型并存 | 消除 | `ADR-0032`：每条成功回执自述 `data.commitModel ∈ {proposal, proposalAutoMerged, direct, none}`（`commit_model_of` 对 24 个 `Plan` 变体穷尽 `match`）；线 Run `40514401107`（`b5710346`）+ 主干 Run `40524221416`（merge `057a1761`）双双 success，承判腿 `rust (yeban-mcp)` **93 条 / 2,180 / 0**（windows 246 / 4,848 / 0、macos 246 / 4,869 / 0）；⚠ 例外：`yeban_list_proposals` 清单顶层的 `mergeTool` 是 `#176` 既有契约、与自述无关 |
+| `G18` `scale` 苛刻 / 无转调工具 | **半消除** | 别名通道已落（线 Run `40464221638` + 主干 `40471370167`）；「段间转调」= `G18b` 进行中（`ADR-0034` 已落 `docs/adr/`：新 `NoteOp` 形态 `transposeClip` 在编译期展开成 N 条 `Op::MoveNote`，线 `line/transpose-clip` 代码 `pending`；D4 三条〔段级目标调、in-scale 转调、平滑声部连接〕仍为待人类裁决的规范缺口） |
 
 **待裁四项不许由集成者补齐**：`G3` / `G10` / `G11` / `G12`（后半）已登记
 `HD-67` / `HD-69` / `HD-68` / `HD-70`。⭐ `HD-70` 是本轮（2026-10-27）**补登**的：
@@ -12059,3 +12059,143 @@ $ python3 scripts/gates/check_phase_status.py   # 退出 0
    `tests/effect_contract.rs:484-513`（判据 ⑤）与 `tests/render_master.rs:1986` 的注释。
    ⇒ 协议层拒绝也要断言，因此判据用了**不拆包**的 `call_raw`（`export_stems.rs`），
    ⛔ 用 `call` 会把 `-32602` 直接 panic 掉、看不见形状。
+
+## 2026-10-27：G17 消除：每条成功回执**自述**提交模型（`data.commitModel`，`ADR-0032`）
+
+**缺口原文（审计 G17）**：工具面同时存在两种提交模型 —— 提案类（`yeban_edit_notes` /
+`yeban_propose_section`，写完必须再 `yeban_merge_proposal`）与直接提交类
+（`yeban_merge_proposal` / `yeban_edit_automation` / `yeban_undo` / 导入 / 宿主），
+回执形状不告诉调用方"这次还要不要去 merge"，规矩只活在文档里。
+
+### 交付（线 `line/commit-model-receipt`，tip `b5710346`）
+
+- `crates/yeban-mcp/src/tools.rs`：`pub const COMMIT_MODEL_KEY: &str = "commitModel"` ＋
+  `ToolResponse::with_commit_model(&'static str)`（只对 `Success` 生效，`Failure` 原样返回）。
+- `crates/yeban-mcp/src/domain/mod.rs`：`apply_inner` 保持名字与签名（别处的文档引用它），
+  改为**包装** `apply_plan_model`，在成功出口**一次**注入；映射由
+  `commit_model_of(&Plan)` 的**穷尽 `match`** 给出（24 个 `Plan` 变体 ⇒ 编译期防漂移），
+  取值集合 `COMMIT_MODEL_VALUES = ["proposal","proposalAutoMerged","direct","none"]`。
+  ⛔ 任何 `apply_*` 里手写这个键；⛔ `dry_run_result` 不参与（dispatch 在 `apply_inner` 之前短路）。
+- `crates/yeban-mcp/src/output_schema.rs`：`commit_model_schema()` ＋ `with_commit_model()`
+  给 5 个已广播 `outputSchema` 的工具**同时**加 `properties.commitModel`（带 `enum`）与
+  `required` 一位。`render_master` 走包装而非改 `json!` 字面量 —— 那个字面量已在
+  serde_json 宏递归上限上（文件里 `midiSource` 的既有警告）。
+- 判据 `crates/yeban-mcp/tests/commit_model.rs`（4 条）：六类真实调用逐字对 D1 表 /
+  `direct`+`none` 回执⛔ 出现 `mergeTool` / 取值恰好四条且 schema 与实现同源 / `dryRun` 预览
+  ⛔ 不冒充自述。既有 `auto_merge.rs` 加一条 `commitModel == "proposal"`（原"逐字节零感知"
+  的范围**就地收窄**到 `autoMerge` 的两条键形状，强度一位不减）。
+- `payload_budget`：BASELINE-006 缺省响应 **2,816 → 2,841 B**（+25 B 由形状算出：
+  `"commitModel"`13 + `:`1 + `"proposal"`10 + `,`1；`serde_json::Map` 是无 `preserve_order`
+  的有序表 ⇒ 插哪位都恰好一个逗号），请求侧 196 B 一位不动，预算 4,096 B 不变。
+
+### ⚠ 实测到的例外与偏离（写进 `ADR-0032` 的"落地补记"）
+
+`yeban_list_proposals` 的清单**顶层**自带 `"mergeTool": "yeban_merge_proposal"`
+（`domain/mod.rs:3188`，`#176` 既有契约）。它说的是"清单里那些提案该用哪个工具去合"，
+⛔ 不是"本次调用属于提案模型"。判据 2 因此**不**把它算违规，另钉住它自己的
+`commitModel == "none"` —— 两把钥匙各说各的。
+
+### 判决链（单位：`test result:` 行数 / passed / failed；每提交各自的 run，按 `headSha`）
+
+- `21d50fe8` Run `40502399152` **failure**（67s）：`commit_model.rs:311`
+  `error[E0277]: can't compare &Value with Value`（新写判据的一处解引用）。
+- `3a96f01a` Run `40503581804` **failure**：`rust (yeban-mcp)` 的 **clippy(-D warnings)** 步骤
+  `error: unused import: yeban_mcp::tools::COMMIT_MODEL_KEY`（`auto_merge.rs:21` —— 第 198 行
+  用了全限定路径，导入因此没被消费）。
+- `03bc0fd8` Run `40506899686` **failure**：lib 目标 **575 passed / 1 failed** ——
+  `output_schema::tests::the_validator_actually_rejects_broken_responses` 在 `output_schema.rs:819`
+  的**手写正例夹具**上红：新键进了 `required`，夹具没带它。
+- `285fc3a1` Run `40509347889` **failure**：lib 目标转绿（**576 / 0**），新目标
+  `tests/commit_model.rs` **1 passed / 3 failed**，三条都停在 `commit_model.rs:97` 的
+  `expect("主总线身份")` —— 我从 `yeban_open_project` 的响应里猜 `data.project.tracks`。
+- `b5710346` Run `40514401107`：**success**。`plan` 报 `workspace_wide: false`
+  （本线⛔ 未碰根级文件）⇒ 承判的腿是 `rust (yeban-mcp)` 矩阵，`rust (workspace 全量)`
+  **skipped** —— 与 G9b 主干那次（改了 `schemas/` ⇒ `workspace_wide: true`、矩阵整条跳过）
+  **正好相反**：读判决前必须先读 `plan`，⛔ 拿上一条线的腿去抄。
+  - `rust (yeban-mcp)` 13:42→13:51 ＝ **93 条 / 2,180 passed / 0 failed**、
+    `test result: FAILED` 行 **0**；`commit_model` 目标 4 条全 `ok`；
+  - `windows`（job `122224532681`，13:42→14:19 = 37:02）＝ **246 条 / 4,848 / 0**；
+  - `macos`（job `122224532957`，13:42:37→14:15:05 = 32:28）＝ **246 条 / 4,869 / 0**，
+    步骤里 `clippy (-D warnings)` 与 8 个 `test (…)` 全部 success（⛔ 不是空绿：耗时非 0）；
+  - `checks` / `deny` / `lockfile` / `plan` / `rust (yeban-ui-mcp)` 全 success。
+- 主干 merge `057a1761` Run `40524221416` **success**（三条腿逐一读回，非 0s）：
+  `rust (yeban-mcp)` 14:45:51→15:00:24（14:33）＝ **93 条 / 2,180 / 0**；
+  `windows` 14:45:51→15:22:09（36:18）＝ **246 条 / 4,848 / 0**；
+  `macos` 14:45:53→15:08:00（22:07）＝ **246 条 / 4,869 / 0**；
+  `rust (workspace 全量)` `skipped`（同线口径）。⇒ `G17` 的主干判决成立。
+- ⚠ 读回手法：`gh run view --json jobs` 在 run 刚结束时**会把已完成的 `macos` 作业仍报成
+  `in_progress`**（run 级 conclusion 已经是 success）。判单条腿必须走
+  `gh api repos/.../actions/jobs/<id>` 看 `status/conclusion/steps`，再用
+  `gh api --allow-escape-sequences repos/.../actions/jobs/<id>/logs` 数 `test result:`。
+
+### 由这四条真实红换来的规则（本轮新增）
+
+1. **把键推进 `required` ＝ 同时在改判据的"正例"。** `outputSchema` 的 `required` 是校验器的
+   输入，任何**手写**的"合法响应"夹具在同一瞬间变成非法响应。⇒ 加键的那一次提交里必须
+   `grep -rn "validate_complete\|output_schema::validate" crates/` 把**所有**手写夹具捞出来
+   一起改（本轮实测 4 处：`src/output_schema.rs:819`/`:846` 与 `tests/props_176.rs:532`/`:569`），
+   ⛔ 让 CI 一条条报。真实响应的判据（`props_176` 的 `five_main_tools_…`）不会红 ——
+   红的全是手抄的那几处。
+2. **新判据取身份⛔ 从"响应里应该有这个键"倒推，要抄**同仓既有 harness 的同一读数口径**。**
+   `yeban_open_project` 的 `data.project` 只有 `trackCount`（`tests/stdio_e2e.rs:235`），
+   稀疏视图的 `tracks` / `master_bus_track_id` 在 `yeban_query_project` 里
+   （`tests/set_clip_placement_loop.rs:204`）。抄字段名 ⇒ 三条判据一起停在同一个 `expect` 上。
+3. **这四条红里没有一条是语义错**：两条编译期（判据自己写错）、一条夹具没跟上契约扩张、
+   一条键名猜错。本机按 AGENTS.md §5.2⛔ 不跑 `cargo clippy -p yeban-mcp --all-targets`
+   （重依赖），所以**这类红的检出成本就是 CI 的一个循环** —— 这是纪律的有意代价，
+   ⛔ 把它记成"测试不稳"。
+
+## 2026-10-27：G8b 消除（G8 第二片）：`voiceSubdivision` —— 和声声部按跨度均匀切分（`ADR-0033`）
+
+**缺口原文（审计 G8，`GAPS.md:35`）**：`yeban_propose_section` 生成的和声是**块状**的
+（每个 `ChordSpan` 每声部一条长音），逐声部的节奏粒度（每小节几个音头）没有控制面，
+写"柱式铺底"可以、写"逐拍律动"不行 ⇒ 只能建完再逐音符 `edit_notes` 手改。
+
+### 交付（线 `line/section-voice-subdivision`，tip `80d854d9`）
+
+- `domain/section_build.rs`：`MAX_VOICE_SUBDIVISION = 16`（与 `THEORY_ONSETS_PER_BAR`
+  的 16 网格、`MidiNote::ratchet` 的 1..=16 同口径；整数上界写在 **domain 层**，
+  ⛔ `ParamSpec` 只有字符串 `min_len`/`max_len` —— 先例 `domain/render.rs:567` 的
+  `TARGET_LUFS_RANGE`）；`PlanOptions.voice_subdivision: Option<u64>`；
+  `theory_contents` 的音符循环改成**整数均匀切分**：`step = duration / N`、
+  ⭐ **末条吸收余数** ⇒ 时值合计逐字节守恒、相邻音符无缝无叠、缺省（`None`/`1`）
+  走同一算术、逐字节等于旧块状（判据 1 钉住）。
+- ⭐ **身份只在 `N > 1` 时多一个切分位**：缺省种子仍是
+  `theory-note:{section}:{voice}:{chord}` ⇒ `ADR-0016` 的"缺省逐字节兼容"契约与
+  既有工程摘要⛔ 不因本票抖动；`N > 1` 才是 `{…}:{part}`（判据 2 的唯一性读数）。
+- 响亮拒绝两处（`domain/section_build.rs`，与 `drumDensity` 同一条优先级带）：
+  `0` / `> 16` ⇒ `INVALID_PARAMETER_RANGE` + `data.range`；给了它却⛔ 不走
+  `materialSource: "theory"` ⇒ 同码 + `data.hint`（"给了不消费的参数"必须响）。
+- ⚠ **命名**：⛔ `onsetsPerBar` —— 那个名字已经是 `GenreRule::drum_pattern` 失败报文里
+  的键（`section_build.rs:1396`，单位＝每小节），本票单位＝**每跨度**，同名会让两份真相
+  共用一个词。`tools.rs` 的参数文档逐字写明"⛔ 不等于每小节音头数"。
+- 发布面两处同批：`tools.rs` 的 `ParamSpec` 行 ＋ `schemas/mcp-tools.schema.json` 的
+  `$defs.yeban_propose_section.properties.voiceSubdivision`（`minimum:1 / maximum:16 /
+  default:1`）；判据 5 把**三个数**（domain 常量 / schema `maximum` / 文档里的 `1..=16`）
+  钉成同一个读数，⛔ 让"加一个数改一处"成为可能。
+- 判据 `crates/yeban-mcp/tests/voice_subdivision.rs`（5 条）：缺省逐字节 / `N ∈ {2,3,4,6,7,16}`
+  的 `N ×` 条数、时值守恒、无缝无叠、音高序列与缺省逐条一致、身份唯一 / 越界与耦合的
+  报文形状 / 鼓与旋律⛔ 被波及 / 两面广播一致。`verify/section_pure.rs` 21 处
+  `PlanOptions` 字面量同批补 `voice_subdivision: None`。
+
+### 判决链（单位：`test result:` 行数 / passed / failed）
+
+- `80d854d9` Run `40523903008` **success**。⚠ 本线改了根级 `schemas/**` ⇒ `plan` 报
+  `workspace_wide: true` ⇒ 矩阵腿 `rust (${{ matrix.crate }})` **整条跳过**，承判的是
+  `rust (workspace 全量)`：
+  - `rust (workspace 全量)` 14:44:01→15:26:09（**42:08**）＝ **408 条 / 6,703 passed / 0 failed**、
+    `test result: FAILED` 行 **0**；
+  - `windows` 14:44:01→15:21:09（37:08）＝ **246 条 / 4,849 / 0**；
+  - `macos` 14:44:05→15:05:17（21:12）＝ **246 条 / 4,870 / 0**；
+  - `checks`（fmt / 红线守卫 / schema）/ `deny` / `lockfile` / `plan` 全 success。
+- 主干 merge `9eb4a6c5`：`pending`（推送后读回，⛔ 未读不写"通过"）。
+
+### 本轮新增的规则
+
+1. **上界只有一个数。** 整数约束⛔ 进不了 `ParamSpec`（它只有字符串长度），因此**写在
+   domain 层、由判据去 `schema` 里核对同一数字**，⛔ 在 schema 与实现各写一个数再靠人记住。
+2. **切分类改造必须"末条吸收余数"⛔ 平分取整**。平分（`duration / N` × `N`）会静默丢掉
+   `duration % N` 个 tick；`MidiNote` 的不变量（时值非零）与"跨度守恒"两条判据一起
+   才能同时挡住"丢余数"和"最后一零时长"。
+3. **新参数进 `PlanOptions` 是一次全仓结构体字面量事件**：`verify/section_pure.rs` 有 21 处
+   构造点。⇒ 加字段的那次提交里 `grep -rn "PlanOptions {" crates -l` 先数完，⛔ 让 CI 逐文件报。
