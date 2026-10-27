@@ -308,7 +308,7 @@ fn commit_model_values_are_exactly_four_and_schemas_agree() {
                 .as_array()
                 .expect("required 必须是数组")
                 .iter()
-                .any(|value| value == json!(COMMIT_MODEL_KEY)),
+                .any(|value| *value == json!(COMMIT_MODEL_KEY)),
             "`{name}` 把每条回执都存在的键写进 `required` 是**契约义务**（D3）: {schema}"
         );
     }
