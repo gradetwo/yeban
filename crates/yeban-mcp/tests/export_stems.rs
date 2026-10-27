@@ -14,7 +14,7 @@
 //! | 4 | 第 2 条写失败：`IO_ERROR` + `completedStems` 长度 1 且**仍在盘上**、`failedTrackId` 如实、`orphanedFiles` 实测（D5） | "要么全有要么全无"的假话、静默删掉已写文件 |
 //! | 5 | `stemsBasis.renders == N + 1` 且每条分轨 `frames` 相等（D3a 的基线那一次） | 报 `N` 制造免费的错觉 / 各条长度不齐 |
 //! | 6 | `dryRun` 不落盘任何文件，预览给全部实测字节 | dryRun 真写盘 |
-//! | 7 | `outDir` 缺失/不存在/不是目录 ⇒ `INVALID_PARAMETER_RANGE`（⛔ 不 `create_dir_all`） | 擅自建目录 |
+//! | 7 | `outDir` 缺失 ⇒ 协议层 `-32602`（schema 的 `required` 先拒）；不存在 / 是文件 ⇒ `INVALID_PARAMETER_RANGE`（⛔ 不 `create_dir_all`） | 擅自建目录 |
 //! | 8 | `trackIds` 筛选子集；陌生身份 ⇒ `TRACK_NOT_FOUND`（⛔ 不静默忽略） | 拼错的 ULID 被吞掉 |
 //! | 9 | 文件名确定：同一工程两次导出**同名**；轨名里的 `/`、`..`、全角被清洗成安全字符，无目录穿越 | 直接把轨名当文件名 |
 //!
@@ -195,6 +195,19 @@ fn dispatcher_with(project: &YebanProjectV1, path: &Path) -> (Dispatcher, String
 
 /// 走真实 `tools/call` 管线。
 fn call(dispatcher: &mut Dispatcher, auth: &str, arguments: Value) -> Value {
+    let response = call_raw(dispatcher, auth, arguments);
+    match (response.result, response.error) {
+        (Some(result), None) => result,
+        (None, Some(error)) => panic!("工具路径上不该有 JSON-RPC 错误: {error:?}"),
+        other => panic!("result 与 error 必须恰好一个: {other:?}"),
+    }
+}
+
+/// 同上，但**不拆包**：协议层（JSON-RPC）的拒绝也要能被断言。
+///
+/// 需要它是因为 `outDir` 是 schema 里的**必填**实参 —— 缺失时由参数校验层先拒
+/// （`-32602`），请求根本走不到领域层，于是"参数问题"在这里有**两个合法的落点**。
+fn call_raw(dispatcher: &mut Dispatcher, auth: &str, arguments: Value) -> yeban_mcp::Response {
     let line = json!({
         "jsonrpc": "2.0",
         "id": "t",
@@ -203,12 +216,7 @@ fn call(dispatcher: &mut Dispatcher, auth: &str, arguments: Value) -> Value {
     })
     .to_string();
     let outcome = dispatcher.handle_line(Channel::Http, Some(auth), &line);
-    let response = outcome.response.expect("必须有响应");
-    match (response.result, response.error) {
-        (Some(result), None) => result,
-        (None, Some(error)) => panic!("工具路径上不该有 JSON-RPC 错误: {error:?}"),
-        other => panic!("result 与 error 必须恰好一个: {other:?}"),
-    }
+    outcome.response.expect("必须有响应")
 }
 
 /// 一次**成功**导出的便捷封装：返回响应的 `data`（失败直接把响应拍在断言里）。
@@ -523,13 +531,20 @@ fn dry_run_previews_measured_bytes_without_writing_any_file() {
         Vec::<String>::new(),
         "dryRun 不得写任何文件"
     );
-    assert_eq!(preview["data"]["willWrite"], json!(true));
-    assert_eq!(preview["data"]["written"], json!(false));
-    assert_eq!(array_len(&preview["data"], "stems"), 3);
-    assert_eq!(preview["data"]["stemsBasis"]["renders"], json!(4));
+    // `dryRun` 的包络是**协议层**统一给的（`dispatch.rs` 的 `dry_run_result`），
+    // 工具自己的实测预览住在 `data.preview` 里 —— 口径先例：
+    // `tests/import_midi_tool.rs:146`、`tests/extension_tools.rs:1069`。
+    let data = &preview["data"];
+    assert_eq!(data["dryRun"], json!(true), "包络必须自述这是干跑");
+    assert_eq!(data["stateUnchanged"], json!(true), "包络必须自述状态未变");
+    let preview_data = &data["preview"];
+    assert_eq!(preview_data["willWrite"], json!(true));
+    assert_eq!(preview_data["written"], json!(false));
+    assert_eq!(array_len(preview_data, "stems"), 3);
+    assert_eq!(preview_data["stemsBasis"]["renders"], json!(4));
 
     // 预览的字节必须是**实测**：真跑之后逐文件哈希与预览一致。
-    let rows = preview["data"]["stems"].as_array().expect("数组");
+    let rows = preview_data["stems"].as_array().expect("数组");
     export(&mut dispatcher, &auth, &out_dir, Value::Null);
     for row in rows {
         let path = out_dir.join(row["fileName"].as_str().expect("fileName"));
@@ -542,7 +557,8 @@ fn dry_run_previews_measured_bytes_without_writing_any_file() {
     }
 }
 
-/// 判据 7：`outDir` 缺失 / 不存在 / 是文件 ⇒ `INVALID_PARAMETER_RANGE`，且**不**建目录。
+/// 判据 7：`outDir` **缺失** ⇒ 协议层 `-32602`（schema 的 `required` 先拒）；
+/// **不存在 / 是文件** ⇒ 领域层 `INVALID_PARAMETER_RANGE`。两种落点都**不**建目录。
 #[test]
 fn out_dir_must_be_an_existing_directory_and_is_never_created() {
     let scratch = Scratch::new("outdir");
@@ -550,13 +566,20 @@ fn out_dir_must_be_an_existing_directory_and_is_never_created() {
     fs::write(&a_file, b"x").expect("写一个文件");
     let (mut dispatcher, auth) = dispatcher_with(&three_track_project(), &scratch.project_path());
 
-    // 缺失。
-    let response = call(&mut dispatcher, &auth, json!({}));
-    assert_eq!(response["status"], "error", "{response}");
-    assert_eq!(
-        response["error"]["code"],
-        json!("INVALID_PARAMETER_RANGE"),
-        "缺 outDir 是参数问题, 不是领域失败"
+    // 缺失 ⇒ **协议层**先拒：`outDir` 是 schema 的必填实参，请求走不到领域层。
+    // 口径先例：`tests/effect_contract.rs` 判据 ⑤（未知顶层实参 ⇒ `-32602`）。
+    let response = call_raw(&mut dispatcher, &auth, json!({}));
+    assert!(response.result.is_none(), "缺必填参数不得同时带 result");
+    let error = response.error.expect("缺 outDir 必须是 JSON-RPC 层错误");
+    assert_eq!(error.code, -32602, "缺必填参数是 INVALID_PARAMS");
+    let detail = serde_json::to_string(&error.data).expect("错误 data 必须可序列化");
+    assert!(
+        detail.contains("outDir"),
+        "报文必须点名缺的是哪个参数: {detail}"
+    );
+    assert!(
+        !scratch.dir.join("stems").exists(),
+        "被拒的调用不许留下任何目录（`Scratch::stems_dir` 本条没调过）"
     );
 
     // 不存在 ⇒ ⛔ 不 `create_dir_all`。

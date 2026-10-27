@@ -157,7 +157,7 @@
   不做隐式 ` (1)` 之类的手写去重；
 - **预检发生在 `export`（渲染）阶段, 写盘在其后的 `write` 阶段** ⇒ 因碰撞拒绝时
   一个字节都还没落下，不出现"半批新文件 + 半批旧文件"；
-- `outDir` 必填且必须是**已存在**的目录，否则 `INVALID_PARAMETER_RANGE`
+- `outDir` 必填且必须是**已存在**的目录，否则拒绝。⚠ **就地更正（2026-10-27，实测两层落点）**：「否则」在实现里分成两层 —— **缺失**由 `schemas/mcp-tools.schema.json` 的 `required` 在参数校验层先拒（JSON-RPC `-32602` + `data.detail` 点名 `outDir`，请求根本走不到领域层，口径同 `tests/effect_contract.rs` 判据 ⑤）；**给了但不是目录**（不存在 / 是文件）才走领域层 `INVALID_PARAMETER_RANGE`。原判据把两者写成同一条 ⇒ CI Run `40485603721` 实测为协议层错误，已按两层改写（`tests/export_stems.rs` 判据 7）。
   带 `missing` / `why`（不 `create_dir_all` 到任意深度：分轨是写一堆文件，
   目录写错位置比单文件更贵）。
   ⚠ 参数名**复用**已登记的 `outDir`（`param_bounds_guard` 的 `STRING_PARAM_BOUNDS`
