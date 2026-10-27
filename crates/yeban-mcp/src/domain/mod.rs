@@ -2455,6 +2455,9 @@ fn plan_propose_section(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault>
     // ⭐ `ADR-0033`：和声切分是可选整数键；缺省 = 既有一整条满跨度（逐字节相同）。
     // 上下界与"给了却不走 theory"的拒绝都留给领域层（`plan_with_options`）。
     let voice_subdivision = arg_u64(call, "voiceSubdivision")?;
+    // ⭐ `ADR-0035` D1/D2：逐声部覆盖表**原样转发**（不在这儿预解析）—— 那四行拒绝
+    // 的形状要点名是哪个声部，只有领域层同时握着声部清单，预解析会把它拆成两个写者。
+    let voice_subdivisions = call.arguments.get("voiceSubdivisions");
     let section_plan = section::plan_with_options(
         project,
         section_name,
@@ -2468,6 +2471,7 @@ fn plan_propose_section(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault>
             include_melody: Some(include_melody),
             drum_density,
             voice_subdivision,
+            voice_subdivisions,
         },
     )?;
     propose_draft(
