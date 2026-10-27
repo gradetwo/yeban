@@ -195,7 +195,7 @@ fn default_shape_is_unchanged_without_auto_merge() {
     // 自述键 `commitModel`（`ADR-0029` 之后落地），缺省路径因此不再是逐字节相同 ——
     // 把它钉成显式读数，⛔ 不让它成为没人登记的漂移。
     assert_eq!(
-        data[yeban_mcp::tools::COMMIT_MODEL_KEY],
+        data[COMMIT_MODEL_KEY],
         json!("proposal"),
         "缺省路径仍然是提案模型（回执自述与 `pendingMerge: true` 同向）: {data}"
     );
