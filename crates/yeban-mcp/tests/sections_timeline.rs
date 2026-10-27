@@ -14,9 +14,15 @@ use yeban_model::{EntityId, SectionV3, YebanProjectV1};
 
 /// 造一个带三段"身份序与时间序**必然相反**"的夹具工程：
 /// `EntityId::new()` 是单调 ULID ⇒ 键序 = 创建序 = (30k, 20k, 10k) 降序。
+/// ⚠ 名字**必须避开** `filled_project` 自带的段落名（`Intro`/`Drop`/…）：
+/// CI 实测 `Intro` 会与自带段**同名不同条**，名字层面的"序不同"断言因此误报。
 fn fixture_project() -> YebanProjectV1 {
     let mut project = filled_project();
-    for (name, start) in [("Outro", 30_000u64), ("Bridge", 20_000), ("Intro", 10_000)] {
+    for (name, start) in [
+        ("FixtureOutro", 30_000u64),
+        ("FixtureBridge", 20_000),
+        ("FixtureBuild", 10_000),
+    ] {
         let entry = SectionV3 {
             id: EntityId::new(),
             name: name.to_owned(),
@@ -63,12 +69,23 @@ fn sections_timeline_is_sorted_by_start_tick_not_by_identity() {
         "时间轴视图必须逐条等于按 tick 升序"
     );
 
-    // 排序必须**observable**：原始 `sections` 的键序（身份序）与时间序不同。
-    let identity_first: &SectionV3 = project.sections.values().next().expect("夹具至少有 3 段");
-    let timeline_first = &view["sectionsTimeline"][0];
+    // 排序必须**observable**：身份序**整条序列** ≠ 时间序整条序列。
+    // ⚠ 不能只比"第一条"：`filled_project` 自带段的身份序与 tick 序恰好同向
+    //   （fixture id 小且 tick 也小），CI 实测单条名字比较会**假绿/假红**；
+    //   夹具的三段降序追加只在序列层面必然翻转。
+    let identity_names: Vec<&str> = project
+        .sections
+        .values()
+        .map(|section| section.name.as_str())
+        .collect();
+    let timeline_names: Vec<&str> = view["sectionsTimeline"]
+        .as_array()
+        .expect("`sectionsTimeline` 必须是数组")
+        .iter()
+        .map(|entry| entry["name"].as_str().expect("name"))
+        .collect();
     assert_ne!(
-        identity_first.name,
-        timeline_first["name"].as_str().expect("name"),
+        identity_names, timeline_names,
         "夹具必须保证身份序 ≠ 时间序（否则删掉 sort 也测不出来）"
     );
 
