@@ -11806,3 +11806,55 @@ $ python3 scripts/gates/check_phase_status.py   # 退出 0
   + `OP_KINDS` 读数同步 + `ops.schema.json` 新分支 + reason 面摘要重钉；
   须等 `line/effect-param-hints` 与 `line/stem-export` 落地后再开（同写
   `op_schema.rs` / `fault_vocabulary.rs`，一文件一写者）。
+
+## 2026-10-27：G13 消除：提案类工具 opt-in `autoMerge`（编辑→合并两轮往返压成一轮）
+
+- **需求规范 ID**: `[MCP-TOOL-005]` `[MCP-TOOL-006]` `[ADR-0029]` `[G13]`
+- **实施工作线**: `line/propose-automerge`（`4d41ad29` → `2b99bd8c` → `9f2dd31b` → `f0e1a114` → `1dbbd36b` → `2473ae5e`，合并 `72330ca1`）
+- **背景与目标**:
+  - 审计（G13 / WALL ⑥ 的前半）：`yeban_propose_section` / `yeban_edit_notes` 永远只写提案，
+    必须再调一次 `yeban_merge_proposal`（且 `commitMessage` 必填）才落进文档 ⇒
+    每一次创作编辑都是**两次往返**，探针全程在补合并。
+- **实施**（`domain/mod.rs` +116、`tools.rs` +45、`schemas/mcp-tools.schema.json` +20）：
+  - **D1** 三个提案类工具新增可选 `autoMerge` / `mergeCommitMessage`，**缺省路径逐字节不变**；
+  - **D2** `apply_propose` 在同一把锁内**背靠背复用 `apply_merge`**（⛔ 不新写一条合并通路）；
+  - **D3** 两段式回执：`pendingMerge:false` + `autoMerged:true` +
+    `mergeTool:"applied-in-process:autoMerge"` + `projectUnchanged:false` + `merge:{…}`，
+    `proposal` 投影跟随 `merged`；
+  - **D4** 合并失败的结构化错误补 `proposalCreated` / `proposalId` / `proposalRemainsOpen`
+    （**失败不回滚提案**，调用方仍可手工合并）；
+  - **D5** `dryRun` 预览如实报 `wouldAutoMerge` 且**一位都不写**；
+  - **D6** 合并工具的 `commitMessage` 改为**可选**（缺省 `"merge proposal {id}"`，
+    与 `plan_merge` 既有口径一致）；schema 的 `DocumentedToolArguments` 同步登记两个新键。
+- **验证（六条线 run：一条预期红 + 三条真缺陷 + tip 绿；主干全量绿）**:
+  - `4d41ad29`（ADR 留痕）线 Run `40454461891`：**success**（纯文档，无代码面）。
+  - `2b99bd8c`（判据先行）线 Run `40454780878`：**failure** —— `tests/auto_merge.rs`
+    四条承重判据全红（`auto_merge_lands_in_one_call` / `default_shape_is_unchanged_without_auto_merge`
+    / `dry_run_writes_nothing_even_with_auto_merge` / `merge_commit_message_passes_through`，
+    `0 passed; 4 failed`）。**这是预期的红**：判据先落地证明能变红，实现随后。
+  - `9f2dd31b`（实施）线 Run `40460921652`：**failure** —— 除 `auto_merge` 外新冒出两条
+    真缺陷：`trap_175::edit_notes_description_says_the_proposal_must_be_merged`
+    （描述句被改，#175 逐字钉住的句子不许漂移）与
+    `param_bounds_guard::every_string_params_bound_status_is_registered`
+    （`mergeCommitMessage` 是新的 string 参数，未登记界状态）。
+  - `f0e1a114`（夹具改走 `materialSource:"theory"`）线 Run `40464186869`：**failure** ——
+    `auto_merge` 夹具在空池下拿不到素材，三条判据里剩这一条与上面两条一起红。
+  - `1dbbd36b`（判据改读回执投影与计数）线 Run `40465871077`：**failure** —— `auto_merge`
+    四条转绿，仍红在 `trap_175.rs:407` 与 `param_bounds_guard.rs:404`；
+    ⚠ 口径同时修正：merged 判据**不向只列 open 的 `yeban_list_proposals` 清单要 status**，
+    改读回执投影与计数。
+  - `2473ae5e`（tip：恢复 #175 逐字描述句 + 登记 `mergeCommitMessage` 界状态）线 Run
+    `40467991910`：**`conclusion: success`**；作业读数（耗时非 0）：`rust (yeban-mcp)` 828s、
+    `windows` 2145s、`macos` 1244s、`rust (yeban-ui-mcp)` 136s、`checks` 89s、`deny` 45s、
+    `lockfile` 22s、`plan` 9s；`rust (workspace 全量)` 按 `plan` 矩阵 `skipped`
+    （⛔ 不是跳过当成绿）。防假绿核对：`rust (yeban-mcp)` 日志 **87 条 `test result:` /
+    合计 2134 passed / 0 failed / 0 条 `test result: FAILED`**。
+  - 合并提交 `72330ca1` 主干 Run `40472116248`：**`conclusion: success`**；作业读数：
+    `rust (workspace 全量)` 4505s、`windows` 2193s、`macos` 1479s、`checks` 80s、
+    `deny` 47s、`lockfile` 20s、`plan` 9s（`rust (${{ matrix.crate }})` 因 `plan` 判
+    workspace-wide 而 `skipped`）。防假绿核对：workspace 全量日志 **406 条 `test result:` /
+    合计 6684 passed / 0 failed / 0 条 `test result: FAILED`**（`/tmp/g13-workspace.log` 读数）。
+- **登记（界的另一半仍在）**: `autoMerge` 只压缩**提案类工具**的往返；
+  `yeban_edit_automation` 仍是**直接提交**模型（`appliedInOfflineRender:true`，无需合并），
+  两种提交模型并存 ⇒ 登记为 **G17**（候选：响应自述 `commitModel` 字段），本片 ⛔ 不把
+  automation 改成提案模型。
