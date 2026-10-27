@@ -2452,6 +2452,9 @@ fn plan_propose_section(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault>
     let include_melody = arg_bool(call, "includeMelody", false);
     // `ADR-0028`：鼓密度是可选键；缺省 = 既有 "normal" 路径（逐字节相同）。
     let drum_density = arg_str(call, "drumDensity");
+    // ⭐ `ADR-0033`：和声切分是可选整数键；缺省 = 既有一整条满跨度（逐字节相同）。
+    // 上下界与"给了却不走 theory"的拒绝都留给领域层（`plan_with_options`）。
+    let voice_subdivision = arg_u64(call, "voiceSubdivision")?;
     let section_plan = section::plan_with_options(
         project,
         section_name,
@@ -2464,6 +2467,7 @@ fn plan_propose_section(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault>
             include_drums: Some(include_drums),
             include_melody: Some(include_melody),
             drum_density,
+            voice_subdivision,
         },
     )?;
     propose_draft(
