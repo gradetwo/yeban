@@ -170,6 +170,45 @@ const DRUMS_PART: &str = "Drums";
 /// 旋律声部名（`ADR-0017` D1：`"{section_name} · Melody"`）。
 const MELODY_PART: &str = "Melody";
 
+/// ⭐ G6（审计 2026-10-27）：**生成时的默认增益分级**。
+///
+/// 此前生成声部全部 `volume_db = 0.0`：8 小节理论段直接渲染实测
+/// `clippedSamples 527020/768000`（68.6%）、`truePeakDbfs +14.79`
+/// （鼓 +9.02 dBFS、各声部约 0 dBFS）—— 每首生成曲子首听之前都要手工给
+/// 每条轨设 `setParam` TrackVolume。下面四个常数把这件事**内置到生成**：
+/// 数值不是从公式推的，是按"渲染真值"调出来的 —— 判据测试用工具面渲染
+/// 一个含鼓与旋律的标准理论段，要求 `clippedSamples == 0` 且
+/// `truePeakDbfs ≤ −6.0`（给手写叠加内容留出余量；`#335` 与本次审计的
+/// 手工 workaround 是 −9/−12/−15 同一量级）。
+/// 前景（旋律）最响、低音与鼓次之、内声部（垫）最低。
+/// ⭐ 第二轮调值：−12/−15/−18 档实测 `clippedSamples 942`、
+/// `truePeakDbfs +3.52` ⇒ 四档**整体再降 10 dB**（角色相对结构不动）。
+/// 实测 −10 dB 只拉下 2.28 dB（非线性）：剩余主控是**种子轨**而非生成轨
+/// ⇒ 配套 `project_create::SEED_TRACK_VOLUME_DB`（判据最终实测
+/// `clippedSamples 0`、主控 `truePeakDbfs −7.45`，见 `ADR-0026`）。
+const VOLUME_MELODY_DB: f32 = -22.0;
+
+/// 见 [`VOLUME_MELODY_DB`]（鼓重音 112 且实测单轨 +9.02 dBFS ⇒ 压得比旋律多 3 dB）。
+const VOLUME_DRUMS_DB: f32 = -25.0;
+
+/// 见 [`VOLUME_MELODY_DB`]（低音持续音能量大，与鼓同档）。
+const VOLUME_BASS_DB: f32 = -25.0;
+
+/// 见 [`VOLUME_MELODY_DB`]（内声部 Alto/Tenor/Soprano 是铺底，最低档）。
+const VOLUME_INNER_DB: f32 = -28.0;
+
+/// 按**声部名**取默认电平（两条材料路径共用同一份口径；`'project'` 路径的
+/// 声部名同样来自 [`part_names`]，非四人声部名一律落到内声部档）。
+#[must_use]
+fn part_volume_db(part: &str) -> f32 {
+    match part {
+        MELODY_PART => VOLUME_MELODY_DB,
+        DRUMS_PART => VOLUME_DRUMS_DB,
+        "Bass" => VOLUME_BASS_DB,
+        _ => VOLUME_INNER_DB,
+    }
+}
+
 /// 理论生成鼓组／旋律时每小节的 onset 数（`ADR-0017` D1：16 = 十六分网格）。
 const THEORY_ONSETS_PER_BAR: u32 = 16;
 
@@ -914,6 +953,8 @@ struct PartPlan {
     edge_id: EntityId,
     name: String,
     color: Option<String>,
+    /// ⭐ G6：生成时的默认轨电平（见 [`part_volume_db`]）。
+    volume_db: f32,
 }
 
 /// 声部身份（低 → 高，顺序 = `parts`）。
@@ -935,6 +976,7 @@ fn part_plans(
                 edge_id: deterministic_id(&format!("edge:{section_id}:{index}:{part}:{bus}")),
                 name,
                 color: COLORS.get(index % COLORS.len()).map(|c| (*c).to_owned()),
+                volume_db: part_volume_db(part),
             }
         })
         .collect()
@@ -1462,6 +1504,8 @@ pub fn plan_with_options(
                 id: part.track_id,
                 name: part.name.clone(),
                 kind: TrackKind::Midi,
+                // ⭐ G6：生成即带分级电平，不再全部 0 dBFS（见 `part_volume_db`）。
+                volume_db: part.volume_db,
                 color: part.color.clone(),
                 ..TrackV3::default()
             },

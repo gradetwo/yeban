@@ -38,7 +38,7 @@
 //! tracks[master]      = TrackV3 { kind: Master, name: "Master" }
 //! routing_graph.nodes = [master]                     ← 主总线**已在图里**
 //! routing_graph.edges = []                           ← 还没有任何声部
-//! tracks[track-0]     = TrackV3 { kind: Midi, name: "Track 1" }
+//! tracks[track-0]     = TrackV3 { kind: Midi, name: "Track 1", volume_db: −12.0 }
 //! clip_pool[clip-0]   = ClipContent::Midi { 4 个音符 (C4 D4 E4 G4, 各 1 拍) }
 //! tracks[track-0].clips[placement-0] = 起点 0, 时值 1 小节 (由拍号算出: 4/4 = 3840, 3/4 = 2880)
 //! routing_graph.edges[edge-0] = track-0 → master (TrackToBus)
@@ -321,6 +321,10 @@ pub fn parse_config(
 /// 一拍（4/4 的一拍）= 一个四分音符 = `PPQ` tick。
 const PPQ: u64 = yeban_model::PPQ;
 
+/// ⭐ G6（审计 2026-10-27，`ADR-0026`）：种子 MIDI 轨的出厂电平（dBFS）。
+/// 判据与来龙去脉见 `build_with_clock` 里 `Op::AddTrack` 处的注释。
+const SEED_TRACK_VOLUME_DB: f32 = -12.0;
+
 /// 从零构造一份"可渲染、可配器"的工程。
 ///
 /// ⭐ `#215`：这是**创建**，因此创建时刻取**恰好一次**写进
@@ -404,6 +408,14 @@ pub fn build_with_clock(
                 id: track_id,
                 name: format!("Track {}", index + 1),
                 kind: TrackKind::Midi,
+                // ⭐ G6（审计 2026-10-27）：种子轨**不再** 0 dBFS 出厂。默认 Motif
+                // （C4 D4 E4 G4）满幅正弦实测单源真峰值 **+0.44 dBFS** ⇒ 新建工程
+                // 首听即贴天花板，叠上 `propose_section` 的声部就削波（实测主控源
+                // 就是它，不是生成轨）。出厂压 **−12 dB**：−9 档实测该源 −8.56 dBFS、
+                // 整段主控真峰值 −5.81，仍差判据线（≤ −6.0）0.8 dB；−12 让种子轨
+                // 让出主控位，生成声部的相对分级不被一条演示轨盖住（见 `ADR-0026`）；
+                // 调用方随后 `setParam` TrackVolume 会照旧覆盖。
+                volume_db: SEED_TRACK_VOLUME_DB,
                 ..TrackV3::default()
             },
         });

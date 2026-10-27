@@ -4582,6 +4582,60 @@ fn a_no_fader_project_gets_a_clipping_warning_through_the_tool_chain() {
     );
     assert_eq!(merged["status"], "success", "{merged}");
 
+    // ⭐ `G6`（`ADR-0026`）把种子轨出厂电平降到 −12 dB、生成声部降到 −22…−28 dB
+    // ⇒ "谁都没碰推子"的默认链**不再**削波。`#224` 的前提是**过响的混音**，
+    // 不是出厂默认值：这里逐轨读数后把**除主总线外**所有推子显式推回 0 dB
+    // （= 修复前的出厂值），再让这条**被手动推满**的工程走同一条导出路径。
+    let master_id = created["data"]["seed"]["masterBusTrackId"]
+        .as_str()
+        .expect("masterBusTrackId")
+        .to_owned();
+    let queried = call_tool(
+        &mut dispatcher,
+        &auth,
+        "yeban_query_project",
+        json!({"fields": ["tracks"]}),
+    );
+    assert_eq!(queried["status"], "success", "{queried}");
+    let tracks = queried["data"]["project"]["tracks"]
+        .as_object()
+        .expect("tracks");
+    let targets: Vec<&String> = tracks
+        .keys()
+        .filter(|id| id.as_str() != master_id)
+        .collect();
+    assert!(
+        !targets.is_empty(),
+        "夹具必须至少有一条非总线音轨: {queried}"
+    );
+    let ops: Vec<_> = targets
+        .iter()
+        .map(|id| {
+            json!({"kind": "setParam", "lane": "TrackVolume",
+                   "trackId": id.as_str(), "value": 0.0})
+        })
+        .collect();
+    let pinned = call_tool(
+        &mut dispatcher,
+        &auth,
+        "yeban_edit_notes",
+        // ⭐ 顶层 `trackId` 是**入参 schema** 的必填口径（本批每条都自带
+        // `ops[].trackId`，代码侧走占位身份、不读顶层值）。
+        json!({"trackId": targets[0].as_str(), "ops": ops}),
+    );
+    assert_eq!(pinned["status"], "success", "{pinned}");
+    let pinned_id = pinned["data"]["proposal"]["proposalId"]
+        .as_str()
+        .expect("proposalId")
+        .to_owned();
+    let merged_pins = call_tool(
+        &mut dispatcher,
+        &auth,
+        "yeban_merge_proposal",
+        json!({"proposalId": pinned_id, "commitMessage": "#224 pin faders"}),
+    );
+    assert_eq!(merged_pins["status"], "success", "{merged_pins}");
+
     let wav = scratch.join("no-fader.wav");
     let rendered = call(
         &mut dispatcher,
