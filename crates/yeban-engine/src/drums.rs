@@ -441,6 +441,20 @@ fn apply_kit_knob(kit: &mut DrumKitParams, name: &str, value: f32) -> bool {
     true
 }
 
+/// ⭐ G5（审计 2026-10-27）：这台**鼓机投影**是否消费给定参数名（小写）？
+///
+/// 复用 [`note_slot`] 与 [`apply_kit_knob`] 这两处**已有**的认名逻辑做探针
+/// （在 `DEFAULT` 的副本上试写一个无害值），因此**不是**第二张名字表 ——
+/// `from_device` 消费什么，这里就承认什么。
+#[must_use]
+pub fn consumes_drum_param(name_lower: &str) -> bool {
+    if note_slot(name_lower).is_some() {
+        return true;
+    }
+    let mut probe = DrumKitParams::DEFAULT;
+    apply_kit_knob(&mut probe, name_lower, 0.0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
