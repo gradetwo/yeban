@@ -67,32 +67,44 @@ fn call(dispatcher: &mut Dispatcher, auth: &str, name: &str, arguments: Value) -
     response.result.expect("必须有 result")
 }
 
+/// 一条音符的逐字段读数（**前后同一形状**，因此可以整条比较）。
+///
+/// 单位：`(身份, start_tick, pitch, duration_ticks, velocity)`。模型的 serde 键名是
+/// 蛇形、`ClipContent` 是外标签 ⇒ 本文件的**两份**读数都走**类型**（`YebanProjectV1`
+/// 的反序列化对偶 / `MidiNote` 的字段），⛔ 从响应里猜 JSON 字段名。
+/// 命名成结构体⛔ 用五位元组：clippy 的 `type_complexity` 在 `-D warnings` 下会
+/// 直接把 `Vec<(String, u64, u8, u64, u8)>` 报成编译错误（本轮实测第二条红）。
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct NoteRow {
+    id: String,
+    start_tick: u64,
+    pitch: u8,
+    duration_ticks: u64,
+    velocity: u8,
+}
+
 /// 样本里**音符最多**的 MIDI 片段：`(音轨身份, 片段身份, 逐音符读数)`。
 ///
-/// 逐音符读数的单位：`(身份, start_tick, pitch, duration_ticks, velocity)`（模型
-/// 的 serde 键名是蛇形，本层的两份读数都走**类型**而不是 JSON 字段名）——
 /// 取"最多"是为了让 `appliedOps == N` 这条读数⛔ 恰好落在 1 上（N=1 时
 /// "展开"与"一条 `move`"看不出区别）。
-fn midi_target(project: &YebanProjectV1) -> (EntityId, EntityId, Vec<(String, u64, u8, u64, u8)>) {
+fn midi_target(project: &YebanProjectV1) -> (EntityId, EntityId, Vec<NoteRow>) {
     let entry = project
         .clip_pool
         .values()
         .filter(|entry| entry.content.notes().is_some())
         .max_by_key(|entry| entry.content.notes().map_or(0, |notes| notes.len()))
         .expect("样本里必须有带音符的 MIDI 片段");
-    let mut rows: Vec<(String, u64, u8, u64, u8)> = entry
+    let mut rows: Vec<NoteRow> = entry
         .content
         .notes()
         .expect("上面筛过")
         .iter()
-        .map(|(id, note)| {
-            (
-                id.to_canonical_string(),
-                note.start_tick,
-                note.pitch,
-                note.duration_ticks,
-                note.velocity,
-            )
+        .map(|(id, note)| NoteRow {
+            id: id.to_canonical_string(),
+            start_tick: note.start_tick,
+            pitch: note.pitch,
+            duration_ticks: note.duration_ticks,
+            velocity: note.velocity,
         })
         .collect();
     rows.sort();
@@ -122,11 +134,7 @@ fn midi_target(project: &YebanProjectV1) -> (EntityId, EntityId, Vec<(String, u6
 /// ⛔ 从响应里猜 JSON 字段名（`start_tick` 还是 `startTick`、`"Midi"` 那层标签）。
 /// 默认视图是 `view::project_view` 的**全量顶层序列化**（`fields` 为空 ⇒ 不裁剪），
 /// 而容器层的双向对偶就是 `YebanProjectV1` 的 serde —— 用它，字段名不会漂移。
-fn read_back(
-    auth: &str,
-    dispatcher: &mut Dispatcher,
-    clip: &EntityId,
-) -> Vec<(String, u64, u8, u64, u8)> {
+fn read_back(auth: &str, dispatcher: &mut Dispatcher, clip: &EntityId) -> Vec<NoteRow> {
     let view = call(dispatcher, auth, "yeban_query_project", json!({}));
     assert_eq!(view["status"], "success", "{view}");
     let document: YebanProjectV1 =
@@ -138,16 +146,14 @@ fn read_back(
         .content
         .notes()
         .unwrap_or_else(|| panic!("片段必须是 MIDI 且带音符表: {clip}"));
-    let mut rows: Vec<(String, u64, u8, u64, u8)> = notes
+    let mut rows: Vec<NoteRow> = notes
         .iter()
-        .map(|(id, note)| {
-            (
-                id.to_canonical_string(),
-                note.start_tick,
-                note.pitch,
-                note.duration_ticks,
-                note.velocity,
-            )
+        .map(|(id, note)| NoteRow {
+            id: id.to_canonical_string(),
+            start_tick: note.start_tick,
+            pitch: note.pitch,
+            duration_ticks: note.duration_ticks,
+            velocity: note.velocity,
         })
         .collect();
     rows.sort();
@@ -232,15 +238,19 @@ fn every_note_moves_in_pitch_and_nothing_moves_in_time() {
         before.len(),
         after.len()
     );
-    for ((id, start, pitch, duration, velocity), (id2, start2, pitch2, duration2, velocity2)) in
-        before.iter().zip(&after)
-    {
-        assert_eq!(id, id2, "身份必须逐条对齐（⛔ 换 id）");
-        assert_eq!(start, start2, "`deltaTick` 恒 0 ⇒ 起点一位不动");
-        assert_eq!(duration, duration2, "时值⛔ 被波及");
-        assert_eq!(velocity, velocity2, "力度⛔ 被波及");
+    for (before_row, after_row) in before.iter().zip(&after) {
+        assert_eq!(before_row.id, after_row.id, "身份必须逐条对齐（⛔ 换 id）");
         assert_eq!(
-            *pitch2 as i16 - *pitch as i16,
+            before_row.start_tick, after_row.start_tick,
+            "`deltaTick` 恒 0 ⇒ 起点一位不动"
+        );
+        assert_eq!(
+            before_row.duration_ticks, after_row.duration_ticks,
+            "时值⛔ 被波及"
+        );
+        assert_eq!(before_row.velocity, after_row.velocity, "力度⛔ 被波及");
+        assert_eq!(
+            i16::from(after_row.pitch) - i16::from(before_row.pitch),
             2,
             "每条都必须恰好 +2 半音（半音级：⛔ 读谱调 ⇒ `C♯` 与 `F` 一样各升两格）"
         );
@@ -286,7 +296,7 @@ fn an_out_of_range_note_rejects_the_whole_batch_without_partial_apply() {
     // 取**能进 `i8` 的最远的一端**：`deltaPitch: 127` 对任何 `pitch ≥ 1` 的音符都越界
     // （`1 + 127 = 128 > 127`）；片段全为 `pitch == 0` 时改用 `-128`（`0 - 128 < 0`）。
     // ⛔ 用 `128 - highest` 那种算法：`highest == 0` 时它会算出 `128`，在 `i8` 外 panic。
-    let highest = rows.iter().map(|row| row.2).max().expect("非空");
+    let highest = rows.iter().map(|row| row.pitch).max().expect("非空");
     let delta: i8 = if highest > 0 { 127 } else { -128 };
 
     let rejected = call(
