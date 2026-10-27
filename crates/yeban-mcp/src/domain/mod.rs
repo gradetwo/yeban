@@ -77,6 +77,7 @@ pub mod scene_launch;
 pub mod section;
 pub mod section_build;
 pub mod sfz;
+pub mod stems;
 pub mod store;
 pub mod view;
 
@@ -1087,6 +1088,11 @@ pub enum Plan {
         /// 已经渲染并编码好的产物（`apply` 只落盘）。
         artifact: Box<sfz::SfzWavArtifact>,
     },
+    /// `yeban_export_stems`（`ADR-0030`）：逐轨弹分轨（`N + 1` 次渲染与编码都在 `plan` 里）。
+    ExportStems {
+        /// 已经渲染并编码好的整批分轨（`apply` 只逐条落盘）。
+        batch: Box<stems::StemBatch>,
+    },
     /// `yeban_record_wav`：录一段测试音（`ARCH-REC-001` 三段）并编码成 WAV。
     RecordWav {
         /// 已经录完并编码好的产物（`apply` 只落盘）。
@@ -1134,6 +1140,7 @@ impl Plan {
             Self::ImportMidi(_) => "import_midi",
             Self::LoadSfz { .. } => "load_sfz",
             Self::RenderSfzWav { .. } => "render_sfz_wav",
+            Self::ExportStems { .. } => "export_stems",
             Self::RecordWav { .. } => "record_wav",
             Self::MidiInputProbe { .. } => "midi_input_probe",
             // 宿主动作不是工具（`plan` 不产出它）；名字只用于留痕与判据点名。
@@ -1175,6 +1182,7 @@ impl Plan {
             // SFZ 装载只动**会话态** registry（不是工程文档）；SFZ 导出与录音只写盘。
             | Self::LoadSfz { .. }
             | Self::RenderSfzWav { .. }
+            | Self::ExportStems { .. }
             | Self::RecordWav { .. }
             // 物理 MIDI 探针只读硬件端口，⛔ 不碰工程文档、⛔ 不落盘。
             | Self::MidiInputProbe { .. }
@@ -1244,6 +1252,7 @@ impl Plan {
             // SFZ 装载只动会话态 registry（不是工程文档）；SFZ 导出与录音只写盘。
             | Self::LoadSfz { .. }
             | Self::RenderSfzWav { .. }
+            | Self::ExportStems { .. }
             | Self::RecordWav { .. }
             // 物理 MIDI 探针只读硬件端口（连工程都不要求活跃）。
             | Self::MidiInputProbe { .. }
@@ -1390,6 +1399,7 @@ impl Plan {
             | Self::ExportMidi { .. }
             | Self::LoadSfz { .. }
             | Self::RenderSfzWav { .. }
+            | Self::ExportStems { .. }
             | Self::RecordWav { .. }
             // 探针不改工程内容（连工程都不要求活跃）。
             | Self::MidiInputProbe { .. }
@@ -1572,6 +1582,16 @@ impl Plan {
                 // 渲染与编码在 `plan`（只读）里就完成了: 帧数 / 字节数 / SHA-256
                 // 都是实测值。落盘只发生在 `apply`。
                 if let Value::Object(details) = artifact.preview() {
+                    for (key, value) in details {
+                        preview.insert(key, value);
+                    }
+                }
+            }
+            Self::ExportStems { batch } => {
+                // ⭐ `ADR-0030`：`N + 1` 次渲染与编码都在 `plan`（只读）里完成 ——
+                // 预览里的每条 stem 的字节数 / SHA-256 / 帧数都是**实测值**，
+                // 而一个字节都不写盘。落盘（逐条原子写）只发生在 `apply`。
+                if let Value::Object(details) = batch.preview() {
                     for (key, value) in details {
                         preview.insert(key, value);
                     }
@@ -1995,6 +2015,7 @@ pub fn plan(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
         "yeban_load_sfz" => plan_load_sfz(domain, call),
         "yeban_render_sfz_wav" => plan_render_sfz_wav(domain, call),
         "yeban_record_wav" => plan_record_wav(domain, call),
+        "yeban_export_stems" => plan_export_stems(domain, call),
         "yeban_midi_input_probe" => plan_midi_input_probe(call),
         // `ToolCall::from_params` 已按契约枚举把关, 因此这里不可达;
         // 用 CONFLICT 而不是 panic: 未知工具名不该让服务进程倒下。
@@ -3645,6 +3666,7 @@ fn apply_inner(domain: &mut Domain, plan: Plan) -> Result<ToolResponse, Fault> {
         Plan::MidiInputProbe { report } => Ok(ToolResponse::success(report.data())),
         Plan::LoadSfz { load } => apply_load_sfz(domain, *load),
         Plan::RenderSfzWav { artifact } => apply_render_sfz_wav(&artifact),
+        Plan::ExportStems { batch } => stems::write(&batch).map(ToolResponse::success),
         Plan::RecordWav { artifact } => apply_record_wav(&artifact),
     }
 }
@@ -3790,6 +3812,27 @@ fn apply_render_sfz_wav(artifact: &sfz::SfzWavArtifact) -> Result<ToolResponse, 
 fn apply_record_wav(artifact: &record_wav::RecordArtifact) -> Result<ToolResponse, Fault> {
     store::write_project_atomic(&artifact.path, &artifact.bytes)?;
     Ok(ToolResponse::success(artifact.response_data()))
+}
+
+/// `yeban_export_stems`（⭐ `ADR-0030`）：一次调用把每条源节点轨弹成一个 32-bit float WAV。
+///
+/// **`N + 1` 次渲染与全部编码都在 `plan` 里**（与 `yeban_render_master` /
+/// `yeban_record_wav` 同一条切分）：`dryRun` 因此拿到的是实测的每条字节数、SHA-256、
+/// 帧数与容器头，且一个字节都不写盘；落盘是 `apply` 的事（逐条
+/// [`store::write_project_atomic`]，失败回报已写清单与 `resumeFrom`）。
+fn plan_export_stems(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
+    let project = require_active(domain)?;
+    let project_path = domain.active_path().ok_or_else(no_active_project)?;
+    let request = stems::validate(&call.arguments)?;
+    Ok(Plan::ExportStems {
+        batch: Box::new(stems::export(
+            project,
+            project_path,
+            &request,
+            domain.now_ms(),
+            domain,
+        )?),
+    })
 }
 
 /// `yeban_record_wav`：录一段测试音（`ARCH-REC-001` 三段）并编码成 24-bit WAV。
@@ -4873,6 +4916,20 @@ mod tests {
                         .to_canonical_string(),
                 }),
             ),
+            // ⭐ `ADR-0030`：分轨导出 —— 这条只证明"有规划臂、绝不 -32005"。
+            // `outDir` 指向一个**不存在**的目录 ⇒ 规划阶段在**任何渲染之前**响亮拒绝
+            // （D7：⛔ 不 `create_dir_all`）。正向的 `N + 1` 次渲染与十条判据在
+            // `crates/yeban-mcp/tests/export_stems.rs`，本条因此刻意不付渲染代价。
+            (
+                "yeban_export_stems",
+                serde_json::json!({
+                    "outDir": std::env::temp_dir()
+                        .join(format!("yeban-stems-absent-{}", std::process::id()))
+                        .display()
+                        .to_string(),
+                    "trackIds": [track.to_canonical_string()],
+                }),
+            ),
         ];
         for spec in &crate::tools::TOOLS {
             assert!(
@@ -4940,6 +4997,17 @@ mod tests {
                     // `sfz_load_then_render_writes_a_non_silent_wav` 覆盖。
                     let fault = outcome.expect_err("会话里没有已装载的 SFZ");
                     assert_eq!(fault.domain_code(), Some(ErrorCode::InvalidParameterRange));
+                }
+                "yeban_export_stems" => {
+                    // `ADR-0030` D7：`outDir` 必须**已存在** ⇒ 规划阶段在任何渲染之前
+                    // 点名缺席的目录（带 `data.missing`），⛔ 不是 -32005、⛔ 不 `create_dir_all`。
+                    let fault = outcome.expect_err("分轨目录不存在");
+                    assert_eq!(fault.domain_code(), Some(ErrorCode::InvalidParameterRange));
+                    let rendered = format!("{fault:?}");
+                    assert!(
+                        rendered.contains("missing"),
+                        "目录缺席必须带 `data.missing`: {rendered}"
+                    );
                 }
                 _ => {
                     outcome.unwrap_or_else(|fault| panic!("{name} 规划失败: {fault:?}"));

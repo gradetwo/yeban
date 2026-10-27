@@ -44,7 +44,13 @@
 //!
 //! | 面 | reason 数 | 规范行数 | SHA-256 |
 //! | :--- | ---: | ---: | :--- |
-//! | `reason`（**可分类**面：字面量 ＋ 可解析的字面量 `let`，含顺序） | 164 | 742 | `59a44770d9b2fabba520fbcf08530534b61e69076809b87552d5c0aca08c38e6` |
+//! | `reason`（**可分类**面：字面量 ＋ 可解析的字面量 `let`，含顺序） | 166 | 750 | `2df60826b5d11ed38bb979073bc3910125dcfb5ca2eacd3e232bfc223f7b0ea1` |
+//!
+//! ⚠ `ADR-0030`（`yeban_export_stems`）：两条新字面站点 `masterBusTrack` /
+//! `notASourceNode`（各带 `trackId` / `name` / `reason` 三个同级键）进入规范文本
+//! ⇒ 164 → 166 个 reason、742 → 750 行；**新摘要照抄判据自己的报出值**（本表里那一位
+//! 与 `FROZEN_REASON_SURFACE_SHA256` 在同一次提交里一起换成新值 —— 两者不许各说各话）。
+//! ⚠ 同一批还把生产区 `.rs` 文件分母从 **44** 推到 **45**（新增 `src/domain/stems.rs`）。
 //!
 //! ⚠ `#274`：摘要随"登记位置搬进 provider"重钉（集合不变、顺序变了）；
 //! 见 `FROZEN_REASON_SURFACE_SHA256` 的沿革注释。
@@ -62,7 +68,7 @@ use yeban_mcp::undo_session::read_rust_sources;
 /// 字面量 ＋ 同函数内可解析的字面量 `let`（#340 起）。运行时站点不进这张表，
 /// 由 [`EXEMPT_DYNAMIC_REASON_SITES`] 逐条登记。
 /// 这是黄金表：任何改名 / 新增 / 删除都必须**故意**改这一行。
-pub const GOLDEN_REASONS: [&str; 160] = [
+pub const GOLDEN_REASONS: [&str; 162] = [
     "assetChannelLayout",
     "assetDecodeFailed",
     "assetHashMismatch",
@@ -125,6 +131,9 @@ pub const GOLDEN_REASONS: [&str; 160] = [
     "loudnessTargetMissed",
     "masterBusNodeCannotBeRemoved",
     "masterBusTrackCannotBeRemoved",
+    // ⭐ `ADR-0030`：`yeban_export_stems` 的 D4 豁免点名（主总线 / 路由图里的非源节点轨）。
+    "masterBusTrack",
+    "notASourceNode",
     "midiInputAmbiguousPort",
     "midiInputConnectFailed",
     "midiInputEmptyPortName",
@@ -948,13 +957,18 @@ const REASON_ARGUMENT_NAME_USES: [ReasonArgumentNameUse; 3] = [
 // ⭐ [G18]：`domain/section_build.rs` 的三条单边输入结构化拒绝（`missingTonic` /
 // `missingMode` / `missingSpaceOrMode`）各为一处字面 `"reason"` 键站点
 // ⇒ 出现 221 → 224、键站点 218 → 221、字面站点 210 → 213。
-const REASON_OCCURRENCES_TOTAL: usize = 224;
+// ⭐ `ADR-0030`：`domain/stems.rs` 的 `SkippedTrack::to_value()` 两个 `json!` 分支
+// 各为一处字面 `"reason"` 键站点（`masterBusTrack` / `notASourceNode`）
+// ⇒ 出现 224 → 226、键站点 221 → **223**（CI Run `40487059733` 的 `left:` 实测值）、
+// 字面站点 213 → **215**（由恒等式 223 = 字面 215 ＋ 可解析 `let` 2 ＋ 运行时 6 收敛，
+// 而 2 与 6 由本文件下方两条断言各自钉住 —— ⛔ 不是手点数出来的）。
+const REASON_OCCURRENCES_TOTAL: usize = 226;
 // ⭐ MCP-TOOL-003：键站点 208 → 216、字面站点 200 → 208 —— 新形态在
 // `domain/notes.rs` / `tools.rs` 里新增的 8 处字面 `"reason"` 站点
 // （tick 0、`bpmOutOfRange` 复用、`tempoPointNotFound`、`timeSignaturePointNotFound`
 // 与描述文本里的键形状；逐文件拆分以扫描器读数为准，此处不手数）。
-const REASON_KEY_SITES_TOTAL: usize = 221;
-const REASON_LITERAL_SITES_TOTAL: usize = 213;
+const REASON_KEY_SITES_TOTAL: usize = 223;
+const REASON_LITERAL_SITES_TOTAL: usize = 215;
 const REASON_RESOLVED_SITES_TOTAL: usize = 2;
 const REASON_DYNAMIC_SITES_TOTAL: usize = 6;
 const REASON_ARGUMENT_NAME_TOTAL: usize = 3;
@@ -1227,7 +1241,7 @@ fn every_reason_is_asserted_somewhere() {
 /// 每条 `reason` 在生产区**字面 `json!` 对象**里带的同级键（排序）。
 /// ⚠ 口径：只收字面 `json!` 里的键；运行时 `map.insert(...)` 加进去的键不在内。
 /// 空数组 = 该 reason 的 `data` 里**没有**同级键（或 Data 由别的构造方式给出）。
-pub const GOLDEN_REASON_PAYLOADS: [(&str, &[&str]); 160] = [
+pub const GOLDEN_REASON_PAYLOADS: [(&str, &[&str]); 162] = [
     (
         "assetChannelLayout",
         &[
@@ -1371,6 +1385,9 @@ pub const GOLDEN_REASON_PAYLOADS: [(&str, &[&str]); 160] = [
         "masterBusTrackCannotBeRemoved",
         &["hint", "masterBusTrackId", "reason", "trackId"],
     ),
+    // ⭐ `ADR-0030`：`yeban_export_stems` 的 `skippedTracks[]` 两条豁免登记（同形三键）。
+    ("masterBusTrack", &["name", "reason", "trackId"]),
+    ("notASourceNode", &["name", "reason", "trackId"]),
     (
         "midiInputAmbiguousPort",
         &["candidates", "field", "reason", "requested"],
@@ -2178,13 +2195,22 @@ fn the_reason_payload_shape_is_the_published_table() {
 /// `59a44770d9b2fabba520fbcf08530534b61e69076809b87552d5c0aca08c38e6`
 /// 由判据 `the_reason_surface_digest_is_frozen_and_documented`（CI Run 40462481785）
 /// 报出后照抄。
+///
+/// ⭐ `ADR-0030` 重钉：新增 `src/domain/stems.rs` 的两条字面站点
+/// （`masterBusTrack` / `notASourceNode`，各带 `trackId` / `name` / `reason` 三键）
+/// ⇒ 164 → 166 个 reason、742 → 750 行。**摘要同批必须一起换**（上一批只换了
+/// 两个规模读数，摘要留在 `[G18]` 那一位 ⇒ CI Run `40487059733` 三条判据当场红，
+/// 而这正是本判据存在的理由：它宁可红，也不许"计数对了而字节没对"）。
+/// 新摘要 `2df60826b5d11ed38bb979073bc3910125dcfb5ca2eacd3e232bfc223f7b0ea1`
+/// 由该 run 里 `the_reason_surface_digest_is_frozen_and_documented` 的 `left:`
+/// 报出后照抄（⛔ 不手算）。
 pub const FROZEN_REASON_SURFACE_SHA256: &str =
-    "59a44770d9b2fabba520fbcf08530534b61e69076809b87552d5c0aca08c38e6";
+    "2df60826b5d11ed38bb979073bc3910125dcfb5ca2eacd3e232bfc223f7b0ea1";
 
 /// 规范形式里的 reason 数 / 规范行数（与摘要一起构成"两端"读数）。
-pub const REASON_SURFACE_REASONS: usize = 164;
+pub const REASON_SURFACE_REASONS: usize = 166;
 /// 规范行数（每个 reason 一行 ＋ 每个键一行）。
-pub const REASON_SURFACE_LINES: usize = 742;
+pub const REASON_SURFACE_LINES: usize = 750;
 
 /// 单文件里的 `reason` 面：**保留出现顺序**的 `(reason, keys)`。
 ///
@@ -2327,8 +2353,10 @@ fn the_reason_surface_digest_is_frozen_and_documented() {
     // #176：新增 `src/output_schema.rs` ⇒ 40 → 41（`reason` 面的规范文本不含 reason 键，摘要不变）。
     // #271：新增 `src/domain/sample_roots.rs` ⇒ 41 → 42（同样不含 `reason` 键，摘要逐位不变）
     // #345：新增 `src/domain/import_midi.rs` ⇒ 43 → 44（同样不含 `reason` 键，摘要逐位不变）
-    // ⇒ 本条只证明"分母变了一位"，`FROZEN_REASON_SURFACE_SHA256` 仍与 #176 时逐字相同。
-    assert_eq!(files.len(), 44, "生产区 `.rs` 文件数（规范形式的分母之一）");
+    // `ADR-0030`：新增 `src/domain/stems.rs` ⇒ 44 → 45，**这次带两条新字面站点**
+    // （`masterBusTrack` / `notASourceNode`）⇒ 摘要同批重钉。
+    // ⇒ 本条只证明"分母变了一位"。
+    assert_eq!(files.len(), 45, "生产区 `.rs` 文件数（规范形式的分母之一）");
     let canonical = reason_surface(&files);
     let digest = yeban_model::AssetHash::of_bytes(canonical.as_bytes())
         .as_str()

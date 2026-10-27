@@ -556,6 +556,10 @@ fn fixture_argument(param: &ParamSpec) -> Value {
         // 变成 ULID **字符串** ⇒ 契约（`"type": "integer", "minimum": 1`）会拒它。
         // 显式给一个整数，样本才与契约同形。
         "instrumentId" => Value::from(1),
+        // ⭐ `ADR-0030`：分轨的必填目录。兜底会把任何 `string` 变成 ULID 形状,
+        // 那读起来不像目录 ⇒ 显式给一个路径形状的值（`outDir` 目前只有
+        // `yeban_export_stems` 是**必填**, 诊断那条是可选、不进样本）。
+        "outDir" => Value::from("~/Music/yeban/stems"),
         other if other.ends_with("Id") => Value::from("01J8ZQ00000000000000000001"),
         _ => match param.json_type {
             "string" => Value::from("01J8ZQ00000000000000000001"),
