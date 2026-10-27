@@ -35,15 +35,20 @@
 `yeban_edit_notes` 的 `ops[]` 接受
 
 ```json
-{"kind": "transposeClip", "trackId": "…", "clipId": "…", "deltaPitch": -5}
+{"kind": "transposeClip", "deltaPitch": -5}
 ```
+
+（`trackId` / `clipId` 在**工具顶层**，⛔ 不在 op 对象里 —— 与其余读音符的形态同一条
+寻址口径；`clipId` 因此进入 `ENVELOPE_CLIP_KINDS`。）
 
 - 语义：把该片段 `notes` 表里**每一条**音符在**同一条 `Op::Batch`** 内变成
   `Op::MoveNote { delta_tick: 0, delta_pitch: }`；起点/时值/velocity/`note_id` 一位不动。
 - 展开在**服务端**做（`compile`），调用方⛔ 不需要知道音符 id，也不必先查询。
 - `deltaPitch` 是 `i8`（半音，可负）；越出 `0..=127` 的音符在 `apply` 前置校验里
   响亮失败（沿用 `ops.rs:1221-1228` 的既有拒绝），⇒ **整批原子**，不会留下"半个片段转好了"。
-- 空音符表 ⇒ `appliedOps` 为 0 的成功回执（不是错误）：合法且可核对。
+- 空音符表 ⇒ **展开成 0 条 `Op`、⛔ 不是错误**（判据 6 钉的是 `compile` 返回
+  `Ok(vec![])` 这一层；"0 条 op 的提案在工具层回执长什么样"由既有的空 `ops` 口径承重，
+  本票不另立，也⛔ 顺手给它编一个错误码）。
 - **⛔ 不新增 `Op` 枚举变体**。理由：`Op::MoveNote` 已完备（apply/inverse/前置/撤销都有），
   本票要的只是"一次描述、逐音展开"的**表达层**。加 `Op` 变体要动
   `ops.rs:155/1252/1343/2297/2882`、`schemas/ops.schema.json` 的 `oneOf`（`:634` 要求覆盖全变体）、
@@ -79,15 +84,21 @@
 
 ## 判据（落地时随代码一起提交）
 
-1. `transpose_clip_covers_every_note_without_ids`：夹具片段含 N 个音符，一条
-   `transposeClip` ⇒ 响应的 `appliedOps == N`，且**逐音** `pitch + delta` 正确、
-   `startTick` / `durationTicks` / `velocity` / `note_id` **逐字节不变**。
-2. `transpose_clip_is_one_undo_step`：一次 `yeban_undo` 回到转调前的工程字节
-   （与转调前逐字节相同），证明它落在同一条 `Op::Batch` 上。
-3. `transpose_clip_out_of_range_rejects_the_whole_batch`：任一音越 `0..=127` ⇒
-   `OUT_OF_RANGE` 且工程⛔ 无半程修改（`appliedOps` 为 0 / 未落盘）。
-4. `transpose_clip_needs_no_note_ids`：调用载荷里⛔ 不出现任何 `noteId`（与"必须先查再逐条写"
-   的旧形状划清界限）；空音符片段 ⇒ `success` + `appliedOps: 0`。
-5. `transpose_clip_receipt_self_describes`：回执 `data.commitModel == "direct"`
-   （`ADR-0032` 的既有映射，本票不新增取值）。
-6. `delta_pitch_bounds_are_loud`：非整数 / 超出 `i8` ⇒ `INVALID_PARAMETER_RANGE`。
+> ⚠ **本节于落地那一次提交就地改正**（原判据 1…6 是设计期的**草案名**，且有两处把取值猜错）：
+> ① 原判据 5 写 `commitModel == "direct"` —— `yeban_edit_notes` 是**提案类**，`ADR-0032` 的
+> 映射给的是 `proposal`，带 `autoMerge` 时是 `proposalAutoMerged`（本票不新增取值，
+> 但必须自述对的那一个）；② 原判据 6 把"`deltaPitch: 128`"归到 `INVALID_PARAMETER_RANGE` ——
+> `read_i8` 的口径是**形状**错误落 `INVALID_PARAMETER_RANGE`、**区间**错误落 `OUT_OF_RANGE`
+> （与逐条 `move` 同一份算式，⛔ 不是第二条口径）。下面是与 `tests/transpose_clip.rs`
+> **逐字同名**的七条。
+
+| # | 判据（`crates/yeban-mcp/tests/transpose_clip.rs`） | 钉住 |
+| :--- | :--- | :--- |
+| 1 | `transpose_clip_expands_into_one_move_per_note_in_a_single_batch` | D1+D2：一条形态 → N 条 `Op`，`data.merge.appliedOps == N`、`data.autoMerged`、`commitModel == "proposalAutoMerged"`（一个批 = 一次提交） |
+| 2 | `every_note_moves_in_pitch_and_nothing_moves_in_time` | D1：逐条 `pitch + 2`；`start_tick` / `duration_ticks` / `velocity` / 身份集合一位不动（`deltaTick` 恒 0）；D2 的"半音级"（⛔ 读谱调） |
+| 3 | `one_undo_step_reverts_the_whole_transposition` | D2：**一次** `yeban_undo` 把整批 N 条还原（⛔ 需要 N 步） |
+| 4 | `an_out_of_range_note_rejects_the_whole_batch_without_partial_apply` | D3：`OUT_OF_RANGE` + `data.noteId` 点名，失败前后逐音符读数**完全相同**（⛔ 部分应用） |
+| 5 | `the_payload_names_no_note_and_rejects_every_illegal_shape` | D1/D5：载荷里⛔ 不出现 `noteId`（给了 ⇒ `unknownTransposeClipField` + `supportedFields`）；缺键 / `2.5` ⇒ `INVALID_PARAMETER_RANGE`；`128` ⇒ `OUT_OF_RANGE`；两张发布清单都含本形态 |
+| 6 | `an_empty_midi_clip_expands_to_zero_ops_and_is_not_an_error` | D5：空音符表 ⇒ `compile` 返回 `Ok(vec![])`（合法，⛔ 不是错误码） |
+| 7 | `the_form_is_published_on_both_surfaces` | D1 的发布面：`ops.items.oneOf` 分支封闭（`additionalProperties: false`）、`x-envelope.clipId: "required"`、`required == [kind, deltaPitch]`、`±128` 界、描述写明"整片段 / 每个 / 展开 / 半音" |
+

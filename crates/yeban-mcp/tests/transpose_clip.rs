@@ -80,7 +80,7 @@ fn midi_target(project: &YebanProjectV1) -> (EntityId, EntityId, Vec<(String, u6
         .filter(|entry| entry.content.notes().is_some())
         .max_by_key(|entry| entry.content.notes().map_or(0, |notes| notes.len()))
         .expect("样本里必须有带音符的 MIDI 片段");
-    let mut rows = entry
+    let mut rows: Vec<(String, u64, u8, u64, u8)> = entry
         .content
         .notes()
         .expect("上面筛过")
