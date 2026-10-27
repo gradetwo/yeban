@@ -496,13 +496,22 @@
               ],
               "default": "normal",
               "description": "鼓点密度档位（`ADR-0028`）。`normal`（缺省）= 逐字节维持既有鼓组输出；`sparse` = 只保留 `GenreRule::drum_pattern` 里**登记为重音**（`accent`）的击点（不发明第二张节奏表）。该流派没有登记重音 ⇒ `INVALID_PARAMETER_RANGE`（带 `hint`，建议换 `normal` 或换流派）。**只**允许与 `includeDrums: true` 同给；否则 ⇒ `INVALID_PARAMETER_RANGE`（带 `hint`）。其余取值 ⇒ `INVALID_PARAMETER_RANGE`（带 `accepted`）。"
+            },
+            "autoMerge": {
+              "type": "boolean",
+              "default": false,
+              "description": "提案 + 合并一次调用完成（`ADR-0029` D1/D2）。`false`（缺省）= 与既有行为逐字节相同。`true` = `apply` 在同一把锁内背靠背执行**既有的** `yeban_merge_proposal` 合并实现（同一预演、同一 `commit_merge`、同一多父图谱语义），响应 = 提案回执 ⊕ 合并回执（`pendingMerge:false` / `autoMerged:true` / `projectUnchanged:false` / `mergeTool:\"applied-in-process:autoMerge\"` / `merge:{…}`）。第二步失败 ⇒ 提案保持 `Open`，错误 `data` 带 `proposalCreated:true` + `proposalId` + `proposalRemainsOpen:true`（`ADR-0029` D4，⛔ 不假装回滚）。"
+            },
+            "mergeCommitMessage": {
+              "type": "string",
+              "description": "`autoMerge` 合并提交的信息（`ADR-0029` D6），只随 `autoMerge:true` 生效；缺省同手动合并的既有缺省 `\"merge proposal {proposalId}\"`。"
             }
           }
         },
         "yeban_edit_notes": {
           "title": "yeban_edit_notes (ADR-0018 组合形态)",
           "type": "object",
-          "description": "`create: true` 与 `placement` **可以同给**（`ADR-0018`）：单次提案原子生成 `Op::AddClip` 与 `Op::AddClipPlacement`。其余实参（`trackId` / `clipId` / `ops` / `clipName` / `dryRun` / `idempotencyKey` / `includeOps`）继续由注册表派生。",
+          "description": "`create: true` 与 `placement` **可以同给**（`ADR-0018`）：单次提案原子生成 `Op::AddClip` 与 `Op::AddClipPlacement`。其余实参（`trackId` / `clipId` / `ops` / `clipName` / `dryRun` / `idempotencyKey` / `includeOps` / `autoMerge` / `mergeCommitMessage`）继续由注册表派生。",
           "properties": {
             "create": {
               "const": true,
@@ -511,6 +520,15 @@
             "placement": {
               "type": "object",
               "description": "摆放编辑。与 `create: true` 同给时 `kind` 只能是 `add`（或省略），否则 `INVALID_PARAMETER_RANGE`（`reason = \"createPlacementKindMustBeAdd\"`）；`durationTicks` 缺省由新片段的全部音符推导（推不出 ⇒ `durationNotDerivable`）。完整字段形状由注册表派生。"
+            },
+            "autoMerge": {
+              "type": "boolean",
+              "default": false,
+              "description": "提案 + 合并一次调用完成（`ADR-0029` D1/D2）：`true` ⇒ 提案创建后在同一进程内走**与 `yeban_merge_proposal` 同一实现**（同一把锁、同一提交图谱）。响应改为 `pendingMerge:false` + `autoMerged:true` + `mergeTool:\"applied-in-process:autoMerge\"` + `projectUnchanged:false` + 完整合并回执 `merge:{…}`；`proposal` 投影跟随 merged 状态。合并失败 ⇒ 结构化错误**额外**带 `proposalCreated:true` / `proposalId` / `proposalRemainsOpen:true`（D4，提案保持 Open 可手动重试）。缺省 `false` ⇒ 响应形状与今天**逐字节相同**（D1）。"
+            },
+            "mergeCommitMessage": {
+              "type": "string",
+              "description": "`autoMerge` 合并提交的信息（`ADR-0029` D6），只随 `autoMerge:true` 生效；缺省同手动合并的既有缺省 `\"merge proposal {proposalId}\"`。"
             }
           }
         },

@@ -86,8 +86,8 @@ enum BoundStatus {
     Unbounded(&'static str),
 }
 
-/// 28 条 string 参数声明（`TOOLS` 里 `json_type == "string"` 的**不同名**）。
-const STRING_PARAM_BOUNDS: [(&str, BoundStatus); 28] = [
+/// 29 条 string 参数声明（`TOOLS` 里 `json_type == "string"` 的**不同名**）。
+const STRING_PARAM_BOUNDS: [(&str, BoundStatus); 29] = [
     ("idempotencyKey", BoundStatus::Length(None, Some(256))),
     ("name", BoundStatus::Length(Some(1), None)),
     ("license", BoundStatus::Length(Some(1), None)),
@@ -142,6 +142,14 @@ const STRING_PARAM_BOUNDS: [(&str, BoundStatus); 28] = [
         "commitMessage",
         BoundStatus::Unbounded(
             "提交信息：落进提交图（`Commit`）⇒ 超长信息写进工程文件与历史。收口面：`schemas/**`。",
+        ),
+    ),
+    (
+        // ⭐ `ADR-0029` D6：`autoMerge` 的合并提交信息，与 `commitMessage` 同一个落点
+        // （同一条 `Commit` 链）⇒ 爆炸半径逐字相同，⛔ 不因为它是新参数就宣称更安全。
+        "mergeCommitMessage",
+        BoundStatus::Unbounded(
+            "合并提交信息：落进提交图（`Commit`）⇒ 超长信息写进工程文件与历史；只在\n`autoMerge:true` 时被消费，缺省沿用手动合并的 `\"merge proposal {id}\"`。\n收口面：`schemas/**` 的 `maxLength`（集成者独占）。",
         ),
     ),
     (

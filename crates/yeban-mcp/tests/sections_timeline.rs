@@ -7,24 +7,40 @@
 //! | c | 同一工程两次调用逐字节相同（确定性） | `the_timeline_view_is_deterministic` |
 //! | d | 只选 `sections.timeline` 时根键 `sections` 也在，且与单独选 `sections` **逐字节同形**（单元判据"每个选择器都取得到根键"的正向钉） | `the_root_projection_equals_the_plain_selector` |
 
+use std::str::FromStr;
+
 use serde_json::Value;
 use yeban_mcp::domain::view::project_view;
 use yeban_model::samples::filled_project;
 use yeban_model::{EntityId, SectionV3, YebanProjectV1};
 
-/// 造一个带三段"身份序与时间序**必然相反**"的夹具工程：
-/// `EntityId::new()` 是单调 ULID ⇒ 键序 = 创建序 = (30k, 20k, 10k) 降序。
+/// 固定身份：只有末位随 `seed` 增长 ⇒ `id(1) < id(2) < id(3)` 是**文本事实**，
+/// 与运行时刻和随机数无关（照 `tests/render_master.rs` 的同名夹具）。
+fn id(seed: u32) -> EntityId {
+    let text = format!("01J8ZR{:0>16}{seed:04}", 0);
+    assert_eq!(text.len(), 26, "ULID 必须 26 字符");
+    EntityId::from_str(&text).expect("合法 Crockford Base32 ULID")
+}
+
+/// 造一个带三段"身份序与时间序**必然相反**"的夹具工程。
+///
+/// ⚠ 身份**必须钉死**, ⛔ 不能用 `EntityId::new()`：它的低位是随机的（同一毫秒内
+///   `Ord` 由随机位决定），于是"身份序 ≠ 时间序"这条断言变成掷硬币 —— CI Run
+///   40468119126 的 Windows 腿就掷出了"三段的 id 序恰好与 tick 序同向", 判据 b
+///   因此误红。钉死 id 后 `id(1)@30k` 排在 `id(2)@20k` 之前是**夹具属性**：
+///   无论 `filled_project` 自带段落在哪个位置, 这两段在两个序列里的相对次序
+///   必定相反, 整条序列必不相等。
 /// ⚠ 名字**必须避开** `filled_project` 自带的段落名（`Intro`/`Drop`/…）：
-/// CI 实测 `Intro` 会与自带段**同名不同条**，名字层面的"序不同"断言因此误报。
+///   CI 实测 `Intro` 会与自带段**同名不同条**，名字层面的"序不同"断言因此误报。
 fn fixture_project() -> YebanProjectV1 {
     let mut project = filled_project();
-    for (name, start) in [
-        ("FixtureOutro", 30_000u64),
-        ("FixtureBridge", 20_000),
-        ("FixtureBuild", 10_000),
+    for (seed, name, start) in [
+        (1, "FixtureOutro", 30_000u64),
+        (2, "FixtureBridge", 20_000),
+        (3, "FixtureBuild", 10_000),
     ] {
         let entry = SectionV3 {
-            id: EntityId::new(),
+            id: id(seed),
             name: name.to_owned(),
             start_tick: start,
             end_tick: start + 5_000,

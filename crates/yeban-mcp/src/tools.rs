@@ -747,6 +747,18 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
                 false,
                 "鼓点密度档位 [ADR-0028]: 缺省 \"normal\" = 逐字节维持既有鼓组输出。\"sparse\" = 只保留 `GenreRule::drum_pattern` 里**登记为重音** (`accent`) 的击点 (不发明新节奏表); 该流派没有登记重音时 ⇒ `INVALID_PARAMETER_RANGE` (带 `hint`, 建议换 \"normal\" 或换流派)。只允许与 `includeDrums:true` 同给; 否则 ⇒ `INVALID_PARAMETER_RANGE` (带 `hint`)。其余取值 ⇒ `INVALID_PARAMETER_RANGE` (带 `accepted`)",
             ),
+            param(
+                "autoMerge",
+                "boolean",
+                false,
+                "[ADR-0029]: 缺省 false = 逐字节不变 (只建提案, `pendingMerge:true`)。true = 同一次调用内**背靠背执行既有的** `yeban_merge_proposal` 合并实现 (同一把锁、同一预演、同一多父合并提交), 响应 = 提案回执 ⊕ 合并回执 (`autoMerged:true` / `pendingMerge:false` / `projectUnchanged:false` / `mergeTool:\"applied-in-process:autoMerge\"` / `merge:{...}`, `proposal` 投影随合并后状态)。第二步失败 ⇒ 提案**保持 Open**, 错误 `data` 带 `proposalCreated:true` + `proposalId` + `proposalRemainsOpen:true` (⛔ 不假装回滚)",
+            ),
+            param(
+                "mergeCommitMessage",
+                "string",
+                false,
+                "[ADR-0029]: `autoMerge` 合并提交的信息, 只随 `autoMerge:true` 生效; 缺省同手动合并的既有缺省 `\"merge proposal {id}\"`",
+            ),
             param("dryRun", "boolean", false, "只读模拟校验"),
             param(
                 INCLUDE_OPS_PARAM,
@@ -760,7 +772,7 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
     ToolSpec {
         spec_id: "MCP-TOOL-006",
         name: "yeban_edit_notes",
-        summary: "⭐ **本调用永远写入隔离提案分支，必须 `yeban_merge_proposal` 才落到 main**（响应的 `data.pendingMerge` 恒为 `true`、`data.projectUnchanged` 恒为 `true` —— 成功只代表提案已创建, ⛔ 不代表已落盘）。⭐ 用 `yeban_list_proposals` 查未合并的提案（`proposalId` / `title` / `opCount` / `opKinds` / `createdAt`）；⭐ 效果器参数名拼错（与某个已识别拼写的编辑距离 ≤ 2）会在**解析期** `INVALID_PARAMETER_RANGE`（`unknownEffectParam`，带最近邻建议）；引擎不认但距离更远的未知名字照旧接受, 并在响应的 `data.warnings[]` 里逐条报出。⭐ `#178`：`insertDevice` 装到一条**没有任何可发声内容**的音轨上时, 同一条 `warnings[]` 会多一条 `code:\"deviceOnSilentTrack\"`（带 `trackId` / `track` / `placements` / `notes` / 逐字 `hint`），⛔ **不阻断**提案（装是合法的, 只是该设备对这条轨的渲染输出不会产生影响；渲染侧的同一读数在 `sources[].kind:\"silent\"`）。⭐ `G5`（审计 2026-10-27）: 内置**音色选择**的入口就是 `insertDevice` + `device.kind:\"InternalInstrument\"` —— 引擎在渲染时**真的求值**这些参数名: `osc1_wave` / `osc2_wave`（取值 = 波表下标 `0`=hollow / `1`=organ / `2`=vocal / `3`=metallic / `4`=glass, 越界钳到末表）、`osc1_level` / `osc1_detune_cents` / `osc2_level` / `osc2_detune_cents`、`cutoff_hz`(`cutoff`) / `resonance`(`res`) / `drive`, 以及鼓机键位 `kick_note` 等五个 `*_note` 与 `kick_*`/`snare_*`/`hihat_*`/`clap_*`/`master_level` 旋钮（权威判据: `yeban_engine::synth::is_consumed_instrument_param`）; **非采样器轨**上这些名字⛔ 不再触发 `deviceChainDsp` 登记（采样器轨的音源是 SFZ, 音源参数不生效 ⇒ 仍如实登记）。; ⭐ `ADR-0018`: 可与 `placement` 同给, 单次提案原子生成 `Op::AddClip` + `Op::AddClipPlacement`在指定片段执行音符增删改, 自动进行音域与发声数合法性校验; `create:true` 时用这个身份新建一条 MIDI 片段池条目 (材料创建); `ops[].kind:\"removeClip\"` 单独出现时把 `clipId` 这个**已有的**片段池条目取走 (`Op::RemoveClip`, 还有摆放引用它则报 `CONFLICT`); `placement.kind` 选择摆放编辑 (`add` 把已有片段摆到音轨时间轴上 / `move` 平移一条已有摆放 / `remove` 取走一条已有摆放); `ops[].kind` 的五个音轨级形态写 `trackId` 那条轨的静态混音值、通道条开关、自动化泳道属性与自动化点 (`setParam` 音量 / 声相 · `setTrackMute` · `setTrackSolo` 三者都可用 `ops[].trackId` 逐条点名另一条音轨, 单次提案即可批量跨轨静音/独奏/调音 · `setAutomationLane` 读开关 / 写模式 / 取值域 / 取走泳道 · `removeAutomationPoint` 取走一个点); `ops[].kind:\"setRoutingGain\"` 写 `edgeId` 那条路由边的静态增益 (`Op::SetRoutingGain`; `value:null` = 单位增益, 与 `0.0` 可区分); `ops[].kind:\"disconnectRouting\"` 把 `edgeId` 那条路由边**取走** (`Op::DisconnectRouting`; 撤销载荷 `previous_edge` 从当前文档读); `ops[].kind:\"removeRoutingNode\"` 把 `nodeId` 那个路由**节点**从 `routing_graph.nodes` 取走 (`Op::RemoveRoutingNode`; 载荷只有节点身份, 主总线节点被响亮拒绝); `ops[].kind:\"removeSection\"` 把 `sectionId` 那个**曲式段落**从工程里取走 (`Op::RemoveSection`, `sectionId` 是本操作自带的寻址; 撤销载荷 `previousSection` 从当前文档读, 段落不存在报 `ENTITY_NOT_FOUND` (reason `sectionNotFound`)); `ops[].kind:\"removeTrack\"` 把 `trackId` 那条**音轨本身**从工程里取走 (`Op::RemoveTrack`, `trackId` 是本操作自带的寻址, 顶层 `trackId`/`clipId` 对本形态无意义; 撤销载荷 `previousTrack` 从当前文档读 (整条音轨, 含它的摆放与自动化泳道), 音轨不存在报 `ENTITY_NOT_FOUND` (reason `trackNotFound`), 主总线被响亮拒绝 (reason `masterBusTrackCannotBeRemoved`); 提案里在它**之前**排上该轨在路由图里的逐条断边与移除节点 (`disconnectRouting` → `removeRoutingNode`, 顺序承重), 一次 `yeban_undo` 把边、节点与音轨一起复原; 本形态只能**单独**出现, 不能与别的 `kind` 或 `placement` 同给); `ops[].kind:\"removeScene\"` 把 `sceneId` 那个**场景**从工程里取走 (`Op::RemoveScene`, `sceneId` 是本操作自带的寻址; 撤销载荷 `previousScene` 从当前文档读, 场景不存在报 `ENTITY_NOT_FOUND` (reason `sceneNotFound`)); `ops[].kind:\"setScene\"` 写 `scene.sceneId` 那个**场景** (`Op::SetScene`; `scene.create:true` = 新建 (身份必须**不在**工程里, 否则 `CONFLICT` (reason `sceneAlreadyExists`), 且 `name` 必填), 缺省 = 更新 (身份必须**在**工程里, 否则 `ENTITY_NOT_FOUND` (reason `sceneNotFound`); 三个属性 `name`/`tempo`/`color` 按**合并**语义施加 (缺省 = 保留现值), 显式 `null` 清空 `tempo`/`color`); 撤销载荷 `oldScene` 从当前文档读 (新建时为空, 更新时是整条现值 → 一次 `yeban_undo` 就能把这个场景整条取走)",
+        summary: "⭐ **本调用永远写入隔离提案分支，必须 `yeban_merge_proposal` 才落到 main**（缺省响应的 `data.pendingMerge` 为 `true`、`data.projectUnchanged` 为 `true`, 成功只代表提案已创建, ⛔ 不代表已落盘; ⭐ `ADR-0029`: 给 `autoMerge:true` 时**本次调用内**执行**同一条**合并实现 —— 等价于背靠背调用 `yeban_merge_proposal`, ⛔ 不存在第二条落到 main 的路, 响应改为 `pendingMerge:false` + `autoMerged:true` + `merge:{…}`）。⭐ 用 `yeban_list_proposals` 查未合并的提案（`proposalId` / `title` / `opCount` / `opKinds` / `createdAt`）；⭐ 效果器参数名拼错（与某个已识别拼写的编辑距离 ≤ 2）会在**解析期** `INVALID_PARAMETER_RANGE`（`unknownEffectParam`，带最近邻建议）；引擎不认但距离更远的未知名字照旧接受, 并在响应的 `data.warnings[]` 里逐条报出。⭐ `#178`：`insertDevice` 装到一条**没有任何可发声内容**的音轨上时, 同一条 `warnings[]` 会多一条 `code:\"deviceOnSilentTrack\"`（带 `trackId` / `track` / `placements` / `notes` / 逐字 `hint`），⛔ **不阻断**提案（装是合法的, 只是该设备对这条轨的渲染输出不会产生影响；渲染侧的同一读数在 `sources[].kind:\"silent\"`）。⭐ `G5`（审计 2026-10-27）: 内置**音色选择**的入口就是 `insertDevice` + `device.kind:\"InternalInstrument\"` —— 引擎在渲染时**真的求值**这些参数名: `osc1_wave` / `osc2_wave`（取值 = 波表下标 `0`=hollow / `1`=organ / `2`=vocal / `3`=metallic / `4`=glass, 越界钳到末表）、`osc1_level` / `osc1_detune_cents` / `osc2_level` / `osc2_detune_cents`、`cutoff_hz`(`cutoff`) / `resonance`(`res`) / `drive`, 以及鼓机键位 `kick_note` 等五个 `*_note` 与 `kick_*`/`snare_*`/`hihat_*`/`clap_*`/`master_level` 旋钮（权威判据: `yeban_engine::synth::is_consumed_instrument_param`）; **非采样器轨**上这些名字⛔ 不再触发 `deviceChainDsp` 登记（采样器轨的音源是 SFZ, 音源参数不生效 ⇒ 仍如实登记）。; ⭐ `ADR-0018`: 可与 `placement` 同给, 单次提案原子生成 `Op::AddClip` + `Op::AddClipPlacement`在指定片段执行音符增删改, 自动进行音域与发声数合法性校验; `create:true` 时用这个身份新建一条 MIDI 片段池条目 (材料创建); `ops[].kind:\"removeClip\"` 单独出现时把 `clipId` 这个**已有的**片段池条目取走 (`Op::RemoveClip`, 还有摆放引用它则报 `CONFLICT`); `placement.kind` 选择摆放编辑 (`add` 把已有片段摆到音轨时间轴上 / `move` 平移一条已有摆放 / `remove` 取走一条已有摆放); `ops[].kind` 的五个音轨级形态写 `trackId` 那条轨的静态混音值、通道条开关、自动化泳道属性与自动化点 (`setParam` 音量 / 声相 · `setTrackMute` · `setTrackSolo` 三者都可用 `ops[].trackId` 逐条点名另一条音轨, 单次提案即可批量跨轨静音/独奏/调音 · `setAutomationLane` 读开关 / 写模式 / 取值域 / 取走泳道 · `removeAutomationPoint` 取走一个点); `ops[].kind:\"setRoutingGain\"` 写 `edgeId` 那条路由边的静态增益 (`Op::SetRoutingGain`; `value:null` = 单位增益, 与 `0.0` 可区分); `ops[].kind:\"disconnectRouting\"` 把 `edgeId` 那条路由边**取走** (`Op::DisconnectRouting`; 撤销载荷 `previous_edge` 从当前文档读); `ops[].kind:\"removeRoutingNode\"` 把 `nodeId` 那个路由**节点**从 `routing_graph.nodes` 取走 (`Op::RemoveRoutingNode`; 载荷只有节点身份, 主总线节点被响亮拒绝); `ops[].kind:\"removeSection\"` 把 `sectionId` 那个**曲式段落**从工程里取走 (`Op::RemoveSection`, `sectionId` 是本操作自带的寻址; 撤销载荷 `previousSection` 从当前文档读, 段落不存在报 `ENTITY_NOT_FOUND` (reason `sectionNotFound`)); `ops[].kind:\"removeTrack\"` 把 `trackId` 那条**音轨本身**从工程里取走 (`Op::RemoveTrack`, `trackId` 是本操作自带的寻址, 顶层 `trackId`/`clipId` 对本形态无意义; 撤销载荷 `previousTrack` 从当前文档读 (整条音轨, 含它的摆放与自动化泳道), 音轨不存在报 `ENTITY_NOT_FOUND` (reason `trackNotFound`), 主总线被响亮拒绝 (reason `masterBusTrackCannotBeRemoved`); 提案里在它**之前**排上该轨在路由图里的逐条断边与移除节点 (`disconnectRouting` → `removeRoutingNode`, 顺序承重), 一次 `yeban_undo` 把边、节点与音轨一起复原; 本形态只能**单独**出现, 不能与别的 `kind` 或 `placement` 同给); `ops[].kind:\"removeScene\"` 把 `sceneId` 那个**场景**从工程里取走 (`Op::RemoveScene`, `sceneId` 是本操作自带的寻址; 撤销载荷 `previousScene` 从当前文档读, 场景不存在报 `ENTITY_NOT_FOUND` (reason `sceneNotFound`)); `ops[].kind:\"setScene\"` 写 `scene.sceneId` 那个**场景** (`Op::SetScene`; `scene.create:true` = 新建 (身份必须**不在**工程里, 否则 `CONFLICT` (reason `sceneAlreadyExists`), 且 `name` 必填), 缺省 = 更新 (身份必须**在**工程里, 否则 `ENTITY_NOT_FOUND` (reason `sceneNotFound`); 三个属性 `name`/`tempo`/`color` 按**合并**语义施加 (缺省 = 保留现值), 显式 `null` 清空 `tempo`/`color`); 撤销载荷 `oldScene` 从当前文档读 (新建时为空, 更新时是整条现值 → 一次 `yeban_undo` 就能把这个场景整条取走)",
         scope: Scope::AppAdmin,
         side_effect: SideEffect::ProjectState,
         params: &[
@@ -838,6 +850,18 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
                 false,
                 "是否回传完整 op 载荷: 缺省 false = 只回结构化字段 (willCreate + opCount/opKinds), true = 额外回传逐条 ops (审查用途) [BASELINE-006]",
             ),
+            param(
+                "autoMerge",
+                "boolean",
+                false,
+                "[ADR-0029]: 缺省 false = 逐字节不变 (只建提案, `pendingMerge:true`)。true = 同一次调用内**背靠背执行既有的** `yeban_merge_proposal` 合并实现 (同一把锁、同一预演、同一多父合并提交), 响应 = 提案回执 ⊕ 合并回执 (`autoMerged:true` / `pendingMerge:false` / `projectUnchanged:false` / `mergeTool:\"applied-in-process:autoMerge\"` / `merge:{...}`, `proposal` 投影随合并后状态)。第二步失败 ⇒ 提案**保持 Open**, 错误 `data` 带 `proposalCreated:true` + `proposalId` + `proposalRemainsOpen:true` (⛔ 不假装回滚)",
+            ),
+            param(
+                "mergeCommitMessage",
+                "string",
+                false,
+                "[ADR-0029]: `autoMerge` 合并提交的信息, 只随 `autoMerge:true` 生效; 缺省同手动合并的既有缺省 `\"merge proposal {id}\"`",
+            ),
         ],
         // `CONFLICT` 是 §7.2 表格 16 个里的既有码（`MCP-TOOL-001` 的 `create` 同款语义：
         // "目标已存在就响亮拒绝"，见 `domain/project_create.rs`）。`INVALID_PARAMETER_RANGE`
@@ -864,6 +888,18 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
                 "boolean",
                 false,
                 "是否回传完整 op 载荷: 缺省 false = 只回结构化字段 (willCreate + opCount/opKinds), true = 额外回传逐条 ops (审查用途) [BASELINE-006]",
+            ),
+            param(
+                "autoMerge",
+                "boolean",
+                false,
+                "[ADR-0029]: 缺省 false = 逐字节不变 (只建提案, `pendingMerge:true`)。true = 同一次调用内**背靠背执行既有的** `yeban_merge_proposal` 合并实现 (同一把锁、同一预演、同一多父合并提交), 响应 = 提案回执 ⊕ 合并回执 (`autoMerged:true` / `pendingMerge:false` / `projectUnchanged:false` / `mergeTool:\"applied-in-process:autoMerge\"` / `merge:{...}`, `proposal` 投影随合并后状态)。第二步失败 ⇒ 提案**保持 Open**, 错误 `data` 带 `proposalCreated:true` + `proposalId` + `proposalRemainsOpen:true` (⛔ 不假装回滚)",
+            ),
+            param(
+                "mergeCommitMessage",
+                "string",
+                false,
+                "[ADR-0029]: `autoMerge` 合并提交的信息, 只随 `autoMerge:true` 生效; 缺省同手动合并的既有缺省 `\"merge proposal {id}\"`",
             ),
         ],
         errors: &[ErrorCode::TrackNotFound, ErrorCode::IndexOutOfBounds],
@@ -948,7 +984,12 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
         side_effect: SideEffect::ProjectState,
         params: &[
             param("proposalId", "string", true, "提案分支 EntityId"),
-            param("commitMessage", "string", true, "合并提交信息"),
+            param(
+                "commitMessage",
+                "string",
+                false,
+                "合并提交信息; 缺省 = `\"merge proposal {proposalId}\"` [ADR-0029] (建议显式书写, 但不再必填 —— 代码口径 `plan_merge` 本来就接受缺省)",
+            ),
         ],
         errors: &[ErrorCode::ProposalNotFound, ErrorCode::Conflict],
     },
