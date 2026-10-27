@@ -80,7 +80,7 @@
 //! | 情形 | 结果 |
 //! | :--- | :--- |
 //! | `create: true` 且池里**已有** `clipId` | `CONFLICT`（`reason = clipAlreadyExists`）—— 与 `yeban_open_project` 的 `create` 同款：绝不覆盖 |
-//! | `create: true` 且 `ops` 里有 `delete`/`move`/`velocity` | `INVALID_PARAMETER_RANGE`（`reason = createRequiresAddOps`）—— 新片段里还没有音符可以被它们指向 |
+//! | `create: true` 且 `ops` 里有**任何非 `add`** 的形态（`delete` / `move` / `velocity` / `transposeClip` / 音轨级开关…） | `INVALID_PARAMETER_RANGE`（`reason = createRequiresAddOps`）—— 新片段里还没有音符可以被它们指向 |
 //! | `create: true` 且两个 `add` 抢同一个音符身份 | `INVALID_PARAMETER_RANGE`（`reason = duplicateNoteId`）—— 不静默去重 |
 //!
 //! 创建出来的片段**只在池子里**（本工具不摆放；摆放是 `Op::AddClipPlacement` 的事，
@@ -1305,6 +1305,7 @@ pub const OP_KINDS: &[&str] = &[
     SET_NOTE_EXPRESSION_KIND,
     SET_NOTE_PITCH_SHAPE_KIND,
     SET_PITCH_BEND_POINT_KIND,
+    TRANSPOSE_CLIP_KIND,
     REMOVE_CLIP_KIND,
     REMOVE_ASSET_KIND,
     SET_ASSET_KIND,
@@ -1353,7 +1354,7 @@ pub const OP_KINDS: &[&str] = &[
 /// `domain::plan_edit_notes` 用它决定"缺参时要不要响亮拒绝"。
 ///
 /// ⚠ 两份真相（本清单 vs 谓词的 `match`）由判据
-/// `every_catalog_kind_parses_and_round_trips` 在**全部 47 个 kind** 上对账
+/// `every_catalog_kind_parses_and_round_trips` 在**全部 48 个 kind** 上对账
 /// （`OP_KINDS` 里每个 kind 的最小合法形状 → 解析 → 与本清单比对），
 /// 因此"加了一个 kind 却忘了决定它读不读 `clipId`"会立刻变红。
 pub const ENVELOPE_CLIP_KINDS: &[&str] = &[
@@ -1365,25 +1366,29 @@ pub const ENVELOPE_CLIP_KINDS: &[&str] = &[
     SET_NOTE_EXPRESSION_KIND,
     SET_NOTE_PITCH_SHAPE_KIND,
     SET_PITCH_BEND_POINT_KIND,
+    TRANSPOSE_CLIP_KIND,
     REMOVE_CLIP_KIND,
 ];
 
 /// **读/写音符**的 kind 清单 —— [`NoteOp::is_note_level`] 的**唯一发布面**。
 ///
-/// ⭐ `#179`：本集合收窄到音符号形态之后，现在是**八个**（`add` / `delete` /
+/// ⭐ `#179`：本集合收窄到音符号形态之后，曾是**八个**（`add` / `delete` /
 /// `move` / `velocity` / `setNoteTiming` / `setNoteExpression` /
-/// `setNotePitchShape` / `setPitchBendPoint`），也就是
-/// [`ENVELOPE_CLIP_KINDS`] 里除池级 `removeClip` 之外的八个。其余 33 个形态
+/// `setNotePitchShape` / `setPitchBendPoint`）；`ADR-0034` 加上 `transposeClip`
+/// （整片段移调**逐条读音符**，只是把点名换成枚举）⇒ 现在是**九个**，也就是
+/// [`ENVELOPE_CLIP_KINDS`] 里除池级 `removeClip` 之外的九个。其余形态
 /// （音轨属性级 / 设备级 / 摆放属性级 / 路由级 / 段落级 / 场景级 / 资产级 /
 /// 文档级 / 音轨实体级 / 池级）**一个音符都不读**，因此不要求片段是 MIDI。
+/// ⚠ 这里⛔ 不写"其余 N 个"：那个数在本票之前就已经与 `47 − 8` 不符（写的是 33），
+/// 而⛔ 有判据钉它 —— 换成不带计数的说法，⛔ 留一个假数字在线上传。
 ///
 /// ⚠ 与 [`ENVELOPE_CLIP_KINDS`] **不是**同一个清单：`removeClip` 读顶层 `clipId`
 /// 却**不**读音符（它取走整条池条目，音频条目同样取得走）；反过来，本清单里的
-/// 八个形态必然是顶层 `clipId` 的消费者 —— 因此本清单是
+/// 九个形态必然是顶层 `clipId` 的消费者 —— 因此本清单是
 /// [`ENVELOPE_CLIP_KINDS`] 去掉 `removeClip` 之后的子集，且这条包含关系由判据钉住。
 ///
 /// 两份真相（本清单 vs 谓词的 `match`）由判据
-/// `every_catalog_kind_compiles_to_exactly_one_op_variant` 在**全部 47 个 kind** 上
+/// `every_catalog_kind_compiles_to_exactly_one_op_variant` 在**全部 48 个 kind** 上
 /// 对账（`OP_KINDS` 里每个 kind 的规范形状 → 解析 → 与本清单比对），因此"加了一个
 /// kind 却忘了决定它读不读音符"会立刻变红。
 pub const NOTE_LEVEL_KINDS: &[&str] = &[
@@ -1395,6 +1400,7 @@ pub const NOTE_LEVEL_KINDS: &[&str] = &[
     SET_NOTE_EXPRESSION_KIND,
     SET_NOTE_PITCH_SHAPE_KIND,
     SET_PITCH_BEND_POINT_KIND,
+    TRANSPOSE_CLIP_KIND,
 ];
 
 /// `setParam` 能写的**静态目标**（[`Op::SetParam`] 里"有静态值可写"的那三个）。
@@ -2273,6 +2279,32 @@ pub const SET_CLIP_PLACEMENT_DURATION_FIELDS: [&str; 4] = [
     SET_CLIP_PLACEMENT_DURATION_DURATION_FIELD,
 ];
 
+/// `ops[].kind` 的**整片段移调**形态名（`ADR-0034`：展开成 N 条 [`Op::MoveNote`]）。
+///
+/// 命名与模型 `Op` 变体**不同词**（模型里没有 `TransposeClip` 这个变体）—— 这是
+/// ⭐ **刻意的**：`ADR-0034` D1 裁的是"缺的是**寻址粒度**、不是**新 Op**"，
+/// 名字因此描述**调用方要做的事**（转调整条片段），而⛔ 不描述实现（展开成多少条 move）。
+///
+/// ⚠ 与 [`SET_CLIP_PLACEMENT_DURATION_KIND`] 的区别在**目标**：那个形态寻址一条**摆放**
+/// （`ops[].placementId`）且改的是长度；本形态寻址**工具顶层 `clipId` 的片段内容**
+/// （音符集合），⛔ 不接受 `placementId`、⛔ 不碰任何摆放。
+pub const TRANSPOSE_CLIP_KIND: &str = "transposeClip";
+
+/// 整片段移调形态的**半音增量**字段名（`ops[].deltaPitch`，**必填**，整数）。
+///
+/// ⚠ **值域就是类型**：`i8`（`-128..=127`）⇒ ⛔ 另设幅度常量上界（那会是第二个真相）。
+/// 非整数 / 出 `i8` ⇒ `INVALID_PARAMETER_RANGE`（[`read_i8`] 的既有口径，与 `move` 同一条码）。
+/// ⚠ **`0` 是合法值**（一条"什么都不动"的移调 ⇒ N 条 `deltaPitch: 0`），⛔ 把它当缺省或
+/// 当错误拒掉都是第二份语义；`null` ⛔ 不适用（`i8` 不可空 ⇒ 缺键/`null` 一律响亮拒绝）。
+pub const TRANSPOSE_CLIP_DELTA_FIELD: &str = "deltaPitch";
+
+/// 整片段移调形态允许出现的**全部**键（判别键 + 半音增量）。
+///
+/// ⚠ ⛔ 没有 `trackId` / `clipId` / `noteId`：目标是**工具顶层**的 `clipId`（本形态是
+/// [`ENVELOPE_CLIP_KINDS`] 的成员，也是 [`NOTE_LEVEL_KINDS`] 的成员 ⇒ 顶层片段必须是
+/// MIDI），音符身份由服务端从片段里**枚举**，⛔ 逐个点名。
+pub const TRANSPOSE_CLIP_FIELDS: [&str; 2] = ["kind", TRANSPOSE_CLIP_DELTA_FIELD];
+
 /// `ops[].kind` 的**新增音轨**形态名（写 [`Op::AddTrack`]）。
 ///
 /// 与模型 `Op` 变体名同词（`AddTrack` 的小驼峰），与 [`REMOVE_TRACK_KIND`] 同一条
@@ -2995,6 +3027,22 @@ pub enum NoteOp {
         /// tick 增量。
         delta_tick: i64,
         /// 半音增量。
+        delta_pitch: i8,
+    },
+    /// **整片段移调**（[`ADR-0034`]）：把**顶层 `clipId` 那条 MIDI 片段里的每一个音符**
+    /// 沿音高平移 `delta_pitch` 个半音（`delta_tick` 恒 `0`）。
+    ///
+    /// ⭐ **它不是一个新的 `Op` 变体**：模型层早就有 `Op::MoveNote`，缺的只是"整片段"
+    /// 这个**寻址粒度** ⇒ [`compile`] 在**同一批**里把它展开成 N 条 `Op::MoveNote`
+    /// （N = 该片段的音符数），逐条走与 `move` **完全相同**的越界算式与撤销语义。
+    /// 因此：一次调用 = 一个批 = **一步撤销**；任一条越界 ⇒ **整批响亮拒绝**
+    /// （`OUT_OF_RANGE`，⛔ 部分应用）。
+    ///
+    /// ⚠ **半音级（chromatic）_only**：⛔ 读谱调、⛔ 读 `key_signature` —— in-scale
+    /// 转调是 `ADR-0034` D4 的**待人类裁决**项，本层不发明答案。
+    /// ⚠ **空片段合法**：音符数 0 ⇒ 展开成空批 ⇒ `appliedOps: 0`（不是错误）。
+    TransposeClip {
+        /// 半音增量（`i8` 全值域；幅度上界就是类型本身，⛔ 另设常量）。
         delta_pitch: i8,
     },
     /// 修改力度。
@@ -3875,6 +3923,7 @@ impl NoteOp {
             Self::Add { .. } => "add",
             Self::Delete { .. } => "delete",
             Self::Move { .. } => "move",
+            Self::TransposeClip { .. } => TRANSPOSE_CLIP_KIND,
             Self::Velocity { .. } => "velocity",
             Self::SetTiming { .. } => SET_NOTE_TIMING_KIND,
             Self::SetNoteExpression { .. } => SET_NOTE_EXPRESSION_KIND,
@@ -3955,6 +4004,7 @@ impl NoteOp {
                 | Self::SetNoteExpression { .. }
                 | Self::SetNotePitchShape { .. }
                 | Self::SetNotePitchBendPoint { .. }
+                | Self::TransposeClip { .. }
         )
     }
 
@@ -4094,6 +4144,7 @@ impl NoteOp {
                 | Self::SetNoteExpression { .. }
                 | Self::SetNotePitchShape { .. }
                 | Self::SetNotePitchBendPoint { .. }
+                | Self::TransposeClip { .. }
                 | Self::RemoveClip
         )
     }
@@ -4334,6 +4385,12 @@ fn parse_one(item: &Value) -> Result<NoteOp, Fault> {
             delta_tick: read_i64(object, "deltaTick")?,
             delta_pitch: read_i8(object, "deltaPitch")?,
         }),
+        TRANSPOSE_CLIP_KIND => {
+            reject_transpose_clip_fields(object)?;
+            Ok(NoteOp::TransposeClip {
+                delta_pitch: read_i8(object, TRANSPOSE_CLIP_DELTA_FIELD)?,
+            })
+        }
         "velocity" => Ok(NoteOp::Velocity {
             note_id: read_id(object, "noteId")?,
             velocity: read_range(object, "velocity", 0, MIDI_VELOCITY_MAX)?,
@@ -5061,6 +5118,22 @@ fn reject_set_clip_placement_duration_fields(object: &Map<String, Value>) -> Res
         &SET_CLIP_PLACEMENT_DURATION_FIELDS,
         SET_CLIP_PLACEMENT_DURATION_KIND,
         "unknownSetClipPlacementDurationField",
+    )
+}
+
+/// 拒绝 `transposeClip` 里 [`TRANSPOSE_CLIP_FIELDS`] 之外的键。
+///
+/// ⚠ 为什么本形态**必须**有关键集守卫，而 `move` / `delete` 没有：那两个形态是
+/// `ADR-0034` 之前就在线上的（加守卫会改它们的报文 ⇒ 另立一票）；本形态是**新**的，
+/// 从第一天起就按"拼错的键必须被拒绝、⛔ 不能静默忽略"的现口径走。
+/// ⚠ 最像"写对了"的错法是把 `noteId` 也写进来（逐条 `move` 的键）—— 那正是
+/// 本形态**要取代**的写法，报出来比猜有用。
+fn reject_transpose_clip_fields(object: &Map<String, Value>) -> Result<(), Fault> {
+    reject_unknown_keys(
+        object,
+        &TRANSPOSE_CLIP_FIELDS,
+        TRANSPOSE_CLIP_KIND,
+        "unknownTransposeClipField",
     )
 }
 
@@ -8155,7 +8228,44 @@ pub fn compile(
     // ⚠ 施加失败（顺序不对 / 前置不满足）**不在这里报错**：预检只是提前给
     // `reason` + `hint` 的友好层，真判据仍由 `propose_draft` 的模拟按原口径报。
     let mut project = project.clone();
-    for op in ops {
+    // ⭐ `ADR-0034` D1：`transposeClip` 是**寻址粒度**形态（整片段），模型层没有对应的
+    // 新 `Op` ⇒ 在**本批的当前投影**上就地展开成 N 条 `move`。展开只做"点名哪些音符"
+    // 这一件事，越界报文、撤销载荷、投影推进全部复用 `move` 臂 —— ⛔ 第二份语义。
+    // 因此循环⛔ 不能是 `for op in ops`：展开出来的条目必须**在原位置**接着被编译，
+    // 同批里"先 `add` 再 `transposeClip`"才转得到刚建的那个音（在投影上展开 ⇒ 天然成立）。
+    let mut queue: Vec<NoteOp> = ops.to_vec();
+    let mut index = 0usize;
+    while index < queue.len() {
+        // ⚠ 先把增量**抄出来**再去改 `queue`：`if let ... = queue[index]` 会在整个
+        // `if let` 体上保留对 `queue` 的借用，下面的 `splice`（可变借用）因此编译不过。
+        let transposition = match queue[index] {
+            NoteOp::TransposeClip { delta_pitch } => Some(delta_pitch),
+            _ => None,
+        };
+        if let Some(delta_pitch) = transposition {
+            let notes = project
+                .clip_pool
+                .get(clip_id)
+                .and_then(|clip| clip.content.notes())
+                .ok_or_else(|| {
+                    // 与循环头那道 MIDI 门**逐字同一**的报文（那里已经拦过一遍；
+                    // 这里是为了⛔ 不 unwrap 一个 `Option`，⛔ 不是第二条口径）。
+                    Fault::domain(
+                        ErrorCode::ClipNotFound,
+                        format!("片段 {clip_id} 不是 MIDI 片段, 没有音符集合"),
+                    )
+                })?;
+            // `BTreeMap` 的键序 = 身份序 ⇒ 展开顺序跨进程确定（红线 4）。
+            let expanded = notes.keys().map(|note_id| NoteOp::Move {
+                note_id: *note_id,
+                delta_tick: 0,
+                delta_pitch,
+            });
+            let _ = queue.splice(index..index + 1, expanded);
+            // ⛔ 不推进下标：下一次迭代编译的就是刚展开的**第一条** `move`。
+            continue;
+        }
+        let op = &queue[index];
         let compiled_op = match op {
             NoteOp::Add { note } => Op::AddNote {
                 track_id: *track_id,
@@ -8213,6 +8323,12 @@ pub fn compile(
                     delta_tick: *delta_tick,
                     delta_pitch: *delta_pitch,
                 }
+            }
+            NoteOp::TransposeClip { .. } => {
+                // ⭐ 展开路径**只**在上面的 `if let`（同一形态 ⇒ 就地换成 N 条 `move`
+                // 并 `continue`）。本臂因此拿不到"一条 `Op`"可返回 —— 用 `continue`
+                // 而不是 `unreachable!`：⛔ 在编译路径上留一条 panic。
+                continue;
             }
             NoteOp::Velocity { note_id, velocity } => {
                 let current = project
@@ -9659,6 +9775,7 @@ pub fn compile(
         // 最佳努力推进投影（见循环头的 G7 注释）：失败不报，模拟才是判据。
         let _ = compiled_op.apply(&mut project);
         compiled.push(compiled_op);
+        index += 1;
     }
     Ok(compiled)
 }
@@ -11283,7 +11400,7 @@ mod tests {
         assert_eq!(lane_fault_data(&fault)["reason"], "paramIndexOutOfRange");
     }
 
-    /// ⭐ `#179`：`is_note_level()` **恰好**是八个音符形态（ADR-0019 起）。
+    /// ⭐ `#179`：`is_note_level()` **恰好**是九个音符形态（ADR-0019 起，`ADR-0034` 加 `transposeClip`）。
     ///
     /// 六个**属性级**形态（`setClipName` / `setDeviceName` / `setDeviceBypassed` /
     /// `setClipPlacementMuted` / `setTrackColor` / `setClipPlacementDuration`）改的是
@@ -11297,7 +11414,7 @@ mod tests {
     #[test]
     fn note_level_is_exactly_the_note_forms() {
         let ulid = "01J8ZQ00000000000000000999";
-        // 八个音符形态：解析后 `is_note_level()` 必须为真。
+        // 九个音符形态：解析后 `is_note_level()` 必须为真。
         let note_forms = [
             (
                 "add",
@@ -11330,6 +11447,10 @@ mod tests {
             (
                 "setPitchBendPoint",
                 serde_json::json!({"kind": "setPitchBendPoint", "noteId": ulid, "tick": 120, "cents": 50}),
+            ),
+            (
+                TRANSPOSE_CLIP_KIND,
+                serde_json::json!({"kind": "transposeClip", "deltaPitch": 3}),
             ),
         ];
         for (kind, payload) in note_forms {
@@ -11380,7 +11501,7 @@ mod tests {
                 "`{kind}` 改的是属性（不读音符）, ⛔ 不得算作音符级"
             );
         }
-        // 发布清单本身：逐字 + 恰好八个（⛔ 不是常量自比）。
+        // 发布清单本身：逐字 + 恰好九个（⛔ 不是常量自比）。
         assert_eq!(
             NOTE_LEVEL_KINDS,
             [
@@ -11391,12 +11512,13 @@ mod tests {
                 "setNoteTiming",
                 "setNoteExpression",
                 "setNotePitchShape",
-                "setPitchBendPoint"
+                "setPitchBendPoint",
+                "transposeClip"
             ],
-            "音符级清单必须逐字是这八个"
+            "音符级清单必须逐字是这九个"
         );
-        assert_eq!(NOTE_LEVEL_KINDS.len(), 8);
-        // 八个音符形态必然是顶层 `clipId` 的消费者（清单之间的包含关系）。
+        assert_eq!(NOTE_LEVEL_KINDS.len(), 9);
+        // 九个音符形态必然是顶层 `clipId` 的消费者（清单之间的包含关系）。
         for kind in NOTE_LEVEL_KINDS {
             assert!(
                 ENVELOPE_CLIP_KINDS.contains(kind),
@@ -12316,7 +12438,7 @@ mod tests {
         // 补上 `tempo_map` / `time_signature_map` 在工具面无通路）后为 46 —— 同样与真实 `kind` 同步。
         // 本票（`ADR-0019` 逐点弯音）新增 `setPitchBendPoint`（第八个音符级形态）后为 47
         // —— 同样与真实 `kind` 同步。
-        assert_eq!(OP_KINDS.len(), 47);
+        assert_eq!(OP_KINDS.len(), 48);
         assert!(OP_KINDS.contains(&SET_KEY_SIGNATURE_KIND));
         assert_eq!(TrackFlag::NAMES, [SET_TRACK_MUTE_KIND, SET_TRACK_SOLO_KIND]);
         assert!(OP_KINDS.contains(&SET_TRACK_MUTE_KIND));
@@ -17268,7 +17390,8 @@ mod tests {
         assert_eq!(value["error"]["data"]["reason"], "clipAlreadyExists");
     }
 
-    /// `create: true` 只允许 `add`；`delete`/`move`/`velocity` 必须响亮失败。
+    /// `create: true` 只允许 `add`；其余（`delete` / `move` / `velocity` /
+    /// `transposeClip` / 音轨级开关）必须响亮失败。
     #[test]
     fn create_refuses_every_non_add_operation() {
         let project = project_without_midi_clips();
@@ -17287,6 +17410,13 @@ mod tests {
             (
                 "velocity",
                 serde_json::json!({"kind": "velocity", "noteId": note, "velocity": 1}),
+            ),
+            // ⭐ `ADR-0034`：`transposeClip` 与刚建出来的片段**天然矛盾** —— 新池子里
+            // 一个音符也没有，"整片段移调"没有可展开的对象。它⛔ 走 `move` 那条旁路
+            // （`is_note_level` 为真），所以必须在这里被点名拒绝，⛔ 静默展开成 0 条。
+            (
+                TRANSPOSE_CLIP_KIND,
+                serde_json::json!({"kind": TRANSPOSE_CLIP_KIND, "deltaPitch": 2}),
             ),
             // 两个音轨级开关与建材料**无关**：`create: true` 只收 `add`。
             (
@@ -18352,7 +18482,7 @@ mod tests {
     fn every_catalog_kind_parses_and_round_trips() {
         let ulid = "01J8ZQ00000000000000000999";
         // 每个 kind 的**最小合法形状**（只到解析期为止；文档相关的前置条件在 `compile`）。
-        let table: [(&str, serde_json::Value); 47] = [
+        let table: [(&str, serde_json::Value); 48] = [
             (
                 "add",
                 serde_json::json!({"note": {"startTick": 0, "pitch": 60, "durationTicks": 480}}),
@@ -18362,6 +18492,8 @@ mod tests {
                 "move",
                 serde_json::json!({"noteId": ulid, "deltaTick": 0, "deltaPitch": 0}),
             ),
+            // ⭐ `ADR-0034`：整片段移调 —— ⛔ `noteId`（目标是顶层 `clipId` 的**全部**音符）。
+            ("transposeClip", serde_json::json!({"deltaPitch": 2})),
             (
                 "velocity",
                 serde_json::json!({"noteId": ulid, "velocity": 64}),
@@ -18561,6 +18693,7 @@ mod tests {
                 "setNoteExpression",
                 "setNotePitchShape",
                 "setPitchBendPoint",
+                "transposeClip",
                 "removeClip",
                 "removeAsset",
                 "setAsset",
@@ -18958,7 +19091,7 @@ mod tests {
             Value,
             &'a str,
         );
-        let rows: [Row<'_>; 48] = [
+        let rows: [Row<'_>; 49] = [
             (
                 "add",
                 None,
@@ -19031,6 +19164,18 @@ mod tests {
                     "cents": 50,
                 }),
                 "SetNotePitchBendPoint",
+            ),
+            // ⭐ `ADR-0034` D1：**展开**形态 —— 一条形态产出 N 条 `MoveNote`（N = 目标
+            // 片段的音符数，由下面的 `expected_len` 从**文档**读，⛔ 手抄）。变体仍是
+            // `move` 的那个 ⇒ 本行⛔ 进 `seen`（那会把"变体数"这个读数凭空抬高一位）。
+            // ⚠ 本行的**位置**跟着 `NOTE_LEVEL_KINDS` / `OP_KINDS` 的桶序（`setPitchBendPoint`
+            // 之后）—— ⭐ 下面那条判据比的是**逐项相等**（含顺序），把行插在别的位置会红。
+            (
+                "transposeClip",
+                None,
+                None,
+                serde_json::json!({"deltaPitch": 2}),
+                "MoveNote",
             ),
             (
                 "setAsset",
@@ -19368,11 +19513,11 @@ mod tests {
         assert_eq!(
             rows.len(),
             OP_KINDS.len() + 1,
-            "47 个 kind ＋ 1 个额外载荷分支"
+            "48 个 kind ＋ 1 个额外载荷分支"
         );
 
         let mut seen: Vec<&str> = Vec::new();
-        // ⭐ `#179`：在**全部 47 个 kind**上对账 `is_note_level()` 与发布的
+        // ⭐ `#179`：在**全部 48 个 kind**上对账 `is_note_level()` 与发布的
         // `NOTE_LEVEL_KINDS`（⛔ 不是手抄的第二份清单，也不是"断言它非空"）。
         let mut note_level_seen: Vec<&str> = Vec::new();
         for (label, clip_override, preset, payload, expected) in rows {
@@ -19401,17 +19546,42 @@ mod tests {
             }
             let compiled = compile(&document, &track, &use_clip, &ops)
                 .unwrap_or_else(|fault| panic!("`{label}` 必须能编译: {fault:?}"));
-            assert_eq!(compiled.len(), 1, "`{label}` 应恰好产出一条 `Op`");
-            assert_eq!(
-                compiled[0].name(),
-                expected,
-                "`{label}` 必须落到登记的 `Op` 变体"
-            );
+            // ⭐ `ADR-0034`：`transposeClip` 是**唯一**"一条形态 → N 条 `Op`"的展开形态
+            // ⇒ 期望长度从**文档**里那条片段的音符数读，⛔ 不写死数字（写死就是第二份真相）。
+            let expected_len = if kind == TRANSPOSE_CLIP_KIND {
+                document
+                    .clip_pool
+                    .get(&use_clip)
+                    .and_then(|entry| entry.content.notes())
+                    .map_or(0, |notes| notes.len())
+            } else {
+                1
+            };
             assert!(
-                !seen.contains(&expected),
-                "`{label}` 的变体 `{expected}` 与别的行重复 —— (kind, 分支) → 变体必须是单射"
+                expected_len > 0,
+                "`{label}` 的夹具片段必须至少有一个音符, 否则展开路径测不到东西"
             );
-            seen.push(expected);
+            assert_eq!(
+                compiled.len(),
+                expected_len,
+                "`{label}` 应恰好产出 {expected_len} 条 `Op`"
+            );
+            for op in &compiled {
+                assert_eq!(
+                    op.name(),
+                    expected,
+                    "`{label}` 的每一条都必须落到登记的 `Op` 变体"
+                );
+            }
+            if kind == TRANSPOSE_CLIP_KIND {
+                // 展开⛔ 引入新变体（它就是 `move` 的产物）⇒ 不进 `seen`、也不占单射名额。
+            } else {
+                assert!(
+                    !seen.contains(&expected),
+                    "`{label}` 的变体 `{expected}` 与别的行重复 —— (kind, 分支) → 变体必须是单射"
+                );
+                seen.push(expected);
+            }
         }
         // ⚠ 本数是**去重后的变体数**（`add` 的三种形态共用 `AddNote`）⇒ 与
         // `rows.len()` 可以不同，也与 `OP_KINDS.len()` 不同。本轮新增
@@ -19425,7 +19595,7 @@ mod tests {
         // 本票的 `setTempoPoint` / `setTimeSignaturePoint`（各独占一个变体）⇒ 45 → **47**；
         // `ADR-0019` 的 `setPitchBendPoint`（独占一个变体）⇒ 47 → **48**。
         assert_eq!(seen.len(), 48);
-        // ⭐ `#179`：音符级分支集合**恰好是八个**，且逐字等于发布清单。
+        // ⭐ `#179`：音符级分支集合**恰好是九个**，且逐字等于发布清单。
         assert_eq!(
             NOTE_LEVEL_KINDS,
             [
@@ -19436,14 +19606,15 @@ mod tests {
                 "setNoteTiming",
                 "setNoteExpression",
                 "setNotePitchShape",
-                "setPitchBendPoint"
+                "setPitchBendPoint",
+                "transposeClip"
             ],
-            "音符级 kind 必须恰好是八个音符形态（字面表，⛔ 不是常量自比）"
+            "音符级 kind 必须恰好是九个音符形态（字面表，⛔ 不是常量自比）"
         );
         assert_eq!(
             note_level_seen.len(),
-            8,
-            "全部 47 个 kind 里 `is_note_level()` 为真的必须**恰好八个**，实际: {note_level_seen:?}"
+            9,
+            "全部 48 个 kind 里 `is_note_level()` 为真的必须**恰好九个**，实际: {note_level_seen:?}"
         );
         assert_eq!(
             note_level_seen,

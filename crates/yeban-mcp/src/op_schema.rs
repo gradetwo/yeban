@@ -518,6 +518,21 @@ pub fn ops_items() -> Value {
                 true,
             ),
             op(
+                "transposeClip",
+                "整片段移调：把顶层 `clipId` 那条 MIDI 片段里的**每个**音符平移 `deltaPitch` 个半音（服务端展开成 N 条 `move`，一步撤销；半音级，⛔ 读谱调）",
+                &["kind", "deltaPitch"],
+                json!({
+                    "kind": kind("transposeClip"),
+                    "deltaPitch": {
+                        "type": "integer",
+                        "minimum": -128,
+                        "maximum": 127,
+                        "description": "半音增量（i8）；0 合法（一条不动的移调）；目标片段由工具顶层的 clipId 给出",
+                    },
+                }),
+                true,
+            ),
+            op(
                 "insertDevice",
                 "在目标音轨的设备链里插入一台设备。要得到 EQ / 混响 / 卷积混响：`device.kind:\"InternalEffect\"` + `bypassed:false` + 在 `device.params` 里写 `eq_*` / `reverb_*` / `conv_*` 名字（名字、单位、值域、缺省值见 `device.params.items`）",
                 &["kind", "trackId", "device"],
