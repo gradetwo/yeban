@@ -12188,7 +12188,18 @@ $ python3 scripts/gates/check_phase_status.py   # 退出 0
   - `windows` 14:44:01→15:21:09（37:08）＝ **246 条 / 4,849 / 0**；
   - `macos` 14:44:05→15:05:17（21:12）＝ **246 条 / 4,870 / 0**；
   - `checks`（fmt / 红线守卫 / schema）/ `deny` / `lockfile` / `plan` 全 success。
-- 主干 merge `9eb4a6c5`：`pending`（推送后读回，⛔ 未读不写"通过"）。
+- 主干 merge `9eb4a6c5` Run `40531221961` **success**（读回于 `16f0edc7` 那轮推送之后）。
+  ⚠ merge 里带了 `80d854d9` 的根级 `schemas/**` 改动 ⇒ `plan` 仍报 `workspace_wide: true`
+  ⇒ 矩阵腿 `rust (${{ matrix.crate }})` **skipped**，承判的是全量作业：
+  - `rust (workspace 全量)` 15:28:10→16:47:34（**1:19:24**）＝ **409 条 / 6,707 passed / 0 failed**、
+    `test result: FAILED` 行 **0**；
+  - `windows` 15:28:10→15:59:45（31:35）＝ **247 条 / 4,853 / 0**；
+  - `macos` 15:28:10→15:48:39（20:29）＝ **247 条 / 4,874 / 0**；
+  - `checks` / `deny` / `lockfile` / `plan` 全 success。
+  ⇒ **G8b 的主干判决读回，`pending` 关闭**。⚠ 同时登记一条**空绿**样本：主干更靠后的
+  `a5b6824f`（纯台账文档）Run `40532027093` 整体 `success`，但 `rust (workspace 全量)` /
+  `windows` / `macos` / 矩阵腿**全部 `skipped`**（只有 `checks`/`deny`/`lockfile`/`plan` 跑过）
+  —— ⛔ 那条 success 不构成任何 rust 验证，本片的验证只有上面 `40531221961` 那一条。
 
 ### 本轮新增的规则
 
