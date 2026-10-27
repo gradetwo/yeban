@@ -2412,6 +2412,8 @@ fn plan_propose_section(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault>
     // `ADR-0017`：鼓组/旋律只在 `materialSource: "theory"` 下可用（否则领域层拒绝）。
     let include_drums = arg_bool(call, "includeDrums", false);
     let include_melody = arg_bool(call, "includeMelody", false);
+    // `ADR-0028`：鼓密度是可选键；缺省 = 既有 "normal" 路径（逐字节相同）。
+    let drum_density = arg_str(call, "drumDensity");
     let section_plan = section::plan_with_options(
         project,
         section_name,
@@ -2423,6 +2425,7 @@ fn plan_propose_section(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault>
             progression,
             include_drums: Some(include_drums),
             include_melody: Some(include_melody),
+            drum_density,
         },
     )?;
     propose_draft(

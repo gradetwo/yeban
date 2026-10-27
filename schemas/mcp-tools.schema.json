@@ -42,7 +42,7 @@
         },
         "arguments": {
           "type": "object",
-          "description": "工具实参。本节的 `properties` 只声明**所有工具共有**的两个键（`dryRun` / `idempotencyKey`）；每个工具的**特有**实参由 `definitions.ToolCall.properties.name` 对应的注册表条目在 `tools/list` 的 `inputSchema` 里逐条派生（`crates/yeban-mcp/src/tools.rs` 的 `ToolSpec::input_schema`，`additionalProperties: false`）。扩展工具的实参**另有**本节下方的 `definitions.ExtensionToolArguments` 手写逐字段约束。**`yeban_render_master` 的 `targetLufs`**（响度目标, LUFS; 给了就按 ±0.5 LU 容差判定, 未达标报 `RENDER_FAILED`）就是前一条路径上的特有实参 —— 它**不是**公共键, 因此刻意不写在这里。**`yeban_propose_section` 的 `materialSource` / `progression`**（ADR-0016）与 **`includeDrums` / `includeMelody`**（ADR-0017）同属该路径；**`yeban_edit_notes` 的 `create: true` + `placement` 组合**（ADR-0018）也同属该路径；它们的新增形状另在 `definitions.DocumentedToolArguments` 里登记（仅文档，不接线到 `allOf`）。",
+          "description": "工具实参。本节的 `properties` 只声明**所有工具共有**的两个键（`dryRun` / `idempotencyKey`）；每个工具的**特有**实参由 `definitions.ToolCall.properties.name` 对应的注册表条目在 `tools/list` 的 `inputSchema` 里逐条派生（`crates/yeban-mcp/src/tools.rs` 的 `ToolSpec::input_schema`，`additionalProperties: false`）。扩展工具的实参**另有**本节下方的 `definitions.ExtensionToolArguments` 手写逐字段约束。**`yeban_render_master` 的 `targetLufs`**（响度目标, LUFS; 给了就按 ±0.5 LU 容差判定, 未达标报 `RENDER_FAILED`）就是前一条路径上的特有实参 —— 它**不是**公共键, 因此刻意不写在这里。**`yeban_propose_section` 的 `materialSource` / `progression`**（ADR-0016）、**`includeDrums` / `includeMelody`**（ADR-0017）与 **`drumDensity`**（ADR-0028）同属该路径；**`yeban_edit_notes` 的 `create: true` + `placement` 组合**（ADR-0018）也同属该路径；它们的新增形状另在 `definitions.DocumentedToolArguments` 里登记（仅文档，不接线到 `allOf`）。",
           "properties": {
             "dryRun": {
               "type": "boolean",
@@ -487,6 +487,15 @@
               "type": "boolean",
               "default": false,
               "description": "是否追加旋律声部（`ADR-0017` D1）。`true` = 在段落末尾追加 `\"{sectionName} · Melody\"` 音轨，旋律由 `melody_over_chords` 在**当前段落展开的** `ChordSpan` 与流派节奏网格上生成，音域 `MelodyConstraints::DEFAULT`，起点/时值与网格对齐，和弦音 112 其余 96，并直连主总线（整图仍为 DAG）。**只**允许与 `materialSource: \"theory\"` 同给；否则 ⇒ `INVALID_PARAMETER_RANGE`（带 `hint`）。缺省 = 与既有行为逐字节相同（`ADR-0017` D2）。"
+            },
+            "drumDensity": {
+              "type": "string",
+              "enum": [
+                "normal",
+                "sparse"
+              ],
+              "default": "normal",
+              "description": "鼓点密度档位（`ADR-0028`）。`normal`（缺省）= 逐字节维持既有鼓组输出；`sparse` = 只保留 `GenreRule::drum_pattern` 里**登记为重音**（`accent`）的击点（不发明第二张节奏表）。该流派没有登记重音 ⇒ `INVALID_PARAMETER_RANGE`（带 `hint`，建议换 `normal` 或换流派）。**只**允许与 `includeDrums: true` 同给；否则 ⇒ `INVALID_PARAMETER_RANGE`（带 `hint`）。其余取值 ⇒ `INVALID_PARAMETER_RANGE`（带 `accepted`）。"
             }
           }
         },

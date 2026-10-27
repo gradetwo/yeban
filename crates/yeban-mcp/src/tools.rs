@@ -741,6 +741,12 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
                 false,
                 "是否追加旋律声部 [ADR-0017]: 缺省 false。true = 在段落末尾追加 `\"{sectionName} · Melody\"` 音轨, 旋律由 `melody_over_chords` 在**当前段落展开的** `ChordSpan` 与流派节奏网格上生成, 音域 `MelodyConstraints::DEFAULT`, 起点/时值与网格对齐, 和弦音 112 其余 96, 并直连主总线 (整图仍为 DAG)。只允许与 `materialSource:\"theory\"` 同给; 否则 ⇒ `INVALID_PARAMETER_RANGE` (带 `hint`)",
             ),
+            param(
+                "drumDensity",
+                "string",
+                false,
+                "鼓点密度档位 [ADR-0028]: 缺省 \"normal\" = 逐字节维持既有鼓组输出。\"sparse\" = 只保留 `GenreRule::drum_pattern` 里**登记为重音** (`accent`) 的击点 (不发明新节奏表); 该流派没有登记重音时 ⇒ `INVALID_PARAMETER_RANGE` (带 `hint`, 建议换 \"normal\" 或换流派)。只允许与 `includeDrums:true` 同给; 否则 ⇒ `INVALID_PARAMETER_RANGE` (带 `hint`)。其余取值 ⇒ `INVALID_PARAMETER_RANGE` (带 `accepted`)",
+            ),
             param("dryRun", "boolean", false, "只读模拟校验"),
             param(
                 INCLUDE_OPS_PARAM,
