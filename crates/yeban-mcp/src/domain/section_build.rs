@@ -631,10 +631,15 @@ pub fn parse_scale(scale: &str) -> Result<Scale, BuildFault> {
         }
         let lower = trimmed.to_ascii_lowercase();
         for (suffix, canonical) in MODE_SUFFIX_ALIASES {
-            if let Some(head) = lower.strip_suffix(suffix) {
-                if !head.is_empty() && known_note(head) && ScaleKind::parse(canonical).is_ok() {
+            match lower.strip_suffix(suffix) {
+                Some(head)
+                    if !head.is_empty()
+                        && known_note(head)
+                        && ScaleKind::parse(canonical).is_ok() =>
+                {
                     return Some(format!("{} {}", head.to_ascii_uppercase(), canonical));
                 }
+                _ => {}
             }
         }
         None
@@ -652,7 +657,7 @@ pub fn parse_scale(scale: &str) -> Result<Scale, BuildFault> {
     }
 
     let trimmed = scale.trim();
-    let effective: std::borrow::Cow<str> = if trimmed.contains(' ') {
+    let effective: std::borrow::Cow<'_, str> = if trimmed.contains(' ') {
         std::borrow::Cow::Borrowed(trimmed)
     } else {
         match normalize_scale_shape(trimmed) {
