@@ -11561,3 +11561,29 @@ $ python3 scripts/gates/check_phase_status.py   # 退出 0
   - 防假绿核对：`rust (workspace 全量)` 作业日志 **404 条 `test result: ok` /
     0 条 FAILED**（`/tmp/g4-mainlog.txt` 读数）。
 
+## 2026-10-27：G7 消除：`yeban_edit_notes` 同批建节点+连边被批前预检误拒（编译期批内投影）
+
+- **需求规范 ID**: `[MCP-TOOL-006]` `[MODEL-AST-004]` `[ADR-0025]`
+- **实施工作线**: `line/routing-batch-ordering`（提交 `1b0e5727`，合并 `0a21ebe5`）
+- **背景与目标**:
+  - 审计（`/tmp/yeban-issues-20261027` G7）：连边/增益等路由 op 的编译期预检读
+    **批前**文档 ⇒ 同批更早 op 即将创建的节点不可见，合法批被
+    `routingNodeNotFound` 误拒（两轮往返才能连一条边）。
+- **实施**:
+  - `notes.rs`：`compile()` 克隆文档并按 op 顺序**最佳努力施加**（施加失败不报，
+    提案模拟仍是唯一判据），后续 op 的预检读这份投影 ⇒ 同批
+    `addRoutingNode`+`connectRouting` 一次编译通过。
+  - 反序批仍以同一 reason 响亮拒绝（**顺序是语义**，不静默重排）。
+  - 边界：pre-loop 的 track/entry 绑定投影不彻底性已作为 D3 登记进 `ADR-0025`。
+  - 判据：`routing_chain_in_one_batch_sees_nodes_created_by_earlier_ops`。
+- **验证（本线一次绿，注入与红灯留痕见 `ADR-0025`）**:
+  - 线 Run `40444315256`（`1b0e5727`）`success`；`rust (yeban-mcp)` 作业日志
+    **85 条 `test result: ok` / 0 条 FAILED**。
+  - 合并提交 `0a21ebe5` 主干 Run `40448148200`：**`conclusion: success`**
+    （作业窗口 `04:09:14Z → 04:46:20Z`）；作业读数（耗时非 0）：
+    `rust (yeban-mcp)` 7m44s、`windows` 36m51s、`macos` 20m55s、
+    `rust (yeban-ui-mcp)` 1m58s、`checks` 59s、`deny` 53s、`lockfile` 23s；
+    `rust (workspace 全量)` 按 `plan` 矩阵 `skipped`（⛔ 不是跳过当成绿）。
+  - 防假绿核对：主干 run 的 `rust (yeban-mcp)` 作业日志 **85 条 `test result: ok` /
+    0 条 FAILED**（`/tmp/g7-main-mcp.log` 读数）。
+
