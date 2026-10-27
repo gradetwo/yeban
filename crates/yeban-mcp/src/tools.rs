@@ -771,6 +771,12 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
                 "按**声部名**给值的切分覆盖表 [ADR-0035]: `{\"Bass\": 8, \"Soprano\": 1}`。单位与 `voiceSubdivision` 完全一致 (每个和弦跨度切成几条, 1..=16)。组合规则只有一条: 表里列出的声部用表里的值, **没列出的声部沿用 `voiceSubdivision`** (其缺省 1) —— 因此 `voiceSubdivision:4 + {\"Soprano\":1}` = 低音/内声部切 4、高音持续。键 = 该风格预设的和声声部名 (`preset_parts` 实测清单); 不是声部名的键 (含 `\"Drums\"` / `\"Melody\"`) ⇒ `INVALID_PARAMETER_RANGE` (带 `part` + `allowedParts`, ⛔ 静默忽略)。非整数或越界 ⇒ `INVALID_PARAMETER_RANGE` (带 `part` + `range`)。空对象 `{}` 合法 = 没有任何覆盖。只作用于 `materialSource:\"theory\"` 的和声声部, 因此只允许与它同给; 否则 ⇒ `INVALID_PARAMETER_RANGE` (带 `hint`)。没被改的声部音符身份与缺省路径逐字节相同",
             ),
             param(
+                "onsetsPerBar",
+                "integer",
+                false,
+                "鼓组与旋律的**每小节**音头数 [ADR-0036]: 单位 = 每小节 (⛔ 与 `voiceSubdivision`/`voiceSubdivisions` 的\"每个和弦跨度\"不是同一个量, 两者互不换算)。缺省 = **该流派拍号一小节的 16 分格位数** (4/4⇒16, 3/4⇒12, 2/4⇒8, 6/8⇒12, 7/8⇒14) —— 因此 4/4 预设不传时逐字节不变, 而非 4/4 预设也不再需要调用方自己折算。下界 1 (0 ⇒ `INVALID_PARAMETER_RANGE`); 上界 = 该拍号的格位数, 由 `yeban-theory` 判定而非本层常量: 超过它 ⇒ `INVALID_PARAMETER_RANGE` (带 `onsetsPerBar` + `maxOnsetsPerBar` + `meter` + `hint`, ⛔ 静默夹紧)。只作用于 `materialSource:\"theory\"` 的**鼓组与旋律**两条生成路径 (和声声部不受影响), 因此要求与它同给、且 `includeDrums` 或 `includeMelody` 至少一条为 true; 否则 ⇒ `INVALID_PARAMETER_RANGE` (带 `hint`)",
+            ),
+            param(
                 "autoMerge",
                 "boolean",
                 false,

@@ -110,14 +110,22 @@
 1. **缺省逐字节不变（4/4）**：`onsetsPerBar` 不给 vs 给 `16`，对 `synthwave`（4/4）
    的鼓与旋律**逐音符相同**；且与"改动前"的输出比较靠 D1 的算术事实（`cells_per_bar(4/4)=16`），
    ⛔ 判据里手抄一份期望网格。
-2. **28 条非 4/4 预设从失败变成功**：对 `GENRES` 里每条**非 4/4** 流派（名单从
-   `GENRES` + `cells_per_bar` **现读**，⛔ 手抄 `["waltz", ...]`），
-   `includeDrums: true` + `includeMelody: true` 必须 `Ok`，且鼓/旋律的每小节音头数
-   等于 `cells_per_bar(meter)`。
+2. **28 条非 4/4 预设从失败变成功**：对 `GenreLibrary::all()` 里每条**非 4/4** 流派
+   （名单从 `GenreLibrary::all()` + `cells_per_bar` **现读**，⛔ 手抄 `["waltz", ...]`），
+   `includeDrums: true` + `includeMelody: true` 必须 `Ok`。
+   ⚠ 口径修正（本票草案写的是"每小节音头数等于 `cells_per_bar(meter)`"，那**不是可观察量**：
+   音头数是**用到的**格位数，可以小于格位数，而摇摆（swing）还会把击点挪离 240 的整数倍 ⇒
+   判据⛔ 从音符 tick 反推网格）。可观察的两条替代：
+   **给 `onsetsPerBar = cells` 与不给 ⇒ 整个规划逐字节相同**（钉住"缺省就是这个数"），
+   **给 `onsetsPerBar = 16` ⇒ 响亮拒绝**（钉住"旧的常量今天在这条流派上必然失败"）。
 3. **界从 theory 读回**：给一个超过格位数的 `onsetsPerBar` ⇒ `INVALID_PARAMETER_RANGE`，
    载荷的 `maxOnsetsPerBar` 必须等于 `cells_per_bar(rule.meter_value())`（同一表达式，
    ⛔ 写死的数），且 `meter` 字段与该流派一致。
-4. **形状错误**：`0`、负数、非整数、字符串 ⇒ 响亮拒绝，⛔ 静默夹紧、⛔ 静默当"没给"。
+4. **形状错误**：`0` ⇒ `INVALID_PARAMETER_RANGE`（带 `range`），⛔ 静默夹紧、⛔ 静默当"没给"。
+   ⚠ 分层实测口径：**负数 / 非整数 / 字符串在工具面就被拦下**
+   （`arg_u64` 的"必须是非负整数"与 `ParamSpec::accepts("integer")`），
+   所以纯领域层只能量到 `0` 与"超出 `u32` 宽度"这两行 —— 判据按这条如实分写，
+   ⛔ 假装领域层会返回 `ParamSpec` 的拒绝。
 5. **作用域**：`onsetsPerBar` 只改鼓与旋律 —— 和声声部逐字节不变（与 `ADR-0033`
    判据 4 的对称形式：那边是"切分不动鼓/旋律"，这边是"网格不动和声"）。
 6. **耦合拒绝**：D4 两条各一例（`materialSource: "project"`；两条消费路径都不在场）。

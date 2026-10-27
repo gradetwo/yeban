@@ -51,6 +51,7 @@ fn plan_try(
             drum_density: None,
             voice_subdivision: uniform,
             voice_subdivisions: overrides,
+            onsets_per_bar: None,
         },
     )
 }
