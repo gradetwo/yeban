@@ -11617,3 +11617,98 @@ $ python3 scripts/gates/check_phase_status.py   # 退出 0
   - 防假绿核对：主干 run 的 `rust (yeban-mcp)` 作业日志 **85 条
     `test result: ok` / 合计 2122 passed / 0 failed**
     （`/tmp/g6-main-mcp.log` 读数）。
+
+## 2026-10-27：G8a 消除（G8 第一片）：低音声部落低八度 + `drumDensity` 稀疏档 opt-in
+
+- **需求规范 ID**: `[MCP-TOOL-005]` `[ADR-0028]` `[G8]`
+- **实施工作线**: `line/generation-bass-register`（提交 `77d49992`，合并 `c725d313`）
+- **背景与目标**:
+  - 审计（`/tmp/yeban-issues-20261027` G8）：`materialSource:"theory"` 的 3 声部骨架
+    沿用 `yeban-theory` 出厂约束 `DEFAULT_THREE_VOICES`（Bass 写在 C3–C5），紧凑性
+    目标把每个声部压向各自音区上沿 ⇒ 实测"低音"声部落在 67–72（G4/C5），听感上
+    没有低音声部；鼓组只有满密度一档，想要稀疏只能生成后逐音符删。
+- **实施**:
+  - D1 音域：3 声部展开改自建 `VoicingConstraints`（Bass C2–C3 / Alto G3–G5 /
+    High C5–C7，`SECTION_THREE_VOICES`）；4 声部维持 `FOUR_VOICES`；
+    **`yeban-theory` 零改动**（不越模块边界，病因在 mcp 侧的约束选取）。
+  - D2 鼓密度：可选 `drumDensity`（`normal`|`sparse`）。`sparse` = 只保留
+    `GenreRule::drum_pattern` 登记为 accent 的击点（**不发明节奏表**，id 为
+    normal 的真子集）；缺省逐字节相同（`ADR-0016` D2 兼容契约）；无重音流派或
+    反序组合 ⇒ `INVALID_PARAMETER_RANGE` 带 hint；空产出响亮拒绝（静默鼓轨不是产出）。
+  - 判据：`verify/section_pure.rs` 新增 4 条（缺省逐字节 / 重音子集 / 守卫 / 低音寄存器），
+    46 项全绿；`param_bounds_guard` 登记 `drumDensity=WordList(28)`；
+    契约同步 `schemas/mcp-tools.schema.json` + `tools.rs`；裁决留痕 `ADR-0028`。
+- **验证**:
+  - 线 Run `40452632358`（`77d49992`）：**`conclusion: success`**。
+  - 合并提交 `c725d313` 主干 Run `40455673028`：**`conclusion: success`**；
+    本 run 的 `plan` 判定为**全量**：`rust (workspace 全量)` 作业真的跑过
+    （`05:30:28Z → 06:13:35Z`，43m07s），`rust (${{ matrix.crate }})` 按矩阵 `skipped`
+    （⛔ 不是跳过当成绿，全量作业已覆盖）。
+  - 防假绿核对：`rust (workspace 全量)` 作业日志 **404 条 `test result:` /
+    合计 6672 passed / 0 failed**（`/tmp/yeban-g8a-ws.log` 读数）。
+  - ⚠ 更正一处易误读：Run `40449614218`（failure）与 `40449885634`（success）
+    是 `41c9d61c` / `481617d6` —— **G4 台账文档线**的 run，与本线无关，
+    不得记作 G8a 的红灯史。
+- **G8 剩余**：声部节奏粒度（每声部独立 rhythm grid）仍 `pending`，登记在下。
+
+## 2026-10-27：G5 消除：音色参数注册口径改为"引擎是否真的消费"（撤 `deviceChainDsp` 的谎）
+
+- **需求规范 ID**: `[MCP-TOOL-006]` `[ADR-0027]` `[ARCH-DET-001]` `[G5]`
+- **实施工作线**: `line/timbre-selection`（提交 `8ddf549d` → `4d0cf4db`，合并 `f0a5484c`）
+- **背景与目标**:
+  - 审计（G5）原诉求是"工具面选不了音色"。origin/main `36843ca9` 实测证明引擎
+    **早已消费**乐器参数（自 `#268` 起 `EngineSnapshot::from_project` →
+    `ToneParams::from_devices` 逐条读 `cutoff_hz`/`resonance`/`drive`/
+    `osc1_wave`（`ENGINE_WAVE_RECIPES` 下标 0=hollow…4=glass）/`osc*_level`/
+    `osc*_detune_cents`，鼓组另有 5 个 `*_note` 与 kit 旋钮），
+    `insertDevice` 也接受 `kind:"InternalInstrument"`。真正的缺口只有一个：
+    **回执在撒谎** —— 合成器轨编辑被登记成 `deviceChainDsp`（读起来像"走了设备链 DSP"），
+    调用方据此以为音色参数没生效。
+- **实施**:
+  - `yeban-engine`：`CONSUMED_INSTRUMENT_PARAMS` / `is_consumed_instrument_param`
+    （`synth.rs` +100 行）与 `consumes_drum_param`（`drums.rs`）把"引擎是否消费"
+    变成**可查询的单一事实源**，⛔ 不在 mcp 侧手抄参数名。
+  - `yeban-render`：`track_has_unhandled_dsp`（`inserts.rs`）按同一口径判定。
+  - `yeban-mcp`：`domain/render.rs` 的 `deviceChainDsp` 注册点改读上述消费判定 ⇒
+    空参数内置乐器**不再**登记 `deviceChainDsp`；`tools.rs` 工具摘要同步如实化。
+  - 判据：`render_master.rs` +79 行（音色参数编辑的回执读数）、
+    `insert_chain.rs` +33 行（渲染侧消费断言）、延迟表判据跟随新口径。
+  - 裁决留痕 `ADR-0027`（集成者依 2026-10-25 人类常设授权裁定）。
+- **验证**:
+  - 线 Run `40452091974`（`4d0cf4db`）：**`conclusion: success`**。
+  - 合并提交 `f0a5484c` 主干 Run `40456689944`：**`conclusion: success`**
+    （作业窗口 `05:40:56Z → 06:16:52Z`）；作业读数（耗时非 0）：
+    `rust (yeban-mcp)` 13m49s、`rust (yeban-app)` 28m59s、`rust (yeban-render)` 4m58s、
+    `rust (yeban-engine)` 4m18s、`rust (yeban-ui-mcp)` 1m53s、`windows` 35m46s、
+    `macos` 23m06s、`checks` 1m24s、`deny` 53s、`lockfile` 20s；
+    `rust (workspace 全量)` 按 `plan` 矩阵 `skipped`（⛔ 不是跳过当成绿 ——
+    本线四个 crate 各有独立作业真的执行过）。
+  - 防假绿核对：主干 run 的 `rust (yeban-mcp)` 作业日志 **85 条 `test result:` /
+    合计 2124 passed / 0 failed**（`/tmp/yeban-g5-mcp.log` 读数）。
+
+## 2026-10-27：G12 半消除：`yeban_record_wav` 回执显式指路（`notProjectBounce` + `alternatives`）
+
+- **需求规范 ID**: `[MCP-TOOL-010]` `[ARCH-REC-001]` `[G12]`
+- **实施工作线**: `line/record-wav-signposting`（提交 `5f5e5f42`，合并 `79b98377`）
+- **背景与目标**:
+  - 审计（G12）：`yeban_record_wav` 的名字易被读成"录本工程"，实为**内存测试音**
+    （引擎测试信号落盘），调用方拿到 WAV 后以为拿到了工程混音。
+  - 本片按 `HD-69` 的裁决边界**只做指路**：接工程源本身是待人类裁项，⛔ 不擅自接线。
+- **实施**:
+  - `domain/record_wav.rs`：真做响应与 `dryRun` 预览**恒带** `notProjectBounce: true`
+    与 `alternatives.projectBounce`（点名 `yeban_render_master`，`why` 同时点名两工具，
+    文案共用一处 ⇒ 预览与响应不漂移）。
+  - `tools.rs` 的 summary 已如实（"录一段内存测试音"），**不动**（该文件当时由
+    G5/G8a 线持有写者）。
+  - 判据：`the_take_is_signposted_as_not_the_project_audio`（双形态逐键断言）。
+- **验证**:
+  - 线 Run `40453254553`（`5f5e5f42`）：**`conclusion: success`**。
+  - 合并提交 `79b98377` 主干 Run `40456716990`：**`conclusion: success`**
+    （作业窗口 `05:41:13Z → 06:17:43Z`）；作业读数（耗时非 0）：
+    `rust (yeban-mcp)` 13m34s、`rust (yeban-ui-mcp)` 2m44s、`windows` 36m17s、
+    `macos` 25m45s、`checks` 69s、`deny` 65s、`lockfile` 21s、`plan` 10s；
+    `rust (workspace 全量)` 按 `plan` 矩阵 `skipped`（纯 mcp 侧改动）。
+  - 防假绿核对：主干 run 的 `rust (yeban-mcp)` 作业日志 **85 条 `test result:` /
+    合计 2126 passed / 0 failed**（`/tmp/yeban-g12-mcp.log` 读数）。
+- **仍待裁（`HD-69`）**：`record_wav` 是否接工程源（改语义 = 改契约），人类裁决前
+  本片口径即为终态：工具**不**产工程混音，且回执自证。
