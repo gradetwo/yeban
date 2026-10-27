@@ -28,7 +28,11 @@ use crate::tools::ErrorCode;
 /// - **顶层字段**（`tracks` / `bpm` / …）；
 /// - **一层下钻**（`tracks.id`）：根是"实体集合对象"时，按 BTreeMap 键序展开成
 ///   `{id: {leaf: value}}`；根是普通对象（如 `routing_graph`）时，直接取 `leaf`。
-pub const SELECTORS: [&str; 27] = [
+///
+/// ⭐ [G15] 例外：`sections.timeline` 是**派生视图** —— 输出走独立顶层键
+/// `sectionsTimeline`（按 `(start_tick, id)` 升序的段落数组）。`sections` 的
+/// 原始键序是**身份序**（ULID 插入序，⛔ 不是时间序），调用方本来必须自己重排。
+pub const SELECTORS: [&str; 28] = [
     "id",
     "title",
     "author",
@@ -55,6 +59,7 @@ pub const SELECTORS: [&str; 27] = [
     "tracks.name",
     "tracks.kind",
     "sections.name",
+    "sections.timeline",
     "clip_pool.name",
 ];
 
@@ -236,6 +241,29 @@ pub fn project_view(project: &YebanProjectV1, fields: &[String]) -> Result<Value
                 } else {
                     out.insert(selector.clone(), Value::Null);
                 }
+            }
+            // ⭐ [G15] 派生视图：段落按时间轴升序（走独立输出键，⛔ 不改 `sections`
+            // 原始形状）。必须排在通用下钻臂**之前** —— 否则这里会静默产出空对象。
+            Some(("sections", "timeline")) => {
+                let mut timeline: Vec<Value> = Vec::with_capacity(project.sections.len());
+                for section in project.sections.values() {
+                    timeline.push(serde_json::to_value(section).map_err(|error| {
+                        Fault::domain(
+                            ErrorCode::IoError,
+                            format!("序列化段落时间轴视图失败: {error}"),
+                        )
+                    })?);
+                }
+                timeline.sort_by(|left, right| {
+                    let key = |entry: &Value| {
+                        (
+                            entry["start_tick"].as_u64().unwrap_or_default(),
+                            entry["id"].as_str().unwrap_or_default().to_owned(),
+                        )
+                    };
+                    key(left).cmp(&key(right))
+                });
+                out.insert("sectionsTimeline".to_owned(), Value::Array(timeline));
             }
             Some((root, leaf)) => {
                 let collected = match object.get(root) {
