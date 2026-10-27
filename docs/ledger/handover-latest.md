@@ -893,11 +893,13 @@ python3 scripts/guards/policy_check.py && bash scripts/gates/run-gates.sh light
 | 路径 | 分支 | 处置 |
 | :--- | :--- | :--- |
 | `/home/crow/work/qoder/yeban` | `main` | 主树（⭐ 集成者工作区，⛔ 不在这里写线代码）|
-| `.worktrees/reason-propagation` | `line/reason-propagation` | ⭐ **在飞**（基 `e1409ad8`＝当时**已推送**的主干 tip）：运行期 `reason` 的调用点传播（`crates/yeban-mcp/tests/fault_vocabulary.rs:889` 的 `EXEMPT_DYNAMIC_REASON_SITES`）|
 
-> ⚠ **2026-10-28 更正（本表此前陈旧）**：上面那行是**唯一**在飞的线。曾经列在这里的四条持久线
-> （`line/mod-app`／`line/mod-mcp`／`line/mod-model`／`line/mod-engine`）与网站线那棵**都已拆除**
-> —— ⭐ 本表只按 `git worktree list` 现读填写，⛔ 凭记忆补行（交接一致性检查就是为这类陈旧写的）。
+> ⭐ **2026-10-28 现读 `git worktree list` ＝ 只有上面这一行**：`line/reason-propagation` 已落地
+> （`c2dd2b89` + `007e3ff9`，merge `e18be129`，run `40588472044` success）⇒ 工作树已按第 31 条拆除
+> （`worktree.sh rm` **只删目录、保留分支**，未合并的工作不会静默消失）。
+> 曾经列在这里的四条持久线（`line/mod-app`／`line/mod-mcp`／`line/mod-model`／`line/mod-engine`）
+> 与网站线那棵**都已拆除** —— ⭐ 本表只按 `git worktree list` 现读填写，⛔ 凭记忆补行
+> （交接一致性检查就是为这类陈旧写的）。
 
 ⚠ **worktree 的上游被普遍配成 `refs/heads/main`** ⇒ 裸 `git push` **默认会改主干** ⇒ ⭐ **一律写显式 refspec**（`command git push origin HEAD:main` 或 `origin <branch>:refs/heads/<branch>`）、**⛔ 永不用 `git push -u`**。
 ⚠ 删除前必验三条：`dirty=0` ＋ `unpushed=0` ＋ 已并入 `origin/main`。

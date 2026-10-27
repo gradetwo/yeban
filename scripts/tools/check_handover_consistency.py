@@ -168,11 +168,11 @@ def check(handover_text: str, ledger_text: str) -> list[str]:
     # ⭐ §5 列的 worktree 应与实际一致（R560：§5 是第三类可能陈旧的节）
     declared_wt = declared_worktrees(handover_text)
     real_wt = actual_worktrees()
-    if not declared_wt:
-        bad.append("交接 §5 里读不到任何 `.worktrees/*` 路径 ⇒ 本判据可能空转")
-    elif real_wt is None:
+    if real_wt is None:
         bad.append("读不到实际 worktree 清单 ⇒ 本判据可能空转")
-    else:
+    elif declared_wt or real_wt:
+        # ⭐ **两边都空**是一致状态（零线在飞 ⇒ §5 只剩主树那一行），⛔ 不算空转：
+        #    "交接说没有在飞的线" ＋ "磁盘确实没有" 本身就是被核对的命题。
         missing = sorted(declared_wt - real_wt)
         extra = sorted(real_wt - declared_wt)
         if missing:

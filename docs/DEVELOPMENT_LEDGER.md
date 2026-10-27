@@ -12692,3 +12692,12 @@ theory 自己的判据名就写着 `an_over_dense_request_is_an_error_not_a_sile
    两者格式是否一致本机无法证明；`40588472044` 的 `the_reason_surface_digest_is_frozen_and_documented`
    在三条腿上 `... ok` ⇒ **顺带证明了 `AssetHash` 就是"小写十六进制 sha256"**（这条等价关系
    以前只是猜测，现在有了判决）。
+4. **"零线在飞"是合法状态, 判据⛔ 把它当空转**：`scripts/tools/check_handover_consistency.py`
+   原来一读到交接 §5 没有 `.worktrees/*` 就报"本判据可能空转"并 **exit=1** —— 于是把最后一根线
+   拆掉之后，① 日常自检永久红（train people to ignore it），② ⭐ 它**自己的自检也红了**
+   （`--self-test` 的"一致文本"用例是从 `actual_worktrees()` 现拼的，零 worktree ⇒ 拼出空串 ⇒
+   误报）。实测复现：修前 `--self-test` **exit=1**、报 `交接 §5 里读不到任何 .worktrees/* 路径`。
+   改成"**两边都空 ⇒ 一致**"（"交接说没有在飞的线" ＋ "磁盘确实没有" 本身就是被核对的命题），
+   任一边非空照旧比 `missing`/`extra`。修后 `--self-test` 与真实检查双 **exit=0**。
+   ⇒ ⭐ 教训：**"清单为空"在核对类判据里必须是一条显式分支**，⛔ 用"读不到东西"兜底 ——
+   兜底分支会把"确实没有"和"读的方法坏了"混成同一个红。
