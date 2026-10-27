@@ -35,6 +35,11 @@
 //! （`tests/props_176.rs` 与 `tests/render_master.rs` 各有一处）。
 //! ⛔ 缺省形状用 [`validate`]（它只核 `required` 与已出现字段的类型）。
 //!
+//! ⭐ `ADR-0032`（缺口 `G17`）：**五条 schema 现在都声明 `commitModel`** —— 它是每条
+//! 成功回执都存在的自述键，由 [`with_commit_model`] 在 `finish` 之外**统一**挂上
+//! （`properties` + `required` 一起）。真实响应同样由 `apply_inner` 统一注入，
+//! 因此"声明的"与"发的"仍是同一件事，⛔ 不是理想形状。
+//!
 //! ## 校验器只做三件事（并**被真的跑**）
 //!
 //! 1. 顶层 `type`；
@@ -252,6 +257,48 @@ fn finish(mut map: Map<String, Value>, required: &[&str], properties: Value) -> 
     Value::Object(map)
 }
 
+/// `commitModel` 的声明（`ADR-0032` **D1/D3**）。
+///
+/// 取值⛔ 不在这里手抄：直接引用 [`crate::domain::COMMIT_MODEL_VALUES`]。写死四条
+/// 就会有"schema 说四条、实现发五条"的两份清单，而那正是本票要治的病。
+fn commit_model_schema() -> Value {
+    json!({
+        "type": "string",
+        "enum": crate::domain::COMMIT_MODEL_VALUES.to_vec(),
+        "description": "本次调用的**提交模型**（`ADR-0032`）：`proposal` = 工程头没动，必须再调 \
+            `yeban_merge_proposal` 才落盘；`proposalAutoMerged` = 同一次调用里已当场合并 \
+            （`arguments.autoMerge`），⛔ 不需要也不必再合并；`direct` = 当场生效、没有\"下一步去合并\"；\
+            `none` = 本次不产生任何提交（⛔ 不等于\"没有副作用\" —— 是否写盘请读 `path` / \
+            `sideEffect` / `appliedInOfflineRender`，提交数请读 `commitDelta` / `committed`）。"
+    })
+}
+
+/// 给一份 schema 补上 `commitModel`（`required` 与 `properties` **一起**补）。
+///
+/// 做成"在 `finish` 外面包一层"、而不是往五份字面量里各加一个键，有两个实测理由：
+///
+/// 1. `render_master` 的 `json!` 字面量早已贴着 `serde_json` 宏的递归上限
+///    （见 [`render_master`] 里 `midiSource` 的来历），再往字面量里加一个键就编不过；
+/// 2. 这个键在实现里只有**一个**来源（`domain::commit_model_of` → `apply_inner` 的注入），
+///    五份 schema 里它是同一句话 ⇒ 逐处手抄等于把本票要治的"易错"搬进生产代码。
+///
+/// ⚠ 覆盖面 = [`COVERED_TOOLS`] 那五个工具。其余二十个工具的响应同样带这个键（注入点在
+/// 唯一出口上），只是**尚未**声明 `outputSchema` —— 声明面扩大到第 26 个不是本票的范围。
+fn with_commit_model(mut schema: Value) -> Value {
+    if let Value::Object(map) = &mut schema {
+        if let Some(Value::Array(required)) = map.get_mut("required") {
+            required.push(Value::from(crate::tools::COMMIT_MODEL_KEY));
+        }
+        if let Some(Value::Object(properties)) = map.get_mut("properties") {
+            properties.insert(
+                crate::tools::COMMIT_MODEL_KEY.to_owned(),
+                commit_model_schema(),
+            );
+        }
+    }
+    schema
+}
+
 /// 提案记录的**摘要**形状（[`crate::domain::proposal::Proposal::summary`]）。
 fn proposal_summary_schema() -> Value {
     json!({
@@ -317,7 +364,7 @@ fn undo_display_schema() -> Value {
 ///
 /// 来源：`domain::apply_propose` 的 `ToolResponse::success(json!({…}))`。
 fn edit_notes() -> Value {
-    finish(
+    with_commit_model(finish(
         envelope(
             "yeban_edit_notes 成功响应的 data",
             "本调用**永远**只创建一条隔离提案分支（`pendingMerge: true` / `projectUnchanged: true`）；\
@@ -383,12 +430,12 @@ fn edit_notes() -> Value {
             },
             "proposal": proposal_summary_schema()
         }),
-    )
+    ))
 }
 
 /// `yeban_merge_proposal` 的成功响应 `data`（**两种形状**）。
 fn merge_proposal() -> Value {
-    finish(
+    with_commit_model(finish(
         envelope(
             "yeban_merge_proposal 成功响应的 data",
             "正常合并：`commit` 是**多父合并提交**（`parents` 从图谱读回），`baseCommitMoved` 说明基线是否移动过。\
@@ -421,12 +468,12 @@ fn merge_proposal() -> Value {
             },
             "proposal": proposal_detail_schema()
         }),
-    )
+    ))
 }
 
 /// `yeban_query_engine_state` 的成功响应 `data`（只读）。
 fn query_engine_state() -> Value {
-    finish(
+    with_commit_model(finish(
         envelope(
             "yeban_query_engine_state 成功响应的 data",
             "三份状态各有唯一来源（`stateSources` 逐条给出）。`track` 只在给了 `trackId` 时是对象，\
@@ -494,7 +541,7 @@ fn query_engine_state() -> Value {
             "sends": {"type": "array", "items": {"type": "object"}},
             "stateSources": {"type": "object"}
         }),
-    )
+    ))
 }
 
 /// `yeban_render_master` 的成功响应 `data`（全部是**实测**数字）。
@@ -649,12 +696,12 @@ fn render_master() -> Value {
         properties.insert("contributions".to_owned(), json!({"type": "array"}));
         properties.insert("contributionsBasis".to_owned(), json!({"type": "object"}));
     }
-    schema
+    with_commit_model(schema)
 }
 
 /// `yeban_undo` 的成功响应 `data`。
 fn undo() -> Value {
-    finish(
+    with_commit_model(finish(
         envelope(
             "yeban_undo 成功响应的 data",
             "`before` / `after` 是模型读数（与界面同源）。`cursorPersisted` 恒为 `false`：\
@@ -684,7 +731,7 @@ fn undo() -> Value {
             "before": undo_display_schema(),
             "after": undo_display_schema()
         }),
-    )
+    ))
 }
 
 #[cfg(test)]

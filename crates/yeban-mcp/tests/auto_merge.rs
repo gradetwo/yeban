@@ -3,7 +3,7 @@
 //! | # | 判据 | 用例 |
 //! | :--- | :--- | :--- |
 //! | 1 | `autoMerge: true` ⇒ 一次调用后提案状态就是 **merged**、工程真的变了 | `auto_merge_lands_in_one_call` |
-//! | 2 | **不写该键**的调用方逐字节零感知（`pendingMerge: true`、无 `autoMerged`/`merge` 键） | `default_shape_is_unchanged_without_auto_merge` |
+//! | 2 | **不写该键**的调用方对 `autoMerge` 的**两条键形状**零感知（`pendingMerge: true`、无 `autoMerged`/`merge` 键） | `default_shape_is_unchanged_without_auto_merge` |
 //! | 3 | `dryRun` + `autoMerge` ⇒ 一位都不改：提案**不会**被创建，预览如实说 `wouldAutoMerge` | `dry_run_writes_nothing_even_with_auto_merge` |
 //! | 4 | `mergeCommitMessage` 原样进合并提交的 `commit.message`（缺省 `"merge proposal {id}"`） | `merge_commit_message_passes_through` |
 //!
@@ -18,6 +18,7 @@ use serde_json::{Value, json};
 
 use yeban_mcp::dispatch::Dispatcher;
 use yeban_mcp::security::{BearerToken, Channel, RunMode, ScopeSet};
+use yeban_mcp::tools::COMMIT_MODEL_KEY;
 use yeban_model::EntityId;
 
 struct Scratch {
@@ -183,11 +184,20 @@ fn default_shape_is_unchanged_without_auto_merge() {
     );
     assert!(
         data.get("autoMerged").is_none(),
-        "不写 autoMerge 的调用方**零感知** ⇒ 不得出现 autoMerged 键: {data}"
+        "不写 autoMerge 的调用方对**这条键**零感知 ⇒ 不得出现 autoMerged 键: {data}"
     );
     assert!(
         data.get("merge").is_none(),
-        "不写 autoMerge 的调用方**零感知** ⇒ 不得出现 merge 键: {data}"
+        "不写 autoMerge 的调用方对**这条键**零感知 ⇒ 不得出现 merge 键: {data}"
+    );
+    // ⭐ `ADR-0032` **D4**：原话"逐字节零感知"的范围**就地收窄**到 `autoMerge` 的
+    // 两条键形状（上面两条断言的强度一位都不减）。本票给**每条**成功回执新增一个
+    // 自述键 `commitModel`（`ADR-0029` 之后落地），缺省路径因此不再是逐字节相同 ——
+    // 把它钉成显式读数，⛔ 不让它成为没人登记的漂移。
+    assert_eq!(
+        data[yeban_mcp::tools::COMMIT_MODEL_KEY],
+        json!("proposal"),
+        "缺省路径仍然是提案模型（回执自述与 `pendingMerge: true` 同向）: {data}"
     );
 
     // 手动 merge 仍然是唯一落盘路径，且语义与既有判据一致。

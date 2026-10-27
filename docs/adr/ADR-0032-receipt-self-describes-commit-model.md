@@ -114,3 +114,23 @@ CI 兜底：一个每条回执都存在的键**必须**出现在 `required` 里�
    钉住取值集合（改成第五条必须**故意**改判据，与 `tools.rs` 的 `TOOL_COUNT` 同一口径）。
 4. `output_schema` 既有双向判据（`:696` / `:721`）自动要求新字段带 `type`；
    `props_176` 的 `validate_complete` 自动要求已声明即出现。
+
+## 落地补记（写代码时实测到的三处偏离，⛔ 不是事后修饰）
+
+1. **D2 的注入点做成 wrapper，不改函数名**：`apply_inner(domain, plan)` 保留原名
+   （`ADR-0029` 与 `docs/ledger/m4-008-authority-notes.md` 都按这个名字留痕），本体
+   改名为 `apply_plan_model`，`apply_inner` 只剩两行 —— 先 `commit_model_of(&plan)`
+   （必须在 `plan` 被 move 之前），再 `.map(|response| response.with_commit_model(model))`。
+2. **判据 2 有一条实测例外**：`yeban_list_proposals` 的清单**顶层本来就带**
+   `"mergeTool": "yeban_merge_proposal"`（`domain/mod.rs:3188`，`#176` 的既有契约），
+   它说的是"清单里那些提案用哪个工具去合"，⛔ 不是"本次调用属于提案模型"。
+   按 D1"⛔ 不改任何既有键的含义"，判据**不**把它算作违规，改为另钉
+   `list.commitModel == "none"` + `list.mergeTool` 保持原值 —— 两个同名字段各说各的。
+3. **D3 的声明方式改成 `finish` 外统一挂一层**（`output_schema::with_commit_model`）：
+   `render_master` 的 `json!` 字面量早已贴着 `serde_json` 宏的递归上限（该函数里
+   `midiSource` 的来历就是这条），往五份字面量里各加一个键有一处编不过；同时
+   取值集合直接引用 `domain::COMMIT_MODEL_VALUES`，⛔ 不留"schema 与实现两份清单"。
+4. **预期代价之一被量化**：`tests/payload_budget.rs` 钉的 `[BASELINE-006]` 缺省往返
+   响应读数 2,816 B ⇒ 形状上恰好 **+25 B**（`"commitModel"` 13 + `:` 1 + `"proposal"` 10
+   + 逗号 1；`serde_json::Map` 有序 ⇒ 插在哪对键之间都只需一个逗号）⇒ 期望值改为
+   **2,841 B**（合计 3,037 ≤ 4,096 的预算不变）。⚠ 以 CI 报出的读数为准，不符就改这里。

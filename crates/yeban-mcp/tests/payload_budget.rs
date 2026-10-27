@@ -151,11 +151,17 @@ fn sixteen_bar_section_round_trip_fits_the_baseline_006_json_budget() {
     );
     // 钉住**实测读数**（单位：字节）。它变红意味着载荷形状变了 ⇒ 必须重新量一次
     // 再决定新的期望值，不许顺手改数字（AGENTS.md §6「逐位一致判据」的精神）。
+    //
+    // ⭐ `ADR-0032`（缺口 `G17`）：每条成功回执自述提交模型 ⇒ `data` 里多一个键。
+    // 增量按**形状**算，不靠猜：`"commitModel"`(13) + `:`(1) + `"proposal"`(10) + `,`(1)
+    // = **+25 B**（`serde_json::Map` 是有序表，插在哪两个键之间都恰好需要那一个逗号；
+    // 请求侧一位不动）。⇒ 响应 2,816 → **2,841**（合计 3,037 ≤ 4,096 的预算不变）。
+    // ⚠ 这条增量是本票**预期**的代价；若 CI 报出的不是 2,841，以 CI 的读数为准并改这里。
     assert_eq!(
         reading,
         RoundTripPayload {
             request: 196,
-            response: 2816
+            response: 2841
         },
         "BASELINE-006 的 16 小节缺省读数变了"
     );
