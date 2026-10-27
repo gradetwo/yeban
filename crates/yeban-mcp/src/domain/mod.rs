@@ -980,6 +980,13 @@ pub enum Plan {
         /// 各算一份、各说一套（`#175` 的 `warnings[]` 只依赖 `ops`，所以能在两处
         /// 各自调一次；本票的警告依赖文档，不能再走那条路）。
         warnings: Vec<Value>,
+        /// [ADR-0029] `arguments.autoMerge`（缺省 `false`）：`true` ⇒ `apply` 在同一把
+        /// 锁内**背靠背**执行合并（`apply_merge`，与 `yeban_merge_proposal` 同一实现），
+        /// 一次调用完成「提案 + 合并」。`false` ⇒ 响应逐字节不变。
+        auto_merge: bool,
+        /// [ADR-0029] `arguments.mergeCommitMessage`：只随 `auto_merge` 生效；
+        /// 缺省口径与 `plan_merge` 相同（`"merge proposal {id}"`）。
+        merge_commit_message: Option<String>,
     },
     /// `yeban_merge_proposal`
     Merge {
@@ -1487,6 +1494,8 @@ impl Plan {
                 draft,
                 include_ops,
                 warnings,
+                auto_merge,
+                ..
             } => {
                 preview.insert("kind".to_owned(), Value::from(draft.kind));
                 preview.insert("title".to_owned(), Value::from(draft.title.clone()));
@@ -1515,6 +1524,12 @@ impl Plan {
                 preview.insert("mergeTool".to_owned(), Value::from("yeban_merge_proposal"));
                 // ⭐ #178：预览与真正创建提案用的是**同一份** `warnings`（规划期算好的）。
                 preview.insert("warnings".to_owned(), Value::Array(warnings.clone()));
+                // ⭐ [ADR-0029] D5：`dryRun` 的承诺（一位都不改）优先级更高 ⇒
+                // **不落盘、不合并**，但如实标出"真跑这一步会顺带合并"。
+                // 缺省路径（无 `autoMerge`）预览逐字节不变（键**只在 `true` 时出现**）。
+                if *auto_merge {
+                    preview.insert("wouldAutoMerge".to_owned(), Value::from(true));
+                }
             }
             Self::Merge {
                 proposal_id,
@@ -2355,7 +2370,7 @@ fn propose_draft(
     title: String,
     description: String,
     ops: Vec<Op>,
-    include_ops: bool,
+    call: &ToolCall,
 ) -> Result<Plan, Fault> {
     let base_commit = domain.active_head().ok_or_else(|| {
         Fault::domain(ErrorCode::Conflict, "主分支没有头提交（提交图谱未初始化）")
@@ -2384,8 +2399,10 @@ fn propose_draft(
             base_commit,
             base_digest,
         }),
-        include_ops,
+        include_ops: include_ops(call),
         warnings,
+        auto_merge: arg_bool(call, "autoMerge", false),
+        merge_commit_message: arg_str(call, "mergeCommitMessage").map(str::to_owned),
     })
 }
 
@@ -2435,7 +2452,7 @@ fn plan_propose_section(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault>
         format!("章节骨架: {section_name} ({style_preset}, {bars} 小节)"),
         format!("propose_section {section_name}"),
         section_plan.ops,
-        include_ops(call),
+        call,
     )
 }
 
@@ -2625,7 +2642,7 @@ fn plan_edit_notes(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
             description,
             format!("edit_notes create {clip_id}"),
             compiled,
-            include_ops(call),
+            call,
         );
     }
     // 音轨实体级形态（`removeTrack`）**单独成一路**：摘掉一条音轨和"在同一次调用里
@@ -2813,7 +2830,7 @@ fn plan_edit_notes(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
         description,
         format!("edit_notes {title_target}"),
         compiled,
-        include_ops(call),
+        call,
     )
 }
 
@@ -2844,7 +2861,7 @@ fn plan_set_macro(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
         format!("宏调整: 音轨 {track_id} 宏 #{macro_index} → {value}"),
         format!("set_macro {track_id}#{macro_index}"),
         macro_plan.ops,
-        include_ops(call),
+        call,
     )
 }
 
@@ -3567,7 +3584,16 @@ fn apply_inner(domain: &mut Domain, plan: Plan) -> Result<ToolResponse, Fault> {
             draft,
             include_ops,
             warnings,
-        } => apply_propose(domain, *draft, include_ops, &warnings),
+            auto_merge,
+            merge_commit_message,
+        } => apply_propose(
+            domain,
+            *draft,
+            include_ops,
+            &warnings,
+            auto_merge,
+            merge_commit_message,
+        ),
         Plan::Merge {
             proposal_id,
             commit_message,
@@ -4007,6 +4033,8 @@ fn apply_propose(
     draft: ProposalDraft,
     include_ops: bool,
     warnings: &[Value],
+    auto_merge: bool,
+    merge_commit_message: Option<String>,
 ) -> Result<ToolResponse, Fault> {
     let project = domain
         .active_project()
@@ -4088,7 +4116,7 @@ fn apply_propose(
     // 提案**不**改工程内容 —— 这两行是给调用方的证据, 不是顺手加的字段。
     let project_digest = store::digest_of(store::serialize_project(&project)?.as_bytes());
     let unwired = draft_unwired(&wire_projection);
-    Ok(ToolResponse::success(serde_json::json!({
+    let mut data = serde_json::json!({
         "created": true,
         "projectUnchanged": true,
         // ⭐ #175（#174 坑①）：提案语义必须是**显式字段**，⛔ 不许只靠
@@ -4105,7 +4133,77 @@ fn apply_propose(
         // （`deviceOnSilentTrack`）；它是 `plan` 阶段对模拟后工程算好的同一份读数。
         "warnings": Value::Array(warnings.to_vec()),
         "proposal": wire_projection,
-    })))
+    });
+
+    // ⭐ [ADR-0029] D2：`autoMerge` 走的是**现有** `apply_merge`（同一预演、同一
+    // `commit_merge`、同一多父图谱语义），在同一把锁内背靠背 ⇒ "autoMerge 合并的"
+    // 与"手动 merge 的"是同一份代码，不可能漂移。缺省路径（`false`）到这里一位都不多走。
+    if auto_merge {
+        let snapshot = domain
+            .proposals
+            .get(&proposal_id)
+            .cloned()
+            .ok_or_else(|| proposal_not_found(domain, &proposal_id))?;
+        let message =
+            merge_commit_message.unwrap_or_else(|| format!("merge proposal {proposal_id}"));
+        let merged = apply_merge(domain, proposal_id, &message, &snapshot)
+            .map_err(|fault| auto_merge_failure_proof(fault, proposal_id))?;
+        let merged_data = match merged {
+            ToolResponse::Success { data } => data,
+            other => other.to_value().get("data").cloned().unwrap_or(Value::Null),
+        };
+        // D3 两段式回执：如实拼合（`mergeTool` 不再是"下一步去调谁"的指令）。
+        if let Some(object) = data.as_object_mut() {
+            object.insert("pendingMerge".to_owned(), Value::from(false));
+            object.insert("autoMerged".to_owned(), Value::from(true));
+            object.insert(
+                "mergeTool".to_owned(),
+                Value::from("applied-in-process:autoMerge"),
+            );
+            object.insert("projectUnchanged".to_owned(), Value::from(false));
+            object.insert("merge".to_owned(), merged_data);
+            // `proposal` 投影**跟随合并后的真实状态**（`status:"merged"`），
+            // 投影选择规则与上面缺省路径一致（`includeOps` ⇒ detail，否则 summary）。
+            let updated_projection =
+                domain
+                    .proposals
+                    .get(&proposal_id)
+                    .map_or(Value::Null, |record| {
+                        if include_ops {
+                            record.detail()
+                        } else {
+                            record.summary()
+                        }
+                    });
+            object.insert("proposal".to_owned(), updated_projection);
+        }
+    }
+    Ok(ToolResponse::success(data))
+}
+
+/// [ADR-0029] D4：autoMerge 第二步失败时，在既有结构化错误上**如实追加**
+/// "提案已创建且保持 Open"的证据（⛔ 不假装回滚、不补偿删除）。
+fn auto_merge_failure_proof(fault: Fault, proposal_id: EntityId) -> Fault {
+    match fault {
+        Fault::Domain {
+            code,
+            message,
+            data,
+        } => {
+            let mut payload = match data {
+                Some(Value::Object(map)) => map,
+                _ => Map::new(),
+            };
+            payload.insert("proposalCreated".to_owned(), Value::from(true));
+            payload.insert(
+                "proposalId".to_owned(),
+                Value::from(proposal_id.to_canonical_string()),
+            );
+            payload.insert("proposalRemainsOpen".to_owned(), Value::from(true));
+            Fault::domain_with_data(code, message, Value::Object(payload))
+        }
+        other => other,
+    }
 }
 
 /// 一批 `Op` 里"引擎不认、但又不是拼错"的设备参数名（进提案响应的 `warnings[]`）。
