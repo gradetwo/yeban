@@ -1259,7 +1259,7 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
     ToolSpec {
         spec_id: "MCP-TOOL-EXT-SFZ-LOAD",
         name: "yeban_load_sfz",
-        summary: "装载一份 SFZ v2 乐器 (走 yeban-sfz 的唯一解析实现) 并返回区域数与会话内 instrumentId",
+        summary: "装载一份 SFZ v2 乐器 (走 yeban-sfz 的唯一解析实现) 并返回区域数与会话内 instrumentId; ⭐ G4: 样本文件读不到时 status 仍是 success (文本确实解析了), 但 data.warnings[] 会点名 sfzSamplesUnreadable —— 采样器轨没有正弦回退, 绑轨即整轨静音, 采样须按 assets/samples/manifest.json 登记式外取",
         scope: Scope::AppAdmin,
         // 只读工程、不落盘：装载只把"文本 + 元数据"放进会话态（`MODEL-ISO-001` 第 2 层），
         // 打开 / 关闭工程会整体重置它。`Op` 一位都不写 ⇒ 提交图谱不动。

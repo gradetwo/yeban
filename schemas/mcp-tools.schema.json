@@ -802,7 +802,7 @@
         "yeban_load_sfz": {
           "title": "yeban_load_sfz",
           "type": "object",
-          "description": "装载一份 SFZ v2 乐器（走 yeban-sfz 的解析层：展开 `#include` 后按 `parse_sources` 重放，与 app 侧同一个实现），会话内记住它并返回区域数、样本读数与 include 读账（`includeIssues` / `includeIssueCount`）。缺失的 include 只记一条、不失败；成环/超深度是错误。采样文件是否被真读看 `sampleFilesRead` 一族读数，不要用 `probe` 的能量判断。",
+          "description": "装载一份 SFZ v2 乐器（走 yeban-sfz 的解析层：展开 `#include` 后按 `parse_sources` 重放，与 app 侧同一个实现），会话内记住它并返回区域数、样本读数与 include 读账（`includeIssues` / `includeIssueCount`）。缺失的 include 只记一条、不失败；成环/超深度是错误。采样文件是否被真读看 `sampleFilesRead` 一族读数，不要用 `probe` 的能量判断。⭐ G4：有样本文件读不到 ⇒ `status` 仍为 `success`（解析/注册确实成功），但 `data.warnings[]` 点名 `sfzSamplesUnreadable`（`blocking:false`，含 `count`/`allSamplesUnreadable`/`examples`/`hint`）——采样器轨没有正弦回退，绑轨渲染即绝对静音；采样须按 `docs/SFZ_SAMPLE_ACQUISITION.md` 登记式外取后重新装载。",
           "properties": {
             "path": {
               "type": "string",
