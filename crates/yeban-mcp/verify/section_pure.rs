@@ -63,6 +63,15 @@
 //!   `false` 逐字节等于既有行为，`true` 只追加两条声部；
 //! - `drums_and_melody_require_the_theory_source`：`'project'` 路径上给任一项 ⇒
 //!   `INVALID_PARAMETER_RANGE`（带指出修复方式的 `hint`）。
+//!
+//! `ADR-0028`（`drumDensity` / 3 声部低音区）再加四条判据：
+//!
+//! - `drum_density_normal_is_byte_identical_to_absent`：显式 `"normal"` 逐字节等于键缺席；
+//! - `sparse_drums_are_exactly_the_accented_hits`：`sparse` 逐击等于 theory 鼓组型里
+//!   登记为重音的子集（theory 侧独立重算），计数严格更小、身份是 normal 的真子集；
+//! - `drum_density_requires_include_drums_and_rejects_unknown_values`：脱离
+//!   `includeDrums:true` 拒绝；未知取值拒绝并列出 `accepted`；
+//! - `three_voice_bass_sits_in_the_low_register`：最低声部全部落在 C2–C3，声部按音区成梯次。
 
 // 本文件是 `rustc --test` 的 **crate root**, 不是库; 被包含模块的公开 API 在这里
 // 没有"外部消费者", 因此 `dead_code` 会误报。真实判定由 CI 的
@@ -324,7 +333,7 @@ fn theory_is_explicitly_opt_in_and_project_path_is_unchanged() {
             material_source: Some("project"),
             progression: Some("I-V"),
             include_drums: None,
-            include_melody: None,
+            include_melody: None, drum_density: None,
         },
     )
     .expect("显式 project");
@@ -343,7 +352,7 @@ fn theory_is_explicitly_opt_in_and_project_path_is_unchanged() {
             material_source: Some("improvisation"),
             progression: None,
             include_drums: None,
-            include_melody: None,
+            include_melody: None, drum_density: None,
         },
     )
     .expect_err("未知材料来源");
@@ -372,7 +381,7 @@ fn theory_generates_a_deterministic_skeleton_on_an_empty_pool() {
             material_source: Some("theory"),
             progression: None,
             include_drums: None,
-            include_melody: None,
+            include_melody: None, drum_density: None,
         };
         let planned =
             plan_with_options(&empty, "Chorus", style, 4, None, options).expect("理论生成");
@@ -511,7 +520,7 @@ fn theory_honours_custom_progression_and_scale() {
         material_source: Some("theory"),
         progression: Some("i-VII-VI-VII"),
         include_drums: None,
-        include_melody: None,
+        include_melody: None, drum_density: None,
     };
     let planned = plan_with_options(&empty, "Chorus", "synthwave", 4, Some("A minor"), options)
         .expect("自定义走向");
@@ -548,7 +557,7 @@ fn theory_honours_custom_progression_and_scale() {
             material_source: Some("theory"),
             progression: None,
             include_drums: None,
-            include_melody: None,
+            include_melody: None, drum_density: None,
         },
     )
     .expect("默认走向");
@@ -566,7 +575,7 @@ fn theory_honours_custom_progression_and_scale() {
             material_source: Some("theory"),
             progression: Some("not-a-degree"),
             include_drums: None,
-            include_melody: None,
+            include_melody: None, drum_density: None,
         },
     )
     .expect_err("非法走向");
@@ -592,7 +601,7 @@ fn drums_are_gm_mapped_and_route_to_master_in_a_dag() {
         material_source: Some("theory"),
         progression: None,
         include_drums: Some(true),
-        include_melody: None,
+        include_melody: None, drum_density: None,
     };
     let planned = plan_with_options(&empty, "Chorus", "synthwave", 4, None, options)
         .expect("鼓组生成");
@@ -708,7 +717,7 @@ fn melody_stays_on_the_genre_grid_and_in_range_in_a_dag() {
             material_source: Some("theory"),
             progression: None,
             include_drums: None,
-            include_melody: Some(true),
+            include_melody: Some(true), drum_density: None,
         },
     )
     .expect("旋律生成");
@@ -835,7 +844,7 @@ fn melody_stays_on_the_genre_grid_and_in_range_in_a_dag() {
             material_source: Some("theory"),
             progression: None,
             include_drums: None,
-            include_melody: Some(true),
+            include_melody: Some(true), drum_density: None,
         },
     )
     .expect("重复调用");
@@ -857,7 +866,7 @@ fn drums_and_melody_are_opt_in_and_legacy_plans_are_byte_identical() {
             material_source: Some("theory"),
             progression: None,
             include_drums: None,
-            include_melody: None,
+            include_melody: None, drum_density: None,
         },
     )
     .expect("理论生成");
@@ -873,7 +882,7 @@ fn drums_and_melody_are_opt_in_and_legacy_plans_are_byte_identical() {
                 material_source: Some("theory"),
                 progression: None,
                 include_drums: drums,
-                include_melody: melody,
+                include_melody: melody, drum_density: None,
             },
         )
         .expect("缺省/显式 false");
@@ -890,7 +899,7 @@ fn drums_and_melody_are_opt_in_and_legacy_plans_are_byte_identical() {
             material_source: Some("theory"),
             progression: None,
             include_drums: Some(true),
-            include_melody: Some(true),
+            include_melody: Some(true), drum_density: None,
         },
     )
     .expect("鼓组 + 旋律");
@@ -919,7 +928,7 @@ fn drums_and_melody_are_opt_in_and_legacy_plans_are_byte_identical() {
             material_source: None,
             progression: None,
             include_drums: Some(false),
-            include_melody: Some(false),
+            include_melody: Some(false), drum_density: None,
         },
     )
     .expect("显式 false");
@@ -943,7 +952,7 @@ fn drums_and_melody_require_the_theory_source() {
                     material_source: source,
                     progression: None,
                     include_drums: drums,
-                    include_melody: melody,
+                    include_melody: melody, drum_density: None,
                 },
             )
             .expect_err("工程材料路径不得生成鼓组/旋律");
@@ -962,4 +971,244 @@ fn drums_and_melody_require_the_theory_source() {
             assert_eq!(data["hint"], "请指定 materialSource: \"theory\"");
         }
     }
+}
+
+/// `ADR-0028` D2：显式 `"normal"` 与键缺席在鼓路径上必须**逐字节相同**。
+#[test]
+fn drum_density_normal_is_byte_identical_to_absent() {
+    let empty = empty_pool_project();
+    let absent = plan_with_options(
+        &empty,
+        "Chorus",
+        "synthwave",
+        4,
+        None,
+        PlanOptions {
+            material_source: Some("theory"),
+            progression: None,
+            include_drums: Some(true),
+            include_melody: None,
+            drum_density: None,
+        },
+    )
+    .expect("缺省鼓");
+    let explicit = plan_with_options(
+        &empty,
+        "Chorus",
+        "synthwave",
+        4,
+        None,
+        PlanOptions {
+            material_source: Some("theory"),
+            progression: None,
+            include_drums: Some(true),
+            include_melody: None,
+            drum_density: Some("normal"),
+        },
+    )
+    .expect("显式 normal");
+    assert_eq!(absent, explicit, "显式 `\"normal\"` 必须与键缺席逐字节相同");
+}
+
+/// `ADR-0028` D2：`sparse` 击点**逐击**等于 theory 鼓组型里登记为重音的子集 ——
+/// 期望值由 theory 侧独立重算（`drum_pattern` 过滤 `accent`），⛔ 不读本模块中间量；
+/// 另要求计数**严格更小**（若某流派全为重音，该判据变红并提示，而不是静默通过）。
+#[test]
+fn sparse_drums_are_exactly_the_accented_hits() {
+    use yeban_theory::genre::GenreLibrary;
+
+    let empty = empty_pool_project();
+    let normal = plan_with_options(
+        &empty,
+        "Chorus",
+        "synthwave",
+        4,
+        None,
+        PlanOptions {
+            material_source: Some("theory"),
+            progression: None,
+            include_drums: Some(true),
+            include_melody: None,
+            drum_density: None,
+        },
+    )
+    .expect("normal 鼓");
+    let sparse = plan_with_options(
+        &empty,
+        "Chorus",
+        "synthwave",
+        4,
+        None,
+        PlanOptions {
+            material_source: Some("theory"),
+            progression: None,
+            include_drums: Some(true),
+            include_melody: None,
+            drum_density: Some("sparse"),
+        },
+    )
+    .expect("sparse 鼓");
+
+    // 鼓轨/片段身份不变 —— 密度档只改音符集合。
+    assert_eq!(
+        normal.part_track_ids, sparse.part_track_ids,
+        "鼓轨身份不得随密度档改变"
+    );
+    assert_eq!(
+        normal.part_clip_ids, sparse.part_clip_ids,
+        "鼓片段身份不得随密度档改变"
+    );
+
+    let after_normal = applied(&empty, &normal);
+    let after_sparse = applied(&empty, &sparse);
+    let notes_normal = after_normal.clip_pool[&normal.part_clip_ids[3]]
+        .content
+        .notes()
+        .expect("normal 鼓片段必须是 MIDI");
+    let notes_sparse = after_sparse.clip_pool[&sparse.part_clip_ids[3]]
+        .content
+        .notes()
+        .expect("sparse 鼓片段必须是 MIDI");
+
+    let mut expected: Vec<(u64, u8, u8, u64)> = GenreLibrary::get("synthwave")
+        .expect("theory 流派")
+        .drum_pattern(4, 16)
+        .expect("鼓组型")
+        .expect("4/4 有鼓组型")
+        .hits()
+        .iter()
+        .filter(|hit| hit.accent)
+        .map(|hit| (hit.tick, hit.voice.gm_key(), 112, 120))
+        .collect();
+    expected.sort_unstable();
+    let mut actual: Vec<(u64, u8, u8, u64)> = notes_sparse
+        .values()
+        .map(|note| (note.start_tick, note.pitch, note.velocity, note.duration_ticks))
+        .collect();
+    actual.sort_unstable();
+    assert_eq!(
+        actual, expected,
+        "sparse 必须逐击等于 theory 登记的重音击点（力度 112、时值 120）"
+    );
+    assert!(
+        notes_sparse.len() < notes_normal.len(),
+        "sparse 必须真的更稀疏: {} vs {}",
+        notes_sparse.len(),
+        notes_normal.len()
+    );
+    for id in notes_sparse.keys() {
+        assert!(
+            notes_normal.contains_key(id),
+            "sparse 音符身份必须来自 normal 全集（hit_index 沿用原索引）: {id}"
+        );
+    }
+}
+
+/// `ADR-0028` D2：`drumDensity` 只有鼓轨在场时才有意义；未知取值必须列出
+/// `accepted` 清单（不静默回退 `normal`）。
+#[test]
+fn drum_density_requires_include_drums_and_rejects_unknown_values() {
+    let empty = empty_pool_project();
+    for drums in [None, Some(false)] {
+        let fault = plan_with_options(
+            &empty,
+            "Chorus",
+            "synthwave",
+            4,
+            None,
+            PlanOptions {
+                material_source: Some("theory"),
+                progression: None,
+                include_drums: drums,
+                include_melody: None,
+                drum_density: Some("sparse"),
+            },
+        )
+        .expect_err("drumDensity 不得脱离 includeDrums:true 单独给");
+        assert_eq!(fault.domain_code(), Some(BuildCode::InvalidParameterRange));
+        let BuildFault::Domain { data, .. } = fault else {
+            panic!("必须是领域失败");
+        };
+        assert_eq!(
+            data["hint"],
+            "请同时指定 includeDrums: true（鼓密度只作用于生成的鼓轨）"
+        );
+    }
+    let fault = plan_with_options(
+        &empty,
+        "Chorus",
+        "synthwave",
+        4,
+        None,
+        PlanOptions {
+            material_source: Some("theory"),
+            progression: None,
+            include_drums: Some(true),
+            include_melody: None,
+            drum_density: Some("double"),
+        },
+    )
+    .expect_err("未知密度档必须拒绝");
+    assert_eq!(fault.domain_code(), Some(BuildCode::InvalidParameterRange));
+    let BuildFault::Domain { data, .. } = fault else {
+        panic!("必须是领域失败");
+    };
+    assert_eq!(
+        data["accepted"],
+        serde_json::json!(["normal", "sparse"]),
+        "拒绝必须列出合法取值"
+    );
+    assert_eq!(data["drumDensity"], serde_json::json!("double"));
+}
+
+/// `ADR-0028` D1：3 声部理论段的最低声部必须坐在 C2–C3（单位：MIDI 音高值
+/// 36–48，实测落点 47–48），且声部按音区成梯次 —— 修正前该声部实测 67–72。
+#[test]
+fn three_voice_bass_sits_in_the_low_register() {
+    let empty = empty_pool_project();
+    let planned = plan_with_options(
+        &empty,
+        "Chorus",
+        "synthwave",
+        4,
+        None,
+        PlanOptions {
+            material_source: Some("theory"),
+            progression: None,
+            include_drums: None,
+            include_melody: None,
+            drum_density: None,
+        },
+    )
+    .expect("3 声部理论段");
+    assert_eq!(planned.part_track_ids.len(), 3);
+    let after = applied(&empty, &planned);
+    let bass = after.clip_pool[&planned.part_clip_ids[0]]
+        .content
+        .notes()
+        .expect("bass 片段必须是 MIDI");
+    assert!(!bass.is_empty(), "bass 声部必须有音符");
+    for note in bass.values() {
+        assert!(
+            (36..=48).contains(&note.pitch),
+            "bass 音高 {} 越出 C2–C3 区间",
+            note.pitch
+        );
+    }
+    let alto = after.clip_pool[&planned.part_clip_ids[1]]
+        .content
+        .notes()
+        .expect("内声部片段必须是 MIDI");
+    let high = after.clip_pool[&planned.part_clip_ids[2]]
+        .content
+        .notes()
+        .expect("高声部片段必须是 MIDI");
+    let bass_max = bass.values().map(|note| note.pitch).max().expect("非空");
+    let alto_min = alto.values().map(|note| note.pitch).min().expect("非空");
+    let alto_max = alto.values().map(|note| note.pitch).max().expect("非空");
+    let high_min = high.values().map(|note| note.pitch).min().expect("非空");
+    assert!(
+        bass_max < alto_min && alto_max < high_min,
+        "声部按音区成梯次: bass≤{bass_max} < alto {alto_min}..{alto_max} < high≥{high_min}"
+    );
 }
