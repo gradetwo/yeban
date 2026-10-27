@@ -11534,3 +11534,30 @@ $ python3 scripts/gates/check_phase_status.py   # 退出 0
     `rust (workspace 全量)` 按 `plan` 矩阵 `skipped`（⛔ 不是跳过当成绿）。
   - 防假绿核对：全 run 日志 **573 条 `test result:` / 0 条 FAILED**
     （`/tmp/g2-main-testresults.txt` 读数）。
+
+## 2026-10-27：G4 消除：`yeban_load_sfz` 样本全缺时静默（装载 success 配整轨静音）
+
+- **需求规范 ID**: `[MCP-TOOL-010]` `[ADR-0024]`
+- **实施工作线**: `line/sfz-load-loud`（提交 `2cfcbd6a`，合并 `c794c942`）
+- **背景与目标**:
+  - 审计（`/tmp/yeban-issues-20261027` G4）：载入仓库自带二胡 SFZ 返回 `success`
+    与 360 个区域，但每个 `sampleFileState` 都是 `unreadable` ⇒ 绑轨渲染出
+    RMS −144.5 dBFS 的绝对静音；"加载成功"配"整轨静音"要靠调用方自己数数组。
+- **实施**:
+  - `sfz.rs`：`SfzLoad` 新增 `samples_warning` ⇒ 回执 `data.warnings[]` 点名
+    `sfzSamplesUnreadable`（非阻塞、`allSamplesUnreadable`、≤5 条 `examples`、
+    `hint` 给出外取路径）；`warnings` 键恒在；`dryRun.preview` 同口径。
+  - 拒绝"采样器轨正弦回退"（会把缺资产伪装成低保真成品），留痕 `ADR-0024` D3。
+  - `docs/SFZ_SAMPLE_ACQUISITION.md`：git / archive 两种外取形态 + sha256 校验 +
+    "重跑装载看警告消失"完成判据。
+  - 判据：`sfz_tools.rs`（全缺 ⇒ 恰好一条警告、读数与 `sampleFilesFailedCount`
+    一致）、`sfz_sample_files.rs`（真读到 ⇒ `warnings == []`）。
+- **验证**:
+  - 线 Run `40440856611`（`2cfcbd6a`）`success`。
+  - 合并提交 `c794c942` 主干 Run `40444555050`：**`conclusion: success`**
+    （`03:30:35Z → 04:13:54Z`）；作业读数（耗时非 0）：`rust (workspace 全量)`
+    43m04s、`windows` 29m38s、`macos` 22m06s、`checks` 1m44s、`deny` 54s、
+    `lockfile` 22s —— 本 run 是**全量** workspace 判决（非 plan 跳过）。
+  - 防假绿核对：`rust (workspace 全量)` 作业日志 **404 条 `test result: ok` /
+    0 条 FAILED**（`/tmp/g4-mainlog.txt` 读数）。
+

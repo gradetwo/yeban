@@ -19,7 +19,7 @@
 | :--- | :--- | :--- | :--- |
 | **本表** `docs/ledger/phase-status.md` | **阶段项**做没做完（`ROAD-*`，47 项） | `docs/YEBAN_ENGINEERING_IMPLEMENTATION_ROADMAP.md` §3 | `scripts/gates/check_phase_status.py` |
 | `docs/ledger/gate-status.md` | **发布门禁**过没过（`MUST-GATE-001..015` / `BASELINE-001..006`，21 条） | 同一份路线图 §5 | `scripts/gates/check_gate_status.py` |
-| `docs/ledger/human-decisions.md` | **待人类裁决**（`HD-01..HD-66`） | `docs/adr/ADR-0001-*` + 负责人追认 | `scripts/gates/check_decisions.py` |
+| `docs/ledger/human-decisions.md` | **待人类裁决**（`HD-01..HD-69`） | `docs/adr/ADR-0001-*` + 负责人追认 | `scripts/gates/check_decisions.py` |
 
 引用规则（这是三张表不互相矛盾的关键）：
 
@@ -364,7 +364,7 @@
 
 ⭐ ⭐ **一、⭐ 负责人新指令（⭐ 逐字）**：⭐ ⭐ **「需要决策的，你自己择优决策，不要停下来和block」** ⇒ ⭐ ⭐ **本仓此前有十四项"⭐ 待人类裁决"**（⭐ 见 §4）+ ⭐ 我本轮又新撞出 **`Op::SetTempo` 的定位问题** ⇒ ⭐ 依此指令**我直接把可技术裁决的项裁掉**、⭐ **只把"⭐ 人类专属"（⭐ 凭据／签署／付费素材／法务）留作待裁** ✓
 
-⭐ ⭐ **二、⭐ 我自行裁决的第一条：⭐ `HD-63`（⭐ `bpm` 可运行期编辑 ⇒ 加 `Op::SetTempo`）**：⭐ **理由三条**（⭐ 逐条可复核）: ⭐ **① `bpm` 是**顶层唯一权威**、⭐ 而 `TransportConfig` **有意不含**它**（⭐ 那三个字段是会改走带/录音行为的配置）⇒ ⭐ **bpm 是独立可编辑的一等字段**；⭐ **② `project.schema.json` 早已给出合法区间 **20.0–999.0** ⇒ ⭐ 数据层早就准备好被改**；⭐ **③ 判"⭐ 有意不可改"的正解形状** = ⭐ 看有没有**明文** —— ⭐ ⭐ `schema_version` 写"⭐ 固定为 3"、⭐ `rng_seed` 写"⭐ 确定性种子" ⇒ ⭐ **那才是有意不可改**；⭐ 而 `bpm` 那处注释是"⭐ 由**模板**定型" ⇒ ⭐ ⭐ **它是**建工程时**的处置、⭐ ⛔ 不等于"⭐ 作者决定它**永不可改**"** ✓ ⇒ ⭐ **登记 `HD-63`**（⭐ 写明**责任在集成者**、⭐ 回退代价 = **删一条 `Op`**）＋ ⭐ **上界级联已同步**（⭐ 4 个活文档 ⇒ ⭐ ⚠ **该上界按 `check_decisions.py` 现读：`2026-10-16` 为 `HD-01..HD-66`**）⇒ ⭐ `check_decisions.py` ＝ **0**（⭐ **63 项／59 已裁／未决 4**）✓
+⭐ ⭐ **二、⭐ 我自行裁决的第一条：⭐ `HD-63`（⭐ `bpm` 可运行期编辑 ⇒ 加 `Op::SetTempo`）**：⭐ **理由三条**（⭐ 逐条可复核）: ⭐ **① `bpm` 是**顶层唯一权威**、⭐ 而 `TransportConfig` **有意不含**它**（⭐ 那三个字段是会改走带/录音行为的配置）⇒ ⭐ **bpm 是独立可编辑的一等字段**；⭐ **② `project.schema.json` 早已给出合法区间 **20.0–999.0** ⇒ ⭐ 数据层早就准备好被改**；⭐ **③ 判"⭐ 有意不可改"的正解形状** = ⭐ 看有没有**明文** —— ⭐ ⭐ `schema_version` 写"⭐ 固定为 3"、⭐ `rng_seed` 写"⭐ 确定性种子" ⇒ ⭐ **那才是有意不可改**；⭐ 而 `bpm` 那处注释是"⭐ 由**模板**定型" ⇒ ⭐ ⭐ **它是**建工程时**的处置、⭐ ⛔ 不等于"⭐ 作者决定它**永不可改**"** ✓ ⇒ ⭐ **登记 `HD-63`**（⭐ 写明**责任在集成者**、⭐ 回退代价 = **删一条 `Op`**）＋ ⭐ **上界级联已同步**（⭐ 4 个活文档 ⇒ ⭐ ⚠ **该上界按 `check_decisions.py` 现读：`2026-10-16` 为 `HD-01..HD-69`**）⇒ ⭐ `check_decisions.py` ＝ **0**（⭐ **63 项／59 已裁／未决 4**）✓
 
 ⭐ ⭐ **三、⭐ `ARCH-RT-005` 片 1 已并入（⭐ `a7cb400c`）**：⭐ ⭐ **`AuditionBranch` = 第二个 `SnapshotReader`** ＋ ⭐ `EngineRuntime` **加** `Option<AuditionBranch>`（⭐ `new` 里 `None`）＋ ⭐ `attach_audition_branch()` ⇒ ⭐ **`rt.rs` +153 ／ `tests/rt_zero_alloc.rs` +97 ＝ +250 行、⭐ 零删除** ✓ ⭐ ⭐ **关键设计（⭐ 我采纳它的推荐）: ⭐ `render_block` **一个字没改**** —— ⭐ **它的解构以 `..` 收尾 ⇒ ⭐ 新字段根本不被绑定 ⇒ ⭐ 渲染路径**逐字节等于旧路径****（⭐ ⭐ 这比"⭐ 加个 `if` 让它不生效"强：⭐ 前者是**结构上**不可能影响，⭐ 后者是**靠判据**证明不影响）✓
 ⭐ ⭐ **判据（⭐ 三条）**: ⭐ **㉕a** 挂上第二份版本后输出**逐字节不变** ＋ ⭐ **㉕b** 在册见证"⭐ 第二读者持有的是**第二份**快照（⭐ 修订号对得上）" ＋ ⭐ **㉕** `[MUST-GATE-001]` 已挂第二份版本时 2000 量子：**四元组全 0** ✓ ⭐ ⚠ **一处口径（⭐ 它如实报的）**: ⭐ 该测试目标是 **`harness = false`**（⭐ 自带 `main() -> ExitCode`）⇒ ⭐ **⛔ 不产生 `test result:` 行** ⇒ ⭐ **等价读数是** `[MUST-GATE-001] 判据汇总: 60 / 60 通过` ＋ ⭐ `RUN_EXIT=0` ⇒ ⭐ ⭐ **故"⭐ 数 `test result:` 行数"这条老口径**对这类目标不适用****、⭐ 要认它自己的汇总行 ✓ ⭐ ⭐ **且零分配是**测出来的****: ⭐ `alloc=0 dealloc=0` ＋ ⭐ **探针 `2000/2000`**（⭐ 证明那 2000 个量子**真的走了 RT 路径**、⭐ ⛔ 不是"⭐ 窗口里什么都没跑"的假绿）✓
@@ -10988,7 +10988,7 @@ error: could not compile `yeban-app` (test "production_save_ui") due to 1 previo
 | :--- | :--- |
 | ⭐ 新 ADR | ⭐ **`docs/adr/ADR-0009-road-m1-005-historical-migration-scope.md`**（状态 **`Proposed`**，⭐ 三问 D1／D2／D3 各给选项与建议） |
 | ⭐ 登记待裁 | ⭐ **`HD-64`**（⭐ 未决）⇒ ⭐ `human-decisions.md` 表头 ⇒ **64 项中 60 项已裁决、未决 4 项**（⭐ `HD-48`／`HD-52`／`HD-58`／`HD-64`） |
-| ⭐ 上界级联 | ⭐ **4 处活文档** ⇒ `HD-01..HD-66`（⭐ `docs/README.md`／`feature-alignment.md`／`phase-status.md` 两处）⇒ ⭐ `check_decisions.py` ＝ **0** |
+| ⭐ 上界级联 | ⭐ **4 处活文档** ⇒ `HD-01..HD-69`（⭐ `docs/README.md`／`feature-alignment.md`／`phase-status.md` 两处）⇒ ⭐ `check_decisions.py` ＝ **0** |
 | ⭐ 交接 §6 | ⭐ ⭐ **五件 ⇒ 六件**（⭐ 新增 `M1` 行；⭐ `check_handover_consistency.py` ＝ **0**） |
 | ⭐ 阶段表那一行 | ⭐ `ROAD-M1-005` **仍记 `PENDING`**，⭐ 但证据列写明"⭐ **等 `HD-64` 裁决**、⭐ ⛔ 不代表本轮要做"（⭐ 状态词受 `check_phase_status.py` 的三值词汇约束 ⇒ ⛔ 不能写"有意不做"） |
 
