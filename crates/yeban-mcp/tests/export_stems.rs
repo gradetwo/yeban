@@ -534,8 +534,8 @@ fn dry_run_previews_measured_bytes_without_writing_any_file() {
     for row in rows {
         let path = out_dir.join(row["fileName"].as_str().expect("fileName"));
         assert_eq!(
-            Some(file_sha256(&path)),
-            row["sha256"].as_str(),
+            file_sha256(&path),
+            row["sha256"].as_str().expect("sha256"),
             "预览的 sha256 必须就是真落盘的那份字节: {}",
             path.display()
         );
