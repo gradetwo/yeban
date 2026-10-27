@@ -192,7 +192,7 @@ CARGO_HOME=/Users/crow/work/music/.cargo-home RUSTUP_TOOLCHAIN=stable \
 | `G6` 生成即增益分级 | 消除 | `ADR-0026`；「G6 消除」条 |
 | `G7` 同批建节点+连边被批前预检误拒 | 消除 | `ADR-0025`；「G7 消除」条 |
 | `G8` 生成控制粒度 | **半消除** | `G8a`（音域 + `drumDensity`）已落，`ADR-0028`；`G8b` 逐声部节奏粒度 `pending`（网格常量钉死在 `section_build.rs:213`） |
-| `G9` 单轨贡献读数 / 分轨导出 | **半消除** | `G9a`（`contributions`）已落，`ADR-0020`；`G9b`（`yeban_export_stems`）`pending`：`line/stem-export` 最新 Run `40480780925` 尚未读回 |
+| `G9` 单轨贡献读数 / 分轨导出 | 消除 | `G9a`（`contributions`）已落，`ADR-0020`；`G9b`（`yeban_export_stems`，第 **25** 台工具）已落，`ADR-0030`；线 Run `40488580940`（tip `77ac65ec`）success（`rust (yeban-mcp)` 3070s ⇒ **91 条 `test result:` / 2170 passed / 0 failed**；`windows` 1276s ⇒ 245 / 4843 / 0；`macos` 1486s），主干合并 `f28dd13d` Run `40496066367` 待读回。留痕见本文件「G9b 消除」条 |
 | `G10` stdio 形态无引擎 ⇒ 场景启动不可用 | **待人类裁决** | `HD-69`（形态 B 是否托管 `yeban-engine`） |
 | `G11` `midi-input` 不进 release 默认特性 | **待人类裁决** | `HD-68`（红线 6 的另一面，⛔ 集成者不擅开特性） |
 | `G12` `record_wav` 语义 | **半消除** | 回执显式指路（`notProjectBounce` + `alternatives`）已落；「接工程源」那半登记为 `HD-70`（本轮补登，见下） |
@@ -11973,3 +11973,75 @@ $ python3 scripts/gates/check_phase_status.py   # 退出 0
   `DeviceDefinition` 一次性给全；改旋钮**曲线**只有 `yeban_edit_automation` 的 `DeviceParam`
   目标）。于是"拧一下某个已插入设备的数值"Today 的做法是 `removeDevice` + `insertDevice`
   同批重放。这不是本票引入的，也不由本票修改 ⇒ 作为 `pending` 候选切片登记。
+
+---
+
+## 2026-10-27：G9b 消除：`yeban_export_stems` —— 一次调用把每条轨弹成一个 32-bit Float 分轨（`ADR-0030`）
+
+- **缺口形状（GAPS `G9b`，现读 `/tmp/yeban-issues-20261027/GAPS.md`）**: 工具面只有**母带**
+  （`yeban_render_master` 出单文件），"每条轨一个 WAV"必须由调用方自己跑
+  `N × (克隆工程 → 只留一条轨 → 渲染 → 换文件名)`。
+- **交付**: 扩展工具 **`yeban_export_stems`**（第 **25** 台：`tools.rs:99` `TOOL_COUNT = 25`
+  ＝ `:102` `DOCUMENTED_TOOL_COUNT = 10` ＋ `:109` `EXTENSION_TOOL_COUNT = 15`，⚠ 三个数**现读**，
+  ⛔ 不抄 `AGENTS.md` 里的历史值 —— 本轮顺手把 §4.2 那句 24/14 改成 25/15）。
+  生产码新增 `crates/yeban-mcp/src/domain/stems.rs`（批次计划 `StemBatch` / 行 `StemRow` /
+  跳过行 `SkippedTrack` / 文件名清洗 `stem_file_name`），渲染仍走既有 `render::build`
+  的克隆-改-重渲染（`ADR-0030` **D3**，⛔ 不另起第二台渲染器），公共帧数由一次**基线渲染**
+  决定 ⇒ 成本读数如实报 `renders == N + 1`（**D3a**/`D6`）。
+- **七条口径**（`ADR-0030` D1..D7，全部 Accepted 依 2026-10-25 人类常设授权）: 不重载
+  `render_master`（D1）／分轨 **32-bit Float** 而母带口径不变（D2）／复用既有渲染器（D3＋D3a）／
+  `mute`/`solo` **不参与**分轨选取但**如实回报** `auditionStateIgnored`（D4）／
+  部分成功是**一等状态**（`completedStems` / `failedTrackId` / `orphanedFiles`，D5）／
+  `stemsBasis` 与 `contributionsBasis` 同口径（D6）／文件名确定性清洗 ＋ 撞车整批拒绝（D7）。
+- **判据**: `crates/yeban-mcp/tests/export_stems.rs` **9 条**端到端（地图在文件头），
+  加 `stems.rs` 内的单元测试（D7 的文件名形状、`SkippedTrack` 三键黄金表）。
+  其中两条的形状是**读 CI 才搞对**的（见下教训 2）。
+- **判决链（`gh run list --branch line/stem-export` 现读，七个代码推送）**:
+
+  | 提交 | Run | 判决 | 该次修法（提交信息原话） |
+  | :--- | :--- | :--- | :--- |
+  | `02a367a8` | `40476553476` | failure | 起交付 |
+  | `1f52b80b` | `40477284205` | failure | `StemRow`/`StemBatch` 去掉 `Clone` —— `RenderArtifact` 不 `Clone` |
+  | `5479200f` | `40479799786` | failure | 清掉 clippy 三条 `-D warnings` 红点（dead code / needless `as_bytes` / 多余 `must_use`） |
+  | `68f7ea2e` | `40480780925` | cancelled（被下一次推送顶掉） | 预览哈希判据按 `String`/`&str` 同型比较 |
+  | `97f5e8a4` | `40485603721` | cancelled（同上） | 按 `ADR-0030` D7 **实测值**订正 4 条文件名/键序判据 |
+  | `350da3b5` | `40487059733` | **failure** | 判据 6/7 按实测两层落点改写（`dryRun` 信封 `data.preview`、缺必填走协议层 `-32602`） |
+  | `77ac65ec` | `40488580940` | **success** | 按 CI 实测值补钉 `reason` 面冻结摘要与站点普查 |
+
+  末条的防假绿核对：`rust (yeban-mcp)` **3070s**（⛔ 不是 0s）⇒ 日志 **91 条 `test result:` /
+  合计 2170 passed / 0 failed**、`grep -ac "test result: FAILED"` ＝ **0**，且这次**跑到了**
+  前几轮因 cargo fail-fast 从未被执行的 `props_176` / `render_master` / `tools_e2e`
+  三个 target（`/tmp/stem-green.log` 读数）；`windows` 1276s ⇒ 245 条 / 4843 passed / 0 failed；
+  `macos` 1486s、`rust (yeban-ui-mcp)` 170s。`rust (workspace 全量)` 按 `plan` 矩阵
+  `skipped`（⛔ 不计入绿）。
+- **落地**: 合并提交 `f28dd13d`（`--no-ff`，保留线史）。⚠ 合并时 `docs/README.md` **一处冲突**：
+  线侧把功能行数写成 **79**、主干侧把 `HD` 上界写成 **HD-70**（两边各改了相邻两行）⇒
+  两个数字都由自己的守卫脚本现读后再取（`check_feature_alignment.py` ＝ 79 行 / 25 个 MCP 工具，
+  `check_decisions.py` ＝ 70 项 / 未决 9），⛔ 不是"挑一边"。主干 Run `40496066367`
+  （tip `f28dd13d`）**待读回**；读到前主干判决按纪律记 `pending`。
+- ⚠ 同分支上 `a4281a1f` / `70d63d70` 两条纯 `docs/adr` 提交的 success（`40465639551` /
+  `40466405431`）是**空绿**（rust 腿按 `plan` 矩阵跳过）；主干 `b5d19ae3`（纯台账）
+  Run `40490914512` 同理 —— 三条都只验证"文档没弄坏守卫与 schema"，对代码不构成判决。
+
+### 由这两条真实红换来的规则（本轮新增）
+
+1. **规模读数与冻结摘要必须同批换，而"同批"由 CI 保证、不由注释保证。**
+   `02a367a8` 把 `REASON_SURFACE_REASONS` / `REASON_SURFACE_LINES` 升到 166/750，并在文件头的
+   沿革里**写明**"新摘要照抄判据自己的报出值、与 `FROZEN_REASON_SURFACE_SHA256` 同一次提交换掉" ——
+   然后**只改了那两个计数**，摘要与站点普查三条（221/224/213）留在 `[G18]` 那一位。
+   `Run 40487059733` 因此三条判据全红。⚠ 最坏的地方在于**文档读起来像已做完**：
+   一句"应当同批换"不能代替被换的那个常量本身。⇒ 新口径：**动了冻结面就当场把
+   摘要 ＋ 三条普查读数一起改，并让 CI 的 `left:` 说话**（本次 `2df60826…` 与键站点 **223**
+   就是照抄该 run 的 `left:`；字面站点 **215** 由恒等式 `223 = 215 ＋ 2 ＋ 6` 收敛，
+   `2`/`6` 各由自己的断言钉住 —— ⛔ 手点数出来的不算读数）。
+2. **判据的"落点"要按实测的两层结构写，不按想象写。** `export_stems` 判据 6/7 第一次红是因为
+   我把 `dryRun` 的预览当"响应顶层就是 preview"、把"缺必填"当 in-band 的
+   `INVALID_PARAMETER_RANGE`。实测口径（`dispatch.rs:365` → `dry_run_result` `:431`）：
+   `dryRun` 信封在 `data` 上给 `dryRun`/`tool`/`specId`/`sideEffect`/`wouldChangeState`/
+   `requiredScope`/`arguments`/`stateUnchanged` ＋ **`preview`**（工具自己算出的预览），
+   分轨的 `stems`/`skippedTracks`/`stemsBasis` 全在 `data.preview` 里；而 **`required` 缺参**
+   由 schema 校验层在领域之前拒 ⇒ JSON-RPC **`-32602`**（`data.detail` 点名参数），
+   "参数在但语义越界"才是 in-band `INVALID_PARAMETER_RANGE`。同仓先例：
+   `tests/effect_contract.rs:484-513`（判据 ⑤）与 `tests/render_master.rs:1986` 的注释。
+   ⇒ 协议层拒绝也要断言，因此判据用了**不拆包**的 `call_raw`（`export_stems.rs`），
+   ⛔ 用 `call` 会把 `-32602` 直接 panic 掉、看不见形状。
