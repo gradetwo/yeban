@@ -11712,3 +11712,40 @@ $ python3 scripts/gates/check_phase_status.py   # 退出 0
     合计 2126 passed / 0 failed**（`/tmp/yeban-g12-mcp.log` 读数）。
 - **仍待裁（`HD-69`）**：`record_wav` 是否接工程源（改语义 = 改契约），人类裁决前
   本片口径即为终态：工具**不**产工程混音，且回执自证。
+
+## 2026-10-27：G15 消除：`query_project` 增加 `sections.timeline` 派生视图（时间序段落读数）
+
+- **需求规范 ID**: `[MCP-TOOL-001]` `[MODEL-AST-005]` `[ARCH-DET-001]` `[G15]`
+- **实施工作线**: `line/sections-timeline`（`fdb020b0` → `346bd9ae` → `351ae26d`，合并 `3f908dbb`）
+- **背景与目标**:
+  - 审计（G15）：`sections` 的原始键序是**身份序**（ULID 插入序），⛔ 不是时间序 ⇒
+    想知道"第 8 小节的段落是哪个"必须自己按 `start_tick` 重排；`WALL ④` 也登记过
+    "按名字/按 tick 区间找段落没有查询入口"。本片给**派生视图**，不改原始形状。
+- **实施**（`domain/view.rs` +38 行）：
+  - `SELECTORS` 28 项新增 `"sections.timeline"`；输出走**独立顶层键**
+    `sectionsTimeline`（按 `(start_tick, id)` 升序），`sections` 原始键序**逐字节不变**
+    （⛔ 不为了便利改既有口径）。
+  - 该臂必须排在通用下钻臂**之前**（否则静默产出空对象）。
+  - 选择器**同时**输出根键 `sections`，且其值与单独选择 `sections` 时逐字节同形
+    —— 这是 `346bd9ae` 补的：单元判据 `every_selector_resolves_against_a_filled_project`
+    要求"每个选择器都取得到根键"，白名单与数据模型不许漂移。
+  - 判据：新文件 `tests/sections_timeline.rs`（+134 行，含升序断言与身份序对照）。
+- **验证（三次线 run，两次红灯都是真缺陷）**:
+  - 线 Run `40453970637`（`fdb020b0`）：**failure** —— 抓到"选择器取不到根键"的
+    白名单/数据模型漂移（不是抖动、不是夹具运气）。
+  - 线 Run `40455433840`（`346bd9ae`）：**failure** —— 夹具段名 `Intro` 与
+    `filled_project` 自带段**同名不同条**，单条名字比较误报；自带段的身份序与
+    tick 序恰好同向 ⇒ 翻转只在**整条序列层面**必然成立（判据据此改写到序列层面）。
+  - 线 Run `40457388314`（`351ae26d`，tip）：**`conclusion: success`**；
+    按 L32「一次推送 = 一批改动，tip run 的判决即整批的判决」，落地依据为该 tip run
+    （`rust (yeban-mcp)` **87 套件 / 2128 passed / 0 failed**，先前读回）。
+  - 合并提交 `3f908dbb` 主干 Run `40462525280`：**`conclusion: success`**
+    （作业窗口 `06:40:45Z → 07:16:02Z`）；作业读数（耗时非 0）：
+    `rust (yeban-mcp)` 11m58s、`rust (yeban-ui-mcp)` 2m55s、`windows` 34m53s、
+    `macos` 26m11s、`checks` 1m31s、`deny` 44s、`lockfile` 21s、`plan` 11s；
+    `rust (workspace 全量)` 按 `plan` 矩阵 `skipped`（⛔ 不是跳过当成绿）。
+  - 防假绿核对：主干 run 的 `rust (yeban-mcp)` 作业日志 **87 条 `test result:` /
+    合计 2132 passed / 0 failed**（`/tmp/yeban-g15-mcp.log` 读数）。
+- **G14 剩余**：设备 CRUD 糖（`knownParams` camelCase 枚举在
+  `unrecognisedEffectParam` 预警里）仍 `pending`，因 `domain/mod.rs` / `tools.rs`
+  写者由 G13 线持有，排在 G13 落地之后。
