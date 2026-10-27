@@ -5,6 +5,7 @@
 //! | a | 数组逐条等于**独立重算**的 `(start_tick, name)` 升序表；且身份序 ≠ 时间序（排序**有 observable 差**，删掉 sort 必红） | `sections_timeline_is_sorted_by_start_tick_not_by_identity` |
 //! | b | `sections` 原始形状**不变**（派生视图走独立键 `sectionsTimeline`） | 同上（`assert_ne` 那条 + 形状断言） |
 //! | c | 同一工程两次调用逐字节相同（确定性） | `the_timeline_view_is_deterministic` |
+//! | d | 只选 `sections.timeline` 时根键 `sections` 也在，且与单独选 `sections` **逐字节同形**（单元判据"每个选择器都取得到根键"的正向钉） | `the_root_projection_equals_the_plain_selector` |
 
 use serde_json::Value;
 use yeban_mcp::domain::view::project_view;
@@ -88,4 +89,29 @@ fn the_timeline_view_is_deterministic() {
     let first = project_view(&project, &fields).expect("第一次视图");
     let second = project_view(&project, &fields).expect("第二次视图");
     assert_eq!(first, second, "同一工程两次查询必须逐字节相同");
+}
+
+/// ⭐ CI Run 40453970637 的真实失败（`view.rs:368` 单元判据
+/// `every_selector_resolves_against_a_filled_project`）正向钉住：
+/// 下钻选择器的**根键**必须在输出里取得到，且形状与单独选择该根**逐字节同形**。
+/// 派生视图只许**额外**多出一个 `sectionsTimeline` 键，⛔ 不许拿掉或改写根键。
+#[test]
+fn the_root_projection_equals_the_plain_selector() {
+    let project = fixture_project();
+    let drilled = project_view(&project, &["sections.timeline".to_owned()]).expect("下钻视图");
+    let plain = project_view(&project, &["sections".to_owned()]).expect("整份视图");
+    assert!(
+        drilled.get("sections").is_some(),
+        "下钻选择器 `sections.timeline` 的输出必须带根键 `sections` \
+         (否则白名单与数据模型漂移, 单元判据会红)"
+    );
+    assert_eq!(
+        drilled["sections"], plain["sections"],
+        "`sections.timeline` 附带的 `sections` 投影必须与单独选 `sections` 逐字节同形"
+    );
+    // 派生键确实**额外**存在（不是靠改写根键把时间轴塞进去）。
+    assert!(
+        plain.get("sectionsTimeline").is_none(),
+        "单独选 `sections` 不得冒出 `sectionsTimeline`（派生视图是下钻专属）"
+    );
 }

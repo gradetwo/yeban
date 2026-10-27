@@ -29,9 +29,10 @@ use crate::tools::ErrorCode;
 /// - **一层下钻**（`tracks.id`）：根是"实体集合对象"时，按 BTreeMap 键序展开成
 ///   `{id: {leaf: value}}`；根是普通对象（如 `routing_graph`）时，直接取 `leaf`。
 ///
-/// ⭐ [G15] 例外：`sections.timeline` 是**派生视图** —— 输出走独立顶层键
-/// `sectionsTimeline`（按 `(start_tick, id)` 升序的段落数组）。`sections` 的
-/// 原始键序是**身份序**（ULID 插入序，⛔ 不是时间序），调用方本来必须自己重排。
+/// ⭐ [G15] 例外：`sections.timeline` 是**派生视图** —— 除了根键 `sections`
+/// （其值与单独选择 `sections` 逐字节同形，满足"每个选择器都取得到根键"的单元判据），
+/// 还输出一个独立顶层键 `sectionsTimeline`（按 `(start_tick, id)` 升序的段落数组）。
+/// `sections` 的原始键序是**身份序**（ULID 插入序，⛔ 不是时间序），调用方本来必须自己重排。
 pub const SELECTORS: [&str; 28] = [
     "id",
     "title",
@@ -244,7 +245,14 @@ pub fn project_view(project: &YebanProjectV1, fields: &[String]) -> Result<Value
             }
             // ⭐ [G15] 派生视图：段落按时间轴升序（走独立输出键，⛔ 不改 `sections`
             // 原始形状）。必须排在通用下钻臂**之前** —— 否则这里会静默产出空对象。
+            // ⚠ 根键 `sections` 必须**同时**出现（取不到根键 = 白名单与数据模型漂移，
+            // 单元判据 `every_selector_resolves_against_a_filled_project` 钉住这件事）；
+            // 其值与单独选择 `sections` 时**逐字节同形**（同一份序列化投影的克隆）。
             Some(("sections", "timeline")) => {
+                out.insert(
+                    "sections".to_owned(),
+                    object.get("sections").cloned().unwrap_or(Value::Null),
+                );
                 let mut timeline: Vec<Value> = Vec::with_capacity(project.sections.len());
                 for section in project.sections.values() {
                     timeline.push(serde_json::to_value(section).map_err(|error| {
