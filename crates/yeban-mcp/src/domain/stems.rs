@@ -707,24 +707,31 @@ pub fn stem_file_name(index: usize, track_count: usize, name: &str) -> String {
 mod tests {
     use super::*;
 
+    /// 清洗规则的唯一权威是 **ADR-0030 D7**：保留 `[0-9A-Za-z._-]`、其余逐个 `_`、
+    /// 首尾的 `.`/`_` 剥掉、空结果回退 `track`。下面的期望值全部按这条规则实测得出。
     #[test]
     fn file_name_keeps_only_the_safe_charset_and_pads_the_index() {
-        assert_eq!(stem_file_name(1, 3, "Lead Vox 主唱"), "0001.Lead_Vox__.wav");
+        // 空格与两个汉字各换成一个 `_`，尾部的 `__` 属于首尾剥离范围 ⇒ 全消。
+        assert_eq!(stem_file_name(1, 3, "Lead Vox 主唱"), "0001.Lead_Vox.wav");
         assert_eq!(stem_file_name(42, 99, "drum-kit.2"), "0042.drum-kit.2.wav");
     }
 
     #[test]
     fn path_separators_and_dot_only_names_fall_back_to_track() {
-        // `/` 先换成 `_` ⇒ `..` 只剩点号，再被首尾剥掉 ⇒ 确定回退，不产生目录穿越。
+        // 纯点号：整个被首尾剥离吃掉 ⇒ 空结果 ⇒ 确定回退。
         assert_eq!(stem_file_name(1, 3, ".."), "0001.track.wav");
-        assert_eq!(stem_file_name(1, 3, "a/../../b"), "0001.a______b.wav");
+        // `/` 换成 `_` 后名字里**不再有分隔符**，中段的 `..` 因此只是普通字符，
+        // 既不构成目录穿越也无需改写（`.` 在保留集内）。
+        assert_eq!(stem_file_name(1, 3, "a/../../b"), "0001.a_.._.._b.wav");
         assert_eq!(stem_file_name(1, 3, "   "), "0001.track.wav");
     }
 
     #[test]
     fn index_width_grows_with_the_project_track_count() {
-        assert_eq!(stem_file_name(1_234, 9_999, "a"), "01234.a.wav");
-        assert_eq!(stem_file_name(1_234, 999_999, "a"), "0001234.a.wav");
+        // 下限 [`STEM_INDEX_MIN_WIDTH`] = 4；总轨数的十进制位数更宽时按位数加宽。
+        assert_eq!(stem_file_name(7, 3, "a"), "0007.a.wav");
+        assert_eq!(stem_file_name(7, 99_999, "a"), "00007.a.wav");
+        assert_eq!(stem_file_name(7, 999_999, "a"), "000007.a.wav");
     }
 
     /// 两条豁免的 `reason` 必须是**字面量**站点（`crates/yeban-mcp/tests/fault_vocabulary.rs`
@@ -744,10 +751,13 @@ mod tests {
             }
             .to_value();
             assert_eq!(row["reason"], json!(label));
+            // 键**集合**必须就是黄金表登记的那三个。顺序上 `serde_json::Map` 默认由
+            // `BTreeMap` 承载（本仓库不开 `preserve_order`），实测序即字典序 ——
+            // 这与 `json!` 里的书写顺序无关，且同样是**确定**的。
             assert_eq!(
                 row.as_object().expect("对象").keys().collect::<Vec<_>>(),
-                vec!["trackId", "name", "reason"],
-                "同级键集合与顺序必须和黄金表一致"
+                vec!["name", "reason", "trackId"],
+                "同级键集合必须和黄金表一致（字典序 = BTreeMap 承载）"
             );
         }
     }
