@@ -387,6 +387,8 @@ fn the_load_response_reports_the_file_it_really_read() {
         "相对 SFZ 目录解析后的路径/帧数/采样率必须如实: {source}"
     );
     assert_eq!(data["sampleFramesLoaded"], 4_800, "累计解码帧数必须如实");
+    // ⭐ G4 的另一半：真读到 ⇒ `warnings` 是**空数组**（键恒在，⛔ 没问题不许假报警）。
+    assert_eq!(data["warnings"], serde_json::json!([]), "{data}");
 }
 
 #[test]

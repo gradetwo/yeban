@@ -685,6 +685,43 @@ impl SfzLoad {
         include_issues_value(&self.include_issues)
     }
 
+    /// ⭐ G4（`[MCP-TOOL-EXT-SFZ-LOAD]`）：样本读不到时的**非阻塞警告**。
+    ///
+    /// `loaded: true` 说的是"SFZ 文本解析成功、registry 注册成功"，**不**蕴含
+    /// "有声音"：仓库采样是登记式（`assets/samples/manifest.json` 的 `policy`，
+    /// 9.371 GiB 不随包分发），按 `instruments[].repo` + `pin` 外取后才会读到文件。
+    /// 一个样本文件都读不到时，`status` 仍是 `success` —— 若没有这条警告，
+    /// 调用方就只能从 `sampleFailures` 数组里自己数出"整轨绝对静音"。
+    /// 因此口径与 `domain/render.rs` 的 `silent_sources_warning` 同型：
+    /// 点名数量、给例子、说清后果（采样器轨**没有**正弦回退，见模块头第 1 条 ⚠）、
+    /// ⛔ 不自动修、⛔ 不阻断。
+    #[must_use]
+    pub fn samples_warning(&self) -> Option<serde_json::Value> {
+        if self.sample_failures.is_empty() {
+            return None;
+        }
+        let all_unreadable = self.sample_sources.is_empty();
+        Some(serde_json::json!({
+            "code": "sfzSamplesUnreadable",
+            "severity": "warning",
+            "blocking": false,
+            "count": self.sample_failures.len(),
+            "allSamplesUnreadable": all_unreadable,
+            "examples": self.sample_failures.iter().take(5).cloned().collect::<Vec<_>>(),
+            "hint": format!(
+                "SFZ 定义解析并注册成功（`loaded:true` 说的只是这件事），但 {} 个样本文件读不到{}\
+                 。把这件乐器绑到采样器轨（`setTrackSampler`）后 `yeban_render_master` 会**整轨数字静音**\
+                 —— 采样器路径没有正弦回退（`yeban_render_sfz_wav` 的回退只覆盖那条导出路径）。\
+                 官方仓库按登记式策略**不随包分发**采样字节：请照 `assets/samples/manifest.json` 里\
+                 `instruments[].repo` + `pin`（或 `archive.url`）自行拉取，并按每条 `sha256` 校验后\
+                 放到 SFZ `sample=` 相对路径解析得到的位置。\
+                 ⛔ 本工具不下载、不代生成采样，音频一个字节都没造。",
+                self.sample_failures.len(),
+                if all_unreadable { "（全部 —— 绑轨渲染即绝对静音）" } else { "" },
+            ),
+        }))
+    }
+
     /// 真调用响应的 `data`。
     #[must_use]
     pub fn response_data(&self) -> serde_json::Value {
@@ -708,6 +745,7 @@ impl SfzLoad {
             "sampleReadsTruncated": self.sample_reads_truncated,
             "sampleFramesLoaded": self.sample_frames_loaded,
             "sampleHz": self.sample_hz,
+            "warnings": self.samples_warning().into_iter().collect::<Vec<_>>(),
             "sessionScoped": true,
             "contentAddressed": true,
             "reused": self.reused,
@@ -734,6 +772,7 @@ impl SfzLoad {
             "sampleFailures": self.sample_failures,
             "sampleReadsTruncated": self.sample_reads_truncated,
             "sampleFramesLoaded": self.sample_frames_loaded,
+            "warnings": self.samples_warning().into_iter().collect::<Vec<_>>(),
             "wouldRegister": {
                 "instrumentId": self.id,
                 "sessionScoped": true,

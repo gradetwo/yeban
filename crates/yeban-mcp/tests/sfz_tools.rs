@@ -240,6 +240,30 @@ fn render_sfz_wav_writes_a_non_silent_wav_through_a_real_mcp_call() {
             .starts_with("unreadable("),
         "失败项必须点名路径与原因: {data}"
     );
+    // ⭐ G4：样本**全部**读不到 ⇒ `data.warnings[]` 必须点名 `sfzSamplesUnreadable`
+    // —— "文本解析成功"不许被读成"有声音"（采样器轨没有正弦回退，绑轨即整轨静音）。
+    let warnings = data["warnings"].as_array().expect("warnings 数组");
+    assert_eq!(warnings.len(), 1, "全部缺样本 ⇒ 恰好一条警告: {data}");
+    assert_eq!(warnings[0]["code"], "sfzSamplesUnreadable");
+    assert_eq!(warnings[0]["severity"], "warning");
+    assert_eq!(warnings[0]["blocking"], false, "装载本身不失败, 只点名");
+    assert_eq!(warnings[0]["allSamplesUnreadable"], true);
+    assert_eq!(
+        warnings[0]["count"].as_u64(),
+        data["sampleFilesFailedCount"].as_u64(),
+        "警告计数与 `sampleFilesFailedCount` 必须是同一读数"
+    );
+    assert!(
+        warnings[0]["examples"].as_array().expect("examples").len() <= 5,
+        "例子最多 5 条: {data}"
+    );
+    assert!(
+        warnings[0]["hint"]
+            .as_str()
+            .expect("hint")
+            .contains("assets/samples/manifest.json"),
+        "hint 必须点名登记式外取的清单位置: {data}"
+    );
     assert_eq!(data["sessionScoped"], true);
     let instrument_id = data["instrumentId"].as_u64().expect("instrumentId 是整数");
     assert!(instrument_id >= 1);
