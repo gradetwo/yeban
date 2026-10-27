@@ -799,6 +799,9 @@ mod tests {
     fn the_validator_actually_rejects_broken_responses() {
         let schema = undo();
         let good = json!({
+            // ⭐ `ADR-0032`：`commitModel` 进了 required ⇒ 手写夹具必须带上，
+            // 且取值与 `undo` 的真实自述一致（`direct`）。
+            "commitModel": "direct",
             "undone": true,
             "requestedSteps": 1,
             "steps": 1,
@@ -841,6 +844,7 @@ mod tests {
         //    `yeban_query_engine_state.sends` 只在点名音轨时出现 ⇒ 不在 required 里。
         let engine_schema = query_engine_state();
         let without_sends = json!({
+            "commitModel": "none",
             "session": {},
             "engine": {},
             "track": null,

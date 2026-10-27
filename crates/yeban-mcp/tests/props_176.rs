@@ -530,6 +530,9 @@ fn five_main_tools_publish_an_output_schema_their_real_responses_satisfy() {
 fn the_validator_can_go_red_and_the_schema_is_not_idealised() {
     let schema = output_schema::for_tool("yeban_undo").expect("schema");
     let good = json!({
+        // ⭐ `ADR-0032`：`commitModel` 进了 required ⇒ 手写夹具必须带上它，
+        // 且取值与 `undo` 的真实自述一致（`direct`）。
+        "commitModel": "direct",
         "undone": true,
         "requestedSteps": 1,
         "steps": 1,
@@ -568,6 +571,7 @@ fn the_validator_can_go_red_and_the_schema_is_not_idealised() {
     //    因此它**不在** required 里）—— `validate` 放行，`validate_complete` 必须红。
     let engine_schema = output_schema::for_tool("yeban_query_engine_state").expect("schema");
     let without_sends = json!({
+        "commitModel": "none",
         "session": {},
         "engine": {},
         "track": null,
