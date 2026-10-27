@@ -11,11 +11,13 @@
 //! | d | `dryRun` 一位都不改（不落盘）且与真做同一批字节 | `dry_run_writes_nothing_and_matches_the_real_call` |
 //! | e | 交付形态：24-bit / 声道数 / 采样率与请求一致，`source` 如实说"内存正弦" | `a_real_mcp_call_writes_a_readable_non_silent_take` |
 //! | f | 失败不留半成品（撞工程文件 / 撞锁文件） | `a_rejected_recording_leaves_no_file_behind` |
+//! | g | [G12] 真做与预览都**明说**"样本不是工程音频"并指路 `yeban_render_master` | `the_take_is_signposted_as_not_the_project_audio` |
 //!
 //! ## 口径（如实标注）
 //!
 //! - 样本来源是**内存测试音**（440 Hz 正弦）⇒ `source` / `deviceStream` 必须如实说明，
-//!   ⛔ 不假装碰了声卡。
+//!   ⛔ 不假装碰了声卡；[G12] 且恒带 `notProjectBounce: true` 与
+//!   `alternatives.projectBounce`（接工程源是待裁项 HD-69，不在本切片擅自接线）。
 //! - `dropped` 是**帧**级（引擎的 `dropped_frames()` 是**样本**级；见
 //!   `domain/record_wav.rs` 的模块文档 ②）。
 
@@ -350,6 +352,55 @@ fn dry_run_writes_nothing_and_matches_the_real_call() {
         dry_sha,
         "同一请求的 dryRun 与真做必须是同一批字节（无 bext/时间戳）"
     );
+}
+
+/// [G12] "record" 这个名字容易让人以为在录工程 ⇒ 真做响应与 `dryRun` 预览都必须
+/// **显式**说清"样本不是工程音频"（`notProjectBounce: true`），并给出工程 bounce
+/// 的替代路径（`alternatives.projectBounce.tool == "yeban_render_master"`）。
+#[test]
+fn the_take_is_signposted_as_not_the_project_audio() {
+    let scratch = Scratch::new("signpost");
+    let mut dispatcher = dispatcher_with_project();
+    let real = call_tool(
+        &mut dispatcher,
+        "yeban_record_wav",
+        serde_json::json!({
+            "path": scratch.join("sign.wav").display().to_string(),
+            "seconds": 0.05,
+        }),
+    );
+    assert_eq!(real["status"], "success", "{real}");
+    let dry = call_tool(
+        &mut dispatcher,
+        "yeban_record_wav",
+        serde_json::json!({
+            "path": scratch.join("sign-dry.wav").display().to_string(),
+            "seconds": 0.05,
+            "dryRun": true,
+        }),
+    );
+    assert_eq!(dry["status"], "success", "{dry}");
+    for (label, data) in [
+        ("真做响应", &real["data"]),
+        ("dryRun 预览", &dry["data"]["preview"]),
+    ] {
+        assert_eq!(
+            data["notProjectBounce"],
+            serde_json::json!(true),
+            "[{label}] 必须明说样本不是工程音频: {data}"
+        );
+        assert_eq!(
+            data["alternatives"]["projectBounce"]["tool"], "yeban_render_master",
+            "[{label}] 工程 bounce 的指路必须点名替代工具: {data}"
+        );
+        let why = data["alternatives"]["projectBounce"]["why"]
+            .as_str()
+            .unwrap_or_default();
+        assert!(
+            why.contains("yeban_record_wav") && why.contains("yeban_render_master"),
+            "[{label}] 指路说明必须同时点名两个工具（调用方才接得上）: {why}"
+        );
+    }
 }
 
 #[test]
