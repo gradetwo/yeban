@@ -193,7 +193,10 @@ impl SkippedTrack {
 }
 
 /// 一条**已渲染、尚未落盘**的分轨。
-#[derive(Clone, Debug)]
+///
+/// 刻意**不实现 `Clone`**：`artifact.bytes` 是几十万到几百万字节的容器负载，
+/// 复制一条等于复制整段音频；`RenderArtifact` 本身也因此不 `Clone`。
+#[derive(Debug)]
 pub struct StemRow {
     /// 轨身份。
     pub track_id: EntityId,
@@ -251,7 +254,10 @@ impl StemRow {
 }
 
 /// `export` 的产物：全部字节在内存里，只差落盘。
-#[derive(Clone, Debug)]
+///
+/// 与 [`StemRow`] 同理**不实现 `Clone`**：这批字节按"一次构造、一次落盘"的路线走，
+/// 复制整批等于复制整张唱片的分轨素材。
+#[derive(Debug)]
 pub struct StemBatch {
     /// 已校验的请求（原样回显）。
     pub request: StemRequest,
