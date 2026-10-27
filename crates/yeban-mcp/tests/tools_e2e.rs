@@ -4446,6 +4446,17 @@ fn edit_notes_remove_track_deletes_one_track_and_undo_restores_it() {
     let target_clips = target.clips.len();
     let target_name = target.name.clone();
     let master_id = project.master_bus_track_id;
+    // G2：取走它必须连带清掉它在路由图里的边与节点（下面逐条钉住）。
+    let incident: Vec<String> = project
+        .routing_graph
+        .edges
+        .values()
+        .filter(|edge| edge.source_node == target_id || edge.destination_node == target_id)
+        .map(|edge| edge.id.to_canonical_string())
+        .collect();
+    let node_in_graph = project.routing_graph.nodes.contains(&target_id);
+    let nodes_before = project.routing_graph.nodes.len();
+    let edges_before = project.routing_graph.edges.len();
     // 顶层两个实参传**别的**实体：本形态一个都不读。
     let envelope_track = project
         .tracks
@@ -4474,20 +4485,51 @@ fn edit_notes_remove_track_deletes_one_track_and_undo_restores_it() {
         }),
     );
     assert_eq!(proposed["status"], "success", "{proposed}");
+    // G2：清理 op 排在 `RemoveTrack` **之前**（`RemoveRoutingNode` 要求先断边），
+    // 合并时整批提交、撤销时逐条反转 ⇒ 图与音轨一起回来。
     let ops = &proposed["data"]["proposal"]["ops"];
-    assert_eq!(ops.as_array().map(Vec::len), Some(1), "{proposed}");
-    assert_eq!(ops[0]["op"]["RemoveTrack"]["track_id"], json!(target_text));
+    let planned = ops.as_array().expect("ops 必须是数组");
     assert_eq!(
-        ops[0]["op"]["RemoveTrack"]["previous_track"]["name"],
+        planned.len(),
+        incident.len() + usize::from(node_in_graph) + 1,
+        "断边 + 移除节点 + 取走音轨: {proposed}"
+    );
+    for (step, edge_id) in planned.iter().zip(&incident) {
+        assert_eq!(
+            step["op"]["DisconnectRouting"]["edge_id"],
+            json!(edge_id),
+            "{proposed}"
+        );
+        assert_eq!(
+            step["op"]["DisconnectRouting"]["previous_edge"]["id"],
+            json!(edge_id),
+            "撤销载荷必须是文档里那一条边: {proposed}"
+        );
+    }
+    if node_in_graph {
+        assert_eq!(
+            planned[incident.len()]["op"]["RemoveRoutingNode"]["node"],
+            json!(target_text),
+            "{proposed}"
+        );
+    }
+    let remove = &planned[planned.len() - 1];
+    assert_eq!(remove["op"]["RemoveTrack"]["track_id"], json!(target_text));
+    assert_eq!(
+        remove["op"]["RemoveTrack"]["previous_track"]["name"],
         json!(target_name),
         "撤销载荷必须是**文档里那一条**音轨 (整条, 不是调用方声明的)"
     );
     assert_eq!(
-        ops[0]["op"]["RemoveTrack"]["previous_track"]["clips"]
+        remove["op"]["RemoveTrack"]["previous_track"]["clips"]
             .as_object()
             .map(serde_json::Map::len),
         Some(target_clips),
         "撤销载荷必须把音轨自己的摆放一起带上"
+    );
+    assert!(
+        node_in_graph,
+        "夹具前提: 被取走的音轨必须在路由图里 (否则本判据的 G2 牙齿是空的)"
     );
     assert_eq!(project_bytes(&dispatcher), bytes_before, "提案不得改工程");
 
@@ -4513,6 +4555,45 @@ fn edit_notes_remove_track_deletes_one_track_and_undo_restores_it() {
     );
     assert!(after.tracks.contains_key(&master_id), "主总线必须还在");
     assert!(after.validate().is_ok(), "取走之后工程必须仍然合法");
+    // G2：孤儿节点/悬空边会让 `yeban_render_master` **整体失败**（"路由图里的源节点
+    // 没有对应的音轨"）⇒ 图必须与 `tracks` 同步减去这一条。
+    assert!(
+        after
+            .routing_graph
+            .nodes
+            .iter()
+            .all(|node| *node != target_id),
+        "G2: 该轨的节点必须随音轨一起消失"
+    );
+    assert!(
+        after
+            .routing_graph
+            .edges
+            .values()
+            .all(|edge| edge.source_node != target_id && edge.destination_node != target_id),
+        "G2: 指向该轨的边必须随音轨一起消失"
+    );
+    assert_eq!(
+        after.routing_graph.nodes.len(),
+        nodes_before - usize::from(node_in_graph),
+        "G2: 节点集合只少了这一条"
+    );
+    assert_eq!(
+        after.routing_graph.edges.len(),
+        edges_before - incident.len(),
+        "G2: 边只少了命中该轨的那些"
+    );
+    // 真正的回归判据：删轨之后母带渲染必须整体成功（修复前这里是 RENDER_FAILED）。
+    let rendered = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_render_master",
+        json!({ "format": "wav", "sampleRate": 48_000 }),
+    );
+    assert_eq!(
+        rendered["status"], "success",
+        "G2 回归: 取走音轨后路由图不得留下孤儿节点: {rendered}"
+    );
 
     // 读侧与写侧落在同一个模型字段上: `yeban_query_project` 的 `project.tracks` 里没有它了。
     let reading = call(
@@ -4538,6 +4619,21 @@ fn edit_notes_remove_track_deletes_one_track_and_undo_restores_it() {
     // 可回退：一次撤销 ⇒ 逐字节回到提案之前的工程（含音轨自己的摆放）。
     let undone = call(&mut dispatcher, &auth, "yeban_undo", json!({}));
     assert_eq!(undone["status"], "success", "{undone}");
+    let restored = dispatcher.domain().active_project().expect("工程");
+    assert!(
+        restored.routing_graph.nodes.contains(&target_id),
+        "撤销必须把该轨的节点放回图里"
+    );
+    assert_eq!(
+        restored
+            .routing_graph
+            .edges
+            .values()
+            .filter(|edge| edge.source_node == target_id || edge.destination_node == target_id)
+            .count(),
+        incident.len(),
+        "撤销必须把命中的边全部放回"
+    );
     assert_eq!(
         project_bytes(&dispatcher),
         bytes_before,

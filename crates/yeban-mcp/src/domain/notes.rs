@@ -699,11 +699,19 @@
 //! 一个音符都不读，也**不要求**片段是 MIDI。
 //!
 //! 不碰的东西（逐条给理由，不冒充已完成）：**片段池不回收**（池里的材料可能仍被别的
-//! 音轨引用；模型 `Op` 全集里也没有资产 / 池级回收变体）；**路由图不清理**（图只存
-//! 身份、不存音轨对象，取走一条仍在 `routing_graph.nodes` 里的音轨不会让图失效 ——
-//! 想清节点请走 `disconnectRouting` + `removeRoutingNode` 两步）；**不查别的音轨的
+//! 音轨引用；模型 `Op` 全集里也没有资产 / 池级回收变体）；**不查别的音轨的
 //! `folder_id`**（`YebanProjectV1::validate` 自己会报悬空引用，而且工具面没有任何形态
 //! 能设置 `folder_id`）。
+//!
+//! ⭐ **路由图现在会一起清**（G2，`ADR-0023`）：`RoutingGraph` 只校验端点与重复，
+//! **不**校验"节点身份必须对应一条存在的音轨"，因此取走音轨会在图里留下孤儿节点与
+//! 悬空边 —— 实测（工单 G2）删 6 条轨后 `yeban_render_master` **整体失败**
+//! （"路由图里的源节点没有对应的音轨，无法知道该渲染什么"）。[`routing_cleanup_ops`]
+//! 从当前文档读出端点命中该轨的每条边（源端**与**目的端都算）与它的节点，
+//! `domain::plan_edit_notes` 把这批 op **插在** [`Op::RemoveTrack`] 之前：
+//! 断边 → 移除节点 → 取走音轨（顺序承重：`RemoveRoutingNode` 前置要求无引用边）。
+//! 整批一次提交（`merge_batch` 恰好一条 `Op::Batch`）、一次 `yeban_undo` 复原。
+//! 该轨不在图里时清理为空 ⇒ 旧响应形状逐字节不变。
 
 //! ## 设备链形态（`ops[].kind == "insertDevice"` / `"removeDevice"`）
 //! —— 关闭"工具面看得见设备链、一台都动不了"这条缺口
@@ -9454,10 +9462,13 @@ pub fn compile(
                 // 2. 音轨必须**存在**（模型报 `TrackNotFound`）。
                 //
                 // "还有谁来引用它"（别的音轨的 `folder_id` / 路由图里的边与节点）
-                // **不在这里**复制：`YebanProjectV1::validate` 会自己报
+                // 这里**不**复制到 `previous_track`：`YebanProjectV1::validate` 会自己报
                 // `TrackNotFound`（悬空的 `folder_id`）。工具面没有任何形态能设置
-                // `folder_id`（模型 `Op` 全集里没有这个变体），而路由图只存身份、
-                // 不存音轨对象 —— 取走一条仍在图里的音轨**不会**让图失效。
+                // `folder_id`（模型 `Op` 全集里没有这个变体）。
+                // ⚠ 路由图是另一件事：孤儿节点/悬空边会让 `yeban_render_master` **整体
+                // 失败**（G2 实测：删 6 条轨 ⇒ 6 个孤儿节点 + 6 条悬空边、渲染全挂）。
+                // 因此编译后由调用方在 `RemoveTrack` **之前**插入
+                // [`routing_cleanup_ops`] 的边/节点清理（见 `domain::plan_edit_notes`）。
                 let current = project.tracks.get(target);
                 if let Some(master) = current
                     && *target == project.master_bus_track_id
@@ -9849,6 +9860,35 @@ pub fn reject_remove_track_conflicts(ops: &[NoteOp], placement_present: bool) ->
         ));
     }
     Ok(())
+}
+
+/// **取走音轨时的路由图清理操作**（G2）：先断开端点命中该轨的边，再移除它的节点。
+///
+/// 顺序是承重的：[`Op::RemoveRoutingNode`] 的前置条件要求**没有任何边引用它**
+/// （`ModelError::RoutingNodeInUse`），所以边必须先断。两者都为空（这条轨不在图里）
+/// ⇒ 返回空 `Vec`，调用方据此保持"一条 [`Op::RemoveTrack`]"的旧形状逐字节不变。
+///
+/// 为什么由工具层承担（而不是调用方逐条 `disconnectRouting` → `removeRoutingNode`）：
+/// 孤儿节点会让 `yeban_render_master` **整体失败**（"路由图里的源节点没有对应的音轨"），
+/// 删 6 条轨要 12 轮提案合并才能恢复渲染 —— 那是工具面应当吸收的成本。
+///
+/// 可逆性由模型保证：[`Op::DisconnectRouting`] 自带 `previous_edge`、
+/// [`Op::AddRoutingNode`] 只用身份 ⇒ 整批反转逐字节复原。
+#[must_use]
+pub fn routing_cleanup_ops(project: &YebanProjectV1, track_id: &EntityId) -> Vec<Op> {
+    let mut ops = Vec::new();
+    for edge in project.routing_graph.edges.values() {
+        if edge.source_node == *track_id || edge.destination_node == *track_id {
+            ops.push(Op::DisconnectRouting {
+                edge_id: edge.id,
+                previous_edge: *edge,
+            });
+        }
+    }
+    if project.routing_graph.nodes.contains(track_id) {
+        ops.push(Op::RemoveRoutingNode { node: *track_id });
+    }
+    ops
 }
 
 /// **材料创建**形态的编译（`arguments.create: true`）：把一组 `add` 折成**一条**
@@ -14848,6 +14888,93 @@ mod tests {
             bytes_before,
             "逆操作必须逐字节回到取走之前的文档"
         );
+    }
+
+    /// G2 的编译级判据：取走音轨前的路由清理**先断边、再移除节点**，且整批可逆。
+    ///
+    /// 顺序是承重的：把两段对调之后 `RemoveRoutingNode` 会撞上
+    /// `RoutingNodeInUse`（节点仍被边引用）⇒ `apply` 失败。
+    /// 过滤条件也钉住两个方向：样本里 Aux 只出现在 `lead → aux` 的**目的端**，
+    /// 只看 `source_node` 会漏掉这条入边。
+    #[test]
+    fn routing_cleanup_disconnects_edges_before_removing_the_node() {
+        let project = filled_project();
+        let target = project
+            .tracks
+            .values()
+            .find(|track| track.kind == yeban_model::TrackKind::AuxReturn)
+            .expect("样本里必须有辅助返回轨")
+            .id;
+        let incident: Vec<_> = project
+            .routing_graph
+            .edges
+            .values()
+            .filter(|edge| edge.source_node == target || edge.destination_node == target)
+            .copied()
+            .collect();
+        assert_eq!(incident.len(), 1, "夹具前提: Aux 有一条入边");
+        assert_eq!(
+            incident[0].destination_node, target,
+            "夹具前提: 命中方向是目的端 (不是源端)"
+        );
+
+        let ops = routing_cleanup_ops(&project, &target);
+        assert_eq!(ops.len(), 2, "一条断边 + 一个节点移除");
+        match &ops[0] {
+            Op::DisconnectRouting {
+                edge_id,
+                previous_edge,
+            } => {
+                assert_eq!(*edge_id, incident[0].id);
+                assert_eq!(previous_edge, &incident[0], "撤销载荷必须是文档里那一条边");
+            }
+            other => panic!("第一步应当是 DisconnectRouting: {other:?}"),
+        }
+        match &ops[1] {
+            Op::RemoveRoutingNode { node } => assert_eq!(*node, target),
+            other => panic!("第二步应当是 RemoveRoutingNode: {other:?}"),
+        }
+
+        let mut doc = project.clone();
+        let batch = Op::Batch {
+            ops: ops.clone(),
+            description: "取走音轨前的路由清理".to_owned(),
+        };
+        batch.apply(&mut doc).expect("清理必须能在当前文档上施加");
+        assert!(
+            !doc.routing_graph.nodes.contains(&target),
+            "该轨的节点必须从图里消失"
+        );
+        assert!(
+            doc.routing_graph
+                .edges
+                .values()
+                .all(|edge| edge.source_node != target && edge.destination_node != target),
+            "引用该轨的边必须全部消失"
+        );
+        assert!(doc.validate().is_ok(), "清理之后图仍然自洽");
+        batch.apply_inverse(&mut doc).expect("整批逆操作");
+        // 这里比**内容**而不是比字节：模型的 `AddRoutingNode` 按字典序二分插入
+        // （`routing_node_ops_keep_the_node_list_sorted`），而 `filled_project` 的
+        // `nodes` 把主总线放在**最后**（不按字典序）⇒ 复原后的顺序是"有序"那一版。
+        // 逐字节复原由 `tests/tools_e2e.rs` 在有序夹具（演示工程）上钉住。
+        let mut restored_nodes = doc.routing_graph.nodes.clone();
+        restored_nodes.sort();
+        let mut original_nodes = project.routing_graph.nodes.clone();
+        original_nodes.sort();
+        assert_eq!(restored_nodes, original_nodes, "整批反转必须把节点全部放回");
+        assert_eq!(
+            doc.routing_graph.edges, project.routing_graph.edges,
+            "整批反转必须把每条边放回文档里那一条"
+        );
+    }
+
+    /// 不在图里的音轨 ⇒ 清理为空（调用方据此保持"一条 `RemoveTrack`"的旧形状）。
+    #[test]
+    fn routing_cleanup_is_empty_for_a_track_outside_the_graph() {
+        let project = filled_project();
+        let ghost = EntityId::from_str("01J8ZQ00000000000000000999").expect("ULID");
+        assert!(routing_cleanup_ops(&project, &ghost).is_empty());
     }
 
     /// 音轨实体级的**字段名与支持集合**被钉住（不多报一个键，也不少报一个键）。
