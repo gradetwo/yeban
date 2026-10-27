@@ -142,6 +142,14 @@ pub const MAX_BARS: u64 = 64;
 /// 超出即 `CONFLICT`（如实上报，不猜名字）。
 pub const MAX_PARTS: usize = 8;
 
+/// `voiceSubdivision` 的上界（`ADR-0033` D1）。
+///
+/// 16 与既有两条粒度面同口径：`THEORY_ONSETS_PER_BAR` 的 16 网格、以及
+/// `MidiNote::ratchet` 的 1..=16。上界写在 **domain 层**而不是 `ParamSpec`
+/// （后者只有字符串 min/max），与 `yeban_render_master` 的 `TARGET_LUFS_RANGE`
+/// 同一先例。
+pub const MAX_VOICE_SUBDIVISION: u64 = 16;
+
 /// 推导声部数时使用的**参考主音**（C）。
 ///
 /// 只需要和弦的**构成音数**，而构成音数由级数后缀（`I` vs `I7`）与和弦性质决定、
@@ -1086,6 +1094,10 @@ pub struct PlanOptions<'a> {
     /// 鼓点密度档位（`ADR-0028`）；只允许与 `include_drums: Some(true)` 同给。
     /// `None` / `Some("normal")` = 逐字节维持既有鼓组输出。
     pub drum_density: Option<&'a str>,
+    /// 和声声部的节奏切分（`ADR-0033`）：每个 `ChordSpan` 均匀切成 N 条同音高音符。
+    /// `None` / `Some(1)` = 逐字节维持既有和声输出；取值 **1..=16**，只允许与
+    /// `material_source: Some("theory")` 同给（鼓/旋律声部**不**受它影响）。
+    pub voice_subdivision: Option<u64>,
 }
 
 /// 一个声部的身份（两条材料路径共用）。
@@ -1281,11 +1293,15 @@ static SECTION_THREE_VOICES: [VoiceRange; 3] = [
 ];
 
 /// 960 PPQ 的整数 tick；身份由 `section_id + 声部序 + 和弦序` 派生。
+///
+/// ⭐ `ADR-0033`：`subdivision`（调用方已校验 1..=[`MAX_VOICE_SUBDIVISION`]）把每个
+/// `ChordSpan` 均匀切成 N 条同音高、同力度的音符。
 fn theory_contents(
     style_preset: &str,
     section_id: EntityId,
     voice_count: usize,
     spans: &[ChordSpan],
+    subdivision: u64,
 ) -> Result<Vec<BTreeMap<EntityId, MidiNote>>, BuildFault> {
     let voiced = match voice_count {
         // ⭐ `G8a`（审计 `G8` / `ADR-0028`）：3 声部**不**用 theory 的出厂音域
@@ -1335,12 +1351,30 @@ fn theory_contents(
             let mut notes = BTreeMap::new();
             for (chord, span) in spans.iter().enumerate() {
                 let pitch = voiced.voicings[chord][voice].value();
-                let id = deterministic_id(&format!("theory-note:{section_id}:{voice}:{chord}"));
-                let note = MidiNote {
-                    velocity: THEORY_VELOCITY,
-                    ..MidiNote::new(id, span.start_tick, pitch, span.duration_ticks)
-                };
-                notes.insert(id, note);
+                // ⭐ `ADR-0033` D1：整数 tick 均匀切分，**最后一条吸收余数** ⇒
+                // 跨度总时值逐字节守恒（相邻无缝无叠）。`N == 1` 保持**现行为**：
+                // 一条满跨度音符 + 两段式 id 种子（D3 缺省逐字节兼容契约，
+                // 无条件追加 `:0` 会翻动所有 id 与工程哈希）。
+                let step = span.duration_ticks / subdivision;
+                let tail = subdivision - 1;
+                for part in 0..subdivision {
+                    let seed = if subdivision == 1 {
+                        format!("theory-note:{section_id}:{voice}:{chord}")
+                    } else {
+                        format!("theory-note:{section_id}:{voice}:{chord}:{part}")
+                    };
+                    let id = deterministic_id(&seed);
+                    let duration = if part == tail {
+                        span.duration_ticks - tail * step
+                    } else {
+                        step
+                    };
+                    let note = MidiNote {
+                        velocity: THEORY_VELOCITY,
+                        ..MidiNote::new(id, span.start_tick + part * step, pitch, duration)
+                    };
+                    notes.insert(id, note);
+                }
             }
             notes
         })
@@ -1579,6 +1613,29 @@ pub fn plan_with_options(
             json!({ "hint": "请同时指定 includeDrums: true（鼓密度只作用于生成的鼓轨）" }),
         ));
     }
+    // ⭐ `ADR-0033` D3：`voiceSubdivision` 的整数上界写在 domain 层，越界 ⇒ 响亮拒绝；
+    // 显式给了它却不走 theory 材料路径 = "给了不消费的参数"，与 `drumDensity` 同口径。
+    let voice_subdivision = match options.voice_subdivision {
+        None | Some(1) => 1,
+        Some(n @ 2..=MAX_VOICE_SUBDIVISION) => n,
+        Some(other) => {
+            return Err(BuildFault::domain(
+                BuildCode::InvalidParameterRange,
+                format!("`voiceSubdivision` 必须在 1..={MAX_VOICE_SUBDIVISION}, 实际 {other}"),
+                json!({
+                    "voiceSubdivision": other,
+                    "range": [1, MAX_VOICE_SUBDIVISION],
+                }),
+            ));
+        }
+    };
+    if options.voice_subdivision.is_some() && material_source != MaterialSource::Theory {
+        return Err(BuildFault::domain_with_data(
+            BuildCode::InvalidParameterRange,
+            "`voiceSubdivision` 仅在 materialSource: 'theory' 时支持",
+            json!({ "hint": "请指定 materialSource: \"theory\"（切分只作用于生成的和声）" }),
+        ));
+    }
     // 1. 参数与工程前置条件（顺序即错误码优先级，判据钉住它）。
     //    风格与声部数都来自 theory（见 `preset_parts` / `genre_voice_count`）。
     let harmony_parts = preset_parts(style_preset)?;
@@ -1671,8 +1728,13 @@ pub fn plan_with_options(
     let contents = match &theory_input {
         Some(theory) => {
             let spans = theory_spans(project, style_preset, bars, theory)?;
-            let mut contents =
-                theory_contents(style_preset, section_id, harmony_parts.len(), &spans)?;
+            let mut contents = theory_contents(
+                style_preset,
+                section_id,
+                harmony_parts.len(),
+                &spans,
+                voice_subdivision,
+            )?;
             if include_drums {
                 contents.push(drum_contents(
                     theory.rule,

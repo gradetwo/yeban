@@ -751,6 +751,12 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
                 "鼓点密度档位 [ADR-0028]: 缺省 \"normal\" = 逐字节维持既有鼓组输出。\"sparse\" = 只保留 `GenreRule::drum_pattern` 里**登记为重音** (`accent`) 的击点 (不发明新节奏表); 该流派没有登记重音时 ⇒ `INVALID_PARAMETER_RANGE` (带 `hint`, 建议换 \"normal\" 或换流派)。只允许与 `includeDrums:true` 同给; 否则 ⇒ `INVALID_PARAMETER_RANGE` (带 `hint`)。其余取值 ⇒ `INVALID_PARAMETER_RANGE` (带 `accepted`)",
             ),
             param(
+                "voiceSubdivision",
+                "integer",
+                false,
+                "和声声部的节奏切分 [ADR-0033]: 单位 = **每个和弦跨度切成几条** (不是每小节击点数, ⛔ 勿与错误载荷里的 `onsetsPerBar` 混同)。取值 1..=16, 缺省 1 = 逐字节维持既有块状和声。N>1 时每个 `ChordSpan` 均匀切成 N 条同音高、力度恒 96 的音符: `step = duration_ticks / N` 整数 tick, **最后一条吸收余数** ⇒ 跨度总时值守恒 (无缝无叠); 音符 id 种子追加切分序号。只作用于 `materialSource:\"theory\"` 的和声声部 (鼓/旋律/`\"project\"` 材料路径不受影响), 因此只允许与 `materialSource:\"theory\"` 同给; 否则 ⇒ `INVALID_PARAMETER_RANGE` (带 `hint`)。越界或非整数 ⇒ `INVALID_PARAMETER_RANGE` (带 `range`)",
+            ),
+            param(
                 "autoMerge",
                 "boolean",
                 false,
