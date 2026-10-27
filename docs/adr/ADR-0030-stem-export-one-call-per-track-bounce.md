@@ -37,8 +37,12 @@
   `EXTENSION_TOOL_COUNT 14 → 15`、`TOOL_COUNT 24 → 25`。
 - `schemas/mcp-tools.schema.json`（现读结构，⛔ 不凭记忆写键名）：根层
   `properties.name.enum` 追加工具名 + `allOf` 新分支（`const: "yeban_export_stems"`
-  与 `$ref` 指向 `$defs`）+ `definitions.ExtensionToolArguments.$defs` 新条目，
-  并补样本 `mcp-tools.call.yeban_export_stems.json`
+  与 `$ref` 指向 `$defs`）+ `definitions.ExtensionToolArguments.$defs` 新条目。
+  调用/响应**样本不在 `schemas/` 目录**（那里只有 4 个 `.schema.json`），而在
+  `crates/yeban-mcp/src/samples.rs`：`export_all()` 按 `FILE_PREFIX = "mcp-tools"` /
+  `CALL_FILE_PREFIX = "mcp-tools.call."` 生成，判据
+  `exported_call_samples_are_contract_shaped_tool_calls`（`tests/contract.rs:250`）
+  逐个读回并核对形状 ⇒ 新工具必须在**该模块**登记样本，⛔ 不是手写 JSON 文件。
   （扩展段的 `$defs` 与 Rust 注册表**逐字段**对测，见 `tests/contract.rs:597`；
   文档化的十个工具不许出现在扩展段 `$defs` 里）。
 - `docs/ledger/feature-alignment.md` 增加一行，`crates/yeban-mcp/tests/props_176.rs`
