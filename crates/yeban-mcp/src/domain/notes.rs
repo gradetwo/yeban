@@ -19113,16 +19113,6 @@ mod tests {
                 serde_json::json!({"noteId": note, "deltaTick": 0, "deltaPitch": 0}),
                 "MoveNote",
             ),
-            // ⭐ `ADR-0034` D1：**展开**形态 —— 一条形态产出 N 条 `MoveNote`（N = 目标
-            // 片段的音符数，由下面的 `expected_len` 从**文档**读，⛔ 手抄）。变体仍是
-            // `move` 的那个 ⇒ 本行⛔ 进 `seen`（那会把"变体数"这个读数凭空抬高一位）。
-            (
-                "transposeClip",
-                None,
-                None,
-                serde_json::json!({"deltaPitch": 2}),
-                "MoveNote",
-            ),
             (
                 "velocity",
                 None,
@@ -19174,6 +19164,18 @@ mod tests {
                     "cents": 50,
                 }),
                 "SetNotePitchBendPoint",
+            ),
+            // ⭐ `ADR-0034` D1：**展开**形态 —— 一条形态产出 N 条 `MoveNote`（N = 目标
+            // 片段的音符数，由下面的 `expected_len` 从**文档**读，⛔ 手抄）。变体仍是
+            // `move` 的那个 ⇒ 本行⛔ 进 `seen`（那会把"变体数"这个读数凭空抬高一位）。
+            // ⚠ 本行的**位置**跟着 `NOTE_LEVEL_KINDS` / `OP_KINDS` 的桶序（`setPitchBendPoint`
+            // 之后）—— ⭐ 下面那条判据比的是**逐项相等**（含顺序），把行插在别的位置会红。
+            (
+                "transposeClip",
+                None,
+                None,
+                serde_json::json!({"deltaPitch": 2}),
+                "MoveNote",
             ),
             (
                 "setAsset",

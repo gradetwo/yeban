@@ -180,7 +180,7 @@ fn transpose_clip_expands_into_one_move_per_note_in_a_single_batch() {
             "clipId": clip.to_canonical_string(),
             "ops": [{"kind": TRANSPOSE_CLIP_KIND, "deltaPitch": 2}],
             "autoMerge": true,
-            "commitMessage": "整片段 +2 半音",
+            "mergeCommitMessage": "整片段 +2 半音",
         }),
     );
     assert_eq!(merged["status"], "success", "{merged}");
@@ -310,7 +310,9 @@ fn an_out_of_range_note_rejects_the_whole_batch_without_partial_apply() {
             "autoMerge": true,
         }),
     );
-    assert_eq!(rejected["status"], "failure", "{rejected}");
+    // ⚠ 带内失败的信封是 `status:"error"`（⛔ 不是 `"failure"` —— 那是本仓⛔ 存在的词，
+    // 全仓 69 处判据都用 `error`，实测本条曾被我自己写错）。
+    assert_eq!(rejected["status"], "error", "{rejected}");
     assert_eq!(
         rejected["error"]["code"], "OUT_OF_RANGE",
         "越界必须在**构造期**就报（与逐条 `move` 同一份算式、同一个码）: {rejected}"
