@@ -44,7 +44,7 @@
 //!
 //! | 面 | reason 数 | 规范行数 | SHA-256 |
 //! | :--- | ---: | ---: | :--- |
-//! | `reason`（**可分类**面：字面量 ＋ 可解析的字面量 `let`，含顺序） | 161 | 728 | `c5056c369e24f34a11ab7349d5af96f4a552f6431c1ebe9a8b18353c6635514d` |
+//! | `reason`（**可分类**面：字面量 ＋ 可解析的字面量 `let`，含顺序） | 164 | 742 | `59a44770d9b2fabba520fbcf08530534b61e69076809b87552d5c0aca08c38e6` |
 //!
 //! ⚠ `#274`：摘要随"登记位置搬进 provider"重钉（集合不变、顺序变了）；
 //! 见 `FROZEN_REASON_SURFACE_SHA256` 的沿革注释。
@@ -2171,8 +2171,15 @@ fn the_reason_payload_shape_is_the_published_table() {
 /// ⇒ 159 → 161 个 reason、720 → 728 行。新摘要
 /// `c5056c369e24f34a11ab7349d5af96f4a552f6431c1ebe9a8b18353c6635514d`
 /// 由判据自己报出后照抄。
+///
+/// ⭐ `[G18]` 重钉：`parse_scale` 的单边输入结构化拒绝（`missingTonic` 4 键 /
+/// `missingMode` 4 键 / `missingSpaceOrMode` 3 键，加 3 条 reason 行）
+/// ⇒ 161 → 164 个 reason、728 → 742 行。新摘要
+/// `59a44770d9b2fabba520fbcf08530534b61e69076809b87552d5c0aca08c38e6`
+/// 由判据 `the_reason_surface_digest_is_frozen_and_documented`（CI Run 40462481785）
+/// 报出后照抄。
 pub const FROZEN_REASON_SURFACE_SHA256: &str =
-    "c5056c369e24f34a11ab7349d5af96f4a552f6431c1ebe9a8b18353c6635514d";
+    "59a44770d9b2fabba520fbcf08530534b61e69076809b87552d5c0aca08c38e6";
 
 /// 规范形式里的 reason 数 / 规范行数（与摘要一起构成"两端"读数）。
 pub const REASON_SURFACE_REASONS: usize = 164;
