@@ -11483,3 +11483,29 @@ $ python3 scripts/gates/check_phase_status.py   # 退出 0
 
 
 
+
+## 2026-10-27：G1 消除：离线渲染 16 槽上限静默丢轨（逐轨布防 + `silentSources` 预警）
+
+- **需求规范 ID**: `[MCP-TOOL-008]` `[ARCH-DET-001]` `[ADR-0022]`
+- **实施工作线**: `line/render-multi-source`（提交 `f168c14d`，合并 `a53cfdba`）
+- **背景与目标**:
+  - 审计（`/tmp/yeban-issues-20261027` G1，在 origin/main `36843ca9` 实测）：
+    `EngineTrackSource` 渲染**一条**轨却把**整个快照**布防进 16 个实时槽 ——
+    28 轨工程渲染回执 `success`，第 16 条之后的 **12 条轨是数字静音**。
+- **实施**:
+  - `yeban-engine`：新增 `SynthEngine::arm_track_from_snapshot`，**只**布防请求的那条轨，
+    其余语义（`begin_snapshot` / `align_cursors` / solo 门）与 `arm_from_snapshot` 逐字相同；
+    离线源数量自此与 `MAX_TRACK_SLOTS` **解耦**。⛔ 实时预算不动（实时仍 16 槽，边界见 `ADR-0022`）。
+  - `yeban-mcp`：`yeban_render_master` 新增**非阻断**预警 `silentSources`
+    （`{code, severity:"warning", blocking:false, count, examples, hint}`，键恒在，
+    干净时为空数组）：点名每个"摆了内容却一个非零样本都没出"的可听源。
+  - 机械读数同步：`output_schema.rs` 增可选键 `silentSources`；`tools.rs` 摘要行同步。
+- **验证（含红灯留痕，⛔ 不写成一次绿）**:
+  - 线 Run `40429255726`（`f168c14d`）`success`（此前已按非零耗时 + `test result:` 行核验）。
+  - 合并提交 `a53cfdba` 主干 Run `40437770933`：**`conclusion: success`**
+    （`02:19:53Z → 02:55:21Z`）；作业读数（耗时非 0）：`windows` 35m27s、`macos` 14m11s、
+    `rust (yeban-mcp)` 12m29s、`rust (yeban-render)` 4m45s、`rust (yeban-engine)` /
+    `rust (yeban-app)` / `rust (yeban-ui-mcp)` / `checks` / `deny` / `lockfile` / `plan`
+    全部 `success`；`rust (workspace 全量)` 按 `plan` 矩阵 `skipped`（⛔ 不是跳过当成绿）。
+  - 防假绿核对：`rust (yeban-mcp)` 日志 **85 条 `test result: ok` / 0 条 FAILED**；
+    `rust (yeban-render)` 日志 **31 条 `test result: ok`**。
