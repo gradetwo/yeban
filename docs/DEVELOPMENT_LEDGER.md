@@ -192,7 +192,10 @@ CARGO_HOME=/Users/crow/work/music/.cargo-home RUSTUP_TOOLCHAIN=stable \
 | `G6` 生成即增益分级 | 消除 | `ADR-0026`；「G6 消除」条 |
 | `G7` 同批建节点+连边被批前预检误拒 | 消除 | `ADR-0025`；「G7 消除」条 |
 | `G8` 生成控制粒度 | **半消除** | `G8a`（音域 + `drumDensity`）已落，`ADR-0028`；`G8b` 逐声部节奏粒度 `pending`（网格常量钉死在 `section_build.rs:213`） |
-| `G9` 单轨贡献读数 / 分轨导出 | 消除 | `G9a`（`contributions`）已落，`ADR-0020`；`G9b`（`yeban_export_stems`，第 **25** 台工具）已落，`ADR-0030`；线 Run `40488580940`（tip `77ac65ec`）success（`rust (yeban-mcp)` 3070s ⇒ **91 条 `test result:` / 2170 passed / 0 failed**；`windows` 1276s ⇒ 245 / 4843 / 0；`macos` 1486s），主干合并 `f28dd13d` Run `40496066367` 待读回。留痕见本文件「G9b 消除」条 |
+| `G9` 单轨贡献读数 / 分轨导出 | 消除 | `G9a`（`contributions`）已落，`ADR-0020`；`G9b`（`yeban_export_stems`，第 **25** 台工具）已落，`ADR-0030`；线 Run `40488580940`（tip `77ac65ec`）success（`rust (yeban-mcp)` 3070s ⇒ **91 条 `test result:` / 2170 passed / 0 failed**；`windows` 1276s ⇒ 245 / 4843 / 0；`macos` 1486s），主干合并 `f28dd13d` Run `40496066367` **success**（这次承判的腿是
+`rust (workspace 全量)` 2594s ⇒ **407 / 6698 / 0**；`macos` 245 / 4865 / 0；
+`windows` 245 / 4844 / 0；`rust (${{ matrix.crate }})` 因 `workspace_wide: true` 跳过）。
+留痕见本文件「G9b 消除」条 |
 | `G10` stdio 形态无引擎 ⇒ 场景启动不可用 | **待人类裁决** | `HD-69`（形态 B 是否托管 `yeban-engine`） |
 | `G11` `midi-input` 不进 release 默认特性 | **待人类裁决** | `HD-68`（红线 6 的另一面，⛔ 集成者不擅开特性） |
 | `G12` `record_wav` 语义 | **半消除** | 回执显式指路（`notProjectBounce` + `alternatives`）已落；「接工程源」那半登记为 `HD-70`（本轮补登，见下） |
@@ -12017,8 +12020,19 @@ $ python3 scripts/gates/check_phase_status.py   # 退出 0
 - **落地**: 合并提交 `f28dd13d`（`--no-ff`，保留线史）。⚠ 合并时 `docs/README.md` **一处冲突**：
   线侧把功能行数写成 **79**、主干侧把 `HD` 上界写成 **HD-70**（两边各改了相邻两行）⇒
   两个数字都由自己的守卫脚本现读后再取（`check_feature_alignment.py` ＝ 79 行 / 25 个 MCP 工具，
-  `check_decisions.py` ＝ 70 项 / 未决 9），⛔ 不是"挑一边"。主干 Run `40496066367`
-  （tip `f28dd13d`）**待读回**；读到前主干判决按纪律记 `pending`。
+  `check_decisions.py` ＝ 70 项 / 未决 9），⛔ 不是"挑一边"。
+- **主干判决（Run `40496066367` @ tip `f28dd13d`，已读回）**: `conclusion: success`。
+  这次的矩阵与线 Run **不同**：`plan` 报 `workspace_wide: true`（reason 逐字
+  "根级文件 (Cargo.toml/lock/工具链/脚本/schema/CI) 被改动" —— 分轨线改了
+  `schemas/mcp-tools.schema.json`），于是 `rust (${{ matrix.crate }})` 整条**跳过**、
+  由 `rust (workspace 全量)` 承判 ⇒ ⚠ **读判决的腿换了，不能拿线 Run 的数抄**。
+  防假绿核对（单位：`test result:` 行数 / passed / failed，日志 `/tmp/main-f28dd-*.log`）：
+  - `rust (workspace 全量)` 11:26:02→12:09:16（**2594s**，⛔ 不是 0s）＝
+    **407 条 / 6698 passed / 0 failed**、`test result: FAILED` 行 **0**；
+  - `macos` 1518s ＝ **245 条 / 4865 passed / 0 failed**；
+  - `windows` 2183s ＝ **245 条 / 4844 passed / 0 failed**；
+  - `checks` / `deny` / `lockfile` / `plan` 四条守卫腿全 success。
+  ⇒ `G9b` 的**主干**判决成立（线判决此前已如上），5.3 表 `G9` 行的"待读回"据此注销。
 - ⚠ 同分支上 `a4281a1f` / `70d63d70` 两条纯 `docs/adr` 提交的 success（`40465639551` /
   `40466405431`）是**空绿**（rust 腿按 `plan` 矩阵跳过）；主干 `b5d19ae3`（纯台账）
   Run `40490914512` 同理 —— 三条都只验证"文档没弄坏守卫与 schema"，对代码不构成判决。
