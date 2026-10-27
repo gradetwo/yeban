@@ -211,6 +211,16 @@ MCP stdio 形态托管引擎，即 `G10`），而清单里**从未**有过 recor
 现补 `HD-70` 行并修正两处引用，`HD` 上界级联四处活文档同步 `HD-01..HD-70`
 （`check_decisions.py` 现为 **70 项 / 61 已裁决 / 未决 9 项**，机械读数一致）。
 
+**审计补记（测量时刻：2026-10-27T10:17Z，单位：条）**：对上表 17 条**已落**缺口的留痕逐条数
+「有无 `test result:` 读数」（正则 `test result:` 在每条 `## 2026-10-27：…` 小节里的出现次数）
+⇒ 16 条 ≥1、唯一例外是 `WALL ②`（只有 `conclusion` 与作业耗时，没有计数）。
+已按纪律**补读**其线 Run `40390138238`（代码提交 `733b3f52`）：85 条 / 2100 passed / 0 failed，
+补进那条留痕。⚠ 同一次补读还查出一件**机制事实**：合并提交 `11531a3b` **没有**自己的 run
+（`gh run list --branch main --created ">2026-10-26"` 查无该 `headSha`）—— 一次推送多个提交时
+GitHub 只为**推送 tip** 建 run ⇒ 逐提交读判决必须读"该提交当过某次推送 tip"的那条 run
+（线推送时是线 run，主干推送时是主干 run），⛔ 不要为合并提交虚构一条。
+
+
 ---
 
 ## 6. 教训与由此产生的规则 (Mistakes and the rules they produced)
@@ -11371,6 +11381,15 @@ $ python3 scripts/gates/check_phase_status.py   # 退出 0
   - `python3 scripts/guards/policy_check.py`: 18 项守卫全部通过。
   - `scripts/gates/run-gates.sh light`: 全部轻量门禁通过。
   - CI Run `40390138238` (`733b3f52`): **`conclusion: success`**（总耗时 28m23s），Linux `rust (yeban-mcp)` (7m7s)、`rust (yeban-ui-mcp)` (2m43s)、`windows` (28m6s)、`macos` (27m27s)、`deny` (45s)、`checks` (1m11s)、`lockfile` (21s)、`plan` (11s) 全部 100% 绿灯通过。
+  - ⭐ **防假绿补读（2026-10-27 缺口审计时发现本条只有 `conclusion`，没有 `test result:` 读数）**：
+    `rust (yeban-mcp)` 作业日志 **85 条 `test result:` / 合计 2100 passed / 0 failed /
+    0 条 `test result: FAILED`**（`/tmp/wall2.log` 读数，取的是**代码提交 `733b3f52` 自己**的 run）。
+    同时登记一条**机制事实**：合并提交 `11531a3b` **没有**自己的 run ——
+    `gh run list --branch main --created ">2026-10-26"` 查无该 `headSha`。原因是一次 `git push`
+    推多个提交时 GitHub 只为**该次推送的 tip** 建一条 run。⇒ 「一次推送 = 一批改动，tip run
+    的判决即整批的判决」这条既有规则（L32）在这里同样成立，但也意味着**逐提交读判决**要读
+    **代码提交在推送时当过 tip 的那条 run**（这里是线 run），而不是凭空期待合并提交有一条。
+
 
 ## 2026-10-27：WALL ① 消除：`yeban_edit_notes` 的 `create: true` 可与 `placement` 同给（单提案原子建＋摆）
 
