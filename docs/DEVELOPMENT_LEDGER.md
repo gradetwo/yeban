@@ -11381,5 +11381,105 @@ $ python3 scripts/gates/check_phase_status.py   # 退出 0
     （`gh api …/actions/jobs/<id>/logs` 下载后现数）⇒ 真跑过，不是空绿；`rust (${{ matrix.crate }})` 仍是
     `skipped` 的重复矩阵。
 
+## 2026-10-27：母带渲染真正读 `tempo_map`（分段常速回放）落地
+
+- **需求规范 ID**: `[MCP-TOOL-008]` `[MODEL-AST-002]` `[ARCH-DET-001]` `[ARCH-DET-002]` `[ADR-0021]`
+- **实施工作线**: `line/tempo-map-playback`（提交 `738a0fa0`，合并 `c85c1c35`）
+- **背景与目标**:
+  - `setTempoPoint` / `setTimeSignaturePoint` / MIDI 导入的速度点早已能写入 `project.tempo_map`，
+    但渲染器与引擎的 tick → 帧换算**只乘 `project.bpm`** ⇒ 变速工程在母带里**静默无效**：
+    表写进去了、`yeban_query_project` 也读得到，导出音频却按单一速度铺满整首。
+- **实施**:
+  - `yeban-model::time_math::TempoMap`（`base_bpm` 取自 `project.bpm`，点是分段常速）+
+    `YebanProjectV1::tempo()` 唯一构造入口；正向换算**先累加未舍入帧数、最后只舍入一次**，
+    反向换算扫描分段后段内取整（空表与旧 `tick_at_frame` 逐位相同）。
+  - `EngineSnapshot::from_project_with_tempo` 是离线专用入口；`from_project*` 继续按恒定 BPM 投影。
+    `EngineTimbre::{from_project, from_project_armed}` 改走它 ⇒ MCP 母带渲染拿到分段常速；
+    实时走带位置推进、节拍器、循环边界、UI 拍格**不改**（登记为后续切片）。
+  - 音符起止 / rattach 子脉冲 / 循环副本 / 音频摆放起止与循环区间 / 采样器 `note_frame_span` /
+    `clip_frame_span` / 总帧数缺省推导全部改读同一时基；旧签名保留为
+    `TempoMap::constant(bpm)` 包装（既有判据继续有效）。
+  - `docs/adr/ADR-0021-tempo-map-playback.md`；新增 `crates/yeban-engine/tests/tempo_map_schedule.rs`
+    （T1 空表逐项相同 / T2 变速点后 tick 1920 ⇒ 36 000 帧 / T3 音频摆放同样移动 / T4 端到端前 36 000 帧静音）。
+- **验证**:
+  - 合并前本线自检：`cargo fmt`、`line-gate.sh`、相关测试全绿（含母带摘要常量
+    `DEFAULT_MASTER_DIGEST` / `DEFAULT_MASTER_SHA256` 未变 —— 空表逐位不变的回归闸）。
+  - CI Run `40422629377` (`c85c1c35`): **`conclusion: success`**（23:51:58Z → 00:27:57Z）；
+    作业级读数（耗时均非 0）：`windows` 35m45s、`macos` 24m41s、`rust (yeban-app)` 28m25s、
+    `rust (yeban-mcp)` 13m42s、`rust (yeban-model)` 9m43s、`rust (yeban-render)` 4m45s、
+    `rust (yeban-engine)` 2m43s、`checks` 74s、`deny` 45s、`lockfile` 23s、`plan` 12s —— 全部 `success`。
+  - 防假绿核对：本次 `plan` 选了**逐 crate 矩阵**，`rust (workspace 全量)` 按计划 `skipped`
+    （⛔ 不是跳过当成绿）；实际跑过的目标 crate 日志里 `test result:` 行数现数：
+    `yeban-engine` **40**、`yeban-render` **31**、`yeban-mcp` **85**，`FAILED` 行均为 **0**。
+
+## 2026-10-27：WALL ⑤ 消除：`yeban_edit_notes` 支持逐点编辑弯音曲线（`setPitchBendPoint`）
+
+- **需求规范 ID**: `[MCP-TOOL-006]` `[WALL-5]` `[ADR-0019]`（`[MODEL-AST-005]` `[ADR-0012]` 值域）
+- **实施**: 提交 `3b2d02bb`（直落 main）
+- **背景与目标**:
+  - `creation_acceptance.rs` 的 WALL ⑤：弯音曲线只能**整体写**（`add.note.pitchBendCurve` /
+    `setNotePitchShape.newPitchBendCurve`），改一个点要读回整条曲线、本地改、再整条回写；
+    并发的两次整条重写会互相覆盖。颤音/揉弦这类**逐点微调**的成本因此很高。
+- **实施**:
+  - `yeban-model`：新增 `Op::SetNotePitchBendPoint { track_id, clip_id, note_id, tick, old_cents, new_cents }`，
+    与 `Op::SetTempoPoint` 同形的三态转移（插/改/删；两个 `None` ⇒ `OpStateMismatch`）；
+    `precondition` 从文档现值核对 `old_cents`，`Some(cents)` 限制在 ±1200
+    （`PitchBendCentsOutOfRange`）；`commit` 用 `binary_search_by_key` 原位改/删/插，不重排、不覆盖相邻点；
+    `invert` 只交换两个 `Option<i16>`。
+  - `yeban-mcp`：`yeban_edit_notes` 新增 op kind `setPitchBendPoint`，字段白名单恰四条
+    （`kind`/`noteId`/`tick`/`cents`），`cents` 必填、`null` = 删除、缺键 ≠ `null`；
+    `old_cents` 由 `compile` 从当前文档查得（不信调用方声明）；删不存在的点 ⇒
+    `ENTITY_NOT_FOUND`（`pitchBendPointNotFound`）；归入音符级 kind 与 `reads_envelope_clip()`。
+  - 机械读数同步：`schemas/ops.schema.json` 新分支；`OP_KINDS` 46→47、`ENVELOPE_CLIP_KINDS` 8→9、
+    `NOTE_LEVEL_KINDS` 7→8；`op_reachability::EXPECTED_SITES` 54→55；`fault_vocabulary`
+    reason 159→161、规范行 720→728、摘要重钉。
+- **验证（含红灯留痕，⛔ 不写成一次绿）**:
+  - `3b2d02bb` 自身的 CI Run `40412490757` 是 **`conclusion: failure`**：
+    `checks` 的三方对齐矩阵报**表第 78/127 行 Op 变体读数 54** vs `ops.schema.json` 的 **55**；
+    `rust (workspace 全量)` 红在 `trap_179::the_note_level_predicate_is_exactly_seven`
+    （音符级形态仍钉七个，新 op 是第八个）。
+  - 修复链：`a31fb716` 在 `ops.rs` 的 showcase 夹具补 `SetNotePitchBendPoint` 实例
+    （否则 ops round-trip/contract/idempotency 在 main 上红）—— 该提交的 Run `40416432196`
+    仍红（同一条 54/55 对齐读数未改钉）；`a6189676` 把 `trap_179` 逐字改成**八个**音符形态、
+    并把 `setPitchBendPoint` 补进"音频片段必须响亮失败"矩阵。
+  - 最终判决：CI Run `40419445566` (`a6189676`): **`conclusion: success`**
+    （23:23:42Z → 23:57:55Z）；作业读数（耗时非 0）：`rust (yeban-ui-mcp)` 34m00s、
+    `windows` 30m07s、`macos` 26m12s、`rust (yeban-mcp)` 14m38s、`checks` 82s、
+    `deny` 44s、`lockfile` 20s、`plan` 10s —— 全部 `success`；`rust (workspace 全量)` 按
+    `plan` 的逐 crate 矩阵 `skipped`（⛔ 不是跳过当成绿）。
+  - 防假绿核对：`rust (yeban-mcp)` 日志 **85 条 `test result:` / 0 条 `test result: FAILED`**。
+
+## 2026-10-27：WALL ⑦ 消除：`yeban_render_master` 报逐轨贡献（`contributions`）
+
+- **需求规范 ID**: `[MCP-TOOL-008]` `[WALL-7]` `[ADR-0020]`（`[MODEL-AST-003]` `[ARCH-DET-001]`）
+- **实施工作线**: `line/track-contributions`（提交 `d56ac8f7`，合并 `68e3db43`）
+- **背景与目标**:
+  - `creation_acceptance.rs` 的 WALL ⑦：`sources[].peak` 是**源节点输出**，回答不了
+    "拿掉这条轨，母带差多少"；调用方要 `3N + 1` 次往返 + 本地解码逐样本比。
+- **实施**:
+  - 可选实参 `contributions: true`（缺省 `false` ⇒ 不额外渲染、响应**不出现**
+    `contributions`/`contributionsBasis`，写盘字节与摘要一位不变）。
+  - 量法：`1 + N` 次额外渲染 —— 基线**关掉归一化与目标响度**、帧数钉成本次母带的 `frames`、
+    采样率/格式/位深一致；再对每条非 master 轨克隆工程、只把该轨 `mute = true` 渲染一次；
+    两份 24-bit PCM 负载逐样本差，报 `deltaRmsDbfs` / `deltaPeakDbfs`（dBFS，全零差 ⇒ `null`，
+    ⛔ 不报 `-inf`）。行序按 `project.tracks` 的 `BTreeMap` 身份序。
+  - 诚实边界：渲染前已静音的轨 `alreadyMuted: true` 且差值为 `null`（不为它渲染）；
+    别的轨 solo 时静音非 solo 轨无变化 ⇒ `null`；`contributionsBasis.normalize` 恒为 `false`。
+  - 机械读数同步：`creation_acceptance.rs` 的 `WALLS` 4→3（编号保持历史原样）；
+    `output_schema.rs` 两个键是**可选**属性；`props_176.rs` 的 `validate_complete` 只在
+    `contributions: true` 的响应上跑，缺省形状用 `validate`。
+- **验证（含红灯留痕，⛔ 不写成一次绿）**:
+  - 合并提交 `68e3db43` 的 CI Run `40415124263` 是 **`conclusion: failure`**：
+    `checks` 红在同一条三方对齐读数（表 54 vs schema 55 —— `SetNotePitchBendPoint` 未入表）；
+    `rust (workspace 全量)` 红在
+    `probe_authenticity::the_crates_own_transcendental_call_sites_are_the_registered_list`
+    —— 逐轨 `dbfs` 直接调宿主 `log10`，撞"生产区超越函数"守卫（R56）。
+  - `a31fb716`（Run `40416432196`）仍红：`checks` 54/55 未改钉；`rust (yeban-mcp)` /
+    `windows` / `macos` 红在 `probe_authenticity` 超越函数清单，`macos` 另红在 `trap_179` 七形态。
+  - `a6189676` 修复三处红因：`dbfs` 改 `libm::log10`（与 `render_math::amplitude_dbfs` 同口径）、
+    `trap_179` 七→八形态、`docs/ledger/feature-alignment.md` 第 78/127 行 54→**55**。
+  - 最终判决：CI Run `40419445566` (`a6189676`): **`conclusion: success`**（读数同上一条）；
+    `rust (yeban-mcp)` 日志 **85 条 `test result:` / 0 FAILED**。
+
 
 
