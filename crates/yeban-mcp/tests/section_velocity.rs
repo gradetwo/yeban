@@ -233,7 +233,7 @@ fn the_two_rungs_land_on_exactly_the_registered_accent_tiers() {
     let base_table = voices(&base);
     let shifted_table = voices(&shifted);
     assert_eq!(
-        base_table.keys().collect::<Vec<_>>,
+        base_table.keys().collect::<Vec<_>>(),
         shifted_table.keys().collect::<Vec<_>>(),
         "两跑的声部集合必须相同"
     );
