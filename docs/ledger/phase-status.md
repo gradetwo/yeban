@@ -19,7 +19,7 @@
 | :--- | :--- | :--- | :--- |
 | **本表** `docs/ledger/phase-status.md` | **阶段项**做没做完（`ROAD-*`，47 项） | `docs/YEBAN_ENGINEERING_IMPLEMENTATION_ROADMAP.md` §3 | `scripts/gates/check_phase_status.py` |
 | `docs/ledger/gate-status.md` | **发布门禁**过没过（`MUST-GATE-001..015` / `BASELINE-001..006`，21 条） | 同一份路线图 §5 | `scripts/gates/check_gate_status.py` |
-| `docs/ledger/human-decisions.md` | **待人类裁决**（`HD-01..HD-69`） | `docs/adr/ADR-0001-*` + 负责人追认 | `scripts/gates/check_decisions.py` |
+| `docs/ledger/human-decisions.md` | **待人类裁决**（`HD-01..HD-70`） | `docs/adr/ADR-0001-*` + 负责人追认 | `scripts/gates/check_decisions.py` |
 
 引用规则（这是三张表不互相矛盾的关键）：
 
@@ -40,7 +40,7 @@
 | `ROAD-M-1-003` | 锁定 VST3 依赖版本为 3.8.0+，走 MIT 路径消除许可传染 | **PENDING** | **没有依赖可锁**：`crates/yeban-vst/Cargo.toml` 的 `[dependencies]` 为空、description 标 `[v2.0.0]`；`grep -rn "vst3\|nih-plug" Cargo.toml crates/*/Cargo.toml` 只命中注释与 description。引入时的拦截机制已就绪：`deny.toml:18-21` 的 `unmaintained = "workspace"`（针对 RSK-35）。PENDING 的原因 = **未到期**（VST3 反向打包属 v2.0.0，见 `gate-status.md` §C.4） | 与 `MUST-GATE-004`（许可合规）不冲突：那条已经接线，管的是"引入时拦得住"；本条管的是"锁到哪个版本"，而版本尚未存在 |
 | `ROAD-M-1-004` | ASIO：默认 WASAPI、ASIO 作为**可选特性**、严禁把 ASIO SDK 打包入仓库 | **已完成** | **已做到**：仓库内无 ASIO SDK —— 守卫 `G07`（`scripts/guards/policy_check.py:259`，每次 `run-gates.sh light` 都跑），引用 `MUST-GATE-013`（**已接线**）。**未做到**：`grep -rn -i asio crates/*/Cargo.toml Cargo.toml` 命中 **0** —— 全仓库只有注释与守卫提到 ASIO，**没有任何 `asio` 可选特性**，因此 RSK-37 要求的"法务确认前把 ASIO 特性标记为 `unverified`"无处可标；法务确认未做（`HD-34`） | "默认走 WASAPI"目前由"根本没有 ASIO 特性"事实上满足，**但不是**由一条可判定机制保证的 —— 这是本条只到"部分"的实质原因  ⭐**【R300 更正（2026-10-11）】**：⭐ 上面那句「默认走 WASAPI… ⛔ 不是由一条可判定机制保证的」**已不成立** —— ⭐ **机制在**：⭐ `scripts/guards/policy_check.py` 的 `g05_forbidden_default_features()`，⭐ 其禁列 `FORBIDDEN_DEFAULT_FEATURES` **含 `asio`**（⭐ `:59`），⭐ 且已登记进检查表（⭐ `:641`）⇒ ⭐ **每次 `run-gates.sh light` 都跑**（⭐ 实测：⭐ `守卫全部通过 (14 条)`，⭐ 含 G05 与 G07）；⭐ SDK 那半由 `G07`（`[MUST-GATE-013]`，⭐ `:643`）覆盖；⭐ `AGENTS.md` 红线 6 原文明列 `asio`。⭐ **所以本项的实质缺件已闭合**；⭐ 剩下两条是：⭐ ① **RSK-37 的 `unverified` 标记**无处可标** ⇒ ⭐ **条件未到期**（⭐ 标记是为尚不存在的特性准备的，⭐ 而「特性不存在」恰是「默认走 WASAPI」最强的保证）⇒ ⭐ 已改为**条件式登记**：⭐ **若引入 `asio` 特性，⭐ 必须同时标 `unverified`**；⭐ ② **法务确认（`HD-34`）** ⇒ ⭐ **人类专属**，⭐ 只登记、⛔ 不代签。 |
 | `ROAD-M-1-005` | `assets/samples/ATTRIBUTION.md` 核验 323 款素材 + 清理 Git 历史 >10MB 大文件 | **部分** | **已做到**：`assets/samples/ATTRIBUTION.md` 存在（4798 字节，含"建清单 → 逐条登记 → 挂根指针 → 跑门禁"的可执行流程）；对账机器可运行 `bash scripts/gates/validate_schemas.py --repo-assets`，引用 `MUST-GATE-014`（**已接线**；2026-10-06 更正——本行旧记「**PENDING** —— 素材待人类选定」，该门禁已按人类裁决复用 R2 镜像、白名单机制已接线并被执行，本行「素材本体未入库」仍成立）；Git 历史大文件**实测 0 个 >10MB**：`git rev-list --objects --all \| git cat-file --batch-check='%(objecttype) %(objectsize)' \| awk '$1=="blob" && $2>10485760' \| wc -l` ⇒ `0`（最大 blob 是 3 张 6,222,418 字节的界面截图）。**未做到**：323 款素材本身 —— `ls assets/samples/` 只有 `ATTRIBUTION.md`，没有样本 | `HD-35` 已裁决**不重写** Git 历史（成本 > 收益，且已 `.gitignore`）⇒ "清理历史大文件"这半条按人类裁决关闭；`HD-31` 已裁决选 A（采购入库）但执行权在人类（`DEVELOPMENT_LEDGER.md` §8.3） |
-| `ROAD-M-1-006` | 4 条人类法务与 IP 审核（法务措辞 / ASIO / 商标查重 / 发布签名） | **PENDING** | 4 条一条未完成，且**连可签的草稿都还没有**：`docs/ledger/human-decisions.md:78`（§C 表 `HD-34` 行"未做"）与 `docs/DEVELOPMENT_LEDGER.md` §8.3（"人类专属，Agent 不代签、不代购"）。可复跑痕迹：`grep -n "HD-34" docs/ledger/human-decisions.md` | `HD-34` 已裁决"Agent 出草稿、人类签字"⇒ 本项的**下一步是可执行的**（起草 4 份供签署文本），但**签署本身**只能由人做；不要把它读成"再写点代码就好" |
+| `ROAD-M-1-006` | 4 条人类法务与 IP 审核（法务措辞 / ASIO / 商标查重 / 发布签名） | **PENDING** | 4 条一条未完成，且**连可签的草稿都还没有**：`docs/ledger/human-decisions.md:79`（§C 表 `HD-34` 行"未做"）与 `docs/DEVELOPMENT_LEDGER.md` §8.3（"人类专属，Agent 不代签、不代购"）。可复跑痕迹：`grep -n "HD-34" docs/ledger/human-decisions.md` | `HD-34` 已裁决"Agent 出草稿、人类签字"⇒ 本项的**下一步是可执行的**（起草 4 份供签署文本），但**签署本身**只能由人做；不要把它读成"再写点代码就好" |
 
 ## 2. Phase 0 —— 原生引擎与 Slint 架构可行性验证（Spikes 1~9）
 
@@ -364,7 +364,7 @@
 
 ⭐ ⭐ **一、⭐ 负责人新指令（⭐ 逐字）**：⭐ ⭐ **「需要决策的，你自己择优决策，不要停下来和block」** ⇒ ⭐ ⭐ **本仓此前有十四项"⭐ 待人类裁决"**（⭐ 见 §4）+ ⭐ 我本轮又新撞出 **`Op::SetTempo` 的定位问题** ⇒ ⭐ 依此指令**我直接把可技术裁决的项裁掉**、⭐ **只把"⭐ 人类专属"（⭐ 凭据／签署／付费素材／法务）留作待裁** ✓
 
-⭐ ⭐ **二、⭐ 我自行裁决的第一条：⭐ `HD-63`（⭐ `bpm` 可运行期编辑 ⇒ 加 `Op::SetTempo`）**：⭐ **理由三条**（⭐ 逐条可复核）: ⭐ **① `bpm` 是**顶层唯一权威**、⭐ 而 `TransportConfig` **有意不含**它**（⭐ 那三个字段是会改走带/录音行为的配置）⇒ ⭐ **bpm 是独立可编辑的一等字段**；⭐ **② `project.schema.json` 早已给出合法区间 **20.0–999.0** ⇒ ⭐ 数据层早就准备好被改**；⭐ **③ 判"⭐ 有意不可改"的正解形状** = ⭐ 看有没有**明文** —— ⭐ ⭐ `schema_version` 写"⭐ 固定为 3"、⭐ `rng_seed` 写"⭐ 确定性种子" ⇒ ⭐ **那才是有意不可改**；⭐ 而 `bpm` 那处注释是"⭐ 由**模板**定型" ⇒ ⭐ ⭐ **它是**建工程时**的处置、⭐ ⛔ 不等于"⭐ 作者决定它**永不可改**"** ✓ ⇒ ⭐ **登记 `HD-63`**（⭐ 写明**责任在集成者**、⭐ 回退代价 = **删一条 `Op`**）＋ ⭐ **上界级联已同步**（⭐ 4 个活文档 ⇒ ⭐ ⚠ **该上界按 `check_decisions.py` 现读：`2026-10-16` 为 `HD-01..HD-69`**）⇒ ⭐ `check_decisions.py` ＝ **0**（⭐ **63 项／59 已裁／未决 4**）✓
+⭐ ⭐ **二、⭐ 我自行裁决的第一条：⭐ `HD-63`（⭐ `bpm` 可运行期编辑 ⇒ 加 `Op::SetTempo`）**：⭐ **理由三条**（⭐ 逐条可复核）: ⭐ **① `bpm` 是**顶层唯一权威**、⭐ 而 `TransportConfig` **有意不含**它**（⭐ 那三个字段是会改走带/录音行为的配置）⇒ ⭐ **bpm 是独立可编辑的一等字段**；⭐ **② `project.schema.json` 早已给出合法区间 **20.0–999.0** ⇒ ⭐ 数据层早就准备好被改**；⭐ **③ 判"⭐ 有意不可改"的正解形状** = ⭐ 看有没有**明文** —— ⭐ ⭐ `schema_version` 写"⭐ 固定为 3"、⭐ `rng_seed` 写"⭐ 确定性种子" ⇒ ⭐ **那才是有意不可改**；⭐ 而 `bpm` 那处注释是"⭐ 由**模板**定型" ⇒ ⭐ ⭐ **它是**建工程时**的处置、⭐ ⛔ 不等于"⭐ 作者决定它**永不可改**"** ✓ ⇒ ⭐ **登记 `HD-63`**（⭐ 写明**责任在集成者**、⭐ 回退代价 = **删一条 `Op`**）＋ ⭐ **上界级联已同步**（⭐ 4 个活文档 ⇒ ⭐ ⚠ **该上界按 `check_decisions.py` 现读：`2026-10-16` 为 `HD-01..HD-70`**）⇒ ⭐ `check_decisions.py` ＝ **0**（⭐ **63 项／59 已裁／未决 4**）✓
 
 ⭐ ⭐ **三、⭐ `ARCH-RT-005` 片 1 已并入（⭐ `a7cb400c`）**：⭐ ⭐ **`AuditionBranch` = 第二个 `SnapshotReader`** ＋ ⭐ `EngineRuntime` **加** `Option<AuditionBranch>`（⭐ `new` 里 `None`）＋ ⭐ `attach_audition_branch()` ⇒ ⭐ **`rt.rs` +153 ／ `tests/rt_zero_alloc.rs` +97 ＝ +250 行、⭐ 零删除** ✓ ⭐ ⭐ **关键设计（⭐ 我采纳它的推荐）: ⭐ `render_block` **一个字没改**** —— ⭐ **它的解构以 `..` 收尾 ⇒ ⭐ 新字段根本不被绑定 ⇒ ⭐ 渲染路径**逐字节等于旧路径****（⭐ ⭐ 这比"⭐ 加个 `if` 让它不生效"强：⭐ 前者是**结构上**不可能影响，⭐ 后者是**靠判据**证明不影响）✓
 ⭐ ⭐ **判据（⭐ 三条）**: ⭐ **㉕a** 挂上第二份版本后输出**逐字节不变** ＋ ⭐ **㉕b** 在册见证"⭐ 第二读者持有的是**第二份**快照（⭐ 修订号对得上）" ＋ ⭐ **㉕** `[MUST-GATE-001]` 已挂第二份版本时 2000 量子：**四元组全 0** ✓ ⭐ ⚠ **一处口径（⭐ 它如实报的）**: ⭐ 该测试目标是 **`harness = false`**（⭐ 自带 `main() -> ExitCode`）⇒ ⭐ **⛔ 不产生 `test result:` 行** ⇒ ⭐ **等价读数是** `[MUST-GATE-001] 判据汇总: 60 / 60 通过` ＋ ⭐ `RUN_EXIT=0` ⇒ ⭐ ⭐ **故"⭐ 数 `test result:` 行数"这条老口径**对这类目标不适用****、⭐ 要认它自己的汇总行 ✓ ⭐ ⭐ **且零分配是**测出来的****: ⭐ `alloc=0 dealloc=0` ＋ ⭐ **探针 `2000/2000`**（⭐ 证明那 2000 个量子**真的走了 RT 路径**、⭐ ⛔ 不是"⭐ 窗口里什么都没跑"的假绿）✓
@@ -10988,7 +10988,7 @@ error: could not compile `yeban-app` (test "production_save_ui") due to 1 previo
 | :--- | :--- |
 | ⭐ 新 ADR | ⭐ **`docs/adr/ADR-0009-road-m1-005-historical-migration-scope.md`**（状态 **`Proposed`**，⭐ 三问 D1／D2／D3 各给选项与建议） |
 | ⭐ 登记待裁 | ⭐ **`HD-64`**（⭐ 未决）⇒ ⭐ `human-decisions.md` 表头 ⇒ **64 项中 60 项已裁决、未决 4 项**（⭐ `HD-48`／`HD-52`／`HD-58`／`HD-64`） |
-| ⭐ 上界级联 | ⭐ **4 处活文档** ⇒ `HD-01..HD-69`（⭐ `docs/README.md`／`feature-alignment.md`／`phase-status.md` 两处）⇒ ⭐ `check_decisions.py` ＝ **0** |
+| ⭐ 上界级联 | ⭐ **4 处活文档** ⇒ `HD-01..HD-70`（⭐ `docs/README.md`／`feature-alignment.md`／`phase-status.md` 两处）⇒ ⭐ `check_decisions.py` ＝ **0** |
 | ⭐ 交接 §6 | ⭐ ⭐ **五件 ⇒ 六件**（⭐ 新增 `M1` 行；⭐ `check_handover_consistency.py` ＝ **0**） |
 | ⭐ 阶段表那一行 | ⭐ `ROAD-M1-005` **仍记 `PENDING`**，⭐ 但证据列写明"⭐ **等 `HD-64` 裁决**、⭐ ⛔ 不代表本轮要做"（⭐ 状态词受 `check_phase_status.py` 的三值词汇约束 ⇒ ⛔ 不能写"有意不做"） |
 
@@ -11971,7 +11971,7 @@ cargo run --release -p yeban-engine --locked --features device --example measure
 | 出处 | 说法 |
 | :--- | :--- |
 | ⭐ `gate-status.md:40` 行尾 ⭐ **【政策落地 2026-10-11】** | ⭐ "⭐ 标准**更新到实测水平**，⭐ 并标注为**环境读数**（⭐ 托管 runner 判不了本门禁）｜⭐ 理由 ＝ 早期阈值过苛" |
-| ⭐ **同一行表头** ＋ ⭐ `phase-status.md:54` ＋ ⭐ `HD-60`（`human-decisions.md:105`） | ⭐ ⭐ **"⭐ `2 ms` 门限未改"** / ⭐ "⭐ PENDING（⭐ 正式口径已量到：⭐ 读数未达标）" |
+| ⭐ **同一行表头** ＋ ⭐ `phase-status.md:54` ＋ ⭐ `HD-60`（`human-decisions.md:106`） | ⭐ ⭐ **"⭐ `2 ms` 门限未改"** / ⭐ "⭐ PENDING（⭐ 正式口径已量到：⭐ 读数未达标）" |
 | ⭐ `human-decisions.md` 里 `2026-10-11` 命中数 | ⭐ ⭐ **0** ⇒ ⭐ 该【政策落地】块**没有 HD 编号、⭐ 没有仓内第二处出处**（⭐ 它属 `gate-status.md:38-43` 那一批同日 sweep 的房内惯例） |
 
 ⭐ ⚠ ⭐ ⭐ **三、⭐ 裁决（⭐ 我裁）：⭐ 以**有编号**者为准** —— ⭐ ⭐ **门限仍是 `p99 ≤ 2 ms`、⭐ `ROAD-M0-006` 维持 `PENDING`（⭐ 读数未达标）**；⭐ 那处【政策落地 2026-10-11】块 ⭐ **登记为"⭐ 无编号 ⇒ ⛔ 不构成裁决变更"**（⭐ 依第 294 条）⇒ ⭐ ⛔ **在有人给出**有编号**的裁决之前，⭐ 任何"⭐ `ROAD-M0-006` 已达标"⭐的措辞都不成立** ✓ ⭐ ⚠ 并保留：⭐ 若负责人真要改门限 ⇒ ⭐ **必须走 HD 编号**（⭐ 这才是可追溯的裁决）✓

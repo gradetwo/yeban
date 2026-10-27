@@ -195,7 +195,7 @@ CARGO_HOME=/Users/crow/work/music/.cargo-home RUSTUP_TOOLCHAIN=stable \
 | `G9` 单轨贡献读数 / 分轨导出 | **半消除** | `G9a`（`contributions`）已落，`ADR-0020`；`G9b`（`yeban_export_stems`）`pending`：`line/stem-export` 最新 Run `40480780925` 尚未读回 |
 | `G10` stdio 形态无引擎 ⇒ 场景启动不可用 | **待人类裁决** | `HD-69`（形态 B 是否托管 `yeban-engine`） |
 | `G11` `midi-input` 不进 release 默认特性 | **待人类裁决** | `HD-68`（红线 6 的另一面，⛔ 集成者不擅开特性） |
-| `G12` `record_wav` 语义 | **半消除** | 回执显式指路（`notProjectBounce` + `alternatives`）已落；「接工程源」那半属 `HD` 未决项 |
+| `G12` `record_wav` 语义 | **半消除** | 回执显式指路（`notProjectBounce` + `alternatives`）已落；「接工程源」那半登记为 `HD-70`（本轮补登，见下） |
 | `G13` 编辑→合并两轮往返 | 消除 | `ADR-0029`；主干 Run `40472116248` success（workspace 全量 4505s、406 条 `test result:` / 6684 passed / 0 failed） |
 | `G14` 设备参数拼写无公告面 | `pending` | `ADR-0031` 在线；线 Run `40478327564`（`c889ecdc`）重跑中，⚠ 同分支 tip 是纯文档提交 ⇒ `40479128541` 的 success 是**空绿**（rust/macos/windows 全 `skipped`），不作判决 |
 | `G15` 段落无时间序读数 | 消除 | `sections.timeline`；主干 Run `40462525280` success + 夹具误红由 `4cfa0008` 修复（Run `40471370167`） |
@@ -203,8 +203,13 @@ CARGO_HOME=/Users/crow/work/music/.cargo-home RUSTUP_TOOLCHAIN=stable \
 | `G17` 两种提交模型并存 | `pending` | 候选切片：回执自述 `commitModel`（⛔ 不把 automation 改成提案模型） |
 | `G18` `scale` 苛刻 / 无转调工具 | **半消除** | 别名通道已落（线 Run `40464221638` + 主干 `40471370167`）；「段间转调」`pending`（全仓 `transpose` 零命中 ⇒ `G18b`） |
 
-**待裁三项不许由集成者补齐**：`G3` / `G10` / `G11` 已登记 `HD-67` / `HD-68` / `HD-69`，
-`docs/ledger/human-decisions.md` 的状态行（69 项中 61 项已裁决）随之漂移，⚠ 下次改动该表时须同步读数。
+**待裁四项不许由集成者补齐**：`G3` / `G10` / `G11` / `G12`（后半）已登记
+`HD-67` / `HD-69` / `HD-68` / `HD-70`。⭐ `HD-70` 是本轮（2026-10-27）**补登**的：
+`G12` 那条留痕原先把「接工程源」这半挂在 `HD-69` 上（⚠ **引错了** —— `HD-69` 讲的是
+MCP stdio 形态托管引擎，即 `G10`），而清单里**从未**有过 record-wav 的行；
+`grep -n "record_wav" docs/ledger/human-decisions.md` 当时是**零命中**。
+现补 `HD-70` 行并修正两处引用，`HD` 上界级联四处活文档同步 `HD-01..HD-70`
+（`check_decisions.py` 现为 **70 项 / 61 已裁决 / 未决 9 项**，机械读数一致）。
 
 ---
 
@@ -11722,7 +11727,7 @@ $ python3 scripts/gates/check_phase_status.py   # 退出 0
 - **背景与目标**:
   - 审计（G12）：`yeban_record_wav` 的名字易被读成"录本工程"，实为**内存测试音**
     （引擎测试信号落盘），调用方拿到 WAV 后以为拿到了工程混音。
-  - 本片按 `HD-69` 的裁决边界**只做指路**：接工程源本身是待人类裁项，⛔ 不擅自接线。
+  - 本片按 `HD-70` 的裁决边界**只做指路**：接工程源本身是待人类裁项，⛔ 不擅自接线。
 - **实施**:
   - `domain/record_wav.rs`：真做响应与 `dryRun` 预览**恒带** `notProjectBounce: true`
     与 `alternatives.projectBounce`（点名 `yeban_render_master`，`why` 同时点名两工具，
@@ -11739,7 +11744,7 @@ $ python3 scripts/gates/check_phase_status.py   # 退出 0
     `rust (workspace 全量)` 按 `plan` 矩阵 `skipped`（纯 mcp 侧改动）。
   - 防假绿核对：主干 run 的 `rust (yeban-mcp)` 作业日志 **85 条 `test result:` /
     合计 2126 passed / 0 failed**（`/tmp/yeban-g12-mcp.log` 读数）。
-- **仍待裁（`HD-69`）**：`record_wav` 是否接工程源（改语义 = 改契约），人类裁决前
+- **仍待裁（`HD-70`，2026-10-27 补登；原文误引 `HD-69`）**：`record_wav` 是否接工程源（改语义 = 改契约），人类裁决前
   本片口径即为终态：工具**不**产工程混音，且回执自证。
 
 ## 2026-10-27：G15 消除：`query_project` 增加 `sections.timeline` 派生视图（时间序段落读数）
