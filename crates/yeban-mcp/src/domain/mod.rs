@@ -4218,8 +4218,19 @@ fn auto_merge_failure_proof(fault: Fault, proposal_id: EntityId) -> Fault {
 /// - 外部插件自己的旋钮名不在本 crate 的任何词表里，替调用方拒绝会误伤。
 ///
 /// 那条路的写入侧此前**一个字节都不提**这件事。现在它至少有一行 `warnings[]`：
-/// `code` / 设备名 / 参数名 / 会出现的读回位置。⚠ `code` 不是故障码（`reason`），
-/// 它只是这条警告的稳定标识 —— 调用**没有**失败，工程也照旧没变。
+/// `code` / 设备名 / 参数名 / 会出现的读回位置，外加 **`knownParams`** ——
+/// 引擎真正认的全部拼写（规范名在前、别名紧随，逐字来自
+/// [`crate::effect_params::recognised_names`]）。
+///
+/// ⭐ 为什么把**整张表**塞进每一条警告（而不是只给"最像的几个"）：
+/// 走到这一支的前提就是 `similar_spellings` 为空（距离全 > 2），
+/// ⇒ 此刻**没有任何**"最近邻"可给：`reverb_mix` 与 `reverb_wet` 差 3。
+/// 只给"去读 schema"会把一次往返变成两次（调用方得先 `tools/list` 再重发）；
+/// 逐字交出词表才是**当场可修**的信息。⛔ 这里不发明任何名字：
+/// 表内容由 `tests/trap_175.rs` 与 `effect_params` 的 `insert.rs` 对账判据两头钉住。
+///
+/// ⚠ `code` 不是故障码（`reason`），它只是这条警告的稳定标识 ——
+/// 调用**没有**失败，工程也照旧没变。
 fn effect_param_warnings(ops: &[Op]) -> Vec<Value> {
     let mut warnings = Vec::new();
     for op in ops {
@@ -4234,8 +4245,10 @@ fn effect_param_warnings(ops: &[Op]) -> Vec<Value> {
                 "code": "unrecognisedEffectParam",
                 "deviceName": device.name,
                 "paramName": param.name,
+                "knownParams": crate::effect_params::recognised_names(),
                 "hint": "引擎不认这个拼写: 参数会被存储但不生效; 读回见 \
-                         `yeban_query_engine_state` 的 tracks[].inserts[].unrecognisedParams",
+                         `yeban_query_engine_state` 的 tracks[].inserts[].unrecognisedParams; \
+                         可用的拼写逐字见本条的 knownParams",
             }));
         }
     }

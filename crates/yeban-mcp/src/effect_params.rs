@@ -452,6 +452,10 @@ pub fn recognise(name: &str) -> Option<(&'static EffectGroup, &'static EffectPar
 }
 
 /// 全部被认的拼写（规范名在前、别名紧随），用于公告与判据。
+///
+/// 现下有三个公告口用它：`insertDevice.device.params.items.oneOf`（`op_schema`）、
+/// 读回的 `inserts[].recognisedParams` 口径，以及 G14 起每条
+/// `unrecognisedEffectParam` 警告里的 `knownParams` —— 同一个词表，⛔ 不允许第四份手抄。
 #[must_use]
 pub fn recognised_names() -> Vec<&'static str> {
     let mut names = Vec::new();

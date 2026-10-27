@@ -9,6 +9,7 @@
 //! | [`the_correct_spelling_is_accepted_and_reads_back_clean`] | `eq_low_gain` 合并后 `inserts[].unrecognisedParams` | **参数名个数**（0） |
 //! | [`a_deliberately_unrecognised_name_is_accepted_but_warned`] | `reverb_mix`（#156 刻意不认） | 1 条 `warnings[]` + 读回 1 个未识别名 |
 //! | [`the_eight_fifty_eight_published_spellings_are_still_all_there`] | `insertDevice.device.params.items` 的 `name.enum` | **拼写个数**（32 规范 + 26 别名 = 58） |
+//! | [`the_warning_hands_back_the_exact_accepted_spellings`] ⭐ G14 | 每条 `unrecognisedEffectParam` 警告的 `knownParams` | **拼写个数**（58）+ 1 个键集合 + 2 个"不许广告"的反面名 |
 //! | [`edit_notes_description_says_the_proposal_must_be_merged`] | `tools/list` 的 `yeban_edit_notes.description` | 1 句逐字 + 响应里 `pendingMerge` |
 //!
 //! 复跑读数：`cargo test -p yeban-mcp --test trap_175 -- --nocapture`
@@ -435,4 +436,117 @@ fn edit_notes_description_says_the_proposal_must_be_merged() {
     );
     assert_eq!(response["data"]["pendingMerge"], true, "{response}");
     assert_eq!(response["data"]["proposal"]["status"], "open", "{response}");
+}
+/// 判据 ⑥（G14）：警告**当场给拼写表** —— `knownParams` 逐字列出引擎认的 58 个拼写，
+/// 调用方不必先 `tools/list` 再重发（省一次往返），⛔ 也不许多广告一个认不出的名字。
+#[test]
+fn the_warning_hands_back_the_exact_accepted_spellings() {
+    let (mut dispatcher, auth, project) = dispatcher();
+    let (track_id, clip_id) = track_and_clip(&project);
+    let device_id = ulid("01ARZ3NDEKTSV4RRFFQ69G5FA4");
+
+    // 两条"引擎不认、又都不是拼错"的名字：`reverb_mix`（#156 刻意不认，距离 3）
+    // 与一条外部插件风格的旋钮名（词表里根本没有它的影子）。
+    let written = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_edit_notes",
+        json!({
+            "trackId": track_id.to_canonical_string(),
+            "clipId": clip_id.to_canonical_string(),
+            "ops": [{
+                "kind": "insertDevice",
+                "trackId": track_id.to_canonical_string(),
+                "device": effect_device(
+                    device_id,
+                    json!([
+                        {"name": "reverb_mix", "value": 0.5},
+                        {"name": "shimmer_amount", "value": 0.2}
+                    ]),
+                ),
+            }],
+        }),
+    );
+    assert_eq!(written["status"], "success", "{written}");
+    let warnings = written["data"]["warnings"]
+        .as_array()
+        .expect("warnings 必须是数组");
+    assert_eq!(warnings.len(), 2, "两条未识别名各一条警告: {warnings:?}");
+
+    let table = effect_params::recognised_names();
+    assert_eq!(
+        table.len(),
+        58,
+        "本判据的前提是词表有 58 个拼写（判据 ④ 也钉这个数）"
+    );
+
+    for warning in warnings {
+        let known = warning["knownParams"]
+            .as_array()
+            .unwrap_or_else(|| panic!("knownParams 必须是数组: {warning}"));
+        assert_eq!(
+            known,
+            &table
+                .iter()
+                .map(|name| json!(*name))
+                .collect::<Vec<Value>>(),
+            "警告里的表必须与词表**逐字同序**（⛔ 排序、⛔ 去重、⛔ 只给规范名）"
+        );
+        // 表里每一个名字都必须真的被 `recognise` 认下 —— ⛔ 广告一个会被拒的名字。
+        for name in known {
+            let spelling = name.as_str().expect("字符串");
+            assert!(
+                effect_params::recognise(spelling).is_some(),
+                "knownParams 里的 {spelling} 其实不被认: {warning}"
+            );
+        }
+        let mut keys = warning
+            .as_object()
+            .expect("对象")
+            .keys()
+            .map(String::as_str)
+            .collect::<Vec<_>>();
+        keys.sort_unstable();
+        assert_eq!(
+            keys,
+            ["code", "deviceName", "hint", "knownParams", "paramName"],
+            "警告的键集合必须只有这五个（多一个少一个都算契约漂移）"
+        );
+        assert!(
+            warning["hint"]
+                .as_str()
+                .expect("hint 是字符串")
+                .contains("knownParams"),
+            "hint 必须指向本条的表，否则调用方不知道去哪儿找拼写: {warning}"
+        );
+    }
+
+    // G14 点名"必须精确"的那 8 个拼写，逐字在表里。
+    for spelling in [
+        "reverb_size",
+        "reverb_damp",
+        "reverb_wet",
+        "threshold_db",
+        "ratio",
+        "attack_s",
+        "release_s",
+        "makeup_db",
+    ] {
+        assert!(
+            table.contains(&spelling),
+            "G14 报的 {spelling} 必须在公告表里"
+        );
+    }
+    // 反面：刻意不认的两个名字**不许**被表广告成可用。
+    for rejected in ["reverb_mix", "reverb_width"] {
+        assert!(
+            !table.contains(&rejected),
+            "{rejected} 是刻意不认的名字，出现在表里等于教调用方写一个静默失效的参数"
+        );
+    }
+    println!(
+        "### knownParams（逐字，{} 个拼写）\n{}",
+        table.len(),
+        serde_json::to_string(&warnings[0]["knownParams"]).expect("序列化")
+    );
 }

@@ -323,7 +323,8 @@ fn edit_notes() -> Value {
             "本调用**永远**只创建一条隔离提案分支（`pendingMerge: true` / `projectUnchanged: true`）；\
              `proposal` 是**摘要**（不含逐条 `ops`，除非 `includeOps: true`）。\
              `warnings[]` 逐条报出**非阻断**问题：`code:\"unrecognisedEffectParam\"` = 引擎不认但又不是\
-             拼错的设备参数名（带 `deviceName` / `paramName`）；`code:\"deviceOnSilentTrack\"` = 设备装到了\
+             拼错的设备参数名（带 `deviceName` / `paramName` / `knownParams` —— \
+             后者逐字列出引擎认的全部拼写，可当场改拼写重发）；`code:\"deviceOnSilentTrack\"` = 设备装到了\
              一条没有任何可发声内容的音轨上（带 `trackId` / `track` / `placements` / `notes` 与逐字 `hint`）。\
              两者都可能为空数组。",
         ),
@@ -368,6 +369,7 @@ fn edit_notes() -> Value {
                         "code": {"type": "string"},
                         "deviceName": {"type": "string"},
                         "paramName": {"type": "string"},
+                        "knownParams": {"type": "array", "items": {"type": "string"}},
                         "trackId": {"type": "string"},
                         "track": {"type": "string"},
                         "deviceId": {"type": "string"},
