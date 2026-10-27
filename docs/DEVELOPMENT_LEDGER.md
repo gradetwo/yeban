@@ -11749,3 +11749,60 @@ $ python3 scripts/gates/check_phase_status.py   # 退出 0
 - **G14 剩余**：设备 CRUD 糖（`knownParams` camelCase 枚举在
   `unrecognisedEffectParam` 预警里）仍 `pending`，因 `domain/mod.rs` / `tools.rs`
   写者由 G13 线持有，排在 G13 落地之后。
+
+## 2026-10-27：G18 半消除：`propose_section` 的 `scale` 确定性别名通道与单边输入精确回执
+
+- **需求规范 ID**: `[MCP-TOOL-005]` `[G18]`（第二半「段间转调辅助」仍 `pending`，见下）
+- **实施工作线**: `line/scale-aliases`（`beaa7aec` → `976bba66` → `03f1aec1` → `011fd7c0`，合并 `db0a1837`；夹具修复 `4cfa0008` 直落 main）
+- **背景与目标**:
+  - 审计（G18）：`scale` 只收 theory 的规范写法（`"C minor"`），`C_minor` / `Cminor` /
+    `Am` 一律被拒；报错虽响亮（带 `modes` / `noteNames` 字母表），但格式**只能靠试**。
+- **实施**（`domain/section_build.rs` +189 / −16）:
+  - **确定性别名通道**（逐字表匹配，⛔ 不猜语义）：分隔符 `_` / `-` 归一为空格；
+    后缀按 `minor|major|min|maj|m` **最长优先**剥离，且**音名头必须 ∈ `NOTE_NAMES`**
+    才重写；两 token 的调式短名（`A m`）同样归一。
+  - **单边输入按整串归属**给三条精确 `reason`：整串是合法调式 ⇒ `missingTonic`、
+    整串是合法音名 ⇒ `missingMode`、两半都不认识 ⇒ `missingSpaceOrMode`；
+    载荷带示例与字母表。未知音名 / 未知调式**照旧拒绝**（别名通道不放宽 theory 接受面）。
+  - 判据：`section_build.rs` 单测逐条钉别名等值（`C_minor`/`C-minor`/`Cminor`/`Am`/
+    `C#m`/`Bbm`/`Fmaj`/`Gmin` → 规范写法），并把两处曾钉 "`Cminor` 缺空格必须失败" 的
+    严格性判据按 `[G18]` 改写为**与规范写法等值**；`plan(..., Some("Cminor"))` 须可规划。
+  - 机械读数漂移（`fault_vocabulary` 黄金表）：词表 157→160、载荷表 157→160、
+    站点普查 出现 221→224 / 键站点 218→221 / 字面站点 210→213、规范面 reason 161→164、
+    规范行 728→742、`FROZEN_REASON_SURFACE_SHA256` → `59a44770d9b2…c38e6`。
+- **验证（四次 run，三次红灯都是真缺陷；主干一次误红是夹具随机位）**:
+  - 线 Run `40456490398`（`beaa7aec`）：**failure** —— `checks` 腿的 clippy
+    `-D rust-2018-idioms` 报 `elided_lifetimes_in_paths`（`Cow<str>` 缺 `'_`，
+    `section_build.rs:655`），`rust` / `macos` / `windows` 同因编译失败 ⇒ `976bba66`。
+  - 线 Run `40456945781`（`976bba66`）：**failure** —— `fault_vocabulary`
+    **5 条判据红**（词表、载荷表、扫描器、摘要、逐条分类）：三条新 `reason` 未登记。
+  - 线 Run `40462481785`（`03f1aec1`）：**failure** —— 剩 2 条红：
+    `the_reason_scanners_skip_comments_and_string_intervals`（行数 728→742 未改钉）与
+    `the_reason_surface_digest_is_frozen_and_documented`；新摘要 **由判据自己报出**后照抄
+    （仓库惯例：⛔ 摘要不手算）⇒ `011fd7c0`。
+  - 线 Run `40464221638`（`011fd7c0`，tip）：**`conclusion: success`**；作业读数（耗时非 0）：
+    `rust (yeban-mcp)` 471s、`windows` 1818s、`macos` 1647s、`rust (yeban-ui-mcp)` 147s、
+    `checks` 87s、`deny` 46s、`lockfile` 18s、`plan` 9s；`rust (workspace 全量)` 按 `plan`
+    矩阵 `skipped`（⛔ 不是跳过当成绿）。
+    防假绿核对：`rust (yeban-mcp)` 日志 **85 条 `test result:` / 合计 2126 passed /
+    0 failed / 0 条 `test result: FAILED`**。
+  - 合并提交 `db0a1837` 主干 Run `40468119126`：**failure**，红点**与 G18 无关** ——
+    `windows` 腿 `tests/sections_timeline.rs:87`（G15 夹具）断言 `left != right` 两侧同为
+    `["Intro","Drop","FixtureBuild","FixtureBridge","FixtureOutro"]`。根因：
+    `EntityId::new()` = `ulid::Ulid::generate()`，**同一毫秒内** `Ord` 由**随机低位**决定，
+    于是"三段降序追加 ⇒ 身份序必与时间序相反"从不是真的成立；Linux / macOS 掷出反向、
+    Windows 掷出同向 ⇒ 判据 b 误红。
+  - 根因修复 `4cfa0008`（夹具改用 `id(seed)` 钉死身份，照 `tests/render_master.rs` 同名夹具：
+    `id(1)@30k` 必排在 `id(2)@20k` 之前是**文本事实**）主干 Run `40471370167`：
+    **`conclusion: success`**；防假绿核对：`rust (yeban-mcp)` **87 条 / 2136 passed / 0 failed**，
+    `windows` **243 条 / 4826 passed / 0 failed**。
+- **登记（教训）**: 夹具里"必然相反"这类断言必须由**钉死的常量**保证，⛔ 不得依赖
+  `EntityId::new()` 的单调性 —— 单调只对**跨毫秒**成立，同毫秒内的低位是随机的。
+- **G18 剩余（未做）**: 「段间转调 / 过渡辅助」这一半**尚未消除**。全仓 ⛔ 没有任何
+  移调能力（`grep -rn "transpose\|Transpose\|transposition"` 在
+  `crates/yeban-mcp/src/op_schema.rs`、`crates/yeban-model/src/ops.rs`、
+  `schemas/ops.schema.json` 三处**零命中**），因此"把上一段整体升高五度接到下一段"
+  今天只能逐音符重写。候选切片：`Op::TransposeNotes`（或片段级整体移调）
+  + `OP_KINDS` 读数同步 + `ops.schema.json` 新分支 + reason 面摘要重钉；
+  须等 `line/effect-param-hints` 与 `line/stem-export` 落地后再开（同写
+  `op_schema.rs` / `fault_vocabulary.rs`，一文件一写者）。
