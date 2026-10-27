@@ -11587,3 +11587,33 @@ $ python3 scripts/gates/check_phase_status.py   # 退出 0
   - 防假绿核对：主干 run 的 `rust (yeban-mcp)` 作业日志 **85 条 `test result: ok` /
     0 条 FAILED**（`/tmp/g7-main-mcp.log` 读数）。
 
+
+## 2026-10-27：G6 消除：生成即增益分级（种子轨 −12 dBFS、propose_section 声部 −22…−28 dBFS）
+
+- **需求规范 ID**: `[MCP-TOOL-001]` `[MCP-TOOL-005]` `[ADR-0026]`
+- **实施工作线**: `line/generation-gain-staging`（提交 `84721e7b`，合并 `4b1ea510`）
+- **背景与目标**:
+  - 审计（`/tmp/yeban-issues-20261027` G6）：8 小节理论段直出渲染
+    `clippedSamples 527020/768000`（68.6%）、`truePeakDbfs +14.79` ⇒
+    每首生成曲首听前都要手工做增益分级（27 条 `setParam` + Master 自动化）。
+    `exportClipping` 警告本身是标杆，缺的是**生成时自带合理电平**。
+- **实施**:
+  - `project_create.rs`：出厂种子轨 `volume_db` 由 0 改为 **−12 dBFS**。
+  - `section_build.rs`：`propose_section` 生成的各声部轨按声部给
+    **−22…−28 dBFS** 生成期分级（鼓最响 −22，高喉最轻 −28），
+    与 ADR-0028 的三声部音域改造互不重叠。
+  - 裁决留痕 `ADR-0026`（集成者依 2026-10-25 人类常设授权裁定，电平参照
+    #335 手设 −9/−12/−15 的实测口径）。
+  - 判据：`creation_acceptance.rs` +103 行（生成后逐轨电平断言）、
+    `render_master.rs` +54 行（默认电平直出**不削波**的端到端读数）。
+- **验证**:
+  - 线 Run `40446912903`（`84721e7b`）`success`；`rust (yeban-mcp)` 作业日志
+    **573 条 `test result: ok` / 0 条 FAILED**（先前已读回）。
+  - 合并提交 `4b1ea510` 主干 Run `40450460964`：**`conclusion: success`**
+    （作业窗口 `04:34:21Z → 05:05:45Z`）；作业读数（耗时非 0）：
+    `rust (yeban-mcp)` 11m57s、`windows` 31m10s、`macos` 21m51s、
+    `rust (yeban-ui-mcp)` 2m10s、`checks` 1m23s、`deny` 48s、`lockfile` 21s；
+    `rust (workspace 全量)` 按 `plan` 矩阵 `skipped`（⛔ 不是跳过当成绿）。
+  - 防假绿核对：主干 run 的 `rust (yeban-mcp)` 作业日志 **85 条
+    `test result: ok` / 合计 2122 passed / 0 failed**
+    （`/tmp/g6-main-mcp.log` 读数）。
