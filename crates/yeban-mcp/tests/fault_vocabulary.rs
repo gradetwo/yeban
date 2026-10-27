@@ -44,7 +44,7 @@
 //!
 //! | 面 | reason 数 | 规范行数 | SHA-256 |
 //! | :--- | ---: | ---: | :--- |
-//! | `reason`（**可分类**面：字面量 ＋ 可解析的字面量 `let`，含顺序） | 161 | 728 | `c5056c369e24f34a11ab7349d5af96f4a552f6431c1ebe9a8b18353c6635514d` |
+//! | `reason`（**可分类**面：字面量 ＋ 可解析的字面量 `let`，含顺序） | 164 | 742 | `59a44770d9b2fabba520fbcf08530534b61e69076809b87552d5c0aca08c38e6` |
 //!
 //! ⚠ `#274`：摘要随"登记位置搬进 provider"重钉（集合不变、顺序变了）；
 //! 见 `FROZEN_REASON_SURFACE_SHA256` 的沿革注释。
@@ -62,7 +62,7 @@ use yeban_mcp::undo_session::read_rust_sources;
 /// 字面量 ＋ 同函数内可解析的字面量 `let`（#340 起）。运行时站点不进这张表，
 /// 由 [`EXEMPT_DYNAMIC_REASON_SITES`] 逐条登记。
 /// 这是黄金表：任何改名 / 新增 / 删除都必须**故意**改这一行。
-pub const GOLDEN_REASONS: [&str; 157] = [
+pub const GOLDEN_REASONS: [&str; 160] = [
     "assetChannelLayout",
     "assetDecodeFailed",
     "assetHashMismatch",
@@ -137,6 +137,10 @@ pub const GOLDEN_REASONS: [&str; 157] = [
     "midiInputSecondsOutOfRange",
     "midiInputSecondsTypeMismatch",
     "midiInputUnknownPort",
+    // ⭐ [G18]：`parse_scale` 的单边输入结构化拒绝（`domain/section_build.rs`）。
+    "missingMode",
+    "missingSpaceOrMode",
+    "missingTonic",
     "moveRequiresPlacementId",
     "moveRequiresStartTick",
     "nonFiniteValue",
@@ -941,13 +945,16 @@ const REASON_ARGUMENT_NAME_USES: [ReasonArgumentNameUse; 3] = [
 // 站点普查的冻结读数。口径：`production_region` 里 `"reason"` 的**出现次数**
 // （不是行数：一行里可能有两个；也不是 distinct 值数）。新增/删除任何站点都必须
 // **故意**改这些数 —— 这是"看全了"这件事本身的机械契约。
-const REASON_OCCURRENCES_TOTAL: usize = 221;
+// ⭐ [G18]：`domain/section_build.rs` 的三条单边输入结构化拒绝（`missingTonic` /
+// `missingMode` / `missingSpaceOrMode`）各为一处字面 `"reason"` 键站点
+// ⇒ 出现 221 → 224、键站点 218 → 221、字面站点 210 → 213。
+const REASON_OCCURRENCES_TOTAL: usize = 224;
 // ⭐ MCP-TOOL-003：键站点 208 → 216、字面站点 200 → 208 —— 新形态在
 // `domain/notes.rs` / `tools.rs` 里新增的 8 处字面 `"reason"` 站点
 // （tick 0、`bpmOutOfRange` 复用、`tempoPointNotFound`、`timeSignaturePointNotFound`
 // 与描述文本里的键形状；逐文件拆分以扫描器读数为准，此处不手数）。
-const REASON_KEY_SITES_TOTAL: usize = 218;
-const REASON_LITERAL_SITES_TOTAL: usize = 210;
+const REASON_KEY_SITES_TOTAL: usize = 221;
+const REASON_LITERAL_SITES_TOTAL: usize = 213;
 const REASON_RESOLVED_SITES_TOTAL: usize = 2;
 const REASON_DYNAMIC_SITES_TOTAL: usize = 6;
 const REASON_ARGUMENT_NAME_TOTAL: usize = 3;
@@ -1220,7 +1227,7 @@ fn every_reason_is_asserted_somewhere() {
 /// 每条 `reason` 在生产区**字面 `json!` 对象**里带的同级键（排序）。
 /// ⚠ 口径：只收字面 `json!` 里的键；运行时 `map.insert(...)` 加进去的键不在内。
 /// 空数组 = 该 reason 的 `data` 里**没有**同级键（或 Data 由别的构造方式给出）。
-pub const GOLDEN_REASON_PAYLOADS: [(&str, &[&str]); 157] = [
+pub const GOLDEN_REASON_PAYLOADS: [(&str, &[&str]); 160] = [
     (
         "assetChannelLayout",
         &[
@@ -1391,6 +1398,10 @@ pub const GOLDEN_REASON_PAYLOADS: [(&str, &[&str]); 157] = [
         "midiInputUnknownPort",
         &["field", "ports", "reason", "requested"],
     ),
+    // ⭐ [G18]：三条单边拒绝的字面 `json!` 同级键（排序表）。
+    ("missingMode", &["example", "modes", "note", "reason"]),
+    ("missingSpaceOrMode", &["modes", "noteNames", "reason"]),
+    ("missingTonic", &["example", "mode", "noteNames", "reason"]),
     (
         "moveRequiresPlacementId",
         &["field", "hint", "placementKind", "reason"],
@@ -2160,13 +2171,20 @@ fn the_reason_payload_shape_is_the_published_table() {
 /// ⇒ 159 → 161 个 reason、720 → 728 行。新摘要
 /// `c5056c369e24f34a11ab7349d5af96f4a552f6431c1ebe9a8b18353c6635514d`
 /// 由判据自己报出后照抄。
+///
+/// ⭐ `[G18]` 重钉：`parse_scale` 的单边输入结构化拒绝（`missingTonic` 4 键 /
+/// `missingMode` 4 键 / `missingSpaceOrMode` 3 键，加 3 条 reason 行）
+/// ⇒ 161 → 164 个 reason、728 → 742 行。新摘要
+/// `59a44770d9b2fabba520fbcf08530534b61e69076809b87552d5c0aca08c38e6`
+/// 由判据 `the_reason_surface_digest_is_frozen_and_documented`（CI Run 40462481785）
+/// 报出后照抄。
 pub const FROZEN_REASON_SURFACE_SHA256: &str =
-    "c5056c369e24f34a11ab7349d5af96f4a552f6431c1ebe9a8b18353c6635514d";
+    "59a44770d9b2fabba520fbcf08530534b61e69076809b87552d5c0aca08c38e6";
 
 /// 规范形式里的 reason 数 / 规范行数（与摘要一起构成"两端"读数）。
-pub const REASON_SURFACE_REASONS: usize = 161;
+pub const REASON_SURFACE_REASONS: usize = 164;
 /// 规范行数（每个 reason 一行 ＋ 每个键一行）。
-pub const REASON_SURFACE_LINES: usize = 728;
+pub const REASON_SURFACE_LINES: usize = 742;
 
 /// 单文件里的 `reason` 面：**保留出现顺序**的 `(reason, keys)`。
 ///
