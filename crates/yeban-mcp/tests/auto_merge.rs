@@ -71,7 +71,8 @@ fn call(dispatcher: &mut Dispatcher, auth: &str, name: &str, arguments: Value) -
     result["data"].clone()
 }
 
-/// 开一个新建工程（一条种子轨足够——propose_section 自己建它要的轨）。
+/// 开一个新建工程（不播种材料：本文件的四组调用一律走 `materialSource: "theory"`，
+/// 乐理生成路径**空池也可用**，见 `domain/section_build.rs` 的 `ADR-0016` 一节）。
 fn open_fresh(dispatcher: &mut Dispatcher, auth: &str, scratch: &Scratch) -> Value {
     let path = scratch.dir.join("auto.yebanproject");
     call(
@@ -82,7 +83,6 @@ fn open_fresh(dispatcher: &mut Dispatcher, auth: &str, scratch: &Scratch) -> Val
             "path": path.display().to_string(),
             "create": true,
             "title": "autoMerge 判据工程",
-            "seed": {"trackCount": 1, "clipName": "Seed", "notes": []},
         }),
     )
 }
@@ -110,7 +110,13 @@ fn auto_merge_lands_in_one_call() {
         &mut dispatcher,
         &auth,
         "yeban_propose_section",
-        json!({"sectionName": "Verse", "stylePreset": "pop", "bars": 2, "autoMerge": true}),
+        json!({
+            "sectionName": "Verse",
+            "stylePreset": "pop",
+            "materialSource": "theory",
+            "bars": 2,
+            "autoMerge": true,
+        }),
     );
     assert_eq!(data["created"], json!(true), "{data}");
     assert_eq!(
@@ -159,7 +165,7 @@ fn default_shape_is_unchanged_without_auto_merge() {
         &mut dispatcher,
         &auth,
         "yeban_propose_section",
-        json!({"sectionName": "Chorus", "stylePreset": "pop", "bars": 2}),
+        json!({"sectionName": "Chorus", "stylePreset": "pop", "materialSource": "theory", "bars": 2}),
     );
     assert_eq!(data["pendingMerge"], json!(true), "{data}");
     assert_eq!(data["projectUnchanged"], json!(true), "{data}");
@@ -206,6 +212,7 @@ fn dry_run_writes_nothing_even_with_auto_merge() {
         json!({
             "sectionName": "Bridge",
             "stylePreset": "pop",
+            "materialSource": "theory",
             "bars": 2,
             "autoMerge": true,
             "dryRun": true,
@@ -242,6 +249,7 @@ fn merge_commit_message_passes_through() {
         json!({
             "sectionName": "Outro",
             "stylePreset": "pop",
+            "materialSource": "theory",
             "bars": 2,
             "autoMerge": true,
             "mergeCommitMessage": "outro 一次到位",
