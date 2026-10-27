@@ -186,11 +186,10 @@ CARGO_HOME=/Users/crow/work/music/.cargo-home RUSTUP_TOOLCHAIN=stable \
 > **消除 14**（`G1` `G2` `G4` `G5` `G6` `G7` `G9` `G13` `G14` `G15` `G16` `G17` `G18` ＋
 > `G8`（**四片**，残余已由 `G8d` 闭合））＋ **待人类裁决 3**（`G3` `G10` `G11`）＋
 > **半消除 1**（`G12`，后半 = `HD-70`）= **18**。
-> ⚠ **`G8` 的"消除"今天还差一道判决**：`G8d` 的线 run `40565010797` 已逐腿读回
-> （承判腿是**矩阵腿** `rust (yeban-mcp)`，全量腿因"推送增量"skipped），
-> 它的**全量门禁判决**由主干 merge `e1409ad8` Run `40570998122` 补上 —— 该 run 现读
-> **`pending`**，读回之前 `G8` 按纪律只能算"代码 + 判据 + 线判决"三件齐、全量一件欠。
-> ⛔ 在 merge 判决读回前把 `G8` 写成无条件消除。
+> ⭐ `G8` 的四片今天**全部有全量判决**：`G8d` 的线 run `40565010797` 逐腿读回但全量腿
+> 因"推送增量"skipped，那道判决由主干 merge `e1409ad8` Run `40570998122` 补上 ——
+> **success**，承判腿 `rust (workspace 全量)` **真跑**（2,619s ⇒ **412 条 / 6,733 / 0**，
+> `onsets_per_bar` 8 条**逐名** `... ok`）⇒ `G8` 至此是**无条件消除**。
 
 | 缺口 | 状态 | 依据（ADR / 判决） |
 | :--- | :--- | :--- |
@@ -201,7 +200,7 @@ CARGO_HOME=/Users/crow/work/music/.cargo-home RUSTUP_TOOLCHAIN=stable \
 | `G5` 音色参数消费口径 | 消除 | `ADR-0027`；「G5 消除」条 |
 | `G6` 生成即增益分级 | 消除 | `ADR-0026`；「G6 消除」条 |
 | `G7` 同批建节点+连边被批前预检误拒 | 消除 | `ADR-0025`；「G7 消除」条 |
-| `G8` 生成控制粒度 | **消除（四片）**＋全量判决 `pending` | `G8a`（音域 + `drumDensity`）`ADR-0028`；`G8b`（`voiceSubdivision` 和声声部按跨度均匀切分 1..=16）`ADR-0033`，线 Run `40523903008`（`80d854d9`）success（承判腿 `rust (workspace 全量)` 42:08 ⇒ **408 条 / 6,703 / 0**；windows 246 / 4,849 / 0；macos 246 / 4,870 / 0；矩阵腿因 `workspace_wide: true` 跳过）＋ 主干 merge `9eb4a6c5` Run `40531221961` success（全量 1:19:24 ⇒ **409 / 6,707 / 0**）；`G8c`（`voiceSubdivisions` 切分按**声部名**给值，组合而非替换）`ADR-0035`，线 Run `40549805342`（`6ec3edd3`）success（`rust (yeban-mcp)` 869s ⇒ **97 条 / 2,212 / 0**，11 条判据**逐名**读回；macos 1,322s ⇒ 248 / 4,885 / 0；windows 1,896s ⇒ 248 / 4,864 / 0；全量腿因"推送增量规划"skipped）＋ 主干 merge `793b0a3b` Run `40560362657` **success**（全量承判 2,573s ⇒ **411 / 6,725 / 0**，`voice_subdivisions_*` 11 条逐名 `... ok`；windows 2,201s ⇒ 249 / 4,871 / 0；macos 1,163s ⇒ 249 / 4,892 / 0；矩阵腿 skipped）；`G8d`（**原残余**：`onsetsPerBar` 每小节网格可调 + 缺省值由常量 16 改为**从拍号导出** `cells_per_bar(meter)`）`ADR-0036`，⚠ 它实测**比登记的重**：常量让 `GENRES` 182 条里 **28 条非 4/4** 流派的鼓/旋律今天必失败（`ProgressionTooDense`，theory 拒绝而⛔ 夹紧），线 Run `40565010797`（`bee98ef5`）success（承判腿**矩阵腿** `rust (yeban-mcp)` 938s ⇒ **101 条 / 2,242 / 0**，8 条判据在 `rust (yeban-mcp)` / windows 2,183s ⇒ 250 / 4,879 / 0 / macos 1,729s ⇒ 250 / 4,900 / 0 **三条腿上逐名** `... ok`；全量腿因本次推送增量只有 `crates/**` 而 skipped），⛔ 上一条 `cc309f7b` Run `40563735922` 是一次**真红**（`E0423`：`assert_eq` 漏 `!`，三条腿同一错误、整轮 0 条 `test result:`），主干 merge `e1409ad8` Run `40570998122` **`pending`**（该 merge 碰根级 `schemas/**` ⇒ 预期由 `rust (workspace 全量)` 承判；读回之前 `G8d` 的全量门禁判决仍欠） |
+| `G8` 生成控制粒度 | **消除（四片）** | `G8a`（音域 + `drumDensity`）`ADR-0028`；`G8b`（`voiceSubdivision` 和声声部按跨度均匀切分 1..=16）`ADR-0033`，线 Run `40523903008`（`80d854d9`）success（承判腿 `rust (workspace 全量)` 42:08 ⇒ **408 条 / 6,703 / 0**；windows 246 / 4,849 / 0；macos 246 / 4,870 / 0；矩阵腿因 `workspace_wide: true` 跳过）＋ 主干 merge `9eb4a6c5` Run `40531221961` success（全量 1:19:24 ⇒ **409 / 6,707 / 0**）；`G8c`（`voiceSubdivisions` 切分按**声部名**给值，组合而非替换）`ADR-0035`，线 Run `40549805342`（`6ec3edd3`）success（`rust (yeban-mcp)` 869s ⇒ **97 条 / 2,212 / 0**，11 条判据**逐名**读回；macos 1,322s ⇒ 248 / 4,885 / 0；windows 1,896s ⇒ 248 / 4,864 / 0；全量腿因"推送增量规划"skipped）＋ 主干 merge `793b0a3b` Run `40560362657` **success**（全量承判 2,573s ⇒ **411 / 6,725 / 0**，`voice_subdivisions_*` 11 条逐名 `... ok`；windows 2,201s ⇒ 249 / 4,871 / 0；macos 1,163s ⇒ 249 / 4,892 / 0；矩阵腿 skipped）；`G8d`（**原残余**：`onsetsPerBar` 每小节网格可调 + 缺省值由常量 16 改为**从拍号导出** `cells_per_bar(meter)`）`ADR-0036`，⚠ 它实测**比登记的重**：常量让 `GENRES` 182 条里 **28 条非 4/4** 流派的鼓/旋律今天必失败（`ProgressionTooDense`，theory 拒绝而⛔ 夹紧），线 Run `40565010797`（`bee98ef5`）success（承判腿**矩阵腿** `rust (yeban-mcp)` 938s ⇒ **101 条 / 2,242 / 0**，8 条判据在 `rust (yeban-mcp)` / windows 2,183s ⇒ 250 / 4,879 / 0 / macos 1,729s ⇒ 250 / 4,900 / 0 **三条腿上逐名** `... ok`；全量腿因本次推送增量只有 `crates/**` 而 skipped），⛔ 上一条 `cc309f7b` Run `40563735922` 是一次**真红**（`E0423`：`assert_eq` 漏 `!`，三条腿同一错误、整轮 0 条 `test result:`），主干 merge `e1409ad8` Run `40570998122` **success**（该 merge 碰根级 `schemas/**` ⇒ 承判腿 `rust (workspace 全量)` **真跑** 2,619s ⇒ **412 / 6,733 / 0**，`onsets_per_bar` 8 条逐名 `... ok`、`voice_subdivisions_*` 11 条同框仍绿；windows 1,237s ⇒ 250 / 4,879 / 0；macos 1,400s ⇒ 250 / 4,900 / 0；矩阵腿 skipped）⇒ `G8d` 的"代码 + 判据 + 线判决 + 全量判决"四件齐 |
 | `G9` 单轨贡献读数 / 分轨导出 | 消除 | `G9a`（`contributions`）已落，`ADR-0020`；`G9b`（`yeban_export_stems`，第 **25** 台工具）已落，`ADR-0030`；线 Run `40488580940`（tip `77ac65ec`）success（`rust (yeban-mcp)` 3070s ⇒ **91 条 `test result:` / 2170 passed / 0 failed**；`windows` 1276s ⇒ 245 / 4843 / 0；`macos` 1486s），主干合并 `f28dd13d` Run `40496066367` **success**（这次承判的腿是
 `rust (workspace 全量)` 2594s ⇒ **407 / 6698 / 0**；`macos` 245 / 4865 / 0；
 `windows` 245 / 4844 / 0；`rust (${{ matrix.crate }})` 因 `workspace_wide: true` 跳过）。
@@ -12541,9 +12540,12 @@ theory 自己的判据名就写着 `an_over_dense_request_is_an_error_not_a_sile
   `windows` 2,183s ⇒ **250 / 4,879 / 0**（⚠ 它的日志里路径写成 `tests\onsets_per_bar.rs`
   反斜杠形态 —— 按 `tests/onsets_per_bar.rs` 正斜杠 grep 会**少数掉一整条腿**）、
   `macos` 1,729s ⇒ **250 / 4,900 / 0**；`rust (yeban-ui-mcp)` 919s ⇒ 4 / 99 / 0。
-- 主干 merge `e1409ad8` Run `40570998122`：**待读回（`pending`）**。
-  ⚠ 预期由 `rust (workspace 全量)` 承判（`git diff --name-only 793b0a3b e1409ad8`
-  命中根级 `schemas/mcp-tools.schema.json`）⇒ 那才是 `G8d` 的全量判决。
+- 主干 merge `e1409ad8` Run `40570998122`：**success**（已逐腿读回）。承判腿
+  `rust (workspace 全量)` **真跑** 2,619s ⇒ **412 条 `test result:` / 6,733 passed / 0 failed**，
+  8 条 `onsets_per_bar` 判据在全量日志里**逐名** `... ok`，`G8c` 的 `voice_subdivisions_*`
+  **11** 条同框仍绿；`windows` 1,237s ⇒ **250 / 4,879 / 0**；`macos` 1,400s ⇒
+  **250 / 4,900 / 0**；矩阵腿因 `workspace_wide: true` skipped；`checks` / `plan` / `deny` /
+  `lockfile` 全 success ⇒ 上面欠的那道**全量门禁判决已补上**，`G8` 这条缺口至此闭合。
   ⚠ **本次推送不合规的一次实录**（登记，不掩饰）：merge 的祖先里带着**尚未推送**的
   主干文档提交 `59ec4087`（线在 `602eabd4` 把当时本地 main 合并了进去），所以
   `e1409ad8` 这一次推送实际是"merge + 文档"挤在一起 ⇒ `59ec4087` **没有自己的 run**。
@@ -12564,3 +12566,52 @@ theory 自己的判据名就写着 `an_over_dense_request_is_an_error_not_a_sile
    落地时它就会挤进同一次主干推送（上面判决链末条的实录），既丢了独立 run，
    也让"merge 与文档分两批"这条既有规则被破。线开工前先
    `git fetch && git merge origin/main`，⛔ `git merge <本地 main>`。
+
+## 2026-10-28：完成审计 —— 创作缺口 `G1..G18` 十八条**逐条复诵**（⭐ 审计本身的判决，⛔ 新增代码）
+
+审计输入：`/tmp/yeban-issues-20261027/GAPS.md`（人类给的十八条，⛔ 不编辑它）。
+方法（每条同一套）：① 缺口原文对**当下代码**核验（⛔ 凭回忆）；② 能自己裁的 ⇒ worktree 一片
+⇒ 判据 ⇒ 四门 ⇒ 提交 ⇒ 快进合并 ⇒ 推 ⇒ **逐腿读回**；③ 不能裁的 ⇒ 登记 `HD-*` 或 ADR 非范围
+并**跳过继续**。读数都在 §5.3 那张表里，⛔ 本节不重抄 run id。
+
+### 结论（单位：条）
+
+| 处置 | 条数 | 是哪几条 |
+| :--- | :--- | :--- |
+| **消除** | **14** | `G1` `G2` `G4` `G5` `G6` `G7` `G8`（四片 `G8a`–`G8d`）`G9`（`G9a`＋`G9b`）`G13` `G14` `G15` `G16` `G17` `G18` |
+| **待人类裁决** | **3** | `G3`（＝`HD-67` 歌声合成路线）／`G10`（＝`HD-69` stdio 形态要不要托管引擎）／`G11`（＝`HD-68` `midi-input` 进不进 release 默认） |
+| **半消除** | **1** | `G12`（语义如实化**已落**；后半"要不要接工程源"＝`HD-70`） |
+| 合计 | **18** | 与输入文件逐条对齐，⛔ 无遗漏、⛔ 无发明 |
+
+### 三条**审计期间被推翻的登记前提**（⭐ 这些是本节最值钱的部分）
+
+1. **`G16` 不是缺口**：登记说"弯音曲线只能整条重写"，实测 `setPitchBendPoint` **早已存在**
+   且能单点编辑 ⇒ 处置＝登记＋补判据核对，⛔ 写新代码。**"先 grep 交付再下结论"救掉一整片。**
+2. **`G8` 的残余比登记的重**：原写"每小节音头数是常量、不可调"（语气＝功能请求），
+   实测＝`GENRES` 182 条里 **28 条非 4/4** 流派的鼓/旋律**今天必失败**（theory 的
+   `ProgressionTooDense` 是⛔ 拒绝而⛔ 夹紧）⇒ 它是**缺陷**，`G8d` 按缺陷修。
+3. **§0.5.8 第 11 项那四条队列，三条已经不成立**（2026-10-28 逐条核代码）：
+   `setTimeSignature` 的**派发层 e2e 已在** `crates/yeban-mcp/tests/tools_e2e.rs:7459`
+   （走完整 `edit_notes → merge_proposal → query_project → undo/redo` ＋ 母带 A/B 逐字节）；
+   `fault_vocabulary` 的 `Unclassified` **已归零**（`fault_vocabulary.rs:1001`／`:2848` 断言
+   `== 0` 且逐点给 file:line）；`project.schema.json` 的 `prefixItems` **无候选**
+   （唯一的定长二元组 `pitch_bend_curve` 已有，`music.rs:233` ↔ `project.schema.json:1115`）。
+   ⇒ ⭐ **只有第四条（运行期 `reason` 的调用点传播）是真缺口**，已开成
+   `line/reason-propagation`（盲区点名在 `fault_vocabulary.rs:889`
+   `EXEMPT_DYNAMIC_REASON_SITES`，其 `retires_when` 逐字写"让扫描器做调用点传播"）。
+   ⚠ **教训**：队列里"登记日期早于最近三次落地"的条目，**每一条都要重新核验**再派单 ——
+   四条里三条已被自己的工作关掉，这在本仓是**第 N 次**"自述型清单会腐烂"（第 44 条）的兑现。
+
+### 审计的边界（⛔ 把⛔ 做的事写成做过）
+
+- 十八条处置**全部有 CI 读回**或**登记为人类待裁**；⚠ 但"消除"只等于**代码 + 判据 + 判决**，
+  ⛔ 不等于人类验收：`HD-52`（Logic 三轨供体）与"听那首 6 秒曲子／听三对／真声卡／真 MIDI
+  键盘／物理回环线"**仍是人类那一格**。
+- `G18` 行的"＋三条待人类裁决的规范缺口"指的是 `ADR-0034` **D4** 三条（段级目标调／
+  in-scale 转调／平滑声部连接的取舍）—— ⚠ 它们**只登记在 ADR**、未开 `HD` 行，
+  因为开 `HD` 行要级联 `docs/README.md`／`feature-alignment.md`／`phase-status.md` 与
+  `check_decisions.py` 的点名未决集合（同 `ADR-0036` **非范围 3**）。⛔ 假装它们在 `HD` 清单里。
+- 交接已重写：`docs/ledger/handover-latest.md` 新增 **§0.6（2026-10-28）**为当下状态，
+  §0.5（2026-10-26，macOS）/§1/§1.9 标为历史；§5 的 worktree 表与 §6 的裁决表按现读改正
+  （⚠ §6 那几张表**全是历史明细**，真正的未决在 `human-decisions.md` 的 9 条）。
+  `python3 scripts/tools/check_handover_consistency.py` 现读 **[ok]**。

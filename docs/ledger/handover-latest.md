@@ -1,10 +1,130 @@
 # 交接（夜半第三阶段 · 2026-10-14 · 覆盖台账 R307–R1144）
 
+> ⭐ **2026-10-28：当下状态看 §0.6**（创作缺口审计 `G1..G18` 全轮 + 完成审计）；⭐ 本轮的逐单明细记在 `docs/DEVELOPMENT_LEDGER.md` 的尾部，`phase-status.md` 的叙事条目停在 R1144。
+
 ---
 
-## ⭐ ⭐ ⭐ §0.5 最新交接（**2026-10-26 06:26**，台账 R1131–R1144）—— 新会话先读这一节
+## ⭐ ⭐ ⭐ §0.6 最新交接（**2026-10-28**，创作缺口审计 `G1..G18` 全轮 + 完成审计）—— 新会话先读这一节
 
-> 本节是**当前**状态。下面 §1／§1.9 是历史快照（2026-10-16／2026-10-20），⛔ 不要当成今天的事实。
+> 本节是**当前**状态；下面 §0.5（2026-10-26，macOS 主机）与 §1／§1.9 是**历史快照**，
+> ⛔ 不要当成今天的事实 —— ⚠ 尤其 §0.5 里的路径与 env 是**另一台机器**的。
+> ⚠ 本轮的逐单明细记在 `docs/DEVELOPMENT_LEDGER.md`（§5.3 的状态表 + 各轮条目），
+> `docs/ledger/phase-status.md` 的叙事条目**停在 R1144**（2026-10-26）⇒ ⭐ 读进度以
+> `DEVELOPMENT_LEDGER.md` 的尾部为准，⛔ 不要以为 R1144 之后没干活。
+
+### 0.6.0 ⚠ 环境已经换了（第一条就要说）
+
+| 项 | 值（现读 2026-10-28） |
+| :--- | :--- |
+| 主机 | **Linux**（`7.2.7-1-cachyos x86_64`，rustc `1.99.0` stable，⛔ 不是 §0.5 说的 Apple M2 / macOS） |
+| 仓库 | `/home/crow/work/qoder/yeban`（⛔ 不是 `/Users/crow/work/music/yeban`） |
+| `gh` | 已登录 `gradetwo`；**每条命令都要带 `--repo gradetwo/yeban`**（本机没有默认仓库上下文） |
+| 磁盘 | 235G 用了 209G ⇒ **可用约 20G（92%）**；清理只允许 `bash scripts/dev/trim-target.sh` |
+| 本机能力 | ⛔ `yeban-mcp` 拖 `yeban-render` ⇒ 它的 `clippy --all-targets` / `test` **在本机跑不起**（§5 重依赖禁令）。本机只有 `cargo fmt`、零依赖 crate（`yeban-theory`／`yeban-model`）的 clippy/test、全部守卫与 schema 脚本、`run-gates.sh light` |
+| ⚠ 由此推论 | 判据里的**类型错误 / 宏名写错**本机抓不到 ⇒ 提交前必须机械扫一遍改动的 `.rs`（见 §0.6.4 第 1 条），⛔ 把"fmt 过了"当"编译过了" |
+
+### 0.6.1 本轮做了什么：**`G1..G18` 十八条创作缺口全部处置**
+
+分布（单位：条，逐行数 `docs/DEVELOPMENT_LEDGER.md` §5.3 的状态列）：
+**消除 14** ＋ **待人类裁决 3**（`G3`／`G10`／`G11`）＋ **半消除 1**（`G12`，后半 = `HD-70`）= **18**。
+每条的 ADR、run id、承判腿、`test result:` 三读数都在那张表里，⛔ 本节不重抄数字。
+
+本轮最后两片（`G8c`／`G8d`，`ADR-0035`／`ADR-0036`）把"生成粒度"轴补齐到 **4 个参数**：
+`drumDensity`（筛点）、`voiceSubdivision`（每跨度切和声）、`voiceSubdivisions`（逐声部给值）、
+`onsetsPerBar`（每小节网格，缺省**从拍号导出** `cells_per_bar(meter)`）。
+`G8d` 顺带修掉一条**实测到的既有缺陷**：常量 16 让 `GENRES` 182 条里 **28 条非 4/4** 流派的
+鼓/旋律**根本生成不出来**（theory 的 `ProgressionTooDense` 是拒绝而⛔ 夹紧）。
+
+### 0.6.2 判决：**本轮全部读回，⛔ 欠判决**（未读回 ＝ 没有判决）
+
+| 提交 | run | 判决（承判腿 + 三读数） |
+| :--- | :--- | :--- |
+| `cc309f7b`（`G8d` 第一批） | `40563735922` | **failure** —— `E0423`：`assert_eq` 漏 `!`（三条腿同一错误、整轮 0 条 `test result:`）⇒ 真红，⛔ 空绿 |
+| `bee98ef5`（`G8d` 修复） | `40565010797` | **success** —— 承判腿**矩阵腿** `rust (yeban-mcp)` 938s ⇒ **101 / 2,242 / 0**，8 条判据在**三条腿逐名** `... ok`；全量腿因"推送增量只含 `crates/**`"skipped |
+| 主干 merge `e1409ad8` | `40570998122` | **success** —— 承判腿 `rust (workspace 全量)` **真跑** 2,619s ⇒ **412 / 6,733 / 0**；windows 1,237s ⇒ 250 / 4,879 / 0；macos 1,400s ⇒ 250 / 4,900 / 0 ⇒ `G8d` 的全量判决补齐 |
+| 本文件所在的**文档批次** | 本次推送后读回 | ⚠ 纯文档 ⇒ `plan` 判无 crate ⇒ 所有 rust 腿 `skipped` 而 `conclusion: success` ⇒ **空绿**，⛔ 当判决用；`G8d` 的判决只认代码 run `40570998122` |
+
+### 0.6.3 ⭐ 待人类裁决（⛔ 集成者不代签；本轮全部**登记后跳过**，没有停等）
+
+`python3 scripts/gates/check_decisions.py` 现读 **70 项 / 61 已裁 / 未决 9**，
+未决的九个就是下表九行（⛔ 本文件 §6 那几张表**都是历史明细**，见 §6.0）：
+
+| 未决 | 事项 | 本轮新增？ |
+| :--- | :--- | :--- |
+| `HD-67` | 歌声合成走哪条路线（审计 `G3`：SFZ 曲库／共振峰／勘察先行／有意不做） | ⭐ 是 |
+| `HD-68` | `midi-input` 要不要进 release 默认特性（审计 `G11`，红线 6） | ⭐ 是 |
+| `HD-69` | stdio 形态要不要托管引擎／场景启动的形态边界（审计 `G10`） | ⭐ 是 |
+| `HD-70` | `record_wav` 要不要接工程源（审计 `G12` 后半） | ⭐ 是 |
+| `HD-52` | 要一份 Logic 12.2 的三轨工程 + 其导出的 `.mid`（多轨 Logic 导出容量停在 **2**） | 历史（需素材） |
+| `HD-58` | 没有参考机 runner 时 `BASELINE-*` 按什么口径记 | 历史 |
+| `HD-64` | `ROAD-M1-005` 历史迁移器的范围（`ADR-0009`） | 历史 |
+| `HD-65` | 会话 CC 状态要不要加轨道维度 | 历史 |
+| `HD-66` | SFZ `cutoff` 族的 `lpf_2p` 要不要落地滤波器 | 历史 |
+
+⚠ **另有两处只登记在 ADR、未开 `HD` 行**（开 `HD` 行要级联 `docs/README.md`／
+`feature-alignment.md`／`phase-status.md` 与 `check_decisions.py` 的点名未决集合）：
+`ADR-0034` **D4** 三条（段级目标调／in-scale 转调／平滑声部连接的取舍）、
+`ADR-0036` **非范围 3**（6/8 这类复合拍是否以"拍"而非十六分格为默认单位）。
+
+### 0.6.4 本轮新增的纪律（每条都是**实测**换来的，完整措辞见台账各轮的"本轮新增的规则"）
+
+1. **宏调用漏 `!` 要机械扫**：`cargo fmt` 只保证**能解析**，不保证 `assert_eq` 是宏 ——
+   本轮 `G8d` 因 `assert_eq(`（漏 `!`）烧掉一整轮 CI（`E0423`，三条腿同一错误、
+   整轮 0 条 `test result:`）。本机跑不起 `yeban-mcp` 的 clippy ⇒ 用
+   `grep -nE '(^|[[:space:]])(assert|assert_eq|assert_ne|panic|vec|format|write|writeln)\('`
+   扫改动的 `.rs` 再筛掉带 `!` 的那些。
+2. **跨平台日志按**测试名/二进制名**匹配，⛔ 按 POSIX 路径字形**：Windows 作业日志里
+   同一条判据写成 `tests\onsets_per_bar.rs`（反斜杠），正斜杠 grep 得 **0 次命中**，
+   看起来就像"那条腿没跑这些判据"。
+3. **线的 `merge(main)` 只能合**已推送**的主干 tip**：本轮把本地未推的文档提交带进线树，
+   落地时它挤进了同一次主干推送 ⇒ 那个文档提交**没有自己的 run**（实录见台账）。
+4. **能在零依赖侧量完的⛔ 留给 CI**：`yeban-theory` 本机可跑（几秒），所以"整张流派表
+   能不能生成"这类判断用仓库外的临时 probe crate 在本机量完，省下的是一轮 1 小时 20 分。
+   ⚠ 探针的调用顺序必须与生产路径**一致**，否则证明的不是同一条路径。
+5. **判据必须是可观察量**：ADR 草案写"每小节音头数 == 格位数"，实测**鼓**的一格可落多个
+   鼓（4/4 十六格产出 88 条击点）⇒ 那条判据要么永远绿、要么毫无信息；换成
+   "**旋律音数 = 小节数 × 格位数**"（`build_weighted_grid` 的 `hits.len() = bars × wanted`）才可数。
+
+### 0.6.5 ⭐ 下一个该做什么
+
+1. ⭐ **先读回 §0.6.2 最后一行**（文档批次那轮）—— 但⚠ 它注定是**空绿**，读它是为了
+   **确认⛔ 有 rust 腿真跑**，⛔ 把它当代码判决。
+2. 创作缺口这条线（审计 `G1..G18`）上**没有 `pending` 的代码工作了**：十八条全部处置，
+   剩下的 4＋5 条要人类回答（§0.6.3），⛔ 集成者不得代签，也⛔ 为了"有活干"发明需求。
+3. ⭐ **在飞的线：`line/reason-propagation`**（`scripts/dev/worktree.sh add` 开的
+   `.worktrees/reason-propagation`）—— 做的是"运行期 `reason` 的调用点传播"：
+   `crates/yeban-mcp/tests/fault_vocabulary.rs:889` 的 `EXEMPT_DYNAMIC_REASON_SITES`
+   盲区（`domain/notes.rs:6527`/`:6539` 与 `:5424`/`:5442` 的运行时拼接 `reason`
+   没被扫描器传播到调用点，`retires_when` 逐字写着"让扫描器做调用点传播"）。
+4. ⚠ **上面 §0.5.8 第 11 项那四条队列，2026-10-28 逐条对代码核验过**（药方就是"派单前 grep"）：
+   - `setTimeSignature` 派发层 e2e ⇒ **已存在**（`crates/yeban-mcp/tests/tools_e2e.rs:7459`
+     走完整 `edit_notes → merge_proposal → query_project → undo/redo`，`:7608` 断言 6/8
+     已提交，还带母带 A/B 逐字节相同）⇒ ⛔ 开票。
+   - `fault_vocabulary` 的 `Unclassified` 覆盖面 ⇒ **已闭合**（`fault_vocabulary.rs:1001`
+     与 `:2848` 断言 `Unclassified == 0` 并逐点给 file:line；`#340` 的 204/204）⇒ ⛔ 开票。
+   - `project.schema.json` 的 `prefixItems` ⇒ **无候选**：工程 JSON 里唯一的定长二元组是
+     `pitch_bend_curve`（`crates/yeban-model/src/music.rs:233`），它已有 `prefixItems`
+     （`schemas/project.schema.json:1115`）；其余 `type: array` 都是同类数组 ⇒ ⛔ 开票。
+   - 真键输入（侧链求值）⇒ **需要真硬件**（人类那一格，见第 5 条）。
+5. ⚠ **人类专属、机器做不了**：真声卡核验／听那首 6 秒曲子（`target/acceptance-335/`，
+   ⛔ 本机 target 已被裁剪过，产物可能不在）／听三对／真 MIDI 键盘／物理回环线。
+
+### 0.6.6 进入状态（五条命令，⛔ 不要凭记忆）
+
+```bash
+cd /home/crow/work/qoder/yeban
+git log --oneline -3 && git status --porcelain            # 主干与脏不脏
+git worktree list                                          # 在飞的线以磁盘为准
+gh run list --repo gradetwo/yeban --branch main --limit 3 --json headSha,status,conclusion
+python3 scripts/gates/check_decisions.py && bash scripts/gates/run-gates.sh light
+bash scripts/dev/trim-target.sh                            # 磁盘 92% 时先清
+```
+
+---
+
+## ⭐ §0.5 交接（**2026-10-26 06:26**，台账 R1131–R1144）—— ⚠ **历史快照**：⭐ 当下状态看 **§0.6**
+
+> ⚠ **2026-10-28 追记：本节的"当前"已被 §0.6 取代**（主机也从 macOS 换到 Linux、⛔ 本节里的路径与 env 全作废）。下面 §1／§1.9 同样是历史快照。
 > 权威台账仍是 `docs/ledger/phase-status.md` 的尾部（R1131–R1144）；⚠ 它是单行巨石，**⛔ 不要 `grep -n`**。
 
 ### 0.5.0 ⛔ 铁的约束 ＋ 进入状态的第一件事（先看这一节，再看 §0）
@@ -20,7 +140,7 @@
 cd /Users/crow/work/music/yeban
 git log --oneline -1 && git status --porcelain          # 主干与脏不脏
 git worktree list                                        # 有哪些线（在飞的那条以磁盘为准）
-git -C .worktrees/mcp-import log --oneline -1 && git -C .worktrees/mcp-import status --porcelain
+git -C <那棵在飞的工作树> log --oneline -1 && git -C <同上> status --porcelain   # ⚠ 该线已于 2026-10-27 落地并拆树
 XDG_CACHE_HOME=/Users/crow/work/music/.cache gh run list --limit 6 --json headSha,status,conclusion
 python3 scripts/guards/policy_check.py && bash scripts/gates/run-gates.sh light
 ```
@@ -33,12 +153,12 @@ python3 scripts/guards/policy_check.py && bash scripts/gates/run-gates.sh light
 | :--- | :--- |
 | 主干 | **`cb8dcef9`**（已推；`git status --porcelain` = **0 行**） |
 | 磁盘可用 | **112 Gi**（`bash scripts/dev/trim-target.sh` 刚从 32 Gi 拉回，target 93.8 GB → 11.3 GB） |
-| 工作树 | 3：主 ＋ `.worktrees/mcp-import`（**在飞**）＋ `.worktrees/website`（`d79a8b41`，与本任务无关） |
+| 工作树 | ⚠ **已过期**：那一轮的三棵（主树 ＋ MIDI 导入线 ＋ 网站线）**今天都已落地并拆掉**，现读 `git worktree list` 以磁盘为准 |
 | 待裁 | **0 项**（今天所有分岔我都自己裁了，见 §0.5.7，**可一句话推翻**） |
 
 ### 0.5.2 ⭐ 在飞的一线（**已提交，磁盘状态才算数**）
 
-`.worktrees/mcp-import`，分支 `line/mcp-import`，基 `cb8dcef9`，**HEAD = `5957627e`**，`git status --porcelain` **空**。
+⚠ **2026-10-28 追记：本小节整段作废**（那条 MIDI 导入线已落地、工作树与分支都已删）。原文：分支 `line/mcp-import`，基 `cb8dcef9`，**HEAD = `5957627e`**，`git status --porcelain` **空**。
 票 **`#344`**：把 MIDI 导入的**纯映射**从 `crates/yeban-app/src/import_midi.rs` **搬进 `crates/yeban-midi/src/import.rs`**（与既有 `export.rs` 对称）。**已完成的部分**：映射 ＋ 18 个单元测试已搬；app 保留 `import_midi_bytes`／`import_midi_file`／`MidiImportReport` ＋ 4 条 `UndoPort` 绑定的测试，并 `pub use` 重新导出，既有调用方与集成测试**断言不变**；新增 `test-fixtures` 特性（app 的 dev-dep 打开它）。读数：app 的 `import_midi` 模块 22→4，`yeban-midi::import` 18 passed，`midi_round_trip` 11 passed，`import_midi_losses_ui` 4 passed，`cargo test -p yeban-app` **937 passed / 0 failed**；`cargo tree -p yeban-app -e normal | grep -c yeban-mcp` = **0**。
 
 **⚠ 它的下一步（确切动作，按顺序）**：
@@ -47,9 +167,9 @@ python3 scripts/guards/policy_check.py && bash scripts/gates/run-gates.sh light
 2. `bash scripts/dev/target-lock.sh -- cargo test -p yeban-midi --locked`；`bash scripts/gates/run-gates.sh light`；`bash scripts/dev/line-gate.sh`。
 3. 票要求的 `import_target_is_empty` 注入证明**还没做**（什么都没注入，所以没有待还原的东西）。
 4. 票里 `grep -c yeban-import == 1` 那条判据**作废**。
-5. 全绿后：`git -C .worktrees/mcp-import rebase b1b29f72`（或当时的 trunk）⇒ `git merge --ff-only line/mcp-import` ⇒ 推 ⇒ 读回 CI ⇒ 入册 ⇒ `git worktree remove .worktrees/mcp-import` ＋ `git branch -D line/mcp-import`。
+5. 全绿后：`git -C <该线工作树> rebase b1b29f72`（或当时的 trunk）⇒ `git merge --ff-only line/mcp-import` ⇒ 推 ⇒ 读回 CI ⇒ 入册 ⇒ `git worktree remove <该线工作树>` ＋ `git branch -D line/mcp-import` ＋ `git branch -D line/mcp-import`。
 
-**⛔ 不要盲信这段文字胜过磁盘**：`git -C .worktrees/mcp-import log --oneline -1` 与 `status --porcelain` 是权威。
+**⛔ 不要盲信这段文字胜过磁盘**：`git worktree list` ＋ 各工作树的 `log --oneline -1` 与 `status --porcelain` 是权威。
 
 ### 0.5.3 ⏳ 未读回的判决（**未读回 ＝ 没有判决**）
 
@@ -508,7 +628,7 @@ python3 scripts/guards/policy_check.py && bash scripts/gates/run-gates.sh light
 ⚠ ~~以前无守卫~~（`scripts/guards/*.py` 与 `ci.yml` 里零命中）——
 它是**流程规矩**、天然难做成代码属性；若要补，**法务文件的 SHA-256 基线**是自然做法。
 
-## 4. ⭐ 最要紧的纪律（完整 **37–321** 条在台账；本会话新增 **56–321**）
+## 4. ⭐ 最要紧的纪律（完整 **37–362** 条在台账 `docs/ledger/phase-status.md`；⭐ 本文件 ⛔ 不复制它们）
 
 > ⭐ **本会话新增的 16 条要点（逐条台账可查）**：⭐ 56 先按类清扫再加平台腿；⭐ 57 归一修「内容」、⛔ 不修「字节」；⭐ 58「报错方向」是独立收益；⭐ 59 缺口三类型；⭐ 60 派单前先查它是否已存在；⭐ 61 扩腿预期红、预置回退；⭐ 62 某腿红先取产物；⭐ 63 勘察不必由线做；⭐ 64 running 就等、⛔ 不中断；⭐ 65 light 退出码须提交前读；⭐ 66 删除用绝对路径；⭐ 67「环境不允许」须先排除调用错；⭐ 68 报错变了≠修好了；⭐ 69 把不可验缩到最小；⭐ 70 待裁状态有成本、要写默认动作；⭐ 71「注入做不出来」是结构性结论。
 > ⭐ **81** 查字段有没有行为、**读者与写者两边都查**；⭐ **82** 按 `#[cfg(test)]` 切分的自动遍历**只能产出候选**；
@@ -753,31 +873,38 @@ python3 scripts/guards/policy_check.py && bash scripts/gates/run-gates.sh light
 
 | 路径 | 分支 | 处置 |
 | :--- | :--- | :--- |
-| `/Users/crow/work/music/yeban` | `main` | 主树（集成者工作区）|
-| `.worktrees/mod-app` | `line/mod-app` | 四条持久线，**复用、⛔ 不拆** |
-| `.worktrees/mod-mcp` | `line/mod-mcp` | 同上 |
-| `.worktrees/mod-model` | `line/mod-model` | 同上 |
-| `.worktrees/mod-engine` | `line/mod-engine` | 同上（**等规范**）|
-| `.worktrees/website` | `website` | ⚠ ⭐ **⛔ 不得删**（有未推提交）|
+| `/home/crow/work/qoder/yeban` | `main` | 主树（⭐ 集成者工作区，⛔ 不在这里写线代码）|
+| `.worktrees/reason-propagation` | `line/reason-propagation` | ⭐ **在飞**（基 `e1409ad8`＝当时**已推送**的主干 tip）：运行期 `reason` 的调用点传播（`crates/yeban-mcp/tests/fault_vocabulary.rs:889` 的 `EXEMPT_DYNAMIC_REASON_SITES`）|
+
+> ⚠ **2026-10-28 更正（本表此前陈旧）**：上面那行是**唯一**在飞的线。曾经列在这里的四条持久线
+> （`line/mod-app`／`line/mod-mcp`／`line/mod-model`／`line/mod-engine`）与网站线那棵**都已拆除**
+> —— ⭐ 本表只按 `git worktree list` 现读填写，⛔ 凭记忆补行（交接一致性检查就是为这类陈旧写的）。
 
 ⚠ **worktree 的上游被普遍配成 `refs/heads/main`** ⇒ 裸 `git push` **默认会改主干** ⇒ ⭐ **一律写显式 refspec**（`command git push origin HEAD:main` 或 `origin <branch>:refs/heads/<branch>`）、**⛔ 永不用 `git push -u`**。
 ⚠ 删除前必验三条：`dirty=0` ＋ `unpushed=0` ＋ 已并入 `origin/main`。
 ⭐ **临时树的口径（第 251 条）**：同一 crate 要不相关切片时用 `scripts/dev/worktree.sh add <line>-<n> <base>` 另开一棵（⛔ 切片的线不得与持久线共树），**收工（已并入 `origin/main`）就拆掉并删分支**；⭐ 走过场的例子：`mod-app-86` 那棵（R743 事故的处置树，`#86` 落地 `4a35c67f` 后已拆）。⚠ 拆树**同时**要把本表的那一行去掉 —— 否则交接一致性检查会红。
 
 ## 6. ⭐ ⭐ 待人类裁决（**六件**；R463 是一页汇总表、R467 加了第 4 件、**R483 加了第 5 件 D3**、**2026-10-16 加了第 6 件 `M1`／`HD-64`**）
+ 
+
+> ⭐ **§6.0（2026-10-28 追记，⭐ 读本节先看这一段）**：下面几张表**全是历史明细** ——
+> ⭐ A1／A2／B1／D2／D3／M1／E1–E4／F1–F6 **都已由集成者按 2026-10-25 常设授权自行裁决并落地**，
+> ⭐ ⛔ 把它们当待办。**当下真正等人回答的四条**是 `HD-67`／`HD-68`／`HD-69`／`HD-70`
+> （歌声合成路线／`midi-input` 进 release／stdio 场景启动的形态边界／`record_wav` 要不要接工程源），
+> ⭐ 权威清单在 `docs/ledger/human-decisions.md`（现读口径见 §0.6.3），⛔ 不在本节这些表里。
 
 ⭐ ⚠ ⭐ ⭐ **追加（2026-10-20，R967–R968）：⭐ 第 7–10 件** —— ⭐ **全部是"⭐ 两条导出路径的架构边界"**、⭐ 按 `#250` 勘察实测。
 
-| ⭐ # | ⭐ 待裁 | ⭐ 选项与代价 | ⭐ 我的建议 |
+| ⭐ # | ⭐ 事项（⭐ 本表条目**均已处置**，见 §6.0） | ⭐ 选项与代价 | ⭐ 我的建议 |
 | :--- | :--- | :--- | :--- |
 | ⭐ ⭐ **7** | ⭐ ⭐ **`E1`：⭐ MCP 的音源要不要换成引擎音色**（⭐ 现在 `MidiSynthSource` 是**内置正弦**、⭐ ⛔ 不是引擎音色） | ⭐ ① ⭐ 加 `(yeban-mcp, yeban-engine)` 例外 ⇒ ⭐ **实测闭包只差 1 行、⭐ 零新增第三方包、⭐ 单编不编 `cpal`**（⭐ 但 ⭐ workspace 全量仍编）★ ⚠ 代价：⭐ **违反 crate 自述规则"轻量 crate 不拖音频栈"** ⇒ ⭐ 门禁每次打印偏离 ② ⭐ `yeban-render` 长出引擎音源 ⇒ ⭐ **门禁代价 0**（⭐ `(mcp, render)` 例外已登记）★ ⚠ 代价：⭐ **违反 render 的"源是注入的"契约**；⭐ `ADR-0001 D19` ⭐ **只授权了 PDC、⛔ 没授权音源** ⇒ ⭐ **需补 ADR** ③ ⭐ 新建轻量 crate 下移投影层 ⇒ ⭐ **1500–2500 行** ★ ⚠ 唯一不需例外的路 | ⭐ ⭐ **先维持两条 ＋ ⭐ 已在响应里标明**（⭐ `data.midiSource`，⭐ `#251` 已落）⇒ ⭐ **E1 从"隐形差异"变"显式差异"**；⭐ 真要统一 ⇒ ⭐ **选 ③（⭐ 正解）或 ②（⭐ 便宜但要 ADR）** |
 | ⭐ **8** | ⭐ **采样器轨的声相**（⭐ CLI 与 MCP **都不应用**） | ⭐ 补 ⇒ ⭐ 两条一起改、⭐ 会改采样器导出字节；⭐ 不补 ⇒ ⭐ 保持现状、⭐ 登记为缺口 | ⭐ ⭐ **暂不补**（⭐ `#251` 已实测：⭐ 单边补会把 CLI/MCP 一致判据打红到 `0.831470`）|
 | ⭐ **9** | ⭐ **帧数语义**（⭐ CLI 缺省 **8 秒固定**、⭐ MCP 按**工程末端推导**） | ⭐ 给 MCP 加可选 `frames`／⭐ 给 CLI 加 `--wav-frames` ⇒ ⭐ **两侧可对齐**、⭐ 默认字节不变 | ⭐ ⭐ **可以加**（⭐ 零默认改动、⭐ 且 ⭐ 它是 `C1` 判据最硬的前置条件）|
 | ⭐ **10** | ⭐ **容器／⭐ 抖动／⭐ 采样率**（⭐ MCP 自研 RF64/BW64＋`bext`、⭐ CLI `hound` plain WAV；⭐ 抖动种子不同；⭐ 采样率一个吃请求一个吃工程） | ⭐ 合并任一 ⇒ ⭐ **改产品行为** | ⭐ ⭐ **不合并**（⭐ 那是**刻意的实现差异**、⛔ 不是缺陷）⇒ ⭐ **判据只比 `masterDigest`、⭐ ⛔ 不比整文件 `sha256`** |
 
-⭐ ⚠ ⭐ ⭐ **并一条**已关闭**的**: ⭐ ⭐ **原 `E3`（"⭐ MCP 施加 master 增益、⭐ CLI 不施加"）⭐ **已过期**** —— ⭐ `render_core.rs:646-676` ⭐ **现在施加**（⭐ `#243` 带的）⇒ ⭐ **从待裁里删掉** ✓
+⭐ ⚠ ⭐ ⭐ **并一条**已关闭**的**: ⭐ ⭐ **原 `E3`（"⭐ MCP 施加 master 增益、⭐ CLI 不施加"）⭐ **已过期**** —— ⭐ `render_core.rs:646-676` ⭐ **现在施加**（⭐ `#243` 带的）⇒ ⭐ **本节不再列它** ✓
 
-> ⭐ ⚠ ⭐ ⭐ **2026-10-22 更正（⭐ R1023）：⭐ 下表**不是待裁** —— ⭐ 四件（A1／A2／B1／D2）**早已由集成者裁决并逐件落地**（⭐ 见下方 `:556-564` 那张表 ＋ ⭐ `E1` 段的两次"已过期"声明）★ ⭐ ⭐ **本表保留原文只为追溯**、⭐ ⛔ **别把它当待办** ⇒ ⭐ ⚠ **真正的待裁在文件后段的 `E1–E4` ＋ `F1–F6` ＋ `HD-64`／`ADR-0008`／`HD-48`／`HD-52`／`HD-58`** ✓
+> ⭐ ⚠ ⭐ ⭐ **2026-10-22 更正（⭐ R1023）：⭐ 下表**不是未决项** —— ⭐ 四件（A1／A2／B1／D2）**早已由集成者裁决并逐件落地**（⭐ 见下方 `:556-564` 那张表 ＋ ⭐ `E1` 段的两次"已过期"声明）★ ⭐ ⭐ **本表保留原文只为追溯**、⭐ ⛔ **别把它当待办** ⇒ ⭐ ⚠ **当时真正的未决项在文件后段的 `E1–E4` ＋ `F1–F6` ＋ `HD-64`／`ADR-0008`／`HD-48`／`HD-52`／`HD-58`** ✓
 ★ ⭐ **落地凭证（⭐ 逐条）**: ⭐ A1 ⭐ `e970eeea`（⭐ 4 文件 ＋218／−14、⭐ 4 判据）／⭐ A2 ⭐ 引擎半 `7d3af321` ＋ `1001bdcf` **而产品半**没接**（⭐ 见下）／⭐ B1 ⭐ `2aca2014`（⭐ 1 文件 ＋270、⭐ 3 判据）／⭐ D2 ⭐ `9aed9cef`（⭐ 1 文件 ＋88）✓
 > ⚠ ⭐ ⭐ **而 A2 有一条**真的欠件**（⭐ R1023 查出来的）**: ⭐ ⭐ **引擎能 `queue_scene_launch`、⭐ 而**没有任何产品代码调它**** ⇒ ⭐ ① ⭐ ⭐ **`grep launch_quantization transport-engine-notes.md` ＝ 0 行**（⭐ **它从未进未实现清单**）② ⭐ ⭐ **UI 的 `scene-launch-<i>-button` 有一个**没有 `clicked`** 的 `TouchArea`**（⭐ `session_view.slint:164/182-186`）＋ ⭐ 登记在 ⭐ `elements.rs:3859` 的 `KNOWN_ACTIONLESS_CONTROLS`（⭐ 共 9 条）⇒ ⭐ ⭐ **即：⭐ 能力存在、⭐ 用户按不到** ⇒ ⭐ **接线票要开**（⭐ 4 文件：⭐ `.slint` ＋ ⭐ `elements.rs` ＋ ⭐ `host.rs` ＋ ⭐ `bridge.rs`、⭐ **⛔ 不动 schema**）✓
 
@@ -802,7 +929,7 @@ python3 scripts/guards/policy_check.py && bash scripts/gates/run-gates.sh light
 | D2 | MIDI tempo map | ⭐ **维持现状 ＋ 明示口径** | ⭐ ✅ **已并入**（`9aed9cef`）|
 | D3 | Windows 锁语义 | ⭐ **维持现状**（⛔ 不补） | ⭐ ✅ 已定、已登记 |
 
-> ⭐ ⭐ ⭐ **2026-10-19 追加（R941–R947）：⭐ 下面四件是**新增**的待裁，⭐ 与上表不重叠**
+> ⭐ ⭐ ⭐ **2026-10-19 追加（R941–R947）：⭐ 下面四件是**当时新增**的未决项（⭐ 现状见 §6.0），⭐ 与上表不重叠**
 
 | # | 事项 | 为什么需要人（⭐ 而不是我裁） | ⭐ 我的建议 |
 | :--- | :--- | :--- | :--- |
@@ -811,7 +938,7 @@ python3 scripts/guards/policy_check.py && bash scripts/gates/run-gates.sh light
 | ⭐ **E3** | ⭐ **主总线增益是否进 CLI 离线导出** | ⚠ MCP 测量前**施加** `master` 轨增益、⭐ CLI 的 `render_core` **不施加** ⇒ ⭐ `master.volume_db ≠ 0` 时两侧读数不同 | ⭐ **加进去**（⭐ 用户把主总线推子拉下来就**应该**听到小声、⭐ 导出也该小声） |
 | ⭐ **E4** | ⭐ **`MAX_SAMPLE_FILES_READ = 32` ⭐ 要不要提高** | ⚠ 大库单次装载读不全（⭐ spanish guitar **26/48**）⇒ ⭐ 提高会增加内存/⭐ 首载延迟 | ⭐ **提到 128**（⭐ 因为 ⭐ 有真实乐器需要、⭐ 且 ⭐ 截断已**响亮报告**、⭐ 不是静默） |
 
-> ⭐ ⭐ ⭐ **2026-10-19 补漏（R949）：⭐ 上表**漏了六件**** —— ⭐ 它们在前面的票里**登记过"待补/待裁"**、⭐ 但**没进这张表** ⇒ ⭐ **本表原本不是全的**（⭐ 这正是第 44 条"自述型清单会腐烂"⭐ 的又一次兑现）。
+> ⭐ ⭐ ⭐ **2026-10-19 补漏（R949）：⭐ 当时那表**漏了六件**** —— ⭐ 它们在前面的票里**登记过"待补/等人回答"**、⭐ 但**没进这张表** ⇒ ⭐ **本表原本不是全的**（⭐ 这正是第 44 条"自述型清单会腐烂"⭐ 的又一次兑现）。
 > ⭐ **补齐如下；⭐ 每一条都有出处（台账 R 号）**。
 
 | # | 事项 | 出处 | ⭐ 我的建议 |
