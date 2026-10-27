@@ -481,6 +481,52 @@ pub const MASTER_CHANNELS: usize = 2;
 /// 导出位深：**恒为 24-bit 整数 PCM**（[ARCH-FMT-001] 的内置高质量 TPDF 抖动路径）。
 pub const OUTPUT_BIT_DEPTH: u16 = 24;
 
+/// ⭐ `ADR-0030` D2：**分轨（stem）**容器位深 —— 32-bit IEEE 浮点、无抖动。
+///
+/// 口径来自规范 `ARCH-DSP-003`（冻结/分轨要求 32-bit Float），⛔ 不是选型自由。
+/// 它**不**是 `yeban_render_master` 的位深（那条恒为 [`OUTPUT_BIT_DEPTH`]）。
+pub const STEM_BIT_DEPTH: u16 = 32;
+
+/// ⭐ `ADR-0030` D2：容器里的**样本格式**（写进 `fmt ` 的 `audioFormat` 与位深）。
+///
+/// ⚠ 这不是用户可给的参数：[`validate`] 恒填 [`Self::Pcm24`]（母带口径），只有
+/// `yeban_export_stems` 在**内部**构造 [`Self::Float32`]。因此 `yeban_render_master`
+/// 的默认路径逐字节不变（同值、同键、同容器实现）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SampleFormat {
+    /// 24-bit 整数 PCM ＋ TPDF 抖动 —— `yeban_render_master` / SFZ / 录音的唯一路径。
+    Pcm24,
+    /// 32-bit IEEE 浮点、**不抖动**（`quantize(_, BitDepth::Float32, _)` 是直通分支，
+    /// 非有限样本归 `0.0`）—— 分轨导出 [ARCH-DSP-003]。
+    Float32,
+}
+
+impl SampleFormat {
+    /// 写进响应 `bitDepth` 与 `fmt ` chunk 的位深。
+    #[must_use]
+    pub const fn bit_depth(self) -> u16 {
+        match self {
+            Self::Pcm24 => OUTPUT_BIT_DEPTH,
+            Self::Float32 => STEM_BIT_DEPTH,
+        }
+    }
+
+    /// 抖动/量化目标（`yeban-render` 的 [`BitDepth`]，唯一入口）。
+    const fn quantize_to(self) -> BitDepth {
+        match self {
+            Self::Pcm24 => BitDepth::Int24,
+            Self::Float32 => BitDepth::Float32,
+        }
+    }
+
+    /// 是否浮点容器 —— 它同时决定 `fmt ` 的 `audioFormat`（`WAVE_FORMAT_IEEE_FLOAT`）
+    /// 与 **`fact` chunk 的有无**（非 PCM 容器必须带 `fact`，`yeban-render` 的
+    /// `ContainerPlan` 按 `PcmFormat::is_float` 自动补，⛔ 本层不自己拼头）。
+    const fn is_float(self) -> bool {
+        matches!(self, Self::Float32)
+    }
+}
+
 /// 归一化目标（满量程）。
 pub const NORMALIZE_TARGET: f32 = 1.0;
 
@@ -684,6 +730,13 @@ pub struct RenderRequest {
     /// 只往响应里加 `data.contributions` / `data.contributionsBasis`。
     /// ⚠ 缺省时响应里**没有**这两个键，但 `data.request` 的回显多一个 `contributions: false`。
     pub contributions: bool,
+    /// ⭐ `ADR-0030` D2：容器**样本格式**（母带 = [`SampleFormat::Pcm24`]，分轨 = `Float32`）。
+    ///
+    /// ⛔ **不是**用户可给的实参：[`validate`] 恒产出 `Pcm24`，所以 `yeban_render_master`
+    /// 的默认路径（含 `data.request` 回显）逐字节不变。分轨路径在内部构造 `Float32`
+    /// 的副本请求（`normalize:false` + 钉死帧数），因此母带那条 24-bit/TPDF 路径
+    /// 一位都不经过这条分支。
+    pub sample_format: SampleFormat,
 }
 
 impl RenderRequest {
@@ -746,7 +799,7 @@ impl RenderRequest {
             } else {
                 "<工程文件 stem>.master.<format>, 与工程同目录"
             },
-            "bitDepth": OUTPUT_BIT_DEPTH,
+            "bitDepth": self.sample_format.bit_depth(),
             "channels": MASTER_CHANNELS,
             "contributions": self.contributions,
         })
@@ -1303,6 +1356,8 @@ pub fn validate(arguments: &Map<String, Value>) -> Result<RenderRequest, Fault> 
             ));
         }
     };
+    // ⭐ `ADR-0030` D2：样本格式**不进参数面** —— `validate` 恒产出母带口径（24-bit 整数
+    // PCM ＋ TPDF 抖动）。分轨导出在 `domain::stems` 里构造 `Float32` 的副本请求。
     Ok(RenderRequest {
         format_index,
         sample_rate,
@@ -1312,6 +1367,7 @@ pub fn validate(arguments: &Map<String, Value>) -> Result<RenderRequest, Fault> 
         target_lufs_bits,
         path,
         contributions,
+        sample_format: SampleFormat::Pcm24,
     })
 }
 
@@ -2913,7 +2969,8 @@ pub fn build(
     if matches!(loudness.verdict, VERDICT_FAIL | VERDICT_UNMEASURABLE) {
         return Err(loudness.failure());
     }
-    // 11. TPDF 抖动 → 24-bit PCM → 容器（与 `yeban_render_sfz_wav` **同一份**实现）。
+    // 11. 抖动/量化 → 容器（母带 24-bit 整数 PCM 与分轨 32-bit 浮点**共用同一个**容器写入器，
+    //     见 [`encode_container_with_format`] —— 头构造只有一份实现，不可能漂移）。
     let (
         bytes,
         container_kind,
@@ -2923,14 +2980,21 @@ pub fn build(
         origination_time,
         originator_reference,
         coding_history,
-    ) = write_master_container(
-        &output.samples,
-        sample_rate,
-        project,
-        request.format(),
-        // 母带导出写 BWF 元数据（与 SFZ 导出刻意不同的**唯一**一处，见该函数的表）。
-        true,
-    )?;
+    ) = match request.sample_format {
+        SampleFormat::Pcm24 => write_master_container(
+            &output.samples,
+            sample_rate,
+            project,
+            request.format(),
+            // 母带导出写 BWF 元数据（与 SFZ 导出刻意不同的**唯一**一处，见该函数的表）。
+            true,
+        )?,
+        // ⭐ `ADR-0030` D2：分轨 = 32-bit IEEE 浮点、无抖动、**不写 `bext`**
+        // （`coding history` 里的 W 随之如实写成 32）。
+        SampleFormat::Float32 => {
+            write_stem_container(&output.samples, sample_rate, project, request.format())?
+        }
+    };
     let project_digest = store::digest_of(store::serialize_project(project)?.as_bytes());
     let audio_clips: u64 = reports.iter().map(|report| report.audio_clips).sum();
     let notes_silenced: u64 = reports.iter().map(|report| report.notes_silenced).sum();
@@ -2942,7 +3006,7 @@ pub fn build(
         container: container_kind,
         sample_rate,
         channels: MASTER_CHANNELS,
-        bit_depth: OUTPUT_BIT_DEPTH,
+        bit_depth: request.sample_format.bit_depth(),
         frames: output.frames,
         blocks: output.blocks,
         block_size: L1_BLOCK_SIZE,
@@ -3017,6 +3081,7 @@ pub fn track_contributions(
         target_lufs_bits: None,
         path: None,
         contributions: false,
+        sample_format: request.sample_format,
     };
     let baseline = build(project, project_path, &basis, now_ms, assets)?;
     let reference = decode_master_payload(&baseline)?;
@@ -3140,17 +3205,95 @@ fn dbfs(amplitude: f64) -> Option<f64> {
     (amplitude > 0.0).then(|| 20.0 * libm::log10(amplitude))
 }
 
-/// **落盘字节的唯一编码器**：TPDF 抖动 → 24-bit PCM → RIFF/RF64/BW64 容器（+ 可选 `bext`）。
+/// `yeban_render_master` / `yeban_render_sfz_wav` 的容器入口：**24-bit 整数 PCM**。
 ///
-/// `yeban_render_master` 与 `yeban_render_sfz_wav` **共用**本函数 —— 两条路径的
-/// 位深、抖动与容器选择因此不可能漂移（"两份编码器必然漂移"是本仓的既有教训）。
+/// 它只是 [`encode_container_with_format`] 的一层薄封装（把格式钉成
+/// [`SampleFormat::Pcm24`]）—— ⛔ 头构造没有第二份实现。
+#[allow(clippy::type_complexity)]
+pub(super) fn write_master_container(
+    samples: &[f32],
+    sample_rate: u32,
+    project: &YebanProjectV1,
+    format: &str,
+    with_bext: bool,
+) -> Result<
+    (
+        Vec<u8>,
+        ContainerKind,
+        usize,
+        usize,
+        String,
+        String,
+        String,
+        String,
+    ),
+    Fault,
+> {
+    encode_container_with_format(
+        samples,
+        sample_rate,
+        project,
+        format,
+        with_bext,
+        SampleFormat::Pcm24,
+    )
+}
+
+/// ⭐ `ADR-0030` D2：**分轨（stem）**容器入口 —— 32-bit IEEE 浮点、无抖动、不写 `bext`。
 ///
-/// `with_bext` 是两者**刻意**的唯一差别：
+/// 与母带共用 [`encode_container_with_format`]（同一份头构造），差别只有三条，
+/// 全部由 [`SampleFormat::Float32`] 决定：
+/// 1. `fmt ` 的 `audioFormat` = `WAVE_FORMAT_IEEE_FLOAT`、`bitsPerSample` = 32；
+/// 2. **带 `fact` chunk**（非 PCM 容器必须带，`yeban-render` 的 `ContainerPlan`
+///    按 `PcmFormat::is_float` 自动补，⛔ 本层不自己拼头）；
+/// 3. `quantize(_, BitDepth::Float32, _)` 是**直通**分支 ⇒ 不加 TPDF 抖动
+///    （抖动是"降位深"的伴生步骤，32-bit 浮点不降位深）。
 ///
-/// | 调用方 | `with_bext` | 为什么 |
-/// | :--- | :--- | :--- |
-/// | `yeban_render_master` | `true` | 广播级母带要 BWF 元数据（`bext`：originatorReference / 日期 / coding history） |
-/// | `yeban_render_sfz_wav` | `false` | 它**不写** `bext` ⇒ 输出不含时间戳 ⇒ 同一个请求**逐字节可复现**（判据 `tests/sfz_tools.rs::dry_run_writes_nothing_and_matches_the_real_call` 用同一份 SHA-256 钉住这一点） |
+/// 不写 `bext` 的理由与 `yeban_render_sfz_wav` 同一条：stem 是要**混回**的分轨，
+/// 不是广播母带；`bext` 的 `OriginatorReference` / 日期戳描述的是"这份文件是谁"，
+/// 逐轨重复一份只会让 N 个文件声称自己是同一个 originator。
+#[allow(clippy::type_complexity)]
+pub(super) fn write_stem_container(
+    samples: &[f32],
+    sample_rate: u32,
+    project: &YebanProjectV1,
+    format: &str,
+) -> Result<
+    (
+        Vec<u8>,
+        ContainerKind,
+        usize,
+        usize,
+        String,
+        String,
+        String,
+        String,
+    ),
+    Fault,
+> {
+    encode_container_with_format(
+        samples,
+        sample_rate,
+        project,
+        format,
+        false,
+        SampleFormat::Float32,
+    )
+}
+
+/// **落盘字节的唯一编码器**：抖动/量化 → RIFF/RF64/BW64 容器（+ 可选 `bext`）。
+///
+/// 三条导出路径**共用**本函数（经 [`write_master_container`] / [`write_stem_container`] /
+/// [`encode_container_without_bext`] 三个薄封装）—— 位深、抖动与容器选择因此不可能漂移
+/// （"两份编码器必然漂移"是本仓的既有教训）。
+///
+/// `with_bext` 与 `sample_format` 是它们**刻意**的差别：
+///
+/// | 调用方 | `with_bext` | `sample_format` | 为什么 |
+/// | :--- | :--- | :--- | :--- |
+/// | `yeban_render_master` | `true` | `Pcm24` | 广播级母带要 BWF 元数据（`bext`：originatorReference / 日期 / coding history） |
+/// | `yeban_render_sfz_wav` / `yeban_record_wav` | `false` | `Pcm24` | 它们**不写** `bext` ⇒ 输出不含时间戳 ⇒ 同一个请求**逐字节可复现**（判据 `tests/sfz_tools.rs::dry_run_writes_nothing_and_matches_the_real_call` 用同一份 SHA-256 钉住这一点） |
+/// | ⭐ `yeban_export_stems` (`ADR-0030`) | `false` | `Float32` | 分轨是**内部精度**交付（`ARCH-DSP-003` 的 32-bit Float）⇒ 不降位深也就不抖动；`fact` chunk 由 `ContainerPlan` 补 |
 ///
 /// 返回 `(容器字节, 容器种类, 头部字节数, 载荷字节数, bext 日期, bext 时间,
 /// originatorReference, codingHistory)`；`with_bext == false` 时后四项为空串。
@@ -3174,12 +3317,13 @@ fn dbfs(amplitude: f64) -> Option<f64> {
 ///
 /// 容器编码失败 ⇒ `RENDER_FAILED`（与调用方原来的出口同一个码）。
 #[allow(clippy::type_complexity)]
-pub(super) fn write_master_container(
+fn encode_container_with_format(
     samples: &[f32],
     sample_rate: u32,
     project: &YebanProjectV1,
     format: &str,
     with_bext: bool,
+    sample_format: SampleFormat,
 ) -> Result<
     (
         Vec<u8>,
@@ -3194,7 +3338,7 @@ pub(super) fn write_master_container(
     Fault,
 > {
     let mut rng = dither_rng_for(project.rng_seed, project.master_bus_track_id);
-    let pcm = quantize(samples, BitDepth::Int24, &mut rng);
+    let pcm = quantize(samples, sample_format.quantize_to(), &mut rng);
     let payload = pcm.to_le_bytes();
     let (origination_date, origination_time) = if with_bext {
         // 墙钟**不**在这里：见函数文档"BWF 的两条 ASCII 戳不取墙钟"。
@@ -3208,7 +3352,10 @@ pub(super) fn write_master_container(
         String::new()
     };
     let coding_history = if with_bext {
-        format!("A=PCM,F={sample_rate},W={OUTPUT_BIT_DEPTH},M=stereo,T=Yeban-MCP")
+        format!(
+            "A=PCM,F={sample_rate},W={},M=stereo,T=Yeban-MCP",
+            sample_format.bit_depth()
+        )
     } else {
         String::new()
     };
@@ -3221,7 +3368,7 @@ pub(super) fn write_master_container(
         bext
     });
     let (bytes, kind, header_bytes, payload_bytes) =
-        encode_interleaved_container(samples, sample_rate, format, &payload, bext)?;
+        encode_interleaved_container(samples, sample_rate, format, &payload, bext, sample_format)?;
     Ok((
         bytes,
         kind,
@@ -3234,10 +3381,13 @@ pub(super) fn write_master_container(
     ))
 }
 
-/// **容器写入器本体**（唯一）：交织 `f32` ⇒ 24-bit 容器字节。
+/// **容器写入器本体**（唯一）：交织 `f32` ⇒ 容器字节（位深/浮点由 [`SampleFormat`] 决定）。
 ///
 /// 三个调用方共用它：`yeban_render_master`（带 `bext`）、`yeban_render_sfz_wav`
-/// 与 `yeban_record_wav`（都 `None`）。⛔ 全仓只有这一个函数写 RIFF/RF64/BW64 头。
+/// 与 `yeban_record_wav`（都 `None`）、⭐ `yeban_export_stems`（`Float32`，也 `None`）。
+/// ⛔ 全仓只有这一个函数写 RIFF/RF64/BW64 头 —— 母带与分轨的差别**只有**
+/// `PcmFormat::integer` / `PcmFormat::float` 这一个构造选择，`fact` chunk 由
+/// `yeban-render` 的 `ContainerPlan` 按 `is_float` 自动补。
 ///
 /// # Errors
 ///
@@ -3248,6 +3398,7 @@ fn encode_interleaved_container(
     format: &str,
     payload: &[u8],
     bext: Option<Bext>,
+    sample_format: SampleFormat,
 ) -> Result<(Vec<u8>, ContainerKind, usize, usize), Fault> {
     let preferred = match format {
         "rf64" => ContainerKind::Rf64,
@@ -3255,13 +3406,16 @@ fn encode_interleaved_container(
         _ => ContainerKind::Riff,
     };
     let frames = u64::try_from(samples.len() / MASTER_CHANNELS).unwrap_or(0);
+    // ⭐ `ADR-0030` D2：浮点与整数的**唯一**差别就是这一个构造选择（`is_float` ⇒
+    // `WAVE_FORMAT_IEEE_FLOAT` + `fact` chunk，都由 `ContainerPlan` 负责）。
+    let channels = u16::try_from(MASTER_CHANNELS).unwrap_or(u16::MAX);
+    let container_format = match sample_format {
+        SampleFormat::Pcm24 => PcmFormat::integer(channels, sample_rate, sample_format.bit_depth()),
+        SampleFormat::Float32 => PcmFormat::float(channels, sample_rate, sample_format.bit_depth()),
+    };
     let container_plan = ContainerPlan::for_payload(
         preferred,
-        PcmFormat::integer(
-            u16::try_from(MASTER_CHANNELS).unwrap_or(u16::MAX),
-            sample_rate,
-            OUTPUT_BIT_DEPTH,
-        ),
+        container_format,
         payload.len() as u64,
         frames,
         bext,
@@ -3295,8 +3449,14 @@ pub(super) fn encode_container_without_bext(
     let mut rng = DeterministicDitherRng::new(dither_seed);
     let pcm = quantize(samples, BitDepth::Int24, &mut rng);
     let payload = pcm.to_le_bytes();
-    let (bytes, _kind, header_bytes, payload_bytes) =
-        encode_interleaved_container(samples, sample_rate, "wav", &payload, None)?;
+    let (bytes, _kind, header_bytes, payload_bytes) = encode_interleaved_container(
+        samples,
+        sample_rate,
+        "wav",
+        &payload,
+        None,
+        SampleFormat::Pcm24,
+    )?;
     Ok((bytes, header_bytes, payload_bytes))
 }
 

@@ -184,8 +184,8 @@ fn list_proposals_is_discoverable_and_the_counts_move_with_it() {
     );
     assert_eq!(
         tools::TOOL_COUNT,
-        24,
-        "10 个规范工具 + 14 个扩展 = 24（#176 新增 1 条、#290 新增场景启动 1 条、#345 新增 MIDI 导入 1 条）"
+        25,
+        "10 个规范工具 + 15 个扩展 = 25（#176 新增 1 条、#290 新增场景启动 1 条、#345 新增 MIDI 导入 1 条、`ADR-0030` 新增分轨导出 1 条）"
     );
     assert_eq!(
         registry["count"],
@@ -198,7 +198,7 @@ fn list_proposals_is_discoverable_and_the_counts_move_with_it() {
     );
     assert_eq!(
         tools::EXTENSION_NAMES.last().copied(),
-        Some("yeban_launch_scene"),
+        Some("yeban_export_stems"),
         "扩展清单顺序 = 注册顺序（新工具追加在末尾）"
     );
 
@@ -224,7 +224,7 @@ fn list_proposals_is_discoverable_and_the_counts_move_with_it() {
         "### 契约 enum 尾部\n{:?}",
         &enum_names[enum_names.len().saturating_sub(3)..]
     );
-    assert_eq!(enum_names.len(), 24, "契约 enum 的工具个数");
+    assert_eq!(enum_names.len(), 25, "契约 enum 的工具个数");
     assert_eq!(enum_names, tools::tool_names(), "enum 顺序 = 注册表顺序");
 }
 

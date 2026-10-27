@@ -55,6 +55,15 @@
 不做 LSB 缩放、不做整数满量程钳位）。因此：
 
 - 分轨默认 **32-bit Float**（规范口径，也是下游二次混音唯一不掉精度的选择）。
+- **现读的实现事实**（决定"要不要动 `yeban-render`"）：
+  `quantize(input, BitDepth::Float32, rng)`（`dither.rs:303`）是**直通**分支
+  —— 不做抖动、非有限样本归 `0.0`；`PcmBuffer::Float32::to_le_bytes()`
+  已存在（`dither.rs:286`）；容器侧 `rf64.rs:241` 已有 IEEE 浮点 `WaveFormat`
+  构造器与 `format_tag()`（`WAVE_FORMAT_IEEE_FLOAT`）。
+  ⚠ 一条**必须遵守的容器规则**（`rf64.rs:17` 明确写着的）：
+  **非 PCM（IEEE 浮点）容器必须带 `fact` chunk**（`u32` 帧数，位置在 `fmt ` 之后、
+  `bext` 之前，结尾回填）—— 浮点分轨若漏掉它就是坏文件。
+  ⇒ 本片**不需要**改 `yeban-render` 的编码器，改动集中在 mcp 侧的调用与头构造。
 - **不**新增 `bitDepth` 实参：多一档就多一套判据与"整数档要不要抖动"的追问，
   而规范只登记了一种。要 16/24-bit 的调用方，母带工具与外部工具链都在。
 - 母带的 24-bit + TPDF 逐字节不动（削波与 `masterDigest` 判据是既有回归锚）。
@@ -71,6 +80,27 @@
 - 分轨走各自的 `path`，但**共用同一次 `now_ms`** ⇒ `creationTimestamp` 一致，
   批次内可比；
 - 母带链上的插入**不参与**分轨输出（分轨是轨后输出，不是总线快照）。
+  **实现口径**：`project_without_audition` 在克隆上把母带轨的 `devices` 清空
+  （`master.devices.clear()`），母带轨的 `volume_db` / `pan` **仍生效**（`build` 在
+  `render.rs:2860` 一带照旧施加 `master_gain` 与母带声像）—— 那是**整批共用的同一个
+  增益**，不改变各条 stem 之间的电平关系，混回去仍然对齐。口径与 Logic
+  "导出单独音轨时总线效果器不进文件"一致。
+
+#### D3a — 批次公共帧数需要一次**基线渲染**（`N + 1` 次，不是 `N` 次）
+
+现读事实：`build` 在 `request.frames == None` 时的帧数来自
+`end_tick = max(逐源 report.end_tick)`（`render.rs:2676` / `:2693`），
+而源是按**可闻门**筛出来的 ⇒ "只独听第 k 轨"的那次渲染会把时间轴**缩短到第 k 轨的末端**。
+一套要混回去的 stem 必须等长，因此本片：
+
+1. **先**做一次"全部轨去掉试听状态"的基线渲染，只取它的 `frames`（字节测出来即丢弃，
+   ⛔ 不落盘、不进回执）；
+2. 每条分轨的请求把 `frames` **钉成**这个基线值（与 `track_contributions` 钉
+   `master.frames` 同一条理由）；
+3. `stemsBasis.renders` 因此是 `N + 1`，⛔ 不报 `N`（多出来的那一次是真实成本）。
+
+⛔ 不自己算"工程有多长"：那条公式的**唯一**实现就在 `build` 里，复制一份必然漂移
+（`G1` / `WALL ⑦` 的既有教训）。
 
 ### D4 — 试听状态（`mute` / `solo`）不参与分轨选取，但必须如实回报
 
@@ -91,21 +121,27 @@
 
 - 成功：`stems: [{trackId, name, path, sha256, bytes, headerBytes, payloadBytes}, …]`、
   `partial: false`。
-- 中途失败：结构化错误 `code: STEM_WRITE_FAILED`，`data` 必带
-  `completedStems`（已成功落盘、**保留不删**）、`failedTrackId` / `failedReason`、
+- 中途失败：`code: IO_ERROR`（⭐ **原稿写的 `STEM_WRITE_FAILED` 已作废**：`ADR-0001` D25
+  的 20 值联集是**封闭**的，判据
+  `tests/contract.rs::extension_tools_only_declare_codes_inside_the_d25_union` 会直接拒绝
+  发明新码；本片的失败**就是** I/O 失败，不需要新名字），`data` 必带
+  `errorKind: "stemWriteFailed"` + `completedStems`（已成功落盘、**保留不删**）、
+  `failedTrackId` / `failedReason`（⭐ 键名刻意**不是** `reason` —— 不新增 `"reason"`
+  字面量站点，免得动 `fault_vocabulary` 的冻结摘要）、
   `orphanedFiles`（盘上存在但本批未完成的文件路径，含目标文件被中断时的残留）。
   回执同时给 `resumeFrom`：下一次调用可以只补 `trackIds` 里的剩余项。
 - ⛔ 不做"自动回滚删除"：删用户盘上的文件比留一个如实的 `orphanedFiles` 危险。
 
 ### D6 — 成本读数 `stemsBasis`，与 `contributionsBasis` 同口径
 
-分轨的代价是 **N 次整工程长度渲染**，这必须自己说出来（`WALL ⑦` 的先例：
+分轨的代价是 **`N + 1` 次整工程长度渲染**（多出的那一次是 D3a 的基线帧数探针），
+这必须自己说出来（`WALL ⑦` 的先例：
 逐轨贡献上线时同时给 `contributionsBasis`，⛔ 不给"免费的错觉"）。
 
-- `stemsBasis: {renders: N, audioFramesPerRender: F, sampleRate: R, basis: "per-track re-render of the full project window"}`；
+- `stemsBasis: {renders: N + 1, basisRender: "projectWide", audioFramesPerRender: F, sampleRate: R, basis: "per-track re-render of the full project window"}`；
 - `bytesTotal`（本批产物字节合计，单位：字节）与 `maxFileNameBytes`。
 
-### D7 — 文件名：确定性清洗 + 显式冲突编号，⛔ 不猜
+### D7 — 文件名：确定性清洗 + 撞车即整批拒绝，⛔ 不猜也不改名
 
 轨名可以带 `/`、空格、`..`、全角字符，直接当文件名是路径穿越与覆盖的门。
 
@@ -113,12 +149,20 @@
   的十进制（`0001` 起，宽度按总轨数），保证同一工程两次导出**逐字节同名**；
 - 清洗规则：保留 `[0-9A-Za-z._-]`，其余一律 `_`，首尾的 `.`/`_` 去掉，
   空结果回退成 `track`（回退是**确定的**，不是随机）；
-- 每个目标路径都过 `guard_output_path`（既有防覆盖 / 防穿越门），
-  同一批内若两个清洗后名字撞车 ⇒ 由 `index` 前缀天然消歧（`index` 唯一），
+- 每个目标路径都过 `guard_output_path`（既有防覆盖 / 防穿越门），再加一条**批内
+  存在性预检**：目标文件**已在盘上**就整批拒绝（`INVALID_PARAMETER_RANGE` +
+  `conflictingPaths` / `why` / `hint`）。理由是 `guard_output_path` 只保护**工程文件与其锁文件**，
+  对目录里的其他同名 `.wav` 不管；而 `write_project_atomic` 那类落盘是**覆盖**语义。
+  同一批内两个清洗后名字撞车由 `index` 前缀天然消歧（`index` 唯一），
   不做隐式 ` (1)` 之类的手写去重；
-- `outputDir` 必填且必须是**已存在**的目录，否则 `INVALID_PARAMETER_RANGE`
+- **预检发生在 `export`（渲染）阶段, 写盘在其后的 `write` 阶段** ⇒ 因碰撞拒绝时
+  一个字节都还没落下，不出现"半批新文件 + 半批旧文件"；
+- `outDir` 必填且必须是**已存在**的目录，否则 `INVALID_PARAMETER_RANGE`
   带 `missing` / `why`（不 `create_dir_all` 到任意深度：分轨是写一堆文件，
   目录写错位置比单文件更贵）。
+  ⚠ 参数名**复用**已登记的 `outDir`（`param_bounds_guard` 的 `STRING_PARAM_BOUNDS`
+  里已是 `Unbounded`），⛔ 不新造 `outputDir` —— 新名字要同步动那条由 G13 线在飞的
+  29 元组，白白造一个跨线写者冲突。
 
 ## 探测证据（先测后改，测量纪律 §6）
 
@@ -128,7 +172,7 @@
 | 分轨容器位深 | bit | 不存在该工具 | `32` float（`ARCH-DSP-003`） |
 | 批次内容随 `solo` 漂移 | 个（stem 文件数） | —— | 同一工程 `solo` 前后**文件数与字节数不变** |
 | 第 k 条写失败后的盘上状态 | 个 | 未定义 | `completedStems = k-1` 且全部可读回 `sha256` |
-| `render::build` 复用次数 | 次 | —— | `N`（⛔ 不新写渲染器） |
+| `render::build` 复用次数 | 次 | —— | `N + 1`（⛔ 不新写渲染器；多出的 1 次是 D3a 的**基线渲染**，真实成本） |
 
 ## 影响与不做的范围
 

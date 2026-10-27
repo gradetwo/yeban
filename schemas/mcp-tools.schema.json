@@ -37,7 +37,8 @@
             "yeban_record_wav",
             "yeban_midi_input_probe",
             "yeban_list_proposals",
-            "yeban_launch_scene"
+            "yeban_launch_scene",
+            "yeban_export_stems"
           ]
         },
         "arguments": {
@@ -319,6 +320,25 @@
             "properties": {
               "arguments": {
                 "$ref": "#/definitions/ExtensionToolArguments/$defs/yeban_launch_scene"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "name"
+            ],
+            "properties": {
+              "name": {
+                "const": "yeban_export_stems"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "arguments": {
+                "$ref": "#/definitions/ExtensionToolArguments/$defs/yeban_export_stems"
               }
             }
           }
@@ -1025,6 +1045,35 @@
           },
           "required": [
             "sceneId"
+          ]
+        },
+        "yeban_export_stems": {
+          "title": "yeban_export_stems",
+          "type": "object",
+          "description": "一次调用把活跃工程的每条源节点轨弹成一个独立的 32-bit IEEE float WAV 分轨（ADR-0030；母带的 24-bit 整数 + TPDF 抖动路径逐字节不变）。实现 = 克隆工程 → 只留目标轨可闻 → 复用 yeban_render_master 的渲染器，因此代价是 N + 1 次整工程长度渲染（多出的 1 次是批次公共帧数的基线探针，见响应 data.stemsBasis）。分轨不抖动、不归一化、母带插入不进文件；试听状态 mute/solo 不参与批次选取，每条如实回报 sourceMute/sourceSolo 且批次级回报 auditionStateIgnored。文件名 = <index>.<清洗后的轨名>.wav（只保留 0-9 A-Z a-z . _ -，其余换 _，首尾的 . 与 _ 去掉，空结果回退 track）⇒ 同一工程两次导出逐字节同名。outDir 必须是已存在的目录（本工具刻意不创建目录）；目标文件已在盘上 ⇒ 整批拒绝（INVALID_PARAMETER_RANGE + data.conflictingPaths），不隐式改名、不覆盖。主总线与分组轨不出文件，在 data.skippedTracks 里点名。写盘中途失败是一等公民：IO_ERROR + data.errorKind=stemWriteFailed 带 completedStems / failedTrackId / failedReason / 实测的 orphanedFiles / 可直接回放的 resumeFrom。dryRun 给全部实测读数但一个字节都不写。陌生 trackIds ⇒ TRACK_NOT_FOUND + data.unknownTrackIds。",
+          "properties": {
+            "outDir": {
+              "type": "string",
+              "description": "分轨落盘的目录，必须已存在；不存在或不是目录 ⇒ INVALID_PARAMETER_RANGE（带 missing / notADirectory 与 why）。"
+            },
+            "trackIds": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "可选：只导这些轨（26 字符 ULID 数组，顺序无关，重复去重）。缺省 = 工程里每一条源节点轨。点名不改变公共帧数 ⇒ 子集与全集里同一条轨的 stem 逐字节相同。"
+            },
+            "dryRun": {
+              "type": "boolean",
+              "default": false
+            },
+            "idempotencyKey": {
+              "type": "string",
+              "maxLength": 256
+            }
+          },
+          "required": [
+            "outDir"
           ]
         }
       }

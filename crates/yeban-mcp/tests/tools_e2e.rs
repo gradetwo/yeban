@@ -1466,6 +1466,13 @@ fn no_tool_answers_with_a_blanket_not_implemented() {
             "yeban_launch_scene",
             json!({"sceneId": "01J8ZQ00000000000000000000"}),
         ),
+        // 分轨导出（`ADR-0030`）：`outDir` 指向一个**不存在**的目录 ⇒ 带内
+        // `INVALID_PARAMETER_RANGE`（D7：⛔ 不 `create_dir_all`，也⛔ 不渲染一次才拒）。
+        // 成功路径与十条判据在 `crates/yeban-mcp/tests/export_stems.rs`。
+        (
+            "yeban_export_stems",
+            json!({ "outDir": scratch.text("stems-not-created") }),
+        ),
         // 关闭放最后: 前面的用例都要有活跃工程。
         ("yeban_close_project", json!({ "saveFirst": false })),
     ];

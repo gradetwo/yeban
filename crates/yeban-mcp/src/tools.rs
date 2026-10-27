@@ -36,6 +36,7 @@
 //! | `yeban_midi_input_probe` | 物理 MIDI 输入端口的一段事件窗口（`ADR-0006`，feature `midi-input` 默认关） | `MCP-TOOL-EXT-MIDI-INPUT` |
 //! | `yeban_list_proposals` | **未合并**的提案清单（只读；`#176`，`#174` 坑②的发现面） | `MCP-TOOL-EXT-LIST-PROPOSALS` |
 //! | `yeban_launch_scene` | 把一次**量化场景启动**交给宿主（`#290`；引擎由形态 A 的 app 经 attach 口接上） | `MCP-TOOL-EXT-SCENE-LAUNCH` |
+//! | `yeban_export_stems` | 一次调用把每条轨弹成**一个 32-bit float WAV 分轨**（`ADR-0030`；`N + 1` 次渲染，母带 24-bit 路径逐字节不变） | `MCP-TOOL-EXT-EXPORT-STEMS` |
 //!
 //! ### 为什么它们的 `specId` 不是 `MCP-TOOL-011/012`
 //!
@@ -95,7 +96,7 @@ pub const IDEMPOTENCY_KEY_PARAM: &str = "idempotencyKey";
 pub const INCLUDE_OPS_PARAM: &str = "includeOps";
 
 /// 工具集规模（规范表格的 10 个 + `ADR-0001` D45/D46 的扩展）。
-pub const TOOL_COUNT: usize = 24;
+pub const TOOL_COUNT: usize = 25;
 
 /// **规范表格**里的工具数（`MCP-TOOL-001..010`）。
 pub const DOCUMENTED_TOOL_COUNT: usize = 10;
@@ -103,8 +104,9 @@ pub const DOCUMENTED_TOOL_COUNT: usize = 10;
 /// 扩展工具数（`MCP-TOOL-EXT-*`）：D45 的撤销入口 2 条 + D46 的三类能力 3 条
 /// + D56 的诊断包 1 条 + SMF 导出 1 条 + SMF 导入 1 条 + SFZ 装载 / SFZ 音色导出 2 条
 /// + 录音导出 1 条 + **物理 MIDI 输入探针 1 条**（`ADR-0006`，`midi-input` 默认关）
-/// + **未合并提案清单 1 条**（`#176`，`#174` 坑②）+ **场景启动 1 条**（`#290`）。
-pub const EXTENSION_TOOL_COUNT: usize = 14;
+/// + **未合并提案清单 1 条**（`#176`，`#174` 坑②）+ **场景启动 1 条**（`#290`）
+/// + **分轨导出 1 条**（`ADR-0030`，一次调用弹完 N 条轨）。
+pub const EXTENSION_TOOL_COUNT: usize = 15;
 
 /// 扩展工具的规范 ID 前缀。
 ///
@@ -132,6 +134,7 @@ pub const EXTENSION_NAMES: [&str; EXTENSION_TOOL_COUNT] = [
     "yeban_midi_input_probe",
     "yeban_list_proposals",
     "yeban_launch_scene",
+    "yeban_export_stems",
 ];
 
 /// 规范 ID 前缀。
@@ -1529,9 +1532,37 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
             ErrorCode::Busy,
         ],
     },
+    ToolSpec {
+        spec_id: "MCP-TOOL-EXT-EXPORT-STEMS",
+        name: "yeban_export_stems",
+        summary: "一次调用把活跃工程的**每条源节点轨**弹成一个独立的 32-bit IEEE float WAV 分轨 (`ADR-0030`; 母带那条 24-bit 整数 + TPDF 抖动路径逐字节不变)。实现口径 = 克隆工程 → 只留目标轨可闻 → 复用 `yeban_render_master` 的 `render::build`, ⛔ 不另起渲染器 ⇒ 代价是 **`N + 1`** 次整工程长度渲染 (多出的 1 次是批次公共帧数的基线探针, 见 `data.stemsBasis`)。每条 stem: 无抖动、不重定目标响度、`normalize` 恒 `false` (归一化是母带动作, 逐轨各归一次会让轨间电平关系失真)。文件名 = `<index>.<清洗后的轨名>.wav` (只保留 `[0-9A-Za-z._-]`, 其余换 `_`, 首尾 `.`/`_` 去掉, 空结果回退 `track`) ⇒ 同一工程两次导出**逐字节同名**。⭐ 试听状态 (`mute`/`solo`) **不参与**批次选取: 批次内容恒定, 每条如实回报 `sourceMute` / `sourceSolo` + 批次级 `auditionStateIgnored: true`。⚠ 目标文件**已在盘上** ⇒ 整批拒绝 (`INVALID_PARAMETER_RANGE` + `conflictingPaths`), 不做隐式改名也不覆盖; 主总线/分组轨不出文件, 在 `data.skippedTracks[]` 里点名 (`reason:\"masterBusTrack\"` / `\"notASourceNode\"`)。⚠ 写盘中途失败是**一等公民**而非静默: `IO_ERROR` + `data.errorKind:\"stemWriteFailed\"` 带 `completedStems` / `failedTrackId` / `failedReason` / 实测的 `orphanedFiles` / 可直接回放的 `resumeFrom`。`dryRun` 给全部测量读数 (字节数 / sha256 / 帧数 / 容器头) 但一个字节都不写。",
+        scope: Scope::AppAdmin,
+        side_effect: SideEffect::Disk,
+        params: &[
+            param(
+                "outDir",
+                "string",
+                true,
+                "分轨落盘的目录。必须是**已存在**的目录 —— 本工具刻意不 `create_dir_all` (批量写文件时把目录建错位置比单个文件更贵); 不存在 ⇒ `INVALID_PARAMETER_RANGE` 带 `missing` / `why`",
+            ),
+            param(
+                "trackIds",
+                "array",
+                false,
+                "可选: 只导这些轨 (26 字符 ULID 数组, 顺序无关, 重复会被去重)。缺省 = 工程里每一条源节点轨。⚠ 点名**不改变**帧数基线 (公共帧数仍来自整工程基线渲染) ⇒ 子集与全集的每条 stem 逐字节相同; 未知身份 ⇒ `TRACK_NOT_FOUND` 带 `unknownTrackIds`",
+            ),
+        ],
+        errors: &[
+            ErrorCode::NoActiveProject,
+            ErrorCode::InvalidParameterRange,
+            ErrorCode::TrackNotFound,
+            ErrorCode::RenderFailed,
+            ErrorCode::IoError,
+        ],
+    },
 ];
 
-/// 按名查找工具（`const` 数组上的线性查找；24 个元素，无需哈希表）。
+/// 按名查找工具（`const` 数组上的线性查找；25 个元素，无需哈希表）。
 #[must_use]
 pub fn tool(name: &str) -> Option<&'static ToolSpec> {
     TOOLS.iter().find(|spec| spec.name == name)

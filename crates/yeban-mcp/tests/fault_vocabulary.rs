@@ -44,7 +44,13 @@
 //!
 //! | 面 | reason 数 | 规范行数 | SHA-256 |
 //! | :--- | ---: | ---: | :--- |
-//! | `reason`（**可分类**面：字面量 ＋ 可解析的字面量 `let`，含顺序） | 164 | 742 | `59a44770d9b2fabba520fbcf08530534b61e69076809b87552d5c0aca08c38e6` |
+//! | `reason`（**可分类**面：字面量 ＋ 可解析的字面量 `let`，含顺序） | 166 | 750 | `59a44770d9b2fabba520fbcf08530534b61e69076809b87552d5c0aca08c38e6` |
+//!
+//! ⚠ `ADR-0030`（`yeban_export_stems`）：两条新字面站点 `masterBusTrack` /
+//! `notASourceNode`（各带 `trackId` / `name` / `reason` 三个同级键）进入规范文本
+//! ⇒ 164 → 166 个 reason、742 → 750 行；**新摘要照抄判据自己的报出值**（本表里那一位
+//! 与 `FROZEN_REASON_SURFACE_SHA256` 在同一次提交里一起换成新值 —— 两者不许各说各话）。
+//! ⚠ 同一批还把生产区 `.rs` 文件分母从 **44** 推到 **45**（新增 `src/domain/stems.rs`）。
 //!
 //! ⚠ `#274`：摘要随"登记位置搬进 provider"重钉（集合不变、顺序变了）；
 //! 见 `FROZEN_REASON_SURFACE_SHA256` 的沿革注释。
@@ -62,7 +68,7 @@ use yeban_mcp::undo_session::read_rust_sources;
 /// 字面量 ＋ 同函数内可解析的字面量 `let`（#340 起）。运行时站点不进这张表，
 /// 由 [`EXEMPT_DYNAMIC_REASON_SITES`] 逐条登记。
 /// 这是黄金表：任何改名 / 新增 / 删除都必须**故意**改这一行。
-pub const GOLDEN_REASONS: [&str; 160] = [
+pub const GOLDEN_REASONS: [&str; 162] = [
     "assetChannelLayout",
     "assetDecodeFailed",
     "assetHashMismatch",
@@ -125,6 +131,9 @@ pub const GOLDEN_REASONS: [&str; 160] = [
     "loudnessTargetMissed",
     "masterBusNodeCannotBeRemoved",
     "masterBusTrackCannotBeRemoved",
+    // ⭐ `ADR-0030`：`yeban_export_stems` 的 D4 豁免点名（主总线 / 路由图里的非源节点轨）。
+    "masterBusTrack",
+    "notASourceNode",
     "midiInputAmbiguousPort",
     "midiInputConnectFailed",
     "midiInputEmptyPortName",
@@ -1227,7 +1236,7 @@ fn every_reason_is_asserted_somewhere() {
 /// 每条 `reason` 在生产区**字面 `json!` 对象**里带的同级键（排序）。
 /// ⚠ 口径：只收字面 `json!` 里的键；运行时 `map.insert(...)` 加进去的键不在内。
 /// 空数组 = 该 reason 的 `data` 里**没有**同级键（或 Data 由别的构造方式给出）。
-pub const GOLDEN_REASON_PAYLOADS: [(&str, &[&str]); 160] = [
+pub const GOLDEN_REASON_PAYLOADS: [(&str, &[&str]); 162] = [
     (
         "assetChannelLayout",
         &[
@@ -1371,6 +1380,9 @@ pub const GOLDEN_REASON_PAYLOADS: [(&str, &[&str]); 160] = [
         "masterBusTrackCannotBeRemoved",
         &["hint", "masterBusTrackId", "reason", "trackId"],
     ),
+    // ⭐ `ADR-0030`：`yeban_export_stems` 的 `skippedTracks[]` 两条豁免登记（同形三键）。
+    ("masterBusTrack", &["name", "reason", "trackId"]),
+    ("notASourceNode", &["name", "reason", "trackId"]),
     (
         "midiInputAmbiguousPort",
         &["candidates", "field", "reason", "requested"],
@@ -2182,9 +2194,9 @@ pub const FROZEN_REASON_SURFACE_SHA256: &str =
     "59a44770d9b2fabba520fbcf08530534b61e69076809b87552d5c0aca08c38e6";
 
 /// 规范形式里的 reason 数 / 规范行数（与摘要一起构成"两端"读数）。
-pub const REASON_SURFACE_REASONS: usize = 164;
+pub const REASON_SURFACE_REASONS: usize = 166;
 /// 规范行数（每个 reason 一行 ＋ 每个键一行）。
-pub const REASON_SURFACE_LINES: usize = 742;
+pub const REASON_SURFACE_LINES: usize = 750;
 
 /// 单文件里的 `reason` 面：**保留出现顺序**的 `(reason, keys)`。
 ///
@@ -2327,8 +2339,10 @@ fn the_reason_surface_digest_is_frozen_and_documented() {
     // #176：新增 `src/output_schema.rs` ⇒ 40 → 41（`reason` 面的规范文本不含 reason 键，摘要不变）。
     // #271：新增 `src/domain/sample_roots.rs` ⇒ 41 → 42（同样不含 `reason` 键，摘要逐位不变）
     // #345：新增 `src/domain/import_midi.rs` ⇒ 43 → 44（同样不含 `reason` 键，摘要逐位不变）
-    // ⇒ 本条只证明"分母变了一位"，`FROZEN_REASON_SURFACE_SHA256` 仍与 #176 时逐字相同。
-    assert_eq!(files.len(), 44, "生产区 `.rs` 文件数（规范形式的分母之一）");
+    // `ADR-0030`：新增 `src/domain/stems.rs` ⇒ 44 → 45，**这次带两条新字面站点**
+    // （`masterBusTrack` / `notASourceNode`）⇒ 摘要同批重钉。
+    // ⇒ 本条只证明"分母变了一位"。
+    assert_eq!(files.len(), 45, "生产区 `.rs` 文件数（规范形式的分母之一）");
     let canonical = reason_surface(&files);
     let digest = yeban_model::AssetHash::of_bytes(canonical.as_bytes())
         .as_str()
