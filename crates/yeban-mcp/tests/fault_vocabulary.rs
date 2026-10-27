@@ -44,7 +44,7 @@
 //!
 //! | 面 | reason 数 | 规范行数 | SHA-256 |
 //! | :--- | ---: | ---: | :--- |
-//! | `reason`（**可分类**面：字面量 ＋ 可解析的字面量 `let`，含顺序） | 166 | 750 | `2df60826b5d11ed38bb979073bc3910125dcfb5ca2eacd3e232bfc223f7b0ea1` |
+//! | `reason`（**可分类**面：字面量 ＋ 可解析的字面量 `let` ＋ **调用点传播**，含顺序） | 207 | 906 | `4890ba25908a83444859edd023e7109b02eb5e33646f46a7b9633ae39443dd43` |
 //!
 //! ⚠ `ADR-0030`（`yeban_export_stems`）：两条新字面站点 `masterBusTrack` /
 //! `notASourceNode`（各带 `trackId` / `name` / `reason` 三个同级键）进入规范文本
@@ -65,10 +65,11 @@ use std::path::PathBuf;
 use yeban_mcp::undo_session::read_rust_sources;
 
 /// 本轮开工基线上**生产区**里**可分类**的全部 `reason` 值（排序）：
-/// 字面量 ＋ 同函数内可解析的字面量 `let`（#340 起）。运行时站点不进这张表，
+/// 字面量 ＋ 同函数内可解析的字面量 `let`（#340 起）＋ **调用点传播**出来的入参
+/// （2026-10-28 起, 见 [`PROPAGATED_REASON_SITES`]）。⛔ 真看不见的运行时站点不进这张表，
 /// 由 [`EXEMPT_DYNAMIC_REASON_SITES`] 逐条登记。
 /// 这是黄金表：任何改名 / 新增 / 删除都必须**故意**改这一行。
-pub const GOLDEN_REASONS: [&str; 162] = [
+pub const GOLDEN_REASONS: [&str; 203] = [
     "assetChannelLayout",
     "assetDecodeFailed",
     "assetHashMismatch",
@@ -252,6 +253,52 @@ pub const GOLDEN_REASONS: [&str; 162] = [
     "valueMustBeUnsignedInteger",
     "valueOutOfRange",
     "writeModeMustBeString",
+    // ⭐ **调用点传播片**（2026-10-28）：以下 41 条以前是**运行时盲区**（登记在
+    // `EXEMPT_DYNAMIC_REASON_SITES`），现在由 [`PROPAGATED_REASON_SITES`] 从辅助函数的
+    // **调用点实参**传播出来 ⇒ 进词表。25 个 `reject_unknown_keys` 的 `unknown*Field`
+    // ＋ 8 个 `read_non_empty_string` 的空串理由 ＋ 8 个同参数的非字符串理由
+    // （`…MustBeNonEmptyStringMustBeString`：入参本身已带后缀, 拼接又加一次 —— 真实输出, 如实登记）。
+    "unknownKeySignatureField",
+    "unknownSetAuthorField",
+    "unknownSetClipGainField",
+    "unknownSetClipNameField",
+    "unknownSetClipPlacementDurationField",
+    "unknownSetClipPlacementLoopField",
+    "unknownSetClipPlacementMutedField",
+    "unknownSetDeviceBypassedField",
+    "unknownSetDeviceNameField",
+    "unknownSetKeySignatureField",
+    "unknownSetNoteExpressionField",
+    "unknownSetNotePitchShapeField",
+    "unknownSetNoteTimingField",
+    "unknownSetPitchBendPointField",
+    "unknownSetSectionField",
+    "unknownSetSectionOpField",
+    "unknownSetTempoField",
+    "unknownSetTempoPointField",
+    "unknownSetTimeSignatureField",
+    "unknownSetTimeSignaturePointField",
+    "unknownSetTitleField",
+    "unknownSetTrackColorField",
+    "unknownSetTrackNameField",
+    "unknownSetTrackSamplerField",
+    "unknownTransposeClipField",
+    "assetLicenseMustBeNonEmptyString",
+    "assetOriginalPathMustBeNonEmptyString",
+    "sceneColorMustBeNonEmptyString",
+    "sceneNameMustBeNonEmptyString",
+    "sectionColorMustBeNonEmptyString",
+    "sectionNameMustBeNonEmptyString",
+    "trackColorMustBeNonEmptyString",
+    "trackSamplerMustBeNonEmptyString",
+    "assetLicenseMustBeNonEmptyStringMustBeString",
+    "assetOriginalPathMustBeNonEmptyStringMustBeString",
+    "sceneColorMustBeNonEmptyStringMustBeString",
+    "sceneNameMustBeNonEmptyStringMustBeString",
+    "sectionColorMustBeNonEmptyStringMustBeString",
+    "sectionNameMustBeNonEmptyStringMustBeString",
+    "trackColorMustBeNonEmptyStringMustBeString",
+    "trackSamplerMustBeNonEmptyStringMustBeString",
 ];
 
 /// 本平台（64 位 `usize`）**不可达**的 `reason`，逐条给机械理由。
@@ -321,8 +368,12 @@ struct Reasons {
 //   * `"reason": error.as_str()`
 //
 // 一个看不见的站点会让"词表一致"变成假绿。现在每个 `"reason"` 出现都必须落到
-// 下面五类之一；`Dynamic`（运行时才算得出来）与 `ArgumentName`（只是参数名）
+// 下面**六类**之一；`Dynamic`（运行时才算得出来）与 `ArgumentName`（只是参数名）
 // 必须**逐条**登记，`Unclassified`（没有已知形状）直接判红并点名 file:line。
+//
+// ⭐ 2026-10-28 的**调用点传播片**把第三类 `Propagated` 补了进来：辅助函数把**自己的
+// 入参**转给 `json!` 时, 值不再算"运行时才定" —— 扫描器读**调用点**的最后一个实参
+// 就能定值（口径与限制见 [`PROPAGATED_REASON_SITES`] 上方那段）。
 
 /// 一次 `"reason"` 出现的分类结果。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -333,6 +384,10 @@ enum ReasonOccurrenceKind {
     Resolved(Vec<String>),
     /// 值是运行时算出来的（转发入参 / `format!` / 外部枚举的 `as_str()`），扫描器看不见。
     Dynamic(String),
+    /// ⭐ 值是**调用点送进来的字面量入参**：本文件按辅助函数名把它**传播**回站点
+    /// （见 [`PROPAGATED_REASON_SITES`]）。字段＝（辅助函数名, 固定后缀, 值集合）。
+    /// 与 `Resolved` 的区别：那个的值在**同一个函数**里，这个的值来自**别的函数**的调用点。
+    Propagated(String, String, Vec<String>),
     /// `"reason"` 是**参数名 / 入参键名**，不是 `data.reason` 的值键。
     ArgumentName(String),
     /// 没有任何已知形状 ⇒ 判据必须红（带 file:line）。
@@ -345,6 +400,7 @@ impl ReasonOccurrenceKind {
         match self {
             Self::Literal(value) => vec![value.clone()],
             Self::Resolved(values) => values.clone(),
+            Self::Propagated(_helper, _suffix, values) => values.clone(),
             Self::Dynamic(_) | Self::ArgumentName(_) | Self::Unclassified(_) => Vec::new(),
         }
     }
@@ -423,7 +479,7 @@ fn reason_occurrences(
             cursor += 1;
         }
         let kind = if bytes.get(cursor) == Some(&b':') {
-            classify_value_expr(take_value_expr(text, cursor + 1), &text[..at], consts)
+            classify_value_expr(take_value_expr(text, cursor + 1), &text[..at], text, consts)
         } else if text[cursor..].starts_with("=>") {
             // 样本夹具按**参数名** `reason` 匹配，右侧是夹具入参，不是 `data.reason`。
             ReasonOccurrenceKind::ArgumentName(trimmed_line(text, at))
@@ -433,19 +489,19 @@ fn reason_occurrences(
                 next += 1;
             }
             if bytes.get(next) == Some(&b',') {
-                classify_value_expr(take_value_expr(text, next + 1), &text[..at], consts)
+                classify_value_expr(take_value_expr(text, next + 1), &text[..at], text, consts)
             } else {
                 ReasonOccurrenceKind::Unclassified(trimmed_line(text, at))
             }
         } else if bytes.get(cursor) == Some(&b',') && text[..at].trim_end().ends_with("insert(") {
-            classify_value_expr(take_value_expr(text, cursor + 1), &text[..at], consts)
+            classify_value_expr(take_value_expr(text, cursor + 1), &text[..at], text, consts)
         } else if bytes.get(cursor) == Some(&b']') {
             let mut next = cursor + 1;
             while next < bytes.len() && (bytes[next] == b' ' || bytes[next] == b'\t') {
                 next += 1;
             }
             if bytes.get(next) == Some(&b'=') && bytes.get(next + 1) != Some(&b'=') {
-                classify_value_expr(take_value_expr(text, next + 1), &text[..at], consts)
+                classify_value_expr(take_value_expr(text, next + 1), &text[..at], text, consts)
             } else {
                 ReasonOccurrenceKind::ArgumentName(trimmed_line(text, at))
             }
@@ -503,12 +559,17 @@ fn take_value_expr(text: &str, start: usize) -> &str {
 }
 
 /// 给值表达式分类；看不见的值统一带上**规范化后的原表达式**（豁免表按它匹配）。
+///
+/// ⭐ `region` 是**整段被扫描的源码**（`prefix` 只有站点**之前**的部分）：
+/// 转发入参要靠**调用点**才能定值，而调用点通常在站点的**后面**。少了这一位，
+/// `"reason": reason` 只能永远登记成运行时盲区（`#340` 的 `EXEMPT_DYNAMIC_REASON_SITES`）。
 fn classify_value_expr(
     expr: &str,
     prefix: &str,
+    region: &str,
     consts: &BTreeMap<String, String>,
 ) -> ReasonOccurrenceKind {
-    match classify_value_inner(expr, prefix, consts) {
+    match classify_value_inner(expr, prefix, region, consts) {
         ReasonOccurrenceKind::Dynamic(_) => ReasonOccurrenceKind::Dynamic(normalize_expr(expr)),
         other => other,
     }
@@ -517,11 +578,19 @@ fn classify_value_expr(
 fn classify_value_inner(
     expr: &str,
     prefix: &str,
+    region: &str,
     consts: &BTreeMap<String, String>,
 ) -> ReasonOccurrenceKind {
     let expr = expr.trim();
     if let Some(inner) = direct_value_from_argument(expr) {
-        return classify_value_inner(inner, prefix, consts);
+        return classify_value_inner(inner, prefix, region, consts);
+    }
+    // ⭐ 唯一的**组合**形状 `format!("{<入参>}<固定后缀>")`：后缀是字面量、入参可传播
+    // ⇒ 值集合 = 调用点字面量各加同一个后缀。其余 `format!` 仍然看不见（⇒ `Dynamic`）。
+    if let Some((ident, suffix)) = format_reason_composition(expr)
+        && let Some((helper, values)) = propagated_reasons(prefix, region, ident, suffix)
+    {
+        return ReasonOccurrenceKind::Propagated(helper.to_owned(), suffix.to_owned(), values);
     }
     if expr.starts_with("format!(") {
         return ReasonOccurrenceKind::Dynamic(String::new());
@@ -549,14 +618,14 @@ fn classify_value_inner(
             .or_else(|| method.strip_prefix("to_owned()"))
             && after.trim().is_empty()
         {
-            return resolve_reason_ident(ident, prefix, consts);
+            return resolve_reason_ident(ident, prefix, region, consts);
         }
         return ReasonOccurrenceKind::Dynamic(String::new());
     }
     if !rest.is_empty() {
         return ReasonOccurrenceKind::Dynamic(String::new());
     }
-    resolve_reason_ident(ident, prefix, consts)
+    resolve_reason_ident(ident, prefix, region, consts)
 }
 
 /// `Value::from(<arg>)` ⇒ `<arg>`（只接受**整个表达式**就是这一次调用）。
@@ -566,10 +635,11 @@ fn direct_value_from_argument(expr: &str) -> Option<&str> {
     (!inner.is_empty()).then_some(inner)
 }
 
-/// 常量优先，其次同函数内的字面量 `let`；都不是 ⇒ `Dynamic`（⛔ 不猜）。
+/// 常量优先，其次同函数内的字面量 `let`，再次**调用点传播**；都不是 ⇒ `Dynamic`（⛔ 不猜）。
 fn resolve_reason_ident(
     ident: &str,
     prefix: &str,
+    region: &str,
     consts: &BTreeMap<String, String>,
 ) -> ReasonOccurrenceKind {
     if let Some(value) = consts.get(ident) {
@@ -577,6 +647,9 @@ fn resolve_reason_ident(
     }
     if let Some(values) = local_literal_binding(prefix, ident) {
         return ReasonOccurrenceKind::Resolved(values);
+    }
+    if let Some((helper, values)) = propagated_reasons(prefix, region, ident, "") {
+        return ReasonOccurrenceKind::Propagated(helper.to_owned(), String::new(), values);
     }
     ReasonOccurrenceKind::Dynamic(String::new())
 }
@@ -789,6 +862,350 @@ fn literal_block_values(block: &str) -> Option<Vec<String>> {
     block[consumed..].trim().is_empty().then(|| vec![value])
 }
 
+// ---------------------------------------------------------------------------
+// ⭐ 调用点传播：把"转发入参"的 reason 从**盲区**折回**可分类面**
+// ---------------------------------------------------------------------------
+//
+// `EXEMPT_DYNAMIC_REASON_SITES` 原来登记着两类站点：辅助函数把**自己的入参**原样
+// 转给 `json!`，或 `format!("{reason}MustBeString")` 在入参后面拼固定后缀。
+// 扫描器只看站点**之前**的文本（`prefix`），因此调用点在后面时它什么都看不见。
+// 本节的口径：
+//
+// * 站点所在函数的**最后一个形参**必须就是那个入参名（⛔ 不是别的同名变量）；
+// * 该辅助函数在**同一份被扫描文本**里的每个调用点，最后一个实参必须是**字符串字面量**；
+// * 表里登记的 `call_sites` / `literals` 是**全 crate 生产区**的读数，由
+//   `the_propagated_reason_sites_publish_their_call_site_literals` 逐条核对
+//   ⇒ 将来在**别的文件**里加一个调用点，本文件的调用点数就对不上 ⇒ 站点退回
+//   `Dynamic` ⇒ 普查立刻点名"未登记的动态站点"（⛔ 不是静默少几个值）。
+
+/// 一条**由调用点传播**的 `"reason"` 站点（`#340` 的退役成果：从盲区清单搬进可分类面）。
+struct PropagatedReasonSite {
+    /// `src/` 之后的路径。
+    file: &'static str,
+    /// **规范化**后的值表达式（与 `EXEMPT_DYNAMIC_REASON_SITES` 同一口径, 便于对照）。
+    expr: &'static str,
+    /// 该表达式在本文件里**传播成功**的站点数。
+    occurrences: usize,
+    /// 承载这个入参的辅助函数名。
+    helper: &'static str,
+    /// `format!` 的固定后缀；直接转发 ⇒ 空串。
+    suffix: &'static str,
+    /// 该辅助函数在**全 crate 生产区**的调用点数。
+    call_sites: usize,
+    /// 每个调用点的最后一个实参（字面量）加上 `suffix` 之后的**全部不重复值**（排序）
+    /// ＝ 这一条站点贡献的 reason 词表。
+    literals: &'static [&'static str],
+}
+
+/// ⭐ 实测 **3 个站点 / 2 个辅助函数 / 33 个调用点**（2026-10-28，`#340` 传播片开工现读）。
+///
+/// 这三条以前登记在 `EXEMPT_DYNAMIC_REASON_SITES`（运行时盲区），现在值**可分类**：
+/// 词表因此从 162 涨到 **203**（＋25 个 `unknown*Field` ＋8 个 `*MustBeNonEmptyString`
+/// ＋8 个 `*MustBeNonEmptyStringMustBeString`）。
+///
+/// ⚠ 那 8 个 `…MustBeString` 是**真实运行时输出**：`read_non_empty_string` 的入参本身
+/// 已经带 `MustBeNonEmptyString` 后缀，非字符串分支又在后面拼 `MustBeString` ⇒
+/// `sceneNameMustBeNonEmptyStringMustBeString`。本片只**如实登记**，⛔ 不改这些词
+/// （改了就是改对客户端可见的故障契约，另案）。
+const PROPAGATED_REASON_SITES: [PropagatedReasonSite; 3] = [
+    PropagatedReasonSite {
+        file: "domain/notes.rs",
+        expr: "reason",
+        occurrences: 1,
+        helper: "reject_unknown_keys",
+        suffix: "",
+        call_sites: 25,
+        literals: &[
+            "unknownKeySignatureField",
+            "unknownSetAuthorField",
+            "unknownSetClipGainField",
+            "unknownSetClipNameField",
+            "unknownSetClipPlacementDurationField",
+            "unknownSetClipPlacementLoopField",
+            "unknownSetClipPlacementMutedField",
+            "unknownSetDeviceBypassedField",
+            "unknownSetDeviceNameField",
+            "unknownSetKeySignatureField",
+            "unknownSetNoteExpressionField",
+            "unknownSetNotePitchShapeField",
+            "unknownSetNoteTimingField",
+            "unknownSetPitchBendPointField",
+            "unknownSetSectionField",
+            "unknownSetSectionOpField",
+            "unknownSetTempoField",
+            "unknownSetTempoPointField",
+            "unknownSetTimeSignatureField",
+            "unknownSetTimeSignaturePointField",
+            "unknownSetTitleField",
+            "unknownSetTrackColorField",
+            "unknownSetTrackNameField",
+            "unknownSetTrackSamplerField",
+            "unknownTransposeClipField",
+        ],
+    },
+    PropagatedReasonSite {
+        file: "domain/notes.rs",
+        expr: "reason",
+        occurrences: 1,
+        helper: "read_non_empty_string",
+        suffix: "",
+        call_sites: 8,
+        literals: &[
+            "assetLicenseMustBeNonEmptyString",
+            "assetOriginalPathMustBeNonEmptyString",
+            "sceneColorMustBeNonEmptyString",
+            "sceneNameMustBeNonEmptyString",
+            "sectionColorMustBeNonEmptyString",
+            "sectionNameMustBeNonEmptyString",
+            "trackColorMustBeNonEmptyString",
+            "trackSamplerMustBeNonEmptyString",
+        ],
+    },
+    PropagatedReasonSite {
+        file: "domain/notes.rs",
+        expr: "format!(\"{reason}MustBeString\")",
+        occurrences: 1,
+        helper: "read_non_empty_string",
+        suffix: "MustBeString",
+        call_sites: 8,
+        literals: &[
+            "assetLicenseMustBeNonEmptyStringMustBeString",
+            "assetOriginalPathMustBeNonEmptyStringMustBeString",
+            "sceneColorMustBeNonEmptyStringMustBeString",
+            "sceneNameMustBeNonEmptyStringMustBeString",
+            "sectionColorMustBeNonEmptyStringMustBeString",
+            "sectionNameMustBeNonEmptyStringMustBeString",
+            "trackColorMustBeNonEmptyStringMustBeString",
+            "trackSamplerMustBeNonEmptyStringMustBeString",
+        ],
+    },
+];
+
+/// 整行开头是不是**函数声明**（与 `crosses_function_boundary` 同一口径）。
+fn is_function_head(trimmed: &str) -> bool {
+    [
+        "fn ",
+        "pub fn ",
+        "pub(crate) fn ",
+        "pub async fn ",
+        "async fn ",
+        "const fn ",
+    ]
+    .iter()
+    .any(|prefix| trimmed.starts_with(*prefix))
+}
+
+/// `format!("{<ident>}<固定后缀>")` ⇒ (`ident`, 后缀)。
+///
+/// 只认**这一个**形状：`}` 之后到闭合引号之间⛔ 再出现 `{` / `}`。
+/// 其余 `format!`（多个插值、插值里带表达式）仍然看不见 ⇒ 照旧 `Dynamic`。
+fn format_reason_composition(expr: &str) -> Option<(&str, &str)> {
+    let body = expr.strip_prefix("format!(\"{")?.strip_suffix("\")")?;
+    let (ident, suffix) = body.split_once('}')?;
+    if !is_simple_ident(ident) || suffix.contains('{') || suffix.contains('}') {
+        return None;
+    }
+    Some((ident, suffix))
+}
+
+/// 从 `open`（必须指向 `(`）起做括号配对，返回（平衡内容, 闭括号之后的下标）。
+fn balanced_parens(text: &str, open: usize) -> Option<(&str, usize)> {
+    let bytes = text.as_bytes();
+    if bytes.get(open) != Some(&b'(') {
+        return None;
+    }
+    let mut depth = 0i32;
+    let mut index = open;
+    let mut in_string = false;
+    let mut escaped = false;
+    while index < bytes.len() {
+        let byte = bytes[index];
+        if in_string {
+            if escaped {
+                escaped = false;
+            } else if byte == b'\\' {
+                escaped = true;
+            } else if byte == b'"' {
+                in_string = false;
+            }
+            index += 1;
+            continue;
+        }
+        match byte {
+            b'"' => in_string = true,
+            b'(' | b'{' | b'[' => depth += 1,
+            b')' | b'}' | b']' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some((&text[open + 1..index], index + 1));
+                }
+            }
+            _ => {}
+        }
+        index += 1;
+    }
+    None
+}
+
+/// 顶层逗号切分（括号／字符串内部的逗号不算分隔）。
+fn split_top_level_arguments(content: &str) -> Vec<&str> {
+    let bytes = content.as_bytes();
+    let mut out = Vec::new();
+    let mut depth = 0i32;
+    let mut start = 0usize;
+    let mut index = 0usize;
+    let mut in_string = false;
+    let mut escaped = false;
+    while index < bytes.len() {
+        let byte = bytes[index];
+        if in_string {
+            if escaped {
+                escaped = false;
+            } else if byte == b'\\' {
+                escaped = true;
+            } else if byte == b'"' {
+                in_string = false;
+            }
+            index += 1;
+            continue;
+        }
+        match byte {
+            b'"' => in_string = true,
+            b'(' | b'{' | b'[' => depth += 1,
+            b')' | b'}' | b']' => depth -= 1,
+            b',' if depth == 0 => {
+                out.push(content[start..index].trim());
+                start = index + 1;
+            }
+            _ => {}
+        }
+        index += 1;
+    }
+    let tail = content[start..].trim();
+    if !tail.is_empty() {
+        out.push(tail);
+    }
+    out
+}
+
+/// 站点**所在函数**的声明（名字 ＋ 形参表原文）：`prefix` 里最后一个整行开头的 `fn`。
+fn enclosing_function(prefix: &str) -> Option<(&str, &str)> {
+    let mut hit: Option<usize> = None;
+    let mut offset = 0usize;
+    for line in prefix.lines() {
+        if is_function_head(line.trim_start()) {
+            hit = Some(offset);
+        }
+        offset += line.len() + 1;
+    }
+    let tail = &prefix[hit?..];
+    let after_keyword = "fn ".len() + tail.find("fn ")?;
+    let rest = &tail[after_keyword..];
+    let open = rest.find('(')?;
+    let name = rest[..open].trim();
+    is_simple_ident(name).then_some(())?;
+    let (params, _) = balanced_parens(rest, open)?;
+    Some((name, params))
+}
+
+/// 一次 `helper(...)` 调用点：位置、最后一个实参原文、解析出的字面量。
+struct HelperCallSite {
+    line: usize,
+    argument: String,
+    literal: Option<String>,
+}
+
+/// `region` 里对 `helper` 的**全部调用点**（声明行、注释、字符串内部都不算）。
+fn helper_call_sites(region: &str, helper: &str) -> Vec<HelperCallSite> {
+    let mask = skipped_offsets(region);
+    // ⚠ 形状检查必须看**整行**：`region[..at]` 在声明行只剩 `"fn "`（针从名字开始）,
+    // 用那一段判形状 ⇒ 声明被当成调用点（实测 26 = 25 真调用 ＋ 1 声明 ⇒ 传播整体失效）。
+    let needle = format!("{helper}(");
+    let (bytes, needle) = (region.as_bytes(), needle.as_bytes());
+    let mut out = Vec::new();
+    let mut from = 0usize;
+    while let Some(offset) = find(&bytes[from..], needle) {
+        let at = from + offset;
+        from = at + 1;
+        if is_skipped(&mask, at) {
+            continue;
+        }
+        if is_function_head(&trimmed_line(region, at)) {
+            continue;
+        }
+        let Some((content, _)) = balanced_parens(region, at + helper.len()) else {
+            continue;
+        };
+        let Some(argument) = split_top_level_arguments(content).last().copied() else {
+            continue;
+        };
+        let literal = match parse_string_literal(argument) {
+            Some((value, consumed)) if argument[consumed..].trim().is_empty() => Some(value),
+            _ => None,
+        };
+        out.push(HelperCallSite {
+            line: line_number(region, at),
+            argument: normalize_expr(argument),
+            literal,
+        });
+    }
+    out
+}
+
+/// ⭐ 由调用点把转发入参 `ident` 折成它的值集合；任一条契约不满足 ⇒ `None`（⇒ 仍算 `Dynamic`）。
+fn propagated_reasons(
+    prefix: &str,
+    region: &str,
+    ident: &str,
+    suffix: &str,
+) -> Option<(&'static str, Vec<String>)> {
+    let (helper, params) = enclosing_function(prefix)?;
+    let entry = PROPAGATED_REASON_SITES
+        .iter()
+        .find(|entry| entry.helper == helper && entry.suffix == suffix)?;
+    let last_parameter = *split_top_level_arguments(params).last()?;
+    let parameter_name = last_parameter.split(':').next()?.trim();
+    if parameter_name != ident {
+        return None;
+    }
+    let sites = helper_call_sites(region, helper);
+    if sites.len() != entry.call_sites || sites.iter().any(|site| site.literal.is_none()) {
+        return None;
+    }
+    let mut values: Vec<String> = sites
+        .iter()
+        .filter_map(|site| site.literal.clone())
+        .map(|value| format!("{value}{suffix}"))
+        .collect();
+    values.sort();
+    values.dedup();
+    if values.len() != entry.literals.len() {
+        return None;
+    }
+    Some((entry.helper, values))
+}
+
+/// 生产区里 `helper` 的**声明**形参表原文（⛔ 调用点、注释、字符串内部都不算）。
+fn function_parameters<'a>(region: &'a str, helper: &str) -> Option<&'a str> {
+    let mask = skipped_offsets(region);
+    let needle = format!("{helper}(");
+    let (bytes, needle) = (region.as_bytes(), needle.as_bytes());
+    let mut from = 0usize;
+    while let Some(offset) = find(&bytes[from..], needle) {
+        let at = from + offset;
+        from = at + 1;
+        if is_skipped(&mask, at) {
+            continue;
+        }
+        if !is_function_head(&trimmed_line(region, at)) {
+            continue;
+        }
+        let (params, _) = balanced_parens(region, at + helper.len())?;
+        return Some(params);
+    }
+    None
+}
+
 /// 生产区里的 `const NAME: &str = "字面量";`（`pub` / `pub(crate)` 也收）。
 ///
 /// ⚠ 按**名字**解析、不看模块路径：两个模块里同名常量会取后者。本仓今天没有
@@ -882,11 +1299,13 @@ struct DynamicReasonSite {
     retires_when: &'static str,
 }
 
-/// 生产区实测 **6 次出现 / 4 个 distinct 表达式**（2026-10-26，#340 开工，动态站点退役后）。
+/// 生产区实测 **3 次出现 / 3 个 distinct 表达式**（2026-10-28：`reject_unknown_keys` /
+/// `read_non_empty_string` 的 3 处转发站点已改由 [`PROPAGATED_REASON_SITES`] 传播出值 ⇒
+/// 6 → 3；剩下的每一条都是**真的**静态看不见）。
 ///
 /// ⚠ 这张表是**显式盲区清单**，不是"这些值不重要"：每一条都写清值从哪来、怎么退役。
 /// ⛔ 不许为了让判据变绿而把新的动态站点塞进来 —— 能给出常量/枚举的，先给出名字。
-const EXEMPT_DYNAMIC_REASON_SITES: [DynamicReasonSite; 4] = [
+const EXEMPT_DYNAMIC_REASON_SITES: [DynamicReasonSite; 3] = [
     DynamicReasonSite {
         file: "domain/mod.rs",
         expr: "Value::from(reason.clone())",
@@ -906,17 +1325,13 @@ const EXEMPT_DYNAMIC_REASON_SITES: [DynamicReasonSite; 4] = [
     DynamicReasonSite {
         file: "domain/notes.rs",
         expr: "reason",
-        occurrences: 3,
-        forwards: "三处 `reject_unknown_fields` / `read_non_empty_string` 的 `reason` 参数与\
-                   `UnresolvedReason` 的绑定：词由**调用点或别的 crate** 给出。",
-        retires_when: "把参数改成枚举/常量、或让扫描器做调用点传播；两种都不在本轮边界内。",
-    },
-    DynamicReasonSite {
-        file: "domain/notes.rs",
-        expr: "format!(\"{reason}MustBeString\")",
         occurrences: 1,
-        forwards: "在 `reason` 参数后面拼 `MustBeString` 后缀：**运行时组合**，字面量只有后缀。",
-        retires_when: "让每个调用点各传两条完整 reason（空串分支 / 非字符串分支），删掉拼接。",
+        forwards: "`resolved.unresolved_reason()`：词由**别的 crate**（`yeban_render::inserts::\
+                   UnresolvedReason`）的 `as_str()` 给出。它的三个取值今天**已经**以字面量站点\
+                   出现在词表里（`trackNotFound` / `slotOutOfRange` / `paramIndexOutOfRange`），\
+                   但本站点静态看不见 —— 传播需要跨 crate 的枚举读数，不在本片边界内。",
+        retires_when: "扫描器能解析跨 crate 的 `enum ...::as_str()` 匹配表时退役（届时这三个值\
+                       的贡献已由字面量站点覆盖, 本条只是重复）。",
     },
 ];
 
@@ -962,6 +1377,9 @@ const REASON_ARGUMENT_NAME_USES: [ReasonArgumentNameUse; 3] = [
 // ⇒ 出现 224 → 226、键站点 221 → **223**（CI Run `40487059733` 的 `left:` 实测值）、
 // 字面站点 213 → **215**（由恒等式 223 = 字面 215 ＋ 可解析 `let` 2 ＋ 运行时 6 收敛，
 // 而 2 与 6 由本文件下方两条断言各自钉住 —— ⛔ 不是手点数出来的）。
+// ⭐ **调用点传播片**（2026-10-28）：⛔ 不改**出现数**（生产区一个字符没动），
+// 只将 3 处运行时站点**重新分类**成 `Propagated` ⇒ 恒等式换成
+// 223 = 字面 215 ＋ 可解析 `let` 2 ＋ 运行时 3 ＋ 传播 3（四条读数各由一条断言钉住）。
 const REASON_OCCURRENCES_TOTAL: usize = 226;
 // ⭐ MCP-TOOL-003：键站点 208 → 216、字面站点 200 → 208 —— 新形态在
 // `domain/notes.rs` / `tools.rs` 里新增的 8 处字面 `"reason"` 站点
@@ -970,7 +1388,8 @@ const REASON_OCCURRENCES_TOTAL: usize = 226;
 const REASON_KEY_SITES_TOTAL: usize = 223;
 const REASON_LITERAL_SITES_TOTAL: usize = 215;
 const REASON_RESOLVED_SITES_TOTAL: usize = 2;
-const REASON_DYNAMIC_SITES_TOTAL: usize = 6;
+const REASON_DYNAMIC_SITES_TOTAL: usize = 3;
+const REASON_PROPAGATED_SITES_TOTAL: usize = 3;
 const REASON_ARGUMENT_NAME_TOTAL: usize = 3;
 
 /// 把"看不见的站点"折成失败字符串：未登记的 `Dynamic` / `ArgumentName` /
@@ -978,12 +1397,17 @@ const REASON_ARGUMENT_NAME_TOTAL: usize = 3;
 fn unexplained_reason_sites(occurrences: &[ReasonOccurrence]) -> Vec<String> {
     let mut failures = Vec::new();
     let mut dynamic: BTreeMap<(String, String), Vec<usize>> = BTreeMap::new();
+    let mut propagated: BTreeMap<(String, String, String), Vec<usize>> = BTreeMap::new();
     let mut arguments = vec![0usize; REASON_ARGUMENT_NAME_USES.len()];
     for occurrence in occurrences {
         let file = relative_to_src(&occurrence.path);
         match &occurrence.kind {
             ReasonOccurrenceKind::Dynamic(expr) => dynamic
                 .entry((file, expr.clone()))
+                .or_default()
+                .push(occurrence.line),
+            ReasonOccurrenceKind::Propagated(helper, suffix, _values) => propagated
+                .entry((file, helper.clone(), suffix.clone()))
                 .or_default()
                 .push(occurrence.line),
             ReasonOccurrenceKind::ArgumentName(context) => {
@@ -1034,6 +1458,50 @@ fn unexplained_reason_sites(occurrences: &[ReasonOccurrence]) -> Vec<String> {
             !entry.forwards.trim().is_empty() && !entry.retires_when.trim().is_empty(),
             "`{}` 的动态站点登记必须写清值从哪来**且**怎么退役",
             entry.expr
+        );
+    }
+    for entry in PROPAGATED_REASON_SITES {
+        let key = (
+            entry.file.to_owned(),
+            entry.helper.to_owned(),
+            entry.suffix.to_owned(),
+        );
+        match propagated.get(&key) {
+            None => failures.push(format!(
+                "{} 的传播登记 `{}`（后缀 `{}`）已经没有站点（陈旧, 必须删掉或恢复调用点）",
+                entry.file, entry.helper, entry.suffix
+            )),
+            Some(lines) if entry.occurrences != lines.len() => failures.push(format!(
+                "{} 的传播站点 `{}`（后缀 `{}`）出现 {} 次，登记 {} 次",
+                entry.file,
+                entry.helper,
+                entry.suffix,
+                lines.len(),
+                entry.occurrences
+            )),
+            Some(_) => {}
+        }
+        // 表自身的一致性（⛔ 不靠手数）：排序、去重、非空、标识符形状、值不多于调用点。
+        let mut sorted = entry.literals.to_vec();
+        sorted.sort();
+        sorted.dedup();
+        assert_eq!(
+            sorted, entry.literals,
+            "传播表 `{}`（后缀 `{}`）的 `literals` 必须**排序且去重**",
+            entry.helper, entry.suffix
+        );
+        assert!(
+            entry
+                .literals
+                .iter()
+                .all(|value| is_identifier_reason(value)),
+            "传播表 `{}` 里有不是标识符形状的值, 会被字符集静默拒掉",
+            entry.helper
+        );
+        assert!(
+            entry.call_sites >= entry.literals.len() && !entry.literals.is_empty(),
+            "传播表 `{}`：调用点数必须 ≥ 去重后的值数, 且值集合非空",
+            entry.helper
         );
     }
     for (index, entry) in REASON_ARGUMENT_NAME_USES.iter().enumerate() {
@@ -1241,7 +1709,7 @@ fn every_reason_is_asserted_somewhere() {
 /// 每条 `reason` 在生产区**字面 `json!` 对象**里带的同级键（排序）。
 /// ⚠ 口径：只收字面 `json!` 里的键；运行时 `map.insert(...)` 加进去的键不在内。
 /// 空数组 = 该 reason 的 `data` 里**没有**同级键（或 Data 由别的构造方式给出）。
-pub const GOLDEN_REASON_PAYLOADS: [(&str, &[&str]); 162] = [
+pub const GOLDEN_REASON_PAYLOADS: [(&str, &[&str]); 203] = [
     (
         "assetChannelLayout",
         &[
@@ -1864,6 +2332,152 @@ pub const GOLDEN_REASON_PAYLOADS: [(&str, &[&str]); 162] = [
     ),
     ("writeModeMustBeString", &["allowed", "field", "reason"]),
     ("valueOutOfRange", &["field", "max", "reason", "received"]),
+    // ⭐ **调用点传播片**（2026-10-28）：41 条由调用点传播出来的 reason, 载荷键**实测**
+    // （`reject_unknown_keys` 的那 25 条带 `supportedFields` / `unsupportedFields`；
+    // `read_non_empty_string` 的空串分支只有 `field`, 非字符串分支多一条 `received`）。
+    (
+        "unknownKeySignatureField",
+        &["reason", "supportedFields", "unsupportedFields"],
+    ),
+    (
+        "unknownSetAuthorField",
+        &["reason", "supportedFields", "unsupportedFields"],
+    ),
+    (
+        "unknownSetClipGainField",
+        &["reason", "supportedFields", "unsupportedFields"],
+    ),
+    (
+        "unknownSetClipNameField",
+        &["reason", "supportedFields", "unsupportedFields"],
+    ),
+    (
+        "unknownSetClipPlacementDurationField",
+        &["reason", "supportedFields", "unsupportedFields"],
+    ),
+    (
+        "unknownSetClipPlacementLoopField",
+        &["reason", "supportedFields", "unsupportedFields"],
+    ),
+    (
+        "unknownSetClipPlacementMutedField",
+        &["reason", "supportedFields", "unsupportedFields"],
+    ),
+    (
+        "unknownSetDeviceBypassedField",
+        &["reason", "supportedFields", "unsupportedFields"],
+    ),
+    (
+        "unknownSetDeviceNameField",
+        &["reason", "supportedFields", "unsupportedFields"],
+    ),
+    (
+        "unknownSetKeySignatureField",
+        &["reason", "supportedFields", "unsupportedFields"],
+    ),
+    (
+        "unknownSetNoteExpressionField",
+        &["reason", "supportedFields", "unsupportedFields"],
+    ),
+    (
+        "unknownSetNotePitchShapeField",
+        &["reason", "supportedFields", "unsupportedFields"],
+    ),
+    (
+        "unknownSetNoteTimingField",
+        &["reason", "supportedFields", "unsupportedFields"],
+    ),
+    (
+        "unknownSetPitchBendPointField",
+        &["reason", "supportedFields", "unsupportedFields"],
+    ),
+    (
+        "unknownSetSectionField",
+        &["reason", "supportedFields", "unsupportedFields"],
+    ),
+    (
+        "unknownSetSectionOpField",
+        &["reason", "supportedFields", "unsupportedFields"],
+    ),
+    (
+        "unknownSetTempoField",
+        &["reason", "supportedFields", "unsupportedFields"],
+    ),
+    (
+        "unknownSetTempoPointField",
+        &["reason", "supportedFields", "unsupportedFields"],
+    ),
+    (
+        "unknownSetTimeSignatureField",
+        &["reason", "supportedFields", "unsupportedFields"],
+    ),
+    (
+        "unknownSetTimeSignaturePointField",
+        &["reason", "supportedFields", "unsupportedFields"],
+    ),
+    (
+        "unknownSetTitleField",
+        &["reason", "supportedFields", "unsupportedFields"],
+    ),
+    (
+        "unknownSetTrackColorField",
+        &["reason", "supportedFields", "unsupportedFields"],
+    ),
+    (
+        "unknownSetTrackNameField",
+        &["reason", "supportedFields", "unsupportedFields"],
+    ),
+    (
+        "unknownSetTrackSamplerField",
+        &["reason", "supportedFields", "unsupportedFields"],
+    ),
+    (
+        "unknownTransposeClipField",
+        &["reason", "supportedFields", "unsupportedFields"],
+    ),
+    ("assetLicenseMustBeNonEmptyString", &["field", "reason"]),
+    (
+        "assetOriginalPathMustBeNonEmptyString",
+        &["field", "reason"],
+    ),
+    ("sceneColorMustBeNonEmptyString", &["field", "reason"]),
+    ("sceneNameMustBeNonEmptyString", &["field", "reason"]),
+    ("sectionColorMustBeNonEmptyString", &["field", "reason"]),
+    ("sectionNameMustBeNonEmptyString", &["field", "reason"]),
+    ("trackColorMustBeNonEmptyString", &["field", "reason"]),
+    ("trackSamplerMustBeNonEmptyString", &["field", "reason"]),
+    (
+        "assetLicenseMustBeNonEmptyStringMustBeString",
+        &["field", "reason", "received"],
+    ),
+    (
+        "assetOriginalPathMustBeNonEmptyStringMustBeString",
+        &["field", "reason", "received"],
+    ),
+    (
+        "sceneColorMustBeNonEmptyStringMustBeString",
+        &["field", "reason", "received"],
+    ),
+    (
+        "sceneNameMustBeNonEmptyStringMustBeString",
+        &["field", "reason", "received"],
+    ),
+    (
+        "sectionColorMustBeNonEmptyStringMustBeString",
+        &["field", "reason", "received"],
+    ),
+    (
+        "sectionNameMustBeNonEmptyStringMustBeString",
+        &["field", "reason", "received"],
+    ),
+    (
+        "trackColorMustBeNonEmptyStringMustBeString",
+        &["field", "reason", "received"],
+    ),
+    (
+        "trackSamplerMustBeNonEmptyStringMustBeString",
+        &["field", "reason", "received"],
+    ),
 ];
 
 /// **非标识符形状**的 `reason` 值（成功路径上的说明性字段），4 条。
@@ -1966,8 +2580,8 @@ fn is_skipped(mask: &[bool], at: usize) -> bool {
 
 /// 每条 reason 的**字面 `json!` 同级键**（#340：值只取**可分类**的站点）。
 ///
-/// 值来源与 [`reasons_in`] 完全同一条扫描器：字面量 ＋ 同函数内可解析的字面量 `let`。
-/// 看不见的站点（`Dynamic` / `ArgumentName`）不贡献值 —— 它们由
+/// 值来源与 [`reasons_in`] 完全同一条扫描器：字面量 ＋ 同函数内可解析的字面量 `let`
+/// ＋ **调用点传播**。看不见的站点（`Dynamic` / `ArgumentName`）不贡献值 —— 它们由
 /// `every_reason_occurrence_is_classified_or_explicitly_registered` 逐条点名，
 /// ⛔ 不是在这里静默丢掉。
 fn reason_payloads(
@@ -2204,22 +2818,32 @@ fn the_reason_payload_shape_is_the_published_table() {
 /// 新摘要 `2df60826b5d11ed38bb979073bc3910125dcfb5ca2eacd3e232bfc223f7b0ea1`
 /// 由该 run 里 `the_reason_surface_digest_is_frozen_and_documented` 的 `left:`
 /// 报出后照抄（⛔ 不手算）。
+///
+/// ⭐ **调用点传播片**（2026-10-28）重钉：41 个传播出来的 reason 进入规范文本
+/// （25 条带 `reason`/`supportedFields`/`unsupportedFields` 三键、8 条带 `field`/`reason`
+/// 两键、8 条带 `field`/`reason`/`received` 三键 ⇒ ＋41 行 ＋115 键行）
+/// ⇒ 166 → **207** 个 reason、750 → **906** 行。
+/// 新摘要由**同一份扫描器代码**在零依赖侧算出：`/tmp/yeban_probe` 把本文件的顶层条目
+/// **逐字**抽出来跑（⛔ 不重写逻辑），先用**改前**的码在**改前**的 `src/` 上复现
+/// `2df60826…` / 166 / 750 证明探针忠实, 再用**改后**的码在**同一个** `src/` 上算出新值
+/// （`src/` 的生产区一个字节没动 ⇒ 两位差值只可能来自扫描器）。
 pub const FROZEN_REASON_SURFACE_SHA256: &str =
-    "2df60826b5d11ed38bb979073bc3910125dcfb5ca2eacd3e232bfc223f7b0ea1";
+    "4890ba25908a83444859edd023e7109b02eb5e33646f46a7b9633ae39443dd43";
 
 /// 规范形式里的 reason 数 / 规范行数（与摘要一起构成"两端"读数）。
-pub const REASON_SURFACE_REASONS: usize = 166;
+pub const REASON_SURFACE_REASONS: usize = 207;
 /// 规范行数（每个 reason 一行 ＋ 每个键一行）。
-pub const REASON_SURFACE_LINES: usize = 750;
+pub const REASON_SURFACE_LINES: usize = 906;
 
 /// 单文件里的 `reason` 面：**保留出现顺序**的 `(reason, keys)`。
 ///
 /// 与 [`reason_payloads`] 的唯一区别是"顺序"：那个返回 `BTreeMap`（排序 ⇒
 /// 对键序不敏感），这个保留源码顺序 ⇒ 对**键序**敏感（摘要要的就是这一位）。
 ///
-/// #340：值来源与 [`reasons_in`] 同一条扫描器，因此**可解析的字面量 `let`**
-/// （`"reason": reason`）也进这份规范文本；看不见的运行时站点由站点普查点名为**豁免**，
-/// 它们不贡献值 —— 摘要因此是"**可分类**的 reason 面"，不是一个假装完整的全集。
+/// #340：值来源与 [`reasons_in`] 同一条扫描器，因此**可解析的字面量 `let`** 与
+/// **调用点传播**（`"reason": reason`）都进这份规范文本；⛔ 真看不见的运行时站点
+/// 由站点普查点名为**豁免**、不贡献值 —— 摘要因此是"**可分类**的 reason 面"，
+/// 不是一个假装完整的全集（2026-10-28：3 处转发站点从豁免搬进传播 ⇒ 摘要重钉）。
 fn reason_surface_in(text: &str, consts: &BTreeMap<String, String>) -> Vec<(String, Vec<String>)> {
     let region = production_region(text);
     let mut order: Vec<(String, Vec<String>)> = Vec::new();
@@ -2839,6 +3463,10 @@ fn every_reason_occurrence_is_classified_or_explicitly_registered() {
         .iter()
         .filter(|occurrence| matches!(occurrence.kind, ReasonOccurrenceKind::Dynamic(_)))
         .count();
+    let propagated = occurrences
+        .iter()
+        .filter(|occurrence| matches!(occurrence.kind, ReasonOccurrenceKind::Propagated(..)))
+        .count();
     let argument = occurrences
         .iter()
         .filter(|occurrence| matches!(occurrence.kind, ReasonOccurrenceKind::ArgumentName(_)))
@@ -2853,7 +3481,7 @@ fn every_reason_occurrence_is_classified_or_explicitly_registered() {
         "`Unclassified` 必须是 0（上面已经逐条点名）"
     );
     assert_eq!(
-        literal + resolved + dynamic,
+        literal + resolved + dynamic + propagated,
         REASON_KEY_SITES_TOTAL,
         "`\"reason\"` **键站点**数（值键 + insert/索引赋值）"
     );
@@ -2862,7 +3490,7 @@ fn every_reason_occurrence_is_classified_or_explicitly_registered() {
         "`\"reason\"` **参数名**出现数"
     );
     assert_eq!(
-        literal + resolved + dynamic + argument + unclassified,
+        literal + resolved + dynamic + propagated + argument + unclassified,
         REASON_OCCURRENCES_TOTAL,
         "`\"reason\"` 总出现数（键站点 + 参数名 + 未分类）"
     );
@@ -2875,4 +3503,97 @@ fn every_reason_occurrence_is_classified_or_explicitly_registered() {
         "可解析 `let` 站点数（`let reason = ...`）"
     );
     assert_eq!(dynamic, REASON_DYNAMIC_SITES_TOTAL, "已登记的运行时站点数");
+    assert_eq!(
+        propagated, REASON_PROPAGATED_SITES_TOTAL,
+        "由**调用点**传播出值的站点数（⛔ 不是盲区, 见 `PROPAGATED_REASON_SITES`）"
+    );
+}
+
+/// ⭐ **传播表自身的牙**：逐条核对 [`PROPAGATED_REASON_SITES`] 的四个读数
+/// （声明唯一 ＋ 最后一个形参是 `reason: &str` ＋ 全 crate 调用点数 ＋ 每个调用点的
+/// 最后一个实参都是**字符串字面量** ＋ 由此折出的值集合与登记表逐位相等）。
+///
+/// 为什么单独立一条：站点普查只核对**站点数** —— 调用点的最后一个实参一旦从字面量
+/// 变成变量，扫描器会**退回** `Dynamic`，普查只能报"未登记的动态站点"（**结果**红）。
+/// 本条报的是**原因**：点名哪一个辅助函数的哪一个调用点不再可传播。
+#[test]
+fn the_propagated_reason_sites_publish_their_call_site_literals() {
+    let files = read_rust_sources(&[manifest_dir().join("src")]);
+    for entry in PROPAGATED_REASON_SITES {
+        let mut declared: Vec<(&String, &String)> = Vec::new();
+        for (path, text) in &files {
+            if function_parameters(&production_region(text), entry.helper).is_some() {
+                declared.push((path, text));
+            }
+        }
+        let locations: Vec<String> = declared
+            .iter()
+            .map(|(path, _text)| relative_to_src(path))
+            .collect();
+        assert_eq!(
+            declared.len(),
+            1,
+            "`{}` 的声明应当**恰好一处**（实测 {locations:?}）；两处同名 ⇒ 传播按名字取值会串味",
+            entry.helper
+        );
+        let (path, text) = declared[0];
+        let production = production_region(text);
+        let params = function_parameters(&production, entry.helper).expect("上面已经筛出声明");
+        let last_parameter = split_top_level_arguments(params)
+            .last()
+            .copied()
+            .unwrap_or_default();
+        assert_eq!(
+            normalize_expr(last_parameter),
+            "reason: &str",
+            "`{path}` 里 `{}` 的最后一个形参必须是 `reason: &str`（传播按**位置**取实参）",
+            entry.helper
+        );
+
+        let mut sites: Vec<(String, HelperCallSite)> = Vec::new();
+        for (call_path, call_text) in &files {
+            let region = production_region(call_text);
+            for site in helper_call_sites(&region, entry.helper) {
+                sites.push((relative_to_src(call_path), site));
+            }
+        }
+        assert_eq!(
+            sites.len(),
+            entry.call_sites,
+            "`{}` 的调用点数与登记表不一致（登记 {}, 实测 {}）",
+            entry.helper,
+            entry.call_sites,
+            sites.len()
+        );
+        let not_literal: Vec<String> = sites
+            .iter()
+            .filter(|(_file, site)| site.literal.is_none())
+            .map(|(file, site)| {
+                format!("{}:{} 的最后一个实参 `{}`", file, site.line, site.argument)
+            })
+            .collect();
+        assert!(
+            not_literal.is_empty(),
+            "`{}` 有调用点的最后一个实参**不是**字符串字面量, 传播因此失效: {not_literal:?}",
+            entry.helper
+        );
+        let mut values: Vec<String> = sites
+            .iter()
+            .filter_map(|(_file, site)| site.literal.clone())
+            .map(|value| format!("{value}{}", entry.suffix))
+            .collect();
+        values.sort();
+        values.dedup();
+        assert_eq!(
+            values, entry.literals,
+            "`{}`（后缀 `{}`）传播出来的词表与登记表不一致",
+            entry.helper, entry.suffix
+        );
+        for value in entry.literals {
+            assert!(
+                GOLDEN_REASONS.iter().any(|reason| reason == value),
+                "传播出来的 `{value}` 没有登记进 `GOLDEN_REASONS`"
+            );
+        }
+    }
 }
