@@ -11013,6 +11013,148 @@ mod tests {
         }
     }
 
+    /// ⭐ **调用点传播的运行时代证**（`#340` 传播片, 2026-10-28）。
+    ///
+    /// `crates/yeban-mcp/tests/fault_vocabulary.rs` 的 `PROPAGATED_REASON_SITES` 说
+    /// "这两个辅助函数在运行时输出的 `reason` 就是调用点传进去的那些字面量"。
+    /// 那条判据是**静态**读数 ⇒ 它自己可能是扫描器造的假词表。这里把表里 33 个入参
+    /// **逐个喂进**辅助函数，断言响应里的 `data.reason` 与同级键面 —— 证明那 41 个词
+    /// （33 个原样 + 8 个带 `MustBeString` 后缀）是**真输出**，不是推断。
+    #[test]
+    fn forwarded_reason_arguments_emit_the_published_literals() {
+        fn data_keys(fault: &Fault) -> Vec<&str> {
+            let mut keys: Vec<&str> = lane_fault_data(fault)
+                .as_object()
+                .expect("data 必须是对象")
+                .keys()
+                .map(String::as_str)
+                .collect();
+            keys.sort_unstable();
+            keys
+        }
+
+        // ⛔ 这张名单与 `PROPAGATED_REASON_SITES` 里 `reject_unknown_keys` 的 `literals`
+        // 必须逐条相同：名单漏一条 ⇒ `every_reason_is_asserted_somewhere` 变红（那个词
+        // 在判据侧没有任何运行时断言）。
+        let forwarded: [&str; 25] = [
+            "unknownKeySignatureField",
+            "unknownSetAuthorField",
+            "unknownSetClipGainField",
+            "unknownSetClipNameField",
+            "unknownSetClipPlacementDurationField",
+            "unknownSetClipPlacementLoopField",
+            "unknownSetClipPlacementMutedField",
+            "unknownSetDeviceBypassedField",
+            "unknownSetDeviceNameField",
+            "unknownSetKeySignatureField",
+            "unknownSetNoteExpressionField",
+            "unknownSetNotePitchShapeField",
+            "unknownSetNoteTimingField",
+            "unknownSetPitchBendPointField",
+            "unknownSetSectionField",
+            "unknownSetSectionOpField",
+            "unknownSetTempoField",
+            "unknownSetTempoPointField",
+            "unknownSetTimeSignatureField",
+            "unknownSetTimeSignaturePointField",
+            "unknownSetTitleField",
+            "unknownSetTrackColorField",
+            "unknownSetTrackNameField",
+            "unknownSetTrackSamplerField",
+            "unknownTransposeClipField",
+        ];
+        let mut object = serde_json::Map::new();
+        object.insert("name".to_owned(), Value::from("可用键"));
+        object.insert("nope".to_owned(), Value::from(1));
+        for reason in forwarded {
+            let fault = reject_unknown_keys(&object, &["name"], "clip", reason)
+                .expect_err("未知键必须响亮失败");
+            assert_eq!(
+                reason_of(&fault).as_str(),
+                Some(reason),
+                "`{reason}` 必须**原样**转发进 `data.reason`"
+            );
+            assert_eq!(
+                data_keys(&fault),
+                ["reason", "supportedFields", "unsupportedFields"],
+                "`{reason}` 的同级键面"
+            );
+        }
+
+        // `read_non_empty_string` 的两个分支：空串 ⇒ 入参本身；非字符串 ⇒ 入参 ＋ `MustBeString`。
+        // ⚠ 第二列是**拼接后的完整词**, 必须逐条写成字面量：判据
+        // `every_reason_is_asserted_somewhere` 认**字面量出现**, 而 `format!` 造出来的词
+        // 在它眼里等于没说过的词（这里⛔ 不许靠传播表自己的自述充数）。
+        let suffixed: [(&str, &str); 8] = [
+            (
+                "assetLicenseMustBeNonEmptyString",
+                "assetLicenseMustBeNonEmptyStringMustBeString",
+            ),
+            (
+                "assetOriginalPathMustBeNonEmptyString",
+                "assetOriginalPathMustBeNonEmptyStringMustBeString",
+            ),
+            (
+                "sceneColorMustBeNonEmptyString",
+                "sceneColorMustBeNonEmptyStringMustBeString",
+            ),
+            (
+                "sceneNameMustBeNonEmptyString",
+                "sceneNameMustBeNonEmptyStringMustBeString",
+            ),
+            (
+                "sectionColorMustBeNonEmptyString",
+                "sectionColorMustBeNonEmptyStringMustBeString",
+            ),
+            (
+                "sectionNameMustBeNonEmptyString",
+                "sectionNameMustBeNonEmptyStringMustBeString",
+            ),
+            (
+                "trackColorMustBeNonEmptyString",
+                "trackColorMustBeNonEmptyStringMustBeString",
+            ),
+            (
+                "trackSamplerMustBeNonEmptyString",
+                "trackSamplerMustBeNonEmptyStringMustBeString",
+            ),
+        ];
+        for (reason, composed_expected) in suffixed {
+            let composed_expected: String = composed_expected.to_owned();
+            let fault = read_non_empty_string("scene", &Value::from(""), "name", reason)
+                .expect_err("空串必须响亮失败");
+            assert_eq!(
+                reason_of(&fault).as_str(),
+                Some(reason),
+                "空串分支必须原样转发 `{reason}`"
+            );
+            assert_eq!(
+                data_keys(&fault),
+                ["field", "reason"],
+                "`{reason}` 空串分支的同级键面"
+            );
+
+            let fault = read_non_empty_string("scene", &Value::from(7), "name", reason)
+                .expect_err("非字符串必须响亮失败");
+            assert_eq!(
+                reason_of(&fault).as_str(),
+                Some(composed_expected.as_str()),
+                "非字符串分支输出**拼接后**的词（入参已带后缀, 又加一次 —— 如实登记, ⛔ 不改词）"
+            );
+            let composed: String = format!("{reason}MustBeString");
+            assert_eq!(
+                reason_of(&fault).as_str(),
+                Some(composed.as_str()),
+                "拼接规则本身：入参 ＋ 固定 `MustBeString` 后缀"
+            );
+            assert_eq!(
+                data_keys(&fault),
+                ["field", "reason", "received"],
+                "`{composed_expected}` 非字符串分支的同级键面"
+            );
+        }
+    }
+
     #[test]
     fn parse_rejects_unknown_kind_and_bad_shapes() {
         for broken in [
