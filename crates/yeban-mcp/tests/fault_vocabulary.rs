@@ -44,7 +44,7 @@
 //!
 //! | 面 | reason 数 | 规范行数 | SHA-256 |
 //! | :--- | ---: | ---: | :--- |
-//! | `reason`（**可分类**面：字面量 ＋ 可解析的字面量 `let`，含顺序） | 166 | 750 | `59a44770d9b2fabba520fbcf08530534b61e69076809b87552d5c0aca08c38e6` |
+//! | `reason`（**可分类**面：字面量 ＋ 可解析的字面量 `let`，含顺序） | 166 | 750 | `2df60826b5d11ed38bb979073bc3910125dcfb5ca2eacd3e232bfc223f7b0ea1` |
 //!
 //! ⚠ `ADR-0030`（`yeban_export_stems`）：两条新字面站点 `masterBusTrack` /
 //! `notASourceNode`（各带 `trackId` / `name` / `reason` 三个同级键）进入规范文本
@@ -957,13 +957,18 @@ const REASON_ARGUMENT_NAME_USES: [ReasonArgumentNameUse; 3] = [
 // ⭐ [G18]：`domain/section_build.rs` 的三条单边输入结构化拒绝（`missingTonic` /
 // `missingMode` / `missingSpaceOrMode`）各为一处字面 `"reason"` 键站点
 // ⇒ 出现 221 → 224、键站点 218 → 221、字面站点 210 → 213。
-const REASON_OCCURRENCES_TOTAL: usize = 224;
+// ⭐ `ADR-0030`：`domain/stems.rs` 的 `SkippedTrack::to_value()` 两个 `json!` 分支
+// 各为一处字面 `"reason"` 键站点（`masterBusTrack` / `notASourceNode`）
+// ⇒ 出现 224 → 226、键站点 221 → **223**（CI Run `40487059733` 的 `left:` 实测值）、
+// 字面站点 213 → **215**（由恒等式 223 = 字面 215 ＋ 可解析 `let` 2 ＋ 运行时 6 收敛，
+// 而 2 与 6 由本文件下方两条断言各自钉住 —— ⛔ 不是手点数出来的）。
+const REASON_OCCURRENCES_TOTAL: usize = 226;
 // ⭐ MCP-TOOL-003：键站点 208 → 216、字面站点 200 → 208 —— 新形态在
 // `domain/notes.rs` / `tools.rs` 里新增的 8 处字面 `"reason"` 站点
 // （tick 0、`bpmOutOfRange` 复用、`tempoPointNotFound`、`timeSignaturePointNotFound`
 // 与描述文本里的键形状；逐文件拆分以扫描器读数为准，此处不手数）。
-const REASON_KEY_SITES_TOTAL: usize = 221;
-const REASON_LITERAL_SITES_TOTAL: usize = 213;
+const REASON_KEY_SITES_TOTAL: usize = 223;
+const REASON_LITERAL_SITES_TOTAL: usize = 215;
 const REASON_RESOLVED_SITES_TOTAL: usize = 2;
 const REASON_DYNAMIC_SITES_TOTAL: usize = 6;
 const REASON_ARGUMENT_NAME_TOTAL: usize = 3;
@@ -2190,8 +2195,17 @@ fn the_reason_payload_shape_is_the_published_table() {
 /// `59a44770d9b2fabba520fbcf08530534b61e69076809b87552d5c0aca08c38e6`
 /// 由判据 `the_reason_surface_digest_is_frozen_and_documented`（CI Run 40462481785）
 /// 报出后照抄。
+///
+/// ⭐ `ADR-0030` 重钉：新增 `src/domain/stems.rs` 的两条字面站点
+/// （`masterBusTrack` / `notASourceNode`，各带 `trackId` / `name` / `reason` 三键）
+/// ⇒ 164 → 166 个 reason、742 → 750 行。**摘要同批必须一起换**（上一批只换了
+/// 两个规模读数，摘要留在 `[G18]` 那一位 ⇒ CI Run `40487059733` 三条判据当场红，
+/// 而这正是本判据存在的理由：它宁可红，也不许"计数对了而字节没对"）。
+/// 新摘要 `2df60826b5d11ed38bb979073bc3910125dcfb5ca2eacd3e232bfc223f7b0ea1`
+/// 由该 run 里 `the_reason_surface_digest_is_frozen_and_documented` 的 `left:`
+/// 报出后照抄（⛔ 不手算）。
 pub const FROZEN_REASON_SURFACE_SHA256: &str =
-    "59a44770d9b2fabba520fbcf08530534b61e69076809b87552d5c0aca08c38e6";
+    "2df60826b5d11ed38bb979073bc3910125dcfb5ca2eacd3e232bfc223f7b0ea1";
 
 /// 规范形式里的 reason 数 / 规范行数（与摘要一起构成"两端"读数）。
 pub const REASON_SURFACE_REASONS: usize = 166;
