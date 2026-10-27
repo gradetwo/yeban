@@ -1098,6 +1098,14 @@ pub struct PlanOptions<'a> {
     /// `None` / `Some(1)` = 逐字节维持既有和声输出；取值 **1..=16**，只允许与
     /// `material_source: Some("theory")` 同给（鼓/旋律声部**不**受它影响）。
     pub voice_subdivision: Option<u64>,
+    /// ⭐ `ADR-0035` D1：**按声部名**给值的切分覆盖表（`{"Bass": 8, "Soprano": 1}`）；
+    /// 表里没列出的声部沿用上面的 `voice_subdivision`。取值同样 **1..=16**，只允许与
+    /// `material_source: Some("theory")` 同给。
+    /// ⚠ 这里传的是**原始 JSON 对象**而不是预解析好的表：`D2` 那三行拒绝（未知名 /
+    /// 非整数 / 越界）因此只有**一个**归属，错误载荷的形状也天然一致 —— 预解析会把
+    /// "非整数"那一行推到实参读取层，同一张表就分成两个写者了。
+    /// `None` / `{}` = 没有任何覆盖 ⇒ 逐字节维持既有和声输出。
+    pub voice_subdivisions: Option<&'a Value>,
 }
 
 /// 一个声部的身份（两条材料路径共用）。
@@ -1292,17 +1300,108 @@ static SECTION_THREE_VOICES: [VoiceRange; 3] = [
     },
 ];
 
+/// ⭐ `ADR-0035` D1/D2：把可选的**按声部名**覆盖表展开成与 `parts` 同长的逐声部粒度表。
+///
+/// `D2` 的四行拒绝全在这一个函数里（载荷形状因此一致）：
+/// 值不是对象 ⇒ `hint` 点名期望形状；键不是该流派的声部名 ⇒ `part` + `allowedParts`；
+/// 值不是整数或越出 `1..=16` ⇒ `part` + `range`。空对象 `{}` **合法**（没有覆盖）。
+///
+/// ⚠ 遍历 `serde_json::Map`（有序）⇒ 同一个请求两次得到同一张表（`ARCH-DET-001`）；
+/// JSON 对象里不可能有重复键，所以也⛔ 不存在"两条目抢同一个声部"的顺序问题。
+fn voice_subdivision_table(
+    style_preset: &str,
+    parts: &[&str],
+    uniform: u64,
+    overrides: Option<&Value>,
+) -> Result<Vec<u64>, BuildFault> {
+    let Some(overrides) = overrides else {
+        return Ok(vec![uniform; parts.len()]);
+    };
+    let object = overrides.as_object().ok_or_else(|| {
+        BuildFault::domain_with_data(
+            BuildCode::InvalidParameterRange,
+            "`voiceSubdivisions` 必须是声部名到整数的对象",
+            json!({
+                "stylePreset": style_preset,
+                "voiceSubdivisions": overrides,
+                "hint": "形状例：{\"Bass\": 8, \"Soprano\": 1}（键只能是该流派的和声声部名）",
+            }),
+        )
+    })?;
+    let mut table = vec![uniform; parts.len()];
+    for (part, value) in object {
+        let index = parts
+            .iter()
+            .position(|name| *name == part.as_str())
+            .ok_or_else(|| {
+                BuildFault::domain(
+                    BuildCode::InvalidParameterRange,
+                    format!(
+                        "`voiceSubdivisions` 的键 `{part}` 不是风格预设 `{style_preset}` 的声部名"
+                    ),
+                    json!({
+                        "stylePreset": style_preset,
+                        "part": part,
+                        "allowedParts": parts,
+                    }),
+                )
+            })?;
+        let subdivision = value.as_u64().ok_or_else(|| {
+            BuildFault::domain(
+                BuildCode::InvalidParameterRange,
+                format!(
+                    "`voiceSubdivisions[\"{part}\"]` 必须是 1..={MAX_VOICE_SUBDIVISION} 的整数, 实际收到 {value}"
+                ),
+                json!({
+                    "stylePreset": style_preset,
+                    "part": part,
+                    "value": value,
+                    "range": [1, MAX_VOICE_SUBDIVISION],
+                }),
+            )
+        })?;
+        if subdivision == 0 || subdivision > MAX_VOICE_SUBDIVISION {
+            return Err(BuildFault::domain(
+                BuildCode::InvalidParameterRange,
+                format!(
+                    "`voiceSubdivisions[\"{part}\"]` 必须在 1..={MAX_VOICE_SUBDIVISION}, 实际 {subdivision}"
+                ),
+                json!({
+                    "stylePreset": style_preset,
+                    "part": part,
+                    "value": subdivision,
+                    "range": [1, MAX_VOICE_SUBDIVISION],
+                }),
+            ));
+        }
+        table[index] = subdivision;
+    }
+    Ok(table)
+}
+
 /// 960 PPQ 的整数 tick；身份由 `section_id + 声部序 + 和弦序` 派生。
 ///
-/// ⭐ `ADR-0033`：`subdivision`（调用方已校验 1..=[`MAX_VOICE_SUBDIVISION`]）把每个
-/// `ChordSpan` 均匀切成 N 条同音高、同力度的音符。
+/// ⭐ `ADR-0033`：`subdivisions[voice]`（调用方已校验 1..=[`MAX_VOICE_SUBDIVISION`]）
+/// 把每个 `ChordSpan` 均匀切成 N 条同音高、同力度的音符。
+/// ⭐ `ADR-0035` D1：粒度从"一个数"换成"**每个声部一个数**"—— 本函数里
+/// ⛔ 没有任何一条算式变了，只是 `subdivision` 逐声部取。
 fn theory_contents(
     style_preset: &str,
     section_id: EntityId,
     voice_count: usize,
     spans: &[ChordSpan],
-    subdivision: u64,
+    subdivisions: &[u64],
 ) -> Result<Vec<BTreeMap<EntityId, MidiNote>>, BuildFault> {
+    if subdivisions.len() != voice_count {
+        return Err(BuildFault::domain(
+            BuildCode::Conflict,
+            "逐声部切分表与和声声部数不一致",
+            json!({
+                "voiceCount": voice_count,
+                "subdivisions": subdivisions,
+            }),
+        ));
+    }
     let voiced = match voice_count {
         // ⭐ `G8a`（审计 `G8` / `ADR-0028`）：3 声部**不**用 theory 的出厂音域
         // （低音 C3–C5 ⇒ 实测 bass 落点 67–72，比人声还高）。这里给生成路径
@@ -1348,6 +1447,10 @@ fn theory_contents(
     }
     Ok((0..voice_count)
         .map(|voice| {
+            // ⭐ `ADR-0035` D3：id 种子的两段/三段式条件**下放到每个声部自己**——
+            // 该声部 `N == 1` ⇒ 两段式（身份与今天逐字节相同），`N > 1` ⇒ 三段式。
+            // ⇒ 给一个声部改粒度⛔ 连带翻动没被改的声部的音符身份。
+            let subdivision = subdivisions[voice];
             let mut notes = BTreeMap::new();
             for (chord, span) in spans.iter().enumerate() {
                 let pitch = voiced.voicings[chord][voice].value();
@@ -1636,6 +1739,15 @@ pub fn plan_with_options(
             json!({ "hint": "请指定 materialSource: \"theory\"（切分只作用于生成的和声）" }),
         ));
     }
+    // ⭐ `ADR-0035` D2：逐声部覆盖表与 `voiceSubdivision` 同一条耦合规则 —— 给了它
+    // 却不走 theory = "给了不消费的参数"，响亮拒绝而不是静默忽略。
+    if options.voice_subdivisions.is_some() && material_source != MaterialSource::Theory {
+        return Err(BuildFault::domain_with_data(
+            BuildCode::InvalidParameterRange,
+            "`voiceSubdivisions` 仅在 materialSource: 'theory' 时支持",
+            json!({ "hint": "请指定 materialSource: \"theory\"（逐声部切分只作用于生成的和声）" }),
+        ));
+    }
     // 1. 参数与工程前置条件（顺序即错误码优先级，判据钉住它）。
     //    风格与声部数都来自 theory（见 `preset_parts` / `genre_voice_count`）。
     let harmony_parts = preset_parts(style_preset)?;
@@ -1693,6 +1805,16 @@ pub fn plan_with_options(
         parts.push(MELODY_PART);
     }
 
+    // 1d. 逐声部切分表（`ADR-0035` D1）：只数**和声声部**（`harmony_parts`），鼓与旋律
+    //     在这张表之外（D4）。位置也是决定：它⛔ 读工程状态，所以放在既有 `bars` /
+    //     `scale` / 环路校验之后，不去改动既有错误码的优先级链。
+    let harmony_subdivisions = voice_subdivision_table(
+        style_preset,
+        harmony_parts,
+        voice_subdivision,
+        options.voice_subdivisions,
+    )?;
+
     // 2. 时间轴与身份（确定性：同一请求 ⇒ 同一份载荷）。
     let ticks_per_bar = ticks_per_bar(project);
     let start_tick = project
@@ -1733,7 +1855,7 @@ pub fn plan_with_options(
                 section_id,
                 harmony_parts.len(),
                 &spans,
-                voice_subdivision,
+                &harmony_subdivisions,
             )?;
             if include_drums {
                 contents.push(drum_contents(
