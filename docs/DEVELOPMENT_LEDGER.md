@@ -183,12 +183,14 @@ CARGO_HOME=/Users/crow/work/music/.cargo-home RUSTUP_TOOLCHAIN=stable \
 > （单位：条）。"消除"= 代码 + 判据 + **读回的 CI 判决**三者齐备；⛔ 只有代码不算消除。
 >
 > ⭐ **2026-10-28 复测的分布（单位：条，逐行数本表的状态列）**：
-> **消除 14**（`G1` `G2` `G4` `G5` `G6` `G7` `G8`（三片，残余另记 `G8d`）`G9` `G13` `G14`
-> `G15` `G16` `G17` `G18`）＋ **待人类裁决 3**（`G3` `G10` `G11`）＋ **半消除 1**
-> （`G12`，后半 = `HD-70`）= **18**。⭐ ⚠ 与首测的差别只有两条：`G18` 由**半消除→消除**
-> （`G18b` 落地并读回主干判决）、`G8` 由**两片→三片**（`G8c` 落地，主干全量 run
-> `40560362657` 仍 `pending`）。⛔ 把 `G8d` 算进"已消除"：它今天只有 ADR（`ADR-0036`）
-> 与一条**实测到的既有缺陷**（28 条非 4/4 流派的鼓/旋律生成必失败），代码 `pending`。
+> **消除 14**（`G1` `G2` `G4` `G5` `G6` `G7` `G9` `G13` `G14` `G15` `G16` `G17` `G18` ＋
+> `G8`（**四片**，残余已由 `G8d` 闭合））＋ **待人类裁决 3**（`G3` `G10` `G11`）＋
+> **半消除 1**（`G12`，后半 = `HD-70`）= **18**。
+> ⚠ **`G8` 的"消除"今天还差一道判决**：`G8d` 的线 run `40565010797` 已逐腿读回
+> （承判腿是**矩阵腿** `rust (yeban-mcp)`，全量腿因"推送增量"skipped），
+> 它的**全量门禁判决**由主干 merge `e1409ad8` Run `40570998122` 补上 —— 该 run 现读
+> **`pending`**，读回之前 `G8` 按纪律只能算"代码 + 判据 + 线判决"三件齐、全量一件欠。
+> ⛔ 在 merge 判决读回前把 `G8` 写成无条件消除。
 
 | 缺口 | 状态 | 依据（ADR / 判决） |
 | :--- | :--- | :--- |
@@ -199,7 +201,7 @@ CARGO_HOME=/Users/crow/work/music/.cargo-home RUSTUP_TOOLCHAIN=stable \
 | `G5` 音色参数消费口径 | 消除 | `ADR-0027`；「G5 消除」条 |
 | `G6` 生成即增益分级 | 消除 | `ADR-0026`；「G6 消除」条 |
 | `G7` 同批建节点+连边被批前预检误拒 | 消除 | `ADR-0025`；「G7 消除」条 |
-| `G8` 生成控制粒度 | **消除（三片）＋一处残余** | `G8a`（音域 + `drumDensity`）`ADR-0028`；`G8b`（`voiceSubdivision` 和声声部按跨度均匀切分 1..=16）`ADR-0033`，线 Run `40523903008`（`80d854d9`）success（承判腿 `rust (workspace 全量)` 42:08 ⇒ **408 条 / 6,703 / 0**；windows 246 / 4,849 / 0；macos 246 / 4,870 / 0；矩阵腿因 `workspace_wide: true` 跳过）＋ 主干 merge `9eb4a6c5` Run `40531221961` success（全量 1:19:24 ⇒ **409 / 6,707 / 0**）；`G8c`（`voiceSubdivisions` 切分按**声部名**给值，组合而非替换）`ADR-0035`，线 Run `40549805342`（`6ec3edd3`）success（`rust (yeban-mcp)` 869s ⇒ **97 条 / 2,212 / 0**，11 条判据**逐名**读回；macos 1,322s ⇒ 248 / 4,885 / 0；windows 1,896s ⇒ 248 / 4,864 / 0；全量腿因"推送增量规划"skipped），主干 merge `793b0a3b` Run `40560362657` **`pending`**（该 merge 实测碰根级 `schemas/mcp-tools.schema.json` ⇒ 预期由 `rust (workspace 全量)` 承判）；⚠ 残余 = 旋律/鼓的每小节音头数仍是**按拍号**的常量（现读 `section_build.rs:221` `THEORY_ONSETS_PER_BAR = 16`，⛔ 按拍号折算 ⇒ `GENRES` 182 条里 **28 条非 4/4** 的鼓/旋律生成今天必失败），登记为 `G8d` `pending`（`ADR-0036` 已落 `docs/adr/`，代码 `pending`） |
+| `G8` 生成控制粒度 | **消除（四片）**＋全量判决 `pending` | `G8a`（音域 + `drumDensity`）`ADR-0028`；`G8b`（`voiceSubdivision` 和声声部按跨度均匀切分 1..=16）`ADR-0033`，线 Run `40523903008`（`80d854d9`）success（承判腿 `rust (workspace 全量)` 42:08 ⇒ **408 条 / 6,703 / 0**；windows 246 / 4,849 / 0；macos 246 / 4,870 / 0；矩阵腿因 `workspace_wide: true` 跳过）＋ 主干 merge `9eb4a6c5` Run `40531221961` success（全量 1:19:24 ⇒ **409 / 6,707 / 0**）；`G8c`（`voiceSubdivisions` 切分按**声部名**给值，组合而非替换）`ADR-0035`，线 Run `40549805342`（`6ec3edd3`）success（`rust (yeban-mcp)` 869s ⇒ **97 条 / 2,212 / 0**，11 条判据**逐名**读回；macos 1,322s ⇒ 248 / 4,885 / 0；windows 1,896s ⇒ 248 / 4,864 / 0；全量腿因"推送增量规划"skipped）＋ 主干 merge `793b0a3b` Run `40560362657` **success**（全量承判 2,573s ⇒ **411 / 6,725 / 0**，`voice_subdivisions_*` 11 条逐名 `... ok`；windows 2,201s ⇒ 249 / 4,871 / 0；macos 1,163s ⇒ 249 / 4,892 / 0；矩阵腿 skipped）；`G8d`（**原残余**：`onsetsPerBar` 每小节网格可调 + 缺省值由常量 16 改为**从拍号导出** `cells_per_bar(meter)`）`ADR-0036`，⚠ 它实测**比登记的重**：常量让 `GENRES` 182 条里 **28 条非 4/4** 流派的鼓/旋律今天必失败（`ProgressionTooDense`，theory 拒绝而⛔ 夹紧），线 Run `40565010797`（`bee98ef5`）success（承判腿**矩阵腿** `rust (yeban-mcp)` 938s ⇒ **101 条 / 2,242 / 0**，8 条判据在 `rust (yeban-mcp)` / windows 2,183s ⇒ 250 / 4,879 / 0 / macos 1,729s ⇒ 250 / 4,900 / 0 **三条腿上逐名** `... ok`；全量腿因本次推送增量只有 `crates/**` 而 skipped），⛔ 上一条 `cc309f7b` Run `40563735922` 是一次**真红**（`E0423`：`assert_eq` 漏 `!`，三条腿同一错误、整轮 0 条 `test result:`），主干 merge `e1409ad8` Run `40570998122` **`pending`**（该 merge 碰根级 `schemas/**` ⇒ 预期由 `rust (workspace 全量)` 承判；读回之前 `G8d` 的全量门禁判决仍欠） |
 | `G9` 单轨贡献读数 / 分轨导出 | 消除 | `G9a`（`contributions`）已落，`ADR-0020`；`G9b`（`yeban_export_stems`，第 **25** 台工具）已落，`ADR-0030`；线 Run `40488580940`（tip `77ac65ec`）success（`rust (yeban-mcp)` 3070s ⇒ **91 条 `test result:` / 2170 passed / 0 failed**；`windows` 1276s ⇒ 245 / 4843 / 0；`macos` 1486s），主干合并 `f28dd13d` Run `40496066367` **success**（这次承判的腿是
 `rust (workspace 全量)` 2594s ⇒ **407 / 6698 / 0**；`macos` 245 / 4865 / 0；
 `windows` 245 / 4844 / 0；`rust (${{ matrix.crate }})` 因 `workspace_wide: true` 跳过）。
@@ -12424,11 +12426,15 @@ $ python3 scripts/gates/check_phase_status.py   # 退出 0
   ⚠ 另一条读数机制：`gh run view --log` 在整条 run `in_progress` 期间直接报
   `logs will be available when it is complete` ⇒ 逐腿 `conclusion` 可提前读，
   但 **`test result:` 计数必须等 run 收尾**（本轮 `rust (yeban-mcp)` 先绿、日志晚到约 40 分钟）。
-- 主干 merge `793b0a3b` Run `40560362657`：**待读回（`pending`）**。
-  ⚠ 预期它是本片的**全量承判 run**：`git diff --name-only 7882ef12 793b0a3b`
-  实测命中根级触发器 `schemas/mcp-tools.schema.json`（1 行）⇒ `plan` 应判
-  `workspace_wide: true` ⇒ `rust (workspace 全量)` 真跑（G8b 主干同型实测 1:19:24）、
-  矩阵腿 skipped。判决读回前，`G8c` 的"消除"只由上面那条**线 run** 支撑。
+- 主干 merge `793b0a3b` Run `40560362657` **success**（2026-10-28 逐腿现读，`headSha` 对得上）：
+  ⭐ 预期的**全量承判**形态坐实 —— `git diff --name-only 7882ef12 793b0a3b` 命中根级
+  `schemas/mcp-tools.schema.json` ⇒ `plan` 判 `workspace_wide: true` ⇒
+  **`rust (workspace 全量)` 真跑**（2,573s ⇒ **411 条 `test result:` / 6,725 passed / 0 failed**），
+  `rust (${{ matrix.crate }})` = **skipped**。另两腿 `windows` 2,201s ⇒ **249 / 4,871 / 0**、
+  `macos` 1,163s ⇒ **249 / 4,892 / 0**；`checks` / `plan` / `deny` / `lockfile` success。
+  ⭐ 那 11 条 `voice_subdivisions_*` 判据在本次全量日志里**逐名** `... ok`
+  （`grep -oE "voice_subdivisions_[a-z_]+ \.\.\. ok" | sort -u` ⇒ **11**），
+  `G8b` 的 `voice_subdivision_*` 5 条同框为绿 ⇒ 本片的"消除"不再只由线 run 支撑。
 
 ### 本轮新增的规则
 
@@ -12445,3 +12451,116 @@ $ python3 scripts/gates/check_phase_status.py   # 退出 0
 4. **主干 push 必须挑时机**：同 ref 的 `concurrency` 意味着**推 main 会取消 main 上仍在跑的
    那条 run 的腿**（本轮就因此⛔ 把 G8c 的 merge 压住，等 `40552378167` 收尾才推）；
    而 merge 提交⛔ 与文档提交挤在同一次推送（一次推送只有 **tip** 建 run）。
+
+---
+
+## 2026-10-28：G8d 消除（G8 第四片，残余闭合）：`onsetsPerBar` —— 鼓/旋律的每小节网格，缺省**从拍号导出**（`ADR-0036`）
+
+**缺口原文（审计 `G8` 的残余）**：「旋律/鼓的每小节音头数仍是常量
+`THEORY_ONSETS_PER_BAR = 16`」。先测后改（§6.3）之后，这条**比登记得更重**：
+它不是"不可调"，而是 **28 条非 4/4 流派的鼓与旋律今天根本生成不出来**。
+实测链条（`ADR-0036` 背景段，每条现读）：常量无条件传进 theory；theory 的界是
+`cells_per_bar(meter)`（`GRID_CELL_TICKS = 240`）⇒ 4/4 是 16、3/4 是 12、2/4 是 8、
+7/8 是 14、6/8 是 12；`wanted > slots` ⇒ `ProgressionTooDense`（**拒绝**，⛔ 夹紧，
+theory 自己的判据名就写着 `an_over_dense_request_is_an_error_not_a_silent_clamp`）；
+`GENRES` 182 条里非 4/4 共 **28** 条；症状是 `theory_invalid` → `INVALID_PARAMETER_RANGE`
+（响亮，不是静默）⇒ 这是一处**契约缺口随数据增长暴露**的既有缺陷，⛔ 新发明的需求。
+
+### 交付（线 `line/onsets-per-bar`：代码 `cc309f7b` + 判据语法修复 `bee98ef5`）
+
+- `domain/section_build.rs`：新 `grid_onsets_per_bar(rule, requested) -> u32`
+  （缺省 = `cells_per_bar(rule.meter_value())`，⛔ `min(16, cells)` —— 那等于给非 4/4
+  拍号另立一套隐含口径，5/4 的 20 格会被压回 16）；`THEORY_ONSETS_PER_BAR` 降级为
+  "4/4 不变量对照 + 病态拍号回落值"。`PlanOptions` 加第 9 个字段
+  `onsets_per_bar: Option<u64>`；三个消费点（`theory_drum_pattern` 的两条入口 +
+  `melody_contents` 的 `rhythm_grid`）改用它。
+- **D3 的界只有一个来源**：新 `theory_grid_invalid` 命中 `ProgressionTooDense` 时把
+  theory 的 `slots` 原样转发成 `data.maxOnsetsPerBar`（+ `onsetsPerBar` / `meter` / `hint`），
+  其余错误仍走 `theory_invalid` 的通用形状 ⇒ 本层⛔ 没有第二张"拍号 → 格位数"表
+  （`G18b`「守卫的语义不能靠手抄名单」的同族错误：流派表一改拍号，手抄表就悄悄错）。
+- **D4 给了必须被消费**：两条耦合拒绝（非 `"theory"` 材料源；鼓与旋律**都不**在场）。
+  ⚠ 与 `drumDensity` 的差别是刻意的 —— 本参数同时管鼓与旋律 ⇒ **任一条在场即可**
+  （照抄 `drumDensity` 那条更严的"必须有鼓"会拒掉合法的"只给旋律加密"）。
+- **D5 确定性**：id 种子的形状不变（不追加维度），所以 4/4 缺省路径的音符身份
+  逐字节不变；判据 1 直接把"不给 ≡ 给 16"钉成整个 `SectionPlan` 相等。
+- 声明面两处同源：`tools.rs` 的 `ParamSpec`（`json_type: "integer"`，界写在散文里 ——
+  `ParamSpec` 只有字符串 min/max）与 `schemas/mcp-tools.schema.json` 的
+  `DocumentedToolArguments.$defs.yeban_propose_section.properties.onsetsPerBar`
+  （**只有 `minimum: 1`，刻意⛔ 没有 `maximum`**：上界是拍号的函数，判据 8 钉的就是"没有"）。
+  实参读取 `domain/mod.rs` 沿用既有的 `arg_u64`（缺省 `None` = 从拍号导出）。
+- 判据 `crates/yeban-mcp/tests/onsets_per_bar.rs`（**8 条**，与 `ADR-0036` 判据段逐条对应）；
+  `PlanOptions` 的 **24** 处逐字面构造点（`verify/section_pure.rs` 21 +
+  `tests/voice_subdivision.rs` 2 + `tests/voice_subdivisions.rs` 1）补新字段。
+  ⛔ 把 24 处换成 `..Default::default()`（`ADR-0035` 的规则 1 同口径：那会让"漏给新参数"
+  从编译期错误退化成运行期默认值）。
+
+### ⚠ 实测到的例外 / 决定（写进 `ADR-0036` 留痕）
+
+1. **ADR 草案的判据 2 原本写的是个不可观察量**：原文要求"每小节音头数 ==
+   `cells_per_bar(meter)`"。实测：`cells = 16` 的 4/4 流派一小节产出 **88** 条鼓击点
+   （一格可落多个鼓：底鼓 + 踩镲同点），**击点数 ≠ 网格容量**；摇摆还会把击点挪离
+   240 的整数倍 ⇒ ⛔ 从音符 tick 反推网格。改成两条**真能数**的：
+   （a）"不给 ≡ 给它自己的格位数"（整个 `SectionPlan` 相等），
+   （b）**旋律音数 = 小节数 × 格位数**（`melody_over_chords` 逐 `grid.hits()` 产一条音，
+   而 `build_weighted_grid` 的 `hits.len() = bars × wanted`，`rhythm.rs:694-718` 现读）。
+2. **零依赖侧的一次性探针替省掉一轮 CI**：`yeban-theory` 不拖音频栈（§5 允许本机跑），
+   所以"整张流派表在各自格位数下能不能生成"可以在**本机**量完 —— 仓库外的临时
+   `probe` crate（路径依赖指向 `crates/yeban-theory`，用完删 build 目录、⛔ 不提交）。
+   实测读数：`非 4/4 条数 28` / `走向展开失败 0` / `鼓失败 0` / `旋律失败 0` /
+   `旋律音数 ≠ 小节数 × 格位数 0`；`synthwave` 鼓击点 4/8/12/16 格 = **40/56/72/88**
+   （⇒ 判据 5 的"8 格击点更少"有依据），旋律 4/8/12/16 格 = 16/32/48/64 音。
+   ⚠ 探针里的调用顺序与生产路径**一致**（按 `drum_pattern` → 仅 `Ok(None)` 才走
+   `swung_styled_drum_pattern`），否则证明的不是同一条路径。
+3. **`slots` 是**每小节**的，与 `bars` 无关**（`rhythm.rs:659-666` 用
+   `cells_per_bar(meter)` 赋值，⛔ 乘 `bars`）⇒ 载荷里 `maxOnsetsPerBar` 与
+   `cells_per_bar(meter)` 是同一个数，判据 3 才敢用"同一表达式"作比较。
+4. **形状拒绝分两层，判据必须照层写**：`0` 与"超出 `u32` 宽度"只能在**领域层**量到；
+   负数 / 非整数 / 字符串在工具面就被 `arg_u64`（"必须是非负整数"）与
+   `ParamSpec::accepts("integer")` 拦下 ⇒ 判据 4 只钉前两行，⛔ 假装领域层会返回
+   `ParamSpec` 的拒绝（`ADR-0035` 的例外 2 同族）。
+5. **`cells_per_bar` 由 theory 的**根**导出**（`use yeban_theory::cells_per_bar;`，不在
+   `genre::` 下），返回 `Option<u64>`；回落分支⛔ 发明第二个数 —— 病态拍号由
+   `Meter::new` / `build_weighted_grid` 响亮拒绝，本票只为它保留对照常量。
+
+### 判决链（单位：`test result:` 行数 / passed / failed；每提交各自的 run，按 `headSha`）
+
+- `cc309f7b` Run `40563735922` **failure**（本批第一次推送，含根级 `schemas/**`
+  ⇒ 规划 `workspace_wide: true`，承判腿 `rust (workspace 全量)`）：`checks` / `plan` /
+  `deny` / `lockfile` 四条绿，**全量腿 + windows 两条同一个唯一错误**
+  `tests/onsets_per_bar.rs:371 error[E0423]: cannot find function assert_eq in this scope`
+  （`assert_eq` 漏了宏感叹号 `!`）⇒ 整轮 **0 条** `test result:`。
+  ⚠ 与 `G8c` 那条 `E0599` 同族：`yeban-mcp` 拖 `yeban-render` ⇒ 本机跑不起它的
+  `clippy --all-targets`，`cargo fmt --check` 只保证**能解析**，不保证 `assert_eq` 是宏。
+- `bee98ef5` Run `40565010797` **success**（逐腿现读）：
+  ⭐ **承判腿是矩阵腿 `rust (yeban-mcp)`**（938s ⇒ **101 条 / 2,242 / 0**），
+  因为**本次推送增量**只有 `crates/yeban-mcp/tests/**`（`schemas/**` 落在上一条失败的
+  `cc309f7b` 里）⇒ `workspace_wide: false` ⇒ `rust (workspace 全量)` = **skipped**。
+  ⚠ 也就是说本片的**全量门禁判决仍欠着**，由主干 merge 那条 run 补上（见下）。
+  8 条判据在全量外的三条腿上**逐名**读回为 `... ok`：
+  `rust (yeban-mcp)`（`test` 与 `test (合并特性)` 两次）、
+  `windows` 2,183s ⇒ **250 / 4,879 / 0**（⚠ 它的日志里路径写成 `tests\onsets_per_bar.rs`
+  反斜杠形态 —— 按 `tests/onsets_per_bar.rs` 正斜杠 grep 会**少数掉一整条腿**）、
+  `macos` 1,729s ⇒ **250 / 4,900 / 0**；`rust (yeban-ui-mcp)` 919s ⇒ 4 / 99 / 0。
+- 主干 merge `e1409ad8` Run `40570998122`：**待读回（`pending`）**。
+  ⚠ 预期由 `rust (workspace 全量)` 承判（`git diff --name-only 793b0a3b e1409ad8`
+  命中根级 `schemas/mcp-tools.schema.json`）⇒ 那才是 `G8d` 的全量判决。
+  ⚠ **本次推送不合规的一次实录**（登记，不掩饰）：merge 的祖先里带着**尚未推送**的
+  主干文档提交 `59ec4087`（线在 `602eabd4` 把当时本地 main 合并了进去），所以
+  `e1409ad8` 这一次推送实际是"merge + 文档"挤在一起 ⇒ `59ec4087` **没有自己的 run**。
+  tip run 覆盖的是同一份树，代码判决仍然算读回；但**文档提交那部分**按纪律只能记
+  "由 tip run 附带覆盖"，⛔ 写成它有独立判决。
+
+### 本轮新增的规则
+
+1. **宏调用写完就机械扫一遍漏 `!`**：`grep -nE '(^|[[:space:]])(assert|assert_eq|assert_ne|debug_assert|panic|unreachable|todo|unimplemented|vec|write|writeln|print|format)\(' <改动的 .rs>`
+   再筛掉带 `!` 的那些。本机跑不起 `yeban-mcp` 的 clippy（重依赖禁令），而这类
+   **纯语法**错误的代价正好是一整轮 CI（本次实测：一次推送 ≈ 1 小时）。
+   ⛔ 把"fmt 过了"当成"编译过了"。
+2. **读跨平台日志时按**测试名/二进制名**匹配，⛔ 按 POSIX 路径字形匹配**：
+   Windows 的作业日志里同一条判据写成 `tests\onsets_per_bar.rs`，正斜杠 grep 得到
+   **0 次命中**，看起来就像"那条腿没跑这些判据"。三条腿的 8 条名字都读回，才敢说
+   "windows 也真跑了"。
+3. **线的 `merge(main)` 只能合**已推送**的主干 tip**：把本地未推的文档提交带进线树，
+   落地时它就会挤进同一次主干推送（上面判决链末条的实录），既丢了独立 run，
+   也让"merge 与文档分两批"这条既有规则被破。线开工前先
+   `git fetch && git merge origin/main`，⛔ `git merge <本地 main>`。
