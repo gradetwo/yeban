@@ -58,7 +58,9 @@ MCP 目前只传 `MelodyConstraints::DEFAULT`）。教训已写成规则：**一
 | `e18be129`（修复 `007e3ff9` 后落地） | `40588472044` | **success** —— ⛔ 空绿：三条承判腿**都真跑**（steps 非 0、日志有 `test result:`）：`rust (yeban-mcp)` **101 / 2,246 / 0**、windows **250 / 4,881 / 0**、macos **250 / 4,902 / 0**；四条新判据在三条腿上**逐名** `... ok`；`rust (workspace 全量)` 因"推送增量只含 `crates/**`"skipped（本片⛔ 无跨 crate 生产改动） |
 | `e1311434`（§0.6.1 更正与 §5 重写所在的**文档批次**） | `40593859267` | **success** —— ⭐ 与上面 `ae316f19` 那行**不同类**：这一批**动了 `scripts/**`**，于是三条代码承判腿**真跑**（读数见 §0.6.2.1）⇒ 文档改动本身仍不需要代码判决，但这次 run **⛔ 当空绿用** |
 | `6dbc3a1c`（`G8e`＝`ADR-0037` 力度轴第一批） | `40597966845` | **failure** —— `E0432: unresolved import yeban_model::MIDI_VELOCITY_MAX`（该常量在 `yeban_model::music`，crate 根**不 re-export**），`checks`／`rust (workspace 全量)`／macos／windows **四条腿同红**、整轮 **0 条** `test result:` ⇒ 真红。⚠ 教训同 §0.6.4 第 1 条：**本机跑不起 `yeban-mcp`** ⇒ 常量路径这类"符号解析"错误只能靠 CI 抓，一次代价 ≈ 1 小时 |
-| `d8504f73`（`G8e` 修复：导入路径 + ADR 引用改正） | `40599247060` | **pending**（run 进行中，读数未回来 ⇒ ⛔ 写成通过）|
+| `d8504f73`（`G8e` 修复批 1：导入路径 + ADR 引用改正） | `40599247060` | **failure** —— lib 已编过（`checks`/clippy 绿），红在**新测试文件**：`E0615`＝`section_velocity.rs:236` 的 `collect::<Vec<_>>,` 漏了调用括号 ⇒ 见 §0.6.4 第 9 条（新的字形扫描） |
+| `bee5d1a7`（`G8e` 修复批 2：补括号） | `40600377538` | **failure** —— ⭐ **判据级**的红：承判腿 `rust (yeban-mcp)` clippy `success` ＋ `test` `failure`，`section_velocity` **4 绿 1 红**，红的是 `out_of_range_and_inverted_are_rejected_naming_the_key`（判据要求 `hint` 点名键名，实现只写了语义解释）⇒ **改报文而⛔ 放宽判据** |
+| `2de1a438`（`G8e` 修复批 3：hint 点名两个键） | — | **pending**（run 在跑；读回前本片⛔ 记为已消除） |
 
 #### 0.6.2.1 `40593859267` 的逐腿读数（文档批次为何也有代码判决）
 
@@ -93,10 +95,12 @@ MCP 目前只传 `MelodyConstraints::DEFAULT`）。教训已写成规则：**一
 | `HD-65` | 会话 CC 状态要不要加轨道维度 | 历史 |
 | `HD-66` | SFZ `cutoff` 族的 `lpf_2p` 要不要落地滤波器 | 历史 |
 
-⚠ **另有两处只登记在 ADR、未开 `HD` 行**（开 `HD` 行要级联 `docs/README.md`／
+⚠ **另有三处只登记在 ADR／台账、未开 `HD` 行**（开 `HD` 行要级联 `docs/README.md`／
 `feature-alignment.md`／`phase-status.md` 与 `check_decisions.py` 的点名未决集合）：
 `ADR-0034` **D4** 三条（段级目标调／in-scale 转调／平滑声部连接的取舍）、
-`ADR-0036` **非范围 3**（6/8 这类复合拍是否以"拍"而非十六分格为默认单位）。
+`ADR-0036` **非范围 3**（6/8 这类复合拍是否以"拍"而非十六分格为默认单位）、
+`G8f` 的**旋律动机**一问（theory 与 MCP 两侧都没有 motif 概念 ⇒ 要不要新增这项音乐能力，
+⛔ 集成者代签；接线用的"旋律音域"那半片⛔ 不等它，见 §0.6.5 第 2 条）。
 
 ### 0.6.4 本轮新增的纪律（每条都是**实测**换来的，完整措辞见台账各轮的"本轮新增的规则"）
 
@@ -128,14 +132,39 @@ MCP 目前只传 `MelodyConstraints::DEFAULT`）。教训已写成规则：**一
    推论：**crate 内测试区的类型检查本机完全覆盖不到**（探针搬不动 `notes.rs` 的 `mod tests`），
    所以那里每个 API 调用都要**从签名现读**（本轮 `error.rs`／`notes.rs:10999` 就是这么定的），
    ⛔ 凭其他语言的惯用直觉补一个方法名。
+8. **常量的导入路径先 grep 同仓库既有用法**：`G8e` 因 `yeban_model::MIDI_VELOCITY_MAX`
+   （crate 根**不 re-export**，真路径 `yeban_model::music`）烧掉一轮 CI（`E0432` 四条腿同红）。
+   `op_schema.rs:42`／`domain/notes.rs:768` 早就写着全路径 —— 一次 `grep` 就是答案。
+9. **字形扫描要盖住 turbofish 漏 `()`，⛔ 只盖宏漏 `!`**：`collect::<Vec<_>>,`（少一对括号）
+   是 `E0615`，又烧一轮。现成命令（实测：两种破形都报，`collect::<Vec<_>>(),`／
+   `Vec::<String>::new()`／`collect::<Vec<u8>>()` 都不报）：
+   `git diff --name-only <base> HEAD -- '*.rs' | tr '\n' '\0' | xargs -0 grep -Pn '::<[^<>]*(?:<[^<>]*>)?>(?![(:])'`
+   ⚠ 只吃**一层嵌套**，且它只是**字形**检查 —— 命中不等于错、不命中不等于对。
+10. **报文类判据：判据里"必须包含 X"的 `X` 要在写实现时就出现在报文里**：`G8e` 的
+    判据要求拒绝载荷 `hint` **点名键名**，实现只写了语义解释 ⇒ 唯一一条红（`section_velocity.rs:369`）。
+    处置是**改报文**（把 `velocityMin`/`velocityMax` 写进 hint）⛔ 放宽判据 —— 后者等于降低契约。
+11. **run 还在跑的时候⛔ 拿不到日志**（`gh run view --log` 明说"logs will be available when
+    it is complete"）⇒ 半程诊断改用 `gh api repos/<slug>/actions/jobs/<id>` 的 **steps 列表**：
+    本轮就是靠"`clippy (-D warnings)` success ＋ `test` failure"这一对，在日志可用之前
+    就定性了"红在**判据**而⛔ 在编译"。（⚠ 另：`--log-job` 这个 flag **不存在**，
+    `gh` 只打印 usage，脚本会把它读成"0 条 `test result:`"。）
 
 ### 0.6.5 ⭐ 下一个该做什么
 
 1. ⭐ §0.6.2 的文档批次**已读回**（run `40579689026`）—— 结论正如预告是**空绿**：四条代码腿
    全 `skipped` 且 steps=0，真跑的只有 `plan`／`lockfile`／`checks`／`deny`。
    同批更早那个提交 `1b26cdd2` **没有自己的 run**（§0.6.4 第 3 条的实录）。⛔ 别再当待办。
-2. 创作缺口这条线（审计 `G1..G18`）上**没有 `pending` 的代码工作了**：十八条全部处置，
-   剩下的 4＋5 条要人类回答（§0.6.3），⛔ 集成者不得代签，也⛔ 为了"有活干"发明需求。
+2. ⚠ **本条于 2026-10-28 被推翻**（原文："创作缺口这条线上**没有 `pending` 的代码工作了**"）：
+   `G8` 实际是**五轴只闭合三轴**（更正见 §0.6.1 与台账 `## 2026-10-28：G8 闭合度更正`）⇒
+   当下有活：**`G8e`（力度）在飞**（线 `line/section-velocity-range`，见 §5），
+   **`G8f`（旋律音域＝把 `MelodyConstraints { lower, upper, max_leap }` 接到入参）未开工**
+   —— 实测：`section_build.rs` 只在 `:1699` 传 `MelodyConstraints::DEFAULT`，
+   任何入参都碰不到它；而 `ADR-0028` 闭合的"音域"是**和声**声部寄存器
+   （`SECTION_THREE_VOICES` / `VoicingConstraints`），⛔ 旋律。
+   ⚠ 另一件事要**人类回答**（⛔ 集成者代签）：**旋律动机**（motif／句法／终止式）在
+   theory 与 MCP **两侧都没有对应概念**（`yeban-theory/src/melody.rs:16` 明文"一律不做"）⇒
+   那是**新增音乐能力**，要不要做、按什么形态做属于产品裁决，⛔ 用现有字段凑。
+   剩下的 4＋5 条待裁见 §0.6.3，⛔ 为了"有活干"发明需求。
 3. ✅ **在飞的线已全部落地**：`line/reason-propagation`（§0.5.8 第 11 项队列的最后一格）
    已合进主干（`c2dd2b89` 主体 + `007e3ff9` 修 CI 报的两个编译错，merge `e18be129`，
    run `40588472044`）。它把 `EXEMPT_DYNAMIC_REASON_SITES` 从 **4 行压到 3 行**：
@@ -922,7 +951,7 @@ python3 scripts/guards/policy_check.py && bash scripts/gates/run-gates.sh light
 | 路径 | 分支 | 处置 |
 | :--- | :--- | :--- |
 | `/home/crow/work/qoder/yeban` | `main` | 主树（⭐ 集成者工作区，⛔ 不在这里写线代码）|
-| `/home/crow/work/qoder/yeban/.worktrees/section-velocity-range` | `line/section-velocity-range` | ⭐ **在飞**（`G8e`＝力度轴，`ADR-0037`）：tip `d8504f73`，run `40599247060` **pending** ⇒ ⛔ 落地、⛔ 拆树 |
+| `/home/crow/work/qoder/yeban/.worktrees/section-velocity-range` | `line/section-velocity-range` | ⭐ **在飞**（`G8e`＝力度轴，`ADR-0037`）：tip `2de1a438`，前三批各有一红（`E0432`→`E0615`→判据红，见 §0.6.2）⇒ ⛔ 落地、⛔ 拆树 |
 
 > ⭐ **2026-10-28 现读 `git worktree list` ＝ 上面两行**：`line/reason-propagation` 已落地
 > （`c2dd2b89` + `007e3ff9`，merge `e18be129`，run `40588472044` success）⇒ 工作树已按第 31 条拆除

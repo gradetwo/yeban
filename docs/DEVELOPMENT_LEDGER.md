@@ -12759,7 +12759,20 @@ theory 自己的判据名就写着 `an_over_dense_request_is_an_error_not_a_sile
     crate 根**不 re-export**，同仓库 `op_schema.rs:42`／`notes.rs:768` 都写全路径），
     `checks`／`rust (workspace 全量)`／macos／windows **四条腿同红**、整轮 **0 条**
     `test result:` ⇒ 真红而⛔ 空绿（本机探针抓不到，原因见下）。
-  * `d8504f73` Run `40599247060` ＝ **pending**（在跑）。
+  * `d8504f73` Run `40599247060` ＝ **failure** —— lib 这次编过了（`checks`／clippy 绿），
+    红在**新测试文件自己**：`error[E0615]: attempted to take value of method collect`
+    ＝ `section_velocity.rs:236` 把 `.collect::<Vec<_>>()` 写成了 `.collect::<Vec<_>>,`
+    （turbofish 后面漏调用括号）。⚠ §0.6.4 第 1 条那条"扫漏 `!`"的机械检查**盖不到这一类**
+    ⇒ 见本节规则第 6 条。
+  * `bee5d1a7` Run `40600377538` ＝ **failure** —— ⭐ 已经是**判据级**的红而⛔ 编译级：
+    承判腿 `rust (yeban-mcp)` 的 clippy `success` ＋ `test` `failure`，
+    `section_velocity` 五条判据**四条绿**，红的是
+    `out_of_range_and_inverted_are_rejected_naming_the_key`（`section_velocity.rs:369`）：
+    判据要求拒绝载荷的 `hint` **点名键名**（可执行的修正方向），而实现写的 hint 只有
+    "上档比下档轻是反重音（演奏法）…"。CI 把实际载荷原样报了出来
+    （`{"field":"velocityMin","hint":"上档…","velocityMax":40,"velocityMin":100}`）⇒
+    **改报文而不是放宽判据**（`2de1a438`），载荷形状与"⛔ 无 `reason` 键"都不动。
+  * `2de1a438` Run — **pending**（在跑）。
   本机测不了：`yeban-mcp` 拖 `yeban-render`（重依赖禁令），本地只跑到 `cargo fmt` ＋
   `run-gates.sh light`（`门禁通过 (mode=light)`）⇒ **符号解析（导入路径／常量名）这类
   错误在本机是量不到的**，代价正好是一整轮 CI（本次实测 ≈ 45 分钟）。
@@ -12796,3 +12809,21 @@ theory 自己的判据名就写着 `an_over_dense_request_is_an_error_not_a_sile
 5. **`gh run view --log --job <id>` 才是逐腿取读数的命令，`--log-job` 这个 flag 不存在**：
    本仓库装的 `gh` 会打印 usage 而非报错，脚本若只看 exit code 就会把"下载失败"读成
    "0 条 `test result:`"。判决脚本对每条腿都要区分这三态（有读数／无该行／没取到日志）。
+   ⚠ 另一条同源的限制：**run 还在跑的时候 `--log` 直接不可用**（"logs will be available
+   when it is complete"）⇒ 半程诊断只能靠 `gh api repos/…/actions/jobs/<id>` 的
+   **steps 列表**（哪一步红：clippy 还是 test）与 `check-runs/<id>/annotations`。
+   本次就是靠"clippy `success` ＋ `test` `failure`"这一对读出"红在判据、⛔ 在编译"。
+6. **推送前的机械扫描要盖住"turbofish 后面没括号"这一类，⛔ 只扫宏漏 `!`**：
+   本轮实测两条同类不同形的语法/类型错各烧掉一轮 CI（≈ 25 分钟）：
+   `assert_eq` 漏 `!`（§0.6.4 第 1 条已登记）与 `collect::<Vec<_>>,` 漏 `()`（新）。
+   ⭐ 现成的命令（**本次实测**：对上面两种破形都报，对
+   `collect::<Vec<_>>(),` / `Vec::<String>::new()` / `collect::<Vec<u8>>()` 都不报）：
+   `git diff --name-only <base> HEAD -- '*.rs' | tr '\n' '\0' | xargs -0 grep -Pn '::<[^<>]*(?:<[^<>]*>)?>(?![(:])'`
+   ⚠ 两条如实的限制：**只吃一层嵌套**（`::<Vec<Vec<u8>>>` 这类不在口径内），
+   以及**它只是字形检查** —— 命中不等于错、不命中不等于对，本机编不了的类型错
+   （如 `E0432` 的导入路径）它一样看不见 ⇒ 与"常量路径先 grep 既有用法"（第 4 条）配套用。
+7. **"报文类判据"要先把判据文本抄进实现再写代码，⛔ 写完实现再补判据**：
+   `ADR-0037` 的判据写明拒绝载荷的 `hint` 必须**点名是哪个键**，而实现给的 hint
+   只解释了语义 ⇒ 唯一一条红。规则：**判据里出现"必须包含 X"这类要求时，X 的字面量
+   要在写实现时就出现在报文里**，并且用 CI 报出的实际载荷（它会把整个 `payload` 打出来）
+   逐字对照 —— ⛔ 靠记忆。放宽判据是**错误处置**（那是在降低契约），改报文才是对的。
