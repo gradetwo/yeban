@@ -1895,3 +1895,106 @@ pub const WALLS: [&str; 3] = [
 /// ⚠ 这是**回归锚**，不是"音乐上正确的响度"：它由本工具链的这一次渲染实测后照抄，
 /// 用来抓"1 dB 以上的混音/推子漂移"。见模块文档的阈值说明。
 const EXPECTED_LUFS: f64 = -12.74;
+
+// ---------------------------------------------------------------------
+// ⭐ G6（审计 2026-10-27）：生成段必须**自带分级电平**，默认渲染不削波
+// ---------------------------------------------------------------------
+
+/// 数什么：`propose_section`（theory 路径，含鼓 + 旋律）合并后**新增轨**的
+/// `volume_db`（单位：dB，轨推子），以及该段**真渲染**的
+/// `clippedSamples`（个）与 `truePeakDbfs`（dBFS，16× 过采样真峰值）。
+/// 修复前基线：全部轨 `0.0` ⇒ `clippedSamples 527020/768000`（68.6%）、
+/// `truePeakDbfs +14.79`。判据：零削波且真峰值 ≤ −6.0 dBFS（给手写叠加留余量）。
+#[test]
+fn generated_sections_arrive_pre_staged_and_render_without_clipping() {
+    let scratch = Scratch::new("staging");
+    let (mut dispatcher, auth) = fresh_dispatcher();
+    let project_path = scratch.join("g6.yeban");
+    let created = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_open_project",
+        json!({
+            "path": project_path.display().to_string(),
+            "create": true,
+            "title": "G6 staging",
+        }),
+    );
+    assert_eq!(created["status"], "success", "建工程必须成功: {created}");
+
+    let proposed = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_propose_section",
+        json!({
+            "sectionName": "Verse",
+            "stylePreset": "synthwave",
+            "bars": 8,
+            "scale": "C minor",
+            "materialSource": "theory",
+            "includeDrums": true,
+            "includeMelody": true,
+        }),
+    );
+    assert_eq!(proposed["status"], "success", "{proposed}");
+    let merged = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_merge_proposal",
+        json!({
+            "proposalId": proposed["data"]["proposal"]["proposalId"],
+            "commitMessage": "G6 生成段",
+        }),
+    );
+    assert_eq!(merged["status"], "success", "{merged}");
+
+    // ① 逐角色电平：与 `section_build::part_volume_db` 的口径**逐字相同**
+    //    （旋律前景最响、鼓/低音次之、内声部铺底最低）。
+    let project = dispatcher.domain().active_project().expect("工程");
+    let mut staged = 0_usize;
+    for track in project.tracks.values() {
+        let Some((_, part)) = track.name.split_once(" · ") else {
+            continue; // 非生成轨（主总线等）
+        };
+        let expected = match part {
+            "Melody" => -22.0_f32,
+            "Drums" | "Bass" => -25.0,
+            _ => -28.0,
+        };
+        assert_eq!(
+            track.volume_db, expected,
+            "G6: 生成轨「{}」的默认电平必须是 {expected} dB: {}",
+            track.name, track.volume_db
+        );
+        staged += 1;
+    }
+    assert!(
+        staged >= 4,
+        "synthwave 三声部 + 鼓 + 旋律 ⇒ 至少 5 条生成轨（这里 {staged} 条）"
+    );
+
+    // ② 工具面真渲染：零削波 + 余量。
+    let rendered = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_render_master",
+        json!({"format": "wav", "sampleRate": 48_000}),
+    );
+    assert_eq!(rendered["status"], "success", "{rendered}");
+    eprintln!(
+        "G6 实测: clippedSamples={} truePeakDbfs={}",
+        rendered["data"]["clippedSamples"], rendered["data"]["truePeakDbfs"],
+    );
+    assert_eq!(
+        rendered["data"]["clippedSamples"], 0,
+        "G6: 生成段默认渲染不许削波（修复前 68.6%）: {}",
+        rendered["data"]["clippedSamples"]
+    );
+    let peak = rendered["data"]["truePeakDbfs"]
+        .as_f64()
+        .expect("truePeakDbfs");
+    assert!(
+        peak <= -6.0,
+        "G6: 生成段真峰值必须 ≤ −6.0 dBFS（修复前实测 +14.79），实测 {peak}"
+    );
+}
