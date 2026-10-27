@@ -42,7 +42,10 @@
 | `cc309f7b`（`G8d` 第一批） | `40563735922` | **failure** —— `E0423`：`assert_eq` 漏 `!`（三条腿同一错误、整轮 0 条 `test result:`）⇒ 真红，⛔ 空绿 |
 | `bee98ef5`（`G8d` 修复） | `40565010797` | **success** —— 承判腿**矩阵腿** `rust (yeban-mcp)` 938s ⇒ **101 / 2,242 / 0**，8 条判据在**三条腿逐名** `... ok`；全量腿因"推送增量只含 `crates/**`"skipped |
 | 主干 merge `e1409ad8` | `40570998122` | **success** —— 承判腿 `rust (workspace 全量)` **真跑** 2,619s ⇒ **412 / 6,733 / 0**；windows 1,237s ⇒ 250 / 4,879 / 0；macos 1,400s ⇒ 250 / 4,900 / 0 ⇒ `G8d` 的全量判决补齐 |
-| 本文件所在的**文档批次** | 本次推送后读回 | ⚠ 纯文档 ⇒ `plan` 判无 crate ⇒ 所有 rust 腿 `skipped` 而 `conclusion: success` ⇒ **空绿**，⛔ 当判决用；`G8d` 的判决只认代码 run `40570998122` |
+| `ae316f19`（§0.6 所在的**文档批次**，含其父提交 `1b26cdd2`） | `40579689026` | **success ＝ 空绿**（承判腿**一条代码腿都没有**）—— `plan` 判"无 crate" ⇒ `rust (${{ matrix.crate }})`／macos／windows／`rust (workspace 全量)` **四条全 `skipped` 且 steps=0**；真跑的只有 `plan`／`lockfile`／`checks`／`deny` 四道非代码门 ⇒ ⛔ 当代码判决用（`G8d` 的代码判决仍只认 `40570998122`） |
+| `1b26cdd2`（同批更早那个文档提交） | **没有自己的 run** | 实测 `gh run list --limit 30` 的 `headSha` 列**无一条**以 `1b26cdd2` 开头 ⇒ 它是 §0.6.4 第 3 条的**实录**：未推的文档提交被线树带走、落地时挤进同一次主干推送，于是它**只共享 tip 的（空绿）判决** |
+| `99f6566d`（`reason-propagation` 第一次落地 `c2dd2b89`） | `40586900647` | **failure** —— `clippy (-D warnings)` 腿 5 个编译错：4×`E0599`（`Option<String>` 没有 `as_str()`）+ 1×`dead_code`（`field expr is never read`），`rust (yeban-mcp)`／macos／windows **三条腿同红**、整轮 **0 条** `test result:` ⇒ 真红（本机探针⛔ 抓不到，原因见 §0.6.4 第 6 条） |
+| `e18be129`（修复 `007e3ff9` 后落地） | `40588472044` | **success** —— ⛔ 空绿：三条承判腿**都真跑**（steps 非 0、日志有 `test result:`）：`rust (yeban-mcp)` **101 / 2,246 / 0**、windows **250 / 4,881 / 0**、macos **250 / 4,902 / 0**；四条新判据在三条腿上**逐名** `... ok`；`rust (workspace 全量)` 因"推送增量只含 `crates/**`"skipped（本片⛔ 无跨 crate 生产改动） |
 
 ### 0.6.3 ⭐ 待人类裁决（⛔ 集成者不代签；本轮全部**登记后跳过**，没有停等）
 
@@ -84,18 +87,34 @@
 5. **判据必须是可观察量**：ADR 草案写"每小节音头数 == 格位数"，实测**鼓**的一格可落多个
    鼓（4/4 十六格产出 88 条击点）⇒ 那条判据要么永远绿、要么毫无信息；换成
    "**旋律音数 = 小节数 × 格位数**"（`build_weighted_grid` 的 `hits.len() = bars × wanted`）才可数。
+6. **探针的 `#![allow(...)]` 会把"CI 才报的错"就地抹掉**：`reason-propagation` 那条线靠
+   零依赖探针（`/tmp/yeban_probe`）把 `fault_vocabulary.rs` 的判据在本机**跑起来**了，
+   但探针头一句是 `#![allow(dead_code, unused_imports, clippy::all)]` ⇒ 真 CI 的
+   `field expr is never read`（`dead_code` 被 `clippy::all = deny` 提成错误）**探针里编译不出来**。
+   ⚠ 用探针做"本机预检"时，**必须另跑一次剥掉 `dead_code` 的严格头**（本轮加了
+   `main_head_strict.rs` + 一次 strict build），否则只是把假绿从 CI 搬到本机。
+7. **`Option<String>` 没有 `as_str()`**：`reason_of(&fault)` 返回 `Option<String>`，
+   写 `.as_str()` 是 `E0599`（本轮 4 处，一次 CI）。正确写法 `.as_deref()`；
+   `assert_eq!` 会**保住宿主临时量到整个比较结束**，所以 `Some(x)` 侧的 `&str` 不会悬垂。
+   推论：**crate 内测试区的类型检查本机完全覆盖不到**（探针搬不动 `notes.rs` 的 `mod tests`），
+   所以那里每个 API 调用都要**从签名现读**（本轮 `error.rs`／`notes.rs:10999` 就是这么定的），
+   ⛔ 凭其他语言的惯用直觉补一个方法名。
 
 ### 0.6.5 ⭐ 下一个该做什么
 
-1. ⭐ **先读回 §0.6.2 最后一行**（文档批次那轮）—— 但⚠ 它注定是**空绿**，读它是为了
-   **确认⛔ 有 rust 腿真跑**，⛔ 把它当代码判决。
+1. ⭐ §0.6.2 的文档批次**已读回**（run `40579689026`）—— 结论正如预告是**空绿**：四条代码腿
+   全 `skipped` 且 steps=0，真跑的只有 `plan`／`lockfile`／`checks`／`deny`。
+   同批更早那个提交 `1b26cdd2` **没有自己的 run**（§0.6.4 第 3 条的实录）。⛔ 别再当待办。
 2. 创作缺口这条线（审计 `G1..G18`）上**没有 `pending` 的代码工作了**：十八条全部处置，
    剩下的 4＋5 条要人类回答（§0.6.3），⛔ 集成者不得代签，也⛔ 为了"有活干"发明需求。
-3. ⭐ **在飞的线：`line/reason-propagation`**（`scripts/dev/worktree.sh add` 开的
-   `.worktrees/reason-propagation`）—— 做的是"运行期 `reason` 的调用点传播"：
-   `crates/yeban-mcp/tests/fault_vocabulary.rs:889` 的 `EXEMPT_DYNAMIC_REASON_SITES`
-   盲区（`domain/notes.rs:6527`/`:6539` 与 `:5424`/`:5442` 的运行时拼接 `reason`
-   没被扫描器传播到调用点，`retires_when` 逐字写着"让扫描器做调用点传播"）。
+3. ✅ **在飞的线已全部落地**：`line/reason-propagation`（§0.5.8 第 11 项队列的最后一格）
+   已合进主干（`c2dd2b89` 主体 + `007e3ff9` 修 CI 报的两个编译错，merge `e18be129`，
+   run `40588472044`）。它把 `EXEMPT_DYNAMIC_REASON_SITES` 从 **4 行压到 3 行**：
+   扫描器现在按**调用点**给转发的 `reason` 定值，词表 **162 → 203**，规范面重新钉在
+   `207 reason / 906 行 / sha256 4890ba25…43dd43`。
+   ⚠ 剩下的第 3 行（`domain/notes.rs:6748` 的 `resolved.unresolved_reason()` —— 词由**别的
+   crate** `yeban_render::inserts::UnresolvedReason::as_str()` 给出）是**跨 crate 的真动态**，
+   ⛔ 本轮没有替它编答案（传播它需要跨 crate 的枚举读数，`retires_when` 里写明不在本片边界）。
 4. ⚠ **上面 §0.5.8 第 11 项那四条队列，2026-10-28 逐条对代码核验过**（药方就是"派单前 grep"）：
    - `setTimeSignature` 派发层 e2e ⇒ **已存在**（`crates/yeban-mcp/tests/tools_e2e.rs:7459`
      走完整 `edit_notes → merge_proposal → query_project → undo/redo`，`:7608` 断言 6/8

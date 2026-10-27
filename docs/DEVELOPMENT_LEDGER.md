@@ -12615,3 +12615,80 @@ theory 自己的判据名就写着 `an_over_dense_request_is_an_error_not_a_sile
   §0.5（2026-10-26，macOS）/§1/§1.9 标为历史；§5 的 worktree 表与 §6 的裁决表按现读改正
   （⚠ §6 那几张表**全是历史明细**，真正的未决在 `human-decisions.md` 的 9 条）。
   `python3 scripts/tools/check_handover_consistency.py` 现读 **[ok]**。
+
+---
+
+## 2026-10-28：`reason-propagation` 消除（§0.5.8 第 11 项第四条队列的最后一格）：扫描器按**调用点**给转发的 `reason` 定值（`[MCP-TOOL-001]`）
+
+### 交付（线 `line/reason-propagation`：`c2dd2b89` 主体 + `007e3ff9` 修 CI 报的编译错）
+
+缺口本身是 `fault_vocabulary.rs` 盲区登记表点名要的那件事：`EXEMPT_DYNAMIC_REASON_SITES`
+里 4 条"`"reason"` 的值要到**运行时**才知道"的站点（`domain/notes.rs:5424`/`:5442` 的
+`reject_unknown_keys`、`:6527`/`:6539` 的 `read_non_empty_string`）。做法是**只改扫描器**、
+⛔ 不动任何产出字节：
+
+- 新增 `ReasonOccurrenceKind::Propagated(helper, suffix, values)` —— 站点值 = **该辅助函数
+  所有调用点最后一个实参的字面量**（若站点写成 `format!("{reason}<后缀>")` 则各加同一后缀）。
+- 四道闸，任一不满足 ⇒ `None` ⇒ 退回 `Dynamic` ⇒ 冻结计数**响亮地红**（不静默放行）：
+  ① 站点所在函数的**最后一个形参**就是那个标识符；② 同文件调用点数 == 登记的 `call_sites`；
+  ③ 每个调用点的最后实参**都是字面量**；④ 站点值表达式（`normalize_expr` 后）== 登记的 `expr`。
+  ⭐ 第 ④ 道是 `007e3ff9` 补的：`PropagatedReasonSite::expr` 原本**只登记不读**，被
+  `clippy::all = deny` 的 `dead_code` 否决 —— 与其加 `#[allow]`，把它接成真闸门。
+- `domain/notes.rs` 的 `mod tests` 新增判据 `forwarded_reason_arguments_emit_the_published_literals`
+  —— 把 25 条 `unknown*Field` 与 8 条 `*MustBeNonEmptyString`／拼接词逐条**跑出来**比对
+  （含 `data` 键集合：`["reason","supportedFields","unsupportedFields"]` / `["field","reason"]` /
+  `["field","reason","received"]`）。
+
+### 读数（单位：站点／词；零依赖探针在本机量，⛔ 不在本机编译 `yeban-mcp`）
+
+出现 **226** = 键站点 **223**（字面 215 + `let` 2 + 动态 **3** + 传播 **3**）+ 参数名 3 + 未分类 0；
+`GOLDEN_REASONS` **162 → 203**（＋41），`GOLDEN_REASON_PAYLOADS` 同步 203（另 4 行 info）；
+规范面 **207** reason / **906** 行 / `sha256 4890ba25908a83444859edd023e7109b02eb5e33646f46a7b9633ae39443dd43`（重新钉）；
+`EXEMPT_DYNAMIC_REASON_SITES` **4 → 3** 行（notes.rs 那侧只剩 `:6748` 的
+`resolved.unresolved_reason()` —— 词由**别的 crate** `yeban_render::inserts::UnresolvedReason::as_str()`
+给出，跨 crate 读数不在本片边界，`retires_when` 里如实这么写）。
+⚠ 探针重钉**之前**先用同一套代码复现了改动前的旧摘要 `166/750/2df60826…` —— 否则"新数字"可能只是探针自己算错了。
+
+### ⚠ 一处**如实登记、⛔ 不改词**的观察
+
+`read_non_empty_string` 的拼接分支把**已带 `MustBeNonEmptyString` 的入参**再拼一次 `MustBeString`
+⇒ 运行期真实存在 8 条例如 `unknownSceneFieldMustBeNonEmptyStringMustBeString` 的词。
+本轮把它们**按原样**写进词表（改词＝改客户端可见的失败契约，属人类那一格），
+拼接规则由那条新判据钉死。
+
+### 判决链（单位：`test result:` 行数 / passed / failed；每提交各自的 run，按 `headSha`）
+
+| 提交 | run | 判决 |
+| :--- | :--- | :--- |
+| `99f6566d`（第一次落地 `c2dd2b89`） | `40586900647` | **failure** —— `clippy (-D warnings)` 腿 5 个编译错：4×`E0599`（`Option<String>` 没有 `as_str`）+ 1×`dead_code`（`field expr is never read`）；`rust (yeban-mcp)`／macos／windows **三条腿同红**，整轮 0 条 `test result:` ⇒ 真红 |
+| `e18be129`（`007e3ff9` 修复后落地） | `40588472044` | **success** —— ⛔ 空绿：承判腿**三条都真跑**（steps 非 0、日志有 `test result:`）。`rust (yeban-mcp)` **101 / 2,246 / 0**；windows **250 / 4,881 / 0**；macos **250 / 4,902 / 0**；另 `rust (yeban-ui-mcp)` 4 / 99 / 0。四条新判据在三条腿上**逐名** `... ok`（`domain::notes::tests::forwarded_reason_arguments_emit_the_published_literals`、`the_propagated_reason_sites_publish_their_call_site_literals`、`every_reason_occurrence_is_classified_or_explicitly_registered`、`the_reason_surface_digest_is_frozen_and_documented`）。`rust (workspace 全量)` 因"推送增量只含 `crates/**`"skipped（steps=0）—— 本片只动 `yeban-mcp` 的 `mod tests` 区与一个测试文件，⛔ 无跨 crate 生产字节改动 |
+
+### 补账：§0.6 那批文档的判决读回（完成审计的收尾，⛔ 新代码）
+
+| 提交 | run | 判决 |
+| :--- | :--- | :--- |
+| `ae316f19`（文档批次 tip） | `40579689026` | **success ＝ 空绿** —— `plan` 判"无 crate" ⇒ `rust (matrix)`／macos／windows／`rust (workspace 全量)` **四条全 `skipped`、steps=0**；真跑的只有 `plan`／`lockfile`／`checks`／`deny` 四道非代码门 ⇒ ⛔ 当代码判决用（`G8d` 的代码判决仍只认 `40570998122`） |
+| `1b26cdd2`（同批更早那个文档提交） | **没有自己的 run** | 实测 `gh run list --limit 30` 的 `headSha` 列无一条以 `1b26cdd2` 开头 ⇒ §0.6.4 第 3 条的**实录**：未推的文档提交被线树带走、落地时挤进同一次主干推送，于是它只共享 tip 的（空绿）判决 |
+
+⇒ 交接 `docs/ledger/handover-latest.md` §0.6.2 最后一行的占位措辞（"本次推送后读回"）已按上表替换。
+
+### 本轮新增的规则
+
+1. **探针的 `#![allow(...)]` 会把"只有 CI 才报的错"就地抹掉**：探针头一句是
+   `#![allow(dead_code, unused_imports, clippy::all)]` ⇒ `field expr is never read`
+   这类被 `clippy::all = deny` 提成错误的 `dead_code`，**探针里编译不出来**，于是本机"全绿"
+   而 CI 红。处置：新增剥掉 `dead_code` 的严格头 `main_head_strict.rs`，预检**必须再跑一次
+   strict build**。⚠ 严格头下必然出现一批"只被 `#[test]` 用到的项判为 never used"的噪声
+   （探针没有测试驱动器，这些 fn 从 `main` 不可达）—— 那类噪声⛔ 当真红，
+   但 **`field … is never read` 不是噪声**（`dead_code` 对字段是**全 crate** 判定，
+   与可达性无关的写法差异要逐条看）。
+2. **`Option<String>` 没有 `as_str()`**：`reason_of(&fault)` 返回 `Option<String>`，
+   `.as_str()` 是 `E0599`（本轮 4 处 = 一次 CI）。写 `.as_deref()`；`assert_eq!` 把两侧
+   操作数都绑进 `match (&$left, &$right)`，宿主临时量活到整个比较结束，故 `Some(x)` 侧的
+   `&str` 不悬垂。推论：**crate 内 `mod tests` 区的类型检查本机完全覆盖不到**
+   （探针搬不动 `notes.rs` 的测试区），那里每个方法名都要**从签名现读**，⛔ 凭其他语言的直觉。
+3. **"探针算出的摘要"只有在 CI 复算后才算数**：本轮把规范面重新钉在探针（纯 std 实现）算出的
+   `4890ba25…43dd43`，而测试里用的是 `yeban_model::AssetHash::of_bytes(...).as_str()` ——
+   两者格式是否一致本机无法证明；`40588472044` 的 `the_reason_surface_digest_is_frozen_and_documented`
+   在三条腿上 `... ok` ⇒ **顺带证明了 `AssetHash` 就是"小写十六进制 sha256"**（这条等价关系
+   以前只是猜测，现在有了判决）。
