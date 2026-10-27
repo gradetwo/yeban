@@ -126,10 +126,10 @@ use yeban_theory::TheoryError;
 use yeban_theory::drum::{DrumPattern, default_backbeat, swung_styled_drum_pattern};
 use yeban_theory::genre::{GenreLibrary, GenreRule};
 use yeban_theory::melody::{MelodyConstraints, melody_over_chords};
-use yeban_theory::pitch::PitchClass;
+use yeban_theory::pitch::{Pitch, PitchClass};
 use yeban_theory::progression::{ChordSpan, Meter as TheoryMeter, Progression};
 use yeban_theory::scale::{Scale as TheoryScale, ScaleKind};
-use yeban_theory::voice_leading::{self, VoicingConstraints};
+use yeban_theory::voice_leading::{self, VoiceRange, VoicingConstraints};
 
 use super::ids::deterministic_id;
 
@@ -930,6 +930,38 @@ impl MaterialSource {
     }
 }
 
+/// `drumDensity` 的已接受取值（审计 `G8` / `ADR-0028`）。
+///
+/// 缺省（`None`）等价于 `Normal`：**全部**生成鼓点，与既有输出逐字节相同
+/// （D2：不选它就不改任何东西）。`Sparse` 是**显式** opt-in 的瘦身。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DrumDensity {
+    /// 保留流派生成的每一个鼓点（缺省；既有语义）。
+    Normal,
+    /// 只保留**重音**鼓点（`hit.accent`）：底鼓组头 / 军鼓backbeat 留下，
+    /// 非重音的踩镲连续流被去掉。重音口径来自 theory 的流派登记，本表**不**
+    /// 另立一套（⛔ 没有第二张名字表）。
+    Sparse,
+}
+
+impl DrumDensity {
+    /// 解析 `drumDensity`；未知取值 ⇒ `INVALID_PARAMETER_RANGE`。
+    fn parse(raw: Option<&str>) -> Result<Self, BuildFault> {
+        match raw {
+            None | Some("normal") => Ok(Self::Normal),
+            Some("sparse") => Ok(Self::Sparse),
+            Some(other) => Err(BuildFault::domain(
+                BuildCode::InvalidParameterRange,
+                format!("`drumDensity` 必须是 \"normal\" 或 \"sparse\", 实际 `{other}`"),
+                json!({
+                    "drumDensity": other,
+                    "accepted": ["normal", "sparse"],
+                }),
+            )),
+        }
+    }
+}
+
 /// `plan` 的扩展选项（`ADR-0016` / `ADR-0017`）。
 ///
 /// 默认值 = 既有 `'project'` 路径，因此 [`plan`] 的调用方不需要任何改动。
@@ -943,6 +975,9 @@ pub struct PlanOptions<'a> {
     pub include_drums: Option<bool>,
     /// 追加旋律声部（`ADR-0017` D1）；只允许与 `material_source: Some("theory")` 同给。
     pub include_melody: Option<bool>,
+    /// 鼓点密度档位（`ADR-0028`）；只允许与 `include_drums: Some(true)` 同给。
+    /// `None` / `Some("normal")` = 逐字节维持既有鼓组输出。
+    pub drum_density: Option<&'a str>,
 }
 
 /// 一个声部的身份（两条材料路径共用）。
@@ -1114,6 +1149,29 @@ fn theory_spans(
 /// `'theory'` 路径的和声内容：声部连接 → 每声部一张确定性音符表。
 ///
 /// 每个和弦跨满 `ChordSpan` 的时值（块状和声节奏），音符起点/时值都是
+/// ⭐ `G8a`（审计 `G8` / `ADR-0028`）：`'theory'` 路径 3 声部的生成音域。
+///
+/// theory 的出厂 3 声部音域（低音 C3–C5）在紧凑性目标下把 bass 顶到
+/// **67–72**（独立探针对 I-V-vi-IV / i-VII-III-vi / I-IV-V-I 实测，MIDI 值；
+/// 复现审计读数"bass 落 67–70"）。且**只降下界不收紧上界是无效的**：
+/// bass C2–C4 的松音域实测仍只落到 59–60 —— 声部贴着各自**上界**走。
+/// 因此 bass 收到 C2–C3（实测落点 47–48 = B2/C3），内声部相应给 G3–G5，
+/// 高声部维持出厂 C5–C7。4 声部不动（`FOUR_VOICES` 本就横跨低音区）。
+static SECTION_THREE_VOICES: [VoiceRange; 3] = [
+    VoiceRange {
+        lower: Pitch::C2,
+        upper: Pitch::C3,
+    },
+    VoiceRange {
+        lower: Pitch::G3,
+        upper: Pitch::G5,
+    },
+    VoiceRange {
+        lower: Pitch::C5,
+        upper: Pitch::C7,
+    },
+];
+
 /// 960 PPQ 的整数 tick；身份由 `section_id + 声部序 + 和弦序` 派生。
 fn theory_contents(
     style_preset: &str,
@@ -1122,7 +1180,18 @@ fn theory_contents(
     spans: &[ChordSpan],
 ) -> Result<Vec<BTreeMap<EntityId, MidiNote>>, BuildFault> {
     let voiced = match voice_count {
-        3 => voice_leading::realize_three_voices(spans),
+        // ⭐ `G8a`（审计 `G8` / `ADR-0028`）：3 声部**不**用 theory 的出厂音域
+        // （低音 C3–C5 ⇒ 实测 bass 落点 67–72，比人声还高）。这里给生成路径
+        // 一份**自定义**音域：bass 收紧到 C2–C3、内声部 G3–G5、高音不动。
+        // ⛔ 不改 `yeban-theory`（模块边界：本 crate 只消费它的公开面）。
+        3 => voice_leading::realize(
+            spans,
+            &VoicingConstraints {
+                ranges: &SECTION_THREE_VOICES,
+                max_voice_jump: 12,
+                max_total_movement: 24,
+            },
+        ),
         4 => voice_leading::realize(spans, &VoicingConstraints::FOUR_VOICES),
         other => {
             return Err(BuildFault::domain(
@@ -1220,10 +1289,18 @@ fn drum_contents(
     bars: u64,
     style_preset: &str,
     section_id: EntityId,
+    density: DrumDensity,
 ) -> Result<BTreeMap<EntityId, MidiNote>, BuildFault> {
     let pattern = theory_drum_pattern(rule, theory_bars(bars)?, style_preset)?;
     let mut notes = BTreeMap::new();
     for (hit_index, hit) in pattern.hits().iter().enumerate() {
+        // ⭐ `ADR-0028` D3：`sparse` = 只留重音（口径来自流派登记的
+        // `hit.accent`，本表不另立规则）。`normal` 一行都不筛 ⇒ 缺省路径
+        // 逐字节不变。音符身份仍按**原始** hit_index 派生（筛选不改未筛中
+        // 音符的 id，两档之间可对照）。
+        if density == DrumDensity::Sparse && !hit.accent {
+            continue;
+        }
         let id = deterministic_id(&format!(
             "theory-drum:{section_id}:{hit_index}:{}",
             hit.voice.name()
@@ -1237,6 +1314,23 @@ fn drum_contents(
             ..MidiNote::new(id, hit.tick, hit.voice.gm_key(), DRUM_NOTE_DURATION_TICKS)
         };
         notes.insert(id, note);
+    }
+    if notes.is_empty() {
+        return Err(BuildFault::domain_with_data(
+            BuildCode::InvalidParameterRange,
+            format!(
+                "流派 `{style_preset}` 在 `drumDensity: {:?}` 下生成不出任何鼓点（静默的鼓轨不是产出）",
+                if density == DrumDensity::Sparse {
+                    "sparse"
+                } else {
+                    "normal"
+                }
+            ),
+            json!({
+                "stylePreset": style_preset,
+                "hint": "换 `drumDensity: \"normal\"`，或换一个登记了重音的流派",
+            }),
+        ));
     }
     Ok(notes)
 }
@@ -1367,6 +1461,16 @@ pub fn plan_with_options(
             json!({ "hint": "请指定 materialSource: \"theory\"" }),
         ));
     }
+    // ⭐ `ADR-0028`：`drumDensity` 只有鼓轨在场时才有意义 —— 显式给了它却
+    // 没有 `includeDrums: true` 是"给了不消费的参数"，响亮拒绝而不是静默忽略。
+    let drum_density = DrumDensity::parse(options.drum_density)?;
+    if options.drum_density.is_some() && !include_drums {
+        return Err(BuildFault::domain_with_data(
+            BuildCode::InvalidParameterRange,
+            "`drumDensity` 仅在 includeDrums: true 时支持",
+            json!({ "hint": "请同时指定 includeDrums: true（鼓密度只作用于生成的鼓轨）" }),
+        ));
+    }
     // 1. 参数与工程前置条件（顺序即错误码优先级，判据钉住它）。
     //    风格与声部数都来自 theory（见 `preset_parts` / `genre_voice_count`）。
     let harmony_parts = preset_parts(style_preset)?;
@@ -1462,7 +1566,13 @@ pub fn plan_with_options(
             let mut contents =
                 theory_contents(style_preset, section_id, harmony_parts.len(), &spans)?;
             if include_drums {
-                contents.push(drum_contents(theory.rule, bars, style_preset, section_id)?);
+                contents.push(drum_contents(
+                    theory.rule,
+                    bars,
+                    style_preset,
+                    section_id,
+                    drum_density,
+                )?);
             }
             if include_melody {
                 contents.push(melody_contents(

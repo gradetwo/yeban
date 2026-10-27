@@ -573,29 +573,43 @@ pub fn statically_compressing_nodes(tracks: &BTreeMap<EntityId, TrackV3>) -> BTr
 ///
 /// 返回 `true` 的条件（任一成立）：
 ///
-/// - 有**非旁通**设备不是 [`DeviceKind::InternalEffect`]（外部插件 / 内置乐器；
-///   后者是音源，其参数由音源负责）；
-/// - 有**非旁通**设备一个参数都没写（"没有参数可求值"不是"已经求值"—— 与既有
-///   MCP 判据的口径一致，保留 `deviceChainDsp` 登记）；
-/// - 有**非旁通**设备的任一参数名不在本切片的白名单里（未知第三方旋钮 / 刻意不认的
-///   `filter_cutoff_hz` / `reverb_mix` / `reverb_width`）。
+/// - 有**非旁通**设备是外部插件（[`DeviceKind::ExternalInstrument`] /
+///   [`DeviceKind::ExternalEffect`]）；
+/// - 有**非旁通**的 [`DeviceKind::InternalInstrument`] 设备带着**引擎不认**的
+///   参数名（音源参数自 `#268` 起由 `yeban-engine` 的
+///   [`ToneParams::from_devices`] 真实求值 —— 音色/`osc*_wave` 就在其中；
+///   名单是引擎的权威清单 [`yeban_engine::synth::is_consumed_instrument_param`]，
+///   ⛔ 不是本 crate 手抄的第二张表；**全部参数都在名单里**（含**空参数** ⇒
+///   出厂默认音色）⇒ 这条设备**不再**登记）；
+/// - 有**非旁通**的 [`DeviceKind::InternalEffect`] 设备一个参数都没写
+///   （"没有参数可求值"不是"已经求值"—— 与既有 MCP 判据的口径一致）；
+/// - 有**非旁通** [`DeviceKind::InternalEffect`] 设备的任一参数名不在本切片的
+///   白名单里（未知第三方旋钮 / 刻意不认的 `filter_cutoff_hz` / `reverb_mix` /
+///   `reverb_width`）。
 ///
-/// 全部非旁通设备都是本切片认识并**真的执行**的内置效果器参数 ⇒ `false` ⇒ MCP
-/// 不再登记 `deviceChainDsp`（报一个已经做到的键就是假话）。增益 / EQ / 滤波 / 压缩
-/// 都已被通道条执行（压缩自 `#303` 起，见 §1.1）⇒ 它们的名字**不再**登记。
+/// 全部非旁通设备都被**某条**离线路径真的执行 ⇒ `false` ⇒ MCP 不再登记
+/// `deviceChainDsp`（报一个已经做到的键就是假话）。增益 / EQ / 滤波 / 压缩
+/// 由通道条执行（压缩自 `#303` 起，见 §1.1）；音源参数由引擎执行（自 `#268`，
+/// G5 把这一半如实接进本判据）。
 #[must_use]
 pub fn track_has_unhandled_dsp(track: &TrackV3) -> bool {
     track.devices.iter().any(|device| {
         if device.bypassed {
             return false;
         }
-        if device.kind != DeviceKind::InternalEffect || device.params.is_empty() {
-            return true;
+        match device.kind {
+            DeviceKind::InternalEffect => {
+                device.params.is_empty()
+                    || device
+                        .params
+                        .iter()
+                        .any(|param| !is_supported_param(&param.name.to_ascii_lowercase()))
+            }
+            DeviceKind::InternalInstrument => device.params.iter().any(|param| {
+                !yeban_engine::synth::is_consumed_instrument_param(&param.name.to_ascii_lowercase())
+            }),
+            DeviceKind::ExternalInstrument | DeviceKind::ExternalEffect => true,
         }
-        device
-            .params
-            .iter()
-            .any(|param| !is_supported_param(&param.name.to_ascii_lowercase()))
     })
 }
 

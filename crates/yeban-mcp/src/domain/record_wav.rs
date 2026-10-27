@@ -23,6 +23,9 @@
 //!    `cargo tree -p yeban-mcp -e normal | grep -c cpal == 0` 的读数）。
 //!    样本来源是一条**可控的内存测试音**
 //!    （440 Hz 正弦），响应 `source` 逐字写明 `in-memory-sine(440Hz)`。
+//!    ⭐ [G12] 名字容易让人以为在"录工程"：响应与预览因此恒带
+//!    `notProjectBounce: true` 与 `alternatives.projectBounce`（指路
+//!    `yeban_render_master`）。接工程源本身是待裁项（HD-69），不在本切片擅自接线。
 //! 2. **丢弃是**帧**级**：引擎的 `RecordSender::dropped_frames()` 是**样本**级
 //!    （它的文档写明这一点），本模块按**整帧原子**推送并自己数**帧**级丢弃 ⇒
 //!    响应里的 `dropped` 是帧级读数，⛔ 不与引擎的样本级读数混用。
@@ -318,11 +321,27 @@ impl RecordArtifact {
         AssetHash::of_bytes(&self.bytes).as_str().to_owned()
     }
 
+    /// [G12] "样本不是工程音频"的**显式**读数（预览与响应共用一处定义 ⇒ 不会漂移）。
+    const NOT_PROJECT_BOUNCE: bool = true;
+
+    /// [G12] 指路：录工程声音的替代工具（接工程源本身是待裁项 HD-69，不在此擅自接线）。
+    #[must_use]
+    fn project_bounce_alternative() -> serde_json::Value {
+        serde_json::json!({
+            "projectBounce": {
+                "tool": "yeban_render_master",
+                "why": "`yeban_record_wav` 只录内存测试音 (ARCH-REC-001)；要录工程的声音请改用 `yeban_render_master`"
+            }
+        })
+    }
+
     /// `dryRun` 预览（同一批实测数字 + `wouldWrite`；**不落盘**）。
     #[must_use]
     pub fn preview(&self) -> serde_json::Value {
         serde_json::json!({
             "source": self.source,
+            "notProjectBounce": Self::NOT_PROJECT_BOUNCE,
+            "alternatives": Self::project_bounce_alternative(),
             "archRec": {
                 "specId": "ARCH-REC-001",
                 "phases": ["record_channel (构造期唯一分配)", "push_frame (整帧原子 + 帧级丢弃计数)", "RecordDrain::pump (后台抽干)"],
@@ -369,6 +388,8 @@ impl RecordArtifact {
             "sha256": self.sha256(),
             "peak": self.peak,
             "source": self.source,
+            "notProjectBounce": Self::NOT_PROJECT_BOUNCE,
+            "alternatives": Self::project_bounce_alternative(),
             "deviceStream": false,
             "request": self.request.to_value(),
             "dither": "TPDF, seed 1 (ARCH-FMT-001; 与 app 侧 record_wav 同一条口径)",
