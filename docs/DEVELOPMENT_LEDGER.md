@@ -177,6 +177,35 @@ CARGO_HOME=/Users/crow/work/music/.cargo-home RUSTUP_TOOLCHAIN=stable \
 | UI/UX 规范的缺口 | 字体与 CJK 字体栈、间距/圆角/字号 scale、DPR 细则、Splitter 约束对象、24px 状态栏归属——见 ADR-0001 与 UI 摘要，实现前需按登记口径执行 |
 | `schemas/mcp-tools.schema.json` 与 10 个工具的最终对账 | 需 `yeban-mcp` 实现后才能做真实对账 |
 
+### 5.3 创作缺口审计（GAPS 18 条）状态表（测量时刻：2026-10-27T09:43Z）
+
+> 数的是 `/tmp/yeban-issues-20261027/GAPS.md` 里 `G1..G18` 十八条缺口的**处置状态**
+> （单位：条）。"消除"= 代码 + 判据 + **读回的 CI 判决**三者齐备；⛔ 只有代码不算消除。
+
+| 缺口 | 状态 | 依据（ADR / 判决） |
+| :--- | :--- | :--- |
+| `G1` 渲染 16 源上限静默丢轨 | 消除 | `ADR-0022`；主干留痕见本文件「G1 消除」条 |
+| `G2` `removeTrack` 不清理路由图 | 消除 | `ADR-0023`；「G2 消除」条 |
+| `G3` 歌声合成路线 | **待人类裁决** | `HD-67`（三条路线 A/B/C 未选路） |
+| `G4` SFZ 样本全缺时静默 | 消除 | `ADR-0024`；「G4 消除」条 |
+| `G5` 音色参数消费口径 | 消除 | `ADR-0027`；「G5 消除」条 |
+| `G6` 生成即增益分级 | 消除 | `ADR-0026`；「G6 消除」条 |
+| `G7` 同批建节点+连边被批前预检误拒 | 消除 | `ADR-0025`；「G7 消除」条 |
+| `G8` 生成控制粒度 | **半消除** | `G8a`（音域 + `drumDensity`）已落，`ADR-0028`；`G8b` 逐声部节奏粒度 `pending`（网格常量钉死在 `section_build.rs:213`） |
+| `G9` 单轨贡献读数 / 分轨导出 | **半消除** | `G9a`（`contributions`）已落，`ADR-0020`；`G9b`（`yeban_export_stems`）`pending`：`line/stem-export` 最新 Run `40480780925` 尚未读回 |
+| `G10` stdio 形态无引擎 ⇒ 场景启动不可用 | **待人类裁决** | `HD-69`（形态 B 是否托管 `yeban-engine`） |
+| `G11` `midi-input` 不进 release 默认特性 | **待人类裁决** | `HD-68`（红线 6 的另一面，⛔ 集成者不擅开特性） |
+| `G12` `record_wav` 语义 | **半消除** | 回执显式指路（`notProjectBounce` + `alternatives`）已落；「接工程源」那半属 `HD` 未决项 |
+| `G13` 编辑→合并两轮往返 | 消除 | `ADR-0029`；主干 Run `40472116248` success（workspace 全量 4505s、406 条 `test result:` / 6684 passed / 0 failed） |
+| `G14` 设备参数拼写无公告面 | `pending` | `ADR-0031` 在线；线 Run `40478327564`（`c889ecdc`）重跑中，⚠ 同分支 tip 是纯文档提交 ⇒ `40479128541` 的 success 是**空绿**（rust/macos/windows 全 `skipped`），不作判决 |
+| `G15` 段落无时间序读数 | 消除 | `sections.timeline`；主干 Run `40462525280` success + 夹具误红由 `4cfa0008` 修复（Run `40471370167`） |
+| `G16` 弯音曲线只能整条重写 | 消除 | `ADR-0019`（`setPitchBendPoint` 插/改/删三态 + 界外拒绝）；主干 Run `40419445566` success |
+| `G17` 两种提交模型并存 | `pending` | 候选切片：回执自述 `commitModel`（⛔ 不把 automation 改成提案模型） |
+| `G18` `scale` 苛刻 / 无转调工具 | **半消除** | 别名通道已落（线 Run `40464221638` + 主干 `40471370167`）；「段间转调」`pending`（全仓 `transpose` 零命中 ⇒ `G18b`） |
+
+**待裁三项不许由集成者补齐**：`G3` / `G10` / `G11` 已登记 `HD-67` / `HD-68` / `HD-69`，
+`docs/ledger/human-decisions.md` 的状态行（69 项中 61 项已裁决）随之漂移，⚠ 下次改动该表时须同步读数。
+
 ---
 
 ## 6. 教训与由此产生的规则 (Mistakes and the rules they produced)
