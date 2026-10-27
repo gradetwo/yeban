@@ -507,10 +507,11 @@ fn render_master() -> Value {
              `peak.before|after` 是**归一化前后**的浮点母带样本峰值（⛔ 不是文件峰值）；\
              文件层面的削波读数是顶层 `clippedSamples`，样本间过冲是顶层 `truePeakDbfs`。\
              `truePeakDbfs` / `headroomDb` 在无法测量时是 `null`（不编造 0）。\
-             ⭐ `#225`：`warnings[]` 是**结果质量**提示（非阻断）—— `clippedSamples > 0` 时\
-             恰好一条 `code:\"exportClipping\"`（含 `clippedSamples` / `truePeakDbfs` /\
+             ⭐ `#225`：`warnings[]` 是**结果质量**提示（非阻断），两条来源：\
+             ① `clippedSamples > 0` 时恰好一条 `code:\"exportClipping\"`（含 `clippedSamples` / `truePeakDbfs` /\
              `suggestedTrimDb`（公式 `-(ceil(truePeakDbfs * 2) / 2)`）/ `loudestSource` /\
-             `hint`），否则**空数组**。⛔ 它不自动改增益；`sources[].peak` / `.peakDbfs`\
+             `hint`）；② 可闻、排了内容、却 `peak == 0.0` 的源由一条 `code:\"silentSources\"`\
+             逐条点名（含 `count` / `sources[]` / `hint`）；两条都不出现时是**空数组**。⛔ 它不自动改增益；`sources[].peak` / `.peakDbfs`\
              是逐源峰值（源节点输出，⛔ 不含插入链与路由边增益）。\
              ⭐ `#268`（`ADR-0011`）：顶层 `midiSource` **明说** MIDI 音源是\
              `yeban-engine` 的 `SynthEngine`（`kind:\"engine-instrument\"`、\

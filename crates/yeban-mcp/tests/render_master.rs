@@ -395,6 +395,69 @@ fn two_track_clip_project(lead_volume_db: f32, pad_volume_db: f32) -> YebanProje
     project
 }
 
+/// ⭐ G1 判据夹具：`tracks` 条 MIDI 源轨汇入 Master，每条各一个 480-tick 音符。
+///
+/// 轨道身份按 `id(100 + index)` 升序 ⇒ 快照 / 槽位分配序 = 声明序；第 17 条起
+/// 落在旧的 16 槽上限之外（缺陷复现的最小结构）。
+fn many_track_clip_project(tracks: usize) -> YebanProjectV1 {
+    let mut project = project(&Spec::default());
+    let master = id(1);
+    for index in 0..tracks {
+        let seed = u32::try_from(index).expect("夹具规模必须放得进 u32");
+        let track = id(100 + seed);
+        let clip = id(1_000 + seed);
+        let placement = id(2_000 + seed);
+        let note = id(3_000 + seed);
+        let edge = id(4_000 + seed);
+        let mut params = TrackV3 {
+            id: track,
+            name: format!("Track {}", index + 1),
+            kind: TrackKind::Midi,
+            ..TrackV3::default()
+        };
+        params.clips.insert(
+            placement,
+            ClipPlacement {
+                id: placement,
+                clip_id: clip,
+                start_tick: 0,
+                duration_ticks: 480,
+                loop_config: LoopConfig::default(),
+                muted: false,
+            },
+        );
+        let mut notes = BTreeMap::new();
+        notes.insert(
+            note,
+            MidiNote::new(note, 0, 48 + u8::try_from(index % 24).expect("取模"), 480),
+        );
+        project.clip_pool.insert(
+            clip,
+            ClipPoolEntry {
+                id: clip,
+                name: format!("Clip {}", index + 1),
+                content: ClipContent::Midi { notes },
+            },
+        );
+        project.tracks.insert(track, params);
+        project.routing_graph.nodes.push(track);
+        project.routing_graph.edges.insert(
+            edge,
+            RoutingEdge {
+                id: edge,
+                source_node: track,
+                destination_node: master,
+                kind: RoutingKind::TrackToBus,
+                gain_db: None,
+            },
+        );
+    }
+    project
+        .validate()
+        .unwrap_or_else(|error| panic!("多源夹具必须合法: {error}"));
+    project
+}
+
 /// 磁盘上这份文件的 SHA-256（**从字节读**，不是回抄响应）。
 fn file_sha256(path: &Path) -> String {
     let bytes = fs::read(path).expect("读产物");
@@ -8380,5 +8443,159 @@ fn a_tempo_point_changes_the_master_length_and_onset() {
     assert_eq!(
         flat["data"]["frames"], 144_000,
         "空 tempo_map 必须保持恒定 BPM 的旧长度: {flat}"
+    );
+}
+
+/// ⭐ **G1 回归（实测缺陷，2026-10-27）**：工程源数超过实时槽位上限（16）时，
+/// **每一条**源都必须在母带里出声。
+///
+/// 缺陷：离线渲染的每个源独享一台 `SynthEngine` 却全量武装快照 ⇒ 第 17 条起
+/// 拿不到槽位、整轨数字静音，而回执只说 `success`（`sources[].peak = 0.0`）。
+/// 判据：24 条源逐条 `peak > 0`，且 `warnings[]` 里没有 `silentSources`。
+#[test]
+fn every_source_in_a_twenty_four_track_project_sounds() {
+    const TRACKS: usize = 24;
+    let scratch = Scratch::new("multi-source");
+    let (mut dispatcher, auth) = dispatcher_with(
+        &many_track_clip_project(TRACKS),
+        &scratch.join("many.yeban"),
+    );
+    let out = scratch.join("many.wav");
+    let rendered = call(
+        &mut dispatcher,
+        &auth,
+        json!({
+            "format": "wav",
+            "sampleRate": 48000,
+            "path": out.display().to_string(),
+        }),
+    );
+    assert_eq!(rendered["status"], "success", "{rendered}");
+    let data = &rendered["data"];
+    let sources = data["sources"].as_array().expect("sources 必须是数组");
+    assert_eq!(
+        sources.len(),
+        TRACKS + 1,
+        "回执必须逐条列出全部源（夹具自带 Lead + {TRACKS} 条；⛔ 不静默少报）: {data}"
+    );
+    let silent: Vec<Value> = sources
+        .iter()
+        .filter(|source| source["peak"].as_f64().unwrap_or(0.0) <= 0.0)
+        .cloned()
+        .collect();
+    assert!(
+        silent.is_empty(),
+        "{TRACKS} 条源必须全部出声（第 17 条起曾经数字静音）: {silent:?}"
+    );
+    let codes: Vec<&str> = data["warnings"]
+        .as_array()
+        .expect("warnings 必须是数组")
+        .iter()
+        .filter_map(|warning| warning["code"].as_str())
+        .collect();
+    assert!(
+        !codes.contains(&"silentSources"),
+        "全部出声时不得报 silentSources（warnings = {codes:?}）"
+    );
+}
+
+/// ⭐ **G1 预警**：可闻、也排了内容，却在本渲染窗口里一个非零样本都没出的源，
+/// 必须被 `warnings[]` 里的 `silentSources` **点名** —— "渲染成功"不能掩盖静音。
+///
+/// 夹具：`Lead` 的音符在 tick 0（会出声），`Pad` 的摆放与音符都在 tick 480
+/// （@120 BPM = 0.25 s）；只渲染前 0.1 s ⇒ `Pad` 在此窗口内必然静音。
+///
+/// 另一条腿：把 `Pad` `mute` 掉 ⇒ `audible = false`，这**不是**缺陷，
+/// 预警必须消失（否则每次静音一条轨都会被打扰）。
+#[test]
+fn a_source_that_renders_silence_in_the_window_is_named_in_a_warning() {
+    let scratch = Scratch::new("silent-source-warning");
+    let mut project = two_track_clip_project(0.0, 0.0);
+    let pad = id(3);
+    let placement = id(21);
+    let clip = id(11);
+    let note = id(31);
+    project
+        .tracks
+        .get_mut(&pad)
+        .expect("Pad 轨")
+        .clips
+        .get_mut(&placement)
+        .expect("Pad 摆放")
+        .start_tick = 480;
+    let ClipContent::Midi { notes } =
+        &mut project.clip_pool.get_mut(&clip).expect("Pad 片段").content
+    else {
+        panic!("Pad 片段必须是 MIDI");
+    };
+    let moved = notes.remove(&note).expect("Pad 音符");
+    notes.insert(
+        note,
+        MidiNote {
+            start_tick: 480,
+            ..moved
+        },
+    );
+    project.validate().expect("晚起的 Pad 夹具必须合法");
+
+    let (mut dispatcher, auth) = dispatcher_with(&project, &scratch.join("late-pad.yeban"));
+    let out = scratch.join("late-pad.wav");
+    let rendered = call(
+        &mut dispatcher,
+        &auth,
+        json!({
+            "format": "wav",
+            "sampleRate": 48000,
+            // 0.1 s：Lead（tick 0）出声，Pad（tick 480 = 0.25 s）还没起音。
+            "frames": 4_800,
+            "path": out.display().to_string(),
+        }),
+    );
+    assert_eq!(rendered["status"], "success", "{rendered}");
+    let data = &rendered["data"];
+    let warnings = data["warnings"].as_array().expect("warnings 必须是数组");
+    let silent: Vec<&Value> = warnings
+        .iter()
+        .filter(|warning| warning["code"] == "silentSources")
+        .collect();
+    assert_eq!(
+        silent.len(),
+        1,
+        "恰好一条 silentSources（warnings = {warnings:?}）"
+    );
+    assert_eq!(silent[0]["count"], 1, "{silent:?}");
+    assert_eq!(silent[0]["blocking"], false, "预警不得阻断渲染: {silent:?}");
+    let named = silent[0]["sources"].as_array().expect("sources 数组");
+    assert_eq!(named.len(), 1, "{silent:?}");
+    assert_eq!(
+        named[0]["track"], "Pad",
+        "点名的必须是静音的 Pad: {silent:?}"
+    );
+    assert!(named[0]["notes"].as_u64().unwrap_or(0) > 0, "{silent:?}");
+
+    // 另一条腿：mute 掉 Pad ⇒ 本来就是"应当静音"，不得再报。
+    project.tracks.get_mut(&pad).expect("Pad 轨").mute = true;
+    let (mut dispatcher, auth) = dispatcher_with(&project, &scratch.join("muted-pad.yeban"));
+    let out = scratch.join("muted-pad.wav");
+    let muted = call(
+        &mut dispatcher,
+        &auth,
+        json!({
+            "format": "wav",
+            "sampleRate": 48000,
+            "frames": 4_800,
+            "path": out.display().to_string(),
+        }),
+    );
+    assert_eq!(muted["status"], "success", "{muted}");
+    let codes: Vec<&str> = muted["data"]["warnings"]
+        .as_array()
+        .expect("warnings 必须是数组")
+        .iter()
+        .filter_map(|warning| warning["code"].as_str())
+        .collect();
+    assert!(
+        !codes.contains(&"silentSources"),
+        "mute 的轨不得报 silentSources（warnings = {codes:?}）"
     );
 }

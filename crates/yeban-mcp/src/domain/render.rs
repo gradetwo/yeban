@@ -253,7 +253,9 @@
 //! 交付形态：
 //!
 //! - `data.warnings[]`（**结果质量提示**通道，与提案响应的 `#175`/`#178` 同名同义）：
-//!   `clippedSamples > 0` 时**恰好一条** `code:"exportClipping"`；否则**空数组**。
+//!   两条来源 —— ① `clippedSamples > 0` 时**恰好一条** `code:"exportClipping"`；
+//!   ② 可闻、排了内容、却**一个非零样本都没出**的源 ⇒ **一条** `code:"silentSources"`
+//!   逐源点名（见 [`silent_sources_warning`]）。两条都不出现时是**空数组**。
 //!   为什么**不**进 `unsupported` / [`KNOWN_UNSUPPORTED_KEYS`]：那份清单的口径是
 //!   "我们会静默少做什么"（第 324 条：清单里的每一项都必须在一个具体输入下真的
 //!   出现）。削波不是"少做了什么"—— 渲染把工程算对了，**结果本身**过载。塞进去会
@@ -1047,6 +1049,68 @@ fn clipping_warning(
         "suggestedTrimDbFormula": formula,
         "basis": basis,
         "loudestSource": loudest_value,
+        "hint": hint,
+    }))
+}
+
+/// **静音源预警**（`data.warnings[]` 的第二条来源）：可闻、排了内容，却一个非零样本都没出。
+///
+/// ## 为什么有它（实测缺陷，G1）
+///
+/// 28 轨工程里 12 条轨 `peak = 0.0` 地"渲染成功"了：离线源每台引擎只渲染自己那条轨，
+/// 却把整份快照塞进 16 个槽 ⇒ 第 17 条起拿不到槽位、整轨数字静音（根因见
+/// `yeban_engine::synth::SynthEngine::arm_track_from_snapshot`）。回执里没有任何提示，
+/// 只有逐条看 `sources[].peak` 才能发现 —— 这个函数把那件事**点名**。
+///
+/// 三条同时成立才点名：
+/// 1. `audible` —— `mute` / `solo` 门控下本来就应当静音的源**不**报（那不是缺陷）；
+/// 2. `peak == 0.0` —— 源节点输出一个非零样本都没有；
+/// 3. `notes > 0 || audio_clips > 0` —— 它**确实排了**会发声的内容
+///    （空轨不点名；被概率判为不触发的音符不计入 `notes`）。
+///
+/// ⛔ 只生成 JSON：不改样本 / 不改 `bytes` / 不改 `sha256`。
+#[must_use]
+fn silent_sources_warning(reports: &[SourceReport]) -> Option<Value> {
+    let silent: Vec<&SourceReport> = reports
+        .iter()
+        .filter(|report| {
+            report.audible && report.peak == 0.0 && (report.notes > 0 || report.audio_clips > 0)
+        })
+        .collect();
+    if silent.is_empty() {
+        return None;
+    }
+    let named: Vec<Value> = silent
+        .iter()
+        .map(|report| {
+            serde_json::json!({
+                "node": report.node.to_canonical_string(),
+                "track": report.track.clone(),
+                "kind": report.kind,
+                "notes": report.notes,
+                "audioClips": report.audio_clips,
+                "notesSilenced": report.notes_silenced,
+                // ⚠ 不在这里复制 `sampler` 子对象：`sources[].sampler` 是它的**唯一**形状，
+                //    同名键在别处长成另一副样子会让"同名同义"失效（见模块头的读数约定）。
+            })
+        })
+        .collect();
+    let hint = format!(
+        "本次渲染里有 {} 条源被判定为**可闻**、也确实排了内容（音符或音频片段），\
+         但源节点输出**一个非零样本都没有** —— 它们没有出现在母带里。\
+         请逐条检查：轨是否被别的 solo 门控（`audible` 已按 mute/solo 判过）、\
+         轨推子/声相是否为 0、路由边是否断开、采样器是否缺样本\
+         （`sources[].sampler.missingSamplePaths`）。\
+         ⚠ 若这些轨本来就不该出声，请删掉它们的内容，而不是让「渲染成功」掩盖静音。\
+         ⛔ 本工具**不自动修**，音频一个字节都没动。",
+        silent.len()
+    );
+    Some(serde_json::json!({
+        "code": "silentSources",
+        "severity": "warning",
+        "blocking": false,
+        "count": silent.len(),
+        "sources": named,
         "hint": hint,
     }))
 }
@@ -1956,12 +2020,14 @@ pub struct RenderArtifact {
     pub headroom_db: Option<f32>,
     /// ⭐ `#225`：**结果质量**提示（`data.warnings[]`，非阻断）。
     ///
-    /// 当前只有一条：`code:"exportClipping"`（`clippedSamples > 0` 时才出现，
-    /// 含 `clippedSamples` / `truePeakDbfs` / `suggestedTrimDb` / `loudestSource`）。
-    /// `clippedSamples == 0` ⇒ **空数组**（⛔ 不是恒报）。
+    /// 两条来源（两条都不出现 ⇒ **空数组**，⛔ 不是恒报）：
+    /// - `code:"exportClipping"`（`clippedSamples > 0`，含 `clippedSamples` /
+    ///   `truePeakDbfs` / `suggestedTrimDb` / `loudestSource`）—— 见 [`clipping_warning`]；
+    /// - `code:"silentSources"`（可闻、排了内容、却 `peak == 0.0` 的源逐条点名）——
+    ///   见 [`silent_sources_warning`]。
     ///
-    /// ⚠ 它**不是** `unsupported`：那份清单的口径是"我们会静默少做什么"，
-    /// 削波是"算对了、但结果过载"。两者的判据与消费者都不同（见 [`clipping_warning`]）。
+    /// ⚠ 它们**不是** `unsupported`：那份清单的口径是"我们会静默少做什么"，
+    /// 削波是"算对了、但结果过载"，静音源是"排了内容却没进母带"。判据与消费者都不同。
     pub warnings: Vec<Value>,
     /// 归一化是否真的改变了样本。
     pub normalize_applied: bool,
@@ -2829,6 +2895,8 @@ pub fn build(
         &reports,
     )
     .into_iter()
+    // ⭐ G1：可闻、有内容、却一个非零样本都没出的源必须被点名（见 `silent_sources_warning`）。
+    .chain(silent_sources_warning(&reports))
     .collect();
     // 10b. 响度读数 + 对 `targetLufs` 的判定（**只读**：在抖动之前的浮点母带上测）。
     //      刻意**在**抖动/量化之前：响度计量的对象是母带信号本身, 而抖动是

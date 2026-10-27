@@ -1438,6 +1438,60 @@ impl SynthEngine {
         Ok(())
     }
 
+    /// **单轨武装**：只把 `track` 一条轨投影进槽位（离线逐轨源用）。
+    ///
+    /// ## 为什么需要它（实测缺陷）
+    ///
+    /// 离线渲染的 `EngineTrackSource`（`yeban-render::engine_source`）**每个源独享一台引擎**
+    /// 且只渲染自己那条轨，但它此前调用 [`Self::arm_from_snapshot`] 把快照里的**全部**轨道
+    /// 塞进 [`MAX_TRACK_SLOTS`] 个槽。工程超过 16 条轨时，按快照顺序排在第 17 条起的轨
+    /// 没有槽位 ⇒ [`Self::render_track`] 找不到槽位、整轨**数字静音**，而
+    /// `track_drops` 只是一个没人读的计数（`render_master` 回执里没有任何提示）。
+    ///
+    /// 单轨武装后槽位上限与"工程里有几条源"彻底解耦：一个源只占一个槽
+    /// （这条路径也⛔ 不改变实时侧 [`MAX_TRACK_SLOTS`] 的内存预算）。
+    ///
+    /// 语义与 [`Self::arm_from_snapshot`] **逐条对齐**：同一条 `begin_snapshot` 路径、
+    /// 同一个 `align_cursors`、同一份 [`Self::set_track_gain_scales`] 的 solo/mute 口径
+    /// （`any_solo` 仍按**整份快照**判定）。`track` 不在快照的 `tracks()` 里、或它就是
+    /// master 母线时，什么都不武装（`render_track` 照旧输出静音 —— 与全量武装时
+    /// 该轨拿不到槽位的语义相同）。
+    ///
+    /// # Errors
+    ///
+    /// 空快照 ⇒ [`SnapshotError::NoMasterBus`]（与 [`Self::arm_from_snapshot`] 同一条拒绝）。
+    pub fn arm_track_from_snapshot(
+        &mut self,
+        snapshot: &EngineSnapshot,
+        track: EntityId,
+    ) -> Result<(), SnapshotError> {
+        if snapshot.tracks().is_empty()
+            && snapshot.tones().is_empty()
+            && snapshot.drums().is_empty()
+            && snapshot.sfz().is_empty()
+        {
+            return Err(SnapshotError::NoMasterBus);
+        }
+        let armable = track != snapshot.master() && snapshot.tracks().contains_key(&track);
+        let tracks = armable.then_some(&track).into_iter();
+        let tones = armable
+            .then(|| snapshot.tones().get(&track))
+            .flatten()
+            .map(|tone| (&track, tone));
+        let drums = armable
+            .then(|| snapshot.drums().get(&track))
+            .flatten()
+            .map(|params| (&track, params));
+        self.begin_snapshot(snapshot.sample_rate(), tracks, tones, drums);
+        let schedules = armable
+            .then(|| snapshot.schedules().get(&track))
+            .flatten()
+            .map(|schedule| (&track, schedule));
+        self.align_cursors(schedules);
+        self.set_track_gain_scales(snapshot);
+        Ok(())
+    }
+
     /// ⭐ 把每条轨"与力度无关"的增益门投影进槽位（**快照边界**调用）。
     ///
     /// ⚠ **超越函数留在边界**：本函数里的 `exp2`（经 [`track_gain`]）与既有

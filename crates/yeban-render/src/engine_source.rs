@@ -384,8 +384,11 @@ fn load_sfz_instrument(path: &Path) -> Result<SfzInstrument, EngineSourceError> 
     .map_err(|error| EngineSourceError::new(format!("SFZ 文本非法 ({}): {error}", path.display())))
 }
 
-/// **引擎乐器音源**：每条轨道一个 [`SynthEngine`]，用**同一条离线装配路径**
-/// （`SynthEngine::arm_from_snapshot`）武装，再按轨渲染（`render_track`）。
+/// **引擎乐器音源**：每条轨道一个 [`SynthEngine`]，用**单轨武装**
+/// （`SynthEngine::arm_track_from_snapshot`）装进合成器，再按轨渲染（`render_track`）。
+///
+/// ⚠ 单轨武装不是优化而是**正确性**：本源只渲染自己那条轨，全量武装会让工程里
+/// 第 17 条起的源拿不到槽位（16 槽上限）而**静音**，见 `arm_track_from_snapshot`。
 ///
 /// ⚠ 每个源持有**自己的**引擎：`RenderPlan::execute` 会把源分发到工作线程（`threads`），
 /// 共享一个 `&mut SynthEngine` 需要锁，而"一个源一个引擎"没有锁也没有跨线程共享。
@@ -448,7 +451,13 @@ impl EngineTrackSource {
         //    三份 10 万字节级副本叠在同一帧里（见字段文档的尺寸对照）。
         let mut engine = Box::new(SynthEngine::new(snapshot.sample_rate()));
         // ⛔ 不 `unwrap`：没有主总线时如实失败（调用方据此在**落盘之前**退出）。
-        engine.arm_from_snapshot(&snapshot)?;
+        //
+        // ⭐ **只武装这一条轨**（`arm_track_from_snapshot`）：本源只渲染 `track`，
+        //    而全量武装会把快照里**全部**轨道塞进 16 个槽 —— 工程超过 16 条轨时，
+        //    排在第 17 条起的源拿不到槽位 ⇒ 整轨数字静音、回执无提示（实测缺陷：
+        //    28 轨工程里 12 条轨道 `peak = 0.0`）。逐轨武装让"一个源一个槽"，
+        //    与工程规模解耦；顺带让 `track_drops` 在这条路径上恒为 0。
+        engine.arm_track_from_snapshot(&snapshot, track)?;
         Ok(Self {
             engine,
             track,
@@ -803,6 +812,184 @@ mod tests {
             "失败信息必须点名两个帧号: {message}"
         );
         assert_eq!(source.position(), 128, "被拒绝的块不得推进播放头");
+    }
+
+    /// 多轨夹具：`n` 条 MIDI 轨（第 i 条音高 `48 + i % 24`）各一个 480-tick 音符，
+    /// 全部直连 master。身份按声明顺序升序 ⇒ `BTreeMap` 迭代序 = 声明序。
+    fn many_track_project(n: usize) -> (YebanProjectV1, Vec<EntityId>) {
+        use std::str::FromStr as _;
+
+        use yeban_model::{
+            ClipContent, ClipPlacement, ClipPoolEntry, LoopConfig, MidiNote, RoutingEdge,
+            RoutingKind, SampleRate, TrackKind, TrackV3,
+        };
+
+        let id = |seed: usize| {
+            EntityId::from_str(&format!("01J8ZM{seed:020}")).expect("夹具 ULID 必须合法")
+        };
+        let master = id(1);
+        let mut project = YebanProjectV1 {
+            title: "multi-source fixture".to_owned(),
+            master_bus_track_id: master,
+            ..YebanProjectV1::default()
+        };
+        project.audio_config.sample_rate = SampleRate::Hz48000;
+        project.tracks.insert(
+            master,
+            TrackV3 {
+                id: master,
+                name: "Master".to_owned(),
+                kind: TrackKind::Master,
+                ..TrackV3::default()
+            },
+        );
+        project.routing_graph.nodes.push(master);
+        let mut ids = Vec::with_capacity(n);
+        for index in 0..n {
+            let track = id(100 + index);
+            let clip = id(1_000 + index);
+            let placement = id(2_000 + index);
+            let note = id(3_000 + index);
+            let edge = id(4_000 + index);
+            let mut track_params = TrackV3 {
+                id: track,
+                name: format!("Track {}", index + 1),
+                kind: TrackKind::Midi,
+                ..TrackV3::default()
+            };
+            track_params.clips.insert(
+                placement,
+                ClipPlacement {
+                    id: placement,
+                    clip_id: clip,
+                    start_tick: 0,
+                    duration_ticks: 480,
+                    loop_config: LoopConfig::default(),
+                    muted: false,
+                },
+            );
+            project.tracks.insert(track, track_params);
+            let mut notes = BTreeMap::new();
+            notes.insert(
+                note,
+                MidiNote::new(note, 0, 48 + u8::try_from(index % 24).expect("取模"), 480),
+            );
+            project.clip_pool.insert(
+                clip,
+                ClipPoolEntry {
+                    id: clip,
+                    name: format!("Clip {}", index + 1),
+                    content: ClipContent::Midi { notes },
+                },
+            );
+            project.routing_graph.nodes.push(track);
+            project.routing_graph.edges.insert(
+                edge,
+                RoutingEdge {
+                    id: edge,
+                    source_node: track,
+                    destination_node: master,
+                    kind: RoutingKind::TrackToBus,
+                    gain_db: None,
+                },
+            );
+            ids.push(track);
+        }
+        project
+            .validate()
+            .unwrap_or_else(|error| panic!("多轨夹具必须合法: {error}"));
+        (project, ids)
+    }
+
+    /// 把一个源按 128 帧切块渲染 `frames` 帧，返回样本峰值（线性幅度）。
+    fn render_peak(source: &mut EngineTrackSource, frames: u64) -> f32 {
+        let mut out = vec![0.0_f32; 128];
+        let mut peak = 0.0_f32;
+        let mut first = 0u64;
+        let mut index = 0u64;
+        while first < frames {
+            let len = usize::try_from((frames - first).min(128)).expect("块长");
+            source
+                .render_block(
+                    BlockContext {
+                        block_index: index,
+                        first_frame: first,
+                        frames: len,
+                        channels: 1,
+                        sample_rate: 48_000,
+                        seed: 1,
+                    },
+                    &mut out[..len],
+                )
+                .expect("连续升序的块必须被接受");
+            for sample in &out[..len] {
+                peak = peak.max(sample.abs());
+            }
+            first += len as u64;
+            index += 1;
+        }
+        peak
+    }
+
+    /// **实测缺陷回归（G1）**：工程源数超过实时槽位上限（`MAX_TRACK_SLOTS` = 16）时，
+    /// 第 17 条起的源**不得**静音。
+    ///
+    /// 缺陷：每个源独享一台引擎却全量武装快照 ⇒ 第 17 条起拿不到槽位、整轨数字静音。
+    /// 判据逐条渲染 24 个源，任何一条峰值 `<= 0` 就红。
+    #[test]
+    fn every_track_source_sounds_beyond_the_sixteen_slot_cap() {
+        const TRACKS: usize = 24;
+        let (project, ids) = many_track_project(TRACKS);
+        let timbre = EngineTimbre::from_project(&project).expect("多轨夹具必须成快照");
+        let mut silent = Vec::new();
+        for (index, track) in ids.iter().enumerate() {
+            let mut source = timbre.track_source(*track).expect("必须能武装");
+            let peak = render_peak(&mut source, 4_800);
+            println!("### [multi-source] #{} peak={peak:.6}", index + 1);
+            if peak <= 0.0 {
+                silent.push((index + 1, *track));
+            }
+        }
+        assert!(
+            silent.is_empty(),
+            "{TRACKS} 条源必须全部出声；静音的源（序号, id）: {silent:?}"
+        );
+    }
+
+    /// 上一条判据的**牙齿**（反向对照）：旧的**全量武装**路径确实会让第 17 条起的轨静音。
+    ///
+    /// 这里手工复刻旧行为（`arm_from_snapshot` 装全部轨 + 本源只渲染最后一条），
+    /// 断言它峰值恰好为 `0.0`。若哪天 `arm_from_snapshot` 不再受槽位上限约束，
+    /// 这条会变红 ⇒ 提醒重写它，而不是让它静悄悄地失去意义。
+    #[test]
+    fn full_snapshot_arming_is_what_silenced_the_seventeenth_track() {
+        const TRACKS: usize = 24;
+        let (project, ids) = many_track_project(TRACKS);
+        let timbre = EngineTimbre::from_project(&project).expect("多轨夹具必须成快照");
+        let snapshot = Arc::clone(&timbre.snapshot);
+        let last = *ids.last().expect("夹具必须有轨");
+        let mut engine = Box::new(SynthEngine::new(snapshot.sample_rate()));
+        engine
+            .arm_from_snapshot(&snapshot)
+            .expect("全量武装本身必须成功（它只是丢槽）");
+        assert!(
+            engine.track_drops() > 0,
+            "{TRACKS} 条轨全量武装必须触发槽位耗尽计数（否则这条牙齿没咬住）"
+        );
+        let mut legacy = EngineTrackSource {
+            engine,
+            track: last,
+            schedule: snapshot.schedules().get(&last).cloned(),
+            snapshot: Arc::clone(&snapshot),
+            mono: Vec::new(),
+            pan: (1.0, 1.0),
+            steals: Arc::new(AtomicU64::new(0)),
+        };
+        assert_eq!(
+            render_peak(&mut legacy, 4_800),
+            0.0,
+            "全量武装下第 {TRACKS} 条轨必须（曾经）数字静音 —— 这是 G1 的复现"
+        );
     }
 
     /// 位级摘要的**正对照**：静音源不是"恒等摘要"（证明上面的判据不是空转）。
