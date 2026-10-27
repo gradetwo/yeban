@@ -80,7 +80,7 @@
 //! | 情形 | 结果 |
 //! | :--- | :--- |
 //! | `create: true` 且池里**已有** `clipId` | `CONFLICT`（`reason = clipAlreadyExists`）—— 与 `yeban_open_project` 的 `create` 同款：绝不覆盖 |
-//! | `create: true` 且 `ops` 里有 `delete`/`move`/`velocity` | `INVALID_PARAMETER_RANGE`（`reason = createRequiresAddOps`）—— 新片段里还没有音符可以被它们指向 |
+//! | `create: true` 且 `ops` 里有**任何非 `add`** 的形态（`delete` / `move` / `velocity` / `transposeClip` / 音轨级开关…） | `INVALID_PARAMETER_RANGE`（`reason = createRequiresAddOps`）—— 新片段里还没有音符可以被它们指向 |
 //! | `create: true` 且两个 `add` 抢同一个音符身份 | `INVALID_PARAMETER_RANGE`（`reason = duplicateNoteId`）—— 不静默去重 |
 //!
 //! 创建出来的片段**只在池子里**（本工具不摆放；摆放是 `Op::AddClipPlacement` 的事，
@@ -17390,7 +17390,8 @@ mod tests {
         assert_eq!(value["error"]["data"]["reason"], "clipAlreadyExists");
     }
 
-    /// `create: true` 只允许 `add`；`delete`/`move`/`velocity` 必须响亮失败。
+    /// `create: true` 只允许 `add`；其余（`delete` / `move` / `velocity` /
+    /// `transposeClip` / 音轨级开关）必须响亮失败。
     #[test]
     fn create_refuses_every_non_add_operation() {
         let project = project_without_midi_clips();
@@ -17409,6 +17410,13 @@ mod tests {
             (
                 "velocity",
                 serde_json::json!({"kind": "velocity", "noteId": note, "velocity": 1}),
+            ),
+            // ⭐ `ADR-0034`：`transposeClip` 与刚建出来的片段**天然矛盾** —— 新池子里
+            // 一个音符也没有，"整片段移调"没有可展开的对象。它⛔ 走 `move` 那条旁路
+            // （`is_note_level` 为真），所以必须在这里被点名拒绝，⛔ 静默展开成 0 条。
+            (
+                TRANSPOSE_CLIP_KIND,
+                serde_json::json!({"kind": TRANSPOSE_CLIP_KIND, "deltaPitch": 2}),
             ),
             // 两个音轨级开关与建材料**无关**：`create: true` 只收 `add`。
             (
