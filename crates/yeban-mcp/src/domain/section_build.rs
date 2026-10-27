@@ -115,10 +115,10 @@ use std::collections::BTreeMap;
 
 use serde_json::{Value, json};
 
+use yeban_model::music::MIDI_VELOCITY_MAX;
 use yeban_model::{
-    ClipContent, ClipPlacement, ClipPoolEntry, EntityId, LoopConfig, MIDI_VELOCITY_MAX, MidiNote,
-    ModelError, Op, PPQ, RoutingEdge, RoutingGraph, RoutingKind, SectionV3, TrackKind, TrackV3,
-    YebanProjectV1,
+    ClipContent, ClipPlacement, ClipPoolEntry, EntityId, LoopConfig, MidiNote, ModelError, Op, PPQ,
+    RoutingEdge, RoutingGraph, RoutingKind, SectionV3, TrackKind, TrackV3, YebanProjectV1,
 };
 
 // `yeban-theory` 的公开面（本模块**只读**它，不复制它的逻辑）。

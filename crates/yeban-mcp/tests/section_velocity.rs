@@ -244,11 +244,12 @@ fn the_two_rungs_land_on_exactly_the_registered_accent_tiers() {
             shifted_notes.keys().collect::<Vec<_>>(),
             "声部 `{part}`：音符 id 集合必须⛔ 不受力度影响"
         );
-        for (id, (start, duration, pitch, velocity)) in base_notes {
+        for (id, note) in base_notes {
+            let (start, duration, pitch, velocity) = *note;
             let (shift_start, shift_duration, shift_pitch, shift_velocity) = shifted_notes[id];
             assert_eq!(
                 (start, duration, pitch),
-                (&shift_start, &shift_duration, &shift_pitch),
+                (shift_start, shift_duration, shift_pitch),
                 "声部 `{part}` 音符 `{id}`：位置与时值不得因力度改变"
             );
             let expected = match velocity {
@@ -266,7 +267,7 @@ fn the_two_rungs_land_on_exactly_the_registered_accent_tiers() {
     // 和声声部：整条落在下档。
     for part in preset_parts(STYLE).expect("夹具必须在册") {
         assert_eq!(
-            rungs(&shifted_table[part]),
+            rungs(&shifted_table[*part]),
             vec![40],
             "和声声部 `{part}` 必须整条落在 `velocityMin` = 40"
         );
