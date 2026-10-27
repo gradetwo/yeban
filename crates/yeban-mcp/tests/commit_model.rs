@@ -79,7 +79,7 @@ fn call(dispatcher: &mut Dispatcher, auth: &str, name: &str, arguments: Value) -
 /// 建一个带**一条普通音轨**的新工程（`seed.trackCount` 给 `edit_automation` 落点）。
 fn open_seeded(dispatcher: &mut Dispatcher, auth: &str, scratch: &Scratch) -> String {
     let path = scratch.dir.join("commit-model.yebanproject");
-    let data = call(
+    let _ = call(
         dispatcher,
         auth,
         "yeban_open_project",
@@ -91,7 +91,10 @@ fn open_seeded(dispatcher: &mut Dispatcher, auth: &str, scratch: &Scratch) -> St
             "seed": {"trackCount": 1, "clipName": "Commit Model", "notes": []},
         }),
     );
-    let project = &data["project"];
+    // 音轨身份**不**从 `open` 的摘要里读（那份 `data.project` 只有 `trackCount`），
+    // 而是走 `yeban_query_project` 的稀疏视图 —— 与 `set_clip_placement_loop.rs:204`
+    // 同一口径（实测键名 `master_bus_track_id` / `tracks`）。
+    let project = &call(dispatcher, auth, "yeban_query_project", json!({}))["project"];
     let master = project["master_bus_track_id"]
         .as_str()
         .expect("主总线身份")
