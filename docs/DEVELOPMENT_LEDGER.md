@@ -177,10 +177,18 @@ CARGO_HOME=/Users/crow/work/music/.cargo-home RUSTUP_TOOLCHAIN=stable \
 | UI/UX 规范的缺口 | 字体与 CJK 字体栈、间距/圆角/字号 scale、DPR 细则、Splitter 约束对象、24px 状态栏归属——见 ADR-0001 与 UI 摘要，实现前需按登记口径执行 |
 | `schemas/mcp-tools.schema.json` 与 10 个工具的最终对账 | 需 `yeban-mcp` 实现后才能做真实对账 |
 
-### 5.3 创作缺口审计（GAPS 18 条）状态表（测量时刻：2026-10-27T09:43Z）
+### 5.3 创作缺口审计（GAPS 18 条）状态表（首测 2026-10-27T09:43Z；**复测 2026-10-28**）
 
 > 数的是 `/tmp/yeban-issues-20261027/GAPS.md` 里 `G1..G18` 十八条缺口的**处置状态**
 > （单位：条）。"消除"= 代码 + 判据 + **读回的 CI 判决**三者齐备；⛔ 只有代码不算消除。
+>
+> ⭐ **2026-10-28 复测的分布（单位：条，逐行数本表的状态列）**：
+> **消除 14**（`G1` `G2` `G4` `G5` `G6` `G7` `G8`（三片，残余另记 `G8d`）`G9` `G13` `G14`
+> `G15` `G16` `G17` `G18`）＋ **待人类裁决 3**（`G3` `G10` `G11`）＋ **半消除 1**
+> （`G12`，后半 = `HD-70`）= **18**。⭐ ⚠ 与首测的差别只有两条：`G18` 由**半消除→消除**
+> （`G18b` 落地并读回主干判决）、`G8` 由**两片→三片**（`G8c` 落地，主干全量 run
+> `40560362657` 仍 `pending`）。⛔ 把 `G8d` 算进"已消除"：它今天只有 ADR（`ADR-0036`）
+> 与一条**实测到的既有缺陷**（28 条非 4/4 流派的鼓/旋律生成必失败），代码 `pending`。
 
 | 缺口 | 状态 | 依据（ADR / 判决） |
 | :--- | :--- | :--- |
@@ -191,7 +199,7 @@ CARGO_HOME=/Users/crow/work/music/.cargo-home RUSTUP_TOOLCHAIN=stable \
 | `G5` 音色参数消费口径 | 消除 | `ADR-0027`；「G5 消除」条 |
 | `G6` 生成即增益分级 | 消除 | `ADR-0026`；「G6 消除」条 |
 | `G7` 同批建节点+连边被批前预检误拒 | 消除 | `ADR-0025`；「G7 消除」条 |
-| `G8` 生成控制粒度 | **消除（两片）＋一处残余** | `G8a`（音域 + `drumDensity`）`ADR-0028`；`G8b`（`voiceSubdivision` 和声声部按跨度均匀切分 1..=16）`ADR-0033`，线 Run `40523903008`（`80d854d9`）success（承判腿 `rust (workspace 全量)` 42:08 ⇒ **408 条 / 6,703 / 0**；windows 246 / 4,849 / 0；macos 246 / 4,870 / 0；矩阵腿因 `workspace_wide: true` 跳过）；⚠ 残余 = 旋律/鼓的每小节音头数仍是常量 `THEORY_ONSETS_PER_BAR = 16`（`section_build.rs:222`），登记为 `G8c` `pending` |
+| `G8` 生成控制粒度 | **消除（三片）＋一处残余** | `G8a`（音域 + `drumDensity`）`ADR-0028`；`G8b`（`voiceSubdivision` 和声声部按跨度均匀切分 1..=16）`ADR-0033`，线 Run `40523903008`（`80d854d9`）success（承判腿 `rust (workspace 全量)` 42:08 ⇒ **408 条 / 6,703 / 0**；windows 246 / 4,849 / 0；macos 246 / 4,870 / 0；矩阵腿因 `workspace_wide: true` 跳过）＋ 主干 merge `9eb4a6c5` Run `40531221961` success（全量 1:19:24 ⇒ **409 / 6,707 / 0**）；`G8c`（`voiceSubdivisions` 切分按**声部名**给值，组合而非替换）`ADR-0035`，线 Run `40549805342`（`6ec3edd3`）success（`rust (yeban-mcp)` 869s ⇒ **97 条 / 2,212 / 0**，11 条判据**逐名**读回；macos 1,322s ⇒ 248 / 4,885 / 0；windows 1,896s ⇒ 248 / 4,864 / 0；全量腿因"推送增量规划"skipped），主干 merge `793b0a3b` Run `40560362657` **`pending`**（该 merge 实测碰根级 `schemas/mcp-tools.schema.json` ⇒ 预期由 `rust (workspace 全量)` 承判）；⚠ 残余 = 旋律/鼓的每小节音头数仍是**按拍号**的常量（现读 `section_build.rs:221` `THEORY_ONSETS_PER_BAR = 16`，⛔ 按拍号折算 ⇒ `GENRES` 182 条里 **28 条非 4/4** 的鼓/旋律生成今天必失败），登记为 `G8d` `pending`（`ADR-0036` 已落 `docs/adr/`，代码 `pending`） |
 | `G9` 单轨贡献读数 / 分轨导出 | 消除 | `G9a`（`contributions`）已落，`ADR-0020`；`G9b`（`yeban_export_stems`，第 **25** 台工具）已落，`ADR-0030`；线 Run `40488580940`（tip `77ac65ec`）success（`rust (yeban-mcp)` 3070s ⇒ **91 条 `test result:` / 2170 passed / 0 failed**；`windows` 1276s ⇒ 245 / 4843 / 0；`macos` 1486s），主干合并 `f28dd13d` Run `40496066367` **success**（这次承判的腿是
 `rust (workspace 全量)` 2594s ⇒ **407 / 6698 / 0**；`macos` 245 / 4865 / 0；
 `windows` 245 / 4844 / 0；`rust (${{ matrix.crate }})` 因 `workspace_wide: true` 跳过）。
@@ -204,7 +212,7 @@ CARGO_HOME=/Users/crow/work/music/.cargo-home RUSTUP_TOOLCHAIN=stable \
 | `G15` 段落无时间序读数 | 消除 | `sections.timeline`；主干 Run `40462525280` success + 夹具误红由 `4cfa0008` 修复（Run `40471370167`） |
 | `G16` 弯音曲线只能整条重写 | 消除 | `ADR-0019`（`setPitchBendPoint` 插/改/删三态 + 界外拒绝）；主干 Run `40419445566` success |
 | `G17` 两种提交模型并存 | 消除 | `ADR-0032`：每条成功回执自述 `data.commitModel ∈ {proposal, proposalAutoMerged, direct, none}`（`commit_model_of` 对 24 个 `Plan` 变体穷尽 `match`）；线 Run `40514401107`（`b5710346`）+ 主干 Run `40524221416`（merge `057a1761`）双双 success，承判腿 `rust (yeban-mcp)` **93 条 / 2,180 / 0**（windows 246 / 4,848 / 0、macos 246 / 4,869 / 0）；⚠ 例外：`yeban_list_proposals` 清单顶层的 `mergeTool` 是 `#176` 既有契约、与自述无关 |
-| `G18` `scale` 苛刻 / 无转调工具 | **半消除** | 别名通道已落（线 Run `40464221638` + 主干 `40471370167`）；「段间转调」= `G18b` 进行中（`ADR-0034` 已落 `docs/adr/`：新 `NoteOp` 形态 `transposeClip` 在编译期展开成 N 条 `Op::MoveNote`，线 `line/transpose-clip` 代码 `pending`；D4 三条〔段级目标调、in-scale 转调、平滑声部连接〕仍为待人类裁决的规范缺口） |
+| `G18` `scale` 苛刻 / 无转调工具 | **消除**（＋三条待人类裁决的规范缺口） | 别名通道（`G18` 前半）已落，线 Run `40464221638` + 主干 `40471370167`；「段间转调」= `G18b` 已落，`ADR-0034`：新 `NoteOp` 形态 `transposeClip` 在编译期展开成 N 条 `Op::MoveNote`（⛔ 不新增模型 `Op` 变体 ⇒ 一步撤销），线 Run `40546004628`（`676fbc3b`）success（`rust (yeban-mcp)` 439s ⇒ **95 条 / 2,194 / 0**；macos 1,749s ⇒ 247 / 4,876 / 0；windows 2,223s ⇒ 247 / 4,855 / 0）＋ 主干 merge `7882ef12` Run `40552378167` success（`rust (yeban-mcp)` 2,963s ⇒ **97 条 / 2,204 / 0**，那三处曾红的判据在主干日志逐名 `... ok`；macos 1,652s ⇒ 248 / 4,881 / 0；windows 2,285s ⇒ 248 / 4,860 / 0；全量腿 skipped —— 本线实测不碰任何根级触发器）；⚠ `ADR-0034` **D4** 三条〔段级目标调、in-scale 转调、平滑声部连接〕**仍为待人类裁决**的规范缺口（本层只有**半音**级，⛔ 读 `key_signature`） |
 
 **待裁四项不许由集成者补齐**：`G3` / `G10` / `G11` / `G12`（后半）已登记
 `HD-67` / `HD-69` / `HD-68` / `HD-70`。⭐ `HD-70` 是本轮（2026-10-27）**补登**的：
@@ -12210,3 +12218,230 @@ $ python3 scripts/gates/check_phase_status.py   # 退出 0
    才能同时挡住"丢余数"和"最后一零时长"。
 3. **新参数进 `PlanOptions` 是一次全仓结构体字面量事件**：`verify/section_pure.rs` 有 21 处
    构造点。⇒ 加字段的那次提交里 `grep -rn "PlanOptions {" crates -l` 先数完，⛔ 让 CI 逐文件报。
+
+## 2026-10-28：G18b 消除：整片段移调（`transposeClip`）—— 缺的是**寻址粒度**，⛔ 不是新 `Op`（`ADR-0034`）
+
+**缺口原文（审计 G18 后半句）**：「每段可换 scale，但段间无过渡/转调辅助」。
+先测后改（§6「先 grep 交付，再下结论」）实测：**移调的原子能力早就在**
+（`Op::MoveNote{delta_tick,delta_pitch}`，`ops.rs:188-199`，音域硬校验 `0..=127`，
+`apply`/`inverse`/前置齐备，工具面 `ops[].kind=="move"` 已暴露），
+真正缺的是"一次描述、逐音展开"：调用方必须先 `query_project` 取该片段**全部** `noteId`，
+再逐条写 `move` —— 40 音的片段就是 40 条 op，漏一个音就转调不彻底。与 `G13` 同族。
+
+### 交付（线 `line/transpose-clip`）
+
+- `domain/notes.rs`：新 `NoteOp::TransposeClip{delta_pitch: i8}`（形态名 `transposeClip`，
+  键集 `TRANSPOSE_CLIP_FIELDS=["kind","deltaPitch"]`，多余键 ⇒ `unknownTransposeClipField`）。
+  ⛔ **不新增模型 `Op` 变体**：`compile` 在**本批的当前投影**上把它就地展开成 N 条
+  `NoteOp::Move{delta_tick:0}`（`queue` + `splice`，⛔ `for op in ops`），越界报文、撤销载荷、
+  投影推进**全部复用** `move` 臂 ⇒ 一个批 = 一次提交 = **一步撤销**。
+  `BTreeMap` 键序 ⇒ 展开顺序跨进程确定（红线 4）。
+- 三张清单同步：`OP_KINDS` 47→**48**、`ENVELOPE_CLIP_KINDS` 9→**10**、`NOTE_LEVEL_KINDS` 8→**9**
+  （`is_note_level` / `reads_envelope_clip` 各加一条臂）。⭐ 落地后主干现读：
+  `OP_KINDS` 的条目行（`notes.rs:1300..1347`，单位：条目）= **48**，其中
+  `TRANSPOSE_CLIP_KIND = "transposeClip"` 定义在 `notes.rs:2291`。
+- `op_schema.rs`：`ops.items.oneOf` 新分支（`additionalProperties:false`、`deltaPitch` 的
+  `i8` 界 −128..=127），位置紧随 `setPitchBendPoint` ⇒ 发布顺序仍与 `ENVELOPE_CLIP_KINDS` 同序。
+  `tools.rs` 两处 kind 清单补名。
+- ⛔ 复制 `ADR-0034` **D4**（段级目标调 / in-scale 转调 / 平滑声部连接 = 三条**待人类裁决**的
+  规范缺口）：本层实现里⛔ 没有任何一处读 `key_signature` —— 只有**半音**级（D2）。
+  `SectionV3` **无** `scale`/`key` 字段（实测 `project.rs:1373-1385`），本片⛔ 动数据模型、
+  ⛔ 悄悄写全局 `keySignature`（那会把"转调"与"改谱面调号"混成一件，D3）。
+- 判据 `tests/transpose_clip.rs`（7 条）+ `trap_179` 两处清单改名加名 +
+  `create_refuses_every_non_add_operation` 加一条 `transposeClip`。
+
+### ⚠ 实测到的例外（写进 `ADR-0034` 的判据段留痕）
+
+1. `edit_notes` + `autoMerge` 的回执是**两段式**：合并那一半挂在 `data.merge` 里
+   （`domain/mod.rs:4275`），顶层只有 `autoMerged` / `mergeTool` ⇒ 读数是
+   `data.merge.appliedOps`，⛔ `data.appliedOps`（后者是 `merge_proposal` 自己的形状）。
+2. `read_i8` 的口径：**形状**错误 ⇒ `INVALID_PARAMETER_RANGE`，**区间**错误 ⇒ `OUT_OF_RANGE`。
+   `deltaPitch: 128` 落后者（ADR 草案把它写成前者，改正）。
+3. `commitModel` ⛔ 是 `direct`：`edit_notes` 属**提案类**，带 `autoMerge` 时自述
+   `proposalAutoMerged`（`ADR-0032` 的既有映射，本票不新增取值）。
+4. 模型 serde 的键是**蛇形**（`start_tick` / `duration_ticks`），`ClipContent` 是**外标签**
+   （`{"Midi":{"notes":…}}`）⇒ 判据改成用 `YebanProjectV1` 的**反序列化对偶**读回类型，
+   ⛔ 从响应里猜字段名（§6「抄同仓既有 harness 的读数口径」的又一次兑现）。
+5. `(EntityId, EntityId, Vec<(String, u64, u8, u64, u8)>)` 在 `-D clippy::all` 下**是编译错误**
+   （`clippy::type_complexity`，默认阈值 250）⇒ 内层五位元组命名成 `struct NoteRow`，
+   ⛔ 不贴 `#[allow]`。⚠ 这条**本机测不出来**（本机不建 `yeban-mcp`），
+   但可以在**零依赖的临时 crate** 里用同样的形状复现 —— 已实测：
+   `Vec<NoteRow>` 那条签名在同一套规则下不报（报的只有 `Vec<五元组>` 那一条）。
+
+### 判决链（五次推送，逐腿读回）
+
+- `9b16c328` Run `40535926040` **failure**：`rust (yeban-mcp)` / `windows` / `macos` 三条腿
+  同一个**唯一**错误 `tests/transpose_clip.rs:83 error[E0282]: type annotations needed`
+  （`collect()` 的目标类型直到 `rows.sort()` 才被要求是 `Vec`，rustc 点名的是绑定本身）。
+  ⚠ 那条提交的**消息**把 ID 标成 `[MCP-TOOL-005]`，而 `yeban_edit_notes` 是
+  **`MCP-TOOL-006`**（`MCP-TOOL-005` = `yeban_propose_section`，现读
+  `docs/YEBAN_ARCHITECTURE_AND_SYSTEM_DESIGN.md:634-635`）⇒ 提交已发布，
+  ⛔ 改写历史 / force push 去修它，只在此如实登记（后续四条提交的标注是对的）。
+- `1dc05e25` Run `40541306573` **cancelled**：⚠ 同分支再次推送会**取消**上一条仍在跑的 run
+  （workflow 的 `concurrency` 组）⇒ 那条提交**没有**自己的判决，如实记 `cancelled`，
+  ⛔ 事后按"它当时快跑完了"当作绿。教训：**改完再推**（一轮一批）。
+- `65d99acd` Run `40541762249` **failure**：三条腿同一个
+  `error: very complex type used --> tests/transpose_clip.rs:76:45`
+  （`-D clippy::type-complexity`，由 `-D clippy::all` 隐含）⇒ 承判的腿是 **clippy**，
+  `unit test` 那步的失败是同一处编译失败的下游，⛔ 第二条独立缺陷。
+  ⚠ `plan` 实测 `{"crates":["yeban-mcp","yeban-ui-mcp"],"workspace_wide":false}`
+  ⇒ `rust (workspace 全量)` 是 **skipped**。
+- `16f0edc7` Run `40543873853` **failure**（两条腿红、一条腿**被自己的下一次推送取消**）：
+  - `windows` ⇒ unit 套件 `564 passed; 1 failed` + `tests/transpose_clip.rs` `5 passed; 2 failed`；
+    `macos` ⇒ `575 passed; 1 failed` + `5 passed; 2 failed`（失败的**测试名两边完全一致**
+    ⇒ 同一批三处红在两条腿上各自独立复现）。
+    ⚠ **通过数差值的实测**（本轮补测，单位：条）：两条腿各打 **62** 行 `test result:`
+    ⇒ ⛔ 我最初的措辞"套件组成随平台变"**是错的** —— 目标行数相同，差异落在
+    **同名的 5 个目标内部**（`+11 / +2 / +2 / +1`，另有 `98↔99` 与 `7↔6` 的相邻交换，
+    净差 16），失败数两边都是 **3**。机制候选定位到**一类**实测门控：
+    `cfg(unix)` 在 `crates/` 出现 **76** 处、其中"300 字符内紧邻 `#[test]`"的 **47** 处
+    （方向与"mac 比 win 多"一致）。⚠ 但⛔ 逐条定位到那 5 个目标各差在哪几条用例
+    ⇒ 差值按**未完全查证**登记（§6「未证的语义要登记，不要补齐」）。
+  - `rust (yeban-mcp)`（linux）那条腿状态是 **`cancelled`** —— 它当时还在跑，
+    被推 `676fbc3b` 的那次 push 取消。⇒ **一个 run 的判决是"逐腿"的**：
+    已完成的腿保留判决，仍在跑的腿变 `cancelled`，⛔ 把"三条腿同一个错误"
+    当成整条 run 在 linux 上也判过红。
+  - 三处实测红（名字从日志读回，⛔ 据症状推断）：
+    1. `domain::notes::tests::every_catalog_kind_compiles_to_exactly_one_op_variant`
+       （`notes.rs:19617`）—— `left` 里 `transposeClip` 排在 `move` 之后（compile 表的插入位置），
+       `right` 是 `NOTE_LEVEL_KINDS` 的桶序 ⇒ 那条判据是**逐项**比较，⛔ 只数个数；
+    2. `transpose_clip_expands_into_one_move_per_note_in_a_single_batch`
+       （`tests/transpose_clip.rs:62`）—— 参数名手抄成 `commitMessage`，
+       而 `yeban_edit_notes` 的合并信息键是 `mergeCommitMessage`（`ADR-0029`）
+       ⇒ 未知参数被 `validate_arguments` 响亮拒绝；
+    3. `an_out_of_range_note_rejects_the_whole_batch_without_partial_apply`（`:313`）
+       —— 判据拿 `status == "failure"` 比，而本仓**没有** `"failure"` 这个词。
+       词汇表现读（单位：**出现次数**，`rg -o`，目录 `crates/yeban-mcp`，主干树）：
+       载荷侧 `"status": "…"` 共 **9** 处 = `success` **5** + `error` **3** + `ok` **1**，
+       `failure` **0**；断言侧 `["status"], "success"` **498** 处、`"error"` **78** 处、
+       `"failure"` **0** 处 ⇒ 工具级成功 `status:"success"`、带内失败 `status:"error"`。
+- `676fbc3b` Run `40546004628` **success**（整条 run 与三条承判腿都绿，逐腿现读）：
+  `rust (yeban-mcp)` 439s ⇒ **95 条 `test result:` / 2,194 passed / 0 failed**；
+  `macos` 1,749s ⇒ **247 / 4,876 / 0**；`windows` 2,223s ⇒ **247 / 4,855 / 0**；
+  `rust (yeban-ui-mcp)` / `checks` / `plan` / `deny` / `lockfile` 全 success；
+  `rust (workspace 全量)` = **skipped**，⚠ 原因实测而非猜测：
+  `git diff --name-only 057a1761 676fbc3b` 里命中根级触发器
+  （`Cargo*` / `rust-toolchain` / `deny.toml` / `.cargo/` / `scripts/` / `schemas/` / `.github/`）
+  的行数 = **0** ⇒ `plan` 判 `workspace_wide: false`（`op_schema.rs` 在 `crates/` 下，
+  ⛔ 它是根级契约文件）。
+- 主干 merge `7882ef12` Run `40552378167` **success**（`line/transpose-clip` 落地那条，逐腿）：
+  `rust (yeban-mcp)` 2,963s ⇒ **97 条 / 2,204 passed / 0 failed**，且那三处曾红的判据
+  在主干日志里**逐名**读回 `... ok`（`every_catalog_kind_compiles_to_exactly_one_op_variant`、
+  `transpose_clip_expands_into_one_move_per_note_in_a_single_batch`、
+  `an_out_of_range_note_rejects_the_whole_batch_without_partial_apply`）；
+  `macos` 1,652s ⇒ **248 / 4,881 / 0**；`windows` 2,285s ⇒ **248 / 4,860 / 0**；
+  `rust (workspace 全量)` 仍 **skipped**（同一原因：本合并不碰根级触发器）。
+  ⇒ **G18b 的主干判决读回，`pending` 关闭**。
+
+### 本轮新增的规则
+
+1. **同一分支上"提交→推送→再提交→再推送"会取消前一个 run**：⛔ 这不是"少一次验证"，
+   而是**前一条提交彻底没有判决**。⇒ 一线一轮一批：把本轮所有能确定的改动攒成一次推送。
+2. **守卫的语义是"任何非 X"时，判据⛔ 用手抄的名字列表表达它**：`compile_create` 一直拒绝
+   一切非 `add`，但模块头与判据只手抄了三个 kind 名 ⇒ 加第四个音符形态时**测不到**那条规则。
+   改成"表里加一例 + 文档措辞改成任何非 `add`"，名单就不再承重。
+3. **一个 run 的判决是"逐腿"的，不是"逐提交"的**：同一分支连推时，workflow 的 `concurrency`
+   只取消**仍在跑**的腿 —— 已完成的腿保留自己的判决，在跑的腿变 `cancelled`。所以读一条
+   run 时必须**逐腿**读 `conclusion`（本轮 `40543873853`：windows/macos failure、
+   `rust (yeban-mcp)` cancelled），⛔ 用"整条 run 的 conclusion"或"另外两条腿的错误"
+   代替那条没有判决的腿。
+4. **判据里的字符串字面量也是读数**：`status:"failure"` 是**本仓不存在的词**（成功 =
+   `"success"`、带内失败 = `"error"`）⇒ 写判据前先 `grep` 词汇表拿**计数**，
+   ⛔ 按通用 HTTP/RPC 习惯猜词（本票为此花掉一条 macos 红）。
+5. **两条平台腿"通过数不同"⛔ 顺手解释**：先把两边的 `test result:` **逐目标对齐**再说话
+   （本轮就是这么做的：目标行数相同 ⇒ 差别在目标**内部**，⛔ 说成"套件组成不同"）。
+   解释不出来就登记成未查证 —— 一个错的机制解释会顺着台账传给下一票。
+
+## 2026-10-28：G8c 消除（G8 第三片）：`voiceSubdivisions` —— 均匀切分按**声部名**给值（`ADR-0035`）
+
+**缺口原文（审计 G8 / `ADR-0033` D4 第 1 条）**：「bass 切 8、pad 持续」。`ADR-0033`
+落地的是一条**全局**均匀切分：`voiceSubdivision: N` 把**每个**和声声部都切成 N 条
+⇒ 三个声部必然同粒度。先 grep 交付再下结论（§6.3）：能力（切分算式、id 种子、时值守恒）
+早就在 `theory_contents`，缺的只是"按声部给数"的形状。
+
+### 交付（线 `line/voice-subdivisions`，代码一推送 `7a765da9` + 判据修复 `6ec3edd3`）
+
+- `domain/section_build.rs`：`PlanOptions.voice_subdivisions: Option<&Value>` +
+  新 `voice_subdivision_table(style_preset, parts, uniform, overrides) -> Vec<u64>`。
+  `theory_contents` 的 `subdivision: u64` → `subdivisions: &[u64]`，**一条算式没动**
+  （`step` / 尾条吸收余数 / 力度恒 96 全部沿用 `ADR-0033` D1）。
+- **组合规则只有一条**：表里列出的声部用表里的值，没列出的沿用 `voiceSubdivision`
+  （缺省 1）。⛔ 数组（`[8,2,1]` 会把语义绑在下标上，而声部数随流派 3/4 变）、
+  ⛔ 字符串（要自己写一门小语法）。
+- **D3 的种子条件从"整个请求"下放到"每个声部"**：该声部 `N==1` ⇒ 两段式种子 ⇒
+  没被点名的声部音符 id 与今天逐字节相同（`ARCH-DET-001` ∩ 缺省兼容契约的交点）。
+- **D2 的四行拒绝只有一个写者**（`voice_subdivision_table`）：非对象 ⇒ `hint` 点名形状；
+  未知名 ⇒ `part` + `allowedParts`；非整数 / 越界 ⇒ `part` + `range`。
+  ⛔ 静默忽略 `"Drums"`（那是个轨，只是不归本参数管）。空对象 `{}` 合法 = 不给。
+- 声明面两处同源：`tools.rs` 的 `ParamSpec`（`json_type: "object"`）与
+  `schemas/mcp-tools.schema.json` 的 `DocumentedToolArguments.yeban_propose_section`
+  （`propertyNames` 四候选名 + `additionalProperties.maximum == MAX_VOICE_SUBDIVISION`），
+  另补 `arguments` 那段散文里 `ADR-0033` 那句的同级列举。
+- 判据 `tests/voice_subdivisions.rs` **11 条**；`verify/section_pure.rs` 21 处
+  `PlanOptions` 字面量与 `tests/voice_subdivision.rs` 2 处补字段（该结构⛔ 用
+  `..Default::default()`，所以加字段是**穷举改写**，一次改到位）。
+
+### ⚠ 实测到的例外 / 决定（写进 `ADR-0035` 留痕）
+
+1. **`&'a Value` 而不是预解析的 `BTreeMap<String,u64>`**：D2 每一行都要求载荷**点名是哪个
+   声部**，而只有领域层同时握着该预设的声部清单；在 `domain/mod.rs` 预解析会把"非整数"
+   那一行推给实参读取层 ⇒ 同一张错误表两个写者、两份载荷形状必然分叉。附带好处：
+   `&Value` 让 `PlanOptions` 保住 `Copy`（21 处夹具逐字面构造它）。
+2. **工具面先于领域层判形状**：`ParamSpec::accepts` 对 `"object"` 已经拦下
+   数组/字符串/数字/`null`（报参数类型错误），所以"非对象"那一行只能在**纯领域层**量到。
+   判据按这条如实分写，⛔ 假装工具面会返回领域码。
+3. **`voiceSubdivisions[part]` 改成 `part` + `value`**：JSON 里带变量键要手工拼 `Map`，
+   而 `part` 已经把键名点出来了，回显值不需要再嵌一层。
+4. **错误优先级不变**：新表在 `1d` 相位展开（`bars` / `scale` / 环路校验之后），
+   它⛔ 读工程状态，所以不插进既有优先级链；只有"给了不消费的参数"那一行与
+   `voiceSubdivision`、`drumDensity` 同批、同位置口径。
+5. **判据里的声部清单全部从 `preset_parts(style)` 读回**：⛔ 手抄 `["Bass","Alto","Soprano"]`
+   —— 那是 `G18b` 那条"守卫的语义不能靠手抄名单"的同族错误（声部表一改就变空判据）。
+
+### 判决链
+
+- `7a765da9` Run `40548848466` **failure**：`checks` / `plan` / `deny` / `lockfile` 四条绿，
+  承判腿 **`rust (workspace 全量)` + `windows` + `macos` 三条同一个唯一错误**
+  `tests/voice_subdivisions.rs:307/335/345 error[E0599]: no method named expect_err found
+  for struct SectionPlan` ⇒ 整轮 **0 条** `test result:`（编译期红，⛔ 不是空绿也不是"快跑完了"）。
+  根因：判据 6 拿**不可失败**夹具 `plan`（内部已 `.expect()`）的返回值调 `expect_err`；
+  修法是加一个直通 `plan_try` 的 `rejected(overrides)`，⛔ 把 `plan` 改成返回 `Result`
+  （那会把 8 条成功路径判据全变成 `.unwrap()` 噪声）。
+  ⚠ 这条红本机测不出：`yeban-mcp` 拖 `yeban-render`（§5 的重依赖禁令），
+  `cargo fmt` 只保证**语法**、不保证方法解析 ⇒ 判据里的**类型**错误只能靠 CI。
+- `6ec3edd3` Run `40549805342` **success**（逐腿现读）：`rust (yeban-mcp)` 869s ⇒
+  **97 条 `test result:` / 2,212 passed / 0 failed**，且**逐名点过**那 11 条判据
+  （`grep -oE "voice_subdivisions_[a-z_]+ \.\.\. ok" | sort -u` ⇒ **11** 条唯一名字）；
+  `macos` 1,322s ⇒ **248 / 4,885 / 0**；`windows` 1,896s ⇒ **248 / 4,864 / 0**；
+  `rust (yeban-ui-mcp)` / `checks` / `plan` / `deny` / `lockfile` success；
+  `rust (workspace 全量)` = **skipped**。
+  ⚠ 那次 skipped **不是**"改根级文件就不触发全量"，而是**推送增量**：现读
+  `ci.yml:88-105` + `changed-crates.py:61` —— `plan` 的 base 取 `github.event.before`
+  （= **本次推送之前的分支 tip**），diff 是 `base...head`。本批把根级 `schemas/**`
+  落在 `7a765da9`、把测试修复单独落在 `6ec3edd3` ⇒ 后者只看见
+  `crates/yeban-mcp/tests/**` ⇒ `workspace_wide: false`。
+  ⇒ **全量门禁的判决因此仍欠着**，由主干 merge 那条 run 补上（见下，pending）。
+  ⚠ 另一条读数机制：`gh run view --log` 在整条 run `in_progress` 期间直接报
+  `logs will be available when it is complete` ⇒ 逐腿 `conclusion` 可提前读，
+  但 **`test result:` 计数必须等 run 收尾**（本轮 `rust (yeban-mcp)` 先绿、日志晚到约 40 分钟）。
+- 主干 merge `793b0a3b` Run `40560362657`：**待读回（`pending`）**。
+  ⚠ 预期它是本片的**全量承判 run**：`git diff --name-only 7882ef12 793b0a3b`
+  实测命中根级触发器 `schemas/mcp-tools.schema.json`（1 行）⇒ `plan` 应判
+  `workspace_wide: true` ⇒ `rust (workspace 全量)` 真跑（G8b 主干同型实测 1:19:24）、
+  矩阵腿 skipped。判决读回前，`G8c` 的"消除"只由上面那条**线 run** 支撑。
+
+### 本轮新增的规则
+
+1. **加一个 `Option<&'a X>` 字段前先查该结构是否 `Copy`、有多少处逐字面构造它**：
+   `PlanOptions` 两者皆是 ⇒ 用引用既保住 `Copy` 又把改动压成"每处夹具加一行"，
+   而不是把 21 处夹具换成 `..Default::default()`（那会让"漏给新参数"从编译期错误
+   退化成运行期默认值）。
+2. **一个参数的错误表只能有一个写者**：预解析 = 把表劈成两半（形状在半路、取值在领域）。
+   宁可让纯计算层收 `&Value`，也⛔ 让两处各自拼 `hint`。
+3. **分次推送会把"根级触发全量"这件事只留在第一次 run 上**：`plan` 的 base 是
+   `github.event.before`（本次推送之前的分支 tip），所以**后续窄 run 不会重跑全量腿**。
+   一条线若第一次推送触发全量、那次又失败了 ⇒ 全量判决**仍欠着**，⛔ 拿"分支树里
+   有 `schemas/**`"推断某条 run 跑过全量，必须现读该 run 的 `plan` 输出与各腿状态。
+4. **主干 push 必须挑时机**：同 ref 的 `concurrency` 意味着**推 main 会取消 main 上仍在跑的
+   那条 run 的腿**（本轮就因此⛔ 把 G8c 的 merge 压住，等 `40552378167` 收尾才推）；
+   而 merge 提交⛔ 与文档提交挤在同一次推送（一次推送只有 **tip** 建 run）。

@@ -123,6 +123,7 @@ use yeban_model::{
 // `yeban-theory` 的公开面（本模块**只读**它，不复制它的逻辑）。
 // 逐个 API 的签名与用途见 `docs/ledger/theory-wiring-notes.md` §2。
 use yeban_theory::TheoryError;
+use yeban_theory::cells_per_bar;
 use yeban_theory::drum::{DrumPattern, default_backbeat, swung_styled_drum_pattern};
 use yeban_theory::genre::{GenreLibrary, GenreRule};
 use yeban_theory::melody::{MelodyConstraints, melody_over_chords};
@@ -144,7 +145,8 @@ pub const MAX_PARTS: usize = 8;
 
 /// `voiceSubdivision` 的上界（`ADR-0033` D1）。
 ///
-/// 16 与既有两条粒度面同口径：`THEORY_ONSETS_PER_BAR` 的 16 网格、以及
+/// 16 与既有两条粒度面同口径：4/4 预设的 `THEORY_ONSETS_PER_BAR` 十六分网格（`ADR-0036`
+/// D1 之后它是**拍号的函数**，4/4 仍等于 16）、以及
 /// `MidiNote::ratchet` 的 1..=16。上界写在 **domain 层**而不是 `ParamSpec`
 /// （后者只有字符串 min/max），与 `yeban_render_master` 的 `TARGET_LUFS_RANGE`
 /// 同一先例。
@@ -218,7 +220,29 @@ fn part_volume_db(part: &str) -> f32 {
 }
 
 /// 理论生成鼓组／旋律时每小节的 onset 数（`ADR-0017` D1：16 = 十六分网格）。
+/// ⭐ `ADR-0036` D1 之后它**不再是缺省值**，只作两件事：4/4 那条不变量的对照常量，
+/// 以及病态拍号（[`cells_per_bar`] 判成 `None`）的**回落值** —— 那种拍号 theory 自己
+/// 会在 `Meter::new` 处响亮拒绝，本表⛔ 为它新增分支或发明第二个数。
 const THEORY_ONSETS_PER_BAR: u32 = 16;
+
+/// ⭐ `ADR-0036` D1：缺省的每小节音头数 = **该拍号一小节的 16 分格位数**。
+///
+/// 这不是"把 16 改成会算的数"那么轻：`GENRES` 实测 182 条里有 **28 条非 4/4**
+/// （`3/4` 13 / `2/4` 8 / `7/8` 4 / `6/8` 3），它们的格位数只有 8 / 12 / 14，
+/// 而无条件传 16 会撞上 theory 的 `wanted > slots` ⇒ 那 28 条流派的鼓与旋律
+/// **今天生成不出来**（响亮失败，⛔ 静默）。4/4 的格位数恰好是 16
+/// （`yeban-theory` 的单测 `rhythm.rs:746` 逐条钉住），所以 154 条 4/4 预设
+/// 逐字节不变（`ADR-0016` 的缺省兼容契约）。
+///
+/// ⛔ 写成 `min(16, cells)`：那等于给非 4/4 拍号另立一套隐含口径，
+/// 且与 D3"上界只有一个来源"重复。缺省就是**整张网格铺满**。
+fn grid_onsets_per_bar(rule: &GenreRule, requested: Option<u32>) -> u32 {
+    requested.unwrap_or_else(|| {
+        cells_per_bar(rule.meter_value())
+            .and_then(|cells| u32::try_from(cells).ok())
+            .unwrap_or(THEORY_ONSETS_PER_BAR)
+    })
+}
 
 /// 鼓击点的固定时值：120 tick（960 PPQ ⇒ 1/32 音符，`ADR-0017` D1）。
 const DRUM_NOTE_DURATION_TICKS: u64 = 120;
@@ -597,6 +621,41 @@ fn theory_invalid(style_preset: &str, step: &str, error: TheoryError) -> BuildFa
             "theoryError": error.to_string(),
         }),
     )
+}
+
+/// ⭐ `ADR-0036` D3：**网格**类失败的上界只有一个来源 —— theory 的
+/// `ProgressionTooDense { degrees, slots }`（`degrees` 在那里承载请求的 onset 数，
+/// `slots` 承载该拍号一小节的 16 分格位数）。本层⛔ 不维护第二张"拍号 → 格位数"表：
+/// 命中这条错误时把 `slots` 原样转发成 `maxOnsetsPerBar`，其余错误沿用
+/// [`theory_invalid`] 的通用形状（`theoryStep` / `theoryError`）。
+///
+/// 为什么走"调用 → 收 `Err` → 读回"而不是预先校验：预校验就意味着本层要自己算一遍
+/// 界（或抄一张表），而流派表一改拍号它就会悄悄错（`G18b` 那条"守卫的语义不能靠
+/// 手抄名单"的同族错误）。
+fn theory_grid_invalid(
+    style_preset: &str,
+    step: &str,
+    error: TheoryError,
+    rule: &GenreRule,
+    onsets_per_bar: u32,
+) -> BuildFault {
+    if let TheoryError::ProgressionTooDense { slots, .. } = &error {
+        let meter = format!("{}/{}", rule.meter.0, rule.meter.1);
+        return BuildFault::domain(
+            BuildCode::InvalidParameterRange,
+            format!(
+                "每小节音头数 {onsets_per_bar} 超过流派 `{style_preset}`（{meter}）的格位数 {slots}"
+            ),
+            json!({
+                "stylePreset": style_preset,
+                "onsetsPerBar": onsets_per_bar,
+                "maxOnsetsPerBar": slots,
+                "meter": meter,
+                "hint": "上界 = 该拍号一小节的 16 分格位数；不给 `onsetsPerBar` 时默认就是它",
+            }),
+        );
+    }
+    theory_invalid(style_preset, step, error)
 }
 
 /// 校验调式写法（`"<音名> <调式>"`，大小写不敏感）。
@@ -1106,6 +1165,15 @@ pub struct PlanOptions<'a> {
     /// "非整数"那一行推到实参读取层，同一张表就分成两个写者了。
     /// `None` / `{}` = 没有任何覆盖 ⇒ 逐字节维持既有和声输出。
     pub voice_subdivisions: Option<&'a Value>,
+    /// ⭐ `ADR-0036` D2：**每小节**音头数（鼓组与旋律两条生成路径共用的网格分辨率）。
+    /// 单位是"每小节"，与上面两个"每 `ChordSpan` 跨度"的切分参数**不是同一个量**，
+    /// 两者互不换算（D2：一个词只有一种单位）。
+    /// `None` = 从该流派的拍号导出（[`grid_onsets_per_bar`]；4/4 ⇒ 16 ⇒ 逐字节维持既有输出）。
+    /// 下界 `1` 在本层当场拒；上界⛔ **不在本层写常量**（D3：唯一的界是 theory 的
+    /// `ProgressionTooDense { slots }`，命中时原样转发成 `maxOnsetsPerBar`）。
+    /// 只允许与 `material_source: Some("theory")` **且**（`include_drums` 或
+    /// `include_melody` 至少一条在场）同给（D4）。
+    pub onsets_per_bar: Option<u64>,
 }
 
 /// 一个声部的身份（两条材料路径共用）。
@@ -1486,14 +1554,25 @@ fn theory_contents(
 
 /// 鼓组型：流派登记的口径优先；`Ok(None)` 时按 `ADR-0017` D1 的兜底入口
 /// 再问一次 `swung_styled_drum_pattern`。
+///
+/// `onsets_per_bar` 已由 [`grid_onsets_per_bar`] 定下（缺省 = 该拍号的格位数，
+/// `ADR-0036` D1）；超出格位数时 theory 的 `ProgressionTooDense` 由
+/// [`theory_grid_invalid`] 转成带 `maxOnsetsPerBar` 的载荷（D3）。
 fn theory_drum_pattern(
     rule: &'static GenreRule,
     bars: u32,
     style_preset: &str,
+    onsets_per_bar: u32,
 ) -> Result<DrumPattern, BuildFault> {
-    let pattern = rule
-        .drum_pattern(bars, THEORY_ONSETS_PER_BAR)
-        .map_err(|error| theory_invalid(style_preset, "GenreRule::drum_pattern", error))?;
+    let pattern = rule.drum_pattern(bars, onsets_per_bar).map_err(|error| {
+        theory_grid_invalid(
+            style_preset,
+            "GenreRule::drum_pattern",
+            error,
+            rule,
+            onsets_per_bar,
+        )
+    })?;
     if let Some(pattern) = pattern {
         return Ok(pattern);
     }
@@ -1503,13 +1582,21 @@ fn theory_drum_pattern(
     swung_styled_drum_pattern(
         rule.meter_value(),
         bars,
-        THEORY_ONSETS_PER_BAR,
+        onsets_per_bar,
         permille,
         None,
         default_backbeat(rule.meter_value()),
         rule.drum_style,
     )
-    .map_err(|error| theory_invalid(style_preset, "swung_styled_drum_pattern", error))?
+    .map_err(|error| {
+        theory_grid_invalid(
+            style_preset,
+            "swung_styled_drum_pattern",
+            error,
+            rule,
+            onsets_per_bar,
+        )
+    })?
     .ok_or_else(|| {
         BuildFault::domain(
             BuildCode::InvalidParameterRange,
@@ -1518,7 +1605,7 @@ fn theory_drum_pattern(
                 "stylePreset": style_preset,
                 "theoryStep": "GenreRule::drum_pattern",
                 "bars": bars,
-                "onsetsPerBar": THEORY_ONSETS_PER_BAR,
+                "onsetsPerBar": onsets_per_bar,
             }),
         )
     })
@@ -1535,8 +1622,9 @@ fn drum_contents(
     style_preset: &str,
     section_id: EntityId,
     density: DrumDensity,
+    onsets_per_bar: u32,
 ) -> Result<BTreeMap<EntityId, MidiNote>, BuildFault> {
-    let pattern = theory_drum_pattern(rule, theory_bars(bars)?, style_preset)?;
+    let pattern = theory_drum_pattern(rule, theory_bars(bars)?, style_preset, onsets_per_bar)?;
     let mut notes = BTreeMap::new();
     for (hit_index, hit) in pattern.hits().iter().enumerate() {
         // ⭐ `ADR-0028` D3：`sparse` = 只留重音（口径来自流派登记的
@@ -1590,11 +1678,20 @@ fn melody_contents(
     bars: u64,
     style_preset: &str,
     section_id: EntityId,
+    onsets_per_bar: u32,
 ) -> Result<BTreeMap<EntityId, MidiNote>, BuildFault> {
     let grid = theory
         .rule
-        .rhythm_grid(theory_bars(bars)?, THEORY_ONSETS_PER_BAR)
-        .map_err(|error| theory_invalid(style_preset, "GenreRule::rhythm_grid", error))?;
+        .rhythm_grid(theory_bars(bars)?, onsets_per_bar)
+        .map_err(|error| {
+            theory_grid_invalid(
+                style_preset,
+                "GenreRule::rhythm_grid",
+                error,
+                theory.rule,
+                onsets_per_bar,
+            )
+        })?;
     let melody = melody_over_chords(
         &theory.scale,
         spans,
@@ -1681,6 +1778,13 @@ pub fn plan(
 /// `"· Melody"` 两条声部追加在和声声部之后；缺省（`None` / `false`）与既有行为
 /// 逐字节相同。
 ///
+/// `options.onsets_per_bar`（`ADR-0036` D2/D4）：鼓组与旋律的**每小节**音头数。
+/// `None` = 从该流派的拍号导出（[`grid_onsets_per_bar`]，4/4 ⇒ 16 ⇒ 逐字节相同）；
+/// 它只作用于这两条生成路径，因此要求 `material_source: Some("theory")` **且**
+/// `include_drums` / `include_melody` 至少一条在场。上界不在本层（D3）：越界由
+/// theory 的 `ProgressionTooDense` 判定，[`theory_grid_invalid`] 把它的 `slots`
+/// 转发成 `data.maxOnsetsPerBar`。
+///
 /// # Errors
 ///
 /// 同 [`plan`]；理论路径额外的失败（走向 / 音阶 / 声部连接 / 鼓组 / 旋律）映射到
@@ -1746,6 +1850,48 @@ pub fn plan_with_options(
             BuildCode::InvalidParameterRange,
             "`voiceSubdivisions` 仅在 materialSource: 'theory' 时支持",
             json!({ "hint": "请指定 materialSource: \"theory\"（逐声部切分只作用于生成的和声）" }),
+        ));
+    }
+    // ⭐ `ADR-0036` D2/D3：`onsetsPerBar` 的**形状**拒绝写在这里（下界 1、以及本层
+    // 能表达的整数宽度），**上界不在这里** —— 那一个界属于拍号，只有 theory 知道，
+    // 由 [`theory_grid_invalid`] 从 `ProgressionTooDense.slots` 读回。⛔ 在这里放一张
+    // "拍号 → 格位数"表：那会把同一个参数的界交给两个写者。
+    let onsets_per_bar = match options.onsets_per_bar {
+        None => None,
+        Some(0) => {
+            return Err(BuildFault::domain(
+                BuildCode::InvalidParameterRange,
+                "`onsetsPerBar` 至少是 1（每小节一个音头），0 不是\"不设网格\"",
+                json!({ "onsetsPerBar": 0, "range": [1, u32::MAX] }),
+            ));
+        }
+        Some(other) => Some(u32::try_from(other).map_err(|_| {
+            BuildFault::domain(
+                BuildCode::InvalidParameterRange,
+                format!(
+                    "`onsetsPerBar` 必须在 1..{}（每小节的音头数不会需要更大的数）",
+                    u32::MAX
+                ),
+                json!({ "onsetsPerBar": other, "range": [1, u32::MAX] }),
+            )
+        })?),
+    };
+    // ⭐ `ADR-0036` D4：给了必须被消费。两条耦合规则与 `drumDensity` /
+    // `voiceSubdivision` 同口径，差别只在**本参数同时管鼓与旋律**，所以
+    // "两条消费路径任一在场"即可（⛔ 沿用 `drumDensity` 那条更严的"必须有鼓"——
+    // 那会拒掉合法的"只给旋律加密"）。
+    if options.onsets_per_bar.is_some() && material_source != MaterialSource::Theory {
+        return Err(BuildFault::domain_with_data(
+            BuildCode::InvalidParameterRange,
+            "`onsetsPerBar` 仅在 materialSource: 'theory' 时支持",
+            json!({ "hint": "请指定 materialSource: \"theory\"（每小节网格只作用于生成的鼓组与旋律）" }),
+        ));
+    }
+    if options.onsets_per_bar.is_some() && !include_drums && !include_melody {
+        return Err(BuildFault::domain_with_data(
+            BuildCode::InvalidParameterRange,
+            "`onsetsPerBar` 需要 includeDrums 或 includeMelody 至少一条为 true",
+            json!({ "hint": "请同时指定 includeDrums: true 或 includeMelody: true（网格只作用于这两条生成路径）" }),
         ));
     }
     // 1. 参数与工程前置条件（顺序即错误码优先级，判据钉住它）。
@@ -1849,6 +1995,10 @@ pub fn plan_with_options(
     //     鼓组/旋律（`ADR-0017`）只追加在和声声部之后，顺序与 `parts` 一致。
     let contents = match &theory_input {
         Some(theory) => {
+            // ⭐ `ADR-0036` D1：鼓与旋律共用的网格分辨率。缺省 = 该流派拍号的
+            // 16 分格位数（4/4 ⇒ 16 ⇒ 逐字节不变）；显式给值时⛔ 不夹紧 ——
+            // 越界由 theory 拒绝，上界从它的 `slots` 读回（D3）。
+            let onsets_per_bar = grid_onsets_per_bar(theory.rule, onsets_per_bar);
             let spans = theory_spans(project, style_preset, bars, theory)?;
             let mut contents = theory_contents(
                 style_preset,
@@ -1864,6 +2014,7 @@ pub fn plan_with_options(
                     style_preset,
                     section_id,
                     drum_density,
+                    onsets_per_bar,
                 )?);
             }
             if include_melody {
@@ -1873,6 +2024,7 @@ pub fn plan_with_options(
                     bars,
                     style_preset,
                     section_id,
+                    onsets_per_bar,
                 )?);
             }
             contents

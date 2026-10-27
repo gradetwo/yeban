@@ -2458,6 +2458,9 @@ fn plan_propose_section(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault>
     // ⭐ `ADR-0035` D1/D2：逐声部覆盖表**原样转发**（不在这儿预解析）—— 那四行拒绝
     // 的形状要点名是哪个声部，只有领域层同时握着声部清单，预解析会把它拆成两个写者。
     let voice_subdivisions = call.arguments.get("voiceSubdivisions");
+    // ⭐ `ADR-0036` D2：每小节网格是可选整数键；缺省 = 从该流派拍号导出（4/4 ⇒ 16 ⇒
+    // 逐字节相同）。**上界不进这里**：那是拍号的函数，只有 theory 知道（D3）。
+    let onsets_per_bar = arg_u64(call, "onsetsPerBar")?;
     let section_plan = section::plan_with_options(
         project,
         section_name,
@@ -2472,6 +2475,7 @@ fn plan_propose_section(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault>
             drum_density,
             voice_subdivision,
             voice_subdivisions,
+            onsets_per_bar,
         },
     )?;
     propose_draft(
