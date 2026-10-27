@@ -99,6 +99,12 @@ fn by_start(rows: &[Row]) -> Vec<(u64, u64, u8)> {
     sorted
 }
 
+/// `synthwave` + `theory` + 均匀旋钮缺省的**可失败**规划（拒绝类判据用它：
+/// `plan` 是 `.expect()` 过的不可失败夹具，拿它的返回值调 `expect_err` 编译不过）。
+fn rejected(overrides: Option<&Value>) -> Result<SectionPlan, BuildFault> {
+    plan_try("synthwave", Some("theory"), None, overrides)
+}
+
 /// ⭐ 判据 1（`ADR-0035` D3）：不给该键 ≡ 空对象 ≡ `voiceSubdivision: 1`，
 /// 且与 `ADR-0033` 的缺省路径**整个规划**逐字节相同（`SectionPlan: PartialEq`）。
 #[test]
@@ -303,7 +309,7 @@ fn voice_subdivisions_out_of_range_and_non_integer_are_loud() {
         json!(-1),
         json!("4"),
     ] {
-        let fault = plan(None, Some(&json!({"Bass": illegal})))
+        let fault = rejected(Some(&json!({"Bass": illegal})))
             .expect_err("越界/非整数不得静默夹紧或四舍五入");
         assert_eq!(
             fault.domain_code(),
@@ -326,7 +332,7 @@ fn voice_subdivisions_out_of_range_and_non_integer_are_loud() {
     }
     // 值不是整数**且**键也不在册时，先报哪个？—— 逐条目按"名 → 值"的顺序判，
     // 所以报的是未知名（`part` + `allowedParts`）。这条钉住实现里唯一的解释。
-    let fault = plan(None, Some(&json!({"Drums": 2.5}))).expect_err("未知名必须响亮");
+    let fault = rejected(Some(&json!({"Drums": 2.5}))).expect_err("未知名必须响亮");
     let BuildFault::Domain { data, .. } = &fault else {
         panic!("必须是领域失败");
     };
@@ -336,7 +342,7 @@ fn voice_subdivisions_out_of_range_and_non_integer_are_loud() {
     );
     // 整个参数不是对象 ⇒ 同样响亮，且给出期望形状。
     for shape in [json!([8, 4]), json!("Bass=8"), json!(4), json!(null)] {
-        let fault = plan(None, Some(&shape)).expect_err("`voiceSubdivisions` 必须是对象");
+        let fault = rejected(Some(&shape)).expect_err("`voiceSubdivisions` 必须是对象");
         assert_eq!(
             fault.domain_code(),
             Some(BuildCode::InvalidParameterRange),
