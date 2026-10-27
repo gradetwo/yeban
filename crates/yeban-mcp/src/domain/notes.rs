@@ -8080,6 +8080,9 @@ fn read_probability(object: &Map<String, Value>) -> Result<Option<f32>, Fault> {
 ///   路由边或路由节点不存在 → `ENTITY_NOT_FOUND`（`routingEdgeNotFound` /
 ///   `routingNodeNotFound`）；曲式段落不存在 → `ENTITY_NOT_FOUND`（`sectionNotFound`）；
 ///   场景不存在 → `ENTITY_NOT_FOUND`（`sceneNotFound`）；
+///   ⭐ G7（`ADR-0025`）：这些**预检**读的是**批内逐条投影**后的文档 ——
+///   同批更早的 op 建的节点 / 轨 / 边算"已存在"，`addRoutingNode → connectRouting`
+///   一批即可；顺序不对仍按本表响亮拒绝。
 /// - 目标是主总线（`removeRoutingNode`）→ `CONFLICT`（`masterBusNodeCannotBeRemoved`）；
 /// - 模型层校验失败 → [`super::error::code_for_model`] 给出的契约码。
 pub fn compile(
@@ -8142,8 +8145,18 @@ pub fn compile(
     }
 
     let mut compiled = Vec::with_capacity(ops.len());
+    // ⭐ G7（审计 2026-10-27）：**批内投影**。此前各分支一律按**批前**文档校验，
+    // 同批新建的节点 / 轨 / 边对后面的 op 不可见 ⇒ `addTrack + addRoutingNode +
+    // connectRouting` 三联被 `routingNodeNotFound` 挡下，白白多一轮提案
+    // （而 `propose_draft` 的 `Op::Batch` 模拟**本来就支持**顺序施加）。
+    // 现在 match 臂读的是这份逐条投影的克隆：每条编译出的 `Op` 立刻最佳努力
+    // 施加到克隆上（见循环末尾），后面的 op 因此能看见前面 op 造出的实体，
+    // 撤销载荷也取自**该条在序列中的当时值**（与合并期重放同一口径）。
+    // ⚠ 施加失败（顺序不对 / 前置不满足）**不在这里报错**：预检只是提前给
+    // `reason` + `hint` 的友好层，真判据仍由 `propose_draft` 的模拟按原口径报。
+    let mut project = project.clone();
     for op in ops {
-        compiled.push(match op {
+        let compiled_op = match op {
             NoteOp::Add { note } => Op::AddNote {
                 track_id: *track_id,
                 clip_id: *clip_id,
@@ -8301,9 +8314,7 @@ pub fn compile(
                 if old_cents.is_none() && cents.is_none() {
                     return Err(Fault::domain_with_data(
                         ErrorCode::EntityNotFound,
-                        format!(
-                            "音符 {note_id} 的弯音曲线在 tick {tick} 没有点, 没有东西可以删除"
-                        ),
+                        format!("音符 {note_id} 的弯音曲线在 tick {tick} 没有点, 没有东西可以删除"),
                         serde_json::json!({
                             "reason": "pitchBendPointNotFound",
                             "tick": tick,
@@ -8342,14 +8353,14 @@ pub fn compile(
                     StaticLane::DeviceParam {
                         slot_index,
                         param_index,
-                    } => resolve_set_param_device(project, target_track, slot_index, param_index)?,
+                    } => resolve_set_param_device(&project, target_track, slot_index, param_index)?,
                     other => other,
                 };
                 let target = lane.target(target_track);
                 // 撤销载荷来自**唯一**的静态值入口 (`AutomationTarget::static_value`)：
                 // 本层不自己读 `track.volume_db` / `track.pan` / 设备参数（那会是第二份真相）。
                 let old_val = target
-                    .static_value(project)
+                    .static_value(&project)
                     .map_err(|error| from_model("静态值读取", &error))?;
                 Op::SetParam {
                     target,
@@ -8384,7 +8395,10 @@ pub fn compile(
                 //
                 // ⚠ 区间与有限性**在这里提前拒**（模型自己也会拒同一区间）：让越界在
                 // **编译期**就带上 `reason`，而不是在提案模拟那一步冒出一个泛化消息。
-                if !new_bpm.is_finite() || !(yeban_model::project::MIN_BPM..=yeban_model::project::MAX_BPM).contains(new_bpm) {
+                if !new_bpm.is_finite()
+                    || !(yeban_model::project::MIN_BPM..=yeban_model::project::MAX_BPM)
+                        .contains(new_bpm)
+                {
                     return Err(Fault::domain_with_data(
                         ErrorCode::InvalidParameterRange,
                         format!(
@@ -8757,9 +8771,7 @@ pub fn compile(
                     new_key_signature: *new_key_signature,
                 }
             }
-            NoteOp::SetTempoPoint {
-                tick, new_bpm, ..
-            } => {
+            NoteOp::SetTempoPoint { tick, new_bpm, .. } => {
                 // ⚠ tick 0 在 `compile` 里**重查**（与 `setTempo` 重查区间同一条口径）：
                 // 手工构造的 `NoteOp`（判据会这么用）也不许编译出一条 `apply` 必被拒的 op。
                 if *tick == 0 {
@@ -8806,7 +8818,9 @@ pub fn compile(
                 if old_bpm.is_none() && new_bpm.is_none() {
                     return Err(Fault::domain_with_data(
                         ErrorCode::EntityNotFound,
-                        format!("工程的 `tempo_map` 里 tick {tick} 没有速度映射点, 没有东西可以删除"),
+                        format!(
+                            "工程的 `tempo_map` 里 tick {tick} 没有速度映射点, 没有东西可以删除"
+                        ),
                         serde_json::json!({
                             "reason": "tempoPointNotFound",
                             "tick": tick,
@@ -8923,15 +8937,15 @@ pub fn compile(
                     .automation_lanes
                     .get(&target)
                     .ok_or_else(|| {
-                    Fault::domain_with_data(
-                        ErrorCode::EntityNotFound,
-                        format!("这条自动化泳道不存在, 没有点可以取走: {target:?}"),
-                        serde_json::json!({
-                            "lane": spec.kind.as_str(),
-                            "reason": "automationLaneNotFound",
-                        }),
-                    )
-                })?;
+                        Fault::domain_with_data(
+                            ErrorCode::EntityNotFound,
+                            format!("这条自动化泳道不存在, 没有点可以取走: {target:?}"),
+                            serde_json::json!({
+                                "lane": spec.kind.as_str(),
+                                "reason": "automationLaneNotFound",
+                            }),
+                        )
+                    })?;
                 // 按 tick 寻址 = "文档里那一个**恰好**落在该 tick 上的点"：
                 // 0 个是 `ENTITY_NOT_FOUND`，≥2 个是**响亮拒绝**（不挑一个）。
                 // 模型只保证 `point.id` 唯一，**不保证** tick 唯一
@@ -9024,8 +9038,10 @@ pub fn compile(
                                 "nodeId": endpoint.to_canonical_string(),
                                 "reason": "routingNodeNotFound",
                                 "hint": "连边之前两端都必须已经在 `nodes` 里 —— 先调 \
-                                         `addRoutingNode` 把节点加进图; 节点身份由 \
-                                         `yeban_query_project` 的 `routing_graph.nodes` 报出",
+                                         `addRoutingNode` 把节点加进图（放在同批 `ops[]` \
+                                         的更早位置**也算**，见 `ADR-0025` 的批内投影）; \
+                                         节点身份由 `yeban_query_project` 的 \
+                                         `routing_graph.nodes` 报出",
                             }),
                         ));
                     }
@@ -9060,22 +9076,23 @@ pub fn compile(
                 // 也不接受调用方送来的载荷（`reject_disconnect_routing_fields` 只认
                 // `kind` 与 `edgeId`）。`nodes` 一个字都不动 —— 取走节点是
                 // `Op::RemoveRoutingNode` 的事，它有"没有任何边引用它"的前置条件。
-                let previous_edge = project
-                    .routing_graph
-                    .edge(edge_id)
-                    .copied()
-                    .ok_or_else(|| {
-                        Fault::domain_with_data(
-                            ErrorCode::EntityNotFound,
-                            format!("工程里没有身份 {edge_id} 的路由边, 没有边可以断开"),
-                            serde_json::json!({
-                                "edgeId": edge_id.to_canonical_string(),
-                                "reason": "routingEdgeNotFound",
-                                "hint": "路由边的身份由 `yeban_query_project` 的 \
-                                         `routing_graph` 字段报出",
-                            }),
-                        )
-                    })?;
+                let previous_edge =
+                    project
+                        .routing_graph
+                        .edge(edge_id)
+                        .copied()
+                        .ok_or_else(|| {
+                            Fault::domain_with_data(
+                                ErrorCode::EntityNotFound,
+                                format!("工程里没有身份 {edge_id} 的路由边, 没有边可以断开"),
+                                serde_json::json!({
+                                    "edgeId": edge_id.to_canonical_string(),
+                                    "reason": "routingEdgeNotFound",
+                                    "hint": "路由边的身份由 `yeban_query_project` 的 \
+                                             `routing_graph` 字段报出",
+                                }),
+                            )
+                        })?;
                 Op::DisconnectRouting {
                     edge_id: *edge_id,
                     previous_edge,
@@ -9200,18 +9217,19 @@ pub fn compile(
                 // `kind` 与 `sectionId`）。`SectionV3` 不与别的实体交叉引用，因此这里
                 // **没有**"还被谁引用"这一类前置条件要查（与 `RemoveClip` /
                 // `RemoveRoutingNode` 不同 —— 那两条的模型前置条件真的存在，本层不复制）。
-                let previous_section = project.sections.get(section_id).cloned().ok_or_else(|| {
-                    Fault::domain_with_data(
-                        ErrorCode::EntityNotFound,
-                        format!("工程里没有身份 {section_id} 的曲式段落, 没有段落可以取走"),
-                        serde_json::json!({
-                            "sectionId": section_id.to_canonical_string(),
-                            "reason": "sectionNotFound",
-                            "hint": "段落的身份由 `yeban_query_project` 的 `entities[]` 里 \
-                                     `kind == \"section\"` 的条目报出",
-                        }),
-                    )
-                })?;
+                let previous_section =
+                    project.sections.get(section_id).cloned().ok_or_else(|| {
+                        Fault::domain_with_data(
+                            ErrorCode::EntityNotFound,
+                            format!("工程里没有身份 {section_id} 的曲式段落, 没有段落可以取走"),
+                            serde_json::json!({
+                                "sectionId": section_id.to_canonical_string(),
+                                "reason": "sectionNotFound",
+                                "hint": "段落的身份由 `yeban_query_project` 的 `entities[]` 里 \
+                                         `kind == \"section\"` 的条目报出",
+                            }),
+                        )
+                    })?;
                 Op::RemoveSection {
                     section_id: *section_id,
                     previous_section,
@@ -9229,7 +9247,10 @@ pub fn compile(
                 let current = project.assets.get(asset_hash).cloned().ok_or_else(|| {
                     Fault::domain_with_data(
                         ErrorCode::EntityNotFound,
-                        format!("工程的 assets 索引里没有身份 {} 的资产", asset_hash.as_str()),
+                        format!(
+                            "工程的 assets 索引里没有身份 {} 的资产",
+                            asset_hash.as_str()
+                        ),
                         serde_json::json!({
                             "assetHash": asset_hash.as_str(),
                             "reason": "assetNotFound",
@@ -9261,7 +9282,10 @@ pub fn compile(
                 let current = project.assets.get(asset_hash).cloned().ok_or_else(|| {
                     Fault::domain_with_data(
                         ErrorCode::EntityNotFound,
-                        format!("工程的 assets 索引里没有身份 {} 的资产", asset_hash.as_str()),
+                        format!(
+                            "工程的 assets 索引里没有身份 {} 的资产",
+                            asset_hash.as_str()
+                        ),
                         serde_json::json!({
                             "assetHash": asset_hash.as_str(),
                             "reason": "assetNotFound",
@@ -9631,7 +9655,10 @@ pub fn compile(
                     previous_device,
                 }
             }
-        });
+        };
+        // 最佳努力推进投影（见循环头的 G7 注释）：失败不报，模拟才是判据。
+        let _ = compiled_op.apply(&mut project);
+        compiled.push(compiled_op);
     }
     Ok(compiled)
 }
@@ -19887,6 +19914,76 @@ mod tests {
             serde_json::to_string(&project).expect("序列化"),
             bytes_before,
             "一步撤销必须逐字节回到原状"
+        );
+    }
+
+    /// ⭐ G7（审计 2026-10-27，`ADR-0025`）：**同批** `addRoutingNode + connectRouting`
+    /// 一次编译就要通过 —— 连边的预检读的是**批内投影**（本批更早的 op 造的节点算
+    /// "已在 `nodes` 里"），整批模拟施加后边真的进图。
+    ///
+    /// 注入：① 把投影退回"按批前文档逐条校验" ⇒ 第一条断言以
+    /// `routingNodeNotFound` 红；② 投影若不分顺序（后面 op 造的节点也算已存在）⇒
+    /// 反序断言红。
+    #[test]
+    fn routing_chain_in_one_batch_sees_nodes_created_by_earlier_ops() {
+        let mut project = filled_project();
+        let (track_id, clip_id) = lead_clip(&project);
+        let new_node = EntityId::from_str("01J8ZQ00000000000000000N7K").expect("ULID");
+        let edge_id = EntityId::from_str("01J8ZQ00000000000000000NE7").expect("ULID");
+        let bus = project.master_bus_track_id;
+        assert!(
+            !project.routing_graph.nodes.contains(&new_node),
+            "夹具前提: 这个节点身份是新的"
+        );
+
+        // ---- ① 正序：先建节点、再连边 ⇒ 一次编译通过 ----
+        let ops = parse_ops(&serde_json::json!([
+            {"kind": ADD_ROUTING_NODE_KIND, "nodeId": new_node.to_canonical_string()},
+            {
+                "kind": CONNECT_ROUTING_KIND,
+                "edgeId": edge_id.to_canonical_string(),
+                "sourceNode": new_node.to_canonical_string(),
+                "destinationNode": bus.to_canonical_string(),
+                "edgeKind": "TrackToBus",
+            },
+        ]))
+        .expect("两个平铺形状必须被接受");
+        let compiled = compile(&project, &track_id, &clip_id, &ops)
+            .expect("同批更早 op 建的节点必须对后面的连边可见（批内投影, ADR-0025）");
+        assert_eq!(compiled.len(), 2);
+
+        // ---- ② 整批模拟施加（与 `propose_draft` 同一口径）⇒ 边真的进图 ----
+        // 反序断言必须打在**批前**文档上，所以先留一份未施加的克隆。
+        let pristine = project.clone();
+        Op::Batch {
+            ops: compiled,
+            description: "G7 批内投影".to_string(),
+        }
+        .apply(&mut project)
+        .expect("整批必须能干净施加");
+        assert!(project.routing_graph.edges.contains_key(&edge_id));
+        assert!(project.validate().is_ok(), "施加后工程必须仍然合法");
+
+        // ---- ③ 反序：连边在**更早**位置 ⇒ 投影里还没有那个节点 ⇒ 响亮拒绝 ----
+        // ⚠ 打在 ② 之前的 `pristine` 上：施加过正序批的文档里节点已真实存在，
+        // 反序批会走"已在图中"的正常路径而**不再**以 `routingNodeNotFound` 拒绝。
+        let reversed = parse_ops(&serde_json::json!([
+            {
+                "kind": CONNECT_ROUTING_KIND,
+                "edgeId": "01J8ZQ00000000000000000RE7",
+                "sourceNode": new_node.to_canonical_string(),
+                "destinationNode": bus.to_canonical_string(),
+                "edgeKind": "TrackToBus",
+            },
+            {"kind": ADD_ROUTING_NODE_KIND, "nodeId": new_node.to_canonical_string()},
+        ]))
+        .expect("反序平铺形状同样合法（顺序是语义, 不是形状）");
+        let fault = compile(&pristine, &track_id, &clip_id, &reversed)
+            .expect_err("投影必须按 op 顺序推进: 还没建的节点不可见");
+        assert_eq!(
+            reason_of(&fault).as_deref(),
+            Some("routingNodeNotFound"),
+            "反序必须以 routingNodeNotFound 拒绝: {fault:?}"
         );
     }
 
