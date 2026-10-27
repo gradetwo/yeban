@@ -2779,14 +2779,18 @@ fn longest_path_latency_comes_from_the_device_definitions() {
         result["data"]["longestPathFrames"], 48,
         "延迟只能来自 DeviceDefinition::latency_samples (跳过旁通设备)"
     );
-    // 内置乐器是音源、不是插入链来源 ⇒ 仍必须如实登记。
+    // ⭐ `G5`（`ADR-0027`）改口径：**非采样器轨**上的**空参数**内置乐器设备没有
+    // "离线路径不消费的参数" ⇒ **不再**登记 `deviceChainDsp`（登记才是假话）。
+    // 该键的如实登记仍由未知旋钮（`effect(...)` 组）与采样器轨（
+    // `sampler_drops_instrument_params`）与本文件 `an_instrument_wave_choice_changes_the_master_and_stops_registering_device_chain_dsp`
+    // 的正/负对照判据覆盖。
     assert!(
-        result["data"]["unsupported"]
+        !result["data"]["unsupported"]
             .as_array()
             .expect("unsupported")
             .iter()
             .any(|key| key == "deviceChainDsp"),
-        "{result}"
+        "空参数内置乐器不得触发 `deviceChainDsp` 登记: {result}"
     );
     verify_file_shape(&result, &out);
 }
