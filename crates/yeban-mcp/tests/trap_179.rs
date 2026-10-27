@@ -278,7 +278,7 @@ fn six_property_forms_succeed_on_an_audio_clip() {
 /// ⚠ 本线新增的 `setNoteTiming` / `setNoteExpression` 也读目标音符，因此音频片段上
 /// 同样必须响亮失败。
 #[test]
-fn four_note_forms_are_still_blocked_on_an_audio_clip() {
+fn note_forms_are_still_blocked_on_an_audio_clip() {
     let (mut dispatcher, auth, project) = dispatcher();
     let audio_clip_id = audio_clip(&project);
     let audio_clip_text = audio_clip_id.to_canonical_string();
@@ -328,6 +328,12 @@ fn four_note_forms_are_still_blocked_on_an_audio_clip() {
                 "kind": "setPitchBendPoint", "noteId": ghost_text,
                 "tick": 120, "cents": 50,
             }),
+        ),
+        // ⭐ `ADR-0034`：整片段移调**逐条读音符** ⇒ 音频片段上同样必须响亮失败
+        // （它⛔ 没有 `noteId` —— 目标是顶层 `clipId` 的**全部**音符）。
+        (
+            "transposeClip",
+            json!({"kind": "transposeClip", "deltaPitch": 2}),
         ),
     ];
     for (kind, op) in cases {
@@ -473,7 +479,7 @@ fn the_four_note_forms_are_byte_identical_on_a_midi_clip() {
 /// 注入（实测红）：把 `NOTE_LEVEL_KINDS` 加回任一属性级形态，或把谓词改回收窄前的
 /// 反选清单 ⇒ 本判据红；`six_property_forms_succeed_on_an_audio_clip` 的标题断言也红。
 #[test]
-fn the_note_level_predicate_is_exactly_eight() {
+fn the_note_level_predicate_is_exactly_nine() {
     assert_eq!(
         NOTE_LEVEL_KINDS,
         [
@@ -484,11 +490,12 @@ fn the_note_level_predicate_is_exactly_eight() {
             "setNoteTiming",
             "setNoteExpression",
             "setNotePitchShape",
-            "setPitchBendPoint"
+            "setPitchBendPoint",
+            "transposeClip"
         ],
-        "音符级 kind 必须逐字是八个音符形态（⛔ 不是从常量自己比出来的长度）"
+        "音符级 kind 必须逐字是九个音符形态（⛔ 不是从常量自己比出来的长度）"
     );
-    assert_eq!(NOTE_LEVEL_KINDS.len(), 8, "恰好八个");
+    assert_eq!(NOTE_LEVEL_KINDS.len(), 9, "恰好九个");
     // 每个成员都在 `OP_KINDS` 目录里（不是幽灵名字）。
     for kind in NOTE_LEVEL_KINDS {
         assert!(OP_KINDS.contains(kind), "`{kind}` 必须在 `OP_KINDS` 目录里");
