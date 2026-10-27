@@ -8653,3 +8653,72 @@ fn a_source_that_renders_silence_in_the_window_is_named_in_a_warning() {
         "mute 的轨不得报 silentSources（warnings = {codes:?}）"
     );
 }
+
+/// ⭐ `G5`（审计 2026-10-27）判据：内置**音色选择**的入口 = 乐器设备的
+/// `osc1_wave` / `osc2_wave`（取值 = 波表下标 0=hollow/1=organ/2=vocal/
+/// 3=metallic/4=glass）。三条断言：
+///
+/// 1. 只改 `osc1_wave`（`0.0` vs `4.0`）的两份工程 ⇒ 母带 `masterDigest`
+///    **必须不同**（引擎的音源投影真的求值 —— "写进去但不响"当场红）；
+/// 2. 两份工程的 `unsupported` 都**不含** `deviceChainDsp`（音源已消费的
+///    名字不再登记 —— 报一个已经做到的键就是假话）；
+/// 3. 正对照：同一台乐器设备混进 `mystery` 旋钮 ⇒ `deviceChainDsp` **仍**登记。
+///
+/// 可被什么注入破坏：`ToneParams::from_devices` 没接进离线母带路径（1 的
+/// digest 相等）；`track_has_unhandled_dsp` 仍对乐器设备一刀切拒绝（2 红）；
+/// 或把乐器设备一概放行（3 红）。
+#[test]
+fn an_instrument_wave_choice_changes_the_master_and_stops_registering_device_chain_dsp() {
+    let scratch = Scratch::new("g5-instrument-wave");
+    let render_with = |tag: &str, params: &[(&str, f32)]| -> Value {
+        let mut instrument = device(60, 0, false);
+        for (name, value) in params {
+            instrument.params.push(yeban_model::ParameterValue {
+                name: (*name).to_owned(),
+                value: *value,
+                unit: None,
+            });
+        }
+        let spec = Spec {
+            devices: vec![instrument],
+            ..Spec::default()
+        };
+        let path = scratch.join(&format!("g5-{tag}.wav"));
+        let (mut dispatcher, auth) = dispatcher_with(&project(&spec), &scratch.join("demo.yeban"));
+        call(
+            &mut dispatcher,
+            &auth,
+            json!({"format": "wav", "sampleRate": 48000, "path": path.display().to_string()}),
+        )
+    };
+    let hollow = render_with("hollow", &[("osc1_wave", 0.0)]);
+    let glass = render_with("glass", &[("osc1_wave", 4.0)]);
+    let mystery = render_with("mystery", &[("osc1_wave", 1.0), ("mystery", 2.0)]);
+    for (tag, value) in [
+        ("hollow", &hollow),
+        ("glass", &glass),
+        ("mystery", &mystery),
+    ] {
+        assert_eq!(value["status"], "success", "{tag}: {value}");
+    }
+    assert_ne!(
+        hollow["data"]["masterDigest"], glass["data"]["masterDigest"],
+        "`osc1_wave` 换了波表必须改母带 —— 否则音源参数是'写进去但不响'"
+    );
+    for (tag, value) in [("hollow", &hollow), ("glass", &glass)] {
+        let unsupported = value["data"]["unsupported"]
+            .as_array()
+            .expect("unsupported");
+        assert!(
+            !unsupported.iter().any(|v| v == "deviceChainDsp"),
+            "{tag}: `osc1_wave` 已被引擎音源求值 ⇒ 不许再登记 deviceChainDsp: {value}"
+        );
+    }
+    let unsupported = mystery["data"]["unsupported"]
+        .as_array()
+        .expect("unsupported");
+    assert!(
+        unsupported.iter().any(|v| v == "deviceChainDsp"),
+        "乐器里混着没人消费的名字 ⇒ 正对照必须仍登记: {mystery}"
+    );
+}

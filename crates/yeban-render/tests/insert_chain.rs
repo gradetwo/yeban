@@ -880,7 +880,38 @@ fn unhandled_device_classification_matches_the_slice_boundary() {
     instrument.kind = DeviceKind::InternalInstrument;
     assert!(
         track_has_unhandled_dsp(&track(vec![instrument])),
-        "内置乐器是音源，不是插入链来源"
+        "音源**不认**的名字（`eq_low_gain` 是通道条旋钮）仍必须登记"
+    );
+
+    // ⭐ G5（审计 2026-10-27）：引擎音源**真的求值**的参数不再登记。
+    // 判据口径 = `yeban_engine::synth::is_consumed_instrument_param`。
+    let mut wave = effect(&[("osc1_wave", 1.0), ("osc2_wave", 4.0)]);
+    wave.kind = DeviceKind::InternalInstrument;
+    assert!(
+        !track_has_unhandled_dsp(&track(vec![wave])),
+        "音色 `osc*_wave` 由引擎音源投影求值（G5）⇒ 报 deviceChainDsp 就是假话"
+    );
+
+    let mut drum_kit = effect(&[("kick_note", 36.0), ("kick_tune_hz", 50.0)]);
+    drum_kit.kind = DeviceKind::InternalInstrument;
+    assert!(
+        !track_has_unhandled_dsp(&track(vec![drum_kit])),
+        "鼓机键位与旋钮由引擎鼓机投影求值 ⇒ 不登记"
+    );
+
+    let mut mixed = effect(&[("osc1_wave", 1.0), ("mystery", 2.0)]);
+    mixed.kind = DeviceKind::InternalInstrument;
+    assert!(
+        track_has_unhandled_dsp(&track(vec![mixed])),
+        "乐器设备里混着**没人消费**的名字 ⇒ 仍如实登记"
+    );
+
+    let mut empty_instrument = effect(&[]);
+    empty_instrument.kind = DeviceKind::InternalInstrument;
+    assert!(
+        !track_has_unhandled_dsp(&track(vec![empty_instrument])),
+        "空参数的乐器 = 出厂默认音色, 没有'没被求值'的东西（InternalEffect 的\
+         空参数规则**不**外推到音源）"
     );
 
     // ⭐ `#303`：压缩已被离线插入链消费 ⇒ 不再登记。

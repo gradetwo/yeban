@@ -2591,6 +2591,41 @@ pub fn track_is_audible(mute: bool, solo: bool, solo_safe: bool, any_solo: bool)
     !mute && (!any_solo || solo || solo_safe)
 }
 
+/// ⭐ G5（审计 2026-10-27）：[`ToneParams::from_devices`] **真的消费**的
+/// 内置乐器参数名（小写）的**权威清单**。
+///
+/// 存在意义：离线路径（`yeban-render` 的 `deviceChainDsp` 登记）需要一个
+/// **不需要再抄一份**的判据来回答"这个乐器参数有没有被音源求值"。清单与
+/// `from_devices` 的 `match` 分支由判据测试
+/// `every_consumed_instrument_param_reaches_the_engine`（本文件 tests）钉在一起 ——
+/// 两边漂移 ⇒ 测试红。
+///
+/// 音色选择的入口就是这里的前两项：`osc1_wave` / `osc2_wave` 的取值是
+/// [`ENGINE_WAVE_RECIPES`] 的**下标**（0=hollow / 1=organ / 2=vocal /
+/// 3=metallic / 4=glass，钳位规则见 [`wave_index`]）。
+pub const CONSUMED_INSTRUMENT_PARAMS: [&str; 11] = [
+    "cutoff_hz",
+    "cutoff",
+    "resonance",
+    "res",
+    "drive",
+    "osc1_wave",
+    "osc2_wave",
+    "osc1_level",
+    "osc1_detune_cents",
+    "osc2_level",
+    "osc2_detune_cents",
+];
+
+/// [`CONSUMED_INSTRUMENT_PARAMS`] 的成员判定 **∪** 鼓机键位/旋钮名
+/// （[`crate::drums::consumes_drum_param`]）—— 即"内置乐器设备的这条参数
+/// 会被**某个**音源路径真实求值"。入参**必须**已转小写。
+#[must_use]
+pub fn is_consumed_instrument_param(name_lower: &str) -> bool {
+    CONSUMED_INSTRUMENT_PARAMS.contains(&name_lower)
+        || crate::drums::consumes_drum_param(name_lower)
+}
+
 /// 音轨线性增益（dB → 线性；非有限输入按静音处理）。超越函数类，构造期一次。
 ///
 /// ## 值域（`line/engine-23` 的实测边界，**不改本函数**）
@@ -3107,5 +3142,70 @@ mod tests {
         );
         assert!(track_is_audible(false, true, false, true), "独奏轨可闻");
         assert!(track_is_audible(false, false, true, true), "独奏安全轨可闻");
+    }
+
+    /// ⭐ G5（审计 2026-10-27）判据：[`CONSUMED_INSTRUMENT_PARAMS`] 与
+    /// [`ToneParams::from_devices`] 的 `match` **不许漂移**。
+    ///
+    /// **量什么**：对清单里每个名字，`from_devices` 在"已有 `cutoff_hz` 来源"的
+    /// 底座上多加这一个参数（值 `0.5`，对每个字段都远离该字段的默认值）后，
+    /// 投影结果必须**改变**；名单之外的名字必须**不改变**。
+    /// 注入实测：把清单里任何一项删掉/改名而 `match` 不动 ⇒ 该名字"不改变"分支
+    /// 红；`match` 少一个臂而清单留着 ⇒ "必须改变"分支红。
+    #[test]
+    fn every_consumed_instrument_param_reaches_the_engine_projection() {
+        let base = [
+            ("cutoff_hz", 1000.0),
+            ("resonance", 0.0),
+            ("drive", 0.0),
+            ("osc1_wave", 0.0),
+            ("osc2_wave", 0.0),
+            ("osc1_level", 1.0),
+            ("osc1_detune_cents", 0.0),
+            ("osc2_level", 0.0),
+            ("osc2_detune_cents", 0.0),
+        ];
+        let device_with = |name: &str, value: f32| {
+            let mut params: Vec<yeban_model::ParameterValue> = base
+                .iter()
+                .map(|(n, v)| yeban_model::ParameterValue {
+                    name: (*n).to_owned(),
+                    value: *v,
+                    unit: None,
+                })
+                .collect();
+            params.push(yeban_model::ParameterValue {
+                name: name.to_owned(),
+                value,
+                unit: None,
+            });
+            DeviceDefinition {
+                id: EntityId::new(),
+                name: "T".to_owned(),
+                kind: DeviceKind::InternalInstrument,
+                bypassed: false,
+                params,
+                latency_samples: 0,
+            }
+        };
+        let baseline = ToneParams::from_devices(std::slice::from_ref(&device_with(
+            "definitely_not_a_real_knob",
+            0.5,
+        )));
+        for name in CONSUMED_INSTRUMENT_PARAMS {
+            assert!(
+                is_consumed_instrument_param(name),
+                "清单里的名字必须被谓词承认: {name}"
+            );
+            assert_ne!(
+                ToneParams::from_devices(std::slice::from_ref(&device_with(name, 0.5))),
+                baseline,
+                "`{name}` 在清单里 ⇒ `from_devices` 必须真的消费它（清单与 match 漂移）"
+            );
+        }
+        assert!(
+            !is_consumed_instrument_param("definitely_not_a_real_knob"),
+            "名单之外的名字不许被谓词承认"
+        );
     }
 }

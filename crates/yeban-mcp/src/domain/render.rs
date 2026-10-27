@@ -48,7 +48,7 @@
 //! | 键 | 含义 |
 //! | :--- | :--- |
 //! | `audioClips` | **收窄后的口径**：仅当工程在 `assets` 索引里**声明**了这个资产、而会话 CAS 池里**没有它的字节**时才登记（`Domain::open_in_memory` 注入的会话就是这种形态）。此时该片段当静音，且响应 `data.audio.assets[].bytesPresent = false` 如实说明。读 `.yeban` 容器时索引与字节由 `store` 双向校验必然同时存在，因此这一项在真实容器工程上**不会**出现 |
-//! | `deviceChainDsp` | 设备链里**本切片没有消费**的参数（未知旋钮 / `filter_cutoff_hz` / `reverb_mix` / `reverb_width`）没有求值；增益、EQ、低通、**压缩**、Freeverb、卷积已求值（压缩自 `#303`；`#303` 之前它**一整级不执行**） |
+//! | `deviceChainDsp` | 设备链里**没有任何离线路径消费**的参数（未知旋钮 / `filter_cutoff_hz` / `reverb_mix` / `reverb_width`）没有求值；增益、EQ、低通、**压缩**、Freeverb、卷积已求值（压缩自 `#303`；`#303` 之前它**一整级不执行**）；⭐ G5：内置乐器（音源）的**引擎认下**的参数（音色 `osc1_wave`/`osc2_wave`、电平/失谐、滤波、鼓机键位与旋钮）由 `yeban-engine` 的音源投影**真的求值**（自 `#268`；判据 `every_consumed_instrument_param_reaches_the_engine_projection`），**不再**因此键登记 —— 只有音源**不认**的名字仍登记 |
 //! | `externalPlugins` | `DeviceKind::ExternalInstrument/ExternalEffect` 没有宿主 |
 //! | `automationLanes` | ⭐ `#243` / `#256` / `#257` / `#266` / `#267` / `#293` / `#297` / `#298` / `#304`：**残差桶** —— **仅**指仍有可求值点、但**这次渲染没有落点**的泳道（空泳道与 `readEnabled:false` 的泳道**不**登记）。具体是：`DeviceParam` 的名字不是插入链落点（**卷积 IR 形状** `conv_ir_decay*` / `conv_ir_seed` / 未知旋钮），或指向旁通/非对应器件族的来源设备；`TrackVolume` / `TrackPan` 落在**不可达轨**（不在保留子图）；`SendGain` 落在**被剪枝的边**；`Macro` 泳道没有落点（宏不存在 / 空 mappings / 某条 mapping 的目标本身无落点 / 目标是嵌套 `Macro`）。**已经有落点的都真的被求值、不在此列**：源节点 / 主总线 / **可达总线轨**的 `TrackVolume` 与 `TrackPan`（`#296` / `#298` 的输出级）；保留子图入边的 `SendGain`（`#256`）；`DeviceParam` 的通道条（**含压缩**）/ Freeverb / 卷积标量字段（`data.appliedDeviceParamNames` 逐条列出；`#266` / `#267` / `#293` / `#304`）；**有落点的 `Macro` 泳道按目标单位级联**（`#297`）。逐泳道的支持/应用读数见 `data.automation` |
 //! | ~~`noteSlide`~~ | ⭐ **已退役（`#311b`）**：滑音由引擎**真的求值**（`SlideSpan` 进 `NoteSchedule`，末频精确落在目标音高），因此**不再**登记 —— 报一个已经做到的键就是假话。判据见 `yeban-engine/tests/pitch_bend.rs` |
@@ -4178,10 +4178,20 @@ fn build_source(
     //    `sfz_pending()` → `arm_pending_sfz` 那条链的入口条件**同一个字段**。
     let sampler_bound = track.sampler.is_some();
     // 设备链: 通道条（增益 / EQ / 低通 / **压缩**）、Freeverb、卷积已经由
-    // `yeban-render` 消费（压缩自 `#303` 起）；只有**本切片没有消费**的参数
-    // （未知旋钮 / `filter_cutoff_hz` / `reverb_mix` / `reverb_width` / 外部器件）
-    // 仍要如实登记。
-    if track_has_unhandled_dsp(track) {
+    // `yeban-render` 消费（压缩自 `#303` 起）；音源参数（音色 `osc*_wave` /
+    // 电平 / 失谐 / 滤波 / 鼓机）由 `yeban-engine` 的音源投影消费（⭐ G5，
+    // 判据在 `yeban-engine` 的 `every_consumed_instrument_param_reaches_the_engine_projection`）；
+    // 只有**没有任何离线路径消费**的参数（未知旋钮 / `filter_cutoff_hz` /
+    // `reverb_mix` / `reverb_width` / 外部器件）仍要如实登记。
+    // ⚠ 采样器轨是例外：音源是 SFZ ⇒ **正弦/鼓机音源的参数不会被求值**，
+    // 这类轨上挂着带参数的内置乐器设备仍登记（报"已消费"就是假话）。
+    let sampler_drops_instrument_params = sampler_bound
+        && track.devices.iter().any(|device| {
+            !device.bypassed
+                && device.kind == yeban_model::DeviceKind::InternalInstrument
+                && !device.params.is_empty()
+        });
+    if track_has_unhandled_dsp(track) || sampler_drops_instrument_params {
         note_unsupported(unsupported, counts, "deviceChainDsp");
     }
     if track.devices.iter().any(|device| {
