@@ -11509,3 +11509,28 @@ $ python3 scripts/gates/check_phase_status.py   # 退出 0
     全部 `success`；`rust (workspace 全量)` 按 `plan` 矩阵 `skipped`（⛔ 不是跳过当成绿）。
   - 防假绿核对：`rust (yeban-mcp)` 日志 **85 条 `test result: ok` / 0 条 FAILED**；
     `rust (yeban-render)` 日志 **31 条 `test result: ok`**。
+
+## 2026-10-27：G2 消除：`removeTrack` 不清理路由图（悬空节点/边 → 工程不可渲染）
+
+- **需求规范 ID**: `[MCP-TOOL-006]` `[MODEL-AST-004]` `[ADR-0023]`
+- **实施工作线**: `line/remove-track-routing`（提交 `cb71931c`，合并 `83916f1b`）
+- **背景与目标**:
+  - 审计（`/tmp/yeban-issues-20261027` G2）：`yeban_edit_notes` 的 `removeTrack`
+    只从 `tracks` 摘轨，**不**动 `routing_graph` ⇒ 该轨的节点与全部边留在图里；
+    悬空边让 `YebanProjectV1::validate` 之后的渲染/回放路径拿到不一致的图。
+- **实施**:
+  - `notes.rs`：`removeTrack` 编译期展开为**同批逆操作**——先 `DisconnectRouting`
+    摘掉所有以该轨节点为端点的边，再 `RemoveRoutingNode` 取走节点；主总线节点
+    不受影响（删轨本就被 `masterBus` 拒绝的既有前置守住）。
+  - `mod.rs`：提案模拟前的批装配；`op_schema.rs` / `tools.rs`：摘要与文档同步。
+  - 判据：`tools_e2e.rs` 新增端到端（建轨→连边→删轨→图里无残留、`validate` 通过、
+    撤销逐字节回原状）。
+- **验证（红灯留痕略：本线一次绿，注入验证在 `ADR-0023` 记录）**:
+  - 线 Run `40439170504`（`cb71931c`）`success`；`rust (yeban-mcp)` / `macos` /
+    `windows` / `rust (yeban-ui-mcp)` / `checks` / `deny` / `lockfile` 全部非零耗时。
+  - 合并提交 `83916f1b` 主干 Run `40442236440`：**`conclusion: success`**
+    （`03:05:53Z → 03:32:55Z`）；作业读数（耗时非 0）：`rust (yeban-mcp)` 13m58s、
+    `windows` 21m08s、`macos` 26m46s、`rust (yeban-ui-mcp)` 2m36s、`checks` 1m22s；
+    `rust (workspace 全量)` 按 `plan` 矩阵 `skipped`（⛔ 不是跳过当成绿）。
+  - 防假绿核对：全 run 日志 **573 条 `test result:` / 0 条 FAILED**
+    （`/tmp/g2-main-testresults.txt` 读数）。
