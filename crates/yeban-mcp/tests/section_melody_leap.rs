@@ -103,6 +103,7 @@ fn try_plan(given: Given) -> Result<SectionPlan, BuildFault> {
             swing_permille: None,
             drum_backbeat: None,
             drum_style: None,
+            melody_seed: None,
         },
     )
 }

@@ -61,6 +61,7 @@ fn plan_try(
             swing_permille: None,
             drum_backbeat: None,
             drum_style: None,
+            melody_seed: None,
         },
     )
 }

@@ -41,6 +41,7 @@ fn theory(voice_subdivision: Option<u64>, include_parts: bool) -> Result<Section
             swing_permille: None,
             drum_backbeat: None,
             drum_style: None,
+            melody_seed: None,
         },
     )
 }
@@ -244,6 +245,7 @@ fn voice_subdivision_bounds_and_coupling_are_loud() {
                 swing_permille: None,
                 drum_backbeat: None,
                 drum_style: None,
+                melody_seed: None,
             },
         )
         .expect_err("`voiceSubdivision` 不得脱离 materialSource:\"theory\" 单独给");

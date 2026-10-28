@@ -750,7 +750,7 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
                 "includeMelody",
                 "boolean",
                 false,
-                "是否追加旋律声部 [ADR-0017]: 缺省 false。true = 在段落末尾追加 `\"{sectionName} · Melody\"` 音轨, 旋律由 `melody_over_chords` 在**当前段落展开的** `ChordSpan` 与流派节奏网格上生成, 音域缺省 `48..=84` (theory 的 `MELODY_LOWER_BOUND`/`MELODY_UPPER_BOUND`), 可由 `melodyLower` / `melodyUpper` 覆盖 [ADR-0038]; 跳进上界 (相邻两音的半音距离) 缺省 12 (= theory 的 `MELODY_MAX_LEAP`), 可由 `melodyMaxLeap` 覆盖 [ADR-0039], 起点/时值与网格对齐, 和弦音取 `velocityMax` (缺省 112) 其余取 `velocityMin` (缺省 96) [ADR-0037], 并直连主总线 (整图仍为 DAG)。只允许与 `materialSource:\"theory\"` 同给; 否则 ⇒ `INVALID_PARAMETER_RANGE` (带 `hint`)",
+                "是否追加旋律声部 [ADR-0017]: 缺省 false。true = 在段落末尾追加 `\"{sectionName} · Melody\"` 音轨, 旋律由 `melody_over_chords` 在**当前段落展开的** `ChordSpan` 与流派节奏网格上生成, 音域缺省 `48..=84` (theory 的 `MELODY_LOWER_BOUND`/`MELODY_UPPER_BOUND`), 可由 `melodyLower` / `melodyUpper` 覆盖 [ADR-0038]; 跳进上界 (相邻两音的半音距离) 缺省 12 (= theory 的 `MELODY_MAX_LEAP`), 可由 `melodyMaxLeap` 覆盖 [ADR-0039]; 取音种子缺省 = 由该段落的 `EntityId` 派生 (每个段落不同), 可由 `melodySeed` 覆盖 [ADR-0045], 起点/时值与网格对齐, 和弦音取 `velocityMax` (缺省 112) 其余取 `velocityMin` (缺省 96) [ADR-0037], 并直连主总线 (整图仍为 DAG)。只允许与 `materialSource:\"theory\"` 同给; 否则 ⇒ `INVALID_PARAMETER_RANGE` (带 `hint`)",
             ),
             param(
                 "drumDensity",
@@ -805,6 +805,12 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
                 "integer",
                 false,
                 "旋律**相邻两音的跳进上界** [ADR-0039]: 单位 = **半音距离** (⛔ 不是 MIDI 音高值、⛔ 不是八度号、⛔ 不是音域宽度)。取值 0..=127, 缺省 12 (= theory 的 `MELODY_MAX_LEAP`) ⇒ 逐字节维持既有输出。为什么上界是 127 而⛔ 是 12/24: 音高全域是 0..=127 ⇒ 两音的半音距离任何输入下都不可能超过 127, 因此 0..=127 是恰好的界; 大于窗口宽度的取值 = \"实际不设限\" (语义, ⛔ 错误)。`0` 合法 = 只允许同音反复 (实测: theory 把整条旋律压成单音, onset 数不变)。消费点与 `melodyLower`/`melodyUpper` **同一个** (只被 `melody_over_chords` 读取) ⇒ 同样要求与 `materialSource:\"theory\"` **且** `includeMelody:true` 同给, 否则 ⇒ `INVALID_PARAMETER_RANGE` (带 `hint`)。越界 ⇒ `INVALID_PARAMETER_RANGE` (带 `field` + `value` + `range`)。⛔ 不筛点、⛔ 不改时值 ⇒ 同一次调用的音符 id/起点/时值与不传时逐条对齐, 只有音高变; 窗口里没有满足上界的音阶音时由 `yeban-theory` 判定并原样转发 ⇒ `INVALID_PARAMETER_RANGE` (带 `theoryStep:\"melody_over_chords\"`), ⛔ 本层不抄可行性表 (与音域同一条理由)",
+            ),
+            param(
+                "melodySeed",
+                "integer",
+                false,
+                "旋律**取音种子** [ADR-0045]: 单位 = 无单位整数 (u64, 取值 0..=18446744073709551615; ⛔ 不是掷骰子的结果、⛔ 不是段落号、⛔ 不是版本号)。同一个数 + 同一组其余参数 ⇒ 同一条旋律 (确定性)。缺省不给 = 沿用 `section_seed(section_id)` 的派生值 (由该段落的 `EntityId` 算出, 因此**每个段落不同**) ⇒ 键缺席时逐字节维持既有输出, 也因此契约里⛔ 写 `default`、⛔ 写 `maximum` (界就是整数类型面本身)。消费点: **仅**旋律生成路径 (`melody_over_chords` 的第 5 实参) ⇒ 与 `melodyLower`/`melodyUpper`/`melodyMaxLeap` **同一支**耦合口径, 要求 `materialSource:\"theory\"` **且** `includeMelody:true` 同给, 否则 ⇒ `INVALID_PARAMETER_RANGE` (带 `hint`)。非整数 / 负数 / 浮点 ⇒ `INVALID_PARAMETER_RANGE` (带 `field:\"melodySeed\"`)。⚠ 换种子改的是**音高选择**与随之变化的**力度档** (和弦音判定 `chord_tone` 是音高的函数: 和弦音取 `velocityMax` 其余取 `velocityMin`) ⇒ 起点/时值与音符 id **逐条不变** (网格来自流派 `rhythm_grid`, ⛔ 读种子), 只有音高与重音分布变。⚠ 可行性同样随种子移动 (`pick_within_leap` 的可行音取决于上一音): 换个种子可能触发 `NoFeasibleVoicing` ⇒ 由 `yeban-theory` 判定并原样转发 (`theoryStep:\"melody_over_chords\"`), ⛔ 本层不判定「哪个种子好」, ⛔ 静默放宽或换种子重试。和声与鼓⛔ 受影响。",
             ),
             param(
                 "harmonyMaxVoiceJump",
