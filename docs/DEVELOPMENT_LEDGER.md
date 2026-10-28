@@ -13238,3 +13238,60 @@ MCP 侧只被写死成常量（`section_build.rs:1828` 的 `max_leap: MELODY_MAX
     ② 它断言的是**成员归属**（声部 ∈ 和弦音集），⛔ 是**覆盖性**（每个音级都被发出）——
     而且只跑 3 声部 × `ii-V-I-vi`。防线＝引行号时同时读**该行的 enclosing 边界**
     （`mod tests`／`impl`／`#[test]`）＋把"它到底断言了什么"逐字抄下来，⛔ 从"这条测试的名字"推断语义。
+
+## 2026-10-28：`G8g` 四件齐 ＋ `G8i` 线判决**真红**（`E0658`）＋ 下一张票现读（`backbeat` 有面／`max_total_movement` 是空转）
+
+**这一节在数什么**：先写指标再报数 —— ① 「一条 merge run 的全量腿真跑了多少个
+`test result:` 行、合计多少 passed、几条 FAILED」（单位＝行／个）；② 「`crates/yeban-mcp/**`
+里引用 theory 那三个总量字段的次数」（单位＝处）；③ 「`ADR-0041` 非范围条目覆盖了哪几个实参」
+（单位＝条，逐条现读）。全部用 `gh run view --log` / `grep` 现读，⛔ 凭记忆（§6 第 6 条）。
+
+### 判决读数（2026-10-28 04:56 现读）
+
+| 线 | 批次 | Run | 读数 | 结论 |
+|---|---|---|---|---|
+| `G8g` `melodyMaxLeap` | merge `c6b5f2bb` | `40630604690` | `rust (workspace 全量)` **415 个 `test result:` 行／6,752 passed／0 FAILED**，`windows`·`macos` 各 18 步 success，矩阵腿 skipped | ✅ **四件齐** |
+| `G8h` `harmonyMaxVoiceJump` | merge `a9132898` | `40633552589` | 读时**仍在飞**（全量 13 步／双平台各 17 步进行中） | ⏳ 三件齐 |
+| `G8i` `swingPermille` | 线 tip `552d20eb` | `40633738039` | **failure**：`clippy (-D warnings)` 报 `error[E0658]` ＋ `std::convert::From is not yet stable as a const trait`，`test`／`doctests` **skipped**，整轮 **0 条** `test result:` | ⛔ 真红（判据一条没跑起来） |
+| `G8i` 修复 | `b10943f9` | `40634940413` | 在飞 | ⏳ 等判决 |
+
+- 红点位置＝`crates/yeban-mcp/tests/section_drum_swing.rs:42/48`（`const STRAIGHT: u64 =
+  u64::from(SWING_PERMILLE_STRAIGHT);` 与 `const FULL: u64 = u64::from(SWING_PERMILLE_MAX);`）。
+  修法＝改 `as u64`，**照抄隔壁 CI 绿的先例** `section_harmony_jump.rs:55`
+  （`const PUBLISHED: u64 = VoicingConstraints::THREE_VOICES.max_voice_jump as u64;`）。
+- ⚠ 本机那一轮覆盖不到：脚手架只编 lib，判据文件的**类型面**是 CI-only（`§0.6.0` 那行）。
+  这条与第 8／9／16 条同族 —— 都是"仓库里已有答案，一次 grep 省一轮 CI（≈1 小时）"。
+
+### 下一张票的现读（两条**否定**结论 + 一条**肯定**结论）
+
+- ⛔ **`max_total_movement` 不开票**。命令：`grep -rn "max_total_movement\|exceeded_total_target\|total_movement" crates/yeban-mcp/`
+  ⇒ 现读 **0 处**（src／tests／verify 全无）。theory 侧只用它在 `voice_leading.rs:346` 置一个报表位
+  `exceeded_total_target`，**没有任何消费者** ⇒ 把它接成 MCP 入参＝交付一个"给了⛔ 被消费"的键，
+  直接撞 `ADR-0037` 的耦合规则。要开这票，前置仍是一张 theory 侧的票（把总量上界变成真约束，
+  或让那个 flag 真的走到报文里）。
+- ⭐ **`backbeat` 是可开的下一张（暂记 `G8k`）**，而且⛔ 不是 `ADR-0041` 的非范围 ——
+  现读那份 ADR（此刻**只在** `.worktrees/swing-permille/docs/adr/ADR-0041-generation-drum-swing-permille.md`，
+  主干上⛔ 有这文件 ⇒ 索引行必须等 `G8i` 落地，否则死链）的非范围四条：
+  `N1` 旋律 onset 网格的摇摆、`N2` 和声声部的微时值、`N3` **`grouping`（复合拍拍内分组）**、
+  `N4` 逐对／逐小节 swing 曲线。**`backbeat` 不在其中**（我先前把它与 `grouping` 混记成 `N3`，已更正）。
+  theory 侧**有面**：`crates/yeban-theory/src/drum.rs:258` `pub type Backbeat = u8;` ＋ `:266`
+  `default_backbeat(meter)`（beats≤1→1；偶数拍→`beats/2`；奇数拍→`beats/2+1`），
+  MCP 调用点 `section_build.rs:1762` 把这一档实参**写死**为 `default_backbeat(rule.meter_value())`
+  ⇒ 形状与 `G8i` 完全同类（"派生值不可覆盖"）。⚠ 开票前先定**判据形状**：它换的是"哪一拍落军鼓"，
+  ⛔ 拿 swing 那种"位移量"当证据。
+- 三张和声票不变：`harmonyVoices`／`harmonyLower`／`harmonyUpper` 全等 `ADR-0042`（人类裁 D1／D2／D3）。
+
+### 本轮新增的规则
+
+18. ⭐ **`const` 初始值里⛔ 调用 `u64::from(小整数)` —— CI 钉死的那版 stable 上 `From` 还⛔ 是 const trait**：
+    `section_drum_swing.rs:42/48` 因此吃了 `E0658` ＋ "`std::convert::From` is not yet stable as a
+    const trait"（rust issue #143874 未稳）。写法上"最正统"的 `from` 恰恰⛔ 可用，`as u64` 才行。
+    防线＝**想用的写法先在 `crates/yeban-mcp/tests/**` grep 一遍有无 CI 绿的先例**，
+    ⛔ 把"看着更规范"当成"CI 会过"。
+19. ⭐ **开一个键之前，先 grep "它的输出被谁读"**：`max_total_movement` 在 theory 里有名字、有文档、
+    还有 `exceeded_total_target` 这个出口 —— 但**全链路 0 个消费者**。"字段存在"⛔ 蕴含"接上就有效"。
+    一条命令（`grep -rn` 那三个名字）就能否掉一张会交付死键的票。
+20. ⭐ **引用"某票的非范围条目"之前要现读那张 ADR 的条目文本**：我把 `backbeat` 记成了 `ADR-0041`
+    的 `N3`，而 `N3` 写的是 `grouping`。错记的代价＝把一张**可开**的票登记成"theory 侧⛔ 该概念"，
+    方向是**反的**（会把真缺口永久登记掉）。防线＝引用票面时同时读**在飞工作树里的那份文件**
+    （`ADR-0041` 主干上还没有，只在 `.worktrees/swing-permille/docs/adr/`），⛔ 从交接文档的二手措辞推断。

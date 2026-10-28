@@ -275,6 +275,13 @@ lib 侧 `8/7` → 判据侧 `E0277` → 判据侧 `unused variable`。
     后者才是 `E0063` 的来源。一次机械插入的正解＝双向对账（多插 ∪ 少插）。
     现成工具＝`/tmp/audit_planoptions.py`（解析 `pub struct PlanOptions` 字段表，按花括号深度
     找到每个 `PlanOptions {` 字面量，报缺/多键；⚠ 要认同行的首键与 `field,` 简写两种形状）。
+25. ⭐ **`const` 初始值⛔ 用 `u64::from(小整数)` —— CI 那版 stable 上 `From` 还不是 const trait**：
+    `G8i` 判据 `section_drum_swing.rs:42/48` 写 `const STRAIGHT: u64 = u64::from(SWING_PERMILLE_STRAIGHT);`
+    ⇒ Run `40633738039` 在 `clippy (-D warnings)` 报 **`E0658` + "`std::convert::From` is not yet
+    stable as a const trait"**（issue #143874 未稳），四条腿同红、0 条 `test result:` ＝**真红但⛔ 本机量不到**
+    （脚手架只编 lib，判据文件的类型面仍是 CI-only，见 §0.6.0 那行）。正解＝**照隔壁已绿的判据写**：
+    `section_harmony_jump.rs:55` 早就用 `… as u64`。⇒ 这一条与第 16 条同族：**先把想用的写法在
+    `crates/yeban-mcp/tests/**` 里 grep 一遍有没有 CI 绿的先例**，没有先例的写法＝一轮 CI 的赌注。
 
 ### 0.6.4.1 ⭐ `G8j` 两张票的**阻塞证据**（2026-10-28 实测，完整表在台账 `## 2026-10-28：G8j 前置实测`）
 
@@ -291,7 +298,7 @@ lib 侧 `8/7` → 判据侧 `E0277` → 判据侧 `unused variable`。
   `harmonyLower/Upper` 另钉在 `ranges: &'static [VoiceRange]`（MCP 侧只能编译期备表）。
   两张票的前置是一张 **theory 侧**的票，⛔ 用本地表绕过。
 
-### 0.6.4.2 ⭐ 判决读数（2026-10-28 04:36 现读，⛔ 凭记忆）
+### 0.6.4.2 ⭐ 判决读数（2026-10-28 04:56 现读，⛔ 凭记忆）
 
 - ⭐ `G8h` **线判决**＝Run `40630969134`（tip `59db1e4e`）**success 且⛔ 空绿**：
   `rust (yeban-mcp)` **109 行 / 2,292 passed / 0 失败**，`windows` **254 行 / 4,904**，
@@ -302,8 +309,17 @@ lib 侧 `8/7` → 判据侧 `E0277` → 判据侧 `unused variable`。
   `feasibility_is_forwarded_from_theory_and_moves_with_the_progression`／
   `jump_bound_is_declared_on_both_param_surfaces`。
   ⇒ **`E0063` 那颗雷确认拆除**（`59db1e4e` 就是那次修复）。
-- ⚠ `G8g` 的**全量判决**＝merge `c6b5f2bb` 的 Run `40630604690` 读时仍在飞（`macos` 已 success／18 步）
-  ⇒ `G8g` 记**三件齐**（代码＋判据＋线判决），⛔ 写成四件齐，直到 `conclusion` 读回来。
+- ✅ `G8g` 的**全量判决**＝merge `c6b5f2bb` 的 Run `40630604690` **success 且⛔ 空绿**
+  （`rust (workspace 全量)` 真跑 **415 个 `test result:` 行 / 6,752 passed / 0 失败**，
+  `windows`／`macos` 各 18 步 success，`rust (矩阵)` 按规则 skipped）
+  ⇒ **`G8g`（`melodyMaxLeap`／`ADR-0039`）四件齐**。
+- ⏳ `G8h` 的**全量判决**＝merge `a9132898` 的 Run `40633552589` **读时仍在飞**
+  （`rust (workspace 全量)` 13 步／`windows`·`macos` 各 17 步进行中）⇒ `G8h` 仍记**三件齐**。
+- ⛔⛔ `G8i` 的**线判决**＝Run `40633738039`（tip `552d20eb`）**failure** —— 红在
+  `clippy (-D warnings)` 的 `E0658`（`section_drum_swing.rs:42/48` 的 `u64::from` 进 const），
+  `test`／`doctests` skipped、整轮 **0 条** `test result:` ⇒ 真红（判据一条都没跑起来）。
+  修复＝`b10943f9`（改 `as u64`，`ADR-0041`／纪律第 25 条），新 Run `40634940413` 在飞。
+  ⇒ 在此之前 `G8i` 的"线判决"那一件⛔ 成立，⛔ 拿 `552d20eb` 那轮当过。
 - 文档批 `e5d6747f` 的 Run `40632707610`＝success 但**空绿**（⛔ 代码判决；第 20 条的口径）。
 
 ### 0.6.5 ⭐ 下一个该做什么
@@ -344,32 +360,56 @@ lib 侧 `8/7` → 判据侧 `E0277` → 判据侧 `unused variable`。
      clippy/编译错误**已在门禁里**，⛔ 再凭记忆手敲）；② **判据的形状面**用一次性探针量
      （§0.6.4 第 15 条：把脚手架的 `rustc` 输入换成临时探针文件，`#[path]` 引真实模块，
      照抄判据的夹具与载荷断言，跑完即删）—— 本轮六条判据就是靠它对上号的。
-     ⚠ 本机仍⛔ 覆盖**判据文件的类型面**（`tests/**` 要整个 lib）⇒ `E0277`/`E0432`/`E0615`
-     那一类要逐名核对 import、调用括号与**索引键的引用层数**（§0.6.4 第 8、9、16 条）。
+     ⚠ 本机仍⛔ 覆盖**判据文件的类型面**（`tests/**` 要整个 lib）⇒ `E0277`/`E0432`/`E0615`/`E0658`
+     那一类要逐名核对 import、调用括号、**索引键的引用层数**与 **`const` 初始值能不能调函数**
+     （§0.6.4 第 8、9、16、25 条）。
    - `G8f` 的**动机半片**仍⛔ 未开工，等 §0.6.3 那条人类裁决；⛔ 为凑"缺口清零"发明 motive。
-   - ⚠⚠ **本条于 2026-10-28 第五次更新（⭐ 两条线同时在飞，接手要分别读回）**：
-     `G8g`（跳进上界 `melodyMaxLeap`，`ADR-0039`）**已开工并落在堆叠工作树**
-     `.worktrees/melody-leap`（分支 `line/melody-leap`，基线 = `c11ffa04`，即 G8f 的在飞 tip），
+   - ⚠⚠ **本条于 2026-10-28 第五次更新（历史；⚠ 树名已去掉 `.worktrees/` 前缀以免撞一致性工具，
+     当下的活看下一条第九次更新）**：
+     `G8g`（跳进上界 `melodyMaxLeap`，`ADR-0039`）**已开工并落在堆叠工作树** `melody-leap`
+     （分支 `line/melody-leap`，基线 = `c11ffa04`，即 G8f 的在飞 tip），
      提交 `10b3e135`，**尚未推送**（⛔ 在 `40621752029` 判下来之前推它，两条 run 的归属会混）。
      - 因此**接手第一件事 = 读回 Run `40621752029`**；成功后按上一条落地 `melody-range`，
-       再 `git -C .worktrees/melody-leap rebase main`（或 merge 落地后的主干）并推送，
+       再在那棵树里 `git rebase main`（或 merge 落地后的主干）并推送，
        读回 `line/melody-leap` **自己**的 run（判据文件 `tests/section_melody_leap.rs`，六条）。
      - ⛔ 在 G8f 落地前把堆叠线的代码合进主干：那条线的 diff **包含** G8f 的全部改动。
-   ⚠⚠⚠ **本条于 2026-10-28 第七次更新（⭐ 这一段才是当下的活，上面两段是历史）**：
-   `G8f` 音域半片**四件齐**（`c11ffa04` Run `40621752029` ＋ 主干 merge `6d42c637` Run
-   `40625010584` ⇒ 全量 414 / 6,746 / 0），工作树 `.worktrees/melody-range` 待 `rm`（判决已读＝
-   可拆）。堆叠线 `G8g` 的 tip 已 rebase 到 `6d42c637`（`5ed77921`）并推送，其**线 run 已读回
-   ＝ success**（全量腿真跑 415 / 6,752 / 0）。剩下的三步按序做，⛔ 跳步：
-   1. `bash scripts/dev/worktree.sh land melody-leap` ⇒ 落地 `G8g`，读回**那条 merge run**
-      （碰 `schemas/**` ⇒ 全量腿应真跑）＝ `G8g` 四件齐；⚠ land 要求主干干净，
-      本条文档批次（`docs/adr/README.md` 的索引行 + 台账）必须先提交。
-   2. 把 `.worktrees/harmony-leap`（tip `850edb17`）rebase 到落地后的主干并**推送**，
-      读回 `line/harmony-leap` **自己**的 run（判据 `tests/section_harmony_jump.rs` 六条）。
-   3. `.worktrees/swing-permille`（tip `966da02d`，⛔ 别与上一步混 run）同理：
-      等 `G8h` 落地后再 rebase＋推送＋读回（判据 `tests/section_drum_swing.rs` 六条）。
-   ⚠ 四条线是**一条堆叠链**（`6d42c637` → `5ed77921` → `850edb17` → `966da02d`），
-   所以每落地一条，下一条的哈希会变 ⇒ **一次只推进一条，且每条读回自己的 run**（§6 第 6 条）。
-   `G8f` 的**动机半片**仍⛔ 未开工，等 §0.6.3 那条人类裁决；⛔ 为凑"缺口清零"发明 motive。
+   ⚠⚠⚠ **本条于 2026-10-28 第九次更新（⭐ 这一段才是当下的活，第七、八段是历史）**：
+   `G8g`（`melodyMaxLeap`／`ADR-0039`）**四件齐**（merge `c6b5f2bb`，Run `40630604690` success，
+   全量腿**真跑** 415 个 `test result:` 行／**6,752**／0）；`G8h`（`harmonyMaxVoiceJump`／`ADR-0040`）
+   **线判决已读回 success 且⛔ 空绿**（`40630969134`：`rust (yeban-mcp)` 109 行／**2,292**／0，
+   `windows` **4,904**、`macos` **4,925**）并**已落地**（merge `a9132898`，Run `40633552589` 读时**仍在飞**
+   ⇒ 只记**三件齐**），`ADR-0040` 索引行 `31dc09b5`；`G8i`（`swingPermille`／`ADR-0041`）
+   **线判决读了、是红的**：Run `40633738039`（tip `552d20eb`）红在 `clippy (-D warnings)` 的 **`E0658`**
+   （判据文件的 `const … = u64::from(…)`，CI 那版 stable 上 `From` ⛔ 是 const trait），`test`／`doctests`
+   skipped、整轮 **0 条** `test result:` ⇒ 真红；修复＝`b10943f9`（改 `as u64`，纪律第 25 条），
+   **新 Run `40634940413` 在飞**。三棵树 `melody-range`／`melody-leap`／`harmony-leap` 已按第 31 条拆除，
+   当下只剩 `main` ＋ `.worktrees/swing-permille`。剩下的按序做，⛔ 跳步：
+   1. 读回两条在飞判决：`40633552589`（`G8h` 全量）与 `40634940413`（`G8i` 线，tip `b10943f9`）。
+      三次 merge 都碰 `schemas/**` ⇒ `plan` 给 `workspace_wide: true`，全量腿**应当真跑**
+      （⛔ 把 skipped 当判决，§0.6.4 第 2 条）。⚠ `G8i` 那一轮的红⛔ 记在旧 tip `552d20eb` 上，
+      ⛔ 拿它当"这条线判过了"。
+   2. `G8i` 线判决 success ⇒ `bash scripts/dev/worktree.sh land swing-permille` ＋ 读回**它的 merge run**；
+      然后**同批**补 `docs/adr/README.md` 的 **`ADR-0041` ＋ `ADR-0042`** 两行 —— ⛔ 分开写会留下
+      0040→0042 的**断号**，⛔ 在 `G8i` 落地前给 0041 写索引行（那文件本体此刻**只在**
+      `.worktrees/swing-permille/docs/adr/ADR-0041-generation-drum-swing-permille.md`，主干上还是死链）。
+      ⚠ `ADR-0042` 文件本体已在主干 `be3bf9c6`，状态 **Proposed**，等人类裁 D1／D2／D3。
+   3. 之后的创作缺口候选⛔ 凭记忆列，本轮已逐条现读：
+      - `harmonyVoices`／`harmonyLower`／`harmonyUpper` 三张票全等 `ADR-0042`（实测见 §0.6.4.1）；
+      - 动机那半片等 §0.6.3 的人类裁决；
+      - `max_total_movement`（theory 已有字段）⇒ **⛔ 不开票**：`grep -rn "max_total_movement|
+        exceeded_total_target|total_movement" crates/yeban-mcp/` 现读 **0 处引用**，theory 只用它
+        在 `voice_leading.rs:346` 置一个⛔ 没人读的报表位 ⇒ 接线＝违反 `ADR-0037` 的耦合规则
+        「给了必须被消费」。要开先得有一张 theory 侧的票（把总量上界变成真约束或真读数）。
+      - `backbeat` ⇒ ⭐ **可开的下一张票**（`G8k`），且⛔ 不是 `ADR-0041` 的非范围：现读 `N3` 只覆盖
+        `grouping`（`Option<BeatGrouping>`，MCP 两处写死 `None`），`backbeat` 在 theory 侧**有面**：
+        `crates/yeban-theory/src/drum.rs:258`（`pub type Backbeat = u8`）＋ `:266`（`default_backbeat(meter)`），
+        MCP 调用点 `section_build.rs:1754-1762` 把第三档实参写死成 `default_backbeat(rule.meter_value())`
+        ⇒ 与 `G8i` 同形（"流派/派生值不可覆盖"）。⚠ 开票前要先量清**判据形状**：它换的是"哪一拍落军鼓"，
+        ⛔ 拿位移当证据。
+      ⛔ 为凑"缺口清零"发明 motive，也⛔ 在 MCP 侧补一张本地表绕过覆盖性。
+   ⚠ 那条四元堆叠链（`6d42c637` → `5ed77921` → `850edb17` → `966da02d`）已随三次落地**解体**：
+   每落地一条，下一条就 rebase 到当时主干（`G8i` 的新基线＝`31dc09b5`、当前 tip＝`b10943f9`）
+   ⇒ 仍是一次只推进一条、每条读回**自己**的 run（§6 第 6 条）。
 3. ✅ **在飞的线已全部落地**：`line/reason-propagation`（§0.5.8 第 11 项队列的最后一格）
    已合进主干（`c2dd2b89` 主体 + `007e3ff9` 修 CI 报的两个编译错，merge `e18be129`，
    run `40588472044`）。它把 `EXEMPT_DYNAMIC_REASON_SITES` 从 **4 行压到 3 行**：
@@ -1167,23 +1207,18 @@ python3 scripts/guards/policy_check.py && bash scripts/gates/run-gates.sh light
 | 路径 | 分支 | 处置 |
 | :--- | :--- | :--- |
 | `/home/crow/work/qoder/yeban` | `main` | 主树（⭐ 集成者工作区，⛔ 不在这里写线代码）|
-| `/home/crow/work/qoder/yeban/.worktrees/melody-range` | `line/melody-range` | ⭐ **已落地，待拆树**（`G8f` 音域半片＝旋律音高窗口，`ADR-0038`）：tip `c11ffa04`（四批：`5a176d4c` 真红于 lib 侧 `clippy::too_many_arguments` → `d654a854`
-真红于判据侧 `E0277` → `36390614` 真红于判据侧 `unused variable` → `c11ffa04` **success**），
-线 Run `40621752029` ＋ 主干 merge `6d42c637` Run `40625010584`（全量 414 / 6,746 / 0）**两条判决都已读回**
-⇒ 四件齐，下一步 `bash scripts/dev/worktree.sh rm melody-range`（只删目录、保留分支）|
-| `/home/crow/work/qoder/yeban/.worktrees/melody-leap` | `line/melody-leap` | ⭐ **待落地**（`G8g` 跳进上界 `melodyMaxLeap`，`ADR-0039`）：基线 `6d42c637`（已 rebase 到落地后的主干），tip `5ed77921` **已推送**，线 Run `40625166116` **success 且⛔ 空绿**（全量腿真跑 ⇒ 415 / 6,752 / 0，六条判据逐名 `... ok`）⇒ 只差 `land` ＋ 读回 merge run。本机证据：`clippy-driver` rc=0 ＋ `verify/section_pure.rs` 48 passed ＋ 形状探针（onset 恒 64、实测最大跳进 = 入参 12/5/2/0）；判据文件 `crates/yeban-mcp/tests/section_melody_leap.rs`（六条）|
-| `/home/crow/work/qoder/yeban/.worktrees/harmony-leap` | `line/harmony-leap` | ⭐ **在飞、未推送**（`G8h` 和声跳进上界 `harmonyMaxVoiceJump`，`ADR-0040`＝`ADR-0039` 非范围 `N1` 的兑现票）：基线 `5ed77921`，tip `850edb17`（`0d22ba04` 主体 + `850edb17` 撤掉机械插入落进 `Given` 字面量的字段 ⇒ §0.6.4 第 21 条）。缺省逐字节 ＝ theory 的 `VoicingConstraints::{THREE,FOUR}_VOICES.max_voice_jump`（现读同数），越界 `[0,127]` 才在参数层拒、无解由 theory 转发。本机证据：`clippy-changed.sh` rc=0 ＋ `run-gates.sh light` 门禁通过；判据 `crates/yeban-mcp/tests/section_harmony_jump.rs`（六条，类型面只能靠 CI）⇒ ⛔ 判决（⛔ 在 `G8g` 落地前推）|
-| `/home/crow/work/qoder/yeban/.worktrees/swing-permille` | `line/swing-permille` | ⭐ **在飞、未推送**（`G8i` 鼓摇摆比例 `swingPermille`，`ADR-0041`＝鼓线上最后一处"流派登记值不可覆盖"）：基线 `0d22ba04`，tip `966da02d`。界 `500..=1000` 复用 theory 的 `SWING_PERMILLE_STRAIGHT`/`SWING_PERMILLE_MAX`；⭐ 契约里**⛔ `default`** —— 现读 `GENRES` 182 条里 148 条不登记（走平直）、34 条登记 540..=660 ⇒ 缺省不是一个数字（D1）。耦合比旋律三键**更严**：要 `materialSource:"theory"` **且** `includeDrums`。本机证据：`clippy-changed.sh` rc=0 ＋ light 门禁通过 ＋ 位移单调探针；判据 `crates/yeban-mcp/tests/section_drum_swing.rs`（六条）⇒ ⛔ 判决 |
+| `/home/crow/work/qoder/yeban/.worktrees/swing-permille` | `line/swing-permille` | ⭐ **在飞**（`G8i` 鼓摇摆比例 `swingPermille`，`ADR-0041`＝鼓线上最后一处"流派登记值不可覆盖"）：基线 `31dc09b5`（⭐ 已 rebase，旧 tip `966da02d` ⇒ 新 tip `4c3d20c4`+`552d20eb`），**已推送**，线 Run `40633738039` ⇒ ⛔ 判决。界 `500..=1000` 复用 theory 的 `SWING_PERMILLE_STRAIGHT`/`SWING_PERMILLE_MAX`；⭐ 契约里**⛔ `default`** —— 现读 `GENRES` 182 条里 148 条不登记（走平直）、34 条登记 540..=660 ⇒ 缺省不是一个数字（D1）。耦合比旋律三键**更严**：要 `materialSource:"theory"` **且** `includeDrums`。本机证据：`clippy-changed.sh` rc=0 ＋ light 门禁通过 ＋ 位移单调探针 ＋ **`audit_struct_literals.py`：15 字段／30 处字面量／缺陷 0**；判据 `crates/yeban-mcp/tests/section_drum_swing.rs`（六条实名见 §0.6.4.2）|
 
-> ⭐ **2026-10-28 现读 `git worktree list` ＝ 上面五行**（主树 + `melody-range` + `melody-leap` + `harmony-leap` + `swing-permille`）：`line/reason-propagation` 已落地
-> （`c2dd2b89` + `007e3ff9`，merge `e18be129`，run `40588472044` success）⇒ 工作树已按第 31 条拆除
-> （`worktree.sh rm` **只删目录、保留分支**，未合并的工作不会静默消失）。
-> ⭐ **同一句于 2026-10-28 第二次生效**：`line/section-velocity-range`（`G8e` 力度轴）已落地
-> （merge `cfaf79cd`，run `40606247815` success ＝⛔ 空绿，读数见 §0.6.2）⇒ 该树已
-> `worktree.sh rm section-velocity-range`，分支 `line/section-velocity-range` 保留。
-> 曾经列在这里的四条持久线（`line/mod-app`／`line/mod-mcp`／`line/mod-model`／`line/mod-engine`）
-> 与网站线那棵**都已拆除** —— ⭐ 本表只按 `git worktree list` 现读填写，⛔ 凭记忆补行
-> （交接一致性检查就是为这类陈旧写的）。
+> ⭐ **2026-10-28 04:40 现读 `git worktree list` ＝ 上面两行**。同批按第 31 条拆除三棵树（`worktree.sh rm`
+> **只删目录、保留分支**）：`melody-range`（`G8f` 音域半片，merge `6d42c637`）、
+> `melody-leap`（`G8g` `melodyMaxLeap`，merge `c6b5f2bb`）、`harmony-leap`（`G8h`
+> `harmonyMaxVoiceJump`，merge `a9132898`）—— 三者的线判决读数在 §0.6.2／§0.6.4.2。
+> 更早拆除的：`line/reason-propagation`（merge `e18be129`，run `40588472044` success）、
+> `line/section-velocity-range`（`G8e` 力度轴，merge `cfaf79cd`，run `40606247815`＝⛔ 空绿口径见 §0.6.2）、
+> 四条持久线（`line/mod-app`／`line/mod-mcp`／`line/mod-model`／`line/mod-engine`）与网站线那棵。
+> ⭐ **本表只按 `git worktree list` 现读填写，⛔ 凭记忆补行** —— 本表曾在 04:40 落后于实际
+> （列着五行、实存两行），是交接一致性检查（`scripts/tools/check_handover_consistency.py`，
+> ⛔ 不进 CI、由集成者跑）报出来的第 1 项。
 
 ⚠ **worktree 的上游被普遍配成 `refs/heads/main`** ⇒ 裸 `git push` **默认会改主干** ⇒ ⭐ **一律写显式 refspec**（`command git push origin HEAD:main` 或 `origin <branch>:refs/heads/<branch>`）、**⛔ 永不用 `git push -u`**。
 ⚠ 删除前必验三条：`dirty=0` ＋ `unpushed=0` ＋ 已并入 `origin/main`。
