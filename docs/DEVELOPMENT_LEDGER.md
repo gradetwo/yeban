@@ -14422,3 +14422,37 @@ D3 完整句法（须先有登记数据来源，不建议现在启动）。**⛔
   这两处**只有一次构造**、预览与响应读同一份产物 ⇒ 不存在该类缺陷。
 
 结论：`record_wav`／`render_master` 无需改动；⛔ 再为此加判据（同源字段的相等判据恒真）。
+
+## 2026-10-29 早（幂等缓存键作用域）：缺陷修复判决 `0861966d` / run `40782675318` ＝ success
+
+**缺陷**（本会话实测，非猜测）：`evaluate_tool_call` 原来直接拿调用方给的 `idempotencyKey`
+查全局 `BTreeMap` ⇒ **两个不同工具**用同一个键时，第二个工具命中第一条缓存：
+⛔ 走不到 `domain::execute`（副作用静默不发生），却收到第一个工具的结果（`replayed: true`）。
+比"什么都不做"更坏 —— 调用方看到的是成功。
+
+**修复**（`0861966d`）：缓存键改为 `<工具名>:<idempotencyKey>`（`scoped_idempotency_key`），
+查/写共用；工具名来自 25 个固定注册名 ⇒ 分隔无歧义，同工具同键的重放语义不变。
+契约同步：`tools.rs` 的 `COMMON_PARAMS` 与 `schemas/mcp-tools.schema.json` 的 `idempotencyKey`
+描述都写明作用域（碰 `schemas/**` ⇒ 本批按矩阵规则走 **workspace 全量**腿）。
+
+**判据**：`dispatch::tests::idempotency_keys_are_scoped_per_tool`（跨工具同键不互命中、
+缓存两条、同工具再调才 `replayed`）。既有两条键断言同步改为带前缀。
+
+**判决（读回 `40782675318`，`headSha` ＝ `0861966d`）**：
+
+| 作业 | 结论 | steps | 耗时 |
+| :--- | :--- | ---: | ---: |
+| plan／checks／deny／lockfile | success | 5／15／6／6 | 10／95／48／18 s |
+| macos | success | 18 | 1,587 s |
+| windows | success | 18 | 2,248 s |
+| rust (workspace 全量) | success | **14** | **2,587 s** |
+| rust (${{ matrix.crate }}) | skipped | 0 | 0 s |
+
+全量腿读数（单位都点明）：`test result:` 行 **424**（其中非 `ok.` **0**）、`passed` 求和 **6,800**、
+`FAILED` 字样 **0**；含 `Running` 字样的行 **402**。macos／windows 腿各自 `passed` 4,967／4,946、
+`test result:` 262 行，均为 0 失败。新判据**逐名**出现且为 ` ... ok`：macOS 日志行 8612、
+Windows 行 19722、全量腿行 35195 ⇒ **三腿都真跑了**（⛔ 只闻整体 success 就记绿）。
+
+⚠ 计数口径留痕：`grep -c 'Running'` 得 402（含 `Running kernel` 等杂行），而 `test result:` 是 424、
+`running N tests` 是 293 —— 三者不相等，原因是日志行分块合并会把部分 `Running`/`running` 前缀
+并到上一行。**只有 `test result:` 与 `passed` 求和是逐二进制完整的**，故判据证据以它为准。

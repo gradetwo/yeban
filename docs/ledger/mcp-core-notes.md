@@ -126,6 +126,21 @@ CI 默认档位不传 `--all-features`（见 `.github/workflows/ci.yml` 的 `rus
   老客户端莫名其妙命中同一条缓存。因此空串 = 未提供，**且这条选择有判据与文档**
   （`empty_idempotency_key_is_treated_as_absent`）。
 
+### M7b —— 幂等缓存的键**带工具名作用域**（2026-10-29 实测缺陷修复）
+
+缓存键是 `<工具名>:<idempotencyKey>`，⛔ 不是调用方给的裸键。
+
+- **缺陷（实测）**：修复前 `evaluate_tool_call` 用 `call.idempotency_key()` 直接查
+  `BTreeMap<String, CachedOutcome>`。两个**不同**工具用同一个键 ⇒ 第二个工具**走不到**
+  `domain::execute`（副作用不发生），却收到第一个工具的结果（只多一层 `replayed: true`）。
+  这正是 R142 的"静默永不生效"，而且比"什么都不做"更坏：调用方看到的是**成功**。
+- **修复**：`scoped_idempotency_key(call)` 产出 `<工具名>:<key>`；查/写共用它。
+  工具名来自 25 个固定注册名 ⇒ `:` 分隔无歧义；同工具同键的重放语义**逐字节不变**。
+- **判据**：`idempotency_keys_are_scoped_per_tool`（两个只读工具共用 `shared` 键：
+  第二条不得带 `replayed`、缓存两条、同工具再调才命中）；既有两条用例的键断言同步改成带前缀。
+- **契约文档**：`schemas/mcp-tools.schema.json` 的 `idempotencyKey` 描述与 `tools.rs`
+  的 `COMMON_PARAMS` 文案都补上"作用域 = 工具名 + 键"。
+
 ### M8 —— 幂等重放用**当前** `id` 重新组装响应
 
 缓存里存的是"不带 `id` 的响应载荷"。重放时用当前请求的 `id` 组装，

@@ -95,6 +95,32 @@
 
 ⇒ 当前**自主可做 = 零**（新键不出现的话）；人类入口见 §0.6.3 ＋ `ADR-0042`／`ADR-0047`。
 
+### 0.6.0g 幂等缓存键**跨工具互撞**已修（2026-10-29 早，一提交一判决，⛔ 重做）
+
+**这不是新键审计，是"键的语义"审计**：`idempotencyKey` 早就在登记表里，但它的**作用域**从没被追问过。
+
+- **缺陷（实测，非猜测）**：原实现直接拿调用方给的键查全局 `BTreeMap` ⇒ 两个**不同工具**用同一个键时，
+  第二个工具**命中第一条缓存**：走不到 `domain::execute`（副作用静默不发生），却收到第一个工具的结果
+  （`replayed: true`）—— 调用方看到的是**成功**。比"什么都不做"更坏（R142 的升级形态）。
+- **修复**（`0861966d`）：缓存键 ＝ `<工具名>:<idempotencyKey>`（`scoped_idempotency_key`，查/写共用）；
+  25 个注册名固定 ⇒ 分隔无歧义；同工具同键的重放语义**逐字节不变**。
+  契约同步：`tools.rs` 的 `COMMON_PARAMS` ＋ `schemas/mcp-tools.schema.json` 的描述都写明作用域
+  （碰 `schemas/**` ⇒ 按矩阵规则本批走 **workspace 全量**腿）。
+- **判据**：`dispatch::tests::idempotency_keys_are_scoped_per_tool`；既有两条键断言改为带前缀。
+- **判决（`40782675318`，`headSha` ＝ `0861966d`，读回 success）**：全量腿 **14 steps／2,587 s**，
+  `test result:` **424** 行（非 `ok.` **0**）、`passed` 求和 **6,800**、`FAILED` 字样 **0**；
+  `macos` 18 steps／1,587 s（passed 4,967）、`windows` 18 steps／2,248 s（passed 4,946）；
+  `matrix` skipped（stems 规则）。新判据在**三腿**各 ` ... ok`（macOS 行 8612／Windows 行 19722／全量行 35195）。
+- ⚠ **计数口径留痕**：日志会把部分 `Running` 前缀并到上一行 ⇒ `grep -c 'Running'`（402）≠
+  `test result:` 行数（424）≠ `running N tests`（293）。**只有 `test result:` 与 `passed` 求和逐二进制完整**，
+  判据证据以它为准；⛔ 用 `Running` 行数当"跑了几个二进制"。
+
+⇒ §0.6.0d 的"自主可做 ≠ 零"再次兑现：**新方法论的一支是"追问既有键/字段的语义作用域"**，不只"追新键"。
+⚠ 下一会话若沿此方向查，先读现读的 `Dispatcher` 字段（`dispatch.rs:137-145`）：**跨调用的可变状态只有**
+`idempotency`（本批已修）与两个计数器 `handled`／`replayed`，其余全在 `domain` 里 ⇒ 候选面就是
+`Domain` 的会话字段**有没有按工具身份区分**；⛔ 别去编不存在的键（本段初稿就曾把
+`yeban_list_proposals` 误写成"有游标"，实际登记表无此键 —— 再次证明"先 grep 交付，再下结论"）。
+
 ### 0.6.0 ⚠ 环境已经换了（第一条就要说）
 
 | 项 | 值（现读 2026-10-28） |
