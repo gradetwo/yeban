@@ -14160,6 +14160,12 @@ macOS 侧读数：`test result:` **262** 行／passed **4,960**／`FAILED` **0**
   预览与真做的 `path` 不同。与刚修的 `sampleHz` **同一类**（预览/真做漂移），但本批
   ⛔ 顺手改（那会再动 `plan` 的身份分支与判据，需新一轮判决）⇒ 登记待下一单。
 
+> **修订（2026-10-28 晚，第二批 `fc610604`）**：本条描述的那条**支**（`dryRun` 预览的
+> `path` 取本次请求路径）已修 —— `plan_load_sfz` 复用分支改为克隆登记记录，预览的
+> `path`／`sampleHz`／样本读数与真做同源；见下节"复用登记项的预览分叉修复"。本条
+> **仍成立的部分**：登记项不被覆盖、首次登记路径仍是真相；"同内容不同路径该复用还是更新"
+> 仍需产品裁决（本批未碰）。原文保留（规则 278）。
+
 ## 2026-10-28 晚：扩展工具**输入侧**审计收盘（除 sfz 外九条全清）—— 0 新缺陷
 
 据上一节（sfz 三键）的教训——**"键被读了"≠"键被用了"**（`velocity` 曾是"解析＋回显、
@@ -14233,5 +14239,14 @@ macOS 侧读数：`test result:` **262** 行／passed **4,960**／`FAILED` **0**
 
 ### 判决
 
-（待读回 `fc610604` 的 run；本批碰 `schemas/**` ⇒ 矩阵判定 `workspace_wide: true` ⇒
-全量腿**必真跑**。）
+`fc610604` 的自动档 run **`40766412375` ＝ success（全量腿真跑，⛔ 空绿）**：
+本批碰 `schemas/**` ⇒ `rust (workspace 全量)` **steps=14**、20:47:54→21:25:09（≈2,235 s）；
+`macos` steps=18、`windows` steps=18（均非 0 s）；`rust (矩阵)` skipped（矩阵规则）。
+全量日志读数：`Running` **402**（带 ANSI 转义 ⇒ 按 `Running` 前缀计）、`test result:` **424**
+（全部 `ok`）、passed **6,799**、**FAILED 0**；`tests/sfz_tools.rs` 该二进制 `running 11 tests`
+且四条 sfz 判据（`sampleHz`／`velocity`／`sampleRate`+`toneHz`／本次 a'''''）逐名 `... ok`，
+其中 `a_reused_instrument_previews_exactly_what_the_real_call_reports` 在日志里出现 **1** 次
+（矩阵腿 skipped ⇒ 不存在"两轮"重复，⛔ 把它当多跑了判据）。
+
+⇒ 本批**三件齐**：代码（`fc610604`）＋判据（a'''''，逐键 18 个）＋全量判决（`40766412375`）。
+文档提交 `b17fcb23` 自己的 run 在下一节读回。
