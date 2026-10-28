@@ -13251,9 +13251,9 @@ MCP 侧只被写死成常量（`section_build.rs:1828` 的 `max_leap: MELODY_MAX
 | 线 | 批次 | Run | 读数 | 结论 |
 |---|---|---|---|---|
 | `G8g` `melodyMaxLeap` | merge `c6b5f2bb` | `40630604690` | `rust (workspace 全量)` **415 个 `test result:` 行／6,752 passed／0 FAILED**，`windows`·`macos` 各 18 步 success，矩阵腿 skipped | ✅ **四件齐** |
-| `G8h` `harmonyMaxVoiceJump` | merge `a9132898` | `40633552589` | 读时**仍在飞**（全量 13 步／双平台各 17 步进行中） | ⏳ 三件齐 |
-| `G8i` `swingPermille` | 线 tip `552d20eb` | `40633738039` | **failure**：`clippy (-D warnings)` 报 `error[E0658]` ＋ `std::convert::From is not yet stable as a const trait`，`test`／`doctests` **skipped**，整轮 **0 条** `test result:` | ⛔ 真红（判据一条没跑起来） |
-| `G8i` 修复 | `b10943f9` | `40634940413` | 在飞 | ⏳ 等判决 |
+| `G8h` `harmonyMaxVoiceJump` | merge `a9132898` | `40633552589` | ⭐ **2026-10-28 06:44 读回 ⇒ success**（本表上一版写"仍在飞"已过期）：整体 `completed/success`，承判腿 `rust (workspace 全量)` **真跑** `04:39:47 → 05:23:05`（43 分 18 秒），日志 **`test result: ok` 行 416 条 / passed 合计 6,758 / `FAILED` 0 条**；本票判据在该腿逐名 `... ok`（`absent_jump_is_byte_identical_to_the_published_bound`／`a_tight_jump_moves_only_the_harmony_pitches`／`a_step_target_is_smoothed_rather_than_jumped`／`jump_bound_is_declared_on_both_param_surfaces`）；`windows`（→05:17:59）／`macos`（→05:05:23）同批 success，矩阵腿 skipped | ✅ **四件齐**（⚠ 上一版记的"三件齐"作废） |
+| `G8i` `swingPermille` | 线 tip `552d20eb` | `40633738039` | **failure**：`clippy (-D warnings)` 报 `error[E0658]` ＋ `std::convert::From is not yet stable as a const trait`，`test`／`doctests` **skipped**，整轮 **0 条** `test result:` | ⛔ 真红（判据一条没跑起来）—— 后续修复见本节下方 §0.6.5 的判决表（`40634940413` ⇒ success ＋ merge `37bb0cc4` 的 `40638861581` ⇒ success ⇒ `G8i` **四件齐**） |
+| `G8i` 修复 | `b10943f9` | `40634940413` | 已读回 ⇒ **success**（四条腿真跑、全量 skipped ⇒ 线判决），详见 §0.6.5 | ✅ 线判决 |
 
 - 红点位置＝`crates/yeban-mcp/tests/section_drum_swing.rs:42/48`（`const STRAIGHT: u64 =
   u64::from(SWING_PERMILLE_STRAIGHT);` 与 `const FULL: u64 = u64::from(SWING_PERMILLE_MAX);`）。
@@ -13337,3 +13337,38 @@ MCP 侧只被写死成常量（`section_build.rs:1828` 的 `max_leap: MELODY_MAX
     **两张**票、`13272` 行把 backbeat 暂记为 `G8k`。代价＝判据文件头与**两个已推送的提交信息**
     里的号是错的，而⛔ 为此 force-push 一条正在跑 CI 的线（只能追加一条更正提交，多花一轮 run）。
     防线＝开票前先跑 `grep -n "G8[a-z]" docs/DEVELOPMENT_LEDGER.md docs/ledger/handover-latest.md`。
+
+---
+
+## 2026-10-28 06:47：`G8` 缺口**余额表**（五轴逐一现读 ＋ 每条带实测障碍）
+
+**这一节在数什么**：单位 = **轴**（`GAPS.md:139` 那条缺口原文逐字枚举的五个控制轴）与
+**票**（每张未开的 MCP 创作票）。口径：先 `grep` 交付面，再下结论（AGENTS.md §6 第 3 条）。
+
+| 轴（缺口原文逐字） | 状态 | 交付它的票（⛔ 记"顺带做了"） |
+|---|---|---|
+| 鼓密度 | ✅ 闭合 | `G8a`／`ADR-0028`（`drumDensity`） |
+| 力度 | ✅ 闭合 | `G8e`／`ADR-0037`（`velocityLadder` 两档；`THEORY_VELOCITY`/`ACCENT_VELOCITY` 两处常量已不再是唯一来源） |
+| 声部节奏 | ✅ 闭合 | `G8b`／`ADR-0033` ＋ `G8c`／`ADR-0035`（`voiceSubdivision(s)`）＋ `G8d`／`ADR-0036`（`onsetsPerBar`） |
+| 旋律动机 | ⛔ **未交付，且⛔ 不可自主开** | 卡在 `§0.6.3` 的人类裁决（"动机"到底是 theory 侧的重复/模进结构，还是 MCP 侧的键）；未裁 ⇒ 开工会撞 `ADR-0037` 的耦合规则与"⛔ 发明语义" |
+| 音域 | ✅ 闭合 | `G8a`（和声）＋ `G8f`／`ADR-0038`（`melodyLower`/`melodyUpper`）；续片 `G8g`／`ADR-0039`（`melodyMaxLeap`） |
+
+**五轴之外的鼓线三键**（本轮新增，属"派生值不可覆盖"同族）：`G8i`／`ADR-0041`（`swingPermille`）**四件齐 ✅**、
+`G8k`／`ADR-0043`（`drumBackbeat`）线判决 ✅ ＋ merge 在飞、`G8l`／`ADR-0044`（`drumStyle`）第三批在飞。
+
+### 剩余可开／不可开的票（逐条给"实测障碍"，⛔ 列名字）
+
+1. ⭐ **`melodySeed`（候选 `G8m`）＝ 唯一可自主开的下一张**。现读覆盖点：
+   `crates/yeban-mcp/src/domain/section_build.rs` 的 `melody_contents` 把
+   `melody_over_chords(..., section_seed(section_id))` 的第 **5** 实参**写死为派生种子**
+   （`ADR-0017` D3：同 `section_id` ⇒ 同一条旋律）⇒ 形状与鼓线三键完全同类。
+   ⚠ 320 组预备读数是**代理测量**（`spans` 取自 `GenreRule::sketch` 而 MCP 路径的 spans 来自调用方的 `progression`）
+   ⇒ 开票前必须在 `plan_with_options` 上重量，或直接让判据在 CI 里做这次测量。
+   ⛔ 在契约里写 `maximum`（u64 无自然上界，同 `progression` 的 P3 豁免）；⛔ 在契约里写 `default`（缺省必须继续走 `section_seed(section_id)` 那条派生 ⇒ 逐字节兼容，`ADR-0016`）。
+2. ⛔ **`harmonyVoices`／`harmonyLower`／`harmonyUpper` 三张全等 `ADR-0042`**（Proposed，⛔ 集成者代签）：
+   实测障碍 = `voice_leading::realize` **不保证和弦每个构成音都被发出**，三条路线（强制覆盖／放宽／只报不判）方向相反，
+   选哪条是人类裁决（`§0.6.3` 同一条理由，见 `G8j` 那一节）。
+3. ⛔ **`max_total_movement` 永不开票**（除非先有 theory 侧的票）：`grep -rn "max_total_movement\|exceeded_total_target\|total_movement" crates/yeban-mcp/`
+   ⇒ **0 处**消费；theory 侧只在 `voice_leading.rs:346` 置一个报表位，**没有任何消费者**（规则第 19 条）。
+4. ⛔ **`ADR-0041` 的非范围四条（`N1` 旋律 onset 网格的摇摆／`N2` 和声声部微时值／`N3` 复合拍拍内 `grouping`／`N4` 逐对逐小节 swing 曲线）⛔ 是 MCP 侧的票** ——
+   它们的量在 theory 侧不存在，开这些票的前置是 theory 票（`grouping` 与 `swing 曲线` 尤其如此）。

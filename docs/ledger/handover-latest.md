@@ -1561,3 +1561,18 @@ python3 scripts/guards/policy_check.py && bash scripts/gates/run-gates.sh light
 | 7 ⛔ 自主可做的下一批 = 零 | 其余创作缺口全卡人类裁决：**`ADR-0042`**（音级覆盖性；卡 `harmonyVoices`／`harmonyLower`／`harmonyUpper`）与**旋律动机半片**（§0.6.3）。⛔ 硬造工作凑轮次 |
 | 8 取判决的工具口径 | `gh` 本轮持续 `net/http: TLS handshake timeout` ⇒ 用 `curl -s -H "Authorization: Bearer $(gh auth token)" https://api.github.com/repos/gradetwo/yeban/actions/runs/<id>`（仓库名现读 `gh repo view --json nameWithOwner`，⛔ 猜）＋ `/jobs?per_page=100`；作业字段键是 `id/name/status/conclusion/started_at/completed_at/steps[]`，⛔ `databaseId`/`start_time`；日志用 `/actions/jobs/<job-id>/logs`（`curl -sL`，本轮 1.5 MB）。⚠ **`head_sha` 过滤要传全 40 位**，传短 sha 返回空列表 |
 | 9 磁盘 | `df` 口径未变：**92% / 可用 19G**；仓库侧 `trim-target.sh` 释放 **0 MB**（3096 MB 全是 `.rlib/.rmeta`）⇒ 大头要人类裁决（挂账 #34）|
+
+### ⭐ 磁盘：仓库**外**大头的现读清单（2026-10-28 06:38，`du -sh` 实测，⛔ 一个字节都没删）
+
+`df /home` = **235G 总 / 已用 210G / 可用 19G（92%）**。仓库侧已到地板（`trim-target.sh` 释放 0 MB），
+以下全是**别的项目的树与系统缓存** ⇒ 按 §5 第 6 条与"删除属高风险动作"，**要人类逐项裁决**，接手者⛔ 自行清理：
+
+| 路径 | 大小 | 现读性质（⛔ 推断，⛔ 当成"可删"） |
+|------|------|--------------------------------|
+| `/home/crow/work/qoder/wt/mcp-note-timing/target` | **5.8G** | ⚠ 该目录 `git rev-parse` 报**非 git 目录** ⇒ 不在 `git worktree list` 里（本仓库现读只有主树＋`.worktrees/drum-style` 两行）。它是**孤儿树**还是被摘掉 `.git` 的工作树，未证 ⇒ 需人类确认后才谈得上删 |
+| `/home/crow/work/qoder/wt/engine-{c2970a6b,c8ee3e73,cf307914}/target` | 887M×3 ＋ `engine/target` 243M | 属**另一个项目 `yanshi`**（`remote.origin.url = github.com/gradetwo/yanshi`，detached HEAD）⇒ ⛔ 本工作线无权动 |
+| `/var/tmp/cand` | **6.2G** | 用途未证 |
+| `/var/tmp/groove-mirror-*`（`virtuosity-drums` 2.6G／`black-and-blue-basses` 2.0G／`vsco2ce` 1.4G＋1.1G／`sonatina-brass` 280M／`freepats` 261M…） | 合计约 **6.7G** | 采样镜像（`#274` 的 `groove-mirror` 系列），⚠ 可能仍是素材供体 |
+| `/var/tmp/arch` | 747M | 用途未证 |
+| `~/.cache` | **19G** | `paru` 8.4G（AUR 构建缓存）／`uv` 3.6G／`ms-playwright` 1.6G／`zig` 1.5G／`camoufox` 1.4G／`pnpm` 1.1G —— 全⛔ 属本项目 |
+| `/home/crow/work/qoder/dist` ＋ `/home/crow/work/qoder/out` | 5.8G ＋ 3.9G | `out/` 里是 `build_*.log` 与 `build_zip_10{AU,AV}.log` 这类**构建日志与产物**（对拍轮次的输出），删前需人类确认对账是否还要引用 |
