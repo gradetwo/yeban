@@ -14067,3 +14067,85 @@ macOS 侧读数：`test result:` **262** 行／passed **4,960**／`FAILED` **0**
   在**单次运行**里能抓到的那一面。跨平台那条由同一份判据在 `macos`／`windows` 两条腿上各自跑（名字逐名可见）。
 - ⛔ **不能证明**它今天红得起来：本机无法变异注入（重依赖 ⇒ AGENTS §5）；敏感性是论证
   （任一非常量进入 → `SectionPlan` 的字段值或 id 漂移 → `==` 红）。
+
+## 2026-10-28：`yeban_load_sfz` / `yeban_render_sfz_wav` 输入侧三键判据（含 `velocity` 空操作修复）—— 判决链
+
+### 起因：规则 32 的**假阳性一侧**（先测后改）
+
+扩展工具的参数面（15 工具 / 81 个键）**不能靠词面扫描判"零覆盖"**：`sampleRate` 的 199 处
+命中全在别的工具（`yeban_render_master` 等）的调用里，`toneHz` 唯一一处是 `yeban_record_wav`
+的**拒绝**用例（`-5`）⇒ 同日早些时候的手扫报"零覆盖 0"，那是**假绿**。结论已写进
+`crates/yeban-mcp/tests/documented_arg_coverage.rs` 的"扫描面"一节（扩展轴⛔ 可词面扫描）。
+
+按"输入是否真的被驱动"重扫，得到**三个真洞**：
+
+1. `yeban_load_sfz.sampleHz`：只有**输出**被断言（"缺省必须是 48000"读的是响应），输入侧
+   没有任何判据 ⇒ 把它改成常量、或删掉 `parse_load_arguments` 的校验，旧判据都不会红；
+2. `yeban_render_sfz_wav.velocity`：**解析＋回显但从未到达渲染器**（缺省 100 恰好等于
+   `filled_project()` 里每个音符的力度 ⇒ 旧判据全绿；
+3. `yeban_render_sfz_wav.sampleRate` / `toneHz`：从未被给过有效值。
+
+### 改动（四条提交）
+
+- `c2dcebb4`：`sampleHz` 输入侧判据（非缺省回显 ＋ 0/负数领域层拒绝 ＋ 非数字 `-32602`）
+  ＋ `src/domain/sfz.rs` 单测（"必须是数字"这一支经 `tools/call` 不可达，注册表 `number`
+  类型先拒 ⇒ 只能由单测钉住）；`2337a48f`：`dryRun` 预览补报 `sampleHz`。
+- `95c42875`：`SfzWavRequest.velocity: Option<u8>` ⇒ `collect_notes(project, rate, note, velocity)`
+  （给了 ⇒ 整段覆盖，不给 ⇒ 逐音符用自己的）；判据三面：`regionsUsed` 区域带选择、
+  两档峰值 8× 比、缺省路径回落到逐音符力度；`velocity: 128` ⇒ `INVALID_PARAMETER_RANGE`
+  点名 `0..=127` 与实际取值。
+- `183462f5`：**复用登记项**时 `plan` 改用登记值造报告（缺陷见下）。
+- `fe160796`：过零估计按声道数折算时长（缺陷见下）。
+
+### 本批三次真红（都不是空绿；每条都读了各自 run）
+
+| 提交 | run | 判决与根因 |
+| :--- | :--- | :--- |
+| `c2dcebb4` | `40744965526` | **failure** —— `checks`/`plan`/`deny`/`lockfile` success；`rust (yeban-mcp)` clippy success、**test failure**：`sfz_tools` **7 passed / 1 failed**，红的是新判据 `the_sample_hz_argument_is_honoured_and_bad_values_are_rejected`（`sfz_tools.rs:461`）：第二次装载同一份内容、缺省 `sampleHz`，响应报 **44100**（登记值）而非判据以为的 48000。fail-fast 读数：`Running` **51** / `test result: ok` **49** / FAILED **1** ⇒ 1 个二进制作了 `Running` 却没产出结果行 |
+| `2337a48f` | `40745491513` | **failure** —— 同一判据、同一根因（`sfz_tools.rs:462`），**7 passed / 1 failed**；`Running` **51** / ok **49**。⚠ 两个提交的红**逐字相同**⇒ 预览补报那一件的判决被这条红遮住（修好后同批复判） |
+| `95c42875` | `40746346946` | **failure** —— 规划把本轮按"全量"处理 ⇒ 矩阵腿 skipped、承判腿换成 `rust (workspace 全量)`：`sfz_tools` **8 passed / 2 failed**：① 上面那条 `sampleHz`（`:464`）；② **新判据自己的缺陷** `the_render_sample_rate_and_tone_are_honoured`（`:752`）：要求 `toneHz 440`，实测 **219.27087** —— 恰为一半。`Running` **233** / ok **226** / FAILED **2** ⇒ 5 个二进制被 fail-fast 截断。`windows`／`macos` 腿同为 failure（只读到腿级＋steps=18） |
+
+### 两条根因（都改了实现/判据，⛔ 放宽断言）
+
+1. **复用路径的报告与预览不一致**（`183462f5`）：`apply_load_sfz` 对同一份内容**不覆盖**旧条目
+   （旧条目的 `path` 是首次装载路径），于是真做回报登记时的 `sampleHz`；而 `plan_load_sfz`
+   仍拿**本次入参**造 `dryRun` 预览 ⇒ 同一份内容两条路给出不同的数字。修法：`plan` 在命中
+   登记项时改读 `instrument.sample_hz` 造报告（缺省值因此**只有首次登记**这条路量得到）。
+   ⚠ 代价如实登记：同一份内容第二次装载时，本次的 `sampleHz` **不生效** —— 已写进
+   `tools.rs` 与 schema 的描述（⛔ 留作隐性行为）。
+2. **过零估计把立体声频率折半**（`fe160796`）：交织样本的索引跨度是**帧**跨度的
+   `channels` 倍，分母只用 `sample_rate` ⇒ 估计值恰为真值 `/2`。修法：分母改成
+   `sample_rate × channels`（声道数从 RIFF `fmt ` 头读回）。⚠ 这正是"判据自己的数学错了、
+   实现是对的"一类：⛔ 因为红就改实现。
+
+### 判决（修复批）
+
+| 提交 | run | 判决 |
+| :--- | :--- | :--- |
+| `183462f5` | `40749006069` | **failure（预期内）** —— 该提交**不含**声道数修复：`sfz_tools` **9 passed / 1 failed**，只剩 `the_render_sample_rate_and_tone_are_honoured`（`:797`，实测仍 219.27087）⇒ `sampleHz` 那条已转绿、整批只剩过零估计一件 |
+| `fe160796` | `40751389223` | **success（真跑＝⛔ 空绿）** —— `checks` 15 steps；承判腿 `rust (yeban-mcp)` steps=14、19:07:28→19:20:34（≈786 s）：`Running` **125** / `test result:` **125** / passed **2,372** / FAILED **0**；三条新判据在 `test` 与 `test (合并特性)` **两轮**逐一 `... ok`（`the_sample_hz_argument_is_honoured_and_bad_values_are_rejected`／`the_render_velocity_override_selects_regions_and_scales_the_peak`／`the_render_sample_rate_and_tone_are_honoured`）；`windows` 19:07:28→19:39:00（≈1,892 s）success、`macos` 19:07:29→19:35:06（≈1,657 s）success（steps=18，只读到腿级＋非零耗时）；`rust (yeban-ui-mcp)` success；`rust (workspace 全量)` **skipped／steps=0**（本轮推送增量只含 `crates/**` ⇒ 矩阵规则，⛔ 本判决） |
+
+⇒ 本批**代码＋判据＋线判决**成立；**全量判决仍欠**（见下节"全量判决"）。
+
+### 判据力（⛔ 夸大）
+
+- **能证明**：三个键各自在 `tools/call` 层被真实驱动并产出可独立测量的后果（回显值、
+  区域带选择、峰值比、RIFF 速率、过零主频）。
+- ⛔ **不能证明** `sampleHz` 改变任何渲染：本仓**没有任何下游消费者**读 `SfzLoad::sample_hz`
+  （`src` 里唯一出现点是序列化那一行）⇒ 这个键今天的作用就是"进报告"，判据只断言回显。
+  schema 早先写的"播放速率比"从未被实现，本批已把描述改成"不计算速率比"。
+
+### 全量判决（欠，待手动档补齐）
+
+`183462f5` 碰了 `schemas/mcp-tools.schema.json` ⇒ 它的 run **`40749006069`** 是
+`rust (workspace 全量)` **真跑**（矩阵腿 skipped），但该提交仍含过零估计的缺陷 ⇒ 全量读数是
+**failure**。`fe160796` 的 run 矩阵腿真跑、全量腿 skipped ⇒ 到 tip 为止**没有一条绿色的
+全量判决**。欠条：用 `gates-manual.yml` 对 tip `fe160796` 跑一次手动全量，读回后补进本表
+（⛔ 把上一次"红在已修判据"的全量 run 当 tip 的判决）。
+
+### 已知留条（登记，⛔ 本批修）
+
+- **同一内容的两个路径**：`apply_load_sfz` 复用旧条目 ⇒ 真做回报**首次装载路径**；
+  `plan` 造预览时 `path` 仍取**本次请求路径** ⇒ 把同一份 SFZ 复制到别处再 `dryRun`，
+  预览与真做的 `path` 不同。与刚修的 `sampleHz` **同一类**（预览/真做漂移），但本批
+  ⛔ 顺手改（那会再动 `plan` 的身份分支与判据，需新一轮判决）⇒ 登记待下一单。
