@@ -14255,3 +14255,13 @@ macOS 侧读数：`test result:` **262** 行／passed **4,960**／`FAILED` **0**
 `252bf077` 的 run **`40771920649` ＝ success ＝ 空绿**（两者四条代码腿 `rust (workspace 全量)`／
 `rust (矩阵)`／`macos`／`windows` **全 skipped、steps=0**；真跑的只有 `plan`／`checks`／
 `lockfile`／`deny`）。
+
+## 2026-10-28 晚：判决补账（两条已读回、此前未入账）
+
+| 提交 | run | 判决（读数） |
+| :--- | :--- | :--- |
+| `62c0bfd7`（记 `5827e7ed` 判决的文档提交） | `40764520602` | **success ＝ 空绿** —— `plan`／`lockfile`／`deny`／`checks` 真跑；`rust (workspace 全量)`／`rust (矩阵)`／`macos`／`windows` **四条全 skipped、steps=0** |
+| `1ee5b4d8`（handover §0.6.0d 更正，当轮 tip） | `40772767962` | **success ＝ 空绿** —— 同上四条代码腿全 skipped、steps=0 |
+
+口径不变：这两条是**文档提交**，`success` ⛔ 当代码判决；它们在账上的作用只是
+"每个提交自己的 run 都读回且结论登记"（§6.3 第 1 条）。
