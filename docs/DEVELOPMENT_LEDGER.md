@@ -13174,3 +13174,45 @@ MCP 侧只被写死成常量（`section_build.rs:1828` 的 `max_leap: MELODY_MAX
     **拒绝**（脏的 `docs/adr/README.md`），什么都没发生。防线＝**落地／推送这类动作，先跑真命令
     把状态读回来**（`git status --short` ＋ `git log --oneline -1` ＋
     `git ls-remote origin refs/heads/main`）再写结论；叙述与工具结果冲突时以工具结果为准并重写。
+
+## 2026-10-28：`G8j` 前置实测 —— `harmonyVoices` 与和声音域两张票的**阻塞证据**（⭐ ⛔ 无代码改动）
+
+**这个数字在数什么**：`voice_leading::realize` 每层返回的**声部数**、该层实际覆盖的**音级集**
+（`pitch_class().semitones()`，单位 0..=11）、以及相对该层和弦音级集的**缺失音级**。
+量法＝仓库外一次性 probe `/tmp/probe4.rs`（`rustc --edition 2021 -L dependency=target/debug/deps
+--extern yeban_theory=target/debug/deps/libyeban_theory-90ca2f4a5a8aeb20.rlib`），⛔ 不入库。
+
+- **机制（现读 `crates/yeban-theory/src/voice_leading.rs`）**：`realize` **没有**独立的"声部数"参数
+  —— 声部数 ≡ `constraints.ranges.len()`（`THREE_VOICES`／`FOUR_VOICES` 两个 const 各带
+  `DEFAULT_THREE_VOICES`／`DEFAULT_FOUR_VOICES`）。`candidate_voicings()` 只要求
+  `tones.len() >= ranges.len()`（`tones` 是和弦的**绝对音高**去重集，八度重复算多个），
+  `recurse()` 则要求每个声部在**自己音域内**取一个严格上行的和弦音 ⇒
+  ⭐ **theory 只保证"每个声部都是和弦音"（`voice_leading.rs:413` 那条断言），⛔ 保证"和弦的每个音级都被覆盖"**。
+- **实测（调 C minor，`i-v-i-VI` 与 `i7-v7-i7-VI7`）**：
+  | 输入 | 结果 |
+  | --- | --- |
+  | 三和弦 × `THREE_VOICES` | 4 层全 `缺=[]` |
+  | 三和弦 × `FOUR_VOICES` | 层0/2 `音=[60,67,79,84]` 类=`{0,7}` **缺=[3]**；层3 类=`{0,8}` **缺=[3]**（三音被八度重复的根/五音挤掉）|
+  | 七和弦 × `THREE_VOICES` | 层0/2 **缺=[4]**、层1 **缺=[5]**、层3 **缺=[3]**（七音/三音每层丢一个）|
+- ⚠ **更正一句先前的推断**：先前记的是"`realize` 对声部数不匹配**从不报错**"。这话**半对**——
+  `TooManyVoices` 确实存在，但只在 `ranges.len() >` 绝对音高数时触发，而三和弦配 4 声部**不触发**
+  （靠八度重复满足），于是症状不是报错而是**静默丢音级**。症状比原判断更坏：⛔ 任何"报错兜底"的设想都不成立。
+- **为什么这条就是 `G8j` 的阻塞**：`crates/yeban-mcp/src/domain/section_build.rs:506`
+  的 `genre_voice_count()` 现从 `chord.pitch_classes().len()` 派声声部数 —— 这条对齐正是上表
+  `缺=[]` 的原因。把声部数开放成入参 `harmonyVoices` ＝ **拆掉本仓库唯一的覆盖性防线**，
+  交付上表那些丢三音／丢七音的和声 ⇒ ⛔ 该票⛔ 作为"参数接线"上线。
+  和声音域 `harmonyLower/Upper` 另有一道钉：`ranges: &'static [VoiceRange]` ⇒ MCP 侧只能在
+  **编译期**备表，逐 N 的变长音域＝又一张本地表（撞 §0.6 既有口径"声部数⛔ 本地表"）。
+- **登记**：`harmonyVoices` ＋ `harmonyLower/Upper` 两张票 ⇒ **阻塞（带证据）**，前置是一张
+  **theory 侧**的票（要么给 `realize` 加音级覆盖性约束，要么把音域表做成可运行时构造的形状）。
+  ⛔ 由 MCP 侧私自补一张表绕过。
+
+### 本轮新增的规则
+
+14. ⭐ **同分支二次推送会取消在飞的旧 run ⇒ 那批改动就没有判决**：`c9dd7d44` 的 run
+    `40630639500` 现读 `conclusion:"cancelled"`（被同分支随后一次推送顶掉）。后果＝那条
+    "缺字段必报 `E0063`"⛔ 能写成 CI 已证实，只能记为**按字段表对账的结构推断**（无 `..base` 的
+    字面量必须列全字段）。防线＝要么等旧 run 读完再推，要么把修复**合并进同一次推送**。
+15. ⭐ **撤"多插的一处"时，必须同时核对"少插的那些"**：第 12 条那轮只修了往 `Given`／`Self`
+    里多插的 3 处，⛔ 顺带审计 `PlanOptions` 字面量**少插**的 —— 那才是 `E0063` 的来源。
+    一次机械插入的正解＝双向对账（多插 ∪ 少插），⛔ 只删自己认出来的那几处。

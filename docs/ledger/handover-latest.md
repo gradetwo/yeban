@@ -261,6 +261,28 @@ lib 侧 `8/7` → 判据侧 `E0277` → 判据侧 `unused variable`。
     防线＝**落地/推送这类动作，先跑一次真命令把状态读回来（`git status --short` ＋
     `git log --oneline -1` ＋ `git ls-remote origin refs/heads/main`），再写结论**；
     叙述与工具结果冲突时，以工具结果为准并重写叙述，⛔ 事后找补。
+23. ⭐ **同分支二次推送会取消在飞的旧 run ⇒ 那批改动⛔ 有判决**：`c9dd7d44` 的 run
+    `40630639500` 现读 `conclusion:"cancelled"`（被同分支随后的推送顶掉）。于是那条
+    "`PlanOptions` 字面量缺新字段必报 `E0063`"只能记为**按字段表对账的结构推断**，⛔ 写成
+    CI 已证实。防线＝旧 run 读完再推，或把修复**并进同一次推送**。
+24. ⭐ **撤"多插的一处"时必须同时核对"少插的那些"**（第 21 条的对称面）：那轮只修了往
+    `Given`/`Self` 里多插的 3 处，⛔ 顺带审计 `PlanOptions` 字面量**少插**的那些 ——
+    后者才是 `E0063` 的来源。一次机械插入的正解＝双向对账（多插 ∪ 少插）。
+    现成工具＝`/tmp/audit_planoptions.py`（解析 `pub struct PlanOptions` 字段表，按花括号深度
+    找到每个 `PlanOptions {` 字面量，报缺/多键；⚠ 要认同行的首键与 `field,` 简写两种形状）。
+
+### 0.6.4.1 ⭐ `G8j` 两张票的**阻塞证据**（2026-10-28 实测，完整表在台账 `## 2026-10-28：G8j 前置实测`）
+
+- `realize` **⛔ 没有声部数参数** —— 声部数 ≡ `constraints.ranges.len()`；它只保证"每个声部
+  都是和弦音"（`voice_leading.rs:413`），**⛔ 不保证和弦每个音级被覆盖**。
+- 仓库外 probe 实测（`i-v-i-VI`／`i7-v7-i7-VI7`）：三和弦 × `FOUR_VOICES` 层0 `音=[60,67,79,84]`
+  类=`{0,7}` **缺=[3]**（三音被八度重复的根/五音挤掉）；七和弦 × `THREE_VOICES` 每层**丢一个音级**。
+- ⚠ **更正**先前那句"`realize` 对声部数不匹配从不报错"：`TooManyVoices` 存在但三和弦配 4 声部
+  **不触发**（八度重复满足了 `tones.len() >= ranges.len()`）⇒ 症状不是报错而是**静默丢音级**，比原判断更坏。
+- ⇒ `harmonyVoices` ⛔ 上线为参数接线：`section_build.rs:506` 的 `genre_voice_count()`
+  从 `chord.pitch_classes().len()` 派生声部数，这条对齐**就是**现存的唯一覆盖性防线，开放入参＝拆它。
+  `harmonyLower/Upper` 另钉在 `ranges: &'static [VoiceRange]`（MCP 侧只能编译期备表）。
+  两张票的前置是一张 **theory 侧**的票，⛔ 用本地表绕过。
 
 ### 0.6.5 ⭐ 下一个该做什么
 
