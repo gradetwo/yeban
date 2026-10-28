@@ -1743,6 +1743,17 @@ python3 scripts/guards/policy_check.py && bash scripts/gates/run-gates.sh light
 > ⭐ 口径新增：**`cancelled` ≠ `skipped`** —— 前者是基础设施没给 runner（steps=0 是判据），**应当重派**；
 > 后者是 planner 的预期决定。两者都⛔ 当判决用。
 > ⇒ 创作缺口这条线上**自主可做的活仍为零**；台账见「2026-10-28 16:50」一节。
+>
+> ⭐ **18:15 追加（theory 路径的全库确定性判据；tip 现读 `f2820f43`）**：差额对照存量 —— 现有四条
+> "两次调用相同"的判据分别只钉**一个夹具（`project` 路径）**／`melodySeed`／`voiceSubdivisions`／渲染器，
+> **theory 生成路径（鼓＋旋律＋声部连接）的全库确定性没有判据**。新增 `section_genre_matrix.rs` 第二条
+> `every_registered_genre_plans_identically_twice`：182 条流派 × 全缺省，两次规划比**完整 `SectionPlan`**
+> （两次都失败时比失败码），＋R93 下界（`compared >= 100`）。
+> **判决**（`f2820f43` → run **`40737274959` = success**）：`rust (yeban-mcp)` **890 s**／`Running` **125**／
+> passed **2,364**（＋2 ＝ 1 判据 × 2 轮）／`FAILED` **0**，判据两轮各 `... ok`；`macos` **1,634 s**、
+> `windows` **1,880 s** 均 success；`checks` 15 steps；`workspace 全量` skipped＋steps=0。
+> ⚠ 判据力只到"**同一进程内不引入非常量**"，⛔ 跨进程/跨平台逐字节（那由同一份判据在两条跨平台腿各自跑）。
+> ⇒ 创作缺口这条线上**自主可做的活仍为零**；台账见「2026-10-28 18:15」一节。
 
 ### ⭐ 磁盘：仓库**外**大头的现读清单（2026-10-28 06:38，`du -sh` 实测，⛔ 一个字节都没删）
 

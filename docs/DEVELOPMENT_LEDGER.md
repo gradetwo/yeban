@@ -14024,3 +14024,46 @@ macOS 侧读数：`test result:` **262** 行／passed **4,960**／`FAILED` **0**
 
 ⇒ 那条"`cancelled` ⇒ pending"的记录**已收口**，⛔ 再保留 pending 字样。口径不变：`cancelled` 是基础设施问题
 （steps = 0），**重派**是正确处置；`skipped` 是 planner 决定，**重派**无意义。
+
+## 2026-10-28 18:15：theory 生成路径的**全库确定性**判据（`section_genre_matrix.rs` 第 2 条）—— 覆盖补强
+
+### 差额（先对照存量，规则 29）
+
+全仓现读与"两次规划逐字节相同"相关的判据有四条，但**没有一条**覆盖 theory 生成路径的全库面：
+
+| 存量判据 | 覆盖的到底是什么 |
+|---|---|
+| `tools_e2e.rs::propose_section_creates_a_real_section_and_is_deterministic` | 只钉**一个夹具**（`synthwave`／8 小节／**`project` 材料路径**） |
+| `section_melody_seed.rs::the_seed_is_idempotent_per_section` | 只钉 `melodySeed` 这一个键（给了种子之后） |
+| `voice_subdivisions.rs::voice_subdivisions_are_deterministic_across_two_calls` | 只钉 `voiceSubdivisions` 这一个键 |
+| `render_master.rs::volume_automation_is_deterministic_across_two_renders` | 渲染器，⛔ 规划器 |
+
+⇒ 新判据的差额：**全库（182 条流派）× theory 路径（鼓 ＋ 旋律 ＋ 声部连接）＋ 所有可选键缺省**。
+
+### 判据与读数
+
+`every_registered_genre_plans_identically_twice`：对每个流派规划**两次**，比较完整的 `SectionPlan`
+（`==`，⛔ 只比音符条数）；两次都失败时比对**失败码**（`ADR-0036` 起各票都钉"原样转发"）；
+两次结论不一致（一次成功一次失败）单独计一类。R93：`genres.len() >= 100` ＋ `compared >= 100`。
+
+**判决**（`f2820f43` → run **`40737274959` = success**）：
+
+| 作业 | 读数 |
+|---|---|
+| `checks` | success，**15 steps** |
+| `rust (yeban-mcp)` | 17:36:48→17:51:38 = **890 s**；`Running` **125**／`test result:` **125**／passed **2,364**／`FAILED` **0**；本判据两轮（17:43:21／17:50:15）各 `... ok` |
+| `macos` | **success** 17:36:49→18:04:03 = **1,634 s**（18 steps） |
+| `windows` | **success** 17:36:48→18:08:08 = **1,880 s**（17 steps） |
+| `rust (workspace 全量)` | **skipped／steps=0**（planner 预期形态） |
+
+**增量交叉核**：`Running` **125 → 125**（未加新二进制）、`passed` **2,362 → 2,364** ＝＋2（**1** 个判据 × 2 轮）
+—— 与"只加了一个 `#[test]` 到既有文件"完全对上。
+
+### 判据力（⛔ 夸大）
+
+- **能证明**：同一进程内、同一份入参下，182 条流派的理论生成计划**逐字节稳定**（含失败报文）。
+- ⛔ **不能证明**跨进程/跨平台逐字节相同：那要靠不同 runner 上的读数比对，本判据只保证
+  "每次调用不引入非常量"（时间、`HashMap` 迭代序、全局计数器、随机源）——而这正是确定性红线
+  在**单次运行**里能抓到的那一面。跨平台那条由同一份判据在 `macos`／`windows` 两条腿上各自跑（名字逐名可见）。
+- ⛔ **不能证明**它今天红得起来：本机无法变异注入（重依赖 ⇒ AGENTS §5）；敏感性是论证
+  （任一非常量进入 → `SectionPlan` 的字段值或 id 漂移 → `==` 红）。
