@@ -6,6 +6,7 @@
 //! | :--- | :--- | :--- |
 //! | a | 新工具经 MCP 调用**真的产出结果**：WAV 落盘、字节数/摘要可判定、**非静音**（回读并算峰值/能量） | `render_sfz_wav_writes_a_non_silent_wav_through_a_real_mcp_call` |
 //! | a' | SFZ 工具**返回 region 数与来源**，且区域数与文件内容一致（反向对照：单区域文件 ⇒ 1） | `load_sfz_reports_the_region_count_and_the_honest_source` |
+//! | a'' | `sampleHz` 入参**真的被读**：非缺省值进报告、非正数被领域层拒、非数字被注册表层拒（"必须是数字"支经 MCP 不可达，由 src 单元测试钉住） | `the_sample_hz_argument_is_honoured_and_bad_values_are_rejected` |
 //! | b | 非法入参 ⇒ **结构化**错误（既有错误码）、⛔ 不 panic | `bad_arguments_are_structured_errors_and_never_panic` |
 //! | c | 不存在/写错的工具名 ⇒ 被拒（`yeban_nope` 负对照） | `an_unknown_tool_name_is_rejected` |
 //! | d | `dryRun` 一位都不改；预览与真做的实测数字一致 | `dry_run_writes_nothing_and_matches_the_real_call` |
@@ -414,6 +415,94 @@ fn load_sfz_reports_the_region_count_and_the_honest_source() {
         single["data"]["instrumentId"], double["data"]["instrumentId"],
         "不同内容必须是不同的 instrumentId"
     );
+}
+
+// ---------------------------------------------------------------------------
+// 判据 a''：`sampleHz` 入参真的被读（非缺省回显 ＋ 两条拒绝路径）
+// ---------------------------------------------------------------------------
+
+/// 这个键此前**只有输出被断言**（上面那条 `sampleHz 缺省必须是 48000` 读的是响应），
+/// 输入侧从未被任何一个判据驱动过 ⇒ 把它改成常量、或把 `parse_load_arguments` 的
+/// 校验整段删掉，旧判据都不会红。本判据补的就是输入侧：
+///
+/// 1. 非缺省值 ⇒ 响应回显它（内容寻址的 `instrumentId` 不变 —— 身份只按内容算）；
+/// 2. 非正数（0 / 负数）⇒ 领域层 `INVALID_PARAMETER_RANGE`，文案点名"必须是有限正数"；
+/// 3. 非数字 ⇒ **注册表**层就拒（`-32602`）：`ParamSpec` 的 `number` 类型先于领域层，
+///    因此 `parse_load_arguments` 的"必须是数字"支经 `tools/call` 不可达 ——
+///    那一支由 `src/domain/sfz.rs` 的单元测试
+///    `load_arguments_take_a_default_sample_hz_and_reject_bad_values` 直接钉住。
+///
+/// ⚠ 如实标注：本仓当前**没有任何下游消费者**读 `SfzLoad::sample_hz`（`src` 里唯一
+/// 出现点是序列化那一行）⇒ 这个键今天的作用就是"进报告"。判据因此只断言回显，
+/// ⛔ 假装它改变了渲染。（schema 描述里的"播放速率比"是描述而非实现读数。）
+#[test]
+fn the_sample_hz_argument_is_honoured_and_bad_values_are_rejected() {
+    let scratch = Scratch::new("sample-hz");
+    let sfz = scratch.write_sfz("one.sfz", "<region> sample=only.wav key=60\n");
+    let mut dispatcher = dispatcher_with_project(filled_project());
+
+    let at_441 = call_tool(
+        &mut dispatcher,
+        "yeban_load_sfz",
+        serde_json::json!({ "path": sfz.display().to_string(), "sampleHz": 44_100 }),
+    );
+    assert_eq!(
+        at_441["data"]["sampleHz"], 44_100.0,
+        "非缺省的 sampleHz 必须被读并回显: {at_441}"
+    );
+    assert_eq!(at_441["data"]["regions"], 1, "这个键不影响解析: {at_441}");
+
+    // 同一份内容、缺省 sampleHz ⇒ 同一身份、不同报告值。
+    let defaulted = call_tool(
+        &mut dispatcher,
+        "yeban_load_sfz",
+        serde_json::json!({ "path": sfz.display().to_string() }),
+    );
+    assert_eq!(
+        defaulted["data"]["sampleHz"], 48_000.0,
+        "缺省必须是 48000: {defaulted}"
+    );
+    assert_eq!(
+        at_441["data"]["instrumentId"], defaulted["data"]["instrumentId"],
+        "身份按内容寻址 ⇒ sampleHz 不得影响 instrumentId"
+    );
+    assert_eq!(
+        defaulted["data"]["reused"].as_bool(),
+        Some(true),
+        "第二次装载同一份内容必须标 reused: {defaulted}"
+    );
+
+    // ---- 非正数 ⇒ 领域层拒绝 ----
+    for bad in [0, -1] {
+        let rejected = call_tool(
+            &mut dispatcher,
+            "yeban_load_sfz",
+            serde_json::json!({ "path": sfz.display().to_string(), "sampleHz": bad }),
+        );
+        assert_eq!(rejected["status"], "error", "{rejected}");
+        assert_eq!(
+            rejected["error"]["code"], "INVALID_PARAMETER_RANGE",
+            "{rejected}"
+        );
+        let message = rejected["error"]["message"].as_str().expect("message");
+        assert!(
+            message.contains("必须是有限正数 (Hz)"),
+            "文案必须点名要求: {message}"
+        );
+        assert!(
+            message.contains(&format!("实际收到 {bad}")),
+            "文案必须点名实际收到的取值: {message}"
+        );
+    }
+
+    // ---- 非数字 ⇒ 注册表层拒（-32602），⛔ 不进领域层 ----
+    let (status, code) = call_tool_raw(
+        &mut dispatcher,
+        "yeban_load_sfz",
+        serde_json::json!({ "path": sfz.display().to_string(), "sampleHz": "fast" }),
+    );
+    assert_eq!(status, 400, "非法类型必须是 JSON-RPC 层拒绝");
+    assert_eq!(code, Some(-32602), "非法类型 ⇒ -32602 (invalid params)");
 }
 
 // ---------------------------------------------------------------------------

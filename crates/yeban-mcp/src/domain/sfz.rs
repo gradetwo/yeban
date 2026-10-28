@@ -2231,6 +2231,67 @@ fn db_to_linear(db: f32) -> f32 {
 mod tests {
     use super::*;
 
+    /// `yeban_load_sfz.sampleHz` 的**形状校验**（[`parse_load_arguments`]）。
+    ///
+    /// 为什么这条判据在本模块而不在 `tests/sfz_tools.rs`：工具注册表先拒非法类型
+    /// （`ParamSpec` 声明 `number` ⇒ 非数字走 JSON-RPC `-32602`），因此
+    /// "必须是数字"这一支**经 `tools/call` 不可达**，集成判据到不了。
+    /// 三支在这里一次钉住：缺省值 / 非数字 / 非正数；非正数的 MCP 侧回执
+    /// 另由集成判据 `the_sample_hz_argument_is_honoured_and_bad_values_are_rejected` 断言。
+    #[test]
+    fn load_arguments_take_a_default_sample_hz_and_reject_bad_values() {
+        let arguments = |value: Option<serde_json::Value>| {
+            let mut map = serde_json::Map::new();
+            map.insert(
+                "path".to_owned(),
+                serde_json::Value::String("/tmp/never-read.sfz".to_owned()),
+            );
+            if let Some(value) = value {
+                map.insert("sampleHz".to_owned(), value);
+            }
+            map
+        };
+        assert_eq!(
+            parse_load_arguments(&arguments(None))
+                .expect("缺省组合法")
+                .1,
+            DEFAULT_SAMPLE_HZ,
+            "缺省 ⇒ {DEFAULT_SAMPLE_HZ}"
+        );
+        assert_eq!(
+            parse_load_arguments(&arguments(Some(serde_json::json!(44_100))))
+                .expect("数字合法")
+                .1,
+            44_100.0
+        );
+
+        let Fault::Domain { code, message, .. } =
+            parse_load_arguments(&arguments(Some(serde_json::json!("fast"))))
+                .expect_err("非数字必须被拒")
+        else {
+            panic!("必须是领域失败");
+        };
+        assert_eq!(code, ErrorCode::InvalidParameterRange);
+        assert!(
+            message.contains("必须是数字"),
+            "文案必须点名形状错误: {message}"
+        );
+
+        for bad in [0.0, -1.0] {
+            let Fault::Domain { code, message, .. } =
+                parse_load_arguments(&arguments(Some(serde_json::json!(bad))))
+                    .expect_err("非正数必须被拒")
+            else {
+                panic!("必须是领域失败");
+            };
+            assert_eq!(code, ErrorCode::InvalidParameterRange);
+            assert!(
+                message.contains("必须是有限正数 (Hz)"),
+                "文案必须点名要求: {message}"
+            );
+        }
+    }
+
     /// E4：文件数上限是 128，且第 129 个**响亮拒绝**而不是静默丢弃。
     ///
     /// 用**不存在的路径**当探针：条目表按"不同路径"计数（失败也记一条，读成功的帧数

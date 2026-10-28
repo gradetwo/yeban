@@ -22,6 +22,18 @@
 //! 预映像（`section_drum_density.rs` 落地**之前**的测试树）上，本判据的等价算法在 21 个键里
 //! **恰好红 1 个**：`drumDensity`（0 处非缺省）；其余 20 个键各 ≥ 1 ⇒ ⛔ 误伤面。
 //! 现读最小读数 = **1**（`drumDensity` / `drumStyle` / `drumBackbeat` / `beatGrouping` 四个键）。
+//!
+//! ## 扫描面（⛔ 本判据**不**覆盖扩展工具，原因经实测）
+//!
+//! 只扫 `DocumentedToolArguments`（3 个工具 / 21 个键）。`ExtensionToolArguments.$defs`
+//! （15 个工具 / 81 个属性）**没有**纳入：本判据只读 `crates/yeban-mcp/tests/*.rs`，
+//! 而扩展工具的一部分判据写在 **`src` 单元测试**里（实测：`yeban_query_engine_state.since`
+//! 的断言在 `src/domain/engine_state.rs:649`）⇒ 纳入后会得到假红。
+//! 扩展侧的零覆盖结论因此是**一次性手工实测**（2026-10-28：tests ＋ src 全扫 ⇒ 零覆盖 **0**；
+//! 只看 tests ⇒ **2**，即 `since` 与 `yeban_load_sfz.sampleHz`；前者由 src 单元测试覆盖，
+//! 后者由 `tests/sfz_tools.rs::the_sample_hz_argument_is_honoured_and_bad_values_are_rejected`
+//! ＋ `src/domain/sfz.rs::load_arguments_take_a_default_sample_hz_and_reject_bad_values` 补上）。
+//! ⚠ 那段手工读数**不会**随代码演变自动复验（rot 风险如实登记）。
 
 use std::fs;
 use std::path::{Path, PathBuf};
