@@ -392,6 +392,13 @@ yeban/
    `--lib` **不够**：`#[cfg(test)]` 代码与集成测试目标都不在其中。
 2. 若该 crate **含重依赖**（`scripts/dev/heavy-deps.py` 判重），`run-gates.sh light` 的 `clippy-changed` 会**跳过**它 ⇒
    本机就没有能覆盖它的门禁，只能**预期 CI 来发现**，并**不要在提交信息里声称本地已验证**。
+   ⚠ **本条于 2026-10-28 缩小了范围**：被跳过的 crate 若**有零重依赖脚手架**（现在是
+   `yeban-mcp` ⇒ `crates/yeban-mcp/verify/section_pure.rs`，它用 `#[path]` 引真实的
+   `src/domain/section_build.rs`），`clippy-changed` 会**改用 `clippy-driver` 真 lint 那份文件**
+   （`--emit=metadata`，实测 ≈1.4s，旗标镜像根 `Cargo.toml` 的 `[workspace.lints]`），
+   所以"lib 侧的编译错误与 clippy 诊断"对**该模块**是本机可测的。
+   ⛔ 由此推出"整个 crate 已本地验证"：`crates/yeban-mcp/tests/**` 要整个 lib（拖
+   `yeban-render`）⇒ 判据文件仍然只能靠 CI（第 3 条照旧适用）。
 3. 提交前若无法覆盖，就在提交信息里明说"该 crate 的测试目标未在本机验证" —— 含混的"已验证"比不验证更糟。
 
 ## 推送节奏：`ci.yml` 现在**每次 main run 自成一组** ⇒ 队列会累积（第 222 轮）

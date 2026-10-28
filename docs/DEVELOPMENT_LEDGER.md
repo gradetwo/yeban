@@ -201,7 +201,7 @@ CARGO_HOME=/Users/crow/work/music/.cargo-home RUSTUP_TOOLCHAIN=stable \
 | `G6` 生成即增益分级 | 消除 | `ADR-0026`；「G6 消除」条 |
 | `G7` 同批建节点+连边被批前预检误拒 | 消除 | `ADR-0025`；「G7 消除」条 |
 | `G8` 生成控制粒度 | **消除（四片）** | `G8a`（音域 + `drumDensity`）`ADR-0028`；`G8b`（`voiceSubdivision` 和声声部按跨度均匀切分 1..=16）`ADR-0033`，线 Run `40523903008`（`80d854d9`）success（承判腿 `rust (workspace 全量)` 42:08 ⇒ **408 条 / 6,703 / 0**；windows 246 / 4,849 / 0；macos 246 / 4,870 / 0；矩阵腿因 `workspace_wide: true` 跳过）＋ 主干 merge `9eb4a6c5` Run `40531221961` success（全量 1:19:24 ⇒ **409 / 6,707 / 0**）；`G8c`（`voiceSubdivisions` 切分按**声部名**给值，组合而非替换）`ADR-0035`，线 Run `40549805342`（`6ec3edd3`）success（`rust (yeban-mcp)` 869s ⇒ **97 条 / 2,212 / 0**，11 条判据**逐名**读回；macos 1,322s ⇒ 248 / 4,885 / 0；windows 1,896s ⇒ 248 / 4,864 / 0；全量腿因"推送增量规划"skipped）＋ 主干 merge `793b0a3b` Run `40560362657` **success**（全量承判 2,573s ⇒ **411 / 6,725 / 0**，`voice_subdivisions_*` 11 条逐名 `... ok`；windows 2,201s ⇒ 249 / 4,871 / 0；macos 1,163s ⇒ 249 / 4,892 / 0；矩阵腿 skipped）；`G8d`（**原残余**：`onsetsPerBar` 每小节网格可调 + 缺省值由常量 16 改为**从拍号导出** `cells_per_bar(meter)`）`ADR-0036`，⚠ 它实测**比登记的重**：常量让 `GENRES` 182 条里 **28 条非 4/4** 流派的鼓/旋律今天必失败（`ProgressionTooDense`，theory 拒绝而⛔ 夹紧），线 Run `40565010797`（`bee98ef5`）success（承判腿**矩阵腿** `rust (yeban-mcp)` 938s ⇒ **101 条 / 2,242 / 0**，8 条判据在 `rust (yeban-mcp)` / windows 2,183s ⇒ 250 / 4,879 / 0 / macos 1,729s ⇒ 250 / 4,900 / 0 **三条腿上逐名** `... ok`；全量腿因本次推送增量只有 `crates/**` 而 skipped），⛔ 上一条 `cc309f7b` Run `40563735922` 是一次**真红**（`E0423`：`assert_eq` 漏 `!`，三条腿同一错误、整轮 0 条 `test result:`），主干 merge `e1409ad8` Run `40570998122` **success**（该 merge 碰根级 `schemas/**` ⇒ 承判腿 `rust (workspace 全量)` **真跑** 2,619s ⇒ **412 / 6,733 / 0**，`onsets_per_bar` 8 条逐名 `... ok`、`voice_subdivisions_*` 11 条同框仍绿；windows 1,237s ⇒ 250 / 4,879 / 0；macos 1,400s ⇒ 250 / 4,900 / 0；矩阵腿 skipped）⇒ `G8d` 的"代码 + 判据 + 线判决 + 全量判决"四件齐；⚠ **本行的"消除（四片）"于 2026-10-28 更正为"三轴闭合"** —— `GAPS.md:139` 的五个轴里**力度**（`G8e`／`ADR-0037`）与**旋律动机·音域**（`G8f`／未开工）从未交付，见 `## 2026-10-28：G8 闭合度更正` |
-| ⚠ **同一行于 2026-10-28 第二次更新（不删除上一句，两句都是当时的判决链）** | — | **力度轴已闭合**：`G8e` 线 `2de1a438` Run `40602347056` success（承判腿 103 / 2,256 / 0，五条判据在三条腿上逐名 `... ok`），主干 merge `cfaf79cd` Run `40606247815` ＝ **success 且⛔ 空绿**（全量腿真跑 2,715s ⇒ **413 条 / 6,740 / 0**，对祖先 `e1311434` 的 412 / 6,735 / 0 净增＝那个新二进制 ＋5 条，五条判据逐名 `... ok`）⇒ "代码＋判据＋线判决＋全量判决"**四件齐**。音域轴的**旋律半片**在落：`G8f` `ADR-0038`，第一批 `5a176d4c` Run `40609755301` ＝ **真红**（lib 侧 `clippy::too_many_arguments` 8/7，三条腿同红、0 条 `test result:`），修复批 `d654a854` Run `40617892659` **pending**；和声半片是既有的 `ADR-0028`；**旋律动机**那一轴仍⛔ 无概念（theory 明文不做），已登记待人类裁决。⇒ 本行正确的读数是「**三轴闭合 ＋ 力度轴四件齐 ＋ 音域（旋律）轴两批在跑 ＋ 动机轴欠人类裁决**」，⛔ 读成"已消除" |
+| ⚠ **同一行于 2026-10-28 第二次更新（不删除上一句，两句都是当时的判决链）** | — | **力度轴已闭合**：`G8e` 线 `2de1a438` Run `40602347056` success（承判腿 103 / 2,256 / 0，五条判据在三条腿上逐名 `... ok`），主干 merge `cfaf79cd` Run `40606247815` ＝ **success 且⛔ 空绿**（全量腿真跑 2,715s ⇒ **413 条 / 6,740 / 0**，对祖先 `e1311434` 的 412 / 6,735 / 0 净增＝那个新二进制 ＋5 条，五条判据逐名 `... ok`）⇒ "代码＋判据＋线判决＋全量判决"**四件齐**。音域轴的**旋律半片**在落：`G8f` `ADR-0038`，第一批 `5a176d4c` Run `40609755301` ＝ **真红**（lib 侧 `clippy::too_many_arguments` 8/7，三条腿同红、0 条 `test result:`），第二批 `d654a854` Run `40617892659` ＝ **第二次真红**（lib 已干净，红在判据文件 `E0277`：`&&str` 键索引 `BTreeMap<String, _>`），第三批 `36390614` Run `40620624034` **pending**；和声半片是既有的 `ADR-0028`；**旋律动机**那一轴仍⛔ 无概念（theory 明文不做），已登记待人类裁决。⇒ 本行正确的读数是「**三轴闭合 ＋ 力度轴四件齐 ＋ 音域（旋律）轴三批在跑（前两批各一次真红） ＋ 动机轴欠人类裁决**」，⛔ 读成"已消除" |
 | `G9` 单轨贡献读数 / 分轨导出 | 消除 | `G9a`（`contributions`）已落，`ADR-0020`；`G9b`（`yeban_export_stems`，第 **25** 台工具）已落，`ADR-0030`；线 Run `40488580940`（tip `77ac65ec`）success（`rust (yeban-mcp)` 3070s ⇒ **91 条 `test result:` / 2170 passed / 0 failed**；`windows` 1276s ⇒ 245 / 4843 / 0；`macos` 1486s），主干合并 `f28dd13d` Run `40496066367` **success**（这次承判的腿是
 `rust (workspace 全量)` 2594s ⇒ **407 / 6698 / 0**；`macos` 245 / 4865 / 0；
 `windows` 245 / 4844 / 0；`rust (${{ matrix.crate }})` 因 `workspace_wide: true` 跳过）。
@@ -12745,6 +12745,8 @@ theory 自己的判据名就写着 `an_over_dense_request_is_an_error_not_a_sile
    接到入参，形状与 `ADR-0036` 同族。而"**动机**"（repeating cell / 主题变形）在 theory
    与 MCP 两侧**都没有对应概念**：`grep -rl "motif\|动机" docs/adr` = **0** 命中 ⇒
    那是新增音乐能力，⛔ 用现有字段凑（凑出来的不会叫动机）。
+   ⚠ **本条的"⛔ 未开工"于同日部分失效**：音域那半片已开工（`ADR-0038`，读数见
+   `## 2026-10-28：G8f 音域半片落地中`）；**动机那半片仍⛔ 未开工且欠人类裁决**（`§0.6.3`）。
 
 ### 落片：`G8e` = 力度两档开放为 `velocityMin` / `velocityMax`（`ADR-0037`）
 
@@ -12887,7 +12889,7 @@ theory 自己的判据名就写着 `an_over_dense_request_is_an_error_not_a_sile
   `crates/yeban-mcp/tests/section_melody_range.rs`（缺省逐字节 ＋ 出厂窗口 / 收窄只动旋律音高
   （id・起点・时值逐条对齐，和声与鼓**逐字节**相同，力度只要求仍在阶梯两档）/ 越界与倒序点名键 /
   耦合 `materialSource` **与** `includeMelody` / 不可行窗口转发 / 两个声明面同源＋`maxLeap` 缺席）。
-- **判决**：**两批 —— 第一批真红，修复批 `d654a854` Run `40617892659` pending**。⚠ 本片⛔ 记为已消除，直到读回。
+- **判决**：**三批 —— 前两批各是一次真红，判据修复批 `36390614` Run `40620624034` pending**。⚠ 本片⛔ 记为已消除，直到读回。
   * `5a176d4c` Run `40609755301` ＝ **failure** —— 红在 **lib 自己**而⛔ 判据：
     `error: this function has too many arguments (8/7)`，位置 `section_build.rs:1785`
     `melody_contents`（加进 `register` 后到第 8 个参数）。`clippy --workspace` 一步就停在这里
@@ -12901,7 +12903,34 @@ theory 自己的判据名就写着 `an_over_dense_request_is_an_error_not_a_sile
     收成 `MelodyRulers`（8→7 个参数）。第二条理由更硬且与本片直接相关：两者**类型完全相同**
     （都是 `(u8, u8)`），分着传时把力度档与音域**调个顺序照样编得过**，编译器一句话不说；
     捆成结构体后字段名写在调用处，这类倒置不可能发生 ⇒ 纯形态改动，行为逐字节不变。
-  * `d654a854` Run `40617892659` — **pending**（在跑）。
+  * `d654a854` Run `40617892659` ＝ **failure**，且这次红在**判据文件**而⛔ lib：
+    `error[E0277]: the trait bound String: Borrow<&str> is not satisfied` ×2，位置
+    `tests/section_melody_range.rs:232:17` / `232:35`（`base_table[part]` / `shifted_table[part]`）。
+    根因是**迭代器元素的引用层数**：`preset_parts` 返回 `&'static [&'static str]`，
+    `for part in <&[&str]>` 给出的 `part` 是 **`&&str`** ⇒ `map[part]` 退化成
+    `Index<&&str>`（要求 `String: Borrow<&str>`，不存在）。字面量键（`map["Drums"]`）同形但合法，
+    所以这条只在"变量键"这一支上炸。修法**照既有写法**（`section_velocity.rs:215/272` 早就写着
+    `table[*part]`）⇒ `[*part]` 走 `String: Borrow<str>`。**又一次"从既有用法 grep"本可以省一轮**
+    （与 §0.6.4 第 8 条同族：路径/写法先看隔壁文件）。
+    读数：`clippy (-D warnings)` 步 failure、`test` 与 `doctests` **skipped**、`rust (yeban-mcp)`／
+    windows／macos 三条腿同红、整轮 **0 条** `test result:` ⇒ 真红；`checks`／`deny`／`lockfile` 绿，
+    `rust (workspace 全量)` 按"增量规划"skipped（⭐ 该 skipped 是矩阵规则，⛔ 是本片的判决）。
+    ⚠ lib 侧这一批**已确认是干净的**：`rust (yeban-ui-mcp)` success ＋ 上一轮那条 8/7 消失。
+  * ⭐ **判据文件本机编译不了，但它断言的"运行时形状"本机量得到**：把 §0.6.4 第 12 条那条
+    脚手架命令的输入换成一个**一次性探针**（`#[path]` 引真实的 `section_build.rs` ＋ `ids.rs`，
+    照抄判据的夹具与窗口），`rustc --test` 跑完即删（⛔ 入库）。实测读数与六条判据**逐条对上**：
+    三个窗口（`60..=60`／`48..=55`／`80..=84`）的和声 `Bass`/`Alto`/`Soprano` 与 `Drums`
+    与缺省**逐条相同**、旋律 id 集合相同、被改音高的条数 61／63／59（⭐ 非空 ⇒ 正例不是空判据）、
+    窗口内音高 `{60}`／`{48,50,51,53,55}`／`{80,82,84}`、力度集合恒 `{96,112}`；
+    六条拒绝载荷的**键名与取值**全对（`field`＋`value`＋`range=[0,127]`、倒序回显
+    `melodyLower:72`/`melodyUpper:60` 且 `hint` 点名两键、`materialSource`／`includeMelody`
+    两条 hint、转发面 `theoryStep:"melody_over_chords"` ＋ `stylePreset` ＋ `theoryError`，
+    ⛔ 一条都不带 `reason`）；`48..=52` 的正例音高 `{48,50,51}`。判据 6 的两个声明面用
+    `grep`/`python3` 现读（registry `integer`/`required:false`/说明含 `ADR-0038` 与 "MIDI 音高值"，
+    schema `minimum 0`/`maximum 127`/`default 48`、`84`，`melodyMaxLeap` 两侧都⛔ 存在）。
+    ⇒ 这条把"判据文件只能靠 CI"的范围**如实缩小到"类型面"**：**形状/载荷/夹具选点**这一类
+    （`G8e` 那轮的 `hint` 不点名键、也就是最贵的一类红）**本机可测**，写判据的同轮就该测。
+  * `36390614`（判据修复批：`[*part]`）Run `40620624034` — **pending**（在跑）。
 - ⭐ **本机预测量**（§0.6.4 第 4 条"落地前先在本量能测的地方测一遍"，两片同族错误的对策）：
   1. 零依赖探测工程 `/tmp/yeban_probe_register`（只 path-dep `yeban-theory`）在 C 自然小调
      `i-VI-VII-i` 4 小节、`metric_grid(COMMON, 4, 16)` ＝ **64** 个 onset、种子 7 上跑
@@ -12932,6 +12961,12 @@ theory 自己的判据名就写着 `an_over_dense_request_is_an_error_not_a_sile
      本来可以省掉**；⛔ 把这条推广到**判据文件**：`crates/yeban-mcp/tests/**` 要靠
      `yeban_mcp` 整个 lib（拖 `yeban-render`，`Cargo.toml:74`）⇒ 上一片 `E0432`／`E0615`
      那一类**仍然只能靠 CI**，本机的覆盖边界是"`section_build.rs` ＋ `ids.rs`"这两个文件。
+     ⭐ **同轮已把这条命令固化成脚本，不必再凭记忆手敲**：`scripts/gates/clippy-changed.sh`
+     对"含重依赖**且有零重依赖脚手架**"的 crate 自动改走 `clippy-driver` 分支（`--emit=metadata`
+     ＋ `--out-dir /tmp/…`，⛔ 落在仓库根的 `libsection_pure.rmeta` 是实测踩到的），
+     `run-gates.sh light` 会调到它。**双向实测**：正向 `[run ] … [ok]`（1.4s，rc=0）；
+     把 `section_build.rs` 换成坏的那版 ⇒ `[FAIL] … rc=1`。措辞见 `DEV_WORKFLOW.md`
+     "本机覆盖不到"第 2 项的 ⚠ 补充。
 - ⚠ **顺手发现的一处陈旧读数**：台账 `:11435` 把出厂音域写成「`60..=84`，最大跳进 7 半音」，
   现读 `melody.rs:62/65/68` ＝ `48 / 84 / 12`（`melody.rs:702-703` 的判据自己也断言 `48`/`84`）
   ⇒ 已按"就地加指针 ⛔ 删旧结论"的口径在那一行补 ⚠ 更正，本节留测量值。
@@ -12961,3 +12996,15 @@ theory 自己的判据名就写着 `an_over_dense_request_is_an_error_not_a_sile
    本轮这一整轮 CI（≈45 分钟）的红**在本机是量得到的**，`cargo fmt` ＋ `run-gates.sh light`
    这两个"本机已验"的信号**盖不到 lib 侧的 clippy**。⚠ 别把这条推广到判据文件：
    `crates/yeban-mcp/tests/**` 需要整个 `yeban_mcp` lib（拖 `yeban-render`）⇒ 仍只能靠 CI。
+6. **`for x in &[..]` 给出的键是"多一层引用"的，`map[x]` 于是可能落到 `Index<&&_>`**：
+   `preset_parts` 返回 `&'static [&'static str]` ⇒ `part` 是 `&&str`，`map[part]` 要求
+   `String: Borrow<&str>`（不存在）＝ `E0277`，而**同形的字面量键 `map["Drums"]` 合法**，
+   所以这种错只会在"变量键"那一支上出现，读起来像"我改了一个字就全红了"。
+   处置：写成 `map[*part]`（或 `map.get(part)`），**先 grep 同目录既有判据的写法** ——
+   `section_velocity.rs` 里早就有 `table[*part]`，抄那一行就不用烧一轮。
+7. ⭐ **判据文件"编译不了"⛔ 等于"判据测不了"**：把零依赖脚手架的输入换成一次性探针
+   （`#[path]` 引真实模块，照抄判据的夹具、窗口与载荷断言），本机就能量到**形状类**判决 ——
+   载荷键名、`hint` 点不点名、夹具是否真产出非空变化、和声/鼓是否被溢出。本轮用它把六条判据
+   逐条对上（见上一节 ⭐ 那条），而 `G8e` 那轮"hint 没点名键"的红正是这一类。
+   ⚠ 边界要说清：探针**⛔ 覆盖类型面**（`E0277`/`E0432` 那一类仍只能靠 CI），也**⛔ 入库** ——
+   用完即删，它是一次性测量夹具而不是判据。

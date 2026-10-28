@@ -21,7 +21,7 @@
 | `gh` | 已登录 `gradetwo`；**每条命令都要带 `--repo gradetwo/yeban`**（本机没有默认仓库上下文） |
 | 磁盘 | 235G 用了 209G ⇒ **可用约 20G（92%）**；清理只允许 `bash scripts/dev/trim-target.sh` |
 | 本机能力 | ⛔ `yeban-mcp` 拖 `yeban-render` ⇒ 它的 `clippy --all-targets` / `test` **在本机跑不起**（§5 重依赖禁令）。本机只有 `cargo fmt`、零依赖 crate（`yeban-theory`／`yeban-model`）的 clippy/test、全部守卫与 schema 脚本、`run-gates.sh light` |
-| ⚠ 由此推论 | 判据里的**类型错误 / 宏名写错**本机抓不到 ⇒ 提交前必须机械扫一遍改动的 `.rs`（见 §0.6.4 第 1 条），⛔ 把"fmt 过了"当"编译过了" |
+| ⚠ 由此推论 | 判据里的**类型错误 / 宏名写错**本机抓不到 ⇒ 提交前必须机械扫一遍改动的 `.rs`（见 §0.6.4 第 1 条），⛔ 把"fmt 过了"当"编译过了"。**⚠ 2026-10-28 本行的覆盖面已被实测缩小两次**：`src/domain/**` 的 lib 侧编译/clippy 错误现在由 `run-gates.sh light` 里的 `clippy-driver` 分支承担（§0.6.4 第 12 条），判据的**形状面**（载荷键名、`hint` 点不点名、夹具是否真改变输出）由一次性探针承担（第 15 条）；⛔ 只有判据文件的**类型面**（`E0277`/`E0432`/`E0615`）仍是 CI-only（第 16 条给了这类错的现成 grep 去处）|
 
 ### 0.6.1 本轮做了什么：**`G1..G18` 十八条创作缺口全部处置**
 
@@ -44,7 +44,9 @@
 且⛔ 空绿**（全量腿真跑 ⇒ 413 / 6,740 / 0），工作树已拆）
 与 **`G8f`＝旋律音域／旋律动机**（拆成两半：**音域半片在飞** `ADR-0038`
 （`melodyLower`/`melodyUpper`，第一批 `5a176d4c` Run `40609755301` **真红**（lib 侧
-`clippy::too_many_arguments` 8/7），修复批 `d654a854` Run `40617892659` **pending**，theory 侧公开面
+`clippy::too_many_arguments` 8/7），第二批 `d654a854` Run `40617892659` **第二次真红**（lib 已干净，
+红在判据文件的 `E0277`：`&&str` 键索引 `BTreeMap<String, _>`），第三批 `36390614`
+Run `40620624034` **pending**，theory 侧公开面
 `MelodyConstraints { lower, upper, max_leap }` 从此不再只收 `DEFAULT`）；**动机半片⛔ 未开工**
 —— theory 明文「旋律型 (motif)、句法、终止式一律不做」（`melody.rs:16`）⇒ 那是产品范围决定，
 已登记待人类裁决）。教训已写成规则：**一条多轴缺口的"消除"
@@ -52,8 +54,9 @@
 
 ### 0.6.2 判决：**本轮全部读回，⛔ 欠判决**（未读回 ＝ 没有判决）
 
-⚠ **本节标题于 2026-10-28 第二次更新后不再全称成立**：`G8f`（音域半片）修复批
-`d654a854` Run `40617892659` 仍 **pending** ⇒ 现在**欠一条判决**，接手第一件事就是读回它。
+⚠ **本节标题于 2026-10-28 第三次更新后仍不全称成立**：`G8f`（音域半片）第三批 `36390614`
+Run `40620624034` 仍 **pending** ⇒ 现在**欠一条判决**，接手第一件事就是读回它
+（前两批 `40609755301`／`40617892659` 已各自读回＝**两次真红**：lib 侧 `8/7` → 判据侧 `E0277`）。
 
 | 提交 | run | 判决（承判腿 + 三读数） |
 | :--- | :--- | :--- |
@@ -71,7 +74,8 @@
 | `2de1a438`（`G8e` 修复批 3：hint 点名两个键） | `40602347056` | **success** —— 三条执行腿逐个读回（全量腿因这次推送增量只含 `crates/**` 而 skipped ⇒ ⛔ 算判决）：承判腿 `rust (yeban-mcp)` **103 / 2,256 / 0**、windows **251 / 4,886 / 0**、macos **251 / 4,907 / 0**，五条 `section_velocity` 判据在**三条腿上逐一 `... ok`**；相对 `G8d` 同组读数（101 / 2,242、250 / 4,879、250 / 4,900）的净增恰等于新增的那个测试二进制 ⇒ ⛔ 有既有判据被改数或删掉 |
 | ⭐ 主干 merge `cfaf79cd`（`G8e` **落地**） | `40606247815` | **success ＝⛔ 空绿** —— 该 merge 碰根级 `schemas/**` ⇒ `plan` 给 `workspace_wide: true`，承判腿 `rust (workspace 全量)` **真跑** 2,715s ⇒ **413 条 `test result:` / 6,740 passed / 0 failed / 16 ignored**；对祖先 `e1311434`（412 / 6,735 / 0）净增 **＋1 二进制 / ＋5 通过** ＝ 那 5 条新判据；`Running tests/section_velocity.rs` 自己报 **5 passed / 0 failed**，五条判据**逐名** `... ok`；windows 2,208s／macos 1,505s conclusion＝success（⚠ 这两条只读到腿级＋非零耗时）；矩阵腿 skipped ⇒ **`G8e` 四件齐（代码＋判据＋线判决＋全量判决），力度轴按本仓口径闭合** |
 | `5a176d4c`（`G8f`＝`ADR-0038` 音域半片第一批） | `40609755301` | **failure** —— 红在 **lib 自己**而⛔ 判据：`error: this function has too many arguments (8/7)`（`section_build.rs:1785` `melody_contents`，加进 `register` 后到第 8 个参数），`rust (workspace 全量)`／windows／macos **三条腿同红**、整轮 **0 条** `test result:` ⇒ 真红。⚠ 两条推论：① clippy 只报这 **1** 个错误 ⇒ lib 其余部分（含 import 与 `domain/mod.rs` 接线）**类型是干净的**；② 这条红**本机本来量得到** ⇒ 见 §0.6.4 第 12 条（`clippy-driver` 换掉脚手架里的 `rustc`） |
-| `d654a854`（`G8f` 修复批：两把标尺收成 `MelodyRulers`） | `40617892659` | **pending**（run 在跑；读回前本片⛔ 记为已消除）。本机证据：`clippy-driver` 版脚手架 **0 错误**（对 `5a176d4c` 的同一文件却逐字复现上面那条 8/7），`rustc --test` 版 **48 passed / 0 failed** ⇒ 纯形态改动、行为逐字节不变；⚠ 判据文件 `tests/section_melody_range.rs` 仍⛔ 本机编译不了（要整个 lib，拖 `yeban-render`），六条判据的成败**要等 CI** |
+| `d654a854`（`G8f` 修复批：两把标尺收成 `MelodyRulers`） | `40617892659` | **failure（第二次真红，位置换到了判据文件）** —— lib 已干净（`rust (yeban-ui-mcp)` success，上一轮那条 8/7 消失），红在 `error[E0277]: String: Borrow<&str> is not satisfied` ×2：`tests/section_melody_range.rs:232:17/232:35` 的 `base_table[part]` —— `preset_parts` 返回 `&[&str]` ⇒ `part` 是 **`&&str`** ⇒ 索引退化成 `Index<&&str>`（同形的字面量键 `map["Drums"]` 合法，所以只炸变量键那一支）。步骤读数：`clippy (-D warnings)` **failure**、`test`／`doctests` **skipped**、`rust (yeban-mcp)`／windows／macos 三条腿同红、整轮 **0 条** `test result:` ⇒ 真红；`rust (workspace 全量)` 因增量规划 skipped（⭐ 那是矩阵规则，⛔ 本判决）。修法＝照既有写法 `[*part]`（`section_velocity.rs:215/272` 早就这么写 ⇒ **又是"先 grep 隔壁文件"能省一轮**）。⚠ 本机这一轮的覆盖情况：`clippy-driver` 版脚手架 **0 错误**、`rustc --test` 版 **48 passed / 0 failed**（本轮重跑复核）⇒ lib 侧确实干净；判据文件**类型面**仍⛔ 本机编译不了，但**形状面已本机实测**（见 §0.6.4 第 15 条那条一次性探针） |
+| `36390614`（`G8f` 判据修复批：`[*part]` 走 `Borrow<str>`） | `40620624034` | **pending**（run 在跑；读回前本片⛔ 记为已消除）。本机已把六条判据的**运行时形状**逐条对上，⛔ 只对上类型面 |
 
 #### 0.6.2.1 `40593859267` 的逐腿读数（文档批次为何也有代码判决）
 
@@ -169,8 +173,16 @@
     Run `40609755301` 那条 `this function has too many arguments (8/7)`。
     ⇒ §0.6.4 第 1/8/9 条那句"符号解析与 lint 类错误只能靠 CI"的**范围到此缩小**：
     `src/domain/**` 这类**纯模块**里 lib 侧的编译错误与 clippy 错误**本机量得到**，
-    本轮这一整轮 CI（≈45 分钟）本来可以省掉。⛔ 推广到判据文件：
+    本轮这一整轮 CI（≈45 分钟）本来可以省掉。⛔ 推广到判据文件**的类型面**：
     `crates/yeban-mcp/tests/**` 要整个 lib（`Cargo.toml:74` 拖 `yeban-render`）⇒ 仍 CI-only。
+    ⚠ 但判据文件的**形状面**本机量得到 —— 见本表第 15 条（一次性探针），两句别混着引。
+    ⭐ **本条已固化成机械防线，不必再手敲命令**：`scripts/gates/clippy-changed.sh` 现在对
+    "含重依赖**且有零重依赖脚手架**"的 crate 自动走 `clippy-driver` 分支（`run-gates.sh light`
+    会调到），实测：正向 `[run ] …[ok]`（1.4s，rc=0），反向把 `section_build.rs` 换成坏的那版
+    ⇒ `[FAIL] …rc=1`。措辞与边界见 `docs/DEV_WORKFLOW.md` 那段第 2 项的 ⚠ 补充。
+    ⚠ 这条分支自己也被**守卫 G14** 判红过一次（`"${externs[@]}"` 在 bash 3.2 + `set -u`
+    且数组为空时报 unbound）⇒ 正确写法是 `${externs[@]+"${externs[@]}"}`；改完
+    `run-gates.sh light` 才回到 `门禁通过 (mode=light)`。⭐ **机械化本身也要过一遍门**。
 13. **`clippy::too_many_arguments` 命中时先查相邻参数是否同型**：`G8f` 的 `ladder` 与
     `register` 都是 `(u8, u8)` ⇒ lint 报的是"调个顺序照样编得过、编译器一句话不说"这个
     **真缺陷**。处置按 `yeban-mcp` 自己的注释（`domain/mod.rs` 的 `SessionSeed`、
@@ -185,6 +197,25 @@
     夹具选得巧"在绿判据里长得一样；
     ③ 同一条耦合规则在相邻两票里可以取**不同值**（力度⛔ 要求声部在场、音域**必须**
     `includeMelody:true`），差别来自**消费点在哪些声部**，⛔ 从上一票的措辞抄。
+15. ⭐ **判据文件"编译不了"⛔ 等于"判据测不了"——一次性探针能本机量到形状面**：
+    把第 12 条那条脚手架命令的**输入文件**换成一个临时探针（同一个 `verify/` 目录、
+    `#[path]` 引真实的 `section_build.rs` + `ids.rs`，照抄判据的夹具/窗口/载荷断言），
+    `rustc --test` 跑完**即删（⛔ 入库）**。本轮用它把 `G8f` 六条判据逐条对上：
+    三个窗口的和声与鼓**逐条相同**、旋律 id 集合相同、被改音高 61/63/59 条（非空⇒正例不空转）、
+    窗口内音高 `{60}`/`{48,50,51,53,55}`/`{80,82,84}`、力度恒 `{96,112}`、六条拒绝载荷的
+    **键名与取值**全对（`field`+`value`+`range=[0,127]`、倒序 `hint` 点名两键、
+    `materialSource`/`includeMelody` 两条 hint、转发面 `theoryStep`+`theoryError`、⛔ 一条带 `reason`）。
+    ⇒ `G8e` 那轮"hint 没点名键"（判据红、最贵的一类）以后**在本机就能拦住**。
+    ⚠ 边界两句：① 探针⛔ 覆盖**类型面**（`E0277`/`E0432`/`E0615` 仍靠 CI）；
+    ② 探针里的**引用层数**要与判据一致 —— 本轮探针自己先撞上 `filter(|(id, n)| …)` 的
+    `&&String` 与 `PlanOptions<'static>`，正是这两处让判据文件的那条 `E0277` 提前在本机现形。
+16. **迭代器元素的"多一层引用"会让 `map[key]` 变成另一个 trait**：`preset_parts` 返回
+    `&'static [&'static str]` ⇒ `for part in …` 给的是 **`&&str`**，`map[part]` 于是要求
+    `String: Borrow<&str>`（不存在）＝ `E0277`；**同形的字面量键 `map["Drums"]` 合法**，
+    所以这类错只出现在"变量键"那一支，看起来像"改一个字就全红"。
+    处置＝照既有写法 `map[*part]`（走 `String: Borrow<str>`）或 `map.get(part)` ——
+    `section_velocity.rs:215/272` 早就写着 `table[*part]`，**先 grep 隔壁判据**⛔ 凭直觉重摆。
+    同族第 8 条（import 路径）：都是"仓库里已有答案，一次 grep 省一轮 CI"。
 
 ### 0.6.5 ⭐ 下一个该做什么
 
@@ -202,23 +233,28 @@
    theory 与 MCP **两侧都没有对应概念**（`yeban-theory/src/melody.rs:16` 明文"一律不做"）⇒
    那是**新增音乐能力**，要不要做、按什么形态做属于产品裁决，⛔ 用现有字段凑。
    剩下的 4＋5 条待裁见 §0.6.3，⛔ 为了"有活干"发明需求。
-   ⚠⚠ **本条于 2026-10-28 第三次更新（这一小段才是当下的活）**：
+   ⚠⚠ **本条于 2026-10-28 第四次更新（这一小段才是当下的活）**：
    `G8e`（力度）**已四件齐**（线 `2de1a438` ＋ 主干 merge `cfaf79cd` Run `40606247815`
    success，读数见 §0.6.2），工作树 `section-velocity-range` 已 `worktree.sh rm`（分支保留）。
    `G8f` 的**音域半片**已落地成代码并推到 `line/melody-range`（`ADR-0038`，
    键 `melodyLower`/`melodyUpper`，缺省 48/84 ⇒ 逐字节不变，六个判据在
-   `crates/yeban-mcp/tests/section_melody_range.rs`；第一批 `5a176d4c` 真红于 lib 侧的
-   `clippy::too_many_arguments`，修复批 `d654a854` 把 `ladder`+`register` 收成 `MelodyRulers`）。
-   ⇒ **接手第一件事 = 读回 Run `40617892659`（分支 `line/melody-range`）**：
+   `crates/yeban-mcp/tests/section_melody_range.rs`）：**三批在前，前两批各是一次真红** ——
+   第一批 `5a176d4c` 红在 lib 侧 `clippy::too_many_arguments` 8/7，第二批 `d654a854`
+   （`MelodyRulers` 捆绑，lib 已干净）红在判据侧 `E0277`（`&&str` 键 ⇒ `Index<&&str>`），
+   第三批 `36390614` 改成 `[*part]`。**判决只到"读回"为止** ⇒
+   ⇒ **接手第一件事 = 读回 Run `40620624034`（分支 `line/melody-range`，tip `36390614`）**：
    `gh run list --repo gradetwo/yeban --branch line/melody-range --json databaseId,headSha,status,conclusion`。
    - 若 **success**（承判腿 `rust (yeban-mcp)` 真跑 ＋ 六条判据**逐名** `... ok`）⇒
      `bash scripts/dev/worktree.sh land melody-range`（⚠ §0.6.4 第 3 条：主干必须先停在
      **已推送**的 tip，merge 提交⛔ 与文档提交挤在同一次推送），再读回那条 merge run
      （碰 `schemas/**` ⇒ 全量腿应**真跑**），最后 `worktree.sh rm melody-range` ＝ 音域半片四件齐。
-   - 若 **failure** ⇒ 按"改报文而⛔ 放宽判据"处理，并且**推送前先跑 §0.6.4 第 12 条那条
-     `clippy-driver` 命令**（本轮的红就是被这一步省下来的那类）。
-     ⚠ 唯一本机测不到的仍是**判据文件本身**（`tests/section_melody_range.rs` 编译不了）⇒
-     `E0432`/`E0615` 那一类要逐名核对 import 与调用括号（§0.6.4 第 8、9 条）。
+   - 若 **failure** ⇒ 按"改报文而⛔ 放宽判据"处理，推送前跑两道本机防线：
+     ① `bash scripts/gates/run-gates.sh light`（现含 `clippy-driver` 纯模块分支，lib 侧的
+     clippy/编译错误**已在门禁里**，⛔ 再凭记忆手敲）；② **判据的形状面**用一次性探针量
+     （§0.6.4 第 15 条：把脚手架的 `rustc` 输入换成临时探针文件，`#[path]` 引真实模块，
+     照抄判据的夹具与载荷断言，跑完即删）—— 本轮六条判据就是靠它对上号的。
+     ⚠ 本机仍⛔ 覆盖**判据文件的类型面**（`tests/**` 要整个 lib）⇒ `E0277`/`E0432`/`E0615`
+     那一类要逐名核对 import、调用括号与**索引键的引用层数**（§0.6.4 第 8、9、16 条）。
    - `G8f` 的**动机半片**仍⛔ 未开工，等 §0.6.3 那条人类裁决；⛔ 为凑"缺口清零"发明 motive。
 3. ✅ **在飞的线已全部落地**：`line/reason-propagation`（§0.5.8 第 11 项队列的最后一格）
    已合进主干（`c2dd2b89` 主体 + `007e3ff9` 修 CI 报的两个编译错，merge `e18be129`，
@@ -1006,7 +1042,8 @@ python3 scripts/guards/policy_check.py && bash scripts/gates/run-gates.sh light
 | 路径 | 分支 | 处置 |
 | :--- | :--- | :--- |
 | `/home/crow/work/qoder/yeban` | `main` | 主树（⭐ 集成者工作区，⛔ 不在这里写线代码）|
-| `/home/crow/work/qoder/yeban/.worktrees/melody-range` | `line/melody-range` | ⭐ **在飞**（`G8f` 音域半片＝旋律音高窗口，`ADR-0038`）：tip `d654a854`（父 `5a176d4c` 真红于 lib 侧 `clippy::too_many_arguments`），Run `40617892659` **pending** ⇒ ⛔ 落地、⛔ 拆树，读回见 §0.6.5 |
+| `/home/crow/work/qoder/yeban/.worktrees/melody-range` | `line/melody-range` | ⭐ **在飞**（`G8f` 音域半片＝旋律音高窗口，`ADR-0038`）：tip `36390614`（三批：`5a176d4c` 真红于 lib 侧 `clippy::too_many_arguments` → `d654a854`
+真红于判据侧 `E0277` → `36390614` 待判），Run `40620624034` **pending** ⇒ ⛔ 落地、⛔ 拆树，读回见 §0.6.5 |
 
 > ⭐ **2026-10-28 现读 `git worktree list` ＝ 上面两行**：`line/reason-propagation` 已落地
 > （`c2dd2b89` + `007e3ff9`，merge `e18be129`，run `40588472044` success）⇒ 工作树已按第 31 条拆除
