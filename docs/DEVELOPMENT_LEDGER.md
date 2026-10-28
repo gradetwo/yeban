@@ -13725,3 +13725,72 @@ MCP 侧只被写死成常量（`section_build.rs:1828` 的 `max_leap: MELODY_MAX
     判据本身没错（它的差额真实存在：含 4/4 ＋ 三类生成物非空），**错的是它自我推销的那句由来**。
     口径：写"某覆盖不存在"之前先 grep 一遍 `GenreLibrary::all()` 与 `::ALL` 的存量用法，把差额写成**逐条对照**，
     ⛔ 用"只有…"这种绝对句。同族偏差：`AGENTS.md` §6.3 第 3 条（用词面判断交付）。
+
+## 2026-10-28 14:40：MCP 测试"空扫描面恒绿"三处补洞（R93 两条下界 ＋ 一处夹具非空）—— ⛔ 创作缺口
+
+### 三处改动，各有独立的恒绿机制
+
+1. **`crates/yeban-mcp/tests/extension_tools.rs::every_source_file_is_declared_as_a_module`**（提交 `80a695f7`）：
+   加 `assert!(mcp.len() >= 30)`。改前它只断言"0 个孤儿模块"；`read_rust_sources` 一旦退化成空集，
+   该断言恒绿。⚠ 这条**crate 自己的机械守卫也没抓住**（见下面"守卫的盲点"一节，是本轮最重要的发现）。
+2. **`crates/yeban-mcp/tests/probe_authenticity.rs::all_sources()`**（同一提交）：加 `assert!(files.len() >= 60)`。
+   下界放在**助手**里而不是 6 个消费方，因为消费方全都只断言 `offenders.is_empty()` —— 空扫描面与干净代码在它们眼里**无法区分**。
+3. **`crates/yeban-mcp/tests/transpose_clip.rs::every_note_moves_in_pitch_and_nothing_moves_in_time`**（提交 `2c2b735a`）：
+   加 `assert!(!rows.is_empty(), …)`。`midi_target` 只要求"有音符表"（`is_some`）⛔ 要求非空 ⇒ 空片段时
+   `before.len() == rows.len()` 是 **0 == 0**、`zip` 循环零次迭代 ⇒ 逐条对齐与 `+2` 半音全部恒绿。
+   ⚠ 同文件判据 1 的 `want > 1` 只护住**它自己**，不护本判据。
+
+**排除的一处**：`sfz_includes.rs` 的可选真库判据（`ran == 0` 时只 `println`）**不改**。理由三条现读：
+① 它的注释**声明**了这是可选判据；② 上面的临时夹具判据真渲染并断言 `peak > 1_000_000`（同一性质有承重判据）；
+③ 两份夹具 `.sfz` **都在仓库里**（`ls` 现读 2,113 / 229 字节）⇒ CI 上 `ran == 0` 分支走不到，跳过只影响被剥掉的检出。
+
+### 覆盖面（两轮只读审计，合计 57/57 个测试二进制，按函数粒度）
+
+第一轮 30 个文件、第二轮余下 27 个（`ls crates/yeban-mcp/tests/*.rs | wc -l` 现读 **57**）。
+形状 = "遍历动态集合后只断言零违规"。命中 **3 处已改 ＋ 1 处排除**。
+审计另报的 `for part in preset_parts(...)` 一类（`voice_subdivisions.rs:137` 等）**不是空判据**：
+右端是 `&PARTS_THREE` / `&PARTS_FOUR`（结构上非空），`base[*part]` 缺键会 **panic** ⇒ 不会静默恒绿。
+
+### 判决链（两次都直接推 `main`）
+
+| 提交 | run | 结论 | `rust (yeban-mcp)` | macos | windows | `rust (workspace 全量)` |
+|---|---|---|---|---|---|---|
+| `80a695f7`（两处下界） | `40699932349` | **success** | 13:49:24→14:05:23 = **959 s**；`Running` **121**／`test result:` **121**；passed **2,354**／failed **0**；`every_source_file_is_declared_as_a_module` `... ok` **2** 次 | **982 s**（18 steps，`FAILED` **0**） | **2,379 s**（18 steps，`FAILED` **0**，`test result:` **260**，两处判据各 `... ok` **1** 次） | **skipped／steps=0** |
+| `2c2b735a`（夹具非空） | `40701755008` | **success** | 14:01:01→14:15:57 = **896 s**；同上读数（121／2,354／0；四条判据名各 `... ok` **2** 次） | **1,424 s**（18 steps，`FAILED` **0**） | **2,105 s**（18 steps，`FAILED` **0**，`test result:` **260**） | **skipped／steps=0** |
+
+`checks` 在两个 run 里都是 **success／15 steps**；`deny`／`lockfile`／`plan`／`rust (yeban-ui-mcp)` 全 success。
+
+### ⭐ 机械守卫的盲点（本轮实测；下一批的入口）
+
+`non_vacuity_guard.rs::dynamic_scans_declare_a_lower_bound` 的口径是"函数体里**出现**任一非真空形态"
+（`NON_VACUITY_FORMS = ["is_empty()", ".len(), ", "non_empty", "scanned", "seen =="]` ＋ `>= 数字`）——
+它问的是"**有没有**"，⛔"是不是**对这个集合**"。用零依赖单文件原型（`/tmp/r93_probe.rs`，`rustc` 直接编，
+⛔ 拖重依赖）把**改前**的源码喂进去，两条盲点都现读出来：
+
+1. **同一函数里别的集合顶替**：`every_source_file_is_declared_as_a_module` 改前被计入 `checked`
+   （有动态源 ＋ 有 `assert`）、`old = true` —— 命中的是 `assert_eq!(found.len(), 1, …)`，而 `found` 是
+   **手工构造的三文件 vec**（反向注入判据）；真正被扫的 `mcp` **没有任何下界**。⇒ 机械守卫在上绿的同时**放过了这次的真实洞**。
+2. **助手间接**：`probe_authenticity.rs` 的 6 个消费方函数体里**不含**动态源文本（它们调 `all_sources()`），
+   守卫按设计（"取数助手不承担下界责任"）从不看它们 ⇒ 改前该文件在本判据下**输出 0 行**。
+
+⚠ 同一原型还抓出**我的严格规则会误伤**的一条：`no_second_automation_evaluation_in_production_sources` 是
+`let mut all = mcp.clone(); all.extend(read_rust_sources(..)); assert!(all.len() >= 40)` —— 下界**真实存在**，
+但 `all` 不是直接从动态源绑定的。⇒ 收紧规则必须跟别名/派生集合（`clone` / `extend`），否则把合法函数判红。
+**下一批**：把这两条盲点机械化（严格规则 ＋ 别名跟踪 ＋ 助手返回集合的口径），先在原型上验证"预映像必须红、现存必须绿"再改守卫。
+
+### 能证明／⛔ 不能证明
+
+- **能证明**：三处判据的扫描面／夹具现读非空；两条完整判决覆盖 linux ＋ macos ＋ windows 三腿，`FAILED` 全 **0**。
+- **⛔ 不能证明**"这类洞不会再犯"：见上节，机械守卫现读**放得过**这两种形态。
+- **⛔ 本批没有 `rust (workspace 全量)` 判决**（planner 按受影响集合跳过，steps=0）。这是"只碰
+  `crates/yeban-mcp/tests/**`"的常态，但与 `G8m`／`G8n` 的"四件齐"**不是同一种证据强度**。
+- 本机只跑了 `cargo fmt --all --check`（rc=0）＋ `bash scripts/gates/run-gates.sh light`（rc=0，规则 28 的入口）。
+
+### 本轮新增的规则
+
+30. ⭐ **"机械化的纪律"必须能对真实缺陷的预映像开火** —— 把守卫当成防线之前，先把它喂给**那次真实洞的改前源码**，
+    确认它报红。`dynamic_scans_declare_a_lower_bound` 一直绿，但它对改前的 `every_source_file_is_declared_as_a_module`
+    判"有下界"——因为针是"函数体里出现 `.len(), `"，而那条 `.len()` 属于**另一个手工构造的集合**。
+    口径：**针只能证明"词出现过"，⛔ 证明"它作用在被扫集合上"**。同族偏差：R93 本身（双零通过）、
+    §6.3 第 2 条（跳过不是绿）。写法：先用**零依赖单文件原型**（`rustc` 直编，⛔ 拖重依赖）在两份预映像上验证判别，
+    再改守卫本体 —— 否则改动本身的敏感性也是"论证"而非"实测"。

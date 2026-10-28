@@ -1659,6 +1659,22 @@ python3 scripts/guards/policy_check.py && bash scripts/gates/run-gates.sh light
 > **现读无残余**；⚠ 但⛔ 说"不可能再犯"——本机无法变异注入（重依赖 ⇒ 只交 CI），敏感性是同代码路径的论证。
 > ⭐ 自主可做的**创作缺口**活**仍为零**（本批是覆盖补强，不改变那条结论）；台账新增规则 29（"第一个全库遍历"要先 grep 存量）。
 > 台账见「2026-10-28 13:38」一节。
+>
+> ⭐ **14:40 追加（R93 空扫描面三处补洞，⛔ 创作缺口；tip 现读 `2c2b735a`）**：两批一起读回，都是
+> **success** —— `80a695f7`（`extension_tools.rs` 的 `mcp.len() >= 30` ＋ `probe_authenticity.rs::all_sources()`
+> 的 `files.len() >= 60`）→ run **`40699932349`**：`rust (yeban-mcp)` **959 s**／passed **2,354**／failed **0**；
+> `macos` **982 s**、`windows` **2,379 s**（各 18 steps、`FAILED` 0）；`checks` 15 steps。tip `2c2b735a`
+> （`transpose_clip.rs` 判据 2 的 `!rows.is_empty()`）→ run **`40701755008`**：mcp **896 s**／同读数
+> （121／2,354／0，四条判据名各 `... ok` 2 次）、`macos` **1,424 s**、`windows` **2,105 s**（14:01:02→14:36:07）。
+> ⚠ 两个 run 的 `rust (workspace 全量)` 都是 planner 的 **skipped／steps=0** ⇒ 本批无全量腿判决。
+> 审计覆盖面：两轮只读审计合计 **57/57** 个测试二进制（第一轮 30 个文件／第二轮 27 个，按函数粒度）；
+> `sfz_includes.rs` 的可选真库判据**排除**（声明过的跳过 ＋ 临时夹具判据承重 ＋ 两份 `.sfz` 在仓库里，现读 2,113/229 字节）。
+> ⭐ **本轮最重要的发现（下一批的入口）**：`non_vacuity_guard.rs::dynamic_scans_declare_a_lower_bound` 的针是
+> "函数体里出现 `.len(), `" 这类**词**，⛔"作用在被扫集合上" —— 零依赖原型（`/tmp/r93_probe.rs`，`rustc` 直编）实测：
+> 改前的 `every_source_file_is_declared_as_a_module` 被它判**有下界**（命中的是手工构造三文件 vec 的 `found.len(), 1`），
+> 而真正被扫的 `mcp` 无下界；`probe_authenticity.rs` 的 6 个消费方因"助手间接"**从不被本判据看**（改前 0 行输出）。
+> 同一原型还抓出严格规则会误伤的形态（`let mut all = mcp.clone(); all.extend(…)` ＋ `all.len() >= 40`）⇒ 收紧必须跟别名。
+> ⇒ **下一批（自主可做，⛔ 待裁）**：把这两条盲点机械化，先在原型上验证"预映像必须红、现存必须绿"。台账见「2026-10-28 14:40」一节。
 
 ### ⭐ 磁盘：仓库**外**大头的现读清单（2026-10-28 06:38，`du -sh` 实测，⛔ 一个字节都没删）
 
