@@ -261,10 +261,11 @@ lib 侧 `8/7` → 判据侧 `E0277` → 判据侧 `unused variable`。
     防线＝**落地/推送这类动作，先跑一次真命令把状态读回来（`git status --short` ＋
     `git log --oneline -1` ＋ `git ls-remote origin refs/heads/main`），再写结论**；
     叙述与工具结果冲突时，以工具结果为准并重写叙述，⛔ 事后找补。
-23. ⭐ **同分支二次推送会取消在飞的旧 run ⇒ 那批改动⛔ 有判决**：`c9dd7d44` 的 run
-    `40630639500` 现读 `conclusion:"cancelled"`（被同分支随后的推送顶掉）。于是那条
+23. ⭐ **⚠ 措辞已于同日更正**：原判据"同分支二次推送会取消在飞的旧 run ⇒ 那批改动⛔ 有判决"
+    只对**非 main 分支**成立。现读 `ci.yml:28-34` ⇒ **main 每条 run 自成一组、⛔ 不取消在飞 run**
+    （分支才共享分组）。`c9dd7d44` 的 run `40630639500` 确实被顶掉（分支），后果＝那条
     "`PlanOptions` 字面量缺新字段必报 `E0063`"只能记为**按字段表对账的结构推断**，⛔ 写成
-    CI 已证实。防线＝旧 run 读完再推，或把修复**并进同一次推送**。
+    CI 已证实。防线＝**分支上**旧 run 读完再推，或把修复**并进同一次推送**。
 24. ⭐ **撤"多插的一处"时必须同时核对"少插的那些"**（第 21 条的对称面）：那轮只修了往
     `Given`/`Self` 里多插的 3 处，⛔ 顺带审计 `PlanOptions` 字面量**少插**的那些 ——
     后者才是 `E0063` 的来源。一次机械插入的正解＝双向对账（多插 ∪ 少插）。
@@ -283,6 +284,21 @@ lib 侧 `8/7` → 判据侧 `E0277` → 判据侧 `unused variable`。
   从 `chord.pitch_classes().len()` 派生声部数，这条对齐**就是**现存的唯一覆盖性防线，开放入参＝拆它。
   `harmonyLower/Upper` 另钉在 `ranges: &'static [VoiceRange]`（MCP 侧只能编译期备表）。
   两张票的前置是一张 **theory 侧**的票，⛔ 用本地表绕过。
+
+### 0.6.4.2 ⭐ 判决读数（2026-10-28 04:36 现读，⛔ 凭记忆）
+
+- ⭐ `G8h` **线判决**＝Run `40630969134`（tip `59db1e4e`）**success 且⛔ 空绿**：
+  `rust (yeban-mcp)` **109 行 / 2,292 passed / 0 失败**，`windows` **254 行 / 4,904**，
+  `macos` **254 行 / 4,925**（`rust (workspace 全量)` 按分支规则 skipped ⇒ 全量判决等 merge）。
+  六个判据（`tests/section_harmony_jump.rs`）：
+  `absent_jump_is_byte_identical_to_the_published_bound`／`a_tight_jump_moves_only_the_harmony_pitches`／
+  `out_of_range_is_rejected_naming_the_key`／`the_harmony_key_requires_only_the_theory_source`／
+  `feasibility_is_forwarded_from_theory_and_moves_with_the_progression`／
+  `jump_bound_is_declared_on_both_param_surfaces`。
+  ⇒ **`E0063` 那颗雷确认拆除**（`59db1e4e` 就是那次修复）。
+- ⚠ `G8g` 的**全量判决**＝merge `c6b5f2bb` 的 Run `40630604690` 读时仍在飞（`macos` 已 success／18 步）
+  ⇒ `G8g` 记**三件齐**（代码＋判据＋线判决），⛔ 写成四件齐，直到 `conclusion` 读回来。
+- 文档批 `e5d6747f` 的 Run `40632707610`＝success 但**空绿**（⛔ 代码判决；第 20 条的口径）。
 
 ### 0.6.5 ⭐ 下一个该做什么
 
@@ -1128,6 +1144,17 @@ python3 scripts/guards/policy_check.py && bash scripts/gates/run-gates.sh light
 
 ⚠ ⭐ **口径声明是强制的**：任何「生产命中数」都要说明它排除了什么（注释？文档？测试？）；
 ⭐ **一次性内联脚本的错是静默的**，落库工具才能被自检。
+
+⭐ ⭐ **`scripts/tools/audit_struct_literals.py`** —— 对账「具名字段的结构体字面量」：
+给 struct 加字段后，任何 `Struct { … }` 字面量**少写**键＝CI 的 `E0063`，**多写**＝`E0560`。
+这类错本机量不到（`yeban-mcp` 的测试要整 crate 编），一轮 CI ≈ 1 小时 ⇒ 推送前用它对账。
+- ⭐ **先跑** `python3 scripts/tools/audit_struct_literals.py --self-test` ⇒ **RC 必须为 0**
+  （9 项对照：列全键／少一键／多一键／重复键／`..base` 两种／注释里的同名字串／嵌套字面量／
+  顶层逗号切分配平）。⚠ 本工具的**第 1 版自己就有 bug**（深度计数只数 `{[` 漏了 `)`），
+  把 28 处里的 26 处报成"缺 12 个键"——⛔ 负对照（拿已知绿的树当"应当为 0"）就抓不出来。
+- ⭐ 用法：`… PlanOptions crates/yeban-mcp/src/domain/section_build.rs crates/yeban-mcp/tests <verify/section_pure.rs>`
+  （单位＝"每个字面量的顶层键名相对字段表的差集"，⛔ 行数）。
+- 现读（2026-10-28）：主树 28／`melody-leap` 28／`harmony-leap` 29／`swing-permille` 30，**缺陷 0**。
 
 ## 5. ⭐ worktree（第 31 条：一条线完了就拆）
 
