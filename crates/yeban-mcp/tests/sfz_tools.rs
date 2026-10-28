@@ -709,8 +709,10 @@ fn the_render_velocity_override_selects_regions_and_scales_the_peak() {
 /// 从回读的 24-bit 样本里**独立**估计主频（过零计数）。
 ///
 /// 取 `|x| ≥ 峰值/4` 的首尾区间（避开起音/释放与静音填充），数符号翻转。
-/// 立体声交织不改变估计值：每个样本重复一次 ⇒ 翻转数不变而时长 ×2。
-fn zero_crossing_hz(samples: &[i32], sample_rate: u32) -> f32 {
+/// 交织样本的索引跨度是**帧**跨度的 `channels` 倍 ⇒ 分母要乘声道数，
+/// 否则立体声输出会把估计值**折半**（2026-10-28 run `40746346946` 实测：440 ⇒ 219.27）。
+fn zero_crossing_hz(samples: &[i32], sample_rate: u32, channels: u16) -> f32 {
+    assert!(channels > 0, "声道数必须为正");
     let peak = samples
         .iter()
         .map(|sample| sample.unsigned_abs())
@@ -733,7 +735,7 @@ fn zero_crossing_hz(samples: &[i32], sample_rate: u32) -> f32 {
             crossings += 1;
         }
     }
-    let seconds = (last - first) as f32 / sample_rate as f32;
+    let seconds = (last - first) as f32 / (sample_rate as f32 * f32::from(channels));
     crossings as f32 / (2.0 * seconds)
 }
 
@@ -786,8 +788,8 @@ fn the_render_sample_rate_and_tone_are_honoured() {
         );
         assert_eq!(response["status"], "success", "[{tag}] {response}");
         let bytes = std::fs::read(&out).expect("读回渲染 WAV");
-        let (_, header_rate, _, samples) = wav_payload_i24(&bytes);
-        let measured = zero_crossing_hz(&samples, header_rate);
+        let (channels, header_rate, _, samples) = wav_payload_i24(&bytes);
+        let measured = zero_crossing_hz(&samples, header_rate, channels);
         (response, header_rate, measured)
     };
 
