@@ -438,7 +438,7 @@ pub const COMMON_PARAMS: [ParamSpec; 2] = [
         min_len: None,
         max_len: Some(256),
         items: None,
-        doc: "幂等重放键: 同一个非空键的第二次调用不执行工具, 直接返回首次结果的缓存; 该响应是 `{\"replayed\":true,\"response\":…}` 信封 (契约 `definitions.ReplayedToolResponse`), 而不是裸 `ToolResponse`; 空串按未提供处理",
+        doc: "幂等重放键: 同一个非空键的第二次调用不执行工具, 直接返回首次结果的缓存; 该响应是 `{\"replayed\":true,\"response\":…}` 信封 (契约 `definitions.ReplayedToolResponse`), 而不是裸 `ToolResponse`; 空串按未提供处理; 作用域 = 工具名 + 键 (缓存键 `<工具名>:<idempotencyKey>`) ⇒ 不同工具复用同一个键**不会**互相命中",
     },
 ];
 

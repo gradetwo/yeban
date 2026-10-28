@@ -201,7 +201,8 @@ impl Dispatcher {
         self.replayed
     }
 
-    /// 幂等缓存里的键，**字典序**（`BTreeMap` 的确定性）。
+    /// 幂等缓存里的键（`<工具名>:<idempotencyKey>`，见 [`scoped_idempotency_key`]），
+    /// **字典序**（`BTreeMap` 的确定性）。
     #[must_use]
     pub fn idempotency_keys(&self) -> Vec<&str> {
         self.idempotency.keys().map(String::as_str).collect()
@@ -369,8 +370,11 @@ impl Dispatcher {
             };
         }
         // 6. 幂等去重: 命中缓存 ⇒ 永远走不到第 7 步 (因此不会重复施加副作用)。
-        if let Some(key) = call.idempotency_key()
-            && let Some(cached) = self.idempotency.get(key)
+        //    键**带工具名**（[`scoped_idempotency_key`]）：只按调用方给的 key 去重，
+        //    会让两个不同工具用同一个 key 时互相命中 —— 第二个工具**不执行**却收到
+        //    第一个工具的结果。
+        if let Some(key) = scoped_idempotency_key(&call)
+            && let Some(cached) = self.idempotency.get(&key)
         {
             self.replayed += 1;
             let id = request.response_id();
@@ -382,18 +386,26 @@ impl Dispatcher {
             Ok(_) => 200,
             Err(error) => http_status_for(error),
         };
-        if let Some(key) = call.idempotency_key() {
+        if let Some(key) = scoped_idempotency_key(&call) {
             let response = match &payload {
                 Ok(result) => Response::success(request.response_id(), result.clone()),
                 Err(error) => Response::failure(request.response_id(), error.clone()),
             };
-            self.idempotency.insert(
-                key.to_owned(),
-                CachedOutcome::from_response(status, &response),
-            );
+            self.idempotency
+                .insert(key, CachedOutcome::from_response(status, &response));
         }
         (status, payload)
     }
+}
+
+/// 幂等缓存的**作用域键**：`<工具名>:<idempotencyKey>`。
+///
+/// ⚠ 必须带工具名（2026-10-29 实测缺陷）：缓存若只按调用方给的 key 存，**两个不同工具**
+/// 用同一个 key 会互相命中 ⇒ 第二个工具根本走不到 `domain::execute`（副作用不发生），
+/// 却收到第一个工具的结果。工具名来自 25 个固定注册名，因此 `:` 分隔无歧义。
+fn scoped_idempotency_key(call: &ToolCall) -> Option<String> {
+    call.idempotency_key()
+        .map(|key| format!("{}:{key}", call.tool.name))
 }
 
 /// 幂等重放的返回值：把缓存载荷包成"这就是重放"的形状。
@@ -807,7 +819,10 @@ mod tests {
         let first = dispatcher.handle_line(Channel::Http, Some(&auth), &first_line);
         assert_eq!(first.error_code(), None, "渲染必须带内成功");
         assert_eq!(dispatcher.idempotency_len(), 1);
-        assert_eq!(dispatcher.idempotency_keys(), vec!["k1"]);
+        assert_eq!(
+            dispatcher.idempotency_keys(),
+            vec!["yeban_render_master:k1"]
+        );
         let first_response = first.response.expect("响应");
         let first_result = first_response.result.clone().expect("result");
         assert_eq!(first_result["status"], "success", "{first_result}");
@@ -915,10 +930,73 @@ mod tests {
         }
         assert_eq!(
             dispatcher.idempotency_keys(),
-            vec!["a", "b", "c"],
-            "BTreeMap 的键序必须是字典序 (确定性)"
+            vec![
+                "yeban_query_project:a",
+                "yeban_query_project:b",
+                "yeban_query_project:c"
+            ],
+            "BTreeMap 的键序必须是字典序 (确定性), 且键带工具名作用域"
         );
         assert_eq!(dispatcher.replayed(), 1);
+    }
+
+    /// **本判据存在的理由（2026-10-29 实测缺陷）**：缓存键若只有调用方给的
+    /// `idempotencyKey`，**两个不同工具**用同一个 key 会互相命中 ⇒ 第二个工具根本
+    /// 不执行（副作用不发生），却收到第一个工具的结果。判法：同一个 key 依次调用两个
+    /// 只读工具，第二条**不得**带 `replayed`；随后同工具再调，才允许命中。
+    #[test]
+    fn idempotency_keys_are_scoped_per_tool() {
+        let mut dispatcher = dispatcher();
+        seed_project(&mut dispatcher, unique_project_path());
+        let auth = bearer(&dispatcher);
+        let line = |name: &str, id: &str| {
+            serde_json::json!({
+                "jsonrpc": "2.0", "id": id, "method": "tools/call",
+                "params": {"name": name, "arguments": {"idempotencyKey": "shared"}}
+            })
+            .to_string()
+        };
+        let project = dispatcher.handle_line(
+            Channel::Http,
+            Some(&auth),
+            &line("yeban_query_project", "p1"),
+        );
+        assert_eq!(project.error_code(), None, "第一条必须成功");
+        let engine = dispatcher.handle_line(
+            Channel::Http,
+            Some(&auth),
+            &line("yeban_query_engine_state", "e1"),
+        );
+        assert_eq!(engine.error_code(), None, "第二条必须成功");
+        let engine_result = engine.response.expect("响应").result.expect("result");
+        assert!(
+            engine_result.get("replayed").is_none(),
+            "不同工具用同一个 key 不得命中彼此的缓存: {engine_result}"
+        );
+        assert_eq!(engine_result["status"], "success", "{engine_result}");
+        assert_eq!(
+            dispatcher.idempotency_len(),
+            2,
+            "两个工具各自缓存一条 (键带工具名)"
+        );
+        assert_eq!(dispatcher.replayed(), 0, "前两次都必须是真执行");
+
+        let again = dispatcher.handle_line(
+            Channel::Http,
+            Some(&auth),
+            &line("yeban_query_project", "p2"),
+        );
+        assert_eq!(dispatcher.replayed(), 1, "同工具同 key 必须命中");
+        let replayed = again.response.expect("响应").result.expect("result");
+        assert_eq!(replayed["replayed"], true, "{replayed}");
+        assert_eq!(
+            dispatcher.idempotency_keys(),
+            vec![
+                "yeban_query_engine_state:shared",
+                "yeban_query_project:shared"
+            ],
+            "BTreeMap 字典序"
+        );
     }
 
     /// **本判据存在的理由（实测事故）**：上面那条测试对**每个注册工具**做一次

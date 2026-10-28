@@ -52,7 +52,7 @@
             "idempotencyKey": {
               "type": "string",
               "maxLength": 256,
-              "description": "幂等重放键。同一个非空键的第二次 `tools/call` 不执行工具, 直接返回首次结果的缓存; 该响应是 `ReplayedToolResponse` 信封(`replayed: true` + `response`), 而不是裸 `ToolResponse`。空串按\"未提供\"处理。**长度上界 256 字符**(D46 收口): 超界一律按参数校验失败拒绝 —— 无界键会成为无界的内存驻留缓存, 属资源耗尽面。"
+              "description": "幂等重放键。同一个非空键的第二次 `tools/call` 不执行工具, 直接返回首次结果的缓存; 该响应是 `ReplayedToolResponse` 信封(`replayed: true` + `response`), 而不是裸 `ToolResponse`。空串按\"未提供\"处理。**作用域 = 工具名 + 键**（缓存键是 `<工具名>:<idempotencyKey>`）：同一个键用在**不同工具**上不会互相命中 —— 否则第二个工具根本不会执行, 调用方却收到第一个工具的结果。**长度上界 256 字符**(D46 收口): 超界一律按参数校验失败拒绝 —— 无界键会成为无界的内存驻留缓存, 属资源耗尽面。"
             }
           }
         }
