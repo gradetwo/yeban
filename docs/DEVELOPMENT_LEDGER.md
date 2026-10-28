@@ -14135,13 +14135,23 @@ macOS 侧读数：`test result:` **262** 行／passed **4,960**／`FAILED` **0**
   （`src` 里唯一出现点是序列化那一行）⇒ 这个键今天的作用就是"进报告"，判据只断言回显。
   schema 早先写的"播放速率比"从未被实现，本批已把描述改成"不计算速率比"。
 
-### 全量判决（欠，待手动档补齐）
+### 全量判决（手动档补上，⛔ 空绿）
 
 `183462f5` 碰了 `schemas/mcp-tools.schema.json` ⇒ 它的 run **`40749006069`** 是
 `rust (workspace 全量)` **真跑**（矩阵腿 skipped），但该提交仍含过零估计的缺陷 ⇒ 全量读数是
-**failure**。`fe160796` 的 run 矩阵腿真跑、全量腿 skipped ⇒ 到 tip 为止**没有一条绿色的
-全量判决**。欠条：用 `gates-manual.yml` 对 tip `fe160796` 跑一次手动全量，读回后补进本表
-（⛔ 把上一次"红在已修判据"的全量 run 当 tip 的判决）。
+**failure**；`fe160796` 的 run 矩阵腿真跑、全量腿 skipped ⇒ 自动档到 tip 为止**没有**
+绿色的全量判决。用 `gates-manual.yml` 的 `all-features` 档对 tip 补跑：
+
+| run | 提交 | 判决（读数） |
+| :--- | :--- | :--- |
+| `40756905654`（手动档 `all-features`） | `e9de7f58`（= tip，含本批全部代码与文档） | **success** —— 作业 `all-features (workspace)` steps=**9**、19:43:57→20:16:59（≈1,982 s）：`clippy --all-features` success、`test --all-features` success；日志 `Running` **288** / `test result:` **310** / passed **5,961** / **FAILED 0**（`test result:` 多于 `Running` 是因为部分二进制/文档测试各打多行，⛔ 当成"多跑了判据"）；三条新判据逐名 `... ok`；其余 9 个手动档作业按 `gate=all-features` 的选择性全部 skipped（⛔ 空绿，⛔ 当它们的判决） |
+
+⇒ 本批**四件齐**：代码（`c2dcebb4`…`fe160796`）＋判据（`tests/sfz_tools.rs` 三条 ＋
+`src/domain/sfz.rs` 单测一条）＋线判决（`40751389223`）＋全量判决（`40756905654`）。
+
+⚠ 同批的**文档提交** `e9de7f58` 自己的自动档 run `40756888181` ＝ **success ＝ 空绿**
+（`plan` 判无 crate ⇒ `rust (workspace 全量)`／矩阵腿／`macos`／`windows` **四条全 skipped
+且 steps=0**；真跑的只有 `plan`／`lockfile`／`checks`／`deny`）⇒ ⛔ 当代码判决用。
 
 ### 已知留条（登记，⛔ 本批修）
 
