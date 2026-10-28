@@ -1382,6 +1382,14 @@ fn no_second_automation_evaluation_in_production_sources() {
 #[test]
 fn every_source_file_is_declared_as_a_module() {
     let mcp = yeban_mcp::undo_session::read_rust_sources(&[repo_path("crates/yeban-mcp/src")]);
+    // ⭐ R93：被扫集合必须有下界 —— 与本文件其余扫描判据同一口径。没有它时，
+    // `read_rust_sources` 退化成空集会让"0 个孤儿模块"恒绿（反向的注入判据仍然通过，
+    // 因为它喂的是**手工构造**的三个文件 ⇒ 它证明扫描器，⛔ 证明扫描面）。
+    assert!(
+        mcp.len() >= 30,
+        "生产区扫描面太小（{} 个文件）—— 目录枚举或路径比较可能写错了",
+        mcp.len()
+    );
     assert_eq!(
         extension_audit::scan_orphan_modules(&mcp),
         Vec::<String>::new(),

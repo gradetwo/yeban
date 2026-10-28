@@ -76,6 +76,15 @@ fn all_sources() -> Vec<(String, String)> {
     let root = manifest_dir();
     let mut files = read_rust_sources(&[root.join("src"), root.join("tests")]);
     files.sort_by(|left, right| left.0.cmp(&right.0));
+    // R93：被扫集合必须有下界 —— `read_rust_sources` 若退化成空集（路径比较写错、
+    // 目录枚举失效），本文件所有"0 处违规"的断言都会**恒绿**。下界放在**助手**里，
+    // 而不是逐个消费方，是因为消费方全都只断言 `offenders.is_empty()`：空扫描面
+    // 与干净代码在它们眼里无法区分。
+    assert!(
+        files.len() >= 60,
+        "扫描面太小（{} 个文件）—— 目录枚举或路径比较可能写错了",
+        files.len()
+    );
     files
 }
 
