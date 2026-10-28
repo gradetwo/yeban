@@ -506,7 +506,7 @@
             "includeMelody": {
               "type": "boolean",
               "default": false,
-              "description": "是否追加旋律声部（`ADR-0017` D1）。`true` = 在段落末尾追加 `\"{sectionName} · Melody\"` 音轨，旋律由 `melody_over_chords` 在**当前段落展开的** `ChordSpan` 与流派节奏网格上生成，音域 `MelodyConstraints::DEFAULT`，起点/时值与网格对齐，和弦音取 `velocityMax`（缺省 112）其余取 `velocityMin`（缺省 96）（`ADR-0037`），并直连主总线（整图仍为 DAG）。**只**允许与 `materialSource: \"theory\"` 同给；否则 ⇒ `INVALID_PARAMETER_RANGE`（带 `hint`）。缺省 = 与既有行为逐字节相同（`ADR-0017` D2）。"
+              "description": "是否追加旋律声部（`ADR-0017` D1）。`true` = 在段落末尾追加 `\"{sectionName} · Melody\"` 音轨，旋律由 `melody_over_chords` 在**当前段落展开的** `ChordSpan` 与流派节奏网格上生成，音域缺省 `48..=84`（`ADR-0038` 起可由 `melodyLower` / `melodyUpper` 覆盖），起点/时值与网格对齐，和弦音取 `velocityMax`（缺省 112）其余取 `velocityMin`（缺省 96）（`ADR-0037`），并直连主总线（整图仍为 DAG）。**只**允许与 `materialSource: \"theory\"` 同给；否则 ⇒ `INVALID_PARAMETER_RANGE`（带 `hint`）。缺省 = 与既有行为逐字节相同（`ADR-0017` D2）。"
             },
             "drumDensity": {
               "type": "string",
@@ -559,6 +559,20 @@
               "maximum": 127,
               "default": 112,
               "description": "生成音符的力度**上档**（重音档，`ADR-0037`）。单位 = MIDI velocity，`0..=127`；缺省 `112` = 逐字节维持既有输出。消费点：鼓 `hit.accent == true` 与旋律 `chord_tone == true`（即既有阶梯里的那个 `112`）。约束与拒绝形状同 `velocityMin`（含 `velocityMin <= velocityMax`）。与 `velocityMin` 相等 = 全曲单档，合法。"
+            },
+            "melodyLower": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 127,
+              "default": 48,
+              "description": "旋律声部音高窗口的**下端**（`ADR-0038`）。单位 = **MIDI 音高值**（⛔ 不是八度号、⛔ 不是半音偏移量），`0..=127`；缺省 `48` = theory 的 `MELODY_LOWER_BOUND` ⇒ 两键都不给时逐字节维持既有输出（`ADR-0016`）。消费点：**仅**旋律生成路径（`melody_over_chords` 的 `MelodyConstraints.lower`）—— 和声声部的音域是 `ADR-0028` 的 `SECTION_THREE_VOICES`（编译期常量，⛔ 入参化），鼓的音高是 GM 键；因此要求与 `materialSource: \"theory\"` **且** `includeMelody: true` 同给，否则 ⇒ `INVALID_PARAMETER_RANGE`（带 `hint`）。越界 ⇒ `INVALID_PARAMETER_RANGE`（带 `field` + `value` + `range`）；相对界 `melodyLower <= melodyUpper` ⇒ `INVALID_PARAMETER_RANGE`（带 `field: \"melodyLower\"` + 两值 + `hint`）。窗口内没有该调式的音时由 `yeban-theory` 判定并**原样转发**（`theoryStep: \"melody_over_chords\"`），⛔ 本层不抄「调式 × 音域」可行性表。⛔ 不筛点、⛔ 不改时值：onset 数与缺省跑相同，只有音高落在请求窗口内。跳进上界 `max_leap` 不在本票（单位是相邻两音的半音距离，不是音域）。"
+            },
+            "melodyUpper": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 127,
+              "default": 84,
+              "description": "旋律声部音高窗口的**上端**（`ADR-0038`）。单位 = MIDI 音高值，`0..=127`；缺省 `84` = theory 的 `MELODY_UPPER_BOUND` ⇒ 逐字节维持既有输出。约束与拒绝形状同 `melodyLower`（含 `melodyLower <= melodyUpper`）。与 `melodyLower` 相等 = 单音音域，合法（实测：整条旋律压成那一个音高，onset 数不变）。"
             },
             "autoMerge": {
               "type": "boolean",

@@ -2466,6 +2466,11 @@ fn plan_propose_section(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault>
     // 这里⛔ 再校验一遍 —— 同一参数的界只能有一个写者。
     let velocity_min = arg_u64(call, "velocityMin")?;
     let velocity_max = arg_u64(call, "velocityMax")?;
+    // ⭐ `ADR-0038` D1/D2：旋律音高窗口的两端都是可选整数键；**都不给 = 既有 48/84**
+    // ⇒ 逐字节相同。`0..=127` 的界与 `lower <= upper`、以及"没有旋律声部却不给拒"的消费
+    // 校验都交给领域层（`melody_register`），这里⛔ 再校验一遍。
+    let melody_lower = arg_u64(call, "melodyLower")?;
+    let melody_upper = arg_u64(call, "melodyUpper")?;
     let section_plan = section::plan_with_options(
         project,
         section_name,
@@ -2483,6 +2488,8 @@ fn plan_propose_section(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault>
             onsets_per_bar,
             velocity_min,
             velocity_max,
+            melody_lower,
+            melody_upper,
         },
     )?;
     propose_draft(

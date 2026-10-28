@@ -104,6 +104,8 @@ fn try_plan(given: Given<'_>) -> Result<SectionPlan, BuildFault> {
             onsets_per_bar: None,
             velocity_min: given.velocity_min,
             velocity_max: given.velocity_max,
+            melody_lower: None,
+            melody_upper: None,
         },
     )
 }
