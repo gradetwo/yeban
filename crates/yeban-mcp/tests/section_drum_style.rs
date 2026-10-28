@@ -346,8 +346,8 @@ fn four_on_the_floor_only_adds_kicks_on_beat_starts() {
         Given::theory().style(Some(FLOOR)).swing(Some(MEDIUM)),
     ));
     assert_eq!(
-        kick_starts(&straight),
-        kick_starts(&swung),
+        kick_starts(&straight["Drums"]),
+        kick_starts(&swung["Drums"]),
         "两档摇摆下的底鼓起点集合必须相同（摇摆只推移每对格位里的**第二个** onset，\
          而 `{FLOOR}` 的落点恒在拍起点 —— 读数 4 用它挡\"接错实参\"）"
     );
