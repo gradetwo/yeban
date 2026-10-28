@@ -215,6 +215,12 @@ fn transpose_clip_expands_into_one_move_per_note_in_a_single_batch() {
 fn every_note_moves_in_pitch_and_nothing_moves_in_time() {
     let (mut dispatcher, auth, project) = dispatcher();
     let (track, clip, rows) = midi_target(&project);
+    // R93：`midi_target` 只要求"有音符表"（`is_some`），⛔ 要求**非空** ⇒ 空片段时
+    // 下面的 `before.len() == rows.len()` 是 0 == 0，`zip` 循环零次迭代 ⇒ 恒绿。
+    assert!(
+        !rows.is_empty(),
+        "夹具片段必须有音符, 否则逐条对齐与 +2 半音的断言会在空集上恒绿: {rows:?}"
+    );
     let before = read_back(&auth, &mut dispatcher, &clip);
     assert_eq!(before.len(), rows.len(), "读数口径必须与夹具一致");
 
