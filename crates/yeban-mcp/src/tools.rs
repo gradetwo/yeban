@@ -608,6 +608,15 @@ const fn array_param(
     }
 }
 
+/// `beatGrouping` 的 item schema（`ADR-0046` D5）：逐项 = 该组的拍数，正整数。
+///
+/// ⛔ 写 `maximum`、⛔ 写数组级 `maxItems`：两者的上界都是**该拍号的拍数**
+/// （`felt_beats_per_bar(meter)`），写死会对窄拍号报出"契约说能、本层拒"的矛盾。
+#[must_use]
+pub fn beat_grouping_items() -> Value {
+    serde_json::json!({ "type": "integer", "minimum": 1 })
+}
+
 /// 二十三个工具，**规范顺序**（`MCP-TOOL-001..010` 在前，D45/D46 及后续的扩展在后）。
 pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
     ToolSpec {
@@ -835,6 +844,12 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
                 "string",
                 false,
                 "鼓的**底鼓口径** [ADR-0044]: 单位 = 档位名 (⛔ 数字、⛔ 枚举下标)。`\"metric\"` = 底鼓落在**组起点** (由拍号自身的度量层级或 `BeatGrouping` 判定); `\"four-on-the-floor\"` = 底鼓落在**每一个拍的起点** (disco/house/techno/trance 的通行配器口径)。候选 = theory 公开的 `DrumStyle::ALL` × `name()` 现读 (本层⛔ 另立一份字符串表 ⇒ 契约里的 `enum` 与错误载荷里的 `accepted` 都从同一处生成)。⛔ 本键**没有固定缺省值**: 缺省不给 = **不覆盖**该流派登记的 `GenreRule::drum_style`, 而现读 `GENRES` 182 条是 **169 条 `metric` / 13 条 `four-on-the-floor`** 两支 ⇒ schema 里因此⛔ 写 `default`, 键缺席时逐字节维持既有输出。消费点: **仅**鼓轨 (`GenreRule::drum_pattern` 是 `swung_styled_drum_pattern(meter, bars, onsets, swing, None, backbeat, drum_style)` 的薄封装, 实测逐字节同形 ⇒ 接线只换 `style` 那一个实参), 和声与旋律⛔ 读它 ⇒ 要求与 `materialSource:\"theory\"` **且** `includeDrums:true` 同给, 否则 ⇒ `INVALID_PARAMETER_RANGE` (带 `hint`)。未知取值 ⇒ `INVALID_PARAMETER_RANGE` (带 `field` + `value` + `accepted`), ⛔ 夹紧、⛔ 静默降级成 `metric`。⚠ 本键**只动底鼓**: 实测可测的 518 组里 **非底鼓**击点的 (音色, 起点, 时值, 力度) 表两档逐条相同, 四踩的底鼓集合恒是度量的**超集** (4/4 夹具实测底鼓 8 → 16 条, 新增的那批起点恒是拍起点)。⚠ \"严格更多\"⛔ 全局成立: 复合二拍 (6/8 的 `jig`/`irish_trad`/`celtic` × onsets 4/8 共 6 组) 上两档**逐字节相同**, 因为那两个拍起点恒是组起点。与 `drumBackbeat` (军鼓落点, 会同时加/筛击点)、`swingPermille` (推 tick)、`onsetsPerBar`、`drumDensity` (筛不筛非重音) 是五根**不同**的轴; 本键与摇摆正交 (同一档位在 500 与 580 两档下底鼓起点集合相同)。\"该口径在此拍号与该格位下产不产得出鼓点\"由 `yeban-theory` 判定并原样转发 (`theoryStep:\"swung_styled_drum_pattern\"`), ⛔ 本层不抄可行性表",
+            ),
+            array_param(
+                "beatGrouping",
+                false,
+                "鼓网格的**拍内分组** [ADR-0046]: 单位 = 拍数序列, 逐项 = 该组的拍数 (⛔ tick、⛔ \"每小节打几下\")。缺省不给 = **不覆盖**拍号自身的度量层级 (组起点 = 拍号判成强位的那些拍), 键缺席时逐字节维持既有输出 ⇒ schema 里⛔ 写 `default`。合法形状**随拍号移动**: 逐项 `>= 1` 且总和 == 该拍号的 `felt_beats_per_bar(meter)` (实测 4/4 ⇒ `[4]`/`[2,2]`/`[1,1,1,1]`、5/4 ⇒ `[5]`/`[3,2]`/`[2,3]`、6/8 ⇒ `[2]`/`[1,1]`) ⇒ schema 里⛔ 写 `maximum`; 合法性的唯一判者是 theory 的 `BeatGrouping::new` (本层⛔ 重算那条规则), 不合法 ⇒ `INVALID_PARAMETER_RANGE` (带 `field` + `value` + `beatsPerBar`), ⛔ 夹紧、⛔ 静默降级。消费点: **仅**鼓轨 (`swung_styled_drum_pattern` 的 `grouping` 实参), 和声与旋律⛔ 读它 ⇒ 要求与 `materialSource:\"theory\"` **且** `includeDrums:true` 同给, 否则 ⇒ `INVALID_PARAMETER_RANGE` (带 `hint`)。⚠ 本键改的是**分派与重量**: 组起点决定底鼓 (Metric 口径) 与吊镲的落点、`weight` 取 `metric_weight_in` 与 `metric_weight_grouped` 的较大者 ⇒ 重音读数与力度档跟着变; **踩镲条数与起点逐条不变** (⛔ 改网格)、军鼓落点⛔ 因它改变 (那由 `drumBackbeat` 管)。与 `swingPermille` (推 tick)、`drumBackbeat` (军鼓落点)、`drumStyle` (底鼓口径)、`onsetsPerBar`/`drumDensity` 是**不同**的轴。",
+                crate::tools::beat_grouping_items,
             ),
             param(
                 "autoMerge",

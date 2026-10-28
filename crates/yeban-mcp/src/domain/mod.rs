@@ -1901,6 +1901,33 @@ fn arg_u64(call: &ToolCall, name: &str) -> Result<Option<u64>, Fault> {
     }
 }
 
+/// 读非负整数数组实参（缺省 `None`）。
+///
+/// ⭐ `ADR-0046` D2：这里只判**类型面**（是数组、逐项是非负整数）。语义面
+/// （逐项 `>= 1`、总和 == 该拍号的拍数）随拍号移动 ⇒ 只由领域层在拿到 `meter` 之后判。
+fn arg_u64_list(call: &ToolCall, name: &str) -> Result<Option<Vec<u64>>, Fault> {
+    match call.arguments.get(name) {
+        None => Ok(None),
+        Some(Value::Array(items)) => {
+            let mut values = Vec::with_capacity(items.len());
+            for item in items {
+                let value = item.as_u64().ok_or_else(|| {
+                    Fault::domain(
+                        ErrorCode::InvalidParameterRange,
+                        format!("`{name}` 的每一项都必须是非负整数, 实际收到 {item}"),
+                    )
+                })?;
+                values.push(value);
+            }
+            Ok(Some(values))
+        }
+        Some(value) => Err(Fault::domain(
+            ErrorCode::InvalidParameterRange,
+            format!("`{name}` 必须是整数数组, 实际收到 {value}"),
+        )),
+    }
+}
+
 /// 读 `EntityId` 实参。
 fn arg_id(call: &ToolCall, name: &str) -> Result<EntityId, Fault> {
     use std::str::FromStr as _;
@@ -2485,6 +2512,10 @@ fn plan_propose_section(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault>
     // ⭐ `ADR-0044` D1：底鼓口径的**档位名** —— 不给 = 不覆盖该流派登记的 `GenreRule::drum_style`
     // （现读 `GENRES` 182 条: 169 条 `metric` / 13 条 `four-on-the-floor` ⇒ ⛔ 在这里写死任何一项）。
     let drum_style = arg_str(call, "drumStyle");
+    // ⭐ `ADR-0046` D1/D2：拍内分组的**原始读数**（逐项 = 该组的拍数）—— 这里只判类型面
+    // （数组 + 逐项非负整数）。合法形状随拍号移动（总和 == `felt_beats_per_bar(meter)`）
+    // ⇒ 语义面只由领域层在拿到 `meter` 之后判（`beat_grouping_u8` + `BeatGrouping::new`）。
+    let beat_grouping = arg_u64_list(call, "beatGrouping")?;
     // ⭐ `ADR-0045` D1/D5：旋律取音种子 —— 不给 = 沿用 `section_seed(section_id)` 的派生值
     // （派生发生在领域层）。本键⛔ 有上界可写（`0..=u64::MAX` 是 `arg_u64` 的类型面）⇒
     // 契约里⛔ `maximum`、⛔ `default`（缺省是**每个段落不同的派生值**，不是一个固定数）。
@@ -2513,6 +2544,7 @@ fn plan_propose_section(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault>
             swing_permille,
             drum_backbeat,
             drum_style,
+            beat_grouping: beat_grouping.as_deref(),
             melody_seed,
         },
     )?;

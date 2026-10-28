@@ -137,6 +137,7 @@ use yeban_theory::melody::{
 };
 use yeban_theory::pitch::{Pitch, PitchClass};
 use yeban_theory::progression::{ChordSpan, Meter as TheoryMeter, Progression};
+use yeban_theory::rhythm::BeatGrouping;
 use yeban_theory::scale::{Scale as TheoryScale, ScaleKind};
 use yeban_theory::voice_leading::{self, VoiceRange, VoicingConstraints};
 
@@ -1236,6 +1237,19 @@ pub struct PlanOptions<'a> {
     /// ⚠ 本键**只动底鼓**：实测可测的 518 组里，**非底鼓**击点的 `(音色, 起点, 时值, 力度)` 表
     /// 两档**逐条相同**（与 `drum_backbeat` 会同时加/筛军鼓是**不同**的形状）。
     pub drum_style: Option<&'a str>,
+    /// ⭐ `ADR-0046` D1：**拍内分组**（单位 = 拍数序列，逐项 = 该组的拍数；⛔ tick、⛔ "每小节打几下"）。
+    /// `None` = **不覆盖** theory 的派生气径（拍号自身的度量层级：组起点 = 该拍号判成强位的拍）
+    /// ⇒ 逐字节维持既有输出（D4）。
+    /// ⚠ 合法形状**随拍号移动**（逐项 `>= 1` 且总和 == 该拍号的 `felt_beats_per_bar(meter)`，
+    /// 实测 4/4 ⇒ `[4]` / `[2,2]` / `[1,1,1,1]`、5/4 ⇒ `[5]` / `[3,2]` / `[2,3]`、6/8 ⇒ `[2]` / `[1,1]`）
+    /// ⇒ 契约里因此⛔ 写 `default`、⛔ 写 `maximum`（两者都随拍号移动，D5）。
+    /// ⚠ 合法性由 theory 的 [`BeatGrouping::new`] **判**（本层只做 `u8` 的类型面转换 ⇒
+    /// ⛔ 在本层重算"总和 == 拍数"那条规则，D2）。
+    /// ⚠ 消费点是**鼓轨**（`swung_styled_drum_pattern` 的 `grouping` 实参）⇒ 耦合口径与
+    /// `swing_permille` / `drum_backbeat` / `drum_style` **同一支**（要 theory 材料源且鼓轨在场，D3）。
+    /// ⚠ 本键改的是**底鼓与吊镲的落点、以及重音读数**（`weight` 取 `metric_weight_in` 与
+    /// `metric_weight_grouped` 的较大者 ⇒ 力度档跟着变），⛔ 改网格：踩镲条数与起点逐条不变（D6）。
+    pub beat_grouping: Option<&'a [u64]>,
     /// ⭐ `ADR-0045` D1：旋律**取音**的种子（单位 = `u64`，界 `0..=u64::MAX`）。
     /// `None` = [`section_seed`] 从 `section_id` 派生 ⇒ 逐字节维持既有输出（D5：`section_seed`
     /// 的调用点因此**上移一处**，"没给就派生"由结构保证而⛔ 靠判据）。
@@ -1722,6 +1736,50 @@ fn backbeat_bound(raw: Option<u64>, meter: TheoryMeter) -> Result<Option<Backbea
         })
 }
 
+/// ⭐ `ADR-0046` D2：`beatGrouping` 的**类型面**（`u64` → `u8`）。
+///
+/// 键缺席 ⇒ `None`（D4：不覆盖拍号自身的度量层级 ⇒ 逐字节不变）。逐项只在这里做
+/// `u8` 的类型面转换（`> 255` 无法表达），**语义**合法性（逐项 `>= 1`、总和 ==
+/// `felt_beats_per_bar(meter)`）由 theory 的 [`BeatGrouping::new`] 判 —— 调用点那一次
+/// `ok_or_else` 与本层的拒绝**共用同一个构造器**，⛔ 在本层重算那条规则（D2）。
+fn beat_grouping_u8(raw: Option<&[u64]>) -> Result<Option<Vec<u8>>, BuildFault> {
+    let Some(raw) = raw else {
+        return Ok(None);
+    };
+    let mut groups = Vec::with_capacity(raw.len());
+    for value in raw {
+        let group = u8::try_from(*value).map_err(|_| {
+            BuildFault::domain_with_data(
+                BuildCode::InvalidParameterRange,
+                format!("`beatGrouping` 的每一项都必须是 1..=255 的拍数, 实际 {value}"),
+                json!({
+                    "field": "beatGrouping",
+                    "value": raw,
+                }),
+            )
+        })?;
+        groups.push(group);
+    }
+    Ok(Some(groups))
+}
+
+/// ⭐ `ADR-0046` D2/D7：`BeatGrouping::new` 判不合法时的拒绝 —— 点名本键、回显取值、
+/// 给出**该拍号的拍数**（⛔ `range`：上界不是常量，写 `[1, n]` 会把它说成逐项的界）。
+fn beat_grouping_reject(value: &[u8], meter: TheoryMeter) -> BuildFault {
+    let beats = felt_beats_per_bar(meter);
+    BuildFault::domain_with_data(
+        BuildCode::InvalidParameterRange,
+        format!(
+            "`beatGrouping` 必须把该流派拍号的 {beats} 拍恰好分完（逐项 >= 1、总和 = {beats}），实际 {value:?}"
+        ),
+        json!({
+            "field": "beatGrouping",
+            "value": value,
+            "beatsPerBar": beats,
+        }),
+    )
+}
+
 /// ⭐ `ADR-0044` D2：把 `drumStyle` 的**字符串读数**转成已解析档位；`None` = 不覆盖。
 ///
 /// 候选⛔ 写在本层：唯一来源是 theory 公开的 `DrumStyle::ALL` × [`DrumStyle::name`]，
@@ -1892,7 +1950,7 @@ fn theory_drum_pattern(
     rule: &'static GenreRule,
     bars: u32,
     style_preset: &str,
-    rulers: DrumRulers,
+    rulers: DrumRulers<'_>,
 ) -> Result<DrumPattern, BuildFault> {
     let onsets_per_bar = rulers.onsets_per_bar;
     // ⭐ `ADR-0043` D2：上界 = 该流派拍号的拍数 ⇒ 形状校验只能在**这里**（拿到 `meter` 之后）做。
@@ -1913,9 +1971,20 @@ fn theory_drum_pattern(
     // ⭐ `ADR-0044` D5：不给档位时读**流派登记值** —— 那正是薄封装内部读的同一个数，因此
     // "只给一把标尺"⛔ 顺带改掉另一根轴。这一步⛔ 会失败（候选已在读参数时按 `DrumStyle::ALL` 判过）。
     let resolved_style = rulers.style.unwrap_or(rule.drum_style);
-    let (asked, step) = match (rulers.swing, rulers.backbeat, rulers.style) {
-        // ⭐ `ADR-0044` D5：三把标尺都不给 ⇒ 走薄封装（= 接线前的路径，逐字节不变）。
-        (None, None, None) => (
+    // ⭐ `ADR-0046` D2：分组的合法形状随拍号移动 ⇒ 与 `backbeat` 同一处判。两次转换共用
+    // **同一个**构造器：`u8` 的类型面在 [`beat_grouping_u8`]，语义面在这一次 `ok_or_else`
+    // —— 因此本层没有第二份"逐项非零、总和等于拍数"的规则（D2）。
+    let groups = beat_grouping_u8(rulers.grouping)?;
+    let grouping = match groups.as_deref() {
+        None => None,
+        Some(raw) => Some(
+            BeatGrouping::new(rule.meter_value(), raw)
+                .ok_or_else(|| beat_grouping_reject(raw, rule.meter_value()))?,
+        ),
+    };
+    let (asked, step) = match (rulers.swing, rulers.backbeat, rulers.style, rulers.grouping) {
+        // ⭐ `ADR-0046` D4：四把鼓线标尺都不给 ⇒ 走薄封装（= 接线前的路径，逐字节不变）。
+        (None, None, None, None) => (
             rule.drum_pattern(bars, onsets_per_bar),
             "GenreRule::drum_pattern",
         ),
@@ -1925,7 +1994,7 @@ fn theory_drum_pattern(
                 bars,
                 onsets_per_bar,
                 resolved_permille()?,
-                None,
+                grouping,
                 backbeat,
                 resolved_style,
             ),
@@ -1944,7 +2013,7 @@ fn theory_drum_pattern(
         bars,
         onsets_per_bar,
         permille,
-        None,
+        grouping,
         backbeat,
         resolved_style,
     )
@@ -1982,7 +2051,7 @@ fn theory_drum_pattern(
 /// ⭐ `ADR-0043` D4：`backbeat` 是第 5 个字段 —— 它与 `swing` 同为 `Option<整数>`，
 /// [`theory_drum_pattern`] 也因此改收整个 `DrumRulers`（⛔ 给它加第 6 个位置参数）。
 #[derive(Clone, Copy, Debug)]
-struct DrumRulers {
+struct DrumRulers<'a> {
     /// 筛点档（`normal` / `sparse`）—— [`DrumDensity::parse`] 的结果（`ADR-0028`）。
     density: DrumDensity,
     /// 每小节的 onset 数 —— [`grid_onsets_per_bar`] 的结果（`ADR-0036`）。
@@ -1999,6 +2068,10 @@ struct DrumRulers {
     /// 就点名是哪个键）；`None` = **不覆盖**该流派登记的 `GenreRule::drum_style`（D1）。
     /// 它是第 6 个字段：与 `backbeat` 同为"最后一处写死的实参"，⛔ 用位置参数传（同 D4 的理由）。
     style: Option<DrumStyle>,
+    /// ⭐ `ADR-0046` D4：拍内分组（**原始读数**，逐项 = 该组的拍数）；`None` = **不覆盖**
+    /// 拍号自身的度量层级（D1）。⚠ 合法形状随拍号移动 ⇒ 校验⛔ 发生在读参数时，
+    /// 只能在 [`theory_drum_pattern`] 里拿到 `rule.meter_value()` 之后由 [`beat_grouping_u8`] 做（D2）。
+    grouping: Option<&'a [u64]>,
 }
 
 /// `'theory'` 路径的鼓组内容（`ADR-0017` D1）。
@@ -2011,7 +2084,7 @@ fn drum_contents(
     bars: u64,
     style_preset: &str,
     section_id: EntityId,
-    rulers: DrumRulers,
+    rulers: DrumRulers<'_>,
 ) -> Result<BTreeMap<EntityId, MidiNote>, BuildFault> {
     let pattern = theory_drum_pattern(rule, theory_bars(bars)?, style_preset, rulers)?;
     let mut notes = BTreeMap::new();
@@ -2306,6 +2379,24 @@ pub fn plan_with_options(
             json!({ "hint": "请同时指定 includeDrums: true（底鼓口径只作用于生成的鼓轨）" }),
         ));
     }
+    // ⭐ `ADR-0046` D2/D3：`beatGrouping` 的形状界**随拍号移动**（总和 == 该拍号的拍数）
+    // ⇒ 判在消费点（[`theory_drum_pattern`]，拿到 `rule.meter_value()` 之后）；
+    // 消费点与 `swingPermille`/`drumBackbeat`/`drumStyle` **同一个** ⇒ 耦合口径取同一支
+    // （要 theory 材料源 **且** 鼓轨在场）。
+    if options.beat_grouping.is_some() && material_source != MaterialSource::Theory {
+        return Err(BuildFault::domain_with_data(
+            BuildCode::InvalidParameterRange,
+            "`beatGrouping` 仅在 materialSource: 'theory' 时支持",
+            json!({ "hint": "请指定 materialSource: \"theory\"（拍内分组只作用于生成的鼓轨网格）" }),
+        ));
+    }
+    if options.beat_grouping.is_some() && !include_drums {
+        return Err(BuildFault::domain_with_data(
+            BuildCode::InvalidParameterRange,
+            "`beatGrouping` 仅在 includeDrums: true 时支持",
+            json!({ "hint": "请同时指定 includeDrums: true（拍内分组只作用于生成的鼓轨）" }),
+        ));
+    }
     // ⭐ `ADR-0033` D3：`voiceSubdivision` 的整数上界写在 domain 层，越界 ⇒ 响亮拒绝；
     // 显式给了它却不走 theory 材料路径 = "给了不消费的参数"，与 `drumDensity` 同口径。
     let voice_subdivision = match options.voice_subdivision {
@@ -2565,6 +2656,7 @@ pub fn plan_with_options(
                         swing,
                         backbeat: options.drum_backbeat,
                         style: drum_style,
+                        grouping: options.beat_grouping,
                     },
                 )?);
             }

@@ -55,6 +55,7 @@ struct Given {
     include_melody: bool,
     include_drums: bool,
     melody_seed: Option<u64>,
+    beat_grouping: None,
 }
 
 impl Given {
@@ -64,6 +65,7 @@ impl Given {
             include_melody: true,
             include_drums: true,
             melody_seed: None,
+            beat_grouping: None,
         }
     }
 
@@ -114,6 +116,7 @@ fn try_plan(given: Given) -> Result<SectionPlan, BuildFault> {
             drum_backbeat: None,
             drum_style: None,
             melody_seed: given.melody_seed,
+            beat_grouping: None,
         },
     )
 }
