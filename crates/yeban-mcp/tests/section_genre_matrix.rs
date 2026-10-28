@@ -80,6 +80,13 @@ fn every_registered_genre_plans_with_its_own_defaults() {
         GenreLibrary::len(),
         "`all()` 与 `len()` 必须同源（⛔ 一条为空而另一条非空）"
     );
+    // R93：上面那条 `assert_eq` 在**两者都为零**时同样通过 ⇒ 被扫集合必须另有下界，
+    // 否则流派表被清空后本判据会变成恒绿。
+    assert!(
+        genres.len() >= 100,
+        "扫描面异常：登记流派只剩 {} 条",
+        genres.len()
+    );
 
     let mut failures: Vec<String> = Vec::new();
     let mut empty_parts: Vec<String> = Vec::new();
