@@ -39,13 +39,13 @@ const KEY: &str = "C minor";
 /// 夹具的进行。
 const PROGRESSION: &str = "i-VI-III-VII";
 /// 平直档（= theory 的 `SWING_PERMILLE_STRAIGHT`，⛔ 在本文件抄 `500`）。
-const STRAIGHT: u64 = u64::from(SWING_PERMILLE_STRAIGHT);
+const STRAIGHT: u64 = SWING_PERMILLE_STRAIGHT as u64;
 /// 一档中等摇摆（千分比）：实测与平直的位移和 = 1216 tick（4 小节 16 格位）。
 const MEDIUM: u64 = 580;
 /// 一档更紧的摇摆（千分比）：位移必须严格大于 [`MEDIUM`]。
 const WIDE: u64 = 700;
 /// 上界端点（千分比）：100% swing，位移必须最大且仍⛔ 被本层拒。
-const FULL: u64 = u64::from(SWING_PERMILLE_MAX);
+const FULL: u64 = SWING_PERMILLE_MAX as u64;
 /// 缺省阶梯的两档（本文件的夹具不给力度键）。
 const LADDER: [u8; 2] = [96, 112];
 
