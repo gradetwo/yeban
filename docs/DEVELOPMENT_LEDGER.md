@@ -13314,8 +13314,9 @@ MCP 侧只被写死成常量（`section_build.rs:1828` 的 `max_leap: MELODY_MAX
 | `40638861581` | `G8i` 的 **merge** `37bb0cc4`（主干） | **success**（读回 06:21） | ⭐ **`G8i` 四件齐闭合**。承判腿 `rust (workspace 全量)` **真跑**：`05:35:31 → 06:18:11`（42 分 40 秒，非 0s ⇒ ⛔ 空绿），日志里 **`test result: ok` 行 417 条 / passed 合计 6,764 / `test result: FAILED` 0 条**（单位 = 每条 `test result:` 行通过数之和）。本票的判据在**主干全量腿**逐名 `... ok`：`absent_swing_is_byte_identical_to_the_straight_permille`／`swing_never_loses_or_creates_ticks`／`swing_never_collapses_a_grid`／`swing_permille_is_declared_on_both_param_surfaces_without_a_default`／`the_swing_key_requires_the_theory_source_and_the_drum_part` 等。`macos`（→06:00:45）／`windows`（→05:58:00）同批 success；`rust (${{ matrix.crate }})` skipped（merge 碰 `schemas/**` ⇒ 由全量腿承判） |
 | `40642047414` | `G8l`（`drumStyle`／`ADR-0044`）线旧 tip `c45653e3` | **failure** | ⚠ 红在**判据文件**、⛔ 在接线：`macos`／`windows`／`rust (workspace 全量)` 三条腿的 `clippy (-D warnings)` 各报同一条 **`E0308`×2**（`tests/section_drum_style.rs:349/350`，期望 `&BTreeMap<String,(u64,u64,u8,u8)>` 实得 `&BTreeMap<String,BTreeMap<String,_>>`）⇒ `voices()` 是**段落→声部→音符**两层表，正交读数把外层传给了要内层的 `kick_starts`。同文件其余五处调用本就传内层 ⇒ 只有这两处错。⚠ 这条线**没有** `rust (yeban-mcp)` 腿的 `test result:` 读数（编译面先红）⇒ ⛔ 任何"判据已过"的说法对这一轮不成立 |
 | `40642621197` | `G8l` 修复批 tip `8d668c9c`（同上，只补 `["Drums"]` 一层） | **failure** | ✅ 编译面**已转绿**（`E0308` 消失，`clippy -D warnings` 无该条）⇒ 上一轮那两处层级错确已修好。本轮**唯一红**＝`rust (yeban-mcp)` 腿的 `param_bounds_guard::every_string_params_bound_status_is_registered`，报文点名 `["drumStyle"]`（表 `STRING_PARAM_BOUNDS` 是**双向比对** `TOOLS` 里所有 `json_type == "string"` 的**不同名**，新增参数必须改一行登记界状态）。⚠ **`cargo test` 默认 fail-fast**：该二进制按字母序排在 `section_drum_style.rs` **之前**（`param` < `section`），后面的判据**根本没跑**（读数：`Running tests/` 共 20 个，止于 `param_bounds_guard.rs`；`grep -c section_drum_style` = **0**）⇒ **"判据名没出现在日志里"⛔ 等于"判据失败"，也⛔ 等于"判据通过"，只等于"没跑到"。`rust (workspace 全量)` skipped、承判腿是矩阵里的 `rust (yeban-mcp)`（＋`rust (yeban-ui-mcp)` success）⇒ 这条 run 只算**线判决**，四件齐另需主干那条。修复见下一行 |
-| `40644168648` | `G8l` 第三批 tip `2c7b0c80`（登记表补 `("drumStyle", BoundStatus::WordList)`，表 29→30 条；**并 rebase 到 `9163530d`** ⇒ diff 只剩 `G8l` 本批 17 文件） | **success**（读回 07:05） | ⭐ **线判决闭合**：整体 `completed/success`，`rust (workspace 全量)` **真跑** `06:29:51 → 07:03:32`（33 分 41 秒；rebase 后基座是已落地主干 ⇒ 本批碰 `schemas/**` ⇒ 由全量腿承判），日志 **`test result: ok` 行 419 条 / passed 合计 6,776 / `FAILED` 0 条**；⭐ 本票**六条判据逐名 `... ok`**（`absent_style_is_byte_identical_to_the_registered_metric`／`four_on_the_floor_only_adds_kicks_on_beat_starts`／`four_on_the_floor_genres_get_a_kick_where_the_metric_style_has_none`／`an_unknown_style_is_rejected_naming_the_key_and_the_accepted_set`／`the_style_key_requires_the_theory_source_and_the_drum_part`／`the_compound_duple_meter_makes_the_two_styles_identical`／`drum_style_is_declared_on_both_param_surfaces_with_the_theory_names_and_no_default`）；`windows`（→06:51:36）／`macos`（→06:57:24）success，矩阵腿 skipped。⇒ 落地 merge `45cce380` 的判决另记（四件齐等那条）|
+| `40644168648` | `G8l` 第三批 tip `2c7b0c80`（登记表补 `("drumStyle", BoundStatus::WordList)`，表 29→30 条；**并 rebase 到 `9163530d`** ⇒ diff 只剩 `G8l` 本批 17 文件） | **success**（读回 07:05） | ⭐ **线判决闭合**：整体 `completed/success`，`rust (workspace 全量)` **真跑** `06:29:51 → 07:03:32`（33 分 41 秒；rebase 后基座是已落地主干 ⇒ 本批碰 `schemas/**` ⇒ 由全量腿承判），日志 **`test result: ok` 行 419 条 / passed 合计 6,776 / `FAILED` 0 条**；⭐ 本票**六条判据逐名 `... ok`**（`absent_style_is_byte_identical_to_the_registered_metric`／`four_on_the_floor_only_adds_kicks_on_beat_starts`／`an_unknown_style_is_rejected_naming_the_key_and_the_accepted_set`／`the_style_key_requires_the_theory_source_and_the_drum_part`／`the_compound_duple_meter_makes_the_two_styles_identical`／`drum_style_is_declared_on_both_param_surfaces_with_the_theory_names_and_no_default`）；`windows`（→06:51:36）／`macos`（→06:57:24）success，矩阵腿 skipped。⇒ 落地 merge `45cce380` 的判决另记（四件齐等那条）。⚠ **本行原文另列了第七条名 `four_on_the_floor_genres_get_a_kick_where_the_metric_style_has_none` 并自称"六条"——那是⛔ 本票的判据**：`git grep metric_style_has_none 45cce380` 现读它只在 `crates/yeban-theory/tests/properties.rs:1518`（theory 侧的同族测试，名字形近），`tests/section_drum_style.rs` 里`#[test]` 计数 = **6**。教训：**判据名要对着 `#[test]` 计数取，⛔ 对着日志里"名字很像的那些"取**（本轮 07:59 读回 merge 日志时被同一条 theory 测试名骗过一次，已在下一行更正）|
 | `40642460900` | `G8k` 的 **merge** `9163530d`（主干） | **success**（读回 07:02） | ⭐ **`G8k` 四件齐闭合**。承判腿 `rust (workspace 全量)` **真跑** `06:12:46 → 06:55:56`（43 分 10 秒），日志 **`test result: ok` 行 418 条 / passed 合计 6,770 / `FAILED` 0 条**；⭐ 本票**六条判据在该主干腿逐名 `... ok`**（`absent_backbeat_is_byte_identical_to_the_derived_beat`／`the_backbeat_moves_only_the_snare_line`／`out_of_range_is_rejected_naming_the_key` ok×4／`the_backbeat_key_requires_the_theory_source_and_the_drum_part`／`the_bound_moves_with_the_meter`／`drum_backbeat_is_declared_on_both_param_surfaces_without_default_or_maximum`）。`macos`（→06:39:34）／`windows`（→06:43:55）同批 success，矩阵腿 skipped（本 merge 碰 `schemas/**` ⇒ 由全量腿承判）。同批还带文档提交 `5fb70644` ⇒ 一次推送 = 一批判决 |
+| `40649125413` | `G8l`（`drumStyle`／`ADR-0044`）的 **merge** `45cce380`（主干；用 `git push origin <该 sha>:refs/heads/main` **只**推到这一颗，文档批 `5c8a105a` 留在本地） | **success**（读回 07:59） | ⭐ **`G8l` 四件齐闭合**。承判腿 `rust (workspace 全量)` **真跑** `07:17:51 → 07:58:25`（40 分 34 秒，非 0s ⇒ ⛔ 空绿），日志 1,656,938 字节里 **`test result: ok` 行 419 条 / passed 合计 6,776 / `test result: FAILED` 0 条**；⭐ 本票**六条判据在该主干腿逐名 `... ok`、各恰一条**（`absent_style_is_byte_identical_to_the_registered_metric`／`four_on_the_floor_only_adds_kicks_on_beat_starts`／`an_unknown_style_is_rejected_naming_the_key_and_the_accepted_set`／`the_style_key_requires_the_theory_source_and_the_drum_part`／`the_compound_duple_meter_makes_the_two_styles_identical`／`drum_style_is_declared_on_both_param_surfaces_with_the_theory_names_and_no_default`）。⚠ 读数口径：`Running tests/` 计数在**全量腿**的日志格式里恒为 0（二进制以 `unittests`／哈希后缀出现），那条 sanity check 在这一腿⛔ 适用 ⇒ 改用 `test result: ok` 行数 + 判据名逐条 `grep -c` |
 
 ### `G8k` 这张票与 `G8i` 的两处结构性差别（⛔ 照抄判据）
 
@@ -13354,7 +13355,9 @@ MCP 侧只被写死成常量（`section_build.rs:1828` 的 `max_leap: MELODY_MAX
 | 音域 | ✅ 闭合 | `G8a`（和声）＋ `G8f`／`ADR-0038`（`melodyLower`/`melodyUpper`）；续片 `G8g`／`ADR-0039`（`melodyMaxLeap`） |
 
 **五轴之外的鼓线三键**（本轮新增，属"派生值不可覆盖"同族）：`G8i`／`ADR-0041`（`swingPermille`）**四件齐 ✅**、
-`G8k`／`ADR-0043`（`drumBackbeat`）线判决 ✅ ＋ merge 在飞、`G8l`／`ADR-0044`（`drumStyle`）第三批在飞。
+`G8k`／`ADR-0043`（`drumBackbeat`）**四件齐 ✅**（merge `9163530d`／run `40642460900`）、
+`G8l`／`ADR-0044`（`drumStyle`）**四件齐 ✅**（merge `45cce380`／run `40649125413`，读回 07:59）；
+旋律线第一张 `G8m`／`ADR-0045`（`melodySeed`）线 tip `0b20a7e5` 已推送、run `40653587929` **在飞**（08:04 现读 `in_progress`）。
 
 ### 剩余可开／不可开的票（逐条给"实测障碍"，⛔ 列名字）
 
@@ -13372,3 +13375,50 @@ MCP 侧只被写死成常量（`section_build.rs:1828` 的 `max_leap: MELODY_MAX
    ⇒ **0 处**消费；theory 侧只在 `voice_leading.rs:346` 置一个报表位，**没有任何消费者**（规则第 19 条）。
 4. ⛔ **`ADR-0041` 的非范围四条（`N1` 旋律 onset 网格的摇摆／`N2` 和声声部微时值／`N3` 复合拍拍内 `grouping`／`N4` 逐对逐小节 swing 曲线）⛔ 是 MCP 侧的票** ——
    它们的量在 theory 侧不存在，开这些票的前置是 theory 票（`grouping` 与 `swing 曲线` 尤其如此）。
+
+---
+
+## 2026-10-28 08:15：`G8l` 四件齐闭合（merge 判决读回）＋ `G8m`（`melodySeed`／`ADR-0045`）落码在飞
+
+**这一节在数什么**：一条判决的**读数**（单位 = 条 `test result:` 行 / 测试数 / 失败数 / 腿耗时）＋
+一处**判决记录的自我更正**（单位 = 条判据名）。
+
+### `G8l` 第四件：merge `45cce380` 的 run `40649125413`
+
+08:04 现读 API 与 07:59 读回的日志（`/actions/jobs/122684879353/logs`，1,656,938 字节）同一组数：
+整体 `completed/success`；承判腿 `rust (workspace 全量)` **真跑** `07:17:51 → 07:58:25`（40 分 34 秒）；
+**`test result: ok` 行 419 条 / passed 合计 6,776 / `test result: FAILED` 0 条**；本票六条判据逐名 `... ok`
+（名字见 §0.6.5 最后一行，已把误记的第七条更正掉）。⇒ `G8l` **四件齐**（线码＋判据＋线判决＋主干判决）。
+
+⚠ **推送口径留档**：这一批用 `git push origin 45cce380…:refs/heads/main` **只**推到 merge 提交，
+文档批 `5c8a105a` 与本节留在本地 ⇒ 那条 run 的 `headSha` **就是** merge 本身，判决不被文档稀释。
+
+### 本轮新增的规则
+
+22. ⭐ **判据名清单必须对着 `#[test]` 计数取，⛔ 对着日志里"名字很像的行"取**：上一节把 `G8l` 的
+    判据写成"六条"却列了**七个**名字 —— 第七个 `four_on_the_floor_genres_get_a_kick_where_the_metric_style_has_none`
+    经 `git grep metric_style_has_none 45cce380` 现读只存在于 `crates/yeban-theory/tests/properties.rs:1518`
+    （theory 侧的同族测试，跨 crate 名字形近），本票的 `tests/section_drum_style.rs` 里 `#[test]` = **6**。
+    代价＝一条已推送的判决记录里带着一个⛔ 属于本票的名字，下一个读台账的人会把 theory 的绿灯当成本票的判据。
+    防线＝**先 `grep -c '#\[test\]' <判据文件>` 数几条，再从同一文件列出名字，最后逐个去日志里 `grep -c "test NAME \.\.\. ok"`**
+    —— 三个读数必须一致（⚠ 全量腿的日志里同名测试可能同时来自别的 crate 的测试文件 ⇒ 名字要连**文件路径**一起核）。
+
+23. ⭐ **拆树之后，文档里⛔ 再留 `.worktrees/<名>` 字面（"留档行"也一样）**：`scripts/tools/check_handover_consistency.py`
+    用 `re.finditer(r"`?(\.worktrees/[A-Za-z0-9._-]+)`?", text)` **扫全文件**（⛔ 只扫 §5 那张表），
+    再把集合与 `git worktree list` 比对 ⇒ 只要留档行、历史段、命令示例里还写着已拆树的名字，检查就**永远红**。
+    实测：`swing-permille`（05:36 拆）与 `drum-backbeat`（06:14 拆）两行留档让它红了**两个多小时**（08:43 才发现），
+    而我这一次又把 `drum-style` 的留档行写成同一种形状 ⇒ 差点变成第三处。修法 = 留档行首格只写**分支名**＋"工作树已拆：<时间>"，
+    命令示例写 `<drum-style 树>` 这类占位，总结到 **§5.2 留档表**里，然后**必须重跑**那个脚本（它不进 CI，第 254 条）。
+
+### `G8m`（`melodySeed`）现状
+
+- 票：`docs/adr/ADR-0045-generation-melody-seed.md`（状态 **Accepted**，集成者依 2026-10-25 常设授权裁定；暂记缺口 `G8m`）。
+- 线：`line/melody-seed`，tip `0b20a7e5`（16 文件 / 685 增行：`section_build.rs` 的 `MelodyRulers.seed` 与
+  第 5 实参换线、`domain/mod.rs` 的 `arg_u64(call, "melodySeed")`、`tools.rs` 的 `param`、契约 JSON 的
+  `properties.melodySeed`（⛔ `default`／⛔ `maximum`、`minimum: 0`）、判据文件 `tests/section_melody_seed.rs`
+  六条、以及 32 处 `melody_seed: None,` 字面量补位）。本地证据：`cargo fmt --check` rc=0、light gates 通过、
+  `audit_struct_literals.py` 读数 = `PlanOptions 字段表 18 / 扫描字面量 33 处 / 缺陷 0 处`。
+- 判决：run `40653587929` **在飞**（08:04 现读 `status=in_progress`）⇒ ⛔ 任何"已过"的写法。
+  ⚠ 承判腿读回时必须**按 `#[test]` 计数逐名**（规则第 22 条），并且注意判据 3 会把 theory 的
+  `NoFeasibleVoicing` 当作**要登记的事实**转发（⛔ 为了让判据绿而挑不报错的种子）。
+
