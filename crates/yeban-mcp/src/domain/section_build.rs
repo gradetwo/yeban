@@ -1236,6 +1236,17 @@ pub struct PlanOptions<'a> {
     /// ⚠ 本键**只动底鼓**：实测可测的 518 组里，**非底鼓**击点的 `(音色, 起点, 时值, 力度)` 表
     /// 两档**逐条相同**（与 `drum_backbeat` 会同时加/筛军鼓是**不同**的形状）。
     pub drum_style: Option<&'a str>,
+    /// ⭐ `ADR-0045` D1：旋律**取音**的种子（单位 = `u64`，界 `0..=u64::MAX`）。
+    /// `None` = [`section_seed`] 从 `section_id` 派生 ⇒ 逐字节维持既有输出（D5：`section_seed`
+    /// 的调用点因此**上移一处**，"没给就派生"由结构保证而⛔ 靠判据）。
+    /// ⚠ 它改的是**音高选择**与随之而变的**力度档**（`chord_tone` 是音高的函数），
+    /// ⛔ 改网格（`start_tick`/`duration_ticks` 全部来自 `rhythm_grid`）⇒ 对外措辞说
+    /// "换一组音高与重音分布"，⛔ 叫它"随机种子"（D7）。
+    /// ⚠ 可行性也随种子移动（`pick_within_leap` 依赖 `previous`）⇒ 同参数换个种子，
+    /// `NoFeasibleVoicing` 可能出现也可能消失；本层⛔ 判定种子好坏（D2），把它留给 theory。
+    /// ⚠ 消费点是**旋律轨** ⇒ 耦合口径与 `melodyLower`/`melodyUpper`/`melodyMaxLeap`
+    /// **同一支**（要 theory 材料源且 `includeMelody: true`，D3）。
+    pub melody_seed: Option<u64>,
 }
 
 /// 一个声部的身份（两条材料路径共用）。
@@ -2065,6 +2076,9 @@ struct MelodyRulers {
     register: (u8, u8),
     /// 跳进上界（半音距离）—— [`melody_leap`] 的结果（`ADR-0039`）。
     leap: u8,
+    /// 取音种子 —— ⭐ `ADR-0045` D4：存**已解析**的值（`None` 的派生在调用处做完），
+    /// ⛔ `Option<u64>`：那会把"没给就派生"这条规则留到生成器里，同一个规则两个写者。
+    seed: u64,
 }
 
 /// `'theory'` 路径的旋律内容（`ADR-0017` D1）。
@@ -2073,6 +2087,8 @@ struct MelodyRulers {
 /// 既有和弦跨度上生成；力度按 `chord_tone` 取 `rulers.ladder` 的两档（缺省 112/96）。
 /// ⭐ `ADR-0038` D1：音高窗口取 `rulers.register` 的两端（缺省 48/84）。
 /// ⭐ `ADR-0039` D1：跳进上界取 `rulers.leap`（缺省 = theory 的 [`MELODY_MAX_LEAP`] = 12）。
+/// ⭐ `ADR-0045` D5：取音种子取 `rulers.seed`（缺省 = [`section_seed`] 从 `section_id` 派生）
+/// —— ⚠ 本函数内**不再**调用 `section_seed`：派生发生在调用处，"没给就派生"因此是结构性的。
 /// ⚠ 这里**就地构造** `MelodyConstraints` 而⛔ 不再调 `MelodyConstraints::new`：
 /// `new` 校验的两条（`lower <= upper`、`upper <= 127`）已经在 [`melody_register`] 判过，
 /// 再判一次就是同一参数的界有两个写者，且那条 `Err` 分支在本层永不可达（无从测）。
@@ -2109,7 +2125,7 @@ fn melody_contents(
             upper: rulers.register.1,
             max_leap: rulers.leap,
         },
-        section_seed(section_id),
+        rulers.seed,
     )
     .map_err(|error| theory_invalid(style_preset, "melody_over_chords", error))?;
     let mut notes = BTreeMap::new();
@@ -2129,6 +2145,8 @@ fn melody_contents(
 }
 
 /// 旋律生成的确定性种子（`ADR-0017` D3：同一 `section_id` ⇒ 同一条旋律）。
+/// ⭐ `ADR-0045` D5：现在**只**在 `plan_with_options` 里 `melodySeed` 缺席时被调用
+/// （唯一调用点见 `MelodyRulers { seed: … }`）⇒ 派生路径⛔ 藏在生成器内部。
 fn section_seed(section_id: EntityId) -> u64 {
     let raw: u128 = section_id.as_ulid().0;
     #[allow(clippy::cast_possible_truncation)]
@@ -2384,21 +2402,23 @@ pub fn plan_with_options(
     // 给了窗口却没有旋律声部 = 参数被静默忽略）。
     // ⭐ `ADR-0039` D3：跳进上界的消费点**同一个** ⇒ 三个键共用这条校验。⚠ 折成一个
     // `register_given` 而⛔ 把同一个条件写三遍（写三遍迟早有一遍漏掉新键）。
+    // ⭐ `ADR-0045` D3：取音种子的消费点**还是同一个** ⇒ 四键共用，⛔ 另起一条同样的判断。
     let register_given = options.melody_lower.is_some()
         || options.melody_upper.is_some()
-        || options.melody_max_leap.is_some();
+        || options.melody_max_leap.is_some()
+        || options.melody_seed.is_some();
     if register_given && material_source != MaterialSource::Theory {
         return Err(BuildFault::domain_with_data(
             BuildCode::InvalidParameterRange,
-            "`melodyLower` / `melodyUpper` / `melodyMaxLeap` 仅在 materialSource: 'theory' 时支持",
-            json!({ "hint": "请指定 materialSource: \"theory\"（音高窗口与跳进上界只作用于生成的旋律，外部素材的音高由调用方给出）" }),
+            "`melodyLower` / `melodyUpper` / `melodyMaxLeap` / `melodySeed` 仅在 materialSource: 'theory' 时支持",
+            json!({ "hint": "请指定 materialSource: \"theory\"（音高窗口、跳进上界与取音种子只作用于生成的旋律，外部素材的音高由调用方给出）" }),
         ));
     }
     if register_given && !include_melody {
         return Err(BuildFault::domain_with_data(
             BuildCode::InvalidParameterRange,
-            "`melodyLower` / `melodyUpper` / `melodyMaxLeap` 需要 includeMelody 为 true",
-            json!({ "hint": "请同时指定 includeMelody: true（音高窗口与跳进上界只被旋律声部消费，和声与鼓不受它们影响）" }),
+            "`melodyLower` / `melodyUpper` / `melodyMaxLeap` / `melodySeed` 需要 includeMelody 为 true",
+            json!({ "hint": "请同时指定 includeMelody: true（音高窗口、跳进上界与取音种子只被旋律声部消费，和声与鼓不受它们影响）" }),
         ));
     }
     // ⭐ `ADR-0038` D1：窗口在这里定下（`0..=127` 的界与 `lower <= upper`），
@@ -2560,6 +2580,11 @@ pub fn plan_with_options(
                         ladder,
                         register,
                         leap,
+                        // ⭐ `ADR-0045` D5：派生只在这里发生（`section_seed` 的调用点从
+                        // `melody_contents` 上移到这一行）⇒ 键缺席时结构上必然走派生值。
+                        seed: options
+                            .melody_seed
+                            .unwrap_or_else(|| section_seed(section_id)),
                     },
                 )?);
             }

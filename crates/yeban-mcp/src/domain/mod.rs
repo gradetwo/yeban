@@ -2485,6 +2485,10 @@ fn plan_propose_section(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault>
     // ⭐ `ADR-0044` D1：底鼓口径的**档位名** —— 不给 = 不覆盖该流派登记的 `GenreRule::drum_style`
     // （现读 `GENRES` 182 条: 169 条 `metric` / 13 条 `four-on-the-floor` ⇒ ⛔ 在这里写死任何一项）。
     let drum_style = arg_str(call, "drumStyle");
+    // ⭐ `ADR-0045` D1/D5：旋律取音种子 —— 不给 = 沿用 `section_seed(section_id)` 的派生值
+    // （派生发生在领域层）。本键⛔ 有上界可写（`0..=u64::MAX` 是 `arg_u64` 的类型面）⇒
+    // 契约里⛔ `maximum`、⛔ `default`（缺省是**每个段落不同的派生值**，不是一个固定数）。
+    let melody_seed = arg_u64(call, "melodySeed")?;
     let section_plan = section::plan_with_options(
         project,
         section_name,
@@ -2509,6 +2513,7 @@ fn plan_propose_section(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault>
             swing_permille,
             drum_backbeat,
             drum_style,
+            melody_seed,
         },
     )?;
     propose_draft(

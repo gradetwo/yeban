@@ -581,6 +581,11 @@
               "default": 12,
               "description": "旋律**相邻两音的跳进上界**（`ADR-0039`）。单位 = **半音距离**（⛔ MIDI 音高值、⛔ 八度号、⛔ 音域宽度），`0..=127`；缺省 `12` = theory 的 `MELODY_MAX_LEAP` ⇒ 键缺席时逐字节维持既有输出（`ADR-0016`）。为什么上界是 `127` 而⛔ 是 12/24：音高全域是 `0..=127` ⇒ 两音的半音距离在任何输入下都不可能超过 127，`0..=127` 是恰好的界；大于窗口宽度的取值 = 「实际不设限」，那是语义而⛔ 错误。`0` 合法 = 只允许同音反复（实测：整条旋律压成单音，onset 数不变）。消费点与 `melodyLower`/`melodyUpper` **同一个**（只被 `melody_over_chords` 读取），因此同样要求与 `materialSource: \"theory\"` **且** `includeMelody: true` 同给，否则 ⇒ `INVALID_PARAMETER_RANGE`（带 `hint`）。越界 ⇒ `INVALID_PARAMETER_RANGE`（带 `field` + `value` + `range`）。⛔ 不筛点、⛔ 不改时值：id/起点/时值与不传时逐条对齐，只有音高变。窗口里没有满足该上界的音阶音时由 `yeban-theory` 判定并**原样转发**（`theoryStep: \"melody_over_chords\"`），⛔ 本层不抄可行性表（与 `ADR-0038` D3 同一条理由）。"
             },
+            "melodySeed": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "旋律的**取音种子**（`ADR-0045`）。单位 = 无单位整数（`u64`，取值 `0..=18446744073709551615`；⛔ 掷骰子的结果、⛔ 段落号、⛔ 版本号）：同一个数 + 同一组其余参数 ⇒ **同一条旋律**（确定性，`ADR-0017` D3 的语义不变）。⭐ 本键**故意没有 `default`**：缺省语义是「**不覆盖** `section_seed(section_id)` 的派生值」，而那一个数**逐段落不同**（由该段落 `EntityId` 的 ULID 高低 64 位异或得出）⇒ 写死任何一个数都是错的契约；键缺席时逐字节维持既有输出（`ADR-0016`）。⭐ 本键**故意没有 `maximum`**：唯一的上界就是整数类型面本身（`u64::MAX`），`minimum: 0` 登记的是 `arg_u64` 真实拒绝的那一支（负数／浮点／字符串 ⇒ `INVALID_PARAMETER_RANGE`，带 `field:\"melodySeed\"`）。消费点：**仅**旋律生成路径（`melody_over_chords` 的第 5 实参），接线只换那一个实参；与 `melodyLower`/`melodyUpper`/`melodyMaxLeap` **同一支**耦合口径 ⇒ 要求 `materialSource: \"theory\"` **且** `includeMelody: true` 同给，否则 ⇒ `INVALID_PARAMETER_RANGE`（带 `hint`）；和声与鼓⛔ 读它。⚠ 换种子改的是**音高选择**与随之变化的**力度档**（和弦音判定 `chord_tone` 是音高的函数：和弦音取 `velocityMax`、其余取 `velocityMin`）⇒ 音符 id／起点／时值与不改种子时**逐条对齐**（网格来自流派 `rhythm_grid`，⛔ 读种子），只有音高与重音分布变；⛔ 把它叫\"掷骰子\"或期待它改变节奏。⚠ 可行性**随种子移动**（`pick_within_leap` 的可行音取决于上一音）⇒ 同参数换个种子可能触发 `NoFeasibleVoicing`，由 `yeban-theory` 判定并**原样转发**（`theoryStep: \"melody_over_chords\"`），⛔ 本层判定「哪个种子好」、⛔ 静默放宽、⛔ 换种子重试。`section_seed` 的调用点因此**上移一处**到 `plan_with_options`：「没给就派生」由结构保证（本函数内不再出现 `section_seed`）。"
+            },
             "harmonyMaxVoiceJump": {
               "type": "integer",
               "minimum": 0,
