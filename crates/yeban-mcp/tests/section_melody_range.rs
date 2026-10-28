@@ -229,7 +229,7 @@ fn a_narrow_register_moves_only_the_melody_pitches() {
         );
         for part in preset_parts(STYLE).expect("夹具必须在册") {
             assert_eq!(
-                base_table[part], shifted_table[part],
+                base_table[*part], shifted_table[*part],
                 "窗口 {low}..={high}：和声声部 `{part}` 必须与缺省跑逐条相同（音域只作用于旋律）"
             );
         }
