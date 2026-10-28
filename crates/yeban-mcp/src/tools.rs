@@ -813,6 +813,12 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
                 "和声声部**相邻两个和弦之间**的跳进上界 [ADR-0040]: 单位 = 半音距离 (同一声部在前后两个和弦里的音高差, ⛔ 不是 MIDI 音高、⛔ 不是八度号)。取值 0..=127; 缺省不给 = **不覆盖** theory 的出厂值 (3 声部 `VoicingConstraints::THREE_VOICES`、4 声部 `FOUR_VOICES`, 现读同为 12) ⇒ 键缺席时逐字节维持既有输出。消费点: **仅**和声生成路径 (`voice_leading::realize`), 且 3 与 4 声部**两条**路径都接线 ⇒ 只要求与 `materialSource:\"theory\"` 同给, ⛔ **不**要求 `includeMelody`/`includeDrums` (和声声部在 theory 路径上恒在场、恒被消费)。越界 ⇒ `INVALID_PARAMETER_RANGE` (带 `field` + `value` + `range`)。`0` 合法 (和弦不动), 但某个上界在该进行里可不可行**随进行移动** (实测: `i-VI-III-VII` 上 1/0 无解, 同和弦反复上 0 有解) ⇒ 由 `yeban-theory` 判定并原样转发 (`theoryStep:\"voice_leading::realize\"`), ⛔ 本层不抄「进行 × 上界」可行性表, ⛔ 静默放宽。⛔ 不筛和弦、⛔ 不改时值: 和弦层数与和声各音符的 id/起点/时值逐条对齐, 只有和声声部的音高变; 旋律与鼓⛔ 受影响。与 `melodyMaxLeap` 是两个键: 那一个管**旋律线**里相邻两音, 这一个管**和声声部**在相邻和弦之间的移动。实测: 缺省 12 在常见进行上只打到 2..3 半音 ⇒ 比实际所需更松的取值不改变输出, 那是\"上界\"的正常语义而⛔ 缺陷",
             ),
             param(
+                "swingPermille",
+                "integer",
+                false,
+                "鼓网格的**摇摆比例** [ADR-0041]: 单位 = **千分比** (每对相邻格位里第二个 onset 向后推移的比例; 500 = 平直不推, 1000 = 推到半个格位)。取值 500..=1000 (= theory 的 `SWING_PERMILLE_STRAIGHT..=SWING_PERMILLE_MAX`)。⛔ 本键**没有固定缺省值**: 缺省不给 = **不覆盖**该流派登记的 `GenreRule::swing`, 而那一个值**随流派移动** (现读 `GENRES` 182 条: 148 条**不登记** ⇒ theory 走平直路径, 34 条登记 540..=660, ⛔ 一条登记 500; 例 bossa_nova=540 / lo_fi_hip_hop=560 / bebop=580 / jazz_swing=660) ⇒ schema 里因此⛔ 写 `default`, 键缺席时逐字节维持既有输出。消费点: **仅**鼓轨网格 (`GenreRule::drum_pattern` 里 `swung_styled_drum_pattern` 的那一个实参; 实测该方法是它的薄封装 ⇒ 接线只换这个实参), 和声与旋律⛔ 读它 ⇒ 要求与 `materialSource:\"theory\"` **且** `includeDrums:true` 同给, 否则 ⇒ `INVALID_PARAMETER_RANGE` (带 `hint`)。越界 ⇒ `INVALID_PARAMETER_RANGE` (带 `field` + `value` + `range`)。⛔ 不筛点、⛔ 不改音色/力度、⛔ 不改时值: 只改 `tick` (实测 4 小节 synthwave + 16 格位: 鼓点恒 88 条且每条的音色与重音逐条不变, 其中 32 条反拍的起点随比例单调推移 —— 与 500 档比, 580 档合计 1216 个 tick / 单条最大 38, 1000 档合计 7648 / 单条最大 239)。与 `onsetsPerBar` (每小节几个 onset) 和 `drumDensity` (筛不筛非重音) 是三根**不同**的轴。比例越界由本层拒; 「这个比例在该拍号与该格位下产不产得出鼓点」由 `yeban-theory` 判定并原样转发 (`theoryStep:\"swung_styled_drum_pattern\"`; 实测 theory 侧 499/1001 ⇒ `SwingOutOfRange`), ⛔ 本层不抄表",
+            ),
+            param(
                 "autoMerge",
                 "boolean",
                 false,

@@ -38,6 +38,7 @@ fn theory(voice_subdivision: Option<u64>, include_parts: bool) -> Result<Section
             melody_upper: None,
             melody_max_leap: None,
             harmony_max_voice_jump: None,
+            swing_permille: None,
         },
     )
 }
@@ -238,6 +239,7 @@ fn voice_subdivision_bounds_and_coupling_are_loud() {
                 melody_upper: None,
                 melody_max_leap: None,
                 harmony_max_voice_jump: None,
+                swing_permille: None,
             },
         )
         .expect_err("`voiceSubdivision` 不得脱离 materialSource:\"theory\" 单独给");
