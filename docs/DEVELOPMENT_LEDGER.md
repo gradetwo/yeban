@@ -13010,6 +13010,72 @@ theory 自己的判据名就写着 `an_over_dense_request_is_an_error_not_a_sile
 `MelodyRulers` 已有 bundling 结构 ⇒ ⛔ 再撞 `too_many_arguments`）。⚠ 探针⛔ 代替判据：
 CI 那六条形状判据仍未写，本片开工时**这条表就是判据的输入清单**。
 
+#### `G8f` 音域半片第四批判决读回（Run `40621752029` ＝ success，⛔ 空绿）
+
+指标：`rust (yeban-mcp)` 腿（job `122597256379`）日志里 `tests/section_melody_range.rs` 的
+**逐名** `... ok` 行数，单位＝条。读数：六条**全部** `ok` 且 `test result: ok. 6 passed; 0 failed`
+—— 该文件在**两条腿各跑一次**（`test` 与 `test (合并特性)`，时间戳 `02:41:32`／`02:48:20`），
+两边都是 6 通过；整份日志共 **105** 行 `test result: ok`、**0** 行 `FAILED` ⇒ 真跑，非跳过。
+
+六个名字（逐名，⛔ 只报"六条绿"）：`absent_register_is_byte_identical_to_the_published_window`／
+`a_narrow_register_moves_only_the_melody_pitches`／`out_of_range_and_inverted_are_rejected_naming_the_key`／
+`register_keys_require_theory_source_and_a_melody_part`／
+`an_unfeasible_window_is_forwarded_from_theory_not_pre_validated`／
+`melody_register_is_declared_on_both_param_surfaces`。
+
+整 run 各腿：`deny`／`lockfile`／`checks`／`plan`／`macos`／`rust (yeban-mcp)`／`rust (yeban-ui-mcp)`
+全 success；`windows (...)` 后到 success；`rust (workspace 全量)` **skipped**（本批只碰
+`crates/yeban-mcp/**` 与 `schemas/**`，plan 腿未把全量纳入 ⇒ 这条 skipped 按纪律⛔ 记为绿，
+它什么都⛔ 验证；全量腿要到 merge 那批才会真跑）。四批的判决链到此闭合：
+`5a176d4c`（lib 侧 `too_many_arguments`）→ `d654a854`（判据侧 `E0277`）→ `36390614`（`unused variable`）
+→ `c11ffa04`（本批，success）。
+
+#### `G8g` 开工（`ADR-0039` ＝ 跳进上界 `melodyMaxLeap`）——判决 pending
+
+`ADR-0038` 的非范围 `N2` 兑现票。theory 侧 `MelodyConstraints.max_leap`（出厂 12）此前在
+MCP 侧只被写死成常量（`section_build.rs:1828` 的 `max_leap: MELODY_MAX_LEAP`），本票把它
+接成可选整数键 `melodyMaxLeap`（`0..=127`，缺省 12 ⇒ 键缺席逐字节不变）。三个决定值一提：
+
+- **上界为什么是 `127` 而⛔ "看起来合理"的 12/24**（`ADR-0039` D2）：音高全域是 `0..=127`
+  ⇒ 两音的半音距离在任何输入下都不可能超过 127。取 12/24 会造出一段"文档允许但永远打不到"
+  的值，而那正是 `ADR-0036` D3 反对的第二张表。`0` 合法 = 同音反复。
+- **`0..=127` 校验器从 `melody_register` 的内层提到模块级**（`midi_pitch_bound`），
+  音域两键与跳进一键共用（D4：⛔ 同一参数的界有两个写者）。
+- **三键的消费校验折成一个 `register_given`**（D3）：原本两处重复的
+  `lower.is_some() || upper.is_some()` 写三遍迟早漏掉新键；拒绝**码、载荷形状与 `hint`
+  里的关键词不变** ⇒ `ADR-0038` 的判据 4 照旧通过（它只断言码、⛔ `reason`、以及 `hint`
+  含 `materialSource`／`includeMelody`）。
+
+线：`.worktrees/melody-leap`（分支 `line/melody-leap`，**堆叠在 `c11ffa04` 之上**），提交
+`10b3e135`；判据 **6** 条在 `crates/yeban-mcp/tests/section_melody_leap.rs`（键缺席 ≡ 给 12
+逐字节 / 收紧只动旋律音高且实测跳进 ≤ 入参 / 越界点名键且端点 `0`、`127` 放行 / 耦合两问 /
+`0` 合法压成单音 / 两个声明面同源）。⚠ **同时翻转** `section_melody_range.rs` 判据 6 里
+"`melodyMaxLeap` 两个声明面都⛔ 出现它"的反向钉 —— 那条钉的是"本票不开"这个事实，
+本票开了它就必须翻成正钉，⛔ 留着当假绿。
+
+**本机证据（`verify/` 一次性形状探针，`#[path]` 引**真实** `section_build.rs`，跑完即删）**——
+单位＝onset 个数 / MIDI 音高值 / 相邻两音的半音距离；⚠ 这一张是 **MCP 路径**（`C minor` ＋
+`synthwave` ＋ 4 小节 ＋ `section_seed` ⇒ 缺省网格 **64** 个 onset），与上面那张 theory 门面
+探针（`genre_melody_with`、8 onset/小节 ⇒ **32** 个）⛔ 不是同一条流水线，两个数⛔ 互相印证：
+
+| `melodyMaxLeap` | onset 数 | 实测最大跳进 | 不同音高（个） | 改音高的音符（条） |
+|---|---|---|---|---|
+| 缺席 ≡ `12` | 64 | 12 | 17 | 0（两份 `SectionPlan` `assert_eq!` 通过） |
+| `5` | 64 | 5 | 19 | 58 |
+| `2` | 64 | 2 | 13 | 55 |
+| `0` | 64 | 0 | **1**（`79`） | 58 |
+
+另外四条也在探针里量到：越界 `128`／`1_000`／`256` ⇒ `InvalidParameterRange` 且载荷键集
+恰为 `{field, range, value}`、`range = [0,127]`、⛔ `reason`；端点 `0` 与 `127` 放行；
+⛔ theory 与 ⛔ `includeMelody` 两条 `hint` 分别点名 `materialSource` 与 `includeMelody`；
+声部集合 `{Alto,Bass,Drums,Melody,Soprano}` 恒定、和声四部与鼓**逐条**相同。
+⚠ 一条**反直觉读数**：收紧到 `5` 的不同音高数（19）**多于**缺省（17）⇒ 本票⛔ 写"音高种类随上界单调收窄"
+这类判据（那条会被实测打红）；只钉"实测最大跳进 ≤ 入参"与"至少一条音高被改"。
+`clippy-driver` 纯模块脚手架 `rc=0`；`verify/section_pure.rs` **48 通过 / 0 失败**
+（⇒ 27 处 `PlanOptions` 字面量补字段后 lib 侧仍然绿）；`run-gates.sh light` ＝ `门禁通过`。
+⚠ 本机量不到的照旧是**判据文件的类型面**（`tests/**` 要链 `yeban_mcp` 整 lib，拖 `yeban-render`）
+⇒ 判决只能来自 CI：**pending**（尚未推送，等 `G8f` 第四批 `40621752029` 的判决先落地）。
+
 ### 本轮新增的规则
 
 1. **写"逐条对齐"类判据之前，先问每个被对齐的字段是不是该参数的函数**：本片原本打算把

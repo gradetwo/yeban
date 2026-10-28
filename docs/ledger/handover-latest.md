@@ -280,6 +280,14 @@ lib 侧 `8/7` → 判据侧 `E0277` → 判据侧 `unused variable`）。
      ⚠ 本机仍⛔ 覆盖**判据文件的类型面**（`tests/**` 要整个 lib）⇒ `E0277`/`E0432`/`E0615`
      那一类要逐名核对 import、调用括号与**索引键的引用层数**（§0.6.4 第 8、9、16 条）。
    - `G8f` 的**动机半片**仍⛔ 未开工，等 §0.6.3 那条人类裁决；⛔ 为凑"缺口清零"发明 motive。
+   - ⚠⚠ **本条于 2026-10-28 第五次更新（⭐ 两条线同时在飞，接手要分别读回）**：
+     `G8g`（跳进上界 `melodyMaxLeap`，`ADR-0039`）**已开工并落在堆叠工作树**
+     `.worktrees/melody-leap`（分支 `line/melody-leap`，基线 = `c11ffa04`，即 G8f 的在飞 tip），
+     提交 `10b3e135`，**尚未推送**（⛔ 在 `40621752029` 判下来之前推它，两条 run 的归属会混）。
+     - 因此**接手第一件事 = 读回 Run `40621752029`**；成功后按上一条落地 `melody-range`，
+       再 `git -C .worktrees/melody-leap rebase main`（或 merge 落地后的主干）并推送，
+       读回 `line/melody-leap` **自己**的 run（判据文件 `tests/section_melody_leap.rs`，六条）。
+     - ⛔ 在 G8f 落地前把堆叠线的代码合进主干：那条线的 diff **包含** G8f 的全部改动。
 3. ✅ **在飞的线已全部落地**：`line/reason-propagation`（§0.5.8 第 11 项队列的最后一格）
    已合进主干（`c2dd2b89` 主体 + `007e3ff9` 修 CI 报的两个编译错，merge `e18be129`，
    run `40588472044`）。它把 `EXEMPT_DYNAMIC_REASON_SITES` 从 **4 行压到 3 行**：
@@ -1069,8 +1077,9 @@ python3 scripts/guards/policy_check.py && bash scripts/gates/run-gates.sh light
 | `/home/crow/work/qoder/yeban/.worktrees/melody-range` | `line/melody-range` | ⭐ **在飞**（`G8f` 音域半片＝旋律音高窗口，`ADR-0038`）：tip `c11ffa04`（四批：`5a176d4c` 真红于 lib 侧 `clippy::too_many_arguments` → `d654a854`
 真红于判据侧 `E0277` → `36390614` 真红于判据侧 `unused variable` → `c11ffa04` 待判），
 Run `40621752029` **pending** ⇒ ⛔ 落地、⛔ 拆树，读回见 §0.6.5 |
+| `/home/crow/work/qoder/yeban/.worktrees/melody-leap` | `line/melody-leap` | ⭐ **在飞（堆叠在上一行之上）**（`G8g` 跳进上界 `melodyMaxLeap`，`ADR-0039`）：基线 `c11ffa04`，tip `10b3e135`，**尚未推送**（⛔ 在 `40621752029` 判下来之前推 ⇒ run 归属会混；⛔ 在 G8f 落地前合进主干 ⇒ diff 包含 G8f 全部改动）。本机证据：`clippy-driver` rc=0 ＋ `verify/section_pure.rs` 48 passed ＋ 形状探针（onset 恒 64、实测最大跳进 = 入参 12/5/2/0）；判据文件 `crates/yeban-mcp/tests/section_melody_leap.rs`（六条，类型面只能靠 CI）|
 
-> ⭐ **2026-10-28 现读 `git worktree list` ＝ 上面两行**：`line/reason-propagation` 已落地
+> ⭐ **2026-10-28 现读 `bash scripts/dev/worktree.sh list` ＝ 上面三行**（主树 + `melody-range` + `melody-leap`）：`line/reason-propagation` 已落地
 > （`c2dd2b89` + `007e3ff9`，merge `e18be129`，run `40588472044` success）⇒ 工作树已按第 31 条拆除
 > （`worktree.sh rm` **只删目录、保留分支**，未合并的工作不会静默消失）。
 > ⭐ **同一句于 2026-10-28 第二次生效**：`line/section-velocity-range`（`G8e` 力度轴）已落地
