@@ -73,9 +73,9 @@
 //!
 //! - 鼓组：`GenreRule::drum_pattern`（缺失时退到 `swung_styled_drum_pattern`）
 //!   的每个 `DrumHit` → 一条 GM 打击乐音符（36/38/42/51），时值固定 120 tick，
-//!   力度按 `accent` 分 112/96；
+//!   力度按 `accent` 分两档（缺省 112/96，`ADR-0037` 起可由 `velocityMax`/`velocityMin` 改）；
 //! - 旋律：`GenreRule::rhythm_grid` 的网格上，`melody_over_chords` 在**同一份**
-//!   `ChordSpan` 上生成，时值/起点与网格对齐，力度按 `chord_tone` 分 112/96；
+//!   `ChordSpan` 上生成，时值/起点与网格对齐，力度按 `chord_tone` 分两档（同上）；
 //! - 两条声部与和声声部共用同一套 `AddTrack` / `AddClip` / `AddClipPlacement` /
 //!   `AddRoutingNode` / `ConnectRouting` 装配，因此路由图仍是 DAG。
 //!
@@ -115,6 +115,7 @@ use std::collections::BTreeMap;
 
 use serde_json::{Value, json};
 
+use yeban_model::music::MIDI_VELOCITY_MAX;
 use yeban_model::{
     ClipContent, ClipPlacement, ClipPoolEntry, EntityId, LoopConfig, MidiNote, ModelError, Op, PPQ,
     RoutingEdge, RoutingGraph, RoutingKind, SectionV3, TrackKind, TrackV3, YebanProjectV1,
@@ -171,7 +172,8 @@ const FALLBACK_PROGRESSION: &str = "I-V-vi-IV";
 /// 理论生成路径的固定力度（`ADR-0016` 未决第 3 条：theory 没有力度概念）。
 const THEORY_VELOCITY: u8 = 96;
 
-/// 重音／和弦音的力度（`ADR-0017` D1：鼓组重音与旋律和弦音 112，其余 96）。
+/// 重音／和弦音的力度**缺省值**（`ADR-0017` D1：鼓组重音与旋律和弦音 112，其余 96；
+/// `ADR-0037` D1 起这两档由 `velocityMin` / `velocityMax` 覆盖）。
 const ACCENT_VELOCITY: u8 = 112;
 
 /// 鼓组声部名（`ADR-0017` D1：`"{section_name} · Drums"`）。
@@ -1174,6 +1176,13 @@ pub struct PlanOptions<'a> {
     /// 只允许与 `material_source: Some("theory")` **且**（`include_drums` 或
     /// `include_melody` 至少一条在场）同给（D4）。
     pub onsets_per_bar: Option<u64>,
+    /// ⭐ `ADR-0037` D1：既有**两级**力度阶梯的下档 —— 和声声部的全部音符，
+    /// 以及鼓（`hit.accent`）与旋律（`chord_tone`）里**非**重音的那档。
+    /// `None` = [`THEORY_VELOCITY`]（96）⇒ 逐字节维持既有输出（D2）。取值 `0..=127`。
+    pub velocity_min: Option<u64>,
+    /// ⭐ `ADR-0037` D1：阶梯的上档 —— 鼓与旋律里被登记为重音／和弦音的那档。
+    /// `None` = [`ACCENT_VELOCITY`]（112）。取值 `0..=127`，且必须 `>= velocity_min`（D3）。
+    pub velocity_max: Option<u64>,
 }
 
 /// 一个声部的身份（两条材料路径共用）。
@@ -1447,6 +1456,49 @@ fn voice_subdivision_table(
     Ok(table)
 }
 
+/// ⭐ `ADR-0037` D1/D3：把两个可选键折成既有**两级**力度阶梯 `(下档, 上档)`。
+///
+/// 两个键都不给 ⇒ `(THEORY_VELOCITY, ACCENT_VELOCITY)` ⇒ 逐字节维持既有输出（D2）。
+/// ⚠ 越界与倒序的拒绝载荷里**故意不写 `reason` 键** —— 那正是 `onsetsPerBar` 那一族
+/// 拒绝的既有形状（`section_build.rs` 里 `{"onsetsPerBar": …, "range": […]}`），
+/// 沿用它的形状也就⛔ 动不到 `fault_vocabulary` 的词表与规范面摘要。
+fn velocity_ladder(min: Option<u64>, max: Option<u64>) -> Result<(u8, u8), BuildFault> {
+    /// 单个键的 `0..=127` 校验。`u8::try_from` 挡 `>255`，`filter` 挡 `128..=255` ⇒ 一条表达式覆盖两种越界。
+    fn bound(name: &str, raw: u64) -> Result<u8, BuildFault> {
+        u8::try_from(raw)
+            .ok()
+            .filter(|value| *value <= MIDI_VELOCITY_MAX)
+            .ok_or_else(|| {
+                BuildFault::domain_with_data(
+                    BuildCode::InvalidParameterRange,
+                    format!("`{name}` 必须在 0..={MIDI_VELOCITY_MAX}, 实际 {raw}"),
+                    json!({ "field": name, "value": raw, "range": [0, MIDI_VELOCITY_MAX] }),
+                )
+            })
+    }
+    let lower = match min {
+        None => THEORY_VELOCITY,
+        Some(raw) => bound("velocityMin", raw)?,
+    };
+    let upper = match max {
+        None => ACCENT_VELOCITY,
+        Some(raw) => bound("velocityMax", raw)?,
+    };
+    if lower > upper {
+        return Err(BuildFault::domain_with_data(
+            BuildCode::InvalidParameterRange,
+            format!("`velocityMin` ({lower}) 必须 <= `velocityMax` ({upper})"),
+            json!({
+                "field": "velocityMin",
+                "velocityMin": lower,
+                "velocityMax": upper,
+                "hint": "把 `velocityMin` 调到不大于 `velocityMax`（两档相等是合法的单档力度）；上档比下档轻是反重音（演奏法），⛔ 不是力度范围的语义, 本票不支持",
+            }),
+        ));
+    }
+    Ok((lower, upper))
+}
+
 /// 960 PPQ 的整数 tick；身份由 `section_id + 声部序 + 和弦序` 派生。
 ///
 /// ⭐ `ADR-0033`：`subdivisions[voice]`（调用方已校验 1..=[`MAX_VOICE_SUBDIVISION`]）
@@ -1459,6 +1511,7 @@ fn theory_contents(
     voice_count: usize,
     spans: &[ChordSpan],
     subdivisions: &[u64],
+    ladder: (u8, u8),
 ) -> Result<Vec<BTreeMap<EntityId, MidiNote>>, BuildFault> {
     if subdivisions.len() != voice_count {
         return Err(BuildFault::domain(
@@ -1541,7 +1594,7 @@ fn theory_contents(
                         step
                     };
                     let note = MidiNote {
-                        velocity: THEORY_VELOCITY,
+                        velocity: ladder.0,
                         ..MidiNote::new(id, span.start_tick + part * step, pitch, duration)
                     };
                     notes.insert(id, note);
@@ -1615,7 +1668,7 @@ fn theory_drum_pattern(
 ///
 /// 每个 [`DrumHit`](yeban_theory::drum::DrumHit) 变成一条 GM 打击乐音符：
 /// 音高 = `hit.voice.gm_key()`（36/38/42/51）、起点 = `hit.tick`、
-/// 时值固定 120 tick、力度按 `accent` 分 112/96。
+/// 时值固定 120 tick、力度按 `accent` 取 `ladder` 的两档（缺省 112/96，`ADR-0037` D1）。
 fn drum_contents(
     rule: &'static GenreRule,
     bars: u64,
@@ -1623,6 +1676,7 @@ fn drum_contents(
     section_id: EntityId,
     density: DrumDensity,
     onsets_per_bar: u32,
+    ladder: (u8, u8),
 ) -> Result<BTreeMap<EntityId, MidiNote>, BuildFault> {
     let pattern = theory_drum_pattern(rule, theory_bars(bars)?, style_preset, onsets_per_bar)?;
     let mut notes = BTreeMap::new();
@@ -1639,11 +1693,7 @@ fn drum_contents(
             hit.voice.name()
         ));
         let note = MidiNote {
-            velocity: if hit.accent {
-                ACCENT_VELOCITY
-            } else {
-                THEORY_VELOCITY
-            },
+            velocity: if hit.accent { ladder.1 } else { ladder.0 },
             ..MidiNote::new(id, hit.tick, hit.voice.gm_key(), DRUM_NOTE_DURATION_TICKS)
         };
         notes.insert(id, note);
@@ -1671,7 +1721,7 @@ fn drum_contents(
 /// `'theory'` 路径的旋律内容（`ADR-0017` D1）。
 ///
 /// 网格来自流派的 `rhythm_grid`，旋律由 `melody_over_chords` 在目标调式与
-/// 既有和弦跨度上生成；力度按 `chord_tone` 分 112/96。
+/// 既有和弦跨度上生成；力度按 `chord_tone` 取 `ladder` 的两档（缺省 112/96）。
 fn melody_contents(
     theory: &TheoryInput,
     spans: &[ChordSpan],
@@ -1679,6 +1729,7 @@ fn melody_contents(
     style_preset: &str,
     section_id: EntityId,
     onsets_per_bar: u32,
+    ladder: (u8, u8),
 ) -> Result<BTreeMap<EntityId, MidiNote>, BuildFault> {
     let grid = theory
         .rule
@@ -1704,11 +1755,7 @@ fn melody_contents(
     for (note_index, note) in melody.notes().iter().enumerate() {
         let id = deterministic_id(&format!("theory-melody:{section_id}:{note_index}"));
         let midi = MidiNote {
-            velocity: if note.chord_tone {
-                ACCENT_VELOCITY
-            } else {
-                THEORY_VELOCITY
-            },
+            velocity: if note.chord_tone { ladder.1 } else { ladder.0 },
             ..MidiNote::new(id, note.start_tick, note.pitch, note.duration_ticks)
         };
         notes.insert(id, midi);
@@ -1894,6 +1941,22 @@ pub fn plan_with_options(
             json!({ "hint": "请同时指定 includeDrums: true 或 includeMelody: true（网格只作用于这两条生成路径）" }),
         ));
     }
+    // ⭐ `ADR-0037` D4：给了必须被消费 —— 力度阶梯只作用于 theory 生成路径
+    // （外部素材的 `velocity` 由调用方给出，本层不覆盖）。与 `voiceSubdivision` /
+    // `onsetsPerBar` 同口径，但⛔ **不要求** `includeDrums` / `includeMelody` 在场：
+    // 和声声部**恒**消费下档，所以"只有和声"的调用也真的在消费这两个参数。
+    if (options.velocity_min.is_some() || options.velocity_max.is_some())
+        && material_source != MaterialSource::Theory
+    {
+        return Err(BuildFault::domain_with_data(
+            BuildCode::InvalidParameterRange,
+            "`velocityMin` / `velocityMax` 仅在 materialSource: 'theory' 时支持",
+            json!({ "hint": "请指定 materialSource: \"theory\"（力度阶梯只作用于生成的音符，外部素材的力度由调用方给出）" }),
+        ));
+    }
+    // ⭐ `ADR-0037` D1/D3：阶梯在这里定下（`0..=127` 的界与 `min <= max`），
+    // 三个生成器只**取用** —— ⛔ 让每个生成器各自再校验一遍（同一参数的界两个写者）。
+    let ladder = velocity_ladder(options.velocity_min, options.velocity_max)?;
     // 1. 参数与工程前置条件（顺序即错误码优先级，判据钉住它）。
     //    风格与声部数都来自 theory（见 `preset_parts` / `genre_voice_count`）。
     let harmony_parts = preset_parts(style_preset)?;
@@ -2006,6 +2069,7 @@ pub fn plan_with_options(
                 harmony_parts.len(),
                 &spans,
                 &harmony_subdivisions,
+                ladder,
             )?;
             if include_drums {
                 contents.push(drum_contents(
@@ -2015,6 +2079,7 @@ pub fn plan_with_options(
                     section_id,
                     drum_density,
                     onsets_per_bar,
+                    ladder,
                 )?);
             }
             if include_melody {
@@ -2025,6 +2090,7 @@ pub fn plan_with_options(
                     style_preset,
                     section_id,
                     onsets_per_bar,
+                    ladder,
                 )?);
             }
             contents
