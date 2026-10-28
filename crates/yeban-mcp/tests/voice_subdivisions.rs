@@ -54,6 +54,8 @@ fn plan_try(
             onsets_per_bar: None,
             velocity_min: None,
             velocity_max: None,
+            melody_lower: None,
+            melody_upper: None,
         },
     )
 }

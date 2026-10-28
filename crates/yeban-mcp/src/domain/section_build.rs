@@ -115,7 +115,7 @@ use std::collections::BTreeMap;
 
 use serde_json::{Value, json};
 
-use yeban_model::music::MIDI_VELOCITY_MAX;
+use yeban_model::music::{MIDI_PITCH_MAX, MIDI_VELOCITY_MAX};
 use yeban_model::{
     ClipContent, ClipPlacement, ClipPoolEntry, EntityId, LoopConfig, MidiNote, ModelError, Op, PPQ,
     RoutingEdge, RoutingGraph, RoutingKind, SectionV3, TrackKind, TrackV3, YebanProjectV1,
@@ -127,7 +127,9 @@ use yeban_theory::TheoryError;
 use yeban_theory::cells_per_bar;
 use yeban_theory::drum::{DrumPattern, default_backbeat, swung_styled_drum_pattern};
 use yeban_theory::genre::{GenreLibrary, GenreRule};
-use yeban_theory::melody::{MelodyConstraints, melody_over_chords};
+use yeban_theory::melody::{
+    MELODY_LOWER_BOUND, MELODY_MAX_LEAP, MELODY_UPPER_BOUND, MelodyConstraints, melody_over_chords,
+};
 use yeban_theory::pitch::{Pitch, PitchClass};
 use yeban_theory::progression::{ChordSpan, Meter as TheoryMeter, Progression};
 use yeban_theory::scale::{Scale as TheoryScale, ScaleKind};
@@ -1183,6 +1185,14 @@ pub struct PlanOptions<'a> {
     /// ⭐ `ADR-0037` D1：阶梯的上档 —— 鼓与旋律里被登记为重音／和弦音的那档。
     /// `None` = [`ACCENT_VELOCITY`]（112）。取值 `0..=127`，且必须 `>= velocity_min`（D3）。
     pub velocity_max: Option<u64>,
+    /// ⭐ `ADR-0038` D1：旋律音高窗口的**下端**（单位 = MIDI 音高值，`0..=127`）。
+    /// `None` = [`MELODY_LOWER_BOUND`]（48）⇒ 逐字节维持既有输出（D2）。
+    /// ⚠ 只被**旋律生成路径**读取 —— 和声声部的音域是 `ADR-0028` 的 `SECTION_THREE_VOICES`，
+    /// 因此必须与 `include_melody: Some(true)` 同给（D3）。
+    pub melody_lower: Option<u64>,
+    /// ⭐ `ADR-0038` D1：旋律音高窗口的**上端**。`None` = [`MELODY_UPPER_BOUND`]（84）。
+    /// 取值 `0..=127`，且必须 `>= melody_lower`（D1）；跳进上界 `max_leap`⛔ 不在本票（N2）。
+    pub melody_upper: Option<u64>,
 }
 
 /// 一个声部的身份（两条材料路径共用）。
@@ -1499,6 +1509,50 @@ fn velocity_ladder(min: Option<u64>, max: Option<u64>) -> Result<(u8, u8), Build
     Ok((lower, upper))
 }
 
+/// ⭐ `ADR-0038` D1/D3：把两个可选键折成旋律的**音高窗口** `(下端, 上端)`。
+///
+/// 两个键都不给 ⇒ `(MELODY_LOWER_BOUND, MELODY_UPPER_BOUND)` ⇒ 逐字节维持既有输出（D2）。
+/// ⛔ 在这里预先判"窗口里有没有音阶音"：那是调式 × 音域的可行性函数，唯一来源是 theory 的
+/// `NoFeasibleVoicing`（命中时由 `melody_contents` 走 [`theory_invalid`] 原样转发）——
+/// 与 `ADR-0036` D3 对 `onsetsPerBar` 上界的处置同一条理由：本层不抄第二张表。
+/// 拒绝载荷⛔ 带 `reason` 键（`ADR-0038` D4 ⇒ `fault_vocabulary` 的词表与摘要不变）。
+fn melody_register(lower: Option<u64>, upper: Option<u64>) -> Result<(u8, u8), BuildFault> {
+    /// 单个键的 `0..=127` 校验。`u8::try_from` 挡 `>255`，`filter` 挡 `128..=255` ⇒ 一条表达式覆盖两种越界。
+    fn bound(name: &str, raw: u64) -> Result<u8, BuildFault> {
+        u8::try_from(raw)
+            .ok()
+            .filter(|value| *value <= MIDI_PITCH_MAX)
+            .ok_or_else(|| {
+                BuildFault::domain_with_data(
+                    BuildCode::InvalidParameterRange,
+                    format!("`{name}` 必须在 0..={MIDI_PITCH_MAX}, 实际 {raw}"),
+                    json!({ "field": name, "value": raw, "range": [0, MIDI_PITCH_MAX] }),
+                )
+            })
+    }
+    let low = match lower {
+        None => MELODY_LOWER_BOUND,
+        Some(raw) => bound("melodyLower", raw)?,
+    };
+    let high = match upper {
+        None => MELODY_UPPER_BOUND,
+        Some(raw) => bound("melodyUpper", raw)?,
+    };
+    if low > high {
+        return Err(BuildFault::domain_with_data(
+            BuildCode::InvalidParameterRange,
+            format!("`melodyLower` ({low}) 必须 <= `melodyUpper` ({high})"),
+            json!({
+                "field": "melodyLower",
+                "melodyLower": low,
+                "melodyUpper": high,
+                "hint": "把 `melodyLower` 调到不大于 `melodyUpper`（两端相等是合法的单音音域）；音高窗口⛔ 没有\"倒着开\"的语义, 本票不支持",
+            }),
+        ));
+    }
+    Ok((low, high))
+}
+
 /// 960 PPQ 的整数 tick；身份由 `section_id + 声部序 + 和弦序` 派生。
 ///
 /// ⭐ `ADR-0033`：`subdivisions[voice]`（调用方已校验 1..=[`MAX_VOICE_SUBDIVISION`]）
@@ -1718,10 +1772,31 @@ fn drum_contents(
     Ok(notes)
 }
 
+/// 旋律生成消费的**两把标尺**：力度两档与音高窗口。
+///
+/// 收成一个结构体而不是分着传四个数，理由有两条，都是本仓的既有纪律：
+/// 1. `clippy::too_many_arguments` 在这里是**承重信号**而⛔ 需要 `allow` 掉的噪音
+///    （同款理由见 `domain/mod.rs` 的 `SessionSeed`）—— 加了 `register` 后本函数已是第 8 个参数；
+/// 2. 两把标尺的**类型完全相同**（都是 `(u8, u8)`），分开传时把力度档与音域**调个顺序照样编得过**，
+///    编译器一句话不说；捆成一个结构体后字段名写在调用处，这类倒置不可能发生。
+#[derive(Clone, Copy, Debug)]
+struct MelodyRulers {
+    /// 力度两档 `(下档, 上档)` —— [`velocity_ladder`] 的结果（`ADR-0037`）。
+    ladder: (u8, u8),
+    /// 音高窗口 `(下界, 上界)` —— [`melody_register`] 的结果（`ADR-0038`）。
+    register: (u8, u8),
+}
+
 /// `'theory'` 路径的旋律内容（`ADR-0017` D1）。
 ///
 /// 网格来自流派的 `rhythm_grid`，旋律由 `melody_over_chords` 在目标调式与
-/// 既有和弦跨度上生成；力度按 `chord_tone` 取 `ladder` 的两档（缺省 112/96）。
+/// 既有和弦跨度上生成；力度按 `chord_tone` 取 `rulers.ladder` 的两档（缺省 112/96）。
+/// ⭐ `ADR-0038` D1：音高窗口取 `rulers.register` 的两端（缺省 48/84），跳进上界沿用 theory
+/// 的 [`MELODY_MAX_LEAP`]（N2：`max_leap` 的单位是"相邻两音的半音距离"，不是音域）。
+/// ⚠ 这里**就地构造** `MelodyConstraints` 而⛔ 不再调 `MelodyConstraints::new`：
+/// `new` 校验的两条（`lower <= upper`、`upper <= 127`）已经在 [`melody_register`] 判过，
+/// 再判一次就是同一参数的界有两个写者，且那条 `Err` 分支在本层永不可达（无从测）。
+/// 音高是否落在窗口内⛔ 不在这里逐音复查 —— 那是 `melody.rs` 文档保证的语义。
 fn melody_contents(
     theory: &TheoryInput,
     spans: &[ChordSpan],
@@ -1729,7 +1804,7 @@ fn melody_contents(
     style_preset: &str,
     section_id: EntityId,
     onsets_per_bar: u32,
-    ladder: (u8, u8),
+    rulers: MelodyRulers,
 ) -> Result<BTreeMap<EntityId, MidiNote>, BuildFault> {
     let grid = theory
         .rule
@@ -1747,7 +1822,11 @@ fn melody_contents(
         &theory.scale,
         spans,
         &grid,
-        MelodyConstraints::DEFAULT,
+        MelodyConstraints {
+            lower: rulers.register.0,
+            upper: rulers.register.1,
+            max_leap: MELODY_MAX_LEAP,
+        },
         section_seed(section_id),
     )
     .map_err(|error| theory_invalid(style_preset, "melody_over_chords", error))?;
@@ -1755,7 +1834,11 @@ fn melody_contents(
     for (note_index, note) in melody.notes().iter().enumerate() {
         let id = deterministic_id(&format!("theory-melody:{section_id}:{note_index}"));
         let midi = MidiNote {
-            velocity: if note.chord_tone { ladder.1 } else { ladder.0 },
+            velocity: if note.chord_tone {
+                rulers.ladder.1
+            } else {
+                rulers.ladder.0
+            },
             ..MidiNote::new(id, note.start_tick, note.pitch, note.duration_ticks)
         };
         notes.insert(id, midi);
@@ -1957,6 +2040,29 @@ pub fn plan_with_options(
     // ⭐ `ADR-0037` D1/D3：阶梯在这里定下（`0..=127` 的界与 `min <= max`），
     // 三个生成器只**取用** —— ⛔ 让每个生成器各自再校验一遍（同一参数的界两个写者）。
     let ladder = velocity_ladder(options.velocity_min, options.velocity_max)?;
+    // ⭐ `ADR-0038` D3：给了必须被消费 —— 音高窗口**只**被旋律生成路径读取（和声走
+    // `ADR-0028` 的 `VoicingConstraints`，鼓的音高是 GM 键），因此这里比力度那一票**更严**：
+    // 除了 `materialSource:"theory"`，还要求 `includeMelody: true` 在场（缺省 `false` ⇒
+    // 给了窗口却没有旋律声部 = 参数被静默忽略）。
+    if (options.melody_lower.is_some() || options.melody_upper.is_some())
+        && material_source != MaterialSource::Theory
+    {
+        return Err(BuildFault::domain_with_data(
+            BuildCode::InvalidParameterRange,
+            "`melodyLower` / `melodyUpper` 仅在 materialSource: 'theory' 时支持",
+            json!({ "hint": "请指定 materialSource: \"theory\"（音高窗口只作用于生成的旋律，外部素材的音高由调用方给出）" }),
+        ));
+    }
+    if (options.melody_lower.is_some() || options.melody_upper.is_some()) && !include_melody {
+        return Err(BuildFault::domain_with_data(
+            BuildCode::InvalidParameterRange,
+            "`melodyLower` / `melodyUpper` 需要 includeMelody 为 true",
+            json!({ "hint": "请同时指定 includeMelody: true（音高窗口只被旋律声部消费，和声与鼓不受它影响）" }),
+        ));
+    }
+    // ⭐ `ADR-0038` D1：窗口在这里定下（`0..=127` 的界与 `lower <= upper`），
+    // `melody_contents` 只**取用**（⛔ 同一参数的界两个写者）。
+    let register = melody_register(options.melody_lower, options.melody_upper)?;
     // 1. 参数与工程前置条件（顺序即错误码优先级，判据钉住它）。
     //    风格与声部数都来自 theory（见 `preset_parts` / `genre_voice_count`）。
     let harmony_parts = preset_parts(style_preset)?;
@@ -2090,7 +2196,7 @@ pub fn plan_with_options(
                     style_preset,
                     section_id,
                     onsets_per_bar,
-                    ladder,
+                    MelodyRulers { ladder, register },
                 )?);
             }
             contents
