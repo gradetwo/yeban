@@ -937,7 +937,7 @@ python3 scripts/guards/policy_check.py && bash scripts/gates/run-gates.sh light
 
 ⭐ 本会话“本仓早已做对”**六次（六次全中）**，故先把已有的守卫列在这里。
 
-### `scripts/guards/policy_check.py` 的 `GUARDS`（⭐ **19** 条 —— 现读 `python3 scripts/guards/policy_check.py --list | wc -l`，⛔ 抄本表的数字）
+### `scripts/guards/policy_check.py` 的 `GUARDS`（⭐ **20** 条 —— 现读 `python3 scripts/guards/policy_check.py --list | wc -l`，⛔ 抄本表的数字；⚠ 本行曾写 19，`G20` 落地后未同步，2026-10-28 12:22 更正）
 
 | 编号 | 管什么 | 红线／规矩 |
 | :--- | :--- | :--- |
@@ -1611,6 +1611,17 @@ python3 scripts/guards/policy_check.py && bash scripts/gates/run-gates.sh light
 | 4 守卫网络 | **20 条**（`--list | wc -l` 现读；⛔ 手抄）。新增 **`G20`**：`docs/adr/README.md` 索引与 `docs/adr/ADR-*.md` **双向一致**（漏行／死链；两条判据都做过变异注入）。⚠ `G20` 自己那次 CI 判决是**红**（run `40680104196`，`checks` 唯一红 = 我在台账里贴了链接字面）⇒ 处置与教训见台账「本轮第三次真红」＋ 规则 26／27；**修复批的 `checks` 腿判决待读回** |
 | 5 ⛔ 自主可做的下一批 | 仍为**零**：**`ADR-0042`**（音级覆盖性；卡 `harmonyVoices`／`harmonyLower`／`harmonyUpper`）与**旋律动机半片**（§0.6.3）都卡人类裁决；`ADR-0041` 的 `N1` 是人类裁决、`N2`/`N4` 是 theory 票。⛔ 硬造工作凑轮次 |
 | 6 磁盘 | `df -h /home` 现读 **27G 可用（89%）**；仓库侧 `target` 3.1G（`debug/incremental` 现读 0）；`beat-grouping` 树已拆（其 `target` 435M 随树消失）。仓库外大头仍挂账 #34（⛔ 未经裁决一个字节都不删） |
+
+### ⭐ ⭐ §11 的 **2026-10-28 12:24 更新**（⭐ 上面各段 ⛔ 不改写；⭐ 接手者**按这一段**行动）
+
+| # | 项 | 现读状态 ＋ 下一步 |
+|---|----|--------------------|
+| 1 状态核验 | `origin/main` tip 现读 **`26f8ed5c`**（`G8n` merge `b42f4cc0` → `G20` 批 `783da55b` → 落账 `9b9b58f3` → 本批），其 run **`40687040952` = success**：`checks`／`deny`／`plan`／`lockfile` 真跑（`checks` **15 steps**／日志 **547 行**），四条 rust 腿 `skipped` 且 **steps=0**（纯文档 diff 的预期形态 ⇒ 空绿**只对 rust 面**成立）。`git worktree list` 现读**一行**（只有主树）。此前 `9b9b58f3` 的 `checks` 红（5 处链接字面）已被本批消除：日志里 `链接指向不存在的路径` = **0** 次 |
+| 2 `G8m`（`melodySeed`）| ✅ **四件齐闭合**（读数不变，见上一段第 2 行；替代全量判决 run `40674825616` 的六条判据已在 `40679452708` 里独立复现） |
+| 3 `G8n`（`beatGrouping`）| ✅ **四件齐闭合**（读数不变，见上一段第 3 行） |
+| 4 守卫网络 | **20 条**，且 `G20` **第一次 CI 绿**已读回：run `40687040952` 的 `checks` 日志里 `守卫全部通过 (20 条)` **1** 次（此前唯一判决 `40680104196` 是红）。⭐ 本轮新增**规则 28**：那些"本机没有入口"的判断要先 grep 门禁脚本 —— `run-gates.sh light` 的 `gate_docs` **本来就含** `check_docs_links.py`（本机 12:22 实测 `light` **rc=0**），我两连红是**用了更小的入口**（只手跑 `policy_check.py` 子集）而**声称了更大的覆盖面**。⇒ 提交前的"本机绿"必须是**文档里那条命令**的退出码 |
+| 5 ⛔ 自主可做的下一批 | 仍为**零**：**`ADR-0042`**（音级覆盖性；卡 `harmonyVoices`／`harmonyLower`／`harmonyUpper`）与**旋律动机半片**（§0.6.3）都卡人类裁决；`ADR-0041` 的 `N1` 是人类裁决、`N2`/`N4` 是 theory 票（`N3` 已由 `G8n` 兑现）。⛔ 硬造工作凑轮次 |
+| 6 磁盘 | `df -h /home` 12:24 现读 **235G 总 / 201G 已用 / 28G 可用（88%）**；`target` 3.1G、`debug/incremental` **0**；`git worktree list` = 一行。仓库外大头仍挂账 #34（⛔ 未经裁决一个字节都不删） |
 
 ### ⭐ 磁盘：仓库**外**大头的现读清单（2026-10-28 06:38，`du -sh` 实测，⛔ 一个字节都没删）
 

@@ -13559,7 +13559,7 @@ MCP 侧只被写死成常量（`section_build.rs:1828` 的 `max_leap: MELODY_MAX
 | `rust (workspace 全量)`（承判腿） | **success**。日志 1,580,297 字节 / 16,667 行 ⇒ **421** 条 `test result:` / passed **6,788** / failed **0** / `FAILED` **0** 次 |
 | `windows` | success |
 | `checks` / `deny` / `lockfile` / `plan` | 全 success |
-| `macos` | ⏳ 读回时仍在 `in_progress` ⇒ **整体 `conclusion` 未定**，本行⛔ 记"四件齐" |
+| `macos` | ⏳ 读回时仍在 `in_progress` ⇒ **整体 `conclusion` 未定**，本行⛔ 记"四件齐"（⭐ 后于 12:17 读回为 success ⇒ 见下节「`G8n` 闭合」） |
 | ⭐ 增量交叉核 | 对 `G8m` 替代判决（420 / 6,782，run `40674825616`）净增 **＋1 二进制 / ＋6 通过** ＝ 新增的 `tests/section_drum_grouping.rs` 六条 |
 | ⭐ 判据逐名（本票六条） | `absent_grouping_is_byte_identical_to_the_derived_split`／`the_grouping_moves_the_kick_and_the_accents_not_the_grid`／`illegal_groupings_are_rejected_naming_the_key`／`the_grouping_key_requires_the_theory_source_and_the_drum_part`／`the_legal_shape_moves_with_the_meter`／`drum_grouping_is_declared_on_both_param_surfaces_without_default_or_maximum` ⇒ **各恰 1 次 `... ok`** |
 | ⭐ 顺带复核 `G8m` 六条 | 同一腿里 `section_melody_seed` 的六条**同样各恰 1 次 `... ok`** ⇒ `G8m` 的替代证据在**第二条**全量腿上独立复现（与 `40674825616` 互证） |
@@ -13577,15 +13577,18 @@ MCP 侧只被写死成常量（`section_build.rs:1828` 的 `max_leap: MELODY_MAX
 根因：我在写 `G20` 的**判据说明**时，把索引行的源码形态当示例贴进了台账 ⇒ 文档链接检查器
 把索引行的**链接形态**当成**真链接**。处置：三处改成「指向某某的相对链接（写法见
 `policy_check.py` 的 `ADR_LINK`）」，⛔ 在 `.md` 里贴链接的源码形态（`check_docs_links.py` 现读
-"165 个文件 / 285 条相对链接"全过）。⚠ 本机当时**没有**这条检查的入口（它只在 CI 的 `checks` 腿里）
-⇒ 又一次"本机绿 ≠ CI 绿"。
+"165 个文件 / 285 条相对链接"全过）。⚠ 根因不是"缺入口"：本机**有**这条检查的入口 ——
+`bash scripts/gates/run-gates.sh light` 的 `gate_docs` 里就有 `run "docs" … check_docs_links.py`；
+我当时的"本机绿"只手跑了 `policy_check.py` 这个**子集**，于是覆盖面小于我声称的覆盖面 ⇒ 又一次
+"本机绿 ≠ CI 绿"，但这次是**用了更小的入口**（见规则 28）。
 
 26. ⭐ **在 `.md` 里写「链接的示例」会把示例变成被判死的真链接**。`G20` 的说明里贴了三处
     索引行的源码形态（`](` ＋ 相对路径 ＋ `)`）⇒ CI `checks` 腿的
     `check_docs_links.py` 报"链接指向不存在的路径"（run `40680104196` 的唯一红）。
     ⭐ 一般化：**文档里凡是「描述某种语法」的片段都必须脱离该语法的实际形态**（本例 = ⛔ 出现右键括号紧跟左圆括号那两个字符），
     否则你是在文档里**制造**被检查的对象。同类前科：`G8h` 的 `8/7` 论证要在正文里写代码形状时也得
-    加引号/拆开。⚠ 另：该检查**仅**在 CI 的 `checks` 腿里跑 ⇒ 本机 `policy_check.py` 全绿**不覆盖**它。
+    加引号/拆开。⚠ 另：本机 `policy_check.py` 全绿**不覆盖**它 —— 覆盖它的是 `run-gates.sh light` 的
+    `docs` 项（⭐ 本条原写"仅在 CI 跑"，**已由规则 28 更正**）。
 
 ### `G8n` 闭合（2026-10-28 12:17 读回）：merge run `40679452708` ⇒ **success**
 
@@ -13607,3 +13610,21 @@ MCP 侧只被写死成常量（`section_build.rs:1828` 的 `max_leap: MELODY_MAX
     **判定行在最上面、被截掉了**，于是把 `rc=1` 的一次运行读成"通过"（同 §6 第 1 条的变体：
     **截断输出的尾部 ≠ 判定的位置**）。口径：这类脚本一律 `cmd > out 2>&1; echo rc=$?` 先看退出码，
     再看 `tail`；`tail -N` 只用来补充细节，⛔ 用来判生死。
+
+28. ⭐ **"本机没有这条检查的入口"这句话本身要先 grep 门禁脚本再说 —— 两次红都不是缺入口，是用了更小的入口**。
+    规则 26 的末句（"该检查仅在 CI 的 `checks` 腿里跑"）是**错的**：`scripts/gates/run-gates.sh` 的
+    `gate_docs` 里第 70 行就是 `run "docs" python3 scripts/gates/check_docs_links.py`，而 `light` 档会调用它。
+    实测（2026-10-28 12:22，本机）：`bash scripts/gates/run-gates.sh light` ⇒ **rc=0**、"门禁通过 (mode=light)"，
+    其中 `docs` 项扫 165 个文件 / 285 条相对链接。⚠ 我这两次自查都只手动跑了 `policy_check.py`（守卫子集）
+    就宣布"本机绿" ⇒ **声明的覆盖面大于实际跑过的命令**。口径：提交前那种"本机绿"必须是**文档里那条命令**
+    （`bash scripts/gates/run-gates.sh light`）自己的退出码；若只用子集，结论里必须写成"跑了 X，未跑 Y"，
+    ⛔ 写"本机绿"。⭐ 同族偏差的判别语：先问"**我要声称的那个覆盖面，对应哪条命令？**"，再去跑那条命令。
+
+### 修复批的判决（文档批 `26f8ed5c`，run **`40687040952`**，2026-10-28 12:23 读回）：`checks` ⇒ **success**
+
+八条作业现读：`checks`／`deny`／`plan`／`lockfile` 全 `success`；四条 rust 腿（`rust (${{ matrix.crate }})`、
+`rust (workspace 全量)`、`macos`、`windows`）全 `skipped` 且 **steps=0** ⇒ 纯文档 diff 的预期形态
+（**空绿只对 rust 面成立，⛔ 对本批有意义**）。判"checks 真跑了"的证据（⛔ 只看整体 success）：
+`checks` 作业 **15 个 steps**／日志 **547 行**，其中 `文档检查通过` **1** 次、
+`守卫全部通过 (20 条)` **1** 次、`链接指向不存在的路径` **0** 次 ⇒ 上一批那 5 处链接字面的红**已消除**，
+且这也是 `G20` 的**第一次 CI 绿**（它此前的唯一判决 `40680104196` 是红）。
