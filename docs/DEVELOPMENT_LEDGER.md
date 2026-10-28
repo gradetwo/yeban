@@ -13375,6 +13375,8 @@ MCP 侧只被写死成常量（`section_build.rs:1828` 的 `max_leap: MELODY_MAX
    ⇒ **0 处**消费；theory 侧只在 `voice_leading.rs:346` 置一个报表位，**没有任何消费者**（规则第 19 条）。
 4. ⛔ **`ADR-0041` 的非范围四条（`N1` 旋律 onset 网格的摇摆／`N2` 和声声部微时值／`N3` 复合拍拍内 `grouping`／`N4` 逐对逐小节 swing 曲线）⛔ 是 MCP 侧的票** ——
    它们的量在 theory 侧不存在，开这些票的前置是 theory 票（`grouping` 与 `swing 曲线` 尤其如此）。
+   ⚠ **本条已被文末「更正一处旧记载」推翻**：现读 `N1`（`rhythm_grid` 已读 `swing_permille()`）与 `N3`
+   （`BeatGrouping` 在 theory 已有、`drum.rs` 已收这个形参）的量在 theory 侧**存在** ⇒ 前置分别是人类裁决与"无"。
 
 ---
 
@@ -13455,3 +13457,34 @@ MCP 侧只被写死成常量（`section_build.rs:1828` 的 `max_leap: MELODY_MAX
    依赖 `previous` 这一条没有变）⇒ 判据 3 里那条"转发 `Err` 并只认 `theoryStep == "melody_over_chords"`"的分支
    **本轮未被触发**，仍是未证状态。
 3. 「320 组不同形状」在 MCP 路径上**没有重测**（判据只要"改变"而不声称 distinct 数）⇒ 台账⛔ 拿代理数当结论。
+
+### `G8m` 主干判决链（⭐ 2026-10-28 10:42 落账：该 merge 自己的 run **从未绿**）
+
+**这一节在数什么**：三个 run 的**结论及其唯一红项**（单位 = 条红腿）—— 用来解释"线判决绿而主干判决缺"这件事，
+⛔ 当成"`G8m` 已四件齐"。
+
+| Run | 对象 | 结论 | 唯一红项（现读读回） |
+|---|---|---|---|
+| `40659910023` | `G8m` 的 **merge `3449c78e`**（主干，08:52 推） | **failure** | 只红 **`deny`**：`RUSTSEC-2026-0414`，`pulldown-cmark 0.13.4` ⇒ ⛔ 与本批 diff 无关（依赖面的既有告警），但整轮结论就是红的 |
+| `40671580976` | 修链 `fe50c0d4`（`pulldown-cmark 0.13.4 → 0.13.5`，只动 `Cargo.lock` 两行） | **failure** | `deny` ✅ 已转绿；只红 **`checks`**：`license_inventory.py --check` 报 `docs/ledger/dependency-licenses.md` 漂移 —— 升锁文件时**漏跑生成器**（我方操作缺陷，⛔ 代码缺陷）；其余腿当时仍在跑 ⇒ 这条 run 本身 ⛔ 能当任何判决 |
+| `40673418291` | `dc158801`（重新生成依赖许可清单） | **success 但空绿** | ⭐ 绿的原因不是验证：本批 diff 纯文档 ⇒ `plan` 给 `crates: []` ⇒ 所有 rust 腿 `skipped`、耗时 0s（`AGENTS.md` §6.3 第 2 条）⇒ **不构成任何验证** |
+
+⇒ 结论：`G8m` 的**三件成立**（代码＝`3449c78e`／判据＝`tests/section_melody_seed.rs` 六条／线判决＝run `40653587929` success），
+缺的只有**主干那条**，而它自己的 run 从未给过。唯一能补的是"含本批内容的后续全量腿"——`G8n` 的 land merge
+（碰 `crates/**` ＋ `schemas/**` ⇒ `workspace_wide: true`）⇒ 读回时须在该 run 的日志里对 `section_melody_seed`
+的六条判据逐名 `grep -c`，并把这条记为**替代判决**（⛔ 该 merge 自己的 run）。
+
+### 更正一处旧记载（`ADR-0041` 的非范围四条 ≠ 都要先有 theory 票）
+
+本文件上一节第 4 条写"`ADR-0041` 的非范围四条……**它们的量在 theory 侧不存在**，开这些票的前置是 theory 票
+（`grouping` 与 `swing 曲线` 尤其如此）"。⭐ 2026-10-28 逐条现读 `ADR-0041` 的 `N1..N4` 原文
+（`docs/adr/ADR-0041-generation-drum-swing-permille.md:91-99`）＋ `grep -rn BeatGrouping crates/yeban-theory/src` 后更正：
+
+| 条 | 现读（⛔ 推断） | 前置是什么 |
+|---|---|---|
+| `N1` 旋律 onset 网格的摇摆 | theory 的 `GenreRule::rhythm_grid` **已经**读 `swing_permille()` ⇒ 量存在，缺的是"一根键管两层"这个**裁决** | 人类裁决（⛔ theory 票） |
+| `N2` 和声声部微时值 | `voice_leading` 那条线上确实**没有** swing 概念 | theory 票（若要做） |
+| `N3` 复合拍拍内 `grouping` | theory 侧是 `Option<BeatGrouping>` 且 `drum.rs` 已收这个形参，**MCP 两处调用写死 `None`** ⇒ 纯 MCP 票 | **无**（⭐ 即 `G8n`／`ADR-0046`，本轮已落码在飞） |
+| `N4` 逐对/逐小节 swing 曲线 | theory 只有单个千分比（字段也是单个 `Option<f32>`） | theory 票 |
+
+⇒ "`grouping` 也要先有 theory 票"这句是**错的**，⛔ 照抄。
