@@ -3341,15 +3341,21 @@ fn plan_load_sfz(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
     })?;
     let digest = AssetHash::of_bytes(&bytes).as_str().to_owned();
     let existing = domain.sfz_instrument_by_digest(&digest);
-    // 复用时不覆盖旧条目（见 [`apply_load_sfz`]）⇒ 登记表里的 `sampleHz` 仍是首次登记的值。
-    // `plan` 必须照这个值造报告：否则 `dryRun` 预览会报本次请求值、真做却回报登记值，
-    // 两者对同一份内容给出不同的数字。**代价如实登记**：同一份内容第二次装载时，
-    // 本次的 `sampleHz` 不生效（`ADR-0016` 的"缺省逐字节"只保护首次登记）。
-    let (assign_id, reused, report_hz) = match existing {
-        Some(instrument) => (instrument.id, true, instrument.sample_hz),
-        None => (domain.sfz_next_id(), false, sample_hz),
+    // 复用时不覆盖旧条目（见 [`apply_load_sfz`]）⇒ 报告必须照**登记的那份记录**造。
+    // 若这里仍按本次请求重新 `load`：`path` 是本次路径、`sampleHz` 与样本读数也可能
+    // 与登记记录不同（同内容的副本旁边可能有不同的样本文件）⇒ `dryRun` 预览与真做
+    // 对同一份内容说两套数字。内容寻址保证 `id` 相同，因此直接克隆登记记录，只把
+    // `reused` 置真（与 `apply_load_sfz` 对响应的改动一致）。
+    // **代价如实登记**：同一份内容第二次装载时，本次的 `sampleHz` 与路径都不生效
+    // （`ADR-0016` 的"缺省逐字节"只保护首次登记）。
+    let load = match existing {
+        Some(instrument) => {
+            let mut record = instrument.clone();
+            record.reused = true;
+            record
+        }
+        None => sfz::load(&path, sample_hz, domain.sfz_next_id(), false)?,
     };
-    let load = sfz::load(&path, report_hz, assign_id, reused)?;
     Ok(Plan::LoadSfz {
         load: Box::new(load),
     })

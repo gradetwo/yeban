@@ -954,7 +954,7 @@
           "properties": {
             "path": {
               "type": "string",
-              "description": "磁盘上的 .sfz 文件路径（**必填**；空串/目录/不存在 ⇒ IO_ERROR）。长度界与其他工具的 path 一致（无界，见 tests/param_bounds_guard.rs）。"
+              "description": "磁盘上的 .sfz 文件路径（**必填**；空串/目录/不存在 ⇒ IO_ERROR）。长度界与其他工具的 path 一致（无界，见 tests/param_bounds_guard.rs）。同一份内容已登记 ⇒ 复用登记项，响应回报**登记时**的路径（本次路径只用于读文件算内容摘要）。"
             },
             "sampleHz": {
               "type": "number",

@@ -9,6 +9,7 @@
 //! | a'' | `sampleHz` 入参**真的被读**：非缺省值进报告、非正数被领域层拒、非数字被注册表层拒（"必须是数字"支经 MCP 不可达，由 src 单元测试钉住） | `the_sample_hz_argument_is_honoured_and_bad_values_are_rejected` |
 //! | a''' | `velocity` 入参**真的到达渲染器**（此前是解析＋回显的空操作）：覆盖力度 ⇒ `regionsUsed` 换区间、峰值按 `(v/127)^2` 缩放；不给 ⇒ 回显 null、用工程音符自己的力度 | `the_render_velocity_override_selects_regions_and_scales_the_peak` |
 //! | a'''' | `sampleRate` / `toneHz` 到达渲染器（跨工具同名键碰撞曾让它们"看起来有覆盖"）：回读 RIFF 头速率 ＋ 过零估计主频 | `the_render_sample_rate_and_tone_are_honoured` |
+//! | a''''' | 复用路径的 `dryRun` 预览与真做**逐键一致**（同内容的副本被装载时，`path` 曾漂移：预览报本次路径、真做报首次登记路径） | `a_reused_instrument_previews_exactly_what_the_real_call_reports` |
 //! | b | 非法入参 ⇒ **结构化**错误（既有错误码）、⛔ 不 panic | `bad_arguments_are_structured_errors_and_never_panic` |
 //! | c | 不存在/写错的工具名 ⇒ 被拒（`yeban_nope` 负对照） | `an_unknown_tool_name_is_rejected` |
 //! | d | `dryRun` 一位都不改；预览与真做的实测数字一致 | `dry_run_writes_nothing_and_matches_the_real_call` |
@@ -570,6 +571,97 @@ fn the_sample_hz_argument_is_honoured_and_bad_values_are_rejected() {
     );
     assert_eq!(status, 400, "非法类型必须是 JSON-RPC 层拒绝");
     assert_eq!(code, Some(-32602), "非法类型 ⇒ -32602 (invalid params)");
+}
+
+// ---------------------------------------------------------------------------
+// 判据 a'''''：复用路径的 dryRun 预览与真做逐键一致
+// ---------------------------------------------------------------------------
+
+/// 同一份内容被**复制到另一个路径**再装载时，`apply_load_sfz` 不覆盖旧条目 ⇒ 真做回报
+/// **首次登记**的路径与读数。旧的 `plan` 仍按本次请求重新 `load` ⇒ 预览报本次路径
+/// （与 `sampleHz` 那条同类漂移：预览与真做对同一份内容说两套数字）。
+///
+/// 判法：先装载 `orig.sfz`（登记 44_100），再把**字节相同**的副本 `copy.sfz` 拿去做
+/// ① 真做（应复用、报首次路径）与 ② `dryRun`（请求 22_050、路径为副本）⇒
+/// 预览里与真做同名的每一个键都必须相等，⛔ 只断言 `path` 一个键。
+#[test]
+fn a_reused_instrument_previews_exactly_what_the_real_call_reports() {
+    let scratch = Scratch::new("reuse-preview");
+    let orig = scratch.write_sfz("orig.sfz", "<region> sample=only.wav key=60\n");
+    let copy = scratch.join("copy.sfz");
+    std::fs::copy(&orig, &copy).expect("复制出字节相同的第二份");
+    let mut dispatcher = dispatcher_with_project(filled_project());
+
+    let first = call_tool(
+        &mut dispatcher,
+        "yeban_load_sfz",
+        serde_json::json!({ "path": orig.display().to_string(), "sampleHz": 44_100 }),
+    );
+    assert_eq!(first["data"]["reused"].as_bool(), Some(false), "{first}");
+
+    let real = call_tool(
+        &mut dispatcher,
+        "yeban_load_sfz",
+        serde_json::json!({ "path": copy.display().to_string() }),
+    );
+    assert_eq!(
+        real["data"]["instrumentId"], first["data"]["instrumentId"],
+        "字节相同 ⇒ 同一身份: {real}"
+    );
+    assert_eq!(real["data"]["reused"].as_bool(), Some(true), "{real}");
+    assert_eq!(
+        real["data"]["path"], first["data"]["path"],
+        "真做回报的是首次登记路径（登记项不被覆盖）: {real}"
+    );
+
+    let preview = call_tool(
+        &mut dispatcher,
+        "yeban_load_sfz",
+        serde_json::json!({
+            "path": copy.display().to_string(),
+            "sampleHz": 22_050,
+            "dryRun": true,
+        }),
+    );
+    let data = &preview["data"]["preview"];
+    for key in [
+        "path",
+        "bytes",
+        "sha256",
+        "regions",
+        "silentRegionCount",
+        "regionDetails",
+        "includeIssues",
+        "includeIssueCount",
+        "sampleSource",
+        "sampleFilesRead",
+        "sampleFilesReadCount",
+        "sampleFilesFailedCount",
+        "sampleSources",
+        "sampleFailures",
+        "sampleReadsTruncated",
+        "sampleFramesLoaded",
+        "sampleHz",
+        "warnings",
+    ] {
+        assert_eq!(
+            data[key], real["data"][key],
+            "复用路径的 dryRun 预览与真做必须逐键一致（键 `{key}`）: preview={preview} real={real}"
+        );
+    }
+    assert_eq!(
+        data["path"], first["data"]["path"],
+        "预览必须报登记时的路径，⛔ 报本次请求的副本路径: {preview}"
+    );
+    assert_eq!(
+        data["wouldRegister"]["instrumentId"], real["data"]["instrumentId"],
+        "{preview}"
+    );
+    assert_eq!(
+        data["wouldRegister"]["reused"].as_bool(),
+        Some(true),
+        "预览必须表明本次会复用: {preview}"
+    );
 }
 
 // ---------------------------------------------------------------------------

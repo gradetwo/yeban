@@ -1430,7 +1430,7 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
                 "path",
                 "string",
                 true,
-                "磁盘上的 .sfz 文件路径 (空串/目录/不存在 ⇒ `IO_ERROR` 或 `INVALID_PARAMETER_RANGE`; 联集里没有专门的 SFZ 错误码, 且不许发明)",
+                "磁盘上的 .sfz 文件路径 (空串/目录/不存在 ⇒ `IO_ERROR` 或 `INVALID_PARAMETER_RANGE`; 联集里没有专门的 SFZ 错误码, 且不许发明)。同一份内容已登记 ⇒ 复用登记项, 响应回报**登记时**的路径 (本次路径只用于读文件算内容摘要, 不改变登记项)",
             ),
             param(
                 "sampleHz",
