@@ -52,3 +52,4 @@ Architecture Decision Record。当 Normative 规范之间冲突、或规范对�
 | [ADR-0036](./ADR-0036-onsets-per-bar-derived-from-meter.md) | 鼓与旋律的每小节音头数：默认从**拍号**导出，并开放 `onsetsPerBar` | **Accepted（集成者依 2026-10-25 人类常设授权裁定）** |
 | [ADR-0037](./ADR-0037-generation-velocity-range.md) | 生成内容的力度：把既有的两级映射开放为 `velocityMin` / `velocityMax`（缺省逐字节 = 96 / 112） | **Accepted（集成者依 2026-10-25 人类常设授权裁定）** |
 | [ADR-0038](./ADR-0038-generation-melody-register.md) | 旋律音域：把 `MelodyConstraints { lower, upper }` 接成 `melodyLower` / `melodyUpper`（缺省逐字节 = 48 / 84；不可行窗口原样转发 theory） | **Accepted（集成者依 2026-10-25 人类常设授权裁定）** |
+| [ADR-0039](./ADR-0039-generation-melody-max-leap.md) | 生成旋律的跳进上界：把 `MelodyConstraints.max_leap` 开放为 `melodyMaxLeap`（缺省逐字节 = 12） | **Accepted（集成者依 2026-10-25 人类常设授权裁定）** |
