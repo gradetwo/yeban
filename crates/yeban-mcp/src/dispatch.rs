@@ -999,6 +999,52 @@ mod tests {
         );
     }
 
+    /// **边角判据（2026-10-29 补）**：**失败也进缓存**。契约 `idempotencyKey` 的描述是
+    /// "第二次 `tools/call` **不执行工具**, 直接返回首次结果的缓存"，未把失败排除；
+    /// 模块文档同样说缓存存的是"首次执行的**完整结果**"。此前只有成功路径的重放判据
+    /// ⇒ 若有人把 `Err` 从缓存里排除，客户端"同键重试"会变成**重复执行**而无人发现。
+    ///
+    /// 用**没有活跃工程**的会话：`yeban_query_project` 必然带内报 `NO_ACTIVE_PROJECT`
+    /// （带内 = `Ok(ToolResponse{status:"error"})`，仍是一等结果，走得到第 7 步）。
+    #[test]
+    fn failed_calls_are_cached_and_replay_without_reexecution() {
+        let mut dispatcher = dispatcher();
+        let auth = bearer(&dispatcher);
+        let line = |id: &str| {
+            serde_json::json!({
+                "jsonrpc": "2.0", "id": id, "method": "tools/call",
+                "params": {"name": "yeban_query_project",
+                           "arguments": {"idempotencyKey": "fail-key"}}
+            })
+            .to_string()
+        };
+        let first = dispatcher.handle_line(Channel::Http, Some(&auth), &line("f1"));
+        assert_eq!(first.error_code(), None, "带内失败不是 JSON-RPC 错误");
+        assert_eq!(first.http_status, 200);
+        let first_result = first.response.expect("响应").result.expect("result");
+        assert_eq!(first_result["status"], "error", "{first_result}");
+        assert_eq!(first_result["error"]["code"], "NO_ACTIVE_PROJECT");
+        assert_eq!(dispatcher.idempotency_len(), 1, "失败同样入缓存");
+        assert_eq!(
+            dispatcher.idempotency_keys(),
+            vec!["yeban_query_project:fail-key"]
+        );
+
+        let second = dispatcher.handle_line(Channel::Http, Some(&auth), &line("f2"));
+        assert_eq!(dispatcher.replayed(), 1, "第二次必须命中**失败**缓存");
+        assert_eq!(dispatcher.idempotency_len(), 1, "缓存不得增长");
+        assert_eq!(second.http_status, 200, "重放沿用首次的状态码");
+        let envelope = second.response.expect("响应");
+        assert_eq!(envelope.id, Id::Text("f2".to_owned()), "必须回显当前 id");
+        let replayed = envelope.result.expect("result");
+        assert_eq!(replayed["replayed"], true, "{replayed}");
+        assert_eq!(replayed["response"]["id"], "f2", "内层也用当前 id");
+        assert_eq!(
+            replayed["response"]["result"], first_result,
+            "重放的失败主体必须与首次逐字节相同"
+        );
+    }
+
     /// **本判据存在的理由（实测事故）**：上面那条测试对**每个注册工具**做一次
     /// **真执行**，而带输出文件面的工具会真的写盘。本线开发中 `yeban_record_wav`
     /// 用默认 2 秒在 `crates/yeban-mcp/` 里留下了
