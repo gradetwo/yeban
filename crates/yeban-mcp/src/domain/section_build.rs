@@ -1772,11 +1772,26 @@ fn drum_contents(
     Ok(notes)
 }
 
+/// 旋律生成消费的**两把标尺**：力度两档与音高窗口。
+///
+/// 收成一个结构体而不是分着传四个数，理由有两条，都是本仓的既有纪律：
+/// 1. `clippy::too_many_arguments` 在这里是**承重信号**而⛔ 需要 `allow` 掉的噪音
+///    （同款理由见 `domain/mod.rs` 的 `SessionSeed`）—— 加了 `register` 后本函数已是第 8 个参数；
+/// 2. 两把标尺的**类型完全相同**（都是 `(u8, u8)`），分开传时把力度档与音域**调个顺序照样编得过**，
+///    编译器一句话不说；捆成一个结构体后字段名写在调用处，这类倒置不可能发生。
+#[derive(Clone, Copy, Debug)]
+struct MelodyRulers {
+    /// 力度两档 `(下档, 上档)` —— [`velocity_ladder`] 的结果（`ADR-0037`）。
+    ladder: (u8, u8),
+    /// 音高窗口 `(下界, 上界)` —— [`melody_register`] 的结果（`ADR-0038`）。
+    register: (u8, u8),
+}
+
 /// `'theory'` 路径的旋律内容（`ADR-0017` D1）。
 ///
 /// 网格来自流派的 `rhythm_grid`，旋律由 `melody_over_chords` 在目标调式与
-/// 既有和弦跨度上生成；力度按 `chord_tone` 取 `ladder` 的两档（缺省 112/96）。
-/// ⭐ `ADR-0038` D1：音高窗口取 `register` 的两端（缺省 48/84），跳进上界沿用 theory
+/// 既有和弦跨度上生成；力度按 `chord_tone` 取 `rulers.ladder` 的两档（缺省 112/96）。
+/// ⭐ `ADR-0038` D1：音高窗口取 `rulers.register` 的两端（缺省 48/84），跳进上界沿用 theory
 /// 的 [`MELODY_MAX_LEAP`]（N2：`max_leap` 的单位是"相邻两音的半音距离"，不是音域）。
 /// ⚠ 这里**就地构造** `MelodyConstraints` 而⛔ 不再调 `MelodyConstraints::new`：
 /// `new` 校验的两条（`lower <= upper`、`upper <= 127`）已经在 [`melody_register`] 判过，
@@ -1789,8 +1804,7 @@ fn melody_contents(
     style_preset: &str,
     section_id: EntityId,
     onsets_per_bar: u32,
-    ladder: (u8, u8),
-    register: (u8, u8),
+    rulers: MelodyRulers,
 ) -> Result<BTreeMap<EntityId, MidiNote>, BuildFault> {
     let grid = theory
         .rule
@@ -1809,8 +1823,8 @@ fn melody_contents(
         spans,
         &grid,
         MelodyConstraints {
-            lower: register.0,
-            upper: register.1,
+            lower: rulers.register.0,
+            upper: rulers.register.1,
             max_leap: MELODY_MAX_LEAP,
         },
         section_seed(section_id),
@@ -1820,7 +1834,11 @@ fn melody_contents(
     for (note_index, note) in melody.notes().iter().enumerate() {
         let id = deterministic_id(&format!("theory-melody:{section_id}:{note_index}"));
         let midi = MidiNote {
-            velocity: if note.chord_tone { ladder.1 } else { ladder.0 },
+            velocity: if note.chord_tone {
+                rulers.ladder.1
+            } else {
+                rulers.ladder.0
+            },
             ..MidiNote::new(id, note.start_tick, note.pitch, note.duration_ticks)
         };
         notes.insert(id, midi);
@@ -2178,8 +2196,7 @@ pub fn plan_with_options(
                     style_preset,
                     section_id,
                     onsets_per_bar,
-                    ladder,
-                    register,
+                    MelodyRulers { ladder, register },
                 )?);
             }
             contents
