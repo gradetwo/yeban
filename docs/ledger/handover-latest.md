@@ -1623,6 +1623,12 @@ python3 scripts/guards/policy_check.py && bash scripts/gates/run-gates.sh light
 | 5 ⛔ 自主可做的下一批 | 仍为**零**：**`ADR-0042`**（音级覆盖性；卡 `harmonyVoices`／`harmonyLower`／`harmonyUpper`）与**旋律动机半片**（§0.6.3）都卡人类裁决；`ADR-0041` 的 `N1` 是人类裁决、`N2`/`N4` 是 theory 票（`N3` 已由 `G8n` 兑现）。⛔ 硬造工作凑轮次 |
 | 6 磁盘 | `df -h /home` 12:24 现读 **235G 总 / 201G 已用 / 28G 可用（88%）**；`target` 3.1G、`debug/incremental` **0**；`git worktree list` = 一行。仓库外大头仍挂账 #34（⛔ 未经裁决一个字节都不删） |
 
+> ⭐ **12:32 追加**：上表第 1 行提到的两批**都已读回**：`26f8ed5c` 的 run `40687040952` = success、
+> `a635656f`（规则 28 ＋ 本段）的 run **`40687671039` = success**；两次的 `checks` 作业都是 **15 steps**／
+> 日志 **547 行**／`文档检查通过` 1 次／`守卫全部通过 (20 条)` 1 次／死链 **0**，四条 rust 腿 `skipped`+steps=0
+> （纯文档 diff 的预期形态）。⇒ 现役 tip **`a635656f`**，本机 `bash scripts/gates/run-gates.sh light` **rc=0**。
+> ⚠ 递归口径见台账「修复批的判决」末段：**"记录判决"自身也是纯文档提交**，不再为它开新一轮入账。
+
 ### ⭐ 磁盘：仓库**外**大头的现读清单（2026-10-28 06:38，`du -sh` 实测，⛔ 一个字节都没删）
 
 `df /home` = **235G 总 / 已用 210G / 可用 19G（92%）**。仓库侧已到地板（`trim-target.sh` 释放 0 MB），
