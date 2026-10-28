@@ -13960,3 +13960,53 @@ v4 的严格规则在**现存**源码上报 **7** 个函数，逐例读后**全�
 ⇒ 差额 > 0 只能**排除"整键零覆盖"**，⛔ 证明某个非缺省值真的到了 `plan_with_options`；
 要断后者得读建造器那一行的赋值来源。本批那条零覆盖结论是在**改前**（14 / 14）读到的，
 且 25 处全文 grep 逐行确认过（除注释外全是 `drum_density: None`）。
+
+## 2026-10-28 16:50：文档化可选键「整键零覆盖」**机械化守卫**（规则 32 的判据化）＋ `6f17b6fa` 判决
+
+### 守卫在判什么（`crates/yeban-mcp/tests/documented_arg_coverage.rs`）
+
+键表**从 `schemas/mcp-tools.schema.json` 派生**（`definitions.DocumentedToolArguments.$defs.<tool>.properties`，
+现读 **3** 个工具 **21** 个键）⇒ 本文件**没有**第二份键名表（同一张表两个写者就是缺陷）。
+
+每个键必须在 `crates/yeban-mcp/tests/*.rs` 里被**给过一次非缺省值**，两种形态各算一遍：
+Rust 字段 `k: <非 None>`（如 `drum_density: Some("sparse")`／`drum_density: density`）与
+JSON 实参 `"k": <非 null>`（如 `"autoMerge": true`）。`None`／`null` ⛔ 算数 —— **那正是缺口的样子**。
+
+### 敏感性：先把真缺陷的预映像喂进去（规则 30）
+
+零依赖原型（本机 python 复刻同一算法，⛔ 编译 `yeban-mcp`）跑了两次快照：
+
+| 快照 | 21 个键里零覆盖的 | 结论 |
+|---|---|---|
+| **预映像**（`section_drum_density.rs` 落地**之前**） | **1** 个：`drumDensity` | **红**（正好就是那个真缺口） |
+| 现读（本守卫落地） | **0** 个；最小读数 **1**（`drumDensity`／`drumStyle`／`drumBackbeat`／`beatGrouping`） | 绿 |
+
+⚠ **初版算法在预映像上是绿的** —— 因为它把 `"drumDensity"` 的**词面出现**（例如
+`assert_eq!(payload["field"], json!("drumDensity"))`）也算成覆盖。改成"键后面跟一个**非** `None`/`null` 的值"
+之后才红 1 个。这正是规则 30 的第二半（针只能证明词出现过）：**先喂预映像，再谈灵敏度**。
+
+### 判据力（⛔ 夸大）
+
+- **能证明**：每个登记键都有判据给过**某个**非缺省值 ⇒ 挡住"14/14 全是 `None`"这一类**整键零覆盖**。
+- ⛔ **不能证明**那个值真的到了消费点：建造器管线（`k: given.k`）也只是"某个非 `None` 值从这里过"。
+  ⇒ 它挡的是**覆盖空缺**，⛔ 挡"值语义写错"（后者归各票自己的形状判据）。
+- 防空（R93）：`$defs` 非空、键数 `>= 20`、扫到的测试源 `>= 20` —— 三个集合都是**动态**的。
+
+### 判决（`6f17b6fa` → run `40722843071`）
+
+| 作业 | 读数 |
+|---|---|
+| `checks` | **success**，**15 steps** |
+| `rust (yeban-mcp)` | **success**；`Running` **125**／`test result:` **125**／passed **2,362**／`FAILED` **0**；本守卫在两轮（`test` 16:11:05／`test (合并特性)` 16:18:15）各 **1** 次 `test ... ok` |
+| `rust (yeban-ui-mcp)` | success |
+| `windows` | **success** 16:07:45→16:45:33 |
+| `macos` | ⛔ **cancelled**（16:07:41→16:22:44，**steps = 0** ⇒ 从未拿到 runner）；⇒ 本提交**没有 macOS 判决**。已 `gh run rerun --job` 重派（新起跑 16:53:49，17 steps） |
+| `rust (workspace 全量)` | **skipped／steps=0**（planner 预期形态） |
+| run 级结论 | **failure** —— ⚠ 逐作业读下来，**唯一**非 success 的就是那个被取消的 macOS（其余七条全绿）；`failure` 是**取消**带出来的，⛔ 是判据失败 |
+
+**增量交叉核**：`Running 123 → 125` ＝＋2（新二进制两轮）、`passed 2,360 → 2,362` ＝＋2（**1** 个判据 × 2 轮）——
+与本批只加**一个** `#[test]` 完全对上。
+
+⚠ **登记口径**：macOS 这条在重跑读回之前记 **pending**（§6.3 第 2 条的同族：取消不是绿、也不是红）。
+`cancelled` 与 `skipped` 的区别在于：`skipped` 是 planner 的决定（预期），`cancelled` 是**基础设施**没给 runner
+（steps = 0 是判据），两者都⛔ 当判决用，但后者**应当重派**而不是登记成"跳过"。

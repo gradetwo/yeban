@@ -1725,6 +1725,24 @@ python3 scripts/guards/policy_check.py && bash scripts/gates/run-gates.sh light
 > 本批后 **15 / 14**；`onsets_per_bar` 19 / 15、`swing_permille` 19 / 15…）⇒ 差额 > 0 只**排除整键零覆盖**，
 > ⛔ 证明非缺省值真的到了 `plan_with_options`。零覆盖那条结论本身不变（改前 14/14 ＋ 25 处全文逐行确认）。
 > 台账同节末「规则 32 的处方修正」。
+>
+> ⭐ **16:50 追加（规则 32 判据化：零覆盖守卫已落地；tip 现读 `6f17b6fa`）**：新增
+> `crates/yeban-mcp/tests/documented_arg_coverage.rs` —— 键表**从 `schemas/mcp-tools.schema.json`
+> 派生**（`DocumentedToolArguments`，现读 3 工具 **21** 键，⛔ 第二份键名表），每键必须在
+> `crates/yeban-mcp/tests/*.rs` 里被**给过一次非缺省值**（`k: <非 None>` 或 `"k": <非 null>`），
+> `None`/`null` ⛔ 算数。**敏感性**（规则 30，零依赖 python 原型两次快照）：预映像上**恰好红 1 个**
+> ＝`drumDensity`（那个真缺口），现读 0 个、最小读数 1 ⇒ ⛔ 误伤面。⚠ 初版把 `"drumDensity"` 的
+> **词面出现**（`assert_eq!(payload["field"], json!(...))`）也算覆盖，预映像是**绿**的 ⇒ 改成"键后跟非
+> `None`/`null` 的值"才红——同一条教训第二次兑现（针只证明词出现过）。
+> **判决**（`6f17b6fa` → run **`40722843071`**）：`rust (yeban-mcp)` **success**，`Running` **125**／
+> `test result:` **125**／passed **2,362**／`FAILED` **0**，本守卫两轮各 `test ... ok` 一次；
+> `checks` 15 steps；`windows` success（16:07:45→16:45:33）；`rust (yeban-ui-mcp)` success；
+> `rust (workspace 全量)` skipped＋steps=0。⚠ **`macos` = cancelled**（16:07:41→16:22:44，**steps = 0**
+> ⇒ 从未拿到 runner）⇒ 该提交**没有 macOS 判决**，run 级 `failure` **只由这条取消带出**（其余七条全绿）。
+> 已重派该作业（新起跑 16:53:49）⇒ **这条 macOS 判决记 pending**，接手者读回后补一行即可。
+> ⭐ 口径新增：**`cancelled` ≠ `skipped`** —— 前者是基础设施没给 runner（steps=0 是判据），**应当重派**；
+> 后者是 planner 的预期决定。两者都⛔ 当判决用。
+> ⇒ 创作缺口这条线上**自主可做的活仍为零**；台账见「2026-10-28 16:50」一节。
 
 ### ⭐ 磁盘：仓库**外**大头的现读清单（2026-10-28 06:38，`du -sh` 实测，⛔ 一个字节都没删）
 
