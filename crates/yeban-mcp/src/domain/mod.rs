@@ -3341,11 +3341,15 @@ fn plan_load_sfz(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
     })?;
     let digest = AssetHash::of_bytes(&bytes).as_str().to_owned();
     let existing = domain.sfz_instrument_by_digest(&digest);
-    let (assign_id, reused) = match existing {
-        Some(instrument) => (instrument.id, true),
-        None => (domain.sfz_next_id(), false),
+    // 复用时不覆盖旧条目（见 [`apply_load_sfz`]）⇒ 登记表里的 `sampleHz` 仍是首次登记的值。
+    // `plan` 必须照这个值造报告：否则 `dryRun` 预览会报本次请求值、真做却回报登记值，
+    // 两者对同一份内容给出不同的数字。**代价如实登记**：同一份内容第二次装载时，
+    // 本次的 `sampleHz` 不生效（`ADR-0016` 的"缺省逐字节"只保护首次登记）。
+    let (assign_id, reused, report_hz) = match existing {
+        Some(instrument) => (instrument.id, true, instrument.sample_hz),
+        None => (domain.sfz_next_id(), false, sample_hz),
     };
-    let load = sfz::load(&path, sample_hz, assign_id, reused)?;
+    let load = sfz::load(&path, report_hz, assign_id, reused)?;
     Ok(Plan::LoadSfz {
         load: Box::new(load),
     })

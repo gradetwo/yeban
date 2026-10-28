@@ -427,8 +427,11 @@ fn load_sfz_reports_the_region_count_and_the_honest_source() {
 /// 输入侧从未被任何一个判据驱动过 ⇒ 把它改成常量、或把 `parse_load_arguments` 的
 /// 校验整段删掉，旧判据都不会红。本判据补的就是输入侧：
 ///
-/// 1. 非缺省值 ⇒ 响应回显它（内容寻址的 `instrumentId` 不变 —— 身份只按内容算）；
-/// 2. `dryRun` 预览也回显它（"预览与真做同一批实测数字"对**这个**键同样成立）；
+/// 1. 非缺省值 ⇒ 首次登记时响应回显它（内容寻址的 `instrumentId` 不变 —— 身份只按内容算）；
+/// 2. `dryRun` 预览报的数字必须**与真做相同**（"预览与真做同一批实测数字"）：未登记内容
+///    报本次请求值；已登记内容报**登记值**（`apply_load_sfz` 不覆盖旧条目 ⇒ 同一份内容
+///    第二次装载时本次的 `sampleHz` 不生效 —— 2026-10-28 由 CI 真红 `40744965526` 量出，
+///    本判据原先误以为复用也会回报缺省 48_000）；
 /// 3. 非正数（0 / 负数）⇒ 领域层 `INVALID_PARAMETER_RANGE`，文案点名"必须是有限正数"；
 /// 4. 非数字 ⇒ **注册表**层就拒（`-32602`）：`ParamSpec` 的 `number` 类型先于领域层，
 ///    因此 `parse_load_arguments` 的"必须是数字"支经 `tools/call` 不可达 ——
@@ -437,11 +440,13 @@ fn load_sfz_reports_the_region_count_and_the_honest_source() {
 ///
 /// ⚠ 如实标注：本仓当前**没有任何下游消费者**读 `SfzLoad::sample_hz`（`src` 里唯一
 /// 出现点是序列化那一行）⇒ 这个键今天的作用就是"进报告"。判据因此只断言回显，
-/// ⛔ 假装它改变了渲染。（schema 描述里的"播放速率比"是描述而非实现读数。）
+/// ⛔ 假装它改变了渲染。（旧 schema 描述曾写"播放速率比"，本仓从未算过它 ——
+/// 2026-10-28 已把 schema 与 `tools.rs` 的描述一并改成"只进报告、不计算速率比"。）
 #[test]
 fn the_sample_hz_argument_is_honoured_and_bad_values_are_rejected() {
     let scratch = Scratch::new("sample-hz");
     let sfz = scratch.write_sfz("one.sfz", "<region> sample=only.wav key=60\n");
+    let fresh = scratch.write_sfz("fresh.sfz", "<region> sample=fresh.wav key=61\n");
     let mut dispatcher = dispatcher_with_project(filled_project());
 
     let at_441 = call_tool(
@@ -455,28 +460,50 @@ fn the_sample_hz_argument_is_honoured_and_bad_values_are_rejected() {
     );
     assert_eq!(at_441["data"]["regions"], 1, "这个键不影响解析: {at_441}");
 
-    // 同一份内容、缺省 sampleHz ⇒ 同一身份、不同报告值。
-    let defaulted = call_tool(
+    // 缺省值只有**登记**这条路能在 CI 上量到：同一份内容第二次装载会复用旧条目
+    // （`apply_load_sfz` 不覆盖它）⇒ 回报的是首次登记的 44_100，⛔ 本次请求的缺省值。
+    let defaulted_fresh = call_tool(
+        &mut dispatcher,
+        "yeban_load_sfz",
+        serde_json::json!({ "path": fresh.display().to_string() }),
+    );
+    assert_eq!(
+        defaulted_fresh["data"]["sampleHz"], 48_000.0,
+        "缺省必须是 48000: {defaulted_fresh}"
+    );
+    assert_eq!(
+        defaulted_fresh["data"]["reused"].as_bool(),
+        Some(false),
+        "新内容必须是首次登记: {defaulted_fresh}"
+    );
+    assert_ne!(
+        defaulted_fresh["data"]["instrumentId"], at_441["data"]["instrumentId"],
+        "不同内容必须是不同身份"
+    );
+
+    // 同一份内容、缺省 sampleHz ⇒ 同一身份，报告值 = 首次登记值（本次入参不生效）。
+    let reused = call_tool(
         &mut dispatcher,
         "yeban_load_sfz",
         serde_json::json!({ "path": sfz.display().to_string() }),
     );
     assert_eq!(
-        defaulted["data"]["sampleHz"], 48_000.0,
-        "缺省必须是 48000: {defaulted}"
+        reused["data"]["sampleHz"], 44_100.0,
+        "复用回报的是登记值（本次缺省 48000 不生效）: {reused}"
     );
     assert_eq!(
-        at_441["data"]["instrumentId"], defaulted["data"]["instrumentId"],
+        at_441["data"]["instrumentId"], reused["data"]["instrumentId"],
         "身份按内容寻址 ⇒ sampleHz 不得影响 instrumentId"
     );
     assert_eq!(
-        defaulted["data"]["reused"].as_bool(),
+        reused["data"]["reused"].as_bool(),
         Some(true),
-        "第二次装载同一份内容必须标 reused: {defaulted}"
+        "第二次装载同一份内容必须标 reused: {reused}"
     );
 
-    // ---- dryRun 的预览必须报告同一个值（且**不登记**）----
-    let preview = call_tool(
+    // ---- dryRun 的预览必须与真做报同一个值（且**不登记**）----
+    // 已登记内容：预览必须跟真做一样回报**登记值**，⛔ 报本次请求的 22_050。
+    let preview_reused = call_tool(
         &mut dispatcher,
         "yeban_load_sfz",
         serde_json::json!({
@@ -486,12 +513,30 @@ fn the_sample_hz_argument_is_honoured_and_bad_values_are_rejected() {
         }),
     );
     assert_eq!(
-        preview["data"]["preview"]["sampleHz"], 22_050.0,
-        "dryRun 预览必须报告同一个 sampleHz: {preview}"
+        preview_reused["data"]["preview"]["sampleHz"], 44_100.0,
+        "复用路径的 dryRun 预览必须回报登记值（与真做一致）: {preview_reused}"
     );
     assert_eq!(
-        preview["data"]["preview"]["wouldRegister"]["instrumentId"], at_441["data"]["instrumentId"],
+        preview_reused["data"]["preview"]["wouldRegister"]["instrumentId"],
+        at_441["data"]["instrumentId"],
         "dryRun 预览应指向同一个已登记身份（内容寻址），⛔ 另起一号"
+    );
+
+    // 未登记内容：预览必须报本次请求值。
+    let preview_fresh = call_tool(
+        &mut dispatcher,
+        "yeban_load_sfz",
+        serde_json::json!({
+            "path": scratch.write_sfz("preview.sfz", "<region> sample=preview.wav key=62\n")
+                .display()
+                .to_string(),
+            "sampleHz": 22_050,
+            "dryRun": true,
+        }),
+    );
+    assert_eq!(
+        preview_fresh["data"]["preview"]["sampleHz"], 22_050.0,
+        "未登记内容的 dryRun 预览必须报本次请求值: {preview_fresh}"
     );
 
     // ---- 非正数 ⇒ 领域层拒绝 ----
