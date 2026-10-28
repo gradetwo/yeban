@@ -58,6 +58,7 @@ fn plan_try(
             melody_upper: None,
             melody_max_leap: None,
             harmony_max_voice_jump: None,
+            swing_permille: None,
         },
     )
 }

@@ -123,6 +123,8 @@ use yeban_model::{
 
 // `yeban-theory` 的公开面（本模块**只读**它，不复制它的逻辑）。
 // 逐个 API 的签名与用途见 `docs/ledger/theory-wiring-notes.md` §2。
+use yeban_theory::SWING_PERMILLE_MAX;
+use yeban_theory::SWING_PERMILLE_STRAIGHT;
 use yeban_theory::TheoryError;
 use yeban_theory::cells_per_bar;
 use yeban_theory::drum::{DrumPattern, default_backbeat, swung_styled_drum_pattern};
@@ -1204,6 +1206,14 @@ pub struct PlanOptions<'a> {
     /// ⚠ 消费点和声路径（`theory_contents`）⇒ 只要求 `material_source` 为 theory，
     /// ⛔ 不要求 `include_melody`/`include_drums`（D3，与旋律三键是**不同**口径）。
     pub harmony_max_voice_jump: Option<u64>,
+    /// ⭐ `ADR-0041` D1：鼓网格的**摇摆比例**（千分比，`500..=1000`，`500` = 平直）。
+    /// `None` = **不覆盖**该流派登记的 `GenreRule::swing`（`GenreRule::swing_permille()`
+    /// 未登记时给 theory `None` = 平直路径）⇒ 逐字节维持既有输出（D2）。
+    /// ⚠ 缺省**不是一个固定数字**：现读 `GENRES` 182 条里 **148 条不登记**（走平直）、
+    /// **34 条登记** 540..=660（⛔ 一条登记 500）⇒ 契约里因此⛔ 写 `default`（D5）。
+    /// ⚠ 消费点是**鼓轨**（`theory_drum_pattern`）⇒ 必须与 `include_drums: Some(true)` 同给（D3），
+    /// 与 `drum_density` 是同一条耦合口径；和声与旋律⛔ 读它。
+    pub swing_permille: Option<u64>,
 }
 
 /// 一个声部的身份（两条材料路径共用）。
@@ -1612,6 +1622,38 @@ fn with_harmony_jump(mut constraints: VoicingConstraints, jump: Option<i16>) -> 
     constraints
 }
 
+/// ⭐ `ADR-0041` D1/D2：把可选键 `swingPermille` 折成鼓网格的**摇摆比例**（千分比）。
+///
+/// 键缺席 ⇒ `None` ⇒ 调用方**不覆盖**流派登记的 `GenreRule::swing`（未登记的流派由 theory
+/// 折算成 [`SWING_PERMILLE_STRAIGHT`]）⇒ 那对数字只有 theory 与流派表两个写者，本层⛔ 再抄一个。
+/// 界 `500..=1000` 直接复用 theory 公开的两个常量（D2）：`500` = 平直（每对 onset 不推），
+/// `1000` = 理论上的全 swing（半个格位偏移），越界在 theory 侧是 `SwingOutOfRange`。
+/// ⚠ 本层**只判形状**："这个比例在具体拍号/格位下产不产得出鼓点"仍归 theory
+/// （`swung_styled_drum_pattern` 的 `ProgressionTooDense` 经 [`theory_grid_invalid`] 转发）。
+/// 拒绝载荷与力度/音域/跳进三族**同形状**（`field` + `value` + `range`），⛔ `reason` 键（D7）。
+fn swing_permille_bound(raw: Option<u64>) -> Result<Option<u16>, BuildFault> {
+    let Some(value) = raw else {
+        return Ok(None);
+    };
+    u16::try_from(value)
+        .ok()
+        .filter(|permille| (SWING_PERMILLE_STRAIGHT..=SWING_PERMILLE_MAX).contains(permille))
+        .map(Some)
+        .ok_or_else(|| {
+            BuildFault::domain_with_data(
+                BuildCode::InvalidParameterRange,
+                format!(
+                    "`swingPermille` 必须在 {SWING_PERMILLE_STRAIGHT}..={SWING_PERMILLE_MAX}, 实际 {value}"
+                ),
+                json!({
+                    "field": "swingPermille",
+                    "value": value,
+                    "range": [SWING_PERMILLE_STRAIGHT, SWING_PERMILLE_MAX],
+                }),
+            )
+        })
+}
+
 /// 960 PPQ 的整数 tick；身份由 `section_id + 声部序 + 和弦序` 派生。
 ///
 /// ⭐ `ADR-0033`：`subdivisions[voice]`（调用方已校验 1..=[`MAX_VOICE_SUBDIVISION`]）
@@ -1732,27 +1774,46 @@ fn theory_contents(
 /// `onsets_per_bar` 已由 [`grid_onsets_per_bar`] 定下（缺省 = 该拍号的格位数，
 /// `ADR-0036` D1）；超出格位数时 theory 的 `ProgressionTooDense` 由
 /// [`theory_grid_invalid`] 转成带 `maxOnsetsPerBar` 的载荷（D3）。
+///
+/// ⭐ `ADR-0041` D2：`swing = Some(千分比)` 时**只换那一个实参** —— 实测
+/// `GenreRule::drum_pattern` 逐字节等于
+/// `swung_styled_drum_pattern(meter, bars, onsets, self.swing_permille()?, None,
+/// default_backbeat(meter), drum_style)`，因此 `None` 分支仍走 `drum_pattern`
+/// ⇒ 键缺席的输出与今日逐字节相同（D3 的缺省兼容是**结构**保证，⛔ "两个调用恰好算得一样"）。
 fn theory_drum_pattern(
     rule: &'static GenreRule,
     bars: u32,
     style_preset: &str,
     onsets_per_bar: u32,
+    swing: Option<u16>,
 ) -> Result<DrumPattern, BuildFault> {
-    let pattern = rule.drum_pattern(bars, onsets_per_bar).map_err(|error| {
-        theory_grid_invalid(
-            style_preset,
+    let (asked, step) = match swing {
+        None => (
+            rule.drum_pattern(bars, onsets_per_bar),
             "GenreRule::drum_pattern",
-            error,
-            rule,
-            onsets_per_bar,
-        )
-    })?;
+        ),
+        Some(permille) => (
+            swung_styled_drum_pattern(
+                rule.meter_value(),
+                bars,
+                onsets_per_bar,
+                Some(permille),
+                None,
+                default_backbeat(rule.meter_value()),
+                rule.drum_style,
+            ),
+            // ⚠ 复用本文件**已有**的这一步骤名（兜底分支就在用它）⇒ ⛔ 新增故障词（D7）。
+            "swung_styled_drum_pattern",
+        ),
+    };
+    let pattern = asked
+        .map_err(|error| theory_grid_invalid(style_preset, step, error, rule, onsets_per_bar))?;
     if let Some(pattern) = pattern {
         return Ok(pattern);
     }
-    let permille = rule
+    let permille = swing.or(rule
         .swing_permille()
-        .map_err(|error| theory_invalid(style_preset, "GenreRule::swing_permille", error))?;
+        .map_err(|error| theory_invalid(style_preset, "GenreRule::swing_permille", error))?);
     swung_styled_drum_pattern(
         rule.meter_value(),
         bars,
@@ -1785,28 +1846,52 @@ fn theory_drum_pattern(
     })
 }
 
+/// 鼓轨消费的**四把标尺**：筛点档、网格密度、力度两档与摇摆比例。
+///
+/// ⭐ `ADR-0041` D4：与 [`MelodyRulers`] 同一条理由 —— `drum_contents` 加上摇摆就是
+/// 第 8 个参数，而 `clippy::too_many_arguments` 在本仓是**承重信号**（`G8f` 第一批
+/// 就是被它烧掉一整轮 CI），⛔ 用 `allow` 压掉。这里另外有一条更硬的理由：
+/// `density`、`onsets_per_bar`、`ladder` 与 `swing` 里有两对**同类型**的数
+/// （`(u8, u8)` 的力度档，以及 `u64`/`u32`/`u16` 的三个整数），把它们写成**命名字段**
+/// 后，"把切分当密度传"这类调错顺序在编译期就完蛋。
+#[derive(Clone, Copy, Debug)]
+struct DrumRulers {
+    /// 筛点档（`normal` / `sparse`）—— [`DrumDensity::parse`] 的结果（`ADR-0028`）。
+    density: DrumDensity,
+    /// 每小节的 onset 数 —— [`grid_onsets_per_bar`] 的结果（`ADR-0036`）。
+    onsets_per_bar: u32,
+    /// 力度两档 `(下档, 上档)` —— [`velocity_ladder`] 的结果（`ADR-0037`）。
+    ladder: (u8, u8),
+    /// ⭐ `ADR-0041`：摇摆千分比；`None` = **不覆盖**流派登记的值（D2）。
+    swing: Option<u16>,
+}
+
 /// `'theory'` 路径的鼓组内容（`ADR-0017` D1）。
 ///
 /// 每个 [`DrumHit`](yeban_theory::drum::DrumHit) 变成一条 GM 打击乐音符：
 /// 音高 = `hit.voice.gm_key()`（36/38/42/51）、起点 = `hit.tick`、
-/// 时值固定 120 tick、力度按 `accent` 取 `ladder` 的两档（缺省 112/96，`ADR-0037` D1）。
+/// 时值固定 120 tick、力度按 `accent` 取 `rulers.ladder` 的两档（缺省 112/96，`ADR-0037` D1）。
 fn drum_contents(
     rule: &'static GenreRule,
     bars: u64,
     style_preset: &str,
     section_id: EntityId,
-    density: DrumDensity,
-    onsets_per_bar: u32,
-    ladder: (u8, u8),
+    rulers: DrumRulers,
 ) -> Result<BTreeMap<EntityId, MidiNote>, BuildFault> {
-    let pattern = theory_drum_pattern(rule, theory_bars(bars)?, style_preset, onsets_per_bar)?;
+    let pattern = theory_drum_pattern(
+        rule,
+        theory_bars(bars)?,
+        style_preset,
+        rulers.onsets_per_bar,
+        rulers.swing,
+    )?;
     let mut notes = BTreeMap::new();
     for (hit_index, hit) in pattern.hits().iter().enumerate() {
         // ⭐ `ADR-0028` D3：`sparse` = 只留重音（口径来自流派登记的
         // `hit.accent`，本表不另立规则）。`normal` 一行都不筛 ⇒ 缺省路径
         // 逐字节不变。音符身份仍按**原始** hit_index 派生（筛选不改未筛中
         // 音符的 id，两档之间可对照）。
-        if density == DrumDensity::Sparse && !hit.accent {
+        if rulers.density == DrumDensity::Sparse && !hit.accent {
             continue;
         }
         let id = deterministic_id(&format!(
@@ -1814,7 +1899,11 @@ fn drum_contents(
             hit.voice.name()
         ));
         let note = MidiNote {
-            velocity: if hit.accent { ladder.1 } else { ladder.0 },
+            velocity: if hit.accent {
+                rulers.ladder.1
+            } else {
+                rulers.ladder.0
+            },
             ..MidiNote::new(id, hit.tick, hit.voice.gm_key(), DRUM_NOTE_DURATION_TICKS)
         };
         notes.insert(id, note);
@@ -1824,7 +1913,7 @@ fn drum_contents(
             BuildCode::InvalidParameterRange,
             format!(
                 "流派 `{style_preset}` 在 `drumDensity: {:?}` 下生成不出任何鼓点（静默的鼓轨不是产出）",
-                if density == DrumDensity::Sparse {
+                if rulers.density == DrumDensity::Sparse {
                     "sparse"
                 } else {
                     "normal"
@@ -2023,6 +2112,27 @@ pub fn plan_with_options(
             BuildCode::InvalidParameterRange,
             "`drumDensity` 仅在 includeDrums: true 时支持",
             json!({ "hint": "请同时指定 includeDrums: true（鼓密度只作用于生成的鼓轨）" }),
+        ));
+    }
+    // ⭐ `ADR-0041` D3：`swingPermille` 的消费点是**鼓轨**（[`theory_drum_pattern`]），
+    // 因此它的耦合口径与 `drumDensity` 同一支（要鼓轨在场），而⛔ 与和声键那一支
+    // （只要求 theory 材料源）相同 —— 三个口径⛔ 折成同一个 `is_some()` 表达式：
+    // 折在一起会把某一支的要求扩散到别的键上，造出一个文档里没写的拒绝。
+    // ⚠ 形状界（`500..=1000`）判在这里，"这个比例在该拍号/格位下产不产得出鼓点"⛔ 预判
+    // —— 那一条由 theory 的 `ProgressionTooDense` / `SwingOutOfRange` 决定并原样转发（D4）。
+    let swing = swing_permille_bound(options.swing_permille)?;
+    if options.swing_permille.is_some() && material_source != MaterialSource::Theory {
+        return Err(BuildFault::domain_with_data(
+            BuildCode::InvalidParameterRange,
+            "`swingPermille` 仅在 materialSource: 'theory' 时支持",
+            json!({ "hint": "请指定 materialSource: \"theory\"（摇摆比例只作用于生成的鼓轨网格）" }),
+        ));
+    }
+    if options.swing_permille.is_some() && !include_drums {
+        return Err(BuildFault::domain_with_data(
+            BuildCode::InvalidParameterRange,
+            "`swingPermille` 仅在 includeDrums: true 时支持",
+            json!({ "hint": "请同时指定 includeDrums: true（摇摆比例只作用于生成的鼓轨）" }),
         ));
     }
     // ⭐ `ADR-0033` D3：`voiceSubdivision` 的整数上界写在 domain 层，越界 ⇒ 响亮拒绝；
@@ -2275,9 +2385,12 @@ pub fn plan_with_options(
                     bars,
                     style_preset,
                     section_id,
-                    drum_density,
-                    onsets_per_bar,
-                    ladder,
+                    DrumRulers {
+                        density: drum_density,
+                        onsets_per_bar,
+                        ladder,
+                        swing,
+                    },
                 )?);
             }
             if include_melody {
