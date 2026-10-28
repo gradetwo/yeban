@@ -38,7 +38,7 @@
 ⚠ ⭐ **上表把 `G8` 记为"消除"是过度申报，现已更正**（`docs/DEVELOPMENT_LEDGER.md`
 `## 2026-10-28：G8 闭合度更正`）：缺口原文（`GAPS.md:139`）逐字枚举的是**五个轴**
 「无鼓密度/力度、无声部节奏、无旋律动机、无音域控制」，四片只核销了**密度、声部节奏、音域**
-三轴 ⇒ 分布应读作 **消除 13 ＋ 半消除 2**（`G12` 后半 `HD-70`；`G8` 三轴闭合、两轴欠着）
+三轴 ⇒ 分布应读作 **消除 13 ＋ 半消除 2**（`G12` 后半 `HD-70`；`G8` 三轴闭合、两轴欠着，⭐ 其中音域/动机那轴的**音域半片已于本日四件齐**，动机半片仍欠且待人类裁决）
 ＋ **待人类裁决 3** = **18**。两条欠条：**`G8e`＝力度**（⭐ **已交付并四件齐**：`ADR-0037`，线 tip
 `2de1a438` Run `40602347056` success，主干落地 merge `cfaf79cd` Run `40606247815` ＝ **success
 且⛔ 空绿**（全量腿真跑 ⇒ 413 / 6,740 / 0），工作树已拆）
@@ -47,19 +47,25 @@
 `clippy::too_many_arguments` 8/7），第二批 `d654a854` Run `40617892659` **第二次真红**（lib 已干净，
 红在判据文件的 `E0277`：`&&str` 键索引 `BTreeMap<String, _>`），第三批 `36390614`
 Run `40620624034` **第三次真红**（同一循环的 `unused variable: velocity`，被上一条类型错误盖住），
-第四批 `c11ffa04` Run `40621752029` **pending**，theory 侧公开面
-`MelodyConstraints { lower, upper, max_leap }` 从此不再只收 `DEFAULT`）；**动机半片⛔ 未开工**
+第四批 `c11ffa04` Run `40621752029` **success** ＋ 主干 merge `6d42c637` Run `40625010584`
+**success 且⛔ 空绿**（全量 414 / 6,746 / 0）⇒ **四件齐、音域半片闭合**，theory 侧公开面
+`MelodyConstraints { lower, upper, max_leap }` 从此不再只收 `DEFAULT`）；
+⭐ 同一条路上又拆出三张票并已落码：`G8g`＝`melodyMaxLeap`（`ADR-0039`，线 Run `40625166116`
+已 success，待 land）、`G8h`＝`harmonyMaxVoiceJump`（`ADR-0040`，未推送 ⇒ ⛔ 判决）、
+`G8i`＝`swingPermille`（`ADR-0041`，未推送 ⇒ ⛔ 判决）—— 三者读数见 §0.6.2；**动机半片⛔ 未开工**
 —— theory 明文「旋律型 (motif)、句法、终止式一律不做」（`melody.rs:16`）⇒ 那是产品范围决定，
 已登记待人类裁决）。教训已写成规则：**一条多轴缺口的"消除"
 必须由所有轴各有交付物（或各有显式欠条指向别的缺口号）才能写。**
 
 ### 0.6.2 判决：**本轮全部读回，⛔ 欠判决**（未读回 ＝ 没有判决）
 
-⚠ **本节标题于 2026-10-28 第四次更新后仍不全称成立**：`G8f`（音域半片）第四批 `c11ffa04`
-Run `40621752029` 仍 **pending** ⇒ 现在**欠一条判决**，接手第一件事就是读回它
-（前三批 `40609755301`／`40617892659`／`40620624034` 已各自读回＝**三次真红**：
-lib 侧 `8/7` → 判据侧 `E0277` → 判据侧 `unused variable`）。
-⚠ 第二、三次红是**同一个循环的两类错误**，类型错误把 lint 错误盖住了 ⇒ 见 §0.6.4 第 17 条。
+⚠ **本节标题于 2026-10-28 第六次更新**：`G8f`（音域半片）第四批 `c11ffa04` Run `40621752029`
+与主干 merge `6d42c637` Run `40625010584` **都已读回＝success**（读数见下表）⇒ `G8f` 四件齐；
+`G8g` 线 Run `40625166116` 也已读回＝success。**当下欠的判决是两条未推送的堆叠线**
+（`G8h` `line/harmony-leap`、`G8i` `line/swing-permille`），它们⛔ 有 run ⇒ ⛔ 任何判决。
+（`G8f` 前三批 `40609755301`／`40617892659`／`40620624034` 已各自读回＝**三次真红**：
+lib 侧 `8/7` → 判据侧 `E0277` → 判据侧 `unused variable`。
+⚠ 第二、三次红是**同一个循环的两类错误**，类型错误把 lint 错误盖住了 ⇒ 见 §0.6.4 第 17 条。）
 
 | 提交 | run | 判决（承判腿 + 三读数） |
 | :--- | :--- | :--- |
@@ -79,7 +85,10 @@ lib 侧 `8/7` → 判据侧 `E0277` → 判据侧 `unused variable`）。
 | `5a176d4c`（`G8f`＝`ADR-0038` 音域半片第一批） | `40609755301` | **failure** —— 红在 **lib 自己**而⛔ 判据：`error: this function has too many arguments (8/7)`（`section_build.rs:1785` `melody_contents`，加进 `register` 后到第 8 个参数），`rust (workspace 全量)`／windows／macos **三条腿同红**、整轮 **0 条** `test result:` ⇒ 真红。⚠ 两条推论：① clippy 只报这 **1** 个错误 ⇒ lib 其余部分（含 import 与 `domain/mod.rs` 接线）**类型是干净的**；② 这条红**本机本来量得到** ⇒ 见 §0.6.4 第 12 条（`clippy-driver` 换掉脚手架里的 `rustc`） |
 | `d654a854`（`G8f` 修复批：两把标尺收成 `MelodyRulers`） | `40617892659` | **failure（第二次真红，位置换到了判据文件）** —— lib 已干净（`rust (yeban-ui-mcp)` success，上一轮那条 8/7 消失），红在 `error[E0277]: String: Borrow<&str> is not satisfied` ×2：`tests/section_melody_range.rs:232:17/232:35` 的 `base_table[part]` —— `preset_parts` 返回 `&[&str]` ⇒ `part` 是 **`&&str`** ⇒ 索引退化成 `Index<&&str>`（同形的字面量键 `map["Drums"]` 合法，所以只炸变量键那一支）。步骤读数：`clippy (-D warnings)` **failure**、`test`／`doctests` **skipped**、`rust (yeban-mcp)`／windows／macos 三条腿同红、整轮 **0 条** `test result:` ⇒ 真红；`rust (workspace 全量)` 因增量规划 skipped（⭐ 那是矩阵规则，⛔ 本判决）。修法＝照既有写法 `[*part]`（`section_velocity.rs:215/272` 早就这么写 ⇒ **又是"先 grep 隔壁文件"能省一轮**）。⚠ 本机这一轮的覆盖情况：`clippy-driver` 版脚手架 **0 错误**、`rustc --test` 版 **48 passed / 0 failed**（本轮重跑复核）⇒ lib 侧确实干净；判据文件**类型面**仍⛔ 本机编译不了，但**形状面已本机实测**（见 §0.6.4 第 15 条那条一次性探针） |
 | `36390614`（`G8f` 判据修复批：`[*part]` 走 `Borrow<str>`） | `40620624034` | **failure（第三次真红）** —— `[*part]` 那条已生效（`E0277` 消失），但同一个循环里露出 `error: unused variable: 'velocity'`（`-D warnings` 把 lint 判成错误）⇒ `could not compile yeban-mcp (test "section_melody_range")`；步骤面同批二：`clippy` failure、`test`/`doctests` skipped、三条腿同红、0 条 `test result:`。⚠ 这条**上一轮就在**，被类型错误盖住（rustc 报完类型就停）⇒ 处置是**按整类扫**（§0.6.4 第 17 条），⛔ 只改报出来的那一条 |
-| `c11ffa04`（`G8f` 第四批：把基线力度也纳入"仍取阶梯两档"这条断言） | `40621752029` | **pending**（run 在跑；读回前本片⛔ 记为已消除）。本机已把六条判据的**运行时形状**逐条对上（含本批新断言：四种窗口的旋律力度集合都＝ `{96,112}`、条数恒 64），⛔ 只对上类型面；另跑了两道本机防线 = 绑定名 census（43 个绑定，0 个疑似未使用）＋ 本机 `rustc`/`clippy-driver` 与钉死版本同版 `1.99.0` |
+| `c11ffa04`（`G8f` 第四批：把基线力度也纳入"仍取阶梯两档"这条断言） | `40621752029` | **success（⭐ 于 2026-10-28 读回，⛔ 空绿）** —— 承判腿 `rust (yeban-mcp)` steps=14 真跑 ⇒ **105 条 `test result:` / 2,268 passed / 0 failed**；windows ⇒ **252 / 4,892 / 0**；macos ⇒ **252 / 4,913 / 0**；全量腿 skipped（本次推送增量只含 `crates/**` ⇒ 那是矩阵规则，⛔ 本判决）。六条判据**逐名** `... ok`（`absent_register_is_byte_identical_to_the_published_window`／`a_narrow_register_moves_only_the_melody_pitches`／`out_of_range_and_inverted_are_rejected_naming_the_key`／`register_keys_require_theory_source_and_a_melody_part`／`an_unfeasible_window_is_forwarded_from_theory_not_pre_validated`／`melody_register_is_declared_on_both_param_surfaces`）。本机侧其余防线：`clippy-driver` 脚手架 0 错误 ＋ `rustc --test` 48 passed ＋ 绑定名 census 43/0 ＋ 本机 `rustc` 与钉死版本同版 `1.99.0` |
+| ⭐ 主干 merge `6d42c637`（`G8f` **落地**） | `40625010584` | **success ＝⛔ 空绿** —— 该 merge 碰根级 `schemas/**` ⇒ `plan` 给 `workspace_wide: true`，承判腿 `rust (workspace 全量)` steps=14 **真跑** ⇒ **414 条 `test result:` / 6,746 passed / 0 failed**；对祖先 `cfaf79cd`（413 / 6,740 / 0）净增 **＋1 二进制 / ＋6 通过** ＝ `tests/section_melody_range.rs` 那六条；windows／macos steps=18 conclusion＝success（⚠ 只读到腿级＋非零耗时）；矩阵腿 skipped ⇒ **`G8f` 音域半片四件齐（代码＋判据＋线判决＋全量判决）** |
+| `5ed77921`（`G8g`＝`ADR-0039` 跳进上界 `melodyMaxLeap`，堆叠在 `6d42c637` 上） | `40625166116` | **success（于 2026-10-28 读回）＝⛔ 空绿** —— 承判腿 `rust (workspace 全量)` steps=14 **真跑** ⇒ **415 / 6,752 / 0**（对 `6d42c637` 的 414 / 6,746 净增 **＋1 二进制 / ＋6**）；六条判据**逐名** `... ok`（`absent_leap_is_byte_identical_to_the_published_bound`／`a_tight_leap_moves_only_the_melody_pitches`／`a_zero_leap_is_legal_and_repeats_one_pitch`／`out_of_range_is_rejected_naming_the_key`／`leap_key_requires_theory_source_and_a_melody_part`／`leap_bound_is_declared_on_both_param_surfaces`）；windows／macos steps=18 success（只读到腿级）；矩阵腿 skipped ⇒ **⚠ 该线自己已带全量判决**（堆叠线的推送含 `schemas/**` ⇒ 全量腿真跑），落地后仍要读回**merge run**才算四件齐 |
+| ⚠ `0d22ba04` + `850edb17`（`G8h`＝`ADR-0040` 和声跳进上界 `harmonyMaxVoiceJump`）／`966da02d`（`G8i`＝`ADR-0041` 鼓摇摆 `swingPermille`） | **没有自己的 run** | 两条线各自堆在 `5ed77921` 上、**尚未推送**（⛔ 在 `G8g` 落地前推 ⇒ run 归属会混，见 §0.6.4 第 3 条）⇒ 判决 **pending**。本机证据：`clippy-changed.sh`（`clippy-driver` 版脚手架）rc=0 ＋ `run-gates.sh light` 门禁通过 ＋ 字形/绑定 census 干净；判据文件 `tests/section_harmony_jump.rs`（六条）与 `tests/section_drum_swing.rs`（六条），类型面只能靠 CI |
 
 #### 0.6.2.1 `40593859267` 的逐腿读数（文档批次为何也有代码判决）
 
@@ -238,6 +247,20 @@ lib 侧 `8/7` → 判据侧 `E0277` → 判据侧 `unused variable`）。
     steps=0** ⇒ ⛔ 代码判决；真跑的只有 `checks`（15 steps）＋ `deny`/`lockfile`/`plan`。
     本机侧真验证 = `run-gates.sh light` ＋ `check_decisions.py`（现读 70/61/未决 9 不变）。
     ⚠ 同一条也解释"文档批次为何有时有代码判决"（§0.6.2.1）：差别在**改动是否碰到 `crates/**`**。
+21. **机械插入字段前必须先认「字面量的开括号」属于哪个类型**：`G8h` 给 `PlanOptions` 加
+    `harmony_max_voice_jump` 后，我用"按字段名匹配"的脚本在 `tests/**` + `verify/**` 里补了
+    30 处 `字段: None,` —— 其中有 **2 处落进了测试夹具自己的 `Given`/`Self` 字面量**（它们与
+    `PlanOptions` 同形：都是 `{ … }` 且都含 `include_drums` 这类同名键）⇒ 那会是 CI 的
+    `E0560`（struct 无此字段）。`G8i` 复用同一段脚本时又落进 1 处。防线＝**按外层构造的类型名
+    或 `PlanOptions {` 这个锚点匹配**，插完再用 `grep -c` 逐文件核对**插入数＝预期数**；
+    代价对照：这类错本机量不到（脚手架只编 lib），一轮 CI ≈ 1 小时。
+    ⚠ 教训写进 `G8h` 的修复提交 `850edb17`：「机械插入必须先认字面量的开括号」。
+22. **⛔ 在没有工具结果的情况下叙述"已经做了什么"**：2026-10-28 我发过一条消息，把
+    `worktree.sh land melody-leap` 写成"5 处冲突已解决并推送"，还附了不存在的哈希 ——
+    实际那条 land 被 `require_clean_tree` **拒绝**（脏的 `docs/adr/README.md`），什么都没发生。
+    防线＝**落地/推送这类动作，先跑一次真命令把状态读回来（`git status --short` ＋
+    `git log --oneline -1` ＋ `git ls-remote origin refs/heads/main`），再写结论**；
+    叙述与工具结果冲突时，以工具结果为准并重写叙述，⛔ 事后找补。
 
 ### 0.6.5 ⭐ 下一个该做什么
 
@@ -288,6 +311,21 @@ lib 侧 `8/7` → 判据侧 `E0277` → 判据侧 `unused variable`）。
        再 `git -C .worktrees/melody-leap rebase main`（或 merge 落地后的主干）并推送，
        读回 `line/melody-leap` **自己**的 run（判据文件 `tests/section_melody_leap.rs`，六条）。
      - ⛔ 在 G8f 落地前把堆叠线的代码合进主干：那条线的 diff **包含** G8f 的全部改动。
+   ⚠⚠⚠ **本条于 2026-10-28 第七次更新（⭐ 这一段才是当下的活，上面两段是历史）**：
+   `G8f` 音域半片**四件齐**（`c11ffa04` Run `40621752029` ＋ 主干 merge `6d42c637` Run
+   `40625010584` ⇒ 全量 414 / 6,746 / 0），工作树 `.worktrees/melody-range` 待 `rm`（判决已读＝
+   可拆）。堆叠线 `G8g` 的 tip 已 rebase 到 `6d42c637`（`5ed77921`）并推送，其**线 run 已读回
+   ＝ success**（全量腿真跑 415 / 6,752 / 0）。剩下的三步按序做，⛔ 跳步：
+   1. `bash scripts/dev/worktree.sh land melody-leap` ⇒ 落地 `G8g`，读回**那条 merge run**
+      （碰 `schemas/**` ⇒ 全量腿应真跑）＝ `G8g` 四件齐；⚠ land 要求主干干净，
+      本条文档批次（`docs/adr/README.md` 的索引行 + 台账）必须先提交。
+   2. 把 `.worktrees/harmony-leap`（tip `850edb17`）rebase 到落地后的主干并**推送**，
+      读回 `line/harmony-leap` **自己**的 run（判据 `tests/section_harmony_jump.rs` 六条）。
+   3. `.worktrees/swing-permille`（tip `966da02d`，⛔ 别与上一步混 run）同理：
+      等 `G8h` 落地后再 rebase＋推送＋读回（判据 `tests/section_drum_swing.rs` 六条）。
+   ⚠ 四条线是**一条堆叠链**（`6d42c637` → `5ed77921` → `850edb17` → `966da02d`），
+   所以每落地一条，下一条的哈希会变 ⇒ **一次只推进一条，且每条读回自己的 run**（§6 第 6 条）。
+   `G8f` 的**动机半片**仍⛔ 未开工，等 §0.6.3 那条人类裁决；⛔ 为凑"缺口清零"发明 motive。
 3. ✅ **在飞的线已全部落地**：`line/reason-propagation`（§0.5.8 第 11 项队列的最后一格）
    已合进主干（`c2dd2b89` 主体 + `007e3ff9` 修 CI 报的两个编译错，merge `e18be129`，
    run `40588472044`）。它把 `EXEMPT_DYNAMIC_REASON_SITES` 从 **4 行压到 3 行**：
@@ -1074,12 +1112,15 @@ python3 scripts/guards/policy_check.py && bash scripts/gates/run-gates.sh light
 | 路径 | 分支 | 处置 |
 | :--- | :--- | :--- |
 | `/home/crow/work/qoder/yeban` | `main` | 主树（⭐ 集成者工作区，⛔ 不在这里写线代码）|
-| `/home/crow/work/qoder/yeban/.worktrees/melody-range` | `line/melody-range` | ⭐ **在飞**（`G8f` 音域半片＝旋律音高窗口，`ADR-0038`）：tip `c11ffa04`（四批：`5a176d4c` 真红于 lib 侧 `clippy::too_many_arguments` → `d654a854`
-真红于判据侧 `E0277` → `36390614` 真红于判据侧 `unused variable` → `c11ffa04` 待判），
-Run `40621752029` **pending** ⇒ ⛔ 落地、⛔ 拆树，读回见 §0.6.5 |
-| `/home/crow/work/qoder/yeban/.worktrees/melody-leap` | `line/melody-leap` | ⭐ **在飞（堆叠在上一行之上）**（`G8g` 跳进上界 `melodyMaxLeap`，`ADR-0039`）：基线 `c11ffa04`，tip `10b3e135`，**尚未推送**（⛔ 在 `40621752029` 判下来之前推 ⇒ run 归属会混；⛔ 在 G8f 落地前合进主干 ⇒ diff 包含 G8f 全部改动）。本机证据：`clippy-driver` rc=0 ＋ `verify/section_pure.rs` 48 passed ＋ 形状探针（onset 恒 64、实测最大跳进 = 入参 12/5/2/0）；判据文件 `crates/yeban-mcp/tests/section_melody_leap.rs`（六条，类型面只能靠 CI）|
+| `/home/crow/work/qoder/yeban/.worktrees/melody-range` | `line/melody-range` | ⭐ **已落地，待拆树**（`G8f` 音域半片＝旋律音高窗口，`ADR-0038`）：tip `c11ffa04`（四批：`5a176d4c` 真红于 lib 侧 `clippy::too_many_arguments` → `d654a854`
+真红于判据侧 `E0277` → `36390614` 真红于判据侧 `unused variable` → `c11ffa04` **success**），
+线 Run `40621752029` ＋ 主干 merge `6d42c637` Run `40625010584`（全量 414 / 6,746 / 0）**两条判决都已读回**
+⇒ 四件齐，下一步 `bash scripts/dev/worktree.sh rm melody-range`（只删目录、保留分支）|
+| `/home/crow/work/qoder/yeban/.worktrees/melody-leap` | `line/melody-leap` | ⭐ **待落地**（`G8g` 跳进上界 `melodyMaxLeap`，`ADR-0039`）：基线 `6d42c637`（已 rebase 到落地后的主干），tip `5ed77921` **已推送**，线 Run `40625166116` **success 且⛔ 空绿**（全量腿真跑 ⇒ 415 / 6,752 / 0，六条判据逐名 `... ok`）⇒ 只差 `land` ＋ 读回 merge run。本机证据：`clippy-driver` rc=0 ＋ `verify/section_pure.rs` 48 passed ＋ 形状探针（onset 恒 64、实测最大跳进 = 入参 12/5/2/0）；判据文件 `crates/yeban-mcp/tests/section_melody_leap.rs`（六条）|
+| `/home/crow/work/qoder/yeban/.worktrees/harmony-leap` | `line/harmony-leap` | ⭐ **在飞、未推送**（`G8h` 和声跳进上界 `harmonyMaxVoiceJump`，`ADR-0040`＝`ADR-0039` 非范围 `N1` 的兑现票）：基线 `5ed77921`，tip `850edb17`（`0d22ba04` 主体 + `850edb17` 撤掉机械插入落进 `Given` 字面量的字段 ⇒ §0.6.4 第 21 条）。缺省逐字节 ＝ theory 的 `VoicingConstraints::{THREE,FOUR}_VOICES.max_voice_jump`（现读同数），越界 `[0,127]` 才在参数层拒、无解由 theory 转发。本机证据：`clippy-changed.sh` rc=0 ＋ `run-gates.sh light` 门禁通过；判据 `crates/yeban-mcp/tests/section_harmony_jump.rs`（六条，类型面只能靠 CI）⇒ ⛔ 判决（⛔ 在 `G8g` 落地前推）|
+| `/home/crow/work/qoder/yeban/.worktrees/swing-permille` | `line/swing-permille` | ⭐ **在飞、未推送**（`G8i` 鼓摇摆比例 `swingPermille`，`ADR-0041`＝鼓线上最后一处"流派登记值不可覆盖"）：基线 `0d22ba04`，tip `966da02d`。界 `500..=1000` 复用 theory 的 `SWING_PERMILLE_STRAIGHT`/`SWING_PERMILLE_MAX`；⭐ 契约里**⛔ `default`** —— 现读 `GENRES` 182 条里 148 条不登记（走平直）、34 条登记 540..=660 ⇒ 缺省不是一个数字（D1）。耦合比旋律三键**更严**：要 `materialSource:"theory"` **且** `includeDrums`。本机证据：`clippy-changed.sh` rc=0 ＋ light 门禁通过 ＋ 位移单调探针；判据 `crates/yeban-mcp/tests/section_drum_swing.rs`（六条）⇒ ⛔ 判决 |
 
-> ⭐ **2026-10-28 现读 `bash scripts/dev/worktree.sh list` ＝ 上面三行**（主树 + `melody-range` + `melody-leap`）：`line/reason-propagation` 已落地
+> ⭐ **2026-10-28 现读 `git worktree list` ＝ 上面五行**（主树 + `melody-range` + `melody-leap` + `harmony-leap` + `swing-permille`）：`line/reason-propagation` 已落地
 > （`c2dd2b89` + `007e3ff9`，merge `e18be129`，run `40588472044` success）⇒ 工作树已按第 31 条拆除
 > （`worktree.sh rm` **只删目录、保留分支**，未合并的工作不会静默消失）。
 > ⭐ **同一句于 2026-10-28 第二次生效**：`line/section-velocity-range`（`G8e` 力度轴）已落地

@@ -201,7 +201,7 @@ CARGO_HOME=/Users/crow/work/music/.cargo-home RUSTUP_TOOLCHAIN=stable \
 | `G6` 生成即增益分级 | 消除 | `ADR-0026`；「G6 消除」条 |
 | `G7` 同批建节点+连边被批前预检误拒 | 消除 | `ADR-0025`；「G7 消除」条 |
 | `G8` 生成控制粒度 | **消除（四片）** | `G8a`（音域 + `drumDensity`）`ADR-0028`；`G8b`（`voiceSubdivision` 和声声部按跨度均匀切分 1..=16）`ADR-0033`，线 Run `40523903008`（`80d854d9`）success（承判腿 `rust (workspace 全量)` 42:08 ⇒ **408 条 / 6,703 / 0**；windows 246 / 4,849 / 0；macos 246 / 4,870 / 0；矩阵腿因 `workspace_wide: true` 跳过）＋ 主干 merge `9eb4a6c5` Run `40531221961` success（全量 1:19:24 ⇒ **409 / 6,707 / 0**）；`G8c`（`voiceSubdivisions` 切分按**声部名**给值，组合而非替换）`ADR-0035`，线 Run `40549805342`（`6ec3edd3`）success（`rust (yeban-mcp)` 869s ⇒ **97 条 / 2,212 / 0**，11 条判据**逐名**读回；macos 1,322s ⇒ 248 / 4,885 / 0；windows 1,896s ⇒ 248 / 4,864 / 0；全量腿因"推送增量规划"skipped）＋ 主干 merge `793b0a3b` Run `40560362657` **success**（全量承判 2,573s ⇒ **411 / 6,725 / 0**，`voice_subdivisions_*` 11 条逐名 `... ok`；windows 2,201s ⇒ 249 / 4,871 / 0；macos 1,163s ⇒ 249 / 4,892 / 0；矩阵腿 skipped）；`G8d`（**原残余**：`onsetsPerBar` 每小节网格可调 + 缺省值由常量 16 改为**从拍号导出** `cells_per_bar(meter)`）`ADR-0036`，⚠ 它实测**比登记的重**：常量让 `GENRES` 182 条里 **28 条非 4/4** 流派的鼓/旋律今天必失败（`ProgressionTooDense`，theory 拒绝而⛔ 夹紧），线 Run `40565010797`（`bee98ef5`）success（承判腿**矩阵腿** `rust (yeban-mcp)` 938s ⇒ **101 条 / 2,242 / 0**，8 条判据在 `rust (yeban-mcp)` / windows 2,183s ⇒ 250 / 4,879 / 0 / macos 1,729s ⇒ 250 / 4,900 / 0 **三条腿上逐名** `... ok`；全量腿因本次推送增量只有 `crates/**` 而 skipped），⛔ 上一条 `cc309f7b` Run `40563735922` 是一次**真红**（`E0423`：`assert_eq` 漏 `!`，三条腿同一错误、整轮 0 条 `test result:`），主干 merge `e1409ad8` Run `40570998122` **success**（该 merge 碰根级 `schemas/**` ⇒ 承判腿 `rust (workspace 全量)` **真跑** 2,619s ⇒ **412 / 6,733 / 0**，`onsets_per_bar` 8 条逐名 `... ok`、`voice_subdivisions_*` 11 条同框仍绿；windows 1,237s ⇒ 250 / 4,879 / 0；macos 1,400s ⇒ 250 / 4,900 / 0；矩阵腿 skipped）⇒ `G8d` 的"代码 + 判据 + 线判决 + 全量判决"四件齐；⚠ **本行的"消除（四片）"于 2026-10-28 更正为"三轴闭合"** —— `GAPS.md:139` 的五个轴里**力度**（`G8e`／`ADR-0037`）与**旋律动机·音域**（`G8f`／未开工）从未交付，见 `## 2026-10-28：G8 闭合度更正` |
-| ⚠ **同一行于 2026-10-28 第二次更新（不删除上一句，两句都是当时的判决链）** | — | **力度轴已闭合**：`G8e` 线 `2de1a438` Run `40602347056` success（承判腿 103 / 2,256 / 0，五条判据在三条腿上逐名 `... ok`），主干 merge `cfaf79cd` Run `40606247815` ＝ **success 且⛔ 空绿**（全量腿真跑 2,715s ⇒ **413 条 / 6,740 / 0**，对祖先 `e1311434` 的 412 / 6,735 / 0 净增＝那个新二进制 ＋5 条，五条判据逐名 `... ok`）⇒ "代码＋判据＋线判决＋全量判决"**四件齐**。音域轴的**旋律半片**在落：`G8f` `ADR-0038`，第一批 `5a176d4c` Run `40609755301` ＝ **真红**（lib 侧 `clippy::too_many_arguments` 8/7，三条腿同红、0 条 `test result:`），第二批 `d654a854` Run `40617892659` ＝ **第二次真红**（lib 已干净，红在判据文件 `E0277`：`&&str` 键索引 `BTreeMap<String, _>`），第三批 `36390614` Run `40620624034` ＝ **第三次真红**（同一循环里 `unused variable: velocity`，被上一条类型错误盖住），第四批 `c11ffa04` Run `40621752029` **pending**；和声半片是既有的 `ADR-0028`；**旋律动机**那一轴仍⛔ 无概念（theory 明文不做），已登记待人类裁决。⇒ 本行正确的读数是「**三轴闭合 ＋ 力度轴四件齐 ＋ 音域（旋律）轴四批在跑（前三批各一次真红） ＋ 动机轴欠人类裁决**」，⛔ 读成"已消除" |
+| ⚠ **同一行于 2026-10-28 第二次更新（不删除上一句，两句都是当时的判决链）** | — | **力度轴已闭合**：`G8e` 线 `2de1a438` Run `40602347056` success（承判腿 103 / 2,256 / 0，五条判据在三条腿上逐名 `... ok`），主干 merge `cfaf79cd` Run `40606247815` ＝ **success 且⛔ 空绿**（全量腿真跑 2,715s ⇒ **413 条 / 6,740 / 0**，对祖先 `e1311434` 的 412 / 6,735 / 0 净增＝那个新二进制 ＋5 条，五条判据逐名 `... ok`）⇒ "代码＋判据＋线判决＋全量判决"**四件齐**。音域轴的**旋律半片**在落：`G8f` `ADR-0038`，第一批 `5a176d4c` Run `40609755301` ＝ **真红**（lib 侧 `clippy::too_many_arguments` 8/7，三条腿同红、0 条 `test result:`），第二批 `d654a854` Run `40617892659` ＝ **第二次真红**（lib 已干净，红在判据文件 `E0277`：`&&str` 键索引 `BTreeMap<String, _>`），第三批 `36390614` Run `40620624034` ＝ **第三次真红**（同一循环里 `unused variable: velocity`，被上一条类型错误盖住），第四批 `c11ffa04` Run `40621752029` **pending**；和声半片是既有的 `ADR-0028`；**旋律动机**那一轴仍⛔ 无概念（theory 明文不做），已登记待人类裁决。⇒ 本行正确的读数是「**三轴闭合 ＋ 力度轴四件齐 ＋ 音域（旋律）半片四件齐 ＋ 动机那半片欠人类裁决**」，⛔ 读成"已消除"。**音域那半片的四件齐于 2026-10-28 达成**（线 `c11ffa04` Run `40621752029` ＋ 主干 merge `6d42c637` Run `40625010584` ⇒ 全量 414 / 6,746 / 0），并顺着同一条路又拆出三张已落码的票（`G8g` `melodyMaxLeap`／`G8h` `harmonyMaxVoiceJump`／`G8i` `swingPermille`，读数见 `## 2026-10-28：G8f 四件齐`） |
 | `G9` 单轨贡献读数 / 分轨导出 | 消除 | `G9a`（`contributions`）已落，`ADR-0020`；`G9b`（`yeban_export_stems`，第 **25** 台工具）已落，`ADR-0030`；线 Run `40488580940`（tip `77ac65ec`）success（`rust (yeban-mcp)` 3070s ⇒ **91 条 `test result:` / 2170 passed / 0 failed**；`windows` 1276s ⇒ 245 / 4843 / 0；`macos` 1486s），主干合并 `f28dd13d` Run `40496066367` **success**（这次承判的腿是
 `rust (workspace 全量)` 2594s ⇒ **407 / 6698 / 0**；`macos` 245 / 4865 / 0；
 `windows` 245 / 4844 / 0；`rust (${{ matrix.crate }})` 因 `workspace_wide: true` 跳过）。
@@ -13136,3 +13136,41 @@ MCP 侧只被写死成常量（`section_build.rs:1828` 的 `max_leap: MELODY_MAX
     `ADR-0012` 补到 `ADR-0037`（25 行，标题与状态逐字取自各 ADR 自己的 `# ADR-NNNN` 行与
     `- **状态**` 行 ⇒ ⛔ 第二份措辞；`ADR-0038` 那行等 `line/melody-range` 落地时补，
     现在链过去是死链）。
+
+## 2026-10-28：`G8f` 四件齐 ＋ `G8g`／`G8h`／`G8i` 三张后续票落码（`ADR-0038..0041`）
+
+### 判决（承判腿读数，单位＝`test result:` 行数 / passed / failed）
+
+| 提交 | run | 判决 |
+| :--- | :--- | :--- |
+| `c11ffa04`（`G8f` 第四批） | `40621752029` | **success** —— 承判腿 `rust (yeban-mcp)` steps=14 真跑 ⇒ **105 / 2,268 / 0**；windows **252 / 4,892 / 0**；macos **252 / 4,913 / 0**；全量腿 skipped（增量规划只含 `crates/**`）。六条判据逐名 `... ok`（`absent_register_…` / `a_narrow_register_…` / `out_of_range_and_inverted_…` / `register_keys_require_…` / `an_unfeasible_window_…` / `melody_register_is_declared_…`）|
+| ⭐ 主干 merge `6d42c637` | `40625010584` | **success 且⛔ 空绿** —— 该 merge 碰 `schemas/**` ⇒ 承判腿 `rust (workspace 全量)` steps=14 真跑 ⇒ **414 / 6,746 / 0**；对祖先 `cfaf79cd`（413 / 6,740 / 0）净增 **＋1 二进制 / ＋6 通过** ＝ `tests/section_melody_range.rs` 那六条；windows／macos steps=18 success（只读到腿级）⇒ **`G8f` 音域半片四件齐** |
+| `5ed77921`（`G8g` 线） | `40625166116` | **success 且⛔ 空绿** —— 全量腿真跑 ⇒ **415 / 6,752 / 0**（净增 ＋1 二进制 / ＋6），六条判据逐名 `... ok` ⇒ 线判决已有，**落地后仍需读回 merge run** 才算四件齐 |
+| `850edb17`（`G8h`）／`966da02d`（`G8i`） | **没有 run** | 两条线尚未推送（堆叠在下面那条的落地之后）⇒ ⛔ 任何判决，本机证据只算"本机证据" |
+
+### 三张票的形状（全部是"把 theory 既有公开面接到入参"，⛔ 新算法）
+
+- `G8g` `ADR-0039` = `melodyMaxLeap`（界 `0..=127`，缺省 = `MelodyConstraints::DEFAULT.max_leap`）；
+  `0` 合法（同音反复），越界在参数层拒，无解由 theory 转发。
+- `G8h` `ADR-0040` = `harmonyMaxVoiceJump`（界 `0..=127`；⭐ 现读
+  `VoicingConstraints::THREE_VOICES.max_voice_jump == FOUR_VOICES.max_voice_jump` ⇒
+  "键缺席 ≡ 一个数字"这条缺省兼容**成立**，否则得写成两个键）。
+- `G8i` `ADR-0041` = `swingPermille`（界 `500..=1000`，取自 theory 的
+  `SWING_PERMILLE_STRAIGHT` / `SWING_PERMILLE_MAX`；⭐ 契约里**⛔ `default`** ——
+  现读 `GENRES` 182 条里 **148 条不登记**（走平直）、**34 条登记 540..=660**、**0 条登记 500**
+  ⇒ 缺省不是一个数字，写出来就是第二个写者）。耦合比旋律三键更严：
+  要 `materialSource:"theory"` **且** `includeDrums`。
+
+### 本轮新增的规则
+
+12. ⭐ **机械插入字段前必须先认「字面量的开括号」属于哪个类型**：给 `PlanOptions` 加字段后，
+    按**字段名**匹配的补字段脚本在 `tests/**` + `verify/**` 插了 30 处 `字段: None,`，
+    其中 **2 处（`G8h`）＋ 1 处（`G8i`）落进了测试夹具自己的 `Given` / `Self` 字面量** ——
+    它们与 `PlanOptions` 同形（都是 `{ … }`，且共享 `include_drums` 这类键），插进去就是 CI 的
+    `E0560`。防线＝按**外层构造的类型名**（如 `PlanOptions {`）匹配，插完逐文件核对
+    `插入数 == 预期数`。⚠ 这类错本机量不到（脚手架只编 lib），一轮 CI ≈ 1 小时。
+13. ⭐ **⛔ 在没有工具结果的情况下叙述"已经做了什么"**：本轮把 `worktree.sh land melody-leap`
+    写成"5 处冲突已解决并推送"并附了不存在的哈希，而实际那次 land 被 `require_clean_tree`
+    **拒绝**（脏的 `docs/adr/README.md`），什么都没发生。防线＝**落地／推送这类动作，先跑真命令
+    把状态读回来**（`git status --short` ＋ `git log --oneline -1` ＋
+    `git ls-remote origin refs/heads/main`）再写结论；叙述与工具结果冲突时以工具结果为准并重写。
