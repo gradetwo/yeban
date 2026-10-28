@@ -342,7 +342,9 @@ fn four_on_the_floor_only_adds_kicks_on_beat_starts() {
     let straight = voices(&plan(
         Given::theory().style(Some(FLOOR)).swing(Some(STRAIGHT)),
     ));
-    let swung = voices(&plan(Given::theory().style(Some(FLOOR)).swing(Some(MEDIUM))));
+    let swung = voices(&plan(
+        Given::theory().style(Some(FLOOR)).swing(Some(MEDIUM)),
+    ));
     assert_eq!(
         kick_starts(&straight),
         kick_starts(&swung),
@@ -356,7 +358,14 @@ fn four_on_the_floor_only_adds_kicks_on_beat_starts() {
 /// 两个合法值都必须放行（⛔ 夹紧、⛔ 静默降级成 `Metric`）。
 #[test]
 fn an_unknown_style_is_rejected_naming_the_key_and_the_accepted_set() {
-    for raw in ["four", "", "FOUR-ON-THE-FLOOR", "FourOnTheFloor", "四踩", "normal"] {
+    for raw in [
+        "four",
+        "",
+        "FOUR-ON-THE-FLOOR",
+        "FourOnTheFloor",
+        "四踩",
+        "normal",
+    ] {
         let fault = try_plan(Given::theory().style(Some(raw)))
             .expect_err("未知档位不得静默降级（`ADR-0036` D3 的同一条口径）");
         assert_shape_reject(&fault, &format!("`drumStyle` = {raw:?}"));
@@ -366,7 +375,11 @@ fn an_unknown_style_is_rejected_naming_the_key_and_the_accepted_set() {
             json!("drumStyle"),
             "载荷必须点名是哪个键: {payload}"
         );
-        assert_eq!(payload["value"], json!(raw), "载荷必须回显被拒的值: {payload}");
+        assert_eq!(
+            payload["value"],
+            json!(raw),
+            "载荷必须回显被拒的值: {payload}"
+        );
         let expected: Vec<&str> = accepted();
         assert_eq!(
             payload["accepted"],
@@ -480,12 +493,9 @@ fn drum_style_is_declared_on_both_param_surfaces_with_the_theory_names_and_no_de
     let text = std::fs::read_to_string(repo.join("schemas").join("mcp-tools.schema.json"))
         .expect("读契约 schema");
     let contract: Value = serde_json::from_str(&text).expect("契约必须是合法 JSON");
-    let declared =
-        &contract["definitions"]["DocumentedToolArguments"]["$defs"]["yeban_propose_section"]
-            ["properties"];
-    let param = spec
-        .param("drumStyle")
-        .expect("参数表必须声明 `drumStyle`");
+    let declared = &contract["definitions"]["DocumentedToolArguments"]["$defs"]["yeban_propose_section"]
+        ["properties"];
+    let param = spec.param("drumStyle").expect("参数表必须声明 `drumStyle`");
     assert_eq!(param.json_type, "string", "`drumStyle` 必须是字符串参数");
     assert!(!param.required, "缺省 = 该流派登记值 ⇒ 必须可选");
     assert!(
