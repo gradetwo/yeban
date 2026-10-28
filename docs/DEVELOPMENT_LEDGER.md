@@ -14159,3 +14159,38 @@ macOS 侧读数：`test result:` **262** 行／passed **4,960**／`FAILED` **0**
   `plan` 造预览时 `path` 仍取**本次请求路径** ⇒ 把同一份 SFZ 复制到别处再 `dryRun`，
   预览与真做的 `path` 不同。与刚修的 `sampleHz` **同一类**（预览/真做漂移），但本批
   ⛔ 顺手改（那会再动 `plan` 的身份分支与判据，需新一轮判决）⇒ 登记待下一单。
+
+## 2026-10-28 晚：扩展工具**输入侧**审计收盘（除 sfz 外九条全清）—— 0 新缺陷
+
+据上一节（sfz 三键）的教训——**"键被读了"≠"键被用了"**（`velocity` 曾是"解析＋回显、
+不进渲染器"的空操作）——把 15 条扩展工具的**每一个实参键**逐条追到消费点。方法：
+① 从 `crates/yeban-mcp/src/tools.rs` 的 `ToolSpec` 现读每个工具的 `param(...)` 键集
+（⛔ 不抄文档、⛔ 抄 schema——注册表才是权威）；
+② 对每个键找到**解析点**与**消费点**两处；只有解析点的是嫌疑（velocity 就是这种），
+消费点必须是"改变输出/改变状态"的那行，而不是再抄一遍进响应。
+
+### 逐工具体检表（键 → 解析点 → 消费点）
+
+| 工具 | 键 | 消费点（实测行） |
+| :--- | :--- | :--- |
+| `yeban_record_wav` | `path`/`seconds`/`sampleRate`/`channels`/`capacityFrames`/`drainBatch`/`toneHz` | 全部进 `record_channel(...)`；相位 `TAU * tone_hz / sample_rate`；`pump(drain_batch)`（上一轮读） |
+| `yeban_import_audio` | `name`/`assetHash`/`path`/`license`/`gainDb`/`clipId`/`trackId`/`startTick`/`durationTicks`/`placementId`/`muted` | `gainDb` 落 `ClipContent::Audio { gain_db }`；`startTick`/`durationTicks`/`placementId`/`muted` 落摆放（上一轮读） |
+| `yeban_import_midi` | `path`/`trackId`/`clipId`/`splitTracks` | `import_midi.rs:111–152` 解析 → `MidiImportOptions`（两处构造，`plan_midi_import` 真吃） |
+| `yeban_export_midi` | **零键** | 注册表即零 `param` ⇒ 无输入面可空转 |
+| `yeban_export_stems` | `outDir`/`trackIds` | `stems.rs:87–152` → `track_ids` 在 `stems.rs:398` 真过滤轨道集 |
+| `yeban_export_diagnostics` | `outDir` | `diagnostics.rs:69–135`：`create_dir_all` 后传给 `export_diagnostics(&out_dir, inputs)` 真写盘 |
+| `yeban_midi_input_probe` | `port`/`seconds` | `midi_input.rs:128–180` 纯解析（空端口/区间/类型三分支，src 单测钉住）；设备层留给 `plan`（无硬件不可判，已在模块头登记） |
+| `yeban_list_proposals` | `kind` | `mod.rs:3212–3232`：`filter(|r| wanted.is_none_or(|k| r.kind == k))` 真过滤 |
+| `yeban_launch_scene` | `sceneId` | `mod.rs:3144` → `scene_launch::resolve` |
+| `yeban_query_engine_state` | `trackId`/`since` | `mod.rs:3110–3123`：`since` 落 `ReadingsCursor`，`trackId` 落 `snapshot(...)` |
+
+### 结论（⛔ 夸大）
+
+- **0 个新的 velocity 类缺陷**：上表每个键都有"改变输出/状态"的消费点；sfz 那一批是
+  **本轮唯一**一处"解析＋回显但没进消费者"的键。
+- ⛔ **不能证明**：上表是**源码追读**，不是运行时判据；`midi_input` 的设备层在 CI
+  （无 MIDI 硬件）上**仍不可判**（它的可判部分是 `parse_arguments` 与 `probe_payload`，
+  这两处已有 src 单测）；`import_audio` 的 `license`/`name` 是"落进资产元数据"，
+  证据取自上一轮逐行读，本轮未重跑判据。
+- 因此"扩展工具输入面无空操作"这条**只在本表列出的键集与行号上成立**；日后新增键
+  仍需按同一方法过一遍（`tools.rs` 的 `param` 是关键集的唯一权威）。
