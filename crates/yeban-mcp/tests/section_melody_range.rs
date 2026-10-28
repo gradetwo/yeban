@@ -259,6 +259,10 @@ fn a_narrow_register_moves_only_the_melody_pitches() {
                 "窗口 {low}..={high}：旋律音符 `{id}` 的音高 {shift_pitch} 必须落在窗口内"
             );
             assert!(
+                LADDER.contains(velocity),
+                "窗口 {low}..={high}：缺省跑的旋律音符 `{id}` 力度 {velocity} 本就该取阶梯两档 {LADDER:?}"
+            );
+            assert!(
                 LADDER.contains(&shift_velocity),
                 "窗口 {low}..={high}：旋律音符 `{id}` 的力度 {shift_velocity} 必须仍取阶梯两档 {LADDER:?}"
             );
