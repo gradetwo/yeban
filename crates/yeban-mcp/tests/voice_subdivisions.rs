@@ -60,6 +60,7 @@ fn plan_try(
             harmony_max_voice_jump: None,
             swing_permille: None,
             drum_backbeat: None,
+            drum_style: None,
         },
     )
 }

@@ -132,6 +132,7 @@ fn try_plan(given: Given<'_>) -> Result<SectionPlan, BuildFault> {
             harmony_max_voice_jump: None,
             swing_permille: None,
             drum_backbeat: given.backbeat,
+            drum_style: None,
         },
     )
 }
