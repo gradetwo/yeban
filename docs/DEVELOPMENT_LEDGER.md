@@ -14199,3 +14199,39 @@ macOS 侧读数：`test result:` **262** 行／passed **4,960**／`FAILED` **0**
 （`plan`／`lockfile`／`deny`／`checks` 四条真跑；`macos`／`rust (矩阵)`／`rust (workspace 全量)`／
 `windows` 四条 **skipped 且 steps=0**）⇒ 本节的结论**不是**判据，⛔ 当代码判决用；
 它在此的作用只是"下一会话不必重做这轮追读"。
+
+## 2026-10-28 晚（第二批）：复用登记项的**预览分叉**修复 —— `path` 与样本读数同源
+
+### 起因
+
+上一批登记了留条：同一份内容复制到别处再 `dryRun`，预览的 `path` 报**本次请求路径**、
+真做回报**首次登记路径**。复查发现分叉面比留条写的更大：旧 `plan_load_sfz` 在复用分支
+仍按本次路径**重新 `load`** ⇒ `path`、样本文件读数（`sampleSources` / `sampleFailures` /
+`sampleFramesLoaded` / `sampleSource`）都可能与登记记录不同（同内容的副本旁边可能放着
+不同的样本文件），而 `apply_load_sfz` 真做时一律回报**登记记录**。
+
+### 改法（`crates/yeban-mcp/src/domain/mod.rs` 的 `plan_load_sfz`）
+
+复用分支**不再重新装载**：直接克隆已登记的 `SfzLoad`，只把 `reused` 置真（与
+`apply_load_sfz` 对响应的改动一致）。内容寻址保证 `id` 相同 ⇒ 预览与真做同一份记录。
+首次装载分支不变（`sfz::load(&path, sample_hz, sfz_next_id(), false)`）。
+
+**语义不变的部分**（⛔ 顺手改）：登记项仍**不被覆盖**（首次登记的路径与 `sampleHz` 仍是
+登记的真相）；"同内容不同路径"该复用还是更新仍是产品决定，本批不碰。
+
+### 判据（`crates/yeban-mcp/tests/sfz_tools.rs` 判据 a'''''）
+
+`a_reused_instrument_previews_exactly_what_the_real_call_reports`：
+`orig.sfz` 首次装载（44_100）→ 字节相同副本 `copy.sfz` ①真做（应复用、报首次路径）
+②`dryRun`（请求 22_050、路径为副本）⇒ 预览与本批真做**逐键**相等（18 个同名键），
+并点名 `path` 必须等于首次登记路径、`wouldRegister.reused == true`。⛔ 只断言 `path`。
+
+### 文档同步
+
+`tools.rs` 与 schema 的 `path` 描述补上"复用 ⇒ 回报登记时的路径"；`sampleHz` 描述不变
+（上一批已写该口径）。
+
+### 判决
+
+（待读回 `fc610604` 的 run；本批碰 `schemas/**` ⇒ 矩阵判定 `workspace_wide: true` ⇒
+全量腿**必真跑**。）
