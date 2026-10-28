@@ -26,3 +26,28 @@ Architecture Decision Record。当 Normative 规范之间冲突、或规范对�
 | [ADR-0010](./ADR-0010-clip-loop-semantics.md) | 片段循环的坐标语义（`start_tick`/`end_tick` 是**摆放相对**坐标，按区间长度平铺） | **Accepted**（集成者，负责人 2026-10-15 授权"择优自行裁决"）|
 | [ADR-0011](./ADR-0011-render-depends-on-engine-for-the-sound-source.md) | 让 `yeban-render` 依赖 `yeban-engine`（`default-features = false`），把引擎音源接进 MCP 导出 | **Accepted**（负责人 2026-10-21 逐字裁决「统一」）|
 | [ADR-0012](./ADR-0012-pitch-bend-curve-contract.md) | 弯音曲线（`MidiNote::pitch_bend_curve`）的坐标、形状与校验（音符局部 tick、`cents` ±1200、严格升序、首点必须为 0、线性插值＋末值保持） | Proposed（待人类裁决）|
+| [ADR-0013](./ADR-0013-midi-track-name-fallback-order.md) | 标准 MIDI 文件（SMF）多轨导入音轨名回退机制与损失读数 | **Approved** (经 2026-10-25 常设授权裁决并完全落地 D1/D2/D3) |
+| [ADR-0014](./ADR-0014-midi-pitch-bend-attribution-and-export.md) | MIDI 导入与导出弯音归属与线格式转换 | Proposed (依 Logic Pro 与 MIDI 1.0 通行规范裁决) |
+| [ADR-0015](./ADR-0015-midi-cc-to-automation-mapping.md) | MIDI CC 到轨道自动化泳道映射（Volume CC 7 与 Pan CC 10） | Proposed (依 Logic Pro 与 MIDI 1.0 通行规范裁决) |
+| [ADR-0016](./ADR-0016-propose-section-theory-generation.md) | `yeban_propose_section` 理论和声骨架生成支持（`materialSource: 'theory'`） | **Accepted（集成者依 2026-10-25 人类常设授权裁定）** |
+| [ADR-0017](./ADR-0017-propose-section-melody-and-drums.md) | `yeban_propose_section` 旋律与鼓组理论生成扩展（`includeMelody` 与 `includeDrums`） | **Accepted（集成者依 2026-10-25 人类常设授权裁定）** |
+| [ADR-0018](./ADR-0018-create-clip-with-placement.md) | `yeban_edit_notes` 支持在 `create: true` 时同时指定 `placement`（消除 WALL ①） | **Accepted（集成者依 2026-10-25 人类常设授权裁定）** |
+| [ADR-0019](./ADR-0019-per-point-pitch-bend-editing.md) | `yeban_edit_notes` 支持逐点编辑弯音曲线（`setPitchBendPoint`，消除 WALL ⑤） | **Accepted（集成者依 2026-10-25 人类常设授权裁定）** |
+| [ADR-0020](./ADR-0020-per-track-contribution-readout.md) | `yeban_render_master` 报逐轨贡献（`contributions`，消除 WALL ⑦） | **Accepted（集成者依 2026-10-25 人类常设授权裁定）** |
+| [ADR-0021](./ADR-0021-tempo-map-playback.md) | 母带渲染真的读 `tempo_map`（分段常速回放） | **Accepted（集成者依 2026-10-25 人类常设授权裁定）** |
+| [ADR-0022](./ADR-0022-offline-per-track-arming-and-silent-source-warning.md) | 离线渲染逐轨武装；母带回执点名静音源 | **Accepted（集成者依 2026-10-25 人类常设授权裁定）** |
+| [ADR-0023](./ADR-0023-remove-track-routing-cleanup.md) | 取走音轨连带清理路由图（`removeTrack` 的孤儿节点与悬空边） | **Accepted（集成者依 2026-10-25 人类常设授权裁定）** |
+| [ADR-0024](./ADR-0024-sfz-load-sample-warnings.md) | SFZ 装载对缺样本发非阻塞警告；采样外取流程入文档 | **Accepted（集成者依 2026-10-25 人类常设授权裁定）** |
+| [ADR-0025](./ADR-0025-edit-notes-batch-projection.md) | `yeban_edit_notes` 的批内投影：路由建边可与建节点同一批（消除 G7） | **Accepted（集成者依 2026-10-25 人类常设授权裁定）** |
+| [ADR-0026](./ADR-0026-generation-gain-staging.md) | 生成声部出厂即分级；种子轨电平 −12 dBFS | **Accepted（集成者依 2026-10-25 人类常设授权裁定）** |
+| [ADR-0027](./ADR-0027-timbre-param-consumption-honesty.md) | 音色参数：撤掉 `deviceChainDsp` 的谎，注册口径改为"引擎是否真的消费" | **Accepted（集成者依 2026-10-25 人类常设授权裁定）** |
+| [ADR-0028](./ADR-0028-section-voicing-register-and-drum-density.md) | 理论段 3 声部低音区修正；`drumDensity` 档位（normal / sparse） | **Accepted（集成者依 2026-10-25 人类常设授权裁定）** |
+| [ADR-0029](./ADR-0029-propose-auto-merge.md) | 提案类工具新增 opt-in `autoMerge`：一次调用完成「提案 + 合并」 | **Accepted（集成者依 2026-10-25 人类常设授权裁定）** |
+| [ADR-0030](./ADR-0030-stem-export-one-call-per-track-bounce.md) | 分轨导出（stem export）：一次调用完成逐轨 32-bit Float 落盘 | **Accepted（集成者依 2026-10-25 人类常设授权裁定）** |
+| [ADR-0031](./ADR-0031-device-chain-ops-stay-in-edit-notes.md) | 设备链 CRUD **不**另开工具：继续走 `yeban_edit_notes` 的 op 词汇；摩擦由 `knownParams` 补偿 | **Accepted（集成者依 2026-10-25 人类常设授权裁定）** |
+| [ADR-0032](./ADR-0032-receipt-self-describes-commit-model.md) | 每条成功回执自述 `commitModel`：把「这次要不要再合并」变成读数而不是记忆 | **Accepted（集成者依 2026-10-25 人类常设授权裁定）** |
+| [ADR-0033](./ADR-0033-section-voice-subdivision.md) | 理论段和声声部的节奏切分（`voiceSubdivision`） | **Accepted（集成者依 2026-10-25 人类常设授权裁定）** |
+| [ADR-0034](./ADR-0034-transpose-clip-note-op.md) | 片段级移调（`transposeClip`）：转调走已有 `MoveNote`，⛔ 不新增 op 变体 | **Accepted（集成者依 2026-10-25 人类常设授权裁定；D4 三条仍为待人类裁决的规范缺口）** |
+| [ADR-0035](./ADR-0035-per-voice-subdivision.md) | 逐声部节奏粒度（`voiceSubdivisions`）：均匀切分按**声部名**给值 | **Accepted（集成者依 2026-10-25 人类常设授权裁定）** |
+| [ADR-0036](./ADR-0036-onsets-per-bar-derived-from-meter.md) | 鼓与旋律的每小节音头数：默认从**拍号**导出，并开放 `onsetsPerBar` | **Accepted（集成者依 2026-10-25 人类常设授权裁定）** |
+| [ADR-0037](./ADR-0037-generation-velocity-range.md) | 生成内容的力度：把既有的两级映射开放为 `velocityMin` / `velocityMax`（缺省逐字节 = 96 / 112） | **Accepted（集成者依 2026-10-25 人类常设授权裁定）** |
