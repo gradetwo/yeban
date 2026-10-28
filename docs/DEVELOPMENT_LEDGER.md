@@ -13667,3 +13667,61 @@ MCP 侧只被写死成常量（`section_build.rs:1828` 的 `max_leap: MELODY_MAX
 ⚠ 递归口径：**"记录判决"本身也是纯文档提交**，它必然再产生一个同形的 `checks` run ⇒ 本文件**不再**为
 "把这次判决写进来"再开一轮入账提交（否则永不收敛）；复核本段的真伪只需看 `a635656f` **之后**那次 run 的
 `checks` 结论（按规则 28，本机对应命令是 `bash scripts/gates/run-gates.sh light`）。
+
+## 2026-10-28 13:38：MCP 侧流派矩阵判据（`tests/section_genre_matrix.rs`）—— 覆盖补强，⛔ 缺口
+
+### 这条判据到底补了什么（先纠正我自己的初版说法）
+
+初版文件头写"MCP 侧的判据只有少数手挑夹具（`synthwave` / `waltz` …）"——**错**（提交 `e6303d0d` 已改）。
+现读的存量全流派遍历有**三处**，但都覆盖不到本判据问的那一面：
+
+1. `crates/yeban-mcp/tests/onsets_per_bar.rs` 的 `every_non_common_time_genre_generates_at_its_own_grid`：
+   `GenreLibrary::all()` 全库遍历，但**跳过 4/4**；断言的是"缺省网格 ≡ 该流派自己的 `cells_per_bar`"
+   ＋"旧常量 16 在该流派上必须响亮失败"；防空靠 `!checked.is_empty()`。
+2. `crates/yeban-mcp/verify/section_pure.rs` 的 `every_theory_genre_maps_to_a_voice_count_from_its_own_chords`：
+   全库比 `preset_parts().len()`，但**不规划**，且它是本机脚手架（不进本 crate 的 `cargo test` test 腿）。
+3. theory 侧 `tests/properties.rs` 的三处全流派矩阵：在**生成器**层面，⛔ 穿过 MCP 规划层。
+
+本判据的差额：**全库（含 4/4）× 走 `plan_with_options` 完整规划 × 和声声部 / `Drums` / `Melody` 三类生成物都非空**。
+
+### 口径（关键的一面）
+
+所有可选键缺省：`scale`／`progression` 都给 `None` ⇒ 每流派读**自己登记**的 `primary_scale` /
+`progression_at(0)`（`section_build.rs` 的 `theory_inputs`）⇒ 它问的是"**登记了却生成不出来**"这类自相矛盾。
+单位 = **流派条目**；读数由判据自己数（`all().len() == len()`），⛔ 抄 182。
+防空：另加下界 `>= 100`（R93：上面那条 `assert_eq` 在**双零**时同样通过；同 crate 先例 `names.len() >= 32`）。
+
+### 判决链（两次都直接推 `main` ⇒ 承判腿 = `rust (yeban-mcp)` ＋ 两条跨平台腿）
+
+| 提交 | run | 结论 | `rust (yeban-mcp)` | macos / windows | `rust (workspace 全量)` |
+|---|---|---|---|---|---|
+| `c24b5ad3`（判据落地） | `40690786597` | **success** | 12:48:06→13:02:35 = **869 s**；`Running` **121** 行／`test result:` **121** 行；passed **2,354**／failed **0**；本判据 `... ok` **2** 次 | **1,883 s** / **2,184 s**，各 18 steps、本判据各 **1** 次 `... ok`、`FAILED` **0** | **skipped／steps=0** |
+| `e6303d0d`（注释更正，含 `6c272ef3` 的下界） | `40693394185` | **success** | 13:06:34→13:21:38 = **904 s**；读数与上行**逐项相同**（121 / 2,354 / 0；`... ok` 2 次） | **1,900 s** / **1,276 s**，各 18 steps、各 **1** 次 `... ok`、`FAILED` **0** | **skipped／steps=0** |
+
+`checks`／`deny`／`lockfile`／`plan` 在两个 run 里全 **success**（`checks` **15 steps**）。
+
+⚠ 两条口径：
+
+1. **`workspace 全量` 的 skipped 是 planner 的预期形态**（本批只碰 `crates/yeban-mcp/tests/**`），
+   ⛔ 读成空绿 —— 承判腿与两条跨平台腿**真跑**（耗时非 0、日志有 `test result:` 行、判据名逐名在场）。
+   ⚠ 但**本批没有全量腿判决**，如实登记：这与 `G8m`／`G8n` 的"四件齐"**不是同一种证据强度**。
+2. 增量交叉核：`G8n` 线判决是 **119 / 2,352**，本批 **121 / 2,354** ⇒ **＋2 行 / ＋2 passed**
+   ＝ 新二进制在**两轮** `cargo test` 里各跑 **1** 条（日志里 `section_genre_matrix.rs` 出现 **2** 次、
+   判据 `... ok` **2** 次）。
+
+### 读数，以及它能证明／⛔ 不能证明什么
+
+- **能证明**：现读 **182 条登记流派全部能用各自默认值规划成功**，且三类生成物都有音符 ⇒
+  `G8d` 那类"登记了却生成不出来"在 MCP 层**现读没有残余**（本批最重要的读数）。
+- **⛔ 不能证明**"这个缺陷类不可能再犯"：本机**做不了变异注入**（`yeban-mcp` 拖 `yeban-render` ⇒ 重依赖 ⇒
+  按 AGENTS §5 只交 CI）。敏感性靠**同一代码路径**的论证：旧常量 16 若回潮，3/4 那类流派会落进
+  `ProgressionTooDense` ⇒ `failures` 非空 ⇒ 红。⚠ 这是**论证**，⛔ 实测。
+- 本机只跑了 `cargo fmt --all --check`（rc=0）＋ `bash scripts/gates/run-gates.sh light`（rc=0，规则 28 的入口）。
+
+### 本轮新增的规则
+
+29. ⭐ **"这是第一个全库遍历"这种话要先 grep 存量判据** —— 我在新判据的文件头写了"MCP 侧只有手挑夹具"，
+    实际同 crate 的 `onsets_per_bar.rs` 早就全库遍历（只是跳过 4/4）、`verify/section_pure.rs` 也全库比声部数。
+    判据本身没错（它的差额真实存在：含 4/4 ＋ 三类生成物非空），**错的是它自我推销的那句由来**。
+    口径：写"某覆盖不存在"之前先 grep 一遍 `GenreLibrary::all()` 与 `::ALL` 的存量用法，把差额写成**逐条对照**，
+    ⛔ 用"只有…"这种绝对句。同族偏差：`AGENTS.md` §6.3 第 3 条（用词面判断交付）。

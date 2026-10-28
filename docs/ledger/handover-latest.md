@@ -1645,6 +1645,20 @@ python3 scripts/guards/policy_check.py && bash scripts/gates/run-gates.sh light
 > ⇒ **`GAPS.md` 的 13 条"消除"在代码里都有交付物，零新缺口**；本位面的自主活**确实是零**，
 > 余下全是待裁（`HD-67`/`HD-68`/`HD-69`/`HD-70`、旋律动机、`ADR-0042`、`ADR-0034` D4 三条）。
 > ⛔ 把"交付物在场"读成"判据已复验" —— 每条判据的 CI 判决各在自己的节里。
+>
+> ⭐ **13:38 追加（覆盖补强，⛔ 缺口；tip 现读 `e6303d0d`）**：新增 MCP 侧**全库流派矩阵**判据
+> `crates/yeban-mcp/tests/section_genre_matrix.rs`（`every_registered_genre_plans_with_its_own_defaults`）：
+> 全库（含 4/4）× 所有可选键缺省（读流派**自己登记**的 `primary_scale`／`progression_at(0)`）×
+> 和声声部 / `Drums` / `Melody` 三件生成物都非空，＋ R93 下界（`>= 100`，防空判据）。
+> 判决：`c24b5ad3` → run `40690786597` = **success**（`rust (yeban-mcp)` **869 s**／`Running` **121** 行／
+> `test result:` **121** 行／passed **2,354**／failed **0**；`macos` **1,883 s**、`windows` **2,184 s** 各含本判据
+> `... ok` **1** 次、`FAILED` 0）、tip `e6303d0d` → run **`40693394185` = success**（**904 s**／同读数
+> 121 / 2,354 / 0；macos **1,900 s**、windows **1,276 s**）。⚠ 两个 run 的 `rust (workspace 全量)` 都是 planner
+> 的 **skipped／steps=0** ⇒ **本批没有全量腿判决**，承判腿是 `rust (yeban-mcp)` ＋ 两条跨平台腿（⛔ 读成空绿）。
+> ⭐ 读数：**182 条登记流派全部规划成功、三件生成物都有音符** ⇒ `G8d`（"登记了却生成不出来"）在 MCP 层
+> **现读无残余**；⚠ 但⛔ 说"不可能再犯"——本机无法变异注入（重依赖 ⇒ 只交 CI），敏感性是同代码路径的论证。
+> ⭐ 自主可做的**创作缺口**活**仍为零**（本批是覆盖补强，不改变那条结论）；台账新增规则 29（"第一个全库遍历"要先 grep 存量）。
+> 台账见「2026-10-28 13:38」一节。
 
 ### ⭐ 磁盘：仓库**外**大头的现读清单（2026-10-28 06:38，`du -sh` 实测，⛔ 一个字节都没删）
 
