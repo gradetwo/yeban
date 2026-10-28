@@ -131,3 +131,64 @@ fn every_registered_genre_plans_with_its_own_defaults() {
         empty_parts
     );
 }
+
+/// ⭐ 全库**确定性**判据（2026-10-28 补覆盖）：同一份入参的两次规划必须**逐字节相同**。
+///
+/// 差额（先对照存量，规则 29）：`tests/tools_e2e.rs` 的
+/// `propose_section_creates_a_real_section_and_is_deterministic` 只钉了**一个夹具**
+/// （`synthwave` / 8 小节 / **`project` 材料路径**），而 theory 生成路径（鼓 ＋ 旋律 ＋ 声部连接）
+/// 的全库确定性**没有判据**。单位 = **流派条目**；两次规划之间不碰任何全局状态。
+///
+/// ⛔ 与"跨进程/跨平台确定性"混为一谈：本判据在**同一个进程内**连调两次，
+/// 能抓的是每次调用自己引入的非常量（时间、`HashMap` 迭代序、全局计数器、随机源）；
+/// 跨平台那条靠 CI 的两条跨平台腿各自跑同一份判据（名字在日志里逐名可见）。
+#[test]
+fn every_registered_genre_plans_identically_twice() {
+    let project = filled_project();
+    let genres = GenreLibrary::all();
+    assert!(
+        genres.len() >= 100,
+        "扫描面异常：登记流派只剩 {} 条",
+        genres.len()
+    );
+
+    let mut unstable: Vec<String> = Vec::new();
+    let mut compared = 0usize;
+    for rule in genres {
+        let first = plan_with_options(&project, "Chorus", rule.id, BARS, None, options());
+        let second = plan_with_options(&project, "Chorus", rule.id, BARS, None, options());
+        match (first, second) {
+            (Ok(first), Ok(second)) => {
+                compared += 1;
+                if first != second {
+                    unstable.push(rule.id.to_owned());
+                }
+            }
+            (Err(first), Err(second)) => {
+                // 失败也必须是同一份报文（`ADR-0036` 起各票都钉"原样转发"）。
+                compared += 1;
+                if first.domain_code() != second.domain_code() {
+                    unstable.push(format!("{}（失败码漂移）", rule.id));
+                }
+            }
+            (first, second) => unstable.push(format!(
+                "{}（一次成功一次失败: {:?} / {:?}）",
+                rule.id,
+                first.err(),
+                second.err()
+            )),
+        }
+    }
+
+    assert!(
+        unstable.is_empty(),
+        "同一份入参的两次规划必须逐字节相同，漂移 {} 条: {:?}",
+        unstable.len(),
+        unstable
+    );
+    // R93：以上在"流派表为空/全部一次都没比"时同样通过 ⇒ 另钉比较过的条目数。
+    assert!(
+        compared >= 100,
+        "真正比过的流派只有 {compared} 条 —— 扫描面异常"
+    );
+}
