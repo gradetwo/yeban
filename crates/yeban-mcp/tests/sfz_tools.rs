@@ -7,6 +7,8 @@
 //! | a | 新工具经 MCP 调用**真的产出结果**：WAV 落盘、字节数/摘要可判定、**非静音**（回读并算峰值/能量） | `render_sfz_wav_writes_a_non_silent_wav_through_a_real_mcp_call` |
 //! | a' | SFZ 工具**返回 region 数与来源**，且区域数与文件内容一致（反向对照：单区域文件 ⇒ 1） | `load_sfz_reports_the_region_count_and_the_honest_source` |
 //! | a'' | `sampleHz` 入参**真的被读**：非缺省值进报告、非正数被领域层拒、非数字被注册表层拒（"必须是数字"支经 MCP 不可达，由 src 单元测试钉住） | `the_sample_hz_argument_is_honoured_and_bad_values_are_rejected` |
+//! | a''' | `velocity` 入参**真的到达渲染器**（此前是解析＋回显的空操作）：覆盖力度 ⇒ `regionsUsed` 换区间、峰值按 `(v/127)^2` 缩放；不给 ⇒ 回显 null、用工程音符自己的力度 | `the_render_velocity_override_selects_regions_and_scales_the_peak` |
+//! | a'''' | `sampleRate` / `toneHz` 到达渲染器（跨工具同名键碰撞曾让它们"看起来有覆盖"）：回读 RIFF 头速率 ＋ 过零估计主频 | `the_render_sample_rate_and_tone_are_honoured` |
 //! | b | 非法入参 ⇒ **结构化**错误（既有错误码）、⛔ 不 panic | `bad_arguments_are_structured_errors_and_never_panic` |
 //! | c | 不存在/写错的工具名 ⇒ 被拒（`yeban_nope` 负对照） | `an_unknown_tool_name_is_rejected` |
 //! | d | `dryRun` 一位都不改；预览与真做的实测数字一致 | `dry_run_writes_nothing_and_matches_the_real_call` |
@@ -523,6 +525,242 @@ fn the_sample_hz_argument_is_honoured_and_bad_values_are_rejected() {
     );
     assert_eq!(status, 400, "非法类型必须是 JSON-RPC 层拒绝");
     assert_eq!(code, Some(-32602), "非法类型 ⇒ -32602 (invalid params)");
+}
+
+// ---------------------------------------------------------------------------
+// 判据 a'''：`velocity` 真的到达渲染器（区域选择 × 增益）
+// ---------------------------------------------------------------------------
+
+/// `velocity` 曾是**文档化的空操作**：`validate` 解析它、响应回显它，但
+/// `collect_notes` 从不读 ⇒ 音频逐字节不变（R142"静默永不生效"）。这个洞之所以活得久，
+/// 是因为缺省值 100 与 `filled_project()` 里每个音符的力度（`music::DEFAULT_VELOCITY`）
+/// 恰好相同 ⇒ 缺省路径看起来"一致"，而显式给值同样不起作用。
+///
+/// 判法用**两个力度区间不重叠**的区域，让"覆盖真的生效"在 `regionsUsed` 上直接可见
+/// （⛔ 只靠音量：增益口径的细节容易放过），再用独立的 WAV 回读比较峰值：
+/// - `velocity: 1` ⇒ 只落 `lovel=0 hivel=30` 的区域；
+/// - `velocity: 127` ⇒ 只落 `lovel=31 hivel=127` 的区域；
+/// - 不给 ⇒ 回显 `null`，按工程音符自己的力度（100）落高区间。
+///
+/// ⚠ 两个区域的样本都不存在 ⇒ 都回退内存正弦（同一份 440 Hz）⇒ 峰值差**只**来自力度
+/// 增益（`amp_veltrack` 缺省 `(v/127)^2`）。
+#[test]
+fn the_render_velocity_override_selects_regions_and_scales_the_peak() {
+    let scratch = Scratch::new("velocity");
+    let sfz = scratch.write_sfz(
+        "two-bands.sfz",
+        "<region> sample=low.wav key=60 lovel=0 hivel=30\n\
+         <region> sample=high.wav key=60 lovel=31 hivel=127\n",
+    );
+    let mut dispatcher = dispatcher_with_project(filled_project());
+    let loaded = call_tool(
+        &mut dispatcher,
+        "yeban_load_sfz",
+        serde_json::json!({ "path": sfz.display().to_string() }),
+    );
+    assert_eq!(loaded["data"]["regions"], 2, "夹具必须是两条区域: {loaded}");
+    let instrument_id = loaded["data"]["instrumentId"]
+        .as_u64()
+        .expect("instrumentId");
+
+    // 渲染一次并**独立**回读 WAV 的峰值（⛔ 不用响应里的 `peak` 自证）。
+    let render = |dispatcher: &mut Dispatcher, tag: &str, extra: Value| -> (Value, u32) {
+        let out = scratch.join(&format!("{tag}.wav"));
+        let mut arguments = serde_json::json!({
+            "instrumentId": instrument_id,
+            "frames": 24_000,
+            "note": 60,
+            "path": out.display().to_string(),
+        });
+        let object = arguments.as_object_mut().expect("实参必须是对象");
+        for (key, value) in extra.as_object().expect("extra 必须是对象") {
+            object.insert(key.clone(), value.clone());
+        }
+        let response = call_tool(dispatcher, "yeban_render_sfz_wav", arguments);
+        assert_eq!(response["status"], "success", "[{tag}] {response}");
+        let bytes = std::fs::read(&out).expect("读回渲染 WAV");
+        let (_, _, _, samples) = wav_payload_i24(&bytes);
+        let peak = samples
+            .iter()
+            .map(|sample| sample.unsigned_abs())
+            .max()
+            .unwrap_or(0);
+        (response, peak)
+    };
+
+    let (low, low_peak) = render(
+        &mut dispatcher,
+        "vel-1",
+        serde_json::json!({ "velocity": 1 }),
+    );
+    assert_eq!(low["data"]["request"]["velocity"], 1, "{low}");
+    assert_eq!(
+        low["data"]["regionsUsed"],
+        serde_json::json!([0]),
+        "力度 1 必须落在低区间区域 0: {low}"
+    );
+
+    let (high, high_peak) = render(
+        &mut dispatcher,
+        "vel-127",
+        serde_json::json!({ "velocity": 127 }),
+    );
+    assert_eq!(high["data"]["request"]["velocity"], 127, "{high}");
+    assert_eq!(
+        high["data"]["regionsUsed"],
+        serde_json::json!([1]),
+        "力度 127 必须落在高区间区域 1: {high}"
+    );
+
+    // 正向面积差：(1/127)^2 ≈ 1/16129，取 8× 作保守下界。
+    assert!(
+        low_peak > 0,
+        "力度 1 仍必须出声（⛔ 0 会让比例判据变成假绿）: {low}"
+    );
+    assert!(
+        high_peak > low_peak.saturating_mul(8),
+        "力度覆盖必须真的改变增益: peak(127)={high_peak} vs peak(1)={low_peak}"
+    );
+
+    let (by_note, by_note_peak) = render(&mut dispatcher, "default", serde_json::json!({}));
+    assert!(
+        by_note["data"]["request"]["velocity"].is_null(),
+        "不给力度 ⇒ 回显 null（⛔ 回显一个没生效的数字）: {by_note}"
+    );
+    assert_eq!(
+        by_note["data"]["regionsUsed"],
+        serde_json::json!([1]),
+        "工程音符自己的力度是 100 ⇒ 高区间: {by_note}"
+    );
+    assert!(
+        by_note_peak < high_peak && by_note_peak > low_peak.saturating_mul(8),
+        "不给力度必须用工程音符的 100（(100/127)^2 ≈ 0.62）: \
+         peak(缺省)={by_note_peak} peak(127)={high_peak} peak(1)={low_peak}"
+    );
+
+    // 越界 ⇒ 领域层拒绝，文案点名 0..=127。
+    let rejected = call_tool(
+        &mut dispatcher,
+        "yeban_render_sfz_wav",
+        serde_json::json!({
+            "instrumentId": instrument_id,
+            "frames": 480,
+            "velocity": 128,
+            "path": scratch.text("too-loud.wav"),
+        }),
+    );
+    assert_eq!(rejected["status"], "error", "{rejected}");
+    assert_eq!(
+        rejected["error"]["code"], "INVALID_PARAMETER_RANGE",
+        "{rejected}"
+    );
+    let message = rejected["error"]["message"].as_str().expect("message");
+    assert!(
+        message.contains("0..=127") && message.contains("实际收到 128"),
+        "文案必须点名范围与实际取值: {message}"
+    );
+}
+
+/// 从回读的 24-bit 样本里**独立**估计主频（过零计数）。
+///
+/// 取 `|x| ≥ 峰值/4` 的首尾区间（避开起音/释放与静音填充），数符号翻转。
+/// 立体声交织不改变估计值：每个样本重复一次 ⇒ 翻转数不变而时长 ×2。
+fn zero_crossing_hz(samples: &[i32], sample_rate: u32) -> f32 {
+    let peak = samples
+        .iter()
+        .map(|sample| sample.unsigned_abs())
+        .max()
+        .unwrap_or(0);
+    assert!(peak > 0, "全零样本估不出频率");
+    let gate = (peak / 4).max(1);
+    let first = samples
+        .iter()
+        .position(|sample| sample.unsigned_abs() >= gate)
+        .expect("必须有活跃样本");
+    let last = samples
+        .iter()
+        .rposition(|sample| sample.unsigned_abs() >= gate)
+        .expect("必须有活跃样本");
+    assert!(last > first + 1, "活跃区间太短，估不出频率");
+    let mut crossings = 0u32;
+    for pair in samples[first..=last].windows(2) {
+        if (pair[0] >= 0) != (pair[1] >= 0) {
+            crossings += 1;
+        }
+    }
+    let seconds = (last - first) as f32 / sample_rate as f32;
+    crossings as f32 / (2.0 * seconds)
+}
+
+// ---------------------------------------------------------------------------
+// 判据 a''''：`sampleRate` / `toneHz` 真的到达渲染器（输出速率 × 正弦频率）
+// ---------------------------------------------------------------------------
+
+/// 这两个键此前**经 MCP 从未被给过有效值**：`sampleRate` 的 199 处命中全在别的工具
+/// （`yeban_render_master` 等）的调用里，`toneHz` 唯一一处是 `yeban_record_wav` 的
+/// **拒绝**用例（`-5`）⇒ 跨工具的**同名键碰撞**让"零覆盖"看起来有覆盖（规则 32 的
+/// 假阳性一侧）。本判据给它们真实取值，并从 WAV **回读**两个可独立测量的性质：
+///
+/// - `sampleRate: 96000` ⇒ RIFF 头里的速率与响应 `sampleRate` 都是 96 kHz；
+/// - `toneHz: 220`（@96 kHz）与 `toneHz: 440`（@48 kHz）⇒ 过零估计的主频各自对上，
+///   于是"频率真的跟着 `toneHz` 走"且"正弦按输出速率生成"同时成立
+///   （⛔ 只看字节变化：那连增益漂移都会通过）。
+#[test]
+fn the_render_sample_rate_and_tone_are_honoured() {
+    let scratch = Scratch::new("rate-tone");
+    let sfz = scratch.write_sfz("probe.sfz", "<region> sample=only.wav key=60\n");
+    let mut dispatcher = dispatcher_with_project(filled_project());
+    let loaded = call_tool(
+        &mut dispatcher,
+        "yeban_load_sfz",
+        serde_json::json!({ "path": sfz.display().to_string() }),
+    );
+    assert_eq!(loaded["data"]["regions"], 1, "夹具必须是单区域: {loaded}");
+    let instrument_id = loaded["data"]["instrumentId"]
+        .as_u64()
+        .expect("instrumentId");
+
+    // 窗口固定 1 秒（帧数随采样率变），⛔ 用固定帧数让不同采样率覆盖不同的时长。
+    let render = |dispatcher: &mut Dispatcher,
+                  tag: &str,
+                  sample_rate: u32,
+                  tone_hz: u32|
+     -> (Value, u32, f32) {
+        let out = scratch.join(&format!("{tag}.wav"));
+        let response = call_tool(
+            dispatcher,
+            "yeban_render_sfz_wav",
+            serde_json::json!({
+                "instrumentId": instrument_id,
+                "frames": u64::from(sample_rate),
+                "note": 60,
+                "sampleRate": sample_rate,
+                "toneHz": tone_hz,
+                "path": out.display().to_string(),
+            }),
+        );
+        assert_eq!(response["status"], "success", "[{tag}] {response}");
+        let bytes = std::fs::read(&out).expect("读回渲染 WAV");
+        let (_, header_rate, _, samples) = wav_payload_i24(&bytes);
+        let measured = zero_crossing_hz(&samples, header_rate);
+        (response, header_rate, measured)
+    };
+
+    let (at_48, header_48, hz_48) = render(&mut dispatcher, "48k-440", 48_000, 440);
+    assert_eq!(header_48, 48_000, "RIFF 头速率必须是 48k: {at_48}");
+    assert_eq!(at_48["data"]["sampleRate"], 48_000, "{at_48}");
+    assert!(
+        (hz_48 - 440.0).abs() / 440.0 < 0.12,
+        "toneHz 440 ⇒ 实测主频应≈440, 实际 {hz_48}"
+    );
+
+    let (at_96, header_96, hz_96) = render(&mut dispatcher, "96k-220", 96_000, 220);
+    assert_eq!(header_96, 96_000, "RIFF 头速率必须是 96k: {at_96}");
+    assert_eq!(at_96["data"]["sampleRate"], 96_000, "{at_96}");
+    assert!(
+        (hz_96 - 220.0).abs() / 220.0 < 0.12,
+        "toneHz 220 @96k ⇒ 实测主频应≈220, 实际 {hz_96}（⛔ 按 48k 生成会得 440）"
+    );
 }
 
 // ---------------------------------------------------------------------------

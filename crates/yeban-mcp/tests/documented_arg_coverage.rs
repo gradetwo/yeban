@@ -23,17 +23,27 @@
 //! **恰好红 1 个**：`drumDensity`（0 处非缺省）；其余 20 个键各 ≥ 1 ⇒ ⛔ 误伤面。
 //! 现读最小读数 = **1**（`drumDensity` / `drumStyle` / `drumBackbeat` / `beatGrouping` 四个键）。
 //!
-//! ## 扫描面（⛔ 本判据**不**覆盖扩展工具，原因经实测）
+//! ## 扫描面（⛔ 本判据**不**覆盖扩展工具；且扩展侧的词面读数会**假绿**）
 //!
 //! 只扫 `DocumentedToolArguments`（3 个工具 / 21 个键）。`ExtensionToolArguments.$defs`
-//! （15 个工具 / 81 个属性）**没有**纳入：本判据只读 `crates/yeban-mcp/tests/*.rs`，
-//! 而扩展工具的一部分判据写在 **`src` 单元测试**里（实测：`yeban_query_engine_state.since`
-//! 的断言在 `src/domain/engine_state.rs:649`）⇒ 纳入后会得到假红。
-//! 扩展侧的零覆盖结论因此是**一次性手工实测**（2026-10-28：tests ＋ src 全扫 ⇒ 零覆盖 **0**；
-//! 只看 tests ⇒ **2**，即 `since` 与 `yeban_load_sfz.sampleHz`；前者由 src 单元测试覆盖，
-//! 后者由 `tests/sfz_tools.rs::the_sample_hz_argument_is_honoured_and_bad_values_are_rejected`
-//! ＋ `src/domain/sfz.rs::load_arguments_take_a_default_sample_hz_and_reject_bad_values` 补上）。
-//! ⚠ 那段手工读数**不会**随代码演变自动复验（rot 风险如实登记）。
+//! （15 个工具 / 81 个属性）未纳入，两条**实测**理由：
+//!
+//! 1. `src` 单元测试也是判据（`yeban_query_engine_state.since` 的断言在
+//!    `src/domain/engine_state.rs:649`）⇒ 只读 tests 会假红；
+//! 2. 换成 tests ＋ src 全扫更糟：**跨工具同名键碰撞**把别的工具命中算给本工具
+//!    （`yeban_render_sfz_wav.sampleRate` 的 199 处命中全在 `yeban_render_master`
+//!    一族的调用里），**非法值**（拒绝用例）也算命中（`toneHz` 唯一一处是
+//!    `yeban_record_wav` 的 `-5`）⇒ 2026-10-28 的手工全扫给出"零覆盖 0"的**假绿**。
+//!    真相是：`yeban_render_sfz_wav.velocity` 那时**根本没到达渲染器**（解析＋回显的
+//!    空操作，R142），`toneHz` 从未被给过有效值，`sampleHz` 只有输出被断言。
+//!
+//! 三处缺口现由 `tests/sfz_tools.rs` 的语义判据兜住
+//! （`the_sample_hz_argument_is_honoured_and_bad_values_are_rejected` /
+//! `the_render_velocity_override_selects_regions_and_scales_the_peak` /
+//! `the_render_sample_rate_and_tone_are_honoured`）。
+//!
+//! ⚠ 结论：扩展参数轴**不能靠词面扫描**（规则 32 的假阳性一侧）。要机械化必须按
+//! "**哪个调用的**实参"归类（解析调用点），本文件不做 —— 这项 rot 风险如实登记。
 
 use std::fs;
 use std::path::{Path, PathBuf};

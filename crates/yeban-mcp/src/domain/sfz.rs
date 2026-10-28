@@ -32,6 +32,7 @@
 //! yeban_render_sfz_wav
 //!   活跃工程的 MIDI 片段 ⇒ 每个音符 (start_frame, frames, pitch, velocity)
 //!                        [与 render.rs 的连击/微时值格点**同一份**公式]
+//!                        力度可被 `velocity` 实参整段覆盖（不给 ⇒ 逐音符用自己的）
 //!          ⇒ 逐音符: 区域选择 Region::matches_key/matches_velocity
 //!                    播放速率 Region::playback_rate
 //!                    总增益   Region::playback_spec(..).total_gain()
@@ -111,9 +112,6 @@ pub const DEFAULT_SAMPLE_HZ: f32 = 48_000.0;
 
 /// 渲染实参的默认输出采样率（Hz）。
 pub const DEFAULT_SAMPLE_RATE: u32 = 48_000;
-
-/// 渲染实参的默认力度。
-pub const DEFAULT_VELOCITY: u8 = 100;
 
 /// 渲染实参的默认样本频率（Hz）——与 `yeban-app --sfz` 的探测音同一个值。
 pub const DEFAULT_TONE_HZ: f32 = 440.0;
@@ -1173,8 +1171,12 @@ pub struct SfzWavRequest {
     pub frames: u64,
     /// 输出采样率（Hz）。
     pub sample_rate: u32,
-    /// 整段使用的力度（0..=127）。
-    pub velocity: u8,
+    /// 整段统一的力度覆盖（0..=127）；`None` = 每个音符用工程里自己的力度。
+    ///
+    /// ⚠ 2026-10-28 前这里是 `u8`（缺省 100）但**从未到达渲染器**：`collect_notes`
+    /// 不读它，于是响应回显一个数字、音频里却毫无变化（R142"静默永不生效"）。
+    /// 现在它真的覆盖每个音符的力度 ⇒ 区域选择（`matches_velocity`）与增益都随之改变。
+    pub velocity: Option<u8>,
     /// 内存正弦样本的频率（Hz）。
     pub tone_hz: f32,
     /// 只渲染这一个音高；`None` = 渲染活跃工程 MIDI 片段里的全部音符。
@@ -1271,17 +1273,19 @@ pub fn validate(
             })?,
     };
     let velocity = match arguments.get("velocity") {
-        None => DEFAULT_VELOCITY,
-        Some(value) => value
-            .as_u64()
-            .and_then(|velocity| u8::try_from(velocity).ok())
-            .filter(|velocity| *velocity <= 127)
-            .ok_or_else(|| {
-                Fault::domain(
-                    CODE_RANGE,
-                    format!("`velocity` 必须是 0..=127 的整数, 实际收到 {value}"),
-                )
-            })?,
+        None => None,
+        Some(value) => Some(
+            value
+                .as_u64()
+                .and_then(|velocity| u8::try_from(velocity).ok())
+                .filter(|velocity| *velocity <= 127)
+                .ok_or_else(|| {
+                    Fault::domain(
+                        CODE_RANGE,
+                        format!("`velocity` 必须是 0..=127 的整数, 实际收到 {value}"),
+                    )
+                })?,
+        ),
     };
     let tone_hz = match arguments.get("toneHz") {
         None => DEFAULT_TONE_HZ,
@@ -1551,6 +1555,8 @@ pub struct SfzNote {
 /// - 连击按整数除法等分成 `ratchet` 个脉冲、余数不补（与实时引擎同一裁决）；
 /// - 微时值偏移按 `render_math::note_frame_span` 换算；
 /// - `only_note` 给了就只收那一个音高；
+/// - `velocity` 给了就**覆盖每个音符的力度**（⛔ 默认值：不给 = 每个音符自己的力度），
+///   于是区域选择与增益都按这个力度算 —— 这是 `yeban_render_sfz_wav.velocity` 的消费点；
 /// - 被曲目 mute / solo 门控掉的音轨 ⇒ 增益 0（它**仍**在排程里，读数因此看得见）。
 ///
 /// 返回 `(音符列表, 被概率判为不触发的音符数)`。
@@ -1559,6 +1565,7 @@ pub fn collect_notes(
     project: &YebanProjectV1,
     sample_rate: u32,
     only_note: Option<u8>,
+    velocity: Option<u8>,
 ) -> (Vec<SfzNote>, u64) {
     let mut notes: Vec<SfzNote> = Vec::new();
     let mut silenced = 0u64;
@@ -1620,7 +1627,7 @@ pub fn collect_notes(
                         start_frame,
                         frames: end_frame.saturating_sub(start_frame).max(1),
                         pitch: note.pitch,
-                        velocity: note.velocity,
+                        velocity: velocity.unwrap_or(note.velocity),
                         gain_l,
                         gain_r,
                     });

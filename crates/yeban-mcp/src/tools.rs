@@ -1465,7 +1465,7 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
                 "velocity",
                 "integer",
                 false,
-                "整段使用的力度 (0..=127); 缺省 100",
+                "整段统一的力度覆盖 (0..=127): 给了 ⇒ 每个音符改用这个力度（区域选择 matches_velocity 与增益都随之改变）; 不给 ⇒ 用工程里每个音符自己的力度",
             ),
             param(
                 "frames",

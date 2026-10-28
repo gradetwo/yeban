@@ -3376,7 +3376,8 @@ fn plan_render_sfz_wav(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> 
     })?;
     // 输出路径的两条安全护栏与 `yeban_render_master` **同一条**（不许覆盖工程或锁文件）。
     render::guard_output_path(&request.path, project_path)?;
-    let (notes, notes_silenced) = sfz::collect_notes(project, request.sample_rate, request.note);
+    let (notes, notes_silenced) =
+        sfz::collect_notes(project, request.sample_rate, request.note, request.velocity);
     // ⚠ `sample=` 的路径语义：相对路径按 SFZ 惯例**相对 SFZ 文件所在目录**解析
     // （`resolve_sample_path`），因此这里把装载时的路径带下去。
     let sfz_path = instrument.path.clone();
