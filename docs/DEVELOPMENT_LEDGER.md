@@ -13941,3 +13941,22 @@ v4 的严格规则在**现存**源码上报 **7** 个函数，逐例读后**全�
     `grep -rn '<该键的非缺省取值字面量>' crates/yeban-mcp/tests/`（例：`"sparse"`）＋ 数
     `drum_density: Some(` 的出现次数；两者皆 0 ⇒ **零覆盖**，⛔ 用同族的其它文件名代替。
     同族偏差：规则 29（"第一个全库遍历"要先 grep 存量）—— 那一次错在夸大覆盖，这次错在**没看见空缺**。
+
+### 规则 32 的处方修正（本机 16:03 实测，⛔ 让一条会被自己证伪的口令留在台账里）
+
+初版处方（"数 `'<key>: Some('`"）**是错的**：同目录的判据大多通过 `Given` 建造器给值，构造点写的是
+`swing_permille: given.swing_permille` ⇒ `Some(` 这个字面量在**有覆盖的键上同样是 0**（规则 30 的同一种粗度：
+针只证明词出现过，⛔ 证明语义）。实测（`crates/yeban-mcp/tests/*.rs`，格式 = 该键出现次数 / 其中 `: None` 的次数）：
+
+| 键 | 出现 / None | 键 | 出现 / None |
+|---|---|---|---|
+| `drum_density` | 15 / 14（唯一非 None 是本批新文件里的变量） | `voice_subdivision` | 17 / 12 |
+| `onsets_per_bar` | 19 / 15 | `swing_permille` | 19 / 15 |
+| `voice_subdivisions` | 17 / 14 | `drum_style` / `drum_backbeat` / `beat_grouping` | 各 15 / 14 |
+| `velocity_min`/`velocity_max`/`melody_lower`/`melody_upper`/`melody_max_leap`/`harmony_max_voice_jump`/`melody_seed` | 各 17 / 15 | | |
+
+⇒ 可用的代理量是"**`None` 之外的出现**"：`grep -rh '<key>:' crates/yeban-mcp/tests/*.rs | grep -v '^\s*//' | wc -l`
+减去 `grep -rh '<key>: None' ... | wc -l`。⚠ 它也只是代理（`given.<key>` 也可能是 `None` 传下来的）
+⇒ 差额 > 0 只能**排除"整键零覆盖"**，⛔ 证明某个非缺省值真的到了 `plan_with_options`；
+要断后者得读建造器那一行的赋值来源。本批那条零覆盖结论是在**改前**（14 / 14）读到的，
+且 25 处全文 grep 逐行确认过（除注释外全是 `drum_density: None`）。

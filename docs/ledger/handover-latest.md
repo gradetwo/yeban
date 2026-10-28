@@ -1718,6 +1718,13 @@ python3 scripts/guards/policy_check.py && bash scripts/gates/run-gates.sh light
 > `HD-67`/`HD-68`/`HD-69`/`HD-70`…）；本批是**覆盖补强**，不改变那条结论。
 > 磁盘 16:00 现读 **235G/201G/28G 可用（89%）**、`target` 3.1G、`incremental` 0、`worktree` 一行、`trim --dry` 无可删。
 > 台账见「2026-10-28 16:00」一节。
+>
+> ⭐ **16:03 补正（规则 32 的处方自己错了，⛔ 留着）**：初版写"数 `'<key>: Some('`"——**错**，
+> 同目录判据大多经 `Given` 建造器给值，构造点是 `swing_permille: given.swing_permille` ⇒ 有覆盖的键上
+> `Some(` 也是 0。改用"**`: None` 之外的出现次数**"作代理量（实测 `drum_density` 改前 **14 / 14**、
+> 本批后 **15 / 14**；`onsets_per_bar` 19 / 15、`swing_permille` 19 / 15…）⇒ 差额 > 0 只**排除整键零覆盖**，
+> ⛔ 证明非缺省值真的到了 `plan_with_options`。零覆盖那条结论本身不变（改前 14/14 ＋ 25 处全文逐行确认）。
+> 台账同节末「规则 32 的处方修正」。
 
 ### ⭐ 磁盘：仓库**外**大头的现读清单（2026-10-28 06:38，`du -sh` 实测，⛔ 一个字节都没删）
 
