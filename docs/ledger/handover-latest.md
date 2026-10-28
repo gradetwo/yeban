@@ -410,6 +410,30 @@ lib 侧 `8/7` → 判据侧 `E0277` → 判据侧 `unused variable`。
    ⚠ 那条四元堆叠链（`6d42c637` → `5ed77921` → `850edb17` → `966da02d`）已随三次落地**解体**：
    每落地一条，下一条就 rebase 到当时主干（`G8i` 的新基线＝`31dc09b5`、当前 tip＝`b10943f9`）
    ⇒ 仍是一次只推进一条、每条读回**自己**的 run（§6 第 6 条）。
+   ⚠⚠⚠ **本条于 2026-10-28 第十次更新（⭐ 这一段才是当下的活，第七、八、九段是历史）**：
+   `G8h` 的**四件齐闭合**（Run `40633552589` success，全量腿**真跑**：`rust (workspace 全量)` ＋
+   `windows` ＋ `macos` 三条都在场且非 0s ⇒ ⛔ 空绿）；`G8k`（`drumBackbeat`／`ADR-0043`）
+   **已开票并开工**，落在**堆叠**的第三棵树 `.worktrees/drum-backbeat`
+   （分支 `line/drum-backbeat`，基线 = `G8i` 的 tip `b10943f9`，即 `swing-permille` 那条线本身）：
+   `d1e98f5e`（ADR）＋ `6e03cd57`（接线 + schema + 判据六条）＋ `541bb7cb`（判据文件头的缺口号更正），
+   **已推送**，线 Run `40637802897` 在飞（前一轮 `40637687858` 是同一批的前一个 tip，⛔ 拿它当判决）。
+   1. ⭐ **缺口号⛔ 靠记忆分配**：本轮把这张票写成 `G8j`，而台账 `13178` 行已经把 `G8j` 给
+      `harmonyVoices`／和声音域那**两张**票、`13272` 行把 backbeat 暂记为 `G8k` ⇒ 判据文件头与
+      两个提交信息里的号**已经错了**（改正只能追加 `541bb7cb`，⛔ 为此 force-push 一条在飞的线）。
+      新纪律：**开票前先把台账与 `handover` 里的缺号表现读一遍**（`grep -n "G8[j-z]" docs/`），
+      号从表里读、⛔ 从上一条 +1 推。
+   2. 接手按序，⛔ 跳步：
+      - 读回 `40634940413`（`G8i` 线，tip `b10943f9`）与 `40637802897`（`G8k` 线，tip `541bb7cb`）。
+        `G8i` 那一轮的 `rust (yeban-mcp)` 已先行 success（其余 legs 在飞时⛔ 记为判决）。
+      - `G8i` success ⇒ `bash scripts/dev/worktree.sh land swing-permille` ＋ 读回**它的 merge run**；
+        落地后 `git -C .worktrees/drum-backbeat rebase main`（那条线的 diff **包含** `G8i` 的全部改动，
+        ⛔ 在 `G8i` 落地前合主干）并重新推送，读回 `line/drum-backbeat` **自己**的新 run。
+      - `ADR-0041`／`ADR-0042`／`ADR-0043` 三行索引在**各自文件落地主干后**同批补，⛔ 留断号。
+   3. `G8k` 这张票的**结构性差别**（写进 `ADR-0043` D1/D2，判据 5 钉它）：界与缺省都**随拍号移动**
+      ⇒ 契约里⛔ 写 `default`、也⛔ 写 `maximum`，上界由本层现读 theory 的 `felt_beats_per_bar(meter)`；
+      且它**会加／筛击点**（实测 4/4 夹具总击点 `96`(`1`) ↔ `88`(`2`=缺省) ↔ `84`(`4`) 条，
+      军鼓 `16`↔`8`↔`4` 条）⇒ `G8i` 那句"鼓轨 id 集合逐条不变"的判据形状在此⛔ 用
+      （击点 id 由**原始 hit 序号**派生，条数一变序号就移）⇒ 改比**非军鼓形状多重集**与**落点拍集合**。
 3. ✅ **在飞的线已全部落地**：`line/reason-propagation`（§0.5.8 第 11 项队列的最后一格）
    已合进主干（`c2dd2b89` 主体 + `007e3ff9` 修 CI 报的两个编译错，merge `e18be129`，
    run `40588472044`）。它把 `EXEMPT_DYNAMIC_REASON_SITES` 从 **4 行压到 3 行**：
@@ -1207,9 +1231,11 @@ python3 scripts/guards/policy_check.py && bash scripts/gates/run-gates.sh light
 | 路径 | 分支 | 处置 |
 | :--- | :--- | :--- |
 | `/home/crow/work/qoder/yeban` | `main` | 主树（⭐ 集成者工作区，⛔ 不在这里写线代码）|
-| `/home/crow/work/qoder/yeban/.worktrees/swing-permille` | `line/swing-permille` | ⭐ **在飞**（`G8i` 鼓摇摆比例 `swingPermille`，`ADR-0041`＝鼓线上最后一处"流派登记值不可覆盖"）：基线 `31dc09b5`（⭐ 已 rebase，旧 tip `966da02d` ⇒ 新 tip `4c3d20c4`+`552d20eb`），**已推送**，线 Run `40633738039` ⇒ ⛔ 判决。界 `500..=1000` 复用 theory 的 `SWING_PERMILLE_STRAIGHT`/`SWING_PERMILLE_MAX`；⭐ 契约里**⛔ `default`** —— 现读 `GENRES` 182 条里 148 条不登记（走平直）、34 条登记 540..=660 ⇒ 缺省不是一个数字（D1）。耦合比旋律三键**更严**：要 `materialSource:"theory"` **且** `includeDrums`。本机证据：`clippy-changed.sh` rc=0 ＋ light 门禁通过 ＋ 位移单调探针 ＋ **`audit_struct_literals.py`：15 字段／30 处字面量／缺陷 0**；判据 `crates/yeban-mcp/tests/section_drum_swing.rs`（六条实名见 §0.6.4.2）|
+| `/home/crow/work/qoder/yeban/.worktrees/swing-permille` | `line/swing-permille` | ⭐ **在飞**（`G8i` 鼓摇摆比例 `swingPermille`，`ADR-0041`＝鼓线上最后一处"流派登记值不可覆盖"）：基线 `31dc09b5`（⭐ 已 rebase，旧 tip `966da02d` ⇒ `4c3d20c4` ⇒ `552d20eb` ⇒ **`b10943f9`**），**已推送**，线 Run `40633738039` ⇒ **failure**（判据文件的 `u64::from` 撞 `E0658`，见 §0.6.4），修复批的新 Run `40634940413` **在飞**（`rust (yeban-mcp)` 已先行 success）。界 `500..=1000` 复用 theory 的 `SWING_PERMILLE_STRAIGHT`/`SWING_PERMILLE_MAX`；⭐ 契约里**⛔ `default`** —— 现读 `GENRES` 182 条里 148 条不登记（走平直）、34 条登记 540..=660 ⇒ 缺省不是一个数字（D1）。耦合比旋律三键**更严**：要 `materialSource:"theory"` **且** `includeDrums`。本机证据：`clippy-changed.sh` rc=0 ＋ light 门禁通过 ＋ 位移单调探针 ＋ **`audit_struct_literals.py`：15 字段／30 处字面量／缺陷 0**；判据 `crates/yeban-mcp/tests/section_drum_swing.rs`（六条实名见 §0.6.4.2）|
+| `/home/crow/work/qoder/yeban/.worktrees/drum-backbeat` | `line/drum-backbeat` | ⭐ **在飞**（`G8k` 军鼓落点 `drumBackbeat`，`ADR-0043`＝鼓线上第二处"派生值不可覆盖"）：**堆叠**在 `G8i` 的 tip `b10943f9` 上（⇒ 那条线落地前⛔ 合主干，本线的 diff **包含** `G8i` 全部改动），提交 `d1e98f5e`+`6e03cd57`+`541bb7cb`，**已推送**，线 Run `40637802897` 在飞（前一轮 `40637687858` 是同一批的旧 tip ⇒ ⛔ 当判决）。界 `1..=该拍号的拍数`＝现读 `felt_beats_per_bar(meter)`（⛔ 常量对、⛔ 本层抄表）；⭐ 契约里**⛔ `default`** 也**⛔ `maximum`**（两者都随拍号移动：缺省实测 4/4→2、3/4→2、2/4 与 6/8→1、5/4→3）。与 `G8i` 的判据形状**相反**的一面：本键**会加／筛击点**（实测 4/4 夹具总击点 `96`/`88`/`84` 条，军鼓 `16`/`8`/`4` 条，落点 `{0,1,2,3}`/`{0,2}`/`{0}`）⇒ 判据比**非军鼓形状多重集**＋**落点拍集合**，⛔ 比 id 集合。耦合取 `ADR-0041` D3 那一支（theory **且** `includeDrums`）。本机证据⛔ 覆盖类型面（`yeban-mcp` 拖 `yeban-render` ⇒ 判据只能靠 CI，§5 第 2 条）：`cargo fmt --check` rc=0 ＋ 守卫 18 条通过 ＋ schema `json.load` 合法；判据 `crates/yeban-mcp/tests/section_drum_backbeat.rs`（六条）|
 
-> ⭐ **2026-10-28 04:40 现读 `git worktree list` ＝ 上面两行**。同批按第 31 条拆除三棵树（`worktree.sh rm`
+> ⭐ **2026-10-28 05:25 现读 `git worktree list` ＝ 上面三行**（`main` ＋ 两条在飞的堆叠线）。
+> 同批按第 31 条拆除三棵树（`worktree.sh rm`
 > **只删目录、保留分支**）：`melody-range`（`G8f` 音域半片，merge `6d42c637`）、
 > `melody-leap`（`G8g` `melodyMaxLeap`，merge `c6b5f2bb`）、`harmony-leap`（`G8h`
 > `harmonyMaxVoiceJump`，merge `a9132898`）—— 三者的线判决读数在 §0.6.2／§0.6.4.2。
