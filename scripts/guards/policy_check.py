@@ -925,6 +925,52 @@ def g19_no_value_in_struct_type_position() -> list[Violation]:
     return bad
 
 
+ADR_DIR = REPO / "docs" / "adr"
+ADR_INDEX = ADR_DIR / "README.md"
+ADR_LINK = re.compile(r"\]\(\./(ADR-[^)\s]+\.md)\)")
+
+
+def g20_adr_index_matches_adr_files() -> list[Violation]:
+    """[文档不变量] `docs/adr/README.md` 的索引与 `docs/adr/ADR-*.md` 双向一致。
+
+    为什么值得机械化：ADR 的索引行是本仓库里**唯一**的发现入口，而交接反复规定
+    "索引行要在 ADR 落到主干**之后**补（⛔ 提前写＝死链）"。这条纪律此前只靠人记 ——
+    `G8n`（`ADR-0046`）就得在 land 之后单独补一次索引行，且没有任何东西会拦下一次漏补。
+
+    判据两条，都能变红：
+    ① 每个 `ADR-*.md` 文件都必须在索引里有一行 `](./文件名)`（⛔ 漏行 ⇒ 文档不可发现）；
+    ② 索引里每个 `](./ADR-*.md)` 都必须指向**存在**的文件（⛔ 死链 ⇒ "提前写索引行"的形态）。
+    口径：只比对相对链接 `](./ADR-….md)`；README 正文里不带链接的文件名提及不参与。
+    """
+    if not ADR_INDEX.is_file():
+        return [("G20", rel(ADR_INDEX), "索引文件缺失 ⇒ `docs/adr/` 下的 ADR 无法被发现")]
+    try:
+        text = ADR_INDEX.read_text(encoding="utf-8")
+    except (UnicodeDecodeError, OSError) as exc:
+        return [("G20", rel(ADR_INDEX), f"索引不可读: {exc}")]
+    files = {p.name for p in ADR_DIR.glob("ADR-*.md")}
+    linked = set(ADR_LINK.findall(text))
+    bad: list[Violation] = []
+    for name in sorted(files - linked):
+        bad.append(
+            (
+                "G20",
+                rel(ADR_DIR / name),
+                f"`{name}` 在 `docs/adr/README.md` 里没有索引行 ⇒ 文档不可发现"
+                f"（补一行 `](./{name})`；⚠ 只能在 ADR 已落主干之后补）",
+            )
+        )
+    for name in sorted(linked - files):
+        bad.append(
+            (
+                "G20",
+                rel(ADR_INDEX),
+                f"索引行指向不存在的 `{name}` ⇒ 死链（索引行⛔ 提前写：等 ADR 落地同批补）",
+            )
+        )
+    return bad
+
+
 GUARDS = {
     "G01": ("[MODEL-AST-003] 持久化 AST 零 HashMap/HashSet", g01_no_hashmap_in_model),
     "G02": ("[ARCH-TOP-003] 引擎层 crate 零 GUI 依赖", g02_no_gui_deps_in_engine_crates),
@@ -951,6 +997,10 @@ GUARDS = {
         "[本机可判定编译错] struct/enum 定义体里不得把值写在类型位置（E0573，G8n 实测一次）",
         g19_no_value_in_struct_type_position,
     ),
+    "G20": (
+        "[文档不变量] docs/adr/README.md 索引与 ADR 文件双向一致（⛔ 漏行／⛔ 死链）",
+        g20_adr_index_matches_adr_files,
+    ),
 }
 
 
@@ -962,7 +1012,7 @@ def self_test() -> int:
     ⚠ 为什么需要：CI 会跑守卫、**但没有任何注入／变异测试** ⇒ 一条守卫若因重构
     或改错而**静默失效**（被从注册表里删掉、或函数抛异常／返回 None）、CI 会一直绿。
     ⭐ 本自检能机械抓住的三件事：
-      ① **注册表完整性**：`G01`…`G19` 一个不缺、且没有空标题／非可调用项；
+      ① **注册表完整性**：`G01`…`G20` 一个不缺、且没有空标题／非可调用项；
       ② **可调用性**：每个 check 函数存在且可调用；
       ③ **真的跑过并返回列表**：逐个调用，断言返回的是 `list`（不是 None、不抛异常）。
     ⚠ 它**不**证明每条判据对**坏输入**会报红（那需要对每个判据构造变异输入）；
@@ -970,7 +1020,7 @@ def self_test() -> int:
     """
     fails: list[str] = []
 
-    expected = [f"G{n:02d}" for n in range(1, 20)]
+    expected = [f"G{n:02d}" for n in range(1, 21)]
     missing = [g for g in expected if g not in GUARDS]
     if missing:
         fails.append(f"注册表缺少守卫 {missing}（共应有 {len(expected)} 条）")
