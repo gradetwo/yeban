@@ -13488,3 +13488,17 @@ MCP 侧只被写死成常量（`section_build.rs:1828` 的 `max_leap: MELODY_MAX
 | `N4` 逐对/逐小节 swing 曲线 | theory 只有单个千分比（字段也是单个 `Option<f32>`） | theory 票 |
 
 ⇒ "`grouping` 也要先有 theory 票"这句是**错的**，⛔ 照抄。
+
+### 本轮新增的规则
+
+24. ⭐ **批量补位脚本按"字段名锚点"插入时，会同时命中结构体定义与别的结构体的字面量** ——
+    `G8n` 给 35 处补 `beat_grouping: None,` 时，有两行落进了 `tests/section_melody_seed.rs` 的
+    `struct Given { … }`（**定义体**，:58）与 `Given::theory()` 的 `Self { … }`（:68）⇒ 推送后
+    run `40673654327` 的 `macos`／`windows`／`rust (workspace 全量)` 三条腿同红
+    `error[E0573]: expected type, found variant None`，**一轮 CI ≈ 45 分钟**。
+    ⚠ 本机护栏当时全是绿的，而那**不是**护栏失效，是**口径不覆盖**：`audit_struct_literals.py` 只对账
+    `PlanOptions` **字面量**的键集（读数"35 处 / 缺陷 0"是真的），误插的目标根本不是 `PlanOptions`。
+    防线两条：① 推送前做一次**括号匹配**自检（每个 `PlanOptions { … }` 体内必须有新键；现读 36 处命中
+    = 34 真字面量 ＋ 1 结构体定义 ＋ 1 文档示例 ⇒ 真缺 0）；② `policy_check.py` 新增 **`G19`**
+    （`struct`/`enum` 定义体里出现 `名字: None|Some(|true|false|数字|"` ⇒ 红），本机注入探针已验证会红。
+    ⭐ 一般化：**"某个数字报绿"只覆盖它数的那件事**；`E0063`（少键）与 `E0573`（值进类型位）是**两类**错。

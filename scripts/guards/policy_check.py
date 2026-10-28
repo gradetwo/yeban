@@ -825,6 +825,106 @@ def g18_ledger_rule_numbers_stay_in_one_family() -> list[Violation]:
     return bad
 
 
+#: 结构体/枚举**定义体**里"类型位置写了值"的形态 ⇒ `error[E0573]: expected type, found variant`。
+#: 值一侧只列**绝不可能**是类型的起始符：`None`／`Some(`／`true`／`false`／数字／字符串。
+VALUE_IN_TYPE = re.compile(
+    r"""^\s*(?:pub(?:\s*\([^)]*\))?\s+)?(\w+)\s*:\s*(None\b|Some\s*\(|true\b|false\b|-?\d|")"""
+)
+DEF_HEAD = re.compile(r"\b(?:pub(?:\s*\([^)]*\))?\s+)?(?:struct|enum)\s+(\w+)")
+
+
+def _strip_code(line: str) -> str:
+    """把 `//` 之后与 `"…"` 的内容抹掉（字符串保留一对引号），供括号配平用。
+
+    ⚠ 只处理行注释与字符串；`/* … */` 块注释不处理（本仓的文档注释一律 `///`）。
+    """
+    out: list[str] = []
+    instr = esc = False
+    i = 0
+    while i < len(line):
+        ch = line[i]
+        if instr:
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == '"':
+                instr = False
+            out.append('"' if ch == '"' and not instr else " ")
+        elif ch == '"':
+            instr = True
+            out.append('"')
+        elif line.startswith("//", i):
+            break
+        else:
+            out.append(ch)
+        i += 1
+    return "".join(out)
+
+
+def iter_definition_bodies(text: str):
+    """产出 `(名字, [(行号, 原始行), …])`：**顶层** `struct`/`enum` 的定义体。
+
+    口径：定义头必须出现在括号深度 0（即不在 `fn`／`impl`／`macro_rules!` 体内），
+    且 `{` 必须与定义头**同行**（rustfmt 的默认形态）；`struct X;` 这类无体单元结构体不产出。
+    ⚠ 局部（函数体内的）定义不扫 —— 本仓没有。
+    """
+    depth = 0
+    name: str | None = None
+    body: list[tuple[int, str]] = []
+    for ln, raw in enumerate(text.split("\n"), 1):
+        code = _strip_code(raw)
+        if name is None and depth == 0:
+            m = DEF_HEAD.search(code)
+            if m and "{" in code[code.index(m.group(0)) :]:
+                name = m.group(1)
+        if name is not None:
+            body.append((ln, raw))
+        depth += code.count("{") - code.count("}")
+        if name is not None and depth <= 0:
+            yield name, body
+            name = None
+            body = []
+            depth = 0
+
+
+def g19_no_value_in_struct_type_position() -> list[Violation]:
+    """[本机可判定编译错] 定义体里的字段类型不得写成值（`field: None` ⇒ E0573）。
+
+    为什么值得机械化：2026-10-28 的 `G8n`（`beatGrouping`）用脚本给 35 处 `PlanOptions`
+    字面量补 `beat_grouping: None,`，其中两行落进了**别的结构体**的定义体与 `Self { … }`
+    字面量 ⇒ 推送后三条代码腿同红 `E0573`，一轮 CI ≈ 45 分钟。
+    ⚠ `audit_struct_literals.py` 抓不到它：那个工具只对账 `PlanOptions` 字面量的**键集**，
+    误插的目标根本不是 `PlanOptions`。本守卫按**定义体**扫，因而是另一条独立防线。
+
+    判据：`struct`/`enum` 定义体（到配对 `}` 为止）内，任何 `名字: <值>` 行都算违规。
+    反例（必须报）：`struct A { x: u8, beat_grouping: None, }`；
+    正例（⛔ 报）：`struct A { x: Option<u8>, }`、`let a = A { x: None };`（那是字面量）。
+    """
+    bad: list[Violation] = []
+    for p in iter_source_files((".rs",)):
+        try:
+            text = p.read_text(encoding="utf-8")
+        except (UnicodeDecodeError, OSError):
+            continue
+        for name, body in iter_definition_bodies(text):
+            for ln, raw in body:
+                if is_comment_line(raw):
+                    continue
+                m = VALUE_IN_TYPE.match(_strip_code(raw))
+                if m:
+                    bad.append(
+                        (
+                            "G19",
+                            f"{rel(p)}:{ln}",
+                            f"`{name}` 的定义体里 `{m.group(1)}` 的类型位置写成了值 "
+                            f"`{m.group(2).strip()}` ⇒ `E0573 expected type, found variant`"
+                            "（补位脚本误插的典型形态；值只能出现在字面量里）",
+                        )
+                    )
+    return bad
+
+
 GUARDS = {
     "G01": ("[MODEL-AST-003] 持久化 AST 零 HashMap/HashSet", g01_no_hashmap_in_model),
     "G02": ("[ARCH-TOP-003] 引擎层 crate 零 GUI 依赖", g02_no_gui_deps_in_engine_crates),
@@ -847,6 +947,10 @@ GUARDS = {
         "[交接一致性] 台账的「第 N 条」不得混入外来号族（R777 实测四次）",
         g18_ledger_rule_numbers_stay_in_one_family,
     ),
+    "G19": (
+        "[本机可判定编译错] struct/enum 定义体里不得把值写在类型位置（E0573，G8n 实测一次）",
+        g19_no_value_in_struct_type_position,
+    ),
 }
 
 
@@ -858,7 +962,7 @@ def self_test() -> int:
     ⚠ 为什么需要：CI 会跑守卫、**但没有任何注入／变异测试** ⇒ 一条守卫若因重构
     或改错而**静默失效**（被从注册表里删掉、或函数抛异常／返回 None）、CI 会一直绿。
     ⭐ 本自检能机械抓住的三件事：
-      ① **注册表完整性**：`G01`…`G18` 一个不缺、且没有空标题／非可调用项；
+      ① **注册表完整性**：`G01`…`G19` 一个不缺、且没有空标题／非可调用项；
       ② **可调用性**：每个 check 函数存在且可调用；
       ③ **真的跑过并返回列表**：逐个调用，断言返回的是 `list`（不是 None、不抛异常）。
     ⚠ 它**不**证明每条判据对**坏输入**会报红（那需要对每个判据构造变异输入）；
@@ -866,7 +970,7 @@ def self_test() -> int:
     """
     fails: list[str] = []
 
-    expected = [f"G{n:02d}" for n in range(1, 19)]
+    expected = [f"G{n:02d}" for n in range(1, 20)]
     missing = [g for g in expected if g not in GUARDS]
     if missing:
         fails.append(f"注册表缺少守卫 {missing}（共应有 {len(expected)} 条）")

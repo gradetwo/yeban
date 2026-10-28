@@ -937,7 +937,7 @@ python3 scripts/guards/policy_check.py && bash scripts/gates/run-gates.sh light
 
 ⭐ 本会话“本仓早已做对”**六次（六次全中）**，故先把已有的守卫列在这里。
 
-### `scripts/guards/policy_check.py` 的 `GUARDS`（⭐ **16** 条）
+### `scripts/guards/policy_check.py` 的 `GUARDS`（⭐ **19** 条 —— 现读 `python3 scripts/guards/policy_check.py --list | wc -l`，⛔ 抄本表的数字）
 
 | 编号 | 管什么 | 红线／规矩 |
 | :--- | :--- | :--- |
@@ -957,9 +957,12 @@ python3 scripts/guards/policy_check.py && bash scripts/gates/run-gates.sh light
 | ⭐ `G14` | **shell 脚本 bash 3.2 兼容（禁关联数组）** | ⭐ **门禁可移植性** |
 | ⭐ `G15` | **`crates/*` 每个 crate 都必须被显式分类**（R567 新增）|
 | ⭐ `G16` | **`asio`／`experimental-vst3` 永不定义**（R592 新增；ADR-0007） | 红线 6 |（R567 新增；补 `G02`／`G03`／`G11` 的白名单漏洞） | 红线 3、8 |
+| ⭐ `G17` | `[HARDWARE]` 标记必须落在 `#[ignore]` 里（人类裁决 R687） | 测试纪律 |
+| ⭐ `G18` | 台账的「第 N 条」不得混入外来号族（R777 实测四次） | 交接一致性 |
+| ⭐ `G19` | **`struct`/`enum` 定义体里不得把值写在类型位置**（`field: None` ⇒ `E0573`）| 可判定的编译错（2026-10-28 `G8n` 实测：补位脚本误插两行，三条代码腿同红）；⚠ `audit_struct_literals.py` 抓不到它（那工具只对账 `PlanOptions` 的键集） |
 
 ⭐ ⭐ **守卫自检（⭐ R546）**：`python3 scripts/guards/policy_check.py --self-test` ——
-断言注册表 `G01`–`G14` 齐备、逐条可调用且返回 `list`（已接进 CI）。
+断言注册表 `G01`–`G19` 齐备、逐条可调用且返回 `list`（已接进 CI）。
 ⚠ 它**不**构造变异输入 ⇒ 只证明「守卫都在且能跑」、⛔ **不证明「每条都能报红」**。
 
 ⭐ **另有**：`cargo deny`（依赖许可，CI 腿）／`scripts/gates/license_inventory.py`（许可清单）／
