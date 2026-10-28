@@ -13422,3 +13422,36 @@ MCP 侧只被写死成常量（`section_build.rs:1828` 的 `max_leap: MELODY_MAX
   ⚠ 承判腿读回时必须**按 `#[test]` 计数逐名**（规则第 22 条），并且注意判据 3 会把 theory 的
   `NoFeasibleVoicing` 当作**要登记的事实**转发（⛔ 为了让判据绿而挑不报错的种子）。
 
+
+### `G8m`（`melodySeed`／`ADR-0045`）线判决（08:53 读回，⛔ 四件齐 —— 还差 merge 那条）
+
+`line/melody-seed` tip `0b20a7e5` 的 run **`40653587929` ⇒ completed/success**（08:44:28 现读）：
+
+| 腿 | 耗时 | 结论 |
+|---|---|---|
+| `rust (workspace 全量)` | `07:59:18 → 08:44:27`（**45 分 09 秒**，非 0s ⇒ ⛔ 空绿） | success（本批碰 `schemas/**` ⇒ 由全量腿承判）|
+| `windows`／`macos` | →08:28:26／→08:27:37 | success |
+| `checks (fmt / 红线守卫 / schema)`／`lockfile`／`plan`／`deny` | 07:59 → 08:00 内 | success |
+| `rust (${{ matrix.crate }})` | 0s | skipped（规划判为全量腿承判）|
+
+日志（`/tmp/ms_full.log`，1,658,006 字节）读数：**`test result: ok` 行 420 条 / passed 合计 6,782 / `test result: FAILED` 0 条**。
+⭐ **两组增量互相印证**（⛔ 只看总量）：与 `G8l` 的 merge 腿（419 行 / 6,776 passed）比 ⇒ ok 行 **+1**（新增了一个判据二进制
+`section_melody_seed`）、passed **+6**（正是本票六条判据）⇒ "新增的测试真的被执行了"这件事有两个独立读数对上。
+⭐ 本票**六条判据逐名 `... ok`、各恰一条**（`tests/section_melody_seed.rs` 的 `#[test]` 计数 = **6**，三处读数一致 ⇒ 规则第 22 条）：
+`absent_seed_is_byte_identical_to_the_derived_seed`／`the_seed_is_idempotent_per_section`／
+`a_different_seed_changes_pitches_and_velocity_never_the_grid`／`non_integer_or_negative_is_rejected_naming_the_key`／
+`the_seed_key_requires_the_theory_source_and_the_melody_part`／
+`melody_seed_is_declared_on_both_param_surfaces_without_default_or_maximum`。
+该二进制**确实执行过**（日志 `Running tests/section_melody_seed.rs (…f3008322c4c57172)` ＋ 紧接 `running 6 tests` / `6 passed; 0 failed`）。
+
+**⭐ `ADR-0045` 「待 CI 回答的两件事」的回填（⛔ 结论化，只报读数）**
+
+1. **"换种子⛔ 换格位"在 MCP 路径上成立**：判据 3 在 `spans` 来自调用方 `progression` 的那条路径上跑，
+   断言的是**排序后的 `(起点, 时值)` 序列逐条不变**、音符条数不变、`onset` 去重集合不变，而音高多重集改变
+   ⇒ 该判据 `ok` 即这条读数成立（⚠ 它⛔ 是"某几个种子恰好没变"的反面证据：判据内还要求"至少一条音高被改变"）。
+2. **本次取样里 `NoFeasibleVoicing` 出现 0 次**：日志里 `NoFeasibleVoicing` / `melody_over_chords` 各 `grep -c` = **0**
+   ⇒ 六个固定取样种子（`0 / 1 / 42 / 7_000_000_000 / 0xdead_beef_cafe / u64::MAX`）在 4 小节 `synthwave`/`C minor`
+   夹具上都规划成功。⚠ **这只说明取样没撞上**，⛔ 说明"这个键不会触发不可行"（`pick_within_leap` 的可行性
+   依赖 `previous` 这一条没有变）⇒ 判据 3 里那条"转发 `Err` 并只认 `theoryStep == "melody_over_chords"`"的分支
+   **本轮未被触发**，仍是未证状态。
+3. 「320 组不同形状」在 MCP 路径上**没有重测**（判据只要"改变"而不声称 distinct 数）⇒ 台账⛔ 拿代理数当结论。
