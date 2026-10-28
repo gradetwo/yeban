@@ -13858,3 +13858,86 @@ v4 的严格规则在**现存**源码上报 **7** 个函数，逐例读后**全�
     正确交付是**写下不覆盖 ＋ 逐例理由**，⛔ 按名字开白名单（那是 rot，且会把新写的同类判据挡在门外）。
     判别语：**"加豁免之后，这条规则还剩什么判别力？"** 若剩下的恰好就是被豁免的那些，规则就该删。
     同族：规则 30（针只能证明词出现过）＋ §6.3 第 2 条（跳过不是绿）。
+## 2026-10-28 16:00：`drumDensity` 语义判据（`ADR-0028` 现读**零覆盖**）＋ 手动全量门禁补上"全量腿跳过"的证据缺口
+
+### 先记两批判决（tip `1ed31afd`）
+
+| run | 类型 | 结论 | 关键读数 |
+|---|---|---|---|
+| `40711453603` | 自动（`ci.yml`） | **success** | `checks` **15 steps**；`rust (yeban-mcp)` 15:00:04→15:15:59 = **955 s**，`Running` **121**／`test result:` **121**／passed **2,354**／`FAILED` **0**；`macos` **2,143 s**（18 steps）、`windows` **2,305 s**（18 steps）；`rust (workspace 全量)` **skipped／steps=0** |
+| `40712860333` | 手动（`gates-manual.yml`，`gate=all-features`、`crate=` 空） | **success** | `all-features (workspace)` 15:08:10→15:28:07 = **1,197 s**，**9 steps**：`cargo clippy --workspace --all-features --all-targets --locked -- -D warnings` ＋ `cargo test --all-features`；`test result:` **308** 行／passed **5,952**／ignored **15**／`FAILED` **0** |
+
+### 为什么值得单独派一次手动门禁
+
+自动 planner 对**只碰 `crates/yeban-mcp/tests/**` 的 diff** 返回"无 workspace 影响" ⇒ 最近三批（`c24b5ad3`／
+`e6303d0d`／`80a695f7`／`2c2b735a`／`1ed31afd`）的 `rust (workspace 全量)` 全是 **skipped／steps=0**，
+台账里那条"本批没有全量腿判决"就一直挂着。这次拿**同一个提交** `1ed31afd` 跑手动 `all-features`：
+全工作区 clippy（`-D warnings`）＋ 全工作区 `test --all-features` 都绿 ⇒ 那三批改动的**全量面**有了判决。
+
+⚠ 两条口径，⛔ 混淆：①它是**另一条命令**的判决，⛔ 是 `rust (workspace 全量)` 那条腿的判决（后者的
+"跳过"依旧成立）；②它**更强**（`--all-features` 比默认特性集宽），但**不同**（无 macos/windows 面）。
+⇒ 登记成"全量面的补证"，⛔ 登记成"全量腿已跑"。
+
+### 找到的缺口：`drumDensity` 的**语义面**零覆盖
+
+`ADR-0028` 的稀疏档（`section_build.rs:2096` 的 `if density == Sparse && !hit.accent { continue }`）
+在此之前**没有任何判据看着**。实测口径（规则 29 的同一支）：
+
+- `crates/yeban-mcp/tests/*.rs` 里 **25** 处 `drum_density` —— **全部**是 `drum_density: None`（新参数的管线占位）；
+- 唯一"碰到这个词"的判据是 `param_bounds_guard.rs:185` 的词表登记（`BoundStatus::WordList`）⇒ 只管**词**，⛔ 管**行为**；
+- 同族的**五个**键（`swingPermille`／`drumStyle`／`drumBackbeat`／`beatGrouping`／`melodySeed`）**各有自己的判据文件**
+  且都钉了耦合拒绝 ⇒ 缺口在**看目录**时完全不可见（见规则 32）。
+
+### 判据（`crates/yeban-mcp/tests/section_drum_density.rs`，3 个 `#[test]`）
+
+1. `sparse_keeps_only_the_accented_hits_of_every_registered_genre` —— 全库 **182** 条 × 两档
+   （`"normal"`／`"sparse"`）矩阵。每格断言：`sparse` **非空**；音符 **id ⊂** `normal` 的 id
+   （id 由**原始** `hit_index` 派生 ⇒ 筛点不改未筛中音符的身份，这条钉住了那段注释的承诺）；
+   力度**只有一档**且**等于** `normal` 的上档（留下来的只有重音）。
+   防空（R93 同族）：`genres.len() >= 100`、两档都成功的 `planned >= 100`、全库 sparse 音符 `>= 100`、
+   且**至少一条流派**上 `sparse` 严格少于 `normal` —— ⛔ 让"sparse 退化成 normal"变成恒绿。
+2. `the_density_key_requires_the_theory_source_and_the_drum_part` —— 工程材料路径上给它必须被拒
+   （承载这条的是 `includeDrums` 的耦合，`section_build.rs:2309`，**先于**本键那行）；
+   鼓轨不在场必须被拒且 `hint` 点名 `includeDrums`；反钉：**旋律不在场时放行**。
+3. `unknown_density_values_are_rejected_with_a_usable_accepted_list` —— 词表外的值报
+   `INVALID_PARAMETER_RANGE`，`accepted` 里每一项都**真的**能被规划（⛔ 只比字符串），且两档都在里面。
+
+### 判决链（`9dc6961b` → run `40715885260` = **success**）
+
+| 作业 | 读数 |
+|---|---|
+| `checks` | **success**，**15 steps** |
+| `rust (yeban-mcp)` | 15:26:17→15:41:01 = **886 s**；`Running` **123**／`test result:` **123**；passed **2,360**／`FAILED` **0** |
+| 新二进制 | 两轮各 **3 passed**（`1.84 s`／轮；两轮 = `test` ＋ `test (合并特性)`），判据名逐名 `... ok` |
+| `macos` / `windows` | **1,301 s** / **1,857 s**，各 **18 steps** |
+| `rust (workspace 全量)` | **skipped／steps=0**（planner 预期形态；本批的全量面由上面那次手动门禁补证） |
+
+**增量交叉核**：`2,360 − 2,354 = +6` ＝ **3 判据 × 2 轮**；`Running 121 → 123` ＝ ＋2（新二进制两轮）。
+⚠ 这个 +6 顺带纠正了我自己的注释编号：文件里我写了"判据 1"和"判据 2"，实际是**同一个函数**里的主断言＋防空段
+⇒ CI 数的是**函数**，⛔ 注释里的编号。首轮若期望 +8 就是读错了。
+
+### 能证明／⛔ 不能证明
+
+- **能证明**（现读）：全库 182 条登记流派里、凡 `sparse` 成功的，输出**都**是 `normal` 的真子集
+  （至少一条流派上严格更少）、**都**非空、**都**只有上档力度；耦合与词表两条拒绝面都在。
+- ⛔ **不能证明**"流派没有任何重音 ⇒ 报 `InvalidParameterRange`"那条分支**被触发过**：判据对两种状态都做了约束，
+  但**没有打印**计数（本判据不产出读数），所以"现读有没有流派落进 Err"**未读到**。要这个数字得给判据加回显。
+- ⛔ **不能证明**"sparse 的筛法不可能写错"：本机无法变异注入（`yeban-mcp` 拖重依赖 ⇒ AGENTS §5 只交 CI），
+  敏感性靠**同一代码路径**的论证（多筛一个点 ⇒ 子集或"只有一档力度"必红；少筛一个点 ⇒ 严格更少那条仍绿
+  ⚠ 这一面**不在**本判据的判据力内，只由"⊂ 且非空"约束）。
+
+### 本机 / 磁盘
+
+本机只跑 `cargo fmt --all --check`（rc=0）—— 新判据的**编译与执行**全在 CI（`yeban-mcp` 拖重依赖，AGENTS §5 第 2 条）。
+磁盘 16:00 现读：`df /home` **235G 总 / 201G 已用 / 28G 可用（89%）**；`target` **3.1G**、
+`target/debug/incremental` **0**、`git worktree list` **一行**、`trim-target.sh --dry` ⇒ 0 个 `.rcgu.o`、
+0 个已链接二进制 ⇒ 仓库侧仍在地板。
+
+### 本轮新增的规则
+
+32. ⭐ **覆盖缺口不在"文件层面"显形 —— 每键覆盖要 grep 该键名的非缺省取值，⛔ 数文件。**
+    `ADR-0028` 的 `drumDensity` 是同族第六个键，另外五个各有判据文件；**看目录**得到的结论是"这一族挺齐"，
+    而真相是这个键**一条行为判据都没有**（25 处全是 `None`）。口径：判"某键有没有覆盖"时，
+    `grep -rn '<该键的非缺省取值字面量>' crates/yeban-mcp/tests/`（例：`"sparse"`）＋ 数
+    `drum_density: Some(` 的出现次数；两者皆 0 ⇒ **零覆盖**，⛔ 用同族的其它文件名代替。
+    同族偏差：规则 29（"第一个全库遍历"要先 grep 存量）—— 那一次错在夸大覆盖，这次错在**没看见空缺**。

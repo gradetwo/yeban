@@ -1689,6 +1689,35 @@ python3 scripts/guards/policy_check.py && bash scripts/gates/run-gates.sh light
 > 本批只改**测试文件的文档注释**（零行为变更）；台账新增规则 31（机械化的第一步是量误伤面）。
 > ⇒ 创作缺口这条线上**自主可做的活仍为零**；R93 这条覆盖轴到此**收敛**（三条盲点全部有过实测结论）。
 > 台账见「2026-10-28 14:58」一节。
+>
+> ⭐ **16:00 追加（tip 现读 `9dc6961b`；覆盖补强，⛔ 创作缺口）**：三件事。
+> **①手动全量门禁补上了"全量腿跳过"的证据缺口**：拿同一个 `1ed31afd` 派了
+> `gates-manual.yml -f gate=all-features`（run **`40712860333`** = success）：`cargo clippy --workspace
+> --all-features --all-targets --locked -- -D warnings` ＋ `cargo test --all-features` 全绿
+> （15:08:10→15:28:07 = **1,197 s**／9 steps；`test result:` **308** 行／passed **5,952**／ignored **15**／`FAILED` **0**）。
+> ⚠ 它是**另一条命令**的判决，⛔ 是 `rust (workspace 全量)` 那条腿的判决（那条在自动档里**仍是**
+> skipped＋steps=0）；登记成"全量面的补证"，⛔ 登记成"全量腿已跑"。
+> 同 tip 的自动 run **`40711453603`** 也是 success：`checks` 15 steps／`rust (yeban-mcp)` **955 s**、
+> `Running` 121／passed **2,354**／`FAILED` 0／macos **2,143 s**／windows **2,305 s**。
+> **②找到并补上一个真缺口：`ADR-0028` 的 `drumDensity` 语义面现读零覆盖** ——
+> `crates/yeban-mcp/tests/*.rs` 里 **25** 处 `drum_density` **全是 `None`**，唯一碰这个词的是
+> `param_bounds_guard.rs` 的词表登记（只管词、⛔ 管行为），`section_build.rs:2096` 那个
+> `if density == Sparse && !hit.accent { continue }` 此前**没有判据看着**。
+> 新增 `tests/section_drum_density.rs`（**3** 个 `#[test]`）：全库 182 条 × `normal`/`sparse` 两档，
+> 钉"非空／音符 id ⊂ normal／只剩上档力度"＋四条防空（含"至少一条流派严格更少"，⛔ 让
+> 'sparse 退化成 normal' 恒绿）、theory＋鼓轨耦合的双向钉、词表外取值的 `accepted` 可用性。
+> **判决**：`9dc6961b` → run **`40715885260` = success**（`rust (yeban-mcp)` **886 s**／`Running` 123／
+> `test result:` 123／passed **2,360**／`FAILED` **0**；新二进制两轮各 **3 passed**（1.84 s／轮）；
+> macos **1,301 s**、windows **1,857 s** 各 18 steps；`checks` 15 steps；`workspace 全量` skipped＋steps=0）。
+> 增量交叉核 **+6 = 3 判据 × 2 轮**、`Running` **+2**。
+> ⚠ 如实登记两处**未证**：流派"没有任何重音 ⇒ 报 `InvalidParameterRange`"那条分支**是否被触发过没读数**
+> （判据对两状态都约束，但不打印计数）；"少筛一个点"这一面**不在**判据力内（只由"⊂ 且非空"约束）。
+> **③规则 32**：覆盖缺口不在**文件层面**显形 —— 同族五个键各有判据文件，看目录会得出"这一族挺齐"，
+> 而 `drumDensity` 一条行为判据都没有 ⇒ 每键覆盖要 `grep` 该键的**非缺省取值字面量**（`"sparse"`），⛔ 数文件。
+> ⇒ 创作缺口这条线上**自主可做的活仍为零**（余下全是待裁：`ADR-0042`、旋律动机半片、`ADR-0034` D4、
+> `HD-67`/`HD-68`/`HD-69`/`HD-70`…）；本批是**覆盖补强**，不改变那条结论。
+> 磁盘 16:00 现读 **235G/201G/28G 可用（89%）**、`target` 3.1G、`incremental` 0、`worktree` 一行、`trim --dry` 无可删。
+> 台账见「2026-10-28 16:00」一节。
 
 ### ⭐ 磁盘：仓库**外**大头的现读清单（2026-10-28 06:38，`du -sh` 实测，⛔ 一个字节都没删）
 
