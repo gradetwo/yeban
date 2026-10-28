@@ -1739,7 +1739,7 @@ python3 scripts/guards/policy_check.py && bash scripts/gates/run-gates.sh light
 > `checks` 15 steps；`windows` success（16:07:45→16:45:33）；`rust (yeban-ui-mcp)` success；
 > `rust (workspace 全量)` skipped＋steps=0。⚠ **`macos` = cancelled**（16:07:41→16:22:44，**steps = 0**
 > ⇒ 从未拿到 runner）⇒ 该提交**没有 macOS 判决**，run 级 `failure` **只由这条取消带出**（其余七条全绿）。
-> 已重派该作业（新起跑 16:53:49）⇒ **这条 macOS 判决记 pending**，接手者读回后补一行即可。
+> 已重派该作业 ⇒ **17:30 读回：macOS 16:53:49→17:24:08 = success（1,819 s）**，run `40722843071` 现读 **completed / success**，八条作业逐条全绿（`checks` 15 steps；macOS 侧 `test result:` 262 行／passed **4,960**／`FAILED` 0，守卫 `... ok` 在 17:00:32）⇒ **pending 已收口**。
 > ⭐ 口径新增：**`cancelled` ≠ `skipped`** —— 前者是基础设施没给 runner（steps=0 是判据），**应当重派**；
 > 后者是 planner 的预期决定。两者都⛔ 当判决用。
 > ⇒ 创作缺口这条线上**自主可做的活仍为零**；台账见「2026-10-28 16:50」一节。

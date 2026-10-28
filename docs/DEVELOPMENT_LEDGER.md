@@ -14010,3 +14010,17 @@ JSON 实参 `"k": <非 null>`（如 `"autoMerge": true`）。`None`／`null` ⛔
 ⚠ **登记口径**：macOS 这条在重跑读回之前记 **pending**（§6.3 第 2 条的同族：取消不是绿、也不是红）。
 `cancelled` 与 `skipped` 的区别在于：`skipped` 是 planner 的决定（预期），`cancelled` 是**基础设施**没给 runner
 （steps = 0 是判据），两者都⛔ 当判决用，但后者**应当重派**而不是登记成"跳过"。
+
+### 16:50 那条 pending 的结案（17:30 读回）
+
+`gh run rerun --job` 重派后，macOS 于 16:53:49 起跑、**17:24:08 完成 = success（1,819 s）**；至此
+`6f17b6fa` 的 run **`40722843071` = completed / success**，八条作业逐条：`checks`(15 steps)／`plan`／`deny`／
+`lockfile`／`rust (yeban-ui-mcp)`／`rust (yeban-mcp)`(125/125、2,362 passed、0 FAILED)／`windows`(16:07:45→16:45:33)／
+`macos`(16:53:49→17:24:08) 全 **success**，`rust (workspace 全量)` **skipped／steps=0**。
+
+macOS 侧读数：`test result:` **262** 行／passed **4,960**／`FAILED` **0**，本守卫在那里也是
+`test every_documented_optional_argument_is_given_a_non_default_value_somewhere ... ok`
+（17:00:32）⇒ 该判据在 Linux 与 macOS 两条腿上都真跑过。
+
+⇒ 那条"`cancelled` ⇒ pending"的记录**已收口**，⛔ 再保留 pending 字样。口径不变：`cancelled` 是基础设施问题
+（steps = 0），**重派**是正确处置；`skipped` 是 planner 决定，**重派**无意义。
