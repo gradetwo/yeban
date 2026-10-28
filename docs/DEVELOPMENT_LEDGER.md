@@ -14408,3 +14408,17 @@ D3 完整句法（须先有登记数据来源，不建议现在启动）。**⛔
 | `yeban_query_project.limit`／`offset` | `view.rs:134` 解析（负数 ⇒ 非法错误）→ `:213` 回报 `page.offset` | `view.rs:410/449/458/469/566/582/591/605` 八条分页判据（含 `u64::MAX` 原样上报） |
 
 ⇒ 四个键都有**改变行为/输出**的消费点与独立判据，⛔ 属 `velocity` 类空操作。
+
+## 2026-10-28 晚（尾批）：`record_wav` / `render_master` 的预览×真做**同源**复核（0 改动）
+
+方法是 sfz 复用缺陷（a'''''）的推广：逐键比对 `preview()` 与 `response_data()` 的**取值来源**。
+
+- `record_wav.rs:340-399`：`preview().wouldWrite` 与 `response_data()` 的 `path`/`frames`/`bytes`/
+  `headerBytes`/`payloadBytes`/`sha256`/`bitDepth`/`channels`/`sampleRate` 全部读**同一组 `self` 字段**
+  （只是形状一个嵌套、一个平铺，`response_data` 另加 `recorded: true` 与静态说明）⇒ 值不可能分叉。
+- `render.rs:2455-2476`：`preview().wouldWrite` 与 `response_data()` 的 `details()` 同源；`response_data`
+  另加 `rendered: true` ＋ `request`。⇒ 同上。
+- ⚠ 与 sfz 那次的差别：sfz 的分叉来自"预览**重新装载**一次"，两次装载的输入不同；
+  这两处**只有一次构造**、预览与响应读同一份产物 ⇒ 不存在该类缺陷。
+
+结论：`record_wav`／`render_master` 无需改动；⛔ 再为此加判据（同源字段的相等判据恒真）。
