@@ -13528,10 +13528,61 @@ MCP 侧只被写死成常量（`section_build.rs:1828` 的 `max_leap: MELODY_MAX
 索引行完全靠人记（同一件事在 `G8i`…`G8l` 各做过一次）。它正属交接第 99 条「入口文件最该有机械自检」。
 
 **判据两条（都做过变异注入，2026-10-28 11:26）**：
-1. 每个 `docs/adr/ADR-*.md` 都必须在索引里有一行 `](./文件名)` ⇒ 注入「删掉 `ADR-0046` 索引行」：
+1. 每个 `docs/adr/ADR-*.md` 都必须在索引里有一行**相对链接**指向该文件名（源码写法见 `policy_check.py` 的 `ADR_LINK`，⛔ 在文档里贴出链接字面，`check_docs_links.py` 会把示例当真链接）⇒ 注入「删掉 `ADR-0046` 索引行」：
    **红**，点名 `docs/adr/ADR-0046-generation-drum-beat-grouping.md`；还原后绿。
-2. 索引里每个 `](./ADR-*.md)` 都必须指向**存在**的文件 ⇒ 注入「追加一行 `ADR-9999` 死链」：
+2. 索引里每个指向 `ADR-*.md` 的相对链接都必须指向**存在**的文件 ⇒ 注入「追加一行 `ADR-9999` 死链」：
    **红**，点名该链接；还原后绿。
 
 **基线读数**：46 个文件 ↔ 46 条链接，两个方向都空集（⛔ 存量不一致被当成"历史遗留"放过）。
-口径：只比对相对链接 `](./ADR-….md)`；README 正文里不带链接的文件名提及不参与。
+口径：只比对指向 `ADR-….md` 的**相对链接**（同一条理由，示例字面不写进文档）；README 正文里不带链接的文件名提及不参与。
+
+### `G8m` 闭合：主干全量腿的**替代判决**已读回（2026-10-28 11:38）
+
+`G8m`（`melodySeed`／`ADR-0045`）自己的 merge `3449c78e` **从来没有绿过**（三连红见上一节），
+故按上一节的口径改由「含本批内容的后续全量腿」承判。⭐ **该证据已到手**：
+
+| 项 | 读数 |
+|---|---|
+| 承判 run | **`40674825616`**（head **`1fccac16`**，`G19` 守卫批；碰 `scripts/**` ⇒ `workspace_wide: true`） |
+| 承判腿 | `rust (workspace 全量)` **2,449 s 真跑**（⇒ ⛔ 空绿）；`windows` 2,225 s、`macos` 1,632 s 亦 success |
+| 三读数 | **420** 条 `test result:` / passed **6,782** / failed **0** / `FAILED` 出现 **0** 次（与 `G8m` 线 run `40653587929` 的 420 / 6,782 / 0 **逐值相同**） |
+| 六条判据 | `absent_seed_is_byte_identical_to_the_derived_seed`／`the_seed_is_idempotent_per_section`／`a_different_seed_changes_pitches_and_velocity_never_the_grid`／`non_integer_or_negative_is_rejected_naming_the_key`／`the_seed_key_requires_the_theory_source_and_the_melody_part`／`melody_seed_is_declared_on_both_param_surfaces_without_default_or_maximum` ⇒ **各恰 1 次 `... ok`** |
+| ⚠ 口径 | 名字取自 `grep -A2 '#\[test\]' crates/yeban-mcp/tests/section_melody_seed.rs`（`#[test]` 计数 = **6**，与日志命中条数一致）；⚠ **全量腿日志里 `Running tests/…` 那一行不出现**（二进制只以 `section_melody_seed-f3008322c4c57172` 这样的产物名出现 **1** 次）⇒ 全量腿的 sanity check 用 `test result:` 行数 ＋ 判据名逐条 `grep -c`，⛔ 用 `Running tests/` 计数（与 `G8l` merge run 那条口径同源） |
+| ⚠ 自纠 | 我第一次核这六条时**凭记忆写了五个判据名**（`…positional_one`／`the_seed_moves_the_melody_pitches_not_the_grid` 等），日志命中 **0** ⇒ 差点把"名字不对"读成"没跑到"。名字必须**从文件现取**（第 22 条），⛔ 从记忆或从 ADR 正文抄 |
+
+⇒ **`G8m` 四件齐闭合**（代码 `3449c78e` ＋ 判据六条 ＋ 线判决 `40653587929` ＋ 主干全量替代判决 `40674825616`）。
+
+### `G8n` 主干判决（merge `b42f4cc0` / run **`40679452708`**，2026-10-28 12:08 读回）
+
+| 腿 | 读数 |
+|---|---|
+| `rust (workspace 全量)`（承判腿） | **success**。日志 1,580,297 字节 / 16,667 行 ⇒ **421** 条 `test result:` / passed **6,788** / failed **0** / `FAILED` **0** 次 |
+| `windows` | success |
+| `checks` / `deny` / `lockfile` / `plan` | 全 success |
+| `macos` | ⏳ 读回时仍在 `in_progress` ⇒ **整体 `conclusion` 未定**，本行⛔ 记"四件齐" |
+| ⭐ 增量交叉核 | 对 `G8m` 替代判决（420 / 6,782，run `40674825616`）净增 **＋1 二进制 / ＋6 通过** ＝ 新增的 `tests/section_drum_grouping.rs` 六条 |
+| ⭐ 判据逐名（本票六条） | `absent_grouping_is_byte_identical_to_the_derived_split`／`the_grouping_moves_the_kick_and_the_accents_not_the_grid`／`illegal_groupings_are_rejected_naming_the_key`／`the_grouping_key_requires_the_theory_source_and_the_drum_part`／`the_legal_shape_moves_with_the_meter`／`drum_grouping_is_declared_on_both_param_surfaces_without_default_or_maximum` ⇒ **各恰 1 次 `... ok`** |
+| ⭐ 顺带复核 `G8m` 六条 | 同一腿里 `section_melody_seed` 的六条**同样各恰 1 次 `... ok`** ⇒ `G8m` 的替代证据在**第二条**全量腿上独立复现（与 `40674825616` 互证） |
+
+### 本轮第三次真红（run `40680104196`，`G8n` 守卫批 `783da55b`）：**文档里贴了链接字面**
+
+`checks` 腿红，唯一红项是 `scripts/gates/check_docs_links.py` 的三行：
+
+```
+- docs/DEVELOPMENT_LEDGER.md:13531 链接指向不存在的路径: ./文件名
+- docs/DEVELOPMENT_LEDGER.md:13533 链接指向不存在的路径: ./ADR-*.md
+- docs/DEVELOPMENT_LEDGER.md:13537 链接指向不存在的路径: ./ADR-….md
+```
+
+根因：我在写 `G20` 的**判据说明**时，把索引行的源码形态当示例贴进了台账 ⇒ 文档链接检查器
+把 `](./文件名)` 一类**示例**当成**真链接**。处置：三处改成"指向某某的相对链接（写法见
+`policy_check.py` 的 `ADR_LINK`）"，⛔ 在 `.md` 里贴 `](…)` 字面（`check_docs_links.py` 现读
+"165 个文件 / 285 条相对链接"全过）。⚠ 本机当时**没有**这条检查的入口（它只在 CI 的 `checks` 腿里）
+⇒ 又一次"本机绿 ≠ CI 绿"。
+
+26. ⭐ **在 `.md` 里写「链接的示例」会把示例变成被判死的真链接**。`G20` 的说明里写了
+    `](./文件名)`／`](./ADR-*.md)`／`](./ADR-….md)` 三处示例 ⇒ CI `checks` 腿的
+    `check_docs_links.py` 报"链接指向不存在的路径"（run `40680104196` 的唯一红）。
+    ⭐ 一般化：**文档里凡是"描述某种语法"的片段都必须脱离该语法的实际形态**（本例 = ⛔ 出现 `](`），
+    否则你是在文档里**制造**被检查的对象。同类前科：`G8h` 的 `8/7` 论证要在正文里写代码形状时也得
+    加引号/拆开。⚠ 另：该检查**仅**在 CI 的 `checks` 腿里跑 ⇒ 本机 `policy_check.py` 全绿**不覆盖**它。
