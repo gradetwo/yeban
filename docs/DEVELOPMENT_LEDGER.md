@@ -14373,3 +14373,26 @@ D3 完整句法（须先有登记数据来源，不建议现在启动）。**⛔
 真实 sha 是 **`27b9c1cd`**（`gh run view 40775253831 --json headSha` 与 `git log` 两处互证）。
 修订后的句子见本节上方（已就地改为 `27b9c1cd`）。纪律：**任何 sha 都必须从命令输出抄进账本**，
 ⛔ 从上下文记忆里复述；这类错误的成本是让读者去追一个不存在的提交。
+
+## 2026-10-28 晚（收官批）：三条判决补账 ＋ 三项复核（0 改动）
+
+### 判决补账（此前已读回、未入账）
+
+| 提交 | run | 判决 |
+| :--- | :--- | :--- |
+| `d91d6d5e`（ADR-0047 入账） | `40775568626` | success ＝ 空绿（四条代码腿 skipped、steps=0） |
+| `b9ff5a87`（sha 更正） | `40775622980` | success ＝ 空绿（同上） |
+
+（`27b9c1cd` 的 `40775253831` 已在上节入账；`40775568626`／`40775622980` 由完整 SHA 查得。）
+
+### 三项复核（全部证伪，故无改动）
+
+1. **`frames` 与 `durationSeconds` 同时给**：`render.rs:1304-1338` **拒绝**指向不同帧数的组合
+   （`INVALID_PARAMETER_RANGE`，`data` 带 `frames`/`durationSeconds`/`durationFrames`/`sampleRate`）；
+   两者一致时 `frames_source()` 回报 `"durationSeconds"`（`render.rs:767-773`）。⛔ 静默择一。
+2. **`yeban_export_stems` 的 `dryRun` 是否会漏掉"目标已存在"**：碰撞预检在 `export()` 渲染循环内
+   （`stems.rs:472-474`，`path.exists()` ⇒ `collisions_fault`），而 `dryRun` 走的是同一条
+   `export()` ⇒ 预览与真做对同一批落点给出**同一个**拒绝。⛔ 分叉。
+3. **工具计数漂移**（AGENTS.md §4.2 两次陈旧警告的机械复查）：
+   `TOOL_COUNT=25`／`10+15`（`tools.rs:107/110/117`）＝ schema `definitions.ToolCall.properties.name.enum`
+   长度 **25**；逐名比对：schema-only **0**、code-only **0**。⇒ 三处一致，本项无账要改。
