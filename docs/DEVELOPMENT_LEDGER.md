@@ -209,6 +209,19 @@ CARGO_HOME=/Users/crow/work/music/.cargo-home RUSTUP_TOOLCHAIN=stable \
 > 认下的音源参数⛔ 再登记 ⇒ 与 `tools.rs` 的说明一致，⛔ 回潮成"谎"）。
 > ⇒ **七条抽查全部与台账声明一致，零新缺口**；`G1`／`G2`／`G4`／`G6`／`G7` 未抽查（各有 ADR 与
 > 自己的判决节，本轮不重复读）。⚠ 这是**抽查**（7/13），⛔ 读作"13 条全验"。
+>
+> ⭐ **同日 12:44：剩下六条也补齐了 ⇒ 13/13 全验**（同一口径：找它声称的**符号**在不在代码里）。
+> `G1`＝`arm_track_from_snapshot`（`yeban-engine` 命中 **1** 处；台账说它是"只布防请求那条轨"的
+> 新入口，与 `silentSources` 预警配套 —— 后者 `yeban-mcp` 命中 **5**）；`G2`＝`domain::plan_edit_notes`
+> 把逆操作插在 `Op::RemoveTrack` **之前**（`notes.rs:711` 的文档与实现一致）；`G4`＝`sfzSamplesUnreadable`
+> （命中 **2**）；`G6`＝`SEED_TRACK_VOLUME_DB`（`project_create.rs:418`）＋ `VOLUME_MELODY_DB = -22.0`
+> ／`VOLUME_INNER_DB = -28.0`（`section_build.rs:209/218`）；`G7`＝`批内投影`（`notes.rs:8221` 的实现注释
+> ＋`:20265` 的判据）；`G14`＝`unknownEffectParam` 最近邻建议面（`tools.rs` 的 `edit_notes` 摘要逐字描述）。
+> ⭐ 结论：**`GAPS.md` 那 13 条"消除"在代码里都找得到对应交付物，零新缺口** ⇒ 创作缺口这条线上
+> **自主可做的活确实是零**（余下全是待裁：`G3`/`G10`/`G11` ↔ `HD-67`/`HD-69`/`HD-68`、`G12` 后半 ↔
+> `HD-70`、旋律动机半片、`ADR-0042`）。⚠ 口径提醒：本次只验"交付物在场"，⛔ 重读每条判据的 CI 判决
+> （那些判决各在自己的节里已读回，复读一遍不产生新信息）。
+
 
 
 | 缺口 | 状态 | 依据（ADR / 判决） |

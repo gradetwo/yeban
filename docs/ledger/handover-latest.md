@@ -1636,6 +1636,15 @@ python3 scripts/guards/policy_check.py && bash scripts/gates/run-gates.sh light
 > `G1`/`G2`/`G4`/`G6`/`G7` 未抽（各有 ADR ＋ 自己的判决节）⇒ **零新缺口**，创作缺口这条线上
 > **自主可做的活仍然是零**（`G3`/`G10`/`G11` 是 `HD-67`/`HD-69`/`HD-68`；`G12` 后半是 `HD-70`；
 > 旋律动机半片待裁；`ADR-0042` 待裁）。⭐ 同时更正了台账 §5.3 表头那句已被证伪的"`G8` 无条件消除"。
+>
+> ⭐ **12:44 追加（抽查做全了 ⇒ 13/13）**：剩下六条也按同一口径验完且**全部一致** ——
+> `G1`＝`arm_track_from_snapshot`（engine 命中 1）＋`silentSources`（mcp 5）、`G2`＝`plan_edit_notes`
+> 把逆操作插在 `Op::RemoveTrack` 之前（`notes.rs:711`）、`G4`＝`sfzSamplesUnreadable`（2）、
+> `G6`＝`SEED_TRACK_VOLUME_DB` ＋ `VOLUME_MELODY_DB=-22.0`／`VOLUME_INNER_DB=-28.0`、
+> `G7`＝`批内投影`（`notes.rs:8221`／`:20265`）、`G14`＝`unknownEffectParam` 最近邻建议面。
+> ⇒ **`GAPS.md` 的 13 条"消除"在代码里都有交付物，零新缺口**；本位面的自主活**确实是零**，
+> 余下全是待裁（`HD-67`/`HD-68`/`HD-69`/`HD-70`、旋律动机、`ADR-0042`、`ADR-0034` D4 三条）。
+> ⛔ 把"交付物在场"读成"判据已复验" —— 每条判据的 CI 判决各在自己的节里。
 
 ### ⭐ 磁盘：仓库**外**大头的现读清单（2026-10-28 06:38，`du -sh` 实测，⛔ 一个字节都没删）
 
