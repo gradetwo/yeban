@@ -278,8 +278,10 @@ lib 侧 `8/7` → 判据侧 `E0277` → 判据侧 `unused variable`。
 
 ### 0.6.4.1 ⭐ `G8j` 两张票的**阻塞证据**（2026-10-28 实测，完整表在台账 `## 2026-10-28：G8j 前置实测`）
 
-- `realize` **⛔ 没有声部数参数** —— 声部数 ≡ `constraints.ranges.len()`；它只保证"每个声部
-  都是和弦音"（`voice_leading.rs:413`），**⛔ 不保证和弦每个音级被覆盖**。
+- `realize` **⛔ 没有声部数参数** —— 声部数 ≡ `constraints.ranges.len()`；"每个声部**属于**和弦音"
+  由构造成立（`recurse` 只在和弦音集 `tones` 里取值），⚠ 而 `voice_leading.rs:413` 那条
+  `every_voice_stays_on_a_chord_tone` 在 `mod tests` 里、只跑 **3 声部 × `ii-V-I-vi`** ⇒
+  它钉的是**成员归属**，**⛔ 全仓库⛔ 一条"和弦每个音级都被发出"（覆盖性）的断言**。
 - 仓库外 probe 实测（`i-v-i-VI`／`i7-v7-i7-VI7`）：三和弦 × `FOUR_VOICES` 层0 `音=[60,67,79,84]`
   类=`{0,7}` **缺=[3]**（三音被八度重复的根/五音挤掉）；七和弦 × `THREE_VOICES` 每层**丢一个音级**。
 - ⚠ **更正**先前那句"`realize` 对声部数不匹配从不报错"：`TooManyVoices` 存在但三和弦配 4 声部

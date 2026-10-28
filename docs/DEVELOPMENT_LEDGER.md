@@ -13187,7 +13187,9 @@ MCP 侧只被写死成常量（`section_build.rs:1828` 的 `max_leap: MELODY_MAX
   `DEFAULT_THREE_VOICES`／`DEFAULT_FOUR_VOICES`）。`candidate_voicings()` 只要求
   `tones.len() >= ranges.len()`（`tones` 是和弦的**绝对音高**去重集，八度重复算多个），
   `recurse()` 则要求每个声部在**自己音域内**取一个严格上行的和弦音 ⇒
-  ⭐ **theory 只保证"每个声部都是和弦音"（`voice_leading.rs:413` 那条断言），⛔ 保证"和弦的每个音级都被覆盖"**。
+  ⇒ ⭐ **"每个声部都属于和弦音"由构造成立**（`recurse` 只在和弦音集 `tones` 里取值）；
+  ⚠ 而 `voice_leading.rs:413` 的 `every_voice_stays_on_a_chord_tone` 在 `mod tests`（起始 `:371`）里、
+  只跑 **3 声部 × `ii-V-I-vi`**，它钉的是**成员归属**⇒ ⛔ **全仓库没有一条断言"和弦每个音级都被发出"（覆盖性）**。
 - **实测（调 C minor，`i-v-i-VI` 与 `i7-v7-i7-VI7`）**：
   | 输入 | 结果 |
   | --- | --- |
@@ -13230,3 +13232,9 @@ MCP 侧只被写死成常量（`section_build.rs:1828` 的 `max_leap: MELODY_MAX
     **正对照用合成字面量**（少一键／多一键／重复键／`..base` 各一条，外加注释与嵌套两条）。
     现读四条线的对账结果（单位＝"每个 `PlanOptions { … }` 字面量的顶层键名相对字段表的差集"）：
     主树 28 处／`melody-leap` 28／`harmony-leap` 29／`swing-permille` 30，**缺陷全为 0**。
+17. ⭐ **引用 `file:line` 当"保证"之前，必须现读那行的所属作用域与它所断言的东西**：本票初稿把
+    `voice_leading.rs:413` 写成"theory 保证每个声部都是和弦音"的**依据** —— 现读 `mod tests` 起始于
+    `:371`，于是两处错：① 那是**测试**，不是产品码强制（真保证来自 `recurse` 的构造）；
+    ② 它断言的是**成员归属**（声部 ∈ 和弦音集），⛔ 是**覆盖性**（每个音级都被发出）——
+    而且只跑 3 声部 × `ii-V-I-vi`。防线＝引行号时同时读**该行的 enclosing 边界**
+    （`mod tests`／`impl`／`#[test]`）＋把"它到底断言了什么"逐字抄下来，⛔ 从"这条测试的名字"推断语义。
