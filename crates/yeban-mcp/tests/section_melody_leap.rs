@@ -59,6 +59,7 @@ impl Given {
             material_source: Some("theory"),
             include_melody: true,
             melody_max_leap: None,
+            harmony_max_voice_jump: None,
         }
     }
 

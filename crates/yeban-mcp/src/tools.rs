@@ -807,6 +807,12 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
                 "旋律**相邻两音的跳进上界** [ADR-0039]: 单位 = **半音距离** (⛔ 不是 MIDI 音高值、⛔ 不是八度号、⛔ 不是音域宽度)。取值 0..=127, 缺省 12 (= theory 的 `MELODY_MAX_LEAP`) ⇒ 逐字节维持既有输出。为什么上界是 127 而⛔ 是 12/24: 音高全域是 0..=127 ⇒ 两音的半音距离任何输入下都不可能超过 127, 因此 0..=127 是恰好的界; 大于窗口宽度的取值 = \"实际不设限\" (语义, ⛔ 错误)。`0` 合法 = 只允许同音反复 (实测: theory 把整条旋律压成单音, onset 数不变)。消费点与 `melodyLower`/`melodyUpper` **同一个** (只被 `melody_over_chords` 读取) ⇒ 同样要求与 `materialSource:\"theory\"` **且** `includeMelody:true` 同给, 否则 ⇒ `INVALID_PARAMETER_RANGE` (带 `hint`)。越界 ⇒ `INVALID_PARAMETER_RANGE` (带 `field` + `value` + `range`)。⛔ 不筛点、⛔ 不改时值 ⇒ 同一次调用的音符 id/起点/时值与不传时逐条对齐, 只有音高变; 窗口里没有满足上界的音阶音时由 `yeban-theory` 判定并原样转发 ⇒ `INVALID_PARAMETER_RANGE` (带 `theoryStep:\"melody_over_chords\"`), ⛔ 本层不抄可行性表 (与音域同一条理由)",
             ),
             param(
+                "harmonyMaxVoiceJump",
+                "integer",
+                false,
+                "和声声部**相邻两个和弦之间**的跳进上界 [ADR-0040]: 单位 = 半音距离 (同一声部在前后两个和弦里的音高差, ⛔ 不是 MIDI 音高、⛔ 不是八度号)。取值 0..=127; 缺省不给 = **不覆盖** theory 的出厂值 (3 声部 `VoicingConstraints::THREE_VOICES`、4 声部 `FOUR_VOICES`, 现读同为 12) ⇒ 键缺席时逐字节维持既有输出。消费点: **仅**和声生成路径 (`voice_leading::realize`), 且 3 与 4 声部**两条**路径都接线 ⇒ 只要求与 `materialSource:\"theory\"` 同给, ⛔ **不**要求 `includeMelody`/`includeDrums` (和声声部在 theory 路径上恒在场、恒被消费)。越界 ⇒ `INVALID_PARAMETER_RANGE` (带 `field` + `value` + `range`)。`0` 合法 (和弦不动), 但某个上界在该进行里可不可行**随进行移动** (实测: `i-VI-III-VII` 上 1/0 无解, 同和弦反复上 0 有解) ⇒ 由 `yeban-theory` 判定并原样转发 (`theoryStep:\"voice_leading::realize\"`), ⛔ 本层不抄「进行 × 上界」可行性表, ⛔ 静默放宽。⛔ 不筛和弦、⛔ 不改时值: 和弦层数与和声各音符的 id/起点/时值逐条对齐, 只有和声声部的音高变; 旋律与鼓⛔ 受影响。与 `melodyMaxLeap` 是两个键: 那一个管**旋律线**里相邻两音, 这一个管**和声声部**在相邻和弦之间的移动。实测: 缺省 12 在常见进行上只打到 2..3 半音 ⇒ 比实际所需更松的取值不改变输出, 那是\"上界\"的正常语义而⛔ 缺陷",
+            ),
+            param(
                 "autoMerge",
                 "boolean",
                 false,
