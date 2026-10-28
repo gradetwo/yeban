@@ -1,4 +1,4 @@
-//! `ADR-0043`（缺口 `G8j`：军鼓落点是入参）：`yeban_propose_section` 的 `drumBackbeat` ——
+//! `ADR-0043`（缺口 `G8k`：军鼓落点是入参）：`yeban_propose_section` 的 `drumBackbeat` ——
 //! 把 `GenreRule::drum_pattern` 里**写死为派生值**的那个实参（`swung_styled_drum_pattern` 的
 //! `backbeat`）开放成可给的入参，缺省 ⇒ 逐字节不变。
 //!
