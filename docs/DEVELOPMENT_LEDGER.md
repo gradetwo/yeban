@@ -13309,8 +13309,10 @@ MCP 侧只被写死成常量（`section_build.rs:1828` 的 `max_leap: MELODY_MAX
 | Run | 对象 | 结论 | 关键读数（单位 = 条 `test result:` 行 / 测试数 / 失败数） |
 |---|---|---|---|
 | `40633552589` | `G8h`（`harmonyMaxVoiceJump`／`ADR-0040`）的 **merge** `a9132898` | **success** | 全量腿**真跑**：`rust (workspace 全量)` ＋ `windows` ＋ `macos` 三条都在场且耗时非 0 ⇒ ⛔ 空绿（§6.3 第 2 条）⇒ `G8h` **四件齐** |
-| `40634940413` | `G8i`（`swingPermille`／`ADR-0041`）修复批 tip `b10943f9` | **在飞** | 记时 `rust (yeban-mcp)` 已先行 success，`windows`／`macos` 仍在跑 ⇒ ⛔ 记为判决，只记"这一轮的编译面已过 `E0658`" |
-| `40637802897` | `G8k`（`drumBackbeat`／`ADR-0043`）线 tip `541bb7cb` | **在飞** | 前一轮 `40637687858` 是**同一批的旧 tip**（只差判据文件头一个缺口号）⇒ ⛔ 拿它当判决 |
+| `40634940413` | `G8i`（`swingPermille`／`ADR-0041`）修复批 tip `b10943f9` | **success** | 四条腿**真跑**且耗时非 0（`rust (yeban-mcp)`／`windows`／`macos`／`rust (yeban-ui-mcp)`），`rust (workspace 全量)` 因"推送增量规划"**skipped** ⇒ 这一轮只是**线判决**，⛔ 四件齐。上一轮 `40633738039` 的 `E0658`（const 里调 `u64::from`）在这一轮消失 ⇒ 修复批的编译面已过。判决落账 = 05:53 现读 |
+| `40637802897` | `G8k`（`drumBackbeat`／`ADR-0043`）线 tip `541bb7cb` | **success** | 承判腿 `rust (yeban-mcp)` 的日志里 **`test result:` 行 113 条 / passed 合计 2,316 / failed 0**（单位 = 每条 `test result:` 行里的通过数之和），⭐ 本票的**六条判据逐名 `... ok`**（每条 ok×2 = 默认腿 + `合并特性` 腿，failed×0）：`absent_backbeat_is_byte_identical_to_the_derived_beat`／`the_backbeat_moves_only_the_snare_line`／`out_of_range_is_rejected_naming_the_key`（ok×8 = 该条内有多组拍号 × 越界值）／`the_backbeat_key_requires_the_theory_source_and_the_drum_part`／`the_bound_moves_with_the_meter`／`drum_backbeat_is_declared_on_both_param_surfaces_without_default_or_maximum`。`全量` 腿 skipped ⇒ **线判决**，四件齐等主干那条。⛔ 前一轮 `40637687858`（旧 tip `6e03cd57`）已被 cancelled ⇒ ⛔ 当判决 |
+| `40638861581` | `G8i` 的 **merge** `37bb0cc4`（主干） | **在飞**（记时 06:09） | 本 merge 碰 `schemas/**` ⇒ 承判腿 `rust (workspace 全量)` **必然执行**（⛔ 空绿）；`macos`／`windows` 同批在跑。`G8i` 的四件齐以这条为准 |
+| `40642047414` | `G8l`（`drumStyle`／`ADR-0044`）线 tip `c45653e3` | **在飞**（记时 06:09） | ⭐ 该线**堆叠**在 `G8k` 的 tip 上（本表上一版把它写成"基线＝主干"，现读 `git log` 拆开的）⇒ 它的 diff **包含** `G8k` 全部改动，线 run 会同时判两票的编译面。⛔ 在 `G8k` 落地前合主干 |
 
 ### `G8k` 这张票与 `G8i` 的两处结构性差别（⛔ 照抄判据）
 
