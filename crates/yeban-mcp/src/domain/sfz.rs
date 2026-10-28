@@ -772,6 +772,7 @@ impl SfzLoad {
             "sampleFailures": self.sample_failures,
             "sampleReadsTruncated": self.sample_reads_truncated,
             "sampleFramesLoaded": self.sample_frames_loaded,
+            "sampleHz": self.sample_hz,
             "warnings": self.samples_warning().into_iter().collect::<Vec<_>>(),
             "wouldRegister": {
                 "instrumentId": self.id,

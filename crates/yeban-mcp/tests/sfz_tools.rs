@@ -426,8 +426,9 @@ fn load_sfz_reports_the_region_count_and_the_honest_source() {
 /// 校验整段删掉，旧判据都不会红。本判据补的就是输入侧：
 ///
 /// 1. 非缺省值 ⇒ 响应回显它（内容寻址的 `instrumentId` 不变 —— 身份只按内容算）；
-/// 2. 非正数（0 / 负数）⇒ 领域层 `INVALID_PARAMETER_RANGE`，文案点名"必须是有限正数"；
-/// 3. 非数字 ⇒ **注册表**层就拒（`-32602`）：`ParamSpec` 的 `number` 类型先于领域层，
+/// 2. `dryRun` 预览也回显它（"预览与真做同一批实测数字"对**这个**键同样成立）；
+/// 3. 非正数（0 / 负数）⇒ 领域层 `INVALID_PARAMETER_RANGE`，文案点名"必须是有限正数"；
+/// 4. 非数字 ⇒ **注册表**层就拒（`-32602`）：`ParamSpec` 的 `number` 类型先于领域层，
 ///    因此 `parse_load_arguments` 的"必须是数字"支经 `tools/call` 不可达 ——
 ///    那一支由 `src/domain/sfz.rs` 的单元测试
 ///    `load_arguments_take_a_default_sample_hz_and_reject_bad_values` 直接钉住。
@@ -470,6 +471,25 @@ fn the_sample_hz_argument_is_honoured_and_bad_values_are_rejected() {
         defaulted["data"]["reused"].as_bool(),
         Some(true),
         "第二次装载同一份内容必须标 reused: {defaulted}"
+    );
+
+    // ---- dryRun 的预览必须报告同一个值（且**不登记**）----
+    let preview = call_tool(
+        &mut dispatcher,
+        "yeban_load_sfz",
+        serde_json::json!({
+            "path": sfz.display().to_string(),
+            "sampleHz": 22_050,
+            "dryRun": true,
+        }),
+    );
+    assert_eq!(
+        preview["data"]["preview"]["sampleHz"], 22_050.0,
+        "dryRun 预览必须报告同一个 sampleHz: {preview}"
+    );
+    assert_eq!(
+        preview["data"]["preview"]["wouldRegister"]["instrumentId"], at_441["data"]["instrumentId"],
+        "dryRun 预览应指向同一个已登记身份（内容寻址），⛔ 另起一号"
     );
 
     // ---- 非正数 ⇒ 领域层拒绝 ----
