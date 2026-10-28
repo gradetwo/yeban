@@ -2482,6 +2482,9 @@ fn plan_propose_section(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault>
     // ⭐ `ADR-0043` D1：军鼓落点的拍序号 —— 不给 = 不覆盖 theory 的派生值 `default_backbeat(meter)`
     // （实测 4/4→2、3/4→2、2/4→1、5/4→3、6/8→1 ⇒ ⛔ 在这里写死任何一个数）。
     let drum_backbeat = arg_u64(call, "drumBackbeat")?;
+    // ⭐ `ADR-0044` D1：底鼓口径的**档位名** —— 不给 = 不覆盖该流派登记的 `GenreRule::drum_style`
+    // （现读 `GENRES` 182 条: 169 条 `metric` / 13 条 `four-on-the-floor` ⇒ ⛔ 在这里写死任何一项）。
+    let drum_style = arg_str(call, "drumStyle");
     let section_plan = section::plan_with_options(
         project,
         section_name,
@@ -2505,6 +2508,7 @@ fn plan_propose_section(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault>
             harmony_max_voice_jump,
             swing_permille,
             drum_backbeat,
+            drum_style,
         },
     )?;
     propose_draft(

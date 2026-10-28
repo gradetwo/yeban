@@ -127,7 +127,9 @@ use yeban_theory::SWING_PERMILLE_MAX;
 use yeban_theory::SWING_PERMILLE_STRAIGHT;
 use yeban_theory::TheoryError;
 use yeban_theory::cells_per_bar;
-use yeban_theory::drum::{Backbeat, DrumPattern, default_backbeat, swung_styled_drum_pattern};
+use yeban_theory::drum::{
+    Backbeat, DrumPattern, DrumStyle, default_backbeat, swung_styled_drum_pattern,
+};
 use yeban_theory::felt_beats_per_bar;
 use yeban_theory::genre::{GenreLibrary, GenreRule};
 use yeban_theory::melody::{
@@ -1224,6 +1226,16 @@ pub struct PlanOptions<'a> {
     /// ⚠ 与摇摆那根轴**不同**：本键会**加／筛击点**（实测 4/4 夹具 96 ↔ 88 ↔ 84 条），
     /// 改的只有军鼓的**落点与条数**（⛔ 不改其它鼓件、⛔ 不改音色/力度/时值）。
     pub drum_backbeat: Option<u64>,
+    /// ⭐ `ADR-0044` D1：鼓的**底鼓口径**（单位 = 档位名，⛔ 数字、⛔ 枚举下标）。
+    /// `None` = **不覆盖**该流派登记的 `GenreRule::drum_style` ⇒ 逐字节维持既有输出（D2）。
+    /// ⚠ 缺省**不是一个固定字符串**：现读 `GENRES` 182 条里 **169 条**登记 `Metric`、
+    /// **13 条**登记 `FourOnTheFloor`（`disco`/`house`/`techno`/`trance` 那一支）⇒ 契约里⛔ 写 `default`（D5）。
+    /// 界 = theory 公开的 `DrumStyle::ALL` × `name()`（现读两项），⛔ 本层另立一份字符串表（D2）。
+    /// ⚠ 消费点是**鼓轨**（`swung_styled_drum_pattern` 的 `style` 实参）⇒ 耦合口径与
+    /// `swing_permille` / `drum_density` / `drum_backbeat` **同一支**（要 theory 材料源且鼓轨在场，D3）。
+    /// ⚠ 本键**只动底鼓**：实测可测的 518 组里，**非底鼓**击点的 `(音色, 起点, 时值, 力度)` 表
+    /// 两档**逐条相同**（与 `drum_backbeat` 会同时加/筛军鼓是**不同**的形状）。
+    pub drum_style: Option<&'a str>,
 }
 
 /// 一个声部的身份（两条材料路径共用）。
@@ -1699,6 +1711,42 @@ fn backbeat_bound(raw: Option<u64>, meter: TheoryMeter) -> Result<Option<Backbea
         })
 }
 
+/// ⭐ `ADR-0044` D2：把 `drumStyle` 的**字符串读数**转成已解析档位；`None` = 不覆盖。
+///
+/// 候选⛔ 写在本层：唯一来源是 theory 公开的 `DrumStyle::ALL` × [`DrumStyle::name`]，
+/// 出现第二份写者就是缺陷（与 `DrumDensity::parse` **不同** —— 那两个字面量是本层自定义的词汇）。
+/// 未知取值 ⇒ `INVALID_PARAMETER_RANGE`，载荷点名 `field` + `value` + **现场**生成的 `accepted`
+/// （⛔ 夹紧、⛔ 静默降级成 `Metric`，`ADR-0036` D3 的同一条口径）。
+fn drum_style_choice(raw: Option<&str>) -> Result<Option<DrumStyle>, BuildFault> {
+    let Some(value) = raw else {
+        return Ok(None);
+    };
+    let accepted: Vec<&'static str> = DrumStyle::ALL.iter().map(|style| style.name()).collect();
+    let value_list = accepted
+        .iter()
+        .map(|name| format!("\"{name}\""))
+        .collect::<Vec<_>>()
+        .join(" 或");
+    DrumStyle::ALL
+        .iter()
+        .copied()
+        .find(|style| style.name() == value)
+        .map(Some)
+        .ok_or_else(|| {
+            BuildFault::domain_with_data(
+                BuildCode::InvalidParameterRange,
+                format!(
+                    "`drumStyle` 必须是 {value_list}, 实际 `{value}`（候选现场取自 theory 的 `DrumStyle::ALL`）"
+                ),
+                json!({
+                    "field": "drumStyle",
+                    "value": value,
+                    "accepted": accepted,
+                }),
+            )
+        })
+}
+
 /// 960 PPQ 的整数 tick；身份由 `section_id + 声部序 + 和弦序` 派生。
 ///
 /// ⭐ `ADR-0033`：`subdivisions[voice]`（调用方已校验 1..=[`MAX_VOICE_SUBDIVISION`]）
@@ -1851,8 +1899,12 @@ fn theory_drum_pattern(
             .swing_permille()
             .map_err(|error| theory_invalid(style_preset, "GenreRule::swing_permille", error)),
     };
-    let (asked, step) = match (rulers.swing, rulers.backbeat) {
-        (None, None) => (
+    // ⭐ `ADR-0044` D5：不给档位时读**流派登记值** —— 那正是薄封装内部读的同一个数，因此
+    // "只给一把标尺"⛔ 顺带改掉另一根轴。这一步⛔ 会失败（候选已在读参数时按 `DrumStyle::ALL` 判过）。
+    let resolved_style = rulers.style.unwrap_or(rule.drum_style);
+    let (asked, step) = match (rulers.swing, rulers.backbeat, rulers.style) {
+        // ⭐ `ADR-0044` D5：三把标尺都不给 ⇒ 走薄封装（= 接线前的路径，逐字节不变）。
+        (None, None, None) => (
             rule.drum_pattern(bars, onsets_per_bar),
             "GenreRule::drum_pattern",
         ),
@@ -1864,7 +1916,7 @@ fn theory_drum_pattern(
                 resolved_permille()?,
                 None,
                 backbeat,
-                rule.drum_style,
+                resolved_style,
             ),
             // ⚠ 复用本文件**已有**的这一步骤名（兜底分支就在用它）⇒ ⛔ 新增故障词（D7）。
             "swung_styled_drum_pattern",
@@ -1883,7 +1935,7 @@ fn theory_drum_pattern(
         permille,
         None,
         backbeat,
-        rule.drum_style,
+        resolved_style,
     )
     .map_err(|error| {
         theory_grid_invalid(
@@ -1908,7 +1960,7 @@ fn theory_drum_pattern(
     })
 }
 
-/// 鼓轨消费的**五把标尺**：筛点档、网格密度、力度两档、摇摆比例与军鼓落点。
+/// 鼓轨消费的**六把标尺**：筛点档、网格密度、力度两档、摇摆比例、军鼓落点与底鼓口径。
 ///
 /// ⭐ `ADR-0041` D4：与 [`MelodyRulers`] 同一条理由 —— `drum_contents` 加上摇摆就是
 /// 第 8 个参数，而 `clippy::too_many_arguments` 在本仓是**承重信号**（`G8f` 第一批
@@ -1932,6 +1984,10 @@ struct DrumRulers {
     /// `default_backbeat(meter)`（D1）。⚠ 界**随拍号移动** ⇒ 校验⛔ 发生在读参数时，
     /// 只能在 [`theory_drum_pattern`] 里拿到 `rule.meter_value()` 之后由 [`backbeat_bound`] 做（D2）。
     backbeat: Option<u64>,
+    /// ⭐ `ADR-0044` D4：底鼓口径（**已解析**的档位，⛔ `Option<&str>` —— 形状拒绝必须在读参数时
+    /// 就点名是哪个键）；`None` = **不覆盖**该流派登记的 `GenreRule::drum_style`（D1）。
+    /// 它是第 6 个字段：与 `backbeat` 同为"最后一处写死的实参"，⛔ 用位置参数传（同 D4 的理由）。
+    style: Option<DrumStyle>,
 }
 
 /// `'theory'` 路径的鼓组内容（`ADR-0017` D1）。
@@ -2214,6 +2270,24 @@ pub fn plan_with_options(
             json!({ "hint": "请同时指定 includeDrums: true（军鼓落点只作用于生成的鼓轨）" }),
         ));
     }
+    // ⭐ `ADR-0044` D2/D3：`drumStyle` 的形状界 = theory 公开的 `DrumStyle::ALL`（⛔ 随拍号移动）
+    // ⇒ 判在这里；消费点与 `swingPermille`/`drumBackbeat` **同一个**（[`theory_drum_pattern`]）
+    // ⇒ 耦合口径取同一支（要 theory 材料源 **且** 鼓轨在场）。
+    let drum_style = drum_style_choice(options.drum_style)?;
+    if options.drum_style.is_some() && material_source != MaterialSource::Theory {
+        return Err(BuildFault::domain_with_data(
+            BuildCode::InvalidParameterRange,
+            "`drumStyle` 仅在 materialSource: 'theory' 时支持",
+            json!({ "hint": "请指定 materialSource: \"theory\"（底鼓口径只作用于生成的鼓轨网格）" }),
+        ));
+    }
+    if options.drum_style.is_some() && !include_drums {
+        return Err(BuildFault::domain_with_data(
+            BuildCode::InvalidParameterRange,
+            "`drumStyle` 仅在 includeDrums: true 时支持",
+            json!({ "hint": "请同时指定 includeDrums: true（底鼓口径只作用于生成的鼓轨）" }),
+        ));
+    }
     // ⭐ `ADR-0033` D3：`voiceSubdivision` 的整数上界写在 domain 层，越界 ⇒ 响亮拒绝；
     // 显式给了它却不走 theory 材料路径 = "给了不消费的参数"，与 `drumDensity` 同口径。
     let voice_subdivision = match options.voice_subdivision {
@@ -2470,6 +2544,7 @@ pub fn plan_with_options(
                         ladder,
                         swing,
                         backbeat: options.drum_backbeat,
+                        style: drum_style,
                     },
                 )?);
             }

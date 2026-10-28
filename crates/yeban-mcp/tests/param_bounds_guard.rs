@@ -86,8 +86,8 @@ enum BoundStatus {
     Unbounded(&'static str),
 }
 
-/// 29 条 string 参数声明（`TOOLS` 里 `json_type == "string"` 的**不同名**）。
-const STRING_PARAM_BOUNDS: [(&str, BoundStatus); 29] = [
+/// 30 条 string 参数声明（`TOOLS` 里 `json_type == "string"` 的**不同名**）。
+const STRING_PARAM_BOUNDS: [(&str, BoundStatus); 30] = [
     ("idempotencyKey", BoundStatus::Length(None, Some(256))),
     ("name", BoundStatus::Length(Some(1), None)),
     ("license", BoundStatus::Length(Some(1), None)),
@@ -183,6 +183,11 @@ const STRING_PARAM_BOUNDS: [(&str, BoundStatus); 29] = [
     // ADR-0028：`yeban_propose_section` 的鼓密度档（词表 = normal / sparse，
     // 未知值由 `DrumDensity::parse` 拒绝并列出 `accepted`）。
     ("drumDensity", BoundStatus::WordList),
+    // ADR-0044：`yeban_propose_section` 的鼓口径档。界的形态是**词表**而不是长度，
+    // 且词表**不在 MCP 里抄写** —— 候选集现场取自 theory 的 `DrumStyle::ALL`（`name()`），
+    // 未知值由 `drum_style_choice` 拒绝并列出 `accepted`；`schemas/**` 同步声明 `enum`、
+    // ⛔ `default`（182 个 GENRES 里 169 走 `metric`／13 走 `four-on-the-floor` ⇒ 无单一默认）。
+    ("drumStyle", BoundStatus::WordList),
 ];
 
 #[test]
