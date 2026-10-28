@@ -14250,3 +14250,8 @@ macOS 侧读数：`test result:` **262** 行／passed **4,960**／`FAILED` **0**
 
 ⇒ 本批**三件齐**：代码（`fc610604`）＋判据（a'''''，逐键 18 个）＋全量判决（`40766412375`）。
 文档提交 `b17fcb23` 自己的 run 在下一节读回。
+
+**本批同推的两条文档提交**（⛔ 当代码判决）：`b17fcb23` 的 run **`40766454641` ＝ success ＝ 空绿**、
+`252bf077` 的 run **`40771920649` ＝ success ＝ 空绿**（两者四条代码腿 `rust (workspace 全量)`／
+`rust (矩阵)`／`macos`／`windows` **全 skipped、steps=0**；真跑的只有 `plan`／`checks`／
+`lockfile`／`deny`）。
