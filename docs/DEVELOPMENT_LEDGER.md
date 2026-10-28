@@ -13502,3 +13502,14 @@ MCP 侧只被写死成常量（`section_build.rs:1828` 的 `max_leap: MELODY_MAX
     = 34 真字面量 ＋ 1 结构体定义 ＋ 1 文档示例 ⇒ 真缺 0）；② `policy_check.py` 新增 **`G19`**
     （`struct`/`enum` 定义体里出现 `名字: None|Some(|true|false|数字|"` ⇒ 红），本机注入探针已验证会红。
     ⭐ 一般化：**"某个数字报绿"只覆盖它数的那件事**；`E0063`（少键）与 `E0573`（值进类型位）是**两类**错。
+
+### `G8n`（`beatGrouping`／`ADR-0046`）判决链（2026-10-28）
+
+| 提交 / run | 结论 | 唯一红项（若有） |
+|---|---|---|
+| 线 `1ac8816f` / run **`40674443906`** | **success，真跑** | 无。`rust (yeban-mcp)` **785 s**（119 个 `test result:` ／ passed **2,352** ／ `FAILED` **0**）；`macos` **1,602 s**、`windows` **2,069 s**、`rust (yeban-ui-mcp)` 166 s 均非 0 s ⇒ ⛔ 空绿；`rust (workspace 全量)` 在该 run 里是 0 s `skipped`（线判决腿是逐 crate ＋ 两平台，属规划口径，⛔ 当成缺腿） |
+| 六条判据逐名 | **全 `... ok`**（各出现 2 次） | `absent_grouping_is_byte_identical_to_the_derived_split`／`the_grouping_moves_the_kick_and_the_accents_not_the_grid`／`illegal_groupings_are_rejected_naming_the_key`／`the_grouping_key_requires_the_theory_source_and_the_drum_part`／`the_legal_shape_moves_with_the_meter`／`drum_grouping_is_declared_on_both_param_surfaces_without_default_or_maximum`。口径（第 22 条）：日志里 `Running tests/section_drum_grouping.rs` 出现 **2** 次，名字与该文件**路径**同框核对 |
+| merge **`b42f4cc0`** / run **`40679452708`** | ⏳ 待读回 | 碰 `crates/**` ＋ `schemas/**` ⇒ `workspace_wide: true` ⇒ 全量腿**必真跑** |
+
+⚠ 前一轮的真红已入案（第 24 条）：run `40673654327` 三腿同红 `E0573`，根因是我自己的补位脚本把
+`beat_grouping: None,` 插进了 `section_melody_seed.rs` 的**结构体定义**与 `Self { … }`；修复提交 `1ac8816f`。

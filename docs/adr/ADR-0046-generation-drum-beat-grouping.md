@@ -118,11 +118,17 @@
    `array_param("beatGrouping", …)` 与契约 JSON 的 `properties.beatGrouping` 同时在场，
    `items.type = integer`、`items.minimum = 1`、`minItems = 1`，且 ⛔ `default`/`maxItems`/`items.maximum`。
 
-### 待 CI 回答的两件事（⛔ 在本票里预先"补齐"）
+### 待 CI 回答的两件事 —— **已由 CI 回答（2026-10-28，两条都成立）**
 
-- 读数 3 是**theory 直调**的探针：MCP 路径下 `onsets_per_bar` 由流派格点导出、力度由 `ADR-0037`
-  的阶梯给出 ⇒ 判据 2 的"8→14 条/小节"是否在真实夹具里**逐值**成立（若夹具的格点数与探针不同，
-  条数会不一样 ⇒ 判据按 4/4 夹具的实测值断言，⛔ 抄探针的绝对值以外的数）。
-- `waltz`（3/4）夹具能否在该 `progression` 下规划成功：探针只测到 theory 层，⛔ 覆盖
-  `yeban-mcp` 的旋律/和声路径 —— 若判据 5 红在"规划失败"，那是夹具问题（要换 3/4 夹具），
-  ⛔ 放宽"合法形状随拍号移动"这条主张。
+- **① MCP 路径下"8→14 条/小节"逐值成立。** 判据 2 在 `yeban-mcp` 里**不是** theory 直调：它走
+  `plan_with_options`（`onsets_per_bar` 由流派格点导出、力度由 `ADR-0037` 的阶梯给出），断言
+  `accent_count(base) == 8 * bars` 与 `accent_count(moved) == 14 * bars`。线 run **`40674443906`**
+  （head `1ac8816f`，`rust (yeban-mcp)` 785 s 真跑 / 119 个 `test result:` / passed 2,352 / `FAILED` 0）
+  里该判据逐名 `... ok` ⇒ 读数与 theory 探针一致，⛔ 需要按夹具改写条数。
+- **② `waltz`（3/4）夹具在该 `progression` 下规划成功。** 判据 5 在 `waltz` 上先跑通 `plan(...)`
+  才谈断言（`[3,2]`/`[4]` 被拒且 `beatsPerBar: 3`；`[2,1]`/`[3]`/`[1,1,1]` 放行；缺省 ≡ `[3]`），
+  同一 run 里 `... ok` ⇒ 夹具可用，⛔ 需要换 3/4 夹具、⛔ 放宽主张。
+- ⚠ 口径（第 22 条）：两条读数都来自**判据名 ＋ 文件路径**（`Running tests/section_drum_grouping.rs`
+  在该日志里出现 **2** 次 — 见 `tests/section_drum_grouping.rs`）的交叉核对，⛔ 仅凭整体 `success`。
+- ⏳ 主干侧替代判决：merge **`b42f4cc0`** 的 run `40679452708`（碰 `crates/**` ＋ `schemas/**`
+  ⇒ `workspace_wide: true` ⇒ 全量腿必真跑）。
