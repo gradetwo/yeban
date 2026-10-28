@@ -4,12 +4,15 @@
 //!
 //! 由来（`G8d` 的教训，2026-10-28 补覆盖）：那一次实测出 MCP 侧一个**常量 16**
 //! 让 `GENRES` 里 **28 条非 4/4** 流派的鼓/旋律根本生成不出来（theory 报
-//! `ProgressionTooDense`），而当时 MCP 侧的判据只有少数**手挑夹具**
-//! （`synthwave` / `waltz` …）⇒ 同样的回归再犯一次，现有判据一条都不会红。
-//! theory 侧早就有全流派矩阵（`tests/properties.rs` 的
-//! `every_genre_produces_a_playable_sketch` / `every_genre_produces_a_melody_in_its_own_scale` /
-//! `every_registered_genre_produces_a_well_formed_drum_pattern`），缺的正是**穿过
-//! MCP 规划层**的那一遍。
+//! `ProgressionTooDense`）⇒ 这类"登记了却生成不出来"的缺陷必须有全库判据兜住。
+//!
+//! ⚠ **本文件不是第一个全库遍历**（纠正初版注释里"只有手挑夹具"的错误说法）：
+//! `tests/onsets_per_bar.rs` 的 `every_non_common_time_genre_generates_at_its_own_grid`
+//! 已经全库遍历，但它**跳过 4/4**、且断言的是"缺省网格 ≡ 该流派自己的 `cells_per_bar`"；
+//! `verify/section_pure.rs` 的 `every_theory_genre_maps_to_a_voice_count_from_its_own_chords`
+//! 全库比 `preset_parts().len()`，但**不规划**，且那是本机脚手架（不进本 crate 的 test 腿）。
+//! 本判据补的差额是三者各自都不覆盖的那一面：**全库（含 4/4）× 走完整规划路径 ×
+//! 三类生成物（和声声部 / 鼓 / 旋律）都非空**。
 //!
 //! 口径（关键的一面）：**所有可选键全缺省** —— `scale`／`progression` 都给 `None`，
 //! 于是每一流派读的是它**自己登记**的 `primary_scale` / `progression_at(0)`
