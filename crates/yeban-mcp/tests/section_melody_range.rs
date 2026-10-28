@@ -104,6 +104,7 @@ fn try_plan(given: Given) -> Result<SectionPlan, BuildFault> {
             melody_lower: given.melody_lower,
             melody_upper: given.melody_upper,
             melody_max_leap: None,
+            harmony_max_voice_jump: None,
         },
     )
 }

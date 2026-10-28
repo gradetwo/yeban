@@ -2474,6 +2474,8 @@ fn plan_propose_section(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault>
     // ⭐ `ADR-0039` D1/D2：跳进上界（单位 = 半音距离）同理 —— 不给 = 既有 12。
     // 界与消费校验都交给领域层（`melody_leap`），这里⛔ 判第二次。
     let melody_max_leap = arg_u64(call, "melodyMaxLeap")?;
+    // ⭐ `ADR-0040` D1：和声声部的跳进上界同理 —— 不给 = 不覆盖 theory 的出厂值。
+    let harmony_max_voice_jump = arg_u64(call, "harmonyMaxVoiceJump")?;
     let section_plan = section::plan_with_options(
         project,
         section_name,
@@ -2494,6 +2496,7 @@ fn plan_propose_section(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault>
             melody_lower,
             melody_upper,
             melody_max_leap,
+            harmony_max_voice_jump,
         },
     )?;
     propose_draft(

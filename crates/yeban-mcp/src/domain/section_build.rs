@@ -1198,6 +1198,12 @@ pub struct PlanOptions<'a> {
     /// （合法：theory 实测把整条旋律压成单音，onset 数不变）；大于窗口宽度的取值 = 实际不设限。
     /// ⚠ 消费点与 `melody_lower`/`melody_upper` 同一个（只被旋律路径读取）⇒ 耦合口径相同（D3）。
     pub melody_max_leap: Option<u64>,
+    /// ⭐ `ADR-0040` D1：**和声声部**相邻两和弦之间的跳进上界（单位 = 半音距离）。
+    /// `None` = 不覆盖 theory 的出厂值（3 声部 `THREE_VOICES`、4 声部 `FOUR_VOICES`，两者实测同为 12）
+    /// ⇒ 逐字节维持既有输出。取值 `0..=127`；`0` 合法但**可行性随进行移动**（D4）。
+    /// ⚠ 消费点和声路径（`theory_contents`）⇒ 只要求 `material_source` 为 theory，
+    /// ⛔ 不要求 `include_melody`/`include_drums`（D3，与旋律三键是**不同**口径）。
+    pub harmony_max_voice_jump: Option<u64>,
 }
 
 /// 一个声部的身份（两条材料路径共用）。
@@ -1579,12 +1585,41 @@ fn melody_leap(raw: Option<u64>) -> Result<u8, BuildFault> {
     }
 }
 
+/// ⭐ `ADR-0040` D1：把可选键 `harmonyMaxVoiceJump` 折成和声声部的**跳进上界**。
+///
+/// 键缺席 ⇒ `None` ⇒ 调用方**不覆盖** `VoicingConstraints.max_voice_jump`，于是 3 声部取
+/// `THREE_VOICES`、4 声部取 `FOUR_VOICES` 各自的出厂值 ⇒ 那个 `12` 只有 theory 一个写者（D1）。
+/// 上界 `127` 的理由与 `ADR-0039` D2 同一条（单声部两个音都在 `0..=127` 内）。
+/// ⚠ `0` 合法但**是否可行随进行移动**（实测：同和弦反复上可行，`i-VI-III-VII` 上不可行）⇒
+/// ⛔ 在本层预判，可行性唯一来源是 theory 的 `NoFeasibleVoicing`（D4，命中时经
+/// `theory_invalid(…, "voice_leading::realize", …)` 原样转发）。拒绝载荷⛔ 带 `reason` 键（D7）。
+fn harmony_leap(raw: Option<u64>) -> Result<Option<i16>, BuildFault> {
+    match raw {
+        None => Ok(None),
+        Some(value) => Ok(Some(i16::from(midi_pitch_bound(
+            "harmonyMaxVoiceJump",
+            value,
+        )?))),
+    }
+}
+
+/// ⭐ `ADR-0040` D1/D5：把上界盖到一份 `VoicingConstraints` 上；`None` ⇒ **原样返回**，
+/// 于是 3/4 声部各自取 theory 的出厂值（⛔ 在本层再抄一个 `12`）。
+fn with_harmony_jump(mut constraints: VoicingConstraints, jump: Option<i16>) -> VoicingConstraints {
+    if let Some(jump) = jump {
+        constraints.max_voice_jump = jump;
+    }
+    constraints
+}
+
 /// 960 PPQ 的整数 tick；身份由 `section_id + 声部序 + 和弦序` 派生。
 ///
 /// ⭐ `ADR-0033`：`subdivisions[voice]`（调用方已校验 1..=[`MAX_VOICE_SUBDIVISION`]）
 /// 把每个 `ChordSpan` 均匀切成 N 条同音高、同力度的音符。
 /// ⭐ `ADR-0035` D1：粒度从"一个数"换成"**每个声部一个数**"—— 本函数里
 /// ⛔ 没有任何一条算式变了，只是 `subdivision` 逐声部取。
+/// ⭐ `ADR-0040` D5：`harmony_jump`（`None` = 不覆盖出厂值）在 3 与 4 声部**两条**路径上都接线
+/// —— 只接一条会让同一个键在两种风格预设下有不同的语义。
 fn theory_contents(
     style_preset: &str,
     section_id: EntityId,
@@ -1592,6 +1627,7 @@ fn theory_contents(
     spans: &[ChordSpan],
     subdivisions: &[u64],
     ladder: (u8, u8),
+    harmony_jump: Option<i16>,
 ) -> Result<Vec<BTreeMap<EntityId, MidiNote>>, BuildFault> {
     if subdivisions.len() != voice_count {
         return Err(BuildFault::domain(
@@ -1610,13 +1646,18 @@ fn theory_contents(
         // ⛔ 不改 `yeban-theory`（模块边界：本 crate 只消费它的公开面）。
         3 => voice_leading::realize(
             spans,
-            &VoicingConstraints {
-                ranges: &SECTION_THREE_VOICES,
-                max_voice_jump: 12,
-                max_total_movement: 24,
-            },
+            &with_harmony_jump(
+                VoicingConstraints {
+                    ranges: &SECTION_THREE_VOICES,
+                    ..VoicingConstraints::THREE_VOICES
+                },
+                harmony_jump,
+            ),
         ),
-        4 => voice_leading::realize(spans, &VoicingConstraints::FOUR_VOICES),
+        4 => voice_leading::realize(
+            spans,
+            &with_harmony_jump(VoicingConstraints::FOUR_VOICES, harmony_jump),
+        ),
         other => {
             return Err(BuildFault::domain(
                 BuildCode::Conflict,
@@ -2102,6 +2143,17 @@ pub fn plan_with_options(
     // `melody_contents` 只**取用**（⛔ 同一参数的界两个写者）。
     let register = melody_register(options.melody_lower, options.melody_upper)?;
     let leap = melody_leap(options.melody_max_leap)?;
+    // ⭐ `ADR-0040` D3：和声键的消费口径与上面三键**不同** —— 和声声部在 theory 路径上
+    // 恒在场、恒被消费（⛔ 像旋律那样要求某个可选声部在场），所以⛔ 把 `register_given`
+    // 那个表达式扩到本键：那会把"必须有旋律声部"这条更严的要求扩散到一个文档里没写它的键上。
+    if options.harmony_max_voice_jump.is_some() && material_source != MaterialSource::Theory {
+        return Err(BuildFault::domain_with_data(
+            BuildCode::InvalidParameterRange,
+            "`harmonyMaxVoiceJump` 仅在 materialSource: 'theory' 时支持",
+            json!({ "hint": "请指定 materialSource: \"theory\"（声部跳进上界只作用于生成的和声声部，外部素材的音高由调用方给出）" }),
+        ));
+    }
+    let harmony_jump = harmony_leap(options.harmony_max_voice_jump)?;
     // 1. 参数与工程前置条件（顺序即错误码优先级，判据钉住它）。
     //    风格与声部数都来自 theory（见 `preset_parts` / `genre_voice_count`）。
     let harmony_parts = preset_parts(style_preset)?;
@@ -2215,6 +2267,7 @@ pub fn plan_with_options(
                 &spans,
                 &harmony_subdivisions,
                 ladder,
+                harmony_jump,
             )?;
             if include_drums {
                 contents.push(drum_contents(
