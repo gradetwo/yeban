@@ -2471,6 +2471,9 @@ fn plan_propose_section(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault>
     // 校验都交给领域层（`melody_register`），这里⛔ 再校验一遍。
     let melody_lower = arg_u64(call, "melodyLower")?;
     let melody_upper = arg_u64(call, "melodyUpper")?;
+    // ⭐ `ADR-0039` D1/D2：跳进上界（单位 = 半音距离）同理 —— 不给 = 既有 12。
+    // 界与消费校验都交给领域层（`melody_leap`），这里⛔ 判第二次。
+    let melody_max_leap = arg_u64(call, "melodyMaxLeap")?;
     let section_plan = section::plan_with_options(
         project,
         section_name,
@@ -2490,6 +2493,7 @@ fn plan_propose_section(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault>
             velocity_max,
             melody_lower,
             melody_upper,
+            melody_max_leap,
         },
     )?;
     propose_draft(

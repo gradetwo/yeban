@@ -36,6 +36,7 @@ fn theory(voice_subdivision: Option<u64>, include_parts: bool) -> Result<Section
             velocity_max: None,
             melody_lower: None,
             melody_upper: None,
+            melody_max_leap: None,
         },
     )
 }
@@ -234,6 +235,7 @@ fn voice_subdivision_bounds_and_coupling_are_loud() {
                 velocity_max: None,
                 melody_lower: None,
                 melody_upper: None,
+                melody_max_leap: None,
             },
         )
         .expect_err("`voiceSubdivision` 不得脱离 materialSource:\"theory\" 单独给");

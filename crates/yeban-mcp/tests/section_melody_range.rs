@@ -103,6 +103,7 @@ fn try_plan(given: Given) -> Result<SectionPlan, BuildFault> {
             velocity_max: None,
             melody_lower: given.melody_lower,
             melody_upper: given.melody_upper,
+            melody_max_leap: None,
         },
     )
 }
@@ -471,9 +472,12 @@ fn melody_register_is_declared_on_both_param_surfaces() {
             "`{name}` 的缺省必须与 theory 的出厂界同源（⛔ 两份数字）: {property}"
         );
     }
-    // ⛔ 第三个键：`max_leap` 的单位不是音域，本票明文不开放（`ADR-0038` N2）。
+    // ⚠ 本条原本是"⛔ 第三个键"的**反向钉**（`ADR-0038` N2：本票不开放 `melodyMaxLeap`）。
+    // `ADR-0039` 兑现了那条欠条 ⇒ 钉必须翻成正钉：键现在**应当**在两个声明面都在场，
+    // 且它的形状由 `tests/section_melody_leap.rs` 的判据 6 逐字段核。⛔ 留着旧断言 ＝ 假绿
+    // （它会在键被合法加上时把 CI 弄红，或在⛔ 该加却没加时把 CI 弄绿）。
     assert!(
-        spec.param("melodyMaxLeap").is_none() && declared.get("melodyMaxLeap").is_none(),
-        "`melodyMaxLeap` 属 `ADR-0038` 非范围 N2 ⇒ 两个声明面都⛔ 出现它"
+        spec.param("melodyMaxLeap").is_some() && declared.get("melodyMaxLeap").is_some(),
+        "`melodyMaxLeap` 已由 `ADR-0039` 开放 ⇒ 两个声明面都必须出现它（形状见 `section_melody_leap.rs`）"
     );
 }
