@@ -1628,6 +1628,14 @@ python3 scripts/guards/policy_check.py && bash scripts/gates/run-gates.sh light
 > 日志 **547 行**／`文档检查通过` 1 次／`守卫全部通过 (20 条)` 1 次／死链 **0**，四条 rust 腿 `skipped`+steps=0
 > （纯文档 diff 的预期形态）。⇒ 现役 tip **`a635656f`**，本机 `bash scripts/gates/run-gates.sh light` **rc=0**。
 > ⚠ 递归口径见台账「修复批的判决」末段：**"记录判决"自身也是纯文档提交**，不再为它开新一轮入账。
+>
+> ⭐ **12:36 追加（独立抽查，⛔ 用台账的词判交付）**：拿 `GAPS.md` 的"消除"条目去 `grep` 交付形态
+> （`AGENTS.md` §6.3 第 3 条），**7/13** 抽中且**全部一致**：`autoMerge` rust 20／schema 7、
+> `sections.timeline` rust 8、`setPitchBendPoint` rust 17、`commitModel` rust 9、`transposeClip` rust 20、
+> `yeban_export_stems` rust 17／schema 5、`deviceChainDsp` 收窄（现读 9 处全是**警告码**用法，⛔ 回潮）。
+> `G1`/`G2`/`G4`/`G6`/`G7` 未抽（各有 ADR ＋ 自己的判决节）⇒ **零新缺口**，创作缺口这条线上
+> **自主可做的活仍然是零**（`G3`/`G10`/`G11` 是 `HD-67`/`HD-69`/`HD-68`；`G12` 后半是 `HD-70`；
+> 旋律动机半片待裁；`ADR-0042` 待裁）。⭐ 同时更正了台账 §5.3 表头那句已被证伪的"`G8` 无条件消除"。
 
 ### ⭐ 磁盘：仓库**外**大头的现读清单（2026-10-28 06:38，`du -sh` 实测，⛔ 一个字节都没删）
 
