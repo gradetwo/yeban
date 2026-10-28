@@ -14396,3 +14396,15 @@ D3 完整句法（须先有登记数据来源，不建议现在启动）。**⛔
 3. **工具计数漂移**（AGENTS.md §4.2 两次陈旧警告的机械复查）：
    `TOOL_COUNT=25`／`10+15`（`tools.rs:107/110/117`）＝ schema `definitions.ToolCall.properties.name.enum`
    长度 **25**；逐名比对：schema-only **0**、code-only **0**。⇒ 三处一致，本项无账要改。
+
+## 2026-10-28 晚（文档化工具抽查）：`saveFirst`／`force`／`limit`·`offset` 四个键均真消费
+
+§0.6.0b 的十五工具全表只覆盖**扩展**工具；本批按同一方法抽查四个**文档化**工具的可疑键：
+
+| 键 | 消费点（现读） | 判据证据 |
+| :--- | :--- | :--- |
+| `yeban_close_project.saveFirst` | `mod.rs:2376` 读键（缺省 `true`）→ `:2377` 决定是否构造 `Plan::Save`（只读会话不保存）→ `:1475` 预览回显 | `:6091` 有 `saveFirst:false` 用例 |
+| `yeban_save_project.force` | `mod.rs:2344` 读键 → `:4159` 落盘判决（未变更时的拒绝文案 `:4166` 点名 `force: true`） | `:5241` 有 `force:true` 用例 |
+| `yeban_query_project.limit`／`offset` | `view.rs:134` 解析（负数 ⇒ 非法错误）→ `:213` 回报 `page.offset` | `view.rs:410/449/458/469/566/582/591/605` 八条分页判据（含 `u64::MAX` 原样上报） |
+
+⇒ 四个键都有**改变行为/输出**的消费点与独立判据，⛔ 属 `velocity` 类空操作。
