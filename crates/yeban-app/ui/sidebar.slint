@@ -35,9 +35,16 @@ export component Sidebar inherits Rectangle {
     // 的挥发性层）、不进 `.yeban`、不进撤销栈。
     in property <int> active-category: 0;
 
+    // ⭐ 当前选中的资源条目（`0..=7`，与 `items` 数组一一对应）。
+    // 与 `active-category` 同一档：唯一写者 = 宿主钳位后写 `MainWindow.sidebar-item`，
+    // 纯视图态（⛔ 不进 `.yeban`、⛔ 不进撤销栈、⛔ 不改工程）。
+    in property <int> active-item: 0;
+
     callback toggle-collapse();
     /// 点击分类标签 ⇒ 请求切到该分类；落点 = 宿主钳位后写 `MainWindow.sidebar-category`。
     callback select-category(int);
+    /// 点击资源条目 ⇒ 请求选中它；落点 = 宿主钳位后写 `MainWindow.sidebar-item`。
+    callback select-item(int);
 
     background: Tokens.bg-panel;
     border-width: 1px;
@@ -177,7 +184,7 @@ export component Sidebar inherits Rectangle {
         y: 100px + 28px * item_index;
         width: parent.width - 8px;
         height: 24px;
-        background: item_index == 0 ? Tokens.bg-panel-alt : Tokens.bg-panel;
+        background: item_index == root.active-item ? Tokens.bg-panel-alt : Tokens.bg-panel;
         border-radius: Tokens.radius-sm;
         clip: true;
         accessible-role: list-item;
@@ -190,7 +197,9 @@ export component Sidebar inherits Rectangle {
         accessible-item-index: item_index;
         accessible-item-count: 8;
         accessible-item-selectable: true;
-        accessible-item-selected: item_index == 0;
+        accessible-item-selected: item_index == root.active-item;
+        // `[UI-A11Y-003]` §7.3 第 4 条 ①：无障碍动作，落点与下面 `TouchArea` 的 `clicked` 逐字相同。
+        accessible-action-default => { root.select-item(item_index); }
 
         // 折叠态只画一个 24px 的图标位, 不画文字
         UiText {
@@ -199,7 +208,7 @@ export component Sidebar inherits Rectangle {
             width: parent.width - 12px;
             height: parent.height;
             text: root.items[item_index];
-            color: item_index == 0 ? Tokens.selection : Tokens.ink-1;
+            color: item_index == root.active-item ? Tokens.selection : Tokens.ink-1;
             font-size: Tokens.font-size-xs;
             overflow: elide;
             visible: !root.compact;
@@ -215,6 +224,12 @@ export component Sidebar inherits Rectangle {
             font-size: Tokens.font-size-xs;
             horizontal-alignment: center;
             visible: root.compact;
+        }
+
+        TouchArea {
+            width: parent.width;
+            height: parent.height;
+            clicked => { root.select-item(item_index); }
         }
     }
 }
