@@ -2925,10 +2925,11 @@ fn c2_a_knife_click_whose_snapped_tick_is_outside_the_note_is_a_no_op() {
 // 1. `←` / `→` 沿时间轴以**网格步长**平移**选区**音符；`Alt + ←/→` 执行 **1 tick** 超精细微调；
 // 2. `↑` / `↓` 执行**半音**移调；`Shift + ↑/↓` 瞬时执行**整八度**（±12 半音）移调。
 //
-// （项 3 `Shift+←/→` 改时值需要一个新的 duration `Op`（`schemas/**` 是集成者文件）；
-// 项 4 `Space`/`Enter` 试听与既有的 `Space` = 播放冲突。两者都**不**在本切片里，见交付报告。）
+// 3. `Shift + ←/→` 以**一个吸附网格**缩短 / 延长**选区**音符的时值
+//    （`Op::SetNoteTiming`，起点不动、身份不动）；
+// 4. 项 4 `Space`/`Enter` 试听与既有的 `Space` = 播放冲突 ⇒ **仍不**在本组里。
 //
-// ## 这四条判据各自咬哪一格
+// ## 这五条判据各自咬哪一格
 //
 // | 判据 | 咬住 |
 // | :--- | :--- |
@@ -2937,6 +2938,7 @@ fn c2_a_knife_click_whose_snapped_tick_is_outside_the_note_is_a_no_op() {
 // | `arrow_nudge_c1_...` | 空选区 ⇒ 0 提交、不消费、逐字节不变（⚠ **未修复的代码上也是绿的**） |
 // | `arrow_nudge_c2_...` | 组夹紧：整块走不动 ⇒ 0 提交（⚠ **未修复的代码上也是绿的**，红要靠变异） |
 // | `arrow_nudge_d_focus_...` | ⭐ **焦点那一问**：经**真 `WindowEvent`** 注入 `\u{f703}`（= winit 给 `→` 的同一个文本）真的动了音符 |
+// | `arrow_duration_resize_e_...` | 项 3：真 `Shift` 按下 + 真 `←`/`→` ⇒ **只**改选区时值（±一个网格）；身份与起点不动；一次按键一步撤销 |
 //
 // ## ⭐ 焦点那一问（本切片最重要的未知）
 //
@@ -2952,7 +2954,7 @@ fn c2_a_knife_click_whose_snapped_tick_is_outside_the_note_is_a_no_op() {
 //
 // - ⛔ **不**证明真 GUI（winit 窗口）里手按方向键会有同样的结果 —— 全部证据是**无头注入**；
 // - ⛔ **不**证明像素（没有截图 / golden）：判据读的是**权威工程**的字段与提交计数；
-// - ⛔ **不**证明 `Shift+←` / `Shift+→`（规范项 3）与试听（项 4）—— 它们未实现；
+// - ⛔ **不**证明试听（规范项 4）—— 它与既有的 `Space` = 播放冲突，未实现；
 // - ⛔ **不**证明键重复的**平台**行为（本判据是"N 次离散按键"这一形态，不是一个 OS 自动重复流）。
 
 /// `[UI-NOTE-005]` §3.5 项 1–2 的**独立**幅度读数。
@@ -3690,6 +3692,169 @@ fn arrow_nudge_d2_shift_through_the_real_event_source_lifts_the_selection_by_an_
         "[roll-nudge-d2-shift] 真 `Shift` 按下 + 真 `↑` ⇒ 提交数 {commits_before} ⇒ {}；\
          选区 {targets:?} 全部 +12 半音（tick 不动）",
         port.display().commit_count,
+    ));
+}
+
+/// 判据 (e)：`[UI-NOTE-005]` §3 项 3 —— `Shift+←/→` 经**真事件源**只改时值。
+///
+/// ## 量什么 / 怎么量 / 单位
+///
+/// | 量 | 怎么量 | 单位 |
+/// | :--- | :--- | :--- |
+/// | 时值变化 | [`note_readings`]（**权威工程**）的 `duration_ticks` | tick |
+/// | 起点 / 音高 / 力度 | 同一个读数的另三个字段 | tick / 半音 / `u8` |
+/// | 提交 / 撤销 | `UndoPort::display().commit_count` / `.undoable` | 条 / 步 |
+/// | 提交载荷 | `port.graph()` 头提交的 `StampedOp` | `Op` 的 `Debug` 文本 |
+///
+/// ## 它证明什么
+///
+/// 1. **真事件源**：真 `Shift` 按下（端口 `KeyCode::Shift`）＋ 真 `←`（`\u{f702}`）⇒
+///    宿主真的改了一个字段 —— 端口表达不了 chord 的那一格在这里是**组合**出来的，
+///    与 `arrow_nudge_d2_*` 同一手法；
+/// 2. **只改时值**：选区每颗 `duration_ticks` 恰好 −240；起点 / 音高 / 力度逐值不变；
+///    选区之外的音符四个字段**逐值不变**；
+/// 3. **身份保住**：读数键（ULID）集合前后一致 ⇒ 走的是 `Op::SetNoteTiming`，
+///    ⛔ 不是"删 + 加"（那会换掉 `EntityId`，进而改变概率触发结果）；
+/// 4. **提交载荷**：头提交恰好一条 `StampedOp`（`Op::Batch`），批里每个选中音符一条
+///    `SetNoteTiming`；
+/// 5. **一次按键 = 一步撤销**：`→`（`Shift` 仍按着）延回原值后再撤销两次，
+///    逐字节回到起点。
+///
+/// ## ⛔ 它不证明什么
+///
+/// - ⛔ 不证明 GUI 人手按键（全部证据是无头注入）；
+/// - ⛔ 不证明像素；
+/// - ⛔ 不证明幅度**常量**的来源（期望值 240 来自模型 PPQ/4，与 `NUDGE_GRID_TICKS_EXPECTED` 同源）。
+#[test]
+fn arrow_duration_resize_e_shift_arrows_change_only_the_selected_durations() {
+    use yeban_ui_mcp::methods::METHOD_DISPATCH_KEY_PRESS;
+
+    let (window, port, mut plane, _input) = assemble_for_arrow_nudge();
+    let targets = ulids_at(&port.project(), &[(960, 64), (1920, 67)]);
+    assert_eq!(targets.len(), 2, "夹具必须能按 (tick, 音高) 点名两颗音符");
+    select_ulids(&window, &targets);
+    let baseline = note_readings(&port.project());
+    let bytes_before = serde_json::to_vec(&port.project()).expect("序列化起点工程");
+    let commits_before = port.display().commit_count;
+    let undoable_before = port.display().undoable;
+    // 期望幅度按**模型**的 PPQ 推导，与平移判据同源（⛔ 不读 `host::nudge_delta_for`）。
+    let grid = u64::try_from(NUDGE_GRID_TICKS_EXPECTED).expect("网格必须是正数");
+
+    // ---- 真 `Shift` 按下（端口能表达的那一个修饰位）----
+    let shift_down = plane.plane().try_line(&request_line(
+        1,
+        METHOD_DISPATCH_KEY_PRESS,
+        Some(json!({ "keyCode": "Shift" })),
+    ));
+    assert!(
+        !shift_down.is_error(),
+        "`Shift` 注入必须落到真实窗口: {shift_down:?}"
+    );
+    // ---- 真 `←`：缩短一个网格 ----
+    let left = plane.plane().try_line(&request_line(
+        10,
+        METHOD_DISPATCH_KEY_PRESS,
+        Some(json!({ "keyCode": "\u{f702}" })),
+    ));
+    assert!(!left.is_error(), "`←` 注入必须落到真实窗口: {left:?}");
+
+    assert_eq!(
+        port.display().commit_count,
+        commits_before + 1,
+        "`Shift+←`（真事件源）必须产生**一次**提交"
+    );
+    let after_shrink = note_readings(&port.project());
+    assert_eq!(
+        after_shrink.keys().collect::<Vec<_>>(),
+        baseline.keys().collect::<Vec<_>>(),
+        "音符**身份**集合必须不变（`SetNoteTiming` 而不是删 + 加）"
+    );
+    for id in &targets {
+        let (t0, p0, duration0, velocity0) = baseline[id];
+        assert_eq!(
+            after_shrink[id],
+            (t0, p0, duration0 - grid, velocity0),
+            "`Shift+←` 必须只把音符 {id} 的时值缩短一个网格（起点 / 音高 / 力度不动）"
+        );
+    }
+    for (id, reading) in &baseline {
+        if !targets.contains(id) {
+            assert_eq!(
+                after_shrink[id], *reading,
+                "选区之外的音符 {id} 四个字段必须逐值不变"
+            );
+        }
+    }
+
+    // ---- 提交载荷：一条 `Batch`，批里每个选中音符一条 `SetNoteTiming` ----
+    {
+        let graph = port.graph();
+        let display = port.display();
+        let head = display.head.expect("提交之后图谱必须有一个头提交");
+        let tip = graph.commit(&head).expect("头提交必须在图谱里");
+        let tip_ops: Vec<String> = tip
+            .ops
+            .iter()
+            .map(|stamped| format!("{:?}", stamped.op))
+            .collect();
+        assert_eq!(
+            tip_ops.len(),
+            1,
+            "一次按键在图谱里必须**恰好一条** `StampedOp`: {tip_ops:?}"
+        );
+        assert!(tip_ops[0].starts_with("Batch {"), "必须是 `Op::Batch`");
+        assert_eq!(
+            tip_ops[0].matches("SetNoteTiming {").count(),
+            targets.len(),
+            "批里必须每个选中音符恰好一条 `SetNoteTiming`: {tip_ops:?}"
+        );
+        assert!(
+            !tip_ops[0].contains("MoveNote"),
+            "时值伸缩**不得**写 `MoveNote`: {tip_ops:?}"
+        );
+    }
+
+    // ---- 真 `→`（`Shift` 仍按着）：延回原值 ----
+    let right = plane.plane().try_line(&request_line(
+        11,
+        METHOD_DISPATCH_KEY_PRESS,
+        Some(json!({ "keyCode": "\u{f703}" })),
+    ));
+    assert!(!right.is_error(), "`→` 注入必须落到真实窗口: {right:?}");
+    assert_eq!(
+        port.display().commit_count,
+        commits_before + 2,
+        "`Shift+→` 必须是**第二次**独立提交"
+    );
+    let after_extend = note_readings(&port.project());
+    for id in &targets {
+        assert_eq!(
+            after_extend[id], baseline[id],
+            "缩短一格再延长一格 ⇒ 音符 {id} 必须回到原时值"
+        );
+    }
+
+    // ---- 两次撤销逐字节回到起点（一次按键一步）----
+    for step in 0..2 {
+        let changed = port.perform(yeban_app::undo::UiAction::Undo).changed();
+        assert!(changed, "第 {} 次撤销必须真的改变了工程", step + 1);
+    }
+    assert_eq!(
+        serde_json::to_vec(&port.project()).expect("序列化"),
+        bytes_before,
+        "两次撤销必须逐字节回到起点（若两次按键被合并成一步，这里会提前满足或停在半路）"
+    );
+    assert_eq!(
+        port.display().undoable,
+        undoable_before,
+        "撤销到底后可撤销步数必须回到起点"
+    );
+
+    report_line(&format!(
+        "[roll-nudge-e-duration] 真 `Shift` + 真 `←` ⇒ 提交数 {commits_before} ⇒ {}；\
+         选区 {targets:?} 时值 −{grid} tick（起点 / 音高 / 力度不动、身份保住）；\
+         真 `→` ⇒ 延回原值、第二次提交；两次撤销 ⇒ `project` 逐字节回到起点",
+        commits_before + 2,
     ));
 }
 
