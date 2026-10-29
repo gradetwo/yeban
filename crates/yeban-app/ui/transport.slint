@@ -13,8 +13,12 @@
 // 见 docs/ledger/ui-shell-notes.md 的 pending 清单。
 //
 // 数据流方向 (与 app.slint 的契约): 子组件只"读" (in property) 和"通知" (callback),
-// 绝不写自己的状态。唯一写者是 app.slint 的 MainWindow —— 这样不会出现
-// 「外部 binding + 组件内部赋值」的冲突, 也不需要双向绑定。
+// 绝不写自己的状态。唯一写者是 app.slint 的 MainWindow。
+//
+// ⚠ 双向绑定只有两处, 且都是**可编辑控件**的回写: `recording`(录音键) 与
+// `bpm-display`(BPM 输入框)。它们用 `<=>` 是因为单向绑定会被用户输入打断
+// (控件从此与宿主脱钩); 权威值仍然只有一个写者 —— 宿主的 `host::apply_view`。
+// 其余属性仍是单向 `in`, ⛔ 不要照抄这两处。
 //
 // BPM 为什么是 string 而不是 float: 这是**显示值**。数字→字符串的格式化 (小数位、
 // 千分位、本地化) 属于模型层的职责; UI 层只画它拿到的字符串。避免在 .slint 里做
@@ -25,7 +29,11 @@ import { Tokens, UiText, UiMonoText } from "tokens.slint";
 export component Transport inherits Rectangle {
     in property <bool> playing: false;
     in property <string> timecode: "001.01.000";
-    in property <string> bpm-display: "120.00";
+    // ⚠ `in-out`（而不是 `in`）：BPM 输入框是**可编辑**的，用户的敲入必须能写回
+    // 这一个属性（`text <=> root.bpm-display`），否则输入框一有焦点就与宿主脱钩。
+    // 权威值仍然只有一个写者：宿主 `host::apply_view`（换工程 / 提交被拒 / 撤销时
+    // 把格式化后的权威读数写回来）。
+    in-out property <string> bpm-display: "120.00";
     in property <string> branch-name: "main";
     in property <bool> arrangement-view: true;
     in property <bool> ai-drawer-open: false;
@@ -65,6 +73,11 @@ export component Transport inherits Rectangle {
     // —— 界面**不**自己做"合成中"的判断。
     callback ime-composition-changed(bool);
     callback ime-focus-changed(bool);
+
+    // ⭐ BPM 敲入的**提交**（回车 / `accepted`）：界面只报"用户敲完的那串文本"，
+    // 解析 / 区间校验 / `Op::SetTempo` 的构造全在宿主（`host::wire_bpm_commit`）。
+    // ⛔ 界面**不**自己判断数字合不合法 —— 那会变成第二份 `MIN_BPM..=MAX_BPM` 口径。
+    callback bpm-commit(string);
 
     min-height: Tokens.top-bar-height;
     max-height: Tokens.top-bar-height;
@@ -233,7 +246,10 @@ export component Transport inherits Rectangle {
             font-size: Tokens.font-size-xs;
         }
 
-        // 真正的编辑面（数值校验 / 提交回模型仍属后续线：本线只接**合成态事件源**）。
+        // 真正的编辑面。**提交**已接线：回车（`accepted`）⇒ `root.bpm-commit(self.text)`
+        // ⇒ 宿主 `host::wire_bpm_commit`。数值解析 / 区间校验（`MIN_BPM..=MAX_BPM`）/
+        // `Op::SetTempo` 全在宿主；被拒 / 非法时宿主把 `bpm-display` 写回权威读数，
+        // 这个双向绑定会让输入框**跟着回到权威值**（⛔ 不留下一个冒充成权威值的草稿）。
         // 它**不**挂 accessible-id —— 语义节点仍然只有外层那一个 `transport-bpm-field`
         // （`[UI-TEST-001]` §12.2：`ui/coverage` 要求运行时树 ⊆ 投影注册表，
         // 而多出来的节点必须有登记；编辑面不是语义节点，因此不进树）。
@@ -242,7 +258,8 @@ export component Transport inherits Rectangle {
             y: 0;
             width: parent.width - 48px;
             height: parent.height;
-            text: root.bpm-display;
+            // ⚠ 必须**双向**：单向绑定会被用户第一次按键打断（输入框从此不再跟随宿主）。
+            text <=> root.bpm-display;
             // BPM 是**数值读数** ⇒ 必须与 UiMonoText 同族, 否则它与时间码的
             // 数字宽度不同源, 两处读数不会对齐 (负责人 mock: BPM 与时间码同列)。
             // TextInput 不继承 UiText, 所以这里显式写族名。
@@ -259,6 +276,11 @@ export component Transport inherits Rectangle {
             }
             changed has-focus => {
                 root.ime-focus-changed(self.has-focus);
+            }
+            // 回车 = 提交（`[UI-A11Y-002]` §7.2 的"参数敲入类控件"是同一个输入框）。
+            // ⛔ 不是第二份校验：这里只是把"用户敲完的文本"交给宿主那一个入口。
+            accepted => {
+                root.bpm-commit(self.text);
             }
         }
     }

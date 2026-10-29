@@ -565,6 +565,8 @@ export component MainWindow inherits Window {
     // `InputContext::begin_composition` / `end_composition` / `set_focus`。
     callback ime-composition-changed(bool);
     callback ime-focus-changed(bool);
+    // ⭐ BPM 输入框回车 ⇒ 提交一次速度编辑（`host::wire_bpm_commit`）。
+    callback bpm-commit(string);
 
     // =====================================================================
     // `N2` 裁决 (1)：GUI 路径的键盘事件源（**逻辑键**）
@@ -1173,7 +1175,7 @@ export component MainWindow inherits Window {
             recording <=> root.recording;
             playing: root.playing;
             timecode: root.timecode;
-            bpm-display: root.bpm-display;
+            bpm-display <=> root.bpm-display;
             branch-name: root.branch-name;
             arrangement-view: root.arrangement-view;
             ai-drawer-open: root.ai-drawer-open;
@@ -1224,6 +1226,10 @@ export component MainWindow inherits Window {
             }
             ime-focus-changed(focused) => {
                 root.ime-focus-changed(focused);
+            }
+            // BPM 回车：原样转给宿主 —— 界面不解析数字、不判区间、不提交。
+            bpm-commit(text) => {
+                root.bpm-commit(text);
             }
         }
 

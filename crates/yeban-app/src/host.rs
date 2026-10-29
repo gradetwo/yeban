@@ -5264,6 +5264,70 @@ pub fn wire_input(ui: &MainWindow, context: Rc<RefCell<InputContext>>) {
     });
 }
 
+/// ⭐ BPM 敲入的**唯一**提交实现（`ui/transport.slint` 的 `bpm-input.accepted`）。
+///
+/// ## 它做什么（只有一件事）
+///
+/// 把用户敲完的文本解析成 `f64`、按模型自己的合法区间校验
+/// （`yeban_model::MIN_BPM..=yeban_model::MAX_BPM`，`20.0..=999.0`），
+/// 然后提交**恰好一次** `Op::SetTempo { old_bpm, new_bpm }`，
+/// 最后重投影 —— 输入框经双向绑定显示**权威工程**的格式化读数（`{:.2}`）。
+///
+/// ## 不提交的四种情形（都只把显示写回权威值，工程一位不动）
+///
+/// * 不是数字（`"abc"` / `""`）；
+/// * 不是有限值（`"NaN"` / `"inf"`）；
+/// * 超出 `MIN_BPM..=MAX_BPM`（判定口径与 `Op::validate` 逐字相同）；
+/// * 与权威值**逐位相同**（"128" 与 "128.00" 是同一件事 ⇒ 不制造空撤销）。
+///
+/// ## 边界（如实登记）
+///
+/// 本提交改的是**工程内容**（`YebanProjectV1::bpm`），可撤销、会重投影；
+/// 引擎的**当前**走带速度不在本提交里 —— 引擎只在启动场景时读一次
+/// `tempo_bpm`（本文件的 `scene.tempo.unwrap_or(view.bpm)`），
+/// 因此改 BPM 对**正在播放**的引擎不生效。那条同步属于引擎控制面，本切片不发明。
+pub fn wire_bpm_commit(ui: &MainWindow, port: &Rc<UndoPort>) {
+    let weak = ui.as_weak();
+    let port = Rc::clone(port);
+    ui.on_bpm_commit(move |text| {
+        let Some(ui) = weak.upgrade() else {
+            debug_assert!(false, "MainWindow 在回调执行期间被销毁");
+            return;
+        };
+        // 权威工程读不出来 ⇒ 出声不画（与 `refresh_undo_window` 同款纪律）。
+        let Some(project) = port.try_project() else {
+            eprintln!("[yeban-app] BPM 敲入没有可投影的工程: 权威会话此刻没有活跃工程");
+            return;
+        };
+        let old_bpm = project.bpm;
+        let Ok(new_bpm) = text.trim().parse::<f64>() else {
+            eprintln!("[yeban-app] BPM 敲入的不是数字（{text:?}）⇒ 没有提交");
+            refresh_undo_window(&ui, &port, true);
+            return;
+        };
+        if !new_bpm.is_finite() || !(yeban_model::MIN_BPM..=yeban_model::MAX_BPM).contains(&new_bpm)
+        {
+            eprintln!(
+                "[yeban-app] BPM 必须在 {}..={} 之间（实得 {new_bpm}）⇒ 没有提交",
+                yeban_model::MIN_BPM,
+                yeban_model::MAX_BPM
+            );
+            refresh_undo_window(&ui, &port, true);
+            return;
+        }
+        if new_bpm.to_bits() == old_bpm.to_bits() {
+            // 值没变：只把显示规范化（"128" → "128.00"），不制造一条空撤销。
+            refresh_undo_window(&ui, &port, true);
+            return;
+        }
+        let op = yeban_model::Op::SetTempo { old_bpm, new_bpm };
+        if port.commit_ops(now_ms(), "set tempo", vec![op]).is_err() {
+            eprintln!("[yeban-app] 速度提交被拒绝（工程未改）");
+        }
+        refresh_undo_window(&ui, &port, true);
+    });
+}
+
 /// ⭐ **这个动作要不要动引擎**（⭐ 任务单 `#212`：`wire_keys` **借不借宿主**的唯一判据）。
 ///
 /// ## 为什么它是**安全属性**的一部分（⛔ 不是分类癖）
