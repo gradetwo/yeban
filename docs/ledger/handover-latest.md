@@ -2262,9 +2262,9 @@ helper `ops.rs:3043` `doc.insert_track(...)`／局部绑定后赋值 `SetMacro`�
 
 | 票 | run | 状态 | 下一动作 |
 | --- | --- | --- | --- |
-| S2 整线 | `40910345157`（`force_full`，tip `0cfd19a6`） | **success 已读回**（全量腿真跑 ≈47m51s／**431** 行 `test result:`／**6,840** passed／**0** failed；引擎三条常驻判据逐名 `ok`） | ✅ **四件齐**（落地判决＝下表 main tip `2c0adaa3` 那条 merge run）⇒ 只剩 `worktree.sh rm s2-device-param-table --purge` ＋ 回收 `/tmp/yeban-s2`（**1.3G**） |
-| S3 落地 | `40917833876`（main `be8e1492`） | **success 已读回**（`rust (yeban-model)` job `123602900177` **66s** 真跑；`Running tests/` **13**；**461** passed／**0** FAILED；四条判据**逐名**各 1 `ok`） | ✅ 四件齐 ⇒ `rm s3-field-reachability --purge` |
-| S4 线 | `40914097921`（tip `c3b0b4a0`） | **success 已逐名读回**（`rust (yeban-model)` **63s** 真跑；`Running tests/` **13**；**463** passed／**0** FAILED；六条判据逐名各 **1** `ok`） | `worktree.sh land s4-folder-link-gap` → 推 main → 读 **merge run** → `rm --purge` → 回收 `/tmp/yeban-s4`（**1.4G**） |
+| S2 整线 | `40910345157`（`force_full`，tip `0cfd19a6`） | **success 已读回**（全量腿真跑 ≈47m51s／**431** 行 `test result:`／**6,840** passed／**0** failed；引擎三条常驻判据逐名 `ok`） | ✅ **四件齐**（落地判决＝main tip `2c0adaa3` 那条 merge run `40919073102`）；树已 `rm --purge`（归档 `line-archive/s2-device-param-table @ 0cfd19a6`），`/tmp/yeban-s2`（**1.3G**）已回收 |
+| S3 落地 | `40917833876`（main `be8e1492`） | **success 已读回**（`rust (yeban-model)` job `123602900177` **66s** 真跑；`Running tests/` **13**；**461** passed／**0** FAILED；四条判据**逐名**各 1 `ok`） | ✅ **四件齐**；树已 `rm --purge`（归档 `line-archive/s3-field-reachability @ 8a755acc`） |
+| S4 线 | `40914097921`（tip `c3b0b4a0`） | **success 已逐名读回**（`rust (yeban-model)` **63s** 真跑；`Running tests/` **13**；**463** passed／**0** FAILED；六条判据逐名各 **1** `ok`） | ⚠ **已 land**（merge `36bfe268`，`1 file changed, 153 insertions(+)`）⇒ 落地判决 `40965834655` **在飞**：判绿后 `rm s4-folder-link-gap --purge` ＋ 回收 `/tmp/yeban-s4`（**1.4G**）＋ 台账补四件齐 |
 | main tip | `2c0adaa3`（含 `ADR-0049` 那批文档） | **success 已读回**（`rust (workspace 全量)` job `123607229655` ≈**46m11s** 真跑；`Running tests/` **367**；**434** 行 `test result:`／**6,846** passed／**0** FAILED；S2 的引擎常驻判据逐名 `ok`、S3 四条逐名 `ok`；⚠ `folder_link_validation_gap` **不在场**＝S4 当时尚未 land，属正确形态） | ✅ **S2 四件齐** ⇒ `rm s2-device-param-table --purge` ＋ 回收 `/tmp/yeban-s2`（**1.3G**） |
 | ⚠ 并行写者落地 | `40918306688`（`45752063`） | **success 已读回**（作业名单含全量腿）；且他们的 6 个 `crates/yeban-app/**` 文件已在我这条 merge 里 ⇒ 由 `40919073102` 一并覆盖 | ✅ 无遗留动作（登记只为⛔ 判决孤儿化） |
 
@@ -2282,8 +2282,16 @@ helper `ops.rs:3043` `doc.insert_track(...)`／局部绑定后赋值 `SetMacro`�
 Logic 导入器 `import_logic.rs:941` 的**写入**），而 `solo_safe` 有 **19** 行引擎消费 ⇒ 四条不是同一种"可写性缺口"。
 
 **创作缺口这条线当下的判断**（⛔ 凭记忆）：`G1..G18` 与 `G8e..G8n` 都已闭合或开票；
-剩下**自主可做**的是 S2 正片（引擎第二张表的**去重**＋全量 30 字段实时落点，需设计决策⛔ 待裁）、
-S3 的**语义差分**片（设计活）；**卡在人类**的是 `ADR-0042`／`ADR-0047`／`ADR-0048`／`ADR-0049`／
+⭐ **两张表的去重也开票了 = `ADR-0050`**（S2 正片）：名字面已被钉（dsp `41/6/8` ↔ 实时臂 `41/6/11`，
+唯一允许差集 = **3** 个 IR 形状键），⛔ 钉住的是"名字 → **目标字段**"那一轴；
+而实时侧带一份共享表里**没有对应物**的状态 —— 级启用推导（`seen`，`insert.rs:891/895/897/907`），
+依据是 dsp 实测"平坦 EQ 仍有 `4.566e-5` 末位舍入"⇒ **机械替换会静默改音频**。
+四条路线（`D1` 只把映射面机械化，零语义改动／`D2` 表加 `level()`／`D3` 投影改集合式／
+`D4` 整张投影搬进 dsp），闸是 `compressor_insert.rs:129-130` 那条 C0"不认识的效果器必须逐字节相同"。
+⇒ 剩下**自主可做**的是 S3 的**语义差分**片（设计活）；
+**卡在人类**的是 `ADR-0042`／`ADR-0047`／`ADR-0048`／`ADR-0049`／`ADR-0050`／
 `ADR-0004`（含 **Q13** 的 `folder_id` 补校验）＋ `AGENTS.md:134` 那句"可写的只有"。
-⇒ 下一片⛔ 从"发明第五个待裁字段"里出，可做的两件是：①读回上面两条 merge run 并拆树（闭合动作）；
-②S2 正片的**设计稿**（把"两张表去重要记哪些部分覆盖"写成一份可批的 ADR）。
+⚠ **第三张表**（`yeban-render` 侧静态投影）**不并入** `ADR-0050`：它与实时表是否本来就该相同⛔ 有答案，
+⛔ 由集成者假定。
+下一片⛔ 从"发明第五个待裁字段"里出；可做的两件是：①读回 S4 的 merge run `40965834655` 并拆树（闭合）；
+②S3 语义差分片的**设计稿**。
