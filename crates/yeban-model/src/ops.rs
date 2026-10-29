@@ -9111,8 +9111,9 @@ mod tests {
         #[derive(Debug, PartialEq, Eq)]
         enum Verdict {
             Pass,
-            /// ⚠ **本轮实测：本臂当前不可达** —— 34/34 变体在 `fixture_document()` 上
-            /// 的施加性检查**全部通过** ⇒ 没有任何一条走这里。保留它是因为
+            /// ⚠ **本轮实测：本臂当前不可达** —— 变体全集（条数由 `declared_op_variants()`
+            /// 现读，⛔ 在注释里手抄）在 `fixture_document()` 上的施加性检查**全部通过**
+            /// ⇒ 没有任何一条走这里。保留它是因为
             /// **"⛔ 不许静默跳过"** 要求分类**在结构上存在**（将来若某个变体的前置条件
             /// 在标准夹具上不再成立，它会走这条臂而不是被悄悄剔除）。
             /// `#[allow(dead_code)]` 是**如实**标注这个现状，⛔ 不是绕过。
@@ -9231,6 +9232,536 @@ mod tests {
             .filter(|(_, v)| matches!(v, Verdict::Fail(_)))
             .collect();
         assert!(failures.is_empty(), "有变体未能逐字节往返: {failures:#?}");
+    }
+
+    // ==================== 差分口径的字段写点普查（第二片） ====================
+    //
+    // 指标（对象 + 单位）：对象＝ `pub enum Op` 的**每个顶层变体**（现读，单位＝条）；
+    // 每条在 `fixture_document()` 上施加一次，比较施加**前后**的 `serde_json::Value` 树，
+    // 取出**最小差异路径集**（子树相等立刻停止下钻）。由这张表回答两个问题：
+    //
+    // * **根键集**＝差异路径的第一段 ⇒ 这个 op 改动工程的哪几个顶层字段；
+    // * **末端段集**＝差异路径的最后一段（跳过数组下标段）⇒ 嵌套字段
+    //   （`mute`／`folder_id`／`solo_safe`…）有没有被改动。
+    //
+    // # 为什么需要第二片（词法片够不到的地方）
+    //
+    // `tests/field_write_reachability.rs` 数的是**源码文本**里 `.<字段>` 的出现次数，
+    // 那里登记了三种实测假阴性机理（rustfmt 链式换行／领域 helper／局部绑定后赋值）。
+    // 本片比的是**输出**而⛔ 文本，所以那三种机理都不影响它 —— 代价是它只看得到一个
+    // 夹具上的取值（下面第 2 条盲点）。两片**互补且各自有守**，⛔ 用一片去删另一片。
+    //
+    // # 已知盲点（如实登记，⛔ 假装没有）
+    //
+    // 1. **整棵子树的增删不算字段写**：`RemoveTrack` 的差异停在 `tracks.<id>`（子树消失）、
+    //    `AddTrack` 的差异也停在 `tracks.<id>`（子树新增），末端段是**身份**而⛔ `folder_id`
+    //    ⇒ 这两类都不计入 `folder_id` 的写者。这是**故意的**：新建轨道上那个字段取的是
+    //    默认值、被删轨道上它根本没有"新值"可谈 —— 要判的是"改不了**已有**工程的这个字段"。
+    // 2. **一个变体只取一个代表实例**：若将来某 op 的写入依赖载荷取值，夹具那一份可能
+    //    恰好等于原值 ⇒ 差异为空。因此第三条判据把**已知可写字段必须被检出**钉成探针 ——
+    //    扫不出探针就红，⛔ 让"空集"同时充当结论和证据（`§0.6.3` 第 4 条的反面教材）。
+    // 3. 夹具之外的状态（例如空工程、无 `folder_id` 的轨道）不在本片覆盖面内；
+    //    "写得了但夹具碰不到"的字段仍由词法片与 `ADR-0049` 登记。
+
+    /// 差分普查的一行（一个变体）。
+    #[derive(Debug)]
+    struct OpWriteDiff {
+        /// 变体名（`Op::name()`）。
+        name: String,
+        /// 差异路径的**第一段**去重集（工程顶层字段）。
+        root_keys: Vec<String>,
+        /// 差异路径的**最后一段**去重集（去掉数组下标段；嵌套字段名）。
+        leaf_fields: Vec<String>,
+        /// ⛔ 未能施加的原因（`Some` ⇒ 夹具不满足前置或 `apply` 失败）。
+        /// 现状实测为**全 `None`**（与往返审计同口径）；保留该臂是为了让"没施加"
+        /// ⛔ 悄悄退化成"没改动"。
+        unapplied: Option<String>,
+    }
+
+    /// 递归收集**最小差异路径**：子树相等就停，容器按键/按下标下钻。
+    ///
+    /// 下标段写作 `#3`（与身份段区分开，便于末端段过滤）。数组**长度不同**时整段算差异
+    /// （实体集合变了，逐下标配不对），长度相同则逐元素比较。
+    fn collect_diff_paths(
+        prefix: &str,
+        a: &serde_json::Value,
+        b: &serde_json::Value,
+        out: &mut Vec<String>,
+    ) {
+        if a == b {
+            return;
+        }
+        match (a, b) {
+            (serde_json::Value::Object(ma), serde_json::Value::Object(mb)) => {
+                let keys: std::collections::BTreeSet<&String> =
+                    ma.keys().chain(mb.keys()).collect();
+                for key in keys {
+                    match (ma.get(key), mb.get(key)) {
+                        (Some(x), Some(y)) => {
+                            collect_diff_paths(&format!("{prefix}{key}."), x, y, out)
+                        }
+                        _ => out.push(format!("{prefix}{key}")),
+                    }
+                }
+            }
+            (serde_json::Value::Array(xa), serde_json::Value::Array(xb))
+                if xa.len() == xb.len() =>
+            {
+                for (idx, (x, y)) in xa.iter().zip(xb.iter()).enumerate() {
+                    collect_diff_paths(&format!("{prefix}#{idx}."), x, y, out);
+                }
+            }
+            _ => {
+                let path = prefix.trim_end_matches('.');
+                out.push(if path.is_empty() {
+                    "<root>".to_owned()
+                } else {
+                    path.to_owned()
+                });
+            }
+        }
+    }
+
+    /// 由前后两棵树导出 `(顶层字段集, 末端字段名集)`（都字典序去重；下标段不计入末端集）。
+    ///
+    /// ⚠ 普查（判据一~五）与检测器自证（判据六）**共用**这一份口径 —— 两半算的不是
+    /// 同一份数据，但必须是**同一把尺**（第 44 条：⛔ 复制第二份切分逻辑，那会让
+    /// "自证"退化成"自证了一把没在用的尺"）。
+    fn diff_root_keys_and_leaves(
+        before: &serde_json::Value,
+        after: &serde_json::Value,
+    ) -> (Vec<String>, Vec<String>) {
+        let mut paths = Vec::new();
+        collect_diff_paths("", before, after, &mut paths);
+        let mut root_keys: Vec<String> = paths
+            .iter()
+            .map(|path| path.split('.').next().unwrap_or(path).to_owned())
+            .collect();
+        root_keys.sort_unstable();
+        root_keys.dedup();
+        let mut leaf_fields: Vec<String> = paths
+            .iter()
+            .map(|path| path.rsplit('.').next().unwrap_or(path).to_owned())
+            .filter(|leaf| !leaf.starts_with('#'))
+            .collect();
+        leaf_fields.sort_unstable();
+        leaf_fields.dedup();
+        (root_keys, leaf_fields)
+    }
+
+    /// 差分普查专用夹具：`fixture_document()` 之上**只**补两处，让"零写者"登记
+    /// 不至于由"那个键根本不在树里"免费提供：
+    ///
+    /// * 一条轨道的 `folder_id` 指向**另一条已存在**的轨道 —— 该字段是
+    ///   `#[serde(default, skip_serializing_if)]`（`project.rs:1234`），默认 `None` 时
+    ///   **整个键不出现**；而"指向存在的轨道"是 `validate()` 对它唯一的约束
+    ///   （`project.rs:1883-1886`，⭐ 自指/环/指向主总线今天全部通过 —— 那是 `ADR-0004`
+    ///   的 **Q13**，`Proposed`，本片⛔ 不修），所以这样构造仍然合法。
+    /// * 同一条轨道 `solo_safe = true`（`bool` 恒序列化，取真值只是给差异一个非默认起点）。
+    ///
+    /// ⚠ 除这两处⛔ 不改夹具：其余部分必须与往返审计**同源**（第 44 条，⛔ 第二份夹具）。
+    fn fixture_document_for_differential() -> YebanProjectV1 {
+        let mut doc = fixture_document();
+        let ids: Vec<EntityId> = doc.tracks.keys().cloned().collect();
+        assert!(
+            ids.len() >= 2,
+            "夹具里轨道不足两条 => 构造不出 `folder_id` 指向，存在性证据会失效"
+        );
+        let folder_target = ids[1];
+        let track = doc.tracks.get_mut(&ids[0]).expect("夹具轨道存在");
+        track.folder_id = Some(folder_target);
+        track.solo_safe = true;
+        doc.validate()
+            .expect("补 folder_id/solo_safe 后夹具必须仍然合法");
+        doc
+    }
+
+    /// JSON 树（任意深度、任意容器里）有没有名为 `name` 的键。
+    ///
+    /// 用途：给"零写者"登记提供**存在性**证据——字段根本不在树里时，"没人写它"是免费的。
+    fn tree_has_key(node: &serde_json::Value, name: &str) -> bool {
+        match node {
+            serde_json::Value::Object(map) => {
+                map.contains_key(name) || map.values().any(|child| tree_has_key(child, name))
+            }
+            serde_json::Value::Array(items) => items.iter().any(|child| tree_has_key(child, name)),
+            _ => false,
+        }
+    }
+
+    /// 夹具序列化后的**顶层键全集**（现读，⛔ 手抄 22 这个数字）。
+    fn fixture_root_keys() -> Vec<String> {
+        let value =
+            serde_json::to_value(fixture_document_for_differential()).expect("夹具可序列化");
+        let serde_json::Value::Object(map) = value else {
+            panic!("工程根不是 JSON 对象 => 顶层字段无从谈起，响亮失败");
+        };
+        let mut keys: Vec<String> = map.keys().cloned().collect();
+        keys.sort_unstable();
+        keys
+    }
+
+    /// 施加前后各取一次 `serde_json::Value`，产出该变体的差分行。
+    ///
+    /// ⚠ **复用**变体清单／夹具／showcase 三份既有件（第 44 条：⛔ 不许有第二份）。
+    fn op_write_differential() -> Vec<OpWriteDiff> {
+        let declared = declared_op_variants();
+        let showcase = showcase_ops();
+        let mut rows: Vec<OpWriteDiff> = Vec::new();
+        for name in declared {
+            let Some(op) = showcase
+                .iter()
+                .find(|candidate| candidate.name() == name.as_str())
+            else {
+                panic!("showcase_ops() 里没有变体 `{name}` 的代表实例 => 差分普查会漏人，响亮失败");
+            };
+            let mut doc = fixture_document_for_differential();
+            let before = serde_json::to_value(&doc).expect("夹具可序列化");
+            if let Err(error) = op.precondition(&doc) {
+                rows.push(OpWriteDiff {
+                    name,
+                    root_keys: Vec::new(),
+                    leaf_fields: Vec::new(),
+                    unapplied: Some(format!("前置条件不成立: {error:?}")),
+                });
+                continue;
+            }
+            if let Err(error) = op.apply(&mut doc) {
+                rows.push(OpWriteDiff {
+                    name,
+                    root_keys: Vec::new(),
+                    leaf_fields: Vec::new(),
+                    unapplied: Some(format!("apply 失败: {error:?}")),
+                });
+                continue;
+            }
+            let after = serde_json::to_value(&doc).expect("施加后可序列化");
+            let (root_keys, leaf_fields) = diff_root_keys_and_leaves(&before, &after);
+            rows.push(OpWriteDiff {
+                name,
+                root_keys,
+                leaf_fields,
+                unapplied: None,
+            });
+        }
+        rows
+    }
+
+    /// 判据一：**覆盖必须等于现读的变体数，且每一行都真被施加过**。
+    ///
+    /// 这条是差分表的"没漏人"守。`unapplied` 现在实测全 `None`；若将来某变体的前置条件
+    /// 在标准夹具上不再成立，这里会红，处置是**更新夹具**，⛔ 放宽判据（否则"没改动"
+    /// 会冒充"写不了"）。
+    #[test]
+    fn every_op_variant_is_covered_by_the_write_differential_scan() {
+        let rows = op_write_differential();
+        let declared = declared_op_variants();
+        for row in &rows {
+            eprintln!(
+                "DIFF {:24} unapplied={:?} roots=[{}] leaves=[{}]",
+                row.name,
+                row.unapplied,
+                row.root_keys.join(","),
+                row.leaf_fields.join(",")
+            );
+        }
+        assert_eq!(
+            rows.len(),
+            declared.len(),
+            "差分表行数必须等于现读变体数（⛔ 不许静默跳过）"
+        );
+        let unapplied: Vec<&String> = rows
+            .iter()
+            .filter_map(|row| row.unapplied.as_ref())
+            .collect();
+        assert!(
+            unapplied.is_empty(),
+            "这些变体在夹具上没被施加，差分结论对它们无效: {unapplied:#?}"
+        );
+    }
+
+    /// 判据二（探针／反盲）：**已知可写的字段必须被检出**。
+    ///
+    /// 指标（对象 + 单位）：对象＝差分表；单位＝每条判据"该字段的写者集合非空"。
+    /// 这七项都是 `Op` 面**明文可写**的（`SetTitle`／`SetAuthor`／`SetTempo`／
+    /// `SetTimeSignature`／`SetTransportConfig`／`SetTrackName`／`SetTrackMute`），
+    /// 扫不出任何一个 ⇒ 差分器坏了（路径切法错了、夹具序列化没变、`apply` 成了空操作）。
+    /// ⛔ 这条判据在"空集即期望值"的判据面前是必需的：没有它，第二条判据的零写者可由
+    /// 一台坏扫描器免费提供。
+    #[test]
+    fn the_write_differential_detects_fields_that_are_known_writable() {
+        let rows = op_write_differential();
+        for field in [
+            "title",
+            "author",
+            "bpm",
+            "time_signature",
+            "transport",
+            "name",
+            "mute",
+        ] {
+            let writers: Vec<&String> = rows
+                .iter()
+                .filter(|row| {
+                    row.unapplied.is_none()
+                        && (row.root_keys.iter().any(|k| k == field)
+                            || row.leaf_fields.iter().any(|k| k == field))
+                })
+                .map(|row| &row.name)
+                .collect();
+            assert!(
+                !writers.is_empty(),
+                "差分器没把 `{field}` 的任何写者找出来 => 扫描器坏了，⛔ 是"
+            );
+        }
+    }
+
+    /// 判据三（现状登记）：**五个字段在 `Op` 全集里没有任何写者**（差分口径）。
+    ///
+    /// 这是 `tests/field_write_reachability.rs` 那条**词法**断言（产品区 `.<字段>` 出现 0 次）
+    /// 的**语义**版本：施加每个变体后，工程里**任何一处**该字段的值都不许变。
+    /// 两片口径不同、互相独立，所以将来谁真去补那条 `Op`，两片会**同时**红 ——
+    /// 这是设计意图（第 44 条：⛔ 让"改不了"这件事重新变成口口相传）。
+    ///
+    /// ⛔ 本片不回答"该不该补"：是否做成产品能力是 `ADR-0049`（`Proposed`）的人类裁决。
+    ///
+    /// ⚠ 检查口径＝**顶层段或末端段命中即算写者**：改 `metadata.description` 这种嵌套子字段
+    /// 时，差异路径是 `metadata.description`，末端段是 `description` —— 只看末端会漏掉整族
+    /// "写子字段"的形态（实测差分器就是这么归因的，见判据六）。
+    #[test]
+    fn the_write_differential_finds_no_writer_for_the_five_registered_fields() {
+        let rows = op_write_differential();
+        let fixture_tree =
+            serde_json::to_value(fixture_document_for_differential()).expect("夹具可序列化");
+        for field in [
+            "audio_config",
+            "rng_seed",
+            "metadata",
+            "folder_id",
+            "solo_safe",
+        ] {
+            // ⚠ **先证存在**再证"没人写"：否则"字段根本不在树里"会免费提供同一个空集
+            //   （`§6.3` 第 4 条的同型陷阱——空集既可能是结论也可能是扫描器坏了）。
+            assert!(
+                tree_has_key(&fixture_tree, field),
+                "夹具里根本没有 `{field}` 这个键 => 下面的『零写者』不构成任何登记，\
+                 先修夹具或确认字段已改名/删除"
+            );
+            let writers: Vec<&String> = rows
+                .iter()
+                .filter(|row| {
+                    row.unapplied.is_none()
+                        && (row.root_keys.iter().any(|key| key == field)
+                            || row.leaf_fields.iter().any(|leaf| leaf == field))
+                })
+                .map(|row| &row.name)
+                .collect();
+            assert!(
+                writers.is_empty(),
+                "`{field}` 出现了写者 {writers:#?} => 差分登记表过期了，\
+                 先改 `ADR-0049` 与 `tests/field_write_reachability.rs` 再动 `Op`"
+            );
+        }
+    }
+
+    /// 判据四（棘轮）：**每个变体的顶层写面必须逐字等于冻结表**。
+    ///
+    /// 冻结表是本片实测产出的读数（2026-10-29 本机 `cargo test -p yeban-model --lib`），
+    /// ⛔ 由代码现算。于是"顺手多写一个顶层字段"会让这条按设计变红，
+    /// 而"某个字段悄悄没人写了"同样会红（两向守）。新增变体进表必须**同时**补
+    /// `showcase_ops()` 的代表实例（缺实例会在 `op_write_differential()` 里 panic）。
+    #[test]
+    fn op_write_differential_root_keys_match_frozen_table() {
+        /// 冻结读数：变体名 → 它改动的**顶层字段**（每行右侧已按字典序）。
+        const FROZEN: [(&str, &[&str]); 55] = [
+            ("AddClip", &["clip_pool"]),
+            ("AddClipPlacement", &["tracks"]),
+            ("AddNote", &["clip_pool"]),
+            ("AddRoutingNode", &["routing_graph"]),
+            ("AddTrack", &["tracks"]),
+            ("Batch", &["clip_pool", "routing_graph"]),
+            ("ConnectRouting", &["routing_graph"]),
+            ("DeleteNote", &["clip_pool"]),
+            ("DisconnectRouting", &["routing_graph"]),
+            ("InsertDevice", &["tracks"]),
+            ("ModifyNoteVelocity", &["clip_pool"]),
+            ("MoveClipPlacement", &["tracks"]),
+            ("MoveNote", &["clip_pool"]),
+            ("RemoveAsset", &["assets"]),
+            ("RemoveAutomationLane", &["tracks"]),
+            ("RemoveAutomationPoint", &["tracks"]),
+            ("RemoveClip", &["clip_pool"]),
+            ("RemoveClipPlacement", &["tracks"]),
+            ("RemoveDevice", &["tracks"]),
+            ("RemoveRoutingNode", &["routing_graph"]),
+            ("RemoveScene", &["scenes"]),
+            ("RemoveSection", &["sections"]),
+            ("RemoveTrack", &["tracks"]),
+            ("SetAsset", &["assets"]),
+            ("SetAuthor", &["author"]),
+            ("SetAutomationLane", &["tracks"]),
+            ("SetAutomationPoint", &["tracks"]),
+            ("SetClipGain", &["clip_pool"]),
+            ("SetClipName", &["clip_pool"]),
+            ("SetClipPlacementDuration", &["tracks"]),
+            ("SetClipPlacementLoop", &["tracks"]),
+            ("SetClipPlacementMuted", &["tracks"]),
+            ("SetDeviceBypassed", &["tracks"]),
+            ("SetDeviceName", &["tracks"]),
+            ("SetKeySignature", &["key_signature"]),
+            ("SetMacro", &["tracks"]),
+            ("SetNoteExpression", &["clip_pool"]),
+            ("SetNotePitchBendPoint", &["clip_pool"]),
+            ("SetNotePitchShape", &["clip_pool"]),
+            ("SetNoteTiming", &["clip_pool"]),
+            ("SetParam", &["tracks"]),
+            ("SetRoutingGain", &["routing_graph"]),
+            ("SetScene", &["scenes"]),
+            ("SetSection", &["sections"]),
+            ("SetTempo", &["bpm"]),
+            ("SetTempoPoint", &["tempo_map"]),
+            ("SetTimeSignature", &["time_signature"]),
+            ("SetTimeSignaturePoint", &["time_signature_map"]),
+            ("SetTitle", &["title"]),
+            ("SetTrackColor", &["tracks"]),
+            ("SetTrackMute", &["tracks"]),
+            ("SetTrackName", &["tracks"]),
+            ("SetTrackSampler", &["tracks"]),
+            ("SetTrackSolo", &["tracks"]),
+            ("SetTransportConfig", &["transport"]),
+        ];
+        let rows = op_write_differential();
+        assert_eq!(
+            rows.len(),
+            FROZEN.len(),
+            "差分行数与冻结表不符 => 变体全集变了（新增/删除），先按实测读数改这张表，\
+             ⛔ 删行来让它绿"
+        );
+        for (name, expected) in FROZEN {
+            let row = rows
+                .iter()
+                .find(|candidate| candidate.name == name)
+                .unwrap_or_else(|| panic!("冻结表里有 `{name}` 而差分表没有（顺序变了？）"));
+            let observed: Vec<&str> = row.root_keys.iter().map(String::as_str).collect();
+            assert_eq!(
+                observed, expected,
+                "变体 `{name}` 的顶层写面与冻结表不符 => 有人改动它的字段触点，\
+                 这片登记表必须一起改"
+            );
+        }
+    }
+
+    /// 判据五（写面死集）：**从未被任何变体碰过的顶层字段**必须逐字等于冻结名单。
+    ///
+    /// 指标（对象 + 单位）：对象＝夹具序列化后的**顶层键全集**（现读，⛔ 手抄）；
+    /// 单位＝个字段。"死"＝没有任何变体的差分离出它。这条是 `ADR-0049` 待裁名单的
+    /// **机械来源**——将来谁给其中某个字段开了写面，这里会红，逼他把裁决与登记表一起改。
+    #[test]
+    fn the_never_written_top_level_fields_match_frozen_dead_set() {
+        /// 冻结读数：顶层**无写者**字段（2026-10-29 本机实测，字典序）。
+        const FROZEN_DEAD: [&str; 8] = [
+            "audio_config",
+            "id",
+            "master_bus_track_id",
+            "metadata",
+            "min_reader_version",
+            "rng_seed",
+            "schema_version",
+            "writer_version",
+        ];
+        let universe = fixture_root_keys();
+        assert!(
+            universe.len() >= 20,
+            "顶层键现读只有 {} 个 => 夹具或序列化退化了，⛔ 让『死集』由缺键免费提供",
+            universe.len()
+        );
+        let rows = op_write_differential();
+        let written: std::collections::BTreeSet<&str> = rows
+            .iter()
+            .flat_map(|row| row.root_keys.iter().map(String::as_str))
+            .collect();
+        let dead: Vec<&str> = universe
+            .iter()
+            .map(String::as_str)
+            .filter(|key| !written.contains(key))
+            .collect();
+        assert_eq!(
+            dead, FROZEN_DEAD,
+            "顶层无写者字段集与冻结表不符 => 要么真的开/关了一条写面（改 `ADR-0049`），\
+             要么差分扫描器坏了（先跑判据二的探针）"
+        );
+    }
+
+    /// 判据六（检测器自证）：**只改这五个字段里的某一个，差分器必须认出改的是它**。
+    ///
+    /// 为什么必需：判据三与判据五都是**空集**断言，而一台坏扫描器同样能免费提供空集
+    /// （`AGENTS.md` §6.3 第 4 条的同型陷阱）。判据二用**既有写者**当探针，够不到
+    /// `folder_id`／`solo_safe` —— 它们在 `Op` 面**根本没有写者**，所以"既有写者"这条
+    /// 路对它们是空的。这里改用**人造写者**：绕开 `Op` 直接改夹具副本，喂给同一个
+    /// `diff_root_keys_and_leaves`，要求差异**只**落在被改的那个字段上。
+    ///
+    /// 五个用例覆盖差分器的两条分支：`folder_id` 走**键新增**（`None → Some`，序列化后
+    /// 凭空多出一个键），其余四个走**值改变**。
+    ///
+    /// ⚠ 这里⛔ 要求改完的文档仍然合法：被测的是**差分器**，⛔ 校验器。
+    #[test]
+    fn a_sole_change_of_each_registered_field_is_attributed_to_that_field() {
+        fn bump_seed(doc: &mut YebanProjectV1) {
+            doc.rng_seed += 1;
+        }
+        fn swap_sample_rate(doc: &mut YebanProjectV1) {
+            doc.audio_config.sample_rate = crate::project::SampleRate::Hz96000;
+        }
+        fn edit_description(doc: &mut YebanProjectV1) {
+            doc.metadata.description.push('x');
+        }
+        fn add_folder_link(doc: &mut YebanProjectV1) {
+            // 夹具只给 `ids[0]` 设了 `folder_id` ⇒ `ids[1]` 这一条走"键新增"分支
+            let ids: Vec<EntityId> = doc.tracks.keys().cloned().collect();
+            doc.tracks.get_mut(&ids[1]).expect("夹具轨道存在").folder_id = Some(ids[0]);
+        }
+        fn flip_solo_safe(doc: &mut YebanProjectV1) {
+            let ids: Vec<EntityId> = doc.tracks.keys().cloned().collect();
+            doc.tracks.get_mut(&ids[1]).expect("夹具轨道存在").solo_safe = true;
+        }
+
+        let attribute = |mutate: fn(&mut YebanProjectV1)| {
+            let mut doc = fixture_document_for_differential();
+            let before = serde_json::to_value(&doc).expect("夹具可序列化");
+            mutate(&mut doc);
+            let after = serde_json::to_value(&doc).expect("改后可序列化");
+            diff_root_keys_and_leaves(&before, &after)
+        };
+
+        // ---- 逐字段：`(顶层集, 末端集)` 的期望是**手算的唯一差异**，实测不符就红 ----
+        assert_eq!(
+            attribute(bump_seed),
+            (vec!["rng_seed".to_owned()], vec!["rng_seed".to_owned()]),
+            "`rng_seed` 单独改动没被归因到它自己"
+        );
+        assert_eq!(
+            attribute(swap_sample_rate),
+            (
+                vec!["audio_config".to_owned()],
+                vec!["sample_rate".to_owned()]
+            ),
+            "`audio_config.sample_rate` 单独改动没被归因到 `audio_config`/`sample_rate`"
+        );
+        assert_eq!(
+            attribute(edit_description),
+            (vec!["metadata".to_owned()], vec!["description".to_owned()]),
+            "`metadata.description` 单独改动没被归因到 `metadata`/`description`"
+        );
+        assert_eq!(
+            attribute(add_folder_link),
+            (vec!["tracks".to_owned()], vec!["folder_id".to_owned()]),
+            "`folder_id` 由 `None` 变 `Some`（键新增）没被归因到 `folder_id`"
+        );
+        assert_eq!(
+            attribute(flip_solo_safe),
+            (vec!["tracks".to_owned()], vec!["solo_safe".to_owned()]),
+            "`solo_safe` 单独改动没被归因到 `solo_safe`"
+        );
     }
 
     /// 四条**新 `set` 类**（`SetTransportConfig` / `SetTempo` / `SetAuthor` / `SetTitle`）的

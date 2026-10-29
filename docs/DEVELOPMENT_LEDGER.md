@@ -15553,8 +15553,9 @@ merge 成一条 push。**该跑的形态**：`plan`／`checks`／`deny`／`lockf
 | 提交／线 | run | 状态与读数（写本批时） | 下一步 |
 | --- | --- | --- | --- |
 | main `05bb588d`（`ADR-0050` 批） | `40967241170` | **success ＝ 空绿** —— `plan` 判无受影响 crate ⇒ `rust (workspace 全量)`／matrix／`windows`／`macos` **四条 skipped**，真跑的只有 `plan`／`lockfile`／`checks`／`deny` | ⛔ 当任何代码验证用；只此登记 |
+| main `83c215bb`（本批文档） | `40970840098` | **success ＝ 空绿（如预测）** —— 现读 `check-runs`：`rust (workspace 全量)`／matrix／`windows`／`macos` **四条 `skipped`**，`plan`／`lockfile`／`deny`／`checks` **四条 success** | 只登记，⛔ 写成代码验证；⚠ 下一批文档**并入 S5 落地那次推送**，让代码 run 覆盖文档（免得再来一条空绿） |
 | S4 落地 merge `36bfe268` | `40965834655` | ⭐ **success 已逐名读回（07:03 现读，非空绿）** —— 承判腿 `rust (yeban-model)` 真跑 **2m36s**：`Running tests/` **14** 个二进制／`test result:` **467 passed**／**0** FAILED；`folder_link_validation_gap.rs` 的**六条判据逐名各 1 次 `... ok`**（`a_folder_link_to_a_missing_track_is_still_rejected`／`the_fixture_has_enough_non_master_tracks_for_the_shape_probes`／`validate_accepts_a_folder_link_pointing_at_the_master_bus_today`／`the_untouched_baseline_fixture_validates`／`validate_accepts_a_two_node_folder_cycle_today`／`validate_accepts_a_self_referential_folder_link_today`）；其余在飞的两条也已真跑：`windows` **258** 二进制／**4,987** passed，`rust (yeban-app)` **204**／**1,958**，`macos` **258**／**5,008**，`rust (yeban-engine)` **43**／**687**；全 run 合计 `test result:` **999** 行／**17,240** passed／**0** 条 `FAILED` 或 `panicked`。⚠ 唯一 `skipped` 是 `rust (workspace 全量)`（matrix 腿在场＝按构造的正常形态，⛔ 因此判空绿） | ✅ **S4 四件齐**（代码 `c3b0b4a0` ＋ 判据六条 ＋ 线判决 `40914097921` ＋ 落地判决 `40965834655`）；树已 `rm --purge`（归档 `line-archive/s4-folder-link-gap @ c3b0b4a0`），`/tmp/yeban-s4`（**1.4G**）**已回收** |
-| S5 线 tip `0c450809` | `40969292516` | **in_progress**（写本批时 queued → 07:0x 起在跑） | 判绿 ⇒ `land` ⇒ 读 merge run（候选纪律③ 的合法来源①） |
+| S5 线 tip `0c450809` | `40969292516` | **in_progress**（写本批时 queued → 07:0x 起在跑）。⭐ **07:2x 经 `check-runs` 兜底读到**：承判腿 **`rust (yeban-model)` completed `success`**，`rust (yeban-mcp)`／`yeban-midi`／`yeban-decode`／`yeban-render`／`yeban-engine`／`yeban-ui-mcp`／`macos`／`lockfile`／`plan`／`deny`／`checks` 全 `success`；仍在飞：`rust (yeban-app)`、`windows`；`rust (workspace 全量)` **skipped**（matrix 腿在场＝按构造，⛔ 判空绿） | 两条腿判绿 ⇒ `land` ⇒ 读 merge run（候选纪律③ 的合法来源①）⇒ 逐名判据仍需**日志**（`check-runs`⛔ 含日志） |
 | S5 中间提交 `f4ef38de` | `40969008920` | **cancelled** —— `ci.yml:28-29`「同一分支的新推送取消旧运行」；tip run 覆盖的是**同一棵树** | ⛔ 给它记判决 |
 | ⚠ 并行写者 `line/sidebar-item`（`641a8724`） | `40968504401` | **failure** —— ⛔ 本会话不读细节、不 land、不动该线 | 谁派的谁读回 |
 | ⚠ 并行写者 `line/sidebar-cat`（`7ffb6907`）／`line/sidebar-item`（`dd305159`） | `40967904583`／`40969319851` | **in_progress** | 同上 |
@@ -15573,6 +15574,20 @@ merge 成一条 push。**该跑的形态**：`plan`／`checks`／`deny`／`lockf
    ⚠ 另：windows 腿是 `Running tests\...`（反斜杠），数二进制的模式要写成 `Running tests[/\\]`。
    ⇒ 纪律：**"计数为 0"先怀疑读法**，再怀疑事实。
 
+#### §4.2 ⭐ 新增：**Actions 端点会被次级限流**（本批实测，代价＝约 10 分钟读不回判决）
+
+同时挂 **3** 条监视（每条 `sleep 45..60` 轮询 `gh run view`）＋ 两次 8MB 级 `gh run view --log`
+之后，`/actions/**` 全线返回 **HTTP 403 `API rate limit exceeded for user ID 44745`**，
+而 `gh api rate_limit` 报 **core 3915/5000**、`gh api user` 正常 ⇒ ⛔ 不是主配额耗尽，
+是 **Actions/`runs` 端点的次级保护**；实测**持续 ≥10 分钟**（连试 8 次 × 70s 未解）。
+
+- **可用的兜底读数路径**（本批靠它拿到 S5 承判腿）：
+  `gh api repos/{owner}/{repo}/commits/{sha}/check-runs` —— 给每条 check 的
+  `name`／`status`／`conclusion`，⛔ 受同一限流影响，且⛔ 含日志正文
+  ⇒ 只能判"这条腿跑没跑、结论是什么"，**逐名判据仍需日志**。
+- 纪律：**一条 run 只挂一条监视**，间隔 ≥**120s**（原判据监视用 45～60s 是本批的直接起因）；
+  监视被通知后立即 `TaskStop`，⛔ 留多条同目标监视并行。
+
 ### §5 磁盘与负债读数
 
 - `/dev/sda2`（`/home`）：235G 总量，已用 **200G**，余 **29G**（88%）—— ⭐ 本批回收 `/tmp/yeban-s4`
@@ -15585,7 +15600,61 @@ merge 成一条 push。**该跑的形态**：`plan`／`checks`／`deny`／`lockf
 
 ### §6 队列现状
 
-自主可做：S5 落地闭合（等 tip run 绿）、S4 落地闭合（等 merge run）。
+自主可做：S5 落地闭合（等 tip run 剩余两条腿）。⭐ S4 落地闭合**已在本批完成**（判决读回＋树拆＋1.4G 回收）。
 待人类：`ADR-0042`／`ADR-0047`／`ADR-0048`／`ADR-0049`（含本轮补账）／`ADR-0050`／
 `ADR-0004`（含 Q13 的 `folder_id` 补校验）＋ `AGENTS.md:134` 那句"可写的只有"。
 新登记的待裁候选（⛔ 本会话不发明答案）：**`master_bus_track_id`** 要不要另开一张票。
+
+### §7 ⭐ 创作轴现状**重新量了一遍**（结论：自主可做的片＝**0**，这次是逐键实测而非措辞）
+
+起因：§0.7/§0.8 说"创作轴只剩设计活"，那句是**推断**。本批按 `schema → 代码消费点 → 判据` 三跳**现读**复核：
+
+- **单位**：`schemas/mcp-tools.schema.json` 里 `yeban_propose_section` 的**参数键个数** ＝ **24**
+  （现读 `definitions.DocumentedToolArguments.$defs.yeban_propose_section.properties`，
+  该 `properties` 段起于 `schemas/mcp-tools.schema.json:507`）。
+- **本批自己量的那条**：把 24 个键逐个转成 `snake_case` 后在
+  `crates/{yeban-mcp,yeban-theory,yeban-model}/src` 里 `grep` —— **缺席 0 个**（单位＝键名个数）。
+  ⚠ 这只证"键在 src 侧**有出现**"，⛔ 等于"语义被 honour"；后者由既有防线承担：
+  文档化可选键零覆盖守卫（本仓常驻，见台账前批）＋ `crates/yeban-mcp/tests/` 里
+  **17** 个 `section*` 判据文件（单位＝文件个数）。
+- 此前三键是嫌疑（`harmonySeed`／`materialClipIds`／`partTracks`），现读其**声明**在
+  `crates/yeban-mcp/src/domain/section_build.rs:1277`／`:1286`／`:1296`，
+  且 `tests/section_harmony_seed.rs`、`section_material_clips.rs`、`section_part_tracks.rs` 各在场。
+- ⇒ **"schema 写了但代码不 honour"这一族按当前注册表已清空**；这条轴的下一个入口只有一个：
+  **出现新键时按同法再审**（与 `docs/ledger/handover-latest.md:144` 同一条）。
+- 三方对齐表另侧的"仅计划（系统也未实现）"现读为 **6** 行（单位＝表行；
+  由 `scripts/gates/check_feature_alignment.py::Row.classify` 现算，⛔ 手抄）：
+  `docs/ledger/feature-alignment.md:116` OS 实时线程调度、`:119` 录音＋自动保存、
+  `:186` 无障碍测试（`TEST-SPEC-005/006`）、`:210` 外部软件联动＋`notify` 热重载、
+  `:211` MLS Ping 声学延迟校准、`:212` ASIO 与反向 VST3 打包 —— ⚠ **六行全部落在系统／硬件／发布面，
+  没有一行是 `yeban_propose_section` 的创作参数**（其中 `:212` 的 `ASIO` 还被红线 6 定为**永不定义**），
+  ⇒ 它们⛔ 属"创作缺口"，⛔ 由本会话自行提级为待办；要动也得先由人类排期。
+
+### §8 ⭐ S5 第二片**设计稿**（现读实测换来的；这片⛔ 是"再钉一遍"，它堵的是**第一片自己留下的洞**）
+
+**洞在哪**：第一片的棘轮表 `op_write_differential_root_keys_match_frozen_table` 钉的是**根键**集合。
+⇒ 若某变体**新增一个根键**，棘轮变红（好）；但若一个**已经在写 `metadata` 的变体**改去多写
+`metadata.tags`，根键不变 ⇒ 棘轮**静默放行**。这正是本轮抓住的那类假绿的另一半。
+
+**为什么⛔ 能把 leaves 直接钉成第二张表**（本机 `--nocapture` 现读，单位＝`DIFF` 行 / leaf 段）：
+- **55** 行，leaf 段合计 **67** 个 ＝ **53** 个真字段名 ＋ **14** 个**实例键**。
+  实例键三种形态：26 字符 ULID（`01J8ZQ…`）、64 位十六进制资产哈希、纯数字 tick 键（`960`）。
+- **14** 行的末段**只有实例键**（`AddClip`／`AddClipPlacement`／`AddNote`／`AddTrack`／`DeleteNote`／
+  `RemoveAsset`／`RemoveClip`／`RemoveClipPlacement`／`RemoveScene`／`RemoveSection`／`RemoveTrack`／
+  `SetAsset`／`SetTempoPoint`／`SetTimeSignaturePoint`）—— 形态是"对 map 容器增删一条记录"，
+  差异路径的末端天然落在**键**上而非字段名上；
+- 其余 **41** 行的字段名可用，例：`SetTransportConfig` → `count_in_bars,launch_quantization,metronome_enabled`、
+  `SetNoteExpression` → `micro_timing_ticks,probability,ratchet`、`Batch` → `gain_db,velocity`。
+
+**这片要做的三件事**（都落在 `ops.rs` 的 test 模块＝light crate，本机可编译可测）：
+1. 加一条**词法过滤**：末段命中 `^[0-9A-HJKMNP-TV-Z]{26}$`／`^[0-9a-f]{64}$`／`^\d+$` ⇒ 归"实例键"、
+   ⛔ 进字段棘轮；把**剩下的字段名**按变体钉成第二张表（现读 `41` 行非空、`53` 个字段段）。
+2. **过滤规则本身要防空转**（R93 同型）：把"实例键段数"**冻结成 14** —— 将来新增一个
+   "按数字键的容器"（如新的 tick map）会让该数变 **15** ⇒ 判据红，逼人来认领，⛔ 被过滤规则静默吞掉。
+3. 每行**二选一**断言：要么字段名集合非空，要么显式登记为"该变体写的是容器记录"
+   （⛔ 允许"两边都空"，那就是本轮 §2 注入实验防的那类空集）。
+
+⚠ 已知代价：过滤是**词法**的。若将来出现真字段名恰好全数字（本仓 `project.rs` 现读无此形态），
+会被误归实例键 ⇒ 由第 2 条的计数冻结兜住（会红，⛔ 悄悄漏）。
+
+
