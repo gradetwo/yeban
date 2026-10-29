@@ -520,7 +520,10 @@ fn an_output_gain_db_lane_on_the_strip_source_lands_in_monitoring() {
                     ("fader_db", 0.0),
                 ],
             ),
-            effect("混响", &[("room_size", 0.5)]),
+            // ⚠ 这台**不是**通道条来源（来源永远是链里第一个被认出来的），但它**也**带一个
+            // 同名的 `output_gain_db` 旋钮 —— D 臂靠它才有牙：谓词若只看名字不看槽位，
+            // D 会被判成"已落地"⇒ 监听响度变了、改的却是另一台设备。
+            effect("混响", &[("output_gain_db", 0.0), ("room_size", 0.5)]),
         ];
         // 夹具前提：换链之后这条轨上**没有**开着的 `DeviceParam` 泳道
         //（演示工程那条 `(0,0)` 是 `read_enabled:false`，且它指向内置乐器）。
@@ -533,7 +536,16 @@ fn an_output_gain_db_lane_on_the_strip_source_lands_in_monitoring() {
 
     let mut host = EngineHost::new();
     let baseline_project = build(&[]);
+    // ⚠ **必须先 `reload`**：`publish_automation` 返回的是 SPSC 环**实际收下**的条数，
+    // 而那条环由 `reload` 建；没有它 `self.events` 是 `None` ⇒ 每次返回恒 0，
+    // 六个臂的增量断言会一起变成"0 == 0＋1"那种红（CI 实测：run `40859261150` 的
+    // `rust (yeban-app)` 就红在这里）。判据 1 的既有臂（`:153`）同一条写法。
+    host.reload(&baseline_project, 0).expect("重建");
     let baseline = host.publish_automation(Some(&baseline_project));
+    assert!(
+        baseline >= 1,
+        "夹具前提：演示工程开着的音量／声相泳道必须真的下发（实得 {baseline}）⇒ 否则下面每条增量都在比 0"
+    );
     println!("[S1/app] 基线事件数（演示工程的音量＋声相）= {baseline}");
 
     // ---- A：来源设备的 `output_gain_db` ⇒ 缺口 0、事件 +1 ----
