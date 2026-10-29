@@ -138,6 +138,11 @@ export component ConsoleTabs inherits Rectangle {
     in property <float> send-gain-max-db: 0.0;
     in property <bool> send-create-available: false;
     in property <string> send-create-reason: "";
+    // ⭐ 宏面板：展示轨的宏逐条投影，只透传给 `DeviceRack`（画「宏 (N)」按钮的条数）。
+    // 面板本体住在 `MainWindow`（`dialogs/macro_panel.slint`），本组件没有抽屉。
+    in property <[string]> macro-names: [];
+    in property <[float]> macro-values: [];
+    in property <[string]> macro-value-labels: [];
     // ⭐ 轨 / 路由（任务单 `#160`）：轨数读数 ＋ 建轨 / 删展示轨的可用性与逐字原因。
     // 与上面发送那几格同一条透传纪律 —— 本组件不解释、⛔ 不自己算"能不能建/删"。
     in property <string> routing-count-label: "";
@@ -226,6 +231,8 @@ export component ConsoleTabs inherits Rectangle {
     callback track-create-audio();
     callback track-create-aux();
     callback track-delete();
+    // ⭐ 打开宏面板（右侧抽屉住在 `MainWindow`）：只上抛，不解释、不持有开关状态。
+    callback open-macro-panel();
     // ⭐ **导出 MIDI**（任务单 `#90` 甲）：混音台（Tab 1）里的**控制台级**动作。
     // 与上面那一族同款 —— 本组件只上抛，⛔ 不写盘、⛔ 不判断成功与否。
     callback export-midi();
@@ -544,6 +551,10 @@ export component ConsoleTabs inherits Rectangle {
         routing-master-label: root.routing-master-label;
         routing-delete-available: root.routing-delete-available;
         routing-delete-reason: root.routing-delete-reason;
+        // ⭐ 宏面板：只透传投影（按钮条数以它为准）。
+        macro-names: root.macro-names;
+        macro-values: root.macro-values;
+        macro-value-labels: root.macro-value-labels;
         // 写入面：两个手势原样上抛（唯一落点 `host::wire_device_rack`）。
         device-bypass-toggle(device-id) => {
             root.device-bypass-toggle(device-id);
@@ -631,6 +642,10 @@ export component ConsoleTabs inherits Rectangle {
         }
         track-delete() => {
             root.track-delete();
+        }
+        // ⭐ 宏入口：只上抛。
+        open-macro-panel() => {
+            root.open-macro-panel();
         }
     }
 }

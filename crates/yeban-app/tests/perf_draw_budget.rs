@@ -197,7 +197,16 @@ const RUNTIME_VELOCITY_BARS: usize = 229;
 /// 与 `master-device-names` 同索引集 —— 主总线每台一个旁通开关）。读数（判据逐字打印
 /// 整份清单）：**48 → 49**。`#181` 的其余五格（EQ 的可用性 / 当前值 / 值域两端 /
 /// 逐字原因）都是**标量** ⇒ 只动 `APPLY_VIEW_WRITE_SITE_BUDGET`（81 → 87）。
-const PER_FRAME_ARRAY_REWRITE_BUDGET: usize = 49;
+///
+/// ## 49 → 52 的追加（宏面板，2026-10-30）
+///
+/// 那三格是 `ui.set_macro_names` / `ui.set_macro_values` / `ui.set_macro_value_labels`
+/// （`ViewState::macros` 逐条投影：名字 / 位置 0.0..=1.0 / 位置文本）。宏面板的
+/// 滑块 = 投影的 `TrackV3::macros` 下标 —— 与发送条同一条纪律（平行数组同索引集，
+/// 三个数组一起注入）。读数（判据逐字打印整份清单）：**49 → 52**，同时
+/// `APPLY_VIEW_WRITE_SITE_BUDGET` 93 → 96。消费者只在默认关着的右侧抽屉
+/// （Tab 3 的按钮才打开它）⇒ 默认帧（Tab 0）一位不变。
+const PER_FRAME_ARRAY_REWRITE_BUDGET: usize = 52;
 /// `host.rs` 的 `apply_view` 函数体里的属性写入点个数上限（本单之后 **60**）。
 ///
 /// ## 39 → 40 的追加（任务单 `#82`，2026-10-16）
@@ -421,7 +430,10 @@ const PER_FRAME_ARRAY_REWRITE_BUDGET: usize = 49;
 /// * 写入点：**89 → 93**（四个标量；`apply_view` 里只多了四行 `ui.set_*`）；
 /// * 每帧换模型实例的数组：**49 → 49**（一条都不动）。
 /// * 默认帧（Tab 0）的运行时树不含 `device-rack` ⇒ 结构上不参与默认帧绘制。
-const APPLY_VIEW_WRITE_SITE_BUDGET: usize = 93;
+///
+/// ⭐ 宏面板（2026-10-30）：+3 个数组写入点（`macro-names` / `macro-values` /
+/// `macro-value-labels`）⇒ **90 → 93 → 96**；宏面板没有新的标量投影字段。
+const APPLY_VIEW_WRITE_SITE_BUDGET: usize = 96;
 
 /// 取 `[BASELINE-003]` 第 `frame` 帧的滚动偏移（与 `examples/fps_gpu.rs` 同款换算）。
 fn scroll_at(frame: usize) -> f32 {
@@ -494,6 +506,11 @@ fn array_instance_addrs(ui: &yeban_app::ui::MainWindow) -> Vec<(&'static str, us
     push!("send-destination-names", get_send_destination_names);
     push!("send-gain-labels", get_send_gain_labels);
     push!("send-gain-dbs", get_send_gain_dbs);
+    // ⭐ 宏面板（Tab 3 头部「宏 (N)」→ 右侧抽屉）的三个平行数组同样在 `apply_view`
+    // 的每帧路径上（⛔ 不是手势路径）⇒ 必须计入这份清单，否则会漏数。
+    push!("macro-names", get_macro_names);
+    push!("macro-values", get_macro_values);
+    push!("macro-value-labels", get_macro_value_labels);
     push!("bar-positions", get_bar_positions);
     push!("note-ulids", get_note_ulids);
     push!("note-velocities", get_note_velocities);

@@ -48,6 +48,7 @@ import { ConsoleTabs } from "console/console_tabs.slint";
 import { MusicalPrDrawer } from "dialogs/musical_pr_drawer.slint";
 import { UndoTreeModal } from "dialogs/undo_tree_modal.slint";
 import { ExportWavDialog } from "dialogs/export_wav_dialog.slint";
+import { MacroPanel } from "dialogs/macro_panel.slint";
 // 五个**模块入口**（导出 WAV / 导入 MIDI / 装载 SFZ / 录音 / 硬件 MIDI 输入）。
 // 它们住在右栏的下半区（`AiRail` 的 `ModuleActions` 实例），因此**不改**任何既有
 // 几何：顶栏 48 / 中段 / 4px splitter / 底部控制台 / 24px 状态栏一位未动，
@@ -385,6 +386,9 @@ export component MainWindow inherits Window {
     in-out property <bool> sidebar-collapsed: false;
     in-out property <bool> ai-drawer-open: false;
     in-out property <bool> musical-pr-open: false;
+    // ⭐ 宏面板（右侧抽屉；默认关着 ⇒ 默认帧一位不变）。打开者 = 控制台 Tab 3 的
+    // 「宏 (N)」按钮；关闭者 = 抽屉自己的 `close`。
+    in-out property <bool> macro-panel-open: false;
     in-out property <bool> undo-tree-open: false;
     // ---- WAV 导出设置（隐藏的模态；默认关着 ⇒ 默认帧一位不变）----------------
     // 四格文本**不在这里解析**：`host::wire_module_actions_with_capture` 的
@@ -791,6 +795,14 @@ export component MainWindow inherits Window {
     callback send-gain-release(string);
     /// 新建发送（目的地 = 身份序第一条 `AuxReturn` 轨；新边身份由宿主分配）。
     callback send-create();
+    // ⭐ **宏面板的写入面**：右侧 `MacroPanel` 的滑块。`.slint` 只报"第几个宏 + 滑块
+    // 位置"，取值夹紧 / 陈旧基线比对 / **一次** `commit_ops` 全在宿主 `host::wire_macro_panel`。
+    /// 宏滑块按下（参数 = 宏下标 + 滑块面内的归一化位置 0.0–1.0）。
+    callback macro-grab(int, float);
+    /// 宏滑块拖动。
+    callback macro-drag(int, float);
+    /// 宏滑块收尾（值真的变了才提交一次 `Op::SetMacro`）。
+    callback macro-release(int);
     // ⭐ **轨 / 路由的写入面**（任务单 `#160`）：控制台 **Tab 3** 与发送条**同一面板**。
     //
     // 形状与 `send-*` 一族逐条同款：`.slint` 只报"按了哪个按钮 / 哪条边"，身份分配、
@@ -980,6 +992,12 @@ export component MainWindow inherits Window {
     in property <float> send-gain-max-db: 0.0;
     in property <bool> send-create-available: false;
     in property <string> send-create-reason: "";
+    // ⭐ 宏面板：展示轨的 `TrackV3::macros` 逐条投影（名字 / 位置 0.0..=1.0 / 位置文本）。
+    // 唯一写者是 `host::apply_view`，唯一事实源是 `ViewState::macros`。
+    // 「宏 (N)」按钮在 Tab 3；抽屉默认关 ⇒ 默认帧不画它。
+    in property <[string]> macro-names: [];
+    in property <[float]> macro-values: [];
+    in property <[string]> macro-value-labels: [];
     // ⭐ 轨 / 路由（任务单 `#160`）：轨数读数 ＋ 建轨 / 删展示轨的可用性与逐字原因。
     // 唯一写者是 `host::apply_view`，唯一事实源是 `ViewState` 的同名字段。
     // 与发送条同住控制台 Tab 3 ⇒ 默认帧不画它。
@@ -1446,6 +1464,10 @@ export component MainWindow inherits Window {
             send-gain-max-db: root.send-gain-max-db;
             send-create-available: root.send-create-available;
             send-create-reason: root.send-create-reason;
+            // ⭐ 宏面板：投影只单向搬运（「宏 (N)」按钮的条数以它为准）。
+            macro-names: root.macro-names;
+            macro-values: root.macro-values;
+            macro-value-labels: root.macro-value-labels;
             // ⭐ 轨 / 路由（任务单 `#160`）：同样只做单向搬运，⛔ 不解释、⛔ 不自己算
             // "能不能建 / 删"（可用性与逐字原因都来自投影）。
             routing-count-label: root.routing-count-label;
@@ -1578,6 +1600,10 @@ export component MainWindow inherits Window {
             }
             track-delete() => {
                 root.track-delete();
+            }
+            // ⭐ 宏入口：打开右侧抽屉（开关状态住在本窗口；⛔ 不在控制台里存第二份）。
+            open-macro-panel() => {
+                root.macro-panel-open = true;
             }
 
             // 混音台写入面：只上抛，不在 `.slint` 里改任何工程值
@@ -1729,6 +1755,32 @@ export component MainWindow inherits Window {
             root.musical-pr-open = false;
         }
         close => { root.musical-pr-open = false; }
+    }
+
+    // 宏面板（Tab 3 头部的「宏 (N)」→ 右侧抽屉；默认关着 ⇒ 默认帧一位不变）
+    MacroPanel {
+        x: root.width - 300px;
+        y: 0;
+        width: 300px;
+        height: root.height;
+        visible: root.macro-panel-open;
+
+        // 标题里写明"这些宏属于哪条轨" —— 与设备架 / 发送条**同一条**展示轨。
+        track-label: root.device-track-label;
+        macro-names: root.macro-names;
+        macro-values: root.macro-values;
+        macro-value-labels: root.macro-value-labels;
+
+        macro-grab(index, fraction) => {
+            root.macro-grab(index, fraction);
+        }
+        macro-drag(index, fraction) => {
+            root.macro-drag(index, fraction);
+        }
+        macro-release(index) => {
+            root.macro-release(index);
+        }
+        close => { root.macro-panel-open = false; }
     }
 
     // 全屏可视化 DAG 时光机 (Cmd/Ctrl + Shift + H)

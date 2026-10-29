@@ -1,0 +1,227 @@
+// 夜半 (Yeban) — 宏面板 (Macro Panel)
+//
+// 数据面：`TrackV3::macros` 的投影（`crates/yeban-app/src/bridge.rs` 的
+// `MacroRowView`）。三个平行数组（名字 / 位置 0.0..=1.0 / 位置文本）**同索引集**，
+// 下标就是模型里的 `macro_index` —— 宿主提交的 `Op::SetMacro` 用它寻址。
+//
+// 语义 ID (`[UI-TEST-001]` §12.2): `macro-panel` / `macro-empty-state` /
+// `macro-{i}-row` / `macro-{i}-name` / `macro-{i}-slider` / `macro-{i}-value`。
+//
+// ⚠ 本文件**不**新建 / 删除宏（`Op` 全集里没有 `AddMacro` / `RemoveMacro`），
+// 也**不**编辑映射（`MacroMapping` 没有工具面入口）。它只写"位置"这一格。
+//
+// 默认隐藏：打开开关住在 `app.slint` 的 `macro-panel-open`（默认 false ⇒ 初始帧
+// 不画它，1920 基准截图一位不动）。
+
+import { Tokens, UiText, UiMonoText, UiTitleText } from "../tokens.slint";
+
+export component MacroPanel inherits Rectangle {
+    // ---------------------------------------------------------------- 数据面
+    /// 这些宏属于哪条轨（`device-track-label` 的原文，与设备架 / 发送条**同一条**）。
+    in property <string> track-label: "";
+    /// 宏名（`MacroParameter::name`）。
+    in property <[string]> macro-names: [];
+    /// 宏位置 0.0..=1.0（滑块位置就是它）。
+    in property <[float]> macro-values: [];
+    /// 位置的显示文本（`"0%".."100%"`，逐字来自投影）。
+    in property <[string]> macro-value-labels: [];
+
+    // ---------------------------------------------------------------- 写入面
+    /// 滑块按下（参数 = 宏下标 + 滑块面内的归一化位置）。
+    callback macro-grab(int, float);
+    /// 滑块拖动。
+    callback macro-drag(int, float);
+    /// 滑块收尾（一次手势 = 恰好一次 `Op::SetMacro`，由宿主提交）。
+    callback macro-release(int);
+    callback close();
+
+    background: Tokens.bg-panel;
+    border-width: 1px;
+    border-color: Tokens.line-strong;
+    clip: true;
+
+    accessible-role: region;
+    accessible-id: "macro-panel";
+    accessible-label: "宏面板";
+    // 宏条数进 `accessible-value`，与标题里的 "(N)" 同一份读数。
+    accessible-value: "" + root.macro-names.length;
+
+    // ---------------------------------------------------------------- 抽屉头
+    Rectangle {
+        x: 0;
+        y: 0;
+        width: parent.width;
+        height: 36px;
+        background: Tokens.bg-panel-alt;
+
+        UiTitleText {
+            x: Tokens.space-6;
+            y: 0;
+            width: parent.width - 64px;
+            height: parent.height;
+            text: "宏 (" + root.macro-names.length + ") · " + root.track-label;
+            color: Tokens.gold-bright;
+            font-size: Tokens.font-size-lg;
+            overflow: elide;
+            accessible-role: text;
+            accessible-id: "macro-panel-title";
+            accessible-label: "宏面板，" + root.track-label;
+        }
+
+        Rectangle {
+            x: parent.width - 28px;
+            y: 8px;
+            width: 20px;
+            height: 20px;
+            background: Tokens.bg-void;
+            border-radius: Tokens.radius-sm;
+            border-width: 1px;
+            border-color: Tokens.line;
+            accessible-role: button;
+            accessible-id: "macro-panel-close-button";
+            accessible-label: "关闭宏面板";
+            accessible-action-default => {
+                root.close();
+            }
+
+            UiText {
+                x: 0;
+                y: 0;
+                width: parent.width;
+                height: parent.height;
+                text: "×";
+                color: Tokens.ink-1;
+                font-size: Tokens.font-size-md;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+
+            TouchArea {
+                width: parent.width;
+                height: parent.height;
+                clicked => {
+                    root.close();
+                }
+            }
+        }
+    }
+
+    // ---------------------------------------------------------------- 空态
+    // 零宏时画一句用户可见的话，⛔ 不是一片空白（与 `musical-pr-empty-state` 同一条纪律）。
+    UiMonoText {
+        x: Tokens.space-6;
+        y: 52px;
+        width: parent.width - 32px;
+        height: 16px;
+        text: "这条轨没有宏";
+        color: Tokens.ink-2;
+        font-size: Tokens.font-size-xs;
+        visible: root.macro-names.length == 0;
+        accessible-role: text;
+        accessible-id: "macro-empty-state";
+        accessible-label: "这条轨没有宏";
+    }
+
+    // ---------------------------------------------------------------- 宏行
+    for macro_name[macro_index] in root.macro-names : Rectangle {
+        x: Tokens.space-6;
+        y: 48px + 40px * macro_index;
+        width: parent.width - 32px;
+        height: 36px;
+        background: transparent;
+
+        // 旋钮位置：注入的 0.0..=1.0 夹紧（值域退化 / 越界时 ⛔ 不画出滑块外面）。
+        property <float> value-clamped: root.macro-values[macro_index] < 0.0
+            ? 0.0
+            : (root.macro-values[macro_index] > 1.0 ? 1.0 : root.macro-values[macro_index]);
+
+        accessible-role: list-item;
+        accessible-id: "macro-" + macro_index + "-row";
+        accessible-label: macro_name + " · " + root.macro-value-labels[macro_index];
+        accessible-item-index: macro_index;
+        accessible-item-count: root.macro-names.length;
+
+        UiText {
+            x: 0;
+            y: 0;
+            width: parent.width - 64px;
+            height: 16px;
+            text: macro_name;
+            color: Tokens.ink-0;
+            font-size: Tokens.font-size-sm;
+            overflow: elide;
+            accessible-role: text;
+            accessible-id: "macro-" + macro_index + "-name";
+            accessible-label: macro_name;
+        }
+
+        UiMonoText {
+            x: parent.width - 60px;
+            y: 0;
+            width: 60px;
+            height: 16px;
+            text: root.macro-value-labels[macro_index];
+            color: Tokens.gold;
+            font-size: Tokens.font-size-xs;
+            horizontal-alignment: right;
+            accessible-role: text;
+            accessible-id: "macro-" + macro_index + "-value";
+            accessible-label: root.macro-value-labels[macro_index];
+        }
+
+        // 滑块语义节点：值域就是模型的 0.0..=1.0（`MacroParameter::value` 的固有域）。
+        Rectangle {
+            x: 0;
+            y: 20px;
+            width: parent.width;
+            height: 16px;
+            background: transparent;
+            accessible-role: slider;
+            accessible-id: "macro-" + macro_index + "-slider";
+            accessible-label: macro_name + " 位置";
+            accessible-orientation: horizontal;
+            accessible-value-minimum: 0.0;
+            accessible-value-maximum: 1.0;
+            accessible-value-step: 0.01;
+            accessible-value: root.macro-value-labels[macro_index];
+        }
+
+        // 导轨
+        Rectangle {
+            x: 0;
+            y: 26px;
+            width: parent.width;
+            height: 4px;
+            background: Tokens.bg-void;
+            border-radius: Tokens.radius-sm;
+        }
+
+        // 旋钮（位置只读注入的 0.0..=1.0）
+        Rectangle {
+            x: (parent.width - 12px) * parent.value-clamped;
+            y: 22px;
+            width: 12px;
+            height: 12px;
+            background: Tokens.gold-deep;
+            border-radius: Tokens.radius-sm;
+        }
+
+        // 手势面：位置**不随数值动**（读 `self.mouse-x`，若控件自己也动就自己喂自己）。
+        TouchArea {
+            x: 0;
+            y: 20px;
+            width: parent.width;
+            height: 20px;
+            pointer-event(event) => {
+                if (event.kind == PointerEventKind.down) {
+                    root.macro-grab(macro_index, self.mouse-x / self.width);
+                } else if (event.kind == PointerEventKind.move) {
+                    root.macro-drag(macro_index, self.mouse-x / self.width);
+                } else {
+                    // `up` 与 `cancel` 都是收尾（拖到窗口外松手也走这条）。
+                    root.macro-release(macro_index);
+                }
+            }
+        }
+    }
+}

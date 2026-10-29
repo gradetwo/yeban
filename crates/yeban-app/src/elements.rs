@@ -1617,6 +1617,77 @@ impl ElementRegistry {
             );
         }
 
+        // ------------------------------------------------------------ 宏面板
+        //
+        // 入口按钮与设备链**同住** Tab 3 的标题行（无条件声明，只有 `visible` 随
+        // 第一段宽度变）⇒ 这里**无条件**登记。行数 / 名字 / 位置全部来自
+        // `ViewState::macros`（`TrackV3::macros` 的投影）；零宏时画空态。
+        registry.add(
+            "macro-open-button",
+            ElementKind::Button,
+            "console/device_rack.slint",
+            &format!("打开宏面板（{} 个宏）", view.macros.len()),
+            false,
+        );
+        registry.add(
+            "macro-panel",
+            ElementKind::Region,
+            "dialogs/macro_panel.slint",
+            "宏面板",
+            false,
+        );
+        registry.add(
+            "macro-panel-title",
+            ElementKind::Text,
+            "dialogs/macro_panel.slint",
+            &format!("宏面板，{}", view.device_track_label),
+            false,
+        );
+        registry.add(
+            "macro-panel-close-button",
+            ElementKind::Button,
+            "dialogs/macro_panel.slint",
+            "关闭宏面板",
+            false,
+        );
+        registry.add(
+            "macro-empty-state",
+            ElementKind::Text,
+            "dialogs/macro_panel.slint",
+            "这条轨没有宏",
+            false,
+        );
+        for (macro_index, row) in view.macros.iter().enumerate() {
+            registry.add(
+                &format!("macro-{macro_index}-row"),
+                ElementKind::ListItem,
+                "dialogs/macro_panel.slint",
+                &row.label(),
+                false,
+            );
+            registry.add(
+                &format!("macro-{macro_index}-name"),
+                ElementKind::Text,
+                "dialogs/macro_panel.slint",
+                &row.name,
+                false,
+            );
+            registry.add(
+                &format!("macro-{macro_index}-value"),
+                ElementKind::Text,
+                "dialogs/macro_panel.slint",
+                &row.value_display,
+                false,
+            );
+            registry.add(
+                &format!("macro-{macro_index}-slider"),
+                ElementKind::Slider,
+                "dialogs/macro_panel.slint",
+                &format!("{} 位置", row.name),
+                false,
+            );
+        }
+
         // ------------------------------------------------------------ 轨 / 路由（⭐ `#160`）
         //
         // 与发送段**同一面板**（`send-strip` 的上半段）。建轨三个按钮 ＋ 删除展示轨；
@@ -2303,7 +2374,7 @@ mod tests {
     /// `console/asset_pool_panel.slint`（15 号）是**任务单 `#133`** 加的素材池面板：
     /// 独立组件（住在 `MixerConsole` 里，Tab 1 才可见）⇒ 默认帧像素不变。它与上面
     /// 那一族同一条纪律：UI 加一个文件就必须在清单里显式改。
-    const SLINT_MANIFEST: [&str; 16] = [
+    const SLINT_MANIFEST: [&str; 17] = [
         "app.slint",
         "transport.slint",
         "status_bar.slint",
@@ -2322,6 +2393,8 @@ mod tests {
         "dialogs/undo_tree_modal.slint",
         // 导出 WAV 选项框（`[UI-NOTE-004]`）：隐藏模态，默认关闭 ⇒ 金帧不变。
         "dialogs/export_wav_dialog.slint",
+        // 宏面板（`[UI-NOTE-004]` 的宏轨那一格）：右侧抽屉，默认关闭 ⇒ 金帧不变。
+        "dialogs/macro_panel.slint",
         // 四个模块入口（导出 WAV / 导入 MIDI / 装载 SFZ / 录音）。
         "module_actions.slint",
     ];
