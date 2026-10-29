@@ -915,7 +915,7 @@
         "yeban_import_midi": {
           "title": "yeban_import_midi",
           "type": "object",
-          "description": "MCP-TOOL-EXT-IMPORT-MIDI — 导入磁盘上的 Standard MIDI File (.mid) 到指定的空 MIDI 片段，采纳单值头元数据并上报非音符损失。",
+          "description": "MCP-TOOL-EXT-IMPORT-MIDI — 导入磁盘上的 Standard MIDI File (.mid) 到指定的空 MIDI 片段，采纳单值头元数据并上报非音符损失。歌词五桶在 data.lyricCounts：read/attached/dropped（read == attached + dropped）＋ nonUtf8/empty（连候选都不算的 FF 05，⛔ 猜文本）；orphan 是 dropped 的同值旧别名。",
           "properties": {
             "path": {
               "type": "string",

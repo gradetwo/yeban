@@ -398,11 +398,15 @@ pub fn describe(import: &MidiImport) -> Value {
         "trackId": import.track_id.to_canonical_string(),
         "clipId": import.clip_id.to_canonical_string(),
         "noteCount": import.note_count,
+        // 与 `MidiLyricCounts` 同口径的五桶：`read == attached + dropped`；
+        // `nonUtf8` / `empty` 是**连候选都不是**的两桶（⛔ 猜文本），必须让调用方看见。
         "lyricCounts": {
             "attached": import.lyric_counts.attached,
             "orphan": import.lyric_counts.dropped,
             "dropped": import.lyric_counts.dropped,
             "read": import.lyric_counts.read,
+            "nonUtf8": import.lyric_counts.non_utf8,
+            "empty": import.lyric_counts.empty,
         },
         "losses": losses_val,
         "lossTotal": import.losses.loss_total(),

@@ -11,6 +11,8 @@
 //!    （`adoptedTempoMap` / `adoptedTimeSignatureMap`、dryRun 不落盘、undo 还原）；
 //! 6. ⭐ [ARCH-EXT-002]：**两工具闭环** —— `yeban_export_midi` 回传的字节（base64 解回）
 //!    写成 `.mid` 后再由 `yeban_import_midi` 导入，音符四元组与标题／署名逐字往返。
+//! 7. ⭐ [ARCH-EXT-002]：歌词五桶 `lyricCounts` —— `nonUtf8` / `empty` 两个丢失桶
+//!    与 `read`/`attached`/`dropped` 一起上报（手搓含空/坏 UTF-8 的 `FF 05`）。
 
 use std::fs;
 use std::path::PathBuf;
@@ -989,6 +991,90 @@ fn test_export_tool_bytes_reimported_through_the_import_tool() {
             vec![(0, 60, 480, 100), (960, 67, 240, 64)],
             "音符四元组必须逐条往返"
         );
+    }
+
+    let _ = fs::remove_file(smf_path);
+}
+
+/// 手搓一份格式 0 / 960 PPQ 的 SMF：tick 0 一颗 C4（vel 100、dur 960），
+/// 加**三条** `FF 05` —— `do`（tick 0，可归属候选）、空负载（`empty` 桶）、
+/// 非 UTF-8 负载 `FF FE`（`nonUtf8` 桶）。后两条编码器不会产出，只能手搓
+/// （同 `yeban-midi` 的 `parser_counts_empty_and_non_utf8_lyrics_without_guessing`）。
+fn create_lyric_bucket_smf_file() -> PathBuf {
+    let payload: Vec<u8> = vec![
+        0x00, 0x90, 0x3C, 0x64, // NoteOn C4 vel 100 @ tick 0
+        0x00, 0xFF, 0x05, 0x02, b'd', b'o', // FF 05 "do" @ tick 0
+        0x87, 0x40, 0x80, 0x3C, 0x00, // NoteOff @ tick 960
+        0x00, 0xFF, 0x05, 0x00, // 空 FF 05
+        0x00, 0xFF, 0x05, 0x02, 0xFF, 0xFE, // 非 UTF-8 FF 05
+        0x00, 0xFF, 0x2F, 0x00, // EndOfTrack
+    ];
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(b"MThd");
+    bytes.extend_from_slice(&6u32.to_be_bytes());
+    bytes.extend_from_slice(&0u16.to_be_bytes()); // 格式 0
+    bytes.extend_from_slice(&1u16.to_be_bytes()); // 1 条轨
+    bytes.extend_from_slice(&960u16.to_be_bytes());
+    bytes.extend_from_slice(b"MTrk");
+    bytes.extend_from_slice(
+        &u32::try_from(payload.len())
+            .expect("测试负载很短")
+            .to_be_bytes(),
+    );
+    bytes.extend_from_slice(&payload);
+    let path = std::env::temp_dir().join(format!(
+        "yeban-mcp-import-lyric-buckets-{}-{}.mid",
+        std::process::id(),
+        EntityId::new().to_canonical_string()
+    ));
+    fs::write(&path, bytes).expect("写手搓 SMF");
+    path
+}
+
+/// 判据（[MCP-TOOL-EXT-IMPORT-MIDI]）：歌词丢失的 `nonUtf8` / `empty` 两桶**必须在
+/// `lyricCounts` 里**。`read == attached + dropped` 只覆盖候选桶 —— 一个全是坏歌词的
+/// 文件会报 `read=0`，⛔ 这不代表文件里没有 `FF 05`；两桶此前只在 CLI/GUI 行可见，
+/// MCP 调用方收到的是"四个键里两个重复"的视图（`orphan` 与 `dropped` 同值）。
+#[test]
+fn test_import_midi_reports_empty_and_non_utf8_lyric_buckets() {
+    let smf_path = create_lyric_bucket_smf_file();
+    let mut dispatcher = dispatcher_with_project(yeban_midi::import::content_free_project());
+
+    let response = call_tool(
+        &mut dispatcher,
+        "yeban_import_midi",
+        json!({ "path": smf_path.to_str().expect("str") }),
+    );
+    assert_eq!(response["status"], "success", "{response}");
+    let data = &response["data"];
+    assert_eq!(data["noteCount"], json!(1), "{data}");
+    assert_eq!(
+        data["lyricCounts"],
+        json!({
+            "read": 1,
+            "attached": 1,
+            "orphan": 0,
+            "dropped": 0,
+            "nonUtf8": 1,
+            "empty": 1,
+        }),
+        "五个桶逐个点名 —— 响应里 ⛔ 不能少 nonUtf8/empty: {data}"
+    );
+
+    // 可归属的那条真成了音节；两个丢失桶 ⛔ 不伪造文本（工程里只有这一颗音符）。
+    {
+        let project = dispatcher.domain().active_project().expect("活跃工程");
+        let syllables: Vec<Option<&str>> = project
+            .clip_pool
+            .values()
+            .filter_map(|entry| match &entry.content {
+                ClipContent::Midi { notes } => Some(notes),
+                ClipContent::Audio { .. } => None,
+            })
+            .flat_map(|notes| notes.values())
+            .map(|note| note.syllable.as_deref())
+            .collect();
+        assert_eq!(syllables, vec![Some("do")], "只有可归属的一条成为音节");
     }
 
     let _ = fs::remove_file(smf_path);
