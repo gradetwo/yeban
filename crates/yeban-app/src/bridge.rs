@@ -1283,6 +1283,13 @@ pub struct SectionView {
     pub width: f32,
     /// 界面色标。
     pub color: Option<String>,
+    /// 已解析（或已回退）的色标 RGB —— 与轨道 / 场景色标**同一处**解析。
+    ///
+    /// 缺失或非法一律回退到 [`DEFAULT_TRACK_COLOR`]（`track_color_or_default` 是唯一实现），
+    /// ⛔ 不为段落另造第二种语法。
+    pub color_rgb: RgbColor,
+    /// 规范化的 `#RRGGBB` 文本（回退色也在这里），进控件树标签与判据。
+    pub color_hex: String,
 }
 
 /// 素材池面板一行里展示的**资产哈希前缀长度**（64 位十六进制的前 8 位）。
@@ -4600,6 +4607,27 @@ impl ViewState {
         self.sections.iter().map(|section| section.width).collect()
     }
 
+    /// 段落色标 RGB（非法 / 缺失已回退到 [`DEFAULT_TRACK_COLOR`]）。
+    ///
+    /// 与 [`Self::track_colors`] / [`Self::scene_colors`] 同源同口径：解析 / 回退只在
+    /// 投影层做一次，宿主只把它转成 Slint 的 `Color`。
+    #[must_use]
+    pub fn section_colors(&self) -> Vec<RgbColor> {
+        self.sections
+            .iter()
+            .map(|section| section.color_rgb)
+            .collect()
+    }
+
+    /// 段落色标的规范化文本（`#RRGGBB`，回退色也在内）。
+    #[must_use]
+    pub fn section_color_labels(&self) -> Vec<String> {
+        self.sections
+            .iter()
+            .map(|section| section.color_hex.clone())
+            .collect()
+    }
+
     // ------------------------------------------------------------------
     // 自动化泳道（`TrackV3::automation_lanes` 的消费形态）
     // ------------------------------------------------------------------
@@ -5113,6 +5141,8 @@ fn section_view(
 ) -> Result<SectionView, BridgeError> {
     let x = as_px(tick_to_px(section.start_tick, ticks_per_pixel)?);
     let x_end = as_px(tick_to_px(section.end_tick, ticks_per_pixel)?);
+    // 色标：与轨道 / 场景**同一处**解析 + 回退（`track_color_or_default` 是唯一实现）。
+    let color_rgb = track_color_or_default(section.color.as_deref());
     Ok(SectionView {
         index,
         id: section.id.to_canonical_string(),
@@ -5122,6 +5152,8 @@ fn section_view(
         x,
         width: (x_end - x).max(MIN_BLOCK_WIDTH_PX),
         color: section.color.clone(),
+        color_rgb,
+        color_hex: color_rgb.to_hex(),
     })
 }
 
@@ -7000,6 +7032,66 @@ mod tests {
         assert_eq!(
             view.scene_color_labels(),
             vec![DEFAULT_TRACK_COLOR_HEX.to_owned(); view.scenes.len()]
+        );
+    }
+
+    /// 段落色标与轨道 / 场景色标**同一套**解析 / 回退：合法色保留并规范化，
+    /// 非法 / 缺失一律回退到 [`DEFAULT_TRACK_COLOR`]（⛔ 不为段落另造第二种语法）。
+    #[test]
+    fn section_colors_parse_and_missing_or_illegal_colors_fall_back() {
+        let mut project = filled_project();
+        let section_ids: Vec<EntityId> = project.sections.keys().copied().collect();
+        assert!(!section_ids.is_empty(), "filled_project 必须至少有一个段落");
+        for id in &section_ids {
+            project
+                .sections
+                .get_mut(id)
+                .expect("刚取出的段落键必须还在")
+                .color = Some("#AbC".to_owned());
+        }
+        let view = ViewState::from_project(&project).expect("投影");
+        for section in &view.sections {
+            assert_eq!(section.color_rgb, RgbColor::new(0xaa, 0xbb, 0xcc));
+            assert_eq!(section.color_hex, "#AABBCC");
+        }
+        assert_eq!(
+            view.section_colors(),
+            vec![RgbColor::new(0xaa, 0xbb, 0xcc); view.sections.len()]
+        );
+        assert_eq!(
+            view.section_color_labels(),
+            vec!["#AABBCC".to_owned(); view.sections.len()]
+        );
+
+        for id in &section_ids {
+            project
+                .sections
+                .get_mut(id)
+                .expect("刚取出的段落键必须还在")
+                .color = Some("不是颜色".to_owned());
+        }
+        let view = ViewState::from_project(&project).expect("投影");
+        for section in &view.sections {
+            assert_eq!(section.color_rgb, DEFAULT_TRACK_COLOR);
+            assert_eq!(section.color_hex, DEFAULT_TRACK_COLOR_HEX);
+        }
+
+        // 缺失（`None`）与非法是同一档：都回退，且回退文本就是文档常量。
+        for id in &section_ids {
+            project
+                .sections
+                .get_mut(id)
+                .expect("刚取出的段落键必须还在")
+                .color = None;
+        }
+        let view = ViewState::from_project(&project).expect("投影");
+        assert_eq!(
+            view.section_colors(),
+            vec![DEFAULT_TRACK_COLOR; view.sections.len()]
+        );
+        assert_eq!(
+            view.section_color_labels(),
+            vec![DEFAULT_TRACK_COLOR_HEX.to_owned(); view.sections.len()]
         );
     }
 

@@ -161,6 +161,10 @@ pub fn apply_view(ui: &MainWindow, view: &ViewState, viewport_width: f32, scroll
     // 场景按钮点击走同一个写者 [`apply_current_scene`]，⛔ 不各写一份）。
     apply_current_scene(ui, view.current_scene.as_ref());
     ui.set_section_names(strings(&view.section_names()));
+    // 段落色标：解析 / 回退在投影层（`bridge::track_color_or_default` 唯一实现），
+    // 这里只转成 Slint 的 `Color` 并把规范化文本一起下发（标签源）。
+    ui.set_section_colors(colors(&view.section_colors()));
+    ui.set_section_color_labels(strings(&view.section_color_labels()));
     ui.set_clip_ulids(strings(&view.clip_ulids()));
     ui.set_clip_labels(strings(&view.clip_labels()));
     ui.set_clip_positions(lengths(&view.clip_positions()));

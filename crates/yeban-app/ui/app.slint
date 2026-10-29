@@ -922,6 +922,10 @@ export component MainWindow inherits Window {
     // 场景启动的**如实回执**（没有引擎 / 环满时非空；默认空串 = 不占视觉空间）。
     in property <string> scene-launch-status: "";
     in property <[string]> section-names: [];
+    // 段落色标（`SectionV3::color` 经投影解析 / 回退后的颜色与规范化文本），
+    // 与 `track-colors` / `scene-colors` 同族：`host::apply_view` 是唯一写者。
+    in property <[color]> section-colors: [];
+    in property <[string]> section-color-labels: [];
     in property <[length]> section-positions: [];
     in property <[length]> section-widths: [];
     in property <[string]> clip-ulids: [];
@@ -1351,6 +1355,8 @@ export component MainWindow inherits Window {
                     track-mutes: root.track-mutes;
                     track-solos: root.track-solos;
                     sections: root.section-names;
+                    section-colors: root.section-colors;
+                    section-color-labels: root.section-color-labels;
                     section-positions: root.section-positions;
                     section-widths: root.section-widths;
                     clip-ulids: root.clip-ulids;

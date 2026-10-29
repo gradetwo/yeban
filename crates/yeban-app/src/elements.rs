@@ -709,6 +709,15 @@ impl ElementRegistry {
                 &format!("章节 {}", section.name),
                 false,
             );
+            // 段落色标（`SectionV3::color` 的投影形态）：标签携带规范化 `#RRGGBB`，
+            // 与轨道 / 场景色标同一条纪律 —— 控件树里读到的就是投影字段。
+            registry.add(
+                &format!("section-{section_index}-color-swatch"),
+                ElementKind::Image,
+                "workspace/arrangement_view.slint",
+                &format!("段落色标 {}", section.color_hex),
+                false,
+            );
         }
         registry.add(
             "arrangement-ruler",
@@ -2773,6 +2782,7 @@ mod tests {
         for id in [
             "track-0-header",
             "section-0-card",
+            "section-0-color-swatch",
             "clip-01J8Z5Q0R7K3M9X2V4B6N8P1F9-header",
             "note-01J8Z5Q0R7K3M9X2V4B6N8P1A2-rect",
             "velocity-0-bar",
