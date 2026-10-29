@@ -230,6 +230,48 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # ⭐ 盘回收（2026-10-30，宏轨线实测）。
+      #
+      # ## 为什么矩阵腿也要这一步
+      #
+      # 本腿同样要跑 `test (合并特性)` —— 那一步把 ~64 个 `yeban-app` 测试二进制
+      # 全部重新链接一遍（每个静态链上整条 Slint / winit 栈）。此前只有
+      # `rust (workspace 全量)` 有回收步骤 ⇒ **窄运行时这条最重的腿没有额外空间**。
+      #
+      # 实测（run `40923947268`，commit `5dd70785`，连跑两次逐字相同）:
+      #     `43G target` / `df -h .` = `145G 102G 44G 71%`
+      #     → 合并特性腿链接 4 分钟后
+      #       `failed to write … test-integration-test-instrument_probe_async:
+      #        No space left on device (os error 28)` +
+      #       `collect2: fatal error: ld terminated with signal 7 [Bus error]`
+      # 对照：同一作业上一次绿（`45752063`）是 `42G target` / `44G 剩`
+      # —— 收尾时余量已贴近 0；本次多了一个测试二进制（`ui_macro_panel`，~110 MB）
+      # 就越线。⇒ 不是偶发，是**贴边**。
+      #
+      # 为什么回收而不是 `debug = 0`: 同 `rust (workspace 全量)` 的理由 ——
+      # 回收 runner 预装垃圾语义上是惰性的；关 debuginfo 会改变被构建的东西。
+      # ⚠ 只删确定的四个目录；**绝不**碰 `/opt/hostedtoolcache`（Rust 工具链就在里面）。
+      - name: 回收 runner 预装垃圾（矩阵腿的合并特性 app 腿之前必须留够链接空间）
+        run: |
+          set -euo pipefail
+          echo "== 回收前 =="
+          df -h / | tail -1
+          for path in \
+            /usr/share/dotnet \
+            /usr/local/lib/android \
+            /opt/ghc \
+            /usr/local/share/boost
+          do
+            if [ -e "$path" ]; then
+              echo "removing $path ($(du -sh "$path" 2>/dev/null | cut -f1 || echo '?'))"
+              sudo rm -rf "$path" || true
+            fi
+          done
+          sudo apt-get clean || true
+          echo "== 回收后 =="
+          df -h / | tail -1
+          # ⚠ 盘这一项**必须留读数**：下次若仍红，要能一眼看出是"回收没生效"还是"回收了也不够"
+
       - name: 安装 Linux 桌面构建依赖 (Slint / winit 需要)
         run: |
           set -euo pipefail
@@ -385,7 +427,9 @@ jobs:
       #
       # ## 为什么这里需要它
       #
-      # 本 job 是**唯一**会跑"合并特性 app 腿"的地方（`test (合并特性, yeban-app)`），
+      # 本 job 会跑"合并特性 app 腿"（`test (合并特性, yeban-app)`）——
+      # ⚠ 它**不是**唯一一处：矩阵腿（窄运行）也跑同一条腿，并在 2026-10-30 因缺这步
+      # 而爆盘（那里已补上同样的回收步骤）。
       # 那一跳要编 ~40 个 `yeban-app` 测试二进制，每个都静态链上整条 Slint / winit /
       # wgpu-free 软件光栅栈 ⇒ **链接体积是本仓最大的一处**。
       #
