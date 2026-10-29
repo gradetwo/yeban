@@ -5140,7 +5140,12 @@ fn apply_record_outcome(ui: &MainWindow, error: Option<String>) {
     let _ = ui.get_recording();
 }
 
-/// 把**纯视图态**的四条界面回调接到宿主上（`ADR-0004` 同款口径：视图态、零 schema、重启即失）。
+/// 左侧资源栏的分类数（`ui/sidebar.slint` 的 `for category_index in 3`）。
+///
+/// 宿主用它钳位点击回调：越界请求（例如 `invoke_select_sidebar_category(7)`）落不到界面上。
+const SIDEBAR_CATEGORY_COUNT: i32 = 3;
+
+/// 把**纯视图态**的界面回调接到宿主上（`ADR-0004` 同款口径：视图态、零 schema、重启即失）。
 ///
 /// | 回调 | 唯一写的属性 | 界面侧的可观察后果 |
 /// | :--- | :--- | :--- |
@@ -5148,15 +5153,16 @@ fn apply_record_outcome(ui: &MainWindow, error: Option<String>) {
 /// | `toggle-sidebar` | `sidebar-collapsed` | 左资源栏 240px ↔ 36px 图标导轨（`min/max-width`） |
 /// | `toggle-ai-drawer` | `ai-drawer-open` | `compact` 断点下 280px AI 抽屉的 `visible` |
 /// | `open-musical-pr` | `musical-pr-open` | `MusicalPrDrawer` 的 `visible`（**只打开**） |
+/// | `select-sidebar-category` | `sidebar-category` | 三个分类标签的选中态（背景 / 文字色 / `accessible-item-selected`） |
 ///
-/// ## 为什么这四处翻转必须住在这里，而不是 `.slint` 的 `clicked =>` 里
+/// ## 为什么这些翻转必须住在这里，而不是 `.slint` 的 `clicked =>` 里
 ///
 /// `arrangement-view` 与 `sidebar-collapsed` 已经有**第二个宿主写者**：
 /// [`apply_action`] 的 `Action::ToggleView` / `Action::ShowView` / `Action::ToggleSidebar`
 /// 写的就是这两个属性（`ui/switch_main_view` 也写同一个）。若 `.slint` 的转发块自己再翻转
 /// 一次，同一个动作就有两个真相源；而"界面**不**自己翻转状态"正是 `playing` 那条已经
 /// 付过学费的契约（`ui/app.slint` 的 `toggle-play` 注释、`docs/ledger/feature-alignment.md`
-/// 错位 7）。因此本函数是这四条回调的**唯一**落点，组件里只剩"原样转发"。
+/// 错位 7）。因此本函数是这五条回调的**唯一**落点，组件里只剩"原样转发"。
 ///
 /// ## 为什么这不是"假接线"
 ///
@@ -5164,11 +5170,11 @@ fn apply_record_outcome(ui: &MainWindow, error: Option<String>) {
 /// 这与 [`set_track_height_override`] 是同一档东西（`ADR-0004` S1 / Q4-A）——
 /// 视图态本来就可以由宿主拥有，因此没有绕过 `ADR-0005` 的领域权威（那条约束的是**工程内容**）。
 ///
-/// 四条都只用"打开时那个窗口" ⇒ 共用一份 [`slint::Weak`]：强引用若被闭包自己持有，
+/// 五条都只用"打开时那个窗口" ⇒ 共用一份 [`slint::Weak`]：强引用若被闭包自己持有，
 /// 就形成 `MainWindow → 回调 → MainWindow` 的自环（窗口永不解构）。
 ///
 /// `close`（关抽屉）**不在这里**：`.slint` 的 `close =>` 没有对应的 Rust 回调，
-/// 因此那一条仍写在组件里（本函数不发明第五条回调）。
+/// 因此那一条仍写在组件里（本函数不发明第六条回调）。
 pub fn wire_view_callbacks(ui: &MainWindow) {
     let weak = ui.as_weak();
     ui.on_toggle_view({
@@ -5211,6 +5217,18 @@ pub fn wire_view_callbacks(ui: &MainWindow) {
             // **只打开**（本切片的范围纪律）：提案的生成 / 采纳 / 拒绝不在这里 ——
             // 它们要么需要界面侧并不存在的"提案身份"，要么属于工程内容（`ADR-0005`）。
             ui.set_musical_pr_open(true);
+        }
+    });
+    // ⭐ 左侧资源分类标签：界面只报告"用户点了哪一个"，钳位与写属性都在这里 ——
+    // 越界请求落不到界面上（`sidebar-category` 的合法区间是 `0..SIDEBAR_CATEGORY_COUNT`）。
+    ui.on_select_sidebar_category({
+        let weak = weak.clone();
+        move |category| {
+            let Some(ui) = weak.upgrade() else {
+                debug_assert!(false, "MainWindow 在回调执行期间被销毁");
+                return;
+            };
+            ui.set_sidebar_category(category.clamp(0, SIDEBAR_CATEGORY_COUNT - 1));
         }
     });
 }

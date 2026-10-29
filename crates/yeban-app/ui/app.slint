@@ -384,6 +384,11 @@ export component MainWindow inherits Window {
     in-out property <int> console-tab: 0;
     in-out property <bool> console-expanded: true;
     in-out property <bool> sidebar-collapsed: false;
+    /// ⭐ 左侧资源栏的激活分类（0 = 乐器 / 1 = 采样 / 2 = 预置）。
+    /// 唯一写者 = `host::wire_view_callbacks` 的 `select-sidebar-category` 回调
+    /// （先钳到 `0..=2` 再写）；界面**不自己**翻转选中态。⛔ 不是工程数据
+    /// （`MODEL-ISO-001` 的挥发性层）、不进 `.yeban`、不进撤销栈。
+    in-out property <int> sidebar-category: 0;
     in-out property <bool> ai-drawer-open: false;
     in-out property <bool> musical-pr-open: false;
     // ⭐ 宏面板（右侧抽屉；默认关着 ⇒ 默认帧一位不变）。打开者 = 控制台 Tab 3 的
@@ -446,6 +451,8 @@ export component MainWindow inherits Window {
     callback stop();
     callback toggle-view();
     callback toggle-sidebar();
+    /// ⭐ 左侧资源分类标签的点击入口：宿主把分类号钳到 `0..=2` 再写 `sidebar-category`。
+    callback select-sidebar-category(int);
     callback toggle-ai-drawer();
     callback toggle-undo-tree();
     // D45: 时光机里的"撤销一步"（与 `Cmd+Z` 汇到同一个 `UndoPort::perform`）。
@@ -1241,6 +1248,13 @@ export component MainWindow inherits Window {
                 // （键盘路径的 `Action::ToggleSidebar` 也写同一个属性）。
                 toggle-collapse => {
                     root.toggle-sidebar();
+                }
+
+                // 同款：激活分类是**视图态**，界面只报告"用户点了哪一个"，
+                // 钳位与写属性都在宿主 ⇒ 越界请求（如 7）不会留在界面上。
+                active-category: root.sidebar-category;
+                select-category(category) => {
+                    root.select-sidebar-category(category);
                 }
             }
 

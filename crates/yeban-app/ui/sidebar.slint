@@ -29,7 +29,15 @@ export component Sidebar inherits Rectangle {
         "SFZ · 323 款采样预置"
     ];
 
+    // ⭐ 当前激活的资源分类（0 = 乐器 / 1 = 采样 / 2 = 预置）。
+    // 唯一写者 = `app.slint` 的 MainWindow（宿主 `host::wire_view_callbacks` 把它钳到
+    // 合法区间后写回）⇒ 界面**不自己**翻转选中态。⛔ 不是工程数据（`MODEL-ISO-001`
+    // 的挥发性层）、不进 `.yeban`、不进撤销栈。
+    in property <int> active-category: 0;
+
     callback toggle-collapse();
+    /// 点击分类标签 ⇒ 请求切到该分类；落点 = 宿主钳位后写 `MainWindow.sidebar-category`。
+    callback select-category(int);
 
     background: Tokens.bg-panel;
     border-width: 1px;
@@ -131,16 +139,19 @@ export component Sidebar inherits Rectangle {
         y: 72px;
         width: 60px;
         height: 20px;
-        background: category_index == 0 ? Tokens.bg-raised : Tokens.bg-panel-alt;
+        background: category_index == root.active-category ? Tokens.bg-raised : Tokens.bg-panel-alt;
         border-radius: Tokens.radius-sm;
         visible: !root.compact;
         accessible-role: tab;
         accessible-id: "sidebar-category-" + category_index + "-button";
-        accessible-label: "资源分类 " + category_index;
+        // 分类名，⛔ 不是序号：屏读器念"资源分类 0"等于没说；与 `elements.rs` 注册表逐字一致。
+        accessible-label: "资源分类 " + (category_index == 0 ? "乐器" : (category_index == 1 ? "采样" : "预置"));
         accessible-item-index: category_index;
         accessible-item-count: 3;
         accessible-item-selectable: true;
-        accessible-item-selected: category_index == 0;
+        accessible-item-selected: category_index == root.active-category;
+        // `[UI-A11Y-003]` §7.3 第 4 条 ①：无障碍动作，落点与下面 `TouchArea` 的 `clicked` 逐字相同。
+        accessible-action-default => { root.select-category(category_index); }
 
         UiText {
             x: 0;
@@ -148,9 +159,15 @@ export component Sidebar inherits Rectangle {
             width: parent.width;
             height: parent.height;
             text: category_index == 0 ? "乐器" : (category_index == 1 ? "采样" : "预置");
-            color: category_index == 0 ? Tokens.selection : Tokens.ink-2;
+            color: category_index == root.active-category ? Tokens.selection : Tokens.ink-2;
             font-size: Tokens.font-size-xs;
             horizontal-alignment: center;
+        }
+
+        TouchArea {
+            width: parent.width;
+            height: parent.height;
+            clicked => { root.select-category(category_index); }
         }
     }
 
