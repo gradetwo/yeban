@@ -33,7 +33,7 @@ use std::rc::Rc;
 
 use live::{LiveWiringOptions, build_live_ui_with};
 use yeban_app::elements::ElementKind;
-use yeban_app::undo::{UiAction, UndoPort, UndoSession};
+use yeban_app::undo::{UndoPort, UndoSession};
 use yeban_ui_test_port::port::Permission;
 
 /// 夹具速度（`yeban_model::samples::filled_project`）。判据的读数以它为准。
@@ -109,7 +109,12 @@ fn the_bpm_field_commits_exactly_one_set_tempo_on_enter() {
         "提交之后必须重投影到界面上"
     );
 
-    let _ = port.perform(UiAction::Undo);
+    // 撤销走**生产路径**（`.slint` 的 `key-action` 那同一格）：`port.perform` 只改权威工程，
+    // 不经过 `refresh_undo_window`/`apply_view`，界面读数不会跟着动。
+    assert!(
+        ui.invoke_key_action("z".into(), false, false, false, true),
+        "`Cmd+Z` 必须被 DAW 消费"
+    );
     assert!(
         (port.project().bpm - FIXTURE_BPM).abs() < f64::EPSILON,
         "撤销之后必须回到夹具速度，实得 {}",
@@ -168,7 +173,10 @@ fn the_bpm_field_commits_exactly_one_set_tempo_on_enter() {
         );
         assert!((port.project().bpm - edge).abs() < f64::EPSILON);
         assert_eq!(ui.get_bpm_display().as_str(), displayed(edge));
-        let _ = port.perform(UiAction::Undo);
+        assert!(
+            ui.invoke_key_action("z".into(), false, false, false, true),
+            "闭区间端点 {edge} 提交后 `Cmd+Z` 必须被 DAW 消费"
+        );
     }
 
     // ---- ⑥ 文本层接线（本机不编译 Slint 的那一半，读源码取证） ----
