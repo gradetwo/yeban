@@ -9324,9 +9324,10 @@ mod tests {
 
     /// 由前后两棵树导出 `(顶层字段集, 末端字段名集)`（都字典序去重；下标段不计入末端集）。
     ///
-    /// ⚠ 普查（判据一~五）与检测器自证（判据六）**共用**这一份口径 —— 两半算的不是
+    /// ⚠ 普查（判据一~五、判据七）与检测器自证（判据六）**共用**这一份口径 —— 两半算的不是
     /// 同一份数据，但必须是**同一把尺**（第 44 条：⛔ 复制第二份切分逻辑，那会让
-    /// "自证"退化成"自证了一把没在用的尺"）。
+    /// "自证"退化成"自证了一把没在用的尺"）。判据七只在**末端集**之上再叠一层**词法过滤**
+    /// （滤掉实例键），⛔ 另起一把切分尺。
     fn diff_root_keys_and_leaves(
         before: &serde_json::Value,
         after: &serde_json::Value,
@@ -9762,6 +9763,189 @@ mod tests {
             (vec!["tracks".to_owned()], vec!["solo_safe".to_owned()]),
             "`solo_safe` 单独改动没被归因到 `solo_safe`"
         );
+    }
+
+    /// 判据七（末端字段棘轮）：**每个变体的子字段写面必须逐字等于冻结表**。
+    ///
+    /// # 这片补的是判据四的洞
+    ///
+    /// 判据四钉的是**根键**，所以"一个本来就在写 `tracks` 的变体再多写
+    /// `tracks.<id>.folder_id`"根键不变 ⇒ 判据四**静默放行**（立项依据见
+    /// `docs/DEVELOPMENT_LEDGER.md` §8）。本片量的是**末端段**，用的是**同一把尺**
+    /// （`diff_root_keys_and_leaves` 的 `leaf_fields`，⭐ ⛔ 复制第二份切分逻辑）。
+    ///
+    /// # 为什么末端段要先过一次词法过滤
+    ///
+    /// 那 55 行的末端段里混着三类**实例键**（身份，⛔ 字段名）：
+    ///
+    /// * 26 字符 Crockford base32 —— `EntityId`（ULID，如 `01J8ZQ…0502`）；
+    /// * 64 字符小写十六进制 —— 资产内容哈希（`assets` 的键）；
+    /// * 纯数字 —— tick 位置键（`tempo_map`／`time_signature_map` 的 `"960"`）。
+    ///
+    /// 它们由**容器记录的增删**产生（判据一登记的盲点 1：`AddClip` 的差异停在
+    /// `clip_pool.<id>`，末端段是那条记录的身份）。所以先按词法把三类归入"实例键"，
+    /// **剩下的字段名**才逐变体钉表。
+    ///
+    /// # 过滤规则自己也要防空转（§6.3 第 4 条／R93 同型）
+    ///
+    /// ⛔ 让一条"空集"同时充当结论和证据。于是每行**二选一**：
+    ///
+    /// 1. 表里**非空** ⇒ 逐个比对字段名（多写一个子字段就红）；
+    /// 2. 表里**为空** ⇒ 必须**证明**该变体的**未过滤**末端段全部是实例键（非空且逐段
+    ///    命中过滤器）。过滤器一旦失效（一段都没滤掉），这 14 行就留下实例键 ⇒ 与空表
+    ///    不符 ⇒ 红；反过来若某变体退化成"零差异"（扫描器坏了／op 不写了），未过滤集合
+    ///    变空 ⇒ 同样红 —— 两种"看起来是空所以通过"都关掉了。
+    ///
+    /// 冻结读数（2026-10-30 本机 `cargo test -p yeban-model --lib`）：55 行 ＝
+    /// **14** 行纯实例键（容器增删／键即身份）＋ **41** 行有字段名；过滤后字段名
+    /// **36** 个去重／**53** 个段。
+    ///
+    /// ⭐ 为什么这张表确实闭得上判据四那个洞：**判据六**已经实测过"只改
+    /// `tracks.<id>.folder_id`"这一处改动的读数是 `(根键＝[tracks], 末端＝[folder_id])`
+    /// ⇒ 同一处改动在判据四那侧**完全不可见**（`tracks` 本来就在写），在这侧⛔ 白拿。
+    #[test]
+    fn op_write_differential_leaf_fields_match_frozen_table() {
+        /// 一个末端段是不是**实例键**（身份）而⛔ 字段名。三段词法，⛔ 正则依赖。
+        ///
+        /// ⚠ 三段都是**封闭词法**（长度 + 字符类），⛔ "长度等于 64 就算"：真字段名是小写
+        /// snake_case（带 `_`、长度远小于 64、含非 hex 字母），既进不了 ULID 臂也进不了
+        /// hex 臂。若将来出现**纯数字命名**的字段，第 1 臂会把它误判成实例键 —— 那时
+        /// 判据三的探针与判据六都会跟着变，⛔ 悄悄漏。
+        fn is_instance_key_segment(leaf: &str) -> bool {
+            let bytes = leaf.as_bytes();
+            if bytes.is_empty() {
+                return false;
+            }
+            if bytes.iter().all(|b| b.is_ascii_digit()) {
+                return true;
+            }
+            if bytes.len() == 64
+                && bytes
+                    .iter()
+                    .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+            {
+                return true;
+            }
+            // Crockford base32：大写字母去掉 I/L/O/U，再加数字。
+            bytes.len() == 26
+                && bytes.iter().all(|b| {
+                    b.is_ascii_digit()
+                        || (b.is_ascii_uppercase() && !matches!(b, b'I' | b'L' | b'O' | b'U'))
+                })
+        }
+
+        /// 冻结读数：变体名 → 它写入的**末端字段名**（已滤掉实例键，每行右侧按字典序）。
+        ///
+        /// 空表 `&[]` 的 14 行⛔ 表示"这个变体什么都不改"，而表示"它改的是**一条容器记录**
+        /// （新增／删除），末端段是那条记录的身份"—— 上面第 2 条断言就是用来证明这一点的。
+        const FROZEN_LEAVES: [(&str, &[&str]); 55] = [
+            ("AddClip", &[]),
+            ("AddClipPlacement", &[]),
+            ("AddNote", &[]),
+            ("AddRoutingNode", &["nodes"]),
+            ("AddTrack", &[]),
+            ("Batch", &["gain_db", "velocity"]),
+            ("ConnectRouting", &["edges"]),
+            ("DeleteNote", &[]),
+            ("DisconnectRouting", &["edges"]),
+            ("InsertDevice", &["devices"]),
+            ("ModifyNoteVelocity", &["velocity"]),
+            ("MoveClipPlacement", &["start_tick"]),
+            ("MoveNote", &["pitch", "start_tick"]),
+            ("RemoveAsset", &[]),
+            ("RemoveAutomationLane", &["automation_lanes"]),
+            ("RemoveAutomationPoint", &["automation_lanes"]),
+            ("RemoveClip", &[]),
+            ("RemoveClipPlacement", &[]),
+            ("RemoveDevice", &["devices"]),
+            ("RemoveRoutingNode", &["nodes"]),
+            ("RemoveScene", &[]),
+            ("RemoveSection", &[]),
+            ("RemoveTrack", &[]),
+            ("SetAsset", &[]),
+            ("SetAuthor", &["author"]),
+            ("SetAutomationLane", &["automation_lanes"]),
+            ("SetAutomationPoint", &["curve", "value"]),
+            ("SetClipGain", &["gain_db"]),
+            ("SetClipName", &["name"]),
+            ("SetClipPlacementDuration", &["duration_ticks"]),
+            ("SetClipPlacementLoop", &["enabled", "end_tick"]),
+            ("SetClipPlacementMuted", &["muted"]),
+            ("SetDeviceBypassed", &["bypassed"]),
+            ("SetDeviceName", &["name"]),
+            ("SetKeySignature", &["key_signature"]),
+            ("SetMacro", &["value"]),
+            (
+                "SetNoteExpression",
+                &["micro_timing_ticks", "probability", "ratchet"],
+            ),
+            ("SetNotePitchBendPoint", &["pitch_bend_curve"]),
+            ("SetNotePitchShape", &["pitch_bend_curve", "slide"]),
+            ("SetNoteTiming", &["duration_ticks", "start_tick"]),
+            ("SetParam", &["volume_db"]),
+            ("SetRoutingGain", &["gain_db"]),
+            ("SetScene", &["tempo"]),
+            ("SetSection", &["end_tick", "name"]),
+            ("SetTempo", &["bpm"]),
+            ("SetTempoPoint", &[]),
+            ("SetTimeSignature", &["denominator", "numerator"]),
+            ("SetTimeSignaturePoint", &[]),
+            ("SetTitle", &["title"]),
+            ("SetTrackColor", &["color"]),
+            ("SetTrackMute", &["mute"]),
+            ("SetTrackName", &["name"]),
+            ("SetTrackSampler", &["sampler"]),
+            ("SetTrackSolo", &["solo"]),
+            (
+                "SetTransportConfig",
+                &["count_in_bars", "launch_quantization", "metronome_enabled"],
+            ),
+        ];
+        let rows = op_write_differential();
+        assert_eq!(
+            rows.len(),
+            FROZEN_LEAVES.len(),
+            "差分行数与末端冻结表不符 => 变体全集变了（新增/删除），先按实测读数改这张表，\
+             ⛔ 删行来让它绿"
+        );
+        for (name, expected) in FROZEN_LEAVES {
+            let row = rows
+                .iter()
+                .find(|candidate| candidate.name == name)
+                .unwrap_or_else(|| panic!("末端冻结表里有 `{name}` 而差分表没有（顺序变了？）"));
+            let observed: Vec<&str> = row
+                .leaf_fields
+                .iter()
+                .map(String::as_str)
+                .filter(|leaf| !is_instance_key_segment(leaf))
+                .collect();
+            if expected.is_empty() {
+                // 二选一的第 2 支：空集**必须**由"末端段全是实例键"挣来，⛔ 白拿。
+                // ⚠ 拆成两条断言（R187）：`assert!(<下界> && ….all(…))` 会把两个 `&&` 操作数
+                // 并成一个"集合根"，那条常驻守卫就⛔ 认不出下界（实测命中本行一次）。
+                // ⚠ 下界用 `!….is_empty()` 而⛔ `….len() >= 1`：后者是 R187 认得的写法①，
+                // 却撞 clippy `len_zero`（`-D warnings` 下直接红）；`!root.is_empty()` 是
+                // R187 的**另一条**显式写法，两者同时满足（实测两撞一次）。
+                let unfiltered = &row.leaf_fields;
+                assert!(
+                    !unfiltered.is_empty(),
+                    "变体 `{name}` 登记为『只写容器记录』，但差分**零末端段** => 它现在什么都不改\
+                     （⛔ 让空集同时充当结论和证据；先跑判据三的探针定位扫描器）"
+                );
+                assert!(
+                    unfiltered.iter().all(|leaf| is_instance_key_segment(leaf)),
+                    "变体 `{name}` 登记为『只写容器记录』，但未过滤末端段里有**非**实例键的段 \
+                     {unfiltered:#?} => 它现在写的是具名子字段（把字段名补进冻结表）\
+                     或过滤器失效了（一段都没滤掉）"
+                );
+            } else {
+                assert_eq!(
+                    observed, expected,
+                    "变体 `{name}` 的子字段写面与冻结表不符 => 有人改了它的末端字段，\
+                     这片登记表必须一起改"
+                );
+            }
+        }
     }
 
     /// 四条**新 `set` 类**（`SetTransportConfig` / `SetTempo` / `SetAuthor` / `SetTitle`）的
