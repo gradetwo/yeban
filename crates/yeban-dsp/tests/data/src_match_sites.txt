@@ -7,11 +7,14 @@
 #      实测本 crate 这三类 needle **各 0 处** ⇒ 当前口径**无漏判**（不是靠巧合）。
 #   ③ 注释：跳过 trim_start() 后以 // 开头的行。
 #   ④ 行尾：text.lines() 已去 \n／\r；读表时走 read_evidence_text() 再归一化（R134）。
-# 合计 32 处：literal 7 ／ variable 25；其中 **twin_point_risk 0 处**
+# 合计 35 处：literal 7 ／ variable 28；其中 **twin_point_risk 0 处**
 src/comb.rs|431|variable|&c.feedback(|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
 src/comb.rs|432|variable|&c.damp(|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
 src/compressor.rs|1398|variable|&gain|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
 src/convolution_reverb.rs|1511|literal|ConvolutionReverb|by_design|Debug 形状断言（在 #[test] 内做子串匹配）：按设计
+src/device_param.rs|208|variable||(spelling|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
+src/device_param.rs|365|variable||(spelling|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
+src/device_param.rs|461|variable||(spelling|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
 src/drums/mod.rs|1335|variable|&kit.kick.tune_hz|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
 src/drums/mod.rs|1336|variable|&kit.kick.glide_hz|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
 src/drums/mod.rs|1337|variable|&kit.kick.glide_s|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
