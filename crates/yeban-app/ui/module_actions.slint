@@ -63,7 +63,9 @@ export component ModuleActions inherits Rectangle {
     // 五个入口各一条回调。**都不带参数**：目标路径 / 端口由宿主解析
     // （`YEBAN_UI_<动作>_PATH`、`YEBAN_UI_MIDI_IN_PORT`，缺省在工作目录 / 端口 `0`），
     // 界面不猜路径也不弹文件对话框 —— 原生文件对话框是**另一票**（见 notes 的 needs 登记）。
-    callback export-wav();
+    // 「导出 WAV」不再是"按下即按宿主缺省导出"：它打开选项对话框
+    // （`ui/dialogs/export_wav_dialog.slint`），真正的导出仍走 `MainWindow.export-wav`。
+    callback open-export-wav();
     callback import-midi();
     callback load-sfz();
     callback record-wav();
@@ -104,8 +106,8 @@ export component ModuleActions inherits Rectangle {
         border-radius: Tokens.radius-md;
         accessible-role: button;
         accessible-id: "module-export-wav-button";
-        accessible-label: "导出 WAV（离线渲染当前工程）";
-        accessible-action-default => { root.export-wav(); }
+        accessible-label: "导出 WAV（打开采样率 / 位深 / 时长选项）";
+        accessible-action-default => { root.open-export-wav(); }
 
         UiText {
             x: Tokens.space-3;
@@ -120,7 +122,7 @@ export component ModuleActions inherits Rectangle {
         TouchArea {
             width: parent.width;
             height: parent.height;
-            clicked => { root.export-wav(); }
+            clicked => { root.open-export-wav(); }
         }
     }
 

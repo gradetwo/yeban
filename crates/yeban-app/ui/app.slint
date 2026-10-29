@@ -47,6 +47,7 @@ import { ArrangementView } from "workspace/arrangement_view.slint";
 import { ConsoleTabs } from "console/console_tabs.slint";
 import { MusicalPrDrawer } from "dialogs/musical_pr_drawer.slint";
 import { UndoTreeModal } from "dialogs/undo_tree_modal.slint";
+import { ExportWavDialog } from "dialogs/export_wav_dialog.slint";
 // 五个**模块入口**（导出 WAV / 导入 MIDI / 装载 SFZ / 录音 / 硬件 MIDI 输入）。
 // 它们住在右栏的下半区（`AiRail` 的 `ModuleActions` 实例），因此**不改**任何既有
 // 几何：顶栏 48 / 中段 / 4px splitter / 底部控制台 / 24px 状态栏一位未动，
@@ -62,7 +63,8 @@ component AiRail inherits Rectangle {
     // ---- 模块入口（本票起五条）--------------------------------------------
     // 与上面三条同款：`AiRail` 只**转发**，动作的语义、目标路径与回执全在宿主
     // （`src/host.rs` 的 `wire_module_actions`）。界面不写盘、不猜路径、不存状态。
-    callback export-wav();
+    // 「导出 WAV」只打开选项对话框；真正的导出回调在 `MainWindow` 上。
+    callback open-export-wav();
     callback import-midi();
     callback load-sfz();
     callback record-wav();
@@ -263,7 +265,7 @@ component AiRail inherits Rectangle {
         clipping-warning: root.module-clipping-warning;
         import-losses: root.module-import-losses;
 
-        export-wav => { root.export-wav(); }
+        open-export-wav => { root.open-export-wav(); }
         import-midi => { root.import-midi(); }
         load-sfz => { root.load-sfz(); }
         record-wav => { root.record-wav(); }
@@ -384,6 +386,16 @@ export component MainWindow inherits Window {
     in-out property <bool> ai-drawer-open: false;
     in-out property <bool> musical-pr-open: false;
     in-out property <bool> undo-tree-open: false;
+    // ---- WAV 导出设置（隐藏的模态；默认关着 ⇒ 默认帧一位不变）----------------
+    // 四格文本**不在这里解析**：`host::wire_module_actions_with_capture` 的
+    // `export-wav` 分支按 `WavExportOptions::resolve` 的唯一口径解析，失败即
+    // `error=invalid-options` 且不落盘。`export-wav-path` 为空时用 `ModulePaths`
+    // 的缺省路径（打开对话框时由宿主播种，用户可改）。
+    in-out property <bool> export-wav-open: false;
+    in-out property <string> export-wav-path: "";
+    in-out property <string> export-wav-sample-rate: "auto";
+    in-out property <string> export-wav-bit-depth: "24";
+    in-out property <string> export-wav-seconds: "8";
     // ---- 撤销能力的显示态（**模型读数**，唯一写者 = src/host.rs 的 apply_undo）------
     // 能不能撤销、还能撤几步、已撤几步、提交多少条 —— 全部由 `undo_session::UndoDisplay`
     // 从 `CommitGraph` + `UndoCursor` 读出（ADR-0001 D45）。界面不自己推断。
@@ -491,6 +503,9 @@ export component MainWindow inherits Window {
     // ⚠ `import-midi` 读的是**文件**（SMF）；`midi-in` 读的是**物理端口** ⇒ 两条不是一件事。
     // ⛔ 界面不写盘、不猜路径、不自己判断成功与否（那是第二个真相源）。
     callback export-wav();
+    // 「导出 WAV」入口打开选项对话框；关闭它只改视图态（⛔ 不碰工程）。
+    callback open-export-wav();
+    callback close-export-wav();
     callback import-midi();
     callback load-sfz();
     callback record-wav();
@@ -1320,7 +1335,7 @@ export component MainWindow inherits Window {
                 module-clipping-warning: root.module-clipping-warning;
                 // ⭐ `#319`：导入损失摘要行（与削波行同一槽位、互斥；空串 ⇒ 不显示）。
                 module-import-losses: root.module-import-losses;
-                export-wav => { root.export-wav(); }
+                open-export-wav => { root.open-export-wav(); }
                 import-midi => { root.import-midi(); }
                 load-sfz => { root.load-sfz(); }
                 record-wav => { root.record-wav(); }
@@ -1737,5 +1752,23 @@ export component MainWindow inherits Window {
 
         undo-step => { root.undo-step(); }
         close => { root.undo-tree-open = false; }
+    }
+
+    // WAV 导出设置（隐藏的模态；默认关着 ⇒ 默认帧一位不变）
+    ExportWavDialog {
+        x: 0;
+        y: 0;
+        width: root.width;
+        height: root.height;
+        visible: root.export-wav-open;
+
+        // 两向绑定：宿主打开时播种，用户编辑后宿主在 `export-wav` 分支现读。
+        path <=> root.export-wav-path;
+        sample-rate <=> root.export-wav-sample-rate;
+        bit-depth <=> root.export-wav-bit-depth;
+        seconds <=> root.export-wav-seconds;
+
+        run => { root.export-wav(); }
+        close => { root.close-export-wav(); }
     }
 }

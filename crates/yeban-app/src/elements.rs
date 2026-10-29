@@ -458,7 +458,10 @@ impl ElementRegistry {
         // ⇒ `[UI-MCP-002]` 的截图遮罩必须按元素包围盒置黑它。
         // 它是 e2e「触发入口 ⇒ 状态文本按预期变化」的**可寻址**落点。
         for (id, label) in [
-            ("module-export-wav-button", "导出 WAV（离线渲染当前工程）"),
+            (
+                "module-export-wav-button",
+                "导出 WAV（打开采样率 / 位深 / 时长选项）",
+            ),
             (
                 "module-import-midi-button",
                 "导入 MIDI（把 SMF 的音符导入第一条非主总线音轨）",
@@ -1800,6 +1803,74 @@ impl ElementRegistry {
             "撤销一步 (Cmd+Z)",
             false,
         );
+        // 导出 WAV 选项框：默认关闭（`export-wav-open=false`），因此不进运行时控件树，
+        // 也不改任何金帧。打开后宿主把 `module-export-wav-button` 的动作接到这里，
+        // 真正的写出仍走 `MainWindow.export-wav` → `export_wav::export_wav_with_sfz_file`。
+        // 四个输入框的文本**不在 UI 侧解析**：解析只发生在宿主 `parse_wav_export_options`，
+        // 非法值回执 `error=invalid-options` 且不落盘（`[UI-TEST-001]`）。
+        registry.add(
+            "export-wav-dialog",
+            ElementKind::Region,
+            "dialogs/export_wav_dialog.slint",
+            "导出 WAV 对话框",
+            false,
+        );
+        registry.add(
+            "export-wav-panel",
+            ElementKind::Region,
+            "dialogs/export_wav_dialog.slint",
+            "导出 WAV 选项面板",
+            false,
+        );
+        registry.add(
+            "export-wav-close-button",
+            ElementKind::Button,
+            "dialogs/export_wav_dialog.slint",
+            "关闭导出对话框",
+            false,
+        );
+        registry.add(
+            "export-wav-path-input",
+            ElementKind::TextInput,
+            "dialogs/export_wav_dialog.slint",
+            "导出目标路径（留空用默认路径）",
+            false,
+        );
+        registry.add(
+            "export-wav-sample-rate-input",
+            ElementKind::TextInput,
+            "dialogs/export_wav_dialog.slint",
+            "采样率（auto / 44100 / 48000 / 96000）",
+            false,
+        );
+        registry.add(
+            "export-wav-bit-depth-input",
+            ElementKind::TextInput,
+            "dialogs/export_wav_dialog.slint",
+            "位深（16 / 24 / 32f）",
+            false,
+        );
+        registry.add(
+            "export-wav-seconds-input",
+            ElementKind::TextInput,
+            "dialogs/export_wav_dialog.slint",
+            "导出时长（秒，留空用后端默认）",
+            false,
+        );
+        registry.add(
+            "export-wav-options-note",
+            ElementKind::Text,
+            "dialogs/export_wav_dialog.slint",
+            "选项说明：留空或 auto 采用后端默认；非法值不落盘",
+            false,
+        );
+        registry.add(
+            "export-wav-run-button",
+            ElementKind::Button,
+            "dialogs/export_wav_dialog.slint",
+            "按当前选项导出 WAV",
+            false,
+        );
 
         registry
     }
@@ -2232,7 +2303,7 @@ mod tests {
     /// `console/asset_pool_panel.slint`（15 号）是**任务单 `#133`** 加的素材池面板：
     /// 独立组件（住在 `MixerConsole` 里，Tab 1 才可见）⇒ 默认帧像素不变。它与上面
     /// 那一族同一条纪律：UI 加一个文件就必须在清单里显式改。
-    const SLINT_MANIFEST: [&str; 15] = [
+    const SLINT_MANIFEST: [&str; 16] = [
         "app.slint",
         "transport.slint",
         "status_bar.slint",
@@ -2249,6 +2320,8 @@ mod tests {
         "console/asset_pool_panel.slint",
         "dialogs/musical_pr_drawer.slint",
         "dialogs/undo_tree_modal.slint",
+        // 导出 WAV 选项框（`[UI-NOTE-004]`）：隐藏模态，默认关闭 ⇒ 金帧不变。
+        "dialogs/export_wav_dialog.slint",
         // 四个模块入口（导出 WAV / 导入 MIDI / 装载 SFZ / 录音）。
         "module_actions.slint",
     ];
