@@ -60,6 +60,10 @@ export component ArrangementView inherits Rectangle {
     in property <[string]> track-color-labels: [];
 
     in property <[string]> sections: [];
+    // 段落色标（`SectionV3::color` 的消费形态）：颜色由投影解析 / 回退，
+    // 规范化文本同时进色标的 `accessible-label` ⇒ 控件树里读得到工程色标。
+    in property <[color]> section-colors: [];
+    in property <[string]> section-color-labels: [];
     in property <[length]> section-positions: [];
     in property <[length]> section-widths: [];
     // 标尺小节线 x (逻辑像素)
@@ -162,6 +166,20 @@ export component ArrangementView inherits Rectangle {
         accessible-label: "章节 " + section_name;
         accessible-item-index: section_index;
         accessible-item-count: root.sections.length;
+
+        // 段落色标 —— `SectionV3::color` 经投影解析后的颜色（非法 / 缺失已回退）。
+        // 3px 竖条贴在卡片左缘；文字从 `space-3`（6px）开始 ⇒ 两者不重叠
+        // （采样点因此不会被字形栅格污染，见 sidebar 条目判据的教训）。
+        Rectangle {
+            x: 0;
+            y: 0;
+            width: 3px;
+            height: parent.height;
+            background: root.section-colors[section_index];
+            accessible-role: image;
+            accessible-id: "section-" + section_index + "-color-swatch";
+            accessible-label: "段落色标 " + root.section-color-labels[section_index];
+        }
 
         UiSerifText {
             x: Tokens.space-3;
