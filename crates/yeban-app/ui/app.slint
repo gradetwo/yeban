@@ -394,6 +394,11 @@ export component MainWindow inherits Window {
     /// （先钳到 `0..=2` 再写）；界面**不自己**翻转选中态。⛔ 不是工程数据
     /// （`MODEL-ISO-001` 的挥发性层）、不进 `.yeban`、不进撤销栈。
     in-out property <int> sidebar-category: 0;
+    /// ⭐ 左侧资源栏选中的条目（`0..=7`，与 `items` 数组一一对应）。
+    /// 唯一写者 = `host::wire_view_callbacks` 的 `select-sidebar-item` 回调
+    /// （先钳到 `0..=7` 再写）；界面**不自己**翻转选中态。⛔ 不是工程数据
+    /// （`MODEL-ISO-001` 的挥发性层）、不进 `.yeban`、不进撤销栈。
+    in-out property <int> sidebar-item: 0;
     in-out property <bool> ai-drawer-open: false;
     in-out property <bool> musical-pr-open: false;
     // ⭐ 宏面板（右侧抽屉；默认关着 ⇒ 默认帧一位不变）。打开者 = 控制台 Tab 3 的
@@ -458,6 +463,8 @@ export component MainWindow inherits Window {
     callback toggle-sidebar();
     /// ⭐ 左侧资源分类标签的点击入口：宿主把分类号钳到 `0..=2` 再写 `sidebar-category`。
     callback select-sidebar-category(int);
+    /// ⭐ 左侧资源条目的点击入口：宿主把条目号钳到 `0..=7` 再写 `sidebar-item`。
+    callback select-sidebar-item(int);
     callback toggle-ai-drawer();
     /// ⭐ 控制台右上角 ⤢ 的点击入口：与 `Cmd/Ctrl+Alt+M`（`Action::ToggleConsoleMaximize`）
     /// 落到**同一个**属性 `console-maximized`（唯一实现 = 宿主写属性，界面不自己翻转）。
@@ -1276,6 +1283,12 @@ export component MainWindow inherits Window {
                 active-category: root.sidebar-category;
                 select-category(category) => {
                     root.select-sidebar-category(category);
+                }
+
+                // 同款：条目选中也是**视图态**，界面只报告"用户点了哪一个"。
+                active-item: root.sidebar-item;
+                select-item(item) => {
+                    root.select-sidebar-item(item);
                 }
             }
 
