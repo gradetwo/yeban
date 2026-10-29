@@ -15343,3 +15343,86 @@ CI 跑 **`40914097921`**（`rust (yeban-model)` 等）⇒ **pending，读回前�
 
 
 
+
+## 2026-10-30（清早）· S2/S4 两票判决读回 ＋ `ADR-0049` 开票（四字段五路线）＋ 剥 ANSI 的**第二次**翻车
+
+### §0 本轮做了什么（一句话）
+
+S2 的**整线判决**（force_full）读回 success 并 land；S4 的**线判决**逐名读回六条全 `ok`；
+把 S3 留下的"待裁四项"写成 `ADR-0049`（`Proposed`，⛔ 未代签、⛔ 零代码）；
+顺带纠正了**我自己上一轮写下的剥色口径**（那条口径本轮又让我一次数出 0）。
+
+### §1 判决读数（全部现读 `gh run view --json`，单位＝次／行／秒）
+
+| 票 | run | 形态 | 读数 |
+| --- | --- | --- | --- |
+| **S2 整线** | `40910345157`（tip `0cfd19a6`，`force_full=true`） | 全量腿**真跑** ⇒ ⛔ 空绿 | `rust (workspace 全量)` job `123576657165`：`16:19:37Z→17:07:28Z`（≈**47m51s**）；剥 ANSI 后 **431** 个 `test result:` 行、**6,840** passed／**0** failed；三条引擎常驻判据逐名各 **1** 条 `ok`。单 crate matrix 腿 `skipped` ⇒ 这是 force_full 的**正确形态** |
+| **S4 线** | `40914097921`（tip `c3b0b4a0`，push） | **completed success** | `rust (yeban-model)` job `123589738750`：**63s**（`16:44:27Z→16:45:30Z`）真跑；**13** 个 `Running tests/`、**18** 个 `test result:` 行、**463** passed／**0** FAILED；`folder_link_validation_gap.rs` 那行明写 `running 6 tests`，六条判据名**逐名**各 **1** 条 `ok`（含 `validate_accepts_a_folder_link_pointing_at_the_master_bus_today` 的真名）。`windows`／`macos`／`yeban-app` 等其余腿亦 success；`rust (workspace 全量)` `skipped`（单 crate 增量的正确形态） |
+| **S2 落地** | land → merge `08586bce` → 并入并行写者 → push | main tip `2c0adaa3` | diffstat `7 files changed, 809 insertions(+), 563 deletions(-)`；⭐ **落地判决已读回**（见下面 §1.1）⇒ S2 **四件齐** |
+| **S3 落地** | merge `be8e1492` | run `40917833876` | ⭐ **已读回 success**（见 §1.1）⇒ S3 **四件齐** |
+| ⚠ 并行写者 | `40918306688`（main tip `45752063`＝他们 land 的 `ui-export-dialog`） | ⭐ **已读回 success** | ⛔ 本会话不判、只登记（谁派的谁读回）；他们那 6 个文件（`crates/yeban-app/**`）已随我的 merge 进入 `2c0adaa3` |
+
+### §1.1 ⭐ 同轮稍后的补账（三份 merge 判决读回；⛔ 覆盖 §1 表里"在飞/未读回"那三格）
+
+| run | 覆盖什么 | 现读作业 | 读数 |
+| --- | --- | --- | --- |
+| `40919073102`（main `2c0adaa3`） | ⭐ **S2 的落地判决**（merge 进 main 那一跑＝候选纪律③的合法来源）＋并行写者 6 个 `yeban-app` 文件 | `rust (workspace 全量)` job `123607229655` `17:12:44→17:58:55`（≈**46m11s**）真跑；单 crate matrix 腿 `skipped` | 剥 ANSI（**修正后的模式**）：**367** 个 `Running tests/`、**434** 个 `test result:` 行、**6,846** passed／**0** FAILED；`the_realtime_strip_arms_are_the_dsp_strip_spellings` **1** 条 `ok`；S3 四条**逐名**各 1 条 `ok`；⚠ `folder_link_validation_gap` **不在场**（当时 S4 尚未 land ⇒ 正确形态，⛔ 空绿） |
+| `40917833876`（main `be8e1492`） | **S3 的落地判决** | `rust (yeban-model)` job `123602900177` `17:06:03→17:07:09`（**66s**）真跑；`windows`／`macos`／`yeban-app` 等全 success；全量腿 `skipped`（该 merge ⛔ 碰 `schemas/**` ⇒ 正确形态） | **13** 个 `Running tests/`、**461** passed／**0** FAILED；`field_write_reachability.rs` **在场**且四条判据**逐名**各 1 条 `ok` |
+| `40918306688`（main `45752063`） | 并行写者的 `ui-export-dialog` 落地跑 | 整跑 success | ⛔ 本会话不代判其细节；其代码已由上一行 `2c0adaa3` 的全量腿覆盖 |
+
+⭐ **同一批读数的复算**：S2 的 `force_full` 跑（job `123576657165`）在**修正后**的剥色模式下重算，
+得 **364** 个 `Running tests/`、**431** 行 `test result:`、**6,840** passed／**0** FAILED —— 与 §1 里那行
+完全一致 ⇒ 那组数字⛔ 受 ANSI 坑影响（坑只作用在 `Running tests/` 这一串，因为 ANSI 正好夹在
+`Running` 与 `tests/` 之间）。
+
+### §2 ⭐ 新纪律：**GH 日志 dump 里的 ANSI 是两字符 `^[`，⛔ 是 `0x1B`**
+
+上一轮我把坑写成"判日志先剥 ANSI"，本轮照做**仍然数出 0**（`grep -c "Running tests/"`
+在已按 `\x1b\[[0-9;]*m` 剥过的文本上 = **0**，而 `test result:` = 18）。逐字节看那行才看清：
+`^[[1m^[[92m     Running^[[0m tests/folder_link_validation_gap.rs` —— 这里的 `^[` 是
+**caret + 左方括号两个可见字符**（GH 的日志导出把 ESC 打印成了字面量），所以任何
+`\x1b` 类正则**根本匹配不到**。⇒ 口径补全为：**剥色正则要写成 `(?:\x1b|\^\[)\[[0-9;]*[a-zA-Z]`**
+（两种编码都覆盖），且"计数为 0"永远先怀疑**读法**、再怀疑"没跑到"（§6.3 第 4 条的读法侧同型坑）。
+本轮改用该模式后同一份日志得 `Running tests/` = **13** ⇒ 目标二进制**在**场，判据可信。
+
+### §3 `ADR-0049` —— 待裁四项**开票**（⛔ 我未裁、⛔ 未写一行代码）
+
+**为什么现在开票**：S3 第一片把"零触点"机械化之后，下一步⛔ 是补代码（会撞未批裁决），
+也⛔ 是"语义差分"（设计活）。能自主推进的只剩**把裁决面写成可批可驳的票面**。
+
+票面里每条都带**现读位置**与**有单位的数字**（单位＝`crates/*/src` 的命中行数）：
+
+| 字段 | 消费者读数 | 开放写入会撞的东西 |
+| --- | --- | --- |
+| `audio_config` | app **26**／engine **24**／model **17**／mcp **6**／render **3**；设备投影 `engine/src/device.rs:341-346`（`sample_rate`+`block_frames`） | **流重配置**（⛔ 脏标记问题）＋ `ARCH-DSP-002` 把"工程设定 48kHz"当前提 |
+| `rng_seed` | 概率触发 `mcp/src/domain/mod.rs:4622`／`sfz.rs:1602`／`app/src/export_wav.rs:714`；抖动 `embedded_digest.rs:1447`/`:1725`；回执报"实际使用种子" `render.rs:2044`；`.als` 损失项 `render/src/als.rs:516-523` | 撞 `MODEL-AST-005` 的确定性叙事；⚠ 与已 Accepted 的 `melodySeed`（`ADR-0045`）**不同层**，⛔ 互相替代 |
+| `metadata.description` | **0 处**读取（`grep -rn "metadata\.description" crates/` 在 `src` 下零命中；唯一 `src` 侧出现是**写入**者 `app/src/import_logic.rs:941`；同名字符串另两处是 `model/tests/schema_ratchet.rs:85,112` 的 schema **棘轮登记行**，读 schema⛔ 读字段值） | 撞 `ADR-0037`「给了必须被消费」⇒ **只开写入并不补足缺口**，缺的是消费面 |
+| `metadata.tags` | **1 处**（`als.rs:485` 的 `tags.len()`，进 `.als` 损失表文本） | 同上 |
+| `solo_safe` | engine **19**／model **14**／app **14**／mcp **11**／render **9**；`ADR-0030:107-108` 的可读性公式 | 撞 `ADR-0001 D43` 那句"三个混音开关要么都写，要么都别写"；⚠ 同族 `mute`/`solo` **已可写**，`ops.rs:525` 还把 `bypassed` 归为"solo_safe 同类"且已有 `setDeviceBypassed` ⇒ 仓库里**已有**"行为开关该有写通路"的先例 |
+
+路线：**D1** 维持现状只补文档（`ADR-0023:79-82` 的既有写法，零代码）／**D2** 纯注记族（须同批裁消费面）／
+**D3** `solo_safe`（与 `setTrackMute`/`setTrackSolo` 同构）／**D4** `rng_seed`（须裁三件事：界、与 `melodySeed`
+的层级、改种子后既有回执是否作废）／**D5** `audio_config`（须先有一份"设备生命周期"裁决，建议**最后**裁）。
+**闭环**：批任一条 ⇒ S3 常驻判据 `field_write_reachability.rs` **按设计变红**，实现片第一步是把该字段
+从"零触点名单"移到"探针表"（探针表要求 ≥1 触点 ⇒ 移过去即是被机械盯住的扩面，⛔ 悄悄放宽）。
+
+### §4 本轮顺手量的两条"⛔ 靠记忆"的口径
+
+1. `op_schema.rs` 的 `kind("…")` 去重集现读 **53** 个：工程头已开放 `setTitle`／`setAuthor`／`setTempo`／
+   `setTimeSignature`／`setKeySignature`／`setTransportConfig`，轨级开放 `setTrackName`／`setTrackColor`／
+   `setTrackMute`／`setTrackSolo`／`setTrackSampler` ⇒ ⭐ **轨音量/声相的写通路在自动化族**
+   （`ops.rs:3388`/`:3392` 实写 `volume_db`/`pan`），⛔ 没有"一次性设音量"的 kind。
+2. `crates/yeban-app/tests/ui_export_dialog.rs:82-96` 的回执字段闭集现读 `[&str; 13]`，含
+   `sample_rate`／`bits` ⇒ **逐次导出**的采样率/位深在 **UI 面**已有答案；MCP 面渲染走工程速率
+   （`domain/render.rs:3537`）。⚠ 这条读数来自**并行写者**刚落地的线，⛔ 我写进 ADR 前先现读了源文件，
+   ⛔ 拿他们的提交信息当证据。
+
+### §5 磁盘（目标里的"定期清理"）
+
+删七个**已完成切片**留下的一次性探针目录（`/tmp/harmony_probe` **19M**、`/tmp/section_pure{,_clippy,_harmony}`
+**36M×3**、`/tmp/g8a-probe` **84M**、`/tmp/g8h` **88M**、`/tmp/probe-out` **107M**）与四个 `4.0K` 的判决暂存文件，
+合计约 **462 MB**（单位＝`du -sh` 磁盘占用）。⚠ 删前 `grep` 过仓库引用：只有
+`crates/yeban-mcp/verify/section_pure.rs:17-18` 的**注释**提到 `/tmp/section_pure`，那是该脚本的**输出路径**
+（按需重生成），⛔ 输入。⛔ 动 `/tmp/yeban-s2`（**1.3G**）与 `/tmp/yeban-s4`（**1.4G**）—— 两线的
+merge 判决还没读回，回收属"落地闭合后"动作。`/home` 用量 **201G/235G（89%）**，
+他项目大头（**19G** cache／**5.2G** rustup／**3.8G** target）仍等 `#34` 的人类裁决。

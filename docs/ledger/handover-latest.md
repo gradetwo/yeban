@@ -2248,3 +2248,42 @@ helper `ops.rs:3043` `doc.insert_track(...)`／局部绑定后赋值 `SetMacro`�
 **S2 侧的下一动作不变**：`0cfd19a6` 判绿落地后，第二张表的**去重**需要设计决策
 （实时投影要记 `eq.seen`／`filter_seen`／`compressor_seen` 与逐旋钮部分覆盖，⛔ 不能机械替换成
 共享 `store`）；常驻判据已经把"两张表不许漂移"钉住，去重可以慢做。
+
+---
+
+## §0.7 ⭐ 最新交接（**2026-10-30 清早**）—— 新会话先读这一节（⛔ §0.6 的表已部分过期）
+
+**主干状态**：tip `2c0adaa3`（已推送）＝ `merge(s2-device-param-table)` `08586bce` ＋ 并入
+**并行写者**自己 land 的 `ui-export-dialog`（他们那条 merge 是 `45752063`，我 merge 回来再推）。
+⇒ ⚠ §0.6 里"`line/ui-export-dialog` 本会话不 land"那条**已自然闭合**：是他们自己落的，
+我只做了"并进来、⛔ 改他们的代码"。
+
+**判决表（⭐ 取代 §0.6 那张的当下读数）**：
+
+| 票 | run | 状态 | 下一动作 |
+| --- | --- | --- | --- |
+| S2 整线 | `40910345157`（`force_full`，tip `0cfd19a6`） | **success 已读回**（全量腿真跑 ≈47m51s／**431** 行 `test result:`／**6,840** passed／**0** failed；引擎三条常驻判据逐名 `ok`） | ✅ **四件齐**（落地判决＝下表 main tip `2c0adaa3` 那条 merge run）⇒ 只剩 `worktree.sh rm s2-device-param-table --purge` ＋ 回收 `/tmp/yeban-s2`（**1.3G**） |
+| S3 落地 | `40917833876`（main `be8e1492`） | **success 已读回**（`rust (yeban-model)` job `123602900177` **66s** 真跑；`Running tests/` **13**；**461** passed／**0** FAILED；四条判据**逐名**各 1 `ok`） | ✅ 四件齐 ⇒ `rm s3-field-reachability --purge` |
+| S4 线 | `40914097921`（tip `c3b0b4a0`） | **success 已逐名读回**（`rust (yeban-model)` **63s** 真跑；`Running tests/` **13**；**463** passed／**0** FAILED；六条判据逐名各 **1** `ok`） | `worktree.sh land s4-folder-link-gap` → 推 main → 读 **merge run** → `rm --purge` → 回收 `/tmp/yeban-s4`（**1.4G**） |
+| main tip | `2c0adaa3`（含 `ADR-0049` 那批文档） | **success 已读回**（`rust (workspace 全量)` job `123607229655` ≈**46m11s** 真跑；`Running tests/` **367**；**434** 行 `test result:`／**6,846** passed／**0** FAILED；S2 的引擎常驻判据逐名 `ok`、S3 四条逐名 `ok`；⚠ `folder_link_validation_gap` **不在场**＝S4 当时尚未 land，属正确形态） | ✅ **S2 四件齐** ⇒ `rm s2-device-param-table --purge` ＋ 回收 `/tmp/yeban-s2`（**1.3G**） |
+| ⚠ 并行写者落地 | `40918306688`（`45752063`） | **success 已读回**（作业名单含全量腿）；且他们的 6 个 `crates/yeban-app/**` 文件已在我这条 merge 里 ⇒ 由 `40919073102` 一并覆盖 | ✅ 无遗留动作（登记只为⛔ 判决孤儿化） |
+
+⭐ **本轮新增的一条读法纪律（⛔ 与 §6.3 第 4 条同型，补在它旁边）**：GH 日志 dump 里的转义序列
+是**两字符 `^[`**（caret＋方括号），⛔ 是 `0x1B`，所以"先剥 ANSI"用 `\x1b\[…` 类正则**匹配不到**，
+`grep -c "Running tests/"` 会再次给你 **0**。可用模式：`(?:\x1b|\^\[)\[[0-9;]*[a-zA-Z]`。
+⇒ "计数为 0"先怀疑**读法**，再怀疑"没跑到"。
+
+⭐ **待裁四项已开票 = `ADR-0049`（`Proposed`，⛔ 零代码、⛔ 未代签）**：`audio_config`／`rng_seed`／
+`metadata.description`+`tags`／`solo_safe` 各一条路线（`D1` 只补文档／`D2` 注记族＋须同批裁**消费面**／
+`D3` `solo_safe` 与 `setTrackMute` 同构／`D4` `rng_seed` 须裁"与 `melodySeed` 的层级"与"改后既有回执是否作废"/
+`D5` `audio_config` 须先有"设备生命周期"裁决，建议最后裁）。批任一条 ⇒ `field_write_reachability.rs`
+**按设计变红**，实现片第一步是把该字段从"零触点名单"移到"探针表"。
+⚠ 开票时量到的两个非显然事实：`metadata.description` 在 `crates/*/src` 的**读取面 = 0 处**（唯一 `src` 侧出现是
+Logic 导入器 `import_logic.rs:941` 的**写入**），而 `solo_safe` 有 **19** 行引擎消费 ⇒ 四条不是同一种"可写性缺口"。
+
+**创作缺口这条线当下的判断**（⛔ 凭记忆）：`G1..G18` 与 `G8e..G8n` 都已闭合或开票；
+剩下**自主可做**的是 S2 正片（引擎第二张表的**去重**＋全量 30 字段实时落点，需设计决策⛔ 待裁）、
+S3 的**语义差分**片（设计活）；**卡在人类**的是 `ADR-0042`／`ADR-0047`／`ADR-0048`／`ADR-0049`／
+`ADR-0004`（含 **Q13** 的 `folder_id` 补校验）＋ `AGENTS.md:134` 那句"可写的只有"。
+⇒ 下一片⛔ 从"发明第五个待裁字段"里出，可做的两件是：①读回上面两条 merge run 并拆树（闭合动作）；
+②S2 正片的**设计稿**（把"两张表去重要记哪些部分覆盖"写成一份可批的 ADR）。
