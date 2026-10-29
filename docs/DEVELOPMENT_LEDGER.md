@@ -15092,3 +15092,66 @@ S1 的本地构建走 `/tmp/yeban-s1` = **6.5 GiB**，⛔ 在 S1 判决读回前
 （"克隆 `ClipContent` 不读音符"），⛔ 我另立口径。
 ⛔ 本机不可编 `yeban-mcp`（symphonia）⇒ 本地只做到 `cargo fmt --check -p yeban-mcp` ＋ 20 条守卫 ＋
 `check_feature_alignment.py` 绿，判决必须读回 CI（`84404b5c`/`60510746` 的 run 待读回）。
+
+## 2026-10-29（深夜）· 两条线四件齐闭合 ＋ S2 第一片（落点表下移到 `yeban-dsp`）
+
+**四件齐闭合（本轮读回，逐腿现读）**：
+
+| 落地 merge | headSha | run | 逐腿读数 |
+| :--- | :--- | :--- | :--- |
+| S1 设备参数实时落点 | `8ba04f50` | **`40897831825`** = success | `rust (yeban-dsp/engine/render/ui-mcp)`／`checks`／`lockfile`／`deny`／`plan` 全 success，`rust (yeban-app)`／`rust (yeban-mcp)`／`macos`／`windows` 同跑同绿 |
+| 十工具广播面 | `72401d45` | **`40898247799`** = success | `rust (yeban-mcp)` **真跑**（⇒ 上一跑被 fail-fast 挡掉的 `230` 冻结读数这次**获判**）／`rust (yeban-ui-mcp)` success |
+
+两跑的 `rust (workspace 全量)` 都是 **skipped**，且这是**正确形态**（⛔ 不是空绿冒充）：本仓库的
+规划腿对"只碰若干单 crate"的批返回 `workspace_wide: false` ⇒ 单 crate 腿逐条真跑、全量腿跳过。
+⇒ 口径：**判"某批是否被真验证"看它承判的单 crate 腿有没有 success 且真跑，⛔ 不要求全量腿跑**。
+
+两棵树已按 `worktree.sh rm <line> --purge` 拆除（脚本先补归档标签再删分支）：
+`line-archive/app-device-param-landing @ 56e0cb97`、`line-archive/mcp-broadcast-nine-tools @ b63ee201`。
+⚠ **远端分支未删**（`origin/line/*` 是共享状态，⛔ 未经确认不动）。
+
+**S2 第一片（`8755b4e6`，线 `line/s2-device-param-table`，base `72401d45`）**：把设备参数落点表
+从 `yeban-render` 下移到 `yeban-dsp`。这是 handover 登记的 S2（全量 30 字段实时落点）**前置**：
+依赖方向 `render → engine → dsp`，实时链（`yeban-engine/src/insert.rs`）与离线链必须读同一组
+"哪个名字有落点、落点字段怎么钳制"，唯一可共享的位置是 `dsp`。
+
+- 新增 `crates/yeban-dsp/src/device_param.rs`：`StripField`(22 字段／41 拼写)／`ReverbField`(4／6)／
+  `ConvolutionField`(4／8)／`DeviceParamField`／`DeviceParamFamily`／`sanitised_output_gain_db`
+  **逐字搬移**（⛔ 未改任何拼写、顺序或钳制）；
+- `crates/yeban-render/src/inserts.rs`：删定义改 **`pub use` re-export**（**7** 个消费方导入路径不变：
+  `yeban-render/src/automation.rs`、`yeban-app/src/engine_host.rs`、
+  `yeban-app/tests/{compressor_export,device_param_automation_export}.rs`、
+  `yeban-mcp/src/domain/notes.rs`、`yeban-mcp/tests/{render_audio_clips,fault_vocabulary}.rs`）；
+  整批 `8755b4e6` 六文件 **+611／−563**（`device_param.rs` ＋582 行；`inserts.rs` 侧 −550 行表文
+  ＋24 行 re-export 与说明），冻结计数 `22／4／4／41／55` 未动 ⇒ 那些判据仍是**同一组数**；
+- ⭐ 顺手消掉一份**只能镜像**的私有常量：`REVERB_MAX_PREDELAY_S` 现在是
+  `yeban_dsp::reverb` 的 `pub` 常量，`Reverb::set_params` 里那个字面 `0.1` 与
+  `ReverbField::Predelay` 的钳制读**同一个**常量（原先两边各写一个、靠网格对账判据钉住）。
+
+**本机判决边界（照 §5 纪律）**：`yeban-dsp` 本机可跑 ⇒ `cargo clippy -p yeban-dsp --all-targets --
+-D warnings` 零告警、`cargo test -p yeban-dsp` **22 个测试二进制全绿**（`r77_hard_assertion_audit`
+= 31 passed）、`run-gates.sh light` 全过、`cargo fmt` 干净。`yeban-render`／`yeban-engine`／
+`yeban-app`／`yeban-mcp` 本机⛔ 不可编 ⇒ 交给 CI，run **`40904300940`**（`rust (yeban-dsp)` 已
+success，`render`／`engine`／`app`／`mcp`／`ui-mcp` 在跑）⇒ **本片判决 pending，读回前不得写"落地"**。
+
+⭐ **第三次撞 r77 的双处数字，并且这次测清了它的机理**：搬文件让 `device_param.rs` 里新增
+3 处 `.contains(\|\|spelling)` 站点 ⇒ `R77_WRITE=1` 重生成 `src_match_sites.txt`（32→**35** 行），
+`count_register.txt` 的手写行 `rows_src_match_sites` 必须同步改 35。
+**新读数**：带 `R77_WRITE=1` 的那一跑报 `31 passed` 是**假绿** —— 我把 register 临时改回 32 再带变量
+重跑，`the_count_register_numbers_are_recomputed_from_the_same_predicate` 立刻 FAILED（left 32／
+right 35）⇒ 证明**设了变量并不会跳过比较**，那次全绿是**同一跑里的读写顺序**（比较那条线程先读到
+了被重写前的文件）。⇒ 口径：`R77_WRITE=1` 只算"重生成"，**判决必须由不带该变量的第二跑给出**。
+
+**磁盘读数（单位 GiB／磁盘上实际占用）**：本轮删除 S1 的本地构建目录 `/tmp/yeban-s1`（**6.5 GiB**，
+其判决已读回 success ⇒ 不再需要）与一处**误建在树内**的 `.worktrees/s2-device-param-table/target`
+（194 MiB —— 起因是没设 `CARGO_TARGET_DIR` 就跑了 `cargo clippy`）。根分区可用 **23G → 29G**。
+后续本地构建一律 `export CARGO_TARGET_DIR=/tmp/yeban-s2`（现读 495 MiB）。
+⚠ 候选纪律（⛔ 未生效，需人类签字）：**worktree 内不得长出 `target`**，本机每次 cargo 命令前
+必须显式设 `CARGO_TARGET_DIR=/tmp/yeban-<line>`。
+
+⭐ **本轮我自抓的一处测量纪律违反（如实登记，⛔ 不静默）**：写 handover"下一片"那段时我先落了一句
+"两侧别名集不保证逐字相同"，并举引擎 `conv_predelay_s | conv_pre_delay_s | conv_predelay` 作例
+—— 现读两个集合后证明**例子是错的**：8 个可自动化拼写两侧**逐字相同**，真实差集只有引擎额外认的
+**3** 个 IR 形状键（`conv_ir_decay_s`／`conv_ir_decay`／`conv_ir_seed`，dsp 侧刻意排除）。⇒ 同一轮内
+改正并把**实测集合**写进文档。教训回到 §6.3：**"看起来合理"的形状差异必须先 `grep` 两侧再落笔**，
+尤其当那句话会成为下一位接手者的动作依据时。

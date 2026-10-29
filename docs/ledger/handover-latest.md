@@ -2118,3 +2118,58 @@ python3 scripts/guards/policy_check.py && bash scripts/gates/run-gates.sh light
 `family` `:1221`／`sanitise` `:1231` 四个方法；`store`/`read` 在三个族枚举上），离线施加 `inserts.rs:1739-1763`，
 实时同名表 `crates/yeban-engine/src/insert.rs:921/1083/657`；依赖方向 `render → engine → dsp` ⇒ 只能下移到 `dsp`。
 ⭐ S1 未 land 前⛔ 动这些文件（一文件一写者）。
+
+### ⭐ 2026-10-29 23:52 追加（两条线四件齐闭合 ＋ S2 第一片在跑 ＋ 下一片的确切动作）
+
+**上一段的两条在飞线全部闭合（四件齐）**：S1 merge **`8ba04f50`** 的 run **`40897831825`** =
+success（逐腿现读：`rust (yeban-dsp/engine/render/ui-mcp/app/mcp)` ＋ `checks`／`lockfile`／`deny`／
+`plan` ＋ `macos`／`windows` **12 条全 success**）；十工具 merge **`72401d45`** 的 run
+**`40898247799`** = success（`rust (yeban-mcp)` **真跑** ⇒ 上一跑被 fail-fast 挡掉的 **`230`**
+冻结读数这次**获判**）。两跑的 `rust (workspace 全量)` 都是 skipped ＝ **正确形态**（本批不是
+workspace_wide ⇒ 单 crate 腿逐条真跑），⛔ 别把"全量腿没跑"读成空绿或读成缺陷。
+两棵树已 `worktree.sh rm --purge` 拆除（归档标签 `line-archive/app-device-param-landing @ 56e0cb97`、
+`line-archive/mcp-broadcast-nine-tools @ b63ee201`）；⚠ **远端 `origin/line/*` 分支未删**（共享状态，
+待人类点头）。
+
+**S2 第一片已推送、判决 pending**：线 `line/s2-device-param-table`（工作树
+`.worktrees/s2-device-param-table`，base `72401d45`）。tip **`0d0383cf`**（前一批 **`8755b4e6`**
+＝落点表下移本体），`8755b4e6` 的 run = **`40904300940`**（15:43 起跑，`rust (yeban-dsp)` 已
+success；`render`／`engine`／`app`／`mcp`／`ui-mcp`／`macos`／`windows` 在跑）。
+⭐ **`0d0383cf` 必须按自己的 `headSha` 读回**（只改了一处文档注释的消费方名单，但它有自己的 run）。
+
+**搬完后的现读位置**（⛔ 上一段的 `inserts.rs:1179` 一类行号已陈旧）：
+`crates/yeban-dsp/src/device_param.rs` —— `sanitised_output_gain_db:41`／`StripField:73`／
+`ReverbField:335`／`ConvolutionField:429`／`DeviceParamField:523`／`DeviceParamFamily:534`；
+`crates/yeban-render/src/inserts.rs` —— re-export 在 `:690`，`forced_identity_strip:702`、
+`resolve_device_param:786` 仍留在 render（它们消费 `DeviceDefinition`/`TrackV3` 等模型类型，
+⛔ 不能下移到 dsp）。冻结计数 `22／4／4／41／55` 未动。
+`REVERB_MAX_PREDELAY_S` 现为 `yeban_dsp::reverb:119` 的 `pub` 常量，`Reverb::set_params` 的字面
+`0.1` 与 `ReverbField::Predelay` 的钳制读**同一个**（消掉一份只能镜像的私有常量）。
+
+**下一片（S2 第二片）的确切动作**：消掉 `yeban-engine` 的**第二张表**。实时侧是三个投影结构各自的
+`fn apply(&mut self, name: &str, value: f32)`（`crates/yeban-engine/src/insert.rs:657`
+（`ConvProjection`）／`:921`／`:1083`），按 `match name { "a" | "b" => … }` 的**字面臂**组织；
+dsp 侧是三张 `SPELLINGS`。⭐ **本轮已实测卷积这一族的两侧差集**（现读，⛔ 不是推断）：
+可自动化的 **8** 个拼写**逐字相同**（`conv_predelay_s`／`conv_pre_delay_s`／`conv_predelay`／
+`conv_dry`／`conv_wet`／`conv_wet_mix`／`conv_ir_gain_db`／`conv_ir_gain`），
+引擎**额外**认 **3** 个 IR 形状键（`conv_ir_decay_s`／`conv_ir_decay`／`conv_ir_seed`），
+而 dsp 的 `ConvolutionField::SPELLINGS` **刻意不含**它们（IR 形状是构造期烘焙、不可自动化，
+见 `inserts.rs` 的 `is_supported_param` 把这三键单列）。⇒ 让 `apply` 走共享表时**必须保留**
+"三键在构造期另走一条路"的形状，⛔ 不得为了统一表而把它们塞进 `SPELLINGS`（那会同时打破
+`APPLIED_DEVICE_PARAM_NAMES` 与 `55` 的冻结读数）。另外两族（`StripProjection`／`ReverbProjection`，
+即 `:921`／`:1083`）的差集**尚未逐字对过** ⇒ 动它们之前先做同样的读数。
+随后才是 S2 的正片（全量 30 字段实时落点 ＋ `DeviceParam` 地址升级到 `device_id`＋名字，
+那一步要动 `schemas/**` 两处并做旧工程兼容裁决）。
+
+**本轮新增的两条候选纪律（⛔ 未生效，需人类签字）**：
+① **`R77_WRITE=1` 那一跑的全绿不构成判决**。实测：搬文件让 `device_param.rs` 新增 3 处
+`.contains` 站点 ⇒ 带变量那一跑报 `31 passed`，但把 `count_register.txt` 临时改回旧值 32 再带变量
+重跑，`the_count_register_numbers_are_recomputed_from_the_same_predicate` 立刻 FAILED（left 32／
+right 35）⇒ 证明**设变量不会跳过比较**，那次全绿是**同一跑内的读写顺序**（比较线程先读到被重写前
+的文件）。⇒ 重生成后**必须不带变量再跑一遍**才算判决。这是 r77"两处数字"第**三**次咬人。
+② **worktree 内不得长出 `target`**：本机任何 `cargo` 命令前必须
+`export CARGO_TARGET_DIR=/tmp/yeban-<line>`（本轮没设就跑了 clippy，树内长出 194 MiB）。
+
+**磁盘读数（本轮实测）**：删 `/tmp/yeban-s1`（**6.5 GiB**，其判决已读回）＋ 树内误建的 `target`
+（194 MiB）⇒ 根分区可用 **23G → 29G**；`/tmp/yeban-s2` 现读 **495 MiB**（S2 线的本地构建目录）。
+⛔ 他项目目录（19G cache／5.2G rustup／3.8G 他项目 target）仍待人类裁决（清单项 `#34`）。
