@@ -61,6 +61,9 @@ PROTECTED_LEGAL = {
 
 FENCE_RE = re.compile(r"^\s*(```|~~~)")
 LINK_RE = re.compile(r"\]\(([^)\s]+)(?:\s+\"[^\"]*\")?\)")
+# 行内代码段（CommonMark：N 个反引号开、同数量闭，⛔ 不跨行）。替换成等长空格，
+# 保留列位与行号，使 `body[: match.start()].count("\n") + 1` 的读数不受影响。
+INLINE_CODE_RE = re.compile(r"(`+)(?!\s)(.+?)(?<!\s)\1")
 
 
 def markdown_files() -> list[Path]:
@@ -70,6 +73,21 @@ def markdown_files() -> list[Path]:
             continue
         out.append(path)
     return sorted(out)
+
+
+def strip_inline_code(text: str) -> str:
+    """去掉行内代码段里的内容，避免把**写出来当例子**的 `[x](y)` 当真链接。
+
+    本仓的台账与 ADR 大量用反引号引用链接写法（例：`` `[a](b.md)` ``）。按 CommonMark，
+    代码段内的 `](` **不是链接**（渲染器不把它变成 `<a>`），所以门不该报它 —— 报了就是
+    假红，而假红会把人推向"改散文来迁就门"。实测影响面（单位：处）＝本轮 **1**
+    （`docs/DEVELOPMENT_LEDGER.md` 自己踩到的那一处），⇒ 这是**防将来**的口径修正，
+    ⛔ 不是大批豁免。⚠ 逐行处理：行内代码段**永不跨行**，跨行匹配会误吞正文。
+    """
+    return "\n".join(
+        INLINE_CODE_RE.sub(lambda m: " " * (m.end() - m.start()), line)
+        for line in text.splitlines()
+    )
 
 
 def strip_fences(text: str) -> str:
@@ -92,7 +110,7 @@ def check_links() -> tuple[list[str], list[str], int]:
 
     for path in markdown_files():
         rel_file = path.relative_to(REPO)
-        body = strip_fences(path.read_text(encoding="utf-8", errors="replace"))
+        body = strip_inline_code(strip_fences(path.read_text(encoding="utf-8", errors="replace")))
         for match in LINK_RE.finditer(body):
             target = match.group(1)
             if target.startswith(("http://", "https://", "mailto:", "#", "data:")):
