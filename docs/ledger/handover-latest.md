@@ -2231,8 +2231,19 @@ helper `ops.rs:3043` `doc.insert_track(...)`／局部绑定后赋值 `SetMacro`�
 在钉，且 `project_view` 是整档序列化后按根键挑选（`view.rs:229`）⇒ 读面本来就全；
 真正没被机械化的只有**写面**（本片已钉零触点那一半），再往前一步是**语义差分**
 （施加每个 `Op` 变体后逐字段比对"到底能不能改"），那是设计活而非补洞。
-另：`ledger:10303` 那句"全工具集里没有设备 CRUD"与现读矛盾（`Op::InsertDevice`／`RemoveDevice`
-的 kind 名在 `notes.rs:2691..2693` 已存在），原意是"没有**独立**设备工具"——⚠ 措辞待改，本批只登记。
+另：`ledger:10303` 那句"全工具集里没有设备 CRUD"**本批已就地更正**（⛔ 原文不改写，更正段紧随其后）：
+现读 `op_schema.rs` 的 `kind("…")` 去重集共 **53** 个 kind，含 `Device` 的 **4** 个
+（`insertDevice`／`removeDevice`／`setDeviceBypassed`／`setDeviceName`），外加 `setParam` 的
+`lane:"DeviceParam"` 分支（`op_schema.rs:638-660`，`slotIndex`+`paramIndex`）⇒ 准确说法是
+"**没有独立的设备工具**（`schemas/mcp-tools.schema.json` 里 `yeban_*Device*` 工具名现读 **0** 个），
+设备 CRUD 是 `yeban_edit_notes` 的 kind"。
+⭐ **随之新增一条要人类签字的规则文件更正**：`AGENTS.md` §6.3 第 3 条（现读在 **`:134`**，
+台账旧引 `:132` ⇒ 同型行号漂移）写"**可写的只有** `yeban_edit_automation` 的 `DeviceParam` 目标"，
+实测**两处**可写（另一处是 `yeban_edit_notes` 的 `setParam/lane:"DeviceParam"`），⛔ 本会话不动 `AGENTS.md`。
+⭐ **S4 那条待裁**：`ADR-0004` 的 **Q13**（`A` 拒绝自指/环/主总线 ＋ `B` 访问集，ADR 建议 A+B 合并）
+**状态仍是 `Proposed`** ⇒ 负责人点头后才有"补校验"那片；S4 的现状判据会在那一刻**按设计变红**。
+⛔ **S4 之外别顺手做**：`folder_id` 的可写通路（`ADR-0023:79-82` 已登记为边界）与折叠 UI 是两条片，
+且折叠 UI 那片还压在 Q4/Q12 的"视图状态住哪一层"裁决上。
 
 **S2 侧的下一动作不变**：`0cfd19a6` 判绿落地后，第二张表的**去重**需要设计决策
 （实时投影要记 `eq.seen`／`filter_seen`／`compressor_seen` 与逐旋钮部分覆盖，⛔ 不能机械替换成

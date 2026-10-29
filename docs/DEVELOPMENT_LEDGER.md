@@ -10304,6 +10304,25 @@ The负责人 handed over an **HTML design mock** carrying eighteen named colours
 
 **验证本身产出的三处缺陷，`7e07401` 修正（三个文件）。**
 
+⭐ **上面 ②' 那句"全工具集里没有设备 CRUD"于 2026-10-30 现读推翻并改正**（⛔ 原文不改写，那是当时的读数）：
+设备面的写通路**存在且成套**，只是**不住在独立工具名里**——现读 `crates/yeban-mcp/src/op_schema.rs`
+的 `kind("…")` 去重集（单位：个 kind）共 **53** 个，其中名字含 `Device` 的 **4** 个
+（`insertDevice`／`removeDevice`／`setDeviceBypassed`／`setDeviceName`），另加
+`setParam` 的 `lane:"DeviceParam"` 分支（`op_schema.rs:638-660`，必填 `slotIndex` + `paramIndex`，
+越界各自报 `slotOutOfRange` / `paramIndexOutOfRange`）。常量在 `domain/notes.rs:2701/2704`
+（`INSERT_DEVICE_KIND` / `REMOVE_DEVICE_KIND`）。⇒ 准确措辞是：
+**"没有独立的设备工具"（`schemas/mcp-tools.schema.json` 里没有 `yeban_*Device*` 工具名），
+设备 CRUD 是 `yeban_edit_notes` 的 kind**。`AGENTS.md` §6.3 第 3 条那句"设备由宏工具承载"仍按原样保留（⛔ 规则文件要人类签字才改），
+但**现读它比这句更正后的话更不准，而且是两处**：① 它连 `insertDevice` 这一族都没提；
+② 它写"**可写的只有** `yeban_edit_automation` 的 `DeviceParam` 目标"——而 `yeban_edit_notes`
+的 `setParam` 带 `lane:"DeviceParam"` 分支**同样**写设备参数（`op_schema.rs:638-660`）。
+⚠ 台账原文把它定位在 `AGENTS.md:132`，现读该句在 **`:134`**（与上面 ADR 那条**同型行号漂移**）。
+⇒ **待人类签字的一条**：`AGENTS.md:134` 的"可写的只有"改成"两处可写（`yeban_edit_automation`
+的 `DeviceParam` 目标 ＋ `yeban_edit_notes` 的 `setParam/lane:"DeviceParam"`）"。⛔ 本会话不动规则文件。
+⚠ **顺带钉住一处仍然成立的缺口**：设备参数寻址用的是 `track.devices` 的**槽位下标**
+（`slotIndex`），⛔ 不是 `device_id` ＋ 名字——这正是 S2 正片要升级的那一处（动 `schemas/**` 两处、
+且牵涉旧工程兼容裁决）。
+
 **(d)** `scripts/gates/run-gates.sh` 的本地 `full` 调 `validate_schemas.py` 时**没有** `--repo-assets`，于是 `MUST-GATE-014` 的许可白名单与逐项对账**只在 CI 存在**。修法是把该开关**只加到 `full`**（`:93`）；`light` 根本不调用 `gate_schemas`（`:191-196` 的 `light` 分支里没有它，只有 `full` 分支在 `:217` 调）。机械证据是先命名指标再数：**`light` 日志里资产清单步骤打印的行数**（针 = `[ok] assets/…manifest.json`）= **0**。（若只 `grep manifest.json` 会得 **1** —— 那是 `LEGAL.md:80` 的 `file://` 告警行，不是资产步骤；针必须落在步骤自己的输出上，这正是第 422 轮换来的教训。）代价同样先命名指标：**单次 `validate_schemas.py` 调用的墙钟秒** —— 审计时（同机各 3 次）不带开关 **0.26 s** → 带开关 **0.93 / 0.94 / 1.15 s**；本轮复核同一指标（各 3 次）得 **0.15 / 0.15 / 0.16 s** → **0.96 / 0.99 / 0.98 s**，绝对值随负载浮动，增量稳定在 **≈ +0.8 s**，与审计同向。该开关管**六项检查**：清单发现、红线 9 的未登记资产扫描、指针式清单 schema + 目标存在、条目清单 schema、逐条许可白名单、逐条 sha256 / `size_bytes` 对账（都在 `verify_repo_asset_manifests()`，`validate_schemas.py:66` 起）。牙是可逆地证明的：把一条的 `license` 改成白名单外的值 ⇒ EXIT=1 并点名条目与许可；删掉必需的 `sha256` ⇒ 在 schema 处 EXIT=1；还原后 `cmp` 逐字节相同、校验和回到原值。
 
 **(e)** `docs/ledger/gate-status.md:31` 的 `MUST-GATE-014` 行把清单记成 `8 903 874 B`；本轮 `stat -f%z` / `wc -c` 实测 **8 903 873**，已改。同一行另有三个数被量过但**有意不改**，其中一个才是有意思的：行里的"最大单文件 **0.01 MB**"**按字面不可测** —— 它挂在有日期、但成员名单没有记录的首批上；而今天真正在场且已登记的最大资产是 `assets/samples/karoryfer-emilyguitar/Emilyguitar/emily_chords.sfz` 的 **210 382 B**（清单 `size_bytes` 同为 210382），约是那个记录值的 **二十倍**（210382 / 0.01 MB = 21.0×）。**这是"带范围说明的陈旧数字"，不是违规**：红线 9 的 10 MB 仍远未触碰。另两个不改的是 `358 909 701 B` / `7 836 692 B`（本树测不到的上游归档大小）与 `8.5 MB`（与两个字节数一致的取整 MiB）。
