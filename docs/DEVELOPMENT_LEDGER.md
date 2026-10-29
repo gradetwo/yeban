@@ -15155,3 +15155,61 @@ right 35）⇒ 证明**设了变量并不会跳过比较**，那次全绿是**�
 **3** 个 IR 形状键（`conv_ir_decay_s`／`conv_ir_decay`／`conv_ir_seed`，dsp 侧刻意排除）。⇒ 同一轮内
 改正并把**实测集合**写进文档。教训回到 §6.3：**"看起来合理"的形状差异必须先 `grep` 两侧再落笔**，
 尤其当那句话会成为下一位接手者的动作依据时。
+
+## 2026-10-29（凌晨）· ⭐ 分支 run **只覆盖该次推送的增量**（测量口径的一处实质更正）＋ S2 第三批 ＋ S3 第一片
+
+⭐ **本轮最值钱的读数是口径，不是代码**：`ci.yml` 的 `plan` 用
+`BASE_SHA = github.event.before`（＝**上一分支 tip**）当 diff 基线，所以**分支上每一次推送的
+run 只验证那一次推送的增量**。⇒ 上一节末尾那句"推送取消了 `40904300940`，判决由新 tip 的
+`40905810210` 承接"**是错的**（本轮现读计划器推翻它，⛔ 静默不改）：
+
+| 读数 | base..head | 计划器返回的 crate 集合（条目＝crate 个数） |
+| :--- | :--- | :--- |
+| 复算 `0d0383cf` 那一跑 | `8755b4e6`..`0d0383cf` | `["yeban-app","yeban-mcp","yeban-render","yeban-ui-mcp"]`（**不含 dsp／engine**） |
+| 整条线应有的集合 | `72401d45`(main)..`0d0383cf` | `["yeban-app","yeban-dsp","yeban-engine","yeban-mcp","yeban-render","yeban-ui-mcp"]` |
+
+两侧**互证**：CI 里 `40905810210` 实际只有 `rust (yeban-render／app／ui-mcp／mcp)` 四条 Linux 腿
+＋`workspace 全量` skipped —— 与复算名单逐条一致。⇒ **`8755b4e6` 被取消后，`yeban-dsp` 主体改动
+在 Linux 上从未获得判决**（只有 windows/macos 腿跑了 `test (yeban-dsp 的扫描器)` 那一小块）。
+L32「一次推送＝一批改动，tip run 的判决即整批的判决」**继续成立但只指 merge 那一跑**（基线是
+main 旧 tip ⇒ diff 覆盖整条线）；分支内部的逐个推送**不适用**。⇒ 动作：不追补三个被取消的 run，
+改用**同一个 tip 上派发 `force_full=true`**（`ci.yml` 手动档）让一次跑覆盖整线 ——
+run **`40910345157`**（`0cfd19a6`，in_progress）；它同时把 `40905810210`／`40910342208` 顶成
+`cancelled`（分支组仍是"新推送取消旧运行"）。⚠ 结论：**判"某条线是否被真验证"要么读它的
+merge run，要么在它自己的 tip 上派一次全量档**，⛔ 不要把"分支 tip 后来的那跑 success"当整线判决。
+
+**S2 第三批（`0cfd19a6`，常驻判据）**：`crates/yeban-engine/tests/device_param_spellings_pinned.rs`
+把「实时链认的参数名必须与 dsp 三张 `SPELLINGS` **逐字同集**」钉住，唯一允许差集＝ **3** 个
+IR 形状键。本机读数：`cargo test -p yeban-engine --no-default-features` ⇒ **3 passed**；
+`cargo fmt` 干净；`cargo clippy -p yeban-engine --no-default-features --tests -- -D warnings` 零告警。
+**注入红实验**（做完**已还原**）：把混响判据的期望表换成 `StripField::SPELLINGS` ⇒
+`the_realtime_reverb_arms_are_the_dsp_reverb_spellings --- FAILED`（left/right 两集不一致）
+⇒ 判据确实会咬；还原后不带变量复跑 **3 passed**（承上一轮 `R77_WRITE` 的教训：**判决只认不带
+写入变量的那一跑**）。
+
+**S3 第一片（`8a755acc`，新线 `line/s3-field-reachability`，run `40911122798`）**：接手
+handover §11 第 4 条留下的轴「**哪些实体只能建、改不了**」。⭐ 先做可构造性，再落判据：
+- **宽口径（"这字段能不能被改"）的词法扫描实测不可构造**，三条假阴性机理各有真实证据：
+  ① rustfmt 链式换行（`ops.rs:1703` 形如 `doc\n .tracks\n .insert(...)`）；
+  ② 领域 helper（`ops.rs:3043` `Self::AddTrack { track } => doc.insert_track(track.clone())`
+  ——字段名 `tracks` 根本不出现在臂里）；③ 局部绑定后赋值（`SetMacro` 先
+  `let track = doc.track_mut(..)?` 再 `track.macros.get_mut(i)`，赋值左侧是 `macro_parameter.value`）。
+  ⇒ 原型第一跑因此把 `title`／`author`／`clips`／`tracks`／`routing_graph` 全读成"不可达"——
+  **探针红＝抽取器无效**，那批"缺口"读数作废，⛔ 未写进任何结论。
+- 可靠方向改成**零触点**：`ops.rs` 产品区（`#[cfg(test)]` 之前、去注释）里 `.<字段>` 出现
+  **0** 次 ⇒ 连读都没被读过。现读为 0 的五个字段：`metadata`／`rng_seed`／`audio_config`／
+  `folder_id`／`solo_safe`；非零探针：`routing_graph` **12**／`macros` **5**／
+  `master_bus_track_id` **1**（`ops.rs:1634` 的自洽校验）⇒ 既钉住现状，又证明扫描器不瞎。
+- 判据文件 `crates/yeban-model/tests/field_write_reachability.rs`（本机 `yeban-model` 可编）：
+  **4 passed**；注入真红＝产品区临时加 `let _ = &doc.metadata;` ⇒ 零触点判据 FAILED
+  (`[("metadata", 1)]`)，还原后复跑 4 passed。
+- ⛔ **这片不回答"该不该补"**：五个字段只登记为「现状：`Op` 面零触点」，是否做成能力
+  （轨道文件夹／工程种子可改／描述与标签可编辑／音频配置可改）是**人类裁决**，要进 `docs/adr/`。
+  另一处已登记的旧账不动：`master_bus_track_id` 的"建后不可改"已记在
+  `docs/ledger/feature-alignment.md`，`ledger:10303` 那句"全工具集里没有设备 CRUD"则与现读矛盾
+  （`Op::InsertDevice`／`RemoveDevice` 及其 kind 名在 `notes.rs:2691..2693` 已存在），
+  它的原意是"没有**独立**设备工具"——⚠ 措辞待改，本批只登记不动它。
+
+**磁盘读数（单位 GiB／磁盘实际占用）**：根分区可用 **29G**（本轮未删大件）；本地构建目录
+`/tmp/yeban-s2` **1.3 GiB**（S2 判决读回后即可回收）、`/tmp/yeban-s3` 新建（S3 线）。
+S3 工作树内 `target` 为零（守 `CARGO_TARGET_DIR` 纪律）。
