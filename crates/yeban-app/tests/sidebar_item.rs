@@ -76,10 +76,15 @@ fn bounds_of(port: &mut LivePort<yeban_app::ui::MainWindow>, id: &str) -> Rect {
 
 /// 抓一帧，取某个条目内部一点的 RGB。
 ///
-/// 采样点取「左内边距 6px、垂直居中」：避开圆角（`radius-sm`）与从 12px 开始的文字。
+/// 采样点取「左内边距 3px、垂直居中」：条目文字从 `space-3`（6px）开始左对齐，
+/// 垂直中心远离 `radius-sm`（2px）圆角 ⇒ 该点只可能是纯背景色。
+/// ⚠ 采样点必须避开**文字**：字形覆盖率随平台系统字体而变（macOS 首字形与 Linux
+/// 不同），一旦踩上文字，「选中色搬家」等式就带进了字体栅格的差异（CI run
+/// `40969319851` 实测：条目 0 的 `S` 在 `x+6` 处有抗锯齿像素，`before[0]` 落到
+/// `(39,45,58)`，既不是 `bg-panel` 也不是 `bg-panel-alt`）。
 fn swatch_of(port: &LivePort<yeban_app::ui::MainWindow>, bounds: Rect) -> [u8; 3] {
     let image = port.window().capture().expect("Tier-1 截图");
-    let x = u32::try_from(bounds.x + 6).expect("条目在窗口内");
+    let x = u32::try_from(bounds.x + 3).expect("条目在窗口内");
     let y = bounds.y + i32::try_from(bounds.height / 2).expect("高度是正数");
     let y = u32::try_from(y).expect("条目在窗口内");
     image
