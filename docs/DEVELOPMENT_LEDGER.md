@@ -14456,3 +14456,50 @@ Windows 行 19722、全量腿行 35195 ⇒ **三腿都真跑了**（⛔ 只闻�
 ⚠ 计数口径留痕：`grep -c 'Running'` 得 402（含 `Running kernel` 等杂行），而 `test result:` 是 424、
 `running N tests` 是 293 —— 三者不相等，原因是日志行分块合并会把部分 `Running`/`running` 前缀
 并到上一行。**只有 `test result:` 与 `passed` 求和是逐二进制完整的**，故判据证据以它为准。
+
+## 2026-10-29 早（失败重放判据 + 缓存条目数无上界）：`0ddd847f` / run `40788780028` ＝ success
+
+**判据补洞**：幂等重放此前**只测成功路径**（`idempotency_replays_the_same_result_*` 等五处），
+失败路径无断言。契约 `idempotencyKey` 的描述是"第二次 `tools/call` **不执行工具**，直接返回首次结果的缓存"
+—— 未排除失败；模块文档说缓存存的是"首次执行的**完整结果**"。新判据
+`dispatch::tests::failed_calls_are_cached_and_replay_without_reexecution`：无活跃工程 ⇒
+`yeban_query_project` 带内报 `NO_ACTIVE_PROJECT`（仍是一等结果，走得到第 7 步）⇒ 第二次必须
+`replayed:true`、内层 `result` 与首次逐字节相同、`idempotency_len` 不增长、`replayed()==1`
+（若有人把 `Err` 从缓存排除，第二次会**真执行**而这条判据红）。
+
+**新登记（Proposed，不改代码）**：`ADR-0048` —— 缓存**条目数无上界**：`grep -rn "evict|capacity|CAP"`
+在 `dispatch.rs` **0 处**；只有**键长**有界（`tools.rs:436-439` 的 `max_len: Some(256)`）；
+缓存挂在 `Dispatcher` 上（`dispatch.rs:141`），`idempotency.clear|remove` **0 处** ⇒ 关/开工程都不清；
+且**一个进程只有一个 `Dispatcher`**（`bin/yeban-mcp.rs:210` → `serve_http`，HTTP 侧 `Mutex<Dispatcher>`
+在 `transport/http.rs:545`）⇒ 条目数随不同键线性增长、每条持一整份首次载荷。
+⚠ **纠错留痕**：ADR 初版断言"现有错误码无语义匹配"，被 `BUSY` 的**枚举注释**误导；
+消费点先例是**场景启动队列满**：`ErrorCode::Busy` + `reason:"sceneLaunchQueueFull"`
+（`mod.rs:3804-3812`），有界队列的注释原话"否则控制面变成一条内存泄漏"
+（`scene_launch.rs:43-45`，`MAX_PENDING_SCENE_LAUNCHES = 64`）。⇒ `D2` 有现成形状，改推 `D2`；
+仍需人类定 `BUSY` 语义扩展与上限值。
+
+**判决（读回 `40788780028`，`headSha` ＝ `0ddd847f`）**：
+
+| 作业 | 结论 | steps | 耗时 | `test result:` | passed | FAILED |
+| :--- | :--- | ---: | ---: | ---: | ---: | ---: |
+| plan／checks／deny／lockfile | success | 5／15／6／6 | 8／83／48／20 s | — | — | — |
+| rust (yeban-mcp) | success | 14 | 919 s | 125 | 2,378 | **0** |
+| rust (yeban-ui-mcp) | success | 14 | 159 s | — | — | 0 |
+| macos | success | 18 | 1,790 s | 262 | 4,968 | **0** |
+| windows | success | 18 | 2,245 s | 262 | 4,947 | **0** |
+| rust (workspace 全量) | skipped | 0 | — | — | — | — |
+
+新判据**逐名** ` ... ok`：mcp 腿**两次**（23:41:32 缺省特性／23:48:33 `APP_FEATURES`，该腿确实跑两遍
+`--all-targets`：默认一次、`app-features.sh` 非空再一次）、macOS 23:44:13、Windows 23:45:50。
+⚠ 本批**只碰 crates** ⇒ 矩阵规则走单 crate 腿，`workspace 全量` skipped 是预期（⛔ 空绿：四条代码腿真跑、
+steps 14/14/18/18 与耗时均非 0）。同日 docs 提交 `c3469314` 的 `40788347272` = success 但**四腿全 skipped**
+（steps=0）⇒ 空绿，只作推送留痕。
+
+### 附带：预览×真做的**结构性**结论（本会话推广，0 改动）
+
+`domain::preview` ＝ `plan(domain, call).and_then(|p| p.describe(domain))`（`mod.rs:4834-4836`）
+⇒ 预览与真做**共用同一份 `plan`**，分叉只可能发生在 `describe()` **重算/重读**的地方。
+逐臂核过（`mod.rs:1416-1690`）：`LoadSfz`／`RenderSfzWav`／`ExportStems`／`RecordWav`／`RenderMaster`
+全部读 plan 里的 **artifact**；`Propose` 读 `draft`/`warnings`；`Undo`／`Redo` 读 plan 字段
+（`undoneBefore` 在**同一次调用内**读 `domain`，plan→describe 之间无状态变化）；`Close.willReleaseLock`
+同理。⇒ **sfz 那类缺陷的入口只剩"describe 里重新构造"**，当前无一处。⛔ 再为同源字段加恒真判据。

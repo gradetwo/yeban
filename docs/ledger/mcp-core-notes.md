@@ -125,6 +125,15 @@ CI 默认档位不传 `--all-features`（见 `.github/workflows/ci.yml` 的 `rus
 - 契约没有给 `idempotencyKey` 任何 `minLength`；把空串当成"必须去重"会让所有
   老客户端莫名其妙命中同一条缓存。因此空串 = 未提供，**且这条选择有判据与文档**
   （`empty_idempotency_key_is_treated_as_absent`）。
+- **缓存没有条目数上限**（2026-10-29 现读）：只有**键长**有界（`tools.rs:436-439`
+  的 `max_len: Some(256)`），`BTreeMap` 无淘汰/容量判断，且它挂在 `Dispatcher` 上
+  ⇒ `yeban_open_project`／`yeban_close_project` **都不清**它，条目数随**不同键**的调用
+  线性增长（每条持一整份首次响应载荷）。是否设上限**不是本模块能决定的**：
+  拒绝要改闭合错误码、静默淘汰会让"同键不重复施加副作用"失效
+  ⇒ 三条路线已登记为 [`ADR-0048`](../adr/ADR-0048-idempotency-cache-size-bound.md)（Proposed）。
+- **失败也进缓存**（契约描述"第二次 `tools/call` 不执行工具, 直接返回首次结果的缓存"，
+  ⛔ 排除失败）：判据 `failed_calls_are_cached_and_replay_without_reexecution`
+  （无活跃工程 ⇒ 带内 `NO_ACTIVE_PROJECT`，第二次必须 `replayed:true` 且主体逐字节相同）。
 
 ### M7b —— 幂等缓存的键**带工具名作用域**（2026-10-29 实测缺陷修复）
 

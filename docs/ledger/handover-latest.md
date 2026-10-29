@@ -121,6 +121,26 @@
 `Domain` 的会话字段**有没有按工具身份区分**；⛔ 别去编不存在的键（本段初稿就曾把
 `yeban_list_proposals` 误写成"有游标"，实际登记表无此键 —— 再次证明"先 grep 交付，再下结论"）。
 
+### 0.6.0h 失败重放判据 ＋ `ADR-0048`（缓存条目数无上界）（2026-10-29 早）
+
+1. **判据补洞**：幂等重放此前只测成功路径。新增 `failed_calls_are_cached_and_replay_without_reexecution`
+   （无活跃工程 ⇒ 带内 `NO_ACTIVE_PROJECT`；第二次必须 `replayed:true` 且主体逐字节相同，
+   若有人把 `Err` 排除出缓存，第二次**真执行** ⇒ 判据红）。
+   判决 `40788780028`（`0ddd847f`）＝ **success**：mcp 腿 14 steps／919 s／`test result:` 125／
+   passed 2,378／FAILED 0；macOS 18 steps／1,790 s／262／4,968；Windows 18 steps／2,245 s／262／4,947；
+   `workspace 全量` skipped（只碰 crates，预期）；新判据三腿逐名 ` ... ok`（mcp 腿两次：缺省 + `APP_FEATURES`）。
+2. **`ADR-0048`（Proposed）**：缓存**条目数无上界**（`dispatch.rs` 里 `evict|capacity|CAP` 0 处；
+   只有键长 `maxLength: 256`；`idempotency.clear|remove` 0 处；一进程一 `Dispatcher`）。
+   四条路 D1 文档／D2 响亮拒绝（**有先例**：场景启动队列满 = `BUSY` + `reason:"sceneLaunchQueueFull"`，
+   `mod.rs:3804-3812`）／D3 淘汰（**冲突**：被逐出的键再请求会二次施加副作用）／D4 降级（需新响应字段）。
+   ⛔ 集成者不选；D1 的"描述现状"部分已写入 `mcp-core-notes` M7。
+3. **预览×真做结构性结论**：`preview = plan().describe()`（`mod.rs:4834-4836`）⇒ 分叉只可能出现在
+   `describe()` 重算处；逐臂核过（1,416-1,690）全部读 plan 内 artifact/字段 ⇒ 当前无分叉入口。
+   ⛔ 再为同源字段加恒真判据。
+
+⇒ **自主可做（创作缺口）= 零**（全卡 `ADR-0042`／`ADR-0047` 等人类裁决）；但**语义面审计**仍有两处
+可做：`ADR-0048` 的三个实现选项（须先裁）、以及按同一方法审 `Domain` 会话字段的**工具身份作用域**。
+
 ### 0.6.0 ⚠ 环境已经换了（第一条就要说）
 
 | 项 | 值（现读 2026-10-28） |
@@ -232,7 +252,7 @@ lib 侧 `8/7` → 判据侧 `E0277` → 判据侧 `unused variable`。
 | `HD-65` | 会话 CC 状态要不要加轨道维度 | 历史 |
 | `HD-66` | SFZ `cutoff` 族的 `lpf_2p` 要不要落地滤波器 | 历史 |
 
-⚠ **另有四处只登记在 ADR／台账、未开 `HD` 行**（开 `HD` 行要级联 `docs/README.md`／
+⚠ **另有五处只登记在 ADR／台账、未开 `HD` 行**（开 `HD` 行要级联 `docs/README.md`／
 `feature-alignment.md`／`phase-status.md` 与 `check_decisions.py` 的点名未决集合）：
 `ADR-0034` **D4** 三条（段级目标调／in-scale 转调／平滑声部连接的取舍）、
 `ADR-0036` **非范围 3**（6/8 这类复合拍是否以"拍"而非十六分格为默认单位）、
@@ -241,7 +261,10 @@ lib 侧 `8/7` → 判据侧 `E0277` → 判据侧 `unused variable`。
 这张票**决定** `harmonyVoices`／`harmonyLower`／`harmonyUpper` 三张缺口票能不能上线，
 ⛔ 集成者代签（实测与三条选项见 `ADR-0042` 与台账 `## 2026-10-28：G8j 前置实测`）、
 `G8f` 的**旋律动机**一问（theory 与 MCP 两侧都没有 motif 概念 ⇒ 要不要新增这项音乐能力，
-⛔ 集成者代签；接线用的"旋律音域"那半片⛔ 不等它，见 §0.6.5 第 2 条）。
+⛔ 集成者代签；接线用的"旋律音域"那半片⛔ 不等它，见 §0.6.5 第 2 条）、
+**`ADR-0048`（⭐ 新增，2026-10-29）幂等缓存的条目数无上界** —— 只有键长有界（`maxLength: 256`），
+`BTreeMap` 无淘汰且挂在 `Dispatcher` 上（关工程不清）；三条设上限的路**都要动闭合错误码或
+核心保证** ⇒ 人类择一（实测与选项见 `ADR-0048`；它的 `D1` 只补文档、已在本会话写进 `mcp-core-notes` M7）。
 
 ### 0.6.4 本轮新增的纪律（每条都是**实测**换来的，完整措辞见台账各轮的"本轮新增的规则"）
 
