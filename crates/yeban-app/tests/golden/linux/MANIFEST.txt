@@ -151,9 +151,31 @@ max(0px, min(480px, root.width - 612px))`，1920 档 `min(480, 1308) = 480` ⇒ 
 ⚠ 五张的**字节数相同**（6222418）**不构成任何证据**（本仓 PNG 是存储式 deflate，1920×1080 恒为该长度）
 —— 判内容的是上面的 sha256 与逐像素读数。
 
+**⚠ 2026-10-30 再录一次（`line/integrate-ui`，headSha `4ec34fc6`）**: 本批把**段落色标**与**场景色标**
+接上工程文档 —— 编曲视图每张段落卡左缘 3px 竖条读 `SectionV3::color`，Session 视图每张场景卡内
+12×12 色块读 `SceneV3::color`（合法色规范化 `#RRGGBB`，非法 / 缺失回退文档常量 `#2C3A63`）。
+两者都是默认帧里**可见且未被遮罩**的静态像素 ⇒ 5 张基准确定性过期（含 compact：窄断点下段落条仍画）。
+生成方式与地点同上：手动档 `gates-manual.yml` 的 `gate=goldens`，run id **40975904306**
+（conclusion=success；job `goldens (生成分平台基准图集)` success，8 步，23:52:15Z–23:54:45Z，
+run 窗口 23:51:19Z–23:54:46Z），ref `line/integrate-ui`，headSha `4ec34fc6`，
+artifact `golden-linux`（id 12943055870，485877 字节）；
+⚠ artifact 自带的那份 `MANIFEST.txt` 是**本改动前的仓库副本**（含旧哈希）⇒ **未采用**。
+**入库前的复核（⚖ 判定量 = 每张差异像素的连通块形状）**: 用 stdlib zlib 解码（本机无 Pillow / numpy，
+本仓 PNG 是存储式 deflate，filter 0/2）把旧 5 张与 artifact 的 5 张逐像素逐通道比较：
+- `app-main-window-arrangement-full` / `app-model-driven-demo-project`：**各 240 个差异像素**，
+  差异的 x 方向是**恰好 4 条宽 3px 的竖条**（`x = 408..410 / 664..666 / 920..922 / 1176..1178`），
+  y 恒为 `48..67`（高 20px = 段落卡高）；
+- `app-main-window-arrangement-compact`：**240 个**，同样 4 条 3×20（`x = 204..206 / 460..462 / 716..718 / 972..974`，`y 48..67`）；
+- `app-model-driven-filled-project`：**120 个**，2 条 3×20（`x = 408..410 / 664..666`，`y 48..67`）—— 该夹具只有 2 个段落；
+- `app-main-window-session-full`：**576 个**，x 恒为 `1022..1033`（宽 12），y 是 4 块高 12 的块
+  （`86..97 / 154..165 / 222..233 / 290..301`）—— 与 `scene-{i}-color-swatch` 的 12×12 **逐像素吻合**；
+⇒ 差异**逐像素等于新色标的矩形**（240 = 4×3×20、120 = 2×3×20、576 = 4×12×12），
+**矩形外不一致像素数 = 0**，没有布局位移、也没有别的控件被触碰。
+⚠ 五张的**字节数相同**（6222418）**不构成任何证据**（存储式 deflate），判内容的是上面的 sha256 与逐像素读数。
+
 文件	sha256	字节
-app-main-window-arrangement-compact-1920x1080.png	4a18ff75757168dd073f00b4629de94f06925eeaa4397f782a9405a920ea0793	6222418
-app-main-window-arrangement-full-1920x1080.png	64a337fb86b360aa5f8cc3127a5a800cd14886dc1043a7bfc05aad5d5fbdd91e	6222418
-app-main-window-session-full-1920x1080.png	99fa4cccfb0ac4e13b52e94bc3c286ab950256837db3d2e23ef7309122daafff	6222418
-app-model-driven-demo-project-1920x1080.png	64a337fb86b360aa5f8cc3127a5a800cd14886dc1043a7bfc05aad5d5fbdd91e	6222418
-app-model-driven-filled-project-1920x1080.png	2f33bf088b2931e433a5f9694fe81b2beb53ecfeeae67a7b9fa15a91b907fe72	6222418
+app-main-window-arrangement-compact-1920x1080.png	0d75d268d29c4c2b8c7035a30766485c3635166eb3263d790b82ffb667891694	6222418
+app-main-window-arrangement-full-1920x1080.png	780987c172b4b647932cd0dc2714ca3f9d79fe6ab88153e9afa6729f402371b0	6222418
+app-main-window-session-full-1920x1080.png	b4cb6a2eab2417e06a46884b7ed6a25a6f91660b62ca7c83b346b2cad4f7cde1	6222418
+app-model-driven-demo-project-1920x1080.png	780987c172b4b647932cd0dc2714ca3f9d79fe6ab88153e9afa6729f402371b0	6222418
+app-model-driven-filled-project-1920x1080.png	5393c78361fa53d5d503ebe96c1c414871e8e0116927e9fca61b299fcace8956	6222418

@@ -289,7 +289,7 @@ running 4 tests   →  test result: ok. 4 passed; 0 failed      # tests/live_ui_
 | 1 | **卷帘视口裁剪 / 滚动** | 音高窗口固定 16 条车道（`60..75`），窗口外音高**钳制**进两端；`[UI-NOTE-001]` 的 R-Tree / 裁剪未做 | `yeban-render` + 视口状态（`MODEL-ISO-001` 的第二层） |
 | 2 | **卷帘的作用域** | 注入的仍是**片段池的全部 MIDI 音符**，不是"当前编辑片段"；音符的 `clip_id` 已进投影，为将来的作用域过滤留了抓手 | "当前片段"属会话运行态，`app-binding` §8.2 已登记 |
 | 3 | **音符时值的可视化宽度** | `width` 已按整数像素差给出（有 1px 地板），但**最小可视宽度 ≤ 3px 时不画**（`[UI-NOTE-001]` 的裁剪语义）未做 —— 亚像素宽的音符可能仍在树里但看不见 | 同上 |
-| 4 | **段落 / 场景色标** | `SectionV3::color` / `SceneV3::color` 已进投影，但 `.slint` 仍未消费（本线只做**轨道**色标，按任务书范围） | 同轨道色标，复用 `parse_hex_color` 即可（一条后续线的小活） |
+| 4 | **段落 / 场景色标** | ✅ **已实现**（2026-10-30，`line/integrate-ui`，提交见 `crates/yeban-app/tests/section_color_swatch.rs` / `scene_color_swatch.rs` 的引入批次）：编曲视图 `section-{i}-color-swatch`（3px 竖条）、Session 视图 `scene-{i}-color-swatch`（12×12 色块），复用 `track_color_or_default`（唯一解析点）；5 张 Linux 基准随之重录（run `40975904306`） | 已闭合 |
 | 5 | **混音台通道条** | `mixer_console.slint` 仍是 `for track_index in 6` + 内联 `FADER_LEVELS`；默认视图里它隐藏（`console-tab = 0`），因此不在运行时树里 | `[ARCH-UI-002]` 电平 SPSC；`app-binding` needs-1 |
 | 6 | **推子 / 声相 / 音量拖拽回写** | 投影只**读**；没有 UI → 模型方向（`Op` 日志 / 引擎调度） | `yeban-engine` + `yeban-model::Op` |
 | 7 | **自动化曲线 / 宏 / 设备链** | ✅ **自动化曲线已进视图**（2026-10-05，`line/app-automation-ui`，载体见 `app-binding-notes.md` 同行的更正）；**宏 / 设备链仍未进视图**。原表述（`automation_lanes` / `macros` / `devices` 仍未进视图）是**当时的**状态；`device_rack.slint` 用 `scene::DEVICE_NAMES` 常量 | `[UI-NOTE-004]`；设备机架应由 `devices` 驱动 |
@@ -311,8 +311,9 @@ running 4 tests   →  test result: ok. 4 passed; 0 failed      # tests/live_ui_
 3. **`docs/ledger/app-binding-notes.md` 的未实现项 #1 / #4 / #8 可以关掉**：
    音符 tick 位置与轨道色标**已实现**，`.yeban` 打开的**入口**已交付（接线仍是 #9 的边界）。
    建议集成者在合并时更新那三条，并在 `docs/DEVELOPMENT_LEDGER.md` 记一笔。
-4. **段落 / 场景色标**（§6 未实现项 4）：是同一套 `parse_hex_color` 的复用，
-   一条小线即可完成；本线按任务书范围只做轨道色标。
+4. **段落 / 场景色标**（§6 未实现项 4）：✅ **已完成** —— 两条 Tier-1 判据
+   `tests/section_color_swatch.rs` / `tests/scene_color_swatch.rs` 各自钉住
+   「投影 → 注入 → 控件树 → 像素」四处同源；Linux 5 张基准已按 run `40975904306` 重录。
 5. **`ui-shell-notes.md` 的 pending**：卷帘的 `.slint` 内联数据债在本线之后只剩
    `white-key-pattern` / `tool-names`（规范级常量），可以据此更新。
 6. **`rust (workspace 全量)` 腿**：本线只动 `crates/yeban-app/**` + 本文件，
