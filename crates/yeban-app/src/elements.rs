@@ -4021,7 +4021,6 @@ mod tests {
     /// | 语义 ID（`.slint` 右值） | 为什么今天没有动作 |
     /// | :--- | :--- |
     /// | `"ai-rail-intent-button"` | 意图生成能力不存在: 没有 `callback`、没有宿主写者 |
-    /// | `"sidebar-category-" + i + "-button"` | 分类切换状态机不存在（只有静态选中态 `category_index == 0`） |
     /// | `"transport-branch-button"` | 切换活跃分支的 API 一处都不存在（判据 `the_three_transport_document_actions_are_not_wired_today` 已钉） |
     /// | `"transport-commit-button"` | 同上（会话里没有"待提交的编辑"这一状态） |
     /// | `"transport-revert-button"` | 同上（能力存在但未接线） |
@@ -4035,6 +4034,13 @@ mod tests {
     /// `EngineHost::queue_scene_launch` ⇒ 引擎在量化点 `transport.retune(场景 tempo)`
     /// ＋ `scene_launches_applied += 1`（判据 `tests/scene_launch_wiring.rs`）。
     /// 按本判据文档的要求（"修好一个 ⇒ 从清单里删掉它"），它不再属于"没有动作"的集合。
+    ///
+    /// ⭐ **本切片移出了一条**（`8 → 7`）：`"sidebar-category-" + i + "-button"` 现在三个
+    /// 标签**都**可点 —— `TouchArea.clicked` 与 `accessible-action-default` 同一落点
+    /// `root.select-category(category_index)` ⇒ `app.slint` 原样转发 ⇒ 宿主
+    /// `host::wire_view_callbacks` 钳到 `0..=2` 后写 `sidebar-category`（纯视图态：
+    /// 选中背景 / 文字色 / `accessible-item-selected` 三处读同一个属性）。
+    /// 判据 `tests/sidebar_category.rs`。
     #[test]
     fn controls_without_any_click_source_are_exactly_the_known_empty_ones() {
         const CONTROL_ROLES: [&str; 6] = [
@@ -4120,9 +4126,16 @@ mod tests {
     /// `root.console-maximize-toggle()`）⇒ 宿主 `host::wire_view_callbacks` 写
     /// `console-maximized` —— 与键盘 `Cmd/Ctrl+Alt+M` 的
     /// `Action::ToggleConsoleMaximize` 是**同一个**视图态属性。
-    const KNOWN_ACTIONLESS_CONTROLS: [&str; 5] = [
+    ///
+    /// ⭐ **资源栏分类标签再移出一条**（`5 → 4`；同样按合并后的实测条数改写，
+    /// ⛔ 不是照抄单线提交里的 `8 → 7`）：`"sidebar-category-" + i + "-button"` 现在三个
+    /// 标签**都**可点 —— `TouchArea.clicked` 与 `accessible-action-default` 同一落点
+    /// `root.select-category(category_index)` ⇒ `app.slint` 原样转发 ⇒ 宿主
+    /// `host::wire_view_callbacks` 钳到 `0..=2` 后写 `sidebar-category`（纯视图态：
+    /// 选中背景 / 文字色 / `accessible-item-selected` 三处读同一个属性）。
+    /// 判据 `tests/sidebar_category.rs`。
+    const KNOWN_ACTIONLESS_CONTROLS: [&str; 4] = [
         "app.slint :: \"ai-rail-intent-button\"",
-        "sidebar.slint :: \"sidebar-category-\" + category_index + \"-button\"",
         "transport.slint :: \"transport-branch-button\"",
         "transport.slint :: \"transport-commit-button\"",
         "transport.slint :: \"transport-revert-button\"",

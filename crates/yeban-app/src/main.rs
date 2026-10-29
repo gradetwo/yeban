@@ -1072,10 +1072,12 @@ fn mount_in_process_mcp(
 /// "撤销一步"按钮由 [`host::wire_undo`] 接到 [`yeban_app::undo::UndoPort`]，
 /// 动作真的会走 `CommitGraph::undo_with`，显示态由 `host::apply_undo` 从模型读数回写。
 ///
-/// **视图态四条也已经真的接线**（本切片）：`toggle-view` / `toggle-sidebar` /
-/// `toggle-ai-drawer` / `open-musical-pr` → [`host::wire_view_callbacks`] →
-/// 分别写 `arrangement-view` / `sidebar-collapsed` / `ai-drawer-open` / `musical-pr-open`。
-/// `.slint` 里那四处 `root.* = !root.*` 的翻转**已删除** —— 同一条动作只有一个写者。
+/// **视图态六条也已经真的接线**（分类切换与控制台 ⤢ 两条并行落地）：
+/// `toggle-view` / `toggle-sidebar` / `toggle-ai-drawer` / `open-musical-pr` /
+/// `select-sidebar-category` / `console-maximize-toggle` →
+/// [`host::wire_view_callbacks`] → 分别写 `arrangement-view` / `sidebar-collapsed` /
+/// `ai-drawer-open` / `musical-pr-open` / `sidebar-category` / `console-maximized`。
+/// 原先写在 `.slint` 里的 `root.* = !root.*` 翻转**已删除** —— 同一条动作只有一个写者。
 ///
 /// 其余**三条**回调仍然故意什么都不做，只打一行 stderr。原因不是省事，而是
 /// "接上也只能是什么都不做"（本仓库的明文纪律：把动作吞掉却什么都不做，比不处理更糟）：
