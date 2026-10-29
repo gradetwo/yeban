@@ -9524,6 +9524,10 @@ mod tests {
     /// 这是设计意图（第 44 条：⛔ 让"改不了"这件事重新变成口口相传）。
     ///
     /// ⛔ 本片不回答"该不该补"：是否做成产品能力是 `ADR-0049`（`Proposed`）的人类裁决。
+    ///
+    /// ⚠ 检查口径＝**顶层段或末端段命中即算写者**：改 `metadata.description` 这种嵌套子字段
+    /// 时，差异路径是 `metadata.description`，末端段是 `description` —— 只看末端会漏掉整族
+    /// "写子字段"的形态（实测差分器就是这么归因的，见判据六）。
     #[test]
     fn the_write_differential_finds_no_writer_for_the_five_registered_fields() {
         let rows = op_write_differential();
@@ -9546,7 +9550,9 @@ mod tests {
             let writers: Vec<&String> = rows
                 .iter()
                 .filter(|row| {
-                    row.unapplied.is_none() && row.leaf_fields.iter().any(|leaf| leaf == field)
+                    row.unapplied.is_none()
+                        && (row.root_keys.iter().any(|key| key == field)
+                            || row.leaf_fields.iter().any(|leaf| leaf == field))
                 })
                 .map(|row| &row.name)
                 .collect();
