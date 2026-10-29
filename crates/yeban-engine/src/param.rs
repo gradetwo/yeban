@@ -56,13 +56,14 @@
 //! 槽位号**与实体**必须同时匹配：一条轨只有 [`TRACK_GAIN_SLOT`]、主总线只有
 //! [`MASTER_GAIN_SLOT`] ⇒ 两个号**不通用**（互相串用一律未映射，见下面的清单）。
 //!
-//! ⚠ ⭐ **本模块只消费上面两格**。另外三个槽位号由**同一 crate 的另一条通路**消费，
+//! ⚠ ⭐ **本模块只消费上面两格**。另外四个槽位号由**同一 crate 的另一条通路**消费，
 //! 它们在这里的裁决**仍然是 `Unmapped`（并且计数）** —— 这是设计，不是遗漏：
 //!
 //! | 槽位号 | 谁消费 | 引入 |
 //! | :--- | :--- | :--- |
 //! | [`TRACK_PAN_LEFT_SLOT`]／[`TRACK_PAN_RIGHT_SLOT`]（2／3） | `crate::rt` 的**事件循环先截走**，写进逐轨声相平滑对（`armed_pan_l`／`armed_pan_r`） | 裁决 P4=(b) |
 //! | [`SEND_GAIN_SLOT`]（4） | `crate::rt` 的**事件循环先截走**，写进逐**边**发送量平滑表（`armed_send_gain`） | `#261` |
+//! | [`STRIP_OUTPUT_GAIN_SLOT`]（5） | `crate::rt` 的**事件循环先截走**，直接赋值给该轨**已武装通道条**的输出增益（`armed_strips`，⛔ 不经平滑器） | S1 第一片（`output_gain_db`） |
 //!
 //! 两者都是"打得到那条通路 ⇒ 生效且 `param_unmapped_events` 不动；打不到 ⇒ 交回本表判
 //! `Unmapped` 并计数"（单一归属：未映射的裁决只有一处）。
@@ -222,8 +223,35 @@ pub const TRACK_PAN_RIGHT_SLOT: u16 = 3;
 ///   （单一归属：未映射的裁决只有一处）。
 pub const SEND_GAIN_SLOT: u16 = 4;
 
-/// 发送量槽位表的容量（`#261` 裁决 1）。
+/// ⭐ **通道条输出增益**（设备参数 `output_gain_db`）的槽位号（S1 第一片）。
 ///
+/// 语义：`entity` = **一条音轨**（或主总线 —— 母线也占通道条槽位，见 `crate::rt`
+/// 的 `master_last`），值是**线性绝对增益** —— 与发送量 [`SEND_GAIN_SLOT`] 同一条
+/// 口径（裁决 2）：控制侧把 `AutomationTarget::DeviceParam`（名字解析为
+/// `output_gain_db`）的 dB 折成**绝对**线性值发进来，音频线程**只赋值、不做换算**
+/// （`db_to_gain` 与 dB 钳制都是超越函数/控制侧的事 ⇒ 不进逐样本路径，也不进
+/// 每个量子的出队边界之外的地方）。
+///
+/// * **替换**，⛔ 不是乘子：它换掉的正是器件静态投影的那一份输出增益，所以
+///   "事件值 = 静态投影的线性值"与"不发事件"在音频上**逐位相同**；
+/// * 落点是 `crate::rt` 的**通道条武装表**（`armed_strips`，键 = 轨身份），
+///   经 [`yeban_dsp::ChannelStrip::set_output_gain`] 一次标量赋值 —— ⛔ **不走**
+///   [`crate::rt`] 里那条声相/发送量用的 `ParamSmoother`：那两级平滑器的
+///   `snap_to` 会在同量子的快照武装时抹掉目标（R76 的读数），而器件参数的
+///   权威定义住在快照投影里，平滑器没有资格替它决定初值；
+/// * ⚠ **本表（[`ParamTable`]）不消费它**：[`ParamTable::accept`] 仍然只认
+///   [`TRACK_GAIN_SLOT`]／[`MASTER_GAIN_SLOT`]，其余一律 [`ParamOutcome::Unmapped`]。
+///   `slot = 5` 的事件由 `crate::rt` 的**事件循环先截走**（与槽位 2/3/4 同一条
+///   先例）⇒ 打得到那条轨**已武装的通道条**就生效且 `param_unmapped_events` 不动；
+///   打不到（这条轨没有通道条来源、超出槽位容量）就原样交给 `ParamTable` 判
+///   `Unmapped` 并**计数**（单一归属：未映射的裁决只有一处）。
+/// * ⚠ **残留（如实登记，不静默）**：离线渲染在"本轨没有投影来源器件"时会
+///   **强制实例化**一条恒等通道条把 `output_gain_db` 落下去（`yeban_render::inserts`
+///   的 `forced_identity_strip`），实时侧**不做**这件事 ⇒ 那类泳道在控制侧由
+///   `yeban_app` 的 `unapplied_automation_lanes` 计数（谓词与采样共用，不各写一套）。
+pub const STRIP_OUTPUT_GAIN_SLOT: u16 = 5;
+
+/// 发送量槽位表的容量（`#261` 裁决 1）。///
 /// 一条边一个槽位，最多 [`SEND_SLOTS`] 条边被武装。装满之后**多出来的边**：
 /// ① 保留它的**静态**边增益（⛔ 不是静音、⛔ 不是整条发送失效）；
 /// ② 每丢一条边 `+1` 到 `EngineRuntime::send_capacity_drops`（⛔ 不 panic、⛔ 不静默）。

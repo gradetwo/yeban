@@ -44,6 +44,7 @@ mod support;
 use std::path::Path;
 
 use support::{MixSpec, NoteSpec, note_project, render, render_with, rms_peak, tuned_project};
+use yeban_engine::level::db_to_gain;
 use yeban_model::{DeviceDefinition, DeviceKind, EntityId, ParameterValue, YebanProjectV1};
 
 /// 判据用的栅格：120 BPM / 48 kHz / 960 PPQ ⇒ 1 tick = 25 样本（见 `support` 模块文档）。
@@ -1292,5 +1293,187 @@ fn insert_detector_level_is_the_input_side_of_the_dynamics_stage() {
         "[engine-wiring-2/C16] 跨轨口径: A 领先 {first_above} 个量子边界 / B 领先 {second_above} 个 / 共 {} 最大差异={max_separation:.4} dB 逐位最大={}",
         CROSS_QUANTA + 1,
         mismatches == 0
+    );
+}
+
+// ---------------------------------------------------------------------------
+// ⭐ S1 第一片：`output_gain_db` 的**实时落点**（`STRIP_OUTPUT_GAIN_SLOT = 5`）
+// ---------------------------------------------------------------------------
+
+/// 一次装配的读数（左声道 + 三个计数器 + 通道条的**静态**投影值）。
+///
+/// 为什么把 `static_output_gain_db` 一起带出来：落点住在器件的
+/// `output_gain`（线性）里，⛔ **不改写** `params.output_gain_db` —— 那是"下一次
+/// `set_params` 会把静态值写回来"这条口径的见证。只有"信号变了 **且** 静态投影没变"
+/// 才说明事件走的是那条窄入口，而不是偷偷重算了系数。
+struct Landing {
+    left: Vec<f32>,
+    /// [`yeban_engine::rt::EngineRuntime::strip_output_gain_events`]。
+    events: u64,
+    /// [`yeban_engine::rt::EngineRuntime::strip_output_gain_value_rejects`]。
+    rejects: u64,
+    /// [`yeban_engine::EngineStats::param_unmapped_events`]（未映射裁决的**唯一**归属）。
+    unmapped: u64,
+    /// 已武装通道条的**静态**投影值；`None` = 这条轨根本没有通道条（C18 的臂）。
+    static_output_gain_db: Option<f32>,
+}
+
+/// 产品路径装配：`EngineSnapshot::from_project` → `SnapshotSlot` → `process_quantum`，
+/// 在**量子 1 的出队边界**投一条 `slot = 5` 的 `SetParam`（`None` = 什么也不发）。
+///
+/// ⚠ 为什么不在量子 0 发：武装发生在 `render_block` 的**第 2 步**（出队之后），
+/// 第 0 个量子时通道条还不存在 ⇒ 那条事件会被判 `Unmapped`。这是既有形状
+/// （声相／发送量的事件同样只能在**第二个**量子起打得到落点），本判据把它
+/// 当作**前提**而不是缺陷，并在 `unmapped` 上逐字见证。
+fn land(project: &YebanProjectV1, track: EntityId, value: Option<f32>) -> Landing {
+    use yeban_engine::param::STRIP_OUTPUT_GAIN_SLOT;
+    use yeban_engine::ring::{EngineEvent, ParamAddress};
+
+    let mut rig = support::TransportRig::new(project, 1);
+    let mut left = Vec::with_capacity(QUANTA * 128);
+    for quantum in 0..QUANTA {
+        if quantum == 1
+            && let Some(value) = value
+        {
+            assert_eq!(
+                rig.sender.publish(&[EngineEvent::SetParam {
+                    target: ParamAddress::new(track, STRIP_OUTPUT_GAIN_SLOT),
+                    value,
+                }]),
+                1,
+                "事件必须真的进队列"
+            );
+        }
+        rig.quantum();
+        for frame in rig.output.chunks(2) {
+            left.push(frame[0]);
+        }
+    }
+    Landing {
+        left,
+        events: rig.runtime.strip_output_gain_events(),
+        rejects: rig.runtime.strip_output_gain_value_rejects(),
+        unmapped: rig.runtime.stats().param_unmapped_events,
+        static_output_gain_db: rig.runtime.armed_strip(&track).map(|p| p.output_gain_db),
+    }
+}
+
+/// 从第 `SKIP * 128` 帧起的 `(RMS, 峰值)`（落点之前的两帧不计，⛔ 不拿混窗口比）。
+const SKIP: usize = 2;
+
+#[must_use]
+fn tail_rms_peak(landing: &Landing) -> (f64, f32) {
+    rms_peak(&landing.left[SKIP * 128..])
+}
+
+/// **C17**：`output_gain_db` 事件**真的**改了输出，且四个读数各自归位。
+///
+/// 四条臂（同一工程、同一事件槽位，只有值不同）：
+///
+/// | 臂 | 事件值 | 期望 |
+/// | :--- | :--- | :--- |
+/// | 基线 | 不发 | `events=0`、`unmapped=0`、`rejects=0` |
+/// | −6 dB | `db_to_gain(-6.0)` | 尾部 RMS **减半**、逐位变了、`events=1`、`unmapped=0` |
+/// | 恒等 | `db_to_gain(0.0)` = 1.0 | 与基线**逐位相同**、`events=1`（打了但听不出） |
+/// | `NaN` | `f32::NAN` | 与基线**逐位相同**、`rejects=1`、`events=0`、`unmapped=0` |
+///
+/// 外加**归因唯一**两条（与 C10 同一条纪律）：母线限制器全程不动作、峰值低于阈值
+/// ⇒ RMS 的差只能来自通道条的输出级。
+#[test]
+fn c17_an_output_gain_db_event_lands_on_the_armed_strip() {
+    let mut fixture = tuned_project(&NOTES, MixSpec::volume(-12.0));
+    let track = fixture.track;
+    mount(&mut fixture.project, track, vec![effect(&ARMED_STRIP)]);
+    let project = fixture.project;
+
+    let baseline = land(&project, track, None);
+    let attenuated = land(&project, track, Some(db_to_gain(-6.0)));
+    let identity = land(&project, track, Some(db_to_gain(0.0)));
+    let nan = land(&project, track, Some(f32::NAN));
+
+    let (base_rms, base_peak) = tail_rms_peak(&baseline);
+    let (att_rms, att_peak) = tail_rms_peak(&attenuated);
+    println!(
+        "[S1/C17] 尾部 RMS: 基线={base_rms:.6} (峰值 {base_peak:.6}) / −6 dB={att_rms:.6} \
+         (峰值 {att_peak:.6}) / 比值={}",
+        if base_rms > 0.0 {
+            att_rms / base_rms
+        } else {
+            f64::NAN
+        }
+    );
+
+    // 归因唯一：限制器不动作 ⇒ 差只能来自输出级。
+    assert!(
+        base_peak < 0.9,
+        "基线峰值 {base_peak:.6} 必须低于限制器阈值 0.9"
+    );
+    assert_eq!(baseline.unmapped, 0, "基线不得有未映射事件");
+
+    // 1. 输出**真的**变了（方向可预期：衰减 ⇒ RMS 下降 ≈ 0.5 倍）。
+    assert_ne!(
+        attenuated.left, baseline.left,
+        "−6 dB 落点之后输出必须改变（逐位相同 ⇒ 事件被接到了不参与混音的地方）"
+    );
+    let ratio = att_rms / base_rms;
+    assert!(
+        (0.45..=0.55).contains(&ratio),
+        "RMS 比值必须 ≈ 0.5（−6 dB），实测 {ratio:.6}"
+    );
+
+    // 2. 读数各归位：打得到落点 ⇒ `events` +1 且 `param_unmapped_events` **不动**。
+    assert_eq!(attenuated.events, 1, "−6 dB 事件必须打到已武装的通道条");
+    assert_eq!(
+        attenuated.unmapped, 0,
+        "打得到落点就不许判未映射（单一归属）"
+    );
+    assert_eq!(attenuated.rejects, 0, "合法值不得被值规则拒绝");
+
+    // 3. 恒等值 ⇒ **逐位相同**（与"不发事件"同解），但仍然算"打了"。
+    assert_eq!(
+        identity.left, baseline.left,
+        "事件值 = 静态投影（0 dB ⇒ 1.0）必须与不发事件逐位相同"
+    );
+    assert_eq!(identity.events, 1, "恒等事件也真的落了地（覆盖度读数）");
+
+    // 4. 非法值 ⇒ **计数**拒绝、目标保持不变（⛔ 不钳成静音、⛔ 不静默丢弃）。
+    assert_eq!(nan.left, baseline.left, "NaN 事件不得改变任何一帧输出");
+    assert_eq!(nan.rejects, 1, "非有限值必须被计数拒绝");
+    assert_eq!(nan.events, 0, "被拒绝的值不算落点");
+    assert_eq!(
+        nan.unmapped, 0,
+        "值拒绝由通道条分支记账，⛔ 不落回 ParamTable"
+    );
+
+    // 5. 落点⛔ 不改写静态投影：`params.output_gain_db` 仍是器件投出来的那一份。
+    assert_eq!(baseline.static_output_gain_db, Some(0.0));
+    assert_eq!(
+        attenuated.static_output_gain_db,
+        Some(0.0),
+        "落点住在 `output_gain`（线性），⛔ 不写回 `params.output_gain_db`"
+    );
+}
+
+/// **C18**：**没有通道条来源**的轨上，`slot = 5` 的事件判 `Unmapped` 并计数
+/// （单一归属：未映射的裁决只有一处 ⇒ ⛔ 既不算落点、也不算值拒绝）。
+#[test]
+fn c18_a_track_without_an_armed_strip_reports_the_event_as_unmapped() {
+    let fixture = tuned_project(&NOTES, MixSpec::volume(-12.0));
+    let track = fixture.track;
+    // 不 mount ⇒ 这条轨没有任何效果器设备 ⇒ 实时侧没有通道条槽位。
+    let landing = land(&fixture.project, track, Some(db_to_gain(-6.0)));
+    println!(
+        "[S1/C18] 未武装: events={} rejects={} unmapped={}",
+        landing.events, landing.rejects, landing.unmapped
+    );
+    assert_eq!(landing.events, 0, "没有通道条 ⇒ 不可能有落点");
+    assert_eq!(landing.rejects, 0, "合法值不该被值规则拒绝");
+    assert_eq!(
+        landing.static_output_gain_db, None,
+        "对照读数：这条轨必须真的没有武装通道条（否则上面三条是空转）"
+    );
+    assert_eq!(
+        landing.unmapped, 1,
+        "打不到落点必须原样交回 `ParamTable` 判未映射并**计数**（不静默）"
     );
 }

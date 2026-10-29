@@ -2,7 +2,7 @@
 # 分类口径：float_bits ＝ 判据体内有 to_bits()；integer_count ＝ 只比整数/长度
 # class：hard ＝ 产线可达集无宿主 libm 超越函数；platform ＝ 有（只在本架构有意义）
 #        no_callee ＝ 不调用本 crate 产线函数
-# 合计 274 条：float_bits 71 ／ integer_count 203；其中 hard 65 ／ platform 3
+# 合计 275 条：float_bits 72 ／ integer_count 203；其中 hard 66 ／ platform 3
 # 列：kind | class | reach | host | file | test
 integer_count | no_callee | 0 | - | src/block.rs | accumulate_matches_scalar_reference
 integer_count | no_callee | 0 | - | src/block.rs | mismatched_lengths_are_truncated_instead_of_panicking
@@ -22,6 +22,7 @@ integer_count | no_callee | 0 | - | src/channel_strip.rs | stage_order_is_the_co
 integer_count | no_callee | 0 | - | src/channel_strip.rs | the_chain_matches_an_independently_built_reference_chain
 integer_count | no_callee | 0 | - | src/channel_strip.rs | the_eq_really_changes_the_level
 integer_count | no_callee | 0 | - | src/channel_strip.rs | the_filter_really_removes_the_high_component
+float_bits | hard | 13 | - | src/channel_strip.rs | the_narrow_output_gain_entry_is_bit_identical_to_the_static_projection
 integer_count | no_callee | 0 | - | src/channel_strip.rs | the_same_input_twice_is_bit_identical
 float_bits | hard | 7 | - | src/channel_strip.rs | the_two_channels_keep_their_own_input
 integer_count | no_callee | 0 | - | src/comb.rs | a_fixed_length_matches_a_textbook_ring_buffer_bit_for_bit
