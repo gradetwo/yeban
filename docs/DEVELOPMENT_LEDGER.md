@@ -14824,4 +14824,11 @@ CLI/GUI 的 `Display` 行（同文件 `:248-258`）逐字打五个字段 —— 
 **本地读数**：`cargo fmt --all --check` 通过；schema JSON `json.load` 通过；
 `check_feature_alignment.py` ok。⚠ 本机不编译 `yeban-mcp`（AGENTS.md §5.2）⇒ 判据第一次**执行**在 CI。
 
-**判决**：待读回（`d35acf14` 的 run；碰 `schemas/**` ⇒ 预期 `workspace 全量` 腿真跑）。
+**判决（2026-10-29 读回）**：`d35acf14` ⇒ run `40822794418` **success**（全腿完成）。
+碰 `schemas/**` ⇒ `rust (workspace 全量)` 腿**真跑**（`test result:` 行 **424** 条 /
+passed 合计 **6,812** / `test result: FAILED` **0** 条），新判据**逐名 ok**
+（05:40 行 9097：`test_import_midi_reports_empty_and_non_utf8_lyric_buckets ... ok`；
+全量腿对 `yeban-mcp` 只跑缺省档 ⇒ 出现 **1** 次，与 6ca89088 的 6,811 差 **1** 个新判据 ✓）。
+`windows`／`macos`／`deny`／`lockfile`／`checks`／`plan` 同批 success；`matrix` skipped（规则）。
+⚠ 读回期间本机出现一次 `api.github.com` 网络抖动（哨兵因此退出 1）—— 判决以重连后
+`gh run list` 的 completed 状态为准，⛔ 把"查不到"记成判决。
