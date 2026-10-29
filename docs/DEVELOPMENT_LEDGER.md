@@ -15052,3 +15052,43 @@ main 侧（整片段 op 片）报 出现 226→**229**／键站点 223→**226**
 **磁盘读数（单位：字节／GiB）**：`/tmp` 7.5 GiB → **7.3 GiB**（清掉 139 MiB 早期轮次的探针与日志），
 根分区仍 205G/235G 已用、剩 **24G**；`.worktrees/**/target` 现读 **0** 个（本机不用仓库内 target，
 S1 的本地构建走 `/tmp/yeban-s1` = **6.5 GiB**，⛔ 在 S1 判决读回前不删）。
+
+## 2026-10-29（夜）· 两条修批的判决 ＋ main 的第二轮继承红（人类授权我跨线修）
+
+**S1 修批 run `40866458295`（headSha `85fd27da`）＝ failure，逐腿现读**：
+`rust (yeban-app)` **success**（上一跑的红已修）／`rust (yeban-engine)` **success**／
+`rust (yeban-render)`、`rust (yeban-ui-mcp)`、`deny`、`lockfile`、`plan` success／
+`rust (yeban-dsp)` **failure** ＝ ⭐ **本片的真红**：r77 棘轮有**两处**数字，我只改了一处 ——
+重生成 `hard_assertion_table.txt`（274→275 行）却没同步 `tests/data/count_register.txt` 的
+`rows_hard_assertion_table|274`（手写行），判据
+`the_count_register_numbers_are_recomputed_from_the_same_predicate` 报 left 274 / right 275。
+⇒ 本机 `cargo test -p yeban-dsp --test r77_hard_assertion_audit` 复跑 **31 passed**，修批 `8a5c6e2c` 已推。
+⚠ 口径：**`R77_WRITE=1` 只重生成证据文件，不重生成"计数总表"里的手写行** ⇒ 加一条硬判据要改**两个**文件。
+`rust (yeban-mcp)` / `macos` / `windows` 的 failure 全是下面那两条继承红（见下），⛔ 不属本片。
+
+**十工具修批 run `40867836378`（headSha `5d1fe7fd`）＝ failure**：`checks` **success**（main 修好后第一条真判决）／
+`plan`／`lockfile`／`deny` success／`rust (workspace 全量)`、`macos`、`windows` failure。
+⭐ **本批的 230 读数尚未获判**：承判腿 fail-fast 停在 `tools_e2e.rs`（字母序在 `fault_vocabulary.rs` **之前**），
+现读数日志里 `Running tests/fault_vocabulary.rs` = **0** 行 ⇒ 按 §6.3.4 这条**既不是红也不是绿**，只登记 pending。
+
+**main 的第二轮继承红（两处，逐字读数取自 main 自己的 run `40857805920` = completed/failure）**：
+① `crates/yeban-mcp/tests/tools_e2e.rs:1479` `no_tool_answers_with_a_blanket_not_implemented`
+——"每个注册的工具都要有用例" **left 25 / right 26** ⇒ `fe9f47ff` 注册了 `yeban_list_instruments` 却没加 e2e 用例；
+② `crates/yeban-mcp/tests/trap_179.rs:483` `the_note_level_predicate_is_exactly_nine`
+——实际 13 项 vs 冻结 9 项（`domain/notes.rs:1404` 已含 `quantizeClip`/`invertClip`/`retrogradeClip`/`humanizeClip`）
+⇒ **生产侧改了、判据侧没跟**。这两条红 block 掉**所有**线的 land（merge run 必红），
+经人类裁决（本轮问过一次，答"我来修这两处"）我动手跨线修，写出 `589530d3`；
+⭐ **推送被拒 —— Devin 线在同一窗口已经把两条都修了**（`84404b5c` 补 e2e 用例、
+`60510746` 更新 trap_179 冻结清单）⇒ 我**丢掉自己那一版**（`git rebase --onto origin/main 589530d3`，
+⛔ 双份留档）。
+⭐ **而且他们那版是对的、我那版会红**：`ENVELOPE_CLIP_KINDS`（`domain/notes.rs:1365-1380`）里
+除九个音符形态外还有 `duplicateClip` 与 `removeClip` 两个"读顶层 `clipId` 却不读音符"的 kind，
+⇒ 同一条判据里 `non_note_readers` 必须是 `["duplicateClip", "removeClip"]`；
+我只把清单从九推到十三、**没动这一处断言**（照抄会 left 2 / right 1）。
+⇒ ⭐ **口径（第 N 次证明"先 grep 交付再下结论"）**：跨线"顺手修红"之前先 `git fetch` 看远端 tip ——
+本仓的并行写者会同时盯同一条红；真正决定对错的不是症状（清单短了）而是**同一判据里的另一条断言**
+（包含关系），只看失败信息那两行会写出一个仍红的修复。
+⚠ 修的是**判据侧**：`duplicateClip` 归"非音符"的依据是 `domain/notes.rs:12236` 生产侧判据自己的注释
+（"克隆 `ClipContent` 不读音符"），⛔ 我另立口径。
+⛔ 本机不可编 `yeban-mcp`（symphonia）⇒ 本地只做到 `cargo fmt --check -p yeban-mcp` ＋ 20 条守卫 ＋
+`check_feature_alignment.py` 绿，判决必须读回 CI（`84404b5c`/`60510746` 的 run 待读回）。
