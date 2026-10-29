@@ -1999,3 +1999,36 @@ python3 scripts/guards/policy_check.py && bash scripts/gates/run-gates.sh light
 | `/var/tmp/arch` | 747M | 用途未证 |
 | `~/.cache` | **19G** | `paru` 8.4G（AUR 构建缓存）／`uv` 3.6G／`ms-playwright` 1.6G／`zig` 1.5G／`camoufox` 1.4G／`pnpm` 1.1G —— 全⛔ 属本项目 |
 | `/home/crow/work/qoder/dist` ＋ `/home/crow/work/qoder/out` | 5.8G ＋ 3.9G | `out/` 里是 `build_*.log` 与 `build_zip_10{AU,AV}.log` 这类**构建日志与产物**（对拍轮次的输出），删前需人类确认对账是否还要引用 |
+
+### ⭐ 2026-10-29 09:17 追加（广播面两线在飞 ＋ S1 的**本机可验**实测读数）
+
+> ⭐ **两线状态（接手者第一件事 = 读①的判决，再决定推②）**：
+> ① `line/mcp-apply-propose-schemas`（七工具面，tip `0fc91942`）⇒ **run `40844960550` pending**
+> （09:15 现读：承判腿 `rust (yeban-mcp)` 仍 `queued`，`windows/macos` in_progress）。
+> 判绿后的链条：`scripts/dev/worktree.sh land mcp-apply-propose-schemas` → 读回 land/merge run
+> → 拆树 → 才推②。
+> ② `line/mcp-broadcast-nine-tools`（十工具面，tip **`dcda0969`** 已提交**未推送**，base ①）⇒
+> ⛔ 在①判绿前推送（叠加线的 base 未落地＝把未验证的形状再叠一层）。
+> ⭐ **判据名已换代**：`seven_main_tools_…` → **`ten_broadcast_tools_publish_an_output_schema_their_real_responses_satisfy`**
+> ⇒ ②的日志点名只能用新名（用旧名 grep 命中 0 是**改名**，不是**没跑**）。
+> ②还带一条**校验器行为变更**：`const`/`enum` 现在**真的核**（此前只声明）⇒ 任何"schema 与响应互相
+> 矛盾"的旧账会在这条腿上变红，那是**修对了**，⛔ 把红判据改回装饰性声明。
+
+> ⭐ **S1（设备参数 automation 的实时落点）本机可验性实测（2026-10-29 09:16）**：
+> `CARGO_TARGET_DIR=/tmp/yeban-s1 bash scripts/dev/cargo-local.sh check -p yeban-dsp -p yeban-engine
+> -p yeban-render --no-default-features` ⇒ **exit 0 / 27.38 s / 缓存 314 MB**（真编了三行
+> `Checking yeban-dsp/yeban-engine/yeban-render`，⛔ 不是跳过）。
+> ⇒ **引擎半（下移 `DeviceParamField` 落点表 ＋ RT 槽位）可在本机迭代**，只有 `yeban-app`
+> 的 `publish_automation` 那一块与 `cpal` 默认特性交给 CI。这推翻了我先前"S1 全程只能靠 CI"的假设。
+> ⭐ **落点表现读在哪**（2026-10-29 09:18 现读 `crates/yeban-render/src/inserts.rs`）：
+> `pub enum DeviceParamField` 在 **:1179**（`Strip(StripField) | Reverb(ReverbField) |
+> Convolution(ConvolutionField)`），它的 `impl` 块 **:1199** 里只有 **四个**方法
+> ——`from_name` **:1202**（"哪个名字有落点"的**唯一**判定处）／`canonical_name` **:1211**／
+> `family` **:1221**／`sanitise` **:1231**；⚠ `store`／`read` **不在**这一层，它们在**三个族枚举**上
+> （用法：`DeviceParamField::Strip(field) => field.read(...)`，见 `automation.rs:1138-1143`）。
+> 离线施加在 `inserts.rs:1739-1763`（`field.store → set_params`，**只在块边界**）；
+> 实时侧同名表在 `crates/yeban-engine/src/insert.rs:921/1083/657` 的 `apply(name, value)`（**投影期**用，
+> 不在块边界）⇒ 两份表并存是 drift 风险，按 Round 261/273 手法把落点表**下移到 `yeban-dsp`**
+> 是 S1 的正解（`yeban-render` 依赖 `yeban-engine`，⛔ 反向依赖会成环）。
+> ⭐ handover §下一步选项 ①（"S1 ＝ 只接 `output_gain_db` 一个参数，5 文件 ≈150–200 行、与
+> `TrackVolume` 同形状"）与上述一致 ⇒ 选它做第一片，⛔ 一次做完 30 个字段。

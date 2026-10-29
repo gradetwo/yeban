@@ -14896,3 +14896,48 @@ run 级还在 queued 时 `checks/deny/plan/lockfile/全量/macos` 已 completed�
 纯文档批的读回批仍是纯文档批，递归在自引用处闭合：**此后空绿读回不再单独入账**，
 只随下一个实质批合并记账；§0.6.0i 收盘状态不变（无任何实质未读判决）。
 另：本轮按目标例行清理 `target/debug`（3.3 GB，可再生构建缓存），`/home` 空闲 27 G⇒30 G。
+
+## 2026-10-29（深夜）· 六工具面判决读回 ＋ 广播面两线并行 ＋ 判据名四代同读法
+
+**六工具面批 `9913e84a` 判决读回（2026-10-29 09:16 现读 `gh run view 40839813747 --log --job=123342540646`）**：
+run `40839813747` **success**。承判腿 `rust (yeban-mcp)` **真跑**（499 s）——单位：**数日志里的行**：
+`test result:` **125** 行且全部 `ok`（`test result: FAILED` **0** 行）、passed 合计 **2,384**、
+`: FAILED` **0** 行。点名判据各 **ok×2**（默认与"合并特性"两条特性路径各一次）：
+`six_main_tools_publish_an_output_schema_their_real_responses_satisfy`、
+`every_covered_tool_is_registered_and_vice_versa`、`every_schema_is_an_object_shape_with_required_fields`。
+`windows` 2,217 s / `macos` 928 s 亦真跑 success；`rust (workspace 全量)` **skipped** ＝ 本批未碰
+`schemas/**` 的**正确规划**（⛔ 不是空绿缺陷 —— 空绿指"整条腿 0 s 且无 `test result:` 行"，本腿有 125 行）。
+
+**同批并入的两本台账批空绿读回**（按 2026-10-29 的"空绿不单独入账"口径，只在此合并记账）：
+`b0ca4bb0` ⇒ run `40838506753`、`d0510aca` ⇒ run `40838694944` —— 两者均 **success·空绿**
+（真跑仅 `plan/deny/checks/lockfile`，rust 腿全 skipped）⇒ 只作记录、不构成任何代码判决。
+
+**广播面两条在飞线（本轮状态，判决 pending）**：
+① `line/mcp-apply-propose-schemas`（七工具面：`1469c01a` 扩面＋`edit_notes` 的 `const` 缺陷修复、
+`0fc91942` 计数措辞去数字）⇒ 首推后 run `40844960550`，09:15 现读：`plan/lockfile` success、
+`windows/macos` in_progress、**承判腿 `rust (yeban-mcp)` 仍 queued** ⇒ **pending**，未读回前⛔ 不 land。
+② 叠在①上的十工具面批 `dcda0969`（分支 `line/mcp-broadcast-nine-tools`，**本地已提交、未推送**）：
+新增 `yeban_reject_proposal` / `yeban_redo` / `yeban_edit_automation` 三份 `outputSchema`，
+`undo`/`redo` 收成同一构造器 `steps_receipt`（实测 `apply_redo` 与 `apply_undo` 九个同名同序键），
+**校验器补上 `const` 与 `enum` 的真核对**（此前两者只声明不核对 ⇒ `edit_notes` 那句
+`pendingMerge: const true` 与自己的真实响应互相矛盾却全绿，反面判据加注入④⑤），
+并改正本轮自己写错的一处口径：草稿说 `applied`/`commitCount` "真做才有"，实测补插点在唯一成功出口
+`domain/automation.rs:843-847` 的 `if` 块**之外** ⇒ 预览与真做**都带** ⇒ 两键进 `required`、
+预览改跑 `validate_complete`，两形状的真正差别钉在 `written: null`；
+`yeban_reject_proposal` 的短形状**必须不过** `validate_complete`（红在 `$.archived`）。
+
+⭐ **判据名四代同读法（读回前必须先认批）**：`five_main_tools_…`（#176 首批五工具）→
+`six_main_tools_…`（`9913e84a`）→ `seven_main_tools_…`（`1469c01a`）→
+`ten_broadcast_tools_publish_an_output_schema_their_real_responses_satisfy`（`dcda0969` 起）。
+⇒ ⛔ 拿旧名在新日志里 grep，命中 0 就写"判据缺失"——那是**名字换了**，不是**没跑**（§6.3.4 的同类错）。
+
+**§0.6.0i 第三条伪小票闭合确认**：`setParam` 与 hint 自相矛盾那条（handover §下一步选项 ③）已由
+`#264`/R991–R993 链闭合（hint 改指 `yeban_edit_automation` 的 `DeviceParam` 目标 ＋ 全部 93 条 hint
+扫净 ＋ 2 条 reason 名改正），本轮按 §6.4「先 grep 交付再下结论」现读 `handover-latest.md:810/951` 两处
+逐字确认 ✓，⛔ 不重开。
+
+**候选纪律一条（⛔ 未生效 —— 需人类签字，本轮不代签、不改 `AGENTS.md`）**：
+`gh run view … --log`（含 `--job=`）在 run 未 finalize 时**取不到日志**（实测报
+"run 40839813747 is still in progress; logs will be available when it is complete"，写出的文件 0 字节）。
+⇒ 判"日志里有没有某判据"之前，必须先看 **run 是否 completed**；run 未终态时的 0 字节日志⛔ 不得读成
+"判据没跑"，只能读成"日志尚不可得"。 interim 证据改用 job 级 `status/conclusion/startedAt/completedAt`。
