@@ -916,10 +916,11 @@ fn test_export_tool_bytes_reimported_through_the_import_tool() {
         let ClipContent::Midi { notes } = &mut entry.content else {
             unreachable!("刚按 MIDI 变体筛过");
         };
-        notes.push(MidiNote::new(EntityId::new(), 0, 60, 480));
+        let first = MidiNote::new(EntityId::new(), 0, 60, 480);
+        notes.insert(first.id, first);
         let mut second = MidiNote::new(EntityId::new(), 960, 67, 240);
         second.velocity = 64;
-        notes.push(second);
+        notes.insert(second.id, second);
     }
     let mut exporter = dispatcher_with_project(source);
 
@@ -969,10 +970,10 @@ fn test_export_tool_bytes_reimported_through_the_import_tool() {
             .clip_pool
             .values()
             .filter_map(|entry| match &entry.content {
-                ClipContent::Midi { notes } => Some(notes.as_slice()),
+                ClipContent::Midi { notes } => Some(notes),
                 ClipContent::Audio { .. } => None,
             })
-            .flatten()
+            .flat_map(|notes| notes.values())
             .map(|note| {
                 (
                     note.start_tick,
