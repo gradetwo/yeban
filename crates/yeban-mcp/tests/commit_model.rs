@@ -12,7 +12,7 @@
 //! | 2 | `direct` / `none` 两类回执里⛔ 不得出现 `mergeTool`（把"要记的规矩"变成断言）；`list_proposals` 的**说明性**同名字段是实测到的例外，另行钉住 | 键集合扩张时把 merge 语义漏进非提案类工具 |
 //! | 3 | 取值**恰好四条**（加第五条必须故意改这里，与 `tools::TOOL_COUNT` 同一口径） | 悄悄加态 ⇒ 老调用方读到没见过的值 |
 //! | 4 | `dryRun` 预览**不带**这个键（D2：⛔ 不在 `dry_run_result` 里另算一套） | 预览与真实回执各说一套 |
-//! | 5 | 五个已声明 `outputSchema` 的工具把 `commitModel` 同时写进 `properties` 与 `required`（D3 的契约义务） | 声明面落后于实现面 = schema 不再是"从真实响应抽的" |
+//! | 5 | `COVERED_TOOLS` 里每个已声明 `outputSchema` 的工具把 `commitModel` 同时写进 `properties` 与 `required`（D3 的契约义务） | 声明面落后于实现面 = schema 不再是"从真实响应抽的" |
 //!
 //! 全部落在 `std::env::temp_dir()` 下的唯一子目录，[`Scratch`] 的 `Drop` 负责删除 —— ⛔ 不污染仓库。
 
