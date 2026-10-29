@@ -2206,9 +2206,22 @@ helper `ops.rs:3043` `doc.insert_track(...)`／局部绑定后赋值 `SetMacro`�
 **待裁清单（本批只登记，⛔ 我未发明答案）**：上述五字段**读得到、写不了**（读面白名单 `crates/yeban-mcp/src/domain/view.rs:36` 的 `SELECTORS: [&str; 28]` 现读含
 `rng_seed`／`audio_config`／`metadata`／`master_bus_track_id`／`routing_graph`／`tracks`），
 是否要做成可改能力，各自一条
-`ADR`（`Proposed` 交人类）—— `folder_id`＝轨道文件夹、`rng_seed`＝工程种子可改、
+`ADR`（`Proposed` 交人类）—— `folder_id`＝轨道文件夹（⚠ **这一项下方改正后移出待裁**）、
+`rng_seed`＝工程种子可改、
 `audio_config`＝采样率/块长/位深/pan law 可改（很可能是产品边界）、
 `metadata.description`/`tags`＝曲库元数据可编辑、`solo_safe`＝独奏安全标志可改。
+⭐ **上一句"这五项从未被裁过"是我自己的过generalization，现读逐字段 `grep` 后改正**（单位＝命中文件名）：
+- `audio_config` **零命中**、`rng_seed` **零命中** ⇒ 这两项的"不可改"确实从未进过任何裁决，**是真待裁**；
+- `metadata` 唯一命中是 `ADR-0001:538` 的 `cargo metadata`（**工具名，与工程 `metadata` 字段无关**）⇒ 假命中，等同零；
+- `solo_safe` 命中 `ADR-0030:10,107-108`，但那讲的是**渲染可读性语义**
+  （`track_is_audible = !mute && (!any_solo || solo || solo_safe)`），⛔ 不是"能不能改"；
+- `folder_id` 命中 **两处且都是真裁决**：`ADR-0004`（语义裁为"仅界面折叠视图"，并点名
+  `validate()` 只查存在性 ⇒ **自指／环／指向主总线今天全部通过**，见其 `:65-69`）与
+  `ADR-0023:79-82`（**"工具面没有能设置 `folder_id` 的形态"已明文登记为"诚实的边界"第 1 条，
+  并写明"不做静默改写"**）。⇒ `folder_id` **不是待裁，是已登记待补**：补什么已由 ADR 划界，
+  缺的是实现（含 `ADR-0004` 点名未修的环/自指校验）。
+⭐ 所以待裁的严格名单是 **`audio_config`／`rng_seed`／`metadata.description`+`tags`／`solo_safe` 四项**，
+`folder_id` 从待裁移到"已知边界待实现"。⛔ 教训回到 §6.3：**"零命中"要逐词现读，`grep -l` 一次不够**。
 ⭐ **下一片⛔ 别做「选择器 ↔ 模型」对账**：读面这条已有判据 `every_selector_resolves_against_a_filled_project`
 在钉，且 `project_view` 是整档序列化后按根键挑选（`view.rs:229`）⇒ 读面本来就全；
 真正没被机械化的只有**写面**（本片已钉零触点那一半），再往前一步是**语义差分**
