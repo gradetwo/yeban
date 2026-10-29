@@ -79,7 +79,7 @@ const DIALOG_IDS: [(&str, ElementKind); 9] = [
 ];
 
 /// 回执字段名闭集（只收本判据可能遇到的字段；`clipping_note` 在 `digest` 之后）。
-const RECEIPT_KEYS: [&str; 14] = [
+const RECEIPT_KEYS: [&str; 13] = [
     "action",
     "outcome",
     "error",
