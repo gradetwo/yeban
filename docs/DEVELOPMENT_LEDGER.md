@@ -15296,3 +15296,35 @@ CI 跑 **`40914097921`**（`rust (yeban-model)` 等）⇒ **pending，读回前�
 `b907e371` 自称修的是"回执字段闭集 **13** 项"⇒ 现跑 **`40911008998`** in_progress。
 登记它只为**别让判决孤儿化**（谁派的谁读回）；⛔ 一文件一写者，本会话不 land、不改该线。
 
+**S3 判决读回 ＋ 落地（`40911122798` = success，逐腿现读）**：
+
+| 读数（单位：个／条） | 现读值 |
+| :--- | :--- |
+| 作业结论 | 全 **14** 条 rust/平台腿 success；`rust (workspace 全量)` = **skipped**（⛔ 不是空绿冒充：本批只碰 `yeban-model` 单 crate，规划腿返回 `workspace_wide:false` ⇒ 跳过是正确形态） |
+| `rust (yeban-model)` 日志 | `Running` 行 **17**（含 2 个 example 与 unittests），结果行 **18** 全部 **0 failed** |
+| 新二进制 | `Running tests/field_write_reachability.rs` ⇒ `test result: ok. 4 passed; 0 failed` |
+| 四条判据逐名 | `no_block_comments_in_production_region`／`the_zero_touch_fields_are_still_untouched_and_the_list_is_not_degenerate`／`the_probe_fields_have_sites_so_the_scanner_is_alive`／`the_probe_site_counts_do_not_silently_drop` —— **逐名 `ok`**（照 §6.3 第 4 条：先数 `Running` 再点名，⛔ 不从"整体 success"倒推） |
+
+⚠ **一处本轮才踩到的日志坑**：GH 日志里 cargo 的 `Running` 与 `tests/…` 之间夹着 ANSI 序列
+（`^[[1m^[[92m     Running^[[0m tests/…`），所以 `grep -c "Running tests/"` 在**未剥色**的原文上得 **0**
+——那⛔ 不是"二进制没跑"，是**针落在了被转义序列隔断的字面串上**。⇒ 口径：**判日志先剥 ANSI 再数**，
+并把"计数为 0"当**可疑**处理（先去原文看那一行长什么样），别当证据。
+
+落地：`worktree.sh land s3-field-reachability` ⇒ merge **`be8e1492`**（`--no-ff`，
+`field_write_reachability.rs` **+203 行**单文件），同批把本轮七个文档提交一起推 main
+⇒ merge run **`40917833876`**（⚠ 读回前本片"落地闭合"未成立；按候选纪律③，merge run 是整线判决的合法来源）。
+
+**门级普查：`check_docs_links.py` 的覆盖面本轮逐处确认（原队列项可关闭）**：
+① **覆盖面**（单位：个 markdown 文件）：门扫 **167**，仓库本体（排除 `.git`／`.worktrees`／`target`／
+`node_modules`）实测也是 **167** ⇒ `SKIP_DIRS` 排除的**全是副本与构建目录**，没有排除任何仓库本体文档。
+（`find . -name '*.md'` 的 **1762** 里 **1595** 个在 `.worktrees/` —— 三个工作树各带一份全文档副本。）
+② **已有的三道防线现读确认**：`files == 0` 拒绝、`checked == 0` 拒绝、正对照"扫描集里必须有 `README.md`"
+（`check_docs_links.py:171-200`，注释里写明这两条是第 41／42 条教训换来的）。
+③ **本轮补做缺失的那一步——正对照的"真红"实验**：临时放一个 `docs/__tmp_gate_probe__.md`，内含两条相对链接 ⇒
+门 **EXIT=1** 并逐条点名行号；删除后 **EXIT=0**。⭐ 顺带纠正我自己的预期：我原以为其中一条是"好链"
+（`[好链](docs/CI_CD.md)`），**实测它也报不存在** —— 因为相对链接以**所在文件的目录**为基准
+（`docs/__tmp_gate_probe__.md` 里的 `docs/CI_CD.md` 解析成 `docs/docs/CI_CD.md`）。⇒ 门是对的，
+**我的针写错了**；这同时证明门的相对解析不是"只要仓库里有同名文件就算过"。
+⛔ 未改脚本：三条防线齐、覆盖面已确认，没有可修的缺口。
+
+
