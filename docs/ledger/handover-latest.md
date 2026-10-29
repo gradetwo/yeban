@@ -192,6 +192,12 @@
 > `40828133545`/`40828583265` **success**（承判腿真跑 125 行／2,384／FAILED 0，三判据逐名 ok ⇒
 > **2,880 全等钉被 CI 实测证实**）；台账批 `40828894146` 与 `9c329389` 的 run `40830178039`
 > **success·空绿**（只作记录）。⇒ 本轴**无 pending**，读数细目见台账「2026-10-29（晚）」节末尾四段。
+> ⭐ **第三条伪缺口登记（2026-10-29，防下一会话重走）**：「19 个 `PlanOptions` 键是否存在
+> **解析后被静默忽略**（不生效）」—— 现读 `grep -rw` 逐键计数：`src` 非声明引用最少 4（
+> `voiceSubdivisions`/`melodyMaxLeap`/`harmonyMaxVoiceJump`/`melodySeed`），`tests` 最少 15（`drumBackbeat`），**无一为零**；
+> 且该失败模式已被 CI 机械守卫覆盖（现读实名：`documented_arg_coverage.rs:116`
+> `every_documented_optional_argument_is_given_a_non_default_value_somewhere` —— 要求每个文档化可选键
+> 在测试里被喂过**非缺省值**，随每票全量腿真跑）。⇒ ⛔ 再手工重数全表；只在**新键出现**且守卫未同步时按同法补一次。
 
 ### 0.6.0 ⚠ 环境已经换了（第一条就要说）
 
