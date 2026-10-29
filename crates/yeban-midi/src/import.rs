@@ -28,16 +28,18 @@
 //!
 //! 1. **音符映射消费** [`ParsedMidi::notes`] / [`ParsedMidi::lyrics`] / [`ParsedMidi::ppq`]；
 //!    ⭐ `#342` 起**另有四类元数据有落点**：`parsed.tempos`（只取
-//!    `microseconds_per_quarter` / `numerator` 字段）· `parsed.track_names` ·
-//!    `parsed.markers` · `parsed.end_tick`。其余读数仍只读 `format` / `tracks` /
-//!    `aux_events`（⛔ 不参与映射）。
-//! 2. **tempo / 拍号只在"目标工程没有内容"时采纳**：`project.bpm` 与
-//!    `project.time_signature` 都是**单标量**，而且前者是**全局**的 —— 改它会重新
-//!    计时整首曲子。所以两个条件同时成立才写：① 文件只有**唯一条生效值且在 tick 0**；
-//!    ② [`import_target_is_empty`]（无段落 / 无 MIDI 音符 / 无音频片段 / 无自动化点；
-//!    落点片段与摆放**不算内容**）。否则整类报 `dropped`，原因里**点名**文件的值与
-//!    tick，并说明"工程已有内容，因此没有覆盖全局值"。map（多条、或首条不在 0）同样
-//!    整类报 `dropped` 并列出每个值。
+//!    `microseconds_per_quarter` / `numerator` / `denominator_pow2` 字段）·
+//!    `parsed.track_names` · `parsed.markers` · `parsed.end_tick`。其余读数仍只读
+//!    `format` / `tracks` / `aux_events`（⛔ 不参与映射）。
+//! 2. **tempo / 拍号只在"目标工程没有内容"时采纳**（⭐ `#342` 门槛；⭐ `#349` 起落点
+//!    扩到 map）：tick 0 的生效值写标量 `project.bpm` / `project.time_signature`，
+//!    tick > 0 的写 `project.tempo_map` / `project.time_signature_map`（`Op::SetTempoPoint`
+//!    / `Op::SetTimeSignaturePoint`）；同一 tick 后出现者胜出，首条在 tick > 0 时 tick 0
+//!    记 SMF 隐含的 120 BPM / 4/4。⛔ 门槛**只有** [`import_target_is_empty`]
+//!    （无段落 / 无 MIDI 音符 / 无音频片段 / 无自动化点；落点片段与摆放**不算内容**）——
+//!    因为改标量会**重新计时**工程已有内容。目标工程**有**内容时整类不写工程、报
+//!    `dropped`，原因里**点名**文件的每个值与 tick 并说明"工程已有内容"；mpqn=0 与
+//!    超出模型范围的 BPM / 拍号同样整类报丢。
 //!    音符的**绝对 tick** 仍按 `ppq` 换算后**原样**落到工程上，⛔ 不做与速度有关的换算。
 //! 3. **不量化**：[`scale_ticks`] 是**纯比例**换算（`tick × MODEL_PPQ ÷ ppq`），
 //!    ⛔ 不吸附到工程网格；`ppq` 除不尽时按整数除法**截断**。
@@ -50,7 +52,8 @@
 //!    ⛔ 认"正在发声"的音符。空 `FF 05` 与非 UTF-8 分别计入 `empty` / `non_utf8`。
 //! 6. **支持的输入范围**：⛔ 本文件不复述"支持哪些格式" —— 那是
 //!    [`crate::midi::parse_smf`] 及其错误变体的事（⭐ 指路，⛔ 不手抄）。
-//! 7. **四类元数据有落点**（⭐ `#342`，⛔ 全是"无歧义才落"）：
+//! 7. **元数据有落点**（⭐ `#342` 起四类、⭐ 今天共十类 —— 权威清单见
+//!    [`STORABLE_KINDS`]，⛔ 不在此手抄；⛔ 全是"无歧义才落"）：
 //!    - `FF 06` marker → [`yeban_model::SectionV3`]：相邻 marker 之间一个 tick 区间，
 //!      最后一个到 [`ParsedMidi::end_tick`]。同一 tick 的后一条顶掉前一条（被顶掉的
 //!      逐条计入 `dropped`）；末尾与 `end_tick` 重合（**零长度**）落不下去、也计入
@@ -61,9 +64,11 @@
 //!    - `FF 03` 轨名 → 目标音轨的 `TrackV3::name`：去重后**恰一个**非空、严格 UTF-8
 //!      名字才落（多个 `MTrk` 同名是同一个名字）；多个不同名字 / 空名 / 非 UTF-8
 //!      一律不落（⛔ 挑一个）。
-//!    - `FF 51` tempo → `project.bpm`（单标量）：**唯一条生效 tempo 且 tick 0** 且目标
-//!      工程没有内容时才落；否则一字不动并报出"会采纳的值"。
-//!    - `FF 58` 拍号 → `project.time_signature`（单标量）：同一条内容门槛。
+//!    - `FF 51` tempo → `project.bpm`（tick 0 的生效值）＋ `project.tempo_map`
+//!      （tick > 0 的生效值）：**同样只在目标工程没有内容时**采纳，否则一字不动并把
+//!      每个值与 tick 作为**整类损失**报出（见第 2 条）。
+//!    - `FF 58` 拍号 → `project.time_signature`（tick 0）＋
+//!      `project.time_signature_map`（tick > 0）：同一条内容门槛与同一套报损口径。
 //!    - `FF 02` 版权 → `project.author`（⭐ [ARCH-EXT-002]）：目标工程**无内容**且
 //!      `author` 为空、conductor 轨（第 0 轨，轨上无事件时看全部轨）上**恰一个**有效
 //!      文本才落；采纳的那条记入 attached（不进 dropped），其余情形逐条 dropped。

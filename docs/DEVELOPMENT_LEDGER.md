@@ -14524,3 +14524,36 @@ steps 14/14/18/18 与耗时均非 0）。同日 docs 提交 `c3469314` 的 `4078
 本段与上一节 `ADR-0048` 的文档提交 `0355816e` → run **`40793241935` = success**：plan／checks(15)／
 deny／lockfile 四作业真跑，四条代码腿全 **skipped steps=0** ⇒ **空绿**，只作推送留痕。
 本段审计结论的文档提交 `b1245093` → run **`40793474391` = success**，同为四腿 skipped 的**空绿**。
+
+### 文档对账：MIDI 导入的 tempo / 拍号口径（2026-10-29，⭐ 只改注释，0 行为改动）
+
+**触发**：接手时核 handover §10.7 D2（"tempo map 不导入／工程速度模型是单一标量／没有判据钉住"），
+现读代码发现三句前提**都不成立**（`#349`／`c34679a5` 之后的现状）：
+
+1. `yeban-model` 已有 `project.tempo_map` / `time_signature_map`（`project.rs:1649` 起），
+   写入走 `Op::SetTempoPoint`（`ops.rs:3183`）；tick 0 不许进 map（`project.rs:2276` 判 `TempoMapZeroTick`）。
+2. `yeban-midi::import::adopt_tempo`（:741）/ `adopt_time_signature`（:917）**确实读 `parsed.tempos`**：
+   目标工程**没有内容**（`import_target_is_empty` :662）时 tick 0 落标量、tick > 0 落 map；
+   **有**内容时整类 `dropped` 并点名每个值与 tick。
+3. **判据已在**：`yeban-midi/src/import.rs` 的 `multi_tempo_and_meter_changes_are_adopted_into_maps_with_zero_loss`
+   （:3886）与 `two_tempo_and_meter_changes_are_loud_losses_that_name_every_value`（:3800）；
+   `yeban-app/src/import_midi.rs` 的 `a_single_tick_zero_tempo_is_adopted_into_the_project_bpm`（:328）、
+   `a_tempo_map_does_not_touch_the_project_bpm_and_names_every_value`（:386，非空工程、拒收理由是内容门槛）。
+
+**本批改动（全部是注释/文档，⛔ 无策略变更、⛔ 无判据改名）**：
+
+| 位置 | 陈旧表述 | 改为 |
+| :--- | :--- | :--- |
+| `yeban-midi/src/import.rs` 模块头第 1 条 | `parsed.tempos` 只取 `microseconds_per_quarter` / `numerator` | 补 `denominator_pow2`（`adopt_time_signature` 实际读它） |
+| 同文件第 2 条 | "`bpm`/拍号是单标量、只有唯一条 tick 0 才写、map 整类 dropped" | tick 0 → 标量、tick > 0 → map；唯一门槛是 `import_target_is_empty`；非空 ⇒ 整类响亮 dropped |
+| 同文件第 7 条标题 | "四类元数据有落点"（与同节第 8 条"其余 14 类"自相矛盾：24−4≠14） | "`#342` 起四类、今天共十类"＋指向 `STORABLE_KINDS`（⛔ 手抄） |
+| 同文件第 7 条 `FF 51`/`FF 58` 两行 | "→ `project.bpm`（单标量）：唯一条 tick 0" | tick 0 → 标量＋tick > 0 → map；同一内容门槛 |
+| `yeban-app/src/import_midi.rs:79` | "无落点 20 类／四类有落点" | "无落点 14 类／十类有落点" |
+| 同文件 :383 判据注释 | "两段 tempo 的 map **没有家**" | 拒收理由是**内容门槛**（`filled_project`）；空工程会落 map，指向同名判据 |
+| `docs/ledger/handover-latest.md` §10.7 D2 | 三句前提 | 按台账规则 278 **保留原文**、追加"修订（2026-10-29）"段 |
+
+⚠ **不改**：D2 的**结论方向**（tempo / 拍号只经内容门槛采纳、⛔ 不静默覆盖已有时序）—— 这是现行明示口径。
+⚠ 未动历史快照（handover §0.5.8／:1442／:1455、`phase-status.md` 的 R467／R502 段）：它们是**当时**的读数，
+按台账纪律 ⛔ 重写历史。
+
+**判决**：待读回（本次提交的 run）。

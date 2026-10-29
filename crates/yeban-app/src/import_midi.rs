@@ -76,9 +76,9 @@ impl MidiImportReport {
     /// - **两个按音符计的属性**：`note-channel-*` / `note-off-velocity-*`
     ///   （`read == dropped == notes`，今天）。
     ///
-    /// ⚠ `dropped == read` 今天只对**无落点**的 20 类成立；四类有落点的类别
-    /// （`#342`）`dropped` 可能小于 `read`，且 `dropped > 0` 时会多一段
-    /// `<kind>-reason=<精确原因>`。⛔ 不许删判据。
+    /// ⚠ `dropped == read` 今天只对**无落点**的 14 类成立；有落点的十类（`#342`
+    /// 起四类、后续 ADR 扩到十类）`dropped` 可能小于 `read`，且 `dropped > 0` 时
+    /// 会多一段 `<kind>-reason=<精确原因>`。⛔ 不许删判据。
     #[must_use]
     pub fn summary(&self) -> String {
         let origin = match self.origin {
@@ -380,8 +380,10 @@ mod metadata_adoption_tests {
         );
     }
 
-    /// ⭐ `#342`：**两段 tempo** 的 map 没有家 ⇒ `project.bpm` **一字不变**，整类
-    /// `dropped` 且原因**点名两个值**（⛔ 不许静默挑一个）。
+    /// ⭐ `#342`：工程**已有内容**（`filled_project`）⇒ 内容门槛拒绝 tempo 采纳：
+    /// `project.bpm` **一字不变**，整类 `dropped` 且原因**点名两个值**（⛔ 不许静默
+    /// 挑一个）。⚠ `#349` 起 map 本身有落点（空工程会落进 `project.tempo_map`，
+    /// 见 `yeban_midi::import` 的同名判据）；这里拒收的理由是**内容门槛**，⛔ 不是"没有家"。
     #[test]
     fn a_tempo_map_does_not_touch_the_project_bpm_and_names_every_value() {
         // 240 BPM @0，120 BPM @960（两个值都与工程的 90 不同）。

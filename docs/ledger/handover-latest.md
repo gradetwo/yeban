@@ -1589,6 +1589,28 @@ python3 scripts/guards/policy_check.py && bash scripts/gates/run-gates.sh light
 已派单补上（主判据＋**控制臂**：同一次导入里还要断言**音符确实进来了**，
 否则那条判据可能恒真）。
 
+> ⭐ ⭐ **修订（2026-10-29，⭐ 现读代码＋判据；⭐ 原文按台账规则 278 保留）**：
+> ⭐ 上面 D2 的三句**前提**都已不成立，⭐ 但**结论方向未变** —— tempo / 拍号仍**只**在目标工程
+> **没有内容**时采纳，⛔ 绝不静默覆盖已有时序：
+> ① ⭐ **模型已有 map 槽位**（⭐ `#349`／`c34679a5`）：`YebanProjectV1::tempo_map` /
+> `time_signature_map`（`crates/yeban-model/src/project.rs:1649` 起；写入 = `Op::SetTempoPoint`，
+> `crates/yeban-model/src/ops.rs:3183`；⛔ tick 0 不许进 map，`project.rs:2276`）——
+> "单一标量、两条真相"**不再是当前模型**。
+> ② ⭐ **导入确实读 `parsed.tempos`**：`crates/yeban-midi/src/import.rs` 的 `adopt_tempo`（:741）/
+> `adopt_time_signature`（:917）—— 目标工程**没有内容**（`import_target_is_empty`，:662）时
+> tick 0 落标量、tick > 0 落 map（首条在 tick > 0 时 tick 0 记 SMF 隐含的 120 BPM / 4/4）；
+> **有**内容时整类 `dropped` 并点名每个值与 tick。原文引用的"`yeban-app/src/import_midi.rs`
+> 写明只消费 `notes` 与 `ppq`"**这段字已不存在**（`#342`／`#344` 重写）。
+> ③ ⭐ **已由判据钉住**（⛔ 不再是"当前缺口"）：
+> `yeban-midi/src/import.rs` 的 `multi_tempo_and_meter_changes_are_adopted_into_maps_with_zero_loss`
+> （:3886）与 `two_tempo_and_meter_changes_are_loud_losses_that_name_every_value`（:3800）；
+> `yeban-app/src/import_midi.rs` 的 `a_single_tick_zero_tempo_is_adopted_into_the_project_bpm`
+> （:328）与 `a_tempo_map_does_not_touch_the_project_bpm_and_names_every_value`（:386，均带
+> "音符确实进来了"的控制臂；后者是**非空工程**、拒收理由是**内容门槛**）。
+> ⚠ ⭐ 同批更正源码里与本条冲突的陈旧注释（⛔ 无策略变更）：`yeban-midi/src/import.rs` 模块头
+> 第 1／2／7 条（"map 整类 dropped／单标量"、"四类"计数、`denominator_pow2` 漏读）与
+> `yeban-app/src/import_midi.rs:79`（"无落点 20 类／四类有落点" → 14／十类）。
+
 ## 10.8 ⭐ 待实现层的**设置**（⭐ 连线前置条件、⭐ R505）
 
 ⭐ 全仓 179 个设置里，生产侧**无真读者**的 33 个中，判为**缺陷**的只有 2 个（`count_in_bars`、
