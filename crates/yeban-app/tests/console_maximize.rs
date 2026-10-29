@@ -157,8 +157,10 @@ fn a_real_click_on_the_console_maximize_button_maximizes_the_console() {
         .split("\n    }")
         .next()
         .expect("最大化按钮的元素块必须能切出来");
+    // ⚠ 只数**带分号的调用**：上面那条注释里也提到了 `root.console-maximize-toggle()`，
+    // 数裸名字会把注释算成第三个落点（CI run 40947349788 实测 left=3 / right=2）。
     assert_eq!(
-        block.matches("root.console-maximize-toggle()").count(),
+        block.matches("root.console-maximize-toggle();").count(),
         2,
         "`clicked` 与 `accessible-action-default` 必须**同一落点**: {block}"
     );
