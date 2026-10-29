@@ -2203,7 +2203,10 @@ base `8755b4e6`..`0d0383cf` ⇒ `["yeban-app","yeban-mcp","yeban-render","yeban-
 helper `ops.rs:3043` `doc.insert_track(...)`／局部绑定后赋值 `SetMacro`）写在文件头 ——
 **下一片⛔ 别再走词法**：要判"能不能改"得走**差分**（施加每个 `Op` 变体后逐字段比对序列化，
 `ops.rs` 已有 `gen_*` 生成器可复用），那是另一片的设计活。
-**待裁清单（本批只登记，⛔ 我未发明答案）**：上述五字段是否要做成可改能力，各自一条
+**待裁清单（本批只登记，⛔ 我未发明答案）**：上述五字段**读得到、写不了**
+（读面白名单 `crates/yeban-mcp/src/domain/view.rs:36` 的 `SELECTORS: [&str; 28]` 现读含
+`rng_seed`／`audio_config`／`metadata`／`master_bus_track_id`／`routing_graph`／`tracks`），
+是否要做成可改能力，各自一条
 `ADR`（`Proposed` 交人类）—— `folder_id`＝轨道文件夹、`rng_seed`＝工程种子可改、
 `audio_config`＝采样率/块长/位深/pan law 可改（很可能是产品边界）、
 `metadata.description`/`tags`＝曲库元数据可编辑、`solo_safe`＝独奏安全标志可改。

@@ -15210,6 +15210,15 @@ handover §11 第 4 条留下的轴「**哪些实体只能建、改不了**」�
   （`Op::InsertDevice`／`RemoveDevice` 及其 kind 名在 `notes.rs:2691..2693` 已存在），
   它的原意是"没有**独立**设备工具"——⚠ 措辞待改，本批只登记不动它。
 
+⚠ **未核一项 → 同轮已核实（记这一步为什么值得）**：这五个字段在**读面**是否可见 ——
+`crates/yeban-mcp/src/domain/view.rs:36` 的 `pub const SELECTORS: [&str; 28]` 现读**含**
+`rng_seed`／`audio_config`／`metadata`／`master_bus_track_id`／`routing_graph`／`tracks`
+（`folder_id`／`solo_safe` 未单列，但可随整个 `tracks` 选择器读出）。⇒ 结论从"改不了"
+收紧为**「读得到、写不了」**：工具面能把它们查出来，却没有任何 `Op` 能改。
+⛔ 我先把这条标成未核、拿到白名单原文后才改口 —— 中间那句"既不能写也不能读"**是错的**，
+若直接写进台账就成了下一位接手者的假前提（§6.3 第 4 条的同型教训：判据名没出现＝没跑到，
+选择器名没现读＝不能断言可见性）。
+
 **磁盘读数（单位 GiB／磁盘实际占用）**：根分区可用 **29G**（本轮未删大件）；本地构建目录
 `/tmp/yeban-s2` **1.3 GiB**（S2 判决读回后即可回收）、`/tmp/yeban-s3` 新建（S3 线）。
 S3 工作树内 `target` 为零（守 `CARGO_TARGET_DIR` 纪律）。
