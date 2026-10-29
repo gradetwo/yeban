@@ -683,9 +683,10 @@ pub fn convolution_source_params(track: &TrackV3) -> Option<ConvolutionReverbPar
 /// 落点字段怎么钳制"的规则 ⇒ 唯一能共享的位置是 `yeban-dsp`。⛔ 这里不得再长出第二张表。
 ///
 /// ⚠ **导入路径不变**：`yeban_render::inserts::{StripField, ReverbField, ConvolutionField,
-/// DeviceParamField, DeviceParamFamily, sanitised_output_gain_db}` 仍然可用（消费方共 6 个
-/// 文件：`automation.rs`、`yeban-app` 的两个测试、`yeban-mcp` 的 `domain/notes.rs` 与两个测试、
-/// `yeban-app/src/engine_host.rs`）。
+/// DeviceParamField, DeviceParamFamily, sanitised_output_gain_db}` 仍然可用（消费方现读 **7** 个
+/// 文件：`yeban-render/src/automation.rs`、`yeban-app/src/engine_host.rs`、
+/// `yeban-app/tests/{compressor_export,device_param_automation_export}.rs`、
+/// `yeban-mcp/src/domain/notes.rs`、`yeban-mcp/tests/{render_audio_clips,fault_vocabulary}.rs`）。
 pub use yeban_dsp::device_param::{
     ConvolutionField, DeviceParamFamily, DeviceParamField, ReverbField, StripField,
     sanitised_output_gain_db,
