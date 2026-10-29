@@ -498,6 +498,61 @@ mod tests {
         assert!(!parsed.key_signatures[0].is_minor);
     }
 
+    /// 判据 (`[ARCH-EXT-002]`): 工程标题 ⇒ conductor 轨名、工程署名 ⇒ `FF 02`，
+    /// 回读后**逐字**一致；空标题／空署名**不写**、conductor 保留默认名。
+    ///
+    /// ⚠ 负向控制臂与正向在同一条判据里：只有正向一半时，"恒写空串"或
+    /// "恒用默认名"也能通过。
+    #[test]
+    fn title_and_author_export_to_conductor_metadata_and_round_trip() {
+        let mut project = yeban_model::samples::demo_project();
+        project.title = "Midnight Sonata".to_owned();
+        project.author = "(c) 2026 Nobody".to_owned();
+
+        let export = export_from_project(&project).expect("导出");
+        assert_eq!(export.title.as_deref(), Some("Midnight Sonata"));
+        assert_eq!(export.copyright.as_deref(), Some("(c) 2026 Nobody"));
+
+        let parsed = parse_smf(&export.to_smf_bytes().expect("编码")).expect("回读");
+        let conductor = parsed
+            .track_names
+            .iter()
+            .find(|name| name.track == 0 && name.tick == 0)
+            .expect("conductor 轨必须有轨名");
+        assert_eq!(
+            conductor.text.as_deref(),
+            Some("Midnight Sonata"),
+            "工程标题 ⇒ conductor 轨名"
+        );
+        assert_eq!(parsed.copyrights.len(), 1, "只有工程署名这一条 FF 02");
+        assert_eq!(parsed.copyrights[0].track, 0);
+        assert_eq!(parsed.copyrights[0].tick, 0);
+        assert_eq!(
+            parsed.copyrights[0].text.as_deref(),
+            Some("(c) 2026 Nobody"),
+            "工程署名 ⇒ FF 02"
+        );
+
+        // ⭐ 控制臂：空标题／空署名 ⇒ **不写**元事件，conductor 保留默认名。
+        project.title = String::new();
+        project.author = String::new();
+        let bare = export_from_project(&project).expect("导出");
+        assert_eq!(bare.title, None, "空标题 ⛔ 伪装成有效名字");
+        assert_eq!(bare.copyright, None, "空署名 ⛔ 写成空 FF 02");
+        let parsed = parse_smf(&bare.to_smf_bytes().expect("编码")).expect("回读");
+        let conductor = parsed
+            .track_names
+            .iter()
+            .find(|name| name.track == 0 && name.tick == 0)
+            .expect("conductor 轨必须有轨名");
+        assert_eq!(
+            conductor.text.as_deref(),
+            Some("Yeban Conductor"),
+            "缺省名保留"
+        );
+        assert!(parsed.copyrights.is_empty(), "空署名 ⇒ 零条 FF 02");
+    }
+
     /// 判据 (`[MODEL-AST-005]`): `tempo_map` 与 `time_signature_map` 在 `tick > 0` 的变更点
     /// 导出到 conductor track，SMF 读取面读回完全一致。
     #[test]

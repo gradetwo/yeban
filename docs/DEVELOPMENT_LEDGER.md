@@ -14578,3 +14578,33 @@ deny／lockfile 四作业真跑，四条代码腿全 **skipped steps=0** ⇒ **�
 `cargo clippy -p yeban-midi --all-targets -- -D warnings` ⇒ 干净；`cargo fmt --all --check` ⇒ 通过。
 
 **判决**：待读回（本条提交的 run）。
+
+### 判据补强：导出侧标题 / 署名的**逐字**语义（2026-10-29，`yeban-midi`）
+
+**缺口（现读）**：`export_from_project` 把 `project.title` ⇒ `MidiExport.title`、
+`project.author` ⇒ `MidiExport.copyright`（`crates/yeban-midi/src/export.rs:406-407`），
+编码时标题成 conductor 轨名、署名成 conductor 轨 tick 0 的 `FF 02`
+（`crates/yeban-midi/src/midi.rs:757-777`）。⛔ 当时**没有逐字判据**：
+`smf_contract.rs` 只有**不透明**锚（`filled` 206 B ＋ `sha256 e38eadb9…`、`demo` 173 B ＋
+`sha256 1a251551…`），导出器把标题／署名**接错**或**接反**时，只有这两个 `sha` 会红 ——
+⛔ 说不出**错在哪**。
+
+**新增一条判据**（`crates/yeban-midi/src/export.rs` 的 `export::tests`，同一条里带正／负两臂）：
+
+| 臂 | 断言 |
+| :--- | :--- |
+| 正向 | `export.title == Some("Midnight Sonata")`、`export.copyright == Some("(c) 2026 Nobody")`；回读 ⇒ conductor 轨（track 0、tick 0）轨名逐字等于标题、`copyrights` **恰 1 条**且 track 0／tick 0／文本逐字等于署名 |
+| ⭐ 负向控制 | 清空 `title`／`author` ⇒ `export.title == None`、`export.copyright == None`；回读 ⇒ conductor 轨名是 `"Yeban Conductor"`、`copyrights` **为空** |
+
+**注入证明**：临时把 :406-407 改成 `title: None` / `copyright: None` ⇒ 判据红在
+`left: None / right: Some("Midnight Sonata")`（正向臂）；还原后 `sha256` 回到
+`bb362f6c…`（＝注入前实测值），判据复绿。
+
+本地读数（单位 = 判据条数）：`cargo test -p yeban-midi` ⇒ lib **217 passed**、
+`musicxml_contract` **50**、`real_world_smf` **9**、`smf_contract` **35**，FAILED **0**；
+`cargo clippy -p yeban-midi --lib --tests -- -D warnings` ⇒ 干净；`cargo fmt --all --check` ⇒ 通过。
+
+⚠ **绿 ≠ 对**：本条只证明"导出器把工程字段接到 conductor 元数据、且能在 `parse_smf` 逐字读回"。
+它 ⛔ 证明"音频／工程导出也写作者" —— 那两条**按 §10.7 B1 仍不写**（`rf64`／`als` 未改）。
+
+**判决**：待读回（本条提交的 run）。

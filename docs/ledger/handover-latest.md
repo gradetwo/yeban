@@ -1577,6 +1577,24 @@ python3 scripts/guards/policy_check.py && bash scripts/gates/run-gates.sh light
 ⭐ 若将来真要加 ⇒ **只加在 MIDI**（元数据字段本就为此设计）。
 ⭐ 已有先例口径：`crates/yeban-render/src/als.rs` 已把「元数据与 `author` 不写入本子集」记成一条 loss。
 
+> ⭐ ⭐ **修订（2026-10-29，⭐ 现读代码＋判据；⭐ 原文按台账规则 278 保留）**：
+> ⭐ "⭐ **MIDI 导出今天也不写作者**"⭐**已不成立**，⭐ 而**结论方向已按原文的"若将来真要加"**落地：
+> ① ⭐ **MIDI 导出写作者**（⭐ `6d1ca072`，⭐ `[ARCH-EXT-002]`）：`export_from_project` 把
+> `project.title` ⇒ `MidiExport.title`（`crates/yeban-midi/src/export.rs:406`）、
+> `project.author` ⇒ `MidiExport.copyright`（:407）；编码时标题成 conductor 轨名、署名成
+> conductor 轨 tick 0 的 `FF 02`（`crates/yeban-midi/src/midi.rs:757-777`）。⭐ **空串不传**
+> （`None` / 空串 ⇒ 不写 `FF 02`、conductor 保留默认名 `"Yeban Conductor"`），⛔ 不把空标题
+> 伪装成有效名字。
+> ② ⭐ **音频／工程导出仍不写作者** —— 与本条原文一致，未改：`rf64` 的 `originator` 仍为
+> `"Yeban DAW"`、`originatorReference` 仍为工程 ULID；`als.rs` 仍把 `author` 记为 loss。
+> ⇒ ⭐ **"只加在 MIDI"** 这条先验口径被**逐字执行**了。
+> ③ ⭐ **判据**：`crates/yeban-midi/src/export.rs` 的
+> `title_and_author_export_to_conductor_metadata_and_round_trip`（正向：标题／署名 ⇒ 轨名／`FF 02`
+> 逐字回读；⭐ **同一条里带负向控制臂**：空标题／空署名 ⇒ `None` ＋ 默认名 ＋ 零条 `FF 02`）。
+> 字节级另有 `crates/yeban-midi/tests/smf_contract.rs` 的 `filled_sample_writes_its_four_syllables_as_lyric_events`
+> （206 B ＋ `sha256 e38eadb9…`，含标题／署名字节）与演示夹具 173 B ＋ `sha256 1a251551…`。
+> ⚠ ⭐ 本修订之前，"标题／署名 ⇒ 字节"只有**不透明**的长度／`sha` 锚，⛔ 没有**逐字**断言。
+
 ### D2 — MIDI tempo map **不导入**
 
 ⭐ **工程的速度模型是单一标量 `project.bpm`**；而 MIDI 的 tempo map 可携带
