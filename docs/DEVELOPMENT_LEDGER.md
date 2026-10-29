@@ -14648,7 +14648,11 @@ deny／lockfile 四作业真跑，四条代码腿全 **skipped steps=0** ⇒ **�
 ⚠ **绿 ≠ 对**：判据只覆盖**一条** MIDI 轨、`split_tracks=false` 的路径；多轨拆分后的落点
 `track_partitions_dropped` ⛔ 在本判据力内。
 
-**判决**：待读回（本条提交的 run）。
+**判决（2026-10-29 读回）**：`dde7c83e` ⇒ run `40805773233` **success**。
+`rust (yeban-midi)` 腿**真跑**（steps **14**；`test result:` **6** 行：lib **218**、
+`musicxml_contract` **50**、`real_world_smf` **9**、`smf_contract` **35**、另两行 0 passed 的壳），
+新判据**逐名 ok**：`import::metadata_adoption_tests::a_project_survives_export_and_reimport_with_every_note_intact`。
+⚠ `workspace 全量`／`macos`／`windows` 三条腿 **skipped、steps=0**。
 
 ### 判据补强：导出 → 导入 → 再导出的**逐字节**同一（2026-10-29，`yeban-midi`）
 
