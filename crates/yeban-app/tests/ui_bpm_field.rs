@@ -158,7 +158,7 @@ fn the_bpm_field_commits_exactly_one_set_tempo_on_enter() {
     );
 
     // ---- ⑤ 提交边界：两端闭区间可提交 ----
-    for edge in [yeban_model::MIN_BPM, yeban_model::MAX_BPM] {
+    for edge in [yeban_model::project::MIN_BPM, yeban_model::project::MAX_BPM] {
         let before = port.display().commit_count;
         ui.invoke_bpm_commit(displayed(edge).into());
         assert_eq!(

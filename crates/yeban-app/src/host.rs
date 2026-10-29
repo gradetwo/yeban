@@ -5269,7 +5269,7 @@ pub fn wire_input(ui: &MainWindow, context: Rc<RefCell<InputContext>>) {
 /// ## 它做什么（只有一件事）
 ///
 /// 把用户敲完的文本解析成 `f64`、按模型自己的合法区间校验
-/// （`yeban_model::MIN_BPM..=yeban_model::MAX_BPM`，`20.0..=999.0`），
+/// （`yeban_model::project::MIN_BPM..=yeban_model::project::MAX_BPM`，`20.0..=999.0`），
 /// 然后提交**恰好一次** `Op::SetTempo { old_bpm, new_bpm }`，
 /// 最后重投影 —— 输入框经双向绑定显示**权威工程**的格式化读数（`{:.2}`）。
 ///
@@ -5305,12 +5305,13 @@ pub fn wire_bpm_commit(ui: &MainWindow, port: &Rc<UndoPort>) {
             refresh_undo_window(&ui, &port, true);
             return;
         };
-        if !new_bpm.is_finite() || !(yeban_model::MIN_BPM..=yeban_model::MAX_BPM).contains(&new_bpm)
+        if !new_bpm.is_finite()
+            || !(yeban_model::project::MIN_BPM..=yeban_model::project::MAX_BPM).contains(&new_bpm)
         {
             eprintln!(
                 "[yeban-app] BPM 必须在 {}..={} 之间（实得 {new_bpm}）⇒ 没有提交",
-                yeban_model::MIN_BPM,
-                yeban_model::MAX_BPM
+                yeban_model::project::MIN_BPM,
+                yeban_model::project::MAX_BPM
             );
             refresh_undo_window(&ui, &port, true);
             return;
