@@ -15213,7 +15213,10 @@ handover §11 第 4 条留下的轴「**哪些实体只能建、改不了**」�
 ⚠ **未核一项 → 同轮已核实（记这一步为什么值得）**：这五个字段在**读面**是否可见 ——
 `crates/yeban-mcp/src/domain/view.rs:36` 的 `pub const SELECTORS: [&str; 28]` 现读**含**
 `rng_seed`／`audio_config`／`metadata`／`master_bus_track_id`／`routing_graph`／`tracks`
-（`folder_id`／`solo_safe` 未单列，但可随整个 `tracks` 选择器读出）。⇒ 结论从"改不了"
+（`folder_id`／`solo_safe` 未单列，但可随整个 `tracks` 选择器读出 —— ⭐ 这句现已**现读证实**：
+`domain/view.rs:229` 是 `serde_json::to_value(project)` **整档序列化**后按根键挑选，
+所以选择 `tracks` 返回的就是完整 `TrackV3`，含这两个字段；且既有单元判据
+`every_selector_resolves_against_a_filled_project` 已经在钉「选择器 ↔ 数据模型」不漂移）。⇒ 结论从"改不了"
 收紧为**「读得到、写不了」**：工具面能把它们查出来，却没有任何 `Op` 能改。
 ⛔ 我先把这条标成未核、拿到白名单原文后才改口 —— 中间那句"既不能写也不能读"**是错的**，
 若直接写进台账就成了下一位接手者的假前提（§6.3 第 4 条的同型教训：判据名没出现＝没跑到，

@@ -2203,13 +2203,16 @@ base `8755b4e6`..`0d0383cf` ⇒ `["yeban-app","yeban-mcp","yeban-render","yeban-
 helper `ops.rs:3043` `doc.insert_track(...)`／局部绑定后赋值 `SetMacro`）写在文件头 ——
 **下一片⛔ 别再走词法**：要判"能不能改"得走**差分**（施加每个 `Op` 变体后逐字段比对序列化，
 `ops.rs` 已有 `gen_*` 生成器可复用），那是另一片的设计活。
-**待裁清单（本批只登记，⛔ 我未发明答案）**：上述五字段**读得到、写不了**
-（读面白名单 `crates/yeban-mcp/src/domain/view.rs:36` 的 `SELECTORS: [&str; 28]` 现读含
+**待裁清单（本批只登记，⛔ 我未发明答案）**：上述五字段**读得到、写不了**（读面白名单 `crates/yeban-mcp/src/domain/view.rs:36` 的 `SELECTORS: [&str; 28]` 现读含
 `rng_seed`／`audio_config`／`metadata`／`master_bus_track_id`／`routing_graph`／`tracks`），
 是否要做成可改能力，各自一条
 `ADR`（`Proposed` 交人类）—— `folder_id`＝轨道文件夹、`rng_seed`＝工程种子可改、
 `audio_config`＝采样率/块长/位深/pan law 可改（很可能是产品边界）、
 `metadata.description`/`tags`＝曲库元数据可编辑、`solo_safe`＝独奏安全标志可改。
+⭐ **下一片⛔ 别做「选择器 ↔ 模型」对账**：读面这条已有判据 `every_selector_resolves_against_a_filled_project`
+在钉，且 `project_view` 是整档序列化后按根键挑选（`view.rs:229`）⇒ 读面本来就全；
+真正没被机械化的只有**写面**（本片已钉零触点那一半），再往前一步是**语义差分**
+（施加每个 `Op` 变体后逐字段比对"到底能不能改"），那是设计活而非补洞。
 另：`ledger:10303` 那句"全工具集里没有设备 CRUD"与现读矛盾（`Op::InsertDevice`／`RemoveDevice`
 的 kind 名在 `notes.rs:2691..2693` 已存在），原意是"没有**独立**设备工具"——⚠ 措辞待改，本批只登记。
 
