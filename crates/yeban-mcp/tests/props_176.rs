@@ -1,8 +1,9 @@
 //! **#176 的判据**：`#174` 验收里剩下的两个高价值坑 ——
 //! **② 提案不可发现/不可恢复**（新增 `yeban_list_proposals`）与
 //! **⑥ 21 个工具全无 `outputSchema`**（主力工具各声明一份并被真实响应反校；
-//! 广播面现含提案类三工具 `yeban_propose_section` / `yeban_edit_notes` /
-//! `yeban_set_macro`，见台账 [MCP-TOOL-005] 扩展票）。
+//! 广播面 = `output_schema::COVERED_TOOLS` 那一份清单，现含十工具 ——
+//! [#176 五工具] ＋ 提案类 `propose_section` / `edit_notes` / `set_macro` ＋
+//! `reject_proposal` / `redo` / `edit_automation`，见台账 [MCP-TOOL-005] 扩展票）。
 //!
 //! ## 这个文件量什么、单位是什么
 //!
@@ -11,8 +12,8 @@
 //! | [`list_proposals_is_discoverable_and_the_counts_move_with_it`] | `tools/list` 里的工具数 / `TOOL_COUNT` / 样本 `registry.count` / 契约 enum | **工具个数**（26） |
 //! | [`a_pending_proposal_is_listed_and_disappears_after_merge`] | `yeban_list_proposals` 的 `openCount` | **提案条数**（1 → 0） |
 //! | [`the_empty_state_is_an_empty_array_plus_one_sentence`] | 空态响应 | 1 个空数组 + 1 句逐字 `note` |
-//! | [`seven_main_tools_publish_an_output_schema_their_real_responses_satisfy`] | 7 个主力工具的真实 `data` | **7 份 schema**，每份都被自己的响应反校 |
-//! | [`the_validator_can_go_red_and_the_schema_is_not_idealised`] | 校验器 | 3 种注入（少 required / 错类型 / 声明字段缺席）各 1 条 |
+//! | [`ten_broadcast_tools_publish_an_output_schema_their_real_responses_satisfy`] | [`COVERED_TOOLS`](yeban_mcp::output_schema::COVERED_TOOLS) 那十个工具的真实 `data` | **10 份 schema**，每份都被自己的响应反校 |
+//! | [`the_validator_can_go_red_and_the_schema_is_not_idealised`] | 校验器 | 5 种注入（少 required / 错类型 / 声明字段缺席 / 违 `const` / 违 `enum`）各 1 条 |
 //! | [`the_58_published_spellings_are_still_all_there`] | `insertDevice.device.params.items` | **拼写个数**（58） |
 //!
 //! 复跑读数：`cargo test -p yeban-mcp --test props_176 -- --nocapture`
@@ -378,15 +379,16 @@ fn the_empty_state_is_an_empty_array_plus_one_sentence() {
     );
 }
 
-/// 判据 ⑤⑥：七个主力工具的 `outputSchema` **与真实响应一致** ——
-/// 校验器核 `required` ＋ 顶层 `type` ＋ 声明的字段名/类型。
+/// 判据 ⑤⑥：广播面（[`COVERED_TOOLS`](output_schema::COVERED_TOOLS)）那十个工具的
+/// `outputSchema` **与真实响应一致** —— 校验器核 `required` ＋ 顶层 `type` ＋
+/// 声明的字段名/类型（名单与长度由 `output_schema` 的单元测试钉住，本判据只跑形状）。
 ///
 /// 真实响应全部来自 `tools/call`（不是手写夹具）；每个工具打印一条读数。
 /// 提案类三工具（`propose_section` / `edit_notes` / `set_macro`）各跑**两种形状**：
 /// 全字段（`autoMerge: true`，供 `validate_complete`）＋ 缺省（供 `validate`，
 /// 见判据末尾）。
 #[test]
-fn seven_main_tools_publish_an_output_schema_their_real_responses_satisfy() {
+fn ten_broadcast_tools_publish_an_output_schema_their_real_responses_satisfy() {
     let (mut dispatcher, auth, project) = dispatcher();
     let (track_id, clip_id) = track_and_clip(&project);
 
@@ -433,6 +435,17 @@ fn seven_main_tools_publish_an_output_schema_their_real_responses_satisfy() {
     // ⑤ `yeban_undo`（撤销刚才那次合并）
     let undo = call(&mut dispatcher, &auth, "yeban_undo", json!({"steps": 1}));
     assert_eq!(undo["status"], "success", "{undo}");
+    // ⑤b `yeban_redo`（把 ⑤ 撤销掉的合并再打回来）—— ⚠ **必须紧跟在 `undo` 之后**：
+    // 撤销之后再产生新提交会让 redo 栈失效，顺序放错就是一条**假红**。
+    // 它的键集与 `undo` 逐字镜像（拼装点 `domain::apply_redo` 就是照 `apply_undo` 写的），
+    // 因此这份响应同时是"两份 schema 同源"的正面对照。
+    let redo = call(&mut dispatcher, &auth, "yeban_redo", json!({"steps": 1}));
+    assert_eq!(redo["status"], "success", "{redo}");
+    assert_eq!(redo["data"]["redone"], true, "{redo}");
+    assert_eq!(
+        redo["data"]["commitModel"], "direct",
+        "重做与撤销同属直接提交类: {redo}"
+    );
     // ⑥ `yeban_propose_section`（[ADR-0029] `autoMerge: true` ⇒ 全字段形状：
     // 两份形状里出现的 12 个声明键**都在**，才能拿去跑 `validate_complete`；
     // 缺省形状另用 `validate` 反校，见判据末尾）。
@@ -514,7 +527,77 @@ fn seven_main_tools_publish_an_output_schema_their_real_responses_satisfy() {
         "{set_macro_default}"
     );
 
-    let responses: [(&str, &Value, &[&str]); 7] = [
+    // ⑨ `yeban_reject_proposal` 的**长形状**（真的拒绝一次）。⚠ 为它单开一份提案：
+    // ⑥/⑦/⑧ 那几份的状态后面还要用，拿它们当样品会让判据之间互相踩。
+    let rejectable = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_propose_section",
+        section_arguments(false),
+    );
+    assert_eq!(rejectable["status"], "success", "{rejectable}");
+    let rejectable_id = rejectable["data"]["proposal"]["proposalId"]
+        .as_str()
+        .expect("提案回执必须有 proposalId")
+        .to_owned();
+    let reject = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_reject_proposal",
+        json!({"proposalId": rejectable_id.clone(), "reason": "#176 反校用"}),
+    );
+    assert_eq!(reject["status"], "success", "{reject}");
+    assert_eq!(reject["data"]["archived"], true, "{reject}");
+    assert_eq!(
+        reject["data"]["commitModel"], "none",
+        "拒绝只动提案记录、不产生工程提交（`commit_model_of` 的 Reject 臂）: {reject}"
+    );
+    // 再拒一次 ⇒ **短形状**（只有 `rejected` / `alreadyRejected` / `proposal` 三共有键）。
+    // 这份**必须**过 `validate`、**必须不过** `validate_complete` —— 它就是"两种成功形状"
+    // 不是措辞而是形状的证明（与 `merge_proposal` 的幂等短形状同一口径）。
+    let reject_again = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_reject_proposal",
+        json!({"proposalId": rejectable_id, "reason": "#176 反校用"}),
+    );
+    assert_eq!(reject_again["status"], "success", "{reject_again}");
+    assert_eq!(
+        reject_again["data"]["alreadyRejected"], true,
+        "{reject_again}"
+    );
+
+    // ⑩ `yeban_edit_automation` 的**真做**形状（[MCP-TOOL-005] 扩面批）。
+    // 给 `point` ⇒ 直接提交（`commitModel: direct`），并由真做路径在 `data()` 之外补插
+    // `applied` / `commitCount`（`domain/automation.rs:843-847`）⇒ 这份拿去跑
+    // `validate_complete`；只读预览（不给 `point`）另用 `validate` 反校，见判据末尾。
+    let automation = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_edit_automation",
+        json!({
+            "trackId": track_id.to_canonical_string(),
+            "lane": "TrackVolume",
+            "point": {"tick": 0, "value": 0.5, "curve": "Linear"},
+        }),
+    );
+    assert_eq!(automation["status"], "success", "{automation}");
+    assert_eq!(automation["data"]["applied"], true, "{automation}");
+    let automation_preview = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_edit_automation",
+        json!({
+            "trackId": track_id.to_canonical_string(),
+            "lane": "TrackVolume",
+        }),
+    );
+    assert_eq!(
+        automation_preview["status"], "success",
+        "{automation_preview}"
+    );
+
+    let responses: [(&str, &Value, &[&str]); 10] = [
         (
             "yeban_propose_section",
             &propose,
@@ -574,6 +657,40 @@ fn seven_main_tools_publish_an_output_schema_their_real_responses_satisfy() {
             "yeban_undo",
             &undo,
             &["before", "after", "undone", "cursorPersisted"],
+        ),
+        (
+            "yeban_redo",
+            &redo,
+            &[
+                "before",
+                "after",
+                "redone",
+                "cursorPersisted",
+                "undoneTotal",
+            ],
+        ),
+        (
+            "yeban_reject_proposal",
+            &reject,
+            &[
+                "rejected",
+                "alreadyRejected",
+                "archived",
+                "reason",
+                "proposal",
+            ],
+        ),
+        (
+            "yeban_edit_automation",
+            &automation,
+            &[
+                "applied",
+                "readOnly",
+                "written",
+                "lane",
+                "appliedInOfflineRender",
+                "origin",
+            ],
         ),
     ];
     for (name, response, spot_fields) in responses {
@@ -676,9 +793,59 @@ fn seven_main_tools_publish_an_output_schema_their_real_responses_satisfy() {
         );
         println!("### `{name}` 缺省形状（validate 通过；autoMerged/merge 缺席）");
     }
+
+    // `yeban_reject_proposal` 的**短形状**（上面第二次拒绝）：`required` 三键都在 ⇒
+    // 过 `validate`；但 `apply_reject` 的幂等分支只回三共有键（没有 `archived` /
+    // `reason`）⇒ **必须不过** `validate_complete`。这条是"schema 描述两种形状"的
+    // 反面证据：声明面比短形状宽，而契约没有把宽声明说成"每次都有"。
+    let reject_schema = output_schema::for_tool("yeban_reject_proposal").expect("schema");
+    output_schema::validate(&reject_schema, &reject_again["data"]).unwrap_or_else(|violation| {
+        panic!(
+            "`yeban_reject_proposal` 短形状违反 required: {violation}\n{}",
+            reject_again["data"]
+        )
+    });
+    let violation = output_schema::validate_complete(&reject_schema, &reject_again["data"])
+        .expect_err("短形状**没有** archived/reason ⇒ validate_complete 必须变红");
+    assert_eq!(violation.path, "$.archived", "{violation}");
+    println!(
+        "### `yeban_reject_proposal` 短形状（validate 通过；validate_complete 红在 {}）",
+        violation.path
+    );
+
+    // `yeban_edit_automation` 的**只读预览**（不给 `point`）：唯一那条成功出口在 `if`
+    // 块**之外**无条件补插 `applied` / `commitCount`（`domain/automation.rs:843-847`）
+    // ⇒ 预览也是全字段形状，`validate_complete` **必须过**（若把这两键说成"真做才有"
+    // 就是一条假红，故此处按实测口径钉）。与真做的形状差别只在 `written: null`。
+    let automation_schema = output_schema::for_tool("yeban_edit_automation").expect("schema");
+    output_schema::validate_complete(&automation_schema, &automation_preview["data"])
+        .unwrap_or_else(|violation| {
+            panic!(
+                "`yeban_edit_automation` 预览违反自己的 schema: {violation}\n{}",
+                automation_preview["data"]
+            )
+        });
+    assert_eq!(
+        automation_preview["data"]["readOnly"], true,
+        "{automation_preview}"
+    );
+    assert_eq!(
+        automation_preview["data"]["written"],
+        Value::Null,
+        "预览不改一位 ⇒ written 是 null: {automation_preview}"
+    );
+    println!(
+        "### `yeban_edit_automation` 预览（validate_complete 通过；written=null, applied={}）",
+        automation_preview["data"]["applied"]
+    );
 }
 
-/// 判据 ⑥ 的反面：校验器**能变红**，且 schema 不是"理想形状"。
+/// 判据 ⑥ 的反面：校验器**能变红**，且 schema 不是"理想形状" —— 五种注入各一条
+/// （少 `required` / 错类型 / 声明字段缺席 / 违 `const` / 违 `enum`）。
+///
+/// 注入④⑤ 是本批判据的**新增理由**：`const` / `enum` 在过去只是装饰，
+/// `edit_notes` 里那句"`autoMerged` 恒为 `true`"的**自相矛盾**因此 CI 看不见
+/// （全字段形状里它是 `true`、缺省形状里该键**不存在**）。
 #[test]
 fn the_validator_can_go_red_and_the_schema_is_not_idealised() {
     let schema = output_schema::for_tool("yeban_undo").expect("schema");
@@ -735,6 +902,25 @@ fn the_validator_can_go_red_and_the_schema_is_not_idealised() {
         .expect_err("声明了就必须出现");
     println!("### 注入③：声明字段缺席\n{violation}");
     assert_eq!(violation.path, "$.sends");
+
+    // ④ `const` 不符必须红 —— **这条判据的存在本身就是一个真实缺陷换来的**：
+    //    `edit_notes` 曾声明 `pendingMerge: {const: true}`，而它 `autoMerge: true` 的真实
+    //    响应里该键是 `false`。校验器当时只核 `type` ⇒ 那份 schema **与自己的实现互相
+    //    矛盾却全绿**。现在 `const` 被真的核对，同样的矛盾会在 CI 里变红。
+    let mut against_const = good.clone();
+    against_const["cursorPersisted"] = Value::from(true);
+    let violation = output_schema::validate(&schema, &against_const)
+        .expect_err("const 不符必须红（声明了恒值就要核到值）");
+    println!("### 注入④：const 不符\n{violation}");
+    assert_eq!(violation.path, "$.cursorPersisted");
+
+    // ⑤ `enum` 不符必须红 —— `commitModel` 的取值表来自 `domain::COMMIT_MODEL_VALUES`
+    //    （唯一一份清单），声明里写的就是它；发一个表外的值必须是"违反自己的 schema"。
+    let mut outside_enum = good.clone();
+    outside_enum["commitModel"] = Value::from("notACommitModel");
+    let violation = output_schema::validate(&schema, &outside_enum).expect_err("enum 不符必须红");
+    println!("### 注入⑤：enum 不符\n{violation}");
+    assert_eq!(violation.path, "$.commitModel");
 }
 
 /// 判据 ⑦：`#156` 的 **58 个拼写**（32 规范 + 26 别名）一个不少（两侧）。

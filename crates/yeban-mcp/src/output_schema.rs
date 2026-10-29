@@ -18,9 +18,10 @@
 //!
 //! ## 字段名与类型**从真实响应抽**，不是理想形状
 //!
-//! 七个 schema 的字段逐个来自实现里的响应拼装点，判据用**真实 `tools/call` 响应**
-//! 反校（[`validate`] 核 `required` ＋ 顶层 `type` ＋ 已声明字段的类型；
-//! [`validate_complete`] 额外核"声明的每个字段名都出现"）。
+//! 每份 schema 的字段逐个来自实现里的响应拼装点，判据用**真实 `tools/call` 响应**
+//! 反校（[`validate`] 核 `required` ＋ 顶层 `type` ＋ 已声明字段的类型 ＋ `const` ＋ `enum`；
+//! [`validate_complete`] 额外核"声明的每个字段名都出现"）。覆盖面就是 [`COVERED_TOOLS`]
+//! 那一份清单（⛔ 别在别处抄它的长度）。
 //!
 //! ⚠ 一个已知的**两种成功形状**：`yeban_merge_proposal` 在"这份提案已经合并过"
 //! 时返回一条**更短**的记录（只有 `merged` / `alreadyMerged` / `appliedOps` /
@@ -35,38 +36,52 @@
 //! （`tests/props_176.rs` 与 `tests/render_master.rs` 各有一处）。
 //! ⛔ 缺省形状用 [`validate`]（它只核 `required` 与已出现字段的类型）。
 //!
-//! ⭐ `ADR-0032`（缺口 `G17`）：**[`COVERED_TOOLS`] 那七份 schema 都声明 `commitModel`** —— 它是每条
+//! ⭐ `ADR-0032`（缺口 `G17`）：**凡 [`COVERED_TOOLS`] 列出的 schema 都声明 `commitModel`** —— 它是每条
 //! 成功回执都存在的自述键，由 [`with_commit_model`] 在 `finish` 之外**统一**挂上
 //! （`properties` + `required` 一起）。真实响应同样由 `apply_inner` 统一注入，
 //! 因此"声明的"与"发的"仍是同一件事，⛔ 不是理想形状。
 //!
-//! ## 校验器只做三件事（并**被真的跑**）
+//! ## 校验器做的事（并**被真的跑**）
 //!
 //! 1. 顶层 `type`；
 //! 2. `required` 里的每个名字都在 `data` 里；
 //! 3. 已声明且出现的字段，其 `type` 与声明一致（`integer` 与 `number` 分开；
-//!    `["number","null"]` 这类联合类型按"任一匹配"处理）。
+//!    `["number","null"]` 这类联合类型按"任一匹配"处理）；
+//! 4. 已声明且出现的字段，其 `const` 与取值**逐值相等**；
+//! 5. 已声明且出现的字段，其 `enum` 含该取值。
 //!
-//! 它**不是**通用 JSON Schema 实现（不处理 `$ref` / `oneOf` / `minimum`）；
-//! 本模块的 schema 刻意只用上述子集，好让"声明的"与"可执行的"是同一件事。
+//! ⚠ 第 4、5 条是 `MCP-TOOL-005` 的 edit_automation／redo／reject_proposal 批**补上**的：在此之前 `const` 与 `enum` **只声明不核对**，
+//! 于是 `edit_notes` 那份把 `pendingMerge` 写成 `const true` 的 schema 与它自己 `autoMerge: true`
+//! 的真实响应（该键为 `false`）**互相矛盾却全绿**。反面判据 `the_validator_can_go_red_and_the_schema_is_not_idealised`
+//! 现在把这两类矛盾都钉成"能变红"。
+//!
+//! 它**不是**通用 JSON Schema 实现（不处理 `$ref` / `oneOf` / `minimum`，也**不递归**进嵌套对象——
+//! 嵌套层只核到"它是 object"，其中的 `required` 是**文档**而非核对项，见 [`edit_automation`] 的说明）；
+//! 本模块的 schema 刻意只用上述可执行子集，好让"声明的"与"可执行的"是同一件事。
 
 use serde_json::{Map, Value, json};
 
 /// 这些 schema 校验的层级（`ToolResponse` 信封里的 `data`）。
 pub const VALIDATES: &str = "result.data";
 
-/// 已经声明 `outputSchema` 的七个主力工具（`#176` 的五工具面 ＋ 提案类三工具
-/// `propose_section` / `set_macro` 的广播面扩展，见台账 [MCP-TOOL-005] 扩展票）。
+/// 已经声明 `outputSchema` 的主力工具（`#176` 的五工具面 ＋ 提案类三工具 ＋
+/// [MCP-TOOL-005] 扩展票再补 `reject_proposal` / `redo` / `edit_automation`，见台账）。
 ///
-/// 顺序 = 注册表顺序里的出现顺序；判据要求这份清单与真实广播面**双向一致**
-/// （每个列出的工具都有 schema；每个有 schema 的工具都在清单里）。
-pub const COVERED_TOOLS: [&str; 7] = [
+/// 顺序 = 注册表顺序里的出现顺序（现读 `tools.rs` 里 `name:` 那几行的行号）；判据要求
+/// 这份清单与真实广播面**双向一致**（每个列出的工具都有 schema；每个有 schema 的工具都在清单里）。
+///
+/// ⚠ 这是**唯一**一份覆盖面清单：模块文档、判据与 `commitModel` 的说明都引用它，
+/// ⛔ 不在别处再抄一遍数量（"工具数手抄值会陈旧"这条教训在本仓库两周内被证明过两次）。
+pub const COVERED_TOOLS: [&str; 10] = [
     "yeban_propose_section",
     "yeban_edit_notes",
     "yeban_set_macro",
     "yeban_render_master",
     "yeban_merge_proposal",
+    "yeban_reject_proposal",
     "yeban_undo",
+    "yeban_redo",
+    "yeban_edit_automation",
     "yeban_query_engine_state",
 ];
 
@@ -80,10 +95,13 @@ pub fn for_tool(name: &str) -> Option<Value> {
         "yeban_propose_section" => Some(propose_section()),
         "yeban_edit_notes" => Some(edit_notes()),
         "yeban_set_macro" => Some(set_macro()),
-        "yeban_merge_proposal" => Some(merge_proposal()),
-        "yeban_query_engine_state" => Some(query_engine_state()),
         "yeban_render_master" => Some(render_master()),
+        "yeban_merge_proposal" => Some(merge_proposal()),
+        "yeban_reject_proposal" => Some(reject_proposal()),
         "yeban_undo" => Some(undo()),
+        "yeban_redo" => Some(redo()),
+        "yeban_edit_automation" => Some(edit_automation()),
+        "yeban_query_engine_state" => Some(query_engine_state()),
         _ => None,
     }
 }
@@ -118,7 +136,7 @@ impl std::fmt::Display for Violation {
 ///
 /// 上述任一条不成立。
 pub fn validate(schema: &Value, data: &Value) -> Result<(), Violation> {
-    check_type(schema, data, "$")?;
+    check_declared(schema, data, "$")?;
     let object = match data.as_object() {
         Some(object) => object,
         None => {
@@ -142,7 +160,7 @@ pub fn validate(schema: &Value, data: &Value) -> Result<(), Violation> {
     if let Some(properties) = schema.get("properties").and_then(Value::as_object) {
         for (name, property) in properties {
             if let Some(value) = object.get(name) {
-                check_type(property, value, &format!("$.{name}"))?;
+                check_declared(property, value, &format!("$.{name}"))?;
             }
         }
     }
@@ -189,29 +207,52 @@ pub fn declared_fields(schema: &Value) -> Vec<String> {
     names
 }
 
-fn check_type(schema: &Value, value: &Value, path: &str) -> Result<(), Violation> {
-    let Some(kind) = schema.get("type") else {
-        return Ok(());
-    };
-    let matches = match kind {
-        Value::String(kind) => json_type_matches(kind, value),
-        Value::Array(kinds) => kinds
-            .iter()
-            .filter_map(Value::as_str)
-            .any(|kind| json_type_matches(kind, value)),
-        _ => true,
-    };
-    if matches {
-        Ok(())
-    } else {
-        Err(Violation::new(
-            path,
-            format!(
-                "schema 声明 type = {kind}, 实际是 {}",
-                json_type_name(value)
-            ),
-        ))
+/// 一处声明对一份取值的核对：`type` ＋ `const` ＋ `enum`。
+///
+/// ⚠ 后两者于 `MCP-TOOL-005` 的 edit_automation／redo／reject_proposal 批**才真的核对**。病根是实测过的：`edit_notes`
+/// 曾把 `pendingMerge` 写成 `const true`，而校验器只核 `type` ⇒ 那份 schema 与
+/// `autoMerge: true` 的真实响应**互相矛盾却全绿**（"声明了但从不核对"的键就是
+/// 装饰，装饰越多越容易把矛盾藏进 CI 的绿灯里）。
+/// 现在 `const` 与 `enum` 都按**逐值相等**处理（`serde_json::Value` 的 `PartialEq`）。
+/// 声明面仍然刻意小：本模块只用 `type` / `required` / `const` / `enum` 这四种关键字，
+/// 所以"声明的"与"可执行的"是同一件事（`$ref` / `oneOf` / `minimum` 一律不用）。
+fn check_declared(schema: &Value, value: &Value, path: &str) -> Result<(), Violation> {
+    if let Some(kind) = schema.get("type") {
+        let matches = match kind {
+            Value::String(kind) => json_type_matches(kind, value),
+            Value::Array(kinds) => kinds
+                .iter()
+                .filter_map(Value::as_str)
+                .any(|kind| json_type_matches(kind, value)),
+            _ => true,
+        };
+        if !matches {
+            return Err(Violation::new(
+                path,
+                format!(
+                    "schema 声明 type = {kind}, 实际是 {}",
+                    json_type_name(value)
+                ),
+            ));
+        }
     }
+    if let Some(constant) = schema.get("const")
+        && constant != value
+    {
+        return Err(Violation::new(
+            path,
+            format!("schema 声明 const = {constant}, 实际是 {value}"),
+        ));
+    }
+    if let Some(allowed) = schema.get("enum").and_then(Value::as_array)
+        && !allowed.iter().any(|candidate| candidate == value)
+    {
+        return Err(Violation::new(
+            path,
+            format!("schema 声明 enum = {allowed:?}, 实际是 {value}"),
+        ));
+    }
+    Ok(())
 }
 
 fn json_type_matches(kind: &str, value: &Value) -> bool {
@@ -285,10 +326,12 @@ fn commit_model_schema() -> Value {
 /// 1. `render_master` 的 `json!` 字面量早已贴着 `serde_json` 宏的递归上限
 ///    （见 [`render_master`] 里 `midiSource` 的来历），再往字面量里加一个键就编不过；
 /// 2. 这个键在实现里只有**一个**来源（`domain::commit_model_of` → `apply_inner` 的注入），
-///    七份 schema 里它是同一句话 ⇒ 逐处手抄等于把本票要治的"易错"搬进生产代码。
+///    每份 schema 里它是同一句话 ⇒ 逐处手抄等于把本票要治的"易错"搬进生产代码。
 ///
-/// ⚠ 覆盖面 = [`COVERED_TOOLS`] 那七个工具。其余十八个工具的响应同样带这个键（注入点在
-/// 唯一出口上），只是**尚未**声明 `outputSchema` —— 声明面扩大到第 26 个不是本票的范围。
+/// ⚠ 覆盖面 = [`COVERED_TOOLS`] 列出的那些工具。**没有**被列出的工具（含 `list_proposals`
+/// 等）的响应同样带这个键（注入点在
+/// 唯一出口上），只是**尚未**声明 `outputSchema` —— 把声明面扩大到注册表里的**每一个**工具
+/// 不是本票的范围（`list_proposals` 与 `launch_scene` 另有"必须不广播"的判据钉着）。
 fn with_commit_model(mut schema: Value) -> Value {
     if let Value::Object(map) = &mut schema {
         if let Some(Value::Array(required)) = map.get_mut("required") {
@@ -593,6 +636,119 @@ fn merge_proposal() -> Value {
     ))
 }
 
+/// `yeban_reject_proposal` 的成功响应 `data`（**两种形状**，口径同 [`merge_proposal`]）。
+fn reject_proposal() -> Value {
+    with_commit_model(finish(
+        envelope(
+            "yeban_reject_proposal 成功响应的 data",
+            "只改记录、**绝不**删除。⚠ 两种形状（拼装点 `domain::apply_reject`）：对**已经**被拒绝的\
+             提案再拒一次 ⇒ 短形状，只有 `rejected` / `alreadyRejected`（恒 `true`）/ `proposal`（**摘要**）；\
+             真的拒绝一次 ⇒ 长形状，多出 `archived`（恒 `true`）与 `reason`，且 `proposal` 换成**完整载荷**\
+             （这里⚠ **没有** `includeOps` 开关 —— 长形状无条件带 `ops`）⇒ `archived` / `reason` \
+             ⛔ 不进 `required`。`rejected` 两种形状都恒 `true` ⇒ 用 `const` 钉住（本校验器**真的**核 `const`）。\
+             ⚠ 已合并的提案走**失败**回执（`Conflict` ＋ `proposalId`），⛔ 不是成功形状、不进这份 schema。\
+             `commitModel` = `none`：拒绝只动提案记录，不产生任何工程提交。",
+        ),
+        &["rejected", "alreadyRejected", "proposal"],
+        json!({
+            "rejected": {"type": "boolean", "const": true},
+            "alreadyRejected": {"type": "boolean"},
+            "archived": {"type": "boolean", "const": true},
+            "reason": {"type": "string"},
+            "proposal": proposal_detail_schema()
+        }),
+    ))
+}
+
+/// `yeban_edit_automation` 的成功响应 `data`（**单形状**：键恒在、值可为 `null`）。
+fn edit_automation() -> Value {
+    with_commit_model(finish(
+        envelope(
+            "yeban_edit_automation 成功响应的 data",
+            "只有一条成功形状，但**多个键可取 `null`**：拼装点 `AutomationEdit::data()` 的口径是\
+             \"键**始终在**（⛔ 不静默省略）\"—— `readOnly: true`（没给 `point` 实参 ⇒ 一位都不改）时\
+             `written` / `valuesAfter` / `projectDigestAfter` 都是 `null`，`residualReason: null` 配\
+             `appliedInOfflineRender: false` 的含义是\"没有可求值点 / 读开关关闭\"（与\"有落点但没生效\"\
+             分开，⛔ 不拿一个残差类冒充）。`dryRun` 预览与真做**共用同一个拼装函数** ⇒ 两种调用不可能漂移。\
+             `offlineRenderError` 只在**离线导出本身失败**时非 `null`（同一处会报 `RENDER_FAILED`）。\
+             `origin.kind` 恒 `\"McpEdit\"`：MCP 直接编辑不创建提案。\
+             ⚠ 本校验器⛔ **不递归** ⇒ 下面 `lane` / `read` / `written` / `origin` 的嵌套键是**文档**，\
+             实际核对只到\"它是 object\"这一层（登记为已知局限，见模块文档）。\
+             `applied` / `commitCount` 也在 `required` 里，因为补插点在**唯一**那条成功出口上\
+             （`domain/automation.rs:843-847`，`apply` 的末尾、`if` 块之外）⇒ **预览与真做都带**这两个键；\
+             别把 `applied` 读成\"只有真做才有\"：它与 `readOnly` 是**同一个判定**（`write.is_none()`），\
+             两者的差异只在来源（`readOnly` 由 `data()` 拼、`applied` 由出口补）。形状差异看 `written`：\
+             真做是对象、预览是 `null`。",
+        ),
+        &[
+            "trackId",
+            "target",
+            "targetLabel",
+            "laneKind",
+            "readOnly",
+            "lane",
+            "read",
+            "written",
+            "valuesAfter",
+            "appliedInOfflineRender",
+            "residualReason",
+            "offlineRenderError",
+            "projectDigestBefore",
+            "projectDigestAfter",
+            "origin",
+            "applied",
+            "commitCount",
+        ],
+        json!({
+            "trackId": {"type": "string"},
+            "target": {"type": ["object", "null"]},
+            "targetLabel": {"type": "string"},
+            "laneKind": {"type": "string"},
+            "readOnly": {"type": "boolean"},
+            "lane": {
+                "type": "object",
+                "required": ["exists", "readEnabled", "writeMode", "unit", "domain", "pointCount", "points"],
+                "properties": {
+                    "exists": {"type": "boolean"},
+                    "readEnabled": {"type": "boolean"},
+                    "writeMode": {"type": ["string", "null"]},
+                    "unit": {"type": "string"},
+                    "domain": {"type": ["object", "null"]},
+                    "pointCount": {"type": "integer"},
+                    "points": {"type": "array", "items": {"type": "object"}}
+                }
+            },
+            "read": {
+                "type": "object",
+                "required": ["ticks", "values", "entry"],
+                "properties": {
+                    "ticks": {"type": "array", "items": {"type": "integer"}},
+                    "values": {"type": "array"},
+                    "entry": {"type": "string"}
+                }
+            },
+            "written": {"type": ["object", "null"]},
+            "valuesAfter": {"type": ["array", "null"]},
+            "appliedInOfflineRender": {"type": "boolean"},
+            "residualReason": {"type": ["string", "null"]},
+            "offlineRenderError": {"type": ["string", "null"]},
+            "projectDigestBefore": {"type": "string"},
+            "projectDigestAfter": {"type": ["string", "null"]},
+            "applied": {"type": "boolean"},
+            "commitCount": {"type": "integer"},
+            "origin": {
+                "type": "object",
+                "required": ["kind", "author", "note"],
+                "properties": {
+                    "kind": {"type": "string"},
+                    "author": {"type": "string"},
+                    "note": {"type": "string"}
+                }
+            }
+        }),
+    ))
+}
+
 /// `yeban_query_engine_state` 的成功响应 `data`（只读）。
 fn query_engine_state() -> Value {
     with_commit_model(finish(
@@ -823,36 +979,64 @@ fn render_master() -> Value {
 
 /// `yeban_undo` 的成功响应 `data`。
 fn undo() -> Value {
+    steps_receipt(
+        "undone",
+        "yeban_undo",
+        "`before` / `after` 是模型读数（与界面同源）。`cursorPersisted` 恒为 `false`：\
+         撤销游标是**会话运行态**，不进 `project.json` / `history.dag`（MODEL-ISO-001）。",
+    )
+}
+
+/// `yeban_redo` 的成功响应 `data`（与 [`undo`] **共用构造器**）。
+fn redo() -> Value {
+    steps_receipt(
+        "redone",
+        "yeban_redo",
+        "键集与 `yeban_undo` 逐字镜像（拼装点 `domain::apply_redo` 就是照 `apply_undo` 写的），\
+         只有第一个键名是 `redone`。⚠ **`undoneTotal` 这个名字在重做回执里也叫 `undoneTotal`**\
+         （来自 `outcome.undone_total`）—— schema 照抄真实键名，⛔ 顺手改名（改名是另一张票）。\
+         `cursorPersisted` 恒为 `false`：游标是会话运行态（MODEL-ISO-001）。",
+    )
+}
+
+/// 撤销 / 重做的**同一份**回执形状：只有"这次到底做没做"那个键名随动词变。
+///
+/// 为什么做成构造器而不是两份字面量：`apply_redo` 的 `json!` 与 `apply_undo` 的键集是
+/// **逐字镜像**（实测：`requestedSteps`/`steps`/`undoneTotal`/`opKinds`/`branch`/
+/// `projectDigest`/`cursorPersisted`/`before`/`after` 九个同名同序），抄两遍就等于把
+/// "两份清单会漂移"这个本票要治的病搬进生产代码。
+fn steps_receipt(verb_key: &str, tool_name: &str, description: &str) -> Value {
+    let mut properties = json!({
+        "requestedSteps": {"type": "integer"},
+        "steps": {"type": "integer"},
+        "undoneTotal": {"type": "integer"},
+        "opKinds": {"type": "array", "items": {"type": "string"}},
+        "branch": {"type": "string"},
+        "projectDigest": {"type": "string"},
+        "cursorPersisted": {"type": "boolean", "const": false},
+        "before": undo_display_schema(),
+        "after": undo_display_schema()
+    });
+    properties
+        .as_object_mut()
+        .expect("字面量必须是对象")
+        .insert(verb_key.to_owned(), json!({"type": "boolean"}));
+    let required: Vec<&str> = vec![
+        verb_key,
+        "requestedSteps",
+        "steps",
+        "undoneTotal",
+        "opKinds",
+        "branch",
+        "projectDigest",
+        "cursorPersisted",
+        "before",
+        "after",
+    ];
     with_commit_model(finish(
-        envelope(
-            "yeban_undo 成功响应的 data",
-            "`before` / `after` 是模型读数（与界面同源）。`cursorPersisted` 恒为 `false`：\
-             撤销游标是**会话运行态**，不进 `project.json` / `history.dag`（MODEL-ISO-001）。",
-        ),
-        &[
-            "undone",
-            "requestedSteps",
-            "steps",
-            "undoneTotal",
-            "opKinds",
-            "branch",
-            "projectDigest",
-            "cursorPersisted",
-            "before",
-            "after",
-        ],
-        json!({
-            "undone": {"type": "boolean"},
-            "requestedSteps": {"type": "integer"},
-            "steps": {"type": "integer"},
-            "undoneTotal": {"type": "integer"},
-            "opKinds": {"type": "array", "items": {"type": "string"}},
-            "branch": {"type": "string"},
-            "projectDigest": {"type": "string"},
-            "cursorPersisted": {"type": "boolean", "const": false},
-            "before": undo_display_schema(),
-            "after": undo_display_schema()
-        }),
+        envelope(&format!("{tool_name} 成功响应的 data"), description),
+        &required,
+        properties,
     ))
 }
 
@@ -885,8 +1069,9 @@ mod tests {
         );
         assert_eq!(
             COVERED_TOOLS.len(),
-            7,
-            "广播面 = #176 五工具 ＋ 提案类 propose_section/set_macro"
+            10,
+            "广播面 = #176 五工具 ＋ 提案类 propose_section/set_macro ＋ \
+             reject_proposal/redo/edit_automation（[MCP-TOOL-005] 扩面批）"
         );
     }
 
