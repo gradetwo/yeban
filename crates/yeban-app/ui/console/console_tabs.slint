@@ -164,6 +164,9 @@ export component ConsoleTabs inherits Rectangle {
     in property <string> master-meter-peak: "-120.0";
     in property <string> master-meter-rms: "-120.0";
     in property <float> master-meter-level: 0.0;
+    // ⭐ 控制台最大化（`Cmd/Ctrl+Alt+M` / 右上角 ⤢）：只读绑定，唯一写者 = 宿主
+    // （`MainWindow.console-maximized`）—— 本组件用它给按钮报 `accessible-checked`。
+    in property <bool> console-maximized: false;
 
     callback select-piano-roll();
     callback select-mixer();
@@ -244,6 +247,11 @@ export component ConsoleTabs inherits Rectangle {
     // 同样只上抛：⛔ 不写盘、⛔ 不弹窗、⛔ 不判断成功与否；唯一落点 = 宿主
     // `host::wire_new_project`（保存对话框 ⇒ 落一个 0 轨容器 ⇒ 打开那条换工程路径）。
     callback new-project();
+    // ⭐ **最大化 / 还原底部控制台**（`Cmd/Ctrl+Alt+M` 的可点等价物）。
+    // 与 `Action::ToggleConsoleMaximize` 落到**同一个**视图态属性
+    // （`MainWindow.console-maximized`，唯一写者是宿主）⇒ 按键与点击不可能分叉。
+    // 本组件只上抛：⛔ 不自己翻转状态、⛔ 不动布局（布局绑定读的是那个属性）。
+    callback console-maximize-toggle();
     // 主控通道条的**写入面**透传（与上面八个同款：本组件只上抛，不解释、不改任何值）。
     // 这六个**不带下标** —— 主总线不在 `track-names` 里，它的身份由宿主从权威工程取。
     callback mixer-master-fader-grab(length);
@@ -334,6 +342,11 @@ export component ConsoleTabs inherits Rectangle {
         accessible-role: button;
         accessible-id: "console-maximize-button";
         accessible-label: "最大化 / 还原底部控制台";
+        // 切换按钮：读数来自宿主的视图态（⛔ 不是本组件自己记的开关）。
+        accessible-checked: root.console-maximized;
+        // `[UI-A11Y-003]` §7.3：无障碍动作与下面 `TouchArea` 的 `clicked` **逐字同一落点**
+        // （都是 `root.console-maximize-toggle()`）⇒ 屏读器激活与鼠标点击不可能分叉。
+        accessible-action-default => { root.console-maximize-toggle(); }
 
         UiText {
             x: 0;
@@ -344,6 +357,12 @@ export component ConsoleTabs inherits Rectangle {
             color: Tokens.ink-1;
             font-size: Tokens.font-size-sm;
             horizontal-alignment: center;
+        }
+
+        TouchArea {
+            width: parent.width;
+            height: parent.height;
+            clicked => { root.console-maximize-toggle(); }
         }
     }
 
