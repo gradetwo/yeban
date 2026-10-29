@@ -15630,3 +15630,31 @@ merge 成一条 push。**该跑的形态**：`plan`／`checks`／`deny`／`lockf
   没有一行是 `yeban_propose_section` 的创作参数**（其中 `:212` 的 `ASIO` 还被红线 6 定为**永不定义**），
   ⇒ 它们⛔ 属"创作缺口"，⛔ 由本会话自行提级为待办；要动也得先由人类排期。
 
+### §8 ⭐ S5 第二片**设计稿**（现读实测换来的；这片⛔ 是"再钉一遍"，它堵的是**第一片自己留下的洞**）
+
+**洞在哪**：第一片的棘轮表 `op_write_differential_root_keys_match_frozen_table` 钉的是**根键**集合。
+⇒ 若某变体**新增一个根键**，棘轮变红（好）；但若一个**已经在写 `metadata` 的变体**改去多写
+`metadata.tags`，根键不变 ⇒ 棘轮**静默放行**。这正是本轮抓住的那类假绿的另一半。
+
+**为什么⛔ 能把 leaves 直接钉成第二张表**（本机 `--nocapture` 现读，单位＝`DIFF` 行 / leaf 段）：
+- **55** 行，leaf 段合计 **67** 个 ＝ **53** 个真字段名 ＋ **14** 个**实例键**。
+  实例键三种形态：26 字符 ULID（`01J8ZQ…`）、64 位十六进制资产哈希、纯数字 tick 键（`960`）。
+- **14** 行的末段**只有实例键**（`AddClip`／`AddClipPlacement`／`AddNote`／`AddTrack`／`DeleteNote`／
+  `RemoveAsset`／`RemoveClip`／`RemoveClipPlacement`／`RemoveScene`／`RemoveSection`／`RemoveTrack`／
+  `SetAsset`／`SetTempoPoint`／`SetTimeSignaturePoint`）—— 形态是"对 map 容器增删一条记录"，
+  差异路径的末端天然落在**键**上而非字段名上；
+- 其余 **41** 行的字段名可用，例：`SetTransportConfig` → `count_in_bars,launch_quantization,metronome_enabled`、
+  `SetNoteExpression` → `micro_timing_ticks,probability,ratchet`、`Batch` → `gain_db,velocity`。
+
+**这片要做的三件事**（都落在 `ops.rs` 的 test 模块＝light crate，本机可编译可测）：
+1. 加一条**词法过滤**：末段命中 `^[0-9A-HJKMNP-TV-Z]{26}$`／`^[0-9a-f]{64}$`／`^\d+$` ⇒ 归"实例键"、
+   ⛔ 进字段棘轮；把**剩下的字段名**按变体钉成第二张表（现读 `41` 行非空、`53` 个字段段）。
+2. **过滤规则本身要防空转**（R93 同型）：把"实例键段数"**冻结成 14** —— 将来新增一个
+   "按数字键的容器"（如新的 tick map）会让该数变 **15** ⇒ 判据红，逼人来认领，⛔ 被过滤规则静默吞掉。
+3. 每行**二选一**断言：要么字段名集合非空，要么显式登记为"该变体写的是容器记录"
+   （⛔ 允许"两边都空"，那就是本轮 §2 注入实验防的那类空集）。
+
+⚠ 已知代价：过滤是**词法**的。若将来出现真字段名恰好全数字（本仓 `project.rs` 现读无此形态），
+会被误归实例键 ⇒ 由第 2 条的计数冻结兜住（会红，⛔ 悄悄漏）。
+
+
