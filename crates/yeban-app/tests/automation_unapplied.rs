@@ -32,6 +32,7 @@
 //! | `TrackVolume` / `TrackPan` 不计 | [`volume_and_pan_lanes_are_not_counted`] |
 //! | 读数可见（CLI 逐字） | [`headless_cli_names_the_unapplied_send_gain_lane`] |
 //! | `DeviceParam` / `Macro` 同类但分开数 | [`an_enabled_device_param_lane_is_counted_separately`] |
+//! | ⭐ **S1 第一片**：`output_gain_db`（含别名）在**通道条来源**轨上有落点 ⇒ 缺口 −1、事件 +1；`threshold_db`／非来源设备／读关 照旧 | [`an_output_gain_db_lane_on_the_strip_source_lands_in_monitoring`] |
 //!
 //! 音频**导出**不变的正对照在 `tests/send_gain_automation_export.rs`（同一个
 //! `--export-wav` 渲染核心，`#261` 不动离线路径 ⇒ 文件 `sha256` 相同）。
@@ -45,8 +46,8 @@ use yeban_app::cli;
 use yeban_app::engine_host::{EngineHost, automation_unapplied_line, unapplied_automation_lanes};
 use yeban_model::container::write_project_container;
 use yeban_model::{
-    AutomationLane, AutomationPoint, AutomationTarget, AutomationWriteMode, CurveType, EntityId,
-    RoutingKind, YebanProjectV1,
+    AutomationLane, AutomationPoint, AutomationTarget, AutomationWriteMode, CurveType,
+    DeviceDefinition, DeviceKind, EntityId, ParameterValue, RoutingKind, YebanProjectV1,
 };
 
 static COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -412,8 +413,210 @@ fn the_diagnostic_line_is_present_even_when_nothing_is_unapplied() {
         line,
         "automation-engine: unapplied-lanes=0 send-gain=0 device-param=0 macro=0 \
          note=\"有 0 条自动化泳道在监听里没落地；SendGain 的边在监听里没有落点\
-         （离线导出/MCP 按边求值），DeviceParam 的通道条（含压缩）/混响/卷积标量名字在离线导出/MCP \
+         （离线导出/MCP 按边求值），DeviceParam 的 output_gain_db 在有通道条来源的轨上有实时落点\
+         （拼写 output_gain / fader_db 同一条），其余通道条（含压缩）/混响/卷积标量名字在离线导出/MCP \
          渲染里有落点（卷积 IR 形状没有），Macro 在监听里没有落点\
          （离线导出/MCP 只在存在 Macro 泳道时按映射级联）\""
+    );
+}
+
+// ---------------------------------------------------------------------------
+// ⭐ S1 第一片：`output_gain_db` 的**实时落点**（gauge 与采样共用同一个谓词）
+// ---------------------------------------------------------------------------
+
+/// 一台内置**效果器**（⚠ 必须是 `InternalEffect`：`strip_source_index` 的规则 2
+/// 排除内置乐器，演示夹具那台 `Yeban PolySynth` 正因如此永远落不了地）。
+fn effect(name: &str, params: &[(&str, f32)]) -> DeviceDefinition {
+    DeviceDefinition {
+        id: EntityId::new(),
+        name: name.to_owned(),
+        kind: DeviceKind::InternalEffect,
+        bypassed: false,
+        params: params
+            .iter()
+            .map(|(param, value)| ParameterValue {
+                name: (*param).to_owned(),
+                value: *value,
+                unit: None,
+            })
+            .collect(),
+        latency_samples: 0,
+    }
+}
+
+/// 往某台设备的某个旋钮上挂一条**开着**的 `DeviceParam` 泳道（一个点，`−6 dB`）。
+fn insert_device_lane(
+    project: &mut YebanProjectV1,
+    track_id: EntityId,
+    slot_index: usize,
+    param_index: usize,
+    read_enabled: bool,
+) {
+    let target = AutomationTarget::DeviceParam {
+        track_id,
+        slot_index,
+        param_index,
+    };
+    let point = AutomationPoint {
+        id: EntityId::new(),
+        tick: 0,
+        value: -6.0,
+        curve: CurveType::Linear,
+    };
+    project
+        .tracks
+        .get_mut(&track_id)
+        .expect("目标轨必须在")
+        .automation_lanes
+        .insert(
+            target,
+            AutomationLane {
+                target,
+                points: BTreeMap::from([(point.id, point)]),
+                read_enabled,
+                write_mode: AutomationWriteMode::Off,
+                domain: None,
+            },
+        );
+}
+
+/// ⭐ S1 判据：**四个臂各自的"缺口读数 + 事件增量"**（不是只看一个数）。
+///
+/// 夹具：把展示轨的设备链换成两台 —— **槽位 0** = 通道条来源
+/// （`output_gain_db` / `threshold_db` / 别名 `fader_db`），**槽位 1** = 只有混响标量
+/// （`room_size` ⇒ 不是通道条来源）。每个臂只改一条泳道的形状，两个读数一起看：
+///
+/// | 臂 | 开着的泳道（槽位, 旋钮） | `device-param` 缺口 | `publish_automation` 增量 |
+/// | :--- | :--- | :-: | :-: |
+/// | 基线 | 无 | 0 | `+0` |
+/// | A | `(0, 0)` = `output_gain_db` | **0**（有落点） | **+1** |
+/// | B | `(0, 1)` = `threshold_db` | 1（S2 以后） | `+0` |
+/// | C | `(0, 2)` = `fader_db`（别名） | **0**（同一条） | **+1** |
+/// | D | `(1, 0)` = 非来源设备的 `output_gain_db` | 1（落点⛔ 不认） | `+0` |
+/// | E | A 但 `read_enabled:false` | 0（关掉本来就不发） | `+0` |
+/// | 全开 | A＋B＋C＋D | **2**（只剩 B＋D） | **+2**（只有 A 与 C 有落点）|
+///
+/// ⚠ D 臂打的是"把自动化接到**别的**器件的同名旋钮上却算落地"——那是比"没落"更坏的
+/// 假读数（监听响度变了、改的却是另一台设备）；B 臂打"整条 DeviceParam 一刀切"
+/// （既不许全算落地，也不许全算没落地）。
+///
+/// ⚠ 本判据**不**证明音频真的变了 —— 那是 `crates/yeban-engine/tests/channel_strip_insert.rs`
+/// 的 C17/C18（逐位 + RMS 比值 0.50）。两半合起来才是"监听与导出同一条"。
+#[test]
+fn an_output_gain_db_lane_on_the_strip_source_lands_in_monitoring() {
+    fn build(arms: &[(usize, usize, bool)]) -> YebanProjectV1 {
+        let mut project = demo_project();
+        let track = first_track(&project);
+        project
+            .tracks
+            .get_mut(&track)
+            .expect("目标轨必须在")
+            .devices = vec![
+            effect(
+                "通道条",
+                &[
+                    ("output_gain_db", 0.0),
+                    ("threshold_db", -20.0),
+                    ("fader_db", 0.0),
+                ],
+            ),
+            effect("混响", &[("room_size", 0.5)]),
+        ];
+        // 夹具前提：换链之后这条轨上**没有**开着的 `DeviceParam` 泳道
+        //（演示工程那条 `(0,0)` 是 `read_enabled:false`，且它指向内置乐器）。
+        assert_eq!(unapplied_automation_lanes(&project).device_param, 0);
+        for &(slot, param, read) in arms {
+            insert_device_lane(&mut project, track, slot, param, read);
+        }
+        project
+    }
+
+    let mut host = EngineHost::new();
+    let baseline_project = build(&[]);
+    let baseline = host.publish_automation(Some(&baseline_project));
+    println!("[S1/app] 基线事件数（演示工程的音量＋声相）= {baseline}");
+
+    // ---- A：来源设备的 `output_gain_db` ⇒ 缺口 0、事件 +1 ----
+    let project_a = build(&[(0, 0, true)]);
+    assert_eq!(
+        unapplied_automation_lanes(&project_a).device_param,
+        0,
+        "A：落在通道条来源轨的 `output_gain_db` 已不是缺口"
+    );
+    assert_eq!(
+        host.publish_automation(Some(&project_a)),
+        baseline + 1,
+        "A：必须真的多发一条 `(轨, STRIP_OUTPUT_GAIN_SLOT)` 事件"
+    );
+    assert_eq!(host.automation_unapplied_breakdown().device_param, 0);
+
+    // ---- B：同一台设备的 `threshold_db` ⇒ 仍是缺口、不发事件 ----
+    let project_b = build(&[(0, 1, true)]);
+    assert_eq!(
+        unapplied_automation_lanes(&project_b).device_param,
+        1,
+        "B：压缩器旋钮在实时侧没有落点（S2 以后）⇒ 照旧计数"
+    );
+    assert_eq!(
+        host.publish_automation(Some(&project_b)),
+        baseline,
+        "B：没有落点的名字一条也不发"
+    );
+
+    // ---- C：别名 `fader_db` ⇒ 与 A 同一条 ----
+    let project_c = build(&[(0, 2, true)]);
+    assert_eq!(
+        unapplied_automation_lanes(&project_c).device_param,
+        0,
+        "C：`fader_db` 是离线拼写表里的同一个字段（⛔ 不另建一张表）"
+    );
+    assert_eq!(
+        host.publish_automation(Some(&project_c)),
+        baseline + 1,
+        "C：别名同样下发"
+    );
+
+    // ---- D：非来源设备的同名旋钮 ⇒ 缺口 1、不发事件 ----
+    let project_d = build(&[(1, 0, true)]);
+    assert_eq!(
+        unapplied_automation_lanes(&project_d).device_param,
+        1,
+        "D：那台设备不是本轨通道条的来源 ⇒ 说「落地」是假读数"
+    );
+    assert_eq!(
+        host.publish_automation(Some(&project_d)),
+        baseline,
+        "D：⛔ 不把值写进别的器件"
+    );
+
+    // ---- E：A 但读开关关掉 ⇒ 既不是缺口、也不发 ----
+    let project_e = build(&[(0, 0, false)]);
+    assert_eq!(
+        unapplied_automation_lanes(&project_e).device_param,
+        0,
+        "E：关掉的泳道本来就不该生效（与音量／声相／发送量同一裁决）"
+    );
+    assert_eq!(
+        host.publish_automation(Some(&project_e)),
+        baseline,
+        "E：关掉 ⇒ 一条不发"
+    );
+
+    // ---- 全开：读数只剩 B＋D 两条，事件只有 A/C 两条 ----
+    let project_all = build(&[(0, 0, true), (0, 1, true), (0, 2, true), (1, 0, true)]);
+    let lanes = unapplied_automation_lanes(&project_all);
+    assert_eq!(
+        lanes.device_param, 2,
+        "全开：四条泳道里只剩 `threshold_db`（B）与「非来源的同名旋钮」（D）没落地"
+    );
+    assert_eq!(
+        host.publish_automation(Some(&project_all)),
+        baseline + 2,
+        "全开：A 与 C 各一条（同一个槽位 ⇒ 后写的那条胜出，引擎侧照常计数）"
+    );
+    assert_eq!(
+        host.automation_unapplied(),
+        lanes.total(),
+        "宿主读数必须等于分类读数（⛔ 两套数）"
     );
 }

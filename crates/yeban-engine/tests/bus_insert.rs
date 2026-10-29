@@ -570,7 +570,7 @@ fn b6_the_bus_convolution_tail_is_audible() {
 /// 插入槽位（它不在 `RoutingPlan::slots()` 里，不能挤掉一条轨的槽位）⇒
 /// `INSERT_SLOTS = MAX_TRACK_SLOTS + 1 = 17`，`EngineRuntime` **180144 → 181936**
 ///
-/// ⚠ ⭐ **`#261` 之后的现读值**：**186720 B**（`#173` 的 181936 ＋ 逐边发送量的
+/// ⚠ ⭐ **`#261` 之后 186720 B**（`#173` 的 181936 ＋ 逐边发送量的；⭐ **S1 第一片**再 ＋16 ⇒ 现读 **186736**）——本判据
 /// 四张定长表/副本 **4784 B**；仍低于 192 KiB = 196608 的红线）。上面那行是 `#173`
 /// 当时的读数，⛔ 不删。
 /// （**＋1792 B**；量法见下）。分项（按结构体字段的 `size_of` 逐项算）：
@@ -584,7 +584,7 @@ fn b6_the_bus_convolution_tail_is_audible() {
 /// 作为裁决里"缓存翻倍"的量化背景。
 /// ⭐ 任务单 `#299` 的**代价**：`EngineSnapshot` **4576 → 4608 B**（＋32）——
 /// 主总线声相两个 `f32`（＋8）＋ 与 `routing.slots()` 平行的 `Vec<BusOutputStage>`（＋24）。
-/// `EngineRuntime` **不变**（仍是 186720 B）：新增的两个主总线声相 `f32` 落在既有对齐填充里。
+/// `EngineRuntime` **不变**（`#299` 当时仍是 186720 B）：新增的两个主总线声相 `f32` 落在既有对齐填充里。
 /// 分项：`Vec` 只是三个词（ptr/len/cap），真实表在堆上（每条总线 12 B，≤16 条 ⇒ ≤192 B），
 /// 与 `track_scratch` / `routing_buses` 同一条"构造期预分配、回调零分配"纪律。
 #[test]
@@ -605,9 +605,10 @@ fn b5_sizes_stay_under_the_192_kib_red_line() {
         196_608 - runtime
     );
     assert_eq!(
-        runtime, 186_720,
-        "EngineRuntime 必须是 186720 B（#261：逐边发送量表 ＋4784 B；\
-         #173 的主总线插入 ＋1792 仍在里面；见本判据文档）"
+        runtime, 186_736,
+        "EngineRuntime 必须是 186736 B（#261：逐边发送量表 ＋4784 B；\
+         #173 的主总线插入 ＋1792 仍在里面；⭐ **S1 第一片** ＋16 B = 两个 `u64` 事件计数\
+         `strip_output_gain_events` / `strip_output_gain_value_rejects`；见本判据文档）"
     );
     assert_eq!(
         snapshot, 4_608,

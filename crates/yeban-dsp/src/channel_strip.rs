@@ -376,6 +376,36 @@ impl ChannelStrip {
         self.params = params;
     }
 
+    /// 只换**输出增益的线性值**：一次标量赋值，⛔ 不重算任何系数。
+    ///
+    /// 存在的理由是 `output_gain_db` 的**实时自动化落点**：走 [`Self::set_params`]
+    /// 会连带重算 EQ／两个滤波器／压缩器的系数（`exp` 类超越函数 [ADR-0001 D32]
+    /// ⇒ 只在快照边界每个修订调一次），而输出增益这一级本身**逐样本无状态**
+    /// （模块注释 §2 的第 ⑤ 级：`s ← s · output_gain`）⇒ 它可以有自己那条窄入口，
+    /// 让自动化在**每个量子的出队边界**落地，其余四级一位不动。
+    ///
+    /// ⚠ 这里**不**改写 [`Self::params`] 的 `output_gain_db`：那个字段继续描述
+    /// **静态投影值**。下一次 [`Self::set_params`]（快照换了修订）会把静态值写回来
+    /// ⇒ 与"声相／发送量在同量子武装时被 `snap_to` 取消"的既有口径同解
+    /// （控制侧每个定时器跳都重发，落点随即回来；取消这件事本身在引擎侧计数）。
+    ///
+    /// ⛔ 这里**不**做值规则（有限 / 非负）：那条裁决住在调用方
+    /// （`yeban-engine` 的 `STRIP_OUTPUT_GAIN_SLOT` 分支，`Unmapped`／拒绝各只有一处
+    /// 归属）。参数请传**已经换算好**的线性增益：`db_to_gain(sanitise(db))`，
+    /// 换算与钳制都在控制侧（超越函数不进音频线程）。
+    pub fn set_output_gain(&mut self, gain: f32) {
+        self.output_gain = gain;
+    }
+
+    /// 此刻**实际生效**的输出增益线性值（自动化落点之后的那一份）。
+    ///
+    /// 与 [`Self::params`] 的 `output_gain_db` 可以不同 —— 前者是落点后的线性值，
+    /// 后者是静态投影的 dB。判据读这个数，⛔ 不必从音频输出反推。
+    #[must_use]
+    pub const fn output_gain(&self) -> f32 {
+        self.output_gain
+    }
+
     /// 换采样率。**不清状态**（与 [`Compressor::set_sample_rate`] 同纪律）。
     pub fn set_sample_rate(&mut self, sample_rate: f32) {
         let sample_rate = sanitise_sample_rate(sample_rate);
@@ -1881,6 +1911,151 @@ mod tests {
                 0.0f32.to_bits(),
                 "第 {frame} 帧右路不是逐位静音（幅度 {}）⇒ 另一路的样本串过来了",
                 sample
+            );
+        }
+    }
+
+    /// **判据（S1 第一片）**：窄入口 `set_output_gain` 与静态投影 `output_gain_db` **逐位同解**。
+    ///
+    /// 量什么：同一份输入（`composite`，220 Hz + 9 kHz）经两条构造路径后的**左＋右输出
+    /// 样本位型**（`f32` 位型 × `FRAMES × 2` 帧），三级全开、输入 trim −3 dB：
+    ///
+    /// | 路径 | 构造 | 谁在用 |
+    /// | :--- | :--- | :--- |
+    /// | ① 静态 | `new(params{ output_gain_db: −6 })` | 离线渲染 / MCP 导出 |
+    /// | ② 窄入口 | `new(params{ output_gain_db: 0 })` 再 `set_output_gain(db_to_gain(−6))` | S1 实时落点 |
+    ///
+    /// 为什么这条判据有牙：S1 的全部正确性论证是"落点⛔ 不重算系数、只改输出级
+    /// ⇒ 与离线**逐位相同**"。此前那句只是论证，没有测量。四组断言各打一种缺陷，
+    /// 且**互不覆盖**（下面那张表就是逐种注入的实测结果）：第 1 组打"改了输出级之外
+    /// 的东西 / 漏了乘点"，第 2 组打"恒等值不透明"，第 3 组打"写回静态投影"，
+    /// 第 4 组打"倍率而非替换"。
+    ///
+    /// 注入实测（本条逐种过，2026-10-29）：
+    /// - `self.output_gain *= gain`（倍率而非替换）⇒ **第 1、2 组全绿**（`base` 的输出级
+    ///   初值是 `1.0`，两种写法在 1.0 上同解），只有**第 4 组**红（第 1 帧左声道位型不符）；
+    ///   ⇒ 这条负面结果就是第 4 组存在的理由：恒等初值测不出倍率语义；
+    /// - 窄入口里加一行 `self.params.output_gain_db = gain`（顺手写回静态投影）⇒
+    ///   只有**第 3 组**红（音频输出不受影响 ⇒ 第 1、2、4 组全绿）。
+    #[test]
+    fn the_narrow_output_gain_entry_is_bit_identical_to_the_static_projection() {
+        /// 观测帧数：够长，让滤波与压缩的瞬态完全走出（与 `composite` 其他判据同量级）。
+        const FRAMES: usize = 512;
+
+        let base = ChannelStripParams {
+            input_gain_db: -3.0,
+            eq: EqParams {
+                low_gain: 6.0,
+                mid_gain: -4.0,
+                high_gain: 3.0,
+                ..Default::default()
+            },
+            filter: FilterParams {
+                cutoff_hz: 1_000.0,
+                resonance: 0.2,
+                drive: 0.0,
+            },
+            ..ChannelStripParams::DEFAULT
+        };
+        let input = composite(FRAMES);
+
+        // 路径①：静态投影（离线那条）。
+        let mut static_strip = ChannelStrip::new(
+            ChannelStripParams {
+                output_gain_db: -6.0,
+                ..base
+            },
+            SR,
+        );
+        let mut static_left = input.clone();
+        let mut static_right = input.clone();
+        static_strip.process_stereo(&mut static_left, &mut static_right);
+
+        // 路径②：窄入口（S1 实时那条）。
+        let mut narrow = ChannelStrip::new(base, SR);
+        narrow.set_output_gain(db_to_gain(-6.0));
+        let mut narrow_left = input.clone();
+        let mut narrow_right = input.clone();
+        narrow.process_stereo(&mut narrow_left, &mut narrow_right);
+
+        // 1. 两条路径**逐位**相同（左右各 `FRAMES` 帧）。
+        for frame in 0..FRAMES {
+            assert_eq!(
+                narrow_left[frame].to_bits(),
+                static_left[frame].to_bits(),
+                "第 {frame} 帧左声道：窄入口与静态投影不同位 ⇒ 落点改了输出级之外的东西"
+            );
+            assert_eq!(
+                narrow_right[frame].to_bits(),
+                static_right[frame].to_bits(),
+                "第 {frame} 帧右声道：窄入口与静态投影不同位"
+            );
+        }
+        assert!(
+            static_left.iter().any(|sample| sample.abs() > 1e-6),
+            "对照读数：夹具必须真的有信号（否则上面两条是空壳）"
+        );
+
+        // 2. 恒等值 ⇒ 逐位透明（`x · 1.0`），与"从没调用窄入口"同解。
+        let mut identity = ChannelStrip::new(base, SR);
+        identity.set_output_gain(db_to_gain(0.0));
+        let mut identity_left = input.clone();
+        let mut identity_right = input.clone();
+        identity.process_stereo(&mut identity_left, &mut identity_right);
+        let mut untouched = ChannelStrip::new(base, SR);
+        let mut untouched_left = input.clone();
+        let mut untouched_right = input.clone();
+        untouched.process_stereo(&mut untouched_left, &mut untouched_right);
+        assert_eq!(
+            fnv1a64(&identity_left) ^ fnv1a64(&identity_right),
+            fnv1a64(&untouched_left) ^ fnv1a64(&untouched_right),
+            "0 dB（gain=1.0）的窄入口必须逐位透明"
+        );
+
+        // 3. 窄入口⛔ 不写回静态投影，且下一次 `set_params` 把它**还原**回静态值。
+        //    这一条就是"同量子武装会取消目标"那条口径的器件级见证。
+        let mut restore = ChannelStrip::new(base, SR);
+        restore.set_output_gain(0.5);
+        assert_eq!(restore.output_gain().to_bits(), 0.5f32.to_bits());
+        assert_eq!(
+            restore.params().output_gain_db.to_bits(),
+            base.output_gain_db.to_bits(),
+            "窄入口⛔ 不得改写 `params.output_gain_db`（静态投影是下一次 `set_params` 的输入）"
+        );
+        restore.set_params(base);
+        assert_eq!(
+            restore.output_gain().to_bits(),
+            db_to_gain(base.output_gain_db).to_bits(),
+            "`set_params` 必须把输出增益还原成静态投影 ⇒ 自动化落在同量子时目标被覆盖是**已知口径**"
+        );
+
+        // 4. 语义是**替换**，不是倍率：静态投影 −6 dB 的条收到 0 dB 事件 ⇒ 回到满增益
+        //    （逐位等于上面那条从没衰减过的 `untouched`）。
+        //
+        //    ⚠ 这一组是"倍率实现"的**唯一**克星：`base` 的输出级初值是 `1.0`，
+        //    在 1.0 上 `= gain` 与 `*= gain` **同解** ⇒ 第 1、2 组测不出那种缺陷
+        //    （实测过，见本判据文档的注入表）。只有从**非恒等**静态值起步才测得出。
+        let mut replace = ChannelStrip::new(
+            ChannelStripParams {
+                output_gain_db: -6.0,
+                ..base
+            },
+            SR,
+        );
+        replace.set_output_gain(db_to_gain(0.0));
+        let mut replace_left = input.clone();
+        let mut replace_right = input.clone();
+        replace.process_stereo(&mut replace_left, &mut replace_right);
+        for frame in 0..FRAMES {
+            assert_eq!(
+                replace_left[frame].to_bits(),
+                untouched_left[frame].to_bits(),
+                "第 {frame} 帧左声道：0 dB 事件必须把 −6 dB 的静态投影**替换**掉（倍率实现会留在 −6）"
+            );
+            assert_eq!(
+                replace_right[frame].to_bits(),
+                untouched_right[frame].to_bits(),
+                "第 {frame} 帧右声道：同上"
             );
         }
     }

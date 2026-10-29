@@ -256,7 +256,8 @@ use crate::meter::{MeterBank, MeterFrame, MeterPublisher, SCRATCH_METERS};
 use crate::metronome::{MetronomeVoice, render_quantum as render_metronome_quantum};
 use crate::mixer::{BusLimiter, PanLaw};
 use crate::param::{
-    ParamTable, SEND_GAIN_SLOT, SEND_SLOTS, TRACK_PAN_LEFT_SLOT, TRACK_PAN_RIGHT_SLOT,
+    ParamTable, SEND_GAIN_SLOT, SEND_SLOTS, STRIP_OUTPUT_GAIN_SLOT, TRACK_PAN_LEFT_SLOT,
+    TRACK_PAN_RIGHT_SLOT,
 };
 use crate::ring::{EngineEvent, EventReceiver, SCRATCH_EVENTS};
 use crate::routing::{RouteTarget, RoutingPlan};
@@ -2524,6 +2525,21 @@ pub struct EngineRuntime {
     /// **1 条主总线**）。主总线的槽位总是排在**最后**（武装顺序 = 轨道按键序、
     /// 主总线收尾）⇒ `[..n]` 永远是**紧凑前缀**，⛔ 没有空洞、⛔ 没有陈旧残留项。
     armed_insert_slots: usize,
+    /// ⭐ **被接受的 `output_gain_db` 落点数**（累计，S1 第一片）。
+    ///
+    /// 数的是"`slot = `[`STRIP_OUTPUT_GAIN_SLOT`] 的事件**打到了**该轨已武装的通道条
+    /// 并完成一次标量赋值"的次数。它是覆盖度见证：没有这个数，"实时侧输出确实变了"
+    /// 只能从音频反推（本仓库的判据纪律要求读数）。
+    ///
+    /// ⚠ 与声相／发送量的 `*_automation_frames`（**逐样本**被平滑乘过的帧数）**不是**
+    /// 同一个量纲：这一条落点⛔ 不经平滑器（见 [`STRIP_OUTPUT_GAIN_SLOT`] 的理由），
+    /// 一次事件改的是一个量子起生效的常数，因此它数**事件**、不数帧。
+    strip_output_gain_events: u64,
+    /// 被拒绝的 `output_gain_db` **值**数（非有限 / 负数，S1 第一片）。
+    ///
+    /// 与 [`Self::pan_automation_value_rejects`] / [`Self::send_automation_value_rejects`]
+    /// 同一条口径：拒绝**计数**，⛔ 不静默，也⛔ 不钳成 `0.0`（那会把坏参数变成静音）。
+    strip_output_gain_value_rejects: u64,
     /// **混响延迟线池**：每槽一台，**构造期**按初始快照的采样率预分配
     /// [ARCH-RT-001, MUST-GATE-001]。
     ///
@@ -2751,7 +2767,7 @@ impl EngineRuntime {
     /// 一个 `EngineRuntime` 都不在栈上；改动前 `new` 的调用期峰值 =
     /// `359312 + 129984` = `489296 B`（⚠ 两个字面读数是 `#107` **之前**实测的栈帧，⛔ 未重测）。
     /// 而**按值调用者**还要多留一份 `size_of::<Self>()` 的返回值位（`#261` 之后
-    /// **186720 B**；`#173` 时是 181936 —— ⛔ 上面那两个栈帧字面读数仍不重测）——
+    /// 186720 ＋⭐ **S1 第一片**的两个 `u64` 计数 = **186736 B**；`#173` 时是 181936 —— ⛔ 上面那两个栈帧字面读数仍不重测）——
     /// 那一份是装箱消掉的（见判据 `tests/rt_new_boxed.rs` 的阈值差 `176 KiB`）。
     ///
     /// # Panics
@@ -2766,7 +2782,7 @@ impl EngineRuntime {
         events: EventReceiver,
         meters: MeterPublisher,
     ) -> Box<Self> {
-        // 堆上只要一块 `size_of::<Self>()`（`#261` 之后 186720 B）；栈帧里只有一个 `Box` 指针。
+        // 堆上只要一块 `size_of::<Self>()`（⭐ S1 之后 186736 B）；栈帧里只有一个 `Box` 指针。
         let mut place = Box::<Self>::new_uninit();
         // SAFETY: `write_into` 的有效性前提由本函数满足（`place` 是堆上一块有效、对齐、
         // 未初始化的 `Self`），它写满全部字段；`Box::assume_init` 再把
@@ -3009,6 +3025,8 @@ impl EngineRuntime {
                 core::array::from_fn(|_| (EntityId::default(), None))
             );
             put!(armed_insert_slots, 0);
+            put!(strip_output_gain_events, 0);
+            put!(strip_output_gain_value_rejects, 0);
             // ⚠ `reverb_pool` **不在这里**：它已经在上面逐台就地写好了（那一段就是本字段）。
             put!(
                 armed_reverbs,
@@ -3531,6 +3549,22 @@ impl EngineRuntime {
         self.send_automation_resets
     }
 
+    /// ⭐ **覆盖度见证**（S1 第一片）：被接受的 `output_gain_db` **落点数**（累计）。
+    ///
+    /// 零 ⇒ 一条也没打上（泳道没被下发 / 那条轨没有武装通道条 ⇒ 走 `Unmapped`）。
+    /// 它＋[`Self::strip_output_gain_value_rejects`] 两条读数一起，才能把
+    /// "事件到了但什么都没发生"与"事件到了、器件也真的改了"区分开。
+    #[must_use]
+    pub const fn strip_output_gain_events(&self) -> u64 {
+        self.strip_output_gain_events
+    }
+
+    /// ⭐ **不静默**（S1 第一片）：被拒绝的 `output_gain_db` **值**数（非有限 / 负数）。
+    #[must_use]
+    pub const fn strip_output_gain_value_rejects(&self) -> u64 {
+        self.strip_output_gain_value_rejects
+    }
+
     /// **容量读数**：因 [`SEND_SLOTS`] 装满而没有武装的**边**数（累计）。
     ///
     /// 那些边仍然使用**静态**边增益（裁决 1）；本计数保证"装不下"可读、不静默。
@@ -4012,6 +4046,9 @@ impl EngineRuntime {
             send_automation_value_rejects,
             send_automation_resets,
             send_capacity_drops,
+            // ⭐ S1 第一片：`output_gain_db` 的落点读数（事件循环里写，判据读）。
+            strip_output_gain_events,
+            strip_output_gain_value_rejects,
             pdc,
             pdc_unarmed_nodes,
             pdc_clamped_frames,
@@ -4149,6 +4186,30 @@ impl EngineRuntime {
                 } else {
                     None
                 };
+                // --- 通道条输出增益（`output_gain_db`）：**同样的分流**（S1 第一片）---
+                //
+                // `ParamTable` 只认 0/1 ⇒ 槽位 5 也必须在这里被截走，否则每条
+                // `DeviceParam(output_gain_db)` 事件都会落进 `params.accept` 被判
+                // `Unmapped` 并计数，而器件的输出增益永远不动 —— 那正是"公开面能写、
+                // 效果被静默丢弃"这一类缺陷（`#258` 的 45 dB 差是同一族的实测）。
+                //
+                // ⚠ 只在**这条轨有已武装的通道条**时截走：找不到就原样交给
+                // `params.accept` ⇒ 由它判 `Unmapped` 并计数（**单一归属**，与
+                // 声相／发送量逐字相同）。"这条轨没有通道条来源"与"这条泳道指的不是
+                // 武装那台设备"两件事在实时侧同解：都打不到落点，都有读数。
+                //
+                // 值是**线性绝对增益**（控制侧已把 dB 换算 + 钳制好，与离线渲染
+                // `db_to_gain(sanitise(db))` 同一个函数、同一条钳制 ⇒ 逐位相同）：
+                // 这里⛔ 不做 `exp`、⛔ 不做除法、⛔ 不调 `set_params`（那会连带重算
+                // EQ／滤波／压缩器系数 —— 超越函数类，只在快照边界每个修订一次，
+                // 见 [`crate::insert`] §2 与下面的武装循环）。
+                let strip_index = if target.slot == STRIP_OUTPUT_GAIN_SLOT {
+                    armed_strips[..*armed_insert_slots]
+                        .iter()
+                        .position(|(id, strip)| *id == target.entity && strip.is_some())
+                } else {
+                    None
+                };
                 if let Some(index) = pan_index {
                     if !value.is_finite() || value < 0.0 {
                         // 与 `ParamTable::accept` 同一条口径：非有限 / 负值 ⇒ **计数**拒绝。
@@ -4171,6 +4232,25 @@ impl EngineRuntime {
                         // **绝对值**：直接写目标（⛔ 不除以静态边增益）。
                         armed_send_gain[index].set_target(value);
                         armed_send_armed[index] = true;
+                    }
+                } else if let Some(index) = strip_index {
+                    if !value.is_finite() || value < 0.0 {
+                        // 同一条值规则（非有限 / 负 ⇒ 忽略该事件、目标保持不变）＋计数。
+                        // ⛔ 不钳成 `0.0`：那是把坏参数变成一次静音（听得见、读不出）。
+                        *strip_output_gain_value_rejects =
+                            strip_output_gain_value_rejects.wrapping_add(1);
+                    } else if let Some((_, Some(strip))) = armed_strips.get_mut(index) {
+                        // **替换**静态输出增益：一次标量赋值（[`ChannelStrip::set_output_gain`]）。
+                        // ⛔ 不经 `ParamSmoother`（理由见 [`STRIP_OUTPUT_GAIN_SLOT`] 的文档：
+                        // 平滑器的 `snap_to` 会同量子抹掉目标，而器件参数的权威在快照投影里）；
+                        // ⛔ 不在此处调 `set_params`（超越函数类）。
+                        strip.set_output_gain(value);
+                        *strip_output_gain_events = strip_output_gain_events.wrapping_add(1);
+                    } else {
+                        // 位置是**本表自己**在 `[..armed_insert_slots]` 上算出来的 ⇒ 到不了这里；
+                        // 写出来只为"槽位为空"这件事不产生任何静默副作用（若发生则一次 `Unmapped`
+                        // 都不会记，读数会比真相更难看）。交回 `params.accept` 判并计数。
+                        let _ = params.accept(target, value, *armed_master);
                     }
                 } else {
                     // 三类"没有生效"的裁决（非法值 / 未映射地址 / 容量不足）由**表自己**
@@ -4516,6 +4596,12 @@ impl EngineRuntime {
                 // 动态级（`crate::insert` 模块文档 §2）。只写压缩器参数的设备投影成
                 // "只开动态级"的通道条 ⇒ 那条路径的输出与 `c792fdc` **逐位相同**。
                 *armed_insert_slots = 0;
+                // ⚠ **这里的 `set_params` 会把输出增益写回静态投影值**（S1 第一片的口径）：
+                // 一条 `output_gain_db` 自动化落点住在 `ChannelStrip::output_gain`
+                // （事件循环里一次标量赋值），⛔ 不住在 `params` 里 ⇒ 换修订重武装时
+                // 静态值回来、自动化在**下一个事件**上重新落地（控制侧的定时器每跳
+                // 都重发 ⇒ 空窗是一个出队边界，不是"整段丢失"）。这件事有读数：
+                // [`EngineRuntime::strip_output_gain_events`] 会随重落地继续前进。
                 // ⭐ 任务单 `#173`：主总线**排在最后**（轨道按键序，主总线收尾）⇒
                 // `[..armed_insert_slots]` 仍然是**紧凑前缀**；主总线占的是多出来的
                 // 第 17 格（[`INSERT_SLOTS`]），⛔ 不挤掉任何一条轨的槽位。

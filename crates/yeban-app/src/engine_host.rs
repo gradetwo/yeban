@@ -116,12 +116,13 @@ use std::path::{Path, PathBuf};
 
 use yeban_engine::block::DEFAULT_BLOCK_FRAMES;
 use yeban_engine::device::{DeviceError, EngineConfig, OutputStreamHandle, ShareMode};
+use yeban_engine::insert::strip_source_index;
 use yeban_engine::level::db_to_gain;
 use yeban_engine::meter::{DEFAULT_METER_CAPACITY, MeterCollector, meter_channel};
 use yeban_engine::mixer::{PanLaw, centered_pan_gains};
 use yeban_engine::param::{
-    MASTER_GAIN_SLOT, PARAM_SLOTS, SEND_GAIN_SLOT, SEND_SLOTS, TRACK_GAIN_SLOT,
-    TRACK_PAN_LEFT_SLOT, TRACK_PAN_RIGHT_SLOT,
+    MASTER_GAIN_SLOT, PARAM_SLOTS, SEND_GAIN_SLOT, SEND_SLOTS, STRIP_OUTPUT_GAIN_SLOT,
+    TRACK_GAIN_SLOT, TRACK_PAN_LEFT_SLOT, TRACK_PAN_RIGHT_SLOT,
 };
 use yeban_engine::ring::{EngineEvent, EventSender, ParamAddress, TransportCommand, event_channel};
 use yeban_engine::routing::edge_carries_audio;
@@ -136,6 +137,10 @@ use yeban_model::EntityId;
 use yeban_model::project::YebanProjectV1;
 use yeban_model::{AssetHash, ClipContent};
 use yeban_model::{LaunchQuantization, TimeSignature};
+// ⭐ S1 第一片：`output_gain_db` 的**离线落点表**（拼写与钳制都由 render 那份定义）。
+// 控制侧读它 ⇒ 监听与导出的"这个名字能不能落"不可能各答一套（`StripField::SPELLINGS`
+// 是唯一一张名字表，`sanitised_output_gain_db` 走的是器件同一次钳制）。
+use yeban_render::inserts::{StripField, sanitised_output_gain_db};
 
 use crate::audio_inject::{
     AudioAssetSource, AudioCacheReadings, AudioClipInjection, AudioClipReport, AudioClipSkip,
@@ -477,8 +482,15 @@ pub struct UnappliedAutomationLanes {
     /// ⇒ 它们不计入本列；本列只剩"边根本不在可搬运音频的图里"的那一类
     /// （离线导出 / MCP 渲染按边求值，但对这类边同样没有落点）。
     pub send_gain: u64,
-    /// 开着的 `DeviceParam` 泳道数（实时**没有**落点；离线有通道条（含压缩）/
-    /// Freeverb / 卷积标量的落点，见任务单 `#266` / `#267` / `#293` / `#304`）。
+    /// 开着的 `DeviceParam` 泳道数**且它在实时侧没有落点**。
+    ///
+    /// ⭐ **S1 第一片之后这一列的口径变了**：`output_gain_db`（拼写 `output_gain` /
+    /// `fader_db` 同）在**有通道条来源的那台设备**上已经真落到实时引擎的通道条
+    /// （槽位 [`STRIP_OUTPUT_GAIN_SLOT`]）⇒ 它们**不计入**本列。剩下的仍是没落点的：
+    /// 其余通道条字段（EQ／滤波／压缩，`#267` / `#304`）、Freeverb（`#293`）、
+    /// 卷积标量（`#293`）—— 这些离线有落点（见任务单 `#266` / `#267` / `#293` / `#304`）、
+    /// 实时没有；以及"`slot_index` 指的不是该轨的通道条来源"与"该轨没有通道条来源"
+    /// （离线会强制实例化恒等通道条，实时不会 —— 谓词见 [`strip_output_gain_lands`]）。
     pub device_param: u64,
     /// 开着的 `Macro` 泳道数（实时与离线**都**没有落点）。
     pub macro_lanes: u64,
@@ -522,6 +534,51 @@ fn send_gain_lands(project: &YebanProjectV1, edge_id: EntityId) -> bool {
         })
 }
 
+/// ⭐ **`output_gain_db` 在实时侧有没有落点**（S1 第一片的谓词，采样与 gauge 共用）。
+///
+/// 两个条件**都要**成立（缺一就不发、也不落地 ⇒ 由 [`unapplied_automation_lanes`]
+/// 计数，⛔ 不静默）：
+///
+/// 1. **这个名字能被落点**：`StripField::from_name`（离线渲染用的**同一张**拼写表，
+///    `output_gain_db` / `output_gain` / `fader_db` 三个拼写）解析到
+///    `OutputGainDb` —— 本单**只接这一组**，其余通道条字段（EQ／滤波／压缩）与
+///    混响／卷积标量仍然只在导出里有落点（那是 S2 以后的事，读数照旧）；
+/// 2. **这台设备就是该轨通道条的来源**：`slot_index ==` [`strip_source_index`]
+///    （引擎 `InsertParams::from_devices` 的规则 1＋3，同一个函数）⇒ 否则实时侧改的是
+///    **别的**器件的输出增益，那是"落错了地方"比"没落"更坏的结果。
+///
+/// ⚠ 本谓词**不**回答"引擎的通道条武装表里此刻有没有这条轨的槽位"：
+/// 那要读 RT 状态，超出控制侧的边界。打不到 ⇒ 事件原样交给 `ParamTable`
+/// 判 `Unmapped` 并计数（引擎侧读数 `param_unmapped_events`），⛔ 不是静默。
+///
+/// ⚠ **已知残留（如实登记）**：离线渲染在"本轨没有通道条来源器件"时会强制实例化一条
+/// 恒等通道条把值落下去（`yeban_render::inserts::forced_identity_strip`），实时侧
+/// ⛔ 不做 ⇒ 那类泳道计入 [`unapplied_automation_lanes`] 的 `device_param`。
+#[must_use]
+fn strip_output_gain_lands(
+    project: &YebanProjectV1,
+    track_id: EntityId,
+    slot_index: usize,
+    param_index: usize,
+) -> bool {
+    let Some(track) = project.tracks.get(&track_id) else {
+        return false;
+    };
+    if strip_source_index(&track.devices) != Some(slot_index) {
+        return false;
+    }
+    let Some(name) = track
+        .devices
+        .get(slot_index)
+        .and_then(|device| device.params.get(param_index))
+        .map(|param| param.name.as_str())
+    else {
+        return false;
+    };
+    // `from_name` 自身**大小写不敏感** ⇒ ⛔ 不再复制一份 `to_ascii_lowercase`。
+    StripField::from_name(name) == Some(StripField::OutputGainDb)
+}
+
 /// 扫描工程里的自动化泳道，数出**实时引擎没有执行落点**的那些（任务单 `#259`）。
 ///
 /// 这是**唯一**的分类处：[`EngineHost::publish_automation`] 每跳调用它更新读数，
@@ -550,8 +607,20 @@ pub fn unapplied_automation_lanes(project: &YebanProjectV1) -> UnappliedAutomati
                         lanes.send_gain = lanes.send_gain.saturating_add(1);
                     }
                 }
-                AutomationTarget::DeviceParam { .. } => {
-                    lanes.device_param = lanes.device_param.saturating_add(1);
+                AutomationTarget::DeviceParam {
+                    track_id,
+                    slot_index,
+                    param_index,
+                } => {
+                    // ⭐ **S1 第一片**：`output_gain_db`（含 `output_gain` / `fader_db` 拼写）
+                    // 且**这台设备就是该轨通道条的来源** ⇒ 实时侧有落点 ⇒ **不再**计入本读数。
+                    // 谓词与 [`EngineHost::publish_automation`] 的第四块**同一个函数**
+                    // （[`strip_output_gain_lands`]）⇒ 采样与读数不可能各答一套。
+                    // 其余名字（EQ／滤波／压缩、混响／卷积标量）与"不是通道条来源"的泳道
+                    // 照旧计数 —— 那仍是实话，⛔ 不是删掉一个计数。
+                    if !strip_output_gain_lands(project, track_id, slot_index, param_index) {
+                        lanes.device_param = lanes.device_param.saturating_add(1);
+                    }
                 }
                 AutomationTarget::Macro { .. } => {
                     lanes.macro_lanes = lanes.macro_lanes.saturating_add(1);
@@ -578,7 +647,8 @@ pub fn automation_unapplied_line(lanes: UnappliedAutomationLanes) -> String {
     format!(
         "automation-engine: unapplied-lanes={} send-gain={} device-param={} macro={} \
          note=\"有 {} 条自动化泳道在监听里没落地；SendGain 的边在监听里没有落点\
-         （离线导出/MCP 按边求值），DeviceParam 的通道条（含压缩）/混响/卷积标量名字在离线导出/MCP \
+         （离线导出/MCP 按边求值），DeviceParam 的 output_gain_db 在有通道条来源的轨上有实时落点\
+         （拼写 output_gain / fader_db 同一条），其余通道条（含压缩）/混响/卷积标量名字在离线导出/MCP \
          渲染里有落点（卷积 IR 形状没有），Macro 在监听里没有落点\
          （离线导出/MCP 只在存在 Macro 泳道时按映射级联）\"",
         lanes.total(),
@@ -1460,20 +1530,22 @@ impl EngineHost {
     /// * 边在实时侧没有落点（不存在 / 侧链 / 源是母线 / 源不是可渲染音轨）⇒ 不发，
     ///   由 [`unapplied_automation_lanes`] 计数（与声相跳过母线同一条先例）。
     ///
-    /// 一跳最多下发的自动化事件数：**每条轨 3 条 ＋ 每条可寻址的 `SendGain` 边 1 条**。
+    /// 一跳最多下发的自动化事件数：**每条轨 3 条 ＋ 每条可寻址的 `SendGain` 边 1 条
+    /// ＋ 每条轨的 `output_gain_db` 落点 1 条**（⭐ S1 第一片）。
     ///
     /// ⛔ 不用 [`PARAM_SLOTS`] 当上限：那个数是**引擎参数表的槽位数**（每条轨一个增益槽位）。
     /// 声相与发送量走引擎里**另外两条独立通路**（`rt.rs` 的逐轨声相平滑对 ／ 逐边发送量
     /// 武装表），不占参数表的槽位 ⇒ 批次可以更大。**每跳仍然只有一次 `publish`
     /// （一条批）**，这条纪律不变。
     ///
-    /// 容量 = `PARAM_SLOTS × 3 ＋ SEND_SLOTS` = **112**：
-    /// 前半是"音量 1 ＋ 声相 2"（每条引擎轨），后半是**引擎发送量表的行数上限**
-    /// （`SendGain` 事件最多只对表里的边有落点）。⚠ 超过的部分逐条计进
-    /// `automation_dropped`（⛔ 不静默）；引擎那一侧还有自己的
-    /// `send_capacity_drops`（表满时保留静态边增益）。
+    /// 容量 = `PARAM_SLOTS × 3 ＋ SEND_SLOTS ＋ PARAM_SLOTS` = **128**：
+    /// 前半是"音量 1 ＋ 声相 2"（每条引擎轨），中半是**引擎发送量表的行数上限**
+    /// （`SendGain` 事件最多只对表里的边有落点），后 `PARAM_SLOTS` 是**通道条落点**
+    /// （一条轨只有一个通道条来源 ⇒ 每轨至多一条）。⚠ 同一台设备上用**多个拼写**
+    /// 各开一条泳道（`output_gain_db` 与 `fader_db` 并存）这类畸形工程会超出上限
+    /// ⇒ 超过的部分逐条计进 `automation_dropped`（⛔ 不静默），与发送量那半条同口径。
     const fn automation_batch_capacity() -> usize {
-        PARAM_SLOTS * 3 + SEND_SLOTS
+        PARAM_SLOTS * 3 + SEND_SLOTS + PARAM_SLOTS
     }
 
     /// **把工程里的自动化泳道采样成 `SetParam` 事件并下发**（裁决 R55／R68／P4=(b)）。
@@ -1484,6 +1556,8 @@ impl EngineHost {
     ///   只在"标记变了"的那一跳才 `try_project()`（成本契约），⛔ 采样**不得**挂在入参上；
     /// * 一条轨最多 **3** 条事件：音量 1 条 + 声相 2 条（左/右**绝对**增益，语义是**替换**）；
     ///   ⭐ **`#261`**：另外每一条**有实时落点**的 `SendGain` 边再加 1 条（见下第三块）；
+    ///   ⭐ **S1 第一片**：再加**至多 1 条** `output_gain_db`（见下第四块，谓词与
+    ///   [`unapplied_automation_lanes`] 共用 ⇒ 没有落点的一条都不发）；
     /// * ⭐ **`#260`**：音量与声相是**两块并列的采样**（各自独立的 `if let`）⇒
     ///   只有声相泳道（或只有音量泳道）的轨也各自下发；⛔ 声相**不**因音量泳道缺失 /
     ///   关闭 / 这一跳没有值 / 值非法而被跳过（修前正是那样，`continue` 跳过了整段）；
@@ -1632,6 +1706,59 @@ impl EngineHost {
                 }
                 batch[len] = EngineEvent::SetParam {
                     target: ParamAddress::new(edge_id, SEND_GAIN_SLOT),
+                    value,
+                };
+                len += 1;
+            }
+
+            // ---- 4. ⭐ 设备参数 `output_gain_db`（S1 第一片）：**每轨至多一条** ----
+            //
+            // 地址的 `entity` 是**轨身份**（与音量／声相同；实时侧的通道条武装表
+            // `armed_strips` 正是按轨查的），槽位 [`STRIP_OUTPUT_GAIN_SLOT`] = 5。
+            //
+            // **换域 = 绝对值**（与发送量 `#261` 同一条口径，⛔ 不是音量的"÷ 静态值"）：
+            // `value = db_to_gain(sanitised_output_gain_db(自动化 dB))`。
+            // 先钳制再换算，用的正是**离线渲染那一次**钳制
+            // （`StripField::sanitise` → `ChannelStripParams::sanitised`）与**同一个**
+            // `db_to_gain`（引擎转发的那份就是 `yeban_dsp::math::db_to_gain`，
+            // 由 `the_forwarded_db_to_gain_is_literally_the_dsp_function` 钉住）
+            // ⇒ 监听的 `10^(db/20)` 与导出的 `10^(db/20)` **逐位相同**。
+            // ⚠ 换算与钳制都发生在**控制侧**：超越函数⛔ 不进音频线程
+            // （[ADR-0001 D32]，与声相 `(左, 右)` 增益同一条纪律）。
+            //
+            // 落点条件（谓词与 [`unapplied_automation_lanes`] **同一个函数**）：
+            // 名字被离线的拼写表认成 `OutputGainDb` ＋ `slot_index` 指的就是该轨
+            // **通道条来源**那台设备 ⇒ 不满足就**不发**（不发＝没有落点＝计数，
+            // ⛔ 不是发一条让引擎判 `Unmapped` 的假事件）。
+            // `read_enabled:false` ⇒ 不发（与音量／声相／发送量同一条裁决 4）。
+            for lane in track.automation_lanes.values() {
+                let AutomationTarget::DeviceParam {
+                    track_id: lane_track,
+                    slot_index,
+                    param_index,
+                } = lane.target
+                else {
+                    continue;
+                };
+                if !lane.read_enabled
+                    || !strip_output_gain_lands(project, lane_track, slot_index, param_index)
+                {
+                    continue;
+                }
+                let Ok(Some(automated_db)) = project.automation_value_at(&lane.target, tick) else {
+                    continue;
+                };
+                // **先钳制后换算**（与离线同一次 `sanitised()`）⇒ 非有限 / 越界的值
+                // 归到器件的合法域，永远不会把一个 `NaN` 送进音频线程。
+                let value = db_to_gain(sanitised_output_gain_db(automated_db));
+                if !value.is_finite() || value < 0.0 || len == batch_capacity {
+                    // 前两个条件在钳制后**不该**成立（`db_to_gain` 有限域内产出正值）
+                    // ⇒ 留作值规则的最后一道，与发送量逐字同形；第三个是批满。
+                    dropped += 1;
+                    continue;
+                }
+                batch[len] = EngineEvent::SetParam {
+                    target: ParamAddress::new(lane_track, STRIP_OUTPUT_GAIN_SLOT),
                     value,
                 };
                 len += 1;

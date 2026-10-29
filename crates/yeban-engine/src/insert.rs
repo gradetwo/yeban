@@ -712,6 +712,28 @@ impl ConvProjection {
     }
 }
 
+/// 设备链里**通道条来源**的下标（`None` = 整条链没有通道条来源）。
+///
+/// 这就是 [`InsertParams::from_devices`] 的规则 1＋3：只看**非旁通**的
+/// `InternalEffect`，第一个"至少含一个已识别通道条参数名"的设备胜。
+///
+/// 把它单独公开出来的原因不是复用代码，是**防止规则漂到第二处**：实时侧
+/// `output_gain_db` 自动化的落点谓词（`yeban_app` 的采样）必须回答"这条泳道指的
+/// 那台设备，是不是**这台通道条**的来源" —— 那与武装用的是同一个问题。抄一份
+/// 判断就必有第二份答案（本仓库的"说假话"这一类缺陷）。
+///
+/// ⚠ 与 [`InsertParams::from_devices`] 一样，本函数是**构造期／控制侧**的纯函数：
+/// 它逐台设备扫 `params` 的名字（`to_ascii_lowercase` 分配临时 `String`），
+/// ⛔ 不在音频线程上调。
+#[must_use]
+pub fn strip_source_index(devices: &[DeviceDefinition]) -> Option<usize> {
+    devices.iter().position(|device| {
+        !device.bypassed
+            && device.kind == DeviceKind::InternalEffect
+            && InsertParams::strip_of(device).is_some()
+    })
+}
+
 impl InsertParams {
     /// **空链**：实时侧对这条轨整段跳过 ⇒ 输出逐位不变。
     #[must_use]
@@ -722,7 +744,6 @@ impl InsertParams {
             convolution: None,
         }
     }
-
     /// 从模型层的设备链投影（**构造期**；见模块文档 §4、§8 与 §9 的规则表）。
     ///
     /// 三件器件**各自独立**取来源：通道条取第一个含通道条参数名的设备，混响取第一个含
@@ -735,7 +756,11 @@ impl InsertParams {
     /// 的直接后果（模块文档 §9.1／§9.2）。
     #[must_use]
     pub fn from_devices(devices: &[DeviceDefinition], sample_rate: u32) -> Self {
-        let mut strip: Option<ChannelStripParams> = None;
+        // 通道条来源走**同一个**谓词（[`strip_source_index`]）⇒ "哪台设备武装了这条
+        // 通道条"这件事只有**一处**定义：实时侧 `output_gain_db` 自动化的落点判断
+        // 读的就是它，⛔ 不可能与这里的投影各写一套答案。
+        let strip: Option<ChannelStripParams> =
+            strip_source_index(devices).and_then(|index| Self::strip_of(&devices[index]));
         let mut reverb: Option<ReverbParams> = None;
         let mut convolution: Option<ConvolutionPlan> = None;
         for device in devices {
@@ -744,16 +769,13 @@ impl InsertParams {
                 continue;
             }
             // 规则 3：`None` = 本设备一个已识别参数都没有 ⇒ 它不是那件器件的来源。
-            if strip.is_none() {
-                strip = Self::strip_of(device);
-            }
             if reverb.is_none() {
                 reverb = Self::reverb_of(device);
             }
             if convolution.is_none() {
                 convolution = Self::convolution_of(device, sample_rate);
             }
-            if strip.is_some() && reverb.is_some() && convolution.is_some() {
+            if reverb.is_some() && convolution.is_some() {
                 break;
             }
         }
