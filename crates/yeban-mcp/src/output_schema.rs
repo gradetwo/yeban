@@ -280,7 +280,7 @@ fn commit_model_schema() -> Value {
 
 /// 给一份 schema 补上 `commitModel`（`required` 与 `properties` **一起**补）。
 ///
-/// 做成"在 `finish` 外面包一层"、而不是往五份字面量里各加一个键，有两个实测理由：
+/// 做成"在 `finish` 外面包一层"、而不是往每份字面量里各加一个键，有两个实测理由：
 ///
 /// 1. `render_master` 的 `json!` 字面量早已贴着 `serde_json` 宏的递归上限
 ///    （见 [`render_master`] 里 `midiSource` 的来历），再往字面量里加一个键就编不过；
