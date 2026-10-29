@@ -468,7 +468,8 @@ fn the_four_note_forms_are_byte_identical_on_a_midi_clip() {
     assert!(mismatches.is_empty(), "digests mismatched: {mismatches:?}");
 }
 
-/// 判据 ④（§2.4）：收窄**可机械核** —— 发布的音符级清单**逐字**是八个，
+/// 判据 ④（§2.4）：收窄**可机械核** —— 发布的音符级清单**逐字**是十三个
+/// （九个音符形态 + `N10`/`N11`/`N16b` 新增的四个整片段变换 kind），
 /// 且它与"读顶层 `clipId` 的清单"的包含关系成立（音符形态必然是 `clipId`
 /// 的消费者；池级 `removeClip` 读 `clipId` 却**不**读音符）。
 ///
@@ -479,7 +480,7 @@ fn the_four_note_forms_are_byte_identical_on_a_midi_clip() {
 /// 注入（实测红）：把 `NOTE_LEVEL_KINDS` 加回任一属性级形态，或把谓词改回收窄前的
 /// 反选清单 ⇒ 本判据红；`six_property_forms_succeed_on_an_audio_clip` 的标题断言也红。
 #[test]
-fn the_note_level_predicate_is_exactly_nine() {
+fn the_note_level_predicate_is_exactly_thirteen() {
     assert_eq!(
         NOTE_LEVEL_KINDS,
         [
@@ -491,11 +492,17 @@ fn the_note_level_predicate_is_exactly_nine() {
             "setNoteExpression",
             "setNotePitchShape",
             "setPitchBendPoint",
-            "transposeClip"
+            "transposeClip",
+            // 审计 `N10`/`N11`/`N16b`：四个整片段变换展开成音符级 op，
+            // 同属音符形态（`duplicateClip` 编出 `Op::Batch`，⛔ 不在此列）。
+            "quantizeClip",
+            "invertClip",
+            "retrogradeClip",
+            "humanizeClip"
         ],
-        "音符级 kind 必须逐字是九个音符形态（⛔ 不是从常量自己比出来的长度）"
+        "音符级 kind 必须逐字是十三个音符形态（⛔ 不是从常量自己比出来的长度）"
     );
-    assert_eq!(NOTE_LEVEL_KINDS.len(), 9, "恰好九个");
+    assert_eq!(NOTE_LEVEL_KINDS.len(), 13, "恰好十三个");
     // 每个成员都在 `OP_KINDS` 目录里（不是幽灵名字）。
     for kind in NOTE_LEVEL_KINDS {
         assert!(OP_KINDS.contains(kind), "`{kind}` 必须在 `OP_KINDS` 目录里");
@@ -504,7 +511,8 @@ fn the_note_level_predicate_is_exactly_nine() {
             "`{kind}` 是音符形态 ⇒ 必然读顶层 `clipId`"
         );
     }
-    // 池级 `removeClip` 是唯一的"读 `clipId` 但不是音符级"的 kind。
+    // 读 `clipId` 但不是音符级的 kind = 池级 `removeClip` 与审计 `N16b` 的
+    // `duplicateClip`（克隆池条目 + 可选摆放，编出 `Op::Batch`，⛔ 不读音符）。
     let non_note_readers: Vec<&str> = ENVELOPE_CLIP_KINDS
         .iter()
         .copied()
@@ -512,8 +520,8 @@ fn the_note_level_predicate_is_exactly_nine() {
         .collect();
     assert_eq!(
         non_note_readers,
-        ["removeClip"],
-        "读 `clipId` 却不读音符的 kind 必须恰好是池级 `removeClip`"
+        ["duplicateClip", "removeClip"],
+        "读 `clipId` 却不读音符的 kind 必须恰好是池级 `removeClip` 与 `duplicateClip`"
     );
     println!(
         "### 逐字：NOTE_LEVEL_KINDS = {} / ENVELOPE_CLIP_KINDS = {}",
