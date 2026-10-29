@@ -911,6 +911,10 @@ export component MainWindow inherits Window {
     // `ui.set_track_sampler_paths` 在 `src/host.rs`）。
     in property <[string]> track-sampler-paths: [];
     in property <[string]> scene-names: [];
+    // 场景色标（`SceneV3::color` 经投影解析 / 回退后的颜色与规范化文本）。
+    // 与 `track-colors` / `track-color-labels` 同族：`host::apply_view` 是唯一写者。
+    in property <[color]> scene-colors: [];
+    in property <[string]> scene-color-labels: [];
     // ⭐ 任务单 `#283`：**当前场景**读数（唯一写者 `host::apply_current_scene`；
     // 唯一事实源 `ViewState::current_scene`）。`-1` / `""` = 本会话还没有启动过场景。
     in property <int> current-scene-index: -1;
@@ -1293,6 +1297,8 @@ export component MainWindow inherits Window {
                     visible: !root.arrangement-view;
                     tracks: root.track-names;
                     scenes: root.scene-names;
+                    scene-colors: root.scene-colors;
+                    scene-color-labels: root.scene-color-labels;
                     // ⭐ `#283`：场景按钮的落点 + "当前场景"读数（全部来自宿主的
                     // 唯一注入；⛔ `.slint` 不自己记"上次点了哪个"）。
                     scene-launch(scene_index) => {

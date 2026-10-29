@@ -655,6 +655,15 @@ impl ElementRegistry {
                 &format!("激发场景 {}", scene.name),
                 false,
             );
+            // 场景色标（`SceneV3::color` 的投影形态）：标签携带规范化 `#RRGGBB`，
+            // 与轨道色标同一条纪律 —— 控件树里读到的就是投影字段。
+            registry.add(
+                &format!("scene-{scene_index}-color-swatch"),
+                ElementKind::Image,
+                "workspace/session_view.slint",
+                &format!("场景色标 {}", scene.color_hex),
+                false,
+            );
         }
         registry.add(
             "session-back-to-arrangement-button",
@@ -2083,13 +2092,14 @@ pub fn is_well_formed_id(id: &str) -> bool {
 /// `track-` 族里，但**主控通道条**（`mixer-master-*`）不共享那个前缀 —— 它的名字 / 音量 /
 /// 声相 / 静音 / 独奏 / 色标同样来自工程，所以必须有自己的族，否则"主控显示的是不是工程"
 /// 就没有机械检查（`ui/console/mixer_console.slint` 的 `mixer-master-strip` 子树）。
-pub const MODEL_DRIVEN_FAMILIES: [&str; 9] = [
+pub const MODEL_DRIVEN_FAMILIES: [&str; 10] = [
     "track-",
     "section-",
     "clip-",
     "note-",
     "velocity-",
     "session-track-",
+    "scene-",
     "scene-launch-",
     "slot-",
     "mixer-",
@@ -2767,6 +2777,7 @@ mod tests {
             "note-01J8Z5Q0R7K3M9X2V4B6N8P1A2-rect",
             "velocity-0-bar",
             "session-track-0-header",
+            "scene-0-color-swatch",
             "scene-launch-0-button",
             "slot-0-0-cell",
             // app-mixer: 调音台通道条 / 电平表 / 主控通道条都由投影或引擎电平驱动。

@@ -3048,6 +3048,13 @@ pub struct SceneView {
     pub tempo: Option<f64>,
     /// 界面色标。
     pub color: Option<String>,
+    /// 已解析（或已回退）的色标 RGB —— `.slint` 的 `[color]` 数组由它构造。
+    ///
+    /// 与轨道色标**同一套**解析 / 回退（`track_color_or_default` 是唯一实现）：
+    /// 缺失或非法一律回退到 [`DEFAULT_TRACK_COLOR`]，⛔ 不猜颜色。
+    pub color_rgb: RgbColor,
+    /// 规范化的 `#RRGGBB` 文本（回退色也在这里），进控件树标签与判据。
+    pub color_hex: String,
 }
 
 /// ⭐ 任务单 `#283`：**最近一次已接受的场景启动**的读数（Session View 的"当前场景"）。
@@ -3968,6 +3975,27 @@ impl ViewState {
     #[must_use]
     pub fn scene_names(&self) -> Vec<String> {
         self.scenes.iter().map(|scene| scene.name.clone()).collect()
+    }
+
+    /// 场景色标 RGB（非法 / 缺失已回退到 [`DEFAULT_TRACK_COLOR`]）。
+    ///
+    /// 与 [`Self::track_colors`] 同源同口径：解析 / 回退只在投影层做一次，
+    /// 宿主只把它转成 Slint 的 `Color`。
+    #[must_use]
+    pub fn scene_colors(&self) -> Vec<RgbColor> {
+        self.scenes.iter().map(|scene| scene.color_rgb).collect()
+    }
+
+    /// 场景色标的规范化文本（`#RRGGBB`，回退色也在内）。
+    ///
+    /// 进 `.slint` 的 `scene-color-labels` 与语义注册表标签 ——
+    /// "投影 ↔ 控件树"的色标一致性由两侧判据钉住。
+    #[must_use]
+    pub fn scene_color_labels(&self) -> Vec<String> {
+        self.scenes
+            .iter()
+            .map(|scene| scene.color_hex.clone())
+            .collect()
     }
 
     /// ⭐ 任务单 `#283`："当前场景"的**视图内序号**；`None` ⇒ `-1`。
@@ -5099,12 +5127,16 @@ fn section_view(
 
 /// 投影一个场景。
 fn scene_view(scene: &SceneV3, index: usize) -> SceneView {
+    // 色标：与轨道**同一处**解析 + 回退（`track_color_or_default` 是唯一实现）。
+    let color_rgb = track_color_or_default(scene.color.as_deref());
     SceneView {
         index,
         id: scene.id.to_canonical_string(),
         name: scene.name.clone(),
         tempo: scene.tempo,
         color: scene.color.clone(),
+        color_rgb,
+        color_hex: color_rgb.to_hex(),
     }
 }
 
@@ -6909,6 +6941,66 @@ mod tests {
         assert_eq!(demo.tracks[0].color_hex, "#F7E6B0");
         assert_eq!(demo.tracks[1].color_hex, DEFAULT_TRACK_COLOR_HEX);
         assert_eq!(demo.tracks[2].color_hex, "#22AA88");
+    }
+
+    /// 场景色标与轨道色标**同一套**解析 / 回退：合法色保留并规范化，
+    /// 非法 / 缺失一律回退到 [`DEFAULT_TRACK_COLOR`]（⛔ 不为场景另造第二种语法）。
+    #[test]
+    fn scene_colors_parse_and_missing_or_illegal_colors_fall_back() {
+        let mut project = filled_project();
+        let scene_ids: Vec<EntityId> = project.scenes.keys().copied().collect();
+        assert!(!scene_ids.is_empty(), "filled_project 必须至少有一个场景");
+        for id in &scene_ids {
+            project
+                .scenes
+                .get_mut(id)
+                .expect("刚取出的场景键必须还在")
+                .color = Some("#AbC".to_owned());
+        }
+        let view = ViewState::from_project(&project).expect("投影");
+        for scene in &view.scenes {
+            assert_eq!(scene.color_rgb, RgbColor::new(0xaa, 0xbb, 0xcc));
+            assert_eq!(scene.color_hex, "#AABBCC");
+        }
+        assert_eq!(
+            view.scene_colors(),
+            vec![RgbColor::new(0xaa, 0xbb, 0xcc); view.scenes.len()]
+        );
+        assert_eq!(
+            view.scene_color_labels(),
+            vec!["#AABBCC".to_owned(); view.scenes.len()]
+        );
+
+        for id in &scene_ids {
+            project
+                .scenes
+                .get_mut(id)
+                .expect("刚取出的场景键必须还在")
+                .color = Some("不是颜色".to_owned());
+        }
+        let view = ViewState::from_project(&project).expect("投影");
+        for scene in &view.scenes {
+            assert_eq!(scene.color_rgb, DEFAULT_TRACK_COLOR);
+            assert_eq!(scene.color_hex, DEFAULT_TRACK_COLOR_HEX);
+        }
+
+        // 缺失（`None`）与非法是同一档：都回退，且回退文本就是文档常量。
+        for id in &scene_ids {
+            project
+                .scenes
+                .get_mut(id)
+                .expect("刚取出的场景键必须还在")
+                .color = None;
+        }
+        let view = ViewState::from_project(&project).expect("投影");
+        assert_eq!(
+            view.scene_colors(),
+            vec![DEFAULT_TRACK_COLOR; view.scenes.len()]
+        );
+        assert_eq!(
+            view.scene_color_labels(),
+            vec![DEFAULT_TRACK_COLOR_HEX.to_owned(); view.scenes.len()]
+        );
     }
 
     /// 判据 16: 色标与 `.slint` / `tokens.slint` 的**文本层耦合**（本机不编译 Slint）。
