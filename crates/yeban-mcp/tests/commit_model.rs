@@ -295,7 +295,7 @@ fn commit_model_values_are_exactly_four_and_schemas_agree() {
     assert_eq!(distinct, 4, "四条取值必须互不相同");
 
     for name in output_schema::COVERED_TOOLS {
-        let schema = output_schema::for_tool(name).expect("五个主力工具都必须声明 schema");
+        let schema = output_schema::for_tool(name).expect("COVERED_TOOLS 全部必须声明 schema");
         assert_eq!(
             schema["properties"][COMMIT_MODEL_KEY]["type"],
             json!("string"),

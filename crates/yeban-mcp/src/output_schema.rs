@@ -18,7 +18,7 @@
 //!
 //! ## 字段名与类型**从真实响应抽**，不是理想形状
 //!
-//! 五个 schema 的字段逐个来自实现里的响应拼装点，判据用**真实 `tools/call` 响应**
+//! 六个 schema 的字段逐个来自实现里的响应拼装点，判据用**真实 `tools/call` 响应**
 //! 反校（[`validate`] 核 `required` ＋ 顶层 `type` ＋ 已声明字段的类型；
 //! [`validate_complete`] 额外核"声明的每个字段名都出现"）。
 //!
@@ -55,16 +55,18 @@ use serde_json::{Map, Value, json};
 /// 这些 schema 校验的层级（`ToolResponse` 信封里的 `data`）。
 pub const VALIDATES: &str = "result.data";
 
-/// 已经声明 `outputSchema` 的五个主力工具（`#176` 的范围）。
+/// 已经声明 `outputSchema` 的六个主力工具（`#176` 的五工具面 ＋ 创作面 `yeban_propose_section`，
+/// 后者见台账 [MCP-TOOL-005] 的广播面扩展票）。
 ///
 /// 顺序 = 注册表顺序里的出现顺序；判据要求这份清单与真实广播面**双向一致**
 /// （每个列出的工具都有 schema；每个有 schema 的工具都在清单里）。
-pub const COVERED_TOOLS: [&str; 5] = [
+pub const COVERED_TOOLS: [&str; 6] = [
+    "yeban_propose_section",
     "yeban_edit_notes",
-    "yeban_merge_proposal",
-    "yeban_query_engine_state",
     "yeban_render_master",
+    "yeban_merge_proposal",
     "yeban_undo",
+    "yeban_query_engine_state",
 ];
 
 /// 按工具名取成功响应的 `data` schema；未声明时为 `None`。
@@ -74,6 +76,7 @@ pub const COVERED_TOOLS: [&str; 5] = [
 #[must_use]
 pub fn for_tool(name: &str) -> Option<Value> {
     match name {
+        "yeban_propose_section" => Some(propose_section()),
         "yeban_edit_notes" => Some(edit_notes()),
         "yeban_merge_proposal" => Some(merge_proposal()),
         "yeban_query_engine_state" => Some(query_engine_state()),
@@ -280,9 +283,9 @@ fn commit_model_schema() -> Value {
 /// 1. `render_master` 的 `json!` 字面量早已贴着 `serde_json` 宏的递归上限
 ///    （见 [`render_master`] 里 `midiSource` 的来历），再往字面量里加一个键就编不过；
 /// 2. 这个键在实现里只有**一个**来源（`domain::commit_model_of` → `apply_inner` 的注入），
-///    五份 schema 里它是同一句话 ⇒ 逐处手抄等于把本票要治的"易错"搬进生产代码。
+///    六份 schema 里它是同一句话 ⇒ 逐处手抄等于把本票要治的"易错"搬进生产代码。
 ///
-/// ⚠ 覆盖面 = [`COVERED_TOOLS`] 那五个工具。其余二十个工具的响应同样带这个键（注入点在
+/// ⚠ 覆盖面 = [`COVERED_TOOLS`] 那六个工具。其余十九个工具的响应同样带这个键（注入点在
 /// 唯一出口上），只是**尚未**声明 `outputSchema` —— 声明面扩大到第 26 个不是本票的范围。
 fn with_commit_model(mut schema: Value) -> Value {
     if let Value::Object(map) = &mut schema {
@@ -360,6 +363,66 @@ fn undo_display_schema() -> Value {
             "canRedo": {"type": "boolean"}
         }
     })
+}
+
+/// `yeban_propose_section` 的成功响应 `data`（创作面提案，与 [`edit_notes`] 同拼装点
+/// `domain::apply_propose`，[MCP-TOOL-005] 广播面扩展票）。
+fn propose_section() -> Value {
+    with_commit_model(finish(
+        envelope(
+            "yeban_propose_section 成功响应的 data",
+            "缺省形状：`pendingMerge: true` / `projectUnchanged: true` / \
+             `mergeTool: \"yeban_merge_proposal\"`（提案不改工程，`merge` 前另给一次\
+             `projectDigest` 作为未变证据）。\
+             ⚠ **两种成功形状**（按 `autoMerge` 参数分支，[ADR-0029] D3 两段式回执）：\
+             `autoMerge: true` 时**多出** `autoMerged`（恒 `true`）与 `merge`（逐字 = \
+             `yeban_merge_proposal` 正常合并的全字段回执，其形状见该工具的 outputSchema；\
+             ⚠ 它**不含**嵌套 `commitModel`，顶层那一份只注入一次），并且**翻值**：\
+             `pendingMerge` → `false`、`projectUnchanged` → `false`、`mergeTool` → \
+             `\"applied-in-process:autoMerge\"`、`proposal` 换成合并后的投影\
+             ⇒ 这三个键⛔ 不用 `const`，`autoMerged`/`merge` ⛔ 不进 `required`。\
+             `proposal` 缺省是**摘要**（14 键），仅 `includeOps: true` 时多一个 `ops` 键\
+             ⇒ `ops` 只进 `properties`。`warnings[]` 与 `edit_notes` 同一份 plan 阶段读数\
+             （`code` / `hint` 逐条），可能为空数组。",
+        ),
+        &[
+            "created",
+            "projectUnchanged",
+            "pendingMerge",
+            "mergeTool",
+            "projectDigest",
+            "unwired",
+            "willCreate",
+            "warnings",
+            "proposal",
+        ],
+        json!({
+            "created": {"type": "boolean"},
+            "projectUnchanged": {"type": "boolean"},
+            "pendingMerge": {"type": "boolean"},
+            "mergeTool": {"type": "string"},
+            "projectDigest": {"type": "string"},
+            "unwired": {"type": "array", "items": {"type": "string"}},
+            "willCreate": {
+                "type": "object",
+                "required": ["opCount", "opKinds"],
+                "properties": {
+                    "opCount": {"type": "integer"},
+                    "opKinds": {"type": "array", "items": {"type": "string"}},
+                    "sections": {"type": "array"},
+                    "tracks": {"type": "array"},
+                    "clipPoolEntries": {"type": "array"},
+                    "placements": {"type": "array"},
+                    "routingNodes": {"type": "array"},
+                    "routingEdges": {"type": "array"}
+                }
+            },
+            "warnings": {"type": "array", "items": {"type": "object"}},
+            "proposal": proposal_detail_schema(),
+            "autoMerged": {"type": "boolean"},
+            "merge": {"type": "object"}
+        }),
+    ))
 }
 
 /// `yeban_edit_notes`（以及其余两个提案类工具）的成功响应 `data`。
@@ -763,7 +826,11 @@ mod tests {
             with_schema, covered,
             "outputSchema 清单与注册表必须双向一致"
         );
-        assert_eq!(COVERED_TOOLS.len(), 5, "#176 的范围：至少 5 个主力工具");
+        assert_eq!(
+            COVERED_TOOLS.len(),
+            6,
+            "广播面 = #176 五工具 ＋ 创作面 propose_section"
+        );
     }
 
     #[test]

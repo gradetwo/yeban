@@ -1,6 +1,7 @@
 //! **#176 的判据**：`#174` 验收里剩下的两个高价值坑 ——
 //! **② 提案不可发现/不可恢复**（新增 `yeban_list_proposals`）与
-//! **⑥ 21 个工具全无 `outputSchema`**（五个主力工具各声明一份，并被真实响应反校）。
+//! **⑥ 21 个工具全无 `outputSchema`**（主力工具各声明一份并被真实响应反校；
+//! 广播面现含创作工具 `yeban_propose_section`，见台账 [MCP-TOOL-005] 扩展票）。
 //!
 //! ## 这个文件量什么、单位是什么
 //!
@@ -9,7 +10,7 @@
 //! | [`list_proposals_is_discoverable_and_the_counts_move_with_it`] | `tools/list` 里的工具数 / `TOOL_COUNT` / 样本 `registry.count` / 契约 enum | **工具个数**（23） |
 //! | [`a_pending_proposal_is_listed_and_disappears_after_merge`] | `yeban_list_proposals` 的 `openCount` | **提案条数**（1 → 0） |
 //! | [`the_empty_state_is_an_empty_array_plus_one_sentence`] | 空态响应 | 1 个空数组 + 1 句逐字 `note` |
-//! | [`five_main_tools_publish_an_output_schema_their_real_responses_satisfy`] | 5 个主力工具的真实 `data` | **5 份 schema**，每份都被自己的响应反校 |
+//! | [`six_main_tools_publish_an_output_schema_their_real_responses_satisfy`] | 6 个主力工具的真实 `data` | **6 份 schema**，每份都被自己的响应反校 |
 //! | [`the_validator_can_go_red_and_the_schema_is_not_idealised`] | 校验器 | 3 种注入（少 required / 错类型 / 声明字段缺席）各 1 条 |
 //! | [`the_58_published_spellings_are_still_all_there`] | `insertDevice.device.params.items` | **拼写个数**（58） |
 //!
@@ -23,7 +24,7 @@ use serde_json::{Value, json};
 
 use yeban_mcp::dispatch::Dispatcher;
 use yeban_mcp::security::{BearerToken, Channel, RunMode, ScopeSet};
-use yeban_mcp::{output_schema, samples, tools};
+use yeban_mcp::{output_schema, payload, samples, tools};
 use yeban_model::{
     ClipContent, ClipPlacement, ClipPoolEntry, EntityId, MidiNote, RoutingEdge, RoutingKind,
     SampleRate, TrackKind, TrackV3, YebanProjectV1,
@@ -154,7 +155,7 @@ fn list_proposals_is_discoverable_and_the_counts_move_with_it() {
             descriptor["inputSchema"]
         );
     }
-    // 不在 #176 的五个主力工具里 ⇒ 不广播 outputSchema（⛔ 不拿空对象冒充）。
+    // 不在 #176 广播面的六个主力工具里 ⇒ 不广播 outputSchema（⛔ 不拿空对象冒充）。
     assert!(
         descriptor.get("outputSchema").is_none(),
         "list_proposals 不在 outputSchema 的五个工具里: {descriptor}"
@@ -376,12 +377,12 @@ fn the_empty_state_is_an_empty_array_plus_one_sentence() {
     );
 }
 
-/// 判据 ⑤⑥：五个主力工具的 `outputSchema` **与真实响应一致** ——
+/// 判据 ⑤⑥：六个主力工具的 `outputSchema` **与真实响应一致** ——
 /// 校验器核 `required` ＋ 顶层 `type` ＋ 声明的字段名/类型。
 ///
 /// 真实响应全部来自 `tools/call`（不是手写夹具）；每个工具打印一条读数。
 #[test]
-fn five_main_tools_publish_an_output_schema_their_real_responses_satisfy() {
+fn six_main_tools_publish_an_output_schema_their_real_responses_satisfy() {
     let (mut dispatcher, auth, project) = dispatcher();
     let (track_id, _clip_id) = track_and_clip(&project);
 
@@ -428,8 +429,48 @@ fn five_main_tools_publish_an_output_schema_their_real_responses_satisfy() {
     // ⑤ `yeban_undo`（撤销刚才那次合并）
     let undo = call(&mut dispatcher, &auth, "yeban_undo", json!({"steps": 1}));
     assert_eq!(undo["status"], "success", "{undo}");
+    // ⑥ `yeban_propose_section`（[ADR-0029] `autoMerge: true` ⇒ 全字段形状：
+    // 两份形状里出现的 12 个声明键**都在**，才能拿去跑 `validate_complete`；
+    // 缺省形状另用 `validate` 反校，见判据末尾）。
+    let section_arguments = |auto_merge: bool| {
+        let mut arguments = json!({
+            "sectionName": "#176 outputSchema",
+            "stylePreset": payload::BASELINE_006_STYLE_PRESET,
+            "bars": 2,
+            "scale": "C minor",
+        });
+        if auto_merge {
+            arguments["autoMerge"] = Value::from(true);
+        }
+        arguments
+    };
+    let propose = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_propose_section",
+        section_arguments(true),
+    );
+    assert_eq!(propose["status"], "success", "{propose}");
+    let propose_default = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_propose_section",
+        section_arguments(false),
+    );
+    assert_eq!(propose_default["status"], "success", "{propose_default}");
 
-    let responses: [(&str, &Value, &[&str]); 5] = [
+    let responses: [(&str, &Value, &[&str]); 6] = [
+        (
+            "yeban_propose_section",
+            &propose,
+            &[
+                "pendingMerge",
+                "autoMerged",
+                "merge",
+                "proposal",
+                "willCreate",
+            ],
+        ),
         (
             "yeban_edit_notes",
             &edit_notes,
@@ -540,6 +581,28 @@ fn five_main_tools_publish_an_output_schema_their_real_responses_satisfy() {
     let merge_schema = output_schema::for_tool("yeban_merge_proposal").expect("schema");
     output_schema::validate(&merge_schema, &again["data"])
         .expect("短形状必须满足同一份 schema 的 required");
+
+    // `yeban_propose_section` 的**缺省形状**（无 `autoMerge`）同样必须满足 `required`，
+    // 且声明的 `autoMerged` / `merge` 两键**不存在**（[ADR-0029] D3 的形状分支证据，
+    // 与 `tests/auto_merge.rs` 的缺省形状钉同源）。
+    let propose_schema = output_schema::for_tool("yeban_propose_section").expect("schema");
+    output_schema::validate(&propose_schema, &propose_default["data"]).unwrap_or_else(
+        |violation| panic!("propose_section 缺省形状违反自己的 schema: {violation}"),
+    );
+    assert_eq!(propose_default["data"]["pendingMerge"], true);
+    assert_eq!(propose_default["data"]["mergeTool"], "yeban_merge_proposal");
+    assert_eq!(propose_default["data"]["projectUnchanged"], true);
+    assert_eq!(propose_default["data"]["commitModel"], "proposal");
+    assert!(
+        propose_default["data"].get("autoMerged").is_none()
+            && propose_default["data"].get("merge").is_none(),
+        "缺省形状**没有** autoMerged/merge: {}",
+        propose_default["data"]
+    );
+    println!(
+        "### propose_section 缺省形状（validate 通过；autoMerged/merge 缺席）\n  commitModel = {}",
+        propose_default["data"]["commitModel"]
+    );
 }
 
 /// 判据 ⑥ 的反面：校验器**能变红**，且 schema 不是"理想形状"。
