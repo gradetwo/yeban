@@ -15020,3 +15020,35 @@ $ python3 scripts/gates/check_feature_alignment.py
 4. **推上 `main` 的批也要读回判决，⛔ 默认 main 绿。** `fe9f47ff` 是别的 agent 直接推 main 的，
    本轮之前"main 是绿的"只是默认值。三方对齐守卫 `check_feature_alignment.py` 是本地一条命令，
    **接手第一步应包含它**，比等 CI 快两轮。
+
+## 2026-10-29（傍晚续）· main 的继承性红闭合 ＋ 十工具线 rebase（冻结读数两侧合增量）
+
+**`check_feature_alignment` 那条继承性红已闭合**（不是我修的，⛔ 也不该我修 —— 一文件一写者）：
+Devin 线的 `5c5c41bf`（只改 `docs/ledger/feature-alignment.md` 一行，点名 `yeban_list_instruments`）
+⇒ 其 run `40865516372` = **success**，逐腿现读 `plan` 5 步／**`checks` 15 步（承判腿，真跑）**／
+`lockfile` 6 步／`deny` 6 步，四条 rust 腿与 `macos`／`windows` **skipped**＝纯文档批的正确规划
+⇒ 本台账 §上一条里那条"main 自己红"的本地复现命令，其前提已不成立（⛔ 别照着重跑成"新证据"）。
+
+**十工具线 rebase 到修好的 main（tip `5d1fe7fd`，base `4d9edfb9`）**：两批里只有
+`crates/yeban-mcp/tests/fault_vocabulary.rs` 一处冲突，且**正是**冻结读数那一族 ——
+main 侧（整片段 op 片）报 出现 226→**229**／键站点 223→**226**／字面 215→**218**，
+本线侧（十工具广播片）报 出现 226→**227**／键站点 223→**224**／字面不动、动态 3→**4**。
+两侧**互不相干**（改的是不同文件的不同站点）⇒ 正确解是**两边增量都加**，⛔ 取任一边的"新值"：
+出现 229＋1＝**230**、键站点 226＋1＝**227**、字面 **218**、可解析 `let` **2**、动态 **4**、传播 **3**、参数名 **3**。
+恒等式两条自查：`227 = 218 + 2 + 4 + 3`（键站点四分类闭合）、`230 = 227 + 3`（出现 = 键站点＋参数名）✓。
+⇒ ⭐ **口径**：冻结读数冲突的解法不是"选一个数"，而是**先确认两侧增量的站点互不重叠**（本次：一侧在
+`domain/notes.rs`/`tools.rs`，另一侧在 `src/output_schema.rs`），再把两个 delta 相加后**代回恒等式**。
+
+⭐ **一条新事实（本轮实测，候选纪律，⛔ 未生效需人类签字）**：对已推送分支做 `git push --force-with-lease`
+（rebase 后推）会**自动取消**该分支上仍在跑的 run ⇒ 旧 run `40867033277`（`31a5da85`）现读
+`status=completed / conclusion=cancelled`。⇒ ⛔ 把 `cancelled` 读成"判决红"或"判决绿"都不对；
+它**没有判决**，该批的判决由新 tip `5d1fe7fd` 的 run `40867836378` 承接。读回时先认 **headSha**，
+再认 `conclusion ∈ {success, failure}`；`cancelled`/`skipped` 一律回到 pending。
+
+**七工具线四件齐闭合**：merge `8a8d0af7`／run `40853883544` success（承判腿 `rust (yeban-mcp)` 505 s）
+⇒ 工作树已按 `worktree.sh rm mcp-apply-propose-schemas --purge` 拆除，脚本自动补归档标签
+`line-archive/mcp-apply-propose-schemas @ 0fc91942` 后才删分支（先保全再删除）。
+
+**磁盘读数（单位：字节／GiB）**：`/tmp` 7.5 GiB → **7.3 GiB**（清掉 139 MiB 早期轮次的探针与日志），
+根分区仍 205G/235G 已用、剩 **24G**；`.worktrees/**/target` 现读 **0** 个（本机不用仓库内 target，
+S1 的本地构建走 `/tmp/yeban-s1` = **6.5 GiB**，⛔ 在 S1 判决读回前不删）。
