@@ -111,6 +111,13 @@ const ALLPASS_MAX: usize = 1536;
 /// 预延迟缓冲：100 ms @96 kHz。
 const PREDELAY_MAX: usize = 9600;
 
+/// 预延迟的上界（秒）＝ [`PREDELAY_MAX`] 的 `9600 ÷ 96_000`。
+///
+/// ⭐ 本模块（`device_param`）落地后这是**唯一**的预延迟上界：`Reverb::set_params` 的钳制与
+/// [`crate::device_param::ReverbField::Predelay`] 的落点钳制读**同一个**常量
+/// （此前 `yeban_render::inserts` 里有一份只能镜像的私有 `0.1`，靠网格对账判据钉住）。
+pub const REVERB_MAX_PREDELAY_S: f32 = 0.1;
+
 /// 本器件引入的**处理延迟**（帧）。`0` = 不参与 [ARCH-PDC-001] 的补偿量。
 ///
 /// 取 `0` 的理由与 [`crate::convolution::CONV_LATENCY`] 同款：本器件的预延迟
@@ -393,7 +400,7 @@ impl Reverb {
             damp: sanitise(params.damp, FALLBACK.damp).clamp(0.0, 1.0),
             mix: sanitise(params.mix, FALLBACK.mix).clamp(0.0, 1.0),
             width: sanitise(params.width, FALLBACK.width).clamp(0.0, 1.0),
-            predelay: sanitise(params.predelay, 0.0).clamp(0.0, 0.1),
+            predelay: sanitise(params.predelay, 0.0).clamp(0.0, REVERB_MAX_PREDELAY_S),
         };
         self.params = params;
         // 0.70…0.94 是稳定区间的映射（0.96 是带调制混响的稳定极限）；
