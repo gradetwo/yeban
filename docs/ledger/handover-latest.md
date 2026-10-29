@@ -2192,7 +2192,8 @@ base `8755b4e6`..`0d0383cf` ⇒ `["yeban-app","yeban-mcp","yeban-render","yeban-
 | :--- | :--- | :--- | :--- |
 | `line/s2-device-param-table` | `0cfd19a6` | **`40910345157`**（`workflow_dispatch`，`force_full=true`，in_progress） | `rust (workspace 全量)` **必须真跑**（耗时非 0、日志有 `test result:`）⇒ 这才是 dsp 主体＋引擎新判据的 Linux 判决；判绿后 `scripts/dev/worktree.sh land s2-device-param-table` → 推 main → 读 merge run → `rm --purge` 拆树 |
 | `line/s3-field-reachability` | `8a755acc` | **`40911122798`**（push，queued） | `rust (yeban-model)` 与下游腿；新判据 `field_write_reachability` 四条要逐名见 `ok`（⛔ fail-fast 顺序坑：先数 `Running tests/`） |
-| main（本地未推） | 台账批 | 待推 | 与 S2 的 merge 同批推即可 |
+| main（本地未推 **4** 件） | `106f29cd`→`d804a830`→`cafb6486`→`107554b6` | 待推 | 与 S2 的 merge 同批推即可；纯文档推 ⇒ 该跑是**空绿**（只登记，⛔ 不写成验证） |
+| ⚠ `line/ui-export-dialog`（**本会话外的并行写者**） | `b907e371` | **`40911008998`**（in_progress） | ⛔ **本会话不 land、不动该线**（无本地工作树，只有 `origin/line/ui-export-dialog`；`fdb17b75` 那跑红在 `rust (yeban-app)`／`macos`／`windows`，`b907e371` 自称修的是"回执字段闭集 13 项"）。登记只为**别让判决孤儿化**：谁派的谁读回 |
 
 **S3 第一片已落线（`8a755acc`）**：新判据 `crates/yeban-model/tests/field_write_reachability.rs`
 钉住「`ops.rs` 产品区（`#[cfg(test)]` 之前、去注释）里 `.<字段>` 出现 **0** 次」的**五个**字段：
