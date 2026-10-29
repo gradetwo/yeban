@@ -14832,3 +14832,30 @@ passed 合计 **6,812** / `test result: FAILED` **0** 条），新判据**逐名
 `windows`／`macos`／`deny`／`lockfile`／`checks`／`plan` 同批 success；`matrix` skipped（规则）。
 ⚠ 读回期间本机出现一次 `api.github.com` 网络抖动（哨兵因此退出 1）—— 判决以重连后
 `gh run list` 的 completed 状态为准，⛔ 把"查不到"记成判决。
+
+---
+
+## 2026-10-29（晚）· §0.6.0i 对账轴收盘 ＋ `Proposal.description` 只存不报（两批，判决 pending）
+
+**方法论**（handover §0.6.0i 的"底层字段 ↔ 响应键"轴，本次把轴扫到**全工具面 + 一层深**）：
+- 顶层对账补齐 11 个此前未审的模块：`scene_launch`／`import_audio`／`record_wav`／`macros`／
+  `automation`／`engine_state`／`diagnostics`／`sfz`（两工具）／`midi_input`／`stems`／`undo` 的
+  plan 产物 `pub` 字段 —— **全部逐键对齐**；嵌套行结构（`TrackContribution`／`LoudnessTarget`／
+  `RegionSummary`／`StemRow`／`ProbeEvent`／`UndoDisplay`）也核过，对齐。
+- **命中一个缺口**：`Proposal.description`（`proposal.rs:90`）全链路只被读**一次**
+  （`mod.rs:4302` 存进记录），`summary()`／`detail()`／list／merge／reject 任何投影都**不发**它 ⇒
+  提案的自述文本在控制面**不可达**（与歌词五桶同形态：算出来了，没上报）。
+
+**批一 `4a065967`**（fix，判决 run `40828133545` **pending**，queued 于 06:15）：
+`summary()` 补 `description` 键；`output_schema.rs` 摘要形状 `required`/`properties` 同步（13→14 键）；
+`tools.rs:1601` 契约措辞补该键；`payload_budget.rs` 判据① 缺省读数按形状 **+39 B**
+（`"description"`13 + `:`1 + `"propose_section Chorus"`24 + 逗号1 ⇒ 2,841→**2,880**，
+合计 3,076 ≤ 4,096 —— ⚠ 若 CI 报数不同以 CI 为准）；`props_176.rs` 判据②加三条断言
+（键存在 ∧ 与创建回执**逐字**相同 ∧ 非空）。⛔ 碰 `schemas/**` ⇒ 不触发全量腿。
+
+**批二 `258084b2`**（docs(mcp)，判决 run `40828583265` **pending**）：
+`yeban_list_proposals` 的"每条给"列举原是 **9/14 的不完整子集**（漏 `kind`/`status`/`mergeCommit`/
+`resolvedAt`/`resolution`）⇒ 改为逐键穷举并点名"= `Proposal::summary()` 的全部键"（6ca89088 同法）。
+
+**同批读回的旧账**：`29f7b147` ⇒ run `40827214005` **success**，但 `macos`/`windows`/`全量`/`rust(matrix)`
+**全 skipped**（仅 checks/lockfile/deny/plan 真跑）⇒ **docs 空绿**，只作记录、不作代码判决。
