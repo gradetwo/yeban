@@ -14859,3 +14859,12 @@ passed 合计 **6,812** / `test result: FAILED` **0** 条），新判据**逐名
 
 **同批读回的旧账**：`29f7b147` ⇒ run `40827214005` **success**，但 `macos`/`windows`/`全量`/`rust(matrix)`
 **全 skipped**（仅 checks/lockfile/deny/plan 真跑）⇒ **docs 空绿**，只作记录、不作代码判决。
+
+**两本台账批的空绿读回（2026-10-29 07:01 现读 `gh run view --json jobs`）**：
+`86ea6998` ⇒ run `40828894146` **success·空绿**（真跑仅 plan/deny/checks/lockfile；
+`rust(matrix)`/`全量`/`windows`/`macos` 全 `skipped`）；`9c329389` ⇒ run `40830178039`
+**success·空绿**（同一拓扑）。⇒ 只作记录、不作代码判决。
+⭐ **纪律补一条（本轮实证）**：run 级 `status:queued` **滞后于 job 级调度** —— `40828133545`
+run 级还在 queued 时 `checks/deny/plan/lockfile/全量/macos` 已 completed、承判腿已在跑
+⇒ 哨兵按 **run 级状态**轮询会**系统性晚报**；判"在飞/放行"要下钻到 `jobs[].status`。
+（本会话据此把等待型轮询改为后台看守直取承判腿日志。）
