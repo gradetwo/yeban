@@ -153,6 +153,10 @@ pub fn apply_view(ui: &MainWindow, view: &ViewState, viewport_width: f32, scroll
     // `None` ⇒ `""`）。写方向是两条 `mixer-sampler-*` 回调（`wire_mixer_sampler`）。
     ui.set_track_sampler_paths(strings(&view.track_sampler_paths()));
     ui.set_scene_names(strings(&view.scene_names()));
+    // 场景色标：解析 / 回退在投影层（`bridge::track_color_or_default` 唯一实现），
+    // 这里只转成 Slint 的 `Color` 并把规范化文本一起下发（标签源）。
+    ui.set_scene_colors(colors(&view.scene_colors()));
+    ui.set_scene_color_labels(strings(&view.scene_color_labels()));
     // ⭐ 任务单 `#283`：**当前场景**的唯一注入点（完整重投影 ⇒ 回到投影的读数；
     // 场景按钮点击走同一个写者 [`apply_current_scene`]，⛔ 不各写一份）。
     apply_current_scene(ui, view.current_scene.as_ref());

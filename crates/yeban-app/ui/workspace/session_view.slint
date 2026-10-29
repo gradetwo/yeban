@@ -21,6 +21,10 @@ export component SessionView inherits Rectangle {
     // 由 src/host.rs 注入: 轨道名 / 场景名 (默认空 = 没有内联演示数据)
     in property <[string]> scenes: [];
     in property <[string]> tracks: [];
+    // ⭐ 场景色标（`SceneV3::color` 的消费形态）：颜色由投影解析 / 回退，
+    // 规范化文本同时进色标的 `accessible-label` ⇒ 控件树里读得到工程色标。
+    in property <[color]> scene-colors: [];
+    in property <[string]> scene-color-labels: [];
 
     // ⭐ 任务单 `#190`：画布装得下的轨道列数 —— **算出来**，⛔ 不写死。
     //
@@ -185,6 +189,21 @@ export component SessionView inherits Rectangle {
         accessible-item-selected: root.current-scene-index == scene_index;
         // `[UI-A11Y-003]` §7.3：无障碍动作与 `TouchArea.clicked` **逐字同一落点**。
         accessible-action-default => { root.scene-launch(scene_index); }
+
+        // 场景色标 —— `SceneV3::color` 经投影解析后的颜色（非法 / 缺失已回退）。
+        // 与轨道色标同款：`accessible-label` 携带规范化 `#RRGGBB`，
+        // 标记 `scene-{i}-color-swatch` 因此能在控件树里与投影字段逐字对账。
+        Rectangle {
+            x: 6px;
+            y: 6px;
+            width: 12px;
+            height: 12px;
+            background: root.scene-colors[scene_index];
+            border-radius: Tokens.radius-sm;
+            accessible-role: image;
+            accessible-id: "scene-" + scene_index + "-color-swatch";
+            accessible-label: "场景色标 " + root.scene-color-labels[scene_index];
+        }
 
         UiMediumText {
             x: 0;
