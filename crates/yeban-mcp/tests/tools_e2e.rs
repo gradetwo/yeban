@@ -1442,6 +1442,9 @@ fn no_tool_answers_with_a_blanket_not_implemented() {
             "yeban_load_sfz",
             json!({ "path": scratch.text("no-blanket.sfz") }),
         ),
+        // 审计 `N13`：只读枚举会话 SFZ registry —— 上一条已把 SFZ 装成
+        // instrumentId 1 ⇒ 带内成功且 `count` ≥ 1（明细判据在 `list_instruments.rs`）。
+        ("yeban_list_instruments", json!({})),
         // SFZ 导出：上一条已经把 scratch 里那份 SFZ 装成 instrumentId 1 ⇒ 这里
         // 真的把活跃工程的 MIDI 音符渲染成 WAV 落盘（渲染器已接线, 因此必须成功）。
         (
