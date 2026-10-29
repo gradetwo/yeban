@@ -2032,3 +2032,40 @@ python3 scripts/guards/policy_check.py && bash scripts/gates/run-gates.sh light
 > 是 S1 的正解（`yeban-render` 依赖 `yeban-engine`，⛔ 反向依赖会成环）。
 > ⭐ handover §下一步选项 ①（"S1 ＝ 只接 `output_gain_db` 一个参数，5 文件 ≈150–200 行、与
 > `TrackVolume` 同形状"）与上述一致 ⇒ 选它做第一片，⛔ 一次做完 30 个字段。
+
+### ⭐ 2026-10-29 10:40 追加（S1 第一片已提交并 rebase 到 `origin/main`，三 run 在飞）
+
+> ⭐ **S1 第一片落地状态（2026-10-29 10:40 现读）**：
+> `.worktrees/app-device-param-landing` 的 11 个脏文件已提交（`a8c94209`，
+> `git diff --stat` 实测 +877 / −47 行），随后 `git rebase origin/main` ⇒
+> **tip `ad145fe0`、base `fe9f47ff`，零冲突**（本片只动 `yeban-{dsp,engine,app}`，
+> 与 `fe9f47ff` 的 `yeban-{mcp,theory}` ＋ `schemas/**` 面无交集）。
+> ⚠ **与上文 §下一步选项 ① 的一处口径差**（如实登记）：第一片**没有**把落点表下移到
+> `yeban-dsp`，而是让 `yeban-app` 直接 `use yeban_render::inserts::{StripField,
+> sanitised_output_gain_db}`（app 依赖 render，⛔ 不成环）＋ 新增
+> `yeban_engine::insert::strip_source_index` 作"哪一格是通道条来源"的**唯一**判定处
+> ⇒ 当下**没有**第二张表，但"表在 `yeban-render`、来源判定在 `yeban-engine`"这个分裂
+> 仍在 ⇒ **S2（全量 30 字段）的前置条件仍是把 `DeviceParamField` 下移**，本片⛔ 声称解决了它。
+>
+> ⭐ **本机判决读数**（单位：`test result:` 行里的 `passed` 之和；⛔ 不数行）：
+> `cargo fmt --check -p yeban-engine -p yeban-dsp -p yeban-app` ⇒ exit 0；
+> `yeban-dsp --lib` ⇒ **359 passed / 0 failed**；
+> `yeban-engine --no-default-features` ⇒ cargo exit 0、`: FAILED` **0** 处、
+> `test result: ok` **39** 行、passed 合计 **659**，其中 `tests/channel_strip_insert.rs`
+> 二进制**在其中**（fail-fast 顺序检查过）且 `c17_an_output_gain_db_event_lands_on_the_armed_strip`
+> ／`c18_a_track_without_an_armed_strip_reports_the_event_as_unmapped` 两条各 `ok`。
+> ⛔ **一条本机陷阱**（本轮踩过）：`cargo test -p yeban-engine` **不带**
+> `--no-default-features` 会按 `default = ["device"]` 拉进 `cpal`，本机 ALSA 下
+> `device::tests::opening_the_default_output_device_never_panics`（`src/device.rs:1183`，
+> **main 上既有判据**）栈溢出 `SIGABRT` 并 abort 整个 lib 二进制 ⇒ 那是**本机环境＋纪律越界**
+> 的读数（AGENTS.md §5 禁本机编 cpal），⛔ 本片缺陷，也⛔ 能当"引擎全套绿"的证据。
+>
+> ⭐ **三个 run 全部 pending**（接手者第一件事 = 逐个按 `headSha` 读回，⛔ 用 tip 绿代替）：
+> ① `40853883544` ＝ merge `8a8d0af7`（七工具面落地）；
+> ② `40853927316` ＝ `dcda0969`（十工具面，判据名已换代为
+> `ten_broadcast_tools_publish_an_output_schema_their_real_responses_satisfy`）；
+> ③ **`40859261150`** ＝ `ad145fe0`（S1 第一片，**app 半只有 CI 能判**）。
+> ②在①判绿前⛔ 落地；③与①②互不相干可并行读回。
+> ⭐ **②落地前需再 rebase 一次**：`fe9f47ff` 也动了 `crates/yeban-mcp/tests/props_176.rs`
+> 与 `src/tools.rs`（新增 `yeban_list_instruments` ⇒ 工具数与"广播面第几个工具"的措辞
+> 可能要换代）。`git merge-tree` 预演**零冲突标记**，但**计数会变小**：⛔ 直接 land 旧 tip。
