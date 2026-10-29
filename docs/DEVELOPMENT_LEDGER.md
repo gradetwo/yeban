@@ -15232,3 +15232,48 @@ handover §11 第 4 条留下的轴「**哪些实体只能建、改不了**」�
 **磁盘读数（单位 GiB／磁盘实际占用）**：根分区可用 **29G**（本轮未删大件）；本地构建目录
 `/tmp/yeban-s2` **1.3 GiB**（S2 判决读回后即可回收）、`/tmp/yeban-s3` 新建（S3 线）。
 S3 工作树内 `target` 为零（守 `CARGO_TARGET_DIR` 纪律）。
+
+## 2026-10-30（凌晨）· S4 第一片（`folder_id` 校验缺口登记）＋ 一处文档行号漂移 ＋ 一条并行写者的在飞线
+
+**先记一条会误导后来者的文档读数**：`docs/adr/ADR-0004-...md` 两处引代码行号
+（`project.rs:1673-1676` 的 `validate()` 存在性检查、`project.rs:1143` 的 `folder_id` 字段），
+现读同一仓库同一文件是 **`:1883`** 与 **`:1235`**（单位：行）。⛔ 按 §6 第 3 条的教训反过来用：
+**ADR 里的行号是写作当时的快照**，据此定位前必须先 `grep` 该行的**特征串**（本次是
+`if let Some(folder_id) = track.folder_id`），⛔ 不要按号取文。
+
+**S4 线（`line/s4-folder-link-gap`，base `origin/main`，tip `c3b0b4a0`）第一片**：新判据
+`crates/yeban-model/tests/folder_link_validation_gap.rs` 登记 `ADR-0004` **Q13**（`:407-428`）
+点名的陷阱——`folder_id` 的三种非法形状今天**全部通过** `validate()`：
+**自指**（`folder_id == track.id`）／**两节点环**（a→b→a）／**指向主总线**
+（主总线本身也在 `tracks` 里，存在性检查管不到它）。机理是 `:1883` 只查
+`self.tracks.contains_key(&folder_id)`。
+
+**为什么这轮⛔ 不修**：`ADR-0004` 的**状态是 `Proposed（待人类裁决）`**（`:3`），Q13 给了
+A（拒绝三种）／B（访问集上限）／C（不校验，⛔ 已被 ADR 自己否决）三选项并**建议 A+B 合并**，
+但该建议**尚未被负责人批准**；且 A 需要新增 `ModelError` 变体（牵动穷尽匹配面）。
+⇒ 按 `AGENTS.md` §5 第 7 条，本片**只登记现状**，把"补校验"留给裁决之后的片；三条"现状判据"
+的设计目标是**将来变红**（逼改的人显式动这里并写回裁决编号），⛔ 不是要维持的"通过"。
+
+**六条判据的构成（照本轮口径：每条控制臂独立变色）**：三条钉现状 + 一条**对照臂**
+（不动 `folder_id` 的基准夹具必须 `Ok`）+ 一条**阳性对照**（指向不存在的轨仍报
+`TrackNotFound` ⇒ 证明 `folder` 分支不是死代码，否则三个 `Ok` 可能只是分支从未执行）
++ 一条**非真空下界**（`≥ 2` 条非主总线轨；并钉"非主总线集 + 1 == 全部轨道数"证明过滤是活的）。
+
+**本机判决边界（照 §5）**：`yeban-model` 本机可跑 ⇒ 注入实验做完已还原并现读复核：
+向 `validate()` 临时注入三种拒绝（自指／`== master_bus_track_id`／带 `BTreeSet` 访问集的环 walk）
+⇒ 该文件 `3 passed; 3 failed`，**红的恰好是那三条"现状登记"**，对照臂／阳性对照／下界三条**仍绿**
+⇒ 证明三条钉的是活代码路径；`git checkout -- crates/yeban-model/src/project.rs` 后
+`grep -c 'folder_id == Some'` = **0**、复跑 **6 passed**。整 crate 读数（单位：个）：
+`Running` 行 **14**、`test result:` 行 **16**、passed 合计 **463**、`FAILED` **0**；
+`cargo clippy -p yeban-model --all-targets -- -D warnings` 零告警；`run-gates.sh light` 全过；`cargo fmt` 干净。
+CI 跑 **`40914097921`**（`rust (yeban-model)` 等）⇒ **pending，读回前不得写"落地"**。
+
+**夹具读数（单位：条）**：`yeban_model::samples::filled_project()` 共 **4** 条轨，
+其中 `TrackKind::Master` **1** 条、非主总线 **3** 条（本轮实测，⛔ 手抄）。
+
+**一条并行写者的在飞线（⛔ 本会话不动它）**：`origin/line/ui-export-dialog`（base `72401d45`，
+`fdb17b75` + tip `b907e371`，作者时间 `2026-10-30 00:10 +0800`）**没有本地工作树**，
+`fdb17b75` 那跑（`40908163480`）红在 `rust (yeban-app)`／`macos`／`windows` 三条腿，
+`b907e371` 自称修的是"回执字段闭集 **13** 项"⇒ 现跑 **`40911008998`** in_progress。
+登记它只为**别让判决孤儿化**（谁派的谁读回）；⛔ 一文件一写者，本会话不 land、不改该线。
+

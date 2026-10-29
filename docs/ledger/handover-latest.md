@@ -2176,6 +2176,9 @@ right 35）⇒ 证明**设变量不会跳过比较**，那次全绿是**同一�
 
 ### ⭐ 2026-10-30 00:24 追加（⛔ 分支 run 只覆盖增量这条口径 ＋ 两条线三跑待读回 ＋ S3 的第一片）
 
+> ⚠ **本节标题里的"两条线三跑"是 `00:24` 当时的读数**；`00:42` 又添了 `line/s4-folder-link-gap`，
+> 并发现并行写者的 `line/ui-export-dialog` 在飞 ⇒ **下表已扩到四行**。⛔ 标题不改写，按表行动。
+
 ⛔ **接手者先读这条口径，否则会重复我犯过的错**：`ci.yml` 的 `plan` 拿
 `BASE_SHA = github.event.before`（**上一分支 tip**）当 diff 基线 ⇒ **分支上每个 run 只验证
 那一次推送的增量**。所以"后一跑的 tip 继承了前一被取消跑的判决"**不成立**。
@@ -2186,12 +2189,13 @@ base `8755b4e6`..`0d0383cf` ⇒ `["yeban-app","yeban-mcp","yeban-render","yeban-
 派 `gh workflow run ci.yml --ref <line> -f force_full=true`。**空绿判定**照 §6.3：`skipped`
 的 `rust (workspace 全量)` 在非全量批是正确形态，⛔ 不是空绿，但也不能拿它当"全 crate 验过"。
 
-**三跑待读回（按 `headSha` 逐腿读，⛔ 用 tip 绿代替）**：
+**四跑待读回（按 `headSha` 逐腿读，⛔ 用 tip 绿代替）**：
 
 | 线 | tip | run | 该看什么 |
 | :--- | :--- | :--- | :--- |
 | `line/s2-device-param-table` | `0cfd19a6` | **`40910345157`**（`workflow_dispatch`，`force_full=true`，in_progress） | `rust (workspace 全量)` **必须真跑**（耗时非 0、日志有 `test result:`）⇒ 这才是 dsp 主体＋引擎新判据的 Linux 判决；判绿后 `scripts/dev/worktree.sh land s2-device-param-table` → 推 main → 读 merge run → `rm --purge` 拆树 |
-| `line/s3-field-reachability` | `8a755acc` | **`40911122798`**（push，queued） | `rust (yeban-model)` 与下游腿；新判据 `field_write_reachability` 四条要逐名见 `ok`（⛔ fail-fast 顺序坑：先数 `Running tests/`） |
+| `line/s3-field-reachability` | `8a755acc` | **`40911122798`**（push，queued） | `rust (yeban-model)` 与下游腿；新判据 `field_write_reachability` 四条要逐名见 `ok`（⛔ fail-fast 顺序坑：先数 `Running tests/`）⇒ ⭐ **`rust (yeban-model)` 腿已 success（现读作业名单），但日志要等整跑结束才取得到**，所以逐名 `ok` 还没核 |
+| `line/s4-folder-link-gap` | `c3b0b4a0` | **`40914097921`**（push，queued） | ⭐ **新片**：`crates/yeban-model/tests/folder_link_validation_gap.rs` 六条判据登记 `folder_id` 的**三种非法形状今天全部通过 `validate()`**（自指／a→b→a 环／指向主总线）。⛔ **只登记不修**：`ADR-0004:407-428` 的 **Q13** 给了 A/B/C 三选项并建议 A+B 合并，但**整份 ADR 状态是 `Proposed`** ⇒ 补校验属人类裁决后的片（§5 第 7 条，⛔ 代签）。看 `rust (yeban-model)` 与下游腿，判据名 `validate_accepts_*_today` 三条要逐名见 `ok` |
 | main（本地未推 **4** 件） | `106f29cd`→`d804a830`→`cafb6486`→`107554b6` | 待推 | 与 S2 的 merge 同批推即可；纯文档推 ⇒ 该跑是**空绿**（只登记，⛔ 不写成验证） |
 | ⚠ `line/ui-export-dialog`（**本会话外的并行写者**） | `b907e371` | **`40911008998`**（in_progress） | ⛔ **本会话不 land、不动该线**（无本地工作树，只有 `origin/line/ui-export-dialog`；`fdb17b75` 那跑红在 `rust (yeban-app)`／`macos`／`windows`，`b907e371` 自称修的是"回执字段闭集 13 项"）。登记只为**别让判决孤儿化**：谁派的谁读回 |
 
