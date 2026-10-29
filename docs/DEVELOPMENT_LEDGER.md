@@ -14941,3 +14941,82 @@ run `40839813747` **success**。承判腿 `rust (yeban-mcp)` **真跑**（499 s�
 "run 40839813747 is still in progress; logs will be available when it is complete"，写出的文件 0 字节）。
 ⇒ 判"日志里有没有某判据"之前，必须先看 **run 是否 completed**；run 未终态时的 0 字节日志⛔ 不得读成
 "判据没跑"，只能读成"日志尚不可得"。 interim 证据改用 job 级 `status/conclusion/startedAt/completedAt`。
+
+## 2026-10-29（傍晚）· S1 第一片落线 ＋ 三跑判决（一绿两红）＋ **main 自己红**的一处本地复现
+
+### 1. 七工具广播面线落地（任务 #58 闭合）
+
+merge `8a8d0af7` ⇒ **run `40853883544` = success**。承判腿真跑（单位：`gh api …/jobs` 的
+`started_at`/`completed_at` 差）：`rust (yeban-mcp)` **505 s**、`macos` **1,577 s**、
+`windows` **2,203 s**、`rust (yeban-ui-mcp)` **142 s**；`checks`/`deny`/`lockfile`/`plan` 全 success；
+`rust (workspace 全量)` **skipped** ＝ 本批未碰 `schemas/**` 的正确规划。
+⇒ `.worktrees/mcp-apply-propose-schemas` 可拆（本轮未拆，见下"十工具线还需 rebase"一处）。
+
+### 2. S1 第一片（任务 #60）：`a8c94209` → rebase `ad145fe0` → **run `40859261150` = failure**
+
+判决读数（单位：日志里的 `test result:` 行）：
+
+| 腿 | 结论 | 实质 |
+| :--- | :--- | :--- |
+| `rust (yeban-dsp)` | **FAILED. 30 passed; 1 failed** | `the_hard_assertion_table_matches_the_committed_evidence`：证据表"合计 274／float_bits 71"而渲染 275／72 ⇒ 新判据本身没登记 |
+| `rust (yeban-app)` | **FAILED. 8 passed; 1 failed** | 新判据 `an_output_gain_db_lane_on_the_strip_source_lands_in_monitoring` 红在 `A：left: 0 / right: 1` |
+| `rust (yeban-engine)` / `rust (yeban-render)` / `rust (yeban-ui-mcp)` | **success** | C17/C18 在 CI 也 ok（本机 659 passed 的读数得到独立证实） |
+| `checks` / `rust (yeban-mcp)` / `macos` / `windows` | **failure（⛔ 不属本片）** | 见 §4：base `fe9f47ff` 自带的三处红 |
+
+两处本片缺陷都在 `85fd27da` 修掉（run `40866458295` pending）：
+① dsp 按判据自身给出的口径 `R77_WRITE=1` 重生成证据表（本机复跑 `--test r77_hard_assertion_audit`
+⇒ **31 passed**，落盘只多一行 `float_bits | hard | 13 | - | src/channel_strip.rs | the_narrow_…`）；
+② app 判据补 `host.reload(&baseline_project, 0)` ＋ 一条"基线必须 ≥ 1"的夹具前提断言
+（与同文件既有臂 `:153` 逐字同形）。**顺带把 D 臂补强**：夹具第二台设备原来只有 `room_size`，
+文档却声称 D 打"别的器件上的**同名**旋钮" ⇒ 改前那一臂打在"名字根本不认识"上，弱一档；
+现在混响那台也带一个 `output_gain_db`，若落点谓词只看名字不看槽位，D 会红。
+
+### 3. 十工具线（任务 #59）：`dcda0969` → **run `40853927316` = failure** → `31a5da85`（pending）
+
+三条腿（`rust (yeban-mcp)` / `macos` / `windows`）红的都是**同一条**判据：
+`every_reason_occurrence_is_classified_or_explicitly_registered`，正文一条
+"`output_schema.rs:657 的动态 `"reason"` 站点 `{"type": "string"}` 没有登记（出现 1 次）`"。
+那是 `reject_proposal()` 的 **outputSchema 类型声明**（⛔ 一个值都不产出），扫描器按
+"冒号后的值表达式"归类 ⇒ 大括号表达式进 `Dynamic`，就必须逐条登记。修法走既有机制、
+⛔ 不发明新类目：`EXEMPT_DYNAMIC_REASON_SITES` 3 → **4** 条，新条的 `forwards` 指向真词源
+（`domain/mod.rs` 的 `apply_reject`）、`retires_when` 写"**改成闭合词表（`enum`/`const`）就删掉本条**"；
+冻结读数按恒等式改（⛔ 不手数）：运行时 3 → **4** ⇒ 键站点 223 → **224** ＝ 字面 215 ＋ `let` 2 ＋
+运行时 4 ＋ 传播 3；出现 226 → **227** ＝ 键站点 ＋ 参数名 3。
+⚠ 本片**没有** rebase 到 `fe9f47ff`（理由见 §4）⇒ 判决只覆盖 base `8a8d0af7` 上的这批改动。
+
+### 4. ⭐ **main 现在是红的**，且⛔ 只有 main 上的作业能证明它是红的 —— 一条本地命令就够
+
+`origin/main` 被另一线前推了一个批：`fe9f47ff`（提交作者 **Devin AI**，
+"补全音乐创作缺口审计的 MCP 接口面"，32 文件 / +3,340 −297）。它的 run `40857805920`
+仍在跑，但 `checks` 腿已经 **failure**。本地复现（⛔ 不等 CI）：
+
+```
+$ python3 scripts/gates/check_feature_alignment.py
+三方对齐矩阵校验未通过:
+  - `yeban_list_instruments` 在 `schemas/mcp-tools.schema.json` 里但**表里没有点名** —— 有工具却没人管它暴露没有
+```
+
+同一 run 里另有两条 MCP 判据红：`tools_e2e.rs:1479 no_tool_answers_with_a_blanket_not_implemented`、
+`trap_179.rs:483 the_note_level_predicate_is_exactly_nine`（读数取自 `40859261150` 的同名腿，
+其 base 含 `fe9f47ff`）。**处置**：本轮⛔ 动 `crates/yeban-mcp/**` 与三方对齐表去"顺手修别人的账"
+（一文件一写者；那线的 run 还在跑，很可能自愈）。两条受影响的线各留一条待办：十工具线落地前
+需 rebase 到修好的 main；S1 线的 `checks`/`mcp` 腿在 main 修好前**必然**继续红 ⇒
+判 S1 只看 `rust (yeban-dsp)` / `rust (yeban-app)` / `rust (yeban-engine)` 三条腿。
+
+### 5. 候选纪律四条（⛔ 未生效 —— 需人类签字，本轮不代签、不改 `AGENTS.md`）
+
+1. **本机跑 `yeban-engine` 的测试必须显式 `--no-default-features`。** `default = ["device"]`
+   ⇒ 不带这个开关就拖进 `cpal`，本机 ALSA 下 main 既有判据 `device.rs:1183
+   opening_the_default_output_device_never_panics` **栈溢出 SIGABRT**，abort 掉整个 lib 二进制
+   （实测：本轮一次越界跑出的 fatal 读数）。后果不止"一条红"：fail-fast 之下它让后面所有判据
+   ⛔ 跑到，⛔ 既不能读成"失败"也不能读成"通过"（§6.3.4 的同类）。
+2. **"控制侧发了几条事件"类判据，前提必须是 `reload` 过的宿主。** `publish_automation` 返回的是
+   SPSC 环**实收**条数，环由 `reload` 建；`EngineHost::new()` 之后 `self.events` 是 `None` ⇒
+   每次恒 0，多臂增量断言全在跟 0 比。同一条判据里必须有一条"基线 ≥ 1"的夹具前提
+   （既有臂 `automation_unapplied.rs:153` 就是这么写的）。这类缺陷**本机测不到**（cpal），只有 CI 抓得到。
+3. **在 `yeban-dsp` 新增逐位判据 ⇒ 同批跑普查判据 `--test r77_hard_assertion_audit`。**
+   它能在本机跑（本轮实测 `R77_WRITE=1` 一条命令就重生成），⛔ 把它留给 CI 等于白扔一整轮判决。
+   同族还有 §6.3.4 那条"判据名没出现＝没跑到"——这里的形态是"**普查表没更新＝判据自己没登记完**"。
+4. **推上 `main` 的批也要读回判决，⛔ 默认 main 绿。** `fe9f47ff` 是别的 agent 直接推 main 的，
+   本轮之前"main 是绿的"只是默认值。三方对齐守卫 `check_feature_alignment.py` 是本地一条命令，
+   **接手第一步应包含它**，比等 CI 快两轮。
