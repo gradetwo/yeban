@@ -64,7 +64,7 @@ fn a_real_click_on_the_console_maximize_button_maximizes_the_console() {
             .find_by_id("console-maximize-button")
             .expect("`console-maximize-button` 必须在运行时控件树里");
         assert_eq!(
-            node.role,
+            node.role.as_str(),
             ElementKind::Button.accessible_role(),
             "最大化按钮的角色必须与注册表一致"
         );
