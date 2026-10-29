@@ -14868,3 +14868,11 @@ passed 合计 **6,812** / `test result: FAILED` **0** 条），新判据**逐名
 run 级还在 queued 时 `checks/deny/plan/lockfile/全量/macos` 已 completed、承判腿已在跑
 ⇒ 哨兵按 **run 级状态**轮询会**系统性晚报**；判"在飞/放行"要下钻到 `jobs[].status`。
 （本会话据此把等待型轮询改为后台看守直取承判腿日志。）
+
+**批一判决读回（2026-10-29 07:1x 现读）**：`4a065967` ⇒ run `40828133545` **success**。
+承判腿 `rust (yeban-mcp)` **真跑**：`test result:` **125** 行、passed 合计 **2,384**、`: FAILED` **0**；
+三判据逐名 ok（默认与"合并特性"两条特性路径各一次）：
+`sixteen_bar_section_round_trip_fits_the_baseline_006_json_budget`（⇒ **2,880 全等钉被 CI 实测证实**，
+形状算术无需改钉）、`a_pending_proposal_is_listed_and_disappears_after_merge`、
+`five_main_tools_publish_an_output_schema_their_real_responses_satisfy`（props_176 反向绑定）。
+`全量/windows/macos` 亦真跑 success；`rust (workspace 全量)` skipped 属本批口径（未碰 `schemas/**`）。
