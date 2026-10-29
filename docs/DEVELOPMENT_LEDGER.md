@@ -14649,3 +14649,31 @@ deny／lockfile 四作业真跑，四条代码腿全 **skipped steps=0** ⇒ **�
 `track_partitions_dropped` ⛔ 在本判据力内。
 
 **判决**：待读回（本条提交的 run）。
+
+### 判据补强：导出 → 导入 → 再导出的**逐字节**同一（2026-10-29，`yeban-midi`）
+
+**缺口（现读）**：仓库里"同内容导出两次逐字节相同"有判据（`smf_contract` 的
+`export_is_byte_deterministic_across_two_calls`），但"**导出 → 导入 → 再导出**仍逐字节相同"
+没有判据 —— 这正是 `ARCH-DET` 与"往返可逆性"两条不可放宽要求的交叉面。
+
+**新增一条判据**（`crates/yeban-midi/src/import.rs` 的 `mod metadata_adoption_tests`）：
+
+| 判据 | 钉住 |
+| :--- | :--- |
+| `export_import_export_is_byte_identical_with_notes_and_metadata` | 夹具含两颗音符（不同力度／时值）＋ 调号 ＋ tick > 0 的速度点（140 BPM @960）与拍号点（6/8 @1920）＋ 标题 ＋ 署名；导出 ⇒ `parse_smf` ⇒ `plan_midi_import` 到 content-free 工程 ⇒ **逐条 `Op::apply`** ⇒ 再导出 ⇒ 两次字节**完全相等**；控制臂 `parsed.notes.len() == 2` |
+
+**注入证明**：把 `key_signature_adoption_op` 改成空采纳 ⇒ 判据红（**135 B vs 129 B**，
+右图缺 `00 FF 59 02 02 00` 那 6 字节）⇒ 证明它抓的是**非对称损失**；还原后 `sha256` 回到
+`4eb0525e…`（注入前实测值）。
+
+⚠ **⚠ 如实登记的判据力边界**：本判据对**对称**故障无力 —— 若导出与导入同时把同一字段
+接错（例如两侧都当标题当作者），两边字节仍然相同 ⇒ 绿。对称面由
+`export::tests::title_and_author_export_to_conductor_metadata_and_round_trip`（逐字）与
+`smf_contract` 的 `sha256` 锚承担。
+⚠ 另一条边界：**自动化泳道（CC 7／10）与段落／marker 不在夹具里** —— CC 的 7 位量化
+（`ADR-0015` D3）本就有损，硬塞进"逐字节"会把有损量化误报成缺陷。
+
+本地读数：`cargo test -p yeban-midi` ⇒ lib **219 passed**（+1）、`musicxml_contract` **50**、
+`real_world_smf` **9**、`smf_contract` **35**，FAILED **0**；clippy `-D warnings` 干净；fmt 通过。
+
+**判决**：待读回（本条提交的 run）。

@@ -3844,6 +3844,74 @@ pub mod metadata_adoption_tests {
         );
     }
 
+    /// 判据（**往返可逆性，逐字节**）：工程 ⇒ 导出 ⇒ 导入 ⇒ 再导出 ⇒ 字节**完全相同**。
+    ///
+    /// 覆盖的音符面：两颗音符（同音高／不同力度／不同时值）＋ 调号 ＋ tick > 0 的速度与
+    /// 拍号映射点 ＋ 标题 ＋ 署名。⚠ 边界（**已知不覆盖**）：自动化泳道（CC 7／10 的
+    /// 7 位量化本就有损，`ADR-0015` D3）与段落／marker —— 这两面 ⛔ 在本判据力内。
+    #[test]
+    fn export_import_export_is_byte_identical_with_notes_and_metadata() {
+        let mut source = content_free_project();
+        source.title = "Round Trip".to_owned();
+        source.author = "(c) 2026 Nobody".to_owned();
+        source.key_signature = Some(KeySignature {
+            sharps_flats: 2,
+            is_minor: false,
+        });
+        source.tempo_map.insert(960, 140.0);
+        source.time_signature_map.insert(
+            1920,
+            TimeSignature {
+                numerator: 6,
+                denominator: 8,
+            },
+        );
+        let clip_id = source
+            .clip_pool
+            .iter()
+            .find(|(_, entry)| entry.content.notes().is_some())
+            .map(|(id, _)| *id)
+            .expect("有 MIDI 片段");
+        if let ClipContent::Midi { notes } =
+            &mut source.clip_pool.get_mut(&clip_id).unwrap().content
+        {
+            let a = EntityId::new();
+            notes.insert(a, MidiNote::new(a, 0, 60, 480));
+            let b = EntityId::new();
+            let mut second = MidiNote::new(b, 960, 67, 240);
+            second.velocity = 64;
+            notes.insert(b, second);
+        }
+
+        let first = crate::export::export_from_project(&source)
+            .expect("投影")
+            .to_smf_bytes()
+            .expect("编码");
+        let parsed = crate::midi::parse_smf(&first).expect("回读");
+        assert_eq!(parsed.notes.len(), 2, "控制臂：两颗音符都进了字节");
+
+        let mut target = content_free_project();
+        target.title = String::new();
+        target.author = String::new();
+        let plan = plan_midi_import(&target, &parsed, &MidiImportOptions::default())
+            .expect("空工程必须可导入");
+        for op in &plan.ops {
+            op.apply(&mut target).expect("计划内的 op 必须可应用");
+        }
+
+        let second = crate::export::export_from_project(&target)
+            .expect("再投影")
+            .to_smf_bytes()
+            .expect("再编码");
+        assert_eq!(
+            first,
+            second,
+            "同一条内容走完 导出 → 导入 → 再导出 必须逐字节相同（长度 {} vs {}）",
+            first.len(),
+            second.len()
+        );
+    }
+
     /// 判据：`project.title` 的采纳**只认真正的名字** —— 导出默认名被排除、两个不同名
     /// 歧义时不猜；⭐ 对照组：同名重复（去重后一个）仍采纳；conductor 轨没有轨名时回退
     /// `FF 01` 文本。⛔ 对照组是防"这三条其实都没跑"的恒真绿。
