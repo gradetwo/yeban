@@ -1598,7 +1598,7 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
     ToolSpec {
         spec_id: "MCP-TOOL-EXT-LIST-PROPOSALS",
         name: "yeban_list_proposals",
-        summary: "列出当前**未合并**的提案（只读）: 每条给 `proposalId` / `title` / `opCount` / `opKinds` / `baseCommit` / `headCommit` / `branch` / `createdAt`（外加 1 起的 `index`）。没有未合并的提案 ⇒ `proposals: []` ＋ 一句 `note`（⛔ 不报错）。⚠ 提案记录是**会话运行态**（不落 `project.json` / `history.dag`）⇒ 进程重启后这里为空; 用它可以在提案还没 merge 时重新找到 `proposalId`，但**不能**跨进程恢复提案。",
+        summary: "列出当前**未合并**的提案（只读）: 每条给 `proposalId` / `title` / `description` / `opCount` / `opKinds` / `baseCommit` / `headCommit` / `branch` / `createdAt`（外加 1 起的 `index`）。没有未合并的提案 ⇒ `proposals: []` ＋ 一句 `note`（⛔ 不报错）。⚠ 提案记录是**会话运行态**（不落 `project.json` / `history.dag`）⇒ 进程重启后这里为空; 用它可以在提案还没 merge 时重新找到 `proposalId`，但**不能**跨进程恢复提案。",
         scope: Scope::AppAdmin,
         // 只读：读 `domain.proposals`，不改工程、不落盘（`Plan::ListProposals` 的 `apply` 原样回传）。
         side_effect: SideEffect::ReadOnly,

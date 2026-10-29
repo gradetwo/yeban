@@ -304,14 +304,16 @@ fn proposal_summary_schema() -> Value {
     json!({
         "type": "object",
         "required": [
-            "proposalId", "branch", "kind", "title", "status", "baseCommit", "headCommit",
-            "mergeCommit", "createdAt", "resolvedAt", "resolution", "opCount", "opKinds"
+            "proposalId", "branch", "kind", "title", "description", "status", "baseCommit",
+            "headCommit", "mergeCommit", "createdAt", "resolvedAt", "resolution", "opCount",
+            "opKinds"
         ],
         "properties": {
             "proposalId": {"type": "string"},
             "branch": {"type": "string"},
             "kind": {"type": "string"},
             "title": {"type": "string"},
+            "description": {"type": "string"},
             "status": {"type": "string"},
             "baseCommit": {"type": "string"},
             "headCommit": {"type": "string"},

@@ -118,6 +118,10 @@ impl Proposal {
         map.insert("branch".to_owned(), Value::from(self.branch.clone()));
         map.insert("kind".to_owned(), Value::from(self.kind));
         map.insert("title".to_owned(), Value::from(self.title.clone()));
+        map.insert(
+            "description".to_owned(),
+            Value::from(self.description.clone()),
+        );
         map.insert("status".to_owned(), Value::from(self.status.as_str()));
         map.insert(
             "baseCommit".to_owned(),

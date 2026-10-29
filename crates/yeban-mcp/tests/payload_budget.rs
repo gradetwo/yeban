@@ -157,11 +157,14 @@ fn sixteen_bar_section_round_trip_fits_the_baseline_006_json_budget() {
     // = **+25 B**（`serde_json::Map` 是有序表，插在哪两个键之间都恰好需要那一个逗号；
     // 请求侧一位不动）。⇒ 响应 2,816 → **2,841**（合计 3,037 ≤ 4,096 的预算不变）。
     // ⚠ 这条增量是本票**预期**的代价；若 CI 报出的不是 2,841，以 CI 的读数为准并改这里。
+    // ⭐ `提案摘要补 description`（审计 2026-10-29，§0.6.0i 对账轴）：`Proposal::summary()`
+    // 新增一个键 ⇒ 增量按**形状**算：`"description"`(13) + `:`(1) + 值 `"propose_section Chorus"`
+    // 含引号(24) + 逗号(1，13→14 个键) = **+39 B**。⇒ 响应 2,841 → **2,880**（合计 3,076 ≤ 4,096）。
     assert_eq!(
         reading,
         RoundTripPayload {
             request: 196,
-            response: 2841
+            response: 2880
         },
         "BASELINE-006 的 16 小节缺省读数变了"
     );

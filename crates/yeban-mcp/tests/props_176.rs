@@ -267,6 +267,23 @@ fn a_pending_proposal_is_listed_and_disappears_after_merge() {
     assert_eq!(entry["opCount"], 1, "{entry}");
     assert_eq!(entry["opKinds"], json!(["SetTempo"]), "{entry}");
     assert_eq!(entry["index"], 1, "1 起始序号: {entry}");
+    // ⭐ §0.6.0i 对账（审计 2026-10-29）：`Proposal.description` 此前**只存不报**
+    // （summary/detail 两侧都没有这个键）⇒ 列表条目必须带它，且与创建回执逐字相同。
+    assert!(
+        entry.get("description").is_some(),
+        "列表条目必须带 description: {entry}"
+    );
+    assert_eq!(
+        entry["description"], created["data"]["proposal"]["description"],
+        "列表里的 description 必须与创建响应**逐字**相同"
+    );
+    assert!(
+        !entry["description"]
+            .as_str()
+            .expect("description")
+            .is_empty(),
+        "{entry}"
+    );
     assert!(
         !entry["title"].as_str().expect("title").is_empty(),
         "{entry}"
