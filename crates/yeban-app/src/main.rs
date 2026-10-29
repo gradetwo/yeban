@@ -1072,12 +1072,13 @@ fn mount_in_process_mcp(
 /// "撤销一步"按钮由 [`host::wire_undo`] 接到 [`yeban_app::undo::UndoPort`]，
 /// 动作真的会走 `CommitGraph::undo_with`，显示态由 `host::apply_undo` 从模型读数回写。
 ///
-/// **视图态七条也已经真的接线**（分类切换、控制台 ⤢、资源条目选中陆续落地）：
+/// **视图态八条也已经真的接线**（分类切换、控制台 ⤢、资源条目选中与 Session 返回编曲陆续落地）：
 /// `toggle-view` / `toggle-sidebar` / `toggle-ai-drawer` / `open-musical-pr` /
-/// `select-sidebar-category` / `console-maximize-toggle` / `select-sidebar-item` →
-/// [`host::wire_view_callbacks`] → 分别写 `arrangement-view` / `sidebar-collapsed` /
-/// `ai-drawer-open` / `musical-pr-open` / `sidebar-category` / `console-maximized` /
-/// `sidebar-item`。
+/// `select-sidebar-category` / `console-maximize-toggle` / `select-sidebar-item` /
+/// `back-to-arrangement` → [`host::wire_view_callbacks`] → 分别写
+/// `arrangement-view` / `sidebar-collapsed` / `ai-drawer-open` / `musical-pr-open` /
+/// `sidebar-category` / `console-maximized` / `sidebar-item` / `arrangement-view`
+/// （`back-to-arrangement` 只写 `true`，与 `toggle-view` 同一属性）。
 /// 原先写在 `.slint` 里的 `root.* = !root.*` 翻转**已删除** —— 同一条动作只有一个写者。
 ///
 /// 其余**三条**回调仍然故意什么都不做，只打一行 stderr。原因不是省事，而是

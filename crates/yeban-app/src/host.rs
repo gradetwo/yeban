@@ -5229,6 +5229,7 @@ const SIDEBAR_ITEM_COUNT: i32 = 8;
 /// | `select-sidebar-category` | `sidebar-category` | 三个分类标签的选中态（背景 / 文字色 / `accessible-item-selected`） |
 /// | `console-maximize-toggle` | `console-maximized` | 控制台面板高度（`vertical-stretch`）与 ⤢ 的 `accessible-checked`；与 `Action::ToggleConsoleMaximize` 同属性 |
 /// | `select-sidebar-item` | `sidebar-item` | 八个资源条目的选中态（背景 / 文字色 / `accessible-item-selected`） |
+/// | `back-to-arrangement` | `arrangement-view` | Session 视图「→ 编曲」按钮：写 `true` 切回编曲视图（⛔ 不是翻转；播放权回归的引擎侧语义未实现，见 `session_view.slint` 头注） |
 ///
 /// ## 为什么这些翻转必须住在这里，而不是 `.slint` 的 `clicked =>` 里
 ///
@@ -5237,7 +5238,7 @@ const SIDEBAR_ITEM_COUNT: i32 = 8;
 /// 写的就是这两个属性（`ui/switch_main_view` 也写同一个）。若 `.slint` 的转发块自己再翻转
 /// 一次，同一个动作就有两个真相源；而"界面**不**自己翻转状态"正是 `playing` 那条已经
 /// 付过学费的契约（`ui/app.slint` 的 `toggle-play` 注释、`docs/ledger/feature-alignment.md`
-/// 错位 7）。因此本函数是这七条回调的**唯一**落点，组件里只剩"原样转发"。
+/// 错位 7）。因此本函数是这八条回调的**唯一**落点，组件里只剩"原样转发"。
 ///
 /// ## 为什么这不是"假接线"
 ///
@@ -5329,6 +5330,19 @@ pub fn wire_view_callbacks(ui: &MainWindow) {
                 return;
             };
             ui.set_sidebar_item(item.clamp(0, SIDEBAR_ITEM_COUNT - 1));
+        }
+    });
+    // ⭐ Session 视图「→ 编曲」：**写 `true`**，不是翻转 —— 按钮的语义是"回到编曲视图"，
+    // 已经在那里时再按也不该把用户踢回 Session。纯视图态（`MODEL-ISO-001` 的挥发性层）。
+    // 播放权从场景回归时间轴的引擎侧语义不在本切片（`session_view.slint` 头注已登记）。
+    ui.on_back_to_arrangement({
+        let weak = weak.clone();
+        move || {
+            let Some(ui) = weak.upgrade() else {
+                debug_assert!(false, "MainWindow 在回调执行期间被销毁");
+                return;
+            };
+            ui.set_arrangement_view(true);
         }
     });
 }
