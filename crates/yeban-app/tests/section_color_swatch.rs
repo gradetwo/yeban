@@ -168,9 +168,8 @@ fn section_color_swatches_carry_the_projected_color() {
     );
 
     // ---- ④ 几何在卡片内：色标属于它那一张段落卡 ----
-    for index in 0..section_count {
+    for (index, swatch) in bounds.iter().copied().enumerate() {
         let card = bounds_of(&mut port, &format!("section-{index}-card"));
-        let swatch = bounds[index];
         let (sx, sy) = (f64::from(swatch.x), f64::from(swatch.y));
         let (sw, sh) = (f64::from(swatch.width), f64::from(swatch.height));
         let (cx, cy) = (f64::from(card.x), f64::from(card.y));

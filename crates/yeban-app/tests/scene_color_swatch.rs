@@ -178,9 +178,8 @@ fn scene_color_swatches_carry_the_projected_color() {
     );
 
     // ---- ④ 几何在卡片内：色标属于它那一张场景卡 ----
-    for index in 0..scene_count {
+    for (index, swatch) in bounds.iter().copied().enumerate() {
         let card = bounds_of(&mut port, &format!("scene-launch-{index}-button"));
-        let swatch = bounds[index];
         // `Rect::x/y` 是 `i32`、`width/height` 是 `u32` ⇒ 统一升到 `f64` 再比（不混加）。
         let (sx, sy) = (f64::from(swatch.x), f64::from(swatch.y));
         let (sw, sh) = (f64::from(swatch.width), f64::from(swatch.height));
