@@ -10304,6 +10304,25 @@ The负责人 handed over an **HTML design mock** carrying eighteen named colours
 
 **验证本身产出的三处缺陷，`7e07401` 修正（三个文件）。**
 
+⭐ **上面 ②' 那句"全工具集里没有设备 CRUD"于 2026-10-30 现读推翻并改正**（⛔ 原文不改写，那是当时的读数）：
+设备面的写通路**存在且成套**，只是**不住在独立工具名里**——现读 `crates/yeban-mcp/src/op_schema.rs`
+的 `kind("…")` 去重集（单位：个 kind）共 **53** 个，其中名字含 `Device` 的 **4** 个
+（`insertDevice`／`removeDevice`／`setDeviceBypassed`／`setDeviceName`），另加
+`setParam` 的 `lane:"DeviceParam"` 分支（`op_schema.rs:638-660`，必填 `slotIndex` + `paramIndex`，
+越界各自报 `slotOutOfRange` / `paramIndexOutOfRange`）。常量在 `domain/notes.rs:2701/2704`
+（`INSERT_DEVICE_KIND` / `REMOVE_DEVICE_KIND`）。⇒ 准确措辞是：
+**"没有独立的设备工具"（`schemas/mcp-tools.schema.json` 里没有 `yeban_*Device*` 工具名），
+设备 CRUD 是 `yeban_edit_notes` 的 kind**。`AGENTS.md` §6.3 第 3 条那句"设备由宏工具承载"仍按原样保留（⛔ 规则文件要人类签字才改），
+但**现读它比这句更正后的话更不准，而且是两处**：① 它连 `insertDevice` 这一族都没提；
+② 它写"**可写的只有** `yeban_edit_automation` 的 `DeviceParam` 目标"——而 `yeban_edit_notes`
+的 `setParam` 带 `lane:"DeviceParam"` 分支**同样**写设备参数（`op_schema.rs:638-660`）。
+⚠ 台账原文把它定位在 `AGENTS.md:132`，现读该句在 **`:134`**（与上面 ADR 那条**同型行号漂移**）。
+⇒ **待人类签字的一条**：`AGENTS.md:134` 的"可写的只有"改成"两处可写（`yeban_edit_automation`
+的 `DeviceParam` 目标 ＋ `yeban_edit_notes` 的 `setParam/lane:"DeviceParam"`）"。⛔ 本会话不动规则文件。
+⚠ **顺带钉住一处仍然成立的缺口**：设备参数寻址用的是 `track.devices` 的**槽位下标**
+（`slotIndex`），⛔ 不是 `device_id` ＋ 名字——这正是 S2 正片要升级的那一处（动 `schemas/**` 两处、
+且牵涉旧工程兼容裁决）。
+
 **(d)** `scripts/gates/run-gates.sh` 的本地 `full` 调 `validate_schemas.py` 时**没有** `--repo-assets`，于是 `MUST-GATE-014` 的许可白名单与逐项对账**只在 CI 存在**。修法是把该开关**只加到 `full`**（`:93`）；`light` 根本不调用 `gate_schemas`（`:191-196` 的 `light` 分支里没有它，只有 `full` 分支在 `:217` 调）。机械证据是先命名指标再数：**`light` 日志里资产清单步骤打印的行数**（针 = `[ok] assets/…manifest.json`）= **0**。（若只 `grep manifest.json` 会得 **1** —— 那是 `LEGAL.md:80` 的 `file://` 告警行，不是资产步骤；针必须落在步骤自己的输出上，这正是第 422 轮换来的教训。）代价同样先命名指标：**单次 `validate_schemas.py` 调用的墙钟秒** —— 审计时（同机各 3 次）不带开关 **0.26 s** → 带开关 **0.93 / 0.94 / 1.15 s**；本轮复核同一指标（各 3 次）得 **0.15 / 0.15 / 0.16 s** → **0.96 / 0.99 / 0.98 s**，绝对值随负载浮动，增量稳定在 **≈ +0.8 s**，与审计同向。该开关管**六项检查**：清单发现、红线 9 的未登记资产扫描、指针式清单 schema + 目标存在、条目清单 schema、逐条许可白名单、逐条 sha256 / `size_bytes` 对账（都在 `verify_repo_asset_manifests()`，`validate_schemas.py:66` 起）。牙是可逆地证明的：把一条的 `license` 改成白名单外的值 ⇒ EXIT=1 并点名条目与许可；删掉必需的 `sha256` ⇒ 在 schema 处 EXIT=1；还原后 `cmp` 逐字节相同、校验和回到原值。
 
 **(e)** `docs/ledger/gate-status.md:31` 的 `MUST-GATE-014` 行把清单记成 `8 903 874 B`；本轮 `stat -f%z` / `wc -c` 实测 **8 903 873**，已改。同一行另有三个数被量过但**有意不改**，其中一个才是有意思的：行里的"最大单文件 **0.01 MB**"**按字面不可测** —— 它挂在有日期、但成员名单没有记录的首批上；而今天真正在场且已登记的最大资产是 `assets/samples/karoryfer-emilyguitar/Emilyguitar/emily_chords.sfz` 的 **210 382 B**（清单 `size_bytes` 同为 210382），约是那个记录值的 **二十倍**（210382 / 0.01 MB = 21.0×）。**这是"带范围说明的陈旧数字"，不是违规**：红线 9 的 10 MB 仍远未触碰。另两个不改的是 `358 909 701 B` / `7 836 692 B`（本树测不到的上游归档大小）与 `8.5 MB`（与两个字节数一致的取整 MiB）。
@@ -15155,3 +15174,125 @@ right 35）⇒ 证明**设了变量并不会跳过比较**，那次全绿是**�
 **3** 个 IR 形状键（`conv_ir_decay_s`／`conv_ir_decay`／`conv_ir_seed`，dsp 侧刻意排除）。⇒ 同一轮内
 改正并把**实测集合**写进文档。教训回到 §6.3：**"看起来合理"的形状差异必须先 `grep` 两侧再落笔**，
 尤其当那句话会成为下一位接手者的动作依据时。
+
+## 2026-10-29（凌晨）· ⭐ 分支 run **只覆盖该次推送的增量**（测量口径的一处实质更正）＋ S2 第三批 ＋ S3 第一片
+
+⭐ **本轮最值钱的读数是口径，不是代码**：`ci.yml` 的 `plan` 用
+`BASE_SHA = github.event.before`（＝**上一分支 tip**）当 diff 基线，所以**分支上每一次推送的
+run 只验证那一次推送的增量**。⇒ 上一节末尾那句"推送取消了 `40904300940`，判决由新 tip 的
+`40905810210` 承接"**是错的**（本轮现读计划器推翻它，⛔ 静默不改）：
+
+| 读数 | base..head | 计划器返回的 crate 集合（条目＝crate 个数） |
+| :--- | :--- | :--- |
+| 复算 `0d0383cf` 那一跑 | `8755b4e6`..`0d0383cf` | `["yeban-app","yeban-mcp","yeban-render","yeban-ui-mcp"]`（**不含 dsp／engine**） |
+| 整条线应有的集合 | `72401d45`(main)..`0d0383cf` | `["yeban-app","yeban-dsp","yeban-engine","yeban-mcp","yeban-render","yeban-ui-mcp"]` |
+
+两侧**互证**：CI 里 `40905810210` 实际只有 `rust (yeban-render／app／ui-mcp／mcp)` 四条 Linux 腿
+＋`workspace 全量` skipped —— 与复算名单逐条一致。⇒ **`8755b4e6` 被取消后，`yeban-dsp` 主体改动
+在 Linux 上从未获得判决**（只有 windows/macos 腿跑了 `test (yeban-dsp 的扫描器)` 那一小块）。
+L32「一次推送＝一批改动，tip run 的判决即整批的判决」**继续成立但只指 merge 那一跑**（基线是
+main 旧 tip ⇒ diff 覆盖整条线）；分支内部的逐个推送**不适用**。⇒ 动作：不追补三个被取消的 run，
+改用**同一个 tip 上派发 `force_full=true`**（`ci.yml` 手动档）让一次跑覆盖整线 ——
+run **`40910345157`**（`0cfd19a6`，in_progress）；它同时把 `40905810210`／`40910342208` 顶成
+`cancelled`（分支组仍是"新推送取消旧运行"）。⚠ 结论：**判"某条线是否被真验证"要么读它的
+merge run，要么在它自己的 tip 上派一次全量档**，⛔ 不要把"分支 tip 后来的那跑 success"当整线判决。
+
+**S2 第三批（`0cfd19a6`，常驻判据）**：`crates/yeban-engine/tests/device_param_spellings_pinned.rs`
+把「实时链认的参数名必须与 dsp 三张 `SPELLINGS` **逐字同集**」钉住，唯一允许差集＝ **3** 个
+IR 形状键。本机读数：`cargo test -p yeban-engine --no-default-features` ⇒ **3 passed**；
+`cargo fmt` 干净；`cargo clippy -p yeban-engine --no-default-features --tests -- -D warnings` 零告警。
+**注入红实验**（做完**已还原**）：把混响判据的期望表换成 `StripField::SPELLINGS` ⇒
+`the_realtime_reverb_arms_are_the_dsp_reverb_spellings --- FAILED`（left/right 两集不一致）
+⇒ 判据确实会咬；还原后不带变量复跑 **3 passed**（承上一轮 `R77_WRITE` 的教训：**判决只认不带
+写入变量的那一跑**）。
+
+**S3 第一片（`8a755acc`，新线 `line/s3-field-reachability`，run `40911122798`）**：接手
+handover §11 第 4 条留下的轴「**哪些实体只能建、改不了**」。⭐ 先做可构造性，再落判据：
+- **宽口径（"这字段能不能被改"）的词法扫描实测不可构造**，三条假阴性机理各有真实证据：
+  ① rustfmt 链式换行（`ops.rs:1703` 形如 `doc\n .tracks\n .insert(...)`）；
+  ② 领域 helper（`ops.rs:3043` `Self::AddTrack { track } => doc.insert_track(track.clone())`
+  ——字段名 `tracks` 根本不出现在臂里）；③ 局部绑定后赋值（`SetMacro` 先
+  `let track = doc.track_mut(..)?` 再 `track.macros.get_mut(i)`，赋值左侧是 `macro_parameter.value`）。
+  ⇒ 原型第一跑因此把 `title`／`author`／`clips`／`tracks`／`routing_graph` 全读成"不可达"——
+  **探针红＝抽取器无效**，那批"缺口"读数作废，⛔ 未写进任何结论。
+- 可靠方向改成**零触点**：`ops.rs` 产品区（`#[cfg(test)]` 之前、去注释）里 `.<字段>` 出现
+  **0** 次 ⇒ 连读都没被读过。现读为 0 的五个字段：`metadata`／`rng_seed`／`audio_config`／
+  `folder_id`／`solo_safe`；非零探针：`routing_graph` **12**／`macros` **5**／
+  `master_bus_track_id` **1**（`ops.rs:1634` 的自洽校验）⇒ 既钉住现状，又证明扫描器不瞎。
+- 判据文件 `crates/yeban-model/tests/field_write_reachability.rs`（本机 `yeban-model` 可编）：
+  **4 passed**；注入真红＝产品区临时加 `let _ = &doc.metadata;` ⇒ 零触点判据 FAILED
+  (`[("metadata", 1)]`)，还原后复跑 4 passed。
+- ⛔ **这片不回答"该不该补"**：五个字段只登记为「现状：`Op` 面零触点」，是否做成能力
+  （轨道文件夹／工程种子可改／描述与标签可编辑／音频配置可改）是**人类裁决**，要进 `docs/adr/`。
+  另一处已登记的旧账不动：`master_bus_track_id` 的"建后不可改"已记在
+  `docs/ledger/feature-alignment.md`，`ledger:10303` 那句"全工具集里没有设备 CRUD"则与现读矛盾
+  （`Op::InsertDevice`／`RemoveDevice` 及其 kind 名在 `notes.rs:2691..2693` 已存在），
+  它的原意是"没有**独立**设备工具"——⚠ 措辞待改，本批只登记不动它。
+
+⚠ **未核一项 → 同轮已核实（记这一步为什么值得）**：这五个字段在**读面**是否可见 ——
+`crates/yeban-mcp/src/domain/view.rs:36` 的 `pub const SELECTORS: [&str; 28]` 现读**含**
+`rng_seed`／`audio_config`／`metadata`／`master_bus_track_id`／`routing_graph`／`tracks`
+（`folder_id`／`solo_safe` 未单列，但可随整个 `tracks` 选择器读出 —— ⭐ 这句现已**现读证实**：
+`domain/view.rs:229` 是 `serde_json::to_value(project)` **整档序列化**后按根键挑选，
+所以选择 `tracks` 返回的就是完整 `TrackV3`，含这两个字段；且既有单元判据
+`every_selector_resolves_against_a_filled_project` 已经在钉「选择器 ↔ 数据模型」不漂移）。⇒ 结论从"改不了"
+收紧为**「读得到、写不了」**：工具面能把它们查出来，却没有任何 `Op` 能改。
+⛔ 我先把这条标成未核、拿到白名单原文后才改口 —— 中间那句"既不能写也不能读"**是错的**，
+若直接写进台账就成了下一位接手者的假前提（§6.3 第 4 条的同型教训：判据名没出现＝没跑到，
+选择器名没现读＝不能断言可见性）。
+
+**候选纪律一条（⛔ 未生效 —— 需人类签字，本轮不代签、不改 `AGENTS.md`）**：
+③ **一条工作线的"整线判决"只有两个合法来源** —— 它 **merge 进 main 那一跑**，或在该线
+**当前 tip 上派 `ci.yml` 的 `force_full=true`**。⛔ 不得把"分支 tip 后来某跑 success"当成整线
+通过：`plan` 的基线是 `github.event.before`（上一分支 tip），**每次推送的 run 只覆盖那次增量**，
+被后续推送取消的 run 所对应的那段增量**不会**被后来者补验（本轮实测：`8755b4e6` 的 dsp 主体
+被取消后，`0d0383cf` 那跑的 crate 名单里根本没有 `yeban-dsp`）。
+
+**磁盘读数（单位 GiB／磁盘实际占用）**：根分区可用 **29G**（本轮未删大件）；本地构建目录
+`/tmp/yeban-s2` **1.3 GiB**（S2 判决读回后即可回收）、`/tmp/yeban-s3` 新建（S3 线）。
+S3 工作树内 `target` 为零（守 `CARGO_TARGET_DIR` 纪律）。
+
+## 2026-10-30（凌晨）· S4 第一片（`folder_id` 校验缺口登记）＋ 一处文档行号漂移 ＋ 一条并行写者的在飞线
+
+**先记一条会误导后来者的文档读数**：`docs/adr/ADR-0004-...md` 两处引代码行号
+（`project.rs:1673-1676` 的 `validate()` 存在性检查、`project.rs:1143` 的 `folder_id` 字段），
+现读同一仓库同一文件是 **`:1883`** 与 **`:1235`**（单位：行）。⛔ 按 §6 第 3 条的教训反过来用：
+**ADR 里的行号是写作当时的快照**，据此定位前必须先 `grep` 该行的**特征串**（本次是
+`if let Some(folder_id) = track.folder_id`），⛔ 不要按号取文。
+
+**S4 线（`line/s4-folder-link-gap`，base `origin/main`，tip `c3b0b4a0`）第一片**：新判据
+`crates/yeban-model/tests/folder_link_validation_gap.rs` 登记 `ADR-0004` **Q13**（`:407-428`）
+点名的陷阱——`folder_id` 的三种非法形状今天**全部通过** `validate()`：
+**自指**（`folder_id == track.id`）／**两节点环**（a→b→a）／**指向主总线**
+（主总线本身也在 `tracks` 里，存在性检查管不到它）。机理是 `:1883` 只查
+`self.tracks.contains_key(&folder_id)`。
+
+**为什么这轮⛔ 不修**：`ADR-0004` 的**状态是 `Proposed（待人类裁决）`**（`:3`），Q13 给了
+A（拒绝三种）／B（访问集上限）／C（不校验，⛔ 已被 ADR 自己否决）三选项并**建议 A+B 合并**，
+但该建议**尚未被负责人批准**；且 A 需要新增 `ModelError` 变体（牵动穷尽匹配面）。
+⇒ 按 `AGENTS.md` §5 第 7 条，本片**只登记现状**，把"补校验"留给裁决之后的片；三条"现状判据"
+的设计目标是**将来变红**（逼改的人显式动这里并写回裁决编号），⛔ 不是要维持的"通过"。
+
+**六条判据的构成（照本轮口径：每条控制臂独立变色）**：三条钉现状 + 一条**对照臂**
+（不动 `folder_id` 的基准夹具必须 `Ok`）+ 一条**阳性对照**（指向不存在的轨仍报
+`TrackNotFound` ⇒ 证明 `folder` 分支不是死代码，否则三个 `Ok` 可能只是分支从未执行）
++ 一条**非真空下界**（`≥ 2` 条非主总线轨；并钉"非主总线集 + 1 == 全部轨道数"证明过滤是活的）。
+
+**本机判决边界（照 §5）**：`yeban-model` 本机可跑 ⇒ 注入实验做完已还原并现读复核：
+向 `validate()` 临时注入三种拒绝（自指／`== master_bus_track_id`／带 `BTreeSet` 访问集的环 walk）
+⇒ 该文件 `3 passed; 3 failed`，**红的恰好是那三条"现状登记"**，对照臂／阳性对照／下界三条**仍绿**
+⇒ 证明三条钉的是活代码路径；`git checkout -- crates/yeban-model/src/project.rs` 后
+`grep -c 'folder_id == Some'` = **0**、复跑 **6 passed**。整 crate 读数（单位：个）：
+`Running` 行 **14**、`test result:` 行 **16**、passed 合计 **463**、`FAILED` **0**；
+`cargo clippy -p yeban-model --all-targets -- -D warnings` 零告警；`run-gates.sh light` 全过；`cargo fmt` 干净。
+CI 跑 **`40914097921`**（`rust (yeban-model)` 等）⇒ **pending，读回前不得写"落地"**。
+
+**夹具读数（单位：条）**：`yeban_model::samples::filled_project()` 共 **4** 条轨，
+其中 `TrackKind::Master` **1** 条、非主总线 **3** 条（本轮实测，⛔ 手抄）。
+
+**一条并行写者的在飞线（⛔ 本会话不动它）**：`origin/line/ui-export-dialog`（base `72401d45`，
+`fdb17b75` + tip `b907e371`，作者时间 `2026-10-30 00:10 +0800`）**没有本地工作树**，
+`fdb17b75` 那跑（`40908163480`）红在 `rust (yeban-app)`／`macos`／`windows` 三条腿，
+`b907e371` 自称修的是"回执字段闭集 **13** 项"⇒ 现跑 **`40911008998`** in_progress。
+登记它只为**别让判决孤儿化**（谁派的谁读回）；⛔ 一文件一写者，本会话不 land、不改该线。
+

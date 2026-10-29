@@ -2173,3 +2173,78 @@ right 35）⇒ 证明**设变量不会跳过比较**，那次全绿是**同一�
 **磁盘读数（本轮实测）**：删 `/tmp/yeban-s1`（**6.5 GiB**，其判决已读回）＋ 树内误建的 `target`
 （194 MiB）⇒ 根分区可用 **23G → 29G**；`/tmp/yeban-s2` 现读 **495 MiB**（S2 线的本地构建目录）。
 ⛔ 他项目目录（19G cache／5.2G rustup／3.8G 他项目 target）仍待人类裁决（清单项 `#34`）。
+
+### ⭐ 2026-10-30 00:24 追加（⛔ 分支 run 只覆盖增量这条口径 ＋ 两条线三跑待读回 ＋ S3 的第一片）
+
+> ⚠ **本节标题里的"两条线三跑"是 `00:24` 当时的读数**；`00:42` 又添了 `line/s4-folder-link-gap`，
+> 并发现并行写者的 `line/ui-export-dialog` 在飞 ⇒ **下表已扩到四行**。⛔ 标题不改写，按表行动。
+
+⛔ **接手者先读这条口径，否则会重复我犯过的错**：`ci.yml` 的 `plan` 拿
+`BASE_SHA = github.event.before`（**上一分支 tip**）当 diff 基线 ⇒ **分支上每个 run 只验证
+那一次推送的增量**。所以"后一跑的 tip 继承了前一被取消跑的判决"**不成立**。
+实测互证（本地复算 `python3 scripts/dev/changed-crates.py` ↔ CI 作业名单，逐条一致）：
+base `8755b4e6`..`0d0383cf` ⇒ `["yeban-app","yeban-mcp","yeban-render","yeban-ui-mcp"]`
+（**没有 dsp／engine 腿**），而整条线 base `72401d45`..`0d0383cf` ⇒ 六条含 dsp／engine。
+⇒ 判一条线的**整线**判决只有两条路：读它 **merge 进 main 那一跑**，或在它自己 tip 上
+派 `gh workflow run ci.yml --ref <line> -f force_full=true`。**空绿判定**照 §6.3：`skipped`
+的 `rust (workspace 全量)` 在非全量批是正确形态，⛔ 不是空绿，但也不能拿它当"全 crate 验过"。
+
+**四跑待读回（按 `headSha` 逐腿读，⛔ 用 tip 绿代替）**：
+
+| 线 | tip | run | 该看什么 |
+| :--- | :--- | :--- | :--- |
+| `line/s2-device-param-table` | `0cfd19a6` | **`40910345157`**（`workflow_dispatch`，`force_full=true`，in_progress） | `rust (workspace 全量)` **必须真跑**（耗时非 0、日志有 `test result:`）⇒ 这才是 dsp 主体＋引擎新判据的 Linux 判决；判绿后 `scripts/dev/worktree.sh land s2-device-param-table` → 推 main → 读 merge run → `rm --purge` 拆树 |
+| `line/s3-field-reachability` | `8a755acc` | **`40911122798`**（push，queued） | `rust (yeban-model)` 与下游腿；新判据 `field_write_reachability` 四条要逐名见 `ok`（⛔ fail-fast 顺序坑：先数 `Running tests/`）⇒ ⭐ **`rust (yeban-model)` 腿已 success（现读作业名单），但日志要等整跑结束才取得到**，所以逐名 `ok` 还没核 |
+| `line/s4-folder-link-gap` | `c3b0b4a0` | **`40914097921`**（push，queued） | ⭐ **新片**：`crates/yeban-model/tests/folder_link_validation_gap.rs` 六条判据登记 `folder_id` 的**三种非法形状今天全部通过 `validate()`**（自指／a→b→a 环／指向主总线）。⛔ **只登记不修**：`ADR-0004:407-428` 的 **Q13** 给了 A/B/C 三选项并建议 A+B 合并，但**整份 ADR 状态是 `Proposed`** ⇒ 补校验属人类裁决后的片（§5 第 7 条，⛔ 代签）。看 `rust (yeban-model)` 与下游腿，判据名 `validate_accepts_*_today` 三条要逐名见 `ok` |
+| main（本地未推 **4** 件） | `106f29cd`→`d804a830`→`cafb6486`→`107554b6` | 待推 | 与 S2 的 merge 同批推即可；纯文档推 ⇒ 该跑是**空绿**（只登记，⛔ 不写成验证） |
+| ⚠ `line/ui-export-dialog`（**本会话外的并行写者**） | `b907e371` | **`40911008998`**（in_progress） | ⛔ **本会话不 land、不动该线**（无本地工作树，只有 `origin/line/ui-export-dialog`；`fdb17b75` 那跑红在 `rust (yeban-app)`／`macos`／`windows`，`b907e371` 自称修的是"回执字段闭集 13 项"）。登记只为**别让判决孤儿化**：谁派的谁读回 |
+
+**S3 第一片已落线（`8a755acc`）**：新判据 `crates/yeban-model/tests/field_write_reachability.rs`
+钉住「`ops.rs` 产品区（`#[cfg(test)]` 之前、去注释）里 `.<字段>` 出现 **0** 次」的**五个**字段：
+`metadata`／`rng_seed`／`audio_config`／`folder_id`／`solo_safe`；探针表钉住 `routing_graph` **12**／
+`macros` **5**／`master_bus_track_id` **1**（证明扫描器不瞎＋棘轮下界）。本机 **4 passed**，
+注入真红（`let _ = &doc.metadata;` ⇒ FAILED）后已还原。
+⚠ **宽口径"这字段能不能改"的词法扫描实测不可构造**，三条假阴性机理（链式换行 `ops.rs:1703`／
+helper `ops.rs:3043` `doc.insert_track(...)`／局部绑定后赋值 `SetMacro`）写在文件头 ——
+**下一片⛔ 别再走词法**：要判"能不能改"得走**差分**（施加每个 `Op` 变体后逐字段比对序列化，
+`ops.rs` 已有 `gen_*` 生成器可复用），那是另一片的设计活。
+**待裁清单（本批只登记，⛔ 我未发明答案）**：上述五字段**读得到、写不了**（读面白名单 `crates/yeban-mcp/src/domain/view.rs:36` 的 `SELECTORS: [&str; 28]` 现读含
+`rng_seed`／`audio_config`／`metadata`／`master_bus_track_id`／`routing_graph`／`tracks`），
+是否要做成可改能力，各自一条
+`ADR`（`Proposed` 交人类）—— `folder_id`＝轨道文件夹（⚠ **这一项下方改正后移出待裁**）、
+`rng_seed`＝工程种子可改、
+`audio_config`＝采样率/块长/位深/pan law 可改（很可能是产品边界）、
+`metadata.description`/`tags`＝曲库元数据可编辑、`solo_safe`＝独奏安全标志可改。
+⭐ **上一句"这五项从未被裁过"是我自己的过generalization，现读逐字段 `grep` 后改正**（单位＝命中文件名）：
+- `audio_config` **零命中**、`rng_seed` **零命中** ⇒ 这两项的"不可改"确实从未进过任何裁决，**是真待裁**；
+- `metadata` 唯一命中是 `ADR-0001:538` 的 `cargo metadata`（**工具名，与工程 `metadata` 字段无关**）⇒ 假命中，等同零；
+- `solo_safe` 命中 `ADR-0030:10,107-108`，但那讲的是**渲染可读性语义**
+  （`track_is_audible = !mute && (!any_solo || solo || solo_safe)`），⛔ 不是"能不能改"；
+- `folder_id` 命中 **两处且都是真裁决**：`ADR-0004`（语义裁为"仅界面折叠视图"，并点名
+  `validate()` 只查存在性 ⇒ **自指／环／指向主总线今天全部通过**，见其 `:65-69`）与
+  `ADR-0023:79-82`（**"工具面没有能设置 `folder_id` 的形态"已明文登记为"诚实的边界"第 1 条，
+  并写明"不做静默改写"**）。⇒ `folder_id` **不是待裁，是已登记待补**：补什么已由 ADR 划界，
+  缺的是实现（含 `ADR-0004` 点名未修的环/自指校验）。
+⭐ 所以待裁的严格名单是 **`audio_config`／`rng_seed`／`metadata.description`+`tags`／`solo_safe` 四项**，
+`folder_id` 从待裁移到"已知边界待实现"。⛔ 教训回到 §6.3：**"零命中"要逐词现读，`grep -l` 一次不够**。
+⭐ **下一片⛔ 别做「选择器 ↔ 模型」对账**：读面这条已有判据 `every_selector_resolves_against_a_filled_project`
+在钉，且 `project_view` 是整档序列化后按根键挑选（`view.rs:229`）⇒ 读面本来就全；
+真正没被机械化的只有**写面**（本片已钉零触点那一半），再往前一步是**语义差分**
+（施加每个 `Op` 变体后逐字段比对"到底能不能改"），那是设计活而非补洞。
+另：`ledger:10303` 那句"全工具集里没有设备 CRUD"**本批已就地更正**（⛔ 原文不改写，更正段紧随其后）：
+现读 `op_schema.rs` 的 `kind("…")` 去重集共 **53** 个 kind，含 `Device` 的 **4** 个
+（`insertDevice`／`removeDevice`／`setDeviceBypassed`／`setDeviceName`），外加 `setParam` 的
+`lane:"DeviceParam"` 分支（`op_schema.rs:638-660`，`slotIndex`+`paramIndex`）⇒ 准确说法是
+"**没有独立的设备工具**（`schemas/mcp-tools.schema.json` 里 `yeban_*Device*` 工具名现读 **0** 个），
+设备 CRUD 是 `yeban_edit_notes` 的 kind"。
+⭐ **随之新增一条要人类签字的规则文件更正**：`AGENTS.md` §6.3 第 3 条（现读在 **`:134`**，
+台账旧引 `:132` ⇒ 同型行号漂移）写"**可写的只有** `yeban_edit_automation` 的 `DeviceParam` 目标"，
+实测**两处**可写（另一处是 `yeban_edit_notes` 的 `setParam/lane:"DeviceParam"`），⛔ 本会话不动 `AGENTS.md`。
+⭐ **S4 那条待裁**：`ADR-0004` 的 **Q13**（`A` 拒绝自指/环/主总线 ＋ `B` 访问集，ADR 建议 A+B 合并）
+**状态仍是 `Proposed`** ⇒ 负责人点头后才有"补校验"那片；S4 的现状判据会在那一刻**按设计变红**。
+⛔ **S4 之外别顺手做**：`folder_id` 的可写通路（`ADR-0023:79-82` 已登记为边界）与折叠 UI 是两条片，
+且折叠 UI 那片还压在 Q4/Q12 的"视图状态住哪一层"裁决上。
+
+**S2 侧的下一动作不变**：`0cfd19a6` 判绿落地后，第二张表的**去重**需要设计决策
+（实时投影要记 `eq.seen`／`filter_seen`／`compressor_seen` 与逐旋钮部分覆盖，⛔ 不能机械替换成
+共享 `store`）；常驻判据已经把"两张表不许漂移"钉住，去重可以慢做。
