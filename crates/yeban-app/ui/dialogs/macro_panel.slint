@@ -123,7 +123,7 @@ export component MacroPanel inherits Rectangle {
     }
 
     // ---------------------------------------------------------------- 宏行
-    for macro_index in root.macro-names.length : Rectangle {
+    for macro_name[macro_index] in root.macro-names : Rectangle {
         x: Tokens.space-6;
         y: 48px + 40px * macro_index;
         width: parent.width - 32px;
@@ -137,7 +137,7 @@ export component MacroPanel inherits Rectangle {
 
         accessible-role: list-item;
         accessible-id: "macro-" + macro_index + "-row";
-        accessible-label: root.macro-names[macro_index] + " · " + root.macro-value-labels[macro_index];
+        accessible-label: macro_name + " · " + root.macro-value-labels[macro_index];
         accessible-item-index: macro_index;
         accessible-item-count: root.macro-names.length;
 
@@ -146,13 +146,13 @@ export component MacroPanel inherits Rectangle {
             y: 0;
             width: parent.width - 64px;
             height: 16px;
-            text: root.macro-names[macro_index];
+            text: macro_name;
             color: Tokens.ink-0;
             font-size: Tokens.font-size-sm;
             overflow: elide;
             accessible-role: text;
             accessible-id: "macro-" + macro_index + "-name";
-            accessible-label: root.macro-names[macro_index];
+            accessible-label: macro_name;
         }
 
         UiMonoText {
@@ -178,7 +178,7 @@ export component MacroPanel inherits Rectangle {
             background: transparent;
             accessible-role: slider;
             accessible-id: "macro-" + macro_index + "-slider";
-            accessible-label: root.macro-names[macro_index] + " 位置";
+            accessible-label: macro_name + " 位置";
             accessible-orientation: horizontal;
             accessible-value-minimum: 0.0;
             accessible-value-maximum: 1.0;
