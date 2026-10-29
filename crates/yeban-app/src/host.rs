@@ -5249,7 +5249,7 @@ const SIDEBAR_ITEM_COUNT: i32 = 8;
 /// 就形成 `MainWindow → 回调 → MainWindow` 的自环（窗口永不解构）。
 ///
 /// `close`（关抽屉）**不在这里**：`.slint` 的 `close =>` 没有对应的 Rust 回调，
-/// 因此那一条仍写在组件里（本函数不发明第六条回调）。
+/// 因此那一条仍写在组件里（本函数不发明这条回调）。
 pub fn wire_view_callbacks(ui: &MainWindow) {
     let weak = ui.as_weak();
     ui.on_toggle_view({
