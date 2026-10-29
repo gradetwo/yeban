@@ -2349,3 +2349,18 @@ tip `0c450809`（`1 file changed, 7 insertions(+), 1 deletion(-)`），其父 `f
 `tests/` 中间）—— 剥色后同一份日志从 **0** 变 **673**；⚠ windows 腿是反斜杠路径，模式要 `Running tests[/\\]`。
 ⇒ **计数为 0 先怀疑读法，再怀疑事实。**
 
+⭐ **同时挂 3 条轮询监视（45～60s）＋ 两次 8MB 日志下载 ⇒ `/actions/**` 全线 403 次级限流 ≥10 分钟**
+（细节在台账「第三批」§4.2）。兜底读数路径：`gh api repos/{o}/{r}/commits/{sha}/check-runs`
+给腿名＋结论（S5 承判腿 `rust (yeban-model)` 就是靠它读到 `success`），⛔ 给日志。
+⇒ 纪律：**一条 run 只挂一条监视，间隔 ≥120s**，通知回来立即 `TaskStop`。
+
+⭐ **创作轴（第一优先级）现状重新量过＝自主可做的片是 0**（台账「第三批」§7，全部现读）：
+`yeban_propose_section` 的 **24** 个参数键逐个转 `snake_case` 后在
+`crates/{yeban-mcp,yeban-theory,yeban-model}/src` **缺席 0 个**；此前三嫌疑键的声明在
+`crates/yeban-mcp/src/domain/section_build.rs:1277/1286/1296`，`crates/yeban-mcp/tests/` 有 **17** 个
+`section*` 判据文件。⚠ "有出现"⛔ 等于"语义被 honour"，后者由既有零覆盖守卫＋那些判据承担。
+对齐表的"仅计划"**6** 行（`docs/ledger/feature-alignment.md:116/119/186/210/211/212`）
+**没有一行是创作参数**（全在系统／硬件／发布面，`:212` 的 `ASIO` 还被红线 6 定为永不定义）
+⇒ ⛔ 由 agent 自行提级，要动先由人类排期。**这条轴下一个入口＝出现新键时按同法再审。**
+
+
