@@ -4022,12 +4022,13 @@ mod tests {
     /// | :--- | :--- |
     /// | `"ai-rail-intent-button"` | 意图生成能力不存在: 没有 `callback`、没有宿主写者 |
     /// | `"console-maximize-button"` | 底部控制台最大化只有键盘路径（`Cmd/Ctrl+Alt+M`） |
-    /// | `"mixer-master-mute-button"` | 主控静音只有**显示**（`apply_mixer` 写 `master-mute`），没有 `mixer-master-mute-toggle` 回调 |
-    /// | `"mixer-master-solo-button"` | 同上（`master-solo`） |
     /// | `"sidebar-category-" + i + "-button"` | 分类切换状态机不存在（只有静态选中态 `category_index == 0`） |
     /// | `"transport-branch-button"` | 切换活跃分支的 API 一处都不存在（判据 `the_three_transport_document_actions_are_not_wired_today` 已钉） |
     /// | `"transport-commit-button"` | 同上（会话里没有"待提交的编辑"这一状态） |
     /// | `"transport-revert-button"` | 同上（能力存在但未接线） |
+    ///
+    /// ⭐ **主控静音 / 独奏已从清单移出**（`8 → 6`）：`"mixer-master-mute-button"` /
+    /// `"mixer-master-solo-button"` 现在有真实动作（`host::wire_mixer_master_switch`）。
     ///
     /// ⭐ **任务单 `#283` 移出了一条**：`"scene-launch-" + i + "-button"` 现在**真的**
     /// 可点 —— `TouchArea.clicked` 与 `accessible-action-default` 同一落点
@@ -4106,11 +4107,16 @@ mod tests {
     /// `host::wire_scene_launch` ⇒ `EngineHost::queue_scene_launch` ⇒ 引擎在量化点
     /// `transport.retune(场景 tempo)`。它与上一条同型：**接上真动作才移出**，
     /// ⛔ 不是"先删表行"。
-    const KNOWN_ACTIONLESS_CONTROLS: [&str; 8] = [
+    /// ⭐ **本票移出了两条**（`8 → 6`）：`"mixer-master-mute-button"` /
+    /// `"mixer-master-solo-button"` 现在**真的**可点 —— 主控通道条的那两个按钮走
+    /// `TouchArea.clicked` ＋ `accessible-action-default`（同一落点）
+    /// `root.mixer-master-mute-toggle()` / `root.mixer-master-solo-toggle()` ⇒
+    /// `host::wire_mixer_master_switch` 按主总线身份提交一次 `Op::SetTrackMute` /
+    /// `Op::SetTrackSolo`。按本判据文档的要求（"修好一个 ⇒ 从清单里删掉它"），
+    /// 它们不再属于"没有动作"的集合。
+    const KNOWN_ACTIONLESS_CONTROLS: [&str; 6] = [
         "app.slint :: \"ai-rail-intent-button\"",
         "console/console_tabs.slint :: \"console-maximize-button\"",
-        "console/mixer_console.slint :: \"mixer-master-mute-button\"",
-        "console/mixer_console.slint :: \"mixer-master-solo-button\"",
         "sidebar.slint :: \"sidebar-category-\" + category_index + \"-button\"",
         "transport.slint :: \"transport-branch-button\"",
         "transport.slint :: \"transport-commit-button\"",

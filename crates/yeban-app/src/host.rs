@@ -1959,6 +1959,9 @@ pub fn wire_mixer_edit(ui: &MainWindow, port: &Rc<UndoPort>) {
     // ---------------------------------------------------------------- 两个开关
     wire_mixer_switch(ui, port, &weak, MixerSwitch::Mute);
     wire_mixer_switch(ui, port, &weak, MixerSwitch::Solo);
+    // ⭐ 主控通道条的同一对开关：目标不是下标而是**主总线身份**（见函数文档）。
+    wire_mixer_master_switch(ui, port, &weak, MixerSwitch::Mute);
+    wire_mixer_master_switch(ui, port, &weak, MixerSwitch::Solo);
 
     // ---------------------------------------------------------------- SFZ 采样器绑定
     // ⭐ 任务单 `#82`：模型 `TrackV3::sampler`（`#76`）第一次有**用户入口**。
@@ -2166,6 +2169,75 @@ enum MixerSwitch {
 /// 撤销树的节点却声称那是"混音台"的动作。改中性文本（去掉来源前缀）后，这条标签在两个
 /// 入口下都成立；带来源的措辞要等宿主能**分别**知道是哪个入口点的（那需要两条回调 + 两条
 /// 标签，本票不做）。
+/// 主控通道条的静音 / 独奏 —— 与 [`wire_mixer_switch`] **同一对** `Op`，只有目标来源不同。
+///
+/// ## 为什么目标不是下标
+///
+/// 主总线不在 `track-ids` 投影模型里（`bridge` 只把非主总线轨放进 `tracks`，
+/// 主总线单独落在 `ViewState::master`）⇒ 界面报不出一个"主控下标"。这里按
+/// **投影里的主总线身份**解析目标：`bridge::master_device_track`（与设备机架 /
+/// 建轨可用性 / 主控标签**同一份**口径：`master_bus_track_id` **且**
+/// `kind == TrackKind::Master`）。
+///
+/// 工程没有主总线 ⇒ **一位不动**（⛔ 不猜一条轨、⛔ 不 panic）；端口没有活跃工程同理。
+///
+/// ## 提交消息
+///
+/// 与轨道开关**逐字相同**（`"toggle track mute"` / `"toggle track solo"`）——
+/// 同一种编辑就该在撤销树里长出同一种节点标签；来源视图仍然不写进标签（台账 R17）。
+/// ⚠ 这两条字面量与 [`wire_mixer_switch`] 里的那一对必须保持一致；
+/// `tests/mixer_toggle_labels.rs` 只从 `wire_mixer_switch` 的代码块里数标签，
+/// 因此本函数刻意住在它的**扫描区间之外**。
+fn wire_mixer_master_switch(
+    ui: &MainWindow,
+    port: &Rc<UndoPort>,
+    weak: &slint::Weak<MainWindow>,
+    which: MixerSwitch,
+) {
+    let weak = weak.clone();
+    let port = Rc::clone(port);
+    let handler = move || {
+        let Some(ui) = weak.upgrade() else {
+            debug_assert!(false, "MainWindow 在回调执行期间被销毁");
+            return;
+        };
+        let Some(project) = port.try_project() else {
+            return;
+        };
+        let Some(master) = crate::bridge::master_device_track(&project) else {
+            return;
+        };
+        let (id, old_mute, old_solo) = (master.id, master.mute, master.solo);
+        let (op, message) = match which {
+            MixerSwitch::Mute => (
+                yeban_model::Op::SetTrackMute {
+                    track_id: id,
+                    old_mute,
+                    new_mute: !old_mute,
+                },
+                "toggle track mute",
+            ),
+            MixerSwitch::Solo => (
+                yeban_model::Op::SetTrackSolo {
+                    track_id: id,
+                    old_solo,
+                    new_solo: !old_solo,
+                },
+                "toggle track solo",
+            ),
+        };
+        if port.commit_ops(now_ms(), message, vec![op]).is_err() {
+            eprintln!("[yeban-app] 主控混音开关提交被拒绝（工程未改）");
+            return;
+        }
+        refresh_undo_window(&ui, &port, true);
+    };
+    match which {
+        MixerSwitch::Mute => ui.on_mixer_master_mute_toggle(handler),
+        MixerSwitch::Solo => ui.on_mixer_master_solo_toggle(handler),
+    }
+}
+
 fn wire_mixer_switch(
     ui: &MainWindow,
     port: &Rc<UndoPort>,
