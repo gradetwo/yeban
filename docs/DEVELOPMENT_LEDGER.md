@@ -14503,3 +14503,23 @@ steps 14/14/18/18 与耗时均非 0）。同日 docs 提交 `c3469314` 的 `4078
 全部读 plan 里的 **artifact**；`Propose` 读 `draft`/`warnings`；`Undo`／`Redo` 读 plan 字段
 （`undoneBefore` 在**同一次调用内**读 `domain`，plan→describe 之间无状态变化）；`Close.willReleaseLock`
 同理。⇒ **sfz 那类缺陷的入口只剩"describe 里重新构造"**，当前无一处。⛔ 再为同源字段加恒真判据。
+
+### 附带：`Domain` 会话字段的"工具身份作用域"审计（2026-10-29，0 改动）
+
+上一节把"跨调用的可变状态只有 `idempotency` + 两个计数器，其余在 `domain`"当作下一候选面。
+逐字段核过（`mod.rs:166-240` 现读）：
+
+| 字段 | 键/增长源 | 是否受调用方键影响 |
+| :--- | :--- | :--- |
+| `assets: BTreeMap<AssetHash, Vec<u8>>` | **内容哈希**（`AssetHash`） | ⛔ 调用方给的键；同内容必同条目 | 
+| `proposals: BTreeMap<EntityId, Proposal>` | 服务端生成的 `EntityId` | ⛔ |
+| `undo: UndoState` | 全局会话态（游标 + 分支） | ⛔（撤销语义本就是工程级） |
+| `readings_tail: Vec<(u64, EngineReadings)>` | 宿主注入，**容量 64** | ⛔ |
+| `pending_scene_launches: Vec<..>` | `yeban_launch_scene`，**容量 64**（`MAX_PENDING_SCENE_LAUNCHES`） | 入队不受键控；满时响亮拒绝 |
+| `sfz_instruments: BTreeMap<u64, SfzLoad>` | **服务端单调 id**，由 **SHA-256 内容寻址**去重（`mod.rs:3935-3957`） | ⛔ 调用方无法指定 id |
+
+⇒ **控制面里唯一"按调用方字符串键控"的容器就是幂等缓存**（已加工具名作用域）。
+其它容器要么内容寻址、要么服务端发号、要么有界 ⇒ 本候选面**到此关闭**；⛔ 再按"猜一个容器"重探。
+
+本段与上一节 `ADR-0048` 的文档提交 `0355816e` → run **`40793241935` = success**：plan／checks(15)／
+deny／lockfile 四作业真跑，四条代码腿全 **skipped steps=0** ⇒ **空绿**，只作推送留痕。
