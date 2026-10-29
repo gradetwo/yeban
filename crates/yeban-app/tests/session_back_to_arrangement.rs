@@ -71,17 +71,21 @@ fn clicking_back_to_arrangement_returns_to_the_arrangement_view() {
 
     // ---- 搭舞台：进 Session 视图（产品里由 `toggle-view` / Tab 切换） ----
     port.ui().set_arrangement_view(false);
-    let tree = port
-        .refresh_tree(None)
-        .expect("切到 Session 之后必须能重抓");
-    assert!(
-        tree.find_by_id("workspace-session-canvas").is_some(),
-        "Session 画布必须在 Session 视图的运行时树里"
-    );
-    assert!(
-        tree.find_by_id("workspace-arrangement-canvas").is_none(),
-        "编曲画布在 Session 视图下必须不可见"
-    );
+    // 树快照活着时不能借窗口抓帧（`refresh_tree` 是可借用的句柄），
+    // 所以这段断言放进块里，抓帧之后 ② 再重抓一次。
+    {
+        let tree = port
+            .refresh_tree(None)
+            .expect("切到 Session 之后必须能重抓");
+        assert!(
+            tree.find_by_id("workspace-session-canvas").is_some(),
+            "Session 画布必须在 Session 视图的运行时树里"
+        );
+        assert!(
+            tree.find_by_id("workspace-arrangement-canvas").is_none(),
+            "编曲画布在 Session 视图下必须不可见"
+        );
+    }
     let session_frame = port.window().capture().expect("Tier-1 截图");
     assert!(
         default_pixels != session_frame.pixels(),
@@ -90,6 +94,7 @@ fn clicking_back_to_arrangement_returns_to_the_arrangement_view() {
 
     // ---- ② 可寻址：返回键在场，角色 / 名称与注册表一致 ----
     let registry = ElementRegistry::from_view(&view);
+    let tree = port.refresh_tree(None).expect("重抓（② 要读节点）");
     let node = tree
         .find_by_id(BACK_BUTTON)
         .expect("返回键必须在 Session 视图的运行时树里");
