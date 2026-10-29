@@ -455,6 +455,9 @@ export component MainWindow inherits Window {
     // 界面**不自己翻转**任何走带状态 —— 见 `src/host.rs` 的 `wire_transport`。
     callback stop();
     callback toggle-view();
+    /// ⭐ Session 视图「→ 编曲」按钮的点击入口：宿主把它落到 `arrangement-view = true`
+    /// （与 `toggle-view` 写的是**同一个**属性；唯一写者 = `host::wire_view_callbacks`）。
+    callback back-to-arrangement();
     callback toggle-sidebar();
     /// ⭐ 左侧资源分类标签的点击入口：宿主把分类号钳到 `0..=2` 再写 `sidebar-category`。
     callback select-sidebar-category(int);
@@ -1297,6 +1300,11 @@ export component MainWindow inherits Window {
                     // 唯一注入；⛔ `.slint` 不自己记"上次点了哪个"）。
                     scene-launch(scene_index) => {
                         root.scene-launch(scene_index);
+                    }
+                    // ⭐ Session 视图「→ 编曲」：原样转给宿主（界面不自己翻转
+                    // `arrangement-view`；唯一写者 = `host::wire_view_callbacks`）。
+                    back-to-arrangement => {
+                        root.back-to-arrangement();
                     }
                     current-scene-index: root.current-scene-index;
                     current-scene-name: root.current-scene-name;
