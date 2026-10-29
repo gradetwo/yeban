@@ -533,6 +533,81 @@ pub fn ops_items() -> Value {
                 true,
             ),
             op(
+                "quantizeClip",
+                "整片段量化：把顶层 `clipId` 那条 MIDI 片段里**每个**音符的 `start` 吸到 `gridTicks` 的最近整数倍（`strengthPermille` < 1000 时只走比例距离；已在格上的音符不动，一步撤销）",
+                &["kind", "gridTicks"],
+                json!({
+                    "kind": kind("quantizeClip"),
+                    "gridTicks": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "description": "量化栅格（tick）；960 PPQ 下 240=十六分音符、480=八分、960=四分",
+                    },
+                    "strengthPermille": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 1000,
+                        "description": "量化强度（‰）；缺省 1000 = 完全吸附；0 合法（什么都不动）",
+                    },
+                }),
+                true,
+            ),
+            op(
+                "invertClip",
+                "整片段倒影：把顶层 `clipId` 那条 MIDI 片段里**每个**音符绕 `axisPitch` 轴镜像（`axisPitch` 缺省 = 片段音域中点 ⇒ 恒不越界；显式轴镜像后越出 0..=127 ⇒ `OUT_OF_RANGE`；一步撤销）",
+                &["kind"],
+                json!({
+                    "kind": kind("invertClip"),
+                    "axisPitch": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": MIDI_PITCH_MAX,
+                        "description": "倒影轴音高（可选；缺省 = 片段音域中点）",
+                    },
+                }),
+                true,
+            ),
+            op(
+                "retrogradeClip",
+                "整片段逆行：把顶层 `clipId` 那条 MIDI 片段的音符排布在其占用区间内**整体镜像**（最早开始的音符变成最后结束，时值不变，一步撤销）",
+                &["kind"],
+                json!({
+                    "kind": kind("retrogradeClip"),
+                }),
+                true,
+            ),
+            op(
+                "humanizeClip",
+                "整片段人性化：对顶层 `clipId` 那条 MIDI 片段里**每个**音符加确定性的微时值（`microTimingTicks` ±`timeJitterTicks`）与力度（±`velocityJitter`）抖动。`seed` 相同 ⇒ 永远同一份\"手感\"（splitmix64 哈希，跨进程稳定；一步撤销）",
+                &["kind", "seed"],
+                json!({
+                    "kind": kind("humanizeClip"),
+                    "seed": uint("抖动种子（确定性：同一 seed 重放同一手感）"),
+                    "timeJitterTicks": uint("微时值抖动幅度 ±N tick（在 ±240 的模型边界内被截断；缺省 0 = 不动时值）"),
+                    "velocityJitter": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": MIDI_VELOCITY_MAX,
+                        "description": "力度抖动幅度 ±N（结果压进 1..=127，缺省 0 = 不动力度）",
+                    },
+                }),
+                true,
+            ),
+            op(
+                "duplicateClip",
+                "克隆顶层 `clipId` 的池条目（MIDI/音频通吃）：`newClipId`/`name` 可选；`trackId`+`startTick` 成对给出 ⇒ 顺便摆一份新摆放（`durationTicks` 缺省 = 源片段内容跨度；`trackId` 必须存在）；新身份撞库 ⇒ `CONFLICT`。一步撤销（内部是一组 `AddClip`[+`AddClipPlacement`])",
+                &["kind"],
+                json!({
+                    "kind": kind("duplicateClip"),
+                    "newClipId": id("新片段身份（可选；缺省 = 从源身份+新名决定论派生）"),
+                    "name": non_empty("新片段名（可选；缺省 = \"{源名} copy\"）"),
+                    "trackId": id("要摆放到的音轨身份（可选；与 `startTick` 必须成对给出）"),
+                    "startTick": uint("新摆放的起始 tick（可选；与 `trackId` 必须成对给出）"),
+                    "durationTicks": uint("新摆放的时值（可选；缺省 = 源片段内容跨度；音频片段请显式给出）"),
+                }),
+                true,
+            ),
+            op(
                 "insertDevice",
                 "在目标音轨的设备链里插入一台设备。要得到 EQ / 混响 / 卷积混响：`device.kind:\"InternalEffect\"` + `bypassed:false` + 在 `device.params` 里写 `eq_*` / `reverb_*` / `conv_*` 名字（名字、单位、值域、缺省值见 `device.params.items`）",
                 &["kind", "trackId", "device"],

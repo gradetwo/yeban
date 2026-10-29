@@ -105,6 +105,9 @@ fn try_plan(given: Given<'_>) -> Result<SectionPlan, BuildFault> {
             drum_backbeat: None,
             drum_style: None,
             melody_seed: None,
+            harmony_seed: None,
+            material_clip_ids: None,
+            part_tracks: None,
             beat_grouping: None,
         },
     )
@@ -339,8 +342,10 @@ fn grid_moves_only_drums_and_melody() {
 
 /// ⭐ 判据 6（D4）：给了必须被消费 —— 两条耦合各一例拒绝，并各留一条正例
 /// （本参数**两条消费路径任一在场**即可，⛔ 套用 `drumDensity` 那条更严的"必须有鼓"）。
+/// ⭐ 审计 `N1`：鼓与旋律在 `'project'` 源上同样生成 ⇒ "材料源必须是 theory"
+/// 这一条耦合已**废除**；剩下的唯一耦合 = "任一消费路径在场"（两条源同口径）。
 #[test]
-fn onsets_per_bar_requires_theory_source_and_one_consumer() {
+fn onsets_per_bar_requires_one_consumer_on_either_source() {
     for material_source in [None, Some("project")] {
         let fault = try_plan(
             Given::theory("synthwave")
@@ -348,7 +353,7 @@ fn onsets_per_bar_requires_theory_source_and_one_consumer() {
                 .onsets(Some(8))
                 .consumers(false, false),
         )
-        .expect_err("`onsetsPerBar` 不得脱离 materialSource:\"theory\" 单独给");
+        .expect_err("`onsetsPerBar` 不得脱离消费路径单独给");
         assert_eq!(
             fault.domain_code(),
             Some(BuildCode::InvalidParameterRange),
@@ -357,11 +362,22 @@ fn onsets_per_bar_requires_theory_source_and_one_consumer() {
         assert!(
             data(&fault)["hint"]
                 .as_str()
-                .is_some_and(|text| text.contains("materialSource")),
-            "载荷必须指出要补 materialSource: {}",
+                .is_some_and(|text| text.contains("includeDrums") || text.contains("includeMelody")),
+            "载荷必须指出要补 includeDrums / includeMelody: {}",
             data(&fault)
         );
     }
+    // ⭐ 审计 `N1` 正例：`'project'` 源 + 鼓在场 ⇒ 网格被消费 ⇒ 放行。
+    let project_drums = plan(
+        Given::theory("synthwave")
+            .material_source(Some("project"))
+            .onsets(Some(8))
+            .consumers(true, false),
+    );
+    assert!(
+        voices(&project_drums).contains_key("Drums"),
+        "project 源 + includeDrums 时 `onsetsPerBar` 必须生效"
+    );
     let fault = try_plan(
         Given::theory("synthwave")
             .onsets(Some(8))

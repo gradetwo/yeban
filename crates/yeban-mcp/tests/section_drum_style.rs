@@ -148,6 +148,9 @@ fn try_plan(given: Given) -> Result<SectionPlan, BuildFault> {
             drum_backbeat: None,
             drum_style: given.style,
             melody_seed: None,
+            harmony_seed: None,
+            material_clip_ids: None,
+            part_tracks: None,
             beat_grouping: None,
         },
     )
@@ -396,25 +399,21 @@ fn an_unknown_style_is_rejected_naming_the_key_and_the_accepted_set() {
     }
 }
 
-/// ⭐ 判据 4（D3 的消费面，**两向都钉**）：本键要求材料源 = theory **且**鼓轨在场；
+/// ⭐ 判据 4（D3 的消费面，**两向都钉**）：本键要求鼓轨在场（⭐ 审计 `N1`：
+/// 材料源一条已废 —— 鼓轨在 `'project'` 源上同样生成，本键在两源同口径被消费）；
 /// 反钉"⛔ 把旋律那条更严的要求扩散过来" —— `includeMelody:false` 时给本键必须放行。
 #[test]
-fn the_style_key_requires_the_theory_source_and_the_drum_part() {
+fn the_style_key_requires_the_drum_part_on_either_source() {
+    // ⭐ 审计 `N1` 正例：`'project'` 源 + 鼓轨在场 ⇒ 本键被消费 ⇒ 放行。
     for material_source in [None, Some("project")] {
-        let fault = try_plan(
+        try_plan(
             Given::theory()
                 .material_source(material_source)
                 .style(Some(FLOOR)),
         )
-        .expect_err("`drumStyle` 不得脱离 materialSource:\"theory\" 单独给");
-        assert_shape_reject(&fault, "`drumStyle` 脱离 theory");
-        assert!(
-            data(&fault)["hint"]
-                .as_str()
-                .is_some_and(|text| text.contains("materialSource")),
-            "载荷必须指出要补 materialSource: {}",
-            data(&fault)
-        );
+        .unwrap_or_else(|fault| {
+            panic!("`drumStyle` 在 project 源 + 鼓轨在场时必须放行 [审计 N1]: {fault:?}")
+        });
     }
     // 鼓轨不在场 ⇒ 本键无人消费，必须响亮拒绝而不是静默忽略。
     let fault = try_plan(Given::theory().drums(false).style(Some(FLOOR)))

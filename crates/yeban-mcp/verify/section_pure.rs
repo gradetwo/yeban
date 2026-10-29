@@ -347,6 +347,9 @@ fn theory_is_explicitly_opt_in_and_project_path_is_unchanged() {
             drum_backbeat: None,
             drum_style: None,
             melody_seed: None,
+            harmony_seed: None,
+            material_clip_ids: None,
+            part_tracks: None,
             beat_grouping: None,
         },
     )
@@ -380,6 +383,9 @@ fn theory_is_explicitly_opt_in_and_project_path_is_unchanged() {
             drum_backbeat: None,
             drum_style: None,
             melody_seed: None,
+            harmony_seed: None,
+            material_clip_ids: None,
+            part_tracks: None,
             beat_grouping: None,
         },
     )
@@ -423,6 +429,9 @@ fn theory_generates_a_deterministic_skeleton_on_an_empty_pool() {
             drum_backbeat: None,
             drum_style: None,
             melody_seed: None,
+            harmony_seed: None,
+            material_clip_ids: None,
+            part_tracks: None,
             beat_grouping: None,
         };
         let planned =
@@ -576,6 +585,9 @@ fn theory_honours_custom_progression_and_scale() {
         drum_backbeat: None,
         drum_style: None,
         melody_seed: None,
+        harmony_seed: None,
+        material_clip_ids: None,
+        part_tracks: None,
         beat_grouping: None,
     };
     let planned = plan_with_options(&empty, "Chorus", "synthwave", 4, Some("A minor"), options)
@@ -627,6 +639,9 @@ fn theory_honours_custom_progression_and_scale() {
             drum_backbeat: None,
             drum_style: None,
             melody_seed: None,
+            harmony_seed: None,
+            material_clip_ids: None,
+            part_tracks: None,
             beat_grouping: None,
         },
     )
@@ -659,6 +674,9 @@ fn theory_honours_custom_progression_and_scale() {
             drum_backbeat: None,
             drum_style: None,
             melody_seed: None,
+            harmony_seed: None,
+            material_clip_ids: None,
+            part_tracks: None,
             beat_grouping: None,
         },
     )
@@ -699,6 +717,9 @@ fn drums_are_gm_mapped_and_route_to_master_in_a_dag() {
         drum_backbeat: None,
         drum_style: None,
         melody_seed: None,
+        harmony_seed: None,
+        material_clip_ids: None,
+        part_tracks: None,
         beat_grouping: None,
     };
     let planned = plan_with_options(&empty, "Chorus", "synthwave", 4, None, options)
@@ -829,6 +850,9 @@ fn melody_stays_on_the_genre_grid_and_in_range_in_a_dag() {
             drum_backbeat: None,
             drum_style: None,
             melody_seed: None,
+            harmony_seed: None,
+            material_clip_ids: None,
+            part_tracks: None,
             beat_grouping: None,
         },
     )
@@ -970,6 +994,9 @@ fn melody_stays_on_the_genre_grid_and_in_range_in_a_dag() {
             drum_backbeat: None,
             drum_style: None,
             melody_seed: None,
+            harmony_seed: None,
+            material_clip_ids: None,
+            part_tracks: None,
             beat_grouping: None,
         },
     )
@@ -1006,6 +1033,9 @@ fn drums_and_melody_are_opt_in_and_legacy_plans_are_byte_identical() {
             drum_backbeat: None,
             drum_style: None,
             melody_seed: None,
+            harmony_seed: None,
+            material_clip_ids: None,
+            part_tracks: None,
             beat_grouping: None,
         },
     )
@@ -1036,6 +1066,9 @@ fn drums_and_melody_are_opt_in_and_legacy_plans_are_byte_identical() {
                 drum_backbeat: None,
                 drum_style: None,
                 melody_seed: None,
+                harmony_seed: None,
+                material_clip_ids: None,
+                part_tracks: None,
                 beat_grouping: None,
             },
         )
@@ -1067,6 +1100,9 @@ fn drums_and_melody_are_opt_in_and_legacy_plans_are_byte_identical() {
             drum_backbeat: None,
             drum_style: None,
             melody_seed: None,
+            harmony_seed: None,
+            material_clip_ids: None,
+            part_tracks: None,
             beat_grouping: None,
         },
     )
@@ -1110,6 +1146,9 @@ fn drums_and_melody_are_opt_in_and_legacy_plans_are_byte_identical() {
             drum_backbeat: None,
             drum_style: None,
             melody_seed: None,
+            harmony_seed: None,
+            material_clip_ids: None,
+            part_tracks: None,
             beat_grouping: None,
         },
     )
@@ -1148,6 +1187,9 @@ fn drums_and_melody_require_the_theory_source() {
                     drum_backbeat: None,
                     drum_style: None,
                     melody_seed: None,
+                    harmony_seed: None,
+                    material_clip_ids: None,
+                    part_tracks: None,
                     beat_grouping: None,
                 },
             )
@@ -1198,6 +1240,9 @@ fn drum_density_normal_is_byte_identical_to_absent() {
             drum_backbeat: None,
             drum_style: None,
             melody_seed: None,
+            harmony_seed: None,
+            material_clip_ids: None,
+            part_tracks: None,
             beat_grouping: None,
         },
     )
@@ -1227,6 +1272,9 @@ fn drum_density_normal_is_byte_identical_to_absent() {
             drum_backbeat: None,
             drum_style: None,
             melody_seed: None,
+            harmony_seed: None,
+            material_clip_ids: None,
+            part_tracks: None,
             beat_grouping: None,
         },
     )
@@ -1267,6 +1315,9 @@ fn sparse_drums_are_exactly_the_accented_hits() {
             drum_backbeat: None,
             drum_style: None,
             melody_seed: None,
+            harmony_seed: None,
+            material_clip_ids: None,
+            part_tracks: None,
             beat_grouping: None,
         },
     )
@@ -1296,6 +1347,9 @@ fn sparse_drums_are_exactly_the_accented_hits() {
             drum_backbeat: None,
             drum_style: None,
             melody_seed: None,
+            harmony_seed: None,
+            material_clip_ids: None,
+            part_tracks: None,
             beat_grouping: None,
         },
     )
@@ -1387,6 +1441,9 @@ fn drum_density_requires_include_drums_and_rejects_unknown_values() {
                 drum_backbeat: None,
                 drum_style: None,
                 melody_seed: None,
+                harmony_seed: None,
+                material_clip_ids: None,
+                part_tracks: None,
                 beat_grouping: None,
             },
         )
@@ -1425,6 +1482,9 @@ fn drum_density_requires_include_drums_and_rejects_unknown_values() {
             drum_backbeat: None,
             drum_style: None,
             melody_seed: None,
+            harmony_seed: None,
+            material_clip_ids: None,
+            part_tracks: None,
             beat_grouping: None,
         },
     )
@@ -1471,6 +1531,9 @@ fn three_voice_bass_sits_in_the_low_register() {
             drum_backbeat: None,
             drum_style: None,
             melody_seed: None,
+            harmony_seed: None,
+            material_clip_ids: None,
+            part_tracks: None,
             beat_grouping: None,
         },
     )

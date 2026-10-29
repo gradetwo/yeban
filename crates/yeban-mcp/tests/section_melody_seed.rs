@@ -114,6 +114,9 @@ fn try_plan(given: Given) -> Result<SectionPlan, BuildFault> {
             drum_backbeat: None,
             drum_style: None,
             melody_seed: given.melody_seed,
+            harmony_seed: None,
+            material_clip_ids: None,
+            part_tracks: None,
             beat_grouping: None,
         },
     )
@@ -508,22 +511,17 @@ fn non_integer_or_negative_is_rejected_naming_the_key() {
 /// `materialSource`；`includeMelody:false` ⇒ 拒且 `hint` 点名 `includeMelody`；
 /// ⚠ **反钉**：`includeDrums:false` 时必须放行（本键⛔ 读鼓）。
 #[test]
-fn the_seed_key_requires_the_theory_source_and_the_melody_part() {
+fn the_seed_key_requires_a_melody_part_on_either_source() {
+    // ⭐ 审计 `N1` 正例：`'project'` 源 + `includeMelody` + 显式 `scale` ⇒ 放行。
     for material_source in [None, Some("project")] {
-        let fault = try_plan(
+        try_plan(
             Given::theory()
                 .material_source(material_source)
                 .seed(Some(7)),
         )
-        .expect_err("`melodySeed` 不得脱离 materialSource:\"theory\" 单独给");
-        assert_shape_reject(&fault, "`melodySeed` 脱离 theory");
-        assert!(
-            data(&fault)["hint"]
-                .as_str()
-                .is_some_and(|text| text.contains("materialSource")),
-            "载荷必须指出要补 materialSource: {}",
-            data(&fault)
-        );
+        .unwrap_or_else(|fault| {
+            panic!("`melodySeed` 在 project 源 + 旋律在场时必须放行 [审计 N1]: {fault:?}")
+        });
     }
     let fault = try_plan(Given::theory().seed(Some(7)).melody(false))
         .expect_err("`melodySeed` 不得在没有旋律声部时静默通过");

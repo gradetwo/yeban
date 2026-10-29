@@ -109,6 +109,9 @@ fn try_plan(given: Given) -> Result<SectionPlan, BuildFault> {
             drum_backbeat: None,
             drum_style: None,
             melody_seed: None,
+            harmony_seed: None,
+            material_clip_ids: None,
+            part_tracks: None,
             beat_grouping: None,
         },
     )
@@ -347,7 +350,9 @@ fn out_of_range_and_inverted_are_rejected_naming_the_key() {
 /// ⭐ 判据 4（D3 的消费面）：两键⛔ 脱离 `materialSource:"theory"`，也⛔ 脱离
 /// `includeMelody: true` —— 与力度那一票不同，音域**没有**"恒消费"的路径。
 #[test]
-fn register_keys_require_theory_source_and_a_melody_part() {
+fn register_keys_require_a_melody_part_on_either_source() {
+    // ⭐ 审计 `N1` 正例：`'project'` 源 + `includeMelody` + 显式 `scale`
+    // （本夹具恒给）⇒ 音域键被消费 ⇒ 放行。
     for material_source in [None, Some("project")] {
         for which in ["melodyLower", "melodyUpper"] {
             let given = if which == "melodyLower" {
@@ -359,17 +364,9 @@ fn register_keys_require_theory_source_and_a_melody_part() {
                     .material_source(material_source)
                     .upper(Some(72))
             };
-            let fault = try_plan(given).expect_err(&format!(
-                "`{which}` 不得脱离 materialSource:\"theory\" 单独给"
-            ));
-            assert_shape_reject(&fault, &format!("`{which}` 脱离 theory"));
-            assert!(
-                data(&fault)["hint"]
-                    .as_str()
-                    .is_some_and(|text| text.contains("materialSource")),
-                "载荷必须指出要补 materialSource: {}",
-                data(&fault)
-            );
+            try_plan(given).unwrap_or_else(|fault| {
+                panic!("`{which}` 在 project 源 + 旋律在场时必须放行 [审计 N1]: {fault:?}")
+            });
         }
     }
     // 有 theory 但没有旋律声部 ⇒ 同样必须拒（键缺省 `includeMelody:false`）。

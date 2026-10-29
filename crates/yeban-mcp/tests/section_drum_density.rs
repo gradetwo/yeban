@@ -46,6 +46,9 @@ fn options(density: Option<&'static str>) -> PlanOptions<'static> {
         drum_style: None,
         beat_grouping: None,
         melody_seed: None,
+        harmony_seed: None,
+        material_clip_ids: None,
+        part_tracks: None,
     }
 }
 
@@ -239,22 +242,12 @@ fn sparse_keeps_only_the_accented_hits_of_every_registered_genre() {
 #[test]
 fn the_density_key_requires_the_theory_source_and_the_drum_part() {
     let project = filled_project();
+    // ⭐ 审计 `N1` 正例：`'project'` 源 + 鼓轨在场 ⇒ `drumDensity` 被消费 ⇒ 放行。
     for material_source in [None, Some("project")] {
         let mut given = options(Some("sparse"));
         given.material_source = material_source;
-        let fault = plan_with_options(&project, "Chorus", "synthwave", BARS, None, given)
-            .expect_err("工程材料路径上没有鼓轨可筛 ⇒ `drumDensity` 必须被拒（⛔ 静默忽略）");
-        assert_eq!(
-            fault.domain_code(),
-            Some(BuildCode::InvalidParameterRange),
-            "必须报 `INVALID_PARAMETER_RANGE`: {fault:?}"
-        );
-        assert!(
-            data(&fault)["hint"]
-                .as_str()
-                .is_some_and(|text| text.contains("materialSource")),
-            "载荷必须指出要补 materialSource: {}",
-            data(&fault)
+        plan_with_options(&project, "Chorus", "synthwave", BARS, None, given).unwrap_or_else(
+            |fault| panic!("project 源 + 鼓轨在场时 `drumDensity` 必须放行 [审计 N1]: {fault:?}"),
         );
     }
 

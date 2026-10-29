@@ -1306,6 +1306,11 @@ pub const OP_KINDS: &[&str] = &[
     SET_NOTE_PITCH_SHAPE_KIND,
     SET_PITCH_BEND_POINT_KIND,
     TRANSPOSE_CLIP_KIND,
+    QUANTIZE_CLIP_KIND,
+    INVERT_CLIP_KIND,
+    RETROGRADE_CLIP_KIND,
+    HUMANIZE_CLIP_KIND,
+    DUPLICATE_CLIP_KIND,
     REMOVE_CLIP_KIND,
     REMOVE_ASSET_KIND,
     SET_ASSET_KIND,
@@ -1367,6 +1372,11 @@ pub const ENVELOPE_CLIP_KINDS: &[&str] = &[
     SET_NOTE_PITCH_SHAPE_KIND,
     SET_PITCH_BEND_POINT_KIND,
     TRANSPOSE_CLIP_KIND,
+    QUANTIZE_CLIP_KIND,
+    INVERT_CLIP_KIND,
+    RETROGRADE_CLIP_KIND,
+    HUMANIZE_CLIP_KIND,
+    DUPLICATE_CLIP_KIND,
     REMOVE_CLIP_KIND,
 ];
 
@@ -1401,6 +1411,10 @@ pub const NOTE_LEVEL_KINDS: &[&str] = &[
     SET_NOTE_PITCH_SHAPE_KIND,
     SET_PITCH_BEND_POINT_KIND,
     TRANSPOSE_CLIP_KIND,
+    QUANTIZE_CLIP_KIND,
+    INVERT_CLIP_KIND,
+    RETROGRADE_CLIP_KIND,
+    HUMANIZE_CLIP_KIND,
 ];
 
 /// `setParam` 能写的**静态目标**（[`Op::SetParam`] 里"有静态值可写"的那三个）。
@@ -2305,6 +2319,75 @@ pub const TRANSPOSE_CLIP_DELTA_FIELD: &str = "deltaPitch";
 /// MIDI），音符身份由服务端从片段里**枚举**，⛔ 逐个点名。
 pub const TRANSPOSE_CLIP_FIELDS: [&str; 2] = ["kind", TRANSPOSE_CLIP_DELTA_FIELD];
 
+/// `ops[].kind` 的**整片段量化**形态名（与 [`TRANSPOSE_CLIP_KIND`] 同一先例：
+/// 编译期展开成 N 条 `setNoteTiming`，一个批 = 一步撤销）。
+pub const QUANTIZE_CLIP_KIND: &str = "quantizeClip";
+/// `quantizeClip` 的**网格时值**字段名（必填，非零 tick）。
+pub const QUANTIZE_CLIP_GRID_FIELD: &str = "gridTicks";
+/// `quantizeClip` 的**强度**字段名（可选，千分比 0..=1000；缺省 = 1000 = 完全贴格）。
+pub const QUANTIZE_CLIP_STRENGTH_FIELD: &str = "strengthPermille";
+/// `quantizeClip` 允许出现的全部键。
+pub const QUANTIZE_CLIP_FIELDS: [&str; 3] = [
+    "kind",
+    QUANTIZE_CLIP_GRID_FIELD,
+    QUANTIZE_CLIP_STRENGTH_FIELD,
+];
+
+/// `ops[].kind` 的**整片段倒影**形态名（音高绕轴镜像：p → 2·axis − p；
+/// 展开成 per-note 的 `delete` + `add` 对，保留全部表现力字段）。
+pub const INVERT_CLIP_KIND: &str = "invertClip";
+/// `invertClip` 的**镜像轴音高**字段名（可选，0..=127；缺省 = 片段音域中点）。
+pub const INVERT_CLIP_AXIS_FIELD: &str = "axisPitch";
+/// `invertClip` 允许出现的全部键。
+pub const INVERT_CLIP_FIELDS: [&str; 2] = ["kind", INVERT_CLIP_AXIS_FIELD];
+
+/// `ops[].kind` 的**整片段逆行**形态名（音符时序首尾翻转，时值不变；
+/// 展开成 N 条 `setNoteTiming`）。
+pub const RETROGRADE_CLIP_KIND: &str = "retrogradeClip";
+/// `retrogradeClip` 允许出现的全部键（只有判别键本身）。
+pub const RETROGRADE_CLIP_FIELDS: [&str; 1] = ["kind"];
+
+/// `ops[].kind` 的**整片段人性化**形态名（确定性抖动：微时值 + 力度；
+/// 展开成 per-note 的 `setNoteExpression` + `velocity` 对）。
+pub const HUMANIZE_CLIP_KIND: &str = "humanizeClip";
+/// `humanizeClip` 的**种子**字段名（必填，u64；同一种子 = 同一份抖动）。
+pub const HUMANIZE_CLIP_SEED_FIELD: &str = "seed";
+/// `humanizeClip` 的**时值抖动幅度**字段名（必填，微时值 ±n tick，
+/// 顶到模型 `micro_timing_ticks` 的 ±240 上界）。
+pub const HUMANIZE_CLIP_TIME_FIELD: &str = "timeJitterTicks";
+/// `humanizeClip` 的**力度抖动幅度**字段名（必填，±n；结果裁进 1..=127）。
+pub const HUMANIZE_CLIP_VELOCITY_FIELD: &str = "velocityJitter";
+/// `humanizeClip` 允许出现的全部键。
+pub const HUMANIZE_CLIP_FIELDS: [&str; 4] = [
+    "kind",
+    HUMANIZE_CLIP_SEED_FIELD,
+    HUMANIZE_CLIP_TIME_FIELD,
+    HUMANIZE_CLIP_VELOCITY_FIELD,
+];
+
+/// `ops[].kind` 的**整片段复制**形态名（克隆池条目；可选地同时摆上新片段，
+/// 编译成一条 `Op::Batch`）。
+pub const DUPLICATE_CLIP_KIND: &str = "duplicateClip";
+/// `duplicateClip` 的**新片段身份**字段名（可选；缺省 = 由源身份派生的确定性身份）。
+pub const DUPLICATE_CLIP_NEW_ID_FIELD: &str = "newClipId";
+/// `duplicateClip` 的**新片段显示名**字段名（可选；缺省 = 源名 + " copy"）。
+pub const DUPLICATE_CLIP_NAME_FIELD: &str = "name";
+/// `duplicateClip` 的**目标音轨**字段名（可选；与 `startTick` 同给才摆放）。
+pub const DUPLICATE_CLIP_TRACK_FIELD: &str = "trackId";
+/// `duplicateClip` 的**摆放起点**字段名（可选；与 `trackId` 同给才摆放）。
+pub const DUPLICATE_CLIP_START_FIELD: &str = "startTick";
+/// `duplicateClip` 的**摆放时值**字段名（可选；缺省 = 源片段的音符跨度）。
+pub const DUPLICATE_CLIP_DURATION_FIELD: &str = "durationTicks";
+/// `duplicateClip` 允许出现的全部键。
+pub const DUPLICATE_CLIP_FIELDS: [&str; 6] = [
+    "kind",
+    DUPLICATE_CLIP_NEW_ID_FIELD,
+    DUPLICATE_CLIP_NAME_FIELD,
+    DUPLICATE_CLIP_TRACK_FIELD,
+    DUPLICATE_CLIP_START_FIELD,
+    DUPLICATE_CLIP_DURATION_FIELD,
+];
+
 /// `ops[].kind` 的**新增音轨**形态名（写 [`Op::AddTrack`]）。
 ///
 /// 与模型 `Op` 变体名同词（`AddTrack` 的小驼峰），与 [`REMOVE_TRACK_KIND`] 同一条
@@ -3044,6 +3127,59 @@ pub enum NoteOp {
     TransposeClip {
         /// 半音增量（`i8` 全值域；幅度上界就是类型本身，⛔ 另设常量）。
         delta_pitch: i8,
+    },
+    /// **整片段量化**：把顶层 `clipId` 片段里每个音符的起点吸到最近的
+    /// `grid_ticks` 网格（`strength_permille` < 1000 时按比例靠近）。
+    ///
+    /// 与 [`Self::TransposeClip`] 同一先例：⛔ 不是新 `Op` 变体，[`compile`]
+    /// 在**同一批**里展开成 N 条 `Op::SetNoteTiming`（N = 音符数），一步撤销。
+    QuantizeClip {
+        /// 网格时值（tick，非零）。
+        grid_ticks: u64,
+        /// 量化强度千分比 `0..=1000`（`1000` = 完全贴格）。
+        strength_permille: u16,
+    },
+    /// **整片段倒影**：每个音符的音高绕轴镜像（`p → 2·axis − p`）。
+    ///
+    /// `Op::MoveNote` 的 `delta_pitch` 是 `i8`（±127），倒影差值可到 ±254 ⇒
+    /// **不能用 `move` 展开**；本形态展开成 per-note 的 `delete` + `add`
+    /// 对（克隆 `MidiNote` 改 `pitch`，表现力字段原样保留）。
+    InvertClip {
+        /// 镜像轴音高 `0..=127`；`None` = 片段音域中点（min+max)/2。
+        axis_pitch: Option<u8>,
+    },
+    /// **整片段逆行**：音符起点在 [minStart, maxEnd] 区间内首尾镜像
+    /// （`new_start = max_end − (start + duration − min_start)`），时值不变。
+    /// 展开成 N 条 `Op::SetNoteTiming`。
+    RetrogradeClip,
+    /// **整片段人性化**：对每个音符施加**确定性**微时值与力度抖动
+    /// （`splitmix64` 从 `seed` + 音符身份派生，同种子同结果，⛔ 不引 RNG 依赖）。
+    /// 展开成 per-note 的 `Op::SetNoteExpression`（写 `micro_timing_ticks`）
+    /// 与 `Op::ModifyNoteVelocity` 对。
+    HumanizeClip {
+        /// 抖动种子（同一种子 ⇒ 同一份抖动）。
+        seed: u64,
+        /// 微时值抖动幅度（tick，±n；结果裁进 ±240）。
+        time_jitter_ticks: u64,
+        /// 力度抖动幅度（±n；结果裁进 1..=127）。
+        velocity_jitter: u8,
+    },
+    /// **整片段复制**：克隆顶层 `clipId` 的池条目（MIDI 与音频片段均可），
+    /// 可选地把新片段摆上 `track_id` 的 `start_tick`。
+    ///
+    /// 编译成**一条** `Op::Batch`（`AddClip` + 可选 `AddClipPlacement`），
+    /// 一步撤销；目标身份缺省时由源身份确定性派生。
+    DuplicateClip {
+        /// 新片段身份；`None` = `deterministic_id("clip-copy:{src}:{name}")`。
+        new_clip_id: Option<EntityId>,
+        /// 新片段显示名；`None` = `"{源名} copy"`。
+        name: Option<String>,
+        /// 目标音轨；`None` = 只进池子不摆放。
+        track_id: Option<EntityId>,
+        /// 摆放起点 tick；`track_id` 在场时必填。
+        start_tick: Option<u64>,
+        /// 摆放时值；`None` = 源片段内容跨度（MIDI = max(start+dur)，音频 = 源摆放时值）。
+        duration_ticks: Option<u64>,
     },
     /// 修改力度。
     Velocity {
@@ -3924,6 +4060,11 @@ impl NoteOp {
             Self::Delete { .. } => "delete",
             Self::Move { .. } => "move",
             Self::TransposeClip { .. } => TRANSPOSE_CLIP_KIND,
+            Self::QuantizeClip { .. } => QUANTIZE_CLIP_KIND,
+            Self::InvertClip { .. } => INVERT_CLIP_KIND,
+            Self::RetrogradeClip => RETROGRADE_CLIP_KIND,
+            Self::HumanizeClip { .. } => HUMANIZE_CLIP_KIND,
+            Self::DuplicateClip { .. } => DUPLICATE_CLIP_KIND,
             Self::Velocity { .. } => "velocity",
             Self::SetTiming { .. } => SET_NOTE_TIMING_KIND,
             Self::SetNoteExpression { .. } => SET_NOTE_EXPRESSION_KIND,
@@ -4005,6 +4146,10 @@ impl NoteOp {
                 | Self::SetNotePitchShape { .. }
                 | Self::SetNotePitchBendPoint { .. }
                 | Self::TransposeClip { .. }
+                | Self::QuantizeClip { .. }
+                | Self::InvertClip { .. }
+                | Self::RetrogradeClip
+                | Self::HumanizeClip { .. }
         )
     }
 
@@ -4145,6 +4290,11 @@ impl NoteOp {
                 | Self::SetNotePitchShape { .. }
                 | Self::SetNotePitchBendPoint { .. }
                 | Self::TransposeClip { .. }
+                | Self::QuantizeClip { .. }
+                | Self::InvertClip { .. }
+                | Self::RetrogradeClip
+                | Self::HumanizeClip { .. }
+                | Self::DuplicateClip { .. }
                 | Self::RemoveClip
         )
     }
@@ -4389,6 +4539,119 @@ fn parse_one(item: &Value) -> Result<NoteOp, Fault> {
             reject_transpose_clip_fields(object)?;
             Ok(NoteOp::TransposeClip {
                 delta_pitch: read_i8(object, TRANSPOSE_CLIP_DELTA_FIELD)?,
+            })
+        }
+        QUANTIZE_CLIP_KIND => {
+            reject_quantize_clip_fields(object)?;
+            let grid_ticks = read_u64(object, QUANTIZE_CLIP_GRID_FIELD)?;
+            if grid_ticks == 0 {
+                return Err(Fault::domain_with_data(
+                    ErrorCode::InvalidParameterRange,
+                    format!("`{QUANTIZE_CLIP_GRID_FIELD}` 必须非零 (0 网格不是网格)"),
+                    serde_json::json!({
+                        "reason": "quantizeGridMustBeNonZero",
+                        "field": QUANTIZE_CLIP_GRID_FIELD,
+                    }),
+                ));
+            }
+            let strength = match read_optional_u64(object, QUANTIZE_CLIP_STRENGTH_FIELD)? {
+                None => 1000u16,
+                Some(value) if value <= 1000 => u16::try_from(value).unwrap_or(1000),
+                Some(value) => {
+                    return Err(Fault::domain_with_data(
+                        ErrorCode::OutOfRange,
+                        format!("`{QUANTIZE_CLIP_STRENGTH_FIELD}` 越界: {value} 不在 0..=1000"),
+                        serde_json::json!({
+                            "field": QUANTIZE_CLIP_STRENGTH_FIELD,
+                            "value": value,
+                            "min": 0,
+                            "max": 1000,
+                        }),
+                    ));
+                }
+            };
+            Ok(NoteOp::QuantizeClip {
+                grid_ticks,
+                strength_permille: strength,
+            })
+        }
+        INVERT_CLIP_KIND => {
+            reject_invert_clip_fields(object)?;
+            let axis_pitch = match read_optional_u64(object, INVERT_CLIP_AXIS_FIELD)? {
+                None => None,
+                Some(value) if value <= u64::from(MIDI_PITCH_MAX) => {
+                    Some(u8::try_from(value).unwrap_or(MIDI_PITCH_MAX))
+                }
+                Some(value) => {
+                    return Err(Fault::domain_with_data(
+                        ErrorCode::OutOfRange,
+                        format!(
+                            "`{INVERT_CLIP_AXIS_FIELD}` 越界: {value} 不在 0..={MIDI_PITCH_MAX}"
+                        ),
+                        serde_json::json!({
+                            "field": INVERT_CLIP_AXIS_FIELD,
+                            "value": value,
+                            "min": 0,
+                            "max": MIDI_PITCH_MAX,
+                        }),
+                    ));
+                }
+            };
+            Ok(NoteOp::InvertClip { axis_pitch })
+        }
+        RETROGRADE_CLIP_KIND => {
+            reject_retrograde_clip_fields(object)?;
+            Ok(NoteOp::RetrogradeClip)
+        }
+        HUMANIZE_CLIP_KIND => {
+            reject_humanize_clip_fields(object)?;
+            Ok(NoteOp::HumanizeClip {
+                seed: read_u64(object, HUMANIZE_CLIP_SEED_FIELD)?,
+                time_jitter_ticks: read_u64(object, HUMANIZE_CLIP_TIME_FIELD)?,
+                velocity_jitter: read_range(
+                    object,
+                    HUMANIZE_CLIP_VELOCITY_FIELD,
+                    0,
+                    MIDI_VELOCITY_MAX,
+                )?,
+            })
+        }
+        DUPLICATE_CLIP_KIND => {
+            reject_duplicate_clip_fields(object)?;
+            let new_clip_id = read_optional_id(object, DUPLICATE_CLIP_NEW_ID_FIELD)?;
+            let name = match object.get(DUPLICATE_CLIP_NAME_FIELD) {
+                None | Some(Value::Null) => None,
+                Some(value) => Some(read_non_empty_string(
+                    DUPLICATE_CLIP_KIND,
+                    value,
+                    DUPLICATE_CLIP_NAME_FIELD,
+                    "duplicateClipNameMustBeNonEmptyString",
+                )?),
+            };
+            let track_id = read_optional_id(object, DUPLICATE_CLIP_TRACK_FIELD)?;
+            let start_tick = read_optional_u64(object, DUPLICATE_CLIP_START_FIELD)?;
+            let duration_ticks = read_optional_u64(object, DUPLICATE_CLIP_DURATION_FIELD)?;
+            // 摆放是二元组：只给 `trackId` 或只给 `startTick` 都撑不起一条摆放。
+            if track_id.is_some() != start_tick.is_some() {
+                return Err(Fault::domain_with_data(
+                    ErrorCode::InvalidParameterRange,
+                    format!(
+                        "`{DUPLICATE_CLIP_KIND}` 的摆放需要 `{DUPLICATE_CLIP_TRACK_FIELD}` 与 \
+                         `{DUPLICATE_CLIP_START_FIELD}` **同时**给出 (只给一个无法摆放)"
+                    ),
+                    serde_json::json!({
+                        "reason": "duplicateClipPlacementPairRequired",
+                        "trackId": track_id.is_some(),
+                        "startTick": start_tick.is_some(),
+                    }),
+                ));
+            }
+            Ok(NoteOp::DuplicateClip {
+                new_clip_id,
+                name,
+                track_id,
+                start_tick,
+                duration_ticks,
             })
         }
         "velocity" => Ok(NoteOp::Velocity {
@@ -5134,6 +5397,56 @@ fn reject_transpose_clip_fields(object: &Map<String, Value>) -> Result<(), Fault
         &TRANSPOSE_CLIP_FIELDS,
         TRANSPOSE_CLIP_KIND,
         "unknownTransposeClipField",
+    )
+}
+
+/// 拒绝 `quantizeClip` 里 [`QUANTIZE_CLIP_FIELDS`] 之外的键。
+fn reject_quantize_clip_fields(object: &Map<String, Value>) -> Result<(), Fault> {
+    reject_unknown_keys(
+        object,
+        &QUANTIZE_CLIP_FIELDS,
+        QUANTIZE_CLIP_KIND,
+        "unknownQuantizeClipField",
+    )
+}
+
+/// 拒绝 `invertClip` 里 [`INVERT_CLIP_FIELDS`] 之外的键。
+fn reject_invert_clip_fields(object: &Map<String, Value>) -> Result<(), Fault> {
+    reject_unknown_keys(
+        object,
+        &INVERT_CLIP_FIELDS,
+        INVERT_CLIP_KIND,
+        "unknownInvertClipField",
+    )
+}
+
+/// 拒绝 `retrogradeClip` 里 [`RETROGRADE_CLIP_FIELDS`] 之外的键。
+fn reject_retrograde_clip_fields(object: &Map<String, Value>) -> Result<(), Fault> {
+    reject_unknown_keys(
+        object,
+        &RETROGRADE_CLIP_FIELDS,
+        RETROGRADE_CLIP_KIND,
+        "unknownRetrogradeClipField",
+    )
+}
+
+/// 拒绝 `humanizeClip` 里 [`HUMANIZE_CLIP_FIELDS`] 之外的键。
+fn reject_humanize_clip_fields(object: &Map<String, Value>) -> Result<(), Fault> {
+    reject_unknown_keys(
+        object,
+        &HUMANIZE_CLIP_FIELDS,
+        HUMANIZE_CLIP_KIND,
+        "unknownHumanizeClipField",
+    )
+}
+
+/// 拒绝 `duplicateClip` 里 [`DUPLICATE_CLIP_FIELDS`] 之外的键。
+fn reject_duplicate_clip_fields(object: &Map<String, Value>) -> Result<(), Fault> {
+    reject_unknown_keys(
+        object,
+        &DUPLICATE_CLIP_FIELDS,
+        DUPLICATE_CLIP_KIND,
+        "unknownDuplicateClipField",
     )
 }
 
@@ -8111,6 +8424,212 @@ fn read_probability(object: &Map<String, Value>) -> Result<Option<f32>, Fault> {
     Ok(Some(raw as f32))
 }
 
+/// 把"整片段"形态的 `NoteOp` 在**当前投影**上展开成音符级条目。
+///
+/// 返回 `None` = 该 op 不是展开形态（走主 match 臂）；`Some(vec)` 就是
+/// `queue.splice` 要原位替换进去的展开批 —— 空 `Vec` 也合法
+/// （空片段 ⇒ `appliedOps: 0`，与 `transposeClip` 同口径）。
+///
+/// ⭐ 展开只做"点名哪些音符"这一件事：越界报文、撤销载荷、投影推进全部复用
+/// 各音符级 `NoteOp` 的编译臂 —— ⛔ 第二份语义。
+///
+/// # Errors
+/// - 目标片段不是 MIDI / 不在池里 → `CLIP_NOT_FOUND`（与循环头那道 MIDI 门
+///   逐字同一的报文）；
+/// - `invertClip` 镜像后音高越出 `0..=127` → `OUT_OF_RANGE`（点名轴与音高）。
+fn expand_clip_level_op(
+    project: &YebanProjectV1,
+    clip_id: &EntityId,
+    op: &NoteOp,
+) -> Result<Option<Vec<NoteOp>>, Fault> {
+    // 先判"是不是展开形态"，再取音符集合：非展开形态连池都不查。
+    let needs_notes = matches!(
+        op,
+        NoteOp::TransposeClip { .. }
+            | NoteOp::QuantizeClip { .. }
+            | NoteOp::InvertClip { .. }
+            | NoteOp::RetrogradeClip
+            | NoteOp::HumanizeClip { .. }
+    );
+    if !needs_notes {
+        return Ok(None);
+    }
+    let notes = project
+        .clip_pool
+        .get(clip_id)
+        .and_then(|clip| clip.content.notes())
+        .ok_or_else(|| {
+            // 与循环头那道 MIDI 门**逐字同一**的报文（那里已经拦过一遍；
+            // 这里是为了⛔ 不 unwrap 一个 `Option`，⛔ 不是第二条口径）。
+            Fault::domain(
+                ErrorCode::ClipNotFound,
+                format!("片段 {clip_id} 不是 MIDI 片段, 没有音符集合"),
+            )
+        })?;
+    // `BTreeMap` 的键序 = 身份序 ⇒ 展开顺序跨进程确定（红线 4）。
+    let expanded: Vec<NoteOp> = match op {
+        NoteOp::TransposeClip { delta_pitch } => notes
+            .keys()
+            .map(|note_id| NoteOp::Move {
+                note_id: *note_id,
+                delta_tick: 0,
+                delta_pitch: *delta_pitch,
+            })
+            .collect(),
+        NoteOp::QuantizeClip {
+            grid_ticks,
+            strength_permille,
+        } => notes
+            .iter()
+            .filter_map(|(note_id, note)| {
+                let snapped = quantize_tick(note.start_tick, *grid_ticks, *strength_permille);
+                // 已在格上的音符不产生 op —— 空动只涨日志不涨音乐。
+                (snapped != note.start_tick).then_some(NoteOp::SetTiming {
+                    note_id: *note_id,
+                    start_tick: snapped,
+                    duration_ticks: note.duration_ticks,
+                })
+            })
+            .collect(),
+        NoteOp::InvertClip { axis_pitch } => {
+            let axis = match axis_pitch {
+                Some(axis) => *axis,
+                None => {
+                    // 缺省轴 = 片段音域中点（min+max)/2 —— 镜像后音域形状不变、
+                    // 只在区内翻转，天然不越界。
+                    let (mut lo, mut hi) = (u8::MAX, 0u8);
+                    for note in notes.values() {
+                        lo = lo.min(note.pitch);
+                        hi = hi.max(note.pitch);
+                    }
+                    lo.saturating_add(hi) / 2
+                }
+            };
+            let mut pairs = Vec::with_capacity(notes.len() * 2);
+            for (note_id, note) in notes {
+                // `Op::MoveNote` 的 `delta_pitch` 是 `i8`，倒影差值 ±254 装不下 ⇒
+                // 展开成 delete+add 对（克隆 `MidiNote` 只改 `pitch`）。
+                let mirrored = 2 * i16::from(axis) - i16::from(note.pitch);
+                if !(0..=i16::from(MIDI_PITCH_MAX)).contains(&mirrored) {
+                    return Err(Fault::domain_with_data(
+                        ErrorCode::OutOfRange,
+                        format!(
+                            "倒影后音高越界: axis={axis} 把 {} 映到 {mirrored} (不在 0..={MIDI_PITCH_MAX})",
+                            note.pitch
+                        ),
+                        serde_json::json!({
+                            "noteId": note_id.to_canonical_string(),
+                            "pitch": note.pitch,
+                            "axisPitch": axis,
+                            "mirroredPitch": mirrored,
+                        }),
+                    ));
+                }
+                pairs.push(NoteOp::Delete { note_id: *note_id });
+                let mut note = note.clone();
+                note.pitch = mirrored as u8;
+                pairs.push(NoteOp::Add {
+                    note: Box::new(note),
+                });
+            }
+            pairs
+        }
+        NoteOp::RetrogradeClip => {
+            // 逆行镜像轴 = 片段占用区间的两端：`new_start = span_end − (start + dur)`
+            // 让最早开始的音符变成最后结束（区间内整体翻转，时值不变）。
+            let span_start = notes.values().map(|note| note.start_tick).min();
+            let span_end = notes
+                .values()
+                .map(|note| note.start_tick + note.duration_ticks)
+                .max();
+            match (span_start, span_end) {
+                (Some(lo), Some(hi)) => notes
+                    .iter()
+                    .map(|(note_id, note)| NoteOp::SetTiming {
+                        note_id: *note_id,
+                        // lo + (hi − (start + dur))：等价于把 [start,end) 映到
+                        // [lo + hi − end, lo + hi − start)。
+                        start_tick: lo + hi - note.start_tick - note.duration_ticks,
+                        duration_ticks: note.duration_ticks,
+                    })
+                    .collect(),
+                _ => Vec::new(),
+            }
+        }
+        NoteOp::HumanizeClip {
+            seed,
+            time_jitter_ticks,
+            velocity_jitter,
+        } => {
+            let mut pairs = Vec::with_capacity(notes.len() * 2);
+            for (index, (note_id, note)) in notes.iter().enumerate() {
+                // 确定性抖动：splitmix64(seed ⊕ index ⊕ 通道) —— 同一
+                // `seed` 永远给出同一份"手感"，跨进程/重放稳定（红线 4）。
+                let base_seed = *seed;
+                let jitter = |channel: u64| -> i64 {
+                    let mut x = base_seed
+                        .wrapping_add(0x9E37_79B9_7F4A_7C15)
+                        .wrapping_add((index as u64).wrapping_mul(0xBF58_476D_1CE4_E5B9))
+                        .wrapping_add(channel.wrapping_mul(0x94D0_49BB_1331_11EB));
+                    x ^= x >> 30;
+                    x = x.wrapping_mul(0xBF58_476D_1CE4_E5B9);
+                    x ^= x >> 27;
+                    x = x.wrapping_mul(0x94D0_49BB_1331_11EB);
+                    x ^= x >> 31;
+                    // 把高 33 位压成有偏的 ±区间：[0, 2n] − n。
+                    (x >> 33) as i64
+                };
+                let micro = if *time_jitter_ticks == 0 {
+                    note.micro_timing_ticks.unwrap_or(0)
+                } else {
+                    let span = (*time_jitter_ticks)
+                        .min(u64::try_from(MICRO_TIMING_MAX_ABS).unwrap_or(240));
+                    let jitter = (jitter(0) % (2 * span as i64 + 1)) - span as i64;
+                    let base = i64::from(note.micro_timing_ticks.unwrap_or(0));
+                    (base + jitter).clamp(
+                        -i64::from(MICRO_TIMING_MAX_ABS),
+                        i64::from(MICRO_TIMING_MAX_ABS),
+                    ) as i16
+                };
+                let velocity = if *velocity_jitter == 0 {
+                    note.velocity
+                } else {
+                    let span = i64::from(*velocity_jitter);
+                    let jitter = (jitter(1) % (2 * span + 1)) - span;
+                    (i64::from(note.velocity) + jitter).clamp(1, i64::from(MIDI_VELOCITY_MAX)) as u8
+                };
+                pairs.push(NoteOp::SetNoteExpression {
+                    note_id: *note_id,
+                    new_probability: note.probability,
+                    new_ratchet: note.ratchet,
+                    new_micro_timing_ticks: Some(micro),
+                });
+                pairs.push(NoteOp::Velocity {
+                    note_id: *note_id,
+                    velocity,
+                });
+            }
+            pairs
+        }
+        _ => return Ok(None),
+    };
+    Ok(Some(expanded))
+}
+
+/// 把 `start` 吸到最近的 `grid` 整数倍；`strength_permille` < 1000 时
+/// 只走强度比例的那段距离（线性内插，tick 分辨率取整）。
+fn quantize_tick(start: u64, grid: u64, strength_permille: u16) -> u64 {
+    let snapped = if grid <= 1 {
+        start
+    } else {
+        // 最近整数倍 = round(start / grid) * grid（半格向上）。
+        (start + grid / 2) / grid * grid
+    };
+    let distance = i128::from(snapped) - i128::from(start);
+    let scaled = i128::from(start) + distance * i128::from(strength_permille) / 1000;
+    scaled.max(0) as u64
+}
+
 /// 把解析过的操作编译成 [`Op`]（**读文档**补齐撤销载荷，但绝不改文档）。
 ///
 /// `Delete` / `Move` / `Velocity` 需要当前音符状态：`DeleteNote` 自带
@@ -8238,29 +8757,10 @@ pub fn compile(
     while index < queue.len() {
         // ⚠ 先把增量**抄出来**再去改 `queue`：`if let ... = queue[index]` 会在整个
         // `if let` 体上保留对 `queue` 的借用，下面的 `splice`（可变借用）因此编译不过。
-        let transposition = match queue[index] {
-            NoteOp::TransposeClip { delta_pitch } => Some(delta_pitch),
-            _ => None,
-        };
-        if let Some(delta_pitch) = transposition {
-            let notes = project
-                .clip_pool
-                .get(clip_id)
-                .and_then(|clip| clip.content.notes())
-                .ok_or_else(|| {
-                    // 与循环头那道 MIDI 门**逐字同一**的报文（那里已经拦过一遍；
-                    // 这里是为了⛔ 不 unwrap 一个 `Option`，⛔ 不是第二条口径）。
-                    Fault::domain(
-                        ErrorCode::ClipNotFound,
-                        format!("片段 {clip_id} 不是 MIDI 片段, 没有音符集合"),
-                    )
-                })?;
-            // `BTreeMap` 的键序 = 身份序 ⇒ 展开顺序跨进程确定（红线 4）。
-            let expanded = notes.keys().map(|note_id| NoteOp::Move {
-                note_id: *note_id,
-                delta_tick: 0,
-                delta_pitch,
-            });
+        // 所有"整片段"形态（`transposeClip` / `quantizeClip` / `invertClip` /
+        // `retrogradeClip` / `humanizeClip`）共用这一条展开通道：
+        // [`expand_clip_level_op`] 在**当前投影**上把形态换成音符级条目。
+        if let Some(expanded) = expand_clip_level_op(&project, clip_id, &queue[index])? {
             let _ = queue.splice(index..index + 1, expanded);
             // ⛔ 不推进下标：下一次迭代编译的就是刚展开的**第一条** `move`。
             continue;
@@ -8324,11 +8824,96 @@ pub fn compile(
                     delta_pitch: *delta_pitch,
                 }
             }
-            NoteOp::TransposeClip { .. } => {
-                // ⭐ 展开路径**只**在上面的 `if let`（同一形态 ⇒ 就地换成 N 条 `move`
+            NoteOp::TransposeClip { .. }
+            | NoteOp::QuantizeClip { .. }
+            | NoteOp::InvertClip { .. }
+            | NoteOp::RetrogradeClip
+            | NoteOp::HumanizeClip { .. } => {
+                // ⭐ 展开路径**只**在上面的 `if let`（同一形态 ⇒ 就地换成音符级条目
                 // 并 `continue`）。本臂因此拿不到"一条 `Op`"可返回 —— 用 `continue`
                 // 而不是 `unreachable!`：⛔ 在编译路径上留一条 panic。
                 continue;
+            }
+            NoteOp::DuplicateClip {
+                new_clip_id,
+                name,
+                track_id: target_track_id,
+                start_tick,
+                duration_ticks,
+            } => {
+                // 克隆池条目（MIDI/音频通吃：clone `ClipContent` 而不是只搬音符）。
+                let source = project.clip_pool.get(clip_id).ok_or_else(|| {
+                    Fault::domain(ErrorCode::ClipNotFound, format!("片段不存在: {clip_id}"))
+                })?;
+                let resolved_name = name
+                    .clone()
+                    .unwrap_or_else(|| format!("{} copy", source.name));
+                let new_id = new_clip_id.unwrap_or_else(|| {
+                    deterministic_id(&format!(
+                        "clip-copy:{}:{resolved_name}",
+                        clip_id.to_canonical_string()
+                    ))
+                });
+                if project.clip_pool.contains_key(&new_id) {
+                    return Err(Fault::domain_with_data(
+                        ErrorCode::Conflict,
+                        format!("片段池里已经有身份 {new_id}, `duplicateClip` 不覆盖既有片段"),
+                        serde_json::json!({
+                            "clipId": new_id.to_canonical_string(),
+                            "reason": "clipAlreadyExists",
+                        }),
+                    ));
+                }
+                let mut batch_ops = vec![Op::AddClip {
+                    clip: ClipPoolEntry {
+                        id: new_id,
+                        name: resolved_name,
+                        content: source.content.clone(),
+                    },
+                }];
+                if let (Some(target_track), Some(start)) = (target_track_id, start_tick) {
+                    // 音轨必须在投影里真的存在（与 `setParam` 逐条目标同口径）。
+                    project
+                        .track(target_track)
+                        .map_err(|error| from_model("音轨查找", &error))?;
+                    // 摆放时值：显式给了用它；缺省 = 源片段内容跨度
+                    // （MIDI = 最右端音符的 end；音频 = 0 回退为非法 ⇒ 模型拒绝）。
+                    let span = duration_ticks.unwrap_or_else(|| {
+                        source
+                            .content
+                            .notes()
+                            .and_then(|notes| {
+                                notes
+                                    .values()
+                                    .map(|note| note.start_tick + note.duration_ticks)
+                                    .max()
+                            })
+                            .unwrap_or(0)
+                    });
+                    batch_ops.push(Op::AddClipPlacement {
+                        track_id: *target_track,
+                        placement: ClipPlacement {
+                            id: deterministic_id(&placement_label(
+                                &new_id.to_canonical_string(),
+                                &target_track.to_canonical_string(),
+                                *start,
+                            )),
+                            clip_id: new_id,
+                            start_tick: *start,
+                            duration_ticks: span,
+                            loop_config: LoopConfig::default(),
+                            muted: false,
+                        },
+                    });
+                }
+                Op::Batch {
+                    ops: batch_ops,
+                    description: format!(
+                        "duplicateClip {} → {}",
+                        clip_id.to_canonical_string(),
+                        new_id.to_canonical_string()
+                    ),
+                }
             }
             NoteOp::Velocity { note_id, velocity } => {
                 let current = project
@@ -11643,7 +12228,10 @@ mod tests {
                 "`{kind}` 改的是属性（不读音符）, ⛔ 不得算作音符级"
             );
         }
-        // 发布清单本身：逐字 + 恰好九个（⛔ 不是常量自比）。
+        // 发布清单本身：逐字 + 恰好十三个（⛔ 不是常量自比）。
+        // 本票（整片段编辑形态）新增 quantizeClip / invertClip / retrogradeClip /
+        // humanizeClip 四个音符级形态（duplicateClip 也读片段但克隆 `ClipContent`
+        // 不读音符 ⇒ 不是音符级）。
         assert_eq!(
             NOTE_LEVEL_KINDS,
             [
@@ -11655,18 +12243,168 @@ mod tests {
                 "setNoteExpression",
                 "setNotePitchShape",
                 "setPitchBendPoint",
-                "transposeClip"
+                "transposeClip",
+                "quantizeClip",
+                "invertClip",
+                "retrogradeClip",
+                "humanizeClip"
             ],
-            "音符级清单必须逐字是这九个"
+            "音符级清单必须逐字是这十三个"
         );
-        assert_eq!(NOTE_LEVEL_KINDS.len(), 9);
-        // 九个音符形态必然是顶层 `clipId` 的消费者（清单之间的包含关系）。
+        assert_eq!(NOTE_LEVEL_KINDS.len(), 13);
+        // 十三个音符形态必然是顶层 `clipId` 的消费者（清单之间的包含关系）。
         for kind in NOTE_LEVEL_KINDS {
             assert!(
                 ENVELOPE_CLIP_KINDS.contains(kind),
                 "`{kind}` 在音符级清单里 ⇒ 必然也在 ENVELOPE_CLIP_KINDS 里"
             );
         }
+    }
+
+    /// 五个**整片段编辑形态**的编译语义（本票：quantize / invert / retrograde /
+    /// humanize / duplicate）。
+    ///
+    /// 注入（实测红）：`expand_clip_level_op` 的 `needs_notes` 漏登记一个 ⇒
+    /// 对应断言红（形态会落到 `continue` 臂、产出 0 条 op）；
+    /// `quantize_tick` 换成"向下取整" ⇒ ③ 红（nearest-grid 而不是 floor）。
+    #[test]
+    fn clip_level_ops_expand_with_their_documented_semantics() {
+        let project = filled_project();
+        let (track, clip) = lead_clip(&project);
+        let notes = project.clip_pool[&clip]
+            .content
+            .notes()
+            .expect("夹具必须是 MIDI 片段");
+        let sample: Vec<MidiNote> = notes.values().cloned().collect();
+        assert!(!sample.is_empty(), "夹具片段必须至少有一个音符");
+
+        // ① quantizeClip：strength=1000 ⇒ 每个产物都落在 grid 整数倍上；
+        //    已在格上的音符不产生 op。
+        let ops = parse_ops(&serde_json::json!([{
+            "kind": "quantizeClip", "gridTicks": 240, "strengthPermille": 1000,
+        }]))
+        .expect("解析");
+        let compiled = compile(&project, &track, &clip, &ops).expect("编译");
+        assert!(compiled.len() <= sample.len());
+        for op in &compiled {
+            let Op::SetNoteTiming { new_start_tick, .. } = op else {
+                panic!("quantizeClip 只能产出 SetNoteTiming, 实际 {}", op.name());
+            };
+            assert_eq!(new_start_tick % 240, 0, "必须吸到 240 的整数倍");
+        }
+
+        // ② invertClip：缺省轴 = 片段音域中点（恒不越界）⇒ delete+add 成对，
+        //    新 pitch = 2*axis - old。
+        let pitch_lo = sample.iter().map(|n| n.pitch).min().expect("非空");
+        let pitch_hi = sample.iter().map(|n| n.pitch).max().expect("非空");
+        let axis = u16::from(pitch_lo.saturating_add(pitch_hi) / 2);
+        let ops = parse_ops(&serde_json::json!([{"kind": "invertClip"}])).expect("解析");
+        let compiled = compile(&project, &track, &clip, &ops).expect("编译");
+        assert_eq!(compiled.len(), sample.len() * 2);
+        let mut adds = 0usize;
+        for (index, op) in compiled.iter().enumerate() {
+            if index % 2 == 0 {
+                assert_eq!(op.name(), "DeleteNote", "偶数位必须是删除");
+            } else {
+                let Op::AddNote { note, .. } = op else {
+                    panic!("奇数位必须是 AddNote, 实际 {}", op.name());
+                };
+                let source = &sample[adds];
+                assert_eq!(
+                    u16::from(note.pitch),
+                    2 * axis - u16::from(source.pitch),
+                    "镜像音高"
+                );
+                adds += 1;
+            }
+        }
+
+        // ③ retrogradeClip：new_start = lo + hi - start - dur（区间内整体镜像）。
+        let lo = sample.iter().map(|n| n.start_tick).min().expect("非空");
+        let hi = sample
+            .iter()
+            .map(|n| n.start_tick + n.duration_ticks)
+            .max()
+            .expect("非空");
+        let ops = parse_ops(&serde_json::json!([{"kind": "retrogradeClip"}])).expect("解析");
+        let compiled = compile(&project, &track, &clip, &ops).expect("编译");
+        assert_eq!(compiled.len(), sample.len());
+        for (note, op) in sample.iter().zip(compiled.iter()) {
+            let Op::SetNoteTiming {
+                new_start_tick,
+                new_duration_ticks,
+                ..
+            } = op
+            else {
+                panic!("retrogradeClip 只能产出 SetNoteTiming, 实际 {}", op.name());
+            };
+            assert_eq!(
+                *new_start_tick,
+                lo + hi - note.start_tick - note.duration_ticks
+            );
+            assert_eq!(*new_duration_ticks, note.duration_ticks, "时值不变");
+        }
+
+        // ④ humanizeClip：同一 seed ⇒ 逐字节同一批 op（确定性是契约）。
+        let payload = serde_json::json!([{
+            "kind": "humanizeClip", "seed": 42, "timeJitterTicks": 20, "velocityJitter": 10,
+        }]);
+        let ops = parse_ops(&payload).expect("解析");
+        let first = compile(&project, &track, &clip, &ops).expect("编译");
+        let second = compile(&project, &track, &clip, &ops).expect("编译");
+        assert_eq!(first.len(), sample.len() * 2);
+        assert_eq!(
+            format!("{first:?}"),
+            format!("{second:?}"),
+            "同一 seed 必须产出逐字节同一批 op"
+        );
+
+        // ⑤ duplicateClip：编译成一条 Batch(AddClip + AddClipPlacement)，
+        //    内容 = 源片段内容克隆；trackId 不存在 ⇒ 响亮失败。
+        let ops = parse_ops(&serde_json::json!([{
+            "kind": "duplicateClip",
+            "name": "Take 2",
+            "trackId": track.to_canonical_string(),
+            "startTick": 3840,
+        }]))
+        .expect("解析");
+        let compiled = compile(&project, &track, &clip, &ops).expect("编译");
+        assert_eq!(compiled.len(), 1);
+        let Op::Batch { ops: batch_ops, .. } = &compiled[0] else {
+            panic!("必须是 Op::Batch, 实际 {}", compiled[0].name());
+        };
+        assert_eq!(batch_ops.len(), 2);
+        let Op::AddClip { clip: new_clip } = &batch_ops[0] else {
+            panic!("第一个必须是 AddClip, 实际 {}", batch_ops[0].name());
+        };
+        assert_eq!(new_clip.name, "Take 2");
+        assert_eq!(
+            new_clip.content.notes().expect("克隆仍是 MIDI").len(),
+            sample.len(),
+            "克隆内容必须与源同音符数"
+        );
+        let Op::AddClipPlacement {
+            track_id: placed_track,
+            placement,
+        } = &batch_ops[1]
+        else {
+            panic!(
+                "第二个必须是 AddClipPlacement, 实际 {}",
+                batch_ops[1].name()
+            );
+        };
+        assert_eq!(*placed_track, track);
+        assert_eq!(placement.clip_id, new_clip.id);
+        assert_eq!(placement.start_tick, 3840);
+        assert_eq!(placement.duration_ticks, hi, "缺省时值 = 内容最右端");
+
+        // ⑥ 新身份撞库 ⇒ CONFLICT（⛔ 覆盖既有片段）。
+        let ops = parse_ops(&serde_json::json!([{
+            "kind": "duplicateClip", "newClipId": clip.to_canonical_string(),
+        }]))
+        .expect("解析");
+        let fault = compile(&project, &track, &clip, &ops).expect_err("撞库必须红");
+        assert_eq!(fault.domain_code(), Some(ErrorCode::Conflict));
     }
 
     /// `setNoteTiming`：解析新值、拒绝未知键，并从**当前文档**读旧值。
@@ -12580,7 +13318,9 @@ mod tests {
         // 补上 `tempo_map` / `time_signature_map` 在工具面无通路）后为 46 —— 同样与真实 `kind` 同步。
         // 本票（`ADR-0019` 逐点弯音）新增 `setPitchBendPoint`（第八个音符级形态）后为 47
         // —— 同样与真实 `kind` 同步。
-        assert_eq!(OP_KINDS.len(), 48);
+        // 本票（整片段编辑形态）新增 quantizeClip / invertClip / retrogradeClip /
+        // humanizeClip / duplicateClip 五个 kind 后为 53 —— 同样与真实 `kind` 同步。
+        assert_eq!(OP_KINDS.len(), 53);
         assert!(OP_KINDS.contains(&SET_KEY_SIGNATURE_KIND));
         assert_eq!(TrackFlag::NAMES, [SET_TRACK_MUTE_KIND, SET_TRACK_SOLO_KIND]);
         assert!(OP_KINDS.contains(&SET_TRACK_MUTE_KIND));
@@ -18624,7 +19364,7 @@ mod tests {
     fn every_catalog_kind_parses_and_round_trips() {
         let ulid = "01J8ZQ00000000000000000999";
         // 每个 kind 的**最小合法形状**（只到解析期为止；文档相关的前置条件在 `compile`）。
-        let table: [(&str, serde_json::Value); 48] = [
+        let table: [(&str, serde_json::Value); 53] = [
             (
                 "add",
                 serde_json::json!({"note": {"startTick": 0, "pitch": 60, "durationTicks": 480}}),
@@ -18636,6 +19376,20 @@ mod tests {
             ),
             // ⭐ `ADR-0034`：整片段移调 —— ⛔ `noteId`（目标是顶层 `clipId` 的**全部**音符）。
             ("transposeClip", serde_json::json!({"deltaPitch": 2})),
+            (
+                "quantizeClip",
+                serde_json::json!({"gridTicks": 240, "strengthPermille": 500}),
+            ),
+            ("invertClip", serde_json::json!({"axisPitch": 64})),
+            ("retrogradeClip", serde_json::json!({})),
+            (
+                "humanizeClip",
+                serde_json::json!({"seed": 7, "timeJitterTicks": 12, "velocityJitter": 8}),
+            ),
+            (
+                "duplicateClip",
+                serde_json::json!({"name": "Copy", "trackId": ulid, "startTick": 0}),
+            ),
             (
                 "velocity",
                 serde_json::json!({"noteId": ulid, "velocity": 64}),
@@ -18836,6 +19590,11 @@ mod tests {
                 "setNotePitchShape",
                 "setPitchBendPoint",
                 "transposeClip",
+                "quantizeClip",
+                "invertClip",
+                "retrogradeClip",
+                "humanizeClip",
+                "duplicateClip",
                 "removeClip",
                 "removeAsset",
                 "setAsset",
@@ -19233,7 +19992,7 @@ mod tests {
             Value,
             &'a str,
         );
-        let rows: [Row<'_>; 49] = [
+        let rows: [Row<'_>; 54] = [
             (
                 "add",
                 None,
@@ -19318,6 +20077,44 @@ mod tests {
                 None,
                 serde_json::json!({"deltaPitch": 2}),
                 "MoveNote",
+            ),
+            // ⭐ 本票（整片段编辑形态）四个**展开**形态 + 一个 `Batch` 形态。
+            // 展开形态⛔ 进 `seen`（产物是已有音符级变体，不是新变体）；
+            // `duplicateClip` 独占 `Batch` ⇒ 进 `seen`。
+            (
+                "quantizeClip",
+                None,
+                None,
+                serde_json::json!({"gridTicks": 240}),
+                "SetNoteTiming",
+            ),
+            (
+                "invertClip",
+                None,
+                None,
+                serde_json::json!({}),
+                "DeleteNote",
+            ),
+            (
+                "retrogradeClip",
+                None,
+                None,
+                serde_json::json!({}),
+                "SetNoteTiming",
+            ),
+            (
+                "humanizeClip",
+                None,
+                None,
+                serde_json::json!({"seed": 7, "timeJitterTicks": 12, "velocityJitter": 8}),
+                "SetNoteExpression",
+            ),
+            (
+                "duplicateClip",
+                None,
+                None,
+                serde_json::json!({"name": "Probe Copy"}),
+                "Batch",
             ),
             (
                 "setAsset",
@@ -19688,35 +20485,60 @@ mod tests {
             }
             let compiled = compile(&document, &track, &use_clip, &ops)
                 .unwrap_or_else(|fault| panic!("`{label}` 必须能编译: {fault:?}"));
-            // ⭐ `ADR-0034`：`transposeClip` 是**唯一**"一条形态 → N 条 `Op`"的展开形态
+            // ⭐ `ADR-0034`：`transposeClip` / `quantizeClip` / `invertClip` /
+            // `retrogradeClip` / `humanizeClip` 是"一条形态 → N 条 `Op`"的展开形态
             // ⇒ 期望长度从**文档**里那条片段的音符数读，⛔ 不写死数字（写死就是第二份真相）。
-            let expected_len = if kind == TRANSPOSE_CLIP_KIND {
-                document
-                    .clip_pool
-                    .get(&use_clip)
-                    .and_then(|entry| entry.content.notes())
-                    .map_or(0, |notes| notes.len())
-            } else {
-                1
+            let notes_len = document
+                .clip_pool
+                .get(&use_clip)
+                .and_then(|entry| entry.content.notes())
+                .map_or(0, |notes| notes.len());
+            let expected_len = match kind {
+                TRANSPOSE_CLIP_KIND | RETROGRADE_CLIP_KIND => notes_len,
+                INVERT_CLIP_KIND | HUMANIZE_CLIP_KIND => notes_len * 2,
+                _ => 1,
             };
             assert!(
                 expected_len > 0,
                 "`{label}` 的夹具片段必须至少有一个音符, 否则展开路径测不到东西"
             );
-            assert_eq!(
-                compiled.len(),
-                expected_len,
-                "`{label}` 应恰好产出 {expected_len} 条 `Op`"
-            );
-            for op in &compiled {
+            if kind == QUANTIZE_CLIP_KIND {
+                // 量化只点名不在格上的音符 ⇒ 数目是数据相关的 (0..=音符数)。
+                assert!(
+                    compiled.len() <= notes_len,
+                    "`{label}` 的量化产物不能超过音符数"
+                );
+            } else {
                 assert_eq!(
-                    op.name(),
-                    expected,
-                    "`{label}` 的每一条都必须落到登记的 `Op` 变体"
+                    compiled.len(),
+                    expected_len,
+                    "`{label}` 应恰好产出 {expected_len} 条 `Op`"
                 );
             }
-            if kind == TRANSPOSE_CLIP_KIND {
-                // 展开⛔ 引入新变体（它就是 `move` 的产物）⇒ 不进 `seen`、也不占单射名额。
+            // 展开形态允许的产物变体集（`invertClip` 删+加成对、`humanizeClip`
+            // 微时值+力度成对；其余形态就是行尾登记的单一变体）。
+            let allowed: &[&str] = match kind {
+                QUANTIZE_CLIP_KIND | RETROGRADE_CLIP_KIND => &["SetNoteTiming"],
+                INVERT_CLIP_KIND => &["DeleteNote", "AddNote"],
+                HUMANIZE_CLIP_KIND => &["SetNoteExpression", "ModifyNoteVelocity"],
+                _ => std::slice::from_ref(&expected),
+            };
+            for op in &compiled {
+                assert!(
+                    allowed.contains(&op.name()),
+                    "`{label}` 的每一条都必须落到登记的 `Op` 变体, 实际 {}",
+                    op.name()
+                );
+            }
+            if matches!(
+                kind,
+                TRANSPOSE_CLIP_KIND
+                    | QUANTIZE_CLIP_KIND
+                    | INVERT_CLIP_KIND
+                    | RETROGRADE_CLIP_KIND
+                    | HUMANIZE_CLIP_KIND
+            ) {
+                // 展开⛔ 引入新变体（它们是音符级形态的产物）⇒ 不进 `seen`、也不占单射名额。
             } else {
                 assert!(
                     !seen.contains(&expected),
@@ -19736,8 +20558,9 @@ mod tests {
         // 本票的 `setKeySignature`（独占一个变体）⇒ 44 → **45**。
         // 本票的 `setTempoPoint` / `setTimeSignaturePoint`（各独占一个变体）⇒ 45 → **47**；
         // `ADR-0019` 的 `setPitchBendPoint`（独占一个变体）⇒ 47 → **48**。
-        assert_eq!(seen.len(), 48);
-        // ⭐ `#179`：音符级分支集合**恰好是九个**，且逐字等于发布清单。
+        // 本票的 `duplicateClip`（独占 `Batch`）⇒ 48 → **49**（四个展开形态进不了 `seen`）。
+        assert_eq!(seen.len(), 49);
+        // ⭐ `#179`：音符级分支集合**恰好是十三个**，且逐字等于发布清单。
         assert_eq!(
             NOTE_LEVEL_KINDS,
             [
@@ -19749,14 +20572,18 @@ mod tests {
                 "setNoteExpression",
                 "setNotePitchShape",
                 "setPitchBendPoint",
-                "transposeClip"
+                "transposeClip",
+                "quantizeClip",
+                "invertClip",
+                "retrogradeClip",
+                "humanizeClip"
             ],
-            "音符级 kind 必须恰好是九个音符形态（字面表，⛔ 不是常量自比）"
+            "音符级 kind 必须恰好是十三个音符形态（字面表，⛔ 不是常量自比）"
         );
         assert_eq!(
             note_level_seen.len(),
-            9,
-            "全部 48 个 kind 里 `is_note_level()` 为真的必须**恰好九个**，实际: {note_level_seen:?}"
+            13,
+            "全部 kind 里 `is_note_level()` 为真的必须**恰好十三个**，实际: {note_level_seen:?}"
         );
         assert_eq!(
             note_level_seen,

@@ -142,6 +142,9 @@ fn try_plan(given: Given<'_>) -> Result<SectionPlan, BuildFault> {
             drum_style: None,
             beat_grouping: given.grouping,
             melody_seed: None,
+            harmony_seed: None,
+            material_clip_ids: None,
+            part_tracks: None,
         },
     )
 }
@@ -406,26 +409,18 @@ fn illegal_groupings_are_rejected_naming_the_key() {
 /// ⭐ 判据 4（D3 的消费面，**两向都钉**）：本键要求材料源 = theory **且**鼓轨在场；
 /// 反钉"⛔ 把旋律那条更严的要求扩散过来" —— `includeMelody:false` 时给本键必须放行。
 #[test]
-fn the_grouping_key_requires_the_theory_source_and_the_drum_part() {
+fn the_grouping_key_requires_the_drum_part_on_either_source() {
+    // ⭐ 审计 `N1` 正例：`'project'` 源 + 鼓轨在场 ⇒ 本键被消费 ⇒ 放行
+    // （材料源一条已废，消费口径只剩"鼓轨在场"）。
     for material_source in [None, Some("project")] {
-        let fault = try_plan(
+        try_plan(
             Given::theory()
                 .material_source(material_source)
                 .grouping(Some(&DERIVED)),
         )
-        .expect_err("`beatGrouping` 不得脱离 materialSource:\"theory\" 单独给");
-        assert_eq!(
-            fault.domain_code(),
-            Some(BuildCode::InvalidParameterRange),
-            "`beatGrouping` 脱离 theory: {fault:?}"
-        );
-        assert!(
-            data(&fault)["hint"]
-                .as_str()
-                .is_some_and(|text| text.contains("materialSource")),
-            "载荷必须指出要补 materialSource: {}",
-            data(&fault)
-        );
+        .unwrap_or_else(|fault| {
+            panic!("`beatGrouping` 在 project 源 + 鼓轨在场时必须放行 [审计 N1]: {fault:?}")
+        });
     }
     let fault = try_plan(Given::theory().drums(false).grouping(Some(&DERIVED)))
         .expect_err("`beatGrouping` 不得在没有鼓轨时静默失效");

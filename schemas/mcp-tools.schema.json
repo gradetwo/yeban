@@ -38,7 +38,8 @@
             "yeban_midi_input_probe",
             "yeban_list_proposals",
             "yeban_launch_scene",
-            "yeban_export_stems"
+            "yeban_export_stems",
+            "yeban_list_instruments"
           ]
         },
         "arguments": {
@@ -342,6 +343,25 @@
               }
             }
           }
+        },
+        {
+          "if": {
+            "required": [
+              "name"
+            ],
+            "properties": {
+              "name": {
+                "const": "yeban_list_instruments"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "arguments": {
+                "$ref": "#/definitions/ExtensionToolArguments/$defs/yeban_list_instruments"
+              }
+            }
+          }
         }
       ]
     },
@@ -617,6 +637,28 @@
               },
               "minItems": 1,
               "description": "鼓网格的**拍内分组**（`ADR-0046`）。单位 = 拍数序列，逐项 = 该组的拍数（⛔ tick、⛔ \"每小节打几下\"）。缺省不给 = **不覆盖**拍号自身的度量层级（组起点 = 拍号判成强位的那些拍）⇒ 键缺席时逐字节维持既有输出，因此本契约⛔ 写 `default`。合法形状**随拍号移动**：逐项 `>= 1` 且总和必须等于该拍号的 `felt_beats_per_bar(meter)`（实测 4/4 ⇒ `[4]`/`[2,2]`/`[1,1,1,1]`、5/4 ⇒ `[5]`/`[3,2]`/`[2,3]`、6/8 ⇒ `[2]`/`[1,1]`）⇒ 本契约⛔ 写逐项 `maximum`、也⛔ 写 `maxItems`。合法性的唯一判者是 theory 的 `BeatGrouping::new`（实现层⛔ 重算那条规则）；不合法 ⇒ `INVALID_PARAMETER_RANGE`（带 `field` + `value` + `beatsPerBar`），⛔ 夹紧、⛔ 静默降级。消费点：**仅**鼓轨（`swung_styled_drum_pattern` 的 `grouping` 实参），要求与 `materialSource: \"theory\"` **且** `includeDrums: true` 同给，否则 ⇒ `INVALID_PARAMETER_RANGE`（带 `hint`）。⚠ 本键改的是**分派与重量**：组起点决定底鼓（Metric 口径）与吊镲的落点，`weight` 取 `metric_weight_in` 与 `metric_weight_grouped` 的较大者 ⇒ 重音读数与力度档跟着变；**踩镲条数与起点逐条不变**（⛔ 改网格），军鼓落点⛔ 因它改变（那由 `drumBackbeat` 管）。"
+            },
+            "materialClipIds": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "title": "materialClipIds",
+              "description": "**指名材料表**（审计 `N2`）：单位 = 片段池条目身份数组（ULID 字符串，第 `i` 项喂第 `i` 个声部）。缺省不给 = 逐字节维持既有行为（可用材料按 `clip_pool` 顺序轮询分配）。⭐ 本键**故意没有 `minItems`/`maxItems`**：合法长度 = 该流派的声部数（3 或 4，随 `stylePreset`/`includeDrums`/`includeMelody` 移动）⇒ 写死会对另一档声部数报出「契约说能、本层拒」的矛盾（与 `beatGrouping` 同一条纪律）。每一项必须在 `clip_pool` 里存在且是可用 MIDI 材料（至少一个音符）；重复项允许。只允许与 `materialSource: \"project\"`（或缺省）同给 —— theory 路径不读片段池 ⇒ 响亮拒 `INVALID_PARAMETER_RANGE`（带 `hint`）。长度不符 ⇒ `INVALID_PARAMETER_RANGE`（带 `received`/`requiredParts`/`parts`）；条目不存在或不是可用 MIDI 材料 ⇒ `CLIP_NOT_FOUND`（带 `clipId` 与 `clipPoolEntries` 或 `acceptedContent`）。"
+            },
+            "partTracks": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "title": "partTracks",
+              "description": "**复用既有音轨**（审计 `N9`）：单位 = 音轨身份数组（ULID 字符串，第 `i` 项是第 `i` 个声部的目标音轨）。缺省不给 = 逐字节维持既有行为（每个声部新开一条确定性派生轨）。⭐ 本键**故意没有 `minItems`/`maxItems`**（与 `materialClipIds` 同一条纪律）。每一项必须在 `project.tracks` 里存在且是 `TrackKind::Midi`；**不允许重复项**。复用的轨不追加 `Op::AddTrack`、不改名不改电平；路由按现状补齐（节点缺席补 `AddRoutingNode`、缺 `TrackToBus` 边补 `ConnectRouting`）。长度不符 ⇒ `INVALID_PARAMETER_RANGE`；轨不存在或不是 MIDI 轨 ⇒ `TRACK_NOT_FOUND`；重复项 ⇒ `INVALID_PARAMETER_RANGE`。⚠ 与 `materialClipIds` **正交**（一个管内容来源、一个管目标音轨）。"
+            },
+            "harmonySeed": {
+              "type": "integer",
+              "minimum": 0,
+              "title": "harmonySeed",
+              "description": "**和声编排种子**（审计 `N3`）：单位 = `u64` 整数（`0..=18446744073709551615`）。缺省不给 = 逐字节维持既有输出。给了 = `scale` 缺席时音阶改由 `scale_for(tonic, seed)` 抽取、走向改由 `progression_for(seed)` 抽取。要求 `materialSource: \"theory\"`；`progression` 与 `scale` 都显式给了 ⇒ `INVALID_PARAMETER_RANGE`。⚠ `drumSeed` 是刻意缺席项（theory 的鼓生成没有种子入参）。"
             },
             "autoMerge": {
               "type": "boolean",
@@ -1176,6 +1218,21 @@
           "required": [
             "outDir"
           ]
+        },
+        "yeban_list_instruments": {
+          "title": "yeban_list_instruments",
+          "type": "object",
+          "description": "列出本会话已装载的 SFZ 乐器（会话 registry 的只读枚举）。响应 data：instruments[]（每条 = instrumentId / path / regions / sha256 / sampleSource / sampleFilesReadCount / sampleFilesFailedCount / sampleHz）/ count；空 registry ⇒ instruments:[] + note（⛔ 不报错）。会话态，重启或开关工程后为空。",
+          "properties": {
+            "dryRun": {
+              "type": "boolean",
+              "default": false
+            },
+            "idempotencyKey": {
+              "type": "string",
+              "maxLength": 256
+            }
+          }
         }
       }
     }

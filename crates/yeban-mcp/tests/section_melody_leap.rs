@@ -104,6 +104,9 @@ fn try_plan(given: Given) -> Result<SectionPlan, BuildFault> {
             drum_backbeat: None,
             drum_style: None,
             melody_seed: None,
+            harmony_seed: None,
+            material_clip_ids: None,
+            part_tracks: None,
             beat_grouping: None,
         },
     )
@@ -333,22 +336,17 @@ fn out_of_range_is_rejected_naming_the_key() {
 /// ⭐ 判据 4（D3 的消费面）：本键⛔ 脱离 `materialSource:"theory"`，也⛔ 脱离
 /// `includeMelody: true` —— 与音域两键共用同一条校验（消费点是同一个）。
 #[test]
-fn leap_key_requires_theory_source_and_a_melody_part() {
+fn leap_key_requires_a_melody_part_on_either_source() {
+    // ⭐ 审计 `N1` 正例：`'project'` 源 + `includeMelody` + 显式 `scale` ⇒ 放行。
     for material_source in [None, Some("project")] {
-        let fault = try_plan(
+        try_plan(
             Given::theory()
                 .material_source(material_source)
                 .leap(Some(STEPWISE)),
         )
-        .expect_err("`melodyMaxLeap` 不得脱离 materialSource:\"theory\" 单独给");
-        assert_shape_reject(&fault, "`melodyMaxLeap` 脱离 theory");
-        assert!(
-            data(&fault)["hint"]
-                .as_str()
-                .is_some_and(|text| text.contains("materialSource")),
-            "载荷必须指出要补 materialSource: {}",
-            data(&fault)
-        );
+        .unwrap_or_else(|fault| {
+            panic!("`melodyMaxLeap` 在 project 源 + 旋律在场时必须放行 [审计 N1]: {fault:?}")
+        });
     }
     // 有 theory 但没有旋律声部 ⇒ 同样必须拒（键缺省 `includeMelody:false`）。
     let fault = try_plan(Given::theory().leap(Some(STEPWISE)).melody(false))

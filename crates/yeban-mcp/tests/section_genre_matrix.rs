@@ -52,6 +52,9 @@ fn options() -> PlanOptions<'static> {
         drum_style: None,
         beat_grouping: None,
         melody_seed: None,
+        harmony_seed: None,
+        material_clip_ids: None,
+        part_tracks: None,
     }
 }
 

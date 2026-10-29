@@ -127,6 +127,7 @@ use yeban_theory::SWING_PERMILLE_MAX;
 use yeban_theory::SWING_PERMILLE_STRAIGHT;
 use yeban_theory::TheoryError;
 use yeban_theory::cells_per_bar;
+use yeban_theory::chord::Chord;
 use yeban_theory::drum::{
     Backbeat, DrumPattern, DrumStyle, default_backbeat, swung_styled_drum_pattern,
 };
@@ -136,7 +137,9 @@ use yeban_theory::melody::{
     MELODY_LOWER_BOUND, MELODY_MAX_LEAP, MELODY_UPPER_BOUND, MelodyConstraints, melody_over_chords,
 };
 use yeban_theory::pitch::{Pitch, PitchClass};
-use yeban_theory::progression::{ChordSpan, Meter as TheoryMeter, Progression};
+use yeban_theory::progression::{
+    ChordSpan, Meter as TheoryMeter, Progression, expand_chord_symbols,
+};
 use yeban_theory::rhythm::BeatGrouping;
 use yeban_theory::scale::{Scale as TheoryScale, ScaleKind};
 use yeban_theory::voice_leading::{self, VoiceRange, VoicingConstraints};
@@ -1261,6 +1264,36 @@ pub struct PlanOptions<'a> {
     /// ⚠ 消费点是**旋律轨** ⇒ 耦合口径与 `melodyLower`/`melodyUpper`/`melodyMaxLeap`
     /// **同一支**（要 theory 材料源且 `includeMelody: true`，D3）。
     pub melody_seed: Option<u64>,
+    /// ⭐ 审计 `N3`：和声**编排种子**（单位 = `u64`，界 `0..=u64::MAX`）。
+    /// `None` = 逐字节维持既有输出（走向取流派 `progression_at(0)`、音阶取
+    /// `primary_scale`）。给了 ⇒ 走向改由 `GenreRule::progression_for(seed)`
+    /// 抽取；`scale` 键缺席时音阶改由 `GenreRule::scale_for(tonic, seed)`
+    /// 抽取 —— 与 `melodySeed` 同一支"换个数再来一版"的语义（消费点不同：
+    /// melodySeed 换音高，harmonySeed 换**已登记的**走向/音阶条目）。
+    /// ⚠ 只被 theory 路径消费 ⇒ 与 `progression` 同一条耦合口径；`progression`
+    /// 与 `scale` **都**显式给了时种子没有可消费的槽位 ⇒ 响亮拒绝
+    /// （"给了必须被消费"）。⚠ theory 的鼓生成没有种子入参（`drumSeed` 是
+    /// 刻意缺席项 —— `swung_styled_drum_pattern` 全量确定性），本键**不**兼作鼓种子。
+    pub harmony_seed: Option<u64>,
+    /// ⭐ 审计 `N2`：`'project'` 材料路径的**指名材料表**（片段池条目身份数组，
+    /// 第 `i` 项喂第 `i` 个声部）。`None` = 逐字节维持既有行为（可用材料按
+    /// `clip_pool` 顺序轮询分配）。
+    /// ⚠ 只允许与 `materialSource: "project"`（或缺省）同给 —— theory 路径
+    /// 不读片段池，给了就是静默忽略 ⇒ 响亮拒绝（与 `progression` 同口径）。
+    /// 长度必须**恰等于**声部数（⛔ 像缺省路径那样轮询重复 —— 指名就该
+    /// 对每个声部点名）；每一项必须在 `clip_pool` 里存在且是可用的 MIDI
+    /// 材料（至少一个音符），重复项**允许**（同一材料喂多个声部是显式写的）。
+    pub material_clip_ids: Option<&'a [EntityId]>,
+    /// ⭐ 审计 `N9`：**复用既有音轨**（音轨身份数组，第 `i` 项是第 `i` 个声部的
+    /// 目标音轨）。`None` = 逐字节维持既有行为（每个声部新开一条确定性派生轨）。
+    /// ⚠ 长度必须**恰等于**声部数（含鼓组/旋律追加的声部 —— 与 `materialClipIds`
+    /// 同一条"指名就该点名"的口径）；每一项必须在 `project.tracks` 里存在且
+    /// 是 `TrackKind::Midi`（片段内容一律是 MIDI 材料）；**不允许重复项**
+    /// （两个声部复用同一条轨会给出相同的确定性 `edge_id` ⇒ 边身份冲突）。
+    /// 复用的轨**不**追加 `Op::AddTrack`、**不**改名改电平；路由按现状补齐 —
+    /// 节点缺席补 `AddRoutingNode`、`track → bus` 的 `TrackToBus` 边缺席补
+    /// `ConnectRouting`（身份照常确定性派生），已在位的就跳过。
+    pub part_tracks: Option<&'a [EntityId]>,
 }
 
 /// 一个声部的身份（两条材料路径共用）。
@@ -1273,6 +1306,9 @@ struct PartPlan {
     color: Option<String>,
     /// ⭐ G6：生成时的默认轨电平（见 [`part_volume_db`]）。
     volume_db: f32,
+    /// ⭐ 审计 `N9`：`track_id` 指向**既有**音轨（`partTracks` 指名）⇒ 装配相位
+    /// 不追加 `Op::AddTrack`，路由按现状补齐而不是无条件新建。
+    track_reused: bool,
 }
 
 /// 声部身份（低 → 高，顺序 = `parts`）。
@@ -1281,6 +1317,7 @@ fn part_plans(
     section_name: &str,
     parts: &[&str],
     bus: EntityId,
+    part_tracks: Option<&[EntityId]>,
 ) -> Vec<PartPlan> {
     parts
         .iter()
@@ -1288,7 +1325,14 @@ fn part_plans(
         .map(|(index, part)| {
             let name = format!("{section_name} · {part}");
             PartPlan {
-                track_id: deterministic_id(&format!("part:{section_id}:{index}:{part}")),
+                // ⭐ 审计 `N9`：指名复用时 `track_id` 就是既有轨的身份（已由
+                // `resolve_part_tracks` 验过存在性与 `TrackKind::Midi`），
+                // ⛔ 不再派生新身份。
+                track_id: part_tracks.map_or_else(
+                    || deterministic_id(&format!("part:{section_id}:{index}:{part}")),
+                    |ids| ids[index],
+                ),
+                track_reused: part_tracks.is_some(),
                 clip_id: deterministic_id(&format!("clip:{section_id}:{index}:{part}")),
                 placement_id: deterministic_id(&format!("placement:{section_id}:{index}:{part}")),
                 edge_id: deterministic_id(&format!("edge:{section_id}:{index}:{part}:{bus}")),
@@ -1300,17 +1344,181 @@ fn part_plans(
         .collect()
 }
 
+/// ⭐ 审计 `N9`：`partTracks` 指名的既有音轨**逐项校验**（三条失败分开报，
+/// 载荷各带定位数据，⛔ 折叠成一条"音轨不可用"）：
+///
+/// - 长度必须恰等于声部数（⛔ 像缺省路径那样随声部派生 —— 指名就该点名）；
+/// - 每一项必须在 `project.tracks` 里存在且是 `TrackKind::Midi`；
+/// - **不允许重复项** —— 两个声部复用同一条轨会分到同一个确定性
+///   `edge_id`（派生键里不含声部下标以外可区分的部分 ⇒ 边身份冲突）。
+fn resolve_part_tracks(
+    project: &YebanProjectV1,
+    part_plans_parts: &[&str],
+    ids: &[EntityId],
+) -> Result<(), BuildFault> {
+    if ids.len() != part_plans_parts.len() {
+        return Err(BuildFault::domain(
+            BuildCode::InvalidParameterRange,
+            format!(
+                "`partTracks` 必须对每个声部各给一条音轨 (需要 {} 条, 实际 {})",
+                part_plans_parts.len(),
+                ids.len()
+            ),
+            json!({
+                "partTracks": ids.iter().map(EntityId::to_canonical_string).collect::<Vec<_>>(),
+                "received": ids.len(),
+                "requiredParts": part_plans_parts.len(),
+                "parts": part_plans_parts,
+            }),
+        ));
+    }
+    for id in ids {
+        let Some(track) = project.tracks.get(id) else {
+            return Err(BuildFault::domain(
+                BuildCode::TrackNotFound,
+                format!(
+                    "`partTracks` 指名的音轨 {} 不存在",
+                    id.to_canonical_string()
+                ),
+                json!({
+                    "trackId": id.to_canonical_string(),
+                    "trackIds": project
+                        .tracks
+                        .keys()
+                        .map(EntityId::to_canonical_string)
+                        .collect::<Vec<_>>(),
+                }),
+            ));
+        };
+        if track.kind != TrackKind::Midi {
+            return Err(BuildFault::domain(
+                BuildCode::TrackNotFound,
+                format!(
+                    "`partTracks` 指名的音轨 {} ({}) 不是 MIDI 轨 (kind: {:?})",
+                    id.to_canonical_string(),
+                    track.name,
+                    track.kind
+                ),
+                json!({
+                    "trackId": id.to_canonical_string(),
+                    "trackName": track.name,
+                    "trackKind": format!("{:?}", track.kind),
+                    "acceptedKind": "Midi",
+                }),
+            ));
+        }
+    }
+    let mut seen = std::collections::BTreeSet::new();
+    for id in ids {
+        if !seen.insert(*id) {
+            return Err(BuildFault::domain(
+                BuildCode::InvalidParameterRange,
+                format!(
+                    "`partTracks` 不允许重复项 ({} 出现了两次 —— 两个声部共用一轨会产生相同的边身份)",
+                    id.to_canonical_string()
+                ),
+                json!({
+                    "trackId": id.to_canonical_string(),
+                    "hint": "让每个声部各用一条音轨, 或去掉 partTracks 让装配派生新轨",
+                }),
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// `'project'` 路径的材料内容：每个声部轮转取一条真实材料（等于既有行为）。
 ///
 /// 材料选择、移调量与音阶内收拢都没动，只是把"挑材料"从装配相位抽成一个
 /// 可单独测试的函数。
+///
+/// ⭐ 审计 `N2`：`named` 在场时**不**轮询 —— 第 `i` 个声部消费 `named[i]`
+/// 指名的片段池条目。长度必须恰等于声部数、每一项必须存在且是可用 MIDI
+/// 材料（至少一个音符）；三类失败分开报（长度 / 找不到 / 不可用），载荷
+/// 各带定位数据，⛔ 折叠成一条"材料不可用"。
 fn project_contents(
     project: &YebanProjectV1,
     scale: Option<&Scale>,
     theory_scale: Option<&TheoryScale>,
     part_plans: &[PartPlan],
+    named: Option<&[EntityId]>,
 ) -> Result<Vec<BTreeMap<EntityId, MidiNote>>, BuildFault> {
-    let materials = usable_materials(project);
+    let materials = match named {
+        Some(ids) => {
+            if ids.len() != part_plans.len() {
+                return Err(BuildFault::domain(
+                    BuildCode::InvalidParameterRange,
+                    format!(
+                        "`materialClipIds` 必须对每个声部各给一条 (需要 {} 条, 实际 {})",
+                        part_plans.len(),
+                        ids.len()
+                    ),
+                    json!({
+                        "materialClipIds": ids.iter().map(EntityId::to_canonical_string).collect::<Vec<_>>(),
+                        "received": ids.len(),
+                        "requiredParts": part_plans.len(),
+                        "parts": part_plans.iter().map(|part| part.name.clone()).collect::<Vec<_>>(),
+                    }),
+                ));
+            }
+            let mut resolved = Vec::with_capacity(ids.len());
+            for id in ids {
+                let Some(entry) = project.clip_pool.get(id) else {
+                    return Err(BuildFault::domain(
+                        BuildCode::ClipNotFound,
+                        format!(
+                            "`materialClipIds` 指名的片段池条目 {} 不存在",
+                            id.to_canonical_string()
+                        ),
+                        json!({
+                            "clipId": id.to_canonical_string(),
+                            "clipPoolEntries": project
+                                .clip_pool
+                                .keys()
+                                .map(EntityId::to_canonical_string)
+                                .collect::<Vec<_>>(),
+                        }),
+                    ));
+                };
+                let Some(notes) = entry.content.notes() else {
+                    return Err(BuildFault::domain(
+                        BuildCode::ClipNotFound,
+                        format!(
+                            "`materialClipIds` 指名的片段 {} ({}) 不是 MIDI 材料",
+                            id.to_canonical_string(),
+                            entry.name
+                        ),
+                        json!({
+                            "clipId": id.to_canonical_string(),
+                            "clipName": entry.name,
+                            "acceptedContent": "Midi clip with at least one note",
+                        }),
+                    ));
+                };
+                let Some(root) = notes.values().map(|note| note.pitch).min() else {
+                    return Err(BuildFault::domain(
+                        BuildCode::ClipNotFound,
+                        format!(
+                            "`materialClipIds` 指名的片段 {} ({}) 一个音符都没有",
+                            id.to_canonical_string(),
+                            entry.name
+                        ),
+                        json!({
+                            "clipId": id.to_canonical_string(),
+                            "clipName": entry.name,
+                            "acceptedContent": "Midi clip with at least one note",
+                        }),
+                    ));
+                };
+                resolved.push(Material {
+                    id: entry.id,
+                    root_pc: root % 12,
+                });
+            }
+            resolved
+        }
+        None => usable_materials(project),
+    };
     if materials.is_empty() {
         return Err(BuildFault::domain(
             BuildCode::ClipNotFound,
@@ -1367,13 +1575,23 @@ fn theory_inputs(
     style_preset: &str,
     scale: Option<&Scale>,
     progression_override: Option<&str>,
+    harmony_seed: Option<u64>,
 ) -> Result<TheoryInput, BuildFault> {
     let rule = genre_rule(style_preset)?;
+    // ⭐ 审计 `N3`：种子在场时，没显式给的那两个槽位改由流派的
+    // **带种抽取器**填充（`scale_for`/`progression_for` —— 同一个 `seed`
+    // 喂两条互相独立的盐 ⇒ 走向与音阶各自换一条登记项）；显式给了的槽位
+    // 照吃显式值（种子不覆盖用户指名）。
     let theory_scale = match scale {
         Some(scale) => scale.theory_scale(),
-        None => rule
-            .primary_scale(REFERENCE_TONIC)
-            .map_err(|error| theory_invalid(style_preset, "primary_scale", error))?,
+        None => match harmony_seed {
+            Some(seed) => rule
+                .scale_for(REFERENCE_TONIC, seed)
+                .map_err(|error| theory_invalid(style_preset, "scale_for", error))?,
+            None => rule
+                .primary_scale(REFERENCE_TONIC)
+                .map_err(|error| theory_invalid(style_preset, "primary_scale", error))?,
+        },
     };
     let scale_label = match scale {
         Some(scale) => scale.canonical(),
@@ -1381,10 +1599,16 @@ fn theory_inputs(
     };
     let progression_text = match progression_override {
         Some(text) => text.to_owned(),
-        None => rule
-            .progression_at(0)
-            .unwrap_or(FALLBACK_PROGRESSION)
-            .to_owned(),
+        None => match harmony_seed {
+            Some(seed) => rule
+                .progression_for(seed)
+                .map_err(|error| theory_invalid(style_preset, "progression_for", error))?
+                .to_owned(),
+            None => rule
+                .progression_at(0)
+                .unwrap_or(FALLBACK_PROGRESSION)
+                .to_owned(),
+        },
     };
     Ok(TheoryInput {
         scale: theory_scale,
@@ -1409,24 +1633,52 @@ fn theory_bars(bars: u64) -> Result<u32, BuildFault> {
 ///
 /// 鼓组与旋律都消费同一份跨度（`ADR-0017`：旋律必须落在**当前段落展开的**
 /// 和弦区段上），因此展开只做一次。
+///
+/// `progression` 接受**两种**文本：罗马数字级数（`"I-V-vi-IV"`，经
+/// [`Progression::parse`] + [`Progression::expand`] 在目标调式上展开）与
+/// 绝对和弦符号（`"Dm7-G7-Cmaj7"`，经 [`expand_chord_symbols`] —— 符号自带
+/// 根音/性质，不依赖调式）。分词规则两者同一份；判定顺序是**整体先罗马**：
+/// 全串能按级数解析就走罗马路径（保住既有行为逐字节不变），失败才尝试把
+/// 每个词按 [`Chord::from_symbol`] 解释。混合写法（`"I-Dm7"`）两边都失败。
+/// 两条路径都失败时把**两个**解析错误一起回报（调用方一次就知道两种语法
+/// 各自卡在哪里），⛔ 只报后失败的那个。
 fn theory_spans(
     project: &YebanProjectV1,
     style_preset: &str,
     bars: u64,
     theory: &TheoryInput,
 ) -> Result<Vec<ChordSpan>, BuildFault> {
-    let progression = Progression::parse(&theory.progression_text)
-        .map_err(|error| theory_invalid(style_preset, "Progression::parse", error))?;
     let meter = TheoryMeter {
         numerator: project.time_signature.numerator,
         denominator: project.time_signature.denominator,
     };
-    progression
-        .with_meter(meter)
-        .with_bars(theory_bars(bars)?)
-        .map_err(|error| theory_invalid(style_preset, "Progression::with_bars", error))?
-        .expand(&theory.scale)
-        .map_err(|error| theory_invalid(style_preset, "Progression::expand", error))
+    match Progression::parse(&theory.progression_text) {
+        Ok(progression) => progression
+            .with_meter(meter)
+            .with_bars(theory_bars(bars)?)
+            .map_err(|error| theory_invalid(style_preset, "Progression::with_bars", error))?
+            .expand(&theory.scale)
+            .map_err(|error| theory_invalid(style_preset, "Progression::expand", error)),
+        Err(roman_error) => {
+            expand_chord_symbols(&theory.progression_text, meter, theory_bars(bars)?).map_err(
+                |symbol_error| {
+                    BuildFault::domain(
+                        BuildCode::InvalidParameterRange,
+                        format!(
+                            "`progression` 既不是合法的罗马数字走向 ({roman_error}) \
+                     也不是合法的和弦符号走向 ({symbol_error})"
+                        ),
+                        json!({
+                            "stylePreset": style_preset,
+                            "progression": theory.progression_text,
+                            "romanError": roman_error.to_string(),
+                            "symbolError": symbol_error.to_string(),
+                        }),
+                    )
+                },
+            )
+        }
+    }
 }
 
 /// `'theory'` 路径的和声内容：声部连接 → 每声部一张确定性音符表。
@@ -2074,6 +2326,65 @@ struct DrumRulers<'a> {
     grouping: Option<&'a [u64]>,
 }
 
+/// ⭐ 审计 `N1`：工程材料 ⇒ 和弦跨度（`includeMelody` on `'project'` 的入口）。
+///
+/// 逐小节把**和声声部**材料片段里与该小节相交的全部音高收成 voicing，
+/// [`Chord::from_voicing`] 判出和弦（口径 = theory 的和弦识别表：3..=5 个音类
+/// 才判得出）。该小节无相交音符 ⇒ 沿用上一小节判出的和弦（延音是和声的语义，
+/// ⛔ 静默改判"无和弦"）；首小节就无相交音符、或某小节 voicing 判不出 ⇒
+/// [`BuildCode::InvalidParameterRange`] 带 `bar` 与 `hint`（⛔ 静默换和弦、
+/// ⛔ 拿邻近和弦充数 —— 那会给旋律配上用户没写的和声）。
+///
+/// ⚠ `degree` 恒 `None`：材料只有音高没有级数来源 —— 与
+/// [`expand_chord_symbols`] 对绝对符号展开同一口径。
+fn material_spans(
+    harmony_contents: &[BTreeMap<EntityId, MidiNote>],
+    ticks_per_bar: u64,
+    bars: u64,
+) -> Result<Vec<ChordSpan>, BuildFault> {
+    let mut spans: Vec<ChordSpan> = Vec::with_capacity(bars as usize);
+    for bar in 0..bars {
+        let bar_start = bar.saturating_mul(ticks_per_bar);
+        let bar_end = bar_start.saturating_add(ticks_per_bar);
+        let mut pitches: Vec<Pitch> = Vec::new();
+        for notes in harmony_contents {
+            for note in notes.values() {
+                let note_end = note.start_tick.saturating_add(note.duration_ticks.max(1));
+                if note.start_tick < bar_end
+                    && note_end > bar_start
+                    && let Ok(pitch) = Pitch::new(i32::from(note.pitch))
+                {
+                    pitches.push(pitch);
+                }
+            }
+        }
+        let chord = if pitches.is_empty() {
+            spans.last().map(|span| span.chord)
+        } else {
+            Chord::from_voicing(&pitches)
+        };
+        let Some(chord) = chord else {
+            return Err(BuildFault::domain_with_data(
+                BuildCode::InvalidParameterRange,
+                format!(
+                    "第 {bar} 小节的材料音高判不出和弦（相交音类须为 3..=5 个），旋律无可依的和声"
+                ),
+                json!({
+                    "bar": bar,
+                    "hint": "材料片段每小节需含 3..=5 个音类的和弦 voicing；也可换 materialSource: \"theory\" 由理论生成和声再配旋律",
+                }),
+            ));
+        };
+        spans.push(ChordSpan {
+            start_tick: bar_start,
+            duration_ticks: ticks_per_bar,
+            degree: None,
+            chord,
+        });
+    }
+    Ok(spans)
+}
+
 /// `'theory'` 路径的鼓组内容（`ADR-0017` D1）。
 ///
 /// 每个 [`DrumHit`](yeban_theory::drum::DrumHit) 变成一条 GM 打击乐音符：
@@ -2303,14 +2614,44 @@ pub fn plan_with_options(
     options: PlanOptions<'_>,
 ) -> Result<SectionPlan, BuildFault> {
     let material_source = MaterialSource::parse(options.material_source)?;
-    // `ADR-0017` D2：鼓组/旋律是理论生成能力的 opt-in，工程材料路径没有这两样。
+    // ⭐ 审计 `N1`：鼓轨的生成**不读和声材料**（流派 `GenreRule` 自带网格/音色/
+    // 重音）⇒ 两条材料源都放行；旋律需要和弦跨度 —— `'project'` 源上改由
+    // [`material_spans`] 逐小节从和声材料的 voicing 判出，但**音阶没有可判出的
+    // 来源** ⇒ `includeMelody` 在 `'project'` 上要求 `scale` 显式指名，
+    // 否则响亮拒（"给了必须可消费"，缺一个判不出的槽位 ⇒ 整条调用作废）。
     let include_drums = options.include_drums == Some(true);
     let include_melody = options.include_melody == Some(true);
-    if (include_drums || include_melody) && material_source != MaterialSource::Theory {
+    if include_melody && material_source == MaterialSource::Project && scale.is_none() {
         return Err(BuildFault::domain_with_data(
             BuildCode::InvalidParameterRange,
-            "旋律与鼓组理论生成仅在 materialSource: 'theory' 时支持",
-            json!({ "hint": "请指定 materialSource: \"theory\"" }),
+            "`includeMelody` 在 materialSource: 'project' 时需要显式 `scale`",
+            json!({ "hint": "请同时指定 scale（如 \"C major\"）：音阶无法从工程材料判出；includeDrums 不受此限" }),
+        ));
+    }
+    // ⭐ 审计 `N3`：和声种子只被 theory 路径消费（`progression` 同口径），
+    // 且 `progression` 与 `scale` **都**显式指名时没有可消费的槽位 ⇒
+    // 两种情况都响亮拒绝（"给了必须被消费"）。
+    if options.harmony_seed.is_some() && material_source != MaterialSource::Theory {
+        return Err(BuildFault::domain_with_data(
+            BuildCode::InvalidParameterRange,
+            "`harmonySeed` 仅在 materialSource: 'theory' 时支持",
+            json!({ "hint": "请指定 materialSource: \"theory\"（种子换的是已登记的走向/音阶条目）" }),
+        ));
+    }
+    if options.harmony_seed.is_some() && options.progression.is_some() && scale.is_some() {
+        return Err(BuildFault::domain_with_data(
+            BuildCode::InvalidParameterRange,
+            "`harmonySeed` 没有可消费的槽位 (progression 与 scale 都已显式指名)",
+            json!({ "hint": "去掉 harmonySeed, 或留一个槽位（progression / scale 二缺其一）让种子抽取" }),
+        ));
+    }
+    // ⭐ 审计 `N2`：指名材料是 `'project'` 路径的参数 —— theory 路径不读片段池，
+    // 给了就是静默忽略 ⇒ 响亮拒绝（"给了必须被消费"，与 `progression` 同口径）。
+    if options.material_clip_ids.is_some() && material_source != MaterialSource::Project {
+        return Err(BuildFault::domain_with_data(
+            BuildCode::InvalidParameterRange,
+            "`materialClipIds` 仅在 materialSource: 'project'（或缺省）时支持",
+            json!({ "hint": "请去掉 materialSource: \"theory\"，或去掉 materialClipIds（指名材料只作用于工程片段池装配）" }),
         ));
     }
     // ⭐ `ADR-0028`：`drumDensity` 只有鼓轨在场时才有意义 —— 显式给了它却
@@ -2330,13 +2671,6 @@ pub fn plan_with_options(
     // ⚠ 形状界（`500..=1000`）判在这里，"这个比例在该拍号/格位下产不产得出鼓点"⛔ 预判
     // —— 那一条由 theory 的 `ProgressionTooDense` / `SwingOutOfRange` 决定并原样转发（D4）。
     let swing = swing_permille_bound(options.swing_permille)?;
-    if options.swing_permille.is_some() && material_source != MaterialSource::Theory {
-        return Err(BuildFault::domain_with_data(
-            BuildCode::InvalidParameterRange,
-            "`swingPermille` 仅在 materialSource: 'theory' 时支持",
-            json!({ "hint": "请指定 materialSource: \"theory\"（摇摆比例只作用于生成的鼓轨网格）" }),
-        ));
-    }
     if options.swing_permille.is_some() && !include_drums {
         return Err(BuildFault::domain_with_data(
             BuildCode::InvalidParameterRange,
@@ -2347,13 +2681,6 @@ pub fn plan_with_options(
     // ⭐ `ADR-0043` D3：`drumBackbeat` 的消费点与 `swingPermille` **同一个**（[`theory_drum_pattern`]）
     // ⇒ 耦合口径取同一支（要 theory 材料源 **且** 鼓轨在场）。⚠ 形状界⛔ 判在这里 ——
     // 它的上界是**该拍号的拍数**，只有拿到 `rule.meter_value()` 才判得（D2，落在消费点里）。
-    if options.drum_backbeat.is_some() && material_source != MaterialSource::Theory {
-        return Err(BuildFault::domain_with_data(
-            BuildCode::InvalidParameterRange,
-            "`drumBackbeat` 仅在 materialSource: 'theory' 时支持",
-            json!({ "hint": "请指定 materialSource: \"theory\"（军鼓落点只作用于生成的鼓轨网格）" }),
-        ));
-    }
     if options.drum_backbeat.is_some() && !include_drums {
         return Err(BuildFault::domain_with_data(
             BuildCode::InvalidParameterRange,
@@ -2365,13 +2692,6 @@ pub fn plan_with_options(
     // ⇒ 判在这里；消费点与 `swingPermille`/`drumBackbeat` **同一个**（[`theory_drum_pattern`]）
     // ⇒ 耦合口径取同一支（要 theory 材料源 **且** 鼓轨在场）。
     let drum_style = drum_style_choice(options.drum_style)?;
-    if options.drum_style.is_some() && material_source != MaterialSource::Theory {
-        return Err(BuildFault::domain_with_data(
-            BuildCode::InvalidParameterRange,
-            "`drumStyle` 仅在 materialSource: 'theory' 时支持",
-            json!({ "hint": "请指定 materialSource: \"theory\"（底鼓口径只作用于生成的鼓轨网格）" }),
-        ));
-    }
     if options.drum_style.is_some() && !include_drums {
         return Err(BuildFault::domain_with_data(
             BuildCode::InvalidParameterRange,
@@ -2383,13 +2703,6 @@ pub fn plan_with_options(
     // ⇒ 判在消费点（[`theory_drum_pattern`]，拿到 `rule.meter_value()` 之后）；
     // 消费点与 `swingPermille`/`drumBackbeat`/`drumStyle` **同一个** ⇒ 耦合口径取同一支
     // （要 theory 材料源 **且** 鼓轨在场）。
-    if options.beat_grouping.is_some() && material_source != MaterialSource::Theory {
-        return Err(BuildFault::domain_with_data(
-            BuildCode::InvalidParameterRange,
-            "`beatGrouping` 仅在 materialSource: 'theory' 时支持",
-            json!({ "hint": "请指定 materialSource: \"theory\"（拍内分组只作用于生成的鼓轨网格）" }),
-        ));
-    }
     if options.beat_grouping.is_some() && !include_drums {
         return Err(BuildFault::domain_with_data(
             BuildCode::InvalidParameterRange,
@@ -2457,13 +2770,6 @@ pub fn plan_with_options(
     // `voiceSubdivision` 同口径，差别只在**本参数同时管鼓与旋律**，所以
     // "两条消费路径任一在场"即可（⛔ 沿用 `drumDensity` 那条更严的"必须有鼓"——
     // 那会拒掉合法的"只给旋律加密"）。
-    if options.onsets_per_bar.is_some() && material_source != MaterialSource::Theory {
-        return Err(BuildFault::domain_with_data(
-            BuildCode::InvalidParameterRange,
-            "`onsetsPerBar` 仅在 materialSource: 'theory' 时支持",
-            json!({ "hint": "请指定 materialSource: \"theory\"（每小节网格只作用于生成的鼓组与旋律）" }),
-        ));
-    }
     if options.onsets_per_bar.is_some() && !include_drums && !include_melody {
         return Err(BuildFault::domain_with_data(
             BuildCode::InvalidParameterRange,
@@ -2475,13 +2781,17 @@ pub fn plan_with_options(
     // （外部素材的 `velocity` 由调用方给出，本层不覆盖）。与 `voiceSubdivision` /
     // `onsetsPerBar` 同口径，但⛔ **不要求** `includeDrums` / `includeMelody` 在场：
     // 和声声部**恒**消费下档，所以"只有和声"的调用也真的在消费这两个参数。
+    // ⭐ 审计 `N1`：阶梯在 `'project'` 源上**仍**被鼓轨与旋律消费（外部素材自身
+    // 的力度依旧不被覆盖）⇒ 拒绝条件收窄为"既不走 theory 也无鼓/旋律生成"。
     if (options.velocity_min.is_some() || options.velocity_max.is_some())
         && material_source != MaterialSource::Theory
+        && !include_drums
+        && !include_melody
     {
         return Err(BuildFault::domain_with_data(
             BuildCode::InvalidParameterRange,
-            "`velocityMin` / `velocityMax` 仅在 materialSource: 'theory' 时支持",
-            json!({ "hint": "请指定 materialSource: \"theory\"（力度阶梯只作用于生成的音符，外部素材的力度由调用方给出）" }),
+            "`velocityMin` / `velocityMax` 仅在 materialSource: 'theory' 或鼓/旋律生成在场时支持",
+            json!({ "hint": "请指定 materialSource: \"theory\"，或同时指定 includeDrums / includeMelody: true（力度阶梯只作用于生成的音符，外部素材的力度由调用方给出）" }),
         ));
     }
     // ⭐ `ADR-0037` D1/D3：阶梯在这里定下（`0..=127` 的界与 `min <= max`），
@@ -2498,13 +2808,6 @@ pub fn plan_with_options(
         || options.melody_upper.is_some()
         || options.melody_max_leap.is_some()
         || options.melody_seed.is_some();
-    if register_given && material_source != MaterialSource::Theory {
-        return Err(BuildFault::domain_with_data(
-            BuildCode::InvalidParameterRange,
-            "`melodyLower` / `melodyUpper` / `melodyMaxLeap` / `melodySeed` 仅在 materialSource: 'theory' 时支持",
-            json!({ "hint": "请指定 materialSource: \"theory\"（音高窗口、跳进上界与取音种子只作用于生成的旋律，外部素材的音高由调用方给出）" }),
-        ));
-    }
     if register_given && !include_melody {
         return Err(BuildFault::domain_with_data(
             BuildCode::InvalidParameterRange,
@@ -2572,6 +2875,7 @@ pub fn plan_with_options(
             style_preset,
             scale.as_ref(),
             options.progression,
+            options.harmony_seed,
         )?),
     };
 
@@ -2623,7 +2927,12 @@ pub fn plan_with_options(
     };
 
     // 3. 每个声部的身份（两条材料路径共用；一次算清，后面几个相位都用它）。
-    let part_plans = part_plans(section_id, section_name, &parts, bus);
+    //    ⭐ 审计 `N9`：`partTracks` 在场时先逐项校验（长度/存在性/MIDI 轨/不重名），
+    //    再让 `part_plans` 直接采用既有轨身份 —— 两条路径的其余相位逐字节不变。
+    if let Some(ids) = options.part_tracks {
+        resolve_part_tracks(project, &parts, ids)?;
+    }
+    let part_plans = part_plans(section_id, section_name, &parts, bus, options.part_tracks);
 
     // 3b. 材料内容：`materialSource` 决定来源，其余装配完全相同。
     //     鼓组/旋律（`ADR-0017`）只追加在和声声部之后，顺序与 `parts` 一致。
@@ -2682,7 +2991,83 @@ pub fn plan_with_options(
             }
             contents
         }
-        None => project_contents(project, scale.as_ref(), theory_scale.as_ref(), &part_plans)?,
+        None => {
+            // ⭐ 审计 `N1`：材料只装进**和声声部**（`part_plans` 的尾部是生成的
+            // 鼓/旋律声部，它们的内容在下面另行追加）⇒ 只切前 `harmony_parts.len()`
+            // 个 part plan；`materialClipIds` 的"每声部一条"口径也随之收窄到和声部。
+            let mut contents = project_contents(
+                project,
+                scale.as_ref(),
+                theory_scale.as_ref(),
+                &part_plans[..harmony_parts.len()],
+                options.material_clip_ids,
+            )?;
+            // ⭐ 审计 `N1`：鼓轨不读和声材料 ⇒ `'project'` 源上同样生成；
+            // 旋律需要的和弦跨度从刚装配的和声材料逐小节判出（`material_spans`）。
+            // 追加顺序与 `parts` 一致（鼓先旋律后，与 theory 路径同构）。
+            if include_drums || include_melody {
+                let rule = genre_rule(style_preset)?;
+                let onsets_per_bar = grid_onsets_per_bar(rule, onsets_per_bar);
+                let spans = if include_melody {
+                    Some(material_spans(
+                        &contents[..harmony_parts.len()],
+                        ticks_per_bar,
+                        bars,
+                    )?)
+                } else {
+                    None
+                };
+                if include_drums {
+                    contents.push(drum_contents(
+                        rule,
+                        bars,
+                        style_preset,
+                        section_id,
+                        DrumRulers {
+                            density: drum_density,
+                            onsets_per_bar,
+                            ladder,
+                            swing,
+                            backbeat: options.drum_backbeat,
+                            style: drum_style,
+                            grouping: options.beat_grouping,
+                        },
+                    )?);
+                }
+                if include_melody {
+                    // `scale` 缺省 ⇒ 前门已拒；`theory_scale` 在此处必然在场。
+                    let theory = TheoryInput {
+                        scale: theory_scale.unwrap_or_else(|| {
+                            unreachable!("N1: includeMelody on project 已在前门要求显式 `scale`")
+                        }),
+                        scale_label: scale
+                            .as_ref()
+                            .map_or_else(|| "-".to_owned(), Scale::canonical),
+                        // 走向列进的是材料判出的跨度，没有文本来源 ⇒
+                        // 用固定标记进 `scale_key`，与 theory 文本天然错开。
+                        progression_text: "material".to_owned(),
+                        rule,
+                    };
+                    contents.push(melody_contents(
+                        &theory,
+                        spans.as_deref().unwrap_or(&[]),
+                        bars,
+                        style_preset,
+                        section_id,
+                        onsets_per_bar,
+                        MelodyRulers {
+                            ladder,
+                            register,
+                            leap,
+                            seed: options
+                                .melody_seed
+                                .unwrap_or_else(|| section_seed(section_id)),
+                        },
+                    )?);
+                }
+            }
+            contents
+        }
     };
 
     // 4. 组批（顺序 = 施加顺序；子操作的前置条件按顺序被模型层检查）。
@@ -2704,8 +3089,11 @@ pub fn plan_with_options(
             },
         });
     }
-    // 4b. 声部音轨。
+    // 4b. 声部音轨（⭐ `N9`：`track_reused` 的声部不新建 —— 轨已存在）。
     for part in &part_plans {
+        if part.track_reused {
+            continue;
+        }
         ops.push(Op::AddTrack {
             track: TrackV3 {
                 id: part.track_id,
@@ -2734,8 +3122,11 @@ pub fn plan_with_options(
     }
     // 4d. 路由节点：声部 + **必要时的**主总线（已在节点表里就不重复加 ——
     //     `AddRoutingNode` 的前置条件拒绝重复身份）。
-    let mut added_routing_nodes: Vec<EntityId> =
-        part_plans.iter().map(|part| part.track_id).collect();
+    let mut added_routing_nodes: Vec<EntityId> = part_plans
+        .iter()
+        .map(|part| part.track_id)
+        .filter(|id| !project.routing_graph.nodes.contains(id))
+        .collect();
     if !project.routing_graph.nodes.contains(&bus) {
         added_routing_nodes.push(bus);
     }
@@ -2743,7 +3134,17 @@ pub fn plan_with_options(
         ops.push(Op::AddRoutingNode { node: *node });
     }
     // 4e. 声部连接：每个声部 → 主总线（`TrackToBus`，与模型规范样本同口径）。
+    //     ⭐ `N9`：复用轨若已经连着该总线就不重复加边（节点/边的缺席补齐
+    //     而非无条件新建 —— `ConnectRouting` 对重复边身份会响亮失败）。
     for part in &part_plans {
+        let already_routed = project.routing_graph.edges.values().any(|edge| {
+            edge.source_node == part.track_id
+                && edge.destination_node == bus
+                && edge.kind == RoutingKind::TrackToBus
+        });
+        if already_routed {
+            continue;
+        }
         ops.push(Op::ConnectRouting {
             edge: RoutingEdge {
                 id: part.edge_id,

@@ -430,24 +430,9 @@ impl Progression {
     /// 任一级数不合法，或结果为空时返回对应错误。
     pub fn parse(text: &str) -> Result<Self, TheoryError> {
         let mut degrees = Vec::new();
-        let mut token = String::new();
-        let flush = |token: &mut String, degrees: &mut Vec<Degree>| -> Result<(), TheoryError> {
-            let trimmed = token.trim();
-            if !trimmed.is_empty() {
-                degrees.push(Degree::parse(trimmed)?);
-            }
-            token.clear();
-            Ok(())
-        };
-        for ch in text.chars() {
-            match ch {
-                '-' | ' ' | '\t' | ',' | '|' | '\u{00b7}' | '\u{2013}' => {
-                    flush(&mut token, &mut degrees)?;
-                }
-                _ => token.push(ch),
-            }
+        for token in progression_tokens(text) {
+            degrees.push(Degree::parse(&token)?);
         }
-        flush(&mut token, &mut degrees)?;
         Self::new(degrees, Meter::COMMON, 4)
     }
 
@@ -552,7 +537,7 @@ impl Progression {
                 spans.push(ChordSpan {
                     start_tick: current_tick,
                     duration_ticks: ticks_per_bar,
-                    degree,
+                    degree: Some(degree),
                     chord: degree.to_chord(key),
                 });
                 current_tick += ticks_per_bar;
@@ -570,7 +555,7 @@ impl Progression {
                 spans.push(ChordSpan {
                     start_tick: current_tick,
                     duration_ticks: duration,
-                    degree: *degree,
+                    degree: Some(*degree),
                     chord: degree.to_chord(key),
                 });
                 current_tick += duration;
@@ -626,8 +611,9 @@ pub struct ChordSpan {
     pub start_tick: u64,
     /// 持续 tick 数（恒为正）。
     pub duration_ticks: u64,
-    /// 原始级数。
-    pub degree: Degree,
+    /// 原始级数；由**绝对和弦符号**展开的区段没有级数来源，为 `None`（见
+    /// [`expand_chord_symbols`]）。
+    pub degree: Option<Degree>,
     /// 在该调上求出的具体和弦。
     pub chord: Chord,
 }
@@ -653,6 +639,93 @@ pub fn expand_progression(
     Progression::parse(degree_sequence)?
         .with_bars(bars)?
         .expand(key)
+}
+
+/// 走向文本的分词规则（[`Progression::parse`] 与 [`expand_chord_symbols`] 共用
+/// 一份，⛔ 两处各写一份分隔符表）。
+///
+/// 分隔符：`-`、空格、`\t`、`,`、`|`、`·`（U+00B7）、`–`（U+2013）；连续分隔符
+/// 折叠，首尾空白忽略；返回**保序**的非空词。
+fn progression_tokens(text: &str) -> Vec<String> {
+    text.split(['-', ' ', '\t', ',', '|', '\u{00b7}', '\u{2013}'])
+        .map(str::trim)
+        .filter(|token| !token.is_empty())
+        .map(str::to_owned)
+        .collect()
+}
+
+/// 把**绝对和弦符号**走向（`"Dm7-G7-Cmaj7"`、`"F#m7b5 B7 Em"` 一类文本）展开成
+/// 整数 tick 的 [`ChordSpan`]。
+///
+/// 与 [`Progression::parse`] 同一份分词规则（[`progression_tokens`]），每个词交给
+/// [`Chord::from_symbol`]（根音 = 字母音名 + 变音记号，后缀 = [`crate::chord::ChordKind`]
+/// 的后缀表，斜杠低音照单全收）。
+///
+/// 时值分配与 [`Progression::expand`] 逐条同规则：和弦数 ≤ 小节数时每小节一个、
+/// 循环取用；否则按四分音符拍均分，再退 [`MIN_DURATION_TICKS`] 网格；放不下时报
+/// [`TheoryError::ProgressionTooDense`]。符号走向**不依赖调式**（每个符号自带根音与
+/// 性质）⇒ 本函数不需要 `key`，区段的 `degree` 一律 `None`（没有"原始级数"可填，
+/// ⛔ 不拿调内最近级数冒充）。
+///
+/// # Errors
+///
+/// 任一词不是合法和弦符号时原样透出 [`Chord::from_symbol`] 的错误；结果为空时
+/// [`TheoryError::EmptyProgression`]；`bars == 0` 或拍号非法时
+/// [`TheoryError::ZeroBars`]；过密时 [`TheoryError::ProgressionTooDense`]。
+pub fn expand_chord_symbols(
+    text: &str,
+    meter: Meter,
+    bars: u32,
+) -> Result<Vec<ChordSpan>, TheoryError> {
+    let tokens = progression_tokens(text);
+    if tokens.is_empty() {
+        return Err(TheoryError::EmptyProgression);
+    }
+    let chords = tokens
+        .iter()
+        .map(|token| Chord::from_symbol(token))
+        .collect::<Result<Vec<_>, _>>()?;
+    // 与 `Progression::expand` 同一个前置校验：`bars`/`meter` 不合法时先拒。
+    Meter::new(meter.numerator, meter.denominator)?;
+    if bars == 0 {
+        return Err(TheoryError::ZeroBars);
+    }
+    let ticks_per_bar = meter.ticks_per_bar();
+    let total = u64::from(bars) * ticks_per_bar;
+    let count = chords.len();
+    let mut spans = Vec::with_capacity(usize::try_from(bars).unwrap_or(count).max(count));
+    let mut current_tick = 0u64;
+    if u64::from(bars) >= count as u64 {
+        // 规则 1：每小节一个和弦，循环取用（与 `expand` 逐条相同）。
+        for bar in 0..u64::from(bars) {
+            spans.push(ChordSpan {
+                start_tick: current_tick,
+                duration_ticks: ticks_per_bar,
+                degree: None,
+                chord: chords[(bar as usize) % count],
+            });
+            current_tick += ticks_per_bar;
+        }
+    } else {
+        // 规则 2/3/4：按拍、退 16 分、放不下报错（与 `expand` 逐条相同）。
+        let durations = distribute(total, count, PPQ)
+            .or_else(|| distribute(total, count, MIN_DURATION_TICKS))
+            .ok_or(TheoryError::ProgressionTooDense {
+                degrees: count,
+                slots: (total / MIN_DURATION_TICKS) as usize,
+            })?;
+        for (index, chord) in chords.iter().enumerate() {
+            spans.push(ChordSpan {
+                start_tick: current_tick,
+                duration_ticks: durations[index],
+                degree: None,
+                chord: *chord,
+            });
+            current_tick += durations[index];
+        }
+    }
+    debug_assert_eq!(current_tick, total);
+    Ok(spans)
 }
 
 #[cfg(test)]
@@ -1119,5 +1192,52 @@ mod tests {
         assert_eq!(Degree::parse("bVII").unwrap().to_string(), "bVII");
         assert_eq!(Degree::parse("V7").unwrap().to_string(), "V7");
         assert_eq!(Degree::parse("I+").unwrap().to_string(), "I+");
+    }
+
+    /// 和弦符号走向：`bars >= 和弦数` 时每小节一个、循环取用，时值分配与
+    /// [`Progression::expand`] 规则 1 逐条相同，`degree` 一律 `None`。
+    #[test]
+    fn expand_chord_symbols_cycles_one_chord_per_bar() {
+        let spans = expand_chord_symbols("Dm7-G7-Cmaj7", Meter::COMMON, 4).unwrap();
+        assert_eq!(spans.len(), 4, "4 小节 ≥ 3 个和弦 ⇒ 每小节一个、循环");
+        for (index, span) in spans.iter().enumerate() {
+            assert_eq!(span.start_tick, index as u64 * 3840);
+            assert_eq!(span.duration_ticks, 3840);
+            assert_eq!(span.degree, None, "符号来源的区段没有原始级数");
+        }
+        let expected = [
+            Chord::from_symbol("Dm7").unwrap(),
+            Chord::from_symbol("G7").unwrap(),
+            Chord::from_symbol("Cmaj7").unwrap(),
+            Chord::from_symbol("Dm7").unwrap(),
+        ];
+        for (span, chord) in spans.iter().zip(expected) {
+            assert_eq!(span.chord, chord);
+        }
+    }
+
+    /// 和弦符号走向：分词规则与罗马数字同一套（空格/逗号/竖线/中点混用），
+    /// 时值分配规则 2/3 也逐条相同（和弦数 > 小节数时按拍/16 分均分）。
+    #[test]
+    fn expand_chord_symbols_shares_the_tokenizer_and_dense_layout() {
+        let mixed = expand_chord_symbols("F G, Am|Bb·C", Meter::COMMON, 2).unwrap();
+        assert_eq!(mixed.len(), 5, "5 个符号摊在 2 小节里 ⇒ 规则 2 均分");
+        let total: u64 = mixed.iter().map(|span| span.duration_ticks).sum();
+        assert_eq!(total, 2 * 3840, "总时值守恒 = bars * ticks_per_bar");
+        for window in mixed.windows(2) {
+            assert_eq!(window[1].start_tick, window[0].end_tick(), "无缝无叠");
+        }
+        assert_eq!(
+            expand_chord_symbols("", Meter::COMMON, 4),
+            Err(TheoryError::EmptyProgression)
+        );
+        assert_eq!(
+            expand_chord_symbols("Dm7-H7", Meter::COMMON, 4),
+            Err(TheoryError::ChordRootUnknown)
+        );
+        assert_eq!(
+            expand_chord_symbols("C", Meter::COMMON, 0),
+            Err(TheoryError::ZeroBars)
+        );
     }
 }

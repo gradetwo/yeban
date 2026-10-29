@@ -76,7 +76,7 @@ AI Agent 严禁执行以下操作，违者将被自动化 CI 与代码审查机�
 
 ### 4.2 服务与 UI
 
-- `MCP-TOOL-001..010`：**文档化的**十个 `yeban_*` 工具。契约里另有 **15** 个扩展工具（`yeban_undo` / `yeban_redo` / `yeban_edit_automation` / `yeban_query_engine_state` / `yeban_import_audio` / `yeban_export_diagnostics` / `yeban_export_midi` / `yeban_import_midi` / `yeban_load_sfz` / `yeban_render_sfz_wav` / `yeban_record_wav` / `yeban_midi_input_probe` / `yeban_list_proposals` / `yeban_launch_scene` / `yeban_export_stems`），故 `schemas/mcp-tools.schema.json`（唯一权威定义）现共登记 **25** 个；`crates/yeban-mcp/src/tools.rs` 的 `TOOL_COUNT` 是这三者的机械读数（现为 `DOCUMENTED_TOOL_COUNT 10` + `EXTENSION_TOOL_COUNT 15` = `TOOL_COUNT 25`）
+- `MCP-TOOL-001..010`：**文档化的**十个 `yeban_*` 工具。契约里另有 **16** 个扩展工具（`yeban_undo` / `yeban_redo` / `yeban_edit_automation` / `yeban_query_engine_state` / `yeban_import_audio` / `yeban_export_diagnostics` / `yeban_export_midi` / `yeban_import_midi` / `yeban_load_sfz` / `yeban_render_sfz_wav` / `yeban_record_wav` / `yeban_midi_input_probe` / `yeban_list_proposals` / `yeban_launch_scene` / `yeban_export_stems` / `yeban_list_instruments`），故 `schemas/mcp-tools.schema.json`（唯一权威定义）现共登记 **26** 个；`crates/yeban-mcp/src/tools.rs` 的 `TOOL_COUNT` 是这三者的机械读数（现为 `DOCUMENTED_TOOL_COUNT 10` + `EXTENSION_TOOL_COUNT 16` = `TOOL_COUNT 26`）
   ⚠ **本节数字曾两度陈旧**：原文写"另有 7 个扩展工具 / 现共登记 17 个"（**2026-10-11 由 `mod-mcp` 线实测并上报改正**为 14/24），`ADR-0030` 落地 `yeban_export_stems` 后又升到 15/25（**2026-10-27 现读 `tools.rs:99/102/109` 与 schema `definitions.ToolCall.properties.name` 的 enum 长度**核对）。教训：**工具数这类数字必须从 `tools.rs` 与 schema 的 enum 现读，⛔ 不靠文档里的手抄值** —— 同一句警告在两周内被证明两次。
 - `MCP-DUAL-001`：双 MCP 自测闭环
 - `UI-GRID-001..004`：Slint 视口、响应式断点与折叠、局部脏矩形、120 FPS

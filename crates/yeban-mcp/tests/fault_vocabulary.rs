@@ -69,7 +69,7 @@ use yeban_mcp::undo_session::read_rust_sources;
 /// （2026-10-28 起, 见 [`PROPAGATED_REASON_SITES`]）。⛔ 真看不见的运行时站点不进这张表，
 /// 由 [`EXEMPT_DYNAMIC_REASON_SITES`] 逐条登记。
 /// 这是黄金表：任何改名 / 新增 / 删除都必须**故意**改这一行。
-pub const GOLDEN_REASONS: [&str; 203] = [
+pub const GOLDEN_REASONS: [&str; 212] = [
     "assetChannelLayout",
     "assetDecodeFailed",
     "assetHashMismatch",
@@ -108,6 +108,7 @@ pub const GOLDEN_REASONS: [&str; 203] = [
     "placementTrackNotFound",
     "clipPlacementNotFound",
     "domainMustBeObjectOrNull",
+    "duplicateClipPlacementPairRequired",
     "duplicateLaneTarget",
     "duplicateNoteId",
     "duplicateSceneTarget",
@@ -173,6 +174,7 @@ pub const GOLDEN_REASONS: [&str; 203] = [
     "pointAddressRequired",
     "projectAlreadyExists",
     "proposalNotFound",
+    "quantizeGridMustBeNonZero",
     "recordDrainFailed",
     "removeClipIsNotPlacement",
     "removeClipTakesNoOtherOps",
@@ -258,7 +260,12 @@ pub const GOLDEN_REASONS: [&str; 203] = [
     // **调用点实参**传播出来 ⇒ 进词表。25 个 `reject_unknown_keys` 的 `unknown*Field`
     // ＋ 8 个 `read_non_empty_string` 的空串理由 ＋ 8 个同参数的非字符串理由
     // （`…MustBeNonEmptyStringMustBeString`：入参本身已带后缀, 拼接又加一次 —— 真实输出, 如实登记）。
+    "unknownDuplicateClipField",
+    "unknownHumanizeClipField",
+    "unknownInvertClipField",
     "unknownKeySignatureField",
+    "unknownQuantizeClipField",
+    "unknownRetrogradeClipField",
     "unknownSetAuthorField",
     "unknownSetClipGainField",
     "unknownSetClipNameField",
@@ -285,6 +292,7 @@ pub const GOLDEN_REASONS: [&str; 203] = [
     "unknownTransposeClipField",
     "assetLicenseMustBeNonEmptyString",
     "assetOriginalPathMustBeNonEmptyString",
+    "duplicateClipNameMustBeNonEmptyString",
     "sceneColorMustBeNonEmptyString",
     "sceneNameMustBeNonEmptyString",
     "sectionColorMustBeNonEmptyString",
@@ -293,6 +301,7 @@ pub const GOLDEN_REASONS: [&str; 203] = [
     "trackSamplerMustBeNonEmptyString",
     "assetLicenseMustBeNonEmptyStringMustBeString",
     "assetOriginalPathMustBeNonEmptyStringMustBeString",
+    "duplicateClipNameMustBeNonEmptyStringMustBeString",
     "sceneColorMustBeNonEmptyStringMustBeString",
     "sceneNameMustBeNonEmptyStringMustBeString",
     "sectionColorMustBeNonEmptyStringMustBeString",
@@ -897,11 +906,12 @@ struct PropagatedReasonSite {
     literals: &'static [&'static str],
 }
 
-/// ⭐ 实测 **3 个站点 / 2 个辅助函数 / 33 个调用点**（2026-10-28，`#340` 传播片开工现读）。
+/// ⭐ 实测 **3 个站点 / 2 个辅助函数 / 39 个调用点**（2026-10-29 审计 `N10/N11/N16b` 的 5 个整片段 op 各加 1 个 `reject_unknown_keys` 调用点＝25→30；`duplicateClip` 的 `name` 加 1 个 `read_non_empty_string` 调用点＝8→9）。
 ///
 /// 这三条以前登记在 `EXEMPT_DYNAMIC_REASON_SITES`（运行时盲区），现在值**可分类**：
-/// 词表因此从 162 涨到 **203**（＋25 个 `unknown*Field` ＋8 个 `*MustBeNonEmptyString`
-/// ＋8 个 `*MustBeNonEmptyStringMustBeString`）。
+/// 词表因此从 162 涨到 **210**（＋30 个 `unknown*Field` ＋9 个 `*MustBeNonEmptyString`
+/// ＋9 个 `*MustBeNonEmptyStringMustBeString`；另有 2 个**字面**站点
+/// `quantizeGridMustBeNonZero` / `duplicateClipPlacementPairRequired` 直接进词表 ⇒ 212）。
 ///
 /// ⚠ 那 8 个 `…MustBeString` 是**真实运行时输出**：`read_non_empty_string` 的入参本身
 /// 已经带 `MustBeNonEmptyString` 后缀，非字符串分支又在后面拼 `MustBeString` ⇒
@@ -914,9 +924,14 @@ const PROPAGATED_REASON_SITES: [PropagatedReasonSite; 3] = [
         occurrences: 1,
         helper: "reject_unknown_keys",
         suffix: "",
-        call_sites: 25,
+        call_sites: 30,
         literals: &[
+            "unknownDuplicateClipField",
+            "unknownHumanizeClipField",
+            "unknownInvertClipField",
             "unknownKeySignatureField",
+            "unknownQuantizeClipField",
+            "unknownRetrogradeClipField",
             "unknownSetAuthorField",
             "unknownSetClipGainField",
             "unknownSetClipNameField",
@@ -949,10 +964,11 @@ const PROPAGATED_REASON_SITES: [PropagatedReasonSite; 3] = [
         occurrences: 1,
         helper: "read_non_empty_string",
         suffix: "",
-        call_sites: 8,
+        call_sites: 9,
         literals: &[
             "assetLicenseMustBeNonEmptyString",
             "assetOriginalPathMustBeNonEmptyString",
+            "duplicateClipNameMustBeNonEmptyString",
             "sceneColorMustBeNonEmptyString",
             "sceneNameMustBeNonEmptyString",
             "sectionColorMustBeNonEmptyString",
@@ -967,10 +983,11 @@ const PROPAGATED_REASON_SITES: [PropagatedReasonSite; 3] = [
         occurrences: 1,
         helper: "read_non_empty_string",
         suffix: "MustBeString",
-        call_sites: 8,
+        call_sites: 9,
         literals: &[
             "assetLicenseMustBeNonEmptyStringMustBeString",
             "assetOriginalPathMustBeNonEmptyStringMustBeString",
+            "duplicateClipNameMustBeNonEmptyStringMustBeString",
             "sceneColorMustBeNonEmptyStringMustBeString",
             "sceneNameMustBeNonEmptyStringMustBeString",
             "sectionColorMustBeNonEmptyStringMustBeString",
@@ -1385,13 +1402,16 @@ const REASON_ARGUMENT_NAME_USES: [ReasonArgumentNameUse; 3] = [
 // ⭐ **调用点传播片**（2026-10-28）：⛔ 不改**出现数**（生产区一个字符没动），
 // 只将 3 处运行时站点**重新分类**成 `Propagated` ⇒ 恒等式换成
 // 223 = 字面 215 ＋ 可解析 `let` 2 ＋ 运行时 3 ＋ 传播 3（四条读数各由一条断言钉住）。
-const REASON_OCCURRENCES_TOTAL: usize = 226;
+// ⭐ 整片段 op 片（2026-10-29）：`quantizeClip`/`duplicateClip` 的 3 处新字面
+// `"reason"` 键站点（`quantizeGridMustBeNonZero` / `duplicateClipPlacementPairRequired`
+// / `clipAlreadyExists` 复用）⇒ 出现 226 → 229、键站点 223 → 226、字面站点 215 → 218。
+const REASON_OCCURRENCES_TOTAL: usize = 229;
 // ⭐ MCP-TOOL-003：键站点 208 → 216、字面站点 200 → 208 —— 新形态在
 // `domain/notes.rs` / `tools.rs` 里新增的 8 处字面 `"reason"` 站点
 // （tick 0、`bpmOutOfRange` 复用、`tempoPointNotFound`、`timeSignaturePointNotFound`
 // 与描述文本里的键形状；逐文件拆分以扫描器读数为准，此处不手数）。
-const REASON_KEY_SITES_TOTAL: usize = 223;
-const REASON_LITERAL_SITES_TOTAL: usize = 215;
+const REASON_KEY_SITES_TOTAL: usize = 226;
+const REASON_LITERAL_SITES_TOTAL: usize = 218;
 const REASON_RESOLVED_SITES_TOTAL: usize = 2;
 const REASON_DYNAMIC_SITES_TOTAL: usize = 3;
 const REASON_PROPAGATED_SITES_TOTAL: usize = 3;
@@ -1714,7 +1734,7 @@ fn every_reason_is_asserted_somewhere() {
 /// 每条 `reason` 在生产区**字面 `json!` 对象**里带的同级键（排序）。
 /// ⚠ 口径：只收字面 `json!` 里的键；运行时 `map.insert(...)` 加进去的键不在内。
 /// 空数组 = 该 reason 的 `data` 里**没有**同级键（或 Data 由别的构造方式给出）。
-pub const GOLDEN_REASON_PAYLOADS: [(&str, &[&str]); 203] = [
+pub const GOLDEN_REASON_PAYLOADS: [(&str, &[&str]); 212] = [
     (
         "assetChannelLayout",
         &[
@@ -1813,6 +1833,10 @@ pub const GOLDEN_REASON_PAYLOADS: [(&str, &[&str]); 203] = [
         &["hint", "placementId", "reason", "trackId"],
     ),
     ("domainMustBeObjectOrNull", &["field", "reason"]),
+    (
+        "duplicateClipPlacementPairRequired",
+        &["reason", "startTick", "trackId"],
+    ),
     ("duplicateLaneTarget", &["lane", "reason"]),
     ("duplicateNoteId", &["noteId", "reason"]),
     ("duplicateSceneTarget", &["hint", "reason", "sceneId"]),
@@ -1994,6 +2018,7 @@ pub const GOLDEN_REASON_PAYLOADS: [(&str, &[&str]); 203] = [
             "reason",
         ],
     ),
+    ("quantizeGridMustBeNonZero", &["field", "reason"]),
     ("recordDrainFailed", &["ioError", "reason"]),
     ("removeClipIsNotPlacement", &["hint", "reason"]),
     ("removeClipTakesNoOtherOps", &["hint", "opKinds", "reason"]),
@@ -2341,7 +2366,27 @@ pub const GOLDEN_REASON_PAYLOADS: [(&str, &[&str]); 203] = [
     // （`reject_unknown_keys` 的那 25 条带 `supportedFields` / `unsupportedFields`；
     // `read_non_empty_string` 的空串分支只有 `field`, 非字符串分支多一条 `received`）。
     (
+        "unknownDuplicateClipField",
+        &["reason", "supportedFields", "unsupportedFields"],
+    ),
+    (
+        "unknownHumanizeClipField",
+        &["reason", "supportedFields", "unsupportedFields"],
+    ),
+    (
+        "unknownInvertClipField",
+        &["reason", "supportedFields", "unsupportedFields"],
+    ),
+    (
         "unknownKeySignatureField",
+        &["reason", "supportedFields", "unsupportedFields"],
+    ),
+    (
+        "unknownQuantizeClipField",
+        &["reason", "supportedFields", "unsupportedFields"],
+    ),
+    (
+        "unknownRetrogradeClipField",
         &["reason", "supportedFields", "unsupportedFields"],
     ),
     (
@@ -2445,6 +2490,10 @@ pub const GOLDEN_REASON_PAYLOADS: [(&str, &[&str]); 203] = [
         "assetOriginalPathMustBeNonEmptyString",
         &["field", "reason"],
     ),
+    (
+        "duplicateClipNameMustBeNonEmptyString",
+        &["field", "reason"],
+    ),
     ("sceneColorMustBeNonEmptyString", &["field", "reason"]),
     ("sceneNameMustBeNonEmptyString", &["field", "reason"]),
     ("sectionColorMustBeNonEmptyString", &["field", "reason"]),
@@ -2457,6 +2506,10 @@ pub const GOLDEN_REASON_PAYLOADS: [(&str, &[&str]); 203] = [
     ),
     (
         "assetOriginalPathMustBeNonEmptyStringMustBeString",
+        &["field", "reason", "received"],
+    ),
+    (
+        "duplicateClipNameMustBeNonEmptyStringMustBeString",
         &["field", "reason", "received"],
     ),
     (
@@ -2832,13 +2885,20 @@ fn the_reason_payload_shape_is_the_published_table() {
 /// **逐字**抽出来跑（⛔ 不重写逻辑），先用**改前**的码在**改前**的 `src/` 上复现
 /// `2df60826…` / 166 / 750 证明探针忠实, 再用**改后**的码在**同一个** `src/` 上算出新值
 /// （`src/` 的生产区一个字节没动 ⇒ 两位差值只可能来自扫描器）。
+///
+/// ⭐ **整片段 op 片**（2026-10-29）重钉：`quantizeClip`/`duplicateClip` 等 5 个新
+/// op 引入 **9 个新 reason 词**（5 条 `unknown*ClipField` 经 `reject_unknown_keys`
+/// 传播、2 条 `duplicateClipNameMustBeNonEmptyString*[` `MustBeString]` 经
+/// `read_non_empty_string` 传播、2 条字面 `quantizeGridMustBeNonZero` /
+/// `duplicateClipPlacementPairRequired`）⇒ 207 → **216** 个 reason。
+/// 新摘要由本判据的 `left:` 报出值照抄（⛔ 不手算）。
 pub const FROZEN_REASON_SURFACE_SHA256: &str =
-    "4890ba25908a83444859edd023e7109b02eb5e33646f46a7b9633ae39443dd43";
+    "d0c76cd1935cb8406c8c18d32599f7e1a40f2d08451c9bd3dd9fa028c24899ba";
 
 /// 规范形式里的 reason 数 / 规范行数（与摘要一起构成"两端"读数）。
-pub const REASON_SURFACE_REASONS: usize = 207;
+pub const REASON_SURFACE_REASONS: usize = 216;
 /// 规范行数（每个 reason 一行 ＋ 每个键一行）。
-pub const REASON_SURFACE_LINES: usize = 906;
+pub const REASON_SURFACE_LINES: usize = 940;
 
 /// 单文件里的 `reason` 面：**保留出现顺序**的 `(reason, keys)`。
 ///

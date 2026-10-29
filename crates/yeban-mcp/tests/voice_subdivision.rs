@@ -42,6 +42,9 @@ fn theory(voice_subdivision: Option<u64>, include_parts: bool) -> Result<Section
             drum_backbeat: None,
             drum_style: None,
             melody_seed: None,
+            harmony_seed: None,
+            material_clip_ids: None,
+            part_tracks: None,
             beat_grouping: None,
         },
     )
@@ -247,6 +250,9 @@ fn voice_subdivision_bounds_and_coupling_are_loud() {
                 drum_backbeat: None,
                 drum_style: None,
                 melody_seed: None,
+                harmony_seed: None,
+                material_clip_ids: None,
+                part_tracks: None,
                 beat_grouping: None,
             },
         )

@@ -1066,6 +1066,12 @@ pub enum Plan {
         /// 已经组装好的清单（`proposals` / `openCount` / `totalCount` / `mergeTool` / `note`）。
         data: Value,
     },
+    /// `yeban_list_instruments`（**只读**，审计 `N13`）：会话 SFZ registry 的枚举。
+    /// `data` 在 `plan` 里组装好（`apply` 原样回传，一位都不改）。
+    ListInstruments {
+        /// 已经组装好的清单（`instruments` / `count` / `note`）。
+        data: Value,
+    },
     /// `yeban_import_audio` [ADR-0001 **D46** 第 3 类能力]
     ImportAudio {
         /// 只读规划的产物（片段条目 + 需要登记进 CAS 池的字节）。
@@ -1135,6 +1141,7 @@ impl Plan {
             Self::EngineState { .. } => "engine_state",
             Self::LaunchScene { .. } => "launch_scene",
             Self::ListProposals { .. } => "list_proposals",
+            Self::ListInstruments { .. } => "list_instruments",
             Self::ImportAudio { .. } => "import_audio",
             Self::ExportMidi { .. } => "export_midi",
             Self::ImportMidi(_) => "import_midi",
@@ -1177,6 +1184,8 @@ impl Plan {
             | Self::EngineState { .. }
             // 未合并提案清单也**只读**（不动工程、不动提案记录）。
             | Self::ListProposals { .. }
+            // 会话乐器清单同样只读（枚举会话 registry）。
+            | Self::ListInstruments { .. }
             // SMF 导出也是**只读**的（字节只回传，不落盘、不改工程）。
             | Self::ExportMidi { .. }
             // SFZ 装载只动**会话态** registry（不是工程文档）；SFZ 导出与录音只写盘。
@@ -1247,6 +1256,8 @@ impl Plan {
             | Self::EngineState { .. }
             // 未合并提案清单也**只读**（不动工程、不动提案记录）。
             | Self::ListProposals { .. }
+            // 会话乐器清单同样只读（枚举会话 registry）。
+            | Self::ListInstruments { .. }
             // SMF 导出也是**只读**的（字节只回传，不落盘、不改工程）。
             | Self::ExportMidi { .. }
             // SFZ 装载只动会话态 registry（不是工程文档）；SFZ 导出与录音只写盘。
@@ -1396,6 +1407,7 @@ impl Plan {
             | Self::RenderMaster { .. }
             | Self::EngineState { .. }
             | Self::ListProposals { .. }
+            | Self::ListInstruments { .. }
             | Self::ExportMidi { .. }
             | Self::LoadSfz { .. }
             | Self::RenderSfzWav { .. }
@@ -1708,7 +1720,7 @@ impl Plan {
             }
             // 未合并提案清单：预览 = 真做（只读工具没有任何差异可预览）。
             // 与 `EngineState` 同一做法：把 `data` 的键合并进预览。
-            Self::ListProposals { data } => {
+            Self::ListProposals { data } | Self::ListInstruments { data } => {
                 if let Value::Object(fields) = data.clone() {
                     for (key, value) in fields {
                         preview.insert(key, value);
@@ -1928,6 +1940,39 @@ fn arg_u64_list(call: &ToolCall, name: &str) -> Result<Option<Vec<u64>>, Fault> 
     }
 }
 
+/// 读 `EntityId` 数组实参（缺省 `None`；逐项必须是 26 字符 ULID 字符串）。
+///
+/// 这里只判**类型面**（是数组、逐项能解析成 `EntityId`）；语义面（存在性、
+/// 长度、是否可用材料）交给领域层 —— 与 `arg_u64_list` 同一条分工纪律。
+fn arg_id_list(call: &ToolCall, name: &str) -> Result<Option<Vec<EntityId>>, Fault> {
+    use std::str::FromStr as _;
+    match call.arguments.get(name) {
+        None => Ok(None),
+        Some(Value::Array(items)) => {
+            let mut ids = Vec::with_capacity(items.len());
+            for item in items {
+                let text = item.as_str().ok_or_else(|| {
+                    Fault::domain(
+                        ErrorCode::InvalidParameterRange,
+                        format!("`{name}` 的每一项都必须是 26 字符 ULID 字符串, 实际收到 {item}"),
+                    )
+                })?;
+                ids.push(EntityId::from_str(text).map_err(|error| {
+                    Fault::domain(
+                        ErrorCode::InvalidParameterRange,
+                        format!("`{name}` 的第 {} 项不是合法 ULID: {error}", ids.len()),
+                    )
+                })?);
+            }
+            Ok(Some(ids))
+        }
+        Some(value) => Err(Fault::domain(
+            ErrorCode::InvalidParameterRange,
+            format!("`{name}` 必须是 ULID 字符串数组, 实际收到 {value}"),
+        )),
+    }
+}
+
 /// 读 `EntityId` 实参。
 fn arg_id(call: &ToolCall, name: &str) -> Result<EntityId, Fault> {
     use std::str::FromStr as _;
@@ -2035,6 +2080,7 @@ pub fn plan(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
         "yeban_query_engine_state" => plan_query_engine_state(domain, call),
         "yeban_launch_scene" => plan_launch_scene(domain, call),
         "yeban_list_proposals" => plan_list_proposals(domain, call),
+        "yeban_list_instruments" => plan_list_instruments(domain, call),
         "yeban_import_audio" => plan_import_audio(domain, call),
         "yeban_export_diagnostics" => plan_export_diagnostics(domain, call),
         "yeban_export_midi" => plan_export_midi(domain, call),
@@ -2520,6 +2566,18 @@ fn plan_propose_section(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault>
     // （派生发生在领域层）。本键⛔ 有上界可写（`0..=u64::MAX` 是 `arg_u64` 的类型面）⇒
     // 契约里⛔ `maximum`、⛔ `default`（缺省是**每个段落不同的派生值**，不是一个固定数）。
     let melody_seed = arg_u64(call, "melodySeed")?;
+    // ⭐ 审计 `N2`：指名材料表 —— 这里只判类型面（数组 + 逐项 ULID）。长度必须
+    // 恰等于声部数、存在性与"是不是可用 MIDI 材料"都在领域层判（`project_contents`），
+    // 因为只有那里同时握着声部清单与片段池（⛔ 拆成两个写者）。
+    // ⭐ 审计 `N3`：和声编排种子 —— 不给 = 流派第 0 条走向 + 主音阶（逐字节不变）；
+    // 给了 = `progression_for`/`scale_for` 各抽一条登记项。耦合口径与 `progression`
+    // 同一支（theory 材料源），两个槽位都被指名时无槽可抽 ⇒ 领域层响亮拒。
+    let harmony_seed = arg_u64(call, "harmonySeed")?;
+    let material_clip_ids = arg_id_list(call, "materialClipIds")?;
+    // ⭐ 审计 `N9`：复用既有音轨表 —— 这里只判类型面（数组 + 逐项 ULID）。
+    // 长度必须恰等于声部数、存在性/`TrackKind::Midi`/不重名都在领域层判
+    // （`resolve_part_tracks`），因为只有那里同时握着声部清单与 `project.tracks`。
+    let part_tracks = arg_id_list(call, "partTracks")?;
     let section_plan = section::plan_with_options(
         project,
         section_name,
@@ -2546,6 +2604,9 @@ fn plan_propose_section(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault>
             drum_style,
             beat_grouping: beat_grouping.as_deref(),
             melody_seed,
+            harmony_seed,
+            material_clip_ids: material_clip_ids.as_deref(),
+            part_tracks: part_tracks.as_deref(),
         },
     )?;
     propose_draft(
@@ -3294,6 +3355,53 @@ fn plan_import_audio(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
     })
 }
 
+/// `yeban_list_instruments`（**只读**，审计 `N13`）：枚举会话 SFZ registry。
+///
+/// 装载进 registry 的乐器此前**没有任何枚举入口**（拿到 `instrumentId` 只能靠
+/// 记 `yeban_load_sfz` 的响应）⇒ 调用方一旦丢了 id 就得重载文件。这里照
+/// `yeban_list_proposals` 的同一形状回清单：**不要求活跃工程**（registry 是
+/// 会话态，与工程无关），空 registry 回 `instruments: []` ＋ `note`（⛔ 不报错）。
+fn plan_list_instruments(domain: &Domain, _call: &ToolCall) -> Result<Plan, Fault> {
+    let instruments: Vec<Value> = domain
+        .sfz_instrument_ids()
+        .into_iter()
+        .filter_map(|id| domain.sfz_instrument(id))
+        .map(|instrument| {
+            serde_json::json!({
+                "instrumentId": instrument.id,
+                "path": instrument.path.display().to_string(),
+                "regions": instrument.regions.len(),
+                "silentRegionCount": instrument.silent_region_count,
+                "sha256": instrument.digest,
+                "sampleSource": instrument.sample_source(),
+                "sampleFilesReadCount": instrument.sample_sources.len(),
+                "sampleFilesFailedCount": instrument.sample_failures.len(),
+                "sampleHz": instrument.sample_hz,
+                "sessionScoped": true,
+            })
+        })
+        .collect();
+    let note = if instruments.is_empty() {
+        "会话 registry 是空的; 用 `yeban_load_sfz` 装载一份 SFZ 乐器（内容寻址 ⇒ \
+         同一文本复用同一 instrumentId）。"
+            .to_owned()
+    } else {
+        format!(
+            "共 {} 个已装载的乐器; `instrumentId` 只在本会话有效 \
+             （打开/关闭工程或进程重启后 registry 为空）。",
+            instruments.len()
+        )
+    };
+    Ok(Plan::ListInstruments {
+        data: serde_json::json!({
+            "instruments": instruments,
+            "count": instruments.len(),
+            "loadTool": "yeban_load_sfz",
+            "note": note,
+        }),
+    })
+}
+
 /// `yeban_export_midi`（**只读**）：把活跃工程交给 `yeban-midi` 的**共享**映射层。
 ///
 /// 本函数只拿 `&Domain`（借用检查器保证 `dryRun` 改不了任何状态），
@@ -3736,6 +3844,7 @@ pub fn commit_model_of(plan: &Plan) -> &'static str {
         | Plan::EngineState { .. }
         | Plan::LaunchScene { .. }
         | Plan::ListProposals { .. }
+        | Plan::ListInstruments { .. }
         | Plan::ExportMidi { .. }
         | Plan::RenderSfzWav { .. }
         | Plan::ExportStems { .. }
@@ -3818,6 +3927,7 @@ fn apply_plan_model(domain: &mut Domain, plan: Plan) -> Result<ToolResponse, Fau
         }
         // 只读：清单在 `plan` 里就组装好了（`apply` 一位都不改）。
         Plan::ListProposals { data } => Ok(ToolResponse::success(data)),
+        Plan::ListInstruments { data } => Ok(ToolResponse::success(data)),
         Plan::ImportAudio { import } => import_audio::apply(domain, &import),
         Plan::Diagnostics { export } => diagnostics::apply(domain, &export),
         // 只读：字节在 `plan` 里就编好了，`apply` 原样回传（一位都不改、不落盘）。
@@ -5091,6 +5201,8 @@ mod tests {
                     "trackIds": [track.to_canonical_string()],
                 }),
             ),
+            // 审计 `N13`：会话乐器清单（只读枚举；空 registry 也是合法成功）。
+            ("yeban_list_instruments", serde_json::json!({})),
         ];
         for spec in &crate::tools::TOOLS {
             assert!(
