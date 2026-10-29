@@ -178,6 +178,10 @@ export component ConsoleTabs inherits Rectangle {
     callback mixer-pan-release(int);
     callback mixer-mute-toggle(int);
     callback mixer-solo-toggle(int);
+    // ⭐ 主控通道条的静音 / 独奏：与上面两个同款只上抛（宿主 `host::wire_mixer_edit`
+    // 按主总线身份提交，⛔ 界面不解析、不提交、不改任何工程值）。
+    callback mixer-master-mute-toggle();
+    callback mixer-master-solo-toggle();
     // ⭐ SFZ 采样器绑定的写入面（任务单 `#82`）：SET（设成 `Some(path)`）/ CLR（解绑 `None`）。
     // 与上面八个同款 —— 本组件只上抛，不解释、不改任何值，也没有第二份提交实现。
     callback mixer-sampler-set(int, string);
@@ -434,6 +438,12 @@ export component ConsoleTabs inherits Rectangle {
         }
         mixer-solo-toggle(index) => {
             root.mixer-solo-toggle(index);
+        }
+        mixer-master-mute-toggle() => {
+            root.mixer-master-mute-toggle();
+        }
+        mixer-master-solo-toggle() => {
+            root.mixer-master-solo-toggle();
         }
         // SFZ 采样器绑定（任务单 `#82`）：同样只上抛（宿主 `host::wire_mixer_sampler` 是唯一落点）。
         mixer-sampler-set(index, path) => {
