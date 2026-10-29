@@ -156,6 +156,30 @@ S3 的常驻判据 `crates/yeban-model/tests/field_write_reachability.rs` 现在
 **该判据会按设计变红**，实现片的第一个动作就是把对应字段从"零触点名单"移到"探针表"
 （探针表要求 ≥1 触点 ⇒ 移过去即是被机械化盯住的扩面，⛔ 悄悄放宽）。
 
+## ⭐ 补账（2026-10-30）：本票的"零写者"现在有两种口径
+
+S5 差分片（线 `line/s5-op-write-differential`，tip `0c450809`，判决 **pending**）在
+`crates/yeban-model/src/ops.rs` 的测试模块里对**每个 `Op` 变体**（现读 **55** 条，⛔ 手抄）
+各施加一次，比较施加前后的 `serde_json` 树并取**最小差异路径集**，判"值到底变了没"。
+⇒ 这是「逐字段实测」那套**词法零触点**断言之外**互相独立**的第二半；批任一条路线时两片会**同时**红。
+
+差分口径额外机械给出两件事（原来只有推断）：
+
+1. **顶层无写者字段全集＝8**（判据 `the_never_written_top_level_fields_match_frozen_dead_set`）：
+   `audio_config`／`rng_seed`／`metadata`（本票三张子票）＋ `id`／`schema_version`／
+   `min_reader_version`／`writer_version`／`master_bus_track_id`。
+   - 前四个是**结构上不可能有写面**：改 `id`＝换一份工程，三个版本字段由**写入器**产出而⛔
+     由领域操作改写（这里只陈述机制，⛔ 替人类裁什么）。
+   - ⭐ `master_bus_track_id` 是差分口径**新暴露**的一项，本票原来⛔ 列进待裁名单：
+     它有 **1** 处读触点（S3 探针表钉着）而 **0** 处写点 ⇒ "换主总线"这件事在 `Op` 面
+     不存在。⛔ 本票代人类裁定它该不该做；只登记为**要不要另开一张票**的问题。
+2. **每个变体的顶层写面表（55 行棘轮）**（判据
+   `op_write_differential_root_keys_match_frozen_table`）＋一条**检测器自证**
+   （`a_sole_change_of_each_registered_field_is_attributed_to_that_field`：人造写者逐字段只改一个，
+   差异必须**只**归到它，`folder_id` 走"键新增"、`solo_safe` 走"值改变"两条分支各测一次）。
+   ⇒ 实现片落地时要**同时**动三处：棘轮表、死集、`field_write_reachability.rs` 的零触点名单。
+   三处一起红＝设计意图；⛔ 只删其中一处来让它绿。
+
 ## 影响面
 
 - 代码：⛔ 本票 0 行（纯文档）。

@@ -2295,3 +2295,57 @@ Logic 导入器 `import_logic.rs:941` 的**写入**），而 `solo_safe` 有 **1
 ⛔ 由集成者假定。
 下一片⛔ 从"发明第五个待裁字段"里出；可做的两件是：①读回 S4 的 merge run `40965834655` 并拆树（闭合）；
 ②S3 语义差分片的**设计稿**。
+
+---
+
+## §0.8 ⭐ 最新交接（**2026-10-30 清晨·第三批**）—— 新会话先读这一节（⛔ §0.7 的判决表已过期）
+
+§0.7 里"可做的两件"**都做完了**：第 ② 件（S3 语义差分片）＝ **S5 差分片**已推送在飞；
+第 ① 件（读回 S4 的 merge run 并拆树）＝ ⭐ **本批闭合**（四件齐，`/tmp/yeban-s4` 的 **1.4G** 已回收）。
+
+**主干状态**：远端 main tip 仍是 `05bb588d`（⚠ 本批纯文档尚未推）。工作线 `line/s5-op-write-differential`
+tip `0c450809`（`1 file changed, 7 insertions(+), 1 deletion(-)`），其父 `f4ef38de` 是六条判据主体
+（`2 files changed, 533 insertions(+), 2 deletions(-)`）。
+
+**判决表（⭐ 取代 §0.7 那张的当下读数；2026-10-30 清晨现读）**：
+
+| 票 | run | 状态 | 下一动作 |
+| --- | --- | --- | --- |
+| S5 线 tip | `40969292516`（`0c450809`） | **in_progress**（`push`） | 判绿 ⇒ `bash scripts/dev/worktree.sh land s5-op-write-differential` → 推 main → 读 **merge run**（整线判决唯一合法来源）→ `rm s5-op-write-differential --purge` ＋ 回收其 `target`（**1.5G**） |
+| ⚠ S5 中间提交 | `40969008920`（`f4ef38de`） | **cancelled**（分支并发规则 `ci.yml:28-29`：同分支新推送取消旧运行） | ⛔ **记判决**（既非绿也非红，只是没跑）；tip run 覆盖同一棵树 |
+| S4 落地 | `40965834655`（main `36bfe268`） | ⭐ **success 已逐名读回＝真绿**：承判腿 `rust (yeban-model)` **2m36s** 真跑，`Running tests/` **14**／**467 passed**／**0** FAILED，六条 `folder_link_validation_gap` 判据**逐名各 1 `ok`**；`windows` **4,987**／`macos` **5,008**／`rust (yeban-app)` **1,958**／`rust (yeban-engine)` **687** 全部真跑；全 run `test result:` **999** 行／**17,240** passed | ✅ **S4 四件齐**；树已 `rm --purge`（归档 `line-archive/s4-folder-link-gap @ c3b0b4a0`），`/tmp/yeban-s4`（**1.4G**）**已回收** |
+| main 文档 tip | `40967241170`（`05bb588d`） | **success 但空绿**：`rust (workspace 全量)`／matrix／windows／macos **四条 skipped**，真跑只有 plan／lockfile／checks／deny | 只登记，⛔ 写成任何代码验证（纯文档批的正确形态） |
+| ⚠ 并行写者 | `40968504401`（`641a8724`）**failure** ／ `40968274971` **cancelled** ／ `40967904583`、`40969319851` **in_progress** | ⛔ 不归本会话：不代读、不代 land、不改他们的代码 | 他们自己 land 后由 merge run 覆盖 |
+
+**S5 这片到底是什么**（⛔ 与 S3 词法片混读会得出错误结论）：`crates/yeban-model/src/ops.rs` 的
+`#[cfg(test)] mod tests` 内新增**六条差分口径判据** —— 对每个 `Op` 变体做 `serde_json::to_value` 前后树比对，
+所以**不受**词法片的三种假阴性机理（链式换行／helper／局部绑定）影响；代价是只看一个夹具代表实例。
+⇒ 补 `Op` 时**两片会同时变红，必须一起改**，⛔ 删任一片（交叉引用已写进
+`tests/field_write_reachability.rs` 文件头）。读数：`55` 个变体全集（⛔ §0.7 提到的"34"是旧手抄值，已改正）、
+顶层死集 `8` 个、`FROZEN` 棘轮表 `55` 行、`Batch` → `[clip_pool, routing_graph]`、轨级写者全部收敛到 `tracks`。
+本机 `6 passed`／该 crate `251 passed`／clippy 干净（⚠ 本机读数只算参考，判决等 CI）。
+
+⭐ **本轮最贵的两条纪律（新会话请当规则读，细节在台账「2026-10-30（清晨·第三批）」）**：
+1. **空集型判据必须同时检查"顶层段或末端段"** —— 只比末端会漏掉整族"写子字段"形态
+   （`metadata.description` 的末端段是 `description`），实测注入人造写者后判据**全绿＝真假绿**；
+   改成 root-or-leaf 后立刻红并报 `metadata 出现了写者 ["SetTitle"]`。
+2. **夹具里 `Option` + `skip_serializing_if` 的字段必须显式给值** —— `folder_id` 默认 `None` 时整个键不出现，
+   "零写者"就由"键不在树里"**免费提供**。判据要写成**先证键在树里、再证空集**两步
+   （`fixture_document_for_differential()` ＋ `tree_has_key` 断言）。
+   衍生：同一个 `for` 循环里的多条 assert 会互相遮蔽（`solo_safe` 的覆盖曾被 `rng_seed` 早停盖住）；
+   ⛔ 注释里手抄变体数（本轮 34→55 漂移）。
+
+**差分面新暴露一项待人类裁**：`master_bus_track_id`（有 `1` 处读触点、`0` 处写点）—— ⛔ 本会话不裁定、
+⛔ 不顺手补写通路，只在 `ADR-0049` 的"补账"节登记为"要不要另开一张票"的候选。
+
+**当下队列（新会话按此顺序动）**：①读回 S5 tip `40969292516` ⇒ land ⇒ 读 merge run ⇒ 拆树回收 1.5G；
+②⭐ S4 已闭合（本批读回，四件齐＋树已拆＋1.4G 已回收），⛔ 无需动作；
+③磁盘 `#34` 与 `ADR-0042/0047/0048/0049/0050/0004(Q13)` ＋ `AGENTS.md:134` 那句"可写的只有"
+＋ `master_bus_track_id` 候选，全部**卡在人类签字**，⛔ 自主补齐。
+
+⭐ **读日志的三条取数陷阱（本轮再犯，细节在台账「第三批」§4.1）**：`gh run view --job <id> --log`
+对含转义序列的输出**直接拒发**并重定向成 **0 字节**（⛔ 读成"这条腿没跑"）；REST 路径少写 `actions/`
+会 **404**；`grep -c "Running tests/"` 在未剥色的 dump 上**恒为 0**（cargo 把样式码夹在 `Running` 与
+`tests/` 中间）—— 剥色后同一份日志从 **0** 变 **673**；⚠ windows 腿是反斜杠路径，模式要 `Running tests[/\\]`。
+⇒ **计数为 0 先怀疑读法，再怀疑事实。**
+
