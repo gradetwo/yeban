@@ -154,11 +154,11 @@ fn clicking_a_sidebar_item_moves_the_selection_and_the_highlight() {
         "点击第 2 条之后 `sidebar-item` 必须是 1"
     );
     let tree = port.refresh_tree(None).expect("重抓");
-    for index in 0..8 {
+    for (index, expected) in bounds.iter().enumerate() {
         let id = format!("sidebar-item-{index}");
         assert_eq!(
             tree.find_by_id(&id).and_then(|node| node.bounds),
-            Some(bounds[index]),
+            Some(*expected),
             "`{id}` 的几何不该被视图态改动（条目选中不重排布局）"
         );
     }
