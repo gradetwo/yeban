@@ -26,7 +26,7 @@ use yeban_app::elements::{ElementKind, ElementRegistry};
 use yeban_app::host;
 use yeban_app::scene::DemoScene;
 use yeban_ui_test_port::render::{LivePort, report_line};
-use yeban_ui_test_port::{Permission, Rect, Size, UiTestPort as _};
+use yeban_ui_test_port::{Permission, Rect, Size};
 
 /// 与其余 Tier-1 判据同款（1440 宽 ⇒ `compact` 断点之外，资源栏是展开态）。
 const WINDOW: Size = Size::new(1440, 900);
@@ -181,11 +181,13 @@ fn scene_color_swatches_carry_the_projected_color() {
     for index in 0..scene_count {
         let card = bounds_of(&mut port, &format!("scene-launch-{index}-button"));
         let swatch = bounds[index];
+        // `Rect::x/y` 是 `i32`、`width/height` 是 `u32` ⇒ 统一升到 `f64` 再比（不混加）。
+        let (sx, sy) = (f64::from(swatch.x), f64::from(swatch.y));
+        let (sw, sh) = (f64::from(swatch.width), f64::from(swatch.height));
+        let (cx, cy) = (f64::from(card.x), f64::from(card.y));
+        let (cw, ch) = (f64::from(card.width), f64::from(card.height));
         assert!(
-            swatch.x >= card.x
-                && swatch.y >= card.y
-                && swatch.x + swatch.width <= card.x + card.width
-                && swatch.y + swatch.height <= card.y + card.height,
+            sx >= cx && sy >= cy && sx + sw <= cx + cw && sy + sh <= cy + ch,
             "`scene-{index}-color-swatch` 必须完全落在 `scene-launch-{index}-button` 里: \
              swatch={swatch:?} card={card:?}"
         );

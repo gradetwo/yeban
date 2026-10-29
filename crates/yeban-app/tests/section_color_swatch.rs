@@ -26,7 +26,7 @@ use yeban_app::elements::{ElementKind, ElementRegistry};
 use yeban_app::host;
 use yeban_app::scene::DemoScene;
 use yeban_ui_test_port::render::{LivePort, report_line};
-use yeban_ui_test_port::{Permission, Rect, Size, UiTestPort as _};
+use yeban_ui_test_port::{Permission, Rect, Size};
 
 /// 与其余 Tier-1 判据同款（1440 宽 ⇒ 三轨 + 一场景全部装得下）。
 const WINDOW: Size = Size::new(1440, 900);
@@ -171,11 +171,12 @@ fn section_color_swatches_carry_the_projected_color() {
     for index in 0..section_count {
         let card = bounds_of(&mut port, &format!("section-{index}-card"));
         let swatch = bounds[index];
+        let (sx, sy) = (f64::from(swatch.x), f64::from(swatch.y));
+        let (sw, sh) = (f64::from(swatch.width), f64::from(swatch.height));
+        let (cx, cy) = (f64::from(card.x), f64::from(card.y));
+        let (cw, ch) = (f64::from(card.width), f64::from(card.height));
         assert!(
-            swatch.x >= card.x
-                && swatch.y >= card.y
-                && swatch.x + swatch.width <= card.x + card.width
-                && swatch.y + swatch.height <= card.y + card.height,
+            sx >= cx && sy >= cy && sx + sw <= cx + cw && sy + sh <= cy + ch,
             "`section-{index}-color-swatch` 必须完全落在 `section-{index}-card` 里: \
              swatch={swatch:?} card={card:?}"
         );
