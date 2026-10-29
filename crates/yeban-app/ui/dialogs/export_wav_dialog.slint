@@ -1,0 +1,277 @@
+// 夜半 (Yeban) — WAV 导出设置对话框
+//
+// 规范来源 (Normative):
+//   - 模块入口「导出 WAV」的**选项面**（`ui/module_actions.slint` 的
+//     `module-export-wav-button`）。它此前直接按宿主解析好的路径导出，界面没有任何
+//     位深 / 采样率 / 时长控件（`src/host.rs` 的 `ModulePaths` 与
+//     `export_wav::WavExportOptions::resolve` 的注释把这一半登记为待做）。
+//   - `[UI-TEST-001]` §12.2: 每个可寻址控件都有稳定语义 ID。
+//
+// ## 诚实性边界
+//
+// 本文件**不解析**任何数值：四个输入框的文本原样交给宿主
+// （`host::wire_module_actions_with_capture`），由它按
+// `export_wav::WavExportOptions::resolve` 的**唯一**口径解析；解析失败时回执
+// `error=invalid-options`，**不落盘半成品文件**。
+// 默认值逐字等于 CLI 不给 `--wav-*` 时的口径：
+//   - 采样率 `auto`      ⇒ 跟随工程（`project.sample_rate()`）
+//   - 位深   `24`        ⇒ 24-bit 整数（TPDF 抖动）
+//   - 时长   `8`         ⇒ `export_wav::DEFAULT_WAV_SECONDS`
+// 空串与 `auto` 同义（= 不覆盖）。界面上**看不到**工程当前的采样率 —— 那需要一条
+// 真实的投影读数，本切片没有造它，因此用 `auto` 而不是编一个假数字。
+//
+// ## 几何
+//
+// 弹窗默认**关着**（`MainWindow.export-wav-open = false`），因此默认帧与
+// `tests/golden/linux/` 的 5 张基准一位不变。打开后是整帧遮罩（与
+// `dialogs/undo_tree_modal.slint` 同款）。
+
+import { Tokens, UiText, UiTitleText } from "../tokens.slint";
+
+export component ExportWavDialog inherits Rectangle {
+    // ---- 四格可编辑文本（唯一写者 = 宿主打开时播种；此后用户输入）------------
+    in-out property <string> path: "";
+    in-out property <string> sample-rate: "auto";
+    in-out property <string> bit-depth: "24";
+    in-out property <string> seconds: "8";
+
+    callback run();
+    callback close();
+
+    background: Tokens.mask-black.with-alpha(0.65);
+    clip: true;
+
+    accessible-role: region;
+    accessible-id: "export-wav-dialog";
+    accessible-label: "WAV 导出设置";
+
+    Rectangle {
+        x: (root.width - 560px) / 2;
+        y: (root.height - 320px) / 2;
+        width: 560px;
+        height: 320px;
+        background: Tokens.bg-panel;
+        border-radius: Tokens.radius-lg;
+        border-width: 1px;
+        border-color: Tokens.gold-deep;
+        clip: true;
+
+        accessible-role: region;
+        accessible-id: "export-wav-panel";
+        accessible-label: "WAV 导出设置面板";
+
+        UiTitleText {
+            x: Tokens.space-6;
+            y: Tokens.space-4;
+            width: parent.width - 96px;
+            height: 24px;
+            text: "导出 WAV · 选项";
+            color: Tokens.gold-bright;
+            font-size: Tokens.font-size-xl;
+        }
+
+        // 关闭
+        Rectangle {
+            x: parent.width - 36px;
+            y: Tokens.space-4;
+            width: 24px;
+            height: 24px;
+            background: Tokens.bg-void;
+            border-radius: Tokens.radius-sm;
+            accessible-role: button;
+            accessible-id: "export-wav-close-button";
+            accessible-label: "关闭导出设置";
+            accessible-action-default => { root.close(); }
+
+            UiText {
+                x: 0;
+                y: 0;
+                width: parent.width;
+                height: parent.height;
+                text: "×";
+                color: Tokens.ink-1;
+                font-size: Tokens.font-size-xl;
+                horizontal-alignment: center;
+            }
+
+            TouchArea {
+                width: parent.width;
+                height: parent.height;
+                clicked => { root.close(); }
+            }
+        }
+
+        // ------------------------------------------------------------ 输出路径
+        UiText {
+            x: Tokens.space-6;
+            y: 52px;
+            width: parent.width - 48px;
+            height: 16px;
+            text: "输出路径（空 = 宿主缺省）";
+            color: Tokens.ink-2;
+            font-size: Tokens.font-size-xs;
+        }
+
+        export-wav-path-input := TextInput {
+            x: Tokens.space-6;
+            y: 72px;
+            width: parent.width - 48px;
+            height: 24px;
+            text: root.path;
+            single-line: true;
+            font-family: Tokens.font-mono;
+            color: Tokens.gold;
+            font-size: Tokens.font-size-xs;
+            vertical-alignment: center;
+            accessible-role: text-input;
+            accessible-id: "export-wav-path-input";
+            accessible-label: "WAV 输出路径";
+            accessible-value: root.path;
+            accessible-read-only: false;
+        }
+
+        // ------------------------------------------------------------ 采样率
+        UiText {
+            x: Tokens.space-6;
+            y: 108px;
+            width: 200px;
+            height: 16px;
+            text: "采样率 Hz（auto = 跟随工程）";
+            color: Tokens.ink-2;
+            font-size: Tokens.font-size-xs;
+        }
+
+        export-wav-sample-rate-input := TextInput {
+            x: Tokens.space-6;
+            y: 128px;
+            width: 200px;
+            height: 24px;
+            text: root.sample-rate;
+            single-line: true;
+            font-family: Tokens.font-mono;
+            color: Tokens.gold;
+            font-size: Tokens.font-size-xs;
+            vertical-alignment: center;
+            accessible-role: text-input;
+            accessible-id: "export-wav-sample-rate-input";
+            accessible-label: "采样率（auto 或 Hz）";
+            accessible-value: root.sample-rate;
+            accessible-read-only: false;
+        }
+
+        // ------------------------------------------------------------ 位深
+        UiText {
+            x: Tokens.space-6 + 216px;
+            y: 108px;
+            width: parent.width - 48px - 216px;
+            height: 16px;
+            text: "位深（16 / 24 / 32f）";
+            color: Tokens.ink-2;
+            font-size: Tokens.font-size-xs;
+        }
+
+        export-wav-bit-depth-input := TextInput {
+            x: Tokens.space-6 + 216px;
+            y: 128px;
+            width: parent.width - 48px - 216px;
+            height: 24px;
+            text: root.bit-depth;
+            single-line: true;
+            font-family: Tokens.font-mono;
+            color: Tokens.gold;
+            font-size: Tokens.font-size-xs;
+            vertical-alignment: center;
+            accessible-role: text-input;
+            accessible-id: "export-wav-bit-depth-input";
+            accessible-label: "位深（16 / 24 / 32f）";
+            accessible-value: root.bit-depth;
+            accessible-read-only: false;
+        }
+
+        // ------------------------------------------------------------ 时长
+        UiText {
+            x: Tokens.space-6;
+            y: 164px;
+            width: parent.width - 48px;
+            height: 16px;
+            text: "时长 秒（空 = 缺省 8 秒）";
+            color: Tokens.ink-2;
+            font-size: Tokens.font-size-xs;
+        }
+
+        export-wav-seconds-input := TextInput {
+            x: Tokens.space-6;
+            y: 184px;
+            width: 200px;
+            height: 24px;
+            text: root.seconds;
+            single-line: true;
+            font-family: Tokens.font-mono;
+            color: Tokens.gold;
+            font-size: Tokens.font-size-xs;
+            vertical-alignment: center;
+            accessible-role: text-input;
+            accessible-id: "export-wav-seconds-input";
+            accessible-label: "导出时长（秒）";
+            accessible-value: root.seconds;
+            accessible-read-only: false;
+        }
+
+        // ------------------------------------------------------------ 说明行
+        Rectangle {
+            x: Tokens.space-6;
+            y: 220px;
+            width: parent.width - 48px;
+            height: 16px;
+            clip: true;
+
+            accessible-role: text;
+            accessible-id: "export-wav-options-note";
+            accessible-label: "无效的采样率 / 位深 / 时长会让导出如实失败，不写半成品文件。";
+
+            UiText {
+                x: 0;
+                y: 0;
+                width: parent.width;
+                height: parent.height;
+                text: "无效的采样率 / 位深 / 时长会让导出如实失败，不写半成品文件。";
+                color: Tokens.ink-2;
+                font-size: Tokens.font-size-xs;
+                overflow: elide;
+            }
+        }
+
+        // ------------------------------------------------------------ 执行
+        Rectangle {
+            x: Tokens.space-6;
+            y: parent.height - 56px;
+            width: 160px;
+            height: 32px;
+            background: Tokens.bg-raised;
+            border-radius: Tokens.radius-md;
+            border-width: 1px;
+            border-color: Tokens.gold;
+            accessible-role: button;
+            accessible-id: "export-wav-run-button";
+            accessible-label: "按这些选项导出 WAV";
+            accessible-action-default => { root.run(); }
+
+            UiText {
+                x: 0;
+                y: 0;
+                width: parent.width;
+                height: parent.height;
+                text: "导出";
+                color: Tokens.gold-bright;
+                font-size: Tokens.font-size-xs;
+                horizontal-alignment: center;
+            }
+
+            TouchArea {
+                width: parent.width;
+                height: parent.height;
+                clicked => { root.run(); }
+            }
+        }
+    }
+}

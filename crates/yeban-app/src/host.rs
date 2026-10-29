@@ -6015,6 +6015,66 @@ impl ModulePaths {
     }
 }
 
+/// 导出对话框三格文本解析出的覆盖参数（`None` = 用后端缺省）。
+type WavExportOverrides = (
+    Option<yeban_model::project::SampleRate>,
+    Option<yeban_render::dither::BitDepth>,
+    Option<f32>,
+);
+
+/// 把 WAV 导出对话框的三格文本解析成
+/// [`crate::export_wav::WavExportOptions::resolve`] 的覆盖参数。
+///
+/// 空串与 `auto` 同义（= 不覆盖）；位深只接受 `16` / `24` / `32f`；采样率走
+/// [`yeban_model::project::SampleRate::from_hz`] 的唯一校验；时长必须是**有限正数**。
+/// 解析失败返回用户可读的原因（回执 `error=invalid-options`），⛔ 不猜测意图。
+fn parse_wav_export_options(ui: &MainWindow) -> Result<WavExportOverrides, String> {
+    use yeban_render::dither::BitDepth;
+
+    let sample_rate_text = ui.get_export_wav_sample_rate();
+    let sample_rate_text = sample_rate_text.trim();
+    let sample_rate =
+        if sample_rate_text.is_empty() || sample_rate_text.eq_ignore_ascii_case("auto") {
+            None
+        } else {
+            let hz: u32 = sample_rate_text
+                .parse()
+                .map_err(|_| format!("采样率必须是整数 Hz 或 auto：{sample_rate_text}"))?;
+            let rate = yeban_model::project::SampleRate::from_hz(hz)
+                .map_err(|error| format!("采样率 {hz} Hz 不被接受：{error}"))?;
+            Some(rate)
+        };
+
+    let bit_depth_text = ui.get_export_wav_bit_depth();
+    let bit_depth_text = bit_depth_text.trim();
+    let bit_depth = if bit_depth_text.is_empty() {
+        None
+    } else {
+        match bit_depth_text.to_ascii_lowercase().as_str() {
+            "16" | "16-bit" | "int16" => Some(BitDepth::Int16),
+            "24" | "24-bit" | "int24" => Some(BitDepth::Int24),
+            "32" | "32f" | "32-bit" | "float" | "float32" | "f32" => Some(BitDepth::Float32),
+            _ => return Err(format!("位深只接受 16 / 24 / 32f：{bit_depth_text}")),
+        }
+    };
+
+    let seconds_text = ui.get_export_wav_seconds();
+    let seconds_text = seconds_text.trim();
+    let seconds = if seconds_text.is_empty() {
+        None
+    } else {
+        let value: f32 = seconds_text
+            .parse()
+            .map_err(|_| format!("时长必须是正数秒：{seconds_text}"))?;
+        if !value.is_finite() || value <= 0.0 {
+            return Err(format!("时长必须是有限正数秒：{seconds_text}"));
+        }
+        Some(value)
+    };
+
+    Ok((sample_rate, bit_depth, seconds))
+}
+
 /// 模块入口的回执前缀 —— 成功与失败**共用**，因此"这一次是谁的回执"永远可判。
 const MODULE_RECEIPT_PREFIX: &str = "module";
 
@@ -6216,12 +6276,42 @@ pub fn wire_module_actions_with_capture(
     // 已装载的 SFZ 乐器（`load-sfz` 写、`export-wav` 读）—— 与 CLI 的 `loaded_sfz` 同角色。
     let loaded_sfz: LoadedSfz = Rc::new(RefCell::new(None));
 
+    // ------------------------------------------------- WAV 导出设置（视图态）
+    //
+    // 「导出 WAV」入口现在打开 `ui/dialogs/export_wav_dialog.slint`。打开 / 关闭都
+    // **只改视图态**（⛔ 不碰工程、⛔ 不写盘）。路径在第一次打开时由 `ModulePaths`
+    // 播种；用户改过之后重开保留用户值（`YEBAN_UI_EXPORT_WAV_PATH` 仍是缺省来源）。
+    {
+        let weak = ui.as_weak();
+        let default_target = paths.export_wav.clone();
+        ui.on_open_export_wav(move || {
+            let Some(ui) = weak.upgrade() else {
+                debug_assert!(false, "MainWindow 在回调执行期间被销毁");
+                return;
+            };
+            if ui.get_export_wav_path().trim().is_empty() {
+                ui.set_export_wav_path(default_target.to_string_lossy().to_string().into());
+            }
+            ui.set_export_wav_open(true);
+        });
+    }
+    {
+        let weak = ui.as_weak();
+        ui.on_close_export_wav(move || {
+            let Some(ui) = weak.upgrade() else {
+                debug_assert!(false, "MainWindow 在回调执行期间被销毁");
+                return;
+            };
+            ui.set_export_wav_open(false);
+        });
+    }
+
     // ------------------------------------------------------------ 导出 WAV
     {
         let weak = ui.as_weak();
         let port = port.clone();
         let loaded_sfz = Rc::clone(&loaded_sfz);
-        let target = paths.export_wav.clone();
+        let default_target = paths.export_wav.clone();
         ui.on_export_wav(move || {
             let Some(ui) = weak.upgrade() else {
                 debug_assert!(false, "MainWindow 在回调执行期间被销毁");
@@ -6246,16 +6336,39 @@ pub fn wire_module_actions_with_capture(
                 .borrow()
                 .clone()
                 .map(|(instrument, path)| (instrument, Some(path)));
+            // 输出路径：对话框为空 ⇒ 宿主缺省（`ModulePaths::export_wav`，
+            // 仍可被 `YEBAN_UI_EXPORT_WAV_PATH` 覆盖）。
+            let path_text = ui.get_export_wav_path();
+            let target = {
+                let trimmed = path_text.trim();
+                if trimmed.is_empty() {
+                    default_target.clone()
+                } else {
+                    std::path::PathBuf::from(trimmed)
+                }
+            };
+            // 三格选项文本 → `WavExportOptions::resolve` 的**唯一**口径。
+            // 解析失败 ⇒ `error=invalid-options`，⛔ 不落盘半成品文件。
+            let (sample_rate, bit_depth, seconds) = match parse_wav_export_options(&ui) {
+                Ok(options) => options,
+                Err(message) => {
+                    let receipt = module_receipt(
+                        "export-wav",
+                        &module_error_fields("invalid-options", &message),
+                    );
+                    apply_module_receipt(&ui, &receipt, false);
+                    module_trace("export-wav", started, &receipt);
+                    return;
+                }
+            };
             // ⭐ 与 CLI 的 `--export-wav` **共用唯一解析处**（⛔ 不各写一份缺省）：
-            // UI 今天**没有**位深／采样率／时长的控件（见 `ModulePaths` 的登记与
-            // `export_wav::WavExportOptions::resolve` 的文档），四个覆盖值都是 `None`
-            // ⇒ 与 CLI 不给 `--wav-*` 时**逐字节相同**的产物（8 秒 / 24-bit / 采样率跟随工程）。
-            // ⚠ UI 侧"可选"这半件登记为**待做**：需要 Slint 控件 + 元素 ID + 无头判据。
+            // 三个选项都给 `None` 时与 CLI 不给 `--wav-*` 的产物**逐字节相同**
+            // （8 秒 / 24-bit / 采样率跟随工程）。
             let wav_options = crate::export_wav::WavExportOptions::resolve(
                 &project,
-                None::<yeban_model::project::SampleRate>,
-                None::<yeban_render::dither::BitDepth>,
-                None::<f32>,
+                sample_rate,
+                bit_depth,
+                seconds,
                 None::<u64>,
             );
             let (receipt, ok, clipping_warning) = match crate::export_wav::export_wav_with_sfz_file(
