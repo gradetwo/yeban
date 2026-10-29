@@ -1321,13 +1321,15 @@ struct DynamicReasonSite {
     retires_when: &'static str,
 }
 
-/// 生产区实测 **3 次出现 / 3 个 distinct 表达式**（2026-10-28：`reject_unknown_keys` /
+/// 生产区实测 **4 次出现 / 4 个 distinct 表达式**（2026-10-28：`reject_unknown_keys` /
 /// `read_non_empty_string` 的 3 处转发站点已改由 [`PROPAGATED_REASON_SITES`] 传播出值 ⇒
-/// 6 → 3；剩下的每一条都是**真的**静态看不见）。
+/// 6 → 3；⭐ 十工具面（`#176` 扩到十）在 `output_schema.rs` 加了**一处 schema 类型声明**
+/// ⇒ 3 → 4；那一条**不产出任何值**（它只是把值域声明成 `string`），词源仍是
+/// `domain/mod.rs` 的 `apply_reject`。剩下的每一条都是**真的**静态看不见）。
 ///
 /// ⚠ 这张表是**显式盲区清单**，不是"这些值不重要"：每一条都写清值从哪来、怎么退役。
 /// ⛔ 不许为了让判据变绿而把新的动态站点塞进来 —— 能给出常量/枚举的，先给出名字。
-const EXEMPT_DYNAMIC_REASON_SITES: [DynamicReasonSite; 3] = [
+const EXEMPT_DYNAMIC_REASON_SITES: [DynamicReasonSite; 4] = [
     DynamicReasonSite {
         file: "domain/mod.rs",
         expr: "Value::from(reason.clone())",
@@ -1354,6 +1356,19 @@ const EXEMPT_DYNAMIC_REASON_SITES: [DynamicReasonSite; 3] = [
                    但本站点静态看不见 —— 传播需要跨 crate 的枚举读数，不在本片边界内。",
         retires_when: "扫描器能解析跨 crate 的 `enum ...::as_str()` 匹配表时退役（届时这三个值\
                        的贡献已由字面量站点覆盖, 本条只是重复）。",
+    },
+    // ⭐ 十工具面（`#176` 扩到十）新增：这是**广播面**的站点，⛔ 与前三条同类（运行时值）。
+    DynamicReasonSite {
+        file: "output_schema.rs",
+        expr: "{\"type\": \"string\"}",
+        occurrences: 1,
+        forwards: "`yeban_reject_proposal` 成功响应的 **outputSchema 类型声明**（`json!` 里 `reason` \
+                   键后面的那个类型节点）⇒ 本站点**一个值都不产出**：它只声明\"长形状里那个 `reason` \
+                   是字符串\"。真正的值由 `domain/mod.rs` 的 `apply_reject` 站点给出（本表**第二条**，\
+                   入参原样入库再回读），词表已经在那一条上登记过。",
+        retires_when: "把这条声明改成**闭合词表**（`\"enum\": [...]` 或 `\"const\"`）⇒ 本站点成为可解析\
+                       的字面站点，本登记项必须删掉；或者 schema 不再广播 `reason` 键（长形状去掉）\
+                       同理退役。",
     },
 ];
 
@@ -1405,15 +1420,22 @@ const REASON_ARGUMENT_NAME_USES: [ReasonArgumentNameUse; 3] = [
 // ⭐ 整片段 op 片（2026-10-29）：`quantizeClip`/`duplicateClip` 的 3 处新字面
 // `"reason"` 键站点（`quantizeGridMustBeNonZero` / `duplicateClipPlacementPairRequired`
 // / `clipAlreadyExists` 复用）⇒ 出现 226 → 229、键站点 223 → 226、字面站点 215 → 218。
-const REASON_OCCURRENCES_TOTAL: usize = 229;
+// ⭐ **十工具广播片**（`#176` 扩到十，2026-10-29）：`output_schema.rs` 的
+// `reject_proposal()` 里 `"reason": {"type": "string"}` 是一处**键站点**（值 = 类型节点 ⇒
+// 扫描器归为 `Dynamic`，已逐条登记进 [`EXEMPT_DYNAMIC_REASON_SITES`] 第四条）
+// ⇒ 运行时站点 3 → **4**、键站点 226 → **227**、出现 229 → **230**
+// （恒等式仍闭合：227 = 字面 218 ＋ 可解析 `let` 2 ＋ 运行时 4 ＋ 传播 3；
+// 230 = 227 ＋ 参数名 3。⚠ 字面/`let`/传播/参数名四条读数**一个都没动** ——
+// 本片在生产区只加了这一条）。
+const REASON_OCCURRENCES_TOTAL: usize = 230;
 // ⭐ MCP-TOOL-003：键站点 208 → 216、字面站点 200 → 208 —— 新形态在
 // `domain/notes.rs` / `tools.rs` 里新增的 8 处字面 `"reason"` 站点
 // （tick 0、`bpmOutOfRange` 复用、`tempoPointNotFound`、`timeSignaturePointNotFound`
 // 与描述文本里的键形状；逐文件拆分以扫描器读数为准，此处不手数）。
-const REASON_KEY_SITES_TOTAL: usize = 226;
+const REASON_KEY_SITES_TOTAL: usize = 227;
 const REASON_LITERAL_SITES_TOTAL: usize = 218;
 const REASON_RESOLVED_SITES_TOTAL: usize = 2;
-const REASON_DYNAMIC_SITES_TOTAL: usize = 3;
+const REASON_DYNAMIC_SITES_TOTAL: usize = 4;
 const REASON_PROPAGATED_SITES_TOTAL: usize = 3;
 const REASON_ARGUMENT_NAME_TOTAL: usize = 3;
 
