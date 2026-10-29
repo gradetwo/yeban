@@ -14556,7 +14556,11 @@ deny／lockfile 四作业真跑，四条代码腿全 **skipped steps=0** ⇒ **�
 ⚠ 未动历史快照（handover §0.5.8／:1442／:1455、`phase-status.md` 的 R467／R502 段）：它们是**当时**的读数，
 按台账纪律 ⛔ 重写历史。
 
-**判决**：待读回（本次提交的 run）。
+**判决（2026-10-29 读回）**：`cd7e6990` ⇒ run `40804593085` **success**（全腿完成）。
+本批是注释/文档，但改了 `crates/yeban-midi/src/import.rs` 与 `crates/yeban-app/src/import_midi.rs`
+⇒ `plan` 把两条腿都纳入并**真跑**：`rust (yeban-midi)` steps **14**、`rust (yeban-app)` steps **14**；
+`macos`／`windows`／`deny`／`lockfile`／`checks` 同批 success；`workspace 全量` skipped。
+⚠ 本批 ⛔ 新增判据 ⇒ 这次判决只证明"改注释没碰坏任何东西"，⛔ 证明新语义。
 
 ### 判据补强：导入侧 title / author 采纳的门槛（2026-10-29，`yeban-midi`）
 
@@ -14716,7 +14720,12 @@ deny／lockfile 四作业真跑，四条代码腿全 **skipped steps=0** ⇒ **�
 `scripts/dev/heavy-deps.py` 本机**不编译**，新判据的第一次执行在 CI。本地只跑了
 `cargo fmt --all --check` 与前提探针（`yeban-midi`，已删）。
 
-**判决**：待读回（本条提交的 run）。
+**判决（2026-10-29 读回）**：`6961d713` ⇒ run `40807428907` **success**（全腿完成）。
+承判腿 `rust (yeban-mcp)` **success**（steps **14**；日志 `test result: ok` 行 **125** 条 /
+passed 合计 **2,380** / `test result: FAILED` **0** 条），新判据**逐名 ok ×2**
+（`test_import_midi_never_reports_a_title_or_copyright_it_did_not_write`，默认腿 ＋ `合并特性` 腿）。
+`macos`／`windows`／`rust (yeban-ui-mcp)`／`deny`／`lockfile`／`checks` 同批 success；
+`workspace 全量` skipped（本批不碰 `schemas/**`）。
 
 ### 判据补强：`yeban_export_midi` ⇒ `yeban_import_midi` 的**两工具闭环**（2026-10-29，`yeban-mcp`）
 
@@ -14740,7 +14749,79 @@ deny／lockfile 四作业真跑，四条代码腿全 **skipped steps=0** ⇒ **�
 轨名在文件里有**两个**不同值（导体轨名 = 标题、内容轨名 = 工程音轨名）⇒ 导入侧的轨名采纳
 按"唯一才采纳"规则**不生效**（⛔ 本判据断言它）—— 那属于 `adopt_track_name` 的既有口径。
 
-**判决**：待读回（本条提交的 run）。
-⚠ 本机不编译 `yeban-mcp`（传递依赖重）⇒ 判据第一次执行在 CI；本地只跑
+⚠ **第一次推送是红的（如实登记）**：`76e08324` ⇒ run `40809954618` **failure**（`rust (yeban-mcp)`／
+`macos`／`windows` 三条腿红在**编译**）：`E0599` ×3 —— `ClipContent::Midi.notes` 现读是
+`BTreeMap<EntityId, MidiNote>`（`crates/yeban-model/src/project.rs:1030`），判据却按 `Vec`
+调 `push` ／ `as_slice`。修正在 `fcc4a9a1`（`insert(note.id, note)` ＋ `notes.values()`）。
+教训：⚠ **`yeban-mcp` 本机不编译 ⇒ 新判据里每个类型细节都要对着模型定义逐处核**，⛔ 凭印象。
+
+**判决（2026-10-29 读回）**：`fcc4a9a1` ⇒ run `40811164706` **success**（全腿完成）。
+承判腿 `rust (yeban-mcp)` **success**（steps **14**（唯一 skipped 是失败摘要步）；日志
+`test result:` 行 **125** 条 / passed 合计 **2,382** / `test result: FAILED` **0** 条），
+新判据**逐名 ok ×2**（`test_export_tool_bytes_reimported_through_the_import_tool`，
+`test` 步 ＋ `test (合并特性)` 步）。`windows`／`macos`／`rust (yeban-ui-mcp)`／`deny`／
+`lockfile`／`checks` 同批 success；`workspace 全量` skipped（本批不碰 `schemas/**`）。
+⚠ 承判腿 03:29 完成时 windows 仍在跑 —— 读回以**整 run completed** 后为准（§6.3 同族教训）。
+⚠ 本机不编译 `yeban-mcp`（传递依赖重）⇒ 判据第一次**执行**在 CI；本地只跑
 `cargo fmt --all --check`。底层路径（导出 ⇒ 解析 ⇒ 规划 ＋ 标题/署名采纳）已由
 `yeban-midi` 的 `export_import_export_is_byte_identical_with_notes_and_metadata` 本地钉住。
+
+### 判据补强 ＋ 契约措辞更正：`yeban_import_midi` 的缺省目标规则（2026-10-29，`yeban-midi`／`yeban-mcp`）
+
+**缺口（现读）**：`yeban_import_midi` 的 `trackId`／`clipId` 描述写着"缺省由 destination 选择
+**首条含 MIDI 片段**的音轨"／"首个 **MIDI** 片段"（`crates/yeban-mcp/src/tools.rs:1377`／`:1383`；
+`schemas/mcp-tools.schema.json:926`／`:930` 同文），但 `destination()`（`crates/yeban-midi/src/import.rs`）
+**不按片段类型筛选** —— 它取**第一条非 master 音轨** ＋ 该音轨的**第一个摆放**，与 app CLI
+`--import-midi`（`crates/yeban-app/src/cli.rs:376`／`:1076`）及 `destination` 自身文档一致
+⇒ 偏离实现的是**工具措辞**，不是代码。类型检查在调用方：音频片段 ⇒ `INVALID_PARAMETER_RANGE`，
+非空 MIDI ⇒ `CONFLICT`（`crates/yeban-mcp/src/domain/import_midi.rs:161-179`）。
+本批**只改措辞、⛔ 不改行为**：共享语义的爆炸半径不值得为一个文字口径去动。
+
+**新增判据**（`crates/yeban-midi/src/import.rs`）：
+
+| 判据 | 断言 |
+| :--- | :--- |
+| `destination_is_the_first_non_master_track_and_its_first_placement` | 演示工程上 == 第一条非 master 音轨 ＋ 首个摆放；把首轨摆放换成**音频**片段后仍返回它（钉住"不筛类型"） |
+| `destination_honours_explicit_ids_and_names_what_is_missing` | 显式 `trackId`／`clipId` 优先；只有 master ⇒ `NoDestination` 含"没有非 master 的音轨"；无摆放 ⇒ "没有任何摆放"；未知音轨 id ⇒ "不在工程里" |
+
+**本地读数**：`cargo fmt --all --check` 通过；`yeban-midi --lib` **221 passed / 0 failed**
+（219 ＋ 新 2），两条新判据**逐名 ok**；`clippy -p yeban-midi --all-targets -- -D warnings` 通过；
+`scripts/gates/check_feature_alignment.py` ok；`validate_schemas.py` 本机缺 `jsonschema`
+（CI 上跑，本机 ⛔ 假装通过）。
+
+**判决（2026-10-29 读回）**：`6ca89088` ⇒ run `40813037657` **success**（全腿完成）。
+本批碰了 `schemas/**` ⇒ `rust (workspace 全量)` 腿**真跑**（03:36→04:18 ≈ 42m40s；
+`test result:` 行 **424** 条 / passed 合计 **6,811** / `test result: FAILED` **0** 条），
+两条新判据**逐名 ok**（04:03：`import::tests::destination_is_the_first_non_master_track_and_its_first_placement`、
+`import::tests::destination_honours_explicit_ids_and_names_what_is_missing`）。
+`rust (${{ matrix.crate }})` 按矩阵规则 skipped（⛔ 空绿：全量腿已覆盖）；
+`macos`／`windows`／`deny`／`lockfile`／`checks` 同批 success。
+⚠ 判据提交 `0cf1c308` 与措辞提交 `6ca89088` 是**一次 push**：中间提交 `head_sha` 查
+`total_count: 0`（现读，完整 40 位）⇒ 判决按 tip `6ca89088` 的 run 读，它覆盖两个提交的全部改动。
+
+### 判据补强：`yeban_import_midi` 的**歌词五桶**（2026-10-29，`yeban-mcp`）
+
+**缺口（现读 `crates/yeban-mcp/src/domain/import_midi.rs:403`）**：`lyricCounts` 只报
+`read`／`attached`／`orphan`／`dropped` 四个键，其中 `orphan` 与 `dropped` 是**同一个数**
+（`MidiLyricCounts.dropped` 的旧别名）。而 `#317` 的分桶自检有**五**桶
+（`crates/yeban-midi/src/import.rs:189-209`：`read == attached + dropped` ＋ `non_utf8` ＋ `empty`），
+CLI/GUI 的 `Display` 行（同文件 `:248-258`）逐字打五个字段 —— **MCP 调用方看不到 `nonUtf8`／`empty`**。
+后果不是"少两个数"：一个**全是坏歌词**的文件报 `read=0, attached=0, dropped=0`，
+读起来与"文件里没有 `FF 05`"**完全一样**（`read` 只数非空且严格 UTF-8 的候选）。
+
+**修正**（⛔ 改行为，只补上报）：
+- `describe` 的 `lyricCounts` 补 `nonUtf8`／`empty` 两键（`dryRun` 预览与真调用共用 `describe` ⇒ 两面同步）；
+- `tools.rs` 的 summary ＋ `schemas/mcp-tools.schema.json` 的 `yeban_import_midi.description`
+  写明五桶口径，并逐字登记 **`orphan` 是 `dropped` 的同值旧别名**（⛔ 删键 = 破坏兼容，⛔ 留着不说明 = 继续误导）。
+
+**新增判据**（`crates/yeban-mcp/tests/import_midi_tool.rs`）：
+`test_import_midi_reports_empty_and_non_utf8_lyric_buckets` —— 手搓格式 0 / 960 PPQ 的 SMF
+（tick 0 一颗 C4 ＋ 三条 `FF 05`：`do`／空负载／`FF FE`），断言 `lyricCounts` **六键逐值**
+（`read=1, attached=1, orphan=0, dropped=0, nonUtf8=1, empty=1`）＋ 全池音节 `== [Some("do")]`
+（两个丢失桶 ⛔ 伪造文本）。手搓构造同 `yeban-midi` 的
+`parser_counts_empty_and_non_utf8_lyrics_without_guessing`（编码器不会产出这两类事件）。
+
+**本地读数**：`cargo fmt --all --check` 通过；schema JSON `json.load` 通过；
+`check_feature_alignment.py` ok。⚠ 本机不编译 `yeban-mcp`（AGENTS.md §5.2）⇒ 判据第一次**执行**在 CI。
+
+**判决**：待读回（`d35acf14` 的 run；碰 `schemas/**` ⇒ 预期 `workspace 全量` 腿真跑）。
