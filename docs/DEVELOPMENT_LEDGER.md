@@ -14882,3 +14882,10 @@ run 级还在 queued 时 `checks/deny/plan/lockfile/全量/macos` 已 completed�
 三条点名判据合计 **6 次 ok**（默认＋"合并特性"两条特性路径各一次）。
 ⇒ §0.6.0i 收盘相关的**四笔判决全部读回**：批一/批二 success（代码面成立），
 两本台账批空绿（只作记录）。本轴至此**无 pending**。
+
+**翻账批空绿读回（2026-10-29 现读 `gh run view --json jobs`，逐 run 核 job 拓扑）**：
+`8ef44624`⇒run `40833767340`、`0dda865d`⇒run `40834050867`、`aa5c138b`⇒run `40834140750`、
+`0df2e892`⇒run `40832870298` —— 四者均 **success·空绿**（真跑仅 `plan/deny/checks/lockfile`；
+`rust (matrix)`/`rust (workspace 全量)`/`windows`/`macos` 全 `completed skipped`）⇒ 只作记录，
+不构成任何代码判决。⚠ 本批（本次追加）自身也是纯文档 ⇒ 其 run 预期同为空绿，下次读回按同拓扑记账，
+⛔ 递归追哨。§0.6.0i 全线至此**无任何未读回的判决**。
