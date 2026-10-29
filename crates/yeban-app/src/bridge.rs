@@ -1421,6 +1421,59 @@ fn send_gain_display(gain_db: Option<f32>) -> String {
     gain_db.map_or_else(|| "单位增益".to_owned(), |gain_db| format!("{gain_db} dB"))
 }
 
+/// 宏面板里的一行 —— **展示轨**的 `TrackV3::macros` 一条。
+///
+/// 下标是模型的宏下标（`Op::SetMacro::macro_index`）—— 三个手势与撤销都用它寻址，
+/// ⛔ 界面层不持有第二份宏身份。
+#[derive(Debug, Clone, PartialEq)]
+pub struct MacroRowView {
+    /// 宏在 `TrackV3::macros` 里的下标（`SetMacro` 的 `macro_index`）。
+    pub macro_index: usize,
+    /// 宏名（`MacroParameter::name`）。
+    pub name: String,
+    /// 宏当前位置 0.0..=1.0（`MacroParameter::value`，滑块位置就是它）。
+    pub value: f32,
+    /// 位置的显示文本（[`macro_value_display`]）。
+    pub value_display: String,
+}
+
+impl MacroRowView {
+    /// 一整行无障碍标签：`"{宏名} · {位置}"`。
+    #[must_use]
+    pub fn label(&self) -> String {
+        format!("{} · {}", self.name, self.value_display)
+    }
+}
+
+/// 宏位置的显示文本（**唯一**的格式化实现）：0.0..=1.0 映射成 `"0%".."100%"`。
+///
+/// ⚠ 这是**显示**口径，⛔ 不是模型口径：提交回模型的是 [`MacroRowView::value`]
+/// 原样的 `f32`（`Op::SetMacro` 的值域就是 0.0..=1.0）。
+#[must_use]
+pub fn macro_value_display(value: f32) -> String {
+    format!("{:.0}%", value * 100.0)
+}
+
+/// 宏面板的投影本体：展示轨的宏逐条变成一行（下标 = 模型里的 `macros` 索引顺序）。
+///
+/// 没有展示轨 ⇒ 空（界面画空态）。宏没有任何映射时**仍然**投影 —— 位置本身是可写的。
+fn macro_projection(track: Option<&TrackV3>) -> Vec<MacroRowView> {
+    let Some(track) = track else {
+        return Vec::new();
+    };
+    track
+        .macros
+        .iter()
+        .enumerate()
+        .map(|(macro_index, macro_parameter)| MacroRowView {
+            macro_index,
+            name: macro_parameter.name.clone(),
+            value: macro_parameter.value,
+            value_display: macro_value_display(macro_parameter.value),
+        })
+        .collect()
+}
+
 /// "新建发送"不可用时逐字写出的原因：工程里**没有非主总线音轨**可作发送源。
 pub const SEND_CREATE_NO_TRACK_REASON: &str = "没有可显示的音轨，无法新建发送";
 
@@ -3304,6 +3357,11 @@ pub struct ViewState {
     /// ⭐ 任务单 `#159`：空 ⇒ 界面显示空态（`"无发送"`）＋ 条目数 `0`，⛔ 不是一片空白，
     /// 也⛔ 不是编造的发送。
     pub sends: Vec<SendRowView>,
+    /// 当前展示轨（与设备机架 / 发送条**同一条轨**）的宏逐条投影 `TrackV3::macros`
+    /// —— 宏面板的**唯一**事实源。
+    ///
+    /// 空 ⇒ 界面显示空态（`macro-empty-state`），⛔ 不是一片空白，也⛔ 不是编造的宏。
+    pub macros: Vec<MacroRowView>,
     /// "新建发送"此刻能不能用：展示轨存在**且**工程里有一条 `TrackKind::AuxReturn` 轨
     /// **且**展示轨到那条 aux 还没有同源同目的地的 `SendToAux` 边。
     ///
@@ -3640,6 +3698,10 @@ impl ViewState {
         let (sends, send_create_available, send_create_reason) =
             send_strip_projection(project, display);
 
+        // 宏面板：与设备机架 / 发送条**同一条**展示轨（`display`）。条目就是
+        // `TrackV3::macros` 的身份序下标 ⇒ 宿主提交的 `macro_index` 与这里同源。
+        let macros = macro_projection(display);
+
         // 轨 / 路由（任务单 `#160`）：轨数读数 ＋ 建轨 / "删除展示轨"的可用性。
         // 删轨的目标只认展示轨（⭐ `#192`：`display` = 选中轨 or 兜底）⇒ 主总线永远不可删。
         let (track_delete_available, track_delete_reason) =
@@ -3741,6 +3803,7 @@ impl ViewState {
             sample_library_download_visible,
             sample_library_root,
             sends,
+            macros,
             send_create_available,
             send_create_reason,
             track_count_label: format!("共 {} 条轨", project.tracks.len()),
@@ -4173,6 +4236,30 @@ impl ViewState {
     #[must_use]
     pub fn send_gain_max_db(&self) -> f32 {
         send_gain_range().1
+    }
+
+    /// 宏面板每一行的宏名（与下面两个数组**同索引集**）。
+    ///
+    /// `.slint` 的 `macro-names` 就是它；宿主听下标（= 模型 `macro_index`），
+    /// ⛔ 不用名字当身份（同名是合法的）。
+    #[must_use]
+    pub fn macro_names(&self) -> Vec<String> {
+        self.macros.iter().map(|row| row.name.clone()).collect()
+    }
+
+    /// 宏面板每一行的位置 0.0..=1.0（滑块位置就是它）。
+    #[must_use]
+    pub fn macro_values(&self) -> Vec<f32> {
+        self.macros.iter().map(|row| row.value).collect()
+    }
+
+    /// 宏面板每一行的位置显示文本（`"0%".."100%"`）。
+    #[must_use]
+    pub fn macro_value_labels(&self) -> Vec<String> {
+        self.macros
+            .iter()
+            .map(|row| row.value_display.clone())
+            .collect()
     }
 
     /// 剪辑摆放身份（`clip-{ulid}-header` 的 `{ulid}` 段）。

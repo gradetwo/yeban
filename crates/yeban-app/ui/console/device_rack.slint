@@ -223,6 +223,15 @@ export component DeviceRack inherits Rectangle {
     /// 不能新建时**逐字**写出的原因（可用时是空串）—— ⛔ 不静默禁用。
     in property <string> send-create-reason: "";
 
+    // ---------------------------------------------------------------- 宏（右侧宏面板）
+    /// 展示轨的宏名（与下面两个数组**同索引集**；下标 = 模型 `macro_index`）。
+    /// 本组件只用来画「宏 (N)」按钮上的条数 —— 行本身住在 `dialogs/macro_panel.slint`。
+    in property <[string]> macro-names: [];
+    /// 每个宏的位置 0.0..=1.0（只透传；本文件不画、不写）。
+    in property <[float]> macro-values: [];
+    /// 每个宏的位置显示文本（只透传）。
+    in property <[string]> macro-value-labels: [];
+
     // ---------------------------------------------------------------- 轨 / 路由（⭐ 任务单 `#160`）
     /// 工程轨数（**含主总线**）的显示文本（`"共 7 条轨"`）—— 逐字来自投影。
     in property <string> routing-count-label: "";
@@ -291,6 +300,12 @@ export component DeviceRack inherits Rectangle {
     callback track-create-aux();
     /// 删除展示轨（主总线不是目标：不可用时禁用并逐字给原因）。
     callback track-delete();
+    /// 打开右侧宏面板（面板本体在 `MainWindow`，本组件只发这一个事件）。
+    callback open-macro-panel();
+
+    // 「宏 (N)」按钮的在场条件：第一段窄到 720 以下时它**不出现**
+    // （那时「N 台设备」计数标签会顶到第一段右沿，再放一个键就压上去了）。
+    property <bool> macro-open-visible: root.first-rack-width >= 720px;
 
     // 旋钮位置（0.0–1.0）：值域退化（min == max）或不可用时给 0.5（居中），
     // 绝不除以零。**这是显示几何**，不是第二份范围表 —— 两个端点都是注入值。
@@ -409,6 +424,48 @@ export component DeviceRack inherits Rectangle {
         accessible-role: text;
         accessible-id: "device-rack-count";
         accessible-label: root.device-names.length + " 台设备";
+    }
+
+    // ---------------------------------------------------------------- 宏入口（⭐ 右侧宏面板）
+    // 标题行的第三条：`8..428` 是轨标签，`436..636` 是「N 台设备」，`644..720` 空着 ——
+    // 按钮就落在那一格（第一段窄于 720 时让位，见 `macro-open-visible`）。
+    // 一次点击只发一个事件；面板的开 / 关住在 `MainWindow`（本文件没有抽屉）。
+    Rectangle {
+        x: 644px;
+        y: 6px;
+        width: 76px;
+        height: 20px;
+        background: Tokens.bg-void;
+        border-radius: Tokens.radius-sm;
+        border-width: 1px;
+        border-color: Tokens.line;
+        visible: root.macro-open-visible;
+        accessible-role: button;
+        accessible-id: "macro-open-button";
+        accessible-label: "打开宏面板（" + root.macro-names.length + " 个宏）";
+        accessible-action-default => {
+            root.open-macro-panel();
+        }
+
+        UiText {
+            x: 0;
+            y: 0;
+            width: parent.width;
+            height: parent.height;
+            text: "宏 (" + root.macro-names.length + ")";
+            color: Tokens.gold;
+            font-size: Tokens.font-size-xs;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+        }
+
+        TouchArea {
+            width: parent.width;
+            height: parent.height;
+            clicked => {
+                root.open-macro-panel();
+            }
+        }
     }
 
     // ---------------------------------------------------------------- 频响曲线区

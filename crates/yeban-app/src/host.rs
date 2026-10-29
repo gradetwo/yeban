@@ -252,6 +252,11 @@ pub fn apply_view(ui: &MainWindow, view: &ViewState, viewport_width: f32, scroll
     ui.set_send_gain_max_db(view.send_gain_max_db());
     ui.set_send_create_available(view.send_create_available);
     ui.set_send_create_reason(view.send_create_reason.clone().into());
+    // ⭐ 宏面板：`ViewState::macros` 是**唯一**事实源。三个平行数组同索引集
+    // （名字 / 位置 0.0..=1.0 / 位置文本）；下标就是模型 `macro_index`。
+    ui.set_macro_names(strings(&view.macro_names()));
+    ui.set_macro_values(lengths(&view.macro_values()));
+    ui.set_macro_value_labels(strings(&view.macro_value_labels()));
     // ⭐ 轨 / 路由（任务单 `#160`）：显示轨数 ＋ 建轨 / "删除展示轨"的可用性与逐字原因
     // （主总线说明那一行兼作"没有主总线 ⇒ 不能建轨"的原因）。五个都是**标量**（不是新
     // 数组）⇒ 只增 `APPLY_VIEW_WRITE_SITE_BUDGET`，不动
@@ -3681,6 +3686,225 @@ pub fn wire_send_strip(ui: &MainWindow, port: &Rc<UndoPort>) {
             if port.commit_ops(now_ms(), "remove send", vec![op]).is_err() {
                 eprintln!("[yeban-app] 删除发送被拒绝（工程未改）");
             }
+            refresh_undo_window(&ui, &port, true);
+        }
+    });
+}
+
+// ===========================================================================
+// 宏面板（控制台 Tab 3 头部的「宏」按钮 → 右侧抽屉）
+// ===========================================================================
+
+/// 宏滑块手势的状态机。
+///
+/// 身份 = `(进程内, 模型宏下标)`：`track_id` 在**按下**那一刻从权威工程解析，
+/// 松手时再核一次（展示轨换了 ⇒ 放弃提交，⛔ 不把值写到另一条轨的同名下标上）。
+enum MacroGesture {
+    /// 没有手势。
+    Idle,
+    /// 正在拖某一条宏。
+    Dragging {
+        /// 按下那一刻的展示轨身份（`Op::SetMacro::track_id`）。
+        track_id: yeban_model::EntityId,
+        /// 宏在 `TrackV3::macros` 里的下标（`Op::SetMacro::macro_index`）。
+        macro_index: usize,
+        /// 按下时的工程值（`old_val`）。
+        start_value: f32,
+        /// 最近一次算出的值（`new_val`）。
+        last_value: f32,
+        /// 是否收到过至少一次**改变数值**的 move / 按下。
+        moved: bool,
+    },
+}
+
+/// 滑块比例 → 宏位置 0.0..=1.0（纯函数，可判据）。
+///
+/// 取到 `0.01` 一格：显示文本按整数百分比画（[`crate::bridge::macro_value_display`]），
+/// 模型里也存同一格 ⇒ "界面说 37%" 与"工程里是 0.37"逐位一致，⛔ 不出现显示四舍五入、
+/// 模型里却是 0.3749 的两份读数。非有限输入落到 `0.0`（⛔ 不 panic、⛔ 不写 NaN）。
+fn macro_value_from_fraction(fraction: f32) -> f32 {
+    if !fraction.is_finite() {
+        return 0.0;
+    }
+    (fraction.clamp(0.0, 1.0) * 100.0).round() / 100.0
+}
+
+/// 拖动期的**视觉预览**：只改 `macro-values` / `macro-value-labels` 里那一格，⛔ 不碰工程。
+fn preview_macro_value(ui: &MainWindow, macro_index: usize, value: f32) {
+    let mut values = read_lengths(&ui.get_macro_values());
+    let Some(slot) = values.get_mut(macro_index) else {
+        return;
+    };
+    *slot = value;
+    let mut labels = read_strings(&ui.get_macro_value_labels());
+    if let Some(label) = labels.get_mut(macro_index) {
+        *label = crate::bridge::macro_value_display(value);
+    }
+    ui.set_macro_values(lengths(&values));
+    ui.set_macro_value_labels(strings(&labels));
+}
+
+/// 宏面板的**写入面**：一个滑块手势 = **恰好一次** [`UndoPort::commit_ops`]
+/// （一个 `Op::SetMacro`，撤销标签 `"set macro"`）。
+///
+/// | 回调 | `.slint` | 作用 |
+/// | :--- | :--- | :--- |
+/// | `macro-grab(int, float)` | `on_macro_grab` | 解析展示轨与宏下标，记下 `old_val`；按下即定位 |
+/// | `macro-drag(int, float)` | `on_macro_drag` | 只写视图态预览 |
+/// | `macro-release(int)` | `on_macro_release` | 核基线 → 提交一次 `SetMacro` → 重投影 |
+///
+/// ## 目标与规则（全部来自权威工程，⛔ 不信界面）
+///
+/// - 主语是 [`display_track`]（选中轨 or 兜底，与设备架 / 发送条**同一条**）；
+/// - 松手时重解析展示轨：身份变了 / 工程值已变（陈旧基线）⇒ 放弃提交并重投影；
+/// - 值域 `0.0..=1.0` 与 `0.01` 一格由 [`macro_value_from_fraction`] 唯一决定；
+/// - 模型校验（[`yeban_model::Op::SetMacro`]）仍会拒绝非法值 ⇒ 这里先夹紧，
+///   但**不**替模型做别的判定。
+///
+/// ## 它**不**做什么
+///
+/// ⛔ 不新建 / 删除宏（`Op` 全集里没有 `AddMacro` / `RemoveMacro`）；
+/// ⛔ 不写映射（`MacroMapping` 是设备层的字段，工具面也没有入口）；
+/// ⛔ 不碰引擎。
+pub fn wire_macro_panel(ui: &MainWindow, port: &Rc<UndoPort>) {
+    let weak = ui.as_weak();
+    let gesture = Rc::new(RefCell::new(MacroGesture::Idle));
+
+    // ---------------------------------------------------------------- ① 按下
+    ui.on_macro_grab({
+        let weak = weak.clone();
+        let gesture = Rc::clone(&gesture);
+        let port = Rc::clone(port);
+        move |macro_index: i32, fraction: f32| {
+            *gesture.borrow_mut() = MacroGesture::Idle;
+            let Ok(macro_index) = usize::try_from(macro_index) else {
+                return;
+            };
+            let Some(ui) = weak.upgrade() else {
+                debug_assert!(false, "MainWindow 在回调执行期间被销毁");
+                return;
+            };
+            let Some(project) = port.try_project() else {
+                return;
+            };
+            let Some(track) = display_track(&ui, &project) else {
+                return;
+            };
+            let Some(macro_parameter) = track.macros.get(macro_index) else {
+                return;
+            };
+            let track_id = track.id;
+            let start_value = macro_parameter.value;
+            let pressed = macro_value_from_fraction(fraction);
+            let moved = pressed.to_bits() != start_value.to_bits();
+            *gesture.borrow_mut() = MacroGesture::Dragging {
+                track_id,
+                macro_index,
+                start_value,
+                last_value: pressed,
+                moved,
+            };
+            // 按下即定位 ⇒ 一次**单击**也是一次可撤销的编辑（与发送增益同一条规则）。
+            if moved {
+                preview_macro_value(&ui, macro_index, pressed);
+            }
+        }
+    });
+    // ---------------------------------------------------------------- ② 拖动（只写视图态）
+    ui.on_macro_drag({
+        let weak = weak.clone();
+        let gesture = Rc::clone(&gesture);
+        move |_macro_index: i32, fraction: f32| {
+            let Some(ui) = weak.upgrade() else {
+                debug_assert!(false, "MainWindow 在回调执行期间被销毁");
+                return;
+            };
+            // 借的作用域只包住状态本身；**先放借，再写界面**（重入 panic 的形态）。
+            // ⛔ 不信回调里的下标：手势握着自己的那一格（投影若在拖动期被换掉，
+            // 下标漂移会把预览写到另一条宏上）。
+            let (index, next_value) = {
+                let mut state = gesture.borrow_mut();
+                let MacroGesture::Dragging {
+                    macro_index,
+                    last_value,
+                    moved,
+                    ..
+                } = &mut *state
+                else {
+                    return;
+                };
+                let next_value = macro_value_from_fraction(fraction);
+                if next_value.to_bits() == last_value.to_bits() {
+                    return;
+                }
+                *last_value = next_value;
+                *moved = true;
+                (*macro_index, next_value)
+            };
+            preview_macro_value(&ui, index, next_value);
+        }
+    });
+    // ---------------------------------------------------------------- ③ 松手（提交）
+    ui.on_macro_release({
+        let weak = weak.clone();
+        let gesture = Rc::clone(&gesture);
+        let port = Rc::clone(port);
+        move |_macro_index: i32| {
+            let Some(ui) = weak.upgrade() else {
+                debug_assert!(false, "MainWindow 在回调执行期间被销毁");
+                return;
+            };
+            let taken = std::mem::replace(&mut *gesture.borrow_mut(), MacroGesture::Idle);
+            let MacroGesture::Dragging {
+                track_id,
+                macro_index,
+                start_value,
+                last_value,
+                moved,
+            } = taken
+            else {
+                return;
+            };
+            if !moved || last_value.to_bits() == start_value.to_bits() {
+                return;
+            }
+            let Some(project) = port.try_project() else {
+                eprintln!("[yeban-app] 宏位置提交：权威会话此刻没有活跃工程");
+                refresh_undo_window(&ui, &port, true);
+                return;
+            };
+            let Some(track) = display_track(&ui, &project) else {
+                eprintln!("[yeban-app] 宏位置提交被放弃：没有可显示的音轨");
+                refresh_undo_window(&ui, &port, true);
+                return;
+            };
+            // 展示轨在拖动期间换了 ⇒ 这一格不再指向按下时的那条轨，⛔ 不按过期身份提交。
+            if track.id != track_id {
+                eprintln!("[yeban-app] 宏位置提交被放弃：拖动期间展示轨已变");
+                refresh_undo_window(&ui, &port, true);
+                return;
+            }
+            let Some(current) = track.macros.get(macro_index) else {
+                eprintln!("[yeban-app] 宏位置提交被放弃：宏已不存在");
+                refresh_undo_window(&ui, &port, true);
+                return;
+            };
+            // 逐位比对：起点必须仍是当前值（陈旧基线 ⇒ 放弃提交）。
+            if current.value.to_bits() != start_value.to_bits() {
+                eprintln!("[yeban-app] 宏位置提交被放弃：拖动期间工程值已变（陈旧基线）");
+                refresh_undo_window(&ui, &port, true);
+                return;
+            }
+            let op = yeban_model::Op::SetMacro {
+                track_id,
+                macro_index,
+                old_val: start_value,
+                new_val: last_value,
+            };
+            if port.commit_ops(now_ms(), "set macro", vec![op]).is_err() {
+                eprintln!("[yeban-app] 宏位置提交被拒绝（工程未改）");
+            }
+            // 成功与失败都重投影一次：成功 ⇒ 读新值；失败 ⇒ 把拖动期的预览值抹掉。
             refresh_undo_window(&ui, &port, true);
         }
     });

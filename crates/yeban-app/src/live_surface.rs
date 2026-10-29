@@ -1936,6 +1936,10 @@ pub fn build_live_ui_with(
         // （`main.rs` 的 `wire_callbacks`）调的是**同一个** `host::wire_send_strip`，
         // 因此无头端口注入的手势与用户点击走同一条链（`Op` + `UndoPort`）。
         host::wire_send_strip(&window, undo);
+        // ⭐ 宏面板（Tab 3 头部「宏 (N)」打开的右侧抽屉）的写入面：与产品进程
+        // （`main.rs` 的 `wire_callbacks`）调的是**同一个** `host::wire_macro_panel`，
+        // 因此无头端口注入的滑块手势与用户点击走同一条链（`Op` + `UndoPort`）。
+        host::wire_macro_panel(&window, undo);
         // ⭐ 轨 / 路由（控制台 Tab 3 的**同一面板**）的写入面（任务单 `#160`）：与产品进程
         // （`main.rs` 的 `wire_callbacks`）调的是**同一个** `host::wire_track_strip`，
         // 因此无头端口注入的建轨 / 删轨手势与用户点击走同一条链（`Op` + `UndoPort`）。
