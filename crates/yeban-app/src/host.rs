@@ -8037,6 +8037,44 @@ fn apply_action(
             refresh_undo_window(ui, port, true);
             true
         }
+        // `[UI-NOTE-005]` §3 项 3：`Shift+←/→` 缩短 / 延长选区音符的**时值**。
+        //
+        // 语义（三条都是决定）：
+        // 1. 选区读点与 [`Action::NudgeSelection`] 同一个（`selected-ulids`）；
+        // 2. 幅度由 [`resize_duration_delta_for`] **唯一**换算（一个吸附网格）；
+        // 3. 批解析走 [`resize_duration_ops_for`]（纯函数）：**逐音符**夹紧到 ≥ 1 tick，
+        //    没变的音符不写 op；整批为空（空选区 / 全部已在下限）⇒ **0 提交**、
+        //    返回 `false`（不吞键，与 `DeleteSelection` / `NudgeSelection` 同一取向）。
+        // 一次按键 = 一次 `commit_ops` = 一步撤销（`undo_session` 包成一个 `Op::Batch`）。
+        // 起点不变 ⇒ 选区身份仍然有效，提交后照常重投影。
+        Action::ResizeSelectionDuration { direction } => {
+            let Some(port) = undo else {
+                return false;
+            };
+            let selected: Vec<String> = {
+                use slint::Model as _;
+                ui.get_selected_ulids()
+                    .iter()
+                    .map(|id| id.to_string())
+                    .collect()
+            };
+            let Some(project) = port.try_project() else {
+                return false;
+            };
+            let delta_ticks = resize_duration_delta_for(direction);
+            let ops = resize_duration_ops_for(&project, &selected, delta_ticks);
+            if ops.is_empty() {
+                return false;
+            }
+            if port
+                .commit_ops(now_ms(), "resize selection duration", ops)
+                .is_err()
+            {
+                return false;
+            }
+            refresh_undo_window(ui, port, true);
+            true
+        }
         // 横向缩放（`Z` / `Shift+Z`）：**视图态**，不碰 `Op`、不进撤销栈。
         //
         // 语义（三条都是决定）：
@@ -8883,6 +8921,107 @@ fn clamp_pitch_delta(min_pitch: u8, max_pitch: u8, delta: i8) -> i8 {
     let upper = 127 - i16::from(max_pitch);
     let clamped = i16::from(delta).clamp(lower, upper);
     i8::try_from(clamped).unwrap_or(0)
+}
+
+/// `[UI-NOTE-005]` §3 项 3：`Shift+←/→` 的一档时值增量（**唯一**换算）。
+///
+/// 幅度的事实源：一个吸附网格 = [`ROLL_SNAP_GRID_TICKS`]，与无修饰 `←/→` 的平移、
+/// 铅笔落笔、`Cmd+D` 的几何是**同一个**常量（⛔ 不给时值单开一个网格）。
+/// `direction` 取 `signum` ⇒ 任何非零正 / 负都等价于 `+1` / `-1`。
+#[must_use]
+pub fn resize_duration_delta_for(direction: i8) -> i64 {
+    i64::from(direction.signum()) * i64::try_from(ROLL_SNAP_GRID_TICKS).unwrap_or(i64::MAX)
+}
+
+/// `[UI-NOTE-005]` §3 项 3：把"选中的音符身份 + 一档时值增量"解析成待提交的
+/// **`Op::SetNoteTiming` 集合**（纯函数, 有判据）。
+///
+/// # 作用域与身份解析
+///
+/// 与 [`nudge_ops_for`] **逐条同口径**：作用域是**选区**（不是指针下的一颗），
+/// 身份解析走 `clip_pool` → 摆放它的第一条轨道（键序确定），选区为空 / 一个身份都
+/// 解析不到 ⇒ 返回空 `Vec`。
+///
+/// # 夹紧是**逐音符**的（与平移的组夹紧**刻意不同**）
+///
+/// 平移用组夹紧是为了**保住选区的相对形状**（和弦不能散架）；时值没有那个问题 ——
+/// 时长是每颗音符**各自的**标量，一颗音符缩到 1 tick 的下限**不构成**另一颗不能缩的
+/// 理由。所以这里是逐音符夹紧：`new = max(1, old + Δ)`。
+///
+/// - 缩到下限**没变**的音符**不产出 op**（例如已经是 1 tick 又按 `Shift+←`）；
+/// - 其余音符照常提交 ⇒ **同一批里可以只有一部分音符**（这与组夹紧的"全有或全无"是
+///   两件事，理由同上：没有相对形状需要保住）。
+/// - 整批为空（没有选区 / 全部音符都不变 / Δ == 0）⇒ 返回空 `Vec`，调用方**不写空 op**、
+///   不消费这一键（与 [`nudge_ops_for`] 的空批语义一致）。
+///
+/// # 为什么是 `SetNoteTiming` 而不是"删了重加"
+///
+/// `Op::SetNoteTiming` 只改 `(start_tick, duration_ticks)`，**保住身份** `note_id` ——
+/// 删 + 加会换掉 `EntityId`，进而改变 `MidiNote::triggers` 的概率触发结果
+///（`ops.rs` 的 `SetNoteExpression` 文档写明了同一理由）。起点**原样回填**，
+/// 因此一次 `Shift+←/→` 只改一个字段。
+///
+/// # 为什么一次返回一批
+///
+/// 与 [`nudge_ops_for`] 逐字同理：`undo_session::commit` 把整批包成**一个**
+/// `Op::Batch` ⇒ "一次按键 = 一次提交 = 一步撤销"是构造上的（`ARCH-OPS-002`）。
+#[must_use]
+pub fn resize_duration_ops_for(
+    project: &yeban_model::YebanProjectV1,
+    selected_ulids: &[String],
+    delta_ticks: i64,
+) -> Vec<yeban_model::ops::Op> {
+    use std::collections::{BTreeMap, BTreeSet};
+    if delta_ticks == 0 {
+        return Vec::new();
+    }
+    let targets: BTreeSet<yeban_model::EntityId> = selected_ulids
+        .iter()
+        .filter_map(|raw| raw.parse::<yeban_model::EntityId>().ok())
+        .collect();
+    if targets.is_empty() {
+        return Vec::new();
+    }
+    // "片段池条目 → 摆放它的第一条轨道"（与 `nudge_ops_for` 逐字同款）。
+    let mut owner: BTreeMap<yeban_model::EntityId, yeban_model::EntityId> = BTreeMap::new();
+    for (track_id, track) in &project.tracks {
+        for placement in track.clips.values() {
+            owner.entry(placement.clip_id).or_insert(*track_id);
+        }
+    }
+    let fallback_track = project.tracks.keys().next().copied();
+    let mut ops = Vec::new();
+    // 片段池键序 → 音符键序：产出顺序确定（红线 4），与 `nudge_ops_for` 同源。
+    for (clip_id, entry) in &project.clip_pool {
+        let Some(notes) = entry.content.notes() else {
+            continue;
+        };
+        for (note_id, note) in notes {
+            if !targets.contains(note_id) {
+                continue;
+            }
+            let Some(track_id) = owner.get(clip_id).copied().or(fallback_track) else {
+                continue;
+            };
+            // 逐音符夹紧：`max(1, old + Δ)`。`i128` 中间量 ⇒ 不依赖溢出行为。
+            let wanted = i128::from(note.duration_ticks) + i128::from(delta_ticks);
+            let new_duration_ticks = u64::try_from(wanted.max(1)).unwrap_or(u64::MAX);
+            if new_duration_ticks == note.duration_ticks {
+                // 这一颗没变（已在下限 / 增量被夹掉）⇒ 不为它写 op。
+                continue;
+            }
+            ops.push(yeban_model::ops::Op::SetNoteTiming {
+                track_id,
+                clip_id: *clip_id,
+                note_id: *note_id,
+                old_start_tick: note.start_tick,
+                old_duration_ticks: note.duration_ticks,
+                new_start_tick: note.start_tick,
+                new_duration_ticks,
+            });
+        }
+    }
+    ops
 }
 
 /// `[UI-NOTE-003]` 把卷帘的点击接到**撤销端口**上（工具矩阵的编辑语义）。
@@ -10647,6 +10786,191 @@ mod pencil_op_tests {
             nudge_ops_for(&at_top, &ids, -240, 0).len(),
             total,
             "反方向必须照常产出"
+        );
+    }
+
+    /// 判据：`resize_duration_ops_for` 的**逐音符夹紧**、**部分批次**与**空批拒绝**
+    /// —— `[UI-NOTE-005]` §3 项 3 在宿主侧的算术。
+    ///
+    /// ## 它证明什么
+    ///
+    /// 1. 空选区 / 解析不出的身份 / **零增量** ⇒ 空 `Vec`（⛔ 不写空 op）；
+    /// 2. 每条 op 只改时值：`new_start_tick == old_start_tick`，`new = old ± 240`；
+    /// 3. 整批可应用、且**可逆**（一步撤销回到原时值）；
+    /// 4. **下界**：已经在 1 tick 的音符**不产出 op**，其余音符照常缩 ——
+    ///    ⭐ 这是与 `nudge_ops_for` 的**组夹紧**刻意不同的地方（时值没有"相对形状"要保住）；
+    /// 5. **上界**：`duration_ticks == u64::MAX` 的音符在延长时被夹掉、不出 op，
+    ///    缩短时照常产出（夹紧只夹撞上界的那一侧）。
+    ///
+    /// ## ⛔ 它不证明什么
+    ///
+    /// - ⛔ 不证明按键可达（`apply_action` 那条臂由 `tests/roll_edit_tools.rs` 的真事件管）；
+    /// - ⛔ 不证明幅度常量（那是 [`resize_duration_delta_for`]；本判据传字面量 240）。
+    #[test]
+    fn resize_duration_ops_for_clamps_per_note_and_refuses_no_ops() {
+        use yeban_model::ops::Op;
+
+        let project = filled_project();
+        let ids: Vec<String> = project
+            .clip_pool
+            .values()
+            .filter_map(|entry| entry.content.notes())
+            .flat_map(|notes| notes.keys().map(ToString::to_string))
+            .collect();
+        let total = ids.len();
+        assert!(total >= 4, "夹具至少有 4 个音符, 实际 {total}");
+
+        // ① 空选区 / 垃圾身份 / 零增量 ⇒ 空批。
+        assert!(
+            resize_duration_ops_for(&project, &[], 240).is_empty(),
+            "空选区 ⇒ 空批"
+        );
+        assert!(
+            resize_duration_ops_for(&project, &["not-a-ulid".to_owned()], 240).is_empty(),
+            "解析不出的身份 ⇒ 空批"
+        );
+        assert!(
+            resize_duration_ops_for(&project, &ids, 0).is_empty(),
+            "零增量 ⇒ 空批（⛔ 不许留下一条什么都不改的 op）"
+        );
+
+        // ② 全选 +240：逐条 `SetNoteTiming`，起点原样、时值 +240。
+        let ops = resize_duration_ops_for(&project, &ids, 240);
+        assert_eq!(ops.len(), total, "每个选中的音符恰好一条 `SetNoteTiming`");
+        for op in &ops {
+            let Op::SetNoteTiming {
+                old_start_tick,
+                new_start_tick,
+                old_duration_ticks,
+                new_duration_ticks,
+                ..
+            } = op
+            else {
+                panic!("只允许 `SetNoteTiming`, 实际是 {op:?}");
+            };
+            assert_eq!(
+                old_start_tick, new_start_tick,
+                "时值伸缩 **不**动起点（那是平移的事）"
+            );
+            assert_eq!(
+                *new_duration_ticks,
+                old_duration_ticks + 240,
+                "延长必须恰好是一个增量"
+            );
+        }
+        // 整批可应用（旧值逐字段来自当前文档）且可逆（换回旧值）。
+        let batch = Op::Batch {
+            ops,
+            description: "resize duration".to_owned(),
+        };
+        let mut doc = project.clone();
+        batch
+            .apply(&mut doc)
+            .expect("整批必须可应用（旧值来自当前文档）");
+        let durations_of =
+            |doc: &yeban_model::YebanProjectV1| -> Vec<(yeban_model::EntityId, u64)> {
+                doc.clip_pool
+                    .values()
+                    .filter_map(|entry| entry.content.notes())
+                    .flat_map(|notes| notes.iter().map(|(id, note)| (*id, note.duration_ticks)))
+                    .collect()
+            };
+        for (_, duration) in durations_of(&doc) {
+            assert_eq!(duration, 480 + 240, "应用后每一颗都必须变长一个增量");
+        }
+        batch
+            .apply_inverse(&mut doc)
+            .expect("一步撤销必须整批换回旧值");
+        for (_, duration) in durations_of(&doc) {
+            assert_eq!(duration, 480, "撤销一次必须回到夹具的原时值");
+        }
+
+        // 把**所有**音符的某个字段改掉（逐音符夹紧的边界只与那一颗有关）。
+        let all_notes = |mutate: &dyn Fn(&mut yeban_model::MidiNote)| {
+            let mut copy = project.clone();
+            for entry in copy.clip_pool.values_mut() {
+                let Some(notes) = entry.content.notes_mut() else {
+                    continue;
+                };
+                for note in notes.values_mut() {
+                    mutate(note);
+                }
+            }
+            copy
+        };
+
+        // ③ 下界：全体已在 1 tick ⇒ 缩短空批；延长照常（夹紧不过度）。
+        let at_floor = all_notes(&|note| note.duration_ticks = 1);
+        assert!(
+            resize_duration_ops_for(&at_floor, &ids, -240).is_empty(),
+            "全体已在 1 tick ⇒ 缩短必须空批"
+        );
+        assert_eq!(
+            resize_duration_ops_for(&at_floor, &ids, 240).len(),
+            total,
+            "反方向必须照常产出"
+        );
+
+        // ④ **部分批次**：一颗 1 tick ＋ 其余 480 ⇒ 缩短只产出其余，下限那一条不写 op。
+        let mut mixed = project.clone();
+        let mut floor_id = None;
+        for entry in mixed.clip_pool.values_mut() {
+            let Some(notes) = entry.content.notes_mut() else {
+                continue;
+            };
+            for (note_id, note) in notes.iter_mut() {
+                if floor_id.is_none() {
+                    note.duration_ticks = 1;
+                    floor_id = Some(*note_id);
+                }
+            }
+        }
+        let floor_id = floor_id.expect("夹具至少有一颗音符");
+        let ops = resize_duration_ops_for(&mixed, &ids, -240);
+        assert_eq!(
+            ops.len(),
+            total - 1,
+            "只有会变的音符产出 op（⭐ 逐音符夹紧 ⇒ 允许部分批次）"
+        );
+        for op in &ops {
+            let Op::SetNoteTiming {
+                note_id,
+                new_duration_ticks,
+                ..
+            } = op
+            else {
+                panic!("只允许 `SetNoteTiming`, 实际是 {op:?}");
+            };
+            assert_ne!(*note_id, floor_id, "已在 1 tick 的音符**不得**被写");
+            assert_eq!(*new_duration_ticks, 240, "其余音符每颗缩一个增量");
+        }
+
+        // ⑤ 上界：一颗 `u64::MAX` ⇒ 延长时它不出 op，缩短时照常产出。
+        let mut topped = project.clone();
+        let mut top_id = None;
+        for entry in topped.clip_pool.values_mut() {
+            let Some(notes) = entry.content.notes_mut() else {
+                continue;
+            };
+            for (note_id, note) in notes.iter_mut() {
+                if top_id.is_none() {
+                    note.duration_ticks = u64::MAX;
+                    top_id = Some(*note_id);
+                }
+            }
+        }
+        let top_id = top_id.expect("夹具至少有一颗音符");
+        let ops = resize_duration_ops_for(&topped, &ids, 240);
+        assert_eq!(ops.len(), total - 1, "撞上界的音符在延长时必须被夹掉");
+        assert!(
+            ops.iter()
+                .all(|op| !matches!(op, Op::SetNoteTiming { note_id, .. } if *note_id == top_id)),
+            "`u64::MAX` 那一颗不得出现在延长批次里"
+        );
+        assert_eq!(
+            resize_duration_ops_for(&topped, &ids, -240).len(),
+            total,
+            "反方向（缩短）必须照常产出"
         );
     }
 }

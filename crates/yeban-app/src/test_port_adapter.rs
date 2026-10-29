@@ -3245,6 +3245,22 @@ fn every_wired_key_returns_without_panicking_and_without_keeping_the_engine_borr
         ("z", true, false, false, false, "Shift+Z"),
         ("\u{f700}", true, false, false, false, "Shift+Up"),
         ("\u{f701}", true, false, false, false, "Shift+Down"),
+        (
+            "\u{f702}",
+            true,
+            false,
+            false,
+            false,
+            "Shift+Left（时值缩短）",
+        ),
+        (
+            "\u{f703}",
+            true,
+            false,
+            false,
+            false,
+            "Shift+Right（时值延长）",
+        ),
         ("\t", false, false, false, false, "Tab"),
         (" ", false, false, false, false, "Space"),
         // ⭐ 任务单 `#227`：裸 `Return` / `Enter` = 回到起点（界面回调族，借外执行）。
