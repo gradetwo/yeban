@@ -14889,3 +14889,10 @@ run 级还在 queued 时 `checks/deny/plan/lockfile/全量/macos` 已 completed�
 `rust (matrix)`/`rust (workspace 全量)`/`windows`/`macos` 全 `completed skipped`）⇒ 只作记录，
 不构成任何代码判决。⚠ 本批（本次追加）自身也是纯文档 ⇒ 其 run 预期同为空绿，下次读回按同拓扑记账，
 ⛔ 递归追哨。§0.6.0i 全线至此**无任何未读回的判决**。
+
+**空绿自指拓扑终止声明（2026-10-29）**：上一条预告的"本批自身 run"已读回 ——
+`f8c47171`⇒run `40836395195` **success·空绿**（真跑仅 `plan/deny/checks/lockfile`，
+`rust matrix/全量/windows/macos` 全 skipped），与预测逐字相同 ⇒ **读数无新信息**。
+纯文档批的读回批仍是纯文档批，递归在自引用处闭合：**此后空绿读回不再单独入账**，
+只随下一个实质批合并记账；§0.6.0i 收盘状态不变（无任何实质未读判决）。
+另：本轮按目标例行清理 `target/debug`（3.3 GB，可再生构建缓存），`/home` 空闲 27 G⇒30 G。
