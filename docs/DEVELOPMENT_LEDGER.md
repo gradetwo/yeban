@@ -14680,7 +14680,13 @@ deny／lockfile 四作业真跑，四条代码腿全 **skipped steps=0** ⇒ **�
 本地读数：`cargo test -p yeban-midi` ⇒ lib **219 passed**（+1）、`musicxml_contract` **50**、
 `real_world_smf` **9**、`smf_contract` **35**，FAILED **0**；clippy `-D warnings` 干净；fmt 通过。
 
-**判决**：待读回（本条提交的 run）。
+**判决（2026-10-29 读回）**：`37936ed5` ⇒ run `40806241346` **success**。
+`rust (yeban-midi)` 腿**真跑**（steps **14**；`test result: ok` 行 **6** 条：lib **219**、
+`musicxml_contract` **50**、`real_world_smf` **9**、`smf_contract` **35**，另两条 0 passed 的壳），
+新判据**逐名 ok**：`import::metadata_adoption_tests::export_import_export_is_byte_identical_with_notes_and_metadata`。
+该腿的测试命令带 `--no-fail-fast`（日志现读）⇒ 第 6.3.4 条的 fail-fast 空白风险在这一腿不成立；
+`plan`／`deny`／`lockfile`／`checks`(steps 15) 四条 success。
+⚠ `workspace 全量`／`macos`／`windows` 三条腿 **skipped、steps=0**（本批不碰 `schemas/**` ⇒ 由矩阵腿承判）。
 
 ### 缺陷修复：`yeban_import_midi` 曾**回报自己没写**的标题／署名（2026-10-29，`yeban-mcp`）
 
@@ -14711,3 +14717,30 @@ deny／lockfile 四作业真跑，四条代码腿全 **skipped steps=0** ⇒ **�
 `cargo fmt --all --check` 与前提探针（`yeban-midi`，已删）。
 
 **判决**：待读回（本条提交的 run）。
+
+### 判据补强：`yeban_export_midi` ⇒ `yeban_import_midi` 的**两工具闭环**（2026-10-29，`yeban-mcp`）
+
+**缺口（现读）**：两个工具**各自**有承重判据 —— 导出侧有 `export_midi_round_trips_in_memory_through_the_shared_mapping`
+（base64 解回 == 共享映射逐字节）、导入侧有采纳上报与撤销判据 —— 但**没有一条把导出工具的
+字节喂给导入工具**。`import_midi_tool.rs` 的 `create_metadata_smf_file` 用的是**手搓**
+`MidiExport`（`crates/yeban-mcp/tests/import_midi_tool.rs:540`），⛔ 不是 `export_from_project`
+的产物 ⇒ "导出侧真写了标题／署名"与"导入侧真采纳它们"这两条只能靠读者自己连起来。
+
+**新增判据**（`crates/yeban-mcp/tests/import_midi_tool.rs`）：
+`test_export_tool_bytes_reimported_through_the_import_tool`
+
+| 段 | 断言 |
+| :--- | :--- |
+| 源工程 | `content_free_project()` ＋ `title`／`author` ＋ 两颗音符 `(0,60,480,100)`／`(960,67,240,64)` |
+| 导出工具 | `data.notes == 2`（控制臂）；base64 **独立解码**（与被测编码器分开写）后长度 == `data.bytes` |
+| 导入工具 | 字节写 `.mid` ⇒ `project_without_identity()` ⇒ `applied == true`、`noteCount == 2`、`adoptedTitle`／`adoptedCopyright` 逐字等于源值 |
+| 工程侧 | `project.title`／`project.author` 等于源值；全池音符四元组排序后 == `[(0,60,480,100), (960,67,240,64)]` |
+
+⚠ **如实登记的边界**：本判据只覆盖**一条**含音符的导出轨、`splitTracks` 缺省（true）；
+轨名在文件里有**两个**不同值（导体轨名 = 标题、内容轨名 = 工程音轨名）⇒ 导入侧的轨名采纳
+按"唯一才采纳"规则**不生效**（⛔ 本判据断言它）—— 那属于 `adopt_track_name` 的既有口径。
+
+**判决**：待读回（本条提交的 run）。
+⚠ 本机不编译 `yeban-mcp`（传递依赖重）⇒ 判据第一次执行在 CI；本地只跑
+`cargo fmt --all --check`。底层路径（导出 ⇒ 解析 ⇒ 规划 ＋ 标题/署名采纳）已由
+`yeban-midi` 的 `export_import_export_is_byte_identical_with_notes_and_metadata` 本地钉住。

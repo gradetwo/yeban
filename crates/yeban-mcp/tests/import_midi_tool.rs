@@ -8,7 +8,9 @@
 //! 4. ⭐ [ARCH-EXT-002]：导体轨标题 / 版权声明在**空工程**上的采纳上报
 //!    （`adoptedTitle` / `adoptedCopyright`、dryRun 不落盘、undo 还原）；
 //! 5. ⭐ [ARCH-EXT-002]：tick > 0 变速 / 拍号映射点的采纳上报
-//!    （`adoptedTempoMap` / `adoptedTimeSignatureMap`、dryRun 不落盘、undo 还原）。
+//!    （`adoptedTempoMap` / `adoptedTimeSignatureMap`、dryRun 不落盘、undo 还原）；
+//! 6. ⭐ [ARCH-EXT-002]：**两工具闭环** —— `yeban_export_midi` 回传的字节（base64 解回）
+//!    写成 `.mid` 后再由 `yeban_import_midi` 导入，音符四元组与标题／署名逐字往返。
 
 use std::fs;
 use std::path::PathBuf;
@@ -20,7 +22,7 @@ use yeban_mcp::security::{BearerToken, Channel, RunMode, Scope, ScopeSet};
 use yeban_mcp::tools::{self, ErrorCode, SideEffect, TOOL_COUNT};
 use yeban_mcp::undo_session::canonical_project_bytes;
 use yeban_model::samples::{filled_project, project_with_notes};
-use yeban_model::{EntityId, YebanProjectV1};
+use yeban_model::{ClipContent, EntityId, MidiNote, YebanProjectV1};
 
 fn unique_path(tag: &str) -> PathBuf {
     std::env::temp_dir()
@@ -855,6 +857,136 @@ fn test_import_midi_adopts_tempo_map_and_time_signature_map() {
         assert!(
             project.time_signature_map.is_empty(),
             "撤销后 project.time_signature_map 必须还原"
+        );
+    }
+
+    let _ = fs::remove_file(smf_path);
+}
+
+// ---------------------------------------------------------------------------
+// ⭐ 两工具闭环：`yeban_export_midi` 的字节 ⇒ `yeban_import_midi` 的工程状态。
+// ---------------------------------------------------------------------------
+
+/// 测试侧的**独立** base64 解码器（RFC 4648 §4）—— 与 `extension_tools.rs` 同款，
+/// 与被测编码器分开写（不共用被测量的实现）。
+fn decode_base64(text: &str) -> Vec<u8> {
+    let mut out = Vec::new();
+    let mut buffer = 0_u32;
+    let mut bits = 0_u32;
+    for byte in text.bytes() {
+        if byte == b'=' {
+            break;
+        }
+        let value = match byte {
+            b'A'..=b'Z' => byte - b'A',
+            b'a'..=b'z' => byte - b'a' + 26,
+            b'0'..=b'9' => byte - b'0' + 52,
+            b'+' => 62,
+            b'/' => 63,
+            other => panic!("非法的 base64 字符: {other}"),
+        };
+        buffer = (buffer << 6) | u32::from(value);
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            out.push(((buffer >> bits) & 0xFF) as u8);
+        }
+    }
+    out
+}
+
+/// 判据（`[ARCH-EXT-002]`）：**导出工具**回传的字节喂给**导入工具**后，
+/// 音符四元组与标题／署名逐字往返 —— 两个工具之间没有"只有单元测试知道"的暗沟。
+#[test]
+fn test_export_tool_bytes_reimported_through_the_import_tool() {
+    const TITLE: &str = "夜半 · 工具闭环";
+    const COPYRIGHT: &str = "(c) 2026 Yeban Loop";
+
+    // 1. 源工程：空工程骨架 + 两颗音符 + 标题 + 署名。
+    let mut source = yeban_midi::import::content_free_project();
+    source.title = TITLE.to_owned();
+    source.author = COPYRIGHT.to_owned();
+    let clip_id = source
+        .clip_pool
+        .iter()
+        .find_map(|(id, entry)| matches!(&entry.content, ClipContent::Midi { .. }).then_some(*id))
+        .expect("content-free 夹具必须含 MIDI 片段");
+    {
+        let entry = source.clip_pool.get_mut(&clip_id).expect("片段在池里");
+        let ClipContent::Midi { notes } = &mut entry.content else {
+            unreachable!("刚按 MIDI 变体筛过");
+        };
+        notes.push(MidiNote::new(EntityId::new(), 0, 60, 480));
+        let mut second = MidiNote::new(EntityId::new(), 960, 67, 240);
+        second.velocity = 64;
+        notes.push(second);
+    }
+    let mut exporter = dispatcher_with_project(source);
+
+    let exported = call_tool(&mut exporter, "yeban_export_midi", json!({}));
+    assert_eq!(exported["status"], "success", "{exported}");
+    assert_eq!(
+        exported["data"]["notes"],
+        json!(2),
+        "控制臂：两颗音符都进了 SMF: {exported}"
+    );
+    let bytes = decode_base64(
+        exported["data"]["content"]
+            .as_str()
+            .expect("导出响应必须带 base64 正文"),
+    );
+    assert_eq!(
+        u64::try_from(bytes.len()).expect("长度"),
+        exported["data"]["bytes"].as_u64().expect("bytes 读数"),
+        "解回来的字节长度必须等于响应自报的 bytes: {exported}"
+    );
+
+    // 2. 字节写成 `.mid`，由**导入工具**导入一个没有身份的空工程。
+    let smf_path = std::env::temp_dir().join(format!(
+        "yeban-test-tool-loop-{}-{}.mid",
+        std::process::id(),
+        EntityId::new().to_canonical_string()
+    ));
+    fs::write(&smf_path, &bytes).expect("写 SMF 文件");
+
+    let mut importer = dispatcher_with_project(project_without_identity());
+    let imported = call_tool(
+        &mut importer,
+        "yeban_import_midi",
+        json!({"path": smf_path.to_str().expect("str")}),
+    );
+    assert_eq!(imported["status"], "success", "{imported}");
+    let data = &imported["data"];
+    assert_eq!(data["applied"], true, "{data}");
+    assert_eq!(data["noteCount"], json!(2), "{data}");
+    assert_eq!(data["adoptedTitle"], json!(TITLE), "{data}");
+    assert_eq!(data["adoptedCopyright"], json!(COPYRIGHT), "{data}");
+    {
+        let project = importer.domain().active_project().expect("活跃工程");
+        assert_eq!(project.title, TITLE, "标题必须在活跃工程生效");
+        assert_eq!(project.author, COPYRIGHT, "署名必须在活跃工程生效");
+        let mut notes: Vec<(u64, u8, u64, u8)> = project
+            .clip_pool
+            .values()
+            .filter_map(|entry| match &entry.content {
+                ClipContent::Midi { notes } => Some(notes.as_slice()),
+                ClipContent::Audio { .. } => None,
+            })
+            .flatten()
+            .map(|note| {
+                (
+                    note.start_tick,
+                    note.pitch,
+                    note.duration_ticks,
+                    note.velocity,
+                )
+            })
+            .collect();
+        notes.sort_unstable();
+        assert_eq!(
+            notes,
+            vec![(0, 60, 480, 100), (960, 67, 240, 64)],
+            "音符四元组必须逐条往返"
         );
     }
 
