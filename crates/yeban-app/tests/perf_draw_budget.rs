@@ -430,6 +430,7 @@ const PER_FRAME_ARRAY_REWRITE_BUDGET: usize = 52;
 /// * 写入点：**89 → 93**（四个标量；`apply_view` 里只多了四行 `ui.set_*`）；
 /// * 每帧换模型实例的数组：**49 → 49**（一条都不动）。
 /// * 默认帧（Tab 0）的运行时树不含 `device-rack` ⇒ 结构上不参与默认帧绘制。
+///
 /// ⭐ 宏面板（2026-10-30）：+3 个数组写入点（`macro-names` / `macro-values` /
 /// `macro-value-labels`）⇒ **90 → 93 → 96**；宏面板没有新的标量投影字段。
 const APPLY_VIEW_WRITE_SITE_BUDGET: usize = 96;
