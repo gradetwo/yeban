@@ -3713,6 +3713,239 @@ pub mod metadata_adoption_tests {
         );
     }
 
+    /// 判据（⭐ [ARCH-EXT-002] 导入侧）：空工程 + `author`/`title` 都为空时，
+    /// conductor 轨上**唯一条**有效版权文本 / 轨名分别落进 `project.author` /
+    /// `project.title`。⚠ 控制臂：同一次计划里音符必须真的进来了（⛔ 否则"标题写了"
+    /// 可能只是整个导入都没跑）。
+    #[test]
+    fn a_unique_conductor_copyright_and_name_fill_an_empty_author_and_title() {
+        let mut project = content_free_project();
+        project.title = String::new();
+        project.author = String::new();
+
+        let mut parsed = two_notes(960);
+        parsed = recording(parsed, MidiAuxEventKind::Copyright, 1);
+        parsed = recording(parsed, MidiAuxEventKind::TrackName, 1);
+        parsed.copyrights = vec![track_name(0, 0, Some("(c) 2026 Nobody"))];
+        parsed.track_names = vec![track_name(0, 0, Some("Midnight Sonata"))];
+
+        let plan =
+            plan_midi_import(&project, &parsed, &MidiImportOptions::default()).expect("有目标");
+        assert_eq!(plan.notes, 2, "控制臂：音符必须真的进来");
+        assert!(
+            plan.ops.iter().any(|op| matches!(
+                op,
+                Op::SetAuthor { old_author, new_author }
+                    if old_author.is_empty() && new_author == "(c) 2026 Nobody"
+            )),
+            "唯一版权文本 ⇒ SetAuthor: {:?}",
+            plan.ops
+        );
+        assert!(
+            plan.ops.iter().any(|op| matches!(
+                op,
+                Op::SetTitle { old_title, new_title }
+                    if old_title.is_empty() && new_title == "Midnight Sonata"
+            )),
+            "唯一 conductor 轨名 ⇒ SetTitle: {:?}",
+            plan.ops
+        );
+        assert_eq!(
+            plan.losses.aux_events[&MidiAuxEventKind::Copyright].dropped,
+            0,
+            "采纳的那条版权不是损失"
+        );
+    }
+
+    /// 判据：`project.title` 的采纳**只认真正的名字** —— 导出默认名被排除、两个不同名
+    /// 歧义时不猜；⭐ 对照组：同名重复（去重后一个）仍采纳；conductor 轨没有轨名时回退
+    /// `FF 01` 文本。⛔ 对照组是防"这三条其实都没跑"的恒真绿。
+    #[test]
+    fn title_never_takes_the_export_default_and_never_guesses_between_names() {
+        let mut project = content_free_project();
+        project.title = String::new();
+
+        let mut default_name = two_notes(960);
+        default_name = recording(default_name, MidiAuxEventKind::TrackName, 1);
+        default_name.track_names = vec![track_name(0, 0, Some(DEFAULT_CONDUCTOR_NAME))];
+        let plan = plan_midi_import(&project, &default_name, &MidiImportOptions::default())
+            .expect("有目标");
+        assert!(
+            !plan.ops.iter().any(|op| matches!(op, Op::SetTitle { .. })),
+            "导出默认名 ⛔ 不是作者起过的标题: {:?}",
+            plan.ops
+        );
+
+        let mut ambiguous = two_notes(960);
+        ambiguous = recording(ambiguous, MidiAuxEventKind::TrackName, 2);
+        ambiguous.track_names = vec![
+            track_name(0, 0, Some("Alpha")),
+            track_name(0, 0, Some("Beta")),
+        ];
+        let plan =
+            plan_midi_import(&project, &ambiguous, &MidiImportOptions::default()).expect("有目标");
+        assert!(
+            !plan.ops.iter().any(|op| matches!(op, Op::SetTitle { .. })),
+            "多个不同名字 ⇒ 歧义，⛔ 不挑第一条: {:?}",
+            plan.ops
+        );
+
+        let mut duplicate = two_notes(960);
+        duplicate = recording(duplicate, MidiAuxEventKind::TrackName, 2);
+        duplicate.track_names = vec![
+            track_name(0, 0, Some("Alpha")),
+            track_name(0, 0, Some("Alpha")),
+        ];
+        let plan =
+            plan_midi_import(&project, &duplicate, &MidiImportOptions::default()).expect("有目标");
+        assert!(
+            plan.ops.iter().any(|op| matches!(
+                op,
+                Op::SetTitle { new_title, .. } if new_title == "Alpha"
+            )),
+            "同名重复去重后恰一个 ⇒ 采纳: {:?}",
+            plan.ops
+        );
+
+        let mut fallback = two_notes(960);
+        fallback = recording(fallback, MidiAuxEventKind::Text, 1);
+        fallback.texts = vec![track_name(0, 0, Some("From a text event"))];
+        let plan =
+            plan_midi_import(&project, &fallback, &MidiImportOptions::default()).expect("有目标");
+        assert!(
+            plan.ops.iter().any(|op| matches!(
+                op,
+                Op::SetTitle { new_title, .. } if new_title == "From a text event"
+            )),
+            "conductor 轨无轨名 ⇒ `FF 01` 文本回退: {:?}",
+            plan.ops
+        );
+    }
+
+    /// 判据：`project.author` 的采纳门槛**逐条有牙** —— 非空工程 / 已有作者 / 多条歧义
+    /// 都 ⛔ 不写工程；⭐ 对照组：空工程 + 空作者时同一份文件**确实**会写。
+    /// ⭐ 另两条：重复的同一条有效文本 → 采纳一条、另一条如实计入 `dropped`；
+    /// conductor 轨有文本时，其它轨的文本**不进**候选池。
+    #[test]
+    fn copyright_is_never_written_over_content_or_an_existing_author_and_never_guessed() {
+        let mut parsed = two_notes(960);
+        parsed = recording(parsed, MidiAuxEventKind::Copyright, 1);
+        parsed.copyrights = vec![track_name(0, 0, Some("(c) 2026 A"))];
+
+        // ① 非空工程。
+        let mut filled = yeban_model::samples::filled_project();
+        filled.author = String::new();
+        let plan =
+            plan_midi_import(&filled, &parsed, &MidiImportOptions::default()).expect("有目标");
+        assert!(
+            !plan.ops.iter().any(|op| matches!(op, Op::SetAuthor { .. })),
+            "非空工程 ⛔ 写 author: {:?}",
+            plan.ops
+        );
+        assert_eq!(
+            plan.losses.aux_events[&MidiAuxEventKind::Copyright],
+            MidiLossCount {
+                read: 1,
+                dropped: 1,
+            }
+        );
+        let reason = &plan.losses.aux_reasons[&MidiAuxEventKind::Copyright];
+        assert!(
+            reason.contains("already has content") && reason.contains("project.author untouched"),
+            "原因必须点名内容门槛: {reason}"
+        );
+
+        // ② 工程已有作者（空工程也算）。
+        let mut existing = content_free_project();
+        existing.author = "Existing Author".to_owned();
+        let plan =
+            plan_midi_import(&existing, &parsed, &MidiImportOptions::default()).expect("有目标");
+        assert!(
+            !plan.ops.iter().any(|op| matches!(op, Op::SetAuthor { .. })),
+            "已有作者 ⛔ 覆盖: {:?}",
+            plan.ops
+        );
+        let reason = &plan.losses.aux_reasons[&MidiAuxEventKind::Copyright];
+        assert!(
+            reason.contains("already set"),
+            "原因必须点名\"已有作者\": {reason}"
+        );
+
+        // ③ 对照组：空工程 + 空作者 ⇒ 同一份文件**确实**会写。
+        let mut empty = content_free_project();
+        empty.title = String::new();
+        empty.author = String::new();
+        let plan =
+            plan_midi_import(&empty, &parsed, &MidiImportOptions::default()).expect("有目标");
+        assert!(
+            plan.ops.iter().any(|op| matches!(
+                op,
+                Op::SetAuthor { new_author, .. } if new_author == "(c) 2026 A"
+            )),
+            "对照组必须真的采纳（否则上面两条可能是恒真）: {:?}",
+            plan.ops
+        );
+
+        // ④ 多条互不相同的文本 ⇒ 歧义，⛔ 不猜。
+        let mut ambiguous = recording(two_notes(960), MidiAuxEventKind::Copyright, 2);
+        ambiguous.copyrights = vec![
+            track_name(0, 0, Some("(c) 2026 A")),
+            track_name(0, 0, Some("(c) 2026 B")),
+        ];
+        let plan =
+            plan_midi_import(&empty, &ambiguous, &MidiImportOptions::default()).expect("有目标");
+        assert!(
+            !plan.ops.iter().any(|op| matches!(op, Op::SetAuthor { .. })),
+            "歧义 ⛔ 挑第一条: {:?}",
+            plan.ops
+        );
+        let reason = &plan.losses.aux_reasons[&MidiAuxEventKind::Copyright];
+        assert!(reason.contains("ambiguous"), "原因必须点名歧义: {reason}");
+
+        // ⑤ 重复的同一条有效文本：采纳一条 + 另一条计入 dropped（原因写明"部分采纳"）。
+        let mut duplicate = recording(two_notes(960), MidiAuxEventKind::Copyright, 2);
+        duplicate.copyrights = vec![
+            track_name(0, 0, Some("(c) 2026 A")),
+            track_name(0, 0, Some("(c) 2026 A")),
+        ];
+        let plan =
+            plan_midi_import(&empty, &duplicate, &MidiImportOptions::default()).expect("有目标");
+        assert!(
+            plan.ops.iter().any(|op| matches!(op, Op::SetAuthor { .. })),
+            "重复的同一条文本仍可采纳: {:?}",
+            plan.ops
+        );
+        assert_eq!(
+            plan.losses.aux_events[&MidiAuxEventKind::Copyright],
+            MidiLossCount {
+                read: 2,
+                dropped: 1,
+            },
+            "采纳一条；另一条没有第二个载体"
+        );
+        let reason = &plan.losses.aux_reasons[&MidiAuxEventKind::Copyright];
+        assert!(
+            reason.contains("partially-adopted") && reason.contains("(c) 2026 A"),
+            "部分采纳原因必须点名采纳值与条数: {reason}"
+        );
+
+        // ⑥ conductor 轨有文本 ⇒ 其它轨的文本不进候选池（第 0 轨优先）。
+        let mut mixed = recording(two_notes(960), MidiAuxEventKind::Copyright, 2);
+        mixed.copyrights = vec![
+            track_name(0, 0, Some("(c) Conductor")),
+            track_name(1, 0, Some("(c) Other Track")),
+        ];
+        let plan = plan_midi_import(&empty, &mixed, &MidiImportOptions::default()).expect("有目标");
+        assert!(
+            plan.ops.iter().any(|op| matches!(
+                op,
+                Op::SetAuthor { new_author, .. } if new_author == "(c) Conductor"
+            )),
+            "第 0 轨优先: {:?}",
+            plan.ops
+        );
+    }
+
     /// 判据：`import_target_is_empty` 的**定义有牙** —— 四个维度各自都能把
     /// "没有内容"翻成"有内容"（否则内容门槛可能只在一种情况下生效）。
     #[test]

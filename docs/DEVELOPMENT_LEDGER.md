@@ -14557,3 +14557,24 @@ deny／lockfile 四作业真跑，四条代码腿全 **skipped steps=0** ⇒ **�
 按台账纪律 ⛔ 重写历史。
 
 **判决**：待读回（本次提交的 run）。
+
+### 判据补强：导入侧 title / author 采纳的门槛（2026-10-29，`yeban-midi`）
+
+**缺口（现读）**：`adopt_title`（`crates/yeban-midi/src/import.rs:1315`）与 `adopt_copyright`（:1349）
+在 `yeban-midi` 的测试里**零直接判据**（全部夹具 `copyrights: Vec::new()`、`track_names` 为空）；
+唯一覆盖是 MCP 端到端 `test_import_midi_adopts_title_and_copyright`（`crates/yeban-mcp/tests/import_midi_tool.rs:574`，
+只走**采纳**这一条分支）。⇒ 三条门槛（非空工程 / 已有作者 / 多条歧义）、默认 conductor 名排除、
+`FF 01` 回退、部分采纳计数**都不会红**。
+
+**新增三条判据**（`mod metadata_adoption_tests`，均带控制臂；⛔ 无生产代码改动）：
+
+| 判据 | 钉住 |
+| :--- | :--- |
+| `a_unique_conductor_copyright_and_name_fill_an_empty_author_and_title` | 唯一 `FF 02` → `SetAuthor`、唯一轨名 → `SetTitle`；控制臂 `plan.notes == 2`；采纳条 `dropped == 0` |
+| `title_never_takes_the_export_default_and_never_guesses_between_names` | 排除 `DEFAULT_CONDUCTOR_NAME`；两名歧义不猜；⭐ 对照：同名重复仍采纳、`FF 01` 回退采纳 |
+| `copyright_is_never_written_over_content_or_an_existing_author_and_never_guessed` | 非空工程（原因点名 `already has content`）／已有作者（`already set`）／多值歧义（`ambiguous`）都 ⛔ 写；⭐ 对照：同文件在空工程确实写；重复有效文本 ⇒ `read=2 dropped=1` ＋ `partially-adopted`；conductor 轨优先于其它轨 |
+
+本地读数：`cargo test -p yeban-midi --lib -- import::` ⇒ **41 passed / 0 failed**；
+`cargo clippy -p yeban-midi --all-targets -- -D warnings` ⇒ 干净；`cargo fmt --all --check` ⇒ 通过。
+
+**判决**：待读回（本条提交的 run）。
