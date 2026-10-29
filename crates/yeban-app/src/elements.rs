@@ -4021,7 +4021,6 @@ mod tests {
     /// | 语义 ID（`.slint` 右值） | 为什么今天没有动作 |
     /// | :--- | :--- |
     /// | `"ai-rail-intent-button"` | 意图生成能力不存在: 没有 `callback`、没有宿主写者 |
-    /// | `"console-maximize-button"` | 底部控制台最大化只有键盘路径（`Cmd/Ctrl+Alt+M`） |
     /// | `"sidebar-category-" + i + "-button"` | 分类切换状态机不存在（只有静态选中态 `category_index == 0`） |
     /// | `"transport-branch-button"` | 切换活跃分支的 API 一处都不存在（判据 `the_three_transport_document_actions_are_not_wired_today` 已钉） |
     /// | `"transport-commit-button"` | 同上（会话里没有"待提交的编辑"这一状态） |
@@ -4107,16 +4106,22 @@ mod tests {
     /// `host::wire_scene_launch` ⇒ `EngineHost::queue_scene_launch` ⇒ 引擎在量化点
     /// `transport.retune(场景 tempo)`。它与上一条同型：**接上真动作才移出**，
     /// ⛔ 不是"先删表行"。
-    /// ⭐ **本票移出了两条**（`8 → 6`）：`"mixer-master-mute-button"` /
+    /// ⭐ **主控静音 / 独奏移出了两条**（`8 → 6`）：`"mixer-master-mute-button"` /
     /// `"mixer-master-solo-button"` 现在**真的**可点 —— 主控通道条的那两个按钮走
     /// `TouchArea.clicked` ＋ `accessible-action-default`（同一落点）
     /// `root.mixer-master-mute-toggle()` / `root.mixer-master-solo-toggle()` ⇒
     /// `host::wire_mixer_master_switch` 按主总线身份提交一次 `Op::SetTrackMute` /
     /// `Op::SetTrackSolo`。按本判据文档的要求（"修好一个 ⇒ 从清单里删掉它"），
     /// 它们不再属于"没有动作"的集合。
-    const KNOWN_ACTIONLESS_CONTROLS: [&str; 6] = [
+    ///
+    /// ⭐ **控制台最大化按钮再移出一条**（`6 → 5`；本行按两线合并后的实测条数改写，
+    /// ⛔ 不是照抄单线提交里的 `8 → 7`）：`console-maximize-button` 现在有
+    /// `TouchArea.clicked` ＋ `accessible-action-default`（同一落点
+    /// `root.console-maximize-toggle()`）⇒ 宿主 `host::wire_view_callbacks` 写
+    /// `console-maximized` —— 与键盘 `Cmd/Ctrl+Alt+M` 的
+    /// `Action::ToggleConsoleMaximize` 是**同一个**视图态属性。
+    const KNOWN_ACTIONLESS_CONTROLS: [&str; 5] = [
         "app.slint :: \"ai-rail-intent-button\"",
-        "console/console_tabs.slint :: \"console-maximize-button\"",
         "sidebar.slint :: \"sidebar-category-\" + category_index + \"-button\"",
         "transport.slint :: \"transport-branch-button\"",
         "transport.slint :: \"transport-commit-button\"",

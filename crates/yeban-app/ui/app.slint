@@ -382,7 +382,12 @@ export component MainWindow inherits Window {
     in-out property <bool> recording: false;
     in-out property <bool> arrangement-view: true;
     in-out property <int> console-tab: 0;
-    in-out property <bool> console-expanded: true;
+    /// ⭐ 底部控制台是否最大化（`Cmd/Ctrl+Alt+M` / 控制台右上角 ⤢ 的同一个视图态）。
+    /// 唯一写者是宿主（`host::apply_action` 的 `Action::ToggleConsoleMaximize` 与
+    /// `host::wire_view_callbacks` 的点击回调写的是**同一个**属性）⇒ 按键与点击不分叉。
+    /// 布局绑定：最大化时中段（工作区）让出全部高度，控制台吃掉剩余空间。
+    /// ⛔ 不是工程数据（`MODEL-ISO-001` 的挥发性层）、不进 `.yeban`、不进撤销栈。
+    in-out property <bool> console-maximized: false;
     in-out property <bool> sidebar-collapsed: false;
     in-out property <bool> ai-drawer-open: false;
     in-out property <bool> musical-pr-open: false;
@@ -447,6 +452,9 @@ export component MainWindow inherits Window {
     callback toggle-view();
     callback toggle-sidebar();
     callback toggle-ai-drawer();
+    /// ⭐ 控制台右上角 ⤢ 的点击入口：与 `Cmd/Ctrl+Alt+M`（`Action::ToggleConsoleMaximize`）
+    /// 落到**同一个**属性 `console-maximized`（唯一实现 = 宿主写属性，界面不自己翻转）。
+    callback console-maximize-toggle();
     callback toggle-undo-tree();
     // D45: 时光机里的"撤销一步"（与 `Cmd+Z` 汇到同一个 `UndoPort::perform`）。
     callback undo-step();
@@ -1240,7 +1248,9 @@ export component MainWindow inherits Window {
 
         // ------------------------------------------- 中段 (弹性区的 60%)
         HorizontalLayout {
-            vertical-stretch: Tokens.workspace-stretch;
+            // ⭐ 控制台最大化：让出**全部**弹性高度（stretch 0 ⇒ 只剩首选高度，
+            // 工作区画布按设计缩到 0）⇒ 剩下的都给控制台。还原 ⇒ 回到 3 : 2。
+            vertical-stretch: root.console-maximized ? 0 : Tokens.workspace-stretch;
 
             // 240px 左资源栏 (compact 时 36px 图标导轨)
             Sidebar {
@@ -1394,6 +1404,7 @@ export component MainWindow inherits Window {
         console-tabs := ConsoleTabs {
             vertical-stretch: Tokens.console-stretch;
             active-tab: root.console-tab;
+            console-maximized: root.console-maximized;
             note-ulids: root.note-ulids;
             note-velocities: root.note-velocities;
             note-positions: root.note-positions;
@@ -1615,6 +1626,12 @@ export component MainWindow inherits Window {
             // ⭐ 宏入口：打开右侧抽屉（开关状态住在本窗口；⛔ 不在控制台里存第二份）。
             open-macro-panel() => {
                 root.macro-panel-open = true;
+            }
+
+            // ⭐ 控制台右上角 ⤢：只上抛 —— 开关状态由宿主写 `console-maximized`
+            // （与 `toggle-view` 一族同款，界面不自己翻转）。
+            console-maximize-toggle() => {
+                root.console-maximize-toggle();
             }
 
             // 混音台写入面：只上抛，不在 `.slint` 里改任何工程值

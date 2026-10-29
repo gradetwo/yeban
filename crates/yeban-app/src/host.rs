@@ -5273,6 +5273,19 @@ pub fn wire_view_callbacks(ui: &MainWindow) {
             ui.set_ai_drawer_open(!ui.get_ai_drawer_open());
         }
     });
+    // ⭐ 控制台右上角 ⤢：与键盘 `Cmd/Ctrl+Alt+M`（`apply_action` 的
+    // `Action::ToggleConsoleMaximize`）写的是**同一个**属性 ⇒ 点击与按键不可能分叉。
+    // 纯视图态（`MODEL-ISO-001` 的挥发性层）⇒ 不改工程、不需要 `UndoPort`。
+    ui.on_console_maximize_toggle({
+        let weak = weak.clone();
+        move || {
+            let Some(ui) = weak.upgrade() else {
+                debug_assert!(false, "MainWindow 在回调执行期间被销毁");
+                return;
+            };
+            ui.set_console_maximized(!ui.get_console_maximized());
+        }
+    });
     ui.on_open_musical_pr({
         let weak = weak.clone();
         move || {
@@ -7993,7 +8006,7 @@ fn apply_action(
             true
         }
         Action::ToggleConsoleMaximize => {
-            ui.set_console_expanded(!ui.get_console_expanded());
+            ui.set_console_maximized(!ui.get_console_maximized());
             true
         }
         // ⭐ 任务单 `#227`（Logic 的 `Go to Beginning`）：`Return` / `Enter`（裸键）。
