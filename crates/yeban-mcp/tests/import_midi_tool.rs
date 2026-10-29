@@ -637,6 +637,81 @@ fn test_import_midi_adopts_title_and_copyright() {
     let _ = fs::remove_file(smf_path);
 }
 
+/// 造一份**格式 0**（单 `MTrk`）文件：唯一的轨名叫 `Piano`，同时带标题与版权元数据。
+///
+/// 关键性质：`TrackName` 类**只有一条事件**、且它被采纳成工程音轨名 ⇒ 该类 `dropped == 0`。
+fn create_single_track_named_smf() -> PathBuf {
+    use yeban_midi::midi::{DEFAULT_PPQ, MidiExport, MidiExportTrack, MidiFormat, MidiTempo};
+    let export = MidiExport {
+        format: MidiFormat::SingleTrack,
+        ppq: DEFAULT_PPQ,
+        tempos: vec![MidiTempo::with_time_signature(120.0, 4, 2)],
+        tracks: vec![MidiExportTrack {
+            name: "Piano".to_string(),
+            channel: 0,
+            notes: vec![yeban_model::MidiNote::new(EntityId::new(), 0, 60, 480)],
+            control_changes: Vec::new(),
+        }],
+        key_signature: None,
+        title: Some(META_TITLE.to_string()),
+        copyright: Some(META_COPYRIGHT.to_string()),
+    };
+    let bytes = export.to_smf_bytes().expect("SMF 编码");
+    let path = std::env::temp_dir().join(format!(
+        "yeban-test-import-single-name-{}-{}.mid",
+        std::process::id(),
+        EntityId::new().to_canonical_string()
+    ));
+    fs::write(&path, bytes).expect("写单轨 SMF 文件");
+    path
+}
+
+/// 判据（⚠ 工具契约"未采纳的一律为 `null`"）：目标工程**已有标题／署名**时，
+/// `adoptedTitle` / `adoptedCopyright` 必须是 `null`。
+///
+/// ⚠ 这一条钉的是一个**曾经存在**的谎报：旧实现对标题按 `TrackName` 类的
+/// `dropped == 0` 回退读 `project.title` —— 当文件的轨名全部被采纳成**工程音轨名**、
+/// 而工程本来就有标题时，响应会报"采纳了标题"（其实是工程自己的旧标题）。
+#[test]
+fn test_import_midi_never_reports_a_title_or_copyright_it_did_not_write() {
+    let smf_path = create_single_track_named_smf();
+    let project = project_with_notes(0);
+    let original_title = project.title.clone();
+    let original_author = project.author.clone();
+    assert!(!original_title.is_empty(), "夹具前提：工程已有标题");
+    let mut dispatcher = dispatcher_with_project(project);
+
+    let res = call_tool(
+        &mut dispatcher,
+        "yeban_import_midi",
+        json!({"path": smf_path.to_str().expect("str")}),
+    );
+    assert_eq!(res["status"], "success", "{res}");
+    let data = &res["data"];
+    assert_eq!(data["applied"], true, "{data}");
+    // 控制臂：导入真的发生了（音符进来了），⛔ 整条路径没跑。
+    assert_eq!(data["noteCount"], 1, "{data}");
+    // 前提：轨名整类零丢失 —— 旧版正是在这里回退读 `project.title`。
+    assert_eq!(
+        data["losses"]["aux_events"]["track-name"]["read"], 1,
+        "{data}"
+    );
+    assert_eq!(
+        data["losses"]["aux_events"]["track-name"]["dropped"], 0,
+        "{data}"
+    );
+    // 判据：⛔ 回报自己没写的标题 / 署名。
+    assert_eq!(data["adoptedTitle"], Value::Null, "{data}");
+    assert_eq!(data["adoptedCopyright"], Value::Null, "{data}");
+    {
+        let project = dispatcher.domain().active_project().expect("活跃工程");
+        assert_eq!(project.title, original_title, "工程标题 ⛔ 被导入改动");
+        assert_eq!(project.author, original_author, "工程署名 ⛔ 被导入改动");
+    }
+
+    let _ = fs::remove_file(smf_path);
+}
+
 /// 造一份**带多点变速 / 拍号映射**的 SMF：tick 0 = 120 BPM + 4/4，
 /// tick 3840 = 144 BPM + 3/4（源 PPQ 与工程同为 960 ⇒ tick 逐一对齐）。
 fn create_tempo_meter_map_smf_file() -> PathBuf {

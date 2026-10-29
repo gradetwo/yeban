@@ -14681,3 +14681,33 @@ deny／lockfile 四作业真跑，四条代码腿全 **skipped steps=0** ⇒ **�
 `real_world_smf` **9**、`smf_contract` **35**，FAILED **0**；clippy `-D warnings` 干净；fmt 通过。
 
 **判决**：待读回（本条提交的 run）。
+
+### 缺陷修复：`yeban_import_midi` 曾**回报自己没写**的标题／署名（2026-10-29，`yeban-mcp`）
+
+**缺陷（现读代码 + 本地前提实测）**：`crates/yeban-mcp/src/domain/import_midi.rs` 在
+`plan.ops` 里没有 `SetTitle` 时，按 **`TrackName` 类的 `read > 0 && dropped == 0`** 回退读
+`project.title`，并回报成 `adoptedTitle`。该条件与"标题被采纳"**无关**：
+- `adopt_title` 的门槛要求 `import_target_is_empty` **且** `project.title` 为空 ⇒ 真采纳**必发**
+  `SetTitle`；不发 ⇒ 一定没采纳；
+- 而 `TrackName` 的 `dropped == 0` 只表示**轨名**（工程的音轨名）整类落进了工程。
+
+⭐ **本地前提实测（`yeban-midi`，960 PPQ）**：`filled_project`（有内容、标题非空）+ 一份只有
+**一条**轨名 `Piano` 的解析结果 ⇒ `plan.ops` **无** `SetTitle`，且 `TrackName` 类
+`read=1 dropped=0` ⇒ 旧版这条路径会回报 `adoptedTitle = <工程原有标题>`。工具契约逐字写着
+"未采纳的一律为 `null`，⛔ 不拿没做的事填个值"（`crates/yeban-mcp/src/tools.rs:1368`）。
+`adoptedCopyright` 的同类回退**不可达**（版权被拦时 `dropped == read > 0`），一并删除以免日后长歪。
+
+**修法**（`crates/yeban-mcp/src/domain/import_midi.rs`）：删掉标题与署名两处"回退读工程现值"，
+并在原处写明理由。⛔ 无策略变更：采纳门槛、损失计数、ops 生成一位未动。
+
+**新判据**（`crates/yeban-mcp/tests/import_midi_tool.rs`）：
+`test_import_midi_never_reports_a_title_or_copyright_it_did_not_write` —— 格式 0 单轨文件
+（轨名 `Piano`，另带标题／版权元数据）× `project_with_notes(0)`（有内容 + 已有标题）⇒
+`applied == true`、`noteCount == 1`（控制臂）、`track-name` 类 `read=1 dropped=0`（前提）、
+`adoptedTitle` / `adoptedCopyright` 均为 `null`（判据）、工程标题／署名一位未动。
+
+⚠ **本轮未跑**：`yeban-mcp` 传递依赖 `yeban-render`（`rayon` / `hound` / `midly`）⇒ 按
+`scripts/dev/heavy-deps.py` 本机**不编译**，新判据的第一次执行在 CI。本地只跑了
+`cargo fmt --all --check` 与前提探针（`yeban-midi`，已删）。
+
+**判决**：待读回（本条提交的 run）。

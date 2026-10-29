@@ -327,31 +327,11 @@ pub fn plan(project: &YebanProjectV1, arguments: &Map<String, Value>) -> Result<
     {
         adopted_track_name = Some(track.name.clone());
     }
-    // ⭐ [ARCH-EXT-002]：`FF 02` 整类读入且零丢失 ⇒ 版权已进 `project.author`；
-    // ops 里没有 `SetAuthor` 时（值与工程现值相同 ⇒ 不产生写操作）回退读工程现值。
-    if adopted_copyright.is_none()
-        && plan
-            .losses
-            .aux_events
-            .get(&MidiAuxEventKind::Copyright)
-            .is_some_and(|c| c.read > 0 && c.dropped == 0)
-        && !project.author.is_empty()
-    {
-        adopted_copyright = Some(project.author.clone());
-    }
-    // ⭐ [ARCH-EXT-002]：标题的载体是 `FF 03` 导体轨名（无有效轨名时回退 `FF 01` 文本）。
-    // ops 里没有 `SetTitle` 时（值与工程现值相同 ⇒ 不产生写操作）回退读工程现值；
-    // 工程标题为空说明**什么都没采纳**，⛔ 不报成"采纳了空标题"。
-    if adopted_title.is_none()
-        && plan
-            .losses
-            .aux_events
-            .get(&MidiAuxEventKind::TrackName)
-            .is_some_and(|c| c.read > 0 && c.dropped == 0)
-        && !project.title.is_empty()
-    {
-        adopted_title = Some(project.title.clone());
-    }
+    // ⚠ 标题 / 署名**没有**"回退读工程现值"这一步：两者的采纳门槛都要求工程字段**为空**
+    // （不覆盖作者已写好的值），所以每次真采纳都会发 `SetTitle` / `SetAuthor`，
+    // ⛔ 不存在"值相同 ⇒ 不发操作"的情形。旧版对标题按 `TrackName` 类的 `dropped == 0`
+    // 回退读 `project.title` —— 那条在"目标工程已有标题、文件只有一条轨名"时会**谎报**
+    // 采纳（工具契约：未采纳一律 `null`）。
 
     let mut created_tracks = Vec::new();
     let mut pending_track: Option<(EntityId, String)> = None;
