@@ -14579,6 +14579,16 @@ deny／lockfile 四作业真跑，四条代码腿全 **skipped steps=0** ⇒ **�
 
 **判决**：待读回（本条提交的 run）。
 
+> **判决（2026-10-29 读回）**：`bf6d2899` ⇒ run `40805034588` **success**。
+> `rust (yeban-midi)` 腿**真跑**（steps **14**；日志 `test result:` **6** 行：
+> lib **216**、`musicxml_contract` **50**、`real_world_smf` **9**、`smf_contract` **35**、
+> 另两行 **0 passed** 的壳），三条新判据**逐名 ok**：
+> `import::metadata_adoption_tests::{a_unique_conductor_copyright_and_name_fill_an_empty_author_and_title,
+> title_never_takes_the_export_default_and_never_guesses_between_names,
+> copyright_is_never_written_over_content_or_an_existing_author_and_never_guessed}`。
+> ⚠ 未跑：`rust (workspace 全量)`／`macos`／`windows` 三条腿 **skipped、steps=0**（本改动只触
+> `yeban-midi`，矩阵按构造未纳入）—— 这是**空绿**的边界，⛔ 当作"全量验证过"。
+
 ### 判据补强：导出侧标题 / 署名的**逐字**语义（2026-10-29，`yeban-midi`）
 
 **缺口（现读）**：`export_from_project` 把 `project.title` ⇒ `MidiExport.title`、
@@ -14606,5 +14616,36 @@ deny／lockfile 四作业真跑，四条代码腿全 **skipped steps=0** ⇒ **�
 
 ⚠ **绿 ≠ 对**：本条只证明"导出器把工程字段接到 conductor 元数据、且能在 `parse_smf` 逐字读回"。
 它 ⛔ 证明"音频／工程导出也写作者" —— 那两条**按 §10.7 B1 仍不写**（`rf64`／`als` 未改）。
+
+**判决（2026-10-29 读回）**：`bdb15bfb` ⇒ run `40805419798` **success**。
+`rust (yeban-midi)` 腿**真跑**（steps **14**；`test result:` **6** 行：lib **217**、
+`musicxml_contract` **50**、`real_world_smf` **9**、`smf_contract` **35**、另两行 0 passed 的壳），
+新判据**逐名 ok**：`export::tests::title_and_author_export_to_conductor_metadata_and_round_trip`。
+⚠ `workspace 全量`／`macos`／`windows` 三条腿 **skipped、steps=0**（只触 `yeban-midi`）。
+
+### 判据补强：导出 → 导入的**整颗音符**往返（2026-10-29，`yeban-midi`）
+
+**缺口（现读）**：`yeban-midi` 里"导出 → 解析 → 导入规划"这条**组合**只有一条判据
+（`export.rs` 的 `a_single_note_pitch_bend_curve_survives_export_and_reimport`，只比**弯音曲线**、
+且用 tick 0 的合成工程）。音符的 `(起始 tick, 音高, 时值, 力度)` 四元组**没有任何组合判据**，
+标题／署名也 ⛔ 在这条组合里出现过。
+
+**新增一条判据**（`crates/yeban-midi/src/import.rs` 的 `mod metadata_adoption_tests`）：
+
+| 判据 | 钉住 |
+| :--- | :--- |
+| `a_project_survives_export_and_reimport_with_every_note_intact` | `demo_project`（6 音符、960 PPQ）⇒ 导出字节 ⇒ `parse_smf` ⇒ `plan_midi_import` 到 **content-free** 工程 ⇒ `Op::AddNote` 的 `(start_tick, pitch, duration_ticks, velocity)` **排序后逐条等于**工程侧独立数出的同一四元组；防空 `!expected.is_empty()`；⭐ 控制臂：`SetTitle`／`SetAuthor` 带回 `project.title`／`project.author`（证明元数据面同样往返） |
+
+**注入证明（如实登记）**：把导入侧的时值改成 `end - start + 1` ⇒ 新判据红（`481` vs `480` 六颗）；
+⭐ **同一条注入也被既有单测 `the_mapping_scales_ticks_and_keeps_pitch_velocity_and_duration` 抓到**
+⇒ **本判据的独特价值在"两跳组合"面，⛔ 在时值算术**（算术面早已有判据）。还原后 `sha256` 回到
+`417d77c2…`（注入前实测值）。
+
+本地读数：`cargo test -p yeban-midi` ⇒ lib **218 passed**（+1）、`musicxml_contract` **50**、
+`real_world_smf` **9**、`smf_contract` **35**，FAILED **0**；`clippy -p yeban-midi --lib --tests -D warnings`
+干净；`cargo fmt --all --check` 通过。
+
+⚠ **绿 ≠ 对**：判据只覆盖**一条** MIDI 轨、`split_tracks=false` 的路径；多轨拆分后的落点
+`track_partitions_dropped` ⛔ 在本判据力内。
 
 **判决**：待读回（本条提交的 run）。

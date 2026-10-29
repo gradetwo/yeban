@@ -3757,6 +3757,93 @@ pub mod metadata_adoption_tests {
         );
     }
 
+    /// 判据（**往返可逆性**）：工程 ⇒ 导出字节 ⇒ 解析 ⇒ 导入规划 ⇒ 逐音符回到工程。
+    ///
+    /// 导出映射与导入映射**各自**都有判据，但"同一工程走完两跳仍回到自己"没有判据
+    /// 看着 —— 若导出把时值写短一 tick、导入再原样读回，两侧单测可以各自为绿。
+    /// ⚠ 控制臂：同一次规划里标题与署名也必须被采纳（证明元数据面也往返了，
+    /// ⛔ 只是"音符恰好对上"）。
+    #[test]
+    fn a_project_survives_export_and_reimport_with_every_note_intact() {
+        let project = yeban_model::samples::demo_project();
+        let bytes = crate::export::export_from_project(&project)
+            .expect("演示夹具必须可投影")
+            .to_smf_bytes()
+            .expect("编码");
+        let parsed = crate::midi::parse_smf(&bytes).expect("回读");
+
+        // 独立口径：直接从工程侧数出 (起始 tick, 音高, 时值, 力度)，不经过导出器。
+        let mut expected: Vec<(u64, u8, u64, u8)> = Vec::new();
+        for track in project.tracks.values() {
+            if track.id == project.master_bus_track_id {
+                continue;
+            }
+            for placement in track.clips.values() {
+                if placement.muted {
+                    continue;
+                }
+                let Some(entry) = project.clip_pool.get(&placement.clip_id) else {
+                    continue;
+                };
+                let Some(pool) = entry.content.notes() else {
+                    continue;
+                };
+                for n in pool.values() {
+                    expected.push((
+                        placement.start_tick.saturating_add(n.start_tick),
+                        n.pitch,
+                        n.duration_ticks,
+                        n.velocity,
+                    ));
+                }
+            }
+        }
+        expected.sort_unstable();
+        assert!(!expected.is_empty(), "夹具必须有音符，否则本判据恒真");
+
+        let mut target = content_free_project();
+        target.title = String::new();
+        target.author = String::new();
+        let plan = plan_midi_import(&target, &parsed, &MidiImportOptions::default())
+            .expect("空工程必须可导入");
+        let mut actual: Vec<(u64, u8, u64, u8)> = plan
+            .ops
+            .iter()
+            .filter_map(|op| match op {
+                Op::AddNote { note, .. } => Some((
+                    note.start_tick,
+                    note.pitch,
+                    note.duration_ticks,
+                    note.velocity,
+                )),
+                _ => None,
+            })
+            .collect();
+        actual.sort_unstable();
+        assert_eq!(
+            actual, expected,
+            "往返后逐音符（起始 tick／音高／时值／力度）必须与工程完全一致"
+        );
+
+        // ⚠ 控制臂：标题与署名同样往返（导出写 conductor 元数据、导入再采纳回来）。
+        assert!(
+            plan.ops.iter().any(|op| matches!(
+                op,
+                Op::SetTitle { new_title, .. } if *new_title == project.title
+            )),
+            "标题必须经 conductor 轨名往返: {:?}",
+            plan.ops
+        );
+        assert!(
+            plan.ops.iter().any(|op| matches!(
+                op,
+                Op::SetAuthor { new_author, .. } if *new_author == project.author
+            )),
+            "署名必须经 FF 02 往返: {:?}",
+            plan.ops
+        );
+    }
+
     /// 判据：`project.title` 的采纳**只认真正的名字** —— 导出默认名被排除、两个不同名
     /// 歧义时不猜；⭐ 对照组：同名重复（去重后一个）仍采纳；conductor 轨没有轨名时回退
     /// `FF 01` 文本。⛔ 对照组是防"这三条其实都没跑"的恒真绿。
