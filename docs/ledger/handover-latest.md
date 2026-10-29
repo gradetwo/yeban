@@ -2069,3 +2069,52 @@ python3 scripts/guards/policy_check.py && bash scripts/gates/run-gates.sh light
 > ⭐ **②落地前需再 rebase 一次**：`fe9f47ff` 也动了 `crates/yeban-mcp/tests/props_176.rs`
 > 与 `src/tools.rs`（新增 `yeban_list_instruments` ⇒ 工具数与"广播面第几个工具"的措辞
 > 可能要换代）。`git merge-tree` 预演**零冲突标记**，但**计数会变小**：⛔ 直接 land 旧 tip。
+
+---
+
+### ⭐ 2026-10-29 14:17 追加（接手收盘：两条线待 land ＋ main 现在绿 ＋ S2 前置）
+
+**main 现读绿**：tip `69e570e0`（我推的台账批）之上是 Devin 线两批
+`84404b5c`／`60510746` ⇒ 其 run `40873045460` = **success**。这两批改的正是本轮我按人类授权
+动手过的同一处红（`tools_e2e` 缺 `yeban_list_instruments` 用例／`trap_179` 音符级清单停在九个）；
+⭐ **我那版 `589530d3` 已丢弃且必须丢弃** —— `ENVELOPE_CLIP_KINDS`（`domain/notes.rs:1365-1380`）
+含 `duplicateClip` 而 `NOTE_LEVEL_KINDS` 不含 ⇒ 同判据里 `non_note_readers` 必须是
+`["duplicateClip","removeClip"]`，我只同步了清单长度 ⇒ 照推会制造**第二个红**。教训写进
+`docs/DEVELOPMENT_LEDGER.md`（"跨线顺手修红之前先 `git fetch` 看远端 tip"＋"决定对错的不是症状那两行，
+而是同一判据里的另一条断言"）。
+
+**两条在飞线与它们的判决（接手第一件事＝按 `headSha` 读回，⛔ 用 tip 绿代替）**：
+| 线 | tip | run | 已判定的腿 | 待读回的承判腿 |
+| :--- | :--- | :--- | :--- | :--- |
+| `line/app-device-param-landing`（S1 第一片） | `56e0cb97` | **`40886013692`** | `checks`／`lockfile`／`deny`／`plan` success | `rust (workspace 全量)`／`macos`／`windows`（13:53 起跑） |
+| `line/mcp-broadcast-nine-tools`（十工具广播面） | `b63ee201` | **`40886122542`** | 同上四条 success | 同上三条 |
+
+- ⚠ 两条线本轮都触发 `workspace_wide: true` ⇒ **单 crate 腿 skipped**，S1 的 `dsp`/`app`/`engine`
+  三腿这次住在**全量腿**里；判 S1 绿要在全量日志里数 `test result:` 行与这三条判据名
+  （`the_narrow_output_gain_entry_is_bit_identical_to_the_static_projection`／
+  `c17_an_output_gain_db_event_lands_on_the_armed_strip`／
+  `c18_a_track_without_an_armed_strip_reports_the_event_as_unmapped`，另加
+  `automation_unapplied.rs` 那条 `publish_automation` 基线 ≥ 1 的夹具前提）。
+- ⭐ **十工具线的 `230` 冻结读数至今未获判**：上一跑 fail-fast 停在字母序更靠前的 `tools_e2e`
+  ⇒ 日志里 `Running tests/fault_vocabulary.rs` = **0** 行。这一跑必须**先数该二进制是否出现**再判
+  （AGENTS.md §6.3.4）。
+- 合并预演：两条线对 `origin/main` 各 **0** 处冲突标记 ⇒ 读回绿后直接 `bash scripts/dev/worktree.sh land <line>`
+  （它 `--no-ff` 合进 main 并跑 `cargo metadata --locked` ＋ 许可清单自检），推 main 后读 merge run、再
+  `worktree.sh rm <line> --purge` 拆树（脚本先补 `line-archive/<line>` 标签才删分支）。
+- ⭐ **判据名换代表**（⛔ 拿旧名在新日志里 grep 命中 0 就写"判据缺失"）：
+  `five_main_tools_…` → `six_main_tools_…` → `seven_main_tools_…` →
+  `ten_broadcast_tools_publish_an_output_schema_their_real_responses_satisfy`；
+  本轮又加一条同类换代：`the_note_level_predicate_is_exactly_nine` → **`…_is_exactly_thirteen`**。
+
+**本轮实测的两条新纪律（⛔ 未生效，需人类签字才能进 `AGENTS.md`）**：
+① r77 棘轮有**两处**数字：`R77_WRITE=1` 只重生成 `crates/yeban-dsp/tests/data/hard_assertion_table.txt`，
+**不**重生成同目录 `count_register.txt` 里的 `rows_hard_assertion_table|N` 手写行 ⇒ 加一条硬判据要改**两个**文件
+（本轮 run `40866458295` 就红在这一处，left 274 / right 275）。
+② `git push --force-with-lease` 推 rebase 后的分支会**自动取消**该分支在跑的 run ⇒ 旧 run 的
+`conclusion=cancelled`（实测 `40867033277`）**既不是红也不是绿**，读回时必须回到 pending 再认新 tip。
+
+**S2（把设备参数落点表下移到 `yeban-dsp`）的前置**：`DeviceParamField` 现读在
+`crates/yeban-render/src/inserts.rs:1179`（`impl` `:1199` 只有 `from_name` `:1202`／`canonical_name` `:1211`／
+`family` `:1221`／`sanitise` `:1231` 四个方法；`store`/`read` 在三个族枚举上），离线施加 `inserts.rs:1739-1763`，
+实时同名表 `crates/yeban-engine/src/insert.rs:921/1083/657`；依赖方向 `render → engine → dsp` ⇒ 只能下移到 `dsp`。
+⭐ S1 未 land 前⛔ 动这些文件（一文件一写者）。
