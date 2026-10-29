@@ -14876,3 +14876,9 @@ run 级还在 queued 时 `checks/deny/plan/lockfile/全量/macos` 已 completed�
 形状算术无需改钉）、`a_pending_proposal_is_listed_and_disappears_after_merge`、
 `five_main_tools_publish_an_output_schema_their_real_responses_satisfy`（props_176 反向绑定）。
 `全量/windows/macos` 亦真跑 success；`rust (workspace 全量)` skipped 属本批口径（未碰 `schemas/**`）。
+
+**批二判决读回（2026-10-29 07:2x 现读）**：`258084b2` ⇒ run `40828583265` **success**。
+承判腿 `rust (yeban-mcp)` 真跑：`test result:` **125** 行、passed **2,384**、`: FAILED` **0**；
+三条点名判据合计 **6 次 ok**（默认＋"合并特性"两条特性路径各一次）。
+⇒ §0.6.0i 收盘相关的**四笔判决全部读回**：批一/批二 success（代码面成立），
+两本台账批空绿（只作记录）。本轴至此**无 pending**。
