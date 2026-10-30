@@ -16040,3 +16040,15 @@ test result: FAILED. 3 passed; 1 failed
 ⇒ `rust (…matrix…)`／`windows`／`macos`／`rust (workspace 全量)` **四条腿全部 skipped**（0s）。
 只有 `plan`／`checks`／`deny`／`lockfile` 真跑。⚠ 这是**空绿**：它证明的是"文档不破坏 schema／守卫／许可"，
 ⛔ 不构成任何代码判决（AGENTS.md §6.3 第 2 条）。本批的代码判决只认 §7／§8 那三条 run。
+
+### §10 收尾读数（2026-10-30 05:00）＋ 一条待人类点头的房间整理
+
+1. **§9 那条文档提交自己的 run `41005838040`（head `b019f2e9`）＝ success ＝ 空绿**：同样四条 rust 腿 skipped，
+   只有 `plan`／`checks`／`deny`／`lockfile` 真跑 ⇒ 与 §9 同一口径，⛔ 当代码判决。**规律**：纯 `docs/**` 提交必然空绿，
+   所以"文档批"永远只证明 schema／守卫／许可没坏。
+2. **本地陈旧分支现读**（`git merge-base --is-ancestor` 逐条）：`line/*` 共 **27** 条，**全部已并入 `main`**（未并入 **0** 条）；
+   另有归档标签 `line-archive/*` **92** 个。⇒ 这 27 条只占命名空间、无工作丢失风险，
+   但**批量删分支是破坏性操作**（且要决定是否同时 `git push --delete` 远端同名分支）⇒ 登记**待人类点头**，⛔ 本轮自主删。
+3. **磁盘现读**：`/home` `198G/235G`（余 **31G**，87%）；仓库内 `target` 仅 **1.9M**，两条子线树已拆、无 `target/`。
+   仓库外大头（`~/.cache` 19G／`~/.cargo/registry` 1.1G／`~/.rustup` 5.2G／他项目 target 3.8G）仍是 `#34`，待人类裁决。
+4. **活树现读**：`git worktree list` ＝ **一行**（主树 `main` @ `b019f2e9`）。
