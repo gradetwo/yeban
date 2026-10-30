@@ -196,9 +196,24 @@ artifact `golden-linux`（id 12943055870，485877 字节）；
 - 两处区域**补集**内不一致像素数 = **0**，没有布局位移、也没有别的控件被触碰。
 ⚠ 五张的**字节数相同**（6222418）**不构成任何证据**（存储式 deflate），判内容的是上面的 sha256 与逐像素读数。
 
+**⚠ 2026-10-30 第三次再录（`line/metronome` 合并诚实性批次后的合并树，headSha `d9653034`）**: 本批让两个切片的像素变化**同帧**入库 ——
+① `e061ca57` 的节拍器开关按钮（走带区那一组文档级动作右侧，32×32 @ `x = 1920 − 348 = 1572..1603`、`y = space-4 = 8..39`，`visible: width ≥ 1120`）；
+② `e618ffde` 的诚实性批次（卷帘静态 AI 建议示意块 ＋ Session 插槽格三态图案/提示/编造选中态，逐区域读数见上一节）。
+生成方式与地点同上：手动档 `gates-manual.yml` 的 `gate=goldens`，run id **40993780063**
+（conclusion=success；ref `line/metronome`，headSha `d9653034`），artifact `golden-linux`；
+⚠ artifact 自带的 `MANIFEST.txt` 是**本改动前的仓库副本** ⇒ **未采用**。
+**入库前的复核（两重基线，⚖ 判定量 = 差异像素数与包围盒）**（stdlib zlib 解码，逐像素）：
+- 对**入库前**的 5 张（= 上一节那一版，只含诚实性批次）比：**每帧 1016 px**，包围盒**精确等于节拍器按钮**
+  `x 1572..1603 × y 8..39`（32×32 = 1024 个像素位里 8 个与底色相同）；x 向只有 `1572..1603` 一段、
+  y 向只有 `8..39` 一段 ⇒ 按钮之外**零**变化；20 种配色对全部从 `Tokens.bg-panel = 19,26,34` 出发
+  （按钮板 `20,28,37` / 字形 `67,77,89` / `82,93,105` 等）；
+- 对**主干** `b53506d4` 的基准比：`arrangement-full` = **1808 px**（= 诚实性 792 ＋ 节拍器 1016，逐像素算术闭合），
+  `session-full` = **64,282 px**（= 诚实性 63,266 ＋ 1016）；x/y 区段与上一节登记的两处移除区 ＋ 按钮矩形逐段吻合。
+⚠ 五张的**字节数相同**（6222418）**不构成任何证据**（存储式 deflate），判内容的是上面的 sha256 与逐像素读数。
+
 文件	sha256	字节
-app-main-window-arrangement-compact-1920x1080.png	baf814ea3bd7d4352755a48877c6318d8f3b359ea5b7822c9ed7bd95a78a9e5e	6222418
-app-main-window-arrangement-full-1920x1080.png	2f920ad2959ea7b5048081b6c8f56054700b02a4259424efbba93886a62184e3	6222418
-app-main-window-session-full-1920x1080.png	5939c4e12edf35f599867c6d3ab0d5b4d8c13f0c1a3d491da6623ae7b1313793	6222418
-app-model-driven-demo-project-1920x1080.png	2f920ad2959ea7b5048081b6c8f56054700b02a4259424efbba93886a62184e3	6222418
-app-model-driven-filled-project-1920x1080.png	c1ae8f833483378d61f832806473598982d3121bb42efec5c89017ce1b46fc8e	6222418
+app-main-window-arrangement-compact-1920x1080.png	58bb7250241050514eb922ce4dedb0971170cdac629e477988239fc88b8fab62	6222418
+app-main-window-arrangement-full-1920x1080.png	1f340b7776c6f259d37175fbe7e3ac83ce1858bdfe2cc65ea003acbc7b01ae37	6222418
+app-main-window-session-full-1920x1080.png	1804e258cb18d35b9dc0973e9698fdd65b85fa45929b8ae442b0cb52c5ce0cf1	6222418
+app-model-driven-demo-project-1920x1080.png	1f340b7776c6f259d37175fbe7e3ac83ce1858bdfe2cc65ea003acbc7b01ae37	6222418
+app-model-driven-filled-project-1920x1080.png	7cb6dd5ac213cc691a8d4f0d550204287bcbf557ceff90a731ba9b371d00f497	6222418
