@@ -16087,3 +16087,34 @@ test result: FAILED. 3 passed; 1 failed
    `SetTrackSampler` → `snapshot.rs` 的 `sfz_pending` 投影（`TrackV3.sampler` → `PendingSfz`）；
    `SetClipGain` → `engine/audio_clip.rs:394`。⇒ **7/7 都有"改变输出"的消费点**，**0** 个空操作。
    ⚠ 这仍是 `src` 侧读行、⛔ 运行时判据；它只回答"有没有消费者"，不回答"值对不对"（后者由各层既有判据承担）。
+
+### §12 第八批（2026-10-30 06:45）：效果面**防掏空下界 20 → 29**（真缺陷一条）＋ 又一次"计数为 0"读法翻车
+
+**起因**：收尾复查登记表时读 `documented_arg_coverage.rs:461`，效果面的棘轮是 `EFFECT_FACE.len() >= 20`，
+而同一张表现读 **29** 行；缺省面早就是 `DEFAULT_SIDE.len() >= 29`（＝当前行数）⇒ **两面口径不一致**。
+
+**这条下界为什么必须等于行数**（不是洁癖）：本判据的主断言是 `declared == universe`（表 ∪ 缺口 ＝ schema 键全集）。
+若"schema 删键 ＋ 表删同键"同时发生，等值**仍然成立**；此时唯一还能变红的就是这条下界。
+`>= 20` 意味着一次可以**静默挖空 9 个键**（29 − 20）而全绿。⇒ 改为 `>= 29`。
+
+**判决链（全读回）**
+
+| 阶段 | run | 判决（读数） |
+| :--- | :--- | :--- |
+| 线 `line/s6e-effect-ratchet` @ `bdc56244` | `41007431612` | **success** —— `rust (yeban-mcp)` 05:15:57→05:32:36（**16m39s**）真跑；`rust (yeban-ui-mcp)` success；`macos` success；`windows` success；`rust (workspace 全量)` 由 planner **skipped**（⛔ 当它绿） |
+| merge `c5eb5739` 推主干 | `41012058693` | **success** —— `rust (yeban-mcp)` 06:05:52→06:20:22（**14m30s**）、`macos` 06:05:53→06:33:23（**27m30s**）、`windows` →06:43:30（**37m37s**）、`ui-mcp` →06:09:32（**3m40s**）四条全部真跑；planner 仍把全量腿 skipped |
+
+**判据读数（merge 腿 `rust (yeban-mcp)`，剥色后）**：`Running tests/` **130** ／ `test result:` **137** ／
+passed 合计 **2,448** ／ `FAILED` **0**；收口判据 `every_documented_creation_key_is_registered_with_an_effect_criterion`
+在 `test` 与 `test (合并特性)` **各 1 次 `... ok`**（线 run 同形，两轮各 ok）。
+
+**⚠ 又一次"计数为 0 先怀疑读法"**：第一次 `grep -c "Running tests/"` 得 **0**。原因不是"没跑"，而是我的剥色
+只写了 `\x1b\[…`；GH 日志 dump 里是**两字符 `^[`**。用 §0.7 记过的模式 `(?:\x1b|\^\[)\[[0-9;]*[a-zA-Z]`
+剥色后同一份日志 **0 → 130**。⇒ 规则再确认一次：**先怀疑剥色，再怀疑事实**。
+
+**落地与清理**：`worktree.sh land` → merge `c5eb5739`（`1 file changed, 4 insertions(+), 2 deletions(-)`），
+post-merge 自检（`cargo metadata --locked` ＋ 许可清单）passed；推前 `rev-list --left-right --count` ＝ `2 0`
+（本地领先 2、远端领先 0）；`worktree.sh rm --purge` 自动打归档标签 `line-archive/s6e-effect-ratchet @ bdc56244`
+⇒ `git worktree list` 恢复**一行**。
+
+**同批的三项只读自查**（见 §11）：kind 字面量口径、构造点/双射、`kind → 下游消费` 7/7 有消费点 —— 合计 **0 新缺陷**。

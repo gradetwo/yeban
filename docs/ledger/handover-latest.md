@@ -12,6 +12,26 @@
 > `docs/ledger/phase-status.md` 的叙事条目**停在 R1144**（2026-10-26）⇒ ⭐ 读进度以
 > `DEVELOPMENT_LEDGER.md` 的尾部为准，⛔ 不要以为 R1144 之后没干活。
 
+### 0.6.0k ⭐ 尾批（2026-10-30 06:45）：效果面**防掏空下界 20 → 29**（与缺省面同口径）
+
+- **发现的真缺陷（一条，机械面）**：`EFFECT_FACE.len() >= 20` 而表里 **29** 行 ⇒ 与 `declared == universe`
+  等值合起来，存在一种**静默挖空**：把 schema 与登记表**同时**删掉同一批键（≤9 个）时，
+  等值仍成立、下界 20 仍成立 ⇒ **判据保持绿**。缺省面早已是 `>= 29`（＝当前行数），两面口径不一致。
+  现改为 `>= 29`。
+- **判决链（全部读回，非推断）**：线 `line/s6e-effect-ratchet` @ `bdc56244` → run **`41007431612` success**
+  （`rust (yeban-mcp)` **16m39s** 真跑／`rust (yeban-ui-mcp)` success／`macos` success／`windows` success；
+  `rust (workspace 全量)` 被 planner **skipped**，⛔ 当它绿）→ merge `c5eb5739` → **merge run
+  `41012058693` success**（`rust (yeban-mcp)` **14m30s**、`macos` **27m30s**、`windows` **37m37s**、
+  `ui-mcp` **3m40s**，四条全部真跑）。
+- **判据读数**：收口判据 `every_documented_creation_key_is_registered_with_an_effect_criterion`
+  在 `test` 与 `test (合并特性)` **各 1 次 `... ok`**（线与 merge 各一轮）；merge 腿
+  `Running tests/` **130** ／ `test result:` **137** ／ **2,448** passed ／ **0** FAILED。
+- **⚠ 本轮又踩一次"计数为 0 先怀疑读法"**：首次 `grep -c "Running tests/"` 得 **0** —— 因为剥色正则只写了
+  `\x1b\[…`，而 GH dump 里是**两字符 `^[`**。换成 `(?:\x1b|\^\[)\[[0-9;]*[a-zA-Z]` 后**同一份日志 0 → 130**。
+- **活树现读**：`git worktree list` ＝ **一行**（只剩主树）；归档标签 `line-archive/s6e-effect-ratchet @ bdc56244`。
+- **下一步**：仍是 `ADR-0042`／`0047`／`0048`／`0049`／`0050`／`0004(Q13)`、`AGENTS.md:134` 措辞、
+  `master_bus_track_id`、磁盘 `#34`、27 条已并入 main 的本地 `line/*` 分支清理 —— 全部**待人类签字**。
+
 ### 0.6.0j ⭐ 尾批（2026-10-30 04:31）：创作轴的**两条登记轴都到 29＋0** ＋ 第四片两组缺省钉
 
 - **登记表三轴现读**（`crates/yeban-mcp/tests/documented_arg_coverage.rs`，已随 `4227adfc` 上主干）：
