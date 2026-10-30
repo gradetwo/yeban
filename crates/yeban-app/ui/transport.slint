@@ -67,6 +67,10 @@ export component Transport inherits Rectangle {
     // 成功 / 被拒（例如另一个形态正持 `.yeban.lock`）的**原话**由宿主写进
     // `MainWindow.save-status`，由 `status_bar.slint` 画出来。
     callback save-project();
+    // 回滚到上一个 Commit。语义由**模型不变量**背书：本实现的每次提交恰好携带一条
+    // `Op::Batch`（`crates/yeban-mcp/src/undo_session.rs` 的 "每次提交恰好一条 op"），
+    // 因此"一步撤销 = 回退一个 Commit"，落点是既有的 `UiAction::Undo`，界面不另建实现。
+    callback revert-to-last-commit();
     callback toggle-view();
     callback show-session();
     callback show-arrangement();
@@ -391,6 +395,7 @@ export component Transport inherits Rectangle {
         accessible-role: button;
         accessible-id: "transport-revert-button";
         accessible-label: "回滚到上一个 Commit";
+        accessible-action-default => { root.revert-to-last-commit(); }
 
         UiText {
             x: 0;
@@ -406,6 +411,7 @@ export component Transport inherits Rectangle {
         revert_area := TouchArea {
             width: parent.width;
             height: parent.height;
+            clicked => { root.revert-to-last-commit(); }
         }
     }
 

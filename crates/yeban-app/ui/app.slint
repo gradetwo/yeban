@@ -499,6 +499,9 @@ export component MainWindow inherits Window {
     // 并把它说的**原话**写回 `save-status`（下面的 `in-out property`）。
     // 界面**不**自己写盘、也不自己做"保存成功了吗"的判断。
     callback save-project();
+    // 走带区「回滚到上一个 Commit」—— 原样上抛给宿主（`host::wire_undo` 落到
+    // `UiAction::Undo`）。界面不判"有没有可撤销的编辑"，那是撤销会话的读数。
+    callback revert-to-last-commit();
     // 最近一次保存的结果文本（`""` = 本次会话还没按过保存）。
     // 它是**宿主写的**（`host::apply_save_outcome` 是唯一写者），由状态栏读出来；
     // 成功与失败都在这里 —— 失败被吞掉正是本仓库最忌讳的失败模式。
@@ -1287,6 +1290,9 @@ export component MainWindow inherits Window {
             // （那个属性只有宿主一个写者，见 `host::apply_save_outcome`）。
             save-project => {
                 root.save-project();
+            }
+            revert-to-last-commit => {
+                root.revert-to-last-commit();
             }
             // ⚠ 界面**不**自己翻转 `root.arrangement-view` / `root.ai-drawer-open`：
             // 这两个属性与 `playing` 同款 —— 唯一写者是宿主（`host::wire_view_callbacks`，
