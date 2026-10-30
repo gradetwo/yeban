@@ -283,21 +283,6 @@ fn statement_start(lines: &[&str], index: usize) -> usize {
     start
 }
 
-/// 站点所在**函数体**的起点行下标（0 起）：向上找第一个函数定义行。
-///
-/// ⭐ **R126／R114**：窗口是**函数体边界**（⛔ 固定行数）。太窄会漏（声明很远）；太宽会借邻居
-/// （上一个函数的界被当成本函数的界）。「有没有界」在**函数体**里找，「是不是站点」按**语句**判。
-fn body_start(lines: &[&str], line_no: usize) -> usize {
-    let mut index = line_no.saturating_sub(1);
-    while index > 0 {
-        if is_fn_definition(lines[index - 1]) {
-            return index - 1;
-        }
-        index -= 1;
-    }
-    0
-}
-
 /// 该行的整条语句里是否有断言宏（掩码后：注释／字符串里的 `assert` 不算）。
 fn statement_is_assertion(lines: &[&str], index: usize) -> bool {
     let start = statement_start(lines, index);
@@ -448,13 +433,32 @@ fn guarded(body: &str, subject: &str) -> bool {
     !subject.is_empty() && (len_guard_holds(body, subject) || non_empty_guard_holds(body, subject))
 }
 
-/// 站点所在函数的**行区间**（含定义行与收尾的 `}`）：从定义行起按花括号配平找结尾。
+/// 站点所在函数的**行区间**（含定义行与收尾的 `}`）。
 ///
-/// ⚠ 界可以写在站点**之后**（实测：`tools_e2e.rs` 的 G2 判据把"边只少了命中的那些"
-/// 钉在站点下方 `assert_eq!(…edges.len(), …)`）⇒ 窗口必须是**整个函数体**，
-/// 只向前看会把**真有界**的站点误报成无界（假阳）。
+/// ⚠ **只认"包住站点"的那个 `fn`**：起点 ≤ 站点、且花括号配平后的结尾 ≥ 站点，取最内层。
+/// 原实现（取"向上第一个 `fn` 定义行"）在 `yeban-app` 实测有缺陷：若中间隔着一个**已经闭合**的
+/// 嵌套辅助函数，窗口会被切在站点之前 ⇒ 真有界的站点被判成无界（假红）；反过来也可能从那个
+/// **无关**函数的同名界里借到证据（假绿）。回补于 2026-10-30。
+/// ⚠ 界可以写在站点**之后**（`tools_e2e.rs` 的 G2 判据把"边只少了命中的那些"钉在站点下方
+/// `assert_eq!(…edges.len(), …)`）⇒ 窗口必须是**整个函数体**，只向前看会把真有界的站点误报。
 fn function_body(lines: &[&str], line_no: usize) -> (usize, usize) {
-    let start = body_start(lines, line_no);
+    let target = line_no.saturating_sub(1);
+    let mut best: Option<(usize, usize)> = None;
+    for index in 0..=target.min(lines.len().saturating_sub(1)) {
+        if !is_fn_definition(lines[index]) {
+            continue;
+        }
+        let (start, end) = span_from(lines, index);
+        if start <= target && target <= end && best.is_none_or(|(best_start, _)| best_start < start)
+        {
+            best = Some((start, end));
+        }
+    }
+    best.unwrap_or((0, lines.len().saturating_sub(1)))
+}
+
+/// 从 `start`（一个 `fn` 定义行）花括号配平到函数结尾（掩码后的行 ⇒ 字面量里的花括号已被抹掉）。
+fn span_from(lines: &[&str], start: usize) -> (usize, usize) {
     let mut depth = 0i32;
     let mut seen_open = false;
     for (index, line) in lines.iter().enumerate().skip(start) {
@@ -483,14 +487,21 @@ fn function_body(lines: &[&str], line_no: usize) -> (usize, usize) {
 fn assertion_text(lines: &[&str], line_no: usize) -> String {
     let (start, end) = function_body(lines, line_no);
     let mut text = String::new();
-    for i in start..=end {
-        if !statement_is_assertion(lines, i) {
+    let mut i = start;
+    while i <= end {
+        // ⚠ **嵌套的辅助函数是另一个作用域**：它的断言不证明外层站点的夹具非空（借它会假绿）。
+        if i != start && is_fn_definition(lines[i]) {
+            let (_, nested_end) = span_from(lines, i);
+            i = nested_end + 1;
             continue;
         }
-        let statement = statement_start(lines, i);
-        for line in &lines[statement..=i] {
-            text.push_str(&squeeze(line));
+        if statement_is_assertion(lines, i) {
+            let statement = statement_start(lines, i);
+            for line in &lines[statement..=i] {
+                text.push_str(&squeeze(line));
+            }
         }
+        i += 1;
     }
     text
 }
@@ -821,6 +832,22 @@ fn the_window_is_the_function_body_and_negation_is_its_own_class() {
     assert!(
         has_bound(real, found_r[0]),
         "对照：真代码里的 `len() >=` ⇒ 必须认（否则说明掩码把代码也掩了）"
+    );
+
+    // ⑤ 嵌套的**已闭合**辅助函数不得切掉外层窗口（app 线实测的缺陷，2026-10-30 回补）：
+    let nested_closed = "fn t() {\n    assert!(xs.len() >= 3);\n    fn helper() {\n        assert!(xs.len() >= 3);\n    }\n    assert!(xs.iter().all(|x| *x > 0));\n}\n";
+    let found_n = sites(nested_closed);
+    assert_eq!(found_n.len(), 1, "对照夹具：只有外层 1 个 `.all(` 站点");
+    assert!(
+        has_bound(nested_closed, found_n[0]),
+        "外层界在**已闭合的嵌套函数之前** ⇒ 必须认得出（窗口按'包住站点的 fn'取）"
+    );
+    let only_inner = "fn t() {\n    fn helper() {\n        assert!(xs.len() >= 3);\n    }\n    assert!(xs.iter().all(|x| *x > 0));\n}\n";
+    let found_i = sites(only_inner);
+    assert_eq!(found_i.len(), 1, "对照夹具：只有外层 1 个 `.all(` 站点");
+    assert!(
+        !has_bound(only_inner, found_i[0]),
+        "⛔ 已闭合的嵌套函数里的同名界不得成为外层站点的证据（借邻居 ⇒ 假绿）"
     );
 }
 

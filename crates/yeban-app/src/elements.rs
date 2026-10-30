@@ -1847,6 +1847,16 @@ impl ElementRegistry {
             "放弃提案",
             false,
         );
+        // 「有提案、但没有写入口」那句原因。标签**逐字取自** `crate::proposals` 的那个常量
+        // （界面上的 `accessible-label` 绑的也是它）⇒ 注册表、图元、宿主说的是同一句话，
+        // ⛔ 这里不是第三份抄写。漏登记会让 `[UI-TEST-001]` 双向覆盖判据红在方向 2。
+        registry.add(
+            "musical-pr-resolve-unavailable",
+            ElementKind::Text,
+            "dialogs/musical_pr_drawer.slint",
+            crate::proposals::RESOLVE_NOT_WIRED_REASON,
+            false,
+        );
         registry.add(
             "undo-tree-modal",
             ElementKind::Region,

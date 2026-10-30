@@ -805,7 +805,7 @@ export component MainWindow inherits Window {
     //
     // 形状与上面三个 `track-height-*` 同款：`.slint` 只报"哪一个下标 + 本地坐标"，
     // 位移换算、拖动期的视图态与松手时的**一次** `commit_ops` 全在宿主
-    // （`host::wire_mixer_edit`）。五个成员 = 推子竖直拖 / 声相水平拖 / 两个开关。
+    // （`host::wire_mixer_edit`）。成员 = 推子竖直拖 / 声相水平拖 / 两个双击复位 / 两个开关。
     /// 推子按下（轨道下标, 推子面坐标系里的 y）。
     callback mixer-fader-grab(int, length);
     /// 推子拖动（同一个下标的当前 y；位移由宿主算）。
@@ -818,6 +818,19 @@ export component MainWindow inherits Window {
     callback mixer-pan-drag(int, length);
     /// 声相收尾。
     callback mixer-pan-release(int);
+    /// ⭐ **双击复位**（DAW 的通行手势）：推子 → `0 dB`（unity）、声相 → 中央（`0`）。
+    ///
+    /// 与上面六条同族：`.slint` 只报"哪一个下标"，换算与**一次** `commit_ops` 全在宿主
+    /// （`host::wire_mixer_edit` 的 `on_mixer_*_reset`）。已是中性值 ⇒ 宿主⛔ 提交
+    /// （否则双击会往撤销栈里压一条空操作）。
+    ///
+    /// ⚠ 边界（如实登记）：这是**鼠标**手势，屏读器与键盘拿不到它 —— 本仓库的键盘/屏读
+    /// 路径**不承诺**能复位（要把轨回到中性，今天只有工具面 `yeban_edit_notes` 的
+    /// `setParam` + `lane:"TrackVolume"` 那一条，见 `crates/yeban-mcp/src/op_schema.rs`）。
+    /// 推子 → `0 dB`（unity）。
+    callback mixer-fader-reset(int);
+    /// 声相 → 中央（`0`）。
+    callback mixer-pan-reset(int);
     /// 静音按钮点击（一次点击 = 一次可撤销的编辑）。
     callback mixer-mute-toggle(int);
     /// 独奏按钮点击。
@@ -993,7 +1006,7 @@ export component MainWindow inherits Window {
     // ⇒ 可撤销）＋ 资产字节登记进会话池（保存才有 `assets/{sha256}`）⇒ 重投影。
     // 回执走**既有**的 `module-status` 投影通道。⛔ 界面不读盘、不猜路径、不判断成功与否。
     callback import-audio();
-    // 主控通道条的**写入面**：与上面那六个手势逐条同形，唯一区别是**不带下标**
+    // 主控通道条的**写入面**：与上面那一族手势逐条同形，唯一区别是**不带下标**
     // （主总线不在 `track-names` / `track-ids` 里 ⇒ 上面那些 `int` 参数没有合法值能指到它）。
     // 主总线身份由宿主在按下那一刻从权威工程取（`master_bus_track_id`），
     // 因此 `.slint` 里**没有**任何身份→下标的算术。
@@ -1009,6 +1022,11 @@ export component MainWindow inherits Window {
     callback mixer-master-pan-drag(length);
     /// 主控声相收尾。
     callback mixer-master-pan-release();
+    /// 主控推子**双击复位**（→ `0 dB`）：与 `mixer-fader-reset` 同一对 `Op`、同一条撤销栈，
+    /// 只是**不带下标** —— 主总线身份由宿主现读。
+    callback mixer-master-fader-reset();
+    /// 主控声相**双击复位**（→ 中央 `0`）。
+    callback mixer-master-pan-reset();
     // 混音台手势（推子 / 声相）的**进行态**读数：宿主拥有、界面只报事件。
     //
     // 与上面的 `track-height-drag-active` 同一个角色：它是"混音手势是否还没结束"的**唯一**
@@ -1885,6 +1903,13 @@ export component MainWindow inherits Window {
             mixer-pan-release(index) => {
                 root.mixer-pan-release(index);
             }
+            // **双击复位**：同样只上抛（宿主 `host::wire_mixer_edit` 的 `on_*_reset` 是唯一落点）。
+            mixer-fader-reset(index) => {
+                root.mixer-fader-reset(index);
+            }
+            mixer-pan-reset(index) => {
+                root.mixer-pan-reset(index);
+            }
             mixer-mute-toggle(index) => {
                 root.mixer-mute-toggle(index);
             }
@@ -1946,6 +1971,13 @@ export component MainWindow inherits Window {
             }
             mixer-master-pan-release() => {
                 root.mixer-master-pan-release();
+            }
+            // 主控的**双击复位**：同样只上抛、不带下标。
+            mixer-master-fader-reset() => {
+                root.mixer-master-fader-reset();
+            }
+            mixer-master-pan-reset() => {
+                root.mixer-master-pan-reset();
             }
         }
 
