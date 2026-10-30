@@ -774,6 +774,18 @@ impl ElementRegistry {
                 &format!("剪辑包头 {clip_index}"),
                 false,
             );
+            // 拖动面（`clip-{ulid}-body`）：与包头**同一取值域**的身份再登记一次。
+            // 它是指针手势的输入面（`[UI-TEST-002]` 注入拖动用它寻址），角色 = `region`
+            // （`.slint` 里 `accessible-role: region`，零视觉元素）。
+            // 标签与 `.slint` 的 `"剪辑拖动面 " + clip-labels[i]` 同构：用剪辑标签而不是
+            // 下标 —— 包头用下标是既有口径（本轮不改），拖动面按"身份 + 标签"写。
+            registry.add(
+                &format!("clip-{}-body", clip.placement_id),
+                ElementKind::Region,
+                "workspace/arrangement_view.slint",
+                &format!("剪辑拖动面 {}", clip.label),
+                false,
+            );
         }
         registry.add(
             "arrangement-playhead",

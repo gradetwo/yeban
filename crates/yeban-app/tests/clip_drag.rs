@@ -248,6 +248,31 @@ fn dragging_a_clip_body_moves_it_with_exactly_one_snapped_op() {
     let baseline = plane.capture().expect("Tier-1 截图");
     let commits_before = port.display().commit_count;
 
+    // ---- 诊断探针（不是判据）：绕开指针链，宿主直接写草稿属性 ⇒ 画面是否跟着动 ----
+    //
+    // 这条读数是 2026-10-30 加的：③ 曾在 mac / windows 两腿报"0 个差异像素"，
+    // 而 ① 证明属性确实是 40.0。探针把"属性 ⇒ 像素"与"指针 ⇒ 属性"两段分开。
+    // 它不改任何被断言的状态（探针末尾清零、并与 `baseline` 逐像素复核复原）。
+    {
+        let before_probe = plane.capture().expect("Tier-1 截图");
+        window.set_clip_drag_ulid(ulid.clone().into());
+        window.set_clip_drag_preview_dx(40.0);
+        let after_probe = plane.capture().expect("Tier-1 截图");
+        report_line(&format!(
+            "[clip-drag] 诊断：直接写 `clip-drag-ulid` + `clip-drag-preview-dx`=40 ⇒ 差异像素 {}（0 = 绑定/重绘没动）",
+            diff_total(&before_probe, &after_probe)
+        ));
+        window.set_clip_drag_ulid("".into());
+        window.set_clip_drag_preview_dx(0.0);
+        let restored = plane.capture().expect("Tier-1 截图");
+        report_line(&format!(
+            "[clip-drag] 诊断：清零草稿后与基准差异 {}（0 = 复原）",
+            diff_total(&baseline, &restored)
+        ));
+    }
+
+    let header_before = element_bounds(&mut plane, 11, &format!("clip-{ulid}-header"));
+
     // ---- ① + ②：拖动期只有草稿，工程与输入面都不动 ----
     let origin = pointer_down_at_center(&mut plane, 20, &body_id, body_before);
     pointer_drag_right(&mut plane, 30, origin);
@@ -278,6 +303,15 @@ fn dragging_a_clip_body_moves_it_with_exactly_one_snapped_op() {
     );
 
     // ---- ③：画面差异全部落在「原位置 ∪ 预览位置」内 ----
+    // 诊断读数（与 ③ 同一次抓帧）：拖动中的草稿属性 + 包头（它随所属剪辑移动，
+    // 因此它的 `ui/node` 几何是"布局是否真的动了"的直接读数）。
+    let header_during = element_bounds(&mut plane, 61, &format!("clip-{ulid}-header"));
+    report_line(&format!(
+        "[clip-drag] 诊断：拖动中 ulid={:?} dx={} body={body_before:?} \
+         header 前={header_before:?} 中={header_during:?}",
+        window.get_clip_drag_ulid().as_str(),
+        window.get_clip_drag_preview_dx(),
+    ));
     let during = plane.capture().expect("Tier-1 截图");
     let union = union_rect(
         body_before,
@@ -288,13 +322,18 @@ fn dragging_a_clip_body_moves_it_with_exactly_one_snapped_op() {
         let outside = diff_outside(&baseline, &during, union);
         assert_eq!(
             outside, 0,
-            "拖动期的差异像素必须全部落在剪辑的并集区域 {union:?} 内（实测 {outside} 个越界）"
+            "拖动期的差异像素必须全部落在剪辑的并集区域 {union:?} 内（实测 {outside} 个越界；\
+             总差异 {total}，body={body_before:?}，header 前={header_before:?} 中={header_during:?}）"
         );
         total - outside
     };
     assert!(
         inside > 0,
-        "预览位移必须**真的画出来**（实测 0 个差异像素）"
+        "预览位移必须**真的画出来**（实测 0 个差异像素；body={body_before:?}，\
+         header 前={header_before:?} 中={header_during:?}，\
+         `clip-drag-ulid`={:?}，`clip-drag-preview-dx`={}）",
+        window.get_clip_drag_ulid().as_str(),
+        window.get_clip_drag_preview_dx(),
     );
 
     // ---- ④：松手恰好一次提交，落在吸附后的目标 ----
