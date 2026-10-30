@@ -1285,6 +1285,10 @@ fn normalize_hits_full_scale_and_leaves_all_zero_signal_alone() {
     // "≤ 2 LSB", 而不是"逐样本为 0"（后者会把正确的抖动判成缺陷）。
     let lsb = 1.0f32 / 8_388_608.0;
     assert!(
+        !samples.is_empty(),
+        "母带必须真的有样本（否则下面那条恒真）"
+    );
+    assert!(
         samples
             .iter()
             .all(|sample| sample.is_finite() && sample.abs() <= 2.0 * lsb),
@@ -3267,6 +3271,7 @@ fn a_loop_is_expanded_into_n_repetitions() {
         .map(|index| window_peak(&samples, 2, index * segment_frames, segment_frames))
         .collect();
     println!("### 四段峰值（逐字）: {peaks:?}");
+    assert_eq!(peaks.len(), 4, "四段各一个峰值（否则下面那条恒真）");
     assert!(
         peaks.iter().all(|value| *value > DITHER_ONLY_PEAK),
         "每一遍都必须真的发声: {peaks:?}"
@@ -3307,6 +3312,7 @@ fn a_loop_is_expanded_into_n_repetitions() {
         plain_peaks[0] > DITHER_ONLY_PEAK,
         "正对照的第一段必须发声: {plain_peaks:?}"
     );
+    assert_eq!(plain_peaks.len(), 4, "四段峰值（否则下面那条恒真）");
     assert!(
         plain_peaks[1..]
             .iter()
@@ -3509,6 +3515,7 @@ fn the_probability_decision_follows_the_note_identity_not_its_position() {
             };
             decisions.push(note.triggers(DEFAULT_RNG_SEED));
         }
+        assert_eq!(decisions.len(), 4, "四个起点各一条判定");
         assert!(
             decisions.windows(2).all(|pair| pair[0] == pair[1]),
             "概率 {probability}: 平移不该改变触发判定, 实测 {decisions:?}"
@@ -3546,6 +3553,7 @@ fn the_probability_decision_follows_the_note_identity_not_its_position() {
         assert_eq!(result["status"], "success", "{result}");
         verdicts.push(result["data"]["probability"]["notesSilenced"].clone());
     }
+    assert_eq!(verdicts.len(), 3, "三次渲染各一条判定");
     assert!(
         verdicts.windows(2).all(|pair| pair[0] == pair[1]),
         "同一身份平移起点后判定必须不变, 实测 {verdicts:?}"
@@ -7707,6 +7715,10 @@ fn a_bend_written_through_the_tool_surface_bends_the_master() {
         "工具面写的弯音曲线必须逐点进工程: {stored}"
     );
     assert!(
+        !notes.as_object().expect("notes").is_empty(),
+        "音符表必须非空（否则下面那条恒真）"
+    );
+    assert!(
         notes
             .as_object()
             .expect("notes")
@@ -7969,12 +7981,9 @@ fn a_pitch_shape_written_in_place_by_the_tool_surface_bends_the_master() {
         stored.get("slide").is_none(),
         "`newSlide: null` ⇒ 滑音仍为空（不落盘）: {stored}"
     );
-    assert!(
-        notes
-            .as_object()
-            .expect("notes")
-            .keys()
-            .all(|key| key == &note),
+    assert_eq!(
+        notes.as_object().expect("notes").len(),
+        1,
         "夹具里必须**仍只有一个**音符（⛔ 删 + 加会换身份）: {notes}"
     );
 
