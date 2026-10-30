@@ -211,9 +211,28 @@ artifact `golden-linux`（id 12943055870，485877 字节）；
   `session-full` = **64,282 px**（= 诚实性 63,266 ＋ 1016）；x/y 区段与上一节登记的两处移除区 ＋ 按钮矩形逐段吻合。
 ⚠ 五张的**字节数相同**（6222418）**不构成任何证据**（存储式 deflate），判内容的是上面的 sha256 与逐像素读数。
 
+**⚠ 2026-10-30 第四次再录（`line/playhead-follow`，headSha `bef7ab82`，提交「走带光标跟随引擎读数」）**: 本批把编曲 / 卷帘两条
+走带光标从**写死的假位置**改成由引擎读数派生 —— `host::apply_transport` 写窗口属性 `playhead-ticks`（默认帧 = tick 0），
+两条 x = 各自时间轴原点 + `tick ÷ ticks-per-pixel`（整数除法，与音符 / 小节线同口径）。tick 0 下：
+编曲光标 `canvas.x + 168`（旧假位置 `canvas.x + 528`，源码 `x: 168px + 120px * 3`），卷帘光标 `roll.x + 56`
+（旧 `roll.x + 236`，源码 `x: 56px + 60px * 3`）。两条线都是默认帧里**可见且未被遮罩**的 1px 竖线 ⇒ 5 张基准确定性过期。
+生成方式与地点同上：手动档 `gates-manual.yml` 的 `gate=goldens`，run id **40996156801**
+（conclusion=success；job `goldens (生成分平台基准图集)` success，8 步，03:13:32Z–03:16:48Z），ref `line/playhead-follow`，
+headSha `bef7ab82`，artifact `golden-linux`（id 12951880348，470971 字节）；
+⚠ artifact 自带的 `MANIFEST.txt` 是**本改动前的仓库副本**（含旧哈希）⇒ **未采用**。
+**入库前的复核（⚖ 判定量 = 差异像素的 x 列 ＋ 每列的 y 区间）**（stdlib zlib 解码，filter 0，逐像素逐通道比较）：
+- `arrangement-full` / `model-driven-demo-project` / `model-driven-filled-project`：**各 1854 px** = 恰好 4 列 ——
+  编曲线 `x 408 / 768`（各 `y 68..630`，563 px；两列相差 **360** = `120px * 3`，`408` 为新位）
+  ＋ 卷帘线 `x 56 / 236`（各 `y 691..1054`，364 px；两列相差 **180** = `60px * 3`，`56` 为新位）⇒ 两条线**旧位置消失、新位置出现**；
+- `arrangement-compact`：**1854 px**，同样 4 列：`x 204 / 564`（563）＋ `x 56 / 236`（364）；
+- `session-full`：**728 px** = 只有卷帘线的两列 `x 56 / 236`（各 364）—— 该帧不含编曲画布；
+- 4（或 2）列之外不一致像素数 = **0**；新线色 `231,223,200`（`Tokens.gold-bright`），旧位置回到底色
+  （`44,57,72` / `33,43,54` / `19,26,34` 等按行条带）⇒ **没有布局位移、也没有别的控件被触碰**。
+⚠ 五张的**字节数相同**（6222418）**不构成任何证据**（存储式 deflate），判内容的是上面的 sha256 与逐像素读数。
+
 文件	sha256	字节
-app-main-window-arrangement-compact-1920x1080.png	58bb7250241050514eb922ce4dedb0971170cdac629e477988239fc88b8fab62	6222418
-app-main-window-arrangement-full-1920x1080.png	1f340b7776c6f259d37175fbe7e3ac83ce1858bdfe2cc65ea003acbc7b01ae37	6222418
-app-main-window-session-full-1920x1080.png	1804e258cb18d35b9dc0973e9698fdd65b85fa45929b8ae442b0cb52c5ce0cf1	6222418
-app-model-driven-demo-project-1920x1080.png	1f340b7776c6f259d37175fbe7e3ac83ce1858bdfe2cc65ea003acbc7b01ae37	6222418
-app-model-driven-filled-project-1920x1080.png	7cb6dd5ac213cc691a8d4f0d550204287bcbf557ceff90a731ba9b371d00f497	6222418
+app-main-window-arrangement-compact-1920x1080.png	41ccd937fbf7265fe844db4077bf4b8742d02641af87fc653d7f351d5e9f5c08	6222418
+app-main-window-arrangement-full-1920x1080.png	1b0c8c929014a0ab9be75ee0d5b727a74ab8009b8eb2fd145a3ef2a5f0949779	6222418
+app-main-window-session-full-1920x1080.png	dd59e0c43158b5358dbf9e4557a757cb265cf395f79fdfab139311c2ea638ffc	6222418
+app-model-driven-demo-project-1920x1080.png	1b0c8c929014a0ab9be75ee0d5b727a74ab8009b8eb2fd145a3ef2a5f0949779	6222418
+app-model-driven-filled-project-1920x1080.png	bbccb3d9079e51624e1445f0a2fbbe620f4b55fa3975c92f1c9bdab230e71fce	6222418
