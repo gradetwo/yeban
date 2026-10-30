@@ -383,10 +383,10 @@ fn strip_adapters(mut expr: &str) -> &str {
             }
         }
         for adapter in ADAPTERS {
-            if let Some(head) = expr.strip_suffix(adapter) {
-                if !head.is_empty() {
-                    expr = head;
-                }
+            if let Some(head) = expr.strip_suffix(adapter)
+                && !head.is_empty()
+            {
+                expr = head;
             }
         }
         if expr == before {
@@ -412,10 +412,10 @@ fn root_of(expr: &str) -> Option<&str> {
 
 /// 取反形态：`!X` ⇒ `(true, X)`；`!=` 不算取反（那是比较运算符）。
 fn split_negation(expr: &str) -> (bool, &str) {
-    if let Some(rest) = expr.strip_prefix('!') {
-        if !rest.starts_with('=') {
-            return (true, rest);
-        }
+    if let Some(rest) = expr.strip_prefix('!')
+        && !rest.starts_with('=')
+    {
+        return (true, rest);
     }
     (false, expr)
 }
