@@ -19,7 +19,7 @@
 //! | ③ 两两不相交 | 每段：排除容器后**逐对**断言包围盒不相交（半开区间，边贴边不算），三档全是 0 | 证"同一段内没有第二处重叠"；⛔ 不证与段外邻居（`#184` 管段间） |
 //! | ④ 容器排除 | 见 [`is_container_role`]：`region` / `groupbox` / `list` / `tab-list` / `main` / `complementary`。**`list-item` 不排**（这四段里它是叶子内容：音符矩形、素材行） | 证"排的是按设计包住子节点的容器"；⛔ 不排 `list-item` 是有意的（与 `#185` 的发送行相反） |
 //! | ⑤ 不许假绿 | 每段先断言"必须在场的 id 一个不少"＋"控件数恰好等于清单"；1024 档走带徽章**按设计隐藏**（不是扫不到），并断言替代入口 `ai-rail-musical-pr-button` 在树里 | 证"0 相交不是 0 控件换来的" |
-//! | ⑥ 预算 | 纯测试 ＋ `.slint` 表达式级布局微调（不新增控件） ⇒ 控件数逐档不变：调音台 `72`、钢琴卷帘 `20`、素材池 `3`、走带 `14`（1024 档 `13`，少的是按设计隐藏的徽章） | 证"没有靠删控件换绿" |
+//! | ⑥ 预算 | 纯测试 ＋ `.slint` 表达式级布局微调 ⇒ 控件数逐档不变：调音台 `73`、钢琴卷帘 `20`、素材池 `4`、走带 `14`（1024 档 `13`，少的是按设计隐藏的徽章）；相对上一版唯一新增的是素材池的 `asset-pool-import-button`（`#20` 导入入口） | 证"没有靠删控件换绿" |
 //!
 //! ## 发现（`#186` 的实测；数字是逻辑像素包围盒 `(x, y, w, h)`）
 //!
@@ -302,7 +302,7 @@ const ASSET_CONTROLS: &[&str] = &[
     "asset-pool-row-1-row",
 ];
 
-/// 调音台的 72 个控件：3 个模块入口 ＋ 6 个主控控件 ＋ 6 条通道条 × 10。
+/// 调音台的 73 个控件：3 个模块入口 ＋ 6 个主控控件 ＋ 4 个素材池控件 ＋ 6 条通道条 × 10。
 fn mixer_controls() -> Vec<String> {
     let mut ids: Vec<String> = vec![
         "module-export-midi-button".to_owned(),
@@ -332,7 +332,7 @@ fn mixer_controls() -> Vec<String> {
             ids.push(format!("track-{track}-{suffix}"));
         }
     }
-    assert_eq!(ids.len(), 72, "调音台控件清单长度变了 ⇒ 判据口径要重核");
+    assert_eq!(ids.len(), 73, "调音台控件清单长度变了 ⇒ 判据口径要重核");
     ids
 }
 
@@ -691,7 +691,8 @@ fn check_mixer_console(width: u32, height: u32) -> (usize, usize) {
             asset_x + asset.2 as i32
         ));
     }
-    (expected.len(), 72 * 71 / 2)
+    let controls = expected.len();
+    (controls, controls * (controls - 1) / 2)
 }
 
 fn check_asset_pool(width: u32, height: u32) -> (usize, usize) {
