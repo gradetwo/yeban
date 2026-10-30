@@ -68,7 +68,7 @@
 //! 后两类上会永久拒绝打开，这就是 `MUST-GATE-008` 要修的病。
 //!
 //! 反过来，"存在即占用"被**显式否决**的判据是
-//! `tests/lock_advisory.rs::crashed_holder_leaves_a_lock_file_that_is_not_occupied`
+//! `tests/lock_advisory.rs::a_lock_file_without_a_live_holder_is_not_occupied`
 //! （造一份无人持有的锁文件 ⇒ 必须能打开；把实现改回"看一眼文件是否存在"它就变红）。
 //!
 //! ## 心跳与陈旧阈值（规范 §0.2 第 5 条的处理）

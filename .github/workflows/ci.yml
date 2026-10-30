@@ -250,7 +250,7 @@ jobs:
       #
       # 为什么回收而不是 `debug = 0`: 同 `rust (workspace 全量)` 的理由 ——
       # 回收 runner 预装垃圾语义上是惰性的；关 debuginfo 会改变被构建的东西。
-      # ⚠ 只删确定的四个目录；**绝不**碰 `/opt/hostedtoolcache`（Rust 工具链就在里面）。
+      # ⚠ 只删**列名**的目录与 Docker 镜像；**绝不**碰 `/opt/hostedtoolcache`（Rust 工具链就在里面）。
       - name: 回收 runner 预装垃圾（矩阵腿的合并特性 app 腿之前必须留够链接空间）
         run: |
           set -euo pipefail
@@ -260,13 +260,27 @@ jobs:
             /usr/share/dotnet \
             /usr/local/lib/android \
             /opt/ghc \
-            /usr/local/share/boost
+            /usr/local/share/boost \
+            /usr/share/miniconda \
+            /usr/local/.ghcup
           do
             if [ -e "$path" ]; then
               echo "removing $path ($(du -sh "$path" 2>/dev/null | cut -f1 || echo '?'))"
               sudo rm -rf "$path" || true
             fi
           done
+          # ⭐ 预装 Docker 镜像（2026-10-30 加）。本仓**任何** job 都不用 docker
+          # （实测口径：`grep -rn "docker" .github/ scripts/` 在本次改动前 = 0 命中），
+          # 所以删它与删 dotnet / android 同一档：语义惰性。**先打读数再删** ——
+          # `docker system df` 的 IMAGE 行给"镜像占了多少字节"，回收前后各打一次，
+          # 下一轮就能判"这一刀到底有没有捞到东西"，而不是猜。
+          if command -v docker >/dev/null 2>&1; then
+            echo "== docker 回收前 =="
+            docker system df || true
+            docker image rm -f $(docker images -q) >/dev/null 2>&1 || true
+            echo "== docker 回收后 =="
+            docker system df || true
+          fi
           sudo apt-get clean || true
           echo "== 回收后 =="
           df -h / | tail -1
@@ -449,7 +463,7 @@ jobs:
       #
       # 关 debuginfo 也能把链接体积压下来，但它**改变了被构建的东西**（panic 回溯失去行号）。
       # 回收 runner 预装垃圾**语义上是惰性的**：删的都是本仓永远不用的 SDK。
-      # ⚠ 只删确定的四个目录；**绝不**碰 `/opt/hostedtoolcache`（Rust 工具链就在里面）。
+      # ⚠ 只删**列名**的目录与 Docker 镜像；**绝不**碰 `/opt/hostedtoolcache`（Rust 工具链就在里面）。
       - name: 回收 runner 预装垃圾（合并特性 app 腿之前必须留够链接空间）
         run: |
           set -euo pipefail
@@ -459,13 +473,27 @@ jobs:
             /usr/share/dotnet \
             /usr/local/lib/android \
             /opt/ghc \
-            /usr/local/share/boost
+            /usr/local/share/boost \
+            /usr/share/miniconda \
+            /usr/local/.ghcup
           do
             if [ -e "$path" ]; then
               echo "removing $path ($(du -sh "$path" 2>/dev/null | cut -f1 || echo '?'))"
               sudo rm -rf "$path" || true
             fi
           done
+          # ⭐ 预装 Docker 镜像（2026-10-30 加）。本仓**任何** job 都不用 docker
+          # （实测口径：`grep -rn "docker" .github/ scripts/` 在本次改动前 = 0 命中），
+          # 所以删它与删 dotnet / android 同一档：语义惰性。**先打读数再删** ——
+          # `docker system df` 的 IMAGE 行给"镜像占了多少字节"，回收前后各打一次，
+          # 下一轮就能判"这一刀到底有没有捞到东西"，而不是猜。
+          if command -v docker >/dev/null 2>&1; then
+            echo "== docker 回收前 =="
+            docker system df || true
+            docker image rm -f $(docker images -q) >/dev/null 2>&1 || true
+            echo "== docker 回收后 =="
+            docker system df || true
+          fi
           sudo apt-get clean || true
           echo "== 回收后 =="
           df -h / | tail -1

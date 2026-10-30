@@ -1375,9 +1375,11 @@ pub struct SfzWavArtifact {
     pub sample_reads_truncated: bool,
     /// 累计解码帧数。
     pub sample_frames_loaded: u64,
-    // ⭐ `#223`：四类**已知但不生效**的区域参数（本工具与 `yeban_render_master`
-    // 共用同一条 [`note_wave`] 音源路径 ⇒ 同样不应用它们）。键名与
-    // `render::KNOWN_UNSUPPORTED_KEYS` 的同一族逐字相同；这里按**音符数**计。
+    // ⭐ `#223`：四类**已知但不生效**的区域参数。⚠ **只有本工具**
+    // （`yeban_render_sfz_wav`）的音源走 [`note_wave`] ⇒ 只有它不应用它们；
+    // `yeban_render_master` 自 `#274` 起只经 [`survey_sampler`]（⛔ 不渲染）取读数，
+    // 发声由引擎的 SFZ 支路完成 ⇒ 那边 `sfzSampleSpan` / `sfzRegionLayering` **已退役**。
+    // 键名与 `render::KNOWN_UNSUPPORTED_KEYS` 的同一族逐字相同；这里按**音符数**计。
     /// 命中区域声明了 `amplitude` 一族的音符数。
     pub notes_with_amplitude: u64,
     /// 命中区域声明了 `tune` 的 CC 调制的音符数。
@@ -1781,9 +1783,10 @@ pub fn render(
     let mut notes_with_multiple_regions = 0u64;
     let mut cache = SampleCache::new();
     for note in notes {
-        // ⭐ `#221`：区域选择 / 速率 / 增益 / 样本来源**只有一份实现**
-        // （[`note_wave`]）。`yeban_render_sfz_wav` 与 `yeban_render_master` 的
-        // 采样器音源都走它 —— 两条路径因此不可能在"哪个样本、多快、多响"上漂移。
+        // ⭐ `#221`：区域选择 / 速率 / 增益 / 样本来源**只有一份实现**（[`note_wave`]）。
+        // ⚠ 走这条路**发声**的只有 `yeban_render_sfz_wav`；`yeban_render_master` 自
+        // `#274` 起不经这里发声（它只调 [`survey_sampler`] 取读数，音频由引擎的
+        // SFZ 支路渲染，钉住这条的判据是 `tests/sampler_source_single_path.rs`）。
         let Some(wave) = note_wave(instrument, note, tone_hz, engine_hz, sfz_path, &mut cache)
         else {
             notes_unmatched = notes_unmatched.saturating_add(1);
