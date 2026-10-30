@@ -16080,3 +16080,10 @@ test result: FAILED. 3 passed; 1 failed
    ⇒ **不是 `velocity` 那类"解析＋回显但不进消费者"**，本条无可补缺口。
 5. **结论**：本次自查 **0 新增缺陷**；"自主可做的创作缺口 ＝ 0"再次**现读成立**。残留项是**非缺口**——
    53 个 kind 没有"逐 kind 的工具面 e2e 文件"属**覆盖增厚**，⛔ 由 agent 自行提级（同 §0.8：要动先由人类排期）。
+6. **补第三口径（`kind` → **下游消费**，专打 `velocity` 那类空操作）**：挑了"最像会写进无人读的字段"的 7 个
+   kind 逐条追**消费点**（单位＝`src` 侧命中行）：`SetNoteExpression` 的三个字段 → `engine/snapshot.rs:1518`
+   （`ratchet`）／`:1519`（`micro_timing_ticks`）／`MidiNote::triggers` 的确定性 `probability` 判定；
+   `SetNotePitchShape` 的两个字段 → `snapshot.rs:1623-1638`（`pitch_bend_curve` → `bend` 表、`slide` → `SlideSpan`）；
+   `SetTrackSampler` → `snapshot.rs` 的 `sfz_pending` 投影（`TrackV3.sampler` → `PendingSfz`）；
+   `SetClipGain` → `engine/audio_clip.rs:394`。⇒ **7/7 都有"改变输出"的消费点**，**0** 个空操作。
+   ⚠ 这仍是 `src` 侧读行、⛔ 运行时判据；它只回答"有没有消费者"，不回答"值对不对"（后者由各层既有判据承担）。
