@@ -7926,6 +7926,7 @@ fn midi_in_error_code(error: &crate::midi_in::MidiInError) -> &'static str {
 /// * 抽屉里也没有"当前选中的是哪一条"这一格（`ProposalRowView` 只有
 ///   `kind` / `title` / `op_count`）；在界面侧新造一份提案状态会与领域权威冲突
 ///   （`ADR-0005`）⇒ 登记为缺口，不接。
+///
 /// 因此界面上那两个按钮由 `musical-pr-resolve-available`（恒 `false`）把关 —— **不画**
 /// 假控件，改为把 [`crate::proposals::RESOLVE_NOT_WIRED_REASON`] 那句逐字原因上屏。
 /// （历史：**2026-10-08** 那四个数据面属性是**内联演示常量**（三条中文假提案 + 三个假
