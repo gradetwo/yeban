@@ -259,6 +259,7 @@ fn clicking_a_clip_header_selects_exactly_that_clip() {
         inside,
         second,
         inside_second,
-        roll_before.len()
+        roll_before.len(),
+        inside_allowed
     ));
 }
