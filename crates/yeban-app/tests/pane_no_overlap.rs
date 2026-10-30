@@ -1826,10 +1826,15 @@ const SIDEBAR_COMPACT: &[&str] = &[
 ];
 
 /// ③ Session 视图的控件清单（⭐ `#190` 起**按画布装得下的列数**生成）：
-/// `visible` 条轨道包头 ＋ 每列 `scenes` 个插槽 ＋ `scenes` 个场景键 ＋ 场景列头
+/// `visible` 条轨道包头 ＋ 每列 `scenes` 个插槽 ＋ `scenes` 个场景色标 ＋ 场景列头
 /// ＋ 返回编曲键 ＋（`visible < total` 时）截断报数 ＋ ⭐ `#283` 的场景启动回执
 /// （`session-scene-launch-status`：恒在场、空串时不画字，但**是**一个非容器节点
 /// ⇒ 本清单必须登记它，否则"段内控件数 ≠ 清单"会红）。
+///
+/// ⭐ 场景卡 `scene-launch-{i}-button` **不在**叶子清单里：它按设计包住自己的
+/// 12×12 色标 `scene-{i}-color-swatch`（与 `#187` 的设备卡片同款）⇒ 进
+/// [`scene_card_buttons`] 的容器组，由 [`assert_scene_cards`] 判"卡彼此不相交 ＋
+/// 色标落在自己卡内"。
 fn session_controls(visible: usize, total: usize, scenes: usize) -> Vec<String> {
     let mut ids = Vec::new();
     for track in 0..visible {
@@ -1841,7 +1846,7 @@ fn session_controls(visible: usize, total: usize, scenes: usize) -> Vec<String> 
         }
     }
     for scene in 0..scenes {
-        ids.push(format!("scene-launch-{scene}-button"));
+        ids.push(format!("scene-{scene}-color-swatch"));
     }
     ids.push("scene-launch-column-header".to_owned());
     ids.push("session-back-to-arrangement-button".to_owned());
@@ -1851,6 +1856,33 @@ fn session_controls(visible: usize, total: usize, scenes: usize) -> Vec<String> 
         ids.push("session-track-truncation-note".to_owned());
     }
     ids
+}
+
+/// ③ 场景卡（`button` 角色，按设计包住自己的色标）—— 容器组清单。
+fn scene_card_buttons(scenes: usize) -> Vec<String> {
+    (0..scenes)
+        .map(|scene| format!("scene-launch-{scene}-button"))
+        .collect()
+}
+
+/// ③ 场景卡容器组的正向证明：卡片**彼此**不相交，且每张卡的色标整个落在卡内
+/// （排除出叶子集 ≠ 不检查）。
+fn assert_scene_cards(tree: &ControlTree, scenes: usize, label: &str) {
+    let cards = scene_card_buttons(scenes);
+    let card_refs: Vec<&str> = cards.iter().map(String::as_str).collect();
+    report_line(&assert_ids_pairwise(
+        tree,
+        &card_refs,
+        &format!("场景卡组 {label}"),
+    ));
+    for scene in 0..scenes {
+        assert_inside(
+            tree,
+            &format!("scene-{scene}-color-swatch"),
+            &format!("scene-launch-{scene}-button"),
+            label,
+        );
+    }
 }
 
 /// ③ 画布装得下的轨道列数 —— 与 `session_view.slint` 的 `visible-track-count` **同一条
@@ -2291,17 +2323,22 @@ fn check_session_view(width: u32, height: u32, breakpoint: bool) {
     let visible = capacity.min(total);
     let expected = session_controls(visible, total, 4);
     let expected_refs: Vec<&str> = expected.iter().map(String::as_str).collect();
-    report_line(&assert_pairwise(
+    // 场景卡按设计包住自己的色标 ⇒ 从叶子集里摘掉，进下面的容器组。
+    let excluded = scene_card_buttons(4);
+    let label = format!(
+        "#190 Session {width}x{height} breakpoint={breakpoint} compact={compact} \
+         画布 {}px ⇒ 容量 {capacity} 列 / 显示 {visible} 列",
+        pane.2
+    );
+    report_line(&assert_pairwise_excluding(
         &tree,
         pane,
         Selection::Intersect,
         &expected_refs,
-        &format!(
-            "#190 Session {width}x{height} breakpoint={breakpoint} compact={compact} \
-             画布 {}px ⇒ 容量 {capacity} 列 / 显示 {visible} 列",
-            pane.2
-        ),
+        &excluded,
+        &label,
     ));
+    assert_scene_cards(&tree, 4, &label);
 
     // ---- 判据 ①：装不下的列**不画**（不是画出去被 `clip` 掉、用户看不见）。
     if visible < total {
@@ -2398,17 +2435,20 @@ fn check_session_track_truncation(width: u32, height: u32) {
     // ---- 判据 ①：7 轨只画装得下的前 N 列；第 N+1 轨不在树里。
     let expected = session_controls(visible, total, 4);
     let expected_refs: Vec<&str> = expected.iter().map(String::as_str).collect();
-    report_line(&assert_pairwise(
+    let excluded = scene_card_buttons(4);
+    report_line(&assert_pairwise_excluding(
         &tree,
         pane,
         Selection::Intersect,
         &expected_refs,
+        &excluded,
         &format!(
             "{label} 画布 {}px ⇒ 容量 {capacity} 列 / 显示 {visible} 列 / 隐藏 {} 列",
             pane.2,
             total - visible
         ),
     ));
+    assert_scene_cards(&tree, 4, &label);
     assert!(
         tree.find_by_id(&format!("session-track-{visible}-header"))
             .is_none(),

@@ -206,7 +206,22 @@ const RUNTIME_VELOCITY_BARS: usize = 229;
 /// 三个数组一起注入）。读数（判据逐字打印整份清单）：**49 → 52**，同时
 /// `APPLY_VIEW_WRITE_SITE_BUDGET` 93 → 96。消费者只在默认关着的右侧抽屉
 /// （Tab 3 的按钮才打开它）⇒ 默认帧（Tab 0）一位不变。
-const PER_FRAME_ARRAY_REWRITE_BUDGET: usize = 52;
+///
+/// ## 52 → 56 的追加（场景 / 段落色标，2026-10-30）
+///
+/// 那四格是两张色标切片的平行数组：`ui.set_scene_colors` / `ui.set_scene_color_labels`
+/// （Session 场景卡）与 `ui.set_section_colors` / `ui.set_section_color_labels`
+/// （编曲段落卡）。四个都经 `colors()` / `strings()` 注入 ⇒ 每次 `apply_view`
+/// 都换一个 `VecModel` 实例。
+///
+/// 读数：CI run `40980667356` 先在 ③a 报 **96 → 100**（`apply_view` 多四行
+/// `ui.set_*`），③b 因同一二进制 fail-fast 未跑到；按同一条构造（+4 个每次换实例的
+/// 数组）本格是 **52 → 56**，由下一次 run 的 ③b 清单逐字复核。
+///
+/// ⚠ 代价边界与上面那些 Tab 3 数组**不同**：两个色标住在**默认帧**（编曲 / Session
+/// 视图）⇒ 这四格确实进入默认帧的绘制路径（5 张 Linux 基准已重录，见 `a7854d27`）；
+/// "颜色由工程驱动"的必付代价，不是被藏起来的抽屉控件。
+const PER_FRAME_ARRAY_REWRITE_BUDGET: usize = 56;
 /// `host.rs` 的 `apply_view` 函数体里的属性写入点个数上限（本单之后 **60**）。
 ///
 /// ## 39 → 40 的追加（任务单 `#82`，2026-10-16）
@@ -433,7 +448,13 @@ const PER_FRAME_ARRAY_REWRITE_BUDGET: usize = 52;
 ///
 /// ⭐ 宏面板（2026-10-30）：+3 个数组写入点（`macro-names` / `macro-values` /
 /// `macro-value-labels`）⇒ **90 → 93 → 96**；宏面板没有新的标量投影字段。
-const APPLY_VIEW_WRITE_SITE_BUDGET: usize = 96;
+///
+/// ⭐ 场景 / 段落色标（2026-10-30）：`apply_view` 多四行
+/// `ui.set_scene_colors` / `set_scene_color_labels` / `set_section_colors` /
+/// `set_section_color_labels` ⇒ **96 → 100**。读数来自 CI run `40980667356`
+/// （③a 逐字报"`apply_view` 的属性写入点从 96 变成了 100"）；它们的消费者住在
+/// **默认帧**（编曲 / Session 视图）⇒ 5 张 Linux 基准已随 `a7854d27` 重录。
+const APPLY_VIEW_WRITE_SITE_BUDGET: usize = 100;
 
 /// 取 `[BASELINE-003]` 第 `frame` 帧的滚动偏移（与 `examples/fps_gpu.rs` 同款换算）。
 fn scroll_at(frame: usize) -> f32 {
