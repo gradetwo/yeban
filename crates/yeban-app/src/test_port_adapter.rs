@@ -1113,13 +1113,13 @@ fn runtime_control_tree_cross_check_against_the_registry() {
     // ---- 左侧资源栏条目族：判据跟着**投影**走，不跟常量走（任务单 `#133`） ----
     //
     // 旧版这里写死 `sidebar-item-0`，因为 `sidebar.slint` 内联了 8 个演示乐器名。现在
-    // 数组由宿主按当前分类注入，唯一事实源 = `crate::bridge::sidebar_category_content`
+    // 数组由宿主按当前分类注入，唯一事实源 = `yeban_app::bridge::sidebar_category_content`
     // （与 `ElementRegistry::from_view` 同一个函数）⇒ 本判据读**同一个**函数：
     //   ① 有行 ⇒ `sidebar-item-0` 必须在树里；0 行 ⇒ 空态节点 `sidebar-empty` 必须在树里；
     //   ② 树里的 `sidebar-item-*` 行数 == 投影条数（⛔ 不是 8）；
     //   ③ `sidebar-empty` 在不在树里 ⟺ 投影是否为空（`.slint` 的 `visible:` 条件）。
     {
-        let sidebar = crate::bridge::sidebar_category_content(&view, 0);
+        let sidebar = yeban_app::bridge::sidebar_category_content(&view, 0);
         let expected_sidebar = if sidebar.is_empty() {
             "sidebar-empty"
         } else {
