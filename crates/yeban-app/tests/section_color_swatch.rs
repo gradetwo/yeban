@@ -28,8 +28,14 @@ use yeban_app::scene::DemoScene;
 use yeban_ui_test_port::render::{LivePort, report_line};
 use yeban_ui_test_port::{Permission, Rect, Size};
 
-/// 与其余 Tier-1 判据同款（1440 宽 ⇒ 三轨 + 一场景全部装得下）。
-const WINDOW: Size = Size::new(1440, 900);
+/// **1920×1080**（不是其余 Tier-1 判据常用的 1440×900）。
+///
+/// 本判据要求**四个**段落色标同时在场。演示工程每 7680 tick 一段，30 tick/px ⇒
+/// 段距 256px；第四张卡 `x = 168 + 3×256 = 936`、宽 256 ⇒ 右缘 1192px（编曲区坐标）。
+/// 编曲区宽 = 窗口宽 − 左栏 240 − 右栏 280：
+/// 1440 ⇒ 920px < 1192 ⇒ 第四张卡整体落在裁剪矩形外、不进运行时树（CI run
+/// `40980667356` 在 mac/windows 腿正是这样红的）；1920 ⇒ 1400px ≥ 1192 ⇒ 四张全在。
+const WINDOW: Size = Size::new(1920, 1080);
 
 /// 演示工程第一段本来就是 `#22AA88`（见 `yeban_model::samples::demo_project`）；
 /// 这里再显式写一遍，判据不依赖夹具的默认值。
