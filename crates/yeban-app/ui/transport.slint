@@ -8,9 +8,20 @@
 //   - [UI-A11Y-003] §7.3: 无障碍树暴露 (accessible-role / -label / -value)
 //
 // 架构约束 [ARCH-UI-002]: UI 线程绝不直接读音频实时上下文 —— 实时线程只往无锁 Meter SPSC
-// 压 60Hz 电平, UI 侧批量出队更新 Slint Properties。本文件出现的所有数值都是**演示数据**,
-// 没有任何一处读取真实引擎状态。真实绑定要等 `yeban-engine` 的 `EngineSnapshot` 落地 ——
-// 见 docs/ledger/ui-shell-notes.md 的 pending 清单。
+// 压 60Hz 电平, UI 侧批量出队更新 Slint Properties。
+//
+// ⚠ 本文件头注在 2026-10-30 之前还写着"这里出现的所有数值都是**演示数据**、没有任何一处
+// 读取真实引擎状态" —— 那句话**已经过期**（实测逐条核对 `host.rs` 的写点）：
+//
+// | 属性 | 今天的事实源 | 写点 |
+// | :--- | :--- | :--- |
+// | `playing` / `timecode` | 引擎的 `TransportReading`（`state.is_running()` / `bridge::timecode_for_ticks(grid, position_ticks)`） | `host::apply_transport` |
+// | `metronome-on` | 工程读数 `project.transport.metronome_enabled`；拨动的两个落点写**同一个**属性（点击与键盘不分叉） | `host::wire_transport`（装配读数 + `on_toggle_metronome`）/ `host::apply_action`（`Cmd/Ctrl+Alt+N`） |
+// | `bpm-display` | `ViewState::bpm_display`（工程 tempo 的投影） | `host::apply_view` |
+// | `branch-name` / 电平表 | `branch-name` 仍是装配期注入（模型没有"分支"载体）；电平走 Meter SPSC，不经过本文件 | — |
+//
+// ⛔ 因此不要照着旧话把这里当"全是假数"，也不要反过来在 `.slint` 里自己取数：唯一写者
+// 永远是宿主。未接真实载体的部分记在 `docs/ledger/ui-shell-notes.md` 的 pending 清单。
 //
 // 数据流方向 (与 app.slint 的契约): 子组件只"读" (in property) 和"通知" (callback),
 // 绝不写自己的状态。唯一写者是 app.slint 的 MainWindow。
