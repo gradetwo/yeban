@@ -890,11 +890,17 @@ mod tests {
                 params,
                 "{name} 的参数必须与规范签名一一对应（dryRun 排最后）"
             );
+            let named_params: Vec<_> = spec
+                .params
+                .iter()
+                .filter(|param| param.name != DRY_RUN_PARAM)
+                .collect();
             assert!(
-                spec.params
-                    .iter()
-                    .filter(|param| param.name != DRY_RUN_PARAM)
-                    .all(|param| param.required),
+                !named_params.is_empty(),
+                "{name}: 规范点名的参数必须非空（否则下面那条 `.all(..)` 恒真）"
+            );
+            assert!(
+                named_params.iter().all(|param| param.required),
                 "{name}: 规范点名的参数全部必填; 只有 dryRun 可选"
             );
             assert!(spec.supports_dry_run(), "{name} 会改状态 ⇒ 必须有 dryRun");

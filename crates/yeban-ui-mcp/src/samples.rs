@@ -674,6 +674,10 @@ mod tests {
         let left = read_dir(&first);
         let right = read_dir(&second);
         assert_eq!(left, right, "两次导出的字节必须完全相同");
+        assert!(
+            !left.is_empty(),
+            "导出目录必须非空（否则下面那条 `.all(..)` 恒真）"
+        );
         assert!(left.iter().all(|(_, text)| text.ends_with("}\n")));
         let tree = left
             .iter()
