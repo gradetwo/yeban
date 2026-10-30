@@ -1542,6 +1542,14 @@ mod tests {
             let mut right = hostile_input.iter().rev().copied().collect::<Vec<f32>>();
             strip.process_stereo(&mut left, &mut right);
             assert!(
+                !left.is_empty(),
+                "夹具必须非空（否则下面那条 `.all(..)` 恒真）"
+            );
+            assert!(
+                !right.is_empty(),
+                "夹具必须非空（否则下面那条 `.all(..)` 恒真）"
+            );
+            assert!(
                 left.iter().chain(right.iter()).all(|s| s.is_finite()),
                 "立体声路径产出了非有限值: {left:?} / {right:?}"
             );
@@ -1553,6 +1561,10 @@ mod tests {
             let mut strip = ChannelStrip::new(params, SR);
             let mut mono = hostile_input.to_vec();
             strip.process_mono(&mut mono);
+            assert!(
+                !mono.is_empty(),
+                "夹具必须非空（否则下面那条 `.all(..)` 恒真）"
+            );
             assert!(
                 mono.iter().all(|s| s.is_finite()),
                 "单声道路径产出了非有限值: {mono:?}"
@@ -1598,6 +1610,10 @@ mod tests {
             .map(|i| if (i / 24) % 2 == 0 { 1.0 } else { -1.0 })
             .collect();
         strip.process_mono(&mut buf);
+        assert!(
+            !buf.is_empty(),
+            "夹具必须非空（否则下面那条 `.all(..)` 恒真）"
+        );
         assert!(buf.iter().all(|s| s.is_finite()), "满幅方波推爆了状态");
         eprintln!(
             "[channel_strip/边界] 满幅方波 {LEN} 帧：输出峰值 {:.6} ({:.3} dBFS)，最大衰减 {:.3} dB",
@@ -1744,6 +1760,10 @@ mod tests {
         let mut buf3 = buf2.clone();
         strip.process_stereo(&mut buf2, &mut buf3);
         assert_eq!(strip.processed_frames(), frames_before + 512);
+        assert!(
+            !buf2.is_empty(),
+            "夹具必须非空（否则下面那条 `.all(..)` 恒真）"
+        );
         assert!(buf2.iter().all(|s| s.is_finite()));
 
         // `reset` 清空全部状态与读数。

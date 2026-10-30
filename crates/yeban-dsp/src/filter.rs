@@ -282,6 +282,10 @@ mod tests {
                 worst < ideal * 2.5,
                 "cutoff {freq} res {res} drive {drive}: step {worst} vs ideal {ideal}"
             );
+            assert!(
+                !out.is_empty(),
+                "夹具必须非空（否则下面那条 `.all(..)` 恒真）"
+            );
             assert!(out.iter().all(|v| v.is_finite()));
         }
     }
@@ -322,6 +326,10 @@ mod tests {
     #[test]
     fn full_resonance_stays_bounded() {
         let out = render(800.0, 1.0, 1.0, 2.0);
+        assert!(
+            !out.is_empty(),
+            "夹具必须非空（否则下面那条 `.all(..)` 恒真）"
+        );
         assert!(out.iter().all(|v| v.is_finite()));
         let peak = out.iter().fold(0.0f32, |m, v| m.max(v.abs()));
         assert!(peak < 12.0, "ladder ran away: {peak}");
@@ -383,6 +391,10 @@ mod tests {
                 "sample {sample}: subnormal output {value:e}"
             );
             reached_exact_zero |= value == 0.0;
+            assert!(
+                !filter.state.is_empty(),
+                "夹具必须非空（否则下面那条 `.all(..)` 恒真）"
+            );
             assert!(filter.state.iter().all(|s| s.is_finite()));
         }
         assert!(reached_exact_zero, "tail never reached exact silence");
