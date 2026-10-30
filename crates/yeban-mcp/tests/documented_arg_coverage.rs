@@ -52,7 +52,7 @@
 //!
 //! ⭐ **同日加第三条轴**（`each_documented_key_declares_its_default_side_evidence_or_gap`）：
 //! 第二条轴每行只取**一条代表判据**，于是"缺省那面（不给该键 ⇒ 与今天逐字节相同）有没有钉"
-//! 在机械读数里不可见。现读 **29** 个键 ＝ **22** 个缺省侧已证 ＋ **7** 个显式缺口
+//! 在机械读数里不可见。现读 **29** 个键 ＝ **25** 个缺省侧已证 ＋ **4** 个显式缺口
 //! （逐键点名，缺口带理由）。三轴共用同一把尺（`documented_keys()` / `defines_fn`）。
 
 use std::fs;
@@ -523,11 +523,26 @@ fn each_documented_key_declares_its_default_side_evidence_or_gap() {
     ///   含"只给其中一个"）；
     /// - `materialSource` 的缺省侧在 `material_source_switches_…` **自己**体内
     ///   （`absent ≡ explicit "project"` 与 `absent ≠ theory` 两条 assert 同处一条判据）。
-    const DEFAULT_SIDE: [(&str, &str, &[&str]); 22] = [
+    const DEFAULT_SIDE: [(&str, &str, &[&str]); 25] = [
         (
             "yeban_edit_notes",
             "autoMerge",
             &["absent_auto_merge_on_edit_notes_proposes_without_merging"],
+        ),
+        (
+            "yeban_edit_notes",
+            "create",
+            &["absent_create_on_edit_notes_edits_the_existing_clip_without_new_material"],
+        ),
+        (
+            "yeban_edit_notes",
+            "mergeCommitMessage",
+            &["absent_merge_commit_message_on_edit_notes_falls_back_to_the_proposal_id"],
+        ),
+        (
+            "yeban_edit_notes",
+            "placement",
+            &["absent_placement_on_edit_notes_leaves_the_timeline_untouched"],
         ),
         (
             "yeban_propose_section",
@@ -635,24 +650,9 @@ fn each_documented_key_declares_its_default_side_evidence_or_gap() {
             &["voice_subdivisions_absent_is_byte_identical_to_today"],
         ),
     ];
-    /// 缺省缺口名单（**7** 行）：键 → 为什么今天钉不了／还没钉。⛔ 把它删空来让它绿 ——
-    /// 这八行是"缺省轴上仍然无证据"的**唯一**接收端，补齐时逐行搬进 `DEFAULT_SIDE`。
-    const DEFAULT_SIDE_GAPS: [(&str, &str, &str); 7] = [
-        (
-            "yeban_edit_notes",
-            "create",
-            "已证那面 `edit_notes_create_and_place_in_one_proposal_is_atomic_and_undoable` 只跑『给了 create』那支；不给 ⇒ 不新建的既有形状没有断言（本键走 `json!` 实参面，缺一支对照）",
-        ),
-        (
-            "yeban_edit_notes",
-            "placement",
-            "已证那面 `needs_6_placement_puts_pool_material_on_the_timeline_and_the_master_hears_it` 只跑『给了 placement』那支；不给 ⇒ 不摆放的既有形状没有断言",
-        ),
-        (
-            "yeban_edit_notes",
-            "mergeCommitMessage",
-            "已证那面是 `merge_commit_message_passes_through`（给了 ⇒ 原样进提交），不给 ⇒ 默认文案未断言",
-        ),
+    /// 缺省缺口名单（**4** 行）：键 → 为什么今天钉不了／还没钉。⛔ 把它删空来让它绿 ——
+    /// 这四行是"缺省轴上仍然无证据"的**唯一**接收端，补齐时逐行搬进 `DEFAULT_SIDE`。
+    const DEFAULT_SIDE_GAPS: [(&str, &str, &str); 4] = [
         (
             "yeban_propose_section",
             "drumDensity",
@@ -696,12 +696,12 @@ fn each_documented_key_declares_its_default_side_evidence_or_gap() {
         declared.len()
     );
     assert!(
-        DEFAULT_SIDE.len() >= 22,
+        DEFAULT_SIDE.len() >= 25,
         "缺省已证只剩 {} 行 => 名单被掏空（R93：⛔ 批量搬去缺口名单来让它绿）",
         DEFAULT_SIDE.len()
     );
     assert!(
-        DEFAULT_SIDE_GAPS.len() <= 7,
+        DEFAULT_SIDE_GAPS.len() <= 4,
         "缺省缺口涨到 {} 行 => 有键的缺省钉被悄悄降级，或新键进来没人补证据",
         DEFAULT_SIDE_GAPS.len()
     );
