@@ -15,6 +15,9 @@
 //! | [`an_empty_midi_clip_expands_to_zero_ops_and_is_not_an_error`] | 空 MIDI 片段的 `compile` | `Ok(vec![])`（D5：`appliedOps: 0` 是**合法**结果，⛔ 不是错误码） |
 //! | [`the_form_is_published_on_both_surfaces`] | `tools/list` 的 `ops.items` 分支 | `additionalProperties: false` ＋ `x-envelope.clipId: "required"` ＋ `deltaPitch` 的 `±128` 界（D1 的发布面） |
 //! | [`absent_auto_merge_on_edit_notes_proposes_without_merging`] | 两支：不给 `autoMerge` / 给 `false` | 两份回执**同形**（`pendingMerge: true` ＋ 无 `autoMerged` ＋ 无 `merge` ＋ `commitModel: "proposal"`）＋ 音符一位没动 ＋ 留一条 open 提案（`ADR-0029` D2 的缺省侧） |
+//! | [`absent_create_on_edit_notes_edits_the_existing_clip_without_new_material`] | 不给 `create` | 片段池条数一位不变 ＋ 既有片段的音符**真的**被改（缺省 = 改既有，⛔ 新建） |
+//! | [`absent_placement_on_edit_notes_leaves_the_timeline_untouched`] | 不给 `placement` | 全部摆放逐字段整表不变 ＋ 同一批的音符编辑真的落地（缺省 = ⛔ 摆放） |
+//! | [`absent_merge_commit_message_on_edit_notes_falls_back_to_the_proposal_id`] | 不给 `mergeCommitMessage`（`autoMerge: true`） | `data.merge.commit.message` == `"merge proposal {proposalId}"`（缺省文案的唯一真相是同一份回执里的身份） |
 //!
 //! 复跑读数：`cargo test -p yeban-mcp --test transpose_clip -- --nocapture`
 
@@ -538,5 +541,166 @@ fn absent_auto_merge_on_edit_notes_proposes_without_merging() {
         first,
         &(true, false, false, "proposal".to_owned()),
         "缺省形状必须是『待合并的提案』：pendingMerge=true / 无 autoMerged / 无 merge / commitModel=proposal"
+    );
+}
+
+/// 从 `query_project` 里读回**整个工程文档**（与 [`read_back`] 同一反序列化口径）。
+fn read_project(auth: &str, dispatcher: &mut Dispatcher) -> YebanProjectV1 {
+    let view = call(dispatcher, auth, "yeban_query_project", json!({}));
+    assert_eq!(view["status"], "success", "{view}");
+    serde_json::from_value(view["data"]["project"].clone()).expect("视图必须能读回模型类型")
+}
+
+/// 时间轴上**每一条摆放**的逐字段读数（排序后可直接整表比较）。
+///
+/// 单位：`(音轨身份, 摆放身份, 片段身份, start_tick, duration_ticks, muted)`。
+fn placement_rows(project: &YebanProjectV1) -> Vec<(String, String, String, u64, u64, bool)> {
+    let mut rows: Vec<(String, String, String, u64, u64, bool)> = project
+        .tracks
+        .iter()
+        .flat_map(|(track_id, track)| {
+            track.clips.values().map(move |placement| {
+                (
+                    track_id.to_canonical_string(),
+                    placement.id.to_canonical_string(),
+                    placement.clip_id.to_canonical_string(),
+                    placement.start_tick,
+                    placement.duration_ticks,
+                    placement.muted,
+                )
+            })
+        })
+        .collect();
+    rows.sort();
+    rows
+}
+
+/// ⭐ 判据 9（`edit_notes.create` 的**缺省钉**）：不给 `create` ⇒ **改既有片段**，
+/// ⛔ 往片段池里加一条新材料。
+///
+/// 此前全库只有"给了 `create` ⇒ 新建"那一支（`tools_e2e.rs` 的
+/// `edit_notes_create_and_place_…`），缺省侧一次都没跑过。本判据钉两件事：
+/// 池子条数一位不变（⛔ 悄悄新建），且这条缺省路径**真的改了东西**
+/// （否则"没新建"只是拿"什么都没干"换来的，不构成证据）。
+#[test]
+fn absent_create_on_edit_notes_edits_the_existing_clip_without_new_material() {
+    let (mut dispatcher, auth, project) = dispatcher();
+    let (track, clip, _) = midi_target(&project);
+    let before_notes = read_back(&auth, &mut dispatcher, &clip);
+    assert!(
+        !before_notes.is_empty(),
+        "夹具片段必须有音符, 否则下面『真的改了』会在空集上恒绿: {clip}"
+    );
+    let pool_before = read_project(&auth, &mut dispatcher).clip_pool.len();
+
+    let merged = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_edit_notes",
+        json!({
+            "trackId": track.to_canonical_string(),
+            "clipId": clip.to_canonical_string(),
+            "ops": [{"kind": TRANSPOSE_CLIP_KIND, "deltaPitch": 2}],
+            "autoMerge": true,
+        }),
+    );
+    assert_eq!(merged["status"], "success", "{merged}");
+    assert_eq!(merged["data"]["autoMerged"], true, "{merged}");
+
+    let after = read_project(&auth, &mut dispatcher);
+    assert_eq!(
+        after.clip_pool.len(),
+        pool_before,
+        "不给 `create` ⇒ 片段池条数必须一位不变 (缺省 = 改既有, ⛔ 新建)"
+    );
+    assert!(
+        after.clip_pool.contains_key(&clip),
+        "既有片段必须还在池里: {clip}"
+    );
+    assert_ne!(
+        read_back(&auth, &mut dispatcher, &clip),
+        before_notes,
+        "不给 `create` 仍然必须真的改到既有片段（否则『没新建』是拿没干活换来的）"
+    );
+}
+
+/// ⭐ 判据 10（`edit_notes.placement` 的**缺省钉**）：不给 `placement` ⇒ 时间轴一位不动。
+///
+/// 已证那面是"给了 `placement` ⇒ 摆上去"；缺省侧此前没有断言
+/// （`needs_6_…` 里那条"`create: true` 不摆放"是**合并情形**，⛔ 本键的缺省钉）。
+/// 本判据用「全表逐字段不变」而不是"这条片段没被摆"，因此也拦得住
+/// 顺手挪走／复制已有摆放的实现。
+#[test]
+fn absent_placement_on_edit_notes_leaves_the_timeline_untouched() {
+    let (mut dispatcher, auth, project) = dispatcher();
+    let (track, clip, _) = midi_target(&project);
+    // 前态也走 `query_project`：与后态同一条序列化路径，⛔ 拿夹具克隆当基线。
+    let before_placements = placement_rows(&read_project(&auth, &mut dispatcher));
+    assert!(
+        !before_placements.is_empty(),
+        "夹具必须已经有摆放, 否则『整表不变』在空表上恒绿"
+    );
+    let before_notes = read_back(&auth, &mut dispatcher, &clip);
+
+    let merged = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_edit_notes",
+        json!({
+            "trackId": track.to_canonical_string(),
+            "clipId": clip.to_canonical_string(),
+            "ops": [{"kind": TRANSPOSE_CLIP_KIND, "deltaPitch": 2}],
+            "autoMerge": true,
+        }),
+    );
+    assert_eq!(merged["status"], "success", "{merged}");
+    assert_eq!(merged["data"]["autoMerged"], true, "{merged}");
+
+    assert_eq!(
+        placement_rows(&read_project(&auth, &mut dispatcher)),
+        before_placements,
+        "不给 `placement` ⇒ 全部摆放逐字段一位不动 (缺省 = ⛔ 摆放)"
+    );
+    assert_ne!(
+        read_back(&auth, &mut dispatcher, &clip),
+        before_notes,
+        "同一批的音符编辑必须真的落地, 否则本判据测的是空气"
+    );
+}
+
+/// ⭐ 判据 11（`edit_notes.mergeCommitMessage` 的**缺省钉**）：不给该键 ⇒ 落回
+/// `"merge proposal {proposalId}"`。
+///
+/// 已证那面是 [`transpose_clip_expands_into_one_move_per_note_in_a_single_batch`]
+/// （给了 ⇒ 原样进提交）。期望值取自**同一份回执**里的 `proposalId`，
+/// ⛔ 硬编码字符串（那会把"回显了某个 id"和"用了缺省文案"混成一件事）。
+#[test]
+fn absent_merge_commit_message_on_edit_notes_falls_back_to_the_proposal_id() {
+    let (mut dispatcher, auth, project) = dispatcher();
+    let (track, clip, _) = midi_target(&project);
+
+    let merged = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_edit_notes",
+        json!({
+            "trackId": track.to_canonical_string(),
+            "clipId": clip.to_canonical_string(),
+            "ops": [{"kind": TRANSPOSE_CLIP_KIND, "deltaPitch": 2}],
+            "autoMerge": true,
+        }),
+    );
+    assert_eq!(merged["status"], "success", "{merged}");
+    let proposal_id = merged["data"]["proposal"]["proposalId"]
+        .as_str()
+        .expect("自动合并的回执必须回显 proposalId");
+    assert_eq!(
+        merged["data"]["merge"]["commit"]["message"],
+        json!(format!("merge proposal {proposal_id}")),
+        "不给 `mergeCommitMessage` ⇒ 信息必须是既有缺省文案（⛔ 空串、⛔ 片段名）: {merged}"
+    );
+    assert_eq!(
+        merged["data"]["commitModel"], "proposalAutoMerged",
+        "缺省文案⛔ 改变提交模型: {merged}"
     );
 }
