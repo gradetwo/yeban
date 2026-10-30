@@ -16017,3 +16017,18 @@ test result: FAILED. 3 passed; 1 failed
    5 个目标二进制各出现 **2** 次（`documented_arg_coverage`／`section_drum_density`／`section_material_clips`／`section_part_tracks`／`render_master`）⇒ fail-fast 口径下"在场"成立；
    4 条新判据逐名 `... ok` ×2；`documented_arg_coverage` 跑 **3 tests** 全 ok（含 `each_documented_key_declares_its_default_side_evidence_or_gap`）。
    ⇒ 前一版 `40998185299` 的红确系 `clippy::absurd_extreme_comparisons` **一条**，改 `is_empty()` 后其余判据 untouched 仍绿。
+
+### §8 落地 `4227adfc`（merge 判决 pending）
+
+- `worktree.sh land s6d-propose-defaults` ⇒ `merge(s6d-propose-defaults)` **`4227adfc`**：5 文件／+275 −27
+  （`documented_arg_coverage.rs`＝登记表 4 行搬迁 ＋ 两条棘轮、`section_drum_density.rs` +59、
+  `section_material_clips.rs` +45、`section_part_tracks.rs` +51、`render_master.rs`），`post_merge_checks` 两条 ok。
+- 主树先落文档提交 **`01453f0f`**（本台账第七批 ＋ handover §5 树表）⇒ 一次推送 `b559df6a..4227adfc`
+  （5 个提交：`956e21af` → `20490f80` → `82a46b8d` ＋ 文档 ＋ merge）。
+- 推前再 `fetch` ＋ `rev-list --left-right --count main...origin/main` ＝ **5 0**（远端未动）⇒ 条件式快进推。
+- ⭐ **本 merge 自己的 run `41003344673` ＝ success（04:55 读回）**：`rust (yeban-mcp)` 04:31:25→04:47:43（**16m18s**）／
+  `windows` →04:53:27（**22m02s**）／`macos` →04:55:23（**23m58s**）／`rust (yeban-ui-mcp)` 3m54s ⇒ 全非 0s（⛔ 空绿）。
+  承判腿读数：`test result:` **137** 行 ／ `Running tests/*.rs` **134** 次 ／ `FAILED` **0** ／ passed **2,448**；
+  五条目标判据（四条新增 ＋ `edit_notes` 那条）与登记轴 `each_documented_key_declares_its_default_side_evidence_or_gap`
+  逐名 `... ok` **各 2 次** ⇒ **四件齐**。落地后拆树（归档标签 `line-archive/s6d-propose-defaults @ 82a46b8d`）；
+  `git worktree list` 现读 **一行**（只剩主树）。

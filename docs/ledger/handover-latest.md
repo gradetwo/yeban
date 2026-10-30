@@ -12,6 +12,34 @@
 > `docs/ledger/phase-status.md` 的叙事条目**停在 R1144**（2026-10-26）⇒ ⭐ 读进度以
 > `DEVELOPMENT_LEDGER.md` 的尾部为准，⛔ 不要以为 R1144 之后没干活。
 
+### 0.6.0j ⭐ 尾批（2026-10-30 04:31）：创作轴的**两条登记轴都到 29＋0** ＋ 第四片两组缺省钉
+
+- **登记表三轴现读**（`crates/yeban-mcp/tests/documented_arg_coverage.rs`，已随 `4227adfc` 上主干）：
+  效果面 `EFFECT_FACE` **29** 行 ／ 缺口 `GAPS` **0**；缺省侧 `DEFAULT_SIDE` **29** 行 ／ `DEFAULT_SIDE_GAPS` **0**；
+  棘轮 = `DEFAULT_SIDE.len() >= 29` ＋ `DEFAULT_SIDE_GAPS.is_empty()`（⚠ 上界为 0 时⛔ 写 `len() <= 0`，
+  那是 `clippy::absurd_extreme_comparisons`，本轮因此红过一次）。
+  ⇒ 29 个文档化创作键**每一个**都同时有"有效果"与"缺省同形"两类证据（⛔ 只算其中一类）。
+- **本批新增 7 条判据**：`edit_notes` 三键（`create`／`placement`／`mergeCommitMessage`，落 `tests/transpose_clip.rs`）
+  ＋ `propose_section` 三键（`drumDensity`／`materialClipIds`／`partTracks`）＋ `render_master.contributions`。
+- **判决链（全部读回）**：
+  - `line/s6d-edit-notes-default` @ `d75d0117` → run **`40994502939` success**（三腿真跑：16m38s／37m34s／27m34s；
+    134 runner／`FAILED` 0／2,440 passed）→ merge `e51df9bf` → 随 `b559df6a` 推主干 →
+    **merge run `40998175291` success**（15m58s／32m52s／26m14s）⇒ **四件齐，树已拆**。
+  - `line/s6d-propose-defaults` @ `82a46b8d` → run **`40998777260` success**（9m18s／37m46s／16m26s；
+    2,448 passed ＝ 前一条 ＋8）→ merge `4227adfc` 推主干，**merge run `41003344673` 在飞**（⛔ 记 pending）。
+  - 中途一条**我自己的红**：`40998185299` 唯一红 ＝ `clippy::absurd_extreme_comparisons`（`usize` 的 `len() <= 0`）
+    ⇒ 改 `is_empty()`（提交 `82a46b8d`）。
+- **落地时的新发现（已写进台账第七批 §2）**：`worktree.sh land` 只推进**本地** main；本轮远端 main 已被
+  `merge(roll-scope)` 推进 **7** 提交（只动 `crates/yeban-app/**`）⇒ 推前必须 `git fetch` ＋
+  `git rev-list --left-right --count main...origin/main`，必要时先 `git merge origin/main` 再推（⛔ 直接 push）。
+- **活树现读**（2026-10-30 04:55 `git worktree list`）＝ **一行**（只剩主树 `main`）：两条子线都已落地并拆除
+  （归档标签 `line-archive/s6d-edit-notes-default @ d75d0117`、`line-archive/s6d-propose-defaults @ 82a46b8d`）。
+- **两条 merge 判决都已读回**：`e51df9bf` → run `40998175291` **success**；`4227adfc` → run `41003344673` **success**
+  ⇒ 两条线**四件齐闭合**（明细见台账第七批 §1／§7／§8 与 §5.2 留档行）。
+- **下一步**：⚠ `§0.6.4` 的四条创作缺口队列**已全部闭合或属人类硬件专属**；`G8j`（`harmonyVoices`／和声音域）
+  卡在**人类裁决**（`ADR-0042` 的三条选项，见 §0.6.4.1）⇒ 下一条"创作缺口"只能来自**新的审计轴**或人类裁决
+  （⛔ 把已验证的东西重新开票）。
+
 ### 0.6.0a ⭐ 尾批（2026-10-28 晚）：`yeban_load_sfz` / `yeban_render_sfz_wav` 输入侧三键
 
 本批之后的状态（逐单明细见 `docs/DEVELOPMENT_LEDGER.md` 新节"输入侧三键判据"）：
@@ -1425,7 +1453,7 @@ python3 scripts/guards/policy_check.py && bash scripts/gates/run-gates.sh light
 | 路径 | 分支 | 处置 |
 | :--- | :--- | :--- |
 | `/home/crow/work/qoder/yeban` | `main` | 主树（⭐ 集成者工作区，⛔ 不在这里写线代码）|
-| `.worktrees/s6d-propose-defaults` | `line/s6d-propose-defaults` | ⭐ **在飞**：S6 第四片第二/三批（`propose` 三键 ＋ `render_master.contributions` 缺省钉，登记表读数 **29＋0**），基点 `b559df6a`，tip **`82a46b8d`**，线 run **`40998777260`**。⚠ 前一轮 `40998185299`（tip `20490f80`）＝ failure，**唯一红**是 `clippy::absurd_extreme_comparisons`（`DEFAULT_SIDE_GAPS.len() <= 0`），已由 `82a46b8d` 改 `is_empty()` 修掉 |
+| （无在飞线）| — | ⭐ 2026-10-30 04:55 现读 `git worktree list` ＝ **一行**（只剩主树 `main`）；两条 `s6d-*` 子线均已落地并拆除，留档见 §5.2 |
 
 ### 5.2 已拆树**留档**（⭐ ⛔ 再写工作树路径字面 —— `check_handover_consistency.py` 把全文件里每个 `.worktrees/<名>` 都当"声明的活树"比对 `git worktree list`，第 254 条的同一条口径）
 
@@ -1439,6 +1467,7 @@ python3 scripts/guards/policy_check.py && bash scripts/gates/run-gates.sh light
 | `line/s5b-leaf-table`（⭐ 工作树已拆：2026-10-30 01:20 按第 31 条**拆除**，分支已随 `--purge` 删除并归档为标签 `line-archive/s5b-leaf-table @ 088ebe06`） | ✅ **四件齐**（S5 第二片＝判据七末端字段棘轮，`crates/yeban-model/src/ops.rs` 的 test 模块，提交链 `1689cb22` ＋ `088ebe06`）：线 tip run `40979744572` 八条腿全 `completed` —— `rust (workspace 全量)` **1,737s**／`windows` **2,252s**／`macos` **1,687s**／`checks` **90s**／`deny` **58s**／`lockfile` **23s**／`plan` **11s**（matrix 腿按构造 skipped、0s）⇒ ⛔ 空绿；本机 `cargo test -p yeban-model --lib` 现读 **252 passed / 0 failed**。冻结读数：表 **55** 行 ＝ **14** 行纯实例键 ＋ **41** 行有字段名；过滤后字段名 **36** 个去重／**53** 个段（两个单位⛔ 互换）。已 land 进 main（merge `e267eba3`，⚠ 主干那条 merge run 待读回）；其 `target` **1.6G** 随树回收 —— `/home` 现读 `198G/235G`（余 **31G**，拆树前 29G）|
 | `line/s6-key-effect-registry`（工作树已拆：2026-10-30 03:29 按第 31 条**拆除**，分支随 `--purge` 删除并自动归档为标签 `line-archive/s6-key-effect-registry @ cff323e6`） | ✅ **已落地**（merge **`3732ab6b`**；线 tip `cff323e6` 的 run `40990503879` ＝真绿）。⚠ **该 merge 没有自己的 run**：它与 `fe00361d` 同一次推送 ⇒ CI 只为 tip 起 run；以 `fe00361d` 的 run **`40994485378`**（`rust (yeban-mcp)` 13m12s／134 runner／`FAILED` 0／passed **2,434**）作**替代判决** ⇒ ⛔ 说成"`3732ab6b` 自己的 run 绿"。本线内容 ＝ S6 第一/二/三片（效果面登记表 29 键 ＋ 缺省侧轴开线，判据文件 `crates/yeban-mcp/tests/documented_arg_coverage.rs`）|
 | `line/s6d-edit-notes-default`（工作树已拆：2026-10-30 04:11 按第 31 条**拆除**，分支随 `--purge` 删除并自动归档为标签 `line-archive/s6d-edit-notes-default @ d75d0117`） | ✅ **四件齐**（S6 第四片第一批：`edit_notes` 的 `create`／`placement`／`mergeCommitMessage` 三键缺省钉，判据落 `crates/yeban-mcp/tests/transpose_clip.rs`；＋登记表 25＋4 → 28＋1）：⭐ **线判决** run `40994502939` ＝ success（`rust (yeban-mcp)` 16m38s／`windows` 37m34s／`macos` 27m34s 均非 0s ⇒ ⛔ 空绿；134 runner／`FAILED` 0／passed **2,440**；三条判据逐名 `... ok` 两轮）＋ ⭐ **merge run `40998175291` ＝ success**（merge `e51df9bf` 随 `b559df6a` 推主干：`rust (yeban-mcp)` 15m58s／`windows` 32m52s／`macos` 26m14s 真跑）。⚠ 落地时远端已被 `merge(roll-scope)` 推进 7 提交 ⇒ 先 `merge origin/main` 得 `b559df6a` 再推（新纪律见台账第七批 §2）|
+| `line/s6d-propose-defaults`（工作树已拆：2026-10-30 04:55 按第 31 条**拆除**，分支随 `--purge` 删除并自动归档为标签 `line-archive/s6d-propose-defaults @ 82a46b8d`） | ✅ **四件齐**（S6 第四片第二/三批：`propose_section` 的 `drumDensity`／`materialClipIds`／`partTracks` ＋ `render_master.contributions` 四键缺省钉；登记表 **28＋1 → 29＋0**，效果面与缺省侧**两轴都满**）：⭐ **线判决** run `40998777260` ＝ success（`rust (yeban-mcp)` 9m18s／`windows` 37m46s／`macos` 16m26s；134 runner／`FAILED` 0／passed **2,448** ＝ 前批 ＋8）＋ ⭐ **merge run `41003344673` ＝ success**（merge `4227adfc`：`rust (yeban-mcp)` 16m18s／`windows` 22m02s／`macos` 23m58s；2,448 passed；五条目标判据＋登记轴逐名 ok 各 2 次）。⚠ 前一版 `40998185299`（tip `20490f80`）＝ failure，**唯一红**＝`clippy::absurd_extreme_comparisons`（`usize` 的 `len() <= 0`）⇒ 改 `is_empty()`（`82a46b8d`）|
 
 > ⭐ **2026-10-28 11:23 现读 `git worktree list` ＝ 磁盘上**一行**（只剩主树 `main`）：`beat-grouping` 已于 11:22 落地（merge `b42f4cc0`）并按第 31 条拆除 ⇒ 其行已移进**上表 §5.2**。本表的行数只认 `git worktree list` 的现读输出，⛔ 凭记忆补行；⚠ **下一张票开新树之前本表只有主树一行**。
 
