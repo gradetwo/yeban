@@ -5719,6 +5719,10 @@ fn the_default_row_geometry_is_bit_for_bit_the_s0_literals() {
     // 剪辑与自动化带同源：默认几何下它们的 y 也落在 S0 的前缀和上。
     let clip_ys = injected_lengths(&window.get_clip_ys());
     assert!(
+        !clip_ys.is_empty(),
+        "夹具必须非空（否则下面那条 `.all(..)` 恒真）"
+    );
+    assert!(
         clip_ys
             .iter()
             .all(|y| (*y - 46.0).rem_euclid(56.0).abs() < f32::EPSILON),

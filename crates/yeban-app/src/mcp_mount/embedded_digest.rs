@@ -1742,6 +1742,10 @@ fn measure_sampler_no_sampler(
         .to_owned();
     let data = &response["data"];
     assert!(
+        !data["sources"].as_array().expect("sources").is_empty(),
+        "夹具必须非空（否则下面那条 `.all(..)` 恒真）"
+    );
+    assert!(
         data["sources"]
             .as_array()
             .expect("sources")
