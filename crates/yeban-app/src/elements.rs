@@ -164,9 +164,14 @@ impl ElementRegistry {
     /// `yeban-ui-test-port` 的有窗实例对账 (见模块文档), 属于已登记的边界。
     ///
     /// 哪些族**不由**工程驱动（如实登记，见 `docs/ledger/app-binding-notes.md`）：
-    /// 侧栏资源 / 控制台标签 / 卷帘工具矩阵 / 两个对话框 —— 它们要么是规范级常量
+    /// 控制台标签 / 卷帘工具矩阵 / 两个对话框 —— 它们要么是规范级常量
     /// （工具矩阵），要么没有对应的模型实体。
     ///
+    /// ⭐ **侧栏条目从这份"静态"清单里移出**（旧版在这里写死 8 条合成标签，而
+    /// `.slint` 那边内联 8 个仓里不存在的乐器名）。现在它的条数、顺序、标签全部来自
+    /// [`crate::bridge::sidebar_category_content`]：乐器 = 采样库清单，采样 =
+    /// `ViewState::asset_pool_names()`（**工程数据**），预置 = 空（模型无载体）。
+    /// ⚠ 它**没有**被加进 [`MODEL_DRIVEN_FAMILIES`]，理由与下面的 `device-` 同款。
     /// ⭐ **任务单 `#157` 移出了"设备机架"**：设备卡片现在**由** `ViewState::devices`
     /// 驱动（条目数 / 名字 / 旁通 / 参数读数）⇒ 它不再是静态部件。⚠ 它**没有**被加进
     /// [`MODEL_DRIVEN_FAMILIES`]：那份清单是**前缀**表，加 `"device-"` 会把
@@ -198,7 +203,7 @@ impl ElementRegistry {
             "搜索资源",
             false,
         );
-        for (index, label) in ["乐器", "采样", "预置"].iter().enumerate() {
+        for (index, label) in crate::bridge::SIDEBAR_CATEGORIES.iter().enumerate() {
             registry.add(
                 &format!("sidebar-category-{index}-button"),
                 ElementKind::Tab,
@@ -207,12 +212,27 @@ impl ElementRegistry {
                 false,
             );
         }
-        for index in 0..8 {
+        // ⭐ 条目族是**派生**的（旧版这里写死 `for index in 0..8` 并给 8 条合成标签
+        // "资源条目 {i}"，而 `.slint` 那边内联的是 8 个仓里不存在的乐器名 —— 两边各写
+        // 一份、谁也不对账）。现在注册表与画面**同源**：同一个
+        // [`crate::bridge::sidebar_category_content`]，同一张 [`ViewState`]，
+        // 默认帧的分类 = 0（乐器）。空 ⇒ 登记 `sidebar-empty` 的**理由**而不是 0 条幽灵。
+        let sidebar = crate::bridge::sidebar_category_content(view, 0);
+        if sidebar.is_empty() {
+            registry.add(
+                "sidebar-empty",
+                ElementKind::Text,
+                "sidebar.slint",
+                &sidebar.empty_reason,
+                false,
+            );
+        }
+        for (index, name) in sidebar.items.iter().enumerate() {
             registry.add(
                 &format!("sidebar-item-{index}"),
                 ElementKind::ListItem,
                 "sidebar.slint",
-                &format!("资源条目 {index}"),
+                name,
                 false,
             );
         }
@@ -2644,15 +2664,39 @@ mod tests {
     ///
     /// ⚠ 例外必须**逐条**写理由，并且 `.slint` 里必须真有这个模板
     /// （同一判据的上半段机械检查）。
-    const EMPTY_DYNAMIC_TEMPLATES_ALLOWED: &[(&str, &str)] = &[(
-        "instrument-install-",
-        "-button", // #165：清单按样本字节过滤，今天为空 ⇒ 0 个按钮
-    )];
+    ///
+    /// ⭐ **侧栏条目族加入本清单**（`("sidebar-item-", "")`，**单段**模板 = 后缀写空串）：
+    /// 它的成员来自 [`crate::bridge::sidebar_category_content`] 的**默认帧分类 0（乐器）**，
+    /// 而 CI / 无头机器上采样库根没有下载 ⇒ 清单为空 ⇒ 模板实例化 0 次。这与 `#165`
+    /// 那条完全同构（同一个"库没下载"的事实现象，只是另一族）。⛔ 不是静默放行 ——
+    /// "条数与投影同源"由 `model_driven_families_scope_is_exact` 末尾的派生断言钉住，
+    /// 空态另有 `sidebar-empty` 注册与判据。
+    const EMPTY_DYNAMIC_TEMPLATES_ALLOWED: &[(&str, &str)] = &[
+        (
+            "instrument-install-",
+            "-button", // #165：清单按样本字节过滤，今天为空 ⇒ 0 个按钮
+        ),
+        (
+            "sidebar-item-",
+            "", // 库根无样本 ⇒ 分类 0 今天 0 条（单段模板 `"sidebar-item-" + i`）
+        ),
+    ];
 
     /// 这个模板是不是在 [`EMPTY_DYNAMIC_TEMPLATES_ALLOWED`] 里登记过。
+    ///
+    /// 形态：后缀非空 ⇒ 必须是**双段**模板（`"前缀-" + i + "-后缀"`）；后缀为空串 ⇒
+    /// 必须是**单段**模板（`"前缀-" + i`）。两种都要前缀逐字相等。
     fn empty_dynamic_template_is_documented(segments: &[String]) -> bool {
         EMPTY_DYNAMIC_TEMPLATES_ALLOWED.iter().any(|(first, last)| {
-            segments.len() == 2 && segments[0] == *first && segments[1] == *last
+            match segments.first() {
+                Some(head) if head.as_str() == *first => {}
+                _ => return false,
+            }
+            if last.is_empty() {
+                segments.len() == 1
+            } else {
+                segments.len() == 2 && segments[1] == *last
+            }
         })
     }
 
@@ -2819,7 +2863,6 @@ mod tests {
             assert!(is_model_driven_family(id), "`{id}` 应当被判为投影驱动");
         }
         for id in [
-            "sidebar-item-0",
             "sidebar-category-0-button",
             "device-rack",
             "musical-pr-drawer",
@@ -2835,6 +2878,34 @@ mod tests {
             );
         }
         assert!(!is_model_driven_family(""));
+
+        // ⭐ 侧栏条目族**不再是静态部件**（旧断言"注册表里必有 `sidebar-item-0`"是
+        // 写死 8 条那一份的镜子）：条数由 [`crate::bridge::sidebar_category_content`]
+        // 派生，与 `.slint` 画的条目**同源**。⚠ 它不在 [`MODEL_DRIVEN_FAMILIES`] 里 ——
+        // 那张表是前缀表，加 `"sidebar-"` 会把 `sidebar` / `sidebar-collapse-button` /
+        // `sidebar-search-field` / `sidebar-category-{i}-button` 一起误判成工程驱动
+        // （与 `device-` 同一处置，见 `from_view` 文档）。
+        let sidebar = crate::bridge::sidebar_category_content(&ViewState::demo(), 0);
+        assert_eq!(
+            registry.with_prefix("sidebar-item-").count(),
+            sidebar.len(),
+            "注册表的 `sidebar-item-*` 条数必须等于投影条数（派生，⛔ 不是写死的 8）"
+        );
+        assert_eq!(
+            registry.contains("sidebar-empty"),
+            sidebar.is_empty(),
+            "`sidebar-empty` 只在投影为空时登记 —— 与 `.slint` 的\
+             `visible: root.items.length == 0` 同判据"
+        );
+        for (index, name) in sidebar.items.iter().enumerate() {
+            let meta = registry
+                .get(&format!("sidebar-item-{index}"))
+                .unwrap_or_else(|| panic!("缺少 `sidebar-item-{index}`"));
+            assert_eq!(
+                meta.label, *name,
+                "注册表标签必须是投影的显示名逐字（⛔ 不是合成标签 `资源条目 {{i}}`）"
+            );
+        }
     }
 
     #[test]
@@ -4109,7 +4180,7 @@ mod tests {
     /// ⭐ **本切片移出了一条**（`8 → 7`）：`"sidebar-category-" + i + "-button"` 现在三个
     /// 标签**都**可点 —— `TouchArea.clicked` 与 `accessible-action-default` 同一落点
     /// `root.select-category(category_index)` ⇒ `app.slint` 原样转发 ⇒ 宿主
-    /// `host::wire_view_callbacks` 钳到 `0..=2` 后写 `sidebar-category`（纯视图态：
+    /// `host::wire_sidebar_contents` 钳到 `0..=2` 后写 `sidebar-category`（纯视图态：
     /// 选中背景 / 文字色 / `accessible-item-selected` 三处读同一个属性）。
     /// 判据 `tests/sidebar_category.rs`。
     #[test]
@@ -4202,7 +4273,7 @@ mod tests {
     /// ⛔ 不是照抄单线提交里的 `8 → 7`）：`"sidebar-category-" + i + "-button"` 现在三个
     /// 标签**都**可点 —— `TouchArea.clicked` 与 `accessible-action-default` 同一落点
     /// `root.select-category(category_index)` ⇒ `app.slint` 原样转发 ⇒ 宿主
-    /// `host::wire_view_callbacks` 钳到 `0..=2` 后写 `sidebar-category`（纯视图态：
+    /// `host::wire_sidebar_contents` 钳到 `0..=2` 后写 `sidebar-category`（纯视图态：
     /// 选中背景 / 文字色 / `accessible-item-selected` 三处读同一个属性）。
     /// 判据 `tests/sidebar_category.rs`。
     const KNOWN_ACTIONLESS_CONTROLS: [&str; 3] = [

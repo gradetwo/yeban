@@ -1086,10 +1086,12 @@ fn mount_in_process_mcp(
 /// **视图态九条也已经真的接线**（分类切换、控制台 ⤢、资源条目选中、Session 返回编曲与
 /// 剪辑选中陆续落地）：
 /// `toggle-view` / `toggle-sidebar` / `toggle-ai-drawer` / `open-musical-pr` /
-/// `select-sidebar-category` / `console-maximize-toggle` / `select-sidebar-item` /
-/// `back-to-arrangement` → [`host::wire_view_callbacks`] → 分别写
-/// `arrangement-view` / `sidebar-collapsed` / `ai-drawer-open` / `musical-pr-open` /
-/// `sidebar-category` / `console-maximized` / `sidebar-item` / `arrangement-view`；
+/// `console-maximize-toggle` / `back-to-arrangement` → [`host::wire_view_callbacks`] →
+/// 分别写 `arrangement-view` / `sidebar-collapsed` / `ai-drawer-open` /
+/// `musical-pr-open` / `console-maximized` / `arrangement-view`；
+/// `select-sidebar-category` / `select-sidebar-item` → [`host::wire_sidebar_contents`] →
+/// 写 `sidebar-category` / `sidebar-item` **并重注入** `sidebar-items` /
+/// `sidebar-empty-reason`（分类 0 = 库扫描、1 = 素材池、2 = 模型缺口；钳位用**当次投影条数**）；
 /// `clip-select` → [`host::wire_clip_scope`] → `selected-clip-ulid`（`back-to-arrangement`
 /// 只写 `true`，与 `toggle-view` 同一属性；`clip-select` 先校验身份确实在 `clip-ulids`
 /// 里再写，并按新身份重注入卷帘作用域 —— `[UI-NOTE-001]` 的"当前编辑片段"）。
@@ -1130,6 +1132,9 @@ fn wire_callbacks(
 ) {
     host::wire_transport(ui, Rc::clone(engine), project, undo.clone());
     host::wire_view_callbacks(ui);
+    // ⭐ 左侧资源栏的条目**取数**（分类 / 条目点击）：与无头装配调的是**同一个**
+    // `host::wire_sidebar_contents`（换分类 ⇒ 数组跟着换 ⇒ 需要当前投影）。
+    host::wire_sidebar_contents(ui, Rc::clone(&view));
     // ⭐ `[UI-NOTE-001]` 剪辑选中态 ⇒ 卷帘作用域：与无头装配（`live_surface.rs`）调的是
     // **同一个** `host::wire_clip_scope`（选中是视图态，写属性 + 重注入，⛔ 不 `commit_ops`）。
     host::wire_clip_scope(ui, Rc::clone(&view), undo);

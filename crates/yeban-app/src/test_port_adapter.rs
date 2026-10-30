@@ -489,13 +489,15 @@ const MIN_SINGLETON_COVERAGE_PERCENT: usize = 90;
 ///
 /// 这是"不管上游怎么展开 `for`，语义寻址必须至少可用"的最低要求 —— 比"实例数必须等于 N"
 /// 弱，比"整族不判"强。实测计数（含全部实例）作为观察值打印，不进断言。
-const VISIBLE_FAMILY_MEMBERS: [&str; 12] = [
+const VISIBLE_FAMILY_MEMBERS: [&str; 11] = [
     "clip-01J8Z5Q0R7K3M9X2V4B6N8P1F9-header",
     "note-01J8Z5Q0R7K3M9X2V4B6N8P1A2-rect",
     "piano-roll-tool-select-button",
     "section-0-card",
     "sidebar-category-0-button",
-    "sidebar-item-0",
+    // ⭐ `sidebar-item-0` **不在本清单**（任务单 `#133`）：这一族今天由**投影**决定，
+    // 库根没装样本 ⇒ 分类 0 就是 0 行 ⇒ "必有一个成员"会变成一条**要求演示数据**的判据。
+    // 它改住在下面那段跟着投影走的断言里（有行 ⇒ `sidebar-item-0`，空 ⇒ `sidebar-empty`）。
     "tab-piano-roll-button",
     "track-0-header",
     "track-0-mute-button",
@@ -1105,6 +1107,40 @@ fn runtime_control_tree_cross_check_against_the_registry() {
         assert!(
             !runtime.contains(id),
             "不可见的 `{id}` 混进了运行时树 —— `visible: false` 的语义没有被尊重"
+        );
+    }
+
+    // ---- 左侧资源栏条目族：判据跟着**投影**走，不跟常量走（任务单 `#133`） ----
+    //
+    // 旧版这里写死 `sidebar-item-0`，因为 `sidebar.slint` 内联了 8 个演示乐器名。现在
+    // 数组由宿主按当前分类注入，唯一事实源 = `crate::bridge::sidebar_category_content`
+    // （与 `ElementRegistry::from_view` 同一个函数）⇒ 本判据读**同一个**函数：
+    //   ① 有行 ⇒ `sidebar-item-0` 必须在树里；0 行 ⇒ 空态节点 `sidebar-empty` 必须在树里；
+    //   ② 树里的 `sidebar-item-*` 行数 == 投影条数（⛔ 不是 8）；
+    //   ③ `sidebar-empty` 在不在树里 ⟺ 投影是否为空（`.slint` 的 `visible:` 条件）。
+    {
+        let sidebar = crate::bridge::sidebar_category_content(&view, 0);
+        let expected_sidebar = if sidebar.is_empty() {
+            "sidebar-empty"
+        } else {
+            "sidebar-item-0"
+        };
+        assert!(
+            runtime.contains(expected_sidebar),
+            "分类 0（乐器）的投影是 {} 条 ⇒ 树里必须有 `{expected_sidebar}`，但没有 ({coverage})\
+             —— 数组或空态至少有一边没接上投影",
+            sidebar.len(),
+        );
+        assert_eq!(
+            runtime.with_prefix("sidebar-item-").count(),
+            sidebar.len(),
+            "树里的 `sidebar-item-*` 行数必须等于投影条数（⛔ 不是旧版写死的 8）"
+        );
+        assert_eq!(
+            runtime.contains("sidebar-empty"),
+            sidebar.is_empty(),
+            "`sidebar-empty` 必须**只在**投影为空时出现在树里（`.slint` 的\
+             `visible: !root.compact && root.items.length == 0`）"
         );
     }
 

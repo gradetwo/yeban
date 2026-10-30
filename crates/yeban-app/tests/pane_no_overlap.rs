@@ -1790,35 +1790,37 @@ const CONSOLE_RAIL: &[&str] = &[
     "console-maximize-button",
 ];
 
-/// ① 左栏**展开**态（240px）的 13 个控件：折叠键 ＋ 搜索框 ＋ 3 个分类 ＋ 8 个条目。
-const SIDEBAR_EXPANDED: &[&str] = &[
-    "sidebar-collapse-button",
-    "sidebar-search-field",
-    "sidebar-category-0-button",
-    "sidebar-category-1-button",
-    "sidebar-category-2-button",
-    "sidebar-item-0",
-    "sidebar-item-1",
-    "sidebar-item-2",
-    "sidebar-item-3",
-    "sidebar-item-4",
-    "sidebar-item-5",
-    "sidebar-item-6",
-    "sidebar-item-7",
-];
-
-/// ① 左栏**折叠**态（36px）的 9 个控件：搜索框与三个分类按设计 `visible: false`。
-const SIDEBAR_COMPACT: &[&str] = &[
-    "sidebar-collapse-button",
-    "sidebar-item-0",
-    "sidebar-item-1",
-    "sidebar-item-2",
-    "sidebar-item-3",
-    "sidebar-item-4",
-    "sidebar-item-5",
-    "sidebar-item-6",
-    "sidebar-item-7",
-];
+/// ① 左栏的**可见控件清单**（按态与**投影条数**生成；⛔ 不再是写死的 13 / 9）。
+///
+/// ⭐ 任务单 `#sidebar-library`：条目族 `sidebar-item-{i}` 从"内联 8 条演示数据"改成
+/// 宿主注入的投影数组 ⇒ 本清单必须跟着投影走。判据口径：
+/// - 展开态（240px）：折叠键 ＋ 搜索框 ＋ `SIDEBAR_CATEGORIES.len()` 个分类 ＋
+///   `items` 个条目；`items == 0` 时条目位换成**一个** `sidebar-empty`（它的
+///   `visible: !compact && items.length == 0` 与画面同源）；
+/// - 折叠态（36px）：只剩折叠键 + 条目（搜索框与分类按设计 `visible: false`，
+///   `sidebar-empty` 也带 `!compact` ⇒ 不在场）。
+///
+/// ⚠ 本文件的 `live_window*` 一律先过 [`isolate_uninstalled_library`]（`#205`）⇒ 库根
+/// 指向不存在的路径 ⇒ 分类 0 在**任何**机器上都是 0 条；调用点会把这条断言钉住。
+fn sidebar_controls(compact: bool, items: usize) -> Vec<String> {
+    let mut ids = vec!["sidebar-collapse-button".to_string()];
+    if !compact {
+        ids.push("sidebar-search-field".to_string());
+        for category in 0..yeban_app::bridge::SIDEBAR_CATEGORIES.len() {
+            ids.push(format!("sidebar-category-{category}-button"));
+        }
+    }
+    if items == 0 {
+        if !compact {
+            ids.push("sidebar-empty".to_string());
+        }
+    } else {
+        for index in 0..items {
+            ids.push(format!("sidebar-item-{index}"));
+        }
+    }
+    ids
+}
 
 /// ③ Session 视图的控件清单（⭐ `#190` 起**按画布装得下的列数**生成）：
 /// `visible` 条轨道包头 ＋ 每列 `scenes` 个插槽 ＋ `scenes` 个场景色标 ＋ 场景列头
@@ -2191,17 +2193,25 @@ fn assert_container_clear_of(
 // ① 左栏 `sidebar*`：展开 / 折叠两态 × 三档
 // ===========================================================================
 fn check_sidebar(width: u32, height: u32, breakpoint: bool) {
+    isolate_uninstalled_library();
     let live = if breakpoint {
         live_window_at_breakpoint(yeban_model::samples::demo_project(), (width, height), 0)
     } else {
         live_window((width, height), 0)
     };
     let compact = live.ui().get_compact();
-    let expected: &[&str] = if compact {
-        SIDEBAR_COMPACT
-    } else {
-        SIDEBAR_EXPANDED
-    };
+    // ⭐ 清单**由投影生成**（与画面同一个取数口 `bridge::sidebar_category_content`，
+    // 默认帧的分类 = 0 乐器）。⛔ 不再抄一份 13 / 9 的字面清单。
+    let sidebar = yeban_app::bridge::sidebar_category_content(&ViewState::demo(), 0);
+    assert!(
+        sidebar.is_empty(),
+        "[#189 左栏 {width}x{height}] 本文件的库根被 `isolate_uninstalled_library()` \
+         钉到不存在的路径（`#205`）⇒ 分类 0 必须是 **0 条**；实际 {} 条 ⇒ 隔离失效，\
+         清单会跟着漂",
+        sidebar.len()
+    );
+    let generated = sidebar_controls(compact, sidebar.len());
+    let expected: Vec<&str> = generated.iter().map(String::as_str).collect();
     let tree = runtime_tree(live.ui());
     let pane = bounds(&tree, "sidebar");
     assert_eq!(

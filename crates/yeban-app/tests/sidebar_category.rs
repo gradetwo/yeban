@@ -45,6 +45,12 @@ fn live_window() -> (LivePort<yeban_app::ui::MainWindow>, ViewState) {
     .expect("Tier-1 平台 + 生产窗口构造入口");
     // 生产接线（`main.rs` 与无头装配调的是**同一个**函数）。
     host::wire_view_callbacks(port.ui());
+    // ⭐ 分类 / 条目点击现在住在 `host::wire_sidebar_contents`（换分类 ⇒ 条目数组跟着换，
+    // 需要一份投影）。判据接的是**同一个**函数，⛔ 不是另一条捷径。
+    host::wire_sidebar_contents(
+        port.ui(),
+        std::rc::Rc::new(std::cell::RefCell::new(view.clone())),
+    );
     (port, view)
 }
 

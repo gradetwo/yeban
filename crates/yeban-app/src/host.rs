@@ -177,6 +177,16 @@ pub fn apply_view(ui: &MainWindow, view: &ViewState, viewport_width: f32, scroll
     ui.set_asset_pool_names(strings(&view.asset_pool_names()));
     ui.set_asset_pool_kinds(strings(&view.asset_pool_kinds()));
     ui.set_asset_pool_details(strings(&view.asset_pool_details()));
+    // ⭐ 左侧资源栏的条目（任务单 `#133`）：一个数组 ＋ 一个逐字理由**标量**。
+    // 唯一事实源 = `crate::bridge::sidebar_category_content`（按**当前分类**取数：
+    // 0 = 进程缓存的库扫描、1 = 上面的素材池投影、2 = 模型层登记的缺口），
+    // `ElementRegistry::from_view` 读的是**同一个**函数 ⇒ "注册表说 N 条 / 屏幕画 M 条"
+    // 在结构上不可能。⛔ 界面不自己取数（旧版在这里内联 8 个乐器名，含仓库里不存在的
+    // "SFZ · 323 款"）。分类 0 走缓存 ⇒ 每帧成本是一次 `stat` ＋ 名字数组拷贝，
+    // 与既有 `asset_pool_names` 同一档（⛔ 不读样本字节，`#165` 的教训）。
+    let sidebar =
+        crate::bridge::sidebar_category_content(view, ui.get_sidebar_category().max(0) as usize);
+    inject_sidebar(ui, &sidebar);
     // ⭐ 设备机架（任务单 `#157`）：`ViewState::devices` / `eq_low_gain` 是**唯一**事实源。
     // 四个平行数组同索引集；五个标量来自同一次投影。它们只在完整重投影（换工程 /
     // 撤销 / 打开 / 一次设备手势提交之后）时变化，但 `apply_view` 每次都会新建
@@ -5295,8 +5305,11 @@ fn apply_record_outcome(ui: &MainWindow, error: Option<String>) {
 /// 左侧资源栏的分类数（`ui/sidebar.slint` 的 `for category_index in 3`）。
 ///
 /// 宿主用它钳位点击回调：越界请求（例如 `invoke_select_sidebar_category(7)`）落不到界面上。
+///
+/// ⚠ 这里**没有**"条目数"的对应常量（旧版有 `SIDEBAR_ITEM_COUNT = 8`，那是内联演示数据的长度）。
+/// 条目数的唯一来源是 `crate::bridge::sidebar_category_content` 的**当次投影长度**，
+/// 钳位用它 ⇒ 换分类 / 库装没装 / 素材池空不空都不会钳到不存在的行上（`#133`）。
 const SIDEBAR_CATEGORY_COUNT: i32 = 3;
-const SIDEBAR_ITEM_COUNT: i32 = 8;
 
 /// splitter 拖拽档位（`console-height-px`）的硬限 —— `[UI-GRID-002]`（规范 §1.1
 /// "splitter 220–600"）。`0` 是"未拖拽"哨兵（布局回到 3:2 弹性比），⛔ 不是可钳的值。
@@ -5311,11 +5324,11 @@ const CONSOLE_HEIGHT_MAX_PX: i32 = 600;
 /// | `toggle-sidebar` | `sidebar-collapsed` | 左资源栏 240px ↔ 36px 图标导轨（`min/max-width`） |
 /// | `toggle-ai-drawer` | `ai-drawer-open` | `compact` 断点下 280px AI 抽屉的 `visible` |
 /// | `open-musical-pr` | `musical-pr-open` | `MusicalPrDrawer` 的 `visible`（**只打开**） |
-/// | `select-sidebar-category` | `sidebar-category` | 三个分类标签的选中态（背景 / 文字色 / `accessible-item-selected`） |
+/// | `select-sidebar-category` | —— | **不在本函数**：换分类 ⇒ 条目数组跟着换 ⇒ 见 [`wire_sidebar_contents`] |
 /// | `console-maximize-toggle` | `console-maximized` | 控制台面板高度（`vertical-stretch`）与 ⤢ 的 `accessible-checked`；与 `Action::ToggleConsoleMaximize` 同属性 |
 /// | `console-height-requested` | `console-height-px` | 先钳到 `220..=600`（`UI-GRID-002` 硬限）再写；`.slint` 的 `states [console-pinned]` 据此把控制台高度钉死在该值 |
 /// | `console-height-reset` | `console-height-px` | 写 `0`（"未拖拽"哨兵）⇒ state 退出、布局回到 3:2 弹性比 |
-/// | `select-sidebar-item` | `sidebar-item` | 八个资源条目的选中态（背景 / 文字色 / `accessible-item-selected`） |
+/// | `select-sidebar-item` | —— | **不在本函数**：条目数组要按投影取数 ⇒ 见 [`wire_sidebar_contents`]（钳位用**当次条数**，⛔ 不是常量） |
 /// | `back-to-arrangement` | `arrangement-view` | Session 视图「→ 编曲」按钮：写 `true` 切回编曲视图（⛔ 不是翻转；播放权回归的引擎侧语义未实现，见 `session_view.slint` 头注） |
 /// | `clip-select` | `selected-clip-ulid` | 编曲视图剪辑包头（`clip-{ulid}-header`）的选中态：包头 2px `selection` 描边 + `accessible-item-selected`（身份比较） |
 ///
@@ -5424,30 +5437,6 @@ pub fn wire_view_callbacks(ui: &MainWindow) {
             ui.set_musical_pr_open(true);
         }
     });
-    // ⭐ 左侧资源分类标签：界面只报告"用户点了哪一个"，钳位与写属性都在这里 ——
-    // 越界请求落不到界面上（`sidebar-category` 的合法区间是 `0..SIDEBAR_CATEGORY_COUNT`）。
-    ui.on_select_sidebar_category({
-        let weak = weak.clone();
-        move |category| {
-            let Some(ui) = weak.upgrade() else {
-                debug_assert!(false, "MainWindow 在回调执行期间被销毁");
-                return;
-            };
-            ui.set_sidebar_category(category.clamp(0, SIDEBAR_CATEGORY_COUNT - 1));
-        }
-    });
-    // ⭐ 左侧资源条目：与分类同一档 —— 界面只报告"用户点了哪一条"，
-    // 钳位与写属性都在这里（越界请求 `7` / `-3` 落不到界面上）。
-    ui.on_select_sidebar_item({
-        let weak = weak.clone();
-        move |item| {
-            let Some(ui) = weak.upgrade() else {
-                debug_assert!(false, "MainWindow 在回调执行期间被销毁");
-                return;
-            };
-            ui.set_sidebar_item(item.clamp(0, SIDEBAR_ITEM_COUNT - 1));
-        }
-    });
     // ⭐ Session 视图「→ 编曲」：**写 `true`**，不是翻转 —— 按钮的语义是"回到编曲视图"，
     // 已经在那里时再按也不该把用户踢回 Session。纯视图态（`MODEL-ISO-001` 的挥发性层）。
     // 播放权从场景回归时间轴的引擎侧语义不在本切片（`session_view.slint` 头注已登记）。
@@ -5461,9 +5450,82 @@ pub fn wire_view_callbacks(ui: &MainWindow) {
             ui.set_arrangement_view(true);
         }
     });
+    // ⭐ 左侧资源栏的分类 / 条目点击**不在这里**：两者都要按**当前投影**算出条目集合
+    // （分类 0 = 库扫描、1 = 素材池、2 = 模型缺口），因此需要一份投影 ——
+    // 落点是紧随其后的 [`wire_sidebar_contents`]（与 [`wire_clip_scope`] 同一档的"要投影"回调）。
     // ⭐ 剪辑包头（`on_clip_select`）**不在这里**：它要按选中身份**重注入卷帘**
     // （`[UI-NOTE-001]` 的"当前编辑片段"作用域），因此需要一份投影和可选的撤销端口 ——
     // 落点是紧随其后的 [`wire_clip_scope`]（与 `wire_scene_launch` 同一档的"要投影"回调）。
+}
+
+/// ⭐ 左侧资源栏的**取数**接线：分类点击 ⇒ 重注入该分类的条目数组 ＋ 空态理由；
+/// 条目点击 ⇒ 按**当次投影条数**钳位后写 `sidebar-item`。
+///
+/// | 读 / 写 | 事实源 |
+/// | :--- | :--- |
+/// | 写 | `sidebar-items` / `sidebar-empty-reason` / `sidebar-category` / `sidebar-item`（唯一写者 = 这里与 [`apply_view`]，两处都只调**同一个** `crate::bridge::sidebar_category_content`） |
+/// | 读 | `.slint` 的 `for item_text[item_index] in root.items`（数组驱动）＋ `sidebar-empty` 文本节点（理由驱动） |
+/// | 不进 | `Op` / `.yeban` / 撤销栈 —— 分类与选中都是视图态（`MODEL-ISO-001` 的挥发性层） |
+///
+/// ## 为什么它从 [`wire_view_callbacks`] 里单独出来
+///
+/// 与 [`wire_clip_scope`] 同理：**换分类 ⇒ 条目数组必须跟着换**。钳位不能用常量
+/// （旧版 `SIDEBAR_ITEM_COUNT = 8` 是内联演示数据的长度），必须是**当次投影的长度** ⇒
+/// 这里需要一份 `Rc<RefCell<ViewState>>`。装配时没有更新的视图快照可用也没关系：
+/// 分类 1 的条目就是 `apply_view` 每帧注入的素材池投影，⛔ 界面不持有第二份清单。
+pub fn wire_sidebar_contents(ui: &MainWindow, view: Rc<RefCell<ViewState>>) {
+    let weak = ui.as_weak();
+    ui.on_select_sidebar_category({
+        let weak = weak.clone();
+        move |category| {
+            let Some(ui) = weak.upgrade() else {
+                debug_assert!(false, "MainWindow 在回调执行期间被销毁");
+                return;
+            };
+            let clamped = category.clamp(0, SIDEBAR_CATEGORY_COUNT - 1);
+            ui.set_sidebar_category(clamped);
+            let content = crate::bridge::sidebar_category_content(&view.borrow(), clamped as usize);
+            inject_sidebar(&ui, &content);
+            // 换分类 ⇒ 条目集合换了 ⇒ 选中态落回**新集合**的合法区间（⛔ 不保留越界值，
+            // ⛔ 不保留"这一列根本不存在的那一行"）。空集合 ⇒ 落回 0（没有行可选）。
+            ui.set_sidebar_item(if content.is_empty() {
+                0
+            } else {
+                ui.get_sidebar_item()
+                    .clamp(0, sidebar_last_index(&content) as i32)
+            });
+        }
+    });
+    ui.on_select_sidebar_item({
+        let weak = weak.clone();
+        move |item| {
+            let Some(ui) = weak.upgrade() else {
+                debug_assert!(false, "MainWindow 在回调执行期间被销毁");
+                return;
+            };
+            let content = crate::bridge::sidebar_category_content(
+                &view.borrow(),
+                ui.get_sidebar_category().max(0) as usize,
+            );
+            // 越界请求（`99` / `-5`）落不到界面上；没有条目时**一位不写**（⛔ 不写幻影选中）。
+            if content.is_empty() {
+                ui.set_sidebar_item(0);
+                return;
+            }
+            ui.set_sidebar_item(item.clamp(0, sidebar_last_index(&content) as i32));
+        }
+    });
+}
+
+/// 当前投影的**最后一条**条目下标（⚠ 调用方须先判空：`len == 0` 时会下溢）。
+fn sidebar_last_index(content: &crate::bridge::SidebarCategoryContent) -> usize {
+    content.len() - 1
+}
+
+/// 把一份条目投影写进窗口：数组 ＋ 空态理由（唯一写点，`apply_view` 与分类回调共用）。
+fn inject_sidebar(ui: &MainWindow, content: &crate::bridge::SidebarCategoryContent) {
+    ui.set_sidebar_items(strings(&content.items));
+    ui.set_sidebar_empty_reason(content.empty_reason.clone().into());
 }
 
 /// ⭐ 剪辑选中态**及其作用面**（`[UI-NOTE-001]` 的"当前编辑片段"）。

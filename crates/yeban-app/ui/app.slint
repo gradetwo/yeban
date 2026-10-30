@@ -417,13 +417,21 @@ export component MainWindow inherits Window {
     ]
     in-out property <bool> sidebar-collapsed: false;
     /// ⭐ 左侧资源栏的激活分类（0 = 乐器 / 1 = 采样 / 2 = 预置）。
-    /// 唯一写者 = `host::wire_view_callbacks` 的 `select-sidebar-category` 回调
+    /// 唯一写者 = `host::wire_sidebar_contents` 的 `select-sidebar-category` 回调
     /// （先钳到 `0..=2` 再写）；界面**不自己**翻转选中态。⛔ 不是工程数据
     /// （`MODEL-ISO-001` 的挥发性层）、不进 `.yeban`、不进撤销栈。
     in-out property <int> sidebar-category: 0;
-    /// ⭐ 左侧资源栏选中的条目（`0..=7`，与 `items` 数组一一对应）。
-    /// 唯一写者 = `host::wire_view_callbacks` 的 `select-sidebar-item` 回调
-    /// （先钳到 `0..=7` 再写）；界面**不自己**翻转选中态。⛔ 不是工程数据
+    /// ⭐ 当前分类的条目**显示名**数组。唯一写者 = 宿主（装配期 `host::apply_view` 按
+    /// `sidebar-category` 注入 + `select-sidebar-category` 回调换分类时重注入），来源逐字是
+    /// `bridge::sidebar_category_content()` —— 与 `ElementRegistry::from_view` 读的是**同一个**
+    /// 投影函数 ⇒ "注册表说 N 条、屏幕画 M 条"这类分叉在结构上不可能发生。
+    /// ⛔ 不是工程数据（`MODEL-ISO-001` 的挥发性层）、不进 `.yeban`、不进撤销栈。
+    in-out property <[string]> sidebar-items: [];
+    /// ⭐ `sidebar-items` 为空时画出来的**理由**（同样由宿主按分类注入）。⛔ 不是占位文案。
+    in-out property <string> sidebar-empty-reason: "";
+    /// ⭐ 左侧资源栏选中的条目（合法区间 = **当前分类**的 `sidebar-items` 长度）。
+    /// 唯一写者 = `host::wire_sidebar_contents` 的 `select-sidebar-item` 回调
+    /// （按当次投影条数钳位后再写，⛔ 不是常量区间）；界面**不自己**翻转选中态。⛔ 不是工程数据
     /// （`MODEL-ISO-001` 的挥发性层）、不进 `.yeban`、不进撤销栈。
     in-out property <int> sidebar-item: 0;
     in-out property <bool> ai-drawer-open: false;
@@ -502,7 +510,7 @@ export component MainWindow inherits Window {
     callback toggle-sidebar();
     /// ⭐ 左侧资源分类标签的点击入口：宿主把分类号钳到 `0..=2` 再写 `sidebar-category`。
     callback select-sidebar-category(int);
-    /// ⭐ 左侧资源条目的点击入口：宿主把条目号钳到 `0..=7` 再写 `sidebar-item`。
+    /// ⭐ 左侧资源条目的点击入口：宿主把条目号钳到**当前分类的投影条数**再写 `sidebar-item`。
     callback select-sidebar-item(int);
     callback toggle-ai-drawer();
     /// ⭐ 控制台右上角 ⤢ 的点击入口：与 `Cmd/Ctrl+Alt+M`（`Action::ToggleConsoleMaximize`）
@@ -1392,6 +1400,11 @@ export component MainWindow inherits Window {
                 select-category(category) => {
                     root.select-sidebar-category(category);
                 }
+
+                // ⭐ 条目数组与空态理由：主窗口**只转发**宿主注入的值，自己不取数
+                // （取数只有宿主一处 = `bridge::sidebar_category_content`，与注册表同源）。
+                items: root.sidebar-items;
+                empty-reason: root.sidebar-empty-reason;
 
                 // 同款：条目选中也是**视图态**，界面只报告"用户点了哪一个"。
                 active-item: root.sidebar-item;

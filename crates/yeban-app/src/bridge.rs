@@ -2922,6 +2922,78 @@ pub fn library_instrument_names() -> Vec<String> {
         .collect()
 }
 
+// ---------------------------------------------------------------------------
+// ⭐ 左侧资源栏（`ui/sidebar.slint`）的**唯一取数口**：分类 →（条目，空态理由）
+//
+// 为什么住在 `bridge` 而不是 `.slint` 或 `host`：宿主注入与静态注册表
+// （`elements.rs::from_view`）必须是**同一个函数**的两个调用点。只要有一侧自己数
+// 一遍条目，"注册表说 N 条 / 画面画 M 条"的分叉就只能靠人肉对账 —— 本仓已为此
+// 付过学费（走带 `323 款采样预置` 那种内联假数字）。
+//
+// ⚠ 这里**不许**调 [`probe_library_instruments`]（真库全量约 10 分钟，`#210` 裁决
+// 投影路径不跑探针）；乐器分类只读 [`library_instruments`]（清单 × 库根，不读样本）。
+// ---------------------------------------------------------------------------
+
+/// 侧栏资源分类的**固定顺序**（下标 = `MainWindow.sidebar-category`）。
+///
+/// 标签文本的唯一来源：`elements.rs` 注册表与 `sidebar.slint` 的分类标签都从这里取，
+/// ⛔ 不再各写一份 `["乐器", "采样", "预置"]`。
+pub const SIDEBAR_CATEGORIES: [&str; 3] = ["乐器", "采样", "预置"];
+
+/// 乐器分类**空**时的理由 —— 逐字复用既有常量（[`INSTRUMENT_INSTALL_NO_BUILTIN_REASON`]），
+/// ⛔ 不再编第二套说法。无头 / CI 环境就是这一档。
+pub const SIDEBAR_EMPTY_INSTRUMENTS_REASON: &str = INSTRUMENT_INSTALL_NO_BUILTIN_REASON;
+
+/// 采样分类**空**时的理由：条目来自工程素材池的投影，空工程就是这一档。
+pub const SIDEBAR_EMPTY_ASSETS_REASON: &str = "工程素材池为空；导入音频或采样之后这里才会有条目";
+
+/// 预置分类**空**时的理由 —— ⚠ 这条说的是**模型缺口**，不是渲染问题：
+/// `yeban-model` 里没有预置实体、`Op` 里没有对应变体 ⇒ 没有可投影的东西。
+/// 登记见 `docs/DEVELOPMENT_LEDGER.md` 的 pending 清单。
+pub const SIDEBAR_EMPTY_PRESETS_REASON: &str =
+    "模型层尚无预置载体（无 preset 实体、无对应 Op 变体），此分类暂无条目";
+
+/// 一个分类的侧栏内容：`items` = 条目显示名（可空），`empty_reason` = 空时**必须**
+/// 画出来的理由（非空 ⇒ 空串）。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SidebarCategoryContent {
+    pub items: Vec<String>,
+    pub empty_reason: String,
+}
+
+impl SidebarCategoryContent {
+    /// 条目数 —— `sidebar-item-{i}` 族与 `active-item` 钳位的**同一个**依据。
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.items.len()
+    }
+
+    /// 空分类（= 界面要画 `sidebar-empty`）。
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.items.is_empty()
+    }
+}
+
+/// 第 `category` 类的侧栏内容。**越界 ⇒ 按预置处理**（空 + 如实理由），
+/// ⛔ 不 panic（宿主回调会先钳位，这里只是不依赖那个前提）。
+#[must_use]
+pub fn sidebar_category_content(view: &ViewState, category: usize) -> SidebarCategoryContent {
+    let (items, empty_reason): (Vec<String>, &str) = match category {
+        0 => (library_instrument_names(), SIDEBAR_EMPTY_INSTRUMENTS_REASON),
+        1 => (view.asset_pool_names(), SIDEBAR_EMPTY_ASSETS_REASON),
+        _ => (Vec::new(), SIDEBAR_EMPTY_PRESETS_REASON),
+    };
+    SidebarCategoryContent {
+        items,
+        empty_reason: if items.is_empty() {
+            empty_reason.to_string()
+        } else {
+            String::new()
+        },
+    }
+}
+
 /// "装乐器"的可用性 ＋ 不可用时的**逐字**原因（可用时是空串）。
 ///
 /// 两个前置条件，顺序即优先级：
