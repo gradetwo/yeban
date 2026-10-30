@@ -281,11 +281,17 @@ fn mixer_nudge_ops_refuse_a_stale_or_unparsable_identity() {
     //    工程的身份，正是这一形态）。
     let ghost = EntityId::new().to_canonical_string();
     assert_eq!(ghost.len(), 26, "`EntityId` 的规范文本是 26 字符");
+    // ⚠ 这里**不用** `.all()`：空集上 `all` 恒真 ⇒ "ghost 不在任何轨道里"会在夹具为空时
+    // 静默通过（本 crate 的常驻判据 `assertion_bounds_audit.rs` 管的就是这件事）。
+    // 换成"集合本身有界 ＋ `contains`"两句合一 ⇒ 夹具为空也会如实红。
+    let ids: Vec<String> = project
+        .tracks
+        .values()
+        .map(|track| track.id.to_canonical_string())
+        .collect();
     assert!(
-        project
-            .tracks
-            .values()
-            .all(|track| track.id.to_canonical_string() != ghost)
+        !ids.is_empty() && !ids.contains(&ghost),
+        "夹具的轨道身份 {ids:?} 必须非空、且不含这个域外身份 {ghost}"
     );
     assert!(host::mixer_nudge_ops_for(&project, &ghost, Volume, 1).is_empty());
     assert!(host::mixer_nudge_ops_for(&project, &ghost, Pan, 1).is_empty());
@@ -487,11 +493,16 @@ fn a_stale_selection_after_a_project_swap_commits_nothing() {
     let (window, port, _ui) = live_with_keys_and_select(&project);
 
     let ghost = EntityId::new().to_canonical_string();
+    // 同上：界写在集合本身（`ids.is_empty()`），"不含 ghost"用 `contains` 判 —— 空夹具
+    // 会让 `.all()` 恒真，这条判据也就白给。
+    let ids: Vec<String> = project
+        .tracks
+        .values()
+        .map(|track| track.id.to_canonical_string())
+        .collect();
     assert!(
-        project
-            .tracks
-            .values()
-            .all(|track| track.id.to_canonical_string() != ghost)
+        !ids.is_empty() && !ids.contains(&ghost),
+        "夹具的轨道身份 {ids:?} 必须非空、且不含这个域外身份 {ghost}"
     );
     window.set_selected_track_id(ghost.clone().into());
 
