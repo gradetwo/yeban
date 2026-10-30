@@ -35,6 +35,14 @@ export component PianoRoll inherits Rectangle {
     in property <[length]> note-positions: [];
     // `[UI-NOTE-003]` 与注入的六个数组**同一索引集**的第七个: 选中标志（宿主用 `Selection::flags_for` 生成）。
     in property <[bool]> note-selected: [];
+    // ---- 走带光标（[UI-NOTE-001]）----
+    // 位置来自引擎读数：唯一写者 = `host::apply_transport`（窗口属性 `playhead-ticks`）。
+    // 界面只做 `tick ÷ ticks_per_pixel − scroll`（与音符位置同一条整数除法 + 同一个滚动读数）。
+    in property <int> playhead-ticks: 0;
+    in property <int> ticks-per-pixel: 30;
+    in property <float> scroll-x: 0.0;
+    // 无障碍值 = 走带时间码（窗口 `timecode`）—— 读屏器读到真实位置，⛔ 不是写死的 `"3"`。
+    in property <string> playhead-timecode: "";
     // `[ROAD-M3-002]` 滚动手势：本组件**只报告增量**, 偏移由宿主拥有并重新注入
     // （见账本第 199 轮：Flickable 会与宿主拥有的偏移双重计算, 故不用）。
     callback scroll-requested(length);
@@ -271,23 +279,15 @@ export component PianoRoll inherits Rectangle {
             accessible-item-selected: root.note-selected[note_index];
         }
 
-        // AI 建议层预览 (§9.1): 45% 半透明 + 虚线霓虹紫描边 + 置信度徽章。
-        // 骨架里只画一个静态示意块, 采纳/放弃由 Esc / Shift+Enter 驱动 (src/input.rs)。
-        Rectangle {
-            x: Tokens.space-5 + 76px * 6;
-            y: 14px * 2 + 6px;
-            width: 66px;
-            height: 12px;
-            background: Tokens.ai-suggestion.with-alpha(0.45);
-            border-width: 1px;
-            border-color: Tokens.ai-suggestion;
-            border-radius: Tokens.radius-sm;
-            accessible-role: list-item;
-            accessible-id: "note-suggestion-overlay-rect";
-            accessible-label: "AI 建议音符 (待采纳)";
-            accessible-item-selectable: true;
-            accessible-item-selected: false;
-        }
+        // AI 建议层 (§9.1)：⛔ 今天**不画**。
+        //
+        // 曾有一个静态示意块（`note-suggestion-overlay-rect`，标签 "AI 建议音符 (待采纳)"）——
+        // 它没有任何提案数据源：界面侧**没有**"当前待采纳的提案身份"这一表示（提案抽屉的
+        // 四个数据面属性默认全空、没有宿主写者；逐条证据见 `src/host.rs` 的
+        // `action_has_implementation` 文档里 `AcceptAiSuggestion` 那一段），所以那块
+        // "待采纳音符"只是一个永远在场的假建议。与 `musical_pr_drawer_declares_no_demo_proposals`
+        // 同一条纪律：能力不存在就不画。真落地时要先有提案来源（领域 `Domain.proposals`
+        // → 投影 → 注入），再按 §9.1 的 45% 半透明 + 虚线描边重画这一层。
     }
 
     // ---------------------------------------------------------------- 力度泳道 (§3.3 力度工具)
@@ -327,13 +327,21 @@ export component PianoRoll inherits Rectangle {
             accessible-value-minimum: 0;
             accessible-value-maximum: 127;
             accessible-value-step: 1;
-            accessible-value: "100";
+            // 屏读器读到的必须是**这一根柱**的力度（0–127），与柱高同源：
+            // `velocity_reading` 已是 0..=127 ÷ 127 的投影值 ⇒ 乘回 127 取整。⛔ 不再写死
+            // 字面量 `"100"`（那会让每一根柱都自称 100，与画面互相矛盾）。
+            accessible-value: "" + Math.round(velocity_reading * 127);
         }
     }
 
     // ---------------------------------------------------------------- 走带光标 [UI-MCP-002]
+    // x = 56px（卷帘时间轴左沿）+ tick ÷ ticks_per_pixel − 滚动偏移：
+    // `note-positions` 是投影**已减去 scroll_x** 的视口相对像素，所以走带光标用
+    // 同一个滚动读数；`playhead-ticks` 的唯一写者 = `host::apply_transport`。
+    // `max(1, …)` 只是除零护栏（宿主写入的缩放恒在 1..=960）。
     Rectangle {
-        x: 56px + 60px * 3;
+        x: 56px + (root.playhead-ticks / max(1, root.ticks-per-pixel)) * 1px
+            - (root.scroll-x * 1px);
         y: 28px;
         width: 1px;
         height: parent.height - 28px;
@@ -341,10 +349,7 @@ export component PianoRoll inherits Rectangle {
         accessible-role: slider;
         accessible-id: "piano-roll-playhead";
         accessible-label: "卷帘走带光标";
-        accessible-value-minimum: 0;
-        accessible-value-maximum: 9999;
-        accessible-value-step: 1;
-        accessible-value: "3";
+        accessible-value: root.playhead-timecode;
     }
 
     // 覆盖泳道的输入面：按住并水平拖动 ⇒ 报告水平增量（向右拖 ⇒ 内容左移 ⇒ 偏移增加）。

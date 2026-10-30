@@ -26,6 +26,11 @@ export component ConsoleTabs inherits Rectangle {
     in property <[string]> note-ulids: [];
     in property <[float]> note-velocities: [];
     in property <[length]> note-positions: [];
+    // ---- 走带光标（[UI-NOTE-001]）：只透传，位置事实源 = 宿主（`host::apply_transport`）----
+    in property <int> playhead-ticks: 0;
+    in property <int> ticks-per-pixel: 30;
+    in property <float> scroll-x: 0.0;
+    in property <string> playhead-timecode: "";
     // 与注入数组同一索引集的选中标志（只**透传**）。
     in property <[bool]> note-selected: [];
     // `[UI-NOTE-003]` 当前工具（与卷帘同一份状态；宿主需要读它来知道该执行哪个工具的语义）。
@@ -251,6 +256,10 @@ export component ConsoleTabs inherits Rectangle {
     // 同样只上抛：⛔ 不写盘、⛔ 不弹窗、⛔ 不判断成功与否；唯一落点 = 宿主
     // `host::wire_new_project`（保存对话框 ⇒ 落一个 0 轨容器 ⇒ 打开那条换工程路径）。
     callback new-project();
+    // ⭐ **导入音频**：混音台（Tab 1）素材池面板里的可见入口。本组件只上抛
+    // （宿主 `host::wire_import_audio` 是唯一落点）—— ⛔ 不读盘、⛔ 不弹窗、
+    // ⛔ 不判断成功与否。
+    callback import-audio();
     // ⭐ **最大化 / 还原底部控制台**（`Cmd/Ctrl+Alt+M` 的可点等价物）。
     // 与 `Action::ToggleConsoleMaximize` 落到**同一个**视图态属性
     // （`MainWindow.console-maximized`，唯一写者是宿主）⇒ 按键与点击不可能分叉。
@@ -382,6 +391,10 @@ export component ConsoleTabs inherits Rectangle {
         velocities: root.note-velocities;
         note-positions: root.note-positions;
         note-selected: root.note-selected;
+        playhead-ticks: root.playhead-ticks;
+        ticks-per-pixel: root.ticks-per-pixel;
+        scroll-x: root.scroll-x;
+        playhead-timecode: root.playhead-timecode;
         active-tool: root.active-tool;
         edit-status: root.roll-edit-status;
         scroll-requested(d) => { root.scroll-requested(d); }
@@ -490,6 +503,10 @@ export component ConsoleTabs inherits Rectangle {
         // 是唯一落点）—— ⛔ 本组件不写盘、不弹窗、不判断成功与否。
         new-project => {
             root.new-project();
+        }
+        // ⭐ **导入音频**：同样只上抛（宿主 `host::wire_import_audio` 是唯一落点）。
+        import-audio => {
+            root.import-audio();
         }
         // 主控写入面：同样只上抛，**不带下标**（宿主在按下那一刻从权威工程取主总线身份）。
         mixer-master-fader-grab(y) => {
