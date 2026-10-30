@@ -16057,3 +16057,26 @@ test result: FAILED. 3 passed; 1 failed
    `rust (workspace 全量)`）**全部 skipped** ⇒ 空绿，⛔ 当代码判决（§6.3 第 2 条）。耗时 ≈2m16s（05:01:12 → 05:03:28）。
    **账本链到此收口**：下面这枚只承载本条判决文字的 `docs/**` 提交，其 run 结构上同样是空绿；
    本行**不预判**它的结论，只说明登记链不再为"记录上一枚 docs 判决"继续自增长。
+
+### §11 收尾自查：`edit_notes` 的 53 个 kind 有没有"没人判"的（2026-10-30 05:10）
+
+**这是自查，不是新票** —— 收尾前用来确认"创作缺口·自主可做 = 0"这条结论不是凭记忆，而是现读。
+
+1. **口径与读数**（对象＝`crates/yeban-mcp/src` 里 `kind("…")` 的字面量名字；单位＝个）：
+   `grep -rho 'kind("[a-zA-Z]*")' crates/yeban-mcp/src | sort -u` ＝ **53** 个，与 §0.7 现读的 53 一致。
+2. **第一遍扫描（已作废）**：对每个 kind 数带引号的 `"<kind>"` 在 `crates/yeban-mcp/tests` 的出现次数 ⇒
+   **7 个为 0**：`addRoutingNode`／`removeAsset`／`setAsset`／`setClipGain`／`setClipPlacementLoop`／
+   `setTitle`／`setTransportConfig`。⚠ 若就此写"7 个 kind 没人判"，那是**读法错**（"计数为 0 先怀疑读法"）。
+3. **第二遍（真读数）**：测试走的是**类型化 API 与小驼峰常量**，⛔ 手抄字面量 ——
+   `set_clip_placement_loop.rs`（881＋ 行，任务单 `#336`）通篇用 `NoteOp`／`Op` 与 `unknownSetClipPlacementLoopField`；
+   `SET_CLIP_GAIN_KIND` 的值由 `notes.rs:2090` 现读；七个名字里 **5** 个的 **PascalCase 变体**已在
+   `crates/yeban-mcp/tests/*` 被引用（`SetAsset` 3 文件／`AddRoutingNode` 4／`RemoveAsset` 2／`SetTitle` 2／
+   `SetTransportConfig` 1），`SetClipGain` 出现在 `op_reachability.rs:105` 的 kind→模块登记表行。
+4. **更硬的那层在生产里**：`op_reachability.rs` 的登记表 ＋ 双射守卫已经要求**每个 `Op` 变体在登记的 `src`
+   模块内至少有一个构造点**、且 `OP_KINDS` ↔ `ops[].kind` 双向对齐 ⇒ 字面量外观不是判据，"有没有构造点"才是。
+   `setClipGain` 的三段链也逐层现读：**解析编译**（`notes.rs:22475` 起的单测：解析 → 正是 `Op::SetClipGain` →
+   `old_gain_db` 来自文档）→ **模型应用与拒绝面**（`project.rs:5049`／`5083`：旧值逐位比较、新值非有限拒绝）→
+   **实时消费**（`engine/audio_clip.rs:394` `gain = track_gain(*gain_db) × track_gain_scale`）
+   ⇒ **不是 `velocity` 那类"解析＋回显但不进消费者"**，本条无可补缺口。
+5. **结论**：本次自查 **0 新增缺陷**；"自主可做的创作缺口 ＝ 0"再次**现读成立**。残留项是**非缺口**——
+   53 个 kind 没有"逐 kind 的工具面 e2e 文件"属**覆盖增厚**，⛔ 由 agent 自行提级（同 §0.8：要动先由人类排期）。
