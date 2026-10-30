@@ -230,9 +230,18 @@ headSha `bef7ab82`，artifact `golden-linux`（id 12951880348，470971 字节）
   （`44,57,72` / `33,43,54` / `19,26,34` 等按行条带）⇒ **没有布局位移、也没有别的控件被触碰**。
 ⚠ 五张的**字节数相同**（6222418）**不构成任何证据**（存储式 deflate），判内容的是上面的 sha256 与逐像素读数。
 
+**⚠ 2026-10-30 再录（`line/loop-brace-honesty`，headSha `cc55fd2d`，提交「删除编曲标尺里的假循环选区把手」）**: 本批删除 `arrangement-loop-brace` —— 它按固定几何（`x: 120px * 2`、`width: 120px * 4`）画一个"2–6 小节循环选区"骨架，无障碍值写死 `"2 - 6"`，而**模型没有走带循环载体**（`LoopConfig` 只住在 `ClipPlacement` 上，`TransportConfig` 无循环字段，`Op` 无对应变体）⇒ 纯假读数。该把手在编曲帧里默认可见且未被遮罩 ⇒ 4 张基准确定性过期；`session-full` 不含编曲画布 ⇒ 0 差异。
+生成地点与生成方式同上：手动档 `gates-manual.yml` 的 `gate=goldens`，run id **41022763821**（conclusion=success；job `goldens (生成分平台基准图集)` success，8 步，07:52:38Z–07:54:48Z），ref `line/loop-brace-honesty`，headSha `cc55fd2d`，artifact `golden-linux`（id 12962615956，472153 字节）；artifact 自带的 `MANIFEST.txt` 是**本改动前的仓库副本**（含旧哈希）⇒ **未采用**。
+**入库前的复核（⚖ 判定量 = 差异像素的 x 列 ＋ y 区间）**（stdlib zlib 解码，逐通道比较）：
+- `arrangement-full` / `model-driven-demo-project` / `model-driven-filled-project`：**各 10,560 px** = 恰好一个 `480 × 22` 实心块，`x 648..1127 / y 68..89`（= 画布左沿 240 ＋ 标尺偏移 168 ＋ `120 × 2`，宽 `120 × 4`）；
+- `arrangement-compact`：**10,560 px**，同一块位移到 `x 444..923 / y 68..89`（画布左沿 36；与上一条的 648 相差 **204**）；
+- `session-full`：**0 个差异像素（逐字节相同）**，该帧不含编曲画布；
+- 块外不一致像素数 = **0**；旧块内容（边框 `Tokens.gold-deep` = `109,136,161`、底色 `bg-raised`）回到标尺底色（`19,26,34` 等按行条带）⇒ **没有布局位移、也没有别的控件被触碰**。
+⚠ 五张的**字节数相同**（6222418）**不构成任何证据**（存储式 deflate），判内容的是上面的 sha256 与逐像素读数。
+
 文件	sha256	字节
-app-main-window-arrangement-compact-1920x1080.png	41ccd937fbf7265fe844db4077bf4b8742d02641af87fc653d7f351d5e9f5c08	6222418
-app-main-window-arrangement-full-1920x1080.png	1b0c8c929014a0ab9be75ee0d5b727a74ab8009b8eb2fd145a3ef2a5f0949779	6222418
+app-main-window-arrangement-compact-1920x1080.png	74a30f23e05dc36316577dd039e2abab6aea59675109a6a9d89e058afc159b0d	6222418
+app-main-window-arrangement-full-1920x1080.png	e75b4b4f08542b44e4943a1f8d0911430c8485cbed28a69083dec33a066aad9b	6222418
 app-main-window-session-full-1920x1080.png	dd59e0c43158b5358dbf9e4557a757cb265cf395f79fdfab139311c2ea638ffc	6222418
-app-model-driven-demo-project-1920x1080.png	1b0c8c929014a0ab9be75ee0d5b727a74ab8009b8eb2fd145a3ef2a5f0949779	6222418
-app-model-driven-filled-project-1920x1080.png	bbccb3d9079e51624e1445f0a2fbbe620f4b55fa3975c92f1c9bdab230e71fce	6222418
+app-model-driven-demo-project-1920x1080.png	e75b4b4f08542b44e4943a1f8d0911430c8485cbed28a69083dec33a066aad9b	6222418
+app-model-driven-filled-project-1920x1080.png	6ea1bd6815089c4cf4eaade179c2cf503523a1b0b20c8a5afbafeae85f6167d1	6222418
