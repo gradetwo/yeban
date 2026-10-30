@@ -1819,12 +1819,22 @@ impl ElementRegistry {
             "还没有 AI 提案。这条链路尚未接线。",
             false,
         );
+        // 提案行左上那一格原来是**置信度徽章**，现已换成"本提案携带几条 op"（领域里真实存在
+        // 的数）。注册表与图元同批登记：漏了它 ⇒ `[UI-TEST-001]` 的双向覆盖判据红在
+        // "`.slint` 里有模板、注册表里一个成员都没有"（方向 2）。
         for proposal_index in 0..3 {
             registry.add(
                 &format!("musical-pr-proposal-{proposal_index}-item"),
                 ElementKind::ListItem,
                 "dialogs/musical_pr_drawer.slint",
                 &format!("AI 提案 {proposal_index}"),
+                false,
+            );
+            registry.add(
+                &format!("musical-pr-proposal-{proposal_index}-ops"),
+                ElementKind::Text,
+                "dialogs/musical_pr_drawer.slint",
+                &format!("AI 提案 {proposal_index} 携带的 op 条数"),
                 false,
             );
         }
@@ -1840,6 +1850,16 @@ impl ElementRegistry {
             ElementKind::Button,
             "dialogs/musical_pr_drawer.slint",
             "放弃提案 (Esc)",
+            false,
+        );
+        // 「有提案、但没有写入口」那句原因。标签**逐字取自** `crate::proposals` 的那个常量
+        // （界面上的 `accessible-label` 绑的也是它）⇒ 注册表、图元、宿主说的是同一句话，
+        // ⛔ 这里不是第三份抄写。漏登记会让 `[UI-TEST-001]` 双向覆盖判据红在方向 2。
+        registry.add(
+            "musical-pr-resolve-unavailable",
+            ElementKind::Text,
+            "dialogs/musical_pr_drawer.slint",
+            crate::proposals::RESOLVE_NOT_WIRED_REASON,
             false,
         );
         registry.add(
