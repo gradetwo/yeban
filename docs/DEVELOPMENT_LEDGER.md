@@ -16164,3 +16164,62 @@ passed **687** ／ `FAILED` **0**；目标判据 `every_all_assertion_in_this_cr
 post-merge 自检（`cargo metadata --locked` ＋ 许可清单）passed；推前 `rev-list --left-right --count` ＝ `0 0`；
 `git push origin main:main`（显式 refspec）；`worktree.sh rm s6f-audit-floor --purge` 自动打归档标签
 `line-archive/s6f-audit-floor @ 04212666` ⇒ `git worktree list` 恢复**一行**。
+
+## 2026-10-30 09:50 —— §14 第十批：**散文里点名的判据是死名册**（3 处，新常驻判据 29→29）
+
+### §14.1 缺陷（真实，且是新的一格）
+
+`crates/yeban-mcp/src/**` 的文档是 MCP 行为的**唯一事实源**；其中 3 处用
+`` `路径::名字` `` 指路的判据在**整 crate 里不存在**（`fn 名字(` 搜不到）：
+
+| 文件:行 | 文档写的名字 | 真判据（已改指） |
+| :--- | :--- | :--- |
+| `domain/render.rs:82`／`:634` | `render::tests::every_known_unsupported_key_is_actually_reported` | `tests/render_master.rs::the_known_unsupported_list_is_not_decoration` |
+| `domain/lock.rs:71` | `tests/lock_advisory.rs::crashed_holder_leaves_a_lock_file_that_is_not_occupied` | 同文件 `a_lock_file_without_a_live_holder_is_not_occupied` |
+| `op_schema.rs:24` | `tests/effect_contract.rs::the_published_ops_item_schema_covers_every_parser_kind` | 同文件 `tools_list_publishes_one_branch_per_parser_kind` |
+
+**后果不是"少一条判据"，而是那句承诺无可核**：`render.rs` 的清单文档写着"清单不会腐烂成
+装饰表"，而照名字去找的人**什么都找不到**。`documented_arg_coverage.rs` 的 `defines_fn`
+只在**登记表**上拦这一类 ⇒ **散文引用**此前零守卫。
+
+### §14.2 新常驻判据（`crates/yeban-mcp/tests/doc_criterion_references_resolve.rs`）
+
+- 口径：扫 `src/**`（⛔ 不含 `tests/**`，那是叙述）里 `::tests::NAME` 与 `.rs::NAME`
+  **两种**指路形状；`NAME` 必须能落到**整 crate 任一** `.rs` 的 `fn NAME(` 上。
+- 读数（本机 `rustc --test` 直接跑同一份文件）：引用 **29** 处、扫过 **111** 个 `.rs`、
+  未解析 **0** 处 ⇒ 棘轮下界 **29**（删引用要同步下调并写明理由），扫描面下界 **40**。
+- **抽取器自证**：另有一条判据在**运行期构造**两种形状的针（R84：⛔ 把期望字面量写进
+  `contains` 实参），证明抽取器认得出两类指路。
+- ⚠ 本轮**第一个版本**只写了 `::tests::` 一种形状 ⇒ 只报 4 处、漏掉 25 处（其中 3 处是死名册）。
+  补上 `.rs::` 后 29 处一次暴露。教训同 §12／§13：**"扫到 0/4" 先怀疑扫描器，不要怀疑事实**。
+
+### §14.3 判决链（全部读回）
+
+| 对象 | run | 判决（读数） |
+| :--- | :--- | :--- |
+| 线 `line/s6g-doc-refs` @ `eb5c97fa` | `41026593131` | **success** —— `rust (yeban-mcp)` 08:28:08→08:45:44（**17m36s**）真跑；`macos` →08:54:13（26m04s）、`windows` →09:00:59（32m52s）、`ui-mcp` →08:31:49（3m41s）；`rust (workspace 全量)` skipped（⛔ 当它绿） |
+| merge `485b08e3` 推主干 | `41031304438` | **success** —— `rust (yeban-mcp)` 09:09:17→09:24:37（**15m20s**）、`macos` →09:32:55（23m31s）、`windows` →09:43:40（34m23s）、`ui-mcp` →09:12:53（3m36s）全部真跑；全量腿仍 skipped |
+
+**判据读数（mcp 腿，剥色后，两轮同形）**：`Running tests/` **132** ／ `test result:` **139** ／
+passed **2,452** ／ `FAILED` **0**；新判据 `every_criterion_named_in_the_sources_exists ... ok`
+在 `test` 与 `test (合并特性)` **各 1 次**，且其前一行是
+`Running tests/doc_criterion_references_resolve.rs` ⇒ 确实跑到。本机 `rustc --test` 那一次
+（2 passed）与 CI 读数一致。
+
+### §14.4 落地与清理
+
+`worktree.sh land s6g-doc-refs` → merge `485b08e3`（`4 files changed, 164 insertions(+), 4 deletions(-)`，
+含新文件 157 行），post-merge 自检（`cargo metadata --locked` ＋ 许可清单）passed；
+推前 `rev-list --left-right --count` ＝ `0 0`；`git push origin main:main`（显式 refspec）；
+`worktree.sh rm --purge` → 归档标签 `line-archive/s6g-doc-refs @ eb5c97fa`；工作树恢复**一行**。
+
+### §14.5 登记待核（⛔ 本轮没动：语义未证，按 AGENTS.md §6.4 第 4 条只登记）
+
+`domain/sfz.rs` 有两处注释声称"`yeban_render_sfz_wav` 与 `yeban_render_master` 的采样器音源
+**都走** `note_wave`"（`:1785-1788`、`:1379-1381`），而 `domain/render.rs` 的 `#274` 段声称
+采样器轨已改由**引擎的 SFZ 支路**发声（`render_track` 第 3 参 ＋ `sfz_pending`），且
+`render.rs` 只经 `sfz::survey_sampler` 做**计数**（`:4646` 明写"⛔ 不渲染"）。两句话**互斥**。
+判据面目前不支持任何一方：`render_master` 不再报 `sfzSampleSpan`/`sfzRegionLayering`
+（`KNOWN_UNSUPPORTED_KEYS` 现 10 项，已由 `the_known_unsupported_list_is_not_decoration`
+双向逼住），而 `render_sfz_wav` 仍报它们。⇒ 待下一单用**音频读数**（同一份 SFZ 分别走两条
+路径，比较 `span`/双层叠加的波形）判定哪一侧的描述是假的，⛔ 不许凭注释改注释。

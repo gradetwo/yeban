@@ -12,6 +12,38 @@
 > `docs/ledger/phase-status.md` 的叙事条目**停在 R1144**（2026-10-26）⇒ ⭐ 读进度以
 > `DEVELOPMENT_LEDGER.md` 的尾部为准，⛔ 不要以为 R1144 之后没干活。
 
+### 0.6.0m ⭐ 尾批（2026-10-30 09:50）：**散文里点名的判据是死名册**（3 处，新常驻判据）
+
+- **缺陷（新的一格）**：`crates/yeban-mcp/src/**` 的文档是 MCP 行为的**唯一事实源**，其中 3 处
+  `` `路径::名字` `` 指路的判据**整 crate 不存在**（`fn 名字(` 搜不到）：
+  `domain/render.rs`（×2）→ 真判据是 `tests/render_master.rs::the_known_unsupported_list_is_not_decoration`；
+  `domain/lock.rs` → `a_lock_file_without_a_live_holder_is_not_occupied`；
+  `op_schema.rs` → `tools_list_publishes_one_branch_per_parser_kind`。
+  后果不是"少一条判据"，而是**那句承诺无可核**（"清单不会腐烂成装饰表"照名字找不到东西）。
+  `documented_arg_coverage` 的 `defines_fn` 只查**登记表** ⇒ **散文引用**此前零守卫。
+- **新常驻判据**：`crates/yeban-mcp/tests/doc_criterion_references_resolve.rs`
+  ——扫 `src/**` 的 `::tests::NAME` 与 `.rs::NAME` 两种指路形状（现读 **29** 处／棘轮下界 **29**；
+  扫描面 111 个 `.rs`／下界 40），逐个要求落到 `fn NAME(`；另有运行期构造的抽取器自证。
+  ⚠ 第一版只写了一种形状 ⇒ 只报 4 处、漏 25 处（其中 3 处正是死名册）⇒ 又一次"扫到 0/4 先怀疑扫描器"。
+- **判决链（全部读回）**：
+  - 线 `line/s6g-doc-refs` @ `eb5c97fa` → run **`41026593131` success**
+    （mcp 17m36s／macos 26m04s／windows 32m52s／ui-mcp 3m41s 全部真跑；全量腿 skipped）
+  - merge `485b08e3` → run **`41031304438` success**（mcp 15m20s／macos 23m31s／windows 34m23s）
+  - **读数（两轮同形）**：`Running tests/` **132** ／ `test result:` **139** ／ passed **2,452** ／
+    `FAILED` **0**；新判据在 `test` 与 `test (合并特性)` **各 1 次 ok**，其前一行就是
+    `Running tests/doc_criterion_references_resolve.rs`。
+- **落地与清理**：merge `485b08e3`（4 files, +164/−4），post-merge 自检 passed；推前 `rev-list` `0 0`；
+  `git push origin main:main`；`worktree.sh rm --purge` → 归档 `line-archive/s6g-doc-refs @ eb5c97fa`；
+  `git worktree list` ＝ **一行**。
+- **登记待核（⛔ 本轮没动：按 AGENTS.md §6.4 第 4 条，未证的语义只登记不补齐）**：
+  `domain/sfz.rs:1379/1785` 注释称"`render_sfz_wav` 与 `render_master` 的采样器音源**都走**
+  `note_wave`"，而 `render.rs` 的 `#274` 段称采样器轨已由**引擎的 SFZ 支路**发声、本工具只经
+  `survey_sampler` **计数**（`:4646` 明写 ⛔ 不渲染）—— 两句话互斥。判据面不支持任何一方
+  （`render_master` 已不报 `sfzSampleSpan`/`sfzRegionLayering`，`render_sfz_wav` 仍报）。
+  ⇒ 下一单用**音频读数**（同一份 SFZ 走两条路径比波形）判定哪侧描述是假的，⛔ 凭注释改注释。
+- **下一步**：自主可做＝**新的审计轴**（本轮这条已收口）；创作缺口仍全在人类裁决
+  （`ADR-0042` G8j／`ADR-0047`..`0050`／`ADR-0004` Q13）。台账明细见 §14。
+
 ### 0.6.0l ⭐ 尾批（2026-10-30 08:15）：R115 被扫文件下界 **8 → 12**（同一类缺陷的第二个真缺陷）
 
 - **缺陷**：`crates/yeban-engine/tests/assertion_bounds_audit.rs` 的 `MIN_SOURCES = 8`，而
