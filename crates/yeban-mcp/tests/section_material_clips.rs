@@ -249,3 +249,48 @@ fn material_source_switches_the_material_and_theory_ignores_the_clip_pool() {
         );
     }
 }
+
+/// 判据 5（第四片第二批·缺省钉）：`materialClipIds` 缺席 ⇒ 按 `clip_pool` 的
+/// `BTreeMap` 键序把**可用材料**（MIDI 且 ≥1 音符）轮询喂给声部（`materials[i % len]`）。
+///
+/// 钉法：测试里**独立**从 `clip_pool` 复算轮询表（⛔ 调实现里的 `usable_materials`），
+/// 先比音符数轮廓、再与"显式给同一张表"的计划逐字节比 —— 缺省若改成"永远取第一条"
+/// 或"取最后一条"，两条断言都会红。
+#[test]
+fn absent_named_materials_reproduce_the_pool_round_robin() {
+    let (project, _first_id, _second_id) = two_material_project();
+    let pool: Vec<(EntityId, usize)> = project
+        .clip_pool
+        .iter()
+        .filter_map(|(id, entry)| {
+            entry
+                .content
+                .notes()
+                .filter(|notes| !notes.is_empty())
+                .map(|notes| (*id, notes.len()))
+        })
+        .collect();
+    assert!(pool.len() >= 2, "夹具必须至少两条可用材料: {pool:?}");
+
+    let absent = try_plan(&project, None, None).expect("缺省路径必须能规划");
+    let counts = part_note_counts(&absent);
+    assert!(!counts.is_empty(), "缺省路径必须真的产出和声材料");
+    assert!(
+        counts.len() > pool.len(),
+        "判据要求至少一个声部回卷到池首（声部 {} / 池 {}），否则 `%` 那一半没被钉到",
+        counts.len(),
+        pool.len()
+    );
+    let expected: Vec<usize> = (0..counts.len()).map(|i| pool[i % pool.len()].1).collect();
+    assert_eq!(
+        counts, expected,
+        "`materialClipIds` 缺席必须按池序轮询（`materials[i % len]`，池 {pool:?}）"
+    );
+
+    let named: Vec<EntityId> = (0..counts.len()).map(|i| pool[i % pool.len()].0).collect();
+    let explicit = try_plan(&project, None, Some(named.clone())).expect("显式轮询表必须能规划");
+    assert_eq!(
+        absent, explicit,
+        "缺省必须逐字节等于显式给轮询表 {named:?}（同一条 `project_contents` 装配）"
+    );
+}

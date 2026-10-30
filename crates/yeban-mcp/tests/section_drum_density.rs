@@ -332,3 +332,62 @@ fn unknown_density_values_are_rejected_with_a_usable_accepted_list() {
         .unwrap_or_else(|fault| panic!("`accepted` 里的 {word:?} 必须放行: {fault:?}"));
     }
 }
+
+/// ⭐ 判据 4（**缺省侧**，`ADR-0028`）：不给 `drumDensity` 与显式 `"normal"` **逐点同形**。
+///
+/// 消费点 `DrumDensity::parse` 的第一臂就是 `None | Some("normal")`，此前全库没有一条判据
+/// 把 `None` 那半支与 `"normal"` 比过（判据 1 只比 `normal` ↔ `sparse`）。
+/// 全库 × 每流派各跑两次，鼓轨的 `id → velocity` 表必须**逐键相等**；
+/// 另钉"真正比过表的流派数"下界（R93：两边都为空时相等是恒真的）。
+#[test]
+fn absent_density_is_identical_to_explicit_normal_on_every_genre() {
+    let project = filled_project();
+    let genres = GenreLibrary::all();
+    assert!(
+        genres.len() >= 100,
+        "扫描面异常：登记流派只剩 {} 条",
+        genres.len()
+    );
+
+    let mut failures: Vec<String> = Vec::new();
+    let mut compared = 0usize;
+    for rule in genres {
+        let absent = plan_with_options(&project, "Chorus", rule.id, BARS, None, options(None));
+        let normal = plan_with_options(
+            &project,
+            "Chorus",
+            rule.id,
+            BARS,
+            None,
+            options(Some("normal")),
+        );
+        match (absent, normal) {
+            (Ok(absent), Ok(normal)) => {
+                let absent_notes = drum_velocities(&absent);
+                let normal_notes = drum_velocities(&normal);
+                if absent_notes != normal_notes {
+                    failures.push(format!(
+                        "{}: 缺省与 normal 的鼓点表不同 ({} vs {} 点)",
+                        rule.id,
+                        absent_notes.len(),
+                        normal_notes.len()
+                    ));
+                } else if !normal_notes.is_empty() {
+                    compared += 1;
+                }
+            }
+            (Err(fault), _) => failures.push(format!("{}: 缺省档失败 {fault:?}", rule.id)),
+            (Ok(_), Err(fault)) => failures.push(format!("{}: normal 档失败 {fault:?}", rule.id)),
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "缺省钉不符 {} 条: {:?}",
+        failures.len(),
+        failures
+    );
+    assert!(
+        compared >= 100,
+        "真正比过非空鼓点表的流派只有 {compared} 条 —— 判据在空表上恒绿"
+    );
+}
