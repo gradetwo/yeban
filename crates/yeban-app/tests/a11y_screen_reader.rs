@@ -117,7 +117,10 @@ fn audit_runtime(tree: &UiTree) -> (usize, Vec<String>, Vec<String>, Vec<String>
 ///
 /// ## ⚠ 两件**读数缺失**（如实登记，⛔ 不假装）
 ///
-/// 1. **焦点本身无读数** ⇒ "焦点被限制在模态内／关闭后回到打开者"不能按焦点值断言；
+/// 1. **控件树里没有焦点字段** ⇒ "焦点被限制在模态内／关闭后回到打开者"**不能**在 `ui/tree` 上断言。
+///    该命题现由 `tests/undo_tree_focus_trap.rs` 按**镜像属性**验证（`app.slint` 把模态
+///    `FocusScope` 与键盘事件源的 `has-focus` 导出为 `undo-tree-focus-trapped` /
+///    `shortcut-layer-focused`）；本判据仍只测**寻址面**，两者互不冒充；
 /// 2. **端口的键面没有组合键**（`KeyCode` 只支持 `Tab`／`Esc`／`Enter`／`Shift+Enter`／`Space`／
 ///    `Backspace`／单字符 —— 见 `port.rs` 的往返判据）⇒ 模态的**真实快捷键**（`Cmd/Ctrl+Shift+H`）
 ///    **无法从端口注入**。
@@ -125,15 +128,15 @@ fn audit_runtime(tree: &UiTree) -> (usize, Vec<String>, Vec<String>, Vec<String>
 /// ⇒ 本判据因此以"**属性 ＋ 寻址面**"的形式落地，并把上面两条写进断言消息。
 /// ⚠ **实测更正（本机读数）**：打开模态之后，模态之外的三个主区
 /// （`sidebar` / `piano-roll` / `transport-play-button`）**仍然可寻址**（86 → 91 节点，只多不少）
-/// ⇒ "**焦点陷阱**"**不能**在寻址面上证明（它是**焦点**属性，而焦点无读数）。
+/// ⇒ "**焦点陷阱**"**不能**在寻址面上证明（它不是"节点消失"）。
 /// 因此本判据只断言三件**可观测**的事：
 /// ① 打开（写 `undo-tree-open`，**与 `host.rs` 同一个开关**）⇒ `undo-tree-modal` 与
 ///    `undo-tree-panel` **出现**在树里（86 ⇒ 91）；
 /// ② 关闭 ⇒ 两者**消失**，且树的 **id 集合回到打开前的同一集合**（"回到打开者"的机械近似）；
 /// ③ 真 `Esc` 关模态那一路由**既有判据** `escape_closes_the_time_machine_modal_for_real` 覆盖
 ///    （⛔ 本判据不重复声称它，也不改它）。
-/// **未验证**（如实登记）：`[TEST-SPEC-005]` 用例 3 要求的"焦点限制在模态内／关闭后回到打开者"**按焦点值**未验证 ——
-/// 缺的是**焦点读数**（见上），不是判据的写法。
+/// **焦点值**那一半（限制在模态内／关闭后回到打开者）由 `tests/undo_tree_focus_trap.rs` 覆盖，
+/// 本判据**不**引用它的读数来声称自己验证了焦点。
 #[test]
 fn the_modal_confines_the_addressable_surface_and_restores_it_on_close() {
     let (window, mut plane) = assemble();
@@ -199,7 +202,7 @@ fn the_modal_confines_the_addressable_surface_and_restores_it_on_close() {
     );
     assert_eq!(
         closed, before,
-        "关闭之后寻址面必须**回到打开前的同一集合**（⛔ 焦点值无读数, 见本判据文档）"
+        "关闭之后寻址面必须**回到打开前的同一集合**（焦点值见 `tests/undo_tree_focus_trap.rs`）"
     );
 }
 
@@ -207,10 +210,11 @@ fn the_modal_confines_the_addressable_surface_and_restores_it_on_close() {
 ///
 /// ## ⚠ 先如实登记**观测面的缺口**（⛔ 不假装按焦点断言）
 ///
-/// 本仓今天**没有**可读的"当前焦点"读数：`yeban_ui_test_port::tree` 与 `yeban_ui_mcp::tree`
-/// 里 `focus` 命中 **0**（可控面树只有 `id`／`role`／`label`／`bounds`／`visible`／`dynamic`）。
-/// `.slint` 侧的焦点是 `forward-focus: key-handler`（`app.slint:331`）＋ `FocusScope` 的
-/// **内部**状态，没有导出成属性 ⇒ **"焦点现在在哪"不可观测**。
+/// ⚠ 本仓今天**没有**"当前焦点在哪"的逐节点读数：`yeban_ui_test_port::tree` 与
+/// `yeban_ui_mcp::tree` 里 `focus` 命中 **0**（可控面树只有 `id`／`role`／`label`／`bounds`／`visible`／`dynamic`）。
+/// `.slint` 侧的焦点是 `forward-focus: key-handler` ＋ `FocusScope` 的**内部**状态；只有模态
+/// 那一个作用域与键盘事件源另有两个镜像布尔（`undo-tree-focus-trapped` / `shortcut-layer-focused`，
+/// 由 `tests/undo_tree_focus_trap.rs` 使用），它们**不能**回答"Tab 轮到了哪个控件"。
 ///
 /// ⇒ 本判据因此落地为**两件可观测的事**，并把上面这条缺口**写进断言消息与报告**：
 /// ① **注入 Tab 不会破坏界面**（真事件，走 §12.4 的注入面；N 次之后树仍可读、端口仍应答）；

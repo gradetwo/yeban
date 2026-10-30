@@ -26,6 +26,11 @@ export component ConsoleTabs inherits Rectangle {
     in property <[string]> note-ulids: [];
     in property <[float]> note-velocities: [];
     in property <[length]> note-positions: [];
+    // ---- 走带光标（[UI-NOTE-001]）：只透传，位置事实源 = 宿主（`host::apply_transport`）----
+    in property <int> playhead-ticks: 0;
+    in property <int> ticks-per-pixel: 30;
+    in property <float> scroll-x: 0.0;
+    in property <string> playhead-timecode: "";
     // 与注入数组同一索引集的选中标志（只**透传**）。
     in property <[bool]> note-selected: [];
     // `[UI-NOTE-003]` 当前工具（与卷帘同一份状态；宿主需要读它来知道该执行哪个工具的语义）。
@@ -386,6 +391,10 @@ export component ConsoleTabs inherits Rectangle {
         velocities: root.note-velocities;
         note-positions: root.note-positions;
         note-selected: root.note-selected;
+        playhead-ticks: root.playhead-ticks;
+        ticks-per-pixel: root.ticks-per-pixel;
+        scroll-x: root.scroll-x;
+        playhead-timecode: root.playhead-timecode;
         active-tool: root.active-tool;
         edit-status: root.roll-edit-status;
         scroll-requested(d) => { root.scroll-requested(d); }

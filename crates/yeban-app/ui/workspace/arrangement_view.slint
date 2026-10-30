@@ -85,6 +85,17 @@ export component ArrangementView inherits Rectangle {
     // 标尺小节线 x (逻辑像素)
     in property <[length]> bar-positions: [];
 
+    // ---- 走带光标（[UI-NOTE-001]）----
+    // 位置来自引擎读数：唯一写者 = `host::apply_transport`，它把
+    // `TransportReading::position_ticks` 写成窗口属性并透传到这里。
+    // 界面只做 `tick ÷ ticks_per_pixel`（与投影里音符 / 小节线同一条整数除法）。
+    // 旧版写死 `x: 168px + 120px×3`（像素字面量）＋ 写死的无障碍值 —— 一个**假位置**。
+    in property <int> playhead-ticks: 0;
+    in property <int> ticks-per-pixel: 30;
+    // 无障碍值 = 走带时间码（窗口 `timecode`，同一个引擎读数的另一面）——
+    // 读屏器读到的是真实位置，而不是写死的 `"3"`。
+    in property <string> playhead-timecode: "";
+
     // ---- 自动化泳道 (line/app-automation-ui) ----
     //
     // 9 个平行数组**全部**由 `src/automation.rs` 的投影派生 (`src/host.rs` 单向注入),
@@ -656,8 +667,10 @@ export component ArrangementView inherits Rectangle {
 
     // ---------------------------------------------------------------- 走带光标 [UI-MCP-002]
     // 高频刷新区域: 无头截图比对前必须按这个 ID 的包围盒置黑。
+    // x 跟随引擎读数（tick 0 ⇒ 168px，即时间轴左沿）；`max(1, …)` 只是除零护栏
+    // （宿主写进来的缩放恒在 1..=960，见 `bridge::clamp_ticks_per_pixel`）。
     Rectangle {
-        x: 168px + 120px * 3;
+        x: 168px + (root.playhead-ticks / max(1, root.ticks-per-pixel)) * 1px;
         y: 20px;
         width: 1px;
         height: parent.height - 20px;
@@ -665,9 +678,6 @@ export component ArrangementView inherits Rectangle {
         accessible-role: slider;
         accessible-id: "arrangement-playhead";
         accessible-label: "走带光标";
-        accessible-value-minimum: 0;
-        accessible-value-maximum: 9999;
-        accessible-value-step: 1;
-        accessible-value: "3";
+        accessible-value: root.playhead-timecode;
     }
 }

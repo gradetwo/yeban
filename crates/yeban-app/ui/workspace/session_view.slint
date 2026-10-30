@@ -104,7 +104,16 @@ export component SessionView inherits Rectangle {
             y: 68px * scene_index;
             width: parent.width;
             height: 64px;
-            background: (track_index + scene_index).mod(3) == 0 ? Tokens.bg-raised : Tokens.bg-panel;
+            // 插槽占用 / 选中：⛔ 今天**没有**来源，所以一格一格都画成同一个样子。
+            //
+            // 曾用 `(track_index + scene_index).mod(3) == 0` 同时决定底色 / "已装载|空插槽"
+            // 提示文字 / `accessible-item-selected` —— 那是一个**编出来的**三态图案：
+            // 模型里没有 track×scene 插槽实体（`SceneV3` 没有槽位，`ClipPlacement`
+            // 只有时间轴起点），宿主也没有任何插槽回调。继续画就等于对用户与屏读器
+            // 谎报"这一格装了剪辑 / 这一格被选中"。
+            // 真落地时要先有槽位来源（投影 → 注入平行数组），再把底色 / 文字 / 选中
+            // 分别绑到真实读数上；在那之前三处一律不编。
+            background: Tokens.bg-panel;
             border-radius: Tokens.radius-md;
             border-width: 1px;
             border-color: Tokens.line;
@@ -114,8 +123,9 @@ export component SessionView inherits Rectangle {
             accessible-label: root.tracks[track_index] + " · " + scene_name;
             accessible-item-index: scene_index;
             accessible-item-count: root.scenes.length;
-            accessible-item-selectable: true;
-            accessible-item-selected: (track_index + scene_index).mod(3) == 0;
+            // 没有点击落点 ⇒ 不声称可选；没有选中状态 ⇒ 不声称已选中。
+            accessible-item-selectable: false;
+            accessible-item-selected: false;
 
             UiText {
                 x: Tokens.space-3;
@@ -124,18 +134,6 @@ export component SessionView inherits Rectangle {
                 height: 16px;
                 text: scene_name;
                 color: Tokens.gold;
-                font-size: Tokens.font-size-xs;
-                overflow: elide;
-            }
-
-            // 空插槽的提示位 (双击创建新 Clip 的手势随后续切片落地)
-            UiText {
-                x: Tokens.space-3;
-                y: 26px;
-                width: parent.width - 12px;
-                height: 16px;
-                text: (track_index + scene_index).mod(3) == 0 ? "已装载" : "空插槽";
-                color: Tokens.ink-2;
                 font-size: Tokens.font-size-xs;
                 overflow: elide;
             }

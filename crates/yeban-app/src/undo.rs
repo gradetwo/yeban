@@ -83,8 +83,14 @@ pub enum UiAction {
     Undo,
     /// `Cmd+Shift+Z`。
     Redo,
-    /// 多步撤销（时光机点击某个节点）。
+    /// 多步撤销（时光机点击某个节点：回到那个版本）。
+    ///
+    /// ⚠ 模型侧的 `plan_undo` 会把步数 **clamp 到 ≥ 1**（`undo_session.rs`）⇒
+    /// `UndoMany(0)` 会**撤销一步**而不是"什么都不做"。调用方必须自己跳过
+    /// "已经在目标版本上"的情形（`host::wire_undo` 的节点点击就是这么做的）。
     UndoMany(usize),
+    /// 多步重做（时光机点击**比当前撤销位置更新**的节点时走到这里）。
+    RedoMany(usize),
     /// 打开 / 关闭 / 切换时光机弹窗（只改界面运行态，不动工程）。
     OpenUndoTree,
     /// 关闭时光机弹窗。
@@ -101,6 +107,7 @@ impl UiAction {
             Self::Undo => "undo",
             Self::Redo => "redo",
             Self::UndoMany(_) => "undo-many",
+            Self::RedoMany(_) => "redo-many",
             Self::OpenUndoTree => "open-undo-tree",
             Self::CloseUndoTree => "close-undo-tree",
             Self::ToggleUndoTree => "toggle-undo-tree",
@@ -620,6 +627,7 @@ impl UndoPort {
             }
             UiAction::Undo => self.undo_steps(1),
             UiAction::UndoMany(steps) => self.undo_steps(steps),
+            UiAction::RedoMany(steps) => self.redo_steps(steps),
             UiAction::Redo => self.redo_steps(1),
             UiAction::OpenUndoTree => {
                 self.open.set(true);
