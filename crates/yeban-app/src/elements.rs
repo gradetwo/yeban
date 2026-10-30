@@ -3378,14 +3378,24 @@ mod tests {
             "`app.slint` 必须把 `revert-to-last-commit` 原样转发给宿主 —— \
              回滚键的接线被摘掉了（本判据的另一半钉的是它必须还在）"
         );
+        // ⚠ 必须按**行首记号**比对，⛔ 不能用 `contains("{name} =>")`：回滚的转发行是
+        // `revert-to-last-commit =>`，它是 `commit =>` 的**超串** ⇒ 子串判据会在回滚
+        // 接线之后**误红**（`line/revert-button` 实测：`run 40995638767` 的
+        // `rust (yeban-app)` 红在这里）。Slint 的转发写法固定是「行首 `name` + `=>`」。
+        let forwards = |name: &str| {
+            app.lines().any(|line| {
+                line.trim_start()
+                    .strip_prefix(name)
+                    .and_then(|rest| rest.trim_start().strip_prefix("=>"))
+                    .is_some()
+            })
+        };
         for name in ["commit", "branch"] {
-            for spelling in [format!("{name} =>"), format!("{name}=>")] {
-                assert!(
-                    !app.contains(&spelling),
-                    "`app.slint` 今天不得转发 `{spelling}` —— \
-                     谁接上了就一并更新本判据（`the_remaining_transport_document_actions_are_not_wired_today`）"
-                );
-            }
+            assert!(
+                !forwards(name),
+                "`app.slint` 今天不得转发 `{name} =>` —— \
+                 谁接上了就一并更新本判据（`the_remaining_transport_document_actions_are_not_wired_today`）"
+            );
         }
 
         // ② `transport.slint` **声明**回滚回调，且**不**为 `commit` / `branch` 声明任何回调。
