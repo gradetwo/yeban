@@ -2580,14 +2580,17 @@ mod tests {
             "`ui/` 里一个 accessible-id 都没有 [UI-TEST-001]"
         );
         // ⚠ 例外清单不许留"已经不存在的模板"：否则它会静默放行未来同名的空模板。
+        // 形态判据**复用** `empty_dynamic_template_is_documented`（后缀空串 ⇒ 单段模板
+        // `"前缀-" + i`；后缀非空 ⇒ 双段模板 `"前缀-" + i + "-后缀"`），⛔ 不在这里重抄：
+        // 这条防陈旧检查原先硬写了 `segments.len() == 2`，于是给清单加一条**单段**例外
+        // （`sidebar-item-`）就把它自己判成"模板不存在"—— 两处规则必须同源。
         for (first, last) in EMPTY_DYNAMIC_TEMPLATES_ALLOWED {
             assert!(
-                patterns
-                    .iter()
-                    .any(|(_, segments, is_template)| *is_template
-                        && segments.len() == 2
-                        && segments[0] == *first
-                        && segments[1] == *last),
+                patterns.iter().any(|(_, segments, is_template)| {
+                    *is_template
+                        && segments.first().map(String::as_str) == Some(*first)
+                        && empty_dynamic_template_is_documented(segments)
+                }),
                 "例外清单里的模板 `{first}<i>{last}` 在 ui/ 里不存在"
             );
         }
