@@ -8909,7 +8909,7 @@ fn zoom_shortcuts_reach_the_projection_and_an_empty_selection_is_not_consumed() 
 /// ## ⭐ 这两条的**原因不同**（2026-10-31 起），别把它们读成同一件事
 ///
 /// - `[` / `]`（试听主线 / 提案）：**能力本身缺失** —— `[ARCH-RT-005]` 要的"A/B 并发渲染
-///   + 30ms 等功率瞬切 + 2048 采样预滚"在仓库里一处都不存在 ⇒
+///   ＋ 30ms 等功率瞬切 ＋ 2048 采样预滚"在仓库里一处都不存在 ⇒
 ///   `host::action_has_implementation` 返回 `false`，**任何**装配都不消费。
 /// - `Shift+Enter`（采纳）：能力**已经落地**（`HostAction::MergeProposal` ⇒ 与 MCP 工具
 ///   复用同一个 `Plan::Merge`）。它在这一条里仍然被拒绝, 是因为**本装配的前置条件不满足**
