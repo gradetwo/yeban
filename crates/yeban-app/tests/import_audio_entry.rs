@@ -140,7 +140,8 @@ fn press(window: &MainWindow, id: &str) {
 
 /// 把假选择器接到**本单的唯一实现**上（重复调用 = `on_*` setter 覆盖）。
 fn wire(window: &MainWindow, port: &Rc<UndoPort>, picker: &Rc<ScriptedPicker>) {
-    let picker: Rc<dyn FilePicker> = Rc::clone(picker);
+    let owned: Rc<ScriptedPicker> = Rc::clone(picker);
+    let picker: Rc<dyn FilePicker> = owned;
     host::wire_import_audio(window, Rc::clone(port), picker);
 }
 
