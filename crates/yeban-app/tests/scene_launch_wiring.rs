@@ -14,7 +14,7 @@
 //! | [`without_a_click_nothing_launches`] | "≥1" 会不会来自别处 | **正对照**：同一夹具不点 ⇒ `scene_launches_applied == 0`、没有 pending |
 //! | [`the_off_quantisation_from_the_projection_is_honoured`] | 产品路径用的是工程配置的量化档吗 | 把投影的 `launch_quantization` 改成 `Off` ⇒ **一个量子内**生效（⛔ 不是写死 `Bar`） |
 //! | [`the_current_scene_is_a_session_readout_not_a_projection_product`] | "当前场景"读数的归属对不对 | 投影恒 `None`；点击后变了；再投影 ⇒ 回到 `None`（换工程不带着旧场景） |
-//! | [`the_scene_button_is_really_clickable_and_the_known_actionless_list_is_8`] | 清单 9 → 8 有没有说谎 | `.slint` 里那一个按钮**同时**有 `clicked` 与同落点的 `accessible-action-default`；清单正好 8 条 |
+//! | [`the_scene_button_is_really_clickable_and_the_actionless_list_is_honest`] | 场景按钮移出清单有没有说谎 | `.slint` 里那一个按钮**同时**有 `clicked` 与同落点的 `accessible-action-default`；清单条目数与声明长度一致且不再含 `scene-launch-` |
 //!
 //! ## 无头可判（判据 ⑧）
 //!
@@ -320,14 +320,16 @@ fn the_current_scene_is_a_session_readout_not_a_projection_product() {
     assert_eq!(fixture.port.ui().get_current_scene_name().as_str(), "");
 }
 
-/// ⭐ 判据 ⑤：**清单 9 → 8 没有说谎** —— 那一个按钮**同时**有 `clicked` 与同落点的
-/// `accessible-action-default`，且 `KNOWN_ACTIONLESS_CONTROLS` 正好 8 条。
+/// ⭐ 判据 ⑤：**场景按钮移出清单没有说谎** —— 那一个按钮**同时**有 `clicked` 与同落点的
+/// `accessible-action-default`，且 `KNOWN_ACTIONLESS_CONTROLS` 的条目数与声明长度一致。
+/// ⚠ 条数**不写死**：清单是随每个"修好一个 ⇒ 移出一条"收缩的活文档（规则见
+/// `elements.rs` 的判据注释），写死 N 会让每一次合法的移出都变成这里的红。
 ///
 /// 这条是文本层判据（与 `elements.rs` 的
 /// `controls_without_any_click_source_are_exactly_the_known_empty_ones` 同一份事实的
 /// **正面**一侧）：那条证"清单外的都没有"，这条证"移出去的那一个真的有动作"。
 #[test]
-fn the_scene_button_is_really_clickable_and_the_known_actionless_list_is_8() {
+fn the_scene_button_is_really_clickable_and_the_actionless_list_is_honest() {
     let source = include_str!("../ui/workspace/session_view.slint");
     let launch = source
         .split("accessible-id: \"scene-launch-\" + scene_index + \"-button\"")
@@ -353,16 +355,24 @@ fn the_scene_button_is_really_clickable_and_the_known_actionless_list_is_8() {
 
     // 清单的真实项数（源码层读数；`elements.rs` 的判据把它与运行时集合逐条对账）。
     let elements = include_str!("../src/elements.rs");
-    let list = elements
-        .split("const KNOWN_ACTIONLESS_CONTROLS: [&str; 8] = [")
+    let declaration = "const KNOWN_ACTIONLESS_CONTROLS: [&str;";
+    let rest = elements
+        .split(declaration)
         .nth(1)
-        .expect("清单必须声明为 8 条（9 → 8 是本单的登记动作）");
-    let body = list.split("];").next().expect("清单必须有结尾");
+        .expect("清单声明必须存在");
+    let (len_text, rest) = rest
+        .split_once("] = [")
+        .expect("清单必须形如 `[&str; N] = [`");
+    let declared: usize = len_text.trim().parse().expect("清单声明的长度必须是整数");
+    let body = rest.split("];").next().expect("清单必须有结尾");
     let entries = body
         .lines()
         .filter(|line| line.trim_start().starts_with('"'))
         .count();
-    assert_eq!(entries, 8, "KNOWN_ACTIONLESS_CONTROLS 必须正好 8 条");
+    assert_eq!(
+        entries, declared,
+        "KNOWN_ACTIONLESS_CONTROLS 的条目数必须与声明长度一致"
+    );
     assert!(
         !body.contains("scene-launch-"),
         "场景按钮必须**真的**从清单里移出（⛔ 只删表行不接线）"

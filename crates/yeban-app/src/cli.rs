@@ -3530,7 +3530,7 @@ pub struct ShortcutRow {
 /// 每一项把**规范写法**、**动作**、**键位**与**落地状态**放在一起。这张表的**意义**是
 /// 让策略表的判定结果可被人与 CI 直接阅读 —— 尤其是 `[UI-A11Y-002]` 的 IME 分支,
 /// 以及"规范点名了、本版本还没做"的那一列（见 [`UNIMPLEMENTED_MARKER`]）。
-const SHORTCUTS: [ShortcutRow; 28] = [
+const SHORTCUTS: [ShortcutRow; 30] = [
     ShortcutRow {
         label: "Space → 播放/暂停",
         action: Action::PlayPause,
@@ -3746,13 +3746,30 @@ const SHORTCUTS: [ShortcutRow; 28] = [
         modifiers: Modifiers::shift(),
         implemented: true,
     },
+    // `[UI-NOTE-005]` §3 项 3：`Shift+←/→` = 时值缩短 / 延长一个吸附网格
+    //（`Op::SetNoteTiming`）。⚠ 标签以 `Shift+` 开头 ⇒ 与无修饰 `← / →` 那两条的
+    // `starts_with` 对账不会互相误配。
+    ShortcutRow {
+        label: "Shift+← → 选区时值缩短一个网格",
+        action: Action::ResizeSelectionDuration { direction: -1 },
+        key: PhysicalKey::LeftArrow,
+        modifiers: Modifiers::shift(),
+        implemented: true,
+    },
+    ShortcutRow {
+        label: "Shift+→ → 选区时值延长一个网格",
+        action: Action::ResizeSelectionDuration { direction: 1 },
+        key: PhysicalKey::RightArrow,
+        modifiers: Modifiers::shift(),
+        implemented: true,
+    },
     // 以下**两条**是本版本仅剩的 `implemented: false` 条目。
     //
     // ⭐ **两个数字都不在这里手抄**（此前这一行写着"表共 26 条"，而表的**总数**其实是 28 ——
     // 26 是 `implemented: true` 的条数，被当成了总数 ⇒ 读的人按它对账会**差 2**，
     // 而差的正是下面这两条 `false`）。⭐ 事实源是**类型标注**与**判据**，逐条复算：
-    //   - 表有多大 ⇒ `[ShortcutRow; 28]` 的**类型标注**（编译期）＋ 判据
-    //     `shortcut_table_status_matches_the_resolution_and_host_pipeline` 的 `rows.len() == 28`；
+    //   - 表有多大 ⇒ `[ShortcutRow; 30]` 的**类型标注**（编译期）＋ 判据
+    //     `shortcut_table_status_matches_the_resolution_and_host_pipeline` 的 `rows.len() == 30`；
     //   - 有几条未实现 ⇒ 同文件的 `delete_selection_is_implemented_in_the_host_table_and_rendered_output`
     //     断言未实现条目**恰好**是 `[AcceptAiSuggestion, AuditionMain]`（精确到**是哪两条**，
     //     比只数条数更强）＋ `printed_marks == 2`。

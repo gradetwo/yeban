@@ -153,10 +153,18 @@ pub fn apply_view(ui: &MainWindow, view: &ViewState, viewport_width: f32, scroll
     // `None` ⇒ `""`）。写方向是两条 `mixer-sampler-*` 回调（`wire_mixer_sampler`）。
     ui.set_track_sampler_paths(strings(&view.track_sampler_paths()));
     ui.set_scene_names(strings(&view.scene_names()));
+    // 场景色标：解析 / 回退在投影层（`bridge::track_color_or_default` 唯一实现），
+    // 这里只转成 Slint 的 `Color` 并把规范化文本一起下发（标签源）。
+    ui.set_scene_colors(colors(&view.scene_colors()));
+    ui.set_scene_color_labels(strings(&view.scene_color_labels()));
     // ⭐ 任务单 `#283`：**当前场景**的唯一注入点（完整重投影 ⇒ 回到投影的读数；
     // 场景按钮点击走同一个写者 [`apply_current_scene`]，⛔ 不各写一份）。
     apply_current_scene(ui, view.current_scene.as_ref());
     ui.set_section_names(strings(&view.section_names()));
+    // 段落色标：解析 / 回退在投影层（`bridge::track_color_or_default` 唯一实现），
+    // 这里只转成 Slint 的 `Color` 并把规范化文本一起下发（标签源）。
+    ui.set_section_colors(colors(&view.section_colors()));
+    ui.set_section_color_labels(strings(&view.section_color_labels()));
     ui.set_clip_ulids(strings(&view.clip_ulids()));
     ui.set_clip_labels(strings(&view.clip_labels()));
     ui.set_clip_positions(lengths(&view.clip_positions()));
@@ -1959,6 +1967,9 @@ pub fn wire_mixer_edit(ui: &MainWindow, port: &Rc<UndoPort>) {
     // ---------------------------------------------------------------- 两个开关
     wire_mixer_switch(ui, port, &weak, MixerSwitch::Mute);
     wire_mixer_switch(ui, port, &weak, MixerSwitch::Solo);
+    // ⭐ 主控通道条的同一对开关：目标不是下标而是**主总线身份**（见函数文档）。
+    wire_mixer_master_switch(ui, port, &weak, MixerSwitch::Mute);
+    wire_mixer_master_switch(ui, port, &weak, MixerSwitch::Solo);
 
     // ---------------------------------------------------------------- SFZ 采样器绑定
     // ⭐ 任务单 `#82`：模型 `TrackV3::sampler`（`#76`）第一次有**用户入口**。
@@ -2166,6 +2177,75 @@ enum MixerSwitch {
 /// 撤销树的节点却声称那是"混音台"的动作。改中性文本（去掉来源前缀）后，这条标签在两个
 /// 入口下都成立；带来源的措辞要等宿主能**分别**知道是哪个入口点的（那需要两条回调 + 两条
 /// 标签，本票不做）。
+/// 主控通道条的静音 / 独奏 —— 与 [`wire_mixer_switch`] **同一对** `Op`，只有目标来源不同。
+///
+/// ## 为什么目标不是下标
+///
+/// 主总线不在 `track-ids` 投影模型里（`bridge` 只把非主总线轨放进 `tracks`，
+/// 主总线单独落在 `ViewState::master`）⇒ 界面报不出一个"主控下标"。这里按
+/// **投影里的主总线身份**解析目标：`bridge::master_device_track`（与设备机架 /
+/// 建轨可用性 / 主控标签**同一份**口径：`master_bus_track_id` **且**
+/// `kind == TrackKind::Master`）。
+///
+/// 工程没有主总线 ⇒ **一位不动**（⛔ 不猜一条轨、⛔ 不 panic）；端口没有活跃工程同理。
+///
+/// ## 提交消息
+///
+/// 与轨道开关**逐字相同**（`"toggle track mute"` / `"toggle track solo"`）——
+/// 同一种编辑就该在撤销树里长出同一种节点标签；来源视图仍然不写进标签（台账 R17）。
+/// ⚠ 这两条字面量与 [`wire_mixer_switch`] 里的那一对必须保持一致；
+/// `tests/mixer_toggle_labels.rs` 只从 `wire_mixer_switch` 的代码块里数标签，
+/// 因此本函数刻意住在它的**扫描区间之外**。
+fn wire_mixer_master_switch(
+    ui: &MainWindow,
+    port: &Rc<UndoPort>,
+    weak: &slint::Weak<MainWindow>,
+    which: MixerSwitch,
+) {
+    let weak = weak.clone();
+    let port = Rc::clone(port);
+    let handler = move || {
+        let Some(ui) = weak.upgrade() else {
+            debug_assert!(false, "MainWindow 在回调执行期间被销毁");
+            return;
+        };
+        let Some(project) = port.try_project() else {
+            return;
+        };
+        let Some(master) = crate::bridge::master_device_track(&project) else {
+            return;
+        };
+        let (id, old_mute, old_solo) = (master.id, master.mute, master.solo);
+        let (op, message) = match which {
+            MixerSwitch::Mute => (
+                yeban_model::Op::SetTrackMute {
+                    track_id: id,
+                    old_mute,
+                    new_mute: !old_mute,
+                },
+                "toggle track mute",
+            ),
+            MixerSwitch::Solo => (
+                yeban_model::Op::SetTrackSolo {
+                    track_id: id,
+                    old_solo,
+                    new_solo: !old_solo,
+                },
+                "toggle track solo",
+            ),
+        };
+        if port.commit_ops(now_ms(), message, vec![op]).is_err() {
+            eprintln!("[yeban-app] 主控混音开关提交被拒绝（工程未改）");
+            return;
+        }
+        refresh_undo_window(&ui, &port, true);
+    };
+    match which {
+        MixerSwitch::Mute => ui.on_mixer_master_mute_toggle(handler),
+        MixerSwitch::Solo => ui.on_mixer_master_solo_toggle(handler),
+    }
+}
+
 fn wire_mixer_switch(
     ui: &MainWindow,
     port: &Rc<UndoPort>,
@@ -5140,7 +5220,13 @@ fn apply_record_outcome(ui: &MainWindow, error: Option<String>) {
     let _ = ui.get_recording();
 }
 
-/// 把**纯视图态**的四条界面回调接到宿主上（`ADR-0004` 同款口径：视图态、零 schema、重启即失）。
+/// 左侧资源栏的分类数（`ui/sidebar.slint` 的 `for category_index in 3`）。
+///
+/// 宿主用它钳位点击回调：越界请求（例如 `invoke_select_sidebar_category(7)`）落不到界面上。
+const SIDEBAR_CATEGORY_COUNT: i32 = 3;
+const SIDEBAR_ITEM_COUNT: i32 = 8;
+
+/// 把**纯视图态**的界面回调接到宿主上（`ADR-0004` 同款口径：视图态、零 schema、重启即失）。
 ///
 /// | 回调 | 唯一写的属性 | 界面侧的可观察后果 |
 /// | :--- | :--- | :--- |
@@ -5148,15 +5234,19 @@ fn apply_record_outcome(ui: &MainWindow, error: Option<String>) {
 /// | `toggle-sidebar` | `sidebar-collapsed` | 左资源栏 240px ↔ 36px 图标导轨（`min/max-width`） |
 /// | `toggle-ai-drawer` | `ai-drawer-open` | `compact` 断点下 280px AI 抽屉的 `visible` |
 /// | `open-musical-pr` | `musical-pr-open` | `MusicalPrDrawer` 的 `visible`（**只打开**） |
+/// | `select-sidebar-category` | `sidebar-category` | 三个分类标签的选中态（背景 / 文字色 / `accessible-item-selected`） |
+/// | `console-maximize-toggle` | `console-maximized` | 控制台面板高度（`vertical-stretch`）与 ⤢ 的 `accessible-checked`；与 `Action::ToggleConsoleMaximize` 同属性 |
+/// | `select-sidebar-item` | `sidebar-item` | 八个资源条目的选中态（背景 / 文字色 / `accessible-item-selected`） |
+/// | `back-to-arrangement` | `arrangement-view` | Session 视图「→ 编曲」按钮：写 `true` 切回编曲视图（⛔ 不是翻转；播放权回归的引擎侧语义未实现，见 `session_view.slint` 头注） |
 ///
-/// ## 为什么这四处翻转必须住在这里，而不是 `.slint` 的 `clicked =>` 里
+/// ## 为什么这些翻转必须住在这里，而不是 `.slint` 的 `clicked =>` 里
 ///
 /// `arrangement-view` 与 `sidebar-collapsed` 已经有**第二个宿主写者**：
 /// [`apply_action`] 的 `Action::ToggleView` / `Action::ShowView` / `Action::ToggleSidebar`
 /// 写的就是这两个属性（`ui/switch_main_view` 也写同一个）。若 `.slint` 的转发块自己再翻转
 /// 一次，同一个动作就有两个真相源；而"界面**不**自己翻转状态"正是 `playing` 那条已经
 /// 付过学费的契约（`ui/app.slint` 的 `toggle-play` 注释、`docs/ledger/feature-alignment.md`
-/// 错位 7）。因此本函数是这四条回调的**唯一**落点，组件里只剩"原样转发"。
+/// 错位 7）。因此本函数是这八条回调的**唯一**落点，组件里只剩"原样转发"。
 ///
 /// ## 为什么这不是"假接线"
 ///
@@ -5164,11 +5254,11 @@ fn apply_record_outcome(ui: &MainWindow, error: Option<String>) {
 /// 这与 [`set_track_height_override`] 是同一档东西（`ADR-0004` S1 / Q4-A）——
 /// 视图态本来就可以由宿主拥有，因此没有绕过 `ADR-0005` 的领域权威（那条约束的是**工程内容**）。
 ///
-/// 四条都只用"打开时那个窗口" ⇒ 共用一份 [`slint::Weak`]：强引用若被闭包自己持有，
+/// 七条都只用"打开时那个窗口" ⇒ 共用一份 [`slint::Weak`]：强引用若被闭包自己持有，
 /// 就形成 `MainWindow → 回调 → MainWindow` 的自环（窗口永不解构）。
 ///
 /// `close`（关抽屉）**不在这里**：`.slint` 的 `close =>` 没有对应的 Rust 回调，
-/// 因此那一条仍写在组件里（本函数不发明第五条回调）。
+/// 因此那一条仍写在组件里（本函数不发明这条回调）。
 pub fn wire_view_callbacks(ui: &MainWindow) {
     let weak = ui.as_weak();
     ui.on_toggle_view({
@@ -5201,6 +5291,19 @@ pub fn wire_view_callbacks(ui: &MainWindow) {
             ui.set_ai_drawer_open(!ui.get_ai_drawer_open());
         }
     });
+    // ⭐ 控制台右上角 ⤢：与键盘 `Cmd/Ctrl+Alt+M`（`apply_action` 的
+    // `Action::ToggleConsoleMaximize`）写的是**同一个**属性 ⇒ 点击与按键不可能分叉。
+    // 纯视图态（`MODEL-ISO-001` 的挥发性层）⇒ 不改工程、不需要 `UndoPort`。
+    ui.on_console_maximize_toggle({
+        let weak = weak.clone();
+        move || {
+            let Some(ui) = weak.upgrade() else {
+                debug_assert!(false, "MainWindow 在回调执行期间被销毁");
+                return;
+            };
+            ui.set_console_maximized(!ui.get_console_maximized());
+        }
+    });
     ui.on_open_musical_pr({
         let weak = weak.clone();
         move || {
@@ -5211,6 +5314,43 @@ pub fn wire_view_callbacks(ui: &MainWindow) {
             // **只打开**（本切片的范围纪律）：提案的生成 / 采纳 / 拒绝不在这里 ——
             // 它们要么需要界面侧并不存在的"提案身份"，要么属于工程内容（`ADR-0005`）。
             ui.set_musical_pr_open(true);
+        }
+    });
+    // ⭐ 左侧资源分类标签：界面只报告"用户点了哪一个"，钳位与写属性都在这里 ——
+    // 越界请求落不到界面上（`sidebar-category` 的合法区间是 `0..SIDEBAR_CATEGORY_COUNT`）。
+    ui.on_select_sidebar_category({
+        let weak = weak.clone();
+        move |category| {
+            let Some(ui) = weak.upgrade() else {
+                debug_assert!(false, "MainWindow 在回调执行期间被销毁");
+                return;
+            };
+            ui.set_sidebar_category(category.clamp(0, SIDEBAR_CATEGORY_COUNT - 1));
+        }
+    });
+    // ⭐ 左侧资源条目：与分类同一档 —— 界面只报告"用户点了哪一条"，
+    // 钳位与写属性都在这里（越界请求 `7` / `-3` 落不到界面上）。
+    ui.on_select_sidebar_item({
+        let weak = weak.clone();
+        move |item| {
+            let Some(ui) = weak.upgrade() else {
+                debug_assert!(false, "MainWindow 在回调执行期间被销毁");
+                return;
+            };
+            ui.set_sidebar_item(item.clamp(0, SIDEBAR_ITEM_COUNT - 1));
+        }
+    });
+    // ⭐ Session 视图「→ 编曲」：**写 `true`**，不是翻转 —— 按钮的语义是"回到编曲视图"，
+    // 已经在那里时再按也不该把用户踢回 Session。纯视图态（`MODEL-ISO-001` 的挥发性层）。
+    // 播放权从场景回归时间轴的引擎侧语义不在本切片（`session_view.slint` 头注已登记）。
+    ui.on_back_to_arrangement({
+        let weak = weak.clone();
+        move || {
+            let Some(ui) = weak.upgrade() else {
+                debug_assert!(false, "MainWindow 在回调执行期间被销毁");
+                return;
+            };
+            ui.set_arrangement_view(true);
         }
     });
 }
@@ -5261,6 +5401,71 @@ pub fn wire_input(ui: &MainWindow, context: Rc<RefCell<InputContext>>) {
             // 这里必须改成"问焦点系统当前焦点是谁"，而不是假定画布。
             Focus::MainCanvas
         });
+    });
+}
+
+/// ⭐ BPM 敲入的**唯一**提交实现（`ui/transport.slint` 的 `bpm-input.accepted`）。
+///
+/// ## 它做什么（只有一件事）
+///
+/// 把用户敲完的文本解析成 `f64`、按模型自己的合法区间校验
+/// （`yeban_model::project::MIN_BPM..=yeban_model::project::MAX_BPM`，`20.0..=999.0`），
+/// 然后提交**恰好一次** `Op::SetTempo { old_bpm, new_bpm }`，
+/// 最后重投影 —— 输入框经双向绑定显示**权威工程**的格式化读数（`{:.2}`）。
+///
+/// ## 不提交的四种情形（都只把显示写回权威值，工程一位不动）
+///
+/// * 不是数字（`"abc"` / `""`）；
+/// * 不是有限值（`"NaN"` / `"inf"`）；
+/// * 超出 `MIN_BPM..=MAX_BPM`（判定口径与 `Op::validate` 逐字相同）；
+/// * 与权威值**逐位相同**（"128" 与 "128.00" 是同一件事 ⇒ 不制造空撤销）。
+///
+/// ## 边界（如实登记）
+///
+/// 本提交改的是**工程内容**（`YebanProjectV1::bpm`），可撤销、会重投影；
+/// 引擎的**当前**走带速度不在本提交里 —— 引擎只在启动场景时读一次
+/// `tempo_bpm`（本文件的 `scene.tempo.unwrap_or(view.bpm)`），
+/// 因此改 BPM 对**正在播放**的引擎不生效。那条同步属于引擎控制面，本切片不发明。
+pub fn wire_bpm_commit(ui: &MainWindow, port: &Rc<UndoPort>) {
+    let weak = ui.as_weak();
+    let port = Rc::clone(port);
+    ui.on_bpm_commit(move |text| {
+        let Some(ui) = weak.upgrade() else {
+            debug_assert!(false, "MainWindow 在回调执行期间被销毁");
+            return;
+        };
+        // 权威工程读不出来 ⇒ 出声不画（与 `refresh_undo_window` 同款纪律）。
+        let Some(project) = port.try_project() else {
+            eprintln!("[yeban-app] BPM 敲入没有可投影的工程: 权威会话此刻没有活跃工程");
+            return;
+        };
+        let old_bpm = project.bpm;
+        let Ok(new_bpm) = text.trim().parse::<f64>() else {
+            eprintln!("[yeban-app] BPM 敲入的不是数字（{text:?}）⇒ 没有提交");
+            refresh_undo_window(&ui, &port, true);
+            return;
+        };
+        if !new_bpm.is_finite()
+            || !(yeban_model::project::MIN_BPM..=yeban_model::project::MAX_BPM).contains(&new_bpm)
+        {
+            eprintln!(
+                "[yeban-app] BPM 必须在 {}..={} 之间（实得 {new_bpm}）⇒ 没有提交",
+                yeban_model::project::MIN_BPM,
+                yeban_model::project::MAX_BPM
+            );
+            refresh_undo_window(&ui, &port, true);
+            return;
+        }
+        if new_bpm.to_bits() == old_bpm.to_bits() {
+            // 值没变：只把显示规范化（"128" → "128.00"），不制造一条空撤销。
+            refresh_undo_window(&ui, &port, true);
+            return;
+        }
+        let op = yeban_model::Op::SetTempo { old_bpm, new_bpm };
+        if port.commit_ops(now_ms(), "set tempo", vec![op]).is_err() {
+            eprintln!("[yeban-app] 速度提交被拒绝（工程未改）");
+        }
+        refresh_undo_window(&ui, &port, true);
     });
 }
 
@@ -7856,7 +8061,7 @@ fn apply_action(
             true
         }
         Action::ToggleConsoleMaximize => {
-            ui.set_console_expanded(!ui.get_console_expanded());
+            ui.set_console_maximized(!ui.get_console_maximized());
             true
         }
         // ⭐ 任务单 `#227`（Logic 的 `Go to Beginning`）：`Return` / `Enter`（裸键）。
@@ -8032,6 +8237,44 @@ fn apply_action(
                 return false;
             }
             if port.commit_ops(now_ms(), "nudge selection", ops).is_err() {
+                return false;
+            }
+            refresh_undo_window(ui, port, true);
+            true
+        }
+        // `[UI-NOTE-005]` §3 项 3：`Shift+←/→` 缩短 / 延长选区音符的**时值**。
+        //
+        // 语义（三条都是决定）：
+        // 1. 选区读点与 [`Action::NudgeSelection`] 同一个（`selected-ulids`）；
+        // 2. 幅度由 [`resize_duration_delta_for`] **唯一**换算（一个吸附网格）；
+        // 3. 批解析走 [`resize_duration_ops_for`]（纯函数）：**逐音符**夹紧到 ≥ 1 tick，
+        //    没变的音符不写 op；整批为空（空选区 / 全部已在下限）⇒ **0 提交**、
+        //    返回 `false`（不吞键，与 `DeleteSelection` / `NudgeSelection` 同一取向）。
+        // 一次按键 = 一次 `commit_ops` = 一步撤销（`undo_session` 包成一个 `Op::Batch`）。
+        // 起点不变 ⇒ 选区身份仍然有效，提交后照常重投影。
+        Action::ResizeSelectionDuration { direction } => {
+            let Some(port) = undo else {
+                return false;
+            };
+            let selected: Vec<String> = {
+                use slint::Model as _;
+                ui.get_selected_ulids()
+                    .iter()
+                    .map(|id| id.to_string())
+                    .collect()
+            };
+            let Some(project) = port.try_project() else {
+                return false;
+            };
+            let delta_ticks = resize_duration_delta_for(direction);
+            let ops = resize_duration_ops_for(&project, &selected, delta_ticks);
+            if ops.is_empty() {
+                return false;
+            }
+            if port
+                .commit_ops(now_ms(), "resize selection duration", ops)
+                .is_err()
+            {
                 return false;
             }
             refresh_undo_window(ui, port, true);
@@ -8883,6 +9126,107 @@ fn clamp_pitch_delta(min_pitch: u8, max_pitch: u8, delta: i8) -> i8 {
     let upper = 127 - i16::from(max_pitch);
     let clamped = i16::from(delta).clamp(lower, upper);
     i8::try_from(clamped).unwrap_or(0)
+}
+
+/// `[UI-NOTE-005]` §3 项 3：`Shift+←/→` 的一档时值增量（**唯一**换算）。
+///
+/// 幅度的事实源：一个吸附网格 = [`ROLL_SNAP_GRID_TICKS`]，与无修饰 `←/→` 的平移、
+/// 铅笔落笔、`Cmd+D` 的几何是**同一个**常量（⛔ 不给时值单开一个网格）。
+/// `direction` 取 `signum` ⇒ 任何非零正 / 负都等价于 `+1` / `-1`。
+#[must_use]
+pub fn resize_duration_delta_for(direction: i8) -> i64 {
+    i64::from(direction.signum()) * i64::try_from(ROLL_SNAP_GRID_TICKS).unwrap_or(i64::MAX)
+}
+
+/// `[UI-NOTE-005]` §3 项 3：把"选中的音符身份 + 一档时值增量"解析成待提交的
+/// **`Op::SetNoteTiming` 集合**（纯函数, 有判据）。
+///
+/// # 作用域与身份解析
+///
+/// 与 [`nudge_ops_for`] **逐条同口径**：作用域是**选区**（不是指针下的一颗），
+/// 身份解析走 `clip_pool` → 摆放它的第一条轨道（键序确定），选区为空 / 一个身份都
+/// 解析不到 ⇒ 返回空 `Vec`。
+///
+/// # 夹紧是**逐音符**的（与平移的组夹紧**刻意不同**）
+///
+/// 平移用组夹紧是为了**保住选区的相对形状**（和弦不能散架）；时值没有那个问题 ——
+/// 时长是每颗音符**各自的**标量，一颗音符缩到 1 tick 的下限**不构成**另一颗不能缩的
+/// 理由。所以这里是逐音符夹紧：`new = max(1, old + Δ)`。
+///
+/// - 缩到下限**没变**的音符**不产出 op**（例如已经是 1 tick 又按 `Shift+←`）；
+/// - 其余音符照常提交 ⇒ **同一批里可以只有一部分音符**（这与组夹紧的"全有或全无"是
+///   两件事，理由同上：没有相对形状需要保住）。
+/// - 整批为空（没有选区 / 全部音符都不变 / Δ == 0）⇒ 返回空 `Vec`，调用方**不写空 op**、
+///   不消费这一键（与 [`nudge_ops_for`] 的空批语义一致）。
+///
+/// # 为什么是 `SetNoteTiming` 而不是"删了重加"
+///
+/// `Op::SetNoteTiming` 只改 `(start_tick, duration_ticks)`，**保住身份** `note_id` ——
+/// 删 + 加会换掉 `EntityId`，进而改变 `MidiNote::triggers` 的概率触发结果
+///（`ops.rs` 的 `SetNoteExpression` 文档写明了同一理由）。起点**原样回填**，
+/// 因此一次 `Shift+←/→` 只改一个字段。
+///
+/// # 为什么一次返回一批
+///
+/// 与 [`nudge_ops_for`] 逐字同理：`undo_session::commit` 把整批包成**一个**
+/// `Op::Batch` ⇒ "一次按键 = 一次提交 = 一步撤销"是构造上的（`ARCH-OPS-002`）。
+#[must_use]
+pub fn resize_duration_ops_for(
+    project: &yeban_model::YebanProjectV1,
+    selected_ulids: &[String],
+    delta_ticks: i64,
+) -> Vec<yeban_model::ops::Op> {
+    use std::collections::{BTreeMap, BTreeSet};
+    if delta_ticks == 0 {
+        return Vec::new();
+    }
+    let targets: BTreeSet<yeban_model::EntityId> = selected_ulids
+        .iter()
+        .filter_map(|raw| raw.parse::<yeban_model::EntityId>().ok())
+        .collect();
+    if targets.is_empty() {
+        return Vec::new();
+    }
+    // "片段池条目 → 摆放它的第一条轨道"（与 `nudge_ops_for` 逐字同款）。
+    let mut owner: BTreeMap<yeban_model::EntityId, yeban_model::EntityId> = BTreeMap::new();
+    for (track_id, track) in &project.tracks {
+        for placement in track.clips.values() {
+            owner.entry(placement.clip_id).or_insert(*track_id);
+        }
+    }
+    let fallback_track = project.tracks.keys().next().copied();
+    let mut ops = Vec::new();
+    // 片段池键序 → 音符键序：产出顺序确定（红线 4），与 `nudge_ops_for` 同源。
+    for (clip_id, entry) in &project.clip_pool {
+        let Some(notes) = entry.content.notes() else {
+            continue;
+        };
+        for (note_id, note) in notes {
+            if !targets.contains(note_id) {
+                continue;
+            }
+            let Some(track_id) = owner.get(clip_id).copied().or(fallback_track) else {
+                continue;
+            };
+            // 逐音符夹紧：`max(1, old + Δ)`。`i128` 中间量 ⇒ 不依赖溢出行为。
+            let wanted = i128::from(note.duration_ticks) + i128::from(delta_ticks);
+            let new_duration_ticks = u64::try_from(wanted.max(1)).unwrap_or(u64::MAX);
+            if new_duration_ticks == note.duration_ticks {
+                // 这一颗没变（已在下限 / 增量被夹掉）⇒ 不为它写 op。
+                continue;
+            }
+            ops.push(yeban_model::ops::Op::SetNoteTiming {
+                track_id,
+                clip_id: *clip_id,
+                note_id: *note_id,
+                old_start_tick: note.start_tick,
+                old_duration_ticks: note.duration_ticks,
+                new_start_tick: note.start_tick,
+                new_duration_ticks,
+            });
+        }
+    }
+    ops
 }
 
 /// `[UI-NOTE-003]` 把卷帘的点击接到**撤销端口**上（工具矩阵的编辑语义）。
@@ -10647,6 +10991,191 @@ mod pencil_op_tests {
             nudge_ops_for(&at_top, &ids, -240, 0).len(),
             total,
             "反方向必须照常产出"
+        );
+    }
+
+    /// 判据：`resize_duration_ops_for` 的**逐音符夹紧**、**部分批次**与**空批拒绝**
+    /// —— `[UI-NOTE-005]` §3 项 3 在宿主侧的算术。
+    ///
+    /// ## 它证明什么
+    ///
+    /// 1. 空选区 / 解析不出的身份 / **零增量** ⇒ 空 `Vec`（⛔ 不写空 op）；
+    /// 2. 每条 op 只改时值：`new_start_tick == old_start_tick`，`new = old ± 240`；
+    /// 3. 整批可应用、且**可逆**（一步撤销回到原时值）；
+    /// 4. **下界**：已经在 1 tick 的音符**不产出 op**，其余音符照常缩 ——
+    ///    ⭐ 这是与 `nudge_ops_for` 的**组夹紧**刻意不同的地方（时值没有"相对形状"要保住）；
+    /// 5. **上界**：`duration_ticks == u64::MAX` 的音符在延长时被夹掉、不出 op，
+    ///    缩短时照常产出（夹紧只夹撞上界的那一侧）。
+    ///
+    /// ## ⛔ 它不证明什么
+    ///
+    /// - ⛔ 不证明按键可达（`apply_action` 那条臂由 `tests/roll_edit_tools.rs` 的真事件管）；
+    /// - ⛔ 不证明幅度常量（那是 [`resize_duration_delta_for`]；本判据传字面量 240）。
+    #[test]
+    fn resize_duration_ops_for_clamps_per_note_and_refuses_no_ops() {
+        use yeban_model::ops::Op;
+
+        let project = filled_project();
+        let ids: Vec<String> = project
+            .clip_pool
+            .values()
+            .filter_map(|entry| entry.content.notes())
+            .flat_map(|notes| notes.keys().map(ToString::to_string))
+            .collect();
+        let total = ids.len();
+        assert!(total >= 4, "夹具至少有 4 个音符, 实际 {total}");
+
+        // ① 空选区 / 垃圾身份 / 零增量 ⇒ 空批。
+        assert!(
+            resize_duration_ops_for(&project, &[], 240).is_empty(),
+            "空选区 ⇒ 空批"
+        );
+        assert!(
+            resize_duration_ops_for(&project, &["not-a-ulid".to_owned()], 240).is_empty(),
+            "解析不出的身份 ⇒ 空批"
+        );
+        assert!(
+            resize_duration_ops_for(&project, &ids, 0).is_empty(),
+            "零增量 ⇒ 空批（⛔ 不许留下一条什么都不改的 op）"
+        );
+
+        // ② 全选 +240：逐条 `SetNoteTiming`，起点原样、时值 +240。
+        let ops = resize_duration_ops_for(&project, &ids, 240);
+        assert_eq!(ops.len(), total, "每个选中的音符恰好一条 `SetNoteTiming`");
+        for op in &ops {
+            let Op::SetNoteTiming {
+                old_start_tick,
+                new_start_tick,
+                old_duration_ticks,
+                new_duration_ticks,
+                ..
+            } = op
+            else {
+                panic!("只允许 `SetNoteTiming`, 实际是 {op:?}");
+            };
+            assert_eq!(
+                old_start_tick, new_start_tick,
+                "时值伸缩 **不**动起点（那是平移的事）"
+            );
+            assert_eq!(
+                *new_duration_ticks,
+                old_duration_ticks + 240,
+                "延长必须恰好是一个增量"
+            );
+        }
+        // 整批可应用（旧值逐字段来自当前文档）且可逆（换回旧值）。
+        let batch = Op::Batch {
+            ops,
+            description: "resize duration".to_owned(),
+        };
+        let mut doc = project.clone();
+        batch
+            .apply(&mut doc)
+            .expect("整批必须可应用（旧值来自当前文档）");
+        let durations_of =
+            |doc: &yeban_model::YebanProjectV1| -> Vec<(yeban_model::EntityId, u64)> {
+                doc.clip_pool
+                    .values()
+                    .filter_map(|entry| entry.content.notes())
+                    .flat_map(|notes| notes.iter().map(|(id, note)| (*id, note.duration_ticks)))
+                    .collect()
+            };
+        for (_, duration) in durations_of(&doc) {
+            assert_eq!(duration, 480 + 240, "应用后每一颗都必须变长一个增量");
+        }
+        batch
+            .apply_inverse(&mut doc)
+            .expect("一步撤销必须整批换回旧值");
+        for (_, duration) in durations_of(&doc) {
+            assert_eq!(duration, 480, "撤销一次必须回到夹具的原时值");
+        }
+
+        // 把**所有**音符的某个字段改掉（逐音符夹紧的边界只与那一颗有关）。
+        let all_notes = |mutate: &dyn Fn(&mut yeban_model::MidiNote)| {
+            let mut copy = project.clone();
+            for entry in copy.clip_pool.values_mut() {
+                let Some(notes) = entry.content.notes_mut() else {
+                    continue;
+                };
+                for note in notes.values_mut() {
+                    mutate(note);
+                }
+            }
+            copy
+        };
+
+        // ③ 下界：全体已在 1 tick ⇒ 缩短空批；延长照常（夹紧不过度）。
+        let at_floor = all_notes(&|note| note.duration_ticks = 1);
+        assert!(
+            resize_duration_ops_for(&at_floor, &ids, -240).is_empty(),
+            "全体已在 1 tick ⇒ 缩短必须空批"
+        );
+        assert_eq!(
+            resize_duration_ops_for(&at_floor, &ids, 240).len(),
+            total,
+            "反方向必须照常产出"
+        );
+
+        // ④ **部分批次**：一颗 1 tick ＋ 其余 480 ⇒ 缩短只产出其余，下限那一条不写 op。
+        let mut mixed = project.clone();
+        let mut floor_id = None;
+        for entry in mixed.clip_pool.values_mut() {
+            let Some(notes) = entry.content.notes_mut() else {
+                continue;
+            };
+            for (note_id, note) in notes.iter_mut() {
+                if floor_id.is_none() {
+                    note.duration_ticks = 1;
+                    floor_id = Some(*note_id);
+                }
+            }
+        }
+        let floor_id = floor_id.expect("夹具至少有一颗音符");
+        let ops = resize_duration_ops_for(&mixed, &ids, -240);
+        assert_eq!(
+            ops.len(),
+            total - 1,
+            "只有会变的音符产出 op（⭐ 逐音符夹紧 ⇒ 允许部分批次）"
+        );
+        for op in &ops {
+            let Op::SetNoteTiming {
+                note_id,
+                new_duration_ticks,
+                ..
+            } = op
+            else {
+                panic!("只允许 `SetNoteTiming`, 实际是 {op:?}");
+            };
+            assert_ne!(*note_id, floor_id, "已在 1 tick 的音符**不得**被写");
+            assert_eq!(*new_duration_ticks, 240, "其余音符每颗缩一个增量");
+        }
+
+        // ⑤ 上界：一颗 `u64::MAX` ⇒ 延长时它不出 op，缩短时照常产出。
+        let mut topped = project.clone();
+        let mut top_id = None;
+        for entry in topped.clip_pool.values_mut() {
+            let Some(notes) = entry.content.notes_mut() else {
+                continue;
+            };
+            for (note_id, note) in notes.iter_mut() {
+                if top_id.is_none() {
+                    note.duration_ticks = u64::MAX;
+                    top_id = Some(*note_id);
+                }
+            }
+        }
+        let top_id = top_id.expect("夹具至少有一颗音符");
+        let ops = resize_duration_ops_for(&topped, &ids, 240);
+        assert_eq!(ops.len(), total - 1, "撞上界的音符在延长时必须被夹掉");
+        assert!(
+            ops.iter()
+                .all(|op| !matches!(op, Op::SetNoteTiming { note_id, .. } if *note_id == top_id)),
+            "`u64::MAX` 那一颗不得出现在延长批次里"
+        );
+        assert_eq!(
+            resize_duration_ops_for(&topped, &ids, -240).len(),
+            total,
+            "反方向（缩短）必须照常产出"
         );
     }
 }

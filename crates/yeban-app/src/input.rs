@@ -598,9 +598,11 @@ pub enum View {
 /// `[UI-NOTE-005]` §3.5 项 1–2 的**四档微调步长**（规范点名的四个修饰组合，逐条对应）。
 ///
 /// 它是一个**枚举**而不是两个数字（tick / pitch 增量），理由是"哪四个组合是规范的、
-/// 哪些不是"这件事必须能被机械读出来：每个变体就是规范里的一格，因此
-/// `Shift+←`（规范项 3 的改时值，需要新的 duration `Op`）**不在**这里 ——
-/// 它落到 `PassThrough`，而不是被悄悄当成别的口径。
+/// 哪些不是"这件事必须能被机械读出来：每个变体就是规范里的一格。
+///
+/// ⚠ 规范项 3 的 `Shift+←/→`（步进改**时值**）**不在**这里 —— 它动的是一个轴之外的
+/// 第三个量（`duration_ticks`），因此是另一个动作
+/// [`Action::ResizeSelectionDuration`]，⛔ 不被悄悄当成"整块平移"。
 ///
 /// 轴与幅度由步长**唯一决定**（`Grid`/`Tick` 动 tick，`Semitone`/`Octave` 动音高）：
 /// 宿主侧因此不存在"tick 轴配八度步长"这种表达不出来的组合。
@@ -668,6 +670,18 @@ pub enum Action {
         /// 规范点名的四档步长之一。
         step: NudgeStep,
         /// `-1` = 左 / 下；`+1` = 右 / 上。
+        direction: i8,
+    },
+    /// `[UI-NOTE-005]` §3 项 3：`Shift+←/→` 把**当前选区**的音符时值
+    /// （`duration_ticks`）缩短 / 延长**一个吸附网格**。
+    ///
+    /// ⚠ 它是**另一个动作**而不是 [`NudgeStep`] 的一档：平移改的是
+    /// `(start_tick, pitch)` 两个坐标，本动作改的是 `duration_ticks` 这一个量，
+    /// 宿主侧的 `Op` 也不同（`Op::MoveNote` vs `Op::SetNoteTiming`）。
+    /// 与 [`Self::NudgeSelection`] 同一条分工：本状态机只回答"这一键代表哪个动作"，
+    /// "选区为空 / 已经缩到 1 tick 怎么办"由 `host::apply_action` 的臂决定。
+    ResizeSelectionDuration {
+        /// `-1` = `Shift+←` 缩短；`+1` = `Shift+→` 延长。
         direction: i8,
     },
     /// `B`: 在箭头与铅笔之间快速切换。
@@ -852,9 +866,14 @@ impl InputContext {
                 Key::Enter => Resolution::Action(Action::AcceptAiSuggestion),
                 Key::Character('z') => Resolution::Action(Action::ZoomToFit),
                 // `[UI-NOTE-005]` §3.5 项 2：`Shift+↑/↓` = **整八度**（±12 半音）。
-                // ⚠ 规范项 3 的 `Shift+←/→`（步进改时值）**刻意不在这里**：它需要一个新的
-                // duration `Op`（`schemas/ops.schema.json` 是集成者文件）⇒ 如实落到
-                // `PassThrough`，而不是被猜成"整块平移"。
+                // `[UI-NOTE-005]` §3 项 3：`Shift+←/→` = 时值缩短 / 延长**一个吸附网格**
+                //（`Op::SetNoteTiming`；⛔ 不是整块平移，那是无修饰的 `←/→`）。
+                Key::LeftArrow => {
+                    Resolution::Action(Action::ResizeSelectionDuration { direction: -1 })
+                }
+                Key::RightArrow => {
+                    Resolution::Action(Action::ResizeSelectionDuration { direction: 1 })
+                }
                 Key::UpArrow => Resolution::Action(Action::NudgeSelection {
                     step: NudgeStep::Octave,
                     direction: 1,
@@ -928,9 +947,9 @@ mod tests {
 
     use Action::{
         AcceptAiSuggestion, AuditionMain, AuditionProposal, Cancel, DeleteSelection, Duplicate,
-        GoToBeginning, NudgeSelection, OpenTimeMachine, PlayPause, Redo, ResumeFromCursor,
-        SelectTool, ShowView, ToggleConsoleMaximize, TogglePencilTool, ToggleSidebar, ToggleView,
-        Undo, ZoomToFit, ZoomToSelection,
+        GoToBeginning, NudgeSelection, OpenTimeMachine, PlayPause, Redo, ResizeSelectionDuration,
+        ResumeFromCursor, SelectTool, ShowView, ToggleConsoleMaximize, TogglePencilTool,
+        ToggleSidebar, ToggleView, Undo, ZoomToFit, ZoomToSelection,
     };
     use Focus::{MainCanvas, Other, TextInput};
     use PhysicalKey::{
@@ -1534,8 +1553,9 @@ mod tests {
         );
     }
 
-    /// 判据（`[UI-NOTE-005]` §3.5 项 1–2，**策略表那一半**）：四条方向键在**四个**修饰组合
-    /// 下各自解析出规范点名的那一档步长，且方向位正确；规范**没**点名的组合如实放行。
+    /// 判据（`[UI-NOTE-005]` §3.5 项 1–2 ＋ §3 项 3，**策略表那一半**）：四条方向键在规范
+    /// 点名的**五**个修饰组合下各自解析出规范点名的那一档（平移的四档步长 / 时值伸缩），
+    /// 且方向位正确；规范**没**点名的组合如实放行。
     ///
     /// ## 量什么 / 怎么量 / 单位
     ///
@@ -1614,7 +1634,16 @@ mod tests {
                 direction: -1
             })
         );
-        // 物理码入口与逻辑入口在四个组合上**同解**（`physical_and_logical_entries_resolve_identically`
+        // `[UI-NOTE-005]` §3 项 3：`Shift+←/→` = 时值缩短 / 延长（⛔ 不是平移）。
+        assert_eq!(
+            canvas().resolve_logical(LKey::LeftArrow, Modifiers::shift()),
+            Act(ResizeSelectionDuration { direction: -1 })
+        );
+        assert_eq!(
+            canvas().resolve_logical(LKey::RightArrow, Modifiers::shift()),
+            Act(ResizeSelectionDuration { direction: 1 })
+        );
+        // 物理码入口与逻辑入口在六个组合上**同解**（`physical_and_logical_entries_resolve_identically`
         // 只遍历到无修饰 / 单一修饰的七个集合，这里把四个规范组合逐条钉死）。
         for (key, mods) in [
             (UpArrow, Modifiers::none()),
@@ -1625,6 +1654,8 @@ mod tests {
             (RightArrow, Modifiers::alt()),
             (UpArrow, Modifiers::shift()),
             (DownArrow, Modifiers::shift()),
+            (LeftArrow, Modifiers::shift()),
+            (RightArrow, Modifiers::shift()),
         ] {
             assert_eq!(
                 canvas().resolve(key, mods),
@@ -1633,13 +1664,10 @@ mod tests {
             );
         }
         // 规范**没**点名的组合必须如实放行（⛔ 不猜一个相近语义）：
-        // `Cmd/Ctrl+←/→`（文本/系统的 caret 语义）与 `Shift+←/→`（规范的**项 3** 改时值 ——
-        // 需要新的 duration `Op`，本切片不实现）。
+        // `Cmd/Ctrl+←/→`（文本/系统的 caret 语义）与 `Alt+↑/↓`（规范未点名）。
         for (key, mods) in [
             (LKey::LeftArrow, Modifiers::ctrl()),
             (LKey::RightArrow, Modifiers::meta()),
-            (LKey::LeftArrow, Modifiers::shift()),
-            (LKey::RightArrow, Modifiers::shift()),
             (LKey::UpArrow, Modifiers::alt()),
             (LKey::DownArrow, Modifiers::alt()),
         ] {

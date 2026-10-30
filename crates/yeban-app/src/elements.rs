@@ -655,6 +655,15 @@ impl ElementRegistry {
                 &format!("激发场景 {}", scene.name),
                 false,
             );
+            // 场景色标（`SceneV3::color` 的投影形态）：标签携带规范化 `#RRGGBB`，
+            // 与轨道色标同一条纪律 —— 控件树里读到的就是投影字段。
+            registry.add(
+                &format!("scene-{scene_index}-color-swatch"),
+                ElementKind::Image,
+                "workspace/session_view.slint",
+                &format!("场景色标 {}", scene.color_hex),
+                false,
+            );
         }
         registry.add(
             "session-back-to-arrangement-button",
@@ -698,6 +707,15 @@ impl ElementRegistry {
                 ElementKind::ListItem,
                 "workspace/arrangement_view.slint",
                 &format!("章节 {}", section.name),
+                false,
+            );
+            // 段落色标（`SectionV3::color` 的投影形态）：标签携带规范化 `#RRGGBB`，
+            // 与轨道 / 场景色标同一条纪律 —— 控件树里读到的就是投影字段。
+            registry.add(
+                &format!("section-{section_index}-color-swatch"),
+                ElementKind::Image,
+                "workspace/arrangement_view.slint",
+                &format!("段落色标 {}", section.color_hex),
                 false,
             );
         }
@@ -2083,13 +2101,14 @@ pub fn is_well_formed_id(id: &str) -> bool {
 /// `track-` 族里，但**主控通道条**（`mixer-master-*`）不共享那个前缀 —— 它的名字 / 音量 /
 /// 声相 / 静音 / 独奏 / 色标同样来自工程，所以必须有自己的族，否则"主控显示的是不是工程"
 /// 就没有机械检查（`ui/console/mixer_console.slint` 的 `mixer-master-strip` 子树）。
-pub const MODEL_DRIVEN_FAMILIES: [&str; 9] = [
+pub const MODEL_DRIVEN_FAMILIES: [&str; 10] = [
     "track-",
     "section-",
     "clip-",
     "note-",
     "velocity-",
     "session-track-",
+    "scene-",
     "scene-launch-",
     "slot-",
     "mixer-",
@@ -2763,10 +2782,12 @@ mod tests {
         for id in [
             "track-0-header",
             "section-0-card",
+            "section-0-color-swatch",
             "clip-01J8Z5Q0R7K3M9X2V4B6N8P1F9-header",
             "note-01J8Z5Q0R7K3M9X2V4B6N8P1A2-rect",
             "velocity-0-bar",
             "session-track-0-header",
+            "scene-0-color-swatch",
             "scene-launch-0-button",
             "slot-0-0-cell",
             // app-mixer: 调音台通道条 / 电平表 / 主控通道条都由投影或引擎电平驱动。
@@ -4021,13 +4042,12 @@ mod tests {
     /// | 语义 ID（`.slint` 右值） | 为什么今天没有动作 |
     /// | :--- | :--- |
     /// | `"ai-rail-intent-button"` | 意图生成能力不存在: 没有 `callback`、没有宿主写者 |
-    /// | `"console-maximize-button"` | 底部控制台最大化只有键盘路径（`Cmd/Ctrl+Alt+M`） |
-    /// | `"mixer-master-mute-button"` | 主控静音只有**显示**（`apply_mixer` 写 `master-mute`），没有 `mixer-master-mute-toggle` 回调 |
-    /// | `"mixer-master-solo-button"` | 同上（`master-solo`） |
-    /// | `"sidebar-category-" + i + "-button"` | 分类切换状态机不存在（只有静态选中态 `category_index == 0`） |
     /// | `"transport-branch-button"` | 切换活跃分支的 API 一处都不存在（判据 `the_three_transport_document_actions_are_not_wired_today` 已钉） |
     /// | `"transport-commit-button"` | 同上（会话里没有"待提交的编辑"这一状态） |
     /// | `"transport-revert-button"` | 同上（能力存在但未接线） |
+    ///
+    /// ⭐ **主控静音 / 独奏已从清单移出**（`8 → 6`）：`"mixer-master-mute-button"` /
+    /// `"mixer-master-solo-button"` 现在有真实动作（`host::wire_mixer_master_switch`）。
     ///
     /// ⭐ **任务单 `#283` 移出了一条**：`"scene-launch-" + i + "-button"` 现在**真的**
     /// 可点 —— `TouchArea.clicked` 与 `accessible-action-default` 同一落点
@@ -4035,6 +4055,13 @@ mod tests {
     /// `EngineHost::queue_scene_launch` ⇒ 引擎在量化点 `transport.retune(场景 tempo)`
     /// ＋ `scene_launches_applied += 1`（判据 `tests/scene_launch_wiring.rs`）。
     /// 按本判据文档的要求（"修好一个 ⇒ 从清单里删掉它"），它不再属于"没有动作"的集合。
+    ///
+    /// ⭐ **本切片移出了一条**（`8 → 7`）：`"sidebar-category-" + i + "-button"` 现在三个
+    /// 标签**都**可点 —— `TouchArea.clicked` 与 `accessible-action-default` 同一落点
+    /// `root.select-category(category_index)` ⇒ `app.slint` 原样转发 ⇒ 宿主
+    /// `host::wire_view_callbacks` 钳到 `0..=2` 后写 `sidebar-category`（纯视图态：
+    /// 选中背景 / 文字色 / `accessible-item-selected` 三处读同一个属性）。
+    /// 判据 `tests/sidebar_category.rs`。
     #[test]
     fn controls_without_any_click_source_are_exactly_the_known_empty_ones() {
         const CONTROL_ROLES: [&str; 6] = [
@@ -4106,12 +4133,30 @@ mod tests {
     /// `host::wire_scene_launch` ⇒ `EngineHost::queue_scene_launch` ⇒ 引擎在量化点
     /// `transport.retune(场景 tempo)`。它与上一条同型：**接上真动作才移出**，
     /// ⛔ 不是"先删表行"。
-    const KNOWN_ACTIONLESS_CONTROLS: [&str; 8] = [
+    /// ⭐ **主控静音 / 独奏移出了两条**（`8 → 6`）：`"mixer-master-mute-button"` /
+    /// `"mixer-master-solo-button"` 现在**真的**可点 —— 主控通道条的那两个按钮走
+    /// `TouchArea.clicked` ＋ `accessible-action-default`（同一落点）
+    /// `root.mixer-master-mute-toggle()` / `root.mixer-master-solo-toggle()` ⇒
+    /// `host::wire_mixer_master_switch` 按主总线身份提交一次 `Op::SetTrackMute` /
+    /// `Op::SetTrackSolo`。按本判据文档的要求（"修好一个 ⇒ 从清单里删掉它"），
+    /// 它们不再属于"没有动作"的集合。
+    ///
+    /// ⭐ **控制台最大化按钮再移出一条**（`6 → 5`；本行按两线合并后的实测条数改写，
+    /// ⛔ 不是照抄单线提交里的 `8 → 7`）：`console-maximize-button` 现在有
+    /// `TouchArea.clicked` ＋ `accessible-action-default`（同一落点
+    /// `root.console-maximize-toggle()`）⇒ 宿主 `host::wire_view_callbacks` 写
+    /// `console-maximized` —— 与键盘 `Cmd/Ctrl+Alt+M` 的
+    /// `Action::ToggleConsoleMaximize` 是**同一个**视图态属性。
+    ///
+    /// ⭐ **资源栏分类标签再移出一条**（`5 → 4`；同样按合并后的实测条数改写，
+    /// ⛔ 不是照抄单线提交里的 `8 → 7`）：`"sidebar-category-" + i + "-button"` 现在三个
+    /// 标签**都**可点 —— `TouchArea.clicked` 与 `accessible-action-default` 同一落点
+    /// `root.select-category(category_index)` ⇒ `app.slint` 原样转发 ⇒ 宿主
+    /// `host::wire_view_callbacks` 钳到 `0..=2` 后写 `sidebar-category`（纯视图态：
+    /// 选中背景 / 文字色 / `accessible-item-selected` 三处读同一个属性）。
+    /// 判据 `tests/sidebar_category.rs`。
+    const KNOWN_ACTIONLESS_CONTROLS: [&str; 4] = [
         "app.slint :: \"ai-rail-intent-button\"",
-        "console/console_tabs.slint :: \"console-maximize-button\"",
-        "console/mixer_console.slint :: \"mixer-master-mute-button\"",
-        "console/mixer_console.slint :: \"mixer-master-solo-button\"",
-        "sidebar.slint :: \"sidebar-category-\" + category_index + \"-button\"",
         "transport.slint :: \"transport-branch-button\"",
         "transport.slint :: \"transport-commit-button\"",
         "transport.slint :: \"transport-revert-button\"",

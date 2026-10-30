@@ -382,8 +382,23 @@ export component MainWindow inherits Window {
     in-out property <bool> recording: false;
     in-out property <bool> arrangement-view: true;
     in-out property <int> console-tab: 0;
-    in-out property <bool> console-expanded: true;
+    /// ⭐ 底部控制台是否最大化（`Cmd/Ctrl+Alt+M` / 控制台右上角 ⤢ 的同一个视图态）。
+    /// 唯一写者是宿主（`host::apply_action` 的 `Action::ToggleConsoleMaximize` 与
+    /// `host::wire_view_callbacks` 的点击回调写的是**同一个**属性）⇒ 按键与点击不分叉。
+    /// 布局绑定：最大化时中段（工作区）让出全部高度，控制台吃掉剩余空间。
+    /// ⛔ 不是工程数据（`MODEL-ISO-001` 的挥发性层）、不进 `.yeban`、不进撤销栈。
+    in-out property <bool> console-maximized: false;
     in-out property <bool> sidebar-collapsed: false;
+    /// ⭐ 左侧资源栏的激活分类（0 = 乐器 / 1 = 采样 / 2 = 预置）。
+    /// 唯一写者 = `host::wire_view_callbacks` 的 `select-sidebar-category` 回调
+    /// （先钳到 `0..=2` 再写）；界面**不自己**翻转选中态。⛔ 不是工程数据
+    /// （`MODEL-ISO-001` 的挥发性层）、不进 `.yeban`、不进撤销栈。
+    in-out property <int> sidebar-category: 0;
+    /// ⭐ 左侧资源栏选中的条目（`0..=7`，与 `items` 数组一一对应）。
+    /// 唯一写者 = `host::wire_view_callbacks` 的 `select-sidebar-item` 回调
+    /// （先钳到 `0..=7` 再写）；界面**不自己**翻转选中态。⛔ 不是工程数据
+    /// （`MODEL-ISO-001` 的挥发性层）、不进 `.yeban`、不进撤销栈。
+    in-out property <int> sidebar-item: 0;
     in-out property <bool> ai-drawer-open: false;
     in-out property <bool> musical-pr-open: false;
     // ⭐ 宏面板（右侧抽屉；默认关着 ⇒ 默认帧一位不变）。打开者 = 控制台 Tab 3 的
@@ -445,8 +460,18 @@ export component MainWindow inherits Window {
     // 界面**不自己翻转**任何走带状态 —— 见 `src/host.rs` 的 `wire_transport`。
     callback stop();
     callback toggle-view();
+    /// ⭐ Session 视图「→ 编曲」按钮的点击入口：宿主把它落到 `arrangement-view = true`
+    /// （与 `toggle-view` 写的是**同一个**属性；唯一写者 = `host::wire_view_callbacks`）。
+    callback back-to-arrangement();
     callback toggle-sidebar();
+    /// ⭐ 左侧资源分类标签的点击入口：宿主把分类号钳到 `0..=2` 再写 `sidebar-category`。
+    callback select-sidebar-category(int);
+    /// ⭐ 左侧资源条目的点击入口：宿主把条目号钳到 `0..=7` 再写 `sidebar-item`。
+    callback select-sidebar-item(int);
     callback toggle-ai-drawer();
+    /// ⭐ 控制台右上角 ⤢ 的点击入口：与 `Cmd/Ctrl+Alt+M`（`Action::ToggleConsoleMaximize`）
+    /// 落到**同一个**属性 `console-maximized`（唯一实现 = 宿主写属性，界面不自己翻转）。
+    callback console-maximize-toggle();
     callback toggle-undo-tree();
     // D45: 时光机里的"撤销一步"（与 `Cmd+Z` 汇到同一个 `UndoPort::perform`）。
     callback undo-step();
@@ -565,6 +590,8 @@ export component MainWindow inherits Window {
     // `InputContext::begin_composition` / `end_composition` / `set_focus`。
     callback ime-composition-changed(bool);
     callback ime-focus-changed(bool);
+    // ⭐ BPM 输入框回车 ⇒ 提交一次速度编辑（`host::wire_bpm_commit`）。
+    callback bpm-commit(string);
 
     // =====================================================================
     // `N2` 裁决 (1)：GUI 路径的键盘事件源（**逻辑键**）
@@ -695,6 +722,11 @@ export component MainWindow inherits Window {
     callback mixer-mute-toggle(int);
     /// 独奏按钮点击。
     callback mixer-solo-toggle(int);
+    /// ⭐ 主控通道条的静音点击：与轨道开关**同一对** `Op`，目标由宿主从投影里
+    /// （`bridge::master_device_track`）解析，界面⛔ 不猜是哪条轨。
+    callback mixer-master-mute-toggle();
+    /// ⭐ 主控通道条的独奏点击（同上）。
+    callback mixer-master-solo-toggle();
     // ⭐ **SFZ 采样器绑定**（任务单 `#82`）—— 模型 `TrackV3::sampler`（`#76`）的**用户入口**。
     //
     // 形状与上面两个开关逐条同款（`.slint` 只报"哪一个下标（+ 输入框文本）"，`Op` 的构造、
@@ -889,6 +921,10 @@ export component MainWindow inherits Window {
     // `ui.set_track_sampler_paths` 在 `src/host.rs`）。
     in property <[string]> track-sampler-paths: [];
     in property <[string]> scene-names: [];
+    // 场景色标（`SceneV3::color` 经投影解析 / 回退后的颜色与规范化文本）。
+    // 与 `track-colors` / `track-color-labels` 同族：`host::apply_view` 是唯一写者。
+    in property <[color]> scene-colors: [];
+    in property <[string]> scene-color-labels: [];
     // ⭐ 任务单 `#283`：**当前场景**读数（唯一写者 `host::apply_current_scene`；
     // 唯一事实源 `ViewState::current_scene`）。`-1` / `""` = 本会话还没有启动过场景。
     in property <int> current-scene-index: -1;
@@ -896,6 +932,10 @@ export component MainWindow inherits Window {
     // 场景启动的**如实回执**（没有引擎 / 环满时非空；默认空串 = 不占视觉空间）。
     in property <string> scene-launch-status: "";
     in property <[string]> section-names: [];
+    // 段落色标（`SectionV3::color` 经投影解析 / 回退后的颜色与规范化文本），
+    // 与 `track-colors` / `scene-colors` 同族：`host::apply_view` 是唯一写者。
+    in property <[color]> section-colors: [];
+    in property <[string]> section-color-labels: [];
     in property <[length]> section-positions: [];
     in property <[length]> section-widths: [];
     in property <[string]> clip-ulids: [];
@@ -1173,7 +1213,7 @@ export component MainWindow inherits Window {
             recording <=> root.recording;
             playing: root.playing;
             timecode: root.timecode;
-            bpm-display: root.bpm-display;
+            bpm-display <=> root.bpm-display;
             branch-name: root.branch-name;
             arrangement-view: root.arrangement-view;
             ai-drawer-open: root.ai-drawer-open;
@@ -1225,11 +1265,17 @@ export component MainWindow inherits Window {
             ime-focus-changed(focused) => {
                 root.ime-focus-changed(focused);
             }
+            // BPM 回车：原样转给宿主 —— 界面不解析数字、不判区间、不提交。
+            bpm-commit(text) => {
+                root.bpm-commit(text);
+            }
         }
 
         // ------------------------------------------- 中段 (弹性区的 60%)
         HorizontalLayout {
-            vertical-stretch: Tokens.workspace-stretch;
+            // ⭐ 控制台最大化：让出**全部**弹性高度（stretch 0 ⇒ 只剩首选高度，
+            // 工作区画布按设计缩到 0）⇒ 剩下的都给控制台。还原 ⇒ 回到 3 : 2。
+            vertical-stretch: root.console-maximized ? 0 : Tokens.workspace-stretch;
 
             // 240px 左资源栏 (compact 时 36px 图标导轨)
             Sidebar {
@@ -1241,6 +1287,19 @@ export component MainWindow inherits Window {
                 // （键盘路径的 `Action::ToggleSidebar` 也写同一个属性）。
                 toggle-collapse => {
                     root.toggle-sidebar();
+                }
+
+                // 同款：激活分类是**视图态**，界面只报告"用户点了哪一个"，
+                // 钳位与写属性都在宿主 ⇒ 越界请求（如 7）不会留在界面上。
+                active-category: root.sidebar-category;
+                select-category(category) => {
+                    root.select-sidebar-category(category);
+                }
+
+                // 同款：条目选中也是**视图态**，界面只报告"用户点了哪一个"。
+                active-item: root.sidebar-item;
+                select-item(item) => {
+                    root.select-sidebar-item(item);
                 }
             }
 
@@ -1258,10 +1317,17 @@ export component MainWindow inherits Window {
                     visible: !root.arrangement-view;
                     tracks: root.track-names;
                     scenes: root.scene-names;
+                    scene-colors: root.scene-colors;
+                    scene-color-labels: root.scene-color-labels;
                     // ⭐ `#283`：场景按钮的落点 + "当前场景"读数（全部来自宿主的
                     // 唯一注入；⛔ `.slint` 不自己记"上次点了哪个"）。
                     scene-launch(scene_index) => {
                         root.scene-launch(scene_index);
+                    }
+                    // ⭐ Session 视图「→ 编曲」：原样转给宿主（界面不自己翻转
+                    // `arrangement-view`；唯一写者 = `host::wire_view_callbacks`）。
+                    back-to-arrangement => {
+                        root.back-to-arrangement();
                     }
                     current-scene-index: root.current-scene-index;
                     current-scene-name: root.current-scene-name;
@@ -1310,6 +1376,8 @@ export component MainWindow inherits Window {
                     track-mutes: root.track-mutes;
                     track-solos: root.track-solos;
                     sections: root.section-names;
+                    section-colors: root.section-colors;
+                    section-color-labels: root.section-color-labels;
                     section-positions: root.section-positions;
                     section-widths: root.section-widths;
                     clip-ulids: root.clip-ulids;
@@ -1383,6 +1451,7 @@ export component MainWindow inherits Window {
         console-tabs := ConsoleTabs {
             vertical-stretch: Tokens.console-stretch;
             active-tab: root.console-tab;
+            console-maximized: root.console-maximized;
             note-ulids: root.note-ulids;
             note-velocities: root.note-velocities;
             note-positions: root.note-positions;
@@ -1606,6 +1675,12 @@ export component MainWindow inherits Window {
                 root.macro-panel-open = true;
             }
 
+            // ⭐ 控制台右上角 ⤢：只上抛 —— 开关状态由宿主写 `console-maximized`
+            // （与 `toggle-view` 一族同款，界面不自己翻转）。
+            console-maximize-toggle() => {
+                root.console-maximize-toggle();
+            }
+
             // 混音台写入面：只上抛，不在 `.slint` 里改任何工程值
             // （`ADR-0005`：工程内容必须走 `Op` + `UndoPort`，落点是 `host::wire_mixer_edit`）。
             mixer-fader-grab(index, y) => {
@@ -1631,6 +1706,12 @@ export component MainWindow inherits Window {
             }
             mixer-solo-toggle(index) => {
                 root.mixer-solo-toggle(index);
+            }
+            mixer-master-mute-toggle() => {
+                root.mixer-master-mute-toggle();
+            }
+            mixer-master-solo-toggle() => {
+                root.mixer-master-solo-toggle();
             }
             // ⭐ SFZ 采样器绑定（任务单 `#82`）：同样只上抛，宿主是唯一落点。
             mixer-sampler-set(index, path) => {

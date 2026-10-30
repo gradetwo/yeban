@@ -834,6 +834,10 @@ fn run_gui(options: &Options) -> Result<Vec<String>, cli::CliError> {
     // **恰好一次** `commit_ops`（一个 `Op::SetMacro`），与上面三条同一条纪律 ——
     // 拖动期只写视图态，松手才提交，共用同一个 `UndoPort`（`ADR-0005`）。
     host::wire_macro_panel(&ui, &undo_port);
+    // ⭐ 走带条 BPM 敲入（回车 / `accepted`）的**写入面**：一次回车 = **恰好一次**
+    // `commit_ops`（一个 `Op::SetTempo`）。解析 / 区间校验 / 同值判重都在宿主里做，
+    // 界面只把原样文本交出来 ⇒ 与 `wire_mixer_sampler` 的"界面不解析数字"同一条纪律。
+    host::wire_bpm_commit(&ui, &undo_port);
     // ⭐ 轨 / 路由（控制台 Tab 3 的**同一面板**）的**写入面**（任务单 `#160`）：
     // 三个建轨按钮 ＋ 删除展示轨。与上面三条同一条纪律 —— 每个手势**恰好一次**
     // `commit_ops`（建轨 / 删轨各自打包成一个 `Op::Batch`），共用同一个 `UndoPort`。
@@ -1068,10 +1072,14 @@ fn mount_in_process_mcp(
 /// "撤销一步"按钮由 [`host::wire_undo`] 接到 [`yeban_app::undo::UndoPort`]，
 /// 动作真的会走 `CommitGraph::undo_with`，显示态由 `host::apply_undo` 从模型读数回写。
 ///
-/// **视图态四条也已经真的接线**（本切片）：`toggle-view` / `toggle-sidebar` /
-/// `toggle-ai-drawer` / `open-musical-pr` → [`host::wire_view_callbacks`] →
-/// 分别写 `arrangement-view` / `sidebar-collapsed` / `ai-drawer-open` / `musical-pr-open`。
-/// `.slint` 里那四处 `root.* = !root.*` 的翻转**已删除** —— 同一条动作只有一个写者。
+/// **视图态八条也已经真的接线**（分类切换、控制台 ⤢、资源条目选中与 Session 返回编曲陆续落地）：
+/// `toggle-view` / `toggle-sidebar` / `toggle-ai-drawer` / `open-musical-pr` /
+/// `select-sidebar-category` / `console-maximize-toggle` / `select-sidebar-item` /
+/// `back-to-arrangement` → [`host::wire_view_callbacks`] → 分别写
+/// `arrangement-view` / `sidebar-collapsed` / `ai-drawer-open` / `musical-pr-open` /
+/// `sidebar-category` / `console-maximized` / `sidebar-item` / `arrangement-view`
+/// （`back-to-arrangement` 只写 `true`，与 `toggle-view` 同一属性）。
+/// 原先写在 `.slint` 里的 `root.* = !root.*` 翻转**已删除** —— 同一条动作只有一个写者。
 ///
 /// 其余**三条**回调仍然故意什么都不做，只打一行 stderr。原因不是省事，而是
 /// "接上也只能是什么都不做"（本仓库的明文纪律：把动作吞掉却什么都不做，比不处理更糟）：
