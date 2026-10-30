@@ -64,6 +64,29 @@ GH_TOKEN=... scripts/dev/ci-verdict.sh --logs <run-id>   # 拉失败 job 的原�
 1. 每个自动档 job 在 `failure()` 时把最后 80 行构建输出写进 **job summary**；
 2. `scripts/gates/run-gates.sh` 与 `cargo-local.sh` 都在本机就能复现同一族检查，重依赖部分除外。
 
+### 要**具体判据名**时怎么把日志拉回来（实测 2026-10-30，`gh run view --log-failed` 只给 1 行的解法）
+
+`gh run view <run> --log-failed` 常常只回 1 行（它只贴 step 的退出摘要），而
+`gh run view <run> --json jobs --jq '.jobs[].id'` 回的是 **`null`** —— 这个视图里的 job id
+字段根本不是 API 的那个 id。要拿到能用的 job id，走 REST：
+
+```bash
+# ① 列 job 真 id 与**失败的 step 名**（step 名直接回答"红在哪一步"）
+gh api repos/<owner>/<repo>/actions/runs/<run>/jobs \
+  --jq '.jobs[] | select(.conclusion=="failure") | "\(.id) | \(.name) | steps=\([.steps[]? | select(.conclusion=="failure") | .name] | join(","))"'
+# ② 按 job id 拉**全量**原始日志（`--allow-escape-sequences` 必需：日志里有 ANSI 码，
+#    gh 默认拒绝输出，症状是"只回 1 行"的另一种误读来源），再剥色
+gh api --allow-escape-sequences repos/<owner>/<repo>/actions/jobs/<job-id>/logs \
+  | sed -e 's/\x1b\[[0-9;]*[a-zA-Z]//g' > /tmp/job.log
+# ③ 先数**跑了几个二进制**，再找判据名（AGENTS §6.3 第 4 条：缺失既不是红也不是绿）
+grep -c "Running tests/" /tmp/job.log
+grep -nE "panicked at|^test result:|error: could not compile" /tmp/job.log
+```
+
+⚠ ①里的 `steps=` 就是"哪一步"的权威答案，⛔ 从整体 conclusion 猜。实测：一次
+`rust (yeban-app)` 的 `clippy` 腿与另一次的 `test` 腿结论都是 `failure`，但一个是编译错、
+一个是判据红 —— 只有 step 名能把两者分开。
+
 **未读取的判决记为 `pending`，不得写成"通过"。**
 
 ---
@@ -319,3 +342,35 @@ b73cab5 completed cancelled 37329482641
 ⇒ **操作后果**：连推几笔后，**只有最后一笔**会真正跑完。想拿到某一笔的判决时，别指望它的自动 run 还活着：
 用 `workflow_dispatch` 在**当前 tip** 上派发一次（本会话已多次这样做，这也是为什么"派发"比"等推送触发"更可靠）。
 
+
+### 第十个坑：同一句 `ld terminated with signal 7 [Bus error]` 有**两种成因**，把上一轮的解释直接套到这一轮就判错了
+
+本仓库对这句话**已有**一份解释，写在 `ci.yml` 的盘回收步骤里（commit `5dd70785`，run `40923947268`）：
+`No space left on device (os error 28)` ＋ `ld … [Bus error]` 同现 ⇒ **runner 爆盘**，
+回收预装垃圾即可。那个因果链当时是**被证据撑着**的（同一次日志里两个签名都有，`df` 只剩 44G 而 target 43G）。
+
+2026-10-30 又出现同一句 `Bus error`，四条腿各一次（run `41057489656`／`41058208805`），
+但按同一份口径**现读**它，签名**不同**：
+
+| 数什么（单位＝**行**，对象＝该 job 的全量原始日志） | 命令 | 读数 |
+| --- | --- | --- |
+| `No space left on device` 出现几行 | `grep -c 'No space left on device'` | **0** |
+| `Bus error` 出现几行 | `grep -c 'Bus error'` | 4 |
+| 该步**开跑前一行**的盘余量 | 日志里紧邻的 `df -h .` | `145G 99G 46G 69%`（46G 可用） |
+| `Running tests/` 出现几次 | `grep -c "Running tests/"` | **0** ⇒ 该腿的判据一条都没跑 |
+
+⇒ "爆盘"这一解释在这两次上**未被证明**。同时 `MemAvailable`/`SwapFree` 在读不到 ⇒
+不能反过来断言"是内存"或"是 lld 自己崩"。**根因目前仍是 open**，本轮不给它编一个名字。
+
+已落地的两件事（`381f8922`）：
+
+1. 那条最重的链接腿之前，除 `incremental` 外**再跑一次 `scripts/dev/trim-target.sh`** ——
+   它专删 `deps` 顶层无扩展名的已链接测试二进制（该脚本文件头实测：1264 个 = 55G，
+   而 `.rlib` 只 4.7G），语义上惰性、有 cargo/锁就拒绝。这是把"贴边"压下去，⛔ 不声称是根因修法。
+2. `scripts/dev/ci-resource-sampler.sh`：该步每 20 秒打一行
+   `disk_avail / ram_avail(MemAvailable) / swap_avail(SwapFree) / ld_procs`。
+   下次复现时三类成因能从**同一份日志**分开，⛔ 再花 30 分钟 rerun 去猜。
+
+⇒ **口径教训**（比这条坑本身更通用）：**换一轮就要重测一遍签名。** 一句错误文本
+配上"上次它是 X 引起的"只是**假设**；把它当结论用，就会把 A 类的修法套在 B 类上，
+既治不好，还把 B 类的证据（这里指盘余量与 ENOSPC 计数）永久埋掉。

@@ -16,10 +16,13 @@
 //! | M8 | **主总线推子**改变输出：0 dB 与 −6 dB 的样本满足 `out₋₆ = f32(out₀ × g)`（逐位） | 主总线增益不参与混音（快照字段接线断在实时侧） |
 //! | M9 | 主总线推子在**母线限制器之前**：−6 dB 把过阈值夹具拉回透明区 | 把推子移到限制器之后 |
 //! | M10 | 母线限制器的**当前压限**是一条**量规**：逐量子采样取最大值 == 全程最大量（**逐位**）；音符结束后回落；未过阈值时**逐位**为 `0.0` | 把该读数写成常数 / 从不更新 |
+//! | M11 | 引擎侧 `PanLaw` 与模型层 `yeban_model::PanLaw` **逐变体同名对应**（穷举四个，双向不合并） | 映射串到错误变体 / 两个模型变体映射到同一个引擎变体 |
 //!
 //! 判据的**实测数字**与口径表见 `docs/ledger/engine-mix-notes.md`。
 
 mod support;
+
+use yeban_engine::mixer::PanLaw;
 
 use support::{
     MixSpec, NoteSpec, empty_project, render, render_with, render_with_limiter,
@@ -611,5 +614,53 @@ fn limiter_current_reduction_is_a_gauge_that_agrees_with_the_running_maximum() {
         quiet_rendered.stats.limiter_current_reduction.to_bits(),
         0.0f32.to_bits(),
         "未过阈值时末次读数必须逐位为 +0.0"
+    );
+}
+
+/// M11：引擎侧 [`PanLaw`] 与模型层 `yeban_model::PanLaw` **逐变体同名对应**（穷举四个，双向）。
+///
+/// `src/mixer.rs` 的模块文档把这条承诺同时挂在 [`PanLaw::from_model`] 与
+/// `tests/mix_render.rs::engine_pan_law_names_match_the_model`（"穷举四个变体"）上。
+/// ⚠ 那个判据此前**不存在**：`grep -r 'fn engine_pan_law_names_match_the_model'` 为空，
+/// 且本文件当时对 `PanLaw` **零提及** ⇒ "穷举钉住"是一句没有载体的承诺。
+/// `from_model` 的穷举 `match` 只能保证**编译期不漏变体**，保证不了"名字对得上、
+/// 两个模型变体不撞到一个引擎变体"。
+#[test]
+fn engine_pan_law_names_match_the_model() {
+    let model_laws = [
+        yeban_model::PanLaw::Linear,
+        yeban_model::PanLaw::ConstantPowerMinus3dB,
+        yeban_model::PanLaw::ConstantPowerMinus4_5dB,
+        yeban_model::PanLaw::ConstantPowerMinus6dB,
+    ];
+    // R93／R100：下界 ＝ **当前**变体数。模型层新增变体时必须同步抬高本值并补映射，
+    // 不许靠"少列一个变体"让本判据变松。
+    assert_eq!(
+        model_laws.len(),
+        4,
+        "模型层 PanLaw 必须被四个变体逐一列全（现列 {} 个）",
+        model_laws.len()
+    );
+
+    let mut mapped = Vec::new();
+    for law in model_laws {
+        let engine_side = PanLaw::from_model(law);
+        assert_eq!(
+            format!("{law:?}"),
+            format!("{engine_side:?}"),
+            "模型层 {law:?} 映射到了引擎侧 {engine_side:?}：两侧变体名必须逐字相同\
+             （文档口径是'把四个变体名在引擎侧重述一遍'）"
+        );
+        assert!(
+            !mapped.contains(&engine_side),
+            "引擎侧 {engine_side:?} 被两个不同的模型变体命中 ⇒ 映射把变体合并了"
+        );
+        mapped.push(engine_side);
+    }
+    assert_eq!(
+        mapped.len(),
+        4,
+        "四个模型变体必须落到四个**不同**的引擎变体上（现落 {} 个）",
+        mapped.len()
     );
 }
