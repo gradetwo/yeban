@@ -12,6 +12,87 @@
 > `docs/ledger/phase-status.md` 的叙事条目**停在 R1144**（2026-10-26）⇒ ⭐ 读进度以
 > `DEVELOPMENT_LEDGER.md` 的尾部为准，⛔ 不要以为 R1144 之后没干活。
 
+### 0.6.0m ⭐ 尾批（2026-10-30 09:50）：**散文里点名的判据是死名册**（3 处，新常驻判据）
+
+- **缺陷（新的一格）**：`crates/yeban-mcp/src/**` 的文档是 MCP 行为的**唯一事实源**，其中 3 处
+  `` `路径::名字` `` 指路的判据**整 crate 不存在**（`fn 名字(` 搜不到）：
+  `domain/render.rs`（×2）→ 真判据是 `tests/render_master.rs::the_known_unsupported_list_is_not_decoration`；
+  `domain/lock.rs` → `a_lock_file_without_a_live_holder_is_not_occupied`；
+  `op_schema.rs` → `tools_list_publishes_one_branch_per_parser_kind`。
+  后果不是"少一条判据"，而是**那句承诺无可核**（"清单不会腐烂成装饰表"照名字找不到东西）。
+  `documented_arg_coverage` 的 `defines_fn` 只查**登记表** ⇒ **散文引用**此前零守卫。
+- **新常驻判据**：`crates/yeban-mcp/tests/doc_criterion_references_resolve.rs`
+  ——扫 `src/**` 的 `::tests::NAME` 与 `.rs::NAME` 两种指路形状（现读 **29** 处／棘轮下界 **29**；
+  扫描面 111 个 `.rs`／下界 40），逐个要求落到 `fn NAME(`；另有运行期构造的抽取器自证。
+  ⚠ 第一版只写了一种形状 ⇒ 只报 4 处、漏 25 处（其中 3 处正是死名册）⇒ 又一次"扫到 0/4 先怀疑扫描器"。
+- **判决链（全部读回）**：
+  - 线 `line/s6g-doc-refs` @ `eb5c97fa` → run **`41026593131` success**
+    （mcp 17m36s／macos 26m04s／windows 32m52s／ui-mcp 3m41s 全部真跑；全量腿 skipped）
+  - merge `485b08e3` → run **`41031304438` success**（mcp 15m20s／macos 23m31s／windows 34m23s）
+  - **读数（两轮同形）**：`Running tests/` **132** ／ `test result:` **139** ／ passed **2,452** ／
+    `FAILED` **0**；新判据在 `test` 与 `test (合并特性)` **各 1 次 ok**，其前一行就是
+    `Running tests/doc_criterion_references_resolve.rs`。
+- **落地与清理**：merge `485b08e3`（4 files, +164/−4），post-merge 自检 passed；推前 `rev-list` `0 0`；
+  `git push origin main:main`；`worktree.sh rm --purge` → 归档 `line-archive/s6g-doc-refs @ eb5c97fa`；
+  `git worktree list` ＝ **一行**。
+- **登记待核（⛔ 本轮没动：按 AGENTS.md §6.4 第 4 条，未证的语义只登记不补齐）**：
+  `domain/sfz.rs:1379/1785` 注释称"`render_sfz_wav` 与 `render_master` 的采样器音源**都走**
+  `note_wave`"，而 `render.rs` 的 `#274` 段称采样器轨已由**引擎的 SFZ 支路**发声、本工具只经
+  `survey_sampler` **计数**（`:4646` 明写 ⛔ 不渲染）—— 两句话互斥。判据面不支持任何一方
+  （`render_master` 已不报 `sfzSampleSpan`/`sfzRegionLayering`，`render_sfz_wav` 仍报）。
+  ⇒ 下一单用**音频读数**（同一份 SFZ 走两条路径比波形）判定哪侧描述是假的，⛔ 凭注释改注释。
+- **下一步**：自主可做＝**新的审计轴**（本轮这条已收口）；创作缺口仍全在人类裁决
+  （`ADR-0042` G8j／`ADR-0047`..`0050`／`ADR-0004` Q13）。台账明细见 §14。
+
+### 0.6.0l ⭐ 尾批（2026-10-30 08:15）：R115 被扫文件下界 **8 → 12**（同一类缺陷的第二个真缺陷）
+
+- **缺陷**：`crates/yeban-engine/tests/assertion_bounds_audit.rs` 的 `MIN_SOURCES = 8`，而
+  `SOURCES` 现读 **12** 条（8 个 `src/*.rs` ＋ 4 个 `tests/*.rs`，全部 `include_str!` 编译期固定）。
+  主判据是"无界 `.all(` 站点数 ≤ 基线 0"——**删掉被扫文件不会让站点数增加** ⇒ 删 4 个源
+  （例如整组 `tests/*`）后判据**仍全绿**，而 R115 的覆盖面已静默缩水一半。与 `0.6.0k` 的
+  `EFFECT_FACE.len() >= 20` **同形**：下界只防"整表掏空"，不防"按行数偷工" ⇒ 下界抬到**当前行数**。
+- **判决链（全部读回）**：
+  - 线 `line/s6f-audit-floor` @ `04212666` → run **`41016534765` success**
+    （`rust (yeban-engine)` 06:51:40→06:56:25 ＝ **4m45s**；`yeban-app` 32m07s／`yeban-mcp` 16m42s／
+    `macos` 20m29s／`windows` 38m19s 全部真跑；`rust (workspace 全量)` skipped ⛔ 当绿）
+  - merge `d6c16a30` 推主干 → run **`41020756510` success**
+    （`yeban-engine` 07:34:29→07:40:08 ＝ 5m39s；`macos` 29m09s／`windows` 35m47s／`app` 33m20s／`mcp` 16m46s 真跑）
+  - **判据读数（两轮同形，剥色后）**：`Running tests/` **43** ／ `test result:` **41** ／ passed **687** ／
+    `FAILED` **0**；`every_all_assertion_in_this_crate_is_bounded_or_allowlisted ... ok` 两 run 各 1 次
+    （线 `06:53:51`、merge `07:37:34`），且 `Running tests/assertion_bounds_audit.rs` 行在其前
+    ⇒ 确实跑到（⛔ fail-fast 后的空白）。
+- **同类清理（这一轴已扫完）**：定长数组下界 **0** 处弱；切片常量下界 **2** 处命中 ⇒ **1 真 1 假**
+  （真的＝本批；假的＝`yeban-sfz/tests/assertion_discipline.rs` 里 `x.len() >= N` 是**文档注释**里的形态说明）。
+  `yeban-midi/tests/smf_contract.rs:1602` 的 `searched: [(&str,&str); 2]` ＋ `SEARCHED_FLOOR = 2`
+  是**正确形态**（定长元数即行数，删条目必须改类型）。
+- **落地与清理**：merge `d6c16a30`（`1 file changed, 9 insertions(+), 3 deletions(-)`），post-merge 自检
+  （`cargo metadata --locked` ＋ 许可清单）passed；推前 `rev-list --left-right --count` ＝ `0 0`；
+  `git push origin main:main`（显式 refspec）；`worktree.sh rm --purge` → 归档标签
+  `line-archive/s6f-audit-floor @ 04212666`；`git worktree list` ＝ **一行**（只剩主树）。
+- **下一步**：R93 家族的"下界弱于行数"两条**都已收口**（§12 效果面、§13 本批）。⚠ 创作缺口队列仍全在
+  **人类裁决**上（`ADR-0042` G8j／`ADR-0047`..`0050`／`ADR-0004` Q13），⛔ 自行开新票。
+  台账明细见 `docs/DEVELOPMENT_LEDGER.md` §13。
+
+### 0.6.0k ⭐ 尾批（2026-10-30 06:45）：效果面**防掏空下界 20 → 29**（与缺省面同口径）
+
+- **发现的真缺陷（一条，机械面）**：`EFFECT_FACE.len() >= 20` 而表里 **29** 行 ⇒ 与 `declared == universe`
+  等值合起来，存在一种**静默挖空**：把 schema 与登记表**同时**删掉同一批键（≤9 个）时，
+  等值仍成立、下界 20 仍成立 ⇒ **判据保持绿**。缺省面早已是 `>= 29`（＝当前行数），两面口径不一致。
+  现改为 `>= 29`。
+- **判决链（全部读回，非推断）**：线 `line/s6e-effect-ratchet` @ `bdc56244` → run **`41007431612` success**
+  （`rust (yeban-mcp)` **16m39s** 真跑／`rust (yeban-ui-mcp)` success／`macos` success／`windows` success；
+  `rust (workspace 全量)` 被 planner **skipped**，⛔ 当它绿）→ merge `c5eb5739` → **merge run
+  `41012058693` success**（`rust (yeban-mcp)` **14m30s**、`macos` **27m30s**、`windows` **37m37s**、
+  `ui-mcp` **3m40s**，四条全部真跑）。
+- **判据读数**：收口判据 `every_documented_creation_key_is_registered_with_an_effect_criterion`
+  在 `test` 与 `test (合并特性)` **各 1 次 `... ok`**（线与 merge 各一轮）；merge 腿
+  `Running tests/` **130** ／ `test result:` **137** ／ **2,448** passed ／ **0** FAILED。
+- **⚠ 本轮又踩一次"计数为 0 先怀疑读法"**：首次 `grep -c "Running tests/"` 得 **0** —— 因为剥色正则只写了
+  `\x1b\[…`，而 GH dump 里是**两字符 `^[`**。换成 `(?:\x1b|\^\[)\[[0-9;]*[a-zA-Z]` 后**同一份日志 0 → 130**。
+- **活树现读**：`git worktree list` ＝ **一行**（只剩主树）；归档标签 `line-archive/s6e-effect-ratchet @ bdc56244`。
+- **下一步**：仍是 `ADR-0042`／`0047`／`0048`／`0049`／`0050`／`0004(Q13)`、`AGENTS.md:134` 措辞、
+  `master_bus_track_id`、磁盘 `#34`、27 条已并入 main 的本地 `line/*` 分支清理 —— 全部**待人类签字**。
+
 ### 0.6.0j ⭐ 尾批（2026-10-30 04:31）：创作轴的**两条登记轴都到 29＋0** ＋ 第四片两组缺省钉
 
 - **登记表三轴现读**（`crates/yeban-mcp/tests/documented_arg_coverage.rs`，已随 `4227adfc` 上主干）：
