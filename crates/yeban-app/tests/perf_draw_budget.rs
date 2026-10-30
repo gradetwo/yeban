@@ -92,10 +92,14 @@ const PROBED_FRAMES: [usize; 3] = [0, 300, 599];
 const VISIBLE_NOTES_PER_FRAME: [usize; 3] = [241, 242, 242];
 /// 卷帘两条 per-note 循环之外的固定绘制图元数。
 ///
-/// 数法：5 个工具按钮 + 5 段工具文本 + 1 段吸附状态文本 + 1 个琴键列容器 + 16 个琴键
-/// + 1 个网格容器 + 16 条横向车道 + 16 条纵向小节线 + 1 个 AI 建议块
-/// + 1 个力度泳道容器 + 1 个走带光标 = **65**。`TouchArea` 不绘制，不计。
-const FIXED_ROLL_PRIMITIVES: usize = 65;
+/// 数法：1 个卷帘根矩形 + 5 个工具按钮 + 5 段工具文本 + 1 段吸附状态文本
+/// + 1 个琴键列容器 + 16 个琴键 + 1 个网格容器 + 16 条横向车道
+/// + 16 条纵向小节线 + 1 个力度泳道容器 + 1 个走带光标 = **64**。`TouchArea` 不绘制，不计。
+///
+/// ⚠ 2026-10-30 诚实性批次：AI 建议层的静态示意块已删除（没有提案数据源
+/// ⇒ 那块"待采纳音符"是假的）⇒ 这一格 **65 → 64**；上游 `roll_primitive_formula…`
+/// 的预算等式同步 **549 → 548**。
+const FIXED_ROLL_PRIMITIVES: usize = 64;
 /// 卷帘每帧绘制图元的预算上限 = `2 × max(N) + FIXED_ROLL_PRIMITIVES`。
 const ROLL_PRIMITIVE_BUDGET: usize = 2 * 242 + FIXED_ROLL_PRIMITIVES;
 /// 运行时控件树里的 `note-*-rect` 条数（中点帧，Tier-1 软件窗口，1920×1080）。
@@ -598,15 +602,15 @@ fn viewport_clipping_pins_the_number_of_visible_notes() {
         );
     }
     assert_eq!(
-        ROLL_PRIMITIVE_BUDGET, 549,
-        "卷帘每帧绘制图元预算必须钉在 549（= 2×242 + 65）；改这个常量必须先重新测量"
+        ROLL_PRIMITIVE_BUDGET, 548,
+        "卷帘每帧绘制图元预算必须钉在 548（= 2×242 + 64）；改这个常量必须先重新测量"
     );
 }
 
 /// 卷帘 `.slint` 里 per-note 循环的条数与固定循环常量 —— 图元公式 `2N + 65` 的两个来源。
 ///
 /// 数 per-note 循环：谁给每个音符再加一个图元（第三条 `for … in root.note-ulids`），这条红。
-/// 数固定循环：`5` / `16` / `16` / `16` 一变，`FIXED_ROLL_PRIMITIVES = 65` 的依据就变了。
+/// 数固定循环：`5` / `16` / `16` / `16` 一变，`FIXED_ROLL_PRIMITIVES = 64` 的依据就变了。
 #[test]
 fn roll_primitive_formula_has_exactly_one_loop_per_note_family() {
     let source = include_str!("../ui/console/piano_roll.slint");

@@ -435,7 +435,10 @@ const DEFAULT_VIEW_MUST_HAVE: [&str; 16] = [
 ///
 /// 覆盖率判据允许少量缺失（`< MIN_SINGLETON_COVERAGE_PERCENT` 才红），因为某一块面板
 /// 被邻居裁剪掉 1px 属于 SSIM/几何口径问题；而系统性失效（树为空、整列不见）会立刻掉到 0%。
-const VISIBLE_SINGLETONS: [&str; 39] = [
+///
+/// ⚠ 2026-10-30 诚实性批次：`note-suggestion-overlay-rect` 已从 `.slint` 删除
+/// （AI 建议层没有提案数据源，静态示意块会谎报"待采纳音符"）⇒ 分母 **39 → 38**。
+const VISIBLE_SINGLETONS: [&str; 38] = [
     "ai-rail",
     "ai-rail-diagnose-button",
     "ai-rail-intent-button",
@@ -445,7 +448,6 @@ const VISIBLE_SINGLETONS: [&str; 39] = [
     "arrangement-ruler",
     "console-maximize-button",
     "console-tab-rail",
-    "note-suggestion-overlay-rect",
     "piano-roll",
     "piano-roll-grid",
     "piano-roll-keys",

@@ -279,7 +279,6 @@ const PIANO_CONTROLS: &[&str] = &[
     "piano-roll-tool-eraser-button",
     "piano-roll-status",
     "piano-roll-playhead",
-    "note-suggestion-overlay-rect",
     "note-01J8Z5Q0R7K3M9X2V4B6N8P1A2-rect",
     "note-01J8Z5Q0R7K3M9X2V4B6N8P1A3-rect",
     "note-01J8Z5Q0R7K3M9X2V4B6N8P1B0-rect",

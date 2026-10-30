@@ -884,13 +884,9 @@ impl ElementRegistry {
                 false,
             );
         }
-        registry.add(
-            "note-suggestion-overlay-rect",
-            ElementKind::ListItem,
-            "console/piano_roll.slint",
-            "AI 建议音符 (待采纳)",
-            false,
-        );
+        // ⛔ 没有 `note-suggestion-overlay-rect`：AI 建议层还没有提案数据源，
+        // `.slint` 里不再画那块静态示意（与 `musical_pr_drawer_declares_no_demo_proposals`
+        // 同一条纪律）。真落地时先有投影字段，再在两边同时登记。
         registry.add(
             "piano-roll-velocity-lane",
             ElementKind::Region,
