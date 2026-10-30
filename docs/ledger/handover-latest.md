@@ -1425,6 +1425,7 @@ python3 scripts/guards/policy_check.py && bash scripts/gates/run-gates.sh light
 | 路径 | 分支 | 处置 |
 | :--- | :--- | :--- |
 | `/home/crow/work/qoder/yeban` | `main` | 主树（⭐ 集成者工作区，⛔ 不在这里写线代码）|
+| `.worktrees/s6-key-effect-registry` | `line/s6-key-effect-registry` | ⭐ 在飞（2026-10-30 01:20 现读 `git worktree list` ＝ **两行**：主树 ＋ 本行）。S6 效果面登记表线，tip `a298aeab`／run `40983157377`；判绿 ⇒ land → 读 merge run → 按第 31 条拆除（拆除时记得把本行去掉，⛔ 留字面） |
 
 ### 5.2 已拆树**留档**（⭐ ⛔ 再写工作树路径字面 —— `check_handover_consistency.py` 把全文件里每个 `.worktrees/<名>` 都当"声明的活树"比对 `git worktree list`，第 254 条的同一条口径）
 
@@ -1435,6 +1436,7 @@ python3 scripts/guards/policy_check.py && bash scripts/gates/run-gates.sh light
 | `line/drum-style`（⭐ 工作树已拆：⭐ 已于 2026-10-28 08:16 按第 31 条**拆除**，分支 `line/drum-style` 保留） | ✅ **已落地并四件齐**（`G8l`／`drumStyle`，merge `45cce380`；线 run `40644168648` success ＋ ⭐ **merge run `40649125413` success（07:59 读回）**：`rust (workspace 全量)` 真跑 `07:17:51 → 07:58:25`（40:34）⇒ 日志 419 行 `test result: ok` / passed 6,776 / `FAILED` 0 ⇒ 四件齐读数见台账 §0.6.5 最后一行）。原状态留档（落地前的细节）：⛔ `default`、`enum` **允许** —— 界 = 公开枚举 `DrumStyle::ALL` × `name()`，⭐ 现读**两项** `"metric"` / `"four-on-the-floor"`（⚠ 别把 `GENRES` 里"13 条登记四踩"的 **13** 当成候选数，那是登记分布））：**堆叠**在 `G8k` 的 tip 上（06:02 rebase，`grep -c drum_backbeat` 在本树 `section_build.rs` = 4 ⇒ 判据点名的字段在场；⛔ 在 `G8k` 落地前合主干）。提交链 `8c82fa8e`（ADR）+`c602008f`（六条判据）+`15a7b362`（rustfmt）+**`c45653e3`（实现）**，线 Run **`40642047414` ⇒ failure**（`E0308`×2），修复批 `8d668c9c` 的 Run **`40642621197` ⇒ failure**（唯一红＝`param_bounds_guard` 的 `STRING_PARAM_BOUNDS` 未登记 `drumStyle`；⚠ fail-fast ⇒ 六条判据一条没跑，见 `AGENTS.md` §6.3 第 4 条）。⭐ 2026-10-28 06:29 已 **rebase 到主干 `9163530d`**（diff 只剩 `G8l` 的 17 文件）＋ 补登记 `("drumStyle", BoundStatus::WordList)`（表 29→30）⇒ 现 tip **`2c7b0c80`**、现 Run **`40644168648` 在飞**（读数与收尾程序见 §11 的 06:32 更新第 4／5 行）。⚠ **红在判据文件而⛔ 在接线**：三条腿（`macos`／`windows`／`rust (workspace 全量)`）的 `clippy (-D warnings)` 步各报同一条 **`E0308`×2**，位置 `tests/section_drum_style.rs:349/350`，报文 = 期望 `&BTreeMap<String, (u64,u64,u8,u8)>` 而拿到 `&BTreeMap<String, BTreeMap<String, _>>` ⇒ `voices()` 返回的是**段落→声部→音符**两层表，判据 2 的正交读数把**外层**表传给了要**内层**表的 `kick_starts`（补 `["Drums"]` 一层）。⚠ 同文件另外五处调用（`:270`/`:314`/`:315`/`:319`/`:320`）本就传内层 ⇒ **只有这两处错**，别把这条读成"整套判据的类型都错"。⚠ 另一处读数口径：本线推上去时 `全量` 腿**真的跑了**（diff 碰 `schemas/**`）⇒ 线 run 里那条腿的绿⛔ 能当四件齐用，判决仍只算这一批。接线面：`PlanOptions.drum_style: Option<&'a str>`（第 17 个字段）、`DrumRulers` 第 6 字段 `style: Option<DrumStyle>`（⭐ **已解析**的档位，⛔ `Option<&str>`）、薄包装分支条件从 `(None,None)` 扩成 `(None,None,None)`、实参 `resolved_style = rulers.style.unwrap_or(rule.drum_style)` 在**两个**调用点共用、`drum_style_choice()` 的候选⛔ 抄字符串（现场从 `DrumStyle::ALL` 生成，同时喂错误载荷的 `accepted` 与契约的 `enum`）、`mod.rs` 的 `arg_str(call,"drumStyle")`、`tools.rs` 的 `param`、schema 的 `{"type":"string","enum":[…],⛔ default}`、31 处字面量插入 `drum_style: None,`（锚在 `drum_backbeat` 那行 ⇒ ⛔ 插错位，见 §5 第 21 条的同类教训）。本机证据⛔ 覆盖类型面：`cargo fmt --check` rc=0 ＋ **`audit_struct_literals.py`：字段表 17／字面量 33 处／缺陷 0**（⚠ 该脚本 `glob("*.rs")` **不递归** ⇒ 传目录要一级一级给，`crates/yeban-mcp` 单传会数出 **0 处**，那是读数口径而⛔ 缺陷）＋ schema `json.load` 合法且 `enum == ["metric","four-on-the-floor"]`；`validate_schemas.py` 本机缺 `jsonschema` 依赖 ⇒ ⛔ 量不到，交给 CI 的 `checks` 腿；判据 `crates/yeban-mcp/tests/section_drum_style.rs`（六条实名见 `ADR-0044` 的判据节）|
 | `line/melody-seed`（⭐ 工作树已拆：⭐ 已于 2026-10-28 08:57 按第 31 条**拆除**，分支 `line/melody-seed` 保留） | ✅ **已落地**（`G8m`／`melodySeed`，`ADR-0045`，merge **`3449c78e`** 08:52 推 `origin/main`；索引行已在 `docs/adr/README.md`）＋ ⭐ **线判决 success**（run `40653587929`：`rust (workspace 全量)` 真跑 `07:59:18 → 08:44:27` = 45:09 ⇒ **420 行 `test result: ok` / passed 6,782 / `FAILED` 0**，六条判据逐名 ok）。⚠ **该 merge 自己的 run 从来没绿**（读数逐条见台账 §0.6.5「`G8m` 主干判决链」）：merge 的 run `40659910023` ⇒ **failure —— 只红 `deny`**（RUSTSEC-2026-0414，`pulldown-cmark 0.13.4`；与本批 diff 无关）；修链 `fe50c0d4` 的 run `40671580976` ⇒ **failure —— 只红 `checks`**（license inventory 漂移，`dc158801` 已修）；`dc158801` 的 run `40673418291` ⇒ success 但**空绿**（纯文档 diff ⇒ rust 腿全 skipped）。⇒ `G8m` 的**主干全量腿证据已由替代判决补上（11:38 读回）**：run **`40674825616`**（head `1fccac16`，`rust (workspace 全量)` **2,449 s** 真跑 ⇒ ⛔ 空绿；**420** 条 `test result:` / passed **6,782** / failed **0**；`section_melody_seed` 六条判据逐名 `... ok`，读数见台账「`G8m` 闭合」节）⇒ **`G8m` 四件齐闭合**。⚠ 这是**替代判决**（⛔ 该 merge 自己的 run）|
 | `line/beat-grouping`（⭐ 工作树已拆：⭐ 已于 2026-10-28 11:22 按第 31 条**拆除**，分支 `line/beat-grouping` 保留） | ✅ **已落地**（`G8n`／`beatGrouping`，`ADR-0046`，merge **`b42f4cc0`** 11:22 推 `origin/main`；索引行已随本批写入 `docs/adr/README.md`；`ADR-0046` 的「待 CI 回答的两件事」已按真读数回填）＋ ⭐ **线判决 success**（run `40674443906`：`rust (yeban-mcp)` **785 s** / 119 个 `test result:` / passed **2,352** / `FAILED` **0**；`macos` **1,602 s**、`windows` **2,069 s**、`rust (yeban-ui-mcp)` 166 s 均非 0 s ⇒ ⛔ 空绿；六条判据逐名 `... ok`，二进制 `Running tests/section_drum_grouping.rs` 在该日志里出现 **2** 次 ⇒ 第 22 条口径满足）⇒ ⭐ **merge run `40679452708` = success（12:17 读回）⇒ 四件齐闭合**：八条作业全部非 0 s（`rust (workspace 全量)` **1,921 s**／`macos` **2,937 s**／`windows` **1,883 s**；⛔ 空绿），承判腿 **421 / 6,788 / 0**，`G8n` 六条与 `G8m` 六条判据**各恰一次 `... ok`**（读数见台账「`G8n` 闭合」节；⚠ 同一个 run 也就是 `G8m` 的**替代全量腿证据**之一）。原待读回口径（留档）：碰 `crates/**` ＋ `schemas/**` ⇒ `workspace_wide: true` ⇒ 全量腿**必真跑**。原在飞细节（留档）：覆盖点 = `theory_drum_pattern` 里 `swung_styled_drum_pattern(…, None, backbeat, style)` 的**第 5 实参** `grouping`（薄包装分支同样把 `None` 换成解析结果 ⇒ 缺省路径与 `GenreRule::drum_pattern` 逐字节同）；`PlanOptions.beat_grouping` 第 **19** 字段、`beat_grouping_u8`（只做 u8 类型面）＋`beat_grouping_reject`（载荷 `{field:{key:"beatGrouping",value,beatsPerBar}}`，判官＝theory `BeatGrouping::new`）、契约 `properties.beatGrouping`（`yeban_propose_section` 现 **21** 个属性）、补位脚本动了 **35** 处锚点（⚠ 读数更正：其中 **2** 处误插进 `section_melody_seed.rs` 的定义体／`Self { … }`，已删）⇒ 主干 11:24 现读 = **33** 行 `beat_grouping: None,`（＋1 处判据传 `given.grouping`）／`PlanOptions` 字面量 **34** 处／缺陷 **0**／文本 `PlanOptions {` **36** 处（＝34 真字面量 ＋1 结构体定义 ＋1 文档示例）；⚠ 口径：**补位处数 ≠ 字面量数 ≠ 键出现行数**，三个数⛔ 互相替代（这正是 §0.6.5 第 24 条那句"某个数字报绿只覆盖它数的那件事"的同一族）。⚠ 前一轮 run `40673654327` 三腿同红 `E0573`（补位脚本把 `beat_grouping: None,` 插进了 `section_melody_seed.rs` 的结构体定义与 `Self { … }`），修复提交 `1ac8816f`，并已由新守卫 **`G19`**（台账第 24 条）机械兜住 |
+| `line/s5b-leaf-table`（⭐ 工作树已拆：2026-10-30 01:20 按第 31 条**拆除**，分支已随 `--purge` 删除并归档为标签 `line-archive/s5b-leaf-table @ 088ebe06`） | ✅ **四件齐**（S5 第二片＝判据七末端字段棘轮，`crates/yeban-model/src/ops.rs` 的 test 模块，提交链 `1689cb22` ＋ `088ebe06`）：线 tip run `40979744572` 八条腿全 `completed` —— `rust (workspace 全量)` **1,737s**／`windows` **2,252s**／`macos` **1,687s**／`checks` **90s**／`deny` **58s**／`lockfile` **23s**／`plan` **11s**（matrix 腿按构造 skipped、0s）⇒ ⛔ 空绿；本机 `cargo test -p yeban-model --lib` 现读 **252 passed / 0 failed**。冻结读数：表 **55** 行 ＝ **14** 行纯实例键 ＋ **41** 行有字段名；过滤后字段名 **36** 个去重／**53** 个段（两个单位⛔ 互换）。已 land 进 main（merge `e267eba3`，⚠ 主干那条 merge run 待读回）；其 `target` **1.6G** 随树回收 —— `/home` 现读 `198G/235G`（余 **31G**，拆树前 29G）|
 
 > ⭐ **2026-10-28 11:23 现读 `git worktree list` ＝ 磁盘上**一行**（只剩主树 `main`）：`beat-grouping` 已于 11:22 落地（merge `b42f4cc0`）并按第 31 条拆除 ⇒ 其行已移进**上表 §5.2**。本表的行数只认 `git worktree list` 的现读输出，⛔ 凭记忆补行；⚠ **下一张票开新树之前本表只有主树一行**。
 
@@ -2036,7 +2038,7 @@ python3 scripts/guards/policy_check.py && bash scripts/gates/run-gates.sh light
 ### ⭐ 2026-10-29 10:40 追加（S1 第一片已提交并 rebase 到 `origin/main`，三 run 在飞）
 
 > ⭐ **S1 第一片落地状态（2026-10-29 10:40 现读）**：
-> `.worktrees/app-device-param-landing` 的 11 个脏文件已提交（`a8c94209`，
+> 树 `app-device-param-landing`（⚠ 2026-10-30 按第 254 条去掉 `.worktrees/` 字面，留档行⛔ 带路径）的 11 个脏文件已提交（`a8c94209`，
 > `git diff --stat` 实测 +877 / −47 行），随后 `git rebase origin/main` ⇒
 > **tip `ad145fe0`、base `fe9f47ff`，零冲突**（本片只动 `yeban-{dsp,engine,app}`，
 > 与 `fe9f47ff` 的 `yeban-{mcp,theory}` ＋ `schemas/**` 面无交集）。
@@ -2132,7 +2134,7 @@ workspace_wide ⇒ 单 crate 腿逐条真跑），⛔ 别把"全量腿没跑"读
 待人类点头）。
 
 **S2 第一片已推送、判决 pending**：线 `line/s2-device-param-table`（工作树
-`.worktrees/s2-device-param-table`，base `72401d45`）。tip **`0d0383cf`**（前一批 **`8755b4e6`**
+树 `s2-device-param-table`（⚠ 同上，留档行⛔ 带路径字面），base `72401d45`）。tip **`0d0383cf`**（前一批 **`8755b4e6`**
 ＝落点表下移本体），`8755b4e6` 的 run = **`40904300940`**（15:43 起跑，`rust (yeban-dsp)` 已
 success；`render`／`engine`／`app`／`mcp`／`ui-mcp`／`macos`／`windows` 在跑）。
 ⭐ **`0d0383cf` 必须按自己的 `headSha` 读回**（只改了一处文档注释的消费方名单，但它有自己的 run）。
@@ -2373,3 +2375,46 @@ tip `0c450809`（`1 file changed, 7 insertions(+), 1 deletion(-)`），其父 `f
 ⇒ ⛔ 由 agent 自行提级，要动先由人类排期。**这条轴下一个入口＝出现新键时按同法再审。**
 
 
+## §0.9 ⭐ 最新交接（**2026-10-30 清晨·第四批**）—— 新会话先读这一节（⛔ §0.8 的判决表已过期）
+
+**主干状态**：`origin/main` 本批推送前是 `4640ee70`（S5 第一片的 land）。本批推两枚：
+`beb6b610`（台账第四批）＋ **`e267eba3`（`merge(s5b-leaf-table)`＝S5 第二片判据七落地）**。
+⚠ 这两枚**同一枚推送**（⛔ 让纯文档批单独跑一趟、再被 land 的推送取消 —— §5 第 1 条那条纪律）。
+`line/s5b-leaf-table` 已 land 并按第 31 条拆除（归档标签 `line-archive/s5b-leaf-table @ 088ebe06`），
+其 `target` **1.6G** 已回收 ⇒ `/home` 现读 `198G/235G`（余 **31G**，拆树前 29G）。
+活树现读 `git worktree list` ＝ **两行**（主树 ＋ S6 那棵，见 §5 表）。
+
+**判决表（⭐ 取代 §0.8 那张；2026-10-30 01:20 现读，逐条按 headSha）**：
+
+| 票 | run / headSha | 状态 | 下一动作 |
+| --- | --- | --- | --- |
+| S5b 线 tip | `40979744572` / `088ebe06` | ⭐ **真绿**（八腿全 completed：全量 **1,737s**／windows **2,252s**／macos **1,687s**／checks 90s／deny 58s／lockfile 23s／plan 11s；matrix 按构造 skipped 0s） | ✅ 已 land（`e267eba3`）、树已拆；⛔ 只剩**主干 merge run 自己的判决**要读回 |
+| main（本批两枚） | 待生成 / `e267eba3` | 推送后读回 `scripts/dev/ci-verdict.sh` | 承判腿是 `rust (workspace 全量)`（本 merge 碰 `crates/**`）；判绿即 S5b **四件齐**闭合，⛔ 用线 tip 的绿代替 |
+| S6 第一片 | `40977015261` / `b9b9848b` | **cancelled** ⇒ ⛔ **无判决**（同分支第二次推送取消了它的三条腿） | ⛔ 记判决、⛔ 重跑；该提交的树由 `30047eb0` 覆盖判定 |
+| S6 第二片 | `40978601723` / `30047eb0` | ⭐ **真绿**：八条非全量腿耗时 `1558/2249/242/950/11/87/21/46` s，`test result: ok` **687** 行，两条新判据在 linux＋windows 腿上**逐名 `ok`** | 已被第三片叠加在同一条线上 |
+| S6 第三片 | `40983157377` / `a298aeab` | **in_progress** | 判绿 ⇒ land → 读 merge run → 拆树（⛔ 判决读回前⛔ 再往这条线推东西，§5 第 1 条） |
+
+⭐ **创作轴（第一优先级）这条线本批开了第二条轴**：出现面（键在 `src` 里有没有声明，§0.8 已量完）之外，
+新增**效果面**登记表 `crates/yeban-mcp/tests/documented_arg_coverage.rs` 的判据
+`every_documented_creation_key_is_registered_with_an_effect_criterion` —— 键全集现读
+**29** 个（`schemas/mcp-tools.schema.json` 的 `DocumentedToolArguments.$defs`，⛔ 手抄），
+机械只钉三件事（两向集合相等／登记的判据名 `fn NAME(` 现读存在／已证与缺口两名单⛔ 重叠且非空）。
+读数演进：**27 已证 + 2 缺口**（`propose.materialSource`、`edit_notes.mergeCommitMessage`）
+⇒ 第二片补成 **29 + 0** ⇒ 第三片再补**四处缺省侧**的钉子
+（`includeDrums`／`includeMelody`／`progression`／`edit_notes.autoMerge`）。
+⚠ 词面自动认这条路实测只认出 **5 / 29**（`drumBackbeat` 的证据函数叫
+`the_backbeat_moves_only_the_snare_line`）⇒ `AGENTS.md` §6.3 第 3 条第二次被证明，语义只能人核。
+
+⭐ **本轮换来的、⛔ 记在台账就要当规则读**（细节在台账「2026-10-30（清晨·第四批）」§5）：
+① **同一分支的第二次推送会取消第一枚提交在飞的腿** ⇒ `cancelled` ⛔ 算判决，
+**读完第 N 枚的判决再推第 N+1 枚**；
+② **判据能不能表达"不给这个键"，先看夹具字段的类型** —— `section_project_generation.rs` 的
+`Given` 两位原本是 `bool`、`try_plan` 一律包成 `Some(..)` ⇒ "缺省形状"在全库一次都没被跑到过；
+③ 比"逐字节相同"要**先把随机身份剔掉**：⛔ 整份 `edit_notes` 回执比较（`proposalId` 随机、`createdAt` 取 `now_ms`），
+⛔ 直接比较 `SectionPlan`（派生 `PartialEq` 但身份字段随机 ⇒ 永不相等），只比**形状**与**音符表渲染**。
+
+**当下队列（新会话按此顺序动）**：①读回 `e267eba3`（main）与 `a298aeab`（S6 线）两 run ⇒ S5b 四件齐闭合
+⇒ land S6 → 读它的 merge run → 拆树；②S6 **第四片已开票**（台账 §8）：登记表其余 **25** 行按同一写法补**缺省侧**，
+按工具面分小批（`velocity*`／`drum*`／`onsetsPerBar` 一族、`ops`／`placement` 一族、`render_master.contributions` 单独一批）；
+③磁盘 `#34`、`ADR-0042/0047/0048/0049/0050/0004(Q13)`、`AGENTS.md:134` 那句、`master_bus_track_id` 候选、
+`human-decisions.md` 的 `HD-52/58/64..70` —— 全部**卡在人类签字**，⛔ 自主补齐。

@@ -15745,7 +15745,7 @@ merge 成一条 push。**该跑的形态**：`plan`／`checks`／`deny`／`lockf
 
 | 票 | run / headSha | 状态（01:00 现读） | 下一动作 |
 | --- | --- | --- | --- |
-| S5b 线 tip | `40979744572` / `088ebe06` | ⭐ **真绿**（01:15 现读，八条腿全 `completed`）：`rust (workspace 全量)` **1737s**、`windows` **2252s**、`macos` **1687s**、`checks` **90s**／`deny` **58s**／`lockfile` **23s**／`plan` **11s**；matrix 腿按构造 `skipped`（0s）。判据名 `op_write_differential_leaf_fields_match_frozen_table` 与 `test result: ok. 252 passed` 已在本批前一跑逐名 grep 过（⛔ 为此再下一份 8MB 日志撞次级限流） | ✅ 四件齐 ⇒ `worktree.sh land s5b-leaf-table` → 推 main（与本台账批同一枚推送，⛔ 让文档批单独跑一趟再被取消）→ 读 **merge run** → `rm --purge`（回收 `.worktrees/s5b-leaf-table/target` **1.6G**，`du -sh` 现读） |
+| S5b 线 tip | `40979744572` / `088ebe06` | ⭐ **真绿**（01:15 现读，八条腿全 `completed`）：`rust (workspace 全量)` **1737s**、`windows` **2252s**、`macos` **1687s**、`checks` **90s**／`deny` **58s**／`lockfile` **23s**／`plan` **11s**；matrix 腿按构造 `skipped`（0s）。判据名 `op_write_differential_leaf_fields_match_frozen_table` 与 `test result: ok. 252 passed` 已在本批前一跑逐名 grep 过（⛔ 为此再下一份 8MB 日志撞次级限流） | ✅ 四件齐只等**主干 merge run**：已 land（merge `e267eba3`）→ 与本台账批同一枚推送 → 读 merge run；树已 `rm --purge`（归档标签 `line-archive/s5b-leaf-table @ 088ebe06`），`target` **1.6G** 已回收（§7） |
 | S6 第一片 | `40977015261` / `b9b9848b` | **cancelled**（§5 第 1 条） | ⛔ 记判决；该提交的树已由 `30047eb0` 覆盖判定 |
 | S6 第二片 | `40978601723` / `30047eb0` | ⭐ **真绿**（§5 第 2 条三条齐全；`rust (workspace 全量)` 按构造 skipped——纯 `yeban-mcp` 测试增量） | 同线第三片已在其上叠加 |
 | S6 第三片 | `40983157377` / `a298aeab` | **in_progress** | 判绿 ⇒ land → merge run → 拆树 |
@@ -15753,9 +15753,9 @@ merge 成一条 push。**该跑的形态**：`plan`／`checks`／`deny`／`lockf
 
 ### §7 磁盘与负债读数
 
-`/home` 现读 `200G/235G`（余 **29G**）。`.worktrees/s5b-leaf-table/target` **1.6G**（`du -sh`），
-待 land 后随树回收；`#34` 的仓库外大头（19G cache／5.2G rustup／3.8G 他项目 target）仍**卡在人类裁决**，
-⛔ 自主删。
+`/home` 两读（`df -h`，单位＝GiB）：拆树前 `200G/235G`（余 **29G**）⇒ 01:20 拆 S5b 树后 `198G/235G`（余 **31G**）。
+回收的就是 `.worktrees/s5b-leaf-table/target` **1.6G**（`du -sh` 现读，随 `rm --purge` 一起走）；
+`#34` 的仓库外大头（19G cache／5.2G rustup／3.8G 他项目 target）仍**卡在人类裁决**，⛔ 自主删。
 
 ### §8 下一片（S6 第四片，按登记表自己的读数开）
 
