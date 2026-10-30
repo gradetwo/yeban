@@ -897,6 +897,15 @@ pub struct CreatedSeed {
 /// [`Domain::apply_revision`] 的推进口径写在 [`Plan::mutates_project`] 里、推进动作写在
 /// [`apply`] 里。宿主动作若绕过 `apply`，就会长出第二个"推进修订号"的地方。
 /// 因此宿主路径与工具路径在**同一处**汇合：`apply(&mut Domain, Plan)`。
+///
+/// ## `MergeProposal` / `RejectProposal` 不是第二个提案面
+///
+/// 采纳与放弃是 2026-10-30 加上的两臂（抽屉「采纳 / 放弃」接线）。它们**不**新写
+/// 合并语义：施加时构造的是工具面那**同一个** [`Plan::Merge`] / [`Plan::Reject`]
+/// （经 [`merge_plan`] / [`reject_plan`]），落到 [`apply_merge`] / [`apply_reject`]。
+/// 于是"界面采纳成功而图谱里没有那条合并提交"在结构上不可能发生，而
+/// [`crate::tools`] 的契约一位都没变 —— 这两个动作**没有**对应的对外工具入口，
+/// 工具面仍然只经 [`execute`]。
 #[derive(Debug)]
 pub enum HostAction {
     /// 撤销若干步（`Cmd+Z` / 时光机）。
@@ -923,6 +932,30 @@ pub enum HostAction {
         /// 本次提交携带的 op（**整批算一步**）。
         ops: Vec<Op>,
     },
+    /// **采纳**一条提案（抽屉的「采纳」/ `Shift+Enter`）—— `yeban_merge_proposal`
+    /// 的宿主面，不是第二份合并实现。
+    ///
+    /// 为什么它进的是同一个 [`Plan::Merge`]：合并要动 `history.dag`（多父合并提交）、
+    /// 要按提案的 `base_digest` 判冲突、要把提案状态改成 `merged`。这几件事今天
+    /// 只由 [`apply_merge`] 一处实现；界面上的按钮若自己拼一套，就会长出第二个
+    /// "什么叫做提案被采纳"。
+    MergeProposal {
+        /// 提案身份（`ProposalRow::id` 的** canonical ULID **原文；解析口径与工具面
+        /// `proposalId` 共用 [`parse_id`]，非法或不存在都响亮拒绝）。
+        proposal_id: String,
+        /// 合并提交信息；`None` ⇒ 与工具面同一缺省口径（见 [`merge_plan`]）。
+        commit_message: Option<String>,
+    },
+    /// **放弃**一条提案（抽屉的「放弃」/ `Esc`）—— `yeban_reject_proposal` 的宿主面。
+    ///
+    /// 只改记录状态（`rejected` + 时间 + 原因），**绝不**删除，也**不**产生提交
+    /// ⇒ [`Plan::mutates_project`] 对它取 `false`（与 `Plan::Reject` 同一读数）。
+    RejectProposal {
+        /// 提案身份（同上）。
+        proposal_id: String,
+        /// 拒绝原因；`None` ⇒ 与工具面同一缺省口径（见 [`reject_plan`]）。
+        reason: Option<String>,
+    },
 }
 
 /// 一次 [`HostAction`] 施加后的**结构化读数**。
@@ -931,13 +964,15 @@ pub enum HostAction {
 /// 与 [`Plan::Host`] 的响应是同一处定义的。
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HostOutcome {
-    /// **实际**走的步数（撤销可能少于请求值；提交 = 1）。
+    /// **实际**走的步数（撤销可能少于请求值；提交 = 1；采纳 = 真落了提交才 1，
+    /// 幂等命中 = 0；放弃恒 0 —— 它不产生提交）。
     pub steps: usize,
     /// 施加后已撤销的总步数（会话运行态）。
     pub undone_total: usize,
     /// 被处理的 op 变体名（`Op::name()`，顺序 = 处理顺序）。
     pub op_kinds: Vec<String>,
-    /// 提交动作的新提交身份（撤销 / 重做时为 `None`）。
+    /// 施加后**新增**的那条提交身份；撤销 / 重做 / 放弃 / 采纳的幂等命中都是 `None`
+    /// （从图谱的实际变化读出来，不是"请求里期望的那个"）。
     pub commit: Option<EntityId>,
     /// 施加后的**显示态**（模型读数；界面不许自己算）。
     pub display: undo_session::UndoDisplay,
@@ -1214,6 +1249,12 @@ impl Plan {
             Self::Host(action) => match action {
                 HostAction::Commit { ops, .. } => usize::from(!ops.is_empty()),
                 HostAction::Undo { .. } | HostAction::Redo { .. } => 0,
+                // 采纳 = 工具面的合并（一条多父合并提交）；已合并再点一次是幂等命中,
+                // 那位读数由 [`apply_merge`] 的 `alreadyMerged` 分支负责, 这里说的
+                // 是"这个动作**计划**添加几条"。
+                HostAction::MergeProposal { .. } => 1,
+                // 放弃只改提案记录, 一位提交都不加。
+                HostAction::RejectProposal { .. } => 0,
             },
             Self::Open(..)
             | Self::Save { .. }
@@ -1287,6 +1328,10 @@ impl Plan {
             Self::Host(action) => match action {
                 HostAction::Commit { ops, .. } => !ops.is_empty(),
                 HostAction::Undo { .. } | HostAction::Redo { .. } => true,
+                // 采纳把提案的 op 落到主分支上 ⇒ 工作工程真的变了（界面要重投影）。
+                HostAction::MergeProposal { .. } => true,
+                // 放弃与工具面的 `Plan::Reject` 同一读数：只动提案记录, 工作工程一位不变。
+                HostAction::RejectProposal { .. } => false,
             },
             Self::Save { .. }
             | Self::Query { .. }
@@ -1330,20 +1375,7 @@ impl Plan {
     pub fn project_after(&self, domain: &Domain) -> Result<Option<YebanProjectV1>, Fault> {
         match self {
             Self::Open(request) => Ok(Some((*request.project).clone())),
-            Self::Merge { snapshot, .. } => {
-                let current = domain.active_project().ok_or_else(no_active_project)?;
-                let mut simulated = current.clone();
-                merge_batch(snapshot, "dryRun")
-                    .apply(&mut simulated)
-                    .map_err(|failure| {
-                        Fault::domain_with_data(
-                            ErrorCode::Conflict,
-                            format!("提案无法合并到当前工程: {failure}"),
-                            serde_json::json!({ "model": format!("{failure:?}") }),
-                        )
-                    })?;
-                Ok(Some(simulated))
-            }
+            Self::Merge { snapshot, .. } => simulate_merge(domain, snapshot),
             Self::Undo { steps, .. } => {
                 let current = domain.active_project().ok_or_else(no_active_project)?;
                 undo_session::simulate_undo(domain.graph(), current, domain.undo_state(), *steps)
@@ -1439,6 +1471,14 @@ impl Plan {
                     .map_err(|failure| error::from_model("宿主动作提交模拟", &failure))?;
                     Ok(Some(simulated))
                 }
+                // 采纳的预览与工具面的 `Plan::Merge` **同一段模拟**（`simulate_merge`）;
+                // 身份解析失败 / 提案不存在 ⇒ 与真做同一个拒绝（⛔ 不报"工程不变"）。
+                HostAction::MergeProposal { proposal_id, .. } => {
+                    let (_, snapshot) = proposal_for_host(domain, proposal_id)?;
+                    simulate_merge(domain, &snapshot)
+                }
+                // 放弃一个字节都不改工程（只改提案记录）⇒ 差异预览就是"无差异"。
+                HostAction::RejectProposal { .. } => Ok(None),
             },
             Self::Save { .. }
             | Self::Close { .. }
@@ -2017,13 +2057,22 @@ fn arg_id_list(call: &ToolCall, name: &str) -> Result<Option<Vec<EntityId>>, Fau
 
 /// 读 `EntityId` 实参。
 fn arg_id(call: &ToolCall, name: &str) -> Result<EntityId, Fault> {
-    use std::str::FromStr as _;
     let text = arg_str(call, name).ok_or_else(|| {
         Fault::domain(
             ErrorCode::InvalidParameterRange,
             format!("`{name}` 必须是 26 字符 ULID 字符串"),
         )
     })?;
+    parse_id(text, name)
+}
+
+/// ULID **文本 → 身份**的唯一解析口径（工具面的实参与宿主面带来的字符串共用它）。
+///
+/// 为什么单独出来：界面上那颗按钮拿的是 `ProposalRow::id`（canonical 字符串），
+/// 如果宿主路径自己再写一遍 `EntityId::from_str` 与那句错误文案，两条路就会在
+/// "什么算一个非法身份"上漂移 —— 而这类漂移只在生产环境看得见。
+fn parse_id(text: &str, name: &str) -> Result<EntityId, Fault> {
+    use std::str::FromStr as _;
     EntityId::from_str(text).map_err(|error| {
         Fault::domain(
             ErrorCode::InvalidParameterRange,
@@ -2092,6 +2141,25 @@ fn merge_batch(proposal: &Proposal, description: &str) -> Op {
             .collect(),
         description: description.to_owned(),
     }
+}
+
+/// 合并的**差异预览**本体（克隆体上跑 `Op::apply`，⛔ 不碰真实状态）。
+///
+/// `Plan::Merge` 的预览与宿主"采纳"的预览共用这一段：两处各写一遍的话,
+/// "预览说能合、真做说冲突"就是可造的漂移。
+fn simulate_merge(domain: &Domain, snapshot: &Proposal) -> Result<Option<YebanProjectV1>, Fault> {
+    let current = domain.active_project().ok_or_else(no_active_project)?;
+    let mut simulated = current.clone();
+    merge_batch(snapshot, "dryRun")
+        .apply(&mut simulated)
+        .map_err(|failure| {
+            Fault::domain_with_data(
+                ErrorCode::Conflict,
+                format!("提案无法合并到当前工程: {failure}"),
+                serde_json::json!({ "model": format!("{failure:?}") }),
+            )
+        })?;
+    Ok(Some(simulated))
 }
 
 // ---------------------------------------------------------------------------
@@ -3108,32 +3176,68 @@ fn plan_render_master(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
 
 /// `yeban_merge_proposal`。
 fn plan_merge(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
-    let proposal_id = arg_id(call, "proposalId")?;
+    merge_plan(
+        domain,
+        arg_id(call, "proposalId")?,
+        arg_str(call, "commitMessage").map(str::to_owned),
+    )
+}
+
+/// 合并计划的**唯一**构造点：身份查找 + 缺省提交信息口径。
+///
+/// 工具面（[`plan_merge`]）与宿主面（[`apply_host_plan`] 的 `MergeProposal` 臂）共用它 ——
+/// 缺省那句 `"merge proposal {proposal_id}"` 因此只有一处（`documented_arg_coverage.rs`
+/// 的缺省轴钉的就是这一处）。
+fn merge_plan(
+    domain: &Domain,
+    proposal_id: EntityId,
+    commit_message: Option<String>,
+) -> Result<Plan, Fault> {
     let snapshot = domain
         .proposal(&proposal_id)
         .ok_or_else(|| proposal_not_found(domain, &proposal_id))?;
-    let commit_message = arg_str(call, "commitMessage")
-        .map_or_else(|| format!("merge proposal {proposal_id}"), str::to_owned);
     Ok(Plan::Merge {
         proposal_id,
-        commit_message,
+        commit_message: commit_message.unwrap_or_else(|| format!("merge proposal {proposal_id}")),
         snapshot: Box::new(snapshot.clone()),
     })
 }
 
 /// `yeban_reject_proposal`。
 fn plan_reject(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
-    let proposal_id = arg_id(call, "proposalId")?;
+    reject_plan(
+        domain,
+        arg_id(call, "proposalId")?,
+        arg_str(call, "reason").map(str::to_owned),
+    )
+}
+
+/// 拒绝计划的**唯一**构造点（缺省原因口径同样只在这里）。
+fn reject_plan(
+    domain: &Domain,
+    proposal_id: EntityId,
+    reason: Option<String>,
+) -> Result<Plan, Fault> {
     let snapshot = domain
         .proposal(&proposal_id)
         .ok_or_else(|| proposal_not_found(domain, &proposal_id))?;
-    let reason =
-        arg_str(call, "reason").map_or_else(|| String::from("(未提供原因)"), str::to_owned);
     Ok(Plan::Reject {
         proposal_id,
-        reason,
+        reason: reason.unwrap_or_else(|| String::from("(未提供原因)")),
         snapshot: Box::new(snapshot.clone()),
     })
+}
+
+/// 宿主字符串身份 → `(身份, 记录)`（**只读**；供 `apply_host_action` 的 op 名单预读）。
+///
+/// 解析走 [`parse_id`]、查找与"找不到"的载荷走 [`proposal_not_found`] —— 两者都是
+/// 工具面在用的那两个函数，界面上因此不可能出现"工具说不存在、按钮却说成功"。
+fn proposal_for_host(domain: &Domain, proposal_id: &str) -> Result<(EntityId, Proposal), Fault> {
+    let id = parse_id(proposal_id, "proposalId")?;
+    let snapshot = domain
+        .proposal(&id)
+        .ok_or_else(|| proposal_not_found(domain, &id))?;
+    Ok((id, snapshot.clone()))
 }
 
 /// `PROPOSAL_NOT_FOUND` 的载荷（带上已知提案，便于调用方自纠）。
@@ -3632,7 +3736,8 @@ pub fn apply(domain: &mut Domain, plan: Plan) -> Result<ToolResponse, Fault> {
 /// 或提交不带任何 op。
 pub fn apply_host_action(domain: &mut Domain, action: HostAction) -> Result<HostOutcome, Fault> {
     let before = domain.undo_display();
-    let committing = matches!(&action, HostAction::Commit { .. });
+    let head_before = domain.active_head();
+    let kind = HostKind::of(&action);
     let planned_op_kinds = match &action {
         HostAction::Undo { steps } => {
             undo_session::undo_op_kinds(domain.graph(), domain.undo_state(), *steps)
@@ -3657,25 +3762,83 @@ pub fn apply_host_action(domain: &mut Domain, action: HostAction) -> Result<Host
             };
             vec![batch.name()]
         }
+        // 采纳：将要施加的 op 名单**就是提案记录里那一批**（与真做同一个来源
+        // [`merge_batch`]），因此界面上的"这次合并动了什么"不可能与图谱里的不一致。
+        HostAction::MergeProposal { proposal_id, .. } => {
+            let (_, snapshot) = proposal_for_host(domain, proposal_id)?;
+            snapshot
+                .ops
+                .iter()
+                .map(|stamped| stamped.op.name())
+                .collect::<Vec<_>>()
+        }
+        // 放弃不施加任何 op（只改提案记录）。
+        HostAction::RejectProposal { .. } => Vec::new(),
     };
     // **唯一可变入口。**
     apply(domain, Plan::Host(action))?;
     let after = domain.undo_display();
+    // "这一步到底落没落"从**图谱的实际变化**里读，不从"我请求了什么"里推：
+    // 已合并的提案再点一次采纳是幂等命中（[`apply_merge`] 的 `alreadyMerged` 分支），
+    // 一位提交都不加，此时报 `steps = 1` / 一条提交身份就是假读数。
+    let landed = kind == HostKind::Merge && domain.active_head() != head_before;
     Ok(HostOutcome {
-        steps: if committing {
-            1
-        } else {
-            before.undone.abs_diff(after.undone)
+        steps: match kind {
+            HostKind::Commit => 1,
+            HostKind::Merge => usize::from(landed),
+            HostKind::Reject => 0,
+            HostKind::History => before.undone.abs_diff(after.undone),
         },
         undone_total: after.undone,
-        op_kinds: planned_op_kinds.into_iter().map(str::to_owned).collect(),
-        commit: if committing {
-            domain.active_head()
+        // 采纳的**幂等命中**一位都没施加 ⇒ "这次处理了哪些 op"必须如实为空。
+        // 预读的那一批是"将要施加的名单"，把它原样报出去就成了"动了 7 条，实际动了 0 条"
+        // —— 而 `steps` 已经是 0，两个读数互相打脸。
+        op_kinds: if kind == HostKind::Merge && !landed {
+            Vec::new()
         } else {
-            None
+            planned_op_kinds.into_iter().map(str::to_owned).collect()
+        },
+        commit: match kind {
+            HostKind::Commit => domain.active_head(),
+            HostKind::Merge => {
+                if landed {
+                    domain.active_head()
+                } else {
+                    None
+                }
+            }
+            HostKind::Reject | HostKind::History => None,
         },
         display: after,
     })
+}
+
+/// [`apply_host_action`] 施加的那一次动作属于哪一类（读数口径按类分派）。
+///
+/// 为什么要先记下它：动作本体要**移动**进 [`Plan::Host`]，而组装 [`HostOutcome`] 时
+/// 还需要知道"这是提交还是采纳"。在这里做一次分类，比在 `apply` 之后再从
+/// `ToolResponse` 的 JSON 里解析出来诚实（那条路就是界面侧解析工具响应）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum HostKind {
+    /// 撤销 / 重做（移动游标，不动图谱）。
+    History,
+    /// 提交一批 op。
+    Commit,
+    /// 采纳提案（= 工具面的合并）。
+    Merge,
+    /// 放弃提案（只改记录）。
+    Reject,
+}
+
+impl HostKind {
+    fn of(action: &HostAction) -> Self {
+        match action {
+            HostAction::Undo { .. } | HostAction::Redo { .. } => Self::History,
+            HostAction::Commit { .. } => Self::Commit,
+            HostAction::MergeProposal { .. } => Self::Merge,
+            HostAction::RejectProposal { .. } => Self::Reject,
+        }
+    }
 }
 
 /// **宿主的保存动作**（`ROAD-M4-008` 选项 (a)：单一写者会话）。
@@ -3761,6 +3924,11 @@ pub fn host_save_project(
 
 /// [`Plan::Host`] 的施加：**复用**工具路径的那两个函数（撤销 / 重做），
 /// 以及本文件里唯一的宿主动作提交实现。
+///
+/// 采纳 / 放弃**不在这里实现**：它们构造并分派到工具面同一个 `Plan`
+/// （[`merge_plan`] / [`reject_plan`] + [`apply_plan_model`]），因此
+/// "提案被采纳"这件事的语义（多父合并提交、`base_digest` 冲突判定、幂等命中、
+/// 提案状态迁移）只有一份。⛔ 界面上不许长出第二套合并。
 fn apply_host_plan(domain: &mut Domain, action: HostAction) -> Result<ToolResponse, Fault> {
     match action {
         // 与 `yeban_undo` / `yeban_redo` **同一个**施加函数、同一份响应形状。
@@ -3772,6 +3940,25 @@ fn apply_host_plan(domain: &mut Domain, action: HostAction) -> Result<ToolRespon
             message,
             ops,
         } => apply_host_commit(domain, now_ms, origin, message, ops),
+        // 与 `yeban_merge_proposal` 同一个计划构造点 + 同一个施加函数（`apply_merge`）。
+        // 提交血缘也因此相同：`OpOrigin::McpProposal`，⛔ 不是 `UserUi` ——
+        // "谁按下的按钮"与"这条提交并了谁"是两条轴，不能因为换了入口就改写前者。
+        HostAction::MergeProposal {
+            proposal_id,
+            commit_message,
+        } => {
+            let (id, _) = proposal_for_host(domain, &proposal_id)?;
+            let plan = merge_plan(domain, id, commit_message)?;
+            apply_plan_model(domain, plan)
+        }
+        HostAction::RejectProposal {
+            proposal_id,
+            reason,
+        } => {
+            let (id, _) = proposal_for_host(domain, &proposal_id)?;
+            let plan = reject_plan(domain, id, reason)?;
+            apply_plan_model(domain, plan)
+        }
     }
 }
 
@@ -3867,8 +4054,16 @@ pub fn commit_model_of(plan: &Plan) -> &'static str {
         | Plan::Redo { .. }
         | Plan::ImportAudio { .. }
         | Plan::ImportMidi(_)
-        | Plan::LoadSfz { .. }
-        | Plan::Host(_) => "direct",
+        | Plan::LoadSfz { .. } => "direct",
+        // 宿主动作里除了"放弃提案"都是当场生效；放弃与 `Plan::Reject` 同一读数
+        // （只改记录, 不产生任何提交）。
+        Plan::Host(action) => match action {
+            HostAction::RejectProposal { .. } => "none",
+            HostAction::Undo { .. }
+            | HostAction::Redo { .. }
+            | HostAction::Commit { .. }
+            | HostAction::MergeProposal { .. } => "direct",
+        },
         // 不产生任何提交：只读读数、渲染/导出到文件、容器与会话操作、硬件探针。
         Plan::Open(..)
         | Plan::Save { .. }
