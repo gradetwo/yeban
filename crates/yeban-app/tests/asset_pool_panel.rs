@@ -4,7 +4,7 @@
 //!
 //! | §4 | 断言 | 证什么 / 不证什么 |
 //! | :--- | :--- | :--- |
-//! | ① 面板存在且可无障碍访问 | `.slint` 源里的 `accessible-id: "asset-pool-panel"` 可由**源码派生**的计数（1 条行循环 / 4 个 `accessible-id:`）对上；注册表与运行时控件树两侧都有它 | 证"面板是一个可寻址的语义区域"。不证 Linux 像素（本机 macOS，无法重录基准） |
+//! | ① 面板存在且可无障碍访问 | `.slint` 源里的 `accessible-id: "asset-pool-panel"` 可由**源码派生**的计数（1 条行循环 / 5 个 `accessible-id:`）对上；注册表与运行时控件树两侧都有它 | 证"面板是一个可寻址的语义区域"。不证 Linux 像素（本机 macOS，无法重录基准） |
 //! | ② 空态可判 | 0 素材的工程（`new_project_archive()`）⇒ `asset-pool-empty` 的**逐字**标签 `尚无素材`、条目数 `素材 0 条`、行数 0 | 证"空池有明确文案，不是空白" |
 //! | ③ 录音 clip 可见 | `plan_recording` ＋ **一次** `Op::AddClip` 造出的那条 clip ⇒ 面板出现一行（逐字标签 / `素材 1 条` / `asset` 前缀） | 证"`#132` 落进来的音频片段真的被投影到界面"。不证 L5 的摆放／发声 |
 //! | ④ 派生不是硬编码 | 两个不同 WAV ⇒ `clip_pool` 2 条 ⇒ 面板 2 行；同一窗口改注入 1 条的投影 ⇒ 1 行（`row-1` 消失） | 证"行数随投影变" |
@@ -177,7 +177,7 @@ fn live_window(view: &ViewState, console_tab: i32) -> LivePort<MainWindow> {
 // ===========================================================================
 #[test]
 fn the_asset_pool_panel_is_declared_and_addressable() {
-    // ---- 源码派生（⛔ 不钉手抄条数）：行循环 1 条、`accessible-id:` 4 条 ----
+    // ---- 源码派生（⛔ 不钉手抄条数）：行循环 1 条、`accessible-id:` 5 条 ----
     let row_loops = PANEL_SOURCE
         .lines()
         .map(str::trim_start)
@@ -194,8 +194,8 @@ fn the_asset_pool_panel_is_declared_and_addressable() {
         .filter(|line| line.starts_with("accessible-id:"))
         .count();
     assert_eq!(
-        id_declarations, 4,
-        "素材池面板的 `accessible-id:` 必须恰好 4 条（panel / count / empty / row）；\
+        id_declarations, 5,
+        "素材池面板的 `accessible-id:` 必须恰好 5 条（panel / count / empty / import / row）；\
          现在 {id_declarations} 条 ⇒ 有节点没登记或被删了"
     );
 

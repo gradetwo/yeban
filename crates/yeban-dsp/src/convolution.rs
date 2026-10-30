@@ -650,6 +650,10 @@ mod tests {
         let mut silence = vec![0.0f32; CONV_BLOCK_FRAMES];
         conv.process(&mut silence);
         assert!(
+            !silence.is_empty(),
+            "夹具必须非空（否则下面那条 `.all(..)` 恒真）"
+        );
+        assert!(
             silence.iter().all(|v| *v == 0.0),
             "同长度换 IR 后静音输入有输出（上一个 IR 的尾巴泄漏了）：{:?}",
             &silence[..8]
@@ -662,6 +666,10 @@ mod tests {
         conv.set_impulse_response(&short);
         let mut silence = vec![0.0f32; CONV_BLOCK_FRAMES];
         conv.process(&mut silence);
+        assert!(
+            !silence.is_empty(),
+            "夹具必须非空（否则下面那条 `.all(..)` 恒真）"
+        );
         assert!(
             silence.iter().all(|v| *v == 0.0),
             "变长度换 IR 后静音输入有输出（上一个 IR 的尾巴泄漏了）：{:?}",
@@ -694,6 +702,10 @@ mod tests {
         conv.set_impulse_response(&pseudo_random(200, 0x7777));
         let mut block = vec![0.0f32; 8];
         assert_eq!(conv.process(&mut block), 8, "短块只处理其自身长度");
+        assert!(
+            !block.is_empty(),
+            "夹具必须非空（否则下面那条 `.all(..)` 恒真）"
+        );
         assert!(block.iter().all(|v| v.is_finite()));
     }
     // 平台感知（R135／裁决 R24-R25）：本位型比较只在本架构（冻结架构）上有意义，
@@ -805,12 +817,20 @@ mod tests {
         let ra = render(&mut a, &input, input.len());
         let rb = render(&mut b, &input, input.len());
         assert!(
+            !ra.is_empty(),
+            "夹具必须非空（否则下面那条 `.all(..)` 恒真）"
+        );
+        assert!(
             ra.iter().zip(&rb).all(|(x, y)| x.to_bits() == y.to_bits()),
             "两次渲染不是逐位相同"
         );
         // `reset()` 必须回到"刚配置完"的状态。
         a.reset();
         let ra2 = render(&mut a, &input, input.len());
+        assert!(
+            !ra.is_empty(),
+            "夹具必须非空（否则下面那条 `.all(..)` 恒真）"
+        );
         assert!(
             ra.iter().zip(&ra2).all(|(x, y)| x.to_bits() == y.to_bits()),
             "reset() 之后的重渲染不是逐位相同"
@@ -853,6 +873,14 @@ mod tests {
         conv.set_impulse_response(&ir);
         let mut after_reset = b.clone();
         conv.process(&mut after_reset);
+        assert!(
+            !after_reset.is_empty(),
+            "夹具必须非空（否则下面那条 `.all(..)` 恒真）"
+        );
+        assert!(
+            !reference.is_empty(),
+            "夹具必须非空（否则下面那条 `.all(..)` 恒真）"
+        );
         assert!(
             after_reset
                 .iter()
@@ -904,6 +932,10 @@ mod tests {
         let mut im = [0.0f32; 8];
         // 长度不是 2 的幂：直接返回。
         fft_radix2(&mut re, &mut im, &[], &[], false);
+        assert!(
+            !re.is_empty(),
+            "夹具必须非空（否则下面那条 `.all(..)` 恒真）"
+        );
         assert!(re.iter().all(|v| *v == 0.0));
         // 因子表长度不对：直接返回。
         let mut re = [1.0f32, 0.0];

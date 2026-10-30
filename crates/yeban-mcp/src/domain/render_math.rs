@@ -566,6 +566,7 @@ mod tests {
         let mut silence = vec![0.0f32; 4];
         let silence_gain = normalize_gain(peak_of(&silence), 1.0);
         scale_in_place(&mut silence, silence_gain);
+        assert_eq!(silence.len(), 4, "夹具是四个样本（否则下面那条恒真）");
         assert!(silence.iter().all(|&sample| sample == 0.0));
     }
 

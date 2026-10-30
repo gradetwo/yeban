@@ -1436,12 +1436,93 @@ fn cancel_mixer_gesture(ui: &MainWindow, gesture: &Rc<RefCell<MixerGesture>>) ->
     }
 }
 
+/// **双击复位**要写回中性的那个**字段**（推子 vs 声相）。
+///
+/// 两者的中性值都是 `0.0`（`0 dB` = unity、声相 `0.0` = 中央），但**含义不同**、
+/// 提交的 `AutomationTarget` 也不同 ⇒ 用枚举分派，⛔ 一个 `bool` 形参（调用点读起来
+/// 必须能看出复位的是哪一格）。
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum MixerResetField {
+    /// `TrackV3::volume_db` → `0 dB`。
+    Volume,
+    /// `TrackV3::pan` → 中央。
+    Pan,
+}
+
+/// **双击复位**的落点（四个 `on_mixer_*_reset` 回调共用的**唯一**实现）。
+///
+/// 前提：调用方**已经**把在手的混音手势清零（[`end_mixer_gesture`]）。这一步不能省，
+/// 也不能挪到这里之后 —— 带着没收尾的手势去提交，提交引发的重投影会重建 repeater
+/// 条目、把正在拖的 `TouchArea` 连同指针抓取一起丢掉，`mixer-drag-active` 就黏在 `true`
+/// （实测记录见 [`reproject_track_heights`] 的文档）。
+///
+/// 与拖动路径的三处刻意区别：
+/// 1. **值的来源是权威工程**（[`mixer_track_state`]），不是视图态，也不是界面上的
+///    一份"默认值"常量 ⇒ `old_val` 必然与控制面比对的那一份逐位相同；
+/// 2. **一次点击 = 一次提交**（没有中间态，与静音 / 独奏同形）；
+/// 3. **已经是中性值 ⇒ 什么都不做**：提交一条 `old == new` 的 `Op` 会在撤销树上留下
+///    一步什么都没改的历史（与 [`wire_mixer_sampler`] 里"值没变时不提交"同一条理由）。
+///
+/// 落点仍是同一条 `Op` 对：`Op::SetParam { AutomationTarget::TrackVolume | TrackPan }`
+/// ⇒ 双击与拖动写进的是**同一格工程内容**、同一条撤销栈。
+fn commit_mixer_reset(
+    ui: &MainWindow,
+    port: &UndoPort,
+    target: &MixerTarget,
+    field: MixerResetField,
+) {
+    let track_id = match target {
+        MixerTarget::Track { track_id, .. } | MixerTarget::Master { track_id } => track_id.clone(),
+    };
+    let Some(state) = mixer_track_state(port, &track_id) else {
+        // 工程被换掉 / 控制面没开 ⇒ 不猜当前值，什么都不做。
+        return;
+    };
+    let Ok(id) = track_id.parse::<yeban_model::EntityId>() else {
+        return;
+    };
+    let (current, automation_target, field_name) = match field {
+        MixerResetField::Volume => (
+            state.volume_db,
+            yeban_model::AutomationTarget::TrackVolume { track_id: id },
+            "volume",
+        ),
+        MixerResetField::Pan => (
+            state.pan,
+            yeban_model::AutomationTarget::TrackPan { track_id: id },
+            "pan",
+        ),
+    };
+    // 位比较（与拖动的收尾同一口径）：`f32: PartialEq` 会把 `-0.0 == 0.0` 判真，
+    // 而这里要的是"一个字节都没变"—— `-0.0` 不是中性值，双击应该把它改回 `0.0`。
+    if current.to_bits() == 0.0_f32.to_bits() {
+        return;
+    }
+    let owner = match target {
+        MixerTarget::Track { .. } => "track",
+        MixerTarget::Master { .. } => "master",
+    };
+    let label = format!("mixer: reset {owner} {field_name}");
+    let op = yeban_model::Op::SetParam {
+        target: automation_target,
+        old_val: current,
+        new_val: 0.0,
+    };
+    if port.commit_ops(now_ms(), &label, vec![op]).is_err() {
+        eprintln!("[yeban-app] 双击复位提交被拒绝（工程未改）");
+        return;
+    }
+    refresh_undo_window(ui, port, true);
+}
+
 /// **混音台写入面的接线**（唯一实现；`main.rs` 与 `live_surface` 调的是同一个函数）。
 ///
-/// 十四个入口分三类：
+/// 入口分四类：
 /// - **通道条手势**（推子竖直 / 声相水平）：按下记起点 → 移动只写视图态 → 松手提交**一次**；
 /// - **主控手势**（`mixer-master-fader-*` / `mixer-master-pan-*`）：与通道条逐条同形，
 ///   区别只有寻址方式（身份，见 [`MixerTarget`]）与视图态的落点（标量属性）；
+/// - **双击复位**（`mixer-*-reset` / `mixer-master-*-reset`）：一次点击提交**一次**
+///   （落点 [`commit_mixer_reset`]），并且**先**清掉在手的手势；
 /// - **开关**（静音 / 独奏）：点击即提交**一次**（没有中间态）。
 ///
 /// 提交失败（控制面拒绝、工程被关掉）⇒ **什么都不回写**并打一行 stderr：
@@ -1955,6 +2036,108 @@ pub fn wire_mixer_edit(ui: &MainWindow, port: &Rc<UndoPort>) {
                 return;
             }
             refresh_undo_window(&ui, &port, true);
+        }
+    });
+
+    // ---------------------------------------------------------------- 双击复位
+    //
+    // `.slint` 只报"哪一个下标"（主控那两条连下标都没有），中性值的换算与提交全在这里
+    // （[`commit_mixer_reset`] 是唯一落点）。四条臂**都先** [`end_mixer_gesture`]。
+    //
+    // ⚠ 为什么必须先清零：一次真实双击 = 两下 `Press`/`Release`，第二下的 `Press` 会先把
+    // 一份 `moved == false` 的记录放进宿主。若带着它在手就提交，提交引发的重投影会重建
+    // repeater 条目、把正在拖的 `TouchArea` 连同指针抓取一起丢掉 ⇒ `mixer-drag-active`
+    // 黏在 `true`（实测记录见 [`reproject_track_heights`] 的文档）。
+    //
+    // 这一处理对**两种**内部顺序都成立（判据 `a_double_click_reset_leaves_no_sticky_gesture`
+    // 把两种交错都跑一遍）：
+    //   - `grab → double-clicked → release`：清零 ⇒ 随后的 `release` 读到 `Idle`，不提交；
+    //   - `double-clicked → grab → release`：新记录 `moved == false` ⇒ 收尾同样不提交。
+    // 两条路都只留下**一步**撤销（那一次复位），不会出现"空操作的一步"。
+    ui.on_mixer_fader_reset({
+        let weak = weak.clone();
+        let gesture = Rc::clone(&gesture);
+        let port = Rc::clone(port);
+        move |index| {
+            let Some(ui) = weak.upgrade() else {
+                debug_assert!(false, "MainWindow 在回调执行期间被销毁");
+                return;
+            };
+            end_mixer_gesture(&ui, &gesture);
+            let Some(track_id) = track_id_at(&ui, index) else {
+                return;
+            };
+            commit_mixer_reset(
+                &ui,
+                &port,
+                &MixerTarget::Track { index, track_id },
+                MixerResetField::Volume,
+            );
+        }
+    });
+    ui.on_mixer_pan_reset({
+        let weak = weak.clone();
+        let gesture = Rc::clone(&gesture);
+        let port = Rc::clone(port);
+        move |index| {
+            let Some(ui) = weak.upgrade() else {
+                debug_assert!(false, "MainWindow 在回调执行期间被销毁");
+                return;
+            };
+            end_mixer_gesture(&ui, &gesture);
+            let Some(track_id) = track_id_at(&ui, index) else {
+                return;
+            };
+            commit_mixer_reset(
+                &ui,
+                &port,
+                &MixerTarget::Track { index, track_id },
+                MixerResetField::Pan,
+            );
+        }
+    });
+    // 主控那两条：与上面两条同形，只是身份来自权威工程（`master_bus_track_id`）而非下标。
+    ui.on_mixer_master_fader_reset({
+        let weak = weak.clone();
+        let gesture = Rc::clone(&gesture);
+        let port = Rc::clone(port);
+        move || {
+            let Some(ui) = weak.upgrade() else {
+                debug_assert!(false, "MainWindow 在回调执行期间被销毁");
+                return;
+            };
+            end_mixer_gesture(&ui, &gesture);
+            let Some(track_id) = master_track_id(&port) else {
+                // 工程没有主总线 ⇒ 不猜身份（与主控 `grab` 同款：不留手势、不提交）。
+                return;
+            };
+            commit_mixer_reset(
+                &ui,
+                &port,
+                &MixerTarget::Master { track_id },
+                MixerResetField::Volume,
+            );
+        }
+    });
+    ui.on_mixer_master_pan_reset({
+        let weak = weak.clone();
+        let gesture = Rc::clone(&gesture);
+        let port = Rc::clone(port);
+        move || {
+            let Some(ui) = weak.upgrade() else {
+                debug_assert!(false, "MainWindow 在回调执行期间被销毁");
+                return;
+            };
+            end_mixer_gesture(&ui, &gesture);
+            let Some(track_id) = master_track_id(&port) else {
+                return;
+            };
+            commit_mixer_reset(
+                &ui,
+                &port,
+                &MixerTarget::Master { track_id },
+                MixerResetField::Pan,
+            );
         }
     });
 
@@ -4294,7 +4477,7 @@ pub enum EnginePublishOutcome<'a> {
 /// | 通道 | 写者 | 数据源 | 目标属性 |
 /// | :--- | :--- | :--- | :--- |
 /// | 电平 | [`pump_meters`] → [`apply_meters`] | `MeterRuntime`（引擎 SPSC 消费端） | `track-meter-*` |
-/// | 走带 | [`apply_transport`] | `EngineHost::transport()`（RT→UI 原子镜面） | `playing` / `timecode` |
+/// | 走带 | [`apply_transport`] | `EngineHost::transport()`（RT→UI 原子镜面） | `playing` / `timecode` / `playhead-ticks` |
 /// | 保存 | [`apply_save_outcome`] | `save_action::SaveOutcome` | `save-status` / `save-succeeded` |
 /// | ⭐ **发布失败** | ⭐ **本函数** | ⭐ `EngineHost::publish_project` 的 `Err` | ⭐ `engine-error` |
 ///
@@ -4673,15 +4856,20 @@ pub fn pump_meters(ui: &MainWindow, meters: &mut MeterRuntime, view: &ViewState)
     MeterPump::Applied(snapshot)
 }
 
-/// 把**引擎的**走带读数注入界面（`playing` 显示态 + 时间码）。
+/// 把**引擎的**走带读数注入界面（`playing` 显示态 + 时间码 + 走带光标位置）。
 ///
 /// 这是全仓库**唯一**写 `playing` 的地方 —— 界面的 `toggle-play` 处理器**不再自己翻转**
 /// 那个属性（上一版 `app.slint` 里的 `root.playing = !root.playing;` 是"UI 自造状态"，
 /// 会让"显示"与"引擎"各说各话）。数据流因此是单向的：
 ///
 /// ```text
-/// TransportMirror(原子读数) --(host::apply_transport)--> MainWindow.playing / .timecode
+/// TransportMirror(原子读数) --(host::apply_transport)--> MainWindow.playing / .timecode / .playhead-ticks
 /// ```
+///
+/// ⭐ `playhead-ticks` 也在这里写（与 `timecode` 同一次读数）：编曲 / 卷帘两条走带光标
+/// 由 `.slint` 用 `tick ÷ ticks_per_pixel` 派生 x（与投影里音符 / 小节线同一条整数除法）。
+/// 旧版两条 playhead 的 x 是写死的假位置（`168px + 120px * 3` / `56px + 60px * 3`，
+/// 无障碍值是 `"3"`）—— 于是"按了播放、光标不动"。⛔ 界面不再持有第二个位置。
 ///
 /// `timecode` 用的是引擎读数（[`TransportReading::position_ticks`]）**配上投影的拍号网格**：
 /// 位置来自引擎，单拍 / 单小节的 tick 数来自工程投影（[`ViewState::timecode_grid`]，
@@ -4713,6 +4901,10 @@ pub fn apply_transport(ui: &MainWindow, reading: TransportReading) {
     ui.set_playing(reading.state.is_running());
     let grid = timecode_grid_of(ui);
     ui.set_timecode(crate::bridge::timecode_for_ticks(grid, reading.position_ticks).into());
+    // 走带光标（编曲 / 卷帘两条）的唯一写点：位置 = 引擎读数，x 由 `.slint` 用
+    // 投影同口径的 `tick ÷ ticks_per_pixel` 派生。超 i32 的 tick（≈ 10 小时以上）钳到
+    // `i32::MAX` —— 界面的 x 会在视口外被裁剪，但绝不回绕到左边。
+    ui.set_playhead_ticks(i32::try_from(reading.position_ticks).unwrap_or(i32::MAX));
 }
 
 /// 从窗口上**投影注入的**两个整数重建时间码网格（唯一读点）。
@@ -4930,6 +5122,56 @@ pub fn wire_transport(
             apply_transport(&ui, reading);
         } else {
             debug_assert!(false, "MainWindow 在回调执行期间被销毁");
+        }
+    });
+
+    // ⭐ **节拍器开关**（`[ARCH-RT-001]` 的界面侧）：`ui/transport.slint` 的
+    // `transport-metronome-button` 与 `Cmd/Ctrl+Alt+N` 走**同一个落点**
+    // （[`apply_engine_command`]），`metronome-on` 也只有一个写者 —— 这里与
+    // [`apply_action`] 的同一个臂。
+    //
+    // ## 初始值
+    //
+    // 装配期从工程文档读一次（`transport.metronome_enabled`）；此后由两个入口维护。
+    // ⛔ 不由 `apply_view` 写：撤销 / 重投影会把镜面打回文档的旧值，让界面与引擎分叉。
+    //
+    // ## 为什么"下一个值"来自界面属性（而不是 `context.project`）
+    //
+    // 拨动今天**不写文档**（`Op::SetTransportConfig` 的提交通道未接线）⇒ 文档字段
+    // 恒为装配期初值。若从它算，第二次点击会再次算出 `true`（开关关不掉）。
+    if let Some(project) = project.as_ref() {
+        ui.set_metronome_on(project.transport.metronome_enabled);
+    }
+    let metronome_engine = Rc::clone(&engine);
+    let metronome_project = project.as_ref().map(Rc::clone);
+    let metronome_ui = slint::ComponentHandle::as_weak(ui);
+    ui.on_toggle_metronome(move || {
+        let Some(ui) = metronome_ui.upgrade() else {
+            debug_assert!(false, "MainWindow 在回调执行期间被销毁");
+            return;
+        };
+        let Some(project) = metronome_project.as_ref() else {
+            eprintln!("[yeban-app] 忽略 toggle-metronome：装配层没有工程 ⇒ 本次按键无效");
+            return;
+        };
+        // `#212` 同款边界兜底：借不到就降级（⛔ 不 panic、⛔ 不假装切换过）。
+        let Ok(mut engine) = metronome_engine.try_borrow_mut() else {
+            eprintln!(
+                "[yeban-app] 忽略 toggle-metronome：引擎正被同一线程借用（重入）⇒ 本次按键无效"
+            );
+            return;
+        };
+        let current = ui.get_metronome_on();
+        let mut context = EngineCommandContext {
+            host: &mut engine,
+            project: project.as_ref(),
+            metronome_on: Some(current),
+        };
+        let applied = apply_engine_command(&mut context, Action::ToggleMetronome);
+        // ⭐ 先放借、再写界面（与 `on_toggle_play` 同款作用域纪律）。
+        drop(engine);
+        if applied {
+            ui.set_metronome_on(!current);
         }
     });
 
@@ -5239,6 +5481,11 @@ fn apply_record_outcome(ui: &MainWindow, error: Option<String>) {
 const SIDEBAR_CATEGORY_COUNT: i32 = 3;
 const SIDEBAR_ITEM_COUNT: i32 = 8;
 
+/// splitter 拖拽档位（`console-height-px`）的硬限 —— `[UI-GRID-002]`（规范 §1.1
+/// "splitter 220–600"）。`0` 是"未拖拽"哨兵（布局回到 3:2 弹性比），⛔ 不是可钳的值。
+const CONSOLE_HEIGHT_MIN_PX: i32 = 220;
+const CONSOLE_HEIGHT_MAX_PX: i32 = 600;
+
 /// 把**纯视图态**的界面回调接到宿主上（`ADR-0004` 同款口径：视图态、零 schema、重启即失）。
 ///
 /// | 回调 | 唯一写的属性 | 界面侧的可观察后果 |
@@ -5249,6 +5496,8 @@ const SIDEBAR_ITEM_COUNT: i32 = 8;
 /// | `open-musical-pr` | `musical-pr-open` **＋六个提案属性** | **不在本函数**：见 [`wire_proposal_drawer`] —— 它打开抽屉，并从唯一可变权威现读未合并提案清单注入 |
 /// | `select-sidebar-category` | `sidebar-category` | 三个分类标签的选中态（背景 / 文字色 / `accessible-item-selected`） |
 /// | `console-maximize-toggle` | `console-maximized` | 控制台面板高度（`vertical-stretch`）与 ⤢ 的 `accessible-checked`；与 `Action::ToggleConsoleMaximize` 同属性 |
+/// | `console-height-requested` | `console-height-px` | 先钳到 `220..=600`（`UI-GRID-002` 硬限）再写；`.slint` 的 `states [console-pinned]` 据此把控制台高度钉死在该值 |
+/// | `console-height-reset` | `console-height-px` | 写 `0`（"未拖拽"哨兵）⇒ state 退出、布局回到 3:2 弹性比 |
 /// | `select-sidebar-item` | `sidebar-item` | 八个资源条目的选中态（背景 / 文字色 / `accessible-item-selected`） |
 /// | `back-to-arrangement` | `arrangement-view` | Session 视图「→ 编曲」按钮：写 `true` 切回编曲视图（⛔ 不是翻转；播放权回归的引擎侧语义未实现，见 `session_view.slint` 头注） |
 /// | `clip-select` | `selected-clip-ulid` | 编曲视图剪辑包头（`clip-{ulid}-header`）的选中态：包头 2px `selection` 描边 + `accessible-item-selected`（身份比较） |
@@ -5264,7 +5513,7 @@ const SIDEBAR_ITEM_COUNT: i32 = 8;
 /// 写的就是这两个属性（`ui/switch_main_view` 也写同一个）。若 `.slint` 的转发块自己再翻转
 /// 一次，同一个动作就有两个真相源；而"界面**不**自己翻转状态"正是 `playing` 那条已经
 /// 付过学费的契约（`ui/app.slint` 的 `toggle-play` 注释、`docs/ledger/feature-alignment.md`
-/// 错位 7）。因此本函数是这八条回调的**唯一**落点，组件里只剩"原样转发"。
+/// 错位 7）。因此本函数是这十条回调的**唯一**落点，组件里只剩"原样转发"。
 ///
 /// ## 为什么这不是"假接线"
 ///
@@ -5272,7 +5521,7 @@ const SIDEBAR_ITEM_COUNT: i32 = 8;
 /// 这与 [`set_track_height_override`] 是同一档东西（`ADR-0004` S1 / Q4-A）——
 /// 视图态本来就可以由宿主拥有，因此没有绕过 `ADR-0005` 的领域权威（那条约束的是**工程内容**）。
 ///
-/// 八条都只用"打开时那个窗口" ⇒ 共用一份 [`slint::Weak`]：强引用若被闭包自己持有，
+/// 这些回调都只用"打开时那个窗口" ⇒ 共用一份 [`slint::Weak`]：强引用若被闭包自己持有，
 /// 就形成 `MainWindow → 回调 → MainWindow` 的自环（窗口永不解构）。
 ///
 /// `close`（关抽屉）**不在这里**：`.slint` 的 `close =>` 没有对应的 Rust 回调，
@@ -5320,6 +5569,30 @@ pub fn wire_view_callbacks(ui: &MainWindow) {
                 return;
             };
             ui.set_console_maximized(!ui.get_console_maximized());
+        }
+    });
+    // ⭐ 拖 splitter：界面按"实测高 + 指针位移"报目标高度（px），**钳位与写属性都在这里**
+    // （唯一写者）。越界请求落在边界上（`220..=600` = `UI-GRID-002` 的硬限）；`0` 是
+    // "未拖拽"哨兵，只有 `console-height-reset` 写它。
+    ui.on_console_height_requested({
+        let weak = weak.clone();
+        move |px| {
+            let Some(ui) = weak.upgrade() else {
+                debug_assert!(false, "MainWindow 在回调执行期间被销毁");
+                return;
+            };
+            ui.set_console_height_px(px.clamp(CONSOLE_HEIGHT_MIN_PX, CONSOLE_HEIGHT_MAX_PX));
+        }
+    });
+    // ⭐ 双击 splitter：清零 ⇒ `states [console-pinned]` 退出、布局回到 3:2 弹性比。
+    ui.on_console_height_reset({
+        let weak = weak.clone();
+        move || {
+            let Some(ui) = weak.upgrade() else {
+                debug_assert!(false, "MainWindow 在回调执行期间被销毁");
+                return;
+            };
+            ui.set_console_height_px(0);
         }
     });
     // `open-musical-pr` **不在本函数里**：它现在既要写 `musical-pr-open`，又要从唯一
@@ -5720,6 +5993,7 @@ pub fn wire_keys(
                             let mut context = EngineCommandContext {
                                 host: &mut host,
                                 project: project.as_ref(),
+                                metronome_on: None,
                             };
                             apply_action(&ui, undo.as_ref(), Some(&mut context), action)
                         }
@@ -6409,6 +6683,106 @@ pub fn wire_new_project(
         };
         apply_module_receipt(&ui, &receipt, ok);
         module_trace("new-project", started, &receipt);
+    });
+}
+
+/// ⭐ **运行期「导入音频」的唯一接线**：`.slint` 的 `import-audio` 回调（素材池面板
+/// `asset-pool-import-button`）⇒ 文件对话框 ⇒ [`crate::import_audio::import_audio_file`]
+/// ⇒ 资产字节登记进**会话池** ⇒ 重投影 ⇒ **既有**的 `module-status` 回执通道。
+///
+/// ## 三条承重的顺序
+///
+/// 1. **取消不是失败**：`choose_open` 回 `None` ⇒ **什么都不做**（⛔ 不写回执、⛔ 不动工程），
+///    与 [`wire_open_project`] / [`wire_save`] 的口径**逐字相同**。
+/// 2. **导入 = 一次可撤销的提交**：`import_audio_file` 走 `UndoPort::commit_ops_with_origin`
+///    （来源 `OpOrigin::Import`）⇒ 深度 +1；幂等命中（池里已有同内容条目）**不发**提交，
+///    回执里 `created=false` / `commit=<none>` 如实报出。
+/// 3. **资产字节必须进会话池**：`import_audio_file` 的文档点名"调用方必须登记
+///    [`crate::import_audio::AudioImportReport::bytes`]"，否则工程文档指向的字节不在容器里、
+///    保存会**结构性**丢资产。落点是 `UndoPort::insert_asset`（内容寻址；重复哈希不重复登记）。
+///
+/// ## 为什么重投影在写回执**之前**
+///
+/// `refresh_undo_window` 会把运行期回执清空（`instrument_install_status`），且重投影会把
+/// 素材池行换成导入后的那一份。先刷新、后写回执 ⇒ 用户看到的回执描述的就是**这一帧**。
+pub fn wire_import_audio(
+    ui: &MainWindow,
+    port: Rc<UndoPort>,
+    picker: Rc<dyn crate::file_picker::FilePicker>,
+) {
+    let weak = ui.as_weak();
+    ui.on_import_audio(move || {
+        let Some(ui) = weak.upgrade() else {
+            debug_assert!(false, "MainWindow 在回调执行期间被销毁");
+            return;
+        };
+        let started = std::time::Instant::now();
+        // ① 问一次对话框（后缀过滤只列 WAV：`import_audio` 只认 PCM/float WAV）。
+        let request = crate::file_picker::PickerRequest::open("导入音频").with_extensions(["wav"]);
+        // ⚠ 取消 ⇒ 一位不动（⛔ 不把"我不想"写成一条错误）。
+        let Some(path) = picker.choose_open(&request) else {
+            return;
+        };
+        // ② 权威会话必须有一份活跃工程（与撤销 / 重投影同一条不变式）。
+        let Some(project) = port.try_project() else {
+            let receipt = module_receipt(
+                "import-audio",
+                &module_error_fields(
+                    "no-project",
+                    "权威会话此刻没有活跃工程 ⇒ 拒绝导入（⛔ 不静默吞掉）",
+                ),
+            );
+            apply_module_receipt(&ui, &receipt, false);
+            module_trace("import-audio", started, &receipt);
+            return;
+        };
+        // ③ 导入 = 规划 + 一次带来源的提交（唯一实现，与 CLI `--import-audio` 同一个函数）。
+        let (receipt, ok) = match crate::import_audio::import_audio_file(
+            &port,
+            &path,
+            &project,
+            &crate::import_audio::AudioImportOptions::default(),
+            now_ms(),
+        ) {
+            Ok(report) => {
+                // ④ 资产字节登记进会话池（保存时经 `UndoPort::assets()` 写 `assets/{sha256}`）。
+                let asset_registered =
+                    port.insert_asset(report.asset.clone(), report.bytes.clone());
+                let fields = vec![
+                    "outcome=ok".to_owned(),
+                    format!("path={}", report.path.display()),
+                    format!("name={}", report.name),
+                    format!("asset={}", report.asset),
+                    format!("frames={}", report.facts.frames),
+                    format!("rate={}", report.facts.sample_rate),
+                    format!("channels={}", report.facts.channels),
+                    format!("bits={}", report.facts.bits_per_sample),
+                    format!("float={}", report.facts.is_float),
+                    format!("asset_bytes={}", report.bytes.len()),
+                    format!("clip={}", report.clip_id.to_canonical_string()),
+                    format!("created={}", report.created),
+                    format!(
+                        "commit={}",
+                        report
+                            .commit
+                            .map_or_else(|| "<none>".to_owned(), |id| id.to_canonical_string())
+                    ),
+                    // 回读：`false` 只说明池里已有同哈希（幂等命中），不是失败。
+                    format!("asset_registered={asset_registered}"),
+                ];
+                refresh_undo_window(&ui, &port, true);
+                (module_receipt("import-audio", &fields), true)
+            }
+            Err(error) => (
+                module_receipt(
+                    "import-audio",
+                    &module_error_fields("import-audio", &error.to_string()),
+                ),
+                false,
+            ),
+        };
+        apply_module_receipt(&ui, &receipt, ok);
+        module_trace("import-audio", started, &receipt);
     });
 }
 
@@ -8022,6 +8396,16 @@ pub struct EngineCommandContext<'a> {
     pub host: &'a mut EngineHost,
     /// **当前工程**（动作要基于它算"下一个值"）。
     pub project: &'a YebanProjectV1,
+    /// ⭐ **节拍器开关的运行态镜面**（界面路径注入；`None` ⇒ 退回落文档字段）。
+    ///
+    /// ## 为什么需要它（而不是永远读文档）
+    ///
+    /// `transport.metronome_enabled` 住在**持久化文档**里，而今天拨动开关**不写文档**
+    /// （文档级提交要走 `Op::SetTransportConfig`，那条通道尚未接线）。若"下一个值"
+    /// 永远从文档算，第二次按键/点击会再次算出 `true` ⇒ **开关关不掉**。
+    /// 界面路径把 `MainWindow.metronome-on`（唯一运行态镜面）注进来，
+    /// 于是 `Cmd/Ctrl+Alt+N` 与节拍器按钮**同一个落点、同一个取值依据**。
+    pub metronome_on: Option<bool>,
 }
 
 /// ⭐ **"要动引擎"的动作的落点**（⭐ **不依赖界面** ⇒ 判据可无窗口地测它）。
@@ -8038,10 +8422,12 @@ pub struct EngineCommandContext<'a> {
 /// ⛔ 不 panic（引擎拒绝 ⇒ 返回 `false`）。
 pub fn apply_engine_command(context: &mut EngineCommandContext<'_>, action: Action) -> bool {
     match action {
-        // 拨**节拍器**开关：取反当前值。
+        // 拨**节拍器**开关：取反当前值（界面路径给的是运行态镜面；纯判据路径落回文档字段）。
         Action::ToggleMetronome => {
-            let next = !context.project.transport.metronome_enabled;
-            crate::metronome::set_enabled(context.host, context.project, next).is_ok()
+            let current = context
+                .metronome_on
+                .unwrap_or(context.project.transport.metronome_enabled);
+            crate::metronome::set_enabled(context.host, context.project, !current).is_ok()
         }
         // 拨**预备拍**：`count_in_bars` 0 ⇄ 1。
         Action::ToggleCountIn => {
@@ -8080,6 +8466,8 @@ pub(crate) fn apply_action_for_criteria(
     let mut context = EngineCommandContext {
         host: engine,
         project,
+        // ⭐ 纯判据路径没有界面 ⇒ "下一个值"落回文档字段（行为与接线前逐位相同）。
+        metronome_on: None,
     };
     // ⭐ ⚠ **必须走与产品同一处落点**（`apply_engine_command`），⛔ 不是另写一条测试旁路；
     // 界面参数**不参与**（那类臂不碰界面）⇒ 判据无需 Tier-1 窗口。
@@ -8100,8 +8488,23 @@ fn apply_action(
         // ⇒ 走 `metronome::set_enabled` 的"先停 ⇒ 换 ⇒ 恢复位置与状态"。
         // ⚠ 引擎/工程不在手（`context == None`）⇒ ⛔ 不消费（照旧放行，⛔ 不假装成功）。
         Action::ToggleMetronome | Action::ToggleCountIn => {
-            let Some(context) = context else { return false };
-            apply_engine_command(context, action)
+            let Some(context) = context else {
+                return false;
+            };
+            if matches!(action, Action::ToggleCountIn) {
+                return apply_engine_command(context, action);
+            }
+            // ⭐ `Action::ToggleMetronome`：**运行态镜面**是"下一个值"的唯一依据
+            // （文档字段只是装配期的初值；拨动本身不写文档）。
+            let current = ui.get_metronome_on();
+            context.metronome_on = Some(current);
+            let applied = apply_engine_command(context, action);
+            if applied {
+                // ⚠ 这里是**属性写入**，不是回调：同线程绑定重算，⛔ 不重入引擎
+                // （`#212` 禁的是持借期间 `ui.invoke_*`）。
+                ui.set_metronome_on(!current);
+            }
+            applied
         }
         // `[UI-NOTE-003]` 工具选择：数字键 → 矩阵行号 → `active-tool`（**单一数字口径**）。
         // 撤销端口在场时同时记一条动作日志（`UiAction::SelectTool` 只报显示态、不改工程）。
@@ -8552,7 +8955,19 @@ fn zoom_action(ui: &MainWindow, port: &UndoPort, action: Action) -> bool {
 pub fn apply_undo(ui: &MainWindow, port: &UndoPort) {
     let display = port.display();
     let clamp = |value: usize| i32::try_from(value).unwrap_or(i32::MAX);
-    ui.set_undo_tree_open(port.undo_tree_open());
+    let open = port.undo_tree_open();
+    let was_open = ui.get_undo_tree_open();
+    ui.set_undo_tree_open(open);
+    // 焦点闭环在**开关翻转的那一次**同步取值：`.slint` 的 `changed` 处理器要等
+    // 事件循环下一拍才跑，而无头判据（`tests/undo_tree_focus_trap.rs`）设置属性后
+    // 不跑事件循环 ⇒ 焦点会停在原地。写者仍然只有这里一个。
+    if open != was_open {
+        if open {
+            ui.invoke_focus_undo_tree_trap();
+        } else {
+            ui.invoke_focus_shortcut_layer();
+        }
+    }
     ui.set_undo_can_undo(display.can_undo);
     ui.set_undo_can_redo(display.can_redo);
     ui.set_undo_depth(clamp(display.undoable));
@@ -8609,14 +9024,17 @@ fn undo_tree_projection(port: &UndoPort) -> (Vec<String>, usize) {
     (labels, chain.len().saturating_sub(UNDO_TREE_MAX_NODES))
 }
 
-/// 把撤销入口接到界面上（`toggle-undo-tree` 与时光机的"撤销一步"按钮）。
+/// 把撤销入口接到界面上（`toggle-undo-tree`、× 关闭、时光机的"撤销一步"按钮、节点点击）。
 ///
-/// 两条回调都汇到**同一个** [`UndoPort::perform`]：
+/// 四条回调都汇到**同一个** [`UndoPort::perform`]：
 ///
 /// | 界面回调 | 动作 | 工程会不会变 |
 /// | :--- | :--- | :--- |
 /// | `toggle-undo-tree` | `UiAction::ToggleUndoTree` | 不会（只开关弹窗） |
+/// | `close-undo-tree`（× / 无障碍关闭） | `UiAction::CloseUndoTree` | 不会（只关弹窗，与 `Esc` 同动作） |
 /// | `undo-step`（弹窗按钮） | `UiAction::Undo` | **会**（走模型的撤销入口） |
+/// | `undo-node-selected`（点一个版本节点） | `UiAction::UndoMany` / `RedoMany` | **会**（回到那一版） |
+/// | `revert-to-last-commit`（走带区 ↻） | `UiAction::Undo` | **会**（同上 —— 每次提交恰好一条 `Op::Batch` ⇒ 一步撤销 = 回退一个 Commit） |
 ///
 /// 每次动作之后：
 ///
@@ -8638,6 +9056,17 @@ pub fn wire_undo(ui: &MainWindow, port: &Rc<UndoPort>) {
         });
     }
     {
+        // × 关闭与 `Esc` 是**同一个动作**、同一条回写路径。只写 `undo-tree-open`
+        // 会让端口仍记着"开着"：下一次撤销的 [`apply_undo`] 按端口把它翻回 `true`，
+        // 弹窗复活（改动前的 × 正是这个行为，判据 `tests/undo_tree_close_button.rs`）。
+        let port = Rc::clone(port);
+        let weak = slint::ComponentHandle::as_weak(ui);
+        ui.on_close_undo_tree(move || {
+            port.perform(UiAction::CloseUndoTree);
+            refresh_undo(&weak, &port, false);
+        });
+    }
+    {
         let port = Rc::clone(port);
         ui.on_export_diagnostics(move || {
             // [D56] 与 MCP 工具**同一个**实现（判据 4）；不改工程状态。
@@ -8648,6 +9077,49 @@ pub fn wire_undo(ui: &MainWindow, port: &Rc<UndoPort>) {
         let port = Rc::clone(port);
         let weak = slint::ComponentHandle::as_weak(ui);
         ui.on_undo_step(move || {
+            port.perform(UiAction::Undo);
+            refresh_undo(&weak, &port, true);
+        });
+    }
+    {
+        let port = Rc::clone(port);
+        let weak = slint::ComponentHandle::as_weak(ui);
+        ui.on_undo_node_selected(move |node_index: i32| {
+            // 节点下标 = 链上"从活跃分支头往回数"的版本号；`undo_session::commit` 的
+            // 约定是"一次提交 = 一条 `Op::Batch` = 一步撤销" ⇒ 游标的 `undone` 步数
+            // 就是"文档现在停在第几个版本"。
+            let Ok(target) = usize::try_from(node_index) else {
+                return;
+            };
+            let display = port.display();
+            // 出界下标不是画出来的版本 ⇒ 什么都不做（与 `wire_tool_select` 同口径：
+            // 宁可不动，也不猜一个版本）。`undone + undoable` = 活跃分支的提交总数，
+            // 而**根提交**正停在第 `commit_count` 步（点它可以撤到底）⇒ 合法下标的
+            // 闭区间是 `0..=undone + undoable`，越界只有**严格大于**它这一种。
+            if target > display.undone + display.undoable {
+                return;
+            }
+            // ⚠ 模型侧 `plan_undo` 会把步数 clamp 到 ≥ 1（`UndoMany(0)` **会撤销一步**）
+            // ⇒ "已经停在目标版本上"必须在这里跳过，而不是把 0 交给端口。
+            if target == display.undone {
+                return;
+            }
+            let action = if target > display.undone {
+                UiAction::UndoMany(target - display.undone)
+            } else {
+                UiAction::RedoMany(display.undone - target)
+            };
+            port.perform(action);
+            refresh_undo(&weak, &port, true);
+        });
+    }
+    {
+        // 走带区「回滚到上一个 Commit」与弹窗的"撤销一步"是**同一个**动作：本实现的
+        // 每次提交恰好携带一条 `Op::Batch`（`undo_session` 的不变量），因此一步撤销
+        // 正好回退一个 Commit。界面侧只报"用户点了 ↻"，这里不复制第二份撤销逻辑。
+        let port = Rc::clone(port);
+        let weak = slint::ComponentHandle::as_weak(ui);
+        ui.on_revert_to_last_commit(move || {
             port.perform(UiAction::Undo);
             refresh_undo(&weak, &port, true);
         });
@@ -9405,12 +9877,15 @@ pub fn wire_roll_edit(ui: &MainWindow, port: &Rc<UndoPort>) {
 ///    - `DeleteNote` ⇒ 用刚命中的身份经 [`delete_ops_for`] + `commit_ops`
 ///      （`eraser: delete note`，与键盘 `DeleteSelection` **同一个**批解析点），
 ///      并清空已不存在的选区；
-///    - `SelectOrClear`、尚未接线的剪刀、以及力度工具的**单击** ⇒ 什么都不做；
+///    - `SplitNote` ⇒ [`split_ops_for`] + `commit_ops`（`knife: split note`）；
+///    - `SelectOrClear` ⇒ 什么都不做（第 1 段就是它的全部语义）；
+///    - 力度工具的**单击** ⇒ 第 1 段的命中在**音符框**上；指针落在**力度柱**上时用
+///      [`velocity_bar_at`] 补一次回退命中再选中那颗音符（规范 §3.3 的"选中对应音符的
+///      底部力度柱"）。⛔ 不写工程（拖拽才改力度）；
 ///    - 力度工具的**双击**（`double_click == true`，来自 `.slint` 的 `double-clicked`）⇒
-///      把刚命中的那颗音符恢复成 `music::DEFAULT_VELOCITY`（**一个**原子
-///      `Op::ModifyNoteVelocity`，已经是 100 则不写）。手势是**音符**范围的：最需要它的
-///      0 力度音符柱高 0px、[`velocity_bar_at`] 也拒绝它 ⇒ 柱范围的手势够不着，
-///      而这里用的正是单击那一个 [`ViewState::hit_test_visible`] 命中。
+///      把命中的那颗音符恢复成 `music::DEFAULT_VELOCITY`（**一个**原子
+///      `Op::ModifyNoteVelocity`，已经是 100 则不写）。`hit` 可来自音符框或力度柱；
+///      0 力度音符的柱高 0px、[`velocity_bar_at`] 拒绝它 ⇒ 那颗音符只能走音符框命中。
 ///
 /// 端口是**可选**的：`None` 时（判据侧没有撤销会话、或窗口还没接端口）派发器照旧做选区，
 /// 只是铅笔 / 橡皮擦如实什么都不做 —— 与"没有撤销会话就没有编辑写入面"同一取向。
@@ -9445,6 +9920,8 @@ fn install_roll_click(ui: &MainWindow, fallback_view: Rc<ViewState>, port: Optio
             // 而下面的命中测试 / 铅笔 / 橡皮擦用**网格局部**坐标。帧换算**只做这一次**
             // （`bridge::painted_to_host` 是唯一真相源）—— 旧实现从不减这个偏移 ⇒ 人手点得到的
             // 音符矩形纵向差 28px（超过音符高 12px），点可见音符恒不中（本票的缺陷）。
+            // 力度柱的命中口径用的是**绘制帧**（见 [`velocity_bar_at`]）⇒ 先把原值留一份。
+            let painted = (x, y);
             let (x, y) = crate::bridge::painted_to_host(x, y);
             // 权威会话可能被控制面关掉工程（`try_project` 如实返回 `None`）——
             // 那时退回装配时的视图，而不是在一个 Slint 回调里 panic。
@@ -9458,12 +9935,29 @@ fn install_roll_click(ui: &MainWindow, fallback_view: Rc<ViewState>, port: Optio
             let scope = roll_scope(&ui, view);
             // ---- 第一段：命中 + 选区（**总是**执行）----
             // 音符框高与 `.slint` 的矩形一致；值写在一处, 免得命中测试去猜（账本第 495 轮）。
-            let hit = view
+            let mut hit = view
                 .hit_test_visible(scroll, width, x, y, NOTE_HEIGHT_PX)
                 .filter(|&index| match scope {
                     Some(scope) => view.notes[index].clip_id.as_str() == scope,
                     None => true,
                 });
+            // ⭐ 力度工具的**单击**（规范 §3.3 "选中对应音符的底部力度柱"）：力度柱画在
+            // `roll-velocity-lane-top` 之下的车道里 ⇒ 那一带永远命中不到音符框。这里用与
+            // 拖拽臂**同一个** [`velocity_bar_at`]（同一 x 口径 = 绘制帧、同一车道内 y 换算、
+            // 同一 `velocity > 0` 门）补一次回退命中，选区照旧由下面**唯一**那一段写。
+            // 作用域过滤与音符框命中逐字相同：⛔ 不选中作用域外看不见的音符。
+            // 只对力度工具生效 —— 别的工具把力度车道当空白（铅笔 / 橡皮擦的语义一位不改）。
+            let velocity_tool = u8::try_from(ui.get_active_tool())
+                .ok()
+                .and_then(crate::input::Tool::from_digit)
+                .is_some_and(|tool| tool.click() == crate::input::ToolClick::SelectVelocity);
+            if hit.is_none() && velocity_tool {
+                hit =
+                    velocity_bar_at(&ui, view, painted.0, painted.1).filter(|&index| match scope {
+                        Some(scope) => view.notes[index].clip_id.as_str() == scope,
+                        None => true,
+                    });
+            }
             // ⭐ `#212`：**借只包住选区的内存镜像** —— 先算出要写的三个读数，放借，
             // 再写界面。持借调界面（`ui.set_selected_*`）是同一类重入形态：
             // 界面写入若回调到同一份 `RefCell`，`borrow_mut()` 就会 panic。
@@ -9596,13 +10090,14 @@ fn install_roll_click(ui: &MainWindow, fallback_view: Rc<ViewState>, port: Optio
                 }
                 // `[UI-NOTE-003]` **力度工具的单击 / 双击**。
                 //
-                // **单击**（规范 §3.3 的"选中对应音符的底部力度柱"）仍未接线 ⇒ 如实不做。
+                // **单击**（规范 §3.3 的"选中对应音符的底部力度柱"）已在第 1 段接上
+                // （`hit` 的空回退 = `velocity_bar_at`）⇒ 这条臂**不写工程**，到此为止。
                 //
-                // **双击** = 规范 §3.3 aux 列的"双击恢复默认力度 100"，本切片接上。手势是
-                // **音符范围**的（⛔ 不是力度柱范围）：最需要恢复的那颗音符力度为 0 ⇒ 它的柱高
-                // `28px * 0` 是 **0px**、根本抓不住（`velocity_bar_at` 也如实拒绝 `velocity == 0`），
-                // 而这里用的正是**单击那一个** `hit_test_visible` 命中 ⇒ 0 力度音符与别的音符
-                // **同一条路径**可达。⛔ 不给柱体加最小高度、⛔ 不放宽 `velocity > 0` 那道门。
+                // **双击** = 规范 §3.3 aux 列的"双击恢复默认力度 100"。`hit` 可来自音符框，
+                // 也可来自力度柱（第 1 段的回退）；两种来源都要**刚好是那颗音符**。
+                // 最需要恢复的 0 力度音符柱高 `28px * 0` = **0px**、抓不住
+                // （`velocity_bar_at` 也如实拒绝 `velocity == 0`）⇒ 它只能走音符框命中。
+                // ⛔ 不给柱体加最小高度、⛔ 不放宽 `velocity > 0` 那道门。
                 crate::input::ToolClick::SelectVelocity => {
                     if !double_click {
                         return;
@@ -9693,7 +10188,7 @@ fn install_roll_click(ui: &MainWindow, fallback_view: Rc<ViewState>, port: Optio
 // - **力度臂的多选作用域**：只作用**指针下那一个音符**（拖一根柱**不**带动选区）；
 // - **零力度音符**：柱高为 0（`piano_roll.slint` 的 `28px * velocity`）⇒ 不可命中；
 //   恢复它的**规范路径**是 `[UI-NOTE-003]` aux 列的**双击到 100**（已接线：见
-//   [`install_roll_click`] 的 `ToolClick::SelectVelocity` 臂 ⇒ 手势是**音符**范围的，
+//   [`install_roll_click`] 的 `ToolClick::SelectVelocity` 臂 ⇒ 手势走**音符框**命中，
 //   ⛔ 不给柱体加最小高度、⛔ 不放宽本臂的 `velocity > 0` 门 —— 那会发明新 affordance）；
 // - **辅助键**（`Shift` 微移 / `Alt` 复制）：与 `[UI-NOTE-005]` 有未裁决冲突 ⇒ ⛔ 不读修饰键；
 // - **空白处拖拽**：语义一位不改（仍是滚动；marquee 未裁决）⇒ ⛔ 不做框选。

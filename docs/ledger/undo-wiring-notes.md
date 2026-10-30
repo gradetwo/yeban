@@ -385,7 +385,8 @@ D:\a\yeban\yeban\crates\yeban-mcp\..\..\crates\yeban-mcp\src\undo_session.rs:634
 | 未实现 | 多步撤销的 UI 交互（点节点回滚） | 需要"节点 ↔ 撤销步数"的映射与选择语义（含分叉/合并），本线只做了 `UndoMany(steps)` 这一层动作与判据 | 已登记 |
 | 未实现 | redo 栈容量策略 | 本线**不需要** redo 栈：重做 = 把游标往回一格的 op 按正向 `Op::apply` 再打一次（游标本身就是栈指针）。容量/裁剪策略在"无限撤销历史"那一层，本线不引入 | 有意不做 |
 | 未实现 | 计时器/时钟注入 | 会话的 `now_ms` 由调用方注入（模型纪律）；UI 侧用 `SystemTime`，MCP 侧沿用既有 `set_now_ms` | 有意不做 |
-| 边界 | 焦点闭环（`[UI-A11Y-003]` §7.3） | 弹窗仍未做 Focus Trap（文件头已登记），本线未扩大该缺口 | 既有 |
+| 边界 | 焦点闭环（`[UI-A11Y-003]` §7.3） | ✅ **已闭环（line/undo-focus）**：`app.slint` 的 `undo_tree_trap := FocusScope` 打开时 `focus()`、关闭时复位到唯一键盘事件源 `key-handler`，`Tab` 在模态内被吞；两个 `has-focus` 镜像成 `undo-tree-focus-trapped` / `shortcut-layer-focused`，判据 `tests/undo_tree_focus_trap.rs`。模态内的按钮仍非 `FocusScope` ⇒ "控件之间的 Tab 顺序"不在本条口径内 | 已完成 |
+| 边界 | 时光机 × 关闭只写界面属性 | 端口仍记着"开着" ⇒ 下一次撤销的 `apply_undo` 按端口把弹窗**复活**。本线改为 `close-undo-tree` 回调 → `UiAction::CloseUndoTree`（与 `Esc` 同动作、同回写路径），判据 `tests/undo_tree_close_button.rs`（真点击 + 再 `apply_undo` 不复活 + 焦点复位） | 已完成 |
 
 **needs-1 的精确修法**（集成者 10 秒可关）：在 `docs/ledger/feature-alignment.md`
 的"执行撤销 / 重做"那一行里点名两个工具并更新三侧标记与状态，例如把该行的

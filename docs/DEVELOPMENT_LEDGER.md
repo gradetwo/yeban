@@ -16366,3 +16366,93 @@ merge `ea8e5efd`（`2 files changed, 190 insertions(+)`，含新文件 139 行�
 
 本轴（散文死名册）在 engine 侧已收口；`prepare_sampler` 那条是**已退休符号**，⛔ 不要"顺手删掉
 那句话"——它记录的是 `#274` 迁移的方向。自主可做仍是**新审计轴**；创作缺口全在人类裁决。
+
+## 2026-10-30 16:20 —— §17 第十三批（两线并行）：R115 扩到 mcp（无界 `.all` 断言归零）＋「零判据 `tests/*.rs`」常驻守卫
+
+> 本批是 §0.6.0p 的两条候选同时开工（A＝R115 扩 mcp，B＝零判据守卫），**两条独立工作树并行**；
+> 各自线判决读回后才 land。⛔ 没有把未证的提交叠到待 land 的线上。
+
+### §17.1 A 线：mcp 侧的 `.all(` 站点口径与引擎**不同**（这是本轮第一件要证明的事）
+
+引擎那份 R115 守卫的口径是"**集合规模**有界"；照抄到 mcp 会**大面积误伤**，实测三类站点不适用：
+
+| 站点形态 | 例子 | 口径 |
+| :--- | :--- | :--- |
+| 字符／字节适配器 | `text.chars().all(..)` | 界是**内容长度**：`text.len() == 64` 即可（适配器须被剥到集合根） |
+| 生产谓词（不是判据） | `fn all_track_entity_level` 里的 `.all(..)` | 不需要界；只有**断言语句**里的站点才要 |
+| 否定形态 | `assert!(!X.all(P))` | **本身已强于**非空（空集时 `!all` 为假 ⇒ 断言先红），不需要界 |
+
+⇒ 实现时的三条口径差：
+
+1. **站点识别按语句**，不按行（`assert!(… .all(…) …)` 可跨行；行级会漏）；
+2. **界搜索范围＝断言所在函数的整个函数体**（fixture 下界常写在 `assert!` 之前几行）；
+3. 找到的界必须作用在**同一集合根**上（`strip_adapters` 后比对 `root_of`）。
+
+读数（`crates/yeban-mcp/tests/assertion_bounds_audit.rs`）：`SOURCES` **22**（`MIN_SOURCES = 22`，＝当前行数，
+R93 口径）、断言站点 **47**、否定 **2**、`ALLOWLIST` **3** 条覆盖 **4** 个嵌套站点、无界 **0**
+（`UNBOUNDED_BASELINE = 0`）。补界 **29 处 ＋ 1 处替换**；替换的是
+`tests/render_master.rs` 的 `.keys().all(|key| key == &note)` —— 该断言在"删 + 加同键"时**恒真**，
+换成 `assert_eq!(notes.len(), 1)` 才真的钉住"仍只有一个音符"。
+
+**过程中两次红，都是真教训**：
+
+- `collapsible_if` ×2：新守卫里的 `if let Some(x) = … { if !head.is_empty() { … } }` 在 `-D warnings`
+  下会红。本机用 `clippy-driver --test --edition 2024 -D warnings` **单文件**先抓到（⛔ 等 CI 换 17 分钟）；
+- **CI 红**（run `41072864089`）：`probe_authenticity.rs` 三段`green` 样本按设计产出**零条形状**，
+  而我新加的前置 `!probe_shapes(green).is_empty()` 断言了一个**假前提**（原句的 `.all(..)` 是刻意的空真）。
+  改为更强的 `assert!(probe_shapes(green).is_empty(), …)` —— 既非空真、又与原意一致。
+
+### §17.2 B 线：零判据 `tests/*.rs` 守卫（7 个例外逐条机检）
+
+**缺陷**：`tests/*.rs` 里**没有** `#[test]` 的文件在 CI 里是"编过即绿"——`test result: ok. 0 passed`
+不会红。实测 282 个文件里 **7** 个零判据，逐个验后**全部合法**：4 个 `harness = false` 运行时腿
+（`main()` 驱动）＋ 3 个 `#[path]`/`include!` 包装。合法不等于可以静默 ⇒ 写成**具名例外**。
+
+`scripts/gates/check_test_criteria_presence.py`：
+
+- 三向会红：① 出现**未登记**的零判据文件；② 登记条目的**机检不成立**（`harness = false` 必须同
+  `[[test]]` 块声明 `name = <stem>` 且 `harness = false`；`#[path]` 包装必须**沿链**到达含 `#[test]` 的文件）；
+  ③ 语料缩水（`MIN_FILES` 下界）。
+- 下界：`MIN_FILES = 293`、`MIN_FILES_WITH_CRITERIA = 286`（**＝合并后的当前读数**；
+  首版是 282／275，并行线新增 11 个测试文件后旧下界留了 11 条静默缩水空间，本批一并抬齐）。
+- 三条反例（本地实测）：删一条例外 ⇒ `exit=1`；伪造一条例外 ⇒ `exit=1`；恢复 ⇒ `[ok]`。
+
+**注册两处（这是一条通用教训）**：`.github/workflows/ci.yml` 的 checks 作业**逐条直调脚本**，
+**从不调用** `scripts/gates/run-gates.sh` ⇒ 只加进 `run-gates.sh` 等于**只注册本地、CI 永不执行**。
+本批两处都登记：`run-gates.sh` 的 `gate_docs` ＋ `ci.yml` 的 checks 步骤。
+
+### §17.3 判决链（全部读回）
+
+| 对象 | run | 判决（读数） |
+| :--- | :--- | :--- |
+| A 线 `line/s8-mcp-assertion-bounds` @ `44c7575a` | `41076007011` | **success** —— `rust (yeban-mcp)` 14:56:10→15:12:10（**16m00s**）、`macos` →15:24:53、`windows` →15:34:21 真跑；`Running tests/assertion_bounds_audit.rs` **2** 次（`test` 与 `test (合并特性)`）。同分支前一枚 `924cfac4` 的 run `41072705373` ＝ **cancelled**（同分支并发规则）⇒ ⛔ 记判决 |
+| A merge `e6c98ccf` 推主干 | `41082188106` | **success** —— `rust (yeban-mcp)` 15:36:13→15:54:16（**18m03s**）、`macos` →16:04:40（28m26s）、`windows` →16:14:04（37m52s）真跑；mcp 腿 `Running tests/` 读数见下 |
+| B 线 `line/s9-zero-criteria-guard` @ `5a2d09df` | `41080591211` | **success** —— checks 15:26:28→15:27:34，日志含 `[check-test-criteria] 扫过 282 个 tests/*.rs；含判据 275 个；零判据 7 个；登记例外 7 条`；`rust (workspace 全量)` 15:26:43→16:12:01（**45m18s**）真跑 ⇒ **462** 行 `test result: ok` |
+| 集成 merge `3dab1269` 推主干 | `41089471277` | **success** —— `checks` 16:25:03→16:26:30、`lockfile`、`deny`、`macos` 16:27:27→16:57:12（29m45s）、`windows` 16:25:33→17:05:34（40m01s）、`rust (workspace 全量)` 16:27:29→16:58:51（**31m22s**）全部真跑 ⇒ ⛔ 空绿。全量腿读数（剥色后）：`Running tests/` **416** ／ `test result: ok` **483** ／ passed **6,944** ／ `FAILED` **0**；守卫五条判据逐名 `ok`（`test` 与 `test (合并特性)` 的两次运行合计出现 2/1/1/2/1 次） |
+
+**A merge 腿读数（剥色后）**：`Running tests/assertion_bounds_audit.rs` **2** ／ `test result:` **143** ／
+passed 合计 **2,464** ／ `FAILED` **0**；五条守卫判据在 `test` 与 `test (合并特性)` **各 1 次 `... ok`**
+（`every_all_assertion_in_this_crate_is_bounded_or_allowlisted` 等五条逐名可查），且其前一行就是
+`Running tests/assertion_bounds_audit.rs` ⇒ 确实跑到，不是 fail-fast 之后的空白。
+
+### §17.4 集成（并行线合流）
+
+- 推送时发现 `origin/main` 已被**并行线**推进 **51** 枚提交（`crates/yeban-app` 的 UI/测试为主：
+  42 文件、+3246/−261），与本批（`crates/yeban-mcp/**`、`scripts/gates/**`、`ci.yml`）**无文件交集**。
+- 本地 `git merge --no-ff origin/main` ⇒ merge `3dab1269`（⛔ 强推、⛔ rebase 改写已 land 的 merge）；
+  post-merge 自检：`cargo metadata --locked` OK、`run-gates.sh light` **全部通过**、零判据守卫新读数
+  **293／286／7／7**（新增 11 个测试文件**全部自带判据**，例外数不变）。
+- 推送 `91d108ca..3dab1269`（显式 refspec `origin main:main`）。
+- ⚠ **B 的 merge `c22aeadf` 自己的 run 不存在**（推送被并行线拒绝，没推上去）⇒ 它的覆盖由
+  `3dab1269` 的 run 承接；这是"替代判决"，⛔ 当成 B merge 自己的绿。
+
+### §17.5 落地与清理
+
+A merge `e6c98ccf`、B merge `c22aeadf`（本地）→ 集成 merge `3dab1269` 推送；
+两棵工作树均已 `worktree.sh rm` 拆除（分支 `line/s8-mcp-assertion-bounds` /
+`line/s9-zero-criteria-guard` **保留**）。`git worktree list` 恢复**一行**。
+
+### §17.6 下一单
+
+`§0.6.0p` 的两条候选**都已收盘**。同一轴的剩余形状（空真/死名册/下界松）在 mcp 侧暂无第三处可机械
+判定的站点；创作缺口仍全在人类裁决（`ADR-0042` G8j／`ADR-0047`..`0050`／`ADR-0004` Q13）。

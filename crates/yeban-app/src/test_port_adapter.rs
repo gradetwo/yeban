@@ -435,17 +435,21 @@ const DEFAULT_VIEW_MUST_HAVE: [&str; 16] = [
 ///
 /// 覆盖率判据允许少量缺失（`< MIN_SINGLETON_COVERAGE_PERCENT` 才红），因为某一块面板
 /// 被邻居裁剪掉 1px 属于 SSIM/几何口径问题；而系统性失效（树为空、整列不见）会立刻掉到 0%。
-const VISIBLE_SINGLETONS: [&str; 39] = [
+///
+/// ⚠ 2026-10-30 诚实性批次：`note-suggestion-overlay-rect` 已从 `.slint` 删除
+/// （AI 建议层没有提案数据源，静态示意块会谎报"待采纳音符"）⇒ 分母 **39 → 38**。
+/// 同日的节拍器切片新增 `transport-metronome-button`（宽度 ≥ 1120 时可见）⇒ **38 → 39**。
+/// 同日的循环选区切片删除 `arrangement-loop-brace`（固定 2–6 小节的假选区，模型没有
+/// 走带循环字段、`Op` 也没有对应变体）⇒ **39 → 38**。
+const VISIBLE_SINGLETONS: [&str; 38] = [
     "ai-rail",
     "ai-rail-diagnose-button",
     "ai-rail-intent-button",
     "ai-rail-musical-pr-button",
-    "arrangement-loop-brace",
     "arrangement-playhead",
     "arrangement-ruler",
     "console-maximize-button",
     "console-tab-rail",
-    "note-suggestion-overlay-rect",
     "piano-roll",
     "piano-roll-grid",
     "piano-roll-keys",
@@ -466,6 +470,7 @@ const VISIBLE_SINGLETONS: [&str; 39] = [
     "transport-bpm-field",
     "transport-branch-button",
     "transport-commit-button",
+    "transport-metronome-button",
     "transport-play-button",
     "transport-record-button",
     "transport-revert-button",
@@ -4312,6 +4317,10 @@ fn pressing_the_record_button_starts_and_stops_a_session() {
             ("seek(960)", engine.seek(960).state),
         ]
     };
+    assert!(
+        !observed.is_empty(),
+        "夹具必须非空（否则下面那条 `.all(..)` 恒真）"
+    );
     assert!(
         observed
             .iter()

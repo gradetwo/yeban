@@ -812,6 +812,14 @@ fn run_gui(options: &Options) -> Result<Vec<String>, cli::CliError> {
             open_runtime,
         );
     }
+    // ⭐ **运行期「导入音频」的可见入口**（控制台 Tab 1 的素材池面板）：问一次对话框 ⇒
+    // `crate::import_audio::import_audio_file`（经同一个 `UndoPort`，来源 `OpOrigin::Import`
+    // ⇒ 可撤销）⇒ 资产字节登记进会话池 ⇒ 重投影 ⇒ `module-status` 回执。
+    host::wire_import_audio(
+        &ui,
+        Rc::clone(&undo_port),
+        Rc::new(yeban_app::file_picker::NativeFilePicker),
+    );
     // `[UI-NOTE-003]` §3.3 工具矩阵的**点击**入口（台账 R16）：界面报行号，宿主把它送进
     // **同一个** `Action::SelectTool` 臂（与上面 `wire_keys` 的 `1`..`5` 数字键同一条链）。
     // 因此"点工具按钮"与"按数字键"不可能分叉。

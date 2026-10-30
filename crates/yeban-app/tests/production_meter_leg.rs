@@ -330,6 +330,10 @@ fn production_loop_start_adopts_the_engine_meter_consumer() {
         .map(|quantum| quantum.expect("每一跳都必须见到帧"))
         .collect();
     assert!(
+        numbers.len() >= 2,
+        "夹具必须 ≥ 2 条（否则 `windows(2).all(..)` 恒真）"
+    );
+    assert!(
         numbers.windows(2).all(|pair| pair[1] > pair[0]),
         "8 跳的量子序号必须严格递增, 实际 {numbers:?}"
     );
@@ -398,6 +402,10 @@ fn production_tick_writes_known_levels_into_the_slint_properties() {
         window.peak_labels(),
         vec!["-120.0".to_owned(); window.view.tracks.len()],
         "没有帧 ⇒ 每一轨都是显示下限（有限值, 不是空串也不是 NaN）"
+    );
+    assert!(
+        !window.levels().is_empty(),
+        "夹具必须非空（否则下面那条 `.all(..)` 恒真）"
     );
     assert!(
         window.levels().iter().all(|level| *level == 0.0),
@@ -630,6 +638,15 @@ fn the_default_frame_is_byte_reproducible_and_unaffected_by_the_meter_leg() {
             lit += 1;
         }
     }
+    // ⭐ 光标跟随读数（`playhead_follows_transport`）之后，这 8 跳会**合法地**推进编曲
+    // 光标（它与顶栏时间码同源，都是 `host::apply_transport` 的写入面）。本判据的命题是
+    // 「**电平腿**不碰编曲视图」⇒ 抓第二帧之前把走带读数归零（与第一帧同一个
+    // `TransportReading::cold()`），光标回到原位。电平读数不住在走带属性上 ⇒ 仍然亮着，
+    // 这正是本判据要证的"电平在图外"。
+    host::apply_transport(
+        window.ui(),
+        yeban_engine::transport::TransportReading::cold(),
+    );
     let after_image = window.port.window().capture().expect("Tier-1 截图");
     let after = encode_rgb8(&after_image);
     let (changed, bbox) = pixel_diff(&first, &after_image);

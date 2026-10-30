@@ -19,7 +19,7 @@
 //! | ③ 两两不相交 | 每段：排除容器后**逐对**断言包围盒不相交（半开区间，边贴边不算），三档全是 0 | 证"同一段内没有第二处重叠"；⛔ 不证与段外邻居（`#184` 管段间） |
 //! | ④ 容器排除 | 见 [`is_container_role`]：`region` / `groupbox` / `list` / `tab-list` / `main` / `complementary`。**`list-item` 不排**（这四段里它是叶子内容：音符矩形、素材行） | 证"排的是按设计包住子节点的容器"；⛔ 不排 `list-item` 是有意的（与 `#185` 的发送行相反） |
 //! | ⑤ 不许假绿 | 每段先断言"必须在场的 id 一个不少"＋"控件数恰好等于清单"；1024 档走带徽章**按设计隐藏**（不是扫不到），并断言替代入口 `ai-rail-musical-pr-button` 在树里 | 证"0 相交不是 0 控件换来的" |
-//! | ⑥ 预算 | 纯测试 ＋ `.slint` 表达式级布局微调（不新增控件） ⇒ 控件数逐档不变：调音台 `72`、钢琴卷帘 `20`、素材池 `3`、走带 `14`（1024 档 `13`，少的是按设计隐藏的徽章） | 证"没有靠删控件换绿" |
+//! | ⑥ 预算 | 纯测试 ＋ `.slint` 表达式级布局微调 ⇒ 控件数逐档不变：调音台 `73`、钢琴卷帘 `20`、素材池 `4`、走带 `14`（1024 档 `13`，少的是按设计隐藏的徽章）；相对上一版唯一新增的是素材池的 `asset-pool-import-button`（`#20` 导入入口） | 证"没有靠删控件换绿" |
 //!
 //! ## 发现（`#186` 的实测；数字是逻辑像素包围盒 `(x, y, w, h)`）
 //!
@@ -265,6 +265,7 @@ const TRANSPORT_WIDE: &[&str] = &[
     "transport-revert-button",
     "transport-save-button",
     "transport-ai-proposal-badge",
+    "transport-metronome-button",
     "transport-view-session-button",
     "transport-view-arrangement-button",
     "transport-view-toggle-button",
@@ -279,7 +280,6 @@ const PIANO_CONTROLS: &[&str] = &[
     "piano-roll-tool-eraser-button",
     "piano-roll-status",
     "piano-roll-playhead",
-    "note-suggestion-overlay-rect",
     "note-01J8Z5Q0R7K3M9X2V4B6N8P1A2-rect",
     "note-01J8Z5Q0R7K3M9X2V4B6N8P1A3-rect",
     "note-01J8Z5Q0R7K3M9X2V4B6N8P1B0-rect",
@@ -294,14 +294,15 @@ const PIANO_CONTROLS: &[&str] = &[
     "velocity-5-bar",
 ];
 
-/// 素材池（演示工程 `clip_pool` 2 条）：条目数 ＋ 两行。面板本体是容器。
+/// 素材池（演示工程 `clip_pool` 2 条）：条目数 ＋ 两行 ＋ 导入入口。
 const ASSET_CONTROLS: &[&str] = &[
     "asset-pool-count",
+    "asset-pool-import-button",
     "asset-pool-row-0-row",
     "asset-pool-row-1-row",
 ];
 
-/// 调音台的 72 个控件：3 个模块入口 ＋ 6 个主控控件 ＋ 6 条通道条 × 10。
+/// 调音台的 73 个控件：3 个模块入口 ＋ 6 个主控控件 ＋ 4 个素材池控件 ＋ 6 条通道条 × 10。
 fn mixer_controls() -> Vec<String> {
     let mut ids: Vec<String> = vec![
         "module-export-midi-button".to_owned(),
@@ -331,7 +332,7 @@ fn mixer_controls() -> Vec<String> {
             ids.push(format!("track-{track}-{suffix}"));
         }
     }
-    assert_eq!(ids.len(), 72, "调音台控件清单长度变了 ⇒ 判据口径要重核");
+    assert_eq!(ids.len(), 73, "调音台控件清单长度变了 ⇒ 判据口径要重核");
     ids
 }
 
@@ -442,13 +443,11 @@ fn is_container_role(role: &str) -> bool {
 /// `LeftEdgeInside` = 与盒子相交**且左沿在盒子内**（⭐ `#187`）。
 ///
 /// ⚠ `LeftEdgeInside` 为什么存在：运行时树给的是**未裁剪**的包围盒。编曲画布
-/// `workspace-arrangement-canvas` 有 `clip: true`，它的越界子节点（`section-*-card`、
-/// `arrangement-loop-brace`）在树里仍带着**越过画布右沿**的宽度 —— 1024 档
-/// `arrangement-loop-brace (648,68,480,22)` 一直伸到 `1128`，而画布右沿是 `744`。
-/// 这些像素被画布 clip 掉了，**⛔ 不与右栏重叠**，但它们的**包围盒**会落进右栏的段盒子。
-/// 右栏的控件全部从 `ai-rail.x + 8` 起（左沿在盒子内），被裁剪的越界节点左沿在盒子外
-/// ⇒ 这条取法把"像素真的在段内"与"包围盒越界"分开。这不是放宽：同一段内左沿在盒子里的
-/// 控件**仍然逐对**断言（见下面的读数）。
+/// `workspace-arrangement-canvas` 有 `clip: true`，其子节点即便像素被画布裁掉，
+/// 包围盒也可能越过画布右沿落进右栏的段盒子。这些像素**⛔ 不与右栏重叠**。
+/// 右栏的控件全部从 `ai-rail.x + 8` 起（左沿在盒子内）⇒ 这条取法把"像素真的在段内"
+/// 与"包围盒越界"分开。这不是放宽：同一段内左沿在盒子里的控件**仍然逐对**断言
+/// （见下面的读数）。
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Selection {
     Intersect,
@@ -690,7 +689,8 @@ fn check_mixer_console(width: u32, height: u32) -> (usize, usize) {
             asset_x + asset.2 as i32
         ));
     }
-    (expected.len(), 72 * 71 / 2)
+    let controls = expected.len();
+    (controls, controls * (controls - 1) / 2)
 }
 
 fn check_asset_pool(width: u32, height: u32) -> (usize, usize) {
@@ -705,22 +705,24 @@ fn check_asset_pool(width: u32, height: u32) -> (usize, usize) {
         &format!("#186 素材池 {width}x{height}"),
     );
     report_line(&reading);
-    (ASSET_CONTROLS.len(), 3)
+    (
+        ASSET_CONTROLS.len(),
+        ASSET_CONTROLS.len() * (ASSET_CONTROLS.len() - 1) / 2,
+    )
 }
 
 fn check_transport(width: u32, height: u32) -> (usize, usize) {
     let live = live_window((width, height), PIANO_TAB);
     let tree = runtime_tree(live.ui());
     let band: Bounds = (0, 0, width, TOP_BAR);
-    let expected: Vec<&str> = if width >= 1064 {
-        TRANSPORT_WIDE.to_vec()
-    } else {
-        TRANSPORT_WIDE
-            .iter()
-            .copied()
-            .filter(|id| *id != "transport-ai-proposal-badge")
-            .collect()
-    };
+    let expected: Vec<&str> = TRANSPORT_WIDE
+        .iter()
+        .copied()
+        .filter(|id| *id != "transport-ai-proposal-badge" || width >= 1064)
+        // ⭐ 节拍器键钉在徽章右侧 12px 缝里（`x = root.width - 348`）⇒ 1120 以下
+        // 会与徽章相交，因此那两档按设计隐藏（同一动作仍有 `Cmd/Ctrl+Alt+N`）。
+        .filter(|id| *id != "transport-metronome-button" || width >= 1120)
+        .collect();
     let reading = assert_pairwise(
         &tree,
         band,
@@ -747,6 +749,21 @@ fn check_transport(width: u32, height: u32) -> (usize, usize) {
             badge.0 + badge.2 as i32 <= session.0,
             "[#186 {width}x{height}] 徽章右沿必须 ≤ Session 左沿（宽档不许交）"
         );
+        // ⭐ 节拍器键（1120 起可见）夹在徽章与视图组之间：两侧各 12px 缝。
+        if width >= 1120 {
+            let metro = bounds(&tree, "transport-metronome-button");
+            assert!(
+                badge.0 + badge.2 as i32 <= metro.0,
+                "[#186 {width}x{height}] 徽章右沿 {badge:?} 必须 ≤ 节拍器键左沿 {metro:?}"
+            );
+            assert!(
+                metro.0 + metro.2 as i32 <= session.0,
+                "[#186 {width}x{height}] 节拍器键右沿 {metro:?} 必须 ≤ Session 左沿 {session:?}"
+            );
+            report_line(&format!(
+                "[#186 走带 {width}x{height}] badge {badge:?} ≤ metronome {metro:?} ≤ session {session:?} ⇒ 不相交"
+            ));
+        }
         report_line(&format!(
             "[#186 走带 {width}x{height}] save {save:?} ≤ badge {badge:?} ≤ session {session:?} ⇒ 不相交"
         ));
@@ -1418,36 +1435,30 @@ fn check_arrangement(width: u32, height: u32) {
     report_line(&assert_ids_pairwise(&tree, sections, &label));
 
     // ---- 排除项（按设计覆盖，逐条登记在报告 §3）：
-    //   `arrangement-ruler` 是标尺**带**，按设计包住 `arrangement-loop-brace`；
     //   `arrangement-playhead` 是 1px 竖向走带光标，按设计压在剪辑 / 泳道上。
     assert!(
         tree.find_by_id("arrangement-ruler").is_some(),
         "[#187 编曲画布 {width}] 标尺带必须在场"
     );
-    assert!(
-        tree.find_by_id("arrangement-loop-brace").is_some(),
-        "[#187 编曲画布 {width}] 循环选区把手必须在场（它是标尺带**内**的滑块，按设计压在带上）"
+    // ⭐ 走带光标现在**跟随引擎读数**（唯一写者 = `host::apply_transport`）：装配态
+    // `playhead-ticks == 0` ⇒ x = 画布左沿 + 168px（时间轴左沿），三档断点下都落在
+    // 画布内 ⇒ 都必须在树里。旧版写死 x = 画布左沿 + 528px，于是 1024 展开档（画布
+    // 504px）整条被 clip —— 那个"树外"断言随假位置一起删掉。
+    let playhead = bounds(&tree, "arrangement-playhead");
+    assert_eq!(
+        playhead.2, 1,
+        "[#187 编曲画布 {width}] 播放头必须是 1px 竖线"
     );
-    // ⭐ `#191`：折叠档（1024）右栏变抽屉后画布撑到窗口右沿（944px 宽），播放头
-    // x = 768 落在画布内 ⇒ 它在树里；只有**展开档**的 1024（画布 504px）才整条被 clip。
-    if live.ui().get_compact() || width >= 1440 {
-        let playhead = bounds(&tree, "arrangement-playhead");
-        assert_eq!(
-            playhead.2, 1,
-            "[#187 编曲画布 {width}] 播放头必须是 1px 竖线"
-        );
-        assert_eq!(
-            playhead.1,
-            canvas.1 + 20,
-            "[#187 编曲画布 {width}] 播放头上沿"
-        );
-    } else {
-        // 1024 档：播放头 x = 画布左沿 + 528 = 768 > 画布右沿 744 ⇒ 完全被 clip ⇒ 不进树。
-        assert!(
-            tree.find_by_id("arrangement-playhead").is_none(),
-            "[#187 编曲画布 {width}] 播放头整条落在画布外 ⇒ 必须在树外（⛔ 不许越界画出）"
-        );
-    }
+    assert_eq!(
+        playhead.1,
+        canvas.1 + 20,
+        "[#187 编曲画布 {width}] 播放头上沿"
+    );
+    assert_eq!(
+        playhead.0,
+        canvas.0 + 168,
+        "[#187 编曲画布 {width}] 默认 tick 0 的播放头 x = 画布左沿 + 168px"
+    );
 }
 
 // ===========================================================================
@@ -1605,22 +1616,6 @@ fn check_ai_rail(width: u32, height: u32) {
         212,
         "[#187 AI 右栏 {width}] `module-actions-title` 必须仍在 y=212（⛔ 不靠整体下移换绿）"
     );
-
-    // ---- 取法的守卫：1024 档 `arrangement-loop-brace` 的包围盒伸进右栏，但左沿在
-    //     画布内（被画布 clip）⇒ `LeftEdgeInside` 必须把它挡在段外。
-    if width == 1024 {
-        let brace = bounds(&tree, "arrangement-loop-brace");
-        assert!(
-            brace.0 < pane.0,
-            "[#187 AI 右栏 {width}] 这条取法的前提变了：`arrangement-loop-brace` 左沿 {} \
-             不再落在右栏外 —— 请重核 `Selection::LeftEdgeInside` 的裁决",
-            brace.0
-        );
-        assert!(
-            brace.0 + brace.2 as i32 > pane.0,
-            "[#187 AI 右栏 {width}] 前提也要求它**仍然**越界伸进右栏（否则这条守卫是空的）"
-        );
-    }
 
     // ---- 1024 档（**常驻栏**）：回执行被右栏裁剪区排掉（完全在树外），如实登记而不是静默。
     // ⭐ `#191`：折叠档的抽屉是 `height: root.height`（整窗高 800），回执行在树里 ——

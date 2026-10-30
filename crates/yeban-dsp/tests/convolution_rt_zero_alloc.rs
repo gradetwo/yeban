@@ -216,6 +216,14 @@ fn rt_path_allocates_nothing_over_10_000_quanta() {
          卷积核没真的参与运算，本判据测的是空壳"
     );
     assert!(
+        !left.is_empty(),
+        "夹具必须非空（否则下面那条 `.all(..)` 恒真）"
+    );
+    assert!(
+        !right.is_empty(),
+        "夹具必须非空（否则下面那条 `.all(..)` 恒真）"
+    );
+    assert!(
         left.iter().chain(right.iter()).all(|v| v.is_finite()),
         "路径产出了非有限值"
     );

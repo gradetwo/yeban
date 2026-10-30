@@ -411,6 +411,10 @@ mod tests {
         );
         // 任何投影都**不**输出 `false` —— 我们没有"确定不可见"的正证据。
         for tree in [&runtime, &registry] {
+            assert!(
+                !tree.nodes.is_empty(),
+                "夹具必须非空（否则下面那条 `.all(..)` 恒真）"
+            );
             assert!(tree.nodes.iter().all(|node| node.visible != Some(false)));
         }
     }

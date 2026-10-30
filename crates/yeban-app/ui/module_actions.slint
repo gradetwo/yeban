@@ -11,10 +11,11 @@
 //
 // 为什么四个入口长在这里（而不是改 `transport.slint` 的录音键）:
 //   `crates/yeban-app/src/elements.rs` 的
-//   `the_record_button_has_no_click_handler_and_recording_is_unimplemented` 与
-//   `the_three_transport_document_actions_are_not_wired_today` 把顶栏那三个键
-//   （`transport-commit-button` / `transport-revert-button` / `transport-branch-button`）
-//   与录音键 `transport-record-button` 的**无点击处理器**钉成了机械事实。
+//   `the_record_button_has_a_click_handler_and_a_wired_record_callback` 与
+//   `the_remaining_transport_document_actions_are_not_wired_today` 把顶栏那一组里
+//   **仍未接线**的两个文档级动作（`transport-commit-button` / `transport-branch-button`）
+//   与录音键 `transport-record-button` 的**无点击处理器**钉成了机械事实
+//   （回滚键 `transport-revert-button` 已于 2026-10-30 接到 `UiAction::Undo`）。
 //   本票（四模块 UI 接线）**不**动那两个已登记的缺口：它给"录音成文件"这条**已有的**
 //   Rust 能力（`src/record_wav.rs`）开一个新的、独立的可见入口。既有的
 //   `transport-record-button` 保持原样（它承载的是 `[ARCH-REC-001]` 的声卡录音缺口，

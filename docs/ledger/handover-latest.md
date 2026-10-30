@@ -12,6 +12,33 @@
 > `docs/ledger/phase-status.md` 的叙事条目**停在 R1144**（2026-10-26）⇒ ⭐ 读进度以
 > `DEVELOPMENT_LEDGER.md` 的尾部为准，⛔ 不要以为 R1144 之后没干活。
 
+### 0.6.0q ⭐ 尾批（2026-10-30 16:20）：**§0.6.0p 的两条候选都已收盘**（R115 扩 mcp ＋ 零判据守卫；两线并行）
+
+- **A（R115 扩 mcp）**：mcp 的站点口径与引擎**不同**——`chars/bytes` 适配器的界是**内容长度**、生产
+  谓词不是判据、`!X.all(P)` 本身已强于非空。守卫按**语句**识别、界搜索在**整个函数体**内。
+  新 `crates/yeban-mcp/tests/assertion_bounds_audit.rs`：`SOURCES` **22**（`MIN_SOURCES` 22 ＝当前行数）、
+  站点 **47**、否定 **2**、allowlist **3** 条覆盖 4 个嵌套站点、无界 **0**（`UNBOUNDED_BASELINE` 0）。
+  补界 29 处 ＋ 1 处替换（`render_master.rs` 的 `.keys().all(== note)` 在"删+加同键"下恒真 ⇒ 改
+  `assert_eq!(notes.len(), 1)`）。⚠ 首轮 CI 红是我自己：`probe_authenticity.rs` 三个 `green` 样本按设计
+  产出零形状，我把"非空"当前置 ⇒ 断言了假前提；改 `is_empty()` 后绿。− `collapsible_if` ×2 由本机
+  `clippy-driver` 单文件先抓到（⛔ 等 CI）。
+- **B（零判据 `tests/*.rs`）**：`scripts/gates/check_test_criteria_presence.py`——7 个例外逐条机检
+  （4 个 `harness = false` 须同 `[[test]]` 块声明 name；3 个 `#[path]` 包装须沿链到含 `#[test]` 的文件），
+  三向会红（未登记 / 机检不成立 / 语料缩水）。**通用教训**：`ci.yml` 的 checks 作业**逐条直调脚本**、
+  **从不调用** `run-gates.sh` ⇒ 只加进 `run-gates.sh` 等于**只注册本地**；本批两处都登记。
+- **判决**：A 线 `44c7575a` → run `41076007011` **success**（mcp 16m00s 真跑，守卫判据 ×2 逐名 ok）；
+  A merge `e6c98ccf` → `41082188106` **success**（mcp 18m03s／macos 28m26s／windows 37m52s；
+  `Running tests/` 143 行 `test result:`／2,464 passed／`FAILED` 0）；B 线 `5a2d09df` → `41080591211`
+  **success**（checks 含读数行；全量腿 45m18s ⇒ 462 行 `test result: ok`）。
+- **集成**：推送时 `origin/main` 已被并行线推进 **51** 枚提交（`yeban-app` UI/测试，与本批无交集）⇒
+  `git merge --no-ff origin/main` = `3dab1269`，post-merge 自检通过、light 全绿；零判据守卫读数变为
+  **293／286／7／7**（新增 11 个测试文件全部自带判据）⇒ **下界抬到 293／286**（否则又留 11 条静默缩水）。
+  集成 run **`41089471277` success**（`checks` 16:25:03→16:26:30，`macos` 29m45s、`windows` 40m01s、
+  `rust (workspace 全量)` **31m22s** 全部真跑；全量腿 `Running tests/` **416** ／ `test result: ok` **483** ／
+  passed **6,944** ／ `FAILED` **0**；守卫五条判据逐名 ok）。⚠ B merge `c22aeadf` 自己的 run **不存在**
+  （推送被拒），覆盖由 `3dab1269` 的 run 承接 —— **替代判决**。
+- 两棵工作树已拆（分支保留）；明细见台账 §17。创作缺口仍全在人类裁决。
+
 ### 0.6.0p 下一单候选（2026-10-30 14:15，**0 代码 / 未开工**；只记普查读数，⛔ 重复普查）
 
 - **候选 A：R115（有界断言）扩到 `crates/yeban-mcp`。** 现读数：`.all(` 站点 **68** 个

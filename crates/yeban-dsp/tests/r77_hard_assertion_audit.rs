@@ -1427,6 +1427,10 @@ fn the_scan_root_arms_reject_tests_and_see_sources() {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let scanned = source_files(&root.join(SRC_ROOT));
     assert!(
+        !scanned.is_empty(),
+        "夹具必须非空（否则下面那条 `.all(..)` 恒真）"
+    );
+    assert!(
         scanned
             .iter()
             // ⚠ **R231**：路径断言必须**先归一化** —— 否则 Windows 上是 `…\tests\…`，

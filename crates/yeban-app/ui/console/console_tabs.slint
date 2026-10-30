@@ -26,6 +26,11 @@ export component ConsoleTabs inherits Rectangle {
     in property <[string]> note-ulids: [];
     in property <[float]> note-velocities: [];
     in property <[length]> note-positions: [];
+    // ---- 走带光标（[UI-NOTE-001]）：只透传，位置事实源 = 宿主（`host::apply_transport`）----
+    in property <int> playhead-ticks: 0;
+    in property <int> ticks-per-pixel: 30;
+    in property <float> scroll-x: 0.0;
+    in property <string> playhead-timecode: "";
     // 与注入数组同一索引集的选中标志（只**透传**）。
     in property <[bool]> note-selected: [];
     // `[UI-NOTE-003]` 当前工具（与卷帘同一份状态；宿主需要读它来知道该执行哪个工具的语义）。
@@ -179,6 +184,10 @@ export component ConsoleTabs inherits Rectangle {
     callback mixer-pan-grab(int, length);
     callback mixer-pan-drag(int, length);
     callback mixer-pan-release(int);
+    // ⭐ **双击复位**（推子 → `0 dB`、声相 → 中央）：与上面六条手势同族、同一条纪律 ——
+    // 本组件只上抛，⛔ 换算、⛔ 提交（落点 `host::wire_mixer_edit` 的 `on_*_reset`）。
+    callback mixer-fader-reset(int);
+    callback mixer-pan-reset(int);
     callback mixer-mute-toggle(int);
     callback mixer-solo-toggle(int);
     // ⭐ 主控通道条的静音 / 独奏：与上面两个同款只上抛（宿主 `host::wire_mixer_edit`
@@ -251,19 +260,26 @@ export component ConsoleTabs inherits Rectangle {
     // 同样只上抛：⛔ 不写盘、⛔ 不弹窗、⛔ 不判断成功与否；唯一落点 = 宿主
     // `host::wire_new_project`（保存对话框 ⇒ 落一个 0 轨容器 ⇒ 打开那条换工程路径）。
     callback new-project();
+    // ⭐ **导入音频**：混音台（Tab 1）素材池面板里的可见入口。本组件只上抛
+    // （宿主 `host::wire_import_audio` 是唯一落点）—— ⛔ 不读盘、⛔ 不弹窗、
+    // ⛔ 不判断成功与否。
+    callback import-audio();
     // ⭐ **最大化 / 还原底部控制台**（`Cmd/Ctrl+Alt+M` 的可点等价物）。
     // 与 `Action::ToggleConsoleMaximize` 落到**同一个**视图态属性
     // （`MainWindow.console-maximized`，唯一写者是宿主）⇒ 按键与点击不可能分叉。
     // 本组件只上抛：⛔ 不自己翻转状态、⛔ 不动布局（布局绑定读的是那个属性）。
     callback console-maximize-toggle();
-    // 主控通道条的**写入面**透传（与上面八个同款：本组件只上抛，不解释、不改任何值）。
-    // 这六个**不带下标** —— 主总线不在 `track-names` 里，它的身份由宿主从权威工程取。
+    // 主控通道条的**写入面**透传（与上面那一族同款：本组件只上抛，不解释、不改任何值）。
+    // 这一族**不带下标** —— 主总线不在 `track-names` 里，它的身份由宿主从权威工程取。
     callback mixer-master-fader-grab(length);
     callback mixer-master-fader-drag(length);
     callback mixer-master-fader-release();
     callback mixer-master-pan-grab(length);
     callback mixer-master-pan-drag(length);
     callback mixer-master-pan-release();
+    // ⭐ 主控的**双击复位**（推子 → `0 dB`、声相 → 中央）：同样只上抛。
+    callback mixer-master-fader-reset();
+    callback mixer-master-pan-reset();
 
     min-height: 32px;
     background: Tokens.bg-panel;
@@ -382,6 +398,10 @@ export component ConsoleTabs inherits Rectangle {
         velocities: root.note-velocities;
         note-positions: root.note-positions;
         note-selected: root.note-selected;
+        playhead-ticks: root.playhead-ticks;
+        ticks-per-pixel: root.ticks-per-pixel;
+        scroll-x: root.scroll-x;
+        playhead-timecode: root.playhead-timecode;
         active-tool: root.active-tool;
         edit-status: root.roll-edit-status;
         scroll-requested(d) => { root.scroll-requested(d); }
@@ -452,6 +472,13 @@ export component ConsoleTabs inherits Rectangle {
         mixer-pan-release(index) => {
             root.mixer-pan-release(index);
         }
+        // **双击复位**：同样只上抛（宿主 `host::wire_mixer_edit` 的 `on_*_reset` 是唯一落点）。
+        mixer-fader-reset(index) => {
+            root.mixer-fader-reset(index);
+        }
+        mixer-pan-reset(index) => {
+            root.mixer-pan-reset(index);
+        }
         mixer-mute-toggle(index) => {
             root.mixer-mute-toggle(index);
         }
@@ -491,6 +518,10 @@ export component ConsoleTabs inherits Rectangle {
         new-project => {
             root.new-project();
         }
+        // ⭐ **导入音频**：同样只上抛（宿主 `host::wire_import_audio` 是唯一落点）。
+        import-audio => {
+            root.import-audio();
+        }
         // 主控写入面：同样只上抛，**不带下标**（宿主在按下那一刻从权威工程取主总线身份）。
         mixer-master-fader-grab(y) => {
             root.mixer-master-fader-grab(y);
@@ -509,6 +540,13 @@ export component ConsoleTabs inherits Rectangle {
         }
         mixer-master-pan-release() => {
             root.mixer-master-pan-release();
+        }
+        // 主控的**双击复位**：同样只上抛、**不带下标**（身份由宿主从权威工程取）。
+        mixer-master-fader-reset() => {
+            root.mixer-master-fader-reset();
+        }
+        mixer-master-pan-reset() => {
+            root.mixer-master-pan-reset();
         }
     }
 

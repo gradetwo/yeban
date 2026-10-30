@@ -173,9 +173,75 @@ artifact `golden-linux`（id 12943055870，485877 字节）；
 **矩形外不一致像素数 = 0**，没有布局位移、也没有别的控件被触碰。
 ⚠ 五张的**字节数相同**（6222418）**不构成任何证据**（存储式 deflate），判内容的是上面的 sha256 与逐像素读数。
 
+**⚠ 2026-10-30 再录一次（`line/honesty`，headSha `8da28b80`，提交「移除两处编造状态」）**: 本批删掉
+① 卷帘的静态「AI 建议音符 (待采纳)」示意块（66×12，界面侧没有提案数据源）与
+② Session 插槽格的 `(track_index + scene_index).mod(3)` 三态图案 / 「已装载 / 空插槽」提示 /
+`accessible-item-selected` 编造态。两者都是默认帧里**可见且未被遮罩**的静态像素 ⇒ 5 张基准确定性过期。
+生成方式与地点同上：手动档 `gates-manual.yml` 的 `gate=goldens`，run id **40986484404**
+（conclusion=success；ref `line/honesty`，headSha `8da28b80`），artifact `golden-linux`
+（id 12947177830，476650 字节）；⚠ artifact 自带的 `MANIFEST.txt` 是**本改动前的仓库副本** ⇒ **未采用**。
+**入库前的复核（⚖ 判定量 = 两处被删区域的**补集**内不一致像素数）**: 用 stdlib zlib 解码
+（本机无 Pillow / numpy，本仓 PNG 是存储式 deflate）把旧 5 张与 artifact 的 5 张逐像素比较：
+- `arrangement-full` / `arrangement-compact` / `model-driven-demo-project` / `model-driven-filled-project`：
+  **各 792 个差异像素** = 恰好一个 **66×12** 的矩形（`x 524..589 × y 725..736`），
+  与 `x: Tokens.space-5 + 76px * 6 = 8 + 456 = 464`（卷帘内）+ 卷帘左边距 **60** ⇒ `524` 逐像素吻合；
+  旧色是紫调（`142,134,166` / `112,108,134` / `137,129,161` 等，`ai-suggestion` 45% 叠在卷帘底上），
+  新色是卷帘底色（`17,22,28` / `33,43,54` / `44,57,72`，按行条带不同）—— 即**区块被抹掉**；
+- `session-full`：**63,266 个**，x 是 **6 条插槽列**（`249..366 / 377..494 / 505..622 / 633..750 /
+  761..878 / 889..1006`，各宽 118），y 是 **4 行**（`81..142 / 149..210 / 217..278 / 285..346`，各高 62）
+  ⇒ 24 格 × 118×62 = 175,584 格内像素，其中 63,266 变了（其余格内像素旧新同色）；
+  另有**同一个 66×12 卷帘条**（`725..736`）在该帧里也可见（Session 帧同时含右侧卷帘预览）；
+  旧色为 416 种图案色（`mod(3)` 三态 × 1px 边框 / 提示文字抗锯齿），全部落到固定的
+  `Tokens.bg-panel = 19,26,34`；
+- 两处区域**补集**内不一致像素数 = **0**，没有布局位移、也没有别的控件被触碰。
+⚠ 五张的**字节数相同**（6222418）**不构成任何证据**（存储式 deflate），判内容的是上面的 sha256 与逐像素读数。
+
+**⚠ 2026-10-30 第三次再录（`line/metronome` 合并诚实性批次后的合并树，headSha `d9653034`）**: 本批让两个切片的像素变化**同帧**入库 ——
+① `e061ca57` 的节拍器开关按钮（走带区那一组文档级动作右侧，32×32 @ `x = 1920 − 348 = 1572..1603`、`y = space-4 = 8..39`，`visible: width ≥ 1120`）；
+② `e618ffde` 的诚实性批次（卷帘静态 AI 建议示意块 ＋ Session 插槽格三态图案/提示/编造选中态，逐区域读数见上一节）。
+生成方式与地点同上：手动档 `gates-manual.yml` 的 `gate=goldens`，run id **40993780063**
+（conclusion=success；ref `line/metronome`，headSha `d9653034`），artifact `golden-linux`；
+⚠ artifact 自带的 `MANIFEST.txt` 是**本改动前的仓库副本** ⇒ **未采用**。
+**入库前的复核（两重基线，⚖ 判定量 = 差异像素数与包围盒）**（stdlib zlib 解码，逐像素）：
+- 对**入库前**的 5 张（= 上一节那一版，只含诚实性批次）比：**每帧 1016 px**，包围盒**精确等于节拍器按钮**
+  `x 1572..1603 × y 8..39`（32×32 = 1024 个像素位里 8 个与底色相同）；x 向只有 `1572..1603` 一段、
+  y 向只有 `8..39` 一段 ⇒ 按钮之外**零**变化；20 种配色对全部从 `Tokens.bg-panel = 19,26,34` 出发
+  （按钮板 `20,28,37` / 字形 `67,77,89` / `82,93,105` 等）；
+- 对**主干** `b53506d4` 的基准比：`arrangement-full` = **1808 px**（= 诚实性 792 ＋ 节拍器 1016，逐像素算术闭合），
+  `session-full` = **64,282 px**（= 诚实性 63,266 ＋ 1016）；x/y 区段与上一节登记的两处移除区 ＋ 按钮矩形逐段吻合。
+⚠ 五张的**字节数相同**（6222418）**不构成任何证据**（存储式 deflate），判内容的是上面的 sha256 与逐像素读数。
+
+**⚠ 2026-10-30 第四次再录（`line/playhead-follow`，headSha `bef7ab82`，提交「走带光标跟随引擎读数」）**: 本批把编曲 / 卷帘两条
+走带光标从**写死的假位置**改成由引擎读数派生 —— `host::apply_transport` 写窗口属性 `playhead-ticks`（默认帧 = tick 0），
+两条 x = 各自时间轴原点 + `tick ÷ ticks-per-pixel`（整数除法，与音符 / 小节线同口径）。tick 0 下：
+编曲光标 `canvas.x + 168`（旧假位置 `canvas.x + 528`，源码 `x: 168px + 120px * 3`），卷帘光标 `roll.x + 56`
+（旧 `roll.x + 236`，源码 `x: 56px + 60px * 3`）。两条线都是默认帧里**可见且未被遮罩**的 1px 竖线 ⇒ 5 张基准确定性过期。
+生成方式与地点同上：手动档 `gates-manual.yml` 的 `gate=goldens`，run id **40996156801**
+（conclusion=success；job `goldens (生成分平台基准图集)` success，8 步，03:13:32Z–03:16:48Z），ref `line/playhead-follow`，
+headSha `bef7ab82`，artifact `golden-linux`（id 12951880348，470971 字节）；
+⚠ artifact 自带的 `MANIFEST.txt` 是**本改动前的仓库副本**（含旧哈希）⇒ **未采用**。
+**入库前的复核（⚖ 判定量 = 差异像素的 x 列 ＋ 每列的 y 区间）**（stdlib zlib 解码，filter 0，逐像素逐通道比较）：
+- `arrangement-full` / `model-driven-demo-project` / `model-driven-filled-project`：**各 1854 px** = 恰好 4 列 ——
+  编曲线 `x 408 / 768`（各 `y 68..630`，563 px；两列相差 **360** = `120px * 3`，`408` 为新位）
+  ＋ 卷帘线 `x 56 / 236`（各 `y 691..1054`，364 px；两列相差 **180** = `60px * 3`，`56` 为新位）⇒ 两条线**旧位置消失、新位置出现**；
+- `arrangement-compact`：**1854 px**，同样 4 列：`x 204 / 564`（563）＋ `x 56 / 236`（364）；
+- `session-full`：**728 px** = 只有卷帘线的两列 `x 56 / 236`（各 364）—— 该帧不含编曲画布；
+- 4（或 2）列之外不一致像素数 = **0**；新线色 `231,223,200`（`Tokens.gold-bright`），旧位置回到底色
+  （`44,57,72` / `33,43,54` / `19,26,34` 等按行条带）⇒ **没有布局位移、也没有别的控件被触碰**。
+⚠ 五张的**字节数相同**（6222418）**不构成任何证据**（存储式 deflate），判内容的是上面的 sha256 与逐像素读数。
+
+**⚠ 2026-10-30 再录（`line/loop-brace-honesty`，headSha `cc55fd2d`，提交「删除编曲标尺里的假循环选区把手」）**: 本批删除 `arrangement-loop-brace` —— 它按固定几何（`x: 120px * 2`、`width: 120px * 4`）画一个"2–6 小节循环选区"骨架，无障碍值写死 `"2 - 6"`，而**模型没有走带循环载体**（`LoopConfig` 只住在 `ClipPlacement` 上，`TransportConfig` 无循环字段，`Op` 无对应变体）⇒ 纯假读数。该把手在编曲帧里默认可见且未被遮罩 ⇒ 4 张基准确定性过期；`session-full` 不含编曲画布 ⇒ 0 差异。
+生成地点与生成方式同上：手动档 `gates-manual.yml` 的 `gate=goldens`，run id **41022763821**（conclusion=success；job `goldens (生成分平台基准图集)` success，8 步，07:52:38Z–07:54:48Z），ref `line/loop-brace-honesty`，headSha `cc55fd2d`，artifact `golden-linux`（id 12962615956，472153 字节）；artifact 自带的 `MANIFEST.txt` 是**本改动前的仓库副本**（含旧哈希）⇒ **未采用**。
+**入库前的复核（⚖ 判定量 = 差异像素的 x 列 ＋ y 区间）**（stdlib zlib 解码，逐通道比较）：
+- `arrangement-full` / `model-driven-demo-project` / `model-driven-filled-project`：**各 10,560 px** = 恰好一个 `480 × 22` 实心块，`x 648..1127 / y 68..89`（= 画布左沿 240 ＋ 标尺偏移 168 ＋ `120 × 2`，宽 `120 × 4`）；
+- `arrangement-compact`：**10,560 px**，同一块位移到 `x 444..923 / y 68..89`（画布左沿 36；与上一条的 648 相差 **204**）；
+- `session-full`：**0 个差异像素（逐字节相同）**，该帧不含编曲画布；
+- 块外不一致像素数 = **0**；旧块内容（边框 `Tokens.gold-deep` = `109,136,161`、底色 `bg-raised`）回到标尺底色（`19,26,34` 等按行条带）⇒ **没有布局位移、也没有别的控件被触碰**。
+⚠ 五张的**字节数相同**（6222418）**不构成任何证据**（存储式 deflate），判内容的是上面的 sha256 与逐像素读数。
+
 文件	sha256	字节
-app-main-window-arrangement-compact-1920x1080.png	0d75d268d29c4c2b8c7035a30766485c3635166eb3263d790b82ffb667891694	6222418
-app-main-window-arrangement-full-1920x1080.png	780987c172b4b647932cd0dc2714ca3f9d79fe6ab88153e9afa6729f402371b0	6222418
-app-main-window-session-full-1920x1080.png	b4cb6a2eab2417e06a46884b7ed6a25a6f91660b62ca7c83b346b2cad4f7cde1	6222418
-app-model-driven-demo-project-1920x1080.png	780987c172b4b647932cd0dc2714ca3f9d79fe6ab88153e9afa6729f402371b0	6222418
-app-model-driven-filled-project-1920x1080.png	5393c78361fa53d5d503ebe96c1c414871e8e0116927e9fca61b299fcace8956	6222418
+app-main-window-arrangement-compact-1920x1080.png	74a30f23e05dc36316577dd039e2abab6aea59675109a6a9d89e058afc159b0d	6222418
+app-main-window-arrangement-full-1920x1080.png	e75b4b4f08542b44e4943a1f8d0911430c8485cbed28a69083dec33a066aad9b	6222418
+app-main-window-session-full-1920x1080.png	dd59e0c43158b5358dbf9e4557a757cb265cf395f79fdfab139311c2ea638ffc	6222418
+app-model-driven-demo-project-1920x1080.png	e75b4b4f08542b44e4943a1f8d0911430c8485cbed28a69083dec33a066aad9b	6222418
+app-model-driven-filled-project-1920x1080.png	6ea1bd6815089c4cf4eaade179c2cf503523a1b0b20c8a5afbafeae85f6167d1	6222418
