@@ -285,6 +285,10 @@ mod tests {
         let mut out = vec![0.0f32; n];
         comb.process(&input, &mut out);
         assert!(
+            !out.is_empty(),
+            "夹具必须非空（否则下面那条 `.all(..)` 恒真）"
+        );
+        assert!(
             out.iter().all(|v| v.is_finite()),
             "comb produced non-finite output"
         );
@@ -311,6 +315,10 @@ mod tests {
         let input = vec![0.5f32; 44_100];
         let mut out = vec![0.0f32; input.len()];
         comb.process(&input, &mut out);
+        assert!(
+            !out.is_empty(),
+            "夹具必须非空（否则下面那条 `.all(..)` 恒真）"
+        );
         assert!(out.iter().all(|v| v.is_finite() && v.abs() < 8.0));
     }
 
@@ -352,6 +360,10 @@ mod tests {
         assert!(
             correlation > 0.3,
             "comb did not make the noise periodic: {correlation}"
+        );
+        assert!(
+            !out.is_empty(),
+            "夹具必须非空（否则下面那条 `.all(..)` 恒真）"
         );
         assert!(out.iter().all(|v| v.is_finite()));
     }

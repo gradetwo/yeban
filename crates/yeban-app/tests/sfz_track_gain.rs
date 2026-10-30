@@ -310,9 +310,17 @@ fn a_sfz_export_scales_with_the_track_fader_and_gates_on_mute_and_solo() {
 
     // ⭐ 静音 / 别轨独奏 ⇒ 样本**逐位**为 `+0.0`（⛔ 不是"很小"）。
     assert!(
+        !mute_pre.samples.is_empty(),
+        "夹具必须非空（否则下面那条 `.all(..)` 恒真）"
+    );
+    assert!(
         mute_pre.samples.iter().all(|sample| sample.to_bits() == 0),
         "⭐ 静音轨 ⇒ 写盘前样本必须**逐位** 0（`to_bits() == 0`），实得峰值 {}",
         peak(&mute_pre.samples)
+    );
+    assert!(
+        !solo_pre.samples.is_empty(),
+        "夹具必须非空（否则下面那条 `.all(..)` 恒真）"
     );
     assert!(
         solo_pre.samples.iter().all(|sample| sample.to_bits() == 0),
@@ -329,12 +337,20 @@ fn a_sfz_export_scales_with_the_track_fader_and_gates_on_mute_and_solo() {
         };
         let read_back = export_and_read(project, &instrument, &path, depth);
         assert!(
+            !read_back.is_empty(),
+            "夹具必须非空（否则下面那条 `.all(..)` 恒真）"
+        );
+        assert!(
             read_back.iter().all(|sample| sample.to_bits() == 0),
             "⭐ {tag}：32f 回读的样本必须**逐位** 0（实得峰值 {}）",
             peak(&read_back)
         );
     }
     // ⚠ 24-bit 落盘会**按设计**加 TPDF 抖动 ⇒ 纯零信号变成 ±1 LSB；这里只钉"没有信号"。
+    assert!(
+        !mute_i24.is_empty(),
+        "夹具必须非空（否则下面那条 `.all(..)` 恒真）"
+    );
     assert!(
         mute_i24.iter().all(|sample| sample.abs() <= dither_floor),
         "⚠ 24-bit 静音导出只允许剩抖动本底（≤ 1 LSB = {dither_floor}），实得峰值 {}",

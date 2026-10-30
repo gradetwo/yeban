@@ -218,6 +218,10 @@ fn a_delayed_trigger_shifts_the_waveform_by_exactly_the_trigger_offset() {
         "夹具必须出声（否则下面四条都可能空过）"
     );
     assert!(
+        !at_offset.is_empty(),
+        "夹具必须非空（否则下面那条 `.all(..)` 恒真）"
+    );
+    assert!(
         at_offset[..OFFSET].iter().all(|sample| *sample == 0.0),
         "起点之前必须一帧都不出声"
     );
@@ -361,6 +365,10 @@ fn rt_path_allocates_nothing_over_10_000_quanta() {
         "有声音的帧只占 {nonzero_frames}/{rendered_frames} —— 窗口大部分是静音快路径（假绿）"
     );
     assert!(
+        !block.is_empty(),
+        "夹具必须非空（否则下面那条 `.all(..)` 恒真）"
+    );
+    assert!(
         block.iter().all(|sample| sample.is_finite()),
         "路径产出了非有限值"
     );
@@ -493,6 +501,10 @@ fn saturating_positions_allocate_nothing() {
     assert!(
         nonzero_frames > 0,
         "窗口里一个非零样本都没有 ⇒ 饱和分支可能没被执行（假绿）"
+    );
+    assert!(
+        !block.is_empty(),
+        "夹具必须非空（否则下面那条 `.all(..)` 恒真）"
     );
     assert!(
         block.iter().all(|sample| sample.is_finite()),

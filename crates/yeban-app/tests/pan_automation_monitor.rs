@@ -381,9 +381,17 @@ fn a_pan_only_lane_moves_the_monitor_pan() {
     println!("### #260 导出 sha256（开/关泳道）= {enabled_export} / {disabled_export}");
 
     assert!(
+        !enabled.written.is_empty(),
+        "夹具必须非空（否则下面那条 `.all(..)` 恒真）"
+    );
+    assert!(
         enabled.written.iter().all(|written| *written == 2),
         "每跳必须写 2 条（左+右），实得首跳 {:?}",
         enabled.written.first()
+    );
+    assert!(
+        !disabled.written.is_empty(),
+        "夹具必须非空（否则下面那条 `.all(..)` 恒真）"
     );
     assert!(
         disabled.written.iter().all(|written| *written == 0),
