@@ -271,23 +271,15 @@ export component PianoRoll inherits Rectangle {
             accessible-item-selected: root.note-selected[note_index];
         }
 
-        // AI 建议层预览 (§9.1): 45% 半透明 + 虚线霓虹紫描边 + 置信度徽章。
-        // 骨架里只画一个静态示意块, 采纳/放弃由 Esc / Shift+Enter 驱动 (src/input.rs)。
-        Rectangle {
-            x: Tokens.space-5 + 76px * 6;
-            y: 14px * 2 + 6px;
-            width: 66px;
-            height: 12px;
-            background: Tokens.ai-suggestion.with-alpha(0.45);
-            border-width: 1px;
-            border-color: Tokens.ai-suggestion;
-            border-radius: Tokens.radius-sm;
-            accessible-role: list-item;
-            accessible-id: "note-suggestion-overlay-rect";
-            accessible-label: "AI 建议音符 (待采纳)";
-            accessible-item-selectable: true;
-            accessible-item-selected: false;
-        }
+        // AI 建议层 (§9.1)：⛔ 今天**不画**。
+        //
+        // 曾有一个静态示意块（`note-suggestion-overlay-rect`，标签 "AI 建议音符 (待采纳)"）——
+        // 它没有任何提案数据源：界面侧**没有**"当前待采纳的提案身份"这一表示（提案抽屉的
+        // 四个数据面属性默认全空、没有宿主写者；逐条证据见 `src/host.rs` 的
+        // `action_has_implementation` 文档里 `AcceptAiSuggestion` 那一段），所以那块
+        // "待采纳音符"只是一个永远在场的假建议。与 `musical_pr_drawer_declares_no_demo_proposals`
+        // 同一条纪律：能力不存在就不画。真落地时要先有提案来源（领域 `Domain.proposals`
+        // → 投影 → 注入），再按 §9.1 的 45% 半透明 + 虚线描边重画这一层。
     }
 
     // ---------------------------------------------------------------- 力度泳道 (§3.3 力度工具)
