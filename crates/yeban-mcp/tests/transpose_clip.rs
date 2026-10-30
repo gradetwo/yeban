@@ -509,14 +509,23 @@ fn absent_auto_merge_on_edit_notes_proposes_without_merging() {
             before,
             "`{label}` 必须一位都不合并（移调⛔ 落到工程上）"
         );
-        let proposals = call(&mut dispatcher, &auth, "yeban_list_proposals", json!({}));
+        // ⚠ 本文件的 `call()` 返回**整份 result**（`auto_merge.rs` 的 `call()`
+        // 替调用方剥掉 `data` ⇒ 同一行代码在那边读得到、在这边读不到，
+        // 2026-10-30 run `40983157377` 唯一一条红就是这么来的）。
+        // `list_proposals` 的载荷在 `data` 下：`{proposals, openCount, totalCount, …}`。
+        let list = call(&mut dispatcher, &auth, "yeban_list_proposals", json!({}));
         assert_eq!(
-            proposals["proposals"]
+            list["data"]["proposals"]
                 .as_array()
-                .expect("`proposals` 必须是数组")
+                .expect("`data.proposals` 必须是数组")
                 .len(),
             1,
-            "缺省路径仍然要真的留下一个待合并的提案: {label} / {proposals}"
+            "缺省路径仍然要真的留下一个待合并的提案: {label} / {list}"
+        );
+        assert_eq!(
+            list["data"]["openCount"],
+            json!(1),
+            "待合并计数必须为 1（提案可发现的那一面）: {label} / {list}"
         );
     }
 
