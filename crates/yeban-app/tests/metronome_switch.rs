@@ -14,7 +14,7 @@
 //! | 判据 | 证的事 |
 //! | :--- | :--- |
 //! | ①（可寻址） | `transport-metronome-button` 在运行时树里、角色 = `Button`、标签与注册表逐字一致；装配态 `metronome-on == 文档字段`（`false`） |
-//! | ②（真点击 → 真引擎） | 注入真实指针点击 ⇒ 属性翻 `true`，走带**仍是 Playing**（换引擎不许破坏走带），推进 2 拍后 `metronome_clicks > 0`（⛔ 不是只看属性） |
+//! | ②（真点击 → 真引擎） | 注入真实指针点击 ⇒ 属性翻 `true`，走带**仍是 Playing**（换引擎不许破坏走带），再推进 2 拍后 `metronome_clicks` **新增**（⛔ 不是只看属性；换引擎的重建自身会 `pump` 出 tick 0 那一次，最多 1） |
 //! | ③（关得掉） | 再点一次 ⇒ 属性回 `false`；推进 2 拍后 `metronome_clicks == 0`（新快照真的关掉了）—— 这正是"从文档算下一个值"会红的格 |
 //! | ④（键盘同一落点） | `Cmd/Ctrl+Alt+N` 被消费 ⇒ 属性与音频面读数与点击**逐格相同**（开 ⇒ 有咔哒，再按 ⇒ 无咔哒） |
 //! | ⑤（属性是唯一镜面） | 点击**只发** `toggle-metronome` 回调、⛔ 不在 `.slint` 里翻转属性；属性由宿主写 —— 由 ②③④ 的往返共同证明 |
@@ -230,15 +230,26 @@ fn the_metronome_switch_round_trips_from_both_entries() {
         TransportState::Playing,
         "拨节拍器不许把播放变成停住（换引擎必须恢复走带状态）"
     );
-    assert_eq!(rig.clicks(), 0, "新引擎在推进之前还没有咔哒");
+    // ⚠ 换引擎**自己**也会推进量子：`apply_transport_config` 的 stop / play / seek
+    // 每条命令都要 `pump(1)`（见 `src/metronome.rs` 模块文档），所以 tick 0 那一次
+    // 拍点在**重建里**就被计上了。恢复的实测漂移上限 `MAX_RESTORE_DRIFT_TICKS = 16`
+    // tick，远小于一拍 960 tick ⇒ 重建最多只跨过**一个**拍点 ⇒ 计数上界是 1。
+    // 原判据写的是 `== 0`（"推进之前还没有咔哒"），与实现自陈的契约直接矛盾：
+    // CI run `40994197164` 实测这里读数是 1（370 条里只红这一条）。
+    let clicks_after_rebuild = rig.clicks();
+    assert!(
+        clicks_after_rebuild <= 1,
+        "⭐ 重建自身最多跨过 tick 0 一个拍点（实测 {clicks_after_rebuild}）"
+    );
     rig.render(QUANTA_TWO_BEATS);
     let on_clicks = rig.clicks();
     println!(
-        "[#16/②] 点击开：metronome-on=true；推进 {QUANTA_TWO_BEATS} 个量子后 metronome_clicks={on_clicks}"
+        "[#16/②] 点击开：metronome-on=true；重建后 metronome_clicks={clicks_after_rebuild}；\
+         再推进 {QUANTA_TWO_BEATS} 个量子后 metronome_clicks={on_clicks}"
     );
     assert!(
-        on_clicks > 0,
-        "⭐ 开之后推进 ≥2 拍必须有咔哒（实测 {on_clicks}）"
+        on_clicks > clicks_after_rebuild,
+        "⭐ 开之后推进 ≥2 拍必须**新增**咔哒（实测 {clicks_after_rebuild} → {on_clicks}）"
     );
 
     // ---- ③ 再点击关：属性回 false，推进 2 拍不再有咔哒（往返）----
