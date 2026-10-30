@@ -6815,7 +6815,7 @@ mod tests {
             shared.expect("演示工程必须有两个摆放共享同一片段池条目");
         let scopes: BTreeSet<Option<&str>> = shared_placements
             .iter()
-            .map(|placement| view.clip_scope_for_placement(*placement))
+            .map(|placement| view.clip_scope_for_placement(placement))
             .collect();
         assert_eq!(
             scopes,

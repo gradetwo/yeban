@@ -142,25 +142,29 @@ fn flags_of(ui: &MainWindow) -> Vec<bool> {
     bools_of(ui.get_note_selected())
 }
 
-/// 同一次注入的五个音符数组 ＋ 选中标志。
-fn reading(
-    ui: &MainWindow,
-) -> (
-    Vec<String>,
-    Vec<f32>,
-    Vec<f32>,
-    Vec<f32>,
-    Vec<f32>,
-    Vec<bool>,
-) {
-    (
-        ulids_of(ui),
-        floats_of(ui.get_note_positions()),
-        floats_of(ui.get_note_widths()),
-        floats_of(ui.get_note_ys()),
-        floats_of(ui.get_note_velocities()),
-        flags_of(ui),
-    )
+/// 同一次注入的五个音符数组 ＋ 选中标志（六个平行数组，同索引集）。
+///
+/// 用具名字段而不是六元组：`clippy::type_complexity` 对 `-D warnings` 生效
+/// （run 40989419153 红在 `roll_scope.rs:148`）。
+#[derive(Debug, PartialEq)]
+struct Reading {
+    ulids: Vec<String>,
+    positions: Vec<f32>,
+    widths: Vec<f32>,
+    ys: Vec<f32>,
+    velocities: Vec<f32>,
+    selected: Vec<bool>,
+}
+
+fn reading(ui: &MainWindow) -> Reading {
+    Reading {
+        ulids: ulids_of(ui),
+        positions: floats_of(ui.get_note_positions()),
+        widths: floats_of(ui.get_note_widths()),
+        ys: floats_of(ui.get_note_ys()),
+        velocities: floats_of(ui.get_note_velocities()),
+        selected: flags_of(ui),
+    }
 }
 
 /// `selected-ulids` 的当前读数。
@@ -223,9 +227,16 @@ fn roll_scope_follows_the_selected_clip_and_restores_the_baseline() {
         "默认不选中任何剪辑"
     );
     let base = reading(port.ui());
-    assert_eq!(base.0, all_notes, "默认注入面 = 片段池全部音符");
-    assert_eq!(base.5.len(), all_notes.len(), "选中标志与音符数组同索引集");
-    assert!(base.5.iter().all(|flag| !*flag), "默认没有选中任何音符");
+    assert_eq!(base.ulids, all_notes, "默认注入面 = 片段池全部音符");
+    assert_eq!(
+        base.selected.len(),
+        all_notes.len(),
+        "选中标志与音符数组同索引集"
+    );
+    assert!(
+        base.selected.iter().all(|flag| !*flag),
+        "默认没有选中任何音符"
+    );
     let baseline_frame = port.window().capture().expect("Tier-1 截图");
     assert_eq!(note_leaf_ids(&mut port), all_notes, "基线控件树的音符面");
     assert_eq!(velocity_bar_count(&mut port), all_notes.len());
