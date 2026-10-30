@@ -2957,7 +2957,9 @@ pub const SIDEBAR_EMPTY_PRESETS_REASON: &str =
 /// 画出来的理由（非空 ⇒ 空串）。
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SidebarCategoryContent {
+    /// 条目显示名，顺序即界面自上而下的顺序（`sidebar-item-{i}` 的 `i` 与此下标同源）。
     pub items: Vec<String>,
+    /// 空分类要如实写出的理由；非空分类是**空串**（⛔ 不是 `None`，界面上没有第二种状态）。
     pub empty_reason: String,
 }
 
