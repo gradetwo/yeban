@@ -12,6 +12,78 @@
 > `docs/ledger/phase-status.md` 的叙事条目**停在 R1144**（2026-10-26）⇒ ⭐ 读进度以
 > `DEVELOPMENT_LEDGER.md` 的尾部为准，⛔ 不要以为 R1144 之后没干活。
 
+### 0.6.0p 下一单候选（2026-10-30 14:15，**0 代码 / 未开工**；只记普查读数，⛔ 重复普查）
+
+- **候选 A：R115（有界断言）扩到 `crates/yeban-mcp`。** 现读数：`.all(` 站点 **68** 个
+  （`src` **23** ＋ `tests` **45**）。⚠ 引擎那份守卫的口径是"**集合规模**有界"，而 mcp 的 src 站点
+  里有一批是**字符/字节谓词**（`chars.all(is_ascii_hexdigit)`、`text.bytes().all(..)`）——
+  这些不适用同一口径。⇒ 开工前必须先写清"哪一类站点需要规模下界、哪一类不适用"，
+  ⛔ 不要照抄引擎的 `has_size_bound` 启发式（会大面积误伤）。
+- **候选 B：零判据集成文件。** 现读数：`crates/*/tests/*.rs` 共 **282** 个文件，其中 **7** 个
+  `#[test]` 计数为 **0** —— 逐个看过，**全部合法**：4 个是 `harness = false` 的运行时腿
+  （`meter_rt_contract` / `snapshot_retire_churn` / `synth_rt_zero_alloc` / `transport_rt_zero_alloc`，
+  `main()` 驱动）、3 个是 `include!`/`#[path]` 包装（`real_ui_tier1` / `pure_modules_scaffold` /
+  `support_scaffolds`）。若做守卫，这 7 个必须是**具名例外**（⛔ 别用"有 fn 即算过"这种宽口径）。
+- 两条都**未开工**；创作缺口仍全在人类裁决（`ADR-0042` G8j／`ADR-0047`..`0050`／`ADR-0004` Q13）。
+
+### 0.6.0o ⭐ 尾批（2026-10-30 13:30）：**engine 也有死名册，而且那条判据根本不存在**（M11 缺失 ＋ 新常驻判据）
+
+- **缺陷（两层）**：`crates/yeban-engine/src/mixer.rs:150` 称"引擎侧 `PanLaw` 与模型的对应由
+  `tests/mix_render.rs::engine_pan_law_names_match_the_model`（穷举四个变体）钉住"。
+  ① 该判据**整 crate 不存在**；② 更重的一层：`mix_render.rs` 当时对 `PanLaw` **零提及** ⇒
+  "穷举钉住"这件事**从未被测过**（`from_model` 的穷举 `match` 只保证编译期不漏变体）。
+- **全仓普查（可复算）**：`crates/*/src/**` 的 `::tests::NAME` ＋ `.rs::NAME` 共 **84** 个去重名字，
+  逐个要求落到 `(fn|const|type|struct|enum|trait|static) NAME` ⇒ **2 个 DEAD**：
+  上述那个（真缺陷，已修）＋ `prepare_sampler`（原文写"**退休**" ⇒ 描述已退休符号，
+  **假阳性，⛔ 不改**，那句話记的是 `#274` 迁移方向）。
+- **修复**：`mix_render.rs` 新增 **M11** `engine_pan_law_names_match_the_model`
+  —— 穷举四个模型变体 → `from_model` → 两侧 `Debug` 名逐字相同；四者落到四个**不同**引擎变体；
+  下界 `== 4`（R93／R100）；模块文档表补 M11 行（含"怎么变红"）。
+- **新常驻判据**：`crates/yeban-engine/tests/doc_criterion_references_resolve.rs`
+  —— 扫 `src/**` 两种指路形状，`fn NAME(` 必须存在；解析语料 ＝ engine（src＋tests）∪
+  **yeban-dsp**（唯一被显式跨 crate 指路的目标，`level.rs:30`）；⛔ 不扩到整个 workspace。
+  下界（＝当前值）：被扫文件 **24**、引用 **7**、去重名字 **4**、语料 **116**；抽取器运行期自证（R84）。
+- **本地正反两例**：正例 **2 passed**；把 `mixer.rs` 名字改成 `…_TYPO` 的副本 ⇒ **红**并点名文件。
+  ⚠ 首跑下界写虚（26／60）⇒ 实测 24／116 后改等号口径。
+- **判决链**：线 `line/s7-engine-doc-refs` @ `7a5c86ff` → run **`41058130056` success**
+  （engine 12:48:39→12:53:45 **5m06s**／app 30m23s／macos 27m21s／windows 32m12s 全部真跑；
+  全量腿 skipped）；merge `ea8e5efd` → run **`41063018818` success**（engine 4m17s／app 33m43s／macos 29m23s／windows 23m01s；engine 腿读数与线同形 690 passed／0 failed）。
+  **读数（engine 腿）**：`Running tests/` **44** ／ `test result:` **42** ／ passed **690** ／
+  `FAILED` **0**；M11 与两条 doc-ref 判据均逐名 `ok`（前一行分别是对应的 `Running tests/…`）。
+- **落地与清理**：merge `ea8e5efd`（2 files, +190），post-merge 自检 passed；推前 `rev-list` `0 0`；
+  `git push origin main:main`；`worktree.sh rm --purge` → 归档 `line-archive/s7-engine-doc-refs @ 7a5c86ff`。
+- **下一步**：自主可做＝**新审计轴**；创作缺口仍全在人类裁决。明细见台账 §16。
+
+### 0.6.0n ⭐ 尾批（2026-10-30 12:10）：§14.5 待核**用可数读数判定**（`sfz.rs` 两句旧注释已改，新常驻判据）
+
+- **判定（⛔ 不凭注释改注释，先数"谁在发声"）**：`domain/render.rs` 里 `note_wave(` **0** 次、
+  `sfz::render(` **0** 次、`sfz::survey_sampler(` **1** 次（`:4679`；其自述在 `sfz.rs:2078` 明写
+  ⛔ 不渲染、⛔ 不读盘）；`sfz::render(` 全 crate 唯一调用点在 `domain/mod.rs:3503`（＝只有
+  `yeban_render_sfz_wav`）。引擎侧真有 span 证据：`crates/yeban-engine/tests/sfz_instrument.rs`
+  S13（`:1477-1533`，`offset=10 end=200` ⇒ 写入 190 帧、首帧逐位等于 `源[10] × gain`），
+  外加 S3／S4／S95／S96 的反向与 span×reverse 逐帧读数。
+  ⇒ **`render.rs` 的 `#274` 退役成立**；`sfz.rs:1379/1785` 的"两个工具都走 `note_wave`"是
+  `#274` 之前的旧描述，已改写（只动注释，`unsupported_keys()` 未改 —— `render_sfz_wav` 确实
+  仍不切 span、只取第一条区域）。
+- **新常驻判据**：`crates/yeban-mcp/tests/sampler_source_single_path.rs`
+  ——`include_str!("../src/domain/render.rs")` 编译期固定；正向必须有 `sfz::survey_sampler(`，
+  反向必须没有 `note_wave(`／`sfz::render(`。⚠ 现有判据拦不住这条：`render_master.rs` 的正向
+  用例测"峰值变没变＋报了没有"，把 `note_wave` 接回母带它仍绿。
+- **本地正反两例（推送前跑完）**：真文件 **1 passed**；把同一份 `render.rs` 拷到 `/tmp` 副本并
+  注入一行 `fn _injected() { note_wave(); }` ⇒ **0 passed / 1 failed**。
+- **判决链（全部读回）**：
+  - 线 `line/s6h-sampler-path` @ `6ce2afd1` → run **`41043819558` success**
+    （mcp 10m08s／macos 26m50s／windows 32m02s／ui-mcp 3m00s 全部真跑；全量腿 skipped）
+  - merge `4768dcda` → run **`41048016380` success**（mcp 18m00s／macos 24m42s／windows 38m01s）
+  - **读数（两轮同形）**：`Running tests/` **134** ／ `test result:` **141** ／ passed **2,454** ／
+    `FAILED` **0**；新判据在 `test` 与 `test (合并特性)` **各 1 次 ok**，其前一行都是
+    `Running tests/sampler_source_single_path.rs`。
+- **落地与清理**：merge `4768dcda`（2 files, +76/−6），post-merge 自检 passed；推前 `rev-list` `0 0`；
+  `git push origin main:main`；`worktree.sh rm --purge` → 归档 `line-archive/s6h-sampler-path @ 6ce2afd1`；
+  `git worktree list` ＝ **一行**。
+- **下一步**：自主可做＝**新审计轴**（本轴已收口）；创作缺口仍全在人类裁决
+  （`ADR-0042` G8j／`ADR-0047`..`0050`／`ADR-0004` Q13／`master_bus_track_id`）。明细见台账 §15。
+
 ### 0.6.0m ⭐ 尾批（2026-10-30 09:50）：**散文里点名的判据是死名册**（3 处，新常驻判据）
 
 - **缺陷（新的一格）**：`crates/yeban-mcp/src/**` 的文档是 MCP 行为的**唯一事实源**，其中 3 处
