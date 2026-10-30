@@ -180,6 +180,14 @@ jobs:
           # 表里不许出现 crates/ 里 grep 不到的名字; 汇总计数必须与逐行统计相等。
           python3 scripts/gates/check_feature_alignment.py
 
+      - name: 集成测试文件零判据守卫（tests/*.rs 必须自带判据或为具名例外）
+        run: |
+          set -euo pipefail
+          # 没有 #[test] 的集成测试文件照样编译并报绿（0 passed）⇒「新增测试文件」与
+          # 「新增判据」在门禁读数上不可区分。7 个合法例外逐条登记, 且每条都做机检
+          # （4 个 harness=false 运行期腿 / 3 个 #[path] 判据包装）。
+          python3 scripts/gates/check_test_criteria_presence.py
+
       - name: 依赖许可清单漂移检查
         run: |
           set -euo pipefail

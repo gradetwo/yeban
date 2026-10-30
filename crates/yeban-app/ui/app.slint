@@ -380,6 +380,12 @@ export component MainWindow inherits Window {
     /// ⭐ 录音键的显示态（`[ARCH-REC-001]`）：唯一写者 = `host::wire_transport`
     /// （起录 ⇒ true、停录 ⇒ false）。⛔ 不是工程数据（`MODEL-ISO-001` 的挥发性层）。
     in-out property <bool> recording: false;
+    /// ⭐ 节拍器开关的显示态（`[ARCH-RT-001]`）：唯一写者 = 宿主
+    /// （`host::wire_transport` 的 `on_toggle_metronome` 与 `host::apply_action` 的
+    /// `Action::ToggleMetronome` 臂写的是**同一个**属性）。⛔ 不是工程数据
+    /// （`MODEL-ISO-001` 的挥发性层）；初始值由装配期从
+    /// `project.transport.metronome_enabled` 读入。
+    in-out property <bool> metronome-on: false;
     in-out property <bool> arrangement-view: true;
     in-out property <int> console-tab: 0;
     /// ⭐ 底部控制台是否最大化（`Cmd/Ctrl+Alt+M` / 控制台右上角 ⤢ 的同一个视图态）。
@@ -388,6 +394,27 @@ export component MainWindow inherits Window {
     /// 布局绑定：最大化时中段（工作区）让出全部高度，控制台吃掉剩余空间。
     /// ⛔ 不是工程数据（`MODEL-ISO-001` 的挥发性层）、不进 `.yeban`、不进撤销栈。
     in-out property <bool> console-maximized: false;
+    /// ⭐ 底部控制台高度的**拖拽档位**（px）。唯一写者 = `host::wire_view_callbacks` 的
+    /// `console-height-requested`（钳到 `220..=600`，`UI-GRID-002` 的硬限）与
+    /// `console-height-reset`（写 `0`）。`0` = 未拖拽 ⇒ 布局保持 3:2 弹性比 ⇒
+    /// **默认帧一位不变**。⛔ 不是工程数据（`MODEL-ISO-001` 的挥发性层）、
+    /// 不进 `.yeban`、不进撤销栈。
+    in-out property <int> console-height-px: 0;
+    // ---- splitter 指针状态机的 UI 局部读数（⛔ 不是视图态：不进宿主、不进测试 API）----
+    property <bool> splitter-dragging: false;
+    property <length> splitter-press-y: 0px;
+    property <bool> console-fixed: !root.console-maximized && root.console-height-px > 0;
+    /// 控制台的**实测**高度（布局读数）—— splitter 的 `accessible-value` 的唯一数据源，
+    /// 与画面同源（⛔ 不是抄来的 "320"）。
+    out property <length> console-height-readout: console-tabs.height;
+    // ⭐ 拖拽档位生效 = **state 覆盖**（Slint `states`）：只有 `console-fixed` 成立时
+    // 才把控制台高度钉死在 `console-height-px`。默认帧不经过任何新绑定 ⇒ 一位像素不变。
+    states [
+        console-pinned when root.console-fixed : {
+            console-tabs.min-height: root.console-height-px * 1px;
+            console-tabs.max-height: root.console-height-px * 1px;
+        }
+    ]
     in-out property <bool> sidebar-collapsed: false;
     /// ⭐ 左侧资源栏的激活分类（0 = 乐器 / 1 = 采样 / 2 = 预置）。
     /// 唯一写者 = `host::wire_view_callbacks` 的 `select-sidebar-category` 回调
@@ -457,6 +484,12 @@ export component MainWindow inherits Window {
     in-out property <string> bpm-display: "120.00";
     in-out property <string> branch-name: "main";
 
+    // 走带光标的位置（960 PPQ tick）。唯一写者 = `src/host.rs` 的 `apply_transport`
+    // （与 `timecode` 同一次引擎读数）；编曲 / 卷帘两条 playhead 都由它派生 x
+    // （`tick ÷ ticks-per-pixel`，与投影里音符 / 小节线的整数除法同口径）。
+    // ⛔ 界面不记位置；旧版两条 playhead 的 `x` 是写死的假位置（`accessible-value: "3"`）。
+    in-out property <int> playhead-ticks: 0;
+
     // ---------------------------------------------------------------------
     // 时间码的**格式化网格**（`[MODEL-AST-001]`）
     // ---------------------------------------------------------------------
@@ -475,6 +508,9 @@ export component MainWindow inherits Window {
     callback toggle-play();
     /// ⭐ 录音键（`[ARCH-REC-001]`）：按下 ⇒ 起录 / 停录。
     callback toggle-record();
+    /// ⭐ 节拍器开关（`Cmd/Ctrl+Alt+N` 的可点等价物）。界面只发通知；
+    /// 状态属性 `metronome-on` 的唯一写者仍是宿主（`host::wire_transport`）。
+    callback toggle-metronome();
     // 走带的"停止"（停住 + 回到起点）。它与 `toggle-play` 一样由 Rust 侧接线，
     // 界面**不自己翻转**任何走带状态 —— 见 `src/host.rs` 的 `wire_transport`。
     callback stop();
@@ -491,15 +527,30 @@ export component MainWindow inherits Window {
     /// ⭐ 控制台右上角 ⤢ 的点击入口：与 `Cmd/Ctrl+Alt+M`（`Action::ToggleConsoleMaximize`）
     /// 落到**同一个**属性 `console-maximized`（唯一实现 = 宿主写属性，界面不自己翻转）。
     callback console-maximize-toggle();
+    /// ⭐ 拖 splitter：界面按"实测高 + 指针位移"报**目标高度**（px），宿主钳到
+    /// `220..=600` 后写 `console-height-px`（唯一写者，与 sidebar 两条同档）。
+    callback console-height-requested(int);
+    /// ⭐ 双击 splitter：宿主把 `console-height-px` 清零 ⇒ 回到 3:2 弹性比（默认态）。
+    callback console-height-reset();
     callback toggle-undo-tree();
+    // 时光机右上角 × 的关闭入口：必须落**端口**（`UiAction::CloseUndoTree`），与 `Esc`
+    // 同一个动作、同一个回写路径。只写界面属性会让端口仍记着"开着"，下一次撤销的
+    // `apply_undo` 就按端口把弹窗翻回来（改动前的 × 正是如此）。
+    callback close-undo-tree();
     // D45: 时光机里的"撤销一步"（与 `Cmd+Z` 汇到同一个 `UndoPort::perform`）。
     callback undo-step();
+    // 时光机里**点击版本节点**：参数 = 节点下标（0 = 活跃分支头）；宿主
+    // `host::wire_undo` 把它换算成 `UndoMany` / `RedoMany` 落到同一个 `UndoPort::perform`。
+    callback undo-node-selected(int);
     // `ROAD-M4-008` 选项 (a)：**保存工程**。事件源是 `ui/transport.slint` 的"保存"按钮
     // （`accessible-id: "transport-save-button"`）；宿主 `host::wire_save` 把它落到
     // `save_action::dispatch_save`（有控制面会话 ⇒ 走那个会话；没有 ⇒ 本地原子写），
     // 并把它说的**原话**写回 `save-status`（下面的 `in-out property`）。
     // 界面**不**自己写盘、也不自己做"保存成功了吗"的判断。
     callback save-project();
+    // 走带区「回滚到上一个 Commit」—— 原样上抛给宿主（`host::wire_undo` 落到
+    // `UiAction::Undo`）。界面不判"有没有可撤销的编辑"，那是撤销会话的读数。
+    callback revert-to-last-commit();
     // 最近一次保存的结果文本（`""` = 本次会话还没按过保存）。
     // 它是**宿主写的**（`host::apply_save_outcome` 是唯一写者），由状态栏读出来；
     // 成功与失败都在这里 —— 失败被吞掉正是本仓库最忌讳的失败模式。
@@ -636,7 +687,8 @@ export component MainWindow inherits Window {
     // `forward-focus` 让窗口建立时焦点就落在这里，因此快捷键**不需要先点一下界面**才生效
     // （判据 16 的端口注入就是这个前提的机械证据）。
     // 焦点被 BPM 敲入框拿走时，单键快捷键按 §7.1/§7.2 归文本控件 —— 那是规范语义，不是缺口；
-    // 回到这里要靠 Slint 的焦点轮转（`Tab`）或程序性 `focus()`，**没有**自动回焦的判据（见 N2 行）。
+    // 回到这里要靠 Slint 的焦点轮转（`Tab`）或程序性 `focus()`。模态那条路径的程序性回焦
+    // （关闭时光机 ⇒ 复位到这里）已有判据：`tests/undo_tree_focus_trap.rs`。
     forward-focus: key-handler;
     key-handler := FocusScope {
         key-pressed(event) => {
@@ -932,6 +984,15 @@ export component MainWindow inherits Window {
     // **打开工程那条**换工程路径（`OpenProjectRuntime::open_runtime`）。
     // ⛔ 界面不写盘、不猜路径、不判断成功与否；回执走**既有**的 `module-status` 通道。
     callback new-project();
+    // ⭐ **导入音频**（本线补的那一格）：把一份 WAV 作为片段导入当前工程。
+    //
+    // 事件源 = `ui/console/asset_pool_panel.slint` 的 `asset-pool-import-button`
+    // （控制台 **Tab 1** 的素材池面板 ⇒ 默认帧一个像素都不画，5 张 Linux 基准逐位不变）。
+    // 落点 = 宿主 `host::wire_import_audio`：问一次**可注入**的 `FilePicker` ⇒
+    // `crate::import_audio::import_audio_file`（经 `UndoPort`，来源 `OpOrigin::Import`
+    // ⇒ 可撤销）＋ 资产字节登记进会话池（保存才有 `assets/{sha256}`）⇒ 重投影。
+    // 回执走**既有**的 `module-status` 投影通道。⛔ 界面不读盘、不猜路径、不判断成功与否。
+    callback import-audio();
     // 主控通道条的**写入面**：与上面那六个手势逐条同形，唯一区别是**不带下标**
     // （主总线不在 `track-names` / `track-ids` 里 ⇒ 上面那些 `int` 参数没有合法值能指到它）。
     // 主总线身份由宿主在按下那一刻从权威工程取（`master_bus_track_id`），
@@ -1265,6 +1326,9 @@ export component MainWindow inherits Window {
             branch-name: root.branch-name;
             arrangement-view: root.arrangement-view;
             ai-drawer-open: root.ai-drawer-open;
+            // ⚠ 单向（子只读）：`metronome-on` 的唯一写者是宿主，写的是
+            // `root.metronome-on`；子组件的 `accessible-checked` 与选中态读这一份。
+            metronome-on: root.metronome-on;
 
             // ⚠ 界面**不**自己翻转 `root.playing`：那个属性只有一个写者 ——
             // `src/host.rs` 的 `apply_transport`（读的是引擎的原子读数）。
@@ -1280,10 +1344,17 @@ export component MainWindow inherits Window {
             toggle-record => {
                 root.toggle-record();
             }
+            // ⭐ 节拍器键：原样转给宿主（⛔ 界面不翻转 `metronome-on` —— 唯一写者是宿主）。
+            toggle-metronome => {
+                root.toggle-metronome();
+            }
             // `ROAD-M4-008`：保存按钮**原样**转给宿主 —— 界面不写盘、不改 `save-status`
             // （那个属性只有宿主一个写者，见 `host::apply_save_outcome`）。
             save-project => {
                 root.save-project();
+            }
+            revert-to-last-commit => {
+                root.revert-to-last-commit();
             }
             // ⚠ 界面**不**自己翻转 `root.arrangement-view` / `root.ai-drawer-open`：
             // 这两个属性与 `playing` 同款 —— 唯一写者是宿主（`host::wire_view_callbacks`，
@@ -1429,6 +1500,11 @@ export component MainWindow inherits Window {
                     section-positions: root.section-positions;
                     section-widths: root.section-widths;
                     clip-ulids: root.clip-ulids;
+                    // ⭐ 走带光标：位置 = 引擎读数（`host::apply_transport` 的唯一写入）；
+                    // 缩放与卷帘共用 `roll-ticks-per-pixel`（同一个 `ViewState` 的投影口径）。
+                    playhead-ticks: root.playhead-ticks;
+                    ticks-per-pixel: root.roll-ticks-per-pixel;
+                    playhead-timecode: root.timecode;
                     // ⭐ 剪辑选中态：与 `clip-ulids` 同一取值域的**身份**（宿主写、界面只读）。
                     selected-clip-ulid: root.selected-clip-ulid;
                     // 包头点击 ⇒ 原样上抛身份，宿主校验后写 `selected-clip-ulid`。
@@ -1499,8 +1575,8 @@ export component MainWindow inherits Window {
         }
 
         // ---------------------------------------------------------- 4px splitter
-        // [UI-GRID-002] 拖拽范围硬限 220–600px; 真实的拖拽 + 双击居中
-        // 需要指针捕获状态机 (规范 §6.1), 本骨架只登记几何与语义值。
+        // [UI-GRID-002] 拖拽范围硬限 220–600px（钳位在宿主 = 唯一写者）。指针状态机与
+        // 卷帘拖动同款（§6.1）：down 记按下点、move 报目标高度、up/cancel 收手。
         Rectangle {
             min-height: Tokens.splitter-height;
             max-height: Tokens.splitter-height;
@@ -1513,7 +1589,40 @@ export component MainWindow inherits Window {
             accessible-value-minimum: 220;
             accessible-value-maximum: 600;
             accessible-value-step: 1;
-            accessible-value: "320";
+            // 屏读器读到的必须是**实测**高度（与画面同源）；改动前这里写死 "320"，
+            // 每一帧都谎报自己的位置。
+            accessible-value: "" + Math.round(root.console-height-readout / 1px);
+
+            splitter-touch := TouchArea {
+                // 命中带上下各扩 2px：4px 的细线不好抓（⛔ 不改可视几何）。
+                width: parent.width;
+                y: -2px;
+                height: parent.height + 4px;
+
+                pointer-event(event) => {
+                    if event.kind == PointerEventKind.down {
+                        root.splitter-dragging = true;
+                        root.splitter-press-y = self.mouse-y;
+                    } else if event.kind == PointerEventKind.move && root.splitter-dragging {
+                        // 目标 = 实测高 + 按下以来的**屏幕**位移。`mouse-y` 是 TouchArea
+                        // 局部坐标，分割线**自身**随布局移动的量已含在实测高里，两者相消
+                        // ⇒ 拖多少涨多少，⛔ 不逐事件累积误差（推导见 tests/splitter_drag.rs 头注）。
+                        root.console-height-requested(Math.round(
+                            root.console-height-readout / 1px
+                            + (root.splitter-press-y - self.mouse-y) / 1px
+                        ));
+                    } else if event.kind == PointerEventKind.up
+                        || event.kind == PointerEventKind.cancel {
+                        root.splitter-dragging = false;
+                    }
+                }
+
+                // 双击 = 回到默认（3:2 弹性比）：清零档位由宿主做（唯一写者）。
+                double-clicked => {
+                    root.splitter-dragging = false;
+                    root.console-height-reset();
+                }
+            }
         }
 
         // --------------------------------------- 底部控制台 (弹性区的 40%)
@@ -1525,6 +1634,12 @@ export component MainWindow inherits Window {
             note-velocities: root.note-velocities;
             note-positions: root.note-positions;
             note-selected: root.note-selected;
+            // ⭐ 走带光标（卷帘）：与编曲同一次引擎读数、同一个缩放口径；
+            // 滚动偏移让卷帘的 x 与已减过 scroll 的音符位置保持同一坐标系。
+            playhead-ticks: root.playhead-ticks;
+            ticks-per-pixel: root.roll-ticks-per-pixel;
+            scroll-x: root.roll-scroll-x;
+            playhead-timecode: root.timecode;
             active-tool: root.active-tool;
             roll-edit-status: root.roll-edit-status;
             scroll-requested(d) => { root.scroll-requested(d); }
@@ -1809,6 +1924,10 @@ export component MainWindow inherits Window {
             new-project => {
                 root.new-project();
             }
+            // ⭐ **导入音频**：只上抛。唯一落点 = `host::wire_import_audio`。
+            import-audio => {
+                root.import-audio();
+            }
             // 主控写入面：只上抛、不带下标（身份由 `host::wire_mixer_edit` 从权威工程取）。
             mixer-master-fader-grab(y) => {
                 root.mixer-master-fader-grab(y);
@@ -1943,6 +2062,32 @@ export component MainWindow inherits Window {
         close => { root.macro-panel-open = false; }
     }
 
+    // 模态焦点闭环（[UI-A11Y-003] §7.3）：打开时光机 ⇒ 键盘焦点从唯一键盘事件源
+    // `key-handler` 移进模态；关闭 ⇒ 复位到 `key-handler`（打开它的那一层）。`Tab` 在
+    // 模态内被吞掉：焦点不许离开模态，也不许落到画布语义的切视图。
+    // 本 `FocusScope` 没有绘制内容，且 `focus-on-click` / `focus-on-tab-navigation` 关着
+    // ⇒ 不开模态时它既不画像素、也不会被 Tab 轮转选中（只能由下面 `changed` 程序性取焦）。
+    undo_tree_trap := FocusScope {
+        x: 0;
+        y: 0;
+        width: root.width;
+        height: root.height;
+        focus-on-click: false;
+        focus-on-tab-navigation: false;
+        key-pressed(event) => {
+            // Slint 1.18 的字符串转义只认 `\"` / `\\` / `\n` / `\u{...}`，`\t` 会编译失败。
+            if (event.text == "\u{9}") {
+                accept
+            } else if (root.key-action(event.text, event.modifiers.shift,
+                                       event.modifiers.control, event.modifiers.alt,
+                                       event.modifiers.meta)) {
+                accept
+            } else {
+                reject
+            }
+        }
+    }
+
     // 全屏可视化 DAG 时光机 (Cmd/Ctrl + Shift + H)
     UndoTreeModal {
         x: 0;
@@ -1963,7 +2108,23 @@ export component MainWindow inherits Window {
         node-hidden: root.undo-node-hidden;
 
         undo-step => { root.undo-step(); }
-        close => { root.undo-tree-open = false; }
+        node-selected(index) => { root.undo-node-selected(index); }
+        close => { root.close-undo-tree(); }
+    }
+
+    // 焦点闭环的**读数**：Slint 的焦点状态不在控件树里，因此把它镜像成两个可读属性
+    // （唯一读者 = 无头判据 `tests/undo_tree_focus_trap.rs`；界面自己不读）。
+    out property <bool> shortcut-layer-focused: key-handler.has-focus;
+    out property <bool> undo-tree-focus-trapped: undo_tree_trap.has-focus;
+
+    // 取焦/复位由**宿主** `host::apply_undo` 在开关翻转时同步调用（`undo-tree-open`
+    // 的唯一写者就是它）。⛔ 不用 `changed undo-tree-open`：该处理器要等事件循环
+    // 的下一拍才跑，而无头判据设置属性后并不跑事件循环 ⇒ 焦点永远停在原地。
+    public function focus-undo-tree-trap() {
+        undo_tree_trap.focus();
+    }
+    public function focus-shortcut-layer() {
+        key-handler.focus();
     }
 
     // WAV 导出设置（隐藏的模态；默认关着 ⇒ 默认帧一位不变）

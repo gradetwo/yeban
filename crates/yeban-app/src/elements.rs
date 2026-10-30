@@ -239,6 +239,15 @@ impl ElementRegistry {
             "录音",
             false,
         );
+        // ⭐ 节拍器开关（`[ARCH-RT-001]` 的界面侧）：`Cmd/Ctrl+Alt+N` 的可点等价物。
+        // 宽档（≥1120）才画；窄档仍可从键盘拨动（同一个宿主落点）。
+        registry.add(
+            "transport-metronome-button",
+            ElementKind::Button,
+            "transport.slint",
+            "节拍器 (Cmd/Ctrl + Alt + N)",
+            false,
+        );
         // `ROAD-M4-008` 选项 (a)：产品二进制里的**保存**入口（用户够得到的那个按钮）。
         // 它不改工程内容，只是把"保存"交给宿主（`host::wire_save` → `save_action`）。
         registry.add(
@@ -726,13 +735,6 @@ impl ElementRegistry {
             "小节与拍标尺",
             false,
         );
-        registry.add(
-            "arrangement-loop-brace",
-            ElementKind::Slider,
-            "workspace/arrangement_view.slint",
-            "循环选区",
-            false,
-        );
         for (track_index, track) in view.tracks.iter().enumerate() {
             registry.add(
                 &format!("track-{track_index}-header"),
@@ -896,13 +898,9 @@ impl ElementRegistry {
                 false,
             );
         }
-        registry.add(
-            "note-suggestion-overlay-rect",
-            ElementKind::ListItem,
-            "console/piano_roll.slint",
-            "AI 建议音符 (待采纳)",
-            false,
-        );
+        // ⛔ 没有 `note-suggestion-overlay-rect`：AI 建议层还没有提案数据源，
+        // `.slint` 里不再画那块静态示意（与 `musical_pr_drawer_declares_no_demo_proposals`
+        // 同一条纪律）。真落地时先有投影字段，再在两边同时登记。
         registry.add(
             "piano-roll-velocity-lane",
             ElementKind::Region,
@@ -1126,6 +1124,13 @@ impl ElementRegistry {
             ElementKind::Text,
             "console/asset_pool_panel.slint",
             "尚无素材",
+            false,
+        );
+        registry.add(
+            "asset-pool-import-button",
+            ElementKind::Button,
+            "console/asset_pool_panel.slint",
+            "导入音频（用文件对话框挑一个 WAV 并作为片段导入）",
             false,
         );
         for (index, row) in view.asset_pool.iter().enumerate() {
@@ -3381,7 +3386,7 @@ mod tests {
         None
     }
 
-    /// 判据（**"今天确实不可用"钉死**）：走带区三个**文档级动作**今天都没有接线。
+    /// 判据（**"今天确实不可用"钉死**）：走带区**提交 / 切换分支**两个文档级动作今天没有接线。
     ///
     /// 三个控制由 `953b85b`（"Slint 主窗口骨架…"）加进走带区。那一票的提交信息逐字写着
     /// "`GUI` 路径注入演示数据并接线回调"与"回调只打 stderr"，并在边界一节写明
@@ -3390,7 +3395,14 @@ mod tests {
     /// 本判据把"今天确实不可用"钉成**机械事实**：将来谁真接了、忘了改判据，会红。
     /// 谁正是来接线的，就**必须**一并更新本判据（它钉的是**今天**的状态，不是永久禁令）。
     ///
-    /// 三个控制各自卡在哪（代价表与逐条证据见交付报告）。
+    /// ⭐ **2026-10-30 回滚已接线**（`line/revert-button`）：`transport-revert-button`
+    /// 的 `revert_area` 现在有 `clicked` ＋ `accessible-action-default`（同一落点
+    /// `root.revert-to-last-commit()`）⇒ `app.slint` 原样转发 ⇒ `host::wire_undo` 落到
+    /// **既有的** `UiAction::Undo`。语义由模型不变量背书（每次提交恰好一条 `Op::Batch`
+    /// ⇒ 一步撤销 = 回退一个 Commit），界面与宿主都没有第二份撤销实现。
+    /// 本判据保留它的**反向**探针（源文件里必须仍然声明/转发/点击）—— 接线被摘掉会红。
+    ///
+    /// 剩下两个控制各自卡在哪（代价表与逐条证据见交付报告）。
     /// 行号刻意**不写**：本仓库的守卫口径是"符号是判据、行号是提示"，
     /// 而 `ui/transport.slint` 同一片区域今天还有别的切片在改（行号会漂）。
     ///
@@ -3399,10 +3411,6 @@ mod tests {
     ///   会话里**没有**"待提交的编辑"这一状态；权威对**空** op 批次明确拒绝
     ///   （`crates/yeban-mcp/src/domain/mod.rs:2152`，`mutates_project` 也按 `!ops.is_empty()`
     ///   判定，`:893` / `:952`）。
-    /// - `transport-revert-button`（同文件的 `revert_area`）—— **能力存在但未接线**：
-    ///   每次提交恰好携带一条 `Op::Batch`（`crates/yeban-mcp/src/undo_session.rs:445`，
-    ///   `:684` 的"本实现保证每次提交恰好一条 op"），因此**一步撤销 = 回退一个 Commit**，
-    ///   载体是既有的 `UiAction::Undo`。
     /// - `transport-branch-button`（同文件，**没有** `TouchArea`）—— **能力不存在**：
     ///   没有任何"切换活跃分支"的 API（`HostAction` 只有 `Undo` / `Redo` / `Commit`，
     ///   `domain/mod.rs:669`）；它今天只是一块**只读**显示（`src/host.rs:2708` 写 `branch-name`）。
@@ -3413,47 +3421,72 @@ mod tests {
     /// 只写 `accessible-label` 不算诚实处置 —— 本文件 `musical_pr_drawer_declares_no_demo_proposals`
     /// 的判据已经写明"只写在注释或 `accessible-label` 里用户看不见"。
     #[test]
-    fn the_three_transport_document_actions_are_not_wired_today() {
+    fn the_remaining_transport_document_actions_are_not_wired_today() {
         let transport = code_only(
             &std::fs::read_to_string(ui_dir().join("transport.slint")).expect("读 transport.slint"),
         );
 
-        // ① `app.slint` 的 `Transport { … }` 实例**没有**转发这三个回调。
+        // ① `app.slint` 的 `Transport { … }` 实例：**回滚必须转发**（接线的那一半），
+        //    `commit` / `branch` **不得**转发（仍是空壳的那一半）。
         //    查在**声明**之前：一个只声明不转发的回调是空壳，一个 `name => …` 的转发
-        //    才是"用户点下去真的会走那条链"。两条各自独立（本判据的注入实测见交付报告）。
+        //    才是"用户点下去真的会走那条链"。两组各自独立（本判据的注入实测见交付报告）。
         let app =
             code_only(&std::fs::read_to_string(ui_dir().join("app.slint")).expect("读 app.slint"));
-        for name in ["commit", "revert", "branch"] {
-            for spelling in [format!("{name} =>"), format!("{name}=>")] {
-                assert!(
-                    !app.contains(&spelling),
-                    "`app.slint` 今天不得转发 `{spelling}` —— \
-                     谁接上了就一并更新本判据（`the_three_transport_document_actions_are_not_wired_today`）"
-                );
-            }
+        assert!(
+            app.contains("revert-to-last-commit =>"),
+            "`app.slint` 必须把 `revert-to-last-commit` 原样转发给宿主 —— \
+             回滚键的接线被摘掉了（本判据的另一半钉的是它必须还在）"
+        );
+        // ⚠ 必须按**行首记号**比对，⛔ 不能用 `contains("{name} =>")`：回滚的转发行是
+        // `revert-to-last-commit =>`，它是 `commit =>` 的**超串** ⇒ 子串判据会在回滚
+        // 接线之后**误红**（`line/revert-button` 实测：`run 40995638767` 的
+        // `rust (yeban-app)` 红在这里）。Slint 的转发写法固定是「行首 `name` + `=>`」。
+        let forwards = |name: &str| {
+            app.lines().any(|line| {
+                line.trim_start()
+                    .strip_prefix(name)
+                    .and_then(|rest| rest.trim_start().strip_prefix("=>"))
+                    .is_some()
+            })
+        };
+        for name in ["commit", "branch"] {
+            assert!(
+                !forwards(name),
+                "`app.slint` 今天不得转发 `{name} =>` —— \
+                 谁接上了就一并更新本判据（`the_remaining_transport_document_actions_are_not_wired_today`）"
+            );
         }
 
-        // ② `transport.slint` **没有**为这三个动作声明任何回调。
+        // ② `transport.slint` **声明**回滚回调，且**不**为 `commit` / `branch` 声明任何回调。
         //    声明了却接不上（或接了却没人转发）就是假契约。
-        for name in ["commit", "revert", "branch"] {
+        assert!(
+            transport.contains("callback revert-to-last-commit();"),
+            "`transport.slint` 必须声明 `callback revert-to-last-commit();`"
+        );
+        for name in ["commit", "branch"] {
             assert!(
                 !transport.contains(&format!("callback {name}")),
                 "`transport.slint` 今天不得声明 `callback {name}` —— \
-                 谁接上了就一并更新本判据（`the_three_transport_document_actions_are_not_wired_today`）"
+                 谁接上了就一并更新本判据（`the_remaining_transport_document_actions_are_not_wired_today`）"
             );
         }
 
-        // ③ 两个**已经存在**的 `TouchArea` 里没有 `clicked`。
-        //    它们今天只在按下时换底色（`background: commit_area.pressed ? …`），松手什么都不发生。
-        for area in ["commit_area", "revert_area"] {
-            let body = touch_area_body(&transport, area).unwrap_or_else(|| {
-                panic!("`{area}` 必须留在源文件里（`ui/` ↔ 注册表的双向契约要它）")
-            });
-            assert!(
-                !body.contains("clicked"),
-                "`{area}` 今天不得有 `clicked` —— 谁接上了就一并更新本判据\n{body}"
-            );
-        }
+        // ③ `revert_area` **有** `clicked` 且落点是那一个回调；`commit_area` **没有** `clicked`
+        //    （它今天只在按下时换底色，松手什么都不发生）。
+        let revert = touch_area_body(&transport, "revert_area").unwrap_or_else(|| {
+            panic!("`revert_area` 必须留在源文件里（`ui/` ↔ 注册表的双向契约要它）")
+        });
+        assert!(
+            revert.contains("clicked") && revert.contains("root.revert-to-last-commit()"),
+            "`revert_area` 必须有 `clicked` 且唯一落点是 `root.revert-to-last-commit()`\n{revert}"
+        );
+        let commit = touch_area_body(&transport, "commit_area").unwrap_or_else(|| {
+            panic!("`commit_area` 必须留在源文件里（`ui/` ↔ 注册表的双向契约要它）")
+        });
+        assert!(
+            !commit.contains("clicked"),
+            "`commit_area` 今天不得有 `clicked` —— 谁接上了就一并更新本判据\n{commit}"
+        );
 
         // ④ 分支那块连点击源都没有：`transport-branch-button` 到下一个 `accessible-id`
         //    之间不得出现 `TouchArea`（否则"点得动但没反应"又回来了）。
@@ -3487,7 +3520,7 @@ mod tests {
     /// 判据（**"录音今天确实不可用"钉死**，`[ARCH-REC-001]` 的缺口）：录音键**没有**点击处理器，
     /// 而且这不是"忘了接线"——**录音能力在仓库里一处都不存在**。
     ///
-    /// 与上一条判据（`the_three_transport_document_actions_are_not_wired_today`）同款：
+    /// 与上一条判据（`the_remaining_transport_document_actions_are_not_wired_today`）同款：
     /// 它钉的是**今天**的状态，不是永久禁令。将来谁真接了录音，**必须**一并更新本判据。
     ///
     /// ## 规范说"要有"，代码说"没有"
@@ -4283,9 +4316,14 @@ mod tests {
     /// | 语义 ID（`.slint` 右值） | 为什么今天没有动作 |
     /// | :--- | :--- |
     /// | `"ai-rail-intent-button"` | 意图生成能力不存在: 没有 `callback`、没有宿主写者 |
-    /// | `"transport-branch-button"` | 切换活跃分支的 API 一处都不存在（判据 `the_three_transport_document_actions_are_not_wired_today` 已钉） |
+    /// | `"transport-branch-button"` | 切换活跃分支的 API 一处都不存在（判据 `the_remaining_transport_document_actions_are_not_wired_today` 已钉） |
     /// | `"transport-commit-button"` | 同上（会话里没有"待提交的编辑"这一状态） |
-    /// | `"transport-revert-button"` | 同上（能力存在但未接线） |
+    ///
+    /// ⭐ **回滚键已从清单移出**（`4 → 3`，`line/revert-button`，2026-10-30）：
+    /// `"transport-revert-button"` 现在有真动作 —— `revert_area.clicked` 与
+    /// `accessible-action-default` 同一落点 `root.revert-to-last-commit()`
+    /// ⇒ `host::wire_undo` 落到 `UiAction::Undo`（每次提交恰好一条 `Op::Batch`
+    /// ⇒ 一步撤销 = 回退一个 Commit）。按本判据文档的要求（"修好一个 ⇒ 从清单里删掉它"）。
     ///
     /// ⭐ **主控静音 / 独奏已从清单移出**（`8 → 6`）：`"mixer-master-mute-button"` /
     /// `"mixer-master-solo-button"` 现在有真实动作（`host::wire_mixer_master_switch`）。
@@ -4396,10 +4434,9 @@ mod tests {
     /// `host::wire_view_callbacks` 钳到 `0..=2` 后写 `sidebar-category`（纯视图态：
     /// 选中背景 / 文字色 / `accessible-item-selected` 三处读同一个属性）。
     /// 判据 `tests/sidebar_category.rs`。
-    const KNOWN_ACTIONLESS_CONTROLS: [&str; 4] = [
+    const KNOWN_ACTIONLESS_CONTROLS: [&str; 3] = [
         "app.slint :: \"ai-rail-intent-button\"",
         "transport.slint :: \"transport-branch-button\"",
         "transport.slint :: \"transport-commit-button\"",
-        "transport.slint :: \"transport-revert-button\"",
     ];
 }

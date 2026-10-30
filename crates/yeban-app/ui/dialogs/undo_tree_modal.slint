@@ -3,9 +3,11 @@
 // 规范来源 (Normative):
 //   - 规范 §10: 编曲时光机 (Arrangement Time Machine) —— 全屏可视化 DAG 版本图谱
 //   - [UI-A11Y-001] §7.1: `Cmd/Ctrl + Shift + H` 呼出
-//   - [UI-A11Y-003] §7.3: 模态对话框要实现**焦点闭环 (Focus Trap)**, 关闭时焦点复位到
-//     触发控件 —— 本骨架**没有**实现焦点闭环 (见 notes 的 pending: 需要 `FocusScope` +
-//     宿主侧焦点保存/恢复, 依赖 Slint 焦点 API 的进一步核验)
+//   - [UI-A11Y-003] §7.3: 模态对话框的**焦点闭环 (Focus Trap)** 与关闭时焦点复位。
+//     实现在**本文件之外**：`app.slint` 的 `undo_tree_trap := FocusScope`（打开 ⇒ `focus()`，
+//     关闭 ⇒ 复位到唯一键盘事件源 `key-handler`；`Tab` 在模态内被吞掉）。可读读数是
+//     `undo-tree-focus-trapped` / `shortcut-layer-focused`，判据见
+//     `crates/yeban-app/tests/undo_tree_focus_trap.rs`。
 //   - [UI-TEST-001] §12.2: 语义 Element ID (`undo-tree-node-{i}` / `undo-tree-undo-button`)
 //   - ADR-0001 **D45**: 弹窗里的动作**真的执行撤销** —— 走 `crate::undo_session`
 //     （与 MCP 的 `yeban_undo` 是**同一份实现**），不再是一个只会打 stderr 的回调。
@@ -34,6 +36,9 @@
 // `UNDO_TREE_MAX_NODES`（= 6）个节点 ⇒ 更早的版本由 `node-hidden` **如实报数**，
 // 不静默截断。真正接线的是：
 //   * "撤销一步"按钮 → `undo-step` → 宿主 → `UndoCursor` 真的前移（判据断言工程真的回退）；
+//   * **点击任一版本节点** → `node-selected(index)` → 宿主 → `UndoMany` / `RedoMany`
+//     ⇒ 工程回到那一版（判据 `tests/undo_tree_navigation.rs`）；选中态由游标
+//     `undone-depth` 驱动，不是装饰；
 //   * 顶部状态行 → 模型读数（可撤销 N 步 / 活跃分支）；
 //   * 节点标签 + 节点数 → 真实提交链（`Commit::message`，最新在前）。
 
@@ -64,6 +69,11 @@ export component UndoTreeModal inherits Rectangle {
     callback close();
     // D45: 这个回调**真的**执行撤销（宿主 → `UndoPort::perform(UiAction::Undo)`）。
     callback undo-step();
+    // 点击某个版本节点 = 回到那个版本。参数 = 节点下标（0 = 活跃分支头，
+    // 与 `CommitGraph::ancestry(head)` 的顺序一致）。落点全在宿主
+    // （`host::wire_undo` → `UndoPort::perform(UiAction::UndoMany | RedoMany)`）：
+    // 界面只报"点了第几个"。
+    callback node-selected(int);
 
     // 遮罩层色 —— [UI-MCP-002] 里被"置黑"的正是这个颜色, 两者同源。
     background: Tokens.mask-black.with-alpha(0.65);
@@ -111,7 +121,7 @@ export component UndoTreeModal inherits Rectangle {
             font-size: Tokens.font-size-xs;
         }
 
-        // 关闭 (§7.3 要求的焦点复位未实现 —— 见文件头)
+        // 关闭（§7.3 的焦点复位在 `app.slint` 的 `changed undo-tree-open` 里）
         Rectangle {
             x: parent.width - 36px;
             y: Tokens.space-4;
@@ -146,17 +156,21 @@ export component UndoTreeModal inherits Rectangle {
         // ------------------------------------------------------------ DAG 节点
         // 规模由**数据**决定（不再是固定的 `for … in 6`）：链为空 ⇒ 这一族在树里一个
         // 节点都没有。顺序 = 宿主给的顺序 = `CommitGraph::ancestry(head)` 的顺序
-        // （**最新的在前**）：下标 0 就是活跃分支头（`UndoDisplay::head`），
-        // 因此"头节点被选中"是一个真读数，不是装饰。
+        // （**最新的在前**）：下标 0 就是活跃分支头（`UndoDisplay::head`）。
+        //
+        // 选中态 = **当前文档停在哪一版**：`undone-depth` 是游标已撤销的步数，而
+        // `undo_session::commit` 的约定是"一次提交 = 一条 `Op::Batch` = 一步撤销"
+        // ⇒ 已撤销 N 步就恰好等于"文档 = 链上下标 N 的那一版"。点击节点由宿主换算成
+        // `UndoMany` / `RedoMany`（界面⛔不自己算步数）。
         for node_label[node_index] in root.node-labels : Rectangle {
             x: Tokens.space-6 + 108px * node_index;
             y: 100px + 44px * node_index.mod(2);
             width: 100px;
             height: 40px;
-            background: node_index == 0 ? Tokens.bg-raised : Tokens.bg-panel-alt;
+            background: node_index == root.undone-depth ? Tokens.bg-raised : Tokens.bg-panel-alt;
             border-radius: Tokens.radius-md;
             border-width: 1px;
-            border-color: node_index == 0 ? Tokens.gold : Tokens.line-strong;
+            border-color: node_index == root.undone-depth ? Tokens.gold : Tokens.line-strong;
             clip: true;
             accessible-role: list-item;
             accessible-id: "undo-tree-node-" + node_index;
@@ -164,7 +178,9 @@ export component UndoTreeModal inherits Rectangle {
             accessible-item-index: node_index;
             accessible-item-count: root.node-count;
             accessible-item-selectable: true;
-            accessible-item-selected: node_index == 0;
+            accessible-item-selected: node_index == root.undone-depth;
+            // `[UI-A11Y-003]` §7.3：无障碍动作与下面 `TouchArea.clicked` **逐字同一落点**。
+            accessible-action-default => { root.node-selected(node_index); }
 
             UiText {
                 x: Tokens.space-2;
@@ -172,10 +188,16 @@ export component UndoTreeModal inherits Rectangle {
                 width: parent.width - 4px;
                 height: parent.height;
                 text: node_label;
-                color: node_index == 0 ? Tokens.selection : Tokens.ink-1;
+                color: node_index == root.undone-depth ? Tokens.selection : Tokens.ink-1;
                 font-size: Tokens.font-size-xs;
                 horizontal-alignment: center;
                 overflow: elide;
+            }
+
+            TouchArea {
+                width: parent.width;
+                height: parent.height;
+                clicked => { root.node-selected(node_index); }
             }
         }
 
@@ -293,7 +315,7 @@ export component UndoTreeModal inherits Rectangle {
             y: parent.height - 32px;
             width: parent.width - 32px;
             height: 20px;
-            text: "撤销一步与 Cmd+Z 同源 · 节点点击回滚未实现 · Esc 关闭";
+            text: "撤销一步与 Cmd+Z 同源 · 点击版本节点回到该版本 · Esc 关闭";
             color: Tokens.ink-2;
             font-size: Tokens.font-size-xs;
         }

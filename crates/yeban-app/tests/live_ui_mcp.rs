@@ -5887,8 +5887,10 @@ fn the_ui_mcp_http_switch_literals_match_the_ui_mcp_crate() {
 
 /// 运行树里的**真**音符身份：`note-{26 字符 ULID}-rect` 的 `{ulid}` 段。
 ///
-/// 不能只按 `note-` / `-rect` 前后缀取：静态叠加层 `note-suggestion-overlay-rect`
-/// 也满足那对前后缀（实测：一棵 85 节点的树里 5 个候选、其中 1 个是叠加层）。
+/// 不能只按 `note-` / `-rect` 前后缀取：任何同形的前缀/后缀节点都会被误收
+/// （历史读数：2026-10-30 之前那块静态 AI 建议层 `note-suggestion-overlay-rect`
+/// 就满足那对前后缀 —— 一棵 85 节点的树里 5 个候选、其中 1 个是叠加层；
+/// 该层已按诚实性纪律删除，但这条**形态过滤**仍按 ULID 形状取，⛔ 不退回前后缀）。
 fn note_ulids_in_tree(tree: &ControlTree) -> Vec<String> {
     tree.with_prefix("note-")
         .filter_map(|node| {

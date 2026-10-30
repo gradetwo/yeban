@@ -18,7 +18,7 @@
 | `ui/status_bar.slint` | `UI-GRID-001`（24px 状态栏）`UI-A11Y-003` | ADR-0001 D2 新增的组件 |
 | `ui/sidebar.slint` | `UI-GRID-001` `UI-GRID-002`（36px 图标导轨）`UI-TEST-001` | 左侧资源栏 / 分类 / 资源条目 |
 | `ui/workspace/session_view.slint` | 规范 §2.2 §2.3 `UI-TEST-001` | 剪辑矩阵 + 场景激发 + Back to Arrangement |
-| `ui/workspace/arrangement_view.slint` | 规范 §4.2 §4.3 `UI-TEST-001` `UI-MCP-002` | 轨道包头 + 标尺 + 循环选区 + 章节卡片 + 走带光标 |
+| `ui/workspace/arrangement_view.slint` | 规范 §4.3 `UI-TEST-001` `UI-MCP-002` | 轨道包头 + 标尺 + 章节卡片 + 走带光标（循环选区骨架已于 2026-10-30 删除：模型无走带循环载体） |
 | `ui/console/console_tabs.slint` | `UI-GRID-001`（底部控制台 35–45%）`UI-TEST-001` | Tab 导轨 + 三页叠放 |
 | `ui/console/piano_roll.slint` | 规范 §3.1 §3.3 §3.5 `UI-TEST-001` `UI-MCP-002` | 卷帘骨架 + 工具矩阵 + 音符图元 + 力度泳道 + AI 建议层 |
 | `ui/console/mixer_console.slint` | 规范 §5.2 `UI-TEST-001` `UI-MCP-002` `ARCH-UI-002` | 通道条 + VU 电平 + 主控 |
@@ -428,9 +428,11 @@ error[rejected]: failed to satisfy license requirements
    `main.rs` 对接生成 API 全部只经过文档核验 + 静态 linter。**编译与测试由 CI 判定。**
 2. **从未在真实显示器上看过界面**：没有截图、没有 SSIM、没有控件树断言。无头路径故意不构造窗口。
 3. **无任何真实绑定**：全部是演示数据。走带 / Op 归约 / AI 采纳 / 撤销栈 / 电平 SPSC（`ARCH-UI-002`）/
-   视口裁剪与 R-Tree（§3.1）/ 960 PPQ 吸附（§3.2）/ 指针捕获状态机（§6.1）/ 拖拽 splitter（`UI-GRID-002`）
+   视口裁剪与 R-Tree（§3.1）/ 960 PPQ 吸附（§3.2）/ 指针捕获状态机（§6.1）
    / 双重 rid 焦点闭环（`UI-A11Y-003`）均未实现。回调只打一行 stderr，**故意**不做本地状态翻转
    （假实现比空实现更危险）。
+   （2026-10-30 splitter 切片：`拖拽 splitter（UI-GRID-002）`已从本条**删除** ——
+   指针状态机 + `220..=600` 宿主钳位 + 真实高度读数已落地，判据 `tests/splitter_drag.rs`。）
 4. **演示 ULID / 轨道名在两处重复**：`ui/workspace/arrangement_view.slint` 与
    `ui/console/piano_roll.slint` 内联了一份与 `src/scene.rs` 相同的常量数组 —— 因为 Slint 数组属性
    需要默认值才能独立渲染。模型线落地后改成 Rust 侧 `ModelRc` 单向注入，`.slint` 里只留空数组。
