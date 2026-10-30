@@ -294,9 +294,10 @@ const PIANO_CONTROLS: &[&str] = &[
     "velocity-5-bar",
 ];
 
-/// 素材池（演示工程 `clip_pool` 2 条）：条目数 ＋ 两行。面板本体是容器。
+/// 素材池（演示工程 `clip_pool` 2 条）：条目数 ＋ 两行 ＋ 导入入口。
 const ASSET_CONTROLS: &[&str] = &[
     "asset-pool-count",
+    "asset-pool-import-button",
     "asset-pool-row-0-row",
     "asset-pool-row-1-row",
 ];
@@ -705,7 +706,10 @@ fn check_asset_pool(width: u32, height: u32) -> (usize, usize) {
         &format!("#186 素材池 {width}x{height}"),
     );
     report_line(&reading);
-    (ASSET_CONTROLS.len(), 3)
+    (
+        ASSET_CONTROLS.len(),
+        ASSET_CONTROLS.len() * (ASSET_CONTROLS.len() - 1) / 2,
+    )
 }
 
 fn check_transport(width: u32, height: u32) -> (usize, usize) {

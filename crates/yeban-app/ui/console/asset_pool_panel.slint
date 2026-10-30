@@ -22,6 +22,18 @@ export component AssetPoolPanel inherits Rectangle {
     in property <[string]> asset-pool-kinds: [];
     in property <[string]> asset-pool-details: [];
 
+    // ⭐ **导入音频**（本线补的那一格）：运行期把一份 WAV 作为片段导入当前工程。
+    //
+    // `.slint` 只报"用户按了导入"：路径来自宿主的 `FilePicker`（⛔ 界面不读盘、
+    // ⛔ 不猜路径、⛔ 不判断成功与否）。落点 = `host::wire_import_audio`：
+    // 问一次对话框 ⇒ `crate::import_audio::import_audio_file`（经 `UndoPort`，
+    // 来源 `OpOrigin::Import`，可撤销）＋ 资产字节登记进会话池 ⇒ 重投影
+    // ⇒ 回执走**既有**的 `module-status` 通道。
+    //
+    // 座位：标题行右侧、条目数同一行（面板宽 216，条目数让出 64px）—— 不新增一行，
+    // 因此空池/行循环的既有几何一位不动。面板住在控制台 Tab 1 ⇒ 默认帧不画它。
+    callback import-audio();
+
     background: Tokens.bg-panel;
     border-radius: Tokens.radius-md;
     border-width: 1px;
@@ -49,7 +61,7 @@ export component AssetPoolPanel inherits Rectangle {
     Rectangle {
         x: Tokens.space-3;
         y: 22px;
-        width: parent.width - 12px;
+        width: parent.width - 12px - 64px;
         height: 16px;
         accessible-role: text;
         accessible-id: "asset-pool-count";
@@ -63,6 +75,39 @@ export component AssetPoolPanel inherits Rectangle {
             text: "素材 " + root.asset-pool-names.length + " 条";
             color: Tokens.ink-2;
             font-size: Tokens.font-size-xs;
+        }
+    }
+
+    // ---------------------------------------------------------------- 导入音频
+    // 只报"按了"（见上面的 `import-audio` 声明）；几何与条目数同一行、互不相交
+    // （`tests/pane_no_overlap.rs` 的素材池段会逐对断言）。
+    Rectangle {
+        x: parent.width - 12px - 56px;
+        y: 20px;
+        width: 56px;
+        height: 20px;
+        background: Tokens.bg-panel-alt;
+        border-radius: Tokens.radius-sm;
+        accessible-role: button;
+        accessible-id: "asset-pool-import-button";
+        accessible-label: "导入音频（用文件对话框挑一个 WAV 并作为片段导入）";
+        accessible-action-default => { root.import-audio(); }
+
+        UiText {
+            x: 4px;
+            y: 0;
+            width: parent.width - 8px;
+            height: parent.height;
+            text: "导入音频";
+            color: Tokens.ink-1;
+            font-size: Tokens.font-size-xs;
+            overflow: elide;
+        }
+
+        TouchArea {
+            width: parent.width;
+            height: parent.height;
+            clicked => { root.import-audio(); }
         }
     }
 

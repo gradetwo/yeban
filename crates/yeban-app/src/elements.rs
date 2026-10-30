@@ -1133,6 +1133,13 @@ impl ElementRegistry {
             "尚无素材",
             false,
         );
+        registry.add(
+            "asset-pool-import-button",
+            ElementKind::Button,
+            "console/asset_pool_panel.slint",
+            "导入音频（用文件对话框挑一个 WAV 并作为片段导入）",
+            false,
+        );
         for (index, row) in view.asset_pool.iter().enumerate() {
             registry.add(
                 &format!("asset-pool-row-{index}-row"),
