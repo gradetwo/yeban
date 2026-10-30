@@ -5361,6 +5361,7 @@ pub fn wire_view_callbacks(ui: &MainWindow) {
     ui.on_clip_select({
         let weak = weak.clone();
         move |clip_ulid| {
+            use slint::Model as _;
             let Some(ui) = weak.upgrade() else {
                 debug_assert!(false, "MainWindow 在回调执行期间被销毁");
                 return;

@@ -19,6 +19,7 @@
 //! `slint::platform::set_platform` 是线程局部的，且每个线程只能装配一次 ⇒
 //! 本文件只有一个 `#[test]`（与 `tests/section_color_swatch.rs` 同款）。
 
+use slint::Model as _;
 use yeban_app::bridge::ViewState;
 use yeban_app::host;
 use yeban_app::scene::DemoScene;
