@@ -49,6 +49,11 @@
 //! 上面这条只数"键有没有被给过非缺省值"，新那条登记"**改了它的值 ⇒ 产出真的变**"的证据判据。
 //! 两轴**共用**同一份键全集派生（`documented_keys()`）与同一份测试源读取（`test_sources()`），
 //! ⛔ 各数各的键（第 44 条）。
+//!
+//! ⭐ **同日加第三条轴**（`each_documented_key_declares_its_default_side_evidence_or_gap`）：
+//! 第二条轴每行只取**一条代表判据**，于是"缺省那面（不给该键 ⇒ 与今天逐字节相同）有没有钉"
+//! 在机械读数里不可见。现读 **29** 个键 ＝ **21** 个缺省侧已证 ＋ **8** 个显式缺口
+//! （逐键点名，缺口带理由）。三轴共用同一把尺（`documented_keys()` / `defines_fn`）。
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -264,8 +269,12 @@ fn defines_fn(text: &str, name: &str) -> bool {
 /// 自 `bool` 放宽成 `Option<bool>` —— 此前⛔ 表达得出"不给"）、`propose.progression` ⇒
 /// `absent_progression_is_byte_identical_to_the_registered_first_pick`、
 /// `edit_notes.autoMerge` ⇒ `absent_auto_merge_on_edit_notes_proposes_without_merging`。
-/// ⚠ 其余 **25** 行仍按**任一侧**判据登记即算已证（如 `propose.melodyUpper` 只有缺省侧
-/// 那一条）—— 本表⛔ 断言"两侧都钉过"，两侧状态只在上面这四个键上逐行核过。
+/// ⚠ 其余 **25** 行在本表里仍按**任一侧**判据登记即算已证（本表⛔ 断言"两侧都钉过"）。
+/// ⭐ 但"另一侧有没有钉"自 2026-10-30 起**不再是不可见**的：那由**第三条轴**
+/// `each_documented_key_declares_its_default_side_evidence_or_gap` 逐键登记（现读
+/// **21** 已证 ＋ **8** 缺口）。本表此前一句"其余 25 行的缺省侧⛔ 有钉"是**从本表那一列
+/// 名字推断**出来的，`grep '^fn absent_…'` 现读推翻了它 —— 库里早就有 21 条缺省侧判据，
+/// 只是本表的"一条代表判据"口径看不见它们。教训：⛔ 从登记表的名字推断另一侧没钉。
 #[test]
 fn every_documented_creation_key_is_registered_with_an_effect_criterion() {
     /// 已证名单：键 → 证据判据名（只取一条代表性判据；同名判据⛔ 要求在同一文件里）。
@@ -473,5 +482,260 @@ fn every_documented_creation_key_is_registered_with_an_effect_criterion() {
                  找不到 `fn {name}(` => 判据被改名或删掉了，登记表成了死名册"
             );
         }
+    }
+}
+
+/// ⭐ **第三条轴**（2026-10-30）：**缺省侧**逐个点名 —— 每个键要么绑一条"不给该键 ⇒
+/// 与今天逐字节相同"的判据，要么**显式登记为缺口并写明为什么**。
+///
+/// # 这条轴堵的是第二条轴自己留下的洞
+///
+/// 第二条轴每行只取**一条代表性判据名**，于是"缺省侧有没有钉"在机械读数里**不可见**：
+/// `drumBackbeat` 那行写的是 `the_backbeat_moves_only_the_snare_line`（打开那面），
+/// 而同文件里 `absent_backbeat_is_byte_identical_to_the_derived_beat`（缺省那面）**早就存在**
+/// —— 表⛔ 看不见它。台账上一度把这件事读成"其余 25 行都缺缺省钉"，
+/// 本次 `grep '^fn absent_\|^fn .*byte_identical\|^fn default_'` 现读**推翻**了那个说法：
+/// 库里已有 **21** 个键的缺省侧判据在跑。教训记台账：**⛔ 从登记表那一列的名字推断
+/// "另一侧没钉"，要先 grep 交付**（`AGENTS.md` §6.3 第 3 条的同型陷阱）。
+///
+/// # 机械只钉四件事（语义仍由人逐函数体核）
+///
+/// 1. **两向并集 == 键全集**：`缺省已证 ∪ 缺省缺口 == universe`（新键进 schema 而没人
+///    在缺省轴表态 ⇒ 红）；
+/// 2. **两名单⛔ 重叠**（同一键⛔ 既算已证又算缺口）；
+/// 3. **登记的判据名逐个真实存在**（复用 `defines_fn`，与第二条轴同一把尺）；
+///    缺省缺口每行**理由非空**，⛔ 空串充当"登记过"；
+/// 4. **两个方向的棘轮**：已证数 ⋧ 往下掉（下界 21），缺口数 ⋧ 悄悄涨（上界 8）——
+///    补齐一个缺口时把行从 `DEFAULT_SIDE_GAPS` 搬进 `DEFAULT_SIDE` 并**同时**改两个
+///    数组长度与这两个界，⛔ 只搬不改（判据 2 的重叠检查拦不住"删掉一行"这种掏空）。
+#[test]
+fn each_documented_key_declares_its_default_side_evidence_or_gap() {
+    /// 缺省已证名单：键 → 钉住"不给该键 ⇒ 与今天同形"的判据名。
+    ///
+    /// # 读数（2026-10-30，逐函数体核过；对象＝键，单位＝个 `(tool, camelKey)`）
+    ///
+    /// **21** 个键有缺省侧钉子。三处容易看错的形状：
+    /// - `velocityMin` 与 `velocityMax` **共用**一条判据（`absent_ladder_…` 比的是
+    ///   "两个键都不给" ≡ `96/112`，一次覆盖两位）；
+    /// - `includeDrums` 与 `includeMelody` 同理（`absent_include_flags_…` 的四支对照里
+    ///   含"只给其中一个"）；
+    /// - `materialSource` 的缺省侧在 `material_source_switches_…` **自己**体内
+    ///   （`absent ≡ explicit "project"` 与 `absent ≠ theory` 两条 assert 同处一条判据）。
+    const DEFAULT_SIDE: [(&str, &str, &[&str]); 21] = [
+        (
+            "yeban_edit_notes",
+            "autoMerge",
+            &["absent_auto_merge_on_edit_notes_proposes_without_merging"],
+        ),
+        (
+            "yeban_propose_section",
+            "autoMerge",
+            &["default_shape_is_unchanged_without_auto_merge"],
+        ),
+        (
+            "yeban_propose_section",
+            "beatGrouping",
+            &["absent_grouping_is_byte_identical_to_the_derived_split"],
+        ),
+        (
+            "yeban_propose_section",
+            "drumBackbeat",
+            &["absent_backbeat_is_byte_identical_to_the_derived_beat"],
+        ),
+        (
+            "yeban_propose_section",
+            "drumStyle",
+            &["absent_style_is_byte_identical_to_the_registered_metric"],
+        ),
+        (
+            "yeban_propose_section",
+            "harmonyMaxVoiceJump",
+            &["absent_jump_is_byte_identical_to_the_published_bound"],
+        ),
+        (
+            "yeban_propose_section",
+            "harmonySeed",
+            &["absent_progression_is_byte_identical_to_the_registered_first_pick"],
+        ),
+        (
+            "yeban_propose_section",
+            "includeDrums",
+            &["absent_include_flags_are_byte_identical_to_explicit_false"],
+        ),
+        (
+            "yeban_propose_section",
+            "includeMelody",
+            &["absent_include_flags_are_byte_identical_to_explicit_false"],
+        ),
+        (
+            "yeban_propose_section",
+            "materialSource",
+            &["material_source_switches_the_material_and_theory_ignores_the_clip_pool"],
+        ),
+        (
+            "yeban_propose_section",
+            "melodyLower",
+            &["absent_register_is_byte_identical_to_the_published_window"],
+        ),
+        (
+            "yeban_propose_section",
+            "melodyMaxLeap",
+            &["absent_leap_is_byte_identical_to_the_published_bound"],
+        ),
+        (
+            "yeban_propose_section",
+            "melodySeed",
+            &["absent_seed_is_byte_identical_to_the_derived_seed"],
+        ),
+        (
+            "yeban_propose_section",
+            "melodyUpper",
+            &["absent_register_is_byte_identical_to_the_published_window"],
+        ),
+        (
+            "yeban_propose_section",
+            "onsetsPerBar",
+            &["common_time_default_grid_is_byte_identical_to_explicit_sixteen"],
+        ),
+        (
+            "yeban_propose_section",
+            "progression",
+            &["absent_progression_is_byte_identical_to_the_registered_first_pick"],
+        ),
+        (
+            "yeban_propose_section",
+            "swingPermille",
+            &["absent_swing_is_byte_identical_to_the_straight_permille"],
+        ),
+        (
+            "yeban_propose_section",
+            "velocityMax",
+            &["absent_ladder_is_byte_identical_to_the_published_two_rungs"],
+        ),
+        (
+            "yeban_propose_section",
+            "velocityMin",
+            &["absent_ladder_is_byte_identical_to_the_published_two_rungs"],
+        ),
+        (
+            "yeban_propose_section",
+            "voiceSubdivision",
+            &["voice_subdivision_default_is_byte_identical_to_absent"],
+        ),
+        (
+            "yeban_propose_section",
+            "voiceSubdivisions",
+            &["voice_subdivisions_absent_is_byte_identical_to_today"],
+        ),
+    ];
+    /// 缺省缺口名单（**8** 行）：键 → 为什么今天钉不了／还没钉。⛔ 把它删空来让它绿 ——
+    /// 这八行是"缺省轴上仍然无证据"的**唯一**接收端，补齐时逐行搬进 `DEFAULT_SIDE`。
+    const DEFAULT_SIDE_GAPS: [(&str, &str, &str); 8] = [
+        (
+            "yeban_edit_notes",
+            "create",
+            "『不给 create』与『给 false』同形未测：本键走 `json!` 实参面，夹具⛔ 一支对照都不给该键",
+        ),
+        (
+            "yeban_edit_notes",
+            "placement",
+            "缺省那面只被 `trap_179` 一类的相邻形状顺带覆盖，没有『不给 placement ⇒ 与今天同形』的断言",
+        ),
+        (
+            "yeban_edit_notes",
+            "mergeCommitMessage",
+            "已证那面是 `merge_commit_message_passes_through`（给了 ⇒ 原样进提交），不给 ⇒ 默认文案未断言",
+        ),
+        (
+            "yeban_propose_section",
+            "drumDensity",
+            "现读只有 `Some(\"normal\")` 与 `Some(\"sparse\")` 两支对照，`None` 那支从未与 `normal` 比过",
+        ),
+        (
+            "yeban_propose_section",
+            "materialClipIds",
+            "`named_materials_feed_parts_in_declared_order` 只跑给了名单那支；同文件的缺省钉属于 `materialSource`",
+        ),
+        (
+            "yeban_propose_section",
+            "partTracks",
+            "三条判据全在『给了 partTracks』那支，不给 ⇒ 全部新建轨的既有形状无断言",
+        ),
+        (
+            "yeban_propose_section",
+            "mergeCommitMessage",
+            "`merge_commit_message_passes_through` 在 propose 侧同理：不给 ⇒ 默认文案未断言",
+        ),
+        (
+            "yeban_render_master",
+            "contributions",
+            "`contributions_match_an_independent_mute_render` 钉的是『给了子集 ⇒ 等于静音另一组』，\
+             不给 ⇒ 全体参与未断言",
+        ),
+    ];
+
+    let universe: std::collections::BTreeSet<(String, String)> =
+        documented_keys().into_iter().collect();
+    let declared: std::collections::BTreeSet<(String, String)> = DEFAULT_SIDE
+        .iter()
+        .map(|(tool, camel, _)| (tool.to_string(), camel.to_string()))
+        .chain(
+            DEFAULT_SIDE_GAPS
+                .iter()
+                .map(|(tool, camel, _)| (tool.to_string(), camel.to_string())),
+        )
+        .collect();
+    assert_eq!(
+        declared,
+        universe,
+        "缺省轴的名单并起来与 schema 的键全集两向不符 => 新键没在缺省轴表态，\
+         或表态过的键被删掉（现读全集 {} 个、本轴 {} 个）",
+        universe.len(),
+        declared.len()
+    );
+    assert!(
+        DEFAULT_SIDE.len() >= 21,
+        "缺省已证只剩 {} 行 => 名单被掏空（R93：⛔ 批量搬去缺口名单来让它绿）",
+        DEFAULT_SIDE.len()
+    );
+    assert!(
+        DEFAULT_SIDE_GAPS.len() <= 8,
+        "缺省缺口涨到 {} 行 => 有键的缺省钉被悄悄降级，或新键进来没人补证据",
+        DEFAULT_SIDE_GAPS.len()
+    );
+
+    let sources = test_sources();
+    for (tool, camel, names) in DEFAULT_SIDE {
+        assert!(
+            !DEFAULT_SIDE_GAPS
+                .iter()
+                .any(|row| row.0 == tool && row.1 == camel),
+            "键 `{tool}.{camel}` 同时出现在缺省已证与缺省缺口两张名单 => 口径自相矛盾"
+        );
+        assert!(
+            !names.is_empty(),
+            "键 `{tool}.{camel}` 的缺省判据名是空集 => 空集⛔ 充当『缺省已证』"
+        );
+        for &name in names {
+            assert!(
+                sources
+                    .iter()
+                    .any(|(_, text)| defines_fn(text.as_str(), name)),
+                "键 `{tool}.{camel}` 登记的缺省判据 `{name}` 在 `crates/yeban-mcp/tests/*.rs` \
+                 里找不到 `fn {name}(` => 判据被改名或删掉了"
+            );
+        }
+    }
+    for (tool, camel, reason) in DEFAULT_SIDE_GAPS {
+        assert!(
+            !reason.trim().is_empty(),
+            "缺口 `{tool}.{camel}` 的理由是空串 => 登记退化成占位"
+        );
+        assert!(
+            !DEFAULT_SIDE
+                .iter()
+                .any(|row| row.0 == tool && row.1 == camel),
+            "缺口 `{tool}.{camel}` 同时又带着已证判据 => 两名单重叠"
+        );
     }
 }
