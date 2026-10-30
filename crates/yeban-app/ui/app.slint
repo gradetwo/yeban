@@ -1971,7 +1971,8 @@ export component MainWindow inherits Window {
         focus-on-click: false;
         focus-on-tab-navigation: false;
         key-pressed(event) => {
-            if (event.text == "\t") {
+            // Slint 1.18 的字符串转义只认 `\"` / `\\` / `\n` / `\u{...}`，`\t` 会编译失败。
+            if (event.text == "\u{9}") {
                 accept
             } else if (root.key-action(event.text, event.modifiers.shift,
                                        event.modifiers.control, event.modifiers.alt,
