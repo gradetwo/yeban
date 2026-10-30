@@ -56,6 +56,24 @@ use yeban_ui_test_port::{Permission, PointerButton, Rect, Size, UiTestPort as _}
 /// 与其余 Tier-1 判据同款（1440 宽 ⇒ `compact` 断点之外，资源栏是展开态）。
 const WINDOW: Size = Size::new(1440, 900);
 
+/// 去掉 `//` 行注释与行尾注释后的**代码文本**（⑥ 的三条读都先过这里）。
+///
+/// 为什么必须去注释：本票把「删掉了哪条假数字」写进了 `sidebar.slint` 的注释里
+/// （审计留痕，与 `src/elements.rs` 的 `code_only` 同一口径）。探针若把注释也算成
+/// "界面里的字面量"，`!contains("SFZ · 323")` 就会红在**留痕本身**上 —— 那等于逼作者
+/// 不写留痕，与本仓库的纪律相反。⚠ 这一格同时是**反向**防线：注释里出现的
+/// `for … in root.items` 之类代码形状也不许算作"接上了"。
+fn code_only(source: &str) -> String {
+    source
+        .lines()
+        .map(|line| match line.split_once("//") {
+            Some((code, _comment)) => code,
+            None => line,
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 /// 夹具乐器：`assets/samples/manifest.json` 里的三个 `id`（逐字）。
 ///
 /// ⚠ 只造 **SFZ 文本**、不造样本字节 —— 分类 0 的取数口只回答"库里有这份 SFZ"
@@ -442,8 +460,9 @@ fn sidebar_items_are_the_projection_and_clicking_one_moves_only_the_view_state()
 
     // ---- ⑥ 文本层接线（本机不编译 Slint 的那一半，读源码取证） ----
     let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    let sidebar =
-        std::fs::read_to_string(manifest_dir.join("ui/sidebar.slint")).expect("读 sidebar.slint");
+    let sidebar = code_only(
+        &std::fs::read_to_string(manifest_dir.join("ui/sidebar.slint")).expect("读 sidebar.slint"),
+    );
     assert!(
         sidebar.contains("accessible-action-default => { root.select-item(item_index); }"),
         "条目必须有无障碍动作"
@@ -477,7 +496,9 @@ fn sidebar_items_are_the_projection_and_clicking_one_moves_only_the_view_state()
             && sidebar.contains("visible: !root.compact && root.items.length == 0;"),
         "空态必须可寻址，且在场性 = `!compact && 条数 == 0`"
     );
-    let app = std::fs::read_to_string(manifest_dir.join("ui/app.slint")).expect("读 app.slint");
+    let app = code_only(
+        &std::fs::read_to_string(manifest_dir.join("ui/app.slint")).expect("读 app.slint"),
+    );
     assert!(
         app.contains("callback select-sidebar-item(int);")
             && app.contains("active-item: root.sidebar-item;")
@@ -489,7 +510,8 @@ fn sidebar_items_are_the_projection_and_clicking_one_moves_only_the_view_state()
             && app.contains("empty-reason: root.sidebar-empty-reason;"),
         "主窗口必须把宿主注入的条目数组与空态文案**转发**给资源栏"
     );
-    let host_src = std::fs::read_to_string(manifest_dir.join("src/host.rs")).expect("读 host.rs");
+    let host_src =
+        code_only(&std::fs::read_to_string(manifest_dir.join("src/host.rs")).expect("读 host.rs"));
     assert!(
         host_src.contains("ui.on_select_sidebar_item(")
             && host_src.contains("sidebar_category_content")
