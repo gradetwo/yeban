@@ -3,9 +3,11 @@
 // 规范来源 (Normative):
 //   - 规范 §10: 编曲时光机 (Arrangement Time Machine) —— 全屏可视化 DAG 版本图谱
 //   - [UI-A11Y-001] §7.1: `Cmd/Ctrl + Shift + H` 呼出
-//   - [UI-A11Y-003] §7.3: 模态对话框要实现**焦点闭环 (Focus Trap)**, 关闭时焦点复位到
-//     触发控件 —— 本骨架**没有**实现焦点闭环 (见 notes 的 pending: 需要 `FocusScope` +
-//     宿主侧焦点保存/恢复, 依赖 Slint 焦点 API 的进一步核验)
+//   - [UI-A11Y-003] §7.3: 模态对话框的**焦点闭环 (Focus Trap)** 与关闭时焦点复位。
+//     实现在**本文件之外**：`app.slint` 的 `undo_tree_trap := FocusScope`（打开 ⇒ `focus()`，
+//     关闭 ⇒ 复位到唯一键盘事件源 `key-handler`；`Tab` 在模态内被吞掉）。可读读数是
+//     `undo-tree-focus-trapped` / `shortcut-layer-focused`，判据见
+//     `crates/yeban-app/tests/undo_tree_focus_trap.rs`。
 //   - [UI-TEST-001] §12.2: 语义 Element ID (`undo-tree-node-{i}` / `undo-tree-undo-button`)
 //   - ADR-0001 **D45**: 弹窗里的动作**真的执行撤销** —— 走 `crate::undo_session`
 //     （与 MCP 的 `yeban_undo` 是**同一份实现**），不再是一个只会打 stderr 的回调。
@@ -119,7 +121,7 @@ export component UndoTreeModal inherits Rectangle {
             font-size: Tokens.font-size-xs;
         }
 
-        // 关闭 (§7.3 要求的焦点复位未实现 —— 见文件头)
+        // 关闭（§7.3 的焦点复位在 `app.slint` 的 `changed undo-tree-open` 里）
         Rectangle {
             x: parent.width - 36px;
             y: Tokens.space-4;

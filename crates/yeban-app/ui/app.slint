@@ -635,7 +635,8 @@ export component MainWindow inherits Window {
     // `forward-focus` 让窗口建立时焦点就落在这里，因此快捷键**不需要先点一下界面**才生效
     // （判据 16 的端口注入就是这个前提的机械证据）。
     // 焦点被 BPM 敲入框拿走时，单键快捷键按 §7.1/§7.2 归文本控件 —— 那是规范语义，不是缺口；
-    // 回到这里要靠 Slint 的焦点轮转（`Tab`）或程序性 `focus()`，**没有**自动回焦的判据（见 N2 行）。
+    // 回到这里要靠 Slint 的焦点轮转（`Tab`）或程序性 `focus()`。模态那条路径的程序性回焦
+    // （关闭时光机 ⇒ 复位到这里）已有判据：`tests/undo_tree_focus_trap.rs`。
     forward-focus: key-handler;
     key-handler := FocusScope {
         key-pressed(event) => {
@@ -1953,6 +1954,31 @@ export component MainWindow inherits Window {
         close => { root.macro-panel-open = false; }
     }
 
+    // 模态焦点闭环（[UI-A11Y-003] §7.3）：打开时光机 ⇒ 键盘焦点从唯一键盘事件源
+    // `key-handler` 移进模态；关闭 ⇒ 复位到 `key-handler`（打开它的那一层）。`Tab` 在
+    // 模态内被吞掉：焦点不许离开模态，也不许落到画布语义的切视图。
+    // 本 `FocusScope` 没有绘制内容，且 `focus-on-click` / `focus-on-tab-navigation` 关着
+    // ⇒ 不开模态时它既不画像素、也不会被 Tab 轮转选中（只能由下面 `changed` 程序性取焦）。
+    undo_tree_trap := FocusScope {
+        x: 0;
+        y: 0;
+        width: root.width;
+        height: root.height;
+        focus-on-click: false;
+        focus-on-tab-navigation: false;
+        key-pressed(event) => {
+            if (event.text == "\t") {
+                accept
+            } else if (root.key-action(event.text, event.modifiers.shift,
+                                       event.modifiers.control, event.modifiers.alt,
+                                       event.modifiers.meta)) {
+                accept
+            } else {
+                reject
+            }
+        }
+    }
+
     // 全屏可视化 DAG 时光机 (Cmd/Ctrl + Shift + H)
     UndoTreeModal {
         x: 0;
@@ -1975,6 +2001,19 @@ export component MainWindow inherits Window {
         undo-step => { root.undo-step(); }
         node-selected(index) => { root.undo-node-selected(index); }
         close => { root.undo-tree-open = false; }
+    }
+
+    // 焦点闭环的**读数**：Slint 的焦点状态不在控件树里，因此把它镜像成两个可读属性
+    // （唯一读者 = 无头判据 `tests/undo_tree_focus_trap.rs`；界面自己不读）。
+    out property <bool> shortcut-layer-focused: key-handler.has-focus;
+    out property <bool> undo-tree-focus-trapped: undo_tree_trap.has-focus;
+
+    changed undo-tree-open => {
+        if (root.undo-tree-open) {
+            undo_tree_trap.focus();
+        } else {
+            key-handler.focus();
+        }
     }
 
     // WAV 导出设置（隐藏的模态；默认关着 ⇒ 默认帧一位不变）
