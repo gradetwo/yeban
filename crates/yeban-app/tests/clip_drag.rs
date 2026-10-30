@@ -195,12 +195,26 @@ fn diff_outside(before: &Rgb8Image, after: &Rgb8Image, area: Rect) -> u64 {
 }
 
 /// 两帧的全帧差异像素数。
+///
+/// ⚠ 2026-10-30 修正：旧实现写成 `diff_outside(before, after, 全帧矩形)`，
+/// 而那只函数数的是"区域**外**"的差异 ⇒ 全帧矩形下**恒为 0**（每一像素都在区域内）。
+/// 于是 ③ 的 `inside > 0` 永远红（macOS 腿实测"0 个差异像素"），⑤ 的 `== 0` 永远绿 ——
+/// 同一条判据既假红又假绿。现在直接逐像素数差异（与 `diff_outside` 互补）。
 fn diff_total(before: &Rgb8Image, after: &Rgb8Image) -> u64 {
-    diff_outside(
-        before,
-        after,
-        Rect::new(0, 0, before.width(), before.height()),
-    )
+    assert_eq!(
+        (before.width(), before.height()),
+        (after.width(), after.height()),
+        "两帧必须同尺寸"
+    );
+    let mut total = 0_u64;
+    for y in 0..before.height() {
+        for x in 0..before.width() {
+            if before.pixel(x, y) != after.pixel(x, y) {
+                total += 1;
+            }
+        }
+    }
+    total
 }
 
 /// 把包围盒扩成剪辑**整块**（包头 18px + 剪辑体），再按 `dx` 向右扩张出预览区域
