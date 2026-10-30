@@ -380,6 +380,12 @@ export component MainWindow inherits Window {
     /// ⭐ 录音键的显示态（`[ARCH-REC-001]`）：唯一写者 = `host::wire_transport`
     /// （起录 ⇒ true、停录 ⇒ false）。⛔ 不是工程数据（`MODEL-ISO-001` 的挥发性层）。
     in-out property <bool> recording: false;
+    /// ⭐ 节拍器开关的显示态（`[ARCH-RT-001]`）：唯一写者 = 宿主
+    /// （`host::wire_transport` 的 `on_toggle_metronome` 与 `host::apply_action` 的
+    /// `Action::ToggleMetronome` 臂写的是**同一个**属性）。⛔ 不是工程数据
+    /// （`MODEL-ISO-001` 的挥发性层）；初始值由装配期从
+    /// `project.transport.metronome_enabled` 读入。
+    in-out property <bool> metronome-on: false;
     in-out property <bool> arrangement-view: true;
     in-out property <int> console-tab: 0;
     /// ⭐ 底部控制台是否最大化（`Cmd/Ctrl+Alt+M` / 控制台右上角 ⤢ 的同一个视图态）。
@@ -438,6 +444,12 @@ export component MainWindow inherits Window {
     in-out property <string> bpm-display: "120.00";
     in-out property <string> branch-name: "main";
 
+    // 走带光标的位置（960 PPQ tick）。唯一写者 = `src/host.rs` 的 `apply_transport`
+    // （与 `timecode` 同一次引擎读数）；编曲 / 卷帘两条 playhead 都由它派生 x
+    // （`tick ÷ ticks-per-pixel`，与投影里音符 / 小节线的整数除法同口径）。
+    // ⛔ 界面不记位置；旧版两条 playhead 的 `x` 是写死的假位置（`accessible-value: "3"`）。
+    in-out property <int> playhead-ticks: 0;
+
     // ---------------------------------------------------------------------
     // 时间码的**格式化网格**（`[MODEL-AST-001]`）
     // ---------------------------------------------------------------------
@@ -456,6 +468,9 @@ export component MainWindow inherits Window {
     callback toggle-play();
     /// ⭐ 录音键（`[ARCH-REC-001]`）：按下 ⇒ 起录 / 停录。
     callback toggle-record();
+    /// ⭐ 节拍器开关（`Cmd/Ctrl+Alt+N` 的可点等价物）。界面只发通知；
+    /// 状态属性 `metronome-on` 的唯一写者仍是宿主（`host::wire_transport`）。
+    callback toggle-metronome();
     // 走带的"停止"（停住 + 回到起点）。它与 `toggle-play` 一样由 Rust 侧接线，
     // 界面**不自己翻转**任何走带状态 —— 见 `src/host.rs` 的 `wire_transport`。
     callback stop();
@@ -475,6 +490,9 @@ export component MainWindow inherits Window {
     callback toggle-undo-tree();
     // D45: 时光机里的"撤销一步"（与 `Cmd+Z` 汇到同一个 `UndoPort::perform`）。
     callback undo-step();
+    // 时光机里**点击版本节点**：参数 = 节点下标（0 = 活跃分支头）；宿主
+    // `host::wire_undo` 把它换算成 `UndoMany` / `RedoMany` 落到同一个 `UndoPort::perform`。
+    callback undo-node-selected(int);
     // `ROAD-M4-008` 选项 (a)：**保存工程**。事件源是 `ui/transport.slint` 的"保存"按钮
     // （`accessible-id: "transport-save-button"`）；宿主 `host::wire_save` 把它落到
     // `save_action::dispatch_save`（有控制面会话 ⇒ 走那个会话；没有 ⇒ 本地原子写），
@@ -1243,6 +1261,9 @@ export component MainWindow inherits Window {
             branch-name: root.branch-name;
             arrangement-view: root.arrangement-view;
             ai-drawer-open: root.ai-drawer-open;
+            // ⚠ 单向（子只读）：`metronome-on` 的唯一写者是宿主，写的是
+            // `root.metronome-on`；子组件的 `accessible-checked` 与选中态读这一份。
+            metronome-on: root.metronome-on;
 
             // ⚠ 界面**不**自己翻转 `root.playing`：那个属性只有一个写者 ——
             // `src/host.rs` 的 `apply_transport`（读的是引擎的原子读数）。
@@ -1257,6 +1278,10 @@ export component MainWindow inherits Window {
             // ⭐ 录音键：原样转给宿主（⛔ 界面不写 `recording` —— 那是宿主的状态）。
             toggle-record => {
                 root.toggle-record();
+            }
+            // ⭐ 节拍器键：原样转给宿主（⛔ 界面不翻转 `metronome-on` —— 唯一写者是宿主）。
+            toggle-metronome => {
+                root.toggle-metronome();
             }
             // `ROAD-M4-008`：保存按钮**原样**转给宿主 —— 界面不写盘、不改 `save-status`
             // （那个属性只有宿主一个写者，见 `host::apply_save_outcome`）。
@@ -1407,6 +1432,11 @@ export component MainWindow inherits Window {
                     section-positions: root.section-positions;
                     section-widths: root.section-widths;
                     clip-ulids: root.clip-ulids;
+                    // ⭐ 走带光标：位置 = 引擎读数（`host::apply_transport` 的唯一写入）；
+                    // 缩放与卷帘共用 `roll-ticks-per-pixel`（同一个 `ViewState` 的投影口径）。
+                    playhead-ticks: root.playhead-ticks;
+                    ticks-per-pixel: root.roll-ticks-per-pixel;
+                    playhead-timecode: root.timecode;
                     // ⭐ 剪辑选中态：与 `clip-ulids` 同一取值域的**身份**（宿主写、界面只读）。
                     selected-clip-ulid: root.selected-clip-ulid;
                     // 包头点击 ⇒ 原样上抛身份，宿主校验后写 `selected-clip-ulid`。
@@ -1503,6 +1533,12 @@ export component MainWindow inherits Window {
             note-velocities: root.note-velocities;
             note-positions: root.note-positions;
             note-selected: root.note-selected;
+            // ⭐ 走带光标（卷帘）：与编曲同一次引擎读数、同一个缩放口径；
+            // 滚动偏移让卷帘的 x 与已减过 scroll 的音符位置保持同一坐标系。
+            playhead-ticks: root.playhead-ticks;
+            ticks-per-pixel: root.roll-ticks-per-pixel;
+            scroll-x: root.roll-scroll-x;
+            playhead-timecode: root.timecode;
             active-tool: root.active-tool;
             roll-edit-status: root.roll-edit-status;
             scroll-requested(d) => { root.scroll-requested(d); }
@@ -1931,6 +1967,7 @@ export component MainWindow inherits Window {
         node-hidden: root.undo-node-hidden;
 
         undo-step => { root.undo-step(); }
+        node-selected(index) => { root.undo-node-selected(index); }
         close => { root.undo-tree-open = false; }
     }
 

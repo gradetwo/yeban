@@ -265,6 +265,7 @@ const TRANSPORT_WIDE: &[&str] = &[
     "transport-revert-button",
     "transport-save-button",
     "transport-ai-proposal-badge",
+    "transport-metronome-button",
     "transport-view-session-button",
     "transport-view-arrangement-button",
     "transport-view-toggle-button",
@@ -279,7 +280,6 @@ const PIANO_CONTROLS: &[&str] = &[
     "piano-roll-tool-eraser-button",
     "piano-roll-status",
     "piano-roll-playhead",
-    "note-suggestion-overlay-rect",
     "note-01J8Z5Q0R7K3M9X2V4B6N8P1A2-rect",
     "note-01J8Z5Q0R7K3M9X2V4B6N8P1A3-rect",
     "note-01J8Z5Q0R7K3M9X2V4B6N8P1B0-rect",
@@ -712,15 +712,14 @@ fn check_transport(width: u32, height: u32) -> (usize, usize) {
     let live = live_window((width, height), PIANO_TAB);
     let tree = runtime_tree(live.ui());
     let band: Bounds = (0, 0, width, TOP_BAR);
-    let expected: Vec<&str> = if width >= 1064 {
-        TRANSPORT_WIDE.to_vec()
-    } else {
-        TRANSPORT_WIDE
-            .iter()
-            .copied()
-            .filter(|id| *id != "transport-ai-proposal-badge")
-            .collect()
-    };
+    let expected: Vec<&str> = TRANSPORT_WIDE
+        .iter()
+        .copied()
+        .filter(|id| *id != "transport-ai-proposal-badge" || width >= 1064)
+        // ⭐ 节拍器键钉在徽章右侧 12px 缝里（`x = root.width - 348`）⇒ 1120 以下
+        // 会与徽章相交，因此那两档按设计隐藏（同一动作仍有 `Cmd/Ctrl+Alt+N`）。
+        .filter(|id| *id != "transport-metronome-button" || width >= 1120)
+        .collect();
     let reading = assert_pairwise(
         &tree,
         band,
@@ -747,6 +746,21 @@ fn check_transport(width: u32, height: u32) -> (usize, usize) {
             badge.0 + badge.2 as i32 <= session.0,
             "[#186 {width}x{height}] 徽章右沿必须 ≤ Session 左沿（宽档不许交）"
         );
+        // ⭐ 节拍器键（1120 起可见）夹在徽章与视图组之间：两侧各 12px 缝。
+        if width >= 1120 {
+            let metro = bounds(&tree, "transport-metronome-button");
+            assert!(
+                badge.0 + badge.2 as i32 <= metro.0,
+                "[#186 {width}x{height}] 徽章右沿 {badge:?} 必须 ≤ 节拍器键左沿 {metro:?}"
+            );
+            assert!(
+                metro.0 + metro.2 as i32 <= session.0,
+                "[#186 {width}x{height}] 节拍器键右沿 {metro:?} 必须 ≤ Session 左沿 {session:?}"
+            );
+            report_line(&format!(
+                "[#186 走带 {width}x{height}] badge {badge:?} ≤ metronome {metro:?} ≤ session {session:?} ⇒ 不相交"
+            ));
+        }
         report_line(&format!(
             "[#186 走带 {width}x{height}] save {save:?} ≤ badge {badge:?} ≤ session {session:?} ⇒ 不相交"
         ));
@@ -1428,26 +1442,25 @@ fn check_arrangement(width: u32, height: u32) {
         tree.find_by_id("arrangement-loop-brace").is_some(),
         "[#187 编曲画布 {width}] 循环选区把手必须在场（它是标尺带**内**的滑块，按设计压在带上）"
     );
-    // ⭐ `#191`：折叠档（1024）右栏变抽屉后画布撑到窗口右沿（944px 宽），播放头
-    // x = 768 落在画布内 ⇒ 它在树里；只有**展开档**的 1024（画布 504px）才整条被 clip。
-    if live.ui().get_compact() || width >= 1440 {
-        let playhead = bounds(&tree, "arrangement-playhead");
-        assert_eq!(
-            playhead.2, 1,
-            "[#187 编曲画布 {width}] 播放头必须是 1px 竖线"
-        );
-        assert_eq!(
-            playhead.1,
-            canvas.1 + 20,
-            "[#187 编曲画布 {width}] 播放头上沿"
-        );
-    } else {
-        // 1024 档：播放头 x = 画布左沿 + 528 = 768 > 画布右沿 744 ⇒ 完全被 clip ⇒ 不进树。
-        assert!(
-            tree.find_by_id("arrangement-playhead").is_none(),
-            "[#187 编曲画布 {width}] 播放头整条落在画布外 ⇒ 必须在树外（⛔ 不许越界画出）"
-        );
-    }
+    // ⭐ 走带光标现在**跟随引擎读数**（唯一写者 = `host::apply_transport`）：装配态
+    // `playhead-ticks == 0` ⇒ x = 画布左沿 + 168px（时间轴左沿），三档断点下都落在
+    // 画布内 ⇒ 都必须在树里。旧版写死 x = 画布左沿 + 528px，于是 1024 展开档（画布
+    // 504px）整条被 clip —— 那个"树外"断言随假位置一起删掉。
+    let playhead = bounds(&tree, "arrangement-playhead");
+    assert_eq!(
+        playhead.2, 1,
+        "[#187 编曲画布 {width}] 播放头必须是 1px 竖线"
+    );
+    assert_eq!(
+        playhead.1,
+        canvas.1 + 20,
+        "[#187 编曲画布 {width}] 播放头上沿"
+    );
+    assert_eq!(
+        playhead.0,
+        canvas.0 + 168,
+        "[#187 编曲画布 {width}] 默认 tick 0 的播放头 x = 画布左沿 + 168px"
+    );
 }
 
 // ===========================================================================
