@@ -198,6 +198,13 @@ fn transpose_clip_expands_into_one_move_per_note_in_a_single_batch() {
         want,
         "`appliedOps` 必须**恰好**等于片段的音符数（一条形态 → N 条 `Op`）"
     );
+    // ⭐ `mergeCommitMessage` 的**效果面**（此前全库只证了 `yeban_propose_section` 那一侧）：
+    // 值必须原样进合并提交，⛔ 退化成缺省的 `"merge proposal {id}"`。
+    assert_eq!(
+        merged["data"]["merge"]["commit"]["message"],
+        json!("整片段 +2 半音"),
+        "`mergeCommitMessage` 必须原样进 `edit_notes` 的合并提交: {merged}"
+    );
     // `ADR-0032`：回执自述提交模型。`edit_notes` 是提案类, `autoMerge` 后是
     // `proposalAutoMerged` —— ⛔ 不是 `direct`（那是 `edit_automation` 那一族）。
     assert_eq!(

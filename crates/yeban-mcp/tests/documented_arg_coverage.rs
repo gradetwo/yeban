@@ -252,14 +252,20 @@ fn defines_fn(text: &str, name: &str) -> bool {
 ///
 /// # 读数（2026-10-30，逐函数体核过；对象＝键，单位＝个键）
 ///
-/// **29** 个键 ＝ **27** 已证 ＋ **2** 缺口。⚠ 另有四处"**缺省即与今天逐字节相同**"那一侧
-/// 没打钉子（`propose.includeDrums`／`propose.includeMelody`／`propose.progression` 只证了
-/// "打开这面"，`edit_notes.autoMerge` 只证了"合并这面"）—— 本表按**任一侧**判据登记即算已证，
-/// 这四处如实登记在台账里，⛔ 由本判据冒充"两侧都钉过"。
+/// **29** 个键 ＝ **29** 已证 ＋ **0** 缺口。本票落地时读出的两个缺口（`propose.materialSource`
+/// 只有耦合校验、`edit_notes.mergeCommitMessage` 无判据读回合并提交的信息）已由同线的
+/// `material_source_switches_the_material_and_theory_ignores_the_clip_pool` 与
+/// `transpose_clip_expands_into_one_move_per_note_in_a_single_batch` 补齐，⛔ 表退化成死名册：
+/// 两侧都由"登记的判据名 `fn NAME(` 真实存在"那条拦着。
+///
+/// ⚠ 另有四处"**缺省即与今天逐字节相同**"那一侧没打钉子（`propose.includeDrums`／
+/// `propose.includeMelody`／`propose.progression` 只证了"打开这面"，`edit_notes.autoMerge`
+/// 只证了"合并这面"）—— 本表按**任一侧**判据登记即算已证，这四处如实登记在台账里，
+/// ⛔ 由本判据冒充"两侧都钉过"。
 #[test]
 fn every_documented_creation_key_is_registered_with_an_effect_criterion() {
     /// 已证名单：键 → 证据判据名（只取一条代表性判据；同名判据⛔ 要求在同一文件里）。
-    const EFFECT_FACE: [(&str, &str, &[&str]); 27] = [
+    const EFFECT_FACE: [(&str, &str, &[&str]); 29] = [
         (
             "yeban_edit_notes",
             "autoMerge",
@@ -269,6 +275,11 @@ fn every_documented_creation_key_is_registered_with_an_effect_criterion() {
             "yeban_edit_notes",
             "create",
             &["edit_notes_create_and_place_in_one_proposal_is_atomic_and_undoable"],
+        ),
+        (
+            "yeban_edit_notes",
+            "mergeCommitMessage",
+            &["transpose_clip_expands_into_one_move_per_note_in_a_single_batch"],
         ),
         (
             "yeban_edit_notes",
@@ -324,6 +335,11 @@ fn every_documented_creation_key_is_registered_with_an_effect_criterion() {
             "yeban_propose_section",
             "materialClipIds",
             &["named_materials_feed_parts_in_declared_order"],
+        ),
+        (
+            "yeban_propose_section",
+            "materialSource",
+            &["material_source_switches_the_material_and_theory_ignores_the_clip_pool"],
         ),
         (
             "yeban_propose_section",
@@ -396,21 +412,11 @@ fn every_documented_creation_key_is_registered_with_an_effect_criterion() {
             &["contributions_match_an_independent_mute_render"],
         ),
     ];
-    /// 缺口名单（现读的**未证**，⛔ 由判据补齐由后续片补齐）：键 → 为什么算缺口。
-    const GAPS: [(&str, &str, &str); 2] = [
-        (
-            "yeban_propose_section",
-            "materialSource",
-            "只有耦合校验（`must be theory`／`must be project`／越界 INVALID_PARAMETER_RANGE）；\
-             ⛔ 一条判据把同一请求在两个 source 下各跑一次并断言 SectionPlan 不同",
-        ),
-        (
-            "yeban_edit_notes",
-            "mergeCommitMessage",
-            "值确实传了下去（`tests/transpose_clip.rs` 给过），但没有判据读回**合并提交的信息**\
-             断言它变过；同键在 `yeban_propose_section` 侧已由 `merge_commit_message_passes_through` 钉住",
-        ),
-    ];
+    /// 缺口名单：**今天为空**。⛔ 把它删掉 —— 这张空表是"新键进 schema 而没人登记"
+    /// 那一类的接收端（`declared == universe` 靠它把未证的键接住），也是"已证的键被
+    /// 悄悄降级"时唯一会红的位置。补一片时的写法：把行从 `EFFECT_FACE` 搬进来、
+    /// 两侧长度各自 +1/-1，判据 3 的"两名单⛔ 重叠"会拦住只搬不改的情况。
+    const GAPS: [(&str, &str, &str); 0] = [];
 
     let universe: std::collections::BTreeSet<(String, String)> =
         documented_keys().into_iter().collect();
