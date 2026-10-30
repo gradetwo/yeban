@@ -490,6 +490,9 @@ export component MainWindow inherits Window {
     callback toggle-undo-tree();
     // D45: 时光机里的"撤销一步"（与 `Cmd+Z` 汇到同一个 `UndoPort::perform`）。
     callback undo-step();
+    // 时光机里**点击版本节点**：参数 = 节点下标（0 = 活跃分支头）；宿主
+    // `host::wire_undo` 把它换算成 `UndoMany` / `RedoMany` 落到同一个 `UndoPort::perform`。
+    callback undo-node-selected(int);
     // `ROAD-M4-008` 选项 (a)：**保存工程**。事件源是 `ui/transport.slint` 的"保存"按钮
     // （`accessible-id: "transport-save-button"`）；宿主 `host::wire_save` 把它落到
     // `save_action::dispatch_save`（有控制面会话 ⇒ 走那个会话；没有 ⇒ 本地原子写），
@@ -1964,6 +1967,7 @@ export component MainWindow inherits Window {
         node-hidden: root.undo-node-hidden;
 
         undo-step => { root.undo-step(); }
+        node-selected(index) => { root.undo-node-selected(index); }
         close => { root.undo-tree-open = false; }
     }
 

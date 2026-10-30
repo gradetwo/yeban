@@ -8596,14 +8596,15 @@ fn undo_tree_projection(port: &UndoPort) -> (Vec<String>, usize) {
     (labels, chain.len().saturating_sub(UNDO_TREE_MAX_NODES))
 }
 
-/// 把撤销入口接到界面上（`toggle-undo-tree` 与时光机的"撤销一步"按钮）。
+/// 把撤销入口接到界面上（`toggle-undo-tree`、时光机的"撤销一步"按钮、节点点击）。
 ///
-/// 两条回调都汇到**同一个** [`UndoPort::perform`]：
+/// 三条回调都汇到**同一个** [`UndoPort::perform`]：
 ///
 /// | 界面回调 | 动作 | 工程会不会变 |
 /// | :--- | :--- | :--- |
 /// | `toggle-undo-tree` | `UiAction::ToggleUndoTree` | 不会（只开关弹窗） |
 /// | `undo-step`（弹窗按钮） | `UiAction::Undo` | **会**（走模型的撤销入口） |
+/// | `undo-node-selected`（点一个版本节点） | `UiAction::UndoMany` / `RedoMany` | **会**（回到那一版） |
 ///
 /// 每次动作之后：
 ///
@@ -8636,6 +8637,37 @@ pub fn wire_undo(ui: &MainWindow, port: &Rc<UndoPort>) {
         let weak = slint::ComponentHandle::as_weak(ui);
         ui.on_undo_step(move || {
             port.perform(UiAction::Undo);
+            refresh_undo(&weak, &port, true);
+        });
+    }
+    {
+        let port = Rc::clone(port);
+        let weak = slint::ComponentHandle::as_weak(ui);
+        ui.on_undo_node_selected(move |node_index: i32| {
+            // 节点下标 = 链上"从活跃分支头往回数"的版本号；`undo_session::commit` 的
+            // 约定是"一次提交 = 一条 `Op::Batch` = 一步撤销" ⇒ 游标的 `undone` 步数
+            // 就是"文档现在停在第几个版本"。
+            let Ok(target) = usize::try_from(node_index) else {
+                return;
+            };
+            let display = port.display();
+            // 出界下标不是画出来的版本 ⇒ 什么都不做（与 `wire_tool_select` 同口径：
+            // 宁可不动，也不猜一个版本）。`undone + undoable` = 活跃分支可回退的
+            // 总版本数（模型读数），合法的目标下标必须严格小于它。
+            if target >= display.undone + display.undoable {
+                return;
+            }
+            // ⚠ 模型侧 `plan_undo` 会把步数 clamp 到 ≥ 1（`UndoMany(0)` **会撤销一步**）
+            // ⇒ "已经停在目标版本上"必须在这里跳过，而不是把 0 交给端口。
+            if target == display.undone {
+                return;
+            }
+            let action = if target > display.undone {
+                UiAction::UndoMany(target - display.undone)
+            } else {
+                UiAction::RedoMany(display.undone - target)
+            };
+            port.perform(action);
             refresh_undo(&weak, &port, true);
         });
     }
