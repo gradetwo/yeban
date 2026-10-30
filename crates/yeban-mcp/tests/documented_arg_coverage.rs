@@ -44,6 +44,11 @@
 //!
 //! ⚠ 结论：扩展参数轴**不能靠词面扫描**（规则 32 的假阳性一侧）。要机械化必须按
 //! "**哪个调用的**实参"归类（解析调用点），本文件不做 —— 这项 rot 风险如实登记。
+//!
+//! ⭐ **2026-10-30 加了第二条轴**（`every_documented_creation_key_is_registered_with_an_effect_criterion`）：
+//! 上面这条只数"键有没有被给过非缺省值"，新那条登记"**改了它的值 ⇒ 产出真的变**"的证据判据。
+//! 两轴**共用**同一份键全集派生（`documented_keys()`）与同一份测试源读取（`test_sources()`），
+//! ⛔ 各数各的键（第 44 条）。
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -112,8 +117,12 @@ fn non_default_hits(text: &str, camel: &str, snake: &str) -> usize {
     hits
 }
 
-#[test]
-fn every_documented_optional_argument_is_given_a_non_default_value_somewhere() {
+/// **键全集的唯一派生处**（本文件两条判据共用一把尺：第 44 条 ⛔ 第二份真相）。
+///
+/// 对象＝ `schemas/mcp-tools.schema.json` 里 `DocumentedToolArguments.$defs` 的每个工具
+/// 的 `properties` 键（现读，字典序去重），单位＝个 `(tool, camelKey)` 对。
+/// R93：集合是**动态**的 ⇒ 下界在这里钉，schema 被清空时两条判据一起红。
+fn documented_keys() -> Vec<(String, String)> {
     let root = repo_root();
     let schema: Value =
         serde_json::from_str(&fs::read_to_string(root.join(SCHEMA)).expect("schema 必须可读"))
@@ -121,28 +130,32 @@ fn every_documented_optional_argument_is_given_a_non_default_value_somewhere() {
     let tools = schema["definitions"]["DocumentedToolArguments"]["$defs"]
         .as_object()
         .expect("`DocumentedToolArguments.$defs` 必须是对象");
-
-    let mut keys: Vec<(String, String, String)> = Vec::new();
+    assert!(
+        !tools.is_empty(),
+        "`DocumentedToolArguments.$defs` 为空 —— 扫描面异常"
+    );
+    let mut keys: Vec<(String, String)> = Vec::new();
     for (tool, spec) in tools {
         let props = spec["properties"]
             .as_object()
             .unwrap_or_else(|| panic!("`{tool}` 必须登记 properties"));
         for (camel, _) in props {
-            keys.push((tool.clone(), camel.clone(), snake_case(camel)));
+            keys.push((tool.clone(), camel.clone()));
         }
     }
-    // R93：被扫集合是**动态**的（schema 派生）⇒ 必须有下界，否则 schema 清空后本判据恒绿。
-    assert!(
-        !tools.is_empty(),
-        "`DocumentedToolArguments.$defs` 为空 —— 扫描面异常"
-    );
+    keys.sort();
+    keys.dedup();
     assert!(
         keys.len() >= 20,
-        "文档化可选键只剩 {} 个 —— 扫描面异常（现读 21）",
+        "文档化可选键只剩 {} 个 —— 扫描面异常（现读 29）",
         keys.len()
     );
+    keys
+}
 
-    let tests_dir = root.join("crates/yeban-mcp/tests");
+/// **测试源集合的唯一读取处**（覆盖面数"键出没出现过"，效果面数"判据函数在不在"）。
+fn test_sources() -> Vec<(PathBuf, String)> {
+    let tests_dir = repo_root().join("crates/yeban-mcp/tests");
     let mut sources: Vec<(PathBuf, String)> = Vec::new();
     for entry in fs::read_dir(&tests_dir).expect("tests 目录必须可读") {
         let path = entry.expect("目录项必须可读").path();
@@ -154,12 +167,26 @@ fn every_documented_optional_argument_is_given_a_non_default_value_somewhere() {
             fs::read_to_string(&path).expect("测试源必须可读"),
         ));
     }
-    // R93 同上：文件集合也是动态的。
     assert!(
         sources.len() >= 20,
         "扫到的测试源只剩 {} 个 —— 扫描面异常",
         sources.len()
     );
+    sources.sort();
+    sources
+}
+
+#[test]
+fn every_documented_optional_argument_is_given_a_non_default_value_somewhere() {
+    let keys: Vec<(String, String, String)> = documented_keys()
+        .into_iter()
+        .map(|(tool, camel)| {
+            let snake = snake_case(&camel);
+            (tool, camel, snake)
+        })
+        .collect();
+
+    let sources = test_sources();
 
     let mut uncovered: Vec<String> = Vec::new();
     let mut readings: Vec<(String, usize)> = Vec::new();
@@ -182,4 +209,247 @@ fn every_documented_optional_argument_is_given_a_non_default_value_somewhere() {
         uncovered,
         readings
     );
+}
+
+/// 给定文本里有没有名为 `name` 的**函数定义**（`fn NAME(`，带标识符边界，⛔ 子串命中）。
+///
+/// 右侧边界由 needle 自带的 `(` 保证（`NAME_x(` ⛔ 命中 `NAME(`）；左侧只需排除
+/// `myfn NAME(` 这类粘连（R119 同型）。
+fn defines_fn(text: &str, name: &str) -> bool {
+    let needle = format!("fn {name}(");
+    let mut search = 0_usize;
+    while let Some(found) = text[search..].find(&needle) {
+        let at = search + found;
+        search = at + 1;
+        let prev_is_ident = text[..at]
+            .chars()
+            .next_back()
+            .is_some_and(|c| c.is_alphanumeric() || c == '_');
+        if !prev_is_ident {
+            return true;
+        }
+    }
+    false
+}
+
+/// 效果面登记表（**第二条轴**）：每个文档化键要么绑定一条"**改它的值 ⇒ 产出真的变**"
+/// （或把"缺省 ⇒ 与今天逐字节相同"钉住）的判据，要么**显式登记为缺口**。
+///
+/// # 为什么是人工登记表而⛔ 词法扫描
+///
+/// 上一条判据只证明"某处给过非缺省值"，而本文件头部（第 40-47 行）自己就写明那⛔ 等于
+/// 证明键被 honour。先试过词面自动认（判据名含键的 snake_case 全名 **且** 含效果词），
+/// 实测只认出 **5 / 29** —— `drumBackbeat` 的证据函数叫
+/// `the_backbeat_moves_only_the_snare_line`，词面必然漏（`AGENTS.md` §6.3 第 3 条的同型
+/// 陷阱：⛔ 用词面判断交付）。于是**语义由人核（逐个读函数体），机械只钉三件事**：
+///
+/// 1. **两向集合相等**：schema 的键全集 ＝ 已证名单 ∪ 缺口名单（新键进 schema 而没登记 ⇒ 红；
+///    键被删而登记表没删 ⇒ 红）；
+/// 2. **登记的判据名逐个真实存在**（`fn NAME(` 现读）：判据被改名／删掉 ⇒ 红，
+///    ⛔ 让登记表退化成死名册；
+/// 3. **缺口⛔ 悄悄补齐**：已证与缺口两名单⛔ 重叠，且每行已证必须给出**非空**判据名
+///    （空集⛔ 充当"已证"）。
+///
+/// # 读数（2026-10-30，逐函数体核过；对象＝键，单位＝个键）
+///
+/// **29** 个键 ＝ **27** 已证 ＋ **2** 缺口。⚠ 另有四处"**缺省即与今天逐字节相同**"那一侧
+/// 没打钉子（`propose.includeDrums`／`propose.includeMelody`／`propose.progression` 只证了
+/// "打开这面"，`edit_notes.autoMerge` 只证了"合并这面"）—— 本表按**任一侧**判据登记即算已证，
+/// 这四处如实登记在台账里，⛔ 由本判据冒充"两侧都钉过"。
+#[test]
+fn every_documented_creation_key_is_registered_with_an_effect_criterion() {
+    /// 已证名单：键 → 证据判据名（只取一条代表性判据；同名判据⛔ 要求在同一文件里）。
+    const EFFECT_FACE: [(&str, &str, &[&str]); 27] = [
+        (
+            "yeban_edit_notes",
+            "autoMerge",
+            &["transpose_clip_expands_into_one_move_per_note_in_a_single_batch"],
+        ),
+        (
+            "yeban_edit_notes",
+            "create",
+            &["edit_notes_create_and_place_in_one_proposal_is_atomic_and_undoable"],
+        ),
+        (
+            "yeban_edit_notes",
+            "placement",
+            &["needs_6_placement_puts_pool_material_on_the_timeline_and_the_master_hears_it"],
+        ),
+        (
+            "yeban_propose_section",
+            "beatGrouping",
+            &["the_grouping_moves_the_kick_and_the_accents_not_the_grid"],
+        ),
+        (
+            "yeban_propose_section",
+            "autoMerge",
+            &["auto_merge_lands_in_one_call"],
+        ),
+        (
+            "yeban_propose_section",
+            "drumBackbeat",
+            &["the_backbeat_moves_only_the_snare_line"],
+        ),
+        (
+            "yeban_propose_section",
+            "drumDensity",
+            &["sparse_keeps_only_the_accented_hits_of_every_registered_genre"],
+        ),
+        (
+            "yeban_propose_section",
+            "drumStyle",
+            &["four_on_the_floor_only_adds_kicks_on_beat_starts"],
+        ),
+        (
+            "yeban_propose_section",
+            "harmonyMaxVoiceJump",
+            &["a_tight_jump_moves_only_the_harmony_pitches"],
+        ),
+        (
+            "yeban_propose_section",
+            "harmonySeed",
+            &["harmony_seed_is_deterministic_and_swaps_the_progression_pick"],
+        ),
+        (
+            "yeban_propose_section",
+            "includeDrums",
+            &["drums_generate_on_project_source"],
+        ),
+        (
+            "yeban_propose_section",
+            "includeMelody",
+            &["melody_generates_over_project_material_with_explicit_scale"],
+        ),
+        (
+            "yeban_propose_section",
+            "materialClipIds",
+            &["named_materials_feed_parts_in_declared_order"],
+        ),
+        (
+            "yeban_propose_section",
+            "melodyLower",
+            &["a_narrow_register_moves_only_the_melody_pitches"],
+        ),
+        (
+            "yeban_propose_section",
+            "melodyMaxLeap",
+            &["a_tight_leap_moves_only_the_melody_pitches"],
+        ),
+        (
+            "yeban_propose_section",
+            "melodySeed",
+            &["a_different_seed_changes_pitches_and_velocity_never_the_grid"],
+        ),
+        (
+            "yeban_propose_section",
+            "melodyUpper",
+            &["absent_register_is_byte_identical_to_the_published_window"],
+        ),
+        (
+            "yeban_propose_section",
+            "mergeCommitMessage",
+            &["merge_commit_message_passes_through"],
+        ),
+        (
+            "yeban_propose_section",
+            "onsetsPerBar",
+            &["grid_moves_only_drums_and_melody"],
+        ),
+        (
+            "yeban_propose_section",
+            "partTracks",
+            &["reused_tracks_get_placements_without_new_tracks"],
+        ),
+        (
+            "yeban_propose_section",
+            "progression",
+            &["symbol_progression_voices_the_named_chords_per_bar"],
+        ),
+        (
+            "yeban_propose_section",
+            "swingPermille",
+            &["the_displacement_grows_monotonically_with_the_permille"],
+        ),
+        (
+            "yeban_propose_section",
+            "velocityMax",
+            &["absent_ladder_is_byte_identical_to_the_published_two_rungs"],
+        ),
+        (
+            "yeban_propose_section",
+            "velocityMin",
+            &["the_two_rungs_land_on_exactly_the_registered_accent_tiers"],
+        ),
+        (
+            "yeban_propose_section",
+            "voiceSubdivision",
+            &["voice_subdivision_partitions_the_span_without_loss"],
+        ),
+        (
+            "yeban_propose_section",
+            "voiceSubdivisions",
+            &["voice_subdivisions_apply_to_the_named_voice_only"],
+        ),
+        (
+            "yeban_render_master",
+            "contributions",
+            &["contributions_match_an_independent_mute_render"],
+        ),
+    ];
+    /// 缺口名单（现读的**未证**，⛔ 由判据补齐由后续片补齐）：键 → 为什么算缺口。
+    const GAPS: [(&str, &str, &str); 2] = [
+        (
+            "yeban_propose_section",
+            "materialSource",
+            "只有耦合校验（`must be theory`／`must be project`／越界 INVALID_PARAMETER_RANGE）；\
+             ⛔ 一条判据把同一请求在两个 source 下各跑一次并断言 SectionPlan 不同",
+        ),
+        (
+            "yeban_edit_notes",
+            "mergeCommitMessage",
+            "值确实传了下去（`tests/transpose_clip.rs` 给过），但没有判据读回**合并提交的信息**\
+             断言它变过；同键在 `yeban_propose_section` 侧已由 `merge_commit_message_passes_through` 钉住",
+        ),
+    ];
+
+    let universe: std::collections::BTreeSet<(String, String)> =
+        documented_keys().into_iter().collect();
+    let mut declared: std::collections::BTreeSet<(String, String)> = EFFECT_FACE
+        .iter()
+        .map(|(tool, camel, _)| (tool.to_string(), camel.to_string()))
+        .collect();
+    declared.extend(
+        GAPS.iter()
+            .map(|(tool, camel, _)| (tool.to_string(), camel.to_string())),
+    );
+    assert_eq!(
+        declared, universe,
+        "效果面登记表与 schema 的键全集两向不符 => 新键没登记，或删掉的键还留在表里"
+    );
+    assert!(
+        EFFECT_FACE.len() >= 20,
+        "已证键只剩 {} 行 => 登记表被整体掏空（R93：⛔ 把已证批量搬进缺口名单来让它绿）",
+        EFFECT_FACE.len()
+    );
+
+    let sources = test_sources();
+    for (tool, camel, names) in EFFECT_FACE {
+        assert!(
+            !GAPS.iter().any(|row| row.0 == tool && row.1 == camel),
+            "键 `{tool}.{camel}` 同时出现在已证与缺口两张名单 => 登记口径自相矛盾"
+        );
+        assert!(
+            !names.is_empty(),
+            "键 `{tool}.{camel}` 登记的判据名是空集 => 空集⛔ 充当『已证』"
+        );
+        for &name in names {
+            assert!(
+                sources
+                    .iter()
+                    .any(|(_, text)| defines_fn(text.as_str(), name)),
+                "键 `{tool}.{camel}` 登记的判据 `{name}` 在 `crates/yeban-mcp/tests/*.rs` 里\
+                 找不到 `fn {name}(` => 判据被改名或删掉了，登记表成了死名册"
+            );
+        }
+    }
 }
