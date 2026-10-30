@@ -255,16 +255,68 @@ fn slice_receiver_bound(context: &str) -> Option<(String, String)> {
     Some((receiver, bound))
 }
 
-/// 站点**所在函数体**的起点行下标（0 起）：向上找第一个 `fn …` 起头处。
+/// 站点**所在函数体**的起点行下标（0 起）：取**包住站点**的最内层 `fn …`。
+///
+/// ⚠ 上一版只取"站点上方最近的 `fn`" ⇒ 若那是**已闭合的嵌套 helper**，
+/// 窗口会从 helper 起头：helper 之前的界被排除（假红）／helper 里的界被借走（假绿）。
 fn enclosing_body_start(lines: &[&str], line_no: usize) -> usize {
-    let mut index = line_no.saturating_sub(1);
-    while index > 0 {
-        if is_fn_definition(lines[index - 1]) {
-            return index - 1;
+    let target = line_no.saturating_sub(1);
+    let mut best: Option<(usize, usize)> = None;
+    for index in 0..=target.min(lines.len().saturating_sub(1)) {
+        if !is_fn_definition(lines[index]) {
+            continue;
         }
-        index -= 1;
+        let (start, end) = span_from(lines, index);
+        if start <= target && target <= end && best.is_none_or(|(best_start, _)| best_start < start)
+        {
+            best = Some((start, end));
+        }
     }
-    0
+    best.map(|(start, _)| start).unwrap_or(0)
+}
+
+/// 从 `start` 行（一个 `fn …` 定义）起，用花括号配平求**闭合行**下标。
+fn span_from(lines: &[&str], start: usize) -> (usize, usize) {
+    let mut depth = 0i32;
+    let mut seen_open = false;
+    for (index, line) in lines.iter().enumerate().skip(start) {
+        for c in line.chars() {
+            if c == '{' {
+                depth += 1;
+                seen_open = true;
+            } else if c == '}' {
+                depth -= 1;
+            }
+        }
+        if seen_open && depth <= 0 {
+            return (start, index);
+        }
+    }
+    (start, lines.len().saturating_sub(1))
+}
+
+/// 窗口的行集合：`[start, end)` 但**跳过嵌套 fn 的整段**（⛔ 不借其内的界）。
+///
+/// ⚠ 上一版只看"函数体起点" ⇒ 已闭合的嵌套 helper 里的界会被当成本函数体的证据（假绿）。
+fn body_lines<'a>(
+    lines: &'a [&'a str],
+    body_start: usize,
+    start: usize,
+    end: usize,
+) -> Vec<&'a str> {
+    let mut out = Vec::new();
+    let mut index = start;
+    let limit = end.min(lines.len());
+    while index < limit {
+        if index > body_start && is_fn_definition(lines[index]) {
+            let (_, nested_end) = span_from(lines, index);
+            index = nested_end + 1;
+            continue;
+        }
+        out.push(lines[index]);
+        index += 1;
+    }
+    out
 }
 
 /// ⭐ **R143**：函数定义行必须用**通用判定**，⛔ 不用前缀清单。
@@ -321,7 +373,7 @@ fn has_size_bound(source: &str, line_no: usize) -> bool {
     let lines: Vec<&str> = source.lines().collect();
     let body_start = enclosing_body_start(&lines, line_no);
     let start = body_start.max(line_no.saturating_sub(WINDOW_MAX + 1));
-    let window = lines[start..line_no.saturating_sub(1).min(lines.len())].join("\n");
+    let window = body_lines(&lines, body_start, start, line_no.saturating_sub(1)).join("\n");
     // ⭐ **R96／R113**：注释与字面量里的 `len() >=` **不算界** ⇒ 先掩码（保长）。
     // ⚠ 掩码之后**再压缩**：针是从**压缩**文本派生的（`xs.len()>=`），
     // 拿它去匹配**未压缩**窗口（`xs.len() >=`）永远不中 —— 实测 4 条臂因此全红。
@@ -351,25 +403,27 @@ fn has_size_bound(source: &str, line_no: usize) -> bool {
     // (b) **切片上界被标量相等钉住**：站点形如 `x[..n]`，窗口里有 `assert_eq!(n, <数>)`。
     // ⚠ 站点行常常只是 `.all(|…| …)`（接收者在**上一行**，如 `out.iter()`）⇒
     // 必须用**包含站点行的整段上下文**提取标识符，⛔ 不能只看站点那一行（实测漏判 2 处）。
-    let site_line = lines[start..line_no.min(lines.len())].join("\n");
+    let site_line = body_lines(&lines, body_start, start, line_no).join("\n");
     let flat = squeeze(&site_line);
 
     // ⭐ **R118 ✅ 形态 A：定长数组接收者** —— 接收者由 **`[..`／站点文本派生**（⛔ 不用白名单）。
     // 声明行形如 `let mut out = [0.0f32; 128];`（含接收者、`[`、`;`、`]`、`let`）。
     if let Some((receiver, _)) = slice_receiver_bound(&site_line) {
-        let declared_fixed = lines[start..line_no].iter().any(|line| {
-            let t = squeeze(line);
-            t.contains(&format!("{receiver}=["))
-                && t.contains(';')
-                && t.contains(']')
-                && (t.starts_with("let") || t.contains("letmut"))
-        });
+        let declared_fixed = body_lines(&lines, body_start, start, line_no)
+            .into_iter()
+            .any(|line| {
+                let t = squeeze(line);
+                t.contains(&format!("{receiver}=["))
+                    && t.contains(';')
+                    && t.contains(']')
+                    && (t.starts_with("let") || t.contains("letmut"))
+            });
         if declared_fixed {
             return true;
         }
     } else {
         // 无切片形态时，退回到"扫窗口里每个 `let … = [ … ; … ]`"的接收者名字。
-        for line in &lines[start..line_no] {
+        for line in body_lines(&lines, body_start, start, line_no) {
             let t = squeeze(line);
             if !(t.starts_with("let") || t.contains("letmut")) || !t.contains("=[") {
                 continue;
@@ -612,6 +666,25 @@ fn the_window_is_the_function_body_not_a_fixed_line_count() {
     assert!(
         !has_size_bound(neighbour, site_b[0]),
         "⛔ 界在上一个函数里 ⇒ 不得被当成本函数的界（借邻居 ⇒ 假阴）"
+    );
+
+    // ③ **界在**已闭合的嵌套 helper 之前** ⇒ 仍属同一函数体，必须认得出。
+    // ⚠ 上一版"取站点上方最近的 fn"会把窗口起点挪到 helper ⇒ 认不出（假红）。
+    let nested_closed = "fn t() {\n    assert!(xs.len() >= 3);\n    fn helper() {\n        let _pad = 1;\n    }\n    assert!(xs.iter().all(|x| *x > 0));\n}\n";
+    let site_c = sites(nested_closed);
+    assert_eq!(site_c.len(), 1, "对照夹具必须恰好 1 个站点");
+    assert!(
+        has_size_bound(nested_closed, site_c[0]),
+        "⭐ 界在嵌套 helper **之前**、同属外层函数体 ⇒ 必须认得出（窗口按'包住站点的 fn'取）"
+    );
+
+    // ④ **界只在**已闭合的嵌套 helper 里** ⇒ 必须**不**认（⛔ 借 nested 的界 ⇒ 假绿）。
+    let only_inner = "fn t() {\n    fn helper() {\n        assert!(xs.len() >= 3);\n    }\n    assert!(xs.iter().all(|x| *x > 0));\n}\n";
+    let site_d = sites(only_inner);
+    assert_eq!(site_d.len(), 1, "对照夹具必须恰好 1 个站点");
+    assert!(
+        !has_size_bound(only_inner, site_d[0]),
+        "⛔ 已闭合的嵌套函数里的同名界不得成为外层站点的证据（借邻居 ⇒ 假绿）"
     );
 }
 
@@ -1129,7 +1202,7 @@ fn count_by_class(sources: &[(&str, &str)]) -> [usize; 4] {
                 && let Some(name) = ident_of(line)
             {
                 let start = enclosing_body_start(&lines, index + 1);
-                let window = lines[start..index].join("\n");
+                let window = body_lines(&lines, start, start, index).join("\n");
                 if window.contains(&format!("{name} +="))
                     || window.contains(&format!("{name}+="))
                     || window.contains(&format!("let mut {name}"))

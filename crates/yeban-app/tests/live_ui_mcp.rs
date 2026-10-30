@@ -8507,3 +8507,303 @@ fn escape_closes_the_time_machine_modal_for_real() {
         display_after.commit_count,
     ));
 }
+
+// ==================================================================== 混音台**双击复位**
+//
+// 文本层那四段接线（命中面 → 回调 → 两级转发 → 宿主四臂）在 `tests/mixer_fader_double_click.rs`；
+// 这里证的是**动作**：双击真的改了工程、只改被点那一格、已经在中性位就⛔ 不提交，
+// 而且带着在手的拖拽去双击不会把 `mixer-drag-active` 黏住。
+//
+// ⚠ 为什么驱动的是 `MainWindow` 回调而不是真实指针：`double-clicked` 要 `click_count == 2`，
+// 而注入面今天只有 `down` / `move` / `up`（`METHOD_DISPATCH_POINTER_DOWN` / `..._MOVE`），
+// 没有"第二下带计数"的入口。`.slint` 的四条 `double-clicked` 臂调的**就是**这里 invoke 的
+// 那四个回调（`ui/console/mixer_console.slint` 的四面），因此走的仍是同一条宿主链；
+// "臂确实挂在命中面上"那半由文本层判据钉 —— 两半缺一个都会漏掉一类缺陷。
+
+/// 判据：双击推子 / 声相 ⇒ 工程与界面**同时**回中性（`0 dB` / 中央），并且
+/// ③ 已经在中性位时**不产生**任何提交、⑤ 复位与拖动共用**同一条**撤销栈。
+#[test]
+fn a_double_click_reset_moves_the_fader_and_pan_to_neutral() {
+    use std::rc::Rc;
+
+    use yeban_app::undo::{UndoPort, UndoSession};
+
+    /// 会话打开时刻（与其它混音台判据同一个夹具常量）。
+    const NOW: u64 = 1_760_000_000_000;
+    /// 中性值的**位**：推子 `0 dB`（unity）与声相中央都是 `0.0` ⇒ 两处同一个基准。
+    const NEUTRAL: u32 = 0.0_f32.to_bits();
+
+    let project = demo_project();
+    let view = ViewState::from_project(&project).expect("演示投影");
+    let port = Rc::new(UndoPort::new(
+        UndoSession::open("<判据>", "yeban-app", project.clone(), NOW).expect("打开"),
+    ));
+    let live = build_live_ui_with(
+        &project,
+        &LiveWiringOptions {
+            permission: Permission::Interactive,
+            console_tab: 1,
+            save_path: None,
+            engine_quanta: 0,
+            undo: Some(Rc::clone(&port)),
+        },
+    )
+    .expect("装配");
+    let window = slint::ComponentHandle::clone_strong(live.ui());
+
+    // ---- ① 前提：夹具第 0 轨**不是**中性值（否则"复位"没有可观察的效果）
+    assert_eq!(
+        mixer_readings(&port.project(), &view, 0).0,
+        -3.2,
+        "① 前提：夹具第 0 轨 = -3.2 dB"
+    );
+    assert_eq!(
+        injected_strings(&window.get_track_volumes())[0],
+        "-3.2",
+        "① 前提：界面上的文本与工程同源（都是 -3.2）"
+    );
+
+    // ---- ② 双击推子 ⇒ 工程逐位 `0.0`、文本由**重投影**写回、恰一步撤销
+    window.invoke_mixer_fader_reset(0);
+    assert_eq!(
+        mixer_readings(&port.project(), &view, 0).0.to_bits(),
+        NEUTRAL,
+        "② 工程里的 `volume_db` 必须真的是 0.0（从权威工程读回，不从界面读）"
+    );
+    assert_eq!(
+        injected_strings(&window.get_track_volumes())[0],
+        "0.0",
+        "② 界面文本必须是 `0.0`（投影写的，不是宿主自己拼的字符串）"
+    );
+    let display = port.display();
+    assert_eq!(display.undoable, 1, "② 一次双击 = **恰**一步可撤销的编辑");
+    assert!(
+        !window.get_mixer_drag_active(),
+        "② 双击不是拖动 ⇒ 标志必须 `false`"
+    );
+    assert_eq!(
+        mixer_readings(&port.project(), &view, 1).0,
+        -6.0,
+        "② 邻格一位不动：第 1 轨仍是 -6.0 dB"
+    );
+
+    // ---- ③ 已经在中性位 ⇒ **什么都不做**（撤销树里不许有"什么都没改"的一步）
+    let commits_after_first_reset = port.display().commit_count;
+    window.invoke_mixer_fader_reset(0);
+    assert_eq!(
+        port.display().undoable,
+        1,
+        "③ 第二次双击不得多出一步（值没变 ⇒ ⛔ 提交）"
+    );
+    assert_eq!(
+        port.display().commit_count,
+        commits_after_first_reset,
+        "③ 而且一次提交都不许发生"
+    );
+
+    // ---- ④ 声相那一格：夹具 `pan` 恒为 `0.0` ⇒ 先拖到非中性，再复位
+    window.invoke_mixer_pan_grab(2, 0.0);
+    window.invoke_mixer_pan_drag(2, 18.0);
+    window.invoke_mixer_pan_release(2);
+    assert_eq!(
+        mixer_readings(&port.project(), &view, 2).1,
+        1.0,
+        "④ 前提：拖满一半行程（`18px / 36px`）⇒ pan 夹到 +1.0"
+    );
+    assert_eq!(
+        injected_strings(&window.get_track_pans())[2],
+        "R100",
+        "④ 前提：界面上的声相文本跟着走"
+    );
+    assert_eq!(port.display().undoable, 2, "④ 一次拖动 = 一步");
+    window.invoke_mixer_pan_reset(2);
+    assert_eq!(
+        mixer_readings(&port.project(), &view, 2).1.to_bits(),
+        NEUTRAL,
+        "④ 双击声相 ⇒ 工程里的 `pan` 必须逐位是 0.0"
+    );
+    assert_eq!(
+        injected_strings(&window.get_track_pans())[2],
+        "C",
+        "④ 界面上的声相文本回中央（与投影同一个口径）"
+    );
+    assert_eq!(
+        port.display().undoable,
+        3,
+        "④ 复位是**另**一步，不是把上一步改掉"
+    );
+    assert_eq!(
+        mixer_readings(&port.project(), &view, 2).0,
+        -8.4,
+        "④ 复位声相⛔ 碰推子：第 2 轨音量仍是夹具的 -8.4 dB"
+    );
+
+    // ---- ⑤ `Cmd+Z`：复位与拖动落在**同一条**撤销栈上
+    assert!(
+        window.invoke_key_action("z".into(), false, false, false, true),
+        "⑤ `Cmd+Z` 必须被 DAW 消费"
+    );
+    assert_eq!(
+        mixer_readings(&port.project(), &view, 2).1,
+        1.0,
+        "⑤ 回退一步必须把 pan 还原到 +1.0"
+    );
+    assert_eq!(
+        injected_strings(&window.get_track_pans())[2],
+        "R100",
+        "⑤ 界面上的文本必须跟着回退"
+    );
+    assert_eq!(port.display().undoable, 2, "⑤ 回退之后剩两步");
+
+    // ---- ⑥ 越界下标 ⇒ 原地返回（不 panic、不猜一条轨道、不提交）
+    let undoable_before = port.display().undoable;
+    window.invoke_mixer_fader_reset(99);
+    window.invoke_mixer_pan_reset(-1);
+    assert_eq!(
+        port.display().undoable,
+        undoable_before,
+        "⑥ 越界下标（99 / -1）不得提交任何东西"
+    );
+    report_line(&format!(
+        "[mixer-double-click-reset] ② 推子 -3.2 → {} dB（undoable {}）；③ 重复双击 ⇒ 提交数\
+         {commits_after_first_reset} → {}（⛔ 不提交）；④ 声相 0.0 → 1.0 → 0.0 → ⑤ `Cmd+Z` 回 1.0",
+        mixer_readings(&port.project(), &view, 0).0,
+        display.undoable,
+        port.display().commit_count,
+    ));
+}
+
+/// 判据（手势交错）：双击的第二下会先来一次 `grab` ⇒ 复位臂**必须先把在手的拖拽清零**。
+/// 两条交错都跑：清零之后那一次孤立的 `release` 既不提交、也不许把标志留在 `true`。
+/// 同一窗口里另证**主控**那两条（寻址按身份、视图态是两个标量属性）。
+#[test]
+fn a_double_click_reset_leaves_no_sticky_gesture() {
+    use std::rc::Rc;
+
+    use yeban_app::undo::{UndoPort, UndoSession};
+
+    const NOW: u64 = 1_760_000_000_000;
+    const NEUTRAL: u32 = 0.0_f32.to_bits();
+
+    let project = demo_project();
+    let view = ViewState::from_project(&project).expect("演示投影");
+    let port = Rc::new(UndoPort::new(
+        UndoSession::open("<判据>", "yeban-app", project.clone(), NOW).expect("打开"),
+    ));
+    let live = build_live_ui_with(
+        &project,
+        &LiveWiringOptions {
+            permission: Permission::Interactive,
+            console_tab: 1,
+            save_path: None,
+            engine_quanta: 0,
+            undo: Some(Rc::clone(&port)),
+        },
+    )
+    .expect("装配");
+    let window = slint::ComponentHandle::clone_strong(live.ui());
+
+    // ---- ① 主控推子：夹具的主总线是 unity ⇒ 先拖出非中性，才谈得上"复位"
+    assert_eq!(
+        master_readings(&port.project()).0,
+        0.0,
+        "① 前提：夹具主总线 `volume_db` = 0.0（`TrackV3::default()`）"
+    );
+    window.invoke_mixer_master_fader_grab(100.0);
+    window.invoke_mixer_master_fader_drag(140.0);
+    window.invoke_mixer_master_fader_release();
+    assert_eq!(
+        window.get_master_volume_display().to_string(),
+        "-30.0",
+        "① 前提：拖 40px（`0.75 dB/px`）⇒ -30.0 dB"
+    );
+    assert_eq!(port.display().undoable, 1, "① 一次拖动 = 一步");
+    window.invoke_mixer_master_fader_reset();
+    assert_eq!(
+        master_readings(&port.project()).0.to_bits(),
+        NEUTRAL,
+        "① 主控复位必须按**身份**命中主总线（第 3 次调用第 4 条臂）"
+    );
+    assert_eq!(
+        window.get_master_volume_display().to_string(),
+        "0.0",
+        "① 主控那两个**标量**属性也必须回中性（不是数组的一格）"
+    );
+    assert_eq!(port.display().undoable, 2, "① 复位是新的一步");
+
+    // ---- ② 主控声相：同一条纪律的另一格
+    window.invoke_mixer_master_pan_grab(0.0);
+    window.invoke_mixer_master_pan_drag(36.0);
+    window.invoke_mixer_master_pan_release();
+    assert_eq!(
+        master_readings(&port.project()).1,
+        1.0,
+        "② 前提：拖满 36px ⇒ pan = +1.0"
+    );
+    window.invoke_mixer_master_pan_reset();
+    assert_eq!(
+        master_readings(&port.project()).1.to_bits(),
+        NEUTRAL,
+        "② 主控声相复位 ⇒ 工程逐位 0.0"
+    );
+    assert_eq!(
+        window.get_master_pan().to_string(),
+        "C",
+        "② 主控声相文本回中央"
+    );
+    assert_eq!(port.display().undoable, 4, "② 拖动 + 复位各一步");
+
+    // ---- ③ 交错 A：`grab` 在手时来一次复位
+    window.invoke_mixer_fader_grab(1, 100.0);
+    assert!(window.get_mixer_drag_active(), "③ 前提：手势在手");
+    window.invoke_mixer_fader_reset(1);
+    assert!(
+        !window.get_mixer_drag_active(),
+        "③ 复位必须**先**把在手的拖拽清零（不清 ⇒ 提交引发的重投影丢掉正在拖的\
+         `TouchArea` ⇒ 标志黏住）"
+    );
+    assert_eq!(
+        mixer_readings(&port.project(), &view, 1).0.to_bits(),
+        NEUTRAL,
+        "③ 第 1 轨从 -6.0 dB 复位到 0.0"
+    );
+    assert_eq!(port.display().undoable, 5, "③ 复位提交恰一步");
+    window.invoke_mixer_fader_release(1);
+    assert_eq!(
+        port.display().undoable,
+        5,
+        "③ 随后那一次孤立的 `release` 读到 `Idle` ⇒ 不再提交"
+    );
+    assert!(
+        !window.get_mixer_drag_active(),
+        "③ 收尾之后标志仍 `false`（不黏住）"
+    );
+
+    // ---- ④ 交错 B：复位之后紧跟一次 `grab → release`（按下就松手）
+    window.invoke_mixer_fader_reset(3);
+    assert_eq!(
+        mixer_readings(&port.project(), &view, 3).0.to_bits(),
+        NEUTRAL,
+        "④ 第 3 轨从 -4.8 dB 复位到 0.0"
+    );
+    assert_eq!(port.display().undoable, 6, "④ 一步");
+    window.invoke_mixer_fader_grab(3, 100.0);
+    window.invoke_mixer_fader_release(3);
+    assert_eq!(
+        port.display().undoable,
+        6,
+        "④ 按下就松手 ⇒ ⛔ 提交（否则撤销树里多一步什么都没改的历史）"
+    );
+    assert_eq!(
+        mixer_readings(&port.project(), &view, 3).0.to_bits(),
+        NEUTRAL,
+        "④ 值仍是 0.0"
+    );
+    assert!(!window.get_mixer_drag_active(), "④ 标志归位");
+
+    report_line(
+        "[mixer-double-click-sticky] 主控 -30.0 → 0.0 dB / 主控声相 +1.0 → C / \
+         ③ `grab → 复位 → release` 之后 undoable=5 且标志 false / \
+         ④ `复位 → grab → release` 之后 undoable=6 且标志 false",
+    );
+}
