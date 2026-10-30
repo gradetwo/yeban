@@ -46,6 +46,10 @@ export component ArrangementView inherits Rectangle {
     // 宿主拥有的选中轨身份（空串 = 没有明确选中 ⇒ 面板走兜底）。界面**只读**它，
     // 唯一写者是 `host::wire_track_select`（⛔ 界面不改选中态）。
     in property <string> selected-track-id: "";
+    // ⭐ 剪辑选中态：与 `clip-ulids` 同一取值域的**身份**文本（空串 = 没有明确选中）。
+    // 唯一写者是宿主（`host::wire_clip_select`）；界面只读它 —— 选中高亮与
+    // `accessible-item-selected` 都是"身份 == 选中身份"这**一个**比较的两面。
+    in property <string> selected-clip-ulid: "";
     // 每条非主总线轨道的行几何 (投影的**前缀和**; ADR-0004 S0)。
     // 与 `tracks` **同索引集**: 包头用 `track_index`、时间轴车道用 `lane_index`。
     in property <[length]> track-ys: [];
@@ -133,6 +137,9 @@ export component ArrangementView inherits Rectangle {
     //   （无障碍属性不是像素）。
     /// 点击轨道头 ⇒ 选中这条轨（宿主写 `selected-track-id` 并重投影）。
     callback track-select(int);
+    /// 点击剪辑包头 ⇒ 选中这个片段（界面只报**身份**，它与 `clip-ulids` 的循环变量同源；
+    /// 校验 / 写入 / 去重全在 `host::wire_clip_select`）。
+    callback clip-select(string);
 
     // ---------------------------------------------------------------- 静音 / 独奏开关
     //
@@ -443,13 +450,26 @@ export component ArrangementView inherits Rectangle {
             width: parent.width;
             height: 18px;
             background: Tokens.bg-raised;
+            // 选中态 = 包头描边（与音符矩形同一支令牌 `selection`；⛔ 不改填充）。
+            // 没有选中（默认）⇒ 0px 无描边 ⇒ 默认帧逐像素不变。
+            border-width: root.selected-clip-ulid == clip_ulid ? 2px : 0px;
+            border-color: root.selected-clip-ulid == clip_ulid ? Tokens.selection : transparent;
             accessible-role: list-item;
             accessible-id: "clip-" + clip_ulid + "-header";
             accessible-label: "剪辑 " + root.clip-labels[clip_index];
             accessible-item-index: clip_index;
             accessible-item-count: root.clip-ulids.length;
             accessible-item-selectable: true;
-            accessible-item-selected: false;
+            // 选中态按**身份**键控（与轨道头同款）：下标会在撤销 / 重排后指向别的剪辑。
+            accessible-item-selected: root.selected-clip-ulid == clip_ulid;
+            accessible-action-default => { root.clip-select(clip_ulid); }
+
+            // 点击面：零视觉、零算术 —— 只把**身份**原样报给宿主。
+            TouchArea {
+                width: parent.width;
+                height: parent.height;
+                clicked => { root.clip-select(clip_ulid); }
+            }
 
             UiMonoText {
                 x: Tokens.space-3;

@@ -667,6 +667,14 @@ export component MainWindow inherits Window {
     // 不进 `projectDigest`、不进撤销栈、不进 `ViewState` 的摘要 —— 与 `roll-scroll-x` /
     // `roll-ticks-per-pixel` / `selected-ulids` 同属"进程退出即失"的视图态。
     in-out property <string> selected-track-id: "";
+    /// ⭐ 剪辑选中态（编辑器视图态）—— **片段身份**文本，取值域 = `clip-ulids` 的元素，
+    /// 空串 = 没有明确选中。
+    ///
+    /// 唯一写者 = `host::wire_clip_select`（剪辑包头点击；宿主先校验身份确实在
+    /// 当前注入的 `clip-ulids` 里再写）；唯一读点 = `ArrangementView::selected-clip-ulid`
+    /// （包头高亮 + `accessible-item-selected`）。⛔ 它不是工程数据：不进 `.yeban`、
+    /// 不进 `projectDigest`、不进撤销栈 —— 与 `selected-track-id` 同一层。
+    in-out property <string> selected-clip-ulid: "";
     // =====================================================================
     // 轨道高度**拖拽手势的进行态**（ADR-0004 S1 的纵向入口）：宿主拥有、界面只报事件。
     // =====================================================================
@@ -696,6 +704,9 @@ export component MainWindow inherits Window {
     // `undoable` / `projectDigest` 全部 Δ0 —— 选中是视图态，不是工程内容。
     /// 点击轨道头：`(轨道下标)`。
     callback track-select(int);
+    /// 点击剪辑包头：`(片段身份)` —— 身份由界面原样上报（它在 `clip-ulids` 的循环里就有），
+    /// 校验与写入全在 `host::wire_clip_select`。
+    callback clip-select(string);
     // ⭐ 任务单 `#283`：Session View 的场景按钮 ⇒ **真的**把这次启动送到引擎
     // （`host::wire_scene_launch` → `EngineHost::queue_scene_launch`）。界面只报场景下标：
     // 量化档 / tempo 覆盖 / 拍号由宿主从**当前投影**现读，⛔ 界面不拼这些语义。
@@ -1381,6 +1392,12 @@ export component MainWindow inherits Window {
                     section-positions: root.section-positions;
                     section-widths: root.section-widths;
                     clip-ulids: root.clip-ulids;
+                    // ⭐ 剪辑选中态：与 `clip-ulids` 同一取值域的**身份**（宿主写、界面只读）。
+                    selected-clip-ulid: root.selected-clip-ulid;
+                    // 包头点击 ⇒ 原样上抛身份，宿主校验后写 `selected-clip-ulid`。
+                    clip-select(clip_ulid) => {
+                        root.clip-select(clip_ulid);
+                    }
                     clip-labels: root.clip-labels;
                     clip-positions: root.clip-positions;
                     clip-widths: root.clip-widths;

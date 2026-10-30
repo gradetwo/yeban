@@ -5238,6 +5238,7 @@ const SIDEBAR_ITEM_COUNT: i32 = 8;
 /// | `console-maximize-toggle` | `console-maximized` | 控制台面板高度（`vertical-stretch`）与 ⤢ 的 `accessible-checked`；与 `Action::ToggleConsoleMaximize` 同属性 |
 /// | `select-sidebar-item` | `sidebar-item` | 八个资源条目的选中态（背景 / 文字色 / `accessible-item-selected`） |
 /// | `back-to-arrangement` | `arrangement-view` | Session 视图「→ 编曲」按钮：写 `true` 切回编曲视图（⛔ 不是翻转；播放权回归的引擎侧语义未实现，见 `session_view.slint` 头注） |
+/// | `clip-select` | `selected-clip-ulid` | 编曲视图剪辑包头（`clip-{ulid}-header`）的选中态：包头 2px `selection` 描边 + `accessible-item-selected`（身份比较） |
 ///
 /// ## 为什么这些翻转必须住在这里，而不是 `.slint` 的 `clicked =>` 里
 ///
@@ -5246,7 +5247,7 @@ const SIDEBAR_ITEM_COUNT: i32 = 8;
 /// 写的就是这两个属性（`ui/switch_main_view` 也写同一个）。若 `.slint` 的转发块自己再翻转
 /// 一次，同一个动作就有两个真相源；而"界面**不**自己翻转状态"正是 `playing` 那条已经
 /// 付过学费的契约（`ui/app.slint` 的 `toggle-play` 注释、`docs/ledger/feature-alignment.md`
-/// 错位 7）。因此本函数是这八条回调的**唯一**落点，组件里只剩"原样转发"。
+/// 错位 7）。因此本函数是这九条回调的**唯一**落点，组件里只剩"原样转发"。
 ///
 /// ## 为什么这不是"假接线"
 ///
@@ -5254,7 +5255,7 @@ const SIDEBAR_ITEM_COUNT: i32 = 8;
 /// 这与 [`set_track_height_override`] 是同一档东西（`ADR-0004` S1 / Q4-A）——
 /// 视图态本来就可以由宿主拥有，因此没有绕过 `ADR-0005` 的领域权威（那条约束的是**工程内容**）。
 ///
-/// 七条都只用"打开时那个窗口" ⇒ 共用一份 [`slint::Weak`]：强引用若被闭包自己持有，
+/// 八条都只用"打开时那个窗口" ⇒ 共用一份 [`slint::Weak`]：强引用若被闭包自己持有，
 /// 就形成 `MainWindow → 回调 → MainWindow` 的自环（窗口永不解构）。
 ///
 /// `close`（关抽屉）**不在这里**：`.slint` 的 `close =>` 没有对应的 Rust 回调，
@@ -5351,6 +5352,27 @@ pub fn wire_view_callbacks(ui: &MainWindow) {
                 return;
             };
             ui.set_arrangement_view(true);
+        }
+    });
+    // ⭐ 剪辑包头：界面报**身份**（它在 `clip-ulids` 的循环里就有 ⇒ ⛔ 不需要第二份表）。
+    // 宿主只做两件事：校验这个身份确实在**当前注入的** `clip-ulids` 里（越界 / 过期身份
+    // ⇒ 什么都不做），以及"同一条再点一次 ⇒ 一位不动"。⛔ 不重投影（没有面板读它；
+    // 高亮由 `.slint` 直接比较身份得到）、⛔ 不 `commit_ops` —— 选中是视图态。
+    ui.on_clip_select({
+        let weak = weak.clone();
+        move |clip_ulid| {
+            let Some(ui) = weak.upgrade() else {
+                debug_assert!(false, "MainWindow 在回调执行期间被销毁");
+                return;
+            };
+            let known = ui.get_clip_ulids();
+            if !known.iter().any(|id| id.as_str() == clip_ulid.as_str()) {
+                return;
+            }
+            if ui.get_selected_clip_ulid().as_str() == clip_ulid.as_str() {
+                return;
+            }
+            ui.set_selected_clip_ulid(clip_ulid);
         }
     });
 }
