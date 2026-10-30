@@ -1425,7 +1425,8 @@ python3 scripts/guards/policy_check.py && bash scripts/gates/run-gates.sh light
 | 路径 | 分支 | 处置 |
 | :--- | :--- | :--- |
 | `/home/crow/work/qoder/yeban` | `main` | 主树（⭐ 集成者工作区，⛔ 不在这里写线代码）|
-| `.worktrees/s6-key-effect-registry` | `line/s6-key-effect-registry` | ⭐ 在飞（2026-10-30 02:14 现读 `git worktree list` ＝ **两行**：主树 ＋ 本行）。S6 效果面登记表线，tip **`cff323e6`**（`940284d5` 修复真绿 run `40986803031`；`d34394dc`＝第三条轴、`cff323e6`＝缺省轴 22+7，两枚同一推送，run 待读回）；判绿 ⇒ land → 读 merge run → 按第 31 条拆除（拆除时记得把本行去掉，⛔ 留字面）|
+| `.worktrees/s6-key-effect-registry` | `line/s6-key-effect-registry` | ⭐ 已 land（merge **`3732ab6b`**；线判决 `cff323e6`／run `40990503879` ＝真绿），**待拆**：先读回 merge run 再 `worktree.sh rm s6-key-effect-registry --purge`（拆除时把本行去掉，⛔ 留字面）|
+| `.worktrees/s6d-edit-notes-default` | `line/s6d-edit-notes-default` | ⭐ 在飞：S6 第四片第一批（`ab94304b`，基点 `cff323e6`），`edit_notes` 三键缺省钉 ＋ 登记表 25＋4；待 rebase 到 `3732ab6b` 之后推线 → 读判决 → land |
 
 ### 5.2 已拆树**留档**（⭐ ⛔ 再写工作树路径字面 —— `check_handover_consistency.py` 把全文件里每个 `.worktrees/<名>` 都当"声明的活树"比对 `git worktree list`，第 254 条的同一条口径）
 
@@ -2375,44 +2376,38 @@ tip `0c450809`（`1 file changed, 7 insertions(+), 1 deletion(-)`），其父 `f
 ⇒ ⛔ 由 agent 自行提级，要动先由人类排期。**这条轴下一个入口＝出现新键时按同法再审。**
 
 
-## §0.9 ⭐ 最新交接（**2026-10-30 上午·第五批**）—— 新会话先读这一节（⛔ §0.8 的判决表已过期）
+## §0.9 ⭐ 最新交接（**2026-10-30 中午·第六批**）—— 新会话先读这一节（⛔ §0.8 的判决表已过期）
 
-**主干状态**：`origin/main` 现读 **`607f4b35`**（并行写者的 `merge(integrate-ui)`，落在我那两枚之上）。
-本批我自己推到主干的只有 **`4a0b2bbe`**（台账第四批 ＋ §0.9/§5 交接，与 `e267eba3` 同一枚推送）。
-⚠ `e267eba3`＝`merge(s5b-leaf-table)`，`line/s5b-leaf-table` 已拆（归档标签 `@ 088ebe06`），`target` 1.6G 已回收。
-活树现读 `git worktree list` ＝ **两行**（主树 ＋ S6 那棵，见 §5 表）。
+**主干状态**：本批推送前 `origin/main` ＝ **`b53506d4`**（并行写者的 `merge(clip-drag)`）。本批我自己推**两枚同一枚推送**：
+`23fd1a11`（台账第五批 ＋ §0.9，rebase 到 `b53506d4` 之上）＋ **`3732ab6b`（`merge(s6-key-effect-registry)`）**。
+⚠ 纯文档批⛔ 单独跑一趟（§5 第 1 条：同分支再推一枚会取消前一枚在飞的腿）。
+活树现读 `git worktree list` ＝ **三行**（主树 ＋ `s6-key-effect-registry`（待拆）＋ `s6d-edit-notes-default`，见 §5 表）。
 
-**判决表（⭐ 取代上一版；2026-10-30 02:14 现读，逐条按 headSha）**：
+**判决表（⭐ 取代上一版；2026-10-30 02:54 现读，逐条按 headSha）**：
 
 | 票 | run / headSha | 状态 | 下一动作 |
 | --- | --- | --- | --- |
-| S5b merge（主干） | `40985891003` / `4a0b2bbe` | **failure** —— 唯一红腿 `rust (yeban-app)`／步骤 `test (合并特性)`／判据 `session::the_session_reaches_the_synth_while_the_window_is_open`（`tests/midi_live_wire.rs:334`，"发布 2 次 ⇒ 形状已退化成批次"，**时序竞态**）；与本批 diff 无关（同 run 的 `rust (yeban-model)` 绿） | ⇒ **S5b 四件齐仍未闭合**；替代判决候选 = `607f4b35` 的 run（若 `yeban-app` 绿且判据名在场），⚠ 如实标"⛔ 该 merge 自己的 run" |
-| main（并行写者） | 待读回 / `607f4b35` | **in_progress** | 读回：①`yeban-app` 结论 ②若绿 ⇒ 同时充当 S5b 的替代全量腿证据 |
-| S6 第三片 | `40983157377` / `a298aeab` | **failure** —— 唯一红判据 `absent_auto_merge_on_edit_notes_proposes_without_merging`（`transpose_clip.rs:516`，`proposals` 必须是数组），`7 passed / 1 failed` | 已由 `940284d5` 修（见下一行） |
-| S6 第三片修复 | `40986803031` / `940284d5` | ⭐ **真绿**：八腿（全量 skipped）；`rust (yeban-mcp)` **990 s**／`macos` **1,642 s**／`windows` **2,234 s**／`yeban-ui-mcp` 251 s；日志 **137** 行 `test result: ok`、passed **2,430**、`FAILED` **0**；本批三条新判据**逐名 `... ok`** | 已被 `d34394dc`＋`cff323e6` 叠加（同一分支） |
-| S6 第三轴 | 待读回 / `cff323e6` | **in_progress**（`d34394dc` 与它同一枚推送） | 判绿 ⇒ land → 读 merge run → 拆树（⛔ 判决读回前⛔ 再往这条线推东西，§5 第 1 条） |
+| S6 第三轴（线 tip） | `40990503879` / `cff323e6` | ⭐ **真绿**：`rust (yeban-mcp)` **951 s**／`macos` **1,640 s**／`windows` **2,220 s**／`yeban-ui-mcp` 221 s／checks 97 s／deny 59 s；mcp 腿 **137** 行 `test result: ok`、`FAILED` **0**；windows 腿 **273** 行 ok；两条新判据在 linux＋windows 腿上**逐名 `... ok`** | ✅ 已 land（`3732ab6b`）；⛔ 只剩**主干 merge run 自己的判决**要读回 |
+| main（本批两枚） | 待生成 / `3732ab6b` | 推送后读回 `gh run list --json headSha` ⇒ 该 run | 承判腿是 `rust (yeban-mcp)`（本 merge 碰 `crates/yeban-mcp/tests/**`）；判绿 ⇒ S6 第三轴闭合、拆 S6 树 |
+| S5b merge | `40985891003` / `4a0b2bbe` | **failure**（`yeban-app` 时序竞态） | 替代判决已读回（下一行） |
+| main（并行写者） | `40988003955` / `607f4b35` | ⭐ **success**：`rust (yeban-app)` **1,418 s**／227 行 `test result: ok`／`FAILED` 0；`session::the_session_reaches_the_synth_while_the_window_is_open ... ok` **在场**；`macos` 1,533 s／`windows` 2,278 s（全量 skipped） | ✅ **S5b 四件齐闭合** —— ⚠ 这是**替代判决**，⛔ 该 merge 自己的 run |
+| S6 第四片第一批 | 未推 / `ab94304b`（子线 `line/s6d-edit-notes-default`，基点 `cff323e6`） | 本地已提交：`edit_notes` 三键缺省侧三判据 ＋ 登记表 **25 已证 ＋ 4 缺口** | S6 落地后 rebase 到新 main → 推线 → 读判决 → land |
 
-⭐ **创作轴这条线本批把"缺省侧"变成机械读数（第三条轴）**：`documented_arg_coverage.rs` 新增
-`each_documented_key_declares_its_default_side_evidence_or_gap`。读数：键全集 **29**
-＝ **22** 缺省侧已证 ＋ **7** 显式缺口（缺口逐行带理由）。
-⚠ **上一批 §8 的处方是错的**：它说"其余 **25** 行缺缺省钉"，那是**从登记表的代表判据名推断**出来的；
-`grep '^fn absent_\|^fn .*byte_identical\|^fn default_'` 现读证明库里**早就有 21 个键**的缺省侧判据在跑。
-⇒ 本轴**只登记既有判据**（⛔ 立第二份真相），机械钉：两向并集 == 全集、两名单⛔ 重叠、
-每个名字 `fn NAME(` 现读存在、缺口理由非空，＋**双向棘轮**（已证 ≥ 22／缺口 ≤ 7）。
-本批另补一条真判据 `absent_merge_commit_message_falls_back_to_the_proposal_id_default`
-（`auto_merge.rs`；期望值从同一份回执的 `proposalId` 现拼）⇒ 缺口 8 → 7。
+⭐ **创作轴（第一优先级）本批把 `edit_notes` 的三个缺省侧一次补齐**（第四片第一批，已在子线本地提交）：
+`absent_create_on_edit_notes_edits_the_existing_clip_without_new_material`（池子条数一位不变 ＋ 既有片段**真的改了**）、
+`absent_placement_on_edit_notes_leaves_the_timeline_untouched`（全部摆放**逐字段整表**不变 ＋ 同一批音符编辑落地）、
+`absent_merge_commit_message_on_edit_notes_falls_back_to_the_proposal_id`（期望值从同一份回执的 `proposalId` 现拼）。
+读数演进：**22 已证 ＋ 7 缺口** ⇒ 本批 **25 ＋ 4**（余下：`propose.drumDensity`／`materialClipIds`／`partTracks`、`render_master.contributions`）。
 
-⭐ **本轮换来的三条规则**（细节在台账「2026-10-30（上午·第五批）」§1/§2）：
-① **跨文件抄一行读写路径前，先读那个文件自己的 helper** —— `auto_merge.rs` 的 `call()` 返回 `result["data"]`，
-`transpose_clip.rs` 的返回**整份 result**，同一行 `list["proposals"]` 在前者读得到、在后者读不到（本批唯一的红）；
-② **⛔ 从登记表某一列的名字推断"另一侧没钉"** —— 要先 `grep` 交付（`AGENTS.md` §6.3 第 3 条的第三次证明）；
-③ `cargo fmt` 在本仓同时是**语法闸**：字符串里混进 ASCII `"` 会先报 `unknown start of token`
-⇒ 本机比 `clippy` 便宜，能抓住 E0xxx 家族的前半。
+⭐ **本轮换来的操作读数**（⛔ 当规则读也不为过）：
+① `gh run view --log --job <id>` 在 run 仍 `in_progress` 时**返回空文件**（0 字节）⇒ 单 job 日志用
+`gh api --allow-escape-sequences repos/gradetwo/yeban/actions/jobs/<job-id>/logs` 取；不加 `--allow-escape-sequences` 会被 gcli 拒（日志里有终端转义）；
+② 同一分支上新批次要**另开子线**（`worktree.sh add <line> line/<父线>` 支持以**分支名**为基点）—— ⛔ 在待 land 的线上叠加未证提交
+（否则 `land` 会把未证提交一起合进 main）；
+③ `cargo fmt` 仍是本机最便宜的**语法闸**（本批两处新判据字符串先过它）。
 
-**当下队列（新会话按此顺序动）**：①读回 `cff323e6`（S6 线）与 `607f4b35`（main）两 run；
-②`cff323e6` 绿 ⇒ `worktree.sh land s6-key-effect-registry` → 读 merge run → 拆树（⛔ 留 `.worktrees/` 字面）；
-③`607f4b35` 的 `yeban-app` 绿 ⇒ 它是 S5b 的**替代判决**（⛔ 该 merge 自己的 run），S5b 四件齐闭合；
-④S6 第四片＝剩余 **7** 个缺口（`edit_notes.create/placement/mergeCommitMessage`、`propose.drumDensity/materialClipIds/partTracks`、
-`render_master.contributions`），按工具面分三小批；
-⑤磁盘 `#34`、`ADR-0042/0047/0048/0049/0050/0004(Q13)`、`AGENTS.md:134` 那句、`master_bus_track_id` 候选、
+**当下队列（新会话按此顺序动）**：①读回 `3732ab6b`（main）的 run ⇒ 判绿后 `worktree.sh rm s6-key-effect-registry --purge`
+（⛔ 留 `.worktrees/` 字面）并删 §5 里那一行；②子线 `s6d-edit-notes-default`（`ab94304b`）rebase 到新 main → 推 → 读判决 → land；
+③第四片另两小批（`propose` 三键／`contributions` 一键）按同一写法开子线；
+④磁盘 `#34`、`ADR-0042/0047/0048/0049/0050/0004(Q13)`、`AGENTS.md:134` 那句、`master_bus_track_id` 候选、
 `human-decisions.md` 的 `HD-52/58/64..70` —— 全部**卡在人类签字**，⛔ 自主补齐。

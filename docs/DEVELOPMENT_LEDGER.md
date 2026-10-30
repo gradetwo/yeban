@@ -15884,3 +15884,62 @@ test result: FAILED. 3 passed; 1 failed
 2. 读回 `607f4b35`：若 `yeban-app` 绿 ⇒ 它是 S5b 的**替代全量腿证据**（⛔ 该 merge 自己的 run），S5b 四件齐。
 3. S6 落地：`worktree.sh land s6-key-effect-registry` ⇒ 读 merge run ⇒ 拆树（⛔ 留 `.worktrees/` 字面）。
 4. 第四片＝剩余 7 个缺口，按工具面分三小批（`edit_notes` 三键／`propose` 三键／`contributions` 一键）。
+
+## 2026-10-30（中午·第六批）：两 run 读回（S5b 替代判决 ＋ S6 线真绿）＋ S6 落地 ＋ 第四片第一批
+
+### §1 `cff323e6`（S6 线 tip）＝ **真绿**（run `40990503879`，2026-10-30 02:53 现读）
+
+八腿逐条：`rust (yeban-mcp)` **951 s**（02:14:32→02:30:23）／`macos` **1,640 s**／`windows` **2,220 s**／
+`rust (yeban-ui-mcp)` 221 s／`checks` 97 s／`deny` 59 s／`lockfile` 20 s／`plan` 11 s；`全量` skipped（本批不涉 workspace 面）。
+真绿三条件逐条取证：① 承判腿**耗时非 0**；② mcp 腿日志 **137** 行 `test result: ok`、`FAILED` **0**；
+③ `each_documented_key_declares_its_default_side_evidence_or_gap` 与
+`absent_merge_commit_message_falls_back_to_the_proposal_id_default` 在 **linux** 腿与 **windows** 腿（273 行 ok）上
+**逐名 `... ok`**。⇒ 第三条轴（缺省 22＋7）与 `propose.mergeCommitMessage` 缺省钉的证据面闭合。
+
+### §2 `607f4b35`（主干，并行写者）＝ **success** ⇒ S5b 四件齐**闭合**（⚠ 替代判决）
+
+- 腿表：`rust (yeban-app)` **1,418 s**（01:48:44→02:12:22）／`macos` 1,533 s／`windows` 2,278 s／
+  `checks` 98 s／`deny` 60 s／`lockfile` 19 s／`plan` 11 s；`全量` skipped（⛔ 空绿：六条真腿都非 0 s）。
+- 证据面：app 腿 **227** 行 `test result: ok`、`FAILED` 0，且
+  `session::the_session_reaches_the_synth_while_the_window_is_open ... ok` **在场**（02:10:36 那一行）。
+- ⇒ 对 `4a0b2bbe` 那条红（同一判据、时序竞态）的结论成立。⚠ 口径：这是**替代判决**，
+  **⛔ 该 merge 自己的 run**（`40985891003` 仍是 failure，不改写）。
+
+### §3 S6 线落地 ＝ `3732ab6b`（`merge(s6-key-effect-registry)`，--no-ff）
+
+6 文件／+984 −61（`auto_merge.rs`＋36、`documented_arg_coverage.rs`＋584、`section_harmony_seed.rs`＋53、
+`section_material_clips.rs`＋122/−?、`section_project_generation.rs`＋157、`transpose_clip.rs`＋93）。
+`post_merge_checks` 两条均 ok（`cargo metadata --locked`／许可清单一致）。
+⛔ 用线 tip 的绿代替本 merge 自己的 run —— 该 run 由本批推送生成，待读回。
+
+### §4 S6 第四片第一批（子线 `line/s6d-edit-notes-default` @ `ab94304b`，本地）
+
+`edit_notes` 三个缺省侧键一次补齐（同名登记表从"缺口"搬进"已证"，读数 **22＋7 → 25＋4**）：
+
+| 判据 | 缺省的语义（本判据钉的形状） |
+| :--- | :--- |
+| `absent_create_on_edit_notes_edits_the_existing_clip_without_new_material` | 片段池条数一位不变 ＋ 既有片段**真的改了**（否则"没新建"是拿"没干活"换的） |
+| `absent_placement_on_edit_notes_leaves_the_timeline_untouched` | 全部摆放**逐字段整表**不变（⛔ 只查"这条没被摆"）＋ 同一批音符编辑落地 |
+| `absent_merge_commit_message_on_edit_notes_falls_back_to_the_proposal_id` | `data.merge.commit.message` == `"merge proposal {proposalId}"`，期望值从**同一份回执**现拼 |
+
+⚠ 前态一律走 `query_project`（与后态同一序列化路径），⛔ 拿夹具克隆当基线（`open_in_memory` 之后可能有派生态）。
+子线基点＝`cff323e6`：**在待 land 的线上叠加未证提交会被 `land` 一起合进 main**（本轮新增的操作纪律）。
+
+### §5 两条操作读数（本批实测）
+
+1. `gh run view --log --job <id>` 在 run 仍 `in_progress` 时**返回 0 字节**；单 job 日志要
+   `gh api --allow-escape-sequences repos/gradetwo/yeban/actions/jobs/<job-id>/logs`
+   （不加 `--allow-escape-sequences` 会被 gcli 直接拒：日志含终端转义）。
+2. `worktree.sh add <line> <base>` 的 `<base>` 可以是**另一条线的分支名**（`git worktree add -b … <base>`），
+   这就是"新批次另开子线"的机械做法。
+
+### §6 磁盘现读（`df -h /home`，单位＝GiB）
+
+`198G/235G`、余 **31G**（87%）。新树 `s6d-edit-notes-default` 无 `target/`（本机只跑 `cargo fmt`）。
+`#34` 的仓库外大头仍卡在人类裁决，⛔ 自主删。
+
+### §7 下一片
+
+1. 读回 `3732ab6b` 的 merge run ⇒ 判绿后拆 `s6-key-effect-registry` 树（⛔ 留 `.worktrees/` 字面）。
+2. 子线 `ab94304b` rebase 到 `3732ab6b` → 推 → 读判决 → land。
+3. 第四片另两小批：`propose.drumDensity`／`materialClipIds`／`partTracks`，`render_master.contributions`。
