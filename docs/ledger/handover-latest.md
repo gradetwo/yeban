@@ -12,6 +12,35 @@
 > `docs/ledger/phase-status.md` 的叙事条目**停在 R1144**（2026-10-26）⇒ ⭐ 读进度以
 > `DEVELOPMENT_LEDGER.md` 的尾部为准，⛔ 不要以为 R1144 之后没干活。
 
+### 0.6.0l ⭐ 尾批（2026-10-30 08:15）：R115 被扫文件下界 **8 → 12**（同一类缺陷的第二个真缺陷）
+
+- **缺陷**：`crates/yeban-engine/tests/assertion_bounds_audit.rs` 的 `MIN_SOURCES = 8`，而
+  `SOURCES` 现读 **12** 条（8 个 `src/*.rs` ＋ 4 个 `tests/*.rs`，全部 `include_str!` 编译期固定）。
+  主判据是"无界 `.all(` 站点数 ≤ 基线 0"——**删掉被扫文件不会让站点数增加** ⇒ 删 4 个源
+  （例如整组 `tests/*`）后判据**仍全绿**，而 R115 的覆盖面已静默缩水一半。与 `0.6.0k` 的
+  `EFFECT_FACE.len() >= 20` **同形**：下界只防"整表掏空"，不防"按行数偷工" ⇒ 下界抬到**当前行数**。
+- **判决链（全部读回）**：
+  - 线 `line/s6f-audit-floor` @ `04212666` → run **`41016534765` success**
+    （`rust (yeban-engine)` 06:51:40→06:56:25 ＝ **4m45s**；`yeban-app` 32m07s／`yeban-mcp` 16m42s／
+    `macos` 20m29s／`windows` 38m19s 全部真跑；`rust (workspace 全量)` skipped ⛔ 当绿）
+  - merge `d6c16a30` 推主干 → run **`41020756510` success**
+    （`yeban-engine` 07:34:29→07:40:08 ＝ 5m39s；`macos` 29m09s／`windows` 35m47s／`app` 33m20s／`mcp` 16m46s 真跑）
+  - **判据读数（两轮同形，剥色后）**：`Running tests/` **43** ／ `test result:` **41** ／ passed **687** ／
+    `FAILED` **0**；`every_all_assertion_in_this_crate_is_bounded_or_allowlisted ... ok` 两 run 各 1 次
+    （线 `06:53:51`、merge `07:37:34`），且 `Running tests/assertion_bounds_audit.rs` 行在其前
+    ⇒ 确实跑到（⛔ fail-fast 后的空白）。
+- **同类清理（这一轴已扫完）**：定长数组下界 **0** 处弱；切片常量下界 **2** 处命中 ⇒ **1 真 1 假**
+  （真的＝本批；假的＝`yeban-sfz/tests/assertion_discipline.rs` 里 `x.len() >= N` 是**文档注释**里的形态说明）。
+  `yeban-midi/tests/smf_contract.rs:1602` 的 `searched: [(&str,&str); 2]` ＋ `SEARCHED_FLOOR = 2`
+  是**正确形态**（定长元数即行数，删条目必须改类型）。
+- **落地与清理**：merge `d6c16a30`（`1 file changed, 9 insertions(+), 3 deletions(-)`），post-merge 自检
+  （`cargo metadata --locked` ＋ 许可清单）passed；推前 `rev-list --left-right --count` ＝ `0 0`；
+  `git push origin main:main`（显式 refspec）；`worktree.sh rm --purge` → 归档标签
+  `line-archive/s6f-audit-floor @ 04212666`；`git worktree list` ＝ **一行**（只剩主树）。
+- **下一步**：R93 家族的"下界弱于行数"两条**都已收口**（§12 效果面、§13 本批）。⚠ 创作缺口队列仍全在
+  **人类裁决**上（`ADR-0042` G8j／`ADR-0047`..`0050`／`ADR-0004` Q13），⛔ 自行开新票。
+  台账明细见 `docs/DEVELOPMENT_LEDGER.md` §13。
+
 ### 0.6.0k ⭐ 尾批（2026-10-30 06:45）：效果面**防掏空下界 20 → 29**（与缺省面同口径）
 
 - **发现的真缺陷（一条，机械面）**：`EFFECT_FACE.len() >= 20` 而表里 **29** 行 ⇒ 与 `declared == universe`

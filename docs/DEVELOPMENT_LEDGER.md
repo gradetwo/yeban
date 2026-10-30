@@ -16118,3 +16118,49 @@ post-merge 自检（`cargo metadata --locked` ＋ 许可清单）passed；推前
 ⇒ `git worktree list` 恢复**一行**。
 
 **同批的三项只读自查**（见 §11）：kind 字面量口径、构造点/双射、`kind → 下游消费` 7/7 有消费点 —— 合计 **0 新缺陷**。
+
+## 2026-10-30 08:15 —— §13 第九批：**同一类缺陷的第二个真缺陷**（R115 被扫文件下界 8 → 12）
+
+### §13.1 缺陷（真实、可删源）
+
+`crates/yeban-engine/tests/assertion_bounds_audit.rs`（R115 常驻判据）里：
+
+- `const SOURCES: &[(&str, &str)]` 现读 **12** 条（8 个 `src/*.rs` ＋ 4 个 `tests/*.rs`，全部 `include_str!` 编译期固定）；
+- `const MIN_SOURCES: usize = 8;` ⇒ **比当前行数松 4 条**。
+
+主判据是"无界 `.all(` 站点数 ≤ `UNBOUNDED_BASELINE`（0）"。**删掉**被扫文件**不会**让无界站点数增加，
+所以删掉 4 个源（例如整组 `tests/*.rs`）之后判据**仍然全绿**，而 R115 的覆盖面已静默缩水一半。
+这是 `EFFECT_FACE.len() >= 20`（S6e，§12）的**同形体**：下界只防"整表掏空"，不防"按行数偷工"。
+⇒ 修法同口径：**下界 ＝ 当前行数**。
+
+### §13.2 判决链（全部读回）
+
+| 对象 | run | 判决（读数） |
+| :--- | :--- | :--- |
+| 线 `line/s6f-audit-floor` @ `04212666` | `41016534765` | **success** —— `rust (yeban-engine)` 06:51:40→06:56:25（**4m45s**）真跑 15 步；`rust (yeban-app)` →07:23:47（**32m07s**）、`rust (yeban-mcp)` →07:08:23（**16m42s**）、`macos` →07:12:09（**20m29s**）、`windows` →07:30:00（**38m19s**）全部真跑；`rust (workspace 全量)` skipped（⛔ 当它绿） |
+| merge `d6c16a30` 推主干 | `41020756510` | **success** —— `rust (yeban-engine)` 07:34:29→07:40:08（**5m39s**）、`macos` →08:02:32（**29m09s**）、`windows` →08:09:09（**35m47s**）、`rust (yeban-app)` →08:06:42（**33m20s**）、`rust (yeban-mcp)` →07:50:44（**16m46s**）全部真跑；全量腿仍 skipped |
+
+**判据读数（两轮同形，剥色后）**：`rust (yeban-engine)` 两轮均 `Running tests/` **43** ／ `test result:` **41** ／
+passed **687** ／ `FAILED` **0**；目标判据 `every_all_assertion_in_this_crate_is_bounded_or_allowlisted ... ok`
+在**两个 run 各自出现 1 次**（线 `06:53:51`、merge `07:37:34`），且 `Running tests/assertion_bounds_audit.rs`
+行在其前 —— 即**确实跑到**，不是 fail-fast 之后的空白。
+
+### §13.3 同类清理（把"这一类"扫完，不再逐批碰运气）
+
+用两条机器扫补完这一轴（R93 家族）：
+
+1. **定长数组下界**（`const X: [T; N]` ＋ `X.len() >= K`）：**0** 处弱于当前行数的站点。
+   `crates/yeban-midi/tests/smf_contract.rs:1602` 的 `searched: [(&str, &str); 2]` ＋ `SEARCHED_FLOOR = 2`
+   是**正确形态**（定长类型的元数就是行数，删条目必须改类型 ⇒ 不可能静默）。
+2. **切片常量下界**（`const X: &[…]` ＋ `X.len() >= K`）：**2** 处命中，逐条判读后
+   **1 真 1 假** —— 真的就是本批 `MIN_SOURCES`（已修）；假的是 `crates/yeban-sfz/tests/assertion_discipline.rs`
+   里的 `x.len() >= N`，那是**文档注释里的形态说明**，不是断言（与 §12 记过的"注释误命中"同形）。
+
+⇒ 该轴现状：**已知的两条弱下界都已抬到当前行数**，无第三处。
+
+### §13.4 落地与清理
+
+`worktree.sh land s6f-audit-floor` → merge `d6c16a30`（`1 file changed, 9 insertions(+), 3 deletions(-)`），
+post-merge 自检（`cargo metadata --locked` ＋ 许可清单）passed；推前 `rev-list --left-right --count` ＝ `0 0`；
+`git push origin main:main`（显式 refspec）；`worktree.sh rm s6f-audit-floor --purge` 自动打归档标签
+`line-archive/s6f-audit-floor @ 04212666` ⇒ `git worktree list` 恢复**一行**。
