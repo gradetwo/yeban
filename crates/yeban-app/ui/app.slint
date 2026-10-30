@@ -444,6 +444,12 @@ export component MainWindow inherits Window {
     in-out property <string> bpm-display: "120.00";
     in-out property <string> branch-name: "main";
 
+    // 走带光标的位置（960 PPQ tick）。唯一写者 = `src/host.rs` 的 `apply_transport`
+    // （与 `timecode` 同一次引擎读数）；编曲 / 卷帘两条 playhead 都由它派生 x
+    // （`tick ÷ ticks-per-pixel`，与投影里音符 / 小节线的整数除法同口径）。
+    // ⛔ 界面不记位置；旧版两条 playhead 的 `x` 是写死的假位置（`accessible-value: "3"`）。
+    in-out property <int> playhead-ticks: 0;
+
     // ---------------------------------------------------------------------
     // 时间码的**格式化网格**（`[MODEL-AST-001]`）
     // ---------------------------------------------------------------------
@@ -1423,6 +1429,11 @@ export component MainWindow inherits Window {
                     section-positions: root.section-positions;
                     section-widths: root.section-widths;
                     clip-ulids: root.clip-ulids;
+                    // ⭐ 走带光标：位置 = 引擎读数（`host::apply_transport` 的唯一写入）；
+                    // 缩放与卷帘共用 `roll-ticks-per-pixel`（同一个 `ViewState` 的投影口径）。
+                    playhead-ticks: root.playhead-ticks;
+                    ticks-per-pixel: root.roll-ticks-per-pixel;
+                    playhead-timecode: root.timecode;
                     // ⭐ 剪辑选中态：与 `clip-ulids` 同一取值域的**身份**（宿主写、界面只读）。
                     selected-clip-ulid: root.selected-clip-ulid;
                     // 包头点击 ⇒ 原样上抛身份，宿主校验后写 `selected-clip-ulid`。
@@ -1519,6 +1530,12 @@ export component MainWindow inherits Window {
             note-velocities: root.note-velocities;
             note-positions: root.note-positions;
             note-selected: root.note-selected;
+            // ⭐ 走带光标（卷帘）：与编曲同一次引擎读数、同一个缩放口径；
+            // 滚动偏移让卷帘的 x 与已减过 scroll 的音符位置保持同一坐标系。
+            playhead-ticks: root.playhead-ticks;
+            ticks-per-pixel: root.roll-ticks-per-pixel;
+            scroll-x: root.roll-scroll-x;
+            playhead-timecode: root.timecode;
             active-tool: root.active-tool;
             roll-edit-status: root.roll-edit-status;
             scroll-requested(d) => { root.scroll-requested(d); }

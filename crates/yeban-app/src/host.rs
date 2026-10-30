@@ -4281,7 +4281,7 @@ pub enum EnginePublishOutcome<'a> {
 /// | 通道 | 写者 | 数据源 | 目标属性 |
 /// | :--- | :--- | :--- | :--- |
 /// | 电平 | [`pump_meters`] → [`apply_meters`] | `MeterRuntime`（引擎 SPSC 消费端） | `track-meter-*` |
-/// | 走带 | [`apply_transport`] | `EngineHost::transport()`（RT→UI 原子镜面） | `playing` / `timecode` |
+/// | 走带 | [`apply_transport`] | `EngineHost::transport()`（RT→UI 原子镜面） | `playing` / `timecode` / `playhead-ticks` |
 /// | 保存 | [`apply_save_outcome`] | `save_action::SaveOutcome` | `save-status` / `save-succeeded` |
 /// | ⭐ **发布失败** | ⭐ **本函数** | ⭐ `EngineHost::publish_project` 的 `Err` | ⭐ `engine-error` |
 ///
@@ -4660,15 +4660,20 @@ pub fn pump_meters(ui: &MainWindow, meters: &mut MeterRuntime, view: &ViewState)
     MeterPump::Applied(snapshot)
 }
 
-/// 把**引擎的**走带读数注入界面（`playing` 显示态 + 时间码）。
+/// 把**引擎的**走带读数注入界面（`playing` 显示态 + 时间码 + 走带光标位置）。
 ///
 /// 这是全仓库**唯一**写 `playing` 的地方 —— 界面的 `toggle-play` 处理器**不再自己翻转**
 /// 那个属性（上一版 `app.slint` 里的 `root.playing = !root.playing;` 是"UI 自造状态"，
 /// 会让"显示"与"引擎"各说各话）。数据流因此是单向的：
 ///
 /// ```text
-/// TransportMirror(原子读数) --(host::apply_transport)--> MainWindow.playing / .timecode
+/// TransportMirror(原子读数) --(host::apply_transport)--> MainWindow.playing / .timecode / .playhead-ticks
 /// ```
+///
+/// ⭐ `playhead-ticks` 也在这里写（与 `timecode` 同一次读数）：编曲 / 卷帘两条走带光标
+/// 由 `.slint` 用 `tick ÷ ticks_per_pixel` 派生 x（与投影里音符 / 小节线同一条整数除法）。
+/// 旧版两条 playhead 的 x 是写死的假位置（`168px + 120px * 3` / `56px + 60px * 3`，
+/// 无障碍值是 `"3"`）—— 于是"按了播放、光标不动"。⛔ 界面不再持有第二个位置。
 ///
 /// `timecode` 用的是引擎读数（[`TransportReading::position_ticks`]）**配上投影的拍号网格**：
 /// 位置来自引擎，单拍 / 单小节的 tick 数来自工程投影（[`ViewState::timecode_grid`]，
@@ -4700,6 +4705,10 @@ pub fn apply_transport(ui: &MainWindow, reading: TransportReading) {
     ui.set_playing(reading.state.is_running());
     let grid = timecode_grid_of(ui);
     ui.set_timecode(crate::bridge::timecode_for_ticks(grid, reading.position_ticks).into());
+    // 走带光标（编曲 / 卷帘两条）的唯一写点：位置 = 引擎读数，x 由 `.slint` 用
+    // 投影同口径的 `tick ÷ ticks_per_pixel` 派生。超 i32 的 tick（≈ 10 小时以上）钳到
+    // `i32::MAX` —— 界面的 x 会在视口外被裁剪，但绝不回绕到左边。
+    ui.set_playhead_ticks(i32::try_from(reading.position_ticks).unwrap_or(i32::MAX));
 }
 
 /// 从窗口上**投影注入的**两个整数重建时间码网格（唯一读点）。

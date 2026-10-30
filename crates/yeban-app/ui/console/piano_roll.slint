@@ -35,6 +35,14 @@ export component PianoRoll inherits Rectangle {
     in property <[length]> note-positions: [];
     // `[UI-NOTE-003]` 与注入的六个数组**同一索引集**的第七个: 选中标志（宿主用 `Selection::flags_for` 生成）。
     in property <[bool]> note-selected: [];
+    // ---- 走带光标（[UI-NOTE-001]）----
+    // 位置来自引擎读数：唯一写者 = `host::apply_transport`（窗口属性 `playhead-ticks`）。
+    // 界面只做 `tick ÷ ticks_per_pixel − scroll`（与音符位置同一条整数除法 + 同一个滚动读数）。
+    in property <int> playhead-ticks: 0;
+    in property <int> ticks-per-pixel: 30;
+    in property <float> scroll-x: 0.0;
+    // 无障碍值 = 走带时间码（窗口 `timecode`）—— 读屏器读到真实位置，⛔ 不是写死的 `"3"`。
+    in property <string> playhead-timecode: "";
     // `[ROAD-M3-002]` 滚动手势：本组件**只报告增量**, 偏移由宿主拥有并重新注入
     // （见账本第 199 轮：Flickable 会与宿主拥有的偏移双重计算, 故不用）。
     callback scroll-requested(length);
@@ -324,8 +332,13 @@ export component PianoRoll inherits Rectangle {
     }
 
     // ---------------------------------------------------------------- 走带光标 [UI-MCP-002]
+    // x = 56px（卷帘时间轴左沿）+ tick ÷ ticks_per_pixel − 滚动偏移：
+    // `note-positions` 是投影**已减去 scroll_x** 的视口相对像素，所以走带光标用
+    // 同一个滚动读数；`playhead-ticks` 的唯一写者 = `host::apply_transport`。
+    // `max(1, …)` 只是除零护栏（宿主写入的缩放恒在 1..=960）。
     Rectangle {
-        x: 56px + 60px * 3;
+        x: 56px + (root.playhead-ticks / max(1, root.ticks-per-pixel)) * 1px
+            - (root.scroll-x * 1px);
         y: 28px;
         width: 1px;
         height: parent.height - 28px;
@@ -333,10 +346,7 @@ export component PianoRoll inherits Rectangle {
         accessible-role: slider;
         accessible-id: "piano-roll-playhead";
         accessible-label: "卷帘走带光标";
-        accessible-value-minimum: 0;
-        accessible-value-maximum: 9999;
-        accessible-value-step: 1;
-        accessible-value: "3";
+        accessible-value: root.playhead-timecode;
     }
 
     // 覆盖泳道的输入面：按住并水平拖动 ⇒ 报告水平增量（向右拖 ⇒ 内容左移 ⇒ 偏移增加）。

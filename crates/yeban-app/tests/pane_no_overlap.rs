@@ -1442,26 +1442,25 @@ fn check_arrangement(width: u32, height: u32) {
         tree.find_by_id("arrangement-loop-brace").is_some(),
         "[#187 编曲画布 {width}] 循环选区把手必须在场（它是标尺带**内**的滑块，按设计压在带上）"
     );
-    // ⭐ `#191`：折叠档（1024）右栏变抽屉后画布撑到窗口右沿（944px 宽），播放头
-    // x = 768 落在画布内 ⇒ 它在树里；只有**展开档**的 1024（画布 504px）才整条被 clip。
-    if live.ui().get_compact() || width >= 1440 {
-        let playhead = bounds(&tree, "arrangement-playhead");
-        assert_eq!(
-            playhead.2, 1,
-            "[#187 编曲画布 {width}] 播放头必须是 1px 竖线"
-        );
-        assert_eq!(
-            playhead.1,
-            canvas.1 + 20,
-            "[#187 编曲画布 {width}] 播放头上沿"
-        );
-    } else {
-        // 1024 档：播放头 x = 画布左沿 + 528 = 768 > 画布右沿 744 ⇒ 完全被 clip ⇒ 不进树。
-        assert!(
-            tree.find_by_id("arrangement-playhead").is_none(),
-            "[#187 编曲画布 {width}] 播放头整条落在画布外 ⇒ 必须在树外（⛔ 不许越界画出）"
-        );
-    }
+    // ⭐ 走带光标现在**跟随引擎读数**（唯一写者 = `host::apply_transport`）：装配态
+    // `playhead-ticks == 0` ⇒ x = 画布左沿 + 168px（时间轴左沿），三档断点下都落在
+    // 画布内 ⇒ 都必须在树里。旧版写死 x = 画布左沿 + 528px，于是 1024 展开档（画布
+    // 504px）整条被 clip —— 那个"树外"断言随假位置一起删掉。
+    let playhead = bounds(&tree, "arrangement-playhead");
+    assert_eq!(
+        playhead.2, 1,
+        "[#187 编曲画布 {width}] 播放头必须是 1px 竖线"
+    );
+    assert_eq!(
+        playhead.1,
+        canvas.1 + 20,
+        "[#187 编曲画布 {width}] 播放头上沿"
+    );
+    assert_eq!(
+        playhead.0,
+        canvas.0 + 168,
+        "[#187 编曲画布 {width}] 默认 tick 0 的播放头 x = 画布左沿 + 168px"
+    );
 }
 
 // ===========================================================================
