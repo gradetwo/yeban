@@ -97,14 +97,10 @@ fn each_mixer_hit_rect_binds_its_own_double_click_reset() {
         "调音台必须**恰好**四块带 `double-clicked` 的命中面（推子 / 声相 × 通道条 / 主控）: {arms:?}"
     );
 
-    for (arm_line, (geometry, call)) in arms
-        .iter()
-        .zip(TRACK_AND_MASTER_HIT_RECTS.iter())
-        .enumerate()
-    {
+    for (arm_line, (geometry, call)) in arms.iter().zip(TRACK_AND_MASTER_HIT_RECTS.iter()) {
         // `double-clicked` 那一行的 0 基下标。命中面头部（`TouchArea {` + 四行几何）
         // 必须在它**上面**、间隔不超过一行注释。
-        let index = arm_line - 1;
+        let index = *arm_line - 1;
         let head = &lines[index.saturating_sub(8)..=index];
         let head_joined = head.join("\n");
         assert!(
@@ -112,7 +108,7 @@ fn each_mixer_hit_rect_binds_its_own_double_click_reset() {
             "第 {} 块命中面的 `double-clicked` 必须挂在 `TouchArea` 上: {head_joined}",
             arm_line
         );
-        for row in geometry {
+        for &row in geometry.iter() {
             assert!(
                 head_joined.contains(row),
                 "第 {arm_line} 行的命中面几何必须逐行读得到 `{row}`（本票只**加**双击臂，\
@@ -123,7 +119,7 @@ fn each_mixer_hit_rect_binds_its_own_double_click_reset() {
         // 调用在 `double-clicked => {` 之后的两行内（中间只有一行回调名）。
         let body = lines[index..(index + 3).min(lines.len())].join("\n");
         assert!(
-            body.contains(call),
+            body.contains(*call),
             "第 {arm_line} 行的双击必须落到 `{call}`（⛔ 串到另一面上）: {body}"
         );
     }
@@ -227,7 +223,8 @@ fn every_host_reset_arm_clears_the_gesture_before_committing_its_own_field() {
         );
         let start = host.find(arm).expect("上面已断言存在");
         // 臂体：从这一臂到它自己的 `});`（下一处 `});` 之后即整臂结束）。
-        let body = &host[start..host.find("});", start).expect("臂必须以 `});` 收尾")];
+        let tail = &host[start..];
+        let body = &tail[..tail.find("});").expect("臂必须以 `});` 收尾")];
         let clear_at = body.find(clear).unwrap_or_else(|| {
             panic!(
                 "`{arm}` 必须在提交**之前**调用 `{clear}`：带着在手的拖拽记录提交 ⇒\
@@ -253,7 +250,8 @@ fn every_host_reset_arm_clears_the_gesture_before_committing_its_own_field() {
         "ui.on_mixer_master_pan_reset(",
     ] {
         let start = host.find(arm).expect("上面已断言存在");
-        let body = &host[start..host.find("});", start).expect("臂必须以 `});` 收尾")];
+        let tail = &host[start..];
+        let body = &tail[..tail.find("});").expect("臂必须以 `});` 收尾")];
         assert!(
             body.contains("master_track_id(&port)"),
             "`{arm}` 必须从权威工程取主总线身份（⛔ 猜下标）: {body}"

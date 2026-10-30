@@ -8801,9 +8801,9 @@ fn a_double_click_reset_leaves_no_sticky_gesture() {
     );
     assert!(!window.get_mixer_drag_active(), "④ 标志归位");
 
-    report_line(&format!(
+    report_line(
         "[mixer-double-click-sticky] 主控 -30.0 → 0.0 dB / 主控声相 +1.0 → C / \
          ③ `grab → 复位 → release` 之后 undoable=5 且标志 false / \
          ④ `复位 → grab → release` 之后 undoable=6 且标志 false",
-    ));
+    );
 }
