@@ -5298,6 +5298,11 @@ fn apply_record_outcome(ui: &MainWindow, error: Option<String>) {
 const SIDEBAR_CATEGORY_COUNT: i32 = 3;
 const SIDEBAR_ITEM_COUNT: i32 = 8;
 
+/// splitter 拖拽档位（`console-height-px`）的硬限 —— `[UI-GRID-002]`（规范 §1.1
+/// "splitter 220–600"）。`0` 是"未拖拽"哨兵（布局回到 3:2 弹性比），⛔ 不是可钳的值。
+const CONSOLE_HEIGHT_MIN_PX: i32 = 220;
+const CONSOLE_HEIGHT_MAX_PX: i32 = 600;
+
 /// 把**纯视图态**的界面回调接到宿主上（`ADR-0004` 同款口径：视图态、零 schema、重启即失）。
 ///
 /// | 回调 | 唯一写的属性 | 界面侧的可观察后果 |
@@ -5308,6 +5313,8 @@ const SIDEBAR_ITEM_COUNT: i32 = 8;
 /// | `open-musical-pr` | `musical-pr-open` | `MusicalPrDrawer` 的 `visible`（**只打开**） |
 /// | `select-sidebar-category` | `sidebar-category` | 三个分类标签的选中态（背景 / 文字色 / `accessible-item-selected`） |
 /// | `console-maximize-toggle` | `console-maximized` | 控制台面板高度（`vertical-stretch`）与 ⤢ 的 `accessible-checked`；与 `Action::ToggleConsoleMaximize` 同属性 |
+/// | `console-height-requested` | `console-height-px` | 先钳到 `220..=600`（`UI-GRID-002` 硬限）再写；`.slint` 的 `states [console-pinned]` 据此把控制台高度钉死在该值 |
+/// | `console-height-reset` | `console-height-px` | 写 `0`（"未拖拽"哨兵）⇒ state 退出、布局回到 3:2 弹性比 |
 /// | `select-sidebar-item` | `sidebar-item` | 八个资源条目的选中态（背景 / 文字色 / `accessible-item-selected`） |
 /// | `back-to-arrangement` | `arrangement-view` | Session 视图「→ 编曲」按钮：写 `true` 切回编曲视图（⛔ 不是翻转；播放权回归的引擎侧语义未实现，见 `session_view.slint` 头注） |
 /// | `clip-select` | `selected-clip-ulid` | 编曲视图剪辑包头（`clip-{ulid}-header`）的选中态：包头 2px `selection` 描边 + `accessible-item-selected`（身份比较） |
@@ -5323,7 +5330,7 @@ const SIDEBAR_ITEM_COUNT: i32 = 8;
 /// 写的就是这两个属性（`ui/switch_main_view` 也写同一个）。若 `.slint` 的转发块自己再翻转
 /// 一次，同一个动作就有两个真相源；而"界面**不**自己翻转状态"正是 `playing` 那条已经
 /// 付过学费的契约（`ui/app.slint` 的 `toggle-play` 注释、`docs/ledger/feature-alignment.md`
-/// 错位 7）。因此本函数是这八条回调的**唯一**落点，组件里只剩"原样转发"。
+/// 错位 7）。因此本函数是这十条回调的**唯一**落点，组件里只剩"原样转发"。
 ///
 /// ## 为什么这不是"假接线"
 ///
@@ -5331,7 +5338,7 @@ const SIDEBAR_ITEM_COUNT: i32 = 8;
 /// 这与 [`set_track_height_override`] 是同一档东西（`ADR-0004` S1 / Q4-A）——
 /// 视图态本来就可以由宿主拥有，因此没有绕过 `ADR-0005` 的领域权威（那条约束的是**工程内容**）。
 ///
-/// 八条都只用"打开时那个窗口" ⇒ 共用一份 [`slint::Weak`]：强引用若被闭包自己持有，
+/// 这些回调都只用"打开时那个窗口" ⇒ 共用一份 [`slint::Weak`]：强引用若被闭包自己持有，
 /// 就形成 `MainWindow → 回调 → MainWindow` 的自环（窗口永不解构）。
 ///
 /// `close`（关抽屉）**不在这里**：`.slint` 的 `close =>` 没有对应的 Rust 回调，
@@ -5379,6 +5386,30 @@ pub fn wire_view_callbacks(ui: &MainWindow) {
                 return;
             };
             ui.set_console_maximized(!ui.get_console_maximized());
+        }
+    });
+    // ⭐ 拖 splitter：界面按"实测高 + 指针位移"报目标高度（px），**钳位与写属性都在这里**
+    // （唯一写者）。越界请求落在边界上（`220..=600` = `UI-GRID-002` 的硬限）；`0` 是
+    // "未拖拽"哨兵，只有 `console-height-reset` 写它。
+    ui.on_console_height_requested({
+        let weak = weak.clone();
+        move |px| {
+            let Some(ui) = weak.upgrade() else {
+                debug_assert!(false, "MainWindow 在回调执行期间被销毁");
+                return;
+            };
+            ui.set_console_height_px(px.clamp(CONSOLE_HEIGHT_MIN_PX, CONSOLE_HEIGHT_MAX_PX));
+        }
+    });
+    // ⭐ 双击 splitter：清零 ⇒ `states [console-pinned]` 退出、布局回到 3:2 弹性比。
+    ui.on_console_height_reset({
+        let weak = weak.clone();
+        move || {
+            let Some(ui) = weak.upgrade() else {
+                debug_assert!(false, "MainWindow 在回调执行期间被销毁");
+                return;
+            };
+            ui.set_console_height_px(0);
         }
     });
     ui.on_open_musical_pr({

@@ -394,6 +394,27 @@ export component MainWindow inherits Window {
     /// 布局绑定：最大化时中段（工作区）让出全部高度，控制台吃掉剩余空间。
     /// ⛔ 不是工程数据（`MODEL-ISO-001` 的挥发性层）、不进 `.yeban`、不进撤销栈。
     in-out property <bool> console-maximized: false;
+    /// ⭐ 底部控制台高度的**拖拽档位**（px）。唯一写者 = `host::wire_view_callbacks` 的
+    /// `console-height-requested`（钳到 `220..=600`，`UI-GRID-002` 的硬限）与
+    /// `console-height-reset`（写 `0`）。`0` = 未拖拽 ⇒ 布局保持 3:2 弹性比 ⇒
+    /// **默认帧一位不变**。⛔ 不是工程数据（`MODEL-ISO-001` 的挥发性层）、
+    /// 不进 `.yeban`、不进撤销栈。
+    in-out property <int> console-height-px: 0;
+    // ---- splitter 指针状态机的 UI 局部读数（⛔ 不是视图态：不进宿主、不进测试 API）----
+    property <bool> splitter-dragging: false;
+    property <length> splitter-press-y: 0px;
+    property <bool> console-fixed: !root.console-maximized && root.console-height-px > 0;
+    /// 控制台的**实测**高度（布局读数）—— splitter 的 `accessible-value` 的唯一数据源，
+    /// 与画面同源（⛔ 不是抄来的 "320"）。
+    out property <length> console-height-readout: console-tabs.height;
+    // ⭐ 拖拽档位生效 = **state 覆盖**（Slint `states`）：只有 `console-fixed` 成立时
+    // 才把控制台高度钉死在 `console-height-px`。默认帧不经过任何新绑定 ⇒ 一位像素不变。
+    states [
+        console-pinned when root.console-fixed : {
+            console-tabs.min-height: root.console-height-px * 1px;
+            console-tabs.max-height: root.console-height-px * 1px;
+        }
+    ]
     in-out property <bool> sidebar-collapsed: false;
     /// ⭐ 左侧资源栏的激活分类（0 = 乐器 / 1 = 采样 / 2 = 预置）。
     /// 唯一写者 = `host::wire_view_callbacks` 的 `select-sidebar-category` 回调
@@ -487,6 +508,11 @@ export component MainWindow inherits Window {
     /// ⭐ 控制台右上角 ⤢ 的点击入口：与 `Cmd/Ctrl+Alt+M`（`Action::ToggleConsoleMaximize`）
     /// 落到**同一个**属性 `console-maximized`（唯一实现 = 宿主写属性，界面不自己翻转）。
     callback console-maximize-toggle();
+    /// ⭐ 拖 splitter：界面按"实测高 + 指针位移"报**目标高度**（px），宿主钳到
+    /// `220..=600` 后写 `console-height-px`（唯一写者，与 sidebar 两条同档）。
+    callback console-height-requested(int);
+    /// ⭐ 双击 splitter：宿主把 `console-height-px` 清零 ⇒ 回到 3:2 弹性比（默认态）。
+    callback console-height-reset();
     callback toggle-undo-tree();
     // 时光机右上角 × 的关闭入口：必须落**端口**（`UiAction::CloseUndoTree`），与 `Esc`
     // 同一个动作、同一个回写路径。只写界面属性会让端口仍记着"开着"，下一次撤销的
@@ -1527,8 +1553,8 @@ export component MainWindow inherits Window {
         }
 
         // ---------------------------------------------------------- 4px splitter
-        // [UI-GRID-002] 拖拽范围硬限 220–600px; 真实的拖拽 + 双击居中
-        // 需要指针捕获状态机 (规范 §6.1), 本骨架只登记几何与语义值。
+        // [UI-GRID-002] 拖拽范围硬限 220–600px（钳位在宿主 = 唯一写者）。指针状态机与
+        // 卷帘拖动同款（§6.1）：down 记按下点、move 报目标高度、up/cancel 收手。
         Rectangle {
             min-height: Tokens.splitter-height;
             max-height: Tokens.splitter-height;
@@ -1541,7 +1567,40 @@ export component MainWindow inherits Window {
             accessible-value-minimum: 220;
             accessible-value-maximum: 600;
             accessible-value-step: 1;
-            accessible-value: "320";
+            // 屏读器读到的必须是**实测**高度（与画面同源）；改动前这里写死 "320"，
+            // 每一帧都谎报自己的位置。
+            accessible-value: "" + Math.round(root.console-height-readout);
+
+            splitter-touch := TouchArea {
+                // 命中带上下各扩 2px：4px 的细线不好抓（⛔ 不改可视几何）。
+                width: parent.width;
+                y: -2px;
+                height: parent.height + 4px;
+
+                pointer-event(event) => {
+                    if event.kind == PointerEventKind.down {
+                        root.splitter-dragging = true;
+                        root.splitter-press-y = self.mouse-y;
+                    } else if event.kind == PointerEventKind.move && root.splitter-dragging {
+                        // 目标 = 实测高 + 按下以来的**屏幕**位移。`mouse-y` 是 TouchArea
+                        // 局部坐标，分割线**自身**随布局移动的量已含在实测高里，两者相消
+                        // ⇒ 拖多少涨多少，⛔ 不逐事件累积误差（推导见 tests/splitter_drag.rs 头注）。
+                        root.console-height-requested(Math.round(
+                            root.console-height-readout / 1px
+                            + (root.splitter-press-y - self.mouse-y) / 1px
+                        ));
+                    } else if event.kind == PointerEventKind.up
+                        || event.kind == PointerEventKind.cancel {
+                        root.splitter-dragging = false;
+                    }
+                }
+
+                // 双击 = 回到默认（3:2 弹性比）：清零档位由宿主做（唯一写者）。
+                double-clicked => {
+                    root.splitter-dragging = false;
+                    root.console-height-reset();
+                }
+            }
         }
 
         // --------------------------------------- 底部控制台 (弹性区的 40%)
