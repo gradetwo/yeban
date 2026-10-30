@@ -1725,9 +1725,9 @@ pub struct LiveControlPlane {
     reference: Rgb8Image,
     /// 活窗口的句柄（`Rc` **共享**，不是第二份窗口状态）。
     ///
-    /// 只用来读一个探针：[`Self::rendered_frames`]。它是"读控件树不得渲染一帧"
-    /// 这条**成本**不变量的观测点 —— 没有它，`refresh_tree` 里被重新加回一次
-    /// `capture()` 也不会有任何判据变红。
+    /// 两个用途：读 [`Self::rendered_frames`] 这个"读控件树不得渲染一帧"的**成本**
+    /// 探针；以及给判据抓像素证据（[`Self::capture`]）—— 拖动判据要在注入事件之后
+    /// 逐像素比对「原位置 ∪ 预览位置」，而控制面已经把执行面装箱拿走了。
     window: Tier1Window,
 }
 
@@ -1735,6 +1735,21 @@ impl LiveControlPlane {
     /// 借出控制面（发 `ui/*` 调用）。
     pub fn plane(&mut self) -> &mut ControlPlane {
         &mut self.plane
+    }
+
+    /// 从**同一个**活窗口抓一帧（`Tier1Window` 是共享句柄，不会造出第二份窗口状态）。
+    ///
+    /// 与 [`LiveUi::capture`] 走的是同一条光栅化路径；差别只是控制面把执行面装箱
+    /// 取走之后，判据仍需要**逐像素**证据（`ui/screenshot` 只给 PNG 字节与指纹）。
+    ///
+    /// # Errors
+    ///
+    /// 光栅化 / 抓帧失败。
+    #[allow(dead_code)] // `#[path]` 装进多个测试目标：不是每个目标都用它（模块头同款）。
+    pub fn capture(&self) -> Result<Rgb8Image, PortError> {
+        self.window.capture().map_err(|err| PortError::Capture {
+            message: err.to_string(),
+        })
     }
 
     /// 这个活窗口**已经真的光栅化过**的帧数（**探针**，见 [`Tier1Window::rendered_frames`]）。
