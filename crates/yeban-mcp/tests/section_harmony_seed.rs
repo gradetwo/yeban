@@ -11,6 +11,10 @@
 //! ⚠ 分层如实：`-1` / `1.5` / `"7"` 的工具面拦截走 `arg_u64` +
 //! `ParamSpec::accepts("integer")` —— 与 `melodySeed` 同一调用路径，已由
 //! `section_melody_seed.rs` 判据 4 覆盖 ⇒ 本文件⛔ 重复取样工具面类型闸。
+//!
+//! ⭐ 判据 4（2026-10-30 补）把本票第 2 行那句"缺省 ⇒ 走向取流派
+//! `progression_at(0)`"钉成读数（此前只证了"给了种子"那一侧）——
+//! 效果面登记表读出的四处缺省钉之一，落在 `progression` 这一行。
 
 use std::collections::BTreeMap;
 
@@ -19,6 +23,7 @@ use yeban_mcp::domain::section_build::{
     BuildCode, BuildFault, PlanOptions, SectionPlan, plan_with_options,
 };
 use yeban_model::{ClipContent, EntityId, Op, samples::filled_project};
+use yeban_theory::GenreLibrary;
 
 /// 夹具的小节数。
 const BARS: u64 = 4;
@@ -227,5 +232,53 @@ fn a_different_pick_is_a_different_section_identity() {
     assert!(
         distinct.len() >= 2,
         "换种子换来的不同走向必须落在不同段落身份上: {ids:?}"
+    );
+}
+
+/// 判据 4（2026-10-30 补）：**不给 `progression`** 时的缺省形状 ——
+/// `section_build.rs:1607` 的 `None ⇒ rule.progression_at(0).unwrap_or(FALLBACK_PROGRESSION)`
+/// 就是"缺省取流派首选走向"那句话的实现（`ADR-0016` D2 一侧）。把"首选走向"从
+/// theory 的登记表现读出来（⛔ 手抄 `"I-V-vi-IV"`，那条是兜底值，夹具走不到），
+/// 显式喂进去必须与不给键**逐字节同形**（声部音符表 + 段落身份两处都钉）；
+/// 反向再钉一条**不同的**登记走向必须改形状 ⇒ 上面的相等⛔ 是"两边都零差异"的空绿。
+#[test]
+fn absent_progression_is_byte_identical_to_the_registered_first_pick() {
+    let rule = GenreLibrary::get(STYLE).expect("夹具流派必须已登记");
+    let registered = rule
+        .progression_at(0)
+        .expect("夹具流派必须登记了首选走向（缺省取它）");
+    assert!(
+        rule.progression_count() >= 2,
+        "反向钉需要夹具流派登记 ≥ 2 条走向，现读 {} 条",
+        rule.progression_count()
+    );
+
+    let absent = plan(Given::theory());
+    let explicit = plan(Given {
+        progression: Some(registered),
+        ..Given::theory()
+    });
+    assert_eq!(
+        voices(&absent),
+        voices(&explicit),
+        "不给 `progression` 必须与显式给流派首选走向逐字节同形"
+    );
+    assert_eq!(
+        absent.section_id, explicit.section_id,
+        "同一条走向文本必须落在同一个段落身份上（`scale_key` 里进的是文本，⛔ 给没给键）"
+    );
+
+    let other = (1..rule.progression_count())
+        .filter_map(|index| rule.progression_at(index))
+        .find(|text| *text != registered)
+        .expect("夹具流派必须另有一条与首选不同的登记走向");
+    let shifted = plan(Given {
+        progression: Some(other),
+        ..Given::theory()
+    });
+    assert_ne!(
+        voices(&absent),
+        voices(&shifted),
+        "换成另一条登记走向 `{other}` 必须移动和声形状，否则上面的相等是空读"
     );
 }

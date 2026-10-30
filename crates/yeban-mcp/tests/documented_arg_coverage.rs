@@ -258,10 +258,14 @@ fn defines_fn(text: &str, name: &str) -> bool {
 /// `transpose_clip_expands_into_one_move_per_note_in_a_single_batch` 补齐，⛔ 表退化成死名册：
 /// 两侧都由"登记的判据名 `fn NAME(` 真实存在"那条拦着。
 ///
-/// ⚠ 另有四处"**缺省即与今天逐字节相同**"那一侧没打钉子（`propose.includeDrums`／
-/// `propose.includeMelody`／`propose.progression` 只证了"打开这面"，`edit_notes.autoMerge`
-/// 只证了"合并这面"）—— 本表按**任一侧**判据登记即算已证，这四处如实登记在台账里，
-/// ⛔ 由本判据冒充"两侧都钉过"。
+/// ⭐ **缺省侧**（"不给这个键 ⇒ 与今天逐字节相同"那一半）此前有四处没钉子，现由同线
+/// 第三片补齐：`propose.includeDrums` / `propose.includeMelody` ⇒
+/// `absent_include_flags_are_byte_identical_to_explicit_false`（该文件的 `Given` 两位
+/// 自 `bool` 放宽成 `Option<bool>` —— 此前⛔ 表达得出"不给"）、`propose.progression` ⇒
+/// `absent_progression_is_byte_identical_to_the_registered_first_pick`、
+/// `edit_notes.autoMerge` ⇒ `absent_auto_merge_on_edit_notes_proposes_without_merging`。
+/// ⚠ 其余 **25** 行仍按**任一侧**判据登记即算已证（如 `propose.melodyUpper` 只有缺省侧
+/// 那一条）—— 本表⛔ 断言"两侧都钉过"，两侧状态只在上面这四个键上逐行核过。
 #[test]
 fn every_documented_creation_key_is_registered_with_an_effect_criterion() {
     /// 已证名单：键 → 证据判据名（只取一条代表性判据；同名判据⛔ 要求在同一文件里）。
@@ -269,7 +273,10 @@ fn every_documented_creation_key_is_registered_with_an_effect_criterion() {
         (
             "yeban_edit_notes",
             "autoMerge",
-            &["transpose_clip_expands_into_one_move_per_note_in_a_single_batch"],
+            &[
+                "transpose_clip_expands_into_one_move_per_note_in_a_single_batch",
+                "absent_auto_merge_on_edit_notes_proposes_without_merging",
+            ],
         ),
         (
             "yeban_edit_notes",
@@ -324,12 +331,18 @@ fn every_documented_creation_key_is_registered_with_an_effect_criterion() {
         (
             "yeban_propose_section",
             "includeDrums",
-            &["drums_generate_on_project_source"],
+            &[
+                "drums_generate_on_project_source",
+                "absent_include_flags_are_byte_identical_to_explicit_false",
+            ],
         ),
         (
             "yeban_propose_section",
             "includeMelody",
-            &["melody_generates_over_project_material_with_explicit_scale"],
+            &[
+                "melody_generates_over_project_material_with_explicit_scale",
+                "absent_include_flags_are_byte_identical_to_explicit_false",
+            ],
         ),
         (
             "yeban_propose_section",
@@ -379,7 +392,10 @@ fn every_documented_creation_key_is_registered_with_an_effect_criterion() {
         (
             "yeban_propose_section",
             "progression",
-            &["symbol_progression_voices_the_named_chords_per_bar"],
+            &[
+                "symbol_progression_voices_the_named_chords_per_bar",
+                "absent_progression_is_byte_identical_to_the_registered_first_pick",
+            ],
         ),
         (
             "yeban_propose_section",
