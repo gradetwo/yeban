@@ -8515,6 +8515,7 @@ fn undo_tree_projection(port: &UndoPort) -> (Vec<String>, usize) {
 /// | :--- | :--- | :--- |
 /// | `toggle-undo-tree` | `UiAction::ToggleUndoTree` | 不会（只开关弹窗） |
 /// | `undo-step`（弹窗按钮） | `UiAction::Undo` | **会**（走模型的撤销入口） |
+/// | `revert-to-last-commit`（走带区 ↻） | `UiAction::Undo` | **会**（同上 —— 每次提交恰好一条 `Op::Batch` ⇒ 一步撤销 = 回退一个 Commit） |
 ///
 /// 每次动作之后：
 ///
@@ -8546,6 +8547,17 @@ pub fn wire_undo(ui: &MainWindow, port: &Rc<UndoPort>) {
         let port = Rc::clone(port);
         let weak = slint::ComponentHandle::as_weak(ui);
         ui.on_undo_step(move || {
+            port.perform(UiAction::Undo);
+            refresh_undo(&weak, &port, true);
+        });
+    }
+    {
+        // 走带区「回滚到上一个 Commit」与弹窗的"撤销一步"是**同一个**动作：本实现的
+        // 每次提交恰好携带一条 `Op::Batch`（`undo_session` 的不变量），因此一步撤销
+        // 正好回退一个 Commit。界面侧只报"用户点了 ↻"，这里不复制第二份撤销逻辑。
+        let port = Rc::clone(port);
+        let weak = slint::ComponentHandle::as_weak(ui);
+        ui.on_revert_to_last_commit(move || {
             port.perform(UiAction::Undo);
             refresh_undo(&weak, &port, true);
         });
