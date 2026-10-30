@@ -27,7 +27,7 @@ use yeban_app::host;
 use yeban_app::scene::DemoScene;
 use yeban_engine::transport::{TransportReading, TransportState};
 use yeban_ui_test_port::render::LivePort;
-use yeban_ui_test_port::{Permission, Rect, Size, UiTestPort as _};
+use yeban_ui_test_port::{Permission, Rect, Size};
 
 /// 与其余 Tier-1 判据同款。
 const WINDOW: Size = Size::new(1440, 900);
