@@ -2223,7 +2223,7 @@ fn check_sidebar(width: u32, height: u32, breakpoint: bool) {
         &tree,
         pane,
         Selection::Intersect,
-        expected,
+        &expected,
         &format!("#189 左栏 {width}x{height} breakpoint={breakpoint} compact={compact}"),
     ));
 
