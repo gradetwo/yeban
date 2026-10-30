@@ -8585,7 +8585,19 @@ fn zoom_action(ui: &MainWindow, port: &UndoPort, action: Action) -> bool {
 pub fn apply_undo(ui: &MainWindow, port: &UndoPort) {
     let display = port.display();
     let clamp = |value: usize| i32::try_from(value).unwrap_or(i32::MAX);
-    ui.set_undo_tree_open(port.undo_tree_open());
+    let open = port.undo_tree_open();
+    let was_open = ui.get_undo_tree_open();
+    ui.set_undo_tree_open(open);
+    // 焦点闭环在**开关翻转的那一次**同步取值：`.slint` 的 `changed` 处理器要等
+    // 事件循环下一拍才跑，而无头判据（`tests/undo_tree_focus_trap.rs`）设置属性后
+    // 不跑事件循环 ⇒ 焦点会停在原地。写者仍然只有这里一个。
+    if open != was_open {
+        if open {
+            ui.invoke_focus_undo_tree_trap();
+        } else {
+            ui.invoke_focus_shortcut_layer();
+        }
+    }
     ui.set_undo_can_undo(display.can_undo);
     ui.set_undo_can_redo(display.can_redo);
     ui.set_undo_depth(clamp(display.undoable));
@@ -8711,9 +8723,10 @@ pub fn wire_undo(ui: &MainWindow, port: &Rc<UndoPort>) {
             };
             let display = port.display();
             // 出界下标不是画出来的版本 ⇒ 什么都不做（与 `wire_tool_select` 同口径：
-            // 宁可不动，也不猜一个版本）。`undone + undoable` = 活跃分支可回退的
-            // 总版本数（模型读数），合法的目标下标必须严格小于它。
-            if target >= display.undone + display.undoable {
+            // 宁可不动，也不猜一个版本）。`undone + undoable` = 活跃分支的提交总数，
+            // 而**根提交**正停在第 `commit_count` 步（点它可以撤到底）⇒ 合法下标的
+            // 闭区间是 `0..=undone + undoable`，越界只有**严格大于**它这一种。
+            if target > display.undone + display.undoable {
                 return;
             }
             // ⚠ 模型侧 `plan_undo` 会把步数 clamp 到 ≥ 1（`UndoMany(0)` **会撤销一步**）
