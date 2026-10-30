@@ -8642,13 +8642,14 @@ fn undo_tree_projection(port: &UndoPort) -> (Vec<String>, usize) {
     (labels, chain.len().saturating_sub(UNDO_TREE_MAX_NODES))
 }
 
-/// 把撤销入口接到界面上（`toggle-undo-tree`、时光机的"撤销一步"按钮、节点点击）。
+/// 把撤销入口接到界面上（`toggle-undo-tree`、× 关闭、时光机的"撤销一步"按钮、节点点击）。
 ///
-/// 三条回调都汇到**同一个** [`UndoPort::perform`]：
+/// 四条回调都汇到**同一个** [`UndoPort::perform`]：
 ///
 /// | 界面回调 | 动作 | 工程会不会变 |
 /// | :--- | :--- | :--- |
 /// | `toggle-undo-tree` | `UiAction::ToggleUndoTree` | 不会（只开关弹窗） |
+/// | `close-undo-tree`（× / 无障碍关闭） | `UiAction::CloseUndoTree` | 不会（只关弹窗，与 `Esc` 同动作） |
 /// | `undo-step`（弹窗按钮） | `UiAction::Undo` | **会**（走模型的撤销入口） |
 /// | `undo-node-selected`（点一个版本节点） | `UiAction::UndoMany` / `RedoMany` | **会**（回到那一版） |
 /// | `revert-to-last-commit`（走带区 ↻） | `UiAction::Undo` | **会**（同上 —— 每次提交恰好一条 `Op::Batch` ⇒ 一步撤销 = 回退一个 Commit） |
@@ -8669,6 +8670,17 @@ pub fn wire_undo(ui: &MainWindow, port: &Rc<UndoPort>) {
         let weak = slint::ComponentHandle::as_weak(ui);
         ui.on_toggle_undo_tree(move || {
             port.perform(UiAction::ToggleUndoTree);
+            refresh_undo(&weak, &port, false);
+        });
+    }
+    {
+        // × 关闭与 `Esc` 是**同一个动作**、同一条回写路径。只写 `undo-tree-open`
+        // 会让端口仍记着"开着"：下一次撤销的 [`apply_undo`] 按端口把它翻回 `true`，
+        // 弹窗复活（改动前的 × 正是这个行为，判据 `tests/undo_tree_close_button.rs`）。
+        let port = Rc::clone(port);
+        let weak = slint::ComponentHandle::as_weak(ui);
+        ui.on_close_undo_tree(move || {
+            port.perform(UiAction::CloseUndoTree);
             refresh_undo(&weak, &port, false);
         });
     }
