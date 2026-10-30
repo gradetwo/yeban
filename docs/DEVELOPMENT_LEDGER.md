@@ -15765,3 +15765,122 @@ merge 成一条 push。**该跑的形态**：`plan`／`checks`／`deny`／`lockf
 名字进 `EFFECT_FACE` 对应行。⛔ 一次做完 25 行——按工具面分小批（`propose_section` 的
 `velocity*`／`drum*`／`onsetsPerBar` 一族、`edit_notes` 的 `ops`/`placement` 一族、
 `render_master.contributions` 单独一批）。
+
+## 2026-10-30（上午·第五批）· S6 第三片红→绿 ＋ ⭐ 第三条轴（缺省侧逐键点名）＋ 一条"从登记表推断另一侧"的假读数
+
+### §1 S6 第三片：四条缺省钉，CI 抓到一处**读数路径**错（红是我自己的，⛔ 本批 diff 之外的东西）
+
+线 run `40983157377`（`a298aeab`）⇒ **failure**，三腿（`rust (yeban-mcp)`／`macos`／`windows`）同红，
+红的是本批新加的**一条**判据：
+
+```
+test absent_auto_merge_on_edit_notes_proposes_without_merging ... FAILED
+thread '…' panicked at crates/yeban-mcp/tests/transpose_clip.rs:516:18: `proposals` 必须是数组
+test result: FAILED. 7 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out
+```
+
+**根因（一句话）**：同一行 `list["proposals"]` 在 `auto_merge.rs` 读得到、在 `transpose_clip.rs` 读不到 ——
+两个文件各自的 `call()` 形状不同：`auto_merge.rs` 的 helper **替调用方剥掉了 `data`**（返回 `result["data"]`），
+`transpose_clip.rs` 的 helper 返回**整份 result** ⇒ `list_proposals` 的载荷在 `data.proposals`。
+我上一轮"先 grep 交付"核的是**另一个文件**的 helper 与 `domain/mod.rs` 的载荷形状，⛔ 核本文件自己的 `call()`。
+教训（并入第 11 条家族）：**跨文件抄一行读写路径时，先读那个文件的 helper，⛔ 读兄弟文件的**。
+
+修复 `940284d5`：`proposals["data"]["proposals"]` 取数组，并补 `proposals["data"]["openCount"] == 1`
+（"提案可发现"那一面）。**真绿读数**（run `40986803031`，对象＝腿，单位＝秒；⛔ 空绿）：
+
+| 腿 | 结论 | 耗时 |
+| :--- | :--- | :--- |
+| `rust (yeban-mcp)` | success | **990 s** |
+| `macos (…)` | success | **1,642 s** |
+| `windows (…)` | success | **2,234 s** |
+| `rust (yeban-ui-mcp)` | success | 251 s |
+| `checks` / `deny` / `lockfile` / `plan` | success | 67 / 60 / 20 / 11 s |
+| `rust (workspace 全量)` | skipped | — |
+
+日志读数（`rust (yeban-mcp)` 腿）：**137** 行 `test result: ok`／passed **2,430**／`FAILED` **0**；
+本批三条新判据**逐名**出现且 `... ok`：
+`absent_auto_merge_on_edit_notes_proposes_without_merging`／
+`absent_include_flags_are_byte_identical_to_explicit_false`／
+`absent_progression_is_byte_identical_to_the_registered_first_pick`。
+
+⚠ fail-fast 口径复核：上一条红 run 里，另外两条新判据在**别的二进制**；"整体 failure"⛔ 等于它们没跑，
+也⛔ 等于它们跑了。本条按"先数 `test result:` 行、再找判据名"两段读。
+
+### §2 ⭐ ⭐ 第三条轴：缺省侧逐键点名（S6 第四片**换掉**了上一批订的写法）
+
+**上一批 §8 的处方是错的**，错在推断方式：它说"登记表只有四个键两侧都钉过，其余 **25** 行按任一侧即算已证"
+⇒ 从**登记表那一列代表判据名**推断"另一侧没钉"。本次改用 grep 数**交付**：
+
+```
+grep -rn "^fn absent_\|^fn .*byte_identical\|^fn default_" crates/yeban-mcp/tests/*.rs
+```
+
+现读（对象＝判据名，单位＝个）：**21** 个键的缺省侧判据**早就在跑**
+（`drumBackbeat`／`beatGrouping`／`drumStyle`／`swingPermille`／`harmonyMaxVoiceJump`／`harmonySeed`／
+`melodySeed`／`melodyRegister`／`melodyMaxLeap`／`velocity*`／`onsetsPerBar`／`voiceSubdivision(s)`／
+`autoMerge`（两面）／`materialSource`…）。真读数：**29 = 21 已证 + 8 缺口**（⛔ 25）。
+
+**落地方式（`d34394dc`）**：新判据 `each_documented_key_declares_its_default_side_evidence_or_gap`
+（同一文件第三条轴，共用 `documented_keys()` / `test_sources()` / `defines_fn` 三把尺；⛔ 立第二份真相）——
+21 行**全部登记既有判据**，8 个缺口逐行写理由。机械钉四件事：
+① `缺省已证 ∪ 缺省缺口 == schema 键全集`（两向）；② 两名单⛔ 重叠；③ 每个名字 `fn NAME(` 真实存在、
+缺口理由非空；④ **双向棘轮**：已证 ≥ 22／缺口 ≤ 7（补齐时两个数组长度与两个界同批改，⛔ 只搬不改）。
+
+**顺手补掉一个缺口（`cff323e6`）**：`absent_merge_commit_message_falls_back_to_the_proposal_id_default` ——
+`auto_merge.rs` 头表第 4 行一直把"缺省 `"merge proposal {id}"`"写在括号里，而判据 4 只跑"给了"那支
+⇒ 缺省支是**说明文字⛔ 断言**。新判据的期望值从**同一份回执的 `proposalId`** 现拼（⛔ 抄固定串；
+`EntityId` 的 `Display` 与 `to_canonical_string()` 同一实现，`crates/yeban-model/src/ids.rs:71/89`）。
+⇒ 缺省轴现读 **22 已证 + 7 缺口**。
+
+剩余 7 个缺口（下一片按工具面分批，⛔ 一轮做完）：
+`edit_notes.create`／`edit_notes.placement`／`edit_notes.mergeCommitMessage`／
+`propose.drumDensity`／`propose.materialClipIds`／`propose.partTracks`／`render_master.contributions`。
+
+### §3 S5b 的 merge run：**红在别人那条腿**，S5b 四件齐因此**未闭合**
+
+run `40985891003`（`4a0b2bbe`）⇒ **failure**，唯一红腿 `rust (yeban-app)`，步骤 `test (合并特性)`：
+
+```
+test session::the_session_reaches_the_synth_while_the_window_is_open ... FAILED
+panicked at crates/yeban-app/tests/midi_live_wire.rs:334:9:
+⭐ 每条事件到期后**各自**发布（≥3 次）；发布 2 次 ⇒ 形状已退化成批次: [(290, 1, 1), [(292, 4, 2)]]
+test result: FAILED. 3 passed; 1 failed
+```
+
+- 与本批 diff **无关**（本批 = docs ＋ `yeban-model` 的测试模块）；同 run 的 `rust (yeban-model)` 绿。
+- 形状：5 条事件（note-on×2／note-off×2／CC×1）在 200 ms 窗口里被**合并成 2 次发布**（4 条落在同一发布）。
+- 定性：**时序竞态**（真实会话循环 + 真时钟窗口）；⛔ 已证"是并行写者那条 app 线的回归"——
+  并行写者 `607f4b35`（`merge(integrate-ui)`，含"两处 app-test 读数对齐"）自己的 run 判决**待读回**。
+- ⇒ S5b 四件齐**仍然未闭合**：merge run 红。替代判决候选 = `607f4b35` 的 run（若 `yeban-app` 绿、
+  且该判据名在场）。⚠ 替代判决要**如实标**"⛔ 该 merge 自己的 run"（`G8m` 那次的同一口径）。
+
+### §4 主干已前进 + 一条读数口径
+
+读完 `4a0b2bbe` 后主树 `git merge --ff-only origin/main` ⇒ 现读 `607f4b35`（并行写者的 merge，35 文件 ＋3,102/−88）。
+⚠ 其中 5 张 golden PNG 的字节数仍是 **6,222,418**（存储式 deflate 的恒等长度）
+⇒ **长度相等⛔ 蕴含内容相同**（§6.3 第 3 条；这批的 MANIFEST.txt 也变了，内容面由并行写者自己的判据兜）。
+
+### §5 磁盘现读（`df -h /home`，单位＝GiB）
+
+`198G/235G`、余 **31G**（87%）。S6 树**无** `target/`（`cargo fmt` 不产 target；`fmt` 在本仓同时充当
+**语法闸**：本轮两处字符串里漏了转义（ASCII `"` 进了中日引号串）就是 `cargo fmt` 先报 `unknown start of token`
+才发现的 ⇒ 本机 `fmt` 比 `clippy` 便宜且能抓 E0xxx 家族的前半）。
+`#34` 的仓库外大头（19G cache／5.2G rustup／3.8G 他项目 target）仍**卡在人类裁决**，⛔ 自主删。
+
+### §6 判决表（本批）
+
+| 提交 | run | 结论 | 读数 |
+| :--- | :--- | :--- | :--- |
+| `a298aeab`（S6 第三片） | `40983157377` | **failure** | 唯一红 `transpose_clip.rs:516`（读数路径），7 passed／1 failed |
+| `940284d5`（修复） | `40986803031` | **success** | 八腿（全量 skipped）；`rust (yeban-mcp)` 990 s／2,430 passed／0 FAILED／三条判据逐名 ok |
+| `4a0b2bbe`（S5b merge + docs） | `40985891003` | **failure** | 唯一红 `yeban-app` / `midi_live_wire.rs:334`（时序竞态，与本批 diff 无关） |
+| `607f4b35`（并行写者 merge，主干） | 待读回 | pending | — |
+| `cff323e6`（缺省轴 22+7） | 待读回 | pending | — |
+
+### §7 下一片
+
+1. 读回 `cff323e6` 的 run：判据名 `each_documented_key_declares_its_default_side_evidence_or_gap` 与
+   `absent_merge_commit_message_falls_back_to_the_proposal_id_default` 逐名 `... ok` ⇒ S6 线判决齐。
+2. 读回 `607f4b35`：若 `yeban-app` 绿 ⇒ 它是 S5b 的**替代全量腿证据**（⛔ 该 merge 自己的 run），S5b 四件齐。
+3. S6 落地：`worktree.sh land s6-key-effect-registry` ⇒ 读 merge run ⇒ 拆树（⛔ 留 `.worktrees/` 字面）。
+4. 第四片＝剩余 7 个缺口，按工具面分三小批（`edit_notes` 三键／`propose` 三键／`contributions` 一键）。
