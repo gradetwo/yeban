@@ -381,6 +381,10 @@ fn no_assertion_compares_a_side_with_itself() {
         "已知红样本必须被抓到"
     );
     assert!(
+        !probe_shapes(green).is_empty(),
+        "绿样本必须能扫出行（否则下面那条恒真）"
+    );
+    assert!(
         probe_shapes(green)
             .iter()
             .all(|(_line, shape)| *shape != ProbeShape::SameSides),
@@ -461,6 +465,10 @@ fn enum_variant_inequality_probes_are_absent_or_annotated() {
         "已知红样本必须被抓到"
     );
     assert!(
+        !probe_shapes(green).is_empty(),
+        "绿样本必须能扫出行（否则下面那条恒真）"
+    );
+    assert!(
         probe_shapes(green)
             .iter()
             .all(|(_line, shape)| *shape != ProbeShape::EnumVariantInequality),
@@ -505,6 +513,10 @@ fn no_assertion_compares_two_literals() {
             .count(),
         2,
         "已知红样本必须被抓到两条"
+    );
+    assert!(
+        !probe_shapes(green).is_empty(),
+        "绿样本必须能扫出行（否则下面那条恒真）"
     );
     assert!(
         probe_shapes(green)

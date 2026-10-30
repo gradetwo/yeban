@@ -2063,6 +2063,10 @@ fn needs_8_create_true_supplies_the_midi_material_arranging_requires() {
     // ① 负样本本身必须真的"没有可用材料"（否则下面测的不是 needs-8）。
     let project = dispatcher.domain().active_project().expect("工程").clone();
     assert!(
+        !project.clip_pool.is_empty(),
+        "负样本里仍有非 MIDI 片段（否则下面那条恒真）"
+    );
+    assert!(
         project
             .clip_pool
             .values()
@@ -2161,6 +2165,10 @@ fn needs_8_create_true_supplies_the_midi_material_arranging_requires() {
         Some(2)
     );
     // 材料只在池子里 —— 本工具不摆放（如实口径，不是缺陷）。
+    assert!(
+        !after.tracks.is_empty(),
+        "工程必须至少有一条音轨（否则下面那条恒真）"
+    );
     assert!(
         after.tracks.values().all(|track| track
             .clips
@@ -5866,6 +5874,10 @@ fn needs_6_placement_puts_pool_material_on_the_timeline_and_the_master_hears_it(
             "材料必须真的进了池子"
         );
         assert!(
+            !project.tracks.is_empty(),
+            "工程必须至少有一条音轨（否则下面那条恒真）"
+        );
+        assert!(
             project.tracks.values().all(|track| track
                 .clips
                 .values()
@@ -6297,6 +6309,10 @@ fn edit_notes_create_and_place_in_one_proposal_is_atomic_and_undoable() {
             "撤销后材料必须离开池子"
         );
         assert!(
+            !project.tracks.is_empty(),
+            "工程必须至少有一条音轨（否则下面那条恒真）"
+        );
+        assert!(
             project.tracks.values().all(|track| track
                 .clips
                 .values()
@@ -6559,6 +6575,10 @@ fn placement_edits_move_and_remove_a_placement_and_the_master_follows() {
     merge(&mut dispatcher, &auth, &removed, "取走摆放");
     {
         let project = dispatcher.domain().active_project().expect("工程");
+        assert!(
+            !project.tracks.is_empty(),
+            "工程必须至少有一条音轨（否则下面那条恒真）"
+        );
         assert!(
             project.tracks.values().all(|track| track
                 .clips
