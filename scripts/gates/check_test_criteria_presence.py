@@ -37,8 +37,8 @@ REPO = Path(__file__).resolve().parents[2]
 TESTS_GLOB = "crates/*/tests/*.rs"
 
 # 下界＝当前实测值（R93 / R115 同口径：删文件是单向偷工，只有下界能挡）。
-MIN_FILES = 282
-MIN_FILES_WITH_CRITERIA = 275
+MIN_FILES = 293
+MIN_FILES_WITH_CRITERIA = 286
 
 # 已评审例外。`kind` 决定哪条机检生效；理由必须说清"为什么它没有 #[test] 仍然在测东西"。
 EXCEPTIONS: list[dict[str, str]] = [
