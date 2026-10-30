@@ -287,7 +287,7 @@ export component MusicalPrDrawer inherits Rectangle {
         // ⭐ 选中态从**身份**读，不从下标读（下标会在下一次重投影后指向另一条提案）。
         // 宿主夹紧过 `selected-proposal-id`：不在当前清单里的旧身份会被写成空串 ⇒
         // 那一行的 `is-selected` 自然为 `false`，界面上不会留一个"高亮着但点不动"的行。
-        property <bool> is-selected: !root.selected-proposal-id.is_empty()
+        property <bool> is-selected: !root.selected-proposal-id.is-empty
             && root.proposal-ids[proposal_index] == root.selected-proposal-id;
 
         background: is-selected ? Tokens.bg-raised : (proposal_index.mod(2) == 0 ? Tokens.bg-panel-alt : Tokens.bg-panel);
@@ -355,7 +355,7 @@ export component MusicalPrDrawer inherits Rectangle {
         TouchArea {
             width: parent.width;
             height: parent.height;
-            mouse-cursor: MouseCursor.Pointer;
+            mouse-cursor: MouseCursor.pointer;
             clicked => { root.select-proposal(root.proposal-ids[proposal_index]); }
         }
     }
