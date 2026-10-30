@@ -373,6 +373,10 @@ mod tests {
         let period = 4800;
         assert!(left[period].abs() > 0.5);
         assert!(
+            !right.is_empty(),
+            "夹具必须非空（否则下面那条 `.all(..)` 恒真）"
+        );
+        assert!(
             right.iter().all(|v| v.abs() < 1e-6),
             "nothing should cross over"
         );
@@ -683,7 +687,15 @@ mod tests {
         let mut left = vec![0.3f32; 4096];
         let mut right = vec![-0.3f32; 4096];
         d.process(absurd, &mut left, &mut right);
+        assert!(
+            !left.is_empty(),
+            "夹具必须非空（否则下面那条 `.all(..)` 恒真）"
+        );
         assert!(left.iter().all(|v| v.is_finite()));
+        assert!(
+            !right.is_empty(),
+            "夹具必须非空（否则下面那条 `.all(..)` 恒真）"
+        );
         assert!(right.iter().all(|v| v.is_finite()));
         // 反馈被钳在 0.95：即使一直喂满幅直流，也必须收敛到有界。
         let hot = DelayParams {
@@ -712,6 +724,10 @@ mod tests {
         let mut left = vec![0.0f32; 64];
         let mut right = vec![0.0f32; 64];
         d.process(long, &mut left, &mut right);
+        assert!(
+            !left.is_empty(),
+            "夹具必须非空（否则下面那条 `.all(..)` 恒真）"
+        );
         assert!(left.iter().all(|v| v.is_finite()));
         assert!(d.max_seconds() <= MAX_DELAY_SECONDS + 1e-3);
     }
@@ -904,6 +920,10 @@ mod tests {
                 sample
             );
         }
+        assert!(
+            !probe_r.is_empty(),
+            "夹具必须非空（否则下面那条 `.all(..)` 恒真）"
+        );
         assert!(probe_r.iter().all(|sample| *sample == 0.0));
     }
 }

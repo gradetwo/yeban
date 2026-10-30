@@ -611,6 +611,10 @@ mod tests {
         let tail = rms(&l[l.len() - 4800..]); // 3.9–4.0 s
         assert!(head > 0.0, "no tail at all");
         assert!(tail < head * 0.5, "tail did not decay: {head} -> {tail}");
+        assert!(
+            !l.is_empty(),
+            "夹具必须非空（否则下面那条 `.all(..)` 恒真）"
+        );
         assert!(l.iter().all(|s| s.is_finite()));
     }
 
@@ -749,7 +753,15 @@ mod tests {
         let mut l = vec![0.3f32; 48_000];
         let mut r = vec![-0.3f32; 48_000];
         verb.process(&mut l, &mut r);
+        assert!(
+            !l.is_empty(),
+            "夹具必须非空（否则下面那条 `.all(..)` 恒真）"
+        );
         assert!(l.iter().all(|s| s.is_finite() && s.abs() < 4.0));
+        assert!(
+            !r.is_empty(),
+            "夹具必须非空（否则下面那条 `.all(..)` 恒真）"
+        );
         assert!(r.iter().all(|s| s.is_finite() && s.abs() < 4.0));
     }
 
@@ -837,7 +849,15 @@ mod tests {
         let mut long = [0.0f32; 8];
         let mut short = [0.0f32; 3];
         verb.process(&mut long, &mut short);
+        assert!(
+            !long.is_empty(),
+            "夹具必须非空（否则下面那条 `.all(..)` 恒真）"
+        );
         assert!(long.iter().all(|v| v.is_finite()));
+        assert!(
+            !short.is_empty(),
+            "夹具必须非空（否则下面那条 `.all(..)` 恒真）"
+        );
         assert!(short.iter().all(|v| v.is_finite()));
         // 退化参数不得产生 NaN：非有限值回落到默认值，混响仍然必须活下来。
         verb.set_params(ReverbParams {
@@ -852,8 +872,16 @@ mod tests {
         let mut right = vec![0.2f32; 4096];
         verb.process(&mut left, &mut right);
         assert!(
+            !left.is_empty(),
+            "夹具必须非空（否则下面那条 `.all(..)` 恒真）"
+        );
+        assert!(
             left.iter().all(|v| v.is_finite()),
             "degenerate parameters poisoned the reverb bus"
+        );
+        assert!(
+            !right.is_empty(),
+            "夹具必须非空（否则下面那条 `.all(..)` 恒真）"
         );
         assert!(right.iter().all(|v| v.is_finite()));
         assert!(
@@ -1504,6 +1532,10 @@ mod tests {
                 sample
             );
         }
+        assert!(
+            !rearmed_r.is_empty(),
+            "夹具必须非空（否则下面那条 `.all(..)` 恒真）"
+        );
         assert!(rearmed_r.iter().all(|sample| *sample == 0.0));
     }
 }

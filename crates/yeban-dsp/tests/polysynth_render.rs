@@ -321,6 +321,10 @@ fn p3_amplitude_envelope_attacks_in_five_milliseconds_and_releases_in_about_fift
     );
     // 静音必须**逐位**归零（不是"很小"）。
     assert!(
+        !rendered.is_empty(),
+        "夹具必须非空（否则下面那条 `.all(..)` 恒真）"
+    );
+    assert!(
         rendered[(end_sample as usize + release_frames as usize)..]
             .iter()
             .all(|sample| *sample == 0.0),
@@ -368,6 +372,10 @@ fn p4_eight_simultaneous_notes_all_sound() {
         highest / lowest
     );
 
+    assert!(
+        !out.is_empty(),
+        "夹具必须非空（否则下面那条 `.all(..)` 恒真）"
+    );
     assert!(
         out.iter().all(|sample| sample.is_finite()),
         "复音输出必须全部有限"
@@ -461,6 +469,10 @@ fn p5_over_the_polyphony_limit_a_deterministic_voice_is_stolen() {
             "未被窃取的 {freq} Hz 声部必须继续发声（bin = {magnitude:.6}）"
         );
     }
+    assert!(
+        !after.is_empty(),
+        "夹具必须非空（否则下面那条 `.all(..)` 恒真）"
+    );
     assert!(
         after.iter().all(|sample| sample.is_finite()),
         "窃取后的输出必须全部有限"
@@ -667,6 +679,10 @@ fn p9_degenerate_inputs_never_produce_non_finite_output() {
                     synth.note_on(NoteEvent::new(0, 4_800, freq, gain), &tables);
                     let mut out = vec![0.0f32; 512];
                     synth.render(&tables, 0, &mut out);
+                    assert!(
+                        !out.is_empty(),
+                        "夹具必须非空（否则下面那条 `.all(..)` 恒真）"
+                    );
                     assert!(
                         out.iter().all(|sample| sample.is_finite()),
                         "退化组合产生了非有限输出: params={params:?} freq={freq} gain={gain} sr={sample_rate}"

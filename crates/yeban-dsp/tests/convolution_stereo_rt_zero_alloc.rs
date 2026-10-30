@@ -200,6 +200,10 @@ fn rt_path_allocates_nothing_over_5_000_stereo_quanta() {
          四条卷积核没真的参与运算，本判据测的是空壳",
         WINDOW_FRAMES * 2
     );
+    assert!(
+        !block.is_empty(),
+        "夹具必须非空（否则下面那条 `.all(..)` 恒真）"
+    );
     assert!(block.iter().all(|v| v.is_finite()), "路径产出了非有限值");
     let peak = block.iter().fold(0.0f32, |m, v| m.max(v.abs()));
     assert!(peak > 0.0, "输出全零 ⇒ 判据测错了对象");
