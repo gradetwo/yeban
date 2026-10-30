@@ -2984,9 +2984,10 @@ pub fn sidebar_category_content(view: &ViewState, category: usize) -> SidebarCat
         1 => (view.asset_pool_names(), SIDEBAR_EMPTY_ASSETS_REASON),
         _ => (Vec::new(), SIDEBAR_EMPTY_PRESETS_REASON),
     };
+    let empty = items.is_empty();
     SidebarCategoryContent {
         items,
-        empty_reason: if items.is_empty() {
+        empty_reason: if empty {
             empty_reason.to_string()
         } else {
             String::new()

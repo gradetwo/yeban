@@ -5477,6 +5477,7 @@ pub fn wire_sidebar_contents(ui: &MainWindow, view: Rc<RefCell<ViewState>>) {
     let weak = ui.as_weak();
     ui.on_select_sidebar_category({
         let weak = weak.clone();
+        let view = Rc::clone(&view);
         move |category| {
             let Some(ui) = weak.upgrade() else {
                 debug_assert!(false, "MainWindow 在回调执行期间被销毁");
