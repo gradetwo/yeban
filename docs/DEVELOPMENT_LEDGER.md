@@ -16298,3 +16298,71 @@ post-merge 自检（`cargo metadata --locked` ＋ 许可清单）passed；推前
 
 本轴（"文档互斥 → 用可数读数判定"）已收口。自主可做的仍是**新审计轴**；创作缺口全部在人类裁决
 （`ADR-0042` G8j／`ADR-0047`..`0050`／`ADR-0004` Q13／`master_bus_track_id`）。
+
+## 2026-10-30 13:30 —— §16 第十二批：**engine 也有死名册，而且那个判据根本不存在**（M11 缺失 ＋ 新常驻判据）
+
+### §16.1 缺陷（两个层次）
+
+`crates/yeban-engine/src/mixer.rs:150` 写"两者的对应关系由 [`PanLaw::from_model`] 与
+`tests/mix_render.rs::engine_pan_law_names_match_the_model`（穷举四个变体）钉住"。
+
+1. **死名册**：`fn engine_pan_law_names_match_the_model(` 在**整 crate** 搜不到（对照：同一句
+   `src/level.rs:30` 指路的 `yeban_dsp::meter::tests::frozen_pre_hoist_table_is_reproduced_bit_for_bit`
+   真实存在，在 `crates/yeban-dsp/src/meter.rs:2035`）；
+2. **承诺无载体**（比死名册更重）：`tests/mix_render.rs` 当时对 `PanLaw` **零提及** ——
+   "穷举四个变体钉住"这件事**从未被测过**。`from_model` 的穷举 `match` 只保证编译期不漏变体，
+   保证不了"名字对得上"与"两个模型变体不撞到一个引擎变体"。
+
+**全仓同口径普查（读数可复算）**：`crates/*/src/**` 里 `::tests::NAME` ＋ `.rs::NAME` 共
+**84 个去重名字**，逐个要求落到 `(fn|const|type|struct|enum|trait|static) NAME` ⇒ **2 个 DEAD**：
+`engine_pan_law_names_match_the_model`（真缺陷，本单修）与 `prepare_sampler`
+（`crates/yeban-app/src/mcp_mount/embedded_digest.rs:1201`，原文写"`SamplerTrackSource` /
+`prepare_sampler` **退休**" ⇒ 描述**已退休符号**，不是判据指路 ⇒ **假阳性，⛔ 不改**）。
+
+### §16.2 修复：把承诺变成判据（M11）
+
+`crates/yeban-engine/tests/mix_render.rs` 新增 `engine_pan_law_names_match_the_model`：
+
+- 穷举模型层四个变体 → `PanLaw::from_model` → 断言两侧 `Debug` 名**逐字相同**
+  （文档口径是"把四个变体名在引擎侧重述一遍"）；
+- 四个模型变体必须落到**四个不同**的引擎变体（⛔ 映射合并变体）；
+- R93／R100 下界：`model_laws.len() == 4` 且 `mapped.len() == 4`（＝当前变体数）。
+- 模块文档表补 M11 行（"怎么变红"写的是：映射串到错误变体／两个模型变体撞到一个引擎变体）。
+
+### §16.3 新常驻判据（`crates/yeban-engine/tests/doc_criterion_references_resolve.rs`）
+
+- 与 mcp 侧同口径（台账 §14）：扫 `src/**` 的 `::tests::NAME` 与 `.rs::NAME`，`NAME` 必须落到
+  `fn NAME(`；⛔ 不扫 `tests/**`（那里是叙述）。
+- **解析语料 ＝ engine（src＋tests）∪ yeban-dsp**：后者是唯一被 engine 散文**显式跨 crate**
+  指路的目标（`level.rs:30`）。⛔ 不扩到整个 workspace —— 那会把"写错 crate"放绿。
+- 反向非真空下界（＝当前值）：被扫文件 **24** 个、引用 **7** 处、去重名字 **4** 个、
+  解析语料 **116** 个 `.rs`。
+- 抽取器自证：两种形状的针在**运行期**拼出（R84）。
+- **本地正反两例**（`rustc --test`，推送前）：正例 **2 passed**；把 `mixer.rs` 的名字改成
+  `…_TYPO` 的副本 ⇒ **红**，日志逐字报 `mixer.rs: engine_pan_law_names_match_the_model_TYPO`。
+  ⚠ 首跑还把下界写虚了（文件数写成 26、语料写成 60）⇒ 实测 24／116 后改成**等号口径**。
+
+### §16.4 判决链
+
+| 对象 | run | 判决（读数） |
+| :--- | :--- | :--- |
+| 线 `line/s7-engine-doc-refs` @ `7a5c86ff` | `41058130056` | **success** —— `rust (yeban-engine)` 12:48:39→12:53:45（**5m06s**）、`rust (yeban-app)` →13:19:02（30m23s）、`macos` →13:16:00（27m21s）、`windows` →13:20:51（32m12s）、`rust (yeban-mcp)`、`rust (yeban-render)`、`rust (yeban-ui-mcp)` 全部真跑；`rust (workspace 全量)` skipped（⛔ 当它绿） |
+| merge `ea8e5efd` 推主干 | `41063018818` | **success** —— `rust (yeban-engine)` 13:25:04→13:29:21（**4m17s**）、`rust (yeban-app)` →13:58:47（33m43s）、`macos` →13:54:29（29m23s）、`windows` →13:48:06（23m01s）、`rust (yeban-mcp)` →13:34:52（9m48s）、`rust (yeban-render)` →13:29:00（3m55s）、`rust (yeban-ui-mcp)` →13:29:18（4m14s）全部真跑；全量腿仍 skipped（13:25:02→13:25:02，steps=0）。engine 腿读数与线**同形**：`Running tests/` 44 ／ `test result:` 42 ／ passed **690** ／ `FAILED` **0**，M11 与两条 doc-ref 判据逐名 `ok` |
+
+**判据读数（engine 腿，剥色后）**：`Running tests/` **44** ／ `test result:` **42** ／ passed **690** ／
+`FAILED` **0**；`engine_pan_law_names_match_the_model ... ok` 的前一行是
+`Running tests/mix_render.rs`；`every_criterion_named_in_the_engine_sources_exists` 与
+`the_extractor_recognises_both_reference_shapes` 均 `ok`，前一行是
+`Running tests/doc_criterion_references_resolve.rs`。
+
+### §16.5 落地与清理
+
+merge `ea8e5efd`（`2 files changed, 190 insertions(+)`，含新文件 139 行），post-merge 自检
+（`cargo metadata --locked` ＋ 许可清单）passed；推前 `rev-list --left-right --count` ＝ `0 0`；
+`git push origin main:main`（`9df4fc4a..ea8e5efd`）；`worktree.sh rm --purge` → 归档标签
+`line-archive/s7-engine-doc-refs @ 7a5c86ff`；`git worktree list` 恢复**一行**。
+
+### §16.6 下一单
+
+本轴（散文死名册）在 engine 侧已收口；`prepare_sampler` 那条是**已退休符号**，⛔ 不要"顺手删掉
+那句话"——它记录的是 `#274` 迁移的方向。自主可做仍是**新审计轴**；创作缺口全在人类裁决。

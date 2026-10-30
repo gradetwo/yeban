@@ -12,6 +12,34 @@
 > `docs/ledger/phase-status.md` 的叙事条目**停在 R1144**（2026-10-26）⇒ ⭐ 读进度以
 > `DEVELOPMENT_LEDGER.md` 的尾部为准，⛔ 不要以为 R1144 之后没干活。
 
+### 0.6.0o ⭐ 尾批（2026-10-30 13:30）：**engine 也有死名册，而且那条判据根本不存在**（M11 缺失 ＋ 新常驻判据）
+
+- **缺陷（两层）**：`crates/yeban-engine/src/mixer.rs:150` 称"引擎侧 `PanLaw` 与模型的对应由
+  `tests/mix_render.rs::engine_pan_law_names_match_the_model`（穷举四个变体）钉住"。
+  ① 该判据**整 crate 不存在**；② 更重的一层：`mix_render.rs` 当时对 `PanLaw` **零提及** ⇒
+  "穷举钉住"这件事**从未被测过**（`from_model` 的穷举 `match` 只保证编译期不漏变体）。
+- **全仓普查（可复算）**：`crates/*/src/**` 的 `::tests::NAME` ＋ `.rs::NAME` 共 **84** 个去重名字，
+  逐个要求落到 `(fn|const|type|struct|enum|trait|static) NAME` ⇒ **2 个 DEAD**：
+  上述那个（真缺陷，已修）＋ `prepare_sampler`（原文写"**退休**" ⇒ 描述已退休符号，
+  **假阳性，⛔ 不改**，那句話记的是 `#274` 迁移方向）。
+- **修复**：`mix_render.rs` 新增 **M11** `engine_pan_law_names_match_the_model`
+  —— 穷举四个模型变体 → `from_model` → 两侧 `Debug` 名逐字相同；四者落到四个**不同**引擎变体；
+  下界 `== 4`（R93／R100）；模块文档表补 M11 行（含"怎么变红"）。
+- **新常驻判据**：`crates/yeban-engine/tests/doc_criterion_references_resolve.rs`
+  —— 扫 `src/**` 两种指路形状，`fn NAME(` 必须存在；解析语料 ＝ engine（src＋tests）∪
+  **yeban-dsp**（唯一被显式跨 crate 指路的目标，`level.rs:30`）；⛔ 不扩到整个 workspace。
+  下界（＝当前值）：被扫文件 **24**、引用 **7**、去重名字 **4**、语料 **116**；抽取器运行期自证（R84）。
+- **本地正反两例**：正例 **2 passed**；把 `mixer.rs` 名字改成 `…_TYPO` 的副本 ⇒ **红**并点名文件。
+  ⚠ 首跑下界写虚（26／60）⇒ 实测 24／116 后改等号口径。
+- **判决链**：线 `line/s7-engine-doc-refs` @ `7a5c86ff` → run **`41058130056` success**
+  （engine 12:48:39→12:53:45 **5m06s**／app 30m23s／macos 27m21s／windows 32m12s 全部真跑；
+  全量腿 skipped）；merge `ea8e5efd` → run **`41063018818` success**（engine 4m17s／app 33m43s／macos 29m23s／windows 23m01s；engine 腿读数与线同形 690 passed／0 failed）。
+  **读数（engine 腿）**：`Running tests/` **44** ／ `test result:` **42** ／ passed **690** ／
+  `FAILED` **0**；M11 与两条 doc-ref 判据均逐名 `ok`（前一行分别是对应的 `Running tests/…`）。
+- **落地与清理**：merge `ea8e5efd`（2 files, +190），post-merge 自检 passed；推前 `rev-list` `0 0`；
+  `git push origin main:main`；`worktree.sh rm --purge` → 归档 `line-archive/s7-engine-doc-refs @ 7a5c86ff`。
+- **下一步**：自主可做＝**新审计轴**；创作缺口仍全在人类裁决。明细见台账 §16。
+
 ### 0.6.0n ⭐ 尾批（2026-10-30 12:10）：§14.5 待核**用可数读数判定**（`sfz.rs` 两句旧注释已改，新常驻判据）
 
 - **判定（⛔ 不凭注释改注释，先数"谁在发声"）**：`domain/render.rs` 里 `note_wave(` **0** 次、
