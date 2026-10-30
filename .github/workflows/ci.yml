@@ -539,11 +539,21 @@ jobs:
 
       # 宽运行这一跳的 `test --workspace` 会留下 incremental; 下面这条 app 合并特性腿
       # 是本 job 最重的一次链接, 先清掉并打印盘读数（与矩阵腿同一条纪律）。
+      #
+      # ⭐ 2026-10-30 追加 `trim-target.sh`：只清 incremental 是**不够**的。现读
+      # （run `41058208805`，该步前一行日志）：`du -sh target` = **64G**，
+      # 而 `scripts/dev/trim-target.sh` 的文件头实测写明 `deps` 顶层**无扩展名的已链接
+      # 测试二进制**才是大头（1264 个＝55G，`.rlib` 只占 4.7G）—— 那正是
+      # `test --workspace` 这一步刚产出、后续步骤不再需要的一族。删它们最多让下一次
+      # 重新链接（脚本按进程名精确匹配 cargo/rustc，锁被持有也拒绝 ⇒ 语义上是惰性的）。
+      # ⚠ 这一步⛔ 是本腿的**判决**，只是把"贴边"往下压；根因见下面的采样器注释。
       - name: 释放增量目录 (宽运行的 app 合并特性腿之前)
         run: |
           set -euo pipefail
           du -sh target 2>/dev/null || true
           rm -rf target/debug/incremental || true
+          bash scripts/dev/trim-target.sh \
+            || echo "::warning::trim-target 拒绝裁剪（有 cargo/rustc 在跑，或共享 target 锁被持有）⇒ 只清了 incremental"
           df -h . || true
 
       # ⭐ #172: 宽运行这一侧也用**同一份** `APP_FEATURES`（⛔ 不再手写一份只有
@@ -553,6 +563,12 @@ jobs:
       #      `schemas/**`）被改动时, **矩阵腿整体被剪掉**（`rust.if: ...`）, 只剩本 job
       #      ⇒ 若本 job 不带这些开关, 那么"任何根级改动"的提交（包括改门禁本身这一次）
       #      一次都不会执行导出族 / midi-input / in-process-mcp 的判据。
+      #
+      # ⭐ 采样器（2026-10-30）：本腿连续两次在同一步以 `ld terminated with signal 7
+      # [Bus error], core dumped` 收场（run `41057489656`／`41058208805`）。本仓库对这句
+      # 的既有解释是"爆盘"，但那两次的日志里 `No space left on device` = **0 行**、
+      # 开跑前 `df -h .` 还剩 **46G**。⇒ 盘满**未被证明**，别再靠 rerun 猜：每 20 秒打一行
+      # 盘/内存/换页/链接进程数（口径见 `scripts/dev/ci-resource-sampler.sh` 文件头）。
       - name: test (合并特性, yeban-app)
         env:
           CARGO_INCREMENTAL: "0"
@@ -566,6 +582,9 @@ jobs:
             exit 0
           fi
           echo "== 本腿特性 (yeban-app): $features"
+          bash scripts/dev/ci-resource-sampler.sh 20 120 &
+          SAMPLER=$!
+          trap 'kill "$SAMPLER" 2>/dev/null || true' EXIT
           cargo test -p yeban-app --all-targets --locked --no-fail-fast \
             --features "$features" \
             2>&1 | tee -a "$RUNNER_TEMP/gate.log"
