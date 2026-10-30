@@ -89,7 +89,7 @@ export component ArrangementView inherits Rectangle {
     // 位置来自引擎读数：唯一写者 = `host::apply_transport`，它把
     // `TransportReading::position_ticks` 写成窗口属性并透传到这里。
     // 界面只做 `tick ÷ ticks_per_pixel`（与投影里音符 / 小节线同一条整数除法）。
-    // 旧版写死 `x: 168px + 120px * 3` + `accessible-value: "3"` —— 一个**假位置**。
+    // 旧版写死 `x: 168px + 120px×3`（像素字面量）＋ 写死的无障碍值 —— 一个**假位置**。
     in property <int> playhead-ticks: 0;
     in property <int> ticks-per-pixel: 30;
     // 无障碍值 = 走带时间码（窗口 `timecode`，同一个引擎读数的另一面）——

@@ -630,6 +630,15 @@ fn the_default_frame_is_byte_reproducible_and_unaffected_by_the_meter_leg() {
             lit += 1;
         }
     }
+    // ⭐ 光标跟随读数（`playhead_follows_transport`）之后，这 8 跳会**合法地**推进编曲
+    // 光标（它与顶栏时间码同源，都是 `host::apply_transport` 的写入面）。本判据的命题是
+    // 「**电平腿**不碰编曲视图」⇒ 抓第二帧之前把走带读数归零（与第一帧同一个
+    // `TransportReading::cold()`），光标回到原位。电平读数不住在走带属性上 ⇒ 仍然亮着，
+    // 这正是本判据要证的"电平在图外"。
+    host::apply_transport(
+        window.ui(),
+        yeban_engine::transport::TransportReading::cold(),
+    );
     let after_image = window.port.window().capture().expect("Tier-1 截图");
     let after = encode_rgb8(&after_image);
     let (changed, bbox) = pixel_diff(&first, &after_image);
