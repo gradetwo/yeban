@@ -12,6 +12,36 @@
 > `docs/ledger/phase-status.md` 的叙事条目**停在 R1144**（2026-10-26）⇒ ⭐ 读进度以
 > `DEVELOPMENT_LEDGER.md` 的尾部为准，⛔ 不要以为 R1144 之后没干活。
 
+### 0.6.0n ⭐ 尾批（2026-10-30 12:10）：§14.5 待核**用可数读数判定**（`sfz.rs` 两句旧注释已改，新常驻判据）
+
+- **判定（⛔ 不凭注释改注释，先数"谁在发声"）**：`domain/render.rs` 里 `note_wave(` **0** 次、
+  `sfz::render(` **0** 次、`sfz::survey_sampler(` **1** 次（`:4679`；其自述在 `sfz.rs:2078` 明写
+  ⛔ 不渲染、⛔ 不读盘）；`sfz::render(` 全 crate 唯一调用点在 `domain/mod.rs:3503`（＝只有
+  `yeban_render_sfz_wav`）。引擎侧真有 span 证据：`crates/yeban-engine/tests/sfz_instrument.rs`
+  S13（`:1477-1533`，`offset=10 end=200` ⇒ 写入 190 帧、首帧逐位等于 `源[10] × gain`），
+  外加 S3／S4／S95／S96 的反向与 span×reverse 逐帧读数。
+  ⇒ **`render.rs` 的 `#274` 退役成立**；`sfz.rs:1379/1785` 的"两个工具都走 `note_wave`"是
+  `#274` 之前的旧描述，已改写（只动注释，`unsupported_keys()` 未改 —— `render_sfz_wav` 确实
+  仍不切 span、只取第一条区域）。
+- **新常驻判据**：`crates/yeban-mcp/tests/sampler_source_single_path.rs`
+  ——`include_str!("../src/domain/render.rs")` 编译期固定；正向必须有 `sfz::survey_sampler(`，
+  反向必须没有 `note_wave(`／`sfz::render(`。⚠ 现有判据拦不住这条：`render_master.rs` 的正向
+  用例测"峰值变没变＋报了没有"，把 `note_wave` 接回母带它仍绿。
+- **本地正反两例（推送前跑完）**：真文件 **1 passed**；把同一份 `render.rs` 拷到 `/tmp` 副本并
+  注入一行 `fn _injected() { note_wave(); }` ⇒ **0 passed / 1 failed**。
+- **判决链（全部读回）**：
+  - 线 `line/s6h-sampler-path` @ `6ce2afd1` → run **`41043819558` success**
+    （mcp 10m08s／macos 26m50s／windows 32m02s／ui-mcp 3m00s 全部真跑；全量腿 skipped）
+  - merge `4768dcda` → run **`41048016380` success**（mcp 18m00s／macos 24m42s／windows 38m01s）
+  - **读数（两轮同形）**：`Running tests/` **134** ／ `test result:` **141** ／ passed **2,454** ／
+    `FAILED` **0**；新判据在 `test` 与 `test (合并特性)` **各 1 次 ok**，其前一行都是
+    `Running tests/sampler_source_single_path.rs`。
+- **落地与清理**：merge `4768dcda`（2 files, +76/−6），post-merge 自检 passed；推前 `rev-list` `0 0`；
+  `git push origin main:main`；`worktree.sh rm --purge` → 归档 `line-archive/s6h-sampler-path @ 6ce2afd1`；
+  `git worktree list` ＝ **一行**。
+- **下一步**：自主可做＝**新审计轴**（本轴已收口）；创作缺口仍全在人类裁决
+  （`ADR-0042` G8j／`ADR-0047`..`0050`／`ADR-0004` Q13／`master_bus_track_id`）。明细见台账 §15。
+
 ### 0.6.0m ⭐ 尾批（2026-10-30 09:50）：**散文里点名的判据是死名册**（3 处，新常驻判据）
 
 - **缺陷（新的一格）**：`crates/yeban-mcp/src/**` 的文档是 MCP 行为的**唯一事实源**，其中 3 处

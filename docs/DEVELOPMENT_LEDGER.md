@@ -16223,3 +16223,78 @@ passed **2,452** ／ `FAILED` **0**；新判据 `every_criterion_named_in_the_so
 （`KNOWN_UNSUPPORTED_KEYS` 现 10 项，已由 `the_known_unsupported_list_is_not_decoration`
 双向逼住），而 `render_sfz_wav` 仍报它们。⇒ 待下一单用**音频读数**（同一份 SFZ 分别走两条
 路径，比较 `span`/双层叠加的波形）判定哪一侧的描述是假的，⛔ 不许凭注释改注释。
+
+> **2026-10-30 12:10 已闭**：§15 用可数读数判定 —— `render.rs` 的 `note_wave(` 与
+> `sfz::render(` 均为 **0** 次、只有 `sfz::survey_sampler(`（`:4679`，自述 ⛔ 不渲染），
+> 引擎 S13 用逐样本读数证明 `offset`/`end` 真生效 ⇒ `sfz.rs` 那两句是 `#274` 之前的旧描述，
+> 已改；`render.rs` 侧成立。新常驻判据 `tests/sampler_source_single_path.rs` 钉住这条前提。
+
+## 2026-10-30 12:10 —— §15 第十一批：§14.5 待核**用证据判定**（`sfz.rs` 两处注释是旧的，`render.rs` 的退役是真的）
+
+### §15.1 判定方法：⛔ 不凭注释改注释，先数"谁在发声"
+
+`§14.5` 登记的两组说法互斥：`domain/sfz.rs:1379/1785` 称"两个工具（`render_sfz_wav` 与
+`render_master`）的采样器音源**都走** `note_wave`"；`domain/render.rs` 的 `#274` 段称采样器轨
+由**引擎的 SFZ 支路**发声、本工具只取读数。本单只用**可数的读数**判：
+
+| 读数（对象 ＝ 次数／字节） | 结果 |
+| :--- | :--- |
+| `crates/yeban-mcp/src/domain/render.rs` 里 `note_wave(` 出现次数 | **0** |
+| 同文件 `sfz::render(` 出现次数 | **0** |
+| 同文件 `sfz::survey_sampler(` 出现次数 | **1**（`:4679`，唯一一处 sfz 调用） |
+| `sfz::render(` 在 `crates/yeban-mcp/src/**` 的调用点 | **1**（`domain/mod.rs:3503` ⇒ 只有 `yeban_render_sfz_wav`） |
+| `survey_sampler` 自述（`sfz.rs:2078`，定义 `:2084`） | "⛔ 不渲染、⛔ 不读盘" |
+| 引擎真的应用 `span`（`crates/yeban-engine/tests/sfz_instrument.rs` S13，`:1477-1533`） | `offset=10 end=200` ⇒ 写入 **190** 帧、首帧逐位等于 `源[10] × gain`；`offset=50` ⇒ 指纹与波形都变；反向对照 S3（`:609`）／S4（`:682`）／S95／S96（`:91-92` 含 span×reverse 三条逐帧读数） |
+
+⇒ **`render.rs` 侧成立**：母带不自己选样本（`note_wave` 零调用），`sfzSampleSpan` /
+`sfzRegionLayering` 的退役不是"我们发现不了"，而是"引擎做到了"。**`sfz.rs` 那两句是过期的**
+（`#274` 之前的旧路径描述），本轮改写。
+
+### §15.2 修正（只动注释，⛔ 不动 `unsupported_keys()`）
+
+- `sfz.rs:1379-1383`：改为"**只有本工具**（`yeban_render_sfz_wav`）的音源走 `note_wave` ⇒ 只有
+  它不应用这四类参数；`yeban_render_master` 自 `#274` 起只经 `survey_sampler`（⛔ 不渲染）取读数，
+  发声由引擎的 SFZ 支路完成 ⇒ 那边两条已退役"。
+- `sfz.rs:1785-1788`：改为"走这条路**发声**的只有 `yeban_render_sfz_wav`；母带自 `#274` 起不经
+  这里发声……钉住这条的判据是 `tests/sampler_source_single_path.rs`"。
+- `unsupported_keys()`（`:1396`）**未改**：`render_sfz_wav` 仍报 `sfzSampleSpan`／`sfzRegionLayering`
+  （它确实只取第一条区域、不切 span），这一侧本来就是真话。
+
+### §15.3 新常驻判据（`crates/yeban-mcp/tests/sampler_source_single_path.rs`）
+
+- 口径：`include_str!("../src/domain/render.rs")` **编译期**固定（R100：文件挪走就编不过，⛔ 静默跳过）；
+  正向**必须**有 `sfz::survey_sampler(`（反向非真空：读数有载体），反向**必须没有**
+  `note_wave(` 与 `sfz::render(`。
+- ⚠ 为什么现有判据拦不住：`tests/render_master.rs::sfz_region_layering_is_applied_and_no_longer_reported`
+  测的是"峰值变没变 + 报了没有"，把 `note_wave` 接回母带后**它自己仍会绿**；而
+  `the_known_unsupported_list_is_not_decoration` 只逼"清单里的键在具体输入下出现"，
+  不逼"谁在发声"。
+- **本地正反两例**（`rustc --test` 直接跑同一份文件，⛔ 不靠"读起来对"）：
+  正例 —— 真文件 **1 passed**；反例 —— 把同一份 `render.rs` 拷到 `/tmp` 副本、追加一行
+  `fn _injected() { note_wave(); }` ⇒ **0 passed / 1 failed**（报"母带又开始自己发声"）。
+  两例都在推送前跑完。
+
+### §15.4 判决链（全部读回）
+
+| 对象 | run | 判决（读数） |
+| :--- | :--- | :--- |
+| 线 `line/s6h-sampler-path` @ `6ce2afd1` | `41043819558` | **success** —— `rust (yeban-mcp)` 10:51:49→11:01:57（**10m08s**）、`macos` →11:18:39（26m50s）、`windows` →11:23:51（32m02s）、`ui-mcp` →10:54:50（3m00s）全部真跑；`rust (workspace 全量)` skipped（⛔ 当它绿） |
+| merge `4768dcda` 推主干 | `41048016380` | **success** —— `rust (yeban-mcp)` 11:26:03→11:44:03（**18m00s**）、`macos` →11:50:49（24m42s）、`windows` →12:04:04（38m01s）、`ui-mcp` →11:29:53（3m50s）；全量腿仍 skipped |
+
+**判据读数（mcp 腿，剥色后，两轮同形）**：`Running tests/` **134** ／ `test result:` **141** ／
+passed **2,454** ／ `FAILED` **0**；新判据 `the_master_never_renders_sampler_notes_itself ... ok`
+在 `test` 与 `test (合并特性)` **各 1 次**，且各自前一行都是
+`Running tests/sampler_source_single_path.rs` ⇒ 确实跑到（⛔ 名缺失当红也当绿）。
+
+### §15.5 落地与清理
+
+`worktree.sh land s6h-sampler-path` → merge `4768dcda`（`2 files changed, 76 insertions(+), 6 deletions(-)`），
+post-merge 自检（`cargo metadata --locked` ＋ 许可清单）passed；推前 `rev-list --left-right --count`
+＝ `0 0`；`git push origin main:main`（显式 refspec，`5687e955..4768dcda`）；
+`worktree.sh rm --purge` → 归档标签 `line-archive/s6h-sampler-path @ 6ce2afd1`；
+`git worktree list` 恢复**一行**。
+
+### §15.6 下一单
+
+本轴（"文档互斥 → 用可数读数判定"）已收口。自主可做的仍是**新审计轴**；创作缺口全部在人类裁决
+（`ADR-0042` G8j／`ADR-0047`..`0050`／`ADR-0004` Q13／`master_bus_track_id`）。
