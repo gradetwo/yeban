@@ -172,7 +172,7 @@ fn clicking_a_clip_header_selects_exactly_that_clip() {
     // 基线帧里卷帘音符面（音符 ＋ 力度柱）的矩形：作用域清空时，变化必须落在它们里面。
     let roll_before = {
         let tree = port.refresh_tree(None).expect("必须能重抓控件树");
-        roll_leaf_rects(&tree)
+        roll_leaf_rects(tree)
     };
     assert!(
         !roll_before.is_empty(),
@@ -215,7 +215,7 @@ fn clicking_a_clip_header_selects_exactly_that_clip() {
     );
     let roll_after = {
         let tree = port.refresh_tree(None).expect("必须能重抓控件树");
-        roll_leaf_rects(&tree)
+        roll_leaf_rects(tree)
     };
     assert!(
         roll_after.is_empty(),
