@@ -82,7 +82,8 @@ fn a_real_click_on_the_revert_button_rolls_back_exactly_one_commit() {
             node.label, "回滚到上一个 Commit",
             "无障碍名必须与注册表一致"
         );
-        let meta = ElementRegistry::from_view(&view)
+        let registry = ElementRegistry::from_view(&view);
+        let meta = registry
             .get("transport-revert-button")
             .expect("`transport-revert-button` 必须在装配时的注册表里（[UI-TEST-001]）");
         assert_eq!(meta.kind, ElementKind::Button);
