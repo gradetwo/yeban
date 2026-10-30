@@ -1483,17 +1483,16 @@ fn the_ai_suggestion_and_audition_keys_are_still_declared_unimplemented() {
         run.stdout
     );
     assert_eq!(printed_marks, 1, "这条是本版本仅剩的未实现快捷键");
-    for label in ["[ → 试听主线"] {
-        let line = run
-            .stdout
-            .lines()
-            .find(|line| line.trim_start().starts_with(label))
-            .unwrap_or_else(|| panic!("`--print-shortcuts` 里找不到 `{label}`:\n{}", run.stdout));
-        assert!(
-            line.contains(UNIMPLEMENTED_MARKER),
-            "能力仍缺失的行**必须**带 `{UNIMPLEMENTED_MARKER}`: {line}"
-        );
-    }
+    let label = "[ → 试听主线";
+    let line = run
+        .stdout
+        .lines()
+        .find(|line| line.trim_start().starts_with(label))
+        .unwrap_or_else(|| panic!("`--print-shortcuts` 里找不到 `{label}`:\n{}", run.stdout));
+    assert!(
+        line.contains(UNIMPLEMENTED_MARKER),
+        "能力仍缺失的行**必须**带 `{UNIMPLEMENTED_MARKER}`: {line}"
+    );
     // ④b 反方向：`Shift+Enter` 那一行**不许**再带标记（它已接线）, 而它确实还在表里。
     let accept_line = run
         .stdout
