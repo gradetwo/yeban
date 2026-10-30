@@ -2026,12 +2026,14 @@ export component MainWindow inherits Window {
     out property <bool> shortcut-layer-focused: key-handler.has-focus;
     out property <bool> undo-tree-focus-trapped: undo_tree_trap.has-focus;
 
-    changed undo-tree-open => {
-        if (root.undo-tree-open) {
-            undo_tree_trap.focus();
-        } else {
-            key-handler.focus();
-        }
+    // 取焦/复位由**宿主** `host::apply_undo` 在开关翻转时同步调用（`undo-tree-open`
+    // 的唯一写者就是它）。⛔ 不用 `changed undo-tree-open`：该处理器要等事件循环
+    // 的下一拍才跑，而无头判据设置属性后并不跑事件循环 ⇒ 焦点永远停在原地。
+    public function focus-undo-tree-trap() {
+        undo_tree_trap.focus();
+    }
+    public function focus-shortcut-layer() {
+        key-handler.focus();
     }
 
     // WAV 导出设置（隐藏的模态；默认关着 ⇒ 默认帧一位不变）
