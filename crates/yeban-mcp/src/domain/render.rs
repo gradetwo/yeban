@@ -79,8 +79,11 @@
 //! **真的生效**，再报它就是说假话。`pan == 0` 仍走恒等快路径（⛔ 不乘 `√2/2`）。
 //!
 //! 已知不支持项的**全集**由 [`KNOWN_UNSUPPORTED_KEYS`] 唯一列出，并由
-//! `render::tests::every_known_unsupported_key_is_actually_reported` 逐条逼出读数
+//! `tests/render_master.rs::the_known_unsupported_list_is_not_decoration` 逐条逼出读数
 //! （清单里的每一项都必须在一个**具体输入**下真的出现在 `unsupported` 里）。
+//! ⚠ 这里曾指向一个**不存在**的判据名（`every_known_unsupported_key_is_actually_reported`；
+//! `grep 'fn every_known'` 为空）⇒ 照名字去核对的人什么也找不到。
+//! 由 `tests/doc_criterion_references_resolve.rs` 常驻钉住"散文里点名的判据必须存在"。
 //!
 //! "工程里有 MIDI 音符或音频片段"这一条是渲染的**前提**：完全没有可渲染内容（0 帧）
 //! 时返回 `RENDER_FAILED`，而不是写一个 0 帧的文件冒充成功。
@@ -631,7 +634,7 @@ pub const SAMPLER_MIXED_SOURCE_KIND: &str = "sfz-sampler+audio-clip";
 ///
 /// - [`note_unsupported`] 在 debug 断言里要求每一次登记都用**这里面的**键
 ///   ⇒ 加一个新键却忘了登记 ⇒ 判据当场红（而不是悄悄多一个没人知道的口径）；
-/// - `render::tests::every_known_unsupported_key_is_actually_reported` 反过来逼：
+/// - `tests/render_master.rs::the_known_unsupported_list_is_not_decoration` 反过来逼：
 ///   清单里的**每一项**都必须在一个**具体输入**下真的出现在 `unsupported` 里
 ///   ⇒ 清单不会腐烂成一张"反正也不会被检查"的装饰表。
 ///
