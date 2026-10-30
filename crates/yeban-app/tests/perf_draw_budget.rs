@@ -107,10 +107,17 @@ const FIXED_ROLL_PRIMITIVES: usize = 64;
 const ROLL_PRIMITIVE_BUDGET: usize = 2 * 242 + FIXED_ROLL_PRIMITIVES;
 /// 运行时控件树里的 `note-*-rect` 条数（中点帧，Tier-1 软件窗口，1920×1080）。
 ///
-/// 它比注入的 242 少 8 个：完全落在父级裁剪矩形之外的图元不进运行时树。
+/// 它比注入的 242 少 9 个：完全落在父级裁剪矩形之外的图元不进运行时树。
 /// ⚠ 这个数与上游（`i-slint-backend-testing`）的枚举规则有关。上游枚举规则一变，这条会红；
 /// 那时必须重新测量图元数，不要直接把常量对齐过去。
-const RUNTIME_NOTE_RECTS: usize = 234;
+///
+/// ⚠ 2026-10-30 诚实性批次：**234 → 233**。被删的静态「AI 建议」块 id 是
+/// `note-suggestion-overlay-rect` —— 它同时命中本判据的 `note-` 前缀与 `-rect` 后缀，
+/// 所以一直算在这 234 里（它不是 per-note 图元，这一格曾经混进一个假成员）。
+/// 删掉它之后运行时树少一个节点；`velocity-*-bar` 不受影响（仍 229）。
+/// 这一格的变化来自**被测树真的少了一个节点**，⛔ 不是把常量对齐到实测值：
+/// 上游枚举规则若变，仍按上面那段重新测量。
+const RUNTIME_NOTE_RECTS: usize = 233;
 /// 运行时控件树里的 `velocity-*-bar` 条数（中点帧）。
 ///
 /// 力度柱的 x 比音符多 86 px（`56 + 12 + 30`），所以右端比音符先出界：229 比 234 少 5。
