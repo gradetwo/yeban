@@ -735,13 +735,6 @@ impl ElementRegistry {
             "小节与拍标尺",
             false,
         );
-        registry.add(
-            "arrangement-loop-brace",
-            ElementKind::Slider,
-            "workspace/arrangement_view.slint",
-            "循环选区",
-            false,
-        );
         for (track_index, track) in view.tracks.iter().enumerate() {
             registry.add(
                 &format!("track-{track_index}-header"),
