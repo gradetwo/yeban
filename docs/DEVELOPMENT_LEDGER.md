@@ -15943,3 +15943,77 @@ test result: FAILED. 3 passed; 1 failed
 1. 读回 `3732ab6b` 的 merge run ⇒ 判绿后拆 `s6-key-effect-registry` 树（⛔ 留 `.worktrees/` 字面）。
 2. 子线 `ab94304b` rebase 到 `3732ab6b` → 推 → 读判决 → land。
 3. 第四片另两小批：`propose.drumDensity`／`materialClipIds`／`partTracks`，`render_master.contributions`。
+
+---
+
+## 2026-10-30（午后·第七批）· edit_notes 三钉落地 ＋ S6 缺省轴 **29＋0** ＋ 一条 clippy 红（我自己）
+
+### §1 子线 `line/s6d-edit-notes-default`（tip `d75d0117`）＝ **真绿**（run `40994502939`）
+
+| 腿 | 起 → 止 | 时长 |
+| :--- | :--- | :--- |
+| `rust (yeban-mcp)` | 02:56:46 → 03:13:24 | 16m38s |
+| `windows (...)` | 02:56:24 → 03:33:58 | **37m34s** |
+| `macos (...)` | 02:56:47 → 03:24:21 | **27m34s** |
+| `rust (yeban-ui-mcp)` | 02:56:37 → 03:00:55 | 4m18s |
+
+⛔ 空绿：三条测试腿都非 0s、且非 skipped（`rust (workspace 全量)` 才是 skipped）。
+`rust (yeban-mcp)` 日志读数：`test result:` **137** 行 ／ `Running tests/*.rs (target/debug/deps` **134** 次 ／ `FAILED` **0** 次 ／ passed 合计 **2,440**。
+三条判据逐名 `... ok`（03:06:18 与 03:13:21 各一轮）：`absent_create_on_edit_notes_edits_the_existing_clip_without_new_material`、
+`absent_placement_on_edit_notes_leaves_the_timeline_untouched`、`absent_merge_commit_message_on_edit_notes_falls_back_to_the_proposal_id`
+（⚠ 落点是 `tests/transpose_clip.rs` —— 沿该文件既有的 `edit_notes` 判据群，⛔ 按名字猜文件）。
+
+### §2 落地 `e51df9bf`；⭐ 远端 main 已被**别的线**推进 7 个提交
+
+- `worktree.sh land s6d-edit-notes-default` ⇒ `merge(s6d-edit-notes-default)` **`e51df9bf`**（2 文件／+186 −22；`documented_arg_coverage.rs` 44 行、`transpose_clip.rs` +164），`post_merge_checks` 两条 ok。
+- `git push origin main:main` **被拒**（non-fast-forward）：`origin/main` 已是 **`1e531d96`**（`merge(roll-scope)`，7 提交全部只动 `crates/yeban-app/**`，`roll_scope.rs` +336 等 759+/40−）。
+- 处置：`git merge origin/main` ⇒ **`b559df6a`**（`merge(integrate)`，无冲突）→ 推 `1e531d96..b559df6a`。
+- **新纪律**：`land` 只保证**本地** main 前进。推前必须 `git fetch origin main` ＋ `git rev-list --left-right --count main...origin/main`；
+  ⛔ 把"本地 land 成功"当成"远端可快进"。
+- `b559df6a` 的 run **`40998175291`**：本轮读到 `in_progress` ⇒ **在飞**，⛔ 记为通过。
+
+### §3 `3732ab6b`（S6 线 merge）**没有自己的 run** ⇒ 替代判决
+
+- `gh run list --commit 3732ab6b` 返回**空**：它与 `fe00361d` 同一次推送，CI 只为 tip 起 run。
+- `fe00361d` 含 `3732ab6b`；其 run `40994485378` success，`rust (yeban-mcp)` 腿 02:56:15 → 03:09:27（13m12s；134 runner／0 FAILED／**2,434** passed）⇒ 合并后的树在 tip 里**被真跑过**。
+- ⚠ 口径：**替代判决**（tip 的 run 覆盖祖先树），⛔ 说成"`3732ab6b` 自己的 run 绿"。
+- 拆树：`worktree.sh rm s6-key-effect-registry --purge` 成功（脚本自动补归档标签 `line-archive/s6-key-effect-registry @ cff323e6`，分支已删）。`git worktree list` 现读 **三行**（主树 ＋ 两条 `s6d-*` 子线）。
+
+### §4 第四片第二/三批：4 条缺省钉 ⇒ 登记表 **29 已证 ＋ 0 缺口**
+
+| 键 | 判据（文件） | 缺省被钉成的形状 |
+| :--- | :--- | :--- |
+| `yeban_propose_section.drumDensity` | `absent_density_is_identical_to_explicit_normal_on_every_genre`（`section_drum_density.rs`） | 全库逐流派 `None` ↔ `"normal"` 的鼓轨 `id → velocity` 表**逐键相等**，且 `compared >= 100`（空表恒绿不算数） |
+| `…materialClipIds` | `absent_named_materials_reproduce_the_pool_round_robin`（`section_material_clips.rs`） | 缺省 = 池序轮询（`materials[index % len]`）；要求声部数 **>** 池长（真的回卷）＋ 与显式轮询表**整表相等** |
+| `…partTracks` | `absent_part_tracks_derives_one_fresh_track_per_part`（`section_part_tracks.rs`） | 每声部派生一条**新轨**（互不相同、且不在工程里）＋ `AddTrack` 保序一一对应 ＋ 摆放落在各自新轨 ＋ 两次规划逐字节相同 |
+| `yeban_render_master.contributions` | `absent_contributions_is_byte_identical_to_explicit_false`（`render_master.rs`） | 两响应 `data` 仅归一化三个易变字段（`path`／`renderedAtUnixMs`／`data.request.path`，各自 `is_some()` 断言其在）后**逐字段相等** ＋ 落盘母带 `sha256` 相同 |
+
+棘轮：`DEFAULT_SIDE.len() >= 29`；`DEFAULT_SIDE_GAPS` 现读 **0 行**（`[(&str, &str, &str); 0] = []`）。效果面 `EFFECT_FACE` 29 行／`GAPS` 空 ⇒ **两轴都是 29＋0**。
+四个判据名机械对账：各 `fn` 声明 **1** 处 ＋ 登记表引用 **1** 处（错字必红的预防）。
+
+### §5 ⭐ 一条红是我自己的：`usize` 的 `len() <= 0`
+
+线 run **`40998185299`**（tip `20490f80`）failure：三条测试腿 2–3 分钟即红 ⇒ **编译期**，不是判据红。
+`crates/yeban-mcp/tests/documented_arg_coverage.rs:705` 的 `DEFAULT_SIDE_GAPS.len() <= 0` 命中
+`clippy::absurd_extreme_comparisons`（`0` 是 `usize` 最小值 ⇒ "不等于 0" 那一支不可能发生）。
+⇒ 改 `is_empty()`（⛔ 改回 `== 0`：那会命中 `clippy::len_zero`）。提交 **`82a46b8d`** 重推，run **`40998777260`**（排队中，待读回）。
+**教训**：棘轮从 `<= 1` 收紧到 `<= 0` 会**改变 lint 语义** —— 上界为 1 是正常比较，为 0 就恒真；这种"收紧"必须连带改成 `is_empty()`。
+
+### §6 操作读数（本轮实测）
+
+1. 刚推完 `gh run list --branch <b>` 可能看不到新 run（等 ~15s）。
+2. `gh run watch --exit-status` 在**排队**阶段空转：`timeout 570` 连续两次都停在 `queued`（本轮 macos/windows 有容量排队提示）⇒ 排队期只用 `gh run view --json status` 单点探。
+3. `worktree.sh land` 的 `require_clean_tree` 只看**主树**；子线树里的改动不受影响，但 `land` 会把该线**已提交**的东西一并合进 main ⇒ ⛔ 在待 land 的线上叠未证提交（铁律再适用一次）。
+
+### §7 两条判决（已读回）
+
+1. **`40998175291`（main `b559df6a`）＝ success** ⇒ `e51df9bf`（edit_notes 三钉）的 **merge 判决成立**。
+   腿：`rust (yeban-mcp)` 03:35:08→03:51:06（**15m58s**）／`windows` 03:35:08→04:08:00（**32m52s**）／`macos` 03:35:09→04:01:22（**26m14s**）／`rust (yeban-ui-mcp)` 3m28s ⇒ 全非 0s（⛔ 空绿）。
+   随后拆 `s6d-edit-notes-default` 树（自动归档标签 `line-archive/s6d-edit-notes-default @ d75d0117`，分支已删）。
+2. **`40998777260`（线 `82a46b8d`）＝ success** ⇒ 第四片第二/三批 ＋ clippy 修复**一条批**判绿。
+   腿：`rust (yeban-mcp)` 03:48:03→03:57:21（**9m18s**）／`windows` 03:52:36→04:30:22（**37m46s**）／`macos` 03:56:00→04:12:26（**16m26s**）／`rust (yeban-ui-mcp)` 4m32s ⇒ 全非 0s。
+   日志读数：`test result:` **137** 行 ／ `Running tests/*.rs` **134** 次 ／ `FAILED` **0** ／ passed **2,448**
+   （＝上一条 run 的 2,440 **＋8**，正是 4 条新判据 ×2 轮 —— 判据**真的进了计数**，⛔ 只看整体绿）。
+   5 个目标二进制各出现 **2** 次（`documented_arg_coverage`／`section_drum_density`／`section_material_clips`／`section_part_tracks`／`render_master`）⇒ fail-fast 口径下"在场"成立；
+   4 条新判据逐名 `... ok` ×2；`documented_arg_coverage` 跑 **3 tests** 全 ok（含 `each_documented_key_declares_its_default_side_evidence_or_gap`）。
+   ⇒ 前一版 `40998185299` 的红确系 `clippy::absurd_extreme_comparisons` **一条**，改 `is_empty()` 后其余判据 untouched 仍绿。
