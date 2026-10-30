@@ -1569,7 +1569,7 @@ export component MainWindow inherits Window {
             accessible-value-step: 1;
             // 屏读器读到的必须是**实测**高度（与画面同源）；改动前这里写死 "320"，
             // 每一帧都谎报自己的位置。
-            accessible-value: "" + Math.round(root.console-height-readout);
+            accessible-value: "" + Math.round(root.console-height-readout / 1px);
 
             splitter-touch := TouchArea {
                 // 命中带上下各扩 2px：4px 的细线不好抓（⛔ 不改可视几何）。
