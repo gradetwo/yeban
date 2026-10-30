@@ -15943,3 +15943,147 @@ test result: FAILED. 3 passed; 1 failed
 1. 读回 `3732ab6b` 的 merge run ⇒ 判绿后拆 `s6-key-effect-registry` 树（⛔ 留 `.worktrees/` 字面）。
 2. 子线 `ab94304b` rebase 到 `3732ab6b` → 推 → 读判决 → land。
 3. 第四片另两小批：`propose.drumDensity`／`materialClipIds`／`partTracks`，`render_master.contributions`。
+
+---
+
+## 2026-10-30（午后·第七批）· edit_notes 三钉落地 ＋ S6 缺省轴 **29＋0** ＋ 一条 clippy 红（我自己）
+
+### §1 子线 `line/s6d-edit-notes-default`（tip `d75d0117`）＝ **真绿**（run `40994502939`）
+
+| 腿 | 起 → 止 | 时长 |
+| :--- | :--- | :--- |
+| `rust (yeban-mcp)` | 02:56:46 → 03:13:24 | 16m38s |
+| `windows (...)` | 02:56:24 → 03:33:58 | **37m34s** |
+| `macos (...)` | 02:56:47 → 03:24:21 | **27m34s** |
+| `rust (yeban-ui-mcp)` | 02:56:37 → 03:00:55 | 4m18s |
+
+⛔ 空绿：三条测试腿都非 0s、且非 skipped（`rust (workspace 全量)` 才是 skipped）。
+`rust (yeban-mcp)` 日志读数：`test result:` **137** 行 ／ `Running tests/*.rs (target/debug/deps` **134** 次 ／ `FAILED` **0** 次 ／ passed 合计 **2,440**。
+三条判据逐名 `... ok`（03:06:18 与 03:13:21 各一轮）：`absent_create_on_edit_notes_edits_the_existing_clip_without_new_material`、
+`absent_placement_on_edit_notes_leaves_the_timeline_untouched`、`absent_merge_commit_message_on_edit_notes_falls_back_to_the_proposal_id`
+（⚠ 落点是 `tests/transpose_clip.rs` —— 沿该文件既有的 `edit_notes` 判据群，⛔ 按名字猜文件）。
+
+### §2 落地 `e51df9bf`；⭐ 远端 main 已被**别的线**推进 7 个提交
+
+- `worktree.sh land s6d-edit-notes-default` ⇒ `merge(s6d-edit-notes-default)` **`e51df9bf`**（2 文件／+186 −22；`documented_arg_coverage.rs` 44 行、`transpose_clip.rs` +164），`post_merge_checks` 两条 ok。
+- `git push origin main:main` **被拒**（non-fast-forward）：`origin/main` 已是 **`1e531d96`**（`merge(roll-scope)`，7 提交全部只动 `crates/yeban-app/**`，`roll_scope.rs` +336 等 759+/40−）。
+- 处置：`git merge origin/main` ⇒ **`b559df6a`**（`merge(integrate)`，无冲突）→ 推 `1e531d96..b559df6a`。
+- **新纪律**：`land` 只保证**本地** main 前进。推前必须 `git fetch origin main` ＋ `git rev-list --left-right --count main...origin/main`；
+  ⛔ 把"本地 land 成功"当成"远端可快进"。
+- `b559df6a` 的 run **`40998175291`**：本轮读到 `in_progress` ⇒ **在飞**，⛔ 记为通过。
+
+### §3 `3732ab6b`（S6 线 merge）**没有自己的 run** ⇒ 替代判决
+
+- `gh run list --commit 3732ab6b` 返回**空**：它与 `fe00361d` 同一次推送，CI 只为 tip 起 run。
+- `fe00361d` 含 `3732ab6b`；其 run `40994485378` success，`rust (yeban-mcp)` 腿 02:56:15 → 03:09:27（13m12s；134 runner／0 FAILED／**2,434** passed）⇒ 合并后的树在 tip 里**被真跑过**。
+- ⚠ 口径：**替代判决**（tip 的 run 覆盖祖先树），⛔ 说成"`3732ab6b` 自己的 run 绿"。
+- 拆树：`worktree.sh rm s6-key-effect-registry --purge` 成功（脚本自动补归档标签 `line-archive/s6-key-effect-registry @ cff323e6`，分支已删）。`git worktree list` 现读 **三行**（主树 ＋ 两条 `s6d-*` 子线）。
+
+### §4 第四片第二/三批：4 条缺省钉 ⇒ 登记表 **29 已证 ＋ 0 缺口**
+
+| 键 | 判据（文件） | 缺省被钉成的形状 |
+| :--- | :--- | :--- |
+| `yeban_propose_section.drumDensity` | `absent_density_is_identical_to_explicit_normal_on_every_genre`（`section_drum_density.rs`） | 全库逐流派 `None` ↔ `"normal"` 的鼓轨 `id → velocity` 表**逐键相等**，且 `compared >= 100`（空表恒绿不算数） |
+| `…materialClipIds` | `absent_named_materials_reproduce_the_pool_round_robin`（`section_material_clips.rs`） | 缺省 = 池序轮询（`materials[index % len]`）；要求声部数 **>** 池长（真的回卷）＋ 与显式轮询表**整表相等** |
+| `…partTracks` | `absent_part_tracks_derives_one_fresh_track_per_part`（`section_part_tracks.rs`） | 每声部派生一条**新轨**（互不相同、且不在工程里）＋ `AddTrack` 保序一一对应 ＋ 摆放落在各自新轨 ＋ 两次规划逐字节相同 |
+| `yeban_render_master.contributions` | `absent_contributions_is_byte_identical_to_explicit_false`（`render_master.rs`） | 两响应 `data` 仅归一化三个易变字段（`path`／`renderedAtUnixMs`／`data.request.path`，各自 `is_some()` 断言其在）后**逐字段相等** ＋ 落盘母带 `sha256` 相同 |
+
+棘轮：`DEFAULT_SIDE.len() >= 29`；`DEFAULT_SIDE_GAPS` 现读 **0 行**（`[(&str, &str, &str); 0] = []`）。效果面 `EFFECT_FACE` 29 行／`GAPS` 空 ⇒ **两轴都是 29＋0**。
+四个判据名机械对账：各 `fn` 声明 **1** 处 ＋ 登记表引用 **1** 处（错字必红的预防）。
+
+### §5 ⭐ 一条红是我自己的：`usize` 的 `len() <= 0`
+
+线 run **`40998185299`**（tip `20490f80`）failure：三条测试腿 2–3 分钟即红 ⇒ **编译期**，不是判据红。
+`crates/yeban-mcp/tests/documented_arg_coverage.rs:705` 的 `DEFAULT_SIDE_GAPS.len() <= 0` 命中
+`clippy::absurd_extreme_comparisons`（`0` 是 `usize` 最小值 ⇒ "不等于 0" 那一支不可能发生）。
+⇒ 改 `is_empty()`（⛔ 改回 `== 0`：那会命中 `clippy::len_zero`）。提交 **`82a46b8d`** 重推，run **`40998777260`**（排队中，待读回）。
+**教训**：棘轮从 `<= 1` 收紧到 `<= 0` 会**改变 lint 语义** —— 上界为 1 是正常比较，为 0 就恒真；这种"收紧"必须连带改成 `is_empty()`。
+
+### §6 操作读数（本轮实测）
+
+1. 刚推完 `gh run list --branch <b>` 可能看不到新 run（等 ~15s）。
+2. `gh run watch --exit-status` 在**排队**阶段空转：`timeout 570` 连续两次都停在 `queued`（本轮 macos/windows 有容量排队提示）⇒ 排队期只用 `gh run view --json status` 单点探。
+3. `worktree.sh land` 的 `require_clean_tree` 只看**主树**；子线树里的改动不受影响，但 `land` 会把该线**已提交**的东西一并合进 main ⇒ ⛔ 在待 land 的线上叠未证提交（铁律再适用一次）。
+
+### §7 两条判决（已读回）
+
+1. **`40998175291`（main `b559df6a`）＝ success** ⇒ `e51df9bf`（edit_notes 三钉）的 **merge 判决成立**。
+   腿：`rust (yeban-mcp)` 03:35:08→03:51:06（**15m58s**）／`windows` 03:35:08→04:08:00（**32m52s**）／`macos` 03:35:09→04:01:22（**26m14s**）／`rust (yeban-ui-mcp)` 3m28s ⇒ 全非 0s（⛔ 空绿）。
+   随后拆 `s6d-edit-notes-default` 树（自动归档标签 `line-archive/s6d-edit-notes-default @ d75d0117`，分支已删）。
+2. **`40998777260`（线 `82a46b8d`）＝ success** ⇒ 第四片第二/三批 ＋ clippy 修复**一条批**判绿。
+   腿：`rust (yeban-mcp)` 03:48:03→03:57:21（**9m18s**）／`windows` 03:52:36→04:30:22（**37m46s**）／`macos` 03:56:00→04:12:26（**16m26s**）／`rust (yeban-ui-mcp)` 4m32s ⇒ 全非 0s。
+   日志读数：`test result:` **137** 行 ／ `Running tests/*.rs` **134** 次 ／ `FAILED` **0** ／ passed **2,448**
+   （＝上一条 run 的 2,440 **＋8**，正是 4 条新判据 ×2 轮 —— 判据**真的进了计数**，⛔ 只看整体绿）。
+   5 个目标二进制各出现 **2** 次（`documented_arg_coverage`／`section_drum_density`／`section_material_clips`／`section_part_tracks`／`render_master`）⇒ fail-fast 口径下"在场"成立；
+   4 条新判据逐名 `... ok` ×2；`documented_arg_coverage` 跑 **3 tests** 全 ok（含 `each_documented_key_declares_its_default_side_evidence_or_gap`）。
+   ⇒ 前一版 `40998185299` 的红确系 `clippy::absurd_extreme_comparisons` **一条**，改 `is_empty()` 后其余判据 untouched 仍绿。
+
+### §8 落地 `4227adfc`（merge 判决 pending）
+
+- `worktree.sh land s6d-propose-defaults` ⇒ `merge(s6d-propose-defaults)` **`4227adfc`**：5 文件／+275 −27
+  （`documented_arg_coverage.rs`＝登记表 4 行搬迁 ＋ 两条棘轮、`section_drum_density.rs` +59、
+  `section_material_clips.rs` +45、`section_part_tracks.rs` +51、`render_master.rs`），`post_merge_checks` 两条 ok。
+- 主树先落文档提交 **`01453f0f`**（本台账第七批 ＋ handover §5 树表）⇒ 一次推送 `b559df6a..4227adfc`
+  （5 个提交：`956e21af` → `20490f80` → `82a46b8d` ＋ 文档 ＋ merge）。
+- 推前再 `fetch` ＋ `rev-list --left-right --count main...origin/main` ＝ **5 0**（远端未动）⇒ 条件式快进推。
+- ⭐ **本 merge 自己的 run `41003344673` ＝ success（04:55 读回）**：`rust (yeban-mcp)` 04:31:25→04:47:43（**16m18s**）／
+  `windows` →04:53:27（**22m02s**）／`macos` →04:55:23（**23m58s**）／`rust (yeban-ui-mcp)` 3m54s ⇒ 全非 0s（⛔ 空绿）。
+  承判腿读数：`test result:` **137** 行 ／ `Running tests/*.rs` **134** 次 ／ `FAILED` **0** ／ passed **2,448**；
+  五条目标判据（四条新增 ＋ `edit_notes` 那条）与登记轴 `each_documented_key_declares_its_default_side_evidence_or_gap`
+  逐名 `... ok` **各 2 次** ⇒ **四件齐**。落地后拆树（归档标签 `line-archive/s6d-propose-defaults @ 82a46b8d`）；
+  `git worktree list` 现读 **一行**（只剩主树）。
+
+### §9 文档提交的 run ＝ **空绿**（⛔ 代码判决）
+
+`773474c2`（本台账第七批 ＋ handover §0.6.0j／§5）的 run **`41005653993` ＝ success**，但 planner 现读
+`{"crates": [], "workspace_wide": false, "reason": "改动不落在任何成员 crate 内 (纯文档/资产)"}`
+⇒ `rust (…matrix…)`／`windows`／`macos`／`rust (workspace 全量)` **四条腿全部 skipped**（0s）。
+只有 `plan`／`checks`／`deny`／`lockfile` 真跑。⚠ 这是**空绿**：它证明的是"文档不破坏 schema／守卫／许可"，
+⛔ 不构成任何代码判决（AGENTS.md §6.3 第 2 条）。本批的代码判决只认 §7／§8 那三条 run。
+
+### §10 收尾读数（2026-10-30 05:00）＋ 一条待人类点头的房间整理
+
+1. **§9 那条文档提交自己的 run `41005838040`（head `b019f2e9`）＝ success ＝ 空绿**：同样四条 rust 腿 skipped，
+   只有 `plan`／`checks`／`deny`／`lockfile` 真跑 ⇒ 与 §9 同一口径，⛔ 当代码判决。**规律**：纯 `docs/**` 提交必然空绿，
+   所以"文档批"永远只证明 schema／守卫／许可没坏。
+2. **本地陈旧分支现读**（`git merge-base --is-ancestor` 逐条）：`line/*` 共 **27** 条，**全部已并入 `main`**（未并入 **0** 条）；
+   另有归档标签 `line-archive/*` **92** 个。⇒ 这 27 条只占命名空间、无工作丢失风险，
+   但**批量删分支是破坏性操作**（且要决定是否同时 `git push --delete` 远端同名分支）⇒ 登记**待人类点头**，⛔ 本轮自主删。
+3. **磁盘现读**：`/home` `198G/235G`（余 **31G**，87%）；仓库内 `target` 仅 **1.9M**，两条子线树已拆、无 `target/`。
+   仓库外大头（`~/.cache` 19G／`~/.cargo/registry` 1.1G／`~/.rustup` 5.2G／他项目 target 3.8G）仍是 `#34`，待人类裁决。
+4. **活树现读**：`git worktree list` ＝ **一行**（主树 `main` @ `b019f2e9`）。
+5. **本节自身那枚提交 `8e32be36` 的 run `41006065587` 已读回**：`conclusion = success`，
+   `plan (受影响集合)`／`lockfile`／`deny`／`checks` 四条真跑 success，四条 rust 腿（windows／`rust (crate)`／macos／
+   `rust (workspace 全量)`）**全部 skipped** ⇒ 空绿，⛔ 当代码判决（§6.3 第 2 条）。耗时 ≈2m16s（05:01:12 → 05:03:28）。
+   **账本链到此收口**：下面这枚只承载本条判决文字的 `docs/**` 提交，其 run 结构上同样是空绿；
+   本行**不预判**它的结论，只说明登记链不再为"记录上一枚 docs 判决"继续自增长。
+
+### §11 收尾自查：`edit_notes` 的 53 个 kind 有没有"没人判"的（2026-10-30 05:10）
+
+**这是自查，不是新票** —— 收尾前用来确认"创作缺口·自主可做 = 0"这条结论不是凭记忆，而是现读。
+
+1. **口径与读数**（对象＝`crates/yeban-mcp/src` 里 `kind("…")` 的字面量名字；单位＝个）：
+   `grep -rho 'kind("[a-zA-Z]*")' crates/yeban-mcp/src | sort -u` ＝ **53** 个，与 §0.7 现读的 53 一致。
+2. **第一遍扫描（已作废）**：对每个 kind 数带引号的 `"<kind>"` 在 `crates/yeban-mcp/tests` 的出现次数 ⇒
+   **7 个为 0**：`addRoutingNode`／`removeAsset`／`setAsset`／`setClipGain`／`setClipPlacementLoop`／
+   `setTitle`／`setTransportConfig`。⚠ 若就此写"7 个 kind 没人判"，那是**读法错**（"计数为 0 先怀疑读法"）。
+3. **第二遍（真读数）**：测试走的是**类型化 API 与小驼峰常量**，⛔ 手抄字面量 ——
+   `set_clip_placement_loop.rs`（881＋ 行，任务单 `#336`）通篇用 `NoteOp`／`Op` 与 `unknownSetClipPlacementLoopField`；
+   `SET_CLIP_GAIN_KIND` 的值由 `notes.rs:2090` 现读；七个名字里 **5** 个的 **PascalCase 变体**已在
+   `crates/yeban-mcp/tests/*` 被引用（`SetAsset` 3 文件／`AddRoutingNode` 4／`RemoveAsset` 2／`SetTitle` 2／
+   `SetTransportConfig` 1），`SetClipGain` 出现在 `op_reachability.rs:105` 的 kind→模块登记表行。
+4. **更硬的那层在生产里**：`op_reachability.rs` 的登记表 ＋ 双射守卫已经要求**每个 `Op` 变体在登记的 `src`
+   模块内至少有一个构造点**、且 `OP_KINDS` ↔ `ops[].kind` 双向对齐 ⇒ 字面量外观不是判据，"有没有构造点"才是。
+   `setClipGain` 的三段链也逐层现读：**解析编译**（`notes.rs:22475` 起的单测：解析 → 正是 `Op::SetClipGain` →
+   `old_gain_db` 来自文档）→ **模型应用与拒绝面**（`project.rs:5049`／`5083`：旧值逐位比较、新值非有限拒绝）→
+   **实时消费**（`engine/audio_clip.rs:394` `gain = track_gain(*gain_db) × track_gain_scale`）
+   ⇒ **不是 `velocity` 那类"解析＋回显但不进消费者"**，本条无可补缺口。
+5. **结论**：本次自查 **0 新增缺陷**；"自主可做的创作缺口 ＝ 0"再次**现读成立**。残留项是**非缺口**——
+   53 个 kind 没有"逐 kind 的工具面 e2e 文件"属**覆盖增厚**，⛔ 由 agent 自行提级（同 §0.8：要动先由人类排期）。
+6. **补第三口径（`kind` → **下游消费**，专打 `velocity` 那类空操作）**：挑了"最像会写进无人读的字段"的 7 个
+   kind 逐条追**消费点**（单位＝`src` 侧命中行）：`SetNoteExpression` 的三个字段 → `engine/snapshot.rs:1518`
+   （`ratchet`）／`:1519`（`micro_timing_ticks`）／`MidiNote::triggers` 的确定性 `probability` 判定；
+   `SetNotePitchShape` 的两个字段 → `snapshot.rs:1623-1638`（`pitch_bend_curve` → `bend` 表、`slide` → `SlideSpan`）；
+   `SetTrackSampler` → `snapshot.rs` 的 `sfz_pending` 投影（`TrackV3.sampler` → `PendingSfz`）；
+   `SetClipGain` → `engine/audio_clip.rs:394`。⇒ **7/7 都有"改变输出"的消费点**，**0** 个空操作。
+   ⚠ 这仍是 `src` 侧读行、⛔ 运行时判据；它只回答"有没有消费者"，不回答"值对不对"（后者由各层既有判据承担）。

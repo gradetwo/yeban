@@ -8383,6 +8383,98 @@ fn contributions_match_an_independent_mute_render() {
     }
 }
 
+/// 判据 15b（第四片第三批·缺省钉）：`contributions` 缺席 ≡ 显式 `false` ——
+/// 两次渲染的 `data`（除回显的 `path` 外）逐字段相同、磁盘字节逐位相同，且两次都
+/// **不出现** `contributions` / `contributionsBasis` 键。上一条只比了"缺席 vs true"
+/// （开关不改母带），没有把"缺省 == 关"这一半钉住。
+#[test]
+fn absent_contributions_is_byte_identical_to_explicit_false() {
+    let scratch = Scratch::new("contrib-default");
+    let fixture = two_track_clip_project(0.0, -6.0);
+    let (mut dispatcher, auth) = dispatcher_with(&fixture, &scratch.join("contrib-default.yeban"));
+
+    let absent_path = scratch.join("absent.wav");
+    let absent = call(
+        &mut dispatcher,
+        &auth,
+        json!({
+            "format": "wav",
+            "sampleRate": 48000,
+            "path": absent_path.display().to_string(),
+        }),
+    );
+    assert_eq!(absent["status"], "success", "{absent}");
+    assert!(
+        absent["data"].get("contributions").is_none(),
+        "缺省不许出现 contributions 键: {}",
+        absent["data"]
+    );
+    assert!(
+        absent["data"].get("contributionsBasis").is_none(),
+        "缺省不许出现 contributionsBasis 键: {}",
+        absent["data"]
+    );
+    verify_file_shape(&absent, &absent_path);
+
+    let false_path = scratch.join("explicit-false.wav");
+    let explicit = call(
+        &mut dispatcher,
+        &auth,
+        json!({
+            "format": "wav",
+            "sampleRate": 48000,
+            "path": false_path.display().to_string(),
+            "contributions": false,
+        }),
+    );
+    assert_eq!(explicit["status"], "success", "{explicit}");
+    assert!(
+        explicit["data"].get("contributions").is_none(),
+        "显式 false 同样不许出现 contributions 键: {}",
+        explicit["data"]
+    );
+    assert!(
+        explicit["data"].get("contributionsBasis").is_none(),
+        "显式 false 同样不许出现 contributionsBasis 键: {}",
+        explicit["data"]
+    );
+
+    // 抹掉两处**按设计就会不同**的字段（⛔ 抹别处）：
+    // - `path` / `request.path`：两次写到不同文件 ⇒ 回显必然不同；
+    // - `renderedAtUnixMs`：墙钟只进这个读数（见 `render.rs` 的 `build` 注释），
+    //   两次调用的毫秒可能不同。母带字节与其余读数由后面的比较和 sha 钉住。
+    let mut absent_data = absent["data"].clone();
+    let mut explicit_data = explicit["data"].clone();
+    for data in [&mut absent_data, &mut explicit_data] {
+        let object = data.as_object_mut().expect("`data` 必须是对象");
+        assert!(
+            object.remove("path").is_some(),
+            "响应本该回显 `path`: {data}"
+        );
+        assert!(
+            object.remove("renderedAtUnixMs").is_some(),
+            "响应本该报 `renderedAtUnixMs`: {data}"
+        );
+        let request = object
+            .get_mut("request")
+            .and_then(Value::as_object_mut)
+            .expect("`data.request` 必须是对象");
+        assert!(
+            request.remove("path").is_some(),
+            "`data.request` 本该回显 `path`: {data}"
+        );
+    }
+    assert_eq!(
+        absent_data, explicit_data,
+        "`contributions` 缺席必须与显式 `false` 的响应逐字段相同"
+    );
+    assert_eq!(
+        file_sha256(&absent_path),
+        file_sha256(&false_path),
+        "缺省与显式 false 落盘的母带必须逐位相同"
+    );
+}
+
 /// 渲染前已经静音的轨：`alreadyMuted: true` + 两个差值 `null`，且**不**为它渲染。
 ///
 /// 顺带钉住"归一化请求仍用**未归一化**基线"：`normalize: true` 时母带被放大，
