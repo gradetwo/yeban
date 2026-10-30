@@ -9,32 +9,45 @@
 //     `border-style` 只有 solid, 虚线要用图元拼)。
 //   - [UI-TEST-001] §12.2: 语义 Element ID
 //
-// 静态骨架, **不含演示数据**: 没有真实 AI 提案数据源, 没有采纳/放弃的 Ops 归约。
+// 静态骨架, **不含演示数据**: 数据面全部由宿主注入（`src/host.rs` 的
+// `apply_proposal_drawer`, 来源 `crates/yeban-app/src/proposals.rs`）。
 // `Shift+Enter` 采纳 / `Esc` 放弃的键盘路径住在 src/input.rs, 这里只提供可点等价物 ——
 // 而那两条键盘路径今天**如实不消费**（`src/host.rs` 的 `action_has_implementation`
-// 返回 `false`; `src/cli.rs` 的表里是 `implemented: false`）。
+// 返回 `false`; `src/cli.rs` 的表里是 `implemented: false`）⇒ 这两个按钮由
+// `resolve-available` 把关, 今天恒 `false`, 因此**画不出来**（⛔ 不是画一个按下去
+// 只关抽屉的假控件）; 取而代之上屏的是 `resolve-reason` 那句逐字原因。
 //
 // ⚠ 本文件曾经把三条中文假提案与三个假置信度百分比写成**属性默认值**, 于是界面显示
 // "AI 提了 3 条提案, 每条带一个百分比置信度"。那些数字是编造的, 用户分不出真假。这已删除:
-// 数据面默认**全空**, 空的时候画一句用户可见的空态文案（见下面的 `musical-pr-empty-state`）。
-// 判据（多路径探针: 源码文本 + 属性默认值 + 运行时树）:
+// 数据面默认**全空**, 空的时候画一句由宿主给的空态文案（见下面的 `musical-pr-empty-state`）;
+// 提案行里那一格也曾写 `"轨道 i · 小节 i+1"`（按**下标**算出来的假读数）, 现在画真实的
+// **op 条数**。判据（多路径探针: 源码文本 + 属性默认值 + 运行时树）:
 // `src/elements.rs` 的 `musical_pr_drawer_declares_no_demo_proposals` /
-// `no_host_writes_the_musical_pr_proposal_properties`, 与 `tests/live_ui_mcp.rs` 的
+// `the_proposal_drawer_is_written_by_the_host_along_one_path`, 与 `tests/live_ui_mcp.rs` 的
 // `the_musical_pr_drawer_shows_an_honest_empty_state`。
 
 import { Tokens, UiText, UiMonoText, UiTitleText } from "../tokens.slint";
 
 export component MusicalPrDrawer inherits Rectangle {
     // ---------------------------------------------------------------- 提案数据面
-    // 默认**全空**: `0` 条提案 + 四个空数组。这里刻意**不**放演示数据。
-    // 唯一写者本应是宿主 Rust; 今天 `grep -rn 'proposal-count|proposal-labels|
-    // proposal-kinds|confidences' crates/yeban-app/src` **只有注释命中** ⇒ 没有任何宿主
-    // 写这四个属性 ⇒ 默认值就是用户在界面上看到的东西（这正是必须清空的原因）。
-    // ⚠ 四个数组必须**等长**: 下面的循环按下标同时读 `kinds` / `labels` / `confidences`。
+    // 默认**全空**: `0` 条提案 + 三个空数组 + 两句空话。这里刻意**不**放演示数据,
+    // 也刻意**不**在这里写字面量文案 —— 空态与"为什么不接线"那两句话的唯一出处是
+    // `src/proposals.rs` 的 `NO_SOURCE_REASON` / `NO_OPEN_PROPOSAL_REASON` /
+    // `RESOLVE_NOT_WIRED_REASON`（在这里再抄一份就会漂移, 且用户读到的就不再是宿主
+    // 断言过的那句）。
+    // ⚠ 三个数组必须**等长**: 下面的循环按下标同时读 `kinds` / `titles` /
+    // `op-counts`。等长由 `drawer_values` 的唯一构造点保证（判据
+    // `drawer_values_keeps_the_three_arrays_the_same_length`）。
     in property <int> proposal-count: 0;
-    in property <[string]> proposal-labels: [];
+    in property <[string]> proposal-titles: [];
     in property <[string]> proposal-kinds: [];
-    in property <[string]> confidences: [];
+    in property <[int]> proposal-op-counts: [];
+    /// 没有提案时上屏的那句话（宿主按 `has_source` 选①/②）。
+    in property <string> empty-reason: "";
+    /// 「采纳 / 放弃」此刻**能不能**用（今天恒 `false`：界面侧没有合并提案的写入口）。
+    in property <bool> resolve-available: false;
+    /// 不能用时逐字上屏的原因。
+    in property <string> resolve-reason: "";
 
     callback accept();
     callback reject();
@@ -214,8 +227,9 @@ export component MusicalPrDrawer inherits Rectangle {
     }
 
     // ---------------------------------------------------------------- 空态
-    // 没有数据源 ⇒ 界面**说真话**。这一句是**用户可见**的: 源码里的自陈用户看不见,
-    // 所以诚实必须落在图元上。
+    // 没有提案 ⇒ 界面**说真话**。这一句是**用户可见**的: 源码里的自陈用户看不见,
+    // 所以诚实必须落在图元上。句子本身**不在这里写**（见上面数据面的注释：唯一出处是
+    // `src/proposals.rs`, 宿主按"有没有来源"选那两句之一）。
     // 先例（本仓既有的同款做法）: `ui/console/device_rack.slint` 的
     // `device-plugin-host-placeholder-card` —— 一张卡片, 可见文本与 `accessible-label`
     // 都写"未实现", 颜色用次级墨色 `Tokens.ink-2`。
@@ -234,14 +248,14 @@ export component MusicalPrDrawer inherits Rectangle {
 
         accessible-role: text;
         accessible-id: "musical-pr-empty-state";
-        accessible-label: "还没有 AI 提案。这条链路尚未接线。";
+        accessible-label: root.empty-reason;
 
         UiText {
             x: Tokens.space-4;
             y: 0;
             width: parent.width - 8px;
             height: parent.height;
-            text: "还没有 AI 提案。这条链路尚未接线。";
+            text: root.empty-reason;
             color: Tokens.ink-2;
             font-size: Tokens.font-size-sm;
             overflow: elide;
@@ -262,13 +276,15 @@ export component MusicalPrDrawer inherits Rectangle {
         clip: true;
         accessible-role: list-item;
         accessible-id: "musical-pr-proposal-" + proposal_index + "-item";
-        accessible-label: proposal_kind + ": " + root.proposal_labels[proposal_index];
+        accessible-label: proposal_kind + ": " + root.proposal_titles[proposal_index];
         accessible-item-index: proposal_index;
         accessible-item-count: root.proposal-count;
         accessible-item-selectable: true;
         accessible-item-selected: false;
 
-        // 置信度徽章 (§9.1)
+        // 这一格原来是**置信度徽章** (§9.1)。`confidence` 在 `yeban-mcp` /
+        // `yeban-model` / `yeban-theory` 的源码里实测 0 处命中 ⇒ 任何百分比都只能是
+        // 编造的, 因此换成领域里真实存在的那个数：本提案携带的 **op 条数**。
         Rectangle {
             x: 6px;
             y: 6px;
@@ -279,12 +295,16 @@ export component MusicalPrDrawer inherits Rectangle {
             border-width: 1px;
             border-color: Tokens.ai-suggestion;
 
+            accessible-role: text;
+            accessible-id: "musical-pr-proposal-" + proposal_index + "-ops";
+            accessible-label: "本提案携带 " + root.proposal_op_counts[proposal_index] + " 条 op";
+
             UiMonoText {
                 x: 0;
                 y: 0;
                 width: parent.width;
                 height: parent.height;
-                text: root.confidences[proposal_index];
+                text: "" + root.proposal_op_counts[proposal_index];
                 color: Tokens.ai-suggestion;
                 font-size: Tokens.font-size-xs;
                 horizontal-alignment: center;
@@ -296,30 +316,25 @@ export component MusicalPrDrawer inherits Rectangle {
             y: 4px;
             width: parent.width - 56px;
             height: 18px;
-            text: proposal_kind + " · " + root.proposal_labels[proposal_index];
+            text: proposal_kind + " · " + root.proposal_titles[proposal_index];
             color: Tokens.ink-0;
             font-size: Tokens.font-size-sm;
             overflow: elide;
         }
 
-        UiMonoText {
-            x: 48px;
-            y: 26px;
-            width: parent.width - 56px;
-            height: 16px;
-            text: "轨道 " + proposal_index + " · 小节 " + (proposal_index + 1);
-            color: Tokens.ink-2;
-            font-size: Tokens.font-size-xs;
-        }
+        // ⚠ 这一行原来写 `"轨道 " + proposal_index + " · 小节 " + (proposal_index + 1)`
+        // —— 两个数都是从提案**下标**算出来的, 领域里没有这两个读数（提案承载的是 op
+        // 批次, 不是单条轨道上的单条剪辑）。整行删除; op 条数已在上面的徽章里。
     }
 
     // ---------------------------------------------------------------- 采纳 / 放弃
-    // ⚠ 零提案时**不画**这两个按钮。一个可点的「采纳 (Shift+Enter)」在空列表上是
-    // **假控件**: 按下去只关抽屉 + 一行 stderr。上一轮已裁定 `Shift+Enter → 采纳 AI 建议`
-    // 不许假装实现（`src/cli.rs` 的 `implemented: false` + `src/host.rs` 的
-    // `action_has_implementation` 如实返回 `false`）⇒ 这里的**可点等价物**必须同款。
-    // 有提案时它们自动回来（条件只看 `proposal-count`）。
-    if root.proposal-count > 0 : Rectangle {
+    // ⚠ 两个按钮的**可点等价物**由 `resolve-available` 把关, 今天恒 `false`。
+    // 理由不是"忘了接"：领域侧的 `yeban_merge_proposal` / `yeban_reject_proposal` 要
+    // `proposalId`, 而宿主的 `HostAction` 只有 `Undo` / `Redo` / `Commit` 三臂 ⇒ 界面
+    // 侧没有合并提案的写入口。上一轮已裁定 `Shift+Enter → 采纳 AI 建议` 不许假装实现
+    // （`src/cli.rs` 的 `implemented: false` + `src/host.rs` 的
+    // `action_has_implementation` 如实返回 `false`）⇒ 这里同款：不画假控件。
+    if root.resolve-available : Rectangle {
         x: Tokens.space-4;
         y: parent.height - 40px;
         width: (parent.width - 16px) / 2;
@@ -352,7 +367,7 @@ export component MusicalPrDrawer inherits Rectangle {
         }
     }
 
-    if root.proposal-count > 0 : Rectangle {
+    if root.resolve-available : Rectangle {
         x: Tokens.space-4 + (parent.width - 16px) / 2 + Tokens.space-2;
         y: parent.height - 40px;
         width: (parent.width - 16px) / 2;
@@ -382,6 +397,38 @@ export component MusicalPrDrawer inherits Rectangle {
             width: parent.width;
             height: parent.height;
             clicked => { root.reject(); }
+        }
+    }
+
+    // ------------------------------------------------ 有提案、但**没有写入口**的那句话
+    // 上面两个按钮不画时，底部不能留白：留白会被读成"这里本来没有控件"。这一格把
+    // **为什么**没有控件说出来（`resolve-reason` 逐字, 出处 `src/proposals.rs` 的
+    // `RESOLVE_NOT_WIRED_REASON`）。先例同 `musical-pr-empty-state`。
+    if root.proposal-count > 0 && !root.resolve-available : Rectangle {
+        x: Tokens.space-4;
+        y: parent.height - 76px;
+        width: parent.width - 8px;
+        height: 64px;
+        background: Tokens.bg-void;
+        border-radius: Tokens.radius-md;
+        border-width: 1px;
+        border-color: Tokens.line;
+        clip: true;
+
+        accessible-role: text;
+        accessible-id: "musical-pr-resolve-unavailable";
+        accessible-label: root.resolve-reason;
+
+        UiText {
+            x: Tokens.space-4;
+            y: 0;
+            width: parent.width - 8px;
+            height: parent.height;
+            text: root.resolve-reason;
+            color: Tokens.ink-2;
+            font-size: Tokens.font-size-xs;
+            wrap: word-wrap;
+            vertical-alignment: center;
         }
     }
 }

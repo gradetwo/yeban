@@ -65,7 +65,8 @@ export component Transport inherits Rectangle {
     callback toggle-ai-drawer();
     // 顶栏 AI 徽章的唯一动作。它不是"第二个真相源"：`app.slint` 把它原样转到
     // `MainWindow.open-musical-pr`（与右栏 `ai-rail-musical-pr-button` **同一个**回调），
-    // 而 `musical-pr-open` 的唯一写者仍是 `host::wire_view_callbacks`。
+    // 而 `musical-pr-open` 的唯一写者仍是宿主（2026-10-30 起在 `host::wire_proposal_drawer`
+    // 里 —— 打开抽屉要**现读**权威那份未合并提案清单，Slint 的 `on_*` 只能有一个注册者）。
     callback open-ai-proposals();
     // [UI-A11Y-002] §7.2 输入法合成态：BPM 参数敲入控件里的**真** TextInput 一有
     // preedit（候选词）就置位，上屏 / 取消 / 失焦时清零。宿主（src/host.rs 的

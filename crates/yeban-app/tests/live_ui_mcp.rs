@@ -6796,28 +6796,34 @@ fn the_view_state_properties_drive_the_runtime_tree() {
 }
 
 // =====================================================================================
-// 判据：**抽屉不说谎** —— 零提案的抽屉里没有编造的数据，只有一句用户可见的真话
+// 判据：**抽屉不说谎** —— 没有提案的抽屉里没有编造的数据，只有一句用户可见的真话
 //
-// 这是"AI 提案抽屉"的诚实性契约的**运行时那一半**；文本层与属性层那一半在
+// 这是"AI 提案抽屉"的诚实性契约的**运行时那一半**；文本层与"唯一注入路径"那一半在
 // `crates/yeban-app/src/elements.rs` 的 `musical_pr_drawer_declares_no_demo_proposals`
-// 与 `no_host_writes_the_musical_pr_proposal_properties`。三条路径共用**同一份**假字面量
+// 与 `the_proposal_drawer_writes_its_readings_from_one_host_path`。两条线共用**同一份**假字面量
 // （`yeban_app::elements::DEMO_PROPOSAL_LITERALS`），因此不存在"两份清单漂移"。
 // =====================================================================================
 
-/// 判据：打开抽屉 ⇒ 运行时树里**零条**提案、零条编造置信度，且有一句可见的空态。
+/// 判据：没接权威的装配 ⇒ 运行时树里**零条**提案、零条编造置信度，且有一句可见的空态。
 ///
 /// | 路径 | 量什么 | 期望 |
 /// | :--- | :--- | :--- |
 /// | 属性 → 树 | `musical-pr-drawer` 节点的 `value`（= `accessible-value` 原文） | `"0"` |
 /// | 树（ID） | `musical-pr-proposal-*-item` 的条数 | `0` |
 /// | 树（标签） | 任何节点的 `accessible-label` / `accessible-value` 命中 6 条假字面量 | `0` 处 |
-/// | 树（空态） | `musical-pr-empty-state` 的 `label` | 逐字等于界面上那句话 |
+/// | 树（空态） | `musical-pr-empty-state` 的 `label` | 逐字等于宿主注入的 `NO_SOURCE_REASON` |
 /// | 树（假控件） | `musical-pr-accept-button` / `-reject-button` | 都不在树里 |
 /// | 像素 | 打开抽屉前后两帧的差异像素数与包围盒 | 必须变（不碰 golden） |
 ///
 /// **为什么 `value` 这一格是"属性 ⇒ 树"**：`accessible-value` 是抽屉从 `proposal-count`
 /// 算出来的文本，运行时树读的是**活控件**（`crates/yeban-ui-test-port/src/inspect.rs:186`）。
 /// 把 `proposal-count` 改回演示常量 ⇒ 这一格立刻变成 `"3"`。
+///
+/// ⚠ 本判据走的是 `build_live_ui`（**没有**进程内权威）⇒ 那句空态必须是
+/// `NO_SOURCE_REASON`（"这个装配没有提案来源"）而不是 `NO_OPEN_PROPOSAL_REASON`
+/// （"控制面此刻没有未合并的提案"）。两句话**必须**能分开，否则"看不见提案"与
+/// "确实没有提案"在界面上就是同一件事 —— 那一句 `src/proposals.rs` 的单元判据
+/// `empty_reason_distinguishes_no_source_from_no_proposal` 钉住，这里钉的是它在真树里的那一半。
 #[test]
 fn the_musical_pr_drawer_shows_an_honest_empty_state() {
     let project = yeban_model::samples::filled_project();
@@ -6908,7 +6914,7 @@ fn the_musical_pr_drawer_shows_an_honest_empty_state() {
         "零提案时「放弃」按钮不许在树里（它是假控件）"
     );
 
-    // ---- 空态: 用户此刻看到的那句话, 逐字读回来
+    // ---- 空态: 用户此刻看到的那句话, 逐字读回来（句子的唯一出处 = `src/proposals.rs`）
     let empty = after
         .find_by_id("musical-pr-empty-state")
         .expect("零提案时必须有空态节点");
@@ -6918,8 +6924,9 @@ fn the_musical_pr_drawer_shows_an_honest_empty_state() {
         empty.label
     ));
     assert_eq!(
-        empty.label, "还没有 AI 提案。这条链路尚未接线。",
-        "空态的 `accessible-label` 必须就是界面上那句话"
+        empty.label,
+        yeban_app::proposals::NO_SOURCE_REASON,
+        "没接权威的装配必须说\"这个装配没有提案来源\"（⛔ 不是\"控制面没有提案\"那句）"
     );
 
     // ---- 像素: 打开抽屉必须真的改变画面（同一次运行的两帧, 不碰 golden）
@@ -6945,6 +6952,219 @@ fn the_musical_pr_drawer_shows_an_honest_empty_state() {
     assert!(
         diff.bbox.right() > drawer_band_left,
         "差异包围盒右界 {} 没有伸进抽屉那条带（x ≥ {drawer_band_left}）⇒ 画的不是抽屉",
+        diff.bbox.right()
+    );
+}
+
+/// 判据（**读面的运行时那一半**）：AI 经控制面提的一次案，抽屉里**真看得见**，
+/// 而那一行的每一个读数都是从 `Domain.proposals` **逐字**来的。
+///
+/// 它与上一条 `the_musical_pr_drawer_shows_an_honest_empty_state` 是**同一枚硬币的两面**：
+/// 上一条证"零提案时界面不许编"，这一条证"有提案时界面不许看不见"。两条缺一条，
+/// "抽屉如实"这句就只是半句 —— 只写上一条的抽屉可以永远画 0 条而全绿。
+///
+/// ## 量什么（每一步都读**活窗口**，不是属性回显）
+///
+/// | 路径 | 量什么 | 期望 |
+/// | :--- | :--- | :--- |
+/// | 起点 | `authority.open_proposal_rows()` | 空（否则 0→1 不成立） |
+/// | 回调 → 树 | `invoke_open_musical_pr()` 后 `musical-pr-empty-state` 的 `label` | 逐字 `NO_OPEN_PROPOSAL_REASON`（**有**来源那句，⛔ 不是 `NO_SOURCE_REASON`） |
+/// | socket → 域 | 真客户端 `yeban_propose_section`（不 `autoMerge`） | `pendingMerge = true`；权威里恰好 1 条 `Open` |
+/// | 域 → 树（条数） | `musical-pr-drawer` 的 `accessible-value` | `"1"` |
+/// | 域 → 树（标题） | `musical-pr-proposal-0-item` 的 `label` | 逐字 `{kind}: {title}`（`title` 是领域原文） |
+/// | 域 → 树（op 数） | `musical-pr-proposal-0-ops` 的 `label` | 逐字 `本提案携带 {op_count} 条 op` |
+/// | 树（假控件） | `musical-pr-accept-button` / `-reject-button` / `musical-pr-empty-state` | 都不在树里 |
+/// | 树（真话） | `musical-pr-resolve-unavailable` 的 `label` | 逐字 `RESOLVE_NOT_WIRED_REASON` |
+/// | 像素 | 0 条那一帧 vs 1 条那一帧 | 必须变，且差异伸进右起 360px 那条带 |
+///
+/// ## 为什么打开走 `invoke_open_musical_pr()` 而不是 `set_musical_pr_open(true)`
+///
+/// `set_musical_pr_open(true)` 只翻可见位，**绕过**宿主那条唯一读权威的路径
+/// （`host::wire_proposal_drawer` 的 `on_open_musical_pr`）—— 那正是本判据要证的机制。
+/// 因此这里**只**调回调：用户点徽章 / 点 AI 栏按钮落的就是它。
+///
+/// ## 这条怎么变红
+///
+/// - 把 `build_live_ui_from_authority` 的 `proposal_source` 覆盖摘掉 ⇒ 第二格仍是
+///   `NO_SOURCE_REASON`、第四格仍是 `"0"`；
+/// - 把 `wire_proposal_drawer` 里的"打开时重读"删掉（只在装配时读一次）⇒ 第四格停在 `"0"`；
+/// - 让界面自己拼标题（不用领域的 `title`）⇒ 第五格逐字不等；
+/// - 把 `resolve-available` 写成 `true` ⇒ 最后两格反向变红（假按钮回到树里、原因卡消失）。
+#[cfg(feature = "in-process-mcp")]
+#[test]
+fn a_real_proposal_from_the_authority_is_visible_in_the_opened_drawer() {
+    use yeban_app::mcp_mount::{InProcessMcp, SessionSource};
+
+    let project = yeban_model::samples::filled_project();
+    let mount = InProcessMcp::start_for_project(
+        true,
+        project,
+        SessionSource::InMemory(std::path::PathBuf::from("sample:pr-drawer")),
+        Vec::new(),
+    )
+    .expect("挂载决策")
+    .expect("运行期开关打开时必须真的挂载");
+    let authority = mount.project_authority();
+    let bearer = format!("Bearer {}", mount.token().expose());
+
+    // ---- 起点：权威里确实**没有**未合并提案（否则下面"0 → 1"没有对照）
+    let rows_at_start = authority.open_proposal_rows();
+    assert!(
+        rows_at_start.is_empty(),
+        "起点必须零提案, 实测 {} 条",
+        rows_at_start.len()
+    );
+
+    // ---- 1. 以权威装配 ⇒ 打开抽屉：有来源、此刻没有提案 ⇒ 那第二句真话
+    let mut ui = build_live_ui_from_authority(&authority, Permission::ReadOnly).expect("装配");
+    ui.ui().invoke_open_musical_pr();
+    ui.pump_meters();
+    let before = ui.tree_snapshot();
+    let before_drawer = before
+        .find_by_id("musical-pr-drawer")
+        .expect("回调必须把抽屉打开（`open-musical-pr` → 宿主写 `musical-pr-open`）");
+    let before_count = before_drawer.value.clone().unwrap_or_default();
+    let before_empty = before
+        .find_by_id("musical-pr-empty-state")
+        .expect("零提案时必须有可见空态");
+    report_line(&format!(
+        "[pr-rows] 打开抽屉（未提案）: accessible-value = {before_count:?}; 空态 label = {:?}",
+        before_empty.label
+    ));
+    assert_eq!(before_count, "0", "未提案时抽屉必须如实报 0 条");
+    assert_eq!(
+        before_empty.label,
+        yeban_app::proposals::NO_OPEN_PROPOSAL_REASON,
+        "接了权威的装配必须说\"控制面此刻没有未合并的 AI 提案\"（⛔ 不是\"没接来源\"那句）"
+    );
+    let frame_zero = ui.capture().expect("零提案那一帧");
+
+    // ---- 2. 真客户端、真令牌、真环回 socket：一次**不合并**的提案
+    let reply = mcp_call(
+        mount.address(),
+        &bearer,
+        &r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"yeban_propose_section","arguments":{"sectionName":"Verse","stylePreset":"pop","materialSource":"theory","bars":2}}}"#,
+    );
+    report_line(&format!(
+        "[pr-rows] tools/call yeban_propose_section ⇒ status={:?} pendingMerge={:?} proposalId={:?}",
+        reply["result"]["status"],
+        reply["result"]["data"]["pendingMerge"],
+        reply["result"]["data"]["proposalId"],
+    ));
+    assert_eq!(
+        reply["result"]["status"], "success",
+        "提案工具必须成功（失败就不是\"界面看不见提案\"的缺口, 而是提案本身没落地）: {reply}"
+    );
+    assert_eq!(
+        reply["result"]["data"]["pendingMerge"], true,
+        "必须走**保持 Open** 的那条路（`autoMerge` 一合并就没得看了）: {reply}"
+    );
+
+    // ---- 3. 权威侧的**原文**：一条 Open 记录（下面两格逐字拿它比）
+    let rows = authority.open_proposal_rows();
+    assert_eq!(
+        rows.len(),
+        1,
+        "提案必须进唯一权威的 `Domain.proposals`, 实测 {}",
+        rows.len()
+    );
+    let row = &rows[0];
+    assert_eq!(row.status, "open", "未合并的提案状态必须是 open: {row:?}");
+
+    // ---- 4. 再走一次**打开**回调 ⇒ 抽屉重读权威
+    ui.ui().invoke_open_musical_pr();
+    ui.pump_meters();
+    let after = ui.tree_snapshot();
+
+    let drawer = after
+        .find_by_id("musical-pr-drawer")
+        .expect("`musical-pr-drawer` 节点");
+    let count_reading = drawer.value.clone().unwrap_or_default();
+    report_line(&format!(
+        "[pr-rows] 域 → 树: `musical-pr-drawer` 的 accessible-value {before_count:?} → {count_reading:?} \
+         （权威 {} 条 Open）",
+        rows.len()
+    ));
+    assert_eq!(
+        count_reading, "1",
+        "AI 提了一条案 ⇒ 抽屉必须报 1 条（`accessible-value` 是 `proposal-count` 的文本）"
+    );
+
+    let item = after
+        .find_by_id("musical-pr-proposal-0-item")
+        .expect("提案条目必须在运行时树里");
+    let expected_item_label = format!("{}: {}", row.kind, row.title);
+    report_line(&format!(
+        "[pr-rows] 域 → 树: `musical-pr-proposal-0-item` label = {:?}（领域原文 kind={:?} title={:?}）",
+        item.label, row.kind, row.title
+    ));
+    assert_eq!(
+        item.label, expected_item_label,
+        "那一行的标题必须是**领域记录的原文**, 不是界面拼的第二份文案"
+    );
+
+    let ops = after
+        .find_by_id("musical-pr-proposal-0-ops")
+        .expect("op 条数那一格必须在树里");
+    let expected_ops_label = format!("本提案携带 {} 条 op", row.op_count);
+    report_line(&format!(
+        "[pr-rows] 域 → 树: `musical-pr-proposal-0-ops` label = {:?}（领域 op_count = {}）",
+        ops.label, row.op_count
+    ));
+    assert_eq!(ops.label, expected_ops_label, "op 条数必须是**真实条数**");
+
+    // 提案族在树里**只有**这两格（多出来的就是按下标编的读数）
+    let mut proposal_ids: Vec<&str> = after
+        .ids()
+        .filter(|id| id.starts_with("musical-pr-proposal-"))
+        .collect();
+    proposal_ids.sort_unstable();
+    assert_eq!(
+        proposal_ids,
+        vec!["musical-pr-proposal-0-item", "musical-pr-proposal-0-ops"],
+        "一条提案 ⇒ 恰好两格读数；出现 `-1-` 就是画了不存在的提案"
+    );
+
+    // ---- 5. 空态退场, 且**不画假控件**：换成逐字原因
+    assert!(
+        !after.contains("musical-pr-empty-state"),
+        "有提案时空态不许还挂在树里（那句\"没有提案\"就成了谎话）"
+    );
+    let reason = after
+        .find_by_id("musical-pr-resolve-unavailable")
+        .expect("有提案、没有写入口 ⇒ 必须上屏那句逐字原因");
+    assert_eq!(
+        reason.label,
+        yeban_app::proposals::RESOLVE_NOT_WIRED_REASON,
+        "底部那句话必须逐字等于宿主断言过的原因, 不能是界面另写的安慰话"
+    );
+    assert!(
+        !after.contains("musical-pr-accept-button"),
+        "`resolve-available` 恒 `false` ⇒ 「采纳」不许进树"
+    );
+    assert!(
+        !after.contains("musical-pr-reject-button"),
+        "`resolve-available` 恒 `false` ⇒ 「放弃」不许进树"
+    );
+
+    // ---- 6. 像素：0 条那一帧 vs 1 条那一帧
+    let frame_one = ui.capture().expect("一条提案那一帧");
+    let diff = frame_diff(&frame_zero, &frame_one)
+        .expect("权威多了一条提案 ⇒ 画面必须真的变（树里有、屏幕上没有 = 没画出来）");
+    report_line(&format!(
+        "[pr-rows] 像素: 零提案帧 vs 一条提案帧 = 差异 {} px, 包围盒 x{}..{} × y{}..{}（帧 {}×{}）",
+        diff.count,
+        diff.bbox.x,
+        diff.bbox.right(),
+        diff.bbox.y,
+        diff.bbox.bottom(),
+        frame_zero.width(),
+        frame_zero.height(),
+    ));
+    let drawer_band_left = i32::try_from(frame_zero.width().saturating_sub(360)).unwrap_or(0);
+    assert!(
+        diff.bbox.right() > drawer_band_left,
+        "差异包围盒右界 {} 没有伸进抽屉那条带（x ≥ {drawer_band_left}）⇒ 变的不是提案行",
         diff.bbox.right()
     );
 }

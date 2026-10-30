@@ -96,7 +96,7 @@ use crate::tools::{ErrorCode, ToolCall, ToolResponse};
 use crate::undo_session::{self, CommitRequest, UndoRefusal};
 
 use error::Fault;
-use proposal::{Proposal, ProposalDraft, ProposalStatus, draft_ops_value};
+use proposal::{Proposal, ProposalDraft, ProposalRow, ProposalStatus, draft_ops_value};
 use store::AcquiredLock;
 
 /// 主分支名。
@@ -584,6 +584,48 @@ impl Domain {
     #[must_use]
     pub fn proposal_ids(&self) -> Vec<EntityId> {
         self.proposals.keys().copied().collect()
+    }
+
+    /// **未合并**（`status == Open`）的提案记录，按 `(created_at, id)` 升序。
+    ///
+    /// ## 为什么排序口径住在这里
+    ///
+    /// 这个顺序今天有两个消费者：工具面 `yeban_list_proposals`
+    /// （[`plan_list_proposals`]）与界面的提案抽屉（经
+    /// `crates/yeban-app/src/mcp_mount.rs` 的 `ProjectAuthorityHandle`）。
+    /// 把 `sort_by` 抄第二遍就会产生"工具说第 1 条是 A、界面把 A 画在第 2 行"这类
+    /// 无法从任何一侧发现的漂移 ⇒ **只有这一处**定义顺序。
+    ///
+    /// 三条口径（与 [`plan_list_proposals`] 的文档逐字同源）：
+    /// 1. 只列 `Open`（`merged` / `rejected` 不再需要审查）；
+    /// 2. 没有提案是正常状态 ⇒ 空 `Vec`，⛔ 不是错误；
+    /// 3. 同毫秒时用 `id`（ULID，字典序 = 创建序）打破平局。
+    #[must_use]
+    pub fn open_proposals(&self) -> Vec<&Proposal> {
+        let mut open: Vec<&Proposal> = self
+            .proposal_ids()
+            .into_iter()
+            .filter_map(|id| self.proposal(&id))
+            .filter(|record| record.status == ProposalStatus::Open)
+            .collect();
+        open.sort_by(|left, right| {
+            left.created_at
+                .cmp(&right.created_at)
+                .then_with(|| left.id.cmp(&right.id))
+        });
+        open
+    }
+
+    /// 未合并提案的**只读投影行**（界面抽屉的数据面；排序 = [`Self::open_proposals`]）。
+    ///
+    /// 它只给界面画得出来的那五格（身份 / 类别 / 标题 / 状态 / op 条数），
+    /// ⛔ 不给"置信度"这类领域里不存在的读数 —— 见 [`ProposalRow`] 的字段清单。
+    #[must_use]
+    pub fn open_proposal_rows(&self) -> Vec<ProposalRow> {
+        self.open_proposals()
+            .into_iter()
+            .map(ProposalRow::new)
+            .collect()
     }
 
     /// 会话 CAS 池里的资产键（哈希升序 = `BTreeMap` 键序 = 容器内条目顺序）。
@@ -3285,18 +3327,12 @@ fn plan_list_proposals(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> 
         }
         None => None,
     };
-    let mut open: Vec<&Proposal> = domain
-        .proposal_ids()
+    // 顺序**不在这里**定义：`open_proposals` 是唯一的排序口径（界面的抽屉走同一个读面）。
+    let open: Vec<&Proposal> = domain
+        .open_proposals()
         .into_iter()
-        .filter_map(|id| domain.proposal(&id))
-        .filter(|record| record.status == ProposalStatus::Open)
         .filter(|record| wanted.is_none_or(|kind| record.kind == kind))
         .collect();
-    open.sort_by(|left, right| {
-        left.created_at
-            .cmp(&right.created_at)
-            .then_with(|| left.id.cmp(&right.id))
-    });
     let proposals: Vec<Value> = open
         .iter()
         .enumerate()
@@ -5733,6 +5769,123 @@ mod tests {
         )
         .expect("再拒绝");
         assert_eq!(again["data"]["alreadyRejected"], true);
+    }
+
+    /// **界面的提案清单与工具面的提案清单不可能各说一套**（抽屉接线的读面判据）。
+    ///
+    /// 三处交叉核对，提案都由**真工具调用**造出来（不手搓 `Proposal`）：
+    /// 1. **顺序**：`open_proposal_rows()` 的身份序列 == `yeban_list_proposals` 的
+    ///    `proposals[].proposalId` 序列。排序口径住在 [`Domain::open_proposals`] 一处；
+    ///    谁抄第二遍，这里就变红（漂移方向是"工具说第 1 条是 A、界面把 A 画在第 2 行"，
+    ///    而从任何一侧单独看都发现不了）。
+    /// 2. **两个数回答两个问题**：被拒绝的那条**不在**行里（`merged` / `rejected`
+    ///    不需要再审查），但 [`Domain::proposal_count`] 仍然数着它（历史记录保留）。
+    /// 3. **每格的来源**：`kind` / `title` / `status` / `op_count` 逐字等于工具摘要的
+    ///    `kind` / `title` / `status` / `opCount`。⛔ 投影里**不许**出现工具摘要里没有的
+    ///    读数 —— 第三条断言因此扫 `ProposalRow` 的 `Debug` 文本：抽屉曾经有一格
+    ///    "置信度百分比"，而领域里从来没有这个字段（见 `crates/yeban-mcp/src/domain/
+    ///    proposal.rs` 的 `ProposalRow` 文档），所以 `%` 与 `confidence` 都不得出现。
+    #[test]
+    fn the_ui_proposal_rows_and_the_tool_list_share_one_ordering() {
+        let mut domain = domain();
+        let track = fixture_track(&domain);
+        let note = note_id(&domain);
+        let clip = clip_id(&domain);
+
+        let first = execute(
+            &mut domain,
+            &call(
+                "yeban_set_macro",
+                serde_json::json!({
+                    "trackId": track.to_canonical_string(),
+                    "macroIndex": 0,
+                    "value": 0.6,
+                }),
+            ),
+        )
+        .expect("第一条提案");
+        let second = execute(
+            &mut domain,
+            &call(
+                "yeban_edit_notes",
+                serde_json::json!({
+                    "trackId": track.to_canonical_string(),
+                    "clipId": clip.to_canonical_string(),
+                    "ops": [{"kind": "velocity", "noteId": note.to_canonical_string(), "velocity": 42}],
+                }),
+            ),
+        )
+        .expect("第二条提案");
+        let second_id = second["data"]["proposal"]["proposalId"]
+            .as_str()
+            .expect("proposalId")
+            .to_owned();
+
+        // 拒绝第二条 ⇒ 它必须从两个读面同时消失（历史里仍然留着）。
+        execute(
+            &mut domain,
+            &call(
+                "yeban_reject_proposal",
+                serde_json::json!({"proposalId": second_id, "reason": "织体过密"}),
+            ),
+        )
+        .expect("拒绝");
+
+        let rows = domain.open_proposal_rows();
+        assert_eq!(
+            rows.len(),
+            1,
+            "未合并的只剩第一条 ⇒ 投影必须 1 行（实际 {} 行）",
+            rows.len()
+        );
+        assert_eq!(domain.proposal_count(), 2, "被拒绝的记录仍然留在注册表里");
+
+        let listed = execute(
+            &mut domain,
+            &call("yeban_list_proposals", serde_json::json!({})),
+        )
+        .expect("清单");
+        let tool_ids: Vec<&str> = listed["data"]["proposals"]
+            .as_array()
+            .expect("proposals 必须是数组")
+            .iter()
+            .map(|entry| entry["proposalId"].as_str().expect("proposalId"))
+            .collect();
+        let row_ids: Vec<&str> = rows.iter().map(|row| row.id.as_str()).collect();
+        assert_eq!(
+            row_ids, tool_ids,
+            "界面读面与工具读面的顺序必须逐位相同（排序口径只许有一处）"
+        );
+
+        let tool_first = listed["data"]["proposals"]
+            .as_array()
+            .expect("proposals")
+            .first()
+            .expect("至少一条")
+            .clone();
+        let row = rows.first().expect("一行");
+        assert_eq!(row.kind, tool_first["kind"].as_str().expect("kind"));
+        assert_eq!(row.title, tool_first["title"].as_str().expect("title"));
+        assert_eq!(row.status, tool_first["status"].as_str().expect("status"));
+        assert_eq!(
+            row.op_count,
+            usize::try_from(tool_first["opCount"].as_u64().expect("opCount"))
+                .expect("opCount 必须落进 usize"),
+        );
+        assert_eq!(
+            row.id,
+            first["data"]["proposal"]["proposalId"]
+                .as_str()
+                .expect("proposalId")
+        );
+
+        let rendered = format!("{row:?}");
+        for forbidden in ["%", "confidence", "置信度"] {
+            assert!(
+                !rendered.to_lowercase().contains(forbidden),
+                "投影行里出现了领域不存在的读数 `{forbidden}`: {rendered}"
+            );
+        }
     }
 
     #[test]
