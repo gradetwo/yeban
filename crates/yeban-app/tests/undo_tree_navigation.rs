@@ -37,7 +37,7 @@ use yeban_app::undo::undo_session::wiring_fixture;
 use yeban_app::undo::{UiAction, UndoPort, UndoSession};
 use yeban_model::Op;
 use yeban_ui_test_port::render::LivePort;
-use yeban_ui_test_port::{Permission, Size, UiTestPort as _};
+use yeban_ui_test_port::{Permission, Size};
 
 /// 与其余 Tier-1 判据同款。
 const WINDOW: Size = Size::new(1440, 900);
@@ -115,8 +115,12 @@ fn clicking_a_time_machine_node_restores_that_version() {
     // ---- 打开时光机：节点确实进树（语义 ID `undo-tree-node-{i}`） ----
     port.perform(UiAction::OpenUndoTree);
     host::apply_undo(live.ui(), &port);
-    live.pump_meters();
-    let tree = live.tree_snapshot();
+    // `LivePort` 的树快照入口是 `refresh_tree(registry) -> &ControlTree`
+    // （`tests/clip_selection.rs` 同款）；`dump_json()` 把语义 ID 摊平成字符串。
+    let tree = live
+        .refresh_tree(None)
+        .expect("必须能重抓控件树")
+        .dump_json();
     for index in 0..5 {
         assert!(
             tree.contains(&format!("undo-tree-node-{index}")),
