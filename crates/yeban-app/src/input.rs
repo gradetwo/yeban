@@ -641,7 +641,8 @@ pub enum Action {
     ///
     /// 落点是 [`crate::host`] 的 `apply_action`：停住时 = 停止 ＋ 回起点；播放中 =
     /// 回起点 ＋ **继续播放**（Logic 行为；引擎侧就是 `Stop` + `SeekTicks(0)` + `Play`）。
-    /// ⚠ `Shift+Enter` 仍是 [`Self::AcceptAiSuggestion`]（未实现 ⇒ 不消费），两者不冲突。
+    /// ⚠ `Shift+Enter` 仍是 [`Self::AcceptAiSuggestion`]，两者不冲突（`Return`/`Enter`
+    /// 走裸键这一臂，`Shift` 把它分到另一臂）。
     GoToBeginning,
     /// `Tab` (仅画布): 在两个视图之间切换。
     ToggleView,
@@ -696,7 +697,23 @@ pub enum Action {
     ToggleConsoleMaximize,
     /// `1`–`5`: 切到某个卷帘工具。
     SelectTool(Tool),
-    /// `Shift+Enter`: 原子采纳当前轨道浮现的 AI 建议。⚠ **键已绑定、动作尚无落地实现** —— 宿主 `host::action_has_implementation` 返回 `false`, 因此 `cli.rs` 的快捷表把它标成 `(未实现)` 且这里**不消费**：缺的是**能力** —— 抽屉**看得见**提案了（2026-10-30 起, `host::wire_proposal_drawer` 从唯一可变权威注入, 见 `src/proposals.rs`）, 但界面上**没有合并提案的写入口**：`HostAction` 只有 `Undo` / `Redo` / `Commit` 三臂, 而领域的 `yeban_merge_proposal` 要 `proposalId`；抽屉那一格也没有"当前选中的是哪一条"（`ProposalRowView` 只有 kind / title / op 条数）, 在界面侧新造一份提案状态会与领域权威冲突（`ADR-0005`）。逐条证据与最小代价见 `host.rs` 的 `action_has_implementation` 文档; 空前置条件 (＝今天任何装配) 下返回 `false`, 与 `DeleteSelection` / `ZoomToSelection` 空选区时同一取向。
+    /// `Shift+Enter`: 采纳**点选了的那一条** AI 提案。
+    ///
+    /// ⭐ **2026-10-31 起这个动作真的接上了**（此前两轮登记为缺口：①界面上没有提案的表示,
+    /// ②"看得见"之后仍然没有携带 `proposalId` 的写入口）。落点是
+    /// `host::apply_action` 的 `AcceptAiSuggestion` 臂 ⇒ `ui.invoke_accept_ai_proposal()`
+    /// ⇒ `host::wire_proposal_drawer` 里注册的**同一条** `on_accept_ai_proposal` ⇒
+    /// `host::resolve_proposal` ⇒ `proposals::ProposalSource::resolve` ⇒
+    /// 权威的 `HostAction::MergeProposal`。**键与按钮共用同一个落点**（⛔ 两份实现），
+    /// 与「放弃」只有可点等价物形成对照（`Esc` 归 [`Self::Cancel`]：取消在手的拖拽）。
+    ///
+    /// ⚠ **前置条件不满足时不消费**（返回 `false`, 键照旧冒泡）：抽屉**开着** ∧
+    /// `musical-pr-resolve-available`（＝装配有写来源 ∧ **点选了当前清单里的一行** ∧
+    /// 上一次没被权威拒绝）。口径只在 `proposals::drawer_values` 定义一次。
+    /// 这与 `DeleteSelection` / `ZoomToSelection` 空选区时同一取向 —— ⛔ 不是"吞掉一次
+    /// 按键却什么都不做"，⛔ 也不是假装可用：`cli.rs` 的表里它现在是 `implemented: true`
+    /// （`host::action_has_implementation` 同一份陈述, 三面一致由判据 B11b 钉,
+    /// "它确实可用/确实不可用"由 B11f 钉）。
     AcceptAiSuggestion,
     /// `Cmd/Ctrl+Alt+N`：拨**节拍器**开关（`[ARCH-RT-001]` 的宿主侧落点）。
     ///
@@ -711,12 +728,25 @@ pub enum Action {
     /// `Esc`：收尾 —— 关闭全屏时光机、取消进行中的拖拽手势。
     ///
     /// 三个落点各自独立（关弹窗 / 纵向拖拽 / 混音手势），任一命中即消费；都不在手时
-    /// **放行**（交给焦点系统）。⚠ **不**包含"放弃 AI 建议"：提案在界面侧没有表示，
-    /// `Action::AcceptAiSuggestion` 也没有落地实现 ⇒ 这里不把它算进本动作的语义。
+    /// **放行**（交给焦点系统）。⚠ **不**包含"放弃 AI 提案"，即使抽屉现在看得见、
+    /// 也真的有了写入口（2026-10-31）：`Escape` 已经承担上面那三件事, 再把它算给放弃
+    /// 就是同一个键在两个上下文里各做一件事, 而规范里没有这条裁决 ⇒ 放弃**只有**可点
+    /// 等价物（抽屉的 `musical-pr-reject-button`）。`.slint` 里那句 "(Esc)" 因此删掉了
+    /// —— 它此前是一句**假声明**（判据 `musical_pr_drawer_declares_no_demo_proposals`
+    /// 现在机械地钉住"按钮文案里的键位必须是真的"）。
     Cancel,
-    /// `[`: 试听主线版本。⚠ **键已绑定、动作尚无落地实现**（与 [`Self::AcceptAiSuggestion`] 同款）：规范 `[ARCH-RT-005]` 要求"主线与提案分支并发渲染 + 30ms 等功率瞬切 + 2048 采样预滚", 这套机制在仓库里一处都不存在（证据见 `host.rs` 的 `action_has_implementation` 文档）⇒ 今天按 `[` 唯一能做的事是"播放", 而那是 `Space`（[`Self::PlayPause`]），因此**不消费**。
+    /// `[`: 试听主线版本。⚠ **键已绑定、动作尚无落地实现**（⭐ 这里与
+    /// [`Self::AcceptAiSuggestion`] **不再是**同款 —— 后者已于 2026-10-31 接上写入口,
+    /// 本条与 [`Self::AuditionProposal`] 仍然缺**能力**）：规范 `[ARCH-RT-005]` 要求
+    /// "主线与提案分支并发渲染 + 30ms 等功率瞬切 + 2048 采样预滚", 这套机制在仓库里一处
+    /// 都不存在（证据见 `host.rs` 的 `action_has_implementation` 文档）⇒ 今天按 `[` 唯一
+    /// 能做的事是"播放", 而那是 `Space`（[`Self::PlayPause`]），因此**不消费**。
     AuditionMain,
-    /// `]`: 试听 AI 提案分支。⚠ **键已绑定、动作尚无落地实现**（同 [`Self::AuditionMain`]，两者是同一个 A/B 对的两半）。它**不在** `cli.rs` 的 `SHORTCUTS` 表里（表是 22 条, `]` 不在其中, 因此 `--print-shortcuts` 不打印它），但 `host::action_has_implementation` 同样如实返回 `false`。
+    /// `]`: 试听 AI 提案分支。⚠ **键已绑定、动作尚无落地实现**（同 [`Self::AuditionMain`]，
+    /// 两者是同一个 A/B 对的两半）。它**不在** `cli.rs` 的 `SHORTCUTS` 表里（`]` 不是表里
+    /// 的某一条 ⇒ ⛔ 这里不手抄表的条数：总数看 `[ShortcutRow; 30]` 的**类型标注**与判据
+    /// B11b 的 `rows.len()`），因此 `--print-shortcuts` 不打印它，但
+    /// `host::action_has_implementation` 同样如实返回 `false`。
     AuditionProposal,
 }
 

@@ -174,6 +174,7 @@ impl AuthorityMirror {
                 host::apply_proposal_drawer(
                     ui,
                     &crate::proposals::ProposalSource::from_authority(&authority),
+                    host::DrawerIntent::default(),
                 );
                 self.projected.store(revision, Ordering::SeqCst);
                 ProjectionOutcome::Reprojected { revision }

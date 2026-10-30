@@ -5246,7 +5246,8 @@ const SIDEBAR_ITEM_COUNT: i32 = 8;
 /// | `toggle-view` | `arrangement-view` | `ArrangementView` / `SessionView` 的 `visible` 互斥互换 |
 /// | `toggle-sidebar` | `sidebar-collapsed` | 左资源栏 240px ↔ 36px 图标导轨（`min/max-width`） |
 /// | `toggle-ai-drawer` | `ai-drawer-open` | `compact` 断点下 280px AI 抽屉的 `visible` |
-/// | `open-musical-pr` | `musical-pr-open` **＋六个提案属性** | **不在本函数**：见 [`wire_proposal_drawer`] —— 它打开抽屉，并从唯一可变权威现读未合并提案清单注入 |
+/// | `open-musical-pr` | `musical-pr-open` **＋九个提案属性** | **不在本函数**：见 [`wire_proposal_drawer`] —— 它打开抽屉，并从唯一可变权威现读未合并提案清单注入 |
+/// | `select-ai-proposal` / `accept-ai-proposal` / `reject-ai-proposal` | `musical-pr-selected-id` 等九个属性（外加领域的提案状态） | 同样**不在本函数**：三条都在 [`wire_proposal_drawer`] 注册 —— 后两条是界面上**唯一**能改领域的地方 |
 /// | `select-sidebar-category` | `sidebar-category` | 三个分类标签的选中态（背景 / 文字色 / `accessible-item-selected`） |
 /// | `console-maximize-toggle` | `console-maximized` | 控制台面板高度（`vertical-stretch`）与 ⤢ 的 `accessible-checked`；与 `Action::ToggleConsoleMaximize` 同属性 |
 /// | `select-sidebar-item` | `sidebar-item` | 八个资源条目的选中态（背景 / 文字色 / `accessible-item-selected`） |
@@ -5369,7 +5370,7 @@ pub fn wire_view_callbacks(ui: &MainWindow) {
     // 落点是紧随其后的 [`wire_clip_scope`]（与 `wire_scene_launch` 同一档的"要投影"回调）。
 }
 
-/// AI 提案抽屉：**注册 `open-musical-pr`** ＋ **数据面的唯一写者**。
+/// AI 提案抽屉：**四个回调的唯一注册者** ＋ **数据面的唯一写者**。
 ///
 /// ## 这一格补的是哪一个洞（实测, 不是转述）
 ///
@@ -5379,44 +5380,202 @@ pub fn wire_view_callbacks(ui: &MainWindow) {
 /// 本函数把读面接上：清单**只**经 [`crate::proposals::ProposalSource`] 从唯一可变权威读
 /// （⛔ 不是界面侧新造的第二份提案状态，`ADR-0005`）。
 ///
-/// ## 两条注册点，一份读数
+/// ## 写面：这里注册的两条按钮回调是界面上**唯一**能改领域的地方
+///
+/// 「采纳」/「放弃」→ [`resolve_proposal`] → [`crate::proposals::ProposalSource::resolve`]
+/// → `ProjectAuthorityHandle::apply_host(HostAction::{MergeProposal, RejectProposal})`
+/// —— 与工具面 `yeban_merge_proposal` / `yeban_reject_proposal` 落到**同一个**
+/// `Plan::Merge` / `Plan::Reject` 实现（⛔ 第二份合并逻辑一处都没有，判据
+/// `there_is_exactly_one_merge_and_one_reject_implementation`）。
+/// `Shift+Enter`（`Action::AcceptAiSuggestion`）**不另写一条**：它 `invoke` 的就是下面
+/// 这一条回调（见 [`apply_action`] 的臂）。
+///
+/// ## 四条注册点，一份读数
 ///
 /// * **装配时**注入一次 ⇒ 控制树里的 `musical-pr-drawer` 的 `accessible-value` 从第一帧
 ///   起就是权威的条数（判据不必先点一下才看得见）；
 /// * **打开时**再注入一次 ⇒ "用户看见的清单"与"点开那一刻权威里的清单"是同一份读数。
 ///   为什么必须现读：`Propose` / `Reject` 按计划**不**推进施加修订号
 ///   （`yeban-mcp` 的 `Plan::mutates_project` 的口径），因此重投影钩子不会为它们而动 —— 边界逐字写在
-///   `src/proposals.rs` 的模块文档里。
+///   `src/proposals.rs` 的模块文档里；
+/// * **点行时**写身份 + 重注入（夹紧与可用性都在这一次算，口径只有 `drawer_values` 一处）；
+/// * **按下采纳 / 放弃时**施加 + 用权威的新读数重注入。
 ///
-/// ⚠ 本函数**只写界面属性**：不调 `commit_ops`、不推进修订号、一个字节都不改工程。
+/// ⚠ Slint 的 `on_*` 是**覆盖**语义 ⇒ 这四条回调在本仓**只有这里**注册（`main.rs` 原先
+/// 那两条 `trace("accept-ai-proposal")` / `trace("reject-ai-proposal")` 已搬进来 ——
+/// 留着就会把这里的注册静悄悄擦掉，而日志里那句"未接线"仍然是打出来的）。
 pub fn wire_proposal_drawer(ui: &MainWindow, source: crate::proposals::ProposalSource) {
-    apply_proposal_drawer(ui, &source);
+    apply_proposal_drawer(ui, &source, DrawerIntent::default());
     let weak = ui.as_weak();
-    ui.on_open_musical_pr(move || {
+
+    ui.on_open_musical_pr({
+        let source = source.clone();
+        let weak = weak.clone();
+        move || {
+            let Some(ui) = weak.upgrade() else {
+                debug_assert!(false, "MainWindow 在回调执行期间被销毁");
+                return;
+            };
+            apply_proposal_drawer(&ui, &source, DrawerIntent::default());
+            ui.set_musical_pr_open(true);
+        }
+    });
+
+    // ⭐ 点一行 = **只**写那一行的身份，然后重注入。⛔ 不是"点一下就合并"：一击改领域的
+    // 代价是一次多父提交，而"在看哪条"与"决定合哪条"是两个动作。
+    ui.on_select_ai_proposal({
+        let source = source.clone();
+        let weak = weak.clone();
+        move |id| {
+            let Some(ui) = weak.upgrade() else {
+                debug_assert!(false, "MainWindow 在回调执行期间被销毁");
+                return;
+            };
+            // ⭐ **不**在这里直接 `set_musical_pr_selected_id`：那九个属性的**唯一**写者是
+            // `apply_proposal_drawer`（判据逐个数 `set_musical_pr_*`），而"什么算选中"的
+            // 夹紧口径只有 `drawer_values` 一处 ⇒ 把身份作为**来意**交进去，写那一张的
+            // 仍然是同一个函数（`select` 的合法性由它对着**当前**权威清单判）。
+            apply_proposal_drawer(
+                &ui,
+                &source,
+                DrawerIntent {
+                    select: Some(id.as_str()),
+                    ..DrawerIntent::default()
+                },
+            );
+        }
+    });
+
+    // 「采纳」：按钮与 `Shift+Enter` 的同一条落点。
+    ui.on_accept_ai_proposal({
+        let source = source.clone();
+        let weak = weak.clone();
+        move || {
+            let Some(ui) = weak.upgrade() else {
+                debug_assert!(false, "MainWindow 在回调执行期间被销毁");
+                return;
+            };
+            resolve_proposal(
+                &ui,
+                &source,
+                crate::proposals::ProposalDecision::Merge {
+                    id: ui.get_musical_pr_selected_id().to_string(),
+                },
+            );
+        }
+    });
+
+    // 「放弃」：只翻转记录（领域的 `apply_reject` **绝不**删除那条提案）。
+    ui.on_reject_ai_proposal(move || {
         let Some(ui) = weak.upgrade() else {
             debug_assert!(false, "MainWindow 在回调执行期间被销毁");
             return;
         };
-        apply_proposal_drawer(&ui, &source);
-        ui.set_musical_pr_open(true);
+        resolve_proposal(
+            &ui,
+            &source,
+            crate::proposals::ProposalDecision::Reject {
+                id: ui.get_musical_pr_selected_id().to_string(),
+            },
+        );
     });
 }
 
-/// 抽屉数据面的**唯一**注入点（幂等：同一个来源重复调用得到同一个界面）。
+/// 抽屉「采纳 / 放弃」的**唯一**落地（按钮回调与 `Shift+Enter` 共用同一条）。
 ///
-/// 三个调用者，同一段代码（⛔ 没有第二份写者）：装配时、打开抽屉时
-/// （[`wire_proposal_drawer`]）、以及会话侧改工程后的重投影
+/// 来源**由调用方（闭包捕获）传进来** —— ⛔ 不在这里造一份：`ProposalSource::none()`
+/// 在这里出现就等于"每一条按键都被诚实地拒绝"，而那与"接上了写入口"是两句相反的话。
+fn resolve_proposal(
+    ui: &MainWindow,
+    source: &crate::proposals::ProposalSource,
+    decision: crate::proposals::ProposalDecision,
+) {
+    // ⚠ 这里是"注入一次、带一份解释"的形状：`apply_proposal_drawer` 是九个属性的**唯一**
+    // 写者（判据 `the_proposal_drawer_writes_its_readings_from_one_host_path` 逐个数
+    // `set_musical_pr_*`），因此被拒绝那句话**作为参数**交给它, 而不是在这里再
+    // `set_musical_pr_resolve_reason(..)` 一次 —— 那样就有第二个写者了。
+    match source.resolve(&decision) {
+        // 成功 ⇒ 只重注入：那一行从清单里消失（`open_proposal_rows` 不再返回它）就是
+        // 唯一的反馈。⛔ 不写"操作成功"—— 那是对**请求**的复述，不是对**结果**的读数
+        // （幂等命中时 `steps` 是 0 而这不是失败, 见 `yeban-mcp` 的
+        // `a_second_host_merge_is_an_idempotent_no_step`）。
+        Ok(()) => apply_proposal_drawer(ui, source, DrawerIntent::default()),
+        Err(message) => {
+            // 权威的**逐字**理由 ⇒ `resolve-available` 打回 `false`（口径在
+            // `drawer_values`：有拒绝理由时按钮不画），抽屉**不关** —— 关掉就等于把
+            // 拒绝理由一起关掉。
+            apply_proposal_drawer(
+                ui,
+                source,
+                DrawerIntent {
+                    refusal: Some(message.as_str()),
+                    ..DrawerIntent::default()
+                },
+            );
+        }
+    }
+}
+
+/// 一次重注入的**来意**（[`apply_proposal_drawer`] 的第三个参数）。
+///
+/// 为什么做成命名结构而不是两个 `Option<&str>` 位置参数：这两个 `None` 的语义**相反** ——
+/// `select: None` 是"**沿用**属性里已有的选中"，`refusal: None` 是"此刻**没有**拒绝"。
+/// 写成 `apply_proposal_drawer(ui, source, None, None)` 时读的人无法分辨哪一格是哪个意思，
+/// 而 `DrawerIntent::default()` 说的就是那句话（沿用选中 + 无拒绝 ⇒ 一次纯重注入）。
+///
+/// ⭐ 有了它，"选中态由谁写"这件事仍然只有一个答案：九个属性**只**由
+/// [`apply_proposal_drawer`] 写（判据
+/// `the_proposal_drawer_writes_its_readings_from_one_host_path` 逐个 `set_musical_pr_*`
+/// 计数），点行只是把身份**交进去**再写。
+#[derive(Clone, Copy, Default)]
+pub struct DrawerIntent<'a> {
+    /// 用户刚点选的那一行的 `proposalId`；`None` = 不改，沿用窗口属性里已有的那一条。
+    pub select: Option<&'a str>,
+    /// 权威刚刚**逐字**拒绝的话；`None` = 没有刚发生的拒绝（任何常规重注入都会清掉上一句）。
+    pub refusal: Option<&'a str>,
+}
+
+/// 抽屉数据面的**唯一**注入点（幂等：同一个来源 + 同一个选中重复调用得到同一个界面）。
+///
+/// 调用者，同一段代码（⛔ 没有第二份写者）：装配时、打开抽屉时、点行时、按下采纳 /
+/// 放弃后（以上都在 [`wire_proposal_drawer`] 的注册者里）、以及会话侧改工程后的重投影
 /// （`crate::reproject::AuthorityMirror::sync_now`）。
 ///
-/// 六个属性一次写齐 —— 三个数组与条数**必须**同源同长度，因为 `.slint` 的循环按下标
+/// 九个属性一次写齐 —— 四个数组与条数**必须**同源同长度，因为 `.slint` 的循环按下标
 /// 同时读它们（等长这件事的判据：`src/proposals.rs` 的
-/// `drawer_values_keeps_the_three_arrays_the_same_length`）。
-pub(crate) fn apply_proposal_drawer(ui: &MainWindow, source: &crate::proposals::ProposalSource) {
-    let values = crate::proposals::drawer_values(&source.rows(), source.has_source());
+/// `drawer_values_keeps_the_four_arrays_the_same_length`）。
+///
+/// ⚠ **选中态存在窗口属性里**（本函数下面那一条 `set_musical_pr_selected_id` 是它唯一的
+/// 写点，写的是**夹紧后**的值）⇒ 宿主不需要一份 `Rc<RefCell<…>>` 的第二状态，而键盘路径
+/// 与按钮路径读到的必然是**同一格**。⛔ 这不是"界面拥有状态"：它是视图态
+/// （`MODEL-ISO-001` 的挥发性层），不进 `.yeban`、不进撤销栈，与 `selected-clip-ulid`
+/// 同款。
+///
+/// ⚠ 来意里的两格各自只有**一个**调用者会传非 `None`：`select` 只有点行那一条回调
+/// （[`wire_proposal_drawer`] 的 `on_select_ai_proposal`），`refusal` 只有
+/// [`resolve_proposal`] 在权威**拒绝**的那一跳。其余四处（装配 / 打开 / 采纳成功 /
+/// 重投影）都是 `DrawerIntent::default()` ⇒ 任何一次常规重注入都把上一句解释清掉，
+/// 陈旧的拒绝不会被读成"现在也用不了"。
+pub fn apply_proposal_drawer(
+    ui: &MainWindow,
+    source: &crate::proposals::ProposalSource,
+    intent: DrawerIntent<'_>,
+) {
+    // 先落到一个**有名字**的临时量上：`get_…` 返回的是新造的 `SharedString`，
+    // 直接在 `unwrap_or(….as_str())` 里用会让借用的生命周期短于 `selection`。
+    let current = ui.get_musical_pr_selected_id();
+    let values = crate::proposals::drawer_values(
+        &source.rows(),
+        source.has_source(),
+        intent.select.unwrap_or(current.as_str()),
+        intent.refusal,
+    );
     ui.set_musical_pr_proposal_count(values.count);
+    ui.set_musical_pr_proposal_ids(strings(&values.ids));
     ui.set_musical_pr_proposal_kinds(strings(&values.kinds));
     ui.set_musical_pr_proposal_titles(strings(&values.titles));
     ui.set_musical_pr_proposal_op_counts(integers(&values.op_counts));
+    ui.set_musical_pr_selected_id(SharedString::from(values.selected.as_str()));
     ui.set_musical_pr_empty_reason(SharedString::from(values.empty_reason.as_str()));
     ui.set_musical_pr_resolve_available(values.resolve_available);
     ui.set_musical_pr_resolve_reason(SharedString::from(values.resolve_reason.as_str()));
@@ -7902,46 +8061,54 @@ fn midi_in_error_code(error: &crate::midi_in::MidiInError) -> &'static str {
 /// `shortcut_table_status_matches_the_resolution_and_host_pipeline` 把快捷键表逐行与它
 /// 对账 —— 表与行为因此不可能各说各话。
 ///
-/// 返回 `false` 的三条（`AuditionMain` / `AuditionProposal` / `AcceptAiSuggestion`）
-/// 是**能力**还没落地的动作。**不消费**它们是刻意的：
+/// 返回 `false` 的两条（`AuditionMain` / `AuditionProposal`）是**能力**还没落地的动作。
+/// **不消费**它们是刻意的：
 /// 把键吞掉却什么都不做，比不处理更糟 —— 用户会以为"这个功能坏了"，而日志里没有任何东西能解释。
 ///
-/// ## 三条各自缺什么（2026-10-08 实测；这是**缺口登记**，不是待办装饰）
+/// ## 剩下两条缺什么（2026-10-08 实测；这是**缺口登记**，不是待办装饰）
 ///
 /// 缺的是**能力**，不是"接线"。把它们接上所需的机制在仓库里**不存在**，因此本轮**有意**
-/// 保持这三条在名单里（`docs/ledger/feature-alignment.md` 的 AI 提案行与走带行有就地加注）。
+/// 保持这两条在名单里（`docs/ledger/feature-alignment.md` 的 AI 提案行与走带行有就地加注）。
 ///
-/// **① `AcceptAiSuggestion`（`Shift+Enter` 采纳 AI 建议）—— 界面上没有"合并提案"的写入口。**
-/// 领域侧**有**提案概念：`crates/yeban-mcp/src/domain/proposal.rs` 的 `Proposal`
-/// （`ProposalStatus::Open`）与 `yeban_merge_proposal`（要 `proposalId`）。
-/// ⚠ 2026-10-30 更正本条的前半：抽屉**已经看得见提案了** —— 数据面由
-/// [`wire_proposal_drawer`] 从唯一可变权威注入（`crates/yeban-app/src/proposals.rs`）。
-/// 但"看得见"与"采纳得了"是两件事，缺的仍然是**能力**：
-/// * `grep -rn 'proposalId' crates/yeban-app/src` 的**取值**命中只有一处 ——
-///   `mcp_mount/embedded_sampler.rs` 的 `bind_sampler`，那是判据**经工具面**（`Dispatcher`
-///   的 `yeban_edit_notes` + `yeban_merge_proposal`）走的会话侧路径，不在 UI 线程上；
-///   其余命中全是注释。UI 线程的 `apply_action` 路径上没有任何一处取用提案身份。
-/// * 界面的写入口只有 [`HostAction`]，它今天只有 `Undo` / `Redo` / `Commit` 三臂 ——
-///   没有携带 `proposalId` 的那一臂。
-/// * 抽屉里也没有"当前选中的是哪一条"这一格（`ProposalRowView` 只有
-///   `kind` / `title` / `op_count`）；在界面侧新造一份提案状态会与领域权威冲突
-///   （`ADR-0005`）⇒ 登记为缺口，不接。
+/// **① `AcceptAiSuggestion`（`Shift+Enter` 采纳 AI 建议）—— 已于 2026-10-31 接上，移出本名单。**
+/// 它缺的三格现在都在（每格都只有一个出处）：
+/// * **写入口**：[`HostAction`] 长出 `MergeProposal { proposal_id, commit_message }` 与
+///   `RejectProposal { proposal_id, reason }` 两臂，它们**复用**工具面
+///   `yeban_merge_proposal` / `yeban_reject_proposal` 所调的**同一个** `merge_plan` /
+///   `reject_plan` + `apply_plan_model` ⇒ ⛔ 没有第二份合并实现（判据
+///   `there_is_exactly_one_merge_and_one_reject_implementation`）。
+/// * **提案身份**：[`crate::proposals::ProposalRowView`] 长出 `id`（`ProposalRow::id` 的
+///   canonical ULID 原文），于是 UI 线程第一次有一个**从权威读来**的 `proposalId` 可用 ——
+///   此前 `grep -rn 'proposalId' crates/yeban-app/src` 的取值命中只有
+///   `mcp_mount/embedded_sampler.rs` 的 `bind_sampler`（那是**经工具面**的会话侧路径）。
+/// * **选中态**：抽屉的 `musical-pr-selected-id`（窗口属性，唯一写者
+///   [`apply_proposal_drawer`]，值由 `drawer_values` 夹紧）⇒ 不需要在界面侧新造一份
+///   提案状态，因此不与领域权威冲突（`ADR-0005`）。
 ///
-/// 因此界面上那两个按钮由 `musical-pr-resolve-available`（恒 `false`）把关 —— **不画**
-/// 假控件，改为把 [`crate::proposals::RESOLVE_NOT_WIRED_REASON`] 那句逐字原因上屏。
-/// （历史：**2026-10-08** 那四个数据面属性是**内联演示常量**（三条中文假提案 + 三个假
-/// 置信度），于是界面显示"AI 提了 3 条提案"而用户分不出真假；那一片删掉了数据并加了
-/// 空态。**2026-10-30** 本片接上真实来源。）
+/// 键盘与按钮**同一个落点**：本函数的臂只 `invoke_accept_ai_proposal()`，而那条回调
+/// 的唯一注册者在 [`wire_proposal_drawer`] 里（`main.rs` 原先那两行 `trace(..)` 注册
+/// 已删 —— Slint 的 `on_*` 是覆盖语义，留着就会把写入口静默擦掉）。
+///
+/// ⚠ **本名单说"有落点"，运行时仍然会如实不消费**（与 `Undo` 没有端口、`Z` 空选区时
+/// 同一取向）：`apply_action` 的那一条臂要求 `musical-pr-open ∧ musical-pr-resolve-available`，
+/// 后者的口径是"这个装配有提案来源 ∧ 用户点选了当前清单里的一行"。⇒ 默认构建
+/// （没有 `in-process-mcp` / 没挂 `--enable-mcp-http`）或没点行时按 `Shift+Enter` 返回
+/// `false`，界面上那一行仍然画着 `NO_SELECTION_REASON` / `NO_WRITE_SOURCE_REASON` 那句逐字原因。
 /// 判据：`elements.rs` 的 `musical_pr_drawer_declares_no_demo_proposals`（文本层：假字面量
 /// / 空默认值 / 下标推出来的假读数 / 两个按钮的条件）与
-/// `the_proposal_drawer_writes_its_readings_from_one_host_path`（**唯一**注入路径）；
-/// `tests/live_ui_mcp.rs` 的 `the_musical_pr_drawer_shows_an_honest_empty_state`（运行时树）。
-/// 接上读面**不**改变本条结论，因此 `Shift+Enter` 仍然如实不消费。
-/// 提案注册表（`Domain.proposals`）住在 `crates/yeban-mcp/src/domain/mod.rs:155`，
+/// `the_proposal_drawer_writes_its_readings_from_one_host_path`（**唯一**注入路径与
+/// **唯一**注册者）；`tests/live_ui_mcp.rs` 的 `the_musical_pr_drawer_shows_an_honest_empty_state`
+/// （运行时树）与 `tests/live_ui_mcp.rs` 的
+/// `selecting_a_row_lights_up_accept_and_it_really_merges_the_proposal` / `a_refused_accept_puts_the_authoritys_own_sentence_on_the_drawer`
+/// （选中 → 采纳 → 那一行真的从清单里消失；被拒 → 权威原话上屏）。
+/// （历史：**2026-10-08** 那四个数据面属性是**内联演示常量**（三条中文假提案 + 三个假
+/// 置信度），于是界面显示"AI 提了 3 条提案"而用户分不出真假；那一片删掉了数据并加了
+/// 空态。**2026-10-30** 接上真实来源（读面）。**2026-10-31** 接上写面。）
+/// 提案注册表（`Domain.proposals`）住在 `crates/yeban-mcp/src/domain/mod.rs`，
 /// 由 `crates/yeban-app/src/mcp_mount.rs` 在**非默认 feature** `in-process-mcp` 且
-/// 运行期 `--enable-mcp-http` 打开时才建，**不在** UI 线程的 `apply_action` 路径上。
-/// ⇒ 空前置条件（今天**任何**装配）下 `Shift+Enter` 都返回 `false`（不消费），
-/// 与 `DeleteSelection` / `ZoomToSelection` / `Duplicate` 空选区时的取向一致。
+/// 运行期 `--enable-mcp-http` 打开时才建。
+///
+/// ⛔ **本条不改变**下面两条的结论。
 ///
 /// **② `AuditionMain`（`[` 试听主线）与 ③ `AuditionProposal`（`]` 试听 AI 提案分支）——
 /// 规范 `[ARCH-RT-005]` 的 A/B 盲听机制未实现。**
@@ -7989,7 +8156,7 @@ pub fn action_has_implementation(action: Action) -> bool {
     // ⚠ **为什么本函数不能也穷尽列名**（实测）：`src/elements.rs:2472` 有一条判据要求
     // `Action::PlayPause` / `Action::ResumeFromCursor` 在 `host.rs` 的**代码区恰好各出现一次**
     //（它证明"两键共用同一个臂"）⇒ ⭐ 在这里把它们**再列一遍**会让那条判据红（实测踩过）。
-    if let Action::AuditionMain | Action::AuditionProposal | Action::AcceptAiSuggestion = action {
+    if let Action::AuditionMain | Action::AuditionProposal = action {
         return false;
     }
     true
@@ -8444,9 +8611,22 @@ fn apply_action(
             false
         }
         Action::AcceptAiSuggestion => {
-            // 界面侧没有"当前待采纳的提案身份"这一表示（提案抽屉的数据面默认全空），
-            // 而领域的 `yeban_merge_proposal` 要 `proposalId` ⇒ 缺的是**能力**。
-            false
+            // ⭐ 与「采纳」按钮**同一个落点**：这里只**触发**那条回调（唯一注册者在
+            // [`wire_proposal_drawer`]），⛔ 不在键盘臂再写一份合并逻辑 —— 两份实现就会
+            // 有"按钮能用而键不行"的漂移。
+            //
+            // ⚠ **两个前置条件**（缺任一 ⇒ 如实不消费，与 `Undo` 没有端口、`Z` 空选区
+            // 时同一取向）：
+            // 1. 抽屉开着 ⇒ 这一键此刻有作用对象；
+            // 2. `musical-pr-resolve-available` ⇒ "这个装配有提案来源 ∧ 用户点选了当前
+            //    清单里的一行"（口径只在 `proposals::drawer_values` 定义一次）。
+            //    默认构建里这一格恒为 `false`（没有来源），因此**任何**没有挂控制面的
+            //    装配按 `Shift+Enter` 都返回 `false` —— ⛔ 不是"吞掉键却什么都不做"。
+            if !(ui.get_musical_pr_open() && ui.get_musical_pr_resolve_available()) {
+                return false;
+            }
+            ui.invoke_accept_ai_proposal();
+            true
         }
     }
 }

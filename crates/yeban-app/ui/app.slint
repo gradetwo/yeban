@@ -405,13 +405,18 @@ export component MainWindow inherits Window {
     // 来源是**进程内唯一可变权威**：`ProjectAuthorityHandle::open_proposal_rows()` →
     // `Domain::open_proposal_rows()`（会话运行态, `MODEL-ISO-001` 第二层）。界面自带
     // 的默认值全空 ⇒ 没有接来源的装配画空态, 而不是画一份编造的提案。
-    // ⚠ `resolve-available` 现在是**常量 false**：宿主侧没有"合并提案"的写入口
-    // （`HostAction` 只有 Undo/Redo/Commit）, 所以按钮不画、句 reason 上屏。判据见
-    // `src/elements.rs` 的 `the_proposal_drawer_is_written_by_the_host_along_one_path`。
+    // ⭐ `resolve-available` 现在是**算出来的**：有写入口 ∧ 点选了当前清单里的一行
+    // （口径唯一, 在 `src/proposals.rs` 的 `drawer_values`）。写入口 = `HostAction` 的
+    // `MergeProposal` / `RejectProposal` 两臂（复用工具面同一个 `Plan::Merge` /
+    // `Plan::Reject` 实现, ⛔ 不是第二份合并逻辑）。
     in property <int> musical-pr-proposal-count: 0;
+    in property <[string]> musical-pr-proposal-ids: [];
     in property <[string]> musical-pr-proposal-kinds: [];
     in property <[string]> musical-pr-proposal-titles: [];
     in property <[int]> musical-pr-proposal-op-counts: [];
+    /// 用户点选的那一行的身份；宿主**夹紧**过（不在当前清单里 ⇒ 空串）。
+    /// ⛔ 不是工程数据（`MODEL-ISO-001` 的挥发性层）、不进 `.yeban`、不进撤销栈。
+    in property <string> musical-pr-selected-id: "";
     in property <string> musical-pr-empty-reason: "";
     in property <bool> musical-pr-resolve-available: false;
     in property <string> musical-pr-resolve-reason: "";
@@ -597,6 +602,9 @@ export component MainWindow inherits Window {
     callback open-musical-pr();
     callback accept-ai-proposal();
     callback reject-ai-proposal();
+    /// 抽屉里点了一行提案：上报**那一行的身份原文**（`ProposalRowView::id`）。
+    /// 唯一落点 = `host::wire_proposal_drawer` 的 `on_select_ai_proposal`。
+    callback select-ai-proposal(string);
     callback run-acoustic-diagnosis();
     callback export-diagnostics();
     // `[UI-A11Y-002]` §7.2：BPM 敲入控件里真 `TextInput` 的合成态 / 焦点事件
@@ -1888,24 +1896,24 @@ export component MainWindow inherits Window {
         height: root.height;
         visible: root.musical-pr-open;
 
-        // ⭐ 抽屉的数据面**全部**来自 `MainWindow` 上那七个属性（唯一写者 =
+        // ⭐ 抽屉的数据面**全部**来自 `MainWindow` 上那九个属性（唯一写者 =
         // `host::apply_proposal_drawer`）。这里不写任何字面量 —— 界面不自己拼提案。
         proposal-count: root.musical-pr-proposal-count;
+        proposal-ids: root.musical-pr-proposal-ids;
         proposal-kinds: root.musical-pr-proposal-kinds;
         proposal-titles: root.musical-pr-proposal-titles;
         proposal-op-counts: root.musical-pr-proposal-op-counts;
+        selected-proposal-id: root.musical-pr-selected-id;
         empty-reason: root.musical-pr-empty-reason;
         resolve-available: root.musical-pr-resolve-available;
         resolve-reason: root.musical-pr-resolve-reason;
 
-        accept => {
-            root.accept-ai-proposal();
-            root.musical-pr-open = false;
-        }
-        reject => {
-            root.reject-ai-proposal();
-            root.musical-pr-open = false;
-        }
+        // ⛔ 按下**不**关抽屉（与上一轮的行为不同, 那是刻意的）：宿主处理完之后
+        // 重新读权威再注入 —— 成功 ⇒ 那一行消失（真实的反馈, 不是一句"操作成功"）;
+        // 被拒 ⇒ `resolve-reason` 换成**权威自己的**那句话, 抽屉必须留着才看得见。
+        accept => { root.accept-ai-proposal(); }
+        reject => { root.reject-ai-proposal(); }
+        select-proposal(id) => { root.select-ai-proposal(id); }
         close => { root.musical-pr-open = false; }
     }
 

@@ -1104,31 +1104,36 @@ fn mount_in_process_mcp(
 /// 里再写，并按新身份重注入卷帘作用域 —— `[UI-NOTE-001]` 的"当前编辑片段"）。
 /// 原先写在 `.slint` 里的 `root.* = !root.*` 翻转**已删除** —— 同一条动作只有一个写者。
 ///
-/// `open-musical-pr` 是这九条里**唯一**搬出去的：它现在由
+/// 抽屉那**四条**（`open-musical-pr` / `select-ai-proposal` / `accept-ai-proposal` /
+/// `reject-ai-proposal`）是这九条里搬出去的：它们现在由
 /// [`host::wire_proposal_drawer`] 注册（打开抽屉时要**现读**权威那份未合并提案清单再
 /// 注入 —— Slint 的 `on_*` 是覆盖语义，同一个回调只能有一个注册者，因此
 /// [`host::wire_view_callbacks`] 里那一处已删）。
 ///
-/// 其余**三条**回调仍然故意什么都不做，只打一行 stderr。原因不是省事，而是
+/// 其余**一条**回调仍然故意什么都不做，只打一行 stderr。原因不是省事，而是
 /// "接上也只能是什么都不做"（本仓库的明文纪律：把动作吞掉却什么都不做，比不处理更糟）：
 ///
-/// - `accept-ai-proposal` / `reject-ai-proposal`：**界面上没有合并提案的写入口**。
-///   **2026-10-30 更正本条前半**：提案在界面侧**现在有了表示** —— 抽屉那七个属性由
-///   [`host::wire_proposal_drawer`] 从唯一可变权威注入（`crates/yeban-app/src/proposals.rs`）。
-///   但"看得见提案"与"能采纳提案"是两件事：`yeban_merge_proposal` /
-///   `yeban_reject_proposal` 要 `proposalId`，而宿主的 `HostAction` 只有 `Undo` /
-///   `Redo` / `Commit` 三臂 ⇒ 界面上没有携带身份的写入口。在界面侧新造一条"当前提案"
-///   状态会与领域权威冲突（`ADR-0005`）⇒ 仍然登记为缺口，不接。
-///   因此抽屉那两个按钮由 `musical-pr-resolve-available`（今天恒 `false`）把关 ——
-///   **不画**假控件，改为逐字上屏 `RESOLVE_NOT_WIRED_REASON` 那句原因。
-///   （历史：这四个属性此前是内联演示常量 —— 三条中文假提案 + 三个假置信度 ⇒ 界面显示
-///   "AI 提了 3 条"而用户分不出真假；2026-10-08 那一片删掉了数据，本片接上真来源。）
+/// - `accept-ai-proposal` / `reject-ai-proposal` / `select-ai-proposal`：**这三条已经真的
+///   接线**（2026-10-31），因此**不在**下面这份"故意空转"的名单里 —— 它们由
+///   [`host::wire_proposal_drawer`] 注册，落点是
+///   [`host::resolve_proposal`] → `proposals::ProposalSource::resolve` →
+///   `ProjectAuthorityHandle::apply_host(HostAction::{MergeProposal, RejectProposal})`，
+///   与 MCP 工具 `yeban_merge_proposal` / `yeban_reject_proposal` 复用**同一个**
+///   `Plan::Merge` / `Plan::Reject`（⛔ 不是界面上的第二份合并实现）。
+///   这一票之前的历史（登记两次、结论都被推翻）：① 界面上没有提案的表示 ⇒ 2026-10-30
+///   接上读面（九个属性由同一个宿主写者从唯一可变权威注入）；② "看得见"仍不等于
+///   "能采纳"，因为写入口要携带 `proposalId` 而 `HostAction` 只有 `Undo`/`Redo`/`Commit`
+///   三臂 ⇒ 2026-10-31 领域侧长出 `MergeProposal`/`RejectProposal` 两臂 + 界面侧
+///   "点一行 = 选中"这一格（选中态是**窗口属性**，不是新造的领域状态，因此不撞
+///   `ADR-0005`）。`musical-pr-resolve-available` 的口径在有写入口之外还要求**点选了
+///   当前清单里的一行**；不满足时**不画**假控件，逐字上屏 `NO_WRITE_SOURCE_REASON` /
+///   `NO_SELECTION_REASON` / 权威拒绝的那句话。
 /// - `run-acoustic-diagnosis`：仓库里**没有**声学分析（掩蔽 / 相位 / 动态范围）的实现。
 ///   最近的既有机制是 `[D56]` 的 `UiAction::ExportDiagnostics`，而 [`host::wire_undo`]
 ///   已经把它接在**另一个**按钮（`diagnostics-export-action`）上，产物是 env/git/日志的
 ///   诊断 zip，不是声学读数 ⇒ 接上去等于用一个无关产物消费掉这一次点击。
 ///
-/// 三条逐条登记在 `docs/ledger/feature-alignment.md` 的错位 7。
+/// 这条仍然未接的回调登记在 `docs/ledger/feature-alignment.md` 的错位 7。
 ///
 /// 回调跑在 UI 线程上; `[ARCH-TOP-002]` / `[ARCH-RT-001]` 约束的是音频线程,
 /// 所以这里的 `eprintln!` 不触碰红线 —— 但接线真实动作时**仍然不许**做长阻塞等待。
@@ -1147,15 +1152,19 @@ fn wire_callbacks(
 ) {
     host::wire_transport(ui, Rc::clone(engine), project, undo.clone());
     host::wire_view_callbacks(ui);
-    // ⭐ 抽屉：注册 `open-musical-pr` ＋ 打开时从权威**现读**未合并提案清单注入
-    // （`wire_view_callbacks` 不再碰这个回调 —— Slint 的 `on_*` 是覆盖语义，只能有一个注册者）。
+    // ⭐ 抽屉：注册 `open` / `select` / `accept` / `reject` 四条回调 ＋ 打开时从权威
+    // **现读**未合并提案清单注入（`wire_view_callbacks` 不再碰这些回调 —— Slint 的
+    // `on_*` 是**覆盖**语义，只能有一个注册者）。
+    //
+    // ⚠ 这里原先还各写着一行 `ui.on_accept_ai_proposal(|| trace(..))` /
+    // `ui.on_reject_ai_proposal(|| trace(..))`：**必须删掉**，不是清理装饰。Slint 的
+    // `on_*` 是覆盖语义 ⇒ 留着就会把 `wire_proposal_drawer` 刚接好的写入口**静默擦掉**，
+    // 而日志里那句"未接线"照旧打出来（写面接了、注册被自己盖掉，界面上按下去什么都不发生）。
     host::wire_proposal_drawer(ui, proposal_source);
     // ⭐ `[UI-NOTE-001]` 剪辑选中态 ⇒ 卷帘作用域：与无头装配（`live_surface.rs`）调的是
     // **同一个** `host::wire_clip_scope`（选中是视图态，写属性 + 重注入，⛔ 不 `commit_ops`）。
     host::wire_clip_scope(ui, Rc::clone(&view), undo);
     host::wire_scene_launch(ui, Rc::clone(engine), view);
-    ui.on_accept_ai_proposal(|| trace("accept-ai-proposal"));
-    ui.on_reject_ai_proposal(|| trace("reject-ai-proposal"));
     ui.on_run_acoustic_diagnosis(|| trace("run-acoustic-diagnosis"));
 }
 

@@ -722,6 +722,7 @@ impl LiveAdminSurface {
         host::apply_proposal_drawer(
             &self.window,
             &yeban_app::proposals::ProposalSource::from_authority(&authority),
+            host::DrawerIntent::default(),
         );
         self.authority_revision = revision;
         Ok(AuthoritySync::Reprojected { revision })
