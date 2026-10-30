@@ -866,6 +866,10 @@ mod tests {
         assert_eq!(left[3].to_bits(), 1.2f32.to_bits(), "越界样本被改写了");
         assert_eq!(left[7].to_bits(), 1.2f32.to_bits(), "越界样本被改写了");
         assert!(
+            !left.is_empty(),
+            "夹具必须非空（否则下面那条 `.all(..)` 恒真）"
+        );
+        assert!(
             left[..3].iter().all(|sample| sample.abs() < 1.2),
             "被覆盖的帧必须被压下去"
         );
@@ -982,6 +986,14 @@ mod tests {
         assert!(
             limited.abs() < 1.2,
             "强侧瞬态没有被压：{limited}（联动取了静音侧，窗口峰值被低估）"
+        );
+        assert!(
+            !left.is_empty(),
+            "夹具必须非空（否则下面那条 `.all(..)` 恒真）"
+        );
+        assert!(
+            !right.is_empty(),
+            "夹具必须非空（否则下面那条 `.all(..)` 恒真）"
         );
         assert!(
             left.iter()

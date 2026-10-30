@@ -1471,6 +1471,10 @@ mod tests {
         let mut again = interleaved(128, 53, 0.9);
         shell.process(&mut again);
         assert!(
+            !again.is_empty(),
+            "夹具必须非空（否则下面那条 `.all(..)` 恒真）"
+        );
+        assert!(
             again.iter().all(|v| v.is_finite()),
             "换回好 IR 之后仍有非有限值"
         );
