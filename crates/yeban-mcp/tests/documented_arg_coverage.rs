@@ -702,7 +702,7 @@ fn each_documented_key_declares_its_default_side_evidence_or_gap() {
         DEFAULT_SIDE.len()
     );
     assert!(
-        DEFAULT_SIDE_GAPS.len() <= 0,
+        DEFAULT_SIDE_GAPS.is_empty(),
         "缺省缺口涨到 {} 行 => 有键的缺省钉被悄悄降级，或新键进来没人补证据",
         DEFAULT_SIDE_GAPS.len()
     );
