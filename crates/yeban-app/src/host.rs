@@ -285,7 +285,9 @@ pub fn apply_view(ui: &MainWindow, view: &ViewState, viewport_width: f32, scroll
     // ⇒ 登记与判据见 `bridge.rs` 的 `VisibleNotes::rows` 与 `tests/roll_injection_registration.rs`
     // （台账第 283 条：生产读点 0；改这里之前先读那条登记）。
     // 位置**相对视口**（投影侧已减去 `scroll_x`）⇒ `.slint` 不做位置算术, 事件路径传 0.0。
-    let visible = view.visible_notes(scroll_x, viewport_width);
+    // ⭐ `[UI-NOTE-001]` 的"当前编辑片段"：选中的剪辑摆放决定**作用域**（片段池条目身份）；
+    // 没有选中（空串 / 过期身份）⇒ `None` ⇒ 片段池全部音符，与作用域落地之前逐项相同。
+    let visible = view.visible_notes_scoped(scroll_x, viewport_width, roll_scope(ui, view));
     // 选中标志与其它数组**同一索引集**（第六个：五个平行数组之后的那一个）：每次注入都从界面上的 `selected-ulids` 重算,
     // 因此滚动/撤销重注入后不会错位（账本第 504 轮）。
     // `ModelRc` 的迭代要 `Model` trait 在作用域内；构造要 `VecModel`（`Vec` 不直接 `Into<ModelRc>`）。
@@ -671,6 +673,17 @@ fn selected_track_id(ui: &MainWindow) -> Option<String> {
     } else {
         Some(id.to_string())
     }
+}
+
+/// ⭐ `[UI-NOTE-001]` 卷帘作用域：选中的剪辑**摆放身份** → 片段池条目身份。
+///
+/// 唯一事实源是窗口属性 `selected-clip-ulid`（写入点只有 [`wire_clip_scope`]）；
+/// 解析走投影自己的 `placement_id → clip_id`（[`crate::bridge::ViewState::clip_scope_for_placement`]），
+/// ⇒ "界面选中的剪辑"与"卷帘显示的片段"是同一份投影，不存在第三张表。
+/// 空串 / 过期身份 ⇒ `None`（片段池全部音符）。
+#[must_use]
+fn roll_scope<'a>(ui: &MainWindow, view: &'a ViewState) -> Option<&'a str> {
+    view.clip_scope_for_placement(ui.get_selected_clip_ulid().as_str())
 }
 
 /// ⭐ 任务单 `#192`：面板服务的那条轨 —— 宿主侧**唯一**的解析点。
@@ -5240,6 +5253,10 @@ const SIDEBAR_ITEM_COUNT: i32 = 8;
 /// | `back-to-arrangement` | `arrangement-view` | Session 视图「→ 编曲」按钮：写 `true` 切回编曲视图（⛔ 不是翻转；播放权回归的引擎侧语义未实现，见 `session_view.slint` 头注） |
 /// | `clip-select` | `selected-clip-ulid` | 编曲视图剪辑包头（`clip-{ulid}-header`）的选中态：包头 2px `selection` 描边 + `accessible-item-selected`（身份比较） |
 ///
+/// `clip-select` **不在本函数里**：它的选中身份同时是卷帘的**作用域**（`[UI-NOTE-001]`
+/// 的"当前编辑片段"），因此要按新身份重注入音符数组 —— 注册点是紧随其后的
+/// [`wire_clip_scope`]（同一档"写视图态 ＋ 重注入"的回调，⛔ 不 `commit_ops`）。
+///
 /// ## 为什么这些翻转必须住在这里，而不是 `.slint` 的 `clicked =>` 里
 ///
 /// `arrangement-view` 与 `sidebar-collapsed` 已经有**第二个宿主写者**：
@@ -5247,7 +5264,7 @@ const SIDEBAR_ITEM_COUNT: i32 = 8;
 /// 写的就是这两个属性（`ui/switch_main_view` 也写同一个）。若 `.slint` 的转发块自己再翻转
 /// 一次，同一个动作就有两个真相源；而"界面**不**自己翻转状态"正是 `playing` 那条已经
 /// 付过学费的契约（`ui/app.slint` 的 `toggle-play` 注释、`docs/ledger/feature-alignment.md`
-/// 错位 7）。因此本函数是这九条回调的**唯一**落点，组件里只剩"原样转发"。
+/// 错位 7）。因此本函数是这八条回调的**唯一**落点，组件里只剩"原样转发"。
 ///
 /// ## 为什么这不是"假接线"
 ///
@@ -5354,27 +5371,56 @@ pub fn wire_view_callbacks(ui: &MainWindow) {
             ui.set_arrangement_view(true);
         }
     });
-    // ⭐ 剪辑包头：界面报**身份**（它在 `clip-ulids` 的循环里就有 ⇒ ⛔ 不需要第二份表）。
-    // 宿主只做两件事：校验这个身份确实在**当前注入的** `clip-ulids` 里（越界 / 过期身份
-    // ⇒ 什么都不做），以及"同一条再点一次 ⇒ 一位不动"。⛔ 不重投影（没有面板读它；
-    // 高亮由 `.slint` 直接比较身份得到）、⛔ 不 `commit_ops` —— 选中是视图态。
-    ui.on_clip_select({
-        let weak = weak.clone();
-        move |clip_ulid| {
-            use slint::Model as _;
-            let Some(ui) = weak.upgrade() else {
-                debug_assert!(false, "MainWindow 在回调执行期间被销毁");
-                return;
-            };
-            let known = ui.get_clip_ulids();
-            if !known.iter().any(|id| id.as_str() == clip_ulid.as_str()) {
-                return;
-            }
-            if ui.get_selected_clip_ulid().as_str() == clip_ulid.as_str() {
-                return;
-            }
-            ui.set_selected_clip_ulid(clip_ulid);
+    // ⭐ 剪辑包头（`on_clip_select`）**不在这里**：它要按选中身份**重注入卷帘**
+    // （`[UI-NOTE-001]` 的"当前编辑片段"作用域），因此需要一份投影和可选的撤销端口 ——
+    // 落点是紧随其后的 [`wire_clip_scope`]（与 `wire_scene_launch` 同一档的"要投影"回调）。
+}
+
+/// ⭐ 剪辑选中态**及其作用面**（`[UI-NOTE-001]` 的"当前编辑片段"）。
+///
+/// | 读 / 写 | 事实源 |
+/// | :--- | :--- |
+/// | 写 | 窗口属性 `selected-clip-ulid`（**唯一**写者就是这里） |
+/// | 读 | `.slint` 高亮（身份比较）＋ [`roll_scope`] → [`ViewState::visible_notes_scoped`] |
+/// | 不进 | `Op` / [`UndoPort`] / `.yeban` / 撤销栈（`commit_ops` 一次都不调）—— 选中是视图态（`MODEL-ISO-001`） |
+///
+/// ## 为什么它从 [`wire_view_callbacks`] 里单独出来
+///
+/// 作用域变了 ⇒ **音符数组必须跟着变**。重注入走**唯一**注入点 [`apply_view`]
+/// （与滚动手势 / 撤销 / 铅笔提交同一条）；因此这里需要一份投影和可选的撤销端口：
+/// 有端口时以**当前**工程重投影（与 [`install_roll_click`] 的 fresh/fallback 同一手法），
+/// 没有端口时退回装配时的视图快照。
+///
+/// ## 校验与幂等
+///
+/// 身份不在**当前注入的** `clip-ulids` 里 ⇒ 一位不写（⛔ 不写幻影身份）；
+/// 同一条再点一次 ⇒ 一位不动（`clip_selection` 判据 ⑤ 的"不白重画"）。
+pub fn wire_clip_scope(ui: &MainWindow, view: Rc<RefCell<ViewState>>, undo: Option<Rc<UndoPort>>) {
+    let weak = ui.as_weak();
+    ui.on_clip_select(move |clip_ulid| {
+        use slint::Model as _;
+        let Some(ui) = weak.upgrade() else {
+            debug_assert!(false, "MainWindow 在回调执行期间被销毁");
+            return;
+        };
+        let known = ui.get_clip_ulids();
+        if !known.iter().any(|id| id.as_str() == clip_ulid.as_str()) {
+            return;
         }
+        if ui.get_selected_clip_ulid().as_str() == clip_ulid.as_str() {
+            return;
+        }
+        ui.set_selected_clip_ulid(clip_ulid);
+        // 作用域重注入：只读的重投影，不 `commit_ops`。
+        let scroll = ui.get_roll_scroll_x();
+        let width = slint::ComponentHandle::window(&ui).size().width as f32;
+        let fresh = undo
+            .as_ref()
+            .and_then(|port| port.try_project())
+            .and_then(|project| project_with_view_state(&project, &ui).ok());
+        let snapshot = view.borrow().clone();
+        let state: &ViewState = fresh.as_ref().unwrap_or(&snapshot);
+        apply_view(&ui, state, width, scroll);
     });
 }
 
@@ -9348,9 +9394,17 @@ fn install_roll_click(ui: &MainWindow, fallback_view: Rc<ViewState>, port: Optio
                 .as_ref()
                 .and_then(|project| ViewState::from_project(project).ok());
             let view: &ViewState = fresh.as_ref().unwrap_or(&fallback_view);
+            // ⭐ 作用域与 `apply_view` **同一口径**：卷帘只画作用域内的音符 ⇒ 命中与选中标志
+            // 也必须只看这些音符，否则会"选中一个看不见的音符"或多出对齐不上的标志位。
+            let scope = roll_scope(&ui, view);
             // ---- 第一段：命中 + 选区（**总是**执行）----
             // 音符框高与 `.slint` 的矩形一致；值写在一处, 免得命中测试去猜（账本第 495 轮）。
-            let hit = view.hit_test_visible(scroll, width, x, y, NOTE_HEIGHT_PX);
+            let hit = view
+                .hit_test_visible(scroll, width, x, y, NOTE_HEIGHT_PX)
+                .filter(|&index| match scope {
+                    Some(scope) => view.notes[index].clip_id.as_str() == scope,
+                    None => true,
+                });
             // ⭐ `#212`：**借只包住选区的内存镜像** —— 先算出要写的三个读数，放借，
             // 再写界面。持借调界面（`ui.set_selected_*`）是同一类重入形态：
             // 界面写入若回调到同一份 `RefCell`，`borrow_mut()` 就会 panic。
@@ -9364,7 +9418,7 @@ fn install_roll_click(ui: &MainWindow, fallback_view: Rc<ViewState>, port: Optio
                 // 把选中 id 写回界面属性 —— `apply_view` 由它重算标志, 保证重注入后仍对齐。
                 let ids: Vec<slint::SharedString> =
                     sel.iter().map(|id| id.as_str().into()).collect();
-                let visible = view.visible_notes(scroll, width);
+                let visible = view.visible_notes_scoped(scroll, width, scope);
                 let flags = crate::input::flags_for_ids(
                     &sel.iter().cloned().collect::<Vec<_>>(),
                     &visible.ulids,

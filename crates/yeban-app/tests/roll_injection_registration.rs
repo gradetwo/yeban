@@ -29,7 +29,11 @@ const HOST_RS: &str = include_str!("../src/host.rs");
 const BRIDGE_RS: &str = include_str!("../src/bridge.rs");
 
 /// 注入块的起点：`apply_view` 里唯一那次"按视口取音符"。
-const INJECT_ANCHOR: &str = "let visible = view.visible_notes(scroll_x, viewport_width);";
+///
+/// ⚠ 作用域切片（`[UI-NOTE-001]` 的"当前编辑片段"）之后**唯一**的取法带上了
+/// `roll_scope(ui, view)`（选中剪辑 → 片段池条目）；数组集合与 `rows` 的处置**一位未变**。
+const INJECT_ANCHOR: &str =
+    "let visible = view.visible_notes_scoped(scroll_x, viewport_width, roll_scope(ui, view));";
 /// 注入块的终点（下一个与音符无关的注入）—— 窗口是**半开**的。
 const INJECT_END: &str = "ui.set_track_colors(";
 /// 被判的那段注释的起点。
@@ -225,11 +229,11 @@ fn host_comment_and_injection_agree_on_the_note_array_set() {
     );
 }
 
-/// **断言 ③**：`visible_notes` 的每个绑定名上，`.rows` 的宿主导入读点 = 0（第 283 条）。
+/// **断言 ③**：`visible_notes_scoped` 的每个绑定名上，`.rows` 的宿主导入读点 = 0（第 283 条）。
 #[test]
 fn visible_rows_has_no_host_consumer() {
     let mut bindings: Vec<(usize, String)> = Vec::new();
-    for (at, _) in HOST_RS.match_indices(".visible_notes(") {
+    for (at, _) in HOST_RS.match_indices(".visible_notes_scoped(") {
         let line_start = HOST_RS[..at].rfind('\n').map_or(0, |i| i + 1);
         let line_end = HOST_RS[at..].find('\n').map_or(HOST_RS.len(), |i| at + i);
         let line = &HOST_RS[line_start..line_end];

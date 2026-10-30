@@ -1076,11 +1076,12 @@ fn mount_in_process_mcp(
 /// 剪辑选中陆续落地）：
 /// `toggle-view` / `toggle-sidebar` / `toggle-ai-drawer` / `open-musical-pr` /
 /// `select-sidebar-category` / `console-maximize-toggle` / `select-sidebar-item` /
-/// `back-to-arrangement` / `clip-select` → [`host::wire_view_callbacks`] → 分别写
+/// `back-to-arrangement` → [`host::wire_view_callbacks`] → 分别写
 /// `arrangement-view` / `sidebar-collapsed` / `ai-drawer-open` / `musical-pr-open` /
-/// `sidebar-category` / `console-maximized` / `sidebar-item` / `arrangement-view` /
-/// `selected-clip-ulid`（`back-to-arrangement` 只写 `true`，与 `toggle-view` 同一属性；
-/// `clip-select` 先校验身份确实在 `clip-ulids` 里再写）。
+/// `sidebar-category` / `console-maximized` / `sidebar-item` / `arrangement-view`；
+/// `clip-select` → [`host::wire_clip_scope`] → `selected-clip-ulid`（`back-to-arrangement`
+/// 只写 `true`，与 `toggle-view` 同一属性；`clip-select` 先校验身份确实在 `clip-ulids`
+/// 里再写，并按新身份重注入卷帘作用域 —— `[UI-NOTE-001]` 的"当前编辑片段"）。
 /// 原先写在 `.slint` 里的 `root.* = !root.*` 翻转**已删除** —— 同一条动作只有一个写者。
 ///
 /// 其余**三条**回调仍然故意什么都不做，只打一行 stderr。原因不是省事，而是
@@ -1116,8 +1117,11 @@ fn wire_callbacks(
     // （⛔ 不是装配期的一份 clone：换工程之后它必须跟着换）。
     view: Rc<RefCell<yeban_app::bridge::ViewState>>,
 ) {
-    host::wire_transport(ui, Rc::clone(engine), project, undo);
+    host::wire_transport(ui, Rc::clone(engine), project, undo.clone());
     host::wire_view_callbacks(ui);
+    // ⭐ `[UI-NOTE-001]` 剪辑选中态 ⇒ 卷帘作用域：与无头装配（`live_surface.rs`）调的是
+    // **同一个** `host::wire_clip_scope`（选中是视图态，写属性 + 重注入，⛔ 不 `commit_ops`）。
+    host::wire_clip_scope(ui, Rc::clone(&view), undo);
     host::wire_scene_launch(ui, Rc::clone(engine), view);
     ui.on_accept_ai_proposal(|| trace("accept-ai-proposal"));
     ui.on_reject_ai_proposal(|| trace("reject-ai-proposal"));

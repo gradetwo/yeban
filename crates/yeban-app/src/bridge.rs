@@ -4312,6 +4312,23 @@ impl ViewState {
         self.clips.iter().map(|clip| clip.label.clone()).collect()
     }
 
+    /// 选中的**摆放身份** → 它引用的**片段池条目身份**（[`Self::visible_notes_scoped`] 的作用域）。
+    ///
+    /// 空串（没有选中）与"身份不在当前投影里"（过期身份 / 刚被撤销掉）都返回 `None`
+    /// ⇒ 卷帘退回"片段池全部音符"，与作用域落地之前的画面逐项相同。
+    /// 映射只走投影自己的 [`ClipView`] 两张字段（`placement_id` → `clip_id`），
+    /// 不存在第二张 `摆放 → 片段` 表。
+    #[must_use]
+    pub fn clip_scope_for_placement(&self, placement_id: &str) -> Option<&str> {
+        if placement_id.is_empty() {
+            return None;
+        }
+        self.clips
+            .iter()
+            .find(|clip| clip.placement_id == placement_id)
+            .map(|clip| clip.clip_id.as_str())
+    }
+
     /// 剪辑相对 x（逻辑像素）。
     #[must_use]
     pub fn clip_positions(&self) -> Vec<f32> {
@@ -4464,10 +4481,30 @@ impl ViewState {
     ///
     /// `positions` 是**相对视口**的（已减去 `scroll_x`），因为 `.slint` 契约规定它不做位置算术；
     /// 与窗口左沿相交但起始更早的音符会得到**负** x（应部分可见），这是正确的。
+    ///
+    /// 没有作用域（`None`）＝ 片段池的全部音符，与作用域落地之前**逐项相同**。
     #[must_use]
     pub fn visible_notes(&self, scroll_x: f32, viewport_width: f32) -> VisibleNotes {
+        self.visible_notes_scoped(scroll_x, viewport_width, None)
+    }
+
+    /// 与 [`Self::visible_notes`] 同一条路径，外加**作用域**（片段池条目身份）。
+    ///
+    /// 作用域非空 ⇒ 只保留 `clip_id` 与该身份**逐字相等**的音符（`[UI-NOTE-001]` 的
+    /// "当前编辑片段"）；空 ⇒ 全部。过滤发生在裁剪**之后**、装数组**之前**，因此六个
+    /// 平行数组仍然共用同一索引集（`ulids` / `velocities` / `positions` / `widths` / `ys` / `rows`）。
+    #[must_use]
+    pub fn visible_notes_scoped(
+        &self,
+        scroll_x: f32,
+        viewport_width: f32,
+        clip_scope: Option<&str>,
+    ) -> VisibleNotes {
         let left = scroll_x.max(0.0);
-        let indices = self.notes_visible_in(scroll_x, viewport_width);
+        let mut indices = self.notes_visible_in(scroll_x, viewport_width);
+        if let Some(scope) = clip_scope {
+            indices.retain(|&index| self.notes[index].clip_id.as_str() == scope);
+        }
         let mut out = VisibleNotes {
             positions: Vec::with_capacity(indices.len()),
             widths: Vec::with_capacity(indices.len()),
@@ -6615,6 +6652,185 @@ mod tests {
         // 六个平行数组**同长**（第 181 轮更正：不是四个）。
         assert_eq!(vis.positions.len(), vis.ulids.len());
         assert_eq!(vis.positions.len(), vis.velocities.len());
+    }
+
+    /// 判据 14：**片段池作用域**只保留 `clip_id` 逐字相等的音符，六个平行数组仍同索引集。
+    ///
+    /// 期望值不是"实现算一遍再比实现"：每个作用域结果必须等于**窗口索引集 ∩ 片段筛选**
+    /// 的暴力结果；两个片段的结果并起来必须等于无作用域结果（既不多也不少）。
+    #[test]
+    fn scoped_visible_notes_filters_to_one_pool_entry_and_keeps_arrays_aligned() {
+        use std::collections::{BTreeMap, BTreeSet};
+
+        // 夹具：`filled_project` 只有一个 MIDI 片段池条目，这里补第二个（⛔ 不动原有 4 条音符）。
+        let mut project = filled_project();
+        let second_clip = demo_id("K7");
+        let mut notes: BTreeMap<EntityId, MidiNote> = BTreeMap::new();
+        for (index, pitch) in [64_u8, 67, 71].into_iter().enumerate() {
+            let note_id = demo_id(&format!("N{index}"));
+            let start_tick = 960 * u64::try_from(index).unwrap_or(0) + 240;
+            notes.insert(note_id, MidiNote::new(note_id, start_tick, pitch, 480));
+        }
+        project.clip_pool.insert(
+            second_clip,
+            ClipPoolEntry {
+                id: second_clip,
+                name: "第二 MIDI".to_owned(),
+                content: ClipContent::Midi { notes },
+            },
+        );
+        let second_clip_text = second_clip.to_canonical_string();
+
+        let view = ViewState::from_project_with_zoom(&project, 120).expect("投影");
+        let clip_ids: BTreeSet<String> =
+            view.notes.iter().map(|note| note.clip_id.clone()).collect();
+        assert!(
+            clip_ids.len() >= 2,
+            "夹具必须至少有两个 MIDI 片段池条目（现读 {clip_ids:?}）"
+        );
+        assert!(clip_ids.contains(&second_clip_text));
+
+        // 三个窗口（含空窗口）：作用域 = 窗口索引集 ∩ 片段，逐条比对。
+        for &(scroll, width) in &[(0.0_f32, 10_000.0_f32), (3.0, 6.0), (0.0, 0.0)] {
+            let window = view.notes_visible_in(scroll, width);
+            let unscoped = view.visible_notes_scoped(scroll, width, None);
+            assert_eq!(
+                unscoped.ulids.len(),
+                window.len(),
+                "无作用域必须逐项等于窗口索引集（scroll={scroll} width={width}）"
+            );
+            // `visible_notes` 是 `visible_notes_scoped(None)` 的逐项同义词。
+            let plain = view.visible_notes(scroll, width);
+            assert_eq!(plain.ulids, unscoped.ulids);
+            assert_eq!(plain.positions, unscoped.positions);
+            assert_eq!(plain.widths, unscoped.widths);
+            assert_eq!(plain.ys, unscoped.ys);
+            assert_eq!(plain.rows, unscoped.rows);
+            assert_eq!(plain.velocities, unscoped.velocities);
+
+            let mut summed = 0_usize;
+            for scope in &clip_ids {
+                let want: Vec<String> = window
+                    .iter()
+                    .filter(|&&index| &view.notes[index].clip_id == scope)
+                    .map(|&index| view.notes[index].id.clone())
+                    .collect();
+                let got = view.visible_notes_scoped(scroll, width, Some(scope.as_str()));
+                assert_eq!(
+                    got.ulids, want,
+                    "作用域必须等于 窗口 ∩ 片段（scroll={scroll} width={width} scope={scope}）"
+                );
+                // 六个平行数组仍然同长（作用域只过滤索引，不各自裁剪）。
+                assert_eq!(got.positions.len(), got.ulids.len());
+                assert_eq!(got.widths.len(), got.ulids.len());
+                assert_eq!(got.ys.len(), got.ulids.len());
+                assert_eq!(got.rows.len(), got.ulids.len());
+                assert_eq!(got.velocities.len(), got.ulids.len());
+                summed += got.ulids.len();
+            }
+            // 按片段拆开再拼起来必须与无作用域结果**逐条相等**（既不多也不少）。
+            assert_eq!(
+                summed,
+                unscoped.ulids.len(),
+                "两个片段的并必须等于无作用域结果（scroll={scroll} width={width}）"
+            );
+        }
+
+        // 全窗口下作用域必须**真的缩小**结果（否则判据对"过滤器没生效"没有牙）。
+        let all = view.visible_notes(0.0, 10_000.0);
+        for scope in &clip_ids {
+            let scoped = view.visible_notes_scoped(0.0, 10_000.0, Some(scope.as_str()));
+            assert!(
+                !scoped.ulids.is_empty(),
+                "片段 {scope} 在 10k 宽窗口里必须有音符"
+            );
+            assert!(
+                scoped.ulids.len() < all.ulids.len(),
+                "作用域 {scope} 必须真的缩小集合：{} vs {}",
+                scoped.ulids.len(),
+                all.ulids.len()
+            );
+        }
+
+        // 过期 / 伪造身份 ⇒ 空结果，⛔ 不退化成"全部"。
+        for bogus in ["", "01J8Z5Q0R7K3M9X2V4B6N8P1ZZ"] {
+            let none = view.visible_notes_scoped(0.0, 10_000.0, Some(bogus));
+            assert!(none.ulids.is_empty(), "未知作用域 {bogus:?} 必须为空");
+            assert_eq!(none.positions.len(), 0);
+            assert_eq!(none.widths.len(), 0);
+            assert_eq!(none.ys.len(), 0);
+            assert_eq!(none.rows.len(), 0);
+            assert_eq!(none.velocities.len(), 0);
+        }
+    }
+
+    /// 判据 15：选中的**摆放身份** → 片段池条目身份（作用域）的唯一映射。
+    ///
+    /// 三个方向：① 每个摆放都解析到投影自己的 `ClipView.clip_id`；② 同一片段池条目的
+    /// 两个摆放解析到同一作用域（不是按摆放各算一份）；③ 空串 / 过期身份 ⇒ `None`
+    /// （退回"全部音符"，与作用域落地之前逐项相同）。
+    #[test]
+    fn clip_scope_maps_placement_to_pool_entry_and_degrades_honestly() {
+        use std::collections::{BTreeMap, BTreeSet};
+
+        let project = demo_project();
+        let view = ViewState::from_project(&project).expect("投影");
+        let placements = view.clip_ulids();
+        assert_eq!(
+            placements.len(),
+            3,
+            "演示工程有三个摆放（一个 MIDI、两个音频）"
+        );
+
+        // ① 每个摆放都解析, 且读数就是投影自己的 `ClipView.clip_id`。
+        for placement in &placements {
+            let clip = view
+                .clips
+                .iter()
+                .find(|clip| &clip.placement_id == placement)
+                .expect("`clip_ulids` 与 `clips` 必须同源");
+            assert_eq!(
+                view.clip_scope_for_placement(placement),
+                Some(clip.clip_id.as_str()),
+                "摆放 {placement} 的作用域"
+            );
+        }
+
+        // ② 共享同一片段池条目的两个音频摆放 ⇒ 同一作用域。
+        let mut by_clip: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
+        for clip in &view.clips {
+            by_clip
+                .entry(clip.clip_id.as_str())
+                .or_default()
+                .insert(clip.placement_id.as_str());
+        }
+        let mut shared: Option<(&str, Vec<&str>)> = None;
+        for (clip_id, placements) in &by_clip {
+            if placements.len() >= 2 {
+                shared = Some((*clip_id, placements.iter().copied().collect()));
+                break;
+            }
+        }
+        let (shared_clip, shared_placements) =
+            shared.expect("演示工程必须有两个摆放共享同一片段池条目");
+        let scopes: BTreeSet<Option<&str>> = shared_placements
+            .iter()
+            .map(|placement| view.clip_scope_for_placement(*placement))
+            .collect();
+        assert_eq!(
+            scopes,
+            BTreeSet::from([Some(shared_clip)]),
+            "两个摆放必须解析到同一个片段池条目"
+        );
+
+        // ③ 空串（没有选中）与过期 / 伪造身份都退回"无作用域"。
+        assert_eq!(view.clip_scope_for_placement(""), None);
+        assert_eq!(
+            view.clip_scope_for_placement("01J8Z5Q0R7K3M9X2V4B6N8P1ZZ"),
+            None
+        );
+        // 反向对照：合法摆放**不是** None（否则上面的退化断言可能恒真）。
+        assert!(view.clip_scope_for_placement(&placements[0]).is_some());
     }
 
     #[test]

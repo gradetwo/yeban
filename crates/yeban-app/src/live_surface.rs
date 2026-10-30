@@ -1923,6 +1923,14 @@ pub fn build_live_ui_with(
     // （真实指针事件 → Slint 命中测试 → `.slint` 的 `TouchArea` → 宿主写属性）。
     // 只有属性写入 ⇒ 不改工程、不需要 `UndoPort`，装配顺序上也不与撤销端口耦合。
     host::wire_view_callbacks(&window);
+    // ⭐ `[UI-NOTE-001]` 剪辑选中态 ⇒ 卷帘作用域：与产品进程（`main.rs` 的 `wire_callbacks`）
+    // 调的是**同一个** `host::wire_clip_scope`。装配视图克隆一份作为"没有撤销端口"时的回落
+    // （与 `build_main_window_with_console_tab` 的 `view_snapshot` 同一手法）。
+    host::wire_clip_scope(
+        &window,
+        Rc::new(RefCell::new(view.clone())),
+        options.undo.clone(),
+    );
     // 混音台（控制台 Tab 2）的**写入面**：与产品进程（`main.rs` 的 `wire_callbacks`）调的是
     // **同一个**函数。它需要 `UndoPort`（工程内容必须走 `Op`，`ADR-0005`）⇒ 只在装配给了
     // 端口时接上；`options.undo` 为 `None` 的既有判据因此照旧"没有写入面"，行为一位不变。
