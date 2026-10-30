@@ -70,17 +70,18 @@ fn splitter_state(port: &mut LivePort<yeban_app::ui::MainWindow>) -> (f64, Rect)
 #[test]
 fn dragging_the_splitter_resizes_the_console_within_220_to_600_and_reports_the_measured_height() {
     let mut port = live_window();
-    let ui = port.ui().clone();
+    // ⚠ 每次读数**现取** `port.ui()`：它返回 `&T`（`LivePort::ui`），而 `MainWindow` **不实现**
+    // `Clone` ⇒ `let ui = port.ui().clone()` 仍是同一个借用，会横跨所有 `&mut port` 的注入调用。
 
     // ---- ① 默认诚实：档位 0，读数 = 实测 ----
     assert_eq!(
-        ui.get_console_height_px(),
+        port.ui().get_console_height_px(),
         0,
         "装配态必须是`未拖拽`哨兵（3:2 弹性比 ⇒ 默认帧一位不变）"
     );
     // 先重抓树（布局跑过一帧），**再**读 `console-height-readout`。
     let (value, bounds) = splitter_state(&mut port);
-    let default_readout = f64::from(ui.get_console_height_readout());
+    let default_readout = f64::from(port.ui().get_console_height_readout());
     assert!(
         default_readout > 0.0,
         "实测高必须为正，实际 {default_readout}"
@@ -108,38 +109,37 @@ fn dragging_the_splitter_resizes_the_console_within_220_to_600_and_reports_the_m
         .expect("指针释放注入");
 
     let expected = (default_readout + 80.0).round();
+    let px = port.ui().get_console_height_px();
     assert_eq!(
-        ui.get_console_height_px(),
-        expected as i32,
+        px, expected as i32,
         "② 上拖 80px 后档位必须 = round(默认实测高 + 80)"
     );
-    let measured = f64::from(ui.get_console_height_readout());
+    let measured = f64::from(port.ui().get_console_height_readout());
     assert!(
         (measured - expected).abs() <= 1.0,
         "② state 必须把实测高钉在档位上：measured={measured}, expected={expected}"
     );
     let (value, _) = splitter_state(&mut port);
     assert!(
-        (value - f64::from(ui.get_console_height_px())).abs() < 0.5,
-        "② 屏读值必须与拖后实测同源：value={value}, 档位={}",
-        ui.get_console_height_px()
+        (value - f64::from(px)).abs() < 0.5,
+        "② 屏读值必须与拖后实测同源：value={value}, 档位={px}"
     );
 
     // ---- ③ 硬钳位（唯一写者 = 宿主） ----
-    ui.invoke_console_height_requested(700);
+    port.ui().invoke_console_height_requested(700);
     assert_eq!(
-        ui.get_console_height_px(),
+        port.ui().get_console_height_px(),
         600,
         "③ 越上界请求必须落在 600（`UI-GRID-002` 硬限）"
     );
-    let measured = f64::from(ui.get_console_height_readout());
+    let measured = f64::from(port.ui().get_console_height_readout());
     assert!(
         (measured - 600.0).abs() <= 1.0,
         "③ 实测高应被钉在 600：measured={measured}"
     );
-    ui.invoke_console_height_requested(-5);
+    port.ui().invoke_console_height_requested(-5);
     assert_eq!(
-        ui.get_console_height_px(),
+        port.ui().get_console_height_px(),
         220,
         "③ 越下界请求必须落在 220（`UI-GRID-002` 硬限）"
     );
@@ -150,9 +150,13 @@ fn dragging_the_splitter_resizes_the_console_within_220_to_600_and_reports_the_m
     );
 
     // ---- ④ 双击归零 ⇒ 回到默认弹性比 ----
-    ui.invoke_console_height_reset();
-    assert_eq!(ui.get_console_height_px(), 0, "④ 归零必须写`未拖拽`哨兵");
-    let measured = f64::from(ui.get_console_height_readout());
+    port.ui().invoke_console_height_reset();
+    assert_eq!(
+        port.ui().get_console_height_px(),
+        0,
+        "④ 归零必须写`未拖拽`哨兵"
+    );
+    let measured = f64::from(port.ui().get_console_height_readout());
     assert!(
         (measured - default_readout).abs() <= 1.0,
         "④ 归零后实测高必须回到默认 3:2 弹性比的读数：measured={measured}, \
