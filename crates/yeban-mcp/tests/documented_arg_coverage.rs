@@ -52,7 +52,7 @@
 //!
 //! ⭐ **同日加第三条轴**（`each_documented_key_declares_its_default_side_evidence_or_gap`）：
 //! 第二条轴每行只取**一条代表判据**，于是"缺省那面（不给该键 ⇒ 与今天逐字节相同）有没有钉"
-//! 在机械读数里不可见。现读 **29** 个键 ＝ **25** 个缺省侧已证 ＋ **4** 个显式缺口
+//! 在机械读数里不可见。现读 **29** 个键 ＝ **28** 个缺省侧已证 ＋ **1** 个显式缺口
 //! （逐键点名，缺口带理由）。三轴共用同一把尺（`documented_keys()` / `defines_fn`）。
 
 use std::fs;
@@ -507,7 +507,7 @@ fn every_documented_creation_key_is_registered_with_an_effect_criterion() {
 /// 2. **两名单⛔ 重叠**（同一键⛔ 既算已证又算缺口）；
 /// 3. **登记的判据名逐个真实存在**（复用 `defines_fn`，与第二条轴同一把尺）；
 ///    缺省缺口每行**理由非空**，⛔ 空串充当"登记过"；
-/// 4. **两个方向的棘轮**：已证数 ⋧ 往下掉（下界 22），缺口数 ⋧ 悄悄涨（上界 7）——
+/// 4. **两个方向的棘轮**：已证数 ⋧ 往下掉（下界 28），缺口数 ⋧ 悄悄涨（上界 1）——
 ///    补齐一个缺口时把行从 `DEFAULT_SIDE_GAPS` 搬进 `DEFAULT_SIDE` 并**同时**改两个
 ///    数组长度与这两个界，⛔ 只搬不改（判据 2 的重叠检查拦不住"删掉一行"这种掏空）。
 #[test]
@@ -516,14 +516,15 @@ fn each_documented_key_declares_its_default_side_evidence_or_gap() {
     ///
     /// # 读数（2026-10-30，逐函数体核过；对象＝键，单位＝个 `(tool, camelKey)`）
     ///
-    /// **22** 个键有缺省侧钉子。三处容易看错的形状：
+    /// **28** 个键有缺省侧钉子（第四片两批补齐：`edit_notes` 三键，`propose` 的
+    /// `drumDensity` / `materialClipIds` / `partTracks`）。三处容易看错的形状：
     /// - `velocityMin` 与 `velocityMax` **共用**一条判据（`absent_ladder_…` 比的是
     ///   "两个键都不给" ≡ `96/112`，一次覆盖两位）；
     /// - `includeDrums` 与 `includeMelody` 同理（`absent_include_flags_…` 的四支对照里
     ///   含"只给其中一个"）；
     /// - `materialSource` 的缺省侧在 `material_source_switches_…` **自己**体内
     ///   （`absent ≡ explicit "project"` 与 `absent ≠ theory` 两条 assert 同处一条判据）。
-    const DEFAULT_SIDE: [(&str, &str, &[&str]); 25] = [
+    const DEFAULT_SIDE: [(&str, &str, &[&str]); 28] = [
         (
             "yeban_edit_notes",
             "autoMerge",
@@ -561,6 +562,11 @@ fn each_documented_key_declares_its_default_side_evidence_or_gap() {
         ),
         (
             "yeban_propose_section",
+            "drumDensity",
+            &["absent_density_is_identical_to_explicit_normal_on_every_genre"],
+        ),
+        (
+            "yeban_propose_section",
             "drumStyle",
             &["absent_style_is_byte_identical_to_the_registered_metric"],
         ),
@@ -583,6 +589,11 @@ fn each_documented_key_declares_its_default_side_evidence_or_gap() {
             "yeban_propose_section",
             "includeMelody",
             &["absent_include_flags_are_byte_identical_to_explicit_false"],
+        ),
+        (
+            "yeban_propose_section",
+            "materialClipIds",
+            &["absent_named_materials_reproduce_the_pool_round_robin"],
         ),
         (
             "yeban_propose_section",
@@ -621,6 +632,11 @@ fn each_documented_key_declares_its_default_side_evidence_or_gap() {
         ),
         (
             "yeban_propose_section",
+            "partTracks",
+            &["absent_part_tracks_derives_one_fresh_track_per_part"],
+        ),
+        (
+            "yeban_propose_section",
             "progression",
             &["absent_progression_is_byte_identical_to_the_registered_first_pick"],
         ),
@@ -650,31 +666,14 @@ fn each_documented_key_declares_its_default_side_evidence_or_gap() {
             &["voice_subdivisions_absent_is_byte_identical_to_today"],
         ),
     ];
-    /// 缺省缺口名单（**4** 行）：键 → 为什么今天钉不了／还没钉。⛔ 把它删空来让它绿 ——
-    /// 这四行是"缺省轴上仍然无证据"的**唯一**接收端，补齐时逐行搬进 `DEFAULT_SIDE`。
-    const DEFAULT_SIDE_GAPS: [(&str, &str, &str); 4] = [
-        (
-            "yeban_propose_section",
-            "drumDensity",
-            "现读只有 `Some(\"normal\")` 与 `Some(\"sparse\")` 两支对照，`None` 那支从未与 `normal` 比过",
-        ),
-        (
-            "yeban_propose_section",
-            "materialClipIds",
-            "`named_materials_feed_parts_in_declared_order` 只跑给了名单那支；同文件的缺省钉属于 `materialSource`",
-        ),
-        (
-            "yeban_propose_section",
-            "partTracks",
-            "三条判据全在『给了 partTracks』那支，不给 ⇒ 全部新建轨的既有形状无断言",
-        ),
-        (
-            "yeban_render_master",
-            "contributions",
-            "`contributions_match_an_independent_mute_render` 钉的是『给了子集 ⇒ 等于静音另一组』，\
+    /// 缺省缺口名单（**1** 行）：键 → 为什么今天钉不了／还没钉。⛔ 把它删空来让它绿 ——
+    /// 这一行是"缺省轴上仍然无证据"的**唯一**接收端，补齐时逐行搬进 `DEFAULT_SIDE`。
+    const DEFAULT_SIDE_GAPS: [(&str, &str, &str); 1] = [(
+        "yeban_render_master",
+        "contributions",
+        "`contributions_match_an_independent_mute_render` 钉的是『给了子集 ⇒ 等于静音另一组』，\
              不给 ⇒ 全体参与未断言",
-        ),
-    ];
+    )];
 
     let universe: std::collections::BTreeSet<(String, String)> =
         documented_keys().into_iter().collect();
@@ -696,12 +695,12 @@ fn each_documented_key_declares_its_default_side_evidence_or_gap() {
         declared.len()
     );
     assert!(
-        DEFAULT_SIDE.len() >= 25,
+        DEFAULT_SIDE.len() >= 28,
         "缺省已证只剩 {} 行 => 名单被掏空（R93：⛔ 批量搬去缺口名单来让它绿）",
         DEFAULT_SIDE.len()
     );
     assert!(
-        DEFAULT_SIDE_GAPS.len() <= 4,
+        DEFAULT_SIDE_GAPS.len() <= 1,
         "缺省缺口涨到 {} 行 => 有键的缺省钉被悄悄降级，或新键进来没人补证据",
         DEFAULT_SIDE_GAPS.len()
     );

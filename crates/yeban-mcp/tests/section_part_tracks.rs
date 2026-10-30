@@ -280,3 +280,54 @@ fn part_tracks_work_with_theory_source_too() {
         "theory 路径下复用轨同样不得再建"
     );
 }
+
+/// 判据 4（第四片第二批·缺省钉）：`partTracks` 缺席 ⇒ 每个声部**各派生一条新轨**
+/// （⛔ 复用既有轨、⛔ 两个声部共用一条）：`part_track_ids` 两两不同且都不在
+/// `project.tracks` 里；`AddTrack` 与声部保序一一对应；摆放目标就是这张表；
+/// 同一请求跑两次逐字节相同（派生轨身份由 `section_id` 决定，⛔ 随机）。
+#[test]
+fn absent_part_tracks_derives_one_fresh_track_per_part() {
+    let project = filled_project();
+    let first = try_plan(&project, None).expect("缺省路径必须能规划");
+    let ids = first.part_track_ids.clone();
+    assert_eq!(ids.len(), 3, "synthwave 是 3 声部: {ids:?}");
+
+    let mut seen = std::collections::BTreeSet::new();
+    for id in &ids {
+        assert!(seen.insert(*id), "两个声部派生了同一条新轨 {id}");
+        assert!(
+            !project.tracks.contains_key(id),
+            "缺省路径⛔ 复用既有轨 {id}（只有 `partTracks` 在场才轮到复用）"
+        );
+    }
+
+    let added: Vec<EntityId> = first
+        .ops
+        .iter()
+        .filter_map(|op| {
+            let Op::AddTrack { track } = op else {
+                return None;
+            };
+            Some(track.id)
+        })
+        .collect();
+    assert_eq!(added, ids, "`AddTrack` 必须与声部保序一一对应");
+
+    let targets: Vec<EntityId> = first
+        .ops
+        .iter()
+        .filter_map(|op| {
+            let Op::AddClipPlacement { track_id, .. } = op else {
+                return None;
+            };
+            Some(*track_id)
+        })
+        .collect();
+    assert_eq!(targets, ids, "摆放必须落在各声部自己的新轨上");
+
+    let second = try_plan(&project, None).expect("第二次规划必须成功");
+    assert_eq!(
+        first, second,
+        "同一请求两次规划必须逐字节相同（派生轨身份确定）"
+    );
+}
