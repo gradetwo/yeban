@@ -81,6 +81,11 @@ gate_docs() {
   run "golden-manifest(linux)" python3 scripts/gates/check_golden_manifest.py
   # `yeban-mcp` 的依赖方向规则（它自己的 Cargo.toml 写着"不拖音频栈进 MCP"）。
   run "mcp-dependency-direction" python3 scripts/gates/check_mcp_dependency_direction.py
+  # `tests/*.rs` 零判据守卫：没有 `#[test]` 的文件照样编译并报绿（0 passed）⇒
+  # "新增测试文件"与"新增判据"在读数上不可区分。7 个合法例外（4 个 harness=false 运行期腿
+  # + 3 个 #[path] 判据包装）逐条登记，且每条都做机检（包装链里必须有 #[test] / [[test]]
+  # 段仍写 harness=false）；新增未登记文件或例外变了性质 ⇒ 红。
+  run "test-criteria-presence" python3 scripts/gates/check_test_criteria_presence.py
   # 纪律检查表门（账本 R261「五组」里**可无歧义机械化**的 3 条）:
   #   C1  `scripts/**` 里真代码含 `git commit` 的脚本必须由显式开关（--commit / DRY_RUN）把关
   #   C3  ci.yml 的上传步必须保留 `if-no-files-found: error`（⛔ 退回 `warn` 会让"没产出"变成绿）
