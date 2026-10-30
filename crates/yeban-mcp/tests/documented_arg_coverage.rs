@@ -52,7 +52,7 @@
 //!
 //! ⭐ **同日加第三条轴**（`each_documented_key_declares_its_default_side_evidence_or_gap`）：
 //! 第二条轴每行只取**一条代表判据**，于是"缺省那面（不给该键 ⇒ 与今天逐字节相同）有没有钉"
-//! 在机械读数里不可见。现读 **29** 个键 ＝ **21** 个缺省侧已证 ＋ **8** 个显式缺口
+//! 在机械读数里不可见。现读 **29** 个键 ＝ **22** 个缺省侧已证 ＋ **7** 个显式缺口
 //! （逐键点名，缺口带理由）。三轴共用同一把尺（`documented_keys()` / `defines_fn`）。
 
 use std::fs;
@@ -272,8 +272,8 @@ fn defines_fn(text: &str, name: &str) -> bool {
 /// ⚠ 其余 **25** 行在本表里仍按**任一侧**判据登记即算已证（本表⛔ 断言"两侧都钉过"）。
 /// ⭐ 但"另一侧有没有钉"自 2026-10-30 起**不再是不可见**的：那由**第三条轴**
 /// `each_documented_key_declares_its_default_side_evidence_or_gap` 逐键登记（现读
-/// **21** 已证 ＋ **8** 缺口）。本表此前一句"其余 25 行的缺省侧⛔ 有钉"是**从本表那一列
-/// 名字推断**出来的，`grep '^fn absent_…'` 现读推翻了它 —— 库里早就有 21 条缺省侧判据，
+/// **22** 已证 ＋ **7** 缺口）。本表此前一句"其余 25 行的缺省侧⛔ 有钉"是**从本表那一列
+/// 名字推断**出来的，`grep '^fn absent_…'` 现读推翻了它 —— 库里早就有 21 条缺省侧判据（本票另补 1 条 ⇒ 现读 22），
 /// 只是本表的"一条代表判据"口径看不见它们。教训：⛔ 从登记表的名字推断另一侧没钉。
 #[test]
 fn every_documented_creation_key_is_registered_with_an_effect_criterion() {
@@ -495,7 +495,9 @@ fn every_documented_creation_key_is_registered_with_an_effect_criterion() {
 /// 而同文件里 `absent_backbeat_is_byte_identical_to_the_derived_beat`（缺省那面）**早就存在**
 /// —— 表⛔ 看不见它。台账上一度把这件事读成"其余 25 行都缺缺省钉"，
 /// 本次 `grep '^fn absent_\|^fn .*byte_identical\|^fn default_'` 现读**推翻**了那个说法：
-/// 库里已有 **21** 个键的缺省侧判据在跑。教训记台账：**⛔ 从登记表那一列的名字推断
+/// 库里已有 **21** 个键的缺省侧判据在跑（本票另补一条
+/// `absent_merge_commit_message_falls_back_to_the_proposal_id_default` ⇒ 表上现读
+/// **22** 已证 ＋ **7** 缺口）。教训记台账：**⛔ 从登记表那一列的名字推断
 /// "另一侧没钉"，要先 grep 交付**（`AGENTS.md` §6.3 第 3 条的同型陷阱）。
 ///
 /// # 机械只钉四件事（语义仍由人逐函数体核）
@@ -505,7 +507,7 @@ fn every_documented_creation_key_is_registered_with_an_effect_criterion() {
 /// 2. **两名单⛔ 重叠**（同一键⛔ 既算已证又算缺口）；
 /// 3. **登记的判据名逐个真实存在**（复用 `defines_fn`，与第二条轴同一把尺）；
 ///    缺省缺口每行**理由非空**，⛔ 空串充当"登记过"；
-/// 4. **两个方向的棘轮**：已证数 ⋧ 往下掉（下界 21），缺口数 ⋧ 悄悄涨（上界 8）——
+/// 4. **两个方向的棘轮**：已证数 ⋧ 往下掉（下界 22），缺口数 ⋧ 悄悄涨（上界 7）——
 ///    补齐一个缺口时把行从 `DEFAULT_SIDE_GAPS` 搬进 `DEFAULT_SIDE` 并**同时**改两个
 ///    数组长度与这两个界，⛔ 只搬不改（判据 2 的重叠检查拦不住"删掉一行"这种掏空）。
 #[test]
@@ -514,14 +516,14 @@ fn each_documented_key_declares_its_default_side_evidence_or_gap() {
     ///
     /// # 读数（2026-10-30，逐函数体核过；对象＝键，单位＝个 `(tool, camelKey)`）
     ///
-    /// **21** 个键有缺省侧钉子。三处容易看错的形状：
+    /// **22** 个键有缺省侧钉子。三处容易看错的形状：
     /// - `velocityMin` 与 `velocityMax` **共用**一条判据（`absent_ladder_…` 比的是
     ///   "两个键都不给" ≡ `96/112`，一次覆盖两位）；
     /// - `includeDrums` 与 `includeMelody` 同理（`absent_include_flags_…` 的四支对照里
     ///   含"只给其中一个"）；
     /// - `materialSource` 的缺省侧在 `material_source_switches_…` **自己**体内
     ///   （`absent ≡ explicit "project"` 与 `absent ≠ theory` 两条 assert 同处一条判据）。
-    const DEFAULT_SIDE: [(&str, &str, &[&str]); 21] = [
+    const DEFAULT_SIDE: [(&str, &str, &[&str]); 22] = [
         (
             "yeban_edit_notes",
             "autoMerge",
@@ -594,6 +596,11 @@ fn each_documented_key_declares_its_default_side_evidence_or_gap() {
         ),
         (
             "yeban_propose_section",
+            "mergeCommitMessage",
+            &["absent_merge_commit_message_falls_back_to_the_proposal_id_default"],
+        ),
+        (
+            "yeban_propose_section",
             "onsetsPerBar",
             &["common_time_default_grid_is_byte_identical_to_explicit_sixteen"],
         ),
@@ -628,18 +635,18 @@ fn each_documented_key_declares_its_default_side_evidence_or_gap() {
             &["voice_subdivisions_absent_is_byte_identical_to_today"],
         ),
     ];
-    /// 缺省缺口名单（**8** 行）：键 → 为什么今天钉不了／还没钉。⛔ 把它删空来让它绿 ——
+    /// 缺省缺口名单（**7** 行）：键 → 为什么今天钉不了／还没钉。⛔ 把它删空来让它绿 ——
     /// 这八行是"缺省轴上仍然无证据"的**唯一**接收端，补齐时逐行搬进 `DEFAULT_SIDE`。
-    const DEFAULT_SIDE_GAPS: [(&str, &str, &str); 8] = [
+    const DEFAULT_SIDE_GAPS: [(&str, &str, &str); 7] = [
         (
             "yeban_edit_notes",
             "create",
-            "『不给 create』与『给 false』同形未测：本键走 `json!` 实参面，夹具⛔ 一支对照都不给该键",
+            "已证那面 `edit_notes_create_and_place_in_one_proposal_is_atomic_and_undoable` 只跑『给了 create』那支；不给 ⇒ 不新建的既有形状没有断言（本键走 `json!` 实参面，缺一支对照）",
         ),
         (
             "yeban_edit_notes",
             "placement",
-            "缺省那面只被 `trap_179` 一类的相邻形状顺带覆盖，没有『不给 placement ⇒ 与今天同形』的断言",
+            "已证那面 `needs_6_placement_puts_pool_material_on_the_timeline_and_the_master_hears_it` 只跑『给了 placement』那支；不给 ⇒ 不摆放的既有形状没有断言",
         ),
         (
             "yeban_edit_notes",
@@ -660,11 +667,6 @@ fn each_documented_key_declares_its_default_side_evidence_or_gap() {
             "yeban_propose_section",
             "partTracks",
             "三条判据全在『给了 partTracks』那支，不给 ⇒ 全部新建轨的既有形状无断言",
-        ),
-        (
-            "yeban_propose_section",
-            "mergeCommitMessage",
-            "`merge_commit_message_passes_through` 在 propose 侧同理：不给 ⇒ 默认文案未断言",
         ),
         (
             "yeban_render_master",
@@ -694,12 +696,12 @@ fn each_documented_key_declares_its_default_side_evidence_or_gap() {
         declared.len()
     );
     assert!(
-        DEFAULT_SIDE.len() >= 21,
+        DEFAULT_SIDE.len() >= 22,
         "缺省已证只剩 {} 行 => 名单被掏空（R93：⛔ 批量搬去缺口名单来让它绿）",
         DEFAULT_SIDE.len()
     );
     assert!(
-        DEFAULT_SIDE_GAPS.len() <= 8,
+        DEFAULT_SIDE_GAPS.len() <= 7,
         "缺省缺口涨到 {} 行 => 有键的缺省钉被悄悄降级，或新键进来没人补证据",
         DEFAULT_SIDE_GAPS.len()
     );
