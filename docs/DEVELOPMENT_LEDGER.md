@@ -15658,3 +15658,110 @@ merge 成一条 push。**该跑的形态**：`plan`／`checks`／`deny`／`lockf
 会被误归实例键 ⇒ 由第 2 条的计数冻结兜住（会红，⛔ 悄悄漏）。
 
 
+## 2026-10-30（清晨·第四批）· S5 第二片判据七 ＋ ⭐ 创作轴的**第二条轴**（效果面登记表）开线 ＋ 一条"取消≠判决"
+
+### §1 S5 第二片：末端字段棘轮（线 `line/s5b-leaf-table`，tip `088ebe06`）
+
+第三批 §8 的设计稿三件事**全部按稿落地**（`crates/yeban-model/src/ops.rs` 的 test 模块，
+`1689cb22` ＝ `1 file changed, 186 insertions(+), 2 deletions(-)`；`088ebe06` 只改
+`tests/field_write_reachability.rs` 文件头的"六条→七条"计数）：
+
+- 新判据 `op_write_differential_leaf_fields_match_frozen_table`，冻结表 `FROZEN_LEAVES: [(&str,&[&str]); 55]`；
+- **①** 词法三段封闭词法过滤实例键（26 字符 ULID 臂／64 位 hex 臂／纯数字臂），⛔ 正则依赖、⛔ "长度等于 64 就算"；
+- **②** 实例键段数冻结（R93 同型：过滤规则空转会立刻红）；
+- **③** 每行二选一（字段名非空 或 显式登记"写的是容器记录"）—— 两种"看起来是空所以通过"都关掉了。
+
+**冻结读数**（本机 `cargo test -p yeban-model --lib`，2026-10-30 01:03 现跑，单位＝行／段）：
+该 crate `252 passed; 0 failed`；表 **55** 行 ＝ **14** 行纯实例键 ＋ **41** 行有字段名；
+过滤后字段名 **36** 个去重／**53** 个段。⚠ 与第三批 §8 设计稿的 `53` 是**同一个量**（段），
+`36` 是**去重后**的另一个量 —— 两个单位都写在判据注释里，⛔ 互换。
+
+**为什么这张表确实堵住第一片留的洞**（不是措辞，是可测的）：判据六已实测"只改
+`tracks.<id>.folder_id`"这一处改动的读数是 `(根键＝[tracks], 末端＝[folder_id])`
+⇒ 同一处改动在根键棘轮那侧**完全不可见**（`tracks` 本来就在写），在末端那侧⛔ 白拿。
+
+### §2 ⭐ 创作轴的第二条轴：效果面登记表（线 `line/s6-key-effect-registry`，第一优先级）
+
+第三批 §7 量完的是**出现面**（24 键在 `src` 里缺席 0 个）。本轮把它推到**效果面**：
+"键在某处被给过非缺省值"⛔ 等于"键被 honour"。
+
+- `b9b9848b`（`1 file changed, 283 insertions(+), 13 deletions(-)`）新增判据
+  `every_documented_creation_key_is_registered_with_an_effect_criterion`：键全集取
+  `schemas/mcp-tools.schema.json` 的 `definitions.DocumentedToolArguments.$defs`
+  （现读 **29** 键／**3** 工具），机械只钉三件事——两向集合相等、登记的判据名 `fn NAME(` 现读真实存在、
+  已证与缺口两名单⛔ 重叠且每行判据名非空。
+- ⚠ **词面自动认**这条路实测只认出 **5 / 29**：`drumBackbeat` 的证据函数叫
+  `the_backbeat_moves_only_the_snare_line`，判据名与键的 `snake_case` 全名**必然不同** ⇒
+  `AGENTS.md` §6.3 第 3 条（⛔ 用词面判断交付）的同型陷阱，第二次被证明。语义由人逐个读函数体核，
+  机械只负责"退化成死名册"那三种。
+- 首读 **29 = 27 已证 + 2 缺口**（`propose.materialSource` 只有耦合校验、
+  `edit_notes.mergeCommitMessage` 无判据读回合并提交的信息）。
+
+### §3 S6 第二片：两个缺口就地闭合（`30047eb0`，`3 files changed, 118 insertions(+), 57 deletions(-)`）
+
+- `material_source_switches_the_material_and_theory_ignores_the_clip_pool`
+  （`tests/section_material_clips.rs` 判据 4）：不给键＝显式 `'project'`；两者都≠`'theory'`（音符表与
+  `section_id` 两处）；`'theory'` 对剪空的片段池**零敏感**（池不变量）；逐声部音符数∈池内各片段音符数
+  （`transposed_notes` 与池音符 1:1）。⛔ 手抄数字，全部从 `filled_project()` 现算。
+- `transpose_clip.rs` 判据 1 内加一条 `mergeCommitMessage` 的**效果面**断言
+  （`data.merge.commit.message == "整片段 +2 半音"`，⛔ 退化成缺省的 `"merge proposal {id}"`）——
+  此前全库只证了 `yeban_propose_section` 那一侧。
+- 顺带删掉重复：该文件两处手抄的 `PlanOptions` 全表收敛成**一个** `try_plan`。
+- 登记表因此 **29 = 29 已证 + 0 缺口**。⚠ `GAPS: [(&str,&str,&str); 0]` 这张**空表⛔ 删** ——
+  它是"新键进 schema 而没人登记"的接收端；补片时的写法是把行从 `EFFECT_FACE` 搬进来、两侧长度各自 +1/-1。
+
+### §4 S6 第三片：四处**缺省侧**的钉子（`a298aeab`，`4 files changed, 300 insertions(+), 19 deletions(-)`）
+
+登记表落地时如实登记的四处"只证了一侧"，本轮补齐：
+
+| 键 | 新判据 | 钉的是什么 |
+| --- | --- | --- |
+| `propose.includeDrums`／`includeMelody` | `absent_include_flags_are_byte_identical_to_explicit_false` | 4 种"关"的写法（⛔／`false` 任意组合）同一个形状；反向两位各自 `true` 必须移动形状 |
+| `propose.progression` | `absent_progression_is_byte_identical_to_the_registered_first_pick` | 首选走向**从 `GenreLibrary::get("synthwave").progression_at(0)` 现读**（⛔ 手抄 `I-V-vi-IV`，那是兜底值），显式喂同一条 ⇒ 音符表与 `section_id` 都同形；换另一条登记走向必须改形状 |
+| `edit_notes.autoMerge` | `absent_auto_merge_on_edit_notes_proposes_without_merging` | 不给键与给 `false` 的**回执形状**四位相同（`pendingMerge`／有无 `autoMerged`／有无 `merge`／`commitModel`），音符一位没动，留一条 open 提案 |
+
+⭐ **本轮最值钱的一条**：`section_project_generation.rs` 的 `Given` 里两位原本是 `bool`，
+`try_plan` 一律包成 `Some(given.include_drums)` ⇒ **该文件结构上表达不出"不给这个键"**，
+于是"缺省形状"这条路径在全库一次都没被跑到过。⇒ 新增一类盲点检查：**判据能否表达缺省，
+先看夹具字段的类型**（`bool`／非 `Option` 的"给法"永远盖住了不给的那一支）。
+读数口径同 §0.8：⛔ 整份回执比较（`proposalId` 是 `EntityId::new()`、`createdAt` 取 `now_ms`），
+只比形状；⛔ 直接比较 `SectionPlan`（它派生 `PartialEq` 但身份字段随机 ⇒ 永不相等），
+因此取"段落身份＋节拍几何＋op 条数＋逐片段名字与音符表渲染成一个串"。
+
+### §5 ⭐ 本轮换来的规则
+
+1. **同一分支的第二次推送会取消第一枚提交仍在飞的腿**（实测：`b9b9848b` 的 run
+   `40977015261` 里 `rust (yeban-mcp)`／`macos`／`windows` 三条在 `30047eb0` 推送那一刻变
+   `cancelled`）。⇒ `cancelled` **⛔ 算判决**（既非绿也非红，只是没跑）；纪律：
+   **读完第 N 枚提交的判决再推第 N+1 枚**，⛔ 用后一枚的绿去代替前一枚。
+   监视脚本因此把 `cancelled` 单列成 `CANCELLED(未判)`，⛔ 并入 `SETTLED`。
+2. **判"真绿"要三条一起看**：目标腿耗时非 0、日志里有 `test result: ok`、**且该批判据名逐名出现**。
+   `30047eb0` 的八条非全量腿耗时 `1558/2249/242/950/11/87/21/46` 秒，`test result: ok` **687** 行，
+   两条新判据在 linux 与 windows 腿上**各逐名 `ok`**。
+3. **`Option<bool>` 类三态键的缺省钉写法**＝"不给"与"给 `false`"两支都跑、比形状，
+   ⛔ 只跑其一就声称"缺省不变"。
+
+### §6 判决队列（逐条按 headSha 读，⛔ 用 tip 绿代替）
+
+| 票 | run / headSha | 状态（01:00 现读） | 下一动作 |
+| --- | --- | --- | --- |
+| S5b 线 tip | `40979744572` / `088ebe06` | ⭐ **真绿**（01:15 现读，八条腿全 `completed`）：`rust (workspace 全量)` **1737s**、`windows` **2252s**、`macos` **1687s**、`checks` **90s**／`deny` **58s**／`lockfile` **23s**／`plan` **11s**；matrix 腿按构造 `skipped`（0s）。判据名 `op_write_differential_leaf_fields_match_frozen_table` 与 `test result: ok. 252 passed` 已在本批前一跑逐名 grep 过（⛔ 为此再下一份 8MB 日志撞次级限流） | ✅ 四件齐 ⇒ `worktree.sh land s5b-leaf-table` → 推 main（与本台账批同一枚推送，⛔ 让文档批单独跑一趟再被取消）→ 读 **merge run** → `rm --purge`（回收 `.worktrees/s5b-leaf-table/target` **1.6G**，`du -sh` 现读） |
+| S6 第一片 | `40977015261` / `b9b9848b` | **cancelled**（§5 第 1 条） | ⛔ 记判决；该提交的树已由 `30047eb0` 覆盖判定 |
+| S6 第二片 | `40978601723` / `30047eb0` | ⭐ **真绿**（§5 第 2 条三条齐全；`rust (workspace 全量)` 按构造 skipped——纯 `yeban-mcp` 测试增量） | 同线第三片已在其上叠加 |
+| S6 第三片 | `40983157377` / `a298aeab` | **in_progress** | 判绿 ⇒ land → merge run → 拆树 |
+| 并行写者 | `5bc1a814`／`e6784296` 在飞、`9a3571f4`／`ae9b7f4d`／`218abe45`／`2b07bb41` **failure** | ⛔ 不归本会话：不代读、不代 land | 他们自己 land |
+
+### §7 磁盘与负债读数
+
+`/home` 现读 `200G/235G`（余 **29G**）。`.worktrees/s5b-leaf-table/target` **1.6G**（`du -sh`），
+待 land 后随树回收；`#34` 的仓库外大头（19G cache／5.2G rustup／3.8G 他项目 target）仍**卡在人类裁决**，
+⛔ 自主删。
+
+### §8 下一片（S6 第四片，按登记表自己的读数开）
+
+登记表现在**只有四个键**两侧都钉过，其余 **25** 行按**任一侧**登记即算已证
+（如 `propose.melodyUpper` 只有缺省侧那一条）。第四片＝按 §4 同一写法逐行补**缺省侧**：
+每行先查"夹具字段能不能表达不给键"（§4 那条盲点），再落一条 `absent_*` 判据，
+名字进 `EFFECT_FACE` 对应行。⛔ 一次做完 25 行——按工具面分小批（`propose_section` 的
+`velocity*`／`drum*`／`onsetsPerBar` 一族、`edit_notes` 的 `ops`/`placement` 一族、
+`render_master.contributions` 单独一批）。
