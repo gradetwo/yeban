@@ -9276,6 +9276,7 @@ fn a_double_click_reset_moves_the_fader_and_pan_to_neutral() {
             save_path: None,
             engine_quanta: 0,
             undo: Some(Rc::clone(&port)),
+            proposal_source: yeban_app::proposals::ProposalSource::none(),
         },
     )
     .expect("装配");
@@ -9428,6 +9429,7 @@ fn a_double_click_reset_leaves_no_sticky_gesture() {
             save_path: None,
             engine_quanta: 0,
             undo: Some(Rc::clone(&port)),
+            proposal_source: yeban_app::proposals::ProposalSource::none(),
         },
     )
     .expect("装配");
