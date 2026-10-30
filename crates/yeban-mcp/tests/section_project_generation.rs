@@ -6,6 +6,9 @@
 //! 夹具材料：`filled_project` 的 MIDI 片段第一小节是 `{60,64,67,72}` =
 //! Cmaj7 四音类（`Chord::from_voicing` 判得出）；后三小节无相交音符 ⇒
 //! 判据 2 顺带守住"延音沿用上一小节"那条语义。
+//!
+//! ⭐ 判据 4（2026-10-30 补）把本片从**打开那面**扩到**缺省那面**：两位键
+//! "不给"与"给 `false`"必须逐字节同形 —— 这是效果面登记表读出的四处缺省钉之一。
 
 use std::collections::BTreeMap;
 
@@ -25,8 +28,10 @@ const GM_DRUM_KEYS: [u8; 4] = [36, 38, 42, 51];
 struct Given {
     material_source: Option<&'static str>,
     scale: Option<&'static str>,
-    include_drums: bool,
-    include_melody: bool,
+    /// ⭐ `None` = 调用方**不给这个键**（缺省钉判据要吃这一支）；此前是 `bool`，
+    /// 于是本文件把两位一律包成 `Some(..)` —— 缺省形状在全库一次都没跑过。
+    include_drums: Option<bool>,
+    include_melody: Option<bool>,
     swing_permille: Option<u64>,
     melody_seed: Option<u64>,
 }
@@ -44,8 +49,8 @@ fn try_plan(
         PlanOptions {
             material_source: given.material_source,
             progression: None,
-            include_drums: Some(given.include_drums),
-            include_melody: Some(given.include_melody),
+            include_drums: given.include_drums,
+            include_melody: given.include_melody,
             drum_density: None,
             voice_subdivision: None,
             voice_subdivisions: None,
@@ -102,6 +107,57 @@ fn data(fault: &BuildFault) -> &Value {
     data
 }
 
+/// 一次规划的**可比**读数。
+///
+/// ⛔ 直接比较 `SectionPlan`：它派生了 `PartialEq`，但 `part_track_ids` /
+/// `part_clip_ids` 里的 `EntityId` 由 `EntityId::new()` 每次随机生成 ⇒ 两次规划
+/// 永远不相等（那是身份的随机性，⛔ 本片要说的事）。这里取的是"缺省即与今天
+/// 逐字节相同"真正覆盖的四件：段落身份、节拍几何、op 条数、逐片段的名字与音符表。
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct PlanShape {
+    section_id: String,
+    start_tick: u64,
+    end_tick: u64,
+    ticks_per_bar: u64,
+    ops: usize,
+    /// 每个 `AddClip` 渲染成 `名字:(起点,时值,音高,力度),…` 后拼接成一个串：
+    /// "逐字节相同"这条断言因此**字面**成立，且⛔ 为此再引入一层嵌套元组类型。
+    clips: String,
+}
+
+fn shape(section_plan: &SectionPlan) -> PlanShape {
+    let mut clips = String::new();
+    for op in &section_plan.ops {
+        let Op::AddClip { clip } = op else {
+            continue;
+        };
+        clips.push_str(&clip.name);
+        clips.push(':');
+        if let ClipContent::Midi { notes } = &clip.content {
+            let mut rows: Vec<String> = notes
+                .values()
+                .map(|n| {
+                    format!(
+                        "({},{},{},{})",
+                        n.start_tick, n.duration_ticks, n.pitch, n.velocity
+                    )
+                })
+                .collect();
+            rows.sort();
+            clips.push_str(&rows.join(","));
+        }
+        clips.push(';');
+    }
+    PlanShape {
+        section_id: section_plan.section_id.to_canonical_string(),
+        start_tick: section_plan.start_tick,
+        end_tick: section_plan.end_tick,
+        ticks_per_bar: section_plan.ticks_per_bar,
+        ops: section_plan.ops.len(),
+        clips,
+    }
+}
+
 /// 判据 1：`'project'` 源上 `includeDrums` 生成 GM 鼓轨；鼓键
 /// （`swingPermille`）在两源同口径被消费 ⇒ 同给时换一版网格。
 #[test]
@@ -110,7 +166,7 @@ fn drums_generate_on_project_source() {
     let straight = plan(
         &project,
         Given {
-            include_drums: true,
+            include_drums: Some(true),
             ..Given::default()
         },
     );
@@ -124,7 +180,7 @@ fn drums_generate_on_project_source() {
     let swung = plan(
         &project,
         Given {
-            include_drums: true,
+            include_drums: Some(true),
             swing_permille: Some(660),
             ..Given::default()
         },
@@ -147,7 +203,7 @@ fn melody_generates_over_project_material_with_explicit_scale() {
     let fault = try_plan(
         &project,
         Given {
-            include_melody: true,
+            include_melody: Some(true),
             ..Given::default()
         },
     )
@@ -160,7 +216,7 @@ fn melody_generates_over_project_material_with_explicit_scale() {
         &project,
         Given {
             scale: Some("C major"),
-            include_melody: true,
+            include_melody: Some(true),
             ..Given::default()
         },
     );
@@ -175,7 +231,7 @@ fn melody_generates_over_project_material_with_explicit_scale() {
         &project,
         Given {
             scale: Some("C major"),
-            include_melody: true,
+            include_melody: Some(true),
             ..Given::default()
         },
     );
@@ -202,7 +258,7 @@ fn unvoiced_material_is_a_loud_failure() {
         &project,
         Given {
             scale: Some("C major"),
-            include_melody: true,
+            include_melody: Some(true),
             ..Given::default()
         },
     )
@@ -211,4 +267,85 @@ fn unvoiced_material_is_a_loud_failure() {
     assert_eq!(data(&fault).get("bar"), Some(&Value::from(0)));
     assert!(data(&fault).get("reason").is_none());
     assert!(data(&fault).get("hint").is_some());
+}
+
+/// 判据 4（2026-10-30 补）：两位**不给键**时的缺省形状 —— `ADR-0017` D1 说
+/// "缺省（`None` / `false`）与既有行为逐字节相同"，消费点 `section_build.rs:2622`
+/// 的 `options.include_drums == Some(true)` 就是那句话的实现。本判据把这句话钉成
+/// 读数：4 种"关"的写法（⛔ / `false` 的任意组合）⇒ 同一个形状；反向再钉两位
+/// 各自 `true` 时形状**必须**移动 ⇒ 上面的相等⛔ 是"两边都零差异"的空绿。
+///
+/// ⭐ 此前本文件的 `Given` 两位是 `bool`，于是全库⛔ 出现过一次"不给键"的调用
+/// —— 效果面登记表（`documented_arg_coverage.rs`）因此把这两行记作**只证了打开这面**。
+#[test]
+fn absent_include_flags_are_byte_identical_to_explicit_false() {
+    let project = filled_project();
+    let baseline = shape(&plan(
+        &project,
+        Given {
+            include_drums: Some(false),
+            include_melody: Some(false),
+            ..Given::default()
+        },
+    ));
+
+    let off: [(&str, Given); 4] = [
+        ("两位都不给", Given::default()),
+        (
+            "只给 drums=false",
+            Given {
+                include_drums: Some(false),
+                ..Given::default()
+            },
+        ),
+        (
+            "只给 melody=false",
+            Given {
+                include_melody: Some(false),
+                ..Given::default()
+            },
+        ),
+        (
+            "两位都给 false",
+            Given {
+                include_drums: Some(false),
+                include_melody: Some(false),
+                ..Given::default()
+            },
+        ),
+    ];
+    for (name, given) in off {
+        assert_eq!(
+            baseline,
+            shape(&plan(&project, given)),
+            "`{name}` 必须与显式双 false 逐字节同形（缺省 = 关）"
+        );
+    }
+
+    // 反向：两位各自 true 都真的改形状（鼓轨 / 旋律轨各追加一条声部）。
+    let with_drums = plan(
+        &project,
+        Given {
+            include_drums: Some(true),
+            ..Given::default()
+        },
+    );
+    assert_ne!(
+        baseline,
+        shape(&with_drums),
+        "includeDrums=true 必须移动形状，否则上面的相等是空读"
+    );
+    let with_melody = plan(
+        &project,
+        Given {
+            scale: Some("C major"),
+            include_melody: Some(true),
+            ..Given::default()
+        },
+    );
+    assert_ne!(
+        baseline,
+        shape(&with_melody),
+        "includeMelody=true 必须移动形状，否则上面的相等是空读"
+    );
 }

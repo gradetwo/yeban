@@ -7,13 +7,14 @@
 //!
 //! | 判据 | 对象 | 读数 |
 //! | :--- | :--- | :--- |
-//! | [`transpose_clip_expands_into_one_move_per_note_in_a_single_batch`] | 一次 `yeban_edit_notes`（`autoMerge`） | `data.merge.appliedOps` == 片段的音符数 N ＋ `data.autoMerged: true` ＋ `commitModel: "proposalAutoMerged"`（D1/D2：一个批 = 一次提交） |
+//! | [`transpose_clip_expands_into_one_move_per_note_in_a_single_batch`] | 一次 `yeban_edit_notes`（`autoMerge`） | `data.merge.appliedOps` == 片段的音符数 N ＋ `data.autoMerged: true` ＋ `commitModel: "proposalAutoMerged"` ＋ `data.merge.commit.message` 原样（`mergeCommitMessage` 的效果面，`ADR-0029` D1/D2：一个批 = 一次提交） |
 //! | [`every_note_moves_in_pitch_and_nothing_moves_in_time`] | 合并后的 `query_project` | N 条 `pitch` 逐条 `+2`；`startTick` / `durationTicks` / `velocity` / 身份集合**逐字节不变**（D1：`deltaTick` 恒 0） |
 //! | [`one_undo_step_reverts_the_whole_transposition`] | 一次 `yeban_undo` | 工程摘要**回到**合并前的值（D2：一步撤销，⛔ N 步） |
 //! | [`an_out_of_range_note_rejects_the_whole_batch_without_partial_apply`] | `deltaPitch: 127`（或全零片段时的 `-128`） | `OUT_OF_RANGE` ＋ `data.noteId` ＋ 合并前后摘要一位不动（D3：整批拒绝，⛔ 部分应用） |
 //! | [`the_payload_names_no_note_and_rejects_every_illegal_shape`] | 四种非法载荷 | `noteId` ⇒ `unknownTransposeClipField`；缺 `deltaPitch` / `2.5` ⇒ `INVALID_PARAMETER_RANGE`；`128` ⇒ `OUT_OF_RANGE`（D5） |
 //! | [`an_empty_midi_clip_expands_to_zero_ops_and_is_not_an_error`] | 空 MIDI 片段的 `compile` | `Ok(vec![])`（D5：`appliedOps: 0` 是**合法**结果，⛔ 不是错误码） |
 //! | [`the_form_is_published_on_both_surfaces`] | `tools/list` 的 `ops.items` 分支 | `additionalProperties: false` ＋ `x-envelope.clipId: "required"` ＋ `deltaPitch` 的 `±128` 界（D1 的发布面） |
+//! | [`absent_auto_merge_on_edit_notes_proposes_without_merging`] | 两支：不给 `autoMerge` / 给 `false` | 两份回执**同形**（`pendingMerge: true` ＋ 无 `autoMerged` ＋ 无 `merge` ＋ `commitModel: "proposal"`）＋ 音符一位没动 ＋ 留一条 open 提案（`ADR-0029` D2 的缺省侧） |
 //!
 //! 复跑读数：`cargo test -p yeban-mcp --test transpose_clip -- --nocapture`
 
@@ -197,6 +198,13 @@ fn transpose_clip_expands_into_one_move_per_note_in_a_single_batch() {
             .expect("appliedOps") as usize,
         want,
         "`appliedOps` 必须**恰好**等于片段的音符数（一条形态 → N 条 `Op`）"
+    );
+    // ⭐ `mergeCommitMessage` 的**效果面**（此前全库只证了 `yeban_propose_section` 那一侧）：
+    // 值必须原样进合并提交，⛔ 退化成缺省的 `"merge proposal {id}"`。
+    assert_eq!(
+        merged["data"]["merge"]["commit"]["message"],
+        json!("整片段 +2 半音"),
+        "`mergeCommitMessage` 必须原样进 `edit_notes` 的合并提交: {merged}"
     );
     // `ADR-0032`：回执自述提交模型。`edit_notes` 是提案类, `autoMerge` 后是
     // `proposalAutoMerged` —— ⛔ 不是 `direct`（那是 `edit_automation` 那一族）。
@@ -448,4 +456,87 @@ fn the_form_is_published_on_both_surfaces() {
             "描述必须逐字写出 {phrase}: {description}"
         );
     }
+}
+
+/// 一次 `edit_notes`（不给 / 显式给 `autoMerge: false`）的**形状读数**：
+/// `(pendingMerge, 有没有 autoMerged 键, 有没有 merge 键, commitModel)`。
+///
+/// ⛔ 把整份回执拿去逐字节比：`proposalId` 是 `EntityId::new()`（每次都换）、
+/// `createdAt` 取 `now_ms` ⇒ 两份必然不同。本函数只取**形状**那四位。
+fn merge_shape_signature(response: &Value) -> (bool, bool, bool, String) {
+    let data = &response["data"];
+    (
+        data["pendingMerge"]
+            .as_bool()
+            .expect("pendingMerge 必须是布尔"),
+        data.get("autoMerged").is_some(),
+        data.get("merge").is_some(),
+        data["commitModel"].as_str().unwrap_or_default().to_owned(),
+    )
+}
+
+/// ⭐ 判据 8（`autoMerge` 在 `edit_notes` 一侧的**缺省钉**，`ADR-0029` D2）：
+/// "不给该键"与"给 `false`"必须同形 —— 只提案、⛔ 合并：回执里既没有 `autoMerged`
+/// 也没有 `merge` 键，`pendingMerge: true`、`commitModel: "proposal"`，
+/// 且片段音符一位没动。此前本文件的判据 1 只钉了"`true` ⇒ 合并这面"，
+/// 效果面登记表因此把 `edit_notes.autoMerge` 记成"缺省侧无钉"。
+#[test]
+fn absent_auto_merge_on_edit_notes_proposes_without_merging() {
+    let cases: [(&str, Option<bool>); 2] = [("不给该键", None), ("显式给 false", Some(false))];
+    assert_eq!(
+        cases.len(),
+        2,
+        "两支对照必须都在（R93：⛔ 让空表充当『两侧都钉过』）"
+    );
+
+    let mut signatures: Vec<(bool, bool, bool, String)> = Vec::new();
+    for (label, auto_merge) in cases {
+        let (mut dispatcher, auth, project) = dispatcher();
+        let (track, clip, before) = midi_target(&project);
+        let mut arguments = json!({
+            "trackId": track.to_canonical_string(),
+            "clipId": clip.to_canonical_string(),
+            "ops": [{"kind": TRANSPOSE_CLIP_KIND, "deltaPitch": 2}],
+        });
+        if let Some(value) = auto_merge {
+            arguments["autoMerge"] = json!(value);
+        }
+        let response = call(&mut dispatcher, &auth, "yeban_edit_notes", arguments);
+        assert_eq!(response["status"], "success", "{label}: {response}");
+        signatures.push(merge_shape_signature(&response));
+        assert_eq!(
+            read_back(&auth, &mut dispatcher, &clip),
+            before,
+            "`{label}` 必须一位都不合并（移调⛔ 落到工程上）"
+        );
+        // ⚠ 本文件的 `call()` 返回**整份 result**（`auto_merge.rs` 的 `call()`
+        // 替调用方剥掉 `data` ⇒ 同一行代码在那边读得到、在这边读不到，
+        // 2026-10-30 run `40983157377` 唯一一条红就是这么来的）。
+        // `list_proposals` 的载荷在 `data` 下：`{proposals, openCount, totalCount, …}`。
+        let list = call(&mut dispatcher, &auth, "yeban_list_proposals", json!({}));
+        assert_eq!(
+            list["data"]["proposals"]
+                .as_array()
+                .expect("`data.proposals` 必须是数组")
+                .len(),
+            1,
+            "缺省路径仍然要真的留下一个待合并的提案: {label} / {list}"
+        );
+        assert_eq!(
+            list["data"]["openCount"],
+            json!(1),
+            "待合并计数必须为 1（提案可发现的那一面）: {label} / {list}"
+        );
+    }
+
+    let (first, second) = (&signatures[0], &signatures[1]);
+    assert_eq!(
+        first, second,
+        "`edit_notes` 上『不给 autoMerge』与『给 false』必须同形: {signatures:?}"
+    );
+    assert_eq!(
+        first,
+        &(true, false, false, "proposal".to_owned()),
+        "缺省形状必须是『待合并的提案』：pendingMerge=true / 无 autoMerged / 无 merge / commitModel=proposal"
+    );
 }

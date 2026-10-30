@@ -8,6 +8,10 @@
 //! `INVALID_PARAMETER_RANGE`；条目不存在 / 存在但不可用（非 MIDI 或零音符）
 //! ⇒ `CLIP_NOT_FOUND`。给了却配 `materialSource:"theory"` ⇒
 //! `INVALID_PARAMETER_RANGE`（带 `hint`，与 `progression` 同口径）。
+//!
+//! ⭐ 判据 4（2026-10-30 补）把本片从**耦合面**扩到**效果面**：`materialSource` 此前
+//! 全库只有"哪些取值⛔ 能同时给"的证据，没有一条判据把同一请求在两个 source 下各跑一次
+//! 并断言产出真的变。那条缺口是效果面登记表读出的两个缺口之一，现由判据 4 闭合。
 
 use std::str::FromStr as _;
 
@@ -45,6 +49,7 @@ fn two_material_project() -> (yeban_model::YebanProjectV1, EntityId, EntityId) {
 
 fn try_plan(
     project: &yeban_model::YebanProjectV1,
+    material_source: Option<&str>,
     ids: Option<Vec<EntityId>>,
 ) -> Result<SectionPlan, BuildFault> {
     plan_with_options(
@@ -54,7 +59,7 @@ fn try_plan(
         4,
         Some("C minor"),
         PlanOptions {
-            material_source: None,
+            material_source,
             progression: None,
             include_drums: None,
             include_melody: None,
@@ -106,8 +111,8 @@ fn named_materials_feed_parts_in_declared_order() {
         .content
         .notes()
         .map_or(0, |notes| notes.len());
-    let section_plan =
-        try_plan(&project, Some(vec![second_id, first_id, second_id])).expect("指名材料必须能规划");
+    let section_plan = try_plan(&project, None, Some(vec![second_id, first_id, second_id]))
+        .expect("指名材料必须能规划");
     let counts = part_note_counts(&section_plan);
     assert_eq!(
         counts,
@@ -122,7 +127,7 @@ fn named_materials_feed_parts_in_declared_order() {
 fn named_material_failures_are_reported_per_class() {
     let (project, first_id, _second_id) = two_material_project();
     // 长度不符（只给 1 条而声部是 3）。
-    let fault = try_plan(&project, Some(vec![first_id])).expect_err("长度不符必须拒");
+    let fault = try_plan(&project, None, Some(vec![first_id])).expect_err("长度不符必须拒");
     assert_eq!(fault.domain_code(), Some(BuildCode::InvalidParameterRange));
     let BuildFault::Domain { data, .. } = &fault else {
         panic!()
@@ -132,8 +137,8 @@ fn named_material_failures_are_reported_per_class() {
 
     // 不存在：一个合法但不在池里的 ULID。
     let ghost = EntityId::from_str("01ARZ3NDEKTSV4RRFFQ69G5FAW").unwrap();
-    let fault =
-        try_plan(&project, Some(vec![first_id, ghost, first_id])).expect_err("不存在的条目必须拒");
+    let fault = try_plan(&project, None, Some(vec![first_id, ghost, first_id]))
+        .expect_err("不存在的条目必须拒");
     assert_eq!(fault.domain_code(), Some(BuildCode::ClipNotFound));
     let BuildFault::Domain { data, .. } = &fault else {
         panic!()
@@ -147,7 +152,7 @@ fn named_material_failures_are_reported_per_class() {
         .find(|(_, entry)| entry.content.notes().is_none())
         .map(|(id, _)| *id)
         .expect("夹具必须有一条非 MIDI 片段");
-    let fault = try_plan(&project, Some(vec![first_id, audio_id, first_id]))
+    let fault = try_plan(&project, None, Some(vec![first_id, audio_id, first_id]))
         .expect_err("非 MIDI 条目必须拒");
     assert_eq!(fault.domain_code(), Some(BuildCode::ClipNotFound));
     let BuildFault::Domain { data, .. } = &fault else {
@@ -162,37 +167,10 @@ fn named_material_failures_are_reported_per_class() {
 #[test]
 fn named_materials_with_theory_source_are_rejected() {
     let (project, first_id, second_id) = two_material_project();
-    let options_ids = Some(vec![first_id, second_id, first_id]);
-    let fault = plan_with_options(
+    let fault = try_plan(
         &project,
-        "Chorus",
-        STYLE,
-        4,
-        Some("C minor"),
-        PlanOptions {
-            material_source: Some("theory"),
-            progression: None,
-            include_drums: None,
-            include_melody: None,
-            drum_density: None,
-            voice_subdivision: None,
-            voice_subdivisions: None,
-            onsets_per_bar: None,
-            velocity_min: None,
-            velocity_max: None,
-            melody_lower: None,
-            melody_upper: None,
-            melody_max_leap: None,
-            harmony_max_voice_jump: None,
-            swing_permille: None,
-            drum_backbeat: None,
-            drum_style: None,
-            melody_seed: None,
-            harmony_seed: None,
-            beat_grouping: None,
-            material_clip_ids: options_ids.as_deref(),
-            part_tracks: None,
-        },
+        Some("theory"),
+        Some(vec![first_id, second_id, first_id]),
     )
     .expect_err("theory 路径配指名材料必须拒");
     assert_eq!(fault.domain_code(), Some(BuildCode::InvalidParameterRange));
@@ -200,4 +178,74 @@ fn named_materials_with_theory_source_are_rejected() {
         panic!()
     };
     assert!(data["hint"].is_string());
+}
+
+/// 取规划成功的那一支（判据 4 的三处都用它；失败时把来源与故障一起打进 panic 文本）。
+fn plan_ok(project: &yeban_model::YebanProjectV1, material_source: Option<&str>) -> SectionPlan {
+    try_plan(project, material_source, None)
+        .unwrap_or_else(|fault| panic!("来源 {material_source:?} 的规划必须成功: {fault:?}"))
+}
+
+/// ⭐ 判据 4：`materialSource` 的**效果面**（前三条只钉了**耦合**——哪些取值⛔ 能同时给；
+/// 本条钉"换了取值，产出真的换"。这一侧此前全库无人钉，是效果面登记表读出的两个缺口之一）。
+///
+/// 1. **缺省钉**：不给 ≡ 给 `"project"`，整份 `SectionPlan` 逐字节相同（`ADR-0016` D2 的向后兼容）；
+/// 2. **换来源即换计划**：同一请求改给 `"theory"` ⇒ 计划不同，且**段落身份**随之换
+///    （`section_id` 的种子串带调式键：`'project'` 是 `Scale::canonical()`，
+///    `'theory'` 是 `"<音阶>:theory:<走向>"`，见 `section_build.rs` 的 `TheoryInput::scale_key`）；
+/// 3. **两条路径读的是两份材料**：`'theory'` 分支⛔ 调 `project_contents` ⇒ 片段池多一条材料
+///    时 theory 计划**一位不变**；`'project'` 路径的每个和声声部都来自池条目
+///    （`transposed_notes` 与源片段 1:1，转调不改音符数）⇒ 声部音符数必然落在池的读数集合里。
+///    "池敏感"的另一半（指名换序 ⇒ 轮廓随之换序）已由判据 1 钉住，此处⛔ 再抄一遍。
+#[test]
+fn material_source_switches_the_material_and_theory_ignores_the_clip_pool() {
+    let (two_material, _first_id, _second_id) = two_material_project();
+    let base = filled_project();
+    assert!(
+        two_material.clip_pool.len() > base.clip_pool.len(),
+        "夹具必须比原池多一条材料（第 3 断的敏感性全押在这个差上）: 夹具 {} / 原池 {}",
+        two_material.clip_pool.len(),
+        base.clip_pool.len()
+    );
+
+    let absent = plan_ok(&two_material, None);
+    let explicit_project = plan_ok(&two_material, Some("project"));
+    assert_eq!(
+        absent, explicit_project,
+        "`materialSource` 缺席必须逐字节等于给 `\"project\"`（`ADR-0016` D2 的缺省兼容契约）"
+    );
+
+    let theory = plan_ok(&two_material, Some("theory"));
+    assert_ne!(
+        absent, theory,
+        "换了材料来源而整份计划一位没变 ⇒ 这个键只是被接受的字符串，⛔ 没有效果面"
+    );
+    assert_ne!(
+        absent.section_id, theory.section_id,
+        "段落身份的种子里带着调式键 ⇒ 两个来源的身份⛔ 相同"
+    );
+
+    let theory_on_base = plan_ok(&base, Some("theory"));
+    assert_eq!(
+        theory, theory_on_base,
+        "theory 路径⛔ 读片段池 ⇒ 池里多一条 MIDI 材料，计划一位都不许变"
+    );
+
+    let pool_counts: Vec<usize> = two_material
+        .clip_pool
+        .values()
+        .filter_map(|entry| entry.content.notes().map(|notes| notes.len()))
+        .collect();
+    let counts = part_note_counts(&absent);
+    assert!(
+        !counts.is_empty(),
+        "project 路径必须真的产出和声材料，一个 `AddClip` 都没有: {counts:?}"
+    );
+    for count in &counts {
+        assert!(
+            pool_counts.contains(count),
+            "project 路径某声部音符数 {count} 不在池内各条 MIDI 材料的音符数 {pool_counts:?} 里 \
+             ⇒ 材料不是从池装配的（`transposed_notes` 与源片段 1:1）"
+        );
+    }
 }

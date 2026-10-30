@@ -6,6 +6,7 @@
 //! | 2 | **不写该键**的调用方对 `autoMerge` 的**两条键形状**零感知（`pendingMerge: true`、无 `autoMerged`/`merge` 键） | `default_shape_is_unchanged_without_auto_merge` |
 //! | 3 | `dryRun` + `autoMerge` ⇒ 一位都不改：提案**不会**被创建，预览如实说 `wouldAutoMerge` | `dry_run_writes_nothing_even_with_auto_merge` |
 //! | 4 | `mergeCommitMessage` 原样进合并提交的 `commit.message`（缺省 `"merge proposal {id}"`） | `merge_commit_message_passes_through` |
+//! | 5 | **不给 `mergeCommitMessage`** ⇒ 信息落回既有缺省 `"merge proposal {proposalId}"`（缺省轴，见 `documented_arg_coverage.rs` 第三条轴） | `absent_merge_commit_message_falls_back_to_the_proposal_id_default` |
 //!
 //! ⚠ **D4（合并失败 ⇒ 提案保持 Open）不在此列**：`apply_propose` 与 `apply_merge`
 //! 在同一把锁内背靠背执行，基线在两步之间被移动需要宿主竞态，
@@ -278,4 +279,39 @@ fn merge_commit_message_passes_through() {
         "mergeCommitMessage 必须原样进合并提交: {data}"
     );
     assert_eq!(data["merge"]["commit"]["isMerge"], json!(true), "{data}");
+}
+
+/// ⭐ 判据 5（`mergeCommitMessage` 的**缺省那面**，效果面登记表第三条轴）：
+/// **不给该键** ⇒ 合并提交的信息必须落回代码里的既有缺省 `"merge proposal {proposalId}"`
+/// （`src/domain/mod.rs` 的 `merge_commit_message.unwrap_or_else(...)`）。
+///
+/// 本文件头表第 4 行一直写着"（缺省 `"merge proposal {id}"`）"，而判据 4 只跑了
+/// **给了**那一支 —— 缺省支此前是**说明性文字**，⛔ 是断言。这一条把它变成断言：
+/// 期望值从**同一份回执里的 `proposalId`** 现拼，⛔ 抄一个固定串（提案 id 每次都在换）。
+#[test]
+fn absent_merge_commit_message_falls_back_to_the_proposal_id_default() {
+    let scratch = Scratch::new("msg-default");
+    let (mut dispatcher, auth) = fresh_dispatcher();
+    open_fresh(&mut dispatcher, &auth, &scratch);
+
+    let data = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_propose_section",
+        json!({
+            "sectionName": "Outro",
+            "stylePreset": "pop",
+            "materialSource": "theory",
+            "bars": 2,
+            "autoMerge": true,
+        }),
+    );
+    let proposal_id = data["proposal"]["proposalId"]
+        .as_str()
+        .expect("自动合并的回执必须回显 proposalId");
+    assert_eq!(
+        data["merge"]["commit"]["message"],
+        json!(format!("merge proposal {proposal_id}")),
+        "不给 mergeCommitMessage ⇒ 信息必须是既有缺省文案（⛔ 空串、⛔ 段落名）: {data}"
+    );
 }
