@@ -75,6 +75,32 @@ export component MixerConsole inherits Rectangle {
     callback mixer-pan-grab(int, length);
     callback mixer-pan-drag(int, length);
     callback mixer-pan-release(int);
+    // ⭐ **双击复位**（DAW 的通行手势）：双击推子面 ⇒ 这一轨回 `0 dB`（unity）；
+    // 双击声相面 ⇒ 回 `0.0`（中央）。主控通道条那两面同款两条。
+    //
+    // 补的是哪一格：拖动之后用户**只能再拖回去**——推子帽的行程是 `88px / 66 dB`
+    // （`host::dragged_fader_db`），手拖回 `0.0` 既不准（`f32` 落点）也没有触觉提示。
+    //
+    // 与上面六条**逐字同一条纪律**：`.slint` 只报"哪一个下标"，⛔ 换算、⛔ 提交、
+    // ⛔ 判断"是不是已经在中性位"全在宿主 `host::wire_mixer_edit` 的四个 `on_*_reset`。
+    //
+    // ⚠ 为什么是**第四条**手势而不是给 `clicked`：这四块命中面本来就是 `pointer-event`
+    // 的静态矩形（本票只**加** `double-clicked` 臂，`x/y/width/height` 一位没动 ——
+    // 改动会挪动 `tests/pane_no_overlap.rs` 读的运行时包围盒，也会改 `host` 里
+    // `MIXER_FADER_TRAVEL_PX = 88px` / `MIXER_PAN_TRAVEL_PX = 36px` 与命中面宽度的同源关系），
+    // 而 `double-clicked` 与 `down/up` 会**同时**发：第二次按下既触发 `double-clicked`
+    // 也走一遍 `grab → release`。那条 `release` 读到的是 `moved == false` ⇒ 本来就不提交
+    // （既有纪律），但**两者先后顺序不保证** ⇒ 宿主的 reset 臂会先把进行中的手势清零，
+    // 否则提交引发的重投影会把正在拖的 `TouchArea` 连同指针抓取一起丢掉
+    // （实测记录见 `host.rs` 里 `preview_track_volume` 的文档）⇒ `mixer-drag-active` 黏住。
+    //
+    // ⚠ 边界（如实登记）：这是**鼠标**手势，屏读器与键盘拿不到它 —— 与推子本身
+    // **同一个**既有边界（这四条滑轨今天只有 `accessible-value` 可读、⛔ 没有写入口，
+    // 见 `live_ui_mcp.rs` 的"摘掉主控推子的 `TouchArea`"那行变异表）。本票⛔ 顺手补那个
+    // 缺口（要动焦点与滑轨的 set-value 语义，是另一票），也⛔ 改 `accessible-label`
+    // （`live_ui_mcp.rs:689` 把 `轨道 鼓 推子` 这一句逐字钉着）。
+    callback mixer-fader-reset(int);
+    callback mixer-pan-reset(int);
     callback mixer-mute-toggle(int);
     callback mixer-solo-toggle(int);
     // ⭐ 主控通道条的静音 / 独奏（与上面两个同一条纪律，只是目标**不是下标**）。
@@ -180,6 +206,10 @@ export component MixerConsole inherits Rectangle {
     callback mixer-master-fader-grab(length);
     callback mixer-master-fader-drag(length);
     callback mixer-master-fader-release();
+    // ⭐ 主控的双击复位（与上面轨道那两条同一条纪律：⛔ 下标，宿主从权威工程取
+    // `master_bus_track_id`；⛔ 提交逻辑在 `.slint`，落在 `host::wire_mixer_edit`）。
+    callback mixer-master-fader-reset();
+    callback mixer-master-pan-reset();
     callback mixer-master-pan-grab(length);
     callback mixer-master-pan-drag(length);
     callback mixer-master-pan-release();
@@ -825,6 +855,10 @@ export component MixerConsole inherits Rectangle {
             y: 54px;
             width: 48px;
             height: 116px;
+            // 双击 ⇒ 这一轨推子回 unity（`0 dB`）。几何一位不动（见上面那条回调的边界说明）。
+            double-clicked => {
+                root.mixer-fader-reset(track_index);
+            }
             pointer-event(event) => {
                 if event.kind == PointerEventKind.down {
                     root.mixer-fader-grab(track_index, self.mouse-y);
@@ -843,6 +877,10 @@ export component MixerConsole inherits Rectangle {
             y: 18px;
             width: 36px;
             height: 18px;
+            // 双击 ⇒ 这一轨声相回中央（`0.0`）。
+            double-clicked => {
+                root.mixer-pan-reset(track_index);
+            }
             pointer-event(event) => {
                 if event.kind == PointerEventKind.down {
                     root.mixer-pan-grab(track_index, self.mouse-x);
@@ -1066,6 +1104,10 @@ export component MixerConsole inherits Rectangle {
             y: 54px;
             width: 48px;
             height: 116px;
+            // 双击 ⇒ 主控推子回 unity（`0 dB`）。
+            double-clicked => {
+                root.mixer-master-fader-reset();
+            }
             pointer-event(event) => {
                 if event.kind == PointerEventKind.down {
                     root.mixer-master-fader-grab(self.mouse-y);
@@ -1083,6 +1125,10 @@ export component MixerConsole inherits Rectangle {
             y: 18px;
             width: 36px;
             height: 18px;
+            // 双击 ⇒ 主控声相回中央（`0.0`）。
+            double-clicked => {
+                root.mixer-master-pan-reset();
+            }
             pointer-event(event) => {
                 if event.kind == PointerEventKind.down {
                     root.mixer-master-pan-grab(self.mouse-x);

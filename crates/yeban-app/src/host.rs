@@ -1436,12 +1436,93 @@ fn cancel_mixer_gesture(ui: &MainWindow, gesture: &Rc<RefCell<MixerGesture>>) ->
     }
 }
 
+/// **双击复位**要写回中性的那个**字段**（推子 vs 声相）。
+///
+/// 两者的中性值都是 `0.0`（`0 dB` = unity、声相 `0.0` = 中央），但**含义不同**、
+/// 提交的 `AutomationTarget` 也不同 ⇒ 用枚举分派，⛔ 一个 `bool` 形参（调用点读起来
+/// 必须能看出复位的是哪一格）。
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum MixerResetField {
+    /// `TrackV3::volume_db` → `0 dB`。
+    Volume,
+    /// `TrackV3::pan` → 中央。
+    Pan,
+}
+
+/// **双击复位**的落点（四个 `on_mixer_*_reset` 回调共用的**唯一**实现）。
+///
+/// 前提：调用方**已经**把在手的混音手势清零（[`end_mixer_gesture`]）。这一步不能省，
+/// 也不能挪到这里之后 —— 带着没收尾的手势去提交，提交引发的重投影会重建 repeater
+/// 条目、把正在拖的 `TouchArea` 连同指针抓取一起丢掉，`mixer-drag-active` 就黏在 `true`
+/// （实测记录见 [`reproject_track_heights`] 的文档）。
+///
+/// 与拖动路径的三处刻意区别：
+/// 1. **值的来源是权威工程**（[`mixer_track_state`]），不是视图态，也不是界面上的
+///    一份"默认值"常量 ⇒ `old_val` 必然与控制面比对的那一份逐位相同；
+/// 2. **一次点击 = 一次提交**（没有中间态，与静音 / 独奏同形）；
+/// 3. **已经是中性值 ⇒ 什么都不做**：提交一条 `old == new` 的 `Op` 会在撤销树上留下
+///    一步什么都没改的历史（与 [`wire_mixer_sampler`] 里"值没变时不提交"同一条理由）。
+///
+/// 落点仍是同一条 `Op` 对：`Op::SetParam { AutomationTarget::TrackVolume | TrackPan }`
+/// ⇒ 双击与拖动写进的是**同一格工程内容**、同一条撤销栈。
+fn commit_mixer_reset(
+    ui: &MainWindow,
+    port: &UndoPort,
+    target: &MixerTarget,
+    field: MixerResetField,
+) {
+    let track_id = match target {
+        MixerTarget::Track { track_id, .. } | MixerTarget::Master { track_id } => track_id.clone(),
+    };
+    let Some(state) = mixer_track_state(port, &track_id) else {
+        // 工程被换掉 / 控制面没开 ⇒ 不猜当前值，什么都不做。
+        return;
+    };
+    let Ok(id) = track_id.parse::<yeban_model::EntityId>() else {
+        return;
+    };
+    let (current, automation_target, field_name) = match field {
+        MixerResetField::Volume => (
+            state.volume_db,
+            yeban_model::AutomationTarget::TrackVolume { track_id: id },
+            "volume",
+        ),
+        MixerResetField::Pan => (
+            state.pan,
+            yeban_model::AutomationTarget::TrackPan { track_id: id },
+            "pan",
+        ),
+    };
+    // 位比较（与拖动的收尾同一口径）：`f32: PartialEq` 会把 `-0.0 == 0.0` 判真，
+    // 而这里要的是"一个字节都没变"—— `-0.0` 不是中性值，双击应该把它改回 `0.0`。
+    if current.to_bits() == 0.0_f32.to_bits() {
+        return;
+    }
+    let owner = match target {
+        MixerTarget::Track { .. } => "track",
+        MixerTarget::Master { .. } => "master",
+    };
+    let label = format!("mixer: reset {owner} {field_name}");
+    let op = yeban_model::Op::SetParam {
+        target: automation_target,
+        old_val: current,
+        new_val: 0.0,
+    };
+    if port.commit_ops(now_ms(), &label, vec![op]).is_err() {
+        eprintln!("[yeban-app] 双击复位提交被拒绝（工程未改）");
+        return;
+    }
+    refresh_undo_window(ui, port, true);
+}
+
 /// **混音台写入面的接线**（唯一实现；`main.rs` 与 `live_surface` 调的是同一个函数）。
 ///
-/// 十四个入口分三类：
+/// 入口分四类：
 /// - **通道条手势**（推子竖直 / 声相水平）：按下记起点 → 移动只写视图态 → 松手提交**一次**；
 /// - **主控手势**（`mixer-master-fader-*` / `mixer-master-pan-*`）：与通道条逐条同形，
 ///   区别只有寻址方式（身份，见 [`MixerTarget`]）与视图态的落点（标量属性）；
+/// - **双击复位**（`mixer-*-reset` / `mixer-master-*-reset`）：一次点击提交**一次**
+///   （落点 [`commit_mixer_reset`]），并且**先**清掉在手的手势；
 /// - **开关**（静音 / 独奏）：点击即提交**一次**（没有中间态）。
 ///
 /// 提交失败（控制面拒绝、工程被关掉）⇒ **什么都不回写**并打一行 stderr：
@@ -1955,6 +2036,108 @@ pub fn wire_mixer_edit(ui: &MainWindow, port: &Rc<UndoPort>) {
                 return;
             }
             refresh_undo_window(&ui, &port, true);
+        }
+    });
+
+    // ---------------------------------------------------------------- 双击复位
+    //
+    // `.slint` 只报"哪一个下标"（主控那两条连下标都没有），中性值的换算与提交全在这里
+    // （[`commit_mixer_reset`] 是唯一落点）。四条臂**都先** [`end_mixer_gesture`]。
+    //
+    // ⚠ 为什么必须先清零：一次真实双击 = 两下 `Press`/`Release`，第二下的 `Press` 会先把
+    // 一份 `moved == false` 的记录放进宿主。若带着它在手就提交，提交引发的重投影会重建
+    // repeater 条目、把正在拖的 `TouchArea` 连同指针抓取一起丢掉 ⇒ `mixer-drag-active`
+    // 黏在 `true`（实测记录见 [`reproject_track_heights`] 的文档）。
+    //
+    // 这一处理对**两种**内部顺序都成立（判据 `a_double_click_reset_leaves_no_sticky_gesture`
+    // 把两种交错都跑一遍）：
+    //   - `grab → double-clicked → release`：清零 ⇒ 随后的 `release` 读到 `Idle`，不提交；
+    //   - `double-clicked → grab → release`：新记录 `moved == false` ⇒ 收尾同样不提交。
+    // 两条路都只留下**一步**撤销（那一次复位），不会出现"空操作的一步"。
+    ui.on_mixer_fader_reset({
+        let weak = weak.clone();
+        let gesture = Rc::clone(&gesture);
+        let port = Rc::clone(port);
+        move |index| {
+            let Some(ui) = weak.upgrade() else {
+                debug_assert!(false, "MainWindow 在回调执行期间被销毁");
+                return;
+            };
+            end_mixer_gesture(&ui, &gesture);
+            let Some(track_id) = track_id_at(&ui, index) else {
+                return;
+            };
+            commit_mixer_reset(
+                &ui,
+                &port,
+                &MixerTarget::Track { index, track_id },
+                MixerResetField::Volume,
+            );
+        }
+    });
+    ui.on_mixer_pan_reset({
+        let weak = weak.clone();
+        let gesture = Rc::clone(&gesture);
+        let port = Rc::clone(port);
+        move |index| {
+            let Some(ui) = weak.upgrade() else {
+                debug_assert!(false, "MainWindow 在回调执行期间被销毁");
+                return;
+            };
+            end_mixer_gesture(&ui, &gesture);
+            let Some(track_id) = track_id_at(&ui, index) else {
+                return;
+            };
+            commit_mixer_reset(
+                &ui,
+                &port,
+                &MixerTarget::Track { index, track_id },
+                MixerResetField::Pan,
+            );
+        }
+    });
+    // 主控那两条：与上面两条同形，只是身份来自权威工程（`master_bus_track_id`）而非下标。
+    ui.on_mixer_master_fader_reset({
+        let weak = weak.clone();
+        let gesture = Rc::clone(&gesture);
+        let port = Rc::clone(port);
+        move || {
+            let Some(ui) = weak.upgrade() else {
+                debug_assert!(false, "MainWindow 在回调执行期间被销毁");
+                return;
+            };
+            end_mixer_gesture(&ui, &gesture);
+            let Some(track_id) = master_track_id(&port) else {
+                // 工程没有主总线 ⇒ 不猜身份（与主控 `grab` 同款：不留手势、不提交）。
+                return;
+            };
+            commit_mixer_reset(
+                &ui,
+                &port,
+                &MixerTarget::Master { track_id },
+                MixerResetField::Volume,
+            );
+        }
+    });
+    ui.on_mixer_master_pan_reset({
+        let weak = weak.clone();
+        let gesture = Rc::clone(&gesture);
+        let port = Rc::clone(port);
+        move || {
+            let Some(ui) = weak.upgrade() else {
+                debug_assert!(false, "MainWindow 在回调执行期间被销毁");
+                return;
+            };
+            end_mixer_gesture(&ui, &gesture);
+            let Some(track_id) = master_track_id(&port) else {
+                return;
+            };
+            commit_mixer_reset(
+                &ui,
+                &port,
+                &MixerTarget::Master { track_id },
+                MixerResetField::Pan,
+            );
         }
     });
 
