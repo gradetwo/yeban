@@ -443,13 +443,11 @@ fn is_container_role(role: &str) -> bool {
 /// `LeftEdgeInside` = 与盒子相交**且左沿在盒子内**（⭐ `#187`）。
 ///
 /// ⚠ `LeftEdgeInside` 为什么存在：运行时树给的是**未裁剪**的包围盒。编曲画布
-/// `workspace-arrangement-canvas` 有 `clip: true`，它的越界子节点（`section-*-card`、
-/// `arrangement-loop-brace`）在树里仍带着**越过画布右沿**的宽度 —— 1024 档
-/// `arrangement-loop-brace (648,68,480,22)` 一直伸到 `1128`，而画布右沿是 `744`。
-/// 这些像素被画布 clip 掉了，**⛔ 不与右栏重叠**，但它们的**包围盒**会落进右栏的段盒子。
-/// 右栏的控件全部从 `ai-rail.x + 8` 起（左沿在盒子内），被裁剪的越界节点左沿在盒子外
-/// ⇒ 这条取法把"像素真的在段内"与"包围盒越界"分开。这不是放宽：同一段内左沿在盒子里的
-/// 控件**仍然逐对**断言（见下面的读数）。
+/// `workspace-arrangement-canvas` 有 `clip: true`，其子节点即便像素被画布裁掉，
+/// 包围盒也可能越过画布右沿落进右栏的段盒子。这些像素**⛔ 不与右栏重叠**。
+/// 右栏的控件全部从 `ai-rail.x + 8` 起（左沿在盒子内）⇒ 这条取法把"像素真的在段内"
+/// 与"包围盒越界"分开。这不是放宽：同一段内左沿在盒子里的控件**仍然逐对**断言
+/// （见下面的读数）。
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Selection {
     Intersect,
@@ -1437,15 +1435,10 @@ fn check_arrangement(width: u32, height: u32) {
     report_line(&assert_ids_pairwise(&tree, sections, &label));
 
     // ---- 排除项（按设计覆盖，逐条登记在报告 §3）：
-    //   `arrangement-ruler` 是标尺**带**，按设计包住 `arrangement-loop-brace`；
     //   `arrangement-playhead` 是 1px 竖向走带光标，按设计压在剪辑 / 泳道上。
     assert!(
         tree.find_by_id("arrangement-ruler").is_some(),
         "[#187 编曲画布 {width}] 标尺带必须在场"
-    );
-    assert!(
-        tree.find_by_id("arrangement-loop-brace").is_some(),
-        "[#187 编曲画布 {width}] 循环选区把手必须在场（它是标尺带**内**的滑块，按设计压在带上）"
     );
     // ⭐ 走带光标现在**跟随引擎读数**（唯一写者 = `host::apply_transport`）：装配态
     // `playhead-ticks == 0` ⇒ x = 画布左沿 + 168px（时间轴左沿），三档断点下都落在
@@ -1623,22 +1616,6 @@ fn check_ai_rail(width: u32, height: u32) {
         212,
         "[#187 AI 右栏 {width}] `module-actions-title` 必须仍在 y=212（⛔ 不靠整体下移换绿）"
     );
-
-    // ---- 取法的守卫：1024 档 `arrangement-loop-brace` 的包围盒伸进右栏，但左沿在
-    //     画布内（被画布 clip）⇒ `LeftEdgeInside` 必须把它挡在段外。
-    if width == 1024 {
-        let brace = bounds(&tree, "arrangement-loop-brace");
-        assert!(
-            brace.0 < pane.0,
-            "[#187 AI 右栏 {width}] 这条取法的前提变了：`arrangement-loop-brace` 左沿 {} \
-             不再落在右栏外 —— 请重核 `Selection::LeftEdgeInside` 的裁决",
-            brace.0
-        );
-        assert!(
-            brace.0 + brace.2 as i32 > pane.0,
-            "[#187 AI 右栏 {width}] 前提也要求它**仍然**越界伸进右栏（否则这条守卫是空的）"
-        );
-    }
 
     // ---- 1024 档（**常驻栏**）：回执行被右栏裁剪区排掉（完全在树外），如实登记而不是静默。
     // ⭐ `#191`：折叠档的抽屉是 `height: root.height`（整窗高 800），回执行在树里 ——

@@ -2,7 +2,6 @@
 //
 // 规范来源 (Normative):
 //   - 规范 §2.1: 双视图是同构投射, 编辑都归约成原子 Op (本骨架尚未接 Op 日志)
-//   - 规范 §4.2: 标尺与循环选区 (True Audio Loop Brace)
 //   - 规范 §4.3: 章节卡片层 (Song Form & Section Track)
 //   - [UI-TEST-001] §12.2: 语义 Element ID —— `clip-{ulid}-header` 与 `track-{i}-header`
 //     就落在这个文件; `track-{i}-fader` 归 console/mixer_console.slint
@@ -18,8 +17,11 @@
 // 规模由工程决定；x / width 由投影的整数 tick 换算给出（`tick / ticks_per_pixel`）。
 // 代价：直接预览本文件（不注入）会看到空轨道 —— 这是"只有一个事实源"的必要代价。
 //
-// 仍未实现: 波形金字塔 / R-Tree 视口裁剪 / 拖拽吸附 / 循环选区拖拽。
+// 仍未实现: 波形金字塔 / R-Tree 视口裁剪 / 拖拽吸附 / 循环选区。
 // 那些是 [UI-NOTE-001..005] 的范围, 需要 `yeban-render` 与 Op 日志先落地。
+// 循环选区额外缺**模型载体**: `LoopConfig` 只住在 `ClipPlacement` 上, `TransportConfig`
+// 没有走带循环字段、`Op` 也没有对应变体 ⇒ 本文件的标尺带里**不画**选区把手
+// （参考性 UI/UX 文档 §4.2 的固定 2–6 小节骨架是假读数, 已删）。
 
 import { Tokens, UiText, UiMonoText, UiMediumText, UiSerifText } from "../tokens.slint";
 
@@ -257,24 +259,6 @@ export component ArrangementView inherits Rectangle {
             width: 1px;
             height: parent.height;
             background: bar_index.mod(4) == 0 ? Tokens.line-strong : Tokens.line;
-        }
-
-        // 循环选区把手 (True Audio Loop Brace) —— 只画骨架, 拖拽未实现
-        Rectangle {
-            x: 120px * 2;
-            y: 0;
-            width: 120px * 4;
-            height: parent.height;
-            background: Tokens.bg-raised;
-            border-width: 1px;
-            border-color: Tokens.gold-deep;
-            accessible-role: slider;
-            accessible-id: "arrangement-loop-brace";
-            accessible-label: "循环选区";
-            accessible-value-minimum: 0;
-            accessible-value-maximum: 9999;
-            accessible-value-step: 1;
-            accessible-value: "2 - 6";
         }
     }
 

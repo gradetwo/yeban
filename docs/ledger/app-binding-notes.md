@@ -374,7 +374,7 @@ running 9 tests   →  test result: ok. 9 passed; 0 failed      # Tier-1 判据�
 | 4 | **轨道色标** | `TrackV3::color` 已进投影（`TrackView::color`），但 `.slint` 未消费：Slint 侧需要 `[color]` 数组，而十六进制字符串→`Color` 的解析要么在 Rust 侧做（多一层转换点），要么引入 Slint 的颜色解析 API（未核验） | 留给 UI 视觉线；本线不在无编译条件下冒险 |
 | 5 | **自动化曲线 / 宏 / 设备链** | ✅ **自动化曲线已进视图**（2026-10-05，`line/app-automation-ui`）：`arrangement_view.slint`（27 处 `automation` 引用）+ `elements.rs:503` 每泳道一个元素 ID；**宏 / 设备链仍未进视图**。原表述（`automation_lanes` / `macros` / `devices` 全部未进视图）已过时 ——保留为当时记录：`TrackV3::automation_lanes` / `macros` / `devices` **当时**未进视图；`device_rack.slint` 用 `scene::DEVICE_NAMES` 常量 | `[UI-NOTE-004]`；设备机架应由 `devices` 驱动 |
 | 6 | **走带位置 / 当前分支** | `timecode` / `branch_name` 是**占位常量**（`SESSION_TIMECODE` / `SESSION_BRANCH_NAME`），因为它们在 `YebanProjectV1` 里**不存在**（会话运行态 / 提交图谱） | `yeban-engine::EngineSnapshot` + `yeban-model::commit::CommitGraph` |
-| 7 | **拖拽 / 吸附 / 循环选区编辑** | 仍是静态几何 | `[UI-NOTE-003]` 工具矩阵 + 指针捕获状态机（规范 §6.1） |
+| 7 | **拖拽 / 吸附 / 循环选区编辑** | 剪辑拖拽已落（吸附复用 `ROLL_SNAP_GRID_TICKS`）；循环选区**未实现**：模型没有走带循环字段（`LoopConfig` 只住 `ClipPlacement`），`Op` 也无对应变体，固定 2–6 小节的标尺骨架已作为假读数删除（2026-10-30） | `[UI-NOTE-003]` 工具矩阵 + 指针捕获状态机（规范 §6.1）；循环选区另需模型字段 + `Op` + ADR |
 | 8 | **`.yeban` 容器加载** | `--project-sample` 只切换**内置**工程（`demo_project()` / `filled_project()`）；没有"打开文件"路径 | `.yeban` 容器读写属 `yeban-services`；本线不引入 `serde_json` 到 app |
 | 9 | **预览 `.slint` 不再自足** | 数组默认值改成 `[]` 之后，单独预览 `app.slint` 会看到空轨道/空卷帘 | 这是"只有一个事实源"的**代价**，与 `docs/ledger/ui-shell-notes.md` pending 4 的原计划一致（"改成 Rust 侧 ModelRc 单向注入, `.slint` 里只留空数组"） |
 | 10 | **`slint::platform::set_platform` 每线程仅一次** | 三条 Tier-1 判据各自新建 `LivePort`；libtest 默认一测一线程（CI 实测通过）。若有人用 `--test-threads=1` 跑，第 2 条起会拿到 `PlatformUnavailable` | 既有约束（本线之前就有 2 条）；已在此登记 |

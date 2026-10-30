@@ -18,7 +18,7 @@
 | `ui/status_bar.slint` | `UI-GRID-001`（24px 状态栏）`UI-A11Y-003` | ADR-0001 D2 新增的组件 |
 | `ui/sidebar.slint` | `UI-GRID-001` `UI-GRID-002`（36px 图标导轨）`UI-TEST-001` | 左侧资源栏 / 分类 / 资源条目 |
 | `ui/workspace/session_view.slint` | 规范 §2.2 §2.3 `UI-TEST-001` | 剪辑矩阵 + 场景激发 + Back to Arrangement |
-| `ui/workspace/arrangement_view.slint` | 规范 §4.2 §4.3 `UI-TEST-001` `UI-MCP-002` | 轨道包头 + 标尺 + 循环选区 + 章节卡片 + 走带光标 |
+| `ui/workspace/arrangement_view.slint` | 规范 §4.3 `UI-TEST-001` `UI-MCP-002` | 轨道包头 + 标尺 + 章节卡片 + 走带光标（循环选区骨架已于 2026-10-30 删除：模型无走带循环载体） |
 | `ui/console/console_tabs.slint` | `UI-GRID-001`（底部控制台 35–45%）`UI-TEST-001` | Tab 导轨 + 三页叠放 |
 | `ui/console/piano_roll.slint` | 规范 §3.1 §3.3 §3.5 `UI-TEST-001` `UI-MCP-002` | 卷帘骨架 + 工具矩阵 + 音符图元 + 力度泳道 + AI 建议层 |
 | `ui/console/mixer_console.slint` | 规范 §5.2 `UI-TEST-001` `UI-MCP-002` `ARCH-UI-002` | 通道条 + VU 电平 + 主控 |

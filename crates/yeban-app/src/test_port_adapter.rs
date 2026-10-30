@@ -439,12 +439,13 @@ const DEFAULT_VIEW_MUST_HAVE: [&str; 16] = [
 /// ⚠ 2026-10-30 诚实性批次：`note-suggestion-overlay-rect` 已从 `.slint` 删除
 /// （AI 建议层没有提案数据源，静态示意块会谎报"待采纳音符"）⇒ 分母 **39 → 38**。
 /// 同日的节拍器切片新增 `transport-metronome-button`（宽度 ≥ 1120 时可见）⇒ **38 → 39**。
-const VISIBLE_SINGLETONS: [&str; 39] = [
+/// 同日的循环选区切片删除 `arrangement-loop-brace`（固定 2–6 小节的假选区，模型没有
+/// 走带循环字段、`Op` 也没有对应变体）⇒ **39 → 38**。
+const VISIBLE_SINGLETONS: [&str; 38] = [
     "ai-rail",
     "ai-rail-diagnose-button",
     "ai-rail-intent-button",
     "ai-rail-musical-pr-button",
-    "arrangement-loop-brace",
     "arrangement-playhead",
     "arrangement-ruler",
     "console-maximize-button",
