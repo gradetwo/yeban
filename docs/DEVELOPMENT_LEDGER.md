@@ -16052,3 +16052,8 @@ test result: FAILED. 3 passed; 1 failed
 3. **磁盘现读**：`/home` `198G/235G`（余 **31G**，87%）；仓库内 `target` 仅 **1.9M**，两条子线树已拆、无 `target/`。
    仓库外大头（`~/.cache` 19G／`~/.cargo/registry` 1.1G／`~/.rustup` 5.2G／他项目 target 3.8G）仍是 `#34`，待人类裁决。
 4. **活树现读**：`git worktree list` ＝ **一行**（主树 `main` @ `b019f2e9`）。
+5. **本节自身那枚提交 `8e32be36` 的 run `41006065587` 已读回**：`conclusion = success`，
+   `plan (受影响集合)`／`lockfile`／`deny`／`checks` 四条真跑 success，四条 rust 腿（windows／`rust (crate)`／macos／
+   `rust (workspace 全量)`）**全部 skipped** ⇒ 空绿，⛔ 当代码判决（§6.3 第 2 条）。耗时 ≈2m16s（05:01:12 → 05:03:28）。
+   **账本链到此收口**：下面这枚只承载本条判决文字的 `docs/**` 提交，其 run 结构上同样是空绿；
+   本行**不预判**它的结论，只说明登记链不再为"记录上一枚 docs 判决"继续自增长。
