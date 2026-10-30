@@ -37,6 +37,12 @@ export component Transport inherits Rectangle {
     in property <string> branch-name: "main";
     in property <bool> arrangement-view: true;
     in property <bool> ai-drawer-open: false;
+    // ⭐ 节拍器开关的**运行态镜面**（`[ARCH-RT-001]` 的界面侧那一半）。
+    // 唯一写者 = 宿主（`host::wire_transport` 的 `on_toggle_metronome` 与
+    // `host::apply_action` 的 `Action::ToggleMetronome` 臂写的是**同一个**属性）；
+    // 界面**不**自己翻转它。⚠ 它是 `MODEL-ISO-001` 的挥发性层：⛔ 不是工程数据，
+    // 初始值由装配期从 `project.transport.metronome_enabled` 读入。
+    in property <bool> metronome-on: false;
 
     // 时间码的**格式化网格**（每拍 / 每小节的 tick 数）由宿主从投影注入 ——
     // 但注入点是 `MainWindow`（见 app.slint 的 `timecode-ticks-*`），
@@ -44,6 +50,8 @@ export component Transport inherits Rectangle {
     // 而不是在 `.slint` 里再做一份拍号算术。
 
     callback toggle-play();
+    /// ⭐ 节拍器开关（`Cmd/Ctrl+Alt+N` 的可点等价物）：界面只发通知，落点在宿主。
+    callback toggle-metronome();
 
     // ⭐ 录音键（`[ARCH-REC-001]`）：宿主是**唯一**写者 —— 它起录/停录后把这个属性写回来。
     // ⚠ `recording` 是**运行态**（`MODEL-ISO-001` 的挥发性层）：⛔ 不进工程、⛔ 不持久化。
@@ -516,6 +524,54 @@ export component Transport inherits Rectangle {
             width: parent.width;
             height: parent.height;
             clicked => { root.open-ai-proposals(); }
+        }
+    }
+
+    // ------------------------------------------------- 节拍器 [ARCH-RT-001]
+    //
+    // 规范 ASCII 图里没有这一格；它是台账「界面侧没有开关」那条后续项
+    // （`docs/ledger/feature-alignment.md` 的走带行）。位置取**视图组左侧的缝**：
+    // 视图组钉在 `root.width - 304`，本键 `x = root.width - 348`（右沿 `-316`，
+    // 两侧各 12px），而 AI 徽章右沿 760 ⇒ 不相交的条件是 `root.width - 348 ≥ 772`
+    // ⇒ `visible: root.width >= 1120px`。1024 档隐藏重复入口；窄档仍有
+    // `Cmd/Ctrl+Alt+N`（同一动作，同一个宿主落点）。
+    //
+    // ⚠ 状态只有一个写者：`root.metronome-on` 由宿主写（`host::wire_transport`），
+    // 这里只读它画选中态与 `accessible-checked`；`clicked` 只发回调，⛔ 不自己翻转。
+    Rectangle {
+        visible: root.width >= 1120px;
+        x: root.width - 348px;
+        y: Tokens.space-4;
+        width: 32px;
+        height: 32px;
+        background: metronome_area.pressed ? Tokens.bg-raised : Tokens.bg-panel-alt;
+        border-radius: Tokens.radius-md;
+        accessible-role: button;
+        accessible-id: "transport-metronome-button";
+        accessible-label: "节拍器 (Cmd/Ctrl + Alt + N)";
+        // ⭐ 真开关：屏读器要能读出"开 / 关"两态 ⇒ 与 `accessible-checked` 一起声明。
+        accessible-checkable: true;
+        accessible-checked: root.metronome-on;
+        // `[UI-A11Y-003]` §7.3：落点与 `metronome_area` 的 `clicked` 逐字相同。
+        accessible-action-default => { root.toggle-metronome(); }
+
+        UiText {
+            x: 0;
+            y: 0;
+            width: parent.width;
+            height: parent.height;
+            text: "♩";
+            // 开启 = 走带族的功能色（与播放键同族：节拍器服务于走带）；
+            // 关闭 = 中性灰。只换**颜色表达式**，不新增控件。
+            color: root.metronome-on ? Tokens.playing : Tokens.ink-2;
+            font-size: Tokens.font-size-lg;
+            horizontal-alignment: center;
+        }
+
+        metronome_area := TouchArea {
+            width: parent.width;
+            height: parent.height;
+            clicked => { root.toggle-metronome(); }
         }
     }
 

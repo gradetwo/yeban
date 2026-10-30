@@ -265,6 +265,7 @@ const TRANSPORT_WIDE: &[&str] = &[
     "transport-revert-button",
     "transport-save-button",
     "transport-ai-proposal-badge",
+    "transport-metronome-button",
     "transport-view-session-button",
     "transport-view-arrangement-button",
     "transport-view-toggle-button",
@@ -712,15 +713,14 @@ fn check_transport(width: u32, height: u32) -> (usize, usize) {
     let live = live_window((width, height), PIANO_TAB);
     let tree = runtime_tree(live.ui());
     let band: Bounds = (0, 0, width, TOP_BAR);
-    let expected: Vec<&str> = if width >= 1064 {
-        TRANSPORT_WIDE.to_vec()
-    } else {
-        TRANSPORT_WIDE
-            .iter()
-            .copied()
-            .filter(|id| *id != "transport-ai-proposal-badge")
-            .collect()
-    };
+    let expected: Vec<&str> = TRANSPORT_WIDE
+        .iter()
+        .copied()
+        .filter(|id| *id != "transport-ai-proposal-badge" || width >= 1064)
+        // ⭐ 节拍器键钉在徽章右侧 12px 缝里（`x = root.width - 348`）⇒ 1120 以下
+        // 会与徽章相交，因此那两档按设计隐藏（同一动作仍有 `Cmd/Ctrl+Alt+N`）。
+        .filter(|id| *id != "transport-metronome-button" || width >= 1120)
+        .collect();
     let reading = assert_pairwise(
         &tree,
         band,
@@ -747,6 +747,21 @@ fn check_transport(width: u32, height: u32) -> (usize, usize) {
             badge.0 + badge.2 as i32 <= session.0,
             "[#186 {width}x{height}] 徽章右沿必须 ≤ Session 左沿（宽档不许交）"
         );
+        // ⭐ 节拍器键（1120 起可见）夹在徽章与视图组之间：两侧各 12px 缝。
+        if width >= 1120 {
+            let metro = bounds(&tree, "transport-metronome-button");
+            assert!(
+                badge.0 + badge.2 as i32 <= metro.0,
+                "[#186 {width}x{height}] 徽章右沿 {badge:?} 必须 ≤ 节拍器键左沿 {metro:?}"
+            );
+            assert!(
+                metro.0 + metro.2 as i32 <= session.0,
+                "[#186 {width}x{height}] 节拍器键右沿 {metro:?} 必须 ≤ Session 左沿 {session:?}"
+            );
+            report_line(&format!(
+                "[#186 走带 {width}x{height}] badge {badge:?} ≤ metronome {metro:?} ≤ session {session:?} ⇒ 不相交"
+            ));
+        }
         report_line(&format!(
             "[#186 走带 {width}x{height}] save {save:?} ≤ badge {badge:?} ≤ session {session:?} ⇒ 不相交"
         ));

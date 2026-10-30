@@ -239,6 +239,15 @@ impl ElementRegistry {
             "录音",
             false,
         );
+        // ⭐ 节拍器开关（`[ARCH-RT-001]` 的界面侧）：`Cmd/Ctrl+Alt+N` 的可点等价物。
+        // 宽档（≥1120）才画；窄档仍可从键盘拨动（同一个宿主落点）。
+        registry.add(
+            "transport-metronome-button",
+            ElementKind::Button,
+            "transport.slint",
+            "节拍器 (Cmd/Ctrl + Alt + N)",
+            false,
+        );
         // `ROAD-M4-008` 选项 (a)：产品二进制里的**保存**入口（用户够得到的那个按钮）。
         // 它不改工程内容，只是把"保存"交给宿主（`host::wire_save` → `save_action`）。
         registry.add(

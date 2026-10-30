@@ -4920,6 +4920,56 @@ pub fn wire_transport(
         }
     });
 
+    // ⭐ **节拍器开关**（`[ARCH-RT-001]` 的界面侧）：`ui/transport.slint` 的
+    // `transport-metronome-button` 与 `Cmd/Ctrl+Alt+N` 走**同一个落点**
+    // （[`apply_engine_command`]），`metronome-on` 也只有一个写者 —— 这里与
+    // [`apply_action`] 的同一个臂。
+    //
+    // ## 初始值
+    //
+    // 装配期从工程文档读一次（`transport.metronome_enabled`）；此后由两个入口维护。
+    // ⛔ 不由 `apply_view` 写：撤销 / 重投影会把镜面打回文档的旧值，让界面与引擎分叉。
+    //
+    // ## 为什么"下一个值"来自界面属性（而不是 `context.project`）
+    //
+    // 拨动今天**不写文档**（`Op::SetTransportConfig` 的提交通道未接线）⇒ 文档字段
+    // 恒为装配期初值。若从它算，第二次点击会再次算出 `true`（开关关不掉）。
+    if let Some(project) = project.as_ref() {
+        ui.set_metronome_on(project.transport.metronome_enabled);
+    }
+    let metronome_engine = Rc::clone(&engine);
+    let metronome_project = project.as_ref().map(Rc::clone);
+    let metronome_ui = slint::ComponentHandle::as_weak(ui);
+    ui.on_toggle_metronome(move || {
+        let Some(ui) = metronome_ui.upgrade() else {
+            debug_assert!(false, "MainWindow 在回调执行期间被销毁");
+            return;
+        };
+        let Some(project) = metronome_project.as_ref() else {
+            eprintln!("[yeban-app] 忽略 toggle-metronome：装配层没有工程 ⇒ 本次按键无效");
+            return;
+        };
+        // `#212` 同款边界兜底：借不到就降级（⛔ 不 panic、⛔ 不假装切换过）。
+        let Ok(mut engine) = metronome_engine.try_borrow_mut() else {
+            eprintln!(
+                "[yeban-app] 忽略 toggle-metronome：引擎正被同一线程借用（重入）⇒ 本次按键无效"
+            );
+            return;
+        };
+        let current = ui.get_metronome_on();
+        let mut context = EngineCommandContext {
+            host: &mut engine,
+            project: project.as_ref(),
+            metronome_on: Some(current),
+        };
+        let applied = apply_engine_command(&mut context, Action::ToggleMetronome);
+        // ⭐ 先放借、再写界面（与 `on_toggle_play` 同款作用域纪律）。
+        drop(engine);
+        if applied {
+            ui.set_metronome_on(!current);
+        }
+    });
+
     // ⭐ **录音键**（`[ARCH-REC-001]`，任务单 `#88`）：接线搬进 [`wire_record_at`] ——
     // 那里有**可注入的工厂缝**（真设备源 / 显式静音腿 / 判据的假源）。
     // 走带这一层只把"产品的四个端口"装配进去（⛔ 不再把源写死在这里）。
@@ -5628,6 +5678,7 @@ pub fn wire_keys(
                             let mut context = EngineCommandContext {
                                 host: &mut host,
                                 project: project.as_ref(),
+                                metronome_on: None,
                             };
                             apply_action(&ui, undo.as_ref(), Some(&mut context), action)
                         }
@@ -7920,6 +7971,16 @@ pub struct EngineCommandContext<'a> {
     pub host: &'a mut EngineHost,
     /// **当前工程**（动作要基于它算"下一个值"）。
     pub project: &'a YebanProjectV1,
+    /// ⭐ **节拍器开关的运行态镜面**（界面路径注入；`None` ⇒ 退回落文档字段）。
+    ///
+    /// ## 为什么需要它（而不是永远读文档）
+    ///
+    /// `transport.metronome_enabled` 住在**持久化文档**里，而今天拨动开关**不写文档**
+    /// （文档级提交要走 `Op::SetTransportConfig`，那条通道尚未接线）。若"下一个值"
+    /// 永远从文档算，第二次按键/点击会再次算出 `true` ⇒ **开关关不掉**。
+    /// 界面路径把 `MainWindow.metronome-on`（唯一运行态镜面）注进来，
+    /// 于是 `Cmd/Ctrl+Alt+N` 与节拍器按钮**同一个落点、同一个取值依据**。
+    pub metronome_on: Option<bool>,
 }
 
 /// ⭐ **"要动引擎"的动作的落点**（⭐ **不依赖界面** ⇒ 判据可无窗口地测它）。
@@ -7936,10 +7997,12 @@ pub struct EngineCommandContext<'a> {
 /// ⛔ 不 panic（引擎拒绝 ⇒ 返回 `false`）。
 pub fn apply_engine_command(context: &mut EngineCommandContext<'_>, action: Action) -> bool {
     match action {
-        // 拨**节拍器**开关：取反当前值。
+        // 拨**节拍器**开关：取反当前值（界面路径给的是运行态镜面；纯判据路径落回文档字段）。
         Action::ToggleMetronome => {
-            let next = !context.project.transport.metronome_enabled;
-            crate::metronome::set_enabled(context.host, context.project, next).is_ok()
+            let current = context
+                .metronome_on
+                .unwrap_or(context.project.transport.metronome_enabled);
+            crate::metronome::set_enabled(context.host, context.project, !current).is_ok()
         }
         // 拨**预备拍**：`count_in_bars` 0 ⇄ 1。
         Action::ToggleCountIn => {
@@ -7978,6 +8041,8 @@ pub(crate) fn apply_action_for_criteria(
     let mut context = EngineCommandContext {
         host: engine,
         project,
+        // ⭐ 纯判据路径没有界面 ⇒ "下一个值"落回文档字段（行为与接线前逐位相同）。
+        metronome_on: None,
     };
     // ⭐ ⚠ **必须走与产品同一处落点**（`apply_engine_command`），⛔ 不是另写一条测试旁路；
     // 界面参数**不参与**（那类臂不碰界面）⇒ 判据无需 Tier-1 窗口。
@@ -7998,8 +8063,23 @@ fn apply_action(
         // ⇒ 走 `metronome::set_enabled` 的"先停 ⇒ 换 ⇒ 恢复位置与状态"。
         // ⚠ 引擎/工程不在手（`context == None`）⇒ ⛔ 不消费（照旧放行，⛔ 不假装成功）。
         Action::ToggleMetronome | Action::ToggleCountIn => {
-            let Some(context) = context else { return false };
-            apply_engine_command(context, action)
+            let Some(context) = context else {
+                return false;
+            };
+            if matches!(action, Action::ToggleCountIn) {
+                return apply_engine_command(context, action);
+            }
+            // ⭐ `Action::ToggleMetronome`：**运行态镜面**是"下一个值"的唯一依据
+            // （文档字段只是装配期的初值；拨动本身不写文档）。
+            let current = ui.get_metronome_on();
+            context.metronome_on = Some(current);
+            let applied = apply_engine_command(context, action);
+            if applied {
+                // ⚠ 这里是**属性写入**，不是回调：同线程绑定重算，⛔ 不重入引擎
+                // （`#212` 禁的是持借期间 `ui.invoke_*`）。
+                ui.set_metronome_on(!current);
+            }
+            applied
         }
         // `[UI-NOTE-003]` 工具选择：数字键 → 矩阵行号 → `active-tool`（**单一数字口径**）。
         // 撤销端口在场时同时记一条动作日志（`UiAction::SelectTool` 只报显示态、不改工程）。

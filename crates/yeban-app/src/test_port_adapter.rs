@@ -435,7 +435,7 @@ const DEFAULT_VIEW_MUST_HAVE: [&str; 16] = [
 ///
 /// 覆盖率判据允许少量缺失（`< MIN_SINGLETON_COVERAGE_PERCENT` 才红），因为某一块面板
 /// 被邻居裁剪掉 1px 属于 SSIM/几何口径问题；而系统性失效（树为空、整列不见）会立刻掉到 0%。
-const VISIBLE_SINGLETONS: [&str; 39] = [
+const VISIBLE_SINGLETONS: [&str; 40] = [
     "ai-rail",
     "ai-rail-diagnose-button",
     "ai-rail-intent-button",
@@ -466,6 +466,7 @@ const VISIBLE_SINGLETONS: [&str; 39] = [
     "transport-bpm-field",
     "transport-branch-button",
     "transport-commit-button",
+    "transport-metronome-button",
     "transport-play-button",
     "transport-record-button",
     "transport-revert-button",

@@ -380,6 +380,12 @@ export component MainWindow inherits Window {
     /// ⭐ 录音键的显示态（`[ARCH-REC-001]`）：唯一写者 = `host::wire_transport`
     /// （起录 ⇒ true、停录 ⇒ false）。⛔ 不是工程数据（`MODEL-ISO-001` 的挥发性层）。
     in-out property <bool> recording: false;
+    /// ⭐ 节拍器开关的显示态（`[ARCH-RT-001]`）：唯一写者 = 宿主
+    /// （`host::wire_transport` 的 `on_toggle_metronome` 与 `host::apply_action` 的
+    /// `Action::ToggleMetronome` 臂写的是**同一个**属性）。⛔ 不是工程数据
+    /// （`MODEL-ISO-001` 的挥发性层）；初始值由装配期从
+    /// `project.transport.metronome_enabled` 读入。
+    in-out property <bool> metronome-on: false;
     in-out property <bool> arrangement-view: true;
     in-out property <int> console-tab: 0;
     /// ⭐ 底部控制台是否最大化（`Cmd/Ctrl+Alt+M` / 控制台右上角 ⤢ 的同一个视图态）。
@@ -456,6 +462,9 @@ export component MainWindow inherits Window {
     callback toggle-play();
     /// ⭐ 录音键（`[ARCH-REC-001]`）：按下 ⇒ 起录 / 停录。
     callback toggle-record();
+    /// ⭐ 节拍器开关（`Cmd/Ctrl+Alt+N` 的可点等价物）。界面只发通知；
+    /// 状态属性 `metronome-on` 的唯一写者仍是宿主（`host::wire_transport`）。
+    callback toggle-metronome();
     // 走带的"停止"（停住 + 回到起点）。它与 `toggle-play` 一样由 Rust 侧接线，
     // 界面**不自己翻转**任何走带状态 —— 见 `src/host.rs` 的 `wire_transport`。
     callback stop();
@@ -1243,6 +1252,9 @@ export component MainWindow inherits Window {
             branch-name: root.branch-name;
             arrangement-view: root.arrangement-view;
             ai-drawer-open: root.ai-drawer-open;
+            // ⚠ 单向（子只读）：`metronome-on` 的唯一写者是宿主，写的是
+            // `root.metronome-on`；子组件的 `accessible-checked` 与选中态读这一份。
+            metronome-on: root.metronome-on;
 
             // ⚠ 界面**不**自己翻转 `root.playing`：那个属性只有一个写者 ——
             // `src/host.rs` 的 `apply_transport`（读的是引擎的原子读数）。
@@ -1257,6 +1269,10 @@ export component MainWindow inherits Window {
             // ⭐ 录音键：原样转给宿主（⛔ 界面不写 `recording` —— 那是宿主的状态）。
             toggle-record => {
                 root.toggle-record();
+            }
+            // ⭐ 节拍器键：原样转给宿主（⛔ 界面不翻转 `metronome-on` —— 唯一写者是宿主）。
+            toggle-metronome => {
+                root.toggle-metronome();
             }
             // `ROAD-M4-008`：保存按钮**原样**转给宿主 —— 界面不写盘、不改 `save-status`
             // （那个属性只有宿主一个写者，见 `host::apply_save_outcome`）。

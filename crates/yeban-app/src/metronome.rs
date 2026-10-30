@@ -533,6 +533,8 @@ mod dispatch_tests {
             let mut context = EngineCommandContext {
                 host: &mut host,
                 project: &project,
+                // 纯判据路径：没有界面镜面 ⇒ 下一个值退回**文档字段**（既有行为不变）。
+                metronome_on: None,
             };
             assert!(
                 apply_engine_command(&mut context, action),
@@ -550,6 +552,8 @@ mod dispatch_tests {
             let mut context = EngineCommandContext {
                 host: &mut host,
                 project: &project,
+                // 纯判据路径：没有界面镜面 ⇒ 下一个值退回**文档字段**（既有行为不变）。
+                metronome_on: None,
             };
             assert!(
                 !apply_engine_command(&mut context, action),
@@ -562,6 +566,8 @@ mod dispatch_tests {
         let mut context = EngineCommandContext {
             host: &mut host,
             project: &project,
+            // 纯判据路径：没有界面镜面 ⇒ 下一个值退回**文档字段**（既有行为不变）。
+            metronome_on: None,
         };
         assert!(!apply_engine_command(&mut context, Action::Cancel));
         assert_eq!(
