@@ -4318,6 +4318,10 @@ fn pressing_the_record_button_starts_and_stops_a_session() {
         ]
     };
     assert!(
+        !observed.is_empty(),
+        "夹具必须非空（否则下面那条 `.all(..)` 恒真）"
+    );
+    assert!(
         observed
             .iter()
             .all(|(_, state)| *state != TransportState::Recording),
