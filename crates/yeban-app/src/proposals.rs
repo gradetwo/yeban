@@ -92,9 +92,15 @@ pub struct ProposalRowView {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ProposalDecision {
     /// 采纳：把这条提案的 op 批次合进主线（领域产出**多父**合并提交）。
-    Merge { id: String },
+    Merge {
+        /// 要合的那条提案的 `proposalId` —— canonical ULID 原文（⛔ 不是行下标）。
+        id: String,
+    },
     /// 放弃：只翻转记录, **绝不**删除, 也不产生提交。
-    Reject { id: String },
+    Reject {
+        /// 要放弃的那条提案的 `proposalId` —— 与 `Merge` 同一格的凭据。
+        id: String,
+    },
 }
 
 impl ProposalDecision {
