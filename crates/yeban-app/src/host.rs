@@ -8024,7 +8024,7 @@ fn apply_action(
         // `Escape` = **收尾**：取消当前手势（`ADR-0004` S1 的纵向拖拽 / `ADR-0005` 的
         // 推子与声相），或关闭全屏时光机（`[UI-A11Y-003]` §7.3）。
         //
-        // 五个来源各自独立、各自有唯一清零点，因此这里**都问一遍**（任一命中即消费）：
+        // 六个来源各自独立、各自有唯一清零点，因此这里**都问一遍**（任一命中即消费）：
         // 1. 时光机开着 ⇒ 落 [`UiAction::CloseUndoTree`]（**只改界面运行态**，不碰工程）；
         // 2. 纵向拖拽在手 ⇒ 落 [`cancel_track_height_drag`]（写回起点高度）；
         // 3. 混音手势在手 ⇒ 落窗口回调 `mixer-cancel-gesture` → [`cancel_mixer_gesture`]
@@ -8032,14 +8032,15 @@ fn apply_action(
         // 4. `[UI-NOTE-003]` 卷帘音符移动手势在手 ⇒ 落 [`cancel_note_drag`]
         //    （**丢弃草稿**；拖动期从未写进工程 ⇒ ⛔ 不提交、⛔ 不重投影）；
         // 5. `[UI-NOTE-003]` 卷帘**力度**手势在手 ⇒ 落 [`cancel_velocity_drag`]
-        //    （同上：只丢弃草稿；两个卷帘手势互斥，但两条清零各自独立 ⇒ 谁也不会漏收尾）。
+        //    （同上：只丢弃草稿；两个卷帘手势互斥，但两条清零各自独立 ⇒ 谁也不会漏收尾）；
+        // 6. 编曲**剪辑平移**手势在手 ⇒ 落 [`cancel_clip_drag`]（同上：只丢弃草稿）。
         //
         // 顺序是**决定**，不是巧合：模态面板在最前面，因此"手势还在手"时按 `Escape`
-        // 先关时光机（与 `[UI-A11Y-003]` 的模态语义同向）。五条各自独立：关掉时光机
+        // 先关时光机（与 `[UI-A11Y-003]` 的模态语义同向）。六条各自独立：关掉时光机
         // **不会**顺带取消手势（用户还要按第二次 `Escape`），没有手势在手也不会把
         // 关闭动作算作"已收尾"。
         //
-        // 五条都没有命中时返回 `false`（照旧放行给焦点系统）—— 与 `Escape` 接线之前
+        // 六条都没有命中时返回 `false`（照旧放行给焦点系统）—— 与 `Escape` 接线之前
         // 的行为逐位相同。这里**没有**新增 `Action` 变体：`Action::Cancel` 本来就在
         // 策略表里（`input.rs` 的 `Key::Escape => Resolution::Action(Action::Cancel)`），
         // 它此前只是没有落地实现（`action_has_implementation` 把它列在未实现里）。
@@ -8063,7 +8064,9 @@ fn apply_action(
             let mixer = ui.invoke_mixer_cancel_gesture();
             let note = cancel_note_drag(ui);
             let velocity = cancel_velocity_drag(ui);
-            height || mixer || note || velocity
+            // 6. 编曲剪辑平移手势在手 ⇒ 落 [`cancel_clip_drag`]（丢弃草稿、⛔ 不提交）。
+            let clip = cancel_clip_drag(ui);
+            height || mixer || note || velocity || clip
         }
         // 双视图：`Tab` 是切换，`F5`/`F6`/`Alt+1`/`Alt+2` 是直达。写的是**界面属性**，
         // 与 `ui/switch_main_view` 走的是同一个属性（管理动作那边有回读判据）。
@@ -10112,6 +10115,245 @@ fn install_roll_note_drag(
             };
             cancel_note_drag(&ui);
             cancel_velocity_drag(&ui);
+        }
+    });
+}
+
+// ===========================================================================
+// 编曲剪辑平移（`clip-{ulid}-body` 拖动面）
+// ===========================================================================
+
+/// 剪辑拖动的**目标起点**（纯函数）：像素位移 ⇒ 吸附后的起点 tick。
+///
+/// 三条口径（每一条都是决定）：
+/// - **同一份缩放**：`delta_px × ticks_per_pixel`，`ticks_per_pixel` 就是投影用的那个
+///   （[`roll_ticks_per_pixel`]，与 `bridge::tick_to_px` 同一个来源）⇒ 界面画在哪、宿主
+///   算到哪是同一个网格；
+/// - **同一个吸附网格**：复用 [`ROLL_SNAP_GRID_TICKS`]（卷帘移动臂的网格常量），
+///   ⛔ 不为剪辑另立一个"剪辑专用"吸附值；
+/// - **起点不早于 0**：`u64` 没有负数，向左拖过头就是 `0`（夹紧而不是回绕）。
+///
+/// 非有限的 `delta_px` ⇒ 原样返回 `start_tick`（调用方拿到的就是一个"没动"的答案，
+/// ⛔ 不把 NaN 静默当成"往左无穷远"）。
+#[must_use]
+pub fn clip_drag_target_tick(start_tick: u64, delta_px: f32, ticks_per_pixel: u64) -> u64 {
+    let ticks_per_pixel = ticks_per_pixel.max(1);
+    if !delta_px.is_finite() {
+        return start_tick;
+    }
+    #[allow(clippy::cast_precision_loss)]
+    let scaled = f64::from(delta_px) * ticks_per_pixel as f64;
+    #[allow(clippy::cast_possible_truncation)]
+    let delta_ticks = scaled.round() as i64;
+    let target = (i128::from(start_tick) + i128::from(delta_ticks)).max(0);
+    // 只有"`start_tick` 已接近 `u64::MAX` 且向右拖"才会溢出（真实工程到不了）⇒ 饱和。
+    let target = u64::try_from(target).unwrap_or(u64::MAX);
+    crate::bridge::snap_tick(target, ROLL_SNAP_GRID_TICKS)
+}
+
+/// 剪辑拖动的**预览位移**（纯函数）：吸附后的起点差换算回逻辑像素（界面直接乘 `1px`）。
+///
+/// 与 [`clip_drag_target_tick`] 互为逆运算的"像素那一侧"；两者都用**同一个**
+/// `ticks_per_pixel` ⇒ 预览停在哪一格，松手就落在哪一格。
+#[must_use]
+pub fn clip_drag_preview_dx_px(start_tick: u64, target_tick: u64, ticks_per_pixel: u64) -> f32 {
+    let ticks_per_pixel = ticks_per_pixel.max(1);
+    #[allow(clippy::cast_precision_loss)]
+    let start = start_tick as f64;
+    #[allow(clippy::cast_precision_loss)]
+    let target = target_tick as f64;
+    #[allow(clippy::cast_precision_loss)]
+    let scale = ticks_per_pixel as f64;
+    #[allow(clippy::cast_possible_truncation)]
+    let px = ((target - start) / scale) as f32;
+    px
+}
+
+/// 摆放身份 ⇒ `(track_id, placement_id, 当前起点 tick)`（**唯一**的身份解析）。
+///
+/// 剪辑是**直接住在轨道里**的（`TrackV3::clips`，不像音符那样先住片段池）⇒ 遍历
+/// `project.tracks`（`BTreeMap` 键序确定）找**第一条**含该键的轨。身份文本非法 /
+/// 不在任何轨道上 ⇒ `None`（调用方什么都不做）。
+///
+/// 起点从**权威工程**现读：`Op::MoveClipPlacement` 的 `old_start_tick` 必须与文档现值
+/// 逐值相同（模型前置条件），从这里带出来就不可能拿到第二份读数。
+fn clip_placement_for(
+    project: &yeban_model::YebanProjectV1,
+    placement_ulid: &str,
+) -> Option<(EntityId, EntityId, u64)> {
+    let placement_id = placement_ulid.parse::<EntityId>().ok()?;
+    project.tracks.iter().find_map(|(track_id, track)| {
+        track
+            .clips
+            .get(&placement_id)
+            .map(|placement| (*track_id, placement_id, placement.start_tick))
+    })
+}
+
+/// 剪辑拖动的**草稿清零**（松手提交之后 / `Escape` / 指针取消三条路径共用）。
+fn clear_clip_drag(ui: &MainWindow) {
+    ui.set_clip_drag_ulid("".into());
+    ui.set_clip_drag_origin_x(0.0);
+    ui.set_clip_drag_preview_dx(0.0);
+}
+
+/// 指针按下：校验这一按的身份**确实在当前工程里**，是则接管并记下起点。
+///
+/// 返回 `true` = 接管（界面因此把后续 `move` 都报给宿主；⛔ 界面自己是不会"拖动"的）。
+/// 三种情况返回 `false`：没有撤销端口、端口此刻没有活跃工程、身份不在任何轨道上。
+fn begin_clip_drag(ui: &MainWindow, port: Option<&Rc<UndoPort>>, clip_ulid: &str, x: f32) -> bool {
+    if !x.is_finite() {
+        return false;
+    }
+    let Some(port) = port else {
+        return false;
+    };
+    let Some(project) = port.try_project() else {
+        return false;
+    };
+    if clip_placement_for(&project, clip_ulid).is_none() {
+        return false;
+    }
+    // 身份 → 起点 → 草稿位移，顺序固定：读者看到非空身份时，其余读数已经就位。
+    ui.set_clip_drag_ulid(clip_ulid.into());
+    ui.set_clip_drag_origin_x(x);
+    ui.set_clip_drag_preview_dx(0.0);
+    true
+}
+
+/// 拖动中的**草稿**：位移 ⇒ 吸附后的预览像素（宿主算，界面只取属性）。
+///
+/// ⛔ 这里**不碰工程、不碰撤销栈**（"拖动期不记录任何撤销记录"的落点）。
+/// 没有进行中的手势 / 报来的身份不是手上这条 ⇒ **什么都不做**。
+fn preview_clip_drag(ui: &MainWindow, port: Option<&Rc<UndoPort>>, clip_ulid: &str, x: f32) {
+    if ui.get_clip_drag_ulid().as_str() != clip_ulid {
+        return;
+    }
+    let Some(port) = port else {
+        return;
+    };
+    let Some(project) = port.try_project() else {
+        return;
+    };
+    let Some((_, _, start_tick)) = clip_placement_for(&project, clip_ulid) else {
+        // 拖到一半工程里没有这条摆放了（外部编辑）⇒ 草稿归零，画面回到投影位置。
+        ui.set_clip_drag_preview_dx(0.0);
+        return;
+    };
+    let ticks_per_pixel = roll_ticks_per_pixel(ui);
+    let target =
+        clip_drag_target_tick(start_tick, x - ui.get_clip_drag_origin_x(), ticks_per_pixel);
+    ui.set_clip_drag_preview_dx(clip_drag_preview_dx_px(start_tick, target, ticks_per_pixel));
+}
+
+/// 松手：**至多一次**原子提交（吸附后起点没变 ⇒ 一次都没有）。
+///
+/// 手势读数在函数**入口处**条件清零（身份对得上才清）：无论下面走哪条出口，
+/// 草稿都不会留在手上。
+fn commit_clip_drag(ui: &MainWindow, port: Option<&Rc<UndoPort>>, clip_ulid: &str, x: f32) {
+    if ui.get_clip_drag_ulid().as_str() != clip_ulid {
+        return;
+    }
+    let origin = ui.get_clip_drag_origin_x();
+    clear_clip_drag(ui);
+    let Some(port) = port else {
+        return;
+    };
+    let Some(project) = port.try_project() else {
+        return;
+    };
+    let Some((track_id, placement_id, old_start_tick)) = clip_placement_for(&project, clip_ulid)
+    else {
+        return;
+    };
+    let ticks_per_pixel = roll_ticks_per_pixel(ui);
+    let new_start_tick = clip_drag_target_tick(old_start_tick, x - origin, ticks_per_pixel);
+    if new_start_tick == old_start_tick {
+        // 位移没跨过吸附网格 ⇒ **不提交空 op**（一次拖动没有产生任何编辑）。
+        return;
+    }
+    let op = yeban_model::ops::Op::MoveClipPlacement {
+        track_id,
+        placement_id,
+        old_start_tick,
+        new_start_tick,
+    };
+    if port
+        .commit_ops(now_ms(), "select: move clip", vec![op])
+        .is_err()
+    {
+        // 模型拒绝（前置条件过期 / 身份已不存在）⇒ 如实什么都不做，⛔ **不重试**：
+        // 载荷携带 `old_start_tick`，重试要重新读权威工程 —— 那不是本函数的职责。
+        return;
+    }
+    refresh_undo_window(ui, port, true);
+}
+
+/// `Escape` / `PointerEventKind.cancel` 的收尾：**丢弃**草稿（⛔ 不提交）。
+///
+/// 返回 `true` = 确实有手势在手、已经收尾；`false` = 此刻没有 ⇒ 这一键与 DAW 无关，
+/// 照旧放行（`apply_action` 的 `Action::Cancel` 链靠它决定要不要消费这一键）。
+///
+/// ⚠ 与 [`cancel_note_drag`] 一样**不重投影**：拖动期改的只有草稿属性，清零它们
+/// 就是"还原初始位置"。
+pub fn cancel_clip_drag(ui: &MainWindow) -> bool {
+    if ui.get_clip_drag_ulid().is_empty() {
+        return false;
+    }
+    clear_clip_drag(ui);
+    true
+}
+
+/// 编曲剪辑拖动的**宿主侧接线**（四条回调，唯一实现）。
+///
+/// 与 [`wire_roll_edit`] 同一取向：装配时没有活跃工程 ⇒ **不接**（否则一个"没有端口"
+/// 的窗口会把每次按下都当单击。端口后来有了工程，装配方会重新调用本函数）。
+pub fn wire_clip_drag(ui: &MainWindow, port: &Rc<UndoPort>) {
+    if port.try_project().is_none() {
+        return;
+    }
+    let weak = ui.as_weak();
+    ui.on_clip_drag_grab({
+        let weak = weak.clone();
+        let port = Rc::clone(port);
+        move |clip_ulid: SharedString, x: f32| {
+            let Some(ui) = weak.upgrade() else {
+                debug_assert!(false, "MainWindow 在回调执行期间被销毁");
+                return false;
+            };
+            begin_clip_drag(&ui, Some(&port), clip_ulid.as_str(), x)
+        }
+    });
+    ui.on_clip_drag_move({
+        let weak = weak.clone();
+        let port = Rc::clone(port);
+        move |clip_ulid: SharedString, x: f32| {
+            let Some(ui) = weak.upgrade() else {
+                debug_assert!(false, "MainWindow 在回调执行期间被销毁");
+                return;
+            };
+            preview_clip_drag(&ui, Some(&port), clip_ulid.as_str(), x);
+        }
+    });
+    ui.on_clip_drag_release({
+        let weak = weak.clone();
+        let port = Rc::clone(port);
+        move |clip_ulid: SharedString, x: f32| {
+            let Some(ui) = weak.upgrade() else {
+                debug_assert!(false, "MainWindow 在回调执行期间被销毁");
+                return;
+            };
+            commit_clip_drag(&ui, Some(&port), clip_ulid.as_str(), x);
+        }
+    });
+    ui.on_clip_drag_cancel({
+        let weak = weak.clone();
+        move || {
+            let Some(ui) = weak.upgrade() else {
+                debug_assert!(false, "MainWindow 在回调执行期间被销毁");
+                return;
+            };
+            cancel_clip_drag(&ui);
         }
     });
 }

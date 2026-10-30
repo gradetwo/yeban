@@ -50,6 +50,18 @@ export component ArrangementView inherits Rectangle {
     // 唯一写者是宿主（`host::wire_clip_select`）；界面只读它 —— 选中高亮与
     // `accessible-item-selected` 都是"身份 == 选中身份"这**一个**比较的两面。
     in property <string> selected-clip-ulid: "";
+    // ⭐ 剪辑拖拽的**草稿读数**（宿主写、界面只读；与卷帘 `note-drag-*` 同款）：
+    // `clip-drag-ulid` 是正在被拖的那条摆放身份（空串 = 没有手势），
+    // `clip-drag-preview-dx` 是宿主算好的预览位移（逻辑像素）。
+    // 没有手势 ⇒ 剪辑 x 取投影值 ⇒ 默认帧逐像素不变；松手提交后由重投影覆盖草稿。
+    in property <string> clip-drag-ulid: "";
+    in property <float> clip-drag-preview-dx: 0.0;
+    // 手势的**界面本地**读数（都不进模型）：按下点 / 是否越过规范的 4px 阈值 /
+    // 宿主是否接管了这一拖（命名与卷帘手势面同款：`drag-*` 是界面本地、
+    // `clip-drag-*` 是宿主草稿）。同一时刻只有一条剪辑在手 ⇒ 全局一份即可。
+    property <length> drag-origin-x: 0px;
+    property <bool> drag-moved: false;
+    property <bool> dragging: false;
     // 每条非主总线轨道的行几何 (投影的**前缀和**; ADR-0004 S0)。
     // 与 `tracks` **同索引集**: 包头用 `track_index`、时间轴车道用 `lane_index`。
     in property <[length]> track-ys: [];
@@ -140,6 +152,19 @@ export component ArrangementView inherits Rectangle {
     /// 点击剪辑包头 ⇒ 选中这个片段（界面只报**身份**，它与 `clip-ulids` 的循环变量同源；
     /// 校验 / 写入 / 去重全在 `host::wire_clip_select`）。
     callback clip-select(string);
+    // ---------------------------------------------------------------- ⭐ 剪辑平移（拖拽）
+    //
+    // 与卷帘的 `note-drag-*` 同一条分工：界面只报**身份 + 本地 x**（逻辑像素），
+    // 位移 → tick 的换算 / 吸附 / 夹紧 / 预览位移 / 松手时的**一次** `Op::MoveClipPlacement`
+    // 全在宿主（`host::wire_clip_drag`）。⛔ 界面不做位置算术。
+    /// 按下剪辑体：返回 `true` = 宿主**接管**这一拖（否则界面当普通单击处理）。
+    callback clip-drag-grab(string, length) -> bool;
+    /// 拖动中：只更新草稿（⛔ 不碰工程 / 撤销栈）。
+    callback clip-drag-move(string, length);
+    /// 松手：至多一次原子提交（位移没跨过吸附网格 ⇒ 一次都没有）。
+    callback clip-drag-release(string, length);
+    /// 收尾但不提交（指针取消 / 未越阈值就抬起）。
+    callback clip-drag-cancel();
 
     // ---------------------------------------------------------------- 静音 / 独奏开关
     //
@@ -432,7 +457,9 @@ export component ArrangementView inherits Rectangle {
     }
 
     for clip_ulid[clip_index] in root.clip-ulids : Rectangle {
-        x: 168px + root.clip-positions[clip_index];
+        // 拖动期只有**正在被拖**的那一条读草稿位移；其余（以及没有手势时）逐像素不变。
+        x: 168px + root.clip-positions[clip_index]
+            + (clip_ulid == root.clip-drag-ulid ? root.clip-drag-preview-dx * 1px : 0px);
         // 剪辑的 y / 高由投影从所在行的行几何派生 (ADR-0004 S0)。
         y: root.clip-ys[clip_index];
         width: root.clip-widths[clip_index];
@@ -491,6 +518,62 @@ export component ArrangementView inherits Rectangle {
             height: 16px;
             background: Tokens.bg-raised;
             border-radius: Tokens.radius-sm;
+        }
+    }
+
+    // 拖动面：**单独一轮循环**、位置恒等于投影的布局槽（⛔ 不读草稿位移）。
+    //
+    // 为什么不能放在上面那个会移动的剪辑块里：拖动面的 `mouse-x` 是**相对它自己**的
+    // 局部坐标（本版本 `PointerEvent` 没有 `position` / `delta-x`）。若它跟着草稿位移走，
+    // 预览每挪 1px 就把同一根手指的局部 x 反向改 1px ⇒ 位移读数自我抵消（橡皮筋效应）。
+    // 因此"动的"只有画面，输入面的坐标系**不动**；指针按下后 Slint 会把后续事件继续
+    // 送给这个抓取中的 `TouchArea`（即使指针已离开它的外框）。
+    //
+    // 只覆盖包头以下的剪辑体：包头归选中臂（`clip-{ulid}-header`），两者不抢同一块像素。
+    for clip_ulid[clip_index] in root.clip-ulids : TouchArea {
+        x: 168px + root.clip-positions[clip_index];
+        y: root.clip-ys[clip_index] + 18px;
+        width: root.clip-widths[clip_index];
+        height: root.clip-heights[clip_index] - 18px;
+        accessible-role: region;
+        accessible-id: "clip-" + clip_ulid + "-body";
+        accessible-label: "剪辑拖动面 " + root.clip-labels[clip_index];
+
+        pointer-event(event) => {
+            if event.kind == PointerEventKind.down {
+                root.drag-origin-x = self.mouse-x;
+                root.drag-moved = false;
+                // 先问宿主"这一按是不是**平移剪辑**"；接管 ⇒ 界面的拖动通道只报位置。
+                root.dragging = root.clip-drag-grab(clip_ulid, self.mouse-x);
+            } else if event.kind == PointerEventKind.up {
+                if root.dragging {
+                    root.dragging = false;
+                    if root.drag-moved {
+                        // 越了 4px ⇒ 拖拽收尾（宿主至多提交**一次**原子 Op）。
+                        root.clip-drag-release(clip_ulid, self.mouse-x);
+                    } else {
+                        // 没越阈值 ⇒ 一次单击 ⇒ 与包头同一个选中落点（宿主丢弃空手势）。
+                        root.clip-drag-cancel();
+                        root.clip-select(clip_ulid);
+                    }
+                }
+                root.drag-moved = false;
+            } else if event.kind == PointerEventKind.move {
+                // 阈值判定用两个方向各自比较（与卷帘手势面逐字同款）。
+                if !root.drag-moved
+                    && ((self.mouse-x - root.drag-origin-x) > 4px
+                        || (root.drag-origin-x - self.mouse-x) > 4px) {
+                    root.drag-moved = true;
+                }
+                if root.dragging && root.drag-moved {
+                    root.clip-drag-move(clip_ulid, self.mouse-x);
+                }
+            } else {
+                // `cancel`（指针离开窗口 / 控件被禁用）：收尾但**不提交**。
+                root.dragging = false;
+                root.drag-moved = false;
+                root.clip-drag-cancel();
+            }
         }
     }
 

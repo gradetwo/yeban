@@ -1959,6 +1959,10 @@ pub fn build_live_ui_with(
         // （`install_roll_click` 的唯一注册点）⇒ 无头面与生产面从此不再分叉：
         // 有端口时两边都"选区 + 铅笔 + 橡皮擦"，没端口时两边都只做选区。
         host::wire_roll_edit(&window, undo);
+        // ⭐ 编曲剪辑平移（拖动面）的写入面：与产品进程（`main.rs` 的
+        // `host::wire_clip_drag`）调的是**同一个**函数 ⇒ 无头端口注入的拖动
+        // 与用户手势走同一条链（拖动期只写草稿，松手 `commit_ops` 一次）。
+        host::wire_clip_drag(&window, undo);
     }
     // **四个模块入口**（导出 WAV / 导入 MIDI / 装载 SFZ / 录音）：与产品进程
     // （`main.rs` 的 `run_gui`）调的是**同一个** `host::wire_module_actions`。

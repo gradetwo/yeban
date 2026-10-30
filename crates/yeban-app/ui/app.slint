@@ -675,6 +675,15 @@ export component MainWindow inherits Window {
     /// （包头高亮 + `accessible-item-selected`）。⛔ 它不是工程数据：不进 `.yeban`、
     /// 不进 `projectDigest`、不进撤销栈 —— 与 `selected-track-id` 同一层。
     in-out property <string> selected-clip-ulid: "";
+    /// ⭐ 剪辑平移的**草稿读数**（宿主拥有，与卷帘 `note-drag-*` 同款）：
+    /// `clip-drag-ulid` = 正在被拖的摆放身份（空串 = 没有手势），
+    /// `clip-drag-preview-dx` = 宿主算好的预览位移（逻辑像素）。
+    /// ⛔ 它们不是工程数据：拖动期**不提交**，松手时宿主才 `commit_ops` **一次**。
+    in-out property <string> clip-drag-ulid: "";
+    in-out property <float> clip-drag-preview-dx: 0.0;
+    /// 按下那一刻拖动面的局部 x（宿主在 `grab` 里写、在 `move` / `release` 里读）——
+    /// 位移 = 当前 x − 它。⛔ 界面不读它（界面的阈值判定用自己那一份 `drag-origin-x`）。
+    in-out property <float> clip-drag-origin-x: 0.0;
     // =====================================================================
     // 轨道高度**拖拽手势的进行态**（ADR-0004 S1 的纵向入口）：宿主拥有、界面只报事件。
     // =====================================================================
@@ -707,6 +716,12 @@ export component MainWindow inherits Window {
     /// 点击剪辑包头：`(片段身份)` —— 身份由界面原样上报（它在 `clip-ulids` 的循环里就有），
     /// 校验与写入全在 `host::wire_clip_select`。
     callback clip-select(string);
+    /// 剪辑体拖动：`(摆放身份, 拖动面局部 x)` —— 换算 / 吸附 / 夹紧 / 提交全在
+    /// `host::wire_clip_drag`；`grab` 的返回值 = 宿主是否接管这一拖。
+    callback clip-drag-grab(string, length) -> bool;
+    callback clip-drag-move(string, length);
+    callback clip-drag-release(string, length);
+    callback clip-drag-cancel();
     // ⭐ 任务单 `#283`：Session View 的场景按钮 ⇒ **真的**把这次启动送到引擎
     // （`host::wire_scene_launch` → `EngineHost::queue_scene_launch`）。界面只报场景下标：
     // 量化档 / tempo 覆盖 / 拍号由宿主从**当前投影**现读，⛔ 界面不拼这些语义。
@@ -1397,6 +1412,21 @@ export component MainWindow inherits Window {
                     // 包头点击 ⇒ 原样上抛身份，宿主校验后写 `selected-clip-ulid`。
                     clip-select(clip_ulid) => {
                         root.clip-select(clip_ulid);
+                    }
+                    // ⭐ 剪辑平移：草稿读数由宿主写，界面只转发四段手势。
+                    clip-drag-ulid: root.clip-drag-ulid;
+                    clip-drag-preview-dx: root.clip-drag-preview-dx;
+                    clip-drag-grab(clip_id, x) => {
+                        root.clip-drag-grab(clip_id, x);
+                    }
+                    clip-drag-move(clip_id, x) => {
+                        root.clip-drag-move(clip_id, x);
+                    }
+                    clip-drag-release(clip_id, x) => {
+                        root.clip-drag-release(clip_id, x);
+                    }
+                    clip-drag-cancel() => {
+                        root.clip-drag-cancel();
                     }
                     clip-labels: root.clip-labels;
                     clip-positions: root.clip-positions;

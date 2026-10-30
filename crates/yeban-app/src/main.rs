@@ -803,6 +803,9 @@ fn run_gui(options: &Options) -> Result<Vec<String>, cli::CliError> {
     host::wire_undo(&ui, &undo_port);
     // `[UI-NOTE-003]` 卷帘编辑入口（铅笔）：与撤销端口共用同一实现 ⇒ 可撤销是构造上的。
     host::wire_roll_edit(&ui, &undo_port);
+    // 编曲剪辑平移：拖动期只写草稿（`clip-drag-*`），松手才 `commit_ops` **一次**
+    // `Op::MoveClipPlacement` —— 与混音台 / 卷帘移动臂同一条纪律。
+    host::wire_clip_drag(&ui, &undo_port);
     // `ADR-0004` S1 的**纵向入口**：轨道头按住并上下拖动 ⇒ 改这一轨的行高。
     //
     // 高度是**视图态**（不进 `.yeban`、不进 schema），因此它落到的不是 `UndoPort::perform`
