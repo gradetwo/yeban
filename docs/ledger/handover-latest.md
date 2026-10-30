@@ -12,6 +12,20 @@
 > `docs/ledger/phase-status.md` 的叙事条目**停在 R1144**（2026-10-26）⇒ ⭐ 读进度以
 > `DEVELOPMENT_LEDGER.md` 的尾部为准，⛔ 不要以为 R1144 之后没干活。
 
+### 0.6.0p 下一单候选（2026-10-30 14:15，**0 代码 / 未开工**；只记普查读数，⛔ 重复普查）
+
+- **候选 A：R115（有界断言）扩到 `crates/yeban-mcp`。** 现读数：`.all(` 站点 **68** 个
+  （`src` **23** ＋ `tests` **45**）。⚠ 引擎那份守卫的口径是"**集合规模**有界"，而 mcp 的 src 站点
+  里有一批是**字符/字节谓词**（`chars.all(is_ascii_hexdigit)`、`text.bytes().all(..)`）——
+  这些不适用同一口径。⇒ 开工前必须先写清"哪一类站点需要规模下界、哪一类不适用"，
+  ⛔ 不要照抄引擎的 `has_size_bound` 启发式（会大面积误伤）。
+- **候选 B：零判据集成文件。** 现读数：`crates/*/tests/*.rs` 共 **282** 个文件，其中 **7** 个
+  `#[test]` 计数为 **0** —— 逐个看过，**全部合法**：4 个是 `harness = false` 的运行时腿
+  （`meter_rt_contract` / `snapshot_retire_churn` / `synth_rt_zero_alloc` / `transport_rt_zero_alloc`，
+  `main()` 驱动）、3 个是 `include!`/`#[path]` 包装（`real_ui_tier1` / `pure_modules_scaffold` /
+  `support_scaffolds`）。若做守卫，这 7 个必须是**具名例外**（⛔ 别用"有 fn 即算过"这种宽口径）。
+- 两条都**未开工**；创作缺口仍全在人类裁决（`ADR-0042` G8j／`ADR-0047`..`0050`／`ADR-0004` Q13）。
+
 ### 0.6.0o ⭐ 尾批（2026-10-30 13:30）：**engine 也有死名册，而且那条判据根本不存在**（M11 缺失 ＋ 新常驻判据）
 
 - **缺陷（两层）**：`crates/yeban-engine/src/mixer.rs:150` 称"引擎侧 `PanLaw` 与模型的对应由
