@@ -156,6 +156,15 @@ export component MixerConsole inherits Rectangle {
     // 换工程路径 `OpenProjectRuntime::open_runtime`）。回执同样走 `module-status`。
     callback new-project();
 
+    // ⭐ **导入音频**（本线补的那一格）—— 把一份 WAV 作为片段导入当前工程。
+    //
+    // 事件源 = 下面 `AssetPoolPanel` 实例里的 `asset-pool-import-button`（同样住在
+    // Tab 1 ⇒ 默认帧一个像素都不画）。本组件只**上抛**：⛔ 不读盘、⛔ 不弹窗、
+    // ⛔ 不判断成功与否；唯一落点 = 宿主 `host::wire_import_audio`（`FilePicker` ⇒
+    // `crate::import_audio::import_audio_file` ＋ 资产字节登记 ⇒ 重投影），
+    // 回执走**既有**的 `module-status` 通道。
+    callback import-audio();
+
     // ---- 主控通道条的**写入面**（本切片新增）----
     //
     // ⭐ 为什么主控是**另一组回调**、而不是把主控编成一个下标送进上面那八个：
@@ -419,6 +428,9 @@ export component MixerConsole inherits Rectangle {
         asset-pool-names: root.asset-pool-names;
         asset-pool-kinds: root.asset-pool-kinds;
         asset-pool-details: root.asset-pool-details;
+        // ⭐ **导入音频**：面板只报"按了"，本组件原样上抛（宿主 `host::wire_import_audio`
+        // 是唯一落点）。
+        import-audio => { root.import-audio(); }
     }
 
     // ---------------------------------------------------------------- 通道条

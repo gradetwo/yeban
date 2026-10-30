@@ -6366,6 +6366,106 @@ pub fn wire_new_project(
     });
 }
 
+/// ⭐ **运行期「导入音频」的唯一接线**：`.slint` 的 `import-audio` 回调（素材池面板
+/// `asset-pool-import-button`）⇒ 文件对话框 ⇒ [`crate::import_audio::import_audio_file`]
+/// ⇒ 资产字节登记进**会话池** ⇒ 重投影 ⇒ **既有**的 `module-status` 回执通道。
+///
+/// ## 三条承重的顺序
+///
+/// 1. **取消不是失败**：`choose_open` 回 `None` ⇒ **什么都不做**（⛔ 不写回执、⛔ 不动工程），
+///    与 [`wire_open_project`] / [`wire_save`] 的口径**逐字相同**。
+/// 2. **导入 = 一次可撤销的提交**：`import_audio_file` 走 `UndoPort::commit_ops_with_origin`
+///    （来源 `OpOrigin::Import`）⇒ 深度 +1；幂等命中（池里已有同内容条目）**不发**提交，
+///    回执里 `created=false` / `commit=<none>` 如实报出。
+/// 3. **资产字节必须进会话池**：`import_audio_file` 的文档点名"调用方必须登记
+///    [`crate::import_audio::AudioImportReport::bytes`]"，否则工程文档指向的字节不在容器里、
+///    保存会**结构性**丢资产。落点是 `UndoPort::insert_asset`（内容寻址；重复哈希不重复登记）。
+///
+/// ## 为什么重投影在写回执**之前**
+///
+/// `refresh_undo_window` 会把运行期回执清空（`instrument_install_status`），且重投影会把
+/// 素材池行换成导入后的那一份。先刷新、后写回执 ⇒ 用户看到的回执描述的就是**这一帧**。
+pub fn wire_import_audio(
+    ui: &MainWindow,
+    port: Rc<UndoPort>,
+    picker: Rc<dyn crate::file_picker::FilePicker>,
+) {
+    let weak = ui.as_weak();
+    ui.on_import_audio(move || {
+        let Some(ui) = weak.upgrade() else {
+            debug_assert!(false, "MainWindow 在回调执行期间被销毁");
+            return;
+        };
+        let started = std::time::Instant::now();
+        // ① 问一次对话框（后缀过滤只列 WAV：`import_audio` 只认 PCM/float WAV）。
+        let request = crate::file_picker::PickerRequest::open("导入音频").with_extensions(["wav"]);
+        // ⚠ 取消 ⇒ 一位不动（⛔ 不把"我不想"写成一条错误）。
+        let Some(path) = picker.choose_open(&request) else {
+            return;
+        };
+        // ② 权威会话必须有一份活跃工程（与撤销 / 重投影同一条不变式）。
+        let Some(project) = port.try_project() else {
+            let receipt = module_receipt(
+                "import-audio",
+                &module_error_fields(
+                    "no-project",
+                    "权威会话此刻没有活跃工程 ⇒ 拒绝导入（⛔ 不静默吞掉）",
+                ),
+            );
+            apply_module_receipt(&ui, &receipt, false);
+            module_trace("import-audio", started, &receipt);
+            return;
+        };
+        // ③ 导入 = 规划 + 一次带来源的提交（唯一实现，与 CLI `--import-audio` 同一个函数）。
+        let (receipt, ok) = match crate::import_audio::import_audio_file(
+            &port,
+            &path,
+            &project,
+            &crate::import_audio::AudioImportOptions::default(),
+            now_ms(),
+        ) {
+            Ok(report) => {
+                // ④ 资产字节登记进会话池（保存时经 `UndoPort::assets()` 写 `assets/{sha256}`）。
+                let asset_registered =
+                    port.insert_asset(report.asset.clone(), report.bytes.clone());
+                let fields = vec![
+                    "outcome=ok".to_owned(),
+                    format!("path={}", report.path.display()),
+                    format!("name={}", report.name),
+                    format!("asset={}", report.asset),
+                    format!("frames={}", report.facts.frames),
+                    format!("rate={}", report.facts.sample_rate),
+                    format!("channels={}", report.facts.channels),
+                    format!("bits={}", report.facts.bits_per_sample),
+                    format!("float={}", report.facts.is_float),
+                    format!("asset_bytes={}", report.bytes.len()),
+                    format!("clip={}", report.clip_id.to_canonical_string()),
+                    format!("created={}", report.created),
+                    format!(
+                        "commit={}",
+                        report
+                            .commit
+                            .map_or_else(|| "<none>".to_owned(), |id| id.to_canonical_string())
+                    ),
+                    // 回读：`false` 只说明池里已有同哈希（幂等命中），不是失败。
+                    format!("asset_registered={asset_registered}"),
+                ];
+                refresh_undo_window(&ui, &port, true);
+                (module_receipt("import-audio", &fields), true)
+            }
+            Err(error) => (
+                module_receipt(
+                    "import-audio",
+                    &module_error_fields("import-audio", &error.to_string()),
+                ),
+                false,
+            ),
+        };
+        apply_module_receipt(&ui, &receipt, ok);
+        module_trace("import-audio", started, &receipt);
+    });
+}
+
 /// 「打开之前先保存」——**复用**已有的保存入口（`save-project` 回调 / [`wire_save`]）。
 ///
 /// 做法只有三步：清掉**上一次**的读数（否则"上次保存成功过"会被读成"这一次也成功了"）

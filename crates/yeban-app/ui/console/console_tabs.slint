@@ -251,6 +251,10 @@ export component ConsoleTabs inherits Rectangle {
     // 同样只上抛：⛔ 不写盘、⛔ 不弹窗、⛔ 不判断成功与否；唯一落点 = 宿主
     // `host::wire_new_project`（保存对话框 ⇒ 落一个 0 轨容器 ⇒ 打开那条换工程路径）。
     callback new-project();
+    // ⭐ **导入音频**：混音台（Tab 1）素材池面板里的可见入口。本组件只上抛
+    // （宿主 `host::wire_import_audio` 是唯一落点）—— ⛔ 不读盘、⛔ 不弹窗、
+    // ⛔ 不判断成功与否。
+    callback import-audio();
     // ⭐ **最大化 / 还原底部控制台**（`Cmd/Ctrl+Alt+M` 的可点等价物）。
     // 与 `Action::ToggleConsoleMaximize` 落到**同一个**视图态属性
     // （`MainWindow.console-maximized`，唯一写者是宿主）⇒ 按键与点击不可能分叉。
@@ -490,6 +494,10 @@ export component ConsoleTabs inherits Rectangle {
         // 是唯一落点）—— ⛔ 本组件不写盘、不弹窗、不判断成功与否。
         new-project => {
             root.new-project();
+        }
+        // ⭐ **导入音频**：同样只上抛（宿主 `host::wire_import_audio` 是唯一落点）。
+        import-audio => {
+            root.import-audio();
         }
         // 主控写入面：同样只上抛，**不带下标**（宿主在按下那一刻从权威工程取主总线身份）。
         mixer-master-fader-grab(y) => {

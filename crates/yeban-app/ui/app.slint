@@ -910,6 +910,15 @@ export component MainWindow inherits Window {
     // **打开工程那条**换工程路径（`OpenProjectRuntime::open_runtime`）。
     // ⛔ 界面不写盘、不猜路径、不判断成功与否；回执走**既有**的 `module-status` 通道。
     callback new-project();
+    // ⭐ **导入音频**（本线补的那一格）：把一份 WAV 作为片段导入当前工程。
+    //
+    // 事件源 = `ui/console/asset_pool_panel.slint` 的 `asset-pool-import-button`
+    // （控制台 **Tab 1** 的素材池面板 ⇒ 默认帧一个像素都不画，5 张 Linux 基准逐位不变）。
+    // 落点 = 宿主 `host::wire_import_audio`：问一次**可注入**的 `FilePicker` ⇒
+    // `crate::import_audio::import_audio_file`（经 `UndoPort`，来源 `OpOrigin::Import`
+    // ⇒ 可撤销）＋ 资产字节登记进会话池（保存才有 `assets/{sha256}`）⇒ 重投影。
+    // 回执走**既有**的 `module-status` 投影通道。⛔ 界面不读盘、不猜路径、不判断成功与否。
+    callback import-audio();
     // 主控通道条的**写入面**：与上面那六个手势逐条同形，唯一区别是**不带下标**
     // （主总线不在 `track-names` / `track-ids` 里 ⇒ 上面那些 `int` 参数没有合法值能指到它）。
     // 主总线身份由宿主在按下那一刻从权威工程取（`master_bus_track_id`），
@@ -1786,6 +1795,10 @@ export component MainWindow inherits Window {
             // （与「打开工程」同一条 `module-status` 回执通道）。
             new-project => {
                 root.new-project();
+            }
+            // ⭐ **导入音频**：只上抛。唯一落点 = `host::wire_import_audio`。
+            import-audio => {
+                root.import-audio();
             }
             // 主控写入面：只上抛、不带下标（身份由 `host::wire_mixer_edit` 从权威工程取）。
             mixer-master-fader-grab(y) => {
