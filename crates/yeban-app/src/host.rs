@@ -9349,12 +9349,15 @@ pub fn wire_roll_edit(ui: &MainWindow, port: &Rc<UndoPort>) {
 ///    - `DeleteNote` ⇒ 用刚命中的身份经 [`delete_ops_for`] + `commit_ops`
 ///      （`eraser: delete note`，与键盘 `DeleteSelection` **同一个**批解析点），
 ///      并清空已不存在的选区；
-///    - `SelectOrClear`、尚未接线的剪刀、以及力度工具的**单击** ⇒ 什么都不做；
+///    - `SplitNote` ⇒ [`split_ops_for`] + `commit_ops`（`knife: split note`）；
+///    - `SelectOrClear` ⇒ 什么都不做（第 1 段就是它的全部语义）；
+///    - 力度工具的**单击** ⇒ 第 1 段的命中在**音符框**上；指针落在**力度柱**上时用
+///      [`velocity_bar_at`] 补一次回退命中再选中那颗音符（规范 §3.3 的"选中对应音符的
+///      底部力度柱"）。⛔ 不写工程（拖拽才改力度）；
 ///    - 力度工具的**双击**（`double_click == true`，来自 `.slint` 的 `double-clicked`）⇒
-///      把刚命中的那颗音符恢复成 `music::DEFAULT_VELOCITY`（**一个**原子
-///      `Op::ModifyNoteVelocity`，已经是 100 则不写）。手势是**音符**范围的：最需要它的
-///      0 力度音符柱高 0px、[`velocity_bar_at`] 也拒绝它 ⇒ 柱范围的手势够不着，
-///      而这里用的正是单击那一个 [`ViewState::hit_test_visible`] 命中。
+///      把命中的那颗音符恢复成 `music::DEFAULT_VELOCITY`（**一个**原子
+///      `Op::ModifyNoteVelocity`，已经是 100 则不写）。`hit` 可来自音符框或力度柱；
+///      0 力度音符的柱高 0px、[`velocity_bar_at`] 拒绝它 ⇒ 那颗音符只能走音符框命中。
 ///
 /// 端口是**可选**的：`None` 时（判据侧没有撤销会话、或窗口还没接端口）派发器照旧做选区，
 /// 只是铅笔 / 橡皮擦如实什么都不做 —— 与"没有撤销会话就没有编辑写入面"同一取向。
@@ -9389,6 +9392,8 @@ fn install_roll_click(ui: &MainWindow, fallback_view: Rc<ViewState>, port: Optio
             // 而下面的命中测试 / 铅笔 / 橡皮擦用**网格局部**坐标。帧换算**只做这一次**
             // （`bridge::painted_to_host` 是唯一真相源）—— 旧实现从不减这个偏移 ⇒ 人手点得到的
             // 音符矩形纵向差 28px（超过音符高 12px），点可见音符恒不中（本票的缺陷）。
+            // 力度柱的命中口径用的是**绘制帧**（见 [`velocity_bar_at`]）⇒ 先把原值留一份。
+            let painted = (x, y);
             let (x, y) = crate::bridge::painted_to_host(x, y);
             // 权威会话可能被控制面关掉工程（`try_project` 如实返回 `None`）——
             // 那时退回装配时的视图，而不是在一个 Slint 回调里 panic。
@@ -9402,12 +9407,29 @@ fn install_roll_click(ui: &MainWindow, fallback_view: Rc<ViewState>, port: Optio
             let scope = roll_scope(&ui, view);
             // ---- 第一段：命中 + 选区（**总是**执行）----
             // 音符框高与 `.slint` 的矩形一致；值写在一处, 免得命中测试去猜（账本第 495 轮）。
-            let hit = view
+            let mut hit = view
                 .hit_test_visible(scroll, width, x, y, NOTE_HEIGHT_PX)
                 .filter(|&index| match scope {
                     Some(scope) => view.notes[index].clip_id.as_str() == scope,
                     None => true,
                 });
+            // ⭐ 力度工具的**单击**（规范 §3.3 "选中对应音符的底部力度柱"）：力度柱画在
+            // `roll-velocity-lane-top` 之下的车道里 ⇒ 那一带永远命中不到音符框。这里用与
+            // 拖拽臂**同一个** [`velocity_bar_at`]（同一 x 口径 = 绘制帧、同一车道内 y 换算、
+            // 同一 `velocity > 0` 门）补一次回退命中，选区照旧由下面**唯一**那一段写。
+            // 作用域过滤与音符框命中逐字相同：⛔ 不选中作用域外看不见的音符。
+            // 只对力度工具生效 —— 别的工具把力度车道当空白（铅笔 / 橡皮擦的语义一位不改）。
+            let velocity_tool = u8::try_from(ui.get_active_tool())
+                .ok()
+                .and_then(crate::input::Tool::from_digit)
+                .is_some_and(|tool| tool.click() == crate::input::ToolClick::SelectVelocity);
+            if hit.is_none() && velocity_tool {
+                hit =
+                    velocity_bar_at(&ui, view, painted.0, painted.1).filter(|&index| match scope {
+                        Some(scope) => view.notes[index].clip_id.as_str() == scope,
+                        None => true,
+                    });
+            }
             // ⭐ `#212`：**借只包住选区的内存镜像** —— 先算出要写的三个读数，放借，
             // 再写界面。持借调界面（`ui.set_selected_*`）是同一类重入形态：
             // 界面写入若回调到同一份 `RefCell`，`borrow_mut()` 就会 panic。
@@ -9540,13 +9562,14 @@ fn install_roll_click(ui: &MainWindow, fallback_view: Rc<ViewState>, port: Optio
                 }
                 // `[UI-NOTE-003]` **力度工具的单击 / 双击**。
                 //
-                // **单击**（规范 §3.3 的"选中对应音符的底部力度柱"）仍未接线 ⇒ 如实不做。
+                // **单击**（规范 §3.3 的"选中对应音符的底部力度柱"）已在第 1 段接上
+                // （`hit` 的空回退 = `velocity_bar_at`）⇒ 这条臂**不写工程**，到此为止。
                 //
-                // **双击** = 规范 §3.3 aux 列的"双击恢复默认力度 100"，本切片接上。手势是
-                // **音符范围**的（⛔ 不是力度柱范围）：最需要恢复的那颗音符力度为 0 ⇒ 它的柱高
-                // `28px * 0` 是 **0px**、根本抓不住（`velocity_bar_at` 也如实拒绝 `velocity == 0`），
-                // 而这里用的正是**单击那一个** `hit_test_visible` 命中 ⇒ 0 力度音符与别的音符
-                // **同一条路径**可达。⛔ 不给柱体加最小高度、⛔ 不放宽 `velocity > 0` 那道门。
+                // **双击** = 规范 §3.3 aux 列的"双击恢复默认力度 100"。`hit` 可来自音符框，
+                // 也可来自力度柱（第 1 段的回退）；两种来源都要**刚好是那颗音符**。
+                // 最需要恢复的 0 力度音符柱高 `28px * 0` = **0px**、抓不住
+                // （`velocity_bar_at` 也如实拒绝 `velocity == 0`）⇒ 它只能走音符框命中。
+                // ⛔ 不给柱体加最小高度、⛔ 不放宽 `velocity > 0` 那道门。
                 crate::input::ToolClick::SelectVelocity => {
                     if !double_click {
                         return;
@@ -9637,7 +9660,7 @@ fn install_roll_click(ui: &MainWindow, fallback_view: Rc<ViewState>, port: Optio
 // - **力度臂的多选作用域**：只作用**指针下那一个音符**（拖一根柱**不**带动选区）；
 // - **零力度音符**：柱高为 0（`piano_roll.slint` 的 `28px * velocity`）⇒ 不可命中；
 //   恢复它的**规范路径**是 `[UI-NOTE-003]` aux 列的**双击到 100**（已接线：见
-//   [`install_roll_click`] 的 `ToolClick::SelectVelocity` 臂 ⇒ 手势是**音符**范围的，
+//   [`install_roll_click`] 的 `ToolClick::SelectVelocity` 臂 ⇒ 手势走**音符框**命中，
 //   ⛔ 不给柱体加最小高度、⛔ 不放宽本臂的 `velocity > 0` 门 —— 那会发明新 affordance）；
 // - **辅助键**（`Shift` 微移 / `Alt` 复制）：与 `[UI-NOTE-005]` 有未裁决冲突 ⇒ ⛔ 不读修饰键；
 // - **空白处拖拽**：语义一位不改（仍是滚动；marquee 未裁决）⇒ ⛔ 不做框选。

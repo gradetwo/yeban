@@ -1677,6 +1677,94 @@ fn velocity_arm_a_a_velocity_drag_sets_the_absolute_velocity_from_the_lane_y() {
     );
 }
 
+/// 判据 (f)：力度工具的**单击**（规范 §3.3 "选中对应音符的底部力度柱"）⇒ 选中那颗音符，
+/// 工程**逐字节不变**、提交 **0** 次；点车道空白 ⇒ 选区清空。
+///
+/// ## 为什么单列
+///
+/// 接线前这条臂是 `if !double_click { return; }`，而第 1 段的命中是**音符框**
+/// （`hit_test_visible`）：力度柱画在 `piano-roll-velocity-lane` 里、不在音符框那一段
+/// ⇒ 单击力度柱不但选不中，还会把已有选区**清掉**（比"点了没反应"更糟）。
+/// 靶子由 [`velocity_target`] 从**运行时包围盒**给出，与被测代码不共享几何假设。
+#[test]
+fn velocity_click_selects_the_note_whose_bar_is_under_the_pointer() {
+    let (window, port, mut plane) = assemble();
+    let project_before = port.project();
+    let before_bytes = serde_json::to_vec(&project_before).expect("序列化起点工程");
+    let commits_before = port.display().commit_count;
+    window.set_active_tool(i32::from(Tool::Velocity.digit()));
+    let target = velocity_target(&window, &mut plane, &project_before, 1, 0.0);
+
+    // 前置：选区为空（否则下面的"选中"可能只是装配时的残留）。
+    assert_eq!(
+        window.get_selected_note_count(),
+        0,
+        "前置：装配之后选区必须为空"
+    );
+
+    // ---- ① 点力度柱 ⇒ 选中**就是**那颗音符 ----
+    click_in_roll_by_id_at(&mut plane, 10, target.grab.0, target.grab.1);
+    assert_eq!(
+        window.get_selected_note_count(),
+        1,
+        "力度工具单击力度柱必须选中恰好一颗音符（靶 `{}`，抓取点 ({:.2},{:.2})）",
+        target.ulid,
+        target.grab.0,
+        target.grab.1
+    );
+    {
+        use slint::Model as _;
+        let ids: Vec<String> = window
+            .get_selected_ulids()
+            .iter()
+            .map(|id| id.to_string())
+            .collect();
+        assert_eq!(
+            ids,
+            vec![target.ulid.clone()],
+            "选中的必须是力度柱对应的那颗音符"
+        );
+    }
+
+    // ---- ② 工程逐字节不变、提交 0 次（单击只改选区）----
+    let after_click = port.project();
+    assert_eq!(
+        serde_json::to_vec(&after_click).expect("序列化"),
+        before_bytes,
+        "力度单击**不得**写工程（改力度是拖拽 / 双击的事）"
+    );
+    assert_eq!(
+        port.display().commit_count,
+        commits_before,
+        "力度单击不得提交任何 op"
+    );
+
+    // ---- ③ 车道空白 ⇒ 选区清空（"点空白 = 清除"在力度车道里同样成立）----
+    let bounds = element_bounds(&mut plane, 30, SCROLL_AREA);
+    let viewport_width = bound_f32(&bounds, "width");
+    let view = yeban_app::bridge::ViewState::from_project(&after_click).expect("投影");
+    let empty = (viewport_width - 3.0, target.lane_top_local + 2.0);
+    assert!(
+        view.velocity_bar_hit_test(
+            0.0,
+            viewport_width,
+            empty.0,
+            empty.1 - target.lane_top_local,
+            yeban_app::bridge::VelocityLaneGeometry::roll_velocity_lane(),
+        )
+        .is_none(),
+        "判据前提：空白点的车道内 y 必须不命中任何柱（点 ({:.2},{:.2})）",
+        empty.0,
+        empty.1
+    );
+    click_in_roll_by_id_at(&mut plane, 40, empty.0, empty.1);
+    assert_eq!(
+        window.get_selected_note_count(),
+        0,
+        "点力度车道的空白必须清空选区"
+    );
+}
+
 /// 判据 (a-2)：拖动期的**草稿**真的在窗口上、**按音符身份**键控，而工程**一位不动**。
 ///
 /// ## 为什么值得单列一条
