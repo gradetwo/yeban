@@ -803,6 +803,9 @@ fn run_gui(options: &Options) -> Result<Vec<String>, cli::CliError> {
     host::wire_undo(&ui, &undo_port);
     // `[UI-NOTE-003]` 卷帘编辑入口（铅笔）：与撤销端口共用同一实现 ⇒ 可撤销是构造上的。
     host::wire_roll_edit(&ui, &undo_port);
+    // 编曲剪辑平移：拖动期只写草稿（`clip-drag-*`），松手才 `commit_ops` **一次**
+    // `Op::MoveClipPlacement` —— 与混音台 / 卷帘移动臂同一条纪律。
+    host::wire_clip_drag(&ui, &undo_port);
     // `ADR-0004` S1 的**纵向入口**：轨道头按住并上下拖动 ⇒ 改这一轨的行高。
     //
     // 高度是**视图态**（不进 `.yeban`、不进 schema），因此它落到的不是 `UndoPort::perform`
@@ -1072,13 +1075,15 @@ fn mount_in_process_mcp(
 /// "撤销一步"按钮由 [`host::wire_undo`] 接到 [`yeban_app::undo::UndoPort`]，
 /// 动作真的会走 `CommitGraph::undo_with`，显示态由 `host::apply_undo` 从模型读数回写。
 ///
-/// **视图态八条也已经真的接线**（分类切换、控制台 ⤢、资源条目选中与 Session 返回编曲陆续落地）：
+/// **视图态九条也已经真的接线**（分类切换、控制台 ⤢、资源条目选中、Session 返回编曲与
+/// 剪辑选中陆续落地）：
 /// `toggle-view` / `toggle-sidebar` / `toggle-ai-drawer` / `open-musical-pr` /
 /// `select-sidebar-category` / `console-maximize-toggle` / `select-sidebar-item` /
-/// `back-to-arrangement` → [`host::wire_view_callbacks`] → 分别写
+/// `back-to-arrangement` / `clip-select` → [`host::wire_view_callbacks`] → 分别写
 /// `arrangement-view` / `sidebar-collapsed` / `ai-drawer-open` / `musical-pr-open` /
-/// `sidebar-category` / `console-maximized` / `sidebar-item` / `arrangement-view`
-/// （`back-to-arrangement` 只写 `true`，与 `toggle-view` 同一属性）。
+/// `sidebar-category` / `console-maximized` / `sidebar-item` / `arrangement-view` /
+/// `selected-clip-ulid`（`back-to-arrangement` 只写 `true`，与 `toggle-view` 同一属性；
+/// `clip-select` 先校验身份确实在 `clip-ulids` 里再写）。
 /// 原先写在 `.slint` 里的 `root.* = !root.*` 翻转**已删除** —— 同一条动作只有一个写者。
 ///
 /// 其余**三条**回调仍然故意什么都不做，只打一行 stderr。原因不是省事，而是
