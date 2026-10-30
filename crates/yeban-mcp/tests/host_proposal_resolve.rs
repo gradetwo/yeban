@@ -343,7 +343,7 @@ fn the_host_reject_flips_only_the_record() {
         plan.project_after(dispatcher.domain())
             .expect("放弃不得失败")
             .is_none(),
-        "放弃的工程预览必须是 `None`（= 内容不变）, ⛔ 不是"顺手删掉提案""
+        "放弃的工程预览必须是 `None`（= 内容不变）, ⛔ 不是「顺手删掉提案」"
     );
 
     let outcome = apply_host_action(dispatcher.domain_mut(), reject_action(&proposal_id, "太满"))
@@ -579,7 +579,7 @@ fn the_host_arms_report_the_commit_model_the_tool_arms_report() {
     assert_eq!(
         commit_model_of(&Plan::Host(merge_action(&merge_id))),
         "direct",
-        "采纳当场生效, 没有"下一步去合并""
+        "采纳当场生效, 没有「下一步去合并」"
     );
     assert_eq!(
         commit_model_of(&Plan::Host(reject_action(&reject_id, "不要"))),
