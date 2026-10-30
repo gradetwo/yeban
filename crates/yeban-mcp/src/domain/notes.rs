@@ -11846,6 +11846,7 @@ mod tests {
             {"kind": "setParam", "lane": "TrackPan", "value": 0.75}
         ]))
         .expect("规范形状必须被接受");
+        assert_eq!(ops.len(), 2, "音量 + 声相各一条");
         assert!(ops.iter().all(|op| !op.is_note_level()), "两条都是音轨级");
         assert_eq!(ops[0].kind_name(), SET_PARAM_KIND);
 
@@ -12977,6 +12978,7 @@ mod tests {
             {"kind": "setTrackSolo", "value": false}
         ]))
         .expect("规范形状必须被接受");
+        assert_eq!(ops.len(), 2, "静音 + 独奏各一条");
         assert!(ops.iter().all(|op| !op.is_note_level()), "两条都是音轨级");
         assert_eq!(ops[0].kind_name(), SET_TRACK_MUTE_KIND);
         assert_eq!(ops[1].kind_name(), SET_TRACK_SOLO_KIND);
@@ -14209,6 +14211,7 @@ mod tests {
         ]))
         .expect("规范形状必须被接受");
         assert_eq!(ops[0].kind_name(), SET_ROUTING_GAIN_KIND);
+        assert_eq!(ops.len(), 2, "两条路由增益各一条");
         assert!(
             ops.iter().all(|op| !op.is_note_level()),
             "路由级不读不写音符"
@@ -15976,6 +15979,11 @@ mod tests {
             !doc.routing_graph.nodes.contains(&target),
             "该轨的节点必须从图里消失"
         );
+        // ⭐ 空集会让下面那条**恒真**：夹具里原本有 3 条边，这里只断开 Aux 的 1 条入边。
+        assert!(
+            !doc.routing_graph.edges.is_empty(),
+            "夹具前提: 清理只断一条边，其余两条仍在（否则下面那条恒真）"
+        );
         assert!(
             doc.routing_graph
                 .edges
@@ -16803,6 +16811,7 @@ mod tests {
         let compiled = compile(&project, &nil, &nil, &ops)
             .expect("设备形态自带寻址, 顶层 trackId / clipId 不被读取");
         assert_eq!(compiled.len(), 2);
+        assert_eq!(ops.len(), 2, "两条设备形态的操作（否则下面那条恒真）");
         assert!(ops.iter().all(NoteOp::is_device_level));
         assert!(NoteOp::all_self_addressed(&ops));
         assert!(
@@ -18213,6 +18222,11 @@ mod tests {
     #[test]
     fn create_compiles_adds_into_one_add_clip_op() {
         let project = project_without_midi_clips();
+        // ⭐ 负样本筛掉了 MIDI 片段，但池里仍留着音频片段（非空 ⇒ 下面那条不是真空）。
+        assert!(
+            !project.clip_pool.is_empty(),
+            "负样本里仍有非 MIDI 片段（否则下面那条恒真）"
+        );
         assert!(
             project
                 .clip_pool
@@ -18446,6 +18460,10 @@ mod tests {
             track.clips.clear();
         }
         let (track_id, clip_id) = lead_clip(&project);
+        assert!(
+            !project.tracks.is_empty(),
+            "阴性前提: 工程必须至少有一条音轨（否则下面那条恒真）"
+        );
         assert!(
             project.tracks.values().all(|track| track.clips.is_empty()),
             "阴性前提: 时间轴上必须没有任何摆放"
