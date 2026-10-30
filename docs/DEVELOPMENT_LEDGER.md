@@ -16032,3 +16032,11 @@ test result: FAILED. 3 passed; 1 failed
   五条目标判据（四条新增 ＋ `edit_notes` 那条）与登记轴 `each_documented_key_declares_its_default_side_evidence_or_gap`
   逐名 `... ok` **各 2 次** ⇒ **四件齐**。落地后拆树（归档标签 `line-archive/s6d-propose-defaults @ 82a46b8d`）；
   `git worktree list` 现读 **一行**（只剩主树）。
+
+### §9 文档提交的 run ＝ **空绿**（⛔ 代码判决）
+
+`773474c2`（本台账第七批 ＋ handover §0.6.0j／§5）的 run **`41005653993` ＝ success**，但 planner 现读
+`{"crates": [], "workspace_wide": false, "reason": "改动不落在任何成员 crate 内 (纯文档/资产)"}`
+⇒ `rust (…matrix…)`／`windows`／`macos`／`rust (workspace 全量)` **四条腿全部 skipped**（0s）。
+只有 `plan`／`checks`／`deny`／`lockfile` 真跑。⚠ 这是**空绿**：它证明的是"文档不破坏 schema／守卫／许可"，
+⛔ 不构成任何代码判决（AGENTS.md §6.3 第 2 条）。本批的代码判决只认 §7／§8 那三条 run。
