@@ -418,6 +418,7 @@ fn options(permission: Permission, console_tab: i32) -> LiveWiringOptions {
         engine_quanta: 4,
         // 这条装配不接撤销端口（与既有判据 16 的"没有撤销会话"形态一致）。
         undo: None,
+        proposal_source: yeban_app::proposals::ProposalSource::none(),
     }
 }
 
@@ -955,6 +956,7 @@ fn the_mixer_strip_writes_volume_pan_mute_and_solo_back_into_the_project() {
             save_path: None,
             engine_quanta: 0,
             undo: Some(Rc::clone(&port)),
+            proposal_source: yeban_app::proposals::ProposalSource::none(),
         },
     )
     .expect("装配");
@@ -1326,6 +1328,7 @@ fn the_master_strip_writes_volume_and_pan_back_into_the_project() {
             save_path: None,
             engine_quanta: 0,
             undo: Some(Rc::clone(&port)),
+            proposal_source: yeban_app::proposals::ProposalSource::none(),
         },
     )
     .expect("装配");
@@ -1766,6 +1769,7 @@ fn escape_cancels_the_mixer_fader_and_pan_drag_without_committing() {
             save_path: None,
             engine_quanta: 0,
             undo: Some(Rc::clone(&port)),
+            proposal_source: yeban_app::proposals::ProposalSource::none(),
         },
     )
     .expect("装配");
@@ -2133,6 +2137,7 @@ fn a_committed_mixer_fader_gesture_changes_the_frame() {
             save_path: None,
             engine_quanta: 0,
             undo: Some(Rc::clone(&port)),
+            proposal_source: yeban_app::proposals::ProposalSource::none(),
         },
     )
     .expect("装配");
@@ -2248,6 +2253,7 @@ fn a_committed_master_fader_gesture_changes_the_frame() {
             save_path: None,
             engine_quanta: 0,
             undo: Some(Rc::clone(&port)),
+            proposal_source: yeban_app::proposals::ProposalSource::none(),
         },
     )
     .expect("装配");
@@ -2379,6 +2385,7 @@ fn a_mixer_gesture_reaches_the_engine_snapshot_on_the_live_window() {
             save_path: None,
             engine_quanta: 0,
             undo: Some(Rc::clone(&port)),
+            proposal_source: yeban_app::proposals::ProposalSource::none(),
         },
     )
     .expect("装配");
@@ -5763,6 +5770,7 @@ fn production_plane_denies_injection_and_really_switches_the_live_view() {
         engine_quanta: 0,
         // 本判据只判生产模式的注入闸门，不接撤销端口。
         undo: None,
+        proposal_source: yeban_app::proposals::ProposalSource::none(),
     };
     let mut plane = build_live_ui_with(&project, &wiring)
         .expect("真实界面 + Tier-1 执行面")
@@ -5942,6 +5950,7 @@ fn backspace_deletes_the_selection_through_the_event_source_and_one_undo_restore
         save_path: None,
         engine_quanta: 0,
         undo: Some(Rc::clone(&port)),
+        proposal_source: yeban_app::proposals::ProposalSource::none(),
     };
     let mut ui = build_live_ui_with(&project, &wiring).expect("真实界面 + Tier-1 执行面");
 
@@ -6086,6 +6095,7 @@ fn cmd_d_duplicates_the_selection_one_grid_to_the_right_and_one_undo_restores_al
         save_path: None,
         engine_quanta: 0,
         undo: Some(Rc::clone(&port)),
+        proposal_source: yeban_app::proposals::ProposalSource::none(),
     };
     let mut ui = build_live_ui_with(&project, &wiring).expect("真实界面 + Tier-1 执行面");
 
@@ -6317,6 +6327,7 @@ fn a_gui_delete_lands_in_the_same_authority_and_one_undo_restores_all() {
         save_path: None,
         engine_quanta: 0,
         undo: Some(Rc::clone(&port)),
+        proposal_source: yeban_app::proposals::ProposalSource::none(),
     };
     let mut ui = live::build_live_ui_from_authority_with(&authority, &wiring).expect("装配");
 
@@ -7256,6 +7267,7 @@ fn the_undo_tree_shows_the_real_commit_chain() {
             save_path: None,
             engine_quanta: 0,
             undo: Some(Rc::clone(&port)),
+            proposal_source: yeban_app::proposals::ProposalSource::none(),
         },
     )
     .expect("装配");
@@ -7794,6 +7806,7 @@ fn a_mute_click_in_the_arrangement_view_writes_an_honest_history_label() {
             save_path: None,
             engine_quanta: 0,
             undo: Some(Rc::clone(&port)),
+            proposal_source: yeban_app::proposals::ProposalSource::none(),
         },
     )
     .expect("装配");
@@ -8206,6 +8219,7 @@ fn zoom_shortcuts_reach_the_projection_and_an_empty_selection_is_not_consumed() 
         save_path: None,
         engine_quanta: 0,
         undo: Some(Rc::clone(&port)),
+        proposal_source: yeban_app::proposals::ProposalSource::none(),
     };
     let mut ui = build_live_ui_with(&project, &wiring).expect("真实界面 + Tier-1 执行面");
 
@@ -8453,6 +8467,7 @@ fn the_ai_suggestion_and_audition_keys_are_rejected_without_any_state_change() {
         save_path: None,
         engine_quanta: 0,
         undo: Some(Rc::clone(&port)),
+        proposal_source: yeban_app::proposals::ProposalSource::none(),
     };
     let mut ui = build_live_ui_with(&project, &wiring).expect("真实界面 + Tier-1 执行面");
 
@@ -8648,6 +8663,7 @@ fn escape_closes_the_time_machine_modal_for_real() {
             save_path: None,
             engine_quanta: 0,
             undo: Some(Rc::clone(&port)),
+            proposal_source: yeban_app::proposals::ProposalSource::none(),
         },
     )
     .expect("装配");

@@ -65,7 +65,7 @@ pub struct ProposalRowView {
 /// 它存在是为了让"有没有控制面"这件事**不是**散在调用点上的 `cfg`：
 /// [`Self::rows()`] 在默认构建里恒为空, 因此宿主只有一条注入路径
 /// （⛔ 没有"feature 开着走 A、关着走 B"的两份界面行为）。
-#[derive(Clone, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct ProposalSource {
     #[cfg(feature = "in-process-mcp")]
     authority: Option<ProjectAuthorityHandle>,
