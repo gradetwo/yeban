@@ -16993,5 +16993,29 @@ helper 里 ⇒ 必须不认（防假绿）。两条臂在旧实现上都会失�
 - ⛔ 本段只是读数：s28 **未立项、未写码**；改 schema 属契约变更（动 26 个工具的响应面 ＋ 第 16 步对账），
   且必然触发宽运行 ⇒ 排期时按 §22.6 的成本口径计入。
 
+### 22.9 合流判决（run `41210731323`，main tip `72a990e4` = `d6a824e8` 文档 + `392fcd27` s26 + `72a990e4` s27）＋ 文档批 `fd40fb4e` 判决
+
+- **整体 `completed / success`**（现读 `gh run view` 的 `status`/`conclusion`，2026-10-31 15:21Z）。逐腿：
+  `plan`／`deny`／`checks`／`lockfile`／`e2e`／`windows`／`macos`／`rust (workspace 全量)` 全 success，
+  窄 `rust (${{ matrix.crate }})` 腿 `skipped` —— ⚠ 本批动 `.github/**` ⇒ 走全量，这是 §22.6 的**预期**形态，⛔ 不是空绿漏跑。
+- **s27 的守卫在 main 上真跑**：`checks`（job `124564954911`，16 步全 `completed/success`）第 **9** 步
+  「端到端判据防掏空守卫 (verify 脚本的牙)」= `completed / success` ⇒ 与 §22.6「⛔ 只写文件不算交付」闭环。
+- **全量腿真跑读数**（job `124565010808`）：`completed - started` = **46 分钟**，日志 **1 780 543** 字节，
+  `test result:` **516** 行，`FAILED` **0** 行，`passed` 合计 **7 235**（比 §22.4 那批的 7 234 多 **1** —— 正是 s26 新增的那条常驻判据）。
+- **s26 的常驻判据在合流上逐名出现**：`test section_pure_scaffold::proposed_part_tracks_carry_notes_but_zero_devices ... ok`
+  出现 **1** 次（⚠ 与 §22.5 里窄腿的 **2** 次不同：窄腿跑缺省档＋合并特性档两遍，全量腿只跑一档 —— 别把"少了 1 次"读成回归）。
+- ⚠ **新手法修正（补 `AGENTS.md` §6.3-2/4 的口径）**：全量腿日志里 **`Running tests/` 出现 0 次**
+  （`grep -c` 实测），所以"数 `Running tests/` 次数确认二进制被跑到"这条只适用于**窄腿**；
+  全量腿的等价证据是 `test result:` 行数（516）与 `passed` 合计。
+  同一条口径差异也解释了 §22.5 里"本机 `--exact` 前缀名过滤为空"：`section_pure_scaffold::` 前缀来自 cargo 的 `#[path]` 接法，裸 `rustc --test` 没有它。
+- **文档批 `fd40fb4e`（run `41211557754`）= `completed / success`**：`plan`/`checks`/`deny`/`lockfile` 四腿真跑，
+  rust 与 e2e 五腿 `skipped` —— 纯 `docs/**` 推送的**正确形态**（验证者就是 `checks` 里的文档契约第 12 步）；
+  推之前本机已跑绿同一族守卫（`check_docs_links` rc=0 ＋ 六个 `ok`），所以这不是"空绿当判决"，而是**判决落在唯一会跑的腿上**。
+- ⚠ **并线现读**：另一会话的线 `line/review-20261031-fixes`（提交 `0fea313f`，run `41210661377`）= **failure**
+  （红在 `rust (yeban-mcp)` ＋ win ＋ mac）。实测 `git merge-base --is-ancestor 0fea313f main` ⇒ **否**，
+  ⛔ 那枚红不进 main、也不得记进本批判决。顺带现读：main 的 `RenderRequest`（`domain/render.rs:701`）里
+  `threads` 出现 **0** 次 ⇒ 他们在**新增**该字段，将来 land 会撞 `domain/render.rs` 与 `domain/stems.rs`
+  ⇒ 本仓集成纪律：land 前先 `git fetch` 比对，一文件一写者。
+
 
 
