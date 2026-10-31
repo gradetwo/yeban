@@ -181,6 +181,13 @@ pub struct LiveWiringOptions {
     /// 生产 GUI 在 `main.rs` 传的是 `Some(undo_port)`；这里默认 `None`，
     /// 因此"没有撤销会话的装配"照旧如实 `reject`（既有判据 16 的第 ⑥/⑦ 步不变）。
     pub undo: Option<Rc<yeban_app::undo::UndoPort>>,
+    /// AI 提案抽屉的**来源**（[`host::wire_proposal_drawer`] 的第二个参数）。
+    ///
+    /// 默认 `none()` ⇒ 抽屉画"这个装配没有接进程内的提案来源"那句空态（真话）。
+    /// ⚠ 这个字段**不由调用方决定**：[`build_live_ui_from_authority_with`] 会把它**覆盖**
+    /// 成 `from_authority(authority)` —— 接在权威上的装配不可能"看不见权威里的提案"，
+    /// 而不接权威的装配（[`build_live_ui`] / [`build_live_ui_with`]）拿不到句柄。
+    pub proposal_source: yeban_app::proposals::ProposalSource,
 }
 
 impl Default for LiveWiringOptions {
@@ -191,6 +198,7 @@ impl Default for LiveWiringOptions {
             save_path: None,
             engine_quanta: 8,
             undo: None,
+            proposal_source: yeban_app::proposals::ProposalSource::none(),
         }
     }
 }
@@ -708,6 +716,13 @@ impl LiveAdminSurface {
             return Ok(AuthoritySync::NoActiveProject { revision });
         };
         self.apply_project(&project)?;
+        // ⭐ 抽屉的提案读数**跟着同一次刷新**（与生产窗口的
+        // `reproject::AuthorityMirror::sync_now` 同一条口径）：合并提案会推进修订号 ⇒
+        // 判据刷完就能在树里看见"少了一条"，不必再点一次打开。仍**只读**权威。
+        host::apply_proposal_drawer(
+            &self.window,
+            &yeban_app::proposals::ProposalSource::from_authority(&authority),
+        );
         self.authority_revision = revision;
         Ok(AuthoritySync::Reprojected { revision })
     }
@@ -1870,7 +1885,13 @@ pub fn build_live_ui_from_authority_with(
     let project = authority
         .project()
         .ok_or(LiveWiringError::NoActiveAuthorityProject)?;
-    let mut ui = build_live_ui_with(&project, options)?;
+    // ⭐ 抽屉的来源**由本装配入口决定**，不接受调用方给的那一份：既然这个执行面的工程
+    // 唯一来源是权威，"看不见权威里的提案"就不可能在这里成立（覆盖而不是合并）。
+    let options = LiveWiringOptions {
+        proposal_source: yeban_app::proposals::ProposalSource::from_authority(authority),
+        ..options.clone()
+    };
+    let mut ui = build_live_ui_with(&project, &options)?;
     ui.surface.attach_authority(authority);
     Ok(ui)
 }
@@ -1938,6 +1959,11 @@ pub fn build_live_ui_with(
     // （真实指针事件 → Slint 命中测试 → `.slint` 的 `TouchArea` → 宿主写属性）。
     // 只有属性写入 ⇒ 不改工程、不需要 `UndoPort`，装配顺序上也不与撤销端口耦合。
     host::wire_view_callbacks(&window);
+    // ⭐ AI 提案抽屉：与产品进程调的是**同一个** `host::wire_proposal_drawer`
+    // （`open-musical-pr` 的注册者只有它，因此上一行不再碰这个回调）。来源由装配决定：
+    // 接在权威上的装配 ⇒ 打开抽屉时现读权威那份未合并清单；没接权威的装配 ⇒ 空态那句
+    // "没有来源"。⛔ 判据侧不存在"绕过来源直接写属性"的第二条路。
+    host::wire_proposal_drawer(&window, options.proposal_source.clone());
     // ⭐ `[UI-NOTE-001]` 剪辑选中态 ⇒ 卷帘作用域：与产品进程（`main.rs` 的 `wire_callbacks`）
     // 调的是**同一个** `host::wire_clip_scope`。装配视图克隆一份作为"没有撤销端口"时的回落
     // （与 `build_main_window_with_console_tab` 的 `view_snapshot` 同一手法）。

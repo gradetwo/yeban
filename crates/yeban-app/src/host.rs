@@ -5493,7 +5493,7 @@ const CONSOLE_HEIGHT_MAX_PX: i32 = 600;
 /// | `toggle-view` | `arrangement-view` | `ArrangementView` / `SessionView` 的 `visible` 互斥互换 |
 /// | `toggle-sidebar` | `sidebar-collapsed` | 左资源栏 240px ↔ 36px 图标导轨（`min/max-width`） |
 /// | `toggle-ai-drawer` | `ai-drawer-open` | `compact` 断点下 280px AI 抽屉的 `visible` |
-/// | `open-musical-pr` | `musical-pr-open` | `MusicalPrDrawer` 的 `visible`（**只打开**） |
+/// | `open-musical-pr` | `musical-pr-open` **＋六个提案属性** | **不在本函数**：见 [`wire_proposal_drawer`] —— 它打开抽屉，并从唯一可变权威现读未合并提案清单注入 |
 /// | `select-sidebar-category` | `sidebar-category` | 三个分类标签的选中态（背景 / 文字色 / `accessible-item-selected`） |
 /// | `console-maximize-toggle` | `console-maximized` | 控制台面板高度（`vertical-stretch`）与 ⤢ 的 `accessible-checked`；与 `Action::ToggleConsoleMaximize` 同属性 |
 /// | `console-height-requested` | `console-height-px` | 先钳到 `220..=600`（`UI-GRID-002` 硬限）再写；`.slint` 的 `states [console-pinned]` 据此把控制台高度钉死在该值 |
@@ -5595,18 +5595,11 @@ pub fn wire_view_callbacks(ui: &MainWindow) {
             ui.set_console_height_px(0);
         }
     });
-    ui.on_open_musical_pr({
-        let weak = weak.clone();
-        move || {
-            let Some(ui) = weak.upgrade() else {
-                debug_assert!(false, "MainWindow 在回调执行期间被销毁");
-                return;
-            };
-            // **只打开**（本切片的范围纪律）：提案的生成 / 采纳 / 拒绝不在这里 ——
-            // 它们要么需要界面侧并不存在的"提案身份"，要么属于工程内容（`ADR-0005`）。
-            ui.set_musical_pr_open(true);
-        }
-    });
+    // `open-musical-pr` **不在本函数里**：它现在既要写 `musical-pr-open`，又要从唯一
+    // 可变权威**现读**未合并提案清单（`crate::proposals`），而本函数拿不到权威句柄
+    // （它的装配点在产品与判据两侧都相同、且没有 `Option<ProjectAuthorityHandle>` 参数）。
+    // 注册点搬到紧随其后的 [`wire_proposal_drawer`] —— 同一个回调**只有一个**注册者
+    // （Slint 的 `on_*` 是覆盖语义, 留两份就会让"哪一份在跑"变成读者要猜的事）。
     // ⭐ 左侧资源分类标签：界面只报告"用户点了哪一个"，钳位与写属性都在这里 ——
     // 越界请求落不到界面上（`sidebar-category` 的合法区间是 `0..SIDEBAR_CATEGORY_COUNT`）。
     ui.on_select_sidebar_category({
@@ -5647,6 +5640,59 @@ pub fn wire_view_callbacks(ui: &MainWindow) {
     // ⭐ 剪辑包头（`on_clip_select`）**不在这里**：它要按选中身份**重注入卷帘**
     // （`[UI-NOTE-001]` 的"当前编辑片段"作用域），因此需要一份投影和可选的撤销端口 ——
     // 落点是紧随其后的 [`wire_clip_scope`]（与 `wire_scene_launch` 同一档的"要投影"回调）。
+}
+
+/// AI 提案抽屉：**注册 `open-musical-pr`** ＋ **数据面的唯一写者**。
+///
+/// ## 这一格补的是哪一个洞（实测, 不是转述）
+///
+/// `ui/dialogs/musical_pr_drawer.slint` 的数据面此前**没有任何写者**：抽屉永远画
+/// "0 条"。而领域侧**有**提案（`Domain::proposals`，一次 `yeban_propose_section` /
+/// `yeban_edit_notes` / `yeban_set_macro` 就留下一条 `Open` 记录）⇒ 两侧都真、中间断开。
+/// 本函数把读面接上：清单**只**经 [`crate::proposals::ProposalSource`] 从唯一可变权威读
+/// （⛔ 不是界面侧新造的第二份提案状态，`ADR-0005`）。
+///
+/// ## 两条注册点，一份读数
+///
+/// * **装配时**注入一次 ⇒ 控制树里的 `musical-pr-drawer` 的 `accessible-value` 从第一帧
+///   起就是权威的条数（判据不必先点一下才看得见）；
+/// * **打开时**再注入一次 ⇒ "用户看见的清单"与"点开那一刻权威里的清单"是同一份读数。
+///   为什么必须现读：`Propose` / `Reject` 按计划**不**推进施加修订号
+///   （`yeban-mcp` 的 `Plan::mutates_project` 的口径），因此重投影钩子不会为它们而动 —— 边界逐字写在
+///   `src/proposals.rs` 的模块文档里。
+///
+/// ⚠ 本函数**只写界面属性**：不调 `commit_ops`、不推进修订号、一个字节都不改工程。
+pub fn wire_proposal_drawer(ui: &MainWindow, source: crate::proposals::ProposalSource) {
+    apply_proposal_drawer(ui, &source);
+    let weak = ui.as_weak();
+    ui.on_open_musical_pr(move || {
+        let Some(ui) = weak.upgrade() else {
+            debug_assert!(false, "MainWindow 在回调执行期间被销毁");
+            return;
+        };
+        apply_proposal_drawer(&ui, &source);
+        ui.set_musical_pr_open(true);
+    });
+}
+
+/// 抽屉数据面的**唯一**注入点（幂等：同一个来源重复调用得到同一个界面）。
+///
+/// 三个调用者，同一段代码（⛔ 没有第二份写者）：装配时、打开抽屉时
+/// （[`wire_proposal_drawer`]）、以及会话侧改工程后的重投影
+/// （`crate::reproject::AuthorityMirror::sync_now`）。
+///
+/// 六个属性一次写齐 —— 三个数组与条数**必须**同源同长度，因为 `.slint` 的循环按下标
+/// 同时读它们（等长这件事的判据：`src/proposals.rs` 的
+/// `drawer_values_keeps_the_three_arrays_the_same_length`）。
+pub fn apply_proposal_drawer(ui: &MainWindow, source: &crate::proposals::ProposalSource) {
+    let values = crate::proposals::drawer_values(&source.rows(), source.has_source());
+    ui.set_musical_pr_proposal_count(values.count);
+    ui.set_musical_pr_proposal_kinds(strings(&values.kinds));
+    ui.set_musical_pr_proposal_titles(strings(&values.titles));
+    ui.set_musical_pr_proposal_op_counts(integers(&values.op_counts));
+    ui.set_musical_pr_empty_reason(SharedString::from(values.empty_reason.as_str()));
+    ui.set_musical_pr_resolve_available(values.resolve_available);
+    ui.set_musical_pr_resolve_reason(SharedString::from(values.resolve_reason.as_str()));
 }
 
 /// ⭐ 剪辑选中态**及其作用面**（`[UI-NOTE-001]` 的"当前编辑片段"）。
@@ -8239,22 +8285,32 @@ fn midi_in_error_code(error: &crate::midi_in::MidiInError) -> &'static str {
 /// 缺的是**能力**，不是"接线"。把它们接上所需的机制在仓库里**不存在**，因此本轮**有意**
 /// 保持这三条在名单里（`docs/ledger/feature-alignment.md` 的 AI 提案行与走带行有就地加注）。
 ///
-/// **① `AcceptAiSuggestion`（`Shift+Enter` 采纳 AI 建议）—— 没有"待采纳的提案"这个对象。**
+/// **① `AcceptAiSuggestion`（`Shift+Enter` 采纳 AI 建议）—— 界面上没有"合并提案"的写入口。**
 /// 领域侧**有**提案概念：`crates/yeban-mcp/src/domain/proposal.rs` 的 `Proposal`
 /// （`ProposalStatus::Open`）与 `yeban_merge_proposal`（要 `proposalId`）。
-/// 但界面侧**没有提案身份的来源**：`grep -rn 'proposalId' crates/yeban-app/src` 的命中
-/// **全部落在注释里**（本文件的这一段与 `main.rs` 的 `wire_callbacks` 文档），没有一处是取值。
-/// 抽屉里的 `proposal-count` / `proposal-labels` / `proposal-kinds` / `confidences`
-/// 是**空的**（`crates/yeban-app/ui/dialogs/musical_pr_drawer.slint` 的 `:32-35`：
-/// `0` 与四个空数组），界面在零提案时画一句用户可见的空态
-/// （`musical-pr-empty-state`，`:12` 自陈"静态骨架, **不含演示数据**"）。
-/// **2026-10-08 更正**：这四个属性此前是**内联演示常量**（三条中文假提案 + 三个假置信度），
-/// 于是界面显示"AI 提了 3 条提案"而用户分不出真假；本切片删掉了那批数据并加了空态。
-/// 两条判据钉住它：`elements.rs` 的 `musical_pr_drawer_declares_no_demo_proposals` /
-/// `no_host_writes_the_musical_pr_proposal_properties`（文本层 + 属性层）与
+/// ⚠ 2026-10-30 更正本条的前半：抽屉**已经看得见提案了** —— 数据面由
+/// [`wire_proposal_drawer`] 从唯一可变权威注入（`crates/yeban-app/src/proposals.rs`）。
+/// 但"看得见"与"采纳得了"是两件事，缺的仍然是**能力**：
+/// * `grep -rn 'proposalId' crates/yeban-app/src` 的**取值**命中只有一处 ——
+///   `mcp_mount/embedded_sampler.rs` 的 `bind_sampler`，那是判据**经工具面**（`Dispatcher`
+///   的 `yeban_edit_notes` + `yeban_merge_proposal`）走的会话侧路径，不在 UI 线程上；
+///   其余命中全是注释。UI 线程的 `apply_action` 路径上没有任何一处取用提案身份。
+/// * 界面的写入口只有 [`HostAction`]，它今天只有 `Undo` / `Redo` / `Commit` 三臂 ——
+///   没有携带 `proposalId` 的那一臂。
+/// * 抽屉里也没有"当前选中的是哪一条"这一格（`ProposalRowView` 只有
+///   `kind` / `title` / `op_count`）；在界面侧新造一份提案状态会与领域权威冲突
+///   （`ADR-0005`）⇒ 登记为缺口，不接。
+///
+/// 因此界面上那两个按钮由 `musical-pr-resolve-available`（恒 `false`）把关 —— **不画**
+/// 假控件，改为把 [`crate::proposals::RESOLVE_NOT_WIRED_REASON`] 那句逐字原因上屏。
+/// （历史：**2026-10-08** 那四个数据面属性是**内联演示常量**（三条中文假提案 + 三个假
+/// 置信度），于是界面显示"AI 提了 3 条提案"而用户分不出真假；那一片删掉了数据并加了
+/// 空态。**2026-10-30** 本片接上真实来源。）
+/// 判据：`elements.rs` 的 `musical_pr_drawer_declares_no_demo_proposals`（文本层：假字面量
+/// / 空默认值 / 下标推出来的假读数 / 两个按钮的条件）与
+/// `the_proposal_drawer_writes_its_readings_from_one_host_path`（**唯一**注入路径）；
 /// `tests/live_ui_mcp.rs` 的 `the_musical_pr_drawer_shows_an_honest_empty_state`（运行时树）。
-/// 清空数据**不**改变本条结论：界面侧**仍然没有**"当前待采纳的提案身份"这个表示，
-/// 因此 `Shift+Enter` 仍然如实不消费。
+/// 接上读面**不**改变本条结论，因此 `Shift+Enter` 仍然如实不消费。
 /// 提案注册表（`Domain.proposals`）住在 `crates/yeban-mcp/src/domain/mod.rs:155`，
 /// 由 `crates/yeban-app/src/mcp_mount.rs` 在**非默认 feature** `in-process-mcp` 且
 /// 运行期 `--enable-mcp-http` 打开时才建，**不在** UI 线程的 `apply_action` 路径上。

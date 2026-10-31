@@ -1824,12 +1824,22 @@ impl ElementRegistry {
             "还没有 AI 提案。这条链路尚未接线。",
             false,
         );
+        // 提案行左上那一格原来是**置信度徽章**，现已换成"本提案携带几条 op"（领域里真实存在
+        // 的数）。注册表与图元同批登记：漏了它 ⇒ `[UI-TEST-001]` 的双向覆盖判据红在
+        // "`.slint` 里有模板、注册表里一个成员都没有"（方向 2）。
         for proposal_index in 0..3 {
             registry.add(
                 &format!("musical-pr-proposal-{proposal_index}-item"),
                 ElementKind::ListItem,
                 "dialogs/musical_pr_drawer.slint",
                 &format!("AI 提案 {proposal_index}"),
+                false,
+            );
+            registry.add(
+                &format!("musical-pr-proposal-{proposal_index}-ops"),
+                ElementKind::Text,
+                "dialogs/musical_pr_drawer.slint",
+                &format!("AI 提案 {proposal_index} 携带的 op 条数"),
                 false,
             );
         }
@@ -1845,6 +1855,16 @@ impl ElementRegistry {
             ElementKind::Button,
             "dialogs/musical_pr_drawer.slint",
             "放弃提案 (Esc)",
+            false,
+        );
+        // 「有提案、但没有写入口」那句原因。标签**逐字取自** `crate::proposals` 的那个常量
+        // （界面上的 `accessible-label` 绑的也是它）⇒ 注册表、图元、宿主说的是同一句话，
+        // ⛔ 这里不是第三份抄写。漏登记会让 `[UI-TEST-001]` 双向覆盖判据红在方向 2。
+        registry.add(
+            "musical-pr-resolve-unavailable",
+            ElementKind::Text,
+            "dialogs/musical_pr_drawer.slint",
+            crate::proposals::RESOLVE_NOT_WIRED_REASON,
             false,
         );
         registry.add(
@@ -2142,9 +2162,14 @@ pub fn is_model_driven_family(id: &str) -> bool {
 /// 从 `ui/dialogs/musical_pr_drawer.slint` **删掉的**全部假提案字面量（文案 + 置信度）。
 ///
 /// 逐字抄自本票改动前的 HEAD（`git show <parent>:crates/yeban-app/ui/dialogs/
-/// musical_pr_drawer.slint` 的 `:18-25`），当时它们是四条属性的**默认值** ——
-/// 也就是说没有任何宿主写它们（`no_host_writes_the_musical_pr_proposal_properties`
-/// 证明这一点），**用户看到的就是这些编造的数据**。
+/// musical_pr_drawer.slint` 的 `:18-25`），当时它们是四条属性的**默认值**，而**没有任何
+/// 宿主写者** ⇒ **用户看到的就是这些编造的数据**。
+///
+/// ⚠ 2026-10-30：数据面**现在有了宿主写者**（`host::apply_proposal_drawer`, 来源
+/// `crate::proposals`）⇒ "默认值就是用户看到的"那句话不再成立；本批字面量仍然一条都不
+/// 许出现在界面代码里（它们与领域里任何一条真实提案都没有关系）。同一天还删掉了第二
+/// 类编造读数 —— `"轨道 i · 小节 i+1"` 那种从**下标**算出来的假数（见
+/// `the_proposal_drawer_writes_its_readings_from_one_host_path` 的最后一节）。
 ///
 /// 为什么放在 lib 里而不是测试模块里: 两个测试目标（本文件的单元测试与
 /// `tests/live_ui_mcp.rs` 的集成测试）要探**同一批**字符串。写第二份就会漂移 ——
@@ -2180,15 +2205,42 @@ pub const DEMO_UNDO_TREE_LITERALS: [&str; 6] = [
     "c5 AI 提案",
 ];
 
-/// 抽屉的四个数据面属性：`.slint` 名 / Slint 生成的 Rust setter 名（snake_case）配对。
+/// 抽屉的七个数据面属性（`ui/dialogs/musical_pr_drawer.slint` 自己声明的那一侧）：
+/// `.slint` 名 / Slint 生成的 Rust 名（snake_case）配对。
 ///
 /// 判据要同时看两侧的**名称风格** —— 只查一侧会让"换个名字重新注入"漏过去。
 #[doc(hidden)]
-pub const MUSICAL_PR_PROPERTY_NAMES: [(&str, &str); 4] = [
+pub const MUSICAL_PR_PROPERTY_NAMES: [(&str, &str); 7] = [
     ("proposal-count", "proposal_count"),
-    ("proposal-labels", "proposal_labels"),
     ("proposal-kinds", "proposal_kinds"),
-    ("confidences", "confidences"),
+    ("proposal-titles", "proposal_titles"),
+    ("proposal-op-counts", "proposal_op_counts"),
+    ("empty-reason", "empty_reason"),
+    ("resolve-available", "resolve_available"),
+    ("resolve-reason", "resolve_reason"),
+];
+
+/// 同一批读数的**宿主侧**形状：`MainWindow` 上那七个 `musical-pr-*` 属性
+/// （`.slint` 名 / `host::apply_proposal_drawer` 要调的 setter 名）。
+///
+/// 为什么要两份而不是一个前缀规则：Slint 为 `MusicalPrDrawer` 与 `MainWindow` 生成的
+/// setter 名字**只差前缀**，把注入面写在 `MainWindow` 上（宿主只能碰窗口属性）而判据只
+/// 查抽屉那七个名字，就会漏掉"注入面整批改了名"这一类漂移。两侧的名字都在这里钉住。
+#[doc(hidden)]
+pub const PROPOSAL_HOST_PROPERTY_NAMES: [(&str, &str); 7] = [
+    ("musical-pr-proposal-count", "musical_pr_proposal_count"),
+    ("musical-pr-proposal-kinds", "musical_pr_proposal_kinds"),
+    ("musical-pr-proposal-titles", "musical_pr_proposal_titles"),
+    (
+        "musical-pr-proposal-op-counts",
+        "musical_pr_proposal_op_counts",
+    ),
+    ("musical-pr-empty-reason", "musical_pr_empty_reason"),
+    (
+        "musical-pr-resolve-available",
+        "musical_pr_resolve_available",
+    ),
+    ("musical-pr-resolve-reason", "musical_pr_resolve_reason"),
 ];
 
 #[cfg(test)]
@@ -3620,19 +3672,22 @@ mod tests {
 
     /// 判据（**多路径探针：源码文本 + 属性默认值 + 循环规模**）：抽屉里没有任何假提案。
     ///
-    /// 三条路径各自独立, 破坏任何一条都变红：
+    /// 四条路径各自独立, 破坏任何一条都变红：
     ///
     /// 1. **全 `ui/` 源码文本**: [`DEMO_PROPOSAL_LITERALS`] 一条都不得出现在 `ui/**` 的
     ///    任何 `.slint` 的**代码**里。只查抽屉那一个文件不够 —— 把假数据搬到 `app.slint`
     ///    再注入, 用户看到的还是一模一样的假界面。
-    /// 2. **属性默认值**: 四个数据面属性的默认值必须是 `0` / `[]`。这一条钉的是
-    ///    "宿主不写时界面显示什么", 而今天**没有**任何宿主写它们（下一条判据证明）。
+    /// 2. **属性默认值**: 七个数据面属性的默认值必须是 `0` / `[]` / `""` / `false`。
+    ///    这一条钉的是"宿主**没写**时界面显示什么" —— 宿主确实写了（下一条判据），但
+    ///    默认值仍然必须空：任何一次装配漏掉注入, 用户看到的就得是空态而不是一版编造。
     /// 3. **循环规模**: 提案列表必须由**数据**驱动, 不得是固定的 `for … in 3` ——
     ///    固定循环加空数组会在界面上留三张空卡片。
+    /// 4. **下标推出来的假读数**: 曾经有一行 `"轨道 i · 小节 i+1"` —— 两个数都来自提案
+    ///    在清单里的**位置**, 领域里没有这两个读数。它必须消失（op 条数取而代之）。
     ///
-    /// 还有一条**空态**断言: 零提案时界面必须有一句用户可见的真话,
-    /// 而不是一片空白（空白让用户以为界面坏了）。文案必须同时是 `accessible-label`
-    /// 与可见 `text` —— 只写一处就是"源码里说真话、用户看不见"的老毛病。
+    /// 另有两条**文案唯一出处**断言: 空态与"为什么不接线"那两句必须**只**住在
+    /// `src/proposals.rs`（判据读的就是那两个常量本身, ⛔ 不在这里抄第三份）—— 在
+    /// `.slint` 里再写一遍, 用户读到的是哪一份就没人保证了。
     #[test]
     fn musical_pr_drawer_declares_no_demo_proposals() {
         let drawer_path = ui_dir().join("dialogs/musical_pr_drawer.slint");
@@ -3664,7 +3719,7 @@ mod tests {
             hits.join("\n  ")
         );
 
-        // ---- 路径 ②: 四个属性的**默认值**必须是空的 ----
+        // ---- 路径 ②: 七个属性的**默认值**必须是空的 ----
         for (slint_name, _) in MUSICAL_PR_PROPERTY_NAMES {
             assert!(
                 !drawer.contains(&format!("{slint_name}: 3")),
@@ -3673,15 +3728,23 @@ mod tests {
         }
         for literal in [
             "in property <int> proposal-count: 0;",
-            "in property <[string]> proposal-labels: [];",
+            "in property <[string]> proposal-titles: [];",
             "in property <[string]> proposal-kinds: [];",
-            "in property <[string]> confidences: [];",
+            "in property <[int]> proposal-op-counts: [];",
+            "in property <string> empty-reason: \"\";",
+            "in property <bool> resolve-available: false;",
+            "in property <string> resolve-reason: \"\";",
         ] {
             assert!(
                 drawer.contains(literal),
                 "抽屉的数据面必须默认全空, 缺这一行: `{literal}`"
             );
         }
+        // 旧的第四格（置信度）不许以任何形式回来：领域里没有 `confidence` 这个读数。
+        assert!(
+            !drawer.contains("confidences"),
+            "`confidences` 这一格已经删除（`confidence` 在领域侧实测 0 处命中 ⇒ 任何百分比都是编造）"
+        );
 
         // ---- 路径 ③: 提案列表由**数据**驱动, 不是固定的三条 ----
         assert!(
@@ -3693,28 +3756,76 @@ mod tests {
             "固定的 `for proposal_index in 3` 必须消失（它会在空数组上留三张空卡片）"
         );
 
-        // ---- 空态: 用户可见的真话（`accessible-label` 与 `text` **两处都要有**）----
+        // ---- 路径 ④: 不许有**下标推出来**的假读数 ----
+        let drawer_code = code_only(&drawer);
+        for forbidden in ["轨道 ", "小节 "] {
+            assert!(
+                !drawer_code.contains(forbidden),
+                "提案行里出现了从**下标**算出来的读数 `{forbidden}`（领域里没有轨道号/小节号, \
+                 该格画的是 op 条数）"
+            );
+        }
+
+        // ---- 空态: 用户可见的真话, 且句子只有**一处**出处（`src/proposals.rs`）----
         assert!(
             drawer.contains("accessible-id: \"musical-pr-empty-state\";"),
             "零提案时必须有一个语义 ID = `musical-pr-empty-state` 的空态图元"
         );
-        assert!(
-            drawer.contains("accessible-label: \"还没有 AI 提案。这条链路尚未接线。\";"),
-            "空态的 `accessible-label` 必须就是界面上那句话（读屏用户听到的也是它）"
-        );
-        assert!(
-            drawer.contains("text: \"还没有 AI 提案。这条链路尚未接线。\";"),
-            "空态必须有一句**可见**的文案 —— 只写在注释或 `accessible-label` 里用户看不见"
-        );
+        for line in [
+            "accessible-label: root.empty-reason;",
+            "text: root.empty-reason;",
+        ] {
+            assert!(
+                drawer.contains(line),
+                "空态必须把宿主注入的那句话**同时**画成 `accessible-label` 与可见 `text` \
+                 （只写一处就是\"源码里说真话、用户看不见\"的老毛病）: 缺 `{line}`"
+            );
+        }
+        // 三句话逐字取自 `src/proposals.rs` 的常量（⛔ 不在这里抄第二份）。
+        let reasons = [
+            crate::proposals::NO_SOURCE_REASON,
+            crate::proposals::NO_OPEN_PROPOSAL_REASON,
+            crate::proposals::RESOLVE_NOT_WIRED_REASON,
+        ];
+        for file in &files {
+            let code = code_only(&std::fs::read_to_string(file).expect("读 .slint 失败"));
+            for reason in reasons {
+                assert!(
+                    !code.contains(reason),
+                    "宿主文案跑进了 .slint 里（那就是第二份文案, 会与 Rust 侧漂移）: `{reason}`"
+                );
+            }
+        }
 
-        // ---- 零提案时不画"采纳 / 放弃": 一个可点的「采纳」在空列表上是假控件 ----
+        // ---- 「采纳 / 放弃」挂在 `resolve-available` 上, 而不是挂在"有没有提案"上 ----
         assert_eq!(
             drawer
-                .matches("if root.proposal-count > 0 : Rectangle")
+                .matches("if root.resolve-available : Rectangle")
                 .count(),
             2,
-            "「采纳」与「放弃」两个按钮都必须挂在 `proposal-count > 0` 的条件上"
+            "「采纳」与「放弃」两个按钮都必须挂在 `resolve-available` 的条件上 \
+             （没有合并提案的写入口时, 一个可点的「采纳」就是假控件）"
         );
+        assert_eq!(
+            drawer
+                .matches("if root.proposal-count > 0 && !root.resolve-available : Rectangle")
+                .count(),
+            1,
+            "两个按钮不画时, 底部必须**换成**一句可见的原因（`resolve-reason`）—— 留白会被读成\"这里本来没有控件\""
+        );
+        assert!(
+            drawer.contains("accessible-id: \"musical-pr-resolve-unavailable\";"),
+            "那句原因必须有语义 ID `musical-pr-resolve-unavailable`（读屏与运行时树探针都靠它定位）"
+        );
+        for line in [
+            "accessible-label: root.resolve-reason;",
+            "text: root.resolve-reason;",
+        ] {
+            assert!(
+                drawer.contains(line),
+                "`resolve-reason` 必须**同时**是 `accessible-label` 与可见 `text`: 缺 `{line}`"
+            );
+        }
         for id in ["musical-pr-accept-button", "musical-pr-reject-button"] {
             assert!(
                 drawer.contains(&format!("accessible-id: \"{id}\";")),
@@ -3723,75 +3834,141 @@ mod tests {
         }
     }
 
-    /// 判据（**属性层的前提**）：没有任何宿主代码写抽屉的四个数据面属性。
+    /// 判据（**唯一注入路径**）：抽屉的七个读数只有宿主那一个函数在写, 且只有
+    /// `app.slint` 把它们绑到抽屉上。
     ///
-    /// 这条不是顺手加的对账 —— 它是上一条判据**路径 ②** 得以成立的前提:
-    /// 只要有任何一处 Rust 写这四个属性, "默认值 = 用户看到的"就不再成立,
-    /// 路径 ② 就退化成一句空话。
+    /// 这条判据是 2026-10-30 **反向改写**来的：它的前身
+    /// `no_host_writes_the_musical_pr_proposal_properties` 断言的是"没有宿主写这四个属性"
+    /// —— 那是当时"默认值就是用户看到的"这个前提的支撑。现在读面接上了（抽屉画权威里的
+    /// 真实提案），前提换了, 要钉的东西也换了：⛔ 不许有**第二条**注入路径。
     ///
-    /// 两条子路径：
-    /// - **Rust 侧**: `src/**` 的**代码**里不得出现 Slint 生成的 setter
-    ///   （`set_proposal_count(` 等）。口径与 `host_setters_match_the_declared_slint_properties`
-    ///   同款 —— 都是文本层扫 `.rs`。
-    /// - **界面侧**: 除了抽屉自己, `ui/**` 的**代码**里不得出现那四个 kebab-case 属性名。
-    ///   在 `app.slint` 里绑一句（`proposal-count: root.…`）就等于接上了注入面。
-    ///
-    /// 本仓纪律: "把动作吞掉却什么都不做, 比不处理更糟"（见 `host.rs` 的
-    /// `action_has_implementation` 文档）。这一条把"今天真的没有数据源"从一句话变成断言。
+    /// 三条子路径（破坏任何一条都变红）：
+    /// - **Rust 侧**: `src/**` 的**代码**里那七个 setter（`set_musical_pr_*`）只出现在
+    ///   `host.rs` 的 `apply_proposal_drawer` 里, 各一次。任何一处别的 `set_…` 就是
+    ///   第二份写者（界面上"哪一处在决定"重新变成要猜的事）。
+    /// - **界面侧**: 七个 `musical-pr-*` 只在 `app.slint` 的 `MusicalPrDrawer { … }`
+    ///   实例里绑一次, 且绑的就是宿主那七个属性（`root.musical-pr-*`）。
+    /// - **注册者唯一**: `on_open_musical_pr` / `open-musical-pr` 在 Rust 侧只由
+    ///   `wire_proposal_drawer` 注册（Slint 的 `on_*` 是**覆盖**语义 —— 两处注册就会
+    ///   有"哪一份生效"的漂移, 而 `wire_view_callbacks` 里那一处正是为此删掉的）。
     #[test]
-    fn no_host_writes_the_musical_pr_proposal_properties() {
-        let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    fn the_proposal_drawer_writes_its_readings_from_one_host_path() {
+        let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let src = manifest.join("src");
         let mut rs_files = Vec::new();
         collect_files_with_extension(&src, "rs", &mut rs_files);
         rs_files.sort();
         assert!(!rs_files.is_empty(), "src/ 下一个 .rs 都没有?");
 
-        let mut setter_hits: Vec<String> = Vec::new();
+        // ---- 子路径 ①: setter 只在 `host.rs` 的 `apply_proposal_drawer` 里 ----
+        let mut writers: Vec<String> = Vec::new();
         for file in &rs_files {
             let rel = file
-                .strip_prefix(std::path::Path::new(env!("CARGO_MANIFEST_DIR")))
+                .strip_prefix(manifest)
                 .unwrap_or(file)
                 .to_string_lossy()
                 .replace('\\', "/");
             let code = code_only(&std::fs::read_to_string(file).expect("读 .rs 失败"));
-            for (_, rust_name) in MUSICAL_PR_PROPERTY_NAMES {
-                if code.contains(&format!("set_{rust_name}(")) {
-                    setter_hits.push(format!("{rel}: set_{rust_name}(…)"));
+            for (_, rust_name) in PROPOSAL_HOST_PROPERTY_NAMES {
+                let hits = code.matches(&format!("set_{rust_name}(")).count();
+                match hits {
+                    0 => {}
+                    1 if rel == "src/host.rs" => {}
+                    n => writers.push(format!("{rel}: set_{rust_name}(…) × {n}")),
                 }
             }
         }
         assert!(
-            setter_hits.is_empty(),
-            "有宿主代码在写抽屉的提案数据面 ⇒ 界面上的提案不再是'没有数据源':\n  {}",
-            setter_hits.join("\n  ")
+            writers.is_empty(),
+            "抽屉读数出现了**第二个**写者（唯一的那一个是 `host::apply_proposal_drawer`）:\n  {}",
+            writers.join("\n  ")
         );
+        // 那七个 setter 确实**都在** `host.rs` 里（否则上一条断言会因为"根本没接线"而空绿）。
+        let host = std::fs::read_to_string(src.join("host.rs")).expect("读 host.rs");
+        let host_code = code_only(&host);
+        let applier = host_code
+            .split("fn apply_proposal_drawer(")
+            .nth(1)
+            .unwrap_or_else(|| panic!("宿主侧那个唯一的注入函数 `apply_proposal_drawer` 不见了"));
+        // 只看到这个函数的函数体（到下一个顶层 `}` 前即可：函数体内没有嵌套顶层函数）。
+        let body = applier.split("\n}\n").next().unwrap_or(applier);
+        for (_, rust_name) in PROPOSAL_HOST_PROPERTY_NAMES {
+            assert!(
+                body.contains(&format!("set_{rust_name}(")),
+                "`apply_proposal_drawer` 必须写满七个属性, 缺 `set_{rust_name}` —— \
+                 少一个就意味着界面上那一格停留在默认值"
+            );
+        }
 
+        // ---- 子路径 ②: 只有 `app.slint` 把它们绑到抽屉上 ----
         let ui = ui_dir();
         let mut slint_files = Vec::new();
         collect_slint_files(&ui, &mut slint_files);
         slint_files.sort();
+        let app = std::fs::read_to_string(ui.join("app.slint")).expect("读 app.slint");
+        let app_code = code_only(&app);
+        assert_eq!(
+            MUSICAL_PR_PROPERTY_NAMES.len(),
+            PROPOSAL_HOST_PROPERTY_NAMES.len(),
+            "两份名字表必须**等长且同序**（下面按序 zip 配对; 少一格就是有一条读数没有宿主写者）"
+        );
+        for ((drawer_name, _), (host_name, host_rust)) in MUSICAL_PR_PROPERTY_NAMES
+            .iter()
+            .zip(PROPOSAL_HOST_PROPERTY_NAMES.iter())
+        {
+            // 声明一次：`in property <…> musical-pr-…: 空默认值;`
+            assert_eq!(
+                app_code.matches(&format!("{host_name}:")).count(),
+                1,
+                "`{host_name}` 必须在 `app.slint` 的 `MainWindow` 上**声明**恰好一次"
+            );
+            // 绑定一次：抽屉实例上 `{proposal-…: root.musical-pr-…;}` —— 绑的是宿主那一格
+            // （⛔ 不是字面量, 也不是别的属性）。
+            assert_eq!(
+                app_code
+                    .matches(&format!("{drawer_name}: root.{host_name};"))
+                    .count(),
+                1,
+                "抽屉的 `{drawer_name}` 必须由 `app.slint` 绑到宿主属性 `{host_name}` 恰好一次"
+            );
+            // 宿主那一侧的 setter 名与 Slint 属性名是**同一条**（生成规则 kebab→snake）。
+            assert_eq!(
+                host_name.replace('-', "_"),
+                *host_rust,
+                "名字表里的 Rust setter 名与 `.slint` 属性名对不上（判据读的会是另一格）"
+            );
+        }
         let drawer_rel = "dialogs/musical_pr_drawer.slint";
-        let mut bind_hits: Vec<String> = Vec::new();
+        let app_rel = "app.slint";
+        let mut extra_binds: Vec<String> = Vec::new();
         for file in &slint_files {
             let rel = file
                 .strip_prefix(&ui)
                 .unwrap_or(file)
                 .to_string_lossy()
                 .replace('\\', "/");
-            if rel == drawer_rel {
-                continue; // 抽屉自己**声明**这四个属性, 这不是注入。
+            if rel == drawer_rel || rel == app_rel {
+                continue; // 抽屉自己**声明**、`app.slint` **绑定** —— 这两处是那条唯一路径。
             }
             let code = code_only(&std::fs::read_to_string(file).expect("读 .slint 失败"));
             for (slint_name, _) in MUSICAL_PR_PROPERTY_NAMES {
                 if code.contains(&format!("{slint_name}:")) {
-                    bind_hits.push(format!("{rel}: {slint_name}:"));
+                    extra_binds.push(format!("{rel}: {slint_name}:"));
                 }
             }
         }
         assert!(
-            bind_hits.is_empty(),
-            "抽屉之外有 .slint 在绑定提案数据面 ⇒ 用户看到的不再是默认值:\n  {}",
-            bind_hits.join("\n  ")
+            extra_binds.is_empty(),
+            "`app.slint` 之外还有 .slint 在绑抽屉的提案数据面 ⇒ 出现了第二条注入路径:\n  {}",
+            extra_binds.join("\n  ")
+        );
+
+        // ---- 子路径 ③: `open-musical-pr` 的注册者只有一个 ----
+        let registrations = host_code.matches("on_open_musical_pr(").count();
+        assert_eq!(
+            registrations, 1,
+            "`on_open_musical_pr` 在宿主里必须**只注册一次**（Slint 的 `on_*` 是覆盖语义, \
+             两处注册时后写的生效, 而前一处只是看起来接了）"
         );
     }
 
