@@ -28,6 +28,8 @@
   `silentRegionCount` 必须相等"）。⚠ ⛔ 渲染侧**没有**加 `builtinSilentRegionCount`：引擎无公开访问器，为凑对称去改
   `yeban-render` 属越界。**判决读数**：全量腿 46m19s／`test result:` 504 行／`FAILED` 0／两条新判据逐名 `… ok`；
   windows 腿独立再读（`test result:` 308／同名两条各 1 次 ok）。
+  **合流判决**：merge `90837f44` 撞上另一会话已推送的 UI 线 `36864fdf` ⇒ 本地并批后 main = `2215022e`，
+  run `41197950361` **success**（全量腿 47m30s／`test result:` **516** 行／`FAILED` 0／两条新判据仍逐名 ok）。
 - **`G4` 的素材面（⛔ 不是缺陷，别再去"修"它）**：`assets/samples` 现读 1 586 个文件里**音频样本 0 个**
   （`.sfz` 1 398／`.txt` 170／`.md` 11／`.xml` 6／`.json` 1），清单 `policy` 逐字写明**登记式外取**（9.371 GiB 不随包分发）
   ⇒ "样本全缺 ⇒ 静默"是设计如此。要不要随包分发素材属人类裁决（许可＋体积），⛔ Agent 不代取。

@@ -16789,4 +16789,14 @@ helper 里 ⇒ 必须不认（防假绿）。两条臂在旧实现上都会失�
 | 提交 | run | 结论 | 关键读数 |
 |---|---|---|---|
 | 线 `a72b9b6a` | `41194388747` | **success** | `rust (workspace 全量)` **46m19s**（10:50:56→11:37:15，日志 1 767 151 字节）：`test result:` **504** 行／`FAILED` **0**；两条新判据在该腿内逐名 `… ok`（`load_and_render_receipts_agree_…` 与 `unreadable_samples_count_toward_…`）；windows 腿独立再读一次：`test result:` **308** 行／`FAILED` **0**／同名两条判据各 1 次 `… ok`；`checks`／`deny`／`lockfile`／`plan`／`macos` 全 success，`rust (矩阵)` 按 workspace 模式判 **skipped**（⛔ 不计绿） |
+| merge `90837f44` → 并入 kong 会话的 UI 线后 `2215022e` | `41197950361` | **success** | 落地时 `origin/main` 已被另一会话推进到 `36864fdf`（zimmer **UI** 线：`Alt+↑/↓` 选轨／`F7/F8/F9` 控制台标签／裸 `R`·`M`·`S`／`Cmd+O`·`Cmd+S`·`Cmd+Shift+S`／标尺小节吸附…）⇒ 本地 merge 后整批一起判。全量腿 **47m30s**（11:51:48→12:39:18）：`test result:` **516** 行（比线 run 多 **12** = 新增的 UI 二进制）／`FAILED` **0**／本票两条新判据仍逐名 `… ok`；`checks`／`deny`／`lockfile`／`macos`／`windows` 全 success，`rust (矩阵)` **skipped**（⛔ 不计绿）。⚠ 他们那枚 `36864fdf` 自己的 run `41196100058` 是 **failure**，但红在 `test (合并特性, yeban-app)` 的**链接器**：`error: linking with 'cc' failed` ＋ `ld terminated with signal 7 [Bus error], core dumped` ⇒ **环境红非代码红**；合流后同一步在本 run 内跑绿（`Running tests/track_select_keyboard.rs` 等 5 个新二进制在场，12:13:21 与 12:38:43 各一遍） |
+
+### §21.7 撞号处置（本仓库第一次）：两个会话同一天各取 `ADR-0054`
+
+- 现象：远端 `36864fdf` 带 `ADR-0054-ruler-bar-snap.md`（另一会话），本地 `c674b947` 带
+  `ADR-0054-singing-synthesis-v2-deferral.md`（本会话）⇒ 同一编号两票，`docs/adr/README.md` 索引行直接冲突。
+- 规则（本批定）：**已发布的一方保号，未发布的一方改号** ⇒ 本侧改 `ADR-0055`，五处同步
+  （文件名／票内标题／README 索引行／`HD-67` 留痕／台账 `G3` 行），⛔ 不动他们那一份。
+- 操作性教训：**取号前必须 `git fetch` 之后数远端的最大值** —— ⛔ 只数本地工作树里的文件，多线并行时一定撞。
+
 
