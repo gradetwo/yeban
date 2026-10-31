@@ -17461,3 +17461,22 @@ helper 里 ⇒ 必须不认（防假绿）。两条臂在旧实现上都会失�
   （本轮 s29 给 lib 加了判据，`passed` 只会 ≥ 该值 ⇒ ⚠ 合流读数要**逐档数**，不能拿窄腿的 2 698 当基线）。
 - ✅ 顺带结清：主干文档批 `f9f93de2` 的 run **`41229861554` = `success`**（`plan`／`lockfile`／`deny`／`checks` 真跑，
   其余五腿 `skipped` ⇒ 对代码零证明，符合只动 `docs/` 的预期）。
+
+### 22.24 s30 缺的最后一份读数：`render_master.sources[].sampler` 的**逐键名册**（2026-11-01，⛔ 只读；§22.20 第①条的下钻）
+
+- **拼装点现读**：`crates/yeban-mcp/src/domain/render.rs` 的 `impl SamplerReport` → `to_value`
+  （字面量在 L1485–1504，字段表在 `pub struct SamplerReport` L1405–1448，`label()` 在 L1464）。
+- **单位＝键；对象＝这个 JSON 对象的顶层键** ⇒ **19** 个键，⛔ **没有一个可空**（`Option` 出现在**外层** `sources[].sampler`
+  本身，不在这一层）：
+  - **字符串 3**：`path`、`resolvedPath`、`label`（`label()` 返回 `String`，是 `sfz(tracks=… regions=… samples=… silent=… missing=…)` 那一行）；
+  - **整数 12**：`regions`／`silentRegionCount`（`usize`）、`notes`／`notesUnmatched`／`notesUsingFileSample`／
+    `notesWithoutSample`／`notesUsingBuiltinSilence`／`notesLooping`／`sampleFramesLoaded`／`regionsWithEnvelope`／
+    `voiceSteals`（`u64`）、`decodedSamples`（`usize`）；
+  - **字符串数组 3**：`sampleSources`／`sampleFailures`／`missingSamplePaths`（全是 `Vec<String>` ⇒
+    可声明成 `{"type":"array","items":{"type":"string"}}`，**这正好用上 s29 新加的 `items` 递归**）；
+  - **布尔 1**：`sampleReadsTruncated`。
+- ⇒ **§22.20 第①条的"能整块声明"这句现在是有名册的**：外层 `sources[]` 的 15 键（含两处必须可空）
+  ＋ 这一层 `sampler` 的 19 键（无 null）＋ 三个数组元素的 `string` ⇒ s30 一片可以写到**三层**。
+- ⚠ 一句留给落笔时的诚实性：`usize`/`u64` 在 JSON 侧都是 `integer`，声明⛔ 不要写成 `number`；
+  而 `sampleFailures` 是"读样本失败"的**路径列表**（常态是空数组），空数组**不是**缺席 ⇒ `validate_complete` 那条
+  "声明了就必须出现"对它成立，不需要特殊处理。
