@@ -48,6 +48,10 @@
 - **s19（守卫注释纠错）**：`yeban-theory` 守卫文档句误称"现为空表"（`ALLOWLIST` 实为 5 条）⇒
   `c4151a3e` / run **`41158864137` success**（theory 腿 2m02s、守卫 5 passed、`FAILED` 0；windows 39m23s／
   macos 31m40s 真跑）→ merge `a342d41d`，措辞改为**不写数量**（⛔ 数字必然腐烂）。读数见台账 §18.7。
+- **推送与合流**：首次 `git push origin main:main` 被上游提案抽屉线 `2860f88d` 拒绝 ⇒ `git merge --no-ff origin/main`
+  后重推 `18363cc8`，主干 run **`41162210699` success**（theory 腿 2m43s 守卫 **5 passed**、ui-mcp 3m55s、
+  mcp 16m49s／`test result: ok` **143** 行、macos 26m22s、windows 39m01s 真跑；`rust (workspace 全量)` 按 plan
+  `skipped` ⛔ 不算绿）。该 run 同时覆盖提案抽屉线的 app/mcp 代码。
 - **空绿的又一次实测**：台账批 `aca9c855` 的 run `41155589983` 逐 job 读回 —— `lockfile`/`plan`/`deny`/`checks`
   真跑，`macos`/`rust (workspace 全量)`/`windows`/`rust (${{matrix.crate}})` 四条腿 `skipped`
   （`startedAt == completedAt`）⇒ run 级 success ⛔ 不是代码面验证。
