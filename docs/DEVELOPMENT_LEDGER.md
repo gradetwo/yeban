@@ -17246,3 +17246,41 @@ helper 里 ⇒ 必须不认（防假绿）。两条臂在旧实现上都会失�
 - ⏳ **待办**：读回 `41227512300` 的**目标腿**（宽档 `rust (workspace 全量)` 里 `yeban-mcp` 的
   `test result:` 行 + 新增四条款据名逐条 `ok`）⇒ 绿才 `worktree.sh land s29-warning-code-teeth` → 推 main →
   读回合流 run；红则按日志点名修，⛔ 不叠未证的提交。
+
+### 22.18 ⭐ s29 线 run `41227512300` 判决读回 = **failure**（红在 clippy，⛔ 不是语义）＋ 修好后重推（2026-11-01）
+
+- **终态**：run `41227512300`（`headSha=cb5a5673e475b4cc0bc2c2fd5f9c706713c8b231`）= `completed / failure`。
+  逐腿：`deny`／`checks`／`plan`／`lockfile`／`e2e`／`rust (yeban-ui-mcp)` = **success**；
+  **`rust (yeban-mcp)` / `windows` / `macos` = failure**；`rust (workspace 全量)` = **skipped**。
+  ⚠ **§22.17 的"宽档"预期是错的**：plan 把受影响集合算成"只 `yeban-mcp`"⇒ 走**窄腿矩阵**、宽腿 skip（§22.6 的形态）
+  ⇒ 本片的**目标腿是 `rust (yeban-mcp)`**（作业 `124614694353`），不是全量腿。
+- **红点只有一个，而且⛔ 不是判据红**：三条腿**全部红在同一步 `clippy (-D warnings)`**
+  （窄腿步骤号 6、win/mac 步骤号 5）。日志里两条 `error:` 同一族的 lint：
+  `crates/yeban-mcp/src/output_schema.rs:1287` 与 `:1300` 的 `.err().expect("…")` 触发
+  **`clippy::err-expect`**（`-D clippy::all` 隐含 ⇒ 视为错误），末行
+  `error: could not compile yeban-mcp (lib test) due to 2 previous errors`。
+  ⛔ **这就是 §6.3-4 的形态**：lib test 没编译 ⇒ s29 那批新判据**一条都没执行**，
+  "日志里找不到判据名"是**编译顺序造成的空白**，既不是失败证据也不是通过证据。
+- **为什么本机预检不到**（如实登记）：`yeban-mcp` 是重依赖 crate，本机禁单（§5.2）⇒ 没有任何本地 clippy 能提前发现；
+  而这两条 lint 是**纯文本形态**的（`.err().expect(` 六个字符就命中）。
+  ⇒ 可复用的便宜预检：**推线前先 `git diff | grep -n '\.err()\.expect(\|\.err()\.unwrap('`**，
+  命中就改 `expect_err`。⚠ 它只覆盖这一条 lint，⛔ 不能当"clippy 已过"用（照 §6 只有 CI 算判决）。
+- **改法与边界**：两处消息都是**纯字面量**⇒ 直接 `expect_err("…")`。
+  同一测试里**另外两处 `.err().unwrap_or_else(|| panic!("…{tool}…"))` 刻意保留**：
+  `expect_err` 只收 `&str`、⛔ 不会替换格式占位符（本会话上一轮正因这个把消息写死成假话），
+  而 `unwrap_or_else` 是惰性求值、不触发 `err-expect`。
+  ⇒ 修正提交 `1179ef04`（同文件 **2 行**）⇒ 推送 ⇒ 新 run **`41228291334`** `in_progress` ⇒ **pending**。
+  ⚠ 线内现在是**两枚提交**（`cb5a5673` + `1179ef04`），落地时以 `1179ef04` 的 run 为准 —— 叠的这枚**不是未证提交**，
+  它是前一枚红的直接后果（红点被日志逐字点名），⛔ 别把它读成"绕过判决"。
+- **顺带改正一句口径**：§22.17 写"四条常驻判据"⇒ 现读 `mod tests` 的 `#[test] fn` 是
+  **新增 3 个测试函数**（递归 / 越名册 / 子集对账）＋ 复用 1 个既有函数；
+  提交信息里的"四条"数的是**判据条目**（真实构造点两路都过是递归那条里的第 ③ 小段）。
+  ⚠ 条目数与函数数不是一回事（§6.5 同一课），下次写"几条判据"要点明数的是什么单位。
+- **同批读回：主干纯文档 run `41227959469`（`headSha=31004aae79362e154bd0fdb2e8f020d773830fa1`）= `completed / success`**。
+  不是空绿：**`checks` 真跑**（步骤 10「warnings 名册对账」／11「JSON Schema 契约」／13「文档契约」／
+  14「集成测试零判据守卫」／17「跨语言契约对账」全部 success），`deny`／`plan`／`lockfile` success；
+  `e2e`／`rust (matrix)`／`windows`／`macos`／`rust (workspace 全量)` = **skipped** —— 纯文档批的预期形态（§22.6）。
+- ⏳ **待办**：读回 `41228291334` 的**目标腿 `rust (yeban-mcp)`** —— clippy 步 success、
+  该腿日志里三个新判据名逐条 `ok`、`test result:` 里 `yeban-mcp` 无 `FAILED`；
+  若那 12 处嵌套 `required` 有任何一处与真实响应矛盾，会红在 `tests/props_176.rs` / `tests/render_master.rs`
+  —— **那是真发现**，按点名修，⛔ 不叠未证的提交。绿才 `land` → 推 main → 读回合流 run → 拆树。

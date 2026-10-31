@@ -19,6 +19,9 @@
 > `docs/ledger/phase-status.md` 的叙事条目**停在 R1144**（2026-10-26）⇒ ⭐ 读进度以
 > `DEVELOPMENT_LEDGER.md` 的尾部为准，⛔ 不要以为 R1144 之后没干活。
 
+- ⭐ **当前在飞的工作 = s29（s28 第二片）**：线两枚提交 `cb5a5673`＋`1179ef04`，
+  第一枚的 run `41227512300` **已读回 = failure（红在 clippy、判据没跑）**，修正后新 run `41228291334` **pending**
+  ⇒ 接手第一件事是读回它（口径与预检见 **§0.6.0zc**，明细在台账 **§22.18**）。
 - ⭐ **main 现含 `bc01b363` 的代码改动且判回 success**（台账 §22.11：全量腿 47 分钟／`passed` **7 235**／`FAILED` **0** ＝ 与改动前同值 ⇒ 无衰退）；
   本机复验（树 `ad022d97`）：防掏空守卫 `rc=0`、s26 判据 `1 passed`。
   ⚠ 本条原文末句"⛔ s28 尚未立项"**已过时**（写在 10-31 深夜）：s28 第一片已于 16:57Z 落地 `1d3d24b9`，见 §0.6.0za；读数史在台账 §22.8／§22.12／§22.15。
@@ -84,6 +87,36 @@
   ＋ 新增的 Rust 判据（`include_str!` 读同一份契约核"广播 ⊆ 契约"）⇒ 改名或删键会同时红在两处。
 - ⏳ **下一步**：读回 `41227512300` 的**目标腿**（宽档全量腿里 `yeban-mcp` 的 `test result:` ＋ 四条新判据逐名 `ok`）
   ⇒ 绿才 `scripts/dev/worktree.sh land s29-warning-code-teeth` → 推 main → 读合流 run；⛔ 红不叠未证的提交。
+  ⇒ **该 pending 已读回 = failure，且"宽档全量腿"这句是错的**（目标腿是窄腿 `rust (yeban-mcp)`）：见下面的 §0.6.0zc。
+
+### 0.6.0zc ⭐ 尾批（2026-11-01）：**s29 线 run 读回 = failure（红在 clippy，判据一条没跑）** ＋ 两行修正重推 `1179ef04`（新 pending）
+
+- **判决**：run `41227512300` = `completed / **failure**`。逐腿：`deny`／`checks`／`plan`／`lockfile`／`e2e`／
+  `rust (yeban-ui-mcp)` **success**，**`rust (yeban-mcp)`／`windows`／`macos` failure**，`rust (workspace 全量)` **skipped**。
+  ⚠ **本片的 target 腿是窄腿 `rust (yeban-mcp)`**（作业 `124614694353`）—— plan 算出的受影响集合只有这一个 crate ⇒
+  宽腿按 §22.6 skip；§0.6.0zb 末行写的"宽档全量腿"是**预期口径错**，已改正。
+- **红点只有一个形状**：三条腿红在**同一步** `clippy (-D warnings)`；日志两条 `error:` 都是
+  **`clippy::err-expect`**（`output_schema.rs` 的两处 `.err().expect("…")`），末行
+  `could not compile yeban-mcp (lib test) due to 2 previous errors`。
+  ⇒ ⛔ **这不是判据红**，也⛔ 不是"语义有问题"：lib test 没编译，s29 的新判据**一条都没执行** ——
+  正是 §6.3-4 说的"日志里找不到判据名 = 编译顺序造成的空白"，既不能读成失败也不能读成通过。
+- **可复用的便宜预检**（本轮换来的一条）：`yeban-mcp` 本机不能 clippy（重依赖禁单），但这类 lint 是**纯文本形态**的 ⇒
+  推线前 `git diff | grep -n '\.err()\.expect(\|\.err()\.unwrap('`，命中就改 `expect_err`。
+  ⚠ 它只覆盖这一条 lint，⛔ 不等于"clippy 已过"（判决仍只算 CI 的）。
+- **修**：`1179ef04`（同文件 2 行）把两处**纯字面量**消息改成 `expect_err`；
+  另两处 `.err().unwrap_or_else(|| panic!("…{tool}…"))` **刻意保留** —— `expect_err` 只收 `&str`、不会替换占位符，
+  惰性 `unwrap_or_else` 也不触发这条 lint。⇒ 新 run **`41228291334`** 现读 `in_progress` ⇒ **pending**。
+  ⚠ 线内两枚提交（`cb5a5673`＋`1179ef04`）：后一枚是前一枚红点的直接后果（日志逐字点名），⛔ 不是"叠未证提交"。
+- **顺带一条口径改正**：§0.6.0zb／§22.17 的"四条常驻判据"数的是**判据条目**；
+  现读 `#[test] fn` 是**新增 3 个测试函数**（递归／双向越名册／子集对账）＋复用 1 个既有函数。
+  ⇒ 写"几条"要点明单位（§6.5 同一课）。
+- ✅ **同批读回：主干纯文档 run `41227959469`（`31004aae`）= success**，⛔ 不是空绿：
+  `checks` 真跑（步骤 10 名册对账／11 schema 合法性／13 文档契约／14 零判据守卫／17 跨语言对账 全 success），
+  rust／e2e／win／mac = skipped（纯文档批的预期形态）。
+- ⏳ **下一步**：读回 `41228291334` 的**窄腿**（clippy 步 success ＋ 三个新判据名逐条 `ok` ＋ `yeban-mcp` 无 `FAILED`）
+  ⇒ 绿才 `land` → 推 main → 读合流 run → 拆树；若红在 `tests/props_176.rs`／`tests/render_master.rs`
+  （那 12 处嵌套 `required` 与真实响应矛盾）⇒ **那是真发现**，按点名修，⛔ 不叠未证的提交。
+
 
 ### 0.6.0y ⭐ 尾批（2026-10-31 22:40）：**三处陈旧口径改正** ＋ s28 的前置读数 ＋ 合流判决（待填）
 
