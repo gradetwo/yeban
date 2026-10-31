@@ -17480,3 +17480,31 @@ helper 里 ⇒ 必须不认（防假绿）。两条臂在旧实现上都会失�
 - ⚠ 一句留给落笔时的诚实性：`usize`/`u64` 在 JSON 侧都是 `integer`，声明⛔ 不要写成 `number`；
   而 `sampleFailures` 是"读样本失败"的**路径列表**（常态是空数组），空数组**不是**缺席 ⇒ `validate_complete` 那条
   "声明了就必须出现"对它成立，不需要特殊处理。
+
+### 22.25 ⭐ s29 合流 run `41232570339` 读回 = **success** ＋ ⛔ 我上一节那句"这次宽腿会真跑"被读数证伪 ＋ §22.21 的 `.cargo-home` 口径也错了
+
+- **判决**：`9925741e` 的 run **`41232570339` = `completed / success`**，十腿里
+  `lockfile`／`plan`／`deny`／`checks`／`macos`／`windows`／`rust (yeban-ui-mcp)`／`rust (yeban-mcp)`／`e2e` = `success`，
+  **`rust (workspace 全量)` = `skipped`**（作业 `124629684329`）。
+- ⛔ **更正（写下来才发现自己 predictions 又超前了）**：§22.23 末句与 §0.6.0ze 都写着
+  "这条走的是**宽腿**，`rust (workspace 全量)` 会真跑（约 45 分钟），基线 `516`／`0`／`7 235`"。
+  **错了。** 真实机制是 §22.6 那条我早就记过的规则：`plan` 只给出**一个 crate** ⇒ 跑**窄档矩阵腿**、宽腿 `skipped`；
+  而这次合流提交的净改动只有 `crates/yeban-mcp/**` 两个文件 ⇒ `plan` 当然只给 `yeban-mcp`。
+  ⇒ **合流 run ≠ 全量 run**：只有当改动跨多个 crate（或有人推了全量触发）时宽腿才跑。
+  ⚠ 代价评估：这次**没有丢证据**——`yeban-mcp` 的窄腿在两档（普通 + 合并特性）都真跑，且 `windows`/`macos` 也真跑了多 crate；
+  丢掉的是"全仓其余 crate 在同一 tip 上重编一次"这一层，而它由 `1d3d24b9`／`bc01b363` 那批合流已经覆盖过，
+  且 s29 的改动面**不跨 crate**。⇒ 结论：s29 的落地判决成立，⛔ 不要把 `skipped` 读成"全量通过"。
+  ⇒ **纪律补一条**：判"合流 run 覆盖了什么"要**先看 `plan` 给了几个 crate**，再决定引用哪一组基线；
+  ⛔ 不要按"这是主干所以一定跑全量"推断（本轮就是这么错的）。
+- **树已拆**：`worktree.sh rm s29-warning-code-teeth --purge` ⇒ 先自动补归档标签
+  **`line-archive/s29-warning-code-teeth @ 25a5d06d`**（先保全再删），再删本地分支 `line/s29-warning-code-teeth`；
+  `git worktree list` 现读只剩主干一棵（`.worktrees/s29-warning-code-teeth` 目录已消失）。
+- ⚠ **§22.21 那条"`.worktrees/*/.cargo-home` 无匹配"是我 glob 用错了**：真实的 `CARGO_HOME`
+  住在 **`.worktrees/.cargo-home`**（`line-gate.sh:43` 与 `local-env.sh:66` 都把它指到 `$ROOT/../.cargo-home`，
+  而 `ROOT` 就是那棵树 ⇒ 父目录正是 `.worktrees`）。现读：`du -sh` = **911 M**，其中 **`registry/` 一个目录就占 911 M**
+  （纯注册表缓存，`.gitignore:20 /.worktrees/` 已覆盖，无 tracked 内容）。
+  ⇒ 本轮**不删**并说明理由：s30 起线后 `line-gate.sh` 会**复用同一份缓存**（删了就是重新下载几百 MB），
+  它既不是孤儿也不占"无法回收"的名额；等 s30 落地、且确认近期不再起 mcp 线时再按 #34 一起裁决。
+  ⚠ 顺带记一处**脚本里的陈旧默认值**（本轮现读，未改）：`scripts/dev/premerge-gate.sh:33` 写死
+  `: "${CARGO_HOME:=/Users/crow/work/music/.cargo-home}"` —— 那是**另一台 macOS 机器**的路径，本机是 Linux；
+  它只在调用方没设 `CARGO_HOME` 时生效，属于 §0.6.0y 那类"文档里的 macOS 路径"在**脚本层**的同款残留 ⇒ 登记，改它要走单独的线（根共享文件 `scripts/**`）。

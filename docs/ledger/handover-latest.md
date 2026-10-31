@@ -1,8 +1,10 @@
 # 交接（夜半第三阶段 · 2026-10-14 · 覆盖台账 R307–R1144）
 
-> ⭐ **2026-11-01 深夜：当下状态看 §0.6.0ze**（s29 **判决已绿并落地** `9925741e`：`warnings[].code` 逐工具子集进广播 ＋ 校验器递归生效 ＋
-> 集成测试二进制本轮**真跑**（70 个 ×2 档）⇒ §0.6.0zd 欠的"递归会不会拒掉真实响应"有了答案；附一条**数 `Running` 的 grep 口径缺陷**
-> —— ANSI 色码让 `grep -c "Running "` 恒等于 1；合流 run `41232570339` 仍 pending）；
+> ⭐ **2026-11-01 深夜（第二批）：当下状态看 §0.6.0zf**（s29 **全链收盘**：线判绿 → land `9925741e` → 合流 run `41232570339` = `success` → 树已拆（归档标签 `line-archive/s29-warning-code-teeth`）；
+> ⛔ 附两条**我自己的预期被读数证伪**：「主干合流一定跑宽腿」错了（`plan` 只给一个 crate ⇒ 窄矩阵 + 宽腿 skip，见 §22.6）／
+> 「`.worktrees/*/.cargo-home` 无匹配」是 glob 层级用错（真实 911 M 住在 `.worktrees/.cargo-home/registry`，本轮不删并给理由）；
+> ⇒ 接手第一件事 = **先推 main（三枚本地文档批）再起 s30**）；
+> ⭐ 上一批在 §0.6.0ze（s29 判绿的逐层读数 ＋ 一条**数 `Running` 的 grep 口径缺陷**：ANSI 色码让 `grep -c "Running "` 恒等于 1）；
 > ⭐ 上一批在 §0.6.0zd（s29 第二轮红在假夹具、12 处嵌套声明逐处审计、s30 前置读数）；
 > ⭐ 更早：§0.6.0zc（s29 线首轮红在 clippy，两行修正重推）／§0.6.0zb（s29 推线 `cb5a5673`）／
 > §0.6.0za（s28 第一片**已落地** `1d3d24b9`：`warnings[].code` 名册进契约 + 集合等式守卫进 CI）／
@@ -15,7 +17,7 @@
 
 ---
 
-## ⭐ ⭐ ⭐ §0.6 最新交接（**2026-10-28 起，最新到 2026-11-01 的 §0.6.0ze**，创作缺口审计 `G1..G18` 全轮 + 完成审计 + Zimmer 报告核账）—— 新会话先读这一节
+## ⭐ ⭐ ⭐ §0.6 最新交接（**2026-10-28 起，最新到 2026-11-01 的 §0.6.0zf**，创作缺口审计 `G1..G18` 全轮 + 完成审计 + Zimmer 报告核账）—— 新会话先读这一节
 
 > 本节是**当前**状态；下面 §0.5（2026-10-26，macOS 主机）与 §1／§1.9 是**历史快照**，
 > ⛔ 不要当成今天的事实 —— ⚠ 尤其 §0.5 里的路径与 env 是**另一台机器**的。
@@ -147,12 +149,39 @@
   （含反向一条 `[ok] id 2 首次 的 result **不**通过 definitions.ReplayedToolResponse`）。
 - **落地**：`worktree.sh land` → 合流提交 **`9925741e`**（`--no-ff`；净 `output_schema.rs` ＋ `props_176.rs`，+354／−40；
   合并后自检 `cargo metadata --locked` 与许可清单 `ok`）→ 已推 `origin main:main`。
-  ⏳ **接手第一件事**：读合流 run **`41232570339`**（`headSha=9925741e09dd8028806df3be920a12e937926c85`）的**宽腿**
-  —— 这次 `rust (workspace 全量)` 会真跑（约 45 分钟），口径＝`test result:` 行数／`FAILED`／`passed` 合计，
+  ⏳ ~~**接手第一件事**：读合流 run **`41232570339`**（`headSha=9925741e09dd8028806df3be920a12e937926c85`）的**宽腿**~~
+  ⚠ **本条已被 §0.6.0zf 就地更正**：合流 run 已读回 = `success`，但**宽腿是 `skipped`**（`plan` 只给一个 crate ⇒ §22.6），
+  那句"基线 `516`／`0`／`7 235`"因此**不适用**；原文留下是为了记"预测 vs 读数"这次错位。
+  原口径（⛔ 勿照做）：这次 `rust (workspace 全量)` 会真跑（约 45 分钟），口径＝`test result:` 行数／`FAILED`／`passed` 合计，
   基线 §22.15 的 `516`／`0`／`7 235`（⚠ s29 净增判据 ⇒ `passed` 只会 ≥；⛔ 别拿窄腿的 2 698 当基线）
   ⇒ 绿才拆树（`worktree.sh rm s29-warning-code-teeth --purge`），然后才起 **s30**（同一文件的第二写者，§0.6.0zd 的前置读数已备）。
 - ✅ 顺带：主干文档批 `f9f93de2` 的 run **`41229861554` = `success`**（`checks` 真跑，其余腿 `skipped`）；
   本机八道守卫（六道文档 + `check_warning_codes` + `policy_check`）逐个 `rc=0`。
+
+### 0.6.0zf ⭐ 尾批（2026-11-01 深夜·第二批）：**s29 合流判决 = success、树已拆** ＋ ⛔ 两条**我自己的预期被读数证伪**（宽腿会跑 / `.cargo-home` 无匹配）
+
+- ✅ **合流 run `41232570339`（主干 `9925741e`）= `completed / success`**：九腿真跑（含 `rust (yeban-mcp)` 两档、
+  `windows`、`macos`、`e2e`），`rust (workspace 全量)` = **`skipped`**。⇒ **s29 全链收盘**：
+  `cb5a5673`＋`1179ef04`＋`25a5d06d` 判绿 → land `9925741e` → 合流判绿 → 树已拆（`--purge` 自动补归档标签
+  **`line-archive/s29-warning-code-teeth @ 25a5d06d`** 后删本地分支，`git worktree list` 只剩主干）。
+- ⛔ **第一条被证伪的是我上一批的话**：§0.6.0ze 写"这次走的是**宽腿**，`rust (workspace 全量)` 会真跑（约 45 分钟），
+  基线 `516`／`0`／`7 235`"。**错了** —— 这就是 §22.6 那条老规则：`plan` 只给**一个 crate** 时跑窄矩阵、宽腿 skip；
+  而合流提交的净改动只有 `crates/yeban-mcp/**` ⇒ `plan` 当然只给 `yeban-mcp`。
+  ⇒ **合流 run ≠ 全量 run**，判"这条 run 覆盖了什么"要**先数 `plan` 给了几个 crate** 再选基线，
+  ⛔ 不要按"它在主干上所以一定跑全量"推断。本轮**没有丢证据**（改动不跨 crate、窄腿两档真跑、win/mac 真跑），
+  但**结论的来路**换了一条，明细见台账 §22.25。
+- ⛔ **第二条是 §22.21 的那句"`.worktrees/*/.cargo-home` 现读无匹配"**：glob 用错了层级 —— 它直接住在
+  `.worktrees/.cargo-home`（`line-gate.sh:43`／`local-env.sh:66` 把 `CARGO_HOME` 指到 `$ROOT/../.cargo-home`，
+  `ROOT` 就是那棵树）。现读 **911 M**，全部在 `registry/` 一个目录里，`.gitignore:20 /.worktrees/` 已覆盖、无 tracked 内容。
+  **本轮不删**并给理由：s30 起线后 `line-gate.sh` 复用同一份缓存，删了只是重新下载；
+  等 s30 落地且近期不再起 mcp 线时，随 #34 一起交人类裁决。
+  ⚠ 顺带现读到一处**脚本层的 macOS 陈旧默认值**：`scripts/dev/premerge-gate.sh:33`
+  `: "${CARGO_HOME:=/Users/crow/work/music/.cargo-home}"` —— 只在调用方未设 `CARGO_HOME` 时生效；
+  `scripts/**` 是根共享文件 ⇒ 改它要走单独的线，本轮只登记。
+- ⏭ **接手第一件事**：主干 `main` 现 tip = 本地三枚未推的文档批（`7c3f8923`／`071caf84`＋本节）——
+  ⚠ 上一批因"⛔ 在飞期间不推 main 会取消 run"而排队，现在 `41232570339` 已 completed ⇒ **先推 main 再起 s30**；
+  然后起 **s30**（task #105，前置读数齐了：§22.20 三处 ＋ §22.24 的 `sampler` 19 键名册），
+  ⛔ `proposal_detail.ops` 不在那片（要先给校验器补 `min/maxProperties`/`propertyNames`，§22.22 路线甲）。
 
 
 ### 0.6.0zd ⭐ 尾批（2026-11-01）：**s29 第二轮判决 = failure（红点换了一类：假夹具被新递归抓到）** ＋ 12 处嵌套声明逐处审计完 ＋ s30 的前置读数已备
