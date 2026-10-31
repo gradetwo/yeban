@@ -398,11 +398,23 @@ jobs:
       # ⭐ 保留本条（#167 加的）: 它 1 秒内清掉前面两条腿的 incremental 并打印
       # `du -sh target` / `df -h .` —— 在 hosted runner 上**这是唯一能读到的盘读数**，
       # 也是下一轮判"够不够"的依据。合并后它挪到合并档 test 腿**之前**（最重的一次链接）。
+      # ⭐ 2026-10-31 与宽运行腿**对齐**：只清 incremental 在这条腿上是**不够**的。
+      # 实证（run `41196100058` 的 `rust (yeban-app)` 重跑，日志 step 10 之后）：
+      # `du -sh target` = **57G**、`df` 只剩 **53G**，接着合并特性 test 腿重链接
+      # 测试二进制时报 `rustc-LLVM ERROR: IO failure on output stream:
+      # No space left on device`（exit 101）。同一份树在宽运行腿（run `41193355453`）
+      # 因为**先跑了 `trim-target.sh`**（70G → 4.7G，释放 66G）而通过。
+      # `trim-target.sh` 只删 `deps` 顶层**已链接**的测试/示例二进制（保留 `.rlib`），
+      # 下次测试会重新**链接**而不是重新编译；脚本按进程名精确匹配 cargo/rustc、
+      # 共享 target 锁被持有也拒绝裁剪 ⇒ 语义上是惰性的。
+      # ⚠ 这一步不是判决，只是把"贴边"往下压（与宽运行腿同一条纪律）。
       - name: 释放增量目录 (合并档 test 腿之前; 前两条腿的 incremental 会叠加)
         run: |
           set -euo pipefail
           du -sh target 2>/dev/null || true
           rm -rf target/debug/incremental || true
+          bash scripts/dev/trim-target.sh \
+            || echo "::warning::trim-target 拒绝裁剪（有 cargo/rustc 在跑，或共享 target 锁被持有）⇒ 只清了 incremental"
           df -h . || true
 
       - name: test (合并特性)
