@@ -3532,7 +3532,7 @@ pub struct ShortcutRow {
 /// 每一项把**规范写法**、**动作**、**键位**与**落地状态**放在一起。这张表的**意义**是
 /// 让策略表的判定结果可被人与 CI 直接阅读 —— 尤其是 `[UI-A11Y-002]` 的 IME 分支,
 /// 以及"规范点名了、本版本还没做"的那一列（见 [`UNIMPLEMENTED_MARKER`]）。
-const SHORTCUTS: [ShortcutRow; 36] = [
+const SHORTCUTS: [ShortcutRow; 37] = [
     ShortcutRow {
         label: "Space → 播放/暂停",
         action: Action::PlayPause,
@@ -3838,13 +3838,28 @@ const SHORTCUTS: [ShortcutRow; 36] = [
         modifiers: Modifiers::none(),
         implemented: true,
     },
+    // ⭐ **界面决定**（⛔ 不是规范点名）：标准 DAW 的保存键 `Cmd/Ctrl+S`。
+    //
+    // 与上面两条的关系：裸 `S` 是独奏 ⇒ 保存**必须带** `Cmd/Ctrl`；这一格此前落到
+    // `PassThrough`（`command()` 分支里 `s` 一条都没有），因此加它不动任何既有绑定。
+    // `Cmd/Ctrl+Shift+S` / `Cmd/Ctrl+Alt+S` 仍放行（"另存为"是另一票界面决定）。
+    // 落点是**既有**的 `save-project` 回调（`host::wire_save` → `save_action::dispatch_save`），
+    // 与 transport 的「保存」按钮、与「换工程前先保存」是同一个入口。逐条理由见
+    // `Action::SaveProject` 的文档；登记在 `docs/ledger/app-cli-notes.md` §5.4。
+    ShortcutRow {
+        label: "Cmd/Ctrl+S → 保存工程",
+        action: Action::SaveProject,
+        key: PhysicalKey::KeyS,
+        modifiers: Modifiers::meta(),
+        implemented: true,
+    },
     // 以下**一条**是本版本仅剩的 `implemented: false` 条目。
     //
     // ⭐ **两个数字都不在这里手抄**（此前这一行写着"表共 26 条"，而表的**总数**其实是 28 ——
     // 26 是 `implemented: true` 的条数，被当成了总数 ⇒ 读的人按它对账会**差 2**，
     // 而差的正是下面这类 `false` 条目）。⭐ 事实源是**类型标注**与**判据**，逐条复算：
-    //   - 表有多大 ⇒ `[ShortcutRow; 36]` 的**类型标注**（编译期）＋ 判据
-    //     `shortcut_table_status_matches_the_resolution_and_host_pipeline` 的 `rows.len() == 36`；
+    //   - 表有多大 ⇒ `[ShortcutRow; 37]` 的**类型标注**（编译期）＋ 判据
+    //     `shortcut_table_status_matches_the_resolution_and_host_pipeline` 的 `rows.len() == 37`；
     //   - 有几条未实现 ⇒ 同文件的 `the_ai_suggestion_and_audition_keys_are_still_declared_unimplemented`
     //     断言未实现条目**恰好**是哪一条（精确到条目，比只数条数更强）＋ `printed_marks`。
     // ⇒ ⭐ 注释只负责**指路**，⛔ 不再复述数字（复述过的数字会陈旧，这一行就是实例）。

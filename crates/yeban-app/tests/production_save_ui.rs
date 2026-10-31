@@ -186,10 +186,21 @@ fn the_production_window_save_entry_writes_through_the_mounted_authority() {
             target: Some(project_path.clone()),
             project: before.clone(),
         },
-        Some(live_port),
+        Some(std::rc::Rc::clone(&live_port)),
         // ⭐ `#86` 乙：装配期**给了**目标路径 ⇒ 一次都不该弹窗（`NoPicker` 让那句承诺可执行）。
         std::rc::Rc::new(yeban_app::file_picker::NoPicker),
         Some(authority.clone()),
+    );
+    // ⭐ 生产键盘接线（与 `run_gui` 同一条 `host::wire_keys`）：步 3b 要从**按键**进，
+    // 才能证明 `Cmd/Ctrl+S` 落到的是**同一个**保存入口（而不是判据自己在调回调）。
+    host::wire_keys(
+        &ui,
+        std::rc::Rc::new(std::cell::RefCell::new(
+            yeban_app::input::InputContext::new(),
+        )),
+        Some(std::rc::Rc::clone(&live_port)),
+        None,
+        None,
     );
     assert_eq!(
         ui.get_save_status().to_string(),
@@ -244,21 +255,45 @@ fn the_production_window_save_entry_writes_through_the_mounted_authority() {
         lane_element_ids(&saved)
     );
 
-    // ---- 3b. 保存**不**改工程内容 ⇒ 施加修订号一位不动（推进点仍只有 `apply` 一处）----
+    // ---- 3b. 键盘路径（`Cmd/Ctrl+S`）落到**同一个**保存入口，且不改工程内容 ----
     assert_eq!(
         authority.apply_revision(),
         revision_before_save,
         "保存不得推进 `apply_revision`（它不改工程内容）"
     );
-    ui.invoke_save_project();
+    // ⚠ 先把回执**清空**：否则"上一次（按钮那次）已经成功"会被读成"这一键也成功了"。
+    // 这条清空纪律与宿主侧 `save_first_through_the_existing_entry` 逐字相同。
+    ui.set_save_succeeded(false);
+    ui.set_save_status(slint::SharedString::new());
+    assert_eq!(
+        ui.get_save_status().to_string(),
+        "",
+        "清空之后状态文本必须是空的（否则 3b 的断言没有承重）"
+    );
+    // `Cmd/Ctrl+S`：与产品二进制同一条 `key-action` 回调（`host::wire_keys`）。
+    assert!(
+        ui.invoke_key_action(
+            slint::SharedString::from("s"),
+            false, // shift
+            false, // ctrl
+            false, // alt
+            true,  // meta —— `Cmd/Ctrl` 在策略表里是同一个 `command()` 位
+        ),
+        "`Cmd/Ctrl+S` 必须被消费（保存键不冒泡给焦点系统）"
+    );
+    let keyboard_status = ui.get_save_status().to_string();
     assert!(
         ui.get_save_succeeded(),
-        "第二次保存也必须成功（同一个会话可以反复写盘）"
+        "`Cmd/Ctrl+S` 必须落到保存入口（回执被清空后仍然成功，说明不是残留读数）: {keyboard_status}"
+    );
+    assert!(
+        keyboard_status.contains(&project_path.display().to_string()),
+        "`Cmd/Ctrl+S` 的回执必须点名写到哪个文件（与按钮那一次同一条消息）: {keyboard_status}"
     );
     assert_eq!(
         authority.apply_revision(),
         revision_before_save,
-        "第二次保存同样不得推进 `apply_revision`"
+        "键盘保存同样不得推进 `apply_revision`"
     );
 
     // ---- 4. 没有控制面时同一个入口走本地路径（产品路径两条分支都可达）----

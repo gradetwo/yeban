@@ -9091,6 +9091,24 @@ fn apply_action(
             refresh_undo_window(ui, port, true);
             true
         }
+        // `Cmd/Ctrl+S`：保存**当前**工程（键位选择的三条事实见 [`Action::SaveProject`]）。
+        //
+        // 三条口径（都与既有保存入口逐字一致，⛔ 不另写一条保存路径）：
+        // 1. **唯一落点**是 `.slint` 的 `save-project` 回调 —— 与「保存」按钮、
+        //    「换工程前先保存」（`save_first_through_the_existing_entry`）**同一个**入口；
+        //    真正的写盘 / 权威分流 / 原生对话框 / 回执全在 `host::wire_save`
+        //    （→ `save_action::dispatch_save`），这里只负责"按到它"；
+        // 2. **不持有引擎借用**：`wire_keys` 只对 `action_needs_engine` 的动作借宿主
+        //    （见那里的 `#212` 文档），保存不在那个集合里 ⇒ 这里 `ui.invoke_save_project()`
+        //    不会撞上 `RefCell already borrowed`；
+        // 3. **成功 / 被锁拒绝 / 取消**都由 `save-status` 如实回报（屏读器可达），
+        //    本臂**不**二次解释结果。因此它恒消费这一键（返回 `true`）——
+        //    与 `ZoomToSelection` 那种"没有对象就不消费"不同：当前工程永远存在，
+        //    "保存失败"是一条要留在界面上的**结果**，不是"这一键没意义"。
+        Action::SaveProject => {
+            ui.invoke_save_project();
+            true
+        }
         // `[UI-NOTE-005]` §3.5 项 1–2：方向键把**当前选区**按一档步长平移 / 移调。
         //
         // 语义（五条都是决定, 不是意外）：

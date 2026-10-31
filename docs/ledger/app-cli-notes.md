@@ -303,6 +303,29 @@ $ unzip -l /tmp/demo.yeban                          # 写出来的是**标准 ZI
 **不适用**：`--save-as` 会让进程走无窗口批处理（`Options::batch`）。因此 Quick Start 里
 **只能**写"打开 → 另存/导出"这条路，**不能**写"在界面里改一改再保存"。这条已登记为未实现项。
 
+**【后续更正（本次切片，2026-10-31，`line/keyboard-save`）—— 保存有了键盘入口】**
+
+- **先把事实说准（两句话不是同一件事）**：GUI 的保存入口**今天已经存在** ——
+  `ui/transport.slint` 的「保存」按钮（`accessible-id: "transport-save-button"`）→
+  `host::wire_save` → `save_action::dispatch_save`，生产装配是 `main.rs` 的
+  `wire_save_with_engine`，端到端判据在 `tests/production_save_ui.rs`。本行上文"未实现"指的是
+  **`--save-as` 在 GUI 上不适用**（它走批处理），⛔ 不是"GUI 不能保存"；因此
+  "Quick Start 只能写打开 → 另存/导出"这句**不再**是唯一真话。
+- **本切片补的那一格**：标准 DAW 的保存键 `Cmd/Ctrl+S`（`Action::SaveProject`）。
+- **键位选择（三条事实，⛔ 不猜）**：① 裸 `S` 已是「选中轨独奏」（`line/mixer-keyboard-switch`，
+  2026-10-31）⇒ 保存**必须带** `Cmd/Ctrl`；② `resolve_logical` 的 `command()` 分支里 `s`
+  此前**一格都没有**（实测）⇒ 加它不覆盖任何既有绑定；③ `Cmd/Ctrl+Shift+S` 与
+  `Cmd/Ctrl+Alt+S` 仍返回 `PassThrough` —— "另存为"需要一套新的界面决定，⛔ 不顺手发明。
+- **落点只有一个**：`host::apply_action` 的 `Action::SaveProject` 臂只做
+  `ui.invoke_save_project()` —— 与「保存」按钮、与「换工程前先保存」
+  （`save_first_through_the_existing_entry`）是**同一个**回调，⛔ 没有第二条写盘路径。
+  回执（成功 / 被 `.yeban.lock` 拒绝 / 用户取消）由 `save-status` 如实回报，屏读器可达。
+- **判据**：`tests/production_save_ui.rs` 的步 3b 改为**从按键进**（先清空
+  `save-succeeded` / `save-status`，再 `invoke_key_action("s", …, meta=true)`，
+  断言回执真的回来且 `apply_revision` 一位不动）；策略表的新一行由
+  `tests/cli_contract.rs` 的 B11b 三面一致（表 / 解析 / 宿主）钉住。
+- **仍未做**：GUI 的"另存为"（⌘⇧S）与"打开"（⌘O）的键盘入口 —— 各自需要界面决定，另开票。
+
 ---
 
 ## 6. **Quick Start 可以引用哪些命令**（给集成者写 README / 官网用）
