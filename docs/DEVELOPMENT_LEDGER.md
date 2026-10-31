@@ -16507,6 +16507,7 @@ helper 里 ⇒ 必须不认（防假绿）。两条臂在旧实现上都会失�
 | 台账批 `5a4c3ba5`＋合流 `0cfe4189` 推主干（**纯文档**） | `41154777536` | **空绿** —— `plan` 返回空 crate 集 ⇒ `rust (workspace 全量)`／`rust (${{matrix.crate}})`／`windows`／`macos` 四条腿全部 `skipped`；`deny` 01:23:08→01:24:07、`checks` 01:23:55→01:25:15、`lockfile` 01:23:33→01:23:53 真跑。⛔ **不构成对 `0cfe4189` 代码面的验证** —— 其代码内容与 `aa9aff6c` 逐字相同，判决由上一行承接 |
 | 台账批 `aca9c855` 推主干（**纯文档**，§18.7 两线在飞＋混音台/空绿两行） | `41155589983` | **空绿** —— 逐 job 读回：`lockfile` 01:30:12→01:30:32、`plan` 01:30:35→01:30:47、`deny` 01:30:45→01:31:31、`checks` 01:30:49→01:32:17 真跑；`macos`／`rust (workspace 全量)`／`windows`／`rust (${{matrix.crate}})` 四条腿 `startedAt == completedAt == 01:30:47` 且 `skipped` ⇒ ⛔ 不算绿。代码面继承 `41143113348` |
 | 台账批 `923ff9e6` 推主干（**纯文档**，§18.6 补记＋§18.7 三线） | `41156387804` | **空绿** —— 逐 job：`lockfile` 01:40:50→01:41:11、`deny` 01:40:19→01:41:22、`checks` 01:40:31→01:41:51、`plan` 01:40:39→01:40:48 真跑；`windows`／`macos`／`rust (workspace 全量)`／`rust (${{matrix.crate}})` 四条腿 `startedAt == completedAt == 01:40:48` 且 `skipped` ⇒ ⛔ 不算绿 |
+| 台账批（`db1e7d68`／`3e76a5b6`／`ee10ec66`）＋s19 merge `a342d41d` 推主干（**文档＋1 行注释**） | 待推送后读回 | **pending** —— 该批含 `crates/yeban-theory/tests/assertion_bounds_audit.rs` 一行注释改动 ⇒ plan 应点名 theory 腿；判决未读回前记 pending |
 | 四守卫 merge `aba563df`＋`adbb7a00`＋`26a1a692`＋`296bd17b` 推主干（s15／s16／s17／s18 合流） | `41158564050` | **success**（`923ff9e6..296bd17b`）—— 13 个作业逐 job：`rust (yeban-midi-io)` 02:11:09→**02:13:41**（2m32s，守卫 `running 5` 在 `test` 与 `test (合并特性)` 两档各 5 `ok`）、`rust (yeban-theory)` 2m25s（守卫 5 ok）、`rust (yeban-midi)` 3m06s（221／5／50／9／35 全 ok）、`rust (yeban-ui-test-port)` 02:11:53→02:15:38（3m45s，49＋5 ok）、`rust (yeban-ui-mcp)` 3m59s、`rust (yeban-mcp)` 15m54s、`rust (yeban-app)` **32m41s**、`windows` 02:09:06→**02:42:04**（32m58s）、`macos` →02:38:43（28m18s）全部真跑、`FAILED` **0**；`rust (workspace 全量)` 按 plan `skipped`（⛔ 该腿不算绿，由 8 条 crate 腿承接） |
 
 > ⚠ **run 级 success ≠ 每个作业都跑完**：本批一次实测到 `gh run view --json` 报
@@ -16584,9 +16585,12 @@ helper 里 ⇒ 必须不认（防假绿）。两条臂在旧实现上都会失�
   2 个断言站点／0 取反／allowlist 0／无界 0**。落线时两处**都已自带界**（`src/lib.rs` 的家族名 ASCII
   判据由同根 `!family.is_empty()` 兜住）⇒ 本线是**纯防回归**，站点数 2 从此只许降不许升。
   本地：守卫 5/5、`cargo test -p yeban-ui-test-port` **49+5** 全绿、clippy/fmt/light 通过。
-- ⚠ **已知小瑕疵（待小线修）**：s16 的 `yeban-theory/tests/assertion_bounds_audit.rs:70` 文档句仍写
-  "本 crate 现为空表"，而 `ALLOWLIST` 实际已登记 **5** 条（`drum.rs` 4、`rhythm.rs` 1）。仅注释出错，
-  判据行为正确；未混入本批文档提交（会额外拉起 theory 腿）。
+- **小瑕疵已修（s19）**：s16 的 `yeban-theory/tests/assertion_bounds_audit.rs` 文档句原写"本 crate 现为空表"，
+  而 `ALLOWLIST` 实为 **5** 条（`drum.rs` 4、`rhythm.rs` 1）。s19 `line/s19-theory-guard-comment`
+  （tip `c4151a3e`，run **`41158864137` success**：theory 腿 02:17:42→02:19:44＝2m02s，守卫二进制
+  `Running tests/assertion_bounds_audit.rs` 在场、**5 passed**、`FAILED` 0；windows 39m23s／macos 31m40s
+  真跑）改为**不写数量**的措辞（⛔ 表头写数字必然腐烂）⇒ merge `a342d41d`。
+  ⚠ 该线从本地 main（含 docs 提交）分出，故 line run 里也带文档；合并无冲突。
 - **九份副本的实现漂移审计（2026-10-31，防下一会话重查）**：按函数名集合比对，8 份是同一套
   （`function_body`／`has_bound_in`／`negation_shaped`／`every_file_that_contains_all_is_registered` …）；
   **`yeban-engine` 那份是自建实现**（1411 行 vs 806–900 行）：窗口用 `enclosing_body_start` 取

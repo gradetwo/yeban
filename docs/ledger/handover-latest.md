@@ -41,8 +41,13 @@
   → merge `adbb7a00`；s17 `4cc67c62` / `41156212959` **success**（midi 腿 2m13s、221／5／50／9／35 全 ok；
   windows/macos/全量腿 `skipped` ⛔ 不算绿）→ merge `26a1a692`；s18 `de5c55ed` / `41156728513` **success**
   （ui-test-port 腿 4m11s、`Running` 2／`test result: ok` 3＝49+5+0、`FAILED` 0；同 run midi 3m05s、ui-mcp 7m04s；
-  windows/macos/全量腿 `skipped`）。四棵工作树已拆，推送 `923ff9e6..296bd17b` 的合流 run **`41158564050`**
-  ⇒ 判决待读回（未读回前记 pending，不入绿账）。读数见台账 §18.7。
+  windows/macos/全量腿 `skipped`）。四棵工作树已拆。合流 run **`41158564050` = success**（13 个作业逐 job：
+  8 条 crate 腿＋`windows` 32m58s＋`macos` 28m18s 全部真跑，`rust (workspace 全量)` 按 plan `skipped`
+  ⇒ ⛔ 该腿不算绿）：四条目标腿日志均见 `Running tests/assertion_bounds_audit.rs`，守卫各 **5 passed**、
+  `FAILED` **0**（midi-io 在 `test` 与 `test (合并特性)` 两档各一次）。
+- **s19（守卫注释纠错）**：`yeban-theory` 守卫文档句误称"现为空表"（`ALLOWLIST` 实为 5 条）⇒
+  `c4151a3e` / run **`41158864137` success**（theory 腿 2m02s、守卫 5 passed、`FAILED` 0；windows 39m23s／
+  macos 31m40s 真跑）→ merge `a342d41d`，措辞改为**不写数量**（⛔ 数字必然腐烂）。读数见台账 §18.7。
 - **空绿的又一次实测**：台账批 `aca9c855` 的 run `41155589983` 逐 job 读回 —— `lockfile`/`plan`/`deny`/`checks`
   真跑，`macos`/`rust (workspace 全量)`/`windows`/`rust (${{matrix.crate}})` 四条腿 `skipped`
   （`startedAt == completedAt`）⇒ run 级 success ⛔ 不是代码面验证。
