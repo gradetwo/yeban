@@ -17508,3 +17508,84 @@ helper 里 ⇒ 必须不认（防假绿）。两条臂在旧实现上都会失�
   ⚠ 顺带记一处**脚本里的陈旧默认值**（本轮现读，未改）：`scripts/dev/premerge-gate.sh:33` 写死
   `: "${CARGO_HOME:=/Users/crow/work/music/.cargo-home}"` —— 那是**另一台 macOS 机器**的路径，本机是 Linux；
   它只在调用方没设 `CARGO_HOME` 时生效，属于 §0.6.0y 那类"文档里的 macOS 路径"在**脚本层**的同款残留 ⇒ 登记，改它要走单独的线（根共享文件 `scripts/**`）。
+
+### 22.26 ⭐ s30 已推线（`12b59ff8`，run `41236805286` **pending**）＋ 一处**§22.20 没写到的机制**把我准备加的那条判据纠了回来
+
+- **起线**：树 `.worktrees/s30-items-shapes`（branch `line/s30-items-shapes`，基线 `bf016ad3`），
+  **一枚**提交 `12b59ff8`，净改动两个文件（`crates/yeban-mcp/src/output_schema.rs`、`crates/yeban-mcp/tests/props_176.rs`）。
+  run `41236805286`（`headSha` 逐字 `12b59ff8939811d6bb7a02de11edc7108e06e708`）createdAt `2026-10-31T20:00:07Z`。
+  ⛔ 判决**未读回**，所以本节一切"通过"只指本机可测的那几项，CI 侧一律记 `pending`。
+- **落地的三处名册**（键数 = 现读拼装点的**恒发**键数，⛔ 不是手抄理想值）：
+  `automation_point_items()` **4** 键（`domain/automation.rs` 的 `AutomationEdit::data` 里 `lane.insert("points", …)`；
+  `curve` 上封闭四值 `enum`，四处里唯一能收紧到名字集合的一处）、
+  `send_edge_items()` **8** 键（`domain/engine_state.rs` 的 `send_edges_value`）、
+  `source_items()` **15** 键 **含**内层 `sampler` **19** 键（`domain/render.rs` 的 `SourceReport::to_value` / `SamplerReport::to_value`，§22.24 那份名册）。
+  可空声明全部**有来源**而非保守：`value`／`gainDb`／`peak`／`peakDbfs` 是 `f32`（`serde_json` 把 `NaN`/`Infinity` 静默写成 `null`），
+  `sourceName`/`destinationName` 是 `map_or(Value::Null, …)`（节点查不到音轨是常态），
+  `sampler` 是 `Option::map`（这条轨没绑采样器）；内层 19 键⛔ 一个都可空不了（字段表里没有 `Option`）。
+- ⛔ **一处**被读数证伪的**实现约束**（本轮先写成"就够了"，下一节改正）：我写
+  "`source_items()` 必须独立成函数，`render_master()` 的 `json!` 已贴着 `serde_json` 宏递归上限"。
+  前半句的**动机**对（不能内联回去），但"独立成函数就够了"**错了** —— `12b59ff8` 就是独立成函数后
+  **自己那份字面量**越过递归上限编译失败的。机制与修法见 **§22.27**。
+- ⛔ **第四处 `proposal_detail_schema().ops` 如实保持弱声明**，且这不是"没做完"而是**判过的**：
+  `Op` 是外部标签枚举 ⇒ 元素的键名本身随变体变（55 个变体 ⇒ 55 种形状），写并集 `properties` 会把合法响应自己拒掉。
+  ⇒ 新判据一里带一条 `assert_eq!(ops, json!({"type":"object"}))`：谁在没有逐变体载荷名册时往 `ops` 塞东西，
+  这条会**先**指出该做什么（§22.22 的三条路线仍未变）。
+- **本机读数**（能测的才报）：`cargo fmt -p yeban-mcp -- --check` **rc=0**（⚠ 插完判据后重跑过一次，
+  第一次 rc=1 —— `expect`/`unwrap_or_else` 那几行的换行是 rustfmt 说了算）；
+  五道守卫逐个 **rc=0**：`check_warning_codes`／`policy_check`(20 条)／`check_test_criteria_presence`(扫 314 文件)／
+  `check_docs_links`／`check_discipline_checklist`。
+  本机**不可判**（照 §5 纪律交给 CI）：`clippy`／`test`（`yeban-mcp` 属重依赖 crate）；`validate_schemas.py`／`check_workflow_structure.py`（本机 `python3` 无 pip）。
+- ⚠ **本轮被现读纠正的一条打算**（记下来是因为它会变成一条假判据）：我原准备"再调一次 `yeban_query_engine_state`
+  **不带 `trackId`**，好让 `sends` 取到全工程的发送边"。现读 `engine_state.rs`：**顶层 `sends` 只在点名 `trackId` 时才插入**
+  （缺省调用同时是 `yeban_export_diagnostics` 喂 `engine-state.json` 的路径，那个包承诺 `projectIncluded:false`，
+  把工程标记写进去就是**隐私读数说谎** —— 这条守卫已经存在）。
+  而插入时给的是 `send_edges_value(project, None)` ＝ **全工程**发送边，逐轨那份挂在 `data.track.sends`（按 `Some(track.id)` 过滤）。
+  ⇒ 所以**带 `trackId` 的那一次调用已经覆盖了名册**，那条打算如果写进去反而会把"缺省 = 不带工程内容"这条契约改坏。
+- **新加的三处非空核对**（`props_176`，⛔ 不是新夹具）：`validate_complete` 对**空数组是空绿**的
+  （`items` 只在真有元素时逐个核对），所以补了 `sends`／`sources`／`lane.points` 各 `!is_empty()` 加一条元素数打印。
+  夹具侧的现读依据：`yeban_model::samples::filled_project()` 的 lead 轨带 `TrackVolume` 泳道**两点**、
+  路由表里**恰一条** `SendToAux`（`lead→aux`，`gain_db = Some(-12.0)`），`render_project()` 一条 MIDI 轨一个音符一个源节点。
+  ⚠ 这三条是**从夹具源码读出来的推断**，判决回来之前按 `pending` 记，⛔ 不算"已证"。
+- **磁盘**（本轮顺带现读，⛔ 没删任何东西）：`/home` 仍是 **201 G 已用／28 G 剩（88%）**；
+  主干 `target` **326 M**（其中 `target/debug` 324 M —— 本机跑轻 crate 的 clippy/test 要用，删了就是重编，⛔ 不是孤儿）；
+  `.worktrees` **1 012 M**，里面**没有** `target/`（`find` 现读无匹配 ⇒ s30 这棵树从没本机编过，符合 §5），
+  那 1 012 M 就是 §22.25 说的那份 `.cargo-home` 注册表缓存 ＋ 工作树本身。
+  ⇒ 仓库内**没有**可安全回收的大项；大头仍在仓库外，归 #34 人类裁决。
+
+### 22.27 ⭐ s30 第一枚的判决读回 = **failure**，红点是**我自己刚写进台账的那句约束**（`source_items()` 独立成函数**不够**）
+
+- **判决**：run `41236805286`（`12b59ff8`）= `completed / failure`。腿：`plan`／`lockfile`／`deny` = `success`，
+  **`checks`／`rust (yeban-mcp)`／`rust (yeban-ui-mcp)`／`macos`／`windows`／`e2e` = `failure`**，宽腿 `skipped`。
+  六腿的失败是**同一个**：`error: recursion limit reached while expanding $crate::json_internal!`
+  （`--> crates/yeban-mcp/src/output_schema.rs:589` —— 正是 `source_items()` 那份字面量的 `json!({` 起始行），
+  `= help: consider increasing the recursion limit by adding a #![recursion_limit = "256"]`）。
+  ⛔ **判据一条都没跑到**（红在 clippy/编译步，`test` 步根本没开始）⇒ 本节⛔ 不构成对三条新判据的任何判决。
+- ⛔ **被证伪的是我上一节（§22.26）与代码注释里那句"实现约束"**：我写的是
+  "`source_items()` 必须**独立成函数**，不能内联回 `render_master()` 的 `json!`，否则会撞递归上限"。
+  **机制判对了一半、结论用错了**：`serde_json` 的 `json_internal!` 是按**字面量内部的条目数**推进递归的
+  （tt-muncher 逐条吃掉剩余 token），**与这段字面量写在哪个函数里无关** ——
+  拆成独立函数只是把它从 `render_master()` 那份**已有 50 键**的字面量旁边挪开，
+  自己那份"15 键 ＋ 内层 19 键"（`required` 15 ＋ `properties` 15 ＋ `type`/`required`/`properties` 19/19 ≈ **70 余条**）
+  **单独**就已经越过默认 128 的预算。
+  ⇒ 同一条 `#251`/`#268` 的"单独插入"惯例，我读成了"函数级拆分能解决递归预算"，这是**把先例读成了无关的东西**。
+- ✅ **修法（第二枚 `678e3f25`，run `41237535235` pending）**：新增 `roster_typed(types, entries)` ＋
+  `roster`／`nullable_roster` 两个入口，名册**逐键装入**（`required` 由 `properties` 的键**同源生成**，
+  ⇒ 顺带把"声明了却漏进 required"这类两份清单的病也堵在拼装处），每个键各自一份小字面量
+  ⇒ **宏递归深度与键数无关**。`sampler` 那层独立成 `sampler_items()`（19 键，`["object","null"]`）。
+  ⛔ **没有**采用编译器给的另一条路 `#![recursion_limit = "256"]` —— 那是把预算调大、把同一类问题留给下一张票，
+  而本文件的既有惯例（`#251`/`#268`、`finish()`/`envelope()` 这套拼装函数）本来就是"名册不写在巨形字面量里"。
+- ✅ **顺带抓到一处更早的违规**（本轮自己引入、自己按现读改正）：第一版把 curve 词表写成本模块的
+  `const POINT_CURVE_NAMES: [&str; 4] = [...]`，而 `domain/extension_pure.rs` 里**已经有**
+  `pub const CURVE_NAMES: [&str; 4]`，且 `domain/automation.rs` 的注释明写
+  **"⛔ 不复制第二套"** —— 我那份就是第二套。⇒ 现在 schema 侧**直接引用** `extension_pure::CURVE_NAMES`；
+  它与模型 `CurveType` 的双射仍由常驻判据 `every_name_table_agrees_with_the_model_enum` 守，
+  本片那条新判据只补"广播 ↔ 生产者 `curve_name`"这一环。
+  ⚠ 教训（并入 §6 测量纪律）：**新增任何"词表/名册"常量前先 `grep` 同名集合** —— 本仓库的单一真相常有注释点名它。
+- **本轮可复用的两条机械口径**（写在这里是为了下一张票不再花一次 CI）：
+  ① **`json!` 字面量的规模要按条目数算**，超过约 **30 条**就该改用 `Map` + 逐条 `insert`（或本文件的 `finish`/`roster`）；
+  ② 编译期红会**同时**打红六腿（含 `checks` 里的 schema/守卫步，它们要编 `yeban-mcp`），
+  所以"六腿同红 + 每条都在 1~3 分钟内"这个形状**本身就是**编译错误的读数，⛔ 不必下载日志猜语义。
+- ⚠ **待第二枚判决回来才能确认的事**（⛔ 现在不许写成通过）：三条新判据是否绿、
+  `props_176` 那三处 `!is_empty()` 是否真的非空（§22.26 说那是从夹具源码读出来的**推断**）、
+  以及 `validate_complete` 在真实响应上是否放过 `sampler: null` 与 `peakDbfs: null`。

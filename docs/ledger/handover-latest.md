@@ -1,9 +1,12 @@
 # 交接（夜半第三阶段 · 2026-10-14 · 覆盖台账 R307–R1144）
 
-> ⭐ **2026-11-01 深夜（第二批）：当下状态看 §0.6.0zf**（s29 **全链收盘**：线判绿 → land `9925741e` → 合流 run `41232570339` = `success` → 树已拆（归档标签 `line-archive/s29-warning-code-teeth`）；
+> ⭐ **2026-11-01 深夜（第三批）：当下状态看 §0.6.0zg**（主干三枚文档批已推 `bf016ad3` ⇒ **s30 已起线并推线 `12b59ff8`**，
+> run `41236805286` = **failure（六腿同红于 `json!` 宏递归上限，判据一条没跑）** ⇒ 第二枚 `678e3f25` 在飞，run `41237535235` = **pending**；
+> 三处裸 `items:{type:object}` 填成逐键名册（`points` 4／`sends` 8／`sources` 15＋内层 `sampler` 19，改用 `roster` 逐键装入），
+> ⛔ 第四处 `ops` 如实保持弱声明并钉成读数；⛔ 一条打算被现读纠回（顶层 `sends` **只在点名 `trackId` 时**才插入，缺省那次是诊断包路径、承诺 `projectIncluded:false`））；
+> ⭐ 上一批在 §0.6.0zf（s29 **全链收盘**：线判绿 → land `9925741e` → 合流 run `41232570339` = `success` → 树已拆（归档标签 `line-archive/s29-warning-code-teeth`）；
 > ⛔ 附两条**我自己的预期被读数证伪**：「主干合流一定跑宽腿」错了（`plan` 只给一个 crate ⇒ 窄矩阵 + 宽腿 skip，见 §22.6）／
-> 「`.worktrees/*/.cargo-home` 无匹配」是 glob 层级用错（真实 911 M 住在 `.worktrees/.cargo-home/registry`，本轮不删并给理由）；
-> ⇒ 接手第一件事 = **先推 main（三枚本地文档批）再起 s30**）；
+> 「`.worktrees/*/.cargo-home` 无匹配」是 glob 层级用错（真实 911 M 住在 `.worktrees/.cargo-home/registry`，本轮不删并给理由））；
 > ⭐ 上一批在 §0.6.0ze（s29 判绿的逐层读数 ＋ 一条**数 `Running` 的 grep 口径缺陷**：ANSI 色码让 `grep -c "Running "` 恒等于 1）；
 > ⭐ 上一批在 §0.6.0zd（s29 第二轮红在假夹具、12 处嵌套声明逐处审计、s30 前置读数）；
 > ⭐ 更早：§0.6.0zc（s29 线首轮红在 clippy，两行修正重推）／§0.6.0zb（s29 推线 `cb5a5673`）／
@@ -17,7 +20,7 @@
 
 ---
 
-## ⭐ ⭐ ⭐ §0.6 最新交接（**2026-10-28 起，最新到 2026-11-01 的 §0.6.0zf**，创作缺口审计 `G1..G18` 全轮 + 完成审计 + Zimmer 报告核账）—— 新会话先读这一节
+## ⭐ ⭐ ⭐ §0.6 最新交接（**2026-10-28 起，最新到 2026-11-01 的 §0.6.0zg**，创作缺口审计 `G1..G18` 全轮 + 完成审计 + Zimmer 报告核账）—— 新会话先读这一节
 
 > 本节是**当前**状态；下面 §0.5（2026-10-26，macOS 主机）与 §1／§1.9 是**历史快照**，
 > ⛔ 不要当成今天的事实 —— ⚠ 尤其 §0.5 里的路径与 env 是**另一台机器**的。
@@ -182,6 +185,51 @@
   ⚠ 上一批因"⛔ 在飞期间不推 main 会取消 run"而排队，现在 `41232570339` 已 completed ⇒ **先推 main 再起 s30**；
   然后起 **s30**（task #105，前置读数齐了：§22.20 三处 ＋ §22.24 的 `sampler` 19 键名册），
   ⛔ `proposal_detail.ops` 不在那片（要先给校验器补 `min/maxProperties`/`propertyNames`，§22.22 路线甲）。
+  ⚠ **本条已被 §0.6.0zg 就地闭合**：main 已推（tip `bf016ad3`），s30 已起线并推 `12b59ff8`（判决 pending）。
+
+
+### 0.6.0zg ⭐ 尾批（2026-11-01 深夜·第三批）：**s30 起线 → 第一枚 `12b59ff8` 判红（编译步，⛔ 不是语义）→ 第二枚 `678e3f25` 在飞（run `41237535235` pending）** ＋ 两处被现读纠回的打算
+
+- ✅ **主干三枚本地文档批已推**（tip `bf016ad3`，`origin/main` 同步），随后起 **s30**（task #105）：
+  树 `.worktrees/s30-items-shapes`，基线 `bf016ad3`，**一枚**提交 `12b59ff8`（净改两文件），
+  已推 `line/s30-items-shapes`，run **`41236805286`**（`headSha` 逐字 `12b59ff8939811d6bb7a02de11edc7108e06e708`）。
+  ⛔ 该枚判决**已读回 = `failure`**（见下面那条改正），本机可测项当时只有
+  `cargo fmt -p yeban-mcp -- --check` rc=0 与五道守卫各 rc=0（`clippy`／`test` 属 CI-only）。明细见台账 §22.26／§22.27。
+- **那片做了什么**（口径：§22.20 三处 ＋ §22.24 的 `sampler` 名册）：三处裸 `items:{"type":"object"}`
+  填成**逐键名册** —— `points` 4 键（`curve` 上封闭四值 `enum`）／`sends` 8 键／`sources` 15 键**含**内层 `sampler` 19 键；
+  每一处可空声明都**指向来源**（`f32` 的 NaN/Infinity → `null`、`map_or(Value::Null,…)` 的显示名、`Option::map` 的采样器）。
+  ⛔ 第四处 `proposal_detail.ops` **如实保持弱声明**，并新加一条 `assert_eq!(ops, {"type":"object"})` 把"为什么不做"钉成读数。
+  ⚠ ~~一条实现约束：`source_items()` 必须独立成函数（否则编译失败）~~ ⇒ **这句已被下面的判决条改正**：
+  独立成函数**不够**，递归预算是按字面量**条目数**算的。
+- ⛔ **一处打算被现读纠回来了**（这条值得单独留痕）：我原本准备"再调一次 `yeban_query_engine_state` **不带 `trackId`**，
+  好让 `sends` 取到全工程发送边"。现读 `engine_state.rs`：**顶层 `sends` 只在点名 `trackId` 时才插入** ——
+  缺省调用同时是 `yeban_export_diagnostics` 喂 `engine-state.json` 的路径，那个包承诺 `projectIncluded:false`。
+  而带 `trackId` 时插入的正是 `send_edges_value(project, None)` ＝ **全工程**发送边（逐轨那份挂在 `data.track.sends`）。
+  ⇒ 现有一次调用**已经**覆盖名册；那条打算若写进去，会把"缺省 = 不带工程内容"这条**隐私契约**改坏。
+  ⇒ 补的只是三处 `!is_empty()` 非空核对（`validate_complete` 对空数组是**空绿**：`items` 只在真有元素时逐个核对）。
+- ⛔ **第一枚判决已读回 = `failure`，红点是我自己在 §22.26 写下的那句"实现约束"**（明细见 **台账 §22.27**）：
+  run `41236805286` 六腿同红于同一处编译错误
+  `recursion limit reached while expanding $crate::json_internal!`（`output_schema.rs` 里 `source_items()` 那份
+  "15 键含内层 `sampler` 19 键"的字面量）⇒ **判据一条都没跑**（红在编译步，⛔ 不是语义红）。
+  机制改正：`serde_json` 的 `json!` 递归预算按**字面量内部条目数**推进，**与写在哪个函数里无关** ——
+  "拆成独立函数就够了"是我读错的先例（`#251`/`#268` 那条"单独插入"）。
+  ⇒ 第二枚 `678e3f25`：改用 `roster_typed`/`roster`/`nullable_roster` **逐键装入**（`required` 由 `properties` 的键同源生成），
+  ⛔ 没有采用 `#![recursion_limit = "256"]`（那是把同一类问题留给下一张票）；
+  顺带去掉了被我复制成"第二套"的 `POINT_CURVE_NAMES`（唯一名册 = `extension_pure::CURVE_NAMES`，
+  `automation.rs` 明写"⛔ 不复制第二套"）。
+  ⚠ **可复用口径**：`json!` 字面量超过约 **30 条**就改用 `Map` + 逐条 `insert`；
+  "六腿同红且各在 1~3 分钟内"这个形状本身就是编译错误的读数，⛔ 不必下日志猜语义。
+- ⏭ **接手第一件事**：读回 `678e3f25` 的 run **`41237535235`** —— 按 §22.25 改正后的口径：窄腿 `rust (yeban-mcp)` 真跑即算覆盖
+  （`plan` 只给一个 crate ⇒ 宽腿 `skipped`，本轮现读已确认 `skipped`，⛔ 别引用 `516`/`7 235` 那组基线）；
+  先确认**编译步过了**（本轮就是栽在这），再数 `Running` 用 `grep -c Running` 或
+  `grep -o 'Running.\{0,80\}tests/[a-z0-9_]*\.rs'`（⛔ `grep -c "Running "` 被 ANSI 色码骗）；
+  三条新判据按**子串**匹配（lib 测试打印是 `test output_schema::tests::NAME ... ok`）：
+  `the_three_item_slots_delegate_to_their_rosters_while_ops_stays_weak`／
+  `the_new_item_rosters_reject_broken_elements_and_accept_the_nullable_ones`／
+  `the_point_curve_roster_matches_what_the_producer_emits`；另看 `props_176` 的三行 `### s30 元素数` 读数。
+  判绿 → land → 推 main（连同本节）→ 读合流 run → `worktree.sh rm s30-items-shapes --purge`。
+- ⏭ **再下一片**（不在 s30）：`ops` 那处要走 §22.22 路线甲 —— 先给校验器补 `min/maxProperties`/`propertyNames`，
+  再拿逐变体载荷名册（`Op` 有 **55** 个顶层变体，外部标签 ⇒ 元素恒"恰好一键"）。
 
 
 ### 0.6.0zd ⭐ 尾批（2026-11-01）：**s29 第二轮判决 = failure（红点换了一类：假夹具被新递归抓到）** ＋ 12 处嵌套声明逐处审计完 ＋ s30 的前置读数已备
