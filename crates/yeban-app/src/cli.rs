@@ -3532,7 +3532,7 @@ pub struct ShortcutRow {
 /// 每一项把**规范写法**、**动作**、**键位**与**落地状态**放在一起。这张表的**意义**是
 /// 让策略表的判定结果可被人与 CI 直接阅读 —— 尤其是 `[UI-A11Y-002]` 的 IME 分支,
 /// 以及"规范点名了、本版本还没做"的那一列（见 [`UNIMPLEMENTED_MARKER`]）。
-const SHORTCUTS: [ShortcutRow; 40] = [
+const SHORTCUTS: [ShortcutRow; 42] = [
     ShortcutRow {
         label: "Space → 播放/暂停",
         action: Action::PlayPause,
@@ -3891,6 +3891,27 @@ const SHORTCUTS: [ShortcutRow; 40] = [
         action: Action::ToggleAiDrawer,
         key: PhysicalKey::KeyA,
         modifiers: Modifiers::ctrl_alt(),
+        implemented: true,
+    },
+    // ⭐ **界面决定**（⛔ 不是规范点名）：键盘-only 用户的**选轨**入口，`Alt+↑` / `Alt+↓`。
+    //
+    // 该组合此前落在第 4 步的 `_ => PassThrough`（当时只有 `1` / `2` / `←` / `→`）；
+    // 裸 `↑/↓`（网格 / 半音微调）、`Shift+↑/↓`（八度）与 `Cmd/Ctrl+Alt+↑/↓`（音量微调）
+    // 一格不动。落点是**既有**的 `track-select` 回调（`host::wire_track_select`），
+    // 与鼠标点轨道行同一条链。逐条理由见 `Action::SelectTrackBy` 的文档；
+    // 登记在 `docs/ledger/app-cli-notes.md` §5.4。
+    ShortcutRow {
+        label: "Alt+↑ → 选上一条轨",
+        action: Action::SelectTrackBy(-1),
+        key: PhysicalKey::UpArrow,
+        modifiers: Modifiers::alt(),
+        implemented: true,
+    },
+    ShortcutRow {
+        label: "Alt+↓ → 选下一条轨",
+        action: Action::SelectTrackBy(1),
+        key: PhysicalKey::DownArrow,
+        modifiers: Modifiers::alt(),
         implemented: true,
     },
     // 以下**一条**是本版本仅剩的 `implemented: false` 条目。

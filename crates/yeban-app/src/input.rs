@@ -849,6 +849,21 @@ pub enum Action {
     /// ⛔ 不是第二份实现。纯视图态（`MODEL-ISO-001` 的挥发性层）⇒ 不改工程、
     /// 不需要 `UndoPort`、不进撤销栈。
     ToggleAiDrawer,
+    /// `Alt+↑` / `Alt+↓`: 把**轨道选中**移到上一条 / 下一条（键盘入口，界面决定）。
+    ///
+    /// ⚠ **规范没有点名这一动作**（`[UI-NOTE-005]` 只讲音符）⇒ **界面决定**，补的是
+    /// 键盘-only 用户**根本无法选轨**这一缺口（选中态此前只能靠鼠标点轨道行）。
+    /// 键位只受一条约束：⛔ 不覆盖任何已被规范点名、或已被既有判据如实钉成放行的组合 ——
+    /// `Alt+↑/↓` 此前落在第 4 步的 `_ => PassThrough`（该分支当时只有 `1` / `2` / `←` / `→`），
+    /// 而 `↑/↓` 的裸键（网格微调 / `Shift` 八度）与 `Cmd/Ctrl+Alt+↑/↓`（音量微调）一格不动。
+    ///
+    /// 落点**唯一**：`host::apply_action` 的 `SelectTrackBy` 臂 ⇒ `ui.invoke_track_select(index)`
+    /// ⇒ `host::wire_track_select` 注册的**同一条** `on_track_select`（写 `selected-track-id`
+    /// 并按**当前横向偏移**重投影），与鼠标点轨道行共用它 ⇒ 不可能分叉。
+    ///
+    /// 方向 `-1` = 上一条，`+1` = 下一条。边界（顶到两端）仍**消费**（重复选中同一条是
+    /// `wire_track_select` 里的早退）；工程里一条轨都没有时**不消费**（见 `apply_action`）。
+    SelectTrackBy(i8),
     /// `1`–`5`: 切到某个卷帘工具。
     SelectTool(Tool),
     /// `Shift+Enter`: 采纳**点选了的那一条** AI 提案。
@@ -1061,10 +1076,13 @@ impl InputContext {
 
         // 4. Alt 组合: 规范 §2.2 的 `Alt + 1` / `Alt + 2` 备选视图切换;
         //    `[UI-NOTE-005]` §3.5 项 1 的 `Alt+←/→` —— **1 tick** 超精细微调。
+        //    另加**界面决定**的 `Alt+↑/↓` = 选上一条 / 下一条轨（键盘-only 用户的选轨入口）。
         if modifiers.alt {
             return match key {
                 Key::Character('1') => Resolution::Action(Action::ShowView(View::Session)),
                 Key::Character('2') => Resolution::Action(Action::ShowView(View::Arrangement)),
+                Key::UpArrow => Resolution::Action(Action::SelectTrackBy(-1)),
+                Key::DownArrow => Resolution::Action(Action::SelectTrackBy(1)),
                 Key::LeftArrow => Resolution::Action(Action::NudgeSelection {
                     step: NudgeStep::Tick,
                     direction: -1,
@@ -1174,9 +1192,10 @@ mod tests {
     use Action::{
         AcceptAiSuggestion, AuditionMain, AuditionProposal, Cancel, DeleteSelection, Duplicate,
         GoToBeginning, NudgeMixerChannel, NudgeSelection, OpenProject, OpenTimeMachine, PlayPause,
-        Redo, ResizeSelectionDuration, ResumeFromCursor, SaveProject, SelectTool, ShowView,
-        ToggleAiDrawer, ToggleConsoleMaximize, TogglePencilTool, ToggleRecord, ToggleSidebar,
-        ToggleTrackMute, ToggleTrackSolo, ToggleView, Undo, ZoomToFit, ZoomToSelection,
+        Redo, ResizeSelectionDuration, ResumeFromCursor, SaveProject, SelectTool, SelectTrackBy,
+        ShowView, ToggleAiDrawer, ToggleConsoleMaximize, TogglePencilTool, ToggleRecord,
+        ToggleSidebar, ToggleTrackMute, ToggleTrackSolo, ToggleView, Undo, ZoomToFit,
+        ZoomToSelection,
     };
     use Focus::{MainCanvas, Other, TextInput};
     use MixerParam::{Pan, Volume};
@@ -1400,6 +1419,64 @@ mod tests {
             text_field().resolve(KeyA, Modifiers::ctrl_alt()),
             PassThrough
         );
+    }
+
+    /// 判据：`Alt+↑` / `Alt+↓` = 选上一条 / 下一条轨（键盘入口，界面决定）。
+    ///
+    /// 钉三件事：① 物理码与逻辑键两条入口同解（含方向）；② 邻居**一位不动** ——
+    /// 裸 `↑/↓`（网格微调）、`Shift+↑/↓`（八度）、`Cmd/Ctrl+Alt+↑/↓`（音量微调）、
+    /// `Alt+←/→`（1 tick）都保持原义；③ 文本域焦点整体放行。
+    #[test]
+    fn alt_up_and_down_move_the_track_selection_and_do_not_disturb_their_neighbours() {
+        assert_eq!(
+            canvas().resolve(UpArrow, Modifiers::alt()),
+            Act(SelectTrackBy(-1))
+        );
+        assert_eq!(
+            canvas().resolve(DownArrow, Modifiers::alt()),
+            Act(SelectTrackBy(1))
+        );
+        assert_eq!(
+            canvas().resolve_logical(LKey::UpArrow, Modifiers::alt()),
+            Act(SelectTrackBy(-1))
+        );
+        assert_eq!(
+            canvas().resolve_logical(LKey::DownArrow, Modifiers::alt()),
+            Act(SelectTrackBy(1))
+        );
+
+        // 邻居：裸键 / Shift / Cmd+Alt 的既有语义一位不动。
+        assert_eq!(
+            canvas().resolve(UpArrow, Modifiers::none()),
+            Act(NudgeSelection {
+                step: NudgeStep::Grid,
+                direction: 1,
+            })
+        );
+        assert_eq!(
+            canvas().resolve(DownArrow, Modifiers::shift()),
+            Act(NudgeSelection {
+                step: NudgeStep::Octave,
+                direction: -1,
+            })
+        );
+        assert_eq!(
+            canvas().resolve(UpArrow, Modifiers::ctrl_alt()),
+            Act(NudgeMixerChannel {
+                param: Volume,
+                direction: 1,
+            })
+        );
+        assert_eq!(
+            canvas().resolve(LeftArrow, Modifiers::alt()),
+            Act(NudgeSelection {
+                step: NudgeStep::Tick,
+                direction: -1,
+            })
+        );
+
+        // 文本域：整体放行。
+        assert_eq!(text_field().resolve(UpArrow, Modifiers::alt()), PassThrough);
     }
 
     /// 判据：裸 `M` / `S` = 拨**选中轨**的静音 / 独奏（键盘入口，界面决定）。

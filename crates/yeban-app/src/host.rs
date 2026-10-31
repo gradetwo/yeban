@@ -8965,6 +8965,35 @@ fn apply_action(
             ui.invoke_toggle_ai_drawer();
             true
         }
+        // `Alt+↑` / `Alt+↓`：选上一条 / 下一条轨（键盘入口，界面决定）。
+        //
+        // 落点**只能是界面回调**：`wire_track_select` 注册的 `on_track_select` 是鼠标点
+        // 轨道行的同一条实现（写 `selected-track-id` + 按**当前横向偏移**重投影）⇒
+        // 键与鼠标共用它，不可能分叉。三条边界：
+        // - 一条轨都没有 ⇒ 返回 `false`（不消费）；
+        // - 当前没有选中轨 ⇒ 两向都落到**第一条**（键盘-only 用户必须能"起步"；
+        //   若沿 `DeleteSelection` 那样静默不消费，选轨就永远不可达）；
+        // - 顶到两端 ⇒ 仍消费（下发的还是同一条 ⇒ `wire_track_select` 里的早退，
+        //   ⛔ 不白重投影一帧）。
+        Action::SelectTrackBy(direction) => {
+            let track_ids = read_strings(&ui.get_track_ids());
+            match i32::try_from(track_ids.len()) {
+                Ok(count) if count > 0 => {
+                    let current = selected_track_id(ui);
+                    let index = current
+                        .as_deref()
+                        .and_then(|id| track_ids.iter().position(|candidate| candidate == id))
+                        .and_then(|position| i32::try_from(position).ok());
+                    let target = match index {
+                        Some(index) => (index + i32::from(direction)).clamp(0, count - 1),
+                        None => 0,
+                    };
+                    ui.invoke_track_select(target);
+                    true
+                }
+                _ => false,
+            }
+        }
         // ⭐ 任务单 `#227`（Logic 的 `Go to Beginning`）：`Return` / `Enter`（裸键）。
         //
         // 落点**只能是界面回调**：`apply_action` 手里没有引擎（`context` 只在

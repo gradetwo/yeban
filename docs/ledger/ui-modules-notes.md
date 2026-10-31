@@ -241,4 +241,38 @@ python3 scripts/gates/measure_rss.py --label ui-module-actions-floor-no-render \
 | :--- | :--- | :--- |
 | A 纯解析 | `src/input.rs` 的 `ctrl_alt_a_is_the_ai_drawer_entry_and_does_not_disturb_its_neighbours` | 物理码 / 逻辑键 / `Cmd` 侧三条入口同解；邻居与文本域放行 |
 | B 活窗口 | `tests/ai_drawer_key_ui.rs` | 按键 ⇒ `ai-drawer-open` **真的翻转**；换计数器后回调恰好一次；邻居不消费 |
-| 表 / 宿主对账 | `tests/cli_contract.rs` 的 B11b | `cli.rs` 的 `[ShortcutRow; 40]` 与 `--print-shortcuts`、`action_has_implementation` 三面一致 |
+| 表 / 宿主对账 | `tests/cli_contract.rs` 的 B11b | `cli.rs` 的 `SHORTCUTS` 表与 `--print-shortcuts`、`action_has_implementation` 三面一致（表条数由该判据的 `rows.len()` 断言，⛔ 不在这里手抄） |
+
+## 8. 后续更正（本次切片，2026-10-31，`line/ai-drawer-key`）—— 键盘能换轨了
+
+**缺口**：编曲区的选中轨**只能靠鼠标点轨道行**换（`selected-track-id` 的唯一写者是
+`host::wire_track_select`，入口是 `arrangement_view.slint` 的轨道头与无障碍默认动作）。
+键盘面没有任何选轨入口 ⇒ 键盘-only 用户被困在投影兜底的第一条轨上。
+
+### 8.1 键位与理由（界面决定，⛔ 不是规范点名）
+
+`Alt+↑` / `Alt+↓` —— 三条事实（逐条实测，⛔ 推断）：
+
+1. `resolve_logical` 第 4 步（`Alt` 分支）当时只有 `1` / `2` / `←` / `→`，`↑/↓` 落在
+   `_ => PassThrough` ⇒ 加它不覆盖任何既有绑定；
+2. 裸 `↑/↓`（网格 / 半音微调）、`Shift+↑/↓`（八度）、`Cmd/Ctrl+Alt+↑/↓`（音量/声相）
+   与 `Alt+←/→`（1 tick）的既有语义一格不动（`input.rs` 与 `cli_contract` 两处钉住）；
+3. 文本域聚焦时 `Alt` 分支先被 `Focus::TextInput` 策略拦住 ⇒ 输入框里不会误换轨。
+
+### 8.2 唯一落点
+
+`host::apply_action` 的 `SelectTrackBy` 臂读窗口上的 `track-ids`（生产注入的身份表，
+⛔ 不拿装配期快照猜）算出邻居下标，只做 `ui.invoke_track_select(target)` ⇒ 与鼠标点
+轨道行是**同一条** `host::wire_track_select`（写 `selected-track-id` + 按当前横向偏移
+重投影）。选中态是**视图态**（`MODEL-ISO-001` 挥发性层）⇒ 不改工程、**不进撤销栈**。
+
+边界：`track-ids` 为空 ⇒ 不消费；当前没有选中轨 ⇒ 两向都落到第一条；顶到两端 ⇒ 仍消费
+（下发夹紧后的同一条下标，回调自己的"同一条轨不重投影"早退）。
+
+### 8.3 判据
+
+| 层 | 文件 | 钉的事 |
+| :--- | :--- | :--- |
+| A 纯解析 | `src/input.rs` 的 `alt_up_and_down_move_the_track_selection_and_do_not_disturb_its_neighbours` | 物理码 / 逻辑键两条入口同解（含方向）；裸键 / `Shift` / `Cmd+Alt` / `Alt+←→` 保持原义；文本域放行 |
+| B 活窗口 | `tests/track_select_keyboard.rs` | 走完选中态与两端停住；回调身份与夹紧（记录器读到 `2, 2, 1, 0`）；邻居组合不动选中态；空工程不消费 |
+| 表 / 宿主对账 | `tests/cli_contract.rs` 的 B11b | 两行新快捷键（`Alt+↑` / `Alt+↓`）三面一致（表 / 解析 / 宿主） |

@@ -347,6 +347,29 @@ $ unzip -l /tmp/demo.yeban                          # 写出来的是**标准 ZI
   （证明是**新会话**而非叠加）；策略表的新一行由 `tests/cli_contract.rs` 的 B11b 三面一致
   （表 / 解析 / 宿主）钉住；`input.rs` 另有单元判据钉住 `Shift` / `Alt` 变体仍放行。
 
+**【后续更正（本次切片，2026-10-31，`line/ai-drawer-key` 的选轨键）—— 键盘能换轨了】**
+
+- **补的那一格**：键盘-only 用户此前**只能靠鼠标点轨道行**换选中轨（`selected-track-id`
+  的唯一写者是 `host::wire_track_select`）。本切片加 `Alt+↑` / `Alt+↓`
+  （`Action::SelectTrackBy(±1)`）。⚠ 规范**没有点名**这一动作（`[UI-NOTE-005]` 只讲音符）
+  ⇒ **界面决定**；登记在 `docs/ledger/ui-modules-notes.md` 的对应更正段。
+- **键位选择（三条事实，⛔ 不猜）**：① `resolve_logical` 第 4 步（`Alt` 分支）此前只有
+  `1` / `2` / `←` / `→`，`↑/↓` 落在 `_ => PassThrough`（实测）⇒ 加它不覆盖任何既有绑定；
+  ② 裸 `↑/↓`（网格 / 半音微调）、`Shift+↑/↓`（八度）、`Cmd/Ctrl+Alt+↑/↓`（音量/声相）
+  一格不动，`input.rs` 与 `tests/cli_contract.rs` 两处逐条钉住；③ 文本框聚焦时 `Alt`
+  分支先被 `Focus::TextInput` 策略拦住（`PassThrough`）⇒ 在输入框里不会误换轨。
+- **落点只有一个**：`host::apply_action` 的 `SelectTrackBy` 臂读窗口上的 `track-ids`
+  （生产注入的身份表）算出**邻居下标**，只做 `ui.invoke_track_select(target)` —— 与鼠标
+  点轨道行是**同一个**回调（写 `selected-track-id` + 按当前横向偏移重投影），
+  ⛔ 没有第二条选轨路径。它**不进** `action_needs_engine`（不借 `EngineHost`）。
+- **边界（如实登记）**：① 一条非主总线轨都没有（`track-ids` 为空）⇒ **不消费**（放行给
+  焦点系统）；② 当前没有选中轨 ⇒ 两向都落到**第一条**（键盘-only 用户必须能"起步"）；
+  ③ 顶到两端 ⇒ **仍消费**，下发的是夹紧后的同一条下标（`wire_track_select` 自己的
+  "同一条轨不重投影"早退，⛔ 不白重投影一帧）。
+- **判据**：`tests/track_select_keyboard.rs` 四条（走完 / 回调身份与夹紧 / 邻居组合 /
+  空工程不消费）＋ `input.rs` 的解析判据；策略表加两行（`Alt+↑` / `Alt+↓`，
+  `implemented: true`）由 `tests/cli_contract.rs` 的 B11b 三面一致（表 / 解析 / 宿主）钉住。
+
 ---
 
 ## 6. **Quick Start 可以引用哪些命令**（给集成者写 README / 官网用）
