@@ -433,12 +433,14 @@ export component MusicalPrDrawer inherits Rectangle {
         }
     }
 
-    // ------------------------------------------------ 有提案、但**这一步用不了**的那句话
+    // ------------------------------------------------ **这一步用不了**的那句话
     // 上面两个按钮不画时，底部不能留白：留白会被读成"这里本来没有控件"。这一格把
     // **为什么**用不了说出来（`resolve-reason` 逐字, 出处 `src/proposals.rs` 的
     // `NO_WRITE_SOURCE_REASON` / `NO_SELECTION_REASON`, 或**权威自己的**那句拒绝原文）。
-    // 先例同 `musical-pr-empty-state`。
-    if root.proposal-count > 0 && !root.resolve-available : Rectangle {
+    // 可见条件只看"有理由要上屏"，⛔ 不再要求 `proposal-count > 0`：被别的客户端抢先
+    // 处理掉唯一那条提案时，清单是空的，而权威那句拒绝原话恰恰必须留在屏上。
+    // 空清单且没有拒绝时理由位为空（口径在 `drawer_values`）⇒ 空态卡单独说明。
+    if !root.resolve-available && !root.resolve-reason.is-empty : Rectangle {
         x: Tokens.space-4;
         y: parent.height - 76px;
         width: parent.width - 8px;

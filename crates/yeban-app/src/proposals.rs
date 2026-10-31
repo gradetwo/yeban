@@ -301,7 +301,9 @@ pub fn drawer_values(
     };
     let resolve_available = has_source && !selected.is_empty() && refusal.is_none();
     let resolve_reason = match refusal {
-        // 拒绝理由**优先**：那是权威刚刚说过的话, 一个字都不许改。
+        // 拒绝理由**优先**：那是权威刚刚说过的话, 一个字都不许改。它必须能进入
+        // `resolve-unavailable` 卡 —— 被别的客户端抢先处理掉唯一那条提案时清单恰好是空的，
+        // 而权威那句拒绝原话正是此刻唯一该上屏的解释（可见条件不再要求"有提案"）。
         Some(message) => message.to_owned(),
         None if !has_source => NO_WRITE_SOURCE_REASON.to_owned(),
         None if selected.is_empty() => NO_SELECTION_REASON.to_owned(),
@@ -479,6 +481,28 @@ mod tests {
         assert_eq!(
             reasons[2], "提案不存在",
             "权威的逐字拒绝必须原样上屏, ⛔ 不改写不缩写"
+        );
+    }
+
+    /// **拒绝原话必须越过"清单为空"**：别的客户端抢先处理掉唯一那条提案后，清单是空的，
+    /// 而权威那句拒绝正是此刻唯一该上屏的解释（`live_ui_mcp` 的
+    /// `a_refused_accept_puts_the_authoritys_own_sentence_on_the_drawer` 量这一跳）。
+    ///
+    /// 同一条也钉住"没有拒绝时"的读数：空清单仍给 `NO_SELECTION_REASON`（重开抽屉后
+    /// 上屏的就是这一句），拒绝只**覆盖**它, ⛔ 不是清空它。
+    #[test]
+    fn a_refusal_survives_an_empty_list_and_overrides_the_selection_hint() {
+        let refusal = "提案 01J000000000000000000000AA 已被拒绝, 不能再合并";
+        let refused = drawer_values(&[], true, "", Some(refusal));
+        assert_eq!(refused.count, 0);
+        assert!(!refused.resolve_available);
+        assert_eq!(refused.resolve_reason, refusal);
+        assert_eq!(refused.empty_reason, NO_OPEN_PROPOSAL_REASON);
+
+        assert_eq!(
+            drawer_values(&[], true, "", None).resolve_reason,
+            NO_SELECTION_REASON,
+            "重开抽屉时清单可能为空, 但原因位仍要说「先点选」—— 否则那句是空白"
         );
     }
 

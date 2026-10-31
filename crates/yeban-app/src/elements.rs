@@ -3831,10 +3831,12 @@ mod tests {
         );
         assert_eq!(
             drawer
-                .matches("if root.proposal-count > 0 && !root.resolve-available : Rectangle")
+                .matches("if !root.resolve-available && !root.resolve-reason.is-empty : Rectangle")
                 .count(),
             1,
-            "两个按钮不画时, 底部必须**换成**一句可见的原因（`resolve-reason`）—— 留白会被读成\"这里本来没有控件\""
+            "两个按钮不画时, 底部必须**换成**一句可见的原因（`resolve-reason`）—— 留白会被读成\"这里本来没有控件\"。\
+             条件⛔ 不许再要求 `proposal-count > 0`：被别的客户端抢先处理掉唯一那条提案时清单是空的, \
+             而权威那句拒绝原话恰恰必须上屏"
         );
         assert!(
             drawer.contains("accessible-id: \"musical-pr-resolve-unavailable\";"),
