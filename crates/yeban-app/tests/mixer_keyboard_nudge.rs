@@ -408,7 +408,7 @@ fn cmd_ctrl_alt_up_down_moves_the_selected_tracks_fader_and_labels_it() {
         "按一次键不许改变通道条数"
     );
     let moved: Vec<usize> = (1..others.len())
-        .filter(|index| &others[*index] != &labels_at_start[*index])
+        .filter(|index| others[*index] != labels_at_start[*index])
         .collect();
     assert!(
         moved.is_empty(),
