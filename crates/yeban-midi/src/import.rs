@@ -2584,6 +2584,11 @@ pub mod tests {
         assert_eq!(plan.lyrics.read, 1);
         assert_eq!(plan.lyrics.attached, 0, "⛔ 正在发声 ≠ 起点");
         assert_eq!(plan.lyrics.dropped, 1);
+        assert_eq!(
+            syllables(&plan).len(),
+            1,
+            "夹具 1 个音符 ⇒ 1 条音节行（少于 1 条时下面的断言恒真）"
+        );
         assert!(syllables(&plan).iter().all(|row| row.1.is_none()));
     }
 
