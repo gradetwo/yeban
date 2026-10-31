@@ -17050,8 +17050,10 @@ helper 里 ⇒ 必须不认（防假绿）。两条臂在旧实现上都会失�
   ⇒ 另一会话的 `yeban-engine` 默认特性关闭**没有**移动本机可判定的这一层；代码层的判决仍以 CI 的 run `41213764737`（success）为准。
 - **给新会话的三个入口**（按优先级）：① s28 立项（读数在 §22.8，task #101）—— ⛔ 契约文件 `schemas/mcp-tools.schema.json` 的改动必须带
   **集合等式**判据（不是下界），并且要能在本机双向真验（真档 `rc=0` ＋ 掏空档 `rc=1`）再进 `ci.yml`；
-  ② `116ecd19`／`d4bacadd`／`ad022d97` 三枚**纯文档**提交各自的 run 已读回 success（`d4bacadd` = run `41217160672`），
-  `ad022d97` 那枚由新会话按 `headSha` 补读一次即可（预期 2 分钟档、rust 腿 skipped，理由见 §22.10）；
+  ② 本会话推送的四枚**纯文档**提交已全部按 `headSha` 读回，⛔ 无 pending：
+  `116ecd19`→run `41214642059`／`d4bacadd`→`41217160672`／`ad022d97`→`41217653597`／`df0d66e4`→`41217736878`，
+  四枚皆 `completed / success`，形态一致（`plan`/`deny`/`checks`/`lockfile` success，rust＋e2e＋win＋mac **skipped**）
+  ⇒ 这是 §22.10 那条「plan 只看本次 push 的 diff」的**第四次**复现；
   ③ 两件人类裁决：task #102（46 枚已并入的 `line/*` 待确认后删，清单 `/tmp/merged_lines.txt`）与 #34（磁盘大头 `~/.cache` 19G／`~/.rustup` 5.2G）。
 
 - 纯文档批 `d4bacadd` 的 run（本次读回时现值）：`d4bacadd 41217160672 completed success`。
