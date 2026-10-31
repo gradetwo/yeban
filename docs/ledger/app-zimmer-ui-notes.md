@@ -219,3 +219,21 @@ macos / windows）的 `clippy (-D warnings)` 步骤报 4 个
 新建 `tests/arrangement_vertical_scroll.rs`）。落地后 `post_merge_checks` 的两处 FAIL
 （`Cargo.lock` 漂移 / 许可清单漂移）与本批**无关**——`git diff --name-only` 里没有任何
 `Cargo.*` 或许可文件，两处 FAIL 与本机 1.99.0 pin 拉不到的环境漂移同源。
+
+## 11. 报告缺口对最新 main 的收盘核账（2026-10-31）
+
+`~/zimmer-ui-mode-report.md` 是**落地前**的快照。逐条对**当前 main 的代码**现读后，
+四条"已复现"缺口全部已由既有工作线闭合（⛔ 本票不重开、⛔ 不新接线）：
+
+| 报告缺口 | 现状 | 现读出处（符号级） |
+| :--- | :--- | :--- |
+| **U-05** 段落卡片不可点 | **已闭合** | `host::wire_section_seek` 注册 `on_section_seek`（⇒ `commit_seek(.., "section-seek")`），产品路径 `main.rs` 与无头路径 `live_surface.rs` 各调一次 |
+| **U-07** 标尺定位三残缺 | **已闭合** | `wire_ruler_seek` 三条臂：`on_ruler_seek`（点击自由定位，`ruler_seek_tick` 带 `bar` 参数）、`on_ruler_seek_bar`（"定位到第 N 小节"，补 R2 键盘/屏读入口）、`ruler_step_tick`（相邻小节步进，补 R3）；R1 的"线间点击"保留自由定位，小节精确导航改由后两条臂承担（既有设计选择，非本票新造） |
+| **U-11** Esc 不关抽屉 | **已闭合** | `host.rs` `Action::Cancel` 臂：`if ui.get_ai_drawer_open() { ui.invoke_toggle_ai_drawer(); return true; }`，注释逐字点名 `U-11`；与走带按钮 / `Cmd/Ctrl+Alt+A` 共用 `toggle-ai-drawer` 单写者 ⇒ 键盘/鼠标/屏读不分叉 |
+| **U-16** 运行时无打开入口 | **已闭合** | `host::wire_open_project` + `PortOpenProject: OpenProjectRuntime`，`input.rs` 的 `Cmd/Ctrl+O => Action::OpenProject` ⇒ `ui.invoke_open_project()`（第 ⑩ 票落地的运行时打开切片） |
+
+**仍未闭合的三条，全部卡在人类裁决 / ADR，⛔ 本票不发明答案**：
+U-12（主总线自动化泳道被投影过滤 —— 是否该放开是产品决策）、N-UI-2（循环重复的 UI 表示）、
+U-09/U-10（抽屉行间键盘移动 / "放弃"快捷键 —— 已登记 `ADR-0058`，状态 `Proposed`，待人类批准）。
+
+⇒ 报告里**所有非 MCP 的可复现 UI 缺口**在 main 上已无待接线项；剩下的是决策依赖项，不属于本票范围。
