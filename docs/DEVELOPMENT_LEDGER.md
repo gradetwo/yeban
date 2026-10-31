@@ -17011,6 +17011,18 @@ helper 里 ⇒ 必须不认（防假绿）。两条臂在旧实现上都会失�
 - **文档批 `fd40fb4e`（run `41211557754`）= `completed / success`**：`plan`/`checks`/`deny`/`lockfile` 四腿真跑，
   rust 与 e2e 五腿 `skipped` —— 纯 `docs/**` 推送的**正确形态**（验证者就是 `checks` 里的文档契约第 12 步）；
   推之前本机已跑绿同一族守卫（`check_docs_links` rc=0 ＋ 六个 `ok`），所以这不是"空绿当判决"，而是**判决落在唯一会跑的腿上**。
+### 22.10 ⛔ 更正一条我自己刚说错的推断：**一枚 run 只判它自己那次 push 的 diff**，不判 sha 区间（2026-10-31 实测）
+
+- 我在推送 `116ecd19`（纯 `docs/**`，但它**叠在** `bc01b363` 那枚改了根 `Cargo.toml` ＋ `yeban-app` ＋ `.slint` 的合流之上）之后，
+  口头推断过「这枚宽 run 的判决**顺带覆盖** `bc01b363`」。**该推断是错的**，实测把它推翻：
+  run `41214642059`（`headSha=116ecd19`）**15:23:37Z → 15:25:22Z ≈ 2 分钟**，逐腿 = `plan`/`deny`/`checks`/`lockfile` success，
+  而 `rust (workspace 全量)`／`e2e`／`windows`／`macos`／窄 `rust (matrix.crate)` **五腿全 `skipped`**。
+  ⇒ 若 plan 真按区间算，改了根清单的 `bc01b363` 不可能让全量腿跳过。**plan 的输入是本次推送的 diff**。
+- 由此补两条纪律：① **判某枚提交，只能读它自己那枚 run**（§6.3-1 的加强版：不仅"一提交一 run"，而且"一 run 只覆盖一提交的 diff"）；
+  ② 因此 `bc01b363` 那批代码改动的判决**只在 run `41213764737` 里** —— 本段写完时它**仍在飞**
+  （15:35Z 起：`checks`/`deny`/`lockfile`/`plan`/`e2e` 已 success，全量腿与 `windows` 未完；宽运行成本 ≈ 46 分钟，见 §22.4）
+  ⇒ 状态 **pending**，⛔ 不得写成通过，⛔ 不得由 `116ecd19` 的绿代替。
+
 - ⚠ **并线现读**：另一会话的线 `line/review-20261031-fixes`（提交 `0fea313f`，run `41210661377`）= **failure**
   （红在 `rust (yeban-mcp)` ＋ win ＋ mac）。实测 `git merge-base --is-ancestor 0fea313f main` ⇒ **否**，
   ⛔ 那枚红不进 main、也不得记进本批判决。顺带现读：main 的 `RenderRequest`（`domain/render.rs:701`）里

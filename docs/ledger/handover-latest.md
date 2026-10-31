@@ -49,6 +49,12 @@
   `/home` 用 **88%**、剩 **28 GB**。**本地 `line/*` 分支 46 枚**，实测**全部 46 枚的 tip 都是 `main` 的祖先**
   （`git merge-base --is-ancestor` 逐枚跑，未并入者 **0** 枚）⇒ 删除不丢任何工作，但删分支属破坏性操作，
   ⛔ 未经人类确认不动手；清单已落 `/tmp/merged_lines.txt`（46 行）供一次性删除。
+- ⛔⛔ **更正我本人口头说过的一条推断**（册子里此前没有，故属新增规则）：**一枚 run 只判它自己那次 push 的 diff，不判 sha 区间**。
+  实测：纯文档的 `116ecd19` **叠在**改了根 `Cargo.toml` 的合流 `bc01b363` 之上，它的 run `41214642059` 只跑 **2 分钟**、
+  五枚 rust/e2e 腿**全 `skipped`** ⇒ 我先前"这枚宽 run 顺带覆盖 `bc01b363`"的说法**被推翻**（详证见台账 §22.10）。
+  ⇒ `bc01b363` 的判决只在 run `41213764737` 里，本段写完时**仍在飞**（15:35Z 起 checks/deny/lockfile/plan/e2e success，全量腿未完）
+  ⇒ **pending**：新会话第一件事就是用 `headSha=bc01b363` 读回它，⛔ 不许拿 `116ecd19` 的绿代替。
+
 - ⛔ **并线现读（land 前必读）**：另一会话的线 `line/review-20261031-fixes`（提交 `0fea313f`，run `41210661377`）
   = **failure**（红在 `rust (yeban-mcp)` ＋ win ＋ mac）。实测 `git merge-base --is-ancestor 0fea313f main` ⇒ **否**
   ⇒ 那枚红⛔ 不在 main、⛔ 不得记进本仓任何判决。顺带现读：main 的 `RenderRequest`（`domain/render.rs:701`）里
