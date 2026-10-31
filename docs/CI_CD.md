@@ -9,7 +9,7 @@
 
 | 文件 | 触发 | 用途 |
 | :--- | :--- | :--- |
-| `.github/workflows/ci.yml` | **自动**：`push` 到 `main` / `line/**`；`pull_request` 到 `main`；另加 `workflow_dispatch` | 主门禁：计划 → 格式/红线/schema → 受影响 crate 的 clippy+test → 锁文件 → cargo-deny |
+| `.github/workflows/ci.yml` | **自动**：`push` 到 `main` / `line/**`；`pull_request` 到 `main`；另加 `workflow_dispatch` | 主门禁：计划 → 格式/红线/schema → MCP stdio 端到端复跑（`e2e`，条件同 windows/macos 的 `contains(crates,'yeban-mcp')`）→ 受影响 crate 的 clippy+test → 锁文件 → cargo-deny |
 | `.github/workflows/gates-manual.yml` | **手动**：`workflow_dispatch`（下拉选择门禁） | 昂贵/专项门禁：`inventory`（门禁清单）、`all-features`（全 feature 组合编译）、`bench`、`determinism`、`pending` |
 | `.github/workflows/site-deploy.yml` | **自动**：`push` 到 `website`；另加 `workflow_dispatch`（可选 ref） | 官网 `yeban.wangda.today`：站点静态契约检查 → Chromium 浏览器核验（含截图归档）→ `wrangler deploy` 到 Cloudflare Workers |
 
