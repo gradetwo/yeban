@@ -7062,7 +7062,7 @@ fn a_real_proposal_from_the_authority_is_visible_in_the_opened_drawer() {
     let reply = mcp_call(
         mount.address(),
         &bearer,
-        r#"{""jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"yeban_propose_section","arguments":{"sectionName":"Verse","stylePreset":"pop","materialSource":"theory","bars":2}}}"#,
+        r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"yeban_propose_section","arguments":{"sectionName":"Verse","stylePreset":"pop","materialSource":"theory","bars":2}}}"#,
     );
     report_line(&format!(
         "[pr-rows] tools/call yeban_propose_section ⇒ status={:?} pendingMerge={:?} proposalId={:?}",
@@ -7251,11 +7251,22 @@ fn a_real_proposal_from_the_authority_is_visible_in_the_opened_drawer() {
 fn selecting_a_row_lights_up_accept_and_it_really_merges_the_proposal() {
     use yeban_app::mcp_mount::{InProcessMcp, SessionSource};
 
+    // 「采纳」要真的写进权威 ⇒ 会话必须是**可写形态**。`SessionSource::InMemory` 的
+    // `session_read_only()` 恒为 `true`（`mcp_mount.rs:307`：只有 `WritableFile` 不是），
+    // 那种装配下 domain 会拒写 —— 那是装配问题，不是本判据要证的命题。
+    let dir = scratch_dir("pr-resolve");
+    let project_path = dir.join("mounted.yeban");
     let project = yeban_model::samples::filled_project();
+    let history = serde_json::to_vec(&yeban_model::CommitGraph::new()).expect("空图谱 JSON");
+    let bytes =
+        yeban_model::container::write_project_container(&project, &history, &BTreeMap::new())
+            .expect("写真容器");
+    std::fs::write(&project_path, &bytes).expect("写夹具");
+
     let mount = InProcessMcp::start_for_project(
         true,
         project,
-        SessionSource::InMemory(std::path::PathBuf::from("sample:pr-resolve")),
+        SessionSource::WritableFile(project_path.clone()),
         Vec::new(),
     )
     .expect("挂载决策")
@@ -7280,7 +7291,7 @@ fn selecting_a_row_lights_up_accept_and_it_really_merges_the_proposal() {
     let propose_reply = mcp_call(
         mount.address(),
         &bearer,
-        r#"{""jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"yeban_propose_section","arguments":{"sectionName":"Chorus","stylePreset":"pop","materialSource":"theory","bars":2}}}"#,
+        r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"yeban_propose_section","arguments":{"sectionName":"Chorus","stylePreset":"pop","materialSource":"theory","bars":2}}}"#,
     );
     assert_eq!(
         propose_reply["result"]["status"], "success",
@@ -7428,7 +7439,7 @@ fn selecting_a_row_lights_up_accept_and_it_really_merges_the_proposal() {
     let second = mcp_call(
         mount.address(),
         &bearer,
-        r#"{""jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"yeban_propose_section","arguments":{"sectionName":"Bridge","stylePreset":"pop","materialSource":"theory","bars":2}}}"#,
+        r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"yeban_propose_section","arguments":{"sectionName":"Bridge","stylePreset":"pop","materialSource":"theory","bars":2}}}"#,
     );
     assert_eq!(
         second["result"]["status"], "success",
@@ -7534,7 +7545,7 @@ fn a_refused_accept_puts_the_authoritys_own_sentence_on_the_drawer() {
     let proposed = mcp_call(
         mount.address(),
         &bearer,
-        r#"{""jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"yeban_propose_section","arguments":{"sectionName":"Verse","stylePreset":"pop","materialSource":"theory","bars":2}}}"#,
+        r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"yeban_propose_section","arguments":{"sectionName":"Verse","stylePreset":"pop","materialSource":"theory","bars":2}}}"#,
     );
     assert_eq!(
         proposed["result"]["status"], "success",
