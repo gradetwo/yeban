@@ -1,7 +1,14 @@
 # 交接（夜半第三阶段 · 2026-10-14 · 覆盖台账 R307–R1144）
 
-> ⭐ **2026-11-01 深夜（第三批）：当下状态看 §0.6.0zg**（主干三枚文档批已推 `bf016ad3` ⇒ **s30 已起线并推线 `12b59ff8`**，
-> run `41236805286` = **failure（六腿同红于 `json!` 宏递归上限，判据一条没跑）** ⇒ 第二枚 `678e3f25` 在飞，run `41237535235` = **pending**；
+> ⭐ **2026-11-01 深夜（第四批）：当下状态看 §0.6.0zh**（s30 第二枚 `678e3f25` 判红但**病根已换**：递归上限确认消失
+> （`checks`／`e2e`／`deny`／`lockfile` 转绿），新红是**三腿同点**于 `clippy (-D warnings)` 的**一条** `E0716`
+> （`output_schema.rs:1843`，我自己判据三里的临时值借出）⇒ 第三枚 `539cc5c9` 已推，run `41238224956` = **pending**；
+> ⭐ 主干被**别人**前移：`origin/main` `bf016ad3` → **`151e2029`**（Muse 合入 `line/review-20261031-fixes` 16 枚，含 `threads` 实参 / ADR-0056·0057），
+> 我的本地文档批因此被 non-fast-forward **正确拒绝** ⇒ 已 rebase 到 `151e2029`（重叠面逐文件核过：他们没碰台账与交接，`crates/yeban-mcp` 里碰的是 `domain/render.rs`／`tools.rs`／`tests/render_master.rs`）；
+> ⛔ **他们那条合流 run `41237762943` 还在飞 ⇒ 此刻不推 main**（同分支并发组会取消在飞判决，抹掉别人的证据）；
+> 顺带现读到后续切片的真范围：本文件还剩 **15 处**裸对象**属性槽**（⛔ 不是 s30 那种数组元素槽，`yeban_render_master` 一家占 12 处，见台账 §22.28））；
+> ⭐ 上一批在 §0.6.0zg（主干三枚文档批已推 `bf016ad3` ⇒ **s30 已起线并推线 `12b59ff8`**，
+> run `41236805286` = **failure（六腿同红于 `json!` 宏递归上限，判据一条没跑）** ⇒ 第二枚 `678e3f25`；
 > 三处裸 `items:{type:object}` 填成逐键名册（`points` 4／`sends` 8／`sources` 15＋内层 `sampler` 19，改用 `roster` 逐键装入），
 > ⛔ 第四处 `ops` 如实保持弱声明并钉成读数；⛔ 一条打算被现读纠回（顶层 `sends` **只在点名 `trackId` 时**才插入，缺省那次是诊断包路径、承诺 `projectIncluded:false`））；
 > ⭐ 上一批在 §0.6.0zf（s29 **全链收盘**：线判绿 → land `9925741e` → 合流 run `41232570339` = `success` → 树已拆（归档标签 `line-archive/s29-warning-code-teeth`）；
@@ -20,7 +27,7 @@
 
 ---
 
-## ⭐ ⭐ ⭐ §0.6 最新交接（**2026-10-28 起，最新到 2026-11-01 的 §0.6.0zg**，创作缺口审计 `G1..G18` 全轮 + 完成审计 + Zimmer 报告核账）—— 新会话先读这一节
+## ⭐ ⭐ ⭐ §0.6 最新交接（**2026-10-28 起，最新到 2026-11-01 的 §0.6.0zh**，创作缺口审计 `G1..G18` 全轮 + 完成审计 + Zimmer 报告核账）—— 新会话先读这一节
 
 > 本节是**当前**状态；下面 §0.5（2026-10-26，macOS 主机）与 §1／§1.9 是**历史快照**，
 > ⛔ 不要当成今天的事实 —— ⚠ 尤其 §0.5 里的路径与 env 是**另一台机器**的。
@@ -188,7 +195,7 @@
   ⚠ **本条已被 §0.6.0zg 就地闭合**：main 已推（tip `bf016ad3`），s30 已起线并推 `12b59ff8`（判决 pending）。
 
 
-### 0.6.0zg ⭐ 尾批（2026-11-01 深夜·第三批）：**s30 起线 → 第一枚 `12b59ff8` 判红（编译步，⛔ 不是语义）→ 第二枚 `678e3f25` 在飞（run `41237535235` pending）** ＋ 两处被现读纠回的打算
+### 0.6.0zg ⭐ 尾批（2026-11-01 深夜·第三批）：**s30 起线 → 第一枚 `12b59ff8` 判红（编译步，⛔ 不是语义）→ 第二枚 `678e3f25` 判红（红点换层：测试面的 `E0716`，见 §0.6.0zh）** ＋ 两处被现读纠回的打算
 
 - ✅ **主干三枚本地文档批已推**（tip `bf016ad3`，`origin/main` 同步），随后起 **s30**（task #105）：
   树 `.worktrees/s30-items-shapes`，基线 `bf016ad3`，**一枚**提交 `12b59ff8`（净改两文件），
@@ -219,18 +226,63 @@
   `automation.rs` 明写"⛔ 不复制第二套"）。
   ⚠ **可复用口径**：`json!` 字面量超过约 **30 条**就改用 `Map` + 逐条 `insert`；
   "六腿同红且各在 1~3 分钟内"这个形状本身就是编译错误的读数，⛔ 不必下日志猜语义。
-- ⏭ **接手第一件事**：读回 `678e3f25` 的 run **`41237535235`** —— 按 §22.25 改正后的口径：窄腿 `rust (yeban-mcp)` 真跑即算覆盖
-  （`plan` 只给一个 crate ⇒ 宽腿 `skipped`，本轮现读已确认 `skipped`，⛔ 别引用 `516`/`7 235` 那组基线）；
-  先确认**编译步过了**（本轮就是栽在这），再数 `Running` 用 `grep -c Running` 或
+- ⏭ ~~**接手第一件事**：读回 `678e3f25` 的 run **`41237535235`**~~ ⇒ ⚠ **本条已被 §0.6.0zh 就地闭合**：
+  判决 = **failure**，但红点**换了性质**（递归上限确认已消，新红是测试面的一处 `E0716`）。
+  ⭐ 下面这套**读数方法**仍然适用于 §0.6.0zh 那条在飞的 run（`41238224956`），照用：
+  按 §22.25 改正后的口径 —— 窄腿 `rust (yeban-mcp)` 真跑即算覆盖
+  （`plan` 只给一个 crate ⇒ 宽腿 `skipped`，⛔ 别引用 `516`/`7 235` 那组基线）；
+  先确认**编译步过了**（这两枚一枚栽在递归、一枚栽在借用），再数 `Running` 用 `grep -c Running` 或
   `grep -o 'Running.\{0,80\}tests/[a-z0-9_]*\.rs'`（⛔ `grep -c "Running "` 被 ANSI 色码骗）；
   三条新判据按**子串**匹配（lib 测试打印是 `test output_schema::tests::NAME ... ok`）：
   `the_three_item_slots_delegate_to_their_rosters_while_ops_stays_weak`／
   `the_new_item_rosters_reject_broken_elements_and_accept_the_nullable_ones`／
   `the_point_curve_roster_matches_what_the_producer_emits`；另看 `props_176` 的三行 `### s30 元素数` 读数。
-  判绿 → land → 推 main（连同本节）→ 读合流 run → `worktree.sh rm s30-items-shapes --purge`。
+  判绿 → land → 推 main（⚠ **先核 `origin/main` 有没有在飞的 run**，见 §0.6.0zh）→ 读合流 run → `worktree.sh rm s30-items-shapes --purge`。
 - ⏭ **再下一片**（不在 s30）：`ops` 那处要走 §22.22 路线甲 —— 先给校验器补 `min/maxProperties`/`propertyNames`，
   再拿逐变体载荷名册（`Op` 有 **55** 个顶层变体，外部标签 ⇒ 元素恒"恰好一键"）。
 
+
+### 0.6.0zh ⭐ 尾批（2026-11-01 深夜·第四批）：**s30 第二枚 `678e3f25` 判红但病根已换（递归确认消失 → 新红 = 测试面一处 `E0716`）→ 第三枚 `539cc5c9` 在飞** ＋ **主干被别人的合流前移 16 枚**（本地文档批被 non-fast-forward 正确拒绝）
+
+- **判决**：run `41237535235`（`678e3f25`）= `completed / failure`。
+  `plan`／`lockfile`／**`checks`**／`deny`／`e2e`／`rust (yeban-ui-mcp)` = `success`，
+  **`rust (yeban-mcp)`／`macos`／`windows` = `failure`**，宽腿 `skipped`（单 crate `plan`，与 §22.25 那条一致）。
+  ⇒ **上一轮的病确实治好了**：日志里 `recursion limit` **一条都不再出现**，而 `checks`（要编 `yeban-mcp`）转绿。
+- **本轮唯一红**：三腿都红在 `clippy (-D warnings)` 这一步，日志里**只有一条**错误、行号逐字相同 ——
+  `error[E0716]: temporary value dropped while borrowed` → `crates/yeban-mcp/src/output_schema.rs:1843:40`，
+  `could not compile yeban-mcp (lib test) due to 1 previous error`。
+  病灶是我写的**判据三**：`automation_point_items()["properties"]["curve"]["enum"].as_array()`
+  把 `&[Value]` 从**临时 `Value`** 借出来，`.collect()` 成的 `Vec<&str>` 要活到语句之外。
+- ⭐ ⭐ **新口径（补 §22.27 那条"六腿同红 = 编译错误"的补集）：哪些腿红，本身就在报错误住在哪一层。**
+  `#[cfg(test)]` 里的编译错误 ⇒ `checks`（只编 lib 与守卫）**绿**，只有带 `--all-targets` 的 clippy 步红；
+  lib 里的编译错误 ⇒ `checks` 一起红（第一枚就是这个形状）。
+  ⇒ **"lib 编译过"⛔ 不等于"测试面编译过"**；判据写在 `mod tests` 时，`checks` 那层绿对它是**空绿**。
+- **修正**（`539cc5c9`，run **`41238224956` = pending**）：宿主值先落 `let` 绑定再索引，**只补这一处**。
+  ⛔ 没有顺手加 `#![recursion_limit]`、⛔ 没动别的判据 —— 同文件另外三处索引（`1670`/`1680` 用 `.clone()`、
+  `1683` 把临时值用在单条语句内）本来就不犯同形错误，"全文件性改法"是无证据的扩大。
+- ⭐ **主干易主读数（这条是本轮最需要留痕的）**：`origin/main` 已从 `bf016ad3` 前移到 **`151e2029`**
+  = Muse 把 `line/review-20261031-fixes`（**16 枚**）合进主干：`a361eee6` 给 `yeban_render_master` 加 `threads` 实参
+  （缺省仍单线程、输出逐字节相同）／`84ef9dfd` GUI 导出缺省落工程目录／ADR-0056（`BASELINE-002` 测量定义）与
+  ADR-0057（UI 控制面编辑端口）**批准**。⇒ 我本地那枚文档批 `521b0c09` 被 **non-fast-forward 拒绝 —— 这是该拒的**，
+  ⛔ 不是异常，⛔ 不要想着绕（不 force、不 reset）。已 `git rebase origin/main` 重放（现读 tip `d84d8da0`），
+  重叠面**逐文件**核过：他们**没碰** `docs/DEVELOPMENT_LEDGER.md` 与 `docs/ledger/handover-latest.md`；
+  在 `crates/yeban-mcp` 里碰的是 `domain/render.rs`／`tools.rs`／`tests/render_master.rs`，
+  我 s30 碰的是 `output_schema.rs`／`tests/props_176.rs` ⇒ 干净重放（守卫本机可测项 `check_legal_files_unchanged.py` rc=0）。
+- ⛔ **此刻不推 main**：他们那条合流 run **`41237762943`（`headSha` `151e2029`）还在 `in_progress`**，
+  同分支并发组会**取消在飞的那条** ⇒ 等于抹掉别人的判决。推 main 前必须先 `gh run list --branch main` 现读有没有在飞项。
+- ⚠ **顺带量到的后续切片真范围**（现读，不是回忆）：`grep -c '{"type": "object"}' output_schema.rs` = **17**，
+  去掉我判据里的断言 1 处与 `ops` 的裸 `items` 1 处 ⇒ **还剩 15 处裸对象"属性槽"**，`yeban_render_master` 一家占 12 处
+  （`request`／`probability`／`ratchet`／`audio`／`peak`／`normalize`／`loudness`／`bwf`／`unsupportedCounts`／
+  `contributionsBasis`／`midiSource`／`merge` 系）。这些**与 s30 那三处不同类**：不是数组元素名册，而是"条件出现的对象"；
+  本校验器 `properties` 的语义是"声明了但可缺席"（`validate_complete` 的"每字段必现"只查**顶层**）
+  ⇒ 逐槽填名册**不需要**声明可空、也不会有 `null` 假阳性。
+  ⚠ `request` 那一槽现在多了一个 `threads`（来自 `151e2029`）⇒ 它的名册必须**在 rebase 后的主干上现读**再写，
+  ⛔ 不要照本节这段清单手抄成键名。
+- ⏭ **接手第一件事**：读回 `539cc5c9` 的 run **`41238224956`** —— 先确认 `clippy` 那步过了（本轮就栽在这），
+  再按 §0.6.0zg 那套读数：数 `Running` 用 `grep -c Running`／`grep -o 'Running.\{0,80\}tests/[a-z0-9_]*\.rs'`，
+  三条新判据按**子串**匹配，另看 `props_176` 三行 `### s30 元素数`。
+  判绿 → **把线 rebase/land 到 `151e2029` 之后的主干上** → 现读 `gh run list --branch main` 确认无在飞 → 推 main（连同本节）
+  → 读合流 run → `worktree.sh rm s30-items-shapes --purge`。
 
 ### 0.6.0zd ⭐ 尾批（2026-11-01）：**s29 第二轮判决 = failure（红点换了一类：假夹具被新递归抓到）** ＋ 12 处嵌套声明逐处审计完 ＋ s30 的前置读数已备
 
