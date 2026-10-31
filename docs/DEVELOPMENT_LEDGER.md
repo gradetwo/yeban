@@ -17628,3 +17628,31 @@ helper 里 ⇒ 必须不认（防假绿）。两条臂在旧实现上都会失�
   而本校验器的 `properties` 语义是"声明了但可以缺席"（`validate_complete` 的"每字段必现"只查**顶层**）
   ⇒ 逐槽填名册**不需要**声明可空，也不会有 `null` 假阳性。`request` 那一槽现在多了 `threads`（`151e2029`），
   所以它的名册必须**在 rebase 后的主干上现读**再写，⛔ 不要照本节这段清单手抄。
+
+### 22.29 ⭐ s30 判绿收盘（第三枚 `539cc5c9` = run `41238224956` **success** → land `90528095`）＋ ⛔ 我自己写的"看三行 `###` 逐字读数"这条验收口径**不可执行**
+
+- **判决**：run `41238224956`（`539cc5c9`，`headSha` 逐字 `539cc5c9…`）= `completed / success`。
+  真跑的腿：`plan`／`lockfile`／`checks`(19 步)／`deny`／`e2e`／`rust (yeban-ui-mcp)`／`rust (yeban-mcp)`(15 步)／`macos`／`windows` = `success`，
+  **`rust (workspace 全量)` = `skipped`**（单 crate `plan`，与 §22.25/§22.6 一致 ⇒ ⛔ 不引用全量基线）。
+- **覆盖读数**（`rust (yeban-mcp)` 一条腿，ANSI 安全口径 `grep -c Running`）：**`Running` = 149 行**，
+  `FAILED` = **0**，该腿 `test result: ok` 共 **149 行 / passed 合计 2 704**。
+  三条新判据各出现 **2 次**（普通档 + 合并特性档），且都带 `... ok`：
+  `output_schema::tests::the_three_item_slots_delegate_to_their_rosters_while_ops_stays_weak`／
+  `…the_new_item_rosters_reject_broken_elements_and_accept_the_nullable_ones`／
+  `…the_point_curve_roster_matches_what_the_producer_emits`。
+- **非空核对的机器证据是断言、不是打印**（这条是本节的重点，因为它证伪了我上一批写的验收口径）：
+  `Running … tests/props_176.rs` 出现 2 次，每次 `test result: ok. 6 passed; 0 failed`
+  ⇒ 三处 `assert!(!elements.is_empty())` 在真实响应上成立（`sends`／`sources`／`lane.points` 都非空）。
+  但同一份日志里 `grep -c "### "` = **0** —— 我在 §0.6.0zg／§0.6.0zh 写的"另看 `props_176` 三行 `### s30 元素数` 读数"
+  **根本读不到**：`cargo test` 对**通过**的用例捕获 stdout，只有失败或加 `--nocapture` 才会出现在日志里。
+  ⇒ **纪律补一条**：⛔ 不要把 `println!` 的"逐字读数"列进判绿验收口径（CI 里它只在红的时候出现）；
+  要"能被机器读的证据"就写成**断言**（本轮就是这么落地的），要"可读的数"就得显式 `--nocapture` 或写进产物文件。
+- **主干基线现读更新**（为下一次判"覆盖"换数字，⛔ 再引用 `516 / 7 235`）：`151e2029` 的合流 run
+  `41237762943` = `success` 且 `plan` 给出 **27 个 crate + `workspace_wide: true`**（根级改了
+  `schemas/mcp-tools.schema.json` 与 `scripts/gates/measure_baseline_002.sh`）⇒ 宽腿真跑，
+  **`test result:` 518 行 / passed 合计 7 243**。
+- **落地**：`scripts/dev/worktree.sh land s30-items-shapes` → 合并提交 **`90528095`**（`--no-ff`，保留线史），
+  合并后自检两项 `ok`（`cargo metadata --locked`／依赖许可清单）。
+  合并面 = `output_schema.rs` +398／`props_176.rs` +24，与 `151e2029` 的 `threads` 批**无文件重叠**（预期兑现，无冲突）。
+- ⚠ **s30 这条线一共三枚提交、两枚判红**，红点分别是 `json!` 宏递归上限（lib 面）与临时值借用（测试面）——
+  两条都不是语义缺陷，但**都足以让整批判据一条不跑**。这正是 §6.3 第 4 条"判据名没出现＝没跑到"的两种新形态。
