@@ -17144,6 +17144,15 @@ helper 里 ⇒ 必须不认（防假绿）。两条臂在旧实现上都会失�
 - ⏳ **pending（本片唯一的未读判决）**：合流 run **`41222166136`**（`headSha=1d3d24b9`），本合并带 `.github/**` ⇒ **宽运行 ≈47 分钟**，
   16:57Z 现值 `in_progress`。读法同 §22.11：终态须 `completed / success`，并确认全量腿真跑
   （`test result:` 行数、`FAILED` 行数、passed 合计；预期仍为 **516／0／7 235**，因为落地不增加内容）。
+- ✅ **合流判决已读回（10-31 17:43Z）⇒ s28 第一片整条闭合**：run `41222166136` = **`completed / success`**；
+  八个作业 `deny`／`lockfile`／`checks`／`plan`／`rust (workspace 全量)`／`e2e`／`windows`／`macos` 全 **success**，
+  窄矩阵 `rust (${{ matrix.crate }})` = `skipped`（宽运行的正常形态 —— 全量腿真跑，⛔ 不是 §6.3-2 说的空绿）；
+  `checks` 作业 `124598827080` 的目标步「warnings 名册对账 (实现侧构造点 == schema 的 WarningCode.enum)」= **`success`**；
+  全量腿 `124598878859` = `16:57:58Z → 17:43:09Z`（**45 分 11 秒**）／日志 **1 780 744** 字节／`test result:` **516** 行／
+  `FAILED` **0**／passed 合计 **7 235** ⇒ 与线 run（本节 516／0／7 235）和落地前基线（§22.9／§22.11）**三方逐位同值**：
+  合流没引入回归，也没增加判据（本片不带 Rust 判据，符合预期）。
+  ⚠ 这组数字由**两条独立路径各取一次**（持久 `Monitor` 的事件 ＋ 收盘时直接 `gh run view` + `curl` 作业日志），两次一致；
+  ⛔ 把"两次都拿到 workspace 腿"当独立验证 —— 独立性来自**取数路径**不同（`job id` 也一致：`124598878859`），不是重复同一命令。
 - **本轮的方法学收获（值得复用）**：`46..48 分钟`的 CI 等待⛔ 不该用轮次去换。
   本会话先试后台 `Bash`（**10 分钟硬超时**，会把 `gh run watch` 掐死）⇒ 改为 **`Monitor` + `persistent: true`**：
   脚本内 `while … sleep 60` 轮询到终态，再把「各作业结论 / 目标步骤结论 / 全量腿时长与三行读数」一次性打到事件里。
@@ -17180,6 +17189,8 @@ helper 里 ⇒ 必须不认（防假绿）。两条臂在旧实现上都会失�
   `DocumentedToolArguments`／`ExtensionToolArguments`）—— 它管的是 **JSON-RPC 信封**，⛔ 不是逐工具响应形状，
   所以"$ref 进 outputSchema"这句话在本仓库里**没有落点**：落点是 **Rust 的 `output_schema.rs`**，不是这份 JSON。
   改这条描述时⛔ 沿用 #103 原文的措辞，按本节改正。
-- 本机状态：为第二片建的线 `line/s28b-warning-ref`（树 `.worktrees/s28b-warning-ref`）**只做了读数，0 改动 0 提交**；
-  合流 run `41222166136` 判决未回前⛔ 不推任何新码（本节的读数以 `main = a8ff496c` 为基准）。
+- 本机状态：为第二片建的线 `line/s28b-warning-ref`（树 `.worktrees/s28b-warning-ref`）**只做了读数，0 改动 0 提交**，
+  读完即拆（分支保全为标签 `line-archive/s28b-warning-ref @ a8ff496c`）⇒ 现在 `git worktree list` 只有主干一条，⛔ 没有孤儿树。
+  ⛔ 推送门槛已解除：合流 run `41222166136` 判绿（§22.15 末的 ✅ 条目），第二片可以从 `main` 另起新线开工；
+  基准 sha 从 `a8ff496c` 变为 `bdf91d19` 之后的主干 tip —— ⚠ 起线前照例 `git fetch` 现读，⛔ 抄本节写的 sha。
 

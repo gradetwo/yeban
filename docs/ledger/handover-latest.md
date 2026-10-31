@@ -41,9 +41,11 @@
   —— 与 §22.9／§22.11 基线**逐位相同**：s28 不动 Rust 测试面，所以"没变"就是**无回归**的读数。
 - **落地**：`worktree.sh land` ⇒ 合并提交 `1d3d24b9`（3 文件 **98 行全新增**）；`push` = `90340a81..1d3d24b9`；
   树已拆，分支先保全为标签 **`line-archive/s28-warning-code-contract @ a5ece833`**；`git worktree list` 现读只剩主干。
-- ⏳ **本会话唯一未读判决**：合流 run **`41222166136`**（`headSha=1d3d24b9`，带 `.github/**` ⇒ 宽运行 ≈47 分钟，16:57Z `in_progress`）。
-  读数已由持久 `Monitor` 接手（⛔ 别用轮次去等 CI：后台 `Bash` 有 **10 分钟硬超时**会掐死 `gh run watch`）。
-  预期仍是 **516／0／7 235**（落地不增加内容）；判红就照 §22.15 的口径定位作业再修。
+- ✅ **合流判决已读回（10-31 17:43Z）⇒ s28 第一片整条闭合**：run `41222166136` = `completed / success`；
+  目标步「warnings 名册对账」= `success`（`checks` 作业 `124598827080`）；全量腿 `124598878859` = 45m11s／日志 1 780 744 字节／
+  `test result:` **516**／`FAILED` **0**／passed **7 235** —— 与线 run 及落地前基线**三方逐位同值**（无回归，也未增判据）。
+  手法：持久 `Monitor` 的事件 ＋ 收盘时直接 `gh run view`/`curl` 各取一次，两条路径逐位一致（⛔ 重复同一命令不算独立验证）。
+  ⇒ **推送门槛解除**，第二片（#103）可从主干另起新线；⚠ 起线前 `git fetch` 现读 tip，⛔ 抄文档里的 sha。
 - ⚠ **本片只闭合了一半，别说满**：名册进了契约，但现读 `grep -n '"warnings"' schemas/mcp-tools.schema.json` = **0 处**
   ⇒ 没有任何工具 `outputSchema` 引用 `WarningCode`，**响应形状仍不受约束**，CI 第 16 步（Rust 样本 ↔ jsonschema）对本通道照旧盲。
   补齐它 = task **#103**（并加一条「`WarningCode` 必须被至少一处 `$ref` 引用」的防死名册判据）。
