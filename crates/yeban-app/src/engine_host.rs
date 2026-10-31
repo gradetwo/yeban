@@ -1784,6 +1784,17 @@ impl EngineHost {
         (self.automation_published, self.automation_dropped)
     }
 
+    /// 最近一份工程缓存（`automation_project` 字段）的**只读**句柄。
+    ///
+    /// 谁在读：`host::ProductionLoop::tick` —— 走带推进的那一跳要把自动化泳道的
+    /// 「当前值」标签跟到播放头，而那一跳拿不到工程（生产路径只在标记变了的那一跳
+    /// `try_project()`）。⛔ 这不是第二份缓存：读的就是 [`Self::publish_automation`]
+    /// 留下的那一份，克隆次数与既有成本契约一位不变。
+    #[must_use]
+    pub fn automation_project(&self) -> Option<&YebanProjectV1> {
+        self.automation_project.as_ref()
+    }
+
     /// ⭐ **`#259` 的读数**：最近一跳**实时引擎不执行**的自动化泳道**总数**（gauge）。
     ///
     /// ⚠ 与 [`Self::automation_counts`] 的**形状不同**：那两个是**累计事件条数**

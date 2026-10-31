@@ -1017,5 +1017,6 @@ fn record_wav_options(options: &RecordOptions) -> yeban_app::export_wav::WavExpo
         use_engine_source: true,
         bit_depth: yeban_render::dither::BitDepth::Int24,
         limiter: false,
+        threads: None,
     }
 }

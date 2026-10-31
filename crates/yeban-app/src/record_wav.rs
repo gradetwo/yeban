@@ -882,6 +882,8 @@ pub fn record_project_under(
         // ⭐ 任务单 `#302`：本票的 per-call 开关只开**导出侧**；录制默认关
         // （`#170` 的逐位契约不变）。
         limiter: false,
+        // ⭐ 审评 2026-10-31（P1-1）：录制走缺省单线程（与 `--export-wav` 缺省同一口径）。
+        threads: None,
     };
     // ⭐ `#170`：与 `--export-wav` **同一个**渲染入口 —— 工程目录（若知道）是相对
     //    `sampler.path` 的第一个候选根。`project_dir = None` ⇒ `&[]` 资产池 ＋ 旧根，

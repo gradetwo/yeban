@@ -237,6 +237,18 @@ fn rt_path_allocates_nothing_over_10_000_quanta() {
         "窗口里从未压缩过 ⇒ 判据测错了对象"
     );
     assert!(
+        !left.is_empty(),
+        "夹具必须非空（否则下面那条 `.all(..)` 恒真）"
+    );
+    assert!(
+        !mono.is_empty(),
+        "夹具必须非空（否则下面那条 `.all(..)` 恒真）"
+    );
+    assert!(
+        !right.is_empty(),
+        "夹具必须非空（否则下面那条 `.all(..)` 恒真）"
+    );
+    assert!(
         left.iter()
             .chain(right.iter())
             .chain(mono.iter())

@@ -173,6 +173,7 @@ impl Fixture {
                 save_path: None,
                 engine_quanta: 0,
                 undo: Some(Rc::clone(&port)),
+                proposal_source: yeban_app::proposals::ProposalSource::none(),
             },
         )
         .expect("装配（真窗口 ＋ Tier-1 执行面）");

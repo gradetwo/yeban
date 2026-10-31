@@ -233,7 +233,15 @@ fn rt_path_allocates_nothing_over_5_000_quanta() {
         changed > 0,
         "窗口最后一块的输出与输入逐样本相同 ⇒ 混响没真的参与运算，本判据测的是空壳"
     );
+    assert!(
+        !left.is_empty(),
+        "夹具必须非空（否则下面那条 `.all(..)` 恒真）"
+    );
     assert!(left.iter().all(|v| v.is_finite()), "路径产出了非有限值");
+    assert!(
+        !right.is_empty(),
+        "夹具必须非空（否则下面那条 `.all(..)` 恒真）"
+    );
     assert!(right.iter().all(|v| v.is_finite()));
     let peak = left
         .iter()

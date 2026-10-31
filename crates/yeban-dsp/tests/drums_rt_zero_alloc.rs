@@ -208,6 +208,10 @@ fn a_delayed_hit_shifts_the_waveform_by_exactly_the_hit_offset() {
         "起点落在第 0 帧时，第 0 帧就必须有非零输出 ⇒ 触发帧就是发声首帧"
     );
     assert!(
+        !at_offset.is_empty(),
+        "夹具必须非空（否则下面那条 `.all(..)` 恒真）"
+    );
+    assert!(
         at_offset[..OFFSET].iter().all(|sample| *sample == 0.0),
         "起点之前必须一帧都不出声"
     );
@@ -346,6 +350,10 @@ fn rt_path_allocates_nothing_over_10_000_quanta() {
         "窗口里从未 choke 开镲 ⇒ 闭镲那条分支没被覆盖（假绿）"
     );
     assert!(
+        !voices_seen.is_empty(),
+        "夹具必须非空（否则下面那条 `.all(..)` 恒真）"
+    );
+    assert!(
         voices_seen.iter().all(|seen| *seen),
         "有音色在窗口里从未占用过槽位：{voices_seen:?}（假绿）"
     );
@@ -361,6 +369,10 @@ fn rt_path_allocates_nothing_over_10_000_quanta() {
     assert!(
         sounding_per_frame >= 12.0,
         "平均同时发声的槽位只有 {sounding_per_frame:.2}/{DRUM_SLOTS} —— 大部分槽位在空转（假绿）"
+    );
+    assert!(
+        !block.is_empty(),
+        "夹具必须非空（否则下面那条 `.all(..)` 恒真）"
     );
     assert!(
         block.iter().all(|sample| sample.is_finite()),
@@ -536,6 +548,10 @@ fn saturating_positions_allocate_nothing() {
     assert!(
         nonzero_frames > 0,
         "窗口里一个非零样本都没有 ⇒ 饱和分支可能没被执行（假绿）"
+    );
+    assert!(
+        !block.is_empty(),
+        "夹具必须非空（否则下面那条 `.all(..)` 恒真）"
     );
     assert!(
         block.iter().all(|sample| sample.is_finite()),

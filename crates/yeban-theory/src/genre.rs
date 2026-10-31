@@ -3208,6 +3208,10 @@ mod tests {
         );
         for rule in GenreLibrary::all() {
             assert!(
+                !rule.id.is_empty(),
+                "流派 id 不得为空（否则下面的字节断言恒真）"
+            );
+            assert!(
                 rule.id
                     .bytes()
                     .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_'),

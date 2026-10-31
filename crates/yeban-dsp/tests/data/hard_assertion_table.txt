@@ -250,7 +250,7 @@ integer_count | no_callee | 0 | - | src/polysynth.rs | render_is_bit_identical_u
 integer_count | no_callee | 0 | - | src/polysynth.rs | stealing_is_deterministic
 integer_count | no_callee | 0 | - | src/polysynth.rs | the_earliest_voice_is_stolen_first
 integer_count | no_callee | 0 | - | src/polysynth.rs | the_pitch_grid_is_anchored_to_the_note_and_not_to_the_caller_block
-float_bits | hard | 31 | - | src/polysynth.rs | the_playhead_saturates_at_the_end_of_the_timeline
+float_bits | hard | 32 | - | src/polysynth.rs | the_playhead_saturates_at_the_end_of_the_timeline
 integer_count | no_callee | 0 | - | src/polysynth.rs | the_second_oscillator_adds_its_own_fundamental
 integer_count | no_callee | 0 | - | src/polysynth.rs | the_voice_size_is_pinned_after_adding_the_requested_frequency
 integer_count | no_callee | 0 | - | src/polysynth.rs | ties_on_start_sample_are_broken_by_the_smallest_index

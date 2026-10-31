@@ -224,12 +224,13 @@ fn render_sfz_wav_writes_a_non_silent_wav_through_a_real_mcp_call() {
     // ⚠ 本夹具的 `sample=a.wav` / `b.wav` **不存在** ⇒ 如实回退：来源文案带**回退原因**，
     // 而 `sampleFilesRead` 是 `false`（⛔ 不假装读到）。真读到的情形见
     // `tests/sfz_sample_files.rs`。
+    // ⚠ 回退只存在于 `yeban_render_sfz_wav` 试听路径 —— 文案自带适用范围（报告缺口 `G4`）。
     assert!(
         data["sampleSource"]
             .as_str()
             .expect("sampleSource")
             .starts_with("in-memory-sine"),
-        "读不到 ⇒ 必须回退到内存正弦: {data}"
+        "读不到 ⇒ 来源必须点名内存正弦（仅试听路径的回退）: {data}"
     );
     assert_eq!(data["sampleFilesRead"], false, "读不到就不许说读到了");
     assert_eq!(data["sampleFilesReadCount"], 0);
@@ -630,6 +631,7 @@ fn a_reused_instrument_previews_exactly_what_the_real_call_reports() {
         "sha256",
         "regions",
         "silentRegionCount",
+        "builtinSilentRegionCount",
         "regionDetails",
         "includeIssues",
         "includeIssueCount",

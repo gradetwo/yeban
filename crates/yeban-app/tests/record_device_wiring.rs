@@ -387,6 +387,10 @@ fn the_record_button_writes_the_scripted_device_samples_bit_for_bit() {
 
     let reports = outcome.reports.borrow();
     assert!(
+        !reports.is_empty(),
+        "夹具必须非空（否则下面那条 `.all(..)` 恒真）"
+    );
+    assert!(
         reports.iter().all(Option::is_none),
         "这条腿没有失败可言（结果读数 {reports:?}）"
     );
@@ -514,6 +518,10 @@ fn the_device_source_drains_its_receiver_in_order_and_never_fabricates_silence()
     // ① 环空：返回 0，且**一个样本都不写**（⛔ 补静音就是伪造内容）。
     let mut out = vec![7.0_f32; 8];
     assert_eq!(source.next_block(4, &mut out), 0, "环空 ⇒ 必须返回 0");
+    assert!(
+        !out.is_empty(),
+        "夹具必须非空（否则下面那条 `.all(..)` 恒真）"
+    );
     assert!(
         out.iter().all(|sample| *sample == 7.0),
         "环空时 ⛔ 不许写 `out`（补静音会把'没喂上'伪装成内容）：{out:?}"
@@ -716,6 +724,10 @@ fn a_mono_device_is_recorded_as_mono_instead_of_being_refused() {
     assert!(!ui.get_recording());
 
     let reports = outcome.reports.borrow();
+    assert!(
+        !reports.is_empty(),
+        "夹具必须非空（否则下面那条 `.all(..)` 恒真）"
+    );
     assert!(
         reports.iter().all(Option::is_none),
         "单声道设备 ⛔ 不许报错（结果读数 {reports:?}）"

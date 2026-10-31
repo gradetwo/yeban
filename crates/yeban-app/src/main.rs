@@ -600,6 +600,18 @@ fn run_gui(options: &Options) -> Result<Vec<String>, cli::CliError> {
             },
         );
     }
+    // ⭐ AI 提案抽屉的**来源**：挂了控制面 ⇒ 那句柄（抽屉画权威里真实的未合并清单）；
+    // 没挂 ⇒ `none()`（抽屉画"这个装配没有提案来源"那句空态）。两种装配走的是**同一个**
+    // 注入函数 ⇒ 界面行为不分叉（`crates/yeban-app/src/proposals.rs`）。
+    #[cfg(feature = "in-process-mcp")]
+    let proposal_source = match in_process_mcp.as_ref() {
+        Some(mount) => {
+            yeban_app::proposals::ProposalSource::from_authority(&mount.project_authority())
+        }
+        None => yeban_app::proposals::ProposalSource::none(),
+    };
+    #[cfg(not(feature = "in-process-mcp"))]
+    let proposal_source = yeban_app::proposals::ProposalSource::none();
     wire_callbacks(
         &ui,
         &production.borrow().engine_handle(),
@@ -609,6 +621,7 @@ fn run_gui(options: &Options) -> Result<Vec<String>, cli::CliError> {
         Some(Rc::clone(&undo_port)),
         // ⭐ `#283`：场景按钮的投影来源（与心跳同一个 `Rc`）。
         Rc::clone(&view_cell),
+        proposal_source.clone(),
     );
     // `[UI-A11Y-002]` §7.2 的**事件源**：BPM 敲入控件里真 `TextInput` 的
     // `preedit-text` / `has-focus` 变化 → `ime-composition-changed` / `ime-focus-changed`
@@ -711,6 +724,9 @@ fn run_gui(options: &Options) -> Result<Vec<String>, cli::CliError> {
             .map(yeban_app::mcp_mount::InProcessMcp::project_authority);
         let save_picker_after: Rc<dyn yeban_app::file_picker::FilePicker> =
             Rc::new(yeban_app::file_picker::NativeFilePicker);
+        // ⭐ 抽屉的来源**不用换**：它拿的是权威的句柄，而换工程不换权威（`Domain` 还是
+        // 那一个 `Domain`）。这里只是把同一份读数的第二份克隆交给新那代回调。
+        let proposal_source_after = proposal_source.clone();
         let after = Rc::new(
             move |ui: &yeban_app::ui::MainWindow,
                   project: &yeban_model::YebanProjectV1,
@@ -744,6 +760,7 @@ fn run_gui(options: &Options) -> Result<Vec<String>, cli::CliError> {
                     Some(Rc::clone(&port_after)),
                     // ⭐ `#283`：`view_after` 就是上面刚换过的那份投影（同一个 `Rc`）。
                     Rc::clone(&view_after),
+                    proposal_source_after.clone(),
                 );
                 host::wire_keys(
                     ui,
@@ -861,8 +878,13 @@ fn run_gui(options: &Options) -> Result<Vec<String>, cli::CliError> {
     // `host::wire_module_actions` 是它们的**唯一**实现，无头端口的装配
     // （`src/live_surface.rs` 的 `build_live_ui_with`）调的是**同一个**函数。
     // 四条回调各自落到**已经存在**的模块（`export_wav` / `import_midi` / `sfz_load` /
-    // `record_wav`），⛔ 不另写一套。目标路径由宿主解析（`ModulePaths::from_env`）。
-    let midi_state = host::wire_module_actions(&ui, Some(Rc::clone(&undo_port)));
+    // `record_wav`），⛔ 不另写一套。目标路径由宿主解析
+    // （`ModulePaths::from_env_for_project`：`export_wav` 缺省取工程目录，见 P2-3）。
+    let midi_state = host::wire_module_actions_for_project(
+        &ui,
+        Some(Rc::clone(&undo_port)),
+        project_dir.as_deref(),
+    );
     // ⭐ **③ 选 SFZ 路径 —— 原生对话框腿**（任务单 `#86` 乙）：混音台通道条的"…"按钮
     // ⇒ 系统文件对话框 ⇒ 把选中的路径**填进** `track-{i}-sampler-path` 那个文本框。
     // ⛔ 它**不**提交工程内容：提交仍是既有的 SET / 回车那一处
@@ -1085,10 +1107,10 @@ fn mount_in_process_mcp(
 ///
 /// **视图态九条也已经真的接线**（分类切换、控制台 ⤢、资源条目选中、Session 返回编曲与
 /// 剪辑选中陆续落地）：
-/// `toggle-view` / `toggle-sidebar` / `toggle-ai-drawer` / `open-musical-pr` /
+/// `toggle-view` / `toggle-sidebar` / `toggle-ai-drawer` /
 /// `console-maximize-toggle` / `back-to-arrangement` → [`host::wire_view_callbacks`] →
 /// 分别写 `arrangement-view` / `sidebar-collapsed` / `ai-drawer-open` /
-/// `musical-pr-open` / `console-maximized` / `arrangement-view`；
+/// `console-maximized` / `arrangement-view`；
 /// `select-sidebar-category` / `select-sidebar-item` → [`host::wire_sidebar_contents`] →
 /// 写 `sidebar-category` / `sidebar-item` **并重注入** `sidebar-items` /
 /// `sidebar-empty-reason`（分类 0 = 库扫描、1 = 素材池、2 = 模型缺口；钳位用**当次投影条数**）；
@@ -1097,26 +1119,36 @@ fn mount_in_process_mcp(
 /// 里再写，并按新身份重注入卷帘作用域 —— `[UI-NOTE-001]` 的"当前编辑片段"）。
 /// 原先写在 `.slint` 里的 `root.* = !root.*` 翻转**已删除** —— 同一条动作只有一个写者。
 ///
-/// 其余**三条**回调仍然故意什么都不做，只打一行 stderr。原因不是省事，而是
+/// 抽屉那**四条**（`open-musical-pr` / `select-ai-proposal` / `accept-ai-proposal` /
+/// `reject-ai-proposal`）是这九条里搬出去的：它们现在由
+/// [`host::wire_proposal_drawer`] 注册（打开抽屉时要**现读**权威那份未合并提案清单再
+/// 注入 —— Slint 的 `on_*` 是覆盖语义，同一个回调只能有一个注册者，因此
+/// [`host::wire_view_callbacks`] 里那一处已删）。
+///
+/// 其余**一条**回调仍然故意什么都不做，只打一行 stderr。原因不是省事，而是
 /// "接上也只能是什么都不做"（本仓库的明文纪律：把动作吞掉却什么都不做，比不处理更糟）：
 ///
-/// - `accept-ai-proposal` / `reject-ai-proposal`：**提案在界面侧没有表示** ——
-///   `ui/dialogs/musical_pr_drawer.slint` 的 `proposal-count` / `proposal-labels` /
-///   `proposal-kinds` / `confidences` 默认**全空**（`0` 与四个空数组），并且**没有任何**
-///   宿主代码写它们（判据：`elements.rs` 的 `no_host_writes_the_musical_pr_proposal_properties`）。
-///   界面在零提案时只画一句可见的空态，**不画**「采纳 / 放弃」两个按钮
-///   （一个可点的「采纳」在空列表上是假控件）。
-///   **2026-10-08 更正**：这四个属性此前是内联演示常量（三条中文假提案 + 三个假置信度），
-///   界面因此显示"AI 提了 3 条"而用户分不出真假；本切片删掉了那批数据。
-///   清空数据**不**改变本条结论：界面上仍然没有任何"当前提案身份"的属性，
-///   而 `yeban_merge_proposal` / `yeban_reject_proposal` 要 `proposalId`。
-///   在界面侧新造一条提案状态会与领域权威冲突（`ADR-0005`）⇒ 登记为缺口，不接。
+/// - `accept-ai-proposal` / `reject-ai-proposal` / `select-ai-proposal`：**这三条已经真的
+///   接线**（2026-10-31），因此**不在**下面这份"故意空转"的名单里 —— 它们由
+///   [`host::wire_proposal_drawer`] 注册，落点是
+///   [`host::resolve_proposal`] → `proposals::ProposalSource::resolve` →
+///   `ProjectAuthorityHandle::apply_host(HostAction::{MergeProposal, RejectProposal})`，
+///   与 MCP 工具 `yeban_merge_proposal` / `yeban_reject_proposal` 复用**同一个**
+///   `Plan::Merge` / `Plan::Reject`（⛔ 不是界面上的第二份合并实现）。
+///   这一票之前的历史（登记两次、结论都被推翻）：① 界面上没有提案的表示 ⇒ 2026-10-30
+///   接上读面（九个属性由同一个宿主写者从唯一可变权威注入）；② "看得见"仍不等于
+///   "能采纳"，因为写入口要携带 `proposalId` 而 `HostAction` 只有 `Undo`/`Redo`/`Commit`
+///   三臂 ⇒ 2026-10-31 领域侧长出 `MergeProposal`/`RejectProposal` 两臂 + 界面侧
+///   "点一行 = 选中"这一格（选中态是**窗口属性**，不是新造的领域状态，因此不撞
+///   `ADR-0005`）。`musical-pr-resolve-available` 的口径在有写入口之外还要求**点选了
+///   当前清单里的一行**；不满足时**不画**假控件，逐字上屏 `NO_WRITE_SOURCE_REASON` /
+///   `NO_SELECTION_REASON` / 权威拒绝的那句话。
 /// - `run-acoustic-diagnosis`：仓库里**没有**声学分析（掩蔽 / 相位 / 动态范围）的实现。
 ///   最近的既有机制是 `[D56]` 的 `UiAction::ExportDiagnostics`，而 [`host::wire_undo`]
 ///   已经把它接在**另一个**按钮（`diagnostics-export-action`）上，产物是 env/git/日志的
 ///   诊断 zip，不是声学读数 ⇒ 接上去等于用一个无关产物消费掉这一次点击。
 ///
-/// 三条逐条登记在 `docs/ledger/feature-alignment.md` 的错位 7。
+/// 这条仍然未接的回调登记在 `docs/ledger/feature-alignment.md` 的错位 7。
 ///
 /// 回调跑在 UI 线程上; `[ARCH-TOP-002]` / `[ARCH-RT-001]` 约束的是音频线程,
 /// 所以这里的 `eprintln!` 不触碰红线 —— 但接线真实动作时**仍然不许**做长阻塞等待。
@@ -1129,18 +1161,35 @@ fn wire_callbacks(
     // "当前场景"写回同一份视图 ⇒ 传的是心跳对齐用的**同一个** `Rc<RefCell<ViewState>>`
     // （⛔ 不是装配期的一份 clone：换工程之后它必须跟着换）。
     view: Rc<RefCell<yeban_app::bridge::ViewState>>,
+    // ⭐ AI 提案抽屉的**来源**（权威 or 没有）。生产窗口两条装配路径传的是同一个来源的
+    // 两份克隆 —— 抽屉的数据面只有 [`host::wire_proposal_drawer`] 这一个注册者。
+    proposal_source: yeban_app::proposals::ProposalSource,
 ) {
     host::wire_transport(ui, Rc::clone(engine), project, undo.clone());
     host::wire_view_callbacks(ui);
     // ⭐ 左侧资源栏的条目**取数**（分类 / 条目点击）：与无头装配调的是**同一个**
     // `host::wire_sidebar_contents`（换分类 ⇒ 数组跟着换 ⇒ 需要当前投影）。
     host::wire_sidebar_contents(ui, Rc::clone(&view));
+    // ⭐ 抽屉：注册 `open` / `select` / `accept` / `reject` 四条回调 ＋ 打开时从权威
+    // **现读**未合并提案清单注入（`wire_view_callbacks` 不再碰这些回调 —— Slint 的
+    // `on_*` 是**覆盖**语义，只能有一个注册者）。
+    //
+    // ⚠ 这里原先还各写着一行 `ui.on_accept_ai_proposal(|| trace(..))` /
+    // `ui.on_reject_ai_proposal(|| trace(..))`：**必须删掉**，不是清理装饰。Slint 的
+    // `on_*` 是覆盖语义 ⇒ 留着就会把 `wire_proposal_drawer` 刚接好的写入口**静默擦掉**，
+    // 而日志里那句"未接线"照旧打出来（写面接了、注册被自己盖掉，界面上按下去什么都不发生）。
+    host::wire_proposal_drawer(ui, proposal_source);
     // ⭐ `[UI-NOTE-001]` 剪辑选中态 ⇒ 卷帘作用域：与无头装配（`live_surface.rs`）调的是
     // **同一个** `host::wire_clip_scope`（选中是视图态，写属性 + 重注入，⛔ 不 `commit_ops`）。
     host::wire_clip_scope(ui, Rc::clone(&view), undo);
+    // ⭐ 点编曲标尺 ⇒ 走带定位：引擎 `Rc` 与 `wire_transport` **同一个**（点标尺与按
+    // `Space` 回起点作用在同一条走带上），投影 `Rc` 与 `wire_clip_scope` / `wire_scene_launch`
+    // **同一个**（网格右缘要从活投影读，换工程之后跟着换）。⛔ 不提交 `Op`。
+    host::wire_ruler_seek(ui, Rc::clone(engine), Rc::clone(&view));
+    // ⭐ 章节卡片点击 ⇒ 走带定位到段起点（`U-05`）：与上一行**同一对** `Rc`
+    // （同一条走带、同一份活投影），落点也是同一个 `commit_seek`。
+    host::wire_section_seek(ui, Rc::clone(engine), Rc::clone(&view));
     host::wire_scene_launch(ui, Rc::clone(engine), view);
-    ui.on_accept_ai_proposal(|| trace("accept-ai-proposal"));
-    ui.on_reject_ai_proposal(|| trace("reject-ai-proposal"));
     ui.on_run_acoustic_diagnosis(|| trace("run-acoustic-diagnosis"));
 }
 

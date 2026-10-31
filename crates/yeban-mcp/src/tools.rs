@@ -1044,7 +1044,7 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
     ToolSpec {
         spec_id: "MCP-TOOL-008",
         name: "yeban_render_master",
-        summary: "触发 `yeban-render` 多核并行导出广播级 WAV 并返回哈希与路径; 响应带实测削波读数: `data.clippedSamples` (会被 24-bit 量化器钳住的样本数, 整数) / `data.truePeakDbfs` (16x 多相过采样的真峰值, 0 = 满量程, >0 = 过载) / `data.headroomDb` (= -truePeakDbfs, 负值 = 已过载)。⭐ 削波时 `data.warnings[]` 里**恰好一条** `code:\"exportClipping\"`: 带 `clippedSamples` / `truePeakDbfs` / `suggestedTrimDb` (= -(ceil(truePeakDbfs * 2) / 2), 向上取整到 0.5 dB) / `loudestSource` (最响的源: `node` / `track` / `peakDbfs`) / `hint`; ⭐ 可闻、排了内容、却 `peak == 0.0` (源节点一个非零样本都没出) 的源另由**一条** `code:\"silentSources\"` 逐条点名 (`count` / `sources[]` / `hint`, 非阻断、不自动修); 两条来源都不出现时 `warnings` 是**空数组**。⛔ 本工具**不自动改增益** (那会静默改用户意图) —— 只是读数 + 建议; 逐源峰值见 `data.sources[].peak` / `.peakDbfs` (源节点输出, ⛔ 不含该轨插入链与路由边增益)。⚠ `data.peak.before` / `data.peak.after` 是**归一化前 / 归一化后的样本峰值** (`max |sample|`), 作用在 TPDF 抖动与量化**之前**的浮点母带上 —— ⛔ 不是写盘文件的峰值, 也⛔ 不是真峰值。⭐ `#252`: 可选 `frames` (整数) / `durationSeconds` (秒) 显式指定总长度 —— 缺省仍按工程末端推导 (与加这个实参之前逐字节相同), 用途是把本工具与 CLI `--export-wav --wav-frames` 的帧数**逐帧**对齐。⭐ `ADR-0020`: 可选 `contributions: true` 让响应额外带逐轨贡献读数 (`data.contributions` / `data.contributionsBasis`, 见该实参), ⛔ 不改写盘字节",
+        summary: "触发 `yeban-render` 离线导出广播级 WAV 并返回哈希与路径（缺省单线程；`threads` 实参可开并行，逐字节相同）; 响应带实测削波读数: `data.clippedSamples` (会被 24-bit 量化器钳住的样本数, 整数) / `data.truePeakDbfs` (16x 多相过采样的真峰值, 0 = 满量程, >0 = 过载) / `data.headroomDb` (= -truePeakDbfs, 负值 = 已过载)。⭐ 削波时 `data.warnings[]` 里**恰好一条** `code:\"exportClipping\"`: 带 `clippedSamples` / `truePeakDbfs` / `suggestedTrimDb` (= -(ceil(truePeakDbfs * 2) / 2), 向上取整到 0.5 dB) / `loudestSource` (最响的源: `node` / `track` / `peakDbfs`) / `hint`; ⭐ 可闻、排了内容、却 `peak == 0.0` (源节点一个非零样本都没出) 的源另由**一条** `code:\"silentSources\"` 逐条点名 (`count` / `sources[]` / `hint`, 非阻断、不自动修); 两条来源都不出现时 `warnings` 是**空数组**。⛔ 本工具**不自动改增益** (那会静默改用户意图) —— 只是读数 + 建议; 逐源峰值见 `data.sources[].peak` / `.peakDbfs` (源节点输出, ⛔ 不含该轨插入链与路由边增益)。⚠ `data.peak.before` / `data.peak.after` 是**归一化前 / 归一化后的样本峰值** (`max |sample|`), 作用在 TPDF 抖动与量化**之前**的浮点母带上 —— ⛔ 不是写盘文件的峰值, 也⛔ 不是真峰值。⭐ `#252`: 可选 `frames` (整数) / `durationSeconds` (秒) 显式指定总长度 —— 缺省仍按工程末端推导 (与加这个实参之前逐字节相同), 用途是把本工具与 CLI `--export-wav --wav-frames` 的帧数**逐帧**对齐。⭐ `ADR-0020`: 可选 `contributions: true` 让响应额外带逐轨贡献读数 (`data.contributions` / `data.contributionsBasis`, 见该实参), ⛔ 不改写盘字节",
         scope: Scope::AppAdmin,
         side_effect: SideEffect::Disk,
         params: &[
@@ -1095,6 +1095,12 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
                 "boolean",
                 false,
                 "⭐ `ADR-0020`: 逐轨贡献读数。缺省 false = 不额外渲染 (`data.contributions` 不出现, 写盘字节与加这个实参之前逐字节相同)。true = 对每条非 master 轨各渲染一次\"只静音该轨\", 在 `data.contributions[]` 报 `{trackId, name, alreadyMuted, deltaRmsDbfs, deltaPeakDbfs}` (两次**未归一化**母带逐样本差的 RMS / 峰值, dBFS; 逐样本无差异或渲染前已静音 ⇒ null), 口径见 `data.contributionsBasis`。⛔ 不改写盘字节; 成本 = 1 + 未静音轨数 次额外渲染",
+            ),
+            param(
+                "threads",
+                "integer",
+                false,
+                "⭐ 审评 2026-10-31（P1-1）: 显式渲染线程数（正整数）。缺省 = 单线程默认路径（仓库实测：M2 Max 上各规模并行都比单线程慢，缺省不动）。给了就透传给渲染器；输出与单线程逐字节相同（固定顺序汇聚，与线程数无关）。0 / 负数 / 非整数 ⇒ INVALID_PARAMETER_RANGE。`data.request.threads` 回显请求值（缺省为 null）",
             ),
         ],
         // 这里声明的仍然是**规范表格那一行**的错误码。实现还会真实产出
@@ -1443,7 +1449,7 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
     ToolSpec {
         spec_id: "MCP-TOOL-EXT-SFZ-LOAD",
         name: "yeban_load_sfz",
-        summary: "装载一份 SFZ v2 乐器 (走 yeban-sfz 的唯一解析实现) 并返回区域数与会话内 instrumentId; ⭐ G4: 样本文件读不到时 status 仍是 success (文本确实解析了), 但 data.warnings[] 会点名 sfzSamplesUnreadable —— 采样器轨没有正弦回退, 绑轨即整轨静音, 采样须按 assets/samples/manifest.json 登记式外取",
+        summary: "装载一份 SFZ v2 乐器 (走 yeban-sfz 的唯一解析实现) 并返回区域数与会话内 instrumentId; data.silentRegionCount 是引擎摊平口径的静音区域数 (缺样本 + 内建静音, 与 yeban_render_master 的 sampler.silentRegionCount 同义), builtinSilentRegionCount 是其中的 *silence 子集; ⭐ G4: 样本文件读不到时 status 仍是 success (文本确实解析了), 但 data.warnings[] 会点名 sfzSamplesUnreadable —— 采样器轨没有正弦回退, 绑轨即整轨静音, 采样须按 assets/samples/manifest.json 登记式外取",
         scope: Scope::AppAdmin,
         // 只读工程、不落盘：装载只把"文本 + 元数据"放进会话态（`MODEL-ISO-001` 第 2 层），
         // 打开 / 关闭工程会整体重置它。`Op` 一位都不写 ⇒ 提交图谱不动。
@@ -1697,7 +1703,7 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
     ToolSpec {
         spec_id: "MCP-TOOL-EXT-LIST-INSTRUMENTS",
         name: "yeban_list_instruments",
-        summary: "列出**本会话已装载**的 SFZ 乐器（审计 `N13`：会话 registry 此前没有任何枚举入口，拿到 `instrumentId` 只能靠记 `yeban_load_sfz` 的响应）。响应 `data.instruments[]`：每条给 `instrumentId` / `path` / `regions` / `silentRegionCount` / `sha256` / `sampleSource` / `sampleFilesReadCount` / `sampleFilesFailedCount` / `sampleHz`（= 装载响应的同一批读数，少了 `regionDetails` 全文）；`count` = 条目数；空 registry ⇒ `instruments: []` ＋ 一句 `note`（⛔ 不报错 —— 没装载过乐器不是错误）。⚠ registry 是**会话运行态**（不落盘），打开/关闭工程或重启进程后为空 ⇒ `instrumentId` 只能当本会话句柄用，不能跨会话引用。装乐器走 `yeban_load_sfz`（内容寻址 ⇒ 同一文本复用同一 id）；把乐器绑到轨上走 `yeban_edit_notes` 的 `insertDevice`（sampler）。",
+        summary: "列出**本会话已装载**的 SFZ 乐器（审计 `N13`：会话 registry 此前没有任何枚举入口，拿到 `instrumentId` 只能靠记 `yeban_load_sfz` 的响应）。响应 `data.instruments[]`：每条给 `instrumentId` / `path` / `regions` / `silentRegionCount` / `builtinSilentRegionCount` / `sha256` / `sampleSource` / `sampleFilesReadCount` / `sampleFilesFailedCount` / `sampleHz`（= 装载响应的同一批读数，少了 `regionDetails` 全文）；`silentRegionCount` 是**引擎摊平口径**（缺样本 ＋ 内建静音，与 `yeban_render_master` 的 `sampler.silentRegionCount` 同义），`builtinSilentRegionCount` 是其中 `sample=*silence` 的子集；`count` = 条目数；空 registry ⇒ `instruments: []` ＋ 一句 `note`（⛔ 不报错 —— 没装载过乐器不是错误）。⚠ registry 是**会话运行态**（不落盘），打开/关闭工程或重启进程后为空 ⇒ `instrumentId` 只能当本会话句柄用，不能跨会话引用。装乐器走 `yeban_load_sfz`（内容寻址 ⇒ 同一文本复用同一 id）；把乐器绑到轨上走 `yeban_edit_notes` 的 `insertDevice`（sampler）。",
         scope: Scope::AppAdmin,
         // 只读：枚举 `domain.sfz_instruments`，不改工程、不装载、不落盘。
         side_effect: SideEffect::ReadOnly,

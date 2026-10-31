@@ -458,8 +458,10 @@ fn every_documented_creation_key_is_registered_with_an_effect_criterion() {
         "效果面登记表与 schema 的键全集两向不符 => 新键没登记，或删掉的键还留在表里"
     );
     assert!(
-        EFFECT_FACE.len() >= 20,
-        "已证键只剩 {} 行 => 登记表被整体掏空（R93：⛔ 把已证批量搬进缺口名单来让它绿）",
+        EFFECT_FACE.len() >= 29,
+        "已证键只剩 {} 行 => 登记表被整体掏空（R93：⛔ 把已证批量搬进缺口名单来让它绿）；\
+         下界等于当前行数，与缺省面的 `DEFAULT_SIDE.len() >= 29` 同口径 —— 真正的掏空路径是\
+         schema 与表**同时**删键（`declared == universe` 仍成立），只有这个下界能拦住",
         EFFECT_FACE.len()
     );
 

@@ -501,6 +501,10 @@ fn a_missing_sample_is_silent_and_counted_through_the_new_chain() {
     );
     assert_eq!(silent_report.decoded_samples, 0);
     assert!(
+        !silent.samples.is_empty(),
+        "夹具必须非空（否则下面那条 `.all(..)` 恒真）"
+    );
+    assert!(
         silent.samples.iter().all(|sample| sample.to_bits() == 0),
         "⭐ 缺样本区域 ⇒ **不建声部** ⇒ 逐位全零（⛔ 不回退播别人的采样），实得峰值 {}",
         peak(&silent.samples)

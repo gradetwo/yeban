@@ -418,6 +418,7 @@ fn options(permission: Permission, console_tab: i32) -> LiveWiringOptions {
         engine_quanta: 4,
         // 这条装配不接撤销端口（与既有判据 16 的"没有撤销会话"形态一致）。
         undo: None,
+        proposal_source: yeban_app::proposals::ProposalSource::none(),
     }
 }
 
@@ -955,6 +956,7 @@ fn the_mixer_strip_writes_volume_pan_mute_and_solo_back_into_the_project() {
             save_path: None,
             engine_quanta: 0,
             undo: Some(Rc::clone(&port)),
+            proposal_source: yeban_app::proposals::ProposalSource::none(),
         },
     )
     .expect("装配");
@@ -1326,6 +1328,7 @@ fn the_master_strip_writes_volume_and_pan_back_into_the_project() {
             save_path: None,
             engine_quanta: 0,
             undo: Some(Rc::clone(&port)),
+            proposal_source: yeban_app::proposals::ProposalSource::none(),
         },
     )
     .expect("装配");
@@ -1766,6 +1769,7 @@ fn escape_cancels_the_mixer_fader_and_pan_drag_without_committing() {
             save_path: None,
             engine_quanta: 0,
             undo: Some(Rc::clone(&port)),
+            proposal_source: yeban_app::proposals::ProposalSource::none(),
         },
     )
     .expect("装配");
@@ -2133,6 +2137,7 @@ fn a_committed_mixer_fader_gesture_changes_the_frame() {
             save_path: None,
             engine_quanta: 0,
             undo: Some(Rc::clone(&port)),
+            proposal_source: yeban_app::proposals::ProposalSource::none(),
         },
     )
     .expect("装配");
@@ -2248,6 +2253,7 @@ fn a_committed_master_fader_gesture_changes_the_frame() {
             save_path: None,
             engine_quanta: 0,
             undo: Some(Rc::clone(&port)),
+            proposal_source: yeban_app::proposals::ProposalSource::none(),
         },
     )
     .expect("装配");
@@ -2379,6 +2385,7 @@ fn a_mixer_gesture_reaches_the_engine_snapshot_on_the_live_window() {
             save_path: None,
             engine_quanta: 0,
             undo: Some(Rc::clone(&port)),
+            proposal_source: yeban_app::proposals::ProposalSource::none(),
         },
     )
     .expect("装配");
@@ -5719,6 +5726,10 @@ fn the_default_row_geometry_is_bit_for_bit_the_s0_literals() {
     // 剪辑与自动化带同源：默认几何下它们的 y 也落在 S0 的前缀和上。
     let clip_ys = injected_lengths(&window.get_clip_ys());
     assert!(
+        !clip_ys.is_empty(),
+        "夹具必须非空（否则下面那条 `.all(..)` 恒真）"
+    );
+    assert!(
         clip_ys
             .iter()
             .all(|y| (*y - 46.0).rem_euclid(56.0).abs() < f32::EPSILON),
@@ -5763,6 +5774,7 @@ fn production_plane_denies_injection_and_really_switches_the_live_view() {
         engine_quanta: 0,
         // 本判据只判生产模式的注入闸门，不接撤销端口。
         undo: None,
+        proposal_source: yeban_app::proposals::ProposalSource::none(),
     };
     let mut plane = build_live_ui_with(&project, &wiring)
         .expect("真实界面 + Tier-1 执行面")
@@ -5944,6 +5956,7 @@ fn backspace_deletes_the_selection_through_the_event_source_and_one_undo_restore
         save_path: None,
         engine_quanta: 0,
         undo: Some(Rc::clone(&port)),
+        proposal_source: yeban_app::proposals::ProposalSource::none(),
     };
     let mut ui = build_live_ui_with(&project, &wiring).expect("真实界面 + Tier-1 执行面");
 
@@ -6088,6 +6101,7 @@ fn cmd_d_duplicates_the_selection_one_grid_to_the_right_and_one_undo_restores_al
         save_path: None,
         engine_quanta: 0,
         undo: Some(Rc::clone(&port)),
+        proposal_source: yeban_app::proposals::ProposalSource::none(),
     };
     let mut ui = build_live_ui_with(&project, &wiring).expect("真实界面 + Tier-1 执行面");
 
@@ -6319,6 +6333,7 @@ fn a_gui_delete_lands_in_the_same_authority_and_one_undo_restores_all() {
         save_path: None,
         engine_quanta: 0,
         undo: Some(Rc::clone(&port)),
+        proposal_source: yeban_app::proposals::ProposalSource::none(),
     };
     let mut ui = live::build_live_ui_from_authority_with(&authority, &wiring).expect("装配");
 
@@ -6798,28 +6813,34 @@ fn the_view_state_properties_drive_the_runtime_tree() {
 }
 
 // =====================================================================================
-// 判据：**抽屉不说谎** —— 零提案的抽屉里没有编造的数据，只有一句用户可见的真话
+// 判据：**抽屉不说谎** —— 没有提案的抽屉里没有编造的数据，只有一句用户可见的真话
 //
-// 这是"AI 提案抽屉"的诚实性契约的**运行时那一半**；文本层与属性层那一半在
+// 这是"AI 提案抽屉"的诚实性契约的**运行时那一半**；文本层与"唯一注入路径"那一半在
 // `crates/yeban-app/src/elements.rs` 的 `musical_pr_drawer_declares_no_demo_proposals`
-// 与 `no_host_writes_the_musical_pr_proposal_properties`。三条路径共用**同一份**假字面量
+// 与 `the_proposal_drawer_writes_its_readings_from_one_host_path`。两条线共用**同一份**假字面量
 // （`yeban_app::elements::DEMO_PROPOSAL_LITERALS`），因此不存在"两份清单漂移"。
 // =====================================================================================
 
-/// 判据：打开抽屉 ⇒ 运行时树里**零条**提案、零条编造置信度，且有一句可见的空态。
+/// 判据：没接权威的装配 ⇒ 运行时树里**零条**提案、零条编造置信度，且有一句可见的空态。
 ///
 /// | 路径 | 量什么 | 期望 |
 /// | :--- | :--- | :--- |
 /// | 属性 → 树 | `musical-pr-drawer` 节点的 `value`（= `accessible-value` 原文） | `"0"` |
 /// | 树（ID） | `musical-pr-proposal-*-item` 的条数 | `0` |
 /// | 树（标签） | 任何节点的 `accessible-label` / `accessible-value` 命中 6 条假字面量 | `0` 处 |
-/// | 树（空态） | `musical-pr-empty-state` 的 `label` | 逐字等于界面上那句话 |
+/// | 树（空态） | `musical-pr-empty-state` 的 `label` | 逐字等于宿主注入的 `NO_SOURCE_REASON` |
 /// | 树（假控件） | `musical-pr-accept-button` / `-reject-button` | 都不在树里 |
 /// | 像素 | 打开抽屉前后两帧的差异像素数与包围盒 | 必须变（不碰 golden） |
 ///
 /// **为什么 `value` 这一格是"属性 ⇒ 树"**：`accessible-value` 是抽屉从 `proposal-count`
 /// 算出来的文本，运行时树读的是**活控件**（`crates/yeban-ui-test-port/src/inspect.rs:186`）。
 /// 把 `proposal-count` 改回演示常量 ⇒ 这一格立刻变成 `"3"`。
+///
+/// ⚠ 本判据走的是 `build_live_ui`（**没有**进程内权威）⇒ 那句空态必须是
+/// `NO_SOURCE_REASON`（"这个装配没有提案来源"）而不是 `NO_OPEN_PROPOSAL_REASON`
+/// （"控制面此刻没有未合并的提案"）。两句话**必须**能分开，否则"看不见提案"与
+/// "确实没有提案"在界面上就是同一件事 —— 那一句 `src/proposals.rs` 的单元判据
+/// `empty_reason_distinguishes_no_source_from_no_proposal` 钉住，这里钉的是它在真树里的那一半。
 #[test]
 fn the_musical_pr_drawer_shows_an_honest_empty_state() {
     let project = yeban_model::samples::filled_project();
@@ -6899,8 +6920,10 @@ fn the_musical_pr_drawer_shows_an_honest_empty_state() {
         proposal_ids.is_empty(),
         "零提案时不该有任何提案条目, 实测 {proposal_ids:?}"
     );
-    // 一个可点的「采纳」在空列表上是**假控件**（按下去只关抽屉 + 一行 stderr）。
-    // 上一轮已裁定 `Shift+Enter → 采纳 AI 建议` 不许假装实现, 这里同款。
+    // 零提案 / 零来源时「采纳」在树里就是**假控件**（按下去没有可作用的提案身份）。
+    // ⚠ 这一格的口径**变了**（2026-10-31）：写入口现在**真的存在**（`resolve-available`
+    // 不再恒 `false`），因此这一条不再是"永远不画"，而是"没有选中行 / 没有来源时不画"。
+    // 上一条判据（`Shift+Enter` 不许假装实现）现在只管 `[` / `]` 那两个试听动作。
     assert!(
         !after.contains("musical-pr-accept-button"),
         "零提案时「采纳」按钮不许在树里（它是假控件）"
@@ -6910,7 +6933,7 @@ fn the_musical_pr_drawer_shows_an_honest_empty_state() {
         "零提案时「放弃」按钮不许在树里（它是假控件）"
     );
 
-    // ---- 空态: 用户此刻看到的那句话, 逐字读回来
+    // ---- 空态: 用户此刻看到的那句话, 逐字读回来（句子的唯一出处 = `src/proposals.rs`）
     let empty = after
         .find_by_id("musical-pr-empty-state")
         .expect("零提案时必须有空态节点");
@@ -6920,8 +6943,9 @@ fn the_musical_pr_drawer_shows_an_honest_empty_state() {
         empty.label
     ));
     assert_eq!(
-        empty.label, "还没有 AI 提案。这条链路尚未接线。",
-        "空态的 `accessible-label` 必须就是界面上那句话"
+        empty.label,
+        yeban_app::proposals::NO_SOURCE_REASON,
+        "没接权威的装配必须说\"这个装配没有提案来源\"（⛔ 不是\"控制面没有提案\"那句）"
     );
 
     // ---- 像素: 打开抽屉必须真的改变画面（同一次运行的两帧, 不碰 golden）
@@ -6948,6 +6972,706 @@ fn the_musical_pr_drawer_shows_an_honest_empty_state() {
         diff.bbox.right() > drawer_band_left,
         "差异包围盒右界 {} 没有伸进抽屉那条带（x ≥ {drawer_band_left}）⇒ 画的不是抽屉",
         diff.bbox.right()
+    );
+}
+
+/// 判据（**读面的运行时那一半**）：AI 经控制面提的一次案，抽屉里**真看得见**，
+/// 而那一行的每一个读数都是从 `Domain.proposals` **逐字**来的。
+///
+/// 它与上一条 `the_musical_pr_drawer_shows_an_honest_empty_state` 是**同一枚硬币的两面**：
+/// 上一条证"零提案时界面不许编"，这一条证"有提案时界面不许看不见"。两条缺一条，
+/// "抽屉如实"这句就只是半句 —— 只写上一条的抽屉可以永远画 0 条而全绿。
+///
+/// ## 量什么（每一步都读**活窗口**，不是属性回显）
+///
+/// | 路径 | 量什么 | 期望 |
+/// | :--- | :--- | :--- |
+/// | 起点 | `authority.open_proposal_rows()` | 空（否则 0→1 不成立） |
+/// | 回调 → 树 | `invoke_open_musical_pr()` 后 `musical-pr-empty-state` 的 `label` | 逐字 `NO_OPEN_PROPOSAL_REASON`（**有**来源那句，⛔ 不是 `NO_SOURCE_REASON`） |
+/// | socket → 域 | 真客户端 `yeban_propose_section`（不 `autoMerge`） | `pendingMerge = true`；权威里恰好 1 条 `Open` |
+/// | 域 → 树（条数） | `musical-pr-drawer` 的 `accessible-value` | `"1"` |
+/// | 域 → 树（标题） | `musical-pr-proposal-0-item` 的 `label` | 逐字 `{kind}: {title}`（`title` 是领域原文） |
+/// | 域 → 树（op 数） | `musical-pr-proposal-0-ops` 的 `label` | 逐字 `本提案携带 {op_count} 条 op` |
+/// | 树（假控件） | `musical-pr-accept-button` / `-reject-button` / `musical-pr-empty-state` | 都不在树里 |
+/// | 树（真话） | `musical-pr-resolve-unavailable` 的 `label` | 逐字 `NO_SELECTION_REASON`（有来源、**没点选** ⇒ 亮不起来那句） |
+/// | 像素 | 0 条那一帧 vs 1 条那一帧 | 必须变，且差异伸进右起 360px 那条带 |
+///
+/// ## 为什么打开走 `invoke_open_musical_pr()` 而不是 `set_musical_pr_open(true)`
+///
+/// `set_musical_pr_open(true)` 只翻可见位，**绕过**宿主那条唯一读权威的路径
+/// （`host::wire_proposal_drawer` 的 `on_open_musical_pr`）—— 那正是本判据要证的机制。
+/// 因此这里**只**调回调：用户点徽章 / 点 AI 栏按钮落的就是它。
+///
+/// ## 这条怎么变红
+///
+/// - 把 `build_live_ui_from_authority` 的 `proposal_source` 覆盖摘掉 ⇒ 第二格仍是
+///   `NO_SOURCE_REASON`、第四格仍是 `"0"`；
+/// - 把 `wire_proposal_drawer` 里的"打开时重读"删掉（只在装配时读一次）⇒ 第四格停在 `"0"`；
+/// - 让界面自己拼标题（不用领域的 `title`）⇒ 第五格逐字不等；
+/// - 把 `resolve-available` 写成 `true` ⇒ 最后两格反向变红（假按钮回到树里、原因卡消失）。
+#[cfg(feature = "in-process-mcp")]
+#[test]
+fn a_real_proposal_from_the_authority_is_visible_in_the_opened_drawer() {
+    use yeban_app::mcp_mount::{InProcessMcp, SessionSource};
+
+    let project = yeban_model::samples::filled_project();
+    let mount = InProcessMcp::start_for_project(
+        true,
+        project,
+        SessionSource::InMemory(std::path::PathBuf::from("sample:pr-drawer")),
+        Vec::new(),
+    )
+    .expect("挂载决策")
+    .expect("运行期开关打开时必须真的挂载");
+    let authority = mount.project_authority();
+    let bearer = format!("Bearer {}", mount.token().expose());
+
+    // ---- 起点：权威里确实**没有**未合并提案（否则下面"0 → 1"没有对照）
+    let rows_at_start = authority.open_proposal_rows();
+    assert!(
+        rows_at_start.is_empty(),
+        "起点必须零提案, 实测 {} 条",
+        rows_at_start.len()
+    );
+
+    // ---- 1. 以权威装配 ⇒ 打开抽屉：有来源、此刻没有提案 ⇒ 那第二句真话
+    let mut ui = build_live_ui_from_authority(&authority, Permission::ReadOnly).expect("装配");
+    ui.ui().invoke_open_musical_pr();
+    ui.pump_meters();
+    let before = ui.tree_snapshot();
+    let before_drawer = before
+        .find_by_id("musical-pr-drawer")
+        .expect("回调必须把抽屉打开（`open-musical-pr` → 宿主写 `musical-pr-open`）");
+    let before_count = before_drawer.value.clone().unwrap_or_default();
+    let before_empty = before
+        .find_by_id("musical-pr-empty-state")
+        .expect("零提案时必须有可见空态");
+    report_line(&format!(
+        "[pr-rows] 打开抽屉（未提案）: accessible-value = {before_count:?}; 空态 label = {:?}",
+        before_empty.label
+    ));
+    assert_eq!(before_count, "0", "未提案时抽屉必须如实报 0 条");
+    assert_eq!(
+        before_empty.label,
+        yeban_app::proposals::NO_OPEN_PROPOSAL_REASON,
+        "接了权威的装配必须说\"控制面此刻没有未合并的 AI 提案\"（⛔ 不是\"没接来源\"那句）"
+    );
+    let frame_zero = ui.capture().expect("零提案那一帧");
+
+    // ---- 2. 真客户端、真令牌、真环回 socket：一次**不合并**的提案
+    let reply = mcp_call(
+        mount.address(),
+        &bearer,
+        r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"yeban_propose_section","arguments":{"sectionName":"Verse","stylePreset":"pop","materialSource":"theory","bars":2}}}"#,
+    );
+    report_line(&format!(
+        "[pr-rows] tools/call yeban_propose_section ⇒ status={:?} pendingMerge={:?} proposalId={:?}",
+        reply["result"]["status"],
+        reply["result"]["data"]["pendingMerge"],
+        reply["result"]["data"]["proposalId"],
+    ));
+    assert_eq!(
+        reply["result"]["status"], "success",
+        "提案工具必须成功（失败就不是\"界面看不见提案\"的缺口, 而是提案本身没落地）: {reply}"
+    );
+    assert_eq!(
+        reply["result"]["data"]["pendingMerge"], true,
+        "必须走**保持 Open** 的那条路（`autoMerge` 一合并就没得看了）: {reply}"
+    );
+
+    // ---- 3. 权威侧的**原文**：一条 Open 记录（下面两格逐字拿它比）
+    let rows = authority.open_proposal_rows();
+    assert_eq!(
+        rows.len(),
+        1,
+        "提案必须进唯一权威的 `Domain.proposals`, 实测 {}",
+        rows.len()
+    );
+    let row = &rows[0];
+    assert_eq!(row.status, "open", "未合并的提案状态必须是 open: {row:?}");
+
+    // ---- 4. 再走一次**打开**回调 ⇒ 抽屉重读权威
+    ui.ui().invoke_open_musical_pr();
+    ui.pump_meters();
+    let after = ui.tree_snapshot();
+
+    let drawer = after
+        .find_by_id("musical-pr-drawer")
+        .expect("`musical-pr-drawer` 节点");
+    let count_reading = drawer.value.clone().unwrap_or_default();
+    report_line(&format!(
+        "[pr-rows] 域 → 树: `musical-pr-drawer` 的 accessible-value {before_count:?} → {count_reading:?} \
+         （权威 {} 条 Open）",
+        rows.len()
+    ));
+    assert_eq!(
+        count_reading, "1",
+        "AI 提了一条案 ⇒ 抽屉必须报 1 条（`accessible-value` 是 `proposal-count` 的文本）"
+    );
+
+    let item = after
+        .find_by_id("musical-pr-proposal-0-item")
+        .expect("提案条目必须在运行时树里");
+    let expected_item_label = format!("{}: {}", row.kind, row.title);
+    report_line(&format!(
+        "[pr-rows] 域 → 树: `musical-pr-proposal-0-item` label = {:?}（领域原文 kind={:?} title={:?}）",
+        item.label, row.kind, row.title
+    ));
+    assert_eq!(
+        item.label, expected_item_label,
+        "那一行的标题必须是**领域记录的原文**, 不是界面拼的第二份文案"
+    );
+
+    let ops = after
+        .find_by_id("musical-pr-proposal-0-ops")
+        .expect("op 条数那一格必须在树里");
+    let expected_ops_label = format!("本提案携带 {} 条 op", row.op_count);
+    report_line(&format!(
+        "[pr-rows] 域 → 树: `musical-pr-proposal-0-ops` label = {:?}（领域 op_count = {}）",
+        ops.label, row.op_count
+    ));
+    assert_eq!(ops.label, expected_ops_label, "op 条数必须是**真实条数**");
+
+    // 提案族在树里**只有**这两格（多出来的就是按下标编的读数）
+    let mut proposal_ids: Vec<&str> = after
+        .ids()
+        .filter(|id| id.starts_with("musical-pr-proposal-"))
+        .collect();
+    proposal_ids.sort_unstable();
+    assert_eq!(
+        proposal_ids,
+        vec!["musical-pr-proposal-0-item", "musical-pr-proposal-0-ops"],
+        "一条提案 ⇒ 恰好两格读数；出现 `-1-` 就是画了不存在的提案"
+    );
+
+    // ---- 5. 空态退场, 且**不画假控件**：换成逐字原因
+    assert!(
+        !after.contains("musical-pr-empty-state"),
+        "有提案时空态不许还挂在树里（那句\"没有提案\"就成了谎话）"
+    );
+    // ⭐ 2026-10-31 起这一格**换了一句**：`RESOLVE_NOT_WIRED_REASON`（"写入口不存在"）
+    // 随写入口落地而退役。此刻的事实是"**有**写入口, 但用户还没点选任何一行" ⇒
+    // 上屏的是 `NO_SELECTION_REASON`。而 `resolve-available` 不再是恒 `false` 的常数,
+    // 它是 `(有来源 ∧ 点选了当前清单里的一行 ∧ 上一次没被拒)` 的读数 —— 亮起与按下真的
+    // 改领域这两件事由本文件下一格的 `selecting_a_row_lights_up_accept_and_it_really_merges_the_proposal`
+    // 在活窗口上量（这里刻意**不**点选,
+    // 剩下的那一半"没点选就不画控件"正是这一格）。
+    let reason = after
+        .find_by_id("musical-pr-resolve-unavailable")
+        .expect("有提案、没有点选 ⇒ 必须上屏那句逐字原因");
+    assert_eq!(
+        reason.label,
+        yeban_app::proposals::NO_SELECTION_REASON,
+        "底部那句话必须逐字等于宿主断言过的原因, 不能是界面另写的安慰话"
+    );
+    assert!(
+        !after.contains("musical-pr-accept-button"),
+        "没有点选 ⇒ `resolve-available` 是 `false` ⇒ 「采纳」不许进树（可点但没有身份的按钮是假控件）"
+    );
+    assert!(
+        !after.contains("musical-pr-reject-button"),
+        "没有点选 ⇒ `resolve-available` 是 `false` ⇒ 「放弃」不许进树"
+    );
+
+    // ---- 6. 像素：0 条那一帧 vs 1 条那一帧
+    let frame_one = ui.capture().expect("一条提案那一帧");
+    let diff = frame_diff(&frame_zero, &frame_one)
+        .expect("权威多了一条提案 ⇒ 画面必须真的变（树里有、屏幕上没有 = 没画出来）");
+    report_line(&format!(
+        "[pr-rows] 像素: 零提案帧 vs 一条提案帧 = 差异 {} px, 包围盒 x{}..{} × y{}..{}（帧 {}×{}）",
+        diff.count,
+        diff.bbox.x,
+        diff.bbox.right(),
+        diff.bbox.y,
+        diff.bbox.bottom(),
+        frame_zero.width(),
+        frame_zero.height(),
+    ));
+    let drawer_band_left = i32::try_from(frame_zero.width().saturating_sub(360)).unwrap_or(0);
+    assert!(
+        diff.bbox.right() > drawer_band_left,
+        "差异包围盒右界 {} 没有伸进抽屉那条带（x ≥ {drawer_band_left}）⇒ 变的不是提案行",
+        diff.bbox.right()
+    );
+}
+
+// =====================================================================================
+// 判据（任务单 #29 的运行时那一半）：点选一行 ⇒ 按钮亮起 ⇒「采纳」/`Shift+Enter`
+// **真的**合并那条提案；被权威拒绝时 ⇒ 权威那句话逐字上屏且一位都不动
+// =====================================================================================
+
+/// 判据：在**接了权威的活窗口**上走完整条写路径 —— 点一行 ⇒ 亮起 ⇒ 采纳 ⇒ 领域真的变了
+/// ⇒ 那一行消失；再走一遍**键盘**那一条（`Shift+Enter`）⇒ 同样真的合并。
+///
+/// ## 补的是哪一个洞（实测，不是转述）
+///
+/// 上一条判据只走到"看得见"。`resolve-available` 亮起、按钮按下之后**发生了什么**，
+/// 全仓此前没有任何运行时判据量过：抽屉的写入口 `HostAction` 当时只有
+/// `Undo` / `Redo` / `Commit` 三臂，领域侧的 `yeban_merge_proposal` 早就把合并做完了，
+/// 而界面上那两个按钮按下去只关抽屉。今天两臂接上了（`MergeProposal` / `RejectProposal`
+/// 复用**同一个** `Plan::Merge` / `Plan::Reject`），本判据钉的就是"接上之后不许漂移"。
+///
+/// 领域侧那九条（`crates/yeban-mcp/tests/host_proposal_resolve.rs`）量的是**动作本身**
+/// （预览==真落、多父提交、幂等零步、拒绝码逐字相同）；本判据量的是**界面到动作那一段**
+/// —— 选中身份、闸门、按钮/键盘两条落点、以及按下之后读数的去向。两边不重复，缺任一边
+/// 都留着一个洞：只有领域侧 ⇒ 界面可能传错身份；只有本侧 ⇒ 合并语义本身可能漂移。
+///
+/// ## 量什么（每一步都是活窗口 / 唯一权威上的实读值）
+///
+/// | 步 | 量什么 | 怎么量 | 期望 |
+/// | :--- | :--- | :--- | :--- |
+/// | ① | 未合并提案条数 | `authority.open_proposal_rows()` | 提案前 0，提案后 1 |
+/// | ② | 选中身份 | `MainWindow.musical-pr-selected-id` | 点选前 `""`，点选后 = 那一行的 `id` |
+/// | ③ | 闸门 | `MainWindow.musical-pr-resolve-available` | `false` → `true` → 合并后回 `false` |
+/// | ④ | 控件 | 树里 `musical-pr-accept-button` / `-reject-button` / `-resolve-unavailable` | 亮起时**两个按钮在、原因卡没有** |
+/// | ⑤ | 领域 | `apply_revision` / `undo_display().commit_count` / `project()` | 采纳后修订号 +1、恰好 +1 条提交、工程变了 |
+/// | ⑥ | 清单 | `open_proposal_rows()` / `proposal-count` / 树里的 `-item` | 采纳后 0 条 / `0` / 条目消失 |
+/// | ⑦ | 夹紧 | `musical-pr-selected-id` | 合并后回 `""`（⛔ 不留陈旧身份） |
+/// | ⑧ | 重投影 | `sync_authority()` | `Reprojected { revision }`（合并推进了修订号 ⇒ 界面跟得上） |
+/// | ⑨ | 键盘 | `invoke_key_action("\n", shift=true)` | **`true`**（被消费）且领域 +1 条提交 |
+/// | ⑩ | 负向对照 | 同一键在**没有点选**时 | `false` ⇒ ⑨ 不是"恒消费" |
+///
+/// ## 抽屉此刻**不关**（这是设计，不是遗漏）
+///
+/// 成功时唯一的反馈是"那一行从清单里没了"（重新读权威得到 0 条 ⇒ 空态那句话
+/// `NO_OPEN_PROPOSAL_REASON` 回到屏上）。把抽屉关掉会把"还剩几条"这个读数一起关掉，
+/// 而用户可能在决定下一条。
+///
+/// ## 这条怎么变红
+///
+/// - 「采纳」的落点退回"只关抽屉"（`on_accept_ai_proposal` 不再施加 `HostAction`）⇒
+///   第⑤步三项读数全不变、第⑥步那一行还在；
+/// - 选中身份写的是**下标**而不是领域的 `id` ⇒ 第②步不等（`apply_host` 会因非法身份
+///   拒绝，第⑤步同样红）；
+/// - 把闸门改成恒 `true` ⇒ 第④步在**未点选**时就红（假按钮进树）；
+/// - 键盘臂不看前置条件 ⇒ 第⑩步红（没点选也消费）；
+/// - 合并后不夹紧选中 ⇒ 第⑦步红（陈旧身份留着，下一次按下就打向一条不存在的提案）。
+#[cfg(feature = "in-process-mcp")]
+#[test]
+fn selecting_a_row_lights_up_accept_and_it_really_merges_the_proposal() {
+    use std::collections::BTreeMap;
+    use yeban_app::mcp_mount::{InProcessMcp, SessionSource};
+
+    // 「采纳」要真的写进权威 ⇒ 会话必须是**可写形态**。`SessionSource::InMemory` 的
+    // `session_read_only()` 恒为 `true`（`mcp_mount.rs:307`：只有 `WritableFile` 不是），
+    // 那种装配下 domain 会拒写 —— 那是装配问题，不是本判据要证的命题。
+    let dir = scratch_dir("pr-resolve");
+    let project_path = dir.join("mounted.yeban");
+    let project = yeban_model::samples::filled_project();
+    let history = serde_json::to_vec(&yeban_model::CommitGraph::new()).expect("空图谱 JSON");
+    let bytes =
+        yeban_model::container::write_project_container(&project, &history, &BTreeMap::new())
+            .expect("写真容器");
+    std::fs::write(&project_path, &bytes).expect("写夹具");
+
+    let mount = InProcessMcp::start_for_project(
+        true,
+        project,
+        SessionSource::WritableFile(project_path.clone()),
+        Vec::new(),
+    )
+    .expect("挂载决策")
+    .expect("运行期开关打开时必须真的挂载");
+    let authority = mount.project_authority();
+    let bearer = format!("Bearer {}", mount.token().expose());
+
+    // 写入口的前置条件：这个会话必须把权威**交给**了界面（只读会话里"采纳"注定失败,
+    // 那是装配问题而不是本判据要证的命题）。
+    assert!(
+        authority.is_writable(),
+        "判据装配必须是可写会话, 否则「采纳」没有写入口可言"
+    );
+    assert!(
+        authority.open_proposal_rows().is_empty(),
+        "起点必须零提案（否则下面 0→1 没有对照）"
+    );
+
+    let mut ui = build_live_ui_from_authority(&authority, Permission::ReadOnly).expect("装配");
+
+    // ---- 1. 真 socket 提一案（⛔ 不在测试里造第二份提案） ----
+    let propose_reply = mcp_call(
+        mount.address(),
+        &bearer,
+        r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"yeban_propose_section","arguments":{"sectionName":"Chorus","stylePreset":"pop","materialSource":"theory","bars":2}}}"#,
+    );
+    assert_eq!(
+        propose_reply["result"]["status"], "success",
+        "提案必须成功, 否则后面全是空判据: {propose_reply}"
+    );
+    let rows = authority.open_proposal_rows();
+    assert_eq!(rows.len(), 1, "权威里必须恰好 1 条未合并提案: {rows:?}");
+    let row = rows[0].clone();
+
+    // ---- 2. 打开抽屉 ⇒ 看得见那一行, 但**没有点选** ⇒ 按钮不画（③④ 的"未点选"侧） ----
+    ui.ui().invoke_open_musical_pr();
+    ui.pump_meters();
+    let before_select = ui.tree_snapshot();
+    assert!(
+        before_select.contains("musical-pr-proposal-0-item"),
+        "提案行必须在树里（上一条判据已逐字钉过它的文案）"
+    );
+    assert_eq!(
+        ui.ui().get_musical_pr_selected_id().as_str(),
+        "",
+        "刚打开时没有点选 ⇒ 选中身份必须是空串"
+    );
+    assert!(
+        !ui.ui().get_musical_pr_resolve_available(),
+        "没有点选 ⇒ 闸门必须是 `false`"
+    );
+    assert!(
+        !before_select.contains("musical-pr-accept-button")
+            && !before_select.contains("musical-pr-reject-button"),
+        "闸门关着 ⇒ 两个按钮不许进树（可点但没有身份的按钮是假控件）"
+    );
+
+    // ---- 3. 点那一行 ⇒ 身份进宿主、闸门亮起、两个按钮进树（②③④） ----
+    ui.ui().invoke_select_ai_proposal(row.id.as_str().into());
+    ui.pump_meters();
+    let after_select = ui.tree_snapshot();
+    assert_eq!(
+        ui.ui().get_musical_pr_selected_id().as_str(),
+        row.id.as_str(),
+        "点选写的必须是**领域那一行的身份原文**（⛔ 不是下标：写入口按身份施加）"
+    );
+    assert!(
+        ui.ui().get_musical_pr_resolve_available(),
+        "有来源 ∧ 点选了当前清单里的一行 ⇒ 闸门必须亮"
+    );
+    assert!(
+        after_select.contains("musical-pr-accept-button"),
+        "亮起 ⇒「采纳」必须进树"
+    );
+    assert!(
+        after_select.contains("musical-pr-reject-button"),
+        "亮起 ⇒「放弃」必须进树"
+    );
+    assert!(
+        !after_select.contains("musical-pr-resolve-unavailable"),
+        "按钮可用时界面上不许还挂着「用不了」那句话"
+    );
+
+    // ---- 4. 按下之前的权威读数（⑤ 的"前"） ----
+    let revision_before = authority.apply_revision();
+    let display_before = authority.undo_display();
+    let project_before = authority.project().expect("活跃工程");
+    let notes_before = model_note_count(&project_before);
+
+    // ---- 5. 按下「采纳」⇒ 领域真的变了（⑤⑥⑦） ----
+    ui.ui().invoke_accept_ai_proposal();
+    ui.pump_meters();
+    let after_accept = ui.tree_snapshot();
+
+    assert_eq!(
+        authority.open_proposal_rows().len(),
+        0,
+        "采纳必须把那条提案从「未合并」清单里拿掉"
+    );
+    let display_after = authority.undo_display();
+    assert_eq!(
+        authority.apply_revision(),
+        revision_before + 1,
+        "合并真的改工作工程 ⇒ 施加修订号必须 +1（界面重投影的触发口径就在这一个读数上）"
+    );
+    assert_eq!(
+        display_after.commit_count,
+        display_before.commit_count + 1,
+        "采纳恰好落**一条**提交（领域侧 `commit_delta() == 1` 的同一口径）: \
+         {display_before:?} → {display_after:?}"
+    );
+    let project_after = authority.project().expect("活跃工程");
+    assert_ne!(
+        project_after, project_before,
+        "工程本身必须变了（⛔ 不许「提交数涨了而内容一位没动」）"
+    );
+    let notes_after = model_note_count(&project_after);
+    report_line(&format!(
+        "[pr-merge] 采纳「{}」(id={}): 未合并提案 1→0, 修订号 {revision_before}→{}, \
+         提交数 {}→{}, 音符条目 {notes_before}→{notes_after}",
+        row.kind,
+        row.id,
+        authority.apply_revision(),
+        display_before.commit_count,
+        display_after.commit_count,
+    ));
+
+    // 界面上的反馈就是"那一行没了"（⛔ 没有成功提示, 也没有关抽屉）
+    assert_eq!(
+        ui.ui().get_musical_pr_proposal_count(),
+        0,
+        "重读权威 ⇒ 条数必须归 0"
+    );
+    assert!(
+        !after_accept.contains("musical-pr-proposal-0-item"),
+        "已合并的那一行不许还挂在树里"
+    );
+    assert_eq!(
+        ui.ui().get_musical_pr_selected_id().as_str(),
+        "",
+        "陈旧选中必须夹紧成空串（否则下一次按打向一条不存在的提案）"
+    );
+    assert!(
+        !ui.ui().get_musical_pr_resolve_available(),
+        "没有可点的行了 ⇒ 闸门必须打回 `false`"
+    );
+    assert!(
+        ui.ui().get_musical_pr_open(),
+        "采纳**不**关抽屉：还剩几条是用户要接着看的那件事"
+    );
+    let empty = after_accept
+        .find_by_id("musical-pr-empty-state")
+        .expect("零条时空态必须回场");
+    assert_eq!(
+        empty.label,
+        yeban_app::proposals::NO_OPEN_PROPOSAL_REASON,
+        "回到屏上的必须是「有来源、此刻没有提案」那句"
+    );
+
+    // ---- 6. 会话侧改工程后界面跟得上（⑧） ----
+    assert_eq!(
+        ui.sync_authority().expect("刷新投影"),
+        AuthoritySync::Reprojected {
+            revision: revision_before + 1
+        },
+        "合并推进了修订号 ⇒ 同一次权威刷新必须真的重投影"
+    );
+
+    // ---- 7. 键盘那一条：`Shift+Enter` 必须**被消费**并且同样真的合并（⑨⑩） ----
+    let second = mcp_call(
+        mount.address(),
+        &bearer,
+        r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"yeban_propose_section","arguments":{"sectionName":"Bridge","stylePreset":"pop","materialSource":"theory","bars":2}}}"#,
+    );
+    assert_eq!(
+        second["result"]["status"], "success",
+        "第二案必须提得起来: {second}"
+    );
+    let rows_second = authority.open_proposal_rows();
+    assert_eq!(rows_second.len(), 1, "第二案应在权威里: {rows_second:?}");
+
+    ui.ui().invoke_open_musical_pr();
+    ui.pump_meters();
+    // ⑩ 负向对照：**没点选**就按 ⇒ 如实不消费（否则第⑨步的 `true` 不说明任何事）
+    assert!(
+        !ui.ui()
+            .invoke_key_action("\n".into(), true, false, false, false),
+        "抽屉开着但**没有点选** ⇒ `Shift+Enter` 必须返回 false（闸门在前, ⛔ 不吞键）"
+    );
+    let display_before_key = authority.undo_display();
+
+    ui.ui()
+        .invoke_select_ai_proposal(rows_second[0].id.as_str().into());
+    ui.pump_meters();
+    assert!(
+        ui.ui().get_musical_pr_resolve_available(),
+        "点了第二行 ⇒ 闸门必须再次亮（第 7 步的对照不是碰巧）"
+    );
+    assert!(
+        ui.ui()
+            .invoke_key_action("\n".into(), true, false, false, false),
+        "抽屉开着 ∧ 已点选 ∧ 有写入口 ⇒ `Shift+Enter` 必须被**消费**"
+    );
+    let display_after_key = authority.undo_display();
+    report_line(&format!(
+        "[pr-merge] `Shift+Enter` 采纳「{}」(id={}): 未合并提案 1→{}, 提交数 {}→{}",
+        rows_second[0].kind,
+        rows_second[0].id,
+        authority.open_proposal_rows().len(),
+        display_before_key.commit_count,
+        display_after_key.commit_count,
+    ));
+    assert!(
+        authority.open_proposal_rows().is_empty(),
+        "键盘那一条必须与按钮**落在同一处**：提案真的被合并, 而不只是回调被调用"
+    );
+    assert_eq!(
+        display_after_key.commit_count,
+        display_before_key.commit_count + 1,
+        "键盘采纳同样恰好落一条提交（与按钮路径同一个 `Plan::Merge`）"
+    );
+    assert_eq!(
+        ui.ui().get_musical_pr_selected_id().as_str(),
+        "",
+        "键盘路径之后选中同样被夹紧"
+    );
+}
+
+/// 判据：权威**拒绝**这一次采纳时，界面上屏的是权威那句**逐字**原话，抽屉不关、闸门打回
+/// `false`、两个按钮退场，而且**一位都不动**。
+///
+/// ## 为什么要造一个"界面上的清单已经陈旧"的时机
+///
+/// 正常流程里被点的行必然在权威里是 `Open` ⇒ 不会失败。要量"被拒"这一跳，就得让**别的
+/// 客户端**在点选之后、按下之前把那条提案处理掉（本判据经真 socket 放弃它）。这不是
+/// 编出来的边角：控制面与界面共用同一个权威，两侧都可以动它，而界面**不**在每次按下前
+/// 重新问一遍"这条还在不在"—— 它把身份交进去，让权威自己裁决。
+///
+/// ## 量什么
+///
+/// | 步 | 量什么 | 期望 |
+/// | :--- | :--- | :--- |
+/// | ① | 点选后、按下前经 socket 放弃那条 | 权威的未合并清单 1→0 |
+/// | ② | 按下「采纳」后树里 `musical-pr-resolve-unavailable` 的 `label` | **逐字等于**同一次工具调用失败回执里的 `error.message` |
+/// | ③ | 那句 vs 宿主的四条自述文案 | **一个都不相等** ⇒ 它是权威的话, 不是宿主替它写的话 |
+/// | ④ | `musical-pr-open` / `resolve-available` / 两个按钮 | 仍开着 / `false` / 都不在树里 |
+/// | ⑤ | 修订号、提交数、工程、未合并清单 | 与按下前**完全相同**（被拒的写一位不动） |
+/// | ⑥ | 再打开一次抽屉 | 那句拒绝**消失** ⇒ 陈旧解释不会被读成"现在也用不了" |
+///
+/// ## 这条怎么变红
+///
+/// - 把拒绝理由吞掉（`resolve_proposal` 的 `Err` 臂只重注入不带 `refusal`）⇒ 第②步变成
+///   `NO_SELECTION_REASON` 那句自述话，第③步红；
+/// - 界面自己拼一句"操作失败"⇒ 第②步逐字不等；
+/// - 被拒时关抽屉 ⇒ 第④步红（等于把拒绝理由一起关掉）；
+/// - 被拒时还让按钮亮着 ⇒ 第④步红（用户可以对着同一个失败再按一次）；
+/// - 拒绝没夹紧 ⇒ 第⑥步红（上一句解释赖在屏上）。
+#[cfg(feature = "in-process-mcp")]
+#[test]
+fn a_refused_accept_puts_the_authoritys_own_sentence_on_the_drawer() {
+    use yeban_app::mcp_mount::{InProcessMcp, SessionSource};
+
+    let project = yeban_model::samples::filled_project();
+    let mount = InProcessMcp::start_for_project(
+        true,
+        project,
+        SessionSource::InMemory(std::path::PathBuf::from("sample:pr-refuse")),
+        Vec::new(),
+    )
+    .expect("挂载决策")
+    .expect("运行期开关打开时必须真的挂载");
+    let authority = mount.project_authority();
+    let bearer = format!("Bearer {}", mount.token().expose());
+
+    let mut ui = build_live_ui_from_authority(&authority, Permission::ReadOnly).expect("装配");
+    let proposed = mcp_call(
+        mount.address(),
+        &bearer,
+        r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"yeban_propose_section","arguments":{"sectionName":"Verse","stylePreset":"pop","materialSource":"theory","bars":2}}}"#,
+    );
+    assert_eq!(
+        proposed["result"]["status"], "success",
+        "提案必须先落地: {proposed}"
+    );
+    let row = authority.open_proposal_rows()[0].clone();
+
+    // ---- 1. 点选 ⇒ 亮起（本判据的前置条件与上一条同一条闸门） ----
+    ui.ui().invoke_open_musical_pr();
+    ui.pump_meters();
+    ui.ui().invoke_select_ai_proposal(row.id.as_str().into());
+    ui.pump_meters();
+    assert!(
+        ui.ui().get_musical_pr_resolve_available(),
+        "点选后必须可用, 否则下面「被拒」是前提不满足而不是权威拒绝"
+    );
+
+    // ---- 2. 别的客户端抢先把这条处理掉（经**真 socket**, ⛔ 不在测试里直改领域） ----
+    let rejected = mcp_call(
+        mount.address(),
+        &bearer,
+        &format!(
+            r#"{{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{{"name":"yeban_reject_proposal","arguments":{{"proposalId":"{}","reason":"先不用"}}}}}}"#,
+            row.id
+        ),
+    );
+    assert_eq!(
+        rejected["result"]["status"], "success",
+        "控制面的放弃必须成功: {rejected}"
+    );
+    assert!(
+        authority.open_proposal_rows().is_empty(),
+        "经控制面放弃后权威里不该再有未合并提案"
+    );
+
+    // ---- 3. 记下"按下之前"的全部读数（⑤ 的"前"） ----
+    let revision_before = authority.apply_revision();
+    let display_before = authority.undo_display();
+    let project_before = authority.project().expect("活跃工程");
+
+    // ---- 4. 用户这时才按下「采纳」：界面上的清单已经陈旧 ----
+    ui.ui().invoke_accept_ai_proposal();
+    ui.pump_meters();
+    let after = ui.tree_snapshot();
+
+    // ---- 5. 权威的**原话**：与工具面对同一次施加的失败回执逐字相同 ----
+    let tool_refusal = mcp_call(
+        mount.address(),
+        &bearer,
+        &format!(
+            r#"{{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{{"name":"yeban_merge_proposal","arguments":{{"proposalId":"{}"}}}}}}"#,
+            row.id
+        ),
+    );
+    let tool_message = tool_refusal["result"]["error"]["message"]
+        .as_str()
+        .unwrap_or_else(|| panic!("同一次合并的失败回执必须有 error.message: {tool_refusal}"))
+        .to_owned();
+    let card = after
+        .find_by_id("musical-pr-resolve-unavailable")
+        .expect("被拒 ⇒ 原因卡必须上屏（按钮此刻不该在）");
+    report_line(&format!(
+        "[pr-refuse] 采纳一条已被放弃的提案 id={}: 界面上屏 = {:?}",
+        row.id, card.label
+    ));
+    assert_eq!(
+        card.label, tool_message,
+        "界面上那句必须是**权威自己的原话**, 与工具面对同一次施加的回执逐字相同"
+    );
+    // 宿主不许替权威说话（四条自述文案是"这一格为什么用不了"的话, 不是"权威说了什么"）
+    for own in [
+        yeban_app::proposals::NO_SOURCE_REASON,
+        yeban_app::proposals::NO_OPEN_PROPOSAL_REASON,
+        yeban_app::proposals::NO_WRITE_SOURCE_REASON,
+        yeban_app::proposals::NO_SELECTION_REASON,
+    ] {
+        assert_ne!(
+            card.label, own,
+            "被拒时上屏的若是宿主自己的文案, 权威那句话就被替换掉了: {own}"
+        );
+    }
+
+    // ---- 6. 拒绝的形状：抽屉不关、闸门打回、按钮退场 ----
+    assert!(
+        ui.ui().get_musical_pr_open(),
+        "被拒**不**关抽屉：关掉抽屉等于把拒绝理由一起关掉"
+    );
+    assert!(
+        !ui.ui().get_musical_pr_resolve_available(),
+        "刚被拒 ⇒ 闸门打回 `false`（不许对着同一个失败连按）"
+    );
+    assert!(
+        !after.contains("musical-pr-accept-button") && !after.contains("musical-pr-reject-button"),
+        "闸门关着 ⇒ 两个按钮都不许在树里"
+    );
+
+    // ---- 7. 被拒的写一位都不动 ----
+    let display_after = authority.undo_display();
+    let project_after = authority.project().expect("活跃工程");
+    assert_eq!(
+        authority.apply_revision(),
+        revision_before,
+        "被拒的采纳不得推进施加修订号"
+    );
+    assert_eq!(
+        display_after.commit_count, display_before.commit_count,
+        "被拒的采纳不得落提交: {display_before:?} → {display_after:?}"
+    );
+    assert_eq!(project_after, project_before, "被拒的采纳不得改工程");
+
+    // ---- 8. 陈旧解释不赖在屏上：任何一次常规重注入都把它清掉 ----
+    ui.ui().invoke_open_musical_pr();
+    ui.pump_meters();
+    let reopened = ui.tree_snapshot();
+    let cleared = reopened
+        .find_by_id("musical-pr-resolve-unavailable")
+        .expect("重开后仍没有可点的行 ⇒ 原因卡还在（换成宿主那句自述话）");
+    assert_eq!(
+        cleared.label,
+        yeban_app::proposals::NO_SELECTION_REASON,
+        "重开抽屉后屏上该是「没有点选」那句, ⛔ 不是上一次失败的余话"
+    );
+    assert!(
+        ui.ui().get_musical_pr_selected_id().is_empty(),
+        "重开时选中身份必须被夹紧成空串"
     );
 }
 
@@ -7038,6 +7762,7 @@ fn the_undo_tree_shows_the_real_commit_chain() {
             save_path: None,
             engine_quanta: 0,
             undo: Some(Rc::clone(&port)),
+            proposal_source: yeban_app::proposals::ProposalSource::none(),
         },
     )
     .expect("装配");
@@ -7576,6 +8301,7 @@ fn a_mute_click_in_the_arrangement_view_writes_an_honest_history_label() {
             save_path: None,
             engine_quanta: 0,
             undo: Some(Rc::clone(&port)),
+            proposal_source: yeban_app::proposals::ProposalSource::none(),
         },
     )
     .expect("装配");
@@ -7988,6 +8714,7 @@ fn zoom_shortcuts_reach_the_projection_and_an_empty_selection_is_not_consumed() 
         save_path: None,
         engine_quanta: 0,
         undo: Some(Rc::clone(&port)),
+        proposal_source: yeban_app::proposals::ProposalSource::none(),
     };
     let mut ui = build_live_ui_with(&project, &wiring).expect("真实界面 + Tier-1 执行面");
 
@@ -8183,19 +8910,31 @@ fn zoom_shortcuts_reach_the_projection_and_an_empty_selection_is_not_consumed() 
     ));
 }
 
-// ===========================================================================
-// AI 建议采纳（`Shift+Enter`）与试听主线（`[`）：能力缺失 ⇒ 如实拒绝且一位不变
-// ===========================================================================
+// =====================================================================================
+// AI 建议采纳（`Shift+Enter`）与试听主线（`[` / `]`）：本装配里没有可作用的对象
+// ⇒ 如实拒绝且一位不变
+// =====================================================================================
 
 /// 判据 B11f 的**行为侧**（`[UI-A11Y-001]` / `[ARCH-RT-005]`）：`Shift+Enter` 与 `[`
 /// 在**真实界面**上被如实拒绝，而且**一位不变**（不是"吞掉键却什么都不做"）。
 ///
+/// ## ⭐ 这两条的**原因不同**（2026-10-31 起），别把它们读成同一件事
+///
+/// - `[` / `]`（试听主线 / 提案）：**能力本身缺失** —— `[ARCH-RT-005]` 要的"A/B 并发渲染
+///   ＋ 30ms 等功率瞬切 ＋ 2048 采样预滚"在仓库里一处都不存在 ⇒
+///   `host::action_has_implementation` 返回 `false`，**任何**装配都不消费。
+/// - `Shift+Enter`（采纳）：能力**已经落地**（`HostAction::MergeProposal` ⇒ 与 MCP 工具
+///   复用同一个 `Plan::Merge`）。它在这一条里仍然被拒绝, 是因为**本装配的前置条件不满足**
+///   （`proposal_source: ProposalSource::none()` ⇒ 没有写来源, 且没点选任何一行 ⇒
+///   `musical-pr-resolve-available` 是 `false`）。"接上权威 + 点选一行 ⇒ 这个键真的改领域"
+///   由 `tests/live_ui_mcp.rs` 的 `selecting_a_row_lights_up_accept_and_it_really_merges_the_proposal` 那一条量 —— ⛔ 不要在这里把它当"仍然不可用"的证据。
+///
 /// ## 为什么要有这一条（它不是"什么都没做"的空判据）
 ///
-/// 它证明的是**否定命题**："这两个动作没有落地实现" —— 这一点只能靠"按键之后没有任何
-/// 可观测变化"来证，而"没有任何变化"必须先证明**探针能看见变化**，否则断言是空的。
-/// 因此本判据自带一个**阳性对照**：注入已落地且已绑定的 `B`（箭头 ⇄ 铅笔）⇒ 同一个读数
-/// 面必须真的变。阳性对照不过 ⇒ 本判据的"一位不变"不算证据。
+/// 它证明的是**否定命题**："这些动作在这一格状态下没有可作用的对象" —— 这一点只能靠"按键
+/// 之后没有任何可观测变化"来证，而"没有任何变化"必须先证明**探针能看见变化**，否则断言
+/// 是空的。因此本判据自带一个**阳性对照**：注入已落地且已绑定的 `B`（箭头 ⇄ 铅笔）⇒
+/// 同一个读数面必须真的变。阳性对照不过 ⇒ 本判据的"一位不变"不算证据。
 ///
 /// ## 量什么 / 怎么量 / 单位
 ///
@@ -8211,11 +8950,14 @@ fn zoom_shortcuts_reach_the_projection_and_an_empty_selection_is_not_consumed() 
 ///
 /// ## 怎么变红
 ///
-/// - 把 `Action::AcceptAiSuggestion` 或 `Action::AuditionMain` 从
-///   `host::action_has_implementation` 的 `!matches!` 移出而没真接上能力 ⇒ ①②…⑦ 里
+/// - 把 `Action::AuditionMain` / `Action::AuditionProposal` 从
+///   `host::action_has_implementation` 的那一条挡下臂移出而没真接上能力 ⇒ ①②…⑦ 里
 ///   至少一项变化（键被消费 ⇒ `invoke_key_action` 返回 `true`）。
-/// - 把这两个键从 `input.rs` 的策略表里删掉 ⇒ `invoke_key_action` 仍然返回 `false`，
-///   但 `tests/cli_contract.rs` 的判据 B11f 会红（它要求键仍绑定）。
+/// - 把 `[` / `]`（或 `Shift+Enter`）从 `input.rs` 的策略表里删掉 ⇒
+///   `invoke_key_action` 仍然返回 `false`，但 `tests/cli_contract.rs` 的判据 B11f 会红
+///   （它要求键仍绑定, 且只有 `[` 那一条带 `(未实现)` 标记）。
+/// - 把 `Shift+Enter` 那一臂改成"不看前置条件就 invoke"（删掉 `resolve-available` 那道
+///   闸）⇒ 本判据的第一格变红（没有写来源的装配里键被消费, 而什么都没发生）。
 /// - 把阳性对照用的 `B` 摘掉 ⇒ 本判据的阳性对照步变红（说明探针失灵，而不是"引擎安静"）。
 #[test]
 fn the_ai_suggestion_and_audition_keys_are_rejected_without_any_state_change() {
@@ -8235,6 +8977,7 @@ fn the_ai_suggestion_and_audition_keys_are_rejected_without_any_state_change() {
         save_path: None,
         engine_quanta: 0,
         undo: Some(Rc::clone(&port)),
+        proposal_source: yeban_app::proposals::ProposalSource::none(),
     };
     let mut ui = build_live_ui_with(&project, &wiring).expect("真实界面 + Tier-1 执行面");
 
@@ -8259,11 +9002,13 @@ fn the_ai_suggestion_and_audition_keys_are_rejected_without_any_state_change() {
     let undoable_before = port.display().undoable;
     let commits_before = port.display().commit_count;
 
-    // ---- ① `.slint` 回调那一格（`host::wire_keys` 的唯一落点）：两条都必须 `reject` ----
+    // ---- ① `.slint` 回调那一格（`host::wire_keys` 的唯一落点）：三条都必须 `reject` ----
     assert!(
         !ui.ui()
             .invoke_key_action("\n".into(), true, false, false, false),
-        "`Shift+Enter → 采纳 AI 建议` 的能力今天不存在 ⇒ 必须如实返回 false（不得假装采纳了）"
+        "`Shift+Enter` 在**没有写来源、没点选**的装配里必须如实返回 false \
+         （能力已落地 ⇒ 但前置条件不满足就是 not consumed; 亮起与按下真改领域由 \
+         `selecting_a_row_lights_up_accept_and_it_really_merges_the_proposal` 量）"
     );
     assert!(
         !ui.ui()
@@ -8430,6 +9175,7 @@ fn escape_closes_the_time_machine_modal_for_real() {
             save_path: None,
             engine_quanta: 0,
             undo: Some(Rc::clone(&port)),
+            proposal_source: yeban_app::proposals::ProposalSource::none(),
         },
     )
     .expect("装配");
@@ -8502,4 +9248,306 @@ fn escape_closes_the_time_machine_modal_for_real() {
         display_after.undoable,
         display_after.commit_count,
     ));
+}
+
+// ==================================================================== 混音台**双击复位**
+//
+// 文本层那四段接线（命中面 → 回调 → 两级转发 → 宿主四臂）在 `tests/mixer_fader_double_click.rs`；
+// 这里证的是**动作**：双击真的改了工程、只改被点那一格、已经在中性位就⛔ 不提交，
+// 而且带着在手的拖拽去双击不会把 `mixer-drag-active` 黏住。
+//
+// ⚠ 为什么驱动的是 `MainWindow` 回调而不是真实指针：`double-clicked` 要 `click_count == 2`，
+// 而注入面今天只有 `down` / `move` / `up`（`METHOD_DISPATCH_POINTER_DOWN` / `..._MOVE`），
+// 没有"第二下带计数"的入口。`.slint` 的四条 `double-clicked` 臂调的**就是**这里 invoke 的
+// 那四个回调（`ui/console/mixer_console.slint` 的四面），因此走的仍是同一条宿主链；
+// "臂确实挂在命中面上"那半由文本层判据钉 —— 两半缺一个都会漏掉一类缺陷。
+
+/// 判据：双击推子 / 声相 ⇒ 工程与界面**同时**回中性（`0 dB` / 中央），并且
+/// ③ 已经在中性位时**不产生**任何提交、⑤ 复位与拖动共用**同一条**撤销栈。
+#[test]
+fn a_double_click_reset_moves_the_fader_and_pan_to_neutral() {
+    use std::rc::Rc;
+
+    use yeban_app::undo::{UndoPort, UndoSession};
+
+    /// 会话打开时刻（与其它混音台判据同一个夹具常量）。
+    const NOW: u64 = 1_760_000_000_000;
+    /// 中性值的**位**：推子 `0 dB`（unity）与声相中央都是 `0.0` ⇒ 两处同一个基准。
+    const NEUTRAL: u32 = 0.0_f32.to_bits();
+
+    let project = demo_project();
+    let view = ViewState::from_project(&project).expect("演示投影");
+    let port = Rc::new(UndoPort::new(
+        UndoSession::open("<判据>", "yeban-app", project.clone(), NOW).expect("打开"),
+    ));
+    let live = build_live_ui_with(
+        &project,
+        &LiveWiringOptions {
+            permission: Permission::Interactive,
+            console_tab: 1,
+            save_path: None,
+            engine_quanta: 0,
+            undo: Some(Rc::clone(&port)),
+            proposal_source: yeban_app::proposals::ProposalSource::none(),
+        },
+    )
+    .expect("装配");
+    let window = slint::ComponentHandle::clone_strong(live.ui());
+
+    // ---- ① 前提：夹具第 0 轨**不是**中性值（否则"复位"没有可观察的效果）
+    assert_eq!(
+        mixer_readings(&port.project(), &view, 0).0,
+        -3.2,
+        "① 前提：夹具第 0 轨 = -3.2 dB"
+    );
+    assert_eq!(
+        injected_strings(&window.get_track_volumes())[0],
+        "-3.2",
+        "① 前提：界面上的文本与工程同源（都是 -3.2）"
+    );
+
+    // ---- ② 双击推子 ⇒ 工程逐位 `0.0`、文本由**重投影**写回、恰一步撤销
+    window.invoke_mixer_fader_reset(0);
+    assert_eq!(
+        mixer_readings(&port.project(), &view, 0).0.to_bits(),
+        NEUTRAL,
+        "② 工程里的 `volume_db` 必须真的是 0.0（从权威工程读回，不从界面读）"
+    );
+    assert_eq!(
+        injected_strings(&window.get_track_volumes())[0],
+        "0.0",
+        "② 界面文本必须是 `0.0`（投影写的，不是宿主自己拼的字符串）"
+    );
+    let display = port.display();
+    assert_eq!(display.undoable, 1, "② 一次双击 = **恰**一步可撤销的编辑");
+    assert!(
+        !window.get_mixer_drag_active(),
+        "② 双击不是拖动 ⇒ 标志必须 `false`"
+    );
+    assert_eq!(
+        mixer_readings(&port.project(), &view, 1).0,
+        -6.0,
+        "② 邻格一位不动：第 1 轨仍是 -6.0 dB"
+    );
+
+    // ---- ③ 已经在中性位 ⇒ **什么都不做**（撤销树里不许有"什么都没改"的一步）
+    let commits_after_first_reset = port.display().commit_count;
+    window.invoke_mixer_fader_reset(0);
+    assert_eq!(
+        port.display().undoable,
+        1,
+        "③ 第二次双击不得多出一步（值没变 ⇒ ⛔ 提交）"
+    );
+    assert_eq!(
+        port.display().commit_count,
+        commits_after_first_reset,
+        "③ 而且一次提交都不许发生"
+    );
+
+    // ---- ④ 声相那一格：夹具 `pan` 恒为 `0.0` ⇒ 先拖到非中性，再复位
+    window.invoke_mixer_pan_grab(2, 0.0);
+    window.invoke_mixer_pan_drag(2, 18.0);
+    window.invoke_mixer_pan_release(2);
+    assert_eq!(
+        mixer_readings(&port.project(), &view, 2).1,
+        1.0,
+        "④ 前提：拖满一半行程（`18px / 36px`）⇒ pan 夹到 +1.0"
+    );
+    assert_eq!(
+        injected_strings(&window.get_track_pans())[2],
+        "R100",
+        "④ 前提：界面上的声相文本跟着走"
+    );
+    assert_eq!(port.display().undoable, 2, "④ 一次拖动 = 一步");
+    window.invoke_mixer_pan_reset(2);
+    assert_eq!(
+        mixer_readings(&port.project(), &view, 2).1.to_bits(),
+        NEUTRAL,
+        "④ 双击声相 ⇒ 工程里的 `pan` 必须逐位是 0.0"
+    );
+    assert_eq!(
+        injected_strings(&window.get_track_pans())[2],
+        "C",
+        "④ 界面上的声相文本回中央（与投影同一个口径）"
+    );
+    assert_eq!(
+        port.display().undoable,
+        3,
+        "④ 复位是**另**一步，不是把上一步改掉"
+    );
+    assert_eq!(
+        mixer_readings(&port.project(), &view, 2).0,
+        -8.4,
+        "④ 复位声相⛔ 碰推子：第 2 轨音量仍是夹具的 -8.4 dB"
+    );
+
+    // ---- ⑤ `Cmd+Z`：复位与拖动落在**同一条**撤销栈上
+    assert!(
+        window.invoke_key_action("z".into(), false, false, false, true),
+        "⑤ `Cmd+Z` 必须被 DAW 消费"
+    );
+    assert_eq!(
+        mixer_readings(&port.project(), &view, 2).1,
+        1.0,
+        "⑤ 回退一步必须把 pan 还原到 +1.0"
+    );
+    assert_eq!(
+        injected_strings(&window.get_track_pans())[2],
+        "R100",
+        "⑤ 界面上的文本必须跟着回退"
+    );
+    assert_eq!(port.display().undoable, 2, "⑤ 回退之后剩两步");
+
+    // ---- ⑥ 越界下标 ⇒ 原地返回（不 panic、不猜一条轨道、不提交）
+    let undoable_before = port.display().undoable;
+    window.invoke_mixer_fader_reset(99);
+    window.invoke_mixer_pan_reset(-1);
+    assert_eq!(
+        port.display().undoable,
+        undoable_before,
+        "⑥ 越界下标（99 / -1）不得提交任何东西"
+    );
+    report_line(&format!(
+        "[mixer-double-click-reset] ② 推子 -3.2 → {} dB（undoable {}）；③ 重复双击 ⇒ 提交数\
+         {commits_after_first_reset} → {}（⛔ 不提交）；④ 声相 0.0 → 1.0 → 0.0 → ⑤ `Cmd+Z` 回 1.0",
+        mixer_readings(&port.project(), &view, 0).0,
+        display.undoable,
+        port.display().commit_count,
+    ));
+}
+
+/// 判据（手势交错）：双击的第二下会先来一次 `grab` ⇒ 复位臂**必须先把在手的拖拽清零**。
+/// 两条交错都跑：清零之后那一次孤立的 `release` 既不提交、也不许把标志留在 `true`。
+/// 同一窗口里另证**主控**那两条（寻址按身份、视图态是两个标量属性）。
+#[test]
+fn a_double_click_reset_leaves_no_sticky_gesture() {
+    use std::rc::Rc;
+
+    use yeban_app::undo::{UndoPort, UndoSession};
+
+    const NOW: u64 = 1_760_000_000_000;
+    const NEUTRAL: u32 = 0.0_f32.to_bits();
+
+    let project = demo_project();
+    let view = ViewState::from_project(&project).expect("演示投影");
+    let port = Rc::new(UndoPort::new(
+        UndoSession::open("<判据>", "yeban-app", project.clone(), NOW).expect("打开"),
+    ));
+    let live = build_live_ui_with(
+        &project,
+        &LiveWiringOptions {
+            permission: Permission::Interactive,
+            console_tab: 1,
+            save_path: None,
+            engine_quanta: 0,
+            undo: Some(Rc::clone(&port)),
+            proposal_source: yeban_app::proposals::ProposalSource::none(),
+        },
+    )
+    .expect("装配");
+    let window = slint::ComponentHandle::clone_strong(live.ui());
+
+    // ---- ① 主控推子：夹具的主总线是 unity ⇒ 先拖出非中性，才谈得上"复位"
+    assert_eq!(
+        master_readings(&port.project()).0,
+        0.0,
+        "① 前提：夹具主总线 `volume_db` = 0.0（`TrackV3::default()`）"
+    );
+    window.invoke_mixer_master_fader_grab(100.0);
+    window.invoke_mixer_master_fader_drag(140.0);
+    window.invoke_mixer_master_fader_release();
+    assert_eq!(
+        window.get_master_volume_display().to_string(),
+        "-30.0",
+        "① 前提：拖 40px（`0.75 dB/px`）⇒ -30.0 dB"
+    );
+    assert_eq!(port.display().undoable, 1, "① 一次拖动 = 一步");
+    window.invoke_mixer_master_fader_reset();
+    assert_eq!(
+        master_readings(&port.project()).0.to_bits(),
+        NEUTRAL,
+        "① 主控复位必须按**身份**命中主总线（第 3 次调用第 4 条臂）"
+    );
+    assert_eq!(
+        window.get_master_volume_display().to_string(),
+        "0.0",
+        "① 主控那两个**标量**属性也必须回中性（不是数组的一格）"
+    );
+    assert_eq!(port.display().undoable, 2, "① 复位是新的一步");
+
+    // ---- ② 主控声相：同一条纪律的另一格
+    window.invoke_mixer_master_pan_grab(0.0);
+    window.invoke_mixer_master_pan_drag(36.0);
+    window.invoke_mixer_master_pan_release();
+    assert_eq!(
+        master_readings(&port.project()).1,
+        1.0,
+        "② 前提：拖满 36px ⇒ pan = +1.0"
+    );
+    window.invoke_mixer_master_pan_reset();
+    assert_eq!(
+        master_readings(&port.project()).1.to_bits(),
+        NEUTRAL,
+        "② 主控声相复位 ⇒ 工程逐位 0.0"
+    );
+    assert_eq!(
+        window.get_master_pan().to_string(),
+        "C",
+        "② 主控声相文本回中央"
+    );
+    assert_eq!(port.display().undoable, 4, "② 拖动 + 复位各一步");
+
+    // ---- ③ 交错 A：`grab` 在手时来一次复位
+    window.invoke_mixer_fader_grab(1, 100.0);
+    assert!(window.get_mixer_drag_active(), "③ 前提：手势在手");
+    window.invoke_mixer_fader_reset(1);
+    assert!(
+        !window.get_mixer_drag_active(),
+        "③ 复位必须**先**把在手的拖拽清零（不清 ⇒ 提交引发的重投影丢掉正在拖的\
+         `TouchArea` ⇒ 标志黏住）"
+    );
+    assert_eq!(
+        mixer_readings(&port.project(), &view, 1).0.to_bits(),
+        NEUTRAL,
+        "③ 第 1 轨从 -6.0 dB 复位到 0.0"
+    );
+    assert_eq!(port.display().undoable, 5, "③ 复位提交恰一步");
+    window.invoke_mixer_fader_release(1);
+    assert_eq!(
+        port.display().undoable,
+        5,
+        "③ 随后那一次孤立的 `release` 读到 `Idle` ⇒ 不再提交"
+    );
+    assert!(
+        !window.get_mixer_drag_active(),
+        "③ 收尾之后标志仍 `false`（不黏住）"
+    );
+
+    // ---- ④ 交错 B：复位之后紧跟一次 `grab → release`（按下就松手）
+    window.invoke_mixer_fader_reset(3);
+    assert_eq!(
+        mixer_readings(&port.project(), &view, 3).0.to_bits(),
+        NEUTRAL,
+        "④ 第 3 轨从 -4.8 dB 复位到 0.0"
+    );
+    assert_eq!(port.display().undoable, 6, "④ 一步");
+    window.invoke_mixer_fader_grab(3, 100.0);
+    window.invoke_mixer_fader_release(3);
+    assert_eq!(
+        port.display().undoable,
+        6,
+        "④ 按下就松手 ⇒ ⛔ 提交（否则撤销树里多一步什么都没改的历史）"
+    );
+    assert_eq!(
+        mixer_readings(&port.project(), &view, 3).0.to_bits(),
+        NEUTRAL,
+        "④ 值仍是 0.0"
+    );
+    assert!(!window.get_mixer_drag_active(), "④ 标志归位");
+
+    report_line(
+        "[mixer-double-click-sticky] 主控 -30.0 → 0.0 dB / 主控声相 +1.0 → C / \
+         ③ `grab → 复位 → release` 之后 undoable=5 且标志 false / \
+         ④ `复位 → grab → release` 之后 undoable=6 且标志 false",
+    );
 }

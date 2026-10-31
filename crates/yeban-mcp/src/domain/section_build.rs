@@ -3325,6 +3325,11 @@ mod tests {
     #[test]
     fn note_names_and_pitch_classes_are_aligned() {
         assert_eq!(NOTE_NAMES.len(), NOTE_PITCH_CLASSES.len());
+        assert_eq!(
+            NOTE_PITCH_CLASSES.len(),
+            17,
+            "音名表逐条 17 项（12 个自然/变化音名 + 5 个带升号名）"
+        );
         assert!(NOTE_PITCH_CLASSES.iter().all(|pc| *pc < 12));
         for window in NOTE_PITCH_CLASSES.windows(2) {
             assert!(window[0] <= window[1], "音名表按音高升序");
@@ -3596,6 +3601,11 @@ mod tests {
             out
         };
         assert_eq!(unique(&only_dorian), vec![69, 71]);
+        assert_eq!(
+            only_dorian.len(),
+            2,
+            "dorian 独有的差异是两个音（否则下面那条恒真）"
+        );
         assert_eq!(unique(&only_minor), vec![70]);
         assert_eq!(only_minor.len(), 2, "minor 里 Bb 出现两次");
         assert!(

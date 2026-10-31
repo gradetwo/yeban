@@ -351,6 +351,7 @@ fn one_call_writes_every_track_as_a_32_bit_float_stem() {
         .iter()
         .map(|row| row["frames"].as_u64().expect("frames"))
         .collect();
+    assert!(!frames.is_empty(), "分轨清单必须非空（否则下面那条恒真）");
     assert!(
         frames.iter().all(|value| *value == frames[0]),
         "批次帧数必须齐平: {frames:?}"

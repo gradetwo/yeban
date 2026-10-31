@@ -330,6 +330,10 @@ fn production_loop_start_adopts_the_engine_meter_consumer() {
         .map(|quantum| quantum.expect("每一跳都必须见到帧"))
         .collect();
     assert!(
+        numbers.len() >= 2,
+        "夹具必须 ≥ 2 条（否则 `windows(2).all(..)` 恒真）"
+    );
+    assert!(
         numbers.windows(2).all(|pair| pair[1] > pair[0]),
         "8 跳的量子序号必须严格递增, 实际 {numbers:?}"
     );
@@ -398,6 +402,10 @@ fn production_tick_writes_known_levels_into_the_slint_properties() {
         window.peak_labels(),
         vec!["-120.0".to_owned(); window.view.tracks.len()],
         "没有帧 ⇒ 每一轨都是显示下限（有限值, 不是空串也不是 NaN）"
+    );
+    assert!(
+        !window.levels().is_empty(),
+        "夹具必须非空（否则下面那条 `.all(..)` 恒真）"
     );
     assert!(
         window.levels().iter().all(|level| *level == 0.0),

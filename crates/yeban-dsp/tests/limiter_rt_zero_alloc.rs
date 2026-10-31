@@ -191,6 +191,14 @@ fn rt_path_allocates_nothing_over_10_000_quanta() {
         "窗口里从未压过 ⇒ 判据测错了对象（假绿）"
     );
     assert!(
+        !left.is_empty(),
+        "夹具必须非空（否则下面那条 `.all(..)` 恒真）"
+    );
+    assert!(
+        !right.is_empty(),
+        "夹具必须非空（否则下面那条 `.all(..)` 恒真）"
+    );
+    assert!(
         left.iter().chain(right.iter()).all(|s| s.is_finite()),
         "路径产出了非有限值"
     );

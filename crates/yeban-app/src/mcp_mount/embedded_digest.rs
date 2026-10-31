@@ -521,6 +521,7 @@ fn cli_render(
         use_engine_source: true,
         bit_depth: BitDepth::Int24,
         limiter: false,
+        threads: None,
     };
     crate::render_core::render_project_f32_with_assets_under(project, options, None, assets, None)
         .expect("CLI 导出腿必须能渲染这份工程")
@@ -1741,6 +1742,10 @@ fn measure_sampler_no_sampler(
         .as_str()
         .to_owned();
     let data = &response["data"];
+    assert!(
+        !data["sources"].as_array().expect("sources").is_empty(),
+        "夹具必须非空（否则下面那条 `.all(..)` 恒真）"
+    );
     assert!(
         data["sources"]
             .as_array()

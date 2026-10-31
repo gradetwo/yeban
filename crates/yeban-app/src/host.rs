@@ -643,11 +643,17 @@ pub fn set_roll_ticks_per_pixel(ui: &MainWindow, ticks_per_pixel: u64) -> bool {
 
 /// **窗口的视图态 → 一份投影**（唯一的"从窗口造投影"入口）。
 ///
-/// 它把**三个**视图态拼在一起：横向缩放（[`roll_ticks_per_pixel`]）、行高布局
-/// （[`track_height_layout`]）与 ⭐ 选中轨（[`selected_track_id`]，任务单 `#192`），
-/// 一起交给 [`ViewState::from_project_with_zoom_layout_and_selection`]。
+/// 它把**四个**视图态拼在一起：横向缩放（[`roll_ticks_per_pixel`]）、行高布局
+/// （[`track_height_layout`]）、⭐ 选中轨（[`selected_track_id`]，任务单 `#192`）与
+/// ⭐ 走带位置（[`playhead_tick`]），一起交给
+/// [`ViewState::from_project_with_zoom_cursor_layout_and_selection`]。
 /// 存在的理由是**别让每个重投影点各拼一遍** —— 拼漏一处，那一条路径就会
 /// 把用户调过的缩放 / 行高 / 选中轨静默清零（行高在 `ADR-0004` S1 已经付过同一种学费）。
+///
+/// ⭐ **播放头进投影**：自动化泳道的「当前值」（`cursor_tick`，进无障碍标签）
+/// 取的是**走带位置**。`playhead-ticks` 为 0（装配态）时与旧的
+/// `AUTOMATION_CURSOR_TICK` 逐位同值 ⇒ 默认帧不变；播放推进期间的逐跳更新走
+/// [`ProductionLoop::tick`]（那条路径不改几何，只重算标签）。
 ///
 /// # Errors
 ///
@@ -657,12 +663,22 @@ pub fn project_with_view_state(
     ui: &MainWindow,
 ) -> Result<ViewState, crate::bridge::BridgeError> {
     let selected = selected_track_id(ui);
-    ViewState::from_project_with_zoom_layout_and_selection(
+    ViewState::from_project_with_zoom_cursor_layout_and_selection(
         project,
         roll_ticks_per_pixel(ui),
+        playhead_tick(ui),
         &track_height_layout(ui),
         selected.as_deref(),
     )
+}
+
+/// 走带位置（窗口属性 `playhead-ticks`）—— 自动化"当前值"的求值 tick。
+///
+/// 唯一写者是 [`apply_transport`]（[`TransportReading::position_ticks`]，`#228`）；
+/// 这里只**读**。负数（不该出现）与越界一律回退到 `0`（工程起点 = 旧口径）。
+#[must_use]
+fn playhead_tick(ui: &MainWindow) -> u64 {
+    u64::try_from(ui.get_playhead_ticks()).unwrap_or(0)
 }
 
 /// ⭐ 任务单 `#192`：窗口上的**选中轨原文**（编辑器视图态）—— 唯一的读点。
@@ -1446,12 +1462,93 @@ fn cancel_mixer_gesture(ui: &MainWindow, gesture: &Rc<RefCell<MixerGesture>>) ->
     }
 }
 
+/// **双击复位**要写回中性的那个**字段**（推子 vs 声相）。
+///
+/// 两者的中性值都是 `0.0`（`0 dB` = unity、声相 `0.0` = 中央），但**含义不同**、
+/// 提交的 `AutomationTarget` 也不同 ⇒ 用枚举分派，⛔ 一个 `bool` 形参（调用点读起来
+/// 必须能看出复位的是哪一格）。
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum MixerResetField {
+    /// `TrackV3::volume_db` → `0 dB`。
+    Volume,
+    /// `TrackV3::pan` → 中央。
+    Pan,
+}
+
+/// **双击复位**的落点（四个 `on_mixer_*_reset` 回调共用的**唯一**实现）。
+///
+/// 前提：调用方**已经**把在手的混音手势清零（[`end_mixer_gesture`]）。这一步不能省，
+/// 也不能挪到这里之后 —— 带着没收尾的手势去提交，提交引发的重投影会重建 repeater
+/// 条目、把正在拖的 `TouchArea` 连同指针抓取一起丢掉，`mixer-drag-active` 就黏在 `true`
+/// （实测记录见 [`reproject_track_heights`] 的文档）。
+///
+/// 与拖动路径的三处刻意区别：
+/// 1. **值的来源是权威工程**（[`mixer_track_state`]），不是视图态，也不是界面上的
+///    一份"默认值"常量 ⇒ `old_val` 必然与控制面比对的那一份逐位相同；
+/// 2. **一次点击 = 一次提交**（没有中间态，与静音 / 独奏同形）；
+/// 3. **已经是中性值 ⇒ 什么都不做**：提交一条 `old == new` 的 `Op` 会在撤销树上留下
+///    一步什么都没改的历史（与 [`wire_mixer_sampler`] 里"值没变时不提交"同一条理由）。
+///
+/// 落点仍是同一条 `Op` 对：`Op::SetParam { AutomationTarget::TrackVolume | TrackPan }`
+/// ⇒ 双击与拖动写进的是**同一格工程内容**、同一条撤销栈。
+fn commit_mixer_reset(
+    ui: &MainWindow,
+    port: &UndoPort,
+    target: &MixerTarget,
+    field: MixerResetField,
+) {
+    let track_id = match target {
+        MixerTarget::Track { track_id, .. } | MixerTarget::Master { track_id } => track_id.clone(),
+    };
+    let Some(state) = mixer_track_state(port, &track_id) else {
+        // 工程被换掉 / 控制面没开 ⇒ 不猜当前值，什么都不做。
+        return;
+    };
+    let Ok(id) = track_id.parse::<yeban_model::EntityId>() else {
+        return;
+    };
+    let (current, automation_target, field_name) = match field {
+        MixerResetField::Volume => (
+            state.volume_db,
+            yeban_model::AutomationTarget::TrackVolume { track_id: id },
+            "volume",
+        ),
+        MixerResetField::Pan => (
+            state.pan,
+            yeban_model::AutomationTarget::TrackPan { track_id: id },
+            "pan",
+        ),
+    };
+    // 位比较（与拖动的收尾同一口径）：`f32: PartialEq` 会把 `-0.0 == 0.0` 判真，
+    // 而这里要的是"一个字节都没变"—— `-0.0` 不是中性值，双击应该把它改回 `0.0`。
+    if current.to_bits() == 0.0_f32.to_bits() {
+        return;
+    }
+    let owner = match target {
+        MixerTarget::Track { .. } => "track",
+        MixerTarget::Master { .. } => "master",
+    };
+    let label = format!("mixer: reset {owner} {field_name}");
+    let op = yeban_model::Op::SetParam {
+        target: automation_target,
+        old_val: current,
+        new_val: 0.0,
+    };
+    if port.commit_ops(now_ms(), &label, vec![op]).is_err() {
+        eprintln!("[yeban-app] 双击复位提交被拒绝（工程未改）");
+        return;
+    }
+    refresh_undo_window(ui, port, true);
+}
+
 /// **混音台写入面的接线**（唯一实现；`main.rs` 与 `live_surface` 调的是同一个函数）。
 ///
-/// 十四个入口分三类：
+/// 入口分四类：
 /// - **通道条手势**（推子竖直 / 声相水平）：按下记起点 → 移动只写视图态 → 松手提交**一次**；
 /// - **主控手势**（`mixer-master-fader-*` / `mixer-master-pan-*`）：与通道条逐条同形，
 ///   区别只有寻址方式（身份，见 [`MixerTarget`]）与视图态的落点（标量属性）；
+/// - **双击复位**（`mixer-*-reset` / `mixer-master-*-reset`）：一次点击提交**一次**
+///   （落点 [`commit_mixer_reset`]），并且**先**清掉在手的手势；
 /// - **开关**（静音 / 独奏）：点击即提交**一次**（没有中间态）。
 ///
 /// 提交失败（控制面拒绝、工程被关掉）⇒ **什么都不回写**并打一行 stderr：
@@ -1968,6 +2065,108 @@ pub fn wire_mixer_edit(ui: &MainWindow, port: &Rc<UndoPort>) {
         }
     });
 
+    // ---------------------------------------------------------------- 双击复位
+    //
+    // `.slint` 只报"哪一个下标"（主控那两条连下标都没有），中性值的换算与提交全在这里
+    // （[`commit_mixer_reset`] 是唯一落点）。四条臂**都先** [`end_mixer_gesture`]。
+    //
+    // ⚠ 为什么必须先清零：一次真实双击 = 两下 `Press`/`Release`，第二下的 `Press` 会先把
+    // 一份 `moved == false` 的记录放进宿主。若带着它在手就提交，提交引发的重投影会重建
+    // repeater 条目、把正在拖的 `TouchArea` 连同指针抓取一起丢掉 ⇒ `mixer-drag-active`
+    // 黏在 `true`（实测记录见 [`reproject_track_heights`] 的文档）。
+    //
+    // 这一处理对**两种**内部顺序都成立（判据 `a_double_click_reset_leaves_no_sticky_gesture`
+    // 把两种交错都跑一遍）：
+    //   - `grab → double-clicked → release`：清零 ⇒ 随后的 `release` 读到 `Idle`，不提交；
+    //   - `double-clicked → grab → release`：新记录 `moved == false` ⇒ 收尾同样不提交。
+    // 两条路都只留下**一步**撤销（那一次复位），不会出现"空操作的一步"。
+    ui.on_mixer_fader_reset({
+        let weak = weak.clone();
+        let gesture = Rc::clone(&gesture);
+        let port = Rc::clone(port);
+        move |index| {
+            let Some(ui) = weak.upgrade() else {
+                debug_assert!(false, "MainWindow 在回调执行期间被销毁");
+                return;
+            };
+            end_mixer_gesture(&ui, &gesture);
+            let Some(track_id) = track_id_at(&ui, index) else {
+                return;
+            };
+            commit_mixer_reset(
+                &ui,
+                &port,
+                &MixerTarget::Track { index, track_id },
+                MixerResetField::Volume,
+            );
+        }
+    });
+    ui.on_mixer_pan_reset({
+        let weak = weak.clone();
+        let gesture = Rc::clone(&gesture);
+        let port = Rc::clone(port);
+        move |index| {
+            let Some(ui) = weak.upgrade() else {
+                debug_assert!(false, "MainWindow 在回调执行期间被销毁");
+                return;
+            };
+            end_mixer_gesture(&ui, &gesture);
+            let Some(track_id) = track_id_at(&ui, index) else {
+                return;
+            };
+            commit_mixer_reset(
+                &ui,
+                &port,
+                &MixerTarget::Track { index, track_id },
+                MixerResetField::Pan,
+            );
+        }
+    });
+    // 主控那两条：与上面两条同形，只是身份来自权威工程（`master_bus_track_id`）而非下标。
+    ui.on_mixer_master_fader_reset({
+        let weak = weak.clone();
+        let gesture = Rc::clone(&gesture);
+        let port = Rc::clone(port);
+        move || {
+            let Some(ui) = weak.upgrade() else {
+                debug_assert!(false, "MainWindow 在回调执行期间被销毁");
+                return;
+            };
+            end_mixer_gesture(&ui, &gesture);
+            let Some(track_id) = master_track_id(&port) else {
+                // 工程没有主总线 ⇒ 不猜身份（与主控 `grab` 同款：不留手势、不提交）。
+                return;
+            };
+            commit_mixer_reset(
+                &ui,
+                &port,
+                &MixerTarget::Master { track_id },
+                MixerResetField::Volume,
+            );
+        }
+    });
+    ui.on_mixer_master_pan_reset({
+        let weak = weak.clone();
+        let gesture = Rc::clone(&gesture);
+        let port = Rc::clone(port);
+        move || {
+            let Some(ui) = weak.upgrade() else {
+                debug_assert!(false, "MainWindow 在回调执行期间被销毁");
+                return;
+            };
+            end_mixer_gesture(&ui, &gesture);
+            let Some(track_id) = master_track_id(&port) else {
+                return;
+            };
+            commit_mixer_reset(
+                &ui,
+                &port,
+                &MixerTarget::Master { track_id },
+                MixerResetField::Pan,
+            );
+        }
+    });
+
     // ---------------------------------------------------------------- 取消（`Escape`）
     //
     // 这是 `Escape`（`Action::Cancel`）在混音台上的落点：`apply_action` 调
@@ -2168,21 +2367,41 @@ fn authoritative_sampler(
 /// 装乐器被拒绝时**唯一**的 stderr 写法（⛔ 不散在回调里）。
 ///
 /// 为什么单独成函数：`tests/mixer_toggle_labels.rs` 用"整行就是一个字面量"的形状扫
-/// `fn wire_mixer_switch` 到 `fn read_strings` 之间的源码。那个区间覆盖了本文件一大段
-/// 与混音开关无关的实现 —— 一个被 rustfmt 换到行首的 `eprintln!` 格式串会被它误数成
-/// 第三条提交消息。本函数住在扫描区间**之外**（`wire_mixer_switch` 之前），调用点因此
+/// `fn mixer_switch_commit_message` 到 `fn wire_mixer_master_switch` 之间的源码。
+/// 那个区间覆盖了本文件一大段与混音开关无关的实现 —— 一个被 rustfmt 换到行首的
+/// `eprintln!` 格式串会被它误数成第三条提交消息。本函数住在扫描区间**之外**，调用点因此
 /// 没有行首字面量。⚠ 这是对既有判据锚点宽度的**规避**，不是把判据改松。
 fn warn_install_rejected(reason: &str, path: &str) {
     eprintln!("{INSTALL_REJECTED_STDERR_PREFIX}{reason}（{path}）");
 }
 
 /// 混音台上的两个**布尔开关**（静音 / 独奏）—— 除了目标字段不同，接线逐字相同。
+///
+/// 公开成 `pub` 的唯一理由：键盘入口的纯函数 [`toggle_track_switch_ops_for`] 要按
+/// "哪一个开关"寻址，而那个枚举住在这里（⛔ 不在 `input` 再抄一份）。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum MixerSwitch {
+pub enum MixerSwitch {
     /// `TrackV3::mute`。
     Mute,
     /// `TrackV3::solo`。
     Solo,
+}
+
+/// 静音 / 独奏两个开关的**唯一**提交消息（撤销树节点标签）。
+///
+/// ⚠ 三个入口共用它：调音台通道条、编曲视图轨道头、⭐ 键盘 `M` / `S`
+/// （[`crate::input::Action::ToggleTrackMute`] / [`crate::input::Action::ToggleTrackSolo`]）。
+/// 同一种编辑在撤销树里必须长出同一种节点标签（台账 R17）。
+///
+/// 为什么单独成函数：`tests/mixer_toggle_labels.rs` 用"整行就是一个字面量"的形状扫
+/// `fn mixer_switch_commit_message` 到 `fn wire_mixer_master_switch` 之间的源码。
+/// 本函数**就是**那个扫描区间的定义点 —— 两条字面量在这里只有**一处**定义，两个鼠标入口
+/// 与键盘入口都调它（判据另有一条结构断言钉住"两个鼠标入口都调它"）。
+fn mixer_switch_commit_message(switch: MixerSwitch) -> &'static str {
+    match switch {
+        MixerSwitch::Mute => "toggle track mute",
+        MixerSwitch::Solo => "toggle track solo",
+    }
 }
 
 /// 一个开关的**唯一**接线实现。
@@ -2216,9 +2435,9 @@ enum MixerSwitch {
 ///
 /// 与轨道开关**逐字相同**（`"toggle track mute"` / `"toggle track solo"`）——
 /// 同一种编辑就该在撤销树里长出同一种节点标签；来源视图仍然不写进标签（台账 R17）。
-/// ⚠ 这两条字面量与 [`wire_mixer_switch`] 里的那一对必须保持一致；
-/// `tests/mixer_toggle_labels.rs` 只从 `wire_mixer_switch` 的代码块里数标签，
-/// 因此本函数刻意住在它的**扫描区间之外**。
+/// 两条字面量不再各写一份：本函数与 [`wire_mixer_switch`] 都经
+/// [`mixer_switch_commit_message`] 取它们，`tests/mixer_toggle_labels.rs` 既扫那个
+/// 定义点，也断言这两个鼠标入口都**调**它（收拢之后谁都不能绕开）。
 fn wire_mixer_master_switch(
     ui: &MainWindow,
     port: &Rc<UndoPort>,
@@ -2246,7 +2465,7 @@ fn wire_mixer_master_switch(
                     old_mute,
                     new_mute: !old_mute,
                 },
-                "toggle track mute",
+                mixer_switch_commit_message(which),
             ),
             MixerSwitch::Solo => (
                 yeban_model::Op::SetTrackSolo {
@@ -2254,7 +2473,7 @@ fn wire_mixer_master_switch(
                     old_solo,
                     new_solo: !old_solo,
                 },
-                "toggle track solo",
+                mixer_switch_commit_message(which),
             ),
         };
         if port.commit_ops(now_ms(), message, vec![op]).is_err() {
@@ -2298,7 +2517,7 @@ fn wire_mixer_switch(
                     old_mute: state.mute,
                     new_mute: !state.mute,
                 },
-                "toggle track mute",
+                mixer_switch_commit_message(which),
             ),
             MixerSwitch::Solo => (
                 yeban_model::Op::SetTrackSolo {
@@ -2306,7 +2525,7 @@ fn wire_mixer_switch(
                     old_solo: state.solo,
                     new_solo: !state.solo,
                 },
-                "toggle track solo",
+                mixer_switch_commit_message(which),
             ),
         };
         if port.commit_ops(now_ms(), message, vec![op]).is_err() {
@@ -4387,6 +4606,12 @@ pub struct ProductionLoop {
     engine: Rc<RefCell<EngineHost>>,
     /// UI 线程持有的电平消费端（[`crate::meters::MeterRuntime`]）。
     meters: MeterRuntime,
+    /// 上一次把自动化泳道标签对齐到的**求值 tick**（= 当时引擎的 `position_ticks`）。
+    ///
+    /// 只用来判"走带位置变没变"：没变就不动标签数组（⛔ 不每跳替换 `ModelRc`）；
+    /// 变了就按新位置重算标签（几何不动）。装配态是 0 —— 与投影的默认
+    /// `AUTOMATION_CURSOR_TICK` 同值 ⇒ 第一跳不会产生无谓的重写。
+    automation_cursor: u64,
 }
 
 impl ProductionLoop {
@@ -4457,6 +4682,13 @@ impl ProductionLoop {
         // ⭐ `#168`：工程目录必须在 `reload` **之前**写下（见函数文档的顺序契约）。
         engine.set_project_dir(project_dir.map(std::path::Path::to_path_buf));
         let rebuild = engine.reload(project, quanta)?;
+        // ⭐ **自动化工程的缓存种子**：`publish_automation` 的缓存只由 `Some(..)` 的那一跳
+        // 写（R68），而生产心跳在"标记没变"时会传 `None` —— 开局又没有编辑 ⇒ 缓存会一直空着，
+        // 直到用户第一次改工程。这里用装配点手里**本来就有的**工程把缓存种上：
+        // ① 自动化（音频侧 `SetParam`）从第一跳就生效，⛔ 不是"编辑之前不生效"；
+        // ② 走带期重算自动化标签（[`Self::tick`]）在**没有编辑**的播放里也有工程可用。
+        // ⛔ 不另存一份工程：种子写的就是 [`EngineHost::automation_project`] 那一份缓存。
+        engine.publish_automation(Some(project));
         let mut meters = MeterRuntime::empty();
         // ⛔ 本票修的那一处。`adopt` 的语义是"引擎换代 ⇒ 旧读数全部作废"
         // （见 `crate::meters::MeterRuntime::adopt`），它同时把消费端的所有权接过来。
@@ -4464,6 +4696,7 @@ impl ProductionLoop {
         Ok(Self {
             engine: Rc::new(RefCell::new(engine)),
             meters,
+            automation_cursor: crate::automation::AUTOMATION_CURSOR_TICK,
         })
     }
 
@@ -4476,6 +4709,7 @@ impl ProductionLoop {
         Self {
             engine: Rc::new(RefCell::new(EngineHost::new())),
             meters: MeterRuntime::empty(),
+            automation_cursor: crate::automation::AUTOMATION_CURSOR_TICK,
         }
     }
 
@@ -4629,6 +4863,26 @@ impl ProductionLoop {
         // ⭐ `#228`：**走带读数**（`Copy` 的一帧，一次原子镜面读）。
         // ⛔ 在借内只读、不写界面：界面写入一律在 `drop(engine)` 之后（`#212`）。
         let transport = engine.transport();
+        // ⭐ **自动化「当前值」跟到播放头**：标签里的数值取的是 `position_ticks`
+        // 那一刻的求值结果（投影期同一件事由 `playhead_tick` 交给投影）。只在**位置变了**
+        // 的那一跳重算 —— 几何（折线 / 带 / 轴）与位置无关 ⇒ ⛔ 不重投影、⛔ 不换几何数组。
+        //
+        // 工程取自 `EngineHost` 的**同一份**缓存（上面 `publish_automation` 刚写过）：
+        // "标记没变"的跳（`project` 是 `None`）也必须能算 —— 与 R68 同因。
+        let cursor_labels = if !view.automation_lanes.is_empty()
+            && transport.position_ticks != self.automation_cursor
+        {
+            self.automation_cursor = transport.position_ticks;
+            engine.automation_project().map(|project| {
+                crate::automation::labels_at_cursor(
+                    project,
+                    &view.automation_lanes,
+                    transport.position_ticks,
+                )
+            })
+        } else {
+            None
+        };
         // ⭐ `#86` 甲：**引擎发布腿 ⇒ 界面**的投影点（与上面三步同一个 tick、同一个 UI 线程）。
         //
         // ⛔ 顺序：必须在 `publish_project` 之后 —— 它读的就是那一步的结局。
@@ -4647,6 +4901,10 @@ impl ProductionLoop {
         // （`drop(engine)` 之后才写界面 ⇒ ⛔ 不重新引入持借写界面，`#212` 的崩法）。
         // 每一跳都写：播放中数字每帧变；停止后 `position_ticks` 保留 ⇒ 显示与引擎一致。
         apply_transport(ui, transport);
+        // ⭐ 自动化标签的落点：与时间码同一次读数（⛔ 不另读一次走带位置）。
+        if let Some(labels) = cursor_labels {
+            ui.set_automation_lane_labels(strings(&labels));
+        }
         ProductionTick {
             published_revision,
             publish_error,
@@ -5323,8 +5581,9 @@ const CONSOLE_HEIGHT_MAX_PX: i32 = 600;
 /// | `toggle-view` | `arrangement-view` | `ArrangementView` / `SessionView` 的 `visible` 互斥互换 |
 /// | `toggle-sidebar` | `sidebar-collapsed` | 左资源栏 240px ↔ 36px 图标导轨（`min/max-width`） |
 /// | `toggle-ai-drawer` | `ai-drawer-open` | `compact` 断点下 280px AI 抽屉的 `visible` |
-/// | `open-musical-pr` | `musical-pr-open` | `MusicalPrDrawer` 的 `visible`（**只打开**） |
-/// | `select-sidebar-category` | —— | **不在本函数**：换分类 ⇒ 条目数组跟着换 ⇒ 见 [`wire_sidebar_contents`] |
+/// | `open-musical-pr` | `musical-pr-open` **＋九个提案属性** | **不在本函数**：见 [`wire_proposal_drawer`] —— 它打开抽屉，并从唯一可变权威现读未合并提案清单注入 |
+/// | `select-ai-proposal` / `accept-ai-proposal` / `reject-ai-proposal` | `musical-pr-selected-id` 等九个属性（外加领域的提案状态） | 同样**不在本函数**：三条都在 [`wire_proposal_drawer`] 注册 —— 后两条是界面上**唯一**能改领域的地方 |
+/// | `select-sidebar-category` | —— | **不在本函数**：换分类 ⇒ 条目数组跟着换 ⇒ 见 [`wire_sidebar_contents`]（钳位用**当次条数**，⛔ 不是常量） |
 /// | `console-maximize-toggle` | `console-maximized` | 控制台面板高度（`vertical-stretch`）与 ⤢ 的 `accessible-checked`；与 `Action::ToggleConsoleMaximize` 同属性 |
 /// | `console-height-requested` | `console-height-px` | 先钳到 `220..=600`（`UI-GRID-002` 硬限）再写；`.slint` 的 `states [console-pinned]` 据此把控制台高度钉死在该值 |
 /// | `console-height-reset` | `console-height-px` | 写 `0`（"未拖拽"哨兵）⇒ state 退出、布局回到 3:2 弹性比 |
@@ -5425,18 +5684,11 @@ pub fn wire_view_callbacks(ui: &MainWindow) {
             ui.set_console_height_px(0);
         }
     });
-    ui.on_open_musical_pr({
-        let weak = weak.clone();
-        move || {
-            let Some(ui) = weak.upgrade() else {
-                debug_assert!(false, "MainWindow 在回调执行期间被销毁");
-                return;
-            };
-            // **只打开**（本切片的范围纪律）：提案的生成 / 采纳 / 拒绝不在这里 ——
-            // 它们要么需要界面侧并不存在的"提案身份"，要么属于工程内容（`ADR-0005`）。
-            ui.set_musical_pr_open(true);
-        }
-    });
+    // `open-musical-pr` **不在本函数里**：它现在既要写 `musical-pr-open`，又要从唯一
+    // 可变权威**现读**未合并提案清单（`crate::proposals`），而本函数拿不到权威句柄
+    // （它的装配点在产品与判据两侧都相同、且没有 `Option<ProjectAuthorityHandle>` 参数）。
+    // 注册点搬到紧随其后的 [`wire_proposal_drawer`] —— 同一个回调**只有一个**注册者
+    // （Slint 的 `on_*` 是覆盖语义, 留两份就会让"哪一份在跑"变成读者要猜的事）。
     // ⭐ Session 视图「→ 编曲」：**写 `true`**，不是翻转 —— 按钮的语义是"回到编曲视图"，
     // 已经在那里时再按也不该把用户踢回 Session。纯视图态（`MODEL-ISO-001` 的挥发性层）。
     // 播放权从场景回归时间轴的引擎侧语义不在本切片（`session_view.slint` 头注已登记）。
@@ -5529,6 +5781,217 @@ fn inject_sidebar(ui: &MainWindow, content: &crate::bridge::SidebarCategoryConte
     ui.set_sidebar_empty_reason(content.empty_reason.clone().into());
 }
 
+/// AI 提案抽屉：**四个回调的唯一注册者** ＋ **数据面的唯一写者**。
+///
+/// ## 这一格补的是哪一个洞（实测, 不是转述）
+///
+/// `ui/dialogs/musical_pr_drawer.slint` 的数据面此前**没有任何写者**：抽屉永远画
+/// "0 条"。而领域侧**有**提案（`Domain::proposals`，一次 `yeban_propose_section` /
+/// `yeban_edit_notes` / `yeban_set_macro` 就留下一条 `Open` 记录）⇒ 两侧都真、中间断开。
+/// 本函数把读面接上：清单**只**经 [`crate::proposals::ProposalSource`] 从唯一可变权威读
+/// （⛔ 不是界面侧新造的第二份提案状态，`ADR-0005`）。
+///
+/// ## 写面：这里注册的两条按钮回调是界面上**唯一**能改领域的地方
+///
+/// 「采纳」/「放弃」→ [`resolve_proposal`] → [`crate::proposals::ProposalSource::resolve`]
+/// → `ProjectAuthorityHandle::apply_host(HostAction::{MergeProposal, RejectProposal})`
+/// —— 与工具面 `yeban_merge_proposal` / `yeban_reject_proposal` 落到**同一个**
+/// `Plan::Merge` / `Plan::Reject` 实现（⛔ 第二份合并逻辑一处都没有，判据
+/// `there_is_exactly_one_merge_and_one_reject_implementation`）。
+/// `Shift+Enter`（`Action::AcceptAiSuggestion`）**不另写一条**：它 `invoke` 的就是下面
+/// 这一条回调（见 [`apply_action`] 的臂）。
+///
+/// ## 四条注册点，一份读数
+///
+/// * **装配时**注入一次 ⇒ 控制树里的 `musical-pr-drawer` 的 `accessible-value` 从第一帧
+///   起就是权威的条数（判据不必先点一下才看得见）；
+/// * **打开时**再注入一次 ⇒ "用户看见的清单"与"点开那一刻权威里的清单"是同一份读数。
+///   为什么必须现读：`Propose` / `Reject` 按计划**不**推进施加修订号
+///   （`yeban-mcp` 的 `Plan::mutates_project` 的口径），因此重投影钩子不会为它们而动 —— 边界逐字写在
+///   `src/proposals.rs` 的模块文档里；
+/// * **点行时**写身份 + 重注入（夹紧与可用性都在这一次算，口径只有 `drawer_values` 一处）；
+/// * **按下采纳 / 放弃时**施加 + 用权威的新读数重注入。
+///
+/// ⚠ Slint 的 `on_*` 是**覆盖**语义 ⇒ 这四条回调在本仓**只有这里**注册（`main.rs` 原先
+/// 那两条 `trace("accept-ai-proposal")` / `trace("reject-ai-proposal")` 已搬进来 ——
+/// 留着就会把这里的注册静悄悄擦掉，而日志里那句"未接线"仍然是打出来的）。
+pub fn wire_proposal_drawer(ui: &MainWindow, source: crate::proposals::ProposalSource) {
+    apply_proposal_drawer(ui, &source, DrawerIntent::default());
+    let weak = ui.as_weak();
+
+    ui.on_open_musical_pr({
+        let source = source.clone();
+        let weak = weak.clone();
+        move || {
+            let Some(ui) = weak.upgrade() else {
+                debug_assert!(false, "MainWindow 在回调执行期间被销毁");
+                return;
+            };
+            apply_proposal_drawer(&ui, &source, DrawerIntent::default());
+            ui.set_musical_pr_open(true);
+        }
+    });
+
+    // ⭐ 点一行 = **只**写那一行的身份，然后重注入。⛔ 不是"点一下就合并"：一击改领域的
+    // 代价是一次多父提交，而"在看哪条"与"决定合哪条"是两个动作。
+    ui.on_select_ai_proposal({
+        let source = source.clone();
+        let weak = weak.clone();
+        move |id| {
+            let Some(ui) = weak.upgrade() else {
+                debug_assert!(false, "MainWindow 在回调执行期间被销毁");
+                return;
+            };
+            // ⭐ **不**在这里直接 `set_musical_pr_selected_id`：那九个属性的**唯一**写者是
+            // `apply_proposal_drawer`（判据逐个数 `set_musical_pr_*`），而"什么算选中"的
+            // 夹紧口径只有 `drawer_values` 一处 ⇒ 把身份作为**来意**交进去，写那一张的
+            // 仍然是同一个函数（`select` 的合法性由它对着**当前**权威清单判）。
+            apply_proposal_drawer(
+                &ui,
+                &source,
+                DrawerIntent {
+                    select: Some(id.as_str()),
+                    ..DrawerIntent::default()
+                },
+            );
+        }
+    });
+
+    // 「采纳」：按钮与 `Shift+Enter` 的同一条落点。
+    ui.on_accept_ai_proposal({
+        let source = source.clone();
+        let weak = weak.clone();
+        move || {
+            let Some(ui) = weak.upgrade() else {
+                debug_assert!(false, "MainWindow 在回调执行期间被销毁");
+                return;
+            };
+            resolve_proposal(
+                &ui,
+                &source,
+                crate::proposals::ProposalDecision::Merge {
+                    id: ui.get_musical_pr_selected_id().to_string(),
+                },
+            );
+        }
+    });
+
+    // 「放弃」：只翻转记录（领域的 `apply_reject` **绝不**删除那条提案）。
+    ui.on_reject_ai_proposal(move || {
+        let Some(ui) = weak.upgrade() else {
+            debug_assert!(false, "MainWindow 在回调执行期间被销毁");
+            return;
+        };
+        resolve_proposal(
+            &ui,
+            &source,
+            crate::proposals::ProposalDecision::Reject {
+                id: ui.get_musical_pr_selected_id().to_string(),
+            },
+        );
+    });
+}
+
+/// 抽屉「采纳 / 放弃」的**唯一**落地（按钮回调与 `Shift+Enter` 共用同一条）。
+///
+/// 来源**由调用方（闭包捕获）传进来** —— ⛔ 不在这里造一份：`ProposalSource::none()`
+/// 在这里出现就等于"每一条按键都被诚实地拒绝"，而那与"接上了写入口"是两句相反的话。
+fn resolve_proposal(
+    ui: &MainWindow,
+    source: &crate::proposals::ProposalSource,
+    decision: crate::proposals::ProposalDecision,
+) {
+    // ⚠ 这里是"注入一次、带一份解释"的形状：`apply_proposal_drawer` 是九个属性的**唯一**
+    // 写者（判据 `the_proposal_drawer_writes_its_readings_from_one_host_path` 逐个数
+    // `set_musical_pr_*`），因此被拒绝那句话**作为参数**交给它, 而不是在这里再
+    // `set_musical_pr_resolve_reason(..)` 一次 —— 那样就有第二个写者了。
+    match source.resolve(&decision) {
+        // 成功 ⇒ 只重注入：那一行从清单里消失（`open_proposal_rows` 不再返回它）就是
+        // 唯一的反馈。⛔ 不写"操作成功"—— 那是对**请求**的复述，不是对**结果**的读数
+        // （幂等命中时 `steps` 是 0 而这不是失败, 见 `yeban-mcp` 的
+        // `a_second_host_merge_is_an_idempotent_no_step`）。
+        Ok(()) => apply_proposal_drawer(ui, source, DrawerIntent::default()),
+        Err(message) => {
+            // 权威的**逐字**理由 ⇒ `resolve-available` 打回 `false`（口径在
+            // `drawer_values`：有拒绝理由时按钮不画），抽屉**不关** —— 关掉就等于把
+            // 拒绝理由一起关掉。
+            apply_proposal_drawer(
+                ui,
+                source,
+                DrawerIntent {
+                    refusal: Some(message.as_str()),
+                    ..DrawerIntent::default()
+                },
+            );
+        }
+    }
+}
+
+/// 一次重注入的**来意**（[`apply_proposal_drawer`] 的第三个参数）。
+///
+/// 为什么做成命名结构而不是两个 `Option<&str>` 位置参数：这两个 `None` 的语义**相反** ——
+/// `select: None` 是"**沿用**属性里已有的选中"，`refusal: None` 是"此刻**没有**拒绝"。
+/// 写成 `apply_proposal_drawer(ui, source, None, None)` 时读的人无法分辨哪一格是哪个意思，
+/// 而 `DrawerIntent::default()` 说的就是那句话（沿用选中 + 无拒绝 ⇒ 一次纯重注入）。
+///
+/// ⭐ 有了它，"选中态由谁写"这件事仍然只有一个答案：九个属性**只**由
+/// [`apply_proposal_drawer`] 写（判据
+/// `the_proposal_drawer_writes_its_readings_from_one_host_path` 逐个 `set_musical_pr_*`
+/// 计数），点行只是把身份**交进去**再写。
+#[derive(Clone, Copy, Default)]
+pub struct DrawerIntent<'a> {
+    /// 用户刚点选的那一行的 `proposalId`；`None` = 不改，沿用窗口属性里已有的那一条。
+    pub select: Option<&'a str>,
+    /// 权威刚刚**逐字**拒绝的话；`None` = 没有刚发生的拒绝（任何常规重注入都会清掉上一句）。
+    pub refusal: Option<&'a str>,
+}
+
+/// 抽屉数据面的**唯一**注入点（幂等：同一个来源 + 同一个选中重复调用得到同一个界面）。
+///
+/// 调用者，同一段代码（⛔ 没有第二份写者）：装配时、打开抽屉时、点行时、按下采纳 /
+/// 放弃后（以上都在 [`wire_proposal_drawer`] 的注册者里）、以及会话侧改工程后的重投影
+/// （`crate::reproject::AuthorityMirror::sync_now`）。
+///
+/// 九个属性一次写齐 —— 四个数组与条数**必须**同源同长度，因为 `.slint` 的循环按下标
+/// 同时读它们（等长这件事的判据：`src/proposals.rs` 的
+/// `drawer_values_keeps_the_four_arrays_the_same_length`）。
+///
+/// ⚠ **选中态存在窗口属性里**（本函数下面那一条 `set_musical_pr_selected_id` 是它唯一的
+/// 写点，写的是**夹紧后**的值）⇒ 宿主不需要一份 `Rc<RefCell<…>>` 的第二状态，而键盘路径
+/// 与按钮路径读到的必然是**同一格**。⛔ 这不是"界面拥有状态"：它是视图态
+/// （`MODEL-ISO-001` 的挥发性层），不进 `.yeban`、不进撤销栈，与 `selected-clip-ulid`
+/// 同款。
+///
+/// ⚠ 来意里的两格各自只有**一个**调用者会传非 `None`：`select` 只有点行那一条回调
+/// （[`wire_proposal_drawer`] 的 `on_select_ai_proposal`），`refusal` 只有
+/// [`resolve_proposal`] 在权威**拒绝**的那一跳。其余四处（装配 / 打开 / 采纳成功 /
+/// 重投影）都是 `DrawerIntent::default()` ⇒ 任何一次常规重注入都把上一句解释清掉，
+/// 陈旧的拒绝不会被读成"现在也用不了"。
+pub fn apply_proposal_drawer(
+    ui: &MainWindow,
+    source: &crate::proposals::ProposalSource,
+    intent: DrawerIntent<'_>,
+) {
+    // 先落到一个**有名字**的临时量上：`get_…` 返回的是新造的 `SharedString`，
+    // 直接在 `unwrap_or(….as_str())` 里用会让借用的生命周期短于 `selection`。
+    let current = ui.get_musical_pr_selected_id();
+    let values = crate::proposals::drawer_values(
+        &source.rows(),
+        source.has_source(),
+        intent.select.unwrap_or(current.as_str()),
+        intent.refusal,
+    );
+    ui.set_musical_pr_proposal_count(values.count);
+    ui.set_musical_pr_proposal_ids(strings(&values.ids));
+    ui.set_musical_pr_proposal_kinds(strings(&values.kinds));
+    ui.set_musical_pr_proposal_titles(strings(&values.titles));
+    ui.set_musical_pr_proposal_op_counts(integers(&values.op_counts));
+    ui.set_musical_pr_selected_id(SharedString::from(values.selected.as_str()));
+    ui.set_musical_pr_empty_reason(SharedString::from(values.empty_reason.as_str()));
+    ui.set_musical_pr_resolve_available(values.resolve_available);
+    ui.set_musical_pr_resolve_reason(SharedString::from(values.resolve_reason.as_str()));
+}
+
 /// ⭐ 剪辑选中态**及其作用面**（`[UI-NOTE-001]` 的"当前编辑片段"）。
 ///
 /// | 读 / 写 | 事实源 |
@@ -5574,6 +6037,236 @@ pub fn wire_clip_scope(ui: &MainWindow, view: Rc<RefCell<ViewState>>, undo: Opti
         let snapshot = view.borrow().clone();
         let state: &ViewState = fresh.as_ref().unwrap_or(&snapshot);
         apply_view(&ui, state, width, scroll);
+    });
+}
+
+// ===========================================================================
+// 编曲标尺点击 ⇒ 走带定位（`arrangement-ruler` 的点击源）
+// ===========================================================================
+
+/// 标尺点击的**目标 tick**（纯函数）：标尺带的局部 x ⇒ 走带位置。
+///
+/// 四条口径（每一条都是决定）：
+///
+/// - **同一份缩放**：`ticks_per_pixel` 就是投影用的那一个（[`roll_ticks_per_pixel`]，与
+///   `bridge::tick_to_px` 同源）⇒ "画在哪一格"与"吸附前的 tick"是同一个整数网格；
+/// - **小节吸附**（`U-07 R1`）：像素列先换成 tick，再交给 [`crate::bridge::snap_tick`]
+///   吸附到**最近的小节线**（与铅笔 / 剪刀 / 移动共用**同一个**吸附实现，平局向更晚
+///   的一侧取整）。`bar_length_ticks == 0` ⇒ 不吸附（防御坏投影值）。点击列正好落在
+///   小节线上时吸附是恒等变换，因此"画的那一列 = 停下的那一列"在**小节线**上仍成立；
+/// - **左端 = 工程起点**：负的 x ⇒ `0`（夹紧；`u64` 没有负数，⛔ 不回绕）；
+/// - **右端 = 投影网格的右缘** `span_ticks`：吸附之后再夹右缘，点在最后一条小节线
+///   之外 ⇒ 停在那里，⛔ 不把光标送去一个画面上没有网格参照的地方。
+///
+/// 非有限的 `x` ⇒ `None` = **不响应**（⛔ 不把 NaN 当成"往右无穷远"，与
+/// [`clip_drag_target_tick`] 对非有限位移同款处理）。
+///
+/// ⚠ **吸附语义的裁决**：Normative 两份文档没有逐字规定"点标尺是否吸附"；本实现按
+/// 负责人任务（`~/zimmer-ui-mode-report.md` 的 `U-07 R1`）落"最近小节线"，并登记
+/// `docs/adr/ADR-0054-ruler-bar-snap.md`（**Proposed**，待人类批准）。网格值取投影自己的
+/// `bar_length_ticks`（⛔ 不在宿主重算拍号）。
+#[must_use]
+pub fn ruler_seek_tick(
+    px: f32,
+    ticks_per_pixel: u64,
+    span_ticks: u64,
+    bar_length_ticks: u64,
+) -> Option<u64> {
+    if !px.is_finite() {
+        return None;
+    }
+    // 向下取整到像素列（与 `tick_to_px` 的整数除法互为逆运算）。`f32 → u32` 的 `as` 既
+    // **截断**又**饱和**：负数已被上面的 `max(0.0)` 收编，而一个天真的巨大 x 落在
+    // `u32::MAX` 列上 —— 那一列必然越过任何真实网格，于是吸附 + 夹紧把它收回右缘。
+    let column = px.max(0.0) as u32;
+    // 乘积溢出 `u64` 只可能来自那种饱和列（窗口宽度到不了）⇒ 视作"在最右缘之右"。
+    let tick = crate::bridge::px_to_tick(column, ticks_per_pixel.max(1)).unwrap_or(u64::MAX);
+    let snapped = crate::bridge::snap_tick(tick, bar_length_ticks);
+    Some(snapped.min(span_ticks))
+}
+
+/// 无障碍「上一 / 下一小节」的目标 tick（纯函数）：`current ± steps × bar_length_ticks`，
+/// 夹在 `[0, span_ticks]`（⛔ 不回绕、⛔ 不越过投影网格）。
+///
+/// `bar_length_ticks == 0` ⇒ 原地不动（防御坏投影值，与 [`ruler_seek_tick`] 同一口径）。
+/// 溢出用 `i128` 中转：`steps` 是 `i32`、`current` / `bar` 是 `u64`，三者的乘积在
+/// `i128` 里一定装得下（`2^32 × 2^64 = 2^96 < 2^127`）⇒ 不需要饱和运算。
+#[must_use]
+pub fn ruler_step_tick(current: u64, steps: i32, bar_length_ticks: u64, span_ticks: u64) -> u64 {
+    if bar_length_ticks == 0 {
+        return current.min(span_ticks);
+    }
+    let target = i128::from(current) + i128::from(steps) * i128::from(bar_length_ticks);
+    if target <= 0 {
+        return 0;
+    }
+    let Ok(target) = u64::try_from(target) else {
+        return span_ticks;
+    };
+    target.min(span_ticks)
+}
+
+/// 无障碍 `SetValue`（"定位到第 N 小节"）的目标 tick（纯函数）。
+///
+/// 小节号是**1 起**（第 1 小节 = tick 0，与界面标尺的读数一致）。乘积溢出 / 越过网格右缘
+/// ⇒ `span_ticks`（饱和，⛔ 不回绕）。
+#[must_use]
+pub fn ruler_bar_tick(bar_number: u64, bar_length_ticks: u64, span_ticks: u64) -> u64 {
+    bar_number
+        .saturating_sub(1)
+        .checked_mul(bar_length_ticks)
+        .map_or(span_ticks, |tick| tick.min(span_ticks))
+}
+
+/// 投影网格的**右缘** tick（纯函数）：`bar_positions.len()` × 一小节的 tick。
+///
+/// `bridge` 画的是**第 0..len-1 条**小节线（`bar_positions` 逐项 = `bar × bar_ticks`），
+/// 因此最后一条线右边那一整格仍然属于网格，其右缘 = `len × bar_ticks`。
+/// 溢出 ⇒ `u64::MAX`（真实工程到不了；饱和而⛔ 不回绕）。
+#[must_use]
+pub fn ruler_span_ticks(bar_lines: usize, bar_length_ticks: u64) -> u64 {
+    u64::try_from(bar_lines)
+        .ok()
+        .and_then(|lines| lines.checked_mul(bar_length_ticks))
+        .unwrap_or(u64::MAX)
+}
+
+/// 走带定位的**唯一提交口**（标尺点击 / 无障碍步进 / 章节跳转共用）。
+///
+/// ⭐ `#212` 同款两道防线：这些回调与 `on_toggle_play` 共用同一个引擎 `Rc`，
+/// 借不到就**降级**（一行 eprintln，走带与界面一位不动），⛔ 不 panic、⛔ 不 abort。
+/// 作用域纪律：**先放借、再碰界面**（`apply_transport` 写三个属性）。
+fn commit_seek(ui: &MainWindow, engine: &Rc<RefCell<EngineHost>>, tick: u64, source: &str) {
+    let Ok(mut engine) = engine.try_borrow_mut() else {
+        eprintln!("[yeban-app] 忽略 {source}：引擎正被同一线程借用（重入）⇒ 本次定位无效");
+        return;
+    };
+    let reading = engine.seek(tick);
+    drop(engine);
+    apply_transport(ui, reading);
+}
+
+/// 把**标尺点击 / 无障碍定位**接到引擎的走带定位上（`arrangement-ruler` 的全部入口）。
+///
+/// | 入口 | 回调 | 换算 |
+/// | :--- | :--- | :--- |
+/// | 指针按下 / 按住拖动（`U-07 R3`） | `ruler-seek(x)` —— 只报**局部像素** | [`ruler_seek_tick`] |
+/// | 屏读器增减（`U-07 R2`） | `ruler-step(steps)` —— 只报**小节步数** | [`ruler_step_tick`] |
+/// | 屏读器 `SetValue`（`U-07 R2`） | `ruler-seek-bar(bar)` —— 只报**小节号文本** | [`ruler_bar_tick`] |
+///
+/// 三条都落 [`commit_seek`] ⇒ `EngineHost::seek` 是**唯一**的 `TransportCommand::SeekTicks`
+/// 发送口（与 `#227` 回起点同一条路）；[`apply_transport`] 是走带光标 / 时间码的**唯一**写者。
+///
+/// ⛔ 这里**不碰工程、不碰撤销栈**：定位是会话运行态（`MODEL-ISO-001` 的第二层），
+/// 一次 `Op` 都不提交 ⇒ `commit_count` / `undoable` / `projectDigest` 全部 Δ0。
+///
+/// 两个 `Rc` 与产品装配**同源**：`engine` 是 `wire_transport` / `wire_keys` 拿的**同一个**
+/// `Rc<RefCell<EngineHost>>`（因此"界面点标尺"与"键位回起点"作用在同一个走带上），
+/// `view` 是 `wire_clip_scope` / `wire_scene_launch` 拿的**同一个**活投影
+/// （网格右缘 / 小节长度都从它现读，换工程 / 换拍号之后跟着换）。
+pub fn wire_ruler_seek(
+    ui: &MainWindow,
+    engine: Rc<RefCell<EngineHost>>,
+    view: Rc<RefCell<ViewState>>,
+) {
+    // ① 指针：down 与按住拖动的每一次 move 都走这条。
+    let weak = ui.as_weak();
+    let click_engine = Rc::clone(&engine);
+    let click_view = Rc::clone(&view);
+    ui.on_ruler_seek(move |x: f32| {
+        let Some(ui) = weak.upgrade() else {
+            debug_assert!(false, "MainWindow 在回调执行期间被销毁");
+            return;
+        };
+        // 网格右缘与小节长度来自**投影自己**的两个读数，⛔ 不在这里重算 `bar_count`
+        // 或拍号（那两条公式在 `bridge` 里，重算一遍就是第二个事实源）。
+        let (span, bar) = {
+            let state = click_view.borrow();
+            (
+                ruler_span_ticks(state.bar_positions.len(), state.bar_length_ticks),
+                state.bar_length_ticks,
+            )
+        };
+        let Some(tick) = ruler_seek_tick(x, roll_ticks_per_pixel(&ui), span, bar) else {
+            return;
+        };
+        commit_seek(&ui, &click_engine, tick, "ruler-seek");
+    });
+
+    // ② 屏读器「上 / 下一小节」：当前位置从**引擎**现读，⛔ 不从界面读。
+    let weak = ui.as_weak();
+    let step_engine = Rc::clone(&engine);
+    let step_view = Rc::clone(&view);
+    ui.on_ruler_step(move |steps: i32| {
+        let Some(ui) = weak.upgrade() else {
+            debug_assert!(false, "MainWindow 在回调执行期间被销毁");
+            return;
+        };
+        let (span, bar) = {
+            let state = step_view.borrow();
+            (
+                ruler_span_ticks(state.bar_positions.len(), state.bar_length_ticks),
+                state.bar_length_ticks,
+            )
+        };
+        let current = {
+            let engine = step_engine.borrow();
+            engine.transport().position_ticks
+        };
+        let tick = ruler_step_tick(current, steps, bar, span);
+        commit_seek(&ui, &step_engine, tick, "ruler-step");
+    });
+
+    // ③ 屏读器 `SetValue`：「定位到第 N 小节」（1 起）。解析失败 ⇒ 一条命令都不发。
+    let weak = ui.as_weak();
+    let bar_engine = Rc::clone(&engine);
+    let bar_view = Rc::clone(&view);
+    ui.on_ruler_seek_bar(move |value: SharedString| {
+        let Some(ui) = weak.upgrade() else {
+            debug_assert!(false, "MainWindow 在回调执行期间被销毁");
+            return;
+        };
+        let Ok(bar_number) = value.trim().parse::<u64>() else {
+            return;
+        };
+        let (span, bar) = {
+            let state = bar_view.borrow();
+            (
+                ruler_span_ticks(state.bar_positions.len(), state.bar_length_ticks),
+                state.bar_length_ticks,
+            )
+        };
+        let tick = ruler_bar_tick(bar_number, bar, span);
+        commit_seek(&ui, &bar_engine, tick, "ruler-seek-bar");
+    });
+}
+
+/// 章节卡片 ⇒ 走带定位到该段起点（`~/zimmer-ui-mode-report.md` 的 `U-05`）。
+///
+/// 与 [`wire_ruler_seek`] **同一条纪律**：界面只报**段落下标**（⛔ 界面零算术），
+/// 起点 tick 从活投影的 [`crate::bridge::SectionView::start_tick`] 现读；
+/// 落点同样是 [`commit_seek`]（唯一的 `SeekTicks` 入口），⛔ 不碰工程 / 撤销栈。
+pub fn wire_section_seek(
+    ui: &MainWindow,
+    engine: Rc<RefCell<EngineHost>>,
+    view: Rc<RefCell<ViewState>>,
+) {
+    let weak = ui.as_weak();
+    ui.on_section_seek(move |index: i32| {
+        let Some(ui) = weak.upgrade() else {
+            debug_assert!(false, "MainWindow 在回调执行期间被销毁");
+            return;
+        };
+        let Ok(index) = usize::try_from(index) else {
+            return;
+        };
+        let Some(tick) = ({
+            let state = view.borrow();
+            state.sections.get(index).map(|section| section.start_tick)
+        }) else {
+            return;
+        };
+        commit_seek(&ui, &engine, tick, "section-seek");
     });
 }
 
@@ -5873,8 +6566,9 @@ pub fn wire_save(
     port: SaveStatus,
     live_port: Option<Rc<UndoPort>>,
     // ⭐ **原生文件对话框**（任务单 `#86` 乙）—— "保存到哪"的**可注入**能力面。
-    // 只有在**装配期没给目标路径**时才会被问到（既有 `--open` / `--save` 那条路
-    // 一次都不弹窗）；判据传自己的假实现，于是"对话框被调用了"与"选了路径 ⇒ 写盘"
+    // 「保存」只在**当前目标还不知道**时才会问它（装配期给了路径 ⇒ 一次都不弹窗）；
+    // 「另存为」（`Cmd/Ctrl+Shift+S`，2026-10-31）**总是**问一次 —— 它的语义就是"换个
+    // 新位置"。判据传自己的假实现，于是"对话框被调用了"与"选了路径 ⇒ 写盘"
     // 两句话都能被机械读数（⛔ 不依赖真弹窗）。
     picker: Rc<dyn crate::file_picker::FilePicker>,
     #[cfg(feature = "in-process-mcp")] authority: Option<crate::mcp_mount::ProjectAuthorityHandle>,
@@ -5925,9 +6619,14 @@ pub fn wire_save_with_engine(
     engine: Option<Rc<RefCell<EngineHost>>>,
 ) {
     // ⭐ `#86` 乙：用户在对话框里挑过一次之后**记住**它（否则每次按保存都要再问一次 ——
-    // 那是"每保存一次弹一次窗"的坏体验）。装配期给了路径时本格**永远**是 `None`。
+    // 那是"每保存一次弹一次窗"的坏体验）。装配期给了路径、且用户没按过「另存为」时
+    // 本格**恒为** `None`（⇒ 既有装配的行为一位不变）；「另存为」会把新路径写进它。
     let chosen: std::rc::Rc<std::cell::RefCell<Option<std::path::PathBuf>>> =
         std::rc::Rc::new(std::cell::RefCell::new(None));
+    // 「另存为」那一路要问自己的对话框、也要写**同一个** `chosen` —— 两个 `Rc` 句柄
+    // 必须在第一个闭包**搬走**它们之前克隆出来（`Rc` 语义：共享同一份状态）。
+    let picker_save_as = std::rc::Rc::clone(&picker);
+    let chosen_save_as = std::rc::Rc::clone(&chosen);
     let weak = ui.as_weak();
     ui.on_save_project(move || {
         let Some(ui) = weak.upgrade() else {
@@ -5940,13 +6639,23 @@ pub fn wire_save_with_engine(
         let authority = authority.as_ref();
         #[cfg(not(feature = "in-process-mcp"))]
         let authority = None;
-        // ⭐ **目标路径**（`#86` 乙）：装配期的路径优先；否则用上次在对话框里挑的；
-        // 再否则**问一次原生对话框**。
+        // ⭐ **目标路径**（`#86` 乙）：上次在对话框里挑的（含「另存为」写下的）优先；
+        // 否则装配期的路径；再否则**问一次原生对话框**。
+        //
+        // ⚠ 优先级自 2026-10-31 起把 `chosen` 提到 `port.target` **之前**：
+        // `port.target` 是装配期的只读知识（`--open` / `--save` 给的那个文件），
+        // 而「另存为」落盘后本会话的当前目标**就是**用户刚挑的那个新文件 ——
+        // 排在后面会让 "另存为 ⇒ 再按保存" 写回旧文件（假读数）。装配期给了路径、
+        // 又没另存为过时 `chosen` 恒为 `None` ⇒ 既有行为一位不变。
         //
         // ⚠ **取消不是失败**：用户按了"取消" ⇒ 本回调**什么都不做**（⛔ 不写
         // `save-status`、⛔ 不调 `dispatch_save`）。把取消写成"保存失败：没有目标路径"
         // 是把"我不想"和"出错了"混成一句 —— 本仓最忌讳的那类假读数。
-        let target = match port.target.clone().or_else(|| chosen.borrow().clone()) {
+        // ⚠ `chosen.borrow()` **单独**占一条语句：写在 `match` 的判据里时，
+        // 那个 `Ref` 临时量会活到整个 `match` 结束（临时量作用域），
+        // 于是下面 `None` 臂里的 `chosen.borrow_mut()` 当场 panic（`RefCell already borrowed`）。
+        let remembered = chosen.borrow().clone();
+        let target = match remembered.or_else(|| port.target.clone()) {
             Some(path) => Some(path),
             None => {
                 let picked = picker.choose_save(
@@ -5969,8 +6678,9 @@ pub fn wire_save_with_engine(
         // 保存的是**此刻**的活会话：工程 + 提交图谱 + ⭐ **会话资产池**
         // （`assets/{sha256}`；任务单 `#132`）。编码口径只有
         // `yeban_model::commit::encode_history_dag` 一份（本处不写第二份序列化）。
-        // 目标路径是**装配期**的知识（`--open` 的那个文件），不随会话变；它保持
-        // `Option`，于是"没有磁盘对应物"仍然如实报 `SaveStage::NoTarget`。
+        // 目标路径的来源是"装配期给的（`--open` 的那个文件）或对话框挑的（含另存为）"；
+        // 它保持 `Option`，于是"既没有装配期目标、对话框也没挑出东西"仍然如实报
+        // `SaveStage::NoTarget`。
         //
         // ⚠ 工程 / 图谱 / 资产池**一次**从同一个端口读出（同一个 `live` binding）：
         // 分几次读会给"保存的那一版"与"图谱/资产的那一版"留下漂移的余地。
@@ -6010,6 +6720,39 @@ pub fn wire_save_with_engine(
                 .set_project_dir(path.parent().map(std::path::Path::to_path_buf));
         }
     });
+
+    // ⭐ **另存为**（`Cmd/Ctrl+Shift+S`，界面决定，⛔ 规范未点名）：界面上**没有按钮**，
+    // 于是它只改行为、不改变默认帧（不新增控件 ⇒ 无 golden 影响）。
+    //
+    // 三跳，每一跳都复用既有实现：
+    // 1. **问一次对话框**：`FilePicker::choose_save`，标题"另存为"（与「保存」那一路
+    //    同一个可注入能力面；⛔ 不在宿主里起第二套文件选择）；
+    // 2. **记成当前目标**：写进 `chosen`（对话框里挑过的路径的**唯一**记忆点），
+    //    于是随后按 `Cmd/Ctrl+S` 写的是新文件（用户预期）；
+    // 3. **进同一条保存链**：`ui.invoke_save_project()` —— 序列化 / 权威分流 / 原子写 /
+    //    回执 / 引擎工程目录的更新**全部**在同一个闭包里，⛔ 不复制第二份。
+    //
+    // ⚠ **取消不是失败**：对话框回取消 ⇒ 当前目标一位不动、不写回执、不落盘。
+    {
+        let weak = ui.as_weak();
+        ui.on_save_project_as(move || {
+            let Some(ui) = weak.upgrade() else {
+                debug_assert!(false, "MainWindow 在回调执行期间被销毁");
+                return;
+            };
+            let picked = picker_save_as.choose_save(
+                &crate::file_picker::PickerRequest::save("另存为", "project.yeban")
+                    .with_extensions(["yeban"]),
+            );
+            let Some(path) = picked else {
+                return;
+            };
+            let path = crate::file_picker::with_default_extension(path, "yeban");
+            // 临时借用在本语句结束处释放 ⇒ 下面重入保存闭包时不会 `already borrowed`。
+            *chosen_save_as.borrow_mut() = Some(path);
+            ui.invoke_save_project();
+        });
+    }
 }
 
 /// 一次保存的**界面回执**：把 [`crate::save_action::SaveOutcome`] 写进状态文本。
@@ -6732,6 +7475,21 @@ impl ModulePaths {
     /// 不是路径解析），因此这里不制造第二个 CLI 面。
     #[must_use]
     pub fn from_env() -> Self {
+        Self::from_env_for_project(None)
+    }
+
+    /// 与 [`from_env`](Self::from_env) 相同，但 `export_wav` 多一条工程目录缺省
+    /// （审评 2026-10-31，P2-3）：
+    ///
+    /// - 环境变量 `YEBAN_UI_EXPORT_WAV_PATH` 已给（非空）⇒ 原样（最高优先）；
+    /// - 否则工程有文件落点（`project_dir = Some`）⇒ 该目录 + `ui-export.wav`
+    ///   （能规范化就规范化成绝对路径；规范化失败 ⇒ 用原目录拼接，⛔ 不为缺省
+    ///   路径去拦整个接线）；
+    /// - 否则（新建未保存工程）⇒ 保持相对缺省 `ui-export.wav`（落进程 cwd，旧行为）。
+    ///
+    /// 只改 `export_wav`：其余三条路径仍是 env / 缺省两档（审评只问了导出 WAV）。
+    #[must_use]
+    pub fn from_env_for_project(project_dir: Option<&std::path::Path>) -> Self {
         let defaults = Self::default();
         let read = |name: &str| {
             std::env::var(name)
@@ -6751,8 +7509,20 @@ impl ModulePaths {
         // 本函数只做"读环境变量 / 给缺省值"，超出 `MAX_SECONDS` 的值会让那条路
         // 如实返回 `InvalidSeconds`（⭐ 与 CLI 完全同一条判定）。
         let midi_in_seconds = seconds_from("YEBAN_UI_MIDI_IN_SECONDS", defaults.midi_in_seconds);
+        // ⭐ 审评 2026-10-31（P2-3）：`export_wav` 的三档优先级 ——
+        // env > 工程目录 > 相对缺省（见 `from_env_for_project` 的文档）。
+        let export_wav = match read("YEBAN_UI_EXPORT_WAV_PATH") {
+            Some(path) => path,
+            None => match project_dir {
+                Some(dir) => {
+                    let base = std::fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf());
+                    base.join("ui-export.wav")
+                }
+                None => defaults.export_wav,
+            },
+        };
         Self {
-            export_wav: read("YEBAN_UI_EXPORT_WAV_PATH").unwrap_or(defaults.export_wav),
+            export_wav,
             export_midi: read("YEBAN_UI_EXPORT_MIDI_PATH").unwrap_or(defaults.export_midi),
             import_midi: read("YEBAN_UI_IMPORT_MIDI_PATH").unwrap_or(defaults.import_midi),
             load_sfz: read("YEBAN_UI_LOAD_SFZ_PATH").unwrap_or(defaults.load_sfz),
@@ -6978,6 +7748,19 @@ fn module_trace(action: &str, started: std::time::Instant, receipt: &str) {
 /// ⇒ 与 CLI 的 `--sfz <f> --export-wav out.wav` 是**同一条**音源路径。
 pub fn wire_module_actions(ui: &MainWindow, port: Option<Rc<UndoPort>>) -> MidiInState {
     wire_module_actions_with(ui, port, ModulePaths::from_env())
+}
+
+/// 与 [`wire_module_actions`] 相同，但 `export_wav` 的缺省取工程目录
+/// （审评 2026-10-31，P2-3；见 [`ModulePaths::from_env_for_project`]）。
+///
+/// 生产接线（`main.rs` / `live_surface.rs`）调这一条；判据仍可用旧的
+/// [`wire_module_actions`]（env / 缺省两档，行为不变）。
+pub fn wire_module_actions_for_project(
+    ui: &MainWindow,
+    port: Option<Rc<UndoPort>>,
+    project_dir: Option<&std::path::Path>,
+) -> MidiInState {
+    wire_module_actions_with(ui, port, ModulePaths::from_env_for_project(project_dir))
 }
 
 /// 与 [`wire_module_actions`] 相同，但路径／参数由调用方**显式**给出（判据用）。
@@ -8110,36 +8893,54 @@ fn midi_in_error_code(error: &crate::midi_in::MidiInError) -> &'static str {
 /// `shortcut_table_status_matches_the_resolution_and_host_pipeline` 把快捷键表逐行与它
 /// 对账 —— 表与行为因此不可能各说各话。
 ///
-/// 返回 `false` 的三条（`AuditionMain` / `AuditionProposal` / `AcceptAiSuggestion`）
-/// 是**能力**还没落地的动作。**不消费**它们是刻意的：
+/// 返回 `false` 的两条（`AuditionMain` / `AuditionProposal`）是**能力**还没落地的动作。
+/// **不消费**它们是刻意的：
 /// 把键吞掉却什么都不做，比不处理更糟 —— 用户会以为"这个功能坏了"，而日志里没有任何东西能解释。
 ///
-/// ## 三条各自缺什么（2026-10-08 实测；这是**缺口登记**，不是待办装饰）
+/// ## 剩下两条缺什么（2026-10-08 实测；这是**缺口登记**，不是待办装饰）
 ///
 /// 缺的是**能力**，不是"接线"。把它们接上所需的机制在仓库里**不存在**，因此本轮**有意**
-/// 保持这三条在名单里（`docs/ledger/feature-alignment.md` 的 AI 提案行与走带行有就地加注）。
+/// 保持这两条在名单里（`docs/ledger/feature-alignment.md` 的 AI 提案行与走带行有就地加注）。
 ///
-/// **① `AcceptAiSuggestion`（`Shift+Enter` 采纳 AI 建议）—— 没有"待采纳的提案"这个对象。**
-/// 领域侧**有**提案概念：`crates/yeban-mcp/src/domain/proposal.rs` 的 `Proposal`
-/// （`ProposalStatus::Open`）与 `yeban_merge_proposal`（要 `proposalId`）。
-/// 但界面侧**没有提案身份的来源**：`grep -rn 'proposalId' crates/yeban-app/src` 的命中
-/// **全部落在注释里**（本文件的这一段与 `main.rs` 的 `wire_callbacks` 文档），没有一处是取值。
-/// 抽屉里的 `proposal-count` / `proposal-labels` / `proposal-kinds` / `confidences`
-/// 是**空的**（`crates/yeban-app/ui/dialogs/musical_pr_drawer.slint` 的 `:32-35`：
-/// `0` 与四个空数组），界面在零提案时画一句用户可见的空态
-/// （`musical-pr-empty-state`，`:12` 自陈"静态骨架, **不含演示数据**"）。
-/// **2026-10-08 更正**：这四个属性此前是**内联演示常量**（三条中文假提案 + 三个假置信度），
-/// 于是界面显示"AI 提了 3 条提案"而用户分不出真假；本切片删掉了那批数据并加了空态。
-/// 两条判据钉住它：`elements.rs` 的 `musical_pr_drawer_declares_no_demo_proposals` /
-/// `no_host_writes_the_musical_pr_proposal_properties`（文本层 + 属性层）与
-/// `tests/live_ui_mcp.rs` 的 `the_musical_pr_drawer_shows_an_honest_empty_state`（运行时树）。
-/// 清空数据**不**改变本条结论：界面侧**仍然没有**"当前待采纳的提案身份"这个表示，
-/// 因此 `Shift+Enter` 仍然如实不消费。
-/// 提案注册表（`Domain.proposals`）住在 `crates/yeban-mcp/src/domain/mod.rs:155`，
+/// **① `AcceptAiSuggestion`（`Shift+Enter` 采纳 AI 建议）—— 已于 2026-10-31 接上，移出本名单。**
+/// 它缺的三格现在都在（每格都只有一个出处）：
+/// * **写入口**：[`HostAction`] 长出 `MergeProposal { proposal_id, commit_message }` 与
+///   `RejectProposal { proposal_id, reason }` 两臂，它们**复用**工具面
+///   `yeban_merge_proposal` / `yeban_reject_proposal` 所调的**同一个** `merge_plan` /
+///   `reject_plan` + `apply_plan_model` ⇒ ⛔ 没有第二份合并实现（判据
+///   `there_is_exactly_one_merge_and_one_reject_implementation`）。
+/// * **提案身份**：[`crate::proposals::ProposalRowView`] 长出 `id`（`ProposalRow::id` 的
+///   canonical ULID 原文），于是 UI 线程第一次有一个**从权威读来**的 `proposalId` 可用 ——
+///   此前 `grep -rn 'proposalId' crates/yeban-app/src` 的取值命中只有
+///   `mcp_mount/embedded_sampler.rs` 的 `bind_sampler`（那是**经工具面**的会话侧路径）。
+/// * **选中态**：抽屉的 `musical-pr-selected-id`（窗口属性，唯一写者
+///   [`apply_proposal_drawer`]，值由 `drawer_values` 夹紧）⇒ 不需要在界面侧新造一份
+///   提案状态，因此不与领域权威冲突（`ADR-0005`）。
+///
+/// 键盘与按钮**同一个落点**：本函数的臂只 `invoke_accept_ai_proposal()`，而那条回调
+/// 的唯一注册者在 [`wire_proposal_drawer`] 里（`main.rs` 原先那两行 `trace(..)` 注册
+/// 已删 —— Slint 的 `on_*` 是覆盖语义，留着就会把写入口静默擦掉）。
+///
+/// ⚠ **本名单说"有落点"，运行时仍然会如实不消费**（与 `Undo` 没有端口、`Z` 空选区时
+/// 同一取向）：`apply_action` 的那一条臂要求 `musical-pr-open ∧ musical-pr-resolve-available`，
+/// 后者的口径是"这个装配有提案来源 ∧ 用户点选了当前清单里的一行"。⇒ 默认构建
+/// （没有 `in-process-mcp` / 没挂 `--enable-mcp-http`）或没点行时按 `Shift+Enter` 返回
+/// `false`，界面上那一行仍然画着 `NO_SELECTION_REASON` / `NO_WRITE_SOURCE_REASON` 那句逐字原因。
+/// 判据：`elements.rs` 的 `musical_pr_drawer_declares_no_demo_proposals`（文本层：假字面量
+/// / 空默认值 / 下标推出来的假读数 / 两个按钮的条件）与
+/// `the_proposal_drawer_writes_its_readings_from_one_host_path`（**唯一**注入路径与
+/// **唯一**注册者）；`tests/live_ui_mcp.rs` 的 `the_musical_pr_drawer_shows_an_honest_empty_state`
+/// （运行时树）与 `tests/live_ui_mcp.rs` 的
+/// `selecting_a_row_lights_up_accept_and_it_really_merges_the_proposal` / `a_refused_accept_puts_the_authoritys_own_sentence_on_the_drawer`
+/// （选中 → 采纳 → 那一行真的从清单里消失；被拒 → 权威原话上屏）。
+/// （历史：**2026-10-08** 那四个数据面属性是**内联演示常量**（三条中文假提案 + 三个假
+/// 置信度），于是界面显示"AI 提了 3 条提案"而用户分不出真假；那一片删掉了数据并加了
+/// 空态。**2026-10-30** 接上真实来源（读面）。**2026-10-31** 接上写面。）
+/// 提案注册表（`Domain.proposals`）住在 `crates/yeban-mcp/src/domain/mod.rs`，
 /// 由 `crates/yeban-app/src/mcp_mount.rs` 在**非默认 feature** `in-process-mcp` 且
-/// 运行期 `--enable-mcp-http` 打开时才建，**不在** UI 线程的 `apply_action` 路径上。
-/// ⇒ 空前置条件（今天**任何**装配）下 `Shift+Enter` 都返回 `false`（不消费），
-/// 与 `DeleteSelection` / `ZoomToSelection` / `Duplicate` 空选区时的取向一致。
+/// 运行期 `--enable-mcp-http` 打开时才建。
+///
+/// ⛔ **本条不改变**下面两条的结论。
 ///
 /// **② `AuditionMain`（`[` 试听主线）与 ③ `AuditionProposal`（`]` 试听 AI 提案分支）——
 /// 规范 `[ARCH-RT-005]` 的 A/B 盲听机制未实现。**
@@ -8187,7 +8988,7 @@ pub fn action_has_implementation(action: Action) -> bool {
     // ⚠ **为什么本函数不能也穷尽列名**（实测）：`src/elements.rs:2472` 有一条判据要求
     // `Action::PlayPause` / `Action::ResumeFromCursor` 在 `host.rs` 的**代码区恰好各出现一次**
     //（它证明"两键共用同一个臂"）⇒ ⭐ 在这里把它们**再列一遍**会让那条判据红（实测踩过）。
-    if let Action::AuditionMain | Action::AuditionProposal | Action::AcceptAiSuggestion = action {
+    if let Action::AuditionMain | Action::AuditionProposal = action {
         return false;
     }
     true
@@ -8351,25 +9152,29 @@ fn apply_action(
             true
         }
         // `Escape` = **收尾**：取消当前手势（`ADR-0004` S1 的纵向拖拽 / `ADR-0005` 的
-        // 推子与声相），或关闭全屏时光机（`[UI-A11Y-003]` §7.3）。
+        // 推子与声相），或关闭模态面板（时光机与导出设置弹窗；`[UI-A11Y-003]` §7.3）。
         //
-        // 六个来源各自独立、各自有唯一清零点，因此这里**都问一遍**（任一命中即消费）：
+        // 八个来源各自独立、各自有唯一清零点，因此这里**都问一遍**（任一命中即消费）：
         // 1. 时光机开着 ⇒ 落 [`UiAction::CloseUndoTree`]（**只改界面运行态**，不碰工程）；
-        // 2. 纵向拖拽在手 ⇒ 落 [`cancel_track_height_drag`]（写回起点高度）；
-        // 3. 混音手势在手 ⇒ 落窗口回调 `mixer-cancel-gesture` → [`cancel_mixer_gesture`]
+        // 2. 导出设置弹窗开着 ⇒ 落窗口回调 `close-export-wav`（**只改视图态**，⛔ 不落盘、
+        //    ⛔ 不碰工程）；
+        // 3. AI 提案抽屉开着 ⇒ 落窗口回调 `toggle-ai-drawer`（**只改视图态**，⛔ 不拒绝提案、
+        //    ⛔ 不碰工程）；`U-11` 的最小修复见这条；
+        // 4. 纵向拖拽在手 ⇒ 落 [`cancel_track_height_drag`]（写回起点高度）；
+        // 5. 混音手势在手 ⇒ 落窗口回调 `mixer-cancel-gesture` → [`cancel_mixer_gesture`]
         //    （写回起点音量 / 声相）；
-        // 4. `[UI-NOTE-003]` 卷帘音符移动手势在手 ⇒ 落 [`cancel_note_drag`]
+        // 6. `[UI-NOTE-003]` 卷帘音符移动手势在手 ⇒ 落 [`cancel_note_drag`]
         //    （**丢弃草稿**；拖动期从未写进工程 ⇒ ⛔ 不提交、⛔ 不重投影）；
-        // 5. `[UI-NOTE-003]` 卷帘**力度**手势在手 ⇒ 落 [`cancel_velocity_drag`]
+        // 7. `[UI-NOTE-003]` 卷帘**力度**手势在手 ⇒ 落 [`cancel_velocity_drag`]
         //    （同上：只丢弃草稿；两个卷帘手势互斥，但两条清零各自独立 ⇒ 谁也不会漏收尾）；
-        // 6. 编曲**剪辑平移**手势在手 ⇒ 落 [`cancel_clip_drag`]（同上：只丢弃草稿）。
+        // 8. 编曲**剪辑平移**手势在手 ⇒ 落 [`cancel_clip_drag`]（同上：只丢弃草稿）。
         //
-        // 顺序是**决定**，不是巧合：模态面板在最前面，因此"手势还在手"时按 `Escape`
-        // 先关时光机（与 `[UI-A11Y-003]` 的模态语义同向）。六条各自独立：关掉时光机
+        // 顺序是**决定**，不是巧合：模态 / 面板在最前面，因此"手势还在手"时按 `Escape`
+        // 先关面板（与 `[UI-A11Y-003]` 的模态语义同向）。八条各自独立：关掉时光机
         // **不会**顺带取消手势（用户还要按第二次 `Escape`），没有手势在手也不会把
         // 关闭动作算作"已收尾"。
         //
-        // 六条都没有命中时返回 `false`（照旧放行给焦点系统）—— 与 `Escape` 接线之前
+        // 八条都没有命中时返回 `false`（照旧放行给焦点系统）—— 与 `Escape` 接线之前
         // 的行为逐位相同。这里**没有**新增 `Action` 变体：`Action::Cancel` 本来就在
         // 策略表里（`input.rs` 的 `Key::Escape => Resolution::Action(Action::Cancel)`），
         // 它此前只是没有落地实现（`action_has_implementation` 把它列在未实现里）。
@@ -8389,11 +9194,40 @@ fn apply_action(
                 refresh_undo_window(ui, port, false);
                 return true;
             }
+            // ⭐ **导出设置弹窗**（`ui/dialogs/export_wav_dialog.slint`）此前**只有**一条
+            // 出路：鼠标点「✕ 关闭」（`export-wav-close-button`）。它盖住整帧（遮罩
+            // `mask-black @ 0.65`），而 `Escape` 是这一类面板的收尾键 —— 时光机那一半
+            // 已经接了，这一半漏了。
+            //
+            // ⚠ 这里**只触发**那条既有回调，⛔ 不在键盘臂再写一次那个属性的 setter：
+            // 它的写者必须**恰好**是「打开」「关闭」那两处（`wire_module_actions_with_capture`），
+            // 多一处就是第二个真相源（同一条纪律见 `tests/ui_export_dialog.rs` 判据 ⑤ 与
+            // 抽屉那批 `set_musical_pr_*` 唯一写者判据）。`close-export-wav` 的注册者也
+            // **只有一个**，因此键盘与鼠标落的是**同一条**路 ⇒ 不可能分叉。
+            //
+            // ⚠ **前置**只有"弹窗开着"这一格：本动作**不**校验路径 / 选项，也**不**导出、
+            // **不**写盘、**不**碰工程 —— 关闭是纯视图态（与那条回调逐字同语义）。
+            if ui.get_export_wav_open() {
+                ui.invoke_close_export_wav();
+                return true;
+            }
+            // ⭐ `U-11`（`~/zimmer-ui-mode-report.md`）：AI 提案抽屉**开着**时 `Escape`
+            // 应当像其余面板一样收起来。落点**只能是**界面回调：`on_toggle_ai_drawer`
+            // 是走带按钮与 `Cmd/Ctrl+Alt+A` 的**同一个**实现（`ai-drawer-open` 的单写者）
+            // ⇒ 键盘 / 鼠标 / 屏读器不可能分叉。
+            //
+            // ⚠ 这只关**面板**（视图态），⛔ **不是**"放弃 AI 提案"：提案仍留在队列里，
+            // 拒绝只有可点等价物 `musical-pr-reject-button`（`Action::Cancel` 的文档
+            // 仍保留这条裁决）。关抽屉不碰工程、不进撤销栈。
+            if ui.get_ai_drawer_open() {
+                ui.invoke_toggle_ai_drawer();
+                return true;
+            }
             let height = cancel_track_height_drag(ui, undo);
             let mixer = ui.invoke_mixer_cancel_gesture();
             let note = cancel_note_drag(ui);
             let velocity = cancel_velocity_drag(ui);
-            // 6. 编曲剪辑平移手势在手 ⇒ 落 [`cancel_clip_drag`]（丢弃草稿、⛔ 不提交）。
+            // 7. 编曲剪辑平移手势在手 ⇒ 落 [`cancel_clip_drag`]（丢弃草稿、⛔ 不提交）。
             let clip = cancel_clip_drag(ui);
             height || mixer || note || velocity || clip
         }
@@ -8411,6 +9245,13 @@ fn apply_action(
             ui.set_arrangement_view(true);
             true
         }
+        // 底部控制台的标签直达（`F7`/`F8`/`F9`，**界面决定**）：**视图态** ——
+        // 写的就是鼠标点标签导轨 / 屏读器动作写的同一个 `console-tab` 属性，
+        // 不碰 `Op`、不进撤销栈、不进 `.yeban`。
+        Action::SelectConsoleTab { index } => {
+            ui.set_console_tab(i32::from(index));
+            true
+        }
         Action::ToggleSidebar => {
             ui.set_sidebar_collapsed(!ui.get_sidebar_collapsed());
             true
@@ -8418,6 +9259,45 @@ fn apply_action(
         Action::ToggleConsoleMaximize => {
             ui.set_console_maximized(!ui.get_console_maximized());
             true
+        }
+        // `Cmd/Ctrl+Alt+A`：AI 抽屉的键盘入口。
+        //
+        // 落点**只能是界面回调**：`wire_view_callbacks` 里 `on_toggle_ai_drawer` 是
+        // 走带 `transport-ai-drawer-button` 的同一条实现（写 `ai-drawer-open`），
+        // 键与按钮共用它 ⇒ 不可能分叉。纯视图态（`MODEL-ISO-001` 挥发性层）⇒
+        // 不需要 `UndoPort`，也**不在** `action_needs_engine` 集合里。
+        Action::ToggleAiDrawer => {
+            ui.invoke_toggle_ai_drawer();
+            true
+        }
+        // `Alt+↑` / `Alt+↓`：选上一条 / 下一条轨（键盘入口，界面决定）。
+        //
+        // 落点**只能是界面回调**：`wire_track_select` 注册的 `on_track_select` 是鼠标点
+        // 轨道行的同一条实现（写 `selected-track-id` + 按**当前横向偏移**重投影）⇒
+        // 键与鼠标共用它，不可能分叉。三条边界：
+        // - 一条轨都没有 ⇒ 返回 `false`（不消费）；
+        // - 当前没有选中轨 ⇒ 两向都落到**第一条**（键盘-only 用户必须能"起步"；
+        //   若沿 `DeleteSelection` 那样静默不消费，选轨就永远不可达）；
+        // - 顶到两端 ⇒ 仍消费（下发的还是同一条 ⇒ `wire_track_select` 里的早退，
+        //   ⛔ 不白重投影一帧）。
+        Action::SelectTrackBy(direction) => {
+            let track_ids = read_strings(&ui.get_track_ids());
+            match i32::try_from(track_ids.len()) {
+                Ok(count) if count > 0 => {
+                    let current = selected_track_id(ui);
+                    let index = current
+                        .as_deref()
+                        .and_then(|id| track_ids.iter().position(|candidate| candidate == id))
+                        .and_then(|position| i32::try_from(position).ok());
+                    let target = match index {
+                        Some(index) => (index + i32::from(direction)).clamp(0, count - 1),
+                        None => 0,
+                    };
+                    ui.invoke_track_select(target);
+                    true
+                }
+                _ => false,
+            }
         }
         // ⭐ 任务单 `#227`（Logic 的 `Go to Beginning`）：`Return` / `Enter`（裸键）。
         //
@@ -8555,6 +9435,66 @@ fn apply_action(
             refresh_undo_window(ui, port, true);
             true
         }
+        // `Cmd/Ctrl+S`：保存**当前**工程（键位选择的三条事实见 [`Action::SaveProject`]）。
+        //
+        // 三条口径（都与既有保存入口逐字一致，⛔ 不另写一条保存路径）：
+        // 1. **唯一落点**是 `.slint` 的 `save-project` 回调 —— 与「保存」按钮、
+        //    「换工程前先保存」（`save_first_through_the_existing_entry`）**同一个**入口；
+        //    真正的写盘 / 权威分流 / 原生对话框 / 回执全在 `host::wire_save`
+        //    （→ `save_action::dispatch_save`），这里只负责"按到它"；
+        // 2. **不持有引擎借用**：`wire_keys` 只对 `action_needs_engine` 的动作借宿主
+        //    （见那里的 `#212` 文档），保存不在那个集合里 ⇒ 这里 `ui.invoke_save_project()`
+        //    不会撞上 `RefCell already borrowed`；
+        // 3. **成功 / 被锁拒绝 / 取消**都由 `save-status` 如实回报（屏读器可达），
+        //    本臂**不**二次解释结果。因此它恒消费这一键（返回 `true`）——
+        //    与 `ZoomToSelection` 那种"没有对象就不消费"不同：当前工程永远存在，
+        //    "保存失败"是一条要留在界面上的**结果**，不是"这一键没意义"。
+        Action::SaveProject => {
+            ui.invoke_save_project();
+            true
+        }
+        // `Cmd/Ctrl+Shift+S`：另存为（键位选择的三条事实见 [`Action::SaveProjectAs`]）。
+        //
+        // 三条口径（与 [`Action::SaveProject`] 同一套约定）：
+        // 1. **唯一落点**是 `.slint` 的 `save-project-as` 回调 —— 宿主侧唯一实现就在
+        //    [`wire_save_with_engine`] 里：问一次对话框 → 把选中的路径记成当前目标 →
+        //    进**同一个**写盘 / 权威分流 / 回执闭包（⛔ 不另写一条保存路径）；
+        // 2. **不持有引擎借用**：保存族不在 `action_needs_engine` 的集合里；
+        // 3. **取消不是失败**：对话框回取消 ⇒ 一位不动、不写回执，因此恒消费这一键
+        //    （与 [`Action::SaveProject`] / [`Action::OpenProject`] 同一约定）。
+        Action::SaveProjectAs => {
+            ui.invoke_save_project_as();
+            true
+        }
+        // `Cmd/Ctrl+O`：打开工程（键位选择的三条事实见 [`Action::OpenProject`]）。
+        //
+        // 三条口径（与既有「打开工程」按钮逐字一致，⛔ 不另写一条打开路径）：
+        // 1. **唯一落点**是 `.slint` 的 `open-project` 回调 —— 与控制台「打开工程」按钮
+        //    **同一个**入口；问对话框 / 读盘 / 换会话 / 重投影 / 回执全在
+        //    `host::wire_open_project`，这里只负责"按到它"；
+        // 2. **不持有引擎借用**：打开不在 `action_needs_engine` 的集合里 ⇒ 这里
+        //    `ui.invoke_open_project()` 不会撞上 `RefCell already borrowed`；
+        // 3. **取消不是失败**（`wire_open_project` 的口径）：对话框回取消 ⇒ 一位不动、
+        //    不写回执；本臂**不**二次解释结果，因此恒消费这一键（返回 `true`）——
+        //    "用户改主意"与"这一键没意义"不是一回事。
+        Action::OpenProject => {
+            ui.invoke_open_project();
+            true
+        }
+        // 裸 `R`：录制开 / 关（键位选择见 [`Action::ToggleRecord`]）。
+        //
+        // 三条口径（与走带「录音」按钮逐字一致，⛔ 不另写一条录音路径）：
+        // 1. **唯一落点**是 `.slint` 的 `toggle-record` 回调 —— 与「录音」按钮**同一个**入口；
+        //    设备源 / 预录静音 / 落盘 / 回执全在 `wire_transport` → `wire_record_at` 那一个实现里；
+        // 2. **不持有引擎借用**：录音不在 `action_needs_engine` 的集合里 ⇒ 这里不会撞上
+        //    `RefCell already borrowed`；录音器自身的重入防线在 `wire_record_at`（`try_borrow_mut`
+        //    借不到 ⇒ 一行 stderr ＋ 本次按键无效，⛔ 不 panic）；
+        // 3. **结果由回执通道解释**：起录失败（设备打不开）由 `RecordOutcomePort` 响亮回报，
+        //    本臂不二次解释 ⇒ 恒消费这一键（"这一键有意义"与"这次录音成功"不是一回事）。
+        Action::ToggleRecord => {
+            ui.invoke_toggle_record();
+            true
+        }
         // `[UI-NOTE-005]` §3.5 项 1–2：方向键把**当前选区**按一档步长平移 / 移调。
         //
         // 语义（五条都是决定, 不是意外）：
@@ -8635,6 +9575,93 @@ fn apply_action(
             refresh_undo_window(ui, port, true);
             true
         }
+        // `Cmd/Ctrl+Alt+方向`：微调**当前选中轨**的音量 / 声相。
+        //
+        // 语义（六条都是决定，不是意外）：
+        // 1. 作用域的事实源是界面属性 `selected-track-id`（唯一写者 [`wire_track_select`]，
+        //    唯一读点 [`selected_track_id`]）—— 与 `device_rack.slint` 用的是**同一个**选中态，
+        //    ⛔ 不新增第二份"当前轨"；
+        // 2. 一格幅度由 [`mixer_nudge_delta_for`] **唯一**换算，夹紧与 `Op` 形状由
+        //    [`mixer_nudge_ops_for`] 一次决定（纯函数、可单独判据）；
+        // 3. **没有撤销端口 / 没有选中轨 / 身份已不在工程里 / 已在量程端点 ⇒ 返回 `false`**
+        //    （不吞键）。与 `NudgeSelection` / `ResizeSelectionDuration` 的空前置条件同一取向；
+        //    特别注意**陈旧选中态**：换工程之后 `selected-track-id` 还留着上一个工程的身份，
+        //    这里不猜"大概是第一条轨"，什么都不做；
+        // 4. 一次按键 = **一次** `commit_ops` = 一步撤销（`undo_session::commit` 把它包成
+        //    一个 `Op::Batch`）。键重复是**多个**离散事件 ⇒ 每档各自一步，可逐档撤销；
+        // 5. 走的 `Op` 与鼠标拖动**完全相同**（`Op::SetParam { TrackVolume | TrackPan }`），
+        //    因此撤销栈里"拖动改的"与"键盘改的"没有两种形状；
+        // 6. 提交后**重新投影**：推子帽与 `PAN …` 读数是从工程算出来的，不重投影就是
+        //    "数值动了、推子还在老地方"（与 [`wire_mixer_edit`] 的松手提交同一条收尾）。
+        //
+        // ⚠ **不含主控通道条**（本票的边界，登记在 `docs/ledger/app-mixer-notes.md`）：
+        // 主总线**不在**注入给界面的 `track-ids` 里，因而**没有**点击源可写 `selected-track-id`
+        // ⇒ "当前选中轨"今天永远不可能是主总线。要让它也能微调，需要先决定"主控怎样被选中"
+        // （一个新的可见状态 ＋ 一个点击源），那是另一票。
+        Action::NudgeMixerChannel { param, direction } => {
+            let Some(port) = undo else {
+                return false;
+            };
+            let Some(track_id) = selected_track_id(ui) else {
+                return false;
+            };
+            let Some(project) = port.try_project() else {
+                return false;
+            };
+            let ops = mixer_nudge_ops_for(&project, &track_id, param, direction);
+            if ops.is_empty() {
+                // 身份已不在工程里 / 已在量程端点 ⇒ 没有可停靠的编辑，如实不消费。
+                return false;
+            }
+            let label = match param {
+                crate::input::MixerParam::Volume => "mixer: nudge track volume",
+                crate::input::MixerParam::Pan => "mixer: nudge track pan",
+            };
+            if port.commit_ops(now_ms(), label, ops).is_err() {
+                return false;
+            }
+            refresh_undo_window(ui, port, true);
+            true
+        }
+        // 裸 `M` / `S`：把**当前选中轨**的静音 / 独奏拨到反面（键盘入口，界面决定）。
+        //
+        // 语义与上面的 `NudgeMixerChannel` 同三条：
+        // 1. 作用域 = `selected-track-id`（唯一写者 [`wire_track_select`]）；
+        // 2. **没有撤销端口 / 没有选中轨 / 身份已不在工程里 ⇒ 返回 `false`**（不吞键，
+        //    陈旧选中态不猜"大概是第一条轨"）；
+        // 3. 一次按键 = **一次** `commit_ops` = 一步撤销；提交后重投影（开关的勾选态
+        //    是从工程算出来的，不重投影就是"值改了、方块还亮着"）。
+        // ⚠ 与鼠标开关走**同一条** `Op` 与**同一条**提交消息（[`mixer_switch_commit_message`]）
+        // ⇒ 撤销树里"点出来的"与"按出来的"没有两种形状。
+        Action::ToggleTrackMute | Action::ToggleTrackSolo => {
+            let Some(port) = undo else {
+                return false;
+            };
+            let Some(track_id) = selected_track_id(ui) else {
+                return false;
+            };
+            let Some(project) = port.try_project() else {
+                return false;
+            };
+            let switch = if matches!(action, Action::ToggleTrackMute) {
+                MixerSwitch::Mute
+            } else {
+                MixerSwitch::Solo
+            };
+            let ops = toggle_track_switch_ops_for(&project, &track_id, switch);
+            if ops.is_empty() {
+                // 身份解析不出 / 已不在工程里 ⇒ 没有可停靠的编辑，如实不消费。
+                return false;
+            }
+            if port
+                .commit_ops(now_ms(), mixer_switch_commit_message(switch), ops)
+                .is_err()
+            {
+                return false;
+            }
+            refresh_undo_window(ui, port, true);
+            true
+        }
         // 横向缩放（`Z` / `Shift+Z`）：**视图态**，不碰 `Op`、不进撤销栈。
         //
         // 语义（三条都是决定）：
@@ -8671,9 +9698,22 @@ fn apply_action(
             false
         }
         Action::AcceptAiSuggestion => {
-            // 界面侧没有"当前待采纳的提案身份"这一表示（提案抽屉的数据面默认全空），
-            // 而领域的 `yeban_merge_proposal` 要 `proposalId` ⇒ 缺的是**能力**。
-            false
+            // ⭐ 与「采纳」按钮**同一个落点**：这里只**触发**那条回调（唯一注册者在
+            // [`wire_proposal_drawer`]），⛔ 不在键盘臂再写一份合并逻辑 —— 两份实现就会
+            // 有"按钮能用而键不行"的漂移。
+            //
+            // ⚠ **两个前置条件**（缺任一 ⇒ 如实不消费，与 `Undo` 没有端口、`Z` 空选区
+            // 时同一取向）：
+            // 1. 抽屉开着 ⇒ 这一键此刻有作用对象；
+            // 2. `musical-pr-resolve-available` ⇒ "这个装配有提案来源 ∧ 用户点选了当前
+            //    清单里的一行"（口径只在 `proposals::drawer_values` 定义一次）。
+            //    默认构建里这一格恒为 `false`（没有来源），因此**任何**没有挂控制面的
+            //    装配按 `Shift+Enter` 都返回 `false` —— ⛔ 不是"吞掉键却什么都不做"。
+            if !(ui.get_musical_pr_open() && ui.get_musical_pr_resolve_available()) {
+                return false;
+            }
+            ui.invoke_accept_ai_proposal();
+            true
         }
     }
 }
@@ -9375,6 +10415,138 @@ pub fn duplicate_ops_for(
         }
     }
     ops
+}
+
+/// `Cmd/Ctrl+Alt+方向`：一格混音微调的**幅度**（音量 1.0 dB / 声相 0.1，唯一换算点）。
+///
+/// 为什么是这两个数（不是"随便挑一档"）：
+/// - **音量 1.0 dB**：推子的显示精度是 `{:.1}` dB（`bridge.rs:5007` 的
+///   `volume_display: format!("{:.1}", track.volume_db)`，⚠ 显示是**有损**的，因此它是
+///   "用户看得见的格"的定义而非存储精度），所以 1.0 dB 是"按一次、界面上的数一定变"的
+///   最小整数档；比它细（0.1 dB）按一次读数可能不动，用户无从判断键有没有生效；
+/// - **声相 0.1**：声相读数按千分之一取整再除以 10（[`crate::bridge::pan_display`]），
+///   所以 0.1 = **恰好一个显示格**（`C` → `R10`）。0.01 会显示成"按了没反应"。
+///
+/// `direction` 只取**符号**（`signum()`）⇒ `direction == 0` 得到 `0.0`，调用方据此不提交
+/// （与 [`nudge_delta_for`] 同一口径：状态机不产出 0 方向，但纯函数不许假设）。
+#[must_use]
+pub fn mixer_nudge_delta_for(param: crate::input::MixerParam, direction: i8) -> f32 {
+    use crate::input::MixerParam;
+    let step = match param {
+        // 字面量是**这里**唯一的定义：判据 `mixer_nudge_delta_is_one_display_step_per_param`
+        // 直接钉这两个数，改任一档 ⇒ 判据红（⛔ 不在别处再写第二份"一格是多少"）。
+        MixerParam::Volume => 1.0,
+        MixerParam::Pan => 0.1,
+    };
+    step * f32::from(direction.signum())
+}
+
+/// `Cmd/Ctrl+Alt+方向`：把"选中轨 + 动哪一格 + 往哪个方向"解析成待提交的
+/// **`Op::SetParam` 集合**（纯函数，有判据）。
+///
+/// # 与鼠标拖动这一路**共用**同一条提交通道
+///
+/// 拖动臂（[`wire_mixer_edit`]）走的是 `Op::SetParam { TrackVolume | TrackPan }`，
+/// 键盘这一路走的是**同一个 `Op`、同一对量程**，所以两条入口写进工程的数没有第二种形状。
+/// 唯一的区别是**作用域来源**：拖动由指针下的通道条**下标 / 身份**决定，键盘由
+/// `selected-track-id`（视图态，唯一写者 [`wire_track_select`]）决定。
+///
+/// # 三条"什么都不提交"（返回空 `Vec`）
+///
+/// 1. 身份文本解析不出 `EntityId`，或该身份**不在**当前工程里（换工程 / 控制面关工程
+///    ⇒ 陈旧选中态。与本文件私有的 `mixer_track_state` 同一取向：不猜，什么都不做）；
+/// 2. 已经在量程端点上（`+` 到顶 / `-` 到底）⇒ 夹紧后 `new_val` 与 `old_val` **逐位**相同，
+///    不写一步什么都没改的撤销。逐位而不是 `==`：`-0.0 == 0.0` 会真，而
+///    `ops.rs` 的 `same_f32` 用位比较 ⇒ 用 `==` 会让"提交必被模型拒绝"的空 op 溜进来；
+/// 3. `direction == 0`（增量 0.0，同第 2 条）。
+///
+/// # 量程 = 推子与声相**各自能表示的区间**（不是模型的区间）
+///
+/// `old + Δ` 先夹到 `[crate::bridge::FADER_MIN_DB, FADER_MAX_DB]`（音量）或
+/// `-1.0..=1.0`（声相，与 [`dragged_pan`] 夹紧的是同一条口径）。⚠ 模型对
+/// `TrackVolume` **不设量程**（`validate_param_value` 只查有限值，`ops.rs:3454-3463`），
+/// 只有声相查 `PanOutOfRange` ⇒ 音量的夹取是**界面**的决定：键盘不该造出一个推子拖不到、
+/// 控件树上 `accessible-value-minimum/-maximum` 也表达不了的数。
+#[must_use]
+pub fn mixer_nudge_ops_for(
+    project: &yeban_model::YebanProjectV1,
+    selected_track_id: &str,
+    param: crate::input::MixerParam,
+    direction: i8,
+) -> Vec<yeban_model::ops::Op> {
+    use crate::input::MixerParam;
+    let Ok(track_id) = selected_track_id.parse::<yeban_model::EntityId>() else {
+        return Vec::new();
+    };
+    let Some(track) = project.tracks.get(&track_id) else {
+        return Vec::new();
+    };
+    let (old_val, new_val, target) = match param {
+        MixerParam::Volume => {
+            let old_val = track.volume_db;
+            (
+                old_val,
+                (old_val + mixer_nudge_delta_for(param, direction))
+                    .clamp(crate::bridge::FADER_MIN_DB, crate::bridge::FADER_MAX_DB),
+                yeban_model::AutomationTarget::TrackVolume { track_id },
+            )
+        }
+        MixerParam::Pan => {
+            let old_val = track.pan;
+            (
+                old_val,
+                (old_val + mixer_nudge_delta_for(param, direction)).clamp(-1.0, 1.0),
+                yeban_model::AutomationTarget::TrackPan { track_id },
+            )
+        }
+    };
+    if new_val.to_bits() == old_val.to_bits() {
+        return Vec::new();
+    }
+    vec![yeban_model::Op::SetParam {
+        target,
+        old_val,
+        new_val,
+    }]
+}
+
+/// `M` / `S`：把**选中轨**的静音 / 独奏拨到反面 ⇒ **一条** `Op::SetTrackMute` / `SetTrackSolo`。
+///
+/// 与 [`mixer_nudge_ops_for`] 同一分工：宿主臂只负责"提交 + 重投影"，`Op` 的形状与
+/// "什么时候什么都不提交"在这里一次决定（纯函数、可单独判据）。
+///
+/// ## 三条都是决定
+///
+/// 1. **布尔量没有"一格"**：本函数没有幅度参数 —— 拨动 = 读现值取反（与
+///    [`wire_mixer_switch`] 的鼠标入口**同一条** `Op`），因此不存在"调到一半"的中间态；
+/// 2. **身份解析不出 / 不在工程里 ⇒ 空**（陈旧选中态不猜"大概是第一条轨"）—— 与
+///    [`mixer_nudge_ops_for`] 同一口径；
+/// 3. **总是恰好一条 op**：`!old` 与 `old` 逐位不同 ⇒ 不需要"端点夹紧"那种空集早退。
+#[must_use]
+pub fn toggle_track_switch_ops_for(
+    project: &yeban_model::YebanProjectV1,
+    selected_track_id: &str,
+    switch: MixerSwitch,
+) -> Vec<yeban_model::ops::Op> {
+    let Ok(track_id) = selected_track_id.parse::<yeban_model::EntityId>() else {
+        return Vec::new();
+    };
+    let Some(track) = project.tracks.get(&track_id) else {
+        return Vec::new();
+    };
+    let op = match switch {
+        MixerSwitch::Mute => yeban_model::Op::SetTrackMute {
+            track_id,
+            old_mute: track.mute,
+            new_mute: !track.mute,
+        },
+        MixerSwitch::Solo => yeban_model::Op::SetTrackSolo {
+            track_id,
+            old_solo: track.solo,
+            new_solo: !track.solo,
+        },
+    };
+    vec![op]
 }
 
 /// `[UI-NOTE-005]` §3.5 项 1–2：一档**步长 + 方向** ⇒ `(delta_tick, delta_pitch)`（唯一换算）。

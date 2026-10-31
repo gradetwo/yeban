@@ -469,6 +469,35 @@ fn call(dispatcher: &mut Dispatcher, auth: &str, arguments: Value) -> Value {
     call_tool(dispatcher, auth, "yeban_render_master", arguments)
 }
 
+/// 与 [`call`] 同一条管线，但返回 JSON-RPC 层错误 —— 供 schema 层先于域校验
+/// 拒掉的类型非法输入使用（域内拒绝走 [`assert_domain_error`]，不要混用）。
+/// 返回的第二项是 `data.detail`（点名参数的那句），没有 detail 时退回 message ——
+/// ⛔ 不要断言 message 点名：schema 层 message 只有笼统的「参数非法」，点名在 detail 里。
+fn call_raw_error(dispatcher: &mut Dispatcher, auth: &str, arguments: Value) -> (i64, String) {
+    let line = json!({
+        "jsonrpc": "2.0",
+        "id": "t",
+        "method": "tools/call",
+        "params": {"name": "yeban_render_master", "arguments": arguments}
+    })
+    .to_string();
+    let outcome = dispatcher.handle_line(Channel::Http, Some(auth), &line);
+    let response = outcome.response.expect("必须有响应");
+    match (response.result, response.error) {
+        (None, Some(error)) => {
+            let detail = error
+                .data
+                .as_ref()
+                .and_then(|data| data.get("detail"))
+                .and_then(|detail| detail.as_str())
+                .unwrap_or(&error.message)
+                .to_string();
+            (error.code, detail)
+        }
+        other => panic!("期望 JSON-RPC 层错误，实际: {other:?}"),
+    }
+}
+
 /// 与 [`call`] 同一条管线，但**点名**工具（供"先经 `yeban_edit_notes` 写、再渲染"这类
 /// 跨工具判据使用；本文件绝大多数判据只调 `yeban_render_master`，因此 [`call`] 不变）。
 fn call_tool(dispatcher: &mut Dispatcher, auth: &str, name: &str, arguments: Value) -> Value {
@@ -951,6 +980,96 @@ fn illegal_explicit_frames_are_refused_without_writing_a_file() {
     );
 }
 
+/// 审评 2026-10-31（P1-1）判据：`threads` 的值域护栏与逐字节等价 ——
+/// 0 / 负数 / 字符串 / 非整数 ⇒ `INVALID_PARAMETER_RANGE` 且不落盘；
+/// `threads: 4` 的产物摘要与文件字节与缺省渲染逐位相同，且 `data.request.threads` 如实回显。
+#[test]
+fn threads_param_is_guarded_and_changes_only_time_not_bytes() {
+    let scratch = Scratch::new("threads-param");
+    let (mut dispatcher, auth) =
+        dispatcher_with(&project(&Spec::default()), &scratch.join("demo.yeban"));
+    let out = scratch.join("never.wav");
+    let path = out.display().to_string();
+
+    // 整数越界（0 / 负数）走域校验：带内 INVALID_PARAMETER_RANGE。
+    for (threads, label) in [(json!(0), "threads = 0"), (json!(-1), "threads = -1")] {
+        let refused = call(
+            &mut dispatcher,
+            &auth,
+            json!({"format": "wav", "sampleRate": 48000, "threads": threads, "path": path}),
+        );
+        assert_domain_error(&refused, "INVALID_PARAMETER_RANGE", label);
+        assert!(
+            format!("{refused}").contains("`threads`"),
+            "报文必须点名 `threads`: {refused}"
+        );
+    }
+    // 类型非法（字符串 / 非整数）走 schema 层，先于域校验被拒：JSON-RPC -32602。
+    // ⛔ 不要把这两类也断言成带内 INVALID_PARAMETER_RANGE —— 层级不同，混写必红。
+    for (threads, label) in [
+        (json!("4"), "threads 是字符串"),
+        (json!(1.5), "threads 是非整数"),
+    ] {
+        let (code, detail) = call_raw_error(
+            &mut dispatcher,
+            &auth,
+            json!({"format": "wav", "sampleRate": 48000, "threads": threads, "path": path}),
+        );
+        assert_eq!(code, -32602, "{label}: 类型非法必须走 schema 层 -32602");
+        assert!(
+            detail.contains("`threads`"),
+            "{label}: detail 必须点名 `threads`: {detail}"
+        );
+    }
+    assert!(
+        entries(&scratch.dir).is_empty(),
+        "被拒绝的渲染不得留下任何文件: {:?}",
+        entries(&scratch.dir)
+    );
+
+    // 缺省 vs threads = 4：摘要与文件字节逐位相同；回显如实（null vs 4）。
+    let default_out = scratch.join("default.wav");
+    let default_path = default_out.display().to_string();
+    let default = call(
+        &mut dispatcher,
+        &auth,
+        json!({"format": "wav", "sampleRate": 48000, "path": default_path}),
+    );
+    assert!(
+        default.get("error").is_none(),
+        "缺省渲染必须成功: {default}"
+    );
+    assert_eq!(
+        default["data"]["request"]["threads"],
+        Value::Null,
+        "缺省的 `data.request.threads` 回显必须是 null"
+    );
+    let threaded_out = scratch.join("threaded.wav");
+    let threaded_path = threaded_out.display().to_string();
+    let threaded = call(
+        &mut dispatcher,
+        &auth,
+        json!({"format": "wav", "sampleRate": 48000, "threads": 4, "path": threaded_path}),
+    );
+    assert!(
+        threaded.get("error").is_none(),
+        "threads = 4 渲染必须成功: {threaded}"
+    );
+    assert_eq!(
+        threaded["data"]["request"]["threads"], 4,
+        "`data.request.threads` 必须回显请求值 4"
+    );
+    assert_eq!(
+        threaded["data"]["masterDigest"], default["data"]["masterDigest"],
+        "threads = 4 的母带摘要必须与缺省渲染相同"
+    );
+    assert_eq!(
+        std::fs::read(&threaded_out).expect("读并行档"),
+        std::fs::read(&default_out).expect("读缺省档"),
+        "threads = 4 的文件字节必须与缺省渲染逐位相同"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // 判据 2b：墙钟只进报文（`renderedAtUnixMs`），⛔ 不进文件字节（#214）
 // ---------------------------------------------------------------------------
@@ -1284,6 +1403,10 @@ fn normalize_hits_full_scale_and_leaves_all_zero_signal_alone() {
     // 会出现 ±1 LSB 的量化噪声。这是正确的 dither 行为而不是"信号" —— 因此这里断言
     // "≤ 2 LSB", 而不是"逐样本为 0"（后者会把正确的抖动判成缺陷）。
     let lsb = 1.0f32 / 8_388_608.0;
+    assert!(
+        !samples.is_empty(),
+        "母带必须真的有样本（否则下面那条恒真）"
+    );
     assert!(
         samples
             .iter()
@@ -3267,6 +3390,7 @@ fn a_loop_is_expanded_into_n_repetitions() {
         .map(|index| window_peak(&samples, 2, index * segment_frames, segment_frames))
         .collect();
     println!("### 四段峰值（逐字）: {peaks:?}");
+    assert_eq!(peaks.len(), 4, "四段各一个峰值（否则下面那条恒真）");
     assert!(
         peaks.iter().all(|value| *value > DITHER_ONLY_PEAK),
         "每一遍都必须真的发声: {peaks:?}"
@@ -3307,6 +3431,7 @@ fn a_loop_is_expanded_into_n_repetitions() {
         plain_peaks[0] > DITHER_ONLY_PEAK,
         "正对照的第一段必须发声: {plain_peaks:?}"
     );
+    assert_eq!(plain_peaks.len(), 4, "四段峰值（否则下面那条恒真）");
     assert!(
         plain_peaks[1..]
             .iter()
@@ -3509,6 +3634,7 @@ fn the_probability_decision_follows_the_note_identity_not_its_position() {
             };
             decisions.push(note.triggers(DEFAULT_RNG_SEED));
         }
+        assert_eq!(decisions.len(), 4, "四个起点各一条判定");
         assert!(
             decisions.windows(2).all(|pair| pair[0] == pair[1]),
             "概率 {probability}: 平移不该改变触发判定, 实测 {decisions:?}"
@@ -3546,6 +3672,7 @@ fn the_probability_decision_follows_the_note_identity_not_its_position() {
         assert_eq!(result["status"], "success", "{result}");
         verdicts.push(result["data"]["probability"]["notesSilenced"].clone());
     }
+    assert_eq!(verdicts.len(), 3, "三次渲染各一条判定");
     assert!(
         verdicts.windows(2).all(|pair| pair[0] == pair[1]),
         "同一身份平移起点后判定必须不变, 实测 {verdicts:?}"
@@ -4943,6 +5070,120 @@ fn an_unreadable_sampler_path_is_a_loud_failure_not_a_silent_sine() {
     assert!(
         !out.exists(),
         "失败时不许留下半成品（⛔ 不许写一个'静音'或'正弦'的替身）"
+    );
+}
+
+/// ⭐ 判据 3d（报告缺口 `G4`）：**同一份"SFZ 存在、采样文件全读不到"的乐器**，
+/// 装载回执与母带回执的 `silentRegionCount` 必须**逐值相同**，且渲染音频真的是静音。
+///
+/// Zimmer 2026-10-31 报告的实测（§5.3）：同一乐器三处表述互相矛盾 ——
+/// ① `yeban_load_sfz` 称 `sampleSource: "in-memory-sine (回退: ...)"`（宣称正弦回退）、
+/// ② `yeban_list_instruments` 称 `silentRegionCount: 0`、
+/// ③ `yeban_render_master` 源标签 `silent=360` 且实测 RMS −144.53 dBFS（数字静音）。
+/// 三者不能同时为真。本判据把"①的措辞带适用范围"与"②==③"钉在同一份夹具上（⛔ 挑字段，
+/// 逐值比对）。⚠ 这里**不**测 `yeban_render_sfz_wav` 的正弦回退（那条旁路自有判据）。
+#[test]
+fn load_and_render_receipts_agree_on_the_silent_region_count_of_a_sampleless_sfz() {
+    let scratch = Scratch::new("g4-parity");
+    let dir = scratch.join("g4");
+    fs::create_dir_all(&dir).expect("建目录");
+    // SFZ 本身存在（⇒ 渲染不会因为 `samplerUnreadable` 失败），但**声明的采样文件都不存在**。
+    let sfz = dir.join("dead.sfz");
+    fs::write(
+        &sfz,
+        "<region> sample=*silence key=69 pitch_keycenter=69\n\
+         <region> sample=gone-a.wav key=69 pitch_keycenter=69\n\
+         <region> sample=gone-b.wav key=69 pitch_keycenter=69\n",
+    )
+    .expect("写 dead.sfz");
+    let path = sfz.display().to_string();
+    let project = project_with_sampler(Some(&path));
+    let (mut dispatcher, auth) = dispatcher_with(&project, &scratch.join("g4.yeban"));
+
+    // ① 装载回执（同一个 Dispatcher，同一条工具路径）。
+    let loaded = call_tool(
+        &mut dispatcher,
+        &auth,
+        "yeban_load_sfz",
+        json!({"path": path}),
+    );
+    assert_eq!(loaded["status"], "success", "{loaded}");
+    let ld = &loaded["data"];
+    assert_eq!(ld["regions"], 3, "夹具必须是三条区域: {ld}");
+    assert_eq!(ld["sampleFilesReadCount"], 0, "{ld}");
+    assert_eq!(
+        ld["sampleFilesFailedCount"], 2,
+        "两条声明的文件都读不到: {ld}"
+    );
+    assert_eq!(
+        ld["builtinSilentRegionCount"], 1,
+        "内建静音子集恰好一条: {ld}"
+    );
+
+    // ② 母带回执：源标签是 `sfz-sampler`，缺样本 ⇒ 该轨真的不发声。
+    let out = scratch.join("g4.wav");
+    let rendered = call(
+        &mut dispatcher,
+        &auth,
+        json!({"format": "wav", "sampleRate": 48000, "path": out.display().to_string()}),
+    );
+    assert_eq!(rendered["status"], "success", "{rendered}");
+    let sampler = &rendered["data"]["sources"][0]["sampler"];
+    assert!(!sampler.is_null(), "绑了采样器就必须有读数: {rendered}");
+    assert_eq!(
+        rendered["data"]["sources"][0]["kind"], "sfz-sampler",
+        "源种类必须点名采样器"
+    );
+
+    // ③ ⭐ 核心断言：两侧 `silentRegionCount` **逐值相同**（修前：装载 1、渲染 3）。
+    println!(
+        "### G4 对账（逐字）: load.silentRegionCount={} render.silentRegionCount={} \
+         load.sampleSource={:?}",
+        ld["silentRegionCount"], sampler["silentRegionCount"], ld["sampleSource"],
+    );
+    assert_eq!(
+        ld["silentRegionCount"], sampler["silentRegionCount"],
+        "装载回执与母带回执必须同口径（引擎摊平：缺样本 + 内建静音）"
+    );
+    assert_eq!(
+        ld["silentRegionCount"], 3,
+        "三条区域都不产生采样输出 ⇒ 摊平口径的静音数是 3: {ld}"
+    );
+
+    // ④ 渲染读数点名缺样本路径（与 `sampleFailures` 同一批，只是从引擎侧来）。
+    let missing = sampler["missingSamplePaths"]
+        .as_array()
+        .expect("missingSamplePaths");
+    assert_eq!(missing.len(), 2, "两条声明文件必须都进 missing: {sampler}");
+
+    // ⑤ 音频必须真的是静音 —— 正弦回退宣称**不**适用于这条路径。
+    assert_eq!(
+        rendered["data"]["peak"]["before"]
+            .as_f64()
+            .expect("peak.before"),
+        0.0,
+        "采样器轨缺样本 ⇒ 母带浮点峰值必须为 0（⛔ 不许有正弦替身）: {rendered}"
+    );
+    let (left, right) = channel_peaks(&out);
+    assert!(
+        left <= 2.0 / 8_388_608.0 && right <= 2.0 / 8_388_608.0,
+        "产物两声道都必须只有抖动底, 实得 {left} / {right}"
+    );
+
+    // ⑥ 装载的回退文案必须带适用范围（⛔ 裸的 "in-memory-sine (回退:...)" 会被读成母带也有声）。
+    let source = ld["sampleSource"].as_str().expect("sampleSource");
+    assert!(source.starts_with("in-memory-sine"), "{source}");
+    assert!(
+        source.contains("采样器轨不回退"),
+        "回退文案必须点名适用边界: {source}"
+    );
+    // ⑦ 装载的 warning 也已在场（G4 的诚实登记）。
+    let warnings = ld["warnings"].as_array().expect("warnings");
+    assert!(
+        warnings
+            .iter()
+            .any(|w| w["code"] == json!("sfzSamplesUnreadable")),
+        "缺样本必须响亮登记: {warnings:?}"
     );
 }
 
@@ -7707,6 +7948,10 @@ fn a_bend_written_through_the_tool_surface_bends_the_master() {
         "工具面写的弯音曲线必须逐点进工程: {stored}"
     );
     assert!(
+        !notes.as_object().expect("notes").is_empty(),
+        "音符表必须非空（否则下面那条恒真）"
+    );
+    assert!(
         notes
             .as_object()
             .expect("notes")
@@ -7969,12 +8214,9 @@ fn a_pitch_shape_written_in_place_by_the_tool_surface_bends_the_master() {
         stored.get("slide").is_none(),
         "`newSlide: null` ⇒ 滑音仍为空（不落盘）: {stored}"
     );
-    assert!(
-        notes
-            .as_object()
-            .expect("notes")
-            .keys()
-            .all(|key| key == &note),
+    assert_eq!(
+        notes.as_object().expect("notes").len(),
+        1,
         "夹具里必须**仍只有一个**音符（⛔ 删 + 加会换身份）: {notes}"
     );
 

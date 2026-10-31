@@ -381,10 +381,8 @@ fn no_assertion_compares_a_side_with_itself() {
         "已知红样本必须被抓到"
     );
     assert!(
-        probe_shapes(green)
-            .iter()
-            .all(|(_line, shape)| *shape != ProbeShape::SameSides),
-        "已知绿样本不得被抓到"
+        probe_shapes(green).is_empty(),
+        "已知绿样本不得被抓到（一条形状都不许报）"
     );
     // 真源码分两类（R75 的是**恒假**那一类）：
     // * `assert_ne!(X, X)` ⇒ 恒假 ⇒ **必然失败** ⇒ 必须为零（R75 的笔误形状）；
@@ -461,10 +459,8 @@ fn enum_variant_inequality_probes_are_absent_or_annotated() {
         "已知红样本必须被抓到"
     );
     assert!(
-        probe_shapes(green)
-            .iter()
-            .all(|(_line, shape)| *shape != ProbeShape::EnumVariantInequality),
-        "已知绿样本不得被抓到"
+        probe_shapes(green).is_empty(),
+        "已知绿样本不得被抓到（一条形状都不许报）"
     );
     // 真源码：0 处（R69 形状①）。将来若真的引入，必须在同一行或上一行写 `R69:` 加注。
     let mut offenders: Vec<String> = Vec::new();
@@ -507,9 +503,7 @@ fn no_assertion_compares_two_literals() {
         "已知红样本必须被抓到两条"
     );
     assert!(
-        probe_shapes(green)
-            .iter()
-            .all(|(_line, shape)| *shape != ProbeShape::BothSidesAreLiterals),
+        probe_shapes(green).is_empty(),
         "已知绿样本不得被抓到（读**夹具表**的探针必须留在绿）"
     );
     // 真源码：0 处（R80 的第三种空判据形状）。

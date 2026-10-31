@@ -149,6 +149,17 @@ jobs:
       - name: 工作流结构自检 (R65)
         run: python3 scripts/guards/check_workflow_structure.py
 
+      # 端到端 verify 脚本的**防掏空**守卫（台账 §22.6）：e2e 腿只保证脚本退出码 0，
+      # 若有人删掉 `sys.exit(1)` 或把 `check(...)` 换成打印，那条腿会**静默变绿**。
+      # ⚠ 必须在这里**逐条直调** —— `checks` 作业从不调 `run-gates.sh`（上面 R65 的注释同此）。
+      - name: 端到端判据防掏空守卫 (verify 脚本的牙)
+        run: python3 scripts/guards/check_verify_teeth.py
+
+      # s28：`warnings[].code` 的名册必须有**一份**真相 —— 实现侧构造点与契约 enum **集合相等**（台账 §22.8）。
+      # ⚠ 同样必须逐条直调（§22.6）：只把文件丢进 scripts/guards/ 不进 CI。
+      - name: warnings 名册对账 (实现侧构造点 == schema 的 WarningCode.enum)
+        run: python3 scripts/guards/check_warning_codes.py
+
       - name: JSON Schema 契约 (schema 自身合法性)
         run: |
           set -euo pipefail
@@ -180,6 +191,21 @@ jobs:
           # 表里不许出现 crates/ 里 grep 不到的名字; 汇总计数必须与逐行统计相等。
           python3 scripts/gates/check_feature_alignment.py
 
+      - name: 集成测试文件零判据守卫（tests/*.rs 必须自带判据或为具名例外）
+        run: |
+          set -euo pipefail
+          # 没有 #[test] 的集成测试文件照样编译并报绿（0 passed）⇒「新增测试文件」与
+          # 「新增判据」在门禁读数上不可区分。7 个合法例外逐条登记, 且每条都做机检
+          # （4 个 harness=false 运行期腿 / 3 个 #[path] 判据包装）。
+          python3 scripts/gates/check_test_criteria_presence.py
+
+      # §21: `verify/audio_pins.py` 此前只 print 三个摘要、**零断言**、且全库无执行者 ——
+      # 于是「三个常量是独立推导出来的」只是文档里的一句话，没人能判它是真是假。
+      # 本步把它变成**有退出码**的判据：三个摘要必须与 `tests/render_audio_clips.rs`
+      # 的 `PINNED_*` 逐字相同（脚本纯标准库，不依赖任何 crate 编译，故放在 checks）。
+      - name: 独立复算音频片段的三个钉死摘要 (ARCH-DET-001)
+        run: python3 crates/yeban-mcp/verify/audio_pins.py
+
       - name: 依赖许可清单漂移检查
         run: |
           set -euo pipefail
@@ -205,6 +231,82 @@ jobs:
           # 价值很低; 同一份对账已由 `crates/yeban-ui-mcp/tests/contract.rs` 在 crate 内跑过。
           # ⇒ 不值得为 3 份文档样本把一个 GUI 工具链搬进这个 job。要改就走 workspace 腿。
           python3 scripts/gates/validate_schemas.py --repo-assets --samples-dir target/schema-samples
+
+  # ---------------------------------------------------------------------------
+  # MCP 端到端复跑（真二进制 / 真 stdio 会话 / 有退出码）
+  # ---------------------------------------------------------------------------
+  #
+  # ## 为什么要单独一条腿（而不是塞进 `checks`，也不是靠矩阵腿）
+  #
+  # `crates/yeban-mcp/verify/` 这三份脚本此前**全库没有执行者**：它们要么写文件、要么打印，
+  # 于是"端到端能跑通"只是文档里的一句话。台账 §20.6 登记了这一族；§21.8 现读了三条接线方案。
+  # 现在：`audio_pins.py`（纯标准库）已在 `checks`（§21）；本腿跑**剩下两份需要真二进制**的
+  # （`e2e_audio_clip_stdio.sh` 与 `idempotency_replay_schema.py`）。
+  # 本腿是方案 ①（独立 job），理由**实测**在下面的耗时读数里：
+  # - `checks` 刻意不装系统库、也不编任何 crate（唯一的重活是 `yeban-model` 的样本导出），
+  #   把 `yeban-mcp` 的构建塞进去会把那条 47s~1m29s 的轻腿变成重腿；
+  # - 矩阵腿只有**窄运行**才跑（`workspace_wide == 'false'`），宽运行（碰 `scripts/`、`.github/`、
+  #   根清单）时它整体 skipped ⇒ 判据会在最常见的合流批次里**一次都不跑**。
+  # 本腿的条件与 `windows` / `macos` **同形**：宽运行时计划器返回**全部成员**，
+  # 所以"动了 `yeban-mcp`"与"整仓全量"两支都被同一个 `contains` 覆盖。
+  #
+  # `yeban-mcp` 无需 apt 系统库：`cargo tree -p yeban-mcp -e normal | grep -c cpal` == 0
+  # （该 crate 的规则是"轻量：不拖音频栈/GUI 进 MCP"，见其 `Cargo.toml` 注释）。
+  e2e-mcp:
+    name: e2e (MCP stdio 复跑 / 幂等重放契约)
+    needs: plan
+    # ⚠ 与 `windows` / `macos` 同一条件形态：实测 `changed-crates.py` 在**宽运行**时
+    # 返回 `crates = 全部成员`（不是空集合），所以这一个 `contains` 已经覆盖
+    # `workspace_wide == 'true'` 那一支 ⇒ 不需要并集，也不需要 `always()`。
+    if: contains(needs.plan.outputs.crates, 'yeban-mcp')
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装钉死工具链 (单一事实源 rust-toolchain.toml)
+        run: |
+          set -euo pipefail
+          rustup show
+          rustc --version
+
+      # 种子脚本的起点是**模型规范样本** `project.filled.json`（⛔ 不是仓库里手抄的一份 JSON）。
+      - name: 导出模型规范样本 (yeban-model, 轻)
+        run: |
+          set -euo pipefail
+          start=$(date +%s)
+          cargo run -p yeban-model --locked --example export_schema_samples -- --out target/schema-samples
+          echo "耗时读数: export_schema_samples = $(( $(date +%s) - start )) 秒"
+
+      - name: 构建 yeban-mcp 裸二进制 (--bin, 默认 feature)
+        run: |
+          set -euo pipefail
+          start=$(date +%s)
+          cargo build -p yeban-mcp --bin yeban-mcp --locked
+          echo "耗时读数: cargo build -p yeban-mcp --bin yeban-mcp = $(( $(date +%s) - start )) 秒"
+          ls -l target/debug/yeban-mcp
+
+      # ⭐ 本腿的**存在理由**：这两条脚本自带退出码，红就是红。
+      # 1) 音频片段端到端：打开 → 导入 → 保存 → 渲染两次（八条命名判据，见脚本内的 `check(...)`）；
+      # 2) 幂等重放的响应必须被 Python 侧 jsonschema 接受（与 `checks` 那条对账同一实现两端）。
+      - name: 端到端复跑 + 幂等重放契约 (真进程 / 真 stdio)
+        run: |
+          set -euo pipefail
+          python3 -m pip install --quiet 'jsonschema>=4.24'
+          bash crates/yeban-mcp/verify/e2e_audio_clip_stdio.sh
+          python3 crates/yeban-mcp/verify/idempotency_replay_schema.py
+
+      - name: 归档端到端产物 (只在失败时值得看)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-mcp-${{ github.run_id }}
+          path: |
+            target/e2e-audio-clip/responses.jsonl
+            target/e2e-audio-clip/requests.jsonl
+            target/idempotency-replay-schema/
+          if-no-files-found: warn
+          retention-days: 7
 
   # ---------------------------------------------------------------------------
   # 每个受影响 crate 一条矩阵腿: clippy -D warnings + test
@@ -250,7 +352,7 @@ jobs:
       #
       # 为什么回收而不是 `debug = 0`: 同 `rust (workspace 全量)` 的理由 ——
       # 回收 runner 预装垃圾语义上是惰性的；关 debuginfo 会改变被构建的东西。
-      # ⚠ 只删确定的四个目录；**绝不**碰 `/opt/hostedtoolcache`（Rust 工具链就在里面）。
+      # ⚠ 只删**列名**的目录与 Docker 镜像；**绝不**碰 `/opt/hostedtoolcache`（Rust 工具链就在里面）。
       - name: 回收 runner 预装垃圾（矩阵腿的合并特性 app 腿之前必须留够链接空间）
         run: |
           set -euo pipefail
@@ -260,13 +362,27 @@ jobs:
             /usr/share/dotnet \
             /usr/local/lib/android \
             /opt/ghc \
-            /usr/local/share/boost
+            /usr/local/share/boost \
+            /usr/share/miniconda \
+            /usr/local/.ghcup
           do
             if [ -e "$path" ]; then
               echo "removing $path ($(du -sh "$path" 2>/dev/null | cut -f1 || echo '?'))"
               sudo rm -rf "$path" || true
             fi
           done
+          # ⭐ 预装 Docker 镜像（2026-10-30 加）。本仓**任何** job 都不用 docker
+          # （实测口径：`grep -rn "docker" .github/ scripts/` 在本次改动前 = 0 命中），
+          # 所以删它与删 dotnet / android 同一档：语义惰性。**先打读数再删** ——
+          # `docker system df` 的 IMAGE 行给"镜像占了多少字节"，回收前后各打一次，
+          # 下一轮就能判"这一刀到底有没有捞到东西"，而不是猜。
+          if command -v docker >/dev/null 2>&1; then
+            echo "== docker 回收前 =="
+            docker system df || true
+            docker image rm -f $(docker images -q) >/dev/null 2>&1 || true
+            echo "== docker 回收后 =="
+            docker system df || true
+          fi
           sudo apt-get clean || true
           echo "== 回收后 =="
           df -h / | tail -1
@@ -369,11 +485,23 @@ jobs:
       # ⭐ 保留本条（#167 加的）: 它 1 秒内清掉前面两条腿的 incremental 并打印
       # `du -sh target` / `df -h .` —— 在 hosted runner 上**这是唯一能读到的盘读数**，
       # 也是下一轮判"够不够"的依据。合并后它挪到合并档 test 腿**之前**（最重的一次链接）。
+      # ⭐ 2026-10-31 与宽运行腿**对齐**：只清 incremental 在这条腿上是**不够**的。
+      # 实证（run `41196100058` 的 `rust (yeban-app)` 重跑，日志 step 10 之后）：
+      # `du -sh target` = **57G**、`df` 只剩 **53G**，接着合并特性 test 腿重链接
+      # 测试二进制时报 `rustc-LLVM ERROR: IO failure on output stream:
+      # No space left on device`（exit 101）。同一份树在宽运行腿（run `41193355453`）
+      # 因为**先跑了 `trim-target.sh`**（70G → 4.7G，释放 66G）而通过。
+      # `trim-target.sh` 只删 `deps` 顶层**已链接**的测试/示例二进制（保留 `.rlib`），
+      # 下次测试会重新**链接**而不是重新编译；脚本按进程名精确匹配 cargo/rustc、
+      # 共享 target 锁被持有也拒绝裁剪 ⇒ 语义上是惰性的。
+      # ⚠ 这一步不是判决，只是把"贴边"往下压（与宽运行腿同一条纪律）。
       - name: 释放增量目录 (合并档 test 腿之前; 前两条腿的 incremental 会叠加)
         run: |
           set -euo pipefail
           du -sh target 2>/dev/null || true
           rm -rf target/debug/incremental || true
+          bash scripts/dev/trim-target.sh \
+            || echo "::warning::trim-target 拒绝裁剪（有 cargo/rustc 在跑，或共享 target 锁被持有）⇒ 只清了 incremental"
           df -h . || true
 
       - name: test (合并特性)
@@ -449,7 +577,7 @@ jobs:
       #
       # 关 debuginfo 也能把链接体积压下来，但它**改变了被构建的东西**（panic 回溯失去行号）。
       # 回收 runner 预装垃圾**语义上是惰性的**：删的都是本仓永远不用的 SDK。
-      # ⚠ 只删确定的四个目录；**绝不**碰 `/opt/hostedtoolcache`（Rust 工具链就在里面）。
+      # ⚠ 只删**列名**的目录与 Docker 镜像；**绝不**碰 `/opt/hostedtoolcache`（Rust 工具链就在里面）。
       - name: 回收 runner 预装垃圾（合并特性 app 腿之前必须留够链接空间）
         run: |
           set -euo pipefail
@@ -459,13 +587,27 @@ jobs:
             /usr/share/dotnet \
             /usr/local/lib/android \
             /opt/ghc \
-            /usr/local/share/boost
+            /usr/local/share/boost \
+            /usr/share/miniconda \
+            /usr/local/.ghcup
           do
             if [ -e "$path" ]; then
               echo "removing $path ($(du -sh "$path" 2>/dev/null | cut -f1 || echo '?'))"
               sudo rm -rf "$path" || true
             fi
           done
+          # ⭐ 预装 Docker 镜像（2026-10-30 加）。本仓**任何** job 都不用 docker
+          # （实测口径：`grep -rn "docker" .github/ scripts/` 在本次改动前 = 0 命中），
+          # 所以删它与删 dotnet / android 同一档：语义惰性。**先打读数再删** ——
+          # `docker system df` 的 IMAGE 行给"镜像占了多少字节"，回收前后各打一次，
+          # 下一轮就能判"这一刀到底有没有捞到东西"，而不是猜。
+          if command -v docker >/dev/null 2>&1; then
+            echo "== docker 回收前 =="
+            docker system df || true
+            docker image rm -f $(docker images -q) >/dev/null 2>&1 || true
+            echo "== docker 回收后 =="
+            docker system df || true
+          fi
           sudo apt-get clean || true
           echo "== 回收后 =="
           df -h / | tail -1
@@ -511,11 +653,21 @@ jobs:
 
       # 宽运行这一跳的 `test --workspace` 会留下 incremental; 下面这条 app 合并特性腿
       # 是本 job 最重的一次链接, 先清掉并打印盘读数（与矩阵腿同一条纪律）。
+      #
+      # ⭐ 2026-10-30 追加 `trim-target.sh`：只清 incremental 是**不够**的。现读
+      # （run `41058208805`，该步前一行日志）：`du -sh target` = **64G**，
+      # 而 `scripts/dev/trim-target.sh` 的文件头实测写明 `deps` 顶层**无扩展名的已链接
+      # 测试二进制**才是大头（1264 个＝55G，`.rlib` 只占 4.7G）—— 那正是
+      # `test --workspace` 这一步刚产出、后续步骤不再需要的一族。删它们最多让下一次
+      # 重新链接（脚本按进程名精确匹配 cargo/rustc，锁被持有也拒绝 ⇒ 语义上是惰性的）。
+      # ⚠ 这一步⛔ 是本腿的**判决**，只是把"贴边"往下压；根因见下面的采样器注释。
       - name: 释放增量目录 (宽运行的 app 合并特性腿之前)
         run: |
           set -euo pipefail
           du -sh target 2>/dev/null || true
           rm -rf target/debug/incremental || true
+          bash scripts/dev/trim-target.sh \
+            || echo "::warning::trim-target 拒绝裁剪（有 cargo/rustc 在跑，或共享 target 锁被持有）⇒ 只清了 incremental"
           df -h . || true
 
       # ⭐ #172: 宽运行这一侧也用**同一份** `APP_FEATURES`（⛔ 不再手写一份只有
@@ -525,6 +677,12 @@ jobs:
       #      `schemas/**`）被改动时, **矩阵腿整体被剪掉**（`rust.if: ...`）, 只剩本 job
       #      ⇒ 若本 job 不带这些开关, 那么"任何根级改动"的提交（包括改门禁本身这一次）
       #      一次都不会执行导出族 / midi-input / in-process-mcp 的判据。
+      #
+      # ⭐ 采样器（2026-10-30）：本腿连续两次在同一步以 `ld terminated with signal 7
+      # [Bus error], core dumped` 收场（run `41057489656`／`41058208805`）。本仓库对这句
+      # 的既有解释是"爆盘"，但那两次的日志里 `No space left on device` = **0 行**、
+      # 开跑前 `df -h .` 还剩 **46G**。⇒ 盘满**未被证明**，别再靠 rerun 猜：每 20 秒打一行
+      # 盘/内存/换页/链接进程数（口径见 `scripts/dev/ci-resource-sampler.sh` 文件头）。
       - name: test (合并特性, yeban-app)
         env:
           CARGO_INCREMENTAL: "0"
@@ -538,6 +696,9 @@ jobs:
             exit 0
           fi
           echo "== 本腿特性 (yeban-app): $features"
+          bash scripts/dev/ci-resource-sampler.sh 20 120 &
+          SAMPLER=$!
+          trap 'kill "$SAMPLER" 2>/dev/null || true' EXIT
           cargo test -p yeban-app --all-targets --locked --no-fail-fast \
             --features "$features" \
             2>&1 | tee -a "$RUNNER_TEMP/gate.log"

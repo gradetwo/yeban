@@ -224,6 +224,10 @@ fn absent_ladder_is_byte_identical_to_the_published_two_rungs() {
     for part in preset_parts(STYLE).expect("夹具必须在册") {
         let notes = &table[*part];
         assert!(
+            !notes.is_empty(),
+            "和声声部 `{part}` 必须有音符（否则下面那条恒真）"
+        );
+        assert!(
             notes.values().all(|note| note.3 == DEFAULT_MIN),
             "和声声部 `{part}` 的力度必须全是下档 {DEFAULT_MIN}: {:?}",
             rungs(notes)

@@ -390,6 +390,7 @@ fn register_keys_require_a_melody_part_on_either_source() {
     // 正例：theory + 旋律 ⇒ 窗口必须真的生效（判据 2 已逐条对齐，这里只核一条）。
     let narrow = plan(Given::theory().lower(Some(48)).upper(Some(52)));
     let values = pitches(&voices(&narrow)["Melody"]);
+    assert!(!values.is_empty(), "旋律必须有音符（否则下面那条恒真）");
     assert!(
         values.iter().all(|pitch| (48..=52).contains(pitch)),
         "窗口 48..=52 必须真的把旋律压进那五个半音: {values:?}"

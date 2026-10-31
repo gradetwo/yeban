@@ -436,6 +436,10 @@ mod tests {
         // 其余项必须**逐位**为零：只有 1 个抽头的 IR 不该在别处产出能量，
         // 也不该在重排边界漏下未写回的残值。
         assert!(
+            !block.is_empty(),
+            "夹具必须非空（否则下面那条 `.all(..)` 恒真）"
+        );
+        assert!(
             block[2..].iter().all(|v| *v == 0.0),
             "1 个抽头的 IR 在别处产出了能量：{:?}",
             &block[..12]
@@ -513,6 +517,10 @@ mod tests {
         let first = render(&mut conv, &inter, 256);
         conv.reset();
         let second = render(&mut conv, &inter, 256);
+        assert!(
+            !first.is_empty(),
+            "夹具必须非空（否则下面那条 `.all(..)` 恒真）"
+        );
         assert!(
             first
                 .iter()
@@ -609,6 +617,10 @@ mod tests {
         b.set_impulse_response(&h, &h, &h, &h);
         let ra = render(&mut a, &inter, 1_000);
         let rb = render(&mut b, &inter, 1_000);
+        assert!(
+            !ra.is_empty(),
+            "夹具必须非空（否则下面那条 `.all(..)` 恒真）"
+        );
         assert!(
             ra.iter().zip(&rb).all(|(x, y)| x.to_bits() == y.to_bits()),
             "两次渲染不是逐位相同"

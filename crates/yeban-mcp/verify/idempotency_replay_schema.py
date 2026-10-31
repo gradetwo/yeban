@@ -122,8 +122,29 @@ def main() -> int:
 
     requests = [
         call(1, "yeban_open_project", {"path": str(project)}),
-        call(2, "yeban_import_audio", {"name": "ReplayKick", "path": str(kick), "idempotencyKey": KEY}),
-        call(3, "yeban_import_audio", {"name": "ReplayKick", "path": str(kick), "idempotencyKey": KEY}),
+        # ⚠ `license` 是 `yeban_import_audio` 的**必填**参数（逐条查白名单，缺了就是
+        # 结构化拒绝 `licenseRequired`）⇒ 不给的话这两次调用**都被拒绝**，本脚本判的红
+        # 是"夹具不合法"而不是"重放形状漂移"。`kick.wav` 由种子脚本自己生成 ⇒ `CC0-1.0` 为真。
+        call(
+            2,
+            "yeban_import_audio",
+            {
+                "name": "ReplayKick",
+                "path": str(kick),
+                "idempotencyKey": KEY,
+                "license": "CC0-1.0",
+            },
+        ),
+        call(
+            3,
+            "yeban_import_audio",
+            {
+                "name": "ReplayKick",
+                "path": str(kick),
+                "idempotencyKey": KEY,
+                "license": "CC0-1.0",
+            },
+        ),
     ]
     session = subprocess.run(
         [str(binary), "--stdio", "--token-file", str(OUT_DIR / "token.txt")],

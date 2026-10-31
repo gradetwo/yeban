@@ -52,6 +52,7 @@ fn the_undo_tree_traps_focus_and_restores_it_to_the_shortcut_layer() {
             save_path: None,
             engine_quanta: 0,
             undo: Some(Rc::clone(&port)),
+            proposal_source: yeban_app::proposals::ProposalSource::none(),
         },
     )
     .expect("真实界面 + Tier-1 执行面");

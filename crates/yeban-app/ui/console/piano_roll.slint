@@ -327,7 +327,10 @@ export component PianoRoll inherits Rectangle {
             accessible-value-minimum: 0;
             accessible-value-maximum: 127;
             accessible-value-step: 1;
-            accessible-value: "100";
+            // 屏读器读到的必须是**这一根柱**的力度（0–127），与柱高同源：
+            // `velocity_reading` 已是 0..=127 ÷ 127 的投影值 ⇒ 乘回 127 取整。⛔ 不再写死
+            // 字面量 `"100"`（那会让每一根柱都自称 100，与画面互相矛盾）。
+            accessible-value: "" + Math.round(velocity_reading * 127);
         }
     }
 

@@ -1809,6 +1809,7 @@ fn export_midi_carries_lyrics_and_reports_phoneme_gaps() {
         );
         positions.push(found[0]);
     }
+    assert_eq!(positions.len(), 4, "四条歌词各一条落点");
     assert!(
         positions.windows(2).all(|pair| pair[0] < pair[1]),
         "四条歌词按 tick 升序落盘: {positions:?}"

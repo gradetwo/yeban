@@ -2124,6 +2124,10 @@ mod tests {
             "第二条振荡器必须带来它自己的基频: 单 {single_220:.6} / 双 {dual_220:.6}"
         );
         // 两个声部的和必须仍然有限。
+        assert!(
+            !dual.is_empty(),
+            "夹具必须非空（否则下面那条 `.all(..)` 恒真）"
+        );
         assert!(dual.iter().all(|sample| sample.is_finite()));
     }
 
@@ -2154,6 +2158,10 @@ mod tests {
                 OscSettings::new(usize::MAX, f32::INFINITY, f32::INFINITY),
             );
         let out = render_note(params, 2_048);
+        assert!(
+            !out.is_empty(),
+            "夹具必须非空（否则下面那条 `.all(..)` 恒真）"
+        );
         assert!(
             out.iter().all(|sample| sample.is_finite()),
             "退化参数产生了非有限值"
@@ -2254,6 +2262,10 @@ mod tests {
         // 渲染不得 panic，输出必须有限。
         let mut out = [0.0f32; 8];
         synth.render(&tables, 2_100, &mut out);
+        assert!(
+            !out.is_empty(),
+            "夹具必须非空（否则下面那条 `.all(..)` 恒真）"
+        );
         assert!(out.iter().all(|sample| sample.is_finite()));
     }
 
@@ -2797,6 +2809,10 @@ mod tests {
         assert!(
             one_shot.iter().any(|sample| *sample != 0.0),
             "夹具必须出声（否则逐位相等是空转）"
+        );
+        assert!(
+            !one_shot.is_empty(),
+            "夹具必须非空（否则下面那条 `.all(..)` 恒真）"
         );
         assert!(
             one_shot.iter().all(|sample| sample.is_finite()),

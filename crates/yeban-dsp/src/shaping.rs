@@ -1207,6 +1207,10 @@ mod tests {
                 );
                 peak = peak.max(value.abs());
             }
+            assert!(
+                !final_r.is_empty(),
+                "夹具必须非空（否则下面那条 `.all(..)` 恒真）"
+            );
             assert!(final_r.iter().all(|v| v.is_finite()));
             // 输入幅度 0.25：EQ 最多 +18 dB（8×）+ transient 最多 8× 也远低于此，
             // 而 crusher 被量化器限制在 ±1。
@@ -1227,6 +1231,10 @@ mod tests {
             &mut out_r,
             CrushParams::default(),
             SR,
+        );
+        assert!(
+            !out.is_empty(),
+            "夹具必须非空（否则下面那条 `.all(..)` 恒真）"
         );
         assert!(out.iter().all(|v| v.is_finite()));
         // 空块是合法的。
@@ -1266,7 +1274,15 @@ mod tests {
             },
             0.0,
         );
+        assert!(
+            !out.is_empty(),
+            "夹具必须非空（否则下面那条 `.all(..)` 恒真）"
+        );
         assert!(out.iter().all(|v| v.is_finite()));
+        assert!(
+            !out.is_empty(),
+            "夹具必须非空（否则下面那条 `.all(..)` 恒真）"
+        );
         assert!(
             out.iter().all(|v| v.abs() <= 0.5),
             "clamped amounts must not boost"

@@ -197,6 +197,10 @@ fn loop_window_fades_allocate_nothing_over_5_000_quanta() {
         0.0f32.to_bits(),
         "淡出必须以 0 结束 ⇒ 窗真的作用了"
     );
+    assert!(
+        !block.is_empty(),
+        "夹具必须非空（否则下面那条 `.all(..)` 恒真）"
+    );
     assert!(block.iter().all(|v| v.is_finite()));
     assert_eq!(reading, SILENT, "循环微平滑窗的实时路径分配了内存");
 }
@@ -237,6 +241,10 @@ fn noise_colours_allocate_nothing_over_10_000_quanta() {
             }
         }
     });
+    assert!(
+        !sums.is_empty(),
+        "夹具必须非空（否则下面那条 `.all(..)` 恒真）"
+    );
     assert!(
         sums.iter().all(|s| s.is_finite()) && sums.iter().all(|s| s.abs() > 0.0),
         "三种颜色都必须真的跑过：{sums:?}"

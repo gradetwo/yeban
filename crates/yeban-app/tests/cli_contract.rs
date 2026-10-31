@@ -1159,7 +1159,8 @@ fn print_shortcuts_is_a_batch_command() {
 ///
 /// 实例会变、判据不变：`Z → 选区撑满视口` 与 `Cmd/Ctrl+D → 复制到下一格` 都曾是这条判据的
 /// 样板谎（表说能用、宿主 `reject`），它们现在都有落地实现（见 B11d / B11e）；
-/// 今天的样例是 `Shift+Enter → 采纳 AI 建议` 与 `[ → 试听主线`。
+/// 今天的样例是 `[ → 试听主线`（`Shift+Enter → 采纳 AI 建议` 曾是这一条的样板谎，
+/// 2026-10-31 起它有了落地实现 ⇒ 从名单里移出，见判据 B11f 的文档）；
 ///
 /// 能无头查的就是这三面。`apply_action` 对 `Undo`/`Redo`/`OpenTimeMachine` 在**没有撤销
 /// 端口**的装配下也返回 `false` —— 那是装配缺件, 不是动作没实现, 所以这条判据判的是
@@ -1178,11 +1179,18 @@ fn shortcut_table_status_matches_the_resolution_and_host_pipeline() {
     let rows = shortcut_rows();
     assert_eq!(
         rows.len(),
-        30,
+        46,
         "快捷键表的**条目**数（不是行数）：18 条 §7.1 核心快捷键 ＋ `[UI-NOTE-005]` §3.5 项 1–2 的 \
          8 条方向键微调（四个修饰组合 × 两个方向）＋ ⭐ `[UI-NOTE-005]` §3 项 3 的 2 条 \
          时值伸缩（`Shift+←/→`）＋ ⭐ `[ARCH-RT-001]` 的 2 条节拍器键 \
-         （`Cmd/Ctrl+Alt+N` 节拍器 / `Cmd/Ctrl+Alt+D` 预备拍）"
+         （`Cmd/Ctrl+Alt+N` 节拍器 / `Cmd/Ctrl+Alt+D` 预备拍）＋ ⭐ 2 条混音微调 \
+         （`Cmd/Ctrl+Alt+↑/↓` 音量 / `+←/→` 声相，两格 × 两方向）＋ ⭐ 2 条混音拨动 \
+         （`M` 静音 / `S` 独奏，两个开关各一条）＋ ⭐ 2 条文件入口（`Cmd/Ctrl+S` 保存 / \
+         `Cmd/Ctrl+O` 打开，界面决定）＋ ⭐ 1 条录音键（`R` 录制开/关，界面决定）＋ \
+         ⭐ 1 条 AI 抽屉键（`Cmd/Ctrl+Alt+A` 抽屉开/关，界面决定）＋ \
+         ⭐ 2 条选轨键（`Alt+↑/↓` 上一条 / 下一条，界面决定）＋ \
+         ⭐ 1 条另存为键（`Cmd/Ctrl+Shift+S`，界面决定）＋ \
+         ⭐ 3 条控制台标签键（`F7`/`F8`/`F9`，界面决定）"
     );
     // 表头那三行 `# …` 是说明文字, 其中一行**定义**了标记; 数标记只数**条目行**。
     let printed_marks: usize = run
@@ -1382,21 +1390,28 @@ fn duplicate_shortcut_is_implemented_in_the_host_table_and_rendered_output() {
     );
 }
 
-/// 判据 B11f: **能力缺失**的那两条快捷键仍然如实标记为 `(未实现)` —— 本判据是"它还不可用"的牙。
+/// 判据 B11f: **能力缺失**的快捷键仍然如实标记为 `(未实现)` —— 本判据是"它还不可用"的牙。
 ///
 /// ## 为什么要有这一条（它不是 B11b 的重复）
 ///
 /// B11b（`shortcut_table_status_matches_the_resolution_and_host_pipeline`）判的是**三面一致**
 /// ——"表 / 解析 / 宿主有没有各说各话"。它**允许**这三面一起改成"已实现"。而本判据钉住的是
-/// **事实本身**：`Shift+Enter → 采纳 AI 建议` 与 `[ → 试听主线` 的能力**今天不存在**
-/// （缺的不是接线，是"待采纳的提案身份"与 `[ARCH-RT-005]` 的 A/B 并发渲染）。
+/// **事实本身**：`[` 与 `]`（试听主线 / 试听 AI 提案分支）的能力**今天不存在**
+/// —— 缺的不是接线，是规范 `[ARCH-RT-005]` 的 A/B 并发渲染。
 ///
 /// 因此它会在两种情况下变红，两种都该红：
-/// 1. **假实现**：把 `implemented` 改成 `true`（或把动作从 `!matches!` 移出）而能力仍未落地
-///    ⇒ 第 ①②③ 步全部失败；
+/// 1. **假实现**：把 `implemented` 改成 `true`（或把动作从 `action_has_implementation`
+///    移出）而能力仍未落地 ⇒ 第 ①③④ 步全部失败；
 /// 2. **真实现但忘了改判据**：谁真的把能力接上了（例如引擎把 `ARCH-RT-005` 落进
 ///    `IMPLEMENTED_SPEC_IDS`）⇒ 第 ⑤ 步失败，逼作者回来更新这一条、`cli.rs` 的
 ///    `implemented` 与 `host::action_has_implementation` 的名单。
+///
+/// ⚠ **本判据于 2026-10-31 少了一条**：`Shift+Enter → 采纳 AI 建议` 从"能力缺失"名单里
+/// **移出**了（抽屉长出提案身份 `ProposalRowView::id` + 选中态窗口属性 + `HostAction` 的
+/// `MergeProposal` / `RejectProposal` 两臂 ⇒ 落点真的存在）。那不是"断言变松"：
+/// 它由 `tests/live_ui_mcp.rs` 的 `selecting_a_row_lights_up_accept_and_it_really_merges_the_proposal` 的运行时判据**反向**接管 ——
+/// 那边要求"点选一行 ⇒ 按钮亮起 ⇒ `Shift+Enter` 与「采纳」都让权威里那条提案真的消失、提交数 +1"。
+/// 一删一补，⛔ 不留"没人管"的那一格。
 ///
 /// ## 各步的"单位"（防止把行数当条数）
 ///
@@ -1405,20 +1420,17 @@ fn duplicate_shortcut_is_implemented_in_the_host_table_and_rendered_output() {
 /// - 第 ④ 步数的是 `shortcut_rows()` 里 `implemented == false` 的**条目数**（单位：条目）。
 ///
 /// 运行时的"按下不消费且一位不变"由 `tests/live_ui_mcp.rs` 的
-/// `the_ai_suggestion_and_audition_keys_are_rejected_without_any_state_change` 用真事件源见证。
+/// `the_ai_suggestion_and_audition_keys_are_rejected_without_any_state_change` 用真事件源见证
+/// （那里 `Shift+Enter` 仍然不消费 —— 那一台装配没有提案来源，本判据说的是"有没有落点"）。
 #[test]
 fn the_ai_suggestion_and_audition_keys_are_still_declared_unimplemented() {
     use yeban_app::cli::{UNIMPLEMENTED_MARKER, shortcut_rows};
     use yeban_app::host::action_has_implementation;
     use yeban_app::input::{Action, Focus, InputContext, Modifiers, PhysicalKey, Resolution};
 
-    // ① 宿主自己的陈述：三条都**没有**可作用的实现。
-    //    第三条（`AuditionProposal`）不在快捷表里，但同一份陈述同样挡住它。
-    let still_unimplemented = [
-        Action::AcceptAiSuggestion,
-        Action::AuditionMain,
-        Action::AuditionProposal,
-    ];
+    // ① 宿主自己的陈述：两条试听键都**没有**可作用的实现。
+    //    （`AuditionProposal` 不在快捷表里，但同一份陈述同样挡住它。）
+    let still_unimplemented = [Action::AuditionMain, Action::AuditionProposal];
     for action in still_unimplemented {
         assert!(
             !action_has_implementation(action),
@@ -1426,6 +1438,14 @@ fn the_ai_suggestion_and_audition_keys_are_still_declared_unimplemented() {
              （回退成 `true` 就是一次假实现）"
         );
     }
+    // ①b 反向对照（⛔ 无阳性对照的阴性断言不算数）：`Shift+Enter` 现在**有**落点了。
+    //     这一句把"移出名单"这件事与第 ③④ 步的读数绑在一起：谁把它改回 `false` 却
+    //     忘了改表，或反过来表改了而宿主没接，都会在这里红。
+    assert!(
+        action_has_implementation(Action::AcceptAiSuggestion),
+        "`Shift+Enter` 的落点已接上（`host::apply_action` → `invoke_accept_ai_proposal` → \
+         `wire_proposal_drawer` 的注册者 → `HostAction::MergeProposal`）⇒ 本判据的第 ③④ 步才允许只剩一条"
+    );
 
     // ② 键**仍然绑定**到这两个动作（缺口是"动作没落地"，不是"键丢了"）。
     let mut canvas = InputContext::new();
@@ -1441,7 +1461,7 @@ fn the_ai_suggestion_and_audition_keys_are_still_declared_unimplemented() {
         "`[` 必须仍然解析出 `AuditionMain`（物理码路径）"
     );
 
-    // ③ 表里只有这两条 `implemented: false`，且就是它们（单位：条目）。
+    // ③ 表里只剩这一条 `implemented: false`，且就是它（单位：条目）。
     let unimplemented_rows: Vec<Action> = shortcut_rows()
         .iter()
         .filter(|row| !row.implemented)
@@ -1449,11 +1469,12 @@ fn the_ai_suggestion_and_audition_keys_are_still_declared_unimplemented() {
         .collect();
     assert_eq!(
         unimplemented_rows,
-        vec![Action::AcceptAiSuggestion, Action::AuditionMain],
-        "本版本快捷键表里未实现的条目必须**恰好**是 `Shift+Enter` 与 `[` 这两条"
+        vec![Action::AuditionMain],
+        "本版本快捷键表里未实现的条目必须**恰好**是 `[` 这一条（`Shift+Enter` 已接线, \
+         `]` 不在表里）"
     );
 
-    // ④ 真二进制的渲染面：条目行上恰好 2 个标记，且两条被点名的行都带标记。
+    // ④ 真二进制的渲染面：条目行上恰好 1 个标记，且被点名的那行带标记。
     let run = invoke(&["--print-shortcuts"]);
     assert_eq!(run.code, 0, "stderr={}", run.stderr);
     let printed_marks: usize = run
@@ -1468,18 +1489,32 @@ fn the_ai_suggestion_and_audition_keys_are_still_declared_unimplemented() {
         "`--print-shortcuts` 的**条目行**里 `{UNIMPLEMENTED_MARKER}` 的次数必须等于未实现条目数:\n{}",
         run.stdout
     );
-    assert_eq!(printed_marks, 2, "这两条是本版本仅剩的未实现快捷键");
-    for label in ["Shift+Enter → 采纳 AI 建议", "[ → 试听主线"] {
-        let line = run
-            .stdout
-            .lines()
-            .find(|line| line.trim_start().starts_with(label))
-            .unwrap_or_else(|| panic!("`--print-shortcuts` 里找不到 `{label}`:\n{}", run.stdout));
-        assert!(
-            line.contains(UNIMPLEMENTED_MARKER),
-            "能力仍缺失的行**必须**带 `{UNIMPLEMENTED_MARKER}`: {line}"
-        );
-    }
+    assert_eq!(printed_marks, 1, "这条是本版本仅剩的未实现快捷键");
+    let label = "[ → 试听主线";
+    let line = run
+        .stdout
+        .lines()
+        .find(|line| line.trim_start().starts_with(label))
+        .unwrap_or_else(|| panic!("`--print-shortcuts` 里找不到 `{label}`:\n{}", run.stdout));
+    assert!(
+        line.contains(UNIMPLEMENTED_MARKER),
+        "能力仍缺失的行**必须**带 `{UNIMPLEMENTED_MARKER}`: {line}"
+    );
+    // ④b 反方向：`Shift+Enter` 那一行**不许**再带标记（它已接线）, 而它确实还在表里。
+    let accept_line = run
+        .stdout
+        .lines()
+        .find(|line| line.trim_start().starts_with("Shift+Enter → 采纳 AI 建议"))
+        .unwrap_or_else(|| {
+            panic!(
+                "`--print-shortcuts` 里找不到 `Shift+Enter` 那一行:\n{}",
+                run.stdout
+            )
+        });
+    assert!(
+        !accept_line.contains(UNIMPLEMENTED_MARKER),
+        "已接线的行不许继续被标成未实现（那是一次**反向**的不诚实：功能在、表上说没有）: {accept_line}"
+    );
     // 反方向：别的行**不许**被顺手标上标记（否则"未实现"这一列就不再可读）。
     for line in run
         .stdout
@@ -1488,8 +1523,8 @@ fn the_ai_suggestion_and_audition_keys_are_still_declared_unimplemented() {
     {
         if line.contains(UNIMPLEMENTED_MARKER) {
             assert!(
-                line.contains("Shift+Enter → 采纳 AI 建议") || line.contains("[ → 试听主线"),
-                "只有那两条能力缺失的行可以带标记, 实际: {line}"
+                line.contains("[ → 试听主线"),
+                "只有那一条能力缺失的行可以带标记, 实际: {line}"
             );
         }
     }
@@ -1505,9 +1540,9 @@ fn the_ai_suggestion_and_audition_keys_are_still_declared_unimplemented() {
     );
 
     eprintln!(
-        "[unimplemented-pins] 未实现快捷键条目 {printed_marks} 条（`Shift+Enter → 采纳 AI 建议` / \
-         `[ → 试听主线`）: 宿主对三条动作（含不在表里的 `AuditionProposal`）一律拒绝, \
-         键仍绑定, `ARCH-RT-005` 不在引擎的 IMPLEMENTED_SPEC_IDS 里"
+        "[unimplemented-pins] 未实现快捷键条目 {printed_marks} 条（`[ → 试听主线`）: 宿主对两条试听动作 \
+         （含不在表里的 `AuditionProposal`）一律拒绝, 键仍绑定, `Shift+Enter` 已移出本名单, \
+         `ARCH-RT-005` 不在引擎的 IMPLEMENTED_SPEC_IDS 里"
     );
 }
 
@@ -1804,6 +1839,8 @@ fn export_wav_bit_depth_sample_rate_and_seconds_are_selectable_and_default_stays
         ("--wav-sample-rate", "44100"),
         ("--wav-seconds", "1"),
         ("--wav-frames", "100"),
+        // ⭐ 审评 2026-10-31（P1-1）：`--render-threads` 同属 `--export-wav` 的修饰开关。
+        ("--render-threads", "4"),
     ] {
         let run = invoke(&["--headless", flag, value]);
         assert_eq!(
@@ -1830,6 +1867,11 @@ fn export_wav_bit_depth_sample_rate_and_seconds_are_selectable_and_default_stays
         ("--wav-frames", "-1"),
         ("--wav-frames", "abc"),
         ("--wav-frames", "1.5"),
+        // ⭐ 审评 2026-10-31（P1-1）：`--render-threads` 的值域护栏（0 / 负数 / 非整数）。
+        ("--render-threads", "0"),
+        ("--render-threads", "-1"),
+        ("--render-threads", "abc"),
+        ("--render-threads", "1.5"),
     ] {
         let run = invoke(&[
             "--headless",
@@ -1845,6 +1887,44 @@ fn export_wav_bit_depth_sample_rate_and_seconds_are_selectable_and_default_stays
         );
     }
 
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// 判据（审评 2026-10-31，P1-1）：`--render-threads` 只改耗时、不改字节 ——
+/// 同一工程缺省导出与 `--render-threads 4` 导出的文件逐字节相同
+/// （固定顺序汇聚；非法值已由上一判据第 ④ 节覆盖）。
+#[test]
+fn export_wav_render_threads_change_only_time_not_bytes() {
+    let dir = scratch_dir("export-wav-threads");
+    let source = write_real_container(&dir, "threads.yeban");
+    let default_out = dir.join("default.wav");
+    let run = invoke(&[
+        "--open",
+        source.to_str().expect("utf8"),
+        "--export-wav",
+        default_out.to_str().expect("utf8"),
+    ]);
+    assert_eq!(run.code, 0, "缺省导出必须成功; stderr={}", run.stderr);
+    let threaded_out = dir.join("threaded.wav");
+    let run = invoke(&[
+        "--open",
+        source.to_str().expect("utf8"),
+        "--export-wav",
+        threaded_out.to_str().expect("utf8"),
+        "--render-threads",
+        "4",
+    ]);
+    assert_eq!(
+        run.code, 0,
+        "--render-threads 4 导出必须成功; stderr={}",
+        run.stderr
+    );
+    let default_bytes = std::fs::read(&default_out).expect("读缺省档");
+    let threaded_bytes = std::fs::read(&threaded_out).expect("读并行档");
+    assert_eq!(
+        threaded_bytes, default_bytes,
+        "--render-threads 4 的产物必须与缺省导出逐字节相同（固定顺序汇聚）"
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 

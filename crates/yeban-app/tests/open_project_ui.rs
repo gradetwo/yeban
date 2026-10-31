@@ -196,6 +196,9 @@ fn the_gui_open_project_entry_really_swaps_the_current_project() {
     let other_path = write_container(&scratch.dir, "other.yeban", &other);
     let other_fingerprint = project_fingerprint(&other).expect("另一份工程的指纹");
     let other_rows = ViewState::from_project(&other).expect("投影").tracks.len();
+    // 键盘腿（`Cmd/Ctrl+O`）要把工程**换回来**：起始那份也落一次盘。
+    let current_path = write_container(&scratch.dir, "current.yeban", &current);
+    let current_fingerprint = project_fingerprint(&current).expect("起始工程的指纹");
 
     // ---- 装配：**生产形态**的窗口（`run_gui` 用的同一个构造入口）＋ Tier-1 无头平台 ----
     let tier1 = Tier1Window::install(WINDOW).expect("装 Tier-1 无头平台");
@@ -536,6 +539,76 @@ fn the_gui_open_project_entry_really_swaps_the_current_project() {
         port.display().undoable,
         undoable_now,
         "⛔ 拒绝之后会话一位不动"
+    );
+
+    // =====================================================================
+    // 判据 ⑦（键盘腿）：`Cmd/Ctrl+O` 落到**同一个**打开入口
+    // =====================================================================
+    //
+    // 这条腿钉住的是"键盘不是第二条打开路径"：先装产品同一条 `host::wire_keys`，
+    // 再从**按键**进（`key-action` 回调，与鼠标点击是同一段落点 ⇒ `ui.invoke_open_project()`），
+    // 断言工程真的换回起始那一份、回执与按钮那一次同一条消息。
+    let picker = ScriptedPicker::answering_open(&current_path);
+    wire(&window, &picker, &port, Some(Rc::clone(&production)), false);
+    host::wire_keys(
+        &window,
+        Rc::new(RefCell::new(yeban_app::input::InputContext::new())),
+        Some(Rc::clone(&port)),
+        None,
+        None,
+    );
+    let rows_before_key = rows(&window);
+    assert_eq!(
+        rows_before_key, other_rows,
+        "键盘腿之前必须停在上一腿换进来的那一份工程上（否则『换回去』看不出）"
+    );
+    assert!(
+        window.invoke_key_action(
+            slint::SharedString::from("o"),
+            false, // shift
+            false, // ctrl
+            false, // alt
+            true,  // meta —— `Cmd/Ctrl` 在策略表里是同一个 `command()` 位
+        ),
+        "`Cmd/Ctrl+O` 必须被消费（打开键不冒泡给焦点系统）"
+    );
+    let receipt = window.get_module_status().to_string();
+    report_line(&format!(
+        "[#93] 键盘 `Cmd/Ctrl+O`：choose_open {} 次；结局 succeeded={}；回执 {receipt:?}；\
+         工程指纹 → {:?}（起始那一份 = {current_fingerprint}）；track-names {rows_before_key} → {}",
+        picker.call_count("open"),
+        window.get_module_status_succeeded(),
+        port.fingerprint(),
+        rows(&window),
+    ));
+    assert_eq!(
+        picker.call_count("open"),
+        1,
+        "`Cmd/Ctrl+O` 必须让对话框恰好被问一次（多一次 = 一次按键弹两次；少一次 = 路径来历不明）"
+    );
+    assert!(
+        window.get_module_status_succeeded(),
+        "`Cmd/Ctrl+O` 的打开必须成功: {receipt}"
+    );
+    assert!(
+        receipt.contains("outcome=ok")
+            && receipt.contains(&format!("path={}", current_path.display())),
+        "回执必须走**既有**的 `module-status` 通道并点名对话框给的那一条路径: {receipt}"
+    );
+    assert_eq!(
+        port.fingerprint().as_deref(),
+        Some(current_fingerprint.as_str()),
+        "⭐ 按键打开必须把工程换成**逐字节**等于起始那一份（不是『轨数看起来对』）"
+    );
+    assert_eq!(
+        rows(&window),
+        rows_current,
+        "⛔ 界面行数必须跟着换回来（否则界面还画着上一份工程）"
+    );
+    assert_eq!(
+        port.display().undoable,
+        0,
+        "⭐ 打开一个工程 = **新会话**：键盘腿同样必须把 `undoable` 归零"
     );
 
     drop(tier1);

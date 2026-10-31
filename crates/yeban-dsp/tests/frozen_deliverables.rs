@@ -188,6 +188,10 @@ fn the_gated_loudness_digest_is_frozen_on_the_frozen_architecture() {
     let readings = [meter.momentary_lufs(), meter.short_term_lufs()];
     let digest = fnv1a64(&readings);
     assert!(
+        !readings.is_empty(),
+        "夹具必须非空（否则下面那条 `.all(..)` 恒真）"
+    );
+    assert!(
         readings.iter().all(|v| v.is_finite()),
         "夹具必须让两个读数都有限（实得 {readings:?}）"
     );

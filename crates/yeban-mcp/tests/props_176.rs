@@ -735,6 +735,30 @@ fn ten_broadcast_tools_publish_an_output_schema_their_real_responses_satisfy() {
         }
     }
 
+    // ⭐ s30 的非空核对：上面那份 `validate_complete` 对**空数组**是**空绿**的
+    // （`items` 只在真有元素时被逐个核对），所以这三处**逐键名册**要能被真实响应跑到，
+    // 必须先证明这三个数组在这一轮**各至少有一个元素**。单位 = 元素个数。
+    for (label, array) in [
+        (
+            "yeban_query_engine_state.sends",
+            &engine_state["data"]["sends"],
+        ),
+        ("yeban_render_master.sources", &rendered["data"]["sources"]),
+        (
+            "yeban_edit_automation.lane.points",
+            &automation["data"]["lane"]["points"],
+        ),
+    ] {
+        let elements = array
+            .as_array()
+            .unwrap_or_else(|| panic!("`{label}` 必须是数组: {array}"));
+        assert!(
+            !elements.is_empty(),
+            "`{label}` 是空数组 ⇒ s30 的 `items` 名册没被真实响应核对过（空绿）"
+        );
+        println!("### s30 元素数 `{label}` = {}", elements.len());
+    }
+
     // 两个逐字读数（判据 ⑦ 的例子）：提案语义与削波读数。
     println!(
         "### 逐字：edit_notes.pendingMerge = {}\n### 逐字：render_master.clippedSamples = {} / truePeakDbfs = {}",
@@ -890,12 +914,38 @@ fn the_validator_can_go_red_and_the_schema_is_not_idealised() {
     // ③ 声明的字段缺席：用**另一种成功形状**的那份 schema（`sends` 只在点名音轨时出现，
     //    因此它**不在** required 里）—— `validate` 放行，`validate_complete` 必须红。
     let engine_schema = output_schema::for_tool("yeban_query_engine_state").expect("schema");
+    // ⚠ `session` / `engine` 必须**写全**（照 `domain::engine_state` 的 `session_value` /
+    // `engine_value` 现读）：s29 起校验器递归进嵌套对象，`{}` 占位在"只看顶层"时代是安全的，
+    // 现在会被嵌套 `required` 直接拒掉（与 `output_schema.rs` 里那份同名夹具同一个理由）。
     let without_sends = json!({
         "commitModel": "none",
-        "session": {},
-        "engine": {},
+        "session": {
+            "playheadTicks": 0,
+            "isPlaying": false,
+            "transportState": "stopped",
+            "ticksPerBeat": 960,
+            "playheadBar": 0,
+            "playheadBarOffsetTicks": 0,
+            "taskCount": 0,
+            "pluginPids": [],
+            "openWindowCount": 0,
+            "undoCursor": 0
+        },
+        "engine": {
+            "sampleRate": 48_000,
+            "sampleRateSource": "project.audio_config.sample_rate",
+            "bufferFrames": null,
+            "bufferSource": "unavailable",
+            "mirrorPresent": false,
+            "readingsRevision": 0,
+            "sceneLaunchesApplied": null,
+            "sceneLaunchesAppliedSource": "unavailable"
+        },
         "track": null,
-        "stateSources": {}
+        "stateSources": {
+            "playhead": "yeban_model::SessionRuntimeState",
+            "sampleRate": "project.audio_config.sample_rate"
+        }
     });
     output_schema::validate(&engine_schema, &without_sends).expect("sends 不是 required");
     let violation = output_schema::validate_complete(&engine_schema, &without_sends)

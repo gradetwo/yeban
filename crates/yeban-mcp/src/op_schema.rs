@@ -21,7 +21,7 @@
 //! | 其余 | 各自的 `reject_*_fields` 白名单 |
 //!
 //! `kind` 的**全集**直接引用 [`crate::domain::notes::OP_KINDS`]（判据
-//! `tests/effect_contract.rs::the_published_ops_item_schema_covers_every_parser_kind`
+//! `tests/effect_contract.rs::tools_list_publishes_one_branch_per_parser_kind`
 //! 双向对账），枚举词表同样引用解析器的那份常量（`LANE_NAMES` / `LANE_WRITE_MODES` /
 //! `DEVICE_KINDS`）。
 //!

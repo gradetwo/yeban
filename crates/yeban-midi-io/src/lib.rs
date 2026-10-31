@@ -120,6 +120,11 @@ mod tests {
         let ticks: Vec<u64> = (0..8)
             .map(|step| ticks_from_origin_us(origin + step * 125_000, origin))
             .collect();
+        assert_eq!(
+            ticks.len(),
+            8,
+            "8 个采样点（少于 2 个时 `windows(2)` 恒真）"
+        );
         assert!(ticks.windows(2).all(|pair| pair[0] <= pair[1]), "{ticks:?}");
         assert!(ticks[7] > 0, "序列必须真的推进：{ticks:?}");
         assert_eq!(ticks[7], 840, "7 × 120 Tick（每 125 ms = 1/8 拍）");

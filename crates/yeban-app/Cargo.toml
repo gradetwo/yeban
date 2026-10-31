@@ -108,7 +108,7 @@ yeban-decode = { workspace = true }
 # `EngineRuntime` / `meter_channel` 这些与设备无关的公开面, 一个 `cpal::*` 都不出现
 # (D19 的字面要求)。离线渲染器 `yeban-render` 走的是另一条路
 # (`default-features = false`), 与本条无关。
-yeban-engine = { workspace = true }
+yeban-engine = { workspace = true, features = ["device"] }
 
 # ---------------------------------------------------------------------------
 # libm: 纯 Rust 超越函数 (L1 确定性 [ARCH-DET-001])

@@ -1538,6 +1538,10 @@ mod tests {
         let mut out = vec![7.0f32; 512];
         machine.render(0, &mut out);
         assert!(
+            !out.is_empty(),
+            "夹具必须非空（否则下面那条 `.all(..)` 恒真）"
+        );
+        assert!(
             out.iter().all(|sample| *sample == 0.0),
             "空闲器件必须输出逐位 0"
         );
@@ -1902,6 +1906,10 @@ mod tests {
         assert!(
             one_shot.iter().any(|sample| *sample != 0.0),
             "夹具必须出声（否则逐位相等是空转）"
+        );
+        assert!(
+            !one_shot.is_empty(),
+            "夹具必须非空（否则下面那条 `.all(..)` 恒真）"
         );
         assert!(
             one_shot.iter().all(|sample| sample.is_finite()),

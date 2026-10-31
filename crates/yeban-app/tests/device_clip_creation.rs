@@ -328,6 +328,10 @@ fn inserting_a_reverb_commits_once_and_installs_the_reverb_params() {
     assert_eq!(actual_names, expected_names, "参数名必须来自 `reverb` 分组");
     let actual_defaults: Vec<f32> = device.params.iter().map(|param| param.value).collect();
     assert_eq!(actual_defaults, expected_defaults);
+    assert!(
+        !actual_names.is_empty(),
+        "夹具必须非空（否则下面那条 `.all(..)` 恒真）"
+    );
     assert!(actual_names.iter().all(|name| name.starts_with("reverb_")));
     let wet = device
         .params
@@ -648,6 +652,10 @@ fn the_builtin_devices_take_every_default_from_the_shared_contract() {
         let actual_defaults: Vec<f32> = device.params.iter().map(|param| param.value).collect();
         assert_eq!(actual_names, names);
         assert_eq!(actual_defaults, defaults);
+        assert!(
+            !device.params.is_empty(),
+            "夹具必须非空（否则下面那条 `.all(..)` 恒真）"
+        );
         assert!(
             device.params.iter().all(|param| param.value.is_finite()),
             "所有缺省值必须有限（`DeviceDefinition::validate` 会拒绝非有限值）"

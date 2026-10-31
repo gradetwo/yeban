@@ -157,6 +157,9 @@ pub mod sfz_load;
 // `ROAD-M4-008` 选项 (a) 第三片：GUI 的保存路径与领域 MCP 参与**同一把**建议锁。
 // 它没有 feature 门：`--save-as` 在**默认构建**里也是写路径（见该模块的文档）。
 pub mod project_lock;
+// AI 提案抽屉的**读面**（`Domain.proposals` → 界面属性, ⛔ 不发明第二份权威）。
+// 没有 feature 门：默认构建里它读不到来源, 于是恒给"没有来源"那句**真话**（见模块文档）。
+pub mod proposals;
 pub mod save;
 // **用户在界面上按的"保存工程"**（`ROAD-M4-008` 选项 (a) 剩下的"保存 UI"缺口）。
 // 产品路径上的普通模块：它只拿 `save::save_project_file` 与（有 feature 时）

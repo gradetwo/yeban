@@ -1385,6 +1385,10 @@ mod tests {
 
         // ③ tick 是**会话相对**的（⛔ 不是巨大值）⇒ 抓"忘了减 origin_us"。
         assert!(
+            !incremental.notes.is_empty(),
+            "夹具必须非空（否则下面那条 `.all(..)` 恒真）"
+        );
+        assert!(
             incremental.notes.iter().all(|n| n.end_tick < 10_000),
             "tick 必须是会话相对的: {:?}",
             incremental.notes

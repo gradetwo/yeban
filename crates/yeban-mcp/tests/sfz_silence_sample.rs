@@ -4,7 +4,8 @@
 //!
 //! | 量 | 来源 | 单位 |
 //! | :--- | :--- | :--- |
-//! | `silent` | `data.silentRegionCount`（`yeban_load_sfz`） | 本工具认作**内建静音**的区域数 |
+//! | `silent` | `data.silentRegionCount`（`yeban_load_sfz`） | **引擎摊平口径**的静音区域数（缺样本 ＋ 内建静音；报告缺口 `G4`） |
+//! | `builtinSilent` | `data.builtinSilentRegionCount`（`yeban_load_sfz`） | 其中 `sample=*silence` 的子集 |
 //! | `notesBuiltinSilence` | `data.notesUsingBuiltinSilence`（`yeban_render_sfz_wav`） | 落在内建静音区域上的**音符数** |
 //! | `samples` | `data.sampleFilesReadCount` | 真的解出 PCM 的样本**份数** |
 //! | `missing` / `unreadable` | `data.sampleFailures` / `data.sampleFilesFailedCount` | 读盘失败**条数**（⛔ 不含 `*silence`） |
@@ -263,7 +264,11 @@ fn load_sfz_counts_the_builtin_silence_and_never_reports_it_as_a_missing_file() 
     assert_eq!(data["regions"], 2, "区域数: {data}");
     assert_eq!(
         data["silentRegionCount"], 1,
-        "`*silence` 必须计入 silent（区域数）: {data}"
+        "`*silence` 必须计入 silent（摊平口径：本夹具另一条读了文件 ⇒ 只此 1 条）: {data}"
+    );
+    assert_eq!(
+        data["builtinSilentRegionCount"], 1,
+        "`*silence` 是内建静音子集: {data}"
     );
     assert!(
         failures.is_empty(),
@@ -322,6 +327,7 @@ fn load_sfz_counts_the_builtin_silence_and_never_reports_it_as_a_missing_file() 
     );
     assert_eq!(only_data["regions"], 1);
     assert_eq!(only_data["silentRegionCount"], 1);
+    assert_eq!(only_data["builtinSilentRegionCount"], 1);
     assert!(
         only_data["sampleFailures"]
             .as_array()
@@ -359,6 +365,7 @@ fn load_sfz_counts_the_builtin_silence_and_never_reports_it_as_a_missing_file() 
     );
     assert_eq!(pd["regions"], 1);
     assert_eq!(pd["silentRegionCount"], 1);
+    assert_eq!(pd["builtinSilentRegionCount"], 1);
     assert!(
         pd["sampleFailures"]
             .as_array()
@@ -369,6 +376,64 @@ fn load_sfz_counts_the_builtin_silence_and_never_reports_it_as_a_missing_file() 
     assert_eq!(
         pd["regionDetails"][0]["sample"], "*silence",
         "`sample=` 字段必须是原值（⛔ 不是拼过 default_path 的 samples/*silence）: {pd}"
+    );
+}
+
+/// 判据 ①b（报告缺口 `G4`）：**读不到的样本也计入 `silentRegionCount`** ——
+/// 与 `yeban_render_master` 的 `sampler.silentRegionCount` 同口径；且回退宣称带适用范围。
+///
+/// 修前：装载回执只数内建静音 ⇒ 同一份"全部样本读不到"的乐器被报成 0，
+/// 而绑轨渲染报 `silent=360` 且音频是数字静音 —— 三处表述互相矛盾
+/// （Zimmer 2026-10-31 报告 §5.3）。本判据在**装载侧**钉住摊平口径与回退边界；
+/// 与母带回执的逐值对账在 `render_master.rs` 的同名 `g4` 判据里。
+#[test]
+fn unreadable_samples_count_toward_silent_region_count_and_the_fallback_says_where_it_applies() {
+    let scratch = Scratch::new("g4-silent");
+    let dead = scratch.write_sfz(
+        "dead.sfz",
+        "<region> key=60 sample=gone-a.wav\n<region> key=61 sample=gone-b.wav\n",
+    );
+    let mut dispatcher = dispatcher_with_project();
+    let loaded = call_tool(
+        &mut dispatcher,
+        "yeban_load_sfz",
+        serde_json::json!({ "path": dead.display().to_string() }),
+    );
+    assert_eq!(loaded["status"], "success", "{loaded}");
+    let data = &loaded["data"];
+    println!(
+        "[mcp/silence/g4] regions={} silent={} builtin={} failures={:?} sampleSource={:?}",
+        data["regions"],
+        data["silentRegionCount"],
+        data["builtinSilentRegionCount"],
+        data["sampleFailures"],
+        data["sampleSource"],
+    );
+    assert_eq!(
+        data["silentRegionCount"], 2,
+        "两条区域都读不到 ⇒ 摊平口径都是静音（⛔ 修前的 0）: {data}"
+    );
+    assert_eq!(
+        data["builtinSilentRegionCount"], 0,
+        "没有 `*silence` ⇒ 内建静音子集为 0: {data}"
+    );
+    assert_eq!(
+        data["sampleFailures"]
+            .as_array()
+            .expect("sampleFailures")
+            .len(),
+        2,
+        "两条失败必须逐条登记: {data}"
+    );
+    // ⭐ 回退宣称必须带适用范围：正弦只属于 `yeban_render_sfz_wav` 试听路径。
+    let source = data["sampleSource"].as_str().expect("sampleSource");
+    assert!(
+        source.starts_with("in-memory-sine"),
+        "⛔ 不许改掉前缀（既有判据按它断言）: {source}"
+    );
+    assert!(
+        source.contains("采样器轨不回退"),
+        "回退文案必须点名适用边界（否则会被读成母带也有声）: {source}"
     );
 }
 

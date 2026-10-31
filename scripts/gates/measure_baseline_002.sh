@@ -6,8 +6,14 @@
 # `--headless-idle` 才真的构造 `MainWindow` 并逐行光栅化一帧（零新增依赖，`MinimalSoftwareWindow`/`SoftwareRenderer`）。
 #
 # 用法（**本机可复跑**，这是它存在的意义）:
-#   scripts/gates/measure_baseline_002.sh -- /path/to/yeban-app          # 用已建好的二进制（debug 也可以）
+#   scripts/gates/measure_baseline_002.sh -- /path/to/yeban-app          # 判定用 release 官方缺省构建
 #   scripts/gates/measure_baseline_002.sh -- cargo run --release -p yeban-app --locked --
+#
+# 测量定义（ADR-0056，已批准）：二进制 = release 官方缺省构建（不启用 mcp-http /
+# ui-mcp / experimental-*，启用它们时的读数须另行标注 features，不得与本口径并列）；
+# 样本 = --project-sample empty；路径 = --headless-idle（真 MainWindow，一帧光栅化见证；
+# --headless 只报进程地板，不是规范对象）；度量 = ru_maxrss 峰值（measure_rss.py）。
+# debug 读数只作量级对照，不作判定。判定硬件见 ADR-0002（待 HD-49/HD-58）。
 # 环境变量: IDLE_SECONDS（默认 5）、TIMEOUT（默认 300，交给 measure_rss.py）
 #
 # 退出码: 0 = 四条测量都跑完（**不代表达标** —— 达标需在规范指定参考机复跑）; 1 = 有测量失败; 2 = 用法错误。

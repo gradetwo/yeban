@@ -9,9 +9,10 @@
 //!
 //! ## ⚠ 如实登记的边界（⛔ 不假装已接）
 //!
-//! * **app 侧今天没有真实提案表示**：`ui/dialogs/musical_pr_drawer.slint` 的
-//!   `proposal-count` / `proposal-labels` 等仍是**内联演示常量**，领域侧的
-//!   `yeban_propose_section` / `yeban_merge_proposal` 要的是 `proposalId`
+//! * **app 侧看得见提案、但按不下它**：抽屉的数据面自 2026-10-30 起由
+//!   `host::wire_proposal_drawer` 从唯一可变权威注入（`src/proposals.rs`；更早之前
+//!   那几个属性是内联演示常量），而**合并**提案要走领域的
+//!   `yeban_propose_section` / `yeban_merge_proposal`，那两步要的是 `proposalId`
 //!   ⇒ ⭐ **故本模块把"两份工程"做成**可注入参数**，判据喂**合成工程**；
 //!   ⭐ **真实提案接入仍归提案线**（`ADR-0005` 的"界面侧不新造提案状态"约束）。
 //! * **真实听感本机无法验证**（无声卡监听回路）⇒ 判据只证"接受/拒绝/回基线"的**结构性**

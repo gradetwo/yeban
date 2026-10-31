@@ -1355,6 +1355,10 @@ mod tests {
         let mut comp = Compressor::new(CompressorParams::DEFAULT, 48_000.0);
         let mut buf = vec![0.0f32; 4_800];
         comp.process_mono(&mut buf);
+        assert!(
+            !buf.is_empty(),
+            "夹具必须非空（否则下面那条 `.all(..)` 恒真）"
+        );
         assert!(buf.iter().all(|s| *s == 0.0), "静音必须逐位为 0");
         assert_eq!(comp.level_db(), MIN_LEVEL_DB);
         assert!(!comp.gain_db().is_nan());
@@ -1584,10 +1588,26 @@ mod tests {
             let mut stereo = Compressor::new(params, 48_000.0);
             assert_eq!(stereo.process_stereo(&mut left, &mut right), input.len());
             assert!(
+                !got.is_empty(),
+                "夹具必须非空（否则下面那条 `.all(..)` 恒真）"
+            );
+            assert!(
+                !left.is_empty(),
+                "夹具必须非空（否则下面那条 `.all(..)` 恒真）"
+            );
+            assert!(
                 left.iter()
                     .zip(got.iter())
                     .all(|(a, b)| a.to_bits() == b.to_bits()),
                 "makeup={makeup_db} dB：左声道与单声道路径不再逐位一致"
+            );
+            assert!(
+                !got.is_empty(),
+                "夹具必须非空（否则下面那条 `.all(..)` 恒真）"
+            );
+            assert!(
+                !right.is_empty(),
+                "夹具必须非空（否则下面那条 `.all(..)` 恒真）"
             );
             assert!(
                 right
@@ -1661,6 +1681,10 @@ mod tests {
         let mut comp = Compressor::new(CompressorParams::DEFAULT, 48_000.0);
         let mut buf = vec![4.0f32; 4_800];
         comp.process_mono(&mut buf);
+        assert!(
+            !buf.is_empty(),
+            "夹具必须非空（否则下面那条 `.all(..)` 恒真）"
+        );
         assert!(buf.iter().all(|s| s.is_finite()));
         // 膝上：x = 20·log10(4) = 12.0412 dBFS；o = 12.0412 + 12 = 24.0412 dB；
         // g = (1/4 − 1)·o = −0.75·24.0412 = −18.0309 dB
@@ -1684,6 +1708,10 @@ mod tests {
             buf[4_799]
         );
         // 起振瞬态必须在**上界一侧**（输出从 4.0 单调下来），不许过冲。
+        assert!(
+            !buf.is_empty(),
+            "夹具必须非空（否则下面那条 `.all(..)` 恒真）"
+        );
         assert!(
             buf.iter().all(|s| *s <= 4.0 + 1e-6),
             "输出不许超过未压缩的输入幅度"

@@ -57,7 +57,9 @@ use crate::elements::ElementRegistry;
 use crate::export_als::AlsExportError;
 use crate::export_logic::LogicExportError;
 use crate::export_midi::{MidiExportError, MidiExportReport, export_project_to_file};
-use crate::input::{Action, InputContext, Modifiers, NudgeStep, PhysicalKey, Tool, View};
+use crate::input::{
+    Action, InputContext, MixerParam, Modifiers, NudgeStep, PhysicalKey, Tool, View,
+};
 use crate::open::{
     DOCUMENT_FORMAT, OpenError, OpenedProject, ProjectOpenOptions, open_project_document_file,
 };
@@ -403,6 +405,9 @@ pub fn usage_text() -> String {
   --wav-frames <n>         --export-wav 的**精确帧数** (与 MCP render_master.frames 同量纲):
                            原样使用, 不再做秒×采样率换算; 与 --wav-seconds **互斥**;
                            必须是**正**整数 (0 帧是空产物, 按用法错误拒绝)
+  --render-threads <n>     --export-wav 的显式渲染线程数 (与 MCP render_master.threads 同量纲):
+                           缺省 = 单线程默认路径; 给了就透传给渲染器, 输出逐字节相同;
+                           必须是**正**整数 (0 线程没有语义, 按用法错误拒绝)
   --export-midi <path>     把当前工程导出成**标准 MIDI 文件** (SMF 1): conductor 轨
                            (tick 0 的 tempo + 拍号) + 每条含 MIDI 的轨道一条 MTrk
                            (通道按导出顺序 0,1,2,…); **PPQ 与工程一致 (960)**;
@@ -523,6 +528,11 @@ pub fn usage_text() -> String {
                            每线程只能装一次, 而 GUI 路径已经把 winit 后端装上了。
                            配 --headless-idle + --idle-seconds <N> = 服务 N 秒后自动
                            停机并释放; 不配 = 服务到进程被终止 (Ctrl-C / kill)。
+  --ui-test-mode           [PATCH] 把 {ui_mcp_switch} 从**生产模式**切成**测试模式**,
+                           从而开放 `ui:inject` 族 (指针 / 键盘注入)。**必须**与
+                           {ui_mcp_switch} 同时给, 且**必须**置环境变量
+                           YEBAN_ALLOW_UI_INJECT=1 —— 两把锁少一把就是用法错误, 不静默降级。
+                           只为本机自动化验收存在; 真实用户会话不应打开。
 
 运行形态:
   yeban-app                启动 GUI (需要显示器; 进入阻塞事件循环)
@@ -649,6 +659,7 @@ pub fn usage_text() -> String {
   yeban-app --open song.yeban --headless
   yeban-app --headless-idle --idle-seconds 2 --project-sample empty
   yeban-app --enable-ui-mcp-http --headless-idle --idle-seconds 30
+  YEBAN_ALLOW_UI_INJECT=1 yeban-app --enable-ui-mcp-http --ui-test-mode --headless-idle --idle-seconds 30
   yeban-app --open song.yeban --save-as copy.yeban
   yeban-app --open song.yeban --dump-elements
   yeban-app --open song.yeban --export-elements elements.txt
@@ -1242,6 +1253,13 @@ pub struct Options {
     /// 开启时限制器带 33 帧前瞻延迟，导出路径会**补偿**这 33 帧 ⇒ 输出长度与
     /// 时间轴不变，只有压限本身改变样本。
     pub wav_limiter: bool,
+    /// `--render-threads <n>`：`--export-wav` 的显式渲染线程数（审评 2026-10-31，P1-1）。
+    ///
+    /// 缺省（`None`）= 单线程默认路径，与今天逐字节相同。给了就透传给渲染器；
+    /// 输出与线程数无关（固定顺序汇聚）。取值必须是正的十进制整数（`0` /
+    /// 非整数 ⇒ [`ParseError::RenderThreadsInvalid`]，⛔ 不静默钳制）。
+    /// 与 MCP `render_master.threads` 同量纲。
+    pub wav_threads: Option<usize>,
     /// `--export-als <path>`：当前工程导出成实验性 Ableton `.als`（Gzip XML）
     /// `[ARCH-FMT-002]` / `[ROAD-M4-007]`，与 `--export-midi` 并列同属 `D47` 的 CLI 出口。
     ///
@@ -1312,6 +1330,17 @@ pub struct Options {
     /// `--idle-seconds` 可选：给了就服务到点自动停机（并释放监听口），
     /// 不给就一直服务到进程被终止（Ctrl-C / `kill`）。
     pub ui_mcp_http: bool,
+    /// `--ui-test-mode`：把 UI 控制面从**生产模式**切成**测试模式**，从而打开
+    /// `ui/dispatch_pointer_*` / `ui/dispatch_key_press` 这一族**事件注入**。
+    ///
+    /// [PATCH ui-test-mode] 为什么需要它：上游把 UI 控制面**硬编码**成
+    /// `RunMode::Production`（见 `src/ui_mcp_serve.rs` 的安全边界第 5 条），于是任何
+    /// "像人一样点界面"的自动化——人机共创评测、可用性回归、逐控件点击热区核验——
+    /// 在**产品二进制**上直接 403，只能改源码重编。本开关把这条能力做成**两把锁**：
+    /// ① 显式给 `--ui-test-mode`；② 环境变量 `YEBAN_ALLOW_UI_INJECT=1`。
+    /// 两把锁缺一 ⇒ 用法错误（退出码 2），绝不静默降级。其余安全边界（只绑环回、
+    /// 端口 0、Bearer 令牌、令牌 `0600`）一条都不放松。
+    pub ui_test_mode: bool,
     /// `--theme <default|yeban|brand|inkmoor|plume|material|fluent|cupertino|native>`：
     /// 运行期调色板选择（`yeban` 是 `default` 的别名，见 [`Theme::accepted_names`]）。
     ///
@@ -1657,6 +1686,11 @@ pub enum ParseError {
     /// ② `--enable-mcp-http`（领域 MCP 要求**正在跑的 GUI 事件循环**，而 UI 控制面的
     /// 执行面只能装在软件光栅化平台上 —— 两者不在同一个进程形态里；见 `src/ui_mcp_serve.rs`）。
     UiMcpHttpConflict(&'static str),
+    /// [PATCH ui-test-mode] 给了 `--ui-test-mode` 却没有给 `--enable-ui-mcp-http`。
+    ///
+    /// 注入是控制面的一条能力，不是进程的一条能力：没有控制面 ⇒ 这个开关无处落地。
+    /// 按本仓纪律（"静默忽略是最坏的一种成功"）判成用法错误，退出码 2。
+    UiTestModeNeedsUiMcp,
     /// 给了 `--export-als`，但这次构建**没有**编译 [`ALS_EXPORT_FEATURE`]
     /// （`[ARCH-FMT-002]` / `[ROAD-M4-007]`）。
     ///
@@ -1742,6 +1776,10 @@ pub enum ParseError {
     ///
     /// ⛔ 不接受 `0`：零帧是**空产物**，按用法错误拒绝比写一个只有头的 WAV 更诚实。
     WavFramesInvalid(String),
+    /// `--render-threads` 的取值不是**正的**十进制整数线程数（审评 2026-10-31，P1-1）。
+    ///
+    /// ⛔ 不接受 `0`：零线程没有语义；⛔ 不静默钳制到 1（那会把用法错误藏成默认行为）。
+    RenderThreadsInvalid(String),
     /// `--wav-frames` 与 `--wav-seconds` 同时给了。
     ///
     /// 一个给**精确帧数**、一个给**秒数换算**，同时给必然有一个被静默丢掉 ——
@@ -1831,6 +1869,11 @@ impl fmt::Display for ParseError {
                  \"软件光栅化平台上的一棵活控件树\" (它承载 ui/* 的 Tier-1 执行面), \
                  接受这个组合只会让 `{other}` 被静默丢掉, 或者让人以为另一个控制面也起来了"
             ),
+            Self::UiTestModeNeedsUiMcp => write!(
+                formatter,
+                "`--ui-test-mode` 只能修饰 `{UI_MCP_HTTP_SWITCH}` —— 注入是 UI 控制面的一条\
+                 能力, 没有控制面时它无处落地 (本仓口径: 静默忽略是最坏的一种成功)"
+            ),
             Self::AlsNotCompiled => write!(
                 formatter,
                 "`{ALS_EXPORT_SWITCH}` 需要本次构建带 `--features {ALS_EXPORT_FEATURE}` \
@@ -1912,6 +1955,10 @@ impl fmt::Display for ParseError {
             Self::WavFramesInvalid(value) => write!(
                 formatter,
                 "`--wav-frames` 的取值 `{value}` 非法 (需要正的十进制整数帧数; 0 帧是空产物)"
+            ),
+            Self::RenderThreadsInvalid(value) => write!(
+                formatter,
+                "`--render-threads` 的取值 `{value}` 非法 (需要正的十进制整数线程数; 0 线程没有语义)"
             ),
             Self::WavFramesConflict => write!(
                 formatter,
@@ -2173,6 +2220,20 @@ pub fn parse(args: &[String]) -> Result<Options, ParseError> {
                 }
                 options.wav_frames = Some(frames);
             }
+            "--render-threads" => {
+                // ⭐ 审评 2026-10-31（P1-1）：与 `--wav-frames` 同款解析（正整数；0 拒绝）。
+                let value = take_value("--render-threads", inline, args, &mut cursor)?;
+                let threads = value
+                    .parse::<usize>()
+                    .map_err(|_| ParseError::RenderThreadsInvalid(value.clone()))?;
+                if threads == 0 {
+                    return Err(ParseError::RenderThreadsInvalid(value));
+                }
+                if options.wav_threads.is_some() {
+                    return Err(ParseError::DuplicateOption("--render-threads"));
+                }
+                options.wav_threads = Some(threads);
+            }
             "--limiter" => {
                 // 布尔修饰开关：⛔ 不吃值（与 `--wav-*` 同档，只改 `--export-wav`
                 // 的产物形状）。重复给 ⇒ 明确报错，⛔ 不静默。
@@ -2216,6 +2277,11 @@ pub fn parse(args: &[String]) -> Result<Options, ParseError> {
             "--enable-ui-mcp-http" => {
                 reject_inline(UI_MCP_HTTP_SWITCH, inline)?;
                 options.ui_mcp_http = true;
+                cursor += 1;
+            }
+            "--ui-test-mode" => {
+                reject_inline("--ui-test-mode", inline)?;
+                options.ui_test_mode = true;
                 cursor += 1;
             }
             "--project-sample" => {
@@ -2280,6 +2346,11 @@ pub fn parse(args: &[String]) -> Result<Options, ParseError> {
     //   ① 编译期那道开关（非默认 feature `ui-mcp-http`）；
     //   ② 组合面 —— 会写盘 / 导出的开关会被**静默丢掉**，而 `--enable-mcp-http`
     //      与它不在同一个进程形态里（领域 MCP 要 GUI 事件循环，UI 控制面要软件平台）。
+    // [PATCH ui-test-mode] `--ui-test-mode` 只是 `--enable-ui-mcp-http` 的修饰符：
+    // 单给等于"要求了注入但没有任何控制面能接收它"，那是一次用法错误，不是静默无效。
+    if options.ui_test_mode && !options.ui_mcp_http {
+        return Err(ParseError::UiTestModeNeedsUiMcp);
+    }
     if options.ui_mcp_http {
         if !cfg!(feature = "ui-mcp-http") {
             return Err(ParseError::UiMcpHttpNotCompiled);
@@ -3530,7 +3601,7 @@ pub struct ShortcutRow {
 /// 每一项把**规范写法**、**动作**、**键位**与**落地状态**放在一起。这张表的**意义**是
 /// 让策略表的判定结果可被人与 CI 直接阅读 —— 尤其是 `[UI-A11Y-002]` 的 IME 分支,
 /// 以及"规范点名了、本版本还没做"的那一列（见 [`UNIMPLEMENTED_MARKER`]）。
-const SHORTCUTS: [ShortcutRow; 30] = [
+const SHORTCUTS: [ShortcutRow; 46] = [
     ShortcutRow {
         label: "Space → 播放/暂停",
         action: Action::PlayPause,
@@ -3563,6 +3634,34 @@ const SHORTCUTS: [ShortcutRow; 30] = [
         label: "F6 → Arrangement 视图",
         action: Action::ShowView(View::Arrangement),
         key: PhysicalKey::F6,
+        modifiers: Modifiers::none(),
+        implemented: true,
+    },
+    // ⭐ 控制台标签直达（**界面决定**，⛔ 规范未点名）：`F7`/`F8`/`F9` 与上面
+    // `F5`/`F6` 是**同一个键族**（功能键直达某个界面位置），但**分层不同** ——
+    // `F5`/`F6` 是规范 §2.2 点名的「全局无冲突备选」（连合成态都放行），
+    // 这三条走无修饰单键这一档，文本域 / IME 策略仍然优先（`Action::SelectConsoleTab` 文档）。
+    //
+    // `implemented: true` 的主张范围 = "宿主有这条臂、按下会改 `console-tab`"；
+    // 它改的是**视图态**（⛔ 不进撤销栈、⛔ 不进 `.yeban`），与 `ShowView` 同一条口径。
+    ShortcutRow {
+        label: "F7 → 控制台「钢琴卷帘」",
+        action: Action::SelectConsoleTab { index: 0 },
+        key: PhysicalKey::F7,
+        modifiers: Modifiers::none(),
+        implemented: true,
+    },
+    ShortcutRow {
+        label: "F8 → 控制台「调音台」",
+        action: Action::SelectConsoleTab { index: 1 },
+        key: PhysicalKey::F8,
+        modifiers: Modifiers::none(),
+        implemented: true,
+    },
+    ShortcutRow {
+        label: "F9 → 控制台「设备效果链」",
+        action: Action::SelectConsoleTab { index: 2 },
+        key: PhysicalKey::F9,
         modifiers: Modifiers::none(),
         implemented: true,
     },
@@ -3763,36 +3862,203 @@ const SHORTCUTS: [ShortcutRow; 30] = [
         modifiers: Modifiers::shift(),
         implemented: true,
     },
-    // 以下**两条**是本版本仅剩的 `implemented: false` 条目。
+    // ⭐ **键盘微调选中轨的混音参数**（四条 = 两格 × 两方向）。
+    //
+    // 与上面八条音符微调的区别是**作用域**：那八条动 `selected-ulids`（音符身份集合），
+    // 这四条动 `selected-track-id`（一个轨道身份）的 `volume_db` / `pan`。⚠ **规范没有点名
+    // 这一动作**（`[UI-NOTE-005]` §3.5 四条项只讲音符）⇒ 这是**界面决定**，登记在
+    // `docs/ledger/app-mixer-notes.md` §7 第 10 行。为什么占 `Cmd/Ctrl+Alt+方向` 这一格，
+    // 理由逐条写在 `Action::NudgeMixerChannel` 的文档里（六个已被 §3.5 点名的方向键组合、
+    // 以及被判据如实钉成放行的 `Cmd/Ctrl+←/→`，都不能占 ⇒ 只剩这一格是空的；
+    // ⚠ `Alt+↑/↓` 2026-10-31 起已绑定为**选轨键**，不在这份"放行"清单里了）。
+    //
+    // `implemented: true` 的**主张范围**要说清：它陈述的是"宿主有这条臂、按下会发生什么"，
+    // 不是"这一键在**任何**装配下都会改工程"。没有选中轨时 `apply_action` 返回 `false`
+    // （不消费），这与 `Undo` 在没有撤销端口的装配下返回 `false` 同一条口径 ——
+    // 逐行对账的是"表 / 解析 / 宿主有没有落点"这三面（判据 B11b）。
+    ShortcutRow {
+        label: "Cmd/Ctrl+Alt+↑ → 选中轨音量 +1.0 dB",
+        action: Action::NudgeMixerChannel {
+            param: MixerParam::Volume,
+            direction: 1,
+        },
+        key: PhysicalKey::UpArrow,
+        modifiers: Modifiers::ctrl_alt(),
+        implemented: true,
+    },
+    ShortcutRow {
+        label: "Cmd/Ctrl+Alt+↓ → 选中轨音量 -1.0 dB",
+        action: Action::NudgeMixerChannel {
+            param: MixerParam::Volume,
+            direction: -1,
+        },
+        key: PhysicalKey::DownArrow,
+        modifiers: Modifiers::ctrl_alt(),
+        implemented: true,
+    },
+    ShortcutRow {
+        label: "Cmd/Ctrl+Alt+→ → 选中轨声相右 0.1",
+        action: Action::NudgeMixerChannel {
+            param: MixerParam::Pan,
+            direction: 1,
+        },
+        key: PhysicalKey::RightArrow,
+        modifiers: Modifiers::ctrl_alt(),
+        implemented: true,
+    },
+    ShortcutRow {
+        label: "Cmd/Ctrl+Alt+← → 选中轨声相左 0.1",
+        action: Action::NudgeMixerChannel {
+            param: MixerParam::Pan,
+            direction: -1,
+        },
+        key: PhysicalKey::LeftArrow,
+        modifiers: Modifiers::ctrl_alt(),
+        implemented: true,
+    },
+    // ⭐ **键盘拨动**选中轨的静音 / 独奏（两条 = 两个开关）。
+    //
+    // 与上面四条的分工是"**连续量 vs 布尔量**"：微调有"一格"，拨动只有"当前值取反"。
+    // 同样**不是**规范点名（登记在 `docs/ledger/app-mixer-notes.md` §7 第 10 行的 ② 那半句）；
+    // 裸 `m` / `s` 此前都落到 `PassThrough`（`Cmd/Ctrl+Alt+M` 是控制台最大化，另一格），
+    // 因此加进表里不动任何既有绑定。逐条理由见 `Action::ToggleTrackMute` 的文档。
+    ShortcutRow {
+        label: "M → 选中轨静音开/关",
+        action: Action::ToggleTrackMute,
+        key: PhysicalKey::KeyM,
+        modifiers: Modifiers::none(),
+        implemented: true,
+    },
+    ShortcutRow {
+        label: "S → 选中轨独奏开/关",
+        action: Action::ToggleTrackSolo,
+        key: PhysicalKey::KeyS,
+        modifiers: Modifiers::none(),
+        implemented: true,
+    },
+    // ⭐ **界面决定**（⛔ 不是规范点名）：标准 DAW 的保存键 `Cmd/Ctrl+S`。
+    //
+    // 与上面两条的关系：裸 `S` 是独奏 ⇒ 保存**必须带** `Cmd/Ctrl`；这一格此前落到
+    // `PassThrough`（`command()` 分支里 `s` 一条都没有），因此加它不动任何既有绑定。
+    // `Cmd/Ctrl+Shift+S` 自 2026-10-31 起是**另存为**（下一条），`Cmd/Ctrl+Alt+S` 仍放行。
+    // 落点是**既有**的 `save-project` 回调（`host::wire_save` → `save_action::dispatch_save`），
+    // 与 transport 的「保存」按钮、与「换工程前先保存」是同一个入口。逐条理由见
+    // `Action::SaveProject` 的文档；登记在 `docs/ledger/app-cli-notes.md` §5.4。
+    ShortcutRow {
+        label: "Cmd/Ctrl+S → 保存工程",
+        action: Action::SaveProject,
+        key: PhysicalKey::KeyS,
+        modifiers: Modifiers::meta(),
+        implemented: true,
+    },
+    // ⭐ **界面决定**（⛔ 不是规范点名）：标准 DAW 的另存为键 `Cmd/Ctrl+Shift+S`。
+    //
+    // 三条事实：裸 `S` 是独奏、`Cmd/Ctrl+S` 是保存（都已在表里）⇒ 另存为只能占
+    // `Shift` 变体；该格此前落到 `PassThrough`（判据如实钉着）；`Cmd/Ctrl+Alt+S`
+    // 仍放行。落点是 `host::wire_save` 注册的 `save-project-as` 回调 —— 问一次对话框，
+    // 把选中的路径记成当前目标，再进**同一条** `dispatch_save`。逐条理由见
+    // `Action::SaveProjectAs` 的文档；登记在 `docs/ledger/app-cli-notes.md` §5.4。
+    ShortcutRow {
+        label: "Cmd/Ctrl+Shift+S → 另存为",
+        action: Action::SaveProjectAs,
+        key: PhysicalKey::KeyS,
+        modifiers: Modifiers::ctrl_shift(),
+        implemented: true,
+    },
+    // ⭐ **界面决定**（⛔ 不是规范点名）：标准 DAW 的打开键 `Cmd/Ctrl+O`。
+    //
+    // `o` 在 `command()` 分支里此前一格都没有、裸 `o` 也从未绑定 ⇒ 加它不动任何既有
+    // 绑定；`Cmd/Ctrl+Shift+O` / `Cmd/Ctrl+Alt+O` 仍放行。落点是**既有**的
+    // `open-project` 回调（`host::wire_open_project`），与控制台「打开工程」按钮同一条链。
+    // 逐条理由见 `Action::OpenProject` 的文档；登记在 `docs/ledger/app-cli-notes.md` §5.4。
+    ShortcutRow {
+        label: "Cmd/Ctrl+O → 打开工程",
+        action: Action::OpenProject,
+        key: PhysicalKey::KeyO,
+        modifiers: Modifiers::meta(),
+        implemented: true,
+    },
+    // ⭐ **界面决定**（⛔ 不是规范点名）：走带「录音」按钮的键盘入口，裸 `R`。
+    //
+    // 裸 `r` 此前在策略表任何一步里都不存在 ⇒ 加它不动任何既有绑定；`Cmd/Ctrl+R` /
+    // `Shift+R` / `Alt+R` 仍放行。落点是**既有**的 `toggle-record` 回调
+    // （`wire_transport` → `wire_record_at`），与走带「录音」按钮同一条链。
+    // 逐条理由见 `Action::ToggleRecord` 的文档；登记在 `docs/ledger/app-cli-notes.md` §5.4。
+    ShortcutRow {
+        label: "R → 录制开/关",
+        action: Action::ToggleRecord,
+        key: PhysicalKey::KeyR,
+        modifiers: Modifiers::none(),
+        implemented: true,
+    },
+    // ⭐ **界面决定**（⛔ 不是规范点名）：走带 AI 抽屉按钮的键盘入口 `Cmd/Ctrl+Alt+A`。
+    //
+    // 该组合此前落在 `command()` 分支的 `_ => PassThrough`（当时只有 `b` / `m` / `n` /
+    // `d` / 方向键），裸 `a` 与 `Alt+A` 也从未绑定 ⇒ 加它不动任何既有绑定；
+    // `Cmd/Ctrl+Alt+Shift+A` 仍放行。落点是**既有**的 `toggle-ai-drawer` 回调
+    // （`wire_view_callbacks`），与走带 `transport-ai-drawer-button` 同一条链。
+    // 逐条理由见 `Action::ToggleAiDrawer` 的文档；登记在 `docs/ledger/ui-modules-notes.md`。
+    ShortcutRow {
+        label: "Cmd/Ctrl+Alt+A → AI 抽屉开/关",
+        action: Action::ToggleAiDrawer,
+        key: PhysicalKey::KeyA,
+        modifiers: Modifiers::ctrl_alt(),
+        implemented: true,
+    },
+    // ⭐ **界面决定**（⛔ 不是规范点名）：键盘-only 用户的**选轨**入口，`Alt+↑` / `Alt+↓`。
+    //
+    // 该组合此前落在第 4 步的 `_ => PassThrough`（当时只有 `1` / `2` / `←` / `→`）；
+    // 裸 `↑/↓`（网格 / 半音微调）、`Shift+↑/↓`（八度）与 `Cmd/Ctrl+Alt+↑/↓`（音量微调）
+    // 一格不动。落点是**既有**的 `track-select` 回调（`host::wire_track_select`），
+    // 与鼠标点轨道行同一条链。逐条理由见 `Action::SelectTrackBy` 的文档；
+    // 登记在 `docs/ledger/app-cli-notes.md` §5.4。
+    ShortcutRow {
+        label: "Alt+↑ → 选上一条轨",
+        action: Action::SelectTrackBy(-1),
+        key: PhysicalKey::UpArrow,
+        modifiers: Modifiers::alt(),
+        implemented: true,
+    },
+    ShortcutRow {
+        label: "Alt+↓ → 选下一条轨",
+        action: Action::SelectTrackBy(1),
+        key: PhysicalKey::DownArrow,
+        modifiers: Modifiers::alt(),
+        implemented: true,
+    },
+    // 以下**一条**是本版本仅剩的 `implemented: false` 条目。
     //
     // ⭐ **两个数字都不在这里手抄**（此前这一行写着"表共 26 条"，而表的**总数**其实是 28 ——
     // 26 是 `implemented: true` 的条数，被当成了总数 ⇒ 读的人按它对账会**差 2**，
-    // 而差的正是下面这两条 `false`）。⭐ 事实源是**类型标注**与**判据**，逐条复算：
-    //   - 表有多大 ⇒ `[ShortcutRow; 30]` 的**类型标注**（编译期）＋ 判据
-    //     `shortcut_table_status_matches_the_resolution_and_host_pipeline` 的 `rows.len() == 30`；
-    //   - 有几条未实现 ⇒ 同文件的 `delete_selection_is_implemented_in_the_host_table_and_rendered_output`
-    //     断言未实现条目**恰好**是 `[AcceptAiSuggestion, AuditionMain]`（精确到**是哪两条**，
-    //     比只数条数更强）＋ `printed_marks == 2`。
+    // 而差的正是下面这类 `false` 条目）。⭐ 事实源是**类型标注**与**判据**，逐条复算：
+    //   - 表有多大 ⇒ 本数组的**类型标注**（编译期）＋ 判据
+    //     `shortcut_table_status_matches_the_resolution_and_host_pipeline` 的 `rows.len()` 断言；
+    //   - 有几条未实现 ⇒ 同文件的 `the_ai_suggestion_and_audition_keys_are_still_declared_unimplemented`
+    //     断言未实现条目**恰好**是哪一条（精确到条目，比只数条数更强）＋ `printed_marks`。
     // ⇒ ⭐ 注释只负责**指路**，⛔ 不再复述数字（复述过的数字会陈旧，这一行就是实例）。
     //
     // `implemented` 是"宿主会不会消费这一键"的主张，事实源是 `host::action_has_implementation`
     // （逐行对账见本文件 `ShortcutRow` 的文档与 `tests/cli_contract.rs` 的判据 B11b）。
-    // 这两条之所以**仍是** `false`：缺的是**能力**，不是接线 ——
-    //   - `Shift+Enter`（采纳 AI 建议）：界面侧没有"当前待采纳的提案身份"这一表示
-    //     （`ui/dialogs/musical_pr_drawer.slint` 的四个数据面属性默认**全空**、且没有
-    //     任何宿主写它们；2026-10-08 之前那四个属性是内联演示常量，本切片已清掉），
-    //     而领域的 `yeban_merge_proposal` 要 `proposalId`；
+    // 这一条之所以**仍是** `false`：缺的是**能力**，不是接线 ——
     //   - `[`（试听主线）：规范 `[ARCH-RT-005]` 要"主线与提案分支并发渲染 + 30ms 等功率瞬切
     //     + 2048 采样预滚"，这套机制在仓库里一处都不存在。
+    // ⭐ 而 `Shift+Enter`（采纳 AI 建议）于 2026-10-31 **移出**本名单：抽屉现在既有
+    //   看得见提案的数据面（`host::wire_proposal_drawer` 从唯一可变权威注入那九个属性），
+    //   也有**写入口**（`HostAction` 的 `MergeProposal` / `RejectProposal` 两臂，复用工具面
+    //   `yeban_merge_proposal` 所调的**同一个** `merge_plan`），而"选中哪一条"是窗口属性
+    //   `musical-pr-selected-id`（值从权威的 `ProposalRow::id` 来，⛔ 界面不自造身份）。
+    //   ⚠ 本列说"有落点"，运行时仍然会**如实不消费**：`host::apply_action` 的那一条要求
+    //   抽屉开着 ∧ `musical-pr-resolve-available`（= 有提案来源 ∧ 点选了当前清单里的一行）
+    //   ⇒ 没挂控制面的装配按 `Shift+Enter` 一位都不动，与 `DeleteSelection` /
+    //   `ZoomToSelection` / `Duplicate` 空前置条件时的取向一致。
     // 逐条证据（`grep` 字面命中与 `file:line`）见 `host.rs` 的 `action_has_implementation` 文档；
     // "它还不可用"这件事由 `tests/cli_contract.rs` 的判据 B11f 机械钉住（谁真接了、忘了改判据即变红）。
-    // 「空前置条件不消费」的取向与 `DeleteSelection` / `ZoomToSelection` / `Duplicate` 一致。
     ShortcutRow {
         label: "Shift+Enter → 采纳 AI 建议",
         action: Action::AcceptAiSuggestion,
         key: PhysicalKey::Enter,
         modifiers: Modifiers::shift(),
-        implemented: false,
+        implemented: true,
     },
     ShortcutRow {
         label: "[ → 试听主线",
@@ -4371,6 +4637,8 @@ pub fn run_batch(options: &Options) -> Result<Vec<String>, CliError> {
         (options.wav_seconds.is_some(), "--wav-seconds"),
         (options.wav_frames.is_some(), "--wav-frames"),
         (options.wav_limiter, "--limiter"),
+        // ⭐ 审评 2026-10-31（P1-1）：`--render-threads` 同属 `--export-wav` 的修饰开关。
+        (options.wav_threads.is_some(), "--render-threads"),
     ] {
         if given && options.export_wav.is_none() {
             return Err(CliError::Usage(format!(
@@ -4535,6 +4803,8 @@ pub fn run_batch(options: &Options) -> Result<Vec<String>, CliError> {
         );
         // ⭐ 任务单 `#302`：per-call 限制器开关；默认关 ⇒ 旧导出逐字节不变。
         wav_options.limiter = options.wav_limiter;
+        // ⭐ 审评 2026-10-31（P1-1）：显式线程数透传；缺省 `None` ⇒ 单线程默认路径。
+        wav_options.threads = options.wav_threads;
         // ⭐ 任务单 `#168`：`--open` 那个文件所在目录 = 相对 SFZ 路径的第一个候选根
         //    ⇒ "样本放在工程旁边"在**任意 cwd** 下都读得到。样本形态（没有 `--open`）
         //    给 `None`，解析从仓库根开始（旧口径）。
