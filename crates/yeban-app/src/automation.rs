@@ -121,9 +121,14 @@ pub const AUTOMATION_EASE_SAMPLES_PER_SEGMENT: u64 = 8;
 
 /// 静态投影的求值 tick（"当前值"取哪一刻）。
 ///
-/// **为什么是常量**：走带位置属**会话运行态**（`[MODEL-ISO-001]` 的第二层），
-/// `YebanProjectV1` 里没有它，本线不发明。`0` = 工程起点，是一个确定且可判据的取值点；
-/// 需要真实播放头时用 [`project_lanes_at_cursor`] 注入（一条后续线的接线动作）。
+/// **为什么默认是常量**：走带位置属**会话运行态**（`[MODEL-ISO-001]` 的第二层），
+/// `YebanProjectV1` 里没有它，投影函数的默认值不发明。`0` = 工程起点，是一个确定且
+/// 可判据的取值点。
+///
+/// ⭐ 生产的"当前值"已经跟着播放头走：`host::project_with_view_state` 把窗口的
+/// `playhead-ticks` 交给投影（[`project_lanes_at_cursor`]），播放推进期间由
+/// `host::ProductionLoop::tick` 用 [`labels_at_cursor`] 逐跳重算标签。
+/// 装配态 `playhead-ticks = 0` ⇒ 与本常量逐位同值，默认帧不变。
 pub const AUTOMATION_CURSOR_TICK: u64 = 0;
 
 /// 值域 → 车道带像素的**唯一**映射（纯计算，可判据）。
@@ -267,6 +272,49 @@ impl AutomationLaneView {
     pub fn sample_count(&self) -> usize {
         self.samples.len()
     }
+
+    /// 在**另一个**求值 tick 上重算这条泳道的无障碍标签（`cursor_tick` 随走带移动）。
+    ///
+    /// 格式只走 [`lane_label`] / [`label_state`] 这**一份**实现：投影期（[`project_lane`]）
+    /// 与走带期（本方法）拼出的标签在同一个 tick 上逐字相同
+    /// （判据 `label_at_cursor_agrees_with_the_projection_at_the_same_tick`）。
+    ///
+    /// 只重算**标签**：几何（`band_y` / 折线 / 轴）与求值 tick 无关，不因播放头移动而变。
+    #[must_use]
+    pub fn label_at_cursor(&self, project: &YebanProjectV1, cursor_tick: u64) -> String {
+        // 与 [`project_lane`] 同一个求值入口（它已遵守 `read_enabled` / 空泳道两语义）。
+        let value = project
+            .automation_value_at(&self.target, cursor_tick)
+            .ok()
+            .flatten();
+        lane_label(&LabelParts {
+            track_name: &self.track_name,
+            target_label: &self.target_label,
+            unit: self.unit,
+            value,
+            static_value: self.static_value,
+            reconciled: self.target_reconciled,
+            read_enabled: self.read_enabled,
+            has_points: !self.points.is_empty(),
+            write_mode: self.write_mode,
+        })
+    }
+}
+
+/// 全部泳道在某个求值 tick 上的标签（与 `lanes` 逐项对齐）。
+///
+/// 走带推进时宿主每一跳用它把 `automation-lane-labels` 跟到播放头
+/// （`host::ProductionLoop::tick`）；投影期的标签由 [`project_lane`] 在**同一个**格式函数上拼出。
+#[must_use]
+pub fn labels_at_cursor(
+    project: &YebanProjectV1,
+    lanes: &[AutomationLaneView],
+    cursor_tick: u64,
+) -> Vec<String> {
+    lanes
+        .iter()
+        .map(|lane| lane.label_at_cursor(project, cursor_tick))
+        .collect()
 }
 
 /// 目标 → 元素 ID 的第三段（**唯一**的目标命名口径）。
@@ -694,6 +742,9 @@ pub fn project_lanes(
 }
 
 /// 同 [`project_lanes`]，但显式指定"当前值"的求值 tick（走带位置的接线点）。
+///
+/// 生产路径：`host::project_with_view_state` 把窗口的 `playhead-ticks` 作为这个参数
+/// 交给 [`ViewState::from_project_with_zoom_cursor_layout_and_selection`]。
 ///
 /// 顺序（**确定**）：轨道按 `YebanProjectV1::tracks` 的键序遍历、跳过主总线，
 /// 轨道内按 `automation_lanes` 的键序（`AutomationTarget::Ord`）遍历。
@@ -1794,5 +1845,90 @@ mod tests {
                 lane.element_id
             );
         }
+    }
+
+    /// ⭐ 走带期按新 tick 重算的标签与投影期在**同一个 tick** 上逐字相同。
+    ///
+    /// 两处都走 [`lane_label`] 这一份格式实现；这里拿"用 `project_lanes_at_cursor`
+    /// 重新投影一遍"当参照 —— 如果哪天有人给走带期另写一套格式，这条会红。
+    #[test]
+    fn label_at_cursor_agrees_with_the_projection_at_the_same_tick() {
+        let (project, volume, _device) = fixture_project();
+        let lanes = project_lanes(&project, DEFAULT_TICKS_PER_PIXEL).expect("投影");
+        let volume_lane = lanes
+            .iter()
+            .find(|lane| lane.target == volume)
+            .expect("音量泳道");
+        for tick in [0_u64, 960, 1920, 3840] {
+            let at_tick =
+                project_lanes_at_cursor(&project, DEFAULT_TICKS_PER_PIXEL, tick).expect("投影");
+            assert_eq!(at_tick.len(), lanes.len(), "换求值 tick 不得改变泳道集合");
+            for (projected, lane) in at_tick.iter().zip(lanes.iter()) {
+                assert_eq!(
+                    projected.element_id, lane.element_id,
+                    "换求值 tick 不得改变元素身份"
+                );
+                assert_eq!(
+                    projected.label,
+                    lane.label_at_cursor(&project, tick),
+                    "`{}` 在 tick {tick} 的走带期标签必须与投影期逐字相同",
+                    lane.element_id
+                );
+            }
+        }
+        // 前提：音量泳道真的随 tick 变（否则上面那条在常量上"通过"）。
+        assert_ne!(
+            volume_lane.label_at_cursor(&project, 0),
+            volume_lane.label_at_cursor(&project, 1920),
+            "夹具的 `SCurve` 段必须在 0 与 1920 之间给出不同的值"
+        );
+    }
+
+    /// ⭐ 走带期标签里的数值**只**来自模型的那一个求值入口，顺序与泳道逐项对齐。
+    ///
+    /// 读关的泳道是**静态值**（走带位置与它无关）⇒ 同一个标签在任何 tick 上不变；
+    /// 读开的泳道逐 tick 等于 `automation_value_at` 的 `value_text`。
+    #[test]
+    fn labels_at_cursor_follow_the_transport_position() {
+        let (project, volume, device) = fixture_project();
+        let lanes = project_lanes(&project, DEFAULT_TICKS_PER_PIXEL).expect("投影");
+        let volume_lane = lanes
+            .iter()
+            .find(|lane| lane.target == volume)
+            .expect("音量泳道");
+        let device_lane = lanes
+            .iter()
+            .find(|lane| lane.target == device)
+            .expect("设备泳道");
+
+        for tick in [0_u64, 1, 960, 1920, 3840, 7680] {
+            let labels = labels_at_cursor(&project, &lanes, tick);
+            assert_eq!(labels.len(), lanes.len(), "标签数组与泳道逐项对齐");
+            for (label, lane) in labels.iter().zip(lanes.iter()) {
+                assert_eq!(label, &lane.label_at_cursor(&project, tick));
+            }
+            let value = project
+                .automation_value_at(&volume, tick)
+                .expect("目标存在")
+                .expect("读开且有点 ⇒ 有值");
+            let state = format!("自动化 {}", value_text(volume_lane.unit, value));
+            let volume_label = volume_lane.label_at_cursor(&project, tick);
+            assert!(
+                volume_label.contains(&state),
+                "tick {tick} 的音量标签必须带上那一刻的求值结果 `{state}`: {volume_label}"
+            );
+        }
+
+        // 读关的泳道：静态值（`1200.000`），与走带位置无关。
+        let device_at_0 = device_lane.label_at_cursor(&project, 0);
+        let device_at_1920 = device_lane.label_at_cursor(&project, 1920);
+        assert_eq!(
+            device_at_0, device_at_1920,
+            "读关泳道的标签是静态值，走带位置不得影响它"
+        );
+        assert!(
+            device_at_0.contains("1200.000"),
+            "读关泳道必须如实给出静态值: {device_at_0}"
+        );
     }
 }
