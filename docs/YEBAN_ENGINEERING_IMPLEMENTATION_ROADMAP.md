@@ -354,7 +354,7 @@ flowchart TD
 | :--- | :--- | :--- | :--- | :--- | :---: |
 | **[BASELINE-001]** | **离线母带渲染** | 32 轨参考工程 A 导出速度 | `yeban-render` 多线程并行导出 24-bit 48kHz WAV | **≥ 100× 真实时间** (180s 工程 ≤ 1.8s) | Phase 4 |
 | - | **离线母带渲染** | 32 轨参考工程 B (SFZ) | `yeban-render` 结合 NVMe 磁盘读取并行导出母带 | **≥ 30× 真实时间** (180s 工程 ≤ 6.0s) | Phase 4 |
-| **[BASELINE-002]** | **常驻内存基线** | 空工程空闲内存占用 | 操作系统内存工作集（Working Set）统计 | **≤ 35 MB** | Phase 0 |
+| **[BASELINE-002]** | **常驻内存基线** | 空工程空闲内存占用 | 测量定义见 ADR-0056：release 官方缺省构建（不启用 `mcp-http` / `ui-mcp` / `experimental-*`）+ `--project-sample empty` + `--headless-idle`（真 MainWindow，一帧光栅化见证）+ `ru_maxrss` 峰值（`scripts/gates/measure_rss.py`）；判定硬件见 ADR-0002（待 HD-49/HD-58，托管读数只作量级证据） | **≤ 35 MB** | Phase 0 |
 | **[BASELINE-003]** | **界面渲染绘制成本**（帧率另记为环境读数） | 10 万音符高频滚动与缩放 | GPU 路径（`winit` + FemtoVG/OpenGL）下测量 **Slint 绘制回调耗时**：`set_rendering_notifier` 的 `BeforeRendering` → `AfterRendering` 区间（**不含呈现/缓冲交换**） | **绘制回调 p99 ≤ 2 毫秒**（`[UI-NOTE-001]` 步骤 ④ 的规格预算）；墙钟帧周期另记为**环境读数**（自适应刷新率面板的节奏不是产品开销） | Phase 3 |
 | **[BASELINE-004]** | **单步撤销时延** | 模型层逆操作应用耗时 | 测量 `Op` 逆向应用至状态树的 p99 耗时 | **≤ 0.2 毫秒** | Phase 1 |
 | **[BASELINE-005]** | **音频硬件时延** | 硬件声卡往返处理延迟 | 以 64 采样点缓冲运行于 cpal 驱动下，通过底层平台原生系统 API 实测回路延迟：macOS CoreAudio 查询 `kAudioDevicePropertyLatency` 与 `kAudioStreamPropertyLatency`；Windows WASAPI 查询 `IAudioClient::GetStreamLatency`；Linux PipeWire/JACK 借助硬件回环测试 | **≤ 5.5 毫秒**（分解见 ARCH §3.5） | Phase 2 |

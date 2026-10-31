@@ -469,6 +469,35 @@ fn call(dispatcher: &mut Dispatcher, auth: &str, arguments: Value) -> Value {
     call_tool(dispatcher, auth, "yeban_render_master", arguments)
 }
 
+/// 与 [`call`] 同一条管线，但返回 JSON-RPC 层错误 —— 供 schema 层先于域校验
+/// 拒掉的类型非法输入使用（域内拒绝走 [`assert_domain_error`]，不要混用）。
+/// 返回的第二项是 `data.detail`（点名参数的那句），没有 detail 时退回 message ——
+/// ⛔ 不要断言 message 点名：schema 层 message 只有笼统的「参数非法」，点名在 detail 里。
+fn call_raw_error(dispatcher: &mut Dispatcher, auth: &str, arguments: Value) -> (i64, String) {
+    let line = json!({
+        "jsonrpc": "2.0",
+        "id": "t",
+        "method": "tools/call",
+        "params": {"name": "yeban_render_master", "arguments": arguments}
+    })
+    .to_string();
+    let outcome = dispatcher.handle_line(Channel::Http, Some(auth), &line);
+    let response = outcome.response.expect("必须有响应");
+    match (response.result, response.error) {
+        (None, Some(error)) => {
+            let detail = error
+                .data
+                .as_ref()
+                .and_then(|data| data.get("detail"))
+                .and_then(|detail| detail.as_str())
+                .unwrap_or(&error.message)
+                .to_string();
+            (error.code, detail)
+        }
+        other => panic!("期望 JSON-RPC 层错误，实际: {other:?}"),
+    }
+}
+
 /// 与 [`call`] 同一条管线，但**点名**工具（供"先经 `yeban_edit_notes` 写、再渲染"这类
 /// 跨工具判据使用；本文件绝大多数判据只调 `yeban_render_master`，因此 [`call`] 不变）。
 fn call_tool(dispatcher: &mut Dispatcher, auth: &str, name: &str, arguments: Value) -> Value {
@@ -948,6 +977,96 @@ fn illegal_explicit_frames_are_refused_without_writing_a_file() {
         entries(&scratch.dir).is_empty(),
         "被拒绝的渲染不得留下任何文件: {:?}",
         entries(&scratch.dir)
+    );
+}
+
+/// 审评 2026-10-31（P1-1）判据：`threads` 的值域护栏与逐字节等价 ——
+/// 0 / 负数 / 字符串 / 非整数 ⇒ `INVALID_PARAMETER_RANGE` 且不落盘；
+/// `threads: 4` 的产物摘要与文件字节与缺省渲染逐位相同，且 `data.request.threads` 如实回显。
+#[test]
+fn threads_param_is_guarded_and_changes_only_time_not_bytes() {
+    let scratch = Scratch::new("threads-param");
+    let (mut dispatcher, auth) =
+        dispatcher_with(&project(&Spec::default()), &scratch.join("demo.yeban"));
+    let out = scratch.join("never.wav");
+    let path = out.display().to_string();
+
+    // 整数越界（0 / 负数）走域校验：带内 INVALID_PARAMETER_RANGE。
+    for (threads, label) in [(json!(0), "threads = 0"), (json!(-1), "threads = -1")] {
+        let refused = call(
+            &mut dispatcher,
+            &auth,
+            json!({"format": "wav", "sampleRate": 48000, "threads": threads, "path": path}),
+        );
+        assert_domain_error(&refused, "INVALID_PARAMETER_RANGE", label);
+        assert!(
+            format!("{refused}").contains("`threads`"),
+            "报文必须点名 `threads`: {refused}"
+        );
+    }
+    // 类型非法（字符串 / 非整数）走 schema 层，先于域校验被拒：JSON-RPC -32602。
+    // ⛔ 不要把这两类也断言成带内 INVALID_PARAMETER_RANGE —— 层级不同，混写必红。
+    for (threads, label) in [
+        (json!("4"), "threads 是字符串"),
+        (json!(1.5), "threads 是非整数"),
+    ] {
+        let (code, detail) = call_raw_error(
+            &mut dispatcher,
+            &auth,
+            json!({"format": "wav", "sampleRate": 48000, "threads": threads, "path": path}),
+        );
+        assert_eq!(code, -32602, "{label}: 类型非法必须走 schema 层 -32602");
+        assert!(
+            detail.contains("`threads`"),
+            "{label}: detail 必须点名 `threads`: {detail}"
+        );
+    }
+    assert!(
+        entries(&scratch.dir).is_empty(),
+        "被拒绝的渲染不得留下任何文件: {:?}",
+        entries(&scratch.dir)
+    );
+
+    // 缺省 vs threads = 4：摘要与文件字节逐位相同；回显如实（null vs 4）。
+    let default_out = scratch.join("default.wav");
+    let default_path = default_out.display().to_string();
+    let default = call(
+        &mut dispatcher,
+        &auth,
+        json!({"format": "wav", "sampleRate": 48000, "path": default_path}),
+    );
+    assert!(
+        default.get("error").is_none(),
+        "缺省渲染必须成功: {default}"
+    );
+    assert_eq!(
+        default["data"]["request"]["threads"],
+        Value::Null,
+        "缺省的 `data.request.threads` 回显必须是 null"
+    );
+    let threaded_out = scratch.join("threaded.wav");
+    let threaded_path = threaded_out.display().to_string();
+    let threaded = call(
+        &mut dispatcher,
+        &auth,
+        json!({"format": "wav", "sampleRate": 48000, "threads": 4, "path": threaded_path}),
+    );
+    assert!(
+        threaded.get("error").is_none(),
+        "threads = 4 渲染必须成功: {threaded}"
+    );
+    assert_eq!(
+        threaded["data"]["request"]["threads"], 4,
+        "`data.request.threads` 必须回显请求值 4"
+    );
+    assert_eq!(
+        threaded["data"]["masterDigest"], default["data"]["masterDigest"],
+        "threads = 4 的母带摘要必须与缺省渲染相同"
+    );
+    assert_eq!(
+        std::fs::read(&threaded_out).expect("读并行档"),
+        std::fs::read(&default_out).expect("读缺省档"),
+        "threads = 4 的文件字节必须与缺省渲染逐位相同"
     );
 }
 
