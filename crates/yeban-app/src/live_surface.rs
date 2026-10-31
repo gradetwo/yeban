@@ -2020,7 +2020,13 @@ pub fn build_live_ui_with(
     // 它**总是**接：三条只读动作（导出 / 装载 / 录音）在 `options.undo` 为 `None` 时
     // 照常可用，只有 `import-midi` 会如实拒绝（`error=no-undo-port`）——
     // ⛔ 不静默用一个临时会话把编辑吞掉。
-    host::wire_module_actions(&window, options.undo.clone());
+    // ⭐ 审评 2026-10-31（P2-3）：`export_wav` 缺省取工程目录（`save_path` 是文件，
+    // 故取其父目录；未保存工程 ⇒ `None` ⇒ 相对缺省，旧行为）。
+    host::wire_module_actions_for_project(
+        &window,
+        options.undo.clone(),
+        options.save_path.as_deref().and_then(|path| path.parent()),
+    );
     let mut admin = LiveAdminSurface {
         inner: surface,
         window,

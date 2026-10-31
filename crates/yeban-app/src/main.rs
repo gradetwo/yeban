@@ -878,8 +878,13 @@ fn run_gui(options: &Options) -> Result<Vec<String>, cli::CliError> {
     // `host::wire_module_actions` 是它们的**唯一**实现，无头端口的装配
     // （`src/live_surface.rs` 的 `build_live_ui_with`）调的是**同一个**函数。
     // 四条回调各自落到**已经存在**的模块（`export_wav` / `import_midi` / `sfz_load` /
-    // `record_wav`），⛔ 不另写一套。目标路径由宿主解析（`ModulePaths::from_env`）。
-    let midi_state = host::wire_module_actions(&ui, Some(Rc::clone(&undo_port)));
+    // `record_wav`），⛔ 不另写一套。目标路径由宿主解析
+    // （`ModulePaths::from_env_for_project`：`export_wav` 缺省取工程目录，见 P2-3）。
+    let midi_state = host::wire_module_actions_for_project(
+        &ui,
+        Some(Rc::clone(&undo_port)),
+        project_dir.as_deref(),
+    );
     // ⭐ **③ 选 SFZ 路径 —— 原生对话框腿**（任务单 `#86` 乙）：混音台通道条的"…"按钮
     // ⇒ 系统文件对话框 ⇒ 把选中的路径**填进** `track-{i}-sampler-path` 那个文本框。
     // ⛔ 它**不**提交工程内容：提交仍是既有的 SET / 回车那一处

@@ -7412,6 +7412,21 @@ impl ModulePaths {
     /// 不是路径解析），因此这里不制造第二个 CLI 面。
     #[must_use]
     pub fn from_env() -> Self {
+        Self::from_env_for_project(None)
+    }
+
+    /// 与 [`from_env`](Self::from_env) 相同，但 `export_wav` 多一条工程目录缺省
+    /// （审评 2026-10-31，P2-3）：
+    ///
+    /// - 环境变量 `YEBAN_UI_EXPORT_WAV_PATH` 已给（非空）⇒ 原样（最高优先）；
+    /// - 否则工程有文件落点（`project_dir = Some`）⇒ 该目录 + `ui-export.wav`
+    ///   （能规范化就规范化成绝对路径；规范化失败 ⇒ 用原目录拼接，⛔ 不为缺省
+    ///   路径去拦整个接线）；
+    /// - 否则（新建未保存工程）⇒ 保持相对缺省 `ui-export.wav`（落进程 cwd，旧行为）。
+    ///
+    /// 只改 `export_wav`：其余三条路径仍是 env / 缺省两档（审评只问了导出 WAV）。
+    #[must_use]
+    pub fn from_env_for_project(project_dir: Option<&std::path::Path>) -> Self {
         let defaults = Self::default();
         let read = |name: &str| {
             std::env::var(name)
@@ -7431,8 +7446,20 @@ impl ModulePaths {
         // 本函数只做"读环境变量 / 给缺省值"，超出 `MAX_SECONDS` 的值会让那条路
         // 如实返回 `InvalidSeconds`（⭐ 与 CLI 完全同一条判定）。
         let midi_in_seconds = seconds_from("YEBAN_UI_MIDI_IN_SECONDS", defaults.midi_in_seconds);
+        // ⭐ 审评 2026-10-31（P2-3）：`export_wav` 的三档优先级 ——
+        // env > 工程目录 > 相对缺省（见 `from_env_for_project` 的文档）。
+        let export_wav = match read("YEBAN_UI_EXPORT_WAV_PATH") {
+            Some(path) => path,
+            None => match project_dir {
+                Some(dir) => {
+                    let base = std::fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf());
+                    base.join("ui-export.wav")
+                }
+                None => defaults.export_wav,
+            },
+        };
         Self {
-            export_wav: read("YEBAN_UI_EXPORT_WAV_PATH").unwrap_or(defaults.export_wav),
+            export_wav,
             export_midi: read("YEBAN_UI_EXPORT_MIDI_PATH").unwrap_or(defaults.export_midi),
             import_midi: read("YEBAN_UI_IMPORT_MIDI_PATH").unwrap_or(defaults.import_midi),
             load_sfz: read("YEBAN_UI_LOAD_SFZ_PATH").unwrap_or(defaults.load_sfz),
@@ -7658,6 +7685,19 @@ fn module_trace(action: &str, started: std::time::Instant, receipt: &str) {
 /// ⇒ 与 CLI 的 `--sfz <f> --export-wav out.wav` 是**同一条**音源路径。
 pub fn wire_module_actions(ui: &MainWindow, port: Option<Rc<UndoPort>>) -> MidiInState {
     wire_module_actions_with(ui, port, ModulePaths::from_env())
+}
+
+/// 与 [`wire_module_actions`] 相同，但 `export_wav` 的缺省取工程目录
+/// （审评 2026-10-31，P2-3；见 [`ModulePaths::from_env_for_project`]）。
+///
+/// 生产接线（`main.rs` / `live_surface.rs`）调这一条；判据仍可用旧的
+/// [`wire_module_actions`]（env / 缺省两档，行为不变）。
+pub fn wire_module_actions_for_project(
+    ui: &MainWindow,
+    port: Option<Rc<UndoPort>>,
+    project_dir: Option<&std::path::Path>,
+) -> MidiInState {
+    wire_module_actions_with(ui, port, ModulePaths::from_env_for_project(project_dir))
 }
 
 /// 与 [`wire_module_actions`] 相同，但路径／参数由调用方**显式**给出（判据用）。
