@@ -3532,7 +3532,7 @@ pub struct ShortcutRow {
 /// 每一项把**规范写法**、**动作**、**键位**与**落地状态**放在一起。这张表的**意义**是
 /// 让策略表的判定结果可被人与 CI 直接阅读 —— 尤其是 `[UI-A11Y-002]` 的 IME 分支,
 /// 以及"规范点名了、本版本还没做"的那一列（见 [`UNIMPLEMENTED_MARKER`]）。
-const SHORTCUTS: [ShortcutRow; 34] = [
+const SHORTCUTS: [ShortcutRow; 36] = [
     ShortcutRow {
         label: "Space → 播放/暂停",
         action: Action::PlayPause,
@@ -3818,13 +3818,33 @@ const SHORTCUTS: [ShortcutRow; 34] = [
         modifiers: Modifiers::ctrl_alt(),
         implemented: true,
     },
+    // ⭐ **键盘拨动**选中轨的静音 / 独奏（两条 = 两个开关）。
+    //
+    // 与上面四条的分工是"**连续量 vs 布尔量**"：微调有"一格"，拨动只有"当前值取反"。
+    // 同样**不是**规范点名（登记在 `docs/ledger/app-mixer-notes.md` §7 第 10 行的 ② 那半句）；
+    // 裸 `m` / `s` 此前都落到 `PassThrough`（`Cmd/Ctrl+Alt+M` 是控制台最大化，另一格），
+    // 因此加进表里不动任何既有绑定。逐条理由见 `Action::ToggleTrackMute` 的文档。
+    ShortcutRow {
+        label: "M → 选中轨静音开/关",
+        action: Action::ToggleTrackMute,
+        key: PhysicalKey::KeyM,
+        modifiers: Modifiers::none(),
+        implemented: true,
+    },
+    ShortcutRow {
+        label: "S → 选中轨独奏开/关",
+        action: Action::ToggleTrackSolo,
+        key: PhysicalKey::KeyS,
+        modifiers: Modifiers::none(),
+        implemented: true,
+    },
     // 以下**一条**是本版本仅剩的 `implemented: false` 条目。
     //
     // ⭐ **两个数字都不在这里手抄**（此前这一行写着"表共 26 条"，而表的**总数**其实是 28 ——
     // 26 是 `implemented: true` 的条数，被当成了总数 ⇒ 读的人按它对账会**差 2**，
     // 而差的正是下面这类 `false` 条目）。⭐ 事实源是**类型标注**与**判据**，逐条复算：
-    //   - 表有多大 ⇒ `[ShortcutRow; 34]` 的**类型标注**（编译期）＋ 判据
-    //     `shortcut_table_status_matches_the_resolution_and_host_pipeline` 的 `rows.len() == 34`；
+    //   - 表有多大 ⇒ `[ShortcutRow; 36]` 的**类型标注**（编译期）＋ 判据
+    //     `shortcut_table_status_matches_the_resolution_and_host_pipeline` 的 `rows.len() == 36`；
     //   - 有几条未实现 ⇒ 同文件的 `the_ai_suggestion_and_audition_keys_are_still_declared_unimplemented`
     //     断言未实现条目**恰好**是哪一条（精确到条目，比只数条数更强）＋ `printed_marks`。
     // ⇒ ⭐ 注释只负责**指路**，⛔ 不再复述数字（复述过的数字会陈旧，这一行就是实例）。

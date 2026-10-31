@@ -429,6 +429,7 @@ fn physical_key_of(key: KeyCode) -> Option<(PhysicalKey, Modifiers)> {
             'h' => (PhysicalKey::KeyH, bare),
             'd' => (PhysicalKey::KeyD, bare),
             'm' => (PhysicalKey::KeyM, bare),
+            's' => (PhysicalKey::KeyS, bare),
             '[' => (PhysicalKey::BracketLeft, bare),
             ']' => (PhysicalKey::BracketRight, bare),
             digit @ '1'..='5' => (PhysicalKey::Digit(digit as u8 - b'0'), bare),

@@ -2357,21 +2357,41 @@ fn authoritative_sampler(
 /// 装乐器被拒绝时**唯一**的 stderr 写法（⛔ 不散在回调里）。
 ///
 /// 为什么单独成函数：`tests/mixer_toggle_labels.rs` 用"整行就是一个字面量"的形状扫
-/// `fn wire_mixer_switch` 到 `fn read_strings` 之间的源码。那个区间覆盖了本文件一大段
-/// 与混音开关无关的实现 —— 一个被 rustfmt 换到行首的 `eprintln!` 格式串会被它误数成
-/// 第三条提交消息。本函数住在扫描区间**之外**（`wire_mixer_switch` 之前），调用点因此
+/// `fn mixer_switch_commit_message` 到 `fn wire_mixer_master_switch` 之间的源码。
+/// 那个区间覆盖了本文件一大段与混音开关无关的实现 —— 一个被 rustfmt 换到行首的
+/// `eprintln!` 格式串会被它误数成第三条提交消息。本函数住在扫描区间**之外**，调用点因此
 /// 没有行首字面量。⚠ 这是对既有判据锚点宽度的**规避**，不是把判据改松。
 fn warn_install_rejected(reason: &str, path: &str) {
     eprintln!("{INSTALL_REJECTED_STDERR_PREFIX}{reason}（{path}）");
 }
 
 /// 混音台上的两个**布尔开关**（静音 / 独奏）—— 除了目标字段不同，接线逐字相同。
+///
+/// 公开成 `pub` 的唯一理由：键盘入口的纯函数 [`toggle_track_switch_ops_for`] 要按
+/// "哪一个开关"寻址，而那个枚举住在这里（⛔ 不在 `input` 再抄一份）。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum MixerSwitch {
+pub enum MixerSwitch {
     /// `TrackV3::mute`。
     Mute,
     /// `TrackV3::solo`。
     Solo,
+}
+
+/// 静音 / 独奏两个开关的**唯一**提交消息（撤销树节点标签）。
+///
+/// ⚠ 三个入口共用它：调音台通道条、编曲视图轨道头、⭐ 键盘 `M` / `S`
+/// （[`crate::input::Action::ToggleTrackMute`] / [`crate::input::Action::ToggleTrackSolo`]）。
+/// 同一种编辑在撤销树里必须长出同一种节点标签（台账 R17）。
+///
+/// 为什么单独成函数：`tests/mixer_toggle_labels.rs` 用"整行就是一个字面量"的形状扫
+/// `fn mixer_switch_commit_message` 到 `fn wire_mixer_master_switch` 之间的源码。
+/// 本函数**就是**那个扫描区间的定义点 —— 两条字面量在这里只有**一处**定义，两个鼠标入口
+/// 与键盘入口都调它（判据另有一条结构断言钉住"两个鼠标入口都调它"）。
+fn mixer_switch_commit_message(switch: MixerSwitch) -> &'static str {
+    match switch {
+        MixerSwitch::Mute => "toggle track mute",
+        MixerSwitch::Solo => "toggle track solo",
+    }
 }
 
 /// 一个开关的**唯一**接线实现。
@@ -2405,9 +2425,9 @@ enum MixerSwitch {
 ///
 /// 与轨道开关**逐字相同**（`"toggle track mute"` / `"toggle track solo"`）——
 /// 同一种编辑就该在撤销树里长出同一种节点标签；来源视图仍然不写进标签（台账 R17）。
-/// ⚠ 这两条字面量与 [`wire_mixer_switch`] 里的那一对必须保持一致；
-/// `tests/mixer_toggle_labels.rs` 只从 `wire_mixer_switch` 的代码块里数标签，
-/// 因此本函数刻意住在它的**扫描区间之外**。
+/// 两条字面量不再各写一份：本函数与 [`wire_mixer_switch`] 都经
+/// [`mixer_switch_commit_message`] 取它们，`tests/mixer_toggle_labels.rs` 既扫那个
+/// 定义点，也断言这两个鼠标入口都**调**它（收拢之后谁都不能绕开）。
 fn wire_mixer_master_switch(
     ui: &MainWindow,
     port: &Rc<UndoPort>,
@@ -2435,7 +2455,7 @@ fn wire_mixer_master_switch(
                     old_mute,
                     new_mute: !old_mute,
                 },
-                "toggle track mute",
+                mixer_switch_commit_message(which),
             ),
             MixerSwitch::Solo => (
                 yeban_model::Op::SetTrackSolo {
@@ -2443,7 +2463,7 @@ fn wire_mixer_master_switch(
                     old_solo,
                     new_solo: !old_solo,
                 },
-                "toggle track solo",
+                mixer_switch_commit_message(which),
             ),
         };
         if port.commit_ops(now_ms(), message, vec![op]).is_err() {
@@ -2487,7 +2507,7 @@ fn wire_mixer_switch(
                     old_mute: state.mute,
                     new_mute: !state.mute,
                 },
-                "toggle track mute",
+                mixer_switch_commit_message(which),
             ),
             MixerSwitch::Solo => (
                 yeban_model::Op::SetTrackSolo {
@@ -2495,7 +2515,7 @@ fn wire_mixer_switch(
                     old_solo: state.solo,
                     new_solo: !state.solo,
                 },
-                "toggle track solo",
+                mixer_switch_commit_message(which),
             ),
         };
         if port.commit_ops(now_ms(), message, vec![op]).is_err() {
@@ -9199,6 +9219,45 @@ fn apply_action(
             refresh_undo_window(ui, port, true);
             true
         }
+        // 裸 `M` / `S`：把**当前选中轨**的静音 / 独奏拨到反面（键盘入口，界面决定）。
+        //
+        // 语义与上面的 `NudgeMixerChannel` 同三条：
+        // 1. 作用域 = `selected-track-id`（唯一写者 [`wire_track_select`]）；
+        // 2. **没有撤销端口 / 没有选中轨 / 身份已不在工程里 ⇒ 返回 `false`**（不吞键，
+        //    陈旧选中态不猜"大概是第一条轨"）；
+        // 3. 一次按键 = **一次** `commit_ops` = 一步撤销；提交后重投影（开关的勾选态
+        //    是从工程算出来的，不重投影就是"值改了、方块还亮着"）。
+        // ⚠ 与鼠标开关走**同一条** `Op` 与**同一条**提交消息（[`mixer_switch_commit_message`]）
+        // ⇒ 撤销树里"点出来的"与"按出来的"没有两种形状。
+        Action::ToggleTrackMute | Action::ToggleTrackSolo => {
+            let Some(port) = undo else {
+                return false;
+            };
+            let Some(track_id) = selected_track_id(ui) else {
+                return false;
+            };
+            let Some(project) = port.try_project() else {
+                return false;
+            };
+            let switch = if matches!(action, Action::ToggleTrackMute) {
+                MixerSwitch::Mute
+            } else {
+                MixerSwitch::Solo
+            };
+            let ops = toggle_track_switch_ops_for(&project, &track_id, switch);
+            if ops.is_empty() {
+                // 身份解析不出 / 已不在工程里 ⇒ 没有可停靠的编辑，如实不消费。
+                return false;
+            }
+            if port
+                .commit_ops(now_ms(), mixer_switch_commit_message(switch), ops)
+                .is_err()
+            {
+                return false;
+            }
+            refresh_undo_window(ui, port, true);
+            true
+        }
         // 横向缩放（`Z` / `Shift+Z`）：**视图态**，不碰 `Op`、不进撤销栈。
         //
         // 语义（三条都是决定）：
@@ -10045,6 +10104,45 @@ pub fn mixer_nudge_ops_for(
         old_val,
         new_val,
     }]
+}
+
+/// `M` / `S`：把**选中轨**的静音 / 独奏拨到反面 ⇒ **一条** `Op::SetTrackMute` / `SetTrackSolo`。
+///
+/// 与 [`mixer_nudge_ops_for`] 同一分工：宿主臂只负责"提交 + 重投影"，`Op` 的形状与
+/// "什么时候什么都不提交"在这里一次决定（纯函数、可单独判据）。
+///
+/// ## 三条都是决定
+///
+/// 1. **布尔量没有"一格"**：本函数没有幅度参数 —— 拨动 = 读现值取反（与
+///    [`wire_mixer_switch`] 的鼠标入口**同一条** `Op`），因此不存在"调到一半"的中间态；
+/// 2. **身份解析不出 / 不在工程里 ⇒ 空**（陈旧选中态不猜"大概是第一条轨"）—— 与
+///    [`mixer_nudge_ops_for`] 同一口径；
+/// 3. **总是恰好一条 op**：`!old` 与 `old` 逐位不同 ⇒ 不需要"端点夹紧"那种空集早退。
+#[must_use]
+pub fn toggle_track_switch_ops_for(
+    project: &yeban_model::YebanProjectV1,
+    selected_track_id: &str,
+    switch: MixerSwitch,
+) -> Vec<yeban_model::ops::Op> {
+    let Ok(track_id) = selected_track_id.parse::<yeban_model::EntityId>() else {
+        return Vec::new();
+    };
+    let Some(track) = project.tracks.get(&track_id) else {
+        return Vec::new();
+    };
+    let op = match switch {
+        MixerSwitch::Mute => yeban_model::Op::SetTrackMute {
+            track_id,
+            old_mute: track.mute,
+            new_mute: !track.mute,
+        },
+        MixerSwitch::Solo => yeban_model::Op::SetTrackSolo {
+            track_id,
+            old_solo: track.solo,
+            new_solo: !track.solo,
+        },
+    };
+    vec![op]
 }
 
 /// `[UI-NOTE-005]` §3.5 项 1–2：一档**步长 + 方向** ⇒ `(delta_tick, delta_pitch)`（唯一换算）。

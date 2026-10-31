@@ -187,8 +187,10 @@ pub enum PhysicalKey {
     KeyH,
     /// `D` —— 与 `Cmd/Ctrl` 组合把选中的音符复制到下一格（右移一个吸附网格）。
     KeyD,
-    /// `M` —— 与 `Cmd/Ctrl+Alt` 组合最大化/还原底部控制台。
+    /// `M` —— 与 `Cmd/Ctrl+Alt` 组合最大化/还原底部控制台；裸键拨选中轨静音。
     KeyM,
+    /// `S` —— 裸键拨选中轨独奏。
+    KeyS,
     /// `N` —— 与 `Cmd/Ctrl+Alt` 组合拨**节拍器**开关（`[ARCH-RT-001]`）。
     KeyN,
     /// `1`–`5` —— 卷帘工具矩阵。
@@ -233,6 +235,7 @@ impl PhysicalKey {
             Self::KeyH => LogicalKey::Character('h'),
             Self::KeyD => LogicalKey::Character('d'),
             Self::KeyM => LogicalKey::Character('m'),
+            Self::KeyS => LogicalKey::Character('s'),
             Self::KeyN => LogicalKey::Character('n'),
             Self::Digit(digit) => {
                 LogicalKey::Character(char::from_digit(u32::from(digit), 10).unwrap_or('\u{0}'))
@@ -624,7 +627,8 @@ pub enum NudgeStep {
 /// 步长"可言；静音 / 独奏是**布尔开关** ⇒ 键盘入口应当是"拨动"（`Toggle`）而不是微调，
 /// 与本动作族不同型（它们的屏读器落点已在控件树里：编曲 `track-{i}-mute-button` /
 /// `track-{i}-solo-button`，调音台 `track-{i}-mixer-mute-button` /
-/// `track-{i}-mixer-solo-button`，见 `crate::elements`；键盘拨动属另一票）。
+/// `track-{i}-mixer-solo-button`，见 `crate::elements`；键盘拨动是**另一族**动作
+/// [`Action::ToggleTrackMute`] / [`Action::ToggleTrackSolo`]，2026-10-31 落地）。
 ///
 /// ⚠ `[UI-NOTE-005]` §3.5 的四条项**只点名音符**（平移 / 1 tick / 半音 / 八度 / 时值 /
 /// 试听），**没有**混音这一格 ⇒ 本类型承载的是**界面决定**，不是规范条文的落地。
@@ -733,6 +737,26 @@ pub enum Action {
         /// `-1` = 左 / 下（减小）；`+1` = 右 / 上（增大）。
         direction: i8,
     },
+    /// `M`：把**当前选中音轨**的静音开关**拨到反面**（键盘入口，与鼠标点
+    /// `track-{i}-mute-button` 同一条提交通道）。
+    ///
+    /// ⚠ **规范没有点名这一动作**：`[UI-NOTE-005]` §3.5 只讲音符 ⇒ 本变体是
+    /// **界面决定**（补"静音 / 独奏只能靠鼠标点"的缺口），登记在
+    /// `docs/ledger/app-mixer-notes.md` §7 第 10 行的 ② 那半句。键位因此只受一条约束：
+    /// ⛔ 不覆盖任何已被规范点名、或已被既有判据如实钉成放行的组合 —— 裸 `m` 此前落到
+    /// 第 6 步的 `_ => PassThrough`（`Cmd/Ctrl+Alt+M` 是另一格，见
+    /// [`Self::ToggleConsoleMaximize`]，两格互不相干）。
+    ///
+    /// 与 [`Self::NudgeMixerChannel`] 的分工：那是"**微调**改一个连续量"，本动作是
+    /// "**拨动**改一个布尔量"，因此没有"一格"可言（见 `MixerParam` 的文档）。
+    /// 本状态机只回答"这一键代表哪个动作"；"没有选中轨 / 身份不在工程里怎么办""要不要提交"
+    /// 全在 `host::apply_action` 的同一个臂里。
+    ToggleTrackMute,
+    /// `S`：把**当前选中音轨**的独奏开关拨到反面（与鼠标点 `track-{i}-solo-button` 同一条通道）。
+    ///
+    /// 同 [`Self::ToggleTrackMute`]：界面决定、裸 `s` 此前未被占用、作用域是
+    /// `selected-track-id`（视图态，唯一写者是 `host::wire_track_select`）。
+    ToggleTrackSolo,
     /// `B`: 在箭头与铅笔之间快速切换。
     TogglePencilTool,
     /// `Cmd/Ctrl+Alt+B`: 展开 / 收起左侧资源抽屉。
@@ -792,7 +816,7 @@ pub enum Action {
     AuditionMain,
     /// `]`: 试听 AI 提案分支。⚠ **键已绑定、动作尚无落地实现**（同 [`Self::AuditionMain`]，
     /// 两者是同一个 A/B 对的两半）。它**不在** `cli.rs` 的 `SHORTCUTS` 表里（`]` 不是表里
-    /// 的某一条 ⇒ ⛔ 这里不手抄表的条数：总数看 `[ShortcutRow; 30]` 的**类型标注**与判据
+    /// 的某一条 ⇒ ⛔ 这里不手抄表的条数：总数看 `[ShortcutRow; 36]` 的**类型标注**与判据
     /// B11b 的 `rows.len()`），因此 `--print-shortcuts` 不打印它，但
     /// `host::action_has_implementation` 同样如实返回 `false`。
     AuditionProposal,
@@ -1022,6 +1046,11 @@ impl InputContext {
                 direction: -1,
             }),
             Key::Character('b') => Resolution::Action(Action::TogglePencilTool),
+            // 键盘**拨动**选中轨的静音 / 独奏（界面决定，见 [`Action::ToggleTrackMute`]）。
+            // 裸 `m` / `s` 此前都落到本步的 `_ => PassThrough`：`m` 只被 `Cmd/Ctrl+Alt+M`
+            // 占用（上面第 3 步），`s` 一处未占 ⇒ 加进来不动任何既有绑定。
+            Key::Character('m') => Resolution::Action(Action::ToggleTrackMute),
+            Key::Character('s') => Resolution::Action(Action::ToggleTrackSolo),
             Key::Character('z') => Resolution::Action(Action::ZoomToSelection),
             Key::Character('[') => Resolution::Action(Action::AuditionMain),
             Key::Character(']') => Resolution::Action(Action::AuditionProposal),
@@ -1048,13 +1077,14 @@ mod tests {
         AcceptAiSuggestion, AuditionMain, AuditionProposal, Cancel, DeleteSelection, Duplicate,
         GoToBeginning, NudgeMixerChannel, NudgeSelection, OpenTimeMachine, PlayPause, Redo,
         ResizeSelectionDuration, ResumeFromCursor, SelectTool, ShowView, ToggleConsoleMaximize,
-        TogglePencilTool, ToggleSidebar, ToggleView, Undo, ZoomToFit, ZoomToSelection,
+        TogglePencilTool, ToggleSidebar, ToggleTrackMute, ToggleTrackSolo, ToggleView, Undo,
+        ZoomToFit, ZoomToSelection,
     };
     use Focus::{MainCanvas, Other, TextInput};
     use MixerParam::{Pan, Volume};
     use PhysicalKey::{
         Backspace, BracketLeft, BracketRight, Delete, Digit, DownArrow, Enter, Escape, F5, F6,
-        KeyB, KeyD, KeyH, KeyM, KeyN, KeyZ, LeftArrow, RightArrow, Space, Tab, UpArrow,
+        KeyB, KeyD, KeyH, KeyM, KeyN, KeyS, KeyZ, LeftArrow, RightArrow, Space, Tab, UpArrow,
     };
     use Resolution::{Action as Act, ConsumedByIme, PassThrough};
 
@@ -1232,6 +1262,44 @@ mod tests {
             canvas().resolve(KeyB, Modifiers::none()),
             Act(TogglePencilTool)
         );
+    }
+
+    /// 判据：裸 `M` / `S` = 拨**选中轨**的静音 / 独奏（键盘入口，界面决定）。
+    ///
+    /// 这一条同时钉三件事：① 新键真的解析出那两条动作（物理码与逻辑键两条入口同解）；
+    /// ② `Cmd/Ctrl+Alt+M` 的既有语义一位没变；③ 规范没点名的组合（`Shift+M` / `Shift+S` /
+    /// `Ctrl+S`）如实放行，文本域焦点下一律不消费。
+    #[test]
+    fn bare_m_and_s_toggle_the_selected_tracks_mute_and_solo() {
+        assert_eq!(
+            canvas().resolve(KeyM, Modifiers::none()),
+            Act(ToggleTrackMute)
+        );
+        assert_eq!(
+            canvas().resolve(KeyS, Modifiers::none()),
+            Act(ToggleTrackSolo)
+        );
+        // GUI 路径（逻辑键）与物理码路径**同解**。
+        assert_eq!(
+            canvas().resolve_logical(LKey::Character('m'), Modifiers::none()),
+            Act(ToggleTrackMute)
+        );
+        assert_eq!(
+            canvas().resolve_logical(LKey::Character('s'), Modifiers::none()),
+            Act(ToggleTrackSolo)
+        );
+        // 既有组合不被覆盖：`Cmd/Ctrl+Alt+M` 仍是控制台最大化。
+        assert_eq!(
+            canvas().resolve(KeyM, Modifiers::ctrl_alt()),
+            Act(ToggleConsoleMaximize)
+        );
+        // 未被点名的组合一律放行（⛔ 不猜一个相近语义）。
+        assert_eq!(canvas().resolve(KeyM, Modifiers::shift()), PassThrough);
+        assert_eq!(canvas().resolve(KeyS, Modifiers::shift()), PassThrough);
+        assert_eq!(canvas().resolve(KeyS, Modifiers::ctrl()), PassThrough);
+        // 文本域焦点：整体放行给表单（IME / 输入法策略在解析最前面）。
+        assert_eq!(text_field().resolve(KeyM, Modifiers::none()), PassThrough);
+        assert_eq!(text_field().resolve(KeyS, Modifiers::none()), PassThrough);
     }
 
     // ---------------------------------------------------------------- 工具矩阵
@@ -1523,6 +1591,7 @@ mod tests {
             KeyD,
             KeyM,
             KeyN,
+            KeyS,
             Digit(0),
             Digit(1),
             Digit(5),
