@@ -485,6 +485,8 @@ pub fn apply_row_geometry(ui: &MainWindow, view: &ViewState) {
     // `.slint` 直接画注入值、不做 `42px + 56px * i`（`ADR-0004` S0 的前缀和）。
     ui.set_track_ys(lengths(&view.track_ys()));
     ui.set_track_heights(lengths(&view.track_heights()));
+    // 行区滚动容器的内容高（同一份行几何派生；演示工程内容不高 ⇒ 偏移恒 0）。
+    ui.set_arrangement_sheet_height(view.track_sheet_height().max(0.0));
     // 剪辑的行几何同源：由所在行的 `RowGeometry` 给出（旧版 `.slint` 自己乘 `clip-lanes`）。
     ui.set_clip_ys(lengths(&view.clip_ys()));
     ui.set_clip_heights(lengths(&view.clip_heights()));

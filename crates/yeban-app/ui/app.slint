@@ -722,6 +722,9 @@ export component MainWindow inherits Window {
     // 与 `track-names` 同索引集；`.slint` 不再做 `42px + 56px * i`。
     in property <[length]> track-ys: [];
     in property <[length]> track-heights: [];
+    // 行区内容高（逻辑像素）—— 由宿主从行几何现算注入；只喂编排行区滚动容器的
+    // `viewport-height`（演示工程内容不高 ⇒ 偏移恒 0）。
+    in property <float> arrangement-sheet-height: 0.0;
     // =====================================================================
     // 轨道高度的**会话/视图态**（ADR-0004 S1 / Q4-A）：宿主拥有、重新注入，零 schema。
     // =====================================================================
@@ -1500,6 +1503,7 @@ export component MainWindow inherits Window {
                     selected-track-id: root.selected-track-id;
                     track-ys: root.track-ys;
                     track-heights: root.track-heights;
+                    sheet-height: root.arrangement-sheet-height;
                     // ⭐ 任务单 `#192`：轨道头点击 ⇒ 选中（界面只报下标）。
                     track-select(track_index) => {
                         root.track-select(track_index);

@@ -68,6 +68,13 @@ export component ArrangementView inherits Rectangle {
     // 与 `tracks` **同索引集**: 包头用 `track_index`、时间轴车道用 `lane_index`。
     in property <[length]> track-ys: [];
     in property <[length]> track-heights: [];
+    // ⭐ 行区**内容高度**（逻辑像素；宿主由行几何现算注入）。它只决定
+    // `Flickable` 的 `viewport-height`：内容不高出可视区 ⇒ 偏移恒 0 ⇒ 默认帧逐像素不变。
+    // ⛔ 界面不自己求和 —— 与 `track-ys` 一样是投影读数。
+    in property <float> sheet-height: 0.0;
+    // 行区上沿（章节卡片 20px + 标尺带 22px）。投影的行 y 以它为原点
+    // （`automation::TRACK_LANE_TOP_PX`）；滚动容器内的局部 y 要减掉它。
+    private property <length> rows-top: 42px;
     in property <[string]> track-volumes: [];
     in property <[bool]> track-mutes: [];
     in property <[bool]> track-solos: [];
@@ -330,11 +337,34 @@ export component ArrangementView inherits Rectangle {
         }
     }
 
+    // ---------------------------------------------------------------- 行区滚动容器（纵向）
+    //
+    // 缺口：行区此前是**固定**的 —— 轨道多到超出可视高度后，第 N 行之后既点不到也
+    // 看不到（真实工程 28 轨时只有前 ~8 行可达）。本容器只做**纵向**偏移：
+    // `viewport-width: self.width` ⇒ 横向不动（横向仍归宿主 `scroll-x`，见卷帘的
+    // 第 199 轮教训：⛔ 不让 Flickable 与宿主偏移双重计算）。
+    //
+    // - 滚轮由上游 `Flickable` 处理（`PointerScrolled` 的 `Cancelled` 相位是**直接
+    //   set**、无动画 ⇒ 判据可立即读到新几何）；触摸拖动需要 `interactive`。
+    // - `viewport-height` 取 `max(可视高, 注入的行区内容高)`：演示工程（6 轨）内容不高
+    //   ⇒ 偏移恒 0、没有滚动条、默认帧逐像素不变。
+    // - 容器**没有** `accessible-id` ⇒ 不进控件树（`inspect.rs`：不可寻址的节点不登记）。
+    // - 子元素的 y 是**行区局部坐标**（投影的 y 减 `rows-top`）；⛔ 界面不重算行几何，
+    //   只减这一个常量。
+    Flickable {
+        x: 0;
+        y: root.rows-top;
+        width: parent.width;
+        height: parent.height - root.rows-top;
+        viewport-width: self.width;
+        viewport-height: max(self.height, root.sheet-height * 1px);
+        interactive: true;
+
     // ---------------------------------------------------------------- 轨道包头列
     for track_name[track_index] in root.tracks : Rectangle {
         x: 0;
-        // 行几何由投影的前缀和给出 (ADR-0004 S0); 界面**不做**行算术。
-        y: root.track-ys[track_index];
+        // 行几何由投影的前缀和给出 (ADR-0004 S0); 滚动容器内只减去行区上沿。
+        y: root.track-ys[track_index] - root.rows-top;
         width: 168px;
         height: root.track-heights[track_index];
         // 包头: 负责人给了**一级**「鸦青·暗」(bg-head); 我们的包头是隔行交替的, 交替本身
@@ -510,7 +540,7 @@ export component ArrangementView inherits Rectangle {
     for _[lane_index] in root.tracks : Rectangle {
         x: 168px;
         // 与包头同一个数组、同一个下标 —— 两条循环必须落在同一行上。
-        y: root.track-ys[lane_index];
+        y: root.track-ys[lane_index] - root.rows-top;
         width: parent.width - 168px;
         height: root.track-heights[lane_index];
         // 车道: 负责人给了**两级**墨阶 —— 墨池 (bg-lane) / 墨池·深 (bg-lane2)。
@@ -524,7 +554,7 @@ export component ArrangementView inherits Rectangle {
         x: 168px + root.clip-positions[clip_index]
             + (clip_ulid == root.clip-drag-ulid ? root.clip-drag-preview-dx * 1px : 0px);
         // 剪辑的 y / 高由投影从所在行的行几何派生 (ADR-0004 S0)。
-        y: root.clip-ys[clip_index];
+        y: root.clip-ys[clip_index] - root.rows-top;
         width: root.clip-widths[clip_index];
         height: root.clip-heights[clip_index];
         background: Tokens.bg-panel-alt;
@@ -595,7 +625,7 @@ export component ArrangementView inherits Rectangle {
     // 只覆盖包头以下的剪辑体：包头归选中臂（`clip-{ulid}-header`），两者不抢同一块像素。
     for clip_ulid[clip_index] in root.clip-ulids : TouchArea {
         x: 168px + root.clip-positions[clip_index];
-        y: root.clip-ys[clip_index] + 18px;
+        y: root.clip-ys[clip_index] + 18px - root.rows-top;
         width: root.clip-widths[clip_index];
         height: root.clip-heights[clip_index] - 18px;
         accessible-role: region;
@@ -661,7 +691,7 @@ export component ArrangementView inherits Rectangle {
     //   ③ 命令坐标不带单位 (语言参考: "operate within the imaginary coordinate system")。
     for _[lane_index] in root.automation-lane-target-keys : Rectangle {
         x: 168px;
-        y: root.automation-lane-band-ys[lane_index];
+        y: root.automation-lane-band-ys[lane_index] - root.rows-top;
         width: parent.width - 168px;
         height: root.automation-lane-band-heights[lane_index];
         background: transparent;
@@ -716,6 +746,8 @@ export component ArrangementView inherits Rectangle {
             visible: root.automation-lane-badges[lane_index] != "";
         }
     }
+
+    }  // ← 行区滚动容器到此结束
 
     // ---------------------------------------------------------------- 走带光标 [UI-MCP-002]
     // 高频刷新区域: 无头截图比对前必须按这个 ID 的包围盒置黑。
