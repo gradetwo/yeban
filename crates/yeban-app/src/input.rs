@@ -179,6 +179,12 @@ pub enum PhysicalKey {
     F5,
     /// `F6` —— 直达 Arrangement 视图。
     F6,
+    /// `F7` —— 直达控制台「钢琴卷帘」标签（**界面决定**，⛔ 规范未点名）。
+    F7,
+    /// `F8` —— 直达控制台「调音台」标签（同上）。
+    F8,
+    /// `F9` —— 直达控制台「设备效果链」标签（同上）。
+    F9,
     /// `B` —— 选择/铅笔工具快速切换。
     KeyB,
     /// `Z` —— 缩放聚焦 / `Shift+Z` 恢复全曲总览。
@@ -187,10 +193,19 @@ pub enum PhysicalKey {
     KeyH,
     /// `D` —— 与 `Cmd/Ctrl` 组合把选中的音符复制到下一格（右移一个吸附网格）。
     KeyD,
-    /// `M` —— 与 `Cmd/Ctrl+Alt` 组合最大化/还原底部控制台。
+    /// `M` —— 与 `Cmd/Ctrl+Alt` 组合最大化/还原底部控制台；裸键拨选中轨静音。
     KeyM,
+    /// `S` —— 裸键拨选中轨独奏；与 `Cmd/Ctrl` 组合保存当前工程。
+    KeyS,
     /// `N` —— 与 `Cmd/Ctrl+Alt` 组合拨**节拍器**开关（`[ARCH-RT-001]`）。
     KeyN,
+    /// `O` —— 与 `Cmd/Ctrl` 组合打开工程。
+    KeyO,
+    /// `R` —— 裸键拨**录制**开 / 关（走带「录音」按钮的键盘入口，界面决定）。
+    KeyR,
+    /// `A` —— 与 `Cmd/Ctrl+Alt` 组合展开 / 收起 AI 抽屉（走带 `transport-ai-drawer-button`
+    /// 的键盘入口，界面决定）。
+    KeyA,
     /// `1`–`5` —— 卷帘工具矩阵。
     Digit(u8),
     /// `[` —— 切到主线版本试听。
@@ -228,12 +243,19 @@ impl PhysicalKey {
             Self::Delete => LogicalKey::Delete,
             Self::F5 => LogicalKey::F5,
             Self::F6 => LogicalKey::F6,
+            Self::F7 => LogicalKey::F7,
+            Self::F8 => LogicalKey::F8,
+            Self::F9 => LogicalKey::F9,
             Self::KeyB => LogicalKey::Character('b'),
             Self::KeyZ => LogicalKey::Character('z'),
             Self::KeyH => LogicalKey::Character('h'),
             Self::KeyD => LogicalKey::Character('d'),
             Self::KeyM => LogicalKey::Character('m'),
+            Self::KeyS => LogicalKey::Character('s'),
             Self::KeyN => LogicalKey::Character('n'),
+            Self::KeyO => LogicalKey::Character('o'),
+            Self::KeyR => LogicalKey::Character('r'),
+            Self::KeyA => LogicalKey::Character('a'),
             Self::Digit(digit) => {
                 LogicalKey::Character(char::from_digit(u32::from(digit), 10).unwrap_or('\u{0}'))
             }
@@ -285,6 +307,12 @@ pub enum LogicalKey {
     F5,
     /// `F6`（`"\u{f709}"`）—— 直达 Arrangement 视图。
     F6,
+    /// `F7`（`"\u{f70a}"`）—— 直达控制台「钢琴卷帘」标签。
+    F7,
+    /// `F8`（`"\u{f70b}"`）—— 直达控制台「调音台」标签。
+    F8,
+    /// `F9`（`"\u{f70c}"`）—— 直达控制台「设备效果链」标签。
+    F9,
     /// `↑`（`"\u{f700}"`）—— `[UI-NOTE-005]` §3.5 项 2：半音移调 / `Shift` 八度。
     UpArrow,
     /// `↓`（`"\u{f701}"`）—— 同上，向下。
@@ -331,6 +359,9 @@ impl LogicalKey {
             '\u{f703}' => Self::RightArrow,
             '\u{f708}' => Self::F5,
             '\u{f709}' => Self::F6,
+            '\u{f70a}' => Self::F7,
+            '\u{f70b}' => Self::F8,
+            '\u{f70c}' => Self::F9,
             ' ' => Self::Space,
             printable if printable.is_ascii_graphic() => {
                 Self::Character(printable.to_ascii_lowercase())
@@ -624,7 +655,8 @@ pub enum NudgeStep {
 /// 步长"可言；静音 / 独奏是**布尔开关** ⇒ 键盘入口应当是"拨动"（`Toggle`）而不是微调，
 /// 与本动作族不同型（它们的屏读器落点已在控件树里：编曲 `track-{i}-mute-button` /
 /// `track-{i}-solo-button`，调音台 `track-{i}-mixer-mute-button` /
-/// `track-{i}-mixer-solo-button`，见 `crate::elements`；键盘拨动属另一票）。
+/// `track-{i}-mixer-solo-button`，见 `crate::elements`；键盘拨动是**另一族**动作
+/// [`Action::ToggleTrackMute`] / [`Action::ToggleTrackSolo`]，2026-10-31 落地）。
 ///
 /// ⚠ `[UI-NOTE-005]` §3.5 的四条项**只点名音符**（平移 / 1 tick / 半音 / 八度 / 时值 /
 /// 试听），**没有**混音这一格 ⇒ 本类型承载的是**界面决定**，不是规范条文的落地。
@@ -667,6 +699,24 @@ pub enum Action {
     ToggleView,
     /// `F5`/`F6`/`Alt+1`/`Alt+2`: 直达某个视图。
     ShowView(View),
+    /// `F7`/`F8`/`F9`: 直达底部控制台的某个标签（**界面决定**，⛔ 规范未点名）。
+    ///
+    /// `index` 是 [`crate::scene::CONSOLE_TABS`] 的**下标**（0 卷帘 / 1 调音台 /
+    /// 2 设备效果链）—— 标签顺序的唯一事实源是那张表，⛔ 这里不另造一份词表。
+    ///
+    /// 落点是 `ui.set_console_tab(index)`：鼠标点标签导轨与屏读器
+    /// `accessible-action-default` 改的是同一个 `active-tab` 绑定（`console_tabs.slint`
+    /// 的文件头数据流说明：本组件只上抛 `select-*`，由 MainWindow 决定新值）。
+    ///
+    /// ⚠ 这三个键**不在**「全局无冲突备选快捷键」那一档：它们走第 6 步（无修饰单键），
+    /// 照常受文本域 / IME 策略约束 —— 规范 §2.2 点名的全局备选只有 `F5`/`F6` 两个视图键。
+    /// 键位理由：`F` 键在任何键盘布局下都产出同一个私有区文本（`\u{f70a}`–`\u{f70c}`，
+    /// 见 Slint `i-slint-common-1.18.1/key_codes.rs`），因此 GUI 路径不依赖布局，
+    /// 也不像 `Alt+数字` 那样会被 Option/AltGr 改写成符号。
+    SelectConsoleTab {
+        /// [`crate::scene::CONSOLE_TABS`] 的下标。
+        index: u8,
+    },
     /// `Cmd/Ctrl+Z`: 基于领域操作日志逆向回滚。
     Undo,
     /// `Cmd/Ctrl+Shift+Z`: 重做。
@@ -675,6 +725,85 @@ pub enum Action {
     OpenTimeMachine,
     /// `Cmd/Ctrl+D`: 原位智能复制。
     Duplicate,
+    /// `Cmd/Ctrl+S`: 保存当前工程（标准 DAW 习惯键，**界面决定**，⛔ 不是规范点名）。
+    ///
+    /// 落点是 `host::apply_action` 的同一个臂 ⇒ `ui.invoke_save_project()` ⇒
+    /// `host::wire_save` 注册的**唯一**保存实现（`save_action::dispatch_save`：
+    /// 有权威走权威、没有权威走本地原子写，目标路径缺省时问一次原生对话框）。
+    /// ⛔ 本动作**不**另写一条保存路径 —— 与「打开前先保存」
+    /// （`host::save_first_through_the_existing_entry`）**同一个**界面入口。
+    ///
+    /// ## 为什么是 `Ctrl+S` 而不是别的（键位选择的三条事实）
+    ///
+    /// 1. 裸 `S` 已是 [`Self::ToggleTrackSolo`]（2026-10-31），故本键**必须带修饰**；
+    /// 2. `Cmd/Ctrl+S` 此前落到 `_ => PassThrough`（`input.rs` 的策略表里 `s` 只有裸键一格），
+    ///    加它**不覆盖**任何既有绑定；`Cmd/Ctrl+Alt+S` 仍放行。`Cmd/Ctrl+Shift+S`
+    ///    2026-10-31 起是 [`Self::SaveProjectAs`]（同一条命令的"另存为"形态），两格互不相干；
+    /// 3. 文本框聚焦时整体放行（策略表第 2 步）—— 与 `Cmd/Ctrl+Z` 同一口径：
+    ///    输入框里的 `Cmd/Ctrl+S` 属于文本控件，不属于 DAW。
+    ///
+    /// ⚠ 保存的**结果**（成功 / 被锁拒绝 / 取消）由 `save-status` 如实回报（屏读器可达），
+    /// 本动作只负责"按到那**一个**保存入口"。
+    SaveProject,
+    /// `Cmd/Ctrl+Shift+S`: **另存为**（标准 DAW 习惯键，**界面决定**，⛔ 不是规范点名）。
+    ///
+    /// 落点是 `host::apply_action` 的同一个臂 ⇒ `ui.invoke_save_project_as()` ⇒
+    /// `host::wire_save` 注册的**同一条**保存链：先问一次可注入的
+    /// `FilePicker::choose_save`（标题"另存为"），选中后把这个路径记成**本会话的当前
+    /// 目标**，再走**同一个** `dispatch_save`（⛔ 不另写一条保存 / 序列化路径）。
+    /// 于是"另存为之后按 `Cmd/Ctrl+S` 写的是**新**文件"—— 与用户对标准 DAW 的预期一致；
+    /// 装配期目标（`SaveStatus::target`）因此在本动作之后不再是"当前目标"。
+    ///
+    /// ## 键位（三条事实，⛔ 不猜）
+    ///
+    /// 1. 裸 `S` 是 [`Self::ToggleTrackSolo`]、`Cmd/Ctrl+S` 是 [`Self::SaveProject`]
+    ///    （都于 2026-10-31 落地）⇒ `Shift` 变体**必须**作为第三种形态出现，否则
+    ///    "另存为"没有可用键；
+    /// 2. `Cmd/Ctrl+Shift+S` 此前落到 `_ => PassThrough`（判据
+    ///    `ctrl_s_is_the_save_entry_and_does_not_disturb_its_neighbours` 如实钉着），
+    ///    加它**不覆盖**任何既有绑定；`Cmd/Ctrl+Alt+S` 仍放行；
+    /// 3. 文本框聚焦时整体放行（策略表第 2 步），与 [`Self::SaveProject`] 同一口径。
+    ///
+    /// ⚠ **取消不是失败**（`wire_save` 的口径）：对话框回取消 ⇒ 一位不动、不写回执；
+    /// 本臂因此恒消费这一键（与 [`Self::SaveProject`] / [`Self::OpenProject`] 同一约定）。
+    SaveProjectAs,
+    /// `Cmd/Ctrl+O`: 打开工程（标准 DAW 习惯键，**界面决定**，⛔ 不是规范点名）。
+    ///
+    /// 落点是 `host::apply_action` 的同一个臂 ⇒ `ui.invoke_open_project()` ⇒
+    /// `host::wire_open_project` 的**唯一**实现（问一次可注入的 `FilePicker` →
+    /// `open::open_project_file` 读盘 → `UndoPort::open_project_session` 换新会话 → 重投影）。
+    /// ⛔ 本动作**不**另写一条打开路径 —— 与控制台「打开工程」按钮是**同一个**回调。
+    ///
+    /// ## 键位选择（三条事实，⛔ 不猜）
+    ///
+    /// 1. 策略表的 `command()` 分支里 `o` 此前**一格都没有**（实测）⇒ 加它**不覆盖**
+    ///    任何既有绑定；`Cmd/Ctrl+Shift+O` / `Cmd/Ctrl+Alt+O` 仍放行（「打开最近」之类的
+    ///    是另一套界面决定，⛔ 不顺手发明）；
+    /// 2. 裸 `O` 从未绑定（与裸 `S` 已是独奏的情形不同）⇒ 不需要额外修饰约束；
+    /// 3. 文本框聚焦时整体放行（策略表第 2 步）—— 与 `Cmd/Ctrl+S` / `Cmd/Ctrl+Z` 同一口径。
+    ///
+    /// ⚠ **取消不是失败**（`wire_open_project` 的口径）：对话框回 `None` ⇒ 一位不动、
+    /// 不写回执。成功 / 失败由既有的 `module-status` 回执如实回报（屏读器可达）。
+    OpenProject,
+    /// `R`: 录制开 / 关（走带「录音」按钮的键盘入口，**界面决定**，⛔ 不是规范点名）。
+    ///
+    /// 落点是 `host::apply_action` 的同一个臂 ⇒ `ui.invoke_toggle_record()` ⇒
+    /// `host::wire_record_at` 装的**唯一**回调（与「录音」按钮是**同一个**入口；
+    /// 起录 / 停录、设备源、预录静音、落盘与回执全在那一个实现里）。
+    /// ⛔ 本动作**不**另写录音路径。
+    ///
+    /// ## 键位选择（三条事实，⛔ 不猜）
+    ///
+    /// 1. 裸 `r` 此前落在 `resolve_logical` 第 6 步的 `_ => PassThrough`（实测：`input.rs`
+    ///    的任何一步都没有 `r`）⇒ 加它**不覆盖**任何既有绑定 —— 与裸 `m` / `s` 同一种选法；
+    /// 2. `command()` 分支里也没有 `r` ⇒ `Cmd/Ctrl+R` 仍**放行**（"重载 / 刷新"之类的
+    ///    是另一套界面决定，⛔ 不顺手发明）；
+    /// 3. 文本框聚焦时整体放行（策略表第 2 步）—— 与裸 `M` / `S` 同一口径。
+    ///
+    /// ⚠ 录音**失败 / 设备打不开**由既有回执通道如实回报（`RecordOutcomePort`）；
+    /// 录音器正被同一线程借用（重入）时 `wire_record_at` 打一行 stderr 并令本次无效
+    /// （⛔ 不 panic）。两种结果都发生在**回调里**，本动作不二次解释 ⇒ 恒消费这一键。
+    ToggleRecord,
     /// `Delete`/`Backspace`: 删除选中的音符 / 选区 / 音轨。
     DeleteSelection,
     /// `[UI-NOTE-005]` §3.5 项 1–2：把**当前选区**的音符按一档步长平移。
@@ -713,9 +842,12 @@ pub enum Action {
     /// 它们把它挤到 `Cmd/Ctrl+Alt+方向` 这一格：
     /// 1. **六个方向键组合已被 §3.5 点名**（裸 `←/→` 网格、`Alt+←/→` 1 tick、裸 `↑/↓`
     ///    半音、`Shift+↑/↓` 八度、`Shift+←/→` 时值），本动作⛔ 不得覆盖既有键语义；
-    /// 2. 规范**没**点名但已被如实钉成 `PassThrough` 的两个组合也不能占：`Cmd/Ctrl+←/→`
-    ///    （归系统的 caret 语义）与 `Alt+↑/↓`，见判据
-    ///    `arrow_keys_resolve_to_the_four_spec_nudge_steps` 末尾那段；
+    /// 2. 规范**没**点名但已被如实钉成 `PassThrough` 的组合也不能占：`Cmd/Ctrl+←/→`
+    ///    （归系统的 caret 语义），见判据
+    ///    `arrow_keys_resolve_to_the_four_spec_nudge_steps` 末尾那段。
+    ///    ⚠ `Alt+↑/↓` **不再**属于这一类：2026-10-31 的选轨切片把它们显式绑成了
+    ///    [`Self::SelectTrackBy`]（键盘选轨，界面决定）—— 本动作族仍不碰它们（音量走
+    ///    `Cmd/Ctrl+Alt+方向`）；
     /// 3. `Cmd/Ctrl+Alt` 组合此前只有 `b` / `m` / `n` / `d` 四条（与
     ///    [`Self::ToggleMetronome`] 同族），方向键在 `resolve_logical` 的第 3 步落到
     ///    `_ => PassThrough` ⇒ 这一格是**空的**，加进去不动任何既有绑定。
@@ -733,6 +865,26 @@ pub enum Action {
         /// `-1` = 左 / 下（减小）；`+1` = 右 / 上（增大）。
         direction: i8,
     },
+    /// `M`：把**当前选中音轨**的静音开关**拨到反面**（键盘入口，与鼠标点
+    /// `track-{i}-mute-button` 同一条提交通道）。
+    ///
+    /// ⚠ **规范没有点名这一动作**：`[UI-NOTE-005]` §3.5 只讲音符 ⇒ 本变体是
+    /// **界面决定**（补"静音 / 独奏只能靠鼠标点"的缺口），登记在
+    /// `docs/ledger/app-mixer-notes.md` §7 第 10 行的 ② 那半句。键位因此只受一条约束：
+    /// ⛔ 不覆盖任何已被规范点名、或已被既有判据如实钉成放行的组合 —— 裸 `m` 此前落到
+    /// 第 6 步的 `_ => PassThrough`（`Cmd/Ctrl+Alt+M` 是另一格，见
+    /// [`Self::ToggleConsoleMaximize`]，两格互不相干）。
+    ///
+    /// 与 [`Self::NudgeMixerChannel`] 的分工：那是"**微调**改一个连续量"，本动作是
+    /// "**拨动**改一个布尔量"，因此没有"一格"可言（见 `MixerParam` 的文档）。
+    /// 本状态机只回答"这一键代表哪个动作"；"没有选中轨 / 身份不在工程里怎么办""要不要提交"
+    /// 全在 `host::apply_action` 的同一个臂里。
+    ToggleTrackMute,
+    /// `S`：把**当前选中音轨**的独奏开关拨到反面（与鼠标点 `track-{i}-solo-button` 同一条通道）。
+    ///
+    /// 同 [`Self::ToggleTrackMute`]：界面决定、裸 `s` 此前未被占用、作用域是
+    /// `selected-track-id`（视图态，唯一写者是 `host::wire_track_select`）。
+    ToggleTrackSolo,
     /// `B`: 在箭头与铅笔之间快速切换。
     TogglePencilTool,
     /// `Cmd/Ctrl+Alt+B`: 展开 / 收起左侧资源抽屉。
@@ -743,6 +895,36 @@ pub enum Action {
     ZoomToFit,
     /// `Cmd/Ctrl+Alt+M`: 最大化 / 还原底部控制台。
     ToggleConsoleMaximize,
+    /// `Cmd/Ctrl+Alt+A`: 展开 / 收起 AI 抽屉。
+    ///
+    /// ⚠ **规范没有点名这一动作**（`[UI-NOTE-005]` 只讲音符）⇒ 与
+    /// [`Self::ToggleTrackMute`] 同一取向：**界面决定**，补"AI 抽屉只能点走带
+    /// `transport-ai-drawer-button`"的缺口。键位只受一条约束：⛔ 不覆盖任何已被
+    /// 规范点名、或已被既有判据如实钉成放行的组合 —— `Cmd/Ctrl+Alt+A` 此前落到
+    /// 第 3 步的 `_ => PassThrough`（该分支当时只有 `b` / `m` / `n` / `d` / 方向键），
+    /// 裸 `a` 与 `Alt+A` 也从未绑定（第 6 步、第 4 步都不含 `a`）。
+    ///
+    /// 落点**唯一**：`host::apply_action` 的 `ToggleAiDrawer` 臂 ⇒
+    /// `ui.invoke_toggle_ai_drawer()` ⇒ `host::wire_view_callbacks` 注册的**同一条**
+    /// `on_toggle_ai_drawer`（写 `ai-drawer-open`）。与鼠标点按钮共用这一个回调，
+    /// ⛔ 不是第二份实现。纯视图态（`MODEL-ISO-001` 的挥发性层）⇒ 不改工程、
+    /// 不需要 `UndoPort`、不进撤销栈。
+    ToggleAiDrawer,
+    /// `Alt+↑` / `Alt+↓`: 把**轨道选中**移到上一条 / 下一条（键盘入口，界面决定）。
+    ///
+    /// ⚠ **规范没有点名这一动作**（`[UI-NOTE-005]` 只讲音符）⇒ **界面决定**，补的是
+    /// 键盘-only 用户**根本无法选轨**这一缺口（选中态此前只能靠鼠标点轨道行）。
+    /// 键位只受一条约束：⛔ 不覆盖任何已被规范点名、或已被既有判据如实钉成放行的组合 ——
+    /// `Alt+↑/↓` 此前落在第 4 步的 `_ => PassThrough`（该分支当时只有 `1` / `2` / `←` / `→`），
+    /// 而 `↑/↓` 的裸键（网格微调 / `Shift` 八度）与 `Cmd/Ctrl+Alt+↑/↓`（音量微调）一格不动。
+    ///
+    /// 落点**唯一**：`host::apply_action` 的 `SelectTrackBy` 臂 ⇒ `ui.invoke_track_select(index)`
+    /// ⇒ `host::wire_track_select` 注册的**同一条** `on_track_select`（写 `selected-track-id`
+    /// 并按**当前横向偏移**重投影），与鼠标点轨道行共用它 ⇒ 不可能分叉。
+    ///
+    /// 方向 `-1` = 上一条，`+1` = 下一条。边界（顶到两端）仍**消费**（重复选中同一条是
+    /// `wire_track_select` 里的早退）；工程里一条轨都没有时**不消费**（见 `apply_action`）。
+    SelectTrackBy(i8),
     /// `1`–`5`: 切到某个卷帘工具。
     SelectTool(Tool),
     /// `Shift+Enter`: 采纳**点选了的那一条** AI 提案。
@@ -773,13 +955,13 @@ pub enum Action {
     /// ⚠ 它与 `metronome_enabled` 同在 `TransportConfig` 里、同样投影进快照
     /// ⇒ 走**同一条**服务、同一套恢复（`crate::metronome::set_count_in_bars`）。
     ToggleCountIn,
-    /// `Esc`：收尾 —— 关闭全屏时光机、取消进行中的拖拽手势。
+    /// `Esc`：收尾 —— 关闭面板（时光机 / 导出设置弹窗 / AI 提案抽屉）、取消进行中的拖拽手势。
     ///
-    /// 三个落点各自独立（关弹窗 / 纵向拖拽 / 混音手势），任一命中即消费；都不在手时
-    /// **放行**（交给焦点系统）。⚠ **不**包含"放弃 AI 提案"，即使抽屉现在看得见、
-    /// 也真的有了写入口（2026-10-31）：`Escape` 已经承担上面那三件事, 再把它算给放弃
-    /// 就是同一个键在两个上下文里各做一件事, 而规范里没有这条裁决 ⇒ 放弃**只有**可点
-    /// 等价物（抽屉的 `musical-pr-reject-button`）。`.slint` 里那句 "(Esc)" 因此删掉了
+    /// 每个落点各自独立（面板 / 纵向拖拽 / 混音手势 / 卷帘两条手势 / 剪辑平移），任一
+    /// 命中即消费；都不在手时**放行**（交给焦点系统）。⚠ 关掉 AI 抽屉**不是**"放弃 AI
+    /// 提案"：提案仍留在队列里，拒绝只有可点等价物（抽屉的 `musical-pr-reject-button`）。
+    /// 这条裁决来自 2026-10-31 —— `Escape` 已经承担收尾, 再把它算给"放弃"就是同一个键
+    /// 在两个上下文里各做一件事, 而规范里没有这条裁决。`.slint` 里那句 "(Esc)" 因此删掉了
     /// —— 它此前是一句**假声明**（判据 `musical_pr_drawer_declares_no_demo_proposals`
     /// 现在机械地钉住"按钮文案里的键位必须是真的"）。
     Cancel,
@@ -792,8 +974,8 @@ pub enum Action {
     AuditionMain,
     /// `]`: 试听 AI 提案分支。⚠ **键已绑定、动作尚无落地实现**（同 [`Self::AuditionMain`]，
     /// 两者是同一个 A/B 对的两半）。它**不在** `cli.rs` 的 `SHORTCUTS` 表里（`]` 不是表里
-    /// 的某一条 ⇒ ⛔ 这里不手抄表的条数：总数看 `[ShortcutRow; 30]` 的**类型标注**与判据
-    /// B11b 的 `rows.len()`），因此 `--print-shortcuts` 不打印它，但
+    /// 的某一条 ⇒ ⛔ 这里不手抄表的条数：总数看 `cli.rs` 里 `SHORTCUTS` 的**类型标注**与
+    /// 判据 B11b 的 `rows.len()`（⛔ 不复述数字），因此 `--print-shortcuts` 不打印它，但
     /// `host::action_has_implementation` 同样如实返回 `false`。
     AuditionProposal,
 }
@@ -907,10 +1089,24 @@ impl InputContext {
                 (Key::Character('z'), true, false) => Resolution::Action(Action::Redo),
                 (Key::Character('h'), true, false) => Resolution::Action(Action::OpenTimeMachine),
                 (Key::Character('d'), false, false) => Resolution::Action(Action::Duplicate),
+                // **界面决定**（⛔ 不是规范点名）：标准 DAW 的保存键与另存为键。
+                // 这两条格此前是空的（`s` 在 `command()` 分支里一条都没有），
+                // 而裸 `s` 已于 2026-10-31 归 [`Action::ToggleTrackSolo`] ⇒ 互不冲突；
+                // `Alt` 变体仍放行（"另存为副本"之类是另一套界面决定，⛔ 不顺手发明）。
+                (Key::Character('s'), false, false) => Resolution::Action(Action::SaveProject),
+                (Key::Character('s'), true, false) => Resolution::Action(Action::SaveProjectAs),
+                // **界面决定**（⛔ 不是规范点名）：标准 DAW 的打开键。
+                // `o` 在 `command()` 分支里此前一格都没有；裸 `o` 也从未绑定
+                //（`o` 至今不在本表任何一步里）⇒ 两者都不覆盖既有语义。
+                // `Shift` / `Alt` 变体仍放行（"打开最近"是另一票界面决定）。
+                (Key::Character('o'), false, false) => Resolution::Action(Action::OpenProject),
                 (Key::Character('b'), false, true) => Resolution::Action(Action::ToggleSidebar),
                 (Key::Character('m'), false, true) => {
                     Resolution::Action(Action::ToggleConsoleMaximize)
                 }
+                // **界面决定**（⛔ 不是规范点名）：AI 抽屉的键盘入口。
+                // `a` 在 `Cmd/Ctrl+Alt` 组合里此前一格都没有；`Shift` 变体仍放行。
+                (Key::Character('a'), false, true) => Resolution::Action(Action::ToggleAiDrawer),
                 // 加性新增（⛔ 不动既有键语义）：`Cmd/Ctrl+Alt+N` / `+D` 此前**未被占**
                 //（实测：本 `Cmd/Ctrl+Alt` 组合当时只有 `b` / `m` 两条）。
                 (Key::Character('n'), false, true) => Resolution::Action(Action::ToggleMetronome),
@@ -942,10 +1138,15 @@ impl InputContext {
 
         // 4. Alt 组合: 规范 §2.2 的 `Alt + 1` / `Alt + 2` 备选视图切换;
         //    `[UI-NOTE-005]` §3.5 项 1 的 `Alt+←/→` —— **1 tick** 超精细微调。
+        //    另加**界面决定**的 `Alt+↑/↓` = 选上一条 / 下一条轨（键盘-only 用户的选轨入口）。
+        //    `Shift` 变体（`Alt+Shift+↑/↓`）**未被点名** ⇒ 如实放行，与第 3 步
+        //    `Cmd/Ctrl+Alt+Shift+方向` 的既有口径一致：新绑的键只占**它点名的那一格**。
         if modifiers.alt {
             return match key {
                 Key::Character('1') => Resolution::Action(Action::ShowView(View::Session)),
                 Key::Character('2') => Resolution::Action(Action::ShowView(View::Arrangement)),
+                Key::UpArrow if !modifiers.shift => Resolution::Action(Action::SelectTrackBy(-1)),
+                Key::DownArrow if !modifiers.shift => Resolution::Action(Action::SelectTrackBy(1)),
                 Key::LeftArrow => Resolution::Action(Action::NudgeSelection {
                     step: NudgeStep::Tick,
                     direction: -1,
@@ -987,6 +1188,13 @@ impl InputContext {
 
         // 6. 无修饰单键。
         match key {
+            // **界面决定**（⛔ 规范未点名）：`F7`/`F8`/`F9` 直达底部控制台的三个标签。
+            // 刻意住在第 6 步而**不是**第 1 步：规范 §2.2 的「全局无冲突备选」只点名
+            // `F5`/`F6` 两个视图键 ⇒ 控制台标签照常受文本域 / IME 策略约束（第 2 步先行）。
+            // 带修饰的变体（`Cmd/Ctrl+F7` 等）落到上面各步的 `PassThrough`。
+            Key::F7 => Resolution::Action(Action::SelectConsoleTab { index: 0 }),
+            Key::F8 => Resolution::Action(Action::SelectConsoleTab { index: 1 }),
+            Key::F9 => Resolution::Action(Action::SelectConsoleTab { index: 2 }),
             // `Tab` 只在主工作区画布聚焦时切视图 [规范 §2.2 MUST]。
             // 其余焦点 (推子 / 旋钮 / 标签) 一律放行, 交给焦点系统。
             Key::Tab => {
@@ -1022,6 +1230,14 @@ impl InputContext {
                 direction: -1,
             }),
             Key::Character('b') => Resolution::Action(Action::TogglePencilTool),
+            // 键盘**拨动**选中轨的静音 / 独奏（界面决定，见 [`Action::ToggleTrackMute`]）。
+            // 裸 `m` / `s` 此前都落到本步的 `_ => PassThrough`：`m` 只被 `Cmd/Ctrl+Alt+M`
+            // 占用（上面第 3 步），`s` 一处未占 ⇒ 加进来不动任何既有绑定。
+            Key::Character('m') => Resolution::Action(Action::ToggleTrackMute),
+            Key::Character('s') => Resolution::Action(Action::ToggleTrackSolo),
+            // 走带「录音」按钮的键盘入口（界面决定，见 [`Action::ToggleRecord`]）。
+            // 裸 `r` 此前落到本步的 `_ => PassThrough`（任何一步都没有 `r`）⇒ 不加修饰也不冲突。
+            Key::Character('r') => Resolution::Action(Action::ToggleRecord),
             Key::Character('z') => Resolution::Action(Action::ZoomToSelection),
             Key::Character('[') => Resolution::Action(Action::AuditionMain),
             Key::Character(']') => Resolution::Action(Action::AuditionProposal),
@@ -1046,15 +1262,18 @@ mod tests {
 
     use Action::{
         AcceptAiSuggestion, AuditionMain, AuditionProposal, Cancel, DeleteSelection, Duplicate,
-        GoToBeginning, NudgeMixerChannel, NudgeSelection, OpenTimeMachine, PlayPause, Redo,
-        ResizeSelectionDuration, ResumeFromCursor, SelectTool, ShowView, ToggleConsoleMaximize,
-        TogglePencilTool, ToggleSidebar, ToggleView, Undo, ZoomToFit, ZoomToSelection,
+        GoToBeginning, NudgeMixerChannel, NudgeSelection, OpenProject, OpenTimeMachine, PlayPause,
+        Redo, ResizeSelectionDuration, ResumeFromCursor, SaveProject, SaveProjectAs,
+        SelectConsoleTab, SelectTool, SelectTrackBy, ShowView, ToggleAiDrawer,
+        ToggleConsoleMaximize, TogglePencilTool, ToggleRecord, ToggleSidebar, ToggleTrackMute,
+        ToggleTrackSolo, ToggleView, Undo, ZoomToFit, ZoomToSelection,
     };
     use Focus::{MainCanvas, Other, TextInput};
     use MixerParam::{Pan, Volume};
     use PhysicalKey::{
-        Backspace, BracketLeft, BracketRight, Delete, Digit, DownArrow, Enter, Escape, F5, F6,
-        KeyB, KeyD, KeyH, KeyM, KeyN, KeyZ, LeftArrow, RightArrow, Space, Tab, UpArrow,
+        Backspace, BracketLeft, BracketRight, Delete, Digit, DownArrow, Enter, Escape, F5, F6, F7,
+        F8, F9, KeyA, KeyB, KeyD, KeyH, KeyM, KeyN, KeyO, KeyR, KeyS, KeyZ, LeftArrow, RightArrow,
+        Space, Tab, UpArrow,
     };
     use Resolution::{Action as Act, ConsumedByIme, PassThrough};
 
@@ -1232,6 +1451,339 @@ mod tests {
             canvas().resolve(KeyB, Modifiers::none()),
             Act(TogglePencilTool)
         );
+    }
+
+    /// 判据：`Cmd/Ctrl+Alt+A` = 展开 / 收起 AI 抽屉（键盘入口，界面决定）。
+    ///
+    /// 钉四件事：① 物理码与逻辑键两条入口同解；② `Cmd`（meta）侧同解；
+    /// ③ 邻居键一位不动 —— 裸 `A` / `Alt+A` / `Shift+A` / `Cmd/Ctrl+Alt+Shift+A` 仍放行；
+    /// ④ 文本域焦点整体放行（与其余组合键同一口径）。
+    #[test]
+    fn ctrl_alt_a_is_the_ai_drawer_entry_and_does_not_disturb_its_neighbours() {
+        assert_eq!(
+            canvas().resolve(KeyA, Modifiers::ctrl_alt()),
+            Act(ToggleAiDrawer)
+        );
+        assert_eq!(
+            canvas().resolve_logical(LKey::Character('a'), Modifiers::ctrl_alt()),
+            Act(ToggleAiDrawer)
+        );
+        let meta_alt = Modifiers {
+            meta: true,
+            alt: true,
+            ..Modifiers::none()
+        };
+        assert_eq!(canvas().resolve(KeyA, meta_alt), Act(ToggleAiDrawer));
+
+        // 邻居：规范没点名的组合一律放行（含加 `Shift` 的那一格）。
+        assert_eq!(canvas().resolve(KeyA, Modifiers::none()), PassThrough);
+        assert_eq!(canvas().resolve(KeyA, Modifiers::alt()), PassThrough);
+        assert_eq!(canvas().resolve(KeyA, Modifiers::shift()), PassThrough);
+        let ctrl_alt_shift = Modifiers {
+            shift: true,
+            ..Modifiers::ctrl_alt()
+        };
+        assert_eq!(canvas().resolve(KeyA, ctrl_alt_shift), PassThrough);
+
+        // 文本域：整体放行。
+        assert_eq!(
+            text_field().resolve(KeyA, Modifiers::ctrl_alt()),
+            PassThrough
+        );
+    }
+
+    /// 判据：`Alt+↑` / `Alt+↓` = 选上一条 / 下一条轨（键盘入口，界面决定）。
+    ///
+    /// 钉三件事：① 物理码与逻辑键两条入口同解（含方向）；② 邻居**一位不动** ——
+    /// 裸 `↑/↓`（半音微调）、`Shift+↑/↓`（八度）、`Cmd/Ctrl+Alt+↑/↓`（音量微调）、
+    /// `Alt+←/→`（1 tick）都保持原义；③ 文本域焦点整体放行。
+    #[test]
+    fn alt_up_and_down_move_the_track_selection_and_do_not_disturb_their_neighbours() {
+        assert_eq!(
+            canvas().resolve(UpArrow, Modifiers::alt()),
+            Act(SelectTrackBy(-1))
+        );
+        assert_eq!(
+            canvas().resolve(DownArrow, Modifiers::alt()),
+            Act(SelectTrackBy(1))
+        );
+        assert_eq!(
+            canvas().resolve_logical(LKey::UpArrow, Modifiers::alt()),
+            Act(SelectTrackBy(-1))
+        );
+        assert_eq!(
+            canvas().resolve_logical(LKey::DownArrow, Modifiers::alt()),
+            Act(SelectTrackBy(1))
+        );
+
+        // 邻居：裸键 / Shift / Cmd+Alt 的既有语义一位不动。
+        // `[UI-NOTE-005]` §3.5 项 2：裸 `↑` = **一个半音**（项 1 的网格步长只属于 `←/→`）。
+        assert_eq!(
+            canvas().resolve(UpArrow, Modifiers::none()),
+            Act(NudgeSelection {
+                step: NudgeStep::Semitone,
+                direction: 1,
+            })
+        );
+        assert_eq!(
+            canvas().resolve(DownArrow, Modifiers::shift()),
+            Act(NudgeSelection {
+                step: NudgeStep::Octave,
+                direction: -1,
+            })
+        );
+        assert_eq!(
+            canvas().resolve(UpArrow, Modifiers::ctrl_alt()),
+            Act(NudgeMixerChannel {
+                param: Volume,
+                direction: 1,
+            })
+        );
+        assert_eq!(
+            canvas().resolve(LeftArrow, Modifiers::alt()),
+            Act(NudgeSelection {
+                step: NudgeStep::Tick,
+                direction: -1,
+            })
+        );
+
+        // `Shift` 变体是**未点名**的组合 ⇒ 如实放行（新键只占它点名的那一格；与
+        // 第 3 步 `Cmd/Ctrl+Alt+Shift+方向` 的既有口径一致）。
+        let alt_shift = Modifiers {
+            shift: true,
+            ..Modifiers::alt()
+        };
+        assert_eq!(canvas().resolve(UpArrow, alt_shift), PassThrough);
+        assert_eq!(canvas().resolve(DownArrow, alt_shift), PassThrough);
+
+        // 文本域：整体放行。
+        assert_eq!(text_field().resolve(UpArrow, Modifiers::alt()), PassThrough);
+    }
+
+    /// 判据：裸 `M` / `S` = 拨**选中轨**的静音 / 独奏（键盘入口，界面决定）。
+    ///
+    /// 这一条同时钉三件事：① 新键真的解析出那两条动作（物理码与逻辑键两条入口同解）；
+    /// ② `Cmd/Ctrl+Alt+M` 的既有语义一位没变；③ 规范没点名的组合（`Shift+M` / `Shift+S`）
+    /// 如实放行，文本域焦点下一律不消费。
+    #[test]
+    fn bare_m_and_s_toggle_the_selected_tracks_mute_and_solo() {
+        assert_eq!(
+            canvas().resolve(KeyM, Modifiers::none()),
+            Act(ToggleTrackMute)
+        );
+        assert_eq!(
+            canvas().resolve(KeyS, Modifiers::none()),
+            Act(ToggleTrackSolo)
+        );
+        // GUI 路径（逻辑键）与物理码路径**同解**。
+        assert_eq!(
+            canvas().resolve_logical(LKey::Character('m'), Modifiers::none()),
+            Act(ToggleTrackMute)
+        );
+        assert_eq!(
+            canvas().resolve_logical(LKey::Character('s'), Modifiers::none()),
+            Act(ToggleTrackSolo)
+        );
+        // 既有组合不被覆盖：`Cmd/Ctrl+Alt+M` 仍是控制台最大化。
+        assert_eq!(
+            canvas().resolve(KeyM, Modifiers::ctrl_alt()),
+            Act(ToggleConsoleMaximize)
+        );
+        // 未被点名的组合一律放行（⛔ 不猜一个相近语义）。
+        assert_eq!(canvas().resolve(KeyM, Modifiers::shift()), PassThrough);
+        assert_eq!(canvas().resolve(KeyS, Modifiers::shift()), PassThrough);
+        // 文本域焦点：整体放行给表单（IME / 输入法策略在解析最前面）。
+        assert_eq!(text_field().resolve(KeyM, Modifiers::none()), PassThrough);
+        assert_eq!(text_field().resolve(KeyS, Modifiers::none()), PassThrough);
+        // ⚠ `Cmd/Ctrl+S` 与 `Cmd/Ctrl+Shift+S` **不再是放行**：它们是保存 / 另存为
+        // （见 `ctrl_s_is_the_save_entry_and_does_not_disturb_its_neighbours`
+        // 与 `ctrl_shift_s_is_the_save_as_entry`）。
+    }
+
+    /// 判据：`Cmd/Ctrl+S` = 保存工程（**界面决定**，⛔ 不是规范点名），且不扰动邻居。
+    ///
+    /// 三条子句（缺一条就不是"这一键只做一件事"）：
+    /// 1. **两条入口同解**为 [`Action::SaveProject`]（GUI 绑逻辑键、无头绑物理码 ——
+    ///    `N2` 裁决 (1)）；
+    /// 2. 邻居键语义一位不动：裸 `S` 仍是独奏；`Cmd/Ctrl+Alt+S` 仍**放行**。
+    ///    `Cmd/Ctrl+Shift+S` 自 2026-10-31 起是 [`Action::SaveProjectAs`]
+    ///    （见 `ctrl_shift_s_is_the_save_as_entry`），两格互不相干；
+    /// 3. 文本框聚焦时整体放行 —— 与 `Cmd/Ctrl+Z` 同一口径（输入框里归文本控件）。
+    #[test]
+    fn ctrl_s_is_the_save_entry_and_does_not_disturb_its_neighbours() {
+        // ① 物理码入口与逻辑键入口同解。
+        assert_eq!(canvas().resolve(KeyS, Modifiers::ctrl()), Act(SaveProject));
+        assert_eq!(canvas().resolve(KeyS, Modifiers::meta()), Act(SaveProject));
+        assert_eq!(
+            canvas().resolve_logical(LKey::Character('s'), Modifiers::ctrl()),
+            Act(SaveProject)
+        );
+        assert_eq!(
+            canvas().resolve_logical(LKey::Character('s'), Modifiers::meta()),
+            Act(SaveProject)
+        );
+
+        // ② 邻居键不动。
+        assert_eq!(
+            canvas().resolve(KeyS, Modifiers::none()),
+            Act(ToggleTrackSolo),
+            "裸 `S` 仍是独奏（保存必须带修饰）"
+        );
+        assert_eq!(canvas().resolve(KeyS, Modifiers::ctrl_alt()), PassThrough);
+        // ⚠ `Cmd/Ctrl+Shift+S` 不再在这里：它是另存为键（下一条判据）。
+
+        // ③ 文本框聚焦：整体放行。
+        assert_eq!(text_field().resolve(KeyS, Modifiers::ctrl()), PassThrough);
+    }
+
+    /// 判据：`Cmd/Ctrl+Shift+S` = **另存为**（**界面决定**，⛔ 不是规范点名）。
+    ///
+    /// 三条子句：
+    /// 1. **两条入口同解**为 [`Action::SaveProjectAs`]（物理码 / 逻辑键 —— `N2` 裁决 (1)）；
+    /// 2. 邻居键语义一位不动：裸 `S` 仍是独奏、`Cmd/Ctrl+S` 仍是保存、
+    ///    `Cmd/Ctrl+Alt+S` 仍**放行**（"另存为副本"之类是另一套界面决定）；
+    /// 3. 文本框聚焦时整体放行 —— 与 [`Action::SaveProject`] 同一口径。
+    #[test]
+    fn ctrl_shift_s_is_the_save_as_entry() {
+        // ① 物理码入口与逻辑键入口同解。
+        assert_eq!(
+            canvas().resolve(KeyS, Modifiers::ctrl_shift()),
+            Act(SaveProjectAs)
+        );
+        assert_eq!(
+            canvas().resolve_logical(LKey::Character('s'), Modifiers::ctrl_shift()),
+            Act(SaveProjectAs)
+        );
+        assert_eq!(
+            canvas().resolve_logical(
+                LKey::Character('s'),
+                Modifiers {
+                    shift: true,
+                    ..Modifiers::meta()
+                }
+            ),
+            Act(SaveProjectAs)
+        );
+
+        // ② 邻居键不动。
+        assert_eq!(
+            canvas().resolve(KeyS, Modifiers::none()),
+            Act(ToggleTrackSolo)
+        );
+        assert_eq!(canvas().resolve(KeyS, Modifiers::ctrl()), Act(SaveProject));
+        assert_eq!(canvas().resolve(KeyS, Modifiers::ctrl_alt()), PassThrough);
+        assert_eq!(canvas().resolve(KeyS, Modifiers::shift()), PassThrough);
+
+        // ③ 文本框聚焦：整体放行。
+        assert_eq!(
+            text_field().resolve(KeyS, Modifiers::ctrl_shift()),
+            PassThrough
+        );
+    }
+
+    /// 判据：`Cmd/Ctrl+O` = 打开工程（**界面决定**，⛔ 不是规范点名），且不扰动邻居。
+    ///
+    /// 三条子句：
+    /// 1. **两条入口同解**为 [`Action::OpenProject`]（物理码 / 逻辑键 —— `N2` 裁决 (1)）；
+    /// 2. 邻居键语义一位不动：`Cmd/Ctrl+Shift+O` 与 `Cmd/Ctrl+Alt+O` 仍**放行**
+    ///    （"打开最近"需要一套新的界面决定，⛔ 不顺手发明）；
+    /// 3. 文本框聚焦时整体放行 —— 与 `Cmd/Ctrl+S` / `Cmd/Ctrl+Z` 同一口径。
+    #[test]
+    fn ctrl_o_is_the_open_entry_and_does_not_disturb_its_neighbours() {
+        // ① 物理码入口与逻辑键入口同解。
+        assert_eq!(canvas().resolve(KeyO, Modifiers::ctrl()), Act(OpenProject));
+        assert_eq!(canvas().resolve(KeyO, Modifiers::meta()), Act(OpenProject));
+        assert_eq!(
+            canvas().resolve_logical(LKey::Character('o'), Modifiers::ctrl()),
+            Act(OpenProject)
+        );
+        assert_eq!(
+            canvas().resolve_logical(LKey::Character('o'), Modifiers::meta()),
+            Act(OpenProject)
+        );
+
+        // ② 邻居键不动：`Shift` / `Alt` 变体仍放行；裸 `O` 不在任何一步里 ⇒ 也放行。
+        assert_eq!(canvas().resolve(KeyO, Modifiers::ctrl_shift()), PassThrough);
+        assert_eq!(canvas().resolve(KeyO, Modifiers::ctrl_alt()), PassThrough);
+        assert_eq!(canvas().resolve(KeyO, Modifiers::none()), PassThrough);
+
+        // ③ 文本框聚焦：整体放行。
+        assert_eq!(text_field().resolve(KeyO, Modifiers::ctrl()), PassThrough);
+    }
+
+    /// 判据：裸 `R` = 录制开 / 关（**界面决定**，⛔ 不是规范点名），且不扰动邻居。
+    ///
+    /// 三条子句：
+    /// 1. **两条入口同解**为 [`Action::ToggleRecord`]（物理码 / 逻辑键 —— `N2` 裁决 (1)）；
+    /// 2. 带修饰的 `R` 一位不动：`Cmd/Ctrl+R` / `Shift+R` / `Alt+R` 仍**放行**
+    ///    （"重载 / 刷新"之类是另一套界面决定，⛔ 不顺手发明）；
+    /// 3. 文本框聚焦时整体放行 —— 与裸 `M` / `S` 同一口径。
+    #[test]
+    fn bare_r_toggles_record_and_does_not_disturb_its_neighbours() {
+        // ① 物理码入口与逻辑键入口同解。
+        assert_eq!(canvas().resolve(KeyR, Modifiers::none()), Act(ToggleRecord));
+        assert_eq!(
+            canvas().resolve_logical(LKey::Character('r'), Modifiers::none()),
+            Act(ToggleRecord)
+        );
+
+        // ② 带修饰的变体不动。
+        assert_eq!(canvas().resolve(KeyR, Modifiers::ctrl()), PassThrough);
+        assert_eq!(canvas().resolve(KeyR, Modifiers::meta()), PassThrough);
+        assert_eq!(canvas().resolve(KeyR, Modifiers::shift()), PassThrough);
+        assert_eq!(canvas().resolve(KeyR, Modifiers::alt()), PassThrough);
+
+        // ③ 文本框聚焦：整体放行（在输入框里按 `r` 是打字母）。
+        assert_eq!(text_field().resolve(KeyR, Modifiers::none()), PassThrough);
+    }
+
+    /// 判据：`F7`/`F8`/`F9` = 直达控制台三个标签（**界面决定**，⛔ 不是规范点名）。
+    ///
+    /// 四条子句：
+    /// 1. **两条入口同解**为 [`Action::SelectConsoleTab`]（物理码 / 逻辑键 —— `N2` 裁决 (1)）；
+    /// 2. 下标与 [`crate::scene::CONSOLE_TABS`] 的**一一对应**（下表是唯一事实源，
+    ///    ⛔ 不在这里手抄标签名）；
+    /// 3. 带修饰的变体仍放行（`Cmd/Ctrl+F7` / `Shift+F7` / `Alt+F7` 都没有被点名）；
+    /// 4. **文本域 / IME 策略优先于它们** —— 与 `F5`/`F6` 的全局档**不同**：
+    ///    输入框里是 `PassThrough`、合成态是 `ConsumedByIme`。
+    #[test]
+    fn f7_f8_f9_pick_console_tabs_and_stay_behind_the_text_policy() {
+        // ① + ② 两条入口同解，且下标覆盖 `scene::CONSOLE_TABS` 的全部三格。
+        assert_eq!(crate::scene::CONSOLE_TABS.len(), 3);
+        for (index, key) in [(0u8, F7), (1u8, F8), (2u8, F9)] {
+            assert_eq!(
+                canvas().resolve(key, Modifiers::none()),
+                Act(SelectConsoleTab { index }),
+                "物理码入口：F{} 必须解出下标 {index}",
+                index + 7
+            );
+        }
+        for (index, text) in [(0u8, "\u{f70a}"), (1u8, "\u{f70b}"), (2u8, "\u{f70c}")] {
+            assert_eq!(
+                canvas().resolve_logical(
+                    LogicalKey::from_text(text).expect("F 键文本"),
+                    Modifiers::none()
+                ),
+                Act(SelectConsoleTab { index })
+            );
+        }
+
+        // ③ 带修饰的变体放行。
+        for modifiers in [
+            Modifiers::ctrl(),
+            Modifiers::meta(),
+            Modifiers::shift(),
+            Modifiers::alt(),
+        ] {
+            assert_eq!(canvas().resolve(F7, modifiers), PassThrough);
+        }
+
+        // ④ 文本域策略**先行**：输入框里放行，合成态被吞。
+        assert_eq!(text_field().resolve(F7, Modifiers::none()), PassThrough);
+        let mut composing = InputContext::new();
+        composing.set_focus(TextInput);
+        composing.begin_composition();
+        assert_eq!(composing.resolve(F8, Modifiers::none()), ConsumedByIme);
     }
 
     // ---------------------------------------------------------------- 工具矩阵
@@ -1523,6 +2075,7 @@ mod tests {
             KeyD,
             KeyM,
             KeyN,
+            KeyS,
             Digit(0),
             Digit(1),
             Digit(5),
@@ -1580,6 +2133,11 @@ mod tests {
         assert_eq!(LogicalKey::from_text("\u{7f}"), Some(LKey::Delete));
         assert_eq!(LogicalKey::from_text("\u{f708}"), Some(LKey::F5));
         assert_eq!(LogicalKey::from_text("\u{f709}"), Some(LKey::F6));
+        // 控制台标签三键 —— 取值来自 Slint `key_codes.rs` 的私有区序列
+        // （`F7` = `\u{f70a}`、`F8` = `\u{f70b}`、`F9` = `\u{f70c}`）。
+        assert_eq!(LogicalKey::from_text("\u{f70a}"), Some(LKey::F7));
+        assert_eq!(LogicalKey::from_text("\u{f70b}"), Some(LKey::F8));
+        assert_eq!(LogicalKey::from_text("\u{f70c}"), Some(LKey::F9));
         // 可打印键：小写化后进策略表（`Cmd+Shift+Z` 的 text 是 "Z"，组合由修饰位表达）。
         assert_eq!(LogicalKey::from_text("z"), Some(LKey::Character('z')));
         assert_eq!(LogicalKey::from_text("Z"), Some(LKey::Character('z')));
@@ -1763,18 +2321,21 @@ mod tests {
                 "物理 `{key:?}` 与逻辑键在 {mods:?} 下必须同解"
             );
         }
-        // 规范**没**点名的组合必须如实放行（⛔ 不猜一个相近语义）：
-        // `Cmd/Ctrl+←/→`（文本/系统的 caret 语义）与 `Alt+↑/↓`（规范未点名）。
+        // 规范**没**点名、且今天仍然没有落点的组合必须如实放行（⛔ 不猜一个相近语义）：
+        // `Cmd/Ctrl+←/→` 归文本 / 系统的 caret 语义。
+        //
+        // ⚠ 本清单 2026-10-31 **移出了 `Alt+↑/↓`**：当初它们在这里是因为"规范没点名"，
+        // 而本切片**显式**把它们绑成了 [`SelectTrackBy`]（键盘选轨，界面决定）⇒ 判据的
+        // 期望必须跟着事实走；否则"没点名 ⇒ 放行"会被误读成"永远放行"。键位与落点
+        // 逐条见 `alt_up_and_down_move_the_track_selection_and_do_not_disturb_its_neighbours`。
         for (key, mods) in [
             (LKey::LeftArrow, Modifiers::ctrl()),
             (LKey::RightArrow, Modifiers::meta()),
-            (LKey::UpArrow, Modifiers::alt()),
-            (LKey::DownArrow, Modifiers::alt()),
         ] {
             assert_eq!(
                 canvas().resolve_logical(key, mods),
                 PassThrough,
-                "规范未点名的组合 `{key:?}` + {mods:?} 必须放行"
+                "规范未点名且没有落点的组合 `{key:?}` + {mods:?} 必须放行"
             );
         }
         // 文本域聚焦时方向键归文本控件（§7.1/§7.2 的既有焦点语义，⛔ 不是缺口）。

@@ -2357,21 +2357,41 @@ fn authoritative_sampler(
 /// 装乐器被拒绝时**唯一**的 stderr 写法（⛔ 不散在回调里）。
 ///
 /// 为什么单独成函数：`tests/mixer_toggle_labels.rs` 用"整行就是一个字面量"的形状扫
-/// `fn wire_mixer_switch` 到 `fn read_strings` 之间的源码。那个区间覆盖了本文件一大段
-/// 与混音开关无关的实现 —— 一个被 rustfmt 换到行首的 `eprintln!` 格式串会被它误数成
-/// 第三条提交消息。本函数住在扫描区间**之外**（`wire_mixer_switch` 之前），调用点因此
+/// `fn mixer_switch_commit_message` 到 `fn wire_mixer_master_switch` 之间的源码。
+/// 那个区间覆盖了本文件一大段与混音开关无关的实现 —— 一个被 rustfmt 换到行首的
+/// `eprintln!` 格式串会被它误数成第三条提交消息。本函数住在扫描区间**之外**，调用点因此
 /// 没有行首字面量。⚠ 这是对既有判据锚点宽度的**规避**，不是把判据改松。
 fn warn_install_rejected(reason: &str, path: &str) {
     eprintln!("{INSTALL_REJECTED_STDERR_PREFIX}{reason}（{path}）");
 }
 
 /// 混音台上的两个**布尔开关**（静音 / 独奏）—— 除了目标字段不同，接线逐字相同。
+///
+/// 公开成 `pub` 的唯一理由：键盘入口的纯函数 [`toggle_track_switch_ops_for`] 要按
+/// "哪一个开关"寻址，而那个枚举住在这里（⛔ 不在 `input` 再抄一份）。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum MixerSwitch {
+pub enum MixerSwitch {
     /// `TrackV3::mute`。
     Mute,
     /// `TrackV3::solo`。
     Solo,
+}
+
+/// 静音 / 独奏两个开关的**唯一**提交消息（撤销树节点标签）。
+///
+/// ⚠ 三个入口共用它：调音台通道条、编曲视图轨道头、⭐ 键盘 `M` / `S`
+/// （[`crate::input::Action::ToggleTrackMute`] / [`crate::input::Action::ToggleTrackSolo`]）。
+/// 同一种编辑在撤销树里必须长出同一种节点标签（台账 R17）。
+///
+/// 为什么单独成函数：`tests/mixer_toggle_labels.rs` 用"整行就是一个字面量"的形状扫
+/// `fn mixer_switch_commit_message` 到 `fn wire_mixer_master_switch` 之间的源码。
+/// 本函数**就是**那个扫描区间的定义点 —— 两条字面量在这里只有**一处**定义，两个鼠标入口
+/// 与键盘入口都调它（判据另有一条结构断言钉住"两个鼠标入口都调它"）。
+fn mixer_switch_commit_message(switch: MixerSwitch) -> &'static str {
+    match switch {
+        MixerSwitch::Mute => "toggle track mute",
+        MixerSwitch::Solo => "toggle track solo",
+    }
 }
 
 /// 一个开关的**唯一**接线实现。
@@ -2405,9 +2425,9 @@ enum MixerSwitch {
 ///
 /// 与轨道开关**逐字相同**（`"toggle track mute"` / `"toggle track solo"`）——
 /// 同一种编辑就该在撤销树里长出同一种节点标签；来源视图仍然不写进标签（台账 R17）。
-/// ⚠ 这两条字面量与 [`wire_mixer_switch`] 里的那一对必须保持一致；
-/// `tests/mixer_toggle_labels.rs` 只从 `wire_mixer_switch` 的代码块里数标签，
-/// 因此本函数刻意住在它的**扫描区间之外**。
+/// 两条字面量不再各写一份：本函数与 [`wire_mixer_switch`] 都经
+/// [`mixer_switch_commit_message`] 取它们，`tests/mixer_toggle_labels.rs` 既扫那个
+/// 定义点，也断言这两个鼠标入口都**调**它（收拢之后谁都不能绕开）。
 fn wire_mixer_master_switch(
     ui: &MainWindow,
     port: &Rc<UndoPort>,
@@ -2435,7 +2455,7 @@ fn wire_mixer_master_switch(
                     old_mute,
                     new_mute: !old_mute,
                 },
-                "toggle track mute",
+                mixer_switch_commit_message(which),
             ),
             MixerSwitch::Solo => (
                 yeban_model::Op::SetTrackSolo {
@@ -2443,7 +2463,7 @@ fn wire_mixer_master_switch(
                     old_solo,
                     new_solo: !old_solo,
                 },
-                "toggle track solo",
+                mixer_switch_commit_message(which),
             ),
         };
         if port.commit_ops(now_ms(), message, vec![op]).is_err() {
@@ -2487,7 +2507,7 @@ fn wire_mixer_switch(
                     old_mute: state.mute,
                     new_mute: !state.mute,
                 },
-                "toggle track mute",
+                mixer_switch_commit_message(which),
             ),
             MixerSwitch::Solo => (
                 yeban_model::Op::SetTrackSolo {
@@ -2495,7 +2515,7 @@ fn wire_mixer_switch(
                     old_solo: state.solo,
                     new_solo: !state.solo,
                 },
-                "toggle track solo",
+                mixer_switch_commit_message(which),
             ),
         };
         if port.commit_ops(now_ms(), message, vec![op]).is_err() {
@@ -5963,35 +5983,76 @@ pub fn wire_clip_scope(ui: &MainWindow, view: Rc<RefCell<ViewState>>, undo: Opti
 
 /// 标尺点击的**目标 tick**（纯函数）：标尺带的局部 x ⇒ 走带位置。
 ///
-/// 三条口径（每一条都是决定）：
+/// 四条口径（每一条都是决定）：
 ///
 /// - **同一份缩放**：`ticks_per_pixel` 就是投影用的那一个（[`roll_ticks_per_pixel`]，与
-///   `bridge::tick_to_px` 同源）⇒ "画在哪一格"与"落到哪一 tick"是同一个整数网格。
-///   反向用 [`crate::bridge::px_to_tick`]（**向下取整**）：一个像素列 `p` 覆盖
-///   `[p×tpp, (p+1)×tpp)` 这段 tick，因此 `tick_to_px(本函数的结果) == p` 恒成立
-///   （判据把这条往返钉住 —— 点在第 100 列，光标就停在第 100 列，不多不少一列）；
+///   `bridge::tick_to_px` 同源）⇒ "画在哪一格"与"吸附前的 tick"是同一个整数网格；
+/// - **小节吸附**（`U-07 R1`）：像素列先换成 tick，再交给 [`crate::bridge::snap_tick`]
+///   吸附到**最近的小节线**（与铅笔 / 剪刀 / 移动共用**同一个**吸附实现，平局向更晚
+///   的一侧取整）。`bar_length_ticks == 0` ⇒ 不吸附（防御坏投影值）。点击列正好落在
+///   小节线上时吸附是恒等变换，因此"画的那一列 = 停下的那一列"在**小节线**上仍成立；
 /// - **左端 = 工程起点**：负的 x ⇒ `0`（夹紧；`u64` 没有负数，⛔ 不回绕）；
-/// - **右端 = 投影网格的右缘** `span_ticks`：点在最后一条小节线之外 ⇒ 停在那里，
-///   ⛔ 不把光标送去一个画面上没有网格参照的地方（那里连小节线都没画）。
+/// - **右端 = 投影网格的右缘** `span_ticks`：吸附之后再夹右缘，点在最后一条小节线
+///   之外 ⇒ 停在那里，⛔ 不把光标送去一个画面上没有网格参照的地方。
 ///
 /// 非有限的 `x` ⇒ `None` = **不响应**（⛔ 不把 NaN 当成"往右无穷远"，与
 /// [`clip_drag_target_tick`] 对非有限位移同款处理）。
 ///
-/// ⚠ **不吸附**：小节 / 拍吸附在 Normative 规范里没有定义（`Desktop UI/UX` 那份是
-/// 参考件、非绑定），因此这里如实做"逐 tick 定位"。该语义缺口登记为
-/// `docs/ledger/app-ruler-seek-notes.md` 的 **needs R1**，⛔ 不私自发明网格。
+/// ⚠ **吸附语义的裁决**：Normative 两份文档没有逐字规定"点标尺是否吸附"；本实现按
+/// 负责人任务（`~/zimmer-ui-mode-report.md` 的 `U-07 R1`）落"最近小节线"，并登记
+/// `docs/adr/ADR-0054-ruler-bar-snap.md`（**Proposed**，待人类批准）。网格值取投影自己的
+/// `bar_length_ticks`（⛔ 不在宿主重算拍号）。
 #[must_use]
-pub fn ruler_seek_tick(px: f32, ticks_per_pixel: u64, span_ticks: u64) -> Option<u64> {
+pub fn ruler_seek_tick(
+    px: f32,
+    ticks_per_pixel: u64,
+    span_ticks: u64,
+    bar_length_ticks: u64,
+) -> Option<u64> {
     if !px.is_finite() {
         return None;
     }
     // 向下取整到像素列（与 `tick_to_px` 的整数除法互为逆运算）。`f32 → u32` 的 `as` 既
     // **截断**又**饱和**：负数已被上面的 `max(0.0)` 收编，而一个天真的巨大 x 落在
-    // `u32::MAX` 列上 —— 那一列必然越过任何真实网格，于是下面两条口径把它夹回右缘。
+    // `u32::MAX` 列上 —— 那一列必然越过任何真实网格，于是吸附 + 夹紧把它收回右缘。
     let column = px.max(0.0) as u32;
     // 乘积溢出 `u64` 只可能来自那种饱和列（窗口宽度到不了）⇒ 视作"在最右缘之右"。
     let tick = crate::bridge::px_to_tick(column, ticks_per_pixel.max(1)).unwrap_or(u64::MAX);
-    Some(tick.min(span_ticks))
+    let snapped = crate::bridge::snap_tick(tick, bar_length_ticks);
+    Some(snapped.min(span_ticks))
+}
+
+/// 无障碍「上一 / 下一小节」的目标 tick（纯函数）：`current ± steps × bar_length_ticks`，
+/// 夹在 `[0, span_ticks]`（⛔ 不回绕、⛔ 不越过投影网格）。
+///
+/// `bar_length_ticks == 0` ⇒ 原地不动（防御坏投影值，与 [`ruler_seek_tick`] 同一口径）。
+/// 溢出用 `i128` 中转：`steps` 是 `i32`、`current` / `bar` 是 `u64`，三者的乘积在
+/// `i128` 里一定装得下（`2^32 × 2^64 = 2^96 < 2^127`）⇒ 不需要饱和运算。
+#[must_use]
+pub fn ruler_step_tick(current: u64, steps: i32, bar_length_ticks: u64, span_ticks: u64) -> u64 {
+    if bar_length_ticks == 0 {
+        return current.min(span_ticks);
+    }
+    let target = i128::from(current) + i128::from(steps) * i128::from(bar_length_ticks);
+    if target <= 0 {
+        return 0;
+    }
+    let Ok(target) = u64::try_from(target) else {
+        return span_ticks;
+    };
+    target.min(span_ticks)
+}
+
+/// 无障碍 `SetValue`（"定位到第 N 小节"）的目标 tick（纯函数）。
+///
+/// 小节号是**1 起**（第 1 小节 = tick 0，与界面标尺的读数一致）。乘积溢出 / 越过网格右缘
+/// ⇒ `span_ticks`（饱和，⛔ 不回绕）。
+#[must_use]
+pub fn ruler_bar_tick(bar_number: u64, bar_length_ticks: u64, span_ticks: u64) -> u64 {
+    bar_number
+        .saturating_sub(1)
+        .checked_mul(bar_length_ticks)
+        .map_or(span_ticks, |tick| tick.min(span_ticks))
 }
 
 /// 投影网格的**右缘** tick（纯函数）：`bar_positions.len()` × 一小节的 tick。
@@ -6007,52 +6068,142 @@ pub fn ruler_span_ticks(bar_lines: usize, bar_length_ticks: u64) -> u64 {
         .unwrap_or(u64::MAX)
 }
 
-/// 把**标尺点击**接到引擎的走带定位上（`arrangement-ruler` 的唯一点击源）。
+/// 走带定位的**唯一提交口**（标尺点击 / 无障碍步进 / 章节跳转共用）。
 ///
-/// | 环节 | 事实 |
-/// | :--- | :--- |
-/// | 命中 | `ui/workspace/arrangement_view.slint` 标尺带里的零像素 `TouchArea` |
-/// | 上报 | `ruler-seek(x)` —— 只报**局部像素**（⛔ 界面零算术） |
-/// | 换算 | [`ruler_seek_tick`]（唯一的 px→tick 落点） |
-/// | 提交 | [`EngineHost::seek`] = 既有 `TransportCommand::SeekTicks` 的唯一发送口（与 `#227` 回起点同一条路） |
-/// | 回写 | [`apply_transport`] —— 走带光标 / 时间码的**唯一**写者，读数取自引擎而不是界面 |
+/// ⭐ `#212` 同款两道防线：这些回调与 `on_toggle_play` 共用同一个引擎 `Rc`，
+/// 借不到就**降级**（一行 eprintln，走带与界面一位不动），⛔ 不 panic、⛔ 不 abort。
+/// 作用域纪律：**先放借、再碰界面**（`apply_transport` 写三个属性）。
+fn commit_seek(ui: &MainWindow, engine: &Rc<RefCell<EngineHost>>, tick: u64, source: &str) {
+    let Ok(mut engine) = engine.try_borrow_mut() else {
+        eprintln!("[yeban-app] 忽略 {source}：引擎正被同一线程借用（重入）⇒ 本次定位无效");
+        return;
+    };
+    let reading = engine.seek(tick);
+    drop(engine);
+    apply_transport(ui, reading);
+}
+
+/// 把**标尺点击 / 无障碍定位**接到引擎的走带定位上（`arrangement-ruler` 的全部入口）。
+///
+/// | 入口 | 回调 | 换算 |
+/// | :--- | :--- | :--- |
+/// | 指针按下 / 按住拖动（`U-07 R3`） | `ruler-seek(x)` —— 只报**局部像素** | [`ruler_seek_tick`] |
+/// | 屏读器增减（`U-07 R2`） | `ruler-step(steps)` —— 只报**小节步数** | [`ruler_step_tick`] |
+/// | 屏读器 `SetValue`（`U-07 R2`） | `ruler-seek-bar(bar)` —— 只报**小节号文本** | [`ruler_bar_tick`] |
+///
+/// 三条都落 [`commit_seek`] ⇒ `EngineHost::seek` 是**唯一**的 `TransportCommand::SeekTicks`
+/// 发送口（与 `#227` 回起点同一条路）；[`apply_transport`] 是走带光标 / 时间码的**唯一**写者。
 ///
 /// ⛔ 这里**不碰工程、不碰撤销栈**：定位是会话运行态（`MODEL-ISO-001` 的第二层），
 /// 一次 `Op` 都不提交 ⇒ `commit_count` / `undoable` / `projectDigest` 全部 Δ0。
 ///
 /// 两个 `Rc` 与产品装配**同源**：`engine` 是 `wire_transport` / `wire_keys` 拿的**同一个**
 /// `Rc<RefCell<EngineHost>>`（因此"界面点标尺"与"键位回起点"作用在同一个走带上），
-/// `view` 是 `wire_clip_scope` / `wire_scene_launch` 拿的**同一个**活投影。
+/// `view` 是 `wire_clip_scope` / `wire_scene_launch` 拿的**同一个**活投影
+/// （网格右缘 / 小节长度都从它现读，换工程 / 换拍号之后跟着换）。
 pub fn wire_ruler_seek(
     ui: &MainWindow,
     engine: Rc<RefCell<EngineHost>>,
     view: Rc<RefCell<ViewState>>,
 ) {
+    // ① 指针：down 与按住拖动的每一次 move 都走这条。
     let weak = ui.as_weak();
+    let click_engine = Rc::clone(&engine);
+    let click_view = Rc::clone(&view);
     ui.on_ruler_seek(move |x: f32| {
         let Some(ui) = weak.upgrade() else {
             debug_assert!(false, "MainWindow 在回调执行期间被销毁");
             return;
         };
-        // 网格右缘来自**投影自己**的两个读数（小节线条数 × 一小节 tick），⛔ 不在这里
-        // 重算 `bar_count`（那条公式在 `bridge` 里，重算一遍就是第二个事实源）。
-        let span = {
+        // 网格右缘与小节长度来自**投影自己**的两个读数，⛔ 不在这里重算 `bar_count`
+        // 或拍号（那两条公式在 `bridge` 里，重算一遍就是第二个事实源）。
+        let (span, bar) = {
+            let state = click_view.borrow();
+            (
+                ruler_span_ticks(state.bar_positions.len(), state.bar_length_ticks),
+                state.bar_length_ticks,
+            )
+        };
+        let Some(tick) = ruler_seek_tick(x, roll_ticks_per_pixel(&ui), span, bar) else {
+            return;
+        };
+        commit_seek(&ui, &click_engine, tick, "ruler-seek");
+    });
+
+    // ② 屏读器「上 / 下一小节」：当前位置从**引擎**现读，⛔ 不从界面读。
+    let weak = ui.as_weak();
+    let step_engine = Rc::clone(&engine);
+    let step_view = Rc::clone(&view);
+    ui.on_ruler_step(move |steps: i32| {
+        let Some(ui) = weak.upgrade() else {
+            debug_assert!(false, "MainWindow 在回调执行期间被销毁");
+            return;
+        };
+        let (span, bar) = {
+            let state = step_view.borrow();
+            (
+                ruler_span_ticks(state.bar_positions.len(), state.bar_length_ticks),
+                state.bar_length_ticks,
+            )
+        };
+        let current = {
+            let engine = step_engine.borrow();
+            engine.transport().position_ticks
+        };
+        let tick = ruler_step_tick(current, steps, bar, span);
+        commit_seek(&ui, &step_engine, tick, "ruler-step");
+    });
+
+    // ③ 屏读器 `SetValue`：「定位到第 N 小节」（1 起）。解析失败 ⇒ 一条命令都不发。
+    let weak = ui.as_weak();
+    let bar_engine = Rc::clone(&engine);
+    let bar_view = Rc::clone(&view);
+    ui.on_ruler_seek_bar(move |value: SharedString| {
+        let Some(ui) = weak.upgrade() else {
+            debug_assert!(false, "MainWindow 在回调执行期间被销毁");
+            return;
+        };
+        let Ok(bar_number) = value.trim().parse::<u64>() else {
+            return;
+        };
+        let (span, bar) = {
+            let state = bar_view.borrow();
+            (
+                ruler_span_ticks(state.bar_positions.len(), state.bar_length_ticks),
+                state.bar_length_ticks,
+            )
+        };
+        let tick = ruler_bar_tick(bar_number, bar, span);
+        commit_seek(&ui, &bar_engine, tick, "ruler-seek-bar");
+    });
+}
+
+/// 章节卡片 ⇒ 走带定位到该段起点（`~/zimmer-ui-mode-report.md` 的 `U-05`）。
+///
+/// 与 [`wire_ruler_seek`] **同一条纪律**：界面只报**段落下标**（⛔ 界面零算术），
+/// 起点 tick 从活投影的 [`crate::bridge::SectionView::start_tick`] 现读；
+/// 落点同样是 [`commit_seek`]（唯一的 `SeekTicks` 入口），⛔ 不碰工程 / 撤销栈。
+pub fn wire_section_seek(
+    ui: &MainWindow,
+    engine: Rc<RefCell<EngineHost>>,
+    view: Rc<RefCell<ViewState>>,
+) {
+    let weak = ui.as_weak();
+    ui.on_section_seek(move |index: i32| {
+        let Some(ui) = weak.upgrade() else {
+            debug_assert!(false, "MainWindow 在回调执行期间被销毁");
+            return;
+        };
+        let Ok(index) = usize::try_from(index) else {
+            return;
+        };
+        let Some(tick) = ({
             let state = view.borrow();
-            ruler_span_ticks(state.bar_positions.len(), state.bar_length_ticks)
-        };
-        let Some(tick) = ruler_seek_tick(x, roll_ticks_per_pixel(&ui), span) else {
+            state.sections.get(index).map(|section| section.start_tick)
+        }) else {
             return;
         };
-        // ⭐ `#212` 同款两道防线：这个回调与 `on_toggle_play` 共用同一个引擎 `Rc`，
-        // 借不到就**降级**（一行 eprintln，走带与界面一位不动），⛔ 不 panic、⛔ 不 abort。
-        let Ok(mut engine) = engine.try_borrow_mut() else {
-            eprintln!("[yeban-app] 忽略 ruler-seek：引擎正被同一线程借用（重入）⇒ 本次点击无效");
-            return;
-        };
-        let reading = engine.seek(tick);
-        // ⭐ 作用域纪律：**先放借、再碰界面**（`apply_transport` 写三个属性）。
-        drop(engine);
-        apply_transport(&ui, reading);
+        commit_seek(&ui, &engine, tick, "section-seek");
     });
 }
 
@@ -6352,8 +6503,9 @@ pub fn wire_save(
     port: SaveStatus,
     live_port: Option<Rc<UndoPort>>,
     // ⭐ **原生文件对话框**（任务单 `#86` 乙）—— "保存到哪"的**可注入**能力面。
-    // 只有在**装配期没给目标路径**时才会被问到（既有 `--open` / `--save` 那条路
-    // 一次都不弹窗）；判据传自己的假实现，于是"对话框被调用了"与"选了路径 ⇒ 写盘"
+    // 「保存」只在**当前目标还不知道**时才会问它（装配期给了路径 ⇒ 一次都不弹窗）；
+    // 「另存为」（`Cmd/Ctrl+Shift+S`，2026-10-31）**总是**问一次 —— 它的语义就是"换个
+    // 新位置"。判据传自己的假实现，于是"对话框被调用了"与"选了路径 ⇒ 写盘"
     // 两句话都能被机械读数（⛔ 不依赖真弹窗）。
     picker: Rc<dyn crate::file_picker::FilePicker>,
     #[cfg(feature = "in-process-mcp")] authority: Option<crate::mcp_mount::ProjectAuthorityHandle>,
@@ -6404,9 +6556,14 @@ pub fn wire_save_with_engine(
     engine: Option<Rc<RefCell<EngineHost>>>,
 ) {
     // ⭐ `#86` 乙：用户在对话框里挑过一次之后**记住**它（否则每次按保存都要再问一次 ——
-    // 那是"每保存一次弹一次窗"的坏体验）。装配期给了路径时本格**永远**是 `None`。
+    // 那是"每保存一次弹一次窗"的坏体验）。装配期给了路径、且用户没按过「另存为」时
+    // 本格**恒为** `None`（⇒ 既有装配的行为一位不变）；「另存为」会把新路径写进它。
     let chosen: std::rc::Rc<std::cell::RefCell<Option<std::path::PathBuf>>> =
         std::rc::Rc::new(std::cell::RefCell::new(None));
+    // 「另存为」那一路要问自己的对话框、也要写**同一个** `chosen` —— 两个 `Rc` 句柄
+    // 必须在第一个闭包**搬走**它们之前克隆出来（`Rc` 语义：共享同一份状态）。
+    let picker_save_as = std::rc::Rc::clone(&picker);
+    let chosen_save_as = std::rc::Rc::clone(&chosen);
     let weak = ui.as_weak();
     ui.on_save_project(move || {
         let Some(ui) = weak.upgrade() else {
@@ -6419,13 +6576,23 @@ pub fn wire_save_with_engine(
         let authority = authority.as_ref();
         #[cfg(not(feature = "in-process-mcp"))]
         let authority = None;
-        // ⭐ **目标路径**（`#86` 乙）：装配期的路径优先；否则用上次在对话框里挑的；
-        // 再否则**问一次原生对话框**。
+        // ⭐ **目标路径**（`#86` 乙）：上次在对话框里挑的（含「另存为」写下的）优先；
+        // 否则装配期的路径；再否则**问一次原生对话框**。
+        //
+        // ⚠ 优先级自 2026-10-31 起把 `chosen` 提到 `port.target` **之前**：
+        // `port.target` 是装配期的只读知识（`--open` / `--save` 给的那个文件），
+        // 而「另存为」落盘后本会话的当前目标**就是**用户刚挑的那个新文件 ——
+        // 排在后面会让 "另存为 ⇒ 再按保存" 写回旧文件（假读数）。装配期给了路径、
+        // 又没另存为过时 `chosen` 恒为 `None` ⇒ 既有行为一位不变。
         //
         // ⚠ **取消不是失败**：用户按了"取消" ⇒ 本回调**什么都不做**（⛔ 不写
         // `save-status`、⛔ 不调 `dispatch_save`）。把取消写成"保存失败：没有目标路径"
         // 是把"我不想"和"出错了"混成一句 —— 本仓最忌讳的那类假读数。
-        let target = match port.target.clone().or_else(|| chosen.borrow().clone()) {
+        // ⚠ `chosen.borrow()` **单独**占一条语句：写在 `match` 的判据里时，
+        // 那个 `Ref` 临时量会活到整个 `match` 结束（临时量作用域），
+        // 于是下面 `None` 臂里的 `chosen.borrow_mut()` 当场 panic（`RefCell already borrowed`）。
+        let remembered = chosen.borrow().clone();
+        let target = match remembered.or_else(|| port.target.clone()) {
             Some(path) => Some(path),
             None => {
                 let picked = picker.choose_save(
@@ -6448,8 +6615,9 @@ pub fn wire_save_with_engine(
         // 保存的是**此刻**的活会话：工程 + 提交图谱 + ⭐ **会话资产池**
         // （`assets/{sha256}`；任务单 `#132`）。编码口径只有
         // `yeban_model::commit::encode_history_dag` 一份（本处不写第二份序列化）。
-        // 目标路径是**装配期**的知识（`--open` 的那个文件），不随会话变；它保持
-        // `Option`，于是"没有磁盘对应物"仍然如实报 `SaveStage::NoTarget`。
+        // 目标路径的来源是"装配期给的（`--open` 的那个文件）或对话框挑的（含另存为）"；
+        // 它保持 `Option`，于是"既没有装配期目标、对话框也没挑出东西"仍然如实报
+        // `SaveStage::NoTarget`。
         //
         // ⚠ 工程 / 图谱 / 资产池**一次**从同一个端口读出（同一个 `live` binding）：
         // 分几次读会给"保存的那一版"与"图谱/资产的那一版"留下漂移的余地。
@@ -6489,6 +6657,39 @@ pub fn wire_save_with_engine(
                 .set_project_dir(path.parent().map(std::path::Path::to_path_buf));
         }
     });
+
+    // ⭐ **另存为**（`Cmd/Ctrl+Shift+S`，界面决定，⛔ 规范未点名）：界面上**没有按钮**，
+    // 于是它只改行为、不改变默认帧（不新增控件 ⇒ 无 golden 影响）。
+    //
+    // 三跳，每一跳都复用既有实现：
+    // 1. **问一次对话框**：`FilePicker::choose_save`，标题"另存为"（与「保存」那一路
+    //    同一个可注入能力面；⛔ 不在宿主里起第二套文件选择）；
+    // 2. **记成当前目标**：写进 `chosen`（对话框里挑过的路径的**唯一**记忆点），
+    //    于是随后按 `Cmd/Ctrl+S` 写的是新文件（用户预期）；
+    // 3. **进同一条保存链**：`ui.invoke_save_project()` —— 序列化 / 权威分流 / 原子写 /
+    //    回执 / 引擎工程目录的更新**全部**在同一个闭包里，⛔ 不复制第二份。
+    //
+    // ⚠ **取消不是失败**：对话框回取消 ⇒ 当前目标一位不动、不写回执、不落盘。
+    {
+        let weak = ui.as_weak();
+        ui.on_save_project_as(move || {
+            let Some(ui) = weak.upgrade() else {
+                debug_assert!(false, "MainWindow 在回调执行期间被销毁");
+                return;
+            };
+            let picked = picker_save_as.choose_save(
+                &crate::file_picker::PickerRequest::save("另存为", "project.yeban")
+                    .with_extensions(["yeban"]),
+            );
+            let Some(path) = picked else {
+                return;
+            };
+            let path = crate::file_picker::with_default_extension(path, "yeban");
+            // 临时借用在本语句结束处释放 ⇒ 下面重入保存闭包时不会 `already borrowed`。
+            *chosen_save_as.borrow_mut() = Some(path);
+            ui.invoke_save_project();
+        });
+    }
 }
 
 /// 一次保存的**界面回执**：把 [`crate::save_action::SaveOutcome`] 写进状态文本。
@@ -8850,25 +9051,27 @@ fn apply_action(
         // `Escape` = **收尾**：取消当前手势（`ADR-0004` S1 的纵向拖拽 / `ADR-0005` 的
         // 推子与声相），或关闭模态面板（时光机与导出设置弹窗；`[UI-A11Y-003]` §7.3）。
         //
-        // 七个来源各自独立、各自有唯一清零点，因此这里**都问一遍**（任一命中即消费）：
+        // 八个来源各自独立、各自有唯一清零点，因此这里**都问一遍**（任一命中即消费）：
         // 1. 时光机开着 ⇒ 落 [`UiAction::CloseUndoTree`]（**只改界面运行态**，不碰工程）；
         // 2. 导出设置弹窗开着 ⇒ 落窗口回调 `close-export-wav`（**只改视图态**，⛔ 不落盘、
         //    ⛔ 不碰工程）；
-        // 3. 纵向拖拽在手 ⇒ 落 [`cancel_track_height_drag`]（写回起点高度）；
-        // 4. 混音手势在手 ⇒ 落窗口回调 `mixer-cancel-gesture` → [`cancel_mixer_gesture`]
+        // 3. AI 提案抽屉开着 ⇒ 落窗口回调 `toggle-ai-drawer`（**只改视图态**，⛔ 不拒绝提案、
+        //    ⛔ 不碰工程）；`U-11` 的最小修复见这条；
+        // 4. 纵向拖拽在手 ⇒ 落 [`cancel_track_height_drag`]（写回起点高度）；
+        // 5. 混音手势在手 ⇒ 落窗口回调 `mixer-cancel-gesture` → [`cancel_mixer_gesture`]
         //    （写回起点音量 / 声相）；
-        // 5. `[UI-NOTE-003]` 卷帘音符移动手势在手 ⇒ 落 [`cancel_note_drag`]
+        // 6. `[UI-NOTE-003]` 卷帘音符移动手势在手 ⇒ 落 [`cancel_note_drag`]
         //    （**丢弃草稿**；拖动期从未写进工程 ⇒ ⛔ 不提交、⛔ 不重投影）；
-        // 6. `[UI-NOTE-003]` 卷帘**力度**手势在手 ⇒ 落 [`cancel_velocity_drag`]
+        // 7. `[UI-NOTE-003]` 卷帘**力度**手势在手 ⇒ 落 [`cancel_velocity_drag`]
         //    （同上：只丢弃草稿；两个卷帘手势互斥，但两条清零各自独立 ⇒ 谁也不会漏收尾）；
-        // 7. 编曲**剪辑平移**手势在手 ⇒ 落 [`cancel_clip_drag`]（同上：只丢弃草稿）。
+        // 8. 编曲**剪辑平移**手势在手 ⇒ 落 [`cancel_clip_drag`]（同上：只丢弃草稿）。
         //
-        // 顺序是**决定**，不是巧合：模态面板在最前面，因此"手势还在手"时按 `Escape`
-        // 先关模态（与 `[UI-A11Y-003]` 的模态语义同向）。七条各自独立：关掉时光机
+        // 顺序是**决定**，不是巧合：模态 / 面板在最前面，因此"手势还在手"时按 `Escape`
+        // 先关面板（与 `[UI-A11Y-003]` 的模态语义同向）。八条各自独立：关掉时光机
         // **不会**顺带取消手势（用户还要按第二次 `Escape`），没有手势在手也不会把
         // 关闭动作算作"已收尾"。
         //
-        // 七条都没有命中时返回 `false`（照旧放行给焦点系统）—— 与 `Escape` 接线之前
+        // 八条都没有命中时返回 `false`（照旧放行给焦点系统）—— 与 `Escape` 接线之前
         // 的行为逐位相同。这里**没有**新增 `Action` 变体：`Action::Cancel` 本来就在
         // 策略表里（`input.rs` 的 `Key::Escape => Resolution::Action(Action::Cancel)`），
         // 它此前只是没有落地实现（`action_has_implementation` 把它列在未实现里）。
@@ -8905,6 +9108,18 @@ fn apply_action(
                 ui.invoke_close_export_wav();
                 return true;
             }
+            // ⭐ `U-11`（`~/zimmer-ui-mode-report.md`）：AI 提案抽屉**开着**时 `Escape`
+            // 应当像其余面板一样收起来。落点**只能是**界面回调：`on_toggle_ai_drawer`
+            // 是走带按钮与 `Cmd/Ctrl+Alt+A` 的**同一个**实现（`ai-drawer-open` 的单写者）
+            // ⇒ 键盘 / 鼠标 / 屏读器不可能分叉。
+            //
+            // ⚠ 这只关**面板**（视图态），⛔ **不是**"放弃 AI 提案"：提案仍留在队列里，
+            // 拒绝只有可点等价物 `musical-pr-reject-button`（`Action::Cancel` 的文档
+            // 仍保留这条裁决）。关抽屉不碰工程、不进撤销栈。
+            if ui.get_ai_drawer_open() {
+                ui.invoke_toggle_ai_drawer();
+                return true;
+            }
             let height = cancel_track_height_drag(ui, undo);
             let mixer = ui.invoke_mixer_cancel_gesture();
             let note = cancel_note_drag(ui);
@@ -8927,6 +9142,13 @@ fn apply_action(
             ui.set_arrangement_view(true);
             true
         }
+        // 底部控制台的标签直达（`F7`/`F8`/`F9`，**界面决定**）：**视图态** ——
+        // 写的就是鼠标点标签导轨 / 屏读器动作写的同一个 `console-tab` 属性，
+        // 不碰 `Op`、不进撤销栈、不进 `.yeban`。
+        Action::SelectConsoleTab { index } => {
+            ui.set_console_tab(i32::from(index));
+            true
+        }
         Action::ToggleSidebar => {
             ui.set_sidebar_collapsed(!ui.get_sidebar_collapsed());
             true
@@ -8934,6 +9156,45 @@ fn apply_action(
         Action::ToggleConsoleMaximize => {
             ui.set_console_maximized(!ui.get_console_maximized());
             true
+        }
+        // `Cmd/Ctrl+Alt+A`：AI 抽屉的键盘入口。
+        //
+        // 落点**只能是界面回调**：`wire_view_callbacks` 里 `on_toggle_ai_drawer` 是
+        // 走带 `transport-ai-drawer-button` 的同一条实现（写 `ai-drawer-open`），
+        // 键与按钮共用它 ⇒ 不可能分叉。纯视图态（`MODEL-ISO-001` 挥发性层）⇒
+        // 不需要 `UndoPort`，也**不在** `action_needs_engine` 集合里。
+        Action::ToggleAiDrawer => {
+            ui.invoke_toggle_ai_drawer();
+            true
+        }
+        // `Alt+↑` / `Alt+↓`：选上一条 / 下一条轨（键盘入口，界面决定）。
+        //
+        // 落点**只能是界面回调**：`wire_track_select` 注册的 `on_track_select` 是鼠标点
+        // 轨道行的同一条实现（写 `selected-track-id` + 按**当前横向偏移**重投影）⇒
+        // 键与鼠标共用它，不可能分叉。三条边界：
+        // - 一条轨都没有 ⇒ 返回 `false`（不消费）；
+        // - 当前没有选中轨 ⇒ 两向都落到**第一条**（键盘-only 用户必须能"起步"；
+        //   若沿 `DeleteSelection` 那样静默不消费，选轨就永远不可达）；
+        // - 顶到两端 ⇒ 仍消费（下发的还是同一条 ⇒ `wire_track_select` 里的早退，
+        //   ⛔ 不白重投影一帧）。
+        Action::SelectTrackBy(direction) => {
+            let track_ids = read_strings(&ui.get_track_ids());
+            match i32::try_from(track_ids.len()) {
+                Ok(count) if count > 0 => {
+                    let current = selected_track_id(ui);
+                    let index = current
+                        .as_deref()
+                        .and_then(|id| track_ids.iter().position(|candidate| candidate == id))
+                        .and_then(|position| i32::try_from(position).ok());
+                    let target = match index {
+                        Some(index) => (index + i32::from(direction)).clamp(0, count - 1),
+                        None => 0,
+                    };
+                    ui.invoke_track_select(target);
+                    true
+                }
+                _ => false,
+            }
         }
         // ⭐ 任务单 `#227`（Logic 的 `Go to Beginning`）：`Return` / `Enter`（裸键）。
         //
@@ -9071,6 +9332,66 @@ fn apply_action(
             refresh_undo_window(ui, port, true);
             true
         }
+        // `Cmd/Ctrl+S`：保存**当前**工程（键位选择的三条事实见 [`Action::SaveProject`]）。
+        //
+        // 三条口径（都与既有保存入口逐字一致，⛔ 不另写一条保存路径）：
+        // 1. **唯一落点**是 `.slint` 的 `save-project` 回调 —— 与「保存」按钮、
+        //    「换工程前先保存」（`save_first_through_the_existing_entry`）**同一个**入口；
+        //    真正的写盘 / 权威分流 / 原生对话框 / 回执全在 `host::wire_save`
+        //    （→ `save_action::dispatch_save`），这里只负责"按到它"；
+        // 2. **不持有引擎借用**：`wire_keys` 只对 `action_needs_engine` 的动作借宿主
+        //    （见那里的 `#212` 文档），保存不在那个集合里 ⇒ 这里 `ui.invoke_save_project()`
+        //    不会撞上 `RefCell already borrowed`；
+        // 3. **成功 / 被锁拒绝 / 取消**都由 `save-status` 如实回报（屏读器可达），
+        //    本臂**不**二次解释结果。因此它恒消费这一键（返回 `true`）——
+        //    与 `ZoomToSelection` 那种"没有对象就不消费"不同：当前工程永远存在，
+        //    "保存失败"是一条要留在界面上的**结果**，不是"这一键没意义"。
+        Action::SaveProject => {
+            ui.invoke_save_project();
+            true
+        }
+        // `Cmd/Ctrl+Shift+S`：另存为（键位选择的三条事实见 [`Action::SaveProjectAs`]）。
+        //
+        // 三条口径（与 [`Action::SaveProject`] 同一套约定）：
+        // 1. **唯一落点**是 `.slint` 的 `save-project-as` 回调 —— 宿主侧唯一实现就在
+        //    [`wire_save_with_engine`] 里：问一次对话框 → 把选中的路径记成当前目标 →
+        //    进**同一个**写盘 / 权威分流 / 回执闭包（⛔ 不另写一条保存路径）；
+        // 2. **不持有引擎借用**：保存族不在 `action_needs_engine` 的集合里；
+        // 3. **取消不是失败**：对话框回取消 ⇒ 一位不动、不写回执，因此恒消费这一键
+        //    （与 [`Action::SaveProject`] / [`Action::OpenProject`] 同一约定）。
+        Action::SaveProjectAs => {
+            ui.invoke_save_project_as();
+            true
+        }
+        // `Cmd/Ctrl+O`：打开工程（键位选择的三条事实见 [`Action::OpenProject`]）。
+        //
+        // 三条口径（与既有「打开工程」按钮逐字一致，⛔ 不另写一条打开路径）：
+        // 1. **唯一落点**是 `.slint` 的 `open-project` 回调 —— 与控制台「打开工程」按钮
+        //    **同一个**入口；问对话框 / 读盘 / 换会话 / 重投影 / 回执全在
+        //    `host::wire_open_project`，这里只负责"按到它"；
+        // 2. **不持有引擎借用**：打开不在 `action_needs_engine` 的集合里 ⇒ 这里
+        //    `ui.invoke_open_project()` 不会撞上 `RefCell already borrowed`；
+        // 3. **取消不是失败**（`wire_open_project` 的口径）：对话框回取消 ⇒ 一位不动、
+        //    不写回执；本臂**不**二次解释结果，因此恒消费这一键（返回 `true`）——
+        //    "用户改主意"与"这一键没意义"不是一回事。
+        Action::OpenProject => {
+            ui.invoke_open_project();
+            true
+        }
+        // 裸 `R`：录制开 / 关（键位选择见 [`Action::ToggleRecord`]）。
+        //
+        // 三条口径（与走带「录音」按钮逐字一致，⛔ 不另写一条录音路径）：
+        // 1. **唯一落点**是 `.slint` 的 `toggle-record` 回调 —— 与「录音」按钮**同一个**入口；
+        //    设备源 / 预录静音 / 落盘 / 回执全在 `wire_transport` → `wire_record_at` 那一个实现里；
+        // 2. **不持有引擎借用**：录音不在 `action_needs_engine` 的集合里 ⇒ 这里不会撞上
+        //    `RefCell already borrowed`；录音器自身的重入防线在 `wire_record_at`（`try_borrow_mut`
+        //    借不到 ⇒ 一行 stderr ＋ 本次按键无效，⛔ 不 panic）；
+        // 3. **结果由回执通道解释**：起录失败（设备打不开）由 `RecordOutcomePort` 响亮回报，
+        //    本臂不二次解释 ⇒ 恒消费这一键（"这一键有意义"与"这次录音成功"不是一回事）。
+        Action::ToggleRecord => {
+            ui.invoke_toggle_record();
+            true
+        }
         // `[UI-NOTE-005]` §3.5 项 1–2：方向键把**当前选区**按一档步长平移 / 移调。
         //
         // 语义（五条都是决定, 不是意外）：
@@ -9194,6 +9515,45 @@ fn apply_action(
                 crate::input::MixerParam::Pan => "mixer: nudge track pan",
             };
             if port.commit_ops(now_ms(), label, ops).is_err() {
+                return false;
+            }
+            refresh_undo_window(ui, port, true);
+            true
+        }
+        // 裸 `M` / `S`：把**当前选中轨**的静音 / 独奏拨到反面（键盘入口，界面决定）。
+        //
+        // 语义与上面的 `NudgeMixerChannel` 同三条：
+        // 1. 作用域 = `selected-track-id`（唯一写者 [`wire_track_select`]）；
+        // 2. **没有撤销端口 / 没有选中轨 / 身份已不在工程里 ⇒ 返回 `false`**（不吞键，
+        //    陈旧选中态不猜"大概是第一条轨"）；
+        // 3. 一次按键 = **一次** `commit_ops` = 一步撤销；提交后重投影（开关的勾选态
+        //    是从工程算出来的，不重投影就是"值改了、方块还亮着"）。
+        // ⚠ 与鼠标开关走**同一条** `Op` 与**同一条**提交消息（[`mixer_switch_commit_message`]）
+        // ⇒ 撤销树里"点出来的"与"按出来的"没有两种形状。
+        Action::ToggleTrackMute | Action::ToggleTrackSolo => {
+            let Some(port) = undo else {
+                return false;
+            };
+            let Some(track_id) = selected_track_id(ui) else {
+                return false;
+            };
+            let Some(project) = port.try_project() else {
+                return false;
+            };
+            let switch = if matches!(action, Action::ToggleTrackMute) {
+                MixerSwitch::Mute
+            } else {
+                MixerSwitch::Solo
+            };
+            let ops = toggle_track_switch_ops_for(&project, &track_id, switch);
+            if ops.is_empty() {
+                // 身份解析不出 / 已不在工程里 ⇒ 没有可停靠的编辑，如实不消费。
+                return false;
+            }
+            if port
+                .commit_ops(now_ms(), mixer_switch_commit_message(switch), ops)
+                .is_err()
+            {
                 return false;
             }
             refresh_undo_window(ui, port, true);
@@ -10045,6 +10405,45 @@ pub fn mixer_nudge_ops_for(
         old_val,
         new_val,
     }]
+}
+
+/// `M` / `S`：把**选中轨**的静音 / 独奏拨到反面 ⇒ **一条** `Op::SetTrackMute` / `SetTrackSolo`。
+///
+/// 与 [`mixer_nudge_ops_for`] 同一分工：宿主臂只负责"提交 + 重投影"，`Op` 的形状与
+/// "什么时候什么都不提交"在这里一次决定（纯函数、可单独判据）。
+///
+/// ## 三条都是决定
+///
+/// 1. **布尔量没有"一格"**：本函数没有幅度参数 —— 拨动 = 读现值取反（与
+///    [`wire_mixer_switch`] 的鼠标入口**同一条** `Op`），因此不存在"调到一半"的中间态；
+/// 2. **身份解析不出 / 不在工程里 ⇒ 空**（陈旧选中态不猜"大概是第一条轨"）—— 与
+///    [`mixer_nudge_ops_for`] 同一口径；
+/// 3. **总是恰好一条 op**：`!old` 与 `old` 逐位不同 ⇒ 不需要"端点夹紧"那种空集早退。
+#[must_use]
+pub fn toggle_track_switch_ops_for(
+    project: &yeban_model::YebanProjectV1,
+    selected_track_id: &str,
+    switch: MixerSwitch,
+) -> Vec<yeban_model::ops::Op> {
+    let Ok(track_id) = selected_track_id.parse::<yeban_model::EntityId>() else {
+        return Vec::new();
+    };
+    let Some(track) = project.tracks.get(&track_id) else {
+        return Vec::new();
+    };
+    let op = match switch {
+        MixerSwitch::Mute => yeban_model::Op::SetTrackMute {
+            track_id,
+            old_mute: track.mute,
+            new_mute: !track.mute,
+        },
+        MixerSwitch::Solo => yeban_model::Op::SetTrackSolo {
+            track_id,
+            old_solo: track.solo,
+            new_solo: !track.solo,
+        },
+    };
+    vec![op]
 }
 
 /// `[UI-NOTE-005]` §3.5 项 1–2：一档**步长 + 方向** ⇒ `(delta_tick, delta_pitch)`（唯一换算）。

@@ -25,6 +25,25 @@
 改判据 + 可能重录基准），而是给**已有的** `record_wav.rs` 能力开一个**新的、独立的**
 可见入口。两条各自留痕。
 
+**（2026-10-31 附记，`line/record-key`）** 上文"顶栏录音键不点"是 #88 之前的事实。`#88`
+把 `host::wire_record_at` 接上之后，顶栏 `transport-record-button` 已经落到**同一**回调
+（`src/elements.rs` 的 `the_record_button_has_a_click_handler_and_a_wired_record_callback`
+逐字钉着 `rec_area` 的 `clicked` 必须落到 `root.toggle-record()`）。本切片再补**键盘入口**：
+
+- **键位**：裸 `R`（`Action::ToggleRecord`）。三条事实：① 裸 `r` 此前在
+  `resolve_logical` 的任何一步里都不存在（实测）；② `command()` 分支里也没有 `r` ⇒
+  `Cmd/Ctrl+R` 仍**放行**（"重载 / 刷新"是另一套界面决定，⛔ 不顺手发明）；
+  ③ 文本框聚焦时整体放行（策略表第 2 步）—— 与裸 `M` / `S` 同一口径。
+- **落点只有一个**：`host::apply_action` 的 `ToggleRecord` 臂只做
+  `ui.invoke_toggle_record()` —— 与「录音」按钮是**同一个**回调（`wire_transport` →
+  `wire_record_at`：设备源 / 预录静音 / 停录落盘 / 回执全在那里）。⛔ 没有第二条录音路径。
+- **失败口径**：起录失败由既有 `RecordOutcomePort` 如实回报；录音器正被同一线程借用时
+  `wire_record_at` 打一行 stderr 并令本次无效（⛔ 不 panic）⇒ 本臂恒消费这一键。
+- **判据**：`tests/record_key_ui.rs`（活窗口上装根回调计数器：裸 `R` ⇒ 回调**恰好**一次、
+  连按递增；`Shift` / `Ctrl` / `Alt` 变体放行且不惊动回调）；策略表新行由
+  `tests/cli_contract.rs` 的 B11b 三面一致（表 / 解析 / 宿主）钉住；`src/input.rs` 另有
+  解析级判据 `bare_r_toggles_record_and_does_not_disturb_its_neighbours`。
+
 ## 1. 新增入口与 Element ID 清单
 
 | 入口（可见文案） | Element ID | 角色 | 落点（Rust） |
@@ -193,3 +212,67 @@ python3 scripts/gates/measure_rss.py --label ui-module-actions-floor-no-render \
    `tests/ui_module_actions.rs` 自己断言（点名的 6 个 ID + 运行时树对注册表的双向覆盖）。
    不把它塞进那份分母的理由：那份分母的缺失容忍度是 10%（39 × 10%），加 6 条会把
    容忍度摊薄到 13%；而本票的 6 条**已经被**更强的判据（精确点名）覆盖。
+
+## 7. 后续更正（本次切片，2026-10-31，`line/ai-drawer-key`）—— AI 抽屉有了键盘入口
+
+**缺口**：走带右上角的 AI 抽屉开关 `transport-ai-drawer-button` 只有鼠标 / 无障碍默认动作
+两个入口，键盘面一格都没有。本切片补的**不是**抽屉能力（`wire_view_callbacks` 早已把
+`on_toggle_ai_drawer` 接到 `ai-drawer-open`），而是**键盘入口**。
+
+### 7.1 键位与理由（界面决定，⛔ 不是规范点名）
+
+`Cmd/Ctrl+Alt+A` —— `a` 取 "AI"。三条事实（逐条实测，⛔ 推断）：
+
+1. `command()` 分支里 `Cmd/Ctrl+Alt` 当时只有 `b` / `m` / `n` / `d` / 四个方向键
+   ⇒ `a` 那格是空的（落到 `_ => PassThrough`）；
+2. 裸 `a` 在第 6 步从未绑定；`Alt+A` 在第 4 步也没有（那里只有 `1` / `2` / `←` / `→`）；
+3. `Cmd/Ctrl+Alt+Shift+A` 仍放行 —— 与"规范没写的不猜一个相近语义"这条纪律一致。
+
+### 7.2 唯一落点
+
+`host::apply_action` 的 `ToggleAiDrawer` 臂 ⇒ `ui.invoke_toggle_ai_drawer()` ⇒
+`host::wire_view_callbacks` 注册的**同一条** `on_toggle_ai_drawer`（写 `ai-drawer-open`）。
+键与按钮共用这一个回调，⛔ 不是第二份实现。纯视图态（`MODEL-ISO-001` 挥发性层）⇒
+不改工程、不需要 `UndoPort`、**不在** `action_needs_engine` 集合里（无 `#212` 重入面）。
+
+### 7.3 判据
+
+| 层 | 文件 | 钉的事 |
+| :--- | :--- | :--- |
+| A 纯解析 | `src/input.rs` 的 `ctrl_alt_a_is_the_ai_drawer_entry_and_does_not_disturb_its_neighbours` | 物理码 / 逻辑键 / `Cmd` 侧三条入口同解；邻居与文本域放行 |
+| B 活窗口 | `tests/ai_drawer_key_ui.rs` | 按键 ⇒ `ai-drawer-open` **真的翻转**；换计数器后回调恰好一次；邻居不消费 |
+| 表 / 宿主对账 | `tests/cli_contract.rs` 的 B11b | `cli.rs` 的 `SHORTCUTS` 表与 `--print-shortcuts`、`action_has_implementation` 三面一致（表条数由该判据的 `rows.len()` 断言，⛔ 不在这里手抄） |
+
+## 8. 后续更正（本次切片，2026-10-31，`line/ai-drawer-key`）—— 键盘能换轨了
+
+**缺口**：编曲区的选中轨**只能靠鼠标点轨道行**换（`selected-track-id` 的唯一写者是
+`host::wire_track_select`，入口是 `arrangement_view.slint` 的轨道头与无障碍默认动作）。
+键盘面没有任何选轨入口 ⇒ 键盘-only 用户被困在投影兜底的第一条轨上。
+
+### 8.1 键位与理由（界面决定，⛔ 不是规范点名）
+
+`Alt+↑` / `Alt+↓` —— 三条事实（逐条实测，⛔ 推断）：
+
+1. `resolve_logical` 第 4 步（`Alt` 分支）当时只有 `1` / `2` / `←` / `→`，`↑/↓` 落在
+   `_ => PassThrough` ⇒ 加它不覆盖任何既有绑定；
+2. 裸 `↑/↓`（网格 / 半音微调）、`Shift+↑/↓`（八度）、`Cmd/Ctrl+Alt+↑/↓`（音量/声相）
+   与 `Alt+←/→`（1 tick）的既有语义一格不动（`input.rs` 与 `cli_contract` 两处钉住）；
+3. 文本域聚焦时 `Alt` 分支先被 `Focus::TextInput` 策略拦住 ⇒ 输入框里不会误换轨。
+
+### 8.2 唯一落点
+
+`host::apply_action` 的 `SelectTrackBy` 臂读窗口上的 `track-ids`（生产注入的身份表，
+⛔ 不拿装配期快照猜）算出邻居下标，只做 `ui.invoke_track_select(target)` ⇒ 与鼠标点
+轨道行是**同一条** `host::wire_track_select`（写 `selected-track-id` + 按当前横向偏移
+重投影）。选中态是**视图态**（`MODEL-ISO-001` 挥发性层）⇒ 不改工程、**不进撤销栈**。
+
+边界：`track-ids` 为空 ⇒ 不消费；当前没有选中轨 ⇒ 两向都落到第一条；顶到两端 ⇒ 仍消费
+（下发夹紧后的同一条下标，回调自己的"同一条轨不重投影"早退）。
+
+### 8.3 判据
+
+| 层 | 文件 | 钉的事 |
+| :--- | :--- | :--- |
+| A 纯解析 | `src/input.rs` 的 `alt_up_and_down_move_the_track_selection_and_do_not_disturb_its_neighbours` | 物理码 / 逻辑键两条入口同解（含方向）；裸键 / `Shift` / `Cmd+Alt` / `Alt+←→` 保持原义；文本域放行 |
+| B 活窗口 | `tests/track_select_keyboard.rs` | 走完选中态与两端停住；回调身份与夹紧（记录器读到 `2, 2, 1, 0`）；邻居组合不动选中态；空工程不消费 |
+| 表 / 宿主对账 | `tests/cli_contract.rs` 的 B11b | 两行新快捷键（`Alt+↑` / `Alt+↓`）三面一致（表 / 解析 / 宿主） |

@@ -53,8 +53,9 @@
 //! - **主控通道条**：主总线不在 `track-ids` 里 ⇒ 没有点击源能写 `selected-track-id`，
 //!   所以键盘这一路今天**碰不到**主控。这条边界登记在 `docs/ledger/app-mixer-notes.md`，
 //!   正对照（主控确实被鼠标改得动）在那里的第 3 行与 `tests/live_ui_mcp.rs` 的主控判据；
-//! - **静音 / 独奏的键盘入口**：布尔开关没有"一格"可言，本动作族刻意不含它
-//!   （见 `crate::input::MixerParam` 的文档）；
+//! - **静音 / 独奏的键盘入口**：布尔开关没有"一格"可言 ⇒ 本动作族刻意不含它；拨动
+//!   那一族有**自己的**键与判据（裸 `M` / `S`，`tests/mixer_keyboard_switch.rs`，
+//!   走 `Op::SetTrackMute` / `SetTrackSolo`，2026-10-31 落地）；
 //! - **引擎听到变化**：编辑 ⇒ 新快照发布是 16 ms 心跳那一条腿的事
 //!   （`main.rs` 的 `run_gui` 调 `EngineHost::publish_project`），本文件不测音频。
 
