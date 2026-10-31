@@ -735,6 +735,30 @@ fn ten_broadcast_tools_publish_an_output_schema_their_real_responses_satisfy() {
         }
     }
 
+    // ⭐ s30 的非空核对：上面那份 `validate_complete` 对**空数组**是**空绿**的
+    // （`items` 只在真有元素时被逐个核对），所以这三处**逐键名册**要能被真实响应跑到，
+    // 必须先证明这三个数组在这一轮**各至少有一个元素**。单位 = 元素个数。
+    for (label, array) in [
+        (
+            "yeban_query_engine_state.sends",
+            &engine_state["data"]["sends"],
+        ),
+        ("yeban_render_master.sources", &rendered["data"]["sources"]),
+        (
+            "yeban_edit_automation.lane.points",
+            &automation["data"]["lane"]["points"],
+        ),
+    ] {
+        let elements = array
+            .as_array()
+            .unwrap_or_else(|| panic!("`{label}` 必须是数组: {array}"));
+        assert!(
+            !elements.is_empty(),
+            "`{label}` 是空数组 ⇒ s30 的 `items` 名册没被真实响应核对过（空绿）"
+        );
+        println!("### s30 元素数 `{label}` = {}", elements.len());
+    }
+
     // 两个逐字读数（判据 ⑦ 的例子）：提案语义与削波读数。
     println!(
         "### 逐字：edit_notes.pendingMerge = {}\n### 逐字：render_master.clippedSamples = {} / truePeakDbfs = {}",
