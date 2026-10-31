@@ -618,6 +618,25 @@ pub enum NudgeStep {
     Octave,
 }
 
+/// 键盘微调混音台时**动哪一格**。
+///
+/// 刻意只有两格，判据是**量的类型**而不是规范条文：音量 / 声相是**连续量** ⇒ 有"一格
+/// 步长"可言；静音 / 独奏是**布尔开关** ⇒ 键盘入口应当是"拨动"（`Toggle`）而不是微调，
+/// 与本动作族不同型（它们的屏读器落点已在控件树里：编曲 `track-{i}-mute-button` /
+/// `track-{i}-solo-button`，调音台 `track-{i}-mixer-mute-button` /
+/// `track-{i}-mixer-solo-button`，见 `crate::elements`；键盘拨动属另一票）。
+///
+/// ⚠ `[UI-NOTE-005]` §3.5 的四条项**只点名音符**（平移 / 1 tick / 半音 / 八度 / 时值 /
+/// 试听），**没有**混音这一格 ⇒ 本类型承载的是**界面决定**，不是规范条文的落地。
+/// 留痕与边界见 `docs/ledger/app-mixer-notes.md` §7 的第 10 行。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MixerParam {
+    /// `TrackV3::volume_db`（推子）。
+    Volume,
+    /// `TrackV3::pan`（声相）。
+    Pan,
+}
+
 /// 一次按键解析出的**领域动作**。
 ///
 /// 刻意不是"直接改 UI 状态": 同一个动作在不同上下文 (例如正在播放 vs 暂停) 的结果不同,
@@ -682,6 +701,35 @@ pub enum Action {
     /// "选区为空 / 已经缩到 1 tick 怎么办"由 `host::apply_action` 的臂决定。
     ResizeSelectionDuration {
         /// `-1` = `Shift+←` 缩短；`+1` = `Shift+→` 延长。
+        direction: i8,
+    },
+    /// 把**当前选中音轨**的混音参数按一档步长微调（键盘入口，与鼠标拖动同一提交通道）。
+    ///
+    /// 键位：`Cmd/Ctrl+Alt+↑/↓` = 音量 ±1.0 dB，`Cmd/Ctrl+Alt+←/→` = 声相 ±0.1。
+    /// ⚠ **规范没有点名这一动作**：`[UI-NOTE-005]` §3.5 的四条项只讲音符 ⇒ 本变体是
+    /// **界面决定**（补"调音台只能靠鼠标拖"的缺口），登记在
+    /// `docs/ledger/app-mixer-notes.md` §7 的第 10 行。键位因此受三条**实测**约束，
+    /// 它们把它挤到 `Cmd/Ctrl+Alt+方向` 这一格：
+    /// 1. **六个方向键组合已被 §3.5 点名**（裸 `←/→` 网格、`Alt+←/→` 1 tick、裸 `↑/↓`
+    ///    半音、`Shift+↑/↓` 八度、`Shift+←/→` 时值），本动作⛔ 不得覆盖既有键语义；
+    /// 2. 规范**没**点名但已被如实钉成 `PassThrough` 的两个组合也不能占：`Cmd/Ctrl+←/→`
+    ///    （归系统的 caret 语义）与 `Alt+↑/↓`，见判据
+    ///    `arrow_keys_resolve_to_the_four_spec_nudge_steps` 末尾那段；
+    /// 3. `Cmd/Ctrl+Alt` 组合此前只有 `b` / `m` / `n` / `d` 四条（与
+    ///    [`Self::ToggleMetronome`] 同族），方向键在 `resolve_logical` 的第 3 步落到
+    ///    `_ => PassThrough` ⇒ 这一格是**空的**，加进去不动任何既有绑定。
+    ///
+    /// 与 [`Self::NudgeSelection`] 同一条分工：本状态机只回答"这一键代表哪个动作 +
+    /// 动哪一格 + 往哪个方向"。**不**决定"没有选中轨怎么办""夹到量程哪一端""要不要提交" ——
+    /// 那些全在 `host::apply_action` 的同一个臂里（事实源：量程常量只住在
+    /// `crate::bridge`，一步的幅度只住在 `host::mixer_nudge_delta_for`）。
+    ///
+    /// ⚠ **作用域与音符微调不同**：`NudgeSelection` 动的是 `selected-ulids`（音符身份集合），
+    /// 本动作动的是 `selected-track-id`（**一个**轨道身份，视图态、不进工程 / 不进撤销栈）。
+    NudgeMixerChannel {
+        /// 动哪一格（见 [`MixerParam`]）。
+        param: MixerParam,
+        /// `-1` = 左 / 下（减小）；`+1` = 右 / 上（增大）。
         direction: i8,
     },
     /// `B`: 在箭头与铅笔之间快速切换。
@@ -837,6 +885,27 @@ impl InputContext {
                 //（实测：本 `Cmd/Ctrl+Alt` 组合当时只有 `b` / `m` 两条）。
                 (Key::Character('n'), false, true) => Resolution::Action(Action::ToggleMetronome),
                 (Key::Character('d'), false, true) => Resolution::Action(Action::ToggleCountIn),
+                // 键盘微调选中轨的混音参数（`Cmd/Ctrl+Alt+方向`，见
+                // [`Action::NudgeMixerChannel`] 文档的第 3 条：这一格此前是空的）。
+                //
+                // `shift` 必须为 `false`：`Cmd/Ctrl+Alt+Shift+方向` **未被点名** ⇒ 放行，
+                // 与"规范没写的不猜一个相近语义"这条既有纪律一致。
+                (Key::UpArrow, false, true) => Resolution::Action(Action::NudgeMixerChannel {
+                    param: MixerParam::Volume,
+                    direction: 1,
+                }),
+                (Key::DownArrow, false, true) => Resolution::Action(Action::NudgeMixerChannel {
+                    param: MixerParam::Volume,
+                    direction: -1,
+                }),
+                (Key::RightArrow, false, true) => Resolution::Action(Action::NudgeMixerChannel {
+                    param: MixerParam::Pan,
+                    direction: 1,
+                }),
+                (Key::LeftArrow, false, true) => Resolution::Action(Action::NudgeMixerChannel {
+                    param: MixerParam::Pan,
+                    direction: -1,
+                }),
                 _ => Resolution::PassThrough,
             };
         }
@@ -947,11 +1016,12 @@ mod tests {
 
     use Action::{
         AcceptAiSuggestion, AuditionMain, AuditionProposal, Cancel, DeleteSelection, Duplicate,
-        GoToBeginning, NudgeSelection, OpenTimeMachine, PlayPause, Redo, ResizeSelectionDuration,
-        ResumeFromCursor, SelectTool, ShowView, ToggleConsoleMaximize, TogglePencilTool,
-        ToggleSidebar, ToggleView, Undo, ZoomToFit, ZoomToSelection,
+        GoToBeginning, NudgeMixerChannel, NudgeSelection, OpenTimeMachine, PlayPause, Redo,
+        ResizeSelectionDuration, ResumeFromCursor, SelectTool, ShowView, ToggleConsoleMaximize,
+        TogglePencilTool, ToggleSidebar, ToggleView, Undo, ZoomToFit, ZoomToSelection,
     };
     use Focus::{MainCanvas, Other, TextInput};
+    use MixerParam::{Pan, Volume};
     use PhysicalKey::{
         Backspace, BracketLeft, BracketRight, Delete, Digit, DownArrow, Enter, Escape, F5, F6,
         KeyB, KeyD, KeyH, KeyM, KeyN, KeyZ, LeftArrow, RightArrow, Space, Tab, UpArrow,
@@ -1682,6 +1752,86 @@ mod tests {
             text_field().resolve_logical(LKey::LeftArrow, Modifiers::none()),
             PassThrough,
             "文本框里的 `←` 是 caret 移动，不是微调音符"
+        );
+    }
+
+    /// `Cmd/Ctrl+Alt+方向` ⇒ **微调选中轨的混音参数**（音量 ↑/↓、声相 ←/→）。
+    ///
+    /// 这条判据钉三件事，缺一件都会让"键位声明"与"解析出来的动作"分叉：
+    /// 1. 四个组合各自的 `param` 与 `direction`（`↑`/`→` 是 `+1`，`↓`/`←` 是 `-1` ——
+    ///    方向**符号**与"数值增大"的对应关系在这里唯一决定）；
+    /// 2. `Cmd`（macOS）与 `Ctrl`（其余平台）在 `command()` 口径下**同解**
+    ///    （规范表格写的是 `Cmd / Ctrl`，两条都必须能用）；
+    /// 3. 物理码入口与逻辑键入口**同解**（与 `arrow_keys_resolve_to_the_four_spec_nudge_steps`
+    ///    同一条纪律，⛔ 不能只在一条入口生效）。
+    ///
+    /// 变异：把 `UpArrow` 臂的 `direction` 改成 `-1` ⇒ 本判据第 1 项红；把 `key` 从
+    /// `PhysicalKey::UpArrow` 改成 `DownArrow`（`cli.rs` 的表行）⇒
+    /// `shortcut_table_status_matches_the_resolution_and_host_pipeline` 的 ② 红。
+    #[test]
+    fn cmd_ctrl_alt_arrows_nudge_the_selected_tracks_mixer_channel() {
+        for (key, param, direction) in [
+            (LKey::UpArrow, Volume, 1),
+            (LKey::DownArrow, Volume, -1),
+            (LKey::RightArrow, Pan, 1),
+            (LKey::LeftArrow, Pan, -1),
+        ] {
+            let want = Act(NudgeMixerChannel { param, direction });
+            assert_eq!(
+                canvas().resolve_logical(key, Modifiers::ctrl_alt()),
+                want,
+                "`Cmd/Ctrl+Alt+{key:?}` 必须解析成音量 / 声相的那一档"
+            );
+            // macOS 的 `Cmd` 与其余平台的 `Ctrl` 同解（`command()` 就是这条口径）。
+            // 这里手写字面量而不是加一个 `meta_alt()` 构造器：仓内既有构造器族
+            // （`none`/`ctrl`/`meta`/`shift`/`alt`/`ctrl_shift`/`ctrl_alt`）到 `Ctrl+Alt`
+            // 为止，为一条判据新增 API 会让"键位声明"多一个只有测试在用的入口。
+            assert_eq!(
+                canvas().resolve_logical(
+                    key,
+                    Modifiers {
+                        ctrl: false,
+                        shift: false,
+                        alt: true,
+                        meta: true,
+                    },
+                ),
+                want,
+                "`Cmd+Alt+{key:?}` 与 `Ctrl+Alt+{key:?}` 必须同解"
+            );
+        }
+        // 物理码入口逐条同解。
+        for (key, mods) in [
+            (UpArrow, Modifiers::ctrl_alt()),
+            (DownArrow, Modifiers::ctrl_alt()),
+            (LeftArrow, Modifiers::ctrl_alt()),
+            (RightArrow, Modifiers::ctrl_alt()),
+        ] {
+            assert_eq!(
+                canvas().resolve(key, mods),
+                canvas().resolve_logical(key.logical(), mods),
+                "物理 `{key:?}` 与逻辑键在 {mods:?} 下必须同解"
+            );
+        }
+        // 规范**没**点名的组合仍然放行（⛔ 不猜相近语义）：多按一个 `Shift`、
+        // 以及文本域里的同一组合（§7.2 的焦点门控对新组合同样生效）。
+        assert_eq!(
+            canvas().resolve_logical(
+                LKey::UpArrow,
+                Modifiers {
+                    ctrl: true,
+                    shift: true,
+                    alt: true,
+                    meta: false,
+                },
+            ),
+            PassThrough,
+            "`Cmd/Ctrl+Alt+Shift+↑` 未被点名 ⇒ 放行"
+        );
+        assert_eq!(
+            text_field().resolve_logical(LKey::UpArrow, Modifiers::ctrl_alt()),
+            PassThrough,
+            "文本框里的 `Ctrl+Alt+↑` 归文本控件，不是微调推子"
         );
     }
 
