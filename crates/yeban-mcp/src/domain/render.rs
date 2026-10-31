@@ -3128,6 +3128,8 @@ pub fn track_contributions(
         target_lufs_bits: None,
         path: None,
         contributions: false,
+        // ⭐ 审评 2026-10-31（P1-1）：逐轨贡献的 1+N 次渲染继承调用方的线程选择。
+        threads: request.threads,
         sample_format: request.sample_format,
     };
     let baseline = build(project, project_path, &basis, now_ms, assets)?;
