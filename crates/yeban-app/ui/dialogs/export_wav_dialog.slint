@@ -117,7 +117,10 @@ export component ExportWavDialog inherits Rectangle {
             y: 72px;
             width: parent.width - 48px;
             height: 24px;
-            text: root.path;
+            // [PATCH export-wav-dialog-binding] 两向绑定：`text:` 是**单向**赋值，
+            // 用户一敲键，TextInput 自己的 text 就与 root.path 脱钩，root 永远停在
+            // 宿主播种的初值 ⇒ 导出恒用初值（8 秒 / 跟随工程的采样率）。
+            text <=> root.path;
             single-line: true;
             font-family: Tokens.font-mono;
             color: Tokens.gold;
@@ -146,7 +149,10 @@ export component ExportWavDialog inherits Rectangle {
             y: 128px;
             width: 200px;
             height: 24px;
-            text: root.sample-rate;
+            // [PATCH export-wav-dialog-binding] 两向绑定：`text:` 是**单向**赋值，
+            // 用户一敲键，TextInput 自己的 text 就与 root.sample-rate 脱钩，root 永远停在
+            // 宿主播种的初值 ⇒ 导出恒用初值（8 秒 / 跟随工程的采样率）。
+            text <=> root.sample-rate;
             single-line: true;
             font-family: Tokens.font-mono;
             color: Tokens.gold;
@@ -175,7 +181,10 @@ export component ExportWavDialog inherits Rectangle {
             y: 128px;
             width: parent.width - 48px - 216px;
             height: 24px;
-            text: root.bit-depth;
+            // [PATCH export-wav-dialog-binding] 两向绑定：`text:` 是**单向**赋值，
+            // 用户一敲键，TextInput 自己的 text 就与 root.bit-depth 脱钩，root 永远停在
+            // 宿主播种的初值 ⇒ 导出恒用初值（8 秒 / 跟随工程的采样率）。
+            text <=> root.bit-depth;
             single-line: true;
             font-family: Tokens.font-mono;
             color: Tokens.gold;
@@ -204,7 +213,10 @@ export component ExportWavDialog inherits Rectangle {
             y: 184px;
             width: 200px;
             height: 24px;
-            text: root.seconds;
+            // [PATCH export-wav-dialog-binding] 两向绑定：`text:` 是**单向**赋值，
+            // 用户一敲键，TextInput 自己的 text 就与 root.seconds 脱钩，root 永远停在
+            // 宿主播种的初值 ⇒ 导出恒用初值（8 秒 / 跟随工程的采样率）。
+            text <=> root.seconds;
             single-line: true;
             font-family: Tokens.font-mono;
             color: Tokens.gold;

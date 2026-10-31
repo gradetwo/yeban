@@ -174,7 +174,26 @@ pub fn run(options: &Options) -> Result<Vec<String>, CliError> {
     // - `ui/tree` 的一次进程内调用：证明这棵运行时控件树真的能被服务（而不是"装好了"）；
     // - 装配时**直接**抓的那一帧（`[MUST-GATE-015]` 的 Tier-1 路径）：证明真的光栅化过。
     // 这些都不是回显参数。
-    let mut plane = live.into_production_control_plane(permission);
+    let mut plane = if options.ui_test_mode {
+        // [PATCH ui-test-mode] 两把锁：显式开关 + 环境变量。缺一 ⇒ 用法错误，不静默降级。
+        // 放开 inject 的唯一后果是"本进程可被注入指针/键盘"，而它仍然只绑环回、
+        // 仍然要 Bearer 令牌 ⇒ 攻击面 = 本机上一个能读到 0600 令牌的进程。
+        if std::env::var("YEBAN_ALLOW_UI_INJECT").ok().as_deref() != Some("1") {
+            return Err(CliError::Ui {
+                detail: "`--ui-test-mode` 需要环境变量 `YEBAN_ALLOW_UI_INJECT=1` 才能生效 \
+                         (两把锁: 注入会打开 ui/dispatch_* 族, 不允许一次 Ctrl-R 就把它带上)"
+                    .to_owned(),
+            });
+        }
+        cli::emit(&[
+            "ui-mcp-http: ⚠ 测试模式 (--ui-test-mode) ⇒ ui:inject 族已开放; 仅限本机自动化, \
+             不要在生产/共享机器上使用"
+                .to_owned(),
+        ]);
+        live.into_control_plane(permission)
+    } else {
+        live.into_production_control_plane(permission)
+    };
     let viewport = plane.viewport();
     let reference = plane.reference().clone();
     let (tree, _) = plane.plane().tree().map_err(|error| CliError::Ui {
@@ -217,9 +236,17 @@ pub fn run(options: &Options) -> Result<Vec<String>, CliError> {
         reference.distinct_color_count(),
         tree_nodes,
     ));
+    // [PATCH ui-test-mode] 这一行必须**说真话**：以前它把"生产模式"写死在字面量里，
+    // 于是 `--ui-test-mode` 下用户会看到"⚠ 测试模式"和"生产模式硬禁"同时出现，
+    // 只能靠 `ui/methods` 的 `injectAllowed` 才知道哪个是真的。
+    let inject_note = if options.ui_test_mode {
+        "测试模式 ⇒ ui:inject 族已开放 (仅限本机自动化)"
+    } else {
+        "生产模式 ⇒ ui:inject 族硬禁 403 forbidden-in-production"
+    };
     lines.push(format!(
         "ui-mcp-http: UI 控制面已监听 {endpoint} \
-         (只绑环回; 生产模式 ⇒ ui:inject 族硬禁 403 forbidden-in-production; \
+         (只绑环回; {inject_note}; \
           权限 = administrative; 端点路径与领域 MCP 的 /mcp 刻意不同; 令牌 = 256-bit)"
     ));
     lines.push(format!(
@@ -251,6 +278,21 @@ pub fn run(options: &Options) -> Result<Vec<String>, CliError> {
              (监听 socket 已 close; 本进程一共服务 {served} 个连接)"
         ),
         BOUNDARY.to_owned(),
+        // [PATCH ui-test-mode] 与上面那条监听行同源：收尾时再说一次本次**实际**模式，
+        // 免得脚本从"⚠ 测试模式"和"生产模式硬禁"两句矛盾话里猜。
+        format!(
+            "ui-mcp-http: 本次运行模式 = {} (ui:inject {})",
+            if options.ui_test_mode {
+                "test"
+            } else {
+                "production"
+            },
+            if options.ui_test_mode {
+                "允许"
+            } else {
+                "禁止"
+            }
+        ),
     ])
 }
 

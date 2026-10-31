@@ -87,7 +87,10 @@ signalsmith-stretch = { version = "0.1.3", default-features = false }
 yeban-model = { path = "crates/yeban-model" }
 yeban-theory = { path = "crates/yeban-theory" }
 yeban-dsp = { path = "crates/yeban-dsp" }
-yeban-engine = { path = "crates/yeban-engine" }
+# [PATCH build-cargo-default-features] workspace 层关闭默认 feature，
+# 否则 `crates/yeban-render` 的 `default-features = false` 在 cargo >= 1.93 直接报错
+# ("cannot override workspace's default-features")。设备宿主由 yeban-app 显式打开。
+yeban-engine = { path = "crates/yeban-engine", default-features = false }
 yeban-midi-io = { path = "crates/yeban-midi-io" }
 yeban-record = { path = "crates/yeban-record" }
 yeban-sfz = { path = "crates/yeban-sfz" }
