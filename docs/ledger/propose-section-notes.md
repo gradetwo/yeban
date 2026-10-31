@@ -281,8 +281,8 @@ CI 侧对应的机械保护是 `tools_e2e.rs::propose_section_creates_a_real_sec
 
 | # | 边界 | 说明 |
 | :--- | :--- | :--- |
-| boundary-A | **调式只用了主音音级，没有用调式音阶结构** | `scale` 目前只决定移调的音级锚点 ⇒ `D dorian` 与 `D minor` 的**产物逐字节相同**（`tonic_pc` 都是 2）。要真正按调式生成/过滤，需要 `yeban-theory` 的音阶语义（见 needs-1）。这是本线**如实登记**的缩水，不藏在 `unwired` 里 |
-| boundary-B | 声部音轨**没有设备/乐器** | 骨架只有音轨 + 片段 + 连接，没有 `InsertDevice`（那个变体**存在**，但"给哪个声部装什么乐器"是编排决策，规范没给）。因此骨架还发不出声 |
+| boundary-A | ~~调式只用了主音音级，没有用调式音阶结构~~ ⛔ **本行已过期**（2026-10-31 现读改正） | 调式语义**早就进了生成路径**：`domain/section_build.rs:97` 的映射表 ＋ `section_build.rs:841 snap_into_scale`（`scale.contains(pitch)` 不成立时收拢到最近音阶音，平局优先下行）⇒ `D dorian` ≠ `D minor`。机器读数 = 常驻判据 `verify/section_pure.rs::dorian_and_minor_differ_exactly_by_the_sixth`（逐音断言 `pitches("D dorian") == [62, 65, 69, 71, 74]`）。本行原本写"`scale` 只决定移调锚点 ⇒ 两种调式产物逐字节相同"，那句话会把下一个读者支出去做一遍**已经做完**的事 —— 与 `section.rs` 头注释里那两条过期自我限制（`ADR-0001` D43）同一族缺陷 |
+| boundary-B | 声部音轨**没有设备/乐器** | 骨架只有音轨 + 片段 + 连接，没有 `InsertDevice`（那个变体**存在**，但"给哪个声部装什么乐器"是编排决策，规范没给）。⚠ 本行原写"因此骨架还**发不出声**" —— ⛔ **假话**，已由 2026-10-31 现读推翻：`domain/render.rs:3826-3838` 给 `(未绑采样器, 有音符, 无音频片段)` 的源种类是 `kind="engine-instrument"`（`ADR-0011`/`#268` 起 MIDI 音源 = `yeban-engine::SynthEngine`，与界面/CLI 同一音色），`"silent"` 只留给**既无音符也无可渲染音频**的源 ⇒ 骨架**能出声**，缺的只是"逐声部的音色选择"（登记为 `ADR-0055`／`G3`，人类裁决面）。机器读数见常驻判据 `section_pure.rs::proposed_part_tracks_carry_notes_but_zero_devices` |
 | boundary-C | 骨架**不在 Session View 建场景** | §7.2 只说"章节配器骨架与声部连接"，没有要求 `SceneV3`。`SetScene`（`old_scene: None`）表达得了，本线没做 |
 | boundary-D | 材料是**拷贝**而不是引用 | 每个声部拿到独立片段（音符身份派生），因此改一个声部不影响别的声部 —— 这是编排骨架想要的行为，但意味着 `clip_pool` 会长 N 条 | 
 | boundary-E | 装配方案本身没有规范依据 | "轮转分配材料 + 等音类移调 + 八度折叠"是**本地裁决**（§7.2 只给四个入参）。机制（未知预设 `STYLE_NOT_FOUND`、缺材料 `CLIP_NOT_FOUND`、不可逆则不许提交）是承重的；**具体分配算法**可替换 |

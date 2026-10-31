@@ -16862,7 +16862,109 @@ helper 里 ⇒ 必须不认（防假绿）。两条臂在旧实现上都会失�
 | 提交 | run | 结论 | 关键读数 |
 |---|---|---|---|
 | 线 `b512ee8a` | `41203744827` | 新腿 **success**（整 run 落地时在飞，见下行） | `e2e` 腿 **真跑**：job `124545260712`，13:08:14→13:09:07 = **53 秒**，7 个实步骤全 success。日志内 `[PASS]` **9** 条／`[FAIL]` **0** 条，逐名：`responses_are_complete_and_error_free`／`import_registers_and_places_the_clip`／`save_persists_the_asset`／`render4_receipt_matches_the_file`／`render4_every_asset_has_bytes_and_frames`／`render5_receipt_matches_the_file`／`render5_every_asset_has_bytes_and_frames`／`no_asset_reported_as_missing_bytes`／`two_renders_are_byte_identical`；幂等腿四条 `[ok]`（含"裸 `ToolResponse` **不**通过 `ReplayedToolResponse`"这条**防掏空**的反向判据）。**耗时读数（决定方案 ① 是否划算的依据）**：`export_schema_samples = 10 秒`、`cargo build -p yeban-mcp --bin yeban-mcp = 25 秒` ⇒ 整腿 53 秒，比 `checks` 腿同量级 ⇒ 独立腿成立，⛔ 不必塞进 `checks` 或矩阵腿。`checks`／`deny`／`plan`／`lockfile` 全 success；`rust (矩阵)` **skipped**（⛔ 不计绿）；`rust (workspace 全量)`／`windows`／`macos` 在 land 时**仍在飞**（本批 0 Rust 源码，合流 run 会再判一次全量） |
-| merge `d40afe0b` | `41204348127` | pending（判决未读回一律记 pending） | 待读：全量腿 `test result:` 行数／`FAILED` 计数，以及本批新腿在宽运行里**是否再次真跑** |
+| merge `d40afe0b` | `41204348127` | **success**（整条 run 的 `conclusion` 已读回，全量腿判完） | 全量腿（job `124546332038`）`13:11:58Z→14:00:50Z` = **48 分 52 秒**，日志 1 780 748 字节：`test result:` **516** 行／`FAILED` **0**／`passed` 合计 **7 234**。新 e2e 腿在**宽运行**里真跑已证（job `124546331968` = `13:10:42Z→13:11:55Z`，**73 秒**，success）；窄运行再复核一次（run `41206450946` 的 e2e = **58 秒**，success）⇒ §22.3 那句"`if:` 只点名 `yeban-mcp` 就同时覆盖宽／窄"由两次独立读数支撑。⚠ 手法：`gh run view --log --job=` 在 run 未收尾时返回 **0 字节**，取日志一律走 `actions/jobs/<id>/logs` |
+
+### 22.5 下一单（s26）的前置读数：`propose_section` 的**设备面是零**（⛔ 不是缺音色，是缺一句实话）
+
+- 对象 = `crates/yeban-mcp/src/domain/section_build.rs`（**4387 行**，测试模块自 `3270` 起）；单位 = 出现次数。现读：
+  `device` **0**／`Device` **0**／`InternalInstrument` **0**／`insertDevice` **0**／`osc1_wave` **0**。
+  ⇒ `propose_section` 生成的骨架**完全不碰设备面**。
+- 对照面（同样现读）：`engine_state.rs` 的响应里**已经有** `deviceCount` 键
+  ⇒ "这条轨有没有设备"是**可测的**，不是未定义量。
+- ⛔ **上面这段"边界"里有一句是假话，已被 2026-10-31 的现读推翻**（原本写"把'本次写入的轨 `deviceCount == 0`
+  ⇒ 这些音符渲染为静音'上报进响应"）：`crates/yeban-mcp/src/domain/render.rs:3826-3838` 的源种类判定给出
+  `(未绑采样器, 有音符, 无音频片段)` ⇒ `kind = SOURCE_KIND` = **`"engine-instrument"`**，
+  而 `render.rs:601-604` 注明自 `ADR-0011`（`#268`）起 MIDI 音源已换成 `yeban-engine::SynthEngine`
+  （与界面／CLI **同一个**音色）；`SILENT_SOURCE_KIND = "silent"`（`render.rs:612`）只留给
+  "**既没有音符也没有可渲染音频片段**"的源。⇒ **零设备 ≠ 静音**，真实缺口只剩"没有逐声部的音色选择"那一半，
+  而那一半正是 `ADR-0055`／`G3` 的人类裁决面（⛔ Agent 不代答）。
+  教训并入既有纪律：这与 `AGENTS.md` §6-3"先 grep 交付再下结论"是同一条 —— 这次栽的是**我自己刚写的推论**，
+  发现路径 = 动手写警告之前去渲染侧找"静音"这个词的真实定义。
+  ⚠ 假话的**源头**找到了并同步改正：`docs/ledger/propose-section-notes.md` 的 `boundary-B` 那行原写
+  "因此骨架还发不出声"（本会话的推论是抄这份旧笔记的结论，⛔ 没回渲染侧核）⇒ 同一行已改成现读口径。
+  ⚠ 顺手把**同一张表**的 `boundary-A` 也核了（旧"已知缺口"清单值得整表重读，不要只修被点名的那一行）：
+  那行写"`scale` 只决定移调锚点 ⇒ `D dorian` 与 `D minor` 产物逐字节相同"⛔ **已过期** ——
+  调式语义早就进了生成路径（`section_build.rs:841 snap_into_scale`，判据
+  `dorian_and_minor_differ_exactly_by_the_sixth` 逐音钉住 `[62, 65, 69, 71, 74]`）⇒ 该行同样改成现读口径。
+  两条都是 `ADR-0001` **D43** 那一族缺陷（过期的自我限制会**主动误导**下一个读者，让他重做已完成的事）。
+- 对照面（同样现读，⛔ 结论已改写）：`engine_state.rs` 的响应里**已经有** `deviceCount` 键
+  ⇒ "这条轨有没有设备"是**可测的**；但它测的是"**用不用内置音色**"，⛔ 不是"响不响"。
+- 范围（三处一起动，缺一处就是第二份真相）：`section.rs`／`section_build.rs` 的响应形状
+  ＋ `schemas/mcp-tools.schema.json` 的 `propose_section` 广播面 ＋ 具名判据。
+  ⚠ 该 crate 判重（拖 `yeban-render`）⇒ 本机不编译，判决只能来自 CI。
+- **第一片已落地路径（s26，线 `f0ba67de`）**：⛔ 不动响应形状，先把上面那句散文**换成机器读数** ——
+  常驻判据 `proposed_part_tracks_carry_notes_but_zero_devices`（`crates/yeban-mcp/verify/section_pure.rs`，
+  单文件 ＋56 行）断言"每条声部音轨都带音符，且 `TrackV3::devices` 长度 == 0"。
+  本机用文件头记录的裸 `rustc --edition 2024 --test` 路径**真跑过**：`49 passed / 0 failed`
+  （新判据单跑 `1 passed`）⇒ 本地绿只算参考，判决读回 run `41206450946`。
+  判据注释里写明：将来接上设备时它会**变红**，那时必须显式改写并同步本节，⛔ 不许静默失效。
+- ⭐ **s26 线判决已读回（run `41206450946`／job `124552427952` = `rust (yeban-mcp)`，日志 414 239 字节）**：
+  `test section_pure_scaffold::proposed_part_tracks_carry_notes_but_zero_devices ... ok` 出现 **2 次**
+  （13:46:19 在 `cargo test -p yeban-mcp --all-targets --locked` 那条腿里，13:52:24 在
+  `… --all-targets --locked --no-fail-fast`（合并特性腿，`APP_FEATURES` 单一事实源）里；逐名对上日志行号 651／2630）；该作业 `test result:` **149** 行、
+  `FAILED` **0**、`passed` 合计 **2 692**。⚠ 手法补记：`gh run view --log --job=` 在**整条 run 未收尾时返回 0 字节**
+  （实测 `bytes=0`），改用 `curl -H "Authorization: token $(gh auth token)" …/actions/jobs/<id>/logs` 才拿到日志
+  ⇒ 判"某作业真跑"⛔ 把空日志读成"没跑"，先确认取日志的方式本身没问题。
+- ⛔ **第二片按原设计不做了**（前提已在上条被推翻：不存在"音符静音"要上报）。以下是**仍然成立**的
+  落点读数，留给将来若要做"逐声部音色上报"时直接复用：
+  ⭐ 契约里**已经有一条专为此设计的通道** `warnings[]`（非阻断问题），⛔ 不需要新响应键、
+  ⛔ 不需要动 `schemas/mcp-tools.schema.json`。现读三处：
+  ① `domain/mod.rs:4805` `fn proposal_warnings(project, ops) -> Vec<Value>` =
+  `effect_param_warnings(ops)` ＋ `device_on_silent_track_warnings(project, ops)`，
+  且 `propose_draft`（`mod.rs:2570`）已经在**模拟施加后的工程**上算它一次、预览与响应共用同一份读数；
+  ② `mod.rs:4897` 的 `device_on_silent_track_warnings` 只扫 `Op::InsertDevice` ⇒
+  `propose_section` 的 op 集（`AddTrack`/`AddClip`/`AddClipPlacement`/`AddRoutingNode`/`ConnectRouting`）
+  **一条都不落进它**，所以今天的骨架提案 `warnings` 恒为空数组 —— 缺的正是**对称的那半条**
+  （"音符在、`devices` 为 0 ⇒ 渲染静音"），现成可复用的读数函数就是同文件的
+  `survey_track_playable`（`mod.rs:4832`，含 `muted` 与 `triggers()` 口径）；
+  ③ 广播面不在 schema 的 enum 里（现读 `grep -rn deviceOnSilentTrack schemas/ | wc -l` = **0**），
+  而是**两处散文名册**：`output_schema.rs:490`（逐字列了两个 `code`，并以"两者都可能为空数组"收尾）
+  ＋ `tools.rs:911`（`yeban_edit_notes` 的 summary 里整段描述 `deviceOnSilentTrack`）
+  ⇒ 新增第三条 code 必须**两处同步**，否则就是 §0.6.0g 那种"散文名册过期"。
+- ⇒ 第二片的真实改动面（比原估更小、但**仍需 CI 判决**，本机不编译）：
+  `domain/mod.rs` 加一条与 `deviceOnSilentTrack` 对称的警告 ＋ `output_schema.rs` 那句名册 ＋
+  具名判据（形态参照 `crates/yeban-mcp/tests/trap_178.rs:279/363/487`，那里已经逐名断言 `warnings[0]["code"]`）。
+  ⚠ 警告函数⛔ 挂在 `InsertDevice` 上 ⇒ 新条件必须自己扫 `AddClipPlacement`（或按模拟后每条被写轨求值），
+  否则判据会在"空警告"上恒绿。
+
+### 22.6 下一单（s27）的前置读数：**新守卫默认不进 CI** —— 这是本仓库写在 workflow 里的一条实测事实
+
+- 现读 `.github/workflows/ci.yml:168-172` 的注释（作者先前写下的）：`checks` 作业**逐条直调**守卫脚本，
+  ⛔ 不调 `run-gates.sh light`（`grep -rn "run-gates" .github/workflows/` = **0 命中**）
+  ⇒ **"往 `scripts/guards/` 丢一个新脚本"这件事本身不会让它在 CI 里跑**。
+  同一族的教训还有一句：本地 `run-gates.sh` 曾在这一点上屏蔽掉三条守卫的失败。
+- 因此 s27 的**两步都必须做**才算交付：① 写守卫；② 在 `ci.yml` 的 `checks` 里加一行直调。
+  ⚠ ② 碰 `.github/**` ⇒ 按 `changed-crates.py` 的 `ROOT_TRIGGERS` 触发**宽运行**（全量腿约 45 分钟）
+  ⇒ 排期时把这一次判决成本算进去，⛔ 别指望"下一个批次顺路判一下"。
+- s27 要防的失效面（本批 s25 刚建，值得钉）：`e2e_audio_clip_stdio.sh` 现在有 **7 个 `check(` 调用点／
+  一次复跑 9 条具名判据／末尾 `sys.exit(1)`。若将来有人删掉 `exit 1` 或把断言换成打印，
+  **e2e 腿会静默变绿** —— 与 s22/s25 修的是同一族缺陷（"只 print 的判据"）。
+  守卫的下界必须写成**具名数字**（调用点数 ≥ 7、`check` 名字逐名在册、存在非零退出路径），
+  ⛔ 不要用"文件里有 assert 字样"这类宽口径（`§0.6.0p` 候选 B 已证过宽口径会把 7 个合法例外一起放过）。
+
+### 22.7 s27 已落地（线 `2e7ab00e`，run `41206831978`）：守卫写完**必须先自证有牙**
+
+- 交付 = ①`scripts/guards/check_verify_teeth.py` ＋ ②`ci.yml` 的 `checks` 里一行直调
+  （按 §22.6：⛔ 只写文件不算交付）。本机双向真验（守卫不需要编译，属"本机允许"档）：
+  - **真档** `rc=0`：`check(` 调用点 **7**（下界 7）、7 条判据名逐名在册、`sys.exit(1)` 在场、`"license":` 参数键在场；
+  - **掏空档** `rc=1`，三类变异各归一条具名 `[FAIL]`：删 2 个调用点（7→5）／
+    `sys.exit(1)`→`sys.exit(0)`／删两处 `"license": "CC0-1.0",`。
+- ⚠ **守卫自己也犯过它要防的错**（这条比交付更值得记）：第一版用 `"license" not in text` 的**子串**口径，
+  删掉参数键后，散文注释里的 "license" 一词仍让守卫判**过** —— 宽口径把缺陷放过，与 §0.6.0p 候选 B
+  的"有 fn 即算过"同一形态。改成只认参数键形态 `"license"\s*:` 后，同一变异才变红。
+- ⚠ 另一处口径修正：第一版用 `\bcheck\(` 数调用点报 **8**，真值 **7** —— 多出来的一枚是
+  **脚本头注释里那句 "`check(...)` 调用点"**。⇒ 数调用点必须**行首锚定**（`^[ \t]*check\(`），
+  ⛔ 全文找子串；这与"数条目不要数行"（`AGENTS.md` §6-5）是同一类错，只是这次栽在守卫自己身上。
+- **CI 侧读数（run `41206831978` 的 `checks` 作业，job `124553512498`）**：新步骤
+  「端到端判据防掏空守卫 (verify 脚本的牙)」= `completed / success` ⇒ §22.6 那条"逐条直调才算交付"
+  在本批**已被机械证明**（同作业里 `e2e` 腿也 success，说明两条腿并存不打架）。
+- ⚠⚠ **本段原先把线记成 `2f317d15`／run `41206837272` —— 那是另一会话的合流提交与它的 run，⛔ 不是我的线**。
+  成因：`gh run list` 里两枚 run 相隔 **2 秒**出现（`41206831978` 我的线 / `41206837272` 他们的合流），
+  我按"时间邻近 + 分支回显"配了对。规则补一条：**提交 ↔ run 的配对只能靠 `headSha` 反查**
+  （`git log -1 --format=%H <line 分支>` 现读，再用该 sha 去 `gh run list --json headSha` 里挑），
+  ⛔ 从推送回显或记忆里抄 hash。核验手法：`git show <sha>:.github/workflows/ci.yml | grep 防掏空`
+  —— 我那枚命中，`2f317d15` 那枚**不命中**（它的 `checks` 作业里也确实没有这一步，这就是发现路径）。
+- ⛔ 本批改了 `.github/**` ⇒ 触发**宽运行**，判决成本 = 全量腿约 45 分钟（排期时已计入，见 §22.6）。
 
 
 
