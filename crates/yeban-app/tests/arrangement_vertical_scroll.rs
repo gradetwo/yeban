@@ -11,9 +11,9 @@
 //!
 //! | 判据 | 证的事 |
 //! | :--- | :--- |
-//! | ①（20 轨 ⇒ 末行在窗口外） | 滚动前 `track-19-header` 的绝对 y ≥ 窗口高（没有滚动就够不着） |
-//! | ②（滚轮 +400 ⇒ 每行上移 400） | `PointerScrolled{delta_y>0}` ⇒ 包头 y 恰好减 400 ⇒ 正方向的语义 = "看下面的行" |
-//! | ③（滚到底 ⇒ 末行进入可视区，且夹紧） | 大幅滚动 ⇒ 末行 y ∈ [42, 窗口高−行高]；再滚一次位置不变（`ensure_in_bound`） |
+//! | ①（30 轨 ⇒ 末行不可寻址） | 滚动前 `track-29-header` **不在控件树里**（可视区外的行不可达） |
+//! | ②（滚轮 +400 ⇒ 仍在树里的每一行上移 400） | `PointerScrolled{delta_y>0}` ⇒ 两次快照交集的每个包头 y 恰好减 400，且更大索引的行进入树中 ⇒ 正方向的语义 = "看下面的行"；再滚 −400 ⇒ 快照复原 |
+//! | ③（滚到底 ⇒ 末行可达，且夹紧） | 大幅滚动 ⇒ `track-29-header` 可寻址且 y 落在行区内；再滚一次快照逐位不变（`ensure_in_bound`） |
 //! | ④（标尺 / 章节卡片不动） | 滚动只动行区：`arrangement-ruler` 与 `section-0-card` 的 y 逐位不变 |
 //! | ⑤（内容不高 ⇒ 一位不动） | 演示工程（6 轨）滚轮 ⇒ 所有包头 y 不变（默认帧 / golden 不漂移） |
 //!
@@ -23,8 +23,20 @@
 //!   在 `Cancelled` 相位是直接 set、无动画 ⇒ 判据可以立即读几何）。
 //! - ⛔ 不证横向滚动：`viewport-width: self.width` ⇒ 横向恒为 0（横向仍归宿主的
 //!   `scroll-x`，见账本第 199 轮"Flickable 与宿主偏移会双重计算"）。
-//! - 控件树的 `bounds` 是**元素几何**（绝对位置 + 尺寸），不按祖先裁剪 ⇒ 判据用
-//!   "y 落在窗口里"表达"可达"，而不是"节点是否存在"。
+//!
+//! ## 为什么判据不直接读"末行的 y"
+//!
+//! 测试口的控件树**按可见性裁剪**（`[N-UI-1]` 实测：视口外的条目根本不进树 ——
+//! `ElementHandle::is_visible()` 对被子孙裁剪链盖掉的元素返回 false）。所以离屏行
+//! 连 `find_by_id` 都找不到，`bounds` 无从读起。判据因此：
+//! - **可达性** = `track-{i}-header` 是否可寻址（进树 ⇒ 可见 ⇒ 可达）；
+//! - **位移** = 滚动前后两次快照的**交集**逐行比较（只有两次都在树里的行才有 y 可读）。
+//!
+//! ## 夹具行数
+//!
+//! 30 行：可视行区 858px（窗口 900 − 行区上沿 42），内容高 1678px ⇒ 最大偏移 820px。
+//! 判据②滚 400 / 判据③滚到底都必须**小于或等于**这个上限才读得出语义（否则被
+//! `ensure_in_bound` 夹紧，"每行恰好上移该 delta"就退化成"上移到头"）。
 //!
 //! ## 平台约束
 //!
@@ -44,11 +56,12 @@ use yeban_ui_test_port::{Permission, Size, UiTestPort as _};
 const WINDOW: Size = Size::new(1440, 900);
 /// 标尺带高：行区上沿 = 标尺带 y + 22（`automation::TRACK_LANE_TOP_PX = 20 + 22`）。
 const RULER_HEIGHT: i32 = 22;
+/// 夹具行数：演示工程 6 轨 + 24 条 MIDI 轨。
+const ROWS: usize = 30;
 
-/// 演示工程（6 轨）+ 14 条 MIDI 轨 = 20 行（默认行槽 56px ⇒ 内容高 ≈ 1118px）。
-fn project_with_19_extra_tracks() -> YebanProjectV1 {
+fn project_with_24_extra_tracks() -> YebanProjectV1 {
     let mut project = demo_project();
-    for index in 0..14 {
+    for index in 0..(ROWS - 6) {
         let id = EntityId::new();
         project.tracks.insert(
             id,
@@ -104,13 +117,28 @@ impl Rig {
     }
 
     fn y_of(&self, id: &str) -> i32 {
+        self.bounds_of(id).y
+    }
+
+    /// 当前**在控件树里**的轨道包头：`(行号, 绝对 y)`，按行号升序。
+    ///
+    /// 视口外的行不进树（见模块文档），所以这是"此刻可达的行"的读数。
+    fn visible_rows(&self) -> Vec<(usize, i32)> {
+        (0..self.view.tracks.len())
+            .filter_map(|index| {
+                let id = format!("track-{index}-header");
+                let node = self.port.tree().find_by_id(&id)?;
+                let bounds = node.bounds?;
+                Some((index, bounds.y))
+            })
+            .collect()
+    }
+
+    fn has_row(&self, index: usize) -> bool {
         self.port
             .tree()
-            .find_by_id(id)
-            .unwrap_or_else(|| panic!("{id} 必须可寻址"))
-            .bounds
-            .unwrap_or_else(|| panic!("{id} 必须有几何"))
-            .y
+            .find_by_id(&format!("track-{index}-header"))
+            .is_some()
     }
 
     fn scroll_wheel(&mut self, delta_y: f32) {
@@ -123,67 +151,90 @@ impl Rig {
     }
 }
 
-/// ① + ②：滚轮正方向 = 看下面的行；每行恰好上移一个 delta。
+/// ① + ②：滚轮正方向 = 看下面的行；仍在树里的每一行恰好上移该 delta。
 #[test]
 fn wheel_scroll_moves_rows_up_by_the_delta() {
-    let mut rig = Rig::with_project(project_with_19_extra_tracks());
-    assert_eq!(rig.view.tracks.len(), 20, "夹具必须有 20 行");
+    let mut rig = Rig::with_project(project_with_24_extra_tracks());
+    assert_eq!(rig.view.tracks.len(), ROWS, "夹具必须有 {ROWS} 行");
 
-    let top_before = rig.y_of("track-0-header");
-    let last_before = rig.y_of("track-19-header");
-    assert_eq!(top_before, rig.rows_top(), "未滚动时首行贴着行区上沿");
+    let before = rig.visible_rows();
+    assert!(!before.is_empty(), "首行必须可达");
+    assert_eq!(before[0], (0, rig.rows_top()), "未滚动时首行贴着行区上沿");
     assert!(
-        last_before >= i32::try_from(WINDOW.height).expect("窗口高可转 i32"),
-        "滚动前末行必须在窗口外（y={last_before}）—— 这正是本片要修的缺口"
+        !rig.has_row(ROWS - 1),
+        "滚动前末行不在控件树里 —— 这正是本片要修的缺口（它不可达）"
     );
 
     rig.scroll_wheel(400.0);
 
-    assert_eq!(
-        rig.y_of("track-0-header"),
-        top_before - 400,
-        "滚轮正方向 ⇒ 内容上移（看下面的行）"
+    let after = rig.visible_rows();
+    let moved: Vec<(usize, i32, i32)> = before
+        .iter()
+        .filter_map(|&(index, y_before)| {
+            after
+                .iter()
+                .find(|&&(other, _)| other == index)
+                .map(|&(_, y_after)| (index, y_before, y_after))
+        })
+        .collect();
+    assert!(
+        moved.len() >= 8,
+        "两次快照必须有一大段交集才读得出位移（交集只有 {} 行）",
+        moved.len()
     );
-    assert_eq!(
-        rig.y_of("track-19-header"),
-        last_before - 400,
-        "所有行同一位移（同一份行几何）"
+    for (index, y_before, y_after) in moved {
+        assert_eq!(
+            y_after,
+            y_before - 400,
+            "第 {index} 行必须整体上移 400（同一份行几何）"
+        );
+    }
+
+    let deepest_before = before.last().expect("before 非空").0;
+    let deepest_after = after.last().expect("滚动后必有可见行").0;
+    assert!(
+        deepest_after > deepest_before,
+        "正方向滚动必须把更大索引的行带进控件树（{deepest_before} → {deepest_after}），否则方向语义不成立"
     );
+
+    rig.scroll_wheel(-400.0);
+    assert_eq!(
+        rig.visible_rows(),
+        before,
+        "滚回 −400 ⇒ 快照逐位复原（没有累计漂移）"
+    );
+    assert!(!rig.has_row(ROWS - 1), "回到顶部 ⇒ 末行重新不可寻址");
 }
 
-/// ③：滚到底 ⇒ 末行进入可视区；继续滚 ⇒ 夹紧（位置不变）。
+/// ③：滚到底 ⇒ 末行可达；继续滚 ⇒ 夹紧（快照不变）。
 #[test]
 fn scrolling_to_the_end_clamps_and_reveals_the_last_row() {
-    let mut rig = Rig::with_project(project_with_19_extra_tracks());
+    let mut rig = Rig::with_project(project_with_24_extra_tracks());
 
     rig.scroll_wheel(100_000.0);
 
     let rows_top = rig.rows_top();
-    let top = rig.y_of("track-0-header");
-    let last = rig.y_of("track-19-header");
     let window_height = i32::try_from(WINDOW.height).expect("窗口高可转 i32");
+    assert!(!rig.has_row(0), "滚到底后首行被裁出行区（不可寻址）");
     assert!(
-        top < rows_top,
-        "滚到底后首行应被裁到行区上沿之上（y={top}）"
+        rig.has_row(ROWS - 1),
+        "滚到底后末行必须进入控件树（可达）—— 本片的产品面"
     );
+    let last = rig.y_of(&format!("track-{}-header", ROWS - 1));
     assert!(
         (rows_top..window_height).contains(&last),
-        "滚到底后末行顶沿必须落在窗口内（y={last}）"
+        "滚到底后末行顶沿必须落在行区内（y={last}）"
     );
 
+    let snapshot = rig.visible_rows();
     rig.scroll_wheel(100_000.0);
-    assert_eq!(rig.y_of("track-0-header"), top, "到底之后不再移动（夹紧）");
-    assert_eq!(
-        rig.y_of("track-19-header"),
-        last,
-        "到底之后不再移动（夹紧）"
-    );
+    assert_eq!(rig.visible_rows(), snapshot, "到底之后不再移动（夹紧）");
 }
 
 /// ④：滚动只动行区 —— 标尺与章节卡片的 y 逐位不变。
 #[test]
 fn scrolling_does_not_move_the_ruler_or_the_section_cards() {
-    let mut rig = Rig::with_project(project_with_19_extra_tracks());
+    let mut rig = Rig::with_project(project_with_24_extra_tracks());
     let ruler_before = rig.y_of("arrangement-ruler");
     let card_before = rig.y_of("section-0-card");
 
