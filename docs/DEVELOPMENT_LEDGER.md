@@ -17656,3 +17656,26 @@ helper 里 ⇒ 必须不认（防假绿）。两条臂在旧实现上都会失�
   合并面 = `output_schema.rs` +398／`props_176.rs` +24，与 `151e2029` 的 `threads` 批**无文件重叠**（预期兑现，无冲突）。
 - ⚠ **s30 这条线一共三枚提交、两枚判红**，红点分别是 `json!` 宏递归上限（lib 面）与临时值借用（测试面）——
   两条都不是语义缺陷，但**都足以让整批判据一条不跑**。这正是 §6.3 第 4 条"判据名没出现＝没跑到"的两种新形态。
+
+### 22.30 ⭐ s30 合流 run `41246376638` = **success**（这棵树第一次把 s30 代码与 `threads` 批放在一起编译）＋ 树已拆、s31 的前置读数已核过
+
+- **判决**：`b008fd49`（= 合并提交 `90528095` + 四枚文档批）的 run **`41246376638`** = `completed / success`。
+  `plan` 现读给 **`["yeban-mcp", "yeban-ui-mcp"]` + `workspace_wide: false`** ⇒ 两枚窄腿真跑
+  （`rust (yeban-mcp)` 15 步／`rust (yeban-ui-mcp)` 15 步），`checks`(19)／`deny`／`lockfile`／`e2e`(9)／`macos`(18)／`windows`(18) 全 `success`，
+  宽腿 `skipped` ⇒ ⛔ 本轮不引用 `518 / 7 243` 那组全量基线（它属于 `151e2029` 那次真跑的宽腿）。
+- ⭐ **这条合流才是"组合"的第一次判决**：`41238224956` 只证了 s30 代码 × 旧基线，`41237762943` 只证了 `threads` 批 × 旧基线；
+  两者**同树编译**发生在 `41246376638` ⇒ 结论：`output_schema.rs` 的名册与 `data.request.threads` 这个新回显键**互不干扰**
+  （`request` 那一槽本轮仍声明为裸 `{"type":"object"}`，所以新键不会撞 `required`）。
+- **树已拆**：`worktree.sh rm s30-items-shapes --purge` ⇒ 自动补归档标签 **`line-archive/s30-items-shapes @ 539cc5c9`**（先保全再删），
+  本地分支 `line/s30-items-shapes` 删除；`git worktree list` 现读只剩主干一棵。task #105 收盘。
+- ⭐ **s31 的前置读数（已逐字复核装配点，⛔ 不采信二手摘要）**：唯一拼装点 = `RenderArtifact::details()`（`domain/render.rs:2233`，
+  被 `preview()` `:2492` 与 `response_data()` `:2514` 共用）。逐槽键数现读为
+  `request` **14**（含 `threads`，`Option<usize>` ⇒ `["integer","null"]`）／`probability` **5**／`ratchet` **8**／
+  `audio` **8**（内层还有 `resampler` 2 键、`bitExactness` 2 键、`assets[]` 元素名册 = 第二批）／`peak` **8**／
+  `normalize` **6**／`loudness` **11**／`bwf` **6**／`midiSource` **7**／`contributionsBasis` **8**。
+  两处**如实留弱**并已定理由：`unsupportedCounts` 是**开放映射**（键 = `KNOWN_UNSUPPORTED_KEYS` 的动态子集、可为 `{}`，
+  收紧它要 `additionalProperties`/`propertyNames` = §22.22 路线甲那半件事），`ops` 沿用 §22.20 的裁决。
+- ⚠ **一处代理报告的误并已被核掉**（留痕，因为这类错误会一路长进契约里）：
+  它把 `LoudnessTarget::failure()`（`render.rs:976`，那是 `RENDER_FAILED` 的**带内错误载荷**：`reason`/`algorithm`…）
+  当成了 `data.loudness` 的键。现读 `to_value()`（`:933`）= 11 键、**没有** `reason` ⇒ 若照抄，`required` 会把真实响应判红。
+  ⇒ 纪律再补一句：**子代理给的键名清单必须先对上"响应面 vs 错误面"这两个不同的装配点**，⛔ 同名结构体的两个 `json!` 不是同一份名册。
