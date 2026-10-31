@@ -17091,3 +17091,27 @@ helper 里 ⇒ 必须不认（防假绿）。两条臂在旧实现上都会失�
   `checks` 作业里新增那一步「warnings 名册对账 …」必须 `completed / success`，⛔ 只看整体 success 不收。
   主线上同一时刻的纯文档 run `41218242390`（`ce8edd84`）= `completed / success`。
 
+### 22.14 收盘时的在飞状态与**接手的三条命令**（2026-10-31 16:18Z，会话预算接近上限）
+
+- **唯一在飞判决**：s28 线 `a5ece833`（`line/s28-warning-code-contract`）的宽运行 run **`41218201348`**。
+  ⏳ 到本节写入时仍 `in_progress` ⇒ 状态一律记 **pending**，⛔ 写成"通过"。
+- **land 面已预检**（现读，非记忆）：`origin/main` = 本地 main = `cf1d5a15`；线改动面 **3 文件 98 行全为新增**
+  （`ci.yml` +5／`schemas/mcp-tools.schema.json` +11／`scripts/guards/check_warning_codes.py` +82），
+  与 `cf1d5a15`（只改本文件）**无同文件交集** ⇒ 合并无冲突面，但 main 已前移，`land` 会产生合并提交（⛔ 期待快进）。
+- **接手三条**（判据读回后才允许 land）：
+  1. `gh run view 41218201348 --json status,conclusion,jobs --jq '.jobs[] | .name + " | " + .status + " | " + (.conclusion // "none")'`
+     —— 要看见 `checks (fmt / 红线守卫 / schema)` = `completed / success`；
+  2. 取该作业 id 后 `gh api repos/gradetwo/yeban/actions/jobs/<id> --jq '.steps[] | select(.name|test("名册对账")) | .name + " => " + .conclusion'`
+     —— 这一步必须 `success`（§22.12 的口径：⛔ 只看整体 success 不收，整体 success 但本步 skipped 也不算）；
+     全量腿另按 §0.6.0y 的口径读数（`test result:` 行数／`FAILED` 行数／passed 合计，⛔ `Running tests/` 在全量腿为 0）；
+  3. 三条都对得上才：`scripts/dev/worktree.sh land s28-warning-code-contract` → `git push origin main:main`
+     → `scripts/dev/worktree.sh rm s28-warning-code-contract --purge` → 读本条 merge run 的 `headSha` 读数并补进本节。
+- **本机环境事实**（不是缺陷，别再误读成红）：本机 `python3` **没有 pip**，且 `jsonschema`／`yaml` 两个模块都缺
+  ⇒ `scripts/gates/validate_schemas.py` 本机 `rc=2`、`scripts/guards/check_workflow_structure.py` 本机 `ModuleNotFoundError`（`rc=1`）。
+  这两条**本机不可判**，判决只能来自 CI 的对应步骤。我自己的 `check_warning_codes.py` 本机 `rc=0`，
+  它同时证明了 schema 的 **JSON 语法**与 `definitions.WarningCode.enum` 这条**路径可读**（这是 jsonschema 之外我能机械证明的全部）。
+- **s28 第一片的边界，说清楚**：名册进了契约，但现读 `grep -n '"warnings"' schemas/mcp-tools.schema.json` = **0 处**
+  ⇒ **没有任何工具的 outputSchema 引用它**，响应形状仍未被约束，CI 第 16 步（Rust 样本 ↔ jsonschema）对本通道依旧盲。
+  补齐它记为 task **#103**（含一条新判据：`WarningCode` 必须被至少一处 `$ref` 引用，否则定义就是 §22.8 那种死名册）；
+  ⛔ 不许把本片叠在判决未回的同一条线上（未证提交不堆叠），落地拆树后另起新线做。
+
