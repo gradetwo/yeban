@@ -1666,7 +1666,16 @@ fn three_voice_bass_sits_in_the_low_register() {
 }
 
 /// ⭐ **常驻判据（钉住"当前状态"，⛔ 不是愿望）**：`yeban_propose_section` 生成的每一条
-/// 声部音轨都**带着音符**，却**一条设备都不带** ⇒ 这些音符在 `render_master` 里发不出声。
+/// 声部音轨都**带着音符**，却**一条设备都不带** ⇒ 骨架⛔ 没有为任何声部选定音色，
+/// 这些音符落到的源种类是**内置 engine 音色**。
+///
+/// ⚠ 本段注释此前写的是"这些音符在 `render_master` 里**发不出声**" —— ⛔ **那是假话**，
+/// 已由现读推翻（2026-10-31）：`crates/yeban-mcp/src/domain/render.rs:3826-3838` 的源种类判定里，
+/// `(未绑采样器, 有音符, 无音频片段)` 给出的 `kind` 是 `SOURCE_KIND` = `"engine-instrument"`，
+/// 而 `render.rs:601-604` 注明自 `ADR-0011`（`#268`）起 MIDI 音源已换成 `yeban-engine` 的
+/// `SynthEngine`（与界面／CLI **同一个**音色）；`SILENT_SOURCE_KIND` = `"silent"` 只留给
+/// "**既没有音符也没有可渲染音频片段**"的源（`render.rs:612`）。
+/// ⇒ **零设备 ≠ 静音**；真实缺口只是"没有逐声部的音色选择"那一半。
 ///
 /// 为什么值得钉住：`docs/DEVELOPMENT_LEDGER.md` §22.5 的现读是 `section_build.rs` 全文
 /// （4387 行）里 `device`／`Device`／`InternalInstrument`／`insertDevice`／`osc1_wave`
