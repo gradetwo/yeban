@@ -292,16 +292,33 @@ fn seeking_from_the_ruler_keeps_the_transport_state() {
         "夹具前置：必须在播放中"
     );
 
+    let before = rig.engine.borrow().transport();
     rig.click_ruler(rig.bar_line_px(4));
+    let after = rig.engine.borrow().transport();
 
     assert!(
-        rig.engine.borrow().transport().state.is_running(),
+        after.state.is_running(),
         "点标尺之后必须仍在播放 —— seek 只搬位置（`TransportCommand::SeekTicks` 的既有语义）"
     );
+    // 播放中 seek 在**量子边界**生效，而 `send_transport` 为让它生效会推进一个量子
+    // （`EngineHost::send_transport`），所以读回的位置是"目标 + 这一次量子的推进量"，
+    // 不是目标本身。判据因此量的是：落在目标之上，且**没有越过**这次泵送推进的量。
+    let target = 4 * rig.view.borrow().bar_length_ticks;
+    let advanced = after.ticks_advanced.saturating_sub(before.ticks_advanced);
     assert_eq!(
-        rig.position(),
-        4 * rig.view.borrow().bar_length_ticks,
-        "播放中定位同样生效"
+        rig.last_command(),
+        Some(TransportCommand::SeekTicks(target)),
+        "点标尺必须把目标 tick 交给走带（⛔ 不是另造一条定位路径）"
+    );
+    assert!(
+        after.position_ticks >= target,
+        "播放中定位同样生效：位置必须到达目标 tick {target}（实得 {}）",
+        after.position_ticks
+    );
+    assert!(
+        after.position_ticks <= target + advanced,
+        "位置只允许越过目标一个泵送量：目标 {target} + 本次推进 {advanced} ≥ 实得 {}",
+        after.position_ticks
     );
 }
 
