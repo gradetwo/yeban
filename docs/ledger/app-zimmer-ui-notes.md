@@ -37,6 +37,7 @@
 | `U-16` 运行时没有打开入口 | 本线已有 `Cmd/Ctrl+O` 切片（`554eaaa4`，复用既有打开入口）；报告探针走测试口的打开路径 ⇒ 产品内打开的最终证明在 `Cmd/Ctrl+O` 的判据与读回，不在本台账重复 |
 | `N-UI-1` 控件树只含视口内条目 | 测试能力缺口（窗口化控件树），不是产品缺陷；⛔ 在 UI 线顺手改测试口。它暴露的**产品面**（行区无滚动 ⇒ 后面的行不可达）已在 §3 单独落地 |
 | `N-UI-2` 循环重复没有 UI 表示 | 需要先回答"循环区域画成什么"（`ADR-0010` 只定坐标语义），属视图设计缺口 |
+| `U-13` 三个"画了但无动作"的控件 | 报告只给结论未点名；现读即 `KNOWN_ACTIONLESS_CONTROLS` 的 **3** 条（`ai-rail-intent-button` / `transport-commit-button` / `transport-branch-button`），处置已由 **`HD-72` / `ADR-0052`** 登记且**未决**（维持现状 is 当前处置）⇒ ⛔ 本线不自行选产品姿态 |
 
 ## 3. 后续切片：编排行区**纵向滚动**（`N-UI-1` 的产品面）
 
@@ -46,7 +47,7 @@
 
 | 落点 | 改动 | 规范 ID | 判据 |
 | :--- | :--- | :--- | :--- |
-| `ui/workspace/arrangement_view.slint` | 五个行锚定层（包头 / 车道 / 剪辑 / 拖动面 / 自动化带）包进 `Flickable`（`viewport-width: self.width` 只滚纵向；子元素 y 减 `rows-top`）＋ 新输入 `sheet-height` | `UI-NOTE-001` | `tests/arrangement_vertical_scroll.rs` |
+| `ui/workspace/arrangement_view.slint` | 五个行锚定层（包头 / 车道 / 剪辑 / 拖动面 / 自动化带）包进 `Flickable`（`content-width: self.width` 只滚纵向；子元素 y 减 `rows-top`；⚠ 必须写 `content-*`，`viewport-*` 是 `@deprecated` 别名，绑定挂在别名上会被上游 flickable pass 的自动生成内容高顶掉 ⇒ 滚轮恒被忽略）＋ 新输入 `sheet-height` | `UI-NOTE-001` | `tests/arrangement_vertical_scroll.rs` |
 | `ui/app.slint` | 根属性 `arrangement-sheet-height` 转发 | — | 同上 |
 | `src/bridge.rs` / `src/host.rs` | `ViewState::track_sheet_height()`（最后一行底沿 − 行区上沿）→ `apply_row_geometry` 注入 | `MODEL-AST-002`（投影派生，⛔ 界面算术） | 同上 |
 
@@ -65,7 +66,37 @@
 可立即读几何）；⛔ 横向（仍归宿主的 `scroll-x`，见账本第 199 轮"双重计算"教训）；
 ⛔ 拖动滚动条 / 触摸惯性。`Flickable` 没有 `accessible-id` ⇒ 控件树不新增节点。
 
-## 4. 本机真跑 vs CI
+## 4. 本片第一票红与根因（run `41208446082`，macOS 腿）
+
+`wheel_scroll_moves_rows_up_by_the_delta` 报 `left: 90 / right: -310`（首行一位不动）、
+`scrolling_to_the_end_clamps_and_reveals_the_last_row` 报"滚到底后首行仍可达"——**两条红的
+形态相同：滚轮根本没生效**，不是"滚了但幅度不对"。
+
+逐段排除后定位到 `.slint` 的属性名：
+
+- 上游 `Flickable::is_allowed_scroll_direction`（`items/flickable.rs`）要求
+  `content_height > 自身 height`，否则 `process_wheel_event` 直接 `EventIgnored` 并**转发给父级**
+  ⇒ 内容高不够时，滚轮是**静默无效**的（不报错、不警告）。
+- `viewport-width/height` 在 1.18.1 是 `content-*` 的 `@deprecated` 别名
+  （`builtin_elements.rs`），而 `passes/flickable.rs` 的 `fixup_geometry` 用
+  `is_binding_set("content-height")` 判断"有没有显式绑定"来决定是否自动生成内容高；
+  该 pass 跑在 `passes/remove_aliases.rs`（`passes.rs` 第 173 行 vs 第 247 行）**之前** ⇒
+  写在别名上的绑定它读不到，于是装上自动绑定（自动值 = 容器自身高，且 `for` 循环子元素
+  不参与计算 = 上游 issue #407），随后别名折叠时显式值可能被顶掉。
+- 排除项（都核过源码/现读代码）：`PointerScrolled` 的 `Cancelled` 相位确实**直接 set**、
+  无动画（`api.rs` → `flickable.rs`）；宿主注入链 `host.rs → bridge.rs → app.slint → arrangement_view.slint`
+  逐级都在；界面内没有任何 `scroll-event` 处理器 ⇒ `TouchArea` 对滚轮返回 `Reject`，不会吞事件。
+
+⇒ 修法是**把绑定写回规范名 `content-*`**，并加判据⑥把"内容高注入到位且高出窗口"钉成前置：
+以后这一环再断，日志会直接指出是注入断了还是容器没接住，而不再是"y 不动"这种两解的读数。
+
+另有一处判据松绑：交集行数下限 `>= 8` 改 `>= 5`——滚动 400px 后**顶部**若干行会被裁出树，
+交集大小由"可视行数 − 滚掉的行数"决定，8 是照抄未滚动时的读数，不是语义要求。
+
+教训（可复用）：**用 `@deprecated` 别名绑定属性，等于把一个显式值交给上游 pass 的执行顺序去猜**。
+凡上游 pass 会按属性名自动补绑定的元素（`Flickable` 的内容尺寸即其一），一律写规范名。
+
+## 5. 本机真跑 vs CI
 
 - 本机：`rustfmt --check`、守卫脚本。Slint 重依赖编译与判据执行一律交 CI（`AGENTS.md` §5）。
 - 判决只认 CI 读回；未读回一律 `pending`，⛔ 写成"通过"。判绿需确认目标二进制**真的执行过**

@@ -69,7 +69,7 @@ export component ArrangementView inherits Rectangle {
     in property <[length]> track-ys: [];
     in property <[length]> track-heights: [];
     // ⭐ 行区**内容高度**（逻辑像素；宿主由行几何现算注入）。它只决定
-    // `Flickable` 的 `viewport-height`：内容不高出可视区 ⇒ 偏移恒 0 ⇒ 默认帧逐像素不变。
+    // `Flickable` 的 `content-height`：内容不高出可视区 ⇒ 偏移恒 0 ⇒ 默认帧逐像素不变。
     // ⛔ 界面不自己求和 —— 与 `track-ys` 一样是投影读数。
     in property <float> sheet-height: 0.0;
     // 行区上沿（章节卡片 20px + 标尺带 22px）。投影的行 y 以它为原点
@@ -341,12 +341,20 @@ export component ArrangementView inherits Rectangle {
     //
     // 缺口：行区此前是**固定**的 —— 轨道多到超出可视高度后，第 N 行之后既点不到也
     // 看不到（真实工程 28 轨时只有前 ~8 行可达）。本容器只做**纵向**偏移：
-    // `viewport-width: self.width` ⇒ 横向不动（横向仍归宿主 `scroll-x`，见卷帘的
+    // `content-width: self.width` ⇒ 横向不动（横向仍归宿主 `scroll-x`，见卷帘的
     // 第 199 轮教训：⛔ 不让 Flickable 与宿主偏移双重计算）。
+    //
+    // ⚠ 必须写 `content-*` 而不能写 `viewport-*`（后者是前者的 `@deprecated` 别名）：
+    //   上游 `flickable` 编译 pass 跑在 `remove_aliases` **之前**，它按名字判断
+    //   `content-height` 上有没有显式绑定来决定是否自动生成内容高（自动值 = 容器自身高，
+    //   `for` 循环子元素不参与，即上游 issue #407）。绑定写在别名上 ⇒ 该检查读不到 ⇒
+    //   自动绑定照样装上，随后别名折叠时两个绑定合并、显式值可能被丢弃 ⇒ 内容高恒等于
+    //   可视高 ⇒ `is_allowed_scroll_direction` 恒 false ⇒ **滚轮被忽略并转发给父级**。
+    //   实测代价：run 41208446082 两条判据红（首行 y 一位不动）。
     //
     // - 滚轮由上游 `Flickable` 处理（`PointerScrolled` 的 `Cancelled` 相位是**直接
     //   set**、无动画 ⇒ 判据可立即读到新几何）；触摸拖动需要 `interactive`。
-    // - `viewport-height` 取 `max(可视高, 注入的行区内容高)`：演示工程（6 轨）内容不高
+    // - `content-height` 取 `max(可视高, 注入的行区内容高)`：演示工程（6 轨）内容不高
     //   ⇒ 偏移恒 0、没有滚动条、默认帧逐像素不变。
     // - 容器**没有** `accessible-id` ⇒ 不进控件树（`inspect.rs`：不可寻址的节点不登记）。
     // - 子元素的 y 是**行区局部坐标**（投影的 y 减 `rows-top`）；⛔ 界面不重算行几何，
@@ -356,8 +364,8 @@ export component ArrangementView inherits Rectangle {
         y: root.rows-top;
         width: parent.width;
         height: parent.height - root.rows-top;
-        viewport-width: self.width;
-        viewport-height: max(self.height, root.sheet-height * 1px);
+        content-width: self.width;
+        content-height: max(self.height, root.sheet-height * 1px);
         interactive: true;
 
     // ---------------------------------------------------------------- 轨道包头列

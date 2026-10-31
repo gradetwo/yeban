@@ -5,7 +5,7 @@
 //! `ui/workspace/arrangement_view.slint` 的行区此前是**固定高度**的：轨道数超过可视
 //! 行数之后，第 N 行之后既看不到也点不到（真实工程 28 轨时只有前 ~8 行可达）。
 //! 本片把五个行锚定层（包头 / 车道 / 剪辑 / 剪辑拖动面 / 自动化带）包进一个
-//! `Flickable`，并新增注入属性 `sheet-height`（行区内容高）作为 `viewport-height`。
+//! `Flickable`，并新增注入属性 `sheet-height`（行区内容高）作为 `content-height`。
 //!
 //! ## 判据
 //!
@@ -16,12 +16,13 @@
 //! | ③（滚到底 ⇒ 末行可达，且夹紧） | 大幅滚动 ⇒ `track-29-header` 可寻址且 y 落在行区内；再滚一次快照逐位不变（`ensure_in_bound`） |
 //! | ④（标尺 / 章节卡片不动） | 滚动只动行区：`arrangement-ruler` 与 `section-0-card` 的 y 逐位不变 |
 //! | ⑤（内容不高 ⇒ 一位不动） | 演示工程（6 轨）滚轮 ⇒ 所有包头 y 不变（默认帧 / golden 不漂移） |
+//! | ⑥（前置：内容高注入到位） | 主窗口的 `arrangement-sheet-height` = 夹具最后一行底沿 − 行区上沿，且**高出窗口** —— 没有它，上游 `Flickable` 的 `is_allowed_scroll_direction` 恒 false ⇒ 滚轮被**静默忽略并转发给父级**（run 41208446082 的两条红正是这条断链的形态） |
 //!
 //! ## 边界（不许当成已证）
 //!
 //! - ⛔ 不证"拖动滚动条"：本片只接**滚轮**（上游 `Flickable` 的 `PointerScrolled`
 //!   在 `Cancelled` 相位是直接 set、无动画 ⇒ 判据可以立即读几何）。
-//! - ⛔ 不证横向滚动：`viewport-width: self.width` ⇒ 横向恒为 0（横向仍归宿主的
+//! - ⛔ 不证横向滚动：`content-width: self.width` ⇒ 横向恒为 0（横向仍归宿主的
 //!   `scroll-x`，见账本第 199 轮"Flickable 与宿主偏移会双重计算"）。
 //!
 //! ## 为什么判据不直接读"末行的 y"
@@ -141,6 +142,54 @@ impl Rig {
             .is_some()
     }
 
+    /// 宿主注入到主窗口的行区内容高（`.slint` 拿它当 `content-height` 的原料）。
+    ///
+    /// ⚠ 这里读的是**注入属性**，不是 `content-height` 本身：`.slint` 侧必须写规范名
+    /// `content-*`，不能写 `@deprecated` 别名 `viewport-*` —— 上游 `flickable` 编译
+    /// pass 跑在别名折叠**之前**，它按名字检查 `content-height` 有没有显式绑定来决定
+    /// 是否自动生成内容高（自动值 = 容器自身高）；绑定挂在别名上时它读不到，于是装上
+    /// 自动绑定，我们的显式值在合并时可能被丢弃 ⇒ 内容高恒等于可视高 ⇒ 滚轮恒被忽略。
+    fn sheet_height(&self) -> f32 {
+        self.port.ui().get_arrangement_sheet_height()
+    }
+
+    /// 夹具应有的内容高：最后一行底沿 − 行区上沿（与 `bridge::track_sheet_height` 同式）。
+    fn expected_sheet_height(&self) -> f32 {
+        let last = self.view.tracks.last().expect("夹具至少一行");
+        (last.y + last.height) - yeban_app::automation::TRACK_LANE_TOP_PX
+    }
+
+    /// 判据⑥：滚轮语义的前置条件 —— 内容高注入到位，且**高出窗口**。
+    fn assert_content_overflows(&self) {
+        let injected = self.assert_injected();
+        let window_height = f32::try_from(WINDOW.height).expect("窗口高可转 f32");
+        assert!(
+            injected > window_height,
+            "夹具内容高 {injected} 必须高出窗口 {window_height}，否则滚动容器不成立"
+        );
+    }
+
+    /// 判据⑤的前半：内容高注入到位，且**不高出窗口** ⇒ 偏移恒 0。
+    fn assert_content_fits(&self) {
+        let injected = self.assert_injected();
+        let window_height = f32::try_from(WINDOW.height).expect("窗口高可转 f32");
+        assert!(
+            injected < window_height,
+            "演示工程内容高 {injected} 必须不高出窗口 {window_height}，否则判据⑤证的不是'不溢出'"
+        );
+    }
+
+    /// 注入值必须等于夹具的行几何末沿（同一份投影，不是界面重算的）。
+    fn assert_injected(&self) -> f32 {
+        let injected = self.sheet_height();
+        let expected = self.expected_sheet_height();
+        assert!(
+            (injected - expected).abs() < 1.0,
+            "宿主必须将行区内容高注入主窗口（注入 {injected}，夹具期望 {expected}）"
+        );
+        injected
+    }
+
     fn scroll_wheel(&mut self, delta_y: f32) {
         self.port.window().dispatch(WindowEvent::PointerScrolled {
             position: self.wheel_point,
@@ -156,6 +205,7 @@ impl Rig {
 fn wheel_scroll_moves_rows_up_by_the_delta() {
     let mut rig = Rig::with_project(project_with_24_extra_tracks());
     assert_eq!(rig.view.tracks.len(), ROWS, "夹具必须有 {ROWS} 行");
+    rig.assert_content_overflows();
 
     let before = rig.visible_rows();
     assert!(!before.is_empty(), "首行必须可达");
@@ -178,8 +228,8 @@ fn wheel_scroll_moves_rows_up_by_the_delta() {
         })
         .collect();
     assert!(
-        moved.len() >= 8,
-        "两次快照必须有一大段交集才读得出位移（交集只有 {} 行）",
+        moved.len() >= 5,
+        "两次快照必须有一段交集才读得出位移（交集只有 {} 行）",
         moved.len()
     );
     for (index, y_before, y_after) in moved {
@@ -210,6 +260,7 @@ fn wheel_scroll_moves_rows_up_by_the_delta() {
 #[test]
 fn scrolling_to_the_end_clamps_and_reveals_the_last_row() {
     let mut rig = Rig::with_project(project_with_24_extra_tracks());
+    rig.assert_content_overflows();
 
     rig.scroll_wheel(100_000.0);
 
@@ -235,6 +286,7 @@ fn scrolling_to_the_end_clamps_and_reveals_the_last_row() {
 #[test]
 fn scrolling_does_not_move_the_ruler_or_the_section_cards() {
     let mut rig = Rig::with_project(project_with_24_extra_tracks());
+    rig.assert_content_overflows();
     let ruler_before = rig.y_of("arrangement-ruler");
     let card_before = rig.y_of("section-0-card");
 
@@ -256,6 +308,7 @@ fn scrolling_does_not_move_the_ruler_or_the_section_cards() {
 #[test]
 fn short_projects_do_not_scroll() {
     let mut rig = Rig::with_project(demo_project());
+    rig.assert_content_fits();
 
     let before: Vec<i32> = (0..rig.view.tracks.len())
         .map(|index| rig.y_of(&format!("track-{index}-header")))

@@ -3930,7 +3930,7 @@ impl ViewState {
     /// 编排行区的**内容高度**（逻辑像素）：最后一行底沿减行区上沿
     /// （[`crate::automation::TRACK_LANE_TOP_PX`]）。
     ///
-    /// 只喂行区滚动容器的 `viewport-height`：内容不高出可视区 ⇒ 偏移恒 0。
+    /// 只喂行区滚动容器的 `content-height`：内容不高出可视区 ⇒ 偏移恒 0。
     #[must_use]
     pub fn track_sheet_height(&self) -> f32 {
         self.tracks
