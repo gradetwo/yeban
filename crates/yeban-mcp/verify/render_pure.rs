@@ -28,7 +28,15 @@
 // `#[path]` 引入**模型层的真实源文件**，而不是再造一份副本。裸 `rustc` 没有
 // `--extern`，所以用 `extern crate self as …` 把本 crate 同时暴露成那两个
 // 依赖名；`PPQ` 也补齐（模型文件的单元测试写的是 `crate::PPQ`）。
+//
+// ⚠ 这两条别名**只在裸 `rustc` 路径上被用到**：当本文件被当模块引进集成测试
+// （`tests/render_pure_scaffold.rs`）时，实测**父模块的别名对子模块不可见**
+// （`E0433`），子模块会回落到真实依赖 crate ⇒ 别名在该形态下无人使用，而
+// CI 的 `-D rust-2018-idioms` 蕴含 `-D unused-extern-crates` ⇒ 不加 `allow`
+// 就是编译错误（run `41174625360` 实测）。两个形态都要能编，故就地 `allow`。
+#[allow(unused_extern_crates)]
 extern crate self as libm;
+#[allow(unused_extern_crates)]
 extern crate self as yeban_model;
 
 /// 裸 `rustc` 的验证专用 shim：生产构建用的是 `yeban-mcp` 依赖里的纯 Rust
