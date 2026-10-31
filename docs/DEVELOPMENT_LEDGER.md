@@ -16587,5 +16587,11 @@ helper 里 ⇒ 必须不认（防假绿）。两条臂在旧实现上都会失�
 - ⚠ **已知小瑕疵（待小线修）**：s16 的 `yeban-theory/tests/assertion_bounds_audit.rs:70` 文档句仍写
   "本 crate 现为空表"，而 `ALLOWLIST` 实际已登记 **5** 条（`drum.rs` 4、`rhythm.rs` 1）。仅注释出错，
   判据行为正确；未混入本批文档提交（会额外拉起 theory 腿）。
+- **九份副本的实现漂移审计（2026-10-31，防下一会话重查）**：按函数名集合比对，8 份是同一套
+  （`function_body`／`has_bound_in`／`negation_shaped`／`every_file_that_contains_all_is_registered` …）；
+  **`yeban-engine` 那份是自建实现**（1411 行 vs 806–900 行）：窗口用 `enclosing_body_start` 取
+  **最内层** 含目标的 fn ＋ `body_lines` 跳过嵌套 fn 跨度 ⇒ 与 s12 修复后的语义**相同**（不是"最近的上方 fn"缺陷形态），
+  另带整数计数四类分类（4／80／2／49 ＝ 135 站点）与 16 条测试臂。**判定：有意分叉，⛔ 不合并、⛔ 不改写**；
+  本次只比对函数名集合，**没有**逐行比对正文（如实登记）。
 - ⇒ R115 家族至此覆盖 `yeban-{mcp,dsp,app,engine,ui-mcp,midi,midi-io,theory,ui-test-port}` 九 crate；
   `model`／`render`／`sfz`／`decode` 各有**自建**的等价扫描（§18.6 补记），不重复开线。
