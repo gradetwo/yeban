@@ -9124,6 +9124,20 @@ fn apply_action(
             ui.invoke_open_project();
             true
         }
+        // 裸 `R`：录制开 / 关（键位选择见 [`Action::ToggleRecord`]）。
+        //
+        // 三条口径（与走带「录音」按钮逐字一致，⛔ 不另写一条录音路径）：
+        // 1. **唯一落点**是 `.slint` 的 `toggle-record` 回调 —— 与「录音」按钮**同一个**入口；
+        //    设备源 / 预录静音 / 落盘 / 回执全在 `wire_transport` → `wire_record_at` 那一个实现里；
+        // 2. **不持有引擎借用**：录音不在 `action_needs_engine` 的集合里 ⇒ 这里不会撞上
+        //    `RefCell already borrowed`；录音器自身的重入防线在 `wire_record_at`（`try_borrow_mut`
+        //    借不到 ⇒ 一行 stderr ＋ 本次按键无效，⛔ 不 panic）；
+        // 3. **结果由回执通道解释**：起录失败（设备打不开）由 `RecordOutcomePort` 响亮回报，
+        //    本臂不二次解释 ⇒ 恒消费这一键（"这一键有意义"与"这次录音成功"不是一回事）。
+        Action::ToggleRecord => {
+            ui.invoke_toggle_record();
+            true
+        }
         // `[UI-NOTE-005]` §3.5 项 1–2：方向键把**当前选区**按一档步长平移 / 移调。
         //
         // 语义（五条都是决定, 不是意外）：

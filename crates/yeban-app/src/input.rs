@@ -195,6 +195,8 @@ pub enum PhysicalKey {
     KeyN,
     /// `O` —— 与 `Cmd/Ctrl` 组合打开工程。
     KeyO,
+    /// `R` —— 裸键拨**录制**开 / 关（走带「录音」按钮的键盘入口，界面决定）。
+    KeyR,
     /// `1`–`5` —— 卷帘工具矩阵。
     Digit(u8),
     /// `[` —— 切到主线版本试听。
@@ -240,6 +242,7 @@ impl PhysicalKey {
             Self::KeyS => LogicalKey::Character('s'),
             Self::KeyN => LogicalKey::Character('n'),
             Self::KeyO => LogicalKey::Character('o'),
+            Self::KeyR => LogicalKey::Character('r'),
             Self::Digit(digit) => {
                 LogicalKey::Character(char::from_digit(u32::from(digit), 10).unwrap_or('\u{0}'))
             }
@@ -720,6 +723,25 @@ pub enum Action {
     /// ⚠ **取消不是失败**（`wire_open_project` 的口径）：对话框回 `None` ⇒ 一位不动、
     /// 不写回执。成功 / 失败由既有的 `module-status` 回执如实回报（屏读器可达）。
     OpenProject,
+    /// `R`: 录制开 / 关（走带「录音」按钮的键盘入口，**界面决定**，⛔ 不是规范点名）。
+    ///
+    /// 落点是 `host::apply_action` 的同一个臂 ⇒ `ui.invoke_toggle_record()` ⇒
+    /// `host::wire_record_at` 装的**唯一**回调（与「录音」按钮是**同一个**入口；
+    /// 起录 / 停录、设备源、预录静音、落盘与回执全在那一个实现里）。
+    /// ⛔ 本动作**不**另写录音路径。
+    ///
+    /// ## 键位选择（三条事实，⛔ 不猜）
+    ///
+    /// 1. 裸 `r` 此前落在 `resolve_logical` 第 6 步的 `_ => PassThrough`（实测：`input.rs`
+    ///    的任何一步都没有 `r`）⇒ 加它**不覆盖**任何既有绑定 —— 与裸 `m` / `s` 同一种选法；
+    /// 2. `command()` 分支里也没有 `r` ⇒ `Cmd/Ctrl+R` 仍**放行**（"重载 / 刷新"之类的
+    ///    是另一套界面决定，⛔ 不顺手发明）；
+    /// 3. 文本框聚焦时整体放行（策略表第 2 步）—— 与裸 `M` / `S` 同一口径。
+    ///
+    /// ⚠ 录音**失败 / 设备打不开**由既有回执通道如实回报（`RecordOutcomePort`）；
+    /// 录音器正被同一线程借用（重入）时 `wire_record_at` 打一行 stderr 并令本次无效
+    /// （⛔ 不 panic）。两种结果都发生在**回调里**，本动作不二次解释 ⇒ 恒消费这一键。
+    ToggleRecord,
     /// `Delete`/`Backspace`: 删除选中的音符 / 选区 / 音轨。
     DeleteSelection,
     /// `[UI-NOTE-005]` §3.5 项 1–2：把**当前选区**的音符按一档步长平移。
@@ -1102,6 +1124,9 @@ impl InputContext {
             // 占用（上面第 3 步），`s` 一处未占 ⇒ 加进来不动任何既有绑定。
             Key::Character('m') => Resolution::Action(Action::ToggleTrackMute),
             Key::Character('s') => Resolution::Action(Action::ToggleTrackSolo),
+            // 走带「录音」按钮的键盘入口（界面决定，见 [`Action::ToggleRecord`]）。
+            // 裸 `r` 此前落到本步的 `_ => PassThrough`（任何一步都没有 `r`）⇒ 不加修饰也不冲突。
+            Key::Character('r') => Resolution::Action(Action::ToggleRecord),
             Key::Character('z') => Resolution::Action(Action::ZoomToSelection),
             Key::Character('[') => Resolution::Action(Action::AuditionMain),
             Key::Character(']') => Resolution::Action(Action::AuditionProposal),
@@ -1128,14 +1153,15 @@ mod tests {
         AcceptAiSuggestion, AuditionMain, AuditionProposal, Cancel, DeleteSelection, Duplicate,
         GoToBeginning, NudgeMixerChannel, NudgeSelection, OpenProject, OpenTimeMachine, PlayPause,
         Redo, ResizeSelectionDuration, ResumeFromCursor, SaveProject, SelectTool, ShowView,
-        ToggleConsoleMaximize, TogglePencilTool, ToggleSidebar, ToggleTrackMute, ToggleTrackSolo,
-        ToggleView, Undo, ZoomToFit, ZoomToSelection,
+        ToggleConsoleMaximize, TogglePencilTool, ToggleRecord, ToggleSidebar, ToggleTrackMute,
+        ToggleTrackSolo, ToggleView, Undo, ZoomToFit, ZoomToSelection,
     };
     use Focus::{MainCanvas, Other, TextInput};
     use MixerParam::{Pan, Volume};
     use PhysicalKey::{
         Backspace, BracketLeft, BracketRight, Delete, Digit, DownArrow, Enter, Escape, F5, F6,
-        KeyB, KeyD, KeyH, KeyM, KeyN, KeyO, KeyS, KeyZ, LeftArrow, RightArrow, Space, Tab, UpArrow,
+        KeyB, KeyD, KeyH, KeyM, KeyN, KeyO, KeyR, KeyS, KeyZ, LeftArrow, RightArrow, Space, Tab,
+        UpArrow,
     };
     use Resolution::{Action as Act, ConsumedByIme, PassThrough};
 
@@ -1418,6 +1444,32 @@ mod tests {
 
         // ③ 文本框聚焦：整体放行。
         assert_eq!(text_field().resolve(KeyO, Modifiers::ctrl()), PassThrough);
+    }
+
+    /// 判据：裸 `R` = 录制开 / 关（**界面决定**，⛔ 不是规范点名），且不扰动邻居。
+    ///
+    /// 三条子句：
+    /// 1. **两条入口同解**为 [`Action::ToggleRecord`]（物理码 / 逻辑键 —— `N2` 裁决 (1)）；
+    /// 2. 带修饰的 `R` 一位不动：`Cmd/Ctrl+R` / `Shift+R` / `Alt+R` 仍**放行**
+    ///    （"重载 / 刷新"之类是另一套界面决定，⛔ 不顺手发明）；
+    /// 3. 文本框聚焦时整体放行 —— 与裸 `M` / `S` 同一口径。
+    #[test]
+    fn bare_r_toggles_record_and_does_not_disturb_its_neighbours() {
+        // ① 物理码入口与逻辑键入口同解。
+        assert_eq!(canvas().resolve(KeyR, Modifiers::none()), Act(ToggleRecord));
+        assert_eq!(
+            canvas().resolve_logical(LKey::Character('r'), Modifiers::none()),
+            Act(ToggleRecord)
+        );
+
+        // ② 带修饰的变体不动。
+        assert_eq!(canvas().resolve(KeyR, Modifiers::ctrl()), PassThrough);
+        assert_eq!(canvas().resolve(KeyR, Modifiers::meta()), PassThrough);
+        assert_eq!(canvas().resolve(KeyR, Modifiers::shift()), PassThrough);
+        assert_eq!(canvas().resolve(KeyR, Modifiers::alt()), PassThrough);
+
+        // ③ 文本框聚焦：整体放行（在输入框里按 `r` 是打字母）。
+        assert_eq!(text_field().resolve(KeyR, Modifiers::none()), PassThrough);
     }
 
     // ---------------------------------------------------------------- 工具矩阵

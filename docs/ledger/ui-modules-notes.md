@@ -25,6 +25,25 @@
 改判据 + 可能重录基准），而是给**已有的** `record_wav.rs` 能力开一个**新的、独立的**
 可见入口。两条各自留痕。
 
+**（2026-10-31 附记，`line/record-key`）** 上文"顶栏录音键不点"是 #88 之前的事实。`#88`
+把 `host::wire_record_at` 接上之后，顶栏 `transport-record-button` 已经落到**同一**回调
+（`src/elements.rs` 的 `the_record_button_has_a_click_handler_and_a_wired_record_callback`
+逐字钉着 `rec_area` 的 `clicked` 必须落到 `root.toggle-record()`）。本切片再补**键盘入口**：
+
+- **键位**：裸 `R`（`Action::ToggleRecord`）。三条事实：① 裸 `r` 此前在
+  `resolve_logical` 的任何一步里都不存在（实测）；② `command()` 分支里也没有 `r` ⇒
+  `Cmd/Ctrl+R` 仍**放行**（"重载 / 刷新"是另一套界面决定，⛔ 不顺手发明）；
+  ③ 文本框聚焦时整体放行（策略表第 2 步）—— 与裸 `M` / `S` 同一口径。
+- **落点只有一个**：`host::apply_action` 的 `ToggleRecord` 臂只做
+  `ui.invoke_toggle_record()` —— 与「录音」按钮是**同一个**回调（`wire_transport` →
+  `wire_record_at`：设备源 / 预录静音 / 停录落盘 / 回执全在那里）。⛔ 没有第二条录音路径。
+- **失败口径**：起录失败由既有 `RecordOutcomePort` 如实回报；录音器正被同一线程借用时
+  `wire_record_at` 打一行 stderr 并令本次无效（⛔ 不 panic）⇒ 本臂恒消费这一键。
+- **判据**：`tests/record_key_ui.rs`（活窗口上装根回调计数器：裸 `R` ⇒ 回调**恰好**一次、
+  连按递增；`Shift` / `Ctrl` / `Alt` 变体放行且不惊动回调）；策略表新行由
+  `tests/cli_contract.rs` 的 B11b 三面一致（表 / 解析 / 宿主）钉住；`src/input.rs` 另有
+  解析级判据 `bare_r_toggles_record_and_does_not_disturb_its_neighbours`。
+
 ## 1. 新增入口与 Element ID 清单
 
 | 入口（可见文案） | Element ID | 角色 | 落点（Rust） |
