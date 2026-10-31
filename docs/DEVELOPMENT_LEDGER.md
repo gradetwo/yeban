@@ -17044,6 +17044,16 @@ helper 里 ⇒ 必须不认（防假绿）。两条臂在旧实现上都会失�
   这是"无衰退"的机械证据，⛔ 不是靠"它绿了"三个字。
 - **纪律闭环**：本批是**别人**落地的合流，我按 §22.10 的规则用 `headSha` 反查它**自己**的 run 读回，
   ⛔ 没有拿我 `116ecd19` 的绿代替；这正是 §22.10 那条更正存在的理由。
+- ⭐ **落地后的本机复验**（树 `ad022d97`，含 `bc01b363` 的代码改动；本机只跑"允许档"：零编译的守卫 ＋ 文件头记录的裸 `rustc --test`）：
+  ① `python3 scripts/guards/check_verify_teeth.py` ⇒ `rc=0`，读数照旧（stdio `check(` 调用点 **7**／具名判据 **7** 条逐名在册／非零退出路径在场；
+  idempotency 侧 `return 1` 与 `ReplayedToolResponse` 在场）；② s26 常驻判据单跑 ⇒ `test result: ok. 1 passed; 0 failed; 48 filtered out`。
+  ⇒ 另一会话的 `yeban-engine` 默认特性关闭**没有**移动本机可判定的这一层；代码层的判决仍以 CI 的 run `41213764737`（success）为准。
+- **给新会话的三个入口**（按优先级）：① s28 立项（读数在 §22.8，task #101）—— ⛔ 契约文件 `schemas/mcp-tools.schema.json` 的改动必须带
+  **集合等式**判据（不是下界），并且要能在本机双向真验（真档 `rc=0` ＋ 掏空档 `rc=1`）再进 `ci.yml`；
+  ② `116ecd19`／`d4bacadd`／`ad022d97` 三枚**纯文档**提交各自的 run 已读回 success（`d4bacadd` = run `41217160672`），
+  `ad022d97` 那枚由新会话按 `headSha` 补读一次即可（预期 2 分钟档、rust 腿 skipped，理由见 §22.10）；
+  ③ 两件人类裁决：task #102（46 枚已并入的 `line/*` 待确认后删，清单 `/tmp/merged_lines.txt`）与 #34（磁盘大头 `~/.cache` 19G／`~/.rustup` 5.2G）。
+
 - 纯文档批 `d4bacadd` 的 run（本次读回时现值）：`d4bacadd 41217160672 completed success`。
   ⚠ 这条是"推送当下"抓的，若其后还有推送，新会话仍应按 `headSha=d4bacadd` 复核一次。
 
