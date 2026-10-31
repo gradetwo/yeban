@@ -469,6 +469,24 @@ fn call(dispatcher: &mut Dispatcher, auth: &str, arguments: Value) -> Value {
     call_tool(dispatcher, auth, "yeban_render_master", arguments)
 }
 
+/// 与 [`call`] 同一条管线，但返回 JSON-RPC 层错误 —— 供 schema 层先于域校验
+/// 拒掉的类型非法输入使用（域内拒绝走 [`assert_domain_error`]，不要混用）。
+fn call_raw_error(dispatcher: &mut Dispatcher, auth: &str, arguments: Value) -> (i64, String) {
+    let line = json!({
+        "jsonrpc": "2.0",
+        "id": "t",
+        "method": "tools/call",
+        "params": {"name": "yeban_render_master", "arguments": arguments}
+    })
+    .to_string();
+    let outcome = dispatcher.handle_line(Channel::Http, Some(auth), &line);
+    let response = outcome.response.expect("必须有响应");
+    match (response.result, response.error) {
+        (None, Some(error)) => (error.code, error.message),
+        other => panic!("期望 JSON-RPC 层错误，实际: {other:?}"),
+    }
+}
+
 /// 与 [`call`] 同一条管线，但**点名**工具（供"先经 `yeban_edit_notes` 写、再渲染"这类
 /// 跨工具判据使用；本文件绝大多数判据只调 `yeban_render_master`，因此 [`call`] 不变）。
 fn call_tool(dispatcher: &mut Dispatcher, auth: &str, name: &str, arguments: Value) -> Value {
@@ -962,12 +980,8 @@ fn threads_param_is_guarded_and_changes_only_time_not_bytes() {
     let out = scratch.join("never.wav");
     let path = out.display().to_string();
 
-    for (threads, label) in [
-        (json!(0), "threads = 0"),
-        (json!(-1), "threads = -1"),
-        (json!("4"), "threads 是字符串"),
-        (json!(1.5), "threads 是非整数"),
-    ] {
+    // 整数越界（0 / 负数）走域校验：带内 INVALID_PARAMETER_RANGE。
+    for (threads, label) in [(json!(0), "threads = 0"), (json!(-1), "threads = -1")] {
         let refused = call(
             &mut dispatcher,
             &auth,
@@ -977,6 +991,23 @@ fn threads_param_is_guarded_and_changes_only_time_not_bytes() {
         assert!(
             format!("{refused}").contains("`threads`"),
             "报文必须点名 `threads`: {refused}"
+        );
+    }
+    // 类型非法（字符串 / 非整数）走 schema 层，先于域校验被拒：JSON-RPC -32602。
+    // ⛔ 不要把这两类也断言成带内 INVALID_PARAMETER_RANGE —— 层级不同，混写必红。
+    for (threads, label) in [
+        (json!("4"), "threads 是字符串"),
+        (json!(1.5), "threads 是非整数"),
+    ] {
+        let (code, message) = call_raw_error(
+            &mut dispatcher,
+            &auth,
+            json!({"format": "wav", "sampleRate": 48000, "threads": threads, "path": path}),
+        );
+        assert_eq!(code, -32602, "{label}: 类型非法必须走 schema 层 -32602");
+        assert!(
+            message.contains("`threads`"),
+            "{label}: 报文必须点名 `threads`: {message}"
         );
     }
     assert!(

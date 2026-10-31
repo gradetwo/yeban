@@ -237,6 +237,7 @@ fn render_one_second(
             use_engine_source: true,
             bit_depth: BitDepth::Int24,
             limiter: false,
+            threads: None,
         },
         None,
         &[(asset.clone(), bytes.to_vec())],
