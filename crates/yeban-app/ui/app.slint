@@ -428,6 +428,20 @@ export component MainWindow inherits Window {
     in-out property <int> sidebar-item: 0;
     in-out property <bool> ai-drawer-open: false;
     in-out property <bool> musical-pr-open: false;
+    // ---- AI 提案抽屉的**读数**（唯一写者 = src/host.rs 的 apply_proposal_drawer）----
+    // 来源是**进程内唯一可变权威**：`ProjectAuthorityHandle::open_proposal_rows()` →
+    // `Domain::open_proposal_rows()`（会话运行态, `MODEL-ISO-001` 第二层）。界面自带
+    // 的默认值全空 ⇒ 没有接来源的装配画空态, 而不是画一份编造的提案。
+    // ⚠ `resolve-available` 现在是**常量 false**：宿主侧没有"合并提案"的写入口
+    // （`HostAction` 只有 Undo/Redo/Commit）, 所以按钮不画、句 reason 上屏。判据见
+    // `src/elements.rs` 的 `the_proposal_drawer_is_written_by_the_host_along_one_path`。
+    in property <int> musical-pr-proposal-count: 0;
+    in property <[string]> musical-pr-proposal-kinds: [];
+    in property <[string]> musical-pr-proposal-titles: [];
+    in property <[int]> musical-pr-proposal-op-counts: [];
+    in property <string> musical-pr-empty-reason: "";
+    in property <bool> musical-pr-resolve-available: false;
+    in property <string> musical-pr-resolve-reason: "";
     // ⭐ 宏面板（右侧抽屉；默认关着 ⇒ 默认帧一位不变）。打开者 = 控制台 Tab 3 的
     // 「宏 (N)」按钮；关闭者 = 抽屉自己的 `close`。
     in-out property <bool> macro-panel-open: false;
@@ -2024,6 +2038,16 @@ export component MainWindow inherits Window {
         width: 360px;
         height: root.height;
         visible: root.musical-pr-open;
+
+        // ⭐ 抽屉的数据面**全部**来自 `MainWindow` 上那七个属性（唯一写者 =
+        // `host::apply_proposal_drawer`）。这里不写任何字面量 —— 界面不自己拼提案。
+        proposal-count: root.musical-pr-proposal-count;
+        proposal-kinds: root.musical-pr-proposal-kinds;
+        proposal-titles: root.musical-pr-proposal-titles;
+        proposal-op-counts: root.musical-pr-proposal-op-counts;
+        empty-reason: root.musical-pr-empty-reason;
+        resolve-available: root.musical-pr-resolve-available;
+        resolve-reason: root.musical-pr-resolve-reason;
 
         accept => {
             root.accept-ai-proposal();

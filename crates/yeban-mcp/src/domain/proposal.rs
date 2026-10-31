@@ -195,6 +195,56 @@ pub fn draft_ops_value(draft: &ProposalDraft) -> Value {
     ops_to_value(&draft.ops)
 }
 
+/// 提案的**只读投影响应**——界面（`crates/yeban-app/ui/dialogs/musical_pr_drawer.slint`）
+/// 的抽屉数据面唯一的来源形状。
+///
+/// ## 为什么另立一个类型, 而不是把 [`Proposal`] 直接交给界面
+///
+/// [`Proposal`] 里有 `Vec<StampedOp>`（一次 16 小节段落提案实测 6,702 字节, 见
+/// [`Proposal::detail`] 的警告）与提交身份 / 时间戳 / 决议说明。界面要画的只有
+/// **类别、标题、条数、op 条数、状态**这五格 —— 把整条记录搬过 `host_domain` 的边界
+/// 就等于让界面去复制一份它不读的大对象。
+///
+/// ## 这个形状里**没有**的字段（这一句是本切片的关键）
+///
+/// 抽屉原先有一格 `confidences`（"每条提案一个百分比置信度"）。⛔ 本类型**刻意不**给
+/// 它一个字段：`grep -rni confidence crates/yeban-mcp/src crates/yeban-model/src
+/// crates/yeban-theory/src` 的实测读数是 **0** 处命中（本段自述是唯一例外）—— 提案记录里
+/// 从来没存在过置信度, 任何百分比都只能是**编造的**。同理没有"轨道号 / 小节号"两格：
+/// 提案承载的是**op 批次**（[`Proposal::ops`]）, 不是单条轨道上的单条剪辑, 界面按提案
+/// 下标算出来的"轨道 i · 小节 i+1"是**下标推导出的假读数**, 这里也不给它字段。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ProposalRow {
+    /// 提案身份的规范文本（`EntityId::to_canonical_string`）。
+    ///
+    /// ⭐ 这就是 `docs/ledger/feature-alignment.md` 那行「最小代价 ①」要的
+    /// **"当前待采纳的提案身份"的只读来源**：`yeban_merge_proposal` /
+    /// `yeban_reject_proposal` 要的 `proposalId` 从这里读, 界面不许自己造。
+    pub id: String,
+    /// 提案类别（`section` / `notes` / `macro` —— [`Proposal::kind`] 原文）。
+    pub kind: &'static str,
+    /// 一句话标题（[`Proposal::title`] 原文, ⛔ 不是界面拼的第二份文案）。
+    pub title: String,
+    /// 生命周期状态的规范文本（[`ProposalStatus::as_str`]）。
+    pub status: &'static str,
+    /// 本提案携带的 op 条数（[`Proposal::ops`] 的长度）。
+    pub op_count: usize,
+}
+
+impl ProposalRow {
+    /// 从一条提案记录投影（**唯一**的投影实现）。
+    #[must_use]
+    pub fn new(record: &Proposal) -> Self {
+        Self {
+            id: record.id.to_canonical_string(),
+            kind: record.kind,
+            title: record.title.clone(),
+            status: record.status.as_str(),
+            op_count: record.ops.len(),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -624,6 +624,19 @@ impl ProjectAuthorityHandle {
         self.server.host_domain(|domain| domain.graph().clone())
     }
 
+    /// 权威的**未合并提案清单**（一份拷贝；只读用途：AI 提案抽屉的数据面）。
+    ///
+    /// 与 `yeban_list_proposals` 用的是**同一个** `Domain::open_proposals` ⇒
+    /// "工具说第 1 条是哪个" 与 "界面把哪个画在第 1 行" 不可能各说一套
+    /// （判据：`crates/yeban-mcp/src/domain/mod.rs` 的
+    /// `the_ui_proposal_rows_and_the_tool_list_share_one_ordering`）。
+    ///
+    /// ⚠ 它**只读**：`host_domain` 的闭包签名里只有 `&Domain`，这里没有一个字节能写。
+    #[must_use]
+    pub fn open_proposal_rows(&self) -> Vec<yeban_mcp::domain::proposal::ProposalRow> {
+        self.server.host_domain(Domain::open_proposal_rows)
+    }
+
     /// **宿主写入口**：把一次 GUI 动作施加到这一个会话上。
     ///
     /// 施加链见 [`ProjectAuthorityHandle`] 的类型文档；成功之后

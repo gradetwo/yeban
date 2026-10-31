@@ -696,7 +696,7 @@ pub enum Action {
     ToggleConsoleMaximize,
     /// `1`–`5`: 切到某个卷帘工具。
     SelectTool(Tool),
-    /// `Shift+Enter`: 原子采纳当前轨道浮现的 AI 建议。⚠ **键已绑定、动作尚无落地实现** —— 宿主 `host::action_has_implementation` 返回 `false`, 因此 `cli.rs` 的快捷表把它标成 `(未实现)` 且这里**不消费**：缺的是**能力**, 界面侧没有"当前待采纳的提案身份"这一表示 (`ui/dialogs/musical_pr_drawer.slint` 的四个数据面属性默认**全空**、没有任何宿主写它们; 2026-10-08 之前它们是内联演示常量, 本切片已清掉并加了一句用户可见的空态), 而领域的 `yeban_merge_proposal` 要 `proposalId`。逐条证据与最小代价见 `host.rs` 的 `action_has_implementation` 文档; 空前置条件 (＝今天任何装配) 下返回 `false`, 与 `DeleteSelection` / `ZoomToSelection` 空选区时同一取向。
+    /// `Shift+Enter`: 原子采纳当前轨道浮现的 AI 建议。⚠ **键已绑定、动作尚无落地实现** —— 宿主 `host::action_has_implementation` 返回 `false`, 因此 `cli.rs` 的快捷表把它标成 `(未实现)` 且这里**不消费**：缺的是**能力** —— 抽屉**看得见**提案了（2026-10-30 起, `host::wire_proposal_drawer` 从唯一可变权威注入, 见 `src/proposals.rs`）, 但界面上**没有合并提案的写入口**：`HostAction` 只有 `Undo` / `Redo` / `Commit` 三臂, 而领域的 `yeban_merge_proposal` 要 `proposalId`；抽屉那一格也没有"当前选中的是哪一条"（`ProposalRowView` 只有 kind / title / op 条数）, 在界面侧新造一份提案状态会与领域权威冲突（`ADR-0005`）。逐条证据与最小代价见 `host.rs` 的 `action_has_implementation` 文档; 空前置条件 (＝今天任何装配) 下返回 `false`, 与 `DeleteSelection` / `ZoomToSelection` 空选区时同一取向。
     AcceptAiSuggestion,
     /// `Cmd/Ctrl+Alt+N`：拨**节拍器**开关（`[ARCH-RT-001]` 的宿主侧落点）。
     ///

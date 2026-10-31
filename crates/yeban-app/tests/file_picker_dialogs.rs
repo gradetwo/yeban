@@ -149,6 +149,7 @@ fn live_window_without_undo_port(permission: Permission) -> (LiveUi, yeban_app::
             save_path: None,
             engine_quanta: 0,
             undo: None,
+            proposal_source: yeban_app::proposals::ProposalSource::none(),
         },
     )
     .expect("装配（无撤销端口的活窗口）");
@@ -226,6 +227,7 @@ impl Fixture {
                 save_path: None,
                 engine_quanta: 0,
                 undo: Some(Rc::clone(&port)),
+                proposal_source: yeban_app::proposals::ProposalSource::none(),
             },
         )
         .expect("装配（真窗口 ＋ Tier-1 执行面）");

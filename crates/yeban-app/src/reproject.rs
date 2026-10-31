@@ -167,6 +167,14 @@ impl AuthorityMirror {
                     slint::ComponentHandle::window(ui).size().width as f32,
                     scroll_x,
                 );
+                // ⭐ AI 提案抽屉的读数**跟着同一次重投影**刷新（`src/proposals.rs` 模块
+                // 文档里登记的第二条刷新点）。为什么放在这里：合并提案真的改了工作工程 ⇒
+                // 修订号推进 ⇒ 本函数被调到；而"提案已合并"这件事必须在界面上看得见，
+                // 否则抽屉会一直画着合并前那份清单。仍然**只读**权威，一个字节都不改工程。
+                host::apply_proposal_drawer(
+                    ui,
+                    &crate::proposals::ProposalSource::from_authority(&authority),
+                );
                 self.projected.store(revision, Ordering::SeqCst);
                 ProjectionOutcome::Reprojected { revision }
             }

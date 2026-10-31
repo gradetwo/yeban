@@ -3778,10 +3778,11 @@ const SHORTCUTS: [ShortcutRow; 30] = [
     // `implemented` 是"宿主会不会消费这一键"的主张，事实源是 `host::action_has_implementation`
     // （逐行对账见本文件 `ShortcutRow` 的文档与 `tests/cli_contract.rs` 的判据 B11b）。
     // 这两条之所以**仍是** `false`：缺的是**能力**，不是接线 ——
-    //   - `Shift+Enter`（采纳 AI 建议）：界面侧没有"当前待采纳的提案身份"这一表示
-    //     （`ui/dialogs/musical_pr_drawer.slint` 的四个数据面属性默认**全空**、且没有
-    //     任何宿主写它们；2026-10-08 之前那四个属性是内联演示常量，本切片已清掉），
-    //     而领域的 `yeban_merge_proposal` 要 `proposalId`；
+    //   - `Shift+Enter`（采纳 AI 建议）：抽屉**已经看得见**提案（2026-10-30 起，
+    //     `host::wire_proposal_drawer` 从唯一可变权威注入那七个属性），但界面上
+    //     **没有合并提案的写入口** —— `HostAction` 只有 `Undo` / `Redo` / `Commit` 三臂，
+    //     而领域的 `yeban_merge_proposal` 要 `proposalId`；抽屉里也没有"当前选中哪一条"
+    //     这一格（在界面侧新造提案状态会撞 `ADR-0005`）；
     //   - `[`（试听主线）：规范 `[ARCH-RT-005]` 要"主线与提案分支并发渲染 + 30ms 等功率瞬切
     //     + 2048 采样预滚"，这套机制在仓库里一处都不存在。
     // 逐条证据（`grep` 字面命中与 `file:line`）见 `host.rs` 的 `action_has_implementation` 文档；
