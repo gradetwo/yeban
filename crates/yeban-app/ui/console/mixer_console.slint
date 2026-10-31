@@ -258,636 +258,670 @@ export component MixerConsole inherits Rectangle {
     accessible-id: "mixer-console";
     accessible-label: "多轨调音台总控";
 
-    // ⭐ **工程导出 · 导出 MIDI**（任务单 `#90` 甲）—— 只在控制台 Tab 1（混音台）里可见。
+    // ---------------------------------------------------------------- 横向滚动容器
     //
-    // 位置：跟在**最后一条通道条之后**（`104px * root.track-names.length`，与 `for` 循环的
-    // `104px * track_index` 共用同一组几何常量）⇒ 从不与通道条重叠，也不需要把任何既有
-    // 控件挪一位。它声明在通道条循环**之前** ⇒ 极端轨道数下通道条盖住它（数据优先）。
+    // 缺口：通道条按 `8 + 104px * i` 平铺，轨道一多就冲出窗口 —— 1440 档下第 14 条通道
+    // 起于 1456px（`zimmer-ui-mode-report.md` §5.1 实测：树里只有 master + track-0..13），
+    // 其后的通道既看不到也点不到；三块侧面板的位置同样跟着 `n` 走，一起被推出去。
+    // 本容器把**横向流程里的全部**（三块侧面板 + 通道条）一起滚；主控通道条留在外面
+    // （它钉在 `root.width - 112`，属于视口而不是内容）。
     //
-    // ⛔ 本块**不**写盘、**不**判断成功与否：它只发 `export-midi` 回调，回执由宿主
-    // （`host::wire_module_actions` 的 `export-midi` 分支）写进**既有**的
-    // `MainWindow.module-status` —— 与 `module-export-wav-button` 逐字同一条通道。
-    Rectangle {
-        x: Tokens.space-4 + 104px * root.track-names.length;
-        y: Tokens.space-4;
-        width: 216px;
-        height: 76px;
-        background: Tokens.bg-panel;
-        border-radius: Tokens.radius-md;
-        border-width: 1px;
-        border-color: Tokens.line;
-        clip: true;
+    // - ⚠ 内容尺寸必须写规范名 `content-*`：`viewport-*` 是 `@deprecated` 别名，而绑定挂在
+    //   别名上会被上游 flickable pass 的自动生成内容宽顶掉 ⇒ 滚轮恒被静默忽略
+    //   （教训留痕 `docs/ledger/app-zimmer-ui-notes.md`，run `41208446082`）。
+    // - 内容宽 = `8 + 104n + (宽档 438 / 窄档 216)`（与三块面板既有的座位算术同一组常量），
+    //   取 `max(视口宽, 该值)` ⇒ 演示工程（6 轨）不溢出 ⇒ 偏移恒 0 ⇒ 默认帧与
+    //   `tests/pane_no_overlap.rs` 的控件预算逐位不变。
+    // - `content-height: self.height` ⇒ 纵向恒不可滚：纵向滚轮照旧转发给父级。
+    // - 视口右缘收在 `parent.width - 112px`（主控通道条的左沿）。此前最右的通道条会画到
+    //   主控条**右侧**露出一小截（14 轨档下第 13 条跨过 1432px 边界）⇒ 本容器顺带收边。
+    // - `interactive` / `mouse-drag-pan-enabled` 都用上游默认值（两者默认即为 `true`）：
+    //   内容不溢出时拖动平移是**恒 no-op**（`ensure_in_bound` 夹在 `[w-cw, 0]`），因此既有
+    //   夹具的指针手势一位不变；溢出后"在空白处横拖 = 平移"是混音台该有的行为。⛔ 本片
+    //   不证触摸路径（判据只送滚轮）。
+    // - 容器没有 `accessible-id` ⇒ 不进控件树；被裁出视口的通道条同样不进树（可达性判据
+    //   因此读"是否可寻址"，与编排行区同一套读法）。
+    Flickable {
+        x: 0;
+        y: 0;
+        width: parent.width - 112px;
+        height: parent.height;
+        content-width: max(self.width,
+                           Tokens.space-4 + 104px * root.track-names.length
+                               + (root.narrow ? 216px : 438px));
+        content-height: self.height;
 
-        UiMediumText {
-            x: Tokens.space-3;
-            y: 0;
-            width: parent.width - 8px;
-            height: 18px;
-            text: "工程导出";
-            color: Tokens.ink-0;
-            font-size: Tokens.font-size-sm;
-            overflow: elide;
-        }
-
-        // 唯一点击源与 `accessible-action-default` 是**同一段**落点（`[UI-A11Y-003]` §7.3）。
+        // ⭐ **工程导出 · 导出 MIDI**（任务单 `#90` 甲）—— 只在控制台 Tab 1（混音台）里可见。
+        //
+        // 位置：跟在**最后一条通道条之后**（`104px * root.track-names.length`，与 `for` 循环的
+        // `104px * track_index` 共用同一组几何常量）⇒ 从不与通道条重叠，也不需要把任何既有
+        // 控件挪一位。它声明在通道条循环**之前** ⇒ 极端轨道数下通道条盖住它（数据优先）。
+        //
+        // ⛔ 本块**不**写盘、**不**判断成功与否：它只发 `export-midi` 回调，回执由宿主
+        // （`host::wire_module_actions` 的 `export-midi` 分支）写进**既有**的
+        // `MainWindow.module-status` —— 与 `module-export-wav-button` 逐字同一条通道。
         Rectangle {
-            x: Tokens.space-3;
-            y: 24px;
-            width: parent.width - 12px;
-            height: 28px;
-            background: midi_export_area.pressed ? Tokens.bg-raised : Tokens.bg-panel-alt;
+            x: Tokens.space-4 + 104px * root.track-names.length;
+            y: Tokens.space-4;
+            width: 216px;
+            height: 76px;
+            background: Tokens.bg-panel;
             border-radius: Tokens.radius-md;
-            accessible-role: button;
-            accessible-id: "module-export-midi-button";
-            accessible-label: "导出 MIDI（把当前工程写成 SMF 1 文件）";
-            accessible-action-default => { root.export-midi(); }
+            border-width: 1px;
+            border-color: Tokens.line;
+            clip: true;
 
-            UiText {
+            UiMediumText {
                 x: Tokens.space-3;
                 y: 0;
-                width: parent.width - 12px;
-                height: parent.height;
-                text: "导出 MIDI";
-                color: Tokens.ink-1;
-                font-size: Tokens.font-size-xs;
+                width: parent.width - 8px;
+                height: 18px;
+                text: "工程导出";
+                color: Tokens.ink-0;
+                font-size: Tokens.font-size-sm;
+                overflow: elide;
             }
 
-            midi_export_area := TouchArea {
-                width: parent.width;
-                height: parent.height;
-                clicked => { root.export-midi(); }
-            }
-        }
-    }
-
-    // ⭐ **工程打开**（任务单 `#93`）—— 运行期「打开工程」的可见入口，**只在 Tab 1 里可见**。
-    //
-    // 位置：紧挨着上面 `#90` 的「工程导出」面板**右侧**（同一个 `y`，即 `Tokens.space-4`；
-    // `x` 在它之后 + 它自己的宽度 `216px` + 一个 `space-3` 间隙）。⭐ 选这个座位是因为它
-    // **不改任何既有控件的几何**：`#90` 那条面板的 `x` / `y` / 高宽与它的按钮位置
-    // （`y: 24px` / `height: 28px`）**一位不动**，而通道条永远在 `104px * track_index`
-    // 那一列里（都在这两个面板的左边）⇒ 三者互不重叠。
-    // （`216px` 是与左侧那块面板**并排对齐**的座位常量；它⛔ 不参与任何算术，
-    //  只是"下一格从上一格右边缘再让一个间隙开始"。）
-    //
-    // ⛔ 本块**不**写盘、**不**判断成功与否：它只发 `open-project` 回调；问对话框、读盘、
-    // 换会话与重投影全在宿主 `host::wire_open_project`（唯一实现），回执走**既有**的
-    // `MainWindow.module-status` —— 与 `module-export-midi-button` 逐字同一条通道。
-    //
-    // ⭐ 任务单 `#129` 在同一面板里向下加了一格「新建工程」（`y: 56px`）：
-    // 「打开工程」按钮的 `x` / `y` / 宽 / 高**一位不动**，本面板只从 76px 变成 104px
-    // （下面没有任何控件，`for` 通道条都在本面板**左侧**的 `104px * track_index` 列里）。
-    // ⭐ 任务单 `#186`：宽档座位一位未动；窄档（`root.narrow`）时这块面板移到
-    // 「导出 MIDI」面板**正下方**、与它同列（`x = 8 + 104n`，`y = 8 + 76 + space-3`），
-    // 让整列右沿停在主控通道条左侧（见文件上方 `narrow` 的算术）。
-    Rectangle {
-        x: root.narrow
-            ? Tokens.space-4 + 104px * root.track-names.length
-            : Tokens.space-4 + 104px * root.track-names.length + 216px + Tokens.space-3;
-        y: root.narrow ? Tokens.space-4 + 76px + Tokens.space-3 : Tokens.space-4;
-        width: 216px;
-        height: 104px;
-        background: Tokens.bg-panel;
-        border-radius: Tokens.radius-md;
-        border-width: 1px;
-        border-color: Tokens.line;
-        clip: true;
-
-        UiMediumText {
-            x: Tokens.space-3;
-            y: 0;
-            width: parent.width - 8px;
-            height: 18px;
-            text: "工程";
-            color: Tokens.ink-0;
-            font-size: Tokens.font-size-sm;
-            overflow: elide;
-        }
-
-        // 唯一点击源与 `accessible-action-default` 是**同一段**落点（`[UI-A11Y-003]` §7.3）。
-        Rectangle {
-            x: Tokens.space-3;
-            y: 24px;
-            width: parent.width - 12px;
-            height: 28px;
-            background: open_project_area.pressed ? Tokens.bg-raised : Tokens.bg-panel-alt;
-            border-radius: Tokens.radius-md;
-            accessible-role: button;
-            accessible-id: "module-open-project-button";
-            accessible-label: "打开工程（用文件对话框挑一个 .yeban 容器并就地换掉当前工程）";
-            accessible-action-default => { root.open-project(); }
-
-            UiText {
-                x: Tokens.space-3;
-                y: 0;
-                width: parent.width - 12px;
-                height: parent.height;
-                text: "打开工程";
-                color: Tokens.ink-1;
-                font-size: Tokens.font-size-xs;
-            }
-
-            open_project_area := TouchArea {
-                width: parent.width;
-                height: parent.height;
-                clicked => { root.open-project(); }
-            }
-        }
-
-        // ⭐ **新建工程**（任务单 `#129`）—— 与上面那格**逐条同形**（同宽 / 同高 /
-        // 同样的 role / 同一个 `module-status` 回执通道），只是座位在它正下方
-        // （`y: 56px` = 24px 上格 + 28px 高 + 4px 间隙）。
-        // ⛔ 本块同样**不**写盘、**不**判断成功与否：唯一落点是宿主 `host::wire_new_project`。
-        Rectangle {
-            x: Tokens.space-3;
-            y: 56px;
-            width: parent.width - 12px;
-            height: 28px;
-            background: new_project_area.pressed ? Tokens.bg-raised : Tokens.bg-panel-alt;
-            border-radius: Tokens.radius-md;
-            accessible-role: button;
-            accessible-id: "module-new-project-button";
-            accessible-label: "新建工程（用文件对话框给新工程选一个落点，写出 0 音轨 ＋ 1 主总线的空白容器并就地换过去）";
-            accessible-action-default => { root.new-project(); }
-
-            UiText {
-                x: Tokens.space-3;
-                y: 0;
-                width: parent.width - 12px;
-                height: parent.height;
-                text: "新建工程";
-                color: Tokens.ink-1;
-                font-size: Tokens.font-size-xs;
-            }
-
-            new_project_area := TouchArea {
-                width: parent.width;
-                height: parent.height;
-                clicked => { root.new-project(); }
-            }
-        }
-    }
-
-    // ⭐ **素材池**（任务单 `#133`）—— `clip_pool` 在界面上的**可见**投影。
-    //
-    // 为什么长在混音台（控制台 Tab 1）里：与 `#90` 的「导出 MIDI」/ `#93` 的「打开工程」/
-    // `#129` 的「新建工程」**逐字同一条纪律** —— `MixerConsole` 只在 `active-tab == 1`
-    // 时可见，默认帧（Tab 0 卷帘 = 5 张 Linux 基准覆盖的那一帧）里**一个像素都不画**
-    // ⇒ 基准逐位不变（本机是 macOS、`tests/golden/<platform>` 只有 `linux`，无法重录）。
-    //
-    // 座位：紧贴「工程」面板**正下方**（同一个 `x` / 同一个宽度），`y = 120px`
-    // （= 上面那块 104px 面板 + `space-4` 起点 + `space-3` 间隙）。通道条永远在
-    // 本面板左侧的 `104px * track_index` 列里 ⇒ 互不重叠，且既有控件的几何一位不动。
-    //
-    // ⛔ 本组件不读盘、不造数据：三个数组**全部**来自投影（见 `src/bridge.rs` 的
-    // `AssetPoolRowView`），空池显示「尚无素材」。
-    // ⭐ 任务单 `#186`：宽档仍是「工程」面板正下方（`y = 8 + 104 + space-3 = 118px`）；
-    // 窄档（`root.narrow`）时它排在**竖排后的「工程」面板**正下方（`y = 200px`），
-    // 高度随之收成 `root.height - 200`（下沿贴到调音台底，仍被 `clip: true` 裁住），
-    // 使整列的右沿/下沿都不越出主控通道条与调音台裁剪区，且两行素材（`y = 44/76`、高 30）
-    // 都在面板内。
-    AssetPoolPanel {
-        x: root.narrow
-            ? Tokens.space-4 + 104px * root.track-names.length
-            : Tokens.space-4 + 104px * root.track-names.length + 216px + Tokens.space-3;
-        y: root.narrow
-            ? Tokens.space-4 + 76px + Tokens.space-3 + 104px + Tokens.space-3
-            : Tokens.space-4 + 104px + Tokens.space-3;
-        width: 216px;
-        height: root.narrow ? root.height - 200px : root.height - 128px;
-        asset-pool-names: root.asset-pool-names;
-        asset-pool-kinds: root.asset-pool-kinds;
-        asset-pool-details: root.asset-pool-details;
-        // ⭐ **导入音频**：面板只报"按了"，本组件原样上抛（宿主 `host::wire_import_audio`
-        // 是唯一落点）。
-        import-audio => { root.import-audio(); }
-    }
-
-    // ---------------------------------------------------------------- 通道条
-    // 通道条数 == 工程的非主总线轨道数。`for name[i] in <model>` 必须带声明标识符
-    // （Slint 1.18.1 不接受只有索引的 `for [i] in <model>`，见
-    // docs/ledger/app-binding-notes.md §6.1）。
-    for track_name[track_index] in root.track-names : Rectangle {
-        x: Tokens.space-4 + 104px * track_index;
-        y: Tokens.space-4;
-        width: 96px;
-        height: parent.height - 16px;
-        background: track_index.mod(2) == 0 ? Tokens.bg-panel : Tokens.bg-shell;
-        border-radius: Tokens.radius-md;
-        border-width: 1px;
-        border-color: Tokens.line;
-        clip: true;
-        accessible-role: groupbox;
-        accessible-id: "track-" + track_index + "-channel-strip";
-        accessible-label: "通道条 " + track_name;
-
-        UiMediumText {
-            x: Tokens.space-3;
-            y: 0;
-            width: parent.width - 8px;
-            height: 18px;
-            text: track_name;
-            color: Tokens.ink-0;
-            font-size: Tokens.font-size-sm;
-            overflow: elide;
-        }
-
-        // 声相读出 —— **始终可见**的数值（`PAN C` / `PAN L50`，由投影的 `pan_display` 给出，
-        // 界面不做任何算术）。本轮起它同时是**声相拖动面**的语义落点：
-        // `accessible-value` 让 `pan` 第一次能从控件树读回来（在此之前它只活在标签文本里）。
-        UiMonoText {
-            x: Tokens.space-3;
-            y: 20px;
-            width: 28px;
-            height: 14px;
-            text: "PAN " + root.track-pans[track_index];
-            color: Tokens.ink-2;
-            font-size: Tokens.font-size-xs;
-            overflow: elide;
-            accessible-role: slider;
-            accessible-id: "track-" + track_index + "-pan";
-            accessible-label: "轨道 " + track_name + " 声相";
-            accessible-orientation: horizontal;
-            accessible-value-minimum: -100;
-            accessible-value-maximum: 100;
-            accessible-value-step: 1;
-            accessible-value: root.track-pans[track_index];
-        }
-
-        // 轨道色标 —— 与 arrangement 的 `track-{i}-color-swatch` 同源（同一个投影字段），
-        // 但**语义 ID 必须不同**：两个视图可能同时可见，重复 ID 会让运行时控件树构建失败。
-        Rectangle {
-            x: 44px;
-            y: 20px;
-            width: 10px;
-            height: 14px;
-            background: root.track-colors[track_index];
-            border-radius: Tokens.radius-sm;
-            accessible-role: image;
-            accessible-id: "track-" + track_index + "-mixer-color-swatch";
-            accessible-label: "轨道色标 " + root.track-color-labels[track_index];
-        }
-
-        // 静音 —— `accessible-checked` 来自工程的 `TrackV3::mute`
-        Rectangle {
-            x: Tokens.space-3;
-            y: 38px;
-            width: 20px;
-            height: 16px;
-            background: root.track-mutes[track_index] ? Tokens.record-red : Tokens.bg-void;
-            border-radius: Tokens.radius-sm;
-            accessible-role: button;
-            accessible-id: "track-" + track_index + "-mixer-mute-button";
-            accessible-label: "轨道 " + track_name + " 静音";
-            accessible-checkable: true;
-            accessible-checked: root.track-mutes[track_index];
-            // `[UI-A11Y-003]` §7.3：无障碍动作，落点与下面 `TouchArea` 的 `clicked` 逐字相同。
-            accessible-action-default => { root.mixer-mute-toggle(track_index); }
-
-            UiText {
-                x: 0;
-                y: 0;
-                width: parent.width;
-                height: parent.height;
-                text: "M";
-                color: Tokens.ink-2;
-                font-size: Tokens.font-size-xs;
-                horizontal-alignment: center;
-            }
-
-            // 点击 ⇒ `Op::SetTrackMute`（一次点击 = 一次可撤销的编辑）。
-            TouchArea {
-                width: parent.width;
-                height: parent.height;
-                clicked => {
-                    root.mixer-mute-toggle(track_index);
-                }
-            }
-        }
-
-        // 独奏 —— `accessible-checked` 来自工程的 `TrackV3::solo`
-        Rectangle {
-            x: 30px;
-            y: 38px;
-            width: 20px;
-            height: 16px;
-            background: root.track-solos[track_index] ? Tokens.gold-deep : Tokens.bg-void;
-            border-radius: Tokens.radius-sm;
-            accessible-role: button;
-            accessible-id: "track-" + track_index + "-mixer-solo-button";
-            accessible-label: "轨道 " + track_name + " 独奏";
-            accessible-checkable: true;
-            accessible-checked: root.track-solos[track_index];
-            // `[UI-A11Y-003]` §7.3：无障碍动作，落点与下面 `TouchArea` 的 `clicked` 逐字相同。
-            accessible-action-default => { root.mixer-solo-toggle(track_index); }
-
-            UiText {
-                x: 0;
-                y: 0;
-                width: parent.width;
-                height: parent.height;
-                text: "S";
-                color: Tokens.ink-2;
-                font-size: Tokens.font-size-xs;
-                horizontal-alignment: center;
-            }
-
-            // 点击 ⇒ `Op::SetTrackSolo`。与静音按钮**成对相邻**（静音 x=4、独奏 x=30）。
-            TouchArea {
-                width: parent.width;
-                height: parent.height;
-                clicked => {
-                    root.mixer-solo-toggle(track_index);
-                }
-            }
-        }
-
-        // VU 电平表 (高频刷新 → 遮罩) [UI-MCP-002] [ARCH-UI-002]
-        // 柱高来自引擎发布的电平（`track-meter-levels`），文本来自同一帧的 dBFS。
-        Rectangle {
-            x: Tokens.space-3;
-            y: 60px;
-            width: 12px;
-            height: 104px;
-            background: Tokens.bg-void;
-            border-radius: Tokens.radius-sm;
-            accessible-role: progress-indicator;
-            accessible-id: "track-" + track_index + "-meter";
-            accessible-label: "轨道 " + track_name + " 电平表 峰值 " + root.track-meter-peaks[track_index] + " RMS " + root.track-meter-rmss[track_index] + " dBFS";
-            accessible-value-minimum: -120;
-            accessible-value-maximum: 0;
-            accessible-value-step: 0.1;
-            accessible-value: root.track-meter-peaks[track_index] + " dBFS";
-
+            // 唯一点击源与 `accessible-action-default` 是**同一段**落点（`[UI-A11Y-003]` §7.3）。
             Rectangle {
-                x: 1px;
-                y: parent.height - 2px - 100px * root.track-meter-levels[track_index];
-                width: parent.width - 2px;
-                height: 100px * root.track-meter-levels[track_index];
-                background: Tokens.ok-green;
+                x: Tokens.space-3;
+                y: 24px;
+                width: parent.width - 12px;
+                height: 28px;
+                background: midi_export_area.pressed ? Tokens.bg-raised : Tokens.bg-panel-alt;
+                border-radius: Tokens.radius-md;
+                accessible-role: button;
+                accessible-id: "module-export-midi-button";
+                accessible-label: "导出 MIDI（把当前工程写成 SMF 1 文件）";
+                accessible-action-default => { root.export-midi(); }
+
+                UiText {
+                    x: Tokens.space-3;
+                    y: 0;
+                    width: parent.width - 12px;
+                    height: parent.height;
+                    text: "导出 MIDI";
+                    color: Tokens.ink-1;
+                    font-size: Tokens.font-size-xs;
+                }
+
+                midi_export_area := TouchArea {
+                    width: parent.width;
+                    height: parent.height;
+                    clicked => { root.export-midi(); }
+                }
+            }
+        }
+
+        // ⭐ **工程打开**（任务单 `#93`）—— 运行期「打开工程」的可见入口，**只在 Tab 1 里可见**。
+        //
+        // 位置：紧挨着上面 `#90` 的「工程导出」面板**右侧**（同一个 `y`，即 `Tokens.space-4`；
+        // `x` 在它之后 + 它自己的宽度 `216px` + 一个 `space-3` 间隙）。⭐ 选这个座位是因为它
+        // **不改任何既有控件的几何**：`#90` 那条面板的 `x` / `y` / 高宽与它的按钮位置
+        // （`y: 24px` / `height: 28px`）**一位不动**，而通道条永远在 `104px * track_index`
+        // 那一列里（都在这两个面板的左边）⇒ 三者互不重叠。
+        // （`216px` 是与左侧那块面板**并排对齐**的座位常量；它⛔ 不参与任何算术，
+        //  只是"下一格从上一格右边缘再让一个间隙开始"。）
+        //
+        // ⛔ 本块**不**写盘、**不**判断成功与否：它只发 `open-project` 回调；问对话框、读盘、
+        // 换会话与重投影全在宿主 `host::wire_open_project`（唯一实现），回执走**既有**的
+        // `MainWindow.module-status` —— 与 `module-export-midi-button` 逐字同一条通道。
+        //
+        // ⭐ 任务单 `#129` 在同一面板里向下加了一格「新建工程」（`y: 56px`）：
+        // 「打开工程」按钮的 `x` / `y` / 宽 / 高**一位不动**，本面板只从 76px 变成 104px
+        // （下面没有任何控件，`for` 通道条都在本面板**左侧**的 `104px * track_index` 列里）。
+        // ⭐ 任务单 `#186`：宽档座位一位未动；窄档（`root.narrow`）时这块面板移到
+        // 「导出 MIDI」面板**正下方**、与它同列（`x = 8 + 104n`，`y = 8 + 76 + space-3`），
+        // 让整列右沿停在主控通道条左侧（见文件上方 `narrow` 的算术）。
+        Rectangle {
+            x: root.narrow
+                ? Tokens.space-4 + 104px * root.track-names.length
+                : Tokens.space-4 + 104px * root.track-names.length + 216px + Tokens.space-3;
+            y: root.narrow ? Tokens.space-4 + 76px + Tokens.space-3 : Tokens.space-4;
+            width: 216px;
+            height: 104px;
+            background: Tokens.bg-panel;
+            border-radius: Tokens.radius-md;
+            border-width: 1px;
+            border-color: Tokens.line;
+            clip: true;
+
+            UiMediumText {
+                x: Tokens.space-3;
+                y: 0;
+                width: parent.width - 8px;
+                height: 18px;
+                text: "工程";
+                color: Tokens.ink-0;
+                font-size: Tokens.font-size-sm;
+                overflow: elide;
+            }
+
+            // 唯一点击源与 `accessible-action-default` 是**同一段**落点（`[UI-A11Y-003]` §7.3）。
+            Rectangle {
+                x: Tokens.space-3;
+                y: 24px;
+                width: parent.width - 12px;
+                height: 28px;
+                background: open_project_area.pressed ? Tokens.bg-raised : Tokens.bg-panel-alt;
+                border-radius: Tokens.radius-md;
+                accessible-role: button;
+                accessible-id: "module-open-project-button";
+                accessible-label: "打开工程（用文件对话框挑一个 .yeban 容器并就地换掉当前工程）";
+                accessible-action-default => { root.open-project(); }
+
+                UiText {
+                    x: Tokens.space-3;
+                    y: 0;
+                    width: parent.width - 12px;
+                    height: parent.height;
+                    text: "打开工程";
+                    color: Tokens.ink-1;
+                    font-size: Tokens.font-size-xs;
+                }
+
+                open_project_area := TouchArea {
+                    width: parent.width;
+                    height: parent.height;
+                    clicked => { root.open-project(); }
+                }
+            }
+
+            // ⭐ **新建工程**（任务单 `#129`）—— 与上面那格**逐条同形**（同宽 / 同高 /
+            // 同样的 role / 同一个 `module-status` 回执通道），只是座位在它正下方
+            // （`y: 56px` = 24px 上格 + 28px 高 + 4px 间隙）。
+            // ⛔ 本块同样**不**写盘、**不**判断成功与否：唯一落点是宿主 `host::wire_new_project`。
+            Rectangle {
+                x: Tokens.space-3;
+                y: 56px;
+                width: parent.width - 12px;
+                height: 28px;
+                background: new_project_area.pressed ? Tokens.bg-raised : Tokens.bg-panel-alt;
+                border-radius: Tokens.radius-md;
+                accessible-role: button;
+                accessible-id: "module-new-project-button";
+                accessible-label: "新建工程（用文件对话框给新工程选一个落点，写出 0 音轨 ＋ 1 主总线的空白容器并就地换过去）";
+                accessible-action-default => { root.new-project(); }
+
+                UiText {
+                    x: Tokens.space-3;
+                    y: 0;
+                    width: parent.width - 12px;
+                    height: parent.height;
+                    text: "新建工程";
+                    color: Tokens.ink-1;
+                    font-size: Tokens.font-size-xs;
+                }
+
+                new_project_area := TouchArea {
+                    width: parent.width;
+                    height: parent.height;
+                    clicked => { root.new-project(); }
+                }
+            }
+        }
+
+        // ⭐ **素材池**（任务单 `#133`）—— `clip_pool` 在界面上的**可见**投影。
+        //
+        // 为什么长在混音台（控制台 Tab 1）里：与 `#90` 的「导出 MIDI」/ `#93` 的「打开工程」/
+        // `#129` 的「新建工程」**逐字同一条纪律** —— `MixerConsole` 只在 `active-tab == 1`
+        // 时可见，默认帧（Tab 0 卷帘 = 5 张 Linux 基准覆盖的那一帧）里**一个像素都不画**
+        // ⇒ 基准逐位不变（本机是 macOS、`tests/golden/<platform>` 只有 `linux`，无法重录）。
+        //
+        // 座位：紧贴「工程」面板**正下方**（同一个 `x` / 同一个宽度），`y = 120px`
+        // （= 上面那块 104px 面板 + `space-4` 起点 + `space-3` 间隙）。通道条永远在
+        // 本面板左侧的 `104px * track_index` 列里 ⇒ 互不重叠，且既有控件的几何一位不动。
+        //
+        // ⛔ 本组件不读盘、不造数据：三个数组**全部**来自投影（见 `src/bridge.rs` 的
+        // `AssetPoolRowView`），空池显示「尚无素材」。
+        // ⭐ 任务单 `#186`：宽档仍是「工程」面板正下方（`y = 8 + 104 + space-3 = 118px`）；
+        // 窄档（`root.narrow`）时它排在**竖排后的「工程」面板**正下方（`y = 200px`），
+        // 高度随之收成 `root.height - 200`（下沿贴到调音台底，仍被 `clip: true` 裁住），
+        // 使整列的右沿/下沿都不越出主控通道条与调音台裁剪区，且两行素材（`y = 44/76`、高 30）
+        // 都在面板内。
+        AssetPoolPanel {
+            x: root.narrow
+                ? Tokens.space-4 + 104px * root.track-names.length
+                : Tokens.space-4 + 104px * root.track-names.length + 216px + Tokens.space-3;
+            y: root.narrow
+                ? Tokens.space-4 + 76px + Tokens.space-3 + 104px + Tokens.space-3
+                : Tokens.space-4 + 104px + Tokens.space-3;
+            width: 216px;
+            height: root.narrow ? root.height - 200px : root.height - 128px;
+            asset-pool-names: root.asset-pool-names;
+            asset-pool-kinds: root.asset-pool-kinds;
+            asset-pool-details: root.asset-pool-details;
+            // ⭐ **导入音频**：面板只报"按了"，本组件原样上抛（宿主 `host::wire_import_audio`
+            // 是唯一落点）。
+            import-audio => { root.import-audio(); }
+        }
+
+        // ---------------------------------------------------------------- 通道条
+        // 通道条数 == 工程的非主总线轨道数。`for name[i] in <model>` 必须带声明标识符
+        // （Slint 1.18.1 不接受只有索引的 `for [i] in <model>`，见
+        // docs/ledger/app-binding-notes.md §6.1）。
+        for track_name[track_index] in root.track-names : Rectangle {
+            x: Tokens.space-4 + 104px * track_index;
+            y: Tokens.space-4;
+            width: 96px;
+            height: parent.height - 16px;
+            background: track_index.mod(2) == 0 ? Tokens.bg-panel : Tokens.bg-shell;
+            border-radius: Tokens.radius-md;
+            border-width: 1px;
+            border-color: Tokens.line;
+            clip: true;
+            accessible-role: groupbox;
+            accessible-id: "track-" + track_index + "-channel-strip";
+            accessible-label: "通道条 " + track_name;
+
+            UiMediumText {
+                x: Tokens.space-3;
+                y: 0;
+                width: parent.width - 8px;
+                height: 18px;
+                text: track_name;
+                color: Tokens.ink-0;
+                font-size: Tokens.font-size-sm;
+                overflow: elide;
+            }
+
+            // 声相读出 —— **始终可见**的数值（`PAN C` / `PAN L50`，由投影的 `pan_display` 给出，
+            // 界面不做任何算术）。本轮起它同时是**声相拖动面**的语义落点：
+            // `accessible-value` 让 `pan` 第一次能从控件树读回来（在此之前它只活在标签文本里）。
+            UiMonoText {
+                x: Tokens.space-3;
+                y: 20px;
+                width: 28px;
+                height: 14px;
+                text: "PAN " + root.track-pans[track_index];
+                color: Tokens.ink-2;
+                font-size: Tokens.font-size-xs;
+                overflow: elide;
+                accessible-role: slider;
+                accessible-id: "track-" + track_index + "-pan";
+                accessible-label: "轨道 " + track_name + " 声相";
+                accessible-orientation: horizontal;
+                accessible-value-minimum: -100;
+                accessible-value-maximum: 100;
+                accessible-value-step: 1;
+                accessible-value: root.track-pans[track_index];
+            }
+
+            // 轨道色标 —— 与 arrangement 的 `track-{i}-color-swatch` 同源（同一个投影字段），
+            // 但**语义 ID 必须不同**：两个视图可能同时可见，重复 ID 会让运行时控件树构建失败。
+            Rectangle {
+                x: 44px;
+                y: 20px;
+                width: 10px;
+                height: 14px;
+                background: root.track-colors[track_index];
+                border-radius: Tokens.radius-sm;
+                accessible-role: image;
+                accessible-id: "track-" + track_index + "-mixer-color-swatch";
+                accessible-label: "轨道色标 " + root.track-color-labels[track_index];
+            }
+
+            // 静音 —— `accessible-checked` 来自工程的 `TrackV3::mute`
+            Rectangle {
+                x: Tokens.space-3;
+                y: 38px;
+                width: 20px;
+                height: 16px;
+                background: root.track-mutes[track_index] ? Tokens.record-red : Tokens.bg-void;
+                border-radius: Tokens.radius-sm;
+                accessible-role: button;
+                accessible-id: "track-" + track_index + "-mixer-mute-button";
+                accessible-label: "轨道 " + track_name + " 静音";
+                accessible-checkable: true;
+                accessible-checked: root.track-mutes[track_index];
+                // `[UI-A11Y-003]` §7.3：无障碍动作，落点与下面 `TouchArea` 的 `clicked` 逐字相同。
+                accessible-action-default => { root.mixer-mute-toggle(track_index); }
+
+                UiText {
+                    x: 0;
+                    y: 0;
+                    width: parent.width;
+                    height: parent.height;
+                    text: "M";
+                    color: Tokens.ink-2;
+                    font-size: Tokens.font-size-xs;
+                    horizontal-alignment: center;
+                }
+
+                // 点击 ⇒ `Op::SetTrackMute`（一次点击 = 一次可撤销的编辑）。
+                TouchArea {
+                    width: parent.width;
+                    height: parent.height;
+                    clicked => {
+                        root.mixer-mute-toggle(track_index);
+                    }
+                }
+            }
+
+            // 独奏 —— `accessible-checked` 来自工程的 `TrackV3::solo`
+            Rectangle {
+                x: 30px;
+                y: 38px;
+                width: 20px;
+                height: 16px;
+                background: root.track-solos[track_index] ? Tokens.gold-deep : Tokens.bg-void;
+                border-radius: Tokens.radius-sm;
+                accessible-role: button;
+                accessible-id: "track-" + track_index + "-mixer-solo-button";
+                accessible-label: "轨道 " + track_name + " 独奏";
+                accessible-checkable: true;
+                accessible-checked: root.track-solos[track_index];
+                // `[UI-A11Y-003]` §7.3：无障碍动作，落点与下面 `TouchArea` 的 `clicked` 逐字相同。
+                accessible-action-default => { root.mixer-solo-toggle(track_index); }
+
+                UiText {
+                    x: 0;
+                    y: 0;
+                    width: parent.width;
+                    height: parent.height;
+                    text: "S";
+                    color: Tokens.ink-2;
+                    font-size: Tokens.font-size-xs;
+                    horizontal-alignment: center;
+                }
+
+                // 点击 ⇒ `Op::SetTrackSolo`。与静音按钮**成对相邻**（静音 x=4、独奏 x=30）。
+                TouchArea {
+                    width: parent.width;
+                    height: parent.height;
+                    clicked => {
+                        root.mixer-solo-toggle(track_index);
+                    }
+                }
+            }
+
+            // VU 电平表 (高频刷新 → 遮罩) [UI-MCP-002] [ARCH-UI-002]
+            // 柱高来自引擎发布的电平（`track-meter-levels`），文本来自同一帧的 dBFS。
+            Rectangle {
+                x: Tokens.space-3;
+                y: 60px;
+                width: 12px;
+                height: 104px;
+                background: Tokens.bg-void;
+                border-radius: Tokens.radius-sm;
+                accessible-role: progress-indicator;
+                accessible-id: "track-" + track_index + "-meter";
+                accessible-label: "轨道 " + track_name + " 电平表 峰值 " + root.track-meter-peaks[track_index] + " RMS " + root.track-meter-rmss[track_index] + " dBFS";
+                accessible-value-minimum: -120;
+                accessible-value-maximum: 0;
+                accessible-value-step: 0.1;
+                accessible-value: root.track-meter-peaks[track_index] + " dBFS";
+
+                Rectangle {
+                    x: 1px;
+                    y: parent.height - 2px - 100px * root.track-meter-levels[track_index];
+                    width: parent.width - 2px;
+                    height: 100px * root.track-meter-levels[track_index];
+                    background: Tokens.ok-green;
+                    border-radius: Tokens.radius-sm;
+                }
+            }
+
+            // 推子导轨
+            Rectangle {
+                x: 38px;
+                y: 60px;
+                width: 6px;
+                height: 104px;
+                background: Tokens.bg-void;
                 border-radius: Tokens.radius-sm;
             }
-        }
 
-        // 推子导轨
-        Rectangle {
-            x: 38px;
-            y: 60px;
-            width: 6px;
-            height: 104px;
-            background: Tokens.bg-void;
-            border-radius: Tokens.radius-sm;
-        }
-
-        // 推子帽 —— [UI-TEST-001] `track-{track_index}-fader`
-        // 位置来自工程的 `volume_db`（`track-volume-fractions`），**不是**电平。
-        Rectangle {
-            x: 30px;
-            y: 60px + 88px * (1.0 - root.track-volume-fractions[track_index]);
-            width: 22px;
-            height: 16px;
-            background: Tokens.bg-raised;
-            border-radius: Tokens.radius-sm;
-            border-width: 1px;
-            border-color: Tokens.gold-deep;
-            accessible-role: slider;
-            accessible-id: "track-" + track_index + "-fader";
-            accessible-label: "轨道 " + track_name + " 推子";
-            accessible-orientation: vertical;
-            accessible-value-minimum: -60;
-            accessible-value-maximum: 6;
-            accessible-value-step: 0.1;
-            accessible-value: root.track-volumes[track_index] + " dB";
-        }
-
-        UiMonoText {
-            x: Tokens.space-3;
-            y: 176px;
-            width: parent.width - 8px;
-            height: 14px;
-            text: root.track-volumes[track_index] + " dB";
-            color: Tokens.gold;
-            font-size: Tokens.font-size-xs;
-            horizontal-alignment: center;
-        }
-
-        // ------------------------------------------------ SFZ 采样器绑定（任务单 `#82`）
-        //
-        // ⭐ 这是"用户怎么设 SFZ"那一环：一条**文本**路径输入 ＋ SET / CLR。
-        //
-        // ⚠ 为什么是文本而不是文件选择器：本仓**没有**文件对话框（原生选择器要引新依赖
-        // ⇒ 必须先报批，见本单的边界登记）⇒ 最小可用的一条是"用户能敲/粘贴路径"。
-        //
-        // 语义节点的形状：
-        //   * 输入框自己是 `text-input` 角色 —— Slint 对 `TextInput` 自动挂
-        //     `accessible-role: text-input` ＋ `accessible-value: text` ＋
-        //     `accessible-action-set-value`（上游 `i-slint-compiler-1.18.1` 的
-        //     `passes/lower_accessibility.rs:71-115`），因此屏读器与控制面既能**读**当前
-        //     绑定，也能**写**一段文本（`ui/property {name:"value"}` /
-        //     `ElementHandle::set_accessible_value`）；
-        //   * SET 的 `accessible-action-default` 与它的 `TouchArea.clicked` 是**逐字同一段**
-        //     ⇒ "屏读器按 SET"与"鼠标点 SET"不可能分叉（`[UI-A11Y-003]` §7.3 的同款纪律）；
-        //     回车走 `TextInput.accepted`，落点是**同一个** `mixer-sampler-set` 回调。
-        //
-        // 写方向 ⛔ 不在这里提交任何东西：`.slint` 只报"哪一个下标 + 输入框文本"，
-        // `Op::SetTrackSampler` 的构造 / 陈旧载荷比对 / `commit_ops` 全在宿主
-        // （`host::wire_mixer_sampler`）。CLR 落到 `None`（**解绑**是一等状态）。
-        UiMonoText {
-            x: Tokens.space-3;
-            y: 194px;
-            width: parent.width - 8px;
-            height: 12px;
-            text: "SFZ";
-            color: Tokens.ink-2;
-            font-size: Tokens.font-size-xs;
-        }
-
-        sampler-path-field := TextInput {
-            x: Tokens.space-3;
-            y: 208px;
-            // ⚠ `#86` 乙：右边让出 24px 给"浏览"按钮（⛔ 不动 SET / CLR 的几何）。
-            width: parent.width - 32px;
-            height: 16px;
-            text: root.track-sampler-paths[track_index];
-            single-line: true;
-            font-family: Tokens.font-mono;
-            color: Tokens.gold;
-            font-size: Tokens.font-size-xs;
-            vertical-alignment: center;
-            accessible-id: "track-" + track_index + "-sampler-path";
-            accessible-label: "轨道 " + track_name + " SFZ 采样器路径";
-            // 回车 = SET。⛔ 不是第二份提交实现：与 SET 按钮发**同一条**回调。
-            accepted => {
-                root.mixer-sampler-set(track_index, self.text);
-            }
-        }
-
-        // ⭐ **③ 浏览…**（任务单 `#86` 乙）：点它开一次**原生**文件对话框，
-        // 选中的路径**填进上面那个输入框**（⛔ 不提交 —— 提交仍是 SET / 回车那一处）。
-        //
-        // 位置：贴在输入框右边缘（`parent.width - 24px`），因此⛔ 不移动 SET / CLR，
-        // 也不改通道条宽度 ⇒ 调音台之外的布局一位未动。
-        // ⚠ 调音台（控制台 Tab 1）**不在默认帧里**（默认是 Tab 0 = 卷帘）⇒ 本按钮
-        //    ⛔ 不影响 `tests/golden/linux/**`（第 247 条：默认帧逐位不变）。
-        Rectangle {
-            x: parent.width - 24px;
-            y: 208px;
-            width: 18px;
-            height: 16px;
-            background: Tokens.bg-void;
-            border-radius: Tokens.radius-sm;
-            border-width: 1px;
-            border-color: Tokens.line-strong;
-            accessible-role: button;
-            accessible-id: "track-" + track_index + "-sampler-browse";
-            accessible-label: "轨道 " + track_name + " 浏览 SFZ 文件";
-            // `[UI-A11Y-003]` §7.3：落点与下面的 `TouchArea.clicked` **逐字相同**。
-            accessible-action-default => {
-                root.mixer-sampler-browse(track_index);
+            // 推子帽 —— [UI-TEST-001] `track-{track_index}-fader`
+            // 位置来自工程的 `volume_db`（`track-volume-fractions`），**不是**电平。
+            Rectangle {
+                x: 30px;
+                y: 60px + 88px * (1.0 - root.track-volume-fractions[track_index]);
+                width: 22px;
+                height: 16px;
+                background: Tokens.bg-raised;
+                border-radius: Tokens.radius-sm;
+                border-width: 1px;
+                border-color: Tokens.gold-deep;
+                accessible-role: slider;
+                accessible-id: "track-" + track_index + "-fader";
+                accessible-label: "轨道 " + track_name + " 推子";
+                accessible-orientation: vertical;
+                accessible-value-minimum: -60;
+                accessible-value-maximum: 6;
+                accessible-value-step: 0.1;
+                accessible-value: root.track-volumes[track_index] + " dB";
             }
 
             UiMonoText {
-                x: 0;
-                y: 0;
-                width: parent.width;
-                height: parent.height;
-                text: "…";
-                color: Tokens.ink-1;
+                x: Tokens.space-3;
+                y: 176px;
+                width: parent.width - 8px;
+                height: 14px;
+                text: root.track-volumes[track_index] + " dB";
+                color: Tokens.gold;
                 font-size: Tokens.font-size-xs;
                 horizontal-alignment: center;
             }
 
-            TouchArea {
-                width: parent.width;
-                height: parent.height;
-                clicked => {
-                    root.mixer-sampler-browse(track_index);
-                }
-            }
-        }
-
-        Rectangle {
-            x: Tokens.space-3;
-            y: 228px;
-            width: 40px;
-            height: 16px;
-            background: Tokens.bg-void;
-            border-radius: Tokens.radius-sm;
-            border-width: 1px;
-            border-color: Tokens.line-strong;
-            accessible-role: button;
-            accessible-id: "track-" + track_index + "-sampler-set";
-            accessible-label: "轨道 " + track_name + " 提交 SFZ 路径";
-            accessible-action-default => {
-                root.mixer-sampler-set(track_index, sampler-path-field.text);
-            }
-
+            // ------------------------------------------------ SFZ 采样器绑定（任务单 `#82`）
+            //
+            // ⭐ 这是"用户怎么设 SFZ"那一环：一条**文本**路径输入 ＋ SET / CLR。
+            //
+            // ⚠ 为什么是文本而不是文件选择器：本仓**没有**文件对话框（原生选择器要引新依赖
+            // ⇒ 必须先报批，见本单的边界登记）⇒ 最小可用的一条是"用户能敲/粘贴路径"。
+            //
+            // 语义节点的形状：
+            //   * 输入框自己是 `text-input` 角色 —— Slint 对 `TextInput` 自动挂
+            //     `accessible-role: text-input` ＋ `accessible-value: text` ＋
+            //     `accessible-action-set-value`（上游 `i-slint-compiler-1.18.1` 的
+            //     `passes/lower_accessibility.rs:71-115`），因此屏读器与控制面既能**读**当前
+            //     绑定，也能**写**一段文本（`ui/property {name:"value"}` /
+            //     `ElementHandle::set_accessible_value`）；
+            //   * SET 的 `accessible-action-default` 与它的 `TouchArea.clicked` 是**逐字同一段**
+            //     ⇒ "屏读器按 SET"与"鼠标点 SET"不可能分叉（`[UI-A11Y-003]` §7.3 的同款纪律）；
+            //     回车走 `TextInput.accepted`，落点是**同一个** `mixer-sampler-set` 回调。
+            //
+            // 写方向 ⛔ 不在这里提交任何东西：`.slint` 只报"哪一个下标 + 输入框文本"，
+            // `Op::SetTrackSampler` 的构造 / 陈旧载荷比对 / `commit_ops` 全在宿主
+            // （`host::wire_mixer_sampler`）。CLR 落到 `None`（**解绑**是一等状态）。
             UiMonoText {
-                x: 0;
-                y: 0;
-                width: parent.width;
-                height: parent.height;
-                text: "SET";
-                color: Tokens.ink-1;
-                font-size: Tokens.font-size-xs;
-                horizontal-alignment: center;
-            }
-
-            TouchArea {
-                width: parent.width;
-                height: parent.height;
-                clicked => {
-                    root.mixer-sampler-set(track_index, sampler-path-field.text);
-                }
-            }
-        }
-
-        Rectangle {
-            x: 48px;
-            y: 228px;
-            width: 40px;
-            height: 16px;
-            background: Tokens.bg-void;
-            border-radius: Tokens.radius-sm;
-            border-width: 1px;
-            border-color: Tokens.line-strong;
-            accessible-role: button;
-            accessible-id: "track-" + track_index + "-sampler-clear";
-            accessible-label: "轨道 " + track_name + " 解绑 SFZ 采样器";
-            accessible-action-default => {
-                root.mixer-sampler-clear(track_index);
-            }
-
-            UiMonoText {
-                x: 0;
-                y: 0;
-                width: parent.width;
-                height: parent.height;
-                text: "CLR";
+                x: Tokens.space-3;
+                y: 194px;
+                width: parent.width - 8px;
+                height: 12px;
+                text: "SFZ";
                 color: Tokens.ink-2;
                 font-size: Tokens.font-size-xs;
-                horizontal-alignment: center;
+            }
+
+            sampler-path-field := TextInput {
+                x: Tokens.space-3;
+                y: 208px;
+                // ⚠ `#86` 乙：右边让出 24px 给"浏览"按钮（⛔ 不动 SET / CLR 的几何）。
+                width: parent.width - 32px;
+                height: 16px;
+                text: root.track-sampler-paths[track_index];
+                single-line: true;
+                font-family: Tokens.font-mono;
+                color: Tokens.gold;
+                font-size: Tokens.font-size-xs;
+                vertical-alignment: center;
+                accessible-id: "track-" + track_index + "-sampler-path";
+                accessible-label: "轨道 " + track_name + " SFZ 采样器路径";
+                // 回车 = SET。⛔ 不是第二份提交实现：与 SET 按钮发**同一条**回调。
+                accepted => {
+                    root.mixer-sampler-set(track_index, self.text);
+                }
+            }
+
+            // ⭐ **③ 浏览…**（任务单 `#86` 乙）：点它开一次**原生**文件对话框，
+            // 选中的路径**填进上面那个输入框**（⛔ 不提交 —— 提交仍是 SET / 回车那一处）。
+            //
+            // 位置：贴在输入框右边缘（`parent.width - 24px`），因此⛔ 不移动 SET / CLR，
+            // 也不改通道条宽度 ⇒ 调音台之外的布局一位未动。
+            // ⚠ 调音台（控制台 Tab 1）**不在默认帧里**（默认是 Tab 0 = 卷帘）⇒ 本按钮
+            //    ⛔ 不影响 `tests/golden/linux/**`（第 247 条：默认帧逐位不变）。
+            Rectangle {
+                x: parent.width - 24px;
+                y: 208px;
+                width: 18px;
+                height: 16px;
+                background: Tokens.bg-void;
+                border-radius: Tokens.radius-sm;
+                border-width: 1px;
+                border-color: Tokens.line-strong;
+                accessible-role: button;
+                accessible-id: "track-" + track_index + "-sampler-browse";
+                accessible-label: "轨道 " + track_name + " 浏览 SFZ 文件";
+                // `[UI-A11Y-003]` §7.3：落点与下面的 `TouchArea.clicked` **逐字相同**。
+                accessible-action-default => {
+                    root.mixer-sampler-browse(track_index);
+                }
+
+                UiMonoText {
+                    x: 0;
+                    y: 0;
+                    width: parent.width;
+                    height: parent.height;
+                    text: "…";
+                    color: Tokens.ink-1;
+                    font-size: Tokens.font-size-xs;
+                    horizontal-alignment: center;
+                }
+
+                TouchArea {
+                    width: parent.width;
+                    height: parent.height;
+                    clicked => {
+                        root.mixer-sampler-browse(track_index);
+                    }
+                }
+            }
+
+            Rectangle {
+                x: Tokens.space-3;
+                y: 228px;
+                width: 40px;
+                height: 16px;
+                background: Tokens.bg-void;
+                border-radius: Tokens.radius-sm;
+                border-width: 1px;
+                border-color: Tokens.line-strong;
+                accessible-role: button;
+                accessible-id: "track-" + track_index + "-sampler-set";
+                accessible-label: "轨道 " + track_name + " 提交 SFZ 路径";
+                accessible-action-default => {
+                    root.mixer-sampler-set(track_index, sampler-path-field.text);
+                }
+
+                UiMonoText {
+                    x: 0;
+                    y: 0;
+                    width: parent.width;
+                    height: parent.height;
+                    text: "SET";
+                    color: Tokens.ink-1;
+                    font-size: Tokens.font-size-xs;
+                    horizontal-alignment: center;
+                }
+
+                TouchArea {
+                    width: parent.width;
+                    height: parent.height;
+                    clicked => {
+                        root.mixer-sampler-set(track_index, sampler-path-field.text);
+                    }
+                }
+            }
+
+            Rectangle {
+                x: 48px;
+                y: 228px;
+                width: 40px;
+                height: 16px;
+                background: Tokens.bg-void;
+                border-radius: Tokens.radius-sm;
+                border-width: 1px;
+                border-color: Tokens.line-strong;
+                accessible-role: button;
+                accessible-id: "track-" + track_index + "-sampler-clear";
+                accessible-label: "轨道 " + track_name + " 解绑 SFZ 采样器";
+                accessible-action-default => {
+                    root.mixer-sampler-clear(track_index);
+                }
+
+                UiMonoText {
+                    x: 0;
+                    y: 0;
+                    width: parent.width;
+                    height: parent.height;
+                    text: "CLR";
+                    color: Tokens.ink-2;
+                    font-size: Tokens.font-size-xs;
+                    horizontal-alignment: center;
+                }
+
+                TouchArea {
+                    width: parent.width;
+                    height: parent.height;
+                    clicked => {
+                        root.mixer-sampler-clear(track_index);
+                    }
+                }
+            }
+
+            // ---------------------------------------------------------------- 输入面
+            //
+            // 两个 `TouchArea` 的位置都**不随数值动**（推子帽的 `y`、声相文本都会动）：
+            // 手势读的是 `self.mouse-y` / `self.mouse-x`，若控件自己也动，坐标就自己喂自己。
+            // 因此它们是**静态矩形**，只做命中与坐标上报，**不画任何像素**（默认外观不变）。
+            //
+            // 声明顺序 = 命中顺序（Slint 自后往前做命中测试）：两个都排在它们所覆盖的
+            // 视觉元素**之后**，所以按在推子帽 / 声相文本上也能抓到。
+            //
+            // 范围：推子面 x 22–70 / y 54–170 盖住导轨（x 38–44）与推子帽（x 30–52，
+            // y ∈ [60, 164]）；声相面 x 4–40 / y 18–36 盖住 `PAN …` 文本（x 4–32）。
+            // 两者都**不**碰静音 / 独奏（y 38–54）、电平表（x 4–16）与别的通道条。
+            TouchArea {
+                x: 22px;
+                y: 54px;
+                width: 48px;
+                height: 116px;
+                // 双击 ⇒ 这一轨推子回 unity（`0 dB`）。几何一位不动（见上面那条回调的边界说明）。
+                double-clicked => {
+                    root.mixer-fader-reset(track_index);
+                }
+                pointer-event(event) => {
+                    if event.kind == PointerEventKind.down {
+                        root.mixer-fader-grab(track_index, self.mouse-y);
+                    } else if event.kind == PointerEventKind.move {
+                        root.mixer-fader-drag(track_index, self.mouse-y);
+                    } else {
+                        // `up` 与 `cancel` 都是收尾：指针拖到窗口外松手也走这条
+                        // （与 `track-height-release` 同款）。
+                        root.mixer-fader-release(track_index);
+                    }
+                }
             }
 
             TouchArea {
-                width: parent.width;
-                height: parent.height;
-                clicked => {
-                    root.mixer-sampler-clear(track_index);
+                x: Tokens.space-3;
+                y: 18px;
+                width: 36px;
+                height: 18px;
+                // 双击 ⇒ 这一轨声相回中央（`0.0`）。
+                double-clicked => {
+                    root.mixer-pan-reset(track_index);
                 }
-            }
-        }
-
-        // ---------------------------------------------------------------- 输入面
-        //
-        // 两个 `TouchArea` 的位置都**不随数值动**（推子帽的 `y`、声相文本都会动）：
-        // 手势读的是 `self.mouse-y` / `self.mouse-x`，若控件自己也动，坐标就自己喂自己。
-        // 因此它们是**静态矩形**，只做命中与坐标上报，**不画任何像素**（默认外观不变）。
-        //
-        // 声明顺序 = 命中顺序（Slint 自后往前做命中测试）：两个都排在它们所覆盖的
-        // 视觉元素**之后**，所以按在推子帽 / 声相文本上也能抓到。
-        //
-        // 范围：推子面 x 22–70 / y 54–170 盖住导轨（x 38–44）与推子帽（x 30–52，
-        // y ∈ [60, 164]）；声相面 x 4–40 / y 18–36 盖住 `PAN …` 文本（x 4–32）。
-        // 两者都**不**碰静音 / 独奏（y 38–54）、电平表（x 4–16）与别的通道条。
-        TouchArea {
-            x: 22px;
-            y: 54px;
-            width: 48px;
-            height: 116px;
-            // 双击 ⇒ 这一轨推子回 unity（`0 dB`）。几何一位不动（见上面那条回调的边界说明）。
-            double-clicked => {
-                root.mixer-fader-reset(track_index);
-            }
-            pointer-event(event) => {
-                if event.kind == PointerEventKind.down {
-                    root.mixer-fader-grab(track_index, self.mouse-y);
-                } else if event.kind == PointerEventKind.move {
-                    root.mixer-fader-drag(track_index, self.mouse-y);
-                } else {
-                    // `up` 与 `cancel` 都是收尾：指针拖到窗口外松手也走这条
-                    // （与 `track-height-release` 同款）。
-                    root.mixer-fader-release(track_index);
-                }
-            }
-        }
-
-        TouchArea {
-            x: Tokens.space-3;
-            y: 18px;
-            width: 36px;
-            height: 18px;
-            // 双击 ⇒ 这一轨声相回中央（`0.0`）。
-            double-clicked => {
-                root.mixer-pan-reset(track_index);
-            }
-            pointer-event(event) => {
-                if event.kind == PointerEventKind.down {
-                    root.mixer-pan-grab(track_index, self.mouse-x);
-                } else if event.kind == PointerEventKind.move {
-                    root.mixer-pan-drag(track_index, self.mouse-x);
-                } else {
-                    root.mixer-pan-release(track_index);
+                pointer-event(event) => {
+                    if event.kind == PointerEventKind.down {
+                        root.mixer-pan-grab(track_index, self.mouse-x);
+                    } else if event.kind == PointerEventKind.move {
+                        root.mixer-pan-drag(track_index, self.mouse-x);
+                    } else {
+                        root.mixer-pan-release(track_index);
+                    }
                 }
             }
         }
