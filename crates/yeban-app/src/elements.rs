@@ -1817,32 +1817,22 @@ impl ElementRegistry {
         );
         // 空态（零提案时**唯一**出现在抽屉内容区的图元）。注册表的标签就是界面上那句
         // 可见文案 —— 注册表与图元说的是同一句话（`[UI-TEST-001]`）。
+        // ⭐ 文案**逐字取自** `crate::proposals` 的常量（⛔ 不手抄）：宿主在无来源的装配
+        // 上注入的就是 `NO_SOURCE_REASON`，注册表抄一份就会与那句漂移。
         registry.add(
             "musical-pr-empty-state",
             ElementKind::Text,
             "dialogs/musical_pr_drawer.slint",
-            "还没有 AI 提案。这条链路尚未接线。",
+            crate::proposals::NO_SOURCE_REASON,
             false,
         );
-        // 提案行左上那一格原来是**置信度徽章**，现已换成"本提案携带几条 op"（领域里真实存在
-        // 的数）。注册表与图元同批登记：漏了它 ⇒ `[UI-TEST-001]` 的双向覆盖判据红在
-        // "`.slint` 里有模板、注册表里一个成员都没有"（方向 2）。
-        for proposal_index in 0..3 {
-            registry.add(
-                &format!("musical-pr-proposal-{proposal_index}-item"),
-                ElementKind::ListItem,
-                "dialogs/musical_pr_drawer.slint",
-                &format!("AI 提案 {proposal_index}"),
-                false,
-            );
-            registry.add(
-                &format!("musical-pr-proposal-{proposal_index}-ops"),
-                ElementKind::Text,
-                "dialogs/musical_pr_drawer.slint",
-                &format!("AI 提案 {proposal_index} 携带的 op 条数"),
-                false,
-            );
-        }
+        // ⛔ 这里**不再有** `for proposal_index in 0..3` 的提案行 —— 那是"注册表凭空发明
+        // 三个元素"的实例：抽屉的行由 `for … in root.proposal-kinds` **按数据**画，而数据
+        // 来自权威里的 `Domain.proposals`（⛔ 不在工程里，`ViewState` 没有这一族）⇒
+        // 由工程投影驱动的注册表**今天**一个成员都造不出来。那两条模板改由
+        // `EMPTY_DYNAMIC_TEMPLATES_ALLOWED` 逐条登记理由；"真有一条提案时树里出现
+        // `musical-pr-proposal-0-item` 与 `-0-ops`"这件事由运行时探针
+        // （`tests/live_ui_mcp.rs` 的 `[pr-rows]`）逐字点名。
         registry.add(
             "musical-pr-accept-button",
             ElementKind::Button,
@@ -1854,17 +1844,22 @@ impl ElementRegistry {
             "musical-pr-reject-button",
             ElementKind::Button,
             "dialogs/musical_pr_drawer.slint",
-            "放弃提案 (Esc)",
+            "放弃提案",
             false,
         );
-        // 「有提案、但没有写入口」那句原因。标签**逐字取自** `crate::proposals` 的那个常量
-        // （界面上的 `accessible-label` 绑的也是它）⇒ 注册表、图元、宿主说的是同一句话，
-        // ⛔ 这里不是第三份抄写。漏登记会让 `[UI-TEST-001]` 双向覆盖判据红在方向 2。
+        // 「有提案、但写面亮不起来」那句原因。它**逐字**来自 `src/proposals.rs`，而那里
+        // 现在是**三**句（`resolve-reason` 是个读数，不是常数）：没有写来源 ⇒
+        // `NO_WRITE_SOURCE_REASON`；有来源但没点选 ⇒ `NO_SELECTION_REASON`；被权威拒过 ⇒
+        // 权威原文。注册表这一格填的是**发行形态实际会画的那一句** —— `in-process-mcp` 是
+        // 非默认 feature（MUST-GATE-009 的第一道开关），因此默认装配永远落在第一句。
+        // 运行时那一句到底是哪句，由 `tests/live_ui_mcp.rs` 的
+        // `a_real_proposal_from_the_authority_is_visible_in_the_opened_drawer` 逐字点名
+        // （⛔ 不在 `.slint` 里抄，也不在这里抄第二份）。
         registry.add(
             "musical-pr-resolve-unavailable",
             ElementKind::Text,
             "dialogs/musical_pr_drawer.slint",
-            crate::proposals::RESOLVE_NOT_WIRED_REASON,
+            crate::proposals::NO_WRITE_SOURCE_REASON,
             false,
         );
         registry.add(
@@ -2205,36 +2200,44 @@ pub const DEMO_UNDO_TREE_LITERALS: [&str; 6] = [
     "c5 AI 提案",
 ];
 
-/// 抽屉的七个数据面属性（`ui/dialogs/musical_pr_drawer.slint` 自己声明的那一侧）：
+/// 抽屉的**九个**数据面属性（`ui/dialogs/musical_pr_drawer.slint` 自己声明的那一侧）：
 /// `.slint` 名 / Slint 生成的 Rust 名（snake_case）配对。
 ///
 /// 判据要同时看两侧的**名称风格** —— 只查一侧会让"换个名字重新注入"漏过去。
+///
+/// ⭐ 顺序即事实源：下面这张表与 `PROPOSAL_HOST_PROPERTY_NAMES` 按序 **zip 配对**，
+/// 因此两处必须同序（`proposal-ids` / `selected-proposal-id` 是 2026-10-31 为
+/// 「点选一行 ⇒ 采纳 / 放弃才亮起」加的两格，插在各自相邻的读数旁边）。
 #[doc(hidden)]
-pub const MUSICAL_PR_PROPERTY_NAMES: [(&str, &str); 7] = [
+pub const MUSICAL_PR_PROPERTY_NAMES: [(&str, &str); 9] = [
     ("proposal-count", "proposal_count"),
+    ("proposal-ids", "proposal_ids"),
     ("proposal-kinds", "proposal_kinds"),
     ("proposal-titles", "proposal_titles"),
     ("proposal-op-counts", "proposal_op_counts"),
+    ("selected-proposal-id", "selected_proposal_id"),
     ("empty-reason", "empty_reason"),
     ("resolve-available", "resolve_available"),
     ("resolve-reason", "resolve_reason"),
 ];
 
-/// 同一批读数的**宿主侧**形状：`MainWindow` 上那七个 `musical-pr-*` 属性
+/// 同一批读数的**宿主侧**形状：`MainWindow` 上那九个 `musical-pr-*` 属性
 /// （`.slint` 名 / `host::apply_proposal_drawer` 要调的 setter 名）。
 ///
 /// 为什么要两份而不是一个前缀规则：Slint 为 `MusicalPrDrawer` 与 `MainWindow` 生成的
 /// setter 名字**只差前缀**，把注入面写在 `MainWindow` 上（宿主只能碰窗口属性）而判据只
-/// 查抽屉那七个名字，就会漏掉"注入面整批改了名"这一类漂移。两侧的名字都在这里钉住。
+/// 查抽屉那九个名字，就会漏掉"注入面整批改了名"这一类漂移。两侧的名字都在这里钉住。
 #[doc(hidden)]
-pub const PROPOSAL_HOST_PROPERTY_NAMES: [(&str, &str); 7] = [
+pub const PROPOSAL_HOST_PROPERTY_NAMES: [(&str, &str); 9] = [
     ("musical-pr-proposal-count", "musical_pr_proposal_count"),
+    ("musical-pr-proposal-ids", "musical_pr_proposal_ids"),
     ("musical-pr-proposal-kinds", "musical_pr_proposal_kinds"),
     ("musical-pr-proposal-titles", "musical_pr_proposal_titles"),
     (
         "musical-pr-proposal-op-counts",
         "musical_pr_proposal_op_counts",
     ),
+    ("musical-pr-selected-id", "musical_pr_selected_id"),
     ("musical-pr-empty-reason", "musical_pr_empty_reason"),
     (
         "musical-pr-resolve-available",
@@ -2696,10 +2699,24 @@ mod tests {
     ///
     /// ⚠ 例外必须**逐条**写理由，并且 `.slint` 里必须真有这个模板
     /// （同一判据的上半段机械检查）。
-    const EMPTY_DYNAMIC_TEMPLATES_ALLOWED: &[(&str, &str)] = &[(
-        "instrument-install-",
-        "-button", // #165：清单按样本字节过滤，今天为空 ⇒ 0 个按钮
-    )];
+    const EMPTY_DYNAMIC_TEMPLATES_ALLOWED: &[(&str, &str)] = &[
+        (
+            "instrument-install-",
+            "-button", // #165：清单按样本字节过滤，今天为空 ⇒ 0 个按钮
+        ),
+        // ⭐ `UI-A11Y-004`（2026-10-30 抽屉接权威）：提案**行**的两条模板。
+        // 为什么"今天 0 个成员"是真的而不是漏登记：注册表由**工程投影**
+        // （`ElementRegistry::from_view(&ViewState)`）实例化，而提案住在
+        // `Domain.proposals` —— 它**不是**工程的一部分（`Propose` 按计划不推进施加
+        // 修订号），`ViewState` 里根本没有这一族 ⇒ 没有任何一份 `ViewState` 能让
+        // `from_view` 造出一个 `musical-pr-proposal-N-*`。
+        // ⇒ ⛔ 不是"UI 加了 ID 却忘了登记"：那一行确实存在, 且**有**判据逐字点名它 ——
+        // 在真提案注入之后从运行时树里读 `musical-pr-proposal-0-item` 的
+        // `label`（`{kind}: {title}` 是领域原文）与 `musical-pr-proposal-0-ops` 的
+        // `本提案携带 {n} 条 op`，见 `tests/live_ui_mcp.rs` 的 `[pr-rows]` 那两条。
+        ("musical-pr-proposal-", "-item"),
+        ("musical-pr-proposal-", "-ops"),
+    ];
 
     /// 这个模板是不是在 [`EMPTY_DYNAMIC_TEMPLATES_ALLOWED`] 里登记过。
     fn empty_dynamic_template_is_documented(segments: &[String]) -> bool {
@@ -3677,7 +3694,7 @@ mod tests {
     /// 1. **全 `ui/` 源码文本**: [`DEMO_PROPOSAL_LITERALS`] 一条都不得出现在 `ui/**` 的
     ///    任何 `.slint` 的**代码**里。只查抽屉那一个文件不够 —— 把假数据搬到 `app.slint`
     ///    再注入, 用户看到的还是一模一样的假界面。
-    /// 2. **属性默认值**: 七个数据面属性的默认值必须是 `0` / `[]` / `""` / `false`。
+    /// 2. **属性默认值**: **九个**数据面属性的默认值必须是 `0` / `[]` / `""` / `false`。
     ///    这一条钉的是"宿主**没写**时界面显示什么" —— 宿主确实写了（下一条判据），但
     ///    默认值仍然必须空：任何一次装配漏掉注入, 用户看到的就得是空态而不是一版编造。
     /// 3. **循环规模**: 提案列表必须由**数据**驱动, 不得是固定的 `for … in 3` ——
@@ -3719,7 +3736,7 @@ mod tests {
             hits.join("\n  ")
         );
 
-        // ---- 路径 ②: 七个属性的**默认值**必须是空的 ----
+        // ---- 路径 ②: **九个**属性的**默认值**必须是空的 ----
         for (slint_name, _) in MUSICAL_PR_PROPERTY_NAMES {
             assert!(
                 !drawer.contains(&format!("{slint_name}: 3")),
@@ -3730,7 +3747,9 @@ mod tests {
             "in property <int> proposal-count: 0;",
             "in property <[string]> proposal-titles: [];",
             "in property <[string]> proposal-kinds: [];",
+            "in property <[string]> proposal-ids: [];",
             "in property <[int]> proposal-op-counts: [];",
+            "in property <string> selected-proposal-id: \"\";",
             "in property <string> empty-reason: \"\";",
             "in property <bool> resolve-available: false;",
             "in property <string> resolve-reason: \"\";",
@@ -3781,11 +3800,15 @@ mod tests {
                  （只写一处就是\"源码里说真话、用户看不见\"的老毛病）: 缺 `{line}`"
             );
         }
-        // 三句话逐字取自 `src/proposals.rs` 的常量（⛔ 不在这里抄第二份）。
+        // 四句话逐字取自 `src/proposals.rs` 的常量（⛔ 不在这里抄第二份）。
+        // ⚠ 这里**不数条数**（判据只断言"任何一句都不许出现在 .slint 里"）—— 新增一句
+        // 只需在这里加一行；`RESOLVE_NOT_WIRED_REASON` 已随写入口落地而**退役**，
+        // 换成下面两句：没装配写来源 ⇒ 第一句；有来源但没点选 ⇒ 第二句。
         let reasons = [
             crate::proposals::NO_SOURCE_REASON,
             crate::proposals::NO_OPEN_PROPOSAL_REASON,
-            crate::proposals::RESOLVE_NOT_WIRED_REASON,
+            crate::proposals::NO_WRITE_SOURCE_REASON,
+            crate::proposals::NO_SELECTION_REASON,
         ];
         for file in &files {
             let code = code_only(&std::fs::read_to_string(file).expect("读 .slint 失败"));
@@ -3808,10 +3831,12 @@ mod tests {
         );
         assert_eq!(
             drawer
-                .matches("if root.proposal-count > 0 && !root.resolve-available : Rectangle")
+                .matches("if !root.resolve-available && !root.resolve-reason.is-empty : Rectangle")
                 .count(),
             1,
-            "两个按钮不画时, 底部必须**换成**一句可见的原因（`resolve-reason`）—— 留白会被读成\"这里本来没有控件\""
+            "两个按钮不画时, 底部必须**换成**一句可见的原因（`resolve-reason`）—— 留白会被读成\"这里本来没有控件\"。\
+             条件⛔ 不许再要求 `proposal-count > 0`：被别的客户端抢先处理掉唯一那条提案时清单是空的, \
+             而权威那句拒绝原话恰恰必须上屏"
         );
         assert!(
             drawer.contains("accessible-id: \"musical-pr-resolve-unavailable\";"),
@@ -3832,10 +3857,31 @@ mod tests {
                 "`{id}` 必须留在源文件里（`ui/` ↔ 注册表的双向契约要它）"
             );
         }
+
+        // ---- 按钮上写的**键位**必须是真的（单位：按钮文案里的键位标记）----
+        //
+        // 这一条与判据 B11b/B11f 是**同一件事的两个面**：那边钉"快捷表 ↔ 解析 ↔ 宿主"
+        // 三面一致, 这里钉"界面**文案**上顺口写的那个键"。2026-10-31 实测
+        // `src/input.rs:906` 是 `Key::Escape => Resolution::Action(Action::Cancel)`
+        // （取消在手的拖动）⇒「放弃 (Esc)」那句是**假声明**，删掉了键位、只留可点等价物。
+        // 反方向：「采纳」现在**确实**有 `Shift+Enter`（`cli.rs` 表里 `implemented: true`,
+        // `host::apply_action` 的 `AcceptAiSuggestion` 臂 invoke 的是同一个 `accept()`
+        // 落点）⇒ 那句必须留在文案里, 否则这条判据会因为"根本没写"而空绿。
+        assert!(
+            !drawer_code.contains("(Esc)"),
+            "「放弃」不许声称 `Esc` 键位：`Escape` 今天的解析结果是 `Action::Cancel`\n\
+             （取消在手的拖动）⇒ 同一个键在两个上下文里各做一件事, 而规范里没有这条裁决"
+        );
+        assert!(
+            drawer_code.contains("采纳 (Shift+Enter)")
+                || drawer_code.contains("采纳提案 (Shift+Enter)"),
+            "「采纳」的 `Shift+Enter` 键位声明必须留在可见文案或 `accessible-label` 上 \
+             （键盘路径真接上了 ⇒ 文案不再声明键位就是少了一条用户可发现的通道）"
+        );
     }
 
-    /// 判据（**唯一注入路径**）：抽屉的七个读数只有宿主那一个函数在写, 且只有
-    /// `app.slint` 把它们绑到抽屉上。
+    /// 判据（**唯一注入路径**）：抽屉的九个数面只有宿主那一个函数在写, 且只有
+    /// `app.slint` 把它们绑到抽屉上；四条回调在全仓 Rust 侧各只注册一次。
     ///
     /// 这条判据是 2026-10-30 **反向改写**来的：它的前身
     /// `no_host_writes_the_musical_pr_proposal_properties` 断言的是"没有宿主写这四个属性"
@@ -3843,14 +3889,18 @@ mod tests {
     /// 真实提案），前提换了, 要钉的东西也换了：⛔ 不许有**第二条**注入路径。
     ///
     /// 三条子路径（破坏任何一条都变红）：
-    /// - **Rust 侧**: `src/**` 的**代码**里那七个 setter（`set_musical_pr_*`）只出现在
+    /// - **Rust 侧**: `src/**` 的**代码**里那九个 setter（`set_musical_pr_*`）只出现在
     ///   `host.rs` 的 `apply_proposal_drawer` 里, 各一次。任何一处别的 `set_…` 就是
-    ///   第二份写者（界面上"哪一处在决定"重新变成要猜的事）。
-    /// - **界面侧**: 七个 `musical-pr-*` 只在 `app.slint` 的 `MusicalPrDrawer { … }`
-    ///   实例里绑一次, 且绑的就是宿主那七个属性（`root.musical-pr-*`）。
-    /// - **注册者唯一**: `on_open_musical_pr` / `open-musical-pr` 在 Rust 侧只由
-    ///   `wire_proposal_drawer` 注册（Slint 的 `on_*` 是**覆盖**语义 —— 两处注册就会
-    ///   有"哪一份生效"的漂移, 而 `wire_view_callbacks` 里那一处正是为此删掉的）。
+    ///   第二份写者（界面上"哪一处在决定"重新变成要猜的事）。⭐ 点选一行**也算**：那条
+    ///   回调把身份作为 `DrawerIntent { select: … }` **交进**这个唯一的写者, 而不是自己
+    ///   `set_musical_pr_selected_id` 一遍再重注入 —— 那样"什么算选中"就有两处口径了。
+    /// - **界面侧**: 九个 `musical-pr-*` 只在 `app.slint` 的 `MusicalPrDrawer { … }`
+    ///   实例里绑一次, 且绑的就是宿主那九个属性（`root.musical-pr-*`）。
+    /// - **注册者唯一**: 抽屉的四条回调（`on_open_musical_pr` / `on_select_ai_proposal` /
+    ///   `on_accept_ai_proposal` / `on_reject_ai_proposal`）在**全部** `src/**` 的代码里
+    ///   各只出现一次, 而那唯一一处就是 `wire_proposal_drawer`（Slint 的 `on_*` 是
+    ///   **覆盖**语义 —— 两处注册就会有"哪一份生效"的漂移：`wire_view_callbacks` 里那一处
+    ///   与 `main.rs` 里那两行 `trace(..)` 都正是为此删掉的）。
     #[test]
     fn the_proposal_drawer_writes_its_readings_from_one_host_path() {
         let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
@@ -3883,7 +3933,7 @@ mod tests {
             "抽屉读数出现了**第二个**写者（唯一的那一个是 `host::apply_proposal_drawer`）:\n  {}",
             writers.join("\n  ")
         );
-        // 那七个 setter 确实**都在** `host.rs` 里（否则上一条断言会因为"根本没接线"而空绿）。
+        // 那九个 setter 确实**都在** `host.rs` 里（否则上一条断言会因为"根本没接线"而空绿）。
         let host = std::fs::read_to_string(src.join("host.rs")).expect("读 host.rs");
         let host_code = code_only(&host);
         let applier = host_code
@@ -3895,7 +3945,7 @@ mod tests {
         for (_, rust_name) in PROPOSAL_HOST_PROPERTY_NAMES {
             assert!(
                 body.contains(&format!("set_{rust_name}(")),
-                "`apply_proposal_drawer` 必须写满七个属性, 缺 `set_{rust_name}` —— \
+                "`apply_proposal_drawer` 必须写满九个属性, 缺 `set_{rust_name}` —— \
                  少一个就意味着界面上那一格停留在默认值"
             );
         }
@@ -3963,13 +4013,32 @@ mod tests {
             extra_binds.join("\n  ")
         );
 
-        // ---- 子路径 ③: `open-musical-pr` 的注册者只有一个 ----
-        let registrations = host_code.matches("on_open_musical_pr(").count();
-        assert_eq!(
-            registrations, 1,
-            "`on_open_musical_pr` 在宿主里必须**只注册一次**（Slint 的 `on_*` 是覆盖语义, \
-             两处注册时后写的生效, 而前一处只是看起来接了）"
-        );
+        // ---- 子路径 ③: 抽屉的四条回调, 全仓 Rust 侧各**只注册一次 ----
+        //
+        // ⚠ Slint 的 `on_*` 是**覆盖**赋值：第二次注册**静默擦掉**前一处（不报错, 也不是
+        // 两条都跑）。`main.rs` 原先那两行 `ui.on_accept_ai_proposal(|| trace(..))` /
+        // `ui.on_reject_ai_proposal(|| trace(..))` 正是这样把写入口盖掉的 —— 而日志里
+        // 那句"未接线"照旧打出来, 于是"接了但没人接"在文本层与运行时层都看不出来。
+        //
+        // ⚠ 所以数的是**全部 `src/**.rs` 的总和**, 不是 `host.rs` 一处：只数宿主就会漏掉
+        // "别的文件又注册了一遍"这一种破坏方式（单位：`on_…(` 的调用次数）。
+        for name in [
+            "on_open_musical_pr",
+            "on_select_ai_proposal",
+            "on_accept_ai_proposal",
+            "on_reject_ai_proposal",
+        ] {
+            let mut registrations = 0_usize;
+            for file in &rs_files {
+                let code = code_only(&std::fs::read_to_string(file).expect("读 .rs 失败"));
+                registrations += code.matches(&format!("{name}(")).count();
+            }
+            assert_eq!(
+                registrations, 1,
+                "`{name}` 在 `src/**` 的**代码**里必须总共出现一次（实际 {registrations} 次）—— \
+                 两处注册时后写的生效, 而前一处只是看起来接了"
+            );
+        }
     }
 
     /// 收集 `dir` 下（递归）全部扩展名为 `ext` 的文件。

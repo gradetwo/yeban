@@ -3818,37 +3818,39 @@ const SHORTCUTS: [ShortcutRow; 34] = [
         modifiers: Modifiers::ctrl_alt(),
         implemented: true,
     },
-    // 以下**两条**是本版本仅剩的 `implemented: false` 条目。
+    // 以下**一条**是本版本仅剩的 `implemented: false` 条目。
     //
     // ⭐ **两个数字都不在这里手抄**（此前这一行写着"表共 26 条"，而表的**总数**其实是 28 ——
     // 26 是 `implemented: true` 的条数，被当成了总数 ⇒ 读的人按它对账会**差 2**，
-    // 而差的正是下面这两条 `false`）。⭐ 事实源是**类型标注**与**判据**，逐条复算：
+    // 而差的正是下面这类 `false` 条目）。⭐ 事实源是**类型标注**与**判据**，逐条复算：
     //   - 表有多大 ⇒ `[ShortcutRow; 34]` 的**类型标注**（编译期）＋ 判据
     //     `shortcut_table_status_matches_the_resolution_and_host_pipeline` 的 `rows.len() == 34`；
-    //   - 有几条未实现 ⇒ 同文件的 `delete_selection_is_implemented_in_the_host_table_and_rendered_output`
-    //     断言未实现条目**恰好**是 `[AcceptAiSuggestion, AuditionMain]`（精确到**是哪两条**，
-    //     比只数条数更强）＋ `printed_marks == 2`。
+    //   - 有几条未实现 ⇒ 同文件的 `the_ai_suggestion_and_audition_keys_are_still_declared_unimplemented`
+    //     断言未实现条目**恰好**是哪一条（精确到条目，比只数条数更强）＋ `printed_marks`。
     // ⇒ ⭐ 注释只负责**指路**，⛔ 不再复述数字（复述过的数字会陈旧，这一行就是实例）。
     //
     // `implemented` 是"宿主会不会消费这一键"的主张，事实源是 `host::action_has_implementation`
     // （逐行对账见本文件 `ShortcutRow` 的文档与 `tests/cli_contract.rs` 的判据 B11b）。
-    // 这两条之所以**仍是** `false`：缺的是**能力**，不是接线 ——
-    //   - `Shift+Enter`（采纳 AI 建议）：抽屉**已经看得见**提案（2026-10-30 起，
-    //     `host::wire_proposal_drawer` 从唯一可变权威注入那七个属性），但界面上
-    //     **没有合并提案的写入口** —— `HostAction` 只有 `Undo` / `Redo` / `Commit` 三臂，
-    //     而领域的 `yeban_merge_proposal` 要 `proposalId`；抽屉里也没有"当前选中哪一条"
-    //     这一格（在界面侧新造提案状态会撞 `ADR-0005`）；
+    // 这一条之所以**仍是** `false`：缺的是**能力**，不是接线 ——
     //   - `[`（试听主线）：规范 `[ARCH-RT-005]` 要"主线与提案分支并发渲染 + 30ms 等功率瞬切
     //     + 2048 采样预滚"，这套机制在仓库里一处都不存在。
+    // ⭐ 而 `Shift+Enter`（采纳 AI 建议）于 2026-10-31 **移出**本名单：抽屉现在既有
+    //   看得见提案的数据面（`host::wire_proposal_drawer` 从唯一可变权威注入那九个属性），
+    //   也有**写入口**（`HostAction` 的 `MergeProposal` / `RejectProposal` 两臂，复用工具面
+    //   `yeban_merge_proposal` 所调的**同一个** `merge_plan`），而"选中哪一条"是窗口属性
+    //   `musical-pr-selected-id`（值从权威的 `ProposalRow::id` 来，⛔ 界面不自造身份）。
+    //   ⚠ 本列说"有落点"，运行时仍然会**如实不消费**：`host::apply_action` 的那一条要求
+    //   抽屉开着 ∧ `musical-pr-resolve-available`（= 有提案来源 ∧ 点选了当前清单里的一行）
+    //   ⇒ 没挂控制面的装配按 `Shift+Enter` 一位都不动，与 `DeleteSelection` /
+    //   `ZoomToSelection` / `Duplicate` 空前置条件时的取向一致。
     // 逐条证据（`grep` 字面命中与 `file:line`）见 `host.rs` 的 `action_has_implementation` 文档；
     // "它还不可用"这件事由 `tests/cli_contract.rs` 的判据 B11f 机械钉住（谁真接了、忘了改判据即变红）。
-    // 「空前置条件不消费」的取向与 `DeleteSelection` / `ZoomToSelection` / `Duplicate` 一致。
     ShortcutRow {
         label: "Shift+Enter → 采纳 AI 建议",
         action: Action::AcceptAiSuggestion,
         key: PhysicalKey::Enter,
         modifiers: Modifiers::shift(),
-        implemented: false,
+        implemented: true,
     },
     ShortcutRow {
         label: "[ → 试听主线",

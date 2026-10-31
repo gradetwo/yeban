@@ -6920,8 +6920,10 @@ fn the_musical_pr_drawer_shows_an_honest_empty_state() {
         proposal_ids.is_empty(),
         "零提案时不该有任何提案条目, 实测 {proposal_ids:?}"
     );
-    // 一个可点的「采纳」在空列表上是**假控件**（按下去只关抽屉 + 一行 stderr）。
-    // 上一轮已裁定 `Shift+Enter → 采纳 AI 建议` 不许假装实现, 这里同款。
+    // 零提案 / 零来源时「采纳」在树里就是**假控件**（按下去没有可作用的提案身份）。
+    // ⚠ 这一格的口径**变了**（2026-10-31）：写入口现在**真的存在**（`resolve-available`
+    // 不再恒 `false`），因此这一条不再是"永远不画"，而是"没有选中行 / 没有来源时不画"。
+    // 上一条判据（`Shift+Enter` 不许假装实现）现在只管 `[` / `]` 那两个试听动作。
     assert!(
         !after.contains("musical-pr-accept-button"),
         "零提案时「采纳」按钮不许在树里（它是假控件）"
@@ -6991,7 +6993,7 @@ fn the_musical_pr_drawer_shows_an_honest_empty_state() {
 /// | 域 → 树（标题） | `musical-pr-proposal-0-item` 的 `label` | 逐字 `{kind}: {title}`（`title` 是领域原文） |
 /// | 域 → 树（op 数） | `musical-pr-proposal-0-ops` 的 `label` | 逐字 `本提案携带 {op_count} 条 op` |
 /// | 树（假控件） | `musical-pr-accept-button` / `-reject-button` / `musical-pr-empty-state` | 都不在树里 |
-/// | 树（真话） | `musical-pr-resolve-unavailable` 的 `label` | 逐字 `RESOLVE_NOT_WIRED_REASON` |
+/// | 树（真话） | `musical-pr-resolve-unavailable` 的 `label` | 逐字 `NO_SELECTION_REASON`（有来源、**没点选** ⇒ 亮不起来那句） |
 /// | 像素 | 0 条那一帧 vs 1 条那一帧 | 必须变，且差异伸进右起 360px 那条带 |
 ///
 /// ## 为什么打开走 `invoke_open_musical_pr()` 而不是 `set_musical_pr_open(true)`
@@ -7147,21 +7149,28 @@ fn a_real_proposal_from_the_authority_is_visible_in_the_opened_drawer() {
         !after.contains("musical-pr-empty-state"),
         "有提案时空态不许还挂在树里（那句\"没有提案\"就成了谎话）"
     );
+    // ⭐ 2026-10-31 起这一格**换了一句**：`RESOLVE_NOT_WIRED_REASON`（"写入口不存在"）
+    // 随写入口落地而退役。此刻的事实是"**有**写入口, 但用户还没点选任何一行" ⇒
+    // 上屏的是 `NO_SELECTION_REASON`。而 `resolve-available` 不再是恒 `false` 的常数,
+    // 它是 `(有来源 ∧ 点选了当前清单里的一行 ∧ 上一次没被拒)` 的读数 —— 亮起与按下真的
+    // 改领域这两件事由本文件下一格的 `selecting_a_row_lights_up_accept_and_it_really_merges_the_proposal`
+    // 在活窗口上量（这里刻意**不**点选,
+    // 剩下的那一半"没点选就不画控件"正是这一格）。
     let reason = after
         .find_by_id("musical-pr-resolve-unavailable")
-        .expect("有提案、没有写入口 ⇒ 必须上屏那句逐字原因");
+        .expect("有提案、没有点选 ⇒ 必须上屏那句逐字原因");
     assert_eq!(
         reason.label,
-        yeban_app::proposals::RESOLVE_NOT_WIRED_REASON,
+        yeban_app::proposals::NO_SELECTION_REASON,
         "底部那句话必须逐字等于宿主断言过的原因, 不能是界面另写的安慰话"
     );
     assert!(
         !after.contains("musical-pr-accept-button"),
-        "`resolve-available` 恒 `false` ⇒ 「采纳」不许进树"
+        "没有点选 ⇒ `resolve-available` 是 `false` ⇒ 「采纳」不许进树（可点但没有身份的按钮是假控件）"
     );
     assert!(
         !after.contains("musical-pr-reject-button"),
-        "`resolve-available` 恒 `false` ⇒ 「放弃」不许进树"
+        "没有点选 ⇒ `resolve-available` 是 `false` ⇒ 「放弃」不许进树"
     );
 
     // ---- 6. 像素：0 条那一帧 vs 1 条那一帧
@@ -7183,6 +7192,486 @@ fn a_real_proposal_from_the_authority_is_visible_in_the_opened_drawer() {
         diff.bbox.right() > drawer_band_left,
         "差异包围盒右界 {} 没有伸进抽屉那条带（x ≥ {drawer_band_left}）⇒ 变的不是提案行",
         diff.bbox.right()
+    );
+}
+
+// =====================================================================================
+// 判据（任务单 #29 的运行时那一半）：点选一行 ⇒ 按钮亮起 ⇒「采纳」/`Shift+Enter`
+// **真的**合并那条提案；被权威拒绝时 ⇒ 权威那句话逐字上屏且一位都不动
+// =====================================================================================
+
+/// 判据：在**接了权威的活窗口**上走完整条写路径 —— 点一行 ⇒ 亮起 ⇒ 采纳 ⇒ 领域真的变了
+/// ⇒ 那一行消失；再走一遍**键盘**那一条（`Shift+Enter`）⇒ 同样真的合并。
+///
+/// ## 补的是哪一个洞（实测，不是转述）
+///
+/// 上一条判据只走到"看得见"。`resolve-available` 亮起、按钮按下之后**发生了什么**，
+/// 全仓此前没有任何运行时判据量过：抽屉的写入口 `HostAction` 当时只有
+/// `Undo` / `Redo` / `Commit` 三臂，领域侧的 `yeban_merge_proposal` 早就把合并做完了，
+/// 而界面上那两个按钮按下去只关抽屉。今天两臂接上了（`MergeProposal` / `RejectProposal`
+/// 复用**同一个** `Plan::Merge` / `Plan::Reject`），本判据钉的就是"接上之后不许漂移"。
+///
+/// 领域侧那九条（`crates/yeban-mcp/tests/host_proposal_resolve.rs`）量的是**动作本身**
+/// （预览==真落、多父提交、幂等零步、拒绝码逐字相同）；本判据量的是**界面到动作那一段**
+/// —— 选中身份、闸门、按钮/键盘两条落点、以及按下之后读数的去向。两边不重复，缺任一边
+/// 都留着一个洞：只有领域侧 ⇒ 界面可能传错身份；只有本侧 ⇒ 合并语义本身可能漂移。
+///
+/// ## 量什么（每一步都是活窗口 / 唯一权威上的实读值）
+///
+/// | 步 | 量什么 | 怎么量 | 期望 |
+/// | :--- | :--- | :--- | :--- |
+/// | ① | 未合并提案条数 | `authority.open_proposal_rows()` | 提案前 0，提案后 1 |
+/// | ② | 选中身份 | `MainWindow.musical-pr-selected-id` | 点选前 `""`，点选后 = 那一行的 `id` |
+/// | ③ | 闸门 | `MainWindow.musical-pr-resolve-available` | `false` → `true` → 合并后回 `false` |
+/// | ④ | 控件 | 树里 `musical-pr-accept-button` / `-reject-button` / `-resolve-unavailable` | 亮起时**两个按钮在、原因卡没有** |
+/// | ⑤ | 领域 | `apply_revision` / `undo_display().commit_count` / `project()` | 采纳后修订号 +1、恰好 +1 条提交、工程变了 |
+/// | ⑥ | 清单 | `open_proposal_rows()` / `proposal-count` / 树里的 `-item` | 采纳后 0 条 / `0` / 条目消失 |
+/// | ⑦ | 夹紧 | `musical-pr-selected-id` | 合并后回 `""`（⛔ 不留陈旧身份） |
+/// | ⑧ | 重投影 | `sync_authority()` | `Reprojected { revision }`（合并推进了修订号 ⇒ 界面跟得上） |
+/// | ⑨ | 键盘 | `invoke_key_action("\n", shift=true)` | **`true`**（被消费）且领域 +1 条提交 |
+/// | ⑩ | 负向对照 | 同一键在**没有点选**时 | `false` ⇒ ⑨ 不是"恒消费" |
+///
+/// ## 抽屉此刻**不关**（这是设计，不是遗漏）
+///
+/// 成功时唯一的反馈是"那一行从清单里没了"（重新读权威得到 0 条 ⇒ 空态那句话
+/// `NO_OPEN_PROPOSAL_REASON` 回到屏上）。把抽屉关掉会把"还剩几条"这个读数一起关掉，
+/// 而用户可能在决定下一条。
+///
+/// ## 这条怎么变红
+///
+/// - 「采纳」的落点退回"只关抽屉"（`on_accept_ai_proposal` 不再施加 `HostAction`）⇒
+///   第⑤步三项读数全不变、第⑥步那一行还在；
+/// - 选中身份写的是**下标**而不是领域的 `id` ⇒ 第②步不等（`apply_host` 会因非法身份
+///   拒绝，第⑤步同样红）；
+/// - 把闸门改成恒 `true` ⇒ 第④步在**未点选**时就红（假按钮进树）；
+/// - 键盘臂不看前置条件 ⇒ 第⑩步红（没点选也消费）；
+/// - 合并后不夹紧选中 ⇒ 第⑦步红（陈旧身份留着，下一次按下就打向一条不存在的提案）。
+#[cfg(feature = "in-process-mcp")]
+#[test]
+fn selecting_a_row_lights_up_accept_and_it_really_merges_the_proposal() {
+    use std::collections::BTreeMap;
+    use yeban_app::mcp_mount::{InProcessMcp, SessionSource};
+
+    // 「采纳」要真的写进权威 ⇒ 会话必须是**可写形态**。`SessionSource::InMemory` 的
+    // `session_read_only()` 恒为 `true`（`mcp_mount.rs:307`：只有 `WritableFile` 不是），
+    // 那种装配下 domain 会拒写 —— 那是装配问题，不是本判据要证的命题。
+    let dir = scratch_dir("pr-resolve");
+    let project_path = dir.join("mounted.yeban");
+    let project = yeban_model::samples::filled_project();
+    let history = serde_json::to_vec(&yeban_model::CommitGraph::new()).expect("空图谱 JSON");
+    let bytes =
+        yeban_model::container::write_project_container(&project, &history, &BTreeMap::new())
+            .expect("写真容器");
+    std::fs::write(&project_path, &bytes).expect("写夹具");
+
+    let mount = InProcessMcp::start_for_project(
+        true,
+        project,
+        SessionSource::WritableFile(project_path.clone()),
+        Vec::new(),
+    )
+    .expect("挂载决策")
+    .expect("运行期开关打开时必须真的挂载");
+    let authority = mount.project_authority();
+    let bearer = format!("Bearer {}", mount.token().expose());
+
+    // 写入口的前置条件：这个会话必须把权威**交给**了界面（只读会话里"采纳"注定失败,
+    // 那是装配问题而不是本判据要证的命题）。
+    assert!(
+        authority.is_writable(),
+        "判据装配必须是可写会话, 否则「采纳」没有写入口可言"
+    );
+    assert!(
+        authority.open_proposal_rows().is_empty(),
+        "起点必须零提案（否则下面 0→1 没有对照）"
+    );
+
+    let mut ui = build_live_ui_from_authority(&authority, Permission::ReadOnly).expect("装配");
+
+    // ---- 1. 真 socket 提一案（⛔ 不在测试里造第二份提案） ----
+    let propose_reply = mcp_call(
+        mount.address(),
+        &bearer,
+        r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"yeban_propose_section","arguments":{"sectionName":"Chorus","stylePreset":"pop","materialSource":"theory","bars":2}}}"#,
+    );
+    assert_eq!(
+        propose_reply["result"]["status"], "success",
+        "提案必须成功, 否则后面全是空判据: {propose_reply}"
+    );
+    let rows = authority.open_proposal_rows();
+    assert_eq!(rows.len(), 1, "权威里必须恰好 1 条未合并提案: {rows:?}");
+    let row = rows[0].clone();
+
+    // ---- 2. 打开抽屉 ⇒ 看得见那一行, 但**没有点选** ⇒ 按钮不画（③④ 的"未点选"侧） ----
+    ui.ui().invoke_open_musical_pr();
+    ui.pump_meters();
+    let before_select = ui.tree_snapshot();
+    assert!(
+        before_select.contains("musical-pr-proposal-0-item"),
+        "提案行必须在树里（上一条判据已逐字钉过它的文案）"
+    );
+    assert_eq!(
+        ui.ui().get_musical_pr_selected_id().as_str(),
+        "",
+        "刚打开时没有点选 ⇒ 选中身份必须是空串"
+    );
+    assert!(
+        !ui.ui().get_musical_pr_resolve_available(),
+        "没有点选 ⇒ 闸门必须是 `false`"
+    );
+    assert!(
+        !before_select.contains("musical-pr-accept-button")
+            && !before_select.contains("musical-pr-reject-button"),
+        "闸门关着 ⇒ 两个按钮不许进树（可点但没有身份的按钮是假控件）"
+    );
+
+    // ---- 3. 点那一行 ⇒ 身份进宿主、闸门亮起、两个按钮进树（②③④） ----
+    ui.ui().invoke_select_ai_proposal(row.id.as_str().into());
+    ui.pump_meters();
+    let after_select = ui.tree_snapshot();
+    assert_eq!(
+        ui.ui().get_musical_pr_selected_id().as_str(),
+        row.id.as_str(),
+        "点选写的必须是**领域那一行的身份原文**（⛔ 不是下标：写入口按身份施加）"
+    );
+    assert!(
+        ui.ui().get_musical_pr_resolve_available(),
+        "有来源 ∧ 点选了当前清单里的一行 ⇒ 闸门必须亮"
+    );
+    assert!(
+        after_select.contains("musical-pr-accept-button"),
+        "亮起 ⇒「采纳」必须进树"
+    );
+    assert!(
+        after_select.contains("musical-pr-reject-button"),
+        "亮起 ⇒「放弃」必须进树"
+    );
+    assert!(
+        !after_select.contains("musical-pr-resolve-unavailable"),
+        "按钮可用时界面上不许还挂着「用不了」那句话"
+    );
+
+    // ---- 4. 按下之前的权威读数（⑤ 的"前"） ----
+    let revision_before = authority.apply_revision();
+    let display_before = authority.undo_display();
+    let project_before = authority.project().expect("活跃工程");
+    let notes_before = model_note_count(&project_before);
+
+    // ---- 5. 按下「采纳」⇒ 领域真的变了（⑤⑥⑦） ----
+    ui.ui().invoke_accept_ai_proposal();
+    ui.pump_meters();
+    let after_accept = ui.tree_snapshot();
+
+    assert_eq!(
+        authority.open_proposal_rows().len(),
+        0,
+        "采纳必须把那条提案从「未合并」清单里拿掉"
+    );
+    let display_after = authority.undo_display();
+    assert_eq!(
+        authority.apply_revision(),
+        revision_before + 1,
+        "合并真的改工作工程 ⇒ 施加修订号必须 +1（界面重投影的触发口径就在这一个读数上）"
+    );
+    assert_eq!(
+        display_after.commit_count,
+        display_before.commit_count + 1,
+        "采纳恰好落**一条**提交（领域侧 `commit_delta() == 1` 的同一口径）: \
+         {display_before:?} → {display_after:?}"
+    );
+    let project_after = authority.project().expect("活跃工程");
+    assert_ne!(
+        project_after, project_before,
+        "工程本身必须变了（⛔ 不许「提交数涨了而内容一位没动」）"
+    );
+    let notes_after = model_note_count(&project_after);
+    report_line(&format!(
+        "[pr-merge] 采纳「{}」(id={}): 未合并提案 1→0, 修订号 {revision_before}→{}, \
+         提交数 {}→{}, 音符条目 {notes_before}→{notes_after}",
+        row.kind,
+        row.id,
+        authority.apply_revision(),
+        display_before.commit_count,
+        display_after.commit_count,
+    ));
+
+    // 界面上的反馈就是"那一行没了"（⛔ 没有成功提示, 也没有关抽屉）
+    assert_eq!(
+        ui.ui().get_musical_pr_proposal_count(),
+        0,
+        "重读权威 ⇒ 条数必须归 0"
+    );
+    assert!(
+        !after_accept.contains("musical-pr-proposal-0-item"),
+        "已合并的那一行不许还挂在树里"
+    );
+    assert_eq!(
+        ui.ui().get_musical_pr_selected_id().as_str(),
+        "",
+        "陈旧选中必须夹紧成空串（否则下一次按打向一条不存在的提案）"
+    );
+    assert!(
+        !ui.ui().get_musical_pr_resolve_available(),
+        "没有可点的行了 ⇒ 闸门必须打回 `false`"
+    );
+    assert!(
+        ui.ui().get_musical_pr_open(),
+        "采纳**不**关抽屉：还剩几条是用户要接着看的那件事"
+    );
+    let empty = after_accept
+        .find_by_id("musical-pr-empty-state")
+        .expect("零条时空态必须回场");
+    assert_eq!(
+        empty.label,
+        yeban_app::proposals::NO_OPEN_PROPOSAL_REASON,
+        "回到屏上的必须是「有来源、此刻没有提案」那句"
+    );
+
+    // ---- 6. 会话侧改工程后界面跟得上（⑧） ----
+    assert_eq!(
+        ui.sync_authority().expect("刷新投影"),
+        AuthoritySync::Reprojected {
+            revision: revision_before + 1
+        },
+        "合并推进了修订号 ⇒ 同一次权威刷新必须真的重投影"
+    );
+
+    // ---- 7. 键盘那一条：`Shift+Enter` 必须**被消费**并且同样真的合并（⑨⑩） ----
+    let second = mcp_call(
+        mount.address(),
+        &bearer,
+        r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"yeban_propose_section","arguments":{"sectionName":"Bridge","stylePreset":"pop","materialSource":"theory","bars":2}}}"#,
+    );
+    assert_eq!(
+        second["result"]["status"], "success",
+        "第二案必须提得起来: {second}"
+    );
+    let rows_second = authority.open_proposal_rows();
+    assert_eq!(rows_second.len(), 1, "第二案应在权威里: {rows_second:?}");
+
+    ui.ui().invoke_open_musical_pr();
+    ui.pump_meters();
+    // ⑩ 负向对照：**没点选**就按 ⇒ 如实不消费（否则第⑨步的 `true` 不说明任何事）
+    assert!(
+        !ui.ui()
+            .invoke_key_action("\n".into(), true, false, false, false),
+        "抽屉开着但**没有点选** ⇒ `Shift+Enter` 必须返回 false（闸门在前, ⛔ 不吞键）"
+    );
+    let display_before_key = authority.undo_display();
+
+    ui.ui()
+        .invoke_select_ai_proposal(rows_second[0].id.as_str().into());
+    ui.pump_meters();
+    assert!(
+        ui.ui().get_musical_pr_resolve_available(),
+        "点了第二行 ⇒ 闸门必须再次亮（第 7 步的对照不是碰巧）"
+    );
+    assert!(
+        ui.ui()
+            .invoke_key_action("\n".into(), true, false, false, false),
+        "抽屉开着 ∧ 已点选 ∧ 有写入口 ⇒ `Shift+Enter` 必须被**消费**"
+    );
+    let display_after_key = authority.undo_display();
+    report_line(&format!(
+        "[pr-merge] `Shift+Enter` 采纳「{}」(id={}): 未合并提案 1→{}, 提交数 {}→{}",
+        rows_second[0].kind,
+        rows_second[0].id,
+        authority.open_proposal_rows().len(),
+        display_before_key.commit_count,
+        display_after_key.commit_count,
+    ));
+    assert!(
+        authority.open_proposal_rows().is_empty(),
+        "键盘那一条必须与按钮**落在同一处**：提案真的被合并, 而不只是回调被调用"
+    );
+    assert_eq!(
+        display_after_key.commit_count,
+        display_before_key.commit_count + 1,
+        "键盘采纳同样恰好落一条提交（与按钮路径同一个 `Plan::Merge`）"
+    );
+    assert_eq!(
+        ui.ui().get_musical_pr_selected_id().as_str(),
+        "",
+        "键盘路径之后选中同样被夹紧"
+    );
+}
+
+/// 判据：权威**拒绝**这一次采纳时，界面上屏的是权威那句**逐字**原话，抽屉不关、闸门打回
+/// `false`、两个按钮退场，而且**一位都不动**。
+///
+/// ## 为什么要造一个"界面上的清单已经陈旧"的时机
+///
+/// 正常流程里被点的行必然在权威里是 `Open` ⇒ 不会失败。要量"被拒"这一跳，就得让**别的
+/// 客户端**在点选之后、按下之前把那条提案处理掉（本判据经真 socket 放弃它）。这不是
+/// 编出来的边角：控制面与界面共用同一个权威，两侧都可以动它，而界面**不**在每次按下前
+/// 重新问一遍"这条还在不在"—— 它把身份交进去，让权威自己裁决。
+///
+/// ## 量什么
+///
+/// | 步 | 量什么 | 期望 |
+/// | :--- | :--- | :--- |
+/// | ① | 点选后、按下前经 socket 放弃那条 | 权威的未合并清单 1→0 |
+/// | ② | 按下「采纳」后树里 `musical-pr-resolve-unavailable` 的 `label` | **逐字等于**同一次工具调用失败回执里的 `error.message` |
+/// | ③ | 那句 vs 宿主的四条自述文案 | **一个都不相等** ⇒ 它是权威的话, 不是宿主替它写的话 |
+/// | ④ | `musical-pr-open` / `resolve-available` / 两个按钮 | 仍开着 / `false` / 都不在树里 |
+/// | ⑤ | 修订号、提交数、工程、未合并清单 | 与按下前**完全相同**（被拒的写一位不动） |
+/// | ⑥ | 再打开一次抽屉 | 那句拒绝**消失** ⇒ 陈旧解释不会被读成"现在也用不了" |
+///
+/// ## 这条怎么变红
+///
+/// - 把拒绝理由吞掉（`resolve_proposal` 的 `Err` 臂只重注入不带 `refusal`）⇒ 第②步变成
+///   `NO_SELECTION_REASON` 那句自述话，第③步红；
+/// - 界面自己拼一句"操作失败"⇒ 第②步逐字不等；
+/// - 被拒时关抽屉 ⇒ 第④步红（等于把拒绝理由一起关掉）；
+/// - 被拒时还让按钮亮着 ⇒ 第④步红（用户可以对着同一个失败再按一次）；
+/// - 拒绝没夹紧 ⇒ 第⑥步红（上一句解释赖在屏上）。
+#[cfg(feature = "in-process-mcp")]
+#[test]
+fn a_refused_accept_puts_the_authoritys_own_sentence_on_the_drawer() {
+    use yeban_app::mcp_mount::{InProcessMcp, SessionSource};
+
+    let project = yeban_model::samples::filled_project();
+    let mount = InProcessMcp::start_for_project(
+        true,
+        project,
+        SessionSource::InMemory(std::path::PathBuf::from("sample:pr-refuse")),
+        Vec::new(),
+    )
+    .expect("挂载决策")
+    .expect("运行期开关打开时必须真的挂载");
+    let authority = mount.project_authority();
+    let bearer = format!("Bearer {}", mount.token().expose());
+
+    let mut ui = build_live_ui_from_authority(&authority, Permission::ReadOnly).expect("装配");
+    let proposed = mcp_call(
+        mount.address(),
+        &bearer,
+        r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"yeban_propose_section","arguments":{"sectionName":"Verse","stylePreset":"pop","materialSource":"theory","bars":2}}}"#,
+    );
+    assert_eq!(
+        proposed["result"]["status"], "success",
+        "提案必须先落地: {proposed}"
+    );
+    let row = authority.open_proposal_rows()[0].clone();
+
+    // ---- 1. 点选 ⇒ 亮起（本判据的前置条件与上一条同一条闸门） ----
+    ui.ui().invoke_open_musical_pr();
+    ui.pump_meters();
+    ui.ui().invoke_select_ai_proposal(row.id.as_str().into());
+    ui.pump_meters();
+    assert!(
+        ui.ui().get_musical_pr_resolve_available(),
+        "点选后必须可用, 否则下面「被拒」是前提不满足而不是权威拒绝"
+    );
+
+    // ---- 2. 别的客户端抢先把这条处理掉（经**真 socket**, ⛔ 不在测试里直改领域） ----
+    let rejected = mcp_call(
+        mount.address(),
+        &bearer,
+        &format!(
+            r#"{{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{{"name":"yeban_reject_proposal","arguments":{{"proposalId":"{}","reason":"先不用"}}}}}}"#,
+            row.id
+        ),
+    );
+    assert_eq!(
+        rejected["result"]["status"], "success",
+        "控制面的放弃必须成功: {rejected}"
+    );
+    assert!(
+        authority.open_proposal_rows().is_empty(),
+        "经控制面放弃后权威里不该再有未合并提案"
+    );
+
+    // ---- 3. 记下"按下之前"的全部读数（⑤ 的"前"） ----
+    let revision_before = authority.apply_revision();
+    let display_before = authority.undo_display();
+    let project_before = authority.project().expect("活跃工程");
+
+    // ---- 4. 用户这时才按下「采纳」：界面上的清单已经陈旧 ----
+    ui.ui().invoke_accept_ai_proposal();
+    ui.pump_meters();
+    let after = ui.tree_snapshot();
+
+    // ---- 5. 权威的**原话**：与工具面对同一次施加的失败回执逐字相同 ----
+    let tool_refusal = mcp_call(
+        mount.address(),
+        &bearer,
+        &format!(
+            r#"{{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{{"name":"yeban_merge_proposal","arguments":{{"proposalId":"{}"}}}}}}"#,
+            row.id
+        ),
+    );
+    let tool_message = tool_refusal["result"]["error"]["message"]
+        .as_str()
+        .unwrap_or_else(|| panic!("同一次合并的失败回执必须有 error.message: {tool_refusal}"))
+        .to_owned();
+    let card = after
+        .find_by_id("musical-pr-resolve-unavailable")
+        .expect("被拒 ⇒ 原因卡必须上屏（按钮此刻不该在）");
+    report_line(&format!(
+        "[pr-refuse] 采纳一条已被放弃的提案 id={}: 界面上屏 = {:?}",
+        row.id, card.label
+    ));
+    assert_eq!(
+        card.label, tool_message,
+        "界面上那句必须是**权威自己的原话**, 与工具面对同一次施加的回执逐字相同"
+    );
+    // 宿主不许替权威说话（四条自述文案是"这一格为什么用不了"的话, 不是"权威说了什么"）
+    for own in [
+        yeban_app::proposals::NO_SOURCE_REASON,
+        yeban_app::proposals::NO_OPEN_PROPOSAL_REASON,
+        yeban_app::proposals::NO_WRITE_SOURCE_REASON,
+        yeban_app::proposals::NO_SELECTION_REASON,
+    ] {
+        assert_ne!(
+            card.label, own,
+            "被拒时上屏的若是宿主自己的文案, 权威那句话就被替换掉了: {own}"
+        );
+    }
+
+    // ---- 6. 拒绝的形状：抽屉不关、闸门打回、按钮退场 ----
+    assert!(
+        ui.ui().get_musical_pr_open(),
+        "被拒**不**关抽屉：关掉抽屉等于把拒绝理由一起关掉"
+    );
+    assert!(
+        !ui.ui().get_musical_pr_resolve_available(),
+        "刚被拒 ⇒ 闸门打回 `false`（不许对着同一个失败连按）"
+    );
+    assert!(
+        !after.contains("musical-pr-accept-button") && !after.contains("musical-pr-reject-button"),
+        "闸门关着 ⇒ 两个按钮都不许在树里"
+    );
+
+    // ---- 7. 被拒的写一位都不动 ----
+    let display_after = authority.undo_display();
+    let project_after = authority.project().expect("活跃工程");
+    assert_eq!(
+        authority.apply_revision(),
+        revision_before,
+        "被拒的采纳不得推进施加修订号"
+    );
+    assert_eq!(
+        display_after.commit_count, display_before.commit_count,
+        "被拒的采纳不得落提交: {display_before:?} → {display_after:?}"
+    );
+    assert_eq!(project_after, project_before, "被拒的采纳不得改工程");
+
+    // ---- 8. 陈旧解释不赖在屏上：任何一次常规重注入都把它清掉 ----
+    ui.ui().invoke_open_musical_pr();
+    ui.pump_meters();
+    let reopened = ui.tree_snapshot();
+    let cleared = reopened
+        .find_by_id("musical-pr-resolve-unavailable")
+        .expect("重开后仍没有可点的行 ⇒ 原因卡还在（换成宿主那句自述话）");
+    assert_eq!(
+        cleared.label,
+        yeban_app::proposals::NO_SELECTION_REASON,
+        "重开抽屉后屏上该是「没有点选」那句, ⛔ 不是上一次失败的余话"
+    );
+    assert!(
+        ui.ui().get_musical_pr_selected_id().is_empty(),
+        "重开时选中身份必须被夹紧成空串"
     );
 }
 
@@ -8421,19 +8910,31 @@ fn zoom_shortcuts_reach_the_projection_and_an_empty_selection_is_not_consumed() 
     ));
 }
 
-// ===========================================================================
-// AI 建议采纳（`Shift+Enter`）与试听主线（`[`）：能力缺失 ⇒ 如实拒绝且一位不变
-// ===========================================================================
+// =====================================================================================
+// AI 建议采纳（`Shift+Enter`）与试听主线（`[` / `]`）：本装配里没有可作用的对象
+// ⇒ 如实拒绝且一位不变
+// =====================================================================================
 
 /// 判据 B11f 的**行为侧**（`[UI-A11Y-001]` / `[ARCH-RT-005]`）：`Shift+Enter` 与 `[`
 /// 在**真实界面**上被如实拒绝，而且**一位不变**（不是"吞掉键却什么都不做"）。
 ///
+/// ## ⭐ 这两条的**原因不同**（2026-10-31 起），别把它们读成同一件事
+///
+/// - `[` / `]`（试听主线 / 提案）：**能力本身缺失** —— `[ARCH-RT-005]` 要的"A/B 并发渲染
+///   ＋ 30ms 等功率瞬切 ＋ 2048 采样预滚"在仓库里一处都不存在 ⇒
+///   `host::action_has_implementation` 返回 `false`，**任何**装配都不消费。
+/// - `Shift+Enter`（采纳）：能力**已经落地**（`HostAction::MergeProposal` ⇒ 与 MCP 工具
+///   复用同一个 `Plan::Merge`）。它在这一条里仍然被拒绝, 是因为**本装配的前置条件不满足**
+///   （`proposal_source: ProposalSource::none()` ⇒ 没有写来源, 且没点选任何一行 ⇒
+///   `musical-pr-resolve-available` 是 `false`）。"接上权威 + 点选一行 ⇒ 这个键真的改领域"
+///   由 `tests/live_ui_mcp.rs` 的 `selecting_a_row_lights_up_accept_and_it_really_merges_the_proposal` 那一条量 —— ⛔ 不要在这里把它当"仍然不可用"的证据。
+///
 /// ## 为什么要有这一条（它不是"什么都没做"的空判据）
 ///
-/// 它证明的是**否定命题**："这两个动作没有落地实现" —— 这一点只能靠"按键之后没有任何
-/// 可观测变化"来证，而"没有任何变化"必须先证明**探针能看见变化**，否则断言是空的。
-/// 因此本判据自带一个**阳性对照**：注入已落地且已绑定的 `B`（箭头 ⇄ 铅笔）⇒ 同一个读数
-/// 面必须真的变。阳性对照不过 ⇒ 本判据的"一位不变"不算证据。
+/// 它证明的是**否定命题**："这些动作在这一格状态下没有可作用的对象" —— 这一点只能靠"按键
+/// 之后没有任何可观测变化"来证，而"没有任何变化"必须先证明**探针能看见变化**，否则断言
+/// 是空的。因此本判据自带一个**阳性对照**：注入已落地且已绑定的 `B`（箭头 ⇄ 铅笔）⇒
+/// 同一个读数面必须真的变。阳性对照不过 ⇒ 本判据的"一位不变"不算证据。
 ///
 /// ## 量什么 / 怎么量 / 单位
 ///
@@ -8449,11 +8950,14 @@ fn zoom_shortcuts_reach_the_projection_and_an_empty_selection_is_not_consumed() 
 ///
 /// ## 怎么变红
 ///
-/// - 把 `Action::AcceptAiSuggestion` 或 `Action::AuditionMain` 从
-///   `host::action_has_implementation` 的 `!matches!` 移出而没真接上能力 ⇒ ①②…⑦ 里
+/// - 把 `Action::AuditionMain` / `Action::AuditionProposal` 从
+///   `host::action_has_implementation` 的那一条挡下臂移出而没真接上能力 ⇒ ①②…⑦ 里
 ///   至少一项变化（键被消费 ⇒ `invoke_key_action` 返回 `true`）。
-/// - 把这两个键从 `input.rs` 的策略表里删掉 ⇒ `invoke_key_action` 仍然返回 `false`，
-///   但 `tests/cli_contract.rs` 的判据 B11f 会红（它要求键仍绑定）。
+/// - 把 `[` / `]`（或 `Shift+Enter`）从 `input.rs` 的策略表里删掉 ⇒
+///   `invoke_key_action` 仍然返回 `false`，但 `tests/cli_contract.rs` 的判据 B11f 会红
+///   （它要求键仍绑定, 且只有 `[` 那一条带 `(未实现)` 标记）。
+/// - 把 `Shift+Enter` 那一臂改成"不看前置条件就 invoke"（删掉 `resolve-available` 那道
+///   闸）⇒ 本判据的第一格变红（没有写来源的装配里键被消费, 而什么都没发生）。
 /// - 把阳性对照用的 `B` 摘掉 ⇒ 本判据的阳性对照步变红（说明探针失灵，而不是"引擎安静"）。
 #[test]
 fn the_ai_suggestion_and_audition_keys_are_rejected_without_any_state_change() {
@@ -8498,11 +9002,13 @@ fn the_ai_suggestion_and_audition_keys_are_rejected_without_any_state_change() {
     let undoable_before = port.display().undoable;
     let commits_before = port.display().commit_count;
 
-    // ---- ① `.slint` 回调那一格（`host::wire_keys` 的唯一落点）：两条都必须 `reject` ----
+    // ---- ① `.slint` 回调那一格（`host::wire_keys` 的唯一落点）：三条都必须 `reject` ----
     assert!(
         !ui.ui()
             .invoke_key_action("\n".into(), true, false, false, false),
-        "`Shift+Enter → 采纳 AI 建议` 的能力今天不存在 ⇒ 必须如实返回 false（不得假装采纳了）"
+        "`Shift+Enter` 在**没有写来源、没点选**的装配里必须如实返回 false \
+         （能力已落地 ⇒ 但前置条件不满足就是 not consumed; 亮起与按下真改领域由 \
+         `selecting_a_row_lights_up_accept_and_it_really_merges_the_proposal` 量）"
     );
     assert!(
         !ui.ui()

@@ -11,11 +11,19 @@
 //
 // 静态骨架, **不含演示数据**: 数据面全部由宿主注入（`src/host.rs` 的
 // `apply_proposal_drawer`, 来源 `crates/yeban-app/src/proposals.rs`）。
-// `Shift+Enter` 采纳 / `Esc` 放弃的键盘路径住在 src/input.rs, 这里只提供可点等价物 ——
-// 而那两条键盘路径今天**如实不消费**（`src/host.rs` 的 `action_has_implementation`
-// 返回 `false`; `src/cli.rs` 的表里是 `implemented: false`）⇒ 这两个按钮由
-// `resolve-available` 把关, 今天恒 `false`, 因此**画不出来**（⛔ 不是画一个按下去
-// 只关抽屉的假控件）; 取而代之上屏的是 `resolve-reason` 那句逐字原因。
+//
+// 这一族**只画它读到的东西**，并只**上报用户的意图**：这里没有一个字节能改领域状态 ——
+// 行点击 → `select-proposal(id)`、按钮 → `accept()` / `reject()`，三条回调的落点都在
+// 宿主（`wire_proposal_drawer`），由宿主把身份交给唯一可变权威。
+// `Shift+Enter` 采纳的键盘路径住在 src/input.rs, 与「采纳」按钮走**同一个** `accept()`
+// 落点（⛔ 两份实现）。「放弃」**没有**键位：`Esc` 今天已经是 `Action::Cancel`
+// （取消在手的拖动 gestures, 见 `src/host.rs`）⇒ 再把它算给"放弃提案"就是让同一个键
+// 在两个上下文里各做一件事, 而规范里没有这条裁决。放弃只有可点等价物。
+//
+// 「采纳 / 放弃」两个按钮由 `resolve-available` 把关：它为 `true` 的**充要**条件是
+// "这个装配有写入口 ∧ 用户点选了当前清单里的一行"（口径唯一, 在 `drawer_values` 里）。
+// 不满足时**不画**假控件，改为把 `resolve-reason` 那句逐字原因上屏（下面
+// `musical-pr-resolve-unavailable`），所以用户永远知道自己是缺哪一步。
 //
 // ⚠ 本文件曾经把三条中文假提案与三个假置信度百分比写成**属性默认值**, 于是界面显示
 // "AI 提了 3 条提案, 每条带一个百分比置信度"。那些数字是编造的, 用户分不出真假。这已删除:
@@ -30,28 +38,35 @@ import { Tokens, UiText, UiMonoText, UiTitleText } from "../tokens.slint";
 
 export component MusicalPrDrawer inherits Rectangle {
     // ---------------------------------------------------------------- 提案数据面
-    // 默认**全空**: `0` 条提案 + 三个空数组 + 两句空话。这里刻意**不**放演示数据,
-    // 也刻意**不**在这里写字面量文案 —— 空态与"为什么不接线"那两句话的唯一出处是
+    // 默认**全空**: `0` 条提案 + 四个空数组 + 三句空话。这里刻意**不**放演示数据,
+    // 也刻意**不**在这里写字面量文案 —— 空态与"为什么用不了"那几句的唯一出处是
     // `src/proposals.rs` 的 `NO_SOURCE_REASON` / `NO_OPEN_PROPOSAL_REASON` /
-    // `RESOLVE_NOT_WIRED_REASON`（在这里再抄一份就会漂移, 且用户读到的就不再是宿主
-    // 断言过的那句）。
-    // ⚠ 三个数组必须**等长**: 下面的循环按下标同时读 `kinds` / `titles` /
+    // `NO_WRITE_SOURCE_REASON` / `NO_SELECTION_REASON`（在这里再抄一份就会漂移, 且用户
+    // 读到的就不再是宿主断言过的那句）。
+    // ⚠ 四个数组必须**等长**: 下面的循环按下标同时读 `ids` / `kinds` / `titles` /
     // `op-counts`。等长由 `drawer_values` 的唯一构造点保证（判据
-    // `drawer_values_keeps_the_three_arrays_the_same_length`）。
+    // `drawer_values_keeps_the_four_arrays_the_same_length`）。
     in property <int> proposal-count: 0;
+    /// 每条提案的身份（canonical ULID）—— 领域的原文, ⛔ 界面不许造一个。
+    in property <[string]> proposal-ids: [];
     in property <[string]> proposal-titles: [];
     in property <[string]> proposal-kinds: [];
     in property <[int]> proposal-op-counts: [];
+    /// 用户点选的那一行的身份；宿主**夹紧**过（不在当前清单里 ⇒ 空串, 见 `drawer_values`）。
+    in property <string> selected-proposal-id: "";
     /// 没有提案时上屏的那句话（宿主按 `has_source` 选①/②）。
     in property <string> empty-reason: "";
-    /// 「采纳 / 放弃」此刻**能不能**用（今天恒 `false`：界面侧没有合并提案的写入口）。
+    /// 「采纳 / 放弃」此刻**能不能**用（有写入口 ∧ 选中了当前清单里的一行）。
     in property <bool> resolve-available: false;
-    /// 不能用时逐字上屏的原因。
+    /// 不能用时逐字上屏的原因（或被权威拒绝时, 权威自己那句话的原文）。
     in property <string> resolve-reason: "";
 
     callback accept();
     callback reject();
     callback close();
+    /// 用户点了一行：上报**那一行的身份原文**（⛔ 不下标 —— 下标会在下一次重投影后
+    /// 指向另一条提案, 那等于把用户的决定施加到没被点的那条上）。
+    callback select-proposal(string);
 
     background: Tokens.bg-panel;
     border-width: 1px;
@@ -269,10 +284,16 @@ export component MusicalPrDrawer inherits Rectangle {
         y: 124px + 56px * proposal_index;
         width: parent.width - 8px;
         height: 48px;
-        background: proposal_index.mod(2) == 0 ? Tokens.bg-panel-alt : Tokens.bg-panel;
+        // ⭐ 选中态从**身份**读，不从下标读（下标会在下一次重投影后指向另一条提案）。
+        // 宿主夹紧过 `selected-proposal-id`：不在当前清单里的旧身份会被写成空串 ⇒
+        // 那一行的 `is-selected` 自然为 `false`，界面上不会留一个"高亮着但点不动"的行。
+        property <bool> is-selected: !root.selected-proposal-id.is-empty
+            && root.proposal-ids[proposal_index] == root.selected-proposal-id;
+
+        background: is-selected ? Tokens.bg-raised : (proposal_index.mod(2) == 0 ? Tokens.bg-panel-alt : Tokens.bg-panel);
         border-radius: Tokens.radius-md;
         border-width: 1px;
-        border-color: Tokens.line;
+        border-color: is-selected ? Tokens.selection : Tokens.line;
         clip: true;
         accessible-role: list-item;
         accessible-id: "musical-pr-proposal-" + proposal_index + "-item";
@@ -280,7 +301,10 @@ export component MusicalPrDrawer inherits Rectangle {
         accessible-item-index: proposal_index;
         accessible-item-count: root.proposal-count;
         accessible-item-selectable: true;
-        accessible-item-selected: false;
+        accessible-item-selected: is-selected;
+        // `[UI-A11Y-003]` §7.3：无障碍动作与下面 `TouchArea` 的 `clicked` **同一落点**，
+        // 且上报的是**同一格**（那一行的身份原文）。
+        accessible-action-default => { root.select-proposal(root.proposal-ids[proposal_index]); }
 
         // 这一格原来是**置信度徽章** (§9.1)。`confidence` 在 `yeban-mcp` /
         // `yeban-model` / `yeban-theory` 的源码里实测 0 处命中 ⇒ 任何百分比都只能是
@@ -325,15 +349,24 @@ export component MusicalPrDrawer inherits Rectangle {
         // ⚠ 这一行原来写 `"轨道 " + proposal_index + " · 小节 " + (proposal_index + 1)`
         // —— 两个数都是从提案**下标**算出来的, 领域里没有这两个读数（提案承载的是 op
         // 批次, 不是单条轨道上的单条剪辑）。整行删除; op 条数已在上面的徽章里。
+
+        // 点这一行 = 选中这一行（⛔ 不是"直接采纳"：一击就改领域状态会把"看哪条"与
+        // "决定合并哪条"压成同一个动作, 而误点的代价是一次多父提交）。
+        TouchArea {
+            width: parent.width;
+            height: parent.height;
+            mouse-cursor: MouseCursor.pointer;
+            clicked => { root.select-proposal(root.proposal-ids[proposal_index]); }
+        }
     }
 
     // ---------------------------------------------------------------- 采纳 / 放弃
-    // ⚠ 两个按钮的**可点等价物**由 `resolve-available` 把关, 今天恒 `false`。
-    // 理由不是"忘了接"：领域侧的 `yeban_merge_proposal` / `yeban_reject_proposal` 要
-    // `proposalId`, 而宿主的 `HostAction` 只有 `Undo` / `Redo` / `Commit` 三臂 ⇒ 界面
-    // 侧没有合并提案的写入口。上一轮已裁定 `Shift+Enter → 采纳 AI 建议` 不许假装实现
-    // （`src/cli.rs` 的 `implemented: false` + `src/host.rs` 的
-    // `action_has_implementation` 如实返回 `false`）⇒ 这里同款：不画假控件。
+    // 两个按钮由 `resolve-available` 把关 —— 它的口径**只在** `proposals.rs` 的
+    // `drawer_values` 里定义一次（有写入口 ∧ 点选了当前清单里的一行 ∧ 上一次没被拒）。
+    // 不满足时**不画**控件（⛔ 不是画一个按下去只关抽屉的假按钮），改为把
+    // `resolve-reason` 那句逐字原因画在下面 `musical-pr-resolve-unavailable` 里。
+    // ⚠ 按下**不**关抽屉：成功时那一行从清单里消失（宿主重读权威）就是反馈, 被拒时
+    // 权威那句话必须留在屏上 —— 关掉抽屉等于把拒绝理由一起关掉。
     if root.resolve-available : Rectangle {
         x: Tokens.space-4;
         y: parent.height - 40px;
@@ -378,7 +411,7 @@ export component MusicalPrDrawer inherits Rectangle {
         border-color: Tokens.diff-removed;
         accessible-role: button;
         accessible-id: "musical-pr-reject-button";
-        accessible-label: "放弃提案 (Esc)";
+        accessible-label: "放弃提案";
         // `[UI-A11Y-003]` §7.3：无障碍动作，落点与下面 `TouchArea` 的 `clicked` 逐字相同。
         accessible-action-default => { root.reject(); }
 
@@ -387,7 +420,7 @@ export component MusicalPrDrawer inherits Rectangle {
             y: 0;
             width: parent.width;
             height: parent.height;
-            text: "放弃 (Esc)";
+            text: "放弃";
             color: Tokens.diff-removed;
             font-size: Tokens.font-size-sm;
             horizontal-alignment: center;
@@ -400,11 +433,14 @@ export component MusicalPrDrawer inherits Rectangle {
         }
     }
 
-    // ------------------------------------------------ 有提案、但**没有写入口**的那句话
+    // ------------------------------------------------ **这一步用不了**的那句话
     // 上面两个按钮不画时，底部不能留白：留白会被读成"这里本来没有控件"。这一格把
-    // **为什么**没有控件说出来（`resolve-reason` 逐字, 出处 `src/proposals.rs` 的
-    // `RESOLVE_NOT_WIRED_REASON`）。先例同 `musical-pr-empty-state`。
-    if root.proposal-count > 0 && !root.resolve-available : Rectangle {
+    // **为什么**用不了说出来（`resolve-reason` 逐字, 出处 `src/proposals.rs` 的
+    // `NO_WRITE_SOURCE_REASON` / `NO_SELECTION_REASON`, 或**权威自己的**那句拒绝原文）。
+    // 可见条件只看"有理由要上屏"，⛔ 不再要求 `proposal-count > 0`：被别的客户端抢先
+    // 处理掉唯一那条提案时，清单是空的，而权威那句拒绝原话恰恰必须留在屏上。
+    // 空清单且没有拒绝时理由位为空（口径在 `drawer_values`）⇒ 空态卡单独说明。
+    if !root.resolve-available && !root.resolve-reason.is-empty : Rectangle {
         x: Tokens.space-4;
         y: parent.height - 76px;
         width: parent.width - 8px;
