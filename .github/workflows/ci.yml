@@ -149,6 +149,17 @@ jobs:
       - name: 工作流结构自检 (R65)
         run: python3 scripts/guards/check_workflow_structure.py
 
+      # 端到端 verify 脚本的**防掏空**守卫（台账 §22.6）：e2e 腿只保证脚本退出码 0，
+      # 若有人删掉 `sys.exit(1)` 或把 `check(...)` 换成打印，那条腿会**静默变绿**。
+      # ⚠ 必须在这里**逐条直调** —— `checks` 作业从不调 `run-gates.sh`（上面 R65 的注释同此）。
+      - name: 端到端判据防掏空守卫 (verify 脚本的牙)
+        run: python3 scripts/guards/check_verify_teeth.py
+
+      # s28：`warnings[].code` 的名册必须有**一份**真相 —— 实现侧构造点与契约 enum **集合相等**（台账 §22.8）。
+      # ⚠ 同样必须逐条直调（§22.6）：只把文件丢进 scripts/guards/ 不进 CI。
+      - name: warnings 名册对账 (实现侧构造点 == schema 的 WarningCode.enum)
+        run: python3 scripts/guards/check_warning_codes.py
+
       - name: JSON Schema 契约 (schema 自身合法性)
         run: |
           set -euo pipefail

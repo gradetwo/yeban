@@ -16862,7 +16862,559 @@ helper 里 ⇒ 必须不认（防假绿）。两条臂在旧实现上都会失�
 | 提交 | run | 结论 | 关键读数 |
 |---|---|---|---|
 | 线 `b512ee8a` | `41203744827` | 新腿 **success**（整 run 落地时在飞，见下行） | `e2e` 腿 **真跑**：job `124545260712`，13:08:14→13:09:07 = **53 秒**，7 个实步骤全 success。日志内 `[PASS]` **9** 条／`[FAIL]` **0** 条，逐名：`responses_are_complete_and_error_free`／`import_registers_and_places_the_clip`／`save_persists_the_asset`／`render4_receipt_matches_the_file`／`render4_every_asset_has_bytes_and_frames`／`render5_receipt_matches_the_file`／`render5_every_asset_has_bytes_and_frames`／`no_asset_reported_as_missing_bytes`／`two_renders_are_byte_identical`；幂等腿四条 `[ok]`（含"裸 `ToolResponse` **不**通过 `ReplayedToolResponse`"这条**防掏空**的反向判据）。**耗时读数（决定方案 ① 是否划算的依据）**：`export_schema_samples = 10 秒`、`cargo build -p yeban-mcp --bin yeban-mcp = 25 秒` ⇒ 整腿 53 秒，比 `checks` 腿同量级 ⇒ 独立腿成立，⛔ 不必塞进 `checks` 或矩阵腿。`checks`／`deny`／`plan`／`lockfile` 全 success；`rust (矩阵)` **skipped**（⛔ 不计绿）；`rust (workspace 全量)`／`windows`／`macos` 在 land 时**仍在飞**（本批 0 Rust 源码，合流 run 会再判一次全量） |
-| merge `d40afe0b` | `41204348127` | pending（判决未读回一律记 pending） | 待读：全量腿 `test result:` 行数／`FAILED` 计数，以及本批新腿在宽运行里**是否再次真跑** |
+| merge `d40afe0b` | `41204348127` | **success**（整条 run 的 `conclusion` 已读回，全量腿判完） | 全量腿（job `124546332038`）`13:11:58Z→14:00:50Z` = **48 分 52 秒**，日志 1 780 748 字节：`test result:` **516** 行／`FAILED` **0**／`passed` 合计 **7 234**。新 e2e 腿在**宽运行**里真跑已证（job `124546331968` = `13:10:42Z→13:11:55Z`，**73 秒**，success）；窄运行再复核一次（run `41206450946` 的 e2e = **58 秒**，success）⇒ §22.3 那句"`if:` 只点名 `yeban-mcp` 就同时覆盖宽／窄"由两次独立读数支撑。⚠ 手法：`gh run view --log --job=` 在 run 未收尾时返回 **0 字节**，取日志一律走 `actions/jobs/<id>/logs` |
+
+### 22.5 下一单（s26）的前置读数：`propose_section` 的**设备面是零**（⛔ 不是缺音色，是缺一句实话）
+
+- 对象 = `crates/yeban-mcp/src/domain/section_build.rs`（**4387 行**，测试模块自 `3270` 起）；单位 = 出现次数。现读：
+  `device` **0**／`Device` **0**／`InternalInstrument` **0**／`insertDevice` **0**／`osc1_wave` **0**。
+  ⇒ `propose_section` 生成的骨架**完全不碰设备面**。
+- 对照面（同样现读）：`engine_state.rs` 的响应里**已经有** `deviceCount` 键
+  ⇒ "这条轨有没有设备"是**可测的**，不是未定义量。
+- ⛔ **上面这段"边界"里有一句是假话，已被 2026-10-31 的现读推翻**（原本写"把'本次写入的轨 `deviceCount == 0`
+  ⇒ 这些音符渲染为静音'上报进响应"）：`crates/yeban-mcp/src/domain/render.rs:3826-3838` 的源种类判定给出
+  `(未绑采样器, 有音符, 无音频片段)` ⇒ `kind = SOURCE_KIND` = **`"engine-instrument"`**，
+  而 `render.rs:601-604` 注明自 `ADR-0011`（`#268`）起 MIDI 音源已换成 `yeban-engine::SynthEngine`
+  （与界面／CLI **同一个**音色）；`SILENT_SOURCE_KIND = "silent"`（`render.rs:612`）只留给
+  "**既没有音符也没有可渲染音频片段**"的源。⇒ **零设备 ≠ 静音**，真实缺口只剩"没有逐声部的音色选择"那一半，
+  而那一半正是 `ADR-0055`／`G3` 的人类裁决面（⛔ Agent 不代答）。
+  教训并入既有纪律：这与 `AGENTS.md` §6-3"先 grep 交付再下结论"是同一条 —— 这次栽的是**我自己刚写的推论**，
+  发现路径 = 动手写警告之前去渲染侧找"静音"这个词的真实定义。
+  ⚠ 假话的**源头**找到了并同步改正：`docs/ledger/propose-section-notes.md` 的 `boundary-B` 那行原写
+  "因此骨架还发不出声"（本会话的推论是抄这份旧笔记的结论，⛔ 没回渲染侧核）⇒ 同一行已改成现读口径。
+  ⚠ 顺手把**同一张表**的 `boundary-A` 也核了（旧"已知缺口"清单值得整表重读，不要只修被点名的那一行）：
+  那行写"`scale` 只决定移调锚点 ⇒ `D dorian` 与 `D minor` 产物逐字节相同"⛔ **已过期** ——
+  调式语义早就进了生成路径（`section_build.rs:841 snap_into_scale`，判据
+  `dorian_and_minor_differ_exactly_by_the_sixth` 逐音钉住 `[62, 65, 69, 71, 74]`）⇒ 该行同样改成现读口径。
+  两条都是 `ADR-0001` **D43** 那一族缺陷（过期的自我限制会**主动误导**下一个读者，让他重做已完成的事）。
+- 对照面（同样现读，⛔ 结论已改写）：`engine_state.rs` 的响应里**已经有** `deviceCount` 键
+  ⇒ "这条轨有没有设备"是**可测的**；但它测的是"**用不用内置音色**"，⛔ 不是"响不响"。
+- 范围（三处一起动，缺一处就是第二份真相）：`section.rs`／`section_build.rs` 的响应形状
+  ＋ `schemas/mcp-tools.schema.json` 的 `propose_section` 广播面 ＋ 具名判据。
+  ⚠ 该 crate 判重（拖 `yeban-render`）⇒ 本机不编译，判决只能来自 CI。
+- **第一片已落地路径（s26，线 `f0ba67de`）**：⛔ 不动响应形状，先把上面那句散文**换成机器读数** ——
+  常驻判据 `proposed_part_tracks_carry_notes_but_zero_devices`（`crates/yeban-mcp/verify/section_pure.rs`，
+  单文件 ＋56 行）断言"每条声部音轨都带音符，且 `TrackV3::devices` 长度 == 0"。
+  本机用文件头记录的裸 `rustc --edition 2024 --test` 路径**真跑过**：`49 passed / 0 failed`
+  （新判据单跑 `1 passed`）⇒ 本地绿只算参考，判决读回 run `41206450946`。
+  判据注释里写明：将来接上设备时它会**变红**，那时必须显式改写并同步本节，⛔ 不许静默失效。
+- ⭐ **s26 线判决已读回（run `41206450946`／job `124552427952` = `rust (yeban-mcp)`，日志 414 239 字节）**：
+  `test section_pure_scaffold::proposed_part_tracks_carry_notes_but_zero_devices ... ok` 出现 **2 次**
+  （13:46:19 在 `cargo test -p yeban-mcp --all-targets --locked` 那条腿里，13:52:24 在
+  `… --all-targets --locked --no-fail-fast`（合并特性腿，`APP_FEATURES` 单一事实源）里；逐名对上日志行号 651／2630）；该作业 `test result:` **149** 行、
+  `FAILED` **0**、`passed` 合计 **2 692**。⚠ 手法补记：`gh run view --log --job=` 在**整条 run 未收尾时返回 0 字节**
+  （实测 `bytes=0`），改用 `curl -H "Authorization: token $(gh auth token)" …/actions/jobs/<id>/logs` 才拿到日志
+  ⇒ 判"某作业真跑"⛔ 把空日志读成"没跑"，先确认取日志的方式本身没问题。
+- ⛔ **第二片按原设计不做了**（前提已在上条被推翻：不存在"音符静音"要上报）。以下是**仍然成立**的
+  落点读数，留给将来若要做"逐声部音色上报"时直接复用：
+  ⭐ 契约里**已经有一条专为此设计的通道** `warnings[]`（非阻断问题），⛔ 不需要新响应键、
+  ⛔ 不需要动 `schemas/mcp-tools.schema.json`。现读三处：
+  ① `domain/mod.rs:4805` `fn proposal_warnings(project, ops) -> Vec<Value>` =
+  `effect_param_warnings(ops)` ＋ `device_on_silent_track_warnings(project, ops)`，
+  且 `propose_draft`（`mod.rs:2570`）已经在**模拟施加后的工程**上算它一次、预览与响应共用同一份读数；
+  ② `mod.rs:4897` 的 `device_on_silent_track_warnings` 只扫 `Op::InsertDevice` ⇒
+  `propose_section` 的 op 集（`AddTrack`/`AddClip`/`AddClipPlacement`/`AddRoutingNode`/`ConnectRouting`）
+  **一条都不落进它**，所以今天的骨架提案 `warnings` 恒为空数组 —— 缺的正是**对称的那半条**
+  （"音符在、`devices` 为 0 ⇒ 渲染静音"），现成可复用的读数函数就是同文件的
+  `survey_track_playable`（`mod.rs:4832`，含 `muted` 与 `triggers()` 口径）；
+  ③ 广播面不在 schema 的 enum 里（现读 `grep -rn deviceOnSilentTrack schemas/ | wc -l` = **0**），
+  而是**两处散文名册**：`output_schema.rs:490`（逐字列了两个 `code`，并以"两者都可能为空数组"收尾）
+  ＋ `tools.rs:911`（`yeban_edit_notes` 的 summary 里整段描述 `deviceOnSilentTrack`）
+  ⇒ 新增第三条 code 必须**两处同步**，否则就是 §0.6.0g 那种"散文名册过期"。
+- ⇒ 若将来人类裁决要做"逐声部音色上报"（`ADR-0055`／`G3` 那侧），改动面已经量好（比原估更小，
+  但**仍需 CI 判决**，本机不编译）：
+  `domain/mod.rs` 加一条与 `deviceOnSilentTrack` 对称的警告 ＋ `output_schema.rs` 那句名册 ＋
+  具名判据（形态参照 `crates/yeban-mcp/tests/trap_178.rs:279/363/487`，那里已经逐名断言 `warnings[0]["code"]`）。
+  ⚠ 警告函数⛔ 挂在 `InsertDevice` 上 ⇒ 新条件必须自己扫 `AddClipPlacement`（或按模拟后每条被写轨求值），
+  否则判据会在"空警告"上恒绿。
+
+### 22.6 下一单（s27）的前置读数：**新守卫默认不进 CI** —— 这是本仓库写在 workflow 里的一条实测事实
+
+- 现读 `.github/workflows/ci.yml:168-172` 的注释（作者先前写下的）：`checks` 作业**逐条直调**守卫脚本，
+  ⛔ 不调 `run-gates.sh light`（`grep -rn "run-gates" .github/workflows/` = **0 命中**）
+  ⇒ **"往 `scripts/guards/` 丢一个新脚本"这件事本身不会让它在 CI 里跑**。
+  同一族的教训还有一句：本地 `run-gates.sh` 曾在这一点上屏蔽掉三条守卫的失败。
+- 因此 s27 的**两步都必须做**才算交付：① 写守卫；② 在 `ci.yml` 的 `checks` 里加一行直调。
+  ⚠ ② 碰 `.github/**` ⇒ 按 `changed-crates.py` 的 `ROOT_TRIGGERS` 触发**宽运行**（全量腿约 45 分钟）
+  ⇒ 排期时把这一次判决成本算进去，⛔ 别指望"下一个批次顺路判一下"。
+- s27 要防的失效面（本批 s25 刚建，值得钉）：`e2e_audio_clip_stdio.sh` 现在有 **7 个 `check(` 调用点／
+  一次复跑 9 条具名判据／末尾 `sys.exit(1)`。若将来有人删掉 `exit 1` 或把断言换成打印，
+  **e2e 腿会静默变绿** —— 与 s22/s25 修的是同一族缺陷（"只 print 的判据"）。
+  守卫的下界必须写成**具名数字**（调用点数 ≥ 7、`check` 名字逐名在册、存在非零退出路径），
+  ⛔ 不要用"文件里有 assert 字样"这类宽口径（`§0.6.0p` 候选 B 已证过宽口径会把 7 个合法例外一起放过）。
+
+### 22.7 s27 已落地（线 `2e7ab00e`，run `41206831978`）：守卫写完**必须先自证有牙**
+
+- 交付 = ①`scripts/guards/check_verify_teeth.py` ＋ ②`ci.yml` 的 `checks` 里一行直调
+  （按 §22.6：⛔ 只写文件不算交付）。本机双向真验（守卫不需要编译，属"本机允许"档）：
+  - **真档** `rc=0`：`check(` 调用点 **7**（下界 7）、7 条判据名逐名在册、`sys.exit(1)` 在场、`"license":` 参数键在场；
+  - **掏空档** `rc=1`，三类变异各归一条具名 `[FAIL]`：删 2 个调用点（7→5）／
+    `sys.exit(1)`→`sys.exit(0)`／删两处 `"license": "CC0-1.0",`。
+- ⚠ **守卫自己也犯过它要防的错**（这条比交付更值得记）：第一版用 `"license" not in text` 的**子串**口径，
+  删掉参数键后，散文注释里的 "license" 一词仍让守卫判**过** —— 宽口径把缺陷放过，与 §0.6.0p 候选 B
+  的"有 fn 即算过"同一形态。改成只认参数键形态 `"license"\s*:` 后，同一变异才变红。
+- ⚠ 另一处口径修正：第一版用 `\bcheck\(` 数调用点报 **8**，真值 **7** —— 多出来的一枚是
+  **脚本头注释里那句 "`check(...)` 调用点"**。⇒ 数调用点必须**行首锚定**（`^[ \t]*check\(`），
+  ⛔ 全文找子串；这与"数条目不要数行"（`AGENTS.md` §6-5）是同一类错，只是这次栽在守卫自己身上。
+- **CI 侧读数（run `41206831978` 的 `checks` 作业，job `124553512498`）**：新步骤
+  「端到端判据防掏空守卫 (verify 脚本的牙)」= `completed / success` ⇒ §22.6 那条"逐条直调才算交付"
+  在本批**已被机械证明**（同作业里 `e2e` 腿也 success，说明两条腿并存不打架）。
+- ⚠⚠ **本段原先把线记成 `2f317d15`／run `41206837272` —— 那是另一会话的合流提交与它的 run，⛔ 不是我的线**。
+  成因：`gh run list` 里两枚 run 相隔 **2 秒**出现（`41206831978` 我的线 / `41206837272` 他们的合流），
+  我按"时间邻近 + 分支回显"配了对。规则补一条：**提交 ↔ run 的配对只能靠 `headSha` 反查**
+  （`git log -1 --format=%H <line 分支>` 现读，再用该 sha 去 `gh run list --json headSha` 里挑），
+  ⛔ 从推送回显或记忆里抄 hash。核验手法：`git show <sha>:.github/workflows/ci.yml | grep 防掏空`
+  —— 我那枚命中，`2f317d15` 那枚**不命中**（它的 `checks` 作业里也确实没有这一步，这就是发现路径）。
+- ⛔ 本批改了 `.github/**` ⇒ 触发**宽运行**，判决成本 = 全量腿约 45 分钟（排期时已计入，见 §22.6）。
+
+### 22.8 下一单（s28）的前置读数：`warnings[].code` 的名册是 **5 份代码构造点 ＋ 3 处散文手抄 ＋ 0 份 schema**（2026-10-31 现读，本机零编译）
+
+数的是什么：**不同的 code 值个数**（对象 = `crates/yeban-mcp/src/` 里 `"code": "…"` 字面量去重后）。
+
+- **代码侧真值 = 5 个**，逐个带构造点：`unrecognisedEffectParam`（`domain/mod.rs:4791`）、
+  `deviceOnSilentTrack`（`domain/mod.rs:4921`）、`exportClipping`（`domain/render.rs:1096`）、
+  `silentSources`（`domain/render.rs:1163`）、`sfzSamplesUnreadable`（`domain/sfz.rs:732`）。
+- **schema 侧 = 0 份**：递归遍历 `schemas/mcp-tools.schema.json`（`definitions` 共 **7** 个）后，
+  键名 `warnings` 出现 **0** 次 ⇒ `data.warnings[]` 的**元素形状完全不受 schema 约束**。
+  连带后果：CI `checks` 作业第 16 步「跨语言契约对账 (Rust 样本 ↔ Python jsonschema)」
+  以及 `e2e` 腿的 `result 通过 schema 根` 断言，对 warnings **是盲的**（它过的是"没有这条约束"，不是"约束成立"）。
+- **散文侧 = 3 处手抄，且没有一处列全 5 个**：`output_schema.rs:488`＋`:490`（2 个）、
+  `output_schema.rs:838`＋`:840`（`exportClipping` 的形状描述）、`tools.rs:911`／`tools.rs:1047`（各点 1 个）。
+  ⇒ 这是 `AGENTS.md` §6-3「同一件事的第二份真相」的形态，与本仓 §0.6.0g 那批"广播面"债同源。
+- ⚠ **一条易误读成缺陷、实测不是**：`unknownEffectParam` 是**错误路径**的 `data.reason`
+  （构造点 `domain/notes.rs:6537`），`unrecognisedEffectParam` 才是 warning 的 `code`；
+  两者各自有判据在册（`tests/trap_175.rs:147` 与 `:292`）⇒ ⛔ 不得把这俩写成"名册拼写漂移"。
+- **s28 候选改动面**（若立项）：① 在 schema 里新增 warnings 的 `definition`，把上述 5 个 code 登记成 `enum`；
+  ② 一条**常驻判据**断言"代码构造点的 code 全集 **==** schema enum"（⛔ 只写下界会重演 §22.5 的空绿：
+  集合等式两侧都空也过）；③ 若 ② 可行，散文那 3 处改为**指向 enum**而不是再抄一份。
+- ⛔ **已知不覆盖要先登记**：口径靠 `grep '"code": *"'` 的字面量形态，将来若出现**变量拼接**的 code，
+  该守卫会漏 —— 与 `#44`（"空集即期望值"不可机械化）、`§0.6.0p 候选 B`（"有 fn 即算过"）同一类盲点，
+  按纪律**登记不补齐**，不许把守卫描述成"覆盖了全部 code"。
+### 22.12 s28 **已立项并推线** `a5ece833`（`line/s28-warning-code-contract`）：名册落进契约 ＋ 集合等式守卫（判决 **pending**）
+
+- 交付 = ①`schemas/mcp-tools.schema.json` 新增 `definitions.WarningCode`（5 个 code 的 enum ＋ 一段说明：构造点逐名点名，
+  并显式声明错误路径的 `data.reason`（如 `unknownEffectParam`）**不属于**本名册）；
+  ②`scripts/guards/check_warning_codes.py`：**实现侧构造点集合 == 契约 enum** 的**集合等式** ＋ 实现侧下界 5 ＋
+  enum 去重与 camelCase 形态检查；③`.github/workflows/ci.yml` 的 `checks` 里一行直调（按 §22.6：⛔ 只写文件不算交付）。
+- **本机双向真验**（守卫零编译，属"本机允许"档）：真档 `rc=0`，读数 `实现侧 5 / 契约侧 5` 且五个名字逐个印出；
+  **掏空档 `rc=1`** —— 同一棵复制树上注入两枚变异（契约删 `exportClipping` ＋ 实现把 `unrecognisedEffectParam` 改名），
+  守卫**一次报出两条**缺失名字（`effectParamRenamed, exportClipping`），证明它两侧都看得见。
+- ⚠ **诚实记账：本机的 `validate_schemas.py` 没有真跑到** —— 它报「缺少 jsonschema 依赖」，而我那行 `echo rc=$?` 取的是
+  管道末端 `tail` 的退出码（⇒ 显示的 `rc=0` **不是**该校验的判决）。schema 自身合法性由 CI 第 10 步判，
+  这条手法教训与 §6-1「先说指标再跑命令」同类：**读 `$?` 之前要确认它属于哪条命令**。
+- ⏳ **pending**：线 `a5ece833` 的 run（本批改 `.github/**` ⇒ 宽运行 ≈ 46 分钟）。读回手法按 §6.3-1/§22.10：
+  用 `git log -1 --format=%H line/s28-warning-code-contract` 现读 sha，再到 `gh run list --json headSha` 里挑；
+  判据看 `checks` 作业里新增那一步 `warnings 名册对账 …` = `completed/success`，⛔ 别看整体 success 就收。
+
+- ⛔ 本段只是读数：s28 **未立项、未写码**；改 schema 属契约变更（动 26 个工具的响应面 ＋ 第 16 步对账），
+  且必然触发宽运行 ⇒ 排期时按 §22.6 的成本口径计入。
+
+### 22.9 合流判决（run `41210731323`，main tip `72a990e4` = `d6a824e8` 文档 + `392fcd27` s26 + `72a990e4` s27）＋ 文档批 `fd40fb4e` 判决
+
+- **整体 `completed / success`**（现读 `gh run view` 的 `status`/`conclusion`，2026-10-31 15:21Z）。逐腿：
+  `plan`／`deny`／`checks`／`lockfile`／`e2e`／`windows`／`macos`／`rust (workspace 全量)` 全 success，
+  窄 `rust (${{ matrix.crate }})` 腿 `skipped` —— ⚠ 本批动 `.github/**` ⇒ 走全量，这是 §22.6 的**预期**形态，⛔ 不是空绿漏跑。
+- **s27 的守卫在 main 上真跑**：`checks`（job `124564954911`，16 步全 `completed/success`）第 **9** 步
+  「端到端判据防掏空守卫 (verify 脚本的牙)」= `completed / success` ⇒ 与 §22.6「⛔ 只写文件不算交付」闭环。
+- **全量腿真跑读数**（job `124565010808`）：`completed - started` = **46 分钟**，日志 **1 780 543** 字节，
+  `test result:` **516** 行，`FAILED` **0** 行，`passed` 合计 **7 235**（比 §22.4 那批的 7 234 多 **1** —— 正是 s26 新增的那条常驻判据）。
+- **s26 的常驻判据在合流上逐名出现**：`test section_pure_scaffold::proposed_part_tracks_carry_notes_but_zero_devices ... ok`
+  出现 **1** 次（⚠ 与 §22.5 里窄腿的 **2** 次不同：窄腿跑缺省档＋合并特性档两遍，全量腿只跑一档 —— 别把"少了 1 次"读成回归）。
+- ⚠ **新手法修正（补 `AGENTS.md` §6.3-2/4 的口径）**：全量腿日志里 **`Running tests/` 出现 0 次**
+  （`grep -c` 实测），所以"数 `Running tests/` 次数确认二进制被跑到"这条只适用于**窄腿**；
+  全量腿的等价证据是 `test result:` 行数（516）与 `passed` 合计。
+  同一条口径差异也解释了 §22.5 里"本机 `--exact` 前缀名过滤为空"：`section_pure_scaffold::` 前缀来自 cargo 的 `#[path]` 接法，裸 `rustc --test` 没有它。
+- **文档批 `fd40fb4e`（run `41211557754`）= `completed / success`**：`plan`/`checks`/`deny`/`lockfile` 四腿真跑，
+  rust 与 e2e 五腿 `skipped` —— 纯 `docs/**` 推送的**正确形态**（验证者就是 `checks` 里的文档契约第 12 步）；
+  推之前本机已跑绿同一族守卫（`check_docs_links` rc=0 ＋ 六个 `ok`），所以这不是"空绿当判决"，而是**判决落在唯一会跑的腿上**。
+### 22.10 ⛔ 更正一条我自己刚说错的推断：**一枚 run 只判它自己那次 push 的 diff**，不判 sha 区间（2026-10-31 实测）
+
+- 我在推送 `116ecd19`（纯 `docs/**`，但它**叠在** `bc01b363` 那枚改了根 `Cargo.toml` ＋ `yeban-app` ＋ `.slint` 的合流之上）之后，
+  口头推断过「这枚宽 run 的判决**顺带覆盖** `bc01b363`」。**该推断是错的**，实测把它推翻：
+  run `41214642059`（`headSha=116ecd19`）**15:23:37Z → 15:25:22Z ≈ 2 分钟**，逐腿 = `plan`/`deny`/`checks`/`lockfile` success，
+  而 `rust (workspace 全量)`／`e2e`／`windows`／`macos`／窄 `rust (matrix.crate)` **五腿全 `skipped`**。
+  ⇒ 若 plan 真按区间算，改了根清单的 `bc01b363` 不可能让全量腿跳过。**plan 的输入是本次推送的 diff**。
+- 由此补两条纪律：① **判某枚提交，只能读它自己那枚 run**（§6.3-1 的加强版：不仅"一提交一 run"，而且"一 run 只覆盖一提交的 diff"）；
+  ② 因此 `bc01b363` 那批代码改动的判决**只在 run `41213764737` 里** —— 本段写完时它**仍在飞**
+  （15:35Z 起：`checks`/`deny`/`lockfile`/`plan`/`e2e` 已 success，全量腿与 `windows` 未完；宽运行成本 ≈ 46 分钟，见 §22.4）
+  ⇒ 状态当时记为 **pending**；**16:00Z 已按 `headSha=bc01b363` 读回 = success**，逐腿读数见下面的 §22.11。
+
+- ⚠ **并线现读**：另一会话的线 `line/review-20261031-fixes`（提交 `0fea313f`，run `41210661377`）= **failure**
+  （红在 `rust (yeban-mcp)` ＋ win ＋ mac）。实测 `git merge-base --is-ancestor 0fea313f main` ⇒ **否**，
+  ⛔ 那枚红不进 main、也不得记进本批判决。顺带现读：main 的 `RenderRequest`（`domain/render.rs:701`）里
+  `threads` 出现 **0** 次 ⇒ 他们在**新增**该字段，将来 land 会撞 `domain/render.rs` 与 `domain/stems.rs`
+  ⇒ 本仓集成纪律：land 前先 `git fetch` 比对，一文件一写者。
 
 
 
+
+### 22.11 `bc01b363`（另一会话的合流）判决读回 ＝ success ＋ `d4bacadd` 同批读数（2026-10-31 16:00Z）
+
+- **run `41213764737` = `completed / success`**（`headSha=bc01b363`：workspace 关闭 `yeban-engine` 默认特性 ＋ `yeban-app` 导出对话框四字段两向绑定）。
+  逐腿：`plan`／`deny`／`checks`／`lockfile`／`e2e`／`windows`／`macos`／`rust (workspace 全量)` 全 success，
+  窄 `rust (matrix.crate)` 腿 `skipped`（本批改根 `Cargo.toml` ⇒ 走全量，§22.6 的预期形态）。
+- **全量腿真跑读数**（job `124573973561`）：`started 15:12:58Z → completed 16:00:00Z` = **47 分钟**；
+  日志 **1 780 752** 字节；`test result:` **516** 行；`FAILED` **0** 行；`passed` 合计 **7 235**；
+  s26 的常驻判据 `section_pure_scaffold::proposed_part_tracks_carry_notes_but_zero_devices ... ok` 逐名出现 **1** 次。
+  ⇒ 与 §22.9（同一棵树不含代码改动时的 `41210731323` 读数）**完全同值** ⇒ `bc01b363` 那批代码改动**没有**移动任何判据计数，
+  这是"无衰退"的机械证据，⛔ 不是靠"它绿了"三个字。
+- **纪律闭环**：本批是**别人**落地的合流，我按 §22.10 的规则用 `headSha` 反查它**自己**的 run 读回，
+  ⛔ 没有拿我 `116ecd19` 的绿代替；这正是 §22.10 那条更正存在的理由。
+- ⭐ **落地后的本机复验**（树 `ad022d97`，含 `bc01b363` 的代码改动；本机只跑"允许档"：零编译的守卫 ＋ 文件头记录的裸 `rustc --test`）：
+  ① `python3 scripts/guards/check_verify_teeth.py` ⇒ `rc=0`，读数照旧（stdio `check(` 调用点 **7**／具名判据 **7** 条逐名在册／非零退出路径在场；
+  idempotency 侧 `return 1` 与 `ReplayedToolResponse` 在场）；② s26 常驻判据单跑 ⇒ `test result: ok. 1 passed; 0 failed; 48 filtered out`。
+  ⇒ 另一会话的 `yeban-engine` 默认特性关闭**没有**移动本机可判定的这一层；代码层的判决仍以 CI 的 run `41213764737`（success）为准。
+- **给新会话的三个入口**（按优先级）：① s28 立项（读数在 §22.8，task #101）—— ⛔ 契约文件 `schemas/mcp-tools.schema.json` 的改动必须带
+  **集合等式**判据（不是下界），并且要能在本机双向真验（真档 `rc=0` ＋ 掏空档 `rc=1`）再进 `ci.yml`；
+  ② 本会话推送的四枚**纯文档**提交已全部按 `headSha` 读回，⛔ 无 pending：
+  `116ecd19`→run `41214642059`／`d4bacadd`→`41217160672`／`ad022d97`→`41217653597`／`df0d66e4`→`41217736878`，
+  四枚皆 `completed / success`，形态一致（`plan`/`deny`/`checks`/`lockfile` success，rust＋e2e＋win＋mac **skipped**）
+  ⇒ 这是 §22.10 那条「plan 只看本次 push 的 diff」的**第四次**复现；
+  ③ 两件人类裁决：task #102（46 枚已并入的 `line/*` 待确认后删，清单 `/tmp/merged_lines.txt`）与 #34（磁盘大头 `~/.cache` 19G／`~/.rustup` 5.2G）。
+
+- 纯文档批 `d4bacadd` 的 run（本次读回时现值）：`d4bacadd 41217160672 completed success`。
+  ⚠ 这条是"推送当下"抓的，若其后还有推送，新会话仍应按 `headSha=d4bacadd` 复核一次。
+
+### 22.13 磁盘与分支卫生读数（2026-10-31 16:11Z，单位已在每条命名；⛔ 记忆值）
+
+- `/dev/sda2` 挂载 `/home`：**235G 总量 / 201G 已用 / 28G 可用 / 88%**（与 §22.7 的读数一致 ⇒ 这一小时没有新的可清理增量）。
+- 仓库内**磁盘占用**（`du -sh` 口径，⛔ 当字节数用）：`target` **326M**、`.worktrees` **1 012M**。
+  ⚠ `.worktrees` 的绝大部分是 `.worktrees/.cargo-home`（**911M**，`line-gate.sh` 强制指向的共享 CARGO_HOME，
+  **在用**，⛔ 不是孤儿产物）。`du -sh .worktrees/*/target` ⇒ `no matches found`（**0 个** worktree 内有 `target`）
+  ⇒ 本仓库当前的清理面**不在** worktree 里；大头仍是人类裁决 #34（`~/.cache` **19G**／`~/.rustup` **5.2G**）。
+- 分支：本地 `line/*` **47** 枚，其中已并入 `main` **46** 枚、未并入 **1** 枚（`line/s28-warning-code-contract`，见下）。
+  ⚠ **远端 `origin/line/*` 有 114 枚** —— 这个数字此前没进过账；它比本地的 46 大一倍多，
+  说明历史会话的线分支推送后从未删除。人类裁决 #102 的范围应**同时覆盖远端**，清单待按
+  `git branch -r --merged origin/main --list 'origin/line/*'` 现读后再生成（⛔ 现在别删，删除是破坏性动作）。
+- **s28 状态**：线 `a5ece833`（`line/s28-warning-code-contract`）的宽运行 run `41218201348`
+  于 16:08:18Z 起 **in_progress**（全量腿约 46 分钟）。⏳ **pending** —— 判决按 §22.12 的口径读：
+  `checks` 作业里新增那一步「warnings 名册对账 …」必须 `completed / success`，⛔ 只看整体 success 不收。
+  主线上同一时刻的纯文档 run `41218242390`（`ce8edd84`）= `completed / success`。
+
+### 22.14 收盘时的在飞状态与**接手的三条命令**（2026-10-31 16:18Z，会话预算接近上限）
+
+- **唯一在飞判决**：s28 线 `a5ece833`（`line/s28-warning-code-contract`）的宽运行 run **`41218201348`**。
+  ⏳ 到本节写入时仍 `in_progress` ⇒ 状态一律记 **pending**，⛔ 写成"通过"。
+- **land 面已预检**（现读，非记忆）：`origin/main` = 本地 main = `cf1d5a15`；线改动面 **3 文件 98 行全为新增**
+  （`ci.yml` +5／`schemas/mcp-tools.schema.json` +11／`scripts/guards/check_warning_codes.py` +82），
+  与 `cf1d5a15`（只改本文件）**无同文件交集** ⇒ 合并无冲突面，但 main 已前移，`land` 会产生合并提交（⛔ 期待快进）。
+- **接手三条**（判据读回后才允许 land）：
+  1. `gh run view 41218201348 --json status,conclusion,jobs --jq '.jobs[] | .name + " | " + .status + " | " + (.conclusion // "none")'`
+     —— 要看见 `checks (fmt / 红线守卫 / schema)` = `completed / success`；
+  2. 取该作业 id 后 `gh api repos/gradetwo/yeban/actions/jobs/<id> --jq '.steps[] | select(.name|test("名册对账")) | .name + " => " + .conclusion'`
+     —— 这一步必须 `success`（§22.12 的口径：⛔ 只看整体 success 不收，整体 success 但本步 skipped 也不算）；
+     全量腿另按 §0.6.0y 的口径读数（`test result:` 行数／`FAILED` 行数／passed 合计，⛔ `Running tests/` 在全量腿为 0）；
+  3. 三条都对得上才：`scripts/dev/worktree.sh land s28-warning-code-contract` → `git push origin main:main`
+     → `scripts/dev/worktree.sh rm s28-warning-code-contract --purge` → 读本条 merge run 的 `headSha` 读数并补进本节。
+- **本机环境事实**（不是缺陷，别再误读成红）：本机 `python3` **没有 pip**，且 `jsonschema`／`yaml` 两个模块都缺
+  ⇒ `scripts/gates/validate_schemas.py` 本机 `rc=2`、`scripts/guards/check_workflow_structure.py` 本机 `ModuleNotFoundError`（`rc=1`）。
+  这两条**本机不可判**，判决只能来自 CI 的对应步骤。我自己的 `check_warning_codes.py` 本机 `rc=0`，
+  它同时证明了 schema 的 **JSON 语法**与 `definitions.WarningCode.enum` 这条**路径可读**（这是 jsonschema 之外我能机械证明的全部）。
+- **s28 第一片的边界，说清楚**：名册进了契约，但现读 `grep -n '"warnings"' schemas/mcp-tools.schema.json` = **0 处**
+  ⇒ **没有任何工具的 outputSchema 引用它**，响应形状仍未被约束，CI 第 16 步（Rust 样本 ↔ jsonschema）对本通道依旧盲。
+  补齐它记为 task **#103**（含一条新判据：`WarningCode` 必须被至少一处 `$ref` 引用，否则定义就是 §22.8 那种死名册）；
+  ⛔ 不许把本片叠在判决未回的同一条线上（未证提交不堆叠），落地拆树后另起新线做。
+
+- **16:20Z 收盘读数**（本会话最后的现读）：
+  `cf1d5a15`（§22.13 磁盘与分支卫生批）→ run `41218623846` = `completed / success`；
+  `0ecd0808`（§22.14 本批）→ run `41219107701` = `completed / success`。
+  两枚都是**纯文档**形态（`plan`／`deny`／`checks`／`lockfile` success，`rust (workspace 全量)`／`rust (matrix)`／
+  `e2e`／`windows`／`macos` **skipped**）⇒ 按 §6.3-2 这是**空绿**，只证明文档与守卫面没坏，⛔ 不构成对代码面的判决。
+  ⚠ 因此 `0ecd0808` 之后若还有纯文档推送，其自身的 run 仍要按 `headSha` 读回（本条写入后**未再等它的 run** ——
+  读法：`gh run list --limit 10 --json databaseId,headSha --jq '.[] | select(.headSha=="'$(git log -1 --format=%H main)'") | .databaseId'`，
+  推送后头几秒 run 尚未登记，要**重试几次**才拿得到 id（本会话实测：一次空值 ⇒ `gh run view` 打空路径报 HTTP 404）。
+- **接手的会话只需做一件事**：按上面三条读 run `41218201348`；判绿则 land，判红则在本节下面补一条判决读数并修线，⛔ 两种情况下都不许留 pending 不读。
+
+### 22.15 s28 第一片判决读回 ＋ 已落地（`1d3d24b9`）：契约名册进主干，`merge run` 仍 pending
+
+- **线 `a5ece833` 的宽运行 run `41218201348` = `completed / success`**，且按 §22.14 的口径逐条读回：
+  - 作业面：`plan`／`deny`／`checks`／`lockfile`／`e2e`／`rust (workspace 全量)`／`windows`／`macos` **全 success**，
+    只有 `rust (${{ matrix.crate }})` = `skipped`（宽运行用全量腿替代窄矩阵，与 §22.9 形态一致）；
+  - ⭐ **本片的判据步**：`checks` 作业 `124587062934` 里那一步
+    「warnings 名册对账 (实现侧构造点 == schema 的 WarningCode.enum)」= **`success`**（整体 success ＋ 本步 success，⛔ 只取前者不算）；
+  - 全量腿 `124587111956`：`16:08:34Z → 16:56:14Z` = **47 分 40 秒**，日志 **1 780 933** 字节，
+    `test result:` **516** 行／`FAILED` **0**／passed 合计 **7 235**。
+    ⇒ 与 §22.9／§22.11 的基线（516／0／7 235）**逐位相同**：s28 只动 schema／守卫／CI，**没动 Rust 测试面**，
+    所以这个"没变"本身就是**无回归**的读数（若哪天多了 Rust 判据，这里的 7 235 才该动）。
+- **落地**：`scripts/dev/worktree.sh land s28-warning-code-contract` ⇒ 合并提交 `1d3d24b9`
+  （`ort` 策略，**3 文件 98 行全为新增**：`ci.yml` +5／`schemas/mcp-tools.schema.json` +11／`scripts/guards/check_warning_codes.py` +82）；
+  合并后自检 `cargo metadata --locked` 与依赖许可清单一致 ⇒ ok；`git push origin main:main` = `90340a81..1d3d24b9`。
+  拆树 `worktree.sh rm … --purge` 完成，分支已先保全为标签 **`line-archive/s28-warning-code-contract @ a5ece833`**；
+  `git worktree list` 现读只剩主干一条。
+- ⏳ **pending（本片唯一的未读判决）**：合流 run **`41222166136`**（`headSha=1d3d24b9`），本合并带 `.github/**` ⇒ **宽运行 ≈47 分钟**，
+  16:57Z 现值 `in_progress`。读法同 §22.11：终态须 `completed / success`，并确认全量腿真跑
+  （`test result:` 行数、`FAILED` 行数、passed 合计；预期仍为 **516／0／7 235**，因为落地不增加内容）。
+- ✅ **合流判决已读回（10-31 17:43Z）⇒ s28 第一片整条闭合**：run `41222166136` = **`completed / success`**；
+  八个作业 `deny`／`lockfile`／`checks`／`plan`／`rust (workspace 全量)`／`e2e`／`windows`／`macos` 全 **success**，
+  窄矩阵 `rust (${{ matrix.crate }})` = `skipped`（宽运行的正常形态 —— 全量腿真跑，⛔ 不是 §6.3-2 说的空绿）；
+  `checks` 作业 `124598827080` 的目标步「warnings 名册对账 (实现侧构造点 == schema 的 WarningCode.enum)」= **`success`**；
+  全量腿 `124598878859` = `16:57:58Z → 17:43:09Z`（**45 分 11 秒**）／日志 **1 780 744** 字节／`test result:` **516** 行／
+  `FAILED` **0**／passed 合计 **7 235** ⇒ 与线 run（本节 516／0／7 235）和落地前基线（§22.9／§22.11）**三方逐位同值**：
+  合流没引入回归，也没增加判据（本片不带 Rust 判据，符合预期）。
+  ⚠ 这组数字由**两条独立路径各取一次**（持久 `Monitor` 的事件 ＋ 收盘时直接 `gh run view` + `curl` 作业日志），两次一致；
+  ⛔ 把"两次都拿到 workspace 腿"当独立验证 —— 独立性来自**取数路径**不同（`job id` 也一致：`124598878859`），不是重复同一命令。
+- **本轮的方法学收获（值得复用）**：`46..48 分钟`的 CI 等待⛔ 不该用轮次去换。
+  本会话先试后台 `Bash`（**10 分钟硬超时**，会把 `gh run watch` 掐死）⇒ 改为 **`Monitor` + `persistent: true`**：
+  脚本内 `while … sleep 60` 轮询到终态，再把「各作业结论 / 目标步骤结论 / 全量腿时长与三行读数」一次性打到事件里。
+  ⚠ 两个坑：① 作业名不是 `checks` 而是 `checks (fmt / 红线守卫 / schema)` ⇒ jq 选择器要 `startswith("checks")`，
+  用等值匹配会**静默拿到空 id**（我第一次就踩了，靠 `CHECKS_JOB=` 空值才发现）；
+  ② 编辑一个**正在运行的 bash 脚本文件**会让解释器按新偏移读旧内容 ⇒ 改脚本前必须先 `TaskStop`。
+
+### 22.16 s28 第二片（#103）的**前置读数**（2026-11-01 00:20 本机＝10-31 17:1xZ）：四处 outputSchema 站点 + 一条会让本片变成假广播的硬事实
+
+- **名册在哪被广播（现读 `crates/yeban-mcp/src/output_schema.rs`）**：`warnings` 的 items 形状共 **4 处** ——
+  `propose_section()` 内 **465**、`edit_notes()` 内 **526-536**、`set_macro()` 内 **593**、`render_master()` 内 **942**。
+  其中只有 `edit_notes` 那处写了 `required: ["code","hint"]` 与 `properties.code = {"type":"string"}`（⛔ 无 `enum`），
+  另外 **3 处是裸的 `{"type":"array","items":{"type":"object"}}`** —— 这就是 §0.6.0za 说的"响应形状不受约束"的具体位置。
+- **每个工具实际能发哪些 code（现读调用链，⛔ 按词面猜）**：
+  `proposal_warnings`（`domain/mod.rs:4805`，内部 = `effect_param_warnings` + `device_on_silent_track_warnings`）
+  的**唯一调用点是 `propose_draft`（`domain/mod.rs:2595`）**，而 `propose_draft` 被 **4** 处调用（`2722`／`2912`／`3100`／`3131`）
+  ⇒ `unrecognisedEffectParam`／`deviceOnSilentTrack` 属 **propose_section / edit_notes / set_macro** 这一族；
+  `clipping_warning`＋`silent_sources_warning` 只在 `domain/render.rs:2950/2959`（`fn build`）里链起来
+  ⇒ `exportClipping`／`silentSources` 属 **render_master**；
+  `sfzSamplesUnreadable` 出自 `domain/sfz.rs:732`，调用点是同文件 **776（`fn response_data`）** 与 **805（`fn preview`）**
+  ⇒ 属 **`yeban_load_sfz` / `yeban_render_sfz_wav`** —— ⚠ **这两个是扩展工具，`for_tool` 对它们返回 `None`**
+  （`output_schema.rs:95-104` 只列 10 个文档化工具；`:1174-1176` 的常驻判据就在断言"没有 schema 时是 `None` 而非 `{}`"）
+  ⇒ **第 5 枚 code 在当前设计里无处广播**，只能靠 JSON 契约的名册 + `data.warnings[]` 的实际内容兜住。
+- ⚠⚠ **本片最容易做成假广播的地方**：本仓库自带的输出校验器 `output_schema.rs::validate` 只认
+  顶层 `type` / `required` / `properties` 的**类型**，**⛔ 不递归** ⇒ `items` 里声明的
+  `enum` / 逐键 `type` / 该层的 `required` **一个都不核对**。
+  ⚠ **本条目原文还多写了一句"也不实现 `enum`"，那是错的**（2026-11-01 现读改正，见 §22.17）：
+  `check_declared` 自 `MCP-TOOL-005` 的 edit_automation／redo／reject_proposal 批起**就实现 `enum`**
+  （逐值相等），缺的只有"递归到声明 `enum` 的那一层"。
+  所以只往 4 处站点塞 `"enum": [...]` 而不动校验器，效果是**"对外广播了一个我们自己不检查的约束"**：
+  真 MCP 客户端会按标准 JSON Schema 拒绝越名册的 code，我们这边却一路放行。
+  ⇒ 第二片的**最小诚实形状**是三件一起：① 站点写 `items.code.enum`（按上面的**逐工具子集**，⛔ 五枚全贴），
+  ② 校验器补 `items` / 嵌套 `properties` 的**递归**（`enum` 已支持，⛔ 不必重做），
+  ③ 常驻判据：`validate`/`validate_complete` 的测试模块（现有 `:1133-1168` 那种正反两路）加一条
+  "越名册的 code 必须被拒"，否则 ② 无从证明。⛔ 只做 ① 的批次不要推。
+- **另两条口径**：`schemas/mcp-tools.schema.json` 的 `definitions` 现有 **8** 个键
+  （`WarningCode`／`ToolCall`／`ToolResponse`／`ReplayedToolResponse`／`JsonRpcResponse`／`JsonRpcError`／
+  `DocumentedToolArguments`／`ExtensionToolArguments`）—— 它管的是 **JSON-RPC 信封**，⛔ 不是逐工具响应形状，
+  所以"$ref 进 outputSchema"这句话在本仓库里**没有落点**：落点是 **Rust 的 `output_schema.rs`**，不是这份 JSON。
+  改这条描述时⛔ 沿用 #103 原文的措辞，按本节改正。
+- 本机状态：为第二片建的线 `line/s28b-warning-ref`（树 `.worktrees/s28b-warning-ref`）**只做了读数，0 改动 0 提交**，
+  读完即拆（分支保全为标签 `line-archive/s28b-warning-ref @ a8ff496c`）⇒ 现在 `git worktree list` 只有主干一条，⛔ 没有孤儿树。
+  ⛔ 推送门槛已解除：合流 run `41222166136` 判绿（§22.15 末的 ✅ 条目），第二片可以从 `main` 另起新线开工；
+  基准 sha 从 `a8ff496c` 变为 `bdf91d19` 之后的主干 tip —— ⚠ 起线前照例 `git fetch` 现读，⛔ 抄本节写的 sha。
+
+
+### 22.17 ⭐ s29（s28 第二片）已推线，判决 pending（2026-11-01）＋ §22.16 的一句改正
+
+- **线**：`line/s29-warning-code-teeth`（树 `.worktrees/s29-warning-code-teeth`，基线 = 主干 tip `8567c53b`，`git fetch` 现读）
+  ⇒ 唯一提交 `cb5a5673`（`crates/yeban-mcp/src/output_schema.rs`，+298 / −34，**一个文件**）
+  ⇒ 推送 `origin/line/s29-warning-code-teeth` ⇒ run **`41227512300`**（`headSha=cb5a5673e475b4cc0bc2c2fd5f9c706713c8b231`）
+  状态 `in_progress` ⇒ **pending**，⛔ 不是"通过"。落地前照 §22.7 的 `headSha` 反查法读回，并逐腿读（改的是 crate 代码 ⇒ 宽档）。
+- **改正 §22.16 的一句错话**（先说指标再读数：数的是 `check_declared` 里有没有 `enum` 分支）：
+  原文「**不递归 `items`、也不实现 `enum`**」的**后半句是错的** —— `enum` 自 `MCP-TOOL-005`
+  的 edit_automation／redo／reject_proposal 批起就按**逐值相等**核对（`output_schema.rs` 的 `check_declared`
+  里就有 `schema.get("enum")` 那一段，本文件的模块文档第 4、5 条也写着这段历史）。
+  ⚠ 这条错话差点把第二片的方向带偏成"重写校验器的 enum 支持"；真缺口只有**递归**。已就地改正，不留二手抄。
+- **本片做了三件（缺一件就是假广播）**：
+  ① **逐工具子集**进广播：提案族（`propose_section` / `edit_notes` / `set_macro`）共用
+  `PROPOSAL_WARNING_CODES = [deviceOnSilentTrack, unrecognisedEffectParam]`；
+  母带 `RENDER_WARNING_CODES = [exportClipping, silentSources]`。子集来自调用链现读（§22.16），
+  不是词面猜的；名册第五枚 `sfzSamplesUnreadable` ⛔ 不进任何子集（只出自两个**不广播 outputSchema** 的扩展工具）。
+  ② **校验器真的递归**：`validate` 拆成 `validate` + `check_object_fields` + `check_declared_field`，
+  路径带下标（`$.warnings[0].code`）。⚠ 这一改的**爆炸半径是实测出来的**：改动前 `output_schema.rs` 的
+  json 字面量里有 **12 处**嵌套 `"required"`（`proposal_summary_schema`／`undo_display_schema`／
+  三处 `willCreate`／`edit_notes` 的 `warnings.items`／`merge_proposal.commit`／`edit_automation` 的
+  `lane`+`read`+`origin`／`query_engine_state` 的 `session`+`engine` 等）——
+  这 12 处**从写下到 s29 一次都没被跑过**，递归一开全部变成活断言。
+  其中最扎眼的是 `edit_notes` 那句 `required:["code","hint"]`：它早就写在广播里，而校验器只看得到顶层。
+  ③ **四条常驻判据**（都在同文件的 `mod tests`）：
+  `the_recursion_reaches_inside_array_items_and_indexes_the_path`（含二级下标 `$.warnings[0].knownParams[1]`
+  ＋ items 层 `required` 缺席 ＋ 正反两路的**真实构造点形状**）、
+  `a_warning_code_outside_the_broadcast_subset_is_rejected`（**两个方向**：提案族收母带码必红、母带收提案码必红）、
+  `the_broadcast_warning_subsets_match_the_measured_call_chain`（广播子集逐字 == 现读名册；发明数 = 空集；
+  契约减广播 = **恰好** `sfzSamplesUnreadable`）、以及复用的 `a_missing_schema_is_none_not_an_empty_object`。
+  对账分工写死在判据文档里：`scripts/guards/check_warning_codes.py` 管"**实现侧构造点 == 契约 enum**"，
+  这条 Rust 判据管"**广播侧 ⊆ 契约**且子集不退化" —— 契约／实现／`tools/list` 三处不可能各说一套。
+- **刻意保留的一处弱广播（不是漏做）**：母带的 `warnings.items` 只声明 `code` + `hint`。
+  理由是有**未证的形状**：`clipping_warning` 的 `truePeakDbfs` / `headroomDb` 走
+  `json_f32(Option<f32>)`（`domain/render.rs` 里那个 `Some(number) if number.is_finite()` 的分支，缺读数落 `Null`），
+  而 `silentSources` 一条都不带这两个键 ⇒ 按并集声明会把**真实响应自己拒掉**。假广播比弱广播更糟。
+  提案族反过来做了并集（12 个键全部逐键声明类型），因为两条构造点的键都是**非空具体值**
+  （`DeviceDefinition.name: String`、`recognised_names(): Vec<&'static str>`、`TrackPlayableSurvey.sounding_placements: usize`）。
+- **本机跑过 / 跑不了（⛔ 把"没跑"写成"过了"）**：
+  跑过 = `cargo fmt`（顺带证明这份文件能被解析）、`python3 scripts/guards/check_warning_codes.py` **rc=0**
+  （实现侧 5 枚 ↔ 契约 5 枚，逐名印出）、`policy_check.py` rc=0。
+  ⛔ 没跑 = `yeban-mcp` 的任何 `clippy` / `test`（重依赖 crate，本机禁单，见 §5.1/5.2）⇒
+  递归改动的正确性只能靠 CI 判，好在**真实响应早就有判据在核**：`tests/props_176.rs` 逐个拿
+  `tools/call` 的真响应跑 `validate` / `validate_complete`、`tests/render_master.rs` 也拿母带真响应跑 `validate`
+  ⇒ 若上面那 12 处嵌套声明里有任何一处与真实响应矛盾，CI 会**直接红在那条判据上**（那是真发现，不是噪声）。
+- ⏳ **待办**：读回 `41227512300` 的**目标腿**（宽档 `rust (workspace 全量)` 里 `yeban-mcp` 的
+  `test result:` 行 + 新增四条款据名逐条 `ok`）⇒ 绿才 `worktree.sh land s29-warning-code-teeth` → 推 main →
+  读回合流 run；红则按日志点名修，⛔ 不叠未证的提交。
+
+### 22.18 ⭐ s29 线 run `41227512300` 判决读回 = **failure**（红在 clippy，⛔ 不是语义）＋ 修好后重推（2026-11-01）
+
+- **终态**：run `41227512300`（`headSha=cb5a5673e475b4cc0bc2c2fd5f9c706713c8b231`）= `completed / failure`。
+  逐腿：`deny`／`checks`／`plan`／`lockfile`／`e2e`／`rust (yeban-ui-mcp)` = **success**；
+  **`rust (yeban-mcp)` / `windows` / `macos` = failure**；`rust (workspace 全量)` = **skipped**。
+  ⚠ **§22.17 的"宽档"预期是错的**：plan 把受影响集合算成"只 `yeban-mcp`"⇒ 走**窄腿矩阵**、宽腿 skip（§22.6 的形态）
+  ⇒ 本片的**目标腿是 `rust (yeban-mcp)`**（作业 `124614694353`），不是全量腿。
+- **红点只有一个，而且⛔ 不是判据红**：三条腿**全部红在同一步 `clippy (-D warnings)`**
+  （窄腿步骤号 6、win/mac 步骤号 5）。日志里两条 `error:` 同一族的 lint：
+  `crates/yeban-mcp/src/output_schema.rs:1287` 与 `:1300` 的 `.err().expect("…")` 触发
+  **`clippy::err-expect`**（`-D clippy::all` 隐含 ⇒ 视为错误），末行
+  `error: could not compile yeban-mcp (lib test) due to 2 previous errors`。
+  ⛔ **这就是 §6.3-4 的形态**：lib test 没编译 ⇒ s29 那批新判据**一条都没执行**，
+  "日志里找不到判据名"是**编译顺序造成的空白**，既不是失败证据也不是通过证据。
+- **为什么本机预检不到**（如实登记）：`yeban-mcp` 是重依赖 crate，本机禁单（§5.2）⇒ 没有任何本地 clippy 能提前发现；
+  而这两条 lint 是**纯文本形态**的（`.err().expect(` 六个字符就命中）。
+  ⇒ 可复用的便宜预检：**推线前先 `git diff | grep -n '\.err()\.expect(\|\.err()\.unwrap('`**，
+  命中就改 `expect_err`。⚠ 它只覆盖这一条 lint，⛔ 不能当"clippy 已过"用（照 §6 只有 CI 算判决）。
+- **改法与边界**：两处消息都是**纯字面量**⇒ 直接 `expect_err("…")`。
+  同一测试里**另外两处 `.err().unwrap_or_else(|| panic!("…{tool}…"))` 刻意保留**：
+  `expect_err` 只收 `&str`、⛔ 不会替换格式占位符（本会话上一轮正因这个把消息写死成假话），
+  而 `unwrap_or_else` 是惰性求值、不触发 `err-expect`。
+  ⇒ 修正提交 `1179ef04`（同文件 **2 行**）⇒ 推送 ⇒ 新 run **`41228291334`** `in_progress` ⇒ **pending**。
+  ⚠ 线内现在是**两枚提交**（`cb5a5673` + `1179ef04`），落地时以 `1179ef04` 的 run 为准 —— 叠的这枚**不是未证提交**，
+  它是前一枚红的直接后果（红点被日志逐字点名），⛔ 别把它读成"绕过判决"。
+- **顺带改正一句口径**：§22.17 写"四条常驻判据"⇒ 现读 `mod tests` 的 `#[test] fn` 是
+  **新增 3 个测试函数**（递归 / 越名册 / 子集对账）＋ 复用 1 个既有函数；
+  提交信息里的"四条"数的是**判据条目**（真实构造点两路都过是递归那条里的第 ③ 小段）。
+  ⚠ 条目数与函数数不是一回事（§6.5 同一课），下次写"几条判据"要点明数的是什么单位。
+- **同批读回：主干纯文档 run `41227959469`（`headSha=31004aae79362e154bd0fdb2e8f020d773830fa1`）= `completed / success`**。
+  不是空绿：**`checks` 真跑**（步骤 10「warnings 名册对账」／11「JSON Schema 契约」／13「文档契约」／
+  14「集成测试零判据守卫」／17「跨语言契约对账」全部 success），`deny`／`plan`／`lockfile` success；
+  `e2e`／`rust (matrix)`／`windows`／`macos`／`rust (workspace 全量)` = **skipped** —— 纯文档批的预期形态（§22.6）。
+- ⏳ **待办**：读回 `41228291334` 的**目标腿 `rust (yeban-mcp)`** —— clippy 步 success、
+  该腿日志里三个新判据名逐条 `ok`、`test result:` 里 `yeban-mcp` 无 `FAILED`；
+  若那 12 处嵌套 `required` 有任何一处与真实响应矛盾，会红在 `tests/props_176.rs` / `tests/render_master.rs`
+  —— **那是真发现**，按点名修，⛔ 不叠未证的提交。绿才 `land` → 推 main → 读回合流 run → 拆树。
+
+### 22.19 ⭐ s29 第二枚的 run `41228291334` 读回 = **failure，但红点换了一类**（假夹具被新递归抓到）＋ 12 处嵌套声明的逐处审计
+
+- **终态**：`completed / failure`。`checks`／`plan`／`lockfile`／`deny`／`e2e`／`rust (yeban-ui-mcp)` = success，
+  **窄腿 `rust (yeban-mcp)`（作业 `124617014003`）= failure**，宽腿 skip，
+  ⚠ **`windows` = `cancelled`、`macos` = `failure`** —— `windows` 那一格⛔ 不是判决：
+  我推第三枚提交时**同分支的并发组把还在跑的 `windows` 取消了**（`gh run view` 现读的三态之一）。
+  ⇒ 本轮对 win/mac 平台**没有读数**，落地后的合流 run 才补得上。
+  ⭐ 但**s29 自己的三条新判据这条腿里逐名 `ok` 各 1 次**（`the_recursion_reaches_inside_array_items_and_indexes_the_path`
+  ／`a_warning_code_outside_the_broadcast_subset_is_rejected`／`the_broadcast_warning_subsets_match_the_measured_call_chain`）
+  —— 递归、双向越名册必红、子集对账这三件事**已经被判过且是绿的**；红的只有下面那条既有夹具判据。
+  ⭐ **clippy 步已过**（红点从步骤 6 移到步骤 7 `test`）⇒ 上一轮那两行是纯静态告警，本轮才是**语义读数**。
+- **红在谁身上**：`output_schema::tests::the_validator_actually_rejects_broken_responses`
+  （`test result: FAILED. 584 passed; 1 failed`）。断言消息写的是 `"sends 不是 required"`，
+  ⚠ **但那是消息文本，不是原因**：真正的原因在同一条 `assert!` 的**另一侧** ——
+  那份夹具把 `session` / `engine` 写成 `{}` 占位，而 schema 在这两个嵌套对象里各自声明了
+  `required`（10 键 / 8 键）。"只看顶层"时代它们从不被核对；**s29 的递归一开就变活断言 ⇒ `{}` 被拒**。
+  ⇒ 这正是 §22.17 数出来的"12 处从未跑过的嵌套声明"的**落点之一**，而且是**最好的一种落点**：
+  矛盾在测试夹具里，不在真实响应里。
+- ⚠ **本轮的另一条读数纪律**（§6.3-4 的第三次实测）：日志里 `Running unittests src/lib.rs` 只出现 **1** 次
+  ⇒ lib 测试一红，`cargo test` fail-fast 就把**所有集成测试二进制**（含 `tests/props_176.rs`、
+  `tests/render_master.rs` 那两处拿**真实响应**跑 `validate`/`validate_complete` 的常驻判据）**全部跳过**。
+  ⇒ 所以"递归会不会拒掉真实响应"这件事**本轮仍未被判**，⛔ 不许读成"过了 584 条 ⇒ 形状没问题"。
+- **于是推前做了逐处审计**（⛔ 不是只对红的那处；每处都是"声明的键集合 ↔ 真实拼装点现读"的集合等式）：
+
+  | 嵌套声明在哪 | 真实构造点 | 判决 |
+  | :--- | :--- | :--- |
+  | `proposal_summary_schema` 的 14 键 `required` | `domain/proposal.rs` 的 `Proposal::summary` | ✅ 键集合**逐字相同**；`mergeCommit`/`resolvedAt`/`resolution` 三处 builder 走 `map_or(Value::Null, …)`，schema 早已声明 `[…,"null"]` |
+  | `undo_display_schema` 的 8 键 | `domain/mod.rs` 的 `undo_display_value` | ✅ 8 键一一对上（`head` 声明 `["string","null"]`） |
+  | `willCreate` 的 `opCount`/`opKinds` ×3 站点 | `domain/section_build.rs` 的 `summarize_ops`（`opCount = ops.len()`）＋ `Proposal::summary` | ✅ 三处共用同一份拼装，不漂移 |
+  | `merge_proposal` 的 `commit` 8 键 | `domain/mod.rs` 合并出口的内联拼装（含 `atomicBatch`/`depth`） | ✅；⚠ 同文件另有一个 `commit_summary` **不带** `atomicBatch`/`depth`，但它的唯一调用点是 `domain/import_midi.rs`，而 `for_tool("yeban_import_midi")` 返回 `None`（扩展工具不广播）⇒ 不在覆盖面内 |
+  | `edit_automation` 的 `lane` 7 键 / `read` 3 键 / `origin` 3 键 | `domain/automation.rs` 的 `AutomationEdit::data` | ✅ 键集合相同；`unit: String`、`read_ticks: Vec<u64>` 与声明同型；`writeMode`/`domain` 可为 `null` 而声明本就是 `[…,"null"]` |
+  | `query_engine_state` 的 `session` 10 键 / `engine` 8 键 | `domain/engine_state.rs` 的 `session_value` / `engine_value` | ✅ `engine.readingsRevision` 不在 `engine_value` 的字面量里，而是**拼装点插入**（同文件 `readingsRevision` 那一段，其判据断言 `value["engine"]["readingsRevision"]`）⇒ 真实响应带着它 |
+
+  **旁证（同一条 CI，两轮都 success）**：`checks` 的「跨语言契约对账 (Rust 样本 ↔ Python jsonschema)」用
+  `export_mcp_samples` 导出的**真实样本**跑 Python `jsonschema` —— 那个校验器**从来就递归** ⇒
+  真实样本早就满足这些嵌套 `required`。本轮的红因此只能落在**手写夹具**上。
+- **改法**：`25a5d06d` 把两份夹具（`output_schema.rs` 的那条 + `tests/props_176.rs` 里**同名同理由**的那条 ——
+  它本轮因 fail-fast 根本没跑到，不补就是第三轮）写全，取值照现读：`ticksPerBeat = 960`
+  （`SessionRuntimeState::ticks_per_beat()` 是 960 PPQ 的唯一入口）、`transportState` 只有
+  `stopped`/`playing` 两态（模型里 `Recording` 是**预留档**，没有入口能到达）、
+  `bufferFrames`/`sceneLaunchesApplied` 未注入即 `null`、`sampleRateSource` 逐字取
+  `"project.audio_config.sample_rate"`。⇒ 新 run **`41229171684`**（`headSha=25a5d06db6676bb5a95e10b99b31432363323f9e`）**pending**。
+- **本轮的方法学收获**：**"断言消息说的原因"与"真正的原因"可以不同** —— 这条 `assert!` 的消息在讲 `sends`，
+  红却红在 `session`/`engine`。读日志时要回到**那一行代码**看它核的是什么，⛔ 不要拿消息文本当判决。
+
+### 22.20 s30 的**前置读数**（2026-11-01，⛔ 只读不改）：剩余四处裸 `items:{type:object}` 里**哪三处能诚实声明、哪一处不能**
+
+- **现读起点**（主干）：字面量 `"items": {"type": "object"}` 共 **7** 处；s29 填掉其中 3 处（三处 `warnings`）
+  ⇒ 剩 **4** 处：`proposal_detail_schema.ops`、`edit_automation` 的 `lane.points`、
+  `query_engine_state.sends`、`render_master.sources`。
+- ⭐ **通用口径（省一次往返）**：这个仓库的 schema **已经在用**可空类型形
+  （`render_master` 顶层的 `truePeakDbfs` / `headroomDb` 就写着 `{"type": ["number", "null"]}`），
+  而 `check_declared` 认数组形 ⇒ **给可空键声明 `["T","null"]` 不需要动校验器**。
+  ⚠ 另一条同族的坑：`json_f32` 的文档写明"`serde_json` 会把 `Infinity`/`NaN` **静默写成 `null`**"
+  ⇒ 所以**任何** `f32` 键在 JSON 侧都是"数字或 `null`"，按 `{"type":"number"}` 单值声明都不是诚实话。
+- **① `render_master.sources[]`（可整块声明，两处必须可空）**：唯一拼装点是 `SourceReport::to_value`，
+  元素恒发 **15** 个键（`node`/`track`/`kind` 字符串、`audible` 布尔、
+  `notes`/`audioClips`/`audioClipsUnrendered`/`audioClipsGated`/`notesSilenced`/`notesRatcheted`/
+  `ratchetPulses`/`endTick` 整数、`peak` 数字、`peakDbfs` = `json_f32(...)`、`sampler` = `Option::map`）。
+  ⇒ `peakDbfs` 与 `sampler` **必须**声明成 `["number","null"]` / `["object","null"]`（后者是"这条轨没绑采样器"的常态）；
+  `sampler` 那一层是 `SamplerReport::to_value`，键全是 `String`/`Vec<String>`/`usize`/`u64`/`bool`
+  （**没有一个** `Option`）⇒ 可以再往里声明一层。⚠ `peak` 是裸 `Value::from(f32)` ⇒ 按上面那条坑，
+  诚实声明要么写 `["number","null"]`，要么就明说"非有限值时本声明会拒"。
+- **② `edit_automation` 的 `lane.points[]`（可声明，且 `curve` 能上 `enum`）**：拼装点在 `domain/automation.rs`
+  的 `AutomationEdit::data`，元素恒发 4 键：`id`（`EntityId` → 字符串）、`tick`（`u64` → 整数）、
+  `value`（`f32` ⇒ 同上，按 `["number","null"]` 才诚实）、`curve`。
+  ⭐ `curve` 的词表是**封闭四值**（`curve_name` 只发 `Linear`/`Exponential`/`Logarithmic`/`SCurve`，
+  且已有判据 `every_name_table_agrees_with_the_model_enum` 钉住它是 `CurveType` 的**双射**）
+  ⇒ 这一处可以上 `enum`，是四处里唯一"能收紧到名字集合"的。
+- **③ `query_engine_state.sends[]`（可声明，两处必须可空）**：拼装点 `send_edges_value`，元素 8 键
+  `edgeId`/`kind`/`sourceNode`/`sourceName`/`destinationNode`/`destinationName`/`gainDb`/`gainSource`；
+  ⚠ `sourceName` 与 `destinationName` 是显示名，**可以是 `null`** ⇒ 两条必须 `["string","null"]`。
+- **④ `proposal_detail.ops[]`（⛔ 这一处现在不能声明，缺的不是勇气是读数）**：
+  拼装点是 `ops_to_value` = `serde_json::to_value(op)`，而 `Op` 是**外部标签**（externally tagged）枚举
+  ⇒ 元素的**键名本身就随变体变化**（`{"SetSection":{…}}` 与 `{"SetTempo":…}` 不是同一个形状），
+  任何"并集 `properties`"都会把合法响应自己拒掉 ⇒ 假广播。
+  ⇒ 诚实的前置动作是**先做逐变体的载荷名册**（`yeban-model` 的 ops 侧已有 S5 那批写面差分普查可复用），
+  要么改成"声明 `ops` 是数组、每个元素是**恰好一键**的对象"这种**不需要知道变体名**的弱声明，
+  ⛔ 不要先写 schema 再补理由。
+- ⏳ **落点顺序建议**：`sources` 与 `points`/`sends` 三处是同一类活（现读拼装点 → 声明 → 拿真实响应跑 `validate`
+  的正反两路判据），可在一条线里做完；`ops` 那一处需要**另一件事先发生**（变体名册），别混进同一片。
+
+### 22.21 磁盘**只读测量**（2026-11-01，供 #34 裁决；⛔ 本轮一个字节都没删）
+
+- **大盘**：`/home` = 235 G 总量／已用 **201 G**／剩 **28 G**（`df -h` 现读，88%）。
+  本仓库自己占得很小：主干 `target` **326 MB**、`.worktrees`（只有 s29 一条线）**1 012 MB** ⇒
+  ⛔ 磁盘压力的来源不是这个仓库。
+- **最大单项在仓库外**：`~/.cache` 合计 **19 G**，其顶级项依次是
+  `paru` **8.4 G**（AUR 构建缓存，与本仓库无关）、`uv` **3.6 G**、`ms-playwright` **1.6 G**、
+  `zig` **1.5 G**、`camoufox` **1.4 G**、`pnpm` **1.2 G**、`pip` 292 MB、`go-build` 249 MB、`gh` 216 MB。
+- ⭐ **`~/.rustup` 的 5.2 G 里有一条可以直接判死的**：`rust-toolchain.toml` 现读 `channel = "1.99.0"`
+  （L1 位级确定性锁的就是它），而 `rustup show` 的 active toolchain 也正是 `1.99.0-x86_64-unknown-linux-gnu`（**617 MB**）。
+  另三枚：`stable` **1.8 G**、`1.92.0` **1.5 G**、`1.95.0` **1.4 G** —— 后两枚⛔ 不是本仓库锁定的版本。
+  ⚠ 但 `rustup toolchain uninstall` 是**不可逆到"重下"**的动作，且 `stable` 是否被别的仓库依赖**本机未证** ⇒ 仍归 #34 人类裁决，
+  本节只交读数，不交删令。
+- **其他项目的 `target`**（同样只测不删）：`work/art/yanshi` **2.2 G**、`work/monitor/cs70-debug-rs` **1 017 MB**、
+  `work/qoder/yanshi` **565 MB**。
+- ⚠ **`.worktrees/.cargo-home` 这一条要更正口径**（§0.6.0y 说过它"在用、⛔ 不是孤儿"）：
+  `ls` 现读 `.worktrees/*/.cargo-home` = **无匹配**（本轮），而 `.worktrees` 总量 1 012 MB 里装的是 s29 那份工作树；
+  ⇒ 那句 911 MB 的读数是**当时那棵树**的（`line-gate.sh` 把 `CARGO_HOME` 指到仓库父目录）⇒
+  线拆完就随树消失，⛔ 不要把它当常驻孤儿去删，也不要当"还在占空间"。
+
+### 22.22 三枚主干文档 run 的读回 ＋ §22.20 第④条（`ops`）的**下一步到底缺什么**（2026-11-01，⛔ 只读）
+
+- ✅ **主干三枚文档提交各自的 run 都读回了**（⛔ 不是"tip 代表整批"，一提交一 run）：
+  `ea6ae47b` → run **`41228618445`**、`0ec8a2a0` → **`41229399936`**、`11654ff3` → **`41229498792`**，
+  三者 `conclusion=success` 且 `headBranch=main`。
+  ⚠ 但按 §6.3-2「空绿不算验证」，这三枚的 `success` 里**只有 `checks` 腿是真跑过的**：
+  现读 `41229498792` 的 `checks` 作业 **19/19 步 `success`、0 步 skipped**，
+  其余 `e2e` / `rust (matrix.crate)` / `rust (workspace 全量)` / `windows` / `macos` = **`skipped`**
+  ⇒ 这三枚对代码零证明（它们本来就只动 `docs/`），能证明的是**七道文档守卫在 CI 上真的执行了**。
+- ⭐ **s29 线第三枚 `25a5d06d` 的 run `41229171684` 读数（截至本节撰写时）**：
+  `lockfile`／`deny`／`plan`／`checks`／`e2e (MCP stdio 复跑 / 幂等重放契约)`／`rust (yeban-ui-mcp)` = **`success`**，
+  `rust (workspace 全量)` = **`skipped`**（窄矩阵 ⇒ 与 §22.18 的口径一致），
+  目标腿 `rust (yeban-mcp)`（作业 `124619651549`）**步骤 6 `clippy (-D warnings)` = `success`、步骤 7 `test` 在跑**，
+  `windows`／`macos` 在跑 ⇒ **判决 pending**，⛔ 本节不写成通过。
+  ⚠ `e2e` 腿本轮**真的执行过**（不是上一轮的 skip），这是那条"真实响应必须仍然通过 `outputSchema`"的独立证据。
+- **§22.20 第④条的后续现读**（对象：`Op` 的顶层变体；单位：条）：
+  从 `crates/yeban-model/src/ops.rs` 的 `pub enum Op {` 花括号配对内**逐行现读** ⇒ **55** 个结构体型变体
+  （`AddNote` … `Batch`，`Batch` 的载荷是 `{ ops: Vec<Op>, description: String }` ⇒ **自递归**）。
+- ⭐ **由此得到一条不需要知道变体名的诚实不变式**：`serde_json` 的外部标签编码 ⇒
+  **每个元素对象恰好只有 1 个键**，键名就是变体名（`{"SetSection":{…}}`／`{"Batch":{…}}`；`Batch` 里那两条
+  `ops`/`description` 属于**载荷**那一层，不打破"顶层恰好一键"）。
+  ⇒ 所以"声明 `ops` 元素是**恰好一键的对象**"这条路是**真命题**，而它现在被卡住的原因不是名册，是**校验器关键字**：
+  现读 `output_schema.rs` 里 `validate` 路径实际只认 **`type` / `required` / `const` / `enum` / `properties` / `items`**
+  六个关键字 ⇒ `minProperties` / `maxProperties` / `propertyNames` **写了也不会被执行**（那才是假广播）。
+- ⏭ **因此 `ops` 这一处有三条诚实路线**（登记供后续裁决，⛔ 本片不选）：
+  **甲**＝给校验器补 `minProperties`/`maxProperties`（键数不变式）＋ `propertyNames`（键名 ∈ 55 名册），
+  名册**从 `ops.rs` 现读**而非手抄（`ops.rs` 测试里已有"从源码抽变体名"的先例可复用）；
+  **乙**＝逐变体载荷名册 → 每变体一份完整 `properties`（工作量＝55 个拼装点，且 55 里多数变体在提案路径上根本不出）；
+  **丙**＝schema 维持"数组的元素是对象"，另加一条**运行时时**断言"元素键数恒为 1"的 Rust 判据（不声明、只验证）。
+  ⚠ 无论走哪条，`Batch` 的自递归都意味着 s29 新加的递归会**按数据深度无限下钻** —— 本机未证它有没有上限，
+  但校验对象是**我们自己构造的响应**，深度由提案规模决定，⛔ 不要为了这个先加限制而丢掉诚实性。
