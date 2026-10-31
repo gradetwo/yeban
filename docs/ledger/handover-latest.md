@@ -53,7 +53,12 @@
   实测：纯文档的 `116ecd19` **叠在**改了根 `Cargo.toml` 的合流 `bc01b363` 之上，它的 run `41214642059` 只跑 **2 分钟**、
   五枚 rust/e2e 腿**全 `skipped`** ⇒ 我先前"这枚宽 run 顺带覆盖 `bc01b363`"的说法**被推翻**（详证见台账 §22.10）。
   ⇒ `bc01b363` 的判决只在 run `41213764737` 里，本段写完时**仍在飞**（15:35Z 起 checks/deny/lockfile/plan/e2e success，全量腿未完）
-  ⇒ **pending**：新会话第一件事就是用 `headSha=bc01b363` 读回它，⛔ 不许拿 `116ecd19` 的绿代替。
+  ⇒ 当时记 **pending**；**16:00Z 已按 `headSha=bc01b363` 读回 = `completed / success`**：
+  八腿 success（`plan`/`deny`/`checks`/`lockfile`/`e2e`/`windows`/`macos`/`rust (workspace 全量)`），窄 `rust (matrix.crate)` `skipped`；
+  全量腿 job `124573973561` = 15:12:58Z → 16:00:00Z = **47 分钟**、日志 **1 780 752** 字节、`test result:` **516** 行、
+  `FAILED` **0**、`passed` 合计 **7 235**、s26 的常驻判据 `... ok` 逐名出现 **1** 次 ⇒ ⭐ **main 现在含另一会话的
+  `yeban-engine` 默认特性关闭 ＋ 导出对话框两向绑定，且全库判据仍是绿的**（台账 §22.11）。
+  ⚠ 同批读回：`d4bacadd`（纯文档）那枚 run 的读数记在同一行里 —— 见台账 §22.11 末条。
 
 - ⛔ **并线现读（land 前必读）**：另一会话的线 `line/review-20261031-fixes`（提交 `0fea313f`，run `41210661377`）
   = **failure**（红在 `rust (yeban-mcp)` ＋ win ＋ mac）。实测 `git merge-base --is-ancestor 0fea313f main` ⇒ **否**

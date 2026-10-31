@@ -17021,7 +17021,7 @@ helper 里 ⇒ 必须不认（防假绿）。两条臂在旧实现上都会失�
 - 由此补两条纪律：① **判某枚提交，只能读它自己那枚 run**（§6.3-1 的加强版：不仅"一提交一 run"，而且"一 run 只覆盖一提交的 diff"）；
   ② 因此 `bc01b363` 那批代码改动的判决**只在 run `41213764737` 里** —— 本段写完时它**仍在飞**
   （15:35Z 起：`checks`/`deny`/`lockfile`/`plan`/`e2e` 已 success，全量腿与 `windows` 未完；宽运行成本 ≈ 46 分钟，见 §22.4）
-  ⇒ 状态 **pending**，⛔ 不得写成通过，⛔ 不得由 `116ecd19` 的绿代替。
+  ⇒ 状态当时记为 **pending**；**16:00Z 已按 `headSha=bc01b363` 读回 = success**，逐腿读数见下面的 §22.11。
 
 - ⚠ **并线现读**：另一会话的线 `line/review-20261031-fixes`（提交 `0fea313f`，run `41210661377`）= **failure**
   （红在 `rust (yeban-mcp)` ＋ win ＋ mac）。实测 `git merge-base --is-ancestor 0fea313f main` ⇒ **否**，
@@ -17030,4 +17030,20 @@ helper 里 ⇒ 必须不认（防假绿）。两条臂在旧实现上都会失�
   ⇒ 本仓集成纪律：land 前先 `git fetch` 比对，一文件一写者。
 
 
+
+
+### 22.11 `bc01b363`（另一会话的合流）判决读回 ＝ success ＋ `d4bacadd` 同批读数（2026-10-31 16:00Z）
+
+- **run `41213764737` = `completed / success`**（`headSha=bc01b363`：workspace 关闭 `yeban-engine` 默认特性 ＋ `yeban-app` 导出对话框四字段两向绑定）。
+  逐腿：`plan`／`deny`／`checks`／`lockfile`／`e2e`／`windows`／`macos`／`rust (workspace 全量)` 全 success，
+  窄 `rust (matrix.crate)` 腿 `skipped`（本批改根 `Cargo.toml` ⇒ 走全量，§22.6 的预期形态）。
+- **全量腿真跑读数**（job `124573973561`）：`started 15:12:58Z → completed 16:00:00Z` = **47 分钟**；
+  日志 **1 780 752** 字节；`test result:` **516** 行；`FAILED` **0** 行；`passed` 合计 **7 235**；
+  s26 的常驻判据 `section_pure_scaffold::proposed_part_tracks_carry_notes_but_zero_devices ... ok` 逐名出现 **1** 次。
+  ⇒ 与 §22.9（同一棵树不含代码改动时的 `41210731323` 读数）**完全同值** ⇒ `bc01b363` 那批代码改动**没有**移动任何判据计数，
+  这是"无衰退"的机械证据，⛔ 不是靠"它绿了"三个字。
+- **纪律闭环**：本批是**别人**落地的合流，我按 §22.10 的规则用 `headSha` 反查它**自己**的 run 读回，
+  ⛔ 没有拿我 `116ecd19` 的绿代替；这正是 §22.10 那条更正存在的理由。
+- 纯文档批 `d4bacadd` 的 run（本次读回时现值）：`d4bacadd 41217160672 completed success`。
+  ⚠ 这条是"推送当下"抓的，若其后还有推送，新会话仍应按 `headSha=d4bacadd` 复核一次。
 
