@@ -264,8 +264,8 @@
   task #105 收盘；台账 §22.26…§22.30 是这条线的完整账。
 - ⭐ **s31 的前置读数（已逐字核装配点，⛔ 不采信二手摘要）**：唯一拼装点 = `RenderArtifact::details()`
   （`domain/render.rs:2233`，被 `preview()`／`response_data()` 共用）。现读键数：`request` **14**（含 `threads`）／
-  `probability` **5**／`ratchet` **8**／`audio` **8**（内层 `resampler` 2、`bitExactness` 2、`assets[]` 元素 = 第二批）／
-  `peak` **8**／`normalize` **6**／`loudness` **11**／`bwf` **6**／`midiSource` **7**／`contributionsBasis` **8**。
+  `probability` **5**／`ratchet` **8**／`audio` **8**（内层 `resampler` **3**、`bitExactness` **2**、`assets[]` 元素 = 第二批）／
+  `peak` **8**／`normalize` **5**／`loudness` **11**／`bwf` **6**／`midiSource` **7**／`contributionsBasis` **8**。
   两处**如实留弱**并已定理由：`unsupportedCounts` = **开放映射**（键是 `KNOWN_UNSUPPORTED_KEYS` 的动态子集、可为 `{}`；
   收紧它要 `additionalProperties`/`propertyNames`，即 §22.22 路线甲的那半件事）＋ `ops`（§22.20 裁决）。
 - ⛔ **一条已在台账留痕的误并**（值得接手的人知道，因为它差点进契约）：子代理把

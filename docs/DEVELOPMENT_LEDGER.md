@@ -17671,10 +17671,15 @@ helper 里 ⇒ 必须不认（防假绿）。两条臂在旧实现上都会失�
 - ⭐ **s31 的前置读数（已逐字复核装配点，⛔ 不采信二手摘要）**：唯一拼装点 = `RenderArtifact::details()`（`domain/render.rs:2233`，
   被 `preview()` `:2492` 与 `response_data()` `:2514` 共用）。逐槽键数现读为
   `request` **14**（含 `threads`，`Option<usize>` ⇒ `["integer","null"]`）／`probability` **5**／`ratchet` **8**／
-  `audio` **8**（内层还有 `resampler` 2 键、`bitExactness` 2 键、`assets[]` 元素名册 = 第二批）／`peak` **8**／
-  `normalize` **6**／`loudness` **11**／`bwf` **6**／`midiSource` **7**／`contributionsBasis` **8**。
+  `audio` **8**（内层还有 `resampler` **3** 键、`bitExactness` **2** 键、`assets[]` 元素名册 = 第二批）／`peak` **8**／
+  `normalize` **5**／`loudness` **11**／`bwf` **6**／`midiSource` **7**／`contributionsBasis` **8**。
   两处**如实留弱**并已定理由：`unsupportedCounts` 是**开放映射**（键 = `KNOWN_UNSUPPORTED_KEYS` 的动态子集、可为 `{}`，
   收紧它要 `additionalProperties`/`propertyNames` = §22.22 路线甲那半件事），`ops` 沿用 §22.20 的裁决。
+- ⛔ **上面那组键数里有两个是我从摘要抄来的、逐字数过才发现错**（就地改正，并留这条痕）：
+  `normalize` 我写 **6** ⇒ 现读 `render.rs:2404-2410` 是 **5** 键（`requested`/`applied`/`target`/`domain`/`note`）；
+  `audio.resampler` 我写 **2** 键 ⇒ 现读 `:2366-2370` 是 **3** 键（`method`/`specId`/`adr`）。
+  ⇒ **教训同 §22.25 那一类**：**数字要自己数**，⛔ 摘要里"看起来是逐字清单"的条目数也一样会错 ——
+  这次是同一个代理报告里"清单对、计数错"（`normalize` 的清单本就列了 5 项，我抄了它结论行的 6）。
 - ⚠ **一处代理报告的误并已被核掉**（留痕，因为这类错误会一路长进契约里）：
   它把 `LoudnessTarget::failure()`（`render.rs:976`，那是 `RENDER_FAILED` 的**带内错误载荷**：`reason`/`algorithm`…）
   当成了 `data.loudness` 的键。现读 `to_value()`（`:933`）= 11 键、**没有** `reason` ⇒ 若照抄，`required` 会把真实响应判红。
