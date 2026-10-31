@@ -12,6 +12,48 @@
 > `docs/ledger/phase-status.md` 的叙事条目**停在 R1144**（2026-10-26）⇒ ⭐ 读进度以
 > `DEVELOPMENT_LEDGER.md` 的尾部为准，⛔ 不要以为 R1144 之后没干活。
 
+### 0.6.0r ⭐ 尾批（2026-10-31 06:45）：**R115 守卫的四份副本里有一个真缺陷**（嵌套已闭合 `fn` 切窗口／借界）＋ 覆盖扩到 dsp/app/ui-mcp
+
+- **缺陷（本批的核心）**：守卫找"站点所在函数体"时取的是**上方最近的 `fn`**。若那是**已闭合的
+  嵌套 helper**：(a) 窗口被挪到 helper ⇒ helper **之前**的界丢失 ⇒ **假红**（`record_device_wiring.rs:526`
+  实测，旁边就有 `!out.is_empty()`）；(b) helper 的断言进入窗口 ⇒ 外层站点**借它的界** ⇒ **假绿**。
+  修法：**包住站点的最内层 `fn`** ＋ 拼窗口时**整段跳过嵌套 fn**；每份副本新增**两条对照臂**
+  （③界在 helper 之前⇒必须认；④界只在 helper 里⇒必须不认）。
+- **覆盖读数（守卫自报）**：dsp **30/78/1/0/0**（74 处补界）｜app **27/46/1/0/0**（22 处补界）｜
+  mcp **22/47/2/3/0**（只回补窗口）｜engine **12/11 站点／无界 0**（窗口重写，整数计数四类
+  4／80／2／49＝**135 未变**）｜ui-mcp **5/6/0/0/0**（新守卫，3 处补界）。
+- **判决**：dsp 线 `41097665246` success（dsp 腿 **3m17s**／541 passed）→ merge `a15b4130` / `41103338337`
+  success；app 线 `41098589863` success（app 腿 **34m18s**／255 ok）→ merge `f9e1e7f0` / `41104394489`
+  success；回补线 `41103699213` success（1,111 `Running`／1,094 ok／0 FAILED）；s12 merge `7065c3d5` /
+  `41135494859` success（windows 39m04s／macos 29m16s／app 34m06s／mcp 16m37s，五条判据 mcp+dsp 各 3 次 ok）；
+  engine 线 `41135850531` success（engine 腿 5m44s）；ui-mcp 线 `41136205024` success（ui-mcp 腿 5m42s，
+  22:15:26 守卫五条判据逐名 ok）。合流 `145c261b` 的 run `41140491576` **success**：11 个作业逐个
+  `completed`（无 `in_progress`）；engine 腿 22:48:33→22:53:21，守卫 `running 16 tests` 全 ok（窗口臂 22:50:51），
+  `FAILED` 0；ui-mcp 腿 22:48:33→22:53:20，守卫 `running 5 tests` 全 ok（22:53:09），`FAILED` 0；
+  `macos`／`windows` 本次真跑；`rust (workspace 全量)` 按 plan `skipped` —— ⛔ 不计为该腿的绿。
+  之后主干又被混音台线推进：**代码面判决**在 merge `aa9aff6c` / `41143113348`（app 腿 32m17s，
+  `Running tests/` **250**／`test result:` **257**／`FAILED` **0**，`mixer_fader_double_click` 在场两次）；
+  本批台账＋合流 `0cfe4189` / `41154777536` 是**空绿**（plan 空集 ⇒ 四条 rust 腿全 `skipped`，
+  只有 deny/checks/lockfile 真跑）⇒ ⛔ 不构成代码面验证，代码内容与 `aa9aff6c` 相同。
+- **三线在飞（⛔ 未读回＝pending）**：s15 `line/s15-midi-io-guard` @ `c66bc448` / run `41155049220`；
+  s16 `line/s16-theory-guard` / run `41155447276`；s17 `line/s17-midi-guard` @ `4cc67c62` / run `41156212959`
+  （`yeban-midi` 11 文件 / 8 站点 / 3 处夹具补界，本机 221+5+50+9+35 全绿）。读数与本地证据见台账 §18.7。
+- **空绿的又一次实测**：台账批 `aca9c855` 的 run `41155589983` 逐 job 读回 —— `lockfile`/`plan`/`deny`/`checks`
+  真跑，`macos`/`rust (workspace 全量)`/`windows`/`rust (${{matrix.crate}})` 四条腿 `skipped`
+  （`startedAt == completedAt`）⇒ run 级 success ⛔ 不是代码面验证。
+- **s17 改指的来由（⛔ 别重走）**：`yeban-model`／`yeban-render`／`yeban-sfz` **各自已有** crate 级量词扫描
+  （`tests/model_isolation.rs`／`tests/quantifier_lower_bounds.rs`／`tests/assertion_discipline.rs`），
+  `yeban-decode` 有内嵌 12 行窗口自检且 5 个站点全部有界 ⇒ 迁移不产生新发现，**决定不迁移**。
+  真正空白只剩 `yeban-midi`（原 `.all(` 15 处、无 crate 级扫描）。明细见台账 §18.6 补记。
+- **纪律再证**：一次 `gh run view --json` 报 run 级 `completed success` 时，`windows` job 仍在
+  `in_progress` ⇒ 判绿必须**逐 job 看 `completedAt`**；`macos`/`windows` 因 plan 而 `skipped` **不是绿**。
+- **本地绿 ≠ 编译过**：ui-mcp 补界的三处 src 改动**本机没编译**（依赖 `yeban-mcp`，CI-only 家族）；
+  本地只跑守卫（`include_str!` 只读文本）、clippy、fmt，编译判决只来自 CI。
+- **下一单（同口径未覆盖）**：只剩 `yeban-ui-test-port`（1 文件／3 站点**均已自带界**，依赖 slint ⇒ 只能 CI 验证；
+  加它是纯防回归）与 `yeban-decode`（**决定不迁移**：内嵌 12 行窗口自检的 5 个站点全部有界）。
+  s15（midi-io）／s16（theory）／s17（midi）三线在飞 ⇒ 判决回来前不再开新线。
+  创作缺口**仍全在人类裁决**（`ADR-0042`／`0047`..`0050`／`0004 Q13`／`0053`）。
+
 ### 0.6.0q ⭐ 尾批（2026-10-30 16:20）：**§0.6.0p 的两条候选都已收盘**（R115 扩 mcp ＋ 零判据守卫；两线并行）
 
 - **A（R115 扩 mcp）**：mcp 的站点口径与引擎**不同**——`chars/bytes` 适配器的界是**内容长度**、生产
