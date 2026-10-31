@@ -7060,7 +7060,7 @@ fn a_real_proposal_from_the_authority_is_visible_in_the_opened_drawer() {
     let reply = mcp_call(
         mount.address(),
         &bearer,
-        &r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"yeban_propose_section","arguments":{"sectionName":"Verse","stylePreset":"pop","materialSource":"theory","bars":2}}}"#,
+        r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"yeban_propose_section","arguments":{"sectionName":"Verse","stylePreset":"pop","materialSource":"theory","bars":2}}}"#,
     );
     report_line(&format!(
         "[pr-rows] tools/call yeban_propose_section ⇒ status={:?} pendingMerge={:?} proposalId={:?}",
