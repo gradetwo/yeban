@@ -1847,14 +1847,19 @@ impl ElementRegistry {
             "放弃提案",
             false,
         );
-        // 「有提案、但没有写入口」那句原因。标签**逐字取自** `crate::proposals` 的那个常量
-        // （界面上的 `accessible-label` 绑的也是它）⇒ 注册表、图元、宿主说的是同一句话，
-        // ⛔ 这里不是第三份抄写。漏登记会让 `[UI-TEST-001]` 双向覆盖判据红在方向 2。
+        // 「有提案、但写面亮不起来」那句原因。它**逐字**来自 `src/proposals.rs`，而那里
+        // 现在是**三**句（`resolve-reason` 是个读数，不是常数）：没有写来源 ⇒
+        // `NO_WRITE_SOURCE_REASON`；有来源但没点选 ⇒ `NO_SELECTION_REASON`；被权威拒过 ⇒
+        // 权威原文。注册表这一格填的是**发行形态实际会画的那一句** —— `in-process-mcp` 是
+        // 非默认 feature（MUST-GATE-009 的第一道开关），因此默认装配永远落在第一句。
+        // 运行时那一句到底是哪句，由 `tests/live_ui_mcp.rs` 的
+        // `a_real_proposal_from_the_authority_is_visible_in_the_opened_drawer` 逐字点名
+        // （⛔ 不在 `.slint` 里抄，也不在这里抄第二份）。
         registry.add(
             "musical-pr-resolve-unavailable",
             ElementKind::Text,
             "dialogs/musical_pr_drawer.slint",
-            crate::proposals::RESOLVE_NOT_WIRED_REASON,
+            crate::proposals::NO_WRITE_SOURCE_REASON,
             false,
         );
         registry.add(
