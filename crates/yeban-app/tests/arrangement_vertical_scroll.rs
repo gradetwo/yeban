@@ -39,7 +39,7 @@ use yeban_app::scene::DemoScene;
 use yeban_app::ui::MainWindow;
 use yeban_model::{EntityId, TrackKind, TrackV3, YebanProjectV1};
 use yeban_ui_test_port::render::LivePort;
-use yeban_ui_test_port::{Permission, Size};
+use yeban_ui_test_port::{Permission, Size, UiTestPort as _};
 
 const WINDOW: Size = Size::new(1440, 900);
 /// 标尺带高：行区上沿 = 标尺带 y + 22（`automation::TRACK_LANE_TOP_PX = 20 + 22`）。
