@@ -3532,7 +3532,7 @@ pub struct ShortcutRow {
 /// 每一项把**规范写法**、**动作**、**键位**与**落地状态**放在一起。这张表的**意义**是
 /// 让策略表的判定结果可被人与 CI 直接阅读 —— 尤其是 `[UI-A11Y-002]` 的 IME 分支,
 /// 以及"规范点名了、本版本还没做"的那一列（见 [`UNIMPLEMENTED_MARKER`]）。
-const SHORTCUTS: [ShortcutRow; 34] = [
+const SHORTCUTS: [ShortcutRow; 46] = [
     ShortcutRow {
         label: "Space → 播放/暂停",
         action: Action::PlayPause,
@@ -3565,6 +3565,34 @@ const SHORTCUTS: [ShortcutRow; 34] = [
         label: "F6 → Arrangement 视图",
         action: Action::ShowView(View::Arrangement),
         key: PhysicalKey::F6,
+        modifiers: Modifiers::none(),
+        implemented: true,
+    },
+    // ⭐ 控制台标签直达（**界面决定**，⛔ 规范未点名）：`F7`/`F8`/`F9` 与上面
+    // `F5`/`F6` 是**同一个键族**（功能键直达某个界面位置），但**分层不同** ——
+    // `F5`/`F6` 是规范 §2.2 点名的「全局无冲突备选」（连合成态都放行），
+    // 这三条走无修饰单键这一档，文本域 / IME 策略仍然优先（`Action::SelectConsoleTab` 文档）。
+    //
+    // `implemented: true` 的主张范围 = "宿主有这条臂、按下会改 `console-tab`"；
+    // 它改的是**视图态**（⛔ 不进撤销栈、⛔ 不进 `.yeban`），与 `ShowView` 同一条口径。
+    ShortcutRow {
+        label: "F7 → 控制台「钢琴卷帘」",
+        action: Action::SelectConsoleTab { index: 0 },
+        key: PhysicalKey::F7,
+        modifiers: Modifiers::none(),
+        implemented: true,
+    },
+    ShortcutRow {
+        label: "F8 → 控制台「调音台」",
+        action: Action::SelectConsoleTab { index: 1 },
+        key: PhysicalKey::F8,
+        modifiers: Modifiers::none(),
+        implemented: true,
+    },
+    ShortcutRow {
+        label: "F9 → 控制台「设备效果链」",
+        action: Action::SelectConsoleTab { index: 2 },
+        key: PhysicalKey::F9,
         modifiers: Modifiers::none(),
         implemented: true,
     },
@@ -3772,7 +3800,8 @@ const SHORTCUTS: [ShortcutRow; 34] = [
     // 这一动作**（`[UI-NOTE-005]` §3.5 四条项只讲音符）⇒ 这是**界面决定**，登记在
     // `docs/ledger/app-mixer-notes.md` §7 第 10 行。为什么占 `Cmd/Ctrl+Alt+方向` 这一格，
     // 理由逐条写在 `Action::NudgeMixerChannel` 的文档里（六个已被 §3.5 点名的方向键组合、
-    // 以及被判据如实钉成放行的 `Cmd/Ctrl+←/→` 与 `Alt+↑/↓`，都不能占 ⇒ 只剩这一格是空的）。
+    // 以及被判据如实钉成放行的 `Cmd/Ctrl+←/→`，都不能占 ⇒ 只剩这一格是空的；
+    // ⚠ `Alt+↑/↓` 2026-10-31 起已绑定为**选轨键**，不在这份"放行"清单里了）。
     //
     // `implemented: true` 的**主张范围**要说清：它陈述的是"宿主有这条臂、按下会发生什么"，
     // 不是"这一键在**任何**装配下都会改工程"。没有选中轨时 `apply_action` 返回 `false`
@@ -3818,13 +3847,123 @@ const SHORTCUTS: [ShortcutRow; 34] = [
         modifiers: Modifiers::ctrl_alt(),
         implemented: true,
     },
+    // ⭐ **键盘拨动**选中轨的静音 / 独奏（两条 = 两个开关）。
+    //
+    // 与上面四条的分工是"**连续量 vs 布尔量**"：微调有"一格"，拨动只有"当前值取反"。
+    // 同样**不是**规范点名（登记在 `docs/ledger/app-mixer-notes.md` §7 第 10 行的 ② 那半句）；
+    // 裸 `m` / `s` 此前都落到 `PassThrough`（`Cmd/Ctrl+Alt+M` 是控制台最大化，另一格），
+    // 因此加进表里不动任何既有绑定。逐条理由见 `Action::ToggleTrackMute` 的文档。
+    ShortcutRow {
+        label: "M → 选中轨静音开/关",
+        action: Action::ToggleTrackMute,
+        key: PhysicalKey::KeyM,
+        modifiers: Modifiers::none(),
+        implemented: true,
+    },
+    ShortcutRow {
+        label: "S → 选中轨独奏开/关",
+        action: Action::ToggleTrackSolo,
+        key: PhysicalKey::KeyS,
+        modifiers: Modifiers::none(),
+        implemented: true,
+    },
+    // ⭐ **界面决定**（⛔ 不是规范点名）：标准 DAW 的保存键 `Cmd/Ctrl+S`。
+    //
+    // 与上面两条的关系：裸 `S` 是独奏 ⇒ 保存**必须带** `Cmd/Ctrl`；这一格此前落到
+    // `PassThrough`（`command()` 分支里 `s` 一条都没有），因此加它不动任何既有绑定。
+    // `Cmd/Ctrl+Shift+S` 自 2026-10-31 起是**另存为**（下一条），`Cmd/Ctrl+Alt+S` 仍放行。
+    // 落点是**既有**的 `save-project` 回调（`host::wire_save` → `save_action::dispatch_save`），
+    // 与 transport 的「保存」按钮、与「换工程前先保存」是同一个入口。逐条理由见
+    // `Action::SaveProject` 的文档；登记在 `docs/ledger/app-cli-notes.md` §5.4。
+    ShortcutRow {
+        label: "Cmd/Ctrl+S → 保存工程",
+        action: Action::SaveProject,
+        key: PhysicalKey::KeyS,
+        modifiers: Modifiers::meta(),
+        implemented: true,
+    },
+    // ⭐ **界面决定**（⛔ 不是规范点名）：标准 DAW 的另存为键 `Cmd/Ctrl+Shift+S`。
+    //
+    // 三条事实：裸 `S` 是独奏、`Cmd/Ctrl+S` 是保存（都已在表里）⇒ 另存为只能占
+    // `Shift` 变体；该格此前落到 `PassThrough`（判据如实钉着）；`Cmd/Ctrl+Alt+S`
+    // 仍放行。落点是 `host::wire_save` 注册的 `save-project-as` 回调 —— 问一次对话框，
+    // 把选中的路径记成当前目标，再进**同一条** `dispatch_save`。逐条理由见
+    // `Action::SaveProjectAs` 的文档；登记在 `docs/ledger/app-cli-notes.md` §5.4。
+    ShortcutRow {
+        label: "Cmd/Ctrl+Shift+S → 另存为",
+        action: Action::SaveProjectAs,
+        key: PhysicalKey::KeyS,
+        modifiers: Modifiers::ctrl_shift(),
+        implemented: true,
+    },
+    // ⭐ **界面决定**（⛔ 不是规范点名）：标准 DAW 的打开键 `Cmd/Ctrl+O`。
+    //
+    // `o` 在 `command()` 分支里此前一格都没有、裸 `o` 也从未绑定 ⇒ 加它不动任何既有
+    // 绑定；`Cmd/Ctrl+Shift+O` / `Cmd/Ctrl+Alt+O` 仍放行。落点是**既有**的
+    // `open-project` 回调（`host::wire_open_project`），与控制台「打开工程」按钮同一条链。
+    // 逐条理由见 `Action::OpenProject` 的文档；登记在 `docs/ledger/app-cli-notes.md` §5.4。
+    ShortcutRow {
+        label: "Cmd/Ctrl+O → 打开工程",
+        action: Action::OpenProject,
+        key: PhysicalKey::KeyO,
+        modifiers: Modifiers::meta(),
+        implemented: true,
+    },
+    // ⭐ **界面决定**（⛔ 不是规范点名）：走带「录音」按钮的键盘入口，裸 `R`。
+    //
+    // 裸 `r` 此前在策略表任何一步里都不存在 ⇒ 加它不动任何既有绑定；`Cmd/Ctrl+R` /
+    // `Shift+R` / `Alt+R` 仍放行。落点是**既有**的 `toggle-record` 回调
+    // （`wire_transport` → `wire_record_at`），与走带「录音」按钮同一条链。
+    // 逐条理由见 `Action::ToggleRecord` 的文档；登记在 `docs/ledger/app-cli-notes.md` §5.4。
+    ShortcutRow {
+        label: "R → 录制开/关",
+        action: Action::ToggleRecord,
+        key: PhysicalKey::KeyR,
+        modifiers: Modifiers::none(),
+        implemented: true,
+    },
+    // ⭐ **界面决定**（⛔ 不是规范点名）：走带 AI 抽屉按钮的键盘入口 `Cmd/Ctrl+Alt+A`。
+    //
+    // 该组合此前落在 `command()` 分支的 `_ => PassThrough`（当时只有 `b` / `m` / `n` /
+    // `d` / 方向键），裸 `a` 与 `Alt+A` 也从未绑定 ⇒ 加它不动任何既有绑定；
+    // `Cmd/Ctrl+Alt+Shift+A` 仍放行。落点是**既有**的 `toggle-ai-drawer` 回调
+    // （`wire_view_callbacks`），与走带 `transport-ai-drawer-button` 同一条链。
+    // 逐条理由见 `Action::ToggleAiDrawer` 的文档；登记在 `docs/ledger/ui-modules-notes.md`。
+    ShortcutRow {
+        label: "Cmd/Ctrl+Alt+A → AI 抽屉开/关",
+        action: Action::ToggleAiDrawer,
+        key: PhysicalKey::KeyA,
+        modifiers: Modifiers::ctrl_alt(),
+        implemented: true,
+    },
+    // ⭐ **界面决定**（⛔ 不是规范点名）：键盘-only 用户的**选轨**入口，`Alt+↑` / `Alt+↓`。
+    //
+    // 该组合此前落在第 4 步的 `_ => PassThrough`（当时只有 `1` / `2` / `←` / `→`）；
+    // 裸 `↑/↓`（网格 / 半音微调）、`Shift+↑/↓`（八度）与 `Cmd/Ctrl+Alt+↑/↓`（音量微调）
+    // 一格不动。落点是**既有**的 `track-select` 回调（`host::wire_track_select`），
+    // 与鼠标点轨道行同一条链。逐条理由见 `Action::SelectTrackBy` 的文档；
+    // 登记在 `docs/ledger/app-cli-notes.md` §5.4。
+    ShortcutRow {
+        label: "Alt+↑ → 选上一条轨",
+        action: Action::SelectTrackBy(-1),
+        key: PhysicalKey::UpArrow,
+        modifiers: Modifiers::alt(),
+        implemented: true,
+    },
+    ShortcutRow {
+        label: "Alt+↓ → 选下一条轨",
+        action: Action::SelectTrackBy(1),
+        key: PhysicalKey::DownArrow,
+        modifiers: Modifiers::alt(),
+        implemented: true,
+    },
     // 以下**一条**是本版本仅剩的 `implemented: false` 条目。
     //
     // ⭐ **两个数字都不在这里手抄**（此前这一行写着"表共 26 条"，而表的**总数**其实是 28 ——
     // 26 是 `implemented: true` 的条数，被当成了总数 ⇒ 读的人按它对账会**差 2**，
     // 而差的正是下面这类 `false` 条目）。⭐ 事实源是**类型标注**与**判据**，逐条复算：
-    //   - 表有多大 ⇒ `[ShortcutRow; 34]` 的**类型标注**（编译期）＋ 判据
-    //     `shortcut_table_status_matches_the_resolution_and_host_pipeline` 的 `rows.len() == 34`；
+    //   - 表有多大 ⇒ 本数组的**类型标注**（编译期）＋ 判据
+    //     `shortcut_table_status_matches_the_resolution_and_host_pipeline` 的 `rows.len()` 断言；
     //   - 有几条未实现 ⇒ 同文件的 `the_ai_suggestion_and_audition_keys_are_still_declared_unimplemented`
     //     断言未实现条目**恰好**是哪一条（精确到条目，比只数条数更强）＋ `printed_marks`。
     // ⇒ ⭐ 注释只负责**指路**，⛔ 不再复述数字（复述过的数字会陈旧，这一行就是实例）。

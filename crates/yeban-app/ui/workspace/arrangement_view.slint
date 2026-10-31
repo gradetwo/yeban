@@ -205,6 +205,17 @@ export component ArrangementView inherits Rectangle {
     //
     /// 点击小节 / 拍标尺：`x` = 指针在**标尺带坐标系**里的横坐标（标尺带左缘 = 工程 0 tick）。
     callback ruler-seek(length);
+    /// 无障碍「上一 / 下一小节」：`steps` = 小节数（`+1` / `-1`）。
+    /// 与 `ruler-seek` 同一个宿主入口（`host::wire_ruler_seek`）：界面只报**步数**，
+    /// 当前位置、一小节多少 tick、夹紧全在宿主从投影 / 引擎现读。
+    callback ruler-step(int);
+    /// 无障碍「定位到第 N 小节」：`bar` = 用户输入的小节号文本（**1 起**）。
+    /// 解析与夹紧同样全在宿主；解析失败 ⇒ 一条命令都不发（⛔ 不猜）。
+    callback ruler-seek-bar(string);
+
+    /// 点击章节卡片 ⇒ 走带定位到该段起点（与标尺同一条纪律：界面只报下标，
+    /// 起点 tick 由宿主从投影的 `SectionView.start_tick` 现读）。
+    callback section-seek(int);
 
     // ---------------------------------------------------------------- 章节卡片层 (§4.3)
     for section_name[section_index] in root.sections : Rectangle {
@@ -220,6 +231,22 @@ export component ArrangementView inherits Rectangle {
         accessible-label: "章节 " + section_name;
         accessible-item-index: section_index;
         accessible-item-count: root.sections.length;
+        // ⭐ `U-05`：章节卡片此前**只显示、不可点**。默认动作 = 走带定位到该段起点
+        // （与下面 `TouchArea` 的 down 逐字同一个回调）—— 屏读器 / 自动化因此不需要
+        // 点像素坐标就能跳段。⛔ 不新增 a11y 节点：动作是既有节点上的属性。
+        accessible-action-default => { root.section-seek(section_index); }
+
+        // 点击面：零视觉、零算术 —— 只把**下标**原样报给宿主。
+        // 第一个子元素（最底层）：色标 / 文字只是绘制，不抢命中。
+        TouchArea {
+            width: parent.width;
+            height: parent.height;
+            pointer-event(event) => {
+                if event.kind == PointerEventKind.down {
+                    root.section-seek(section_index);
+                }
+            }
+        }
 
         // 段落色标 —— `SectionV3::color` 经投影解析后的颜色（非法 / 缺失已回退）。
         // 3px 竖条贴在卡片左缘；文字从 `space-3`（6px）开始 ⇒ 两者不重叠
@@ -254,9 +281,17 @@ export component ArrangementView inherits Rectangle {
         width: parent.width - 168px;
         height: 22px;
         background: Tokens.bg-panel;
-        accessible-role: text;
+        // ⭐ `U-07 R2`：标尺是一个**可调定位器**（scrubber），不是只读文本 ⇒ 角色从
+        // `text` 升为 `slider`。三个无障碍动作给出"定位到第 N 小节"的**非指针**入口：
+        // 增减 = 上 / 下一小节，SetValue = 输入小节号（1 起，宿主解析）。
+        // `accessible-value` 报的是**当前走带位置**（与时间码同一个引擎读数）。
+        accessible-role: slider;
         accessible-id: "arrangement-ruler";
         accessible-label: "小节与拍标尺";
+        accessible-value: root.playhead-timecode;
+        accessible-action-increment => { root.ruler-step(1); }
+        accessible-action-decrement => { root.ruler-step(-1); }
+        accessible-action-set-value(v) => { root.ruler-seek-bar(v); }
 
         // ⭐ 点击标尺 ⇒ 走带定位。与轨道头的拖拽面**同款纪律**：
         //
@@ -274,6 +309,11 @@ export component ArrangementView inherits Rectangle {
                 if event.kind == PointerEventKind.down {
                     root.ruler-seek(self.mouse-x);
                 }
+            }
+            // ⭐ `U-07 R3`：按住拖动 ⇒ **连续**定位（`moved` 只在按下期间触发，
+            // 与上面的 down 共用同一条 `ruler-seek`；换算 / 吸附 / 夹紧仍在宿主）。
+            moved => {
+                root.ruler-seek(self.mouse-x);
             }
         }
 

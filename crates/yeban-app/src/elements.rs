@@ -728,9 +728,12 @@ impl ElementRegistry {
                 false,
             );
         }
+        // ⭐ `U-07 R2`：标尺是一个**可调定位器**（增减 / SetValue 都能定位），角色与
+        // `.slint` 的 `accessible-role: slider` 保持一致 —— 注册表与运行时逐字对账
+        // （`test_port_adapter::adapter_mirrors_the_registry_one_to_one`）。
         registry.add(
             "arrangement-ruler",
-            ElementKind::Text,
+            ElementKind::Slider,
             "workspace/arrangement_view.slint",
             "小节与拍标尺",
             false,

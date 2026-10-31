@@ -37,6 +37,9 @@
 //!   `None`，即"没有目标路径就直接放弃"）⇒
 //!   [`saving_without_an_assembly_time_target_asks_the_picker_and_writes_there`] 红
 //!   （`calls == 0` 且磁盘上没有那个文件）。
+//! * **③ 另存为不接线**（`wire_save` 里不注册 `on_save_project_as`）⇒
+//!   [`saving_as_asks_the_picker_and_retargets_subsequent_saves`] 红（`calls == 0`、
+//!   新文件不存在）；把「另存为」做成"装配期目标优先"⇒ 该判据第二段红（保存写回旧文件）。
 //! * **② SFZ 浏览不接线**（把 `wire_mixer_sampler_browse` 的回调体清空）⇒
 //!   [`browsing_for_an_sfz_fills_the_text_box_and_only_set_commits_it`] 红
 //!   （输入框的 `value` 仍是空串）。
@@ -422,6 +425,120 @@ fn cancelling_the_save_dialog_writes_nothing_and_reports_nothing() {
         std::fs::read_dir(&dir).map(|it| it.count()).unwrap_or(0),
         0,
         "⛔ 取消之后目录里不该出现任何文件"
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// ⭐ 判据二之 b（**另存为**，2026-10-31）：装配期**有**目标路径时按「另存为」
+/// 仍然**必须**问一次对话框，并把后续「保存」**改道**到新文件。
+///
+/// # 判定量
+///
+/// * 按下另存为之前：`choose_save` 被调用 **0** 次；
+/// * 按下之后：恰 **1** 次（`title == "另存为"`、`file_name == Some("project.yeban")`、
+///   `extensions == ["yeban"]`）；新路径上**真的**出现了一个能读回的容器；
+///   装配期那个旧文件的字节**一个都没变**（⛔ 另存为丢掉了"新位置"这件事就不叫另存为）；
+/// * 随后再按「保存」（`invoke_save_project`）：对话框**仍然只有 1 次**（不重复问），
+///   并且**新**路径上重新出现了文件（＝当前目标已切到新文件）；旧文件仍一位未动。
+///
+/// # 怎么变红
+///
+/// * `wire_save` 里不给 `on_save_project_as` 接线（回调空转）⇒ `calls == 0`、新文件不存在；
+/// * 另存为走"装配期目标优先"⇒ 新文件不存在 / 旧文件被改写 ⇒ 第一段红；
+/// * 另存为之后不把挑中的路径记成当前目标 ⇒ 第二段红（保存写回旧文件、新文件没有回来）。
+#[test]
+fn saving_as_asks_the_picker_and_retargets_subsequent_saves() {
+    let dir = scratch("save-as");
+    let original = dir.join("original.yeban");
+    let target = dir.join("picked-as.yeban");
+    // 装配期目标先放一段**哨兵字节**：判据只需要"它一位没变"这个读数。
+    std::fs::write(&original, b"assembly-time-target").expect("写哨兵文件");
+    assert!(!target.exists(), "夹具前提：另存为的目标一开始不该在");
+
+    let picker = ScriptedPicker::answering_save(&target);
+    let (_tier1, ui, project) = production_window();
+    let port = Rc::new(UndoPort::new(
+        UndoSession::open("<判据 save-as>", "yeban-app", project.clone(), NOW_MS)
+            .expect("打开撤销会话"),
+    ));
+    // 装配期**有**目标路径 ⇒ 这正是"保存不弹窗、另存为要弹窗"的那一档。
+    yeban_app::host::wire_save(
+        &ui,
+        yeban_app::host::SaveStatus {
+            target: Some(original.clone()),
+            project,
+        },
+        Some(Rc::clone(&port)),
+        Rc::clone(&picker) as Rc<dyn FilePicker>,
+        None,
+    );
+    let sentinel = std::fs::read(&original).expect("读哨兵文件");
+    assert_eq!(
+        picker.call_count("save"),
+        0,
+        "⛔ 还没按另存为就不该开对话框"
+    );
+
+    ui.invoke_save_project_as();
+
+    let request = picker
+        .last_request("save")
+        .unwrap_or_else(|| panic!("⭐ 另存为**必须**问一次对话框（实得 0 次）"));
+    report_line(&format!(
+        "[file-picker/save-as] choose_save 调用 {} 次；title={:?} file_name={:?} \
+         extensions={:?}；脚本回: {}；save-status={:?}",
+        picker.call_count("save"),
+        request.title,
+        request.file_name,
+        request.extensions,
+        target.display(),
+        ui.get_save_status().to_string(),
+    ));
+    assert_eq!(picker.call_count("save"), 1, "一次另存为 = 恰一次对话框");
+    assert_eq!(request.title, "另存为");
+    assert_eq!(request.file_name.as_deref(), Some("project.yeban"));
+    assert_eq!(request.extensions, vec!["yeban".to_owned()]);
+    assert!(
+        ui.get_save_succeeded(),
+        "另存为必须成功（状态文本 {:?}）",
+        ui.get_save_status().to_string()
+    );
+    assert!(target.exists(), "⭐ 另存为挑中的路径必须真的被写出来");
+    let read_back = yeban_app::open::open_project_file(&target).expect("写出去的容器必须读得回");
+    assert_eq!(
+        read_back.tracks.len(),
+        port.project().tracks.len(),
+        "读回来的轨道数必须与保存的那一份一致"
+    );
+    assert_eq!(
+        std::fs::read(&original).expect("读哨兵文件"),
+        sentinel,
+        "⛔ 另存为不许碰装配期那个旧文件"
+    );
+
+    // ② 另存为之后按「保存」⇒ 写的是**新**文件，且**不**再问对话框。
+    std::fs::remove_file(&target).expect("先移除新文件，才能证明它被重新写出来");
+    ui.invoke_save_project();
+    report_line(&format!(
+        "[file-picker/save-as] 再保存: choose_save 调用 {} 次；新文件存在={}；旧文件字节 {} B",
+        picker.call_count("save"),
+        target.exists(),
+        std::fs::metadata(&original).map(|m| m.len()).unwrap_or(0),
+    ));
+    assert_eq!(
+        picker.call_count("save"),
+        1,
+        "⛔ 当前目标已经有了（另存为挑的）⇒ 保存不得再问对话框"
+    );
+    assert!(
+        target.exists(),
+        "⭐ 另存为之后的保存必须写回**新**文件（当前目标已切换）"
+    );
+    assert_eq!(
+        std::fs::read(&original).expect("读哨兵文件"),
+        sentinel,
+        "⛔ 另存为之后的保存仍不得碰旧文件"
     );
 
     std::fs::remove_dir_all(&dir).ok();

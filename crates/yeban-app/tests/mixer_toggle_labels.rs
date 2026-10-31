@@ -109,15 +109,24 @@ fn names_a_view(literal: &str) -> bool {
 
 /// 判据（**读实现里的字面量 + 入口的数量**）。
 ///
-/// 四条子路径：
-/// 1. `wire_mixer_switch` 的两个 match 臂各自给出一条 `commit_ops` 消息，两条都必须**不是**
-///    `"<视图>: <动作>"` 形状（缺陷的字面形态）—— 去掉来源前缀之后，这条标签在两个入口下都成立；
+/// 五条子路径：
+/// 1. 两条提交消息**只有一处定义**（`fn mixer_switch_commit_message`，三个入口共用：
+///    调音台通道条 / 编曲视图轨道头 / 键盘 `M`·`S`），且两条都必须**不是**
+///    `"<视图>: <动作>"` 形状（缺陷的字面形态）—— 去掉来源前缀之后，这条标签在每个入口下都成立；
 /// 2. 两个标签必须**逐字不同**（静音与独奏是两条不同的历史，共用一条会把两者混成一件事）；
 /// 3. 每条标签必须带上它真正改的字段名（`mute` / `solo`）—— 中性不等于含糊，撤销树要让用户
 ///    看出这一步改了什么；
-/// 4. 两个入口**今天真的都在**：`arrangement_view.slint` 的轨道头点击经 `app.slint` 转到
+/// 4. 两个鼠标入口**今天真的都在**：`arrangement_view.slint` 的轨道头点击经 `app.slint` 转到
 ///    **同一个** `mixer-mute-toggle` / `mixer-solo-toggle`。没有这一条，本判据钉的是一条
-///    不存在的冲突（"假问题"）。
+///    不存在的冲突（"假问题"）；
+/// 5. 两个鼠标入口与键盘臂都**真的调**那个共用定义点（否则收拢只是把字面量挪个地方，
+///    谁都可以绕开它各写一份）。
+///
+/// ⚠ **扫描区间自 2026-10-31 起从 `wire_mixer_switch` 挪到共用定义点**：键盘入口
+/// （`Action::ToggleTrackMute` / `ToggleTrackSolo`）也要长出**同一条**撤销标签，
+/// 若把它复制进 `apply_action` 的臂里就成了第二份字面量。因此字面量收进
+/// `mixer_switch_commit_message`，本判据改扫它，并**另加一条**"两个鼠标入口都调它"
+/// 的结构断言（否则收拢之后谁都可以绕开它）。
 ///
 /// ## 代理指标的局限（如实说出）
 ///
@@ -132,15 +141,21 @@ fn the_two_mixer_toggle_labels_do_not_name_a_view() {
     let host = code_only(&read("src/host.rs"));
     // 结束锚点必须是**代码**行：`code_only` 去掉了全部 `//` 注释（含文档注释），
     // 因此 `/// …` 形状的锚点在它上面永远找不到。
-    let wire = block(&host, "fn wire_mixer_switch(", "fn read_strings(");
+    let wire = block(
+        &host,
+        "fn mixer_switch_commit_message(",
+        "fn wire_mixer_master_switch(",
+    );
 
-    // 两个臂的消息是**整行就是那一个字面量**的两行（`"…",` 形状）。
+    // 每个臂的消息是**该行最后一个字面量、后面只剩一个逗号**的那一行
+    // （`"…",` 与 `Arm => "…",` 同款）：两种写法都是"这一行只为给出这条消息"。
+    // 收拢到函数之后臂写在同一行，因此不再要求字面量必须在行首。
     let labels: Vec<&str> = wire
         .lines()
         .filter_map(|line| {
             let trimmed = line.trim();
-            let rest = trimmed.strip_prefix('"')?;
-            let (literal, tail) = rest.split_once('"')?;
+            let start = trimmed.find('"')?;
+            let (literal, tail) = trimmed[start + 1..].split_once('"')?;
             if tail.trim() == "," {
                 Some(literal)
             } else {
@@ -151,7 +166,7 @@ fn the_two_mixer_toggle_labels_do_not_name_a_view() {
     assert_eq!(
         labels.len(),
         2,
-        "`wire_mixer_switch` 今天必须恰好给出两条提交消息（静音 / 独奏），实际 {labels:?}"
+        "`mixer_switch_commit_message` 今天必须恰好给出两条提交消息（静音 / 独奏），实际 {labels:?}"
     );
     assert_ne!(
         labels[0], labels[1],
@@ -171,6 +186,32 @@ fn the_two_mixer_toggle_labels_do_not_name_a_view() {
     assert!(
         labels.iter().any(|label| label.contains("solo")),
         "独奏开关的标签必须带上它真正改的字段名 `solo`（中性不等于含糊）: {labels:?}"
+    );
+
+    // ---- 收拢之后的结构防线：两个鼠标入口都必须**调**那个共用定义点 ----
+    // 只扫定义点还不够 —— 谁都可以在入口里写回一份新字面量绕开它。因此这里逐个入口
+    // 检查函数体里真的出现 `mixer_switch_commit_message(`。区间结束于 `fn read_strings(`
+    // （两者都在它之前），没有借用"下一个函数"的脆弱假设。
+    for entry in ["fn wire_mixer_master_switch(", "fn wire_mixer_switch("] {
+        let body = block(&host, entry, "fn read_strings(");
+        assert!(
+            body.contains("mixer_switch_commit_message("),
+            "`{entry}` 必须经共用定义点 `mixer_switch_commit_message` 取撤销标签\
+             （⛔ 不再自己写字面量，否则标签的第二份就藏在这里）"
+        );
+    }
+
+    // ---- 键盘入口（`M` / `S`）也必须经同一个定义点拿标签 ----
+    // 区间是两个相邻且稳定的 match 臂标签：起于键盘臂，止于下一个臂 `ZoomToSelection`。
+    let keyboard_arm = block(
+        &host,
+        "Action::ToggleTrackMute | Action::ToggleTrackSolo =>",
+        "Action::ZoomToSelection | Action::ZoomToFit =>",
+    );
+    assert!(
+        keyboard_arm.contains("mixer_switch_commit_message("),
+        "`apply_action` 的键盘臂必须经 `mixer_switch_commit_message` 拿撤销标签\
+         （⛔ 不在这里补第二份字面量 —— 同一种编辑在撤销树里必须同一种标签）"
     );
 
     // ---- 路径 4：两个界面入口今天都在（否则本判据钉的是一条不存在的冲突） ----
