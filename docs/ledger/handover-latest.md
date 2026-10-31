@@ -12,6 +12,28 @@
 > `docs/ledger/phase-status.md` 的叙事条目**停在 R1144**（2026-10-26）⇒ ⭐ 读进度以
 > `DEVELOPMENT_LEDGER.md` 的尾部为准，⛔ 不要以为 R1144 之后没干活。
 
+### 0.6.0u ⭐ 尾批（2026-10-31 19:00）：`verify/audio_pins.py` 由「只打印」改成「断言＋退出码」并接进 CI `checks` —— §0.6.0t 末尾那句「属另一族、已登记未动」的一半**当场兑现**
+
+- **缺口（§20.6 登记的原话）**：`crates/yeban-mcp/verify/audio_pins.py` 全库只有文档与注释引用、
+  **无 CI 调用**，本机实跑 `ModuleNotFoundError: No module named 'numpy'` ⇒「三个钉死摘要是独立
+  推导出来的」这句话在门禁上无法判真假。
+- **修法（两件事一起做，缺一就还是空转）**：① 脚本改**纯标准库** —— `f32()` 用 `struct` 往返
+  实现 IEEE-754 binary32 的 round-to-nearest-even（与 Rust `f32` 四则同语义），⛔ 不为一条
+  复算脚本让门禁机器装第三方包；② 三个摘要（`PINNED_MASTER_DIGEST` / `PINNED_PAYLOAD_SHA256` /
+  `PINNED_FILE_SHA256`，源 `crates/yeban-mcp/tests/render_audio_clips.rs` 判据 6）改为
+  **逐字相等断言＋非零退出码**，现读 201 行 / `assert` 5 处。
+- **接线位置有讲究**：放 `.github/workflows/ci.yml:196` 的 `checks` 作业（fmt／红线守卫／schema
+  那一条），⛔ 不放 rust 矩阵腿 —— 它不编译任何 crate，因此**零依赖**、跑得早、失败即红。
+- **判决**：线 `b13b8c91`／run `41182573360` **success**（`checks`／`plan`／`lockfile`／`deny`／
+  `rust (workspace 全量)`／`windows`／`macos` 七条真腿全 success，矩阵腿 `skipped` 是 plan 返回
+  `workspace_wide` 的既有形态）；merge `76c33548`／run `41186793513` **success**（全量腿
+  **45m18s**，windows 39m43s、macos 26m26s）。工作树已拆（分支 `line/s22-audio-pins-assert` 保留）。
+- **同族余下**：`e2e_audio_clip_seed.py`（178 行／`assert` 0）／`idempotency_replay_schema.py`
+  （202 行／`assert` 0）／`e2e_audio_clip_stdio.sh`（144 行）**仍无执行者**，但它们⛔ 不是
+  `audio_pins.py` 那一类 —— 前两条要**真二进制** `target/debug/yeban-mcp`，
+  `idempotency_replay_schema.py` 还要 `jsonschema`（正是 §20.6 那句"第三方依赖"）⇒ 照搬会造假绿，
+  已单独登记成 s25 候选（接 CI 的 **e2e** 作业，那里已有构建产物）。
+
 ### 0.6.0t ⭐ 尾批（2026-10-31 15:10）：`verify/render_pure.rs` 同族开环清零 —— **`crates/*/verify/*.rs` 三份脚手架现在全有 cargo 门禁执行面**；顺手记下 `-D rust-2018-idioms` 这条隐性门槛
 
 - **缺口**：`crates/yeban-mcp/verify/render_pure.rs` 是零依赖 `rustc --test` 脚手架（`#[path]` 引**真实源**
