@@ -8527,25 +8527,27 @@ fn apply_action(
             true
         }
         // `Escape` = **收尾**：取消当前手势（`ADR-0004` S1 的纵向拖拽 / `ADR-0005` 的
-        // 推子与声相），或关闭全屏时光机（`[UI-A11Y-003]` §7.3）。
+        // 推子与声相），或关闭模态面板（时光机与导出设置弹窗；`[UI-A11Y-003]` §7.3）。
         //
-        // 六个来源各自独立、各自有唯一清零点，因此这里**都问一遍**（任一命中即消费）：
+        // 七个来源各自独立、各自有唯一清零点，因此这里**都问一遍**（任一命中即消费）：
         // 1. 时光机开着 ⇒ 落 [`UiAction::CloseUndoTree`]（**只改界面运行态**，不碰工程）；
-        // 2. 纵向拖拽在手 ⇒ 落 [`cancel_track_height_drag`]（写回起点高度）；
-        // 3. 混音手势在手 ⇒ 落窗口回调 `mixer-cancel-gesture` → [`cancel_mixer_gesture`]
+        // 2. 导出设置弹窗开着 ⇒ 落窗口回调 `close-export-wav`（**只改视图态**，⛔ 不落盘、
+        //    ⛔ 不碰工程）；
+        // 3. 纵向拖拽在手 ⇒ 落 [`cancel_track_height_drag`]（写回起点高度）；
+        // 4. 混音手势在手 ⇒ 落窗口回调 `mixer-cancel-gesture` → [`cancel_mixer_gesture`]
         //    （写回起点音量 / 声相）；
-        // 4. `[UI-NOTE-003]` 卷帘音符移动手势在手 ⇒ 落 [`cancel_note_drag`]
+        // 5. `[UI-NOTE-003]` 卷帘音符移动手势在手 ⇒ 落 [`cancel_note_drag`]
         //    （**丢弃草稿**；拖动期从未写进工程 ⇒ ⛔ 不提交、⛔ 不重投影）；
-        // 5. `[UI-NOTE-003]` 卷帘**力度**手势在手 ⇒ 落 [`cancel_velocity_drag`]
+        // 6. `[UI-NOTE-003]` 卷帘**力度**手势在手 ⇒ 落 [`cancel_velocity_drag`]
         //    （同上：只丢弃草稿；两个卷帘手势互斥，但两条清零各自独立 ⇒ 谁也不会漏收尾）；
-        // 6. 编曲**剪辑平移**手势在手 ⇒ 落 [`cancel_clip_drag`]（同上：只丢弃草稿）。
+        // 7. 编曲**剪辑平移**手势在手 ⇒ 落 [`cancel_clip_drag`]（同上：只丢弃草稿）。
         //
         // 顺序是**决定**，不是巧合：模态面板在最前面，因此"手势还在手"时按 `Escape`
-        // 先关时光机（与 `[UI-A11Y-003]` 的模态语义同向）。六条各自独立：关掉时光机
+        // 先关模态（与 `[UI-A11Y-003]` 的模态语义同向）。七条各自独立：关掉时光机
         // **不会**顺带取消手势（用户还要按第二次 `Escape`），没有手势在手也不会把
         // 关闭动作算作"已收尾"。
         //
-        // 六条都没有命中时返回 `false`（照旧放行给焦点系统）—— 与 `Escape` 接线之前
+        // 七条都没有命中时返回 `false`（照旧放行给焦点系统）—— 与 `Escape` 接线之前
         // 的行为逐位相同。这里**没有**新增 `Action` 变体：`Action::Cancel` 本来就在
         // 策略表里（`input.rs` 的 `Key::Escape => Resolution::Action(Action::Cancel)`），
         // 它此前只是没有落地实现（`action_has_implementation` 把它列在未实现里）。
@@ -8565,11 +8567,28 @@ fn apply_action(
                 refresh_undo_window(ui, port, false);
                 return true;
             }
+            // ⭐ **导出设置弹窗**（`ui/dialogs/export_wav_dialog.slint`）此前**只有**一条
+            // 出路：鼠标点「✕ 关闭」（`export-wav-close-button`）。它盖住整帧（遮罩
+            // `mask-black @ 0.65`），而 `Escape` 是这一类面板的收尾键 —— 时光机那一半
+            // 已经接了，这一半漏了。
+            //
+            // ⚠ 这里**只触发**那条既有回调，⛔ 不在键盘臂再写一次那个属性的 setter：
+            // 它的写者必须**恰好**是「打开」「关闭」那两处（`wire_module_actions_with_capture`），
+            // 多一处就是第二个真相源（同一条纪律见 `tests/ui_export_dialog.rs` 判据 ⑤ 与
+            // 抽屉那批 `set_musical_pr_*` 唯一写者判据）。`close-export-wav` 的注册者也
+            // **只有一个**，因此键盘与鼠标落的是**同一条**路 ⇒ 不可能分叉。
+            //
+            // ⚠ **前置**只有"弹窗开着"这一格：本动作**不**校验路径 / 选项，也**不**导出、
+            // **不**写盘、**不**碰工程 —— 关闭是纯视图态（与那条回调逐字同语义）。
+            if ui.get_export_wav_open() {
+                ui.invoke_close_export_wav();
+                return true;
+            }
             let height = cancel_track_height_drag(ui, undo);
             let mixer = ui.invoke_mixer_cancel_gesture();
             let note = cancel_note_drag(ui);
             let velocity = cancel_velocity_drag(ui);
-            // 6. 编曲剪辑平移手势在手 ⇒ 落 [`cancel_clip_drag`]（丢弃草稿、⛔ 不提交）。
+            // 7. 编曲剪辑平移手势在手 ⇒ 落 [`cancel_clip_drag`]（丢弃草稿、⛔ 不提交）。
             let clip = cancel_clip_drag(ui);
             height || mixer || note || velocity || clip
         }
@@ -8806,6 +8825,54 @@ fn apply_action(
                 .commit_ops(now_ms(), "resize selection duration", ops)
                 .is_err()
             {
+                return false;
+            }
+            refresh_undo_window(ui, port, true);
+            true
+        }
+        // `Cmd/Ctrl+Alt+方向`：微调**当前选中轨**的音量 / 声相。
+        //
+        // 语义（六条都是决定，不是意外）：
+        // 1. 作用域的事实源是界面属性 `selected-track-id`（唯一写者 [`wire_track_select`]，
+        //    唯一读点 [`selected_track_id`]）—— 与 `device_rack.slint` 用的是**同一个**选中态，
+        //    ⛔ 不新增第二份"当前轨"；
+        // 2. 一格幅度由 [`mixer_nudge_delta_for`] **唯一**换算，夹紧与 `Op` 形状由
+        //    [`mixer_nudge_ops_for`] 一次决定（纯函数、可单独判据）；
+        // 3. **没有撤销端口 / 没有选中轨 / 身份已不在工程里 / 已在量程端点 ⇒ 返回 `false`**
+        //    （不吞键）。与 `NudgeSelection` / `ResizeSelectionDuration` 的空前置条件同一取向；
+        //    特别注意**陈旧选中态**：换工程之后 `selected-track-id` 还留着上一个工程的身份，
+        //    这里不猜"大概是第一条轨"，什么都不做；
+        // 4. 一次按键 = **一次** `commit_ops` = 一步撤销（`undo_session::commit` 把它包成
+        //    一个 `Op::Batch`）。键重复是**多个**离散事件 ⇒ 每档各自一步，可逐档撤销；
+        // 5. 走的 `Op` 与鼠标拖动**完全相同**（`Op::SetParam { TrackVolume | TrackPan }`），
+        //    因此撤销栈里"拖动改的"与"键盘改的"没有两种形状；
+        // 6. 提交后**重新投影**：推子帽与 `PAN …` 读数是从工程算出来的，不重投影就是
+        //    "数值动了、推子还在老地方"（与 [`wire_mixer_edit`] 的松手提交同一条收尾）。
+        //
+        // ⚠ **不含主控通道条**（本票的边界，登记在 `docs/ledger/app-mixer-notes.md`）：
+        // 主总线**不在**注入给界面的 `track-ids` 里，因而**没有**点击源可写 `selected-track-id`
+        // ⇒ "当前选中轨"今天永远不可能是主总线。要让它也能微调，需要先决定"主控怎样被选中"
+        // （一个新的可见状态 ＋ 一个点击源），那是另一票。
+        Action::NudgeMixerChannel { param, direction } => {
+            let Some(port) = undo else {
+                return false;
+            };
+            let Some(track_id) = selected_track_id(ui) else {
+                return false;
+            };
+            let Some(project) = port.try_project() else {
+                return false;
+            };
+            let ops = mixer_nudge_ops_for(&project, &track_id, param, direction);
+            if ops.is_empty() {
+                // 身份已不在工程里 / 已在量程端点 ⇒ 没有可停靠的编辑，如实不消费。
+                return false;
+            }
+            let label = match param {
+                crate::input::MixerParam::Volume => "mixer: nudge track volume",
+                crate::input::MixerParam::Pan => "mixer: nudge track pan",
+            };
+            if port.commit_ops(now_ms(), label, ops).is_err() {
                 return false;
             }
             refresh_undo_window(ui, port, true);
@@ -9551,6 +9618,99 @@ pub fn duplicate_ops_for(
         }
     }
     ops
+}
+
+/// `Cmd/Ctrl+Alt+方向`：一格混音微调的**幅度**（音量 1.0 dB / 声相 0.1，唯一换算点）。
+///
+/// 为什么是这两个数（不是"随便挑一档"）：
+/// - **音量 1.0 dB**：推子的显示精度是 `{:.1}` dB（`bridge.rs:5007` 的
+///   `volume_display: format!("{:.1}", track.volume_db)`，⚠ 显示是**有损**的，因此它是
+///   "用户看得见的格"的定义而非存储精度），所以 1.0 dB 是"按一次、界面上的数一定变"的
+///   最小整数档；比它细（0.1 dB）按一次读数可能不动，用户无从判断键有没有生效；
+/// - **声相 0.1**：声相读数按千分之一取整再除以 10（[`crate::bridge::pan_display`]），
+///   所以 0.1 = **恰好一个显示格**（`C` → `R10`）。0.01 会显示成"按了没反应"。
+///
+/// `direction` 只取**符号**（`signum()`）⇒ `direction == 0` 得到 `0.0`，调用方据此不提交
+/// （与 [`nudge_delta_for`] 同一口径：状态机不产出 0 方向，但纯函数不许假设）。
+#[must_use]
+pub fn mixer_nudge_delta_for(param: crate::input::MixerParam, direction: i8) -> f32 {
+    use crate::input::MixerParam;
+    let step = match param {
+        // 字面量是**这里**唯一的定义：判据 `mixer_nudge_delta_is_one_display_step_per_param`
+        // 直接钉这两个数，改任一档 ⇒ 判据红（⛔ 不在别处再写第二份"一格是多少"）。
+        MixerParam::Volume => 1.0,
+        MixerParam::Pan => 0.1,
+    };
+    step * f32::from(direction.signum())
+}
+
+/// `Cmd/Ctrl+Alt+方向`：把"选中轨 + 动哪一格 + 往哪个方向"解析成待提交的
+/// **`Op::SetParam` 集合**（纯函数，有判据）。
+///
+/// # 与鼠标拖动这一路**共用**同一条提交通道
+///
+/// 拖动臂（[`wire_mixer_edit`]）走的是 `Op::SetParam { TrackVolume | TrackPan }`，
+/// 键盘这一路走的是**同一个 `Op`、同一对量程**，所以两条入口写进工程的数没有第二种形状。
+/// 唯一的区别是**作用域来源**：拖动由指针下的通道条**下标 / 身份**决定，键盘由
+/// `selected-track-id`（视图态，唯一写者 [`wire_track_select`]）决定。
+///
+/// # 三条"什么都不提交"（返回空 `Vec`）
+///
+/// 1. 身份文本解析不出 `EntityId`，或该身份**不在**当前工程里（换工程 / 控制面关工程
+///    ⇒ 陈旧选中态。与本文件私有的 `mixer_track_state` 同一取向：不猜，什么都不做）；
+/// 2. 已经在量程端点上（`+` 到顶 / `-` 到底）⇒ 夹紧后 `new_val` 与 `old_val` **逐位**相同，
+///    不写一步什么都没改的撤销。逐位而不是 `==`：`-0.0 == 0.0` 会真，而
+///    `ops.rs` 的 `same_f32` 用位比较 ⇒ 用 `==` 会让"提交必被模型拒绝"的空 op 溜进来；
+/// 3. `direction == 0`（增量 0.0，同第 2 条）。
+///
+/// # 量程 = 推子与声相**各自能表示的区间**（不是模型的区间）
+///
+/// `old + Δ` 先夹到 `[crate::bridge::FADER_MIN_DB, FADER_MAX_DB]`（音量）或
+/// `-1.0..=1.0`（声相，与 [`dragged_pan`] 夹紧的是同一条口径）。⚠ 模型对
+/// `TrackVolume` **不设量程**（`validate_param_value` 只查有限值，`ops.rs:3454-3463`），
+/// 只有声相查 `PanOutOfRange` ⇒ 音量的夹取是**界面**的决定：键盘不该造出一个推子拖不到、
+/// 控件树上 `accessible-value-minimum/-maximum` 也表达不了的数。
+#[must_use]
+pub fn mixer_nudge_ops_for(
+    project: &yeban_model::YebanProjectV1,
+    selected_track_id: &str,
+    param: crate::input::MixerParam,
+    direction: i8,
+) -> Vec<yeban_model::ops::Op> {
+    use crate::input::MixerParam;
+    let Ok(track_id) = selected_track_id.parse::<yeban_model::EntityId>() else {
+        return Vec::new();
+    };
+    let Some(track) = project.tracks.get(&track_id) else {
+        return Vec::new();
+    };
+    let (old_val, new_val, target) = match param {
+        MixerParam::Volume => {
+            let old_val = track.volume_db;
+            (
+                old_val,
+                (old_val + mixer_nudge_delta_for(param, direction))
+                    .clamp(crate::bridge::FADER_MIN_DB, crate::bridge::FADER_MAX_DB),
+                yeban_model::AutomationTarget::TrackVolume { track_id },
+            )
+        }
+        MixerParam::Pan => {
+            let old_val = track.pan;
+            (
+                old_val,
+                (old_val + mixer_nudge_delta_for(param, direction)).clamp(-1.0, 1.0),
+                yeban_model::AutomationTarget::TrackPan { track_id },
+            )
+        }
+    };
+    if new_val.to_bits() == old_val.to_bits() {
+        return Vec::new();
+    }
+    vec![yeban_model::Op::SetParam {
+        target,
+        old_val,
+        new_val,
+    }]
 }
 
 /// `[UI-NOTE-005]` §3.5 项 1–2：一档**步长 + 方向** ⇒ `(delta_tick, delta_pitch)`（唯一换算）。

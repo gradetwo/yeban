@@ -293,6 +293,7 @@ lib 目标，我把探针扩成 lib(OFF)/lib(ON)/单元判据三步 —— 第�
 | 7 | **`.yeban` 的 `history.dag` 内容** | `force_save` 写出**空字节**的 `history.dag`（容器布局要求该条目存在）；提交图谱的权威内容属 `yeban-model::commit` | `yeban-model` / 提交图谱切片 |
 | 8 | **没有开声卡** | `EngineHost` 不调用 `yeban_engine::device`；`process_quantum` 由控制面/测试线程显式驱动（它是 cpal 回调会调的**同一个函数**，但"由回调驱动"未接线） | 红线 6 + D19 的设备裁决；需要非默认 feature 与集成者的 CI 步骤 |
 | 9 | **控制面不进发行路径** | `main.rs` 事件循环一行未动（`live-port-notes.md` §7.2 的边界沿用） | 集成者（`.github/**` 独占） |
+| 10 | **键盘微调混音的三处边界**（`line/mixer-keyboard-nudge`，2026-10-30） | **先说性质**：`[UI-NOTE-005]` §3.5 的四条项**只点名音符**（实测该文档 213-217 行无"音量 / 声相 / 推子"），⇒ 本切片是**界面决定**（补"调音台只能靠鼠标拖"的缺口），⛔ 不是规范条文的落地。**已实现的那半**：`Cmd/Ctrl+Alt+↑/↓` = 选中轨音量 ±1.0 dB、`Cmd/Ctrl+Alt+←/→` = 选中轨声相 ±0.1（一格 = 一个显示格，`host::mixer_nudge_delta_for` 是唯一换算点）；走的 `Op` 与第 3 行的鼠标拖动**完全相同**（`Op::SetParam { TrackVolume \| TrackPan }`）⇒ 撤销栈里两种入口没有两种形状。**仍未实现**：① **主控通道条**（`mixer-master-*`）碰不到 —— 主总线**不在**注入给界面的 `track-ids` 里 ⇒ 没有任何点击源能写 `selected-track-id`，所以"当前选中轨"今天永远不可能是主总线。要补得先裁决"主控怎样被选中"（一个新的可见状态 ＋ 一个点击源）；② **静音 / 独奏没有键盘入口** —— 布尔开关没有"一格"可言，键盘入口应是**拨动**而不是微调，与微调族不同型（屏读器落点 `track-{i}-mute-button` / `track-{i}-solo-button` / `track-{i}-mixer-*-button` 今天已存在）；③ **`Alt+↑/↓` 与 `Cmd/Ctrl+←/→` 仍是放行** —— 那是 `[UI-NOTE-005]` §3.5 之外的组合，规范没点名 ⇒ 判据 `arrow_keys_resolve_to_the_four_spec_nudge_steps` 把它们钉成 `PassThrough`，本切片**没有**去占用（不覆盖既有键语义） | ① 需要先有"主总线可被选中"的界面决定（属界面裁决，不是引擎）；② 属另一票（键盘拨动静音 / 独奏，走的 `Op` 是 `SetTrackMute` / `SetTrackSolo`）；③ 属规范缺口，若人类裁决要给这两个组合分配语义，走 `docs/adr/` |
 
 ---
 
