@@ -3532,7 +3532,7 @@ pub struct ShortcutRow {
 /// 每一项把**规范写法**、**动作**、**键位**与**落地状态**放在一起。这张表的**意义**是
 /// 让策略表的判定结果可被人与 CI 直接阅读 —— 尤其是 `[UI-A11Y-002]` 的 IME 分支,
 /// 以及"规范点名了、本版本还没做"的那一列（见 [`UNIMPLEMENTED_MARKER`]）。
-const SHORTCUTS: [ShortcutRow; 42] = [
+const SHORTCUTS: [ShortcutRow; 43] = [
     ShortcutRow {
         label: "Space → 播放/暂停",
         action: Action::PlayPause,
@@ -3843,7 +3843,7 @@ const SHORTCUTS: [ShortcutRow; 42] = [
     //
     // 与上面两条的关系：裸 `S` 是独奏 ⇒ 保存**必须带** `Cmd/Ctrl`；这一格此前落到
     // `PassThrough`（`command()` 分支里 `s` 一条都没有），因此加它不动任何既有绑定。
-    // `Cmd/Ctrl+Shift+S` / `Cmd/Ctrl+Alt+S` 仍放行（"另存为"是另一票界面决定）。
+    // `Cmd/Ctrl+Shift+S` 自 2026-10-31 起是**另存为**（下一条），`Cmd/Ctrl+Alt+S` 仍放行。
     // 落点是**既有**的 `save-project` 回调（`host::wire_save` → `save_action::dispatch_save`），
     // 与 transport 的「保存」按钮、与「换工程前先保存」是同一个入口。逐条理由见
     // `Action::SaveProject` 的文档；登记在 `docs/ledger/app-cli-notes.md` §5.4。
@@ -3852,6 +3852,20 @@ const SHORTCUTS: [ShortcutRow; 42] = [
         action: Action::SaveProject,
         key: PhysicalKey::KeyS,
         modifiers: Modifiers::meta(),
+        implemented: true,
+    },
+    // ⭐ **界面决定**（⛔ 不是规范点名）：标准 DAW 的另存为键 `Cmd/Ctrl+Shift+S`。
+    //
+    // 三条事实：裸 `S` 是独奏、`Cmd/Ctrl+S` 是保存（都已在表里）⇒ 另存为只能占
+    // `Shift` 变体；该格此前落到 `PassThrough`（判据如实钉着）；`Cmd/Ctrl+Alt+S`
+    // 仍放行。落点是 `host::wire_save` 注册的 `save-project-as` 回调 —— 问一次对话框，
+    // 把选中的路径记成当前目标，再进**同一条** `dispatch_save`。逐条理由见
+    // `Action::SaveProjectAs` 的文档；登记在 `docs/ledger/app-cli-notes.md` §5.4。
+    ShortcutRow {
+        label: "Cmd/Ctrl+Shift+S → 另存为",
+        action: Action::SaveProjectAs,
+        key: PhysicalKey::KeyS,
+        modifiers: Modifiers::ctrl_shift(),
         implemented: true,
     },
     // ⭐ **界面决定**（⛔ 不是规范点名）：标准 DAW 的打开键 `Cmd/Ctrl+O`。

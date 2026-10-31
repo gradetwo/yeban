@@ -548,6 +548,12 @@ export component MainWindow inherits Window {
     // 并把它说的**原话**写回 `save-status`（下面的 `in-out property`）。
     // 界面**不**自己写盘、也不自己做"保存成功了吗"的判断。
     callback save-project();
+    // ⭐ **另存为**（`Cmd/Ctrl+Shift+S`，界面决定，⛔ 规范未点名）：**只有键盘入口**，
+    // 界面上没有对应的按钮 ⇒ 它不画任何东西、也不改变默认帧。落点是宿主
+    // `host::wire_save_with_engine` 里与 `save-project` **同一个**闭包链：
+    // 先问一次保存对话框（`FilePicker::choose_save`，"另存为"），选中后把路径记成
+    // 本会话的**当前目标**，再走**同一条** `dispatch_save`。取消 ⇒ 一位不动、不写回执。
+    callback save-project-as();
     // 走带区「回滚到上一个 Commit」—— 原样上抛给宿主（`host::wire_undo` 落到
     // `UiAction::Undo`）。界面不判"有没有可撤销的编辑"，那是撤销会话的读数。
     callback revert-to-last-commit();

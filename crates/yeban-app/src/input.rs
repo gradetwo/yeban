@@ -701,14 +701,36 @@ pub enum Action {
     ///
     /// 1. 裸 `S` 已是 [`Self::ToggleTrackSolo`]（2026-10-31），故本键**必须带修饰**；
     /// 2. `Cmd/Ctrl+S` 此前落到 `_ => PassThrough`（`input.rs` 的策略表里 `s` 只有裸键一格），
-    ///    加它**不覆盖**任何既有绑定；`Cmd/Ctrl+Shift+S` / `Cmd/Ctrl+Alt+S` 仍放行
-    ///    （"另存为"要一套新的界面决定，⛔ 不在这里顺手发明）；
+    ///    加它**不覆盖**任何既有绑定；`Cmd/Ctrl+Alt+S` 仍放行。`Cmd/Ctrl+Shift+S`
+    ///    2026-10-31 起是 [`Self::SaveProjectAs`]（同一条命令的"另存为"形态），两格互不相干；
     /// 3. 文本框聚焦时整体放行（策略表第 2 步）—— 与 `Cmd/Ctrl+Z` 同一口径：
     ///    输入框里的 `Cmd/Ctrl+S` 属于文本控件，不属于 DAW。
     ///
     /// ⚠ 保存的**结果**（成功 / 被锁拒绝 / 取消）由 `save-status` 如实回报（屏读器可达），
     /// 本动作只负责"按到那**一个**保存入口"。
     SaveProject,
+    /// `Cmd/Ctrl+Shift+S`: **另存为**（标准 DAW 习惯键，**界面决定**，⛔ 不是规范点名）。
+    ///
+    /// 落点是 `host::apply_action` 的同一个臂 ⇒ `ui.invoke_save_project_as()` ⇒
+    /// `host::wire_save` 注册的**同一条**保存链：先问一次可注入的
+    /// `FilePicker::choose_save`（标题"另存为"），选中后把这个路径记成**本会话的当前
+    /// 目标**，再走**同一个** `dispatch_save`（⛔ 不另写一条保存 / 序列化路径）。
+    /// 于是"另存为之后按 `Cmd/Ctrl+S` 写的是**新**文件"—— 与用户对标准 DAW 的预期一致；
+    /// 装配期目标（`SaveStatus::target`）因此在本动作之后不再是"当前目标"。
+    ///
+    /// ## 键位（三条事实，⛔ 不猜）
+    ///
+    /// 1. 裸 `S` 是 [`Self::ToggleTrackSolo`]、`Cmd/Ctrl+S` 是 [`Self::SaveProject`]
+    ///    （都于 2026-10-31 落地）⇒ `Shift` 变体**必须**作为第三种形态出现，否则
+    ///    "另存为"没有可用键；
+    /// 2. `Cmd/Ctrl+Shift+S` 此前落到 `_ => PassThrough`（判据
+    ///    `ctrl_s_is_the_save_entry_and_does_not_disturb_its_neighbours` 如实钉着），
+    ///    加它**不覆盖**任何既有绑定；`Cmd/Ctrl+Alt+S` 仍放行；
+    /// 3. 文本框聚焦时整体放行（策略表第 2 步），与 [`Self::SaveProject`] 同一口径。
+    ///
+    /// ⚠ **取消不是失败**（`wire_save` 的口径）：对话框回取消 ⇒ 一位不动、不写回执；
+    /// 本臂因此恒消费这一键（与 [`Self::SaveProject`] / [`Self::OpenProject`] 同一约定）。
+    SaveProjectAs,
     /// `Cmd/Ctrl+O`: 打开工程（标准 DAW 习惯键，**界面决定**，⛔ 不是规范点名）。
     ///
     /// 落点是 `host::apply_action` 的同一个臂 ⇒ `ui.invoke_open_project()` ⇒
@@ -1031,11 +1053,12 @@ impl InputContext {
                 (Key::Character('z'), true, false) => Resolution::Action(Action::Redo),
                 (Key::Character('h'), true, false) => Resolution::Action(Action::OpenTimeMachine),
                 (Key::Character('d'), false, false) => Resolution::Action(Action::Duplicate),
-                // **界面决定**（⛔ 不是规范点名）：标准 DAW 的保存键。
-                // 这条格此前是空的（`s` 在 `command()` 分支里一条都没有），
-                // 而裸 `s` 已于 2026-10-31 归 [`Action::ToggleTrackSolo`] ⇒ 两者不冲突。
-                // `Shift` / `Alt` 变体仍放行（"另存为"是另一票界面决定）。
+                // **界面决定**（⛔ 不是规范点名）：标准 DAW 的保存键与另存为键。
+                // 这两条格此前是空的（`s` 在 `command()` 分支里一条都没有），
+                // 而裸 `s` 已于 2026-10-31 归 [`Action::ToggleTrackSolo`] ⇒ 互不冲突；
+                // `Alt` 变体仍放行（"另存为副本"之类是另一套界面决定，⛔ 不顺手发明）。
                 (Key::Character('s'), false, false) => Resolution::Action(Action::SaveProject),
+                (Key::Character('s'), true, false) => Resolution::Action(Action::SaveProjectAs),
                 // **界面决定**（⛔ 不是规范点名）：标准 DAW 的打开键。
                 // `o` 在 `command()` 分支里此前一格都没有；裸 `o` 也从未绑定
                 //（`o` 至今不在本表任何一步里）⇒ 两者都不覆盖既有语义。
@@ -1195,9 +1218,9 @@ mod tests {
     use Action::{
         AcceptAiSuggestion, AuditionMain, AuditionProposal, Cancel, DeleteSelection, Duplicate,
         GoToBeginning, NudgeMixerChannel, NudgeSelection, OpenProject, OpenTimeMachine, PlayPause,
-        Redo, ResizeSelectionDuration, ResumeFromCursor, SaveProject, SelectTool, SelectTrackBy,
-        ShowView, ToggleAiDrawer, ToggleConsoleMaximize, TogglePencilTool, ToggleRecord,
-        ToggleSidebar, ToggleTrackMute, ToggleTrackSolo, ToggleView, Undo, ZoomToFit,
+        Redo, ResizeSelectionDuration, ResumeFromCursor, SaveProject, SaveProjectAs, SelectTool,
+        SelectTrackBy, ShowView, ToggleAiDrawer, ToggleConsoleMaximize, TogglePencilTool,
+        ToggleRecord, ToggleSidebar, ToggleTrackMute, ToggleTrackSolo, ToggleView, Undo, ZoomToFit,
         ZoomToSelection,
     };
     use Focus::{MainCanvas, Other, TextInput};
@@ -1485,8 +1508,8 @@ mod tests {
     /// 判据：裸 `M` / `S` = 拨**选中轨**的静音 / 独奏（键盘入口，界面决定）。
     ///
     /// 这一条同时钉三件事：① 新键真的解析出那两条动作（物理码与逻辑键两条入口同解）；
-    /// ② `Cmd/Ctrl+Alt+M` 的既有语义一位没变；③ 规范没点名的组合（`Shift+M` / `Shift+S` /
-    /// `Ctrl+S`）如实放行，文本域焦点下一律不消费。
+    /// ② `Cmd/Ctrl+Alt+M` 的既有语义一位没变；③ 规范没点名的组合（`Shift+M` / `Shift+S`）
+    /// 如实放行，文本域焦点下一律不消费。
     #[test]
     fn bare_m_and_s_toggle_the_selected_tracks_mute_and_solo() {
         assert_eq!(
@@ -1514,12 +1537,12 @@ mod tests {
         // 未被点名的组合一律放行（⛔ 不猜一个相近语义）。
         assert_eq!(canvas().resolve(KeyM, Modifiers::shift()), PassThrough);
         assert_eq!(canvas().resolve(KeyS, Modifiers::shift()), PassThrough);
-        assert_eq!(canvas().resolve(KeyS, Modifiers::ctrl_shift()), PassThrough);
         // 文本域焦点：整体放行给表单（IME / 输入法策略在解析最前面）。
         assert_eq!(text_field().resolve(KeyM, Modifiers::none()), PassThrough);
         assert_eq!(text_field().resolve(KeyS, Modifiers::none()), PassThrough);
-        // ⚠ `Cmd/Ctrl+S` 从**本提交起**不再是放行：它是保存键
-        // （见 `ctrl_s_is_the_save_entry_and_does_not_disturb_its_neighbours`）。
+        // ⚠ `Cmd/Ctrl+S` 与 `Cmd/Ctrl+Shift+S` **不再是放行**：它们是保存 / 另存为
+        // （见 `ctrl_s_is_the_save_entry_and_does_not_disturb_its_neighbours`
+        // 与 `ctrl_shift_s_is_the_save_as_entry`）。
     }
 
     /// 判据：`Cmd/Ctrl+S` = 保存工程（**界面决定**，⛔ 不是规范点名），且不扰动邻居。
@@ -1527,8 +1550,9 @@ mod tests {
     /// 三条子句（缺一条就不是"这一键只做一件事"）：
     /// 1. **两条入口同解**为 [`Action::SaveProject`]（GUI 绑逻辑键、无头绑物理码 ——
     ///    `N2` 裁决 (1)）；
-    /// 2. 邻居键语义一位不动：裸 `S` 仍是独奏；`Cmd/Ctrl+Shift+S` 与
-    ///    `Cmd/Ctrl+Alt+S` 仍**放行**（"另存为"需要一套新的界面决定，⛔ 不顺手发明）；
+    /// 2. 邻居键语义一位不动：裸 `S` 仍是独奏；`Cmd/Ctrl+Alt+S` 仍**放行**。
+    ///    `Cmd/Ctrl+Shift+S` 自 2026-10-31 起是 [`Action::SaveProjectAs`]
+    ///    （见 `ctrl_shift_s_is_the_save_as_entry`），两格互不相干；
     /// 3. 文本框聚焦时整体放行 —— 与 `Cmd/Ctrl+Z` 同一口径（输入框里归文本控件）。
     #[test]
     fn ctrl_s_is_the_save_entry_and_does_not_disturb_its_neighbours() {
@@ -1550,11 +1574,56 @@ mod tests {
             Act(ToggleTrackSolo),
             "裸 `S` 仍是独奏（保存必须带修饰）"
         );
-        assert_eq!(canvas().resolve(KeyS, Modifiers::ctrl_shift()), PassThrough);
         assert_eq!(canvas().resolve(KeyS, Modifiers::ctrl_alt()), PassThrough);
+        // ⚠ `Cmd/Ctrl+Shift+S` 不再在这里：它是另存为键（下一条判据）。
 
         // ③ 文本框聚焦：整体放行。
         assert_eq!(text_field().resolve(KeyS, Modifiers::ctrl()), PassThrough);
+    }
+
+    /// 判据：`Cmd/Ctrl+Shift+S` = **另存为**（**界面决定**，⛔ 不是规范点名）。
+    ///
+    /// 三条子句：
+    /// 1. **两条入口同解**为 [`Action::SaveProjectAs`]（物理码 / 逻辑键 —— `N2` 裁决 (1)）；
+    /// 2. 邻居键语义一位不动：裸 `S` 仍是独奏、`Cmd/Ctrl+S` 仍是保存、
+    ///    `Cmd/Ctrl+Alt+S` 仍**放行**（"另存为副本"之类是另一套界面决定）；
+    /// 3. 文本框聚焦时整体放行 —— 与 [`Action::SaveProject`] 同一口径。
+    #[test]
+    fn ctrl_shift_s_is_the_save_as_entry() {
+        // ① 物理码入口与逻辑键入口同解。
+        assert_eq!(
+            canvas().resolve(KeyS, Modifiers::ctrl_shift()),
+            Act(SaveProjectAs)
+        );
+        assert_eq!(
+            canvas().resolve_logical(LKey::Character('s'), Modifiers::ctrl_shift()),
+            Act(SaveProjectAs)
+        );
+        assert_eq!(
+            canvas().resolve_logical(
+                LKey::Character('s'),
+                Modifiers {
+                    shift: true,
+                    ..Modifiers::meta()
+                }
+            ),
+            Act(SaveProjectAs)
+        );
+
+        // ② 邻居键不动。
+        assert_eq!(
+            canvas().resolve(KeyS, Modifiers::none()),
+            Act(ToggleTrackSolo)
+        );
+        assert_eq!(canvas().resolve(KeyS, Modifiers::ctrl()), Act(SaveProject));
+        assert_eq!(canvas().resolve(KeyS, Modifiers::ctrl_alt()), PassThrough);
+        assert_eq!(canvas().resolve(KeyS, Modifiers::shift()), PassThrough);
+
+        // ③ 文本框聚焦：整体放行。
+        assert_eq!(
+            text_field().resolve(KeyS, Modifiers::ctrl_shift()),
+            PassThrough
+        );
     }
 
     /// 判据：`Cmd/Ctrl+O` = 打开工程（**界面决定**，⛔ 不是规范点名），且不扰动邻居。

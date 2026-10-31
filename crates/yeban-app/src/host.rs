@@ -6372,8 +6372,9 @@ pub fn wire_save(
     port: SaveStatus,
     live_port: Option<Rc<UndoPort>>,
     // ⭐ **原生文件对话框**（任务单 `#86` 乙）—— "保存到哪"的**可注入**能力面。
-    // 只有在**装配期没给目标路径**时才会被问到（既有 `--open` / `--save` 那条路
-    // 一次都不弹窗）；判据传自己的假实现，于是"对话框被调用了"与"选了路径 ⇒ 写盘"
+    // 「保存」只在**当前目标还不知道**时才会问它（装配期给了路径 ⇒ 一次都不弹窗）；
+    // 「另存为」（`Cmd/Ctrl+Shift+S`，2026-10-31）**总是**问一次 —— 它的语义就是"换个
+    // 新位置"。判据传自己的假实现，于是"对话框被调用了"与"选了路径 ⇒ 写盘"
     // 两句话都能被机械读数（⛔ 不依赖真弹窗）。
     picker: Rc<dyn crate::file_picker::FilePicker>,
     #[cfg(feature = "in-process-mcp")] authority: Option<crate::mcp_mount::ProjectAuthorityHandle>,
@@ -6424,9 +6425,14 @@ pub fn wire_save_with_engine(
     engine: Option<Rc<RefCell<EngineHost>>>,
 ) {
     // ⭐ `#86` 乙：用户在对话框里挑过一次之后**记住**它（否则每次按保存都要再问一次 ——
-    // 那是"每保存一次弹一次窗"的坏体验）。装配期给了路径时本格**永远**是 `None`。
+    // 那是"每保存一次弹一次窗"的坏体验）。装配期给了路径、且用户没按过「另存为」时
+    // 本格**恒为** `None`（⇒ 既有装配的行为一位不变）；「另存为」会把新路径写进它。
     let chosen: std::rc::Rc<std::cell::RefCell<Option<std::path::PathBuf>>> =
         std::rc::Rc::new(std::cell::RefCell::new(None));
+    // 「另存为」那一路要问自己的对话框、也要写**同一个** `chosen` —— 两个 `Rc` 句柄
+    // 必须在第一个闭包**搬走**它们之前克隆出来（`Rc` 语义：共享同一份状态）。
+    let picker_save_as = std::rc::Rc::clone(&picker);
+    let chosen_save_as = std::rc::Rc::clone(&chosen);
     let weak = ui.as_weak();
     ui.on_save_project(move || {
         let Some(ui) = weak.upgrade() else {
@@ -6439,13 +6445,19 @@ pub fn wire_save_with_engine(
         let authority = authority.as_ref();
         #[cfg(not(feature = "in-process-mcp"))]
         let authority = None;
-        // ⭐ **目标路径**（`#86` 乙）：装配期的路径优先；否则用上次在对话框里挑的；
-        // 再否则**问一次原生对话框**。
+        // ⭐ **目标路径**（`#86` 乙）：上次在对话框里挑的（含「另存为」写下的）优先；
+        // 否则装配期的路径；再否则**问一次原生对话框**。
+        //
+        // ⚠ 优先级自 2026-10-31 起把 `chosen` 提到 `port.target` **之前**：
+        // `port.target` 是装配期的只读知识（`--open` / `--save` 给的那个文件），
+        // 而「另存为」落盘后本会话的当前目标**就是**用户刚挑的那个新文件 ——
+        // 排在后面会让 "另存为 ⇒ 再按保存" 写回旧文件（假读数）。装配期给了路径、
+        // 又没另存为过时 `chosen` 恒为 `None` ⇒ 既有行为一位不变。
         //
         // ⚠ **取消不是失败**：用户按了"取消" ⇒ 本回调**什么都不做**（⛔ 不写
         // `save-status`、⛔ 不调 `dispatch_save`）。把取消写成"保存失败：没有目标路径"
         // 是把"我不想"和"出错了"混成一句 —— 本仓最忌讳的那类假读数。
-        let target = match port.target.clone().or_else(|| chosen.borrow().clone()) {
+        let target = match chosen.borrow().clone().or_else(|| port.target.clone()) {
             Some(path) => Some(path),
             None => {
                 let picked = picker.choose_save(
@@ -6468,8 +6480,9 @@ pub fn wire_save_with_engine(
         // 保存的是**此刻**的活会话：工程 + 提交图谱 + ⭐ **会话资产池**
         // （`assets/{sha256}`；任务单 `#132`）。编码口径只有
         // `yeban_model::commit::encode_history_dag` 一份（本处不写第二份序列化）。
-        // 目标路径是**装配期**的知识（`--open` 的那个文件），不随会话变；它保持
-        // `Option`，于是"没有磁盘对应物"仍然如实报 `SaveStage::NoTarget`。
+        // 目标路径的来源是"装配期给的（`--open` 的那个文件）或对话框挑的（含另存为）"；
+        // 它保持 `Option`，于是"既没有装配期目标、对话框也没挑出东西"仍然如实报
+        // `SaveStage::NoTarget`。
         //
         // ⚠ 工程 / 图谱 / 资产池**一次**从同一个端口读出（同一个 `live` binding）：
         // 分几次读会给"保存的那一版"与"图谱/资产的那一版"留下漂移的余地。
@@ -6509,6 +6522,39 @@ pub fn wire_save_with_engine(
                 .set_project_dir(path.parent().map(std::path::Path::to_path_buf));
         }
     });
+
+    // ⭐ **另存为**（`Cmd/Ctrl+Shift+S`，界面决定，⛔ 规范未点名）：界面上**没有按钮**，
+    // 于是它只改行为、不改变默认帧（不新增控件 ⇒ 无 golden 影响）。
+    //
+    // 三跳，每一跳都复用既有实现：
+    // 1. **问一次对话框**：`FilePicker::choose_save`，标题"另存为"（与「保存」那一路
+    //    同一个可注入能力面；⛔ 不在宿主里起第二套文件选择）；
+    // 2. **记成当前目标**：写进 `chosen`（对话框里挑过的路径的**唯一**记忆点），
+    //    于是随后按 `Cmd/Ctrl+S` 写的是新文件（用户预期）；
+    // 3. **进同一条保存链**：`ui.invoke_save_project()` —— 序列化 / 权威分流 / 原子写 /
+    //    回执 / 引擎工程目录的更新**全部**在同一个闭包里，⛔ 不复制第二份。
+    //
+    // ⚠ **取消不是失败**：对话框回取消 ⇒ 当前目标一位不动、不写回执、不落盘。
+    {
+        let weak = ui.as_weak();
+        ui.on_save_project_as(move || {
+            let Some(ui) = weak.upgrade() else {
+                debug_assert!(false, "MainWindow 在回调执行期间被销毁");
+                return;
+            };
+            let picked = picker_save_as.choose_save(
+                &crate::file_picker::PickerRequest::save("另存为", "project.yeban")
+                    .with_extensions(["yeban"]),
+            );
+            let Some(path) = picked else {
+                return;
+            };
+            let path = crate::file_picker::with_default_extension(path, "yeban");
+            // 临时借用在本语句结束处释放 ⇒ 下面重入保存闭包时不会 `already borrowed`。
+            *chosen_save_as.borrow_mut() = Some(path);
+            ui.invoke_save_project();
+        });
+    }
 }
 
 /// 一次保存的**界面回执**：把 [`crate::save_action::SaveOutcome`] 写进状态文本。
@@ -9146,6 +9192,19 @@ fn apply_action(
         //    "保存失败"是一条要留在界面上的**结果**，不是"这一键没意义"。
         Action::SaveProject => {
             ui.invoke_save_project();
+            true
+        }
+        // `Cmd/Ctrl+Shift+S`：另存为（键位选择的三条事实见 [`Action::SaveProjectAs`]）。
+        //
+        // 三条口径（与 [`Action::SaveProject`] 同一套约定）：
+        // 1. **唯一落点**是 `.slint` 的 `save-project-as` 回调 —— 宿主侧唯一实现就在
+        //    [`wire_save_with_engine`] 里：问一次对话框 → 把选中的路径记成当前目标 →
+        //    进**同一个**写盘 / 权威分流 / 回执闭包（⛔ 不另写一条保存路径）；
+        // 2. **不持有引擎借用**：保存族不在 `action_needs_engine` 的集合里；
+        // 3. **取消不是失败**：对话框回取消 ⇒ 一位不动、不写回执，因此恒消费这一键
+        //    （与 [`Action::SaveProject`] / [`Action::OpenProject`] 同一约定）。
+        Action::SaveProjectAs => {
+            ui.invoke_save_project_as();
             true
         }
         // `Cmd/Ctrl+O`：打开工程（键位选择的三条事实见 [`Action::OpenProject`]）。

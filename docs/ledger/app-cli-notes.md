@@ -370,6 +370,31 @@ $ unzip -l /tmp/demo.yeban                          # 写出来的是**标准 ZI
   空工程不消费）＋ `input.rs` 的解析判据；策略表加两行（`Alt+↑` / `Alt+↓`，
   `implemented: true`）由 `tests/cli_contract.rs` 的 B11b 三面一致（表 / 解析 / 宿主）钉住。
 
+**【后续更正（本次切片，2026-10-31，`line/save-as-key`）—— "另存为"补上了，键盘入口的欠账清零】**
+
+- **补的那一格**：标准 DAW 的另存为键 `Cmd/Ctrl+Shift+S`（`Action::SaveProjectAs`）。
+  上一段（`line/keyboard-save`）末尾写"仍未做：GUI 的另存为的键盘入口"、`line/open-keyboard`
+  段又把它收窄成"只剩'另存为'一项" —— 到这里**这一项也没有了**。
+- **键位选择（三条事实，⛔ 不猜）**：① 裸 `S` 是「选中轨独奏」、`Cmd/Ctrl+S` 是保存
+  （都已在表里）⇒ 另存为只能占 `Shift` 变体；② `Cmd/Ctrl+Shift+S` 此前落到
+  `_ => PassThrough`（判据 `ctrl_s_is_the_save_entry_and_does_not_disturb_its_neighbours`
+  实打实钉着），加它**不覆盖**任何既有绑定；③ `Cmd/Ctrl+Alt+S` 仍放行。
+- **行为（不只是"按到一个回调"）**：`host::wire_save` 注册第二个回调 `save-project-as`：
+  ① 问一次保存对话框（`FilePicker::choose_save`，标题"另存为"；与「保存」同一个可注入
+  能力面）；② 把挑中的路径写进 `chosen` —— 自本切片起**优先级高于装配期目标**
+  （`SaveStatus::target`），因此"另存为之后按 `Cmd/Ctrl+S` 写的是**新**文件"；装配期给了
+  路径又没另存为过时 `chosen` 恒为 `None` ⇒ 既有行为一位不变；③ 再进**同一条**保存闭包
+  （序列化 / 权威分流 / 原子写 / `save-status` 回执 / 引擎工程目录更新，⛔ 无第二份实现）。
+  取消 ⇒ 当前目标一位不动、不写回执、不落盘（与「保存」同一约定）。
+- **界面（默认帧不变）**：**只有键盘入口**，`.slint` 只多声明一个 `save-project-as`
+  回调，不新增控件 ⇒ ⛔ 无 golden 影响（本切片不需要手动档重录）。
+- **判据**：`tests/file_picker_dialogs.rs` 新增
+  `saving_as_asks_the_picker_and_retargets_subsequent_saves` —— 装配期**有**目标路径时
+  按另存为仍问一次对话框（`title == "另存为"`）、新文件真的写出来、旧文件字节一位不变；
+  随后按保存**不再问**对话框且写回新文件（证明当前目标已切换）。解析面由 `input.rs` 的
+  `ctrl_shift_s_is_the_save_as_entry` 钉住；策略表新一行由 `tests/cli_contract.rs` 的 B11b
+  三面一致（表 / 解析 / 宿主）钉住。
+
 ---
 
 ## 6. **Quick Start 可以引用哪些命令**（给集成者写 README / 官网用）
