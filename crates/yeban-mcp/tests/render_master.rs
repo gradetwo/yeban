@@ -4954,6 +4954,120 @@ fn an_unreadable_sampler_path_is_a_loud_failure_not_a_silent_sine() {
     );
 }
 
+/// ⭐ 判据 3d（报告缺口 `G4`）：**同一份"SFZ 存在、采样文件全读不到"的乐器**，
+/// 装载回执与母带回执的 `silentRegionCount` 必须**逐值相同**，且渲染音频真的是静音。
+///
+/// Zimmer 2026-10-31 报告的实测（§5.3）：同一乐器三处表述互相矛盾 ——
+/// ① `yeban_load_sfz` 称 `sampleSource: "in-memory-sine (回退: ...)"`（宣称正弦回退）、
+/// ② `yeban_list_instruments` 称 `silentRegionCount: 0`、
+/// ③ `yeban_render_master` 源标签 `silent=360` 且实测 RMS −144.53 dBFS（数字静音）。
+/// 三者不能同时为真。本判据把"①的措辞带适用范围"与"②==③"钉在同一份夹具上（⛔ 挑字段，
+/// 逐值比对）。⚠ 这里**不**测 `yeban_render_sfz_wav` 的正弦回退（那条旁路自有判据）。
+#[test]
+fn load_and_render_receipts_agree_on_the_silent_region_count_of_a_sampleless_sfz() {
+    let scratch = Scratch::new("g4-parity");
+    let dir = scratch.join("g4");
+    fs::create_dir_all(&dir).expect("建目录");
+    // SFZ 本身存在（⇒ 渲染不会因为 `samplerUnreadable` 失败），但**声明的采样文件都不存在**。
+    let sfz = dir.join("dead.sfz");
+    fs::write(
+        &sfz,
+        "<region> sample=*silence key=69 pitch_keycenter=69\n\
+         <region> sample=gone-a.wav key=69 pitch_keycenter=69\n\
+         <region> sample=gone-b.wav key=69 pitch_keycenter=69\n",
+    )
+    .expect("写 dead.sfz");
+    let path = sfz.display().to_string();
+    let project = project_with_sampler(Some(&path));
+    let (mut dispatcher, auth) = dispatcher_with(&project, &scratch.join("g4.yeban"));
+
+    // ① 装载回执（同一个 Dispatcher，同一条工具路径）。
+    let loaded = call_tool(
+        &mut dispatcher,
+        &auth,
+        "yeban_load_sfz",
+        json!({"path": path}),
+    );
+    assert_eq!(loaded["status"], "success", "{loaded}");
+    let ld = &loaded["data"];
+    assert_eq!(ld["regions"], 3, "夹具必须是三条区域: {ld}");
+    assert_eq!(ld["sampleFilesReadCount"], 0, "{ld}");
+    assert_eq!(
+        ld["sampleFilesFailedCount"], 2,
+        "两条声明的文件都读不到: {ld}"
+    );
+    assert_eq!(
+        ld["builtinSilentRegionCount"], 1,
+        "内建静音子集恰好一条: {ld}"
+    );
+
+    // ② 母带回执：源标签是 `sfz-sampler`，缺样本 ⇒ 该轨真的不发声。
+    let out = scratch.join("g4.wav");
+    let rendered = call(
+        &mut dispatcher,
+        &auth,
+        json!({"format": "wav", "sampleRate": 48000, "path": out.display().to_string()}),
+    );
+    assert_eq!(rendered["status"], "success", "{rendered}");
+    let sampler = &rendered["data"]["sources"][0]["sampler"];
+    assert!(!sampler.is_null(), "绑了采样器就必须有读数: {rendered}");
+    assert_eq!(
+        rendered["data"]["sources"][0]["kind"], "sfz-sampler",
+        "源种类必须点名采样器"
+    );
+
+    // ③ ⭐ 核心断言：两侧 `silentRegionCount` **逐值相同**（修前：装载 1、渲染 3）。
+    println!(
+        "### G4 对账（逐字）: load.silentRegionCount={} render.silentRegionCount={} \
+         load.sampleSource={:?}",
+        ld["silentRegionCount"], sampler["silentRegionCount"], ld["sampleSource"],
+    );
+    assert_eq!(
+        ld["silentRegionCount"], sampler["silentRegionCount"],
+        "装载回执与母带回执必须同口径（引擎摊平：缺样本 + 内建静音）"
+    );
+    assert_eq!(
+        ld["silentRegionCount"], 3,
+        "三条区域都不产生采样输出 ⇒ 摊平口径的静音数是 3: {ld}"
+    );
+
+    // ④ 渲染读数点名缺样本路径（与 `sampleFailures` 同一批，只是从引擎侧来）。
+    let missing = sampler["missingSamplePaths"]
+        .as_array()
+        .expect("missingSamplePaths");
+    assert_eq!(missing.len(), 2, "两条声明文件必须都进 missing: {sampler}");
+
+    // ⑤ 音频必须真的是静音 —— 正弦回退宣称**不**适用于这条路径。
+    assert_eq!(
+        rendered["data"]["peak"]["before"]
+            .as_f64()
+            .expect("peak.before"),
+        0.0,
+        "采样器轨缺样本 ⇒ 母带浮点峰值必须为 0（⛔ 不许有正弦替身）: {rendered}"
+    );
+    let (left, right) = channel_peaks(&out);
+    assert!(
+        left <= 2.0 / 8_388_608.0 && right <= 2.0 / 8_388_608.0,
+        "产物两声道都必须只有抖动底, 实得 {left} / {right}"
+    );
+
+    // ⑥ 装载的回退文案必须带适用范围（⛔ 裸的 "in-memory-sine (回退:...)" 会被读成母带也有声）。
+    let source = ld["sampleSource"].as_str().expect("sampleSource");
+    assert!(source.starts_with("in-memory-sine"), "{source}");
+    assert!(
+        source.contains("采样器轨不回退"),
+        "回退文案必须点名适用边界: {source}"
+    );
+    // ⑦ 装载的 warning 也已在场（G4 的诚实登记）。
+    let warnings = ld["warnings"].as_array().expect("warnings");
+    assert!(
+        warnings
+            .iter()
+            .any(|w| w["code"] == json!("sfzSamplesUnreadable")),
+        "缺样本必须响亮登记: {warnings:?}"
+    );
+}
+
 /// 从 MCP 渲染出的 WAV 里读**逐声道峰值**（24-bit 立体声，单位：满刻度线性幅度）。
 ///
 /// 用 [`parse_container`] 定位 `data` 负载（产物带 `bext`，⛔ 不能假设 44 字节头）。
