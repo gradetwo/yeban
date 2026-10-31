@@ -669,6 +669,260 @@ fn source_items() -> Value {
     ])
 }
 
+// ⭐ s31：以下名册填的是 `yeban_render_master` 响应里**十一处裸声明槽** —— 十处
+// `{"type":"object"}` 属性槽（`request` / `probability` / `ratchet` / `audio` / `peak` /
+// `normalize` / `loudness` / `bwf` / `midiSource` / `contributionsBasis`）加一处
+// **连 `items` 都没有**的 `{"type":"array"}`（`contributions`，比裸对象更弱：元素形状完全未声明）。
+// 每条名册的**唯一事实源**是 `domain/render.rs` 里那一个 `json!` 拼装点：逐键照它抄，
+// ⛔ 不写"理想形状"。两处刻意留弱（`unsupportedCounts` 的开键映射、`ops` 的 55 变体标签联合）
+// 由各自的判据点名，理由写在 [`render_master`] 末尾。
+//
+// ⚠ `const` 只用在工作量小的**字面量布尔/整数旗标**上（`wired: true` 那类）：它们变假就是
+// 契约变了，值得让判据红。散文键（`method` / `semantics` / `note`）只声明 `type` —— 改一个
+// 逗号不该强迫改 schema，而把文案钉成 `const` 换来的是"改措辞时必红"，不是"说谎时必红"。
+
+/// ⭐ s31：`data.request` —— 本次请求的回显（14 键，全部**恒发**）。
+/// 拼装点唯一（`domain/render.rs` 的 `RenderRequest::to_value`）。
+/// ⚠ `null` 在这里是**语义**而非缺席：`frames: null` = "没给显式帧数、按工程末端推导"，
+/// 与 `data.frames`（实际长度）不是同一个含义（`#252`）。
+#[must_use]
+fn render_request_roster() -> Value {
+    roster(&[
+        ("format", json!({"type": "string"})),
+        ("sampleRate", json!({"type": "integer"})),
+        ("normalize", json!({"type": "boolean"})),
+        ("frames", json!({"type": ["integer", "null"]})),
+        ("durationSeconds", json!({"type": ["number", "null"]})),
+        ("framesSource", json!({"type": "string"})),
+        ("targetLufs", json!({"type": ["number", "null"]})),
+        ("targetToleranceLu", json!({"type": ["number", "null"]})),
+        ("path", json!({"type": ["string", "null"]})),
+        ("pathRule", json!({"type": "string"})),
+        ("bitDepth", json!({"type": "integer"})),
+        ("channels", json!({"type": "integer"})),
+        ("contributions", json!({"type": "boolean"})),
+        ("threads", json!({"type": ["integer", "null"]})),
+    ])
+}
+
+/// ⭐ s31：`data.probability`（5 键）—— 概率触发的实测读数。
+/// 拼装点唯一（`domain/render.rs` 里 `map.insert("probability", …)` 那段 `json!`）。
+#[must_use]
+fn probability_roster() -> Value {
+    roster(&[
+        ("decision", json!({"type": "string"})),
+        ("specId", json!({"type": "string"})),
+        ("adr", json!({"type": "string"})),
+        ("notesSilenced", json!({"type": "integer"})),
+        ("rngSeed", json!({"type": "integer"})),
+    ])
+}
+
+/// ⭐ s31：`data.ratchet`（8 键）。拼装点同上（`map.insert("ratchet", …)`）。
+#[must_use]
+fn ratchet_roster() -> Value {
+    roster(&[
+        ("grid", json!({"type": "string"})),
+        ("specId", json!({"type": "string"})),
+        ("engineParity", json!({"type": "string"})),
+        ("ruling", json!({"type": "string"})),
+        ("minPerNote", json!({"type": "integer"})),
+        ("notesExpanded", json!({"type": "integer"})),
+        ("pulses", json!({"type": "integer"})),
+        ("maxPerNote", json!({"type": "integer"})),
+    ])
+}
+
+/// ⭐ s31：`data.audio`（8 键）。拼装点唯一（`map.insert("audio", …)`）。
+#[must_use]
+fn audio_roster() -> Value {
+    roster(&[
+        ("wired", json!({"type": "boolean", "const": true})),
+        ("clipsRendered", json!({"type": "integer"})),
+        ("assetsReferenced", json!({"type": "integer"})),
+        (
+            "assets",
+            json!({"type": "array", "items": audio_asset_items()}),
+        ),
+        ("supported", json!({"type": "string"})),
+        ("unsupported", json!({"type": "string"})),
+        ("resampler", resampler_roster()),
+        ("bitExactness", bit_exactness_roster()),
+    ])
+}
+
+/// ⭐ s31：`data.audio.resampler`（3 键，全字符串）。
+#[must_use]
+fn resampler_roster() -> Value {
+    roster(&[
+        ("method", json!({"type": "string"})),
+        ("specId", json!({"type": "string"})),
+        ("adr", json!({"type": "string"})),
+    ])
+}
+
+/// ⭐ s31：`data.audio.bitExactness`（2 键，全字符串）—— D32 的"承诺到哪一层"。
+#[must_use]
+fn bit_exactness_roster() -> Value {
+    roster(&[
+        ("identityRate", json!({"type": "string"})),
+        ("resampled", json!({"type": "string"})),
+    ])
+}
+
+/// ⭐ s31：`data.audio.assets[]` 逐条形状（17 键，**恒发**；字段表里只有两个 `Option`）。
+/// 拼装点唯一（`domain/render.rs` 的 `AudioAssetReport::to_value`）。
+#[must_use]
+fn audio_asset_items() -> Value {
+    roster(&[
+        ("hash", json!({"type": "string"})),
+        ("bytesPresent", json!({"type": "boolean"})),
+        ("declaredInIndex", json!({"type": "boolean"})),
+        ("container", json!({"type": "string"})),
+        ("pcmFormat", json!({"type": "string"})),
+        ("sourceChannels", json!({"type": "integer"})),
+        ("sourceSampleRate", json!({"type": "integer"})),
+        ("sourceFrames", json!({"type": "integer"})),
+        ("targetSampleRate", json!({"type": "integer"})),
+        ("resampled", json!({"type": "boolean"})),
+        ("channelLayout", json!({"type": "string"})),
+        ("encoderDelayFrames", json!({"type": ["integer", "null"]})),
+        ("encoderPaddingFrames", json!({"type": ["integer", "null"]})),
+        ("trimmedFrames", json!({"type": "integer"})),
+        ("renderedFrames", json!({"type": "integer"})),
+        ("bytes", json!({"type": "integer"})),
+        ("clips", json!({"type": "integer"})),
+    ])
+}
+
+/// ⭐ s31：`data.peak`（8 键）。拼装点唯一（`map.insert("peak", …)`）。
+/// ⚠ `before`/`after`/`target` 都是 `f32` ⇒ 声明 `["number","null"]`：`serde_json` 把
+/// `NaN`/`Infinity` **静默写成 `null`**（同一口径见 [`automation_point_items`] 的 `value`）。
+#[must_use]
+fn peak_roster() -> Value {
+    roster(&[
+        ("before", json!({"type": ["number", "null"]})),
+        ("after", json!({"type": ["number", "null"]})),
+        ("target", json!({"type": ["number", "null"]})),
+        ("unit", json!({"type": "string"})),
+        ("semantics", json!({"type": "string"})),
+        ("domain", json!({"type": "string"})),
+        ("truePeakDbfs", json!({"type": ["number", "null"]})),
+        (
+            "truePeakOversampling",
+            json!({"type": "integer", "const": 16}),
+        ),
+    ])
+}
+
+/// ⭐ s31：`data.normalize`（5 键）。拼装点唯一（`map.insert("normalize", …)`）。
+#[must_use]
+fn normalize_roster() -> Value {
+    roster(&[
+        ("requested", json!({"type": "boolean"})),
+        ("applied", json!({"type": "boolean"})),
+        ("target", json!({"type": ["number", "null"]})),
+        ("domain", json!({"type": "string"})),
+        ("note", json!({"type": ["string", "null"]})),
+    ])
+}
+
+/// ⭐ s31：`data.loudness`（11 键）。拼装点唯一（`LoudnessTarget::to_value`）。
+/// ⛔ **不要**把 `LoudnessTarget::failure()` 的那 7 个键并进来：那是带内错误
+/// `RENDER_FAILED` 的载荷（错误面），与本条（响应面）是同一结构体的**两个 `json!` 站点**。
+/// `verdict` 的词表⛔ 不手抄：直接引用 [`crate::domain::render::VERDICT_VALUES`]。
+#[must_use]
+fn loudness_roster() -> Value {
+    roster(&[
+        ("targetLufs", json!({"type": ["number", "null"]})),
+        ("toleranceLu", json!({"type": ["number", "null"]})),
+        (
+            "measuredIntegratedLufs",
+            json!({"type": ["number", "null"]}),
+        ),
+        ("deltaLu", json!({"type": ["number", "null"]})),
+        (
+            "verdict",
+            json!({
+                "type": "string",
+                "enum": crate::domain::render::VERDICT_VALUES.to_vec()
+            }),
+        ),
+        ("measured", json!({"type": "boolean"})),
+        ("measurementNote", json!({"type": ["string", "null"]})),
+        ("algorithm", json!({"type": "string"})),
+        ("implementation", json!({"type": "string"})),
+        ("specId", json!({"type": "string"})),
+        (
+            "specSilentOnTolerance",
+            json!({"type": "boolean", "const": true}),
+        ),
+    ])
+}
+
+/// ⭐ s31：`data.bwf`（6 键，全字符串）。拼装点唯一（`map.insert("bwf", …)`）。
+/// ⚠ 里面的 `loudness` 是 `bext` v2 的**哨兵句**、不是 LUFS 读数 —— 它与顶层 `data.loudness`
+/// 撞名而含义无关，所以这一槽**故意**不给 `data.loudness` 的名册复用。
+#[must_use]
+fn bwf_roster() -> Value {
+    roster(&[
+        ("originator", json!({"type": "string"})),
+        ("originatorReference", json!({"type": "string"})),
+        ("originationDate", json!({"type": "string"})),
+        ("originationTime", json!({"type": "string"})),
+        ("codingHistory", json!({"type": "string"})),
+        ("loudness", json!({"type": "string"})),
+    ])
+}
+
+/// ⭐ s31：`data.midiSource`（7 键）。拼装点唯一（`map.insert("midiSource", …)`，`#251`/`#268`）。
+/// 这一槽一直是 `properties.insert` **单独挂**的（`serde_json` 宏的递归上限，见 [`render_master`]）；
+/// 名册装进自己的函数后深度与键数无关，但⛔ 不动那块字面量的写法。
+#[must_use]
+fn midi_source_roster() -> Value {
+    roster(&[
+        ("kind", json!({"type": "string"})),
+        ("label", json!({"type": "string"})),
+        ("engineTimbre", json!({"type": "boolean", "const": true})),
+        ("adr", json!({"type": "string"})),
+        ("engine", json!({"type": "string"})),
+        ("note", json!({"type": "string"})),
+        ("appliesTo", json!({"type": "string"})),
+    ])
+}
+
+/// ⭐ s31：`data.contributions[]` 逐条形状（5 键，**恒发**）。
+/// 拼装点唯一（`domain/render.rs` 的 `TrackContribution::to_value`）。
+/// ⚠ 两个差值是 `Option<f64>`：`null` 的字面意思是"这条轨没留下任何 24-bit 级变化"
+/// **或**"渲染前它已经 mute"（口径全文在 [`contributions_basis_roster`] 的 `nullMeans` 里）。
+#[must_use]
+fn contribution_items() -> Value {
+    roster(&[
+        ("trackId", json!({"type": "string"})),
+        ("name", json!({"type": "string"})),
+        ("alreadyMuted", json!({"type": "boolean"})),
+        ("deltaRmsDbfs", json!({"type": ["number", "null"]})),
+        ("deltaPeakDbfs", json!({"type": ["number", "null"]})),
+    ])
+}
+
+/// ⭐ s31：`data.contributionsBasis`（8 键）。拼装点唯一（`ADR-0020` 那段 `if let Some(rows)`）。
+/// ⚠ 整块**可选**（缺省时不出现）⇒ 它⛔ 不进 [`render_master`] 的 `required`；
+/// 但一旦存在，这 8 个键**全发** ⇒ 名册里的 `required` 是实打实的。
+#[must_use]
+fn contributions_basis_roster() -> Value {
+    roster(&[
+        ("method", json!({"type": "string"})),
+        ("metric", json!({"type": "string"})),
+        ("domain", json!({"type": "string"})),
+        ("normalize", json!({"type": "boolean", "const": false})),
+        ("frames", json!({"type": "integer"})),
+        ("renders", json!({"type": "integer"})),
+        ("nullMeans", json!({"type": "string"})),
+        ("doesNotProve", json!({"type": "string"})),
+    ])
+}
+
 /// `yeban_propose_section` 的成功响应 `data`（创作面提案，与 [`edit_notes`] 同拼装点
 /// `domain::apply_propose`，[MCP-TOOL-005] 广播面扩展票）。
 fn propose_section() -> Value {
@@ -1156,7 +1410,7 @@ fn render_master() -> Value {
         ],
         json!({
             "rendered": {"type": "boolean"},
-            "request": {"type": "object"},
+            "request": render_request_roster(),
             "path": {"type": "string"},
             "format": {"type": "string"},
             "container": {"type": "string"},
@@ -1177,21 +1431,28 @@ fn render_master() -> Value {
             "nodeCount": {"type": "integer"},
             "sourceNodes": {"type": "array", "items": {"type": "string"}},
             "sources": {"type": "array", "items": source_items()},
-            "probability": {"type": "object"},
-            "ratchet": {"type": "object"},
-            "audio": {"type": "object"},
-            "peak": {"type": "object"},
+            "probability": probability_roster(),
+            "ratchet": ratchet_roster(),
+            "audio": audio_roster(),
+            "peak": peak_roster(),
             "clippedSamples": {"type": "integer"},
             "truePeakDbfs": {"type": ["number", "null"]},
             "headroomDb": {"type": ["number", "null"]},
             "warnings": {"type": "array", "items": render_warning_items()},
-            "normalize": {"type": "object"},
-            "loudness": {"type": "object"},
+            "normalize": normalize_roster(),
+            "loudness": loudness_roster(),
             "atomic": {"type": "boolean"},
             "strategy": {"type": "string"},
             "dither": {"type": "string"},
-            "bwf": {"type": "object"},
+            "bwf": bwf_roster(),
             "unsupported": {"type": "array", "items": {"type": "string"}},
+            // ⭐ s31：这**一处**如实留弱 —— `unsupportedCounts` 是开键映射
+            // （`BTreeMap<&'static str, u64>` 直译成对象），键集是 `KNOWN_UNSUPPORTED_KEYS`
+            // 的**子集**且可以为空 ⇒ 校验器的六个关键字里没有能表达"键名来自这张表"的
+            // （`propertyNames` / `additionalProperties` 都不支持）。判据
+            // `the_unsupported_counts_slot_stays_weak_on_purpose` 把"它仍然只有 type"钉成读数；
+            // 另一处留弱（`proposal.ops`）已由 s30 的
+            // `the_three_item_slots_delegate_to_their_rosters_while_ops_stays_weak` 钉住。
             "unsupportedCounts": {"type": "object"},
             "projectDigest": {"type": "string"},
             "renderedAtUnixMs": {"type": "integer"}
@@ -1200,7 +1461,7 @@ fn render_master() -> Value {
     if let Value::Object(map) = &mut schema
         && let Some(Value::Object(properties)) = map.get_mut("properties")
     {
-        properties.insert("midiSource".to_owned(), json!({"type": "object"}));
+        properties.insert("midiSource".to_owned(), midi_source_roster());
         // ⭐ `#315`：两个侧链读数同样是**单独插入**（同一处递归上限），
         // 与 Required 里的两条一一对应。
         properties.insert(
@@ -1216,8 +1477,14 @@ fn render_master() -> Value {
             json!({"type": "integer"}),
         );
         // ⭐ `ADR-0020`：可选键 ⇒ ⛔ 不进 `required`（缺省时它们不存在）。
-        properties.insert("contributions".to_owned(), json!({"type": "array"}));
-        properties.insert("contributionsBasis".to_owned(), json!({"type": "object"}));
+        properties.insert(
+            "contributions".to_owned(),
+            json!({"type": "array", "items": contribution_items()}),
+        );
+        properties.insert(
+            "contributionsBasis".to_owned(),
+            contributions_basis_roster(),
+        );
     }
     with_commit_model(schema)
 }
@@ -1853,6 +2120,398 @@ mod tests {
         assert_eq!(
             published, produced,
             "广播的 curve 词表必须与生产者 curve_name 的逐变体输出同集"
+        );
+    }
+
+    /// ⭐ s31 判据一（接线 + 防掏空）：`yeban_render_master` 的**十一处**曾经裸声明的槽位，
+    /// 广播出去的必须**逐字等于**各自的名册函数，且每处的键数与拼装点现读数**一字不差**。
+    ///
+    /// 十一处 = 十处 `{"type":"object"}` 属性槽 ＋ `contributions`（它原来**连 `items` 都没有**，
+    /// 比裸对象更弱）。每处两个数（`required` 与 `properties` 的长度）写死在这里：
+    /// 谁把名册删短就红，⛔ 不会退化成"schema 里有这个键"这种空话。
+    /// 内层再数三个（`audio.resampler` 3／`audio.bitExactness` 2／`audio.assets[]` 17）——
+    /// ⚠ 这三个数是本轮**自己数**的（台账 §22.30 那条教训：抄来的计数错过两次）。
+    #[test]
+    fn the_eleven_render_master_slots_delegate_to_their_rosters() {
+        let schema = render_master();
+        let cases: [(&str, Value, usize); 11] = [
+            ("request", render_request_roster(), 14),
+            ("probability", probability_roster(), 5),
+            ("ratchet", ratchet_roster(), 8),
+            ("audio", audio_roster(), 8),
+            ("peak", peak_roster(), 8),
+            ("normalize", normalize_roster(), 5),
+            ("loudness", loudness_roster(), 11),
+            ("bwf", bwf_roster(), 6),
+            ("midiSource", midi_source_roster(), 7),
+            (
+                "contributions",
+                json!({"type": "array", "items": contribution_items()}),
+                5,
+            ),
+            ("contributionsBasis", contributions_basis_roster(), 8),
+        ];
+        for (slot, expected, keys) in cases {
+            let published = schema["properties"][slot].clone();
+            assert_eq!(published, expected, "`{slot}` 广播的必须与名册函数逐字相同");
+            assert_ne!(
+                published,
+                json!({"type": "object"}),
+                "`{slot}` 不得退回裸对象声明"
+            );
+            if slot == "contributions" {
+                // 这一处是数组槽：核 `items` 的键数，⛔ 不是核它自己的 `required`。
+                let items = published["items"]
+                    .as_object()
+                    .unwrap_or_else(|| panic!("`{slot}` 的 items 必须是对象名册"));
+                assert_eq!(items["required"].as_array().expect("required").len(), keys);
+                assert_eq!(
+                    items["properties"].as_object().expect("properties").len(),
+                    keys
+                );
+                continue;
+            }
+            let required = published["required"]
+                .as_array()
+                .unwrap_or_else(|| panic!("`{slot}` 的 required 必须是数组（十一处全是恒发键）"));
+            assert_eq!(required.len(), keys, "`{slot}` 的键数（防掏空下界）");
+            assert_eq!(
+                published["properties"]
+                    .as_object()
+                    .expect("properties 必须是对象")
+                    .len(),
+                keys,
+                "`{slot}` 的声明键数必须与 required 同数（恒发键 ⇒ 两者不该差一）"
+            );
+        }
+
+        // 内层三处（同样写死现读数）。⚠ 先 `let` 绑定再借：见 `run 41237535235` 的 E0716。
+        let audio = audio_roster();
+        for (inner, keys) in [("resampler", 3usize), ("bitExactness", 2usize)] {
+            let node = audio["properties"][inner].clone();
+            assert_eq!(
+                node["required"]
+                    .as_array()
+                    .expect("内层必须有 required")
+                    .len(),
+                keys,
+                "`audio.{inner}` 的键数"
+            );
+        }
+        let assets = audio["properties"]["assets"].clone();
+        assert_eq!(assets["type"], json!("array"));
+        assert_eq!(
+            assets["items"]["required"]
+                .as_array()
+                .expect("assets[] 必须有逐键名册")
+                .len(),
+            17,
+            "`audio.assets[]` 的键数（现读 `AudioAssetReport::to_value`）"
+        );
+    }
+
+    /// ⭐ s31 判据二（牙齿）：十一份名册**真的会拒**。少键、错型、越词表、旗标翻假都要红在
+    /// **那个键的路径**上；而 `null` 是真实形态的（`request.path`、`loudness.measuredIntegratedLufs`、
+    /// `normalize.note`、`contributions[].deltaRmsDbfs`）必须**放行** —— 拒绝真实形态就是假广播。
+    /// 第三层也要红在第三层（`audio.resampler.method`），这是 s29 那条递归在本批的复用。
+    #[test]
+    fn the_render_rosters_reject_broken_values_and_accept_the_nullable_ones() {
+        let request = json!({
+            "format": "wav", "sampleRate": 48_000, "normalize": true,
+            "frames": null, "durationSeconds": 30.0, "framesSource": "durationSeconds",
+            "targetLufs": -14.0, "targetToleranceLu": 0.5, "path": null,
+            "pathRule": "<工程文件 stem>.master.<format>, 与工程同目录",
+            "bitDepth": 24, "channels": 2, "contributions": false, "threads": null
+        });
+        let asset = json!({
+            "hash": "0".repeat(64), "bytesPresent": true, "declaredInIndex": true,
+            "container": "wav", "pcmFormat": "S16", "sourceChannels": 2,
+            "sourceSampleRate": 44_100, "sourceFrames": 48_000, "targetSampleRate": 48_000,
+            "resampled": true, "channelLayout": "stereo",
+            "encoderDelayFrames": null, "encoderPaddingFrames": null,
+            "trimmedFrames": 0, "renderedFrames": 48_000, "bytes": 192_044, "clips": 1
+        });
+        let audio = json!({
+            "wired": true, "clipsRendered": 1, "assetsReferenced": 1,
+            "assets": [asset.clone()],
+            "supported": "…", "unsupported": "…",
+            "resampler": {"method": "…", "specId": "ARCH-DSP-002", "adr": "ADR-0001 D26"},
+            "bitExactness": {"identityRate": "…", "resampled": "…"}
+        });
+        let peak = json!({
+            "before": 0.9, "after": 1.0, "target": 1.0,
+            "unit": "full-scale (线性幅度; 1.0 = 0 dBFS, 不是 dB)",
+            "semantics": "…", "domain": "TPDF 抖动 / 24-bit 量化之前的浮点母带",
+            "truePeakDbfs": -0.3, "truePeakOversampling": 16
+        });
+        let loudness = json!({
+            "targetLufs": -14.0, "toleranceLu": 0.5, "measuredIntegratedLufs": -14.1,
+            "deltaLu": -0.1, "verdict": "pass", "measured": true, "measurementNote": null,
+            "algorithm": "ITU-R BS.1770-4", "implementation": "yeban-dsp::loudness::GatedLoudness",
+            "specId": "ARCH-UI-002", "specSilentOnTolerance": true
+        });
+        let normalize = json!({
+            "requested": true, "applied": true, "target": 1.0,
+            "domain": "抖动/量化之前的浮点母带", "note": null
+        });
+        let probability = json!({
+            "decision": "MidiNote::triggers(project.rng_seed)", "specId": "MODEL-AST-005",
+            "adr": "ADR-0001 (ARCH-DET-001)", "notesSilenced": 0, "rngSeed": 0
+        });
+        let ratchet = json!({
+            "grid": "step = …", "specId": "MODEL-AST-005", "engineParity": "…",
+            "ruling": "…", "minPerNote": 1, "notesExpanded": 0, "pulses": 0, "maxPerNote": 16
+        });
+        let bwf = json!({
+            "originator": "Yeban DAW", "originatorReference": "YEBAN 0.4.0",
+            "originationDate": "2026-10-31", "originationTime": "22:41:07",
+            "codingHistory": "bext", "loudness": "unknown (bext v2 哨兵)"
+        });
+        let midi_source = json!({
+            "kind": "engine-instrument", "label": "yeban-engine SynthEngine（引擎音色）",
+            "engineTimbre": true, "adr": "ADR-0011", "engine": "…", "note": "…",
+            "appliesTo": "sources[].kind == \"engine-instrument\""
+        });
+        let contribution = json!({
+            "trackId": "01ABC", "name": "Lead", "alreadyMuted": false,
+            "deltaRmsDbfs": -3.5, "deltaPeakDbfs": null
+        });
+        let basis = json!({
+            "method": "…", "metric": "…", "domain": "解码后的 24-bit PCM 负载",
+            "normalize": false, "frames": 1_440_000, "renders": 3,
+            "nullMeans": "…", "doesNotProve": "这条轨在音乐上该不该被听见"
+        });
+        let basis_unnormalized = basis.clone();
+
+        // ① 十二份合法形状必须先过（否则后面的红可能只是"整份都不合法"）。
+        let legal: [(&str, Value, Value); 12] = [
+            ("request", render_request_roster(), request.clone()),
+            ("probability", probability_roster(), probability.clone()),
+            ("ratchet", ratchet_roster(), ratchet.clone()),
+            ("audio", audio_roster(), audio.clone()),
+            ("audio.assets[0]", audio_asset_items(), asset.clone()),
+            ("peak", peak_roster(), peak.clone()),
+            ("normalize", normalize_roster(), normalize.clone()),
+            ("loudness", loudness_roster(), loudness.clone()),
+            ("bwf", bwf_roster(), bwf.clone()),
+            ("midiSource", midi_source_roster(), midi_source.clone()),
+            (
+                "contributions[0]",
+                contribution_items(),
+                contribution.clone(),
+            ),
+            (
+                "contributionsBasis",
+                contributions_basis_roster(),
+                basis.clone(),
+            ),
+        ];
+        for (label, schema, element) in &legal {
+            validate(schema, element)
+                .unwrap_or_else(|violation| panic!("合法的 `{label}` 形状必须通过: {violation}"));
+        }
+
+        // ② 少一个 required 键 ⇒ 红在那个键（这十二条一起证明"名册不是只有 type"）。
+        // 键名逐条取自各自拼装点，⛔ 不重复①已经证明"整份合法"的那一步。
+        for (label, schema, element, key) in [
+            (
+                "request",
+                render_request_roster(),
+                request.clone(),
+                "format",
+            ),
+            ("probability", probability_roster(), probability, "rngSeed"),
+            ("ratchet", ratchet_roster(), ratchet, "maxPerNote"),
+            ("audio", audio_roster(), audio.clone(), "bitExactness"),
+            ("audio.assets[0]", audio_asset_items(), asset, "hash"),
+            ("peak", peak_roster(), peak.clone(), "semantics"),
+            (
+                "normalize",
+                normalize_roster(),
+                normalize.clone(),
+                "applied",
+            ),
+            ("loudness", loudness_roster(), loudness.clone(), "verdict"),
+            ("bwf", bwf_roster(), bwf, "codingHistory"),
+            ("midiSource", midi_source_roster(), midi_source, "appliesTo"),
+            (
+                "contributions[0]",
+                contribution_items(),
+                contribution.clone(),
+                "trackId",
+            ),
+            (
+                "contributionsBasis",
+                contributions_basis_roster(),
+                basis,
+                "doesNotProve",
+            ),
+        ] {
+            let mut broken = element;
+            broken.as_object_mut().expect("元素必须是对象").remove(key);
+            assert_eq!(
+                validate(&schema, &broken)
+                    .expect_err(&format!("`{label}` 的 `{key}` 是 required"))
+                    .path,
+                format!("$.{key}"),
+                "`{label}` 少 `{key}` 必须红在该键"
+            );
+        }
+
+        // ③ 旗标翻假 ⇒ 红（`const` 在本批的四条）。
+        let mut unwired = audio.clone();
+        unwired["wired"] = Value::from(false);
+        assert_eq!(
+            validate(&audio_roster(), &unwired)
+                .expect_err("wired 的 const 必须被执行")
+                .path,
+            "$.wired"
+        );
+        let mut louder = loudness.clone();
+        louder["specSilentOnTolerance"] = Value::from(false);
+        assert_eq!(
+            validate(&loudness_roster(), &louder)
+                .expect_err("const true 翻了必须红")
+                .path,
+            "$.specSilentOnTolerance"
+        );
+        let mut up = peak.clone();
+        up["truePeakOversampling"] = Value::from(8);
+        assert_eq!(
+            validate(&peak_roster(), &up)
+                .expect_err("过采样率写死 16，给 8 必须红")
+                .path,
+            "$.truePeakOversampling"
+        );
+        let mut normalized = basis_unnormalized;
+        normalized["normalize"] = Value::from(true);
+        assert_eq!(
+            validate(&contributions_basis_roster(), &normalized)
+                .expect_err("贡献口径是**未归一化**母带，翻 true 必须红")
+                .path,
+            "$.normalize"
+        );
+
+        // ④ 越词表 ⇒ 红（`verdict` 是本批唯一封闭的词表）。
+        let mut invented = loudness.clone();
+        invented["verdict"] = Value::from("nearly");
+        assert_eq!(
+            validate(&loudness_roster(), &invented)
+                .expect_err("词表外的 verdict 拼写必须红")
+                .path,
+            "$.verdict"
+        );
+
+        // ⑤ 错型 ⇒ 红在对应键（`integer` 与 `number` 分开这条，在嵌套层同样生效）。
+        let mut stringy = request.clone();
+        stringy["sampleRate"] = Value::from("48000");
+        assert_eq!(
+            validate(&render_request_roster(), &stringy)
+                .expect_err("sampleRate 是整数不是字符串")
+                .path,
+            "$.sampleRate"
+        );
+        let mut floaty = request.clone();
+        floaty["frames"] = Value::from(30.5);
+        assert_eq!(
+            validate(&render_request_roster(), &floaty)
+                .expect_err("frames 声明 integer ⇒ 小数必须红")
+                .path,
+            "$.frames"
+        );
+
+        // ⑥ 递归到**第三层**：`audio.resampler` 给空对象 ⇒ 红在 resampler 里面，⛔ 不是 `$.resampler`。
+        let mut shallow = audio.clone();
+        shallow["resampler"] = json!({});
+        let violation = validate(&audio_roster(), &shallow)
+            .expect_err("内层名册的 required 必须被核对（s29 的递归）");
+        assert!(
+            violation.path.starts_with("$.resampler."),
+            "路径必须点到 resampler 里面的键: {}",
+            violation.path
+        );
+        let mut strings = audio.clone();
+        strings["assets"] = json!([42]);
+        assert_eq!(
+            validate(&audio_roster(), &strings)
+                .expect_err("assets 的元素必须是对象名册")
+                .path,
+            "$.assets[0]"
+        );
+
+        // ⑦ `null` 是真实形态的那几处必须**放行**（默认路径：没给 path / 没给 targetLufs /
+        // 全零信号 / 这条轨没留下变化）。
+        let mut nulls = request.clone();
+        nulls["path"] = Value::Null;
+        nulls["durationSeconds"] = Value::Null;
+        nulls["targetLufs"] = Value::Null;
+        nulls["targetToleranceLu"] = Value::Null;
+        nulls["threads"] = Value::Null;
+        validate(&render_request_roster(), &nulls).expect("默认请求的五个 null 都是常态");
+        let mut nulls = loudness.clone();
+        nulls["measuredIntegratedLufs"] = Value::Null;
+        nulls["deltaLu"] = Value::Null;
+        nulls["measurementNote"] = Value::from("纯静音母带: 门限积分的读数为负无穷, 不是 0 LUFS");
+        validate(&loudness_roster(), &nulls).expect("测不出读数 ⇒ 两个 null 加一句原因");
+        let mut nulls = normalize.clone();
+        nulls["note"] = Value::Null;
+        validate(&normalize_roster(), &nulls).expect("没有备注时 note 就是 null");
+        let mut nulls = contribution.clone();
+        nulls["deltaRmsDbfs"] = Value::Null;
+        validate(&contribution_items(), &nulls).expect("这条轨没留下变化是常态");
+        let mut nulls = peak.clone();
+        nulls["truePeakDbfs"] = Value::Null;
+        validate(&peak_roster(), &nulls).expect("非有限 f32 序列化成 null ⇒ 必须放行");
+    }
+
+    /// ⭐ s31 判据三（同源）：广播的 `verdict` 词表必须**逐字等于**实现侧的唯一名册
+    /// `domain::render::VERDICT_VALUES` —— 与 `commitModel` 引用 [`crate::domain::COMMIT_MODEL_VALUES`]
+    /// 同一条理由：⛔ 不在 schema 侧手抄第二份清单。
+    #[test]
+    fn the_loudness_verdict_enum_is_the_producers_word_table() {
+        let loudness = loudness_roster();
+        let published: Vec<&str> = loudness["properties"]["verdict"]["enum"]
+            .as_array()
+            .expect("verdict 必须带 enum")
+            .iter()
+            .map(|value| value.as_str().expect("enum 的元素必须是字符串"))
+            .collect();
+        assert_eq!(
+            published,
+            crate::domain::render::VERDICT_VALUES.to_vec(),
+            "广播的词表必须与实现侧 VERDICT_VALUES 同序同集"
+        );
+        // 非空断言：词表为空时上面那条等式会自我确认（两边都空）。
+        assert!(!published.is_empty(), "verdict 词表不得为空");
+    }
+
+    /// ⭐ s31 判据四（把"为什么不做"钉成读数）：`unsupportedCounts` **保持弱声明**。
+    ///
+    /// 它是 `BTreeMap<&'static str, u64>` 的直译：键集是 `KNOWN_UNSUPPORTED_KEYS` 的**子集**、
+    /// 而且**可以为空**（一次干净的渲染就是 `{}`）。校验器现读的六个关键字
+    /// （`type` / `required` / `const` / `enum` / `properties` / `items`）里没有一个能表达
+    /// "键名必须来自这张表"—— 那要 `propertyNames`（或 `additionalProperties`），
+    /// 见台账 §22.22 路线甲。⛔ 把十枚键名铺成 `properties` 并集就是假广播：声明了十条
+    /// "这些键会出现"，而真实响应一条都没有。与 s30 的
+    /// `the_three_item_slots_delegate_to_their_rosters_while_ops_stays_weak` 同形。
+    #[test]
+    fn the_unsupported_counts_slot_stays_weak_on_purpose() {
+        let schema = render_master();
+        let counts = schema["properties"]["unsupportedCounts"].clone();
+        assert_eq!(
+            counts,
+            json!({"type": "object"}),
+            "unsupportedCounts 仍应是弱声明；要收紧它，先给校验器补 propertyNames（§22.22 路线甲）"
+        );
+        // 但它的**值域**是确定的（整数计数）⇒ 这一句留给人读，不留成假声明。
+        let declared = counts.as_object().expect("unsupportedCounts 必须是对象");
+        assert!(
+            !declared.contains_key("additionalProperties"),
+            "校验器不支持 additionalProperties ⇒ 广播里也不许出现这个关键字"
+        );
+        assert!(
+            !declared.contains_key("propertyNames"),
+            "同上：propertyNames 也不受支持，声明了就是假广播"
         );
     }
 }

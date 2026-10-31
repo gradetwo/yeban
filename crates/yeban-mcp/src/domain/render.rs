@@ -579,6 +579,15 @@ pub const VERDICT_UNMEASURABLE: &str = "unmeasurable";
 /// 判定词表：调用方没有给 `targetLufs`（**默认路径**；只报读数，不做判定）。
 pub const VERDICT_NO_TARGET: &str = "noTarget";
 
+/// ⭐ s31：四条判定的**唯一名册**（`outputSchema` 的 `loudness.verdict.enum` 直接引用它，
+/// 与 [`crate::domain::COMMIT_MODEL_VALUES`] 同一条理由：⛔ 不在 schema 侧手抄第二份清单）。
+pub const VERDICT_VALUES: [&str; 4] = [
+    VERDICT_PASS,
+    VERDICT_FAIL,
+    VERDICT_UNMEASURABLE,
+    VERDICT_NO_TARGET,
+];
+
 /// 响度读数或判定**不可用**时的原因词（进响应 `loudness.measurementNote`）。
 pub const NOTE_SILENT_MASTER: &str = "纯静音母带: 门限积分的读数为负无穷, 不是 0 LUFS";
 /// 见 [`NOTE_SILENT_MASTER`]；这一条是采样率不在四档核验表里。
