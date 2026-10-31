@@ -186,12 +186,20 @@ fn the_track_keys_invoke_the_registered_track_select_callback_with_the_neighbour
     assert!(window.invoke_key_action(DOWN.into(), false, false, true, false));
     assert_eq!(selected(&window), ids[2], "`Alt+↓` 走到末条");
 
-    // 换成记录器。之后选中态不再移动（生产回调已被替换），于是每次按键都从**末条**
-    // 这个起点计算下标 ⇒ "夹紧"与"邻居"都能被逐次读出。
+    // 换成记录器。记录器同时**扮演** `wire_track_select` 的写者（真实回调就是这样把
+    // 下标查成身份写回 `selected-track-id`）：不写回的话选中态就冻在末条不动，
+    // 下面那条序列只会读到 `[2, 2, 1, 1]`，两端夹紧里的低端一条永远读不到。
     let calls = Rc::new(RefCell::new(Vec::<i32>::new()));
     let calls_for_callback = Rc::clone(&calls);
+    let ids_for_callback = ids.clone();
+    let weak_for_callback = window.as_weak();
     window.on_track_select(move |index| {
         calls_for_callback.borrow_mut().push(index);
+        if let Some(window) = weak_for_callback.upgrade()
+            && let Some(id) = ids_for_callback.get(index as usize)
+        {
+            window.set_selected_track_id(id.clone().into());
+        }
     });
 
     for _ in 0..2 {
