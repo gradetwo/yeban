@@ -130,6 +130,7 @@ fn escape_closes_the_export_dialog_without_running_an_export() {
             save_path: None,
             engine_quanta: 0,
             undo: Some(Rc::clone(&port)),
+            proposal_source: yeban_app::proposals::ProposalSource::none(),
         },
     )
     .expect("真实界面 + Tier-1 执行面");
