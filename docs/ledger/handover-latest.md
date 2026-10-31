@@ -1,6 +1,7 @@
 # 交接（夜半第三阶段 · 2026-10-14 · 覆盖台账 R307–R1144）
 
-> ⭐ **2026-11-01：当下状态看 §0.6.0za**（s28 第一片**已落地** `1d3d24b9`：`warnings[].code` 名册进契约 + 集合等式守卫进 CI；线判决与合流读数的口径、以及"schema 里 `warnings` 仍 0 处引用 ⇒ 第二片 task #103"这条边界）；
+> ⭐ **2026-11-01 晚：当下状态看 §0.6.0zb**（s29 = s28 第二片已推线 `cb5a5673`、判决 pending：`warnings[].code` 的逐工具子集进广播 ＋ 校验器**真的开始递归** ＋ 12 处嵌套 `required` 从此变活断言；附「§22.16 那句'不实现 enum'是错的」这条改正，与"防死名册问题的落点不是 `$ref`"这条结论）；
+> ⭐ 同日早些时候的状态在 §0.6.0za（s28 第一片**已落地** `1d3d24b9`：`warnings[].code` 名册进契约 + 集合等式守卫进 CI；线判决与合流读数的口径、以及"schema 里 `warnings` 仍 0 处引用 ⇒ 第二片 task #103"这条边界）；
 > ⭐ 更早的状态在 §0.6.0z（s28 立项与推线 `a5ece833` 的当时读数，含"读 `$?` 前先确认它属于哪条命令"这条教训）；
 > ⭐ 2026-10-31 深夜的状态在 §0.6.0y（本机环境口径三处改正 + 脚本腿的判绿口径 + s28 前置读数 + 合流 run `41210731323`（success：全量腿 46 分钟／`passed` 合计 7 235）与文档批 `fd40fb4e`（success）两笔判决）；
 > ⭐ 同日早些时候的状态在 §0.6.0x（把两句散文换成机器读数：s26 常驻判据「声部音轨带音符但零设备」＋ s27 e2e 脚本防掏空守卫；含"新守卫不逐条列出就不进 CI"这条实操教训）；
@@ -52,6 +53,37 @@
 - ⚠ **本机不可判的两条**（别再误读成红）：本机 `python3` **无 pip 且缺 `jsonschema`／`yaml`** ⇒
   `scripts/gates/validate_schemas.py` 本机 `rc=2`、`scripts/guards/check_workflow_structure.py` 本机 `ModuleNotFoundError`。
   这两项只能信 CI 对应步骤；`check_warning_codes.py` 本机 `rc=0`，它顺带证明了 schema 的 **JSON 语法**与 `definitions.WarningCode.enum` **路径可读**（这就是本机可证的全部）。
+
+### 0.6.0zb ⭐ 尾批（2026-11-01）：**s29（s28 第二片）已推线 `cb5a5673`** —— 广播子集进 `outputSchema`、校验器**真的开始递归**（判决 pending）
+
+- **线**：`line/s29-warning-code-teeth`（树 `.worktrees/s29-warning-code-teeth`，基线 = 主干 tip `8567c53b`）
+  ⇒ 唯一提交 `cb5a5673`（**一个文件** `crates/yeban-mcp/src/output_schema.rs`，+298 / −34）
+  ⇒ run **`41227512300`**（`headSha` 全名 `cb5a5673e475b4cc0bc2c2fd5f9c706713c8b231`）现读 `in_progress` ⇒ **pending**，⛔ 不是"通过"。
+  明细与理由在台账 **§22.17**。
+- ⭐ **上一轮那句错话已改正**（⚠ 台账 §22.16 原文写「自带校验器**不递归 `items`、也不实现 `enum`**」，后半句是错的）：
+  `check_declared` 自 `MCP-TOOL-005` 那批起就按逐值相等核 `enum`，**缺的只有递归**。
+  教训：一句"顺手写下的能力清单"会把下一片的方向整个带偏（差点去重写已存在的 `enum` 支持）⇒ **先现读，再写"缺什么"**。
+- ⭐ **本片把"广播"和"自查"接成同一件事**（三件一起，缺一件就是假广播）：
+  ① `warnings[].code` 按**调用链现读**的逐工具子集进广播（提案族 `deviceOnSilentTrack`+`unrecognisedEffectParam`／
+  母带 `exportClipping`+`silentSources`；名册第五枚 `sfzSamplesUnreadable` ⛔ 刻意不广播 —— 它只出自两个
+  `for_tool` 返回 `None` 的扩展工具）；② 校验器补 `properties` / `items` **递归**，路径带下标（`$.warnings[0].code`）；
+  ③ 四条常驻判据（递归含二级下标、**双向**越名册必红、广播子集逐字 == 现读名册且"契约减广播 = 恰好那第五枚"）。
+- ⚠ **递归改动的爆炸半径是数出来的**：改之前 json 字面量里有 **12 处**嵌套 `"required"`
+  （`proposal_summary`／`undo_display`／三处 `willCreate`／`edit_notes` 的 `warnings.items`／`merge_proposal.commit`／
+  `edit_automation` 的 `lane`+`read`+`origin`／`query_engine_state` 的 `session`+`engine`）——
+  **从写下到 s29 一次都没被跑过**，现在全部变活断言。其中最难看的一句：`edit_notes` 早就广播了
+  `required:["code","hint"]`，而校验器只看得到顶层。
+  ⇒ 本机**跑不了** `yeban-mcp` 的 test/clippy（重依赖，§5.1/5.2 禁单），能依赖的是**真实响应早有判据在核**
+  （`tests/props_176.rs` 逐个拿 `tools/call` 真响应跑 `validate`/`validate_complete`、`tests/render_master.rs` 同）
+  ⇒ 若这 12 处里有任何一处与真实响应矛盾，CI 会红在**那条判据**上（那是真发现）。本机跑过的只有：`cargo fmt`、
+  `check_warning_codes.py` `rc=0`（5/5 逐名）、`policy_check.py` `rc=0`、两个文档守卫 `rc=0`。
+- ✅ **§0.6.0za 留的那个"防死名册"问题在本片有了落点**：⛔ 不要再要求"契约里加 `$ref`"——
+  现读 `grep -c '"warnings"' schemas/mcp-tools.schema.json` 仍是 **0**、`WarningCode` 只出现 **1** 次（它自己的定义）。
+  本仓库的逐工具响应形状住在 **Rust 的 `output_schema.rs`**，JSON 契约只管 **信封**，所以 `$ref` 没有落点。
+  现在这份名册有**两个**消费者：`scripts/guards/check_warning_codes.py`（构造点 ↔ 契约，集合相等）
+  ＋ 新增的 Rust 判据（`include_str!` 读同一份契约核"广播 ⊆ 契约"）⇒ 改名或删键会同时红在两处。
+- ⏳ **下一步**：读回 `41227512300` 的**目标腿**（宽档全量腿里 `yeban-mcp` 的 `test result:` ＋ 四条新判据逐名 `ok`）
+  ⇒ 绿才 `scripts/dev/worktree.sh land s29-warning-code-teeth` → 推 main → 读合流 run；⛔ 红不叠未证的提交。
 
 ### 0.6.0y ⭐ 尾批（2026-10-31 22:40）：**三处陈旧口径改正** ＋ s28 的前置读数 ＋ 合流判决（待填）
 

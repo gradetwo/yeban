@@ -17176,12 +17176,16 @@ helper 里 ⇒ 必须不认（防假绿）。两条臂在旧实现上都会失�
   ⇒ 属 **`yeban_load_sfz` / `yeban_render_sfz_wav`** —— ⚠ **这两个是扩展工具，`for_tool` 对它们返回 `None`**
   （`output_schema.rs:95-104` 只列 10 个文档化工具；`:1174-1176` 的常驻判据就在断言"没有 schema 时是 `None` 而非 `{}`"）
   ⇒ **第 5 枚 code 在当前设计里无处广播**，只能靠 JSON 契约的名册 + `data.warnings[]` 的实际内容兜住。
-- ⚠⚠ **本片最容易做成假广播的地方**：本仓库自带的输出校验器 `output_schema.rs::validate`（**138-168**）只认
-  顶层 `type` / `required` / `properties` 的**类型**，**不递归 `items`、也不实现 `enum`**（`check_declared` 只比类型名）。
+- ⚠⚠ **本片最容易做成假广播的地方**：本仓库自带的输出校验器 `output_schema.rs::validate` 只认
+  顶层 `type` / `required` / `properties` 的**类型**，**⛔ 不递归** ⇒ `items` 里声明的
+  `enum` / 逐键 `type` / 该层的 `required` **一个都不核对**。
+  ⚠ **本条目原文还多写了一句"也不实现 `enum`"，那是错的**（2026-11-01 现读改正，见 §22.17）：
+  `check_declared` 自 `MCP-TOOL-005` 的 edit_automation／redo／reject_proposal 批起**就实现 `enum`**
+  （逐值相等），缺的只有"递归到声明 `enum` 的那一层"。
   所以只往 4 处站点塞 `"enum": [...]` 而不动校验器，效果是**"对外广播了一个我们自己不检查的约束"**：
   真 MCP 客户端会按标准 JSON Schema 拒绝越名册的 code，我们这边却一路放行。
   ⇒ 第二片的**最小诚实形状**是三件一起：① 站点写 `items.code.enum`（按上面的**逐工具子集**，⛔ 五枚全贴），
-  ② 校验器补 `items` 递归 + `enum` 支持（或明确写"本仓库不校验，仅广播"并把这句放进 `docs/`），
+  ② 校验器补 `items` / 嵌套 `properties` 的**递归**（`enum` 已支持，⛔ 不必重做），
   ③ 常驻判据：`validate`/`validate_complete` 的测试模块（现有 `:1133-1168` 那种正反两路）加一条
   "越名册的 code 必须被拒"，否则 ② 无从证明。⛔ 只做 ① 的批次不要推。
 - **另两条口径**：`schemas/mcp-tools.schema.json` 的 `definitions` 现有 **8** 个键
@@ -17194,3 +17198,51 @@ helper 里 ⇒ 必须不认（防假绿）。两条臂在旧实现上都会失�
   ⛔ 推送门槛已解除：合流 run `41222166136` 判绿（§22.15 末的 ✅ 条目），第二片可以从 `main` 另起新线开工；
   基准 sha 从 `a8ff496c` 变为 `bdf91d19` 之后的主干 tip —— ⚠ 起线前照例 `git fetch` 现读，⛔ 抄本节写的 sha。
 
+
+### 22.17 ⭐ s29（s28 第二片）已推线，判决 pending（2026-11-01）＋ §22.16 的一句改正
+
+- **线**：`line/s29-warning-code-teeth`（树 `.worktrees/s29-warning-code-teeth`，基线 = 主干 tip `8567c53b`，`git fetch` 现读）
+  ⇒ 唯一提交 `cb5a5673`（`crates/yeban-mcp/src/output_schema.rs`，+298 / −34，**一个文件**）
+  ⇒ 推送 `origin/line/s29-warning-code-teeth` ⇒ run **`41227512300`**（`headSha=cb5a5673e475b4cc0bc2c2fd5f9c706713c8b231`）
+  状态 `in_progress` ⇒ **pending**，⛔ 不是"通过"。落地前照 §22.7 的 `headSha` 反查法读回，并逐腿读（改的是 crate 代码 ⇒ 宽档）。
+- **改正 §22.16 的一句错话**（先说指标再读数：数的是 `check_declared` 里有没有 `enum` 分支）：
+  原文「**不递归 `items`、也不实现 `enum`**」的**后半句是错的** —— `enum` 自 `MCP-TOOL-005`
+  的 edit_automation／redo／reject_proposal 批起就按**逐值相等**核对（`output_schema.rs` 的 `check_declared`
+  里就有 `schema.get("enum")` 那一段，本文件的模块文档第 4、5 条也写着这段历史）。
+  ⚠ 这条错话差点把第二片的方向带偏成"重写校验器的 enum 支持"；真缺口只有**递归**。已就地改正，不留二手抄。
+- **本片做了三件（缺一件就是假广播）**：
+  ① **逐工具子集**进广播：提案族（`propose_section` / `edit_notes` / `set_macro`）共用
+  `PROPOSAL_WARNING_CODES = [deviceOnSilentTrack, unrecognisedEffectParam]`；
+  母带 `RENDER_WARNING_CODES = [exportClipping, silentSources]`。子集来自调用链现读（§22.16），
+  不是词面猜的；名册第五枚 `sfzSamplesUnreadable` ⛔ 不进任何子集（只出自两个**不广播 outputSchema** 的扩展工具）。
+  ② **校验器真的递归**：`validate` 拆成 `validate` + `check_object_fields` + `check_declared_field`，
+  路径带下标（`$.warnings[0].code`）。⚠ 这一改的**爆炸半径是实测出来的**：改动前 `output_schema.rs` 的
+  json 字面量里有 **12 处**嵌套 `"required"`（`proposal_summary_schema`／`undo_display_schema`／
+  三处 `willCreate`／`edit_notes` 的 `warnings.items`／`merge_proposal.commit`／`edit_automation` 的
+  `lane`+`read`+`origin`／`query_engine_state` 的 `session`+`engine` 等）——
+  这 12 处**从写下到 s29 一次都没被跑过**，递归一开全部变成活断言。
+  其中最扎眼的是 `edit_notes` 那句 `required:["code","hint"]`：它早就写在广播里，而校验器只看得到顶层。
+  ③ **四条常驻判据**（都在同文件的 `mod tests`）：
+  `the_recursion_reaches_inside_array_items_and_indexes_the_path`（含二级下标 `$.warnings[0].knownParams[1]`
+  ＋ items 层 `required` 缺席 ＋ 正反两路的**真实构造点形状**）、
+  `a_warning_code_outside_the_broadcast_subset_is_rejected`（**两个方向**：提案族收母带码必红、母带收提案码必红）、
+  `the_broadcast_warning_subsets_match_the_measured_call_chain`（广播子集逐字 == 现读名册；发明数 = 空集；
+  契约减广播 = **恰好** `sfzSamplesUnreadable`）、以及复用的 `a_missing_schema_is_none_not_an_empty_object`。
+  对账分工写死在判据文档里：`scripts/guards/check_warning_codes.py` 管"**实现侧构造点 == 契约 enum**"，
+  这条 Rust 判据管"**广播侧 ⊆ 契约**且子集不退化" —— 契约／实现／`tools/list` 三处不可能各说一套。
+- **刻意保留的一处弱广播（不是漏做）**：母带的 `warnings.items` 只声明 `code` + `hint`。
+  理由是有**未证的形状**：`clipping_warning` 的 `truePeakDbfs` / `headroomDb` 走
+  `json_f32(Option<f32>)`（`domain/render.rs` 里那个 `Some(number) if number.is_finite()` 的分支，缺读数落 `Null`），
+  而 `silentSources` 一条都不带这两个键 ⇒ 按并集声明会把**真实响应自己拒掉**。假广播比弱广播更糟。
+  提案族反过来做了并集（12 个键全部逐键声明类型），因为两条构造点的键都是**非空具体值**
+  （`DeviceDefinition.name: String`、`recognised_names(): Vec<&'static str>`、`TrackPlayableSurvey.sounding_placements: usize`）。
+- **本机跑过 / 跑不了（⛔ 把"没跑"写成"过了"）**：
+  跑过 = `cargo fmt`（顺带证明这份文件能被解析）、`python3 scripts/guards/check_warning_codes.py` **rc=0**
+  （实现侧 5 枚 ↔ 契约 5 枚，逐名印出）、`policy_check.py` rc=0。
+  ⛔ 没跑 = `yeban-mcp` 的任何 `clippy` / `test`（重依赖 crate，本机禁单，见 §5.1/5.2）⇒
+  递归改动的正确性只能靠 CI 判，好在**真实响应早就有判据在核**：`tests/props_176.rs` 逐个拿
+  `tools/call` 的真响应跑 `validate` / `validate_complete`、`tests/render_master.rs` 也拿母带真响应跑 `validate`
+  ⇒ 若上面那 12 处嵌套声明里有任何一处与真实响应矛盾，CI 会**直接红在那条判据上**（那是真发现，不是噪声）。
+- ⏳ **待办**：读回 `41227512300` 的**目标腿**（宽档 `rust (workspace 全量)` 里 `yeban-mcp` 的
+  `test result:` 行 + 新增四条款据名逐条 `ok`）⇒ 绿才 `worktree.sh land s29-warning-code-teeth` → 推 main →
+  读回合流 run；红则按日志点名修，⛔ 不叠未证的提交。
