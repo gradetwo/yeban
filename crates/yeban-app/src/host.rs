@@ -8527,25 +8527,27 @@ fn apply_action(
             true
         }
         // `Escape` = **收尾**：取消当前手势（`ADR-0004` S1 的纵向拖拽 / `ADR-0005` 的
-        // 推子与声相），或关闭全屏时光机（`[UI-A11Y-003]` §7.3）。
+        // 推子与声相），或关闭模态面板（时光机与导出设置弹窗；`[UI-A11Y-003]` §7.3）。
         //
-        // 六个来源各自独立、各自有唯一清零点，因此这里**都问一遍**（任一命中即消费）：
+        // 七个来源各自独立、各自有唯一清零点，因此这里**都问一遍**（任一命中即消费）：
         // 1. 时光机开着 ⇒ 落 [`UiAction::CloseUndoTree`]（**只改界面运行态**，不碰工程）；
-        // 2. 纵向拖拽在手 ⇒ 落 [`cancel_track_height_drag`]（写回起点高度）；
-        // 3. 混音手势在手 ⇒ 落窗口回调 `mixer-cancel-gesture` → [`cancel_mixer_gesture`]
+        // 2. 导出设置弹窗开着 ⇒ 落窗口回调 `close-export-wav`（**只改视图态**，⛔ 不落盘、
+        //    ⛔ 不碰工程）；
+        // 3. 纵向拖拽在手 ⇒ 落 [`cancel_track_height_drag`]（写回起点高度）；
+        // 4. 混音手势在手 ⇒ 落窗口回调 `mixer-cancel-gesture` → [`cancel_mixer_gesture`]
         //    （写回起点音量 / 声相）；
-        // 4. `[UI-NOTE-003]` 卷帘音符移动手势在手 ⇒ 落 [`cancel_note_drag`]
+        // 5. `[UI-NOTE-003]` 卷帘音符移动手势在手 ⇒ 落 [`cancel_note_drag`]
         //    （**丢弃草稿**；拖动期从未写进工程 ⇒ ⛔ 不提交、⛔ 不重投影）；
-        // 5. `[UI-NOTE-003]` 卷帘**力度**手势在手 ⇒ 落 [`cancel_velocity_drag`]
+        // 6. `[UI-NOTE-003]` 卷帘**力度**手势在手 ⇒ 落 [`cancel_velocity_drag`]
         //    （同上：只丢弃草稿；两个卷帘手势互斥，但两条清零各自独立 ⇒ 谁也不会漏收尾）；
-        // 6. 编曲**剪辑平移**手势在手 ⇒ 落 [`cancel_clip_drag`]（同上：只丢弃草稿）。
+        // 7. 编曲**剪辑平移**手势在手 ⇒ 落 [`cancel_clip_drag`]（同上：只丢弃草稿）。
         //
         // 顺序是**决定**，不是巧合：模态面板在最前面，因此"手势还在手"时按 `Escape`
-        // 先关时光机（与 `[UI-A11Y-003]` 的模态语义同向）。六条各自独立：关掉时光机
+        // 先关模态（与 `[UI-A11Y-003]` 的模态语义同向）。七条各自独立：关掉时光机
         // **不会**顺带取消手势（用户还要按第二次 `Escape`），没有手势在手也不会把
         // 关闭动作算作"已收尾"。
         //
-        // 六条都没有命中时返回 `false`（照旧放行给焦点系统）—— 与 `Escape` 接线之前
+        // 七条都没有命中时返回 `false`（照旧放行给焦点系统）—— 与 `Escape` 接线之前
         // 的行为逐位相同。这里**没有**新增 `Action` 变体：`Action::Cancel` 本来就在
         // 策略表里（`input.rs` 的 `Key::Escape => Resolution::Action(Action::Cancel)`），
         // 它此前只是没有落地实现（`action_has_implementation` 把它列在未实现里）。
@@ -8565,11 +8567,28 @@ fn apply_action(
                 refresh_undo_window(ui, port, false);
                 return true;
             }
+            // ⭐ **导出设置弹窗**（`ui/dialogs/export_wav_dialog.slint`）此前**只有**一条
+            // 出路：鼠标点「✕ 关闭」（`export-wav-close-button`）。它盖住整帧（遮罩
+            // `mask-black @ 0.65`），而 `Escape` 是这一类面板的收尾键 —— 时光机那一半
+            // 已经接了，这一半漏了。
+            //
+            // ⚠ 这里**只触发**那条既有回调，⛔ 不在键盘臂再写一次那个属性的 setter：
+            // 它的写者必须**恰好**是「打开」「关闭」那两处（`wire_module_actions_with_capture`），
+            // 多一处就是第二个真相源（同一条纪律见 `tests/ui_export_dialog.rs` 判据 ⑤ 与
+            // 抽屉那批 `set_musical_pr_*` 唯一写者判据）。`close-export-wav` 的注册者也
+            // **只有一个**，因此键盘与鼠标落的是**同一条**路 ⇒ 不可能分叉。
+            //
+            // ⚠ **前置**只有"弹窗开着"这一格：本动作**不**校验路径 / 选项，也**不**导出、
+            // **不**写盘、**不**碰工程 —— 关闭是纯视图态（与那条回调逐字同语义）。
+            if ui.get_export_wav_open() {
+                ui.invoke_close_export_wav();
+                return true;
+            }
             let height = cancel_track_height_drag(ui, undo);
             let mixer = ui.invoke_mixer_cancel_gesture();
             let note = cancel_note_drag(ui);
             let velocity = cancel_velocity_drag(ui);
-            // 6. 编曲剪辑平移手势在手 ⇒ 落 [`cancel_clip_drag`]（丢弃草稿、⛔ 不提交）。
+            // 7. 编曲剪辑平移手势在手 ⇒ 落 [`cancel_clip_drag`]（丢弃草稿、⛔ 不提交）。
             let clip = cancel_clip_drag(ui);
             height || mixer || note || velocity || clip
         }
