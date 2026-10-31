@@ -67,7 +67,7 @@ const UNBOUNDED_BASELINE: usize = 0;
 /// ⚠ **身份＝内容锚**（⛔ 不用行号：在上方插行会整体错位 ⇒ 假红，引擎那份的原文教训）。
 /// ⚠ **本条守卫不做"内容锚必须唯一"检查**（来历：`yeban-ui-mcp` 的 `tests/tools_e2e.rs` 有
 /// 两处**逐字符相同**的内层站点，共用同一条理由；唯一性检查会把刻意同形的站点判成歧义）。
-/// 冒充风险由 [`stale_entries`] 兜住：任一处已经**有界**仍登记 ⇒ 直接红。本 crate 现为空表。
+/// 冒充风险由 [`stale_entries`] 兜住：任一处已经**有界**仍登记 ⇒ 直接红。本 crate 现登记 **5** 条（见下表）。
 /// ⚠ 本 crate 的 5 条 = **生产不变量**（`debug_assert!`），集合**合法**为空或只有一个元素：
 /// `onsets_per_bar = 0` 是合法输入（`pattern(...)` 返回空模式，见 `drum.rs` 的
 /// `an_out_of_range_backbeat_is_rejected_not_clamped`），单个 onset 也合法。它们的性质
