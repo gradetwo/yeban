@@ -28,7 +28,15 @@
 // `#[path]` 引入**模型层的真实源文件**，而不是再造一份副本。裸 `rustc` 没有
 // `--extern`，所以用 `extern crate self as …` 把本 crate 同时暴露成那两个
 // 依赖名；`PPQ` 也补齐（模型文件的单元测试写的是 `crate::PPQ`）。
+//
+// ⚠ 这两条别名**只在裸 `rustc` 路径上被用到**：当本文件被当模块引进集成测试
+// （`tests/render_pure_scaffold.rs`）时，实测**父模块的别名对子模块不可见**
+// （`E0433`），子模块会回落到真实依赖 crate ⇒ 别名在该形态下无人使用，而
+// CI 的 `-D rust-2018-idioms` 蕴含 `-D unused-extern-crates` ⇒ 不加 `allow`
+// 就是编译错误（run `41174625360` 实测）。两个形态都要能编，故就地 `allow`。
+#[allow(unused_extern_crates)]
 extern crate self as libm;
+#[allow(unused_extern_crates)]
 extern crate self as yeban_model;
 
 /// 裸 `rustc` 的验证专用 shim：生产构建用的是 `yeban-mcp` 依赖里的纯 Rust
@@ -285,7 +293,10 @@ mod clip_reconciliation {
                     for rate in [44_100u32, 48_000, 96_000, 192_000] {
                         let ours = clip::clip_frame_span(start, duration, 960, bpm as f64, rate);
                         let theirs = super::reference_clip_span(start, duration, 960, bpm, rate);
-                        assert_eq!(ours, theirs, "bpm={bpm} start={start} dur={duration} rate={rate}");
+                        assert_eq!(
+                            ours, theirs,
+                            "bpm={bpm} start={start} dur={duration} rate={rate}"
+                        );
                         assert!(ours.1 > ours.0, "非零时值必须给出非空区间");
                         checked += 1;
                     }
@@ -301,7 +312,11 @@ mod clip_reconciliation {
         for asset in 0u16..=8 {
             for out in 0usize..=8 {
                 let ours = clip::channel_layout(asset, out).map(clip::ChannelLayout::name);
-                assert_eq!(ours, super::reference_layout(asset, out), "{asset} -> {out}");
+                assert_eq!(
+                    ours,
+                    super::reference_layout(asset, out),
+                    "{asset} -> {out}"
+                );
             }
         }
     }
@@ -332,7 +347,14 @@ mod clip_reconciliation {
             if from >= to { None } else { Some((from, to)) }
         };
         for frames in [0u64, 1, 2, 100, 44_100] {
-            for delay in [None, Some(0u32), Some(1), Some(64), Some(44_100), Some(1_000_000)] {
+            for delay in [
+                None,
+                Some(0u32),
+                Some(1),
+                Some(64),
+                Some(44_100),
+                Some(1_000_000),
+            ] {
                 for padding in [None, Some(0u32), Some(1), Some(64), Some(1_000_000)] {
                     assert_eq!(
                         clip::encoder_trim_span(frames, delay, padding),
@@ -356,9 +378,15 @@ mod clip_reconciliation {
         for cut in 0..riff.len() {
             let prefix = &riff[..cut];
             if cut >= 12 {
-                assert_eq!(clip::sniff_container(prefix), clip::ContainerSniff::RiffWave);
+                assert_eq!(
+                    clip::sniff_container(prefix),
+                    clip::ContainerSniff::RiffWave
+                );
             } else {
-                assert_ne!(clip::ContainerSniff::RiffWave, clip::sniff_container(prefix));
+                assert_ne!(
+                    clip::ContainerSniff::RiffWave,
+                    clip::sniff_container(prefix)
+                );
             }
         }
         // 用一串"每个字节都试一遍"的构造证明: 不是签名的东西不会被误认。

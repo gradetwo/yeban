@@ -85,6 +85,13 @@ EXCEPTIONS: list[dict[str, str]] = [
         "reason": "用 #[path] 把 verify/section_pure.rs 的开环判据（含未知 materialSource 的"
         "拒绝面，tests/ 下无等价物）接进 cargo 门禁；同一先例见 yeban-render 的上一条。",
     },
+    {
+        "path": "crates/yeban-mcp/tests/render_pure_scaffold.rs",
+        "kind": "path_wrapper",
+        "reason": "用 #[path] 把 verify/render_pure.rs 的本机脚手架（53 条：独立参考实现对账 ＋ "
+        "被包含的真实 render_math/render_clip_math/time_math 单元判据）接进 cargo 门禁；"
+        "此前只被 clippy-changed.sh 当元数据看，无门禁执行。",
+    },
 ]
 
 PATH_ATTR = re.compile(r'#\[path\s*=\s*"([^"]+)"\]')

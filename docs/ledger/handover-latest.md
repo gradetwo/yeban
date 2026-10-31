@@ -12,6 +12,27 @@
 > `docs/ledger/phase-status.md` 的叙事条目**停在 R1144**（2026-10-26）⇒ ⭐ 读进度以
 > `DEVELOPMENT_LEDGER.md` 的尾部为准，⛔ 不要以为 R1144 之后没干活。
 
+### 0.6.0t ⭐ 尾批（2026-10-31 15:10）：`verify/render_pure.rs` 同族开环清零 —— **`crates/*/verify/*.rs` 三份脚手架现在全有 cargo 门禁执行面**；顺手记下 `-D rust-2018-idioms` 这条隐性门槛
+
+- **缺口**：`crates/yeban-mcp/verify/render_pure.rs` 是零依赖 `rustc --test` 脚手架（`#[path]` 引**真实源**
+  `src/domain/render_math.rs`／`render_clip_math.rs`／`../../yeban-model/src/time_math.rs`），
+  `scripts/`／`.github/` 无执行者（只有 `clippy-changed.sh` 的元数据分支）⇒ 判据无门禁执行。
+- **修法（§19 同款）**：新增 `crates/yeban-mcp/tests/render_pure_scaffold.rs`（36 行）包装 ＋
+  `pub use yeban_model::PPQ;`（被包含的 `time_math.rs` 单元测试写 `crate::PPQ`；⛔ 不复制第二份 960）＋
+  门禁登记 `path_wrapper` 例外（+7 行）。main 上现读：**308／299／9／9**（`[ok]`）。
+- **判据总数 53** = 脚手架自有 13 ＋ `render_math` 20 ＋ `render_clip_math` 7 ＋ `time_math` 13；
+  **三平台日志各自 `Running tests/render_pure_scaffold` 在场、各 `53 passed; 0 failed`、`FAILED` 0**。
+- **⚠ 首推红（run `41174625360`）**：包装后两条 `extern crate self as …` 别名无人使用，而工作区
+  `rust_2018_idioms = deny` 蕴含 `-D unused-extern-crates` ⇒ 三平台腿同红在 `unused extern crate`；
+  就地 `#[allow(unused_extern_crates)]` 后（`51841f1d`）全绿。**本地 clippy 必须带 `-D rust-2018-idioms`**，
+  只跑 `-D warnings` 复现不出该类别。
+- **家族状态**：两处 `verify/` 目录、三份 `.rs` 脚手架（`section_pure` / `render_pure` / `render/pure_modules`）
+  全部进门禁 ⇒ 开环清零。余下 `verify/*.py` 与 `e2e_audio_clip_stdio.sh` **不是** Rust 脚手架、
+  全库只有文档/注释引用、`audio_pins.py` 本机跑 `ModuleNotFoundError: numpy` ⇒ 属另一族，已登记未动。
+- **判决**：线 `51841f1d`／run `41175795519` **success**（三平台各自 `53 passed; 0 failed`、`FAILED` 0）；
+  merge `05ec9064`／run `41178606773` **success** —— workspace 全量腿 **41m57s**、`Running tests/` 437／
+  `test result:` 504／`FAILED` 0，腿内 53 条判据在场。工作树已拆（分支保留）。
+
 ### 0.6.0s ⭐ 尾批（2026-10-31 13:42）：**`verify/section_pure.rs` 的 48 条判据此前无任何门禁执行**（开环）⇒ 用 R50① 的 `#[path]` 包装接进 cargo 门禁；顺手揪出 2 条陈旧判据 ＋ 主干一枚继承红
 
 - **缺口（实测，非推测）**：`grep -rn 'section_pure' scripts/ .github/` 只命中

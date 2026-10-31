@@ -16670,3 +16670,58 @@ helper 里 ⇒ 必须不认（防假绿）。两条臂在旧实现上都会失�
   可照本批 `#[path]` 包装（差异：它用 `extern crate self as yeban_model`，包装后需实测别名是否仍成立）。
 - `yeban-mcp/verify/*.py`（`audio_pins.py` 等）自登记"不是 cargo 目标、不参与任何门禁" ⇒ 属**另类**
   开环，动它前先确认它们是否被 CI 的其他脚本调用（避免重复实现）。
+
+## 2026-10-31 15:10 —— §20 第十六批：`verify/render_pure.rs` 同族开环清零（三平台 53 判据真跑）＋ `-D rust-2018-idioms` 的隐性门槛
+
+### §20.1 缺口（§19.6 预告的第二处，实测非推测）
+
+- `crates/yeban-mcp/verify/render_pure.rs`：零依赖 `rustc --test` 脚手架，`#[path]` 引**真实源**
+  `../src/domain/render_math.rs`、`../src/domain/render_clip_math.rs`、`../../yeban-model/src/time_math.rs`；
+  `grep -rn 'render_pure' scripts/ .github/` 唯一命中仍是 `clippy-changed.sh` 的**元数据**分支 ⇒ 判据无门禁执行。
+- 判据总数 **53**（三平台日志一致）：脚手架自有 **13** ＋ 被包含真实源的单元判据
+  `render_math` **20** ＋ `render_clip_math` **7** ＋ `time_math` **13**。
+
+### §20.2 修法（与 §19.2 同款包装，差异只在别名）
+
+- 新增 `crates/yeban-mcp/tests/render_pure_scaffold.rs`（36 行）：`#[path = "../verify/render_pure.rs"]`
+  包装 ＋ `#![allow(dead_code)]` ＋ `pub use yeban_model::PPQ;`。`PPQ` 是唯一需要暴露的名字：
+  被包含的 `time_math.rs` 单元测试写 `crate::PPQ`，而此处 crate 即集成测试 crate ⇒ 直接转出**真实常量**，
+  ⛔ 不复制第二份 960。
+- `scripts/gates/check_test_criteria_presence.py` 登记 `path_wrapper` 例外（+7 行）。main 上现读：
+  **扫过 308 个 `tests/*.rs`／含判据 299／零判据 9／登记例外 9**（`[ok]`）。
+
+### §20.3 别名可见性（三次 20 行 `rustc` 探针的实测，不靠推断）
+
+1. **同一模块内**的 `extern crate self as X` 会**遮蔽** extern prelude（该模块的子模块解析到别名）；
+2. **crate 根**的别名对全 crate 可见；
+3. **父 *模块* 的别名对子模块不可见**（`E0433`）⇒ 文件被当模块引入时，其子模块回落到真实依赖 crate。
+
+- 结论：包装形态下 `libm`／`yeban_model` 两条别名**无人使用**；而工作区 lints
+  （`Cargo.toml:110 rust_2018_idioms = { level = "deny" }`）蕴含 `-D unused-extern-crates`
+  ⇒ 首推 run `41174625360` 三平台 rust 腿同红在 `error: unused extern crate`。
+- 修法：两条别名就地 `#[allow(unused_extern_crates)]`（裸 `rustc` 形态仍要能编），文件内注释写清两种形态。
+
+### §20.4 判决链（逐 job 读回，按 headSha 对齐）
+
+| 提交 | run | 结论 | 关键读数 |
+|---|---|---|---|
+| 线 `9459e2b1` | `41174625360` | **failure** | 三平台 rust 腿红在 clippy 步：`unused extern crate`；job 日志在 clippy 命令处截断，真输出在 `macos-gate-log` 产物的 `gate.log` 里（本机从产物读回，⛔ 不是从截断日志猜） |
+| 线 `51841f1d` | `41175795519` | **success** | `rust (yeban-mcp)`：140 条 `Running tests/`／147 条 `test result:`／`FAILED` **0**；`Running tests/render_pure_scaffold.rs` 在场且 `53 passed; 0 failed`（06:22:37）；macos 同读数（06:22:29）；windows 同读数（`tests\render_pure_scaffold.exe`，06:26:39）；`rust (workspace 全量)` 本轮 plan 判 **skipped**（⛔ 不计绿）；macos 18m、windows 39m、checks 46s、deny 47s |
+| merge `05ec9064` | `41178606773` | **success** | 触碰 `scripts/gates/**` ⇒ plan 判 **workspace_wide**：`rust (workspace 全量)` **41m57s**，`Running tests/` **437**／`test result:` **504**／`FAILED` **0**，腿内 `test result: ok. 53 passed; 0 failed`（`render_pure_scaffold`）在场（07:22:40）；macos 27m47s、windows 40m30s、checks 57s、deny 34s；`rust (矩阵)` 本轮按 workspace 模式判 **skipped**（⛔ 不计绿） |
+
+### §20.5 教训：本地 clippy 必须带工作区 lints
+
+- 本机复现该红**只有**带上 `-D rust-2018-idioms` 才同型；只跑 `-D warnings` 会漏掉整个
+  `unused-extern-crates` 类别 —— **工作区 lint ≠ crate 属性**，本地 clippy 参数必须与 CI 对齐。
+- 另一个操作性的：`gh run view --log` 在 run 未完成时**取不到**；单 job 日志要走
+  `gh api repos/{owner}/{repo}/actions/jobs/<id>/logs`，且需 `--allow-escape-sequences`（否则 rc=1）。
+
+### §20.6 `crates/*/verify/*.rs` 开环家族清零
+
+- 仓库只有两处 `verify/` 目录（`yeban-mcp`、`yeban-render`）；三份 `.rs` 脚手架
+  （`mcp/verify/section_pure.rs` §19、`mcp/verify/render_pure.rs` 本批、`render/verify/pure_modules.rs` R50①）
+  现在**都有** `tests/` 包装 ⇒ 该家族开环清零。
+- 余下 `mcp/verify/*.py`（`audio_pins.py`／`e2e_audio_clip_seed.py`／`idempotency_replay_schema.py`）
+  与 `e2e_audio_clip_stdio.sh` **不属于** Rust 脚手架：全库 `grep` 只有文档与源码注释引用，**无 CI 调用**；
+  本机实跑 `python3 crates/yeban-mcp/verify/audio_pins.py` ⇒ `ModuleNotFoundError: No module named 'numpy'`。
+  ⇒ 接门禁需先解决第三方依赖，属**另一族**；本批只登记，⛔ 不碰。
