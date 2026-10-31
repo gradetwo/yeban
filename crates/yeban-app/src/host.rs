@@ -6457,7 +6457,11 @@ pub fn wire_save_with_engine(
         // ⚠ **取消不是失败**：用户按了"取消" ⇒ 本回调**什么都不做**（⛔ 不写
         // `save-status`、⛔ 不调 `dispatch_save`）。把取消写成"保存失败：没有目标路径"
         // 是把"我不想"和"出错了"混成一句 —— 本仓最忌讳的那类假读数。
-        let target = match chosen.borrow().clone().or_else(|| port.target.clone()) {
+        // ⚠ `chosen.borrow()` **单独**占一条语句：写在 `match` 的判据里时，
+        // 那个 `Ref` 临时量会活到整个 `match` 结束（临时量作用域），
+        // 于是下面 `None` 臂里的 `chosen.borrow_mut()` 当场 panic（`RefCell already borrowed`）。
+        let remembered = chosen.borrow().clone();
+        let target = match remembered.or_else(|| port.target.clone()) {
             Some(path) => Some(path),
             None => {
                 let picked = picker.choose_save(
