@@ -179,6 +179,11 @@ fn handmade_mvp_every_field_is_a_literal() {
     assert_eq!(actual, expected);
     assert_eq!(score.note_count(), 4);
     assert_eq!(score.tick_range(), Some((0, 1920)));
+    assert_eq!(
+        score.parts[0].notes.len(),
+        4,
+        "夹具 4 个音符（少于 1 个时下面的 velocity 断言恒真）"
+    );
     assert!(
         score.parts[0]
             .notes
@@ -1013,6 +1018,11 @@ fn mxl_import_readings_are_pinned_by_listing_the_containers() {
         let entries = local_entries(bytes);
         let names: Vec<&str> = entries.iter().map(|entry| entry.name).collect();
         assert_eq!(names, vec!["META-INF/container.xml", "score.xml"], "{name}");
+        assert_eq!(
+            entries.len(),
+            2,
+            "{name}: 容器恰好 2 个条目（少于 1 个时下面的 method 断言恒真）"
+        );
         assert!(entries.iter().all(|entry| entry.method == 8), "{name}");
         assert_eq!(entries[0].crc32, 0xae69_681f, "{name} 的 container.xml");
         assert_eq!(
