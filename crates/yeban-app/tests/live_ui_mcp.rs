@@ -7062,7 +7062,7 @@ fn a_real_proposal_from_the_authority_is_visible_in_the_opened_drawer() {
     let reply = mcp_call(
         mount.address(),
         &bearer,
-        &r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"yeban_propose_section","arguments":{"sectionName":"Verse","stylePreset":"pop","materialSource":"theory","bars":2}}}"#,
+        r#"{""jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"yeban_propose_section","arguments":{"sectionName":"Verse","stylePreset":"pop","materialSource":"theory","bars":2}}}"#,
     );
     report_line(&format!(
         "[pr-rows] tools/call yeban_propose_section ⇒ status={:?} pendingMerge={:?} proposalId={:?}",
@@ -7280,7 +7280,7 @@ fn selecting_a_row_lights_up_accept_and_it_really_merges_the_proposal() {
     let propose_reply = mcp_call(
         mount.address(),
         &bearer,
-        &r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"yeban_propose_section","arguments":{"sectionName":"Chorus","stylePreset":"pop","materialSource":"theory","bars":2}}}"#,
+        r#"{""jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"yeban_propose_section","arguments":{"sectionName":"Chorus","stylePreset":"pop","materialSource":"theory","bars":2}}}"#,
     );
     assert_eq!(
         propose_reply["result"]["status"], "success",
@@ -7428,7 +7428,7 @@ fn selecting_a_row_lights_up_accept_and_it_really_merges_the_proposal() {
     let second = mcp_call(
         mount.address(),
         &bearer,
-        &r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"yeban_propose_section","arguments":{"sectionName":"Bridge","stylePreset":"pop","materialSource":"theory","bars":2}}}"#,
+        r#"{""jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"yeban_propose_section","arguments":{"sectionName":"Bridge","stylePreset":"pop","materialSource":"theory","bars":2}}}"#,
     );
     assert_eq!(
         second["result"]["status"], "success",
@@ -7534,7 +7534,7 @@ fn a_refused_accept_puts_the_authoritys_own_sentence_on_the_drawer() {
     let proposed = mcp_call(
         mount.address(),
         &bearer,
-        &r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"yeban_propose_section","arguments":{"sectionName":"Verse","stylePreset":"pop","materialSource":"theory","bars":2}}}"#,
+        r#"{""jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"yeban_propose_section","arguments":{"sectionName":"Verse","stylePreset":"pop","materialSource":"theory","bars":2}}}"#,
     );
     assert_eq!(
         proposed["result"]["status"], "success",
