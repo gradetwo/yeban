@@ -515,6 +515,160 @@ fn render_warning_items() -> Value {
     })
 }
 
+/// ⭐ s30：把一份**逐键名册**装成对象 schema —— ⛔ 不要用一个大 `json!` 字面量写名册。
+///
+/// 这条不是风格，是实测换来的（run `41236805286`，2026-11-01）：`sources[]` 那份
+/// "15 键 **含**内层 `sampler` 19 键"的字面量直接
+/// `error: recursion limit reached while expanding $crate::json_internal!`（⇒ `checks`／
+/// `rust (yeban-mcp)`／`ui-mcp`／`macos`／`windows`／`e2e` 六腿同一处编译错误，判据一条没跑）。
+/// 本文件 `#251`/`#268` 那条"单独插入"的理由是同一个机制，而我当时**低估**了它：
+/// 以为"拆成独立函数"就够了 —— 不够，递归深度是按**字面量内部的条目数**推进的，
+/// 与它在哪个函数里无关。逐键装入后递归深度与键数⛔ 无关（每个键各自一份小字面量）。
+///
+/// `required` 由 `properties` 的键**同源生成** ⇒ 不会再出现"声明了却漏进 required"的两份清单。
+#[must_use]
+fn roster_typed(types: &[&str], entries: &[(&str, Value)]) -> Value {
+    let mut required = Vec::with_capacity(entries.len());
+    let mut properties = Map::new();
+    for (name, schema) in entries {
+        required.push(Value::from(*name));
+        properties.insert((*name).to_owned(), (*schema).clone());
+    }
+    // `type` 单值时写成字符串（与其余 schema 同形），多值才写成数组。
+    let kind = if types.len() == 1 {
+        Value::from(types[0])
+    } else {
+        Value::Array(types.iter().map(|name| Value::from(*name)).collect())
+    };
+    json!({
+        "type": kind,
+        "required": required,
+        "properties": properties
+    })
+}
+
+/// 恒发键的对象名册（`type = "object"`）。
+#[must_use]
+fn roster(entries: &[(&str, Value)]) -> Value {
+    roster_typed(&["object"], entries)
+}
+
+/// 可空对象名册（`type = ["object", "null"]`）—— 用于"这条轨没绑采样器"那一类常态缺席。
+#[must_use]
+fn nullable_roster(entries: &[(&str, Value)]) -> Value {
+    roster_typed(&["object", "null"], entries)
+}
+
+/// ⭐ s30：`yeban_edit_automation` 的 `data.lane.points[]` 逐条形状。
+/// 拼装点唯一（`domain/automation.rs` 里 `lane.insert("points", …)` 那段 `json!`，四键**恒发**）。
+/// ⚠ `value` 声明成 `["number","null"]` 是诚实话而非保守：`AutomationPoint.value` 是 `f32`，
+/// 而 `serde_json` 把 `NaN`/`Infinity` **静默写成 `null`**（`json_f32` 的文档明说同一件事）。
+/// `curve` 的词表⛔ **不是这里手抄的**：唯一名册是 [`crate::domain::extension_pure::CURVE_NAMES`]
+/// （`automation.rs` 那句"⛔ 不复制第二套"同样适用于 schema 侧），它与模型 `CurveType` 的双射
+/// 已由常驻判据 `every_name_table_agrees_with_the_model_enum` 钉住；本模块的判据
+/// `the_point_curve_roster_matches_what_the_producer_emits` 再钉"广播的词表 = 生产者
+/// `curve_name` 的逐变体输出"这一环。
+#[must_use]
+fn automation_point_items() -> Value {
+    roster(&[
+        ("id", json!({"type": "string"})),
+        ("tick", json!({"type": "integer"})),
+        ("value", json!({"type": ["number", "null"]})),
+        (
+            "curve",
+            json!({
+                "type": "string",
+                "enum": crate::domain::extension_pure::CURVE_NAMES.to_vec()
+            }),
+        ),
+    ])
+}
+
+/// ⭐ s30：`yeban_query_engine_state` 的 `data.sends[]` 逐条形状。
+/// 拼装点唯一（`domain/engine_state.rs` 的 `send_edges_value`，八字段**恒发**）。
+/// 三处可空都有来源：`gainDb` = `RoutingEdge.gain_db: Option<f32>`（`null` = 单位增益，
+/// 与 `0.0` **可区分**，这是这条契约的意义所在）；两个 `*Name` = 节点查不到音轨时
+/// `map_or(Value::Null, …)` ⇒ 显示名缺席是常态（目标是 bus/master 时按 id 走）。
+/// ⛔ `kind` 不上 `enum`：它是 `RoutingKind` 的 serde 名，词表在模型侧而**这里只发发送边**
+/// ⇒ 真要收紧应该按"过滤后的子集"声明，那是另一件事（需要先证过滤器恒等）。
+#[must_use]
+fn send_edge_items() -> Value {
+    roster(&[
+        ("edgeId", json!({"type": "string"})),
+        ("kind", json!({"type": "string"})),
+        ("sourceNode", json!({"type": "string"})),
+        ("sourceName", json!({"type": ["string", "null"]})),
+        ("destinationNode", json!({"type": "string"})),
+        ("destinationName", json!({"type": ["string", "null"]})),
+        ("gainDb", json!({"type": ["number", "null"]})),
+        ("gainSource", json!({"type": "string"})),
+    ])
+}
+
+/// ⭐ s30：`data.sources[].sampler` 那一层（19 键，可空对象）。
+/// 拼装点唯一（`domain/render.rs` 的 `SamplerReport::to_value`）；19 键⛔ **一个都可空不了**
+/// （字段表里没有一个 `Option`：`String`/`usize`/`u64`/`bool`/`Vec<String>`）。
+#[must_use]
+fn sampler_items() -> Value {
+    nullable_roster(&[
+        ("path", json!({"type": "string"})),
+        ("resolvedPath", json!({"type": "string"})),
+        ("regions", json!({"type": "integer"})),
+        ("silentRegionCount", json!({"type": "integer"})),
+        ("notes", json!({"type": "integer"})),
+        ("notesUnmatched", json!({"type": "integer"})),
+        ("notesUsingFileSample", json!({"type": "integer"})),
+        ("notesWithoutSample", json!({"type": "integer"})),
+        ("notesUsingBuiltinSilence", json!({"type": "integer"})),
+        ("notesLooping", json!({"type": "integer"})),
+        (
+            "sampleSources",
+            json!({"type": "array", "items": {"type": "string"}}),
+        ),
+        (
+            "sampleFailures",
+            json!({"type": "array", "items": {"type": "string"}}),
+        ),
+        ("sampleFramesLoaded", json!({"type": "integer"})),
+        ("sampleReadsTruncated", json!({"type": "boolean"})),
+        ("regionsWithEnvelope", json!({"type": "integer"})),
+        ("decodedSamples", json!({"type": "integer"})),
+        (
+            "missingSamplePaths",
+            json!({"type": "array", "items": {"type": "string"}}),
+        ),
+        ("voiceSteals", json!({"type": "integer"})),
+        ("label", json!({"type": "string"})),
+    ])
+}
+
+/// ⭐ s30：`yeban_render_master` 的 `data.sources[]` 逐条形状（15 键），其内
+/// `sampler` 那一层由 [`sampler_items`]（19 键）给出 —— 两层的唯一拼装点都是
+/// `domain/render.rs` 的 `to_value`。
+///
+/// 可空两处：`peakDbfs` = `json_f32(...)`（缺读数为 `null`）、`sampler` = `Option::map`
+/// （"这条轨没绑采样器"是常态）。`peak` 是裸 `Value::from(f32)` ⇒ 同一条 `f32` 的坑，按可空声明。
+#[must_use]
+fn source_items() -> Value {
+    roster(&[
+        ("node", json!({"type": "string"})),
+        ("track", json!({"type": "string"})),
+        ("kind", json!({"type": "string"})),
+        ("audible", json!({"type": "boolean"})),
+        ("notes", json!({"type": "integer"})),
+        ("audioClips", json!({"type": "integer"})),
+        ("audioClipsUnrendered", json!({"type": "integer"})),
+        ("audioClipsGated", json!({"type": "integer"})),
+        ("notesSilenced", json!({"type": "integer"})),
+        ("notesRatcheted", json!({"type": "integer"})),
+        ("ratchetPulses", json!({"type": "integer"})),
+        ("endTick", json!({"type": "integer"})),
+        ("peak", json!({"type": ["number", "null"]})),
+        ("peakDbfs", json!({"type": ["number", "null"]})),
+        ("sampler", sampler_items()),
+    ])
+}
+
 /// `yeban_propose_section` 的成功响应 `data`（创作面提案，与 [`edit_notes`] 同拼装点
 /// `domain::apply_propose`，[MCP-TOOL-005] 广播面扩展票）。
 fn propose_section() -> Value {
@@ -806,7 +960,7 @@ fn edit_automation() -> Value {
                     "unit": {"type": "string"},
                     "domain": {"type": ["object", "null"]},
                     "pointCount": {"type": "integer"},
-                    "points": {"type": "array", "items": {"type": "object"}}
+                    "points": {"type": "array", "items": automation_point_items()}
                 }
             },
             "read": {
@@ -907,7 +1061,7 @@ fn query_engine_state() -> Value {
                 }
             },
             "track": {"type": ["object", "null"]},
-            "sends": {"type": "array", "items": {"type": "object"}},
+            "sends": {"type": "array", "items": send_edge_items()},
             "stateSources": {"type": "object"}
         }),
     ))
@@ -1022,7 +1176,7 @@ fn render_master() -> Value {
             "latencySource": {"type": "string"},
             "nodeCount": {"type": "integer"},
             "sourceNodes": {"type": "array", "items": {"type": "string"}},
-            "sources": {"type": "array", "items": {"type": "object"}},
+            "sources": {"type": "array", "items": source_items()},
             "probability": {"type": "object"},
             "ratchet": {"type": "object"},
             "audio": {"type": "object"},
@@ -1462,5 +1616,243 @@ mod tests {
     fn broadcast_warning_check(tool: &str, warnings: &Value) -> Result<(), Violation> {
         let schema = for_tool(tool).expect("schema")["properties"]["warnings"].clone();
         check_declared_field(&schema, warnings, "$.warnings")
+    }
+
+    /// ⭐ s30 判据一（接线）：三处**曾经是裸 `{"type":"object"}`** 的槽位，广播出去的 `items`
+    /// 必须**逐字等于**各自的名册函数；第四处 `proposal_detail.ops` 则**必须保持弱声明**
+    /// （台账 §22.20/§22.22：那一处缺的不是勇气，是 `Op` 的逐变体载荷名册 ——
+    /// 外部标签枚举的元素**键名本身随变体变**，写并集就是假广播）。
+    ///
+    /// 三个数（`4`／`8`／`15`＋内层 `19`）是各拼装点的现读键数，写死在这里当**防掏空下界**：
+    /// 谁把名册删短，这条就红，⛔ 不会只剩"schema 里有这个键"这种空话。
+    #[test]
+    fn the_three_item_slots_delegate_to_their_rosters_while_ops_stays_weak() {
+        let cases = [
+            (
+                "yeban_edit_automation 的 lane.points",
+                edit_automation()["properties"]["lane"]["properties"]["points"]["items"].clone(),
+                automation_point_items(),
+                4,
+            ),
+            (
+                "yeban_query_engine_state 的 sends",
+                query_engine_state()["properties"]["sends"]["items"].clone(),
+                send_edge_items(),
+                8,
+            ),
+            (
+                "yeban_render_master 的 sources",
+                render_master()["properties"]["sources"]["items"].clone(),
+                source_items(),
+                15,
+            ),
+        ];
+        for (label, published, roster, keys) in cases {
+            assert_eq!(
+                published, roster,
+                "`{label}` 广播的 items 必须与名册函数逐字相同"
+            );
+            let required = published["required"]
+                .as_array()
+                .expect("required 必须是数组");
+            assert_eq!(required.len(), keys, "`{label}` 的键数（防掏空下界）");
+            assert_eq!(
+                published["properties"]
+                    .as_object()
+                    .expect("properties 必须是对象")
+                    .len(),
+                keys,
+                "`{label}` 的声明键数必须与 required 同数（恒发键 ⇒ 两者不该差一）"
+            );
+        }
+
+        // 内层 sampler 那一层也要有数（19 键，⛔ 一个都可空不了）。
+        let sampler = source_items()["properties"]["sampler"].clone();
+        assert_eq!(sampler["type"], json!(["object", "null"]));
+        assert_eq!(
+            sampler["required"].as_array().expect("required").len(),
+            19,
+            "sampler 层的键数（现读 `SamplerReport::to_value`）"
+        );
+
+        // 第四处**保持弱**：这一条不是自我确认，是把"为什么不做"钉成读数 ——
+        // 一旦有人没做变体名册就往 `ops` 里塞并集 properties，这条会指出该先做什么。
+        let ops = proposal_detail_schema()["properties"]["ops"]["items"].clone();
+        assert_eq!(ops, json!({"type": "object"}), "ops 仍应是弱声明");
+        assert!(
+            automation_point_items()["properties"]["curve"]["enum"].is_array(),
+            "四处里只有 curve 的词表是封闭的 ⇒ 只有它上了 enum"
+        );
+    }
+
+    /// ⭐ s30 判据二（牙齿）：三份名册**真的会拒**——少键／错型／越词表／嵌套空占位都要红，
+    /// 而**可空那三处**（`value`／`gainDb`／`sampler` 与两个 `*Name`）给 `null` 必须放行。
+    /// 每条都带**路径断言**：`Violation.path` 指的是哪个键，才算"点名"而不是"整体红"。
+    #[test]
+    fn the_new_item_rosters_reject_broken_elements_and_accept_the_nullable_ones() {
+        // 三份合法元素：键集逐字取自拼装点（值不重要，形状重要）。
+        let point = json!({"id": "01ABC", "tick": 0, "value": 0.5, "curve": "Linear"});
+        let send = json!({
+            "edgeId": "01EDGE",
+            "kind": "SendToAux",
+            "sourceNode": "01SRC",
+            "sourceName": "Lead",
+            "destinationNode": "01DST",
+            "destinationName": "Aux",
+            "gainDb": -12.0,
+            "gainSource": "project.routing_graph.edges[].gain_db (null = 单位增益)"
+        });
+        let sampler = json!({
+            "path": "/tmp/a.sfz",
+            "resolvedPath": "/tmp/a.sfz",
+            "regions": 1,
+            "silentRegionCount": 0,
+            "notes": 4,
+            "notesUnmatched": 0,
+            "notesUsingFileSample": 4,
+            "notesWithoutSample": 0,
+            "notesUsingBuiltinSilence": 0,
+            "notesLooping": 0,
+            "sampleSources": ["drum.kick.wav"],
+            "sampleFailures": [],
+            "sampleFramesLoaded": 48_000,
+            "sampleReadsTruncated": false,
+            "regionsWithEnvelope": 0,
+            "decodedSamples": 1,
+            "missingSamplePaths": [],
+            "voiceSteals": 0,
+            "label": "sfz(tracks=1 regions=1 samples=1 silent=0 missing=[] unreadable(not_found=0,unsupported=0,other=0))"
+        });
+        let mut source = json!({
+            "node": "01NODE",
+            "track": "Lead",
+            "kind": "audio",
+            "audible": true,
+            "notes": 4,
+            "audioClips": 0,
+            "audioClipsUnrendered": 0,
+            "audioClipsGated": 0,
+            "notesSilenced": 0,
+            "notesRatcheted": 0,
+            "ratchetPulses": 0,
+            "endTick": 1920,
+            "peak": 0.9,
+            "peakDbfs": -0.9
+        });
+        source["sampler"] = sampler.clone();
+
+        // ① 三份合法元素必须先过（否则后面的红都可能只是"整份都不合法"）。
+        for (label, schema, element) in [
+            ("point", &automation_point_items(), &point),
+            ("send", &send_edge_items(), &send),
+            ("source", &source_items(), &source),
+        ] {
+            validate(schema, element)
+                .unwrap_or_else(|violation| panic!("合法 `{label}` 元素必须通过: {violation}"));
+        }
+
+        // ② 少一个 required 键 ⇒ 红在该键的路径上。
+        let mut missing = point.clone();
+        missing.as_object_mut().expect("对象").remove("curve");
+        assert_eq!(
+            validate(&automation_point_items(), &missing)
+                .expect_err("curve 是 required")
+                .path,
+            "$.curve"
+        );
+
+        // ③ 越词表 ⇒ 红（这条同时证明 `enum` 在**递归层**里也真的被执行）。
+        let mut invented = point.clone();
+        invented["curve"] = Value::from("Sine");
+        let violation =
+            validate(&automation_point_items(), &invented).expect_err("词表外的 curve 拼写必须红");
+        assert_eq!(violation.path, "$.curve");
+
+        // ④ 错型 ⇒ 红在对应键。
+        let mut wrong = send.clone();
+        wrong["gainDb"] = Value::from("-12");
+        assert_eq!(
+            validate(&send_edge_items(), &wrong)
+                .expect_err("gainDb 是数字或 null，不是字符串")
+                .path,
+            "$.gainDb"
+        );
+
+        // ⑤ ⭐ 递归到**第三层**：`sampler` 给空对象 ⇒ 红在 sampler 内部，⛔ 不是红在 `$.sampler`。
+        let mut shallow = source.clone();
+        shallow["sampler"] = json!({});
+        let violation = validate(&source_items(), &shallow)
+            .expect_err("sampler 的 required 必须被核对（s29 的递归）");
+        assert!(
+            violation.path.starts_with("$.sampler."),
+            "路径必须点到 sampler 里面的键: {}",
+            violation.path
+        );
+
+        // ⑥ 字符串数组的元素也要被核（`items` 递归的第二种形态）。
+        let mut strings = source.clone();
+        strings["sampler"]["sampleSources"] = json!([42]);
+        assert_eq!(
+            validate(&source_items(), &strings)
+                .expect_err("sampleSources 的元素必须是字符串")
+                .path,
+            "$.sampler.sampleSources[0]"
+        );
+
+        // ⑦ 可空那几处给 `null` 必须**放行**（这是诚实声明的意义：拒绝真实形态就是假广播）。
+        let mut nulls = point.clone();
+        nulls["value"] = Value::Null;
+        validate(&automation_point_items(), &nulls).expect("非有限 f32 序列化成 null ⇒ 必须放行");
+        let mut nulls = send.clone();
+        nulls["gainDb"] = Value::Null;
+        nulls["sourceName"] = Value::Null;
+        nulls["destinationName"] = Value::Null;
+        validate(&send_edge_items(), &nulls).expect("单位增益与查不到的显示名都是常态");
+        let mut nulls = source.clone();
+        nulls["sampler"] = Value::Null;
+        nulls["peakDbfs"] = Value::Null;
+        validate(&source_items(), &nulls).expect("这条轨没绑采样器是常态");
+
+        // ⑧ 反向：把弱声明时期的形态（缺键的元素）拿来，现在必须红 —— 这条是"本片真的收紧了"的证据。
+        let mut bare = source.clone();
+        bare.as_object_mut().expect("对象").remove("ratchetPulses");
+        assert_eq!(
+            validate(&source_items(), &bare)
+                .expect_err("s30 之前裸 items 放行一切，现在必须点名")
+                .path,
+            "$.ratchetPulses"
+        );
+    }
+
+    /// ⭐ s30 判据三（防漂移）：`curve` 的词表**不是手抄**——拿生产者函数
+    /// `domain::automation::curve_name` 逐变体对账；模型侧那套名字与纯层的对齐另有
+    /// 常驻判据 `every_name_table_agrees_with_the_model_enum`，本条补的是 **schema ↔ 生产者** 这一环。
+    #[test]
+    fn the_point_curve_roster_matches_what_the_producer_emits() {
+        let emitted: Vec<&str> = [
+            yeban_model::CurveType::Linear,
+            yeban_model::CurveType::Exponential,
+            yeban_model::CurveType::Logarithmic,
+            yeban_model::CurveType::SCurve,
+        ]
+        .iter()
+        .map(|curve| crate::domain::automation::curve_name(*curve))
+        .collect();
+        let mut produced = emitted;
+        produced.sort_unstable();
+        // ⚠ 先落成 `let` 绑定：`automation_point_items()` 返回的 `Value` 若留在表达式里，
+        // 下面借它的 `["enum"]` 数组就撞上 E0716（临时值在语句末释放，run `41237535235` 实测）。
+        let items = automation_point_items();
+        let mut published: Vec<&str> = items["properties"]["curve"]["enum"]
+            .as_array()
+            .expect("enum 必须是数组")
+            .iter()
+            .map(|value| value.as_str().expect("enum 的元素必须是字符串"))
+            .collect();
+        published.sort_unstable();
+        assert_eq!(
+            published, produced,
+            "广播的 curve 词表必须与生产者 curve_name 的逐变体输出同集"
+        );
     }
 }
