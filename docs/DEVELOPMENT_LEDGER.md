@@ -17619,9 +17619,11 @@ helper 里 ⇒ 必须不认（防假绿）。两条臂在旧实现上都会失�
   ⛔ **此刻不推 main**：他们那条合流 run `41237762943` 还在 `in_progress`，同分支并发组会**取消在飞的那条**，
   等于把别人的判决抹掉。等它收盘，再把（本地文档批 rebase 后的）推送排到 s30 判绿之后同一批。
 - ⚠ **顺带量到的后续切片范围**（现读 `grep -c '{"type": "object"}' output_schema.rs` = **17** 处，
-  其中 1 处是我判据里的断言、1 处是 `ops` 的裸 `items` ⇒ **还剩 15 处裸对象"属性槽"**，`yeban_render_master` 一个工具独占 12 处
+  其中 1 处是我判据里的断言、1 处是 `ops` 的裸 `items` ⇒ **还剩 15 处裸对象"属性槽"**，`yeban_render_master` 一个工具占 11 处
   （`request`／`probability`／`ratchet`／`audio`／`peak`／`normalize`／`loudness`／`bwf`／`unsupportedCounts`／
-  `contributionsBasis`／`midiSource`／`merge` 系）。
+  `contributionsBasis`／`midiSource` = **11** 处，⛔ 不是我初稿写的 12 —— 初稿把 `merge` 系算进了 `render_master`，
+  按函数归属现读：`merge` 那 3 处分别住在 `propose_section`／`edit_notes`／`set_macro`，`stateSources` 1 处住 `query_engine_state`，
+  其余 `ops` 1 处是**故意**留弱的 `proposal_detail_schema`，最后 1 处是我判据里的 `assert_eq!`）。
   这些与 s30 那三处的**区别**：它们不是数组元素名册而是"条件出现的对象"，
   而本校验器的 `properties` 语义是"声明了但可以缺席"（`validate_complete` 的"每字段必现"只查**顶层**）
   ⇒ 逐槽填名册**不需要**声明可空，也不会有 `null` 假阳性。`request` 那一槽现在多了 `threads`（`151e2029`），

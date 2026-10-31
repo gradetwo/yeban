@@ -6,7 +6,7 @@
 > ⭐ 主干被**别人**前移：`origin/main` `bf016ad3` → **`151e2029`**（Muse 合入 `line/review-20261031-fixes` 16 枚，含 `threads` 实参 / ADR-0056·0057），
 > 我的本地文档批因此被 non-fast-forward **正确拒绝** ⇒ 已 rebase 到 `151e2029`（重叠面逐文件核过：他们没碰台账与交接，`crates/yeban-mcp` 里碰的是 `domain/render.rs`／`tools.rs`／`tests/render_master.rs`）；
 > ⛔ **他们那条合流 run `41237762943` 还在飞 ⇒ 此刻不推 main**（同分支并发组会取消在飞判决，抹掉别人的证据）；
-> 顺带现读到后续切片的真范围：本文件还剩 **15 处**裸对象**属性槽**（⛔ 不是 s30 那种数组元素槽，`yeban_render_master` 一家占 12 处，见台账 §22.28））；
+> 顺带现读到后续切片的真范围：本文件还剩 **15 处**裸对象**属性槽**（⛔ 不是 s30 那种数组元素槽，`yeban_render_master` 一家占 11 处，见台账 §22.28））；
 > ⭐ 上一批在 §0.6.0zg（主干三枚文档批已推 `bf016ad3` ⇒ **s30 已起线并推线 `12b59ff8`**，
 > run `41236805286` = **failure（六腿同红于 `json!` 宏递归上限，判据一条没跑）** ⇒ 第二枚 `678e3f25`；
 > 三处裸 `items:{type:object}` 填成逐键名册（`points` 4／`sends` 8／`sources` 15＋内层 `sampler` 19，改用 `roster` 逐键装入），
@@ -271,9 +271,11 @@
 - ⛔ **此刻不推 main**：他们那条合流 run **`41237762943`（`headSha` `151e2029`）还在 `in_progress`**，
   同分支并发组会**取消在飞的那条** ⇒ 等于抹掉别人的判决。推 main 前必须先 `gh run list --branch main` 现读有没有在飞项。
 - ⚠ **顺带量到的后续切片真范围**（现读，不是回忆）：`grep -c '{"type": "object"}' output_schema.rs` = **17**，
-  去掉我判据里的断言 1 处与 `ops` 的裸 `items` 1 处 ⇒ **还剩 15 处裸对象"属性槽"**，`yeban_render_master` 一家占 12 处
+  去掉我判据里的断言 1 处与 `ops` 的裸 `items` 1 处 ⇒ **还剩 15 处裸对象"属性槽"**，`yeban_render_master` 一家占 11 处
   （`request`／`probability`／`ratchet`／`audio`／`peak`／`normalize`／`loudness`／`bwf`／`unsupportedCounts`／
-  `contributionsBasis`／`midiSource`／`merge` 系）。这些**与 s30 那三处不同类**：不是数组元素名册，而是"条件出现的对象"；
+  `contributionsBasis`／`midiSource` = **11** 处；⛔ 我初稿写 12 处是把 `merge` 系算错了归属 ——
+  按函数现读：`merge` 3 处分别住 `propose_section`／`edit_notes`／`set_macro`，`stateSources` 1 处住 `query_engine_state`，
+  剩 1 处是**故意**留弱的 `ops`、1 处是判据里的 `assert_eq!`）。这些**与 s30 那三处不同类**：不是数组元素名册，而是"条件出现的对象"；
   本校验器 `properties` 的语义是"声明了但可缺席"（`validate_complete` 的"每字段必现"只查**顶层**）
   ⇒ 逐槽填名册**不需要**声明可空、也不会有 `null` 假阳性。
   ⚠ `request` 那一槽现在多了一个 `threads`（来自 `151e2029`）⇒ 它的名册必须**在 rebase 后的主干上现读**再写，
