@@ -16,6 +16,7 @@
 //! | ③（选项真的生效） | 采样率 44100 / 位深 16 / 时长 0.5 ⇒ 回执 `sample_rate=44100:bits=16:frames=22050`，字节数与磁盘一致 |
 //! | ④（非法选项不落盘） | 位深 `cd` ⇒ `outcome=error:error=invalid-options`，目标文件**不存在** |
 //! | ⑤（关闭还原） | `close-export-wav` ⇒ 对话框节点全部消失，ID 集合回到打开前的**同一集合**；用户改过的路径重开时**不被**缺省值覆盖 |
+//! | ⑥（键盘输入真的进根属性） | 审评 2026-10-31（P0-2 跟进）：在路径输入框里**真实敲键盘**（点按聚焦 + 退格清掉旧值 + 逐字输入新路径）⇒ 根属性必须跟着变，导出必须落到**新**路径；单向绑定（修前）下根属性纹丝不动、导出仍落旧路径，判据必红 |
 //!
 //! ## 平台约束
 //!
@@ -297,6 +298,82 @@ fn the_export_dialog_is_hidden_until_opened_and_its_options_reach_the_wav_writer
         ui.get_export_wav_path().to_string(),
         kept.display().to_string(),
         "用户改过的路径重开时不许被缺省值覆盖"
+    );
+
+    // ---- ⑥ 键盘输入真的进根属性（审评 2026-10-31，P0-2 的跟进判据） ----
+    //
+    // 修前（单向 `text: root.x`）的失效形态：框里敲的字只改输入框自己的显示，
+    // 根属性不动 ⇒ 导出仍落到播种/旧路径。修后（双向 `text <=> root.x`）：
+    // 敲的字必须先落到根属性，导出才跟得上。
+    //
+    // 驱动方式：控制面 JSON-RPC（与 MCP `ui/dispatch_*` 同一条注入路）——
+    // 点按路径输入框右缘（光标落到末尾）→ 退格清掉旧值 → 逐字敲新路径。
+    // 采样率 / 位深 / 时长三格与路径格是同一处绑定改法（`export_wav_dialog.slint`
+    // 四处同款），故只钉路径格这一处真实失效过的格子。
+    let (tree, _) = plane.plane().tree().expect("ui/tree");
+    let path_node = node(&tree, "export-wav-path-input");
+    let bounds = path_node.bounds.expect("路径输入框必须有几何");
+    let click_x = f64::from(bounds.width.saturating_sub(2));
+    let click_y = f64::from(bounds.height) / 2.0;
+    plane
+        .plane()
+        .call(
+            yeban_ui_mcp::methods::METHOD_DISPATCH_POINTER_DOWN,
+            Some(serde_json::json!({
+                "elementId": "export-wav-path-input",
+                "xOffset": click_x,
+                "yOffset": click_y,
+                "button": "left",
+            })),
+        )
+        .expect("点按路径输入框必须送达");
+    plane
+        .plane()
+        .call(
+            yeban_ui_mcp::methods::METHOD_DISPATCH_POINTER_UP,
+            Some(serde_json::json!({ "button": "left" })),
+        )
+        .expect("松开鼠标必须送达");
+    // 旧值 = ⑤ 留下的 kept 路径（ASCII），逐字退格清掉。
+    let old_len = kept.display().to_string().chars().count();
+    for _ in 0..old_len {
+        plane
+            .plane()
+            .call(
+                yeban_ui_mcp::methods::METHOD_DISPATCH_KEY_PRESS,
+                Some(serde_json::json!({ "keyCode": "Backspace" })),
+            )
+            .expect("退格必须送达");
+    }
+    let typed = scratch.join("typed-by-keyboard.wav");
+    let typed_text = typed.display().to_string();
+    for ch in typed_text.chars() {
+        plane
+            .plane()
+            .call(
+                yeban_ui_mcp::methods::METHOD_DISPATCH_KEY_PRESS,
+                Some(serde_json::json!({ "keyCode": ch.to_string() })),
+            )
+            .unwrap_or_else(|error| panic!("输入 `{ch}` 必须送达: {error:?}"));
+    }
+    assert_eq!(
+        ui.get_export_wav_path().to_string(),
+        typed_text,
+        "键盘敲进路径框的字必须先落到根属性（单向绑定下这里还是旧值）"
+    );
+    ui.invoke_export_wav();
+    let receipt = ui.get_module_status().to_string();
+    assert!(
+        ui.get_module_status_succeeded(),
+        "按键盘输入的路径导出应当成功: {receipt}"
+    );
+    assert_eq!(field_of(&receipt, "action"), "export-wav", "{receipt}");
+    assert_eq!(field_of(&receipt, "outcome"), "ok", "{receipt}");
+    assert_nonempty_file(&typed);
+    assert!(
+        !kept.exists(),
+        "导出必须落到键盘输入的新路径，不许仍写到旧路径: {}",
+        kept.display()
     );
 
     // SAFETY: 同上 —— 单 `#[test]` 的进程。
