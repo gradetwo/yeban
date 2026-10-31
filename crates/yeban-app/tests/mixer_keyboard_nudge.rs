@@ -27,8 +27,14 @@
 //! | A4 | `mixer_nudge_ops_refuse_a_stale_or_unparsable_identity` | 身份文本解析不出 `EntityId` / 解析得出但**不在**工程里 ⇒ 空 `Vec`（换工程之后的陈旧选中态不猜） |
 //! | B1 | `cmd_ctrl_alt_up_down_moves_the_selected_tracks_fader_and_labels_it` | 真 `key-action` ⇒ 工程 `-3.0 → -2.0`（**逐位**）且 `track-volumes[0]` 从 `"-3.0"` 变 `"-2.0"`；`undoable` 每按一次 **+1**；`Cmd+Ctrl+Alt+Shift+↑` **不消费**；`mixer-drag-active` 始终 `false`（键盘路不留手势） |
 //! | B2 | `cmd_ctrl_alt_left_right_moves_the_pan_by_one_display_step` | 一格声相 = 显示上的**一格**（`L25 → L15`）；音量**不**跟着动（两格各自写自己那一列） |
-//! | B3 | `with_no_selected_track_the_mixer_nudge_keys_are_not_consumed` | 四个方向各按一次 ⇒ 四次都 `false`、`commit_count` 与 `undoable` 恒为 0、工程读数逐位不变（**不吞键**：留给焦点系统） |
-//! | B4 | `a_stale_selection_after_a_project_swap_commits_nothing` | 选中态是**窗口属性**（换工程之后它还留着上一个工程的身份）⇒ 按四向全部 `false`、0 提交 |
+//! | B3 | `with_no_selected_track_the_mixer_nudge_keys_are_not_consumed` | 四个方向各按一次 ⇒ 四次都 `false`、`commit_count` **停在起点**（见下"提交的口径"）、`undoable` 恒为 0、工程读数逐位不变（**不吞键**：留给焦点系统） |
+//! | B4 | `a_stale_selection_after_a_project_swap_commits_nothing` | 选中态是**窗口属性**（换工程之后它还留着上一个工程的身份）⇒ 按四向全部 `false`、`commit_count` 停在起点 |
+//!
+//! ⭐ **提交的口径**：`UndoDisplay::commit_count` **含那一条根提交** —— 全新会话
+//! （`UndoSession::open`）打开就记 1，这条由 `src/undo.rs` 的判据
+//! `a_fresh_port_has_no_history`（**同一个夹具** `filled_project()`）钉住。
+//! 因此 B 层一律**相对起点**断言（"一次按键 = 一条提交"读作 Δ1），⛔ 不写 `0` 这个字面量。
+//! `undoable` 是另一个口径（可撤销的**步数**，全新会话 = 0），仍按绝对值断。
 //!
 //! ## 变异表（每条都写明它应当让谁变红）
 //!
@@ -346,7 +352,15 @@ fn cmd_ctrl_alt_up_down_moves_the_selected_tracks_fader_and_labels_it() {
     );
     assert_eq!(string_column(&window.get_track_volumes())[0], "-3.0");
     assert_eq!(port.display().undoable, 0);
-    assert_eq!(port.display().commit_count, 0);
+    // ⭐ `commit_count` 的口径**含那一条根提交**（`src/undo.rs` 的判据
+    // `a_fresh_port_has_no_history` 用**同一个夹具**（`filled_project()` + `UndoSession::open`）
+    // 钉住"全新会话 = 1 条"）。本判据因此一律**相对起点**断言：这样"一次按键 = 一条提交"
+    // 这句话说的还是它要说的东西（用户产生的提交），而不必赌根怎么数。
+    let commits_at_start = port.display().commit_count;
+    assert_eq!(
+        commits_at_start, 1,
+        "起点：会话里只有那一条根提交（口径见 `src/undo.rs`）"
+    );
 
     // 用**生产的点击源**选中第一条轨（不是从判据里写属性）。
     window.invoke_track_select(0);
@@ -369,7 +383,11 @@ fn cmd_ctrl_alt_up_down_moves_the_selected_tracks_fader_and_labels_it() {
         "推子读数跟着改"
     );
     assert_eq!(port.display().undoable, 1, "一次按键 = 一步撤销");
-    assert_eq!(port.display().commit_count, 1);
+    assert_eq!(
+        port.display().commit_count,
+        commits_at_start + 1,
+        "一次 nudge = 一条提交（相对起点 Δ1）"
+    );
     assert!(!window.get_mixer_drag_active(), "键盘这一路不留混音手势");
 
     // 邻居不受影响（作用域 = 选中的那一条）。
@@ -389,7 +407,11 @@ fn cmd_ctrl_alt_up_down_moves_the_selected_tracks_fader_and_labels_it() {
         !window.invoke_key_action(UP.into(), true, true, true, false),
         "`Cmd/Ctrl+Alt+Shift+↑` 未绑定 ⇒ 不得消费"
     );
-    assert_eq!(port.display().commit_count, 2, "放行的键不产生提交");
+    assert_eq!(
+        port.display().commit_count,
+        commits_at_start + 2,
+        "两步各一条，那个**放行**的键不产生提交"
+    );
 
     // `Cmd/Ctrl+Z` 撤掉刚才那一步 ⇒ 回到 -2.0 那一格的**前**一个状态（-3.0 之后的 -3.0…
     // 逐步核对：栈是 [−2.0, −3.0]，撤一步回到 −2.0）。
@@ -406,7 +428,7 @@ fn cmd_ctrl_alt_up_down_moves_the_selected_tracks_fader_and_labels_it() {
     );
 
     report_line(&format!(
-        "[mixer-keyboard-nudge-volume] -3.0 → -2.0 → -3.0 dB / undoable=2 / commit=2 / \
+        "[mixer-keyboard-nudge-volume] -3.0 → -2.0 → -3.0 dB / undoable=2 / Δcommit=2 / \
          邻居 {}/{} 格未动 / 撤一步回到 -2.0",
         others.len() - 1,
         others.len() - 1
@@ -465,6 +487,9 @@ fn with_no_selected_track_the_mixer_nudge_keys_are_not_consumed() {
     let before = port.try_project().expect("工程");
     let volume_before = lead(&before).volume_db.to_bits();
     let pan_before = lead(&before).pan.to_bits();
+    // `commit_count` **含根提交**（口径见 `src/undo.rs` 的 `a_fresh_port_has_no_history`）
+    // ⇒ "0 提交"这句话只能用**相对起点**的读数来断。
+    let commits_at_start = port.display().commit_count;
 
     for key in [UP, DOWN, LEFT, RIGHT] {
         assert!(
@@ -475,10 +500,16 @@ fn with_no_selected_track_the_mixer_nudge_keys_are_not_consumed() {
     let after = port.try_project().expect("工程");
     assert_eq!(lead(&after).volume_db.to_bits(), volume_before);
     assert_eq!(lead(&after).pan.to_bits(), pan_before);
-    assert_eq!(port.display().commit_count, 0);
+    assert_eq!(
+        port.display().commit_count,
+        commits_at_start,
+        "没有选中轨 ⇒ 四向全部放行 ⇒ 相对起点一条提交都没多"
+    );
     assert_eq!(port.display().undoable, 0);
 
-    report_line("[mixer-keyboard-nudge-empty] 四向各按一次 ⇒ 全部 reject / 0 提交 / 读数逐位不变");
+    report_line(
+        "[mixer-keyboard-nudge-empty] 四向各按一次 ⇒ 全部 reject / Δcommit=0 / 读数逐位不变",
+    );
 }
 
 /// B4：陈旧选中态（窗口属性还留着**上一个工程**的身份）⇒ 什么都不提交。
@@ -507,6 +538,7 @@ fn a_stale_selection_after_a_project_swap_commits_nothing() {
     window.set_selected_track_id(ghost.clone().into());
 
     let before = lead(&port.try_project().expect("工程")).volume_db.to_bits();
+    let commits_at_start = port.display().commit_count;
     for key in [UP, DOWN, LEFT, RIGHT] {
         assert!(
             !window.invoke_key_action(key.into(), false, true, true, false),
@@ -518,8 +550,12 @@ fn a_stale_selection_after_a_project_swap_commits_nothing() {
         before,
         "陈旧身份下工程一个字节都不许动"
     );
-    assert_eq!(port.display().commit_count, 0);
+    assert_eq!(
+        port.display().commit_count,
+        commits_at_start,
+        "陈旧身份 ⇒ 四向全部 reject ⇒ 相对起点一条提交都没多"
+    );
     assert_eq!(string_column(&window.get_track_volumes())[0], "-3.0");
 
-    report_line("[mixer-keyboard-nudge-stale] 陈旧选中身份 ⇒ 四向 reject / 0 提交 / 读数不变");
+    report_line("[mixer-keyboard-nudge-stale] 陈旧选中身份 ⇒ 四向 reject / Δcommit=0 / 读数不变");
 }
