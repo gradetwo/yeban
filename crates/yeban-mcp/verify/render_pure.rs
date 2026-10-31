@@ -285,7 +285,10 @@ mod clip_reconciliation {
                     for rate in [44_100u32, 48_000, 96_000, 192_000] {
                         let ours = clip::clip_frame_span(start, duration, 960, bpm as f64, rate);
                         let theirs = super::reference_clip_span(start, duration, 960, bpm, rate);
-                        assert_eq!(ours, theirs, "bpm={bpm} start={start} dur={duration} rate={rate}");
+                        assert_eq!(
+                            ours, theirs,
+                            "bpm={bpm} start={start} dur={duration} rate={rate}"
+                        );
                         assert!(ours.1 > ours.0, "非零时值必须给出非空区间");
                         checked += 1;
                     }
@@ -301,7 +304,11 @@ mod clip_reconciliation {
         for asset in 0u16..=8 {
             for out in 0usize..=8 {
                 let ours = clip::channel_layout(asset, out).map(clip::ChannelLayout::name);
-                assert_eq!(ours, super::reference_layout(asset, out), "{asset} -> {out}");
+                assert_eq!(
+                    ours,
+                    super::reference_layout(asset, out),
+                    "{asset} -> {out}"
+                );
             }
         }
     }
@@ -332,7 +339,14 @@ mod clip_reconciliation {
             if from >= to { None } else { Some((from, to)) }
         };
         for frames in [0u64, 1, 2, 100, 44_100] {
-            for delay in [None, Some(0u32), Some(1), Some(64), Some(44_100), Some(1_000_000)] {
+            for delay in [
+                None,
+                Some(0u32),
+                Some(1),
+                Some(64),
+                Some(44_100),
+                Some(1_000_000),
+            ] {
                 for padding in [None, Some(0u32), Some(1), Some(64), Some(1_000_000)] {
                     assert_eq!(
                         clip::encoder_trim_span(frames, delay, padding),
@@ -356,9 +370,15 @@ mod clip_reconciliation {
         for cut in 0..riff.len() {
             let prefix = &riff[..cut];
             if cut >= 12 {
-                assert_eq!(clip::sniff_container(prefix), clip::ContainerSniff::RiffWave);
+                assert_eq!(
+                    clip::sniff_container(prefix),
+                    clip::ContainerSniff::RiffWave
+                );
             } else {
-                assert_ne!(clip::ContainerSniff::RiffWave, clip::sniff_container(prefix));
+                assert_ne!(
+                    clip::ContainerSniff::RiffWave,
+                    clip::sniff_container(prefix)
+                );
             }
         }
         // 用一串"每个字节都试一遍"的构造证明: 不是签名的东西不会被误认。
