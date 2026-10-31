@@ -826,7 +826,7 @@ impl LiveAdminSurface {
     /// | 本执行面有没有权威句柄 | 落点 | 为什么 |
     /// | :--- | :--- | :--- |
     /// | **有**（[`build_live_ui_from_authority`] 装配的） | [`ProjectAuthorityHandle::save_to`] —— 控制面会话自己产出字节并写盘 | 挂在控制面上时，那个会话是这份文档的**唯一**磁盘写者；GUI 的本地保存路径（[`save_project_file`]）在会话持锁期间**必然被拒**（判据 ④），所以它**不能**是第二条写路径 |
-    /// | **没有**（[`build_live_ui`] / [`build_live_ui_with`] 装配的） | [`save_project_file`]（本地原子写，取排他写建议锁） | 没有控制面时进程里只有它一个写者，本地路径就是那条路 |
+    /// | **没有**（[`build_live_ui`] / [`build_live_ui_with`] 装配的） | [`save_project_file`]（本地原子写，取排他写建议锁） | 没有控制面时进程里只有它一个写者，本地路径就是那条路；挂着撤销端口时写端口的工程（`ADR-0057` A），不是界面缓存（否则注入的编辑会被静默丢掉） |
     ///
     /// 两条路**不会**同时发生：有权威时**不**调用本地路径，权威拒绝时**不**回退到本地路径
     /// （回退会把"权威说不能写"变成一个偷偷写盘的分支）。因此"保存"这个动作在两种装配下
@@ -866,7 +866,16 @@ impl LiveAdminSurface {
             ));
             return Ok(());
         }
-        let saved = save_project_file(&self.project, &path).map_err(|error| match error {
+        // [ADR-0057 A] 有撤销端口时保存**端口的工程**，不是界面缓存 `self.project`：
+        // `wire_*` 的提交只走 `commit_ops → refresh_undo_window`（重投影窗口，不换
+        // `self.project`）⇒ 按旧缓存写盘会把注入的编辑静默丢掉（比「什么都不发生」
+        // 更坏）。端口没有活跃工程时回落到缓存（服务端装配恒有工程，此分支只防退化）。
+        let (save_source, written_from_undo_port) =
+            match self.undo.as_ref().and_then(|port| port.try_project()) {
+                Some(project) => (project, true),
+                None => (self.project.clone(), false),
+            };
+        let saved = save_project_file(&save_source, &path).map_err(|error| match error {
             SaveError::Container(inner) => PortError::Rejected {
                 message: format!("容器写出被拒绝: {inner}"),
             },
@@ -880,8 +889,13 @@ impl LiveAdminSurface {
             vec![
                 ("saveEpoch", ReportValue::Uint(self.save_epoch)),
                 ("bytes", ReportValue::Uint(saved.bytes as u64)),
-                // 没有权威 ⇒ 本地原子写（与历史行为逐字相同）。
+                // 没有权威 ⇒ 本地原子写（无端口时与历史行为逐字相同）。
                 ("writtenByAuthority", ReportValue::Bool(false)),
+                // 有端口时写的是端口的工程（`ADR-0057` A 的可断言证据）。
+                (
+                    "writtenFromUndoPort",
+                    ReportValue::Bool(written_from_undo_port),
+                ),
                 // 容器布局：`project.json` + `history.dag`（空图谱），见 `crate::save` 的边界。
                 ("containerEntries", ReportValue::Uint(2)),
             ],
@@ -926,7 +940,7 @@ impl LiveAdminSurface {
     /// | 本执行面持有 | 为什么拒绝 |
     /// | :--- | :--- |
     /// | `authority`（进程内控制面会话） | 工程的唯一可变权威是那个 `Domain`（`ADR-0005`）。在这里换一份会让"界面画的是哪一份"与"会话读写的是哪一份"立刻分叉；而宿主的写入口 `HostAction` 只有 `Undo` / `Redo` / `Commit` —— **没有**"打开工程"这一项（`crates/yeban-mcp/src/domain/mod.rs:669`）⇒ 本执行面无法把这次打开交给权威 |
-    /// | `undo`（外部撤销端口） | 那个端口**自己持有一份工程**（`UndoPort::try_project` 是生产心跳的发布来源）⇒ 换工程而不换端口会让端口把旧工程写回引擎。而「打开一个工程 = **新会话**」今天只有一条实现（`crates/yeban-app/src/main.rs:447` 的 `open_undo_session`，它造的是 GUI **自己**那一份会话），本执行面拿不到调用方手里的那个端口 ⇒ 如实拒绝，而不是换一半 |
+    /// | `undo`（撤销端口） | 那个端口**自己持有一份工程**（`UndoPort::try_project` 是生产心跳的发布来源）⇒ 换工程而不换端口会让端口把旧工程写回引擎。而「打开一个工程 = **新会话**」只有启动装配那一条实现（`yeban_app::undo::open_undo_session`），本执行面换不了手里的端口 ⇒ 如实拒绝，而不是换一半；测试装配在启动时 `--open` 定死工程 |
     ///
     /// 两种情况都用**既有**的 `PortError::Rejected` ⇒ 服务层既有的 `-32005 NOT_IMPLEMENTED`
     /// （`ADR-0001` D25：不发明新错误码），消息点名是哪一个持有者。
@@ -959,11 +973,11 @@ impl LiveAdminSurface {
         }
         if self.undo.is_some() {
             return Err(PortError::Rejected {
-                message: "本执行面挂着外部的撤销端口（它自己持有一份工程）⇒ 在这里换工程会让它\
-                          把旧工程写回引擎。「打开一个工程 = 新会话」今天只有\
-                          `crates/yeban-app/src/main.rs:447`（`open_undo_session`）那一条实现，\
-                          而本执行面拿不到那个端口 ⇒ 如实拒绝，而不是换一半；\
-                          请用**没有**撤销端口的装配（产品形态 `--enable-ui-mcp-http` 就是这一种）"
+                message: "本执行面挂着撤销端口（它自己持有一份工程）⇒ 在这里换工程会让它\
+                          把旧工程写回引擎。「打开一个工程 = 新会话」只有启动装配那一条实现\
+                          （`yeban_app::undo::open_undo_session`），本执行面换不了手里的端口 ⇒ \
+                          如实拒绝，而不是换一半；测试装配请在启动时 `--open` 定死工程，\
+                          没有撤销端口的装配（产品形态 `--enable-ui-mcp-http`）仍可在这里换工程"
                     .to_owned(),
             });
         }
@@ -1278,11 +1292,11 @@ impl UiSurface for LiveAdminSurface {
                 if self.undo.is_some() {
                     return Err(PortError::Rejected {
                         message:
-                            "本执行面挂着外部的撤销端口（它自己持有一份工程）⇒ 在这里换工程会让它\
-                                  把旧工程写回引擎。「打开一个工程 = 新会话」今天只有\
-                                  `crates/yeban-app/src/main.rs:447`（`open_undo_session`）那一条实现，\
-                                  而本执行面拿不到那个端口 ⇒ 如实拒绝，而不是换一半；\
-                                  请用**没有**撤销端口的装配（产品形态 `--enable-ui-mcp-http` 就是这一种）"
+                            "本执行面挂着撤销端口（它自己持有一份工程）⇒ 在这里换工程会让它\
+                                  把旧工程写回引擎。「打开一个工程 = 新会话」只有启动装配那一条实现\
+                                  （`yeban_app::undo::open_undo_session`），本执行面换不了手里的端口 ⇒ \
+                                  如实拒绝，而不是换一半；测试装配请在启动时 `--open` 定死工程，\
+                                  没有撤销端口的装配（产品形态 `--enable-ui-mcp-http`）仍可在这里换工程"
                                 .to_owned(),
                     });
                 }

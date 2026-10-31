@@ -1,6 +1,6 @@
 # ADR-0057 — UI 控制面（`ui_mcp_serve` 装配）的编辑端口：先定会话生命周期，再接线
 
-- **状态**: **Accepted（Wang 2026-10-31 ~22:30 授权「你自己择优决策」后裁决：选 A；本票仍不改代码，实现是下一阶段）**
+- **状态**: **Accepted（Wang 2026-10-31 ~22:30 授权「你自己择优决策」后裁决：选 A；实现见末节，支 `line/adr-0057-a-test-session`，待 CI 判决）**
 - **决定者**: 待人类裁决
 - **关联**: 审评 2026-10-31 P0-1（UI 控制面提交类控件全部静默无动作，零报错）；
   补丁 0001（`--ui-test-mode` + `YEBAN_ALLOW_UI_INJECT=1`，只分了执行面，**没有**修 P0-1）；
@@ -98,6 +98,27 @@ GUI 进程的心跳；服务端自己的窗口就能看见提交结果。
 不塞进正在跑 CI 的修复支。补丁支与修复支合入后，再开新支实现 A；
 实现时须带一条端到端判据：注入的编辑经 `ui/force_save` 落盘后重读一致
 （今天论证过的「静默丢编辑」陷阱必须由判据钉死，不能只靠 code review）。
+
+## 实现（2026-11-01，支 `line/adr-0057-a-test-session`，Wang 2026-11-01 ~06:12「那就A」后开工）
+
+- **测试面建会话**（`crates/yeban-app/src/ui_mcp_serve.rs`）：两道门
+  （`--ui-test-mode` + `YEBAN_ALLOW_UI_INJECT=1`）都过才建会话，缺一 ⇒
+  `None` 走老路，后面那道 env 检查照旧报错（错误 precedence 不变）；
+  生产面永远 `None`（只读）。会话构造与 GUI 共用同一条：
+  `open_undo_session` 从 `main.rs` 的私有函数移进 `yeban_app::undo`
+  （实现与报文逐字未变，`main.rs` 只转交），不再各自造会话。
+- **保存优先 `try_project()`**（`live_surface.rs` 的 `save_now` 本地路径）：
+  有端口时写端口的工程，不是界面缓存；端口无活跃工程时回落到缓存。
+  回执新增 `writtenFromUndoPort`（可断言的证据）。
+- **`open_project_now` 取「接受不换工程并写明」**（不实现新会话换工程）：
+  换端口不只是换 `self.undo` —— 写表面回调在装配时就捕获了旧端口的 `Rc`，
+  只换字段不重接线等于换一半；因此测试装配继续拒绝换工程，但文案改成
+  真话（旧文案「请用没有撤销端口的装配」在测试面已是假话；旧 `main.rs:447`
+  行号已腐烂，改指 `yeban_app::undo::open_undo_session`），并写明测试装配在
+  启动时 `--open` 定死工程。真调用与 `dryRun` 预览两处文案保持同句（D48）。
+- **端到端判据**（`crates/yeban-app/tests/ui_adr0057a_test_session.rs`，单测）：
+  注入 BPM 编辑 ⇒ `ui/force_save` ⇒ `open_project_file` 重读，`bpm = 140.0`
+  且回执 `writtenFromUndoPort = true`。修前必红（落盘读回 128：编辑被静默丢掉）。
 
 ## 本票不做的事（⛔ 不是遗漏）
 

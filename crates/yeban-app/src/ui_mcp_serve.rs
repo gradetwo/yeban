@@ -66,6 +66,7 @@
 //!      -d '{"jsonrpc":"2.0","id":1,"method":"ui/tree"}'
 //! ```
 
+use std::rc::Rc;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -75,6 +76,7 @@ use yeban_ui_test_port::port::Permission;
 
 use crate::cli::{self, CliError, Options};
 use crate::live_surface::{LiveWiringOptions, build_live_ui_with};
+use crate::undo::{UndoPort, open_undo_session};
 
 /// 本档的握手行（与 `headless ok` / `headless-idle ok` **刻意不同**）。
 ///
@@ -142,6 +144,31 @@ pub fn run(options: &Options) -> Result<Vec<String>, CliError> {
     let loaded = cli::load_project(options)?;
     let view = cli::project_view(&loaded.archive.project)?;
 
+    // [ADR-0057 A] 测试面才建会话：两道门（`--ui-test-mode` + `YEBAN_ALLOW_UI_INJECT=1`）
+    // 都过才建与 GUI 同款会话（`open_undo_session`，含 `history.dag` 恢复）⇒ 写表面
+    // 在测试面接线，注入的编辑真的进工程。门缺一 ⇒ 会话 `None`，走老路；
+    // 后面那道检查照旧报错，错误 precedence 不变。生产面永远 `None`（只读）。
+    let undo_source = match &loaded.source {
+        cli::ProjectSource::File { path, .. } => path.display().to_string(),
+        cli::ProjectSource::Sample(sample) => format!("sample:{}", sample.name()),
+    };
+    let test_undo = if options.ui_test_mode
+        && std::env::var("YEBAN_ALLOW_UI_INJECT").ok().as_deref() == Some("1")
+    {
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |elapsed| {
+                u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX)
+            });
+        Some(Rc::new(UndoPort::new(open_undo_session(
+            &undo_source,
+            &loaded,
+            now_ms,
+        )?)))
+    } else {
+        None
+    };
+
     // §12.3 的最高一级：`ui/switch_main_view`（`app:admin`）/ `ui/force_save`
     // （`app:save`）/ `ui/reload_engine`（`app:reload-engine`）要它。`ui:inject` 也在
     // 这一级的 scope 集合里，但**生产模式**会让它在服务端被硬拒 —— 这正是我们要的：
@@ -156,9 +183,10 @@ pub fn run(options: &Options) -> Result<Vec<String>, CliError> {
         save_path: loaded.source.save_target(),
         // 装配阶段不推量子（`ui/reload_engine` 才建引擎）。
         engine_quanta: 0,
-        // 产品形态的键盘撤销端口：本执行面只服务 `ui/*` 控制面，GUI 键盘路径由
-        // `main.rs` 的装配负责 ⇒ 这里如实 `None`（撤销族按键不被这一份消费）。
-        undo: None,
+        // [ADR-0057 A] 测试面建会话 ⇒ 写表面接线（注入的编辑进工程）；
+        // 生产面（与 env 缺省的测试面）如实 `None` ⇒ 撤销族按键不被这一份消费，
+        // 提交类控件在无会话装配上是惰性的（方法规约写明，不再像 bug）。
+        undo: test_undo,
         proposal_source: crate::proposals::ProposalSource::none(),
     };
     let live =
