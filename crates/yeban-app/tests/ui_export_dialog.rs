@@ -334,8 +334,14 @@ fn the_export_dialog_is_hidden_until_opened_and_its_options_reach_the_wav_writer
             Some(serde_json::json!({ "button": "left" })),
         )
         .expect("松开鼠标必须送达");
-    // 旧值 = ⑤ 留下的 kept 路径（ASCII），逐字退格清掉。
-    let old_len = kept.display().to_string().chars().count();
+    // 先把旧值换成一个短种子再清：⑤ 留下的 kept 是长路径，在窄框里
+    // 会被滚动显示，点右缘时 macOS/Windows 的落点是最后一个可见字形
+    // 而非串尾，退格就清不干净（第六轮 CI：mac/win 在此断言红，Linux 绿；
+    // 残值 = 新路径 + 旧串被落点截断后的尾巴）。短种子整串可见，
+    // 点右缘必落串尾；清掉后敲长路径，仍能证明键盘输入经双向绑定
+    // 落到根属性（单向绑定下断言照样红，判据没有被绕过）。
+    ui.set_export_wav_path("x.wav".into());
+    let old_len = "x.wav".chars().count();
     for _ in 0..old_len {
         plane
             .plane()
