@@ -1840,7 +1840,10 @@ mod tests {
         .collect();
         let mut produced = emitted;
         produced.sort_unstable();
-        let mut published: Vec<&str> = automation_point_items()["properties"]["curve"]["enum"]
+        // ⚠ 先落成 `let` 绑定：`automation_point_items()` 返回的 `Value` 若留在表达式里，
+        // 下面借它的 `["enum"]` 数组就撞上 E0716（临时值在语句末释放，run `41237535235` 实测）。
+        let items = automation_point_items();
+        let mut published: Vec<&str> = items["properties"]["curve"]["enum"]
             .as_array()
             .expect("enum 必须是数组")
             .iter()
