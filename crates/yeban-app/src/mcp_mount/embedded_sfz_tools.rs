@@ -6,7 +6,8 @@
 //! | 量 | 来源 | 单位 |
 //! | :--- | :--- | :--- |
 //! | `regions` | `data.regions`（`yeban_load_sfz`） | 区域数 |
-//! | `silentRegionCount` | 同上 | `sample=*silence` 区域数 |
+//! | `silentRegionCount` | 同上 | **引擎摊平口径**的静音区域数（缺样本 ＋ 内建静音），与 `yeban_render_master` 的 `sampler.silentRegionCount` 同义（`#G4`） |
+//! | `builtinSilentRegionCount` | 同上 | 其中 `sample=*silence` 的区域数（上一行的子集） |
 //! | `sampleFilesReadCount` | 同上 | 真的读盘解出 PCM 的样本份数 |
 //! | `instrumentId` / `reused` | 同上 | 会话内乐器身份 / 是否内容寻址复用 |
 //! | `notesUsingBuiltinSilence` | `data.notesUsingBuiltinSilence`（`yeban_render_sfz_wav`） | 落在内建静音上的音符数 |
@@ -233,16 +234,24 @@ fn the_embedded_session_dispatcher_drives_both_sfz_tools() {
     assert_eq!(loaded["status"], "success", "{loaded}");
     let load = &loaded["data"];
     println!(
-        "[app/embed/load] regions={} silent={} samples={} instrumentId={} reused={} source={:?}",
+        "[app/embed/load] regions={} silent={} builtinSilent={} samples={} instrumentId={} reused={} source={:?}",
         load["regions"],
         load["silentRegionCount"],
+        load["builtinSilentRegionCount"],
         load["sampleFilesReadCount"],
         load["instrumentId"],
         load["reused"],
         load["sampleSource"],
     );
     assert_eq!(load["regions"], 2, "两条区域: {load}");
-    assert_eq!(load["silentRegionCount"], 1, "`*silence` 区域数: {load}");
+    assert_eq!(
+        load["silentRegionCount"], 1,
+        "引擎摊平口径的静音区域数: {load}"
+    );
+    assert_eq!(
+        load["builtinSilentRegionCount"], 1,
+        "其中 `sample=*silence` 的区域数: {load}"
+    );
     assert_eq!(
         load["sampleFilesReadCount"], 1,
         "只有 tone.wav 这一份真样本: {load}"
@@ -372,10 +381,11 @@ fn read_only_gates_saving_but_not_the_two_sfz_tools() {
             "read_only={read_only}: {rendered}"
         );
         println!(
-            "[app/embed/read-only] read_only={read_only} regions={} silent={} builtin_silence={} \
-             notesUsingFileSample={} peak={:?} sha256={:?}",
+            "[app/embed/read-only] read_only={read_only} regions={} silent={} builtinSilent={} \
+             notesUsingBuiltinSilence={} notesUsingFileSample={} peak={:?} sha256={:?}",
             loaded["data"]["regions"],
             loaded["data"]["silentRegionCount"],
+            loaded["data"]["builtinSilentRegionCount"],
             rendered["data"]["notesUsingBuiltinSilence"],
             rendered["data"]["notesUsingFileSample"],
             rendered["data"]["peak"],
@@ -487,6 +497,7 @@ fn the_embedded_dispatcher_matches_the_stdio_assembly_field_by_field() {
     for key in [
         "regions",
         "silentRegionCount",
+        "builtinSilentRegionCount",
         "sampleFilesReadCount",
         "instrumentId",
         "reused",

@@ -222,6 +222,82 @@ jobs:
           python3 scripts/gates/validate_schemas.py --repo-assets --samples-dir target/schema-samples
 
   # ---------------------------------------------------------------------------
+  # MCP 端到端复跑（真二进制 / 真 stdio 会话 / 有退出码）
+  # ---------------------------------------------------------------------------
+  #
+  # ## 为什么要单独一条腿（而不是塞进 `checks`，也不是靠矩阵腿）
+  #
+  # `crates/yeban-mcp/verify/` 这三份脚本此前**全库没有执行者**：它们要么写文件、要么打印，
+  # 于是"端到端能跑通"只是文档里的一句话。台账 §20.6 登记了这一族；§21.8 现读了三条接线方案。
+  # 现在：`audio_pins.py`（纯标准库）已在 `checks`（§21）；本腿跑**剩下两份需要真二进制**的
+  # （`e2e_audio_clip_stdio.sh` 与 `idempotency_replay_schema.py`）。
+  # 本腿是方案 ①（独立 job），理由**实测**在下面的耗时读数里：
+  # - `checks` 刻意不装系统库、也不编任何 crate（唯一的重活是 `yeban-model` 的样本导出），
+  #   把 `yeban-mcp` 的构建塞进去会把那条 47s~1m29s 的轻腿变成重腿；
+  # - 矩阵腿只有**窄运行**才跑（`workspace_wide == 'false'`），宽运行（碰 `scripts/`、`.github/`、
+  #   根清单）时它整体 skipped ⇒ 判据会在最常见的合流批次里**一次都不跑**。
+  # 本腿的条件与 `windows` / `macos` **同形**：宽运行时计划器返回**全部成员**，
+  # 所以"动了 `yeban-mcp`"与"整仓全量"两支都被同一个 `contains` 覆盖。
+  #
+  # `yeban-mcp` 无需 apt 系统库：`cargo tree -p yeban-mcp -e normal | grep -c cpal` == 0
+  # （该 crate 的规则是"轻量：不拖音频栈/GUI 进 MCP"，见其 `Cargo.toml` 注释）。
+  e2e-mcp:
+    name: e2e (MCP stdio 复跑 / 幂等重放契约)
+    needs: plan
+    # ⚠ 与 `windows` / `macos` 同一条件形态：实测 `changed-crates.py` 在**宽运行**时
+    # 返回 `crates = 全部成员`（不是空集合），所以这一个 `contains` 已经覆盖
+    # `workspace_wide == 'true'` 那一支 ⇒ 不需要并集，也不需要 `always()`。
+    if: contains(needs.plan.outputs.crates, 'yeban-mcp')
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装钉死工具链 (单一事实源 rust-toolchain.toml)
+        run: |
+          set -euo pipefail
+          rustup show
+          rustc --version
+
+      # 种子脚本的起点是**模型规范样本** `project.filled.json`（⛔ 不是仓库里手抄的一份 JSON）。
+      - name: 导出模型规范样本 (yeban-model, 轻)
+        run: |
+          set -euo pipefail
+          start=$(date +%s)
+          cargo run -p yeban-model --locked --example export_schema_samples -- --out target/schema-samples
+          echo "耗时读数: export_schema_samples = $(( $(date +%s) - start )) 秒"
+
+      - name: 构建 yeban-mcp 裸二进制 (--bin, 默认 feature)
+        run: |
+          set -euo pipefail
+          start=$(date +%s)
+          cargo build -p yeban-mcp --bin yeban-mcp --locked
+          echo "耗时读数: cargo build -p yeban-mcp --bin yeban-mcp = $(( $(date +%s) - start )) 秒"
+          ls -l target/debug/yeban-mcp
+
+      # ⭐ 本腿的**存在理由**：这两条脚本自带退出码，红就是红。
+      # 1) 音频片段端到端：打开 → 导入 → 保存 → 渲染两次（八条命名判据，见脚本内的 `check(...)`）；
+      # 2) 幂等重放的响应必须被 Python 侧 jsonschema 接受（与 `checks` 那条对账同一实现两端）。
+      - name: 端到端复跑 + 幂等重放契约 (真进程 / 真 stdio)
+        run: |
+          set -euo pipefail
+          python3 -m pip install --quiet 'jsonschema>=4.24'
+          bash crates/yeban-mcp/verify/e2e_audio_clip_stdio.sh
+          python3 crates/yeban-mcp/verify/idempotency_replay_schema.py
+
+      - name: 归档端到端产物 (只在失败时值得看)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-mcp-${{ github.run_id }}
+          path: |
+            target/e2e-audio-clip/responses.jsonl
+            target/e2e-audio-clip/requests.jsonl
+            target/idempotency-replay-schema/
+          if-no-files-found: warn
+          retention-days: 7
+
+  # ---------------------------------------------------------------------------
   # 每个受影响 crate 一条矩阵腿: clippy -D warnings + test
   # ---------------------------------------------------------------------------
   rust:
@@ -398,11 +474,23 @@ jobs:
       # ⭐ 保留本条（#167 加的）: 它 1 秒内清掉前面两条腿的 incremental 并打印
       # `du -sh target` / `df -h .` —— 在 hosted runner 上**这是唯一能读到的盘读数**，
       # 也是下一轮判"够不够"的依据。合并后它挪到合并档 test 腿**之前**（最重的一次链接）。
+      # ⭐ 2026-10-31 与宽运行腿**对齐**：只清 incremental 在这条腿上是**不够**的。
+      # 实证（run `41196100058` 的 `rust (yeban-app)` 重跑，日志 step 10 之后）：
+      # `du -sh target` = **57G**、`df` 只剩 **53G**，接着合并特性 test 腿重链接
+      # 测试二进制时报 `rustc-LLVM ERROR: IO failure on output stream:
+      # No space left on device`（exit 101）。同一份树在宽运行腿（run `41193355453`）
+      # 因为**先跑了 `trim-target.sh`**（70G → 4.7G，释放 66G）而通过。
+      # `trim-target.sh` 只删 `deps` 顶层**已链接**的测试/示例二进制（保留 `.rlib`），
+      # 下次测试会重新**链接**而不是重新编译；脚本按进程名精确匹配 cargo/rustc、
+      # 共享 target 锁被持有也拒绝裁剪 ⇒ 语义上是惰性的。
+      # ⚠ 这一步不是判决，只是把"贴边"往下压（与宽运行腿同一条纪律）。
       - name: 释放增量目录 (合并档 test 腿之前; 前两条腿的 incremental 会叠加)
         run: |
           set -euo pipefail
           du -sh target 2>/dev/null || true
           rm -rf target/debug/incremental || true
+          bash scripts/dev/trim-target.sh \
+            || echo "::warning::trim-target 拒绝裁剪（有 cargo/rustc 在跑，或共享 target 锁被持有）⇒ 只清了 incremental"
           df -h . || true
 
       - name: test (合并特性)

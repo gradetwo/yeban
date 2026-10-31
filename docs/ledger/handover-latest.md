@@ -1,16 +1,104 @@
 # 交接（夜半第三阶段 · 2026-10-14 · 覆盖台账 R307–R1144）
 
-> ⭐ **2026-10-28：当下状态看 §0.6**（创作缺口审计 `G1..G18` 全轮 + 完成审计）；⭐ 本轮的逐单明细记在 `docs/DEVELOPMENT_LEDGER.md` 的尾部，`phase-status.md` 的叙事条目停在 R1144。
+> ⭐ **2026-10-31：当下状态看 §0.6.0w**（MCP stdio 端到端复跑**接成了有判决的一族**：新 CI 腿 + 两份脚本的真缺陷）；
+> ⭐ 更早的状态在 §0.6.0v（Zimmer 创作报告逐条核账：`G4` 已修／`G5` 是报告误判／`G3` 待裁决 ＋ ADR 编号撞车的处置规则）；
+> ⭐ 更早的状态在 §0.6（创作缺口审计 `G1..G18` 全轮 + 完成审计）；本轮的逐单明细记在 `docs/DEVELOPMENT_LEDGER.md` 的尾部（`§22` = 2026-10-31 第十八批），`phase-status.md` 的叙事条目停在 R1144。
 
 ---
 
-## ⭐ ⭐ ⭐ §0.6 最新交接（**2026-10-28**，创作缺口审计 `G1..G18` 全轮 + 完成审计）—— 新会话先读这一节
+## ⭐ ⭐ ⭐ §0.6 最新交接（**2026-10-28 起，最新到 2026-10-31 的 §0.6.0w**，创作缺口审计 `G1..G18` 全轮 + 完成审计 + Zimmer 报告核账）—— 新会话先读这一节
 
 > 本节是**当前**状态；下面 §0.5（2026-10-26，macOS 主机）与 §1／§1.9 是**历史快照**，
 > ⛔ 不要当成今天的事实 —— ⚠ 尤其 §0.5 里的路径与 env 是**另一台机器**的。
 > ⚠ 本轮的逐单明细记在 `docs/DEVELOPMENT_LEDGER.md`（§5.3 的状态表 + 各轮条目），
 > `docs/ledger/phase-status.md` 的叙事条目**停在 R1144**（2026-10-26）⇒ ⭐ 读进度以
 > `DEVELOPMENT_LEDGER.md` 的尾部为准，⛔ 不要以为 R1144 之后没干活。
+
+### 0.6.0w ⭐ 尾批（2026-10-31 21:10）：**MCP stdio 端到端复跑从此有判决** —— 但两份脚本各藏一个"本地跑不出来"的真缺陷
+
+- **接了执行者，也修了被接的东西**。`crates/yeban-mcp/verify/` 的两份脚本此前**全库没有执行者**（台账 §20.6/§21.8）；
+  本批新建 CI 腿 `e2e (MCP stdio 复跑 / 幂等重放契约)`（方案 ①：独立 job），
+  触发条件现读 `changed-crates.py` 后简化为**单个** `contains(needs.plan.outputs.crates,'yeban-mcp')`
+  —— 每条 `workspace_wide:true` 分支都 emit **全部成员**（不是空集合），⛔ 不需要并集也不需要 `always()`。
+- ⛔ **⚠ 接执行者之前必须先读脚本自己判什么**：`yeban_import_audio` 的 `license` 是**必填**
+  （缺 ⇒ 带内拒绝 `licenseRequired`；白名单不可读 ⇒ `licenseWhitelistUnavailable`，⛔ 从不静默放行 = `MUST-GATE-014`），
+  而两份脚本**都没给** ⇒ 若只接线不补这一笔，幂等脚本报的红会是**"夹具不合法"**而非它名义上的**"重放形状漂移"**。
+  两份都补 `"license": "CC0-1.0"`（`kick.wav` 的字节由种子脚本自己合成 ⇒ 声明为真）。
+- **`e2e_audio_clip_stdio.sh` 原本完全没有牙**（末尾只 `print`，任何不一致都以 0 退出）⇒ 改成 **9 个具名 `check`**
+  ＋任一红 `exit 1`。**两处刻意只打印不断言**：`audio.unsupported == []` 的语义未证；`bext` 墙钟**本就该**变
+  （被证的是**文件字节**相同，沿用 `tests/render_master.rs` 的既有口径）。
+- **判决（线 `b512ee8a`／run `41203744827`，逐 job 读回）**：`e2e` 腿**真跑** = job `124545260712`、**53 秒**、
+  日志内 `[PASS]` **9** 条／`[FAIL]` **0** 条；`checks`/`deny`/`plan`/`lockfile` success；`rust (矩阵)` **skipped**（⛔ 不计绿）。
+  **成本读数**（选方案 ① 的依据）：样本导出 `10 秒`、`cargo build -p yeban-mcp --bin yeban-mcp` `25 秒`
+  ⇒ 独立腿总 53 秒，与 `checks` 同量级，⛔ 不必塞进轻腿或矩阵腿。
+  ⚠ **merge `d40afe0b`（run `41204348127`）落笔时未读回 ⇒ pending**；`[MCP-TOOL-005]` 台账 §22 已登记整张判决表。
+- **教训（写进纪律，不再重述）**：`pip install jsonschema` 在 ubuntu-24.04 runner 上可用**不是假设**
+  —— 同一 run 的 `checks` 腿用同一条命令且 success，就是它自己的证据。
+
+### 0.6.0v ⭐ 尾批（2026-10-31 19:40）：**Zimmer 创作报告逐条核账收盘** —— `G4` 是真缺陷（口径分叉＋回退文案越界）已修；`G5` 是报告**误判**；`G3` 是登记待裁决的推迟能力
+
+> 报告来自人类转来的 `/tmp/zimmer-20261031-package.zip`。核账方法：**每条先用仓库现读复核，再决定动代码还是动文档**
+> —— 上一轮（s22）的教训是"报告说没有执行者"这类话**可以**直接兑现，但"报告说没有入口"这类话**必须**现读。
+
+- **`G4`（真缺陷，已修 —— 线 `a72b9b6a`／run `41194388747` success）**：报告 §5.3 说"同一乐器的三处表述互相矛盾"。
+  现读把它拆成**两处真缺陷**：① 同一个键名 `silentRegionCount` 在装载侧数**内建静音**、在渲染侧数**引擎摊平**
+  （缺样本＋内建），所以"0 vs 360"不是测量噪声而是**两套口径**；② `sampleSource` 里的 `in-memory-sine (回退…)`
+  只存在于 `yeban_render_sfz_wav` 试听路径，采样器轨**没有**回退 ⇒ 装载回执不加限定就是在预告一段渲染里不会出现的静音。
+  修法：装载侧一次遍历同时数两个口径、`yeban_load_sfz`／`yeban_list_instruments`／app 镜像都吐
+  `silentRegionCount`＋`builtinSilentRegionCount`，回退文案由 `SINE_FALLBACK_SCOPE` 单一来源加范围。
+  **新增 2 条判据**（`sfz_silence_sample.rs:390`、`render_master.rs:4967` —— 后者钉"装载回执与渲染回执的
+  `silentRegionCount` 必须相等"）。⚠ ⛔ 渲染侧**没有**加 `builtinSilentRegionCount`：引擎无公开访问器，为凑对称去改
+  `yeban-render` 属越界。**判决读数**：全量腿 46m19s／`test result:` 504 行／`FAILED` 0／两条新判据逐名 `… ok`；
+  windows 腿独立再读（`test result:` 308／同名两条各 1 次 ok）。
+  **合流判决**：merge `90837f44` 撞上另一会话已推送的 UI 线 `36864fdf` ⇒ 本地并批后 main = `2215022e`，
+  run `41197950361` **success**（全量腿 47m30s／`test result:` **516** 行／`FAILED` 0／两条新判据仍逐名 ok）。
+- **`G4` 的素材面（⛔ 不是缺陷，别再去"修"它）**：`assets/samples` 现读 1 586 个文件里**音频样本 0 个**
+  （`.sfz` 1 398／`.txt` 170／`.md` 11／`.xml` 6／`.json` 1），清单 `policy` 逐字写明**登记式外取**（9.371 GiB 不随包分发）
+  ⇒ "样本全缺 ⇒ 静默"是设计如此。要不要随包分发素材属人类裁决（许可＋体积），⛔ Agent 不代取。
+- **`G5`（报告误判）**：报告 §5.4 拿 `recipe`／`timbre`／`setTrackInstrument` 三个词 grep 它自己带的 `tools_list.json`
+  （各 0 命中）就判"工具面无音色入口" —— 违反测量纪律 §6.3「先 grep 交付再下结论」。三件现读证据：
+  ① 报告**自带**的 `tools_list.json` 里就有 `osc1_wave`（波表 `0`=hollow／`2`=vocal／`4`=glass 写在 `yeban_edit_notes` 的 description 内）；
+  ② 入口＝`edit_notes` 的 `insertDevice` + `device.kind:"InternalInstrument"`；③ 判据 `an_instrument_wave_choice_changes_the_master_and_stops_registering_device_chain_dsp`
+  （`render_master.rs:8776`）钉住"只改 `osc1_wave` ⇒ 母带 digest 必变"。
+  ⚠ **相邻的真缺口另记**（不是报告说的那条）：`propose_section` ⛔ 不插音源设备（`section_build.rs` 的 `InternalInstrument` **0 命中**）
+  ⇒ 生成段落里每个声部都用引擎默认波表；补它=新增默认值决策，待人类裁决。
+- **`G3`（登记，不动代码）**：报告 §5.2 重开"无歌声合成"。现证 `ROADMAP:478` 把 SVS 排在 **v2.0.0** ⇒ 属推迟项，
+  本票只登记路线（`ADR-0055`，Proposed，路线权威在 `HD-67`，⛔ 第二份名册）。
+- **⭐ 新纪律：ADR 编号会撞车。** 本仓库今天第一次出现**两个会话各自取号 `ADR-0054`**（另一侧 = `ruler-bar-snap`，已发布在
+  `origin/main` `36864fdf`；本侧 = `singing-synthesis-v2-deferral`，还在本地）。规则：**已发布的一方保号，未发布的一方改号**
+  ⇒ 本侧五处同步改 `ADR-0055`（文件名／票内标题／README 索引行／`HD-67` 留痕／台账 `G3` 行）。
+  取号前必须 `git fetch` 后数远端的最大值，⛔ 只数本地工作树。
+- **另一侧那条红是环境红，不是代码红**：run `41196100058`（`36864fdf`）红在 `rust (yeban-app)` 的 `test (合并特性)` 步，
+  日志实证 `error: linking with 'cc' failed` ＋ `collect2: fatal error: ld terminated with signal 7 [Bus error], core dumped`
+  —— 与 `ci.yml` 里"合并特性 app 腿之前必须留够链接空间"那一步是同一类故障；该腿之前 `test result:` 全 ok。
+  ⇒ 判红之前先分**链接器红／断言红**，别把 runner 的事记成代码的账。
+
+### 0.6.0u ⭐ 尾批（2026-10-31 19:00）：`verify/audio_pins.py` 由「只打印」改成「断言＋退出码」并接进 CI `checks` —— §0.6.0t 末尾那句「属另一族、已登记未动」的一半**当场兑现**
+
+- **缺口（§20.6 登记的原话）**：`crates/yeban-mcp/verify/audio_pins.py` 全库只有文档与注释引用、
+  **无 CI 调用**，本机实跑 `ModuleNotFoundError: No module named 'numpy'` ⇒「三个钉死摘要是独立
+  推导出来的」这句话在门禁上无法判真假。
+- **修法（两件事一起做，缺一就还是空转）**：① 脚本改**纯标准库** —— `f32()` 用 `struct` 往返
+  实现 IEEE-754 binary32 的 round-to-nearest-even（与 Rust `f32` 四则同语义），⛔ 不为一条
+  复算脚本让门禁机器装第三方包；② 三个摘要（`PINNED_MASTER_DIGEST` / `PINNED_PAYLOAD_SHA256` /
+  `PINNED_FILE_SHA256`，源 `crates/yeban-mcp/tests/render_audio_clips.rs` 判据 6）改为
+  **逐字相等断言＋非零退出码**，现读 201 行 / `assert` 5 处。
+- **接线位置有讲究**：放 `.github/workflows/ci.yml:196` 的 `checks` 作业（fmt／红线守卫／schema
+  那一条），⛔ 不放 rust 矩阵腿 —— 它不编译任何 crate，因此**零依赖**、跑得早、失败即红。
+- **判决**：线 `b13b8c91`／run `41182573360` **success**（`checks`／`plan`／`lockfile`／`deny`／
+  `rust (workspace 全量)`／`windows`／`macos` 七条真腿全 success，矩阵腿 `skipped` 是 plan 返回
+  `workspace_wide` 的既有形态）；merge `76c33548`／run `41186793513` **success**（全量腿
+  **45m18s**，windows 39m43s、macos 26m26s）。工作树已拆（分支 `line/s22-audio-pins-assert` 保留）。
+- **同族余下**：`e2e_audio_clip_seed.py`（178 行）／`idempotency_replay_schema.py`（202 行）／
+  `e2e_audio_clip_stdio.sh`（144 行）**仍无执行者**，但它们⛔ 不是 `audio_pins.py` 那一类 ——
+  ⚠ 2026-10-31 晚复核："数 `assert` 关键字"会把这两条 python 误读成"只打印"：`seed.py` 有
+  **3 条 `raise SystemExit`** ＋ `sys.exit(main())`，`idempotency_replay_schema.py` 有 `fail()`→`sys.exit(1)`
+  且缺 `jsonschema` 时 `sys.exit(2)`（注释原话"不伪造绿"）⇒ **它们只差执行者**。
+  这一族里真正的"打印当判据"只有 `e2e_audio_clip_stdio.sh` 末尾那段：`assert` **0** 条、
+  `"cmp master-a.wav master-b.wav" => identical|DIFFERENT` 印完照样退 0。
+  接线前先解决：前两条要**真二进制** `target/debug/yeban-mcp`，
+  `idempotency_replay_schema.py` 还要 `jsonschema`（正是 §20.6 那句"第三方依赖"）⇒ 照搬会造假绿，
+  已单独登记成 s25 候选（接 CI 的 **e2e** 作业，那里已有构建产物）。
 
 ### 0.6.0t ⭐ 尾批（2026-10-31 15:10）：`verify/render_pure.rs` 同族开环清零 —— **`crates/*/verify/*.rs` 三份脚手架现在全有 cargo 门禁执行面**；顺手记下 `-D rust-2018-idioms` 这条隐性门槛
 

@@ -1407,7 +1407,10 @@ pub struct SamplerReport {
     pub resolved_path: String,
     /// SFZ 区域总数。
     pub regions: usize,
-    /// 内建静音（`sample=*silence`）区域数。
+    /// ⭐ **引擎摊平口径**的静音区域数（缺样本 ＋ 内建静音；决定该轨是否发声）。
+    ///
+    /// 与 `yeban_load_sfz` / `yeban_list_instruments` 的 `silentRegionCount` **同一个
+    /// 含义**（报告缺口 `G4` 起对齐；`builtinSilentRegionCount` 才是内建静音子集）。
     pub silent_regions: usize,
     /// 排程进采样器的音符数。
     pub notes: u64,

@@ -1443,7 +1443,7 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
     ToolSpec {
         spec_id: "MCP-TOOL-EXT-SFZ-LOAD",
         name: "yeban_load_sfz",
-        summary: "装载一份 SFZ v2 乐器 (走 yeban-sfz 的唯一解析实现) 并返回区域数与会话内 instrumentId; ⭐ G4: 样本文件读不到时 status 仍是 success (文本确实解析了), 但 data.warnings[] 会点名 sfzSamplesUnreadable —— 采样器轨没有正弦回退, 绑轨即整轨静音, 采样须按 assets/samples/manifest.json 登记式外取",
+        summary: "装载一份 SFZ v2 乐器 (走 yeban-sfz 的唯一解析实现) 并返回区域数与会话内 instrumentId; data.silentRegionCount 是引擎摊平口径的静音区域数 (缺样本 + 内建静音, 与 yeban_render_master 的 sampler.silentRegionCount 同义), builtinSilentRegionCount 是其中的 *silence 子集; ⭐ G4: 样本文件读不到时 status 仍是 success (文本确实解析了), 但 data.warnings[] 会点名 sfzSamplesUnreadable —— 采样器轨没有正弦回退, 绑轨即整轨静音, 采样须按 assets/samples/manifest.json 登记式外取",
         scope: Scope::AppAdmin,
         // 只读工程、不落盘：装载只把"文本 + 元数据"放进会话态（`MODEL-ISO-001` 第 2 层），
         // 打开 / 关闭工程会整体重置它。`Op` 一位都不写 ⇒ 提交图谱不动。
@@ -1697,7 +1697,7 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
     ToolSpec {
         spec_id: "MCP-TOOL-EXT-LIST-INSTRUMENTS",
         name: "yeban_list_instruments",
-        summary: "列出**本会话已装载**的 SFZ 乐器（审计 `N13`：会话 registry 此前没有任何枚举入口，拿到 `instrumentId` 只能靠记 `yeban_load_sfz` 的响应）。响应 `data.instruments[]`：每条给 `instrumentId` / `path` / `regions` / `silentRegionCount` / `sha256` / `sampleSource` / `sampleFilesReadCount` / `sampleFilesFailedCount` / `sampleHz`（= 装载响应的同一批读数，少了 `regionDetails` 全文）；`count` = 条目数；空 registry ⇒ `instruments: []` ＋ 一句 `note`（⛔ 不报错 —— 没装载过乐器不是错误）。⚠ registry 是**会话运行态**（不落盘），打开/关闭工程或重启进程后为空 ⇒ `instrumentId` 只能当本会话句柄用，不能跨会话引用。装乐器走 `yeban_load_sfz`（内容寻址 ⇒ 同一文本复用同一 id）；把乐器绑到轨上走 `yeban_edit_notes` 的 `insertDevice`（sampler）。",
+        summary: "列出**本会话已装载**的 SFZ 乐器（审计 `N13`：会话 registry 此前没有任何枚举入口，拿到 `instrumentId` 只能靠记 `yeban_load_sfz` 的响应）。响应 `data.instruments[]`：每条给 `instrumentId` / `path` / `regions` / `silentRegionCount` / `builtinSilentRegionCount` / `sha256` / `sampleSource` / `sampleFilesReadCount` / `sampleFilesFailedCount` / `sampleHz`（= 装载响应的同一批读数，少了 `regionDetails` 全文）；`silentRegionCount` 是**引擎摊平口径**（缺样本 ＋ 内建静音，与 `yeban_render_master` 的 `sampler.silentRegionCount` 同义），`builtinSilentRegionCount` 是其中 `sample=*silence` 的子集；`count` = 条目数；空 registry ⇒ `instruments: []` ＋ 一句 `note`（⛔ 不报错 —— 没装载过乐器不是错误）。⚠ registry 是**会话运行态**（不落盘），打开/关闭工程或重启进程后为空 ⇒ `instrumentId` 只能当本会话句柄用，不能跨会话引用。装乐器走 `yeban_load_sfz`（内容寻址 ⇒ 同一文本复用同一 id）；把乐器绑到轨上走 `yeban_edit_notes` 的 `insertDevice`（sampler）。",
         scope: Scope::AppAdmin,
         // 只读：枚举 `domain.sfz_instruments`，不改工程、不装载、不落盘。
         side_effect: SideEffect::ReadOnly,
