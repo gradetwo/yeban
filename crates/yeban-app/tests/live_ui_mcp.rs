@@ -7249,6 +7249,7 @@ fn a_real_proposal_from_the_authority_is_visible_in_the_opened_drawer() {
 #[cfg(feature = "in-process-mcp")]
 #[test]
 fn selecting_a_row_lights_up_accept_and_it_really_merges_the_proposal() {
+    use std::collections::BTreeMap;
     use yeban_app::mcp_mount::{InProcessMcp, SessionSource};
 
     // 「采纳」要真的写进权威 ⇒ 会话必须是**可写形态**。`SessionSource::InMemory` 的
