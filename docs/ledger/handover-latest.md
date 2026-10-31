@@ -12,6 +12,33 @@
 > `docs/ledger/phase-status.md` 的叙事条目**停在 R1144**（2026-10-26）⇒ ⭐ 读进度以
 > `DEVELOPMENT_LEDGER.md` 的尾部为准，⛔ 不要以为 R1144 之后没干活。
 
+### 0.6.0r ⭐ 尾批（2026-10-31 06:45）：**R115 守卫的四份副本里有一个真缺陷**（嵌套已闭合 `fn` 切窗口／借界）＋ 覆盖扩到 dsp/app/ui-mcp
+
+- **缺陷（本批的核心）**：守卫找"站点所在函数体"时取的是**上方最近的 `fn`**。若那是**已闭合的
+  嵌套 helper**：(a) 窗口被挪到 helper ⇒ helper **之前**的界丢失 ⇒ **假红**（`record_device_wiring.rs:526`
+  实测，旁边就有 `!out.is_empty()`）；(b) helper 的断言进入窗口 ⇒ 外层站点**借它的界** ⇒ **假绿**。
+  修法：**包住站点的最内层 `fn`** ＋ 拼窗口时**整段跳过嵌套 fn**；每份副本新增**两条对照臂**
+  （③界在 helper 之前⇒必须认；④界只在 helper 里⇒必须不认）。
+- **覆盖读数（守卫自报）**：dsp **30/78/1/0/0**（74 处补界）｜app **27/46/1/0/0**（22 处补界）｜
+  mcp **22/47/2/3/0**（只回补窗口）｜engine **12/11 站点／无界 0**（窗口重写，整数计数四类
+  4／80／2／49＝**135 未变**）｜ui-mcp **5/6/0/0/0**（新守卫，3 处补界）。
+- **判决**：dsp 线 `41097665246` success（dsp 腿 **3m17s**／541 passed）→ merge `a15b4130` / `41103338337`
+  success；app 线 `41098589863` success（app 腿 **34m18s**／255 ok）→ merge `f9e1e7f0` / `41104394489`
+  success；回补线 `41103699213` success（1,111 `Running`／1,094 ok／0 FAILED）；s12 merge `7065c3d5` /
+  `41135494859` success（windows 39m04s／macos 29m16s／app 34m06s／mcp 16m37s，五条判据 mcp+dsp 各 3 次 ok）；
+  engine 线 `41135850531` success（engine 腿 5m44s）；ui-mcp 线 `41136205024` success（ui-mcp 腿 5m42s，
+  22:15:26 守卫五条判据逐名 ok）。合流 `145c261b` 的 run `41140491576` **success**：11 个作业逐个
+  `completed`（无 `in_progress`）；engine 腿 22:48:33→22:53:21，守卫 `running 16 tests` 全 ok（窗口臂 22:50:51），
+  `FAILED` 0；ui-mcp 腿 22:48:33→22:53:20，守卫 `running 5 tests` 全 ok（22:53:09），`FAILED` 0；
+  `macos`／`windows` 本次真跑；`rust (workspace 全量)` 按 plan `skipped` —— ⛔ 不计为该腿的绿。
+- **纪律再证**：一次 `gh run view --json` 报 run 级 `completed success` 时，`windows` job 仍在
+  `in_progress` ⇒ 判绿必须**逐 job 看 `completedAt`**；`macos`/`windows` 因 plan 而 `skipped` **不是绿**。
+- **本地绿 ≠ 编译过**：ui-mcp 补界的三处 src 改动**本机没编译**（依赖 `yeban-mcp`，CI-only 家族）；
+  本地只跑守卫（`include_str!` 只读文本）、clippy、fmt，编译判决只来自 CI。
+- **下一单（同口径未覆盖）**：`yeban-midi-io`（2 文件，`windows(2).all`，需 render 那份的窗口界）、
+  `yeban-ui-test-port`（1 文件）、`yeban-decode`（1 文件，但 `decode.rs` **内嵌**一段 R102/R109/R118 自检
+  ⇒ 先评估要不要迁移成常驻文件）。创作缺口**仍全在人类裁决**（`ADR-0042`／`0047`..`0050`／`0004 Q13`／`0053`）。
+
 ### 0.6.0q ⭐ 尾批（2026-10-30 16:20）：**§0.6.0p 的两条候选都已收盘**（R115 扩 mcp ＋ 零判据守卫；两线并行）
 
 - **A（R115 扩 mcp）**：mcp 的站点口径与引擎**不同**——`chars/bytes` 适配器的界是**内容长度**、生产

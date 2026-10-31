@@ -16456,3 +16456,77 @@ A merge `e6c98ccf`、B merge `c22aeadf`（本地）→ 集成 merge `3dab1269` �
 
 `§0.6.0p` 的两条候选**都已收盘**。同一轴的剩余形状（空真/死名册/下界松）在 mcp 侧暂无第三处可机械
 判定的站点；创作缺口仍全在人类裁决（`ADR-0042` G8j／`ADR-0047`..`0050`／`ADR-0004` Q13）。
+
+## 2026-10-31 06:45 —— §18 第十四批（五线并行）：R115 守卫扩到 dsp/app/ui-mcp ＋ **窗口缺陷**（嵌套已闭合 fn 会切窗口／借界）
+
+> ⚠ 日志时间戳：GitHub API 里是 UTC（本机 `date` 是 +08:00）；本节引用 job 起止时保留原文 UTC。
+
+### §18.1 缺陷（本批的核心，不是"再加两个副本"）
+
+R115 系列守卫（`assertion_bounds_audit.rs`）里找"站点所在函数体"的那段，三份副本（dsp/app/mcp）
+都写成**"站点上方最近的 `fn`"**。当上方那个 `fn` 是**已经闭合的嵌套 helper** 时：
+
+1. **窗口起点被挪到 helper** ⇒ helper **之前**的界被排除 ⇒ **假红**（`record_device_wiring.rs:526`
+   就是这么红起来的：同一行旁边就有 `!out.is_empty()`，守卫却报无界）；
+2. 窗口里**包含了 helper 的整段断言** ⇒ 外层站点可以**借 helper 的界** ⇒ **假绿**。
+
+修法（三份 dsp/app/mcp 副本）：取**包住站点的最内层** `fn`（`function_body` + 花括号配平的
+`span_from`），并在拼"断言文本"时**整段跳过嵌套 fn**（`i = nested_end + 1`）；engine 那份是另一套
+机器（后向窗口 + `WINDOW_MAX`），改成 `body_lines(..)` 过滤掉嵌套 fn 的行（保留其余行与相对距离）。
+新增**对照臂两条**（每条副本都加）：③界在嵌套 helper **之前**⇒ 必须认（防假红）；④界**只在**
+helper 里 ⇒ 必须不认（防假绿）。两条臂在旧实现上都会失败（③红、④绿），因此是**有牙的**。
+
+### §18.2 覆盖扩张（同一口径的四份）
+
+| crate | 站点读数（守卫自报） | 处理 |
+| :--- | :--- | :--- |
+| `yeban-dsp` | **30** 文件 / **78** 站点 / 1 取反 / 0 allowlist / 无界 **0** | 74 处补非空界（含 `windows(2)` 的 ≥2 条界） |
+| `yeban-app` | **27** 文件 / **46** 站点 / 1 取反 / 0 allowlist / 无界 **0** | 22 处补界（88 行 / 11 文件）＋窗口修复 |
+| `yeban-mcp` | 22 文件 / **47** 站点 / 2 取反 / 3 allowlist / 无界 **0**（读数未变） | 只回补窗口修复 |
+| `yeban-engine` | **12** 文件 / **11** 站点 / 无界 **0**；整数计数四类 4／80／2／49（合计 **135**）**未变** | 窗口重写（含整数计数那条窗口也换掉） |
+| `yeban-ui-mcp`（新） | **5** 文件 / **6** 站点 / 0 取反 / 0 allowlist / 无界 **0** | 3 处补界（`methods.rs` 的 dryRun 之外参数集合、`samples.rs` 的导出目录、`tree.rs` 的节点集） |
+
+`yeban-ui-mcp` 的守卫是从 mcp 副本派生的**第三份**（口径相同：站点按语句、字符/字节谓词剥适配器）；
+`MIN_SOURCES = 5`（＝当前行数）、规模地板 `scanned >= 16`（15 src ＋ 1 tests）。
+
+### §18.3 判决链（全部读回）
+
+| 对象 | run | 判决（读数） |
+| :--- | :--- | :--- |
+| main 地板抬高批 `41095888712`（前置） | `41095888712` | **success** —— `rust (workspace 全量)` 真跑 **48m02s**；`Running` **461** ／ `test result: ok` **483** ／ passed **6,944** ／ `FAILED` **0**；`macos` 32m28s |
+| dsp 线 `line/s10-dsp-assertion-bounds` @ `d39bddb5` | `41097665246` | **success** —— `rust (yeban-dsp)` **3m17s**、23 行 `test result: ok`、passed **541**、`FAILED` **0**；守卫判据逐名 `ok`；`windows` 33m39s／`macos` 30m16s／`mcp` 16m39s |
+| dsp merge `a15b4130` | `41103338337` | **success** —— 13 个作业全部 completed（⚠ 曾被后续 main 推送**取消**的担心不成立：本 run 已完整跑完） |
+| app 线 `line/s11-app-assertion-bounds` @ `ea01a843` | `41098589863` | **success** —— `rust (yeban-app)` **34m18s**、255 行 `test result: ok`、`FAILED` **0**；守卫在 17:36:47 与 17:51:14 两次运行、判据逐名 `ok`；`macos` 30m08s |
+| app merge `f9e1e7f0` | `41104394489` | **success** —— 8 个作业全 completed；`rust (workspace 全量)` **按 plan 跳过**（增量只涉 app）⇒ 由上一行的全量腿承接 |
+| 回补线 `line/s12-guard-window-backport` @ `0efabb3b`（mcp+dsp 窗口修复） | `41103699213` | **success** —— `Running` **1,111** ／ `test result: ok` **1,094** ／ `FAILED` **0**；dsp/engine/mcp 三条腿都跑了 `tests/assertion_bounds_audit.rs` |
+| s12 merge `7065c3d5` 推主干 | `41135494859` | **success** —— `windows` 22:03:48→**22:42:52**（39m04s）、`macos` →22:33:05（29m16s）、`rust (yeban-app)` →22:37:55（34m06s）、`rust (yeban-mcp)` →22:20:25（16m37s）全部真跑；`Running` **1,115** ／ `test result: ok` **1,098** ／ `FAILED` **0**；五条守卫判据在 mcp/dsp 两腿合计各 **3 次** `... ok` |
+| engine 窗口重写线 `line/s13-engine-guard-window` @ `3ca82288` | `41135850531` | **success** —— `rust (yeban-engine)` 22:06:46→**22:12:30**（5m44s）；`Running tests/assertion_bounds_audit.rs` 在场且 `the_window_is_the_function_body_not_a_fixed_line_count ... ok`；`Running` **1,092** ／ `test result: ok` **1,075** ／ `FAILED` **0** |
+| ui-mcp 新守卫线 `line/s14-ui-mcp-guard` @ `a478f2a8` | `41136205024` | **success** —— `rust (yeban-ui-mcp)` 22:09:50→**22:15:32**（5m42s）真跑；守卫在 **22:15:26** 运行、五条判据逐名 `ok`；`FAILED` **0**；`macos`/`windows` 按 plan 跳过（⛔ 不算绿） |
+| 合流 merge `145c261b` 推主干（s14＋s13＋`origin/main`） | `41140491576` | **绿**（`conclusion=success`，11 个作业逐个 `completed`，无 `in_progress`）：`rust (yeban-engine)` 22:48:33→22:53:21 真跑，守卫二进制 `running 16 tests` 全 `ok`（含窗口臂 `the_window_is_the_function_body_not_a_fixed_line_count ... ok`，22:50:51），`FAILED` 0；`rust (yeban-ui-mcp)` 22:48:33→22:53:20 真跑，守卫 `running 5 tests` 全 `ok`（22:53:09），`FAILED` 0；`macos`/`windows` 本次未跳过（22:48:33→23:08:32 / 23:27:59）；`rust (workspace 全量)` 按 plan `skipped` —— 该腿⛔ 不算绿 |
+
+> ⚠ **run 级 success ≠ 每个作业都跑完**：本批一次实测到 `gh run view --json` 报
+> `completed success` 而 `windows` 作业仍在 `in_progress`。判绿必须逐 job 看 `completedAt`，
+> 且 `windows`/`macos` 的 `skipped`（plan 决定）**不是绿**。本节的每一条都在 job 级核对过。
+
+### §18.4 一处"本地绿 ≠ 编译过"
+
+`yeban-ui-mcp` 的三处补界**没有在本机编译过**（该 crate 依赖 `yeban-mcp`，属 CI-only 家族）：
+本地只跑了守卫（`rustc --test`，只 `include_str!` 读文本，**不编译被测 src**）、`clippy-driver`
+与 `rustfmt`。三处改动的类型面是逐条人工核对的（`ParamSpec.required: bool`、
+`read_dir(..) -> Vec<(String, String)>`、`UiTree.nodes: Vec<UiNode>`），但**编译判决只来自 CI**
+（`41136205024` 的 `rust (yeban-ui-mcp)` 腿），本机绿不构成编译证据。
+
+### §18.5 落地与清理
+
+`a15b4130`（dsp）、`f9e1e7f0`（app）、`7065c3d5`（s12）、`42a142a0`（s14）、`f0295806`（s13）
+＋合流 `145c261b`；推送 `83f3ebe2..145c261b`（显式 refspec `origin main:main`，第一次推送被并行线
+推进拒绝 ⇒ `git merge --no-ff origin/main` 后重推）。四棵工作树（s10/s11/s12/s13/s14）全部
+`worktree.sh rm` 拆除（分支保留）；`git worktree list` 恢复**一行**。磁盘：`/home` **89%**、可用 **27G**。
+
+### §18.6 下一单
+
+同一口径下仍未覆盖的 crate（读数：`crates/*/{src,tests}` 里断言含 `.all(` 的文件数）：
+`yeban-midi-io`（2 文件，`windows(2).all` 形态，需 render 那份的窗口界）、`yeban-ui-test-port`
+（1 文件）、`yeban-decode`（1 文件，但 `decode.rs` 内**自带**一段 R102/R109/R118 的 40 行窗口
+自检 ⇒ 若要统一口径，应先评估"内嵌守卫"是否要迁移成常驻文件）。创作缺口仍全在人类裁决
+（`ADR-0042` G8j／`ADR-0047`..`0050`／`ADR-0004` Q13／`ADR-0053`）。
