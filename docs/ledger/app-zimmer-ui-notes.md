@@ -203,3 +203,19 @@ macos / windows）的 `clippy (-D warnings)` 步骤报 4 个
 ⛔ 本票不顺手补横向平移：报告把它记在**未验证**而不是**缺口**里，
 而"横向平移的落点归宿主偏移、还是归 Flickable 的 `content-width`"是一处会撞上
 `app-zimmer-ui-notes` §3 那条"⛔ 双重计算"教训的**设计选择** ⇒ 待人类点票再动。
+
+## 10. 纵向滚动票的收盘判决与落地（run `41250318956`）
+
+`line/arrangement-scroll` 的第三票（前两票的根因见 §4 与 §6）于 sha `9d46e7e3` 判**绿**，
+按 `[AGENTS.md §6.3]` 的口径逐腿读回：
+
+| 腿 | 读数 |
+| :--- | :--- |
+| `rust (yeban-app)`（job `124682339791`） | `Running tests/` = **272**，其中 `arrangement_vertical_scroll.rs` 出现 **2 次**（单特性 + 合并特性两档），4 条具名判据各 `ok`，`test result: ok. 4 passed; 0 failed` ×2 ⇒ 非空绿 |
+| `macos` / `windows` | success |
+| deny / checks / plan / lockfile | success |
+
+落地：`worktree.sh land arrangement-scroll` ⇒ 合并提交 `fec6bd1b`（6 文件，+579/−8，
+新建 `tests/arrangement_vertical_scroll.rs`）。落地后 `post_merge_checks` 的两处 FAIL
+（`Cargo.lock` 漂移 / 许可清单漂移）与本批**无关**——`git diff --name-only` 里没有任何
+`Cargo.*` 或许可文件，两处 FAIL 与本机 1.99.0 pin 拉不到的环境漂移同源。

@@ -89,7 +89,7 @@ golden、`tests/pane_no_overlap.rs` 的 73 控件预算逐位不变。
 
 | 提交 | 内容 | CI run | 判决 |
 | :--- | :--- | :--- | :--- |
-| （待填） | `.slint` 容器 + 判据文件 | 待推送后读回 | `pending` |
+| `73a2db88` | `.slint` 容器 + 判据文件 | `41250324373` | **绿**（读回于 2026-10-31）：`rust (yeban-app)`（job `124682358510`）`Running tests/` = **274**，`mixer_horizontal_scroll` 二进制在其中，5 条具名判据各 **2 档 ok**，`test result: ok. 5 passed; 0 failed`；`macos` / `windows` 两腿同为 success，deny / checks / plan / lockfile 全绿 ⇒ 非空绿 |
 
 按 `[AGENTS.md §6.3]` 的口径：判绿必须确认 `rust (yeban-app)` / `macos` / `windows` 三条腿里
 `Running tests/` 覆盖了 `mixer_horizontal_scroll` 这个二进制，并找到 5 条具名 `test … ok`；
