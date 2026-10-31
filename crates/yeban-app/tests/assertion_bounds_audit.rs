@@ -102,13 +102,17 @@ const SOURCES: &[(&str, &str)] = &[
         "tests/track_routing_crud.rs",
         include_str!("track_routing_crud.rs"),
     ),
+    (
+        "tests/track_select_keyboard.rs",
+        include_str!("track_select_keyboard.rs"),
+    ),
 ];
 
 /// 被扫文件数的下界（R93：**下界绑在同一集合根上**，且**等于当前行数**）。
 ///
 /// 主判据是"无界站点数 == 基线"；整组删掉一个被扫文件**不会**让无界站点数增加 ⇒
 /// 本判据仍绿，而 R115 的覆盖面已静默缩水。只有本下界能拦住这种**单向**偷工。
-const MIN_SOURCES: usize = 27;
+const MIN_SOURCES: usize = 28;
 
 /// 注册基线：允许存在的"无界断言站点"数。⭐ **棘轮** —— 只能减，不能增。
 const UNBOUNDED_BASELINE: usize = 0;
