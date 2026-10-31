@@ -17284,3 +17284,85 @@ helper 里 ⇒ 必须不认（防假绿）。两条臂在旧实现上都会失�
   该腿日志里三个新判据名逐条 `ok`、`test result:` 里 `yeban-mcp` 无 `FAILED`；
   若那 12 处嵌套 `required` 有任何一处与真实响应矛盾，会红在 `tests/props_176.rs` / `tests/render_master.rs`
   —— **那是真发现**，按点名修，⛔ 不叠未证的提交。绿才 `land` → 推 main → 读回合流 run → 拆树。
+
+### 22.19 ⭐ s29 第二枚的 run `41228291334` 读回 = **failure，但红点换了一类**（假夹具被新递归抓到）＋ 12 处嵌套声明的逐处审计
+
+- **终态**：`completed / failure`。`checks`／`plan`／`lockfile`／`deny`／`e2e`／`rust (yeban-ui-mcp)` = success，
+  **窄腿 `rust (yeban-mcp)`（作业 `124617014003`）= failure**，宽腿 skip，
+  ⚠ **`windows` = `cancelled`、`macos` = `failure`** —— `windows` 那一格⛔ 不是判决：
+  我推第三枚提交时**同分支的并发组把还在跑的 `windows` 取消了**（`gh run view` 现读的三态之一）。
+  ⇒ 本轮对 win/mac 平台**没有读数**，落地后的合流 run 才补得上。
+  ⭐ 但**s29 自己的三条新判据这条腿里逐名 `ok` 各 1 次**（`the_recursion_reaches_inside_array_items_and_indexes_the_path`
+  ／`a_warning_code_outside_the_broadcast_subset_is_rejected`／`the_broadcast_warning_subsets_match_the_measured_call_chain`）
+  —— 递归、双向越名册必红、子集对账这三件事**已经被判过且是绿的**；红的只有下面那条既有夹具判据。
+  ⭐ **clippy 步已过**（红点从步骤 6 移到步骤 7 `test`）⇒ 上一轮那两行是纯静态告警，本轮才是**语义读数**。
+- **红在谁身上**：`output_schema::tests::the_validator_actually_rejects_broken_responses`
+  （`test result: FAILED. 584 passed; 1 failed`）。断言消息写的是 `"sends 不是 required"`，
+  ⚠ **但那是消息文本，不是原因**：真正的原因在同一条 `assert!` 的**另一侧** ——
+  那份夹具把 `session` / `engine` 写成 `{}` 占位，而 schema 在这两个嵌套对象里各自声明了
+  `required`（10 键 / 8 键）。"只看顶层"时代它们从不被核对；**s29 的递归一开就变活断言 ⇒ `{}` 被拒**。
+  ⇒ 这正是 §22.17 数出来的"12 处从未跑过的嵌套声明"的**落点之一**，而且是**最好的一种落点**：
+  矛盾在测试夹具里，不在真实响应里。
+- ⚠ **本轮的另一条读数纪律**（§6.3-4 的第三次实测）：日志里 `Running unittests src/lib.rs` 只出现 **1** 次
+  ⇒ lib 测试一红，`cargo test` fail-fast 就把**所有集成测试二进制**（含 `tests/props_176.rs`、
+  `tests/render_master.rs` 那两处拿**真实响应**跑 `validate`/`validate_complete` 的常驻判据）**全部跳过**。
+  ⇒ 所以"递归会不会拒掉真实响应"这件事**本轮仍未被判**，⛔ 不许读成"过了 584 条 ⇒ 形状没问题"。
+- **于是推前做了逐处审计**（⛔ 不是只对红的那处；每处都是"声明的键集合 ↔ 真实拼装点现读"的集合等式）：
+
+  | 嵌套声明在哪 | 真实构造点 | 判决 |
+  | :--- | :--- | :--- |
+  | `proposal_summary_schema` 的 14 键 `required` | `domain/proposal.rs` 的 `Proposal::summary` | ✅ 键集合**逐字相同**；`mergeCommit`/`resolvedAt`/`resolution` 三处 builder 走 `map_or(Value::Null, …)`，schema 早已声明 `[…,"null"]` |
+  | `undo_display_schema` 的 8 键 | `domain/mod.rs` 的 `undo_display_value` | ✅ 8 键一一对上（`head` 声明 `["string","null"]`） |
+  | `willCreate` 的 `opCount`/`opKinds` ×3 站点 | `domain/section_build.rs` 的 `summarize_ops`（`opCount = ops.len()`）＋ `Proposal::summary` | ✅ 三处共用同一份拼装，不漂移 |
+  | `merge_proposal` 的 `commit` 8 键 | `domain/mod.rs` 合并出口的内联拼装（含 `atomicBatch`/`depth`） | ✅；⚠ 同文件另有一个 `commit_summary` **不带** `atomicBatch`/`depth`，但它的唯一调用点是 `domain/import_midi.rs`，而 `for_tool("yeban_import_midi")` 返回 `None`（扩展工具不广播）⇒ 不在覆盖面内 |
+  | `edit_automation` 的 `lane` 7 键 / `read` 3 键 / `origin` 3 键 | `domain/automation.rs` 的 `AutomationEdit::data` | ✅ 键集合相同；`unit: String`、`read_ticks: Vec<u64>` 与声明同型；`writeMode`/`domain` 可为 `null` 而声明本就是 `[…,"null"]` |
+  | `query_engine_state` 的 `session` 10 键 / `engine` 8 键 | `domain/engine_state.rs` 的 `session_value` / `engine_value` | ✅ `engine.readingsRevision` 不在 `engine_value` 的字面量里，而是**拼装点插入**（同文件 `readingsRevision` 那一段，其判据断言 `value["engine"]["readingsRevision"]`）⇒ 真实响应带着它 |
+
+  **旁证（同一条 CI，两轮都 success）**：`checks` 的「跨语言契约对账 (Rust 样本 ↔ Python jsonschema)」用
+  `export_mcp_samples` 导出的**真实样本**跑 Python `jsonschema` —— 那个校验器**从来就递归** ⇒
+  真实样本早就满足这些嵌套 `required`。本轮的红因此只能落在**手写夹具**上。
+- **改法**：`25a5d06d` 把两份夹具（`output_schema.rs` 的那条 + `tests/props_176.rs` 里**同名同理由**的那条 ——
+  它本轮因 fail-fast 根本没跑到，不补就是第三轮）写全，取值照现读：`ticksPerBeat = 960`
+  （`SessionRuntimeState::ticks_per_beat()` 是 960 PPQ 的唯一入口）、`transportState` 只有
+  `stopped`/`playing` 两态（模型里 `Recording` 是**预留档**，没有入口能到达）、
+  `bufferFrames`/`sceneLaunchesApplied` 未注入即 `null`、`sampleRateSource` 逐字取
+  `"project.audio_config.sample_rate"`。⇒ 新 run **`41229171684`**（`headSha=25a5d06db6676bb5a95e10b99b31432363323f9e`）**pending**。
+- **本轮的方法学收获**：**"断言消息说的原因"与"真正的原因"可以不同** —— 这条 `assert!` 的消息在讲 `sends`，
+  红却红在 `session`/`engine`。读日志时要回到**那一行代码**看它核的是什么，⛔ 不要拿消息文本当判决。
+
+### 22.20 s30 的**前置读数**（2026-11-01，⛔ 只读不改）：剩余四处裸 `items:{type:object}` 里**哪三处能诚实声明、哪一处不能**
+
+- **现读起点**（主干）：字面量 `"items": {"type": "object"}` 共 **7** 处；s29 填掉其中 3 处（三处 `warnings`）
+  ⇒ 剩 **4** 处：`proposal_detail_schema.ops`、`edit_automation` 的 `lane.points`、
+  `query_engine_state.sends`、`render_master.sources`。
+- ⭐ **通用口径（省一次往返）**：这个仓库的 schema **已经在用**可空类型形
+  （`render_master` 顶层的 `truePeakDbfs` / `headroomDb` 就写着 `{"type": ["number", "null"]}`），
+  而 `check_declared` 认数组形 ⇒ **给可空键声明 `["T","null"]` 不需要动校验器**。
+  ⚠ 另一条同族的坑：`json_f32` 的文档写明"`serde_json` 会把 `Infinity`/`NaN` **静默写成 `null`**"
+  ⇒ 所以**任何** `f32` 键在 JSON 侧都是"数字或 `null`"，按 `{"type":"number"}` 单值声明都不是诚实话。
+- **① `render_master.sources[]`（可整块声明，两处必须可空）**：唯一拼装点是 `SourceReport::to_value`，
+  元素恒发 **15** 个键（`node`/`track`/`kind` 字符串、`audible` 布尔、
+  `notes`/`audioClips`/`audioClipsUnrendered`/`audioClipsGated`/`notesSilenced`/`notesRatcheted`/
+  `ratchetPulses`/`endTick` 整数、`peak` 数字、`peakDbfs` = `json_f32(...)`、`sampler` = `Option::map`）。
+  ⇒ `peakDbfs` 与 `sampler` **必须**声明成 `["number","null"]` / `["object","null"]`（后者是"这条轨没绑采样器"的常态）；
+  `sampler` 那一层是 `SamplerReport::to_value`，键全是 `String`/`Vec<String>`/`usize`/`u64`/`bool`
+  （**没有一个** `Option`）⇒ 可以再往里声明一层。⚠ `peak` 是裸 `Value::from(f32)` ⇒ 按上面那条坑，
+  诚实声明要么写 `["number","null"]`，要么就明说"非有限值时本声明会拒"。
+- **② `edit_automation` 的 `lane.points[]`（可声明，且 `curve` 能上 `enum`）**：拼装点在 `domain/automation.rs`
+  的 `AutomationEdit::data`，元素恒发 4 键：`id`（`EntityId` → 字符串）、`tick`（`u64` → 整数）、
+  `value`（`f32` ⇒ 同上，按 `["number","null"]` 才诚实）、`curve`。
+  ⭐ `curve` 的词表是**封闭四值**（`curve_name` 只发 `Linear`/`Exponential`/`Logarithmic`/`SCurve`，
+  且已有判据 `every_name_table_agrees_with_the_model_enum` 钉住它是 `CurveType` 的**双射**）
+  ⇒ 这一处可以上 `enum`，是四处里唯一"能收紧到名字集合"的。
+- **③ `query_engine_state.sends[]`（可声明，两处必须可空）**：拼装点 `send_edges_value`，元素 8 键
+  `edgeId`/`kind`/`sourceNode`/`sourceName`/`destinationNode`/`destinationName`/`gainDb`/`gainSource`；
+  ⚠ `sourceName` 与 `destinationName` 是显示名，**可以是 `null`** ⇒ 两条必须 `["string","null"]`。
+- **④ `proposal_detail.ops[]`（⛔ 这一处现在不能声明，缺的不是勇气是读数）**：
+  拼装点是 `ops_to_value` = `serde_json::to_value(op)`，而 `Op` 是**外部标签**（externally tagged）枚举
+  ⇒ 元素的**键名本身就随变体变化**（`{"SetSection":{…}}` 与 `{"SetTempo":…}` 不是同一个形状），
+  任何"并集 `properties`"都会把合法响应自己拒掉 ⇒ 假广播。
+  ⇒ 诚实的前置动作是**先做逐变体的载荷名册**（`yeban-model` 的 ops 侧已有 S5 那批写面差分普查可复用），
+  要么改成"声明 `ops` 是数组、每个元素是**恰好一键**的对象"这种**不需要知道变体名**的弱声明，
+  ⛔ 不要先写 schema 再补理由。
+- ⏳ **落点顺序建议**：`sources` 与 `points`/`sends` 三处是同一类活（现读拼装点 → 声明 → 拿真实响应跑 `validate`
+  的正反两路判据），可在一条线里做完；`ops` 那一处需要**另一件事先发生**（变体名册），别混进同一片。

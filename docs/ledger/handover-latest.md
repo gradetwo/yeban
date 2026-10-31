@@ -19,9 +19,10 @@
 > `docs/ledger/phase-status.md` 的叙事条目**停在 R1144**（2026-10-26）⇒ ⭐ 读进度以
 > `DEVELOPMENT_LEDGER.md` 的尾部为准，⛔ 不要以为 R1144 之后没干活。
 
-- ⭐ **当前在飞的工作 = s29（s28 第二片）**：线两枚提交 `cb5a5673`＋`1179ef04`，
-  第一枚的 run `41227512300` **已读回 = failure（红在 clippy、判据没跑）**，修正后新 run `41228291334` **pending**
-  ⇒ 接手第一件事是读回它（口径与预检见 **§0.6.0zc**，明细在台账 **§22.18**）。
+- ⭐ **当前在飞的工作 = s29（s28 第二片）**：线内三枚提交 `cb5a5673`＋`1179ef04`＋`25a5d06d`，
+  前两枚的 run 已读回（`41227512300` = failure／clippy，`41228291334` = failure／**假夹具被新递归抓到**），
+  第三枚的 run `41229171684` **pending** ⇒ 接手第一件事是读回它（⚠ 要**数 `Running` 次数**确认集成测试真的跑了；
+  口径与 12 处审计见 **§0.6.0zd**，明细在台账 **§22.19／§22.20**）。
 - ⭐ **main 现含 `bc01b363` 的代码改动且判回 success**（台账 §22.11：全量腿 47 分钟／`passed` **7 235**／`FAILED` **0** ＝ 与改动前同值 ⇒ 无衰退）；
   本机复验（树 `ad022d97`）：防掏空守卫 `rc=0`、s26 判据 `1 passed`。
   ⚠ 本条原文末句"⛔ s28 尚未立项"**已过时**（写在 10-31 深夜）：s28 第一片已于 16:57Z 落地 `1d3d24b9`，见 §0.6.0za；读数史在台账 §22.8／§22.12／§22.15。
@@ -117,6 +118,41 @@
   ⇒ 绿才 `land` → 推 main → 读合流 run → 拆树；若红在 `tests/props_176.rs`／`tests/render_master.rs`
   （那 12 处嵌套 `required` 与真实响应矛盾）⇒ **那是真发现**，按点名修，⛔ 不叠未证的提交。
 
+
+### 0.6.0zd ⭐ 尾批（2026-11-01）：**s29 第二轮判决 = failure（红点换了一类：假夹具被新递归抓到）** ＋ 12 处嵌套声明逐处审计完 ＋ s30 的前置读数已备
+
+- **判决**（台账 §22.19）：run `41228291334` = `completed / failure`，⭐ **clippy 已过**（红点从步骤 6 移到步骤 7 `test`）；
+  **s29 自己的三条新判据逐名 `ok` 各 1 次**（递归／双向越名册／子集对账**已判绿**）；
+  唯一红的是**既有**那条 `the_validator_actually_rejects_broken_responses`。
+  ⚠ 另外 `windows` = **`cancelled`**（我推第三枚时同分支并发组取消了它）⇒ 本轮对 win/mac **没有读数**，别把它读成红或绿。
+- ⚠ **红点换了类别，而且断言消息在骗人**：消息写 `"sends 不是 required"`，真实原因是那份夹具把
+  `session` / `engine` 写成 `{}` 占位 —— s29 的递归一开，schema 里这两处嵌套 `required`（10 键 / 8 键）
+  **第一次真的被核对** ⇒ `{}` 被拒。⇒ 这正是 §22.17 数出来的"12 处从未跑过的声明"的落点，
+  而且是**最好的一种**：矛盾在测试夹具里，不在真实响应里。
+- ⚠ **本轮仍未被判的那件事**：日志里 `Running unittests src/lib.rs` 只有 **1** 次 ⇒ lib 一红，
+  fail-fast 把**所有集成测试二进制**（含拿**真实响应**跑 `validate` 的 `props_176` / `render_master`）**全部跳过**（§6.3-4 第三次实测）
+  ⇒ "递归会不会拒掉真实响应"**没有读数**，⛔ 不许把"584 passed"读成"形状没问题"。
+- ✅ **于是推前把 12 处嵌套声明逐处对过真实拼装点**（§22.19 的表）：`Proposal::summary` 14 键（三处可空键早已声明成
+  `[…,"null"]`）、`undo_display_value` 8 键、`summarize_ops` 的 `opCount`/`opKinds`、合并出口的 `commit` 8 键
+  （⚠ 另一个 `commit_summary` 缺两键，但它只喂 `yeban_import_midi`，该工具 `for_tool` 返回 `None` ⇒ 不在覆盖面）、
+  `AutomationEdit::data` 的 `lane`/`read`/`origin`、`session_value`/`engine_value`
+  （`engine.readingsRevision` 不在字面量里、由**拼装点插入**）。
+  **旁证**：同一条 CI 的「跨语言契约对账」用**会递归**的 Python jsonschema 核**真实导出样本**，两轮都 success。
+- **修**：`25a5d06d` 把**两份**同名夹具（`output_schema.rs` ＋ `tests/props_176.rs` —— 后者本轮因 fail-fast 没跑到，
+  不补就是第三轮）写全，取值现读（`ticksPerBeat = 960`、`transportState` 只有 `stopped`/`playing`、
+  未注入即 `null`）。⇒ 新 run **`41229171684`**（`headSha=25a5d06db6676bb5a95e10b99b31432363323f9e`）**pending**；
+  ⏳ 读回它时**必须数 `Running` 的次数**（要看到集成测试二进制真的跑），⛔ 只看 `test result:` 行数会把"没跑"读成"过"。
+- ⭐ **s30 的前置读数已备**（台账 §22.20，⛔ 尚未起线）：剩余 4 处裸 `items:{type:object}` 里
+  `render_master.sources`（15 键，`peakDbfs`/`sampler` **必须**可空）、`edit_automation.lane.points`
+  （4 键，⭐ `curve` 词表封闭四值 ⇒ 唯一能上 `enum` 的一处）、`query_engine_state.sends`
+  （8 键，`sourceName`/`destinationName` 可空）三处可以诚实声明；
+  `proposal_detail.ops` ⛔ 现在不能 —— `ops_to_value = serde_json::to_value(op)` 是**外部标签**枚举，
+  元素键名随变体变 ⇒ 并集声明必然拒掉合法响应（假广播），前置动作是**先做逐变体载荷名册**。
+  通用口径：schema 里**已有** `{"type": ["number","null"]}` 的写法且 `check_declared` 认数组形 ⇒
+  声明可空键⛔ 不需要动校验器；而 `json_f32` 的文档明说非有限 `f32` 会被 `serde_json` 静默写成 `null`
+  ⇒ **任何** `f32` 键按单值 `number` 声明都不是诚实话。
+- ⛔ **起 s30 的前置条件没变**：`output_schema.rs` 的写者只有 s29 那条线；它落地（判决读回＋land＋推 main）之前，
+  第二枚动同一文件的线就是**两个写者**。
 
 ### 0.6.0y ⭐ 尾批（2026-10-31 22:40）：**三处陈旧口径改正** ＋ s28 的前置读数 ＋ 合流判决（待填）
 
