@@ -17589,3 +17589,40 @@ helper 里 ⇒ 必须不认（防假绿）。两条臂在旧实现上都会失�
 - ⚠ **待第二枚判决回来才能确认的事**（⛔ 现在不许写成通过）：三条新判据是否绿、
   `props_176` 那三处 `!is_empty()` 是否真的非空（§22.26 说那是从夹具源码读出来的**推断**）、
   以及 `validate_complete` 在真实响应上是否放过 `sampler: null` 与 `peakDbfs: null`。
+
+### 22.28 ⭐ s30 第二枚判决读回 = **failure**，但红点**换了性质**（递归上限确认已消；新红是我自己那条判据里的一个借用错误）＋ 主干被别人的合流前移了 16 枚
+
+- **判决**：run `41237535235`（`678e3f25`）= `completed / failure`。腿：
+  `plan`／`lockfile`／`checks`／`deny`／`e2e`／`rust (yeban-ui-mcp)` = `success`，
+  **`rust (yeban-mcp)`／`macos`／`windows` = `failure`**，宽腿 `skipped`（单 crate `plan`，与 §22.25 那条规则一致）。
+- **上一轮的病确实治好了**：日志里 `recursion limit` **一条都不再出现**，且 `checks`（要编 `yeban-mcp` 的 schema/守卫步）转绿
+  ⇒ `roster_typed` 逐键装入这条路成立。⛔ 但**不许**据此写"编译过了所以判据过了"——见下面两条。
+- **本轮唯一红**：三腿的失败步都是 `clippy (-D warnings)`，日志里**只有一条**错误、且行号逐字相同：
+  `error[E0716]: temporary value dropped while borrowed` → `crates/yeban-mcp/src/output_schema.rs:1843:40`，
+  `error: could not compile yeban-mcp (lib test) due to 1 previous error`。
+  病灶是我写的判据三：`automation_point_items()["properties"]["curve"]["enum"].as_array()` 把 `&[Value]`
+  从**临时 `Value`** 里借出来，再 `.collect()` 成 `Vec<&str>` 存活到语句之外。
+- ⭐ **可复用的读数（补 §22.27 那条"六腿同红 = 编译错误"的补集）**：**哪些腿红，本身就在报错误住在哪一层**。
+  `#[cfg(test)]` 里的编译错误 ⇒ `checks`（只编 lib 与守卫）**绿**，只有带 `--all-targets` 的 clippy 步红；
+  lib 里的编译错误 ⇒ `checks` 也一起红（第一枚就是这个形状）。
+  ⇒ 推论：**"lib 编译过"⛔ 不等于"测试面编译过"**，反过来判据写在 `mod tests` 时，
+  `cargo build`／`checks` 那一层的绿是**空绿**，必须看 clippy/test 那一步。
+- **修正**（`539cc5c9`，run `41238224956` **pending**）：宿主值先落成 `let` 绑定再索引 ——
+  与同一轮里其余三处（`1670`/`1680` 用 `.clone()`、`1683` 把临时值用**在单条语句内**）本来就没犯同形错误这一点吻合，
+  所以这不是全文件性的改法，只补这一处。⛔ 没有顺手去加 `#![recursion_limit]`、也⛔ 没动别的判据。
+- **主干现状（本轮实测，不是推断）**：`origin/main` 已从 `bf016ad3` 前移到 **`151e2029`**
+  = Muse 的 `line/review-20261031-fixes` 合流（16 枚，含 `a361eee6` 给 `yeban_render_master` 加 `threads` 实参、
+  `84ef9dfd` GUI 导出缺省落工程目录、ADR-0056/0057 批准）。我的本地文档批 `521b0c09` 因此被 **non-fast-forward 拒绝**
+  —— 这是**该拒的**，⛔ 不是异常。重叠面已逐文件核过：他们**没碰** `docs/DEVELOPMENT_LEDGER.md` 与 `docs/ledger/handover-latest.md`，
+  在 `crates/yeban-mcp` 里碰的是 `domain/render.rs`／`tools.rs`／`tests/render_master.rs`，
+  而我 s30 碰的是 `output_schema.rs`／`tests/props_176.rs` ⇒ 预期能干净 rebase。
+  ⛔ **此刻不推 main**：他们那条合流 run `41237762943` 还在 `in_progress`，同分支并发组会**取消在飞的那条**，
+  等于把别人的判决抹掉。等它收盘，再把（本地文档批 rebase 后的）推送排到 s30 判绿之后同一批。
+- ⚠ **顺带量到的后续切片范围**（现读 `grep -c '{"type": "object"}' output_schema.rs` = **17** 处，
+  其中 1 处是我判据里的断言、1 处是 `ops` 的裸 `items` ⇒ **还剩 15 处裸对象"属性槽"**，`yeban_render_master` 一个工具独占 12 处
+  （`request`／`probability`／`ratchet`／`audio`／`peak`／`normalize`／`loudness`／`bwf`／`unsupportedCounts`／
+  `contributionsBasis`／`midiSource`／`merge` 系）。
+  这些与 s30 那三处的**区别**：它们不是数组元素名册而是"条件出现的对象"，
+  而本校验器的 `properties` 语义是"声明了但可以缺席"（`validate_complete` 的"每字段必现"只查**顶层**）
+  ⇒ 逐槽填名册**不需要**声明可空，也不会有 `null` 假阳性。`request` 那一槽现在多了 `threads`（`151e2029`），
+  所以它的名册必须**在 rebase 后的主干上现读**再写，⛔ 不要照本节这段清单手抄。
