@@ -17151,3 +17151,35 @@ helper 里 ⇒ 必须不认（防假绿）。两条臂在旧实现上都会失�
   用等值匹配会**静默拿到空 id**（我第一次就踩了，靠 `CHECKS_JOB=` 空值才发现）；
   ② 编辑一个**正在运行的 bash 脚本文件**会让解释器按新偏移读旧内容 ⇒ 改脚本前必须先 `TaskStop`。
 
+### 22.16 s28 第二片（#103）的**前置读数**（2026-11-01 00:20 本机＝10-31 17:1xZ）：四处 outputSchema 站点 + 一条会让本片变成假广播的硬事实
+
+- **名册在哪被广播（现读 `crates/yeban-mcp/src/output_schema.rs`）**：`warnings` 的 items 形状共 **4 处** ——
+  `propose_section()` 内 **465**、`edit_notes()` 内 **526-536**、`set_macro()` 内 **593**、`render_master()` 内 **942**。
+  其中只有 `edit_notes` 那处写了 `required: ["code","hint"]` 与 `properties.code = {"type":"string"}`（⛔ 无 `enum`），
+  另外 **3 处是裸的 `{"type":"array","items":{"type":"object"}}`** —— 这就是 §0.6.0za 说的"响应形状不受约束"的具体位置。
+- **每个工具实际能发哪些 code（现读调用链，⛔ 按词面猜）**：
+  `proposal_warnings`（`domain/mod.rs:4805`，内部 = `effect_param_warnings` + `device_on_silent_track_warnings`）
+  的**唯一调用点是 `propose_draft`（`domain/mod.rs:2595`）**，而 `propose_draft` 被 **4** 处调用（`2722`／`2912`／`3100`／`3131`）
+  ⇒ `unrecognisedEffectParam`／`deviceOnSilentTrack` 属 **propose_section / edit_notes / set_macro** 这一族；
+  `clipping_warning`＋`silent_sources_warning` 只在 `domain/render.rs:2950/2959`（`fn build`）里链起来
+  ⇒ `exportClipping`／`silentSources` 属 **render_master**；
+  `sfzSamplesUnreadable` 出自 `domain/sfz.rs:732`，调用点是同文件 **776（`fn response_data`）** 与 **805（`fn preview`）**
+  ⇒ 属 **`yeban_load_sfz` / `yeban_render_sfz_wav`** —— ⚠ **这两个是扩展工具，`for_tool` 对它们返回 `None`**
+  （`output_schema.rs:95-104` 只列 10 个文档化工具；`:1174-1176` 的常驻判据就在断言"没有 schema 时是 `None` 而非 `{}`"）
+  ⇒ **第 5 枚 code 在当前设计里无处广播**，只能靠 JSON 契约的名册 + `data.warnings[]` 的实际内容兜住。
+- ⚠⚠ **本片最容易做成假广播的地方**：本仓库自带的输出校验器 `output_schema.rs::validate`（**138-168**）只认
+  顶层 `type` / `required` / `properties` 的**类型**，**不递归 `items`、也不实现 `enum`**（`check_declared` 只比类型名）。
+  所以只往 4 处站点塞 `"enum": [...]` 而不动校验器，效果是**"对外广播了一个我们自己不检查的约束"**：
+  真 MCP 客户端会按标准 JSON Schema 拒绝越名册的 code，我们这边却一路放行。
+  ⇒ 第二片的**最小诚实形状**是三件一起：① 站点写 `items.code.enum`（按上面的**逐工具子集**，⛔ 五枚全贴），
+  ② 校验器补 `items` 递归 + `enum` 支持（或明确写"本仓库不校验，仅广播"并把这句放进 `docs/`），
+  ③ 常驻判据：`validate`/`validate_complete` 的测试模块（现有 `:1133-1168` 那种正反两路）加一条
+  "越名册的 code 必须被拒"，否则 ② 无从证明。⛔ 只做 ① 的批次不要推。
+- **另两条口径**：`schemas/mcp-tools.schema.json` 的 `definitions` 现有 **8** 个键
+  （`WarningCode`／`ToolCall`／`ToolResponse`／`ReplayedToolResponse`／`JsonRpcResponse`／`JsonRpcError`／
+  `DocumentedToolArguments`／`ExtensionToolArguments`）—— 它管的是 **JSON-RPC 信封**，⛔ 不是逐工具响应形状，
+  所以"$ref 进 outputSchema"这句话在本仓库里**没有落点**：落点是 **Rust 的 `output_schema.rs`**，不是这份 JSON。
+  改这条描述时⛔ 沿用 #103 原文的措辞，按本节改正。
+- 本机状态：为第二片建的线 `line/s28b-warning-ref`（树 `.worktrees/s28b-warning-ref`）**只做了读数，0 改动 0 提交**；
+  合流 run `41222166136` 判决未回前⛔ 不推任何新码（本节的读数以 `main = a8ff496c` 为基准）。
+
