@@ -471,6 +471,8 @@ fn call(dispatcher: &mut Dispatcher, auth: &str, arguments: Value) -> Value {
 
 /// 与 [`call`] 同一条管线，但返回 JSON-RPC 层错误 —— 供 schema 层先于域校验
 /// 拒掉的类型非法输入使用（域内拒绝走 [`assert_domain_error`]，不要混用）。
+/// 返回的第二项是 `data.detail`（点名参数的那句），没有 detail 时退回 message ——
+/// ⛔ 不要断言 message 点名：schema 层 message 只有笼统的「参数非法」，点名在 detail 里。
 fn call_raw_error(dispatcher: &mut Dispatcher, auth: &str, arguments: Value) -> (i64, String) {
     let line = json!({
         "jsonrpc": "2.0",
@@ -482,7 +484,16 @@ fn call_raw_error(dispatcher: &mut Dispatcher, auth: &str, arguments: Value) -> 
     let outcome = dispatcher.handle_line(Channel::Http, Some(auth), &line);
     let response = outcome.response.expect("必须有响应");
     match (response.result, response.error) {
-        (None, Some(error)) => (error.code, error.message),
+        (None, Some(error)) => {
+            let detail = error
+                .data
+                .as_ref()
+                .and_then(|data| data.get("detail"))
+                .and_then(|detail| detail.as_str())
+                .unwrap_or(&error.message)
+                .to_string();
+            (error.code, detail)
+        }
         other => panic!("期望 JSON-RPC 层错误，实际: {other:?}"),
     }
 }
@@ -999,15 +1010,15 @@ fn threads_param_is_guarded_and_changes_only_time_not_bytes() {
         (json!("4"), "threads 是字符串"),
         (json!(1.5), "threads 是非整数"),
     ] {
-        let (code, message) = call_raw_error(
+        let (code, detail) = call_raw_error(
             &mut dispatcher,
             &auth,
             json!({"format": "wav", "sampleRate": 48000, "threads": threads, "path": path}),
         );
         assert_eq!(code, -32602, "{label}: 类型非法必须走 schema 层 -32602");
         assert!(
-            message.contains("`threads`"),
-            "{label}: 报文必须点名 `threads`: {message}"
+            detail.contains("`threads`"),
+            "{label}: detail 必须点名 `threads`: {detail}"
         );
     }
     assert!(

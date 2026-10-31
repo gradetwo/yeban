@@ -37,8 +37,8 @@ impl Drop for Scratch {
 
 #[test]
 fn export_wav_default_prefers_env_then_project_dir_then_cwd() {
-    // SAFETY: 本测试二进制只有一个 `#[test]` ⇒ 不存在第二个线程读这个变量。
     let saved = std::env::var("YEBAN_UI_EXPORT_WAV_PATH").ok();
+    // SAFETY: 本测试二进制只有一个 `#[test]` ⇒ 不存在第二个线程读这个变量。
     unsafe {
         std::env::remove_var("YEBAN_UI_EXPORT_WAV_PATH");
     }
@@ -64,6 +64,7 @@ fn export_wav_default_prefers_env_then_project_dir_then_cwd() {
 
     // ② env 已设 ⇒ env 赢（工程目录不许覆盖用户显式选择）。
     let env_path = scratch.dir.join("env-chosen.wav");
+    // SAFETY: 同上 —— 单 `#[test]` 的进程。
     unsafe {
         std::env::set_var("YEBAN_UI_EXPORT_WAV_PATH", &env_path);
     }
@@ -74,6 +75,7 @@ fn export_wav_default_prefers_env_then_project_dir_then_cwd() {
     );
 
     // ③ env 未设 + 新建未保存工程 ⇒ 相对缺省（旧行为，不拦接线）。
+    // SAFETY: 同上 —— 单 `#[test]` 的进程。
     unsafe {
         std::env::remove_var("YEBAN_UI_EXPORT_WAV_PATH");
     }
@@ -85,6 +87,7 @@ fn export_wav_default_prefers_env_then_project_dir_then_cwd() {
     );
 
     // 恢复调用方环境（本二进制单测，仍按规矩还原）。
+    // SAFETY: 同上 —— 单 `#[test]` 的进程。
     unsafe {
         match saved {
             Some(value) => std::env::set_var("YEBAN_UI_EXPORT_WAV_PATH", value),
