@@ -16921,7 +16921,8 @@ helper 里 ⇒ 必须不认（防假绿）。两条臂在旧实现上都会失�
   而是**两处散文名册**：`output_schema.rs:490`（逐字列了两个 `code`，并以"两者都可能为空数组"收尾）
   ＋ `tools.rs:911`（`yeban_edit_notes` 的 summary 里整段描述 `deviceOnSilentTrack`）
   ⇒ 新增第三条 code 必须**两处同步**，否则就是 §0.6.0g 那种"散文名册过期"。
-- ⇒ 第二片的真实改动面（比原估更小、但**仍需 CI 判决**，本机不编译）：
+- ⇒ 若将来人类裁决要做"逐声部音色上报"（`ADR-0055`／`G3` 那侧），改动面已经量好（比原估更小，
+  但**仍需 CI 判决**，本机不编译）：
   `domain/mod.rs` 加一条与 `deviceOnSilentTrack` 对称的警告 ＋ `output_schema.rs` 那句名册 ＋
   具名判据（形态参照 `crates/yeban-mcp/tests/trap_178.rs:279/363/487`，那里已经逐名断言 `warnings[0]["code"]`）。
   ⚠ 警告函数⛔ 挂在 `InsertDevice` 上 ⇒ 新条件必须自己扫 `AddClipPlacement`（或按模拟后每条被写轨求值），
@@ -16965,6 +16966,32 @@ helper 里 ⇒ 必须不认（防假绿）。两条臂在旧实现上都会失�
   ⛔ 从推送回显或记忆里抄 hash。核验手法：`git show <sha>:.github/workflows/ci.yml | grep 防掏空`
   —— 我那枚命中，`2f317d15` 那枚**不命中**（它的 `checks` 作业里也确实没有这一步，这就是发现路径）。
 - ⛔ 本批改了 `.github/**` ⇒ 触发**宽运行**，判决成本 = 全量腿约 45 分钟（排期时已计入，见 §22.6）。
+
+### 22.8 下一单（s28）的前置读数：`warnings[].code` 的名册是 **5 份代码构造点 ＋ 3 处散文手抄 ＋ 0 份 schema**（2026-10-31 现读，本机零编译）
+
+数的是什么：**不同的 code 值个数**（对象 = `crates/yeban-mcp/src/` 里 `"code": "…"` 字面量去重后）。
+
+- **代码侧真值 = 5 个**，逐个带构造点：`unrecognisedEffectParam`（`domain/mod.rs:4791`）、
+  `deviceOnSilentTrack`（`domain/mod.rs:4921`）、`exportClipping`（`domain/render.rs:1096`）、
+  `silentSources`（`domain/render.rs:1163`）、`sfzSamplesUnreadable`（`domain/sfz.rs:732`）。
+- **schema 侧 = 0 份**：递归遍历 `schemas/mcp-tools.schema.json`（`definitions` 共 **7** 个）后，
+  键名 `warnings` 出现 **0** 次 ⇒ `data.warnings[]` 的**元素形状完全不受 schema 约束**。
+  连带后果：CI `checks` 作业第 16 步「跨语言契约对账 (Rust 样本 ↔ Python jsonschema)」
+  以及 `e2e` 腿的 `result 通过 schema 根` 断言，对 warnings **是盲的**（它过的是"没有这条约束"，不是"约束成立"）。
+- **散文侧 = 3 处手抄，且没有一处列全 5 个**：`output_schema.rs:488`＋`:490`（2 个）、
+  `output_schema.rs:838`＋`:840`（`exportClipping` 的形状描述）、`tools.rs:911`／`tools.rs:1047`（各点 1 个）。
+  ⇒ 这是 `AGENTS.md` §6-3「同一件事的第二份真相」的形态，与本仓 §0.6.0g 那批"广播面"债同源。
+- ⚠ **一条易误读成缺陷、实测不是**：`unknownEffectParam` 是**错误路径**的 `data.reason`
+  （构造点 `domain/notes.rs:6537`），`unrecognisedEffectParam` 才是 warning 的 `code`；
+  两者各自有判据在册（`tests/trap_175.rs:147` 与 `:292`）⇒ ⛔ 不得把这俩写成"名册拼写漂移"。
+- **s28 候选改动面**（若立项）：① 在 schema 里新增 warnings 的 `definition`，把上述 5 个 code 登记成 `enum`；
+  ② 一条**常驻判据**断言"代码构造点的 code 全集 **==** schema enum"（⛔ 只写下界会重演 §22.5 的空绿：
+  集合等式两侧都空也过）；③ 若 ② 可行，散文那 3 处改为**指向 enum**而不是再抄一份。
+- ⛔ **已知不覆盖要先登记**：口径靠 `grep '"code": *"'` 的字面量形态，将来若出现**变量拼接**的 code，
+  该守卫会漏 —— 与 `#44`（"空集即期望值"不可机械化）、`§0.6.0p 候选 B`（"有 fn 即算过"）同一类盲点，
+  按纪律**登记不补齐**，不许把守卫描述成"覆盖了全部 code"。
+- ⛔ 本段只是读数：s28 **未立项、未写码**；改 schema 属契约变更（动 26 个工具的响应面 ＋ 第 16 步对账），
+  且必然触发宽运行 ⇒ 排期时按 §22.6 的成本口径计入。
 
 
 

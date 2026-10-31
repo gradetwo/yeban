@@ -1,6 +1,7 @@
 # 交接（夜半第三阶段 · 2026-10-14 · 覆盖台账 R307–R1144）
 
-> ⭐ **2026-10-31：当下状态看 §0.6.0x**（把两句散文换成机器读数：s26 常驻判据「声部音轨带音符但零设备」＋ s27 e2e 脚本防掏空守卫；含"新守卫不逐条列出就不进 CI"这条实操教训）；
+> ⭐ **2026-10-31 深夜：当下状态看 §0.6.0y**（本机环境口径三处改正 + 脚本腿的判绿口径 + s28 前置读数 + 合流 run `41210731323` 的部分判决，全量腿仍 pending）；
+> ⭐ 同日早些时候的状态在 §0.6.0x（把两句散文换成机器读数：s26 常驻判据「声部音轨带音符但零设备」＋ s27 e2e 脚本防掏空守卫；含"新守卫不逐条列出就不进 CI"这条实操教训）；
 > ⭐ 更早的状态在 §0.6.0w（MCP stdio 端到端复跑**接成了有判决的一族**：新 CI 腿 + 两份脚本的真缺陷）；
 > ⭐ 更早的状态在 §0.6.0v（Zimmer 创作报告逐条核账：`G4` 已修／`G5` 是报告误判／`G3` 待裁决 ＋ ADR 编号撞车的处置规则）；
 > ⭐ 更早的状态在 §0.6（创作缺口审计 `G1..G18` 全轮 + 完成审计）；本轮的逐单明细记在 `docs/DEVELOPMENT_LEDGER.md` 的尾部（`§22` = 2026-10-31 第十八批），`phase-status.md` 的叙事条目停在 R1144。
@@ -14,6 +15,36 @@
 > ⚠ 本轮的逐单明细记在 `docs/DEVELOPMENT_LEDGER.md`（§5.3 的状态表 + 各轮条目），
 > `docs/ledger/phase-status.md` 的叙事条目**停在 R1144**（2026-10-26）⇒ ⭐ 读进度以
 > `DEVELOPMENT_LEDGER.md` 的尾部为准，⛔ 不要以为 R1144 之后没干活。
+
+### 0.6.0y ⭐ 尾批（2026-10-31 22:40）：**三处陈旧口径改正** ＋ s28 的前置读数 ＋ 合流判决（待填）
+
+- ⚠ **§0.5「进入状态」那五条命令里的路径本机不存在**（本轮已就地改）：旧文本写 `cd /Users/crow/work/music/yeban`
+  与一整套 `CARGO_HOME=/Users/crow/work/music/.cargo-home` 的 export 口径 —— 本机是 Linux（`HOME=/home/crow`），
+  `ls -d /Users` ⇒ `No such file or directory`。现读机制：`scripts/dev/local-env.sh` **只在 `~/.cargo` 或 `~/.rustup`
+  不可写时**才把缓存改指仓库父目录；本机实测 `source` 之后四个变量**全部"未设置"** ⇒ 手工 export 反而会把缓存指向空目录、
+  触发一次全量重编。仍强制指定缓存目录的只有 `scripts/dev/line-gate.sh`（`CARGO_HOME=$ROOT/../.cargo-home`
+  ⇒ 工作树里就是 `.worktrees/.cargo-home`，**911 MB**，在用、⛔ 不是孤儿）。
+  ⛔ 同类残留还在：`docs/DEV_WORKFLOW.md` 5 处、`docs/DEVELOPMENT_LEDGER.md` 20 处仍写 `/Users/crow/...`
+  （多数是历史叙述，不必追改；**操作性**的只有 handover 这一处，已改）。
+- ⚠ **判绿口径按腿类型分**（补 `AGENTS.md` §6.3-2 的口子）：`e2e` 腿作业 `124565010777` 的日志 64 557 字节里
+  **`test result:` 出现 0 次** —— 这条腿跑的是 shell＋python 脚本，不是 cargo。它的证据形态是
+  `9 / 9 条判据为绿` ＋ `[ok] … 通过 definitions.ReplayedToolResponse`。**拿 rust 腿的口径去卡脚本腿，会把绿判成"没跑到"。**
+- **s28 的前置读数已入台账 §22.8**（本机零编译）：`warnings[].code` 的真值 = **代码 5 个构造点**
+  （`unrecognisedEffectParam`／`deviceOnSilentTrack`／`exportClipping`／`silentSources`／`sfzSamplesUnreadable`）
+  ＋ **散文 3 处手抄**（无一处列全）＋ **`schemas/mcp-tools.schema.json` 里 `warnings` 键 0 次**
+  （7 个 definitions 递归遍历）⇒ 响应里的 `data.warnings[]` 形状**完全不受契约约束**，
+  CI 第 16 步跨语言对账与 e2e 的 schema 断言对它都是盲的。⚠ 别把 `unknownEffectParam`（错误路径的 `data.reason`，
+  `notes.rs:6537`）当成名册拼写漂移 —— 它和 warning 的 `unrecognisedEffectParam` 各有判据在册（`trap_175.rs:147/292`）。
+- ⚠ **仓库卫生现读**：`.worktrees/` 里除 `.cargo-home`（911 MB，line-gate 在用）**只剩 0 棵工作树**、
+  仓库内 `target` **326 MB**（本机跑 `verify/section_pure.rs` 的 rlib 全靠它，⛔ 删）；
+  `/home` 用 **88%**、剩 **28 GB**。**本地 `line/*` 分支 46 枚**，实测**全部 46 枚的 tip 都是 `main` 的祖先**
+  （`git merge-base --is-ancestor` 逐枚跑，未并入者 **0** 枚）⇒ 删除不丢任何工作，但删分支属破坏性操作，
+  ⛔ 未经人类确认不动手；清单已落 `/tmp/merged_lines.txt`（46 行）供一次性删除。
+- **合流判决（run `41210731323`，main tip `72a990e4`：`d6a824e8` 文档 + `392fcd27` s26 + `72a990e4` s27）**：
+  ⭐ 已判回的部分 = `plan`／`deny`／`lockfile`／`checks`／`e2e` 五腿 success，其中 `checks`（job `124564954911`）
+  第 **9** 步「端到端判据防掏空守卫 (verify 脚本的牙)」= `completed / success` ⇒ s27 的守卫在 **main** 上有牙；
+  ⚠ 窄 `rust (matrix.crate)` 腿 `skipped`（本批动 `.github/**` ⇒ 走全量，见 §22.6）。
+  ⏳ **pending**：全量腿 `124565010808`（14:34:22Z 起跑）与 windows／macos 两腿的读数 —— 判回后补 §22.9。
 
 ### 0.6.0x ⭐ 尾批（2026-10-31 21:45）：**把两句散文换成机器读数**（s26 判据 ＋ s27 守卫），三线并行待判
 
@@ -1117,15 +1148,23 @@ bash scripts/dev/trim-target.sh                            # 磁盘 92% 时先�
 **进入状态（五条命令，⛔ 不要凭记忆）**：
 
 ```bash
-cd /Users/crow/work/music/yeban
+cd /home/crow/work/qoder/yeban
 git log --oneline -1 && git status --porcelain          # 主干与脏不脏
 git worktree list                                        # 有哪些线（在飞的那条以磁盘为准）
 git -C <那棵在飞的工作树> log --oneline -1 && git -C <同上> status --porcelain   # ⚠ 该线已于 2026-10-27 落地并拆树
-XDG_CACHE_HOME=/Users/crow/work/music/.cache gh run list --limit 6 --json headSha,status,conclusion
+gh run list --limit 6 --json headSha,status,conclusion
 python3 scripts/guards/policy_check.py && bash scripts/gates/run-gates.sh light
 ```
 
-⚠ 环境（**每次编译前 export，否则会重编 Slint**）：`CARGO_HOME=/Users/crow/work/music/.cargo-home`、`RUSTUP_TOOLCHAIN=stable`、`XDG_CACHE_HOME=/Users/crow/work/music/.cache`、`RUST_MIN_STACK=16777216`、`CARGO_TARGET_DIR=/Users/crow/work/music/yeban/target`；**每一条 cargo 命令都包在 `bash scripts/dev/target-lock.sh -- <cmd>` 里**（原因见 §0.5.6）。
+⚠ 环境（2026-10-31 现读更正，⛔ 再照旧措辞 export）：本机是 Linux（`HOME=/home/crow`），
+**旧版这一段写的 `/Users/crow/work/music/...` 整套 macOS 路径在本机不存在**（`ls -d /Users` ⇒ `No such file or directory`），
+而按它 export 只会把 `CARGO_HOME`/`XDG_CACHE_HOME` 指向空目录 ⇒ 触发一次全量重编（正是那句"否则会重编 Slint"要防的事）。
+现读的机制：`scripts/dev/local-env.sh` **只在 `~/.cargo` 或 `~/.rustup` 不可写时**（受限沙箱）才改指仓库父目录；
+本机两者可写，实测 `source scripts/dev/local-env.sh` 之后 `CARGO_HOME / XDG_CACHE_HOME / CARGO_TARGET_DIR / RUSTUP_TOOLCHAIN`
+**全部"未设置"** ⇒ 用默认的 `~/.cargo`（1.5G）与 `~/.cache`（19G），无需手工 export。
+唯一仍会强制指定缓存目录的是 `scripts/dev/line-gate.sh`：它把 `CARGO_HOME` 设为 `$ROOT/../.cargo-home`
+（工作树里 ⇒ `.worktrees/.cargo-home`，实测 **911 MB**，**在用、⛔ 孤儿**）。
+`RUST_MIN_STACK=16777216` 与"每一条 cargo 命令都包在 `bash scripts/dev/target-lock.sh -- <cmd>` 里"**照旧有效**（原因见 §0.5.6）。
 
 ### 0.5.1 硬状态（此刻已核验）
 
