@@ -1284,8 +1284,7 @@ mod tests {
             &json!([{"code": "unrecognisedEffectParam", "knownParams": ["cutoff", 5], "hint": "x"}]),
             "$.warnings",
         )
-        .err()
-        .expect("knownParams 的元素不是字符串, 必须红");
+        .expect_err("knownParams 的元素不是字符串, 必须红");
         assert_eq!(
             violation.path, "$.warnings[0].knownParams[1]",
             "递归必须把两层下标都写进路径: {violation}"
@@ -1297,8 +1296,7 @@ mod tests {
             &json!([{"code": "deviceOnSilentTrack", "trackId": "t1"}]),
             "$.warnings",
         )
-        .err()
-        .expect("items 层的 required 缺席, 必须红");
+        .expect_err("items 层的 required 缺席, 必须红");
         assert_eq!(violation.path, "$.warnings[0].hint", "{violation}");
 
         // ③ 正反两路：两条构造点的**真实形状**都必须过（只留反面判据会把假广播也验成绿）。
