@@ -17075,3 +17075,19 @@ helper 里 ⇒ 必须不认（防假绿）。两条臂在旧实现上都会失�
 - 纯文档批 `d4bacadd` 的 run（本次读回时现值）：`d4bacadd 41217160672 completed success`。
   ⚠ 这条是"推送当下"抓的，若其后还有推送，新会话仍应按 `headSha=d4bacadd` 复核一次。
 
+### 22.13 磁盘与分支卫生读数（2026-10-31 16:11Z，单位已在每条命名；⛔ 记忆值）
+
+- `/dev/sda2` 挂载 `/home`：**235G 总量 / 201G 已用 / 28G 可用 / 88%**（与 §22.7 的读数一致 ⇒ 这一小时没有新的可清理增量）。
+- 仓库内**磁盘占用**（`du -sh` 口径，⛔ 当字节数用）：`target` **326M**、`.worktrees` **1 012M**。
+  ⚠ `.worktrees` 的绝大部分是 `.worktrees/.cargo-home`（**911M**，`line-gate.sh` 强制指向的共享 CARGO_HOME，
+  **在用**，⛔ 不是孤儿产物）。`du -sh .worktrees/*/target` ⇒ `no matches found`（**0 个** worktree 内有 `target`）
+  ⇒ 本仓库当前的清理面**不在** worktree 里；大头仍是人类裁决 #34（`~/.cache` **19G**／`~/.rustup` **5.2G**）。
+- 分支：本地 `line/*` **47** 枚，其中已并入 `main` **46** 枚、未并入 **1** 枚（`line/s28-warning-code-contract`，见下）。
+  ⚠ **远端 `origin/line/*` 有 114 枚** —— 这个数字此前没进过账；它比本地的 46 大一倍多，
+  说明历史会话的线分支推送后从未删除。人类裁决 #102 的范围应**同时覆盖远端**，清单待按
+  `git branch -r --merged origin/main --list 'origin/line/*'` 现读后再生成（⛔ 现在别删，删除是破坏性动作）。
+- **s28 状态**：线 `a5ece833`（`line/s28-warning-code-contract`）的宽运行 run `41218201348`
+  于 16:08:18Z 起 **in_progress**（全量腿约 46 分钟）。⏳ **pending** —— 判决按 §22.12 的口径读：
+  `checks` 作业里新增那一步「warnings 名册对账 …」必须 `completed / success`，⛔ 只看整体 success 不收。
+  主线上同一时刻的纯文档 run `41218242390`（`ce8edd84`）= `completed / success`。
+
