@@ -154,3 +154,29 @@ macos / windows）的 `clippy (-D warnings)` 步骤报 4 个
 
 教训（可复用）：**滚动探针的量必须由被测量本身导出，不能凭窗口尺寸推视口尺寸**。
 一个固定的像素探针同时依赖视口高与内容高，而这两者都不是测试说了算的（布局归宿主）。
+
+## 7. 第三票的读数补全：三条腿同一个断言 ⇒ 一个根因，不是平台差异
+
+下载三条腿的作业日志现读（`gh api repos/gradetwo/yeban/actions/jobs/<id>/logs`，run `41247717524`）：
+
+| 腿 | `Running tests/arrangement_vertical_scroll.rs` | 4 条判据 | 红的 panic 位置与文本 |
+| :--- | :--- | :--- | :--- |
+| `rust (yeban-app)` | 出现 | 3 passed / 1 failed | `arrangement_vertical_scroll.rs:246`：`两次快照必须有一段交集才读得出位移（交集只有 1 行）` |
+| macos | 出现（job `124674574880` 第 5759 行） | 3 passed / 1 failed | 同一行号、同一句文本 |
+| windows | 出现（job `124674574889` 第 5635 行） | 3 passed / 1 failed | 同一行号、同一句文本 |
+
+⇒ **一次根因（写死的 400px 探针）在三个平台上一致复发**，⛔ 读成"平台相关的视口高不同"。
+另外两腿的尾部 `error: 1 target failed: -p yeban-app --test arrangement_vertical_scroll` 就是这一条，
+其余二进制全绿（各 `test result: ok.`）—— 也就是说 macos / windows 这两票**没有**别的账要还。
+
+## 8. 推送侧的一条操作教训：git-over-HTTPS 会假成功
+
+本片 `9d46e7e3` 一度**推不上去**：`git push` 报 `GnuTLS recv error (-110)` 或
+`Failed to connect to github.com port 443 after 133xxx ms`，而 `gh api`（走 `api.github.com`）一直正常
+⇒ 判"推没推上去"⛔ 靠 `gh api` 通不通，要现读 `gh api repos/gradetwo/yeban/branches/<线名> --jq '.commit.sha'`
+跟本地 `git rev-parse HEAD` 对（本仓库第一次就是靠这条读回发现远端还停在 `f1337217`）。
+更阴的一次：把 push 丢到后台包装脚本里，包装脚本 **exit 0** 而输出文件里是一行 `fatal:`
+⇒ 判推送只认 `gh api` 的远端 sha，⛔ 认包装脚本的退出码。
+
+可用的绕法（实测）：`git -c http.version=HTTP/1.1 push`（默认 HTTP/2 的连接在这台机器上会卡在 443）。
+⛔ 把 `http.version` 写进 git config（改配置属人的决定），只在单次调用上带 `-c`。
