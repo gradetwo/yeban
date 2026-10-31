@@ -16815,4 +16815,54 @@ helper 里 ⇒ 必须不认（防假绿）。两条臂在旧实现上都会失�
   ③ 挂 `rust (矩阵)` 的 `yeban-mcp` 腿 ⇒ 两条触发路径都覆盖，但要把 ② 的样本与 jsonschema 也搬过去（矩阵腿现在没有）。
 - ⛔ 本批只登记读数，未开工；开工前先取一条实测数：`checks` 从零编 `yeban-mcp` 的耗时（决定选 ① 还是 ③）。
 
+## §22 s25 批（2026-10-31）：把 MCP stdio 端到端复跑**接成有判决的一族**（新腿 + 两份脚本的真缺陷）
+
+> §21.8 的三个候选方案里选了 **①（独立 job）**，理由不在习惯而在实测耗时（见 §22.4）。
+> 本批 ⛔ 没有新增 Rust 源码：改的是 1 份 workflow ＋ 2 份 verify 脚本 ＋ 1 行文档。
+
+### 22.1 两份脚本各自的真缺陷（都是"本地跑不出来"的那种）
+
+- **共同缺陷：`yeban_import_audio` 的 `license` 是必填参数，两份脚本都没给。** 现读
+  `crates/yeban-mcp/src/domain/import_audio.rs` 的白名单逻辑：缺 `license` ⇒ 带内拒绝 `licenseRequired`；
+  白名单不可读 ⇒ `licenseWhitelistUnavailable`（⛔ 绝不静默放行，这是 `MUST-GATE-014` 在项目文档层的落点）。
+  ⇒ 若只补执行者而不补这一笔，`idempotency_replay_schema.py` 报的红会是**"夹具不合法"**，
+  而它名义上判的是**"重放形状漂移"** —— 这正是本仓库最忌讳的"判据指向别的东西"。
+  两份脚本的 id 2／id 3 都补上 `"license": "CC0-1.0"`：夹具 `kick.wav` 的字节由 `e2e_audio_clip_seed.py`
+  **自己合成**，所以这条许可声明是**真话**（白名单值现读 `assets/samples/manifest.json` 的 `licence_whitelist`）。
+- **`e2e_audio_clip_stdio.sh` 完全没有牙**：末尾的读数块只 `print`，任何不一致都以 0 退出 ⇒ "端到端能跑通"
+  永远只是文档里的一句话。本批把它改成 **9 个具名 `check(...)`**（7 个调用点，其中 2 个在逐渲染循环里），
+  逐条打 `[PASS]/[FAIL]`，任一红 ⇒ `exit 1`。
+
+### 22.2 判据边界（⭐ 本批的诚实纪律：两处**只打印不断言**）
+
+- 不断言 `audio.unsupported == []`：该序列里"这一项应为空"的语义**未证** ⇒ 只登记读数（`AGENTS.md` §6.4-4）。
+- 不打印墙钟一致性为判据：`bext` 生成时间**本就该**随墙钟变；真正被证的是**文件字节**相同，
+  复用既有常驻判据 `two_renders_under_different_wall_clocks_are_byte_identical_chunk_by_chunk`
+  （`crates/yeban-mcp/tests/render_master.rs`）的口径 ⇒ 新脚本断言 `first == second`（字节级），
+  bext 只打印。
+- 两条写错的期望在**推送之前**被现读源码抓住（教训入账，不进结论）：
+  曾把 `placement.placed` 当计数（`>= 1`）—— 它是**布尔**；
+  曾把 `placement.durationRule` 当英文枚举（`== "asset-length"`）—— 它是**中文散文**
+  （`素材全长换算: ceil(frames * PPQ * bpm / (sampleRate * 60))`）。⇒ 改成 `is True` 与 `"素材全长换算" in str(...)`，
+  并在脚本内注释记下"这是散文/布尔，⛔ 不是枚举/计数"。
+
+### 22.3 CI 接线：新腿 `e2e (MCP stdio 复跑 / 幂等重放契约)` 的触发条件是**实测**出来的
+
+- `if: contains(needs.plan.outputs.crates, 'yeban-mcp')` —— 现读 `scripts/dev/changed-crates.py`：
+  每一条 `workspace_wide: true` 分支都 `emit(crates = 全部成员)`（**不是空集合**），
+  所以这**一个** `contains` 已覆盖宽运行 ⇒ ⛔ 不需要 `always()`，⛔ 不需要并集表达式
+  （我第一版写了三路并集，取完读数后删掉，与 `windows`/`macos` 两条腿保持同一条件形态）。
+- `yeban-mcp` 无需 apt 系统库：现读其 `Cargo.toml` 记录的机械证据
+  `cargo tree -p yeban-mcp -e normal | grep -c cpal` == 0（`default = []`，`mcp-http` 永不进 default）。
+- `pip install 'jsonschema>=4.24'` 的可行性**不是假设**：同一 run 里 `checks` 腿用同一条命令且判 success
+  ⇒ ubuntu-24.04 的 PEP 668（externally-managed）在本仓 runner 镜像上不成立。
+
+### 22.4 判决链（线 `b512ee8a`，逐 job 读回）+ 独立腿的成本读数
+
+| 提交 | run | 结论 | 关键读数 |
+|---|---|---|---|
+| 线 `b512ee8a` | `41203744827` | 新腿 **success**（整 run 落地时在飞，见下行） | `e2e` 腿 **真跑**：job `124545260712`，13:08:14→13:09:07 = **53 秒**，7 个实步骤全 success。日志内 `[PASS]` **9** 条／`[FAIL]` **0** 条，逐名：`responses_are_complete_and_error_free`／`import_registers_and_places_the_clip`／`save_persists_the_asset`／`render4_receipt_matches_the_file`／`render4_every_asset_has_bytes_and_frames`／`render5_receipt_matches_the_file`／`render5_every_asset_has_bytes_and_frames`／`no_asset_reported_as_missing_bytes`／`two_renders_are_byte_identical`；幂等腿四条 `[ok]`（含"裸 `ToolResponse` **不**通过 `ReplayedToolResponse`"这条**防掏空**的反向判据）。**耗时读数（决定方案 ① 是否划算的依据）**：`export_schema_samples = 10 秒`、`cargo build -p yeban-mcp --bin yeban-mcp = 25 秒` ⇒ 整腿 53 秒，比 `checks` 腿同量级 ⇒ 独立腿成立，⛔ 不必塞进 `checks` 或矩阵腿。`checks`／`deny`／`plan`／`lockfile` 全 success；`rust (矩阵)` **skipped**（⛔ 不计绿）；`rust (workspace 全量)`／`windows`／`macos` 在 land 时**仍在飞**（本批 0 Rust 源码，合流 run 会再判一次全量） |
+| merge `d40afe0b` | `41204348127` | pending（判决未读回一律记 pending） | 待读：全量腿 `test result:` 行数／`FAILED` 计数，以及本批新腿在宽运行里**是否再次真跑** |
+
+
 
