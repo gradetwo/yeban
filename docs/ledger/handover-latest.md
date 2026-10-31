@@ -252,6 +252,35 @@
   再拿逐变体载荷名册（`Op` 有 **55** 个顶层变体，外部标签 ⇒ 元素恒"恰好一键"）。
 
 
+### 0.6.0zk ⭐ 尾批（2026-11-01 深夜·第七批）：**s31 线判绿 `41250994144` = success → 已 land** ＋ ⛔「`--log` 下载不到」不是"没跑到" ＋ 落地前先比 `main` 与 `origin/main`
+
+- **线判决**：`25a767cb`（681 行进 `output_schema.rs` + 9 行进 `domain/render.rs`）的 run **`41250994144`** = `completed / success`。
+  九条腿全 `success`（`checks` 19 步／`e2e`／`rust (yeban-mcp)` 15 步耗时 **16:46**／`rust (yeban-ui-mcp)`／`macos`／`windows`），
+  `rust (workspace 全量)` = `skipped`（`plan` 给窄集合）⇒ ⛔ 本轮同样不引用 `518 / 7 243` 那组全量基线。
+- **验收读数（单位：数该腿日志里 `test <名> ... ok` 整行的出现次数，按步骤分）**：四条新判据**每条 2 次**
+  （`test` 默认 feature 档 + `test (合并特性)` 档各一次）⇒ "两种 feature 组合都成立"，⛔ 不是重复计数；
+  同腿聚合 `test result:` **149** 行／`FAILED` **0** 行／`passed` 合计 **149,924**；
+  `tests/props_176.rs`（用**真实响应**跑 `validate_complete` 的二进制）两步都出现（日志 1736 / 3678 行）⇒ 新名册是被真实回执读到的，不自证。
+- ⛔ **本批最值得留的一条**：run 还在 `in_progress` 时 `gh run view --log` **直接拒绝**
+  （实测 `run 41250994144 is still in progress; logs will be available when it is complete`）。
+  这**不是**"判据没跑"的证据（差点被读成 §6.3 第 4 条的那种空白）。等收口用一条阻塞命令
+  `gh run watch <id> --exit-status`（退出码 0 即 `success`），⛔ 不要 sleep 轮询、⛔ 不要把"取不到日志"写进结论。
+- **交付内容**：§22.30 那张前置读数变成契约 —— **11 处**裸对象属性槽填成逐键名册，共**新声明 107 键**
+  （主槽 85：`request` 14／`probability` 5／`ratchet` 8／`audio` 8／`peak` 8／`normalize` 5／`loudness` 11／`bwf` 6／`midiSource` 7／`contributions[]` 5／`contributionsBasis` 8；
+  内层 22：`assets[]` 17／`resampler` 3／`bitExactness` 2）。四处判据：逐槽非空 + 破损必红/可空必放行 + `verdict.enum` 逐字等于实现侧新加的 `VERDICT_VALUES` + `unsupportedCounts` **故意留弱**钉成读数。
+- ⭐ **推送前那步"静态对账"值一整轮 CI**：一次性脚本比"名册里 `("键",…)` 的字面量条数"与生产者 `json!` 的顶层键名（集合 + 顺序），
+  12 处主槽全对得上；两处报 `DIFF` 复现后定性为**抽取器自己的错**（从下一个 `{` 起算）⇒ **报告的 DIFF 先复现再定性**，⛔ 别照它改契约。
+- ⛔ **落地时的新发现**：`git worktree list` 与 `git status` 都干净，**但本地 `main` 不等于 `origin/main`** ——
+  别人已把 `93ee8eb3 merge(adr-drawer-keyboard)`（run `41251045953` = success）落在远端 main 上。
+  先 `git fetch` + `git merge --ff-only origin/main` 再 `--no-ff` 合 s31 ⇒ **推 main 之前先比两枚 40 位 SHA**。
+- ⏭ **接手第一件事**：把本地 main（含本节与 §22.31）推 `origin/main` → 读**合流 run**（宽腿会不会被 `workspace_wide` 打开：本批改了 `docs/DEVELOPMENT_LEDGER.md`，属根级共享文件）→
+  `scripts/dev/worktree.sh rm s31-render-rosters --purge`（自动补归档标签）→ task #106 收盘。
+- ⏭ **下一片 s32 = task #107**：渲染回执里**唯一完全未声明**的键 `data.automation`（既不在 `required` 也不在 `properties`）。
+  现读形状：顶层 **14** 键／`granularity` **3**／`domainTransfer` **3**／`tracks[]` **3**／`lanes[]` **15**（其中 **8** 个键为 `null` 是常态）。
+  词表：`writeMode` 直接引用现成的 `domain::notes::LANE_WRITE_MODES`（4 个，`notes.rs:1652`）；
+  `target` 的 5 个名字只活在 `automation_target_name` 的 match 臂里 ⇒ 先补 `TARGET_VALUES`，再让 `targetsSupported`/`targetsUnsupported` 从它派生（⛔ 第三份手抄）。
+  ⚠ 与 §0.6.0zi 同一条口径：验收写成**断言**，⛔ 不列 `println!` 读数。
+
 ### 0.6.0zj ⭐ 尾批（2026-11-01 深夜·第六批）：**s30 全链收盘**（合流 run `41246376638` = `success` → 树已拆）＋ s31 的前置读数已逐字复核
 
 - **合流判决**：`b008fd49` 的 run **`41246376638`** = `completed / success`；`plan` 现读给

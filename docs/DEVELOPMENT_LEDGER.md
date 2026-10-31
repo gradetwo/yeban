@@ -17684,3 +17684,38 @@ helper 里 ⇒ 必须不认（防假绿）。两条臂在旧实现上都会失�
   它把 `LoudnessTarget::failure()`（`render.rs:976`，那是 `RENDER_FAILED` 的**带内错误载荷**：`reason`/`algorithm`…）
   当成了 `data.loudness` 的键。现读 `to_value()`（`:933`）= 11 键、**没有** `reason` ⇒ 若照抄，`required` 会把真实响应判红。
   ⇒ 纪律再补一句：**子代理给的键名清单必须先对上"响应面 vs 错误面"这两个不同的装配点**，⛔ 同名结构体的两个 `json!` 不是同一份名册。
+
+### 22.31 ⭐ s31 判绿收盘（线 run `41250994144` = **success**）：`render_master` 的十一处裸槽填成 107 键名册 ＋ 四处判据 ＋ ⛔「下载不到日志 ≠ 没跑到」
+
+- **判决**：`25a767cb`（唯一一枚代码批，681 行进 `output_schema.rs` + 9 行进 `domain/render.rs`）的线 run **`41250994144`** = `completed / success`。
+  腿集现读九条：`plan`(5)／`lockfile`(5)／`deny`(5)／`checks`(19)／`e2e`(8)／`rust (yeban-ui-mcp)`(14)／`macos`(18)／`rust (yeban-mcp)`(15)／`windows`(18) 全 `success`，
+  `rust (workspace 全量)` = `skipped`（`plan` 给的是窄集合，与 §22.30 同形）⇒ ⛔ 本轮不引用 `518 / 7 243` 那组全量基线。
+  主判据腿 `rust (yeban-mcp)` 耗时 **16:46**（23:05:20 → 23:22:06，非 0s ⇒ 真跑）。
+- **验收读数（单位：数该腿日志里 `test <名> ... ok` 这一整行出现的次数，按步骤分）**：四条新判据在
+  `test` 与 `test (合并特性)` **两步各出现一次**（每条 2 次，共 8 行 `ok`）——这两步是同一套代码在
+  **默认 feature** 与**合并 feature** 两种组合下各跑一遍，所以"2 次"本身就是"两种组合都成立"的证据，⛔ 不是重复计数。
+  同一腿聚合：`test result:` **149** 行、`test result: FAILED` **0** 行、`passed` 合计 **149,924**（跨两步 + doctests）；
+  `tests/props_176.rs`（拿**真实响应**跑 `validate_complete` 的那个二进制）在两步里都出现过（日志第 1736 / 3678 行）⇒ 新名册被端到端读到了，不只是自证。
+- ⛔ **一条新踩的坑**：`gh run view --log` 在 run 仍 `in_progress` 时**直接拒绝**（实测报 `run 41250994144 is still in progress; logs will be available when it is complete`）。
+  这**不是**"判据没跑"的证据。等收口的正确做法是一条阻塞命令 `gh run watch <id> --exit-status`（退出码 0 = `success`），⛔ 不要 sleep 轮询。
+- **这批把 §22.30 那张前置读数变成了契约**：`request` 14／`probability` 5／`ratchet` 8／`audio` 8／`peak` 8／`normalize` 5／`loudness` 11／`bwf` 6／`midiSource` 7／`contributions[]` 5／`contributionsBasis` 8 = **85** 键，
+  加内层 `assets[]` **17**／`resampler` **3**／`bitExactness` **2** = 本轮新声明 **107** 个键。四枚判据分别钉：
+  ①十一槽**逐槽非空**（`assert_ne!(…, {"type":"object"})` + `required` 长度 == `properties` 长度 == 键数下界）；
+  ②破损值必红 / 可空值必放行（12 份合法夹具、逐槽各缺一个 `required` 键 ⇒ 红在 `$.<键>`、四个 `const` 翻牌、`verdict:"nearly"`、`sampleRate` 给字符串、`frames` 给小数、第三层 `resampler:{}` 红在 `$.resampler.*`、`assets:[42]` 红在 `$.assets[0]`、五处 `null` 是常态必须放行）；
+  ③`loudness.verdict.enum` **逐字等于**实现侧新加的 `VERDICT_VALUES`（与 `commitModel` 引用 `COMMIT_MODEL_VALUES` 同一条理由：⛔ 第二份手抄清单）；
+  ④`unsupportedCounts` **故意留弱**并钉成读数（`assert_eq!(…, {"type":"object"})` + 断言广播里**没有** `additionalProperties`/`propertyNames` —— 校验器不支持的关键字一旦写进去就是假广播）。
+- ⭐ **推送前的"静态对账"这一步值一整轮 CI 时间**：写了 `/tmp/s31_roster_check.py`（一次性工具，⛔ 不入库），
+  单位 = **数一个名册函数里 `("键", …)` 的字面量条数**，与生产者 `json!` 的顶层键名**逐字比集合与顺序**。
+  12 处主槽全 `OK`（名字与顺序都对得上），`resampler`/`bitExactness` 报 `DIFF` —— 逐行看是**抽取器自己的错**
+  （它从下一个 `{` 起算），手工数生产者仍是 3 / 2，与名册一致 ⇒ **报告的 DIFF 要先复现再定性**，⛔ 别照着它改契约。
+- ⭐ **落地时发现本地 main 不是远端 main**：`git worktree list` 干净、`git status` 干净，但 `origin/main` 已被别的线推到 `93ee8eb3`（`merge(adr-drawer-keyboard)`，run `41251045953` success）。
+  先 `git fetch` + `git merge --ff-only origin/main`，再 `--no-ff` 合 s31 ⇒ 纪律一句：**推 main 之前先比 `main` 与 `origin/main` 两个 40 位 SHA**，⛔ 别假设"我上次推的就是 tip"。
+- ⭐ **s32 的前置读数（现读 `AutomationReport::to_value` `render.rs:1937-1964` 等四处，逐条手数）**：
+  `data.automation` 是渲染回执里**唯一完全未声明**的键（既不在 `required` 也不在 `properties`，⛔ 不是"弱声明"）——
+  顶层 **14** 键（`wired`/`evaluator`/`targetsSupported`/`targetsUnsupported`/`appliedDeviceParamNames`/`granularity`/`domainTransfer`/`smoother`/`timeConstantSeconds`/`lanes`/`evaluableLanes`/`appliedLanes`/`unsupportedLanes`/`tracks`）、
+  `granularity` **3**、`domainTransfer` **3**、`tracks[]` **3**（`node`/`track`/`lanes`）、`lanes[]` **15**（其中 `staticValue`/`firstTick`/`lastTick`/`firstValue`/`lastValue`/`resolvedDeviceId`/`resolvedParamName`/`unresolved` 这 **8** 个为 `null` 是常态）。
+  词表单一来源已核：`writeMode` 可直接引用现成的 `domain::notes::LANE_WRITE_MODES`（4 个，`notes.rs:1652`）；
+  `target` 的 5 个名字目前**只存在于** `automation_target_name` 的 match 臂 ⇒ s32 先补 `TARGET_VALUES`，
+  并把 `targetsSupported`/`targetsUnsupported` 那两条字面量清单从它派生（⛔ 第三份手抄）。
+- **树况**：`git worktree list` 现读两棵（主干 + `.worktrees/s31-render-rosters`），两棵 `git status --porcelain` 均**空**；
+  本地分支 47 枚已并入 `main`、仅 `line/s31-render-rosters` 未并（本轮合入后即并）。task #106 收盘、#107（s32）登记。
