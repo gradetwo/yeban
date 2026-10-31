@@ -788,6 +788,10 @@ export component MainWindow inherits Window {
     callback clip-drag-move(string, length);
     callback clip-drag-release(string, length);
     callback clip-drag-cancel();
+    // ⭐ 点击编曲标尺 ⇒ 走带定位（界面只报标尺带局部 x；换算 / 夹紧 / `SeekTicks`
+    // 全在 `host::wire_ruler_seek`，与上面 `clip-drag-*` 同一条「界面零算术」纪律）。
+    /// 点击小节 / 拍标尺：`(局部 x)`。
+    callback ruler-seek(length);
     // ⭐ 任务单 `#283`：Session View 的场景按钮 ⇒ **真的**把这次启动送到引擎
     // （`host::wire_scene_launch` → `EngineHost::queue_scene_launch`）。界面只报场景下标：
     // 量化档 / tempo 覆盖 / 拍号由宿主从**当前投影**现读，⛔ 界面不拼这些语义。
@@ -1535,6 +1539,10 @@ export component MainWindow inherits Window {
                     }
                     clip-drag-cancel() => {
                         root.clip-drag-cancel();
+                    }
+                    // ⭐ 标尺点击 ⇒ 原样上抛局部 x，宿主换算成 tick 并 seek。
+                    ruler-seek(x) => {
+                        root.ruler-seek(x);
                     }
                     clip-labels: root.clip-labels;
                     clip-positions: root.clip-positions;

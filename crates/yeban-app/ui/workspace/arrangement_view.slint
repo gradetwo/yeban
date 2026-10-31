@@ -197,6 +197,15 @@ export component ArrangementView inherits Rectangle {
     /// 点击轨道头的独奏开关：`(轨道下标)`。取反与 `Op::SetTrackSolo` 由宿主提交。
     callback track-solo-toggle(int);
 
+    // ---------------------------------------------------------------- 标尺定位（点击走带）
+    //
+    // 与 `track-height-grab` / `clip-drag-*` 同一条分工：**界面只报指针的本地 x（逻辑像素）**，
+    // 像素 → tick 的换算、工程长度夹紧、`TransportCommand::SeekTicks` 与走带读数回写
+    // 全在宿主（`host::wire_ruler_seek`）。⛔ 界面不做位置算术。
+    //
+    /// 点击小节 / 拍标尺：`x` = 指针在**标尺带坐标系**里的横坐标（标尺带左缘 = 工程 0 tick）。
+    callback ruler-seek(length);
+
     // ---------------------------------------------------------------- 章节卡片层 (§4.3)
     for section_name[section_index] in root.sections : Rectangle {
         x: 168px + root.section-positions[section_index];
@@ -248,6 +257,25 @@ export component ArrangementView inherits Rectangle {
         accessible-role: text;
         accessible-id: "arrangement-ruler";
         accessible-label: "小节与拍标尺";
+
+        // ⭐ 点击标尺 ⇒ 走带定位。与轨道头的拖拽面**同款纪律**：
+        //
+        // - **零视觉**：`TouchArea` 不画任何东西 ⇒ 默认帧一位不变（标尺线、条数、颜色都不动）；
+        // - **零算术**：只把 `mouse-x` 原样报给宿主，像素 → tick 的换算与夹紧都在宿主侧；
+        // - **零新 a11y 节点**：本面不带 `accessible-id`（与轨道头那条 `TouchArea` 逐字一致）
+        //   ⇒ 元素树与 golden 截图的既有断言（`tests/a11y_screen_reader.rs`、
+        //   `tests/pane_no_overlap.rs` 里的 `arrangement-ruler`）逐字不变；
+        // - 它是标尺带的**第一个**子元素（最底层），排在它后面的 `for … : Rectangle` 只是
+        //   1px 宽的小节线（无 `TouchArea`）⇒ 命中测试没有竞争者。
+        TouchArea {
+            width: parent.width;
+            height: parent.height;
+            pointer-event(event) => {
+                if event.kind == PointerEventKind.down {
+                    root.ruler-seek(self.mouse-x);
+                }
+            }
+        }
 
         // 小节线位置由投影给出（一小节 = 960 PPQ × 分子 × 4 ÷ 分母 tick）。
         // `for _[i] in <model>`：**必须**有声明标识符（`_` 即可）。Slint 1.18.1 不接受
