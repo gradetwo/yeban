@@ -17125,3 +17125,29 @@ helper 里 ⇒ 必须不认（防假绿）。两条臂在旧实现上都会失�
   推送后头几秒 run 尚未登记，要**重试几次**才拿得到 id（本会话实测：一次空值 ⇒ `gh run view` 打空路径报 HTTP 404）。
 - **接手的会话只需做一件事**：按上面三条读 run `41218201348`；判绿则 land，判红则在本节下面补一条判决读数并修线，⛔ 两种情况下都不许留 pending 不读。
 
+### 22.15 s28 第一片判决读回 ＋ 已落地（`1d3d24b9`）：契约名册进主干，`merge run` 仍 pending
+
+- **线 `a5ece833` 的宽运行 run `41218201348` = `completed / success`**，且按 §22.14 的口径逐条读回：
+  - 作业面：`plan`／`deny`／`checks`／`lockfile`／`e2e`／`rust (workspace 全量)`／`windows`／`macos` **全 success**，
+    只有 `rust (${{ matrix.crate }})` = `skipped`（宽运行用全量腿替代窄矩阵，与 §22.9 形态一致）；
+  - ⭐ **本片的判据步**：`checks` 作业 `124587062934` 里那一步
+    「warnings 名册对账 (实现侧构造点 == schema 的 WarningCode.enum)」= **`success`**（整体 success ＋ 本步 success，⛔ 只取前者不算）；
+  - 全量腿 `124587111956`：`16:08:34Z → 16:56:14Z` = **47 分 40 秒**，日志 **1 780 933** 字节，
+    `test result:` **516** 行／`FAILED` **0**／passed 合计 **7 235**。
+    ⇒ 与 §22.9／§22.11 的基线（516／0／7 235）**逐位相同**：s28 只动 schema／守卫／CI，**没动 Rust 测试面**，
+    所以这个"没变"本身就是**无回归**的读数（若哪天多了 Rust 判据，这里的 7 235 才该动）。
+- **落地**：`scripts/dev/worktree.sh land s28-warning-code-contract` ⇒ 合并提交 `1d3d24b9`
+  （`ort` 策略，**3 文件 98 行全为新增**：`ci.yml` +5／`schemas/mcp-tools.schema.json` +11／`scripts/guards/check_warning_codes.py` +82）；
+  合并后自检 `cargo metadata --locked` 与依赖许可清单一致 ⇒ ok；`git push origin main:main` = `90340a81..1d3d24b9`。
+  拆树 `worktree.sh rm … --purge` 完成，分支已先保全为标签 **`line-archive/s28-warning-code-contract @ a5ece833`**；
+  `git worktree list` 现读只剩主干一条。
+- ⏳ **pending（本片唯一的未读判决）**：合流 run **`41222166136`**（`headSha=1d3d24b9`），本合并带 `.github/**` ⇒ **宽运行 ≈47 分钟**，
+  16:57Z 现值 `in_progress`。读法同 §22.11：终态须 `completed / success`，并确认全量腿真跑
+  （`test result:` 行数、`FAILED` 行数、passed 合计；预期仍为 **516／0／7 235**，因为落地不增加内容）。
+- **本轮的方法学收获（值得复用）**：`46..48 分钟`的 CI 等待⛔ 不该用轮次去换。
+  本会话先试后台 `Bash`（**10 分钟硬超时**，会把 `gh run watch` 掐死）⇒ 改为 **`Monitor` + `persistent: true`**：
+  脚本内 `while … sleep 60` 轮询到终态，再把「各作业结论 / 目标步骤结论 / 全量腿时长与三行读数」一次性打到事件里。
+  ⚠ 两个坑：① 作业名不是 `checks` 而是 `checks (fmt / 红线守卫 / schema)` ⇒ jq 选择器要 `startswith("checks")`，
+  用等值匹配会**静默拿到空 id**（我第一次就踩了，靠 `CHECKS_JOB=` 空值才发现）；
+  ② 编辑一个**正在运行的 bash 脚本文件**会让解释器按新偏移读旧内容 ⇒ 改脚本前必须先 `TaskStop`。
+
