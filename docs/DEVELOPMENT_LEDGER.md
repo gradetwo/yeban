@@ -16799,4 +16799,20 @@ helper 里 ⇒ 必须不认（防假绿）。两条臂在旧实现上都会失�
   （文件名／票内标题／README 索引行／`HD-67` 留痕／台账 `G3` 行），⛔ 不动他们那一份。
 - 操作性教训：**取号前必须 `git fetch` 之后数远端的最大值** —— ⛔ 只数本地工作树里的文件，多线并行时一定撞。
 
+### §21.8 下一单（s25）的前置读数：`checks` 作业**已经有** e2e 需要的一半（⛔ 别再重做普查）
+
+- 现读 `.github/workflows/ci.yml:212-213`：`checks` 里已经跑
+  `cargo run -p yeban-model --locked --example export_schema_samples -- --out target/schema-samples`
+  ＋ `export_mcp_samples`，`:222` 的 `validate_schemas.py --samples-dir target/schema-samples` 就是吃这份产物
+  ⇒ `e2e_audio_clip_seed.py` 依赖的 `target/schema-samples/project.filled.json` **在该作业里天然存在**；
+  同一步还隐含 `pip install`（现读 `ci.yml:155` = `python3 -m pip install --quiet 'jsonschema>=4.24'`，在 `checks` 作业内）
+  ⇒ `idempotency_replay_schema.py` 的第三方依赖**也已经满足**。
+- ⚠ 唯一缺的是 **`target/debug/yeban-mcp` 这个二进制**（`checks` 不建 bin 目标）。所以 s25 的真问题不是
+  "要不要新作业"，而是**把这三步接在哪条腿末尾最便宜**：
+  ① 接 `checks` ⇒ 要在那条腿上从零编 `yeban-mcp`（含 `yeban-render` 重依赖，实测代价未取）；
+  ② 接 `rust (workspace 全量)` 末尾 ⇒ target 目录是热的，`cargo build -p yeban-mcp --bin yeban-mcp`
+  近乎增量；但该腿只在 plan 判 `workspace_wide` 时才跑 ⇒ ⛔ 不能只挂它，否则纯 mcp 改动的轮次这三步**根本不执行**；
+  ③ 挂 `rust (矩阵)` 的 `yeban-mcp` 腿 ⇒ 两条触发路径都覆盖，但要把 ② 的样本与 jsonschema 也搬过去（矩阵腿现在没有）。
+- ⛔ 本批只登记读数，未开工；开工前先取一条实测数：`checks` 从零编 `yeban-mcp` 的耗时（决定选 ① 还是 ③）。
+
 
