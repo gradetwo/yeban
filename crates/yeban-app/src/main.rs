@@ -1176,6 +1176,9 @@ fn wire_callbacks(
     // `Space` 回起点作用在同一条走带上），投影 `Rc` 与 `wire_clip_scope` / `wire_scene_launch`
     // **同一个**（网格右缘要从活投影读，换工程之后跟着换）。⛔ 不提交 `Op`。
     host::wire_ruler_seek(ui, Rc::clone(engine), Rc::clone(&view));
+    // ⭐ 章节卡片点击 ⇒ 走带定位到段起点（`U-05`）：与上一行**同一对** `Rc`
+    // （同一条走带、同一份活投影），落点也是同一个 `commit_seek`。
+    host::wire_section_seek(ui, Rc::clone(engine), Rc::clone(&view));
     host::wire_scene_launch(ui, Rc::clone(engine), view);
     ui.on_run_acoustic_diagnosis(|| trace("run-acoustic-diagnosis"));
 }

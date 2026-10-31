@@ -3,7 +3,7 @@
 //! ## 被补上的缺口
 //!
 //! `ui/workspace/arrangement_view.slint` 的小节 / 拍标尺带（`arrangement-ruler`）此前
-//! **没有任何点击源**：它声明了 `accessible-role: text` 与语义 ID，画了小节线，但点上去
+//! **没有任何点击源**：它只声明了语义 ID（角色当时是 `text`）与无障碍名，画了小节线，但点上去
 //! 一位都不动。宿主侧的走带定位只有一条路 —— `host.rs` 里 `engine.seek(0)`（`#227` 的
 //! "连按 `Space` 回起点"），因此**除了 0 以外没有任何地方可以让光标去**。
 //!
@@ -25,12 +25,15 @@
 //! | ④（点出网格右缘 ⇒ 夹在右缘） | 缩到 `960 tick/px`（最粗），点在网格右缘之右的**窗口内真实坐标** ⇒ 位置 == `bar_positions.len() × bar_length_ticks`，⛔ 不把光标送去没画网格的地方 |
 //! | ⑤（非有限的读数 ⇒ 一位不动） | 直接调回调送 `NaN` ⇒ 位置不变、动作日志**长度不变**（⛔ 不把 NaN 当成"往右无穷远"） |
 //! | ⑥（定位不改走带状态） | 播放中点标尺 ⇒ `state` 仍是 `Playing`（seek 只搬位置，⛔ 不起播也不停播） |
+//! | ⑦（`U-07 R1` 线间点击 ⇒ 吸附） | 点两条小节线**正中间** ⇒ 落到最近的小节线（平局向更晚一侧，与 `bridge::snap_tick` 同一口径） |
+//! | ⑧（`U-07 R3` 按住拖动 ⇒ 连续定位） | 按下 + 移动 + 松手 ⇒ 动作日志**加两条**，落点是移动后的那一小节 |
+//! | ⑨（`U-07 R2` 无障碍 ⇒ 小节入口） | 标尺的增减动作 ⇒ ±1 小节；`SetValue("5")` ⇒ 第 5 小节；非数字 ⇒ 一条命令都不发 |
 //!
 //! ## 边界（不许当成已证）
 //!
-//! - ⛔ **不证明"小节 / 拍吸附"**：吸附语义在 Normative 规范里没有定义（`DESKTOP_UI_UX`
-//!   那份 2026-10-06 起是参考件、非绑定），本片如实做**逐 tick** 定位；该缺口登记为
-//!   `docs/ledger/app-ruler-seek-notes.md` 的 **needs R1** 待人类裁决。
+//! - ⚠ 小节吸附（`U-07 R1`）已按负责人任务落地（`~/zimmer-ui-mode-report.md`），裁决
+//!   登记在 `docs/adr/ADR-0054-ruler-bar-snap.md`（**Proposed**）；网格值取投影自己的
+//!   `bar_length_ticks`，⛔ 不在宿主重算拍号。
 //! - ⛔ **不证明"出声"**：`tests/rewind_sound.rs` 已经钉住"回 0 之后必须真的发声"，
 //!   本文件只断言**控制面**位置与日志（同一个 `EngineHost::seek` 入口，⛔ 不新造第二条）。
 //! - ⛔ **不证明"不改工程"**：这里没有 `UndoPort`（走带定位是会话运行态，
@@ -53,6 +56,7 @@ use yeban_app::host::{self, ProductionLoop};
 use yeban_app::scene::DemoScene;
 use yeban_app::ui::MainWindow;
 use yeban_engine::ring::TransportCommand;
+use yeban_ui_test_port::inspect::find_by_accessible_id;
 use yeban_ui_test_port::render::LivePort;
 use yeban_ui_test_port::{Permission, PointerButton, Size, UiTestPort as _};
 
@@ -153,6 +157,31 @@ impl Rig {
         self.port
             .dispatch_pointer_down(RULER, local_x, RULER_MID_Y, PointerButton::Left)
             .expect("Interactive 权限下标尺带必须可按下");
+        self.port
+            .dispatch_pointer_up(PointerButton::Left)
+            .expect("释放必须送达");
+    }
+
+    /// 在标尺带上真实拖一次：按下 `from_x` → 移到 `to_x` → 松手。
+    /// 移动事件的坐标是**窗口绝对坐标**（测试口的 `dispatch_pointer_move` 口径），
+    /// 因此用控件树的包围盒把局部 x 换算过去。
+    fn drag_ruler(&mut self, from_x: f64, to_x: f64) {
+        let bounds = self
+            .port
+            .tree()
+            .find_by_id(RULER)
+            .expect("控件树里必须有标尺带")
+            .bounds
+            .expect("标尺带必须有几何才谈得上拖动");
+        self.port
+            .dispatch_pointer_down(RULER, from_x, RULER_MID_Y, PointerButton::Left)
+            .expect("Interactive 权限下标尺带必须可按下");
+        self.port
+            .dispatch_pointer_move(
+                f64::from(bounds.x) + to_x,
+                f64::from(bounds.y) + RULER_MID_Y,
+            )
+            .expect("拖动必须送达");
         self.port
             .dispatch_pointer_up(PointerButton::Left)
             .expect("释放必须送达");
@@ -322,35 +351,156 @@ fn seeking_from_the_ruler_keeps_the_transport_state() {
     );
 }
 
+/// ⑦（`U-07 R1`）：线间点击 ⇒ 吸附到最近的小节线（平局向更晚一侧）。
+#[test]
+fn clicking_between_two_bars_snaps_to_the_nearest_one() {
+    let mut rig = Rig::new();
+    let bar_ticks = rig.view.borrow().bar_length_ticks;
+    let left = rig.bar_line_px(3);
+    let right = rig.bar_line_px(4);
+    let midpoint = (left + right) / 2.0;
+    rig.click_ruler(midpoint);
+    assert_eq!(
+        rig.position(),
+        4 * bar_ticks,
+        "两条小节线正中间 ⇒ 吸附到最近的一条（平局向更晚一侧，与 `bridge::snap_tick` 同一口径）"
+    );
+}
+
+/// ⑧（`U-07 R3`）：按住拖动 ⇒ 连续定位（down 一条 + move 一条），落点是移动后的那一小节。
+#[test]
+fn dragging_across_the_ruler_seeks_continuously() {
+    let mut rig = Rig::new();
+    let bar_ticks = rig.view.borrow().bar_length_ticks;
+    let from = rig.bar_line_px(2);
+    let to = rig.bar_line_px(7);
+    let journal_before = rig.journal_len();
+
+    rig.drag_ruler(from, to);
+
+    assert_eq!(
+        rig.position(),
+        7 * bar_ticks,
+        "拖动到第 7 条小节线 ⇒ 光标必须跟到第 7 小节（不是只响应按下点）"
+    );
+    assert_eq!(
+        rig.journal_len(),
+        journal_before + 2,
+        "一次按下 + 一次移动 = 两条走带命令（释放不重复发）"
+    );
+    assert_eq!(
+        rig.last_command(),
+        Some(TransportCommand::SeekTicks(7 * bar_ticks)),
+        "末条命令必须是移动后的定位"
+    );
+}
+
+/// ⑨（`U-07 R2`）：标尺的无障碍增减 / `SetValue` ⇒ 不为指针的"第 N 小节"入口。
+#[test]
+fn the_ruler_accessible_actions_seek_by_bar() {
+    let rig = Rig::new();
+    let bar_ticks = rig.view.borrow().bar_length_ticks;
+    let span = rig.view.borrow().bar_positions.len() as u64 * bar_ticks;
+    let handle = find_by_accessible_id(rig.ui(), RULER).expect("标尺必须可寻址");
+
+    handle.invoke_accessible_increment_action();
+    assert_eq!(rig.position(), bar_ticks, "增：从第 1 小节到第 2 小节");
+
+    handle.invoke_accessible_decrement_action();
+    assert_eq!(rig.position(), 0, "减：回到第 1 小节");
+
+    handle.set_accessible_value("5");
+    assert_eq!(rig.position(), 4 * bar_ticks, "第 5 小节 = tick 4 × 一小节");
+
+    let journal = rig.journal_len();
+    handle.set_accessible_value("not-a-bar");
+    assert_eq!(rig.position(), 4 * bar_ticks, "非数字 ⇒ 位置不动");
+    assert_eq!(rig.journal_len(), journal, "非数字 ⇒ 一条命令都不发");
+
+    handle.set_accessible_value("999");
+    assert_eq!(rig.position(), span, "越过网格右缘 ⇒ 夹在右缘");
+}
+
 // ===========================================================================
-// 纯函数侧：夹紧 / 拒绝的三条口径（不建窗口，⛔ 不需要平台）
+// 纯函数侧：夹紧 / 拒绝 / 吸附 / 步进（不建窗口，⛔ 不需要平台）
 // ===========================================================================
 
 /// 左端 = 工程起点：负的 x ⇒ 0（夹紧，⛔ 不回绕）。
 #[test]
 fn a_negative_column_seeks_to_the_start() {
-    assert_eq!(host::ruler_seek_tick(-250.0, 30, 65_280), Some(0));
-    assert_eq!(host::ruler_seek_tick(-0.5, 30, 65_280), Some(0));
+    assert_eq!(host::ruler_seek_tick(-250.0, 30, 65_280, 3_840), Some(0));
+    assert_eq!(host::ruler_seek_tick(-0.5, 30, 65_280, 3_840), Some(0));
 }
 
 /// 一个像素列覆盖 `[p×tpp, (p+1)×tpp)` ⇒ 取整方向与 `tick_to_px` 互逆。
+///
+/// 这里把小节长度传 `1`（吸附的恒等元）⇒ 只测像素列的**截断**口径，与吸附无关。
 #[test]
 fn the_column_is_truncated_like_the_projection_division() {
     // 同一列里的任意小数都得到同一个 tick（点在一列的左半边与右半边不该差一个 tick）。
-    assert_eq!(host::ruler_seek_tick(100.0, 30, u64::MAX), Some(3_000));
-    assert_eq!(host::ruler_seek_tick(100.9, 30, u64::MAX), Some(3_000));
-    assert_eq!(host::ruler_seek_tick(101.0, 30, u64::MAX), Some(3_030));
+    assert_eq!(host::ruler_seek_tick(100.0, 30, u64::MAX, 1), Some(3_000));
+    assert_eq!(host::ruler_seek_tick(100.9, 30, u64::MAX, 1), Some(3_000));
+    assert_eq!(host::ruler_seek_tick(101.0, 30, u64::MAX, 1), Some(3_030));
     // 缩放为 0 是外力写坏的属性：按 `max(1)` 处理而⛔ 不 panic。
-    assert_eq!(host::ruler_seek_tick(100.0, 0, u64::MAX), Some(100));
+    assert_eq!(host::ruler_seek_tick(100.0, 0, u64::MAX, 1), Some(100));
 }
 
 /// 右端 = 网格右缘；非有限 ⇒ `None`（不响应）。
 #[test]
 fn a_column_past_the_grid_clamps_and_a_non_finite_one_is_refused() {
-    assert_eq!(host::ruler_seek_tick(1e6, 30, 65_280), Some(65_280));
-    assert_eq!(host::ruler_seek_tick(f32::NAN, 30, 65_280), None);
-    assert_eq!(host::ruler_seek_tick(f32::INFINITY, 30, 65_280), None);
-    assert_eq!(host::ruler_seek_tick(f32::NEG_INFINITY, 30, 65_280), None);
+    assert_eq!(host::ruler_seek_tick(1e6, 30, 65_280, 3_840), Some(65_280));
+    assert_eq!(host::ruler_seek_tick(f32::NAN, 30, 65_280, 3_840), None);
+    assert_eq!(
+        host::ruler_seek_tick(f32::INFINITY, 30, 65_280, 3_840),
+        None
+    );
+    assert_eq!(
+        host::ruler_seek_tick(f32::NEG_INFINITY, 30, 65_280, 3_840),
+        None
+    );
+}
+
+/// ⑦ 的纯函数侧：线间点击 ⇒ 最近小节线；平局向更晚一侧（`bridge::snap_tick` 的口径）。
+#[test]
+fn a_click_between_bars_snaps_to_the_nearest_bar_and_ties_move_later() {
+    // 42 列 × 960 = 40320 = 第 10 与第 11 小节正中间（3840 tick 一小节）⇒ 平局向上。
+    assert_eq!(
+        host::ruler_seek_tick(42.0, 960, 345_600, 3_840),
+        Some(42_240)
+    );
+    // 41 列 = 39360，离前一条小节线更近。
+    assert_eq!(
+        host::ruler_seek_tick(41.0, 960, 345_600, 3_840),
+        Some(38_400)
+    );
+    // bar_length = 0 ⇒ 不吸附（防御坏投影值）。
+    assert_eq!(host::ruler_seek_tick(42.0, 960, 345_600, 0), Some(40_320));
+}
+
+/// ⑨ 的纯函数侧：`± steps × 一小节`，夹在 `[0, span]`，⛔ 不回绕。
+#[test]
+fn stepping_moves_whole_bars_and_clamps() {
+    assert_eq!(host::ruler_step_tick(0, 1, 3_840, 65_280), 3_840);
+    assert_eq!(host::ruler_step_tick(3_840, -1, 3_840, 65_280), 0);
+    assert_eq!(host::ruler_step_tick(0, -1, 3_840, 65_280), 0);
+    assert_eq!(host::ruler_step_tick(65_280, 1, 3_840, 65_280), 65_280);
+    // 一小节为 0 ⇒ 原地不动（与 `ruler_seek_tick` 的 `bar_length == 0` 同口径）。
+    assert_eq!(host::ruler_step_tick(1_000, 1, 0, 65_280), 1_000);
+    // 极端步数也不溢出（i128 中转）。
+    assert_eq!(host::ruler_step_tick(0, i32::MAX, 3_840, 65_280), 65_280);
+    assert_eq!(host::ruler_step_tick(0, i32::MIN, 3_840, 65_280), 0);
+}
+
+/// ⑨ 的纯函数侧：小节号 **1 起**；越界 / 溢出 ⇒ 右缘。
+#[test]
+fn a_bar_number_is_one_based_and_clamps_to_the_grid() {
+    assert_eq!(host::ruler_bar_tick(1, 3_840, 65_280), 0);
+    assert_eq!(host::ruler_bar_tick(5, 3_840, 65_280), 15_360);
+    // 0 起的小节号按"第 1 小节"处理（saturating_sub），⛔ 不回绕成巨大 tick。
+    assert_eq!(host::ruler_bar_tick(0, 3_840, 65_280), 0);
+    assert_eq!(host::ruler_bar_tick(18, 3_840, 65_280), 65_280);
+    assert_eq!(host::ruler_bar_tick(1_000, 3_840, 65_280), 65_280);
+    assert_eq!(host::ruler_bar_tick(u64::MAX, u64::MAX, 65_280), 65_280);
 }
 
 /// 网格右缘：溢出 ⇒ 饱和（真实工程到不了；⛔ 不回绕成小数）。

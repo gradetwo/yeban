@@ -806,6 +806,12 @@ export component MainWindow inherits Window {
     // 全在 `host::wire_ruler_seek`，与上面 `clip-drag-*` 同一条「界面零算术」纪律）。
     /// 点击小节 / 拍标尺：`(局部 x)`。
     callback ruler-seek(length);
+    /// 无障碍「上一 / 下一小节」：`(步数)` —— 落点是同一个 `host::wire_ruler_seek`。
+    callback ruler-step(int);
+    /// 无障碍「定位到第 N 小节」：`(小节号文本，1 起)`。
+    callback ruler-seek-bar(string);
+    /// 点击章节卡片 ⇒ 走带定位到该段起点：`(段落下标)`。
+    callback section-seek(int);
     // ⭐ 任务单 `#283`：Session View 的场景按钮 ⇒ **真的**把这次启动送到引擎
     // （`host::wire_scene_launch` → `EngineHost::queue_scene_launch`）。界面只报场景下标：
     // 量化档 / tempo 覆盖 / 拍号由宿主从**当前投影**现读，⛔ 界面不拼这些语义。
@@ -1554,9 +1560,20 @@ export component MainWindow inherits Window {
                     clip-drag-cancel() => {
                         root.clip-drag-cancel();
                     }
+                    // ⭐ 章节卡片点击 / 无障碍默认动作 ⇒ 原样上抛下标，宿主查段起点并 seek。
+                    section-seek(section_index) => {
+                        root.section-seek(section_index);
+                    }
                     // ⭐ 标尺点击 ⇒ 原样上抛局部 x，宿主换算成 tick 并 seek。
                     ruler-seek(x) => {
                         root.ruler-seek(x);
+                    }
+                    // ⭐ 无障碍「上 / 下一小节」与「第 N 小节」⇒ 同一个宿主入口。
+                    ruler-step(steps) => {
+                        root.ruler-step(steps);
+                    }
+                    ruler-seek-bar(bar) => {
+                        root.ruler-seek-bar(bar);
                     }
                     clip-labels: root.clip-labels;
                     clip-positions: root.clip-positions;

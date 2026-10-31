@@ -9,7 +9,7 @@
 //! | 层 | 位置 | 证的事 |
 //! | :--- | :--- | :--- |
 //! | A 纯解析 | `src/input.rs` 的 `ctrl_alt_a_is_the_ai_drawer_entry_and_does_not_disturb_its_neighbours` | `Cmd/Ctrl+Alt+A` 解出 `ToggleAiDrawer`；`Cmd` 侧同解；邻居仍放行；文本框放行 |
-//! | B 活窗口（本文件） | `build_live_ui_with` 装**生产同一个** `host::wire_keys` | ① 按键 ⇒ `ai-drawer-open` **真的翻转**（端到端）；② 换计数器后 ⇒ 回调**恰好**一次；③ 邻居⇒ 不消费且计数不动 |
+//! | B 活窗口（本文件） | `build_live_ui_with` 装**生产同一个** `host::wire_keys` | ① 按键 ⇒ `ai-drawer-open` **真的翻转**（端到端）；② 换计数器后 ⇒ 回调**恰好**一次；③ 邻居⇒ 不消费且计数不动；④ `Escape` ⇒ 收起开着的抽屉（`U-11`），关上之后如实放行 |
 //!
 //! ## 变异表（每条都写明它应当让谁变红）
 //!
@@ -91,4 +91,42 @@ fn ctrl_alt_a_is_a_second_entry_to_the_ai_drawer_button_callback() {
         );
     }
     assert_eq!(*hits.borrow(), 1, "放行的组合不得触发抽屉回调");
+}
+
+/// `U-11`（`~/zimmer-ui-mode-report.md`）：抽屉开着时 `Escape` 收起它。
+///
+/// 这是**面板收尾**（与时光机 / 导出弹窗同一条 `Action::Cancel` 链），⛔ 不是"放弃 AI
+/// 提案"—— 拒绝仍只有 `musical-pr-reject-button`。判据落在**生产同一个** `wire_keys`
+/// 上：抽屉关着时 `Escape` 必须如实放行（`tests/live_ui_mcp.rs` 对这条放行也有断言）。
+#[test]
+fn escape_closes_the_open_ai_drawer_and_then_passes_through() {
+    let project = filled_project();
+    let ui = live::build_live_ui_with(
+        &project,
+        &live::LiveWiringOptions {
+            permission: Permission::Interactive,
+            ..live::LiveWiringOptions::default()
+        },
+    )
+    .expect("真实界面 + Tier-1 端口");
+    let window = slint::ComponentHandle::clone_strong(ui.ui());
+
+    // 打开抽屉走**唯一写者**（与按钮 / 快捷键同一条回调），⛔ 不直接 set 属性 ——
+    // 否则判据测到的只是"属性可写"，与真实打开路径无关。
+    window.invoke_toggle_ai_drawer();
+    assert!(window.get_ai_drawer_open(), "前置：抽屉应当已展开");
+
+    assert!(
+        window.invoke_key_action("\u{1b}".into(), false, false, false, false),
+        "抽屉开着时 `Escape` 必须被消费（面板收尾不冒泡）"
+    );
+    assert!(
+        !window.get_ai_drawer_open(),
+        "`Escape` 必须收起抽屉（纯视图态）"
+    );
+
+    assert!(
+        !window.invoke_key_action("\u{1b}".into(), false, false, false, false),
+        "没有可收尾的对象时 `Escape` 如实放行（与接线前逐位相同）"
+    );
 }

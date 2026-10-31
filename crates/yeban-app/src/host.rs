@@ -5983,35 +5983,76 @@ pub fn wire_clip_scope(ui: &MainWindow, view: Rc<RefCell<ViewState>>, undo: Opti
 
 /// 标尺点击的**目标 tick**（纯函数）：标尺带的局部 x ⇒ 走带位置。
 ///
-/// 三条口径（每一条都是决定）：
+/// 四条口径（每一条都是决定）：
 ///
 /// - **同一份缩放**：`ticks_per_pixel` 就是投影用的那一个（[`roll_ticks_per_pixel`]，与
-///   `bridge::tick_to_px` 同源）⇒ "画在哪一格"与"落到哪一 tick"是同一个整数网格。
-///   反向用 [`crate::bridge::px_to_tick`]（**向下取整**）：一个像素列 `p` 覆盖
-///   `[p×tpp, (p+1)×tpp)` 这段 tick，因此 `tick_to_px(本函数的结果) == p` 恒成立
-///   （判据把这条往返钉住 —— 点在第 100 列，光标就停在第 100 列，不多不少一列）；
+///   `bridge::tick_to_px` 同源）⇒ "画在哪一格"与"吸附前的 tick"是同一个整数网格；
+/// - **小节吸附**（`U-07 R1`）：像素列先换成 tick，再交给 [`crate::bridge::snap_tick`]
+///   吸附到**最近的小节线**（与铅笔 / 剪刀 / 移动共用**同一个**吸附实现，平局向更晚
+///   的一侧取整）。`bar_length_ticks == 0` ⇒ 不吸附（防御坏投影值）。点击列正好落在
+///   小节线上时吸附是恒等变换，因此"画的那一列 = 停下的那一列"在**小节线**上仍成立；
 /// - **左端 = 工程起点**：负的 x ⇒ `0`（夹紧；`u64` 没有负数，⛔ 不回绕）；
-/// - **右端 = 投影网格的右缘** `span_ticks`：点在最后一条小节线之外 ⇒ 停在那里，
-///   ⛔ 不把光标送去一个画面上没有网格参照的地方（那里连小节线都没画）。
+/// - **右端 = 投影网格的右缘** `span_ticks`：吸附之后再夹右缘，点在最后一条小节线
+///   之外 ⇒ 停在那里，⛔ 不把光标送去一个画面上没有网格参照的地方。
 ///
 /// 非有限的 `x` ⇒ `None` = **不响应**（⛔ 不把 NaN 当成"往右无穷远"，与
 /// [`clip_drag_target_tick`] 对非有限位移同款处理）。
 ///
-/// ⚠ **不吸附**：小节 / 拍吸附在 Normative 规范里没有定义（`Desktop UI/UX` 那份是
-/// 参考件、非绑定），因此这里如实做"逐 tick 定位"。该语义缺口登记为
-/// `docs/ledger/app-ruler-seek-notes.md` 的 **needs R1**，⛔ 不私自发明网格。
+/// ⚠ **吸附语义的裁决**：Normative 两份文档没有逐字规定"点标尺是否吸附"；本实现按
+/// 负责人任务（`~/zimmer-ui-mode-report.md` 的 `U-07 R1`）落"最近小节线"，并登记
+/// `docs/adr/ADR-0054-ruler-bar-snap.md`（**Proposed**，待人类批准）。网格值取投影自己的
+/// `bar_length_ticks`（⛔ 不在宿主重算拍号）。
 #[must_use]
-pub fn ruler_seek_tick(px: f32, ticks_per_pixel: u64, span_ticks: u64) -> Option<u64> {
+pub fn ruler_seek_tick(
+    px: f32,
+    ticks_per_pixel: u64,
+    span_ticks: u64,
+    bar_length_ticks: u64,
+) -> Option<u64> {
     if !px.is_finite() {
         return None;
     }
     // 向下取整到像素列（与 `tick_to_px` 的整数除法互为逆运算）。`f32 → u32` 的 `as` 既
     // **截断**又**饱和**：负数已被上面的 `max(0.0)` 收编，而一个天真的巨大 x 落在
-    // `u32::MAX` 列上 —— 那一列必然越过任何真实网格，于是下面两条口径把它夹回右缘。
+    // `u32::MAX` 列上 —— 那一列必然越过任何真实网格，于是吸附 + 夹紧把它收回右缘。
     let column = px.max(0.0) as u32;
     // 乘积溢出 `u64` 只可能来自那种饱和列（窗口宽度到不了）⇒ 视作"在最右缘之右"。
     let tick = crate::bridge::px_to_tick(column, ticks_per_pixel.max(1)).unwrap_or(u64::MAX);
-    Some(tick.min(span_ticks))
+    let snapped = crate::bridge::snap_tick(tick, bar_length_ticks);
+    Some(snapped.min(span_ticks))
+}
+
+/// 无障碍「上一 / 下一小节」的目标 tick（纯函数）：`current ± steps × bar_length_ticks`，
+/// 夹在 `[0, span_ticks]`（⛔ 不回绕、⛔ 不越过投影网格）。
+///
+/// `bar_length_ticks == 0` ⇒ 原地不动（防御坏投影值，与 [`ruler_seek_tick`] 同一口径）。
+/// 溢出用 `i128` 中转：`steps` 是 `i32`、`current` / `bar` 是 `u64`，三者的乘积在
+/// `i128` 里一定装得下（`2^32 × 2^64 = 2^96 < 2^127`）⇒ 不需要饱和运算。
+#[must_use]
+pub fn ruler_step_tick(current: u64, steps: i32, bar_length_ticks: u64, span_ticks: u64) -> u64 {
+    if bar_length_ticks == 0 {
+        return current.min(span_ticks);
+    }
+    let target = i128::from(current) + i128::from(steps) * i128::from(bar_length_ticks);
+    if target <= 0 {
+        return 0;
+    }
+    let Ok(target) = u64::try_from(target) else {
+        return span_ticks;
+    };
+    target.min(span_ticks)
+}
+
+/// 无障碍 `SetValue`（"定位到第 N 小节"）的目标 tick（纯函数）。
+///
+/// 小节号是**1 起**（第 1 小节 = tick 0，与界面标尺的读数一致）。乘积溢出 / 越过网格右缘
+/// ⇒ `span_ticks`（饱和，⛔ 不回绕）。
+#[must_use]
+pub fn ruler_bar_tick(bar_number: u64, bar_length_ticks: u64, span_ticks: u64) -> u64 {
+    bar_number
+        .saturating_sub(1)
+        .checked_mul(bar_length_ticks)
+        .map_or(span_ticks, |tick| tick.min(span_ticks))
 }
 
 /// 投影网格的**右缘** tick（纯函数）：`bar_positions.len()` × 一小节的 tick。
@@ -6027,52 +6068,142 @@ pub fn ruler_span_ticks(bar_lines: usize, bar_length_ticks: u64) -> u64 {
         .unwrap_or(u64::MAX)
 }
 
-/// 把**标尺点击**接到引擎的走带定位上（`arrangement-ruler` 的唯一点击源）。
+/// 走带定位的**唯一提交口**（标尺点击 / 无障碍步进 / 章节跳转共用）。
 ///
-/// | 环节 | 事实 |
-/// | :--- | :--- |
-/// | 命中 | `ui/workspace/arrangement_view.slint` 标尺带里的零像素 `TouchArea` |
-/// | 上报 | `ruler-seek(x)` —— 只报**局部像素**（⛔ 界面零算术） |
-/// | 换算 | [`ruler_seek_tick`]（唯一的 px→tick 落点） |
-/// | 提交 | [`EngineHost::seek`] = 既有 `TransportCommand::SeekTicks` 的唯一发送口（与 `#227` 回起点同一条路） |
-/// | 回写 | [`apply_transport`] —— 走带光标 / 时间码的**唯一**写者，读数取自引擎而不是界面 |
+/// ⭐ `#212` 同款两道防线：这些回调与 `on_toggle_play` 共用同一个引擎 `Rc`，
+/// 借不到就**降级**（一行 eprintln，走带与界面一位不动），⛔ 不 panic、⛔ 不 abort。
+/// 作用域纪律：**先放借、再碰界面**（`apply_transport` 写三个属性）。
+fn commit_seek(ui: &MainWindow, engine: &Rc<RefCell<EngineHost>>, tick: u64, source: &str) {
+    let Ok(mut engine) = engine.try_borrow_mut() else {
+        eprintln!("[yeban-app] 忽略 {source}：引擎正被同一线程借用（重入）⇒ 本次定位无效");
+        return;
+    };
+    let reading = engine.seek(tick);
+    drop(engine);
+    apply_transport(ui, reading);
+}
+
+/// 把**标尺点击 / 无障碍定位**接到引擎的走带定位上（`arrangement-ruler` 的全部入口）。
+///
+/// | 入口 | 回调 | 换算 |
+/// | :--- | :--- | :--- |
+/// | 指针按下 / 按住拖动（`U-07 R3`） | `ruler-seek(x)` —— 只报**局部像素** | [`ruler_seek_tick`] |
+/// | 屏读器增减（`U-07 R2`） | `ruler-step(steps)` —— 只报**小节步数** | [`ruler_step_tick`] |
+/// | 屏读器 `SetValue`（`U-07 R2`） | `ruler-seek-bar(bar)` —— 只报**小节号文本** | [`ruler_bar_tick`] |
+///
+/// 三条都落 [`commit_seek`] ⇒ `EngineHost::seek` 是**唯一**的 `TransportCommand::SeekTicks`
+/// 发送口（与 `#227` 回起点同一条路）；[`apply_transport`] 是走带光标 / 时间码的**唯一**写者。
 ///
 /// ⛔ 这里**不碰工程、不碰撤销栈**：定位是会话运行态（`MODEL-ISO-001` 的第二层），
 /// 一次 `Op` 都不提交 ⇒ `commit_count` / `undoable` / `projectDigest` 全部 Δ0。
 ///
 /// 两个 `Rc` 与产品装配**同源**：`engine` 是 `wire_transport` / `wire_keys` 拿的**同一个**
 /// `Rc<RefCell<EngineHost>>`（因此"界面点标尺"与"键位回起点"作用在同一个走带上），
-/// `view` 是 `wire_clip_scope` / `wire_scene_launch` 拿的**同一个**活投影。
+/// `view` 是 `wire_clip_scope` / `wire_scene_launch` 拿的**同一个**活投影
+/// （网格右缘 / 小节长度都从它现读，换工程 / 换拍号之后跟着换）。
 pub fn wire_ruler_seek(
     ui: &MainWindow,
     engine: Rc<RefCell<EngineHost>>,
     view: Rc<RefCell<ViewState>>,
 ) {
+    // ① 指针：down 与按住拖动的每一次 move 都走这条。
     let weak = ui.as_weak();
+    let click_engine = Rc::clone(&engine);
+    let click_view = Rc::clone(&view);
     ui.on_ruler_seek(move |x: f32| {
         let Some(ui) = weak.upgrade() else {
             debug_assert!(false, "MainWindow 在回调执行期间被销毁");
             return;
         };
-        // 网格右缘来自**投影自己**的两个读数（小节线条数 × 一小节 tick），⛔ 不在这里
-        // 重算 `bar_count`（那条公式在 `bridge` 里，重算一遍就是第二个事实源）。
-        let span = {
+        // 网格右缘与小节长度来自**投影自己**的两个读数，⛔ 不在这里重算 `bar_count`
+        // 或拍号（那两条公式在 `bridge` 里，重算一遍就是第二个事实源）。
+        let (span, bar) = {
+            let state = click_view.borrow();
+            (
+                ruler_span_ticks(state.bar_positions.len(), state.bar_length_ticks),
+                state.bar_length_ticks,
+            )
+        };
+        let Some(tick) = ruler_seek_tick(x, roll_ticks_per_pixel(&ui), span, bar) else {
+            return;
+        };
+        commit_seek(&ui, &click_engine, tick, "ruler-seek");
+    });
+
+    // ② 屏读器「上 / 下一小节」：当前位置从**引擎**现读，⛔ 不从界面读。
+    let weak = ui.as_weak();
+    let step_engine = Rc::clone(&engine);
+    let step_view = Rc::clone(&view);
+    ui.on_ruler_step(move |steps: i32| {
+        let Some(ui) = weak.upgrade() else {
+            debug_assert!(false, "MainWindow 在回调执行期间被销毁");
+            return;
+        };
+        let (span, bar) = {
+            let state = step_view.borrow();
+            (
+                ruler_span_ticks(state.bar_positions.len(), state.bar_length_ticks),
+                state.bar_length_ticks,
+            )
+        };
+        let current = {
+            let engine = step_engine.borrow();
+            engine.transport().position_ticks
+        };
+        let tick = ruler_step_tick(current, steps, bar, span);
+        commit_seek(&ui, &step_engine, tick, "ruler-step");
+    });
+
+    // ③ 屏读器 `SetValue`：「定位到第 N 小节」（1 起）。解析失败 ⇒ 一条命令都不发。
+    let weak = ui.as_weak();
+    let bar_engine = Rc::clone(&engine);
+    let bar_view = Rc::clone(&view);
+    ui.on_ruler_seek_bar(move |value: SharedString| {
+        let Some(ui) = weak.upgrade() else {
+            debug_assert!(false, "MainWindow 在回调执行期间被销毁");
+            return;
+        };
+        let Ok(bar_number) = value.trim().parse::<u64>() else {
+            return;
+        };
+        let (span, bar) = {
+            let state = bar_view.borrow();
+            (
+                ruler_span_ticks(state.bar_positions.len(), state.bar_length_ticks),
+                state.bar_length_ticks,
+            )
+        };
+        let tick = ruler_bar_tick(bar_number, bar, span);
+        commit_seek(&ui, &bar_engine, tick, "ruler-seek-bar");
+    });
+}
+
+/// 章节卡片 ⇒ 走带定位到该段起点（`~/zimmer-ui-mode-report.md` 的 `U-05`）。
+///
+/// 与 [`wire_ruler_seek`] **同一条纪律**：界面只报**段落下标**（⛔ 界面零算术），
+/// 起点 tick 从活投影的 [`crate::bridge::SectionView::start_tick`] 现读；
+/// 落点同样是 [`commit_seek`]（唯一的 `SeekTicks` 入口），⛔ 不碰工程 / 撤销栈。
+pub fn wire_section_seek(
+    ui: &MainWindow,
+    engine: Rc<RefCell<EngineHost>>,
+    view: Rc<RefCell<ViewState>>,
+) {
+    let weak = ui.as_weak();
+    ui.on_section_seek(move |index: i32| {
+        let Some(ui) = weak.upgrade() else {
+            debug_assert!(false, "MainWindow 在回调执行期间被销毁");
+            return;
+        };
+        let Ok(index) = usize::try_from(index) else {
+            return;
+        };
+        let Some(tick) = ({
             let state = view.borrow();
-            ruler_span_ticks(state.bar_positions.len(), state.bar_length_ticks)
-        };
-        let Some(tick) = ruler_seek_tick(x, roll_ticks_per_pixel(&ui), span) else {
+            state.sections.get(index).map(|section| section.start_tick)
+        }) else {
             return;
         };
-        // ⭐ `#212` 同款两道防线：这个回调与 `on_toggle_play` 共用同一个引擎 `Rc`，
-        // 借不到就**降级**（一行 eprintln，走带与界面一位不动），⛔ 不 panic、⛔ 不 abort。
-        let Ok(mut engine) = engine.try_borrow_mut() else {
-            eprintln!("[yeban-app] 忽略 ruler-seek：引擎正被同一线程借用（重入）⇒ 本次点击无效");
-            return;
-        };
-        let reading = engine.seek(tick);
-        // ⭐ 作用域纪律：**先放借、再碰界面**（`apply_transport` 写三个属性）。
-        drop(engine);
-        apply_transport(&ui, reading);
+        commit_seek(&ui, &engine, tick, "section-seek");
     });
 }
 
@@ -8920,25 +9051,27 @@ fn apply_action(
         // `Escape` = **收尾**：取消当前手势（`ADR-0004` S1 的纵向拖拽 / `ADR-0005` 的
         // 推子与声相），或关闭模态面板（时光机与导出设置弹窗；`[UI-A11Y-003]` §7.3）。
         //
-        // 七个来源各自独立、各自有唯一清零点，因此这里**都问一遍**（任一命中即消费）：
+        // 八个来源各自独立、各自有唯一清零点，因此这里**都问一遍**（任一命中即消费）：
         // 1. 时光机开着 ⇒ 落 [`UiAction::CloseUndoTree`]（**只改界面运行态**，不碰工程）；
         // 2. 导出设置弹窗开着 ⇒ 落窗口回调 `close-export-wav`（**只改视图态**，⛔ 不落盘、
         //    ⛔ 不碰工程）；
-        // 3. 纵向拖拽在手 ⇒ 落 [`cancel_track_height_drag`]（写回起点高度）；
-        // 4. 混音手势在手 ⇒ 落窗口回调 `mixer-cancel-gesture` → [`cancel_mixer_gesture`]
+        // 3. AI 提案抽屉开着 ⇒ 落窗口回调 `toggle-ai-drawer`（**只改视图态**，⛔ 不拒绝提案、
+        //    ⛔ 不碰工程）；`U-11` 的最小修复见这条；
+        // 4. 纵向拖拽在手 ⇒ 落 [`cancel_track_height_drag`]（写回起点高度）；
+        // 5. 混音手势在手 ⇒ 落窗口回调 `mixer-cancel-gesture` → [`cancel_mixer_gesture`]
         //    （写回起点音量 / 声相）；
-        // 5. `[UI-NOTE-003]` 卷帘音符移动手势在手 ⇒ 落 [`cancel_note_drag`]
+        // 6. `[UI-NOTE-003]` 卷帘音符移动手势在手 ⇒ 落 [`cancel_note_drag`]
         //    （**丢弃草稿**；拖动期从未写进工程 ⇒ ⛔ 不提交、⛔ 不重投影）；
-        // 6. `[UI-NOTE-003]` 卷帘**力度**手势在手 ⇒ 落 [`cancel_velocity_drag`]
+        // 7. `[UI-NOTE-003]` 卷帘**力度**手势在手 ⇒ 落 [`cancel_velocity_drag`]
         //    （同上：只丢弃草稿；两个卷帘手势互斥，但两条清零各自独立 ⇒ 谁也不会漏收尾）；
-        // 7. 编曲**剪辑平移**手势在手 ⇒ 落 [`cancel_clip_drag`]（同上：只丢弃草稿）。
+        // 8. 编曲**剪辑平移**手势在手 ⇒ 落 [`cancel_clip_drag`]（同上：只丢弃草稿）。
         //
-        // 顺序是**决定**，不是巧合：模态面板在最前面，因此"手势还在手"时按 `Escape`
-        // 先关模态（与 `[UI-A11Y-003]` 的模态语义同向）。七条各自独立：关掉时光机
+        // 顺序是**决定**，不是巧合：模态 / 面板在最前面，因此"手势还在手"时按 `Escape`
+        // 先关面板（与 `[UI-A11Y-003]` 的模态语义同向）。八条各自独立：关掉时光机
         // **不会**顺带取消手势（用户还要按第二次 `Escape`），没有手势在手也不会把
         // 关闭动作算作"已收尾"。
         //
-        // 七条都没有命中时返回 `false`（照旧放行给焦点系统）—— 与 `Escape` 接线之前
+        // 八条都没有命中时返回 `false`（照旧放行给焦点系统）—— 与 `Escape` 接线之前
         // 的行为逐位相同。这里**没有**新增 `Action` 变体：`Action::Cancel` 本来就在
         // 策略表里（`input.rs` 的 `Key::Escape => Resolution::Action(Action::Cancel)`），
         // 它此前只是没有落地实现（`action_has_implementation` 把它列在未实现里）。
@@ -8973,6 +9106,18 @@ fn apply_action(
             // **不**写盘、**不**碰工程 —— 关闭是纯视图态（与那条回调逐字同语义）。
             if ui.get_export_wav_open() {
                 ui.invoke_close_export_wav();
+                return true;
+            }
+            // ⭐ `U-11`（`~/zimmer-ui-mode-report.md`）：AI 提案抽屉**开着**时 `Escape`
+            // 应当像其余面板一样收起来。落点**只能是**界面回调：`on_toggle_ai_drawer`
+            // 是走带按钮与 `Cmd/Ctrl+Alt+A` 的**同一个**实现（`ai-drawer-open` 的单写者）
+            // ⇒ 键盘 / 鼠标 / 屏读器不可能分叉。
+            //
+            // ⚠ 这只关**面板**（视图态），⛔ **不是**"放弃 AI 提案"：提案仍留在队列里，
+            // 拒绝只有可点等价物 `musical-pr-reject-button`（`Action::Cancel` 的文档
+            // 仍保留这条裁决）。关抽屉不碰工程、不进撤销栈。
+            if ui.get_ai_drawer_open() {
+                ui.invoke_toggle_ai_drawer();
                 return true;
             }
             let height = cancel_track_height_drag(ui, undo);
