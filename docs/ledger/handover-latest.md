@@ -31,6 +31,12 @@
   `completed`（无 `in_progress`）；engine 腿 22:48:33→22:53:21，守卫 `running 16 tests` 全 ok（窗口臂 22:50:51），
   `FAILED` 0；ui-mcp 腿 22:48:33→22:53:20，守卫 `running 5 tests` 全 ok（22:53:09），`FAILED` 0；
   `macos`／`windows` 本次真跑；`rust (workspace 全量)` 按 plan `skipped` —— ⛔ 不计为该腿的绿。
+  之后主干又被混音台线推进：**代码面判决**在 merge `aa9aff6c` / `41143113348`（app 腿 32m17s，
+  `Running tests/` **250**／`test result:` **257**／`FAILED` **0**，`mixer_fader_double_click` 在场两次）；
+  本批台账＋合流 `0cfe4189` / `41154777536` 是**空绿**（plan 空集 ⇒ 四条 rust 腿全 `skipped`，
+  只有 deny/checks/lockfile 真跑）⇒ ⛔ 不构成代码面验证，代码内容与 `aa9aff6c` 相同。
+- **两线在飞（⛔ 未读回＝pending）**：s15 `line/s15-midi-io-guard` @ `c66bc448` / run `41155049220`；
+  s16 `line/s16-theory-guard` / run `41155447276`。读数与本地证据见台账 §18.7。
 - **纪律再证**：一次 `gh run view --json` 报 run 级 `completed success` 时，`windows` job 仍在
   `in_progress` ⇒ 判绿必须**逐 job 看 `completedAt`**；`macos`/`windows` 因 plan 而 `skipped` **不是绿**。
 - **本地绿 ≠ 编译过**：ui-mcp 补界的三处 src 改动**本机没编译**（依赖 `yeban-mcp`，CI-only 家族）；

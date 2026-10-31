@@ -16503,6 +16503,8 @@ helper 里 ⇒ 必须不认（防假绿）。两条臂在旧实现上都会失�
 | engine 窗口重写线 `line/s13-engine-guard-window` @ `3ca82288` | `41135850531` | **success** —— `rust (yeban-engine)` 22:06:46→**22:12:30**（5m44s）；`Running tests/assertion_bounds_audit.rs` 在场且 `the_window_is_the_function_body_not_a_fixed_line_count ... ok`；`Running` **1,092** ／ `test result: ok` **1,075** ／ `FAILED` **0** |
 | ui-mcp 新守卫线 `line/s14-ui-mcp-guard` @ `a478f2a8` | `41136205024` | **success** —— `rust (yeban-ui-mcp)` 22:09:50→**22:15:32**（5m42s）真跑；守卫在 **22:15:26** 运行、五条判据逐名 `ok`；`FAILED` **0**；`macos`/`windows` 按 plan 跳过（⛔ 不算绿） |
 | 合流 merge `145c261b` 推主干（s14＋s13＋`origin/main`） | `41140491576` | **绿**（`conclusion=success`，11 个作业逐个 `completed`，无 `in_progress`）：`rust (yeban-engine)` 22:48:33→22:53:21 真跑，守卫二进制 `running 16 tests` 全 `ok`（含窗口臂 `the_window_is_the_function_body_not_a_fixed_line_count ... ok`，22:50:51），`FAILED` 0；`rust (yeban-ui-mcp)` 22:48:33→22:53:20 真跑，守卫 `running 5 tests` 全 `ok`（22:53:09），`FAILED` 0；`macos`/`windows` 本次未跳过（22:48:33→23:08:32 / 23:27:59）；`rust (workspace 全量)` 按 plan `skipped` —— 该腿⛔ 不算绿 |
+| 混音台线 merge `aa9aff6c` 推主干（**代码面判决**） | `41143113348` | **绿** —— `rust (yeban-app)` 23:13:30→**23:45:47**（32m17s）真跑：`Running tests/` **250** ／ `test result:` **257** ／ `FAILED` **0**；`tests/mixer_fader_double_click.rs` 在场并两次运行（`test` 与 `test (合并特性)`）；`windows` 23:13:22→23:52:03、`macos` →23:42:07 真跑 |
+| 台账批 `5a4c3ba5`＋合流 `0cfe4189` 推主干（**纯文档**） | `41154777536` | **空绿** —— `plan` 返回空 crate 集 ⇒ `rust (workspace 全量)`／`rust (${{matrix.crate}})`／`windows`／`macos` 四条腿全部 `skipped`；`deny` 01:23:08→01:24:07、`checks` 01:23:55→01:25:15、`lockfile` 01:23:33→01:23:53 真跑。⛔ **不构成对 `0cfe4189` 代码面的验证** —— 其代码内容与 `aa9aff6c` 逐字相同，判决由上一行承接 |
 
 > ⚠ **run 级 success ≠ 每个作业都跑完**：本批一次实测到 `gh run view --json` 报
 > `completed success` 而 `windows` 作业仍在 `in_progress`。判绿必须逐 job 看 `completedAt`，
@@ -16526,7 +16528,29 @@ helper 里 ⇒ 必须不认（防假绿）。两条臂在旧实现上都会失�
 ### §18.6 下一单
 
 同一口径下仍未覆盖的 crate（读数：`crates/*/{src,tests}` 里断言含 `.all(` 的文件数）：
-`yeban-midi-io`（2 文件，`windows(2).all` 形态，需 render 那份的窗口界）、`yeban-ui-test-port`
-（1 文件）、`yeban-decode`（1 文件，但 `decode.rs` 内**自带**一段 R102/R109/R118 的 40 行窗口
-自检 ⇒ 若要统一口径，应先评估"内嵌守卫"是否要迁移成常驻文件）。创作缺口仍全在人类裁决
+`yeban-midi-io`（**已开线 s15**，见 §18.7）、`yeban-ui-test-port`
+（1 文件，3 处断言站点**均已自带界**：`!family.is_empty()`／`mask_rects.len() == 3` ⇒ 加守卫是纯防回归，
+但该 crate 依赖 slint，本机不可编译 ⇒ 只能 CI 验证）、`yeban-decode`（1 文件，但 `decode.rs` 内**自带**
+一段 R102/R109/R118 的 40 行窗口自检 ⇒ 若要统一口径，应先评估"内嵌守卫"是否要迁移成常驻文件）。
+`yeban-theory` **已开线 s16**（见 §18.7）。创作缺口仍全在人类裁决
 （`ADR-0042` G8j／`ADR-0047`..`0050`／`ADR-0004` Q13／`ADR-0053`）。
+
+### §18.7 第十四批续：s15／s16 两线（在飞，判决待读回）
+
+| 线 | tip | run | 状态 |
+| :--- | :--- | :--- | :--- |
+| s15 `line/s15-midi-io-guard` | `c66bc448` | `41155049220` | **queued** —— 推送时在飞，判决未读回 |
+| s16 `line/s16-theory-guard` | `8b5fc69a` | `41155447276` | **queued** —— 推送时在飞，判决未读回 |
+
+- **s15 读数（守卫自报）**：`yeban-midi-io` **3 个被扫文件 / 2 个站点 / 0 取反 / 0 allowlist / 无界 0**。
+  守卫抓到 `src/lib.rs:123` 的 `ticks.windows(2).all(..)` **无界**（元素 < 2 时恒真）⇒ 已补
+  `assert_eq!(ticks.len(), 8)`；`src/input.rs:582` 前面本来就有 `assert_eq!(ticks.len(), 16)` ⇒ 有界。
+  本地：守卫 5/5、`cargo test -p yeban-midi-io` **18+5+3** 全绿、clippy/fmt/light 通过。
+- **s16 读数（守卫自报）**：`yeban-theory` **16 个被扫文件 / 15 个站点 / 0 取反 / allowlist 5 / 无界 0**。
+  新守卫抓到 8 处无界 ⇒ **3 处补界**（`drum.rs` 的 `hits_in_bar` 切片非空、摇摆判据 `len >= 2`；
+  `genre.rs` 的流派 `rule.id` 非空）＋ **5 条生产 `debug_assert` 登记例外**（`drum.rs` 4 条、`rhythm.rs` 1 条）：
+  它们的集合**合法为空/单元素**（`onsets_per_bar = 0` 是合法输入 ⇒ `pattern(..)` 返回空模式），
+  性质本就是"相邻对"约束 ⇒ 加 `len() >= 2` 会把合法输入判成缺陷。本地：守卫 5/5、
+  `cargo test -p yeban-theory` **243+5+7+7+44+3+3 = 312** 全绿、clippy/fmt/light 通过。
+- ⚠ **两条 src 改动都没有本地 CI 之外的证据**：s15 走 `rust (yeban-midi-io)` 腿、s16 走
+  `rust (yeban-theory)` 腿；判决回来前一律记 **pending**。
