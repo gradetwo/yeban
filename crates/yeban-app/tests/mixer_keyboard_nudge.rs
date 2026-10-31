@@ -351,6 +351,16 @@ fn cmd_ctrl_alt_up_down_moves_the_selected_tracks_fader_and_labels_it() {
         (-3.0_f32).to_bits()
     );
     assert_eq!(string_column(&window.get_track_volumes())[0], "-3.0");
+    // ⭐ 起点把**整列**读数抄下来：邻居那条判据之后比的是"同一列的起点值"，
+    // ⛔ 不替夹具猜数字（上一次 CI 红在猜了个 `0.0` —— 第二条轨的真实读数是 `-6.0`,
+    // 那是 `yeban_model::samples::filled_project()` 里 `Bass` 的 `volume_db`,
+    // 与键盘微调这件事毫无关系）。
+    let labels_at_start = string_column(&window.get_track_volumes());
+    assert_eq!(
+        labels_at_start.len(),
+        3,
+        "夹具的通道条数（有界：改了 `filled_project()` 的轨数时**这里先红**，而不是邻居那条莫名红）: {labels_at_start:?}"
+    );
     assert_eq!(port.display().undoable, 0);
     // ⭐ `commit_count` 的口径**含那一条根提交**（`src/undo.rs` 的判据
     // `a_fresh_port_has_no_history` 用**同一个夹具**（`filled_project()` + `UndoSession::open`）
@@ -390,9 +400,22 @@ fn cmd_ctrl_alt_up_down_moves_the_selected_tracks_fader_and_labels_it() {
     );
     assert!(!window.get_mixer_drag_active(), "键盘这一路不留混音手势");
 
-    // 邻居不受影响（作用域 = 选中的那一条）。
+    // 邻居不受影响（作用域 = 选中的那一条）：逐条比**起点那一列**，⛔ 不猜夹具的值。
     let others = string_column(&window.get_track_volumes());
-    assert_eq!(others[1], "0.0", "未选中的轨一格都没动");
+    assert_eq!(
+        others.len(),
+        labels_at_start.len(),
+        "按一次键不许改变通道条数"
+    );
+    let moved: Vec<usize> = (1..others.len())
+        .filter(|index| &others[*index] != &labels_at_start[*index])
+        .collect();
+    assert!(
+        moved.is_empty(),
+        "未选中的轨一格都没动，实测第 {moved:?} 条从 {:?} 变成了 {:?}",
+        &labels_at_start[1..],
+        &others[1..]
+    );
 
     // 再按一次 `↓` ⇒ -3.0，撤销栈走第二步（离散按键各算一步）。
     assert!(window.invoke_key_action(DOWN.into(), false, true, true, false));
