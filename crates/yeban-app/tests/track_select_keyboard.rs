@@ -39,6 +39,8 @@ mod live;
 use std::cell::RefCell;
 use std::rc::Rc;
 
+// `as_weak()` 是 `ComponentHandle` 的方法；记录器要拿弱句柄写回选中态。
+use slint::ComponentHandle as _;
 use yeban_app::host;
 use yeban_app::ui::MainWindow;
 use yeban_app::undo::{UndoPort, UndoSession};
