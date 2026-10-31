@@ -5684,7 +5684,7 @@ pub fn wire_proposal_drawer(ui: &MainWindow, source: crate::proposals::ProposalS
 /// 六个属性一次写齐 —— 三个数组与条数**必须**同源同长度，因为 `.slint` 的循环按下标
 /// 同时读它们（等长这件事的判据：`src/proposals.rs` 的
 /// `drawer_values_keeps_the_three_arrays_the_same_length`）。
-pub(crate) fn apply_proposal_drawer(ui: &MainWindow, source: &crate::proposals::ProposalSource) {
+pub fn apply_proposal_drawer(ui: &MainWindow, source: &crate::proposals::ProposalSource) {
     let values = crate::proposals::drawer_values(&source.rows(), source.has_source());
     ui.set_musical_pr_proposal_count(values.count);
     ui.set_musical_pr_proposal_kinds(strings(&values.kinds));
