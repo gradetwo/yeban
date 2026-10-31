@@ -12,7 +12,7 @@
 //! | 判据 | 证的事 |
 //! | :--- | :--- |
 //! | ①（30 轨 ⇒ 末行不可寻址） | 滚动前 `track-29-header` **不在控件树里**（可视区外的行不可达） |
-//! | ②（向下滚 400 ⇒ 仍在树里的每一行上移 400） | `PointerScrolled{delta_y=-400}` ⇒ 两次快照交集的每个包头 y 恰好减 400，且更大索引的行进入树中；再向上滚 400 ⇒ 快照复原（⚠ 符号：上游把 `content-y` 夹在 `[h−ch, 0]` 且 delta **不取反** ⇒ 静止位上正 `delta_y` 被夹回 0，什么也不动） |
+//! | ②（向下滚两个行距 ⇒ 仍在树里的每一行上移该距离） | `PointerScrolled{delta_y=-2×行距}` ⇒ 两次快照交集的每个包头 y 恰好减该距离，且更大索引的行进入树中；再向上滚同样距离 ⇒ 快照复原（⚠ 符号：上游把 `content-y` 夹在 `[h−ch, 0]` 且 delta **不取反** ⇒ 静止位上正 `delta_y` 被夹回 0，什么也不动） |
 //! | ③（滚到底 ⇒ 末行可达，且夹紧） | 大幅滚动 ⇒ `track-29-header` 可寻址且 y 落在行区内；再滚一次快照逐位不变（`ensure_in_bound`） |
 //! | ④（标尺 / 章节卡片不动） | 滚动只动行区：`arrangement-ruler` 与 `section-0-card` 的 y 逐位不变 |
 //! | ⑤（内容不高 ⇒ 一位不动） | 演示工程（6 轨）滚轮 ⇒ 所有包头 y 不变（默认帧 / golden 不漂移） |
@@ -33,11 +33,13 @@
 //! - **可达性** = `track-{i}-header` 是否可寻址（进树 ⇒ 可见 ⇒ 可达）；
 //! - **位移** = 滚动前后两次快照的**交集**逐行比较（只有两次都在树里的行才有 y 可读）。
 //!
-//! ## 夹具行数
+//! ## 夹具行数与"为什么不写死 delta"
 //!
-//! 30 行：可视行区 858px（窗口 900 − 行区上沿 42），内容高 1678px ⇒ 最大偏移 820px。
-//! 判据②滚 400 / 判据③滚到底都必须**小于或等于**这个上限才读得出语义（否则被
-//! `ensure_in_bound` 夹紧，"每行恰好上移该 delta"就退化成"上移到头"）。
+//! 30 行，内容高 1678px（行区上沿在窗口内 y=90）。**行区视口高不是窗口高减去行区上沿** ——
+//! 编排区下面还有底部控制台，实测 1440×900 档只有约 456px（run `41247717524`：固定 400px 的
+//! 探针吃满整个视口 ⇒ 两次快照的交集只剩 1 行，判据②红）。所以判据②的位移量取
+//! **两个行距**（行距从同一份投影的树里现读），并且先把"滚动前行区里至少有 5 行"钉成前置条件。
+//! 判据③滚到底用 `100_000`，靠 `ensure_in_bound` 夹紧来证"到底不再动"，与视口高无关。
 //!
 //! ## 平台约束
 //!
@@ -197,20 +199,21 @@ impl Rig {
     /// **不取反** ⇒ 静止位（`content-y = 0`）上**正的 `delta_y` 被夹回 0**、什么也不动。
     /// "看下面的行"因此必须送**负** delta（这也是真实滚轮向下的符号）。
     /// 判据因此用两个具名助手，把符号留在一个地方。
-    fn scroll_rows_down(&mut self, amount: f32) {
+    fn scroll_rows_down(&mut self, amount: i32) {
         self.dispatch_wheel(-amount);
     }
 
     /// 向上滚 `amount` 像素（= 回到上面的行）。
-    fn scroll_rows_up(&mut self, amount: f32) {
+    fn scroll_rows_up(&mut self, amount: i32) {
         self.dispatch_wheel(amount);
     }
 
-    fn dispatch_wheel(&mut self, delta_y: f32) {
+    fn dispatch_wheel(&mut self, delta_y: i32) {
         self.port.window().dispatch(WindowEvent::PointerScrolled {
             position: self.wheel_point,
             delta_x: 0.0,
-            delta_y,
+            // ⚠ `as f32`：i32→f32 有损 ⇒ 标准库不给 `From<i32> for f32`；像素级 delta 无关判据。
+            delta_y: delta_y as f32,
         });
         self.port.refresh_tree(None).expect("滚动后重抓控件树");
     }
@@ -224,14 +227,25 @@ fn wheel_scroll_moves_rows_up_by_the_delta() {
     rig.assert_content_overflows();
 
     let before = rig.visible_rows();
-    assert!(!before.is_empty(), "首行必须可达");
+    assert!(
+        before.len() >= 5,
+        "滚动前的视口里必须有足够的行（实测 {before_len} 行）—— 少于 5 行就读不出位移样本",
+        before_len = before.len()
+    );
     assert_eq!(before[0], (0, rig.rows_top()), "未滚动时首行贴着行区上沿");
     assert!(
         !rig.has_row(ROWS - 1),
         "滚动前末行不在控件树里 —— 这正是本片要修的缺口（它不可达）"
     );
 
-    rig.scroll_rows_down(400.0);
+    // 位移量**不硬编码**：行区视口高由窗口布局决定（编排区被底部控制台分掉，实测 1440×900 档
+    // 只有约 456px ⇒ 一个固定 400px 的探针几乎吃满整个视口，交集退化到 1 行）。
+    // 取"两个行距"—— 行距从同一份投影的树里现读，判据仍然精确到像素。
+    let pitch = before[1].1 - before[0].1;
+    assert!(pitch > 0, "行距必须是正数（读到 {pitch}）");
+    let delta = pitch * 2;
+
+    rig.scroll_rows_down(delta);
 
     let after = rig.visible_rows();
     let moved: Vec<(usize, i32, i32)> = before
@@ -244,15 +258,15 @@ fn wheel_scroll_moves_rows_up_by_the_delta() {
         })
         .collect();
     assert!(
-        moved.len() >= 5,
-        "两次快照必须有一段交集才读得出位移（交集只有 {} 行）",
+        moved.len() >= 3,
+        "两次快照必须有一段交集才读得出位移（交集只有 {} 行，delta={delta}）",
         moved.len()
     );
     for (index, y_before, y_after) in moved {
         assert_eq!(
             y_after,
-            y_before - 400,
-            "第 {index} 行必须整体上移 400（同一份行几何）"
+            y_before - delta,
+            "第 {index} 行必须整体上移 {delta}（= 两个行距，同一份行几何）"
         );
     }
 
@@ -263,11 +277,11 @@ fn wheel_scroll_moves_rows_up_by_the_delta() {
         "向下滚动必须把更大索引的行带进控件树（{deepest_before} → {deepest_after}），否则方向语义不成立"
     );
 
-    rig.scroll_rows_up(400.0);
+    rig.scroll_rows_up(delta);
     assert_eq!(
         rig.visible_rows(),
         before,
-        "向上滚回 400 ⇒ 快照逐位复原（没有累计漂移）"
+        "向上滚回 {delta} ⇒ 快照逐位复原（没有累计漂移）"
     );
     assert!(!rig.has_row(ROWS - 1), "回到顶部 ⇒ 末行重新不可寻址");
 }
@@ -278,7 +292,7 @@ fn scrolling_to_the_end_clamps_and_reveals_the_last_row() {
     let mut rig = Rig::with_project(project_with_24_extra_tracks());
     rig.assert_content_overflows();
 
-    rig.scroll_rows_down(100_000.0);
+    rig.scroll_rows_down(100_000);
 
     let rows_top = rig.rows_top();
     let window_height = i32::try_from(WINDOW.height).expect("窗口高可转 i32");
@@ -294,7 +308,7 @@ fn scrolling_to_the_end_clamps_and_reveals_the_last_row() {
     );
 
     let snapshot = rig.visible_rows();
-    rig.scroll_rows_down(100_000.0);
+    rig.scroll_rows_down(100_000);
     assert_eq!(rig.visible_rows(), snapshot, "到底之后不再移动（夹紧）");
 }
 
@@ -306,7 +320,7 @@ fn scrolling_does_not_move_the_ruler_or_the_section_cards() {
     let ruler_before = rig.y_of("arrangement-ruler");
     let card_before = rig.y_of("section-0-card");
 
-    rig.scroll_rows_down(400.0);
+    rig.scroll_rows_down(400);
 
     assert_eq!(
         rig.y_of("arrangement-ruler"),
@@ -329,7 +343,7 @@ fn short_projects_do_not_scroll() {
     let before: Vec<i32> = (0..rig.view.tracks.len())
         .map(|index| rig.y_of(&format!("track-{index}-header")))
         .collect();
-    rig.scroll_rows_down(400.0);
+    rig.scroll_rows_down(400);
     let after: Vec<i32> = (0..rig.view.tracks.len())
         .map(|index| rig.y_of(&format!("track-{index}-header")))
         .collect();
