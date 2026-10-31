@@ -51,7 +51,8 @@
 - **推送与合流**：首次 `git push origin main:main` 被上游提案抽屉线 `2860f88d` 拒绝 ⇒ `git merge --no-ff origin/main`
   后重推 `18363cc8`，主干 run **`41162210699` success**（theory 腿 2m43s 守卫 **5 passed**、ui-mcp 3m55s、
   mcp 16m49s／`test result: ok` **143** 行、macos 26m22s、windows 39m01s 真跑；`rust (workspace 全量)` 按 plan
-  `skipped` ⛔ 不算绿）。该 run 同时覆盖提案抽屉线的 app/mcp 代码。
+  `skipped` ⛔ 不算绿）。该 run 同时覆盖提案抽屉线的 app/mcp 代码。随后的台账批 `2fc39414` / run
+  `41165160438` 是**空绿**（4 条 meta 腿真跑、4 条 rust 腿 `skipped`）⇒ 空绿链在此截断，后续文档批不再逐条入账。
 - **空绿的又一次实测**：台账批 `aca9c855` 的 run `41155589983` 逐 job 读回 —— `lockfile`/`plan`/`deny`/`checks`
   真跑，`macos`/`rust (workspace 全量)`/`windows`/`rust (${{matrix.crate}})` 四条腿 `skipped`
   （`startedAt == completedAt`）⇒ run 级 success ⛔ 不是代码面验证。
