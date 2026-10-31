@@ -16506,6 +16506,8 @@ helper 里 ⇒ 必须不认（防假绿）。两条臂在旧实现上都会失�
 | 混音台线 merge `aa9aff6c` 推主干（**代码面判决**） | `41143113348` | **绿** —— `rust (yeban-app)` 23:13:30→**23:45:47**（32m17s）真跑：`Running tests/` **250** ／ `test result:` **257** ／ `FAILED` **0**；`tests/mixer_fader_double_click.rs` 在场并两次运行（`test` 与 `test (合并特性)`）；`windows` 23:13:22→23:52:03、`macos` →23:42:07 真跑 |
 | 台账批 `5a4c3ba5`＋合流 `0cfe4189` 推主干（**纯文档**） | `41154777536` | **空绿** —— `plan` 返回空 crate 集 ⇒ `rust (workspace 全量)`／`rust (${{matrix.crate}})`／`windows`／`macos` 四条腿全部 `skipped`；`deny` 01:23:08→01:24:07、`checks` 01:23:55→01:25:15、`lockfile` 01:23:33→01:23:53 真跑。⛔ **不构成对 `0cfe4189` 代码面的验证** —— 其代码内容与 `aa9aff6c` 逐字相同，判决由上一行承接 |
 | 台账批 `aca9c855` 推主干（**纯文档**，§18.7 两线在飞＋混音台/空绿两行） | `41155589983` | **空绿** —— 逐 job 读回：`lockfile` 01:30:12→01:30:32、`plan` 01:30:35→01:30:47、`deny` 01:30:45→01:31:31、`checks` 01:30:49→01:32:17 真跑；`macos`／`rust (workspace 全量)`／`windows`／`rust (${{matrix.crate}})` 四条腿 `startedAt == completedAt == 01:30:47` 且 `skipped` ⇒ ⛔ 不算绿。代码面继承 `41143113348` |
+| 台账批 `923ff9e6` 推主干（**纯文档**，§18.6 补记＋§18.7 三线） | `41156387804` | **空绿** —— 逐 job：`lockfile` 01:40:50→01:41:11、`deny` 01:40:19→01:41:22、`checks` 01:40:31→01:41:51、`plan` 01:40:39→01:40:48 真跑；`windows`／`macos`／`rust (workspace 全量)`／`rust (${{matrix.crate}})` 四条腿 `startedAt == completedAt == 01:40:48` 且 `skipped` ⇒ ⛔ 不算绿 |
+| 四守卫 merge `aba563df`＋`adbb7a00`＋`26a1a692`＋`296bd17b` 推主干（s15／s16／s17／s18 合流） | `41158564050` | **pending** —— 2026-10-31 02:08Z 推送（`923ff9e6..296bd17b`）时处于 `queued`；判决待读回，未读回前一律记 pending |
 
 > ⚠ **run 级 success ≠ 每个作业都跑完**：本批一次实测到 `gh run view --json` 报
 > `completed success` 而 `windows` 作业仍在 `in_progress`。判绿必须逐 job 看 `completedAt`，
@@ -16526,14 +16528,12 @@ helper 里 ⇒ 必须不认（防假绿）。两条臂在旧实现上都会失�
 推进拒绝 ⇒ `git merge --no-ff origin/main` 后重推）。四棵工作树（s10/s11/s12/s13/s14）全部
 `worktree.sh rm` 拆除（分支保留）；`git worktree list` 恢复**一行**。磁盘：`/home` **89%**、可用 **27G**。
 
-### §18.6 下一单
+### §18.6 下一单（本口径**已收口**）
 
-同一口径下仍未覆盖的 crate（读数：`crates/*/{src,tests}` 里断言含 `.all(` 的文件数）：
-`yeban-midi-io`（**已开线 s15**，见 §18.7）、`yeban-ui-test-port`
-（1 文件，3 处断言站点**均已自带界**：`!family.is_empty()`／`mask_rects.len() == 3` ⇒ 加守卫是纯防回归，
-但该 crate 依赖 slint，本机不可编译 ⇒ 只能 CI 验证）、`yeban-decode`（1 文件，但 `decode.rs` 内**自带**
-一段 R102/R109/R118 的 40 行窗口自检 ⇒ 若要统一口径，应先评估"内嵌守卫"是否要迁移成常驻文件）。
-`yeban-theory` **已开线 s16**（见 §18.7）。创作缺口仍全在人类裁决
+同一口径（`crates/*/{src,tests}` 里断言含 `.all(` 的文件）下的空白 crate **已全部处理完**：
+`yeban-midi-io` → s15、`yeban-theory` → s16、`yeban-midi` → s17、`yeban-ui-test-port` → s18
+（四线全部判决读回并落地，见 §18.7）；`yeban-decode` **决定不迁移**（理由见下方补记）。
+⇒ 本口径没有下一个可开线的 crate。创作缺口仍全在人类裁决
 （`ADR-0042` G8j／`ADR-0047`..`0050`／`ADR-0004` Q13／`ADR-0053`）。
 
 **2026-10-31 补记（先 grep 交付，再下结论）**：本想给 `yeban-model`（`.all(` 原文 90 处）开 s17，
@@ -16549,13 +16549,18 @@ helper 里 ⇒ 必须不认（防假绿）。两条臂在旧实现上都会失�
   之后**特意收窄**的（R118）⇒ **决定不迁移**，保留其自有口径。
 - ⇒ 真正空白只有 `yeban-midi`（15 处原文、无 crate 级扫描）⇒ s17 改指它（见 §18.7）。
 
-### §18.7 第十四批续：s15／s16／s17 三线（在飞，判决待读回）
+### §18.7 第十四批续：s15／s16／s17／s18 四线（判决已读回，全部落地）
 
-| 线 | tip | run | 状态 |
+| 线 | tip | run | 判决（job 级） |
 | :--- | :--- | :--- | :--- |
-| s15 `line/s15-midi-io-guard` | `c66bc448` | `41155049220` | **in_progress**（2026-10-31 01:37Z 读数）—— 判决未读回 |
-| s16 `line/s16-theory-guard` | `8b5fc69a` | `41155447276` | **in_progress**（同一时刻读数）—— 判决未读回 |
-| s17 `line/s17-midi-guard` | `4cc67c62` | `41156212959` | **queued** —— 推送时 CI 队列被四条并行线占满（`proposal-resolve`／`pr-drawer-proposals`／`export-modal-esc` 等，非本线） |
+| s15 `line/s15-midi-io-guard` | `c66bc448` | `41155049220` | **success** —— `rust (yeban-midi-io)` **2m30s** 真跑：`Running` **6**／`test result: ok` **7**（lib 18→19、守卫 5/5 两档特性、`rt_zero_alloc` 3/3、doctests 各 1 行 0 判据）、`FAILED` **0**；`windows` 38m36s、`macos` 21m50s 真跑；`rust (workspace 全量)` 按 plan `skipped`（⛔ 不算绿，代码面由本腿承接） |
+| s16 `line/s16-theory-guard` | `8b5fc69a` | `41155447276` | **success** —— `rust (yeban-theory)` 01:29:52→**01:32:24**（**2m32s**）真跑、312 条判据 `ok`、`FAILED` **0**；`macos` →01:56:36、`windows` →01:51:43 真跑；`rust (workspace 全量)` 按 plan `skipped` |
+| s17 `line/s17-midi-guard` | `4cc67c62` | `41156212959` | **success** —— `rust (yeban-midi)` 01:37:53→**01:40:06**（**2m13s**）真跑：221／守卫 5／50／9／35 全 `ok`、`FAILED` **0**；`windows`／`macos`／`rust (workspace 全量)` 均 `startedAt == completedAt == 01:37:29` 且 `skipped`（⛔ 不算绿） |
+| s18 `line/s18-ui-test-port-guard` | `de5c55ed` | `41156728513` | **success** —— `rust (yeban-ui-test-port)` 01:59:35→**02:03:46**（**4m11s**）真跑：`Running` **2**／`test result: ok` **3**（lib 49、守卫 5、doctests 0）、`FAILED` **0**；同 run 的 `rust (yeban-midi)` 3m05s、`rust (yeban-ui-mcp)` 7m04s 亦真跑；`windows`／`macos`／`rust (workspace 全量)` `skipped`（⛔ 不算绿） |
+
+- **落地**：s17 → merge `26a1a692`、s16 → `adbb7a00`、s15 → `aba563df`、s18 → `296bd17b`；
+  四棵工作树全部 `worktree.sh rm` 拆除（s15/s16/s17/s18 分支保留）。推送 `923ff9e6..296bd17b`
+  （显式 refspec `origin main:main`）⇒ 合流 merge run **`41158564050`**，判决见 §18.3。
 
 - **s15 读数（守卫自报）**：`yeban-midi-io` **3 个被扫文件 / 2 个站点 / 0 取反 / 0 allowlist / 无界 0**。
   守卫抓到 `src/lib.rs:123` 的 `ticks.windows(2).all(..)` **无界**（元素 < 2 时恒真）⇒ 已补
@@ -16567,11 +16572,20 @@ helper 里 ⇒ 必须不认（防假绿）。两条臂在旧实现上都会失�
   它们的集合**合法为空/单元素**（`onsets_per_bar = 0` 是合法输入 ⇒ `pattern(..)` 返回空模式），
   性质本就是"相邻对"约束 ⇒ 加 `len() >= 2` 会把合法输入判成缺陷。本地：守卫 5/5、
   `cargo test -p yeban-theory` **243+5+7+7+44+3+3 = 312** 全绿、clippy/fmt/light 通过。
-- ⚠ **两条 src 改动都没有本地 CI 之外的证据**：s15 走 `rust (yeban-midi-io)` 腿、s16 走
-  `rust (yeban-theory)` 腿；判决回来前一律记 **pending**。
+- ⚠ **两条 src 改动的编译证据只来自 CI**：s15 走 `rust (yeban-midi-io)` 腿、s16 走
+  `rust (yeban-theory)` 腿 —— 两条腿已在 job 级读回真跑（见上表），本机只跑了守卫/文本扫描。
 - **s17 读数（守卫自报）**：`yeban-midi` **11 个被扫文件（8 src 含 `mxl/inflate.rs` + 3 tests）／
   8 个断言站点／0 取反／allowlist 0／无界 0**。落线时抓到 3 处无界且**全在夹具里** ⇒ 逐条补根绑定下界
   （`src/import.rs` 的 `syllables(&plan).len() == 1`；`tests/musicxml_contract.rs` 的
   `notes.len() == 4` 与容器 `entries.len() == 2`），**没有**生产不变量例外。
   本地：守卫 5/5、`cargo test -p yeban-midi` **221+5+50+9+35** 全绿、clippy/fmt/light 通过。
   ⚠ 仓库上下文：本线最初是想开在 `yeban-model` 上，现读发现其**已有** crate 级扫描 ⇒ 改指 midi（§18.6 补记）。
+- **s18 读数（守卫自报）**：`yeban-ui-test-port` **10 个被扫文件（全部 `src/`，无 tests 目录）／
+  2 个断言站点／0 取反／allowlist 0／无界 0**。落线时两处**都已自带界**（`src/lib.rs` 的家族名 ASCII
+  判据由同根 `!family.is_empty()` 兜住）⇒ 本线是**纯防回归**，站点数 2 从此只许降不许升。
+  本地：守卫 5/5、`cargo test -p yeban-ui-test-port` **49+5** 全绿、clippy/fmt/light 通过。
+- ⚠ **已知小瑕疵（待小线修）**：s16 的 `yeban-theory/tests/assertion_bounds_audit.rs:70` 文档句仍写
+  "本 crate 现为空表"，而 `ALLOWLIST` 实际已登记 **5** 条（`drum.rs` 4、`rhythm.rs` 1）。仅注释出错，
+  判据行为正确；未混入本批文档提交（会额外拉起 theory 腿）。
+- ⇒ R115 家族至此覆盖 `yeban-{mcp,dsp,app,engine,ui-mcp,midi,midi-io,theory,ui-test-port}` 九 crate；
+  `model`／`render`／`sfz`／`decode` 各有**自建**的等价扫描（§18.6 补记），不重复开线。
