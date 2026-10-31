@@ -515,29 +515,73 @@ fn render_warning_items() -> Value {
     })
 }
 
-/// ⭐ `data.lane.points[].curve` 的词表（s29 那条"名册必须能被核对"的口径，用到这里）。
+/// ⭐ s30：把一份**逐键名册**装成对象 schema —— ⛔ 不要用一个大 `json!` 字面量写名册。
 ///
-/// 这四枚不是手抄理想值：常驻判据
-/// [`the_point_curve_roster_matches_what_the_producer_emits`] 拿**生产者函数**
-/// `domain::automation::curve_name` 逐个变体对账 ⇒ 模型 `CurveType` 改名/增删而这里没跟上即红。
-const POINT_CURVE_NAMES: [&str; 4] = ["Linear", "Exponential", "Logarithmic", "SCurve"];
+/// 这条不是风格，是实测换来的（run `41236805286`，2026-11-01）：`sources[]` 那份
+/// "15 键 **含**内层 `sampler` 19 键"的字面量直接
+/// `error: recursion limit reached while expanding $crate::json_internal!`（⇒ `checks`／
+/// `rust (yeban-mcp)`／`ui-mcp`／`macos`／`windows`／`e2e` 六腿同一处编译错误，判据一条没跑）。
+/// 本文件 `#251`/`#268` 那条"单独插入"的理由是同一个机制，而我当时**低估**了它：
+/// 以为"拆成独立函数"就够了 —— 不够，递归深度是按**字面量内部的条目数**推进的，
+/// 与它在哪个函数里无关。逐键装入后递归深度与键数⛔ 无关（每个键各自一份小字面量）。
+///
+/// `required` 由 `properties` 的键**同源生成** ⇒ 不会再出现"声明了却漏进 required"的两份清单。
+#[must_use]
+fn roster_typed(types: &[&str], entries: &[(&str, Value)]) -> Value {
+    let mut required = Vec::with_capacity(entries.len());
+    let mut properties = Map::new();
+    for (name, schema) in entries {
+        required.push(Value::from(*name));
+        properties.insert((*name).to_owned(), (*schema).clone());
+    }
+    // `type` 单值时写成字符串（与其余 schema 同形），多值才写成数组。
+    let kind = if types.len() == 1 {
+        Value::from(types[0])
+    } else {
+        Value::Array(types.iter().map(|name| Value::from(*name)).collect())
+    };
+    json!({
+        "type": kind,
+        "required": required,
+        "properties": properties
+    })
+}
+
+/// 恒发键的对象名册（`type = "object"`）。
+#[must_use]
+fn roster(entries: &[(&str, Value)]) -> Value {
+    roster_typed(&["object"], entries)
+}
+
+/// 可空对象名册（`type = ["object", "null"]`）—— 用于"这条轨没绑采样器"那一类常态缺席。
+#[must_use]
+fn nullable_roster(entries: &[(&str, Value)]) -> Value {
+    roster_typed(&["object", "null"], entries)
+}
 
 /// ⭐ s30：`yeban_edit_automation` 的 `data.lane.points[]` 逐条形状。
 /// 拼装点唯一（`domain/automation.rs` 里 `lane.insert("points", …)` 那段 `json!`，四键**恒发**）。
 /// ⚠ `value` 声明成 `["number","null"]` 是诚实话而非保守：`AutomationPoint.value` 是 `f32`，
 /// 而 `serde_json` 把 `NaN`/`Infinity` **静默写成 `null`**（`json_f32` 的文档明说同一件事）。
+/// `curve` 的词表⛔ **不是这里手抄的**：唯一名册是 [`crate::domain::extension_pure::CURVE_NAMES`]
+/// （`automation.rs` 那句"⛔ 不复制第二套"同样适用于 schema 侧），它与模型 `CurveType` 的双射
+/// 已由常驻判据 `every_name_table_agrees_with_the_model_enum` 钉住；本模块的判据
+/// `the_point_curve_roster_matches_what_the_producer_emits` 再钉"广播的词表 = 生产者
+/// `curve_name` 的逐变体输出"这一环。
 #[must_use]
 fn automation_point_items() -> Value {
-    json!({
-        "type": "object",
-        "required": ["id", "tick", "value", "curve"],
-        "properties": {
-            "id": {"type": "string"},
-            "tick": {"type": "integer"},
-            "value": {"type": ["number", "null"]},
-            "curve": {"type": "string", "enum": POINT_CURVE_NAMES.to_vec()}
-        }
-    })
+    roster(&[
+        ("id", json!({"type": "string"})),
+        ("tick", json!({"type": "integer"})),
+        ("value", json!({"type": ["number", "null"]})),
+        (
+            "curve",
+            json!({
+                "type": "string",
+                "enum": crate::domain::extension_pure::CURVE_NAMES.to_vec()
+            }),
+        ),
+    ])
 }
 
 /// ⭐ s30：`yeban_query_engine_state` 的 `data.sends[]` 逐条形状。
@@ -549,124 +593,80 @@ fn automation_point_items() -> Value {
 /// ⇒ 真要收紧应该按"过滤后的子集"声明，那是另一件事（需要先证过滤器恒等）。
 #[must_use]
 fn send_edge_items() -> Value {
-    json!({
-        "type": "object",
-        "required": [
-            "edgeId",
-            "kind",
-            "sourceNode",
-            "sourceName",
-            "destinationNode",
-            "destinationName",
-            "gainDb",
-            "gainSource"
-        ],
-        "properties": {
-            "edgeId": {"type": "string"},
-            "kind": {"type": "string"},
-            "sourceNode": {"type": "string"},
-            "sourceName": {"type": ["string", "null"]},
-            "destinationNode": {"type": "string"},
-            "destinationName": {"type": ["string", "null"]},
-            "gainDb": {"type": ["number", "null"]},
-            "gainSource": {"type": "string"}
-        }
-    })
+    roster(&[
+        ("edgeId", json!({"type": "string"})),
+        ("kind", json!({"type": "string"})),
+        ("sourceNode", json!({"type": "string"})),
+        ("sourceName", json!({"type": ["string", "null"]})),
+        ("destinationNode", json!({"type": "string"})),
+        ("destinationName", json!({"type": ["string", "null"]})),
+        ("gainDb", json!({"type": ["number", "null"]})),
+        ("gainSource", json!({"type": "string"})),
+    ])
 }
 
-/// ⭐ s30：`yeban_render_master` 的 `data.sources[]` 逐条形状（15 键）**含**其内
-/// `sampler` 那一层（19 键）—— 两层的唯一拼装点都是 `domain/render.rs` 的 `to_value`。
-///
-/// ⚠ 这份必须住在**自己的函数**里，不能内联回 `render_master()` 的那个 `json!`：
-/// 那条字面量的键数已经贴着 `serde_json` 宏的递归上限（文件里 `#251`/`#268` 的注释就是记这件事的），
-/// 再往里嵌一层 `properties` 会直接编译失败。分片与内联是**同一份** schema。
+/// ⭐ s30：`data.sources[].sampler` 那一层（19 键，可空对象）。
+/// 拼装点唯一（`domain/render.rs` 的 `SamplerReport::to_value`）；19 键⛔ **一个都可空不了**
+/// （字段表里没有一个 `Option`：`String`/`usize`/`u64`/`bool`/`Vec<String>`）。
+#[must_use]
+fn sampler_items() -> Value {
+    nullable_roster(&[
+        ("path", json!({"type": "string"})),
+        ("resolvedPath", json!({"type": "string"})),
+        ("regions", json!({"type": "integer"})),
+        ("silentRegionCount", json!({"type": "integer"})),
+        ("notes", json!({"type": "integer"})),
+        ("notesUnmatched", json!({"type": "integer"})),
+        ("notesUsingFileSample", json!({"type": "integer"})),
+        ("notesWithoutSample", json!({"type": "integer"})),
+        ("notesUsingBuiltinSilence", json!({"type": "integer"})),
+        ("notesLooping", json!({"type": "integer"})),
+        (
+            "sampleSources",
+            json!({"type": "array", "items": {"type": "string"}}),
+        ),
+        (
+            "sampleFailures",
+            json!({"type": "array", "items": {"type": "string"}}),
+        ),
+        ("sampleFramesLoaded", json!({"type": "integer"})),
+        ("sampleReadsTruncated", json!({"type": "boolean"})),
+        ("regionsWithEnvelope", json!({"type": "integer"})),
+        ("decodedSamples", json!({"type": "integer"})),
+        (
+            "missingSamplePaths",
+            json!({"type": "array", "items": {"type": "string"}}),
+        ),
+        ("voiceSteals", json!({"type": "integer"})),
+        ("label", json!({"type": "string"})),
+    ])
+}
+
+/// ⭐ s30：`yeban_render_master` 的 `data.sources[]` 逐条形状（15 键），其内
+/// `sampler` 那一层由 [`sampler_items`]（19 键）给出 —— 两层的唯一拼装点都是
+/// `domain/render.rs` 的 `to_value`。
 ///
 /// 可空两处：`peakDbfs` = `json_f32(...)`（缺读数为 `null`）、`sampler` = `Option::map`
 /// （"这条轨没绑采样器"是常态）。`peak` 是裸 `Value::from(f32)` ⇒ 同一条 `f32` 的坑，按可空声明。
-/// 内层 `sampler` 的 19 键⛔ **一个都可空不了**（字段表里没有一个 `Option`）。
 #[must_use]
 fn source_items() -> Value {
-    json!({
-        "type": "object",
-        "required": [
-            "node",
-            "track",
-            "kind",
-            "audible",
-            "notes",
-            "audioClips",
-            "audioClipsUnrendered",
-            "audioClipsGated",
-            "notesSilenced",
-            "notesRatcheted",
-            "ratchetPulses",
-            "endTick",
-            "peak",
-            "peakDbfs",
-            "sampler"
-        ],
-        "properties": {
-            "node": {"type": "string"},
-            "track": {"type": "string"},
-            "kind": {"type": "string"},
-            "audible": {"type": "boolean"},
-            "notes": {"type": "integer"},
-            "audioClips": {"type": "integer"},
-            "audioClipsUnrendered": {"type": "integer"},
-            "audioClipsGated": {"type": "integer"},
-            "notesSilenced": {"type": "integer"},
-            "notesRatcheted": {"type": "integer"},
-            "ratchetPulses": {"type": "integer"},
-            "endTick": {"type": "integer"},
-            "peak": {"type": ["number", "null"]},
-            "peakDbfs": {"type": ["number", "null"]},
-            "sampler": {
-                "type": ["object", "null"],
-                "required": [
-                    "path",
-                    "resolvedPath",
-                    "regions",
-                    "silentRegionCount",
-                    "notes",
-                    "notesUnmatched",
-                    "notesUsingFileSample",
-                    "notesWithoutSample",
-                    "notesUsingBuiltinSilence",
-                    "notesLooping",
-                    "sampleSources",
-                    "sampleFailures",
-                    "sampleFramesLoaded",
-                    "sampleReadsTruncated",
-                    "regionsWithEnvelope",
-                    "decodedSamples",
-                    "missingSamplePaths",
-                    "voiceSteals",
-                    "label"
-                ],
-                "properties": {
-                    "path": {"type": "string"},
-                    "resolvedPath": {"type": "string"},
-                    "regions": {"type": "integer"},
-                    "silentRegionCount": {"type": "integer"},
-                    "notes": {"type": "integer"},
-                    "notesUnmatched": {"type": "integer"},
-                    "notesUsingFileSample": {"type": "integer"},
-                    "notesWithoutSample": {"type": "integer"},
-                    "notesUsingBuiltinSilence": {"type": "integer"},
-                    "notesLooping": {"type": "integer"},
-                    "sampleSources": {"type": "array", "items": {"type": "string"}},
-                    "sampleFailures": {"type": "array", "items": {"type": "string"}},
-                    "sampleFramesLoaded": {"type": "integer"},
-                    "sampleReadsTruncated": {"type": "boolean"},
-                    "regionsWithEnvelope": {"type": "integer"},
-                    "decodedSamples": {"type": "integer"},
-                    "missingSamplePaths": {"type": "array", "items": {"type": "string"}},
-                    "voiceSteals": {"type": "integer"},
-                    "label": {"type": "string"}
-                }
-            }
-        }
-    })
+    roster(&[
+        ("node", json!({"type": "string"})),
+        ("track", json!({"type": "string"})),
+        ("kind", json!({"type": "string"})),
+        ("audible", json!({"type": "boolean"})),
+        ("notes", json!({"type": "integer"})),
+        ("audioClips", json!({"type": "integer"})),
+        ("audioClipsUnrendered", json!({"type": "integer"})),
+        ("audioClipsGated", json!({"type": "integer"})),
+        ("notesSilenced", json!({"type": "integer"})),
+        ("notesRatcheted", json!({"type": "integer"})),
+        ("ratchetPulses", json!({"type": "integer"})),
+        ("endTick", json!({"type": "integer"})),
+        ("peak", json!({"type": ["number", "null"]})),
+        ("peakDbfs", json!({"type": ["number", "null"]})),
+        ("sampler", sampler_items()),
+    ])
 }
 
 /// `yeban_propose_section` 的成功响应 `data`（创作面提案，与 [`edit_notes`] 同拼装点
