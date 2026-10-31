@@ -525,6 +525,11 @@ pub fn usage_text() -> String {
                            每线程只能装一次, 而 GUI 路径已经把 winit 后端装上了。
                            配 --headless-idle + --idle-seconds <N> = 服务 N 秒后自动
                            停机并释放; 不配 = 服务到进程被终止 (Ctrl-C / kill)。
+  --ui-test-mode           [PATCH] 把 {ui_mcp_switch} 从**生产模式**切成**测试模式**,
+                           从而开放 `ui:inject` 族 (指针 / 键盘注入)。**必须**与
+                           {ui_mcp_switch} 同时给, 且**必须**置环境变量
+                           YEBAN_ALLOW_UI_INJECT=1 —— 两把锁少一把就是用法错误, 不静默降级。
+                           只为本机自动化验收存在; 真实用户会话不应打开。
 
 运行形态:
   yeban-app                启动 GUI (需要显示器; 进入阻塞事件循环)
@@ -651,6 +656,7 @@ pub fn usage_text() -> String {
   yeban-app --open song.yeban --headless
   yeban-app --headless-idle --idle-seconds 2 --project-sample empty
   yeban-app --enable-ui-mcp-http --headless-idle --idle-seconds 30
+  YEBAN_ALLOW_UI_INJECT=1 yeban-app --enable-ui-mcp-http --ui-test-mode --headless-idle --idle-seconds 30
   yeban-app --open song.yeban --save-as copy.yeban
   yeban-app --open song.yeban --dump-elements
   yeban-app --open song.yeban --export-elements elements.txt
@@ -1314,6 +1320,17 @@ pub struct Options {
     /// `--idle-seconds` 可选：给了就服务到点自动停机（并释放监听口），
     /// 不给就一直服务到进程被终止（Ctrl-C / `kill`）。
     pub ui_mcp_http: bool,
+    /// `--ui-test-mode`：把 UI 控制面从**生产模式**切成**测试模式**，从而打开
+    /// `ui/dispatch_pointer_*` / `ui/dispatch_key_press` 这一族**事件注入**。
+    ///
+    /// [PATCH ui-test-mode] 为什么需要它：上游把 UI 控制面**硬编码**成
+    /// `RunMode::Production`（见 `src/ui_mcp_serve.rs` 的安全边界第 5 条），于是任何
+    /// "像人一样点界面"的自动化——人机共创评测、可用性回归、逐控件点击热区核验——
+    /// 在**产品二进制**上直接 403，只能改源码重编。本开关把这条能力做成**两把锁**：
+    /// ① 显式给 `--ui-test-mode`；② 环境变量 `YEBAN_ALLOW_UI_INJECT=1`。
+    /// 两把锁缺一 ⇒ 用法错误（退出码 2），绝不静默降级。其余安全边界（只绑环回、
+    /// 端口 0、Bearer 令牌、令牌 `0600`）一条都不放松。
+    pub ui_test_mode: bool,
     /// `--theme <default|yeban|brand|inkmoor|plume|material|fluent|cupertino|native>`：
     /// 运行期调色板选择（`yeban` 是 `default` 的别名，见 [`Theme::accepted_names`]）。
     ///
@@ -1659,6 +1676,11 @@ pub enum ParseError {
     /// ② `--enable-mcp-http`（领域 MCP 要求**正在跑的 GUI 事件循环**，而 UI 控制面的
     /// 执行面只能装在软件光栅化平台上 —— 两者不在同一个进程形态里；见 `src/ui_mcp_serve.rs`）。
     UiMcpHttpConflict(&'static str),
+    /// [PATCH ui-test-mode] 给了 `--ui-test-mode` 却没有给 `--enable-ui-mcp-http`。
+    ///
+    /// 注入是控制面的一条能力，不是进程的一条能力：没有控制面 ⇒ 这个开关无处落地。
+    /// 按本仓纪律（"静默忽略是最坏的一种成功"）判成用法错误，退出码 2。
+    UiTestModeNeedsUiMcp,
     /// 给了 `--export-als`，但这次构建**没有**编译 [`ALS_EXPORT_FEATURE`]
     /// （`[ARCH-FMT-002]` / `[ROAD-M4-007]`）。
     ///
@@ -1832,6 +1854,11 @@ impl fmt::Display for ParseError {
                 "`{UI_MCP_HTTP_SWITCH}` 不能与 `{other}` 组合 —— 本开关的进程形态是\
                  \"软件光栅化平台上的一棵活控件树\" (它承载 ui/* 的 Tier-1 执行面), \
                  接受这个组合只会让 `{other}` 被静默丢掉, 或者让人以为另一个控制面也起来了"
+            ),
+            Self::UiTestModeNeedsUiMcp => write!(
+                formatter,
+                "`--ui-test-mode` 只能修饰 `{UI_MCP_HTTP_SWITCH}` —— 注入是 UI 控制面的一条\
+                 能力, 没有控制面时它无处落地 (本仓口径: 静默忽略是最坏的一种成功)"
             ),
             Self::AlsNotCompiled => write!(
                 formatter,
@@ -2220,6 +2247,11 @@ pub fn parse(args: &[String]) -> Result<Options, ParseError> {
                 options.ui_mcp_http = true;
                 cursor += 1;
             }
+            "--ui-test-mode" => {
+                reject_inline("--ui-test-mode", inline)?;
+                options.ui_test_mode = true;
+                cursor += 1;
+            }
             "--project-sample" => {
                 let value = take_value("--project-sample", inline, args, &mut cursor)?;
                 options.sample = match value.as_str() {
@@ -2282,6 +2314,11 @@ pub fn parse(args: &[String]) -> Result<Options, ParseError> {
     //   ① 编译期那道开关（非默认 feature `ui-mcp-http`）；
     //   ② 组合面 —— 会写盘 / 导出的开关会被**静默丢掉**，而 `--enable-mcp-http`
     //      与它不在同一个进程形态里（领域 MCP 要 GUI 事件循环，UI 控制面要软件平台）。
+    // [PATCH ui-test-mode] `--ui-test-mode` 只是 `--enable-ui-mcp-http` 的修饰符：
+    // 单给等于"要求了注入但没有任何控制面能接收它"，那是一次用法错误，不是静默无效。
+    if options.ui_test_mode && !options.ui_mcp_http {
+        return Err(ParseError::UiTestModeNeedsUiMcp);
+    }
     if options.ui_mcp_http {
         if !cfg!(feature = "ui-mcp-http") {
             return Err(ParseError::UiMcpHttpNotCompiled);
