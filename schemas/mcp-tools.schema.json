@@ -4,6 +4,17 @@
   "title": "YebanMcpTools",
   "description": "Standard JSON-RPC 2.0 interface and tool definitions for Yeban MCP. 根为 oneOf(ToolCall, ToolResponse, ReplayedToolResponse)：工具调用、工具响应与幂等重放信封的样本都必须通过根校验，否则本契约只是一堆没人引用的类型定义（ADR-0001 D25）。",
   "definitions": {
+    "WarningCode": {
+      "description": "\u2b50 `data.warnings[]` \u91cc `code` \u5b57\u6bb5\u7684**\u552f\u4e00\u6743\u5a01\u540d\u518c**\uff08\u673a\u68b0\u5bf9\u8d26\u89c1 `scripts/guards/check_warning_codes.py`\uff1a\u5b9e\u73b0\u4fa7\u6784\u9020\u70b9\u4e0e\u672c enum \u5fc5\u987b**\u96c6\u5408\u76f8\u7b49**\uff09\u3002\u8b66\u544a\u4e00\u5f8b**\u975e\u963b\u65ad**\uff1a\u51fa\u73b0\u5728\u54cd\u5e94\u91cc\u4e0d\u4ee3\u8868\u64cd\u4f5c\u5931\u8d25\u3002\u6784\u9020\u70b9\uff1a`unrecognisedEffectParam` / `deviceOnSilentTrack` = `domain/mod.rs`\uff0c`exportClipping` / `silentSources` = `domain/render.rs`\uff0c`sfzSamplesUnreadable` = `domain/sfz.rs`\u3002\u26a0 \u9519\u8bef\u8def\u5f84\u7684 `data.reason`\uff08\u5982 `unknownEffectParam`\uff09**\u4e0d\u5c5e\u4e8e**\u672c\u540d\u518c\u3002",
+      "type": "string",
+      "enum": [
+        "deviceOnSilentTrack",
+        "exportClipping",
+        "sfzSamplesUnreadable",
+        "silentSources",
+        "unrecognisedEffectParam"
+      ]
+    },
     "ToolCall": {
       "type": "object",
       "required": [

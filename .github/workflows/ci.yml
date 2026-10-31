@@ -155,6 +155,11 @@ jobs:
       - name: 端到端判据防掏空守卫 (verify 脚本的牙)
         run: python3 scripts/guards/check_verify_teeth.py
 
+      # s28：`warnings[].code` 的名册必须有**一份**真相 —— 实现侧构造点与契约 enum **集合相等**（台账 §22.8）。
+      # ⚠ 同样必须逐条直调（§22.6）：只把文件丢进 scripts/guards/ 不进 CI。
+      - name: warnings 名册对账 (实现侧构造点 == schema 的 WarningCode.enum)
+        run: python3 scripts/guards/check_warning_codes.py
+
       - name: JSON Schema 契约 (schema 自身合法性)
         run: |
           set -euo pipefail
