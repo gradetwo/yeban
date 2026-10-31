@@ -40,7 +40,8 @@
 - **合流判决**：`650c0c44` / run `41169702791` **success**：`rust (workspace 全量)` 43m34s，
   `Running …tests/` **720**／`test result:` **1,106**／`FAILED` **0**，`test result: ok. 48 passed; 0 failed` 在场；
   macos 27m04s（289／304／0，48 passed 在场）｜windows 37m42s｜checks 1m31s。矩阵腿 `skipped`（plan 判
-  workspace_wide）⇒ 本批的代码面判决**只**来自这三条真跑的腿。
+  workspace_wide）⇒ 本批的代码面判决**只**来自这三条真跑的腿。本台账提交 `3185f749` / run `41173738212`
+  是**空绿**（plan 空集 ⇒ 四条 rust 腿 0 步 `skipped`，只有 deny／checks／lockfile 真跑）⇒ ⛔ 不构成代码面验证。
 - **下一单候选（已实测，⛔ 重查）**：`crates/yeban-mcp/verify/render_pure.rs` 是**同一形态**的开环脚手架
   （`rustc --test` 的 ~49 条纯逻辑判据，`#[path]` 引 `render_math.rs` / `render_clip_math.rs`），
   同样没有门禁执行 ⇒ 可照本批包装（注意它用 `extern crate self as yeban_model`，包装时需实测）。
