@@ -784,9 +784,12 @@ pub enum Action {
     /// 它们把它挤到 `Cmd/Ctrl+Alt+方向` 这一格：
     /// 1. **六个方向键组合已被 §3.5 点名**（裸 `←/→` 网格、`Alt+←/→` 1 tick、裸 `↑/↓`
     ///    半音、`Shift+↑/↓` 八度、`Shift+←/→` 时值），本动作⛔ 不得覆盖既有键语义；
-    /// 2. 规范**没**点名但已被如实钉成 `PassThrough` 的两个组合也不能占：`Cmd/Ctrl+←/→`
-    ///    （归系统的 caret 语义）与 `Alt+↑/↓`，见判据
-    ///    `arrow_keys_resolve_to_the_four_spec_nudge_steps` 末尾那段；
+    /// 2. 规范**没**点名但已被如实钉成 `PassThrough` 的组合也不能占：`Cmd/Ctrl+←/→`
+    ///    （归系统的 caret 语义），见判据
+    ///    `arrow_keys_resolve_to_the_four_spec_nudge_steps` 末尾那段。
+    ///    ⚠ `Alt+↑/↓` **不再**属于这一类：2026-10-31 的选轨切片把它们显式绑成了
+    ///    [`Self::SelectTrackBy`]（键盘选轨，界面决定）—— 本动作族仍不碰它们（音量走
+    ///    `Cmd/Ctrl+Alt+方向`）；
     /// 3. `Cmd/Ctrl+Alt` 组合此前只有 `b` / `m` / `n` / `d` 四条（与
     ///    [`Self::ToggleMetronome`] 同族），方向键在 `resolve_logical` 的第 3 步落到
     ///    `_ => PassThrough` ⇒ 这一格是**空的**，加进去不动任何既有绑定。
@@ -2140,18 +2143,21 @@ mod tests {
                 "物理 `{key:?}` 与逻辑键在 {mods:?} 下必须同解"
             );
         }
-        // 规范**没**点名的组合必须如实放行（⛔ 不猜一个相近语义）：
-        // `Cmd/Ctrl+←/→`（文本/系统的 caret 语义）与 `Alt+↑/↓`（规范未点名）。
+        // 规范**没**点名、且今天仍然没有落点的组合必须如实放行（⛔ 不猜一个相近语义）：
+        // `Cmd/Ctrl+←/→` 归文本 / 系统的 caret 语义。
+        //
+        // ⚠ 本清单 2026-10-31 **移出了 `Alt+↑/↓`**：当初它们在这里是因为"规范没点名"，
+        // 而本切片**显式**把它们绑成了 [`SelectTrackBy`]（键盘选轨，界面决定）⇒ 判据的
+        // 期望必须跟着事实走；否则"没点名 ⇒ 放行"会被误读成"永远放行"。键位与落点
+        // 逐条见 `alt_up_and_down_move_the_track_selection_and_do_not_disturb_its_neighbours`。
         for (key, mods) in [
             (LKey::LeftArrow, Modifiers::ctrl()),
             (LKey::RightArrow, Modifiers::meta()),
-            (LKey::UpArrow, Modifiers::alt()),
-            (LKey::DownArrow, Modifiers::alt()),
         ] {
             assert_eq!(
                 canvas().resolve_logical(key, mods),
                 PassThrough,
-                "规范未点名的组合 `{key:?}` + {mods:?} 必须放行"
+                "规范未点名且没有落点的组合 `{key:?}` + {mods:?} 必须放行"
             );
         }
         // 文本域聚焦时方向键归文本控件（§7.1/§7.2 的既有焦点语义，⛔ 不是缺口）。
