@@ -117,13 +117,17 @@ impl Rig {
 
     /// 投影画出的第 `index` 条小节线在**标尺带局部坐标系**里的列（= 界面自己的读数）。
     fn bar_line_px(&self, index: usize) -> f64 {
+        // `ModelRc` 上没有 `.rows()` / `.row()`（本文件上一版因此编译失败）。既有口径：
+        // 行数走 UFCS `slint::Model::row_count(&…)`（`host.rs:4406`、`live_surface.rs:1002`），
+        // 逐项走 `.iter().nth(…)`（`host.rs:4356` 的 `read_strings`，`iter()` 是 `Model`
+        // trait 的方法 ⇒ 顶部那句 `use slint::Model as _;` 由它消费）。
         let model = self.ui().get_bar_positions();
+        let rows = slint::Model::row_count(&model);
         assert!(
-            index < model.rows(),
-            "投影必须画出第 {index} 条小节线（实得 {} 条）",
-            model.rows()
+            index < rows,
+            "投影必须画出第 {index} 条小节线（实得 {rows} 条）"
         );
-        f64::from(model.row(index).expect("逐项必有值"))
+        f64::from(model.iter().nth(index).expect("逐项必有值"))
     }
 
     /// 引擎的走带位置（**事实源**，不是界面镜面）。
