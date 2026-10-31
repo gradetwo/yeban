@@ -633,11 +633,17 @@ pub fn set_roll_ticks_per_pixel(ui: &MainWindow, ticks_per_pixel: u64) -> bool {
 
 /// **窗口的视图态 → 一份投影**（唯一的"从窗口造投影"入口）。
 ///
-/// 它把**三个**视图态拼在一起：横向缩放（[`roll_ticks_per_pixel`]）、行高布局
-/// （[`track_height_layout`]）与 ⭐ 选中轨（[`selected_track_id`]，任务单 `#192`），
-/// 一起交给 [`ViewState::from_project_with_zoom_layout_and_selection`]。
+/// 它把**四个**视图态拼在一起：横向缩放（[`roll_ticks_per_pixel`]）、行高布局
+/// （[`track_height_layout`]）、⭐ 选中轨（[`selected_track_id`]，任务单 `#192`）与
+/// ⭐ 走带位置（[`playhead_tick`]），一起交给
+/// [`ViewState::from_project_with_zoom_cursor_layout_and_selection`]。
 /// 存在的理由是**别让每个重投影点各拼一遍** —— 拼漏一处，那一条路径就会
 /// 把用户调过的缩放 / 行高 / 选中轨静默清零（行高在 `ADR-0004` S1 已经付过同一种学费）。
+///
+/// ⭐ **播放头进投影**：自动化泳道的「当前值」（`cursor_tick`，进无障碍标签）
+/// 取的是**走带位置**。`playhead-ticks` 为 0（装配态）时与旧的
+/// `AUTOMATION_CURSOR_TICK` 逐位同值 ⇒ 默认帧不变；播放推进期间的逐跳更新走
+/// [`ProductionLoop::tick`]（那条路径不改几何，只重算标签）。
 ///
 /// # Errors
 ///
@@ -647,12 +653,22 @@ pub fn project_with_view_state(
     ui: &MainWindow,
 ) -> Result<ViewState, crate::bridge::BridgeError> {
     let selected = selected_track_id(ui);
-    ViewState::from_project_with_zoom_layout_and_selection(
+    ViewState::from_project_with_zoom_cursor_layout_and_selection(
         project,
         roll_ticks_per_pixel(ui),
+        playhead_tick(ui),
         &track_height_layout(ui),
         selected.as_deref(),
     )
+}
+
+/// 走带位置（窗口属性 `playhead-ticks`）—— 自动化"当前值"的求值 tick。
+///
+/// 唯一写者是 [`apply_transport`]（[`TransportReading::position_ticks`]，`#228`）；
+/// 这里只**读**。负数（不该出现）与越界一律回退到 `0`（工程起点 = 旧口径）。
+#[must_use]
+fn playhead_tick(ui: &MainWindow) -> u64 {
+    u64::try_from(ui.get_playhead_ticks()).unwrap_or(0)
 }
 
 /// ⭐ 任务单 `#192`：窗口上的**选中轨原文**（编辑器视图态）—— 唯一的读点。
@@ -4560,6 +4576,12 @@ pub struct ProductionLoop {
     engine: Rc<RefCell<EngineHost>>,
     /// UI 线程持有的电平消费端（[`crate::meters::MeterRuntime`]）。
     meters: MeterRuntime,
+    /// 上一次把自动化泳道标签对齐到的**求值 tick**（= 当时引擎的 `position_ticks`）。
+    ///
+    /// 只用来判"走带位置变没变"：没变就不动标签数组（⛔ 不每跳替换 `ModelRc`）；
+    /// 变了就按新位置重算标签（几何不动）。装配态是 0 —— 与投影的默认
+    /// `AUTOMATION_CURSOR_TICK` 同值 ⇒ 第一跳不会产生无谓的重写。
+    automation_cursor: u64,
 }
 
 impl ProductionLoop {
@@ -4630,6 +4652,13 @@ impl ProductionLoop {
         // ⭐ `#168`：工程目录必须在 `reload` **之前**写下（见函数文档的顺序契约）。
         engine.set_project_dir(project_dir.map(std::path::Path::to_path_buf));
         let rebuild = engine.reload(project, quanta)?;
+        // ⭐ **自动化工程的缓存种子**：`publish_automation` 的缓存只由 `Some(..)` 的那一跳
+        // 写（R68），而生产心跳在"标记没变"时会传 `None` —— 开局又没有编辑 ⇒ 缓存会一直空着，
+        // 直到用户第一次改工程。这里用装配点手里**本来就有的**工程把缓存种上：
+        // ① 自动化（音频侧 `SetParam`）从第一跳就生效，⛔ 不是"编辑之前不生效"；
+        // ② 走带期重算自动化标签（[`Self::tick`]）在**没有编辑**的播放里也有工程可用。
+        // ⛔ 不另存一份工程：种子写的就是 [`EngineHost::automation_project`] 那一份缓存。
+        engine.publish_automation(Some(project));
         let mut meters = MeterRuntime::empty();
         // ⛔ 本票修的那一处。`adopt` 的语义是"引擎换代 ⇒ 旧读数全部作废"
         // （见 `crate::meters::MeterRuntime::adopt`），它同时把消费端的所有权接过来。
@@ -4637,6 +4666,7 @@ impl ProductionLoop {
         Ok(Self {
             engine: Rc::new(RefCell::new(engine)),
             meters,
+            automation_cursor: crate::automation::AUTOMATION_CURSOR_TICK,
         })
     }
 
@@ -4649,6 +4679,7 @@ impl ProductionLoop {
         Self {
             engine: Rc::new(RefCell::new(EngineHost::new())),
             meters: MeterRuntime::empty(),
+            automation_cursor: crate::automation::AUTOMATION_CURSOR_TICK,
         }
     }
 
@@ -4802,6 +4833,26 @@ impl ProductionLoop {
         // ⭐ `#228`：**走带读数**（`Copy` 的一帧，一次原子镜面读）。
         // ⛔ 在借内只读、不写界面：界面写入一律在 `drop(engine)` 之后（`#212`）。
         let transport = engine.transport();
+        // ⭐ **自动化「当前值」跟到播放头**：标签里的数值取的是 `position_ticks`
+        // 那一刻的求值结果（投影期同一件事由 `playhead_tick` 交给投影）。只在**位置变了**
+        // 的那一跳重算 —— 几何（折线 / 带 / 轴）与位置无关 ⇒ ⛔ 不重投影、⛔ 不换几何数组。
+        //
+        // 工程取自 `EngineHost` 的**同一份**缓存（上面 `publish_automation` 刚写过）：
+        // "标记没变"的跳（`project` 是 `None`）也必须能算 —— 与 R68 同因。
+        let cursor_labels = if !view.automation_lanes.is_empty()
+            && transport.position_ticks != self.automation_cursor
+        {
+            self.automation_cursor = transport.position_ticks;
+            engine.automation_project().map(|project| {
+                crate::automation::labels_at_cursor(
+                    project,
+                    &view.automation_lanes,
+                    transport.position_ticks,
+                )
+            })
+        } else {
+            None
+        };
         // ⭐ `#86` 甲：**引擎发布腿 ⇒ 界面**的投影点（与上面三步同一个 tick、同一个 UI 线程）。
         //
         // ⛔ 顺序：必须在 `publish_project` 之后 —— 它读的就是那一步的结局。
@@ -4820,6 +4871,10 @@ impl ProductionLoop {
         // （`drop(engine)` 之后才写界面 ⇒ ⛔ 不重新引入持借写界面，`#212` 的崩法）。
         // 每一跳都写：播放中数字每帧变；停止后 `position_ticks` 保留 ⇒ 显示与引擎一致。
         apply_transport(ui, transport);
+        // ⭐ 自动化标签的落点：与时间码同一次读数（⛔ 不另读一次走带位置）。
+        if let Some(labels) = cursor_labels {
+            ui.set_automation_lane_labels(strings(&labels));
+        }
         ProductionTick {
             published_revision,
             publish_error,

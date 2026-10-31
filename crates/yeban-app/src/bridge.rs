@@ -3471,8 +3471,9 @@ impl ViewState {
     /// 投影一个工程、指定缩放，并指定自动化"当前值"的求值 tick（布局取默认）。
     ///
     /// 走带位置属**会话运行态**（`[MODEL-ISO-001]` 的第二层），不在 `YebanProjectV1` 里，
-    /// 因此静态投影固定用 [`crate::automation::AUTOMATION_CURSOR_TICK`]；需要真实播放头时
-    /// 走这个入口（一条后续线的接线动作，本线只提供可被调用的形状）。
+    /// 因此静态投影固定用 [`crate::automation::AUTOMATION_CURSOR_TICK`]；生产的真实播放头
+    /// 由 `host::project_with_view_state` 经
+    /// [`Self::from_project_with_zoom_cursor_layout_and_selection`] 传进来。
     ///
     /// # Errors
     ///
