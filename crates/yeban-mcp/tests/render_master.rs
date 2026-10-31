@@ -951,6 +951,83 @@ fn illegal_explicit_frames_are_refused_without_writing_a_file() {
     );
 }
 
+/// 审评 2026-10-31（P1-1）判据：`threads` 的值域护栏与逐字节等价 ——
+/// 0 / 负数 / 字符串 / 非整数 ⇒ `INVALID_PARAMETER_RANGE` 且不落盘；
+/// `threads: 4` 的产物摘要与文件字节与缺省渲染逐位相同，且 `data.request.threads` 如实回显。
+#[test]
+fn threads_param_is_guarded_and_changes_only_time_not_bytes() {
+    let scratch = Scratch::new("threads-param");
+    let (mut dispatcher, auth) =
+        dispatcher_with(&project(&Spec::default()), &scratch.join("demo.yeban"));
+    let out = scratch.join("never.wav");
+    let path = out.display().to_string();
+
+    for (threads, label) in [
+        (json!(0), "threads = 0"),
+        (json!(-1), "threads = -1"),
+        (json!("4"), "threads 是字符串"),
+        (json!(1.5), "threads 是非整数"),
+    ] {
+        let refused = call(
+            &mut dispatcher,
+            &auth,
+            json!({"format": "wav", "sampleRate": 48000, "threads": threads, "path": path}),
+        );
+        assert_domain_error(&refused, "INVALID_PARAMETER_RANGE", label);
+        assert!(
+            format!("{refused}").contains("`threads`"),
+            "报文必须点名 `threads`: {refused}"
+        );
+    }
+    assert!(
+        entries(&scratch.dir).is_empty(),
+        "被拒绝的渲染不得留下任何文件: {:?}",
+        entries(&scratch.dir)
+    );
+
+    // 缺省 vs threads = 4：摘要与文件字节逐位相同；回显如实（null vs 4）。
+    let default_out = scratch.join("default.wav");
+    let default_path = default_out.display().to_string();
+    let default = call(
+        &mut dispatcher,
+        &auth,
+        json!({"format": "wav", "sampleRate": 48000, "path": default_path}),
+    );
+    assert!(
+        default.get("error").is_none(),
+        "缺省渲染必须成功: {default}"
+    );
+    assert_eq!(
+        default["data"]["request"]["threads"],
+        Value::Null,
+        "缺省的 `data.request.threads` 回显必须是 null"
+    );
+    let threaded_out = scratch.join("threaded.wav");
+    let threaded_path = threaded_out.display().to_string();
+    let threaded = call(
+        &mut dispatcher,
+        &auth,
+        json!({"format": "wav", "sampleRate": 48000, "threads": 4, "path": threaded_path}),
+    );
+    assert!(
+        threaded.get("error").is_none(),
+        "threads = 4 渲染必须成功: {threaded}"
+    );
+    assert_eq!(
+        threaded["data"]["request"]["threads"], 4,
+        "`data.request.threads` 必须回显请求值 4"
+    );
+    assert_eq!(
+        threaded["data"]["masterDigest"], default["data"]["masterDigest"],
+        "threads = 4 的母带摘要必须与缺省渲染相同"
+    );
+    assert_eq!(
+        std::fs::read(&threaded_out).expect("读并行档"),
+        std::fs::read(&default_out).expect("读缺省档"),
+        "threads = 4 的文件字节必须与缺省渲染逐位相同"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // 判据 2b：墙钟只进报文（`renderedAtUnixMs`），⛔ 不进文件字节（#214）
 // ---------------------------------------------------------------------------

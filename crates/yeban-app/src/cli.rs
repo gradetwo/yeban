@@ -405,6 +405,9 @@ pub fn usage_text() -> String {
   --wav-frames <n>         --export-wav 的**精确帧数** (与 MCP render_master.frames 同量纲):
                            原样使用, 不再做秒×采样率换算; 与 --wav-seconds **互斥**;
                            必须是**正**整数 (0 帧是空产物, 按用法错误拒绝)
+  --render-threads <n>     --export-wav 的显式渲染线程数 (与 MCP render_master.threads 同量纲):
+                           缺省 = 单线程默认路径; 给了就透传给渲染器, 输出逐字节相同;
+                           必须是**正**整数 (0 线程没有语义, 按用法错误拒绝)
   --export-midi <path>     把当前工程导出成**标准 MIDI 文件** (SMF 1): conductor 轨
                            (tick 0 的 tempo + 拍号) + 每条含 MIDI 的轨道一条 MTrk
                            (通道按导出顺序 0,1,2,…); **PPQ 与工程一致 (960)**;
@@ -1250,6 +1253,13 @@ pub struct Options {
     /// 开启时限制器带 33 帧前瞻延迟，导出路径会**补偿**这 33 帧 ⇒ 输出长度与
     /// 时间轴不变，只有压限本身改变样本。
     pub wav_limiter: bool,
+    /// `--render-threads <n>`：`--export-wav` 的显式渲染线程数（审评 2026-10-31，P1-1）。
+    ///
+    /// 缺省（`None`）= 单线程默认路径，与今天逐字节相同。给了就透传给渲染器；
+    /// 输出与线程数无关（固定顺序汇聚）。取值必须是正的十进制整数（`0` /
+    /// 非整数 ⇒ [`ParseError::RenderThreadsInvalid`]，⛔ 不静默钳制）。
+    /// 与 MCP `render_master.threads` 同量纲。
+    pub wav_threads: Option<usize>,
     /// `--export-als <path>`：当前工程导出成实验性 Ableton `.als`（Gzip XML）
     /// `[ARCH-FMT-002]` / `[ROAD-M4-007]`，与 `--export-midi` 并列同属 `D47` 的 CLI 出口。
     ///
@@ -1766,6 +1776,10 @@ pub enum ParseError {
     ///
     /// ⛔ 不接受 `0`：零帧是**空产物**，按用法错误拒绝比写一个只有头的 WAV 更诚实。
     WavFramesInvalid(String),
+    /// `--render-threads` 的取值不是**正的**十进制整数线程数（审评 2026-10-31，P1-1）。
+    ///
+    /// ⛔ 不接受 `0`：零线程没有语义；⛔ 不静默钳制到 1（那会把用法错误藏成默认行为）。
+    RenderThreadsInvalid(String),
     /// `--wav-frames` 与 `--wav-seconds` 同时给了。
     ///
     /// 一个给**精确帧数**、一个给**秒数换算**，同时给必然有一个被静默丢掉 ——
@@ -1941,6 +1955,10 @@ impl fmt::Display for ParseError {
             Self::WavFramesInvalid(value) => write!(
                 formatter,
                 "`--wav-frames` 的取值 `{value}` 非法 (需要正的十进制整数帧数; 0 帧是空产物)"
+            ),
+            Self::RenderThreadsInvalid(value) => write!(
+                formatter,
+                "`--render-threads` 的取值 `{value}` 非法 (需要正的十进制整数线程数; 0 线程没有语义)"
             ),
             Self::WavFramesConflict => write!(
                 formatter,
@@ -2201,6 +2219,20 @@ pub fn parse(args: &[String]) -> Result<Options, ParseError> {
                     return Err(ParseError::WavFramesConflict);
                 }
                 options.wav_frames = Some(frames);
+            }
+            "--render-threads" => {
+                // ⭐ 审评 2026-10-31（P1-1）：与 `--wav-frames` 同款解析（正整数；0 拒绝）。
+                let value = take_value("--render-threads", inline, args, &mut cursor)?;
+                let threads = value
+                    .parse::<usize>()
+                    .map_err(|_| ParseError::RenderThreadsInvalid(value.clone()))?;
+                if threads == 0 {
+                    return Err(ParseError::RenderThreadsInvalid(value));
+                }
+                if options.wav_threads.is_some() {
+                    return Err(ParseError::DuplicateOption("--render-threads"));
+                }
+                options.wav_threads = Some(threads);
             }
             "--limiter" => {
                 // 布尔修饰开关：⛔ 不吃值（与 `--wav-*` 同档，只改 `--export-wav`
@@ -4605,6 +4637,8 @@ pub fn run_batch(options: &Options) -> Result<Vec<String>, CliError> {
         (options.wav_seconds.is_some(), "--wav-seconds"),
         (options.wav_frames.is_some(), "--wav-frames"),
         (options.wav_limiter, "--limiter"),
+        // ⭐ 审评 2026-10-31（P1-1）：`--render-threads` 同属 `--export-wav` 的修饰开关。
+        (options.wav_threads.is_some(), "--render-threads"),
     ] {
         if given && options.export_wav.is_none() {
             return Err(CliError::Usage(format!(
@@ -4769,6 +4803,8 @@ pub fn run_batch(options: &Options) -> Result<Vec<String>, CliError> {
         );
         // ⭐ 任务单 `#302`：per-call 限制器开关；默认关 ⇒ 旧导出逐字节不变。
         wav_options.limiter = options.wav_limiter;
+        // ⭐ 审评 2026-10-31（P1-1）：显式线程数透传；缺省 `None` ⇒ 单线程默认路径。
+        wav_options.threads = options.wav_threads;
         // ⭐ 任务单 `#168`：`--open` 那个文件所在目录 = 相对 SFZ 路径的第一个候选根
         //    ⇒ "样本放在工程旁边"在**任意 cwd** 下都读得到。样本形态（没有 `--open`）
         //    给 `None`，解析从仓库根开始（旧口径）。

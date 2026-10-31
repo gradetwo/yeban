@@ -731,6 +731,15 @@ pub struct RenderRequest {
     /// 只往响应里加 `data.contributions` / `data.contributionsBasis`。
     /// ⚠ 缺省时响应里**没有**这两个键，但 `data.request` 的回显多一个 `contributions: false`。
     pub contributions: bool,
+    /// ⭐ 审评 2026-10-31（P1-1）：调用方显式请求的渲染线程数（`None` = 缺省路径）。
+    ///
+    /// `None` ⇒ `RenderOptions::threads` 保持 `None` ⇒ 渲染器按 `unwrap_or(1)` 走**单线程**
+    /// （仓库实测结论：M2 Max 上 4/8/16/32/64 轨 × 30 秒，并行在每个规模都比单线程
+    /// 慢 1.9–4.4 倍；固定顺序汇聚保逐字节等价 —— 见 `yeban-render` 的线程数注释）。
+    /// 显式给值 ⇒ 透传给 `RenderOptions::with_threads`；输出与单线程逐字节相同
+    /// （固定顺序汇聚，与线程数无关；`yeban-render` 判据覆盖 1/2/4/8 线程等价）。
+    /// ⛔ 缺省绝不改：改缺省 = 推翻实测结论，需先量出真正的交叉点。
+    pub threads: Option<usize>,
     /// ⭐ `ADR-0030` D2：容器**样本格式**（母带 = [`SampleFormat::Pcm24`]，分轨 = `Float32`）。
     ///
     /// ⛔ **不是**用户可给的实参：[`validate`] 恒产出 `Pcm24`，所以 `yeban_render_master`
@@ -803,6 +812,8 @@ impl RenderRequest {
             "bitDepth": self.sample_format.bit_depth(),
             "channels": MASTER_CHANNELS,
             "contributions": self.contributions,
+            // ⭐ 审评 2026-10-31（P1-1）：显式线程数回显（`null` = 缺省单线程路径）。
+            "threads": self.threads,
         })
     }
 
@@ -1357,6 +1368,31 @@ pub fn validate(arguments: &Map<String, Value>) -> Result<RenderRequest, Fault> 
             ));
         }
     };
+    // ⭐ 审评 2026-10-31（P1-1）：显式线程数。缺省 `None` ⇒ 单线程默认路径不变；
+    // 给值必须是正整数（0 / 负数 / 非整数 ⇒ 显式拒绝，⛔ 不静默钳制、不静默忽略）。
+    let threads = match arguments.get("threads") {
+        None => None,
+        Some(Value::Number(n)) => match n.as_u64() {
+            Some(t) if t >= 1 => Some(usize::try_from(t).map_err(|_| {
+                Fault::domain(
+                    ErrorCode::InvalidParameterRange,
+                    format!("`threads` 超出本机可表示范围, 实际收到 {n}"),
+                )
+            })?),
+            _ => {
+                return Err(Fault::domain(
+                    ErrorCode::InvalidParameterRange,
+                    format!("`threads` 必须是正整数, 实际收到 {n}"),
+                ));
+            }
+        },
+        Some(other) => {
+            return Err(Fault::domain(
+                ErrorCode::InvalidParameterRange,
+                format!("`threads` 必须是正整数, 实际收到 {other}"),
+            ));
+        }
+    };
     // ⭐ `ADR-0030` D2：样本格式**不进参数面** —— `validate` 恒产出母带口径（24-bit 整数
     // PCM ＋ TPDF 抖动）。分轨导出在 `domain::stems` 里构造 `Float32` 的副本请求。
     Ok(RenderRequest {
@@ -1368,6 +1404,7 @@ pub fn validate(arguments: &Map<String, Value>) -> Result<RenderRequest, Fault> 
         target_lufs_bits,
         path,
         contributions,
+        threads,
         sample_format: SampleFormat::Pcm24,
     })
 }
@@ -2730,6 +2767,12 @@ pub fn build(
     }
     // 8. 真编译 + 真执行。
     let options = RenderOptions::l1(frames, MASTER_CHANNELS, sample_rate, project.rng_seed);
+    // ⭐ 审评 2026-10-31（P1-1）：显式线程数透传；缺省 `None` ⇒ 渲染器按 `unwrap_or(1)`
+    // 走单线程默认路径（输出逐字节不变；并行与否只影响耗时，不影响字节）。
+    let options = match request.threads {
+        Some(threads) => options.with_threads(threads),
+        None => options,
+    };
     // 每轨插入链：从 `TrackV3.devices` 投影（通道条增益/EQ/低通/**压缩** + Freeverb
     // + 卷积混响）。⭐ 压缩自 `#303` 起**执行**（见 `yeban_render::inserts` 模块头 §1.1；
     // 会压缩的源轨由 `compressing` 把声相搬到输出级 ⇒ 检波器在声相之前）。

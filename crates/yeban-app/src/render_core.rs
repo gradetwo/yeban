@@ -557,6 +557,8 @@ pub fn render_project_f32_with_plans_under(
         sample_rate: options.sample_rate,
         channels: options.channels,
         seed: options.seed,
+        // ⭐ 审评 2026-10-31（P1-1）：CLI `--render-threads` 透传；`None` ⇒ 单线程默认。
+        threads: options.threads,
         ..RenderOptions::default()
     };
 

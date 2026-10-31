@@ -671,6 +671,8 @@ fn stem_render_request(
         target_lufs_bits: None,
         path,
         contributions: false,
+        // ⭐ 审评 2026-10-31（P1-1）：分轨基线继承调用方的线程选择（缺省仍是单线程）。
+        threads: request.threads,
         sample_format: render::SampleFormat::Float32,
     }
 }

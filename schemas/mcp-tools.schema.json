@@ -698,7 +698,7 @@
         "yeban_render_master": {
           "title": "yeban_render_master (ADR-0020 新增键)",
           "type": "object",
-          "description": "`yeban_render_master` 的 `ADR-0020` 新增**可选**键。其余实参（`format` / `sampleRate` / `normalize` / `targetLufs` / `path` / `frames` / `durationSeconds`）继续由注册表派生。",
+          "description": "`yeban_render_master` 的 `ADR-0020` 新增**可选**键。其余实参（`format` / `sampleRate` / `normalize` / `targetLufs` / `path` / `frames` / `durationSeconds` / `threads`）继续由注册表派生。",
           "properties": {
             "contributions": {
               "type": "boolean",

@@ -1839,6 +1839,8 @@ fn export_wav_bit_depth_sample_rate_and_seconds_are_selectable_and_default_stays
         ("--wav-sample-rate", "44100"),
         ("--wav-seconds", "1"),
         ("--wav-frames", "100"),
+        // ⭐ 审评 2026-10-31（P1-1）：`--render-threads` 同属 `--export-wav` 的修饰开关。
+        ("--render-threads", "4"),
     ] {
         let run = invoke(&["--headless", flag, value]);
         assert_eq!(
@@ -1865,6 +1867,11 @@ fn export_wav_bit_depth_sample_rate_and_seconds_are_selectable_and_default_stays
         ("--wav-frames", "-1"),
         ("--wav-frames", "abc"),
         ("--wav-frames", "1.5"),
+        // ⭐ 审评 2026-10-31（P1-1）：`--render-threads` 的值域护栏（0 / 负数 / 非整数）。
+        ("--render-threads", "0"),
+        ("--render-threads", "-1"),
+        ("--render-threads", "abc"),
+        ("--render-threads", "1.5"),
     ] {
         let run = invoke(&[
             "--headless",
@@ -1880,6 +1887,44 @@ fn export_wav_bit_depth_sample_rate_and_seconds_are_selectable_and_default_stays
         );
     }
 
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// 判据（审评 2026-10-31，P1-1）：`--render-threads` 只改耗时、不改字节 ——
+/// 同一工程缺省导出与 `--render-threads 4` 导出的文件逐字节相同
+/// （固定顺序汇聚；非法值已由上一判据第 ④ 节覆盖）。
+#[test]
+fn export_wav_render_threads_change_only_time_not_bytes() {
+    let dir = scratch_dir("export-wav-threads");
+    let source = write_real_container(&dir, "threads.yeban");
+    let default_out = dir.join("default.wav");
+    let run = invoke(&[
+        "--open",
+        source.to_str().expect("utf8"),
+        "--export-wav",
+        default_out.to_str().expect("utf8"),
+    ]);
+    assert_eq!(run.code, 0, "缺省导出必须成功; stderr={}", run.stderr);
+    let threaded_out = dir.join("threaded.wav");
+    let run = invoke(&[
+        "--open",
+        source.to_str().expect("utf8"),
+        "--export-wav",
+        threaded_out.to_str().expect("utf8"),
+        "--render-threads",
+        "4",
+    ]);
+    assert_eq!(
+        run.code, 0,
+        "--render-threads 4 导出必须成功; stderr={}",
+        run.stderr
+    );
+    let default_bytes = std::fs::read(&default_out).expect("读缺省档");
+    let threaded_bytes = std::fs::read(&threaded_out).expect("读并行档");
+    assert_eq!(
+        threaded_bytes, default_bytes,
+        "--render-threads 4 的产物必须与缺省导出逐字节相同（固定顺序汇聚）"
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 

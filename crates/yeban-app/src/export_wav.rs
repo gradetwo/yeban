@@ -116,6 +116,11 @@ pub struct WavExportOptions {
     /// ⚠ 这是**每次调用**的开关：⛔ 不写进 `project.schema.json`（任务单 `#302`
     /// 的硬边界），由 CLI `--limiter` / MCP `yeban_render` 的 `limiter` 参数传入。
     pub limiter: bool,
+    /// ⭐ 审评 2026-10-31（P1-1）：显式渲染线程数（`None` = 缺省单线程路径）。
+    ///
+    /// 由 CLI `--render-threads` 传入（GUI 导出不设 ⇒ `None` ⇒ 单线程，与今天逐字节
+    /// 相同）。透传给 `render_core` 的 `RenderOptions::threads`；输出与线程数无关。
+    pub threads: Option<usize>,
 }
 
 /// `--wav-seconds` / UI 缺省时长（秒）。
@@ -134,6 +139,7 @@ impl Default for WavExportOptions {
             use_engine_source: true,
             bit_depth: BitDepth::Int24,
             limiter: false,
+            threads: None,
         }
     }
 }
@@ -1789,6 +1795,7 @@ mod tests {
                 use_engine_source: true,
                 bit_depth: BitDepth::Float32,
                 limiter: false,
+                threads: None,
             };
             export_wav_with_sfz_file_and_assets(&project, &path, options, None, &assets)
                 .unwrap_or_else(|error| panic!("{tag} 必须导出成功: {error}"));
