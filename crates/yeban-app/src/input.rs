@@ -1139,12 +1139,14 @@ impl InputContext {
         // 4. Alt 组合: 规范 §2.2 的 `Alt + 1` / `Alt + 2` 备选视图切换;
         //    `[UI-NOTE-005]` §3.5 项 1 的 `Alt+←/→` —— **1 tick** 超精细微调。
         //    另加**界面决定**的 `Alt+↑/↓` = 选上一条 / 下一条轨（键盘-only 用户的选轨入口）。
+        //    `Shift` 变体（`Alt+Shift+↑/↓`）**未被点名** ⇒ 如实放行，与第 3 步
+        //    `Cmd/Ctrl+Alt+Shift+方向` 的既有口径一致：新绑的键只占**它点名的那一格**。
         if modifiers.alt {
             return match key {
                 Key::Character('1') => Resolution::Action(Action::ShowView(View::Session)),
                 Key::Character('2') => Resolution::Action(Action::ShowView(View::Arrangement)),
-                Key::UpArrow => Resolution::Action(Action::SelectTrackBy(-1)),
-                Key::DownArrow => Resolution::Action(Action::SelectTrackBy(1)),
+                Key::UpArrow if !modifiers.shift => Resolution::Action(Action::SelectTrackBy(-1)),
+                Key::DownArrow if !modifiers.shift => Resolution::Action(Action::SelectTrackBy(1)),
                 Key::LeftArrow => Resolution::Action(Action::NudgeSelection {
                     step: NudgeStep::Tick,
                     direction: -1,
@@ -1544,6 +1546,15 @@ mod tests {
                 direction: -1,
             })
         );
+
+        // `Shift` 变体是**未点名**的组合 ⇒ 如实放行（新键只占它点名的那一格；与
+        // 第 3 步 `Cmd/Ctrl+Alt+Shift+方向` 的既有口径一致）。
+        let alt_shift = Modifiers {
+            shift: true,
+            ..Modifiers::alt()
+        };
+        assert_eq!(canvas().resolve(UpArrow, alt_shift), PassThrough);
+        assert_eq!(canvas().resolve(DownArrow, alt_shift), PassThrough);
 
         // 文本域：整体放行。
         assert_eq!(text_field().resolve(UpArrow, Modifiers::alt()), PassThrough);
