@@ -857,8 +857,8 @@ pub enum Action {
     AuditionMain,
     /// `]`: 试听 AI 提案分支。⚠ **键已绑定、动作尚无落地实现**（同 [`Self::AuditionMain`]，
     /// 两者是同一个 A/B 对的两半）。它**不在** `cli.rs` 的 `SHORTCUTS` 表里（`]` 不是表里
-    /// 的某一条 ⇒ ⛔ 这里不手抄表的条数：总数看 `[ShortcutRow; 37]` 的**类型标注**与判据
-    /// B11b 的 `rows.len()`），因此 `--print-shortcuts` 不打印它，但
+    /// 的某一条 ⇒ ⛔ 这里不手抄表的条数：总数看 `cli.rs` 里 `SHORTCUTS` 的**类型标注**与
+    /// 判据 B11b 的 `rows.len()`（⛔ 不复述数字），因此 `--print-shortcuts` 不打印它，但
     /// `host::action_has_implementation` 同样如实返回 `false`。
     AuditionProposal,
 }
