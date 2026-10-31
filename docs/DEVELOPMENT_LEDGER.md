@@ -17115,3 +17115,13 @@ helper 里 ⇒ 必须不认（防假绿）。两条臂在旧实现上都会失�
   补齐它记为 task **#103**（含一条新判据：`WarningCode` 必须被至少一处 `$ref` 引用，否则定义就是 §22.8 那种死名册）；
   ⛔ 不许把本片叠在判决未回的同一条线上（未证提交不堆叠），落地拆树后另起新线做。
 
+- **16:20Z 收盘读数**（本会话最后的现读）：
+  `cf1d5a15`（§22.13 磁盘与分支卫生批）→ run `41218623846` = `completed / success`；
+  `0ecd0808`（§22.14 本批）→ run `41219107701` = `completed / success`。
+  两枚都是**纯文档**形态（`plan`／`deny`／`checks`／`lockfile` success，`rust (workspace 全量)`／`rust (matrix)`／
+  `e2e`／`windows`／`macos` **skipped**）⇒ 按 §6.3-2 这是**空绿**，只证明文档与守卫面没坏，⛔ 不构成对代码面的判决。
+  ⚠ 因此 `0ecd0808` 之后若还有纯文档推送，其自身的 run 仍要按 `headSha` 读回（本条写入后**未再等它的 run** ——
+  读法：`gh run list --limit 10 --json databaseId,headSha --jq '.[] | select(.headSha=="'$(git log -1 --format=%H main)'") | .databaseId'`，
+  推送后头几秒 run 尚未登记，要**重试几次**才拿得到 id（本会话实测：一次空值 ⇒ `gh run view` 打空路径报 HTTP 404）。
+- **接手的会话只需做一件事**：按上面三条读 run `41218201348`；判绿则 land，判红则在本节下面补一条判决读数并修线，⛔ 两种情况下都不许留 pending 不读。
+
