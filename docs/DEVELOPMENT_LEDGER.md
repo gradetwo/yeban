@@ -16600,3 +16600,72 @@ helper 里 ⇒ 必须不认（防假绿）。两条臂在旧实现上都会失�
   本次只比对函数名集合，**没有**逐行比对正文（如实登记）。
 - ⇒ R115 家族至此覆盖 `yeban-{mcp,dsp,app,engine,ui-mcp,midi,midi-io,theory,ui-test-port}` 九 crate；
   `model`／`render`／`sfz`／`decode` 各有**自建**的等价扫描（§18.6 补记），不重复开线。
+
+---
+
+## 2026-10-31 13:42 —— §19 第十五批：**48 条判据开环**（`verify/section_pure.rs` 无门禁执行）⇒ `#[path]` 包装 ＋ 2 条陈旧判据 ＋ 主干一枚继承红
+
+### §19.1 缺陷：不是"再补一条判据"，而是**判定根本没被跑**
+
+- 审计出发点（第四轴：取值域）本身**没有查出缺陷** —— schema 有界键（`yeban_propose_section`
+  的 16 个）逐条核过：15 个有直接拒绝面覆盖，`harmonySeed` 走与 `melodySeed` 同一 `arg_u64` 路径
+  （豁免登记在 `tests/section_harmony_seed.rs:11-13`，覆盖在 `tests/section_melody_seed.rs` 判据 4）。
+- 真正的缺口在**执行面**：`crates/yeban-mcp/verify/section_pure.rs` 是零依赖 `rustc --test` 脚手架
+  （`#[path]` 引**真实源** `src/domain/section_build.rs` / `src/domain/ids.rs`），**不是 cargo 目标**；
+  `grep -rn 'section_pure' scripts/ .github/` 唯一命中是 `scripts/gates/clippy-changed.sh` 的
+  **clippy 元数据**分支 ⇒ 48 条判据**一条都没被 CI 执行**。
+- 其中「未知 `materialSource` 被响亮拒绝」（`MaterialSource::parse` 给 `accepted: ["project","theory"]`）
+  在 `tests/` 下**没有等价物** —— 孤本判据，开环 = 无保护。
+
+### §19.2 修法（先例 R50①：`crates/yeban-render/tests/pure_modules_scaffold.rs`）
+
+- 新增 `crates/yeban-mcp/tests/section_pure_scaffold.rs`（27 行）：
+  `#[path = "../verify/section_pure.rs"] mod section_pure_scaffold;`
+  —— 集成测试是**另一个 crate**，被包含的 `ids.rs` / `section_build.rs` 成为其子模块独立编译
+  （代价几秒编译时间，换来判据进门禁）。⛔ 不在 `mod` 上加 `#[allow(dead_code)]`（被包含文件自带，
+  重复触发 clippy `duplicated attribute`）。
+- `scripts/gates/check_test_criteria_presence.py` 登记 `path_wrapper` 例外（+6 行）。
+  门禁自报：**扫过 302 个 `tests/*.rs`／含判据 294／零判据 8／登记例外 8**（`[ok]`）。
+- 副作用：该文件成为 rustfmt 可达目标 ⇒ `cargo fmt` 重排 255 行（纯格式，无行为变化；
+  `cargo fmt --all --check` 本地 rc=0）。
+
+### §19.3 两条陈旧判据（开环腐烂的实证；修的是**契约**不是断言强度）
+
+1. `drums_and_melody_require_the_theory_source`（旧）断言"工程材料路径不得生成鼓组/旋律"。
+   现行契约（审计 `N1`，`section_build.rs`）是：鼓组在 `'project'` 上**放行**；旋律放行但**必须显式
+   `scale`**，否则 `INVALID_PARAMETER_RANGE` ＋ `hint` 指出补 `scale`。
+   ⇒ 改名 `project_source_allows_drums_and_melody_needs_an_explicit_scale`，对 `[None, Some("project")]`
+   两档断言：鼓组真产出 `· Drums` 声部／缺 `scale` 的旋律被拒（消息＋`hint` 逐字）／给 `scale` 真产出 `· Melody`。
+2. `theory_honours_custom_progression_and_scale` 旧断言 `data["theoryStep"] == "Progression::parse"`；
+   现行实现是"罗马数字解析失败 ⇒ 回落和弦符号展开 ⇒ 两者皆失败"，载荷
+   `{stylePreset, progression, romanError, symbolError}`，**无** `theoryStep`
+   （`tests/section_chord_symbols.rs` 同契约）⇒ 改为断言两个错误字段在场且 `theoryStep` **缺席**。
+- 两条都**未放松**：行为再变仍会红。教训：**没有执行面的判据会腐烂，且烂了没人知道** —— 这与
+  §18 的"死名册"是同一族缺陷（把"存在性"当"有效性"）。
+
+### §19.4 判决链（逐 job 读回，全部按 headSha 对齐）
+
+| 提交 | run | 结论 | 关键读数 |
+|---|---|---|---|
+| 线 `5e635e15` | `41165899391` | **success** | macos 腿 `Running tests/section_pure_scaffold.rs` 在场、**48 passed / 0 failed**；windows／workspace 同轮真跑；矩阵腿 plan 判 `skipped`（⛔ 不计绿） |
+| 别线 `7e695432` | `41167400569` | **failure（继承红，非本线）** | macos／windows／app 三腿同红在 `clippy` 步：`error[E0063]: missing field proposal_source in initializer of live::LiveWiringOptions` |
+| merge `92d410d7` | — | 未推（远端已先动） | 推 main 被拒（non-fast-forward）⇒ 先合 origin/main 再修继承红 |
+| 修复 `650c0c44` | `41169702791` | **success** | `rust (workspace 全量)` **43m34s**，`Running` **720**／`test result:` **1,106**／`FAILED` **0**；macos 27m04s（289／304／0）；windows 37m42s；checks 1m31s；workspace 腿内 `test result: ok. 48 passed; 0 failed` 在场 |
+
+### §19.5 继承红修复（集成者动作，不代签别线语义）
+
+- 站点：`crates/yeban-app/tests/export_dialog_modal_closure.rs:127` 的 `LiveWiringOptions { … }`
+  字段**全列**字面量（写于 `proposal_source` 字段落地之前）⇒ 补
+  `proposal_source: yeban_app::proposals::ProposalSource::none()`，与同目录兄弟字面量同款。
+- 实测其余字面量：`grep -rl 'LiveWiringOptions {'` 20 个文件，除本处外**要么带该字段、要么
+  `..LiveWiringOptions::default()`**（`roll_edit_tools.rs` 与 `mixer_keyboard_nudge.rs` 是后者）⇒ 只此一处破。
+- 未改别线语义（只补字段），`cargo fmt --all --check` 本地 rc=0；`yeban-app` 属重依赖 ⇒ **不本机编译**，
+  以 CI 三腿 clippy 通过为准（macos/windows/workspace 均已过 clippy 步）。
+
+### §19.6 下一单（已实测，⛔ 重复普查）
+
+- `crates/yeban-mcp/verify/render_pure.rs`：**同形态开环**（`rustc --test` 的 ~49 条纯逻辑判据，
+  `#[path]` 引 `render_math.rs` / `render_clip_math.rs`），`scripts/`／`.github/` 无执行者 ⇒
+  可照本批 `#[path]` 包装（差异：它用 `extern crate self as yeban_model`，包装后需实测别名是否仍成立）。
+- `yeban-mcp/verify/*.py`（`audio_pins.py` 等）自登记"不是 cargo 目标、不参与任何门禁" ⇒ 属**另类**
+  开环，动它前先确认它们是否被 CI 的其他脚本调用（避免重复实现）。

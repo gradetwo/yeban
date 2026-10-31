@@ -12,6 +12,39 @@
 > `docs/ledger/phase-status.md` 的叙事条目**停在 R1144**（2026-10-26）⇒ ⭐ 读进度以
 > `DEVELOPMENT_LEDGER.md` 的尾部为准，⛔ 不要以为 R1144 之后没干活。
 
+### 0.6.0s ⭐ 尾批（2026-10-31 13:42）：**`verify/section_pure.rs` 的 48 条判据此前无任何门禁执行**（开环）⇒ 用 R50① 的 `#[path]` 包装接进 cargo 门禁；顺手揪出 2 条陈旧判据 ＋ 主干一枚继承红
+
+- **缺口（实测，非推测）**：`grep -rn 'section_pure' scripts/ .github/` 只命中
+  `scripts/gates/clippy-changed.sh` 的 **clippy 元数据**分支 —— 那个文件是零依赖 `rustc --test`
+  脚手架，**不是 cargo 目标**，所以 48 条判据一条都没被 CI 执行。其中「未知 `materialSource`
+  被响亮拒绝」在 `tests/` 下**没有等价物**（`MaterialSource::parse` 的实现级断言只在该脚手架里）。
+- **修法（先例 R50①）**：新增 `crates/yeban-mcp/tests/section_pure_scaffold.rs`（27 行，
+  `#[path = "../verify/section_pure.rs"] mod section_pure_scaffold;`），把脚手架整体搬进集成测试
+  目标；`scripts/gates/check_test_criteria_presence.py` 登记一条 `path_wrapper` 例外（+6 行）。
+  门禁自报：**扫过 302 个 `tests/*.rs`／含判据 294／零判据 8／登记例外 8**。
+- **⚠ 陈旧判据 2 条（"开环"直接导致腐烂的证据）**：① `drums_and_melody_require_the_theory_source`
+  断言"工程材料路径不得生成鼓组/旋律" —— **审计 N1 早已改成**：鼓组在 `'project'` 上**放行**，
+  旋律放行但**必须显式 `scale`**（`section_build.rs` 的响亮拒绝带 `hint`）⇒ 判据改名为
+  `project_source_allows_drums_and_melody_needs_an_explicit_scale`，断言消息＋`hint`＋真产出声部；
+  ② `theory_honours_custom_progression_and_scale` 断言载荷 `data["theoryStep"] == "Progression::parse"`，
+  而现行实现是"罗马数字失败 ⇒ 回落和弦符号 ⇒ 两者都失败"给 `{romanError, symbolError}`（**无** `theoryStep`）
+  ⇒ 改为断言两个错误字段在场且 `theoryStep` 缺席。两条都**未放松**：行为再变仍会红。
+- **判决链**：s20 线 `5e635e15` / run `41165899391` **success**（macos 腿 `Running tests/section_pure_scaffold.rs`
+  在场、`test result: ok. 48 passed; 0 failed`；windows／workspace 同轮真跑；矩阵腿按 plan `skipped` ⛔ 不计绿）
+  → merge `92d410d7`。**继承红**：与此同时别线落地 `7e695432`（export-modal-esc）的 run `41167400569`
+  **failure**（macos／windows／app 三腿都红在 `clippy` 步，`error[E0063]: missing field proposal_source
+  in initializer of live::LiveWiringOptions`，站点是 `tests/export_dialog_modal_closure.rs:127` 的字段全列
+  字面量，早于 `proposal_source` 字段落地）⇒ 集成修复 `650c0c44`（补 `proposal_source: …::none()`，
+  与 `tests/` 下既有 `ProposalSource::none()` 字面量同款；实测全部 20 个构造文件里其余各处要么带该字段、
+  要么 `..default()`，只有这一处破）。
+- **合流判决**：`650c0c44` / run `41169702791` **success**：`rust (workspace 全量)` 43m34s，
+  `Running …tests/` **720**／`test result:` **1,106**／`FAILED` **0**，`test result: ok. 48 passed; 0 failed` 在场；
+  macos 27m04s（289／304／0，48 passed 在场）｜windows 37m42s｜checks 1m31s。矩阵腿 `skipped`（plan 判
+  workspace_wide）⇒ 本批的代码面判决**只**来自这三条真跑的腿。
+- **下一单候选（已实测，⛔ 重查）**：`crates/yeban-mcp/verify/render_pure.rs` 是**同一形态**的开环脚手架
+  （`rustc --test` 的 ~49 条纯逻辑判据，`#[path]` 引 `render_math.rs` / `render_clip_math.rs`），
+  同样没有门禁执行 ⇒ 可照本批包装（注意它用 `extern crate self as yeban_model`，包装时需实测）。
+
 ### 0.6.0r ⭐ 尾批（2026-10-31 06:45）：**R115 守卫的四份副本里有一个真缺陷**（嵌套已闭合 `fn` 切窗口／借界）＋ 覆盖扩到 dsp/app/ui-mcp
 
 - **缺陷（本批的核心）**：守卫找"站点所在函数体"时取的是**上方最近的 `fn`**。若那是**已闭合的
