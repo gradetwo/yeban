@@ -1161,6 +1161,10 @@ fn wire_callbacks(
     // ⭐ `[UI-NOTE-001]` 剪辑选中态 ⇒ 卷帘作用域：与无头装配（`live_surface.rs`）调的是
     // **同一个** `host::wire_clip_scope`（选中是视图态，写属性 + 重注入，⛔ 不 `commit_ops`）。
     host::wire_clip_scope(ui, Rc::clone(&view), undo);
+    // ⭐ 点编曲标尺 ⇒ 走带定位：引擎 `Rc` 与 `wire_transport` **同一个**（点标尺与按
+    // `Space` 回起点作用在同一条走带上），投影 `Rc` 与 `wire_clip_scope` / `wire_scene_launch`
+    // **同一个**（网格右缘要从活投影读，换工程之后跟着换）。⛔ 不提交 `Op`。
+    host::wire_ruler_seek(ui, Rc::clone(engine), Rc::clone(&view));
     host::wire_scene_launch(ui, Rc::clone(engine), view);
     ui.on_accept_ai_proposal(|| trace("accept-ai-proposal"));
     ui.on_reject_ai_proposal(|| trace("reject-ai-proposal"));

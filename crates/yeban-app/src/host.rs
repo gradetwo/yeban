@@ -5743,6 +5743,105 @@ pub fn wire_clip_scope(ui: &MainWindow, view: Rc<RefCell<ViewState>>, undo: Opti
     });
 }
 
+// ===========================================================================
+// 编曲标尺点击 ⇒ 走带定位（`arrangement-ruler` 的点击源）
+// ===========================================================================
+
+/// 标尺点击的**目标 tick**（纯函数）：标尺带的局部 x ⇒ 走带位置。
+///
+/// 三条口径（每一条都是决定）：
+///
+/// - **同一份缩放**：`ticks_per_pixel` 就是投影用的那一个（[`roll_ticks_per_pixel`]，与
+///   `bridge::tick_to_px` 同源）⇒ "画在哪一格"与"落到哪一 tick"是同一个整数网格。
+///   反向用 [`crate::bridge::px_to_tick`]（**向下取整**）：一个像素列 `p` 覆盖
+///   `[p×tpp, (p+1)×tpp)` 这段 tick，因此 `tick_to_px(本函数的结果) == p` 恒成立
+///   （判据把这条往返钉住 —— 点在第 100 列，光标就停在第 100 列，不多不少一列）；
+/// - **左端 = 工程起点**：负的 x ⇒ `0`（夹紧；`u64` 没有负数，⛔ 不回绕）；
+/// - **右端 = 投影网格的右缘** `span_ticks`：点在最后一条小节线之外 ⇒ 停在那里，
+///   ⛔ 不把光标送去一个画面上没有网格参照的地方（那里连小节线都没画）。
+///
+/// 非有限的 `x` ⇒ `None` = **不响应**（⛔ 不把 NaN 当成"往右无穷远"，与
+/// [`clip_drag_target_tick`] 对非有限位移同款处理）。
+///
+/// ⚠ **不吸附**：小节 / 拍吸附在 Normative 规范里没有定义（`Desktop UI/UX` 那份是
+/// 参考件、非绑定），因此这里如实做"逐 tick 定位"。该语义缺口登记为
+/// `docs/ledger/app-ruler-seek-notes.md` 的 **needs R1**，⛔ 不私自发明网格。
+#[must_use]
+pub fn ruler_seek_tick(px: f32, ticks_per_pixel: u64, span_ticks: u64) -> Option<u64> {
+    if !px.is_finite() {
+        return None;
+    }
+    // 向下取整到像素列（与 `tick_to_px` 的整数除法互为逆运算）。`f32 → u32` 的 `as` 既
+    // **截断**又**饱和**：负数已被上面的 `max(0.0)` 收编，而一个天真的巨大 x 落在
+    // `u32::MAX` 列上 —— 那一列必然越过任何真实网格，于是下面两条口径把它夹回右缘。
+    let column = px.max(0.0) as u32;
+    // 乘积溢出 `u64` 只可能来自那种饱和列（窗口宽度到不了）⇒ 视作"在最右缘之右"。
+    let tick = crate::bridge::px_to_tick(column, ticks_per_pixel.max(1)).unwrap_or(u64::MAX);
+    Some(tick.min(span_ticks))
+}
+
+/// 投影网格的**右缘** tick（纯函数）：`bar_positions.len()` × 一小节的 tick。
+///
+/// `bridge` 画的是**第 0..len-1 条**小节线（`bar_positions` 逐项 = `bar × bar_ticks`），
+/// 因此最后一条线右边那一整格仍然属于网格，其右缘 = `len × bar_ticks`。
+/// 溢出 ⇒ `u64::MAX`（真实工程到不了；饱和而⛔ 不回绕）。
+#[must_use]
+pub fn ruler_span_ticks(bar_lines: usize, bar_length_ticks: u64) -> u64 {
+    u64::try_from(bar_lines)
+        .ok()
+        .and_then(|lines| lines.checked_mul(bar_length_ticks))
+        .unwrap_or(u64::MAX)
+}
+
+/// 把**标尺点击**接到引擎的走带定位上（`arrangement-ruler` 的唯一点击源）。
+///
+/// | 环节 | 事实 |
+/// | :--- | :--- |
+/// | 命中 | `ui/workspace/arrangement_view.slint` 标尺带里的零像素 `TouchArea` |
+/// | 上报 | `ruler-seek(x)` —— 只报**局部像素**（⛔ 界面零算术） |
+/// | 换算 | [`ruler_seek_tick`]（唯一的 px→tick 落点） |
+/// | 提交 | [`EngineHost::seek`] = 既有 `TransportCommand::SeekTicks` 的唯一发送口（与 `#227` 回起点同一条路） |
+/// | 回写 | [`apply_transport`] —— 走带光标 / 时间码的**唯一**写者，读数取自引擎而不是界面 |
+///
+/// ⛔ 这里**不碰工程、不碰撤销栈**：定位是会话运行态（`MODEL-ISO-001` 的第二层），
+/// 一次 `Op` 都不提交 ⇒ `commit_count` / `undoable` / `projectDigest` 全部 Δ0。
+///
+/// 两个 `Rc` 与产品装配**同源**：`engine` 是 `wire_transport` / `wire_keys` 拿的**同一个**
+/// `Rc<RefCell<EngineHost>>`（因此"界面点标尺"与"键位回起点"作用在同一个走带上），
+/// `view` 是 `wire_clip_scope` / `wire_scene_launch` 拿的**同一个**活投影。
+pub fn wire_ruler_seek(
+    ui: &MainWindow,
+    engine: Rc<RefCell<EngineHost>>,
+    view: Rc<RefCell<ViewState>>,
+) {
+    let weak = ui.as_weak();
+    ui.on_ruler_seek(move |x: f32| {
+        let Some(ui) = weak.upgrade() else {
+            debug_assert!(false, "MainWindow 在回调执行期间被销毁");
+            return;
+        };
+        // 网格右缘来自**投影自己**的两个读数（小节线条数 × 一小节 tick），⛔ 不在这里
+        // 重算 `bar_count`（那条公式在 `bridge` 里，重算一遍就是第二个事实源）。
+        let span = {
+            let state = view.borrow();
+            ruler_span_ticks(state.bar_positions.len(), state.bar_length_ticks)
+        };
+        let Some(tick) = ruler_seek_tick(x, roll_ticks_per_pixel(&ui), span) else {
+            return;
+        };
+        // ⭐ `#212` 同款两道防线：这个回调与 `on_toggle_play` 共用同一个引擎 `Rc`，
+        // 借不到就**降级**（一行 eprintln，走带与界面一位不动），⛔ 不 panic、⛔ 不 abort。
+        let Ok(mut engine) = engine.try_borrow_mut() else {
+            eprintln!("[yeban-app] 忽略 ruler-seek：引擎正被同一线程借用（重入）⇒ 本次点击无效");
+            return;
+        };
+        let reading = engine.seek(tick);
+        // ⭐ 作用域纪律：**先放借、再碰界面**（`apply_transport` 写三个属性）。
+        drop(engine);
+        apply_transport(&ui, reading);
+    });
+}
+
 /// 把界面的**输入法事件源**接到 `[UI-A11Y-002]` 的状态机上（§7.2）。
 ///
 /// ## 接的是什么（上游核验，不是猜的）
