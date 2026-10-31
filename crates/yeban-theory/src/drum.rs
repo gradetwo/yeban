@@ -1073,6 +1073,11 @@ mod tests {
             .expect("cell 1 is in the grid");
         assert_eq!(second.tick, slot);
         assert!(
+            swung.hits().len() >= 2,
+            "夹具至少要有一对命中（少于 2 个时 `windows(2)` 恒真）: {}",
+            swung.hits().len()
+        );
+        assert!(
             swung
                 .hits()
                 .windows(2)
@@ -1196,6 +1201,10 @@ mod tests {
         let mut rebuilt = Vec::new();
         for bar in 0..3 {
             let slice = pattern.hits_in_bar(bar);
+            assert!(
+                !slice.is_empty(),
+                "第 {bar} 小节必须有命中（否则下面那条 `.all` 恒真）"
+            );
             assert!(slice.iter().all(|hit| hit.bar == bar));
             rebuilt.extend_from_slice(slice);
         }
