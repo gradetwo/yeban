@@ -12,11 +12,11 @@
 //! | 判据 | 证的事 |
 //! | :--- | :--- |
 //! | ①（30 轨 ⇒ 末行不可寻址） | 滚动前 `track-29-header` **不在控件树里**（可视区外的行不可达） |
-//! | ②（滚轮 +400 ⇒ 仍在树里的每一行上移 400） | `PointerScrolled{delta_y>0}` ⇒ 两次快照交集的每个包头 y 恰好减 400，且更大索引的行进入树中 ⇒ 正方向的语义 = "看下面的行"；再滚 −400 ⇒ 快照复原 |
+//! | ②（向下滚 400 ⇒ 仍在树里的每一行上移 400） | `PointerScrolled{delta_y=-400}` ⇒ 两次快照交集的每个包头 y 恰好减 400，且更大索引的行进入树中；再向上滚 400 ⇒ 快照复原（⚠ 符号：上游把 `content-y` 夹在 `[h−ch, 0]` 且 delta **不取反** ⇒ 静止位上正 `delta_y` 被夹回 0，什么也不动） |
 //! | ③（滚到底 ⇒ 末行可达，且夹紧） | 大幅滚动 ⇒ `track-29-header` 可寻址且 y 落在行区内；再滚一次快照逐位不变（`ensure_in_bound`） |
 //! | ④（标尺 / 章节卡片不动） | 滚动只动行区：`arrangement-ruler` 与 `section-0-card` 的 y 逐位不变 |
 //! | ⑤（内容不高 ⇒ 一位不动） | 演示工程（6 轨）滚轮 ⇒ 所有包头 y 不变（默认帧 / golden 不漂移） |
-//! | ⑥（前置：内容高注入到位） | 主窗口的 `arrangement-sheet-height` = 夹具最后一行底沿 − 行区上沿，且**高出窗口** —— 没有它，上游 `Flickable` 的 `is_allowed_scroll_direction` 恒 false ⇒ 滚轮被**静默忽略并转发给父级**（run 41208446082 的两条红正是这条断链的形态） |
+//! | ⑥（前置：内容高注入到位） | 主窗口的 `arrangement-sheet-height` = 夹具最后一行底沿 − 行区上沿，且**高出窗口** —— 没有它，上游 `Flickable` 的 `is_allowed_scroll_direction` 恒 false ⇒ 滚轮被**静默忽略并转发给父级**（`41208446082` 那票"一位都不动"的红就有两个独立原因：内容高别名 + 滚轮符号，见账本 §4） |
 //!
 //! ## 边界（不许当成已证）
 //!
@@ -162,7 +162,7 @@ impl Rig {
     /// 判据⑥：滚轮语义的前置条件 —— 内容高注入到位，且**高出窗口**。
     fn assert_content_overflows(&self) {
         let injected = self.assert_injected();
-        let window_height = f32::try_from(WINDOW.height).expect("窗口高可转 f32");
+        let window_height = WINDOW.height as f32;
         assert!(
             injected > window_height,
             "夹具内容高 {injected} 必须高出窗口 {window_height}，否则滚动容器不成立"
@@ -172,7 +172,7 @@ impl Rig {
     /// 判据⑤的前半：内容高注入到位，且**不高出窗口** ⇒ 偏移恒 0。
     fn assert_content_fits(&self) {
         let injected = self.assert_injected();
-        let window_height = f32::try_from(WINDOW.height).expect("窗口高可转 f32");
+        let window_height = WINDOW.height as f32;
         assert!(
             injected < window_height,
             "演示工程内容高 {injected} 必须不高出窗口 {window_height}，否则判据⑤证的不是'不溢出'"
@@ -190,7 +190,23 @@ impl Rig {
         injected
     }
 
-    fn scroll_wheel(&mut self, delta_y: f32) {
+    /// 向下滚 `amount` 像素（= 看下面的行）。
+    ///
+    /// ⚠ 上游把 `content-y` 夹在 `[视口高 − 内容高, 0]`（`items/flickable.rs` 的
+    /// `ensure_in_bound`：`min = h - ch`、`max = 0`），而 `new_pos = current + delta`
+    /// **不取反** ⇒ 静止位（`content-y = 0`）上**正的 `delta_y` 被夹回 0**、什么也不动。
+    /// "看下面的行"因此必须送**负** delta（这也是真实滚轮向下的符号）。
+    /// 判据因此用两个具名助手，把符号留在一个地方。
+    fn scroll_rows_down(&mut self, amount: f32) {
+        self.dispatch_wheel(-amount);
+    }
+
+    /// 向上滚 `amount` 像素（= 回到上面的行）。
+    fn scroll_rows_up(&mut self, amount: f32) {
+        self.dispatch_wheel(amount);
+    }
+
+    fn dispatch_wheel(&mut self, delta_y: f32) {
         self.port.window().dispatch(WindowEvent::PointerScrolled {
             position: self.wheel_point,
             delta_x: 0.0,
@@ -200,7 +216,7 @@ impl Rig {
     }
 }
 
-/// ① + ②：滚轮正方向 = 看下面的行；仍在树里的每一行恰好上移该 delta。
+/// ① + ②：向下滚轮 = 看下面的行；仍在树里的每一行恰好上移该距离。
 #[test]
 fn wheel_scroll_moves_rows_up_by_the_delta() {
     let mut rig = Rig::with_project(project_with_24_extra_tracks());
@@ -215,7 +231,7 @@ fn wheel_scroll_moves_rows_up_by_the_delta() {
         "滚动前末行不在控件树里 —— 这正是本片要修的缺口（它不可达）"
     );
 
-    rig.scroll_wheel(400.0);
+    rig.scroll_rows_down(400.0);
 
     let after = rig.visible_rows();
     let moved: Vec<(usize, i32, i32)> = before
@@ -244,14 +260,14 @@ fn wheel_scroll_moves_rows_up_by_the_delta() {
     let deepest_after = after.last().expect("滚动后必有可见行").0;
     assert!(
         deepest_after > deepest_before,
-        "正方向滚动必须把更大索引的行带进控件树（{deepest_before} → {deepest_after}），否则方向语义不成立"
+        "向下滚动必须把更大索引的行带进控件树（{deepest_before} → {deepest_after}），否则方向语义不成立"
     );
 
-    rig.scroll_wheel(-400.0);
+    rig.scroll_rows_up(400.0);
     assert_eq!(
         rig.visible_rows(),
         before,
-        "滚回 −400 ⇒ 快照逐位复原（没有累计漂移）"
+        "向上滚回 400 ⇒ 快照逐位复原（没有累计漂移）"
     );
     assert!(!rig.has_row(ROWS - 1), "回到顶部 ⇒ 末行重新不可寻址");
 }
@@ -262,7 +278,7 @@ fn scrolling_to_the_end_clamps_and_reveals_the_last_row() {
     let mut rig = Rig::with_project(project_with_24_extra_tracks());
     rig.assert_content_overflows();
 
-    rig.scroll_wheel(100_000.0);
+    rig.scroll_rows_down(100_000.0);
 
     let rows_top = rig.rows_top();
     let window_height = i32::try_from(WINDOW.height).expect("窗口高可转 i32");
@@ -278,7 +294,7 @@ fn scrolling_to_the_end_clamps_and_reveals_the_last_row() {
     );
 
     let snapshot = rig.visible_rows();
-    rig.scroll_wheel(100_000.0);
+    rig.scroll_rows_down(100_000.0);
     assert_eq!(rig.visible_rows(), snapshot, "到底之后不再移动（夹紧）");
 }
 
@@ -290,7 +306,7 @@ fn scrolling_does_not_move_the_ruler_or_the_section_cards() {
     let ruler_before = rig.y_of("arrangement-ruler");
     let card_before = rig.y_of("section-0-card");
 
-    rig.scroll_wheel(400.0);
+    rig.scroll_rows_down(400.0);
 
     assert_eq!(
         rig.y_of("arrangement-ruler"),
@@ -313,7 +329,7 @@ fn short_projects_do_not_scroll() {
     let before: Vec<i32> = (0..rig.view.tracks.len())
         .map(|index| rig.y_of(&format!("track-{index}-header")))
         .collect();
-    rig.scroll_wheel(400.0);
+    rig.scroll_rows_down(400.0);
     let after: Vec<i32> = (0..rig.view.tracks.len())
         .map(|index| rig.y_of(&format!("track-{index}-header")))
         .collect();
