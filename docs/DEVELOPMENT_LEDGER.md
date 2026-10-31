@@ -17386,3 +17386,35 @@ helper 里 ⇒ 必须不认（防假绿）。两条臂在旧实现上都会失�
   `ls` 现读 `.worktrees/*/.cargo-home` = **无匹配**（本轮），而 `.worktrees` 总量 1 012 MB 里装的是 s29 那份工作树；
   ⇒ 那句 911 MB 的读数是**当时那棵树**的（`line-gate.sh` 把 `CARGO_HOME` 指到仓库父目录）⇒
   线拆完就随树消失，⛔ 不要把它当常驻孤儿去删，也不要当"还在占空间"。
+
+### 22.22 三枚主干文档 run 的读回 ＋ §22.20 第④条（`ops`）的**下一步到底缺什么**（2026-11-01，⛔ 只读）
+
+- ✅ **主干三枚文档提交各自的 run 都读回了**（⛔ 不是"tip 代表整批"，一提交一 run）：
+  `ea6ae47b` → run **`41228618445`**、`0ec8a2a0` → **`41229399936`**、`11654ff3` → **`41229498792`**，
+  三者 `conclusion=success` 且 `headBranch=main`。
+  ⚠ 但按 §6.3-2「空绿不算验证」，这三枚的 `success` 里**只有 `checks` 腿是真跑过的**：
+  现读 `41229498792` 的 `checks` 作业 **19/19 步 `success`、0 步 skipped**，
+  其余 `e2e` / `rust (matrix.crate)` / `rust (workspace 全量)` / `windows` / `macos` = **`skipped`**
+  ⇒ 这三枚对代码零证明（它们本来就只动 `docs/`），能证明的是**七道文档守卫在 CI 上真的执行了**。
+- ⭐ **s29 线第三枚 `25a5d06d` 的 run `41229171684` 读数（截至本节撰写时）**：
+  `lockfile`／`deny`／`plan`／`checks`／`e2e (MCP stdio 复跑 / 幂等重放契约)`／`rust (yeban-ui-mcp)` = **`success`**，
+  `rust (workspace 全量)` = **`skipped`**（窄矩阵 ⇒ 与 §22.18 的口径一致），
+  目标腿 `rust (yeban-mcp)`（作业 `124619651549`）**步骤 6 `clippy (-D warnings)` = `success`、步骤 7 `test` 在跑**，
+  `windows`／`macos` 在跑 ⇒ **判决 pending**，⛔ 本节不写成通过。
+  ⚠ `e2e` 腿本轮**真的执行过**（不是上一轮的 skip），这是那条"真实响应必须仍然通过 `outputSchema`"的独立证据。
+- **§22.20 第④条的后续现读**（对象：`Op` 的顶层变体；单位：条）：
+  从 `crates/yeban-model/src/ops.rs` 的 `pub enum Op {` 花括号配对内**逐行现读** ⇒ **55** 个结构体型变体
+  （`AddNote` … `Batch`，`Batch` 的载荷是 `{ ops: Vec<Op>, description: String }` ⇒ **自递归**）。
+- ⭐ **由此得到一条不需要知道变体名的诚实不变式**：`serde_json` 的外部标签编码 ⇒
+  **每个元素对象恰好只有 1 个键**，键名就是变体名（`{"SetSection":{…}}`／`{"Batch":{…}}`；`Batch` 里那两条
+  `ops`/`description` 属于**载荷**那一层，不打破"顶层恰好一键"）。
+  ⇒ 所以"声明 `ops` 元素是**恰好一键的对象**"这条路是**真命题**，而它现在被卡住的原因不是名册，是**校验器关键字**：
+  现读 `output_schema.rs` 里 `validate` 路径实际只认 **`type` / `required` / `const` / `enum` / `properties` / `items`**
+  六个关键字 ⇒ `minProperties` / `maxProperties` / `propertyNames` **写了也不会被执行**（那才是假广播）。
+- ⏭ **因此 `ops` 这一处有三条诚实路线**（登记供后续裁决，⛔ 本片不选）：
+  **甲**＝给校验器补 `minProperties`/`maxProperties`（键数不变式）＋ `propertyNames`（键名 ∈ 55 名册），
+  名册**从 `ops.rs` 现读**而非手抄（`ops.rs` 测试里已有"从源码抽变体名"的先例可复用）；
+  **乙**＝逐变体载荷名册 → 每变体一份完整 `properties`（工作量＝55 个拼装点，且 55 里多数变体在提案路径上根本不出）；
+  **丙**＝schema 维持"数组的元素是对象"，另加一条**运行时时**断言"元素键数恒为 1"的 Rust 判据（不声明、只验证）。
+  ⚠ 无论走哪条，`Batch` 的自递归都意味着 s29 新加的递归会**按数据深度无限下钻** —— 本机未证它有没有上限，
+  但校验对象是**我们自己构造的响应**，深度由提案规模决定，⛔ 不要为了这个先加限制而丢掉诚实性。
