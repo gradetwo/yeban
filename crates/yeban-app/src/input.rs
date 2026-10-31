@@ -197,6 +197,9 @@ pub enum PhysicalKey {
     KeyO,
     /// `R` —— 裸键拨**录制**开 / 关（走带「录音」按钮的键盘入口，界面决定）。
     KeyR,
+    /// `A` —— 与 `Cmd/Ctrl+Alt` 组合展开 / 收起 AI 抽屉（走带 `transport-ai-drawer-button`
+    /// 的键盘入口，界面决定）。
+    KeyA,
     /// `1`–`5` —— 卷帘工具矩阵。
     Digit(u8),
     /// `[` —— 切到主线版本试听。
@@ -243,6 +246,7 @@ impl PhysicalKey {
             Self::KeyN => LogicalKey::Character('n'),
             Self::KeyO => LogicalKey::Character('o'),
             Self::KeyR => LogicalKey::Character('r'),
+            Self::KeyA => LogicalKey::Character('a'),
             Self::Digit(digit) => {
                 LogicalKey::Character(char::from_digit(u32::from(digit), 10).unwrap_or('\u{0}'))
             }
@@ -830,6 +834,21 @@ pub enum Action {
     ZoomToFit,
     /// `Cmd/Ctrl+Alt+M`: 最大化 / 还原底部控制台。
     ToggleConsoleMaximize,
+    /// `Cmd/Ctrl+Alt+A`: 展开 / 收起 AI 抽屉。
+    ///
+    /// ⚠ **规范没有点名这一动作**（`[UI-NOTE-005]` 只讲音符）⇒ 与
+    /// [`Self::ToggleTrackMute`] 同一取向：**界面决定**，补"AI 抽屉只能点走带
+    /// `transport-ai-drawer-button`"的缺口。键位只受一条约束：⛔ 不覆盖任何已被
+    /// 规范点名、或已被既有判据如实钉成放行的组合 —— `Cmd/Ctrl+Alt+A` 此前落到
+    /// 第 3 步的 `_ => PassThrough`（该分支当时只有 `b` / `m` / `n` / `d` / 方向键），
+    /// 裸 `a` 与 `Alt+A` 也从未绑定（第 6 步、第 4 步都不含 `a`）。
+    ///
+    /// 落点**唯一**：`host::apply_action` 的 `ToggleAiDrawer` 臂 ⇒
+    /// `ui.invoke_toggle_ai_drawer()` ⇒ `host::wire_view_callbacks` 注册的**同一条**
+    /// `on_toggle_ai_drawer`（写 `ai-drawer-open`）。与鼠标点按钮共用这一个回调，
+    /// ⛔ 不是第二份实现。纯视图态（`MODEL-ISO-001` 的挥发性层）⇒ 不改工程、
+    /// 不需要 `UndoPort`、不进撤销栈。
+    ToggleAiDrawer,
     /// `1`–`5`: 切到某个卷帘工具。
     SelectTool(Tool),
     /// `Shift+Enter`: 采纳**点选了的那一条** AI 提案。
@@ -1008,6 +1027,9 @@ impl InputContext {
                 (Key::Character('m'), false, true) => {
                     Resolution::Action(Action::ToggleConsoleMaximize)
                 }
+                // **界面决定**（⛔ 不是规范点名）：AI 抽屉的键盘入口。
+                // `a` 在 `Cmd/Ctrl+Alt` 组合里此前一格都没有；`Shift` 变体仍放行。
+                (Key::Character('a'), false, true) => Resolution::Action(Action::ToggleAiDrawer),
                 // 加性新增（⛔ 不动既有键语义）：`Cmd/Ctrl+Alt+N` / `+D` 此前**未被占**
                 //（实测：本 `Cmd/Ctrl+Alt` 组合当时只有 `b` / `m` 两条）。
                 (Key::Character('n'), false, true) => Resolution::Action(Action::ToggleMetronome),
@@ -1153,15 +1175,15 @@ mod tests {
         AcceptAiSuggestion, AuditionMain, AuditionProposal, Cancel, DeleteSelection, Duplicate,
         GoToBeginning, NudgeMixerChannel, NudgeSelection, OpenProject, OpenTimeMachine, PlayPause,
         Redo, ResizeSelectionDuration, ResumeFromCursor, SaveProject, SelectTool, ShowView,
-        ToggleConsoleMaximize, TogglePencilTool, ToggleRecord, ToggleSidebar, ToggleTrackMute,
-        ToggleTrackSolo, ToggleView, Undo, ZoomToFit, ZoomToSelection,
+        ToggleAiDrawer, ToggleConsoleMaximize, TogglePencilTool, ToggleRecord, ToggleSidebar,
+        ToggleTrackMute, ToggleTrackSolo, ToggleView, Undo, ZoomToFit, ZoomToSelection,
     };
     use Focus::{MainCanvas, Other, TextInput};
     use MixerParam::{Pan, Volume};
     use PhysicalKey::{
         Backspace, BracketLeft, BracketRight, Delete, Digit, DownArrow, Enter, Escape, F5, F6,
-        KeyB, KeyD, KeyH, KeyM, KeyN, KeyO, KeyR, KeyS, KeyZ, LeftArrow, RightArrow, Space, Tab,
-        UpArrow,
+        KeyA, KeyB, KeyD, KeyH, KeyM, KeyN, KeyO, KeyR, KeyS, KeyZ, LeftArrow, RightArrow, Space,
+        Tab, UpArrow,
     };
     use Resolution::{Action as Act, ConsumedByIme, PassThrough};
 
@@ -1338,6 +1360,45 @@ mod tests {
         assert_eq!(
             canvas().resolve(KeyB, Modifiers::none()),
             Act(TogglePencilTool)
+        );
+    }
+
+    /// 判据：`Cmd/Ctrl+Alt+A` = 展开 / 收起 AI 抽屉（键盘入口，界面决定）。
+    ///
+    /// 钉四件事：① 物理码与逻辑键两条入口同解；② `Cmd`（meta）侧同解；
+    /// ③ 邻居键一位不动 —— 裸 `A` / `Alt+A` / `Shift+A` / `Cmd/Ctrl+Alt+Shift+A` 仍放行；
+    /// ④ 文本域焦点整体放行（与其余组合键同一口径）。
+    #[test]
+    fn ctrl_alt_a_is_the_ai_drawer_entry_and_does_not_disturb_its_neighbours() {
+        assert_eq!(
+            canvas().resolve(KeyA, Modifiers::ctrl_alt()),
+            Act(ToggleAiDrawer)
+        );
+        assert_eq!(
+            canvas().resolve_logical(LKey::Character('a'), Modifiers::ctrl_alt()),
+            Act(ToggleAiDrawer)
+        );
+        let meta_alt = Modifiers {
+            meta: true,
+            alt: true,
+            ..Modifiers::none()
+        };
+        assert_eq!(canvas().resolve(KeyA, meta_alt), Act(ToggleAiDrawer));
+
+        // 邻居：规范没点名的组合一律放行（含加 `Shift` 的那一格）。
+        assert_eq!(canvas().resolve(KeyA, Modifiers::none()), PassThrough);
+        assert_eq!(canvas().resolve(KeyA, Modifiers::alt()), PassThrough);
+        assert_eq!(canvas().resolve(KeyA, Modifiers::shift()), PassThrough);
+        let ctrl_alt_shift = Modifiers {
+            shift: true,
+            ..Modifiers::ctrl_alt()
+        };
+        assert_eq!(canvas().resolve(KeyA, ctrl_alt_shift), PassThrough);
+
+        // 文本域：整体放行。
+        assert_eq!(
+            text_field().resolve(KeyA, Modifiers::ctrl_alt()),
+            PassThrough
         );
     }
 

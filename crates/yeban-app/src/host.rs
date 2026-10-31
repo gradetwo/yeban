@@ -8955,6 +8955,16 @@ fn apply_action(
             ui.set_console_maximized(!ui.get_console_maximized());
             true
         }
+        // `Cmd/Ctrl+Alt+A`：AI 抽屉的键盘入口。
+        //
+        // 落点**只能是界面回调**：`wire_view_callbacks` 里 `on_toggle_ai_drawer` 是
+        // 走带 `transport-ai-drawer-button` 的同一条实现（写 `ai-drawer-open`），
+        // 键与按钮共用它 ⇒ 不可能分叉。纯视图态（`MODEL-ISO-001` 挥发性层）⇒
+        // 不需要 `UndoPort`，也**不在** `action_needs_engine` 集合里。
+        Action::ToggleAiDrawer => {
+            ui.invoke_toggle_ai_drawer();
+            true
+        }
         // ⭐ 任务单 `#227`（Logic 的 `Go to Beginning`）：`Return` / `Enter`（裸键）。
         //
         // 落点**只能是界面回调**：`apply_action` 手里没有引擎（`context` 只在

@@ -212,3 +212,33 @@ python3 scripts/gates/measure_rss.py --label ui-module-actions-floor-no-render \
    `tests/ui_module_actions.rs` 自己断言（点名的 6 个 ID + 运行时树对注册表的双向覆盖）。
    不把它塞进那份分母的理由：那份分母的缺失容忍度是 10%（39 × 10%），加 6 条会把
    容忍度摊薄到 13%；而本票的 6 条**已经被**更强的判据（精确点名）覆盖。
+
+## 7. 后续更正（本次切片，2026-10-31，`line/ai-drawer-key`）—— AI 抽屉有了键盘入口
+
+**缺口**：走带右上角的 AI 抽屉开关 `transport-ai-drawer-button` 只有鼠标 / 无障碍默认动作
+两个入口，键盘面一格都没有。本切片补的**不是**抽屉能力（`wire_view_callbacks` 早已把
+`on_toggle_ai_drawer` 接到 `ai-drawer-open`），而是**键盘入口**。
+
+### 7.1 键位与理由（界面决定，⛔ 不是规范点名）
+
+`Cmd/Ctrl+Alt+A` —— `a` 取 "AI"。三条事实（逐条实测，⛔ 推断）：
+
+1. `command()` 分支里 `Cmd/Ctrl+Alt` 当时只有 `b` / `m` / `n` / `d` / 四个方向键
+   ⇒ `a` 那格是空的（落到 `_ => PassThrough`）；
+2. 裸 `a` 在第 6 步从未绑定；`Alt+A` 在第 4 步也没有（那里只有 `1` / `2` / `←` / `→`）；
+3. `Cmd/Ctrl+Alt+Shift+A` 仍放行 —— 与"规范没写的不猜一个相近语义"这条纪律一致。
+
+### 7.2 唯一落点
+
+`host::apply_action` 的 `ToggleAiDrawer` 臂 ⇒ `ui.invoke_toggle_ai_drawer()` ⇒
+`host::wire_view_callbacks` 注册的**同一条** `on_toggle_ai_drawer`（写 `ai-drawer-open`）。
+键与按钮共用这一个回调，⛔ 不是第二份实现。纯视图态（`MODEL-ISO-001` 挥发性层）⇒
+不改工程、不需要 `UndoPort`、**不在** `action_needs_engine` 集合里（无 `#212` 重入面）。
+
+### 7.3 判据
+
+| 层 | 文件 | 钉的事 |
+| :--- | :--- | :--- |
+| A 纯解析 | `src/input.rs` 的 `ctrl_alt_a_is_the_ai_drawer_entry_and_does_not_disturb_its_neighbours` | 物理码 / 逻辑键 / `Cmd` 侧三条入口同解；邻居与文本域放行 |
+| B 活窗口 | `tests/ai_drawer_key_ui.rs` | 按键 ⇒ `ai-drawer-open` **真的翻转**；换计数器后回调恰好一次；邻居不消费 |
+| 表 / 宿主对账 | `tests/cli_contract.rs` 的 B11b | `cli.rs` 的 `[ShortcutRow; 40]` 与 `--print-shortcuts`、`action_has_implementation` 三面一致 |
