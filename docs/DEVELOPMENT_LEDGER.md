@@ -16505,6 +16505,7 @@ helper 里 ⇒ 必须不认（防假绿）。两条臂在旧实现上都会失�
 | 合流 merge `145c261b` 推主干（s14＋s13＋`origin/main`） | `41140491576` | **绿**（`conclusion=success`，11 个作业逐个 `completed`，无 `in_progress`）：`rust (yeban-engine)` 22:48:33→22:53:21 真跑，守卫二进制 `running 16 tests` 全 `ok`（含窗口臂 `the_window_is_the_function_body_not_a_fixed_line_count ... ok`，22:50:51），`FAILED` 0；`rust (yeban-ui-mcp)` 22:48:33→22:53:20 真跑，守卫 `running 5 tests` 全 `ok`（22:53:09），`FAILED` 0；`macos`/`windows` 本次未跳过（22:48:33→23:08:32 / 23:27:59）；`rust (workspace 全量)` 按 plan `skipped` —— 该腿⛔ 不算绿 |
 | 混音台线 merge `aa9aff6c` 推主干（**代码面判决**） | `41143113348` | **绿** —— `rust (yeban-app)` 23:13:30→**23:45:47**（32m17s）真跑：`Running tests/` **250** ／ `test result:` **257** ／ `FAILED` **0**；`tests/mixer_fader_double_click.rs` 在场并两次运行（`test` 与 `test (合并特性)`）；`windows` 23:13:22→23:52:03、`macos` →23:42:07 真跑 |
 | 台账批 `5a4c3ba5`＋合流 `0cfe4189` 推主干（**纯文档**） | `41154777536` | **空绿** —— `plan` 返回空 crate 集 ⇒ `rust (workspace 全量)`／`rust (${{matrix.crate}})`／`windows`／`macos` 四条腿全部 `skipped`；`deny` 01:23:08→01:24:07、`checks` 01:23:55→01:25:15、`lockfile` 01:23:33→01:23:53 真跑。⛔ **不构成对 `0cfe4189` 代码面的验证** —— 其代码内容与 `aa9aff6c` 逐字相同，判决由上一行承接 |
+| 台账批 `aca9c855` 推主干（**纯文档**，§18.7 两线在飞＋混音台/空绿两行） | `41155589983` | **空绿** —— 逐 job 读回：`lockfile` 01:30:12→01:30:32、`plan` 01:30:35→01:30:47、`deny` 01:30:45→01:31:31、`checks` 01:30:49→01:32:17 真跑；`macos`／`rust (workspace 全量)`／`windows`／`rust (${{matrix.crate}})` 四条腿 `startedAt == completedAt == 01:30:47` 且 `skipped` ⇒ ⛔ 不算绿。代码面继承 `41143113348` |
 
 > ⚠ **run 级 success ≠ 每个作业都跑完**：本批一次实测到 `gh run view --json` 报
 > `completed success` 而 `windows` 作业仍在 `in_progress`。判绿必须逐 job 看 `completedAt`，
@@ -16535,12 +16536,26 @@ helper 里 ⇒ 必须不认（防假绿）。两条臂在旧实现上都会失�
 `yeban-theory` **已开线 s16**（见 §18.7）。创作缺口仍全在人类裁决
 （`ADR-0042` G8j／`ADR-0047`..`0050`／`ADR-0004` Q13／`ADR-0053`）。
 
-### §18.7 第十四批续：s15／s16 两线（在飞，判决待读回）
+**2026-10-31 补记（先 grep 交付，再下结论）**：本想给 `yeban-model`（`.all(` 原文 90 处）开 s17，
+现读发现**已有 crate 级量词扫描** ⇒ 再放家族守卫就是第二份真相，撤单：
+
+- `yeban-model`：`tests/model_isolation.rs:2166+` 的常驻扫描（`.all(…)`/`.any(…)`，含根绑定、
+  宏尾、嵌套 fn、跨行、R140 接收者在上一行等臂）。
+- `yeban-render`：`tests/quantifier_lower_bounds.rs`（扫全部源文件的"无根绑定下界"量词站点）。
+- `yeban-sfz`：`tests/assertion_discipline.rs`（R111 五种下界形态＋R112 正对照＋字面量集合）。
+- `yeban-decode`：`src/decode.rs:4526` 的常驻自检（12 行窗口＋`env::temp_dir` LOUD 臂）。现读 5 个站点
+  （`decode.rs` 1357/4331/4429/4492、`resample.rs` 2225）**全部有根绑定界**（`frame_count`／
+  `!output.is_empty()`）⇒ 迁移成家族口径**不产生新发现**，且 12 行窗口是 40 行窗口漏掉一条删除界
+  之后**特意收窄**的（R118）⇒ **决定不迁移**，保留其自有口径。
+- ⇒ 真正空白只有 `yeban-midi`（15 处原文、无 crate 级扫描）⇒ s17 改指它（见 §18.7）。
+
+### §18.7 第十四批续：s15／s16／s17 三线（在飞，判决待读回）
 
 | 线 | tip | run | 状态 |
 | :--- | :--- | :--- | :--- |
-| s15 `line/s15-midi-io-guard` | `c66bc448` | `41155049220` | **queued** —— 推送时在飞，判决未读回 |
-| s16 `line/s16-theory-guard` | `8b5fc69a` | `41155447276` | **queued** —— 推送时在飞，判决未读回 |
+| s15 `line/s15-midi-io-guard` | `c66bc448` | `41155049220` | **in_progress**（2026-10-31 01:37Z 读数）—— 判决未读回 |
+| s16 `line/s16-theory-guard` | `8b5fc69a` | `41155447276` | **in_progress**（同一时刻读数）—— 判决未读回 |
+| s17 `line/s17-midi-guard` | `4cc67c62` | `41156212959` | **queued** —— 推送时 CI 队列被四条并行线占满（`proposal-resolve`／`pr-drawer-proposals`／`export-modal-esc` 等，非本线） |
 
 - **s15 读数（守卫自报）**：`yeban-midi-io` **3 个被扫文件 / 2 个站点 / 0 取反 / 0 allowlist / 无界 0**。
   守卫抓到 `src/lib.rs:123` 的 `ticks.windows(2).all(..)` **无界**（元素 < 2 时恒真）⇒ 已补
@@ -16554,3 +16569,9 @@ helper 里 ⇒ 必须不认（防假绿）。两条臂在旧实现上都会失�
   `cargo test -p yeban-theory` **243+5+7+7+44+3+3 = 312** 全绿、clippy/fmt/light 通过。
 - ⚠ **两条 src 改动都没有本地 CI 之外的证据**：s15 走 `rust (yeban-midi-io)` 腿、s16 走
   `rust (yeban-theory)` 腿；判决回来前一律记 **pending**。
+- **s17 读数（守卫自报）**：`yeban-midi` **11 个被扫文件（8 src 含 `mxl/inflate.rs` + 3 tests）／
+  8 个断言站点／0 取反／allowlist 0／无界 0**。落线时抓到 3 处无界且**全在夹具里** ⇒ 逐条补根绑定下界
+  （`src/import.rs` 的 `syllables(&plan).len() == 1`；`tests/musicxml_contract.rs` 的
+  `notes.len() == 4` 与容器 `entries.len() == 2`），**没有**生产不变量例外。
+  本地：守卫 5/5、`cargo test -p yeban-midi` **221+5+50+9+35** 全绿、clippy/fmt/light 通过。
+  ⚠ 仓库上下文：本线最初是想开在 `yeban-model` 上，现读发现其**已有** crate 级扫描 ⇒ 改指 midi（§18.6 补记）。

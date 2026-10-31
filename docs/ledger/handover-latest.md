@@ -35,15 +35,24 @@
   `Running tests/` **250**／`test result:` **257**／`FAILED` **0**，`mixer_fader_double_click` 在场两次）；
   本批台账＋合流 `0cfe4189` / `41154777536` 是**空绿**（plan 空集 ⇒ 四条 rust 腿全 `skipped`，
   只有 deny/checks/lockfile 真跑）⇒ ⛔ 不构成代码面验证，代码内容与 `aa9aff6c` 相同。
-- **两线在飞（⛔ 未读回＝pending）**：s15 `line/s15-midi-io-guard` @ `c66bc448` / run `41155049220`；
-  s16 `line/s16-theory-guard` / run `41155447276`。读数与本地证据见台账 §18.7。
+- **三线在飞（⛔ 未读回＝pending）**：s15 `line/s15-midi-io-guard` @ `c66bc448` / run `41155049220`；
+  s16 `line/s16-theory-guard` / run `41155447276`；s17 `line/s17-midi-guard` @ `4cc67c62` / run `41156212959`
+  （`yeban-midi` 11 文件 / 8 站点 / 3 处夹具补界，本机 221+5+50+9+35 全绿）。读数与本地证据见台账 §18.7。
+- **空绿的又一次实测**：台账批 `aca9c855` 的 run `41155589983` 逐 job 读回 —— `lockfile`/`plan`/`deny`/`checks`
+  真跑，`macos`/`rust (workspace 全量)`/`windows`/`rust (${{matrix.crate}})` 四条腿 `skipped`
+  （`startedAt == completedAt`）⇒ run 级 success ⛔ 不是代码面验证。
+- **s17 改指的来由（⛔ 别重走）**：`yeban-model`／`yeban-render`／`yeban-sfz` **各自已有** crate 级量词扫描
+  （`tests/model_isolation.rs`／`tests/quantifier_lower_bounds.rs`／`tests/assertion_discipline.rs`），
+  `yeban-decode` 有内嵌 12 行窗口自检且 5 个站点全部有界 ⇒ 迁移不产生新发现，**决定不迁移**。
+  真正空白只剩 `yeban-midi`（原 `.all(` 15 处、无 crate 级扫描）。明细见台账 §18.6 补记。
 - **纪律再证**：一次 `gh run view --json` 报 run 级 `completed success` 时，`windows` job 仍在
   `in_progress` ⇒ 判绿必须**逐 job 看 `completedAt`**；`macos`/`windows` 因 plan 而 `skipped` **不是绿**。
 - **本地绿 ≠ 编译过**：ui-mcp 补界的三处 src 改动**本机没编译**（依赖 `yeban-mcp`，CI-only 家族）；
   本地只跑守卫（`include_str!` 只读文本）、clippy、fmt，编译判决只来自 CI。
-- **下一单（同口径未覆盖）**：`yeban-midi-io`（2 文件，`windows(2).all`，需 render 那份的窗口界）、
-  `yeban-ui-test-port`（1 文件）、`yeban-decode`（1 文件，但 `decode.rs` **内嵌**一段 R102/R109/R118 自检
-  ⇒ 先评估要不要迁移成常驻文件）。创作缺口**仍全在人类裁决**（`ADR-0042`／`0047`..`0050`／`0004 Q13`／`0053`）。
+- **下一单（同口径未覆盖）**：只剩 `yeban-ui-test-port`（1 文件／3 站点**均已自带界**，依赖 slint ⇒ 只能 CI 验证；
+  加它是纯防回归）与 `yeban-decode`（**决定不迁移**：内嵌 12 行窗口自检的 5 个站点全部有界）。
+  s15（midi-io）／s16（theory）／s17（midi）三线在飞 ⇒ 判决回来前不再开新线。
+  创作缺口**仍全在人类裁决**（`ADR-0042`／`0047`..`0050`／`0004 Q13`／`0053`）。
 
 ### 0.6.0q ⭐ 尾批（2026-10-30 16:20）：**§0.6.0p 的两条候选都已收盘**（R115 扩 mcp ＋ 零判据守卫；两线并行）
 
