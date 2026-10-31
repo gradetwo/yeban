@@ -19,6 +19,16 @@
 - ⭐ **main 现含 `bc01b363` 的代码改动且判回 success**（台账 §22.11：全量腿 47 分钟／`passed` **7 235**／`FAILED` **0** ＝ 与改动前同值 ⇒ 无衰退）；
   本机复验（树 `ad022d97`）：防掏空守卫 `rc=0`、s26 判据 `1 passed`。⛔ s28 尚未立项，读数在台账 §22.8 ＋ task #101。
 
+### 0.6.0z ⭐ 尾批（2026-10-31 16:08Z）：**s28 已立项并推线 `a5ece833`**（判决 pending）
+
+- 契约新增 `definitions.WarningCode`（5 个 code 的 enum）＋ 守卫 `scripts/guards/check_warning_codes.py`
+  （**实现侧构造点 == 契约 enum** 的集合等式，⛔ 不是下界）＋ `ci.yml` 的 `checks` 一行直调。
+  本机双向真验：真档 `rc=0`（5/5 逐名印出）、掏空档 `rc=1`（两枚变异一次报全）。
+- ⚠ **本机的 `validate_schemas.py` 没跑到**（缺 `jsonschema` 依赖），而当时 `echo rc=$?` 取到的是管道末端 `tail` 的码 ⇒
+  屏幕上那个 `rc=0` ⛔ 不是判决。schema 合法性交给 CI 第 10 步。⇒ 新规则：**读 `$?` 前先确认它属于哪条命令。**
+- ⏳ 线 `a5ece833` 的 run **pending**（宽运行 ≈ 46 分钟）；落地前照 §22.7 的 `headSha` 反查法读回，
+  并且要看 `checks` 里那一步真的 `completed/success`，⛔ 用整体 success 代替。
+
 ### 0.6.0y ⭐ 尾批（2026-10-31 22:40）：**三处陈旧口径改正** ＋ s28 的前置读数 ＋ 合流判决（待填）
 
 - ⚠ **§0.5「进入状态」那五条命令里的路径本机不存在**（本轮已就地改）：旧文本写 `cd /Users/crow/work/music/yeban`

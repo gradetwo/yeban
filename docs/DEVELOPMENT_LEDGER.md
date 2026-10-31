@@ -16990,6 +16990,22 @@ helper 里 ⇒ 必须不认（防假绿）。两条臂在旧实现上都会失�
 - ⛔ **已知不覆盖要先登记**：口径靠 `grep '"code": *"'` 的字面量形态，将来若出现**变量拼接**的 code，
   该守卫会漏 —— 与 `#44`（"空集即期望值"不可机械化）、`§0.6.0p 候选 B`（"有 fn 即算过"）同一类盲点，
   按纪律**登记不补齐**，不许把守卫描述成"覆盖了全部 code"。
+### 22.12 s28 **已立项并推线** `a5ece833`（`line/s28-warning-code-contract`）：名册落进契约 ＋ 集合等式守卫（判决 **pending**）
+
+- 交付 = ①`schemas/mcp-tools.schema.json` 新增 `definitions.WarningCode`（5 个 code 的 enum ＋ 一段说明：构造点逐名点名，
+  并显式声明错误路径的 `data.reason`（如 `unknownEffectParam`）**不属于**本名册）；
+  ②`scripts/guards/check_warning_codes.py`：**实现侧构造点集合 == 契约 enum** 的**集合等式** ＋ 实现侧下界 5 ＋
+  enum 去重与 camelCase 形态检查；③`.github/workflows/ci.yml` 的 `checks` 里一行直调（按 §22.6：⛔ 只写文件不算交付）。
+- **本机双向真验**（守卫零编译，属"本机允许"档）：真档 `rc=0`，读数 `实现侧 5 / 契约侧 5` 且五个名字逐个印出；
+  **掏空档 `rc=1`** —— 同一棵复制树上注入两枚变异（契约删 `exportClipping` ＋ 实现把 `unrecognisedEffectParam` 改名），
+  守卫**一次报出两条**缺失名字（`effectParamRenamed, exportClipping`），证明它两侧都看得见。
+- ⚠ **诚实记账：本机的 `validate_schemas.py` 没有真跑到** —— 它报「缺少 jsonschema 依赖」，而我那行 `echo rc=$?` 取的是
+  管道末端 `tail` 的退出码（⇒ 显示的 `rc=0` **不是**该校验的判决）。schema 自身合法性由 CI 第 10 步判，
+  这条手法教训与 §6-1「先说指标再跑命令」同类：**读 `$?` 之前要确认它属于哪条命令**。
+- ⏳ **pending**：线 `a5ece833` 的 run（本批改 `.github/**` ⇒ 宽运行 ≈ 46 分钟）。读回手法按 §6.3-1/§22.10：
+  用 `git log -1 --format=%H line/s28-warning-code-contract` 现读 sha，再到 `gh run list --json headSha` 里挑；
+  判据看 `checks` 作业里新增那一步 `warnings 名册对账 …` = `completed/success`，⛔ 别看整体 success 就收。
+
 - ⛔ 本段只是读数：s28 **未立项、未写码**；改 schema 属契约变更（动 26 个工具的响应面 ＋ 第 16 步对账），
   且必然触发宽运行 ⇒ 排期时按 §22.6 的成本口径计入。
 
