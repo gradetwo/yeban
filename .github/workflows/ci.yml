@@ -188,6 +188,13 @@ jobs:
           # （4 个 harness=false 运行期腿 / 3 个 #[path] 判据包装）。
           python3 scripts/gates/check_test_criteria_presence.py
 
+      # §21: `verify/audio_pins.py` 此前只 print 三个摘要、**零断言**、且全库无执行者 ——
+      # 于是「三个常量是独立推导出来的」只是文档里的一句话，没人能判它是真是假。
+      # 本步把它变成**有退出码**的判据：三个摘要必须与 `tests/render_audio_clips.rs`
+      # 的 `PINNED_*` 逐字相同（脚本纯标准库，不依赖任何 crate 编译，故放在 checks）。
+      - name: 独立复算音频片段的三个钉死摘要 (ARCH-DET-001)
+        run: python3 crates/yeban-mcp/verify/audio_pins.py
+
       - name: 依赖许可清单漂移检查
         run: |
           set -euo pipefail

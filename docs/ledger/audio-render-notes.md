@@ -32,7 +32,7 @@
 | [`crates/yeban-mcp/Cargo.toml`](../../crates/yeban-mcp/Cargo.toml) | 新增依赖边 `yeban-decode.workspace = true`（**复用根清单已登记的条目**，未改根 `Cargo.toml`） | `ADR-0001` D21 |
 | [`crates/yeban-mcp/tests/render_audio_clips.rs`](../../crates/yeban-mcp/tests/render_audio_clips.rs) **(新增)** | **13 条端到端判据**（样本对应、落位、门控、重采样、确定性+钉死哈希、缺资产、哈希不符、声明但无字节、坏资产不 panic、`dryRun`、幂等、PDC） | `MCP-TOOL-008`、`MUST-GATE-002` |
 | [`crates/yeban-mcp/verify/render_pure.rs`](../../crates/yeban-mcp/verify/render_pure.rs) | 本机零依赖脚手架：新增 [`render_clip_math`] 的 6 条**独立参考实现对账**（整数有理数版落位、显式布局表、显式裁剪参考、贪心嗅探充要性…） | — |
-| [`crates/yeban-mcp/verify/audio_pins.py`](../../crates/yeban-mcp/verify/audio_pins.py) **(新增，非 cargo 目标)** | **独立 Python 复算**三个钉死摘要（SHA-256 over 位型 / xorshift32+TPDF / RIFF 头布局），证明判据里的常量是**被推导出来的** | `ARCH-DET-001` |
+| [`crates/yeban-mcp/verify/audio_pins.py`](../../crates/yeban-mcp/verify/audio_pins.py) **(非 cargo 目标；由 CI `checks` 作业执行并断言)** | **独立 Python 复算**三个钉死摘要（SHA-256 over 位型 / xorshift32+TPDF / RIFF 头布局），证明判据里的常量是**被推导出来的**；脚本只依赖标准库，与 `PINNED_*` 不一致即退出非零（`§21`） | `ARCH-DET-001` |
 | [`crates/yeban-mcp/tests/render_master.rs`](../../crates/yeban-mcp/tests/render_master.rs) | 判据 7 改写：采样率不一致从"`RENDER_FAILED` + `unwired`"改成"成功 + 报告重采样口径" | `MCP-TOOL-008` |
 | [`crates/yeban-mcp/src/transport/http.rs`](../../crates/yeban-mcp/src/transport/http.rs) | 同名判据改写（HTTP 腿不再把 44.1 kHz 请求当失败） | `MCP-TOOL-008` |
 | [`crates/yeban-mcp/src/tools.rs`](../../crates/yeban-mcp/src/tools.rs) | `sampleRate` 的参数说明更正为"输出采样率；不一致时重采样" | `MCP-TOOL-008` |
