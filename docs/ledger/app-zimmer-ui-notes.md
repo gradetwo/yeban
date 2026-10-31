@@ -180,3 +180,26 @@ macos / windows）的 `clippy (-D warnings)` 步骤报 4 个
 
 可用的绕法（实测）：`git -c http.version=HTTP/1.1 push`（默认 HTTP/2 的连接在这台机器上会卡在 443）。
 ⛔ 把 `http.version` 写进 git config（改配置属人的决定），只在单次调用上带 `-c`。
+
+## 9. 报告 §10 的一条"仍未验证"读成了事实：编排的**横向**可达只有缩放，没有平移
+
+报告 §10 写"视口外的剪辑块对真实用户是否可达仍未验证"。本票现读代码后的口径（⛔ 未做行为实验）：
+
+| 问题 | 现读事实 | 出处（符号级） |
+| :--- | :--- | :--- |
+| 编排视图有没有横向偏移输入？ | **没有**。`arrangement_view.slint` 的输入里与 x 相关的只有投影算好的 `clip-positions` / `section-positions` / `bar-positions` 与标量 `ticks-per-pixel`；**没有** `scroll-x` / `view-offset` 一类的 in 属性 | `arrangement_view.slint` 的属性表 |
+| 那"看后面的小节"靠什么？ | 只有**缩放**：`Shift+Z` = `ZoomToFit`、`Z` = `ZoomToSelection`，目标值由 `bridge::ticks_per_pixel_to_fit` 一次算出（唯一换算＋夹紧），再重投影 | `input.rs` 第 ⑥ 步、`host.rs` 的 `zoom_action` |
+| 缩放的界 | `MIN_TICKS_PER_PIXEL = 1`（最大放大）… `MAX_TICKS_PER_PIXEL = 960`（一个四分音符 1px，最小放大）；文档**明写**夹紧后果："若 `ceil(span / px) > MAX`，本函数给出上界值，**而不是假装装得下**" | `bridge.rs` 的三个常量与其文档 |
+| 默认档有多窄？ | 默认 `DEFAULT_TICKS_PER_PIXEL = 30` ⇒ 一个 4/4 小节（3840 tick）= **128px**。行区可视宽**本票未现读**（它随窗口档与侧栏状态变），因此只给公式：可见小节数 ≈ `行区宽 px / 128` | 同上 |
+
+⇒ 结论分两句，⛔ 混成一句：
+
+1. **中等长度工程不是缺口**：按最小放大一格 960 tick/px，横向覆盖 = `px × 960` tick，
+   工程跨度小于它时 `Shift+Z` 就能全部装进视口 ⇒ "视口外的剪辑"在默认档下**可达**（靠缩放）。
+2. **但没有任何平移入口**：想要"停在第 40 小节、放大到能编辑音符密度"的用法，
+   今天只能反复缩放、没有左右滚动条 / 滚轮横向 / 拖动平移。这与 `N-UI-1` 的**纵向**缺口
+   （本线已修）是两种病：纵向是"行压根到不了"，横向是"能到但看不细"。
+
+⛔ 本票不顺手补横向平移：报告把它记在**未验证**而不是**缺口**里，
+而"横向平移的落点归宿主偏移、还是归 Flickable 的 `content-width`"是一处会撞上
+`app-zimmer-ui-notes` §3 那条"⛔ 双重计算"教训的**设计选择** ⇒ 待人类点票再动。
