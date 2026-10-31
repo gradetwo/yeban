@@ -324,7 +324,28 @@ $ unzip -l /tmp/demo.yeban                          # 写出来的是**标准 ZI
   `save-succeeded` / `save-status`，再 `invoke_key_action("s", …, meta=true)`，
   断言回执真的回来且 `apply_revision` 一位不动）；策略表的新一行由
   `tests/cli_contract.rs` 的 B11b 三面一致（表 / 解析 / 宿主）钉住。
-- **仍未做**：GUI 的"另存为"（⌘⇧S）与"打开"（⌘O）的键盘入口 —— 各自需要界面决定，另开票。
+- **仍未做**：GUI 的"另存为"（⌘⇧S）的键盘入口 —— 需要界面决定，另开票。
+
+**【后续更正（本次切片，2026-10-31，`line/open-keyboard`）—— 打开有了键盘入口】**
+
+- **补的那一格**：标准 DAW 的打开键 `Cmd/Ctrl+O`（`Action::OpenProject`）。上一段末尾的
+  "仍未做：…与打开的键盘入口"到这里**只剩'另存为'一项**。
+- **键位选择（三条事实，⛔ 不猜）**：① `resolve_logical` 的 `command()` 分支里 `o`
+  此前**一格都没有**（实测）⇒ 加它不覆盖任何既有绑定；② 裸 `O` 从未绑定（卷帘的音符键盘
+  `o` 也不在该表里），因此不抢任何既有语义；③ 文本框聚焦时 `command()` 分支**先**被
+  TextInput 策略拦住（`PassThrough`），⇒ 在输入框里 `Cmd/Ctrl+O` 不会误开文件对话框。
+- **落点只有一个**：`host::apply_action` 的 `Action::OpenProject` 臂只做
+  `ui.invoke_open_project()` —— 与「打开工程」按钮（`module-open-project-button`）是
+  **同一个**回调 `host::wire_open_project`（文件选择 → 可选"先保存" → 新会话 → 重投影），
+  ⛔ 没有第二条打开路径。它**不进** `action_needs_engine`（不需要借用 `EngineHost`），
+  因此不会撞上 `RefCell already borrowed`。
+- **取消不是失败**：文件对话框取消时 `wire_open_project` 静默返回、工程一位不动，
+  ⇒ 这个动作**总是**消费按键（返回 `true`），与保存键同一约定。
+- **判据**：`tests/open_project_ui.rs` 新增末段 —— 从按键
+  `invoke_key_action("o", …, meta=true)` 进，断言文件选择被调用一次、`module-status`
+  回执含 `outcome=ok` 与目标路径、工程指纹切到目标、行数随之更新且 `undoable == 0`
+  （证明是**新会话**而非叠加）；策略表的新一行由 `tests/cli_contract.rs` 的 B11b 三面一致
+  （表 / 解析 / 宿主）钉住；`input.rs` 另有单元判据钉住 `Shift` / `Alt` 变体仍放行。
 
 ---
 

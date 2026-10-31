@@ -9109,6 +9109,21 @@ fn apply_action(
             ui.invoke_save_project();
             true
         }
+        // `Cmd/Ctrl+O`：打开工程（键位选择的三条事实见 [`Action::OpenProject`]）。
+        //
+        // 三条口径（与既有「打开工程」按钮逐字一致，⛔ 不另写一条打开路径）：
+        // 1. **唯一落点**是 `.slint` 的 `open-project` 回调 —— 与控制台「打开工程」按钮
+        //    **同一个**入口；问对话框 / 读盘 / 换会话 / 重投影 / 回执全在
+        //    `host::wire_open_project`，这里只负责"按到它"；
+        // 2. **不持有引擎借用**：打开不在 `action_needs_engine` 的集合里 ⇒ 这里
+        //    `ui.invoke_open_project()` 不会撞上 `RefCell already borrowed`；
+        // 3. **取消不是失败**（`wire_open_project` 的口径）：对话框回取消 ⇒ 一位不动、
+        //    不写回执；本臂**不**二次解释结果，因此恒消费这一键（返回 `true`）——
+        //    "用户改主意"与"这一键没意义"不是一回事。
+        Action::OpenProject => {
+            ui.invoke_open_project();
+            true
+        }
         // `[UI-NOTE-005]` §3.5 项 1–2：方向键把**当前选区**按一档步长平移 / 移调。
         //
         // 语义（五条都是决定, 不是意外）：

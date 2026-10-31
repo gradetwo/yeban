@@ -193,6 +193,8 @@ pub enum PhysicalKey {
     KeyS,
     /// `N` —— 与 `Cmd/Ctrl+Alt` 组合拨**节拍器**开关（`[ARCH-RT-001]`）。
     KeyN,
+    /// `O` —— 与 `Cmd/Ctrl` 组合打开工程。
+    KeyO,
     /// `1`–`5` —— 卷帘工具矩阵。
     Digit(u8),
     /// `[` —— 切到主线版本试听。
@@ -237,6 +239,7 @@ impl PhysicalKey {
             Self::KeyM => LogicalKey::Character('m'),
             Self::KeyS => LogicalKey::Character('s'),
             Self::KeyN => LogicalKey::Character('n'),
+            Self::KeyO => LogicalKey::Character('o'),
             Self::Digit(digit) => {
                 LogicalKey::Character(char::from_digit(u32::from(digit), 10).unwrap_or('\u{0}'))
             }
@@ -699,6 +702,24 @@ pub enum Action {
     /// ⚠ 保存的**结果**（成功 / 被锁拒绝 / 取消）由 `save-status` 如实回报（屏读器可达），
     /// 本动作只负责"按到那**一个**保存入口"。
     SaveProject,
+    /// `Cmd/Ctrl+O`: 打开工程（标准 DAW 习惯键，**界面决定**，⛔ 不是规范点名）。
+    ///
+    /// 落点是 `host::apply_action` 的同一个臂 ⇒ `ui.invoke_open_project()` ⇒
+    /// `host::wire_open_project` 的**唯一**实现（问一次可注入的 `FilePicker` →
+    /// `open::open_project_file` 读盘 → `UndoPort::open_project_session` 换新会话 → 重投影）。
+    /// ⛔ 本动作**不**另写一条打开路径 —— 与控制台「打开工程」按钮是**同一个**回调。
+    ///
+    /// ## 键位选择（三条事实，⛔ 不猜）
+    ///
+    /// 1. 策略表的 `command()` 分支里 `o` 此前**一格都没有**（实测）⇒ 加它**不覆盖**
+    ///    任何既有绑定；`Cmd/Ctrl+Shift+O` / `Cmd/Ctrl+Alt+O` 仍放行（「打开最近」之类的
+    ///    是另一套界面决定，⛔ 不顺手发明）；
+    /// 2. 裸 `O` 从未绑定（与裸 `S` 已是独奏的情形不同）⇒ 不需要额外修饰约束；
+    /// 3. 文本框聚焦时整体放行（策略表第 2 步）—— 与 `Cmd/Ctrl+S` / `Cmd/Ctrl+Z` 同一口径。
+    ///
+    /// ⚠ **取消不是失败**（`wire_open_project` 的口径）：对话框回 `None` ⇒ 一位不动、
+    /// 不写回执。成功 / 失败由既有的 `module-status` 回执如实回报（屏读器可达）。
+    OpenProject,
     /// `Delete`/`Backspace`: 删除选中的音符 / 选区 / 音轨。
     DeleteSelection,
     /// `[UI-NOTE-005]` §3.5 项 1–2：把**当前选区**的音符按一档步长平移。
@@ -956,6 +977,11 @@ impl InputContext {
                 // 而裸 `s` 已于 2026-10-31 归 [`Action::ToggleTrackSolo`] ⇒ 两者不冲突。
                 // `Shift` / `Alt` 变体仍放行（"另存为"是另一票界面决定）。
                 (Key::Character('s'), false, false) => Resolution::Action(Action::SaveProject),
+                // **界面决定**（⛔ 不是规范点名）：标准 DAW 的打开键。
+                // `o` 在 `command()` 分支里此前一格都没有；裸 `o` 也从未绑定
+                //（`o` 至今不在本表任何一步里）⇒ 两者都不覆盖既有语义。
+                // `Shift` / `Alt` 变体仍放行（"打开最近"是另一票界面决定）。
+                (Key::Character('o'), false, false) => Resolution::Action(Action::OpenProject),
                 (Key::Character('b'), false, true) => Resolution::Action(Action::ToggleSidebar),
                 (Key::Character('m'), false, true) => {
                     Resolution::Action(Action::ToggleConsoleMaximize)
@@ -1100,8 +1126,8 @@ mod tests {
 
     use Action::{
         AcceptAiSuggestion, AuditionMain, AuditionProposal, Cancel, DeleteSelection, Duplicate,
-        GoToBeginning, NudgeMixerChannel, NudgeSelection, OpenTimeMachine, PlayPause, Redo,
-        ResizeSelectionDuration, ResumeFromCursor, SaveProject, SelectTool, ShowView,
+        GoToBeginning, NudgeMixerChannel, NudgeSelection, OpenProject, OpenTimeMachine, PlayPause,
+        Redo, ResizeSelectionDuration, ResumeFromCursor, SaveProject, SelectTool, ShowView,
         ToggleConsoleMaximize, TogglePencilTool, ToggleSidebar, ToggleTrackMute, ToggleTrackSolo,
         ToggleView, Undo, ZoomToFit, ZoomToSelection,
     };
@@ -1109,7 +1135,7 @@ mod tests {
     use MixerParam::{Pan, Volume};
     use PhysicalKey::{
         Backspace, BracketLeft, BracketRight, Delete, Digit, DownArrow, Enter, Escape, F5, F6,
-        KeyB, KeyD, KeyH, KeyM, KeyN, KeyS, KeyZ, LeftArrow, RightArrow, Space, Tab, UpArrow,
+        KeyB, KeyD, KeyH, KeyM, KeyN, KeyO, KeyS, KeyZ, LeftArrow, RightArrow, Space, Tab, UpArrow,
     };
     use Resolution::{Action as Act, ConsumedByIme, PassThrough};
 
@@ -1362,6 +1388,36 @@ mod tests {
 
         // ③ 文本框聚焦：整体放行。
         assert_eq!(text_field().resolve(KeyS, Modifiers::ctrl()), PassThrough);
+    }
+
+    /// 判据：`Cmd/Ctrl+O` = 打开工程（**界面决定**，⛔ 不是规范点名），且不扰动邻居。
+    ///
+    /// 三条子句：
+    /// 1. **两条入口同解**为 [`Action::OpenProject`]（物理码 / 逻辑键 —— `N2` 裁决 (1)）；
+    /// 2. 邻居键语义一位不动：`Cmd/Ctrl+Shift+O` 与 `Cmd/Ctrl+Alt+O` 仍**放行**
+    ///    （"打开最近"需要一套新的界面决定，⛔ 不顺手发明）；
+    /// 3. 文本框聚焦时整体放行 —— 与 `Cmd/Ctrl+S` / `Cmd/Ctrl+Z` 同一口径。
+    #[test]
+    fn ctrl_o_is_the_open_entry_and_does_not_disturb_its_neighbours() {
+        // ① 物理码入口与逻辑键入口同解。
+        assert_eq!(canvas().resolve(KeyO, Modifiers::ctrl()), Act(OpenProject));
+        assert_eq!(canvas().resolve(KeyO, Modifiers::meta()), Act(OpenProject));
+        assert_eq!(
+            canvas().resolve_logical(LKey::Character('o'), Modifiers::ctrl()),
+            Act(OpenProject)
+        );
+        assert_eq!(
+            canvas().resolve_logical(LKey::Character('o'), Modifiers::meta()),
+            Act(OpenProject)
+        );
+
+        // ② 邻居键不动：`Shift` / `Alt` 变体仍放行；裸 `O` 不在任何一步里 ⇒ 也放行。
+        assert_eq!(canvas().resolve(KeyO, Modifiers::ctrl_shift()), PassThrough);
+        assert_eq!(canvas().resolve(KeyO, Modifiers::ctrl_alt()), PassThrough);
+        assert_eq!(canvas().resolve(KeyO, Modifiers::none()), PassThrough);
+
+        // ③ 文本框聚焦：整体放行。
+        assert_eq!(text_field().resolve(KeyO, Modifiers::ctrl()), PassThrough);
     }
 
     // ---------------------------------------------------------------- 工具矩阵
