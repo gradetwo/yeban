@@ -1664,3 +1664,59 @@ fn three_voice_bass_sits_in_the_low_register() {
         "声部按音区成梯次: bass≤{bass_max} < alto {alto_min}..{alto_max} < high≥{high_min}"
     );
 }
+
+/// ⭐ **常驻判据（钉住"当前状态"，⛔ 不是愿望）**：`yeban_propose_section` 生成的每一条
+/// 声部音轨都**带着音符**，却**一条设备都不带** ⇒ 这些音符在 `render_master` 里发不出声。
+///
+/// 为什么值得钉住：`docs/DEVELOPMENT_LEDGER.md` §22.5 的现读是 `section_build.rs` 全文
+/// （4387 行）里 `device`／`Device`／`InternalInstrument`／`insertDevice`／`osc1_wave`
+/// 各 **0** 次 —— 这句话一旦变成散文就没人再核，而"报告说内置音色不可选"那类误判
+/// （§21 的 `G5`）正是从这里长出来的。本判据把它换成**机器读数**。
+///
+/// 语义边界（⛔ 越界即发明答案）：
+/// - "每个声部该用哪个缺省音色"是**规范缺口**（`ADR-0055`／`G3` 一侧），留给人裁决；
+///   本判据⛔ 不主张"应该自动接设备"，只上报**实测的两半同时成立**：有音符 ＋ 零设备。
+/// - 已证的补齐入口 = `yeban_edit_notes` 的 `insertDevice(InternalInstrument)` ＋ `osc1_wave`。
+/// - 若将来 `propose_section` 真的接上设备，本判据会**变红** ⇒ 那时必须**显式改写这条判据**
+///   并同步 §22.5 的登记，⛔ 不许让它静默失效或删掉了事。
+#[test]
+fn proposed_part_tracks_carry_notes_but_zero_devices() {
+    let project = filled_project();
+    let planned = plan(&project, "Chorus", "synthwave", 8, Some("C minor")).expect("规划");
+    let after = applied(&project, &planned);
+
+    assert!(
+        !planned.part_track_ids.is_empty(),
+        "声部音轨清单非空（单位：条）"
+    );
+
+    let mut tracks_with_notes = 0_usize;
+    for track_id in &planned.part_track_ids {
+        let track = after.tracks.get(track_id).expect("声部音轨必须存在");
+        assert_eq!(
+            track.devices.len(),
+            0,
+            "音轨 {} 的设备数必须是 0（当前缺口；若已补齐 ⇒ 显式改写本判据）",
+            track_id
+        );
+        let notes = track
+            .clips
+            .values()
+            .map(|placement| {
+                after.clip_pool[&placement.clip_id]
+                    .content
+                    .notes()
+                    .map(|notes| notes.len())
+                    .unwrap_or(0)
+            })
+            .sum::<usize>();
+        if notes > 0 {
+            tracks_with_notes += 1;
+        }
+    }
+    assert_eq!(
+        tracks_with_notes,
+        planned.part_track_ids.len(),
+        "每条声部音轨都带音符（单位：条）—— 否则本判据在空转"
+    );
+}
