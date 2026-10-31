@@ -17418,3 +17418,46 @@ helper 里 ⇒ 必须不认（防假绿）。两条臂在旧实现上都会失�
   **丙**＝schema 维持"数组的元素是对象"，另加一条**运行时时**断言"元素键数恒为 1"的 Rust 判据（不声明、只验证）。
   ⚠ 无论走哪条，`Batch` 的自递归都意味着 s29 新加的递归会**按数据深度无限下钻** —— 本机未证它有没有上限，
   但校验对象是**我们自己构造的响应**，深度由提案规模决定，⛔ 不要为了这个先加限制而丢掉诚实性。
+
+### 22.23 ⭐ s29 判决读回 = **success**（窄腿全绿、集成测试真跑了）＋ 落地 `9925741e` ＋ ⚠ 一条**数 `Running` 的口径缺陷**（本轮抓到并改正）
+
+- ✅ **线第三枚 `25a5d06d` 的 run `41229171684` = `success`，十腿里九条真跑、一条按矩阵 skip**：
+  `lockfile`／`deny`／`plan`／`checks`／`rust (yeban-mcp)`／`windows`／`e2e`／`macos`／`rust (yeban-ui-mcp)` = `success`，
+  `rust (workspace 全量)` = `skipped`（窄矩阵，同 §22.18）。
+  ⭐ **`windows` 与 `macos` 本轮都是真绿**（上一轮 `windows` 是我自己重推造成的 `cancelled`，那条欠账到此结清）。
+- **目标窄腿（作业 `124619651549`）逐层读数**：步骤 **6 `clippy (-D warnings)`／7 `test`／8 `test (doctests)`／
+  9 `clippy (合并特性)`／11 `test (合并特性)` = 全 `success`**；日志 `4 512` 行／`415 849` 字节。
+  - **跑了多少测试二进制**：`Running` 行 **149** 条，其中**集成测试二进制 `tests/*.rs` 共 70 个、每个出现 2 次**
+    （两档 `test` 腿各跑一遍）⇒ ⭐ **§22.19 欠的那句"递归一开，真实响应还过不过"这一轮有了答案：过**
+    （`tests/props_176.rs` 每个二进制 `running 6 tests`、`tests/render_master.rs` 都在清单里）。
+  - **红点**：`FAILED` 行数 **0**；`test result: ok` 行 **149** 条、`passed` 合计 **2 698**。
+  - **lib 二进制的对账**：`test result: ok. 585 passed; 0 failed`（上一轮是 `584 passed; 1 failed` ⇒ **总数同一批 585，
+    唯一那枚红的就是改掉的假夹具**，⛔ 不是"又加了两条判据混过去了"）。
+  - **四条判据逐名**（两档腿各一次 ⇒ 每名 `ok×2`）：`the_recursion_reaches_inside_array_items_and_indexes_the_path`／
+    `a_warning_code_outside_the_broadcast_subset_is_rejected`／`the_broadcast_warning_subsets_match_the_measured_call_chain`／
+    `the_validator_actually_rejects_broken_responses` ⇒ `ok×2 FAILED×0`。
+    ⚠ 名字必须用**子串**匹配：lib 测试打印带模块路径（`test output_schema::tests::NAME ... ok`），
+    按 `test NAME ... ok` 全文匹配会得到 **0**，那是**匹配式的错，不是判据没跑**。
+- ⭐ **本轮最该留下的一条是口径缺陷本身**：§0.6.0zd 写"读回时要数 `Running` 的次数"，
+  而我第一次用的命令是 `grep -c "Running "`（**带尾空格**）⇒ 读数 **1**，看起来像"又一个只跑了 lib 二进制的红"。
+  真实原因是 GitHub Actions 日志里那一行是**带 ANSI 色码的**
+  `^[[1m^[[92m     Running^[[0m tests/auto_merge.rs (...)` —— `Running` 后面紧跟的是转义序列而不是空格，
+  所以 `"Running "` 只能匹到 apt 那句 `Running kernel seems to be up-to-date.`。
+  正确口径：`grep -c Running`，或 `grep -o 'Running.\{0,80\}tests/[a-z0-9_]*\.rs'`（**跳着色码**再匹文件名）。
+  ⚠ 讽刺的是**这次结论没被带错**：用正确口径复核 run `41228291334`，`Running` 共 **2** 条
+  （apt 一条 + `unittests src/lib.rs` 一条）、`tests/*.rs` **0** 条 ⇒ §22.19 的"集成二进制没跑"**仍然成立**，
+  但它是**侥幸对上的**：同一个错误口径在绿 run 上会把"全跑完"读成"没跑"。⇒ **教训：写 grep 口径时必须拿一份已知答案的日志先自测**
+  （本轮是拿 run 3 的 4512 行日志自测出来的，代价为零；上一轮的代价是一次 CI）。
+- ⚠ **另一条实操盲点（§22.22 落笔时就撞上了）**：`gh run view --job … --log` 对**仍在 in_progress 的 run**
+  直接返回 `run … is still in progress; logs will be available when it is complete` ⇒
+  **判据行只能在 run 收尾后读**，中途只能读 `jobs[].conclusion`（腿级），⛔ 不能把"腿 success"写成"判据为绿"。
+  本节把 §22.22 那句"`e2e` 是独立证据"补成了实测：日志里 **`9 / 9 条判据为绿`**，
+  含 `[ok] id 2 首次 的 result **不**通过 definitions.ReplayedToolResponse (旧形状不是重放)` 这类反向一条。
+- **落地与合流**：`scripts/dev/worktree.sh land s29-warning-code-teeth`（`--no-ff`，`ort` 策略）⇒ 合流提交 **`9925741e`**，
+  净改动 `crates/yeban-mcp/src/output_schema.rs` ＋ `crates/yeban-mcp/tests/props_176.rs`（+354／−40）；
+  合并后自检 `cargo metadata --locked` 与许可清单两项 `ok` ⇒ 已推 `origin main:main`。
+  ⏳ **合流 run `41232570339`（`headSha=9925741e09dd8028806df3be920a12e937926c85`）pending** —— 这条走的是**宽腿**
+  （主干改动 ⇒ `rust (workspace 全量)` 会真跑，约 45 分钟），判绿基线口径＝§22.15 那组 `516` 行／`FAILED 0`／`passed 7 235`
+  （本轮 s29 给 lib 加了判据，`passed` 只会 ≥ 该值 ⇒ ⚠ 合流读数要**逐档数**，不能拿窄腿的 2 698 当基线）。
+- ✅ 顺带结清：主干文档批 `f9f93de2` 的 run **`41229861554` = `success`**（`plan`／`lockfile`／`deny`／`checks` 真跑，
+  其余五腿 `skipped` ⇒ 对代码零证明，符合只动 `docs/` 的预期）。
