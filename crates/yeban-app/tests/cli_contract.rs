@@ -1179,7 +1179,7 @@ fn shortcut_table_status_matches_the_resolution_and_host_pipeline() {
     let rows = shortcut_rows();
     assert_eq!(
         rows.len(),
-        43,
+        46,
         "快捷键表的**条目**数（不是行数）：18 条 §7.1 核心快捷键 ＋ `[UI-NOTE-005]` §3.5 项 1–2 的 \
          8 条方向键微调（四个修饰组合 × 两个方向）＋ ⭐ `[UI-NOTE-005]` §3 项 3 的 2 条 \
          时值伸缩（`Shift+←/→`）＋ ⭐ `[ARCH-RT-001]` 的 2 条节拍器键 \
@@ -1189,7 +1189,8 @@ fn shortcut_table_status_matches_the_resolution_and_host_pipeline() {
          `Cmd/Ctrl+O` 打开，界面决定）＋ ⭐ 1 条录音键（`R` 录制开/关，界面决定）＋ \
          ⭐ 1 条 AI 抽屉键（`Cmd/Ctrl+Alt+A` 抽屉开/关，界面决定）＋ \
          ⭐ 2 条选轨键（`Alt+↑/↓` 上一条 / 下一条，界面决定）＋ \
-         ⭐ 1 条另存为键（`Cmd/Ctrl+Shift+S`，界面决定）"
+         ⭐ 1 条另存为键（`Cmd/Ctrl+Shift+S`，界面决定）＋ \
+         ⭐ 3 条控制台标签键（`F7`/`F8`/`F9`，界面决定）"
     );
     // 表头那三行 `# …` 是说明文字, 其中一行**定义**了标记; 数标记只数**条目行**。
     let printed_marks: usize = run

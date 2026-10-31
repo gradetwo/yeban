@@ -3532,7 +3532,7 @@ pub struct ShortcutRow {
 /// 每一项把**规范写法**、**动作**、**键位**与**落地状态**放在一起。这张表的**意义**是
 /// 让策略表的判定结果可被人与 CI 直接阅读 —— 尤其是 `[UI-A11Y-002]` 的 IME 分支,
 /// 以及"规范点名了、本版本还没做"的那一列（见 [`UNIMPLEMENTED_MARKER`]）。
-const SHORTCUTS: [ShortcutRow; 43] = [
+const SHORTCUTS: [ShortcutRow; 46] = [
     ShortcutRow {
         label: "Space → 播放/暂停",
         action: Action::PlayPause,
@@ -3565,6 +3565,34 @@ const SHORTCUTS: [ShortcutRow; 43] = [
         label: "F6 → Arrangement 视图",
         action: Action::ShowView(View::Arrangement),
         key: PhysicalKey::F6,
+        modifiers: Modifiers::none(),
+        implemented: true,
+    },
+    // ⭐ 控制台标签直达（**界面决定**，⛔ 规范未点名）：`F7`/`F8`/`F9` 与上面
+    // `F5`/`F6` 是**同一个键族**（功能键直达某个界面位置），但**分层不同** ——
+    // `F5`/`F6` 是规范 §2.2 点名的「全局无冲突备选」（连合成态都放行），
+    // 这三条走无修饰单键这一档，文本域 / IME 策略仍然优先（`Action::SelectConsoleTab` 文档）。
+    //
+    // `implemented: true` 的主张范围 = "宿主有这条臂、按下会改 `console-tab`"；
+    // 它改的是**视图态**（⛔ 不进撤销栈、⛔ 不进 `.yeban`），与 `ShowView` 同一条口径。
+    ShortcutRow {
+        label: "F7 → 控制台「钢琴卷帘」",
+        action: Action::SelectConsoleTab { index: 0 },
+        key: PhysicalKey::F7,
+        modifiers: Modifiers::none(),
+        implemented: true,
+    },
+    ShortcutRow {
+        label: "F8 → 控制台「调音台」",
+        action: Action::SelectConsoleTab { index: 1 },
+        key: PhysicalKey::F8,
+        modifiers: Modifiers::none(),
+        implemented: true,
+    },
+    ShortcutRow {
+        label: "F9 → 控制台「设备效果链」",
+        action: Action::SelectConsoleTab { index: 2 },
+        key: PhysicalKey::F9,
         modifiers: Modifiers::none(),
         implemented: true,
     },

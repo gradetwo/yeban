@@ -395,6 +395,34 @@ $ unzip -l /tmp/demo.yeban                          # 写出来的是**标准 ZI
   `ctrl_shift_s_is_the_save_as_entry` 钉住；策略表新一行由 `tests/cli_contract.rs` 的 B11b
   三面一致（表 / 解析 / 宿主）钉住。
 
+**【后续（本次切片，2026-10-31，`line/console-tab-key`）—— 控制台三个标签补上键盘入口】**
+
+- **补的那一格**：底部控制台（卷帘 / 调音台 / 设备效果链）此前只有两个入口 ——
+  鼠标点标签导轨的 `TouchArea.clicked` 与屏读器的 `accessible-action-default`；两处都只
+  `root.select-*()` 上抛，由 `app.slint` 写 `root.console-tab`（`console_tabs.slint` 文件头
+  的数据流说明）。键盘用户**一个入口都没有** ⇒ 本切片补 `F7`/`F8`/`F9`
+  （`Action::SelectConsoleTab { index }`）。
+- **键位选择（三条事实，⛔ 不猜）**：① 取 `F` 键**族**的连续性 —— `F5`/`F6` 已是两个
+  视图的直达键，`F7`–`F9` 是同一形状的下一段；② `F` 键的 GUI 文本是 Slint 的私有区
+  常量（`F7` = `\u{f70a}`、`F8` = `\u{f70b}`、`F9` = `\u{f70c}`；上游
+  `slint-ui/slint@v1.18.1` 的 `internal/common/key_codes.rs` 实测），**不随键盘布局变化** ——
+  这正是没有选 `Alt+数字` 的理由：`Option+1` 之类的组合在 GUI 路径上会被改写成符号，
+  解析点 `LogicalKey::from_text` 看不到数字；③ 三个组合此前都落到无修饰单键的
+  `_ => PassThrough`（`F7`–`F9` 在任何一步都没有被占用）⇒ 加进来不动既有绑定。
+- **分层（关键）**：它们住在 `resolve_logical` **第 6 步（无修饰单键）**，⛔ 不是 `F5`/`F6`
+  所在的第 1 步 —— 规范 §2.2 的「全局无冲突备选」**只点名两个视图键** ⇒ 控制台标签照常
+  受文本域 / IME 策略约束（输入框里 `PassThrough`、合成态 `ConsumedByIme`）。
+- **落点只有一个**：`host::apply_action` 的 `SelectConsoleTab` 臂 = `ui.set_console_tab(index)`，
+  与鼠标 / 屏读器改的是**同一个** `active-tab` 绑定；它是**视图态**（⛔ 不碰 `Op`、⛔ 不进
+  撤销栈、⛔ 不进 `.yeban`），与 `ShowView` 同一条口径。下标的事实源是
+  `scene::CONSOLE_TABS`（0 卷帘 / 1 调音台 / 2 设备），⛔ 不在 `input.rs` 另造词表。
+- **界面（默认帧不变）**：只有键盘入口，`.slint` **一位未改** ⇒ ⛔ 无 golden 影响。
+- **判据**：`tests/console_tab_keys.rs` 一条（真事件源：三键各自把 `console-tab` 拨到
+  0/1/2；带修饰的变体放行且不改属性）；解析面由 `src/input.rs` 的
+  `f7_f8_f9_pick_console_tabs_and_stay_behind_the_text_policy` 钉住（含下标对上
+  `CONSOLE_TABS.len()`、文本域 / 合成态两档）；策略表三行由 `tests/cli_contract.rs` 的
+  B11b 三面一致（表 / 解析 / 宿主）钉住。
+
 ---
 
 ## 6. **Quick Start 可以引用哪些命令**（给集成者写 README / 官网用）

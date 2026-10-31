@@ -8993,6 +8993,13 @@ fn apply_action(
             ui.set_arrangement_view(true);
             true
         }
+        // 底部控制台的标签直达（`F7`/`F8`/`F9`，**界面决定**）：**视图态** ——
+        // 写的就是鼠标点标签导轨 / 屏读器动作写的同一个 `console-tab` 属性，
+        // 不碰 `Op`、不进撤销栈、不进 `.yeban`。
+        Action::SelectConsoleTab { index } => {
+            ui.set_console_tab(i32::from(index));
+            true
+        }
         Action::ToggleSidebar => {
             ui.set_sidebar_collapsed(!ui.get_sidebar_collapsed());
             true
