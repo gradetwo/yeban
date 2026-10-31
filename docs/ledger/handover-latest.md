@@ -1,6 +1,9 @@
 # 交接（夜半第三阶段 · 2026-10-14 · 覆盖台账 R307–R1144）
 
-> ⭐ **2026-11-01 深夜（第五批）：当下状态看 §0.6.0zi**（**s30 收盘**：第三枚 `539cc5c9` 的 run `41238224956` = `success`
+> ⭐ **2026-11-01 深夜（第六批）：当下状态看 §0.6.0zj**（**s30 全链收盘**：合流 run `41246376638` = `success`
+> （`plan` 给两枚 crate ⇒ 窄腿真跑、宽腿 `skipped`；这条 run 才是"s30 代码 × `threads` 批"第一次同树编译）、
+> 树已拆（归档标签 `line-archive/s30-items-shapes @ 539cc5c9`）⇒ ⏭ 下一步 = **s31**（task #106：`render_master` 的 10 处裸对象属性槽）；
+> ⭐ 上一批在 §0.6.0zi（**s30 收盘**：第三枚 `539cc5c9` 的 run `41238224956` = `success`
 > （窄腿 `rust (yeban-mcp)` 真跑：`Running` 149／`FAILED` 0／passed 合计 2 704，三条新判据两档各 `ok`；宽腿 `skipped`）
 > → `worktree.sh land` = 合并提交 `90528095`（与 `151e2029` 的 `threads` 批零文件重叠）；
 > ⛔ 附一条**我自己的验收口径被证伪**：「另看 `props_176` 三行 `### s30 元素数` 读数」在 CI 里**读不到**
@@ -34,7 +37,7 @@
 
 ---
 
-## ⭐ ⭐ ⭐ §0.6 最新交接（**2026-10-28 起，最新到 2026-11-01 的 §0.6.0zi**，创作缺口审计 `G1..G18` 全轮 + 完成审计 + Zimmer 报告核账）—— 新会话先读这一节
+## ⭐ ⭐ ⭐ §0.6 最新交接（**2026-10-28 起，最新到 2026-11-01 的 §0.6.0zj**，创作缺口审计 `G1..G18` 全轮 + 完成审计 + Zimmer 报告核账）—— 新会话先读这一节
 
 > 本节是**当前**状态；下面 §0.5（2026-10-26，macOS 主机）与 §1／§1.9 是**历史快照**，
 > ⛔ 不要当成今天的事实 —— ⚠ 尤其 §0.5 里的路径与 env 是**另一台机器**的。
@@ -249,6 +252,30 @@
   再拿逐变体载荷名册（`Op` 有 **55** 个顶层变体，外部标签 ⇒ 元素恒"恰好一键"）。
 
 
+### 0.6.0zj ⭐ 尾批（2026-11-01 深夜·第六批）：**s30 全链收盘**（合流 run `41246376638` = `success` → 树已拆）＋ s31 的前置读数已逐字复核
+
+- **合流判决**：`b008fd49` 的 run **`41246376638`** = `completed / success`；`plan` 现读给
+  **`["yeban-mcp","yeban-ui-mcp"]` + `workspace_wide: false`** ⇒ 两枚窄腿真跑、宽腿 `skipped`
+  （⛔ 所以本轮不引用 `518 / 7 243` 那组全量基线）。
+  ⭐ 这条 run 是**"s30 代码 × `threads` 批"第一次同树编译**（前两枚各自只证了一半）⇒ 结论：
+  `output_schema.rs` 的名册与新回显键 `data.request.threads` 互不干扰（该槽本轮仍是裸 `{"type":"object"}`，不撞 `required`）。
+- **树已拆**：归档标签 `line-archive/s30-items-shapes @ 539cc5c9`，本地分支已删，`git worktree list` 只剩主干。
+  ⭐ **s30 全链 = 三枚提交／两枚判红（递归上限、测试面借用）→ 第三枚判绿 → land `90528095` → 合流判绿 → 拆树**，
+  task #105 收盘；台账 §22.26…§22.30 是这条线的完整账。
+- ⭐ **s31 的前置读数（已逐字核装配点，⛔ 不采信二手摘要）**：唯一拼装点 = `RenderArtifact::details()`
+  （`domain/render.rs:2233`，被 `preview()`／`response_data()` 共用）。现读键数：`request` **14**（含 `threads`）／
+  `probability` **5**／`ratchet` **8**／`audio` **8**（内层 `resampler` 2、`bitExactness` 2、`assets[]` 元素 = 第二批）／
+  `peak` **8**／`normalize` **6**／`loudness` **11**／`bwf` **6**／`midiSource` **7**／`contributionsBasis` **8**。
+  两处**如实留弱**并已定理由：`unsupportedCounts` = **开放映射**（键是 `KNOWN_UNSUPPORTED_KEYS` 的动态子集、可为 `{}`；
+  收紧它要 `additionalProperties`/`propertyNames`，即 §22.22 路线甲的那半件事）＋ `ops`（§22.20 裁决）。
+- ⛔ **一条已在台账留痕的误并**（值得接手的人知道，因为它差点进契约）：子代理把
+  `LoudnessTarget::failure()`（`RENDER_FAILED` 的**带内错误载荷**，含 `reason`）当成 `data.loudness` 的键报上来。
+  现读 `to_value()` = 11 键、**没有** `reason` ⇒ 照抄会把真实响应判红。
+  ⇒ **纪律**：同名结构体的**两个 `json!`（响应面 vs 错误面）不是同一份名册**，键清单必须先对上装配点再进 `required`。
+- ⏭ **接手第一件事**：起 **s31**（task #106）= 把上面 10 处裸对象**属性槽**逐键填名册，
+  两处留弱各钉一条 `assert_eq!(…, {"type":"object"})`；每槽配**非空断言**（⛔ 别再写 `println!` 读数当验收，见 §0.6.0zi）。
+  ⚠ 一条实现约束已现读记下：字面量超过约 30 条要改 `roster`/`Map` 逐键装入（§22.27），`request`(14) 与 `audio`(8+内层) 都建议直接走 `roster`。
+
 ### 0.6.0zi ⭐ 尾批（2026-11-01 深夜·第五批）：**s30 收盘 = 判绿 `41238224956` → land `90528095`** ＋ ⛔ 我上一批写的"看 `###` 逐字读数"这条验收口径被证伪（CI 读不到 stdout）
 
 - **判决**：run **`41238224956`**（`539cc5c9`）= `completed / success`。真跑腿：`plan`／`lockfile`／`checks`(19 步)／`deny`／`e2e`／
@@ -268,9 +295,8 @@
   与 `threads` 批**零文件重叠**、无冲突；合并后自检 `cargo metadata --locked` 与许可清单各 `ok`。
   ⚠ 三枚提交、两枚判红（`json!` 递归上限 = lib 面；临时值借用 = 测试面），两条都足以让**整批判据一条不跑**
   ⇒ 这是 §6.3 第 4 条的两种新形态，台账 §22.29 已并案。
-- ⏭ **接手第一件事**：把本地 main（tip 现读 `c816ec88`：`90528095` + 台账/交接四枚文档批）**推 origin/main**
-  —— 推之前先 `gh run list --branch main` 现读有没有在飞 run（`151e2029` 那条已收盘，本轮应可推）；
-  随后读合流 run（预期：`plan` 只给 `yeban-mcp` ⇒ 窄腿真跑、宽腿 `skipped`），再 `worktree.sh rm s30-items-shapes --purge`（先自动打归档标签）。
+- ⏭ ~~**接手第一件事**：把本地 main 推 origin/main → 读合流 run → `worktree.sh rm s30-items-shapes --purge`~~
+  ⇒ ⭐ **三件都已做完**（见 §0.6.0zj）：main 已推（`151e2029..b008fd49`）、合流 run `41246376638` = **success**、树已拆（归档标签 `line-archive/s30-items-shapes @ 539cc5c9`）。
 - ⏭ **下一片 s31**（不在 s30）：现读的 **11 处 `render_master` 裸对象属性槽**（`request`／`probability`／`ratchet`／`audio`／
   `peak`／`normalize`／`loudness`／`bwf`／`unsupportedCounts`／`midiSource`／`contributionsBasis`）逐槽填名册；
   ⚠ `request` 那一槽的键集**必须在 `151e2029` 之后的主干上现读**（`threads` 刚进去），⛔ 照本节清单手抄；
