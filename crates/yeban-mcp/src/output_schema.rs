@@ -1244,13 +1244,39 @@ mod tests {
 
         // ④ 声明的字段缺席（`validate_complete` 的那一条）：
         //    `yeban_query_engine_state.sends` 只在点名音轨时出现 ⇒ 不在 required 里。
+        //    ⚠ `session` / `engine` 必须**写全**（照 `domain::engine_state` 的
+        //    `session_value` / `engine_value` 现读）：s29 起校验器递归进嵌套对象，
+        //    旧的 `{}` 占位在"只看顶层"时代是安全的，现在是**假夹具**（run `41228291334` 就红在这里）。
         let engine_schema = query_engine_state();
         let without_sends = json!({
             "commitModel": "none",
-            "session": {},
-            "engine": {},
+            "session": {
+                "playheadTicks": 0,
+                "isPlaying": false,
+                "transportState": "stopped",
+                "ticksPerBeat": 960,
+                "playheadBar": 0,
+                "playheadBarOffsetTicks": 0,
+                "taskCount": 0,
+                "pluginPids": [],
+                "openWindowCount": 0,
+                "undoCursor": 0
+            },
+            "engine": {
+                "sampleRate": 48_000,
+                "sampleRateSource": "project.audio_config.sample_rate",
+                "bufferFrames": null,
+                "bufferSource": "unavailable",
+                "mirrorPresent": false,
+                "readingsRevision": 0,
+                "sceneLaunchesApplied": null,
+                "sceneLaunchesAppliedSource": "unavailable"
+            },
             "track": null,
-            "stateSources": {}
+            "stateSources": {
+                "playhead": "yeban_model::SessionRuntimeState",
+                "sampleRate": "project.audio_config.sample_rate"
+            }
         });
         assert!(
             validate(&engine_schema, &without_sends).is_ok(),

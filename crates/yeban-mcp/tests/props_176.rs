@@ -890,12 +890,38 @@ fn the_validator_can_go_red_and_the_schema_is_not_idealised() {
     // ③ 声明的字段缺席：用**另一种成功形状**的那份 schema（`sends` 只在点名音轨时出现，
     //    因此它**不在** required 里）—— `validate` 放行，`validate_complete` 必须红。
     let engine_schema = output_schema::for_tool("yeban_query_engine_state").expect("schema");
+    // ⚠ `session` / `engine` 必须**写全**（照 `domain::engine_state` 的 `session_value` /
+    // `engine_value` 现读）：s29 起校验器递归进嵌套对象，`{}` 占位在"只看顶层"时代是安全的，
+    // 现在会被嵌套 `required` 直接拒掉（与 `output_schema.rs` 里那份同名夹具同一个理由）。
     let without_sends = json!({
         "commitModel": "none",
-        "session": {},
-        "engine": {},
+        "session": {
+            "playheadTicks": 0,
+            "isPlaying": false,
+            "transportState": "stopped",
+            "ticksPerBeat": 960,
+            "playheadBar": 0,
+            "playheadBarOffsetTicks": 0,
+            "taskCount": 0,
+            "pluginPids": [],
+            "openWindowCount": 0,
+            "undoCursor": 0
+        },
+        "engine": {
+            "sampleRate": 48_000,
+            "sampleRateSource": "project.audio_config.sample_rate",
+            "bufferFrames": null,
+            "bufferSource": "unavailable",
+            "mirrorPresent": false,
+            "readingsRevision": 0,
+            "sceneLaunchesApplied": null,
+            "sceneLaunchesAppliedSource": "unavailable"
+        },
         "track": null,
-        "stateSources": {}
+        "stateSources": {
+            "playhead": "yeban_model::SessionRuntimeState",
+            "sampleRate": "project.audio_config.sample_rate"
+        }
     });
     output_schema::validate(&engine_schema, &without_sends).expect("sends 不是 required");
     let violation = output_schema::validate_complete(&engine_schema, &without_sends)
