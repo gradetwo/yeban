@@ -1493,7 +1493,7 @@ mod tests {
     /// 判据：`Alt+↑` / `Alt+↓` = 选上一条 / 下一条轨（键盘入口，界面决定）。
     ///
     /// 钉三件事：① 物理码与逻辑键两条入口同解（含方向）；② 邻居**一位不动** ——
-    /// 裸 `↑/↓`（网格微调）、`Shift+↑/↓`（八度）、`Cmd/Ctrl+Alt+↑/↓`（音量微调）、
+    /// 裸 `↑/↓`（半音微调）、`Shift+↑/↓`（八度）、`Cmd/Ctrl+Alt+↑/↓`（音量微调）、
     /// `Alt+←/→`（1 tick）都保持原义；③ 文本域焦点整体放行。
     #[test]
     fn alt_up_and_down_move_the_track_selection_and_do_not_disturb_their_neighbours() {
@@ -1515,10 +1515,11 @@ mod tests {
         );
 
         // 邻居：裸键 / Shift / Cmd+Alt 的既有语义一位不动。
+        // `[UI-NOTE-005]` §3.5 项 2：裸 `↑` = **一个半音**（项 1 的网格步长只属于 `←/→`）。
         assert_eq!(
             canvas().resolve(UpArrow, Modifiers::none()),
             Act(NudgeSelection {
-                step: NudgeStep::Grid,
+                step: NudgeStep::Semitone,
                 direction: 1,
             })
         );
