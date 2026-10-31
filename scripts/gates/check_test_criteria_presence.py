@@ -79,6 +79,12 @@ EXCEPTIONS: list[dict[str, str]] = [
         "kind": "path_wrapper",
         "reason": "用 #[path] 把 examples/support/ 下两份零依赖脚手架（38 条判据）接进门禁。",
     },
+    {
+        "path": "crates/yeban-mcp/tests/section_pure_scaffold.rs",
+        "kind": "path_wrapper",
+        "reason": "用 #[path] 把 verify/section_pure.rs 的开环判据（含未知 materialSource 的"
+        "拒绝面，tests/ 下无等价物）接进 cargo 门禁；同一先例见 yeban-render 的上一条。",
+    },
 ]
 
 PATH_ATTR = re.compile(r'#\[path\s*=\s*"([^"]+)"\]')
