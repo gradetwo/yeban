@@ -1,6 +1,13 @@
 # 交接（夜半第三阶段 · 2026-10-14 · 覆盖台账 R307–R1144）
 
-> ⭐ **2026-11-01 深夜（第四批）：当下状态看 §0.6.0zh**（s30 第二枚 `678e3f25` 判红但**病根已换**：递归上限确认消失
+> ⭐ **2026-11-01 深夜（第五批）：当下状态看 §0.6.0zi**（**s30 收盘**：第三枚 `539cc5c9` 的 run `41238224956` = `success`
+> （窄腿 `rust (yeban-mcp)` 真跑：`Running` 149／`FAILED` 0／passed 合计 2 704，三条新判据两档各 `ok`；宽腿 `skipped`）
+> → `worktree.sh land` = 合并提交 `90528095`（与 `151e2029` 的 `threads` 批零文件重叠）；
+> ⛔ 附一条**我自己的验收口径被证伪**：「另看 `props_176` 三行 `### s30 元素数` 读数」在 CI 里**读不到**
+> （`cargo test` 捕获通过用例的 stdout，`grep -c "### "` = 0）⇒ 证据只能是断言，本轮的非空核对正是靠 `6 passed / 0 failed`；
+> ⭐ 全量基线换数字：`151e2029` 的合流 run `41237762943` = `success` 且宽腿真跑 = **518 行 / passed 7 243**（⛔ 旧的 `516 / 7 235` 作废）；
+> ⏭ **接手第一件事 = 推本地 main（tip `c816ec88`）→ 读合流 run → `worktree.sh rm s30-items-shapes --purge`**）；
+> ⭐ 上一批在 §0.6.0zh（s30 第二枚 `678e3f25` 判红但**病根已换**：递归上限确认消失
 > （`checks`／`e2e`／`deny`／`lockfile` 转绿），新红是**三腿同点**于 `clippy (-D warnings)` 的**一条** `E0716`
 > （`output_schema.rs:1843`，我自己判据三里的临时值借出）⇒ 第三枚 `539cc5c9` 已推，run `41238224956` = **pending**；
 > ⭐ 主干被**别人**前移：`origin/main` `bf016ad3` → **`151e2029`**（Muse 合入 `line/review-20261031-fixes` 16 枚，含 `threads` 实参 / ADR-0056·0057），
@@ -27,7 +34,7 @@
 
 ---
 
-## ⭐ ⭐ ⭐ §0.6 最新交接（**2026-10-28 起，最新到 2026-11-01 的 §0.6.0zh**，创作缺口审计 `G1..G18` 全轮 + 完成审计 + Zimmer 报告核账）—— 新会话先读这一节
+## ⭐ ⭐ ⭐ §0.6 最新交接（**2026-10-28 起，最新到 2026-11-01 的 §0.6.0zi**，创作缺口审计 `G1..G18` 全轮 + 完成审计 + Zimmer 报告核账）—— 新会话先读这一节
 
 > 本节是**当前**状态；下面 §0.5（2026-10-26，macOS 主机）与 §1／§1.9 是**历史快照**，
 > ⛔ 不要当成今天的事实 —— ⚠ 尤其 §0.5 里的路径与 env 是**另一台机器**的。
@@ -242,6 +249,34 @@
   再拿逐变体载荷名册（`Op` 有 **55** 个顶层变体，外部标签 ⇒ 元素恒"恰好一键"）。
 
 
+### 0.6.0zi ⭐ 尾批（2026-11-01 深夜·第五批）：**s30 收盘 = 判绿 `41238224956` → land `90528095`** ＋ ⛔ 我上一批写的"看 `###` 逐字读数"这条验收口径被证伪（CI 读不到 stdout）
+
+- **判决**：run **`41238224956`**（`539cc5c9`）= `completed / success`。真跑腿：`plan`／`lockfile`／`checks`(19 步)／`deny`／`e2e`／
+  `rust (yeban-ui-mcp)`／`rust (yeban-mcp)`(15 步)／`macos`／`windows`，宽腿 `skipped`（单 crate `plan` ⇒ ⛔ 不引用全量基线）。
+  `rust (yeban-mcp)` 腿现读：**`Running` 149 行／`FAILED` 0／`test result: ok` 149 行 passed 合计 2 704**；
+  三条新判据各 **2 次**（普通档 + 合并特性档）且都 `... ok`。
+- ⛔ **我写的验收口径里有一条不可执行**（这条比判决本身更值得留）：§0.6.0zg／§0.6.0zh 都写"另看 `props_176`
+  三行 `### s30 元素数` 读数"。同一份日志 `grep -c "### "` = **0** —— `cargo test` 对**通过**的用例捕获 stdout，
+  只有红的时候才打印出来。⇒ **口径改正**：判绿验收⛔ 不列 `println!` 读数；要证据就写成**断言**
+  （本轮的非空核对本来就是 `assert!(!elements.is_empty())`，`tests/props_176.rs` 每次 `6 passed / 0 failed` 就是它的机器证据）。
+- **非空核对真兑现了**（这补上了 §22.26 那句"从夹具源码读出来的**推断**"）：`sends`／`sources`／`lane.points`
+  三处 `items` 名册在真实响应上**非空**，所以 `items` 不是空绿。
+- **主干基线换数字**（下一次判"覆盖"要用）：`151e2029` 的合流 run `41237762943` = `success`，
+  `plan` 给 **27 crate + `workspace_wide: true`**（根级改了 `schemas/mcp-tools.schema.json`／`scripts/gates/measure_baseline_002.sh`）
+  ⇒ 宽腿真跑，**`test result:` 518 行／passed 合计 7 243**（⛔ 旧的 `516 / 7 235` 作废）。
+- **落地**：`worktree.sh land s30-items-shapes` → 合并提交 **`90528095`**；合并面 `output_schema.rs` +398／`props_176.rs` +24，
+  与 `threads` 批**零文件重叠**、无冲突；合并后自检 `cargo metadata --locked` 与许可清单各 `ok`。
+  ⚠ 三枚提交、两枚判红（`json!` 递归上限 = lib 面；临时值借用 = 测试面），两条都足以让**整批判据一条不跑**
+  ⇒ 这是 §6.3 第 4 条的两种新形态，台账 §22.29 已并案。
+- ⏭ **接手第一件事**：把本地 main（tip 现读 `c816ec88`：`90528095` + 台账/交接四枚文档批）**推 origin/main**
+  —— 推之前先 `gh run list --branch main` 现读有没有在飞 run（`151e2029` 那条已收盘，本轮应可推）；
+  随后读合流 run（预期：`plan` 只给 `yeban-mcp` ⇒ 窄腿真跑、宽腿 `skipped`），再 `worktree.sh rm s30-items-shapes --purge`（先自动打归档标签）。
+- ⏭ **下一片 s31**（不在 s30）：现读的 **11 处 `render_master` 裸对象属性槽**（`request`／`probability`／`ratchet`／`audio`／
+  `peak`／`normalize`／`loudness`／`bwf`／`unsupportedCounts`／`midiSource`／`contributionsBasis`）逐槽填名册；
+  ⚠ `request` 那一槽的键集**必须在 `151e2029` 之后的主干上现读**（`threads` 刚进去），⛔ 照本节清单手抄；
+  另 4 处属别的手法（`merge` 系 3 处在 `propose_section`／`edit_notes`／`set_macro`，`stateSources` 在 `query_engine_state`）。
+  `ops` 仍走 §22.22 路线甲（先给校验器补 `min/maxProperties`/`propertyNames`，再上 55 变体载荷名册）。
+
 ### 0.6.0zh ⭐ 尾批（2026-11-01 深夜·第四批）：**s30 第二枚 `678e3f25` 判红但病根已换（递归确认消失 → 新红 = 测试面一处 `E0716`）→ 第三枚 `539cc5c9` 在飞** ＋ **主干被别人的合流前移 16 枚**（本地文档批被 non-fast-forward 正确拒绝）
 
 - **判决**：run `41237535235`（`678e3f25`）= `completed / failure`。
@@ -280,7 +315,9 @@
   ⇒ 逐槽填名册**不需要**声明可空、也不会有 `null` 假阳性。
   ⚠ `request` 那一槽现在多了一个 `threads`（来自 `151e2029`）⇒ 它的名册必须**在 rebase 后的主干上现读**再写，
   ⛔ 不要照本节这段清单手抄成键名。
-- ⏭ **接手第一件事**：读回 `539cc5c9` 的 run **`41238224956`** —— 先确认 `clippy` 那步过了（本轮就栽在这），
+- ⏭ ~~**接手第一件事**：读回 `539cc5c9` 的 run **`41238224956`**~~ ⇒ ⭐ **本条已被 §0.6.0zi 闭合：`success`，已 land `90528095`**
+  （⚠ 但那条"另看 `props_176` 三行 `### s30 元素数` 读数"的验收口径**不可执行**，见同节 —— `cargo test` 会捕获通过用例的 stdout）。
+  原口径留此供复用：先确认 `clippy` 那步过了（本轮就栽在这），
   再按 §0.6.0zg 那套读数：数 `Running` 用 `grep -c Running`／`grep -o 'Running.\{0,80\}tests/[a-z0-9_]*\.rs'`，
   三条新判据按**子串**匹配，另看 `props_176` 三行 `### s30 元素数`。
   判绿 → **把线 rebase/land 到 `151e2029` 之后的主干上** → 现读 `gh run list --branch main` 确认无在飞 → 推 main（连同本节）
