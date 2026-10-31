@@ -80,10 +80,23 @@ impl Drop for Scratch {
 }
 
 /// 运行时控件树的 ID 集合（升序 ⇒ 可直接比相等）。
-fn ids(ui: &live::LiveUi) -> Vec<String> {
+///
+/// ⭐ 每次读之前先跳一跳心跳：[`live::LiveUi::tree_snapshot`] 返回的是**缓存**的那一份
+/// （`live_surface.rs` 里 `self.surface.inner.tree().clone()`），刷新发生在
+/// `pump_meters()` 末尾的 `refresh_tree()` —— 与 `tests/undo_tree_focus_trap.rs`
+/// 每次状态变化后先 `pump_meters()` 再读树是同一个道理。
+/// 不跳这一跳，读到的就是**上一次心跳时刻**的树：弹窗属性已经翻了，树还是旧的，
+/// 判据于是红在"② `export-wav-dialog` 必须进运行时树"上（本文件第一次上 CI 就是这么红的）。
+fn ids(ui: &mut live::LiveUi) -> Vec<String> {
+    ui.pump_meters();
     let mut list: Vec<String> = ui.tree_snapshot().ids().map(str::to_owned).collect();
     list.sort();
     list
+}
+
+/// 某个 ID 在不在这一份树里（`ids` 已排序，这里只做存在性判断）。
+fn has(list: &[String], id: &str) -> bool {
+    list.iter().any(|seen| seen == id)
 }
 
 #[test]
@@ -124,14 +137,14 @@ fn escape_closes_the_export_dialog_without_running_an_export() {
     ui.pump_meters();
 
     // ---- ① 起点 ----
-    let before = ids(&ui);
+    let before = ids(&mut ui);
     let start_closed = !ui.ui().get_export_wav_open();
     assert!(
         start_closed,
         "① 起点：弹窗必须是关闭态（默认帧因此与基准一位不差）"
     );
     assert!(
-        !before.iter().any(|id| id == "export-wav-dialog"),
+        !has(&before, "export-wav-dialog"),
         "① 起点：对话框不许在树里"
     );
     assert_eq!(
@@ -146,11 +159,10 @@ fn escape_closes_the_export_dialog_without_running_an_export() {
         ui.ui().get_export_wav_open(),
         "② `open-export-wav` 必须打开弹窗"
     );
-    let open_tree = ui.tree_snapshot();
+    let opened = ids(&mut ui);
     for id in DIALOG_IDS {
-        assert!(open_tree.contains(id), "② `{id}` 必须进运行时树");
+        assert!(has(&opened, id), "② `{id}` 必须进运行时树");
     }
-    let opened = ids(&ui);
     let opened_delta = opened.len() - before.len();
     assert!(
         opened_delta > 0,
@@ -167,13 +179,12 @@ fn escape_closes_the_export_dialog_without_running_an_export() {
         esc_closed,
         "③ 弹窗开着时按 `Esc` 必须关掉它（键盘与鼠标 `export-wav-close-button` 同一条路）"
     );
-    let closed_tree = ui.tree_snapshot();
+    let closed = ids(&mut ui);
     for id in DIALOG_IDS {
-        assert!(!closed_tree.contains(id), "③ 关闭之后 `{id}` 必须离开树");
+        assert!(!has(&closed, id), "③ 关闭之后 `{id}` 必须离开树");
     }
     assert_eq!(
-        ids(&ui),
-        before,
+        closed, before,
         "③ 关闭之后的寻址面必须回到 ① 的**同一集合**（不许留下半个弹窗节点，也不许顺手改出新节点）"
     );
 
