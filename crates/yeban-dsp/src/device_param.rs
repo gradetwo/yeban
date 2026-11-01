@@ -53,7 +53,7 @@ pub fn sanitised_output_gain_db(value: f32) -> f32 {
 ///
 /// - **混响 / 卷积**（`reverb_*` / `conv_*`）：它们不是**通道条**字段，而是
 ///   [`ReverbField`] / [`ConvolutionField`] 的落点（`#293`）。其中卷积的 IR 形状
-///   （`conv_ir_decay*` / `conv_ir_seed`）是构造期烘焙、不可自动化；其余标量由对应
+///   （`conv_ir_decay*` / `conv_ir_seed` / `conv_ir_stereo`）是构造期烘焙、不可自动化；其余标量由对应
 ///   器件的 `set_params` 在块边界改（⛔ 不是 `ChannelStrip::set_params`）；
 /// - 未知旋钮。
 ///
