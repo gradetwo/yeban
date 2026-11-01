@@ -1763,6 +1763,15 @@ impl LiveUi {
     /// 这条落 `LiveAdminSurface` 自己的 `dispatch_key_chord_impl`（`.slint` 派发快捷键的
     /// 那个回调 `invoke_key_action`），因为平台事件带不了修饰位。返回值是**界面是否消费**
     /// （`false` = 这一组合没有绑定），⛔ 不是"调用失败"。
+    // ⚠ 与模块头 §1 的取向**相冲**，因此把冲在哪写清楚：§1 说"判据只住一个目标 ⇒ 没人用
+    // 就删"，但那条前提今天已不成立 —— `grep -l 'path = "../src/live_surface.rs"' tests/`
+    // 实测 **28** 个目标装本文件，任何一个目标看不到某条入口都会报 `dead_code`
+    // （CI 实测：`error: method dispatch_key_chord is never used`，红在 `live_ui_mcp` 那份），
+    // `-D warnings` 再把它变成编译失败。处置按本文件的**近例**（`open_project_via_picker`、
+    // `capture` 同款）。⛔ 这不是"藏死代码"：本入口在产品腿
+    // 上有真实调用者 —— `ui/dispatch_key_chord` 经 `LiveAdminSurface::dispatch_key_chord_impl`
+    // 走的就是同一条实现，被装进测试目标时它只是**那个**目标没调它。
+    #[allow(dead_code)]
     pub fn dispatch_key_chord(
         &mut self,
         chord: &yeban_ui_test_port::port::KeyChord,
