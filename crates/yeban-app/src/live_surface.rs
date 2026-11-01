@@ -2168,6 +2168,41 @@ pub fn build_live_ui_with(
         options.undo.clone(),
         options.save_path.as_deref().and_then(|path| path.parent()),
     );
+    // ⭐ 缺陷 `D-UI-8`（2026-11-01，创作第二首时撞上）：**保存入口在本装配里没接线**。
+    //
+    // 上面的那九个 `wire_*` 是**改工程**的写入面，而"把改完的工程写进文件"这一条
+    // 曾经只有 `ui/force_save`（一条**控制面命令**，见 `LiveAdminSurface::save_now`）——
+    // `host::wire_save` 的唯一调用点在 `main.rs` 的 `run_gui`，而本档在 `main.rs`
+    // 里**直接 `return`**，`run_gui` 根本不跑。后果是用户可见的：顶栏那颗
+    // `transport-save-button` 与 `Ctrl+S` 都调 `invoke_save_project`，而回调**没有注册者**
+    // ⇒ Slint 空操作。它比"报错"更坏：`save-status` 一位不写，而状态栏那行文本只在
+    // `save-status != ""` 时才进控件树 ⇒ 自动化界面**读不到任何失败**，人只看到"点了没反应"。
+    //
+    // 接法与产品 `run_gui` 逐字同源（同一条 `Op`/会话 → `save_action::dispatch_save` →
+    // `apply_save_outcome` 写界面回执），只有一处按本档的形态收窄：
+    //
+    // | 参数 | 产品 `run_gui` | 本装配 | 为什么 |
+    // | :--- | :--- | :--- | :--- |
+    // | `port.target` | `--open` 的那个文件 | 同一个来源（`options.save_path`） | 落点只能是装配期给的那个文件 |
+    // | `live_port` | 活会话端口 | `options.undo` —— 与那九个写入面**同一个** `Rc` | 写出去的是此刻的工程，不是装配快照 |
+    // | `picker` | `NativeFilePicker` | `yeban_app::file_picker::NoPicker` | 本档**没有 OS 窗口**（模块文档：只装 Tier-1 软件平台），弹一次模态原生框既没人能答、又会把控制面钉死。给了落点时产品腿也一次都不问 ⇒ 差异只在"没给 `--open`"那一档 |
+    // | `authority` | 挂载时给权威 | `None` | 本装配不挂进程内权威（挂权威的是 `build_live_ui_from_authority_with`，它的 `ui/force_save` 仍走权威那条腿） |
+    // | `engine` | 走带那一份宿主 | `None` ⇒ 与 `host::wire_save` 逐位相同 | `NoPicker` ⇒ 「另存为」在本档问不出路径，落点恒为装配期那个文件 ⇒ `#170` 的"目录跟着新文件走"这一跳没有可到达的输入 |
+    //
+    // ⚠ 由此留下的**如实空白**（已进创作审核报告，不在代码里假装）：本档没给 `--open`
+    // 时保存按钮仍是空操作（`NoPicker` 返回 `None` ⇒ 回调提前返回，与"取消不是失败"同一条
+    // 口径）。要它变成一句可见的失败，得先决定"无 OS 窗口的界面该怎么问落点"——
+    // 那是规范缺口，不是这里能私自补齐的答案。
+    host::wire_save(
+        &window,
+        host::SaveStatus {
+            target: options.save_path.clone(),
+            project: project.clone(),
+        },
+        options.undo.clone(),
+        std::rc::Rc::new(yeban_app::file_picker::NoPicker),
+        None,
+    );
     let mut admin = LiveAdminSurface {
         inner: surface,
         window,
