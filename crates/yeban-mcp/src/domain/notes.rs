@@ -2778,6 +2778,14 @@ pub const DEVICE_KINDS: [&str; 4] = [
     "ExternalEffect",
 ];
 
+/// [`TrackKind`] 在任何 `kind` 位置接受的**全部**字面量。
+///
+/// 与 [`DEVICE_KINDS`] 同一条理由：逐字等于模型 serde 的变体名（`TrackKind` 没有 `rename_all`）。
+/// 本表是**唯一**名册 ⛔ 不再手抄：输入侧 `op_schema.rs` 的 `enum`、错误回执里的 `allowed`、
+/// 输出侧 `output_schema.rs` 的 `track.kind` 都引用它；等式由判据
+/// `track_kinds_match_the_model_variant_names` 钉住。
+pub const TRACK_KINDS: [&str; 4] = ["Midi", "Audio", "AuxReturn", "Master"];
+
 /// 泳道目标在**解析期**的形态：变体 + 额外分量（**不含**音轨身份）。
 ///
 /// 目标名逐字等于 `project.json` 的变体名（[`LaneKind::parse`] 那一份词表）；
@@ -6011,7 +6019,7 @@ fn read_required_track_kind(object: &Map<String, Value>, field: &str) -> Result<
                 "field": field,
                 "reason": "unknownTrackKind",
                 "received": other,
-                "allowed": ["Midi", "Audio", "AuxReturn", "Master"],
+                "allowed": TRACK_KINDS.to_vec(),
             }),
         )),
     }
@@ -16362,6 +16370,34 @@ mod tests {
         sorted.sort_unstable();
         sorted.dedup();
         assert_eq!(sorted.len(), DEVICE_KINDS.len());
+    }
+
+    /// [`TRACK_KINDS`] 与**模型自己的变体名**同源（同 [`device_kinds_match_the_model_variant_names`]）。
+    ///
+    /// 为什么要新建这张表而不是就地手抄：同一个四个名字在仓库里原本已有**两份**手抄
+    /// （`op_schema.rs` 输入侧的 `enum`、本文件 `read_required_track_kind` 错误回执的 `allowed`），
+    /// 现在两处都改成引用本表 ⇒ 漂移只可能发生在"表 ↔ 模型"这一条边上，而那条边由本判据守着。
+    /// 注入（实测红）：把 [`TRACK_KINDS`] 任一元素改成模型没有的拼写 ⇒ 红；删一项 ⇒ 红。
+    #[test]
+    fn track_kinds_match_the_model_variant_names() {
+        let model_names = [
+            TrackKind::Midi,
+            TrackKind::Audio,
+            TrackKind::AuxReturn,
+            TrackKind::Master,
+        ];
+        assert_eq!(TRACK_KINDS.len(), model_names.len());
+        for (index, kind) in model_names.iter().enumerate() {
+            assert_eq!(
+                serde_json::to_value(kind).expect("枚举序列化"),
+                serde_json::json!(TRACK_KINDS[index]),
+                "`track.kind` 的词表必须逐字等于模型 serde 的变体名"
+            );
+        }
+        let mut sorted: Vec<&str> = TRACK_KINDS.to_vec();
+        sorted.sort_unstable();
+        sorted.dedup();
+        assert_eq!(sorted.len(), TRACK_KINDS.len(), "四项必须互不相同");
     }
 
     /// `insertDevice` 缺省**追加到链尾**；给了 `slotIndex` 就落在那一格；
