@@ -2,13 +2,15 @@
 #
 # 对标偃师 (Yanshi) 的 nightly.yml（2026-10-30 设计），按夜半仓库的既有约定改写。
 # 与偃师版的**三处有意不同**（不是照搬漏了，是夜半现状决定的取舍）：
-#   ① 只要两个 linux 平台（x86_64 + aarch64）。偃师是四平台矩阵；夜半 release.yml 的
-#      plan job 已逐条证明：macOS（未在 CI 编过 app、缺 codesign/notarize 凭据）、
-#      Windows（app 从未在 windows-latest 上编过）今天发不了；arm64 linux 经 Wang
-#      2026-11-01 确认没问题（runner 用 gates-manual 的 arm 档已在用的 ubuntu-24.04-arm，
-#      两腿都在各自原生 runner 上编，不加 --target）。其余目标等 release.yml 的
-#      "未来目标"表逐项打通后再加（加目标时同步改下面的 matrix、artifact 名与发布
-#      校验里的归档数断言）。
+#   ① 四个平台（2 linux + 2 macOS），只要 Windows 不在内。偃师是四平台矩阵；夜半
+#      release.yml 的 plan job 只证明 Windows 今天发不了（app 从未在 windows-latest
+#      上编过）。linux 两腿：x86_64 原生 + aarch64 原生（runner 用 gates-manual 的
+#      arm 档已在用的 ubuntu-24.04-arm）。macOS 两腿（Wang 2026-11-01 确认）：aarch64
+#      原生（ci.yml 的 macos 腿已在 macos-latest 上编 yeban-app，有证据）+ x86_64
+#      在 macos-15 上交叉编（--target，新增腿，由本 nightly 腿自己证明）。
+#      macOS 包是**未签名**的（仓库未配 codesign/notarize 凭据）：nightly 不是正式
+#      release，用户须手动放行；要签名分发等 release.yml 的 macOS 路打通后再说。
+#      加目标时同步改下面的 matrix、artifact 名与发布校验里的归档数断言。
 #   ② 不重跑 release.yml 的重门禁（guards / deny / clippy --workspace / test --workspace）。
 #      那些判据在 main 每次 push 时已经由 ci.yml 跑过；nightly 只做"把 main 的树用默认
 #      feature 真编译一次、打成可核对的包"。夜半 nightly ≠ 夜半 release：release 的
@@ -82,8 +84,20 @@ jobs:
         include:
           - runner: ubuntu-latest
             target: x86_64-unknown-linux-gnu
+            cargo_flag: ""
+            bindir: target/release
           - runner: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
+            cargo_flag: ""
+            bindir: target/release
+          - runner: macos-15
+            target: aarch64-apple-darwin
+            cargo_flag: ""
+            bindir: target/release
+          - runner: macos-15
+            target: x86_64-apple-darwin
+            cargo_flag: "--target x86_64-apple-darwin"
+            bindir: target/x86_64-apple-darwin/release
     steps:
       - uses: actions/checkout@v4
 
@@ -97,6 +111,7 @@ jobs:
           [ "$want" = "$got" ] || { echo "::error::工具链漂移, L1 声学确定性要求锁定工具链"; exit 1; }
 
       - name: 安装 Linux 桌面构建依赖（与 release.yml 的 build job 逐字相同）
+        if: runner.os == 'Linux'
         run: |
           set -euo pipefail
           # 缺 fontconfig 会在"编译依赖"阶段红（不是我们的代码错）；
@@ -109,15 +124,48 @@ jobs:
             clang libclang-dev \
             fonts-noto-cjk
 
+      - name: libclang（macOS bindgen 前置；ci.yml 的 macos 腿同款发现逻辑）
+        if: runner.os == 'macOS'
+        run: |
+          set -euo pipefail
+          # macOS 上 libclang 不在 SDK 里，逐个候选并**验证**它真含 libclang.dylib，
+          # 否则 bindgen 会在编译 signalsmith-stretch 时失败（ci.yml 的 macos 腿曾因此红一次）。
+          cands=()
+          if command -v brew >/dev/null 2>&1; then
+            p="$(brew --prefix llvm 2>/dev/null || true)"; [ -n "$p" ] && cands+=("$p/lib")
+            p="$(brew --prefix llvm@18 2>/dev/null || true)"; [ -n "$p" ] && cands+=("$p/lib")
+          fi
+          cands+=("$(xcode-select -p)/usr/lib")
+          cands+=("$(xcode-select -p)/Toolchains/XcodeDefault.xctoolchain/usr/lib")
+          cands+=("/opt/homebrew/opt/llvm/lib" "/usr/local/opt/llvm/lib")
+          found=""
+          for c in "${cands[@]}"; do
+            if [ -e "$c/libclang.dylib" ] || [ -e "$c/libclang.1.dylib" ]; then found="$c"; break; fi
+          done
+          if [ -z "$found" ]; then
+            echo "::error::找不到 libclang.dylib；已试: ${cands[*]}"
+            exit 1
+          fi
+          echo "LIBCLANG_PATH=$found" >> "$GITHUB_ENV"
+          echo "libclang: $found"
+
+      - name: 交叉目标 std（只给 x86_64-apple-darwin 腿）
+        if: matrix.target == 'x86_64-apple-darwin'
+        run: |
+          set -euo pipefail
+          rustup target add x86_64-apple-darwin
+
       - name: 发行构建（默认 feature 专用：绝不加 --all-features / 绝不加任何 --features）
         run: |
           set -euo pipefail
           # MUST-GATE-009 的第一道开关就是"编译期不把危险能力编进去" ⇒ 这里只能是默认 feature。
           # `--locked` + 钉死工具链 = 仓库既有的复现约定。
-          cargo build --release --locked -p yeban-app -p yeban-mcp
-          ls -l target/release/yeban-app target/release/yeban-mcp
+          # matrix.cargo_flag 只在 x86_64-apple-darwin 腿上是 --target（交叉编），其余腿为空；
+          # 它不是 --features，绝不往里塞 feature 开关。
+          cargo build --release --locked ${{ matrix.cargo_flag }} -p yeban-app -p yeban-mcp
+          ls -l "${{ matrix.bindir }}/yeban-app" "${{ matrix.bindir }}/yeban-mcp"
 
-      - name: 打包 + sha256（可复现 tar：--sort=name + --mtime=SOURCE_DATE_EPOCH）
+      - name: 打包 + sha256（Linux 腿可复现 tar；macOS 腿 BSD tar 布局相同）
         id: pack
         run: |
           set -euo pipefail
@@ -138,8 +186,8 @@ jobs:
           mkdir -p dist
 
           mkdir -p "stage/$NAME"
-          install -m 0755 target/release/yeban-app "stage/$NAME/yeban-app"
-          install -m 0755 target/release/yeban-mcp "stage/$NAME/yeban-mcp"
+          install -m 0755 "${{ matrix.bindir }}/yeban-app" "stage/$NAME/yeban-app"
+          install -m 0755 "${{ matrix.bindir }}/yeban-mcp" "stage/$NAME/yeban-mcp"
           # GPLv3 再分发：许可原文随包。缺了它宁可不发（LICENSE 是红线 1 保护文件，只读不动）。
           install -m 0644 LICENSE "stage/$NAME/LICENSE"
 
@@ -153,13 +201,21 @@ jobs:
             printf 'rustc: %s\n' "$(rustc --version)"
             printf 'built at (SOURCE_DATE_EPOCH=%s): %s\n' "$SOURCE_DATE_EPOCH" "$(python3 -c 'import datetime, os; print(datetime.datetime.fromtimestamp(int(os.environ["SOURCE_DATE_EPOCH"]), datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))')"
             printf 'features: 默认档 only —— in-process-mcp / experimental-als-export / experimental-logic-export 均未编译\n'
-            printf 'sha256(yeban-app): %s\n' "$(sha256sum "stage/$NAME/yeban-app" | cut -d' ' -f1)"
-            printf 'sha256(yeban-mcp): %s\n' "$(sha256sum "stage/$NAME/yeban-mcp" | cut -d' ' -f1)"
+            printf 'sha256(yeban-app): %s\n' "$(python3 -c "import hashlib; print(hashlib.sha256(open('stage/$NAME/yeban-app','rb').read()).hexdigest())")"
+            printf 'sha256(yeban-mcp): %s\n' "$(python3 -c "import hashlib; print(hashlib.sha256(open('stage/$NAME/yeban-mcp','rb').read()).hexdigest())")"
           } > "stage/$NAME/BUILD-INFO.txt"
 
-          tar --sort=name --mtime="@${SOURCE_DATE_EPOCH}" --owner=0 --group=0 --numeric-owner \
-              --format=gnu -czf "dist/$NAME.tar.gz" -C stage "$NAME"
-          ( cd dist && sha256sum "$NAME.tar.gz" > "$NAME.tar.gz.sha256" )
+          # 哈希与打包一律用 python3 + tar 的跨平台写法：macOS 没有 GNU sha256sum
+          # 与 GNU timeout，BSD tar 也不认 --sort/--mtime/--format=gnu。
+          # Linux 腿保持 GNU tar 可复现约定；macOS 腿布局相同，只是不做字节级可复现。
+          if [ "$(uname)" = Darwin ]; then
+            tar -czf "dist/$NAME.tar.gz" -C stage "$NAME"
+          else
+            tar --sort=name --mtime="@${SOURCE_DATE_EPOCH}" --owner=0 --group=0 --numeric-owner \
+                --format=gnu -czf "dist/$NAME.tar.gz" -C stage "$NAME"
+          fi
+          ( cd dist && python3 -c "import hashlib; print(hashlib.sha256(open('$NAME.tar.gz','rb').read()).hexdigest() + '  $NAME.tar.gz')" > "$NAME.tar.gz.sha256" )
+          SHA="$(cut -d' ' -f1 < "dist/$NAME.tar.gz.sha256")"
           {
             echo "### nightly 归档"
             echo ""
@@ -175,7 +231,16 @@ jobs:
           ls -la dist
           test -n "$(ls dist/*.tar.gz 2>/dev/null)" || { echo "✗ dist 里没有归档 ⇒ 打包没成功"; exit 1; }
           test -f dist/*.tar.gz.sha256 || { echo "✗ 没有随包 sha256 ⇒ 校验和缺失"; exit 1; }
-          ( cd dist && sha256sum -c ./*.sha256 )
+          # 随包自验（python3 跨平台写法；macOS 没有 GNU sha256sum）。
+          ( cd dist && python3 - <<'PY'
+          import glob, hashlib
+          for f in glob.glob('*.sha256'):
+              want, name = open(f).read().strip().split(None, 1)
+              got = hashlib.sha256(open(name.strip(), 'rb').read()).hexdigest()
+              assert got == want, f"{name}: {got} != {want}"
+          print("sha256 自验通过")
+          PY
+          )
           for f in dist/*.tar.gz; do
             echo "-- 校验归档：$f"
             tar -tzf "$f" >/dev/null
@@ -200,7 +265,8 @@ jobs:
           print(tomllib.loads(pathlib.Path("Cargo.toml").read_text(encoding="utf-8"))["workspace"]["package"]["version"])
           PY
           )"
-          BIN_LINE="$(timeout 30 "$root/yeban-app" --version)"
+          # 30 秒超时保护用 python3 包一层：macOS 没有 GNU timeout。
+          BIN_LINE="$(python3 -c "import subprocess, sys; print(subprocess.run(sys.argv[1:], capture_output=True, text=True, timeout=30).stdout.strip())" "$root/yeban-app" --version)"
           echo "--- 包内 yeban-app --version ---"
           echo "$BIN_LINE"
           [ "$BIN_LINE" = "yeban-app $VERSION" ] \
@@ -245,8 +311,8 @@ jobs:
           find artifacts -name '*.tar.gz' | sort | tee /tmp/nightly-archives.txt
           n_archives=$(wc -l < /tmp/nightly-archives.txt | tr -d ' ')
           echo "归档数 $n_archives"
-          # v1 两个平台：归档数不是 2 就是构建腿或取回腿漂移了 ⇒ 不许发布。
-          [ "$n_archives" -eq 2 ] || { echo "✗ 归档数 $n_archives ≠ 2 ⇒ 不许发布（加平台时同步改这里的断言）" >&2; exit 1; }
+          # v1 四个平台：归档数不是 4 就是构建腿或取回腿漂移了 ⇒ 不许发布。
+          [ "$n_archives" -eq 4 ] || { echo "✗ 归档数 $n_archives ≠ 4 ⇒ 不许发布（加平台时同步改这里的断言）" >&2; exit 1; }
           find artifacts -name '*.sha256' -exec cat {} \; > SHA256SUMS
           cat SHA256SUMS
           # 自校验：每个归档都在自己的 artifact 目录里凭随包 .sha256 验一遍（证明传输没坏）。
