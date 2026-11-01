@@ -2718,7 +2718,14 @@ mod tests {
             .filter(|entry| entry["dryRunSupported"].as_bool() == Some(true))
             .map(|entry| entry["name"].as_str().expect("字符串"))
             .collect();
-        assert_eq!(supporting.len(), 10, "支持 dryRun 的方法: {supporting:?}");
+        // ⭐ 2026-11-01（D-UI-3）：`ui/dispatch_key_chord` 与 `ui/dispatch_key_press` 同为
+        //    注入面 ⇒ 同样支持 dryRun 预览，本计数 10 → 11。判漂移靠点名，不靠数数：
+        //    两条键注入方法必须一起在场。
+        assert_eq!(supporting.len(), 11, "支持 dryRun 的方法: {supporting:?}");
+        assert!(
+            supporting.contains(&methods::METHOD_DISPATCH_KEY_CHORD),
+            "键注入支持 dryRun 而组合键不支持 ⇒ 两条注入面能力漂移: {supporting:?}"
+        );
         for method in supporting {
             assert!(
                 methods::method(method).expect("注册表里有").mutating,
