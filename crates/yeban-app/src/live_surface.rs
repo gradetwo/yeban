@@ -1961,6 +1961,11 @@ pub fn build_live_ui_with(
     // （真实指针事件 → Slint 命中测试 → `.slint` 的 `TouchArea` → 宿主写属性）。
     // 只有属性写入 ⇒ 不改工程、不需要 `UndoPort`，装配顺序上也不与撤销端口耦合。
     host::wire_view_callbacks(&window);
+    // ⭐ 左侧资源栏的条目**取数**（分类 / 条目点击 ⇒ 重注入数组）：与产品进程
+    // （`main.rs` 的 `wire_callbacks`）调的是**同一个** `host::wire_sidebar_contents`。
+    // 这里给的是装配视图的快照（与下面 `wire_clip_scope` 的回落同一手法）⇒ 无头端口注入的
+    // 分类点击与用户点击取同一份数、钳同一个区间。
+    host::wire_sidebar_contents(&window, Rc::new(RefCell::new(view.clone())));
     // ⭐ AI 提案抽屉：与产品进程调的是**同一个** `host::wire_proposal_drawer`
     // （`open-musical-pr` 的注册者只有它，因此上一行不再碰这个回调）。来源由装配决定：
     // 接在权威上的装配 ⇒ 打开抽屉时现读权威那份未合并清单；没接权威的装配 ⇒ 空态那句

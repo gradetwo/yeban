@@ -239,9 +239,20 @@ headSha `bef7ab82`，artifact `golden-linux`（id 12951880348，470971 字节）
 - 块外不一致像素数 = **0**；旧块内容（边框 `Tokens.gold-deep` = `109,136,161`、底色 `bg-raised`）回到标尺底色（`19,26,34` 等按行条带）⇒ **没有布局位移、也没有别的控件被触碰**。
 ⚠ 五张的**字节数相同**（6222418）**不构成任何证据**（存储式 deflate），判内容的是上面的 sha256 与逐像素读数。
 
+**⚠ 2026-10-30 再录（`line/sidebar-library`，headSha `49a81936`，提交 `17d8eb8d`「左侧资源栏条目接真实投影」）**: 旧版 `ui/sidebar.slint` 在这一层**内联 8 个演示乐器名**（含仓库里根本不存在的「SFZ · 323 款采样预置」）。本票把条目数组换成宿主按**当前分类**注入的真实投影（唯一取数处 `bridge::sidebar_category_content`，界面层默认空），并在 0 条时改画**一个写着理由的文本节点** `sidebar-empty`。无头 CI 里分类 0 = `bridge::library_instrument_names()` 实测 **0 条**（内置清单为空、采样库未下载）⇒ 默认帧左资源栏**整块重写** ⇒ 5 张基准确定性过期（本票在提交信息里就登记了这条待重录）。
+生成地点与生成方式同上：手动档 `gates-manual.yml` 的 `gate=goldens`，run id **41067005625**（conclusion=success；job `goldens (生成分平台基准图集)` success，8 步，13:53:49Z–13:57:21Z；该档的 `YEBAN_WRITE_GOLDEN=1 cargo test -p yeban-app --locked --test real_ui_tier1` 报 `test result: ok. 34 passed; 0 failed; 1 ignored`），ref `line/sidebar-library`，headSha `49a81936`，artifact `golden-linux`（id 12983660810，444210 字节）；⚠ artifact 自带的 `MANIFEST.txt` 是**本改动前的仓库副本**（含旧哈希）⇒ **未采用**（本节与下表由本线在本机重写，下表用 `--write-table` 从磁盘生成）。
+**入库前的复核（⚖ 判定量 = 差异像素的 y 行带；stdlib zlib 解码逐像素逐通道，非 Pillow —— 本机无 Pillow，口径与上文几节一致）**：
+- `arrangement-full` / `session-full` / `model-driven-demo-project` / `model-driven-filled-project`：**各 10,139 个差异像素**，整体包围盒 `x 8..238 × y 148..367`，逐行带分解 = 新画的空态文字块 `y 148..180 / x 8..238` **6,501 px** ＋ 旧 8 条演示条目的 7 条文字带 `y 183..194 / 211..222 / 239..248 / 267..276 / 295..306 / 323..334 / 351..360`（`x` 左沿一律 13–16 = 条目文字起始位）**共 3,586 px** ＋ 13 条行分隔线的两端 `4 px × 13 = 52 px` ⇒ 6,501 + 3,586 + 52 = **10,139**（逐项相加吻合，不是估算）；
+- `arrangement-compact`：**905 个差异像素**，包围盒 `x 8..34 × y 148..367`（收拢栏宽只有 27 px）= 首行**选中块**（旧 8 条里条目 0 高亮）`y 148..171 / x 8..34` 整块 **648 px = 27 × 24**（实心矩形，行数 × 列数吻合）＋ 7 条单字形带 **201 px** ＋ 14 条分隔线端点 **56 px** ⇒ 648 + 201 + 56 = **905**；⚠ 空态节点在 compact 下 `visible: !root.compact` ⇒ **不画**，所以 compact 这一张**只有移除、没有新增**，与上表构成不同是预期的；
+- 带外（`x 8..238 × y 148..367` 之外）不一致像素数 = **0** ⇒ 左资源栏以外的任何控件**一格未动**；
+- 与**同 headSha 的另一次渲染**交叉验证：`ci.yml` run **41065919978** 的 `ui-screenshots-yeban-app` artifact（另一条 workflow、另一台 runner，该 run 因比对旧基准而红）里可比的两张与本批**逐字节相同** —— `app-main-window-arrangement-full` sha256 `f87e550f…`、`app-model-driven-filled-project` `c48bc99e…`（2/2；该 run fail-fast，其余 3 张没产出）⇒ 渲染**可复现**；
+- 控件树读数吻合（同一 artifact 的 `live-port-control-tree.json`）：`sidebar-empty` 的 bounds = `x 8 / y 148 / w 232 / h 44` ⇒ 与上面「新画的空态文字块」`x 8..238 × y 148..180` **逐边吻合**（148+44−1=191，文字实际占到第 180 行）；同文件 `重复族实测计数` 里 **`sidebar-item-*` = 0** ⇒ 与「8 条演示条目行消失」互相印证，且 `sidebar-empty` 的 label 逐字为「仓内没有带样本的 SFZ（内置清单为空）；请用自带样本的 SFZ（Tab 1 的 SFZ 路径 ＋ SET）」；
+- 5 张仍是 4 个不同 sha256，`arrangement-full` 与 `model-driven-demo-project` 共用同一个（`f87e550f…`）—— 与「这两个场景本就逐字节相同」的既有记录一致。
+⚠ 五张的**字节数相同**（6222418）**不构成任何证据**（存储式 deflate，1920×1080 恒为该长度），判内容的是上面的 sha256 与逐行带读数。
+
 文件	sha256	字节
-app-main-window-arrangement-compact-1920x1080.png	74a30f23e05dc36316577dd039e2abab6aea59675109a6a9d89e058afc159b0d	6222418
-app-main-window-arrangement-full-1920x1080.png	e75b4b4f08542b44e4943a1f8d0911430c8485cbed28a69083dec33a066aad9b	6222418
-app-main-window-session-full-1920x1080.png	dd59e0c43158b5358dbf9e4557a757cb265cf395f79fdfab139311c2ea638ffc	6222418
-app-model-driven-demo-project-1920x1080.png	e75b4b4f08542b44e4943a1f8d0911430c8485cbed28a69083dec33a066aad9b	6222418
-app-model-driven-filled-project-1920x1080.png	6ea1bd6815089c4cf4eaade179c2cf503523a1b0b20c8a5afbafeae85f6167d1	6222418
+app-main-window-arrangement-compact-1920x1080.png	5cfa70c881117f56fe1470b2228839269ec4404687bc38b0e75822c40a25148c	6222418
+app-main-window-arrangement-full-1920x1080.png	f87e550f8a61d89187c28d0bb9ddbe0f945e486797afb26972b407d74c623eb8	6222418
+app-main-window-session-full-1920x1080.png	989cc11c9fb44d982a2d6eddcd2eb49e702d8bc0b9dcab1780ed6d6d1b6052b1	6222418
+app-model-driven-demo-project-1920x1080.png	f87e550f8a61d89187c28d0bb9ddbe0f945e486797afb26972b407d74c623eb8	6222418
+app-model-driven-filled-project-1920x1080.png	c48bc99e9920ad92ef1199b1d50fcdc299ad143a27639c18e5d6d3695fca5998	6222418
