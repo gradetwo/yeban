@@ -300,7 +300,7 @@ clip_widths / clip_ys / clip_heights` 全部是 `self.clips.iter()` **无过滤�
 | main（docs 批） | `41256461256` / `f6753cc8` | **success**，但 4 跑 5 跳 —— 纯文档批按计划空绿 | ⛔ 只算门禁绿，代码判决承上一行 |
 | sidebar goldens 重录 | `41254412881` | **success** 且 5 张 PNG **sha256 逐张相等** | 基准零变更（§13 已记） |
 | sidebar 判据第一批 | `41253471992` / `1da6ddd5` | **failure**：`391 passed; 1 failed` —— 抽屉单注入判据把 sidebar 本地同名声明 `empty-reason:` 误读为第二注入路径 | 根因修复 `d5ceab0d`：判据只数**实例绑定行**（豁免含 `property <` 的声明行；`MusicalPrDrawer` 全仓唯一实例化在 `app.slint`，真注入仍被抓） |
-| sidebar 重判 | `41256416978` / `d5ceab0d` | 在飞；合流由判决门控的后台流水线执行（绿⇒land⇒push⇒读回⇒拆树） | 结果到达后在本行补记 |
+| sidebar 重判 | `41256416978` / `d5ceab0d` | **success**（判决直读 GitHub）；判据门计数 `Running_tests=276`、`sidebar_category=2`、`sidebar_item=2`、`result_FAILED=0` ⇒ 收紧后的单注入判据在 yeban-app 与 windows 两腿全绿；合流 `983080d2` 已推送并远程确认 | 落地批 main run 读回与拆树见 §16（自动落账） |
 
 ## 15.1 合流流水线的两处判据耦合缺陷（在飞期间热修，2026-11-01）
 
