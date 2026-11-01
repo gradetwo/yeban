@@ -72,7 +72,9 @@ jobs:
   build:
     name: build (x86_64-unknown-linux-gnu)
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    # 与 release.yml 的 build 腿同为 150：冷编 yeban-app（含 Slint 等重依赖、无缓存）
+    # 不是 60 分钟能稳过的量，超时只会让 nightly 无故断供。
+    timeout-minutes: 150
     outputs:
       archive: ${{ steps.pack.outputs.archive }}
       sha256: ${{ steps.pack.outputs.sha256 }}
