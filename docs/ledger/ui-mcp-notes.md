@@ -512,3 +512,22 @@ rust 腿在 lib 就停了（见 §4.1）。
 - 仍未做（转记）：**不把控制面接进发行版运行路径**（`main.rs` 事件循环一行未动）。若要在发行版开控制面，
   需要非默认 feature + `main.rs` 开关 + 一条**带该 feature** 的 clippy/test（`ci.yml` 归集成者）；
   管理动作仍如实 `-32005`；真实 GL/物理窗口后端未验证。
+
+---
+
+## 追加（2026-11-01，`line/zimmer-ui-write-surface`）：§2 那张表**只覆盖 §12 直接推导的 14 条**
+
+§2 的表是这条线**首轮**的产物，规范里没有的方法（写面扩展）当时一条也没有，因此
+表里现在缺 4 行。**注册表 `methods::METHODS` 才是唯一权威**（`ui/methods` 就是它的内容，
+判据 `registry_counts` 钉 `METHOD_COUNT == 18`、只读 7 条 / 会改状态 11 条）。补齐：
+
+| 方法名 | 参数 | scope / 权限层 | 出处与裁决 |
+| :--- | :--- | :--- | :--- |
+| `ui/dispatch_pointer_cancel` | `dryRun?` | `ui:inject` / Interactive | §12.4 的 `dispatch_pointer_up` 只有"松手"，**没有**"取消"（拖拽中途离开窗口那条路）；坐标不带（上游 `PointerExited` 无坐标，传坐标＝假装"取消发生在某点"） |
+| `ui/dispatch_key_chord` | `keyName`, `shift?`, `ctrl?`, `alt?`, `meta?`, `dryRun?` | `ui:inject` / Interactive | ⚠ **规范签名扩展** ⇒ `docs/adr/ADR-0061_ui_dispatch_key_chord.md`（`Proposed`）。§12.4 第 2 条要求 `dispatch_key_press(key_code)` 分发 `Shift+Enter`，但一个 `key_code` 表达不了组合键；本条落 `MainWindow::invoke_key_action`（与真实击键同一格、同一张键位表、同一个 UndoPort）。回执第三格叫 `consumed`，⛔ 不叫 `accepted` |
+| `ui/set_track_height` | `elementId`, `heightPx`, `dryRun?` | `ui:inject` / Interactive | `ADR-0004` S1（轨道高度）在控制面上的纵向入口：改的是**视图态**（投影基准高），与事件注入同层 ⇒ 生产模式下随 `ui:inject` 族一起硬禁；产品窗口里用户的手是**拖拽手势**。`currentBasePx` 只读回读作证 dryRun 零副作用 |
+| `ui/open_project` | `path`, `saveFirst?`, `dryRun?` | `app:admin` / Administrative | 换的是**工程整体**，与只改视图态的轨高不是一个量级 ⇒ 不落在 `ui:inject`；六级 scope 里没有"换工程"这一级（`ADR-0001` **D29** 已登记为待人类裁决），按 D29 既有口径挂 `app:admin`。容器读取**复用** CLI `--open` 那一条（`open.rs` 的 `open_project_file`），不新造第二份读法 |
+
+**为什么这四条不进 §2 的表**：那张表的第 4 列是"§12 出处 / 规范 ID"，而这四条的正当性
+来自规范**之外**的裁决（判据 `spec_event_injection_methods_match_section_12_4` 逐字比对
+§12.4 原文，把非 §12.4 的方法塞进那个循环会让判据失去"逐字对账"的意义）。

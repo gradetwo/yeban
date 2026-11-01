@@ -85,6 +85,12 @@ pub const METHOD_SWITCH_MAIN_VIEW: &str = "ui/switch_main_view";
 pub const METHOD_FORCE_SAVE: &str = "ui/force_save";
 /// 方法名：§12.3 `Administrative` 的"重载音频引擎"。
 pub const METHOD_RELOAD_ENGINE: &str = "ui/reload_engine";
+/// 方法名：`§12.4` `dispatch_key_press` 表达不了的**修饰键组合**（chord）的注入入口。
+///
+/// ⚠ 规范 §12.4 的四条注入里**没有**它（`dispatch_key_press(key_code)` 只有一个键名、
+/// 没有修饰位）。名字与形状是本仓的工程裁决，理由逐字写在下面方法表的 `signature` 里；
+/// 人类裁决登记为 `docs/adr/ADR-0061_ui_dispatch_key_chord.md`（`Proposed`）。
+pub const METHOD_DISPATCH_KEY_CHORD: &str = "ui/dispatch_key_chord";
 /// 方法名：`ADR-0004` S1 的**纵向入口**（轨道头拖拽手势）在控制面上的孪生。
 ///
 /// 规范里**没有**这个方法名与签名 —— 它是工程裁决（理由与口径写在方法表的 `signature` 里）。
@@ -238,6 +244,55 @@ const KEY_CODE: ParamSpec = ParamSpec {
     allowed: None,
     description: "键名（§12.4 的 `key_code`；解析口径 = `yeban_ui_test_port::port::KeyCode::parse`）",
 };
+/// `ui/dispatch_key_chord` 的键名（chord 的"哪个键"那一半）。
+///
+/// 与 [`KEY_CODE`] **不**合并成一个参数：那一半走的是平台事件（`WindowEvent::KeyPressed`
+/// 只有 `text`、没有修饰位），这一半走的是 `.slint` 的 `key_action(text, shift, ctrl, alt, meta)`
+/// 回调 —— 两条路的表达能力不同，混在一个参数名里就会伪装成"它们能互相替代"。
+/// 取值不是白名单：解析口径在执行面（`ChordKey::parse`），拼错键名报 `-32602`。
+const KEY_NAME: ParamSpec = ParamSpec {
+    name: "keyName",
+    json_type: "string",
+    required: true,
+    allowed: None,
+    description: "键名（`Space` / `Tab` / `Esc` / `Enter` / `Backspace` / `Delete` / `F5`–`F9` / \
+                  `Up` / `Down` / `Left` / `Right` / 单个可打印字符；大小写不敏感。\
+                  解析口径 = `yeban_ui_test_port::port::ChordKey::parse`）",
+};
+/// chord 的四个修饰位（各自一个可选布尔，默认 `false`；⛔ 不合并成一个字符串）。
+///
+/// 为什么不设计成 `"modifiers": "Cmd+Shift"` 一个字符串：那会造出**第二套**修饰位语法
+/// （顺序、别名、大小写都要重新判），而 `.slint` 的回调本来就是四个 `bool`
+/// ⇒ 一一对应之后，控制面的实参与界面的实参**同一形状**，没有翻译层可以漂移。
+const CHORD_SHIFT: ParamSpec = ParamSpec {
+    name: "shift",
+    json_type: "boolean",
+    required: false,
+    allowed: None,
+    description: "按住 `Shift`（默认 false）",
+};
+const CHORD_CTRL: ParamSpec = ParamSpec {
+    name: "ctrl",
+    json_type: "boolean",
+    required: false,
+    allowed: None,
+    description: "按住 `Ctrl`（默认 false）",
+};
+const CHORD_ALT: ParamSpec = ParamSpec {
+    name: "alt",
+    json_type: "boolean",
+    required: false,
+    allowed: None,
+    description: "按住 `Alt`（默认 false）",
+};
+const CHORD_META: ParamSpec = ParamSpec {
+    name: "meta",
+    json_type: "boolean",
+    required: false,
+    allowed: None,
+    description: "按住 `Cmd` / `Super`（默认 false；macOS 上 Slint 把 `Cmd` 报到 `control` 位，\
+                  宿主一律按 `Modifiers::command()` 问，见 `crates/yeban-app/src/input.rs`）",
+};
 const HEIGHT_PX: ParamSpec = ParamSpec {
     name: "heightPx",
     json_type: "integer",
@@ -292,7 +347,7 @@ const SAVE_FIRST: ParamSpec = ParamSpec {
 /// 默认 `false`，与领域侧逐字一致（判据 [crate::dry_run] 的
 /// `dry_run_defaults_to_false_exactly_like_the_domain`）。
 ///
-/// **只出现在会改状态的方法上**（`mutating == true` 的 10 条）：只读方法收到它会被
+/// **只出现在会改状态的方法上**（`mutating == true` 的 11 条）：只读方法收到它会被
 /// 未知参数规则**响亮拒绝**（`-32602`），而不是静默忽略 —— 理由见 [crate::dry_run] 的模块头。
 const DRY_RUN: ParamSpec = ParamSpec {
     name: DRY_RUN_PARAM,
@@ -304,7 +359,7 @@ const DRY_RUN: ParamSpec = ParamSpec {
 };
 
 /// 全部方法，**注册表顺序 = 文档顺序**（不依赖任何容器迭代顺序）。
-pub const METHODS: [MethodSpec; 17] = [
+pub const METHODS: [MethodSpec; 18] = [
     MethodSpec {
         name: METHOD_METHODS,
         spec_ids: &["ARCH-UI-004", "MCP-DUAL-001"],
@@ -437,6 +492,35 @@ pub const METHODS: [MethodSpec; 17] = [
         signature: "UI/UX §12.4: dispatch_key_press(key_code)；UI/UX §7.2 [UI-A11Y-002]: \
                     合成态 (is_composing == true) 下彻底拦截单键快捷键的冒泡分发",
         description: "注入键盘按键（`Tab` / `Shift+Enter` / `Esc` 等）",
+        mutating: true,
+    },
+    MethodSpec {
+        name: METHOD_DISPATCH_KEY_CHORD,
+        spec_ids: &["UI-MCP-001", "UI-TEST-002", "UI-NOTE-005"],
+        scope: Scope::UiInject,
+        // 与 `ui/dispatch_key_press` **同一层级**（`Interactive` ⇒ 生产模式硬禁、
+        // `ui:inject` 的 scope 逐字相同）：chord 只是"多带四个修饰位"，不是更低一等的入口。
+        port_operation: Some(Operation::DispatchKeyChord),
+        params: &[
+            KEY_NAME,
+            CHORD_SHIFT,
+            CHORD_CTRL,
+            CHORD_ALT,
+            CHORD_META,
+            DRY_RUN,
+        ],
+        signature: "规范里没有这个方法名与签名 —— §12.4 的 `dispatch_key_press(key_code)` \
+                    只有**一个键名**、没有修饰位，而 `slint::platform::WindowEvent::KeyPressed` \
+                    本身**不带**修饰字段（`i-slint-core-1.18.1/api.rs`，只有 `text`）⇒ 平台事件\
+                    那条路表达不了 `[UI-NOTE-005]` §3.5 的 `Shift+↑/↓`（整八度）与 `Shift+←/→`（\
+                    时值一个吸附网格），也表达不了 `Shift+Z`（全曲总览）与 `Cmd/Ctrl+*` 全家。\
+                    本方法是 §12.4 那条注入在**另一格**上的孪生：落点是 `.slint` 派发快捷键已在\
+                    用的那一个回调 `MainWindow::invoke_key_action(text, shift, ctrl, alt, meta)`\
+                    （`crates/yeban-app/src/host.rs` 的 `wire_keys`），`keyName` 换算成 `text` 的\
+                    词表与宿主唯一的解析点 `input::LogicalKey::from_text` 同码位（往返由判据钉住）。\
+                    人类裁决登记为 `docs/adr/ADR-0061_ui_dispatch_key_chord.md`（`Proposed`）；\
+                    权限落在 Interactive 层，与 `ui/dispatch_key_press` 逐字相同",
+        description: "注入带修饰键的组合（chord）：`Shift+Z` / `Shift+↑` / `Cmd+Shift+Z` 等；回执给出界面是否消费",
         mutating: true,
     },
     MethodSpec {
@@ -761,7 +845,7 @@ mod tests {
     fn method_names_are_unique_and_well_formed() {
         let names = names();
         assert_eq!(names.len(), METHOD_COUNT);
-        assert_eq!(METHOD_COUNT, 17);
+        assert_eq!(METHOD_COUNT, 18);
         let unique: std::collections::BTreeSet<&str> = names.iter().copied().collect();
         assert_eq!(unique.len(), names.len(), "方法名不得重复");
 
@@ -909,7 +993,7 @@ mod tests {
 
     /// 判据 6（**ADR-0001 D48**）: `dryRun` 的**可发现性**与**适用范围**。
     ///
-    /// - 会改状态的 10 条方法**全部**声明 `dryRun`，且它是**可选布尔**；
+    /// - 会改状态的 11 条方法**全部**声明 `dryRun`，且它是**可选布尔**；
     /// - 只读的 7 条方法**一条都不声明**（只读没有副作用可短路，见 [`crate::dry_run`]）；
     /// - `ui/methods` 的自描述里能**直接看出**哪些方法支持它（`dryRunSupported` +
     ///   顶层 `dryRunParam`），调用方不必读文档。
@@ -945,7 +1029,7 @@ mod tests {
                 without.push(spec.name);
             }
         }
-        assert_eq!(with.len(), 10, "会改状态的方法: {with:?}");
+        assert_eq!(with.len(), 11, "会改状态的方法: {with:?}");
         assert_eq!(without.len(), 7, "只读方法: {without:?}");
         assert_eq!(with.len() + without.len(), METHOD_COUNT);
 
