@@ -427,7 +427,7 @@ const CONVOLUTION: EffectGroup = EffectGroup {
     ],
 };
 
-/// 磁带饱和：链级饱和器（`ADR-0061`）。
+/// 磁带饱和：链级饱和器（`ADR-0062`）。
 const TAPE: EffectGroup = EffectGroup {
     id: "tape",
     title: "磁带饱和",

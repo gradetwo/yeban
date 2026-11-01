@@ -1104,7 +1104,7 @@ pub const APPLIED_DEVICE_PARAM_NAMES: &[&str] = &[
     "conv_wet_mix",
     "conv_ir_gain_db",
     "conv_ir_gain",
-    // 磁带饱和标量（8 = 4 个字段；`ADR-0061`）。
+    // 磁带饱和标量（8 = 4 个字段；`ADR-0062`）。
     "tape_drive",
     "saturation_drive",
     "tape_mix",

@@ -257,7 +257,7 @@ pub struct InsertChain {
     /// （`0 dB` ＋ 三级全关，[`Self::effective_strip`] 本来会返回 `None`），也必须有
     /// 一台器件让块边界的 `set_params` 有落点。恒等泳道**不**置这一位。
     force_strip: bool,
-    /// **编译期强制实例化磁带饱和**（`ADR-0061`）。与 [`Self::force_reverb`] 同理：
+    /// **编译期强制实例化磁带饱和**（`ADR-0062`）。与 [`Self::force_reverb`] 同理：
     /// `tape_mix: 0` 的静态链会让 [`InsertRuntime`] 丢掉器件。
     force_saturation: bool,
     /// **编译期强制实例化 Freeverb**（`#293`）。
@@ -346,7 +346,7 @@ impl InsertChain {
         self
     }
 
-    /// 置"强制实例化磁带饱和"位（`ADR-0061`）。见 [`Self::force_saturation`]。
+    /// 置"强制实例化磁带饱和"位（`ADR-0062`）。见 [`Self::force_saturation`]。
     #[must_use]
     pub const fn with_forced_saturation(mut self, force: bool) -> Self {
         self.force_saturation = force;
@@ -1213,7 +1213,7 @@ impl InsertRuntime {
             let mut state = TapeSaturation::new();
             state.configure(sample_rate_f32);
             state.set_params(params);
-            // ⭐ `ADR-0061`：与 Freeverb 同一条缝（静态 `tape_mix: 0`）。
+            // ⭐ `ADR-0062`：与 Freeverb 同一条缝（静态 `tape_mix: 0`）。
             if state.is_active() || chain.is_forced_saturation() {
                 Some(state)
             } else {
@@ -1828,7 +1828,7 @@ mod tests {
         assert_eq!(params.output_gain_db.to_bits(), 0.0f32.to_bits());
     }
 
-    /// ⭐ `ADR-0061`：磁带饱和字段的钳制镜像必须与**真实器件**逐位一致。
+    /// ⭐ `ADR-0062`：磁带饱和字段的钳制镜像必须与**真实器件**逐位一致。
     #[test]
     fn tape_field_clamp_is_the_device_clamp() {
         for field in TapeField::ALL {
@@ -1859,7 +1859,7 @@ mod tests {
         }
     }
 
-    /// ⭐ `ADR-0061`：饱和名字进链、来源槽一致；裸 `mix` / `drive` 不是饱和名字。
+    /// ⭐ `ADR-0062`：饱和名字进链、来源槽一致；裸 `mix` / `drive` 不是饱和名字。
     #[test]
     fn tape_names_project_and_source_slot_agrees() {
         let dev = device(&[("tape_drive", 0.5), ("saturation_mix", 0.7)]);
@@ -1883,7 +1883,7 @@ mod tests {
         assert_eq!(tape_of(&device(&[("drive", 0.5)])), None);
     }
 
-    /// ⭐ `ADR-0061` 判据 2（机制层）：静态 `tape_mix: 0` 的链在**不强制**时**不建**
+    /// ⭐ `ADR-0062` 判据 2（机制层）：静态 `tape_mix: 0` 的链在**不强制**时**不建**
     /// 器件；一置 `force_saturation`，运行态就真的有一台饱和器可让块边界改它。
     #[test]
     fn forced_saturation_keeps_a_mix_zero_instance_alive() {
@@ -1912,7 +1912,7 @@ mod tests {
         assert!(saturation.is_active());
     }
 
-    /// ⭐ `ADR-0061`：运行态里饱和级真的处理（drive 1.0 / mix 1.0 的 0.9 常量块
+    /// ⭐ `ADR-0062`：运行态里饱和级真的处理（drive 1.0 / mix 1.0 的 0.9 常量块
     /// 稳态 ≈ `pade_tanh(9)/10 = 0.12857`）；`mix = 0` 时整级丢掉 ⇒ 直通。
     #[test]
     fn tape_runtime_saturates_and_drops_an_inactive_stage() {

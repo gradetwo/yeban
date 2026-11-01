@@ -423,7 +423,7 @@ pub use yeban_dsp::convolution_reverb::{ConvolutionReverb, ConvolutionReverbPara
 // 与 `DspChannelStrip` 同一个理由：让判据能写出"dsp 类型 ← engine 路径"的赋值。
 pub use yeban_dsp::convolution_reverb::ConvolutionReverb as DspConvolutionReverb;
 // 磁带饱和的**唯一实现**住在 `yeban-dsp`（`crates/yeban-dsp/src/tape.rs`）。
-// 本模块只转发：类型 + 参数类型（`ADR-0061`）。
+// 本模块只转发：类型 + 参数类型（`ADR-0062`）。
 pub use yeban_dsp::tape::{TapeParams, TapeSaturation};
 // IR 合成本身**不是**本模块的发明：白噪声源是 `yeban_dsp::noise::Rng`（xorshift32，
 // 显式播种、跨运行同序），本模块**不**定义第二份 PRNG。
@@ -438,8 +438,8 @@ use yeban_dsp::noise::Rng;
 /// 见模块文档 §9）。⚠ 它同时是**本类型失去 `Copy` 的原因**：那一件器件必须携带一份 IR
 /// （`Vec<f32>`），见 [`ConvolutionPlan`]。
 ///
-/// ⚠ **本链的第四个器件是磁带饱和**（`ADR-0061`）：链级饱和器，位置在通道条之后、
-/// Freeverb 之前（离线链已接线；实时 `rt.rs` 的池接线是后续项，见 ADR-0061）。
+/// ⚠ **本链的第四个器件是磁带饱和**（`ADR-0062`）：链级饱和器，位置在通道条之后、
+/// Freeverb 之前（离线链已接线；实时 `rt.rs` 的池接线是后续项，见 ADR-0062）。
 /// `drums` 仍然**不是**插入器件：它是**音源**（触发式）⇒ 住在 [`crate::synth`] 里，
 /// 位置在本链**之前**。理由（插入链没有事件输入、`DrumMachine` 没有 `process_*`）
 /// 见 [`crate::drums`] 模块文档 §2。
@@ -451,7 +451,7 @@ pub struct InsertParams {
     /// 本轨的通道条参数：`None` = 本轨**没有**通道条（实时侧那段跳过）。
     strip: Option<ChannelStripParams>,
     /// 本轨的磁带饱和参数：`None` = 本轨**没有**磁带饱和（离线链那段跳过；
-    /// 实时池接线见 ADR-0061 后续项）。
+    /// 实时池接线见 ADR-0062 后续项）。
     saturation: Option<TapeParams>,
     /// 本轨的混响参数：`None` = 本轨**没有**混响（实时侧那段跳过）。
     ///
@@ -830,7 +830,7 @@ impl InsertParams {
 
     /// 单台设备 → 磁带饱和参数（`None` = 一个已识别的饱和名字都没有）。
     ///
-    /// 基值是 `yeban_dsp` 的设备默认值；只有**出现**的名字才覆盖它（`ADR-0061`）。
+    /// 基值是 `yeban_dsp` 的设备默认值；只有**出现**的名字才覆盖它（`ADR-0062`）。
     fn tape_of(device: &DeviceDefinition) -> Option<TapeParams> {
         let mut resolved = TapeProjection::default();
         for param in &device.params {
@@ -859,7 +859,7 @@ impl InsertParams {
     ///
     /// 存在的理由与 [`Self::strip`] 相同：把"投影出来的那个数"变成可读的，
     /// 判据就不必从音频输出反推。**只**被离线链（现阶段）用来调 `TapeSaturation::set_params`；
-    /// 实时池接线见 ADR-0061 后续项。
+    /// 实时池接线见 ADR-0062 后续项。
     #[must_use]
     pub const fn saturation(&self) -> Option<TapeParams> {
         self.saturation
@@ -1173,7 +1173,7 @@ impl ReverbProjection {
 struct TapeProjection {
     /// 出现过的饱和旋钮（`tape_drive` 等）。
     seen: bool,
-    /// 基值 = 器件默认值（`ADR-0061`）。
+    /// 基值 = 器件默认值（`ADR-0062`）。
     params: TapeParams,
 }
 
@@ -1928,7 +1928,7 @@ mod tests {
         );
     }
 
-    /// ⭐ `ADR-0061`：饱和投影只认带前缀的拼写；别名与规范名同落点；裸名不武装。
+    /// ⭐ `ADR-0062`：饱和投影只认带前缀的拼写；别名与规范名同落点；裸名不武装。
     #[test]
     fn tape_projection_recognises_only_prefixed_spellings() {
         let aliased = from_devices(&[device(
