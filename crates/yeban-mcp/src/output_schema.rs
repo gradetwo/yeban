@@ -29,6 +29,12 @@
 //! 因此那份 schema 的 `required` 只列**两种形状都有**的字段，并在 `description`
 //! 里逐字说明缺的是哪几个 —— 写成"理想形状"会让幂等合并的那次响应**违反自己的 schema**。
 //!
+//! ⭐ 同一条"两种形状"的口径**不适用于** `data.merge`（s33 现读）：那三个提案类工具的
+//! `merge` 槽里装的是 `apply_merge` 对**本次调用刚创建、状态恒为 `Open`** 那条提案的输出，
+//! 幂等臂在那条路径上不可达 ⇒ 那一槽的七键**全为恒发**。两份 schema 共用同一份
+//! `properties`（[`merge_shape_properties`]），差别只在 `required` 与 `commitModel`
+//! （派发器只注入**外层** `data`）。
+//!
 //! ⚠ 第二种**按参数分支**的形状（`ADR-0020`）：`yeban_render_master` 的
 //! `contributions` 缺省 `false` ⇒ 响应里**没有** `contributions` / `contributionsBasis`；
 //! 打开时才出现。这两键同样只进 `properties`、不进 `required`，而
@@ -1114,7 +1120,7 @@ fn propose_section() -> Value {
             "warnings": {"type": "array", "items": proposal_warning_items()},
             "proposal": proposal_detail_schema(),
             "autoMerged": {"type": "boolean"},
-            "merge": {"type": "object"}
+            "merge": merge_shape_roster()
         }),
     ))
 }
@@ -1178,7 +1184,7 @@ fn edit_notes() -> Value {
             },
             "proposal": proposal_detail_schema(),
             "autoMerged": {"type": "boolean"},
-            "merge": {"type": "object"}
+            "merge": merge_shape_roster()
         }),
     ))
 }
@@ -1225,9 +1231,81 @@ fn set_macro() -> Value {
             "warnings": {"type": "array", "items": proposal_warning_items()},
             "proposal": proposal_detail_schema(),
             "autoMerged": {"type": "boolean"},
-            "merge": {"type": "object"}
+            "merge": merge_shape_roster()
         }),
     ))
+}
+
+/// ⭐ s33：`data.merge` 那一槽与 [`merge_proposal`] 的**同一份**形状体（键集合逐字同源）。
+///
+/// 为什么必须一份而不是两份手抄：autoMerge 分支把 `apply_merge` 的成功 `data` **原样**
+/// 塞进三个提案类工具的 `data.merge`（`domain/mod.rs` 里
+/// `object.insert("merge", merged_data)`）⇒ 四处的键集合是同一份代码的输出，
+/// 这正是 [ADR-0029] D2 那句"同一把锁内背靠背、不可能漂移"在 schema 侧的落点。
+///
+/// ⚠ 这份体**只写类型、不写 `const`**，是刻意的：同一份体要同时喂两种形状的外层
+/// `yeban_merge_proposal`（那里 `merged` 恒 `true`、`alreadyMerged` 两种取值都出现），
+/// 把恒值写进共有体就会让其中一处变成假话 ⇒ 恒值轴留给各自的外层。
+#[must_use]
+fn merge_shape_properties() -> Value {
+    json!({
+        "merged": {"type": "boolean"},
+        "alreadyMerged": {"type": "boolean"},
+        "appliedOps": {"type": "integer"},
+        "baseCommitMoved": {"type": "boolean"},
+        // 生产者是 `map_or(Value::Null, |json| digest_of(…))`（`domain::apply_merge`）⇒
+        // `null` 在类型上是可达的，声明成可空是真话而非保守。
+        "projectDigest": {"type": ["string", "null"]},
+        "commit": {
+            "type": "object",
+            "required": [
+                "id", "branch", "message", "atomicBatch",
+                "parents", "parentCount", "isMerge", "depth"
+            ],
+            "properties": {
+                "id": {"type": "string"},
+                "branch": {"type": "string"},
+                "message": {"type": "string"},
+                "atomicBatch": {"type": "boolean"},
+                "parents": {"type": "array", "items": {"type": "string"}},
+                "parentCount": {"type": "integer"},
+                "isMerge": {"type": "boolean"},
+                "depth": {"type": "integer"}
+            }
+        },
+        "proposal": proposal_detail_schema()
+    })
+}
+
+/// ⭐ s33：三个提案类工具里 `data.merge` 那一槽（此前是**三处**裸 `{"type":"object"}`）。
+///
+/// `required` 与外层 [`merge_proposal`] **不同**，且这是现读的真话：`data.merge` 只有
+/// **一种**形状 —— 拼装点合并的是**刚刚创建、状态恒为 `Open`** 的那条提案
+/// （`domain::apply_propose` 里 `proposal_id` 就地生成后立刻 `apply_merge`），
+/// 于是 `apply_merge` 的幂等臂（`ProposalStatus::Merged`）与拒绝臂在这条路径上不可达
+/// ⇒ 七个键全为恒发。外层保留四条 `required` 是因为**那里**两种形状都会出现。
+///
+/// ⛔ 这里**没有** `commitModel`：派发器只把 `commitModel` 注入**外层** `data`
+/// （`crate::tools` 的注入点），`data.merge` 是 `apply_merge` 未经注入的原始 `data`。
+#[must_use]
+fn merge_shape_roster() -> Value {
+    json!({
+        "type": "object",
+        "description": "`autoMerge: true` 时**才出现**的那一键（缺省形状里没有 \
+            `autoMerged` / `merge` 两键），逐字等于 `yeban_merge_proposal` 成功响应的 `data` \
+            （除 `commitModel` —— 派发器只注入外层）。⚠ 这一槽**只有一种形状**：合并的是\
+            本次调用刚创建的提案，`apply_merge` 的幂等短形状在这条路径上不可达 ⇒ 七个键恒发。",
+        "required": [
+            "merged",
+            "alreadyMerged",
+            "appliedOps",
+            "baseCommitMoved",
+            "projectDigest",
+            "commit",
+            "proposal"
+        ],
+        "properties": merge_shape_properties()
+    })
 }
 
 /// `yeban_merge_proposal` 的成功响应 `data`（**两种形状**）。
@@ -1240,31 +1318,7 @@ fn merge_proposal() -> Value {
              `appliedOps` / `proposal`，没有 `commit` / `baseCommitMoved` / `projectDigest` ⇒ 因此这三个键不在 `required` 里。",
         ),
         &["merged", "alreadyMerged", "appliedOps", "proposal"],
-        json!({
-            "merged": {"type": "boolean"},
-            "alreadyMerged": {"type": "boolean"},
-            "appliedOps": {"type": "integer"},
-            "baseCommitMoved": {"type": "boolean"},
-            "projectDigest": {"type": "string"},
-            "commit": {
-                "type": "object",
-                "required": [
-                    "id", "branch", "message", "atomicBatch",
-                    "parents", "parentCount", "isMerge", "depth"
-                ],
-                "properties": {
-                    "id": {"type": "string"},
-                    "branch": {"type": "string"},
-                    "message": {"type": "string"},
-                    "atomicBatch": {"type": "boolean"},
-                    "parents": {"type": "array", "items": {"type": "string"}},
-                    "parentCount": {"type": "integer"},
-                    "isMerge": {"type": "boolean"},
-                    "depth": {"type": "integer"}
-                }
-            },
-            "proposal": proposal_detail_schema()
-        }),
+        merge_shape_properties(),
     ))
 }
 
@@ -2944,6 +2998,218 @@ mod tests {
         assert!(
             names.contains(&Value::from("input_gain_db")),
             "渲染夹具真的用 input_gain_db 走通落点 ⇒ 白名单必须含它"
+        );
+    }
+
+    /// ⭐ s33 判据一（接线 + 单一来源）：三个提案类工具的 `data.merge` 广播的**就是**
+    /// [`merge_shape_roster`]，而这份名册的 `properties` 与外层 [`merge_proposal`] 逐字同源
+    /// —— 差的只有 `commitModel` 一键（派发器只把它注入**外层** `data`）。
+    ///
+    /// `7`／`7`／`8` 三个数是 `domain::apply_merge` 长形状的现读键数，写死在这里当
+    /// **防掏空下界**：谁把名册删短，这条就红，⛔ 不会只剩"schema 里有 merge 这个键"这种空话。
+    #[test]
+    fn the_three_merge_slots_share_one_roster_and_omit_commit_model() {
+        for (label, schema) in [
+            ("yeban_propose_section", propose_section()),
+            ("yeban_edit_notes", edit_notes()),
+            ("yeban_set_macro", set_macro()),
+        ] {
+            let slot = schema["properties"]["merge"].clone();
+            assert_ne!(
+                slot,
+                json!({"type": "object"}),
+                "`{label}` 的 merge 不得退回裸声明"
+            );
+            assert_eq!(
+                slot,
+                merge_shape_roster(),
+                "`{label}` 广播的 merge 槽必须与名册函数逐字相同"
+            );
+            // `merge` 只在 `autoMerge: true` 分支出现（缺省形状里根本没有这个键）
+            // ⇒ ⛔ 不许进顶层 `required`，否则缺省回执就违反自己的 schema。
+            let required = schema["required"].as_array().expect("required 必须是数组");
+            assert!(
+                !required.iter().any(|name| name == "merge"),
+                "`{label}` 的缺省形状没有 merge ⇒ 它不得进顶层 required"
+            );
+        }
+
+        let slot = merge_shape_roster();
+        assert_eq!(
+            slot["required"]
+                .as_array()
+                .expect("required 必须是数组")
+                .len(),
+            7,
+            "`data.merge` 的恒发键数（现读 `apply_merge` 的长形状字面量）"
+        );
+        assert_eq!(
+            slot["properties"]
+                .as_object()
+                .expect("properties 必须是对象")
+                .len(),
+            7,
+            "`data.merge` 的声明键数必须与 required 同数（这一槽只有一种形状 ⇒ 一个都不能少）"
+        );
+        assert_eq!(
+            slot["properties"]["commit"]["required"]
+                .as_array()
+                .expect("commit.required 必须是数组")
+                .len(),
+            8,
+            "内层 `commit` 的键数（现读同一处字面量）"
+        );
+
+        // 单一来源的另一半方向：外层与这一槽的 `properties` 只差 `commitModel` 一键。
+        let mut outer = merge_proposal()["properties"]
+            .as_object()
+            .expect("外层 properties 必须是对象")
+            .clone();
+        assert!(
+            outer.remove(crate::tools::COMMIT_MODEL_KEY).is_some(),
+            "外层 `yeban_merge_proposal` 必须带 commitModel（它是派发器注入外层 data 的键）"
+        );
+        assert_eq!(
+            Value::Object(outer),
+            slot["properties"],
+            "外层去掉 commitModel 后必须与 `data.merge` 的 properties 逐字相同 —— \
+             两处都是 `apply_merge` 的输出，各自手抄就会漂移"
+        );
+        assert!(
+            slot["properties"]
+                .get(crate::tools::COMMIT_MODEL_KEY)
+                .is_none(),
+            "`data.merge` 里⛔ 没有 commitModel：派发器只注入外层，这一槽是未注入的原始 data"
+        );
+    }
+
+    /// s33 判据共用的破损核对：把 `broken` 喂进 [`merge_shape_roster`]，必须红在 `path` 上。
+    ///
+    /// 做成小函数而不是闭包，是为了让每条 `label` 都带上"红在点名路径"这句同一口径的断言。
+    #[track_caller]
+    fn merge_slot_rejects(label: &str, broken: &Value, path: &str) {
+        let violation = validate(&merge_shape_roster(), broken)
+            .err()
+            .unwrap_or_else(|| panic!("`{label}` 必须被拒，但校验通过了: {broken}"));
+        assert_eq!(violation.path, path, "`{label}` 必须红在点名的路径上");
+    }
+
+    /// ⭐ s33 判据二（牙齿）：`data.merge` 名册**真的会拒** —— 少键／错型／嵌套错型都要红在
+    /// 点名它的路径上；同时钉住"这一槽**只有长形状**"那句现读的话：把 `apply_merge` 的
+    /// **幂等短形状**喂进这一槽必须红（短形状只可能出现在外层，见名册文档里的可达性推理）。
+    ///
+    /// 合法夹具的键集**逐字**取自 `domain::apply_merge` 长形状那段 `json!`。
+    #[test]
+    fn the_merge_slot_rejects_the_idempotent_shape_and_broken_values() {
+        let proposal = json!({
+            "proposalId": "01PROPOSAL",
+            "branch": "proposal/01PROPOSAL",
+            "kind": "section",
+            "title": "t",
+            "description": "d",
+            "status": "merged",
+            "baseCommit": "01BASE",
+            "headCommit": "01HEAD",
+            "mergeCommit": "01MERGE",
+            "createdAt": 1_760_000_000_000_i64,
+            "resolvedAt": 1_760_000_000_500_i64,
+            "resolution": "merge proposal 01PROPOSAL",
+            "opCount": 1,
+            "opKinds": ["SetTempo"],
+            "ops": []
+        });
+        let fresh = json!({
+            "merged": true,
+            "alreadyMerged": false,
+            "appliedOps": 1,
+            "baseCommitMoved": false,
+            "projectDigest": "sha256:abc",
+            "commit": {
+                "id": "01COMMIT",
+                "branch": "main",
+                "message": "merge proposal 01PROPOSAL",
+                "atomicBatch": true,
+                "parents": ["01BASE", "01HEAD"],
+                "parentCount": 2,
+                "isMerge": true,
+                "depth": 12
+            },
+            "proposal": proposal
+        });
+        let slot = merge_shape_roster();
+
+        // ① 合法长形状必须先过（否则后面的红可能只是"整份都不合法"）。
+        validate(&slot, &fresh)
+            .unwrap_or_else(|violation| panic!("合法 `data.merge` 必须通过: {violation}"));
+        // `projectDigest` 声明成可空是真话：生产者是
+        // `active_project().map_or(Value::Null, …)`（⛔ 不是这里的宽松）。
+        let mut nullable_digest = fresh.clone();
+        nullable_digest["projectDigest"] = Value::Null;
+        validate(&slot, &nullable_digest)
+            .unwrap_or_else(|violation| panic!("projectDigest 给 null 必须放行: {violation}"));
+
+        // ② 幂等**短形状**在这一槽里必须红（它是外层的另一种形状，不是这一槽的）。
+        let short = json!({
+            "merged": true,
+            "alreadyMerged": true,
+            "appliedOps": 0,
+            "proposal": proposal
+        });
+        merge_slot_rejects("幂等短形状", &short, "$.baseCommitMoved");
+
+        // ③ 逐条破损值：红在**点名它的路径**上（只报"整体红"不算点名）。
+        let mut no_merged = fresh.clone();
+        no_merged.as_object_mut().expect("对象").remove("merged");
+        merge_slot_rejects("少一个 required 键", &no_merged, "$.merged");
+
+        let mut digest_is_int = fresh.clone();
+        digest_is_int["projectDigest"] = json!(5);
+        merge_slot_rejects("projectDigest 给整数", &digest_is_int, "$.projectDigest");
+
+        let mut applied_ops_is_string = fresh.clone();
+        applied_ops_is_string["appliedOps"] = json!(1.to_string());
+        merge_slot_rejects(
+            "appliedOps 给字符串",
+            &applied_ops_is_string,
+            "$.appliedOps",
+        );
+
+        let mut base_commit_moved_is_string = fresh.clone();
+        base_commit_moved_is_string["baseCommitMoved"] = json!("yes");
+        merge_slot_rejects(
+            "baseCommitMoved 给字符串",
+            &base_commit_moved_is_string,
+            "$.baseCommitMoved",
+        );
+
+        let mut commit_without_depth = fresh.clone();
+        commit_without_depth.as_object_mut().expect("对象")["commit"]
+            .as_object_mut()
+            .expect("对象")
+            .remove("depth");
+        merge_slot_rejects(
+            "内层 commit 少 depth",
+            &commit_without_depth,
+            "$.commit.depth",
+        );
+
+        let mut parents_are_ints = fresh.clone();
+        parents_are_ints["commit"]["parents"] = json!([1]);
+        merge_slot_rejects(
+            "commit.parents 的元素给整数",
+            &parents_are_ints,
+            "$.commit.parents[0]",
+        );
+
+        let mut proposal_without_op_count = fresh.clone();
+        proposal_without_op_count["proposal"]
+            .as_object_mut()
+            .expect("对象")
+            .remove("opCount");
+        merge_slot_rejects(
+            "proposal 少 opCount",
+            &proposal_without_op_count,
+            "$.proposal.opCount",
         );
     }
 }

@@ -17694,7 +17694,7 @@ helper 里 ⇒ 必须不认（防假绿）。两条臂在旧实现上都会失�
 - **验收读数（单位：数该腿日志里 `test <名> ... ok` 这一整行出现的次数，按步骤分）**：四条新判据在
   `test` 与 `test (合并特性)` **两步各出现一次**（每条 2 次，共 8 行 `ok`）——这两步是同一套代码在
   **默认 feature** 与**合并 feature** 两种组合下各跑一遍，所以"2 次"本身就是"两种组合都成立"的证据，⛔ 不是重复计数。
-  同一腿聚合：`test result:` **149** 行、`test result: FAILED` **0** 行、`passed` 合计 **149,924**（跨两步 + doctests）；
+  同一腿聚合：`test result:` **149** 行、`test result: FAILED` **0** 行、`passed` 合计 **149,924**（跨两步 + doctests）—— ⛔ **该合计已由 §22.32 改正为 `2,724`**（字段切错），`149`／`0` 两数仍有效；
   `tests/props_176.rs`（拿**真实响应**跑 `validate_complete` 的那个二进制）在两步里都出现过（日志第 1736 / 3678 行）⇒ 新名册被端到端读到了，不只是自证。
 - ⛔ **一条新踩的坑**：`gh run view --log` 在 run 仍 `in_progress` 时**直接拒绝**（实测报 `run 41250994144 is still in progress; logs will be available when it is complete`）。
   这**不是**"判据没跑"的证据。等收口的正确做法是一条阻塞命令 `gh run watch <id> --exit-status`（退出码 0 = `success`），⛔ 不要 sleep 轮询。
@@ -17728,3 +17728,30 @@ helper 里 ⇒ 必须不认（防假绿）。两条臂在旧实现上都会失�
   并把 `targetsSupported`/`targetsUnsupported` 那两条字面量清单从它派生（⛔ 第三份手抄）。
 - **树况**：`git worktree list` 现读两棵（主干 + `.worktrees/s31-render-rosters`），两棵 `git status --porcelain` 均**空**；
   本地分支 47 枚已并入 `main`、仅 `line/s31-render-rosters` 未并（本轮合入后即并）。task #106 收盘、#107（s32）登记。
+
+### 22.32 ⭐ s32 判绿收盘（线 run `41260371411` = **success**）：`data.automation` 由"完全未声明"变成 38 键名册 ＋ ⛔ **改正**上一节那条 `passed` 合计（149,924 ⇒ **2,724**）
+
+- ⛔ **先把上一条读数改正，再记新账**（单位：数**同一腿**日志里每一行 `test result: ok. N passed` 的 N 之和）：
+  §22.31 与 handover §0.6.0zk 写的 **149,924** 是**错的**。本轮（2026-11-01）用**同一单位**把两枚 run 的 `rust (yeban-mcp)` 腿各重测一遍：
+  **s31 腿**（job `124684349433`，run `41250994144`）= `test result:` **149** 行／`FAILED` **0** 行／N 之和 **`2,714`**；
+  **s32 腿**（run `41260371411`，`/tmp/s32c_all.log` 6.5 MB 按 `job` 字段筛出该腿）= `test result:` **149** 行／`FAILED` **0** 行／N 之和 **`2,724`**（多的 10 条正是 s32 新写判据里被计入的断言单元）。
+  错因**未能复现**：把同一堆候选切法（四字段切／全 run 不分腿／把 `failed`/`ignored` 也累加）逐一跑在这两枚日志上，**没有一个能得出 149,924**（最近的是"全 run 不分腿"= `13,381`）⇒ 结论只能是"那次读数取了未知的东西"，⛔ 不得引用。
+  纪律两句：**聚合类数字必须先说"从第几个字段、筛哪个 job、按哪个正则取数"**；并且**"跨两步 + doctests"这类口径描述本身就是不可核对的措辞** —— 换成"该腿 `test result:` 行的 N 之和"这种可复述的取法。
+- **判决链（三枚提交、三枚 run —— L32 的形状，逐枚现读 `headSha`）**：
+  - `3297a4e9` → run **`41257927372`** = `completed / failure`（00:42:34 → 00:47:32，约 5 分钟即收 ⇒ 这个耗时形状就是**编译红**）：一处 `E0308`（把 `TARGET_VALUES` 派生成 `targetsSupported`/`targetsUnsupported` 那两条清单时类型不匹配）。
+  - `31b38c1e` → run **`41258749895`** = `completed / failure`（00:53:53 → 01:10:38）：编译过了，红在**我自己新写的两条读广播枚举的判据** —— schema 路径少写了两层索引（`data.automation.tracks[].lanes[]` 的 `tracks`／`lanes` 两级）。⇒ **红点在我写的判据，不在契约**：`56a8ec0b` 补上两层索引后这两条转绿。
+  - `56a8ec0b` → run **`41260371411`** = `completed / success`（01:16:06 → 02:09:53）。
+- **合流判决**：`0150cb2e`（`--no-ff` 合 s32 线）的 run **`41264545558`** = `completed / success`；十腿现读 **9 条 `success`** ＋ `rust (workspace 全量)` = `skipped`（这批只动 `crates/yeban-mcp/**` 与 `docs/**` ⇒ `plan` 不开宽腿，口径同 §22.31 那条"docs/** 不开宽腿"的新读数）；
+  主判据腿 `rust (yeban-mcp)` **15 步**、02:17:28 → 02:33:41 = **16:13**（非 0s ⇒ 真跑）。⇒ ⛔ 本轮不引用 `518 / 7 243` 那组全量基线。
+- **验收读数（单位：数该 run 日志里含该判据名且带 `... ok` 的**整行**出现次数，并按第一个 tab 字段（job）分）**：**五枚判据各 `4` 次** ——
+  `rust (yeban-mcp)` 窄腿的 `test`（默认 feature）与 `test (合并特性)` 两步各一次 ＋ `windows` 腿一次 ＋ `macos` 腿一次
+  ⇒ 证据比"两种 feature 组合都成立"更强：**跨架构三平台都跑到**。五枚：
+  `output_schema.rs` 侧 `the_automation_slot_is_declared_and_delegates_to_its_rosters`／`the_automation_roster_rejects_broken_values_and_accepts_the_null_shape`／`the_automation_word_tables_are_the_producers_rosters`；
+  `domain/render.rs` 侧 `the_automation_word_tables_are_the_producers_partition`／`the_producer_automation_report_passes_the_broadcast_roster`（后者拿**生产者真值**过广播名册 ⇒ 名册不是自证）。
+  ⚠ 上一批只数了窄腿的 2 次（`steps` 字段在 macos/windows 腿上读成 `UNKNOWN STEP`，被我当成"不属于任何步骤"漏掉）⇒ **按 job 筛、别按 step 筛**，step 名在跨平台腿上不可靠。
+- **交付内容**：§22.31 那张前置读数变成契约 —— `data.automation` 顶层 **14** 键 + `granularity` **3** + `domainTransfer` **3** + `tracks[]` **3** + `lanes[]` **15** = 本轮**新声明 38 键**；
+  `lanes[]` 里 `staticValue`/`firstTick`/`lastTick`/`firstValue`/`lastValue`/`resolvedDeviceId`/`resolvedParamName`/`unresolved` 这 **8** 个 `null` 是常态 ⇒ 声明成 `["…","null"]`（与生产者 `Option`/`map_or(Value::Null, …)` 逐字对齐）。
+  单一来源两处落地：实现侧新增 `TARGET_VALUES`（**5** 个，此前只活在 `automation_target_name` 的 match 臂里），`targetsSupported`/`targetsUnsupported` 两条清单**从它派生**；`writeMode` 直接引用现成的 `domain::notes::LANE_WRITE_MODES`（**4** 个）。
+- ⭐ **`gh run watch` 的退出码只能在"它是作业里最后一条命令"时读**：本轮把它包进 `$( … )`／接了管道，退出码被吞，于是"watch 返回 0"这个**最便宜的 success 读数**丢了，只能回头再下一遍日志。后台收口作业 = 一条 `gh run watch <id> --exit-status >日志 2>&1`，⛔ 后面不再挂任何命令。
+- **树已拆**：`worktree.sh rm s32-automation-roster --purge` ⇒ 自动补归档标签 **`line-archive/s32-automation-roster @ 56a8ec0b`**（先保全再删），本地分支 `line/s32-automation-roster` 删除。
+- **树况**：`git worktree list` 现读两棵（主干 `0150cb2e` `git status --porcelain` 空 + `.worktrees/s33-merge-roster`）；s33 线（`c1ad2b1d`，run 在飞）已推 `line/s33-merge-roster`。task #107 收盘、#108（s33）在飞。
