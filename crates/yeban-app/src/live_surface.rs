@@ -831,6 +831,12 @@ impl LiveAdminSurface {
     /// 两条路**不会**同时发生：有权威时**不**调用本地路径，权威拒绝时**不**回退到本地路径
     /// （回退会把"权威说不能写"变成一个偷偷写盘的分支）。因此"保存"这个动作在两种装配下
     /// 各自只有一个落点，且挂载时那个落点是会话。
+    ///
+    /// ⭐ 本地那条腿再分两种（缺陷 `D-UI-1` 的同一次修复）：装配给了**本地撤销端口**时，
+    /// 落盘的字节取自端口的当前工程（`UndoPort::try_project`，与生产心跳的发布来源同一个
+    /// 读数）—— 注入手势改的是端口，`self.project` 只是装配缓存，写它等于丢编辑。
+    /// 没有端口时本执行面就是唯一持有者，照旧写缓存。读数进
+    /// `savedFromUndoPort`（`bool`），因此"这一版到底从哪儿来"是可断言的而不是注释。
     fn save_now(&mut self) -> Result<(), PortError> {
         let Some(path) = self.save_path.clone() else {
             // 没有配置落点 = 这条能力在**这个装配上**没接线 ⇒ `-32005` 是诚实的。
@@ -866,7 +872,21 @@ impl LiveAdminSurface {
             ));
             return Ok(());
         }
-        let saved = save_project_file(&self.project, &path).map_err(|error| match error {
+        let from_port = self.undo.as_ref().and_then(|port| port.try_project());
+        // ⭐ **没有权威**时，谁是写者就看"有没有本地撤销端口"：
+        // - 有端口 ⇒ 注入的手势（`host::wire_track_strip` / `wire_clip_create` /
+        //   `wire_roll_edit`…）全部提交到**那个端口**的会话里，`self.project` 只是装配
+        //   那一刻的投影缓存。照旧写缓存就会产出一个"保存成功、文件里却没有这一笔"的
+        //   落盘 ⇒ 写端口那一版，并把它**同时**投影进界面（画面 / 控件树 / 磁盘同源）。
+        // - 没有端口 ⇒ 本执行面就是工程的唯一持有者，写缓存与历史行为逐字相同。
+        let project = match &from_port {
+            Some(project) => {
+                self.apply_project(project).map_err(wiring_rejected)?;
+                project.clone()
+            }
+            None => self.project.clone(),
+        };
+        let saved = save_project_file(&project, &path).map_err(|error| match error {
             SaveError::Container(inner) => PortError::Rejected {
                 message: format!("容器写出被拒绝: {inner}"),
             },
@@ -882,6 +902,8 @@ impl LiveAdminSurface {
                 ("bytes", ReportValue::Uint(saved.bytes as u64)),
                 // 没有权威 ⇒ 本地原子写（与历史行为逐字相同）。
                 ("writtenByAuthority", ReportValue::Bool(false)),
+                // 这条读数把"落盘的是端口那一版、不是装配缓存"变成可断言的证据。
+                ("savedFromUndoPort", ReportValue::Bool(from_port.is_some())),
                 // 容器布局：`project.json` + `history.dag`（空图谱），见 `crate::save` 的边界。
                 ("containerEntries", ReportValue::Uint(2)),
             ],

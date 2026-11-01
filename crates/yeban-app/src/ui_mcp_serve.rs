@@ -98,6 +98,59 @@ const POLL_IDLE: Duration = Duration::from_millis(5);
 /// `accept` / 连接级失败后的退避（与 `crate::mcp_mount` 的工作线程同款）。
 const ACCEPT_RETRY_BACKOFF: Duration = Duration::from_millis(10);
 
+/// 本档执行面的**装配选项**（从 [`run`] 抽出，让"写入面有没有接线"成为可判据的东西）。
+///
+/// ## 为什么要抽出来
+///
+/// ⭐ 缺陷 `D-UI-1`：这里曾经把 [`LiveWiringOptions`] 的 `undo` 字段写成 `None`，而
+/// [`crate::live_surface`] 把九个**改工程**的接线（`wire_mixer_edit` /
+/// `wire_device_rack` / `wire_send_strip` / `wire_macro_panel` / `wire_bpm_commit` /
+/// `wire_track_strip` / `wire_clip_create` / `wire_roll_edit` / `wire_clip_drag`）
+/// 整体 gate 在这个字段上。实际后果：`ui/dispatch_*` 与 `ui/dispatch_key_press`
+/// **永远改不动工程** —— 按钮照投影画成"可用"（`Tokens.gold-deep` 填充），点下去却
+/// 既不提交、也不打印、也不报错（Slint 的回调没注册 handler 就是空操作）。
+/// 当时写在旁边的理由是"GUI 键盘路径由 `main.rs` 的装配负责"，而 `main.rs` 在本档
+/// **直接 `return`**（`run_gui` 根本不跑），进程里不存在第二个装配者 —— 那句话不成立。
+///
+/// 端口按 `run_gui` 的**同一条配方**构造（[`crate::undo::session_from_archive`]），并把
+/// 归档里的资产池交给它（任务单 `#132` 的同一条边界：不带池 ⇒ "打开带资产的工程再保存"
+/// 会把池写空）。抽成函数的意义在于：判据能直接对**这一份**选项断言
+/// `undo.is_some()`，并拿它去装配界面、注入一次真指针点击 ⇒ 轨数 +1 且落盘 ——
+/// 而不是去测一个"装配好之后没法从测试里进去"的 `run`。
+///
+/// # Errors
+///
+/// 归档里的 `history.dag` 无法恢复，或撤销会话被模型拒绝（`CliError::Ui`）—— 与
+/// `main.rs` 那条路同一个口径：⛔ 不降级成空历史。
+pub fn serve_wiring(
+    loaded: &cli::Loaded,
+    permission: Permission,
+) -> Result<LiveWiringOptions, CliError> {
+    let undo_port = std::rc::Rc::new(crate::undo::UndoPort::new(
+        crate::undo::session_from_archive(
+            &loaded.undo_source(),
+            &loaded.archive,
+            crate::host::now_ms(),
+        )
+        .map_err(|detail| CliError::Ui { detail })?,
+    ));
+    undo_port.replace_assets(loaded.archive.assets.clone());
+    Ok(LiveWiringOptions {
+        permission,
+        // 底部控制台 Tab 0 = 卷帘（与 `--headless-idle` / 默认 GUI 一致）。
+        console_tab: 0,
+        // `ui/force_save` 的落点：`--open` 的那个文件（样本形态没有磁盘对应物 ⇒
+        // 该动作会**如实**报错，而不是猜一个文件名）。
+        save_path: loaded.source.save_target(),
+        // 装配阶段不推量子（`ui/reload_engine` 才建引擎）。
+        engine_quanta: 0,
+        // 本执行面**就是**这个进程里唯一的界面装配者（见本函数文档），因此端口必须由
+        // 这里给出：给了它，注入的指针 / 按键才与真实用户走同一条 `Op` + `UndoPort` 提交链。
+        undo: Some(undo_port),
+        proposal_source: crate::proposals::ProposalSource::none(),
+    })
+}
+
 /// 跑一次 `--enable-ui-mcp-http`：装配 → 绑定 → 落令牌 → 服务 → 停机并释放。
 ///
 /// ## 顺序是契约（每一段都有理由）
@@ -147,20 +200,7 @@ pub fn run(options: &Options) -> Result<Vec<String>, CliError> {
     // 这一级的 scope 集合里，但**生产模式**会让它在服务端被硬拒 —— 这正是我们要的：
     // 作用域给全、能力由模式闸住（与领域控制面 `ScopeSet::all()` + `RunMode::Production` 同款）。
     let permission = Permission::Administrative;
-    let wiring = LiveWiringOptions {
-        permission,
-        // 底部控制台 Tab 0 = 卷帘（与 `--headless-idle` / 默认 GUI 一致）。
-        console_tab: 0,
-        // `ui/force_save` 的落点：`--open` 的那个文件（样本形态没有磁盘对应物 ⇒
-        // 该动作会**如实**报错，而不是猜一个文件名）。
-        save_path: loaded.source.save_target(),
-        // 装配阶段不推量子（`ui/reload_engine` 才建引擎）。
-        engine_quanta: 0,
-        // 产品形态的键盘撤销端口：本执行面只服务 `ui/*` 控制面，GUI 键盘路径由
-        // `main.rs` 的装配负责 ⇒ 这里如实 `None`（撤销族按键不被这一份消费）。
-        undo: None,
-        proposal_source: crate::proposals::ProposalSource::none(),
-    };
+    let wiring = serve_wiring(&loaded, permission)?;
     let live =
         build_live_ui_with(&loaded.archive.project, &wiring).map_err(|error| CliError::Ui {
             detail: format!(
