@@ -280,3 +280,14 @@ conclusion=**success**，`goldens` 作业实跑 23:56:23Z–00:00:37Z（≈4m14s
 A 维持／B ×N 徽标／C 区间分割／D 可编辑循环区；现读 `yeban-model/src/loop_plan.rs` 的
 `ClipPlacement::loop_repeat()` 为唯一真相、三处共用），均 `Proposed`、零代码、已入 `docs/adr/README.md` 索引。
 U-09/U-10 的正式票即既有 `ADR-0058`；U-13 的正式票即既有 `ADR-0052`（待其提出方按本批裁决翻 `Accepted`）。
+
+## 14. §10「视口外剪辑块可达」的代码事实收盘（2026-11-01）
+
+**这个数字在数什么**：单位＝**个**，对象＝编曲剪辑层注入界面的集合大小对**视口**的依赖。
+现读（`main`，符号级）：`bridge.rs` 的 `clip_ulids / clip_labels / clip_positions /
+clip_widths / clip_ys / clip_heights` 全部是 `self.clips.iter()` **无过滤臂** —— 与轨道行/音符
+那两处的**视口裁剪**不同（那些有 `visible_*_scoped(scroll_x, viewport_width, ..)` 族），
+**剪辑层没有**同名裁剪。⇒ 报告 §10 第 4 条"视口外的剪辑块对真实用户是否可达"在**树可达性**
+口径上答案是**可达**（N-UI-1 的窗口化不覆盖剪辑块）；"滚轮滚动行为"那一格仍属**未行为验证**，
+且编曲行区 `Flickable` 注释自证为**纵向专用**（`content-width: self.width`），横向口径
+按第 199 轮教训归宿主 `scroll-x`（⛔ 双重计算）。本条只登记代码事实，⛔ 不据此发明缺陷。
