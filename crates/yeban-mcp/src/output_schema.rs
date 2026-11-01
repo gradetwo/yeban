@@ -923,6 +923,142 @@ fn contributions_basis_roster() -> Value {
     ])
 }
 
+/// ⭐ s32：`data.automation`（14 键）—— 音量自动化的**逐泳道读数**。
+///
+/// 为什么它是本票而不是又一次"顺手填一格"：s31 把 11 处**裸对象槽**填完之后，
+/// 静态对账（生产者 `details()` 的键集 ↔ schema 的 `properties`）剩下的**唯一一处**
+/// 是**连条目都没有**的 `automation` —— 既不在 `required`，也不在 `properties`。
+/// 拼装点唯一（`domain/render.rs` 的 `AutomationReport::to_value`）。
+///
+/// 三处 `const` 是有单一来源可指的定长数组（`targetsSupported` / `targetsUnsupported` /
+/// `appliedDeviceParamNames`），⛔ 不是这里手抄的：值来自 `domain::render` 与
+/// `yeban_render` 的常量本身。剩下四条散文键（`evaluator` / `smoother` /
+/// `granularity.curve|smoothing` / `domainTransfer.ratio|adr|denominator`）没有可指的名册，
+/// 只声明类型 —— 改措辞不该红一条契约（s31 定的同一条口径）。
+#[must_use]
+fn automation_roster() -> Value {
+    roster(&[
+        ("wired", json!({"type": "boolean", "const": true})),
+        ("evaluator", json!({"type": "string"})),
+        (
+            "targetsSupported",
+            json!({
+                "type": "array",
+                "const": serde_json::json!(crate::domain::render::TARGETS_SUPPORTED)
+            }),
+        ),
+        (
+            "targetsUnsupported",
+            json!({
+                "type": "array",
+                "const": serde_json::json!(crate::domain::render::TARGETS_UNSUPPORTED)
+            }),
+        ),
+        (
+            "appliedDeviceParamNames",
+            json!({
+                "type": "array",
+                "const": serde_json::json!(yeban_render::automation::APPLIED_DEVICE_PARAM_NAMES)
+            }),
+        ),
+        ("granularity", automation_granularity_roster()),
+        ("domainTransfer", automation_domain_transfer_roster()),
+        ("smoother", json!({"type": "string"})),
+        ("timeConstantSeconds", json!({"type": "number"})),
+        ("lanes", json!({"type": "integer"})),
+        ("evaluableLanes", json!({"type": "integer"})),
+        ("appliedLanes", json!({"type": "integer"})),
+        ("unsupportedLanes", json!({"type": "integer"})),
+        (
+            "tracks",
+            json!({"type": "array", "items": automation_track_items()}),
+        ),
+    ])
+}
+
+/// ⭐ s32：`data.automation.granularity`（3 键）。`blockSize` 是定长整数 ⇒ 指到
+/// `yeban_render::render::L1_BLOCK_SIZE` 本身（⛔ 不写第二份 128）。
+#[must_use]
+fn automation_granularity_roster() -> Value {
+    roster(&[
+        (
+            "blockSize",
+            json!({
+                "type": "integer",
+                "const": serde_json::json!(yeban_render::render::L1_BLOCK_SIZE)
+            }),
+        ),
+        ("curve", json!({"type": "string"})),
+        ("smoothing", json!({"type": "string"})),
+    ])
+}
+
+/// ⭐ s32：`data.automation.domainTransfer`（3 键）—— 全三条都是口径散文 ⇒ 只声明类型。
+#[must_use]
+fn automation_domain_transfer_roster() -> Value {
+    roster(&[
+        ("ratio", json!({"type": "string"})),
+        ("adr", json!({"type": "string"})),
+        ("denominator", json!({"type": "string"})),
+    ])
+}
+
+/// ⭐ s32：`data.automation.tracks[]`（3 键）。拼装点 = `AutomationTrackReport::to_value`；
+/// `node` 是 `EntityId` 的规范串、`track` 是轨名（可空串，⛔ 不是 `null`）。
+#[must_use]
+fn automation_track_items() -> Value {
+    roster(&[
+        ("node", json!({"type": "string"})),
+        ("track", json!({"type": "string"})),
+        (
+            "lanes",
+            json!({"type": "array", "items": automation_lane_items()}),
+        ),
+    ])
+}
+
+/// ⭐ s32：`data.automation.tracks[].lanes[]`（15 键）。
+/// 拼装点 = `AutomationLaneReport::to_value`，八个键**为 `null` 是常态**：
+/// 空泳道 ⇒ `firstTick`/`lastTick`/`firstValue`/`lastValue` 四个 `null`；
+/// 非 `DeviceParam` 目标 ⇒ `resolvedDeviceId`/`resolvedParamName`/`unresolved` 三个 `null`
+/// （生产者文档明说"⛔ 不静默省略键"）；`staticValue` 不可对账时也是 `null`。
+///
+/// 两个词表⛔ 不手抄：`target` 指 [`crate::domain::render::TARGET_VALUES`]（五个变体名），
+/// `writeMode` 指 [`crate::domain::notes::LANE_WRITE_MODES`]（解析器在读的那份四个名字，
+/// `op_schema.rs` 也引用它）。
+#[must_use]
+fn automation_lane_items() -> Value {
+    roster(&[
+        (
+            "target",
+            json!({
+                "type": "string",
+                "enum": crate::domain::render::TARGET_VALUES.to_vec()
+            }),
+        ),
+        ("points", json!({"type": "integer"})),
+        ("readEnabled", json!({"type": "boolean"})),
+        (
+            "writeMode",
+            json!({
+                "type": "string",
+                "enum": crate::domain::notes::LANE_WRITE_MODES.to_vec()
+            }),
+        ),
+        ("staticValue", json!({"type": ["number", "null"]})),
+        ("supported", json!({"type": "boolean"})),
+        ("evaluable", json!({"type": "boolean"})),
+        ("applied", json!({"type": "boolean"})),
+        ("firstTick", json!({"type": ["integer", "null"]})),
+        ("lastTick", json!({"type": ["integer", "null"]})),
+        ("firstValue", json!({"type": ["number", "null"]})),
+        ("lastValue", json!({"type": ["number", "null"]})),
+        ("resolvedDeviceId", json!({"type": ["string", "null"]})),
+        ("resolvedParamName", json!({"type": ["string", "null"]})),
+        ("unresolved", json!({"type": ["string", "null"]})),
+    ])
+}
+
 /// `yeban_propose_section` 的成功响应 `data`（创作面提案，与 [`edit_notes`] 同拼装点
 /// `domain::apply_propose`，[MCP-TOOL-005] 广播面扩展票）。
 fn propose_section() -> Value {
@@ -1360,7 +1496,10 @@ fn render_master() -> Value {
              deltaRmsDbfs, deltaPeakDbfs}`，两次**未归一化**母带逐样本差的 RMS / 峰值，\
              单位 dBFS；逐样本无差异或渲染前已静音 ⇒ null）与 `contributionsBasis`\
              （口径说明 + `renders` = 实际渲染次数）。缺省时**两个键都不出现**\
-             ⇒ 不在 `required` 列表里；开关⛔ 不改写盘字节。",
+             ⇒ 不在 `required` 列表里；开关⛔ 不改写盘字节。\
+             ⭐ s32：`automation` 是**每次成功渲染都发**的逐泳道读数（`tracks[]` 只列有泳道的轨，\
+             每条 `lanes[]` 一行给 `evaluable` / `supported` / `applied` 三个布尔与首末点读数）；\
+             空泳道与关掉读开关的泳道**也在这份读数里**，其首末点与三个 `resolved*` 是 `null`。",
         ),
         &[
             "rendered",
@@ -1400,6 +1539,7 @@ fn render_master() -> Value {
             "strategy",
             "dither",
             "bwf",
+            "automation",
             "unsupported",
             "unsupportedCounts",
             "sidechainEdgesSummedAsOrdinaryAudio",
@@ -1462,6 +1602,9 @@ fn render_master() -> Value {
         && let Some(Value::Object(properties)) = map.get_mut("properties")
     {
         properties.insert("midiSource".to_owned(), midi_source_roster());
+        // ⭐ s32：`data.automation` 此前**完全没有条目**（既不在 `required` 也不在 `properties`），
+        // 而它是每次成功渲染都发的一整块逐泳道读数 ⇒ 这一槽是新补的，不是"把裸对象填紧"。
+        properties.insert("automation".to_owned(), automation_roster());
         // ⭐ `#315`：两个侧链读数同样是**单独插入**（同一处递归上限），
         // 与 Required 里的两条一一对应。
         properties.insert(
@@ -2512,6 +2655,295 @@ mod tests {
         assert!(
             !declared.contains_key("propertyNames"),
             "同上：propertyNames 也不受支持，声明了就是假广播"
+        );
+    }
+
+    /// ⭐ s32 判据一：`data.automation` 从**完全没有条目**变成 14 键名册，且逐层都有形状。
+    ///
+    /// 与 s31 那批的差别写在 `automation_roster` 的文档里：别的槽是"裸对象填紧"，
+    /// 这一处是**补一条从未广播的键**。⛔ 只断言"非空"是不够的 —— 本票要的是
+    /// 每一层的键数与"声明的每个键都 required"（每次成功渲染都发这块，见 `details()` 的
+    /// `map.insert("automation", …)` 那一句是**无条件**的）。
+    #[test]
+    fn the_automation_slot_is_declared_and_delegates_to_its_rosters() {
+        let schema = render_master();
+        let automation = schema["properties"]["automation"].clone();
+        assert_ne!(
+            automation,
+            json!({"type": "object"}),
+            "s32 之前 `automation` 压根不在 properties 里；填成裸对象也算没做"
+        );
+        assert!(
+            schema["required"]
+                .as_array()
+                .expect("顶层必须有 required")
+                .contains(&Value::from("automation")),
+            "每次都发的键必须在 required 里"
+        );
+
+        let keys = automation["properties"]
+            .as_object()
+            .expect("automation 必须有 properties")
+            .len();
+        assert_eq!(keys, 14, "automation 的名册键数 = 生产者 to_value 的键数");
+        assert_eq!(
+            automation["required"]
+                .as_array()
+                .expect("automation 必须有 required")
+                .len(),
+            keys,
+            "名册里声明的每个键都必须 required"
+        );
+
+        // 内层逐层：granularity 3 / domainTransfer 3 / tracks[] 3 / lanes[] 15。
+        let inner = |slot: &str| {
+            automation["properties"][slot]["properties"]
+                .as_object()
+                .unwrap_or_else(|| panic!("{slot} 必须是对象名册"))
+                .len()
+        };
+        assert_eq!(inner("granularity"), 3, "granularity 是 3 键");
+        assert_eq!(inner("domainTransfer"), 3, "domainTransfer 是 3 键");
+        let track_items = automation["properties"]["tracks"]["items"].clone();
+        assert_eq!(
+            track_items["properties"]
+                .as_object()
+                .expect("tracks 的元素必须是对象名册")
+                .len(),
+            3,
+            "tracks[] 是 3 键（node / track / lanes）"
+        );
+        let lane_items = track_items["properties"]["lanes"]["items"].clone();
+        assert_eq!(
+            lane_items["properties"]
+                .as_object()
+                .expect("lanes 的元素必须是对象名册")
+                .len(),
+            15,
+            "lanes[] 是 15 键"
+        );
+
+        // 三处 `const` 是"每次成功渲染都逐字相同"的东西：`wired` / 块长 / 两份目标清单。
+        assert_eq!(
+            automation["properties"]["wired"],
+            json!({"type": "boolean", "const": true}),
+            "automation 接了才敢声明 wired 恒真"
+        );
+        assert_eq!(
+            automation["properties"]["granularity"]["properties"]["blockSize"]["const"],
+            serde_json::json!(yeban_render::render::L1_BLOCK_SIZE),
+            "blockSize 必须指到 L1_BLOCK_SIZE 本身，⛔ 第二份 128"
+        );
+    }
+
+    /// ⭐ s32 判据二：名册必须**接得住真实形状**、**接不住破损形状**，且八个 `null` 是常态。
+    #[test]
+    fn the_automation_roster_rejects_broken_values_and_accepts_the_null_shape() {
+        let schema = render_master();
+        let automation = schema["properties"]["automation"].clone();
+
+        // ① 真实形状：一条解析到设备的 `DeviceParam` 泳道 + 一条**空泳道**（八个 null）。
+        let resolved_lane = json!({
+            "target": "DeviceParam",
+            "points": 3,
+            "readEnabled": true,
+            "writeMode": "Touch",
+            "staticValue": -3.0,
+            "supported": true,
+            "evaluable": true,
+            "applied": true,
+            "firstTick": 0,
+            "lastTick": 1920,
+            "firstValue": 0.5,
+            "lastValue": 0.25,
+            "resolvedDeviceId": "00000000000000000000000007",
+            "resolvedParamName": "input_gain_db",
+            "unresolved": null,
+        });
+        let empty_lane = json!({
+            "target": "TrackVolume",
+            "points": 0,
+            "readEnabled": false,
+            "writeMode": "Off",
+            "staticValue": null,
+            "supported": true,
+            "evaluable": false,
+            "applied": false,
+            "firstTick": null,
+            "lastTick": null,
+            "firstValue": null,
+            "lastValue": null,
+            "resolvedDeviceId": null,
+            "resolvedParamName": null,
+            "unresolved": null,
+        });
+        let granularity = json!({
+            "blockSize": 128,
+            "curve": "每块起点取一次曲线值",
+            "smoothing": "块内逐样本一阶低通",
+        });
+        let transfer =
+            json!({"ratio": "db_to_linear(自动化 dB)", "adr": "R55", "denominator": "静态值"});
+        let track = json!({"node": "00000000000000000000000001", "track": "Lead", "lanes": [resolved_lane, empty_lane]});
+        let legal = json!({
+            "wired": true,
+            "evaluator": "YebanProjectV1::automation_value_at",
+            // 两处 `const` ⇒ 夹具只能用生产者那两份名册本身，⛔ 在这里手抄一遍清单。
+            "targetsSupported": serde_json::json!(crate::domain::render::TARGETS_SUPPORTED),
+            "targetsUnsupported": serde_json::json!(crate::domain::render::TARGETS_UNSUPPORTED),
+            "appliedDeviceParamNames":
+                serde_json::json!(yeban_render::automation::APPLIED_DEVICE_PARAM_NAMES),
+            "granularity": granularity,
+            "domainTransfer": transfer,
+            "smoother": "yeban_dsp::smoothing::ParamSmoother",
+            "timeConstantSeconds": 0.005,
+            "lanes": 2,
+            "evaluableLanes": 1,
+            "appliedLanes": 1,
+            "unsupportedLanes": 0,
+            "tracks": [track],
+        });
+        validate(&automation, &legal).expect("真实形状必须过名册（含八个 null 的常态）");
+
+        // ② 每一层各缺一个 required 键 ⇒ 红在那一条路径上。
+        let mut missing_top = legal.clone();
+        missing_top["granularity"] = json!(null);
+        assert_eq!(
+            validate(&automation, &missing_top)
+                .expect_err("granularity 换成 null 必须红")
+                .path,
+            "$.granularity"
+        );
+        let mut without_key = legal.clone();
+        without_key
+            .as_object_mut()
+            .expect("legal 是对象")
+            .remove("smoother");
+        assert_eq!(
+            validate(&automation, &without_key)
+                .expect_err("名册里的每个键都 required")
+                .path,
+            "$.smoother"
+        );
+        let mut bad_granularity = legal.clone();
+        bad_granularity["granularity"] = json!({"blockSize": 128, "curve": "x"});
+        assert_eq!(
+            validate(&automation, &bad_granularity)
+                .expect_err("granularity 缺 smoothing 必须红（递归到第二层）")
+                .path,
+            "$.granularity.smoothing"
+        );
+        let mut bad_track = legal.clone();
+        bad_track["tracks"][0]
+            .as_object_mut()
+            .expect("track")
+            .remove("lanes");
+        assert_eq!(
+            validate(&automation, &bad_track)
+                .expect_err("tracks[] 缺 lanes 必须红")
+                .path,
+            "$.tracks[0].lanes"
+        );
+        let mut bad_lane = legal.clone();
+        bad_lane["tracks"][0]["lanes"][0]
+            .as_object_mut()
+            .expect("lane")
+            .remove("unresolved");
+        assert_eq!(
+            validate(&automation, &bad_lane)
+                .expect_err("lanes[] 缺 unresolved 必须红（⛔ 不静默省略键）")
+                .path,
+            "$.tracks[0].lanes[0].unresolved"
+        );
+
+        // ③ 词表与 const：编不出来的东西必须红。
+        let mut ghost_target = legal.clone();
+        ghost_target["tracks"][0]["lanes"][0]["target"] = json!("TrackMute");
+        assert_eq!(
+            validate(&automation, &ghost_target)
+                .expect_err("不存在的目标变体必须红")
+                .path,
+            "$.tracks[0].lanes[0].target"
+        );
+        let mut ghost_mode = legal.clone();
+        ghost_mode["tracks"][0]["lanes"][0]["writeMode"] = json!("Ride");
+        assert_eq!(
+            validate(&automation, &ghost_mode)
+                .expect_err("DAW 借来的词不在写模式名册里")
+                .path,
+            "$.tracks[0].lanes[0].writeMode"
+        );
+        let mut flipped = legal.clone();
+        flipped["wired"] = json!(false);
+        assert!(
+            validate(&automation, &flipped).is_err(),
+            "wired 是 const true ⇒ 翻成 false 必须红"
+        );
+        let mut other_block = legal.clone();
+        other_block["granularity"]["blockSize"] = json!(64);
+        assert!(
+            validate(&automation, &other_block).is_err(),
+            "块长不是 L1_BLOCK_SIZE ⇒ 广播必须红"
+        );
+        let mut extra_supported = legal.clone();
+        extra_supported["targetsSupported"] = json!([
+            "TrackVolume",
+            "TrackPan",
+            "SendGain",
+            "DeviceParam",
+            "Macro"
+        ]);
+        assert!(
+            validate(&automation, &extra_supported).is_err(),
+            "把 Macro 说成消费是假话，const 必须拦住"
+        );
+
+        // ④ 类型：计数与 tick 是整数，给字符串/小数都要红。
+        let mut string_points = legal.clone();
+        string_points["tracks"][0]["lanes"][0]["points"] = json!("3");
+        assert!(
+            validate(&automation, &string_points).is_err(),
+            "points 必须是整数"
+        );
+        let mut fraction_tick = legal.clone();
+        fraction_tick["tracks"][0]["lanes"][0]["lastTick"] = json!(1920.5);
+        assert!(
+            validate(&automation, &fraction_tick).is_err(),
+            "tick 必须是整数"
+        );
+    }
+
+    /// ⭐ s32 判据三（同源）：两张词表必须**逐字等于**实现侧的名册，
+    /// `appliedDeviceParamNames` 的白名单必须**非空且含真实名字**（⛔ 空数组冒充"支持了"）。
+    #[test]
+    fn the_automation_word_tables_are_the_producers_rosters() {
+        let schema = render_master();
+        let automation = schema["properties"]["automation"].clone();
+        let lane_props = automation["properties"]["tracks"]["items"]["properties"]["lanes"]["items"]
+            ["properties"]
+            .clone();
+        assert_eq!(
+            lane_props["target"]["enum"],
+            serde_json::json!(crate::domain::render::TARGET_VALUES),
+            "target 的枚举必须逐字等于 TARGET_VALUES（同序同集）"
+        );
+        assert_eq!(
+            lane_props["writeMode"]["enum"],
+            serde_json::json!(crate::domain::notes::LANE_WRITE_MODES),
+            "writeMode 必须引用解析器在读的那份 LANE_WRITE_MODES，⛔ 第二份手抄"
+        );
+
+        let names = automation["properties"]["appliedDeviceParamNames"]["const"]
+            .as_array()
+            .expect("appliedDeviceParamNames 必须是数组")
+            .clone();
+        assert!(
+            !names.is_empty(),
+            "白名单为空 = 广播说'DeviceParam 有落点'而实际一条都没有"
+        );
+        assert!(
+            names.contains(&Value::from("input_gain_db")),
+            "渲染夹具真的用 input_gain_db 走通落点 ⇒ 白名单必须含它"
         );
     }
 }
