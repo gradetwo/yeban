@@ -53,12 +53,14 @@ jobs:
         run: |
           set -euo pipefail
           cargo build --release --locked -p yeban-app --features in-process-mcp,ui-mcp-http
+          cargo build --release --locked -p yeban-mcp --features mcp-http
           mkdir -p dist
           cp target/release/yeban-app dist/
+          cp target/release/yeban-mcp dist/
           rustc -V > dist/build-info.txt
           uname -m >> dist/build-info.txt
           git rev-parse HEAD >> dist/build-info.txt
-          sha256sum dist/yeban-app > dist/SHA256SUMS
+          sha256sum dist/yeban-app dist/yeban-mcp > dist/SHA256SUMS
           ldd dist/yeban-app > dist/ldd.txt || true
           ./dist/yeban-app --help > dist/help.txt 2>&1 || true
 
