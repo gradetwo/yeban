@@ -17656,3 +17656,66 @@ helper 里 ⇒ 必须不认（防假绿）。两条臂在旧实现上都会失�
   合并面 = `output_schema.rs` +398／`props_176.rs` +24，与 `151e2029` 的 `threads` 批**无文件重叠**（预期兑现，无冲突）。
 - ⚠ **s30 这条线一共三枚提交、两枚判红**，红点分别是 `json!` 宏递归上限（lib 面）与临时值借用（测试面）——
   两条都不是语义缺陷，但**都足以让整批判据一条不跑**。这正是 §6.3 第 4 条"判据名没出现＝没跑到"的两种新形态。
+
+### 22.30 ⭐ s30 合流 run `41246376638` = **success**（这棵树第一次把 s30 代码与 `threads` 批放在一起编译）＋ 树已拆、s31 的前置读数已核过
+
+- **判决**：`b008fd49`（= 合并提交 `90528095` + 四枚文档批）的 run **`41246376638`** = `completed / success`。
+  `plan` 现读给 **`["yeban-mcp", "yeban-ui-mcp"]` + `workspace_wide: false`** ⇒ 两枚窄腿真跑
+  （`rust (yeban-mcp)` 15 步／`rust (yeban-ui-mcp)` 15 步），`checks`(19)／`deny`／`lockfile`／`e2e`(9)／`macos`(18)／`windows`(18) 全 `success`，
+  宽腿 `skipped` ⇒ ⛔ 本轮不引用 `518 / 7 243` 那组全量基线（它属于 `151e2029` 那次真跑的宽腿）。
+- ⭐ **这条合流才是"组合"的第一次判决**：`41238224956` 只证了 s30 代码 × 旧基线，`41237762943` 只证了 `threads` 批 × 旧基线；
+  两者**同树编译**发生在 `41246376638` ⇒ 结论：`output_schema.rs` 的名册与 `data.request.threads` 这个新回显键**互不干扰**
+  （`request` 那一槽本轮仍声明为裸 `{"type":"object"}`，所以新键不会撞 `required`）。
+- **树已拆**：`worktree.sh rm s30-items-shapes --purge` ⇒ 自动补归档标签 **`line-archive/s30-items-shapes @ 539cc5c9`**（先保全再删），
+  本地分支 `line/s30-items-shapes` 删除；`git worktree list` 现读只剩主干一棵。task #105 收盘。
+- ⭐ **s31 的前置读数（已逐字复核装配点，⛔ 不采信二手摘要）**：唯一拼装点 = `RenderArtifact::details()`（`domain/render.rs:2233`，
+  被 `preview()` `:2492` 与 `response_data()` `:2514` 共用）。逐槽键数现读为
+  `request` **14**（含 `threads`，`Option<usize>` ⇒ `["integer","null"]`）／`probability` **5**／`ratchet` **8**／
+  `audio` **8**（内层还有 `resampler` **3** 键、`bitExactness` **2** 键、`assets[]` 元素名册 = 第二批）／`peak` **8**／
+  `normalize` **5**／`loudness` **11**／`bwf` **6**／`midiSource` **7**／`contributionsBasis` **8**。
+  两处**如实留弱**并已定理由：`unsupportedCounts` 是**开放映射**（键 = `KNOWN_UNSUPPORTED_KEYS` 的动态子集、可为 `{}`，
+  收紧它要 `additionalProperties`/`propertyNames` = §22.22 路线甲那半件事），`ops` 沿用 §22.20 的裁决。
+- ⛔ **上面那组键数里有两个是我从摘要抄来的、逐字数过才发现错**（就地改正，并留这条痕）：
+  `normalize` 我写 **6** ⇒ 现读 `render.rs:2404-2410` 是 **5** 键（`requested`/`applied`/`target`/`domain`/`note`）；
+  `audio.resampler` 我写 **2** 键 ⇒ 现读 `:2366-2370` 是 **3** 键（`method`/`specId`/`adr`）。
+  ⇒ **教训同 §22.25 那一类**：**数字要自己数**，⛔ 摘要里"看起来是逐字清单"的条目数也一样会错 ——
+  这次是同一个代理报告里"清单对、计数错"（`normalize` 的清单本就列了 5 项，我抄了它结论行的 6）。
+- ⚠ **一处代理报告的误并已被核掉**（留痕，因为这类错误会一路长进契约里）：
+  它把 `LoudnessTarget::failure()`（`render.rs:976`，那是 `RENDER_FAILED` 的**带内错误载荷**：`reason`/`algorithm`…）
+  当成了 `data.loudness` 的键。现读 `to_value()`（`:933`）= 11 键、**没有** `reason` ⇒ 若照抄，`required` 会把真实响应判红。
+  ⇒ 纪律再补一句：**子代理给的键名清单必须先对上"响应面 vs 错误面"这两个不同的装配点**，⛔ 同名结构体的两个 `json!` 不是同一份名册。
+
+### 22.31 ⭐ s31 判绿收盘（线 run `41250994144` = **success**）：`render_master` 的十一处裸槽填成 107 键名册 ＋ 四处判据 ＋ ⛔「下载不到日志 ≠ 没跑到」
+
+- **判决**：`25a767cb`（唯一一枚代码批，681 行进 `output_schema.rs` + 9 行进 `domain/render.rs`）的线 run **`41250994144`** = `completed / success`。
+  腿集现读九条：`plan`(5)／`lockfile`(5)／`deny`(5)／`checks`(19)／`e2e`(8)／`rust (yeban-ui-mcp)`(14)／`macos`(18)／`rust (yeban-mcp)`(15)／`windows`(18) 全 `success`，
+  `rust (workspace 全量)` = `skipped`（`plan` 给的是窄集合，与 §22.30 同形）⇒ ⛔ 本轮不引用 `518 / 7 243` 那组全量基线。
+  主判据腿 `rust (yeban-mcp)` 耗时 **16:46**（23:05:20 → 23:22:06，非 0s ⇒ 真跑）。
+- **验收读数（单位：数该腿日志里 `test <名> ... ok` 这一整行出现的次数，按步骤分）**：四条新判据在
+  `test` 与 `test (合并特性)` **两步各出现一次**（每条 2 次，共 8 行 `ok`）——这两步是同一套代码在
+  **默认 feature** 与**合并 feature** 两种组合下各跑一遍，所以"2 次"本身就是"两种组合都成立"的证据，⛔ 不是重复计数。
+  同一腿聚合：`test result:` **149** 行、`test result: FAILED` **0** 行、`passed` 合计 **149,924**（跨两步 + doctests）；
+  `tests/props_176.rs`（拿**真实响应**跑 `validate_complete` 的那个二进制）在两步里都出现过（日志第 1736 / 3678 行）⇒ 新名册被端到端读到了，不只是自证。
+- ⛔ **一条新踩的坑**：`gh run view --log` 在 run 仍 `in_progress` 时**直接拒绝**（实测报 `run 41250994144 is still in progress; logs will be available when it is complete`）。
+  这**不是**"判据没跑"的证据。等收口的正确做法是一条阻塞命令 `gh run watch <id> --exit-status`（退出码 0 = `success`），⛔ 不要 sleep 轮询。
+- **这批把 §22.30 那张前置读数变成了契约**：`request` 14／`probability` 5／`ratchet` 8／`audio` 8／`peak` 8／`normalize` 5／`loudness` 11／`bwf` 6／`midiSource` 7／`contributions[]` 5／`contributionsBasis` 8 = **85** 键，
+  加内层 `assets[]` **17**／`resampler` **3**／`bitExactness` **2** = 本轮新声明 **107** 个键。四枚判据分别钉：
+  ①十一槽**逐槽非空**（`assert_ne!(…, {"type":"object"})` + `required` 长度 == `properties` 长度 == 键数下界）；
+  ②破损值必红 / 可空值必放行（12 份合法夹具、逐槽各缺一个 `required` 键 ⇒ 红在 `$.<键>`、四个 `const` 翻牌、`verdict:"nearly"`、`sampleRate` 给字符串、`frames` 给小数、第三层 `resampler:{}` 红在 `$.resampler.*`、`assets:[42]` 红在 `$.assets[0]`、五处 `null` 是常态必须放行）；
+  ③`loudness.verdict.enum` **逐字等于**实现侧新加的 `VERDICT_VALUES`（与 `commitModel` 引用 `COMMIT_MODEL_VALUES` 同一条理由：⛔ 第二份手抄清单）；
+  ④`unsupportedCounts` **故意留弱**并钉成读数（`assert_eq!(…, {"type":"object"})` + 断言广播里**没有** `additionalProperties`/`propertyNames` —— 校验器不支持的关键字一旦写进去就是假广播）。
+- ⭐ **推送前的"静态对账"这一步值一整轮 CI 时间**：写了 `/tmp/s31_roster_check.py`（一次性工具，⛔ 不入库），
+  单位 = **数一个名册函数里 `("键", …)` 的字面量条数**，与生产者 `json!` 的顶层键名**逐字比集合与顺序**。
+  12 处主槽全 `OK`（名字与顺序都对得上），`resampler`/`bitExactness` 报 `DIFF` —— 逐行看是**抽取器自己的错**
+  （它从下一个 `{` 起算），手工数生产者仍是 3 / 2，与名册一致 ⇒ **报告的 DIFF 要先复现再定性**，⛔ 别照着它改契约。
+- ⭐ **落地时发现本地 main 不是远端 main**：`git worktree list` 干净、`git status` 干净，但 `origin/main` 已被别的线推到 `93ee8eb3`（`merge(adr-drawer-keyboard)`，run `41251045953` success）。
+  先 `git fetch` + `git merge --ff-only origin/main`，再 `--no-ff` 合 s31 ⇒ 纪律一句：**推 main 之前先比 `main` 与 `origin/main` 两个 40 位 SHA**，⛔ 别假设"我上次推的就是 tip"。
+- ⭐ **s32 的前置读数（现读 `AutomationReport::to_value` `render.rs:1937-1964` 等四处，逐条手数）**：
+  `data.automation` 是渲染回执里**唯一完全未声明**的键（既不在 `required` 也不在 `properties`，⛔ 不是"弱声明"）——
+  顶层 **14** 键（`wired`/`evaluator`/`targetsSupported`/`targetsUnsupported`/`appliedDeviceParamNames`/`granularity`/`domainTransfer`/`smoother`/`timeConstantSeconds`/`lanes`/`evaluableLanes`/`appliedLanes`/`unsupportedLanes`/`tracks`）、
+  `granularity` **3**、`domainTransfer` **3**、`tracks[]` **3**（`node`/`track`/`lanes`）、`lanes[]` **15**（其中 `staticValue`/`firstTick`/`lastTick`/`firstValue`/`lastValue`/`resolvedDeviceId`/`resolvedParamName`/`unresolved` 这 **8** 个为 `null` 是常态）。
+  词表单一来源已核：`writeMode` 可直接引用现成的 `domain::notes::LANE_WRITE_MODES`（4 个，`notes.rs:1652`）；
+  `target` 的 5 个名字目前**只存在于** `automation_target_name` 的 match 臂 ⇒ s32 先补 `TARGET_VALUES`，
+  并把 `targetsSupported`/`targetsUnsupported` 那两条字面量清单从它派生（⛔ 第三份手抄）。
+- **树况**：`git worktree list` 现读两棵（主干 + `.worktrees/s31-render-rosters`），两棵 `git status --porcelain` 均**空**；
+  本地分支 47 枚已并入 `main`、仅 `line/s31-render-rosters` 未并（本轮合入后即并）。task #106 收盘、#107（s32）登记。

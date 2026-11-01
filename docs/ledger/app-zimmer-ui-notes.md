@@ -35,11 +35,259 @@
 | `U-10` 抽屉"放弃"无键盘快捷键 | `Escape` 已承担"取消在手拖动 / 关面板"；"一键两义"（放弃提案 vs 收尾）没有规范裁决，且拒提案的既有唯一入口是 `musical-pr-reject-button` |
 | `U-12` 自动化泳道不覆盖主总线 | 投影**有意**过滤主总线（`ADR-0004` 的泳道归属）；要做需要一条"主总线自动化如何编辑 / 如何投影"的产品裁决 |
 | `U-16` 运行时没有打开入口 | 本线已有 `Cmd/Ctrl+O` 切片（`554eaaa4`，复用既有打开入口）；报告探针走测试口的打开路径 ⇒ 产品内打开的最终证明在 `Cmd/Ctrl+O` 的判据与读回，不在本台账重复 |
-| `N-UI-1` 控件树只含视口内条目 | 测试能力缺口（窗口化控件树），不是产品缺陷；⛔ 在 UI 线顺手改测试口 |
+| `N-UI-1` 控件树只含视口内条目 | 测试能力缺口（窗口化控件树），不是产品缺陷；⛔ 在 UI 线顺手改测试口。它暴露的**产品面**（行区无滚动 ⇒ 后面的行不可达）已在 §3 单独落地 |
 | `N-UI-2` 循环重复没有 UI 表示 | 需要先回答"循环区域画成什么"（`ADR-0010` 只定坐标语义），属视图设计缺口 |
+| `U-13` 三个"画了但无动作"的控件 | 报告只给结论未点名；现读即 `KNOWN_ACTIONLESS_CONTROLS` 的 **3** 条（`ai-rail-intent-button` / `transport-commit-button` / `transport-branch-button`），处置已由 **`HD-72` / `ADR-0052`** 登记且**未决**（维持现状 is 当前处置）⇒ ⛔ 本线不自行选产品姿态 |
 
-## 3. 本机真跑 vs CI
+## 3. 后续切片：编排行区**纵向滚动**（`N-UI-1` 的产品面）
+
+`N-UI-1`（"控件树只含视口内条目"）本身是测试能力缺口，但这批探针同时暴露了一个
+**产品缺陷**：编排行区没有滚动 ⇒ 轨道多到超出可视高后，后面的行**无法到达**
+（报告的真实工程 28 轨只有前 ~8 行可用）。
+
+| 落点 | 改动 | 规范 ID | 判据 |
+| :--- | :--- | :--- | :--- |
+| `ui/workspace/arrangement_view.slint` | 五个行锚定层（包头 / 车道 / 剪辑 / 拖动面 / 自动化带）包进 `Flickable`（`content-width: self.width` 只滚纵向；子元素 y 减 `rows-top`；⚠ 必须写 `content-*`，`viewport-*` 是 `@deprecated` 别名，绑定挂在别名上会被上游 flickable pass 的自动生成内容高顶掉 ⇒ 滚轮恒被忽略）＋ 新输入 `sheet-height` | `UI-NOTE-001` | `tests/arrangement_vertical_scroll.rs` |
+| `ui/app.slint` | 根属性 `arrangement-sheet-height` 转发 | — | 同上 |
+| `src/bridge.rs` / `src/host.rs` | `ViewState::track_sheet_height()`（最后一行底沿 − 行区上沿）→ `apply_row_geometry` 注入 | `MODEL-AST-002`（投影派生，⛔ 界面算术） | 同上 |
+
+判据覆盖：① 30 轨时末行**不在控件树里**（测试口按可见性裁剪；不可寻址 ⇒ 不可达）；
+② 滚轮 `delta_y > 0` ⇒ 两次快照交集的**每行**恰好上移该 delta，且更大索引的行进入树中
+（**方向语义**由此钉死；再滚 −400 快照复原）；③ 滚到底夹紧且末行进入树里、y 落在行区；
+④ 标尺 / 章节卡片不动；⑤ 演示工程（6 轨）内容不高 ⇒ 偏移恒 0（默认帧 / golden 不漂移）。
+
+⚠ **判据写法教训**（run `41203913356` 三平台同红）：控件树的 `bounds` 不是"离屏也读得到"——
+`ElementHandle::is_visible()` 对被子孙裁剪链盖掉的元素返回 false，**视口外的行根本不进树**
+（`track-19-header 必须可寻址` panic）。所以判据不能读"末行的 y"，要用"是否可寻址"表达
+可达性、用两次快照交集表达位移；夹具行数也要让最大偏移（内容高 − 可视高）**大于**判据的
+滚动量，否则 `ensure_in_bound` 把"上移 delta"夹成"上移到头"。
+
+边界：只接**滚轮**（上游 `PointerScrolled` 的 `Cancelled` 相位直接 set、无动画 ⇒ 判据
+可立即读几何）；⛔ 横向（仍归宿主的 `scroll-x`，见账本第 199 轮"双重计算"教训）；
+⛔ 拖动滚动条 / 触摸惯性。`Flickable` 没有 `accessible-id` ⇒ 控件树不新增节点。
+
+## 4. 本片第一票红与根因（run `41208446082`，macOS 腿）
+
+`wheel_scroll_moves_rows_up_by_the_delta` 报 `left: 90 / right: -310`（首行一位不动）、
+`scrolling_to_the_end_clamps_and_reveals_the_last_row` 报"滚到底后首行仍可达"——**两条红的
+形态相同：滚轮根本没生效**，不是"滚了但幅度不对"。
+
+逐段排除后定位到 `.slint` 的属性名：
+
+- 上游 `Flickable::is_allowed_scroll_direction`（`items/flickable.rs`）要求
+  `content_height > 自身 height`，否则 `process_wheel_event` 直接 `EventIgnored` 并**转发给父级**
+  ⇒ 内容高不够时，滚轮是**静默无效**的（不报错、不警告）。
+- `viewport-width/height` 在 1.18.1 是 `content-*` 的 `@deprecated` 别名
+  （`builtin_elements.rs`），而 `passes/flickable.rs` 的 `fixup_geometry` 用
+  `is_binding_set("content-height")` 判断"有没有显式绑定"来决定是否自动生成内容高；
+  该 pass 跑在 `passes/remove_aliases.rs`（`passes.rs` 第 173 行 vs 第 247 行）**之前** ⇒
+  写在别名上的绑定它读不到，于是装上自动绑定（自动值 = 容器自身高，且 `for` 循环子元素
+  不参与计算 = 上游 issue #407），随后别名折叠时显式值可能被顶掉。
+- 排除项（都核过源码/现读代码）：`PointerScrolled` 的 `Cancelled` 相位确实**直接 set**、
+  无动画（`api.rs` → `flickable.rs`）；宿主注入链 `host.rs → bridge.rs → app.slint → arrangement_view.slint`
+  逐级都在；界面内没有任何 `scroll-event` 处理器 ⇒ `TouchArea` 对滚轮返回 `Reject`，不会吞事件。
+
+⇒ 修法是**把绑定写回规范名 `content-*`**，并加判据⑥把"内容高注入到位且高出窗口"钉成前置：
+以后这一环再断，日志会直接指出是注入断了还是容器没接住，而不再是"y 不动"这种两解的读数。
+
+另有一处判据松绑：交集行数下限 `>= 8` 改 `>= 5`——滚动 400px 后**顶部**若干行会被裁出树，
+交集大小由"可视行数 − 滚掉的行数"决定，8 是照抄未滚动时的读数，不是语义要求。
+
+### 第二处缺陷：滚轮符号（同一个红里藏着的第二个原因）
+
+`ensure_in_bound`（`items/flickable.rs`）把 `content-x/y` 夹在 **`[视口尺寸 − 内容尺寸, 0]`**，
+而 `process_wheel_event` 用的是 `new_pos = current + delta`、**不取反**。⇒ 静止位
+（`content = 0`）上**正的 delta 被夹回 0，一位都不动**。判据②③原先写的是
+`delta_y = +400 / +100_000` 期望"看下面的行"，方向本身就不成立。
+
+修法是给判据两个具名助手（`scroll_rows_down(amount)` 送 `-amount`、`scroll_rows_up(amount)`
+送 `+amount`），把符号收在一处；这与真实滚轮的符号一致（向下滚 = 负 delta）。
+
+第二票红（run `41247139184`，`rust (yeban-app)` / macos / windows 三腿）红在 **clippy 编译期**
+（`f32: TryFrom<u32>` 不存在 —— `Size.height` 是 u32），目标二进制根本没执行 ⇒ 按 §6.3 第 4 条
+这**不是**判据失败，只是没跑到；改 `as f32` 后与符号修复合成同一票重推。
+
+教训（可复用）：**上游的夹紧区间是有方向的**。写滚动判据前先看 `ensure_in_bound` 的
+`min/max`，别按"正数=往下"的直觉设符号；直觉那一版会退化成"什么都没发生"，与"容器不可滚"
+在日志里长得一模一样。
+
+教训（可复用）：**用 `@deprecated` 别名绑定属性，等于把一个显式值交给上游 pass 的执行顺序去猜**。
+凡上游 pass 会按属性名自动补绑定的元素（`Flickable` 的内容尺寸即其一），一律写规范名。
+
+## 5. 本机真跑 vs CI
 
 - 本机：`rustfmt --check`、守卫脚本。Slint 重依赖编译与判据执行一律交 CI（`AGENTS.md` §5）。
 - 判决只认 CI 读回；未读回一律 `pending`，⛔ 写成"通过"。判绿需确认目标二进制**真的执行过**
   （`Running tests/` 计数 + 具名 `test ... ok`），⛔ 把 fail-fast 的空白当证据。
+
+## 6. 第二、三票红：一处编译期红 + 一处"写死的滚动量"（run `41247139184` / `41247717524`）
+
+**第二票（`41247139184`，sha `d103af6c`）红在编译期，不是判据**：三条腿（`rust (yeban-app)` /
+macos / windows）的 `clippy (-D warnings)` 步骤报 4 个
+`error[E0277]: the trait bound f32: TryFrom<u32> is not satisfied`
+（`WINDOW.height` 是 `u32`，判据里用了 `f32::try_from(...)`）。按 `AGENTS.md` §6.3 第 4 条口径，这只能记作
+**"目标二进制没跑到"** —— 该 run 的日志里根本没有 `Running tests/arrangement_vertical_scroll.rs`
+这一行，⛔ 不能读成"滚动判据失败"。修法是照仓库既有写法（`tests/asset_pool_panel.rs`）用 `as f32`。
+⚠ 顺带记一条我自己的错：`f32::from_i32` **不存在**（标准库只给 `i8/i16/u8/u16 → f32` 的 `From`，
+`i32 → f32` 有损所以没有）—— 写之前该现读，不该按"对称一定有"的直觉。
+
+**第三票（`41247717524`，sha `f1337217`）第一次让判据真的跑了**，读回的口径是"数 `Running tests/`
+= 5 个二进制、目标二进制在其中、再数具名 `test … ok`"：
+
+| 读数 | 值 |
+| :--- | :--- |
+| `Running tests/arrangement_vertical_scroll.rs` | 出现（该二进制真的执行） |
+| 4 条判据 | **3 passed / 1 failed** |
+| 红的那条 | `wheel_scroll_moves_rows_up_by_the_delta`：`两次快照必须有一段交集才读得出位移（交集只有 1 行）` |
+
+前两票的根因（内容高别名 + 滚轮符号）**至此被证明已修**：`scrolling_to_the_end_clamps_and_reveals_the_last_row`
+绿 ⇒ 滚一下确实把末行进树、把首行裁出；`short_projects_do_not_scroll` 绿 ⇒ 不溢出时偏移恒 0。
+
+**第三票的根因是我自己写死的常数**：判据②的探针取了固定 400px，而我把"行区视口高"算成了
+`窗口 900 − 行区上沿 42 = 858`。真实视口不是这么来的 —— 编排区下面还有底部控制台。反推实测：
+交集 = 1 行 ⇒ `视口高 − 400 ≈ 一个行距` ⇒ 行区视口高约 **456px**（首行在窗口内 y=90，故行区底约 546）。
+固定 400px 因此几乎吃满整个视口，"两次快照的交集"退化成一行，位移样本读不出来。
+
+修法：判据②的 delta **不再写死**，改取"两个行距"（行距 = 树里第 1 行与第 0 行的 y 差，同一份投影），
+并把"滚动前行区里至少 5 行"钉成前置条件 —— 于是这条红将来只可能是"方向/夹紧/投影"坏了，
+不会再是"探针选得太长"。
+
+教训（可复用）：**滚动探针的量必须由被测量本身导出，不能凭窗口尺寸推视口尺寸**。
+一个固定的像素探针同时依赖视口高与内容高，而这两者都不是测试说了算的（布局归宿主）。
+
+## 7. 第三票的读数补全：三条腿同一个断言 ⇒ 一个根因，不是平台差异
+
+下载三条腿的作业日志现读（`gh api repos/gradetwo/yeban/actions/jobs/<id>/logs`，run `41247717524`）：
+
+| 腿 | `Running tests/arrangement_vertical_scroll.rs` | 4 条判据 | 红的 panic 位置与文本 |
+| :--- | :--- | :--- | :--- |
+| `rust (yeban-app)` | 出现 | 3 passed / 1 failed | `arrangement_vertical_scroll.rs:246`：`两次快照必须有一段交集才读得出位移（交集只有 1 行）` |
+| macos | 出现（job `124674574880` 第 5759 行） | 3 passed / 1 failed | 同一行号、同一句文本 |
+| windows | 出现（job `124674574889` 第 5635 行） | 3 passed / 1 failed | 同一行号、同一句文本 |
+
+⇒ **一次根因（写死的 400px 探针）在三个平台上一致复发**，⛔ 读成"平台相关的视口高不同"。
+另外两腿的尾部 `error: 1 target failed: -p yeban-app --test arrangement_vertical_scroll` 就是这一条，
+其余二进制全绿（各 `test result: ok.`）—— 也就是说 macos / windows 这两票**没有**别的账要还。
+
+## 8. 推送侧的一条操作教训：git-over-HTTPS 会假成功
+
+本片 `9d46e7e3` 一度**推不上去**：`git push` 报 `GnuTLS recv error (-110)` 或
+`Failed to connect to github.com port 443 after 133xxx ms`，而 `gh api`（走 `api.github.com`）一直正常
+⇒ 判"推没推上去"⛔ 靠 `gh api` 通不通，要现读 `gh api repos/gradetwo/yeban/branches/<线名> --jq '.commit.sha'`
+跟本地 `git rev-parse HEAD` 对（本仓库第一次就是靠这条读回发现远端还停在 `f1337217`）。
+更阴的一次：把 push 丢到后台包装脚本里，包装脚本 **exit 0** 而输出文件里是一行 `fatal:`
+⇒ 判推送只认 `gh api` 的远端 sha，⛔ 认包装脚本的退出码。
+
+可用的绕法（实测）：`git -c http.version=HTTP/1.1 push`（默认 HTTP/2 的连接在这台机器上会卡在 443）。
+⛔ 把 `http.version` 写进 git config（改配置属人的决定），只在单次调用上带 `-c`。
+
+## 9. 报告 §10 的一条"仍未验证"读成了事实：编排的**横向**可达只有缩放，没有平移
+
+报告 §10 写"视口外的剪辑块对真实用户是否可达仍未验证"。本票现读代码后的口径（⛔ 未做行为实验）：
+
+| 问题 | 现读事实 | 出处（符号级） |
+| :--- | :--- | :--- |
+| 编排视图有没有横向偏移输入？ | **没有**。`arrangement_view.slint` 的输入里与 x 相关的只有投影算好的 `clip-positions` / `section-positions` / `bar-positions` 与标量 `ticks-per-pixel`；**没有** `scroll-x` / `view-offset` 一类的 in 属性 | `arrangement_view.slint` 的属性表 |
+| 那"看后面的小节"靠什么？ | 只有**缩放**：`Shift+Z` = `ZoomToFit`、`Z` = `ZoomToSelection`，目标值由 `bridge::ticks_per_pixel_to_fit` 一次算出（唯一换算＋夹紧），再重投影 | `input.rs` 第 ⑥ 步、`host.rs` 的 `zoom_action` |
+| 缩放的界 | `MIN_TICKS_PER_PIXEL = 1`（最大放大）… `MAX_TICKS_PER_PIXEL = 960`（一个四分音符 1px，最小放大）；文档**明写**夹紧后果："若 `ceil(span / px) > MAX`，本函数给出上界值，**而不是假装装得下**" | `bridge.rs` 的三个常量与其文档 |
+| 默认档有多窄？ | 默认 `DEFAULT_TICKS_PER_PIXEL = 30` ⇒ 一个 4/4 小节（3840 tick）= **128px**。行区可视宽**本票未现读**（它随窗口档与侧栏状态变），因此只给公式：可见小节数 ≈ `行区宽 px / 128` | 同上 |
+
+⇒ 结论分两句，⛔ 混成一句：
+
+1. **中等长度工程不是缺口**：按最小放大一格 960 tick/px，横向覆盖 = `px × 960` tick，
+   工程跨度小于它时 `Shift+Z` 就能全部装进视口 ⇒ "视口外的剪辑"在默认档下**可达**（靠缩放）。
+2. **但没有任何平移入口**：想要"停在第 40 小节、放大到能编辑音符密度"的用法，
+   今天只能反复缩放、没有左右滚动条 / 滚轮横向 / 拖动平移。这与 `N-UI-1` 的**纵向**缺口
+   （本线已修）是两种病：纵向是"行压根到不了"，横向是"能到但看不细"。
+
+⛔ 本票不顺手补横向平移：报告把它记在**未验证**而不是**缺口**里，
+而"横向平移的落点归宿主偏移、还是归 Flickable 的 `content-width`"是一处会撞上
+`app-zimmer-ui-notes` §3 那条"⛔ 双重计算"教训的**设计选择** ⇒ 待人类点票再动。
+
+## 10. 纵向滚动票的收盘判决与落地（run `41250318956`）
+
+`line/arrangement-scroll` 的第三票（前两票的根因见 §4 与 §6）于 sha `9d46e7e3` 判**绿**，
+按 `[AGENTS.md §6.3]` 的口径逐腿读回：
+
+| 腿 | 读数 |
+| :--- | :--- |
+| `rust (yeban-app)`（job `124682339791`） | `Running tests/` = **272**，其中 `arrangement_vertical_scroll.rs` 出现 **2 次**（单特性 + 合并特性两档），4 条具名判据各 `ok`，`test result: ok. 4 passed; 0 failed` ×2 ⇒ 非空绿 |
+| `macos` / `windows` | success |
+| deny / checks / plan / lockfile | success |
+
+落地：`worktree.sh land arrangement-scroll` ⇒ 合并提交 `fec6bd1b`（6 文件，+579/−8，
+新建 `tests/arrangement_vertical_scroll.rs`）。落地后 `post_merge_checks` 的两处 FAIL
+（`Cargo.lock` 漂移 / 许可清单漂移）与本批**无关**——`git diff --name-only` 里没有任何
+`Cargo.*` 或许可文件，两处 FAIL 与本机 1.99.0 pin 拉不到的环境漂移同源。
+
+## 11. 报告缺口对最新 main 的收盘核账（2026-10-31）
+
+`~/zimmer-ui-mode-report.md` 是**落地前**的快照。逐条对**当前 main 的代码**现读后，
+四条"已复现"缺口全部已由既有工作线闭合（⛔ 本票不重开、⛔ 不新接线）：
+
+| 报告缺口 | 现状 | 现读出处（符号级） |
+| :--- | :--- | :--- |
+| **U-05** 段落卡片不可点 | **已闭合** | `host::wire_section_seek` 注册 `on_section_seek`（⇒ `commit_seek(.., "section-seek")`），产品路径 `main.rs` 与无头路径 `live_surface.rs` 各调一次 |
+| **U-07** 标尺定位三残缺 | **已闭合** | `wire_ruler_seek` 三条臂：`on_ruler_seek`（点击自由定位，`ruler_seek_tick` 带 `bar` 参数）、`on_ruler_seek_bar`（"定位到第 N 小节"，补 R2 键盘/屏读入口）、`ruler_step_tick`（相邻小节步进，补 R3）；R1 的"线间点击"保留自由定位，小节精确导航改由后两条臂承担（既有设计选择，非本票新造） |
+| **U-11** Esc 不关抽屉 | **已闭合** | `host.rs` `Action::Cancel` 臂：`if ui.get_ai_drawer_open() { ui.invoke_toggle_ai_drawer(); return true; }`，注释逐字点名 `U-11`；与走带按钮 / `Cmd/Ctrl+Alt+A` 共用 `toggle-ai-drawer` 单写者 ⇒ 键盘/鼠标/屏读不分叉 |
+| **U-16** 运行时无打开入口 | **已闭合** | `host::wire_open_project` + `PortOpenProject: OpenProjectRuntime`，`input.rs` 的 `Cmd/Ctrl+O => Action::OpenProject` ⇒ `ui.invoke_open_project()`（第 ⑩ 票落地的运行时打开切片） |
+
+**仍未闭合的三条，全部卡在人类裁决 / ADR，⛔ 本票不发明答案**：
+U-12（主总线自动化泳道被投影过滤 —— 是否该放开是产品决策）、N-UI-2（循环重复的 UI 表示）、
+U-09/U-10（抽屉行间键盘移动 / "放弃"快捷键 —— 已登记 `ADR-0058`，状态 `Proposed`，待人类批准）。
+
+⇒ 报告里**所有非 MCP 的可复现 UI 缺口**在 main 上已无待接线项；剩下的是决策依赖项，不属于本票范围。
+
+## 12. 报告 §7/§8/§9/§10 的余下项收盘（补 §11 未覆盖的三条）
+
+§11 收了 U-05/U-07/U-11/U-16 四条；报告还点名 U-08 / U-13，以及 §7 的混音通道可达与 §10 的
+"视口外可达"清单。逐条对**最新 main** 现读后的口径：
+
+| 项 | 定性 | 依据 |
+| :--- | :--- | :--- |
+| **U-08** | **非功能缺口，且本票不猜** | 报告逐字："文档措辞问题，**不影响标尺功能**"＋"未在本轮复现"。探针既未复现、又无确切措辞缺陷原文 ⇒ 改动＝发明；⛔ 不动。若确属根文档措辞，`docs/**` 归集成者 |
+| **U-13** | **卡人类裁决** | "三个画了但无动作的控件"——这三个控件**该做什么**是产品决策（`ADR-0052` / `HD-72` 未决）⇒ ⛔ 不接线，等裁决 |
+| **§7 混音第 14 条以后通道可达** | **已闭合（本线）** | `line/mixer-horizontal-scroll`（落地 `4c0d3153`）给了通道条的宿主横向偏移 ⇒ 后段通道可滚入视口；判据 `scrolling_to_the_end_clamps_and_reveals_the_last_strip_and_the_panels` 在 run `41250324373` 绿 |
+| **§10 第 8 条以后轨道行可达** | **已闭合（本线）** | `line/arrangement-scroll`（落地 `fec6bd1b`）行区 `Flickable` 纵向滚动；判据 `…reveals_the_last_row` 在 run `41250318956` 绿 |
+| **§10 Intro 以外段落卡片可达** | **已闭合** | `wire_section_seek`（同 §11 U-05）：卡片点击 ⇒ 定位段起点，配合编排行区滚动可达后段卡片 |
+| **§10 Session / 钢琴卷帘标尺点击** | **口径为「单标尺覆盖」** | 现读：`console/piano_roll.slint` 与 `workspace/session_view.slint` **各自都没有独立标尺** ⇒ 报告那两条"仍未验证"由编曲**唯一标尺**（`wire_ruler_seek`）覆盖，不是漏接线 |
+
+⇒ 报告**全部**非 MCP UI 项现读完毕：**可复现功能缺口全部已落地**，**余下全部卡人类裁决**（U-09/U-10/U-12/U-13、N-UI-2）或属**非功能措辞**（U-08）。自主可做的 UI 功能切片 = **零**，与集成者在 `handover-latest.md` 记的"自主可做的下一批 = 零"一致。
+
+## 13. 人类裁决落账 + sidebar 基准重录核账（2026-11-01）
+
+**基准重录核账（`line/sidebar-library`）**：手动档 `gate=goldens` run `41254412881`
+conclusion=**success**，`goldens` 作业实跑 23:56:23Z–00:00:37Z（≈4m14s，非空绿）。
+产物 `golden-linux` 的 **5 张 PNG sha256 与仓库内已钉死基准逐张相等**（单位＝张；对象＝
+`crates/yeban-app/tests/golden/linux/` 全部 5 文件）⇒ sidebar 线**没有移动任何被基准覆盖的像素**，
+基准零变更可入库，`MANIFEST.txt` 无需改写。此后只剩常驻判据 run `41253471992` 的判决决定合流。
+
+**人类裁决（2026-11-01，负责人经 AskUserQuestion 亲裁，本票只登记不代签）**：
+
+| 项 | 裁决 | 本线动作 |
+| :--- | :--- | :--- |
+| **U-13** 三个空壳控件 | **A 维持现状**（= `ADR-0052` 的 `D1`，零代码、零 `.slint`、零基准重录） | ⛔ 不改三控件、不改注册表；三控件继续由 `KNOWN_ACTIONLESS_CONTROLS` 逐名钉死。`ADR-0052` 状态 Proposed→Approved(D1) 由该文档提出方（集成者）翻转，本线不碰其文件 |
+| **U-12** 主总线自动化泳道 | **待裁**——放开过滤是产品决策，无裁决不可施工 | 登记为 pending，不实现 |
+| **N-UI-2** 循环重复的 UI 表示 | **待裁**——是否要界面上的重复标记属交互设计决策 | 登记为 pending，不实现 |
+| **U-09 / U-10** 抽屉行间键盘移动 / 「放弃」键 | **待裁**——焦点模型与键位已写进 `ADR-0058`（状态仍 `Proposed`），等负责人批准 | 登记为 pending，不实现 |
+
+⇒ zimmer 报告面的 UI 项至此**全部收口**：可复现功能缺口全部已落地（§11/§12），U-13 有了人类姿态裁决
+（维持现状），其余四项**逐条登记为待人类裁决**——自主可做的 UI 功能切片仍为**零**，且不虚构。
+
+**登记升级（同批）**：`U-12` 与 `N-UI-2` 从"本台账一句话"升格为**可批可驳的正式票**——
+`ADR-0059`（主总线自动化泳道：A 维持排除／B 放开可编辑／C 只读显示；现读 `automation.rs` 的
+`filter(!= master_bus_track_id)` 与模块注释"判据断言跳过是有意的"）与 `ADR-0060`（循环重复 UI 表示：
+A 维持／B ×N 徽标／C 区间分割／D 可编辑循环区；现读 `yeban-model/src/loop_plan.rs` 的
+`ClipPlacement::loop_repeat()` 为唯一真相、三处共用），均 `Proposed`、零代码、已入 `docs/adr/README.md` 索引。
+U-09/U-10 的正式票即既有 `ADR-0058`；U-13 的正式票即既有 `ADR-0052`（待其提出方按本批裁决翻 `Accepted`）。
+
+## 14. §10「视口外剪辑块可达」的代码事实收盘（2026-11-01）
+
+**这个数字在数什么**：单位＝**个**，对象＝编曲剪辑层注入界面的集合大小对**视口**的依赖。
+现读（`main`，符号级）：`bridge.rs` 的 `clip_ulids / clip_labels / clip_positions /
+clip_widths / clip_ys / clip_heights` 全部是 `self.clips.iter()` **无过滤臂** —— 与轨道行/音符
+那两处的**视口裁剪**不同（那些有 `visible_*_scoped(scroll_x, viewport_width, ..)` 族），
+**剪辑层没有**同名裁剪。⇒ 报告 §10 第 4 条"视口外的剪辑块对真实用户是否可达"在**树可达性**
+口径上答案是**可达**（N-UI-1 的窗口化不覆盖剪辑块）；"滚轮滚动行为"那一格仍属**未行为验证**，
+且编曲行区 `Flickable` 注释自证为**纵向专用**（`content-width: self.width`），横向口径
+按第 199 轮教训归宿主 `scroll-x`（⛔ 双重计算）。本条只登记代码事实，⛔ 不据此发明缺陷。
