@@ -860,7 +860,7 @@ impl LiveAdminSurface {
     /// 落盘的字节取自端口的当前工程（`UndoPort::try_project`，与生产心跳的发布来源同一个
     /// 读数）—— 注入手势改的是端口，`self.project` 只是装配缓存，写它等于丢编辑。
     /// 没有端口时本执行面就是唯一持有者，照旧写缓存。读数进
-    /// `savedFromUndoPort`（`bool`），因此"这一版到底从哪儿来"是可断言的而不是注释。
+    /// `writtenFromUndoPort`（`bool`），因此"这一版到底从哪儿来"是可断言的而不是注释。
     fn save_now(&mut self) -> Result<(), PortError> {
         let Some(path) = self.save_path.clone() else {
             // 没有配置落点 = 这条能力在**这个装配上**没接线 ⇒ `-32005` 是诚实的。

@@ -428,3 +428,57 @@ std::rc::Rc::new(yeban_app::file_picker::NoPicker), None)`。⛔ 不新增控件
 **残留缺口**（不在本票解决，如实登记）：接线修的是**控制面装配路径**。一个**没有 `--open`
 启动的真实 GUI 会话**里，`NoPicker` 返回 `None` ⇒ 「保存」按钮仍是没有目标可写；
 另存为/新建后首存的选择器路径属另一切片，⛔ 本片不私自发明文件对话框语义。
+
+## 19. rebase 到 main（51 票之后）的碰撞与分工收盘（2026-11-01）
+
+**这个数字在数什么**：单位＝**个**，对象＝`line/zimmer-ui-write-surface` 的 9 支票在
+`git rebase origin/main` 里**真正发生内容冲突**的文件数，以及 main 已经覆盖 / 未覆盖的
+本线修复数。来源＝逐支 `git status` 的 `UU` 计数与 `git show origin/main:<file> | grep -c` 的现读。
+
+**为什么要单开一节**：负责人要求"先 pull 到最新再 rebase，让第二首曲子用上新落地的修复"。
+main 在这期间**独立落了 `ADR-0057` 选项 A**（测试面才建撤销会话，生产面恒 `None`），它修的就是
+`D-UI-1` 的**同一个症状**。于是"我的补丁还剩什么"必须现读，⛔ 不能靠"我写过所以还在"。
+
+**分工现读**（main 侧那份文件逐字核对）：
+
+| 本线的修复 | main 是否已覆盖 | 证据（现读） |
+| :--- | :--- | :--- |
+| `D-UI-1` 核心：serve 侧不再 `undo: None` | **已覆盖**（同一形状，闸在 `run`、装配是纯函数） | `origin/main` 的 `ui_mcp_serve.rs:155` 起 `let test_undo = if options.ui_test_mode && env YEBAN_ALLOW_UI_INJECT == "1"`，`:189` `undo: test_undo` |
+| 服务端端口的**资产池**（`#132` 那条边界） | **未覆盖** | `git show origin/main:.../ui_mcp_serve.rs \| grep -c replace_assets` = **0**（GUI 那条装配在 `main.rs` 一直做，服务端漏） |
+| `D-UI-8`：控制面装配里**保存入口**未接线 | **未覆盖** | `git show origin/main:.../live_surface.rs \| grep -c "host::wire_save("` = **0** |
+| `D-UI-3`：修饰键 chord 注入 | **未覆盖**（main 无此方法） | `origin/main` 的 `methods.rs` 声明长度行逐字 `MethodSpec; 17`（本线现读 **18**） |
+| `D-UI-4`：建 MIDI 轨即挂内置乐器 | **未覆盖** | main 侧 `bridge.rs` 无 `builtin_instrument_device` |
+
+⇒ rebase 后本线剩下的是**真增量**，⛔ 不是重复劳动；`D-UI-1` 那一支从"我自己造一份配方"
+改写成"**把 main 那道闸开出来的端口喂进装配**"（`serve_wiring` 变纯装配 + `run` 侧
+`replace_assets` 补池），会话配方收敛到 `undo::open_undo_session → session_from_archive`
+一条（`main.rs` 与本档调**同一个**入口）。
+
+**改号**（按仓内既有惯例"后落地的一方改号"，先例 `c5e83a46` / `f0499302`）：
+`ADR-0061`（chord）→ **`ADR-0064`**；`ADR-0062`（内置乐器）→ **`ADR-0065`**。
+main 在这期间把 `0061/0062/0063` 分别给了乒乓延迟／磁带饱和／侧链键输入。
+引用面逐条改：`README.md` 表两行、`bridge.rs`、`device_clip_creation.rs`、
+`app-zimmer-ui-notes.md` §17 标题、`feature-alignment.md`（5 处）与 `phase-status.md`（1 处）
+—— ⚠ 本节的 4 处是**改号收尾时的漏网**：第一批只改了 6 个文件，`grep -rn "ADR-0061" docs/ledger`
+现读仍有 5＋1 处才补上。⛔ main 的磁带／乒乓票在 `yeban-render`／`yeban-engine`／`yeban-dsp`
+里的 `ADR-0061/0062` 引用一位未动（同名不同票，按语义甄别而不是全局替换）。
+两处号位说明写进 ADR 正文（blockquote），裁决内容一字未改。
+
+**融合收尾的一处陈旧读数**：`live_surface.rs` 的 `save_now` 文档注释在本线改名成
+`savedFromUndoPort` 而 main 的字段叫 `writtenFromUndoPort` ⇒ rebase 保留 main 的字段名后
+注释变成**指向一个不存在的读数**，已就地改正（⛔ 判据只钉字符串，注释里的名字不在射程内，
+这正是"注释腐烂"的形状）。
+
+**静态复核**（本机不编译 Slint，§5 纪律 ⇒ 把默认档那两条**读源码**判据的每个断言逐条
+`grep -F` 复刻一遍，单位＝**个断言**）：`d_ui_1` 判据 ① 的 11 条断言全过（含 `undo,\n
+        proposal_source` 那一支析取），`d_ui_8` 判据 ① 的 4 条全过；
+`methods.rs` 的三处机械读数自洽（声明 `MethodSpec; 18` = 条目 18 = 两处 `METHOD_COUNT` 断言 18），
+`mutating: true` **11** / `false` **7**，`service.rs:2724` 写死的 `supporting.len() == 11` 仍然成立
+⇒ 干跑没有把"计数漂移"带进新 base。`cargo fmt` 以 `rustfmt +stable --edition 2024 --check`
+对本票触及的 `.rs` 逐文件跑过（无输出）。
+
+**判决**：`pending` —— 推送后按 §6.3 逐票读回（自动档 `CI` + 手动档
+`gates-manifest gate=all-features crate=yeban-app` 的 `ui-mcp-http` 腿），⛔ 不写"通过"。
+
+**备份**：rebase 前的 tip 记在 `backup/pre-rebase-zimmer-ui` = `82cd7166`（⛔ 不删，
+新分支若判红要能逐字回到旧形状）。
