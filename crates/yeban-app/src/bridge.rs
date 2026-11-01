@@ -1777,13 +1777,63 @@ pub fn new_track_name(project: &YebanProjectV1, kind: NewTrackKind) -> String {
     format!("{} {}", kind.name_prefix(), existing + 1)
 }
 
+/// ⭐ 缺陷 **D-UI-4** 的默认音色：内置乐器（wavetable 多音合成器）的设备名。
+pub const BUILTIN_INSTRUMENT_NAME: &str = "内置合成器";
+
+/// 内置乐器的**默认音色**（九个引擎识别键，值取自引擎文档里那份投影示例）。
+///
+/// 形状的唯一来源 = `crates/yeban-engine/src/synth.rs` 的 `ToneParams` 文档块
+/// （它把"设备链里一台音源长什么样"写成九键示例）；参数名必须逐字是引擎认下的键
+/// （权威判据 `yeban_engine::synth::is_consumed_instrument_param`）。⚠ **不能**只写
+/// `resonance` / `drive`：`DeviceTone::is_source` 只把 `cutoff_hz` 与六个振荡器键算
+/// 音源，其余 ⇒ 装上去是一台**哑设备**（工程改了，听不见）。
+///
+/// 单位只在共享契约里**已有**该键时逐字照抄（`cutoff_hz` = `Hz`，见
+/// `yeban-mcp/src/effect_params.rs` 的 `filter` 分组）；契约没有的键（振荡器电平 /
+/// 失谐）⛔ 不发明单位字符串。
+const BUILTIN_INSTRUMENT_PARAMS: [(&str, f32, Option<&str>); 9] = [
+    ("cutoff_hz", 1200.0, Some("Hz")),
+    ("resonance", 0.2, None),
+    ("drive", 0.0, None),
+    ("osc1_wave", 1.0, None),
+    ("osc2_wave", 4.0, None),
+    ("osc1_level", 0.8, None),
+    ("osc1_detune_cents", -6.0, None),
+    ("osc2_level", 0.5, None),
+    ("osc2_detune_cents", 7.0, None),
+];
+
+/// 一台**可以直接发声**的内置乐器（身份新分配，参数 = [`BUILTIN_INSTRUMENT_PARAMS`]）。
+///
+/// `latency_samples` 写 `0`：与 [`builtin_effect_device`] 同一条纪律 —— 没有公布的
+/// 延迟就报零，⛔ 不编一个数字。
+#[must_use]
+pub fn builtin_instrument_device() -> DeviceDefinition {
+    DeviceDefinition {
+        id: EntityId::new(),
+        name: BUILTIN_INSTRUMENT_NAME.to_owned(),
+        kind: DeviceKind::InternalInstrument,
+        bypassed: false,
+        params: BUILTIN_INSTRUMENT_PARAMS
+            .iter()
+            .map(|(name, value, unit)| ParameterValue {
+                name: (*name).to_owned(),
+                value: *value,
+                unit: (*unit).map(str::to_owned),
+            })
+            .collect(),
+        latency_samples: 0,
+    }
+}
+
 /// 建轨的**完整** `Op` 批次（⛔ 不是"只 `AddTrack`"）。
 ///
-/// 返回 `[AddTrack, AddRoutingNode(新轨), ConnectRouting(新轨 → master)]`（主总线
-/// 不在 `nodes` 里时先补它的 `AddRoutingNode`）。三条形状与 `yeban-mcp` 的
-/// `project_create::build` **同一份**（`AddTrack` ＋ `AddRoutingNode` ＋
-/// `ConnectRouting{kind: TrackToBus, gain_db: None}`）⇒ 新轨在路由图里**有一条显式的
-/// 到主总线的边**，而不是靠引擎"没有出边 ⇒ 默认直连 master"这条回退。
+/// 返回 `[AddTrack, (MIDI 轨：InsertDevice 一台内置乐器), AddRoutingNode(新轨),
+/// ConnectRouting(新轨 → master)]`（主总线不在 `nodes` 里时先补它的 `AddRoutingNode`）。
+/// 路由那三条的形状与 `yeban-mcp` 的 `project_create::build` **同一份**
+/// （`AddTrack` ＋ `AddRoutingNode` ＋ `ConnectRouting{kind: TrackToBus, gain_db: None}`）
+/// ⇒ 新轨在路由图里**有一条显式的到主总线的边**，而不是靠引擎"没有出边 ⇒ 默认直连
+/// master"这条回退。
 ///
 /// ⚠ 引擎的回退确实存在（`yeban-engine/src/routing.rs` 模块头）：没有音频出边的节点默认
 /// 直连 master。本函数仍然显式建边，因为 ① 演示 / 填充 / MCP 建工程三条既有路径都建了；
@@ -1816,8 +1866,23 @@ pub fn track_create_ops(
         kind: kind.routing_kind(),
         gain_db: None,
     };
-    let mut ops = Vec::with_capacity(4);
+    let mut ops = Vec::with_capacity(5);
     ops.push(Op::AddTrack { track });
+    // ⭐ 缺陷 **D-UI-4**：MIDI 轨**建轨即挂一台内置乐器**。在这之前，只用鼠标/键盘的
+    // 用户建出来的 MIDI 轨设备链是空的（`TrackV3::default()`），而界面里唯一的"装乐器"
+    // 入口是 SFZ 库按钮 `instrument-install-{i}-button`，其清单按**样本字节是否存在**
+    // 过滤 ⇒ 仓内无样本时清单为空（`INSTRUMENT_INSTALL_NO_BUILTIN_REASON`，0 个按钮）。
+    // 结果：画满音符也**物理静音**。音频轨不加（它的音源是录进来的素材）。
+    // 不想要这台乐器的做法是既有的"删设备"（`device-{i}-remove-button`），⛔ 不必
+    // 为"默认带音源"再加控件。裁决登记 `docs/adr/ADR-0065-midi-track-default-instrument.md`
+    // （`Proposed`）。
+    if kind == NewTrackKind::Midi {
+        ops.push(Op::InsertDevice {
+            track_id,
+            slot_index: 0,
+            device: builtin_instrument_device(),
+        });
+    }
     ops.push(Op::AddRoutingNode { node: track_id });
     // 主总线**通常**已经在 `nodes` 里（`validate()` 要求）；缺失时补一格，否则
     // `ConnectRouting` 的前置条件（两端都在 `nodes` 里）会拒掉整批。
