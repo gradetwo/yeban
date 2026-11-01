@@ -5670,13 +5670,14 @@ mod tests {
         let schema = crate::output_schema::for_tool("yeban_render_master")
             .expect("render_master 有 outputSchema");
         let automation = &schema["properties"]["automation"];
-        let published_targets: Vec<&str> =
-            automation["properties"]["tracks"]["items"]["properties"]["target"]["enum"]
-                .as_array()
-                .expect("target 必须带 enum")
-                .iter()
-                .map(|value| value.as_str().expect("enum 的元素是字符串"))
-                .collect();
+        let lane_props = &automation["properties"]["tracks"]["items"]["properties"]["lanes"]["items"]
+            ["properties"];
+        let published_targets: Vec<&str> = lane_props["target"]["enum"]
+            .as_array()
+            .expect("target 必须带 enum")
+            .iter()
+            .map(|value| value.as_str().expect("enum 的元素是字符串"))
+            .collect();
         assert_eq!(
             published_targets,
             TARGET_VALUES.to_vec(),

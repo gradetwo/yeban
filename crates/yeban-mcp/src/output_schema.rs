@@ -2919,8 +2919,9 @@ mod tests {
     fn the_automation_word_tables_are_the_producers_rosters() {
         let schema = render_master();
         let automation = schema["properties"]["automation"].clone();
-        let lane_props =
-            automation["properties"]["tracks"]["items"]["properties"]["lanes"]["items"].clone();
+        let lane_props = automation["properties"]["tracks"]["items"]["properties"]["lanes"]["items"]
+            ["properties"]
+            .clone();
         assert_eq!(
             lane_props["target"]["enum"],
             serde_json::json!(crate::domain::render::TARGET_VALUES),
