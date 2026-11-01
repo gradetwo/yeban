@@ -473,6 +473,9 @@ use super::render_math as math;
 // ⭐ `#221`：采样器音源**复用** `domain::sfz` 的那一份实现（区域选择 / 播放速率 /
 // 总增益 / 样本来源）—— ⛔ 这里不写第二套"一个音符怎么响"。
 use super::sfz;
+/// ⭐ 样本读取预算从本模块**转出**一份：分轨（`domain::stems`）与母带必须用同一类型、
+/// 同一套缺省值，⛔ 不各写一份数字。
+pub use super::sfz::SampleLimits;
 use super::store;
 use crate::tools::ErrorCode;
 
@@ -757,6 +760,17 @@ pub struct RenderRequest {
     /// 的副本请求（`normalize:false` + 钉死帧数），因此母带那条 24-bit/TPDF 路径
     /// 一位都不经过这条分支。
     pub sample_format: SampleFormat,
+    /// ⭐ 本次渲染的**样本读取预算**（`yeban_render_master.maxSampleFiles` /
+    /// `.maxSampleFrames`；缺省 = [`sfz::SampleLimits::default`]）。
+    ///
+    /// 为什么放在请求里：预算决定"采样器轨能不能读到它的全部力度层 / 音区层"，
+    /// 而读不全的那些音区在采样器轨上**没有正弦回退** ⇒ 直接是数字静音。把它做成
+    /// 每次渲染可配的实参，等于把"这个工程需要多大的样本预算"交给调用方声明，
+    /// ⛔ 不再由编译期常量替所有工程做决定。
+    ///
+    /// ⚠ 逐轨记账（[`sfz::TrackSampleCache`]）；已解码 PCM 由
+    /// [`sfz::SampleStore`] 跨轨共享 ⇒ 峰值内存 ≈ 不同样本之和。
+    pub sample_limits: sfz::SampleLimits,
 }
 
 impl RenderRequest {
@@ -824,6 +838,8 @@ impl RenderRequest {
             "contributions": self.contributions,
             // ⭐ 审评 2026-10-31（P1-1）：显式线程数回显（`null` = 缺省单线程路径）。
             "threads": self.threads,
+            // ⭐ 样本读取预算回显（缺省值也报 ⇒ 读数自带"这次用的是哪一条预算"）。
+            "sampleLimits": self.sample_limits.to_value(),
         })
     }
 
@@ -1452,6 +1468,9 @@ pub fn validate(arguments: &Map<String, Value>) -> Result<RenderRequest, Fault> 
             ));
         }
     };
+    // ⭐ 样本读取预算：`maxSampleFiles` / `maxSampleFrames`（口径与 `yeban_load_sfz`
+    // 的**同一份**实现 —— 两个工具都调 `sfz::parse_sample_limits`）。
+    let sample_limits = sfz::parse_sample_limits(arguments)?;
     // ⭐ `ADR-0030` D2：样本格式**不进参数面** —— `validate` 恒产出母带口径（24-bit 整数
     // PCM ＋ TPDF 抖动）。分轨导出在 `domain::stems` 里构造 `Float32` 的副本请求。
     Ok(RenderRequest {
@@ -1465,6 +1484,7 @@ pub fn validate(arguments: &Map<String, Value>) -> Result<RenderRequest, Fault> 
         contributions,
         threads,
         sample_format: SampleFormat::Pcm24,
+        sample_limits,
     })
 }
 
@@ -1536,6 +1556,12 @@ pub struct SamplerReport {
     /// ⭐ `#274`：引擎摊平表报出的**缺样本路径**（升序去重；`silent` 里除内建静音
     /// 以外的那一半）。
     pub missing_sample_paths: Vec<String>,
+    /// ⭐ 本次装载用的**样本读取预算**（`null` 字段 ＝ 不限）。
+    ///
+    /// 为什么与读数一起报：`sampleReadsTruncated` / `silentRegionCount` 都是**相对某条
+    /// 预算**的结论 —— 不报预算，"被 8 M 帧砍到 12 个静音音区"与"这份 SFZ 本来就只有
+    /// 12 个静音音区"在响应里长得一模一样。
+    pub budget: sfz::SampleLimits,
     /// ⭐ `#274`：**声部窃取**数（引擎 SFZ 声部池 16 槽；池满 ⇒ 窃取最老的声部）。
     ///
     /// 由渲染期的 [`EngineTrackSource::steal_counter`] 填回（构造期恒 `0`）——
@@ -1592,6 +1618,7 @@ impl SamplerReport {
             "sampleFailures": self.sample_failures,
             "sampleFramesLoaded": self.sample_frames_loaded,
             "sampleReadsTruncated": self.sample_reads_truncated,
+            "sampleLimits": self.budget.to_value(),
             "regionsWithEnvelope": self.regions_with_envelope,
             "decodedSamples": self.decoded_samples,
             "missingSamplePaths": self.missing_sample_paths,
@@ -2738,7 +2765,14 @@ pub fn build(
     let mut sampler_failure: Option<Fault> = None;
     let mut sampler_store = sfz::SampleStore::new();
     let timbre = EngineTimbre::from_project_armed(project, sample_rate as f32, |track, raw| {
-        match prepare_sampler_track(track, raw, project, project_path, &mut sampler_store) {
+        match prepare_sampler_track(
+            track,
+            raw,
+            project,
+            project_path,
+            &mut sampler_store,
+            request.sample_limits,
+        ) {
             Ok((armed, samples)) => {
                 // ⭐ `#279`：解码表**直接**交给引擎（`(sample= 原样字符串, (PCM, 原始采样率))`），
                 // ⛔ 不再经 `ArmedSamplerTrack` 中转一次深拷贝（旧 `armed.samples.clone()`）。
@@ -3227,6 +3261,9 @@ pub fn track_contributions(
         // ⭐ 审评 2026-10-31（P1-1）：逐轨贡献的 1+N 次渲染继承调用方的线程选择。
         threads: request.threads,
         sample_format: request.sample_format,
+        // ⭐ 逐轨贡献的额外渲染必须与母带**同一份**预算，否则"拿掉某轨"的差值
+        // 会掺进"预算不同"的差异（读数就不再是那一轨的贡献）。
+        sample_limits: request.sample_limits,
     };
     let baseline = build(project, project_path, &basis, now_ms, assets)?;
     let reference = decode_master_payload(&baseline)?;
@@ -4063,10 +4100,12 @@ fn prepare_sampler_track(
     project: &YebanProjectV1,
     project_path: &Path,
     store: &mut sfz::SampleStore,
+    limits: sfz::SampleLimits,
 ) -> Result<(ArmedSamplerTrack, Vec<ArmedSfzSample>), Fault> {
     let resolved = resolve_sampler_path(raw, project_path)?;
     // ⭐ `#276`：装载与提供表**同一次解析**；解码由 `store` 去重（同一文件只解一次）。
-    let mut cache = sfz::TrackSampleCache::new(store);
+    // ⭐ 预算来自本次渲染的实参（`maxSampleFiles` / `maxSampleFrames`），⛔ 不是常量。
+    let mut cache = sfz::TrackSampleCache::with_limits(store, limits);
     let (load, table) = sfz::load_with(
         &resolved,
         project.audio_config.sample_rate.hz() as f32,
@@ -4854,6 +4893,7 @@ fn build_source(
                 sample_failures: armed.load.sample_failures.clone(),
                 sample_frames_loaded: armed.load.sample_frames_loaded,
                 sample_reads_truncated: armed.load.sample_reads_truncated,
+                budget: armed.load.limits,
                 regions_with_envelope: survey.regions_with_envelope,
                 decoded_samples: summary.samples,
                 missing_sample_paths: summary.missing_samples.clone(),
