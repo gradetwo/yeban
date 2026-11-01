@@ -301,3 +301,13 @@ clip_widths / clip_ys / clip_heights` 全部是 `self.clips.iter()` **无过滤�
 | sidebar goldens 重录 | `41254412881` | **success** 且 5 张 PNG **sha256 逐张相等** | 基准零变更（§13 已记） |
 | sidebar 判据第一批 | `41253471992` / `1da6ddd5` | **failure**：`391 passed; 1 failed` —— 抽屉单注入判据把 sidebar 本地同名声明 `empty-reason:` 误读为第二注入路径 | 根因修复 `d5ceab0d`：判据只数**实例绑定行**（豁免含 `property <` 的声明行；`MusicalPrDrawer` 全仓唯一实例化在 `app.slint`，真注入仍被抓） |
 | sidebar 重判 | `41256416978` / `d5ceab0d` | 在飞；合流由判决门控的后台流水线执行（绿⇒land⇒push⇒读回⇒拆树） | 结果到达后在本行补记 |
+
+## 15.1 合流流水线的两处判据耦合缺陷（在飞期间热修，2026-11-01）
+
+流水线 step3 原判据把「工作线全量验证」耦合到**作业名** `rust (workspace`：
+本 run 的受影响集合计划把全量腿**跳过**（分支只触 `yeban-app`），目标二进制实际跑在
+`rust (yeban-app)` 腿 —— 若不改，一次**真绿**会被空日志的跳过腿误判为 `exit 2` 拒落。
+热修：step3 改为拼接**所有** `rust (` 腿日志后再套同一判据（目标二进制在场 ⇒ 仍然可证伪；
+⛔ 放宽为"看整体 conclusion"）。step6 原判据取 `--limit 1` 的"最新 main run"，与并发推送
+存在竞态；改按**精确 headSha** 定位。教训与 §15 判据误红同族：**任何自动化判据都不许耦合
+作业名/最新性这类会被计划裁剪与并发移动的表面坐标，要耦合就耦合内容（二进制名、SHA）。**
