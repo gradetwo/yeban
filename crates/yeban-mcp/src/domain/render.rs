@@ -1979,7 +1979,7 @@ fn automation_target_name(target: AutomationTarget) -> &'static str {
 }
 
 /// ⭐ s32：[`AutomationTarget`] 五个变体的**唯一名册** —— 上面的
-/// [`automation_target_name`] 每个臂贡献一个名字，判据
+/// `automation_target_name` 每个臂贡献一个名字，判据
 /// `the_automation_word_tables_are_the_producers_partition` 钉住这个一一对应。
 /// `outputSchema` 的 `data.automation.tracks[].lanes[].target.enum` 直接引用它，
 /// 与 [`VERDICT_VALUES`] 同一条理由：⛔ 不在 schema 侧手抄第二份清单。
@@ -5661,7 +5661,7 @@ mod tests {
         assert_eq!(union, whole, "supported ∪ unsupported 必须是全集");
         for name in TARGETS_SUPPORTED {
             assert!(
-                !TARGETS_UNSUPPORTED.contains(name),
+                !TARGETS_UNSUPPORTED.contains(&name),
                 "{name} 同时被说成消费与不消费"
             );
         }
