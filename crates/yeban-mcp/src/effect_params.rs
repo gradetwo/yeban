@@ -427,9 +427,61 @@ const CONVOLUTION: EffectGroup = EffectGroup {
     ],
 };
 
+/// 磁带饱和：链级饱和器（`ADR-0061`）。
+const TAPE: EffectGroup = EffectGroup {
+    id: "tape",
+    title: "磁带饱和",
+    summary: "链级磁带饱和（`pade_tanh`＋2x 过采样＋湿路低通），位置在通道条之后、Freeverb 之前；链级 ⇒ 覆盖采样器轨（⚠ 通道条的 `drive` 是滤波器驱动，不作用于采样器轨）。级建成条件：`tape_drive > 0` 且 `tape_mix > 0`（任一缺省 ⇒ 不建器件，不另设 enabled 开关）。过采样往返延迟 31 采样，进器件的 `latency_samples`（PDC 唯一事实源）。",
+    params: &[
+        EffectParam {
+            name: "tape_drive",
+            aliases: &["saturation_drive"],
+            unit: "",
+            min: 0.0,
+            max: 1.0,
+            default: 0.0,
+            doc: "饱和驱动（曲线 `pade_tanh(g·x)/g`，`g = 1 + 9·drive`，小信号增益 ≈ 1）",
+        },
+        EffectParam {
+            name: "tape_mix",
+            aliases: &["saturation_mix"],
+            unit: "",
+            min: 0.0,
+            max: 1.0,
+            default: 0.0,
+            doc: "干湿比（0 = 干路直通）",
+        },
+        EffectParam {
+            name: "tape_trim_db",
+            aliases: &["saturation_trim_db"],
+            unit: "dB",
+            min: -24.0,
+            max: 24.0,
+            default: 0.0,
+            doc: "输出补偿增益",
+        },
+        EffectParam {
+            name: "tape_hf_hz",
+            aliases: &["saturation_hf_hz"],
+            unit: "Hz",
+            min: 2000.0,
+            max: 20000.0,
+            default: 20000.0,
+            doc: "湿路一阶低通截止频率（≥ 20000 时旁通）",
+        },
+    ],
+};
+
 /// 全部**引擎真正认**的效果器参数，按器件分组（顺序稳定，schema 与读回共用）。
-pub const EFFECT_GROUPS: [EffectGroup; 6] =
-    [CHANNEL_STRIP, EQ, FILTER, DYNAMICS, REVERB, CONVOLUTION];
+pub const EFFECT_GROUPS: [EffectGroup; 7] = [
+    CHANNEL_STRIP,
+    EQ,
+    FILTER,
+    DYNAMICS,
+    REVERB,
+    CONVOLUTION,
+    TAPE,
+];
 
 /// 按名字（大小写不敏感）查一个参数的归属。
 ///

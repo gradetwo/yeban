@@ -9,19 +9,20 @@
 //!
 //! ## 表的内容
 //!
-//! 三个**器件族**各一张字段表 ＋ 一张把三个族合起来的落点枚举：
+//! 四个**器件族**各一张字段表 ＋ 一张把四个族合起来的落点枚举：
 //!
 //! | 类型 | 内容 |
 //! | :--- | :--- |
 //! | [`StripField`] | 通道条 22 个可自动化字段（`41` 个拼写） |
 //! | [`ReverbField`] | Freeverb 的 4 个标量字段（`6` 个拼写） |
 //! | [`ConvolutionField`] | 卷积混响的 4 个标量字段（`8` 个拼写；IR 形状不落点） |
-//! | [`DeviceParamField`] / [`DeviceParamFamily`] | 三族的合流枚举与器件族标签 |
+//! | [`TapeField`] | 磁带饱和的 4 个标量字段（`8` 个拼写） |
+//! | [`DeviceParamField`] / [`DeviceParamFamily`] | 四族的合流枚举与器件族标签 |
 //!
 //! ⛔ **本模块不含**任何 I/O、模型类型或 GUI：每个 `sanitise` 都与器件内部**同一次**
 //! 钳制对齐（[`ChannelStripParams::sanitised`] / [`crate::reverb::Reverb::set_params`] /
 //! [`crate::convolution_reverb::ConvolutionReverb::set_params`]），`read`/`store` 只读写这三个参数结构。
-//! 名字表的消费方（静态投影 `strip_of` / `reverb_of` / `convolution_of`、离线施加、
+//! 名字表的消费方（静态投影 `strip_of` / `tape_of` / `reverb_of` / `convolution_of`、离线施加、
 //! 实时块边界落点）都在 `yeban-render` 与 `yeban-engine`，它们⛔ 不得再造第二张表。
 
 use crate::channel_strip::ChannelStripParams;
@@ -29,6 +30,7 @@ use crate::convolution_reverb::{
     ConvolutionReverbParams, MAX_IR_GAIN_DB, MAX_PRE_DELAY_SECONDS, MIN_IR_GAIN_DB,
 };
 use crate::reverb::{REVERB_MAX_PREDELAY_S, ReverbParams};
+use crate::tape::TapeParams;
 
 /// 通道条**实际会用的**输出增益值（`dB`）—— 与器件内部同一次钳制
 /// （[`ChannelStripParams::sanitised`]，非有限值归 `0 dB`）。
@@ -515,14 +517,103 @@ impl ConvolutionField {
     }
 }
 
+/// 磁带饱和上**可被 `DeviceParam` 自动化落点**的字段。
+///
+/// 与 `tape_of` 的静态投影**同一张拼写表**（[`Self::SPELLINGS`]）：静态投影与
+/// 块边界自动化读的是同一组名字，⛔ 不写第二份。
+///
+/// 四个字段都是 `TapeSaturation::set_params` 的入参；该函数文档承诺**零分配、
+/// 可以逐块调用** ⇒ 块边界自动化不需要重建过采样器（`configure` 才是状态初始化入口）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum TapeField {
+    /// 饱和驱动（0..1）。`tape_drive` / `saturation_drive`。
+    Drive,
+    /// 干湿比（0..1）。`tape_mix` / `saturation_mix`。
+    Mix,
+    /// 输出补偿增益（dB，−24..+24）。`tape_trim_db` / `saturation_trim_db`。
+    TrimDb,
+    /// 湿路低通截止频率（Hz，2000..20000）。`tape_hf_hz` / `saturation_hf_hz`。
+    HfHz,
+}
+
+impl TapeField {
+    /// 全部字段。
+    pub const ALL: &'static [Self] = &[Self::Drive, Self::Mix, Self::TrimDb, Self::HfHz];
+
+    /// **全部拼写** → 字段（`8` 条 = `4` 个字段）。
+    pub const SPELLINGS: &'static [(&'static str, Self)] = &[
+        ("tape_drive", Self::Drive),
+        ("saturation_drive", Self::Drive),
+        ("tape_mix", Self::Mix),
+        ("saturation_mix", Self::Mix),
+        ("tape_trim_db", Self::TrimDb),
+        ("saturation_trim_db", Self::TrimDb),
+        ("tape_hf_hz", Self::HfHz),
+        ("saturation_hf_hz", Self::HfHz),
+    ];
+
+    /// 名字 → 字段（大小写不敏感）。
+    #[must_use]
+    pub fn from_name(name: &str) -> Option<Self> {
+        Self::SPELLINGS
+            .iter()
+            .find(|(spelling, _)| name.eq_ignore_ascii_case(spelling))
+            .map(|(_, field)| *field)
+    }
+
+    /// 规范名。
+    #[must_use]
+    pub const fn canonical_name(self) -> &'static str {
+        match self {
+            Self::Drive => "tape_drive",
+            Self::Mix => "tape_mix",
+            Self::TrimDb => "tape_trim_db",
+            Self::HfHz => "tape_hf_hz",
+        }
+    }
+
+    /// 从投影参数里读这个字段。
+    #[must_use]
+    pub fn read(self, params: &TapeParams) -> f32 {
+        match self {
+            Self::Drive => params.drive,
+            Self::Mix => params.mix,
+            Self::TrimDb => params.trim_db,
+            Self::HfHz => params.hf_hz,
+        }
+    }
+
+    /// 把**原生绝对值**写进投影参数（⛔ 不在这里钳制：钳制在器件的 `set_params`）。
+    pub fn store(self, params: &mut TapeParams, value: f32) {
+        match self {
+            Self::Drive => params.drive = value,
+            Self::Mix => params.mix = value,
+            Self::TrimDb => params.trim_db = value,
+            Self::HfHz => params.hf_hz = value,
+        }
+    }
+
+    /// 与器件内部**同一次**钳制：把值写进一份 `DEFAULT` 参数、`sanitised()`、再读回来。
+    ///
+    /// ⛔ 不复制上下界：[`TapeParams::sanitised`] 是唯一一份钳制规则。
+    #[must_use]
+    pub fn sanitise(self, value: f32) -> f32 {
+        let mut params = TapeParams::DEFAULT;
+        self.store(&mut params, value);
+        self.read(&params.sanitised())
+    }
+}
+
 /// 一条 `DeviceParam` 泳道在离线插入链上的**落点**：器件族 ＋ 字段。
 ///
 /// [`Self::from_name`] 是“哪个名字有落点”的**唯一**判定处：静态投影
-/// （`strip_of` / `reverb_of` / `convolution_of`）与块边界自动化都从这张表出发。
+/// （`strip_of` / `tape_of` / `reverb_of` / `convolution_of`）与块边界自动化都从这张表出发。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum DeviceParamField {
     /// 通道条字段。
     Strip(StripField),
+    /// 磁带饱和标量字段。
+    Tape(TapeField),
     /// Freeverb 标量字段。
     Reverb(ReverbField),
     /// 卷积混响**标量**字段。
@@ -534,6 +625,8 @@ pub enum DeviceParamField {
 pub enum DeviceParamFamily {
     /// 通道条。
     Strip,
+    /// 磁带饱和。
+    Saturation,
     /// Freeverb。
     Reverb,
     /// 卷积混响。
@@ -541,11 +634,12 @@ pub enum DeviceParamFamily {
 }
 
 impl DeviceParamField {
-    /// 名字 → 落点（大小写不敏感）。顺序：通道条 → 混响 → 卷积。
+    /// 名字 → 落点（大小写不敏感）。顺序：通道条 → 饱和 → 混响 → 卷积。
     #[must_use]
     pub fn from_name(name: &str) -> Option<Self> {
         StripField::from_name(name)
             .map(Self::Strip)
+            .or_else(|| TapeField::from_name(name).map(Self::Tape))
             .or_else(|| ReverbField::from_name(name).map(Self::Reverb))
             .or_else(|| ConvolutionField::from_name(name).map(Self::Convolution))
     }
@@ -555,6 +649,7 @@ impl DeviceParamField {
     pub const fn canonical_name(self) -> &'static str {
         match self {
             Self::Strip(field) => field.canonical_name(),
+            Self::Tape(field) => field.canonical_name(),
             Self::Reverb(field) => field.canonical_name(),
             Self::Convolution(field) => field.canonical_name(),
         }
@@ -565,6 +660,7 @@ impl DeviceParamField {
     pub const fn family(self) -> DeviceParamFamily {
         match self {
             Self::Strip(_) => DeviceParamFamily::Strip,
+            Self::Tape(_) => DeviceParamFamily::Saturation,
             Self::Reverb(_) => DeviceParamFamily::Reverb,
             Self::Convolution(_) => DeviceParamFamily::Convolution,
         }
@@ -575,6 +671,7 @@ impl DeviceParamField {
     pub fn sanitise(self, value: f32) -> f32 {
         match self {
             Self::Strip(field) => field.sanitise(value),
+            Self::Tape(field) => field.sanitise(value),
             Self::Reverb(field) => field.sanitise(value),
             Self::Convolution(field) => field.sanitise(value),
         }

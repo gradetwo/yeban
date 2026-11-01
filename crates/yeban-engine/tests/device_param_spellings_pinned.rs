@@ -1,13 +1,13 @@
 //! **常驻判据**：实时插入链（`src/insert.rs`）认的参数名，必须与
-//! [`yeban_dsp::device_param`] 的三张 `SPELLINGS` **逐字同集**。
+//! [`yeban_dsp::device_param`] 的四张 `SPELLINGS` **逐字同集**。
 //!
 //! ## 为什么要有它
 //!
 //! 设备参数落点表下移到 `yeban-dsp` 之后，仓库里仍有**两张**表：
 //!
-//! * `yeban_dsp::device_param::{StripField, ReverbField, ConvolutionField}::SPELLINGS`
+//! * `yeban_dsp::device_param::{StripField, TapeField, ReverbField, ConvolutionField}::SPELLINGS`
 //!   —— 离线渲染链（`yeban-render`）与工具面（`yeban-mcp`）读的那张；
-//! * `src/insert.rs` 三个投影结构各自的 `fn apply` 的 **`match` 字面臂** —— 实时链读的那张。
+//! * `src/insert.rs` 四个投影结构各自的 `fn apply` 的 **`match` 字面臂** —— 实时链读的那张。
 //!
 //! ⛔ 第二张暂时不能并进第一张：实时侧的投影**不是**直接写 `ChannelStripParams`，它还要记
 //! "这一级有没有出现过"（`eq.seen` / `filter_seen` / `compressor_seen`）与**逐旋钮的部分覆盖**
@@ -21,20 +21,20 @@
 //!   ⛔ 不用 `read_dir`／运行期读文件，夹具缺失会变真空）。
 //! * **一个"拼写"**＝ `fn apply` 的 `match` 里，一行**以 `"` 起始**且含 `=>` 的臂模式里
 //!   `=>` **之前**出现的每个双引号字符串。臂体（`=>` 之后）里的字符串字面量**不**算拼写。
-//! * **归属**按 `impl` 块名判定（`impl StripProjection`／`impl ReverbProjection`／
-//!   `impl ConvProjection`），⛔ 不按"集合恰好等于哪张表"反推 —— 后者会让断言自我确认。
+//! * **归属**按 `impl` 块名判定（`impl StripProjection`／`impl TapeProjection`／
+//!   `impl ReverbProjection`／`impl ConvProjection`），⛔ 不按"集合恰好等于哪张表"反推 —— 后者会让断言自我确认。
 //! * **唯一允许的已知差集**：实时侧额外认 **3** 个 IR 形状键（[`IR_SHAPE_NAMES`]）。
 //!   它们是**构造期**烘焙参数、⛔ 不是自动化落点，故刻意不在 dsp 的 `ConvolutionField::SPELLINGS`
 //!   里（口径同 `yeban_render::inserts::is_supported_param`）。
 //!
 //! ## 非真空（R93／R100）
 //!
-//! 每族解析出的拼写数**必须**等于冻结读数（41／6／11），且三族解析各**必须**找到
+//! 每族解析出的拼写数**必须**等于冻结读数（41／8／6／11），且四族解析各**必须**找到
 //! 唯一一个 `fn apply` ⇒ 解析器退化（读不到臂）只会变红，不会变"空集即通过"。
 
 use std::collections::BTreeSet;
 
-use yeban_dsp::device_param::{ConvolutionField, ReverbField, StripField};
+use yeban_dsp::device_param::{ConvolutionField, ReverbField, StripField, TapeField};
 
 /// 被扫文件：**编译期固定**（⛔ 运行期读盘）。
 const SOURCE: &str = include_str!("../src/insert.rs");
@@ -42,9 +42,9 @@ const SOURCE: &str = include_str!("../src/insert.rs");
 /// 实时侧额外认、但⛔ 不是自动化落点的 **IR 形状**键（构造期烘焙）。
 const IR_SHAPE_NAMES: [&str; 3] = ["conv_ir_decay_s", "conv_ir_decay", "conv_ir_seed"];
 
-/// 冻结读数（与 `yeban-render` 的 `automation.rs` 同一条口径：41 ＋ 6 ＋ 8 ＝ 55 个拼写；
+/// 冻结读数（与 `yeban-render` 的 `automation.rs` 同一条口径：41 ＋ 6 ＋ 8 ＋ 8 ＝ 63 个拼写；
 /// 实时侧再＋ 3 个 IR 形状键 ⇒ 卷积族在**本判据**里是 11）。
-const FROZEN_COUNTS: (usize, usize, usize) = (41, 6, 11);
+const FROZEN_COUNTS: (usize, usize, usize, usize) = (41, 6, 11, 8);
 
 /// 取 `impl <header>` 块内 `fn apply(&mut self, name: &str, value: f32)` 的**臂名**列表。
 ///
@@ -166,6 +166,23 @@ fn the_realtime_reverb_arms_are_the_dsp_reverb_spellings() {
         FROZEN_COUNTS.1
     );
     assert_eq!(got, expected, "实时链与 dsp 的混响拼写表不一致");
+}
+
+/// **磁带饱和 8 拼写**：实时臂集 == [`TapeField::SPELLINGS`]。
+#[test]
+fn the_realtime_tape_arms_are_the_dsp_tape_spellings() {
+    let arms = apply_arm_names("impl TapeProjection {");
+    let expected = dsp_names(TapeField::SPELLINGS);
+    let got = names_to_set(&arms);
+    assert_eq!(arms.len(), got.len(), "实时饱和臂里有重复拼写：{arms:?}");
+    assert_eq!(
+        got.len(),
+        FROZEN_COUNTS.3,
+        "实时饱和解析出 {} 个拼写，冻结读数是 {}",
+        got.len(),
+        FROZEN_COUNTS.3
+    );
+    assert_eq!(got, expected, "实时链与 dsp 的饱和拼写表不一致");
 }
 
 /// **卷积 8 ＋ IR 形状 3**：实时臂集 == [`ConvolutionField::SPELLINGS`] ∪ [`IR_SHAPE_NAMES`]，
