@@ -46,7 +46,7 @@ use yeban_model::music::{
 use yeban_model::project::{MAX_BPM, MIN_BPM};
 
 use crate::domain::extension_pure::{CURVE_NAMES, LANE_NAMES};
-use crate::domain::notes::{DEVICE_KINDS, LANE_WRITE_MODES, OP_KINDS};
+use crate::domain::notes::{DEVICE_KINDS, LANE_WRITE_MODES, OP_KINDS, TRACK_KINDS};
 use crate::effect_params;
 
 /// 一个 op 分支：判别键 + 必填集 + 属性 + （可选）封闭性。
@@ -1088,7 +1088,7 @@ pub fn ops_items() -> Value {
                     "name": non_empty("音轨显示名"),
                     "trackKind": {
                         "type": "string",
-                        "enum": ["Midi", "Audio", "AuxReturn", "Master"],
+                        "enum": TRACK_KINDS.to_vec(),
                         "description": "音轨类型（模型 serde 名）",
                     },
                 }),

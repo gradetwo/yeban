@@ -595,19 +595,168 @@ fn automation_point_items() -> Value {
 /// 三处可空都有来源：`gainDb` = `RoutingEdge.gain_db: Option<f32>`（`null` = 单位增益，
 /// 与 `0.0` **可区分**，这是这条契约的意义所在）；两个 `*Name` = 节点查不到音轨时
 /// `map_or(Value::Null, …)` ⇒ 显示名缺席是常态（目标是 bus/master 时按 id 走）。
-/// ⛔ `kind` 不上 `enum`：它是 `RoutingKind` 的 serde 名，词表在模型侧而**这里只发发送边**
-/// ⇒ 真要收紧应该按"过滤后的子集"声明，那是另一件事（需要先证过滤器恒等）。
+/// ⭐ s35：`kind` 由裸 `string` 收紧成 **`const`** —— 依据是生产者自己那行过滤器
+/// （`.filter(|edge| edge.kind == RoutingKind::SendToAux)`）：这里**只发发送边**，
+/// 所以四条路由词表里有三条永远不会出现。词⛔ 不手抄：值直接由 `serde_json::to_value(RoutingKind::SendToAux)`
+/// 取（与线协议同一份 serde 名）。等式由判据
+/// `the_sends_roster_pins_the_producer_filter_identity` 用**实测**钉住。
 #[must_use]
 fn send_edge_items() -> Value {
     roster(&[
         ("edgeId", json!({"type": "string"})),
-        ("kind", json!({"type": "string"})),
+        (
+            "kind",
+            json!({
+                "type": "string",
+                "const": serde_json::to_value(yeban_model::RoutingKind::SendToAux)
+                    .expect("单元枚举序列化不失败"),
+            }),
+        ),
         ("sourceNode", json!({"type": "string"})),
         ("sourceName", json!({"type": ["string", "null"]})),
         ("destinationNode", json!({"type": "string"})),
         ("destinationName", json!({"type": ["string", "null"]})),
         ("gainDb", json!({"type": ["number", "null"]})),
         ("gainSource", json!({"type": "string"})),
+    ])
+}
+
+/// 设备种类的词表：⛔ 不手抄，唯一名册是 [`crate::domain::notes::DEVICE_KINDS`]
+/// （它与模型 `DeviceKind` serde 名的等式由常驻判据 `device_kinds_match_the_model_variant_names` 钉住）。
+#[must_use]
+fn device_kind_enum() -> Value {
+    json!({
+        "type": "string",
+        "enum": crate::domain::notes::DEVICE_KINDS.to_vec()
+    })
+}
+
+/// ⭐ s35：`data.track.devices[].params[]` 七键（此前整条 `track` 是一处裸 `["object","null"]`）。
+/// 拼装点唯一（`domain/engine_state.rs` 的 `device_chain_value` 里那段 `json!`，七键**恒发**）。
+/// 三处可空各有来源：`unit` = 模型 `ParameterValue.unit: Option<String>`（`None` = "无量纲/未标注"，
+/// 是一等状态）；`canonicalName` / `effect` = `recognised.map(…)` ⇒ **未识别的参数这两键恒为 `null`**，
+/// 那是 `recognised:false` 的机械后果，不是缺件。
+/// ⚠ `value` 声明成可空与 `lane.points[].value` 同一个理由：`f32` 的 `NaN`/`±Inf` 被 `serde_json`
+/// **静默写成 `null`**；模型的 `ParameterValue::validate` 拒绝非有限值，所以 `null` 只可能来自
+/// 没过校验的路径 —— 如实登记，不假装它是"不可能"。
+#[must_use]
+fn engine_param_items() -> Value {
+    roster(&[
+        ("paramIndex", json!({"type": "integer"})),
+        ("name", json!({"type": "string"})),
+        ("value", json!({"type": ["number", "null"]})),
+        ("unit", json!({"type": ["string", "null"]})),
+        ("recognised", json!({"type": "boolean"})),
+        ("canonicalName", json!({"type": ["string", "null"]})),
+        ("effect", json!({"type": ["string", "null"]})),
+    ])
+}
+
+/// ⭐ s35：`data.track.devices[]` 十二键（逐台设备一行）。
+/// 拼装点唯一（同上 `device_chain_value` 的 `devices.push(json!({...}))`，十二键**恒发**）。
+/// `paramCount` = `params.len()`、`active` = `!bypassed && kind == InternalEffect`（引擎武装规则）、
+/// `effects` = 该设备参数命中的**效果器组 id**（`&'static str`，去重保序 ⇒ 数组，元素是字符串）。
+#[must_use]
+fn engine_device_items() -> Value {
+    roster(&[
+        ("slotIndex", json!({"type": "integer"})),
+        ("deviceId", json!({"type": "string"})),
+        ("name", json!({"type": "string"})),
+        ("kind", device_kind_enum()),
+        ("bypassed", json!({"type": "boolean"})),
+        ("latencySamples", json!({"type": "integer"})),
+        ("paramCount", json!({"type": "integer"})),
+        (
+            "params",
+            json!({"type": "array", "items": engine_param_items()}),
+        ),
+        ("active", json!({"type": "boolean"})),
+        (
+            "effects",
+            json!({"type": "array", "items": {"type": "string"}}),
+        ),
+        ("recognisedParamCount", json!({"type": "integer"})),
+        ("unrecognisedParamCount", json!({"type": "integer"})),
+    ])
+}
+
+/// ⭐ s35：`data.track.inserts[]` 九键（每格一行，与 `devices[]` **同源同序**——同一个循环体里 push）。
+/// ⚠ 这条名册的意义在于它与 `devices[]` **不是一回事**：`inserts` 给的是**名字**
+/// （`recognisedParams` / `unrecognisedParams` 两个字符串数组），`devices` 给的是**值**
+/// （`params[]` 逐条带 `value` / `unit`）；两处的 `deviceKind` 与 `kind` 是同一个 serde 名。
+#[must_use]
+fn engine_insert_items() -> Value {
+    roster(&[
+        ("slotIndex", json!({"type": "integer"})),
+        ("deviceId", json!({"type": "string"})),
+        ("deviceName", json!({"type": "string"})),
+        ("deviceKind", device_kind_enum()),
+        ("bypassed", json!({"type": "boolean"})),
+        ("active", json!({"type": "boolean"})),
+        (
+            "effects",
+            json!({"type": "array", "items": {"type": "string"}}),
+        ),
+        (
+            "recognisedParams",
+            json!({"type": "array", "items": {"type": "string"}}),
+        ),
+        (
+            "unrecognisedParams",
+            json!({"type": "array", "items": {"type": "string"}}),
+        ),
+    ])
+}
+
+/// ⭐ s35：`yeban_query_engine_state` 的 `data.track` —— 八键（此前是一整处裸 `["object","null"]`）。
+/// 生产者两处拼装：`device_chain_value(track)` 的七键 + `snapshot` 里 `fields.insert("sends", …)`
+/// 追加的第八键（**只在点名音轨时**这条路径才被走到，缺省调用整个 `track` 是 `null`）。
+/// `sends[]` 复用 [`send_edge_items`]（同一个 `send_edges_value`，与顶层 `data.sends[]` 逐字节同形）。
+#[must_use]
+fn query_track() -> Value {
+    nullable_roster(&[
+        ("id", json!({"type": "string"})),
+        ("name", json!({"type": "string"})),
+        (
+            "kind",
+            json!({
+                "type": "string",
+                "enum": crate::domain::notes::TRACK_KINDS.to_vec()
+            }),
+        ),
+        ("deviceCount", json!({"type": "integer"})),
+        ("totalLatencySamples", json!({"type": "integer"})),
+        (
+            "devices",
+            json!({"type": "array", "items": engine_device_items()}),
+        ),
+        (
+            "inserts",
+            json!({"type": "array", "items": engine_insert_items()}),
+        ),
+        (
+            "sends",
+            json!({"type": "array", "items": send_edge_items()}),
+        ),
+    ])
+}
+
+/// ⭐ s35：`data.stateSources` 九键（此前是裸 `{"type":"object"}` —— 连"有哪些来源"都不肯说）。
+/// 拼装点唯一（`domain/engine_state.rs` 的 `snapshot` 里那份 `json!`）：九个值全是**字面字符串**
+/// （没有 `Option`、没有数字），逐条写明该读数从哪儿取。
+#[must_use]
+fn state_sources() -> Value {
+    let source = || json!({"type": "string"});
+    roster(&[
+        ("playhead", source()),
+        ("sampleRate", source()),
+        ("bufferFrames", source()),
+        ("devices", source()),
+        ("inserts", source()),
+        ("sends", source()),
+        ("undoCursor", source()),
+        ("readingsRevision", source()),
+        ("sceneLaunchesApplied", source()),
     ])
 }
 
@@ -1346,6 +1495,82 @@ fn reject_proposal() -> Value {
     ))
 }
 
+/// ⭐ s35：`yeban_edit_automation` 的 `data.target` —— 五个变体的载荷（此前是一处裸 `["object","null"]`）。
+///
+/// 生产者唯一（`domain/automation.rs` 的 `AutomationEdit::data()` ⇒ `serde_json::to_value(self.target)`），
+/// 而 `yeban_model::AutomationTarget` 上**没有任何 serde 属性** ⇒ **外部标签**：载荷恒为
+/// `{"<变体名>": {…}}`，内键**逐字是 snake_case 字段名**；`EntityId` 的手写 `Serialize` 发字符串，
+/// 三个 `*_index` 是 `usize` ⇒ 整数。
+///
+/// ⚠ "恰好一键"与"不许出现第六个变体名"**写不进机器判据**：校验器只实现六种关键字
+/// （`type`/`required`/`const`/`enum`/`properties`/`items`，缺 `min/maxProperties` 与 `propertyNames`，
+/// 见 §22.22 路线甲）⇒ 外层如实留弱（**不写** `required`），内层逐变体钉 `required`。
+/// 变体名的单一来源是 [`crate::domain::render::TARGET_VALUES`]，等式由判据
+/// `the_target_variant_names_are_the_producers_word_table` 钉住（⛔ 第三份手抄）。
+#[must_use]
+fn automation_target_variants() -> Value {
+    let id = || json!({"type": "string"});
+    let index = || json!({"type": "integer"});
+    json!({
+        "TrackVolume": roster(&[("track_id", id())]),
+        "TrackPan": roster(&[("track_id", id())]),
+        "SendGain": roster(&[("track_id", id()), ("edge_id", id())]),
+        "DeviceParam": roster(&[("track_id", id()), ("slot_index", index()), ("param_index", index())]),
+        "Macro": roster(&[("track_id", id()), ("macro_index", index())])
+    })
+}
+
+/// ⭐ s35：`AutomationReading::to_value` 的六键（拼装点唯一，六键**恒发**）。
+/// ⚠ `automationValue` 声明成可空是真话不是保守：生产者
+/// `self.automation_value.map_or(Value::Null, Value::from)` —— `Option<f32>` 的 `None`
+/// 含义是"这条 lane 在该 tick 没有求值出自动化值"（与 `0.0` **可区分**，这就是这条契约的意义）。
+/// 一份名册喂**两处**裸 array：`data.read.values[]` 与 `data.valuesAfter`。
+#[must_use]
+fn automation_reading_items() -> Value {
+    roster(&[
+        ("tick", json!({"type": "integer"})),
+        ("automationValue", json!({"type": ["number", "null"]})),
+        ("staticValue", json!({"type": "number"})),
+        ("effectiveValue", json!({"type": "number"})),
+        ("source", json!({"type": "string"})),
+        ("readEnabled", json!({"type": "boolean"})),
+    ])
+}
+
+/// ⭐ s35：`yeban_edit_automation` 的 `data.written` 七键（此前是裸 `["object","null"]`；
+/// 非空时七键恒发）。⚠ `curve` 上 `enum` 的词表⛔ 不是这里手抄的：
+/// 唯一名册是 [`crate::domain::extension_pure::CURVE_NAMES`]（与 `lane.points[]` 同一份）。
+/// `oldValue` 可空 = "这条 lane 此前没有该 tick 的点"。
+#[must_use]
+fn automation_written() -> Value {
+    nullable_roster(&[
+        ("pointId", json!({"type": "string"})),
+        ("tick", json!({"type": "integer"})),
+        ("value", json!({"type": "number"})),
+        (
+            "curve",
+            json!({
+                "type": "string",
+                "enum": crate::domain::extension_pure::CURVE_NAMES.to_vec()
+            }),
+        ),
+        ("existed", json!({"type": "boolean"})),
+        ("oldValue", json!({"type": ["number", "null"]})),
+        ("op", json!({"type": "string"})),
+    ])
+}
+
+/// ⭐ s35：`data.lane.domain` 的两键（此前是裸 `["object","null"]`）。
+/// 生产者 `self.domain.map_or(Value::Null, |(min, max)| json!({"min", "max"}))`
+/// ⇒ `null` = 这条 lane 没有声明定义域（常态），非空时**两键恒发**。
+#[must_use]
+fn automation_lane_domain() -> Value {
+    nullable_roster(&[
+        ("min", json!({"type": "number"})),
+        ("max", json!({"type": "number"})),
+    ])
+}
+
 /// `yeban_edit_automation` 的成功响应 `data`（**单形状**：键恒在、值可为 `null`）。
 fn edit_automation() -> Value {
     with_commit_model(finish(
@@ -1390,7 +1615,10 @@ fn edit_automation() -> Value {
         ],
         json!({
             "trackId": {"type": "string"},
-            "target": {"type": ["object", "null"]},
+            "target": {
+                "type": ["object", "null"],
+                "properties": automation_target_variants()
+            },
             "targetLabel": {"type": "string"},
             "laneKind": {"type": "string"},
             "readOnly": {"type": "boolean"},
@@ -1402,7 +1630,7 @@ fn edit_automation() -> Value {
                     "readEnabled": {"type": "boolean"},
                     "writeMode": {"type": ["string", "null"]},
                     "unit": {"type": "string"},
-                    "domain": {"type": ["object", "null"]},
+                    "domain": automation_lane_domain(),
                     "pointCount": {"type": "integer"},
                     "points": {"type": "array", "items": automation_point_items()}
                 }
@@ -1412,12 +1640,15 @@ fn edit_automation() -> Value {
                 "required": ["ticks", "values", "entry"],
                 "properties": {
                     "ticks": {"type": "array", "items": {"type": "integer"}},
-                    "values": {"type": "array"},
+                    "values": {"type": "array", "items": automation_reading_items()},
                     "entry": {"type": "string"}
                 }
             },
-            "written": {"type": ["object", "null"]},
-            "valuesAfter": {"type": ["array", "null"]},
+            "written": automation_written(),
+            "valuesAfter": {
+                "type": ["array", "null"],
+                "items": automation_reading_items()
+            },
             "appliedInOfflineRender": {"type": "boolean"},
             "residualReason": {"type": ["string", "null"]},
             "offlineRenderError": {"type": ["string", "null"]},
@@ -1504,9 +1735,9 @@ fn query_engine_state() -> Value {
                     "readingsRevision": {"type": "integer"}
                 }
             },
-            "track": {"type": ["object", "null"]},
+            "track": query_track(),
             "sends": {"type": "array", "items": send_edge_items()},
-            "stateSources": {"type": "object"}
+            "stateSources": state_sources()
         }),
     ))
 }
@@ -1891,9 +2122,18 @@ mod tests {
                 "sceneLaunchesAppliedSource": "unavailable"
             },
             "track": null,
+            // ⭐ s35：`stateSources` 从裸 `{"type":"object"}` 收成九键名册 ⇒ 这份夹具必须写全
+            // （九个值逐字取自 `domain::engine_state::snapshot` 里那段 `json!`）。
             "stateSources": {
                 "playhead": "yeban_model::SessionRuntimeState",
-                "sampleRate": "project.audio_config.sample_rate"
+                "sampleRate": "project.audio_config.sample_rate",
+                "bufferFrames": "host injected EngineReadings mirror",
+                "devices": "project.tracks[].devices",
+                "inserts": "project.tracks[].devices (recognised against crate::effect_params)",
+                "sends": "project.routing_graph.edges where kind == SendToAux",
+                "undoCursor": "undo_session::UndoState::display().undoable (applied op count; same value as yeban_undo before.undoable) [#177]",
+                "readingsRevision": "host injected EngineReadings mirror (monotonic)",
+                "sceneLaunchesApplied": "host injected EngineStats::scene_launches_applied (None = this engine generation cannot read it)"
             }
         });
         assert!(
@@ -3211,5 +3451,517 @@ mod tests {
             &proposal_without_op_count,
             "$.proposal.opCount",
         );
+    }
+
+    /// ⭐ s35 判据一：`data.target` 的五个变体名**必须逐字等于**生产者词表，
+    /// 且每个变体的内层 `required` 与 `properties` **同源**（键数相等 = 不会"声明了却漏进 required"）。
+    #[test]
+    fn the_target_variant_names_are_the_producers_word_table() {
+        let variants = automation_target_variants();
+        let object = variants
+            .as_object()
+            .expect("变体名册必须是对象（`json!` 的字面量形状）");
+
+        // ① 同集：与 `domain::render::TARGET_VALUES` 逐字一致（⛔ 第三份手抄）。
+        // ⚠ 这里⛔ 不比顺序：`serde_json::Map` 在本仓没开 `preserve_order`（现读根 `Cargo.toml`
+        // 的 `serde_json = { version = "1.0.151" }` 无 features）⇒ 它是 `BTreeMap`，
+        // 键**恒按字母序**读出。顺序由②里的 `required`（按 `entries` 装入序生成）承载。
+        let mut declared: Vec<&str> = object.keys().map(String::as_str).collect();
+        let mut producers: Vec<&str> = crate::domain::render::TARGET_VALUES.to_vec();
+        declared.sort_unstable();
+        producers.sort_unstable();
+        assert_eq!(
+            declared, producers,
+            "`target` 的变体名必须与生产者词表同集（键序是字母序，见上）"
+        );
+        assert_eq!(
+            object.len(),
+            crate::domain::render::TARGET_VALUES.len(),
+            "五个变体一个不少、一个不多"
+        );
+
+        // ② 逐变体的内层名册（生产者 = `AutomationTarget` 的字段名，snake_case 逐字）。
+        let expected: [(&str, &[&str]); 5] = [
+            ("TrackVolume", &["track_id"]),
+            ("TrackPan", &["track_id"]),
+            ("SendGain", &["track_id", "edge_id"]),
+            ("DeviceParam", &["track_id", "slot_index", "param_index"]),
+            ("Macro", &["track_id", "macro_index"]),
+        ];
+        for (name, keys) in expected {
+            let variant = &object[name];
+            let required: Vec<String> = variant["required"]
+                .as_array()
+                .expect("`required` 是数组")
+                .iter()
+                .map(|item| item.as_str().unwrap_or_default().to_owned())
+                .collect();
+            let mut inner: Vec<&str> = variant["properties"]
+                .as_object()
+                .expect("内层 `properties` 是对象")
+                .keys()
+                .map(String::as_str)
+                .collect();
+            let want: Vec<String> = keys.iter().copied().map(String::from).collect();
+            assert_eq!(
+                required, want,
+                "`{name}` 的 required 必须逐字等于字段名册（含模型里的字段序）"
+            );
+            // `properties` 是 `BTreeMap` ⇒ 只能比**集合**；与 `required` 同集就是"同源"的读数
+            // （`roster_typed` 由同一份 `entries` 同时生成两处，见其文档）。
+            inner.sort_unstable();
+            let mut want_sorted = want.iter().map(String::as_str).collect::<Vec<&str>>();
+            want_sorted.sort_unstable();
+            assert_eq!(
+                inner, want_sorted,
+                "`{name}` 的 properties 与 required 必须同集（声明了却漏进 required 会被这条抓到）"
+            );
+        }
+
+        // ③ 三个 `*_index` 是 `usize` ⇒ 整数；两个 id 是 `EntityId` 的手写 `Serialize` ⇒ 字符串。
+        for (variant, key, kind) in [
+            ("DeviceParam", "slot_index", "integer"),
+            ("DeviceParam", "param_index", "integer"),
+            ("Macro", "macro_index", "integer"),
+            ("SendGain", "edge_id", "string"),
+            ("TrackVolume", "track_id", "string"),
+        ] {
+            assert_eq!(
+                object[variant]["properties"][key]["type"],
+                Value::from(kind),
+                "`{variant}.{key}` 的类型读数必须来自 Rust 字段类型"
+            );
+        }
+    }
+
+    /// ⭐ s35 判据二：`edit_automation` 的五处槽**真的委托**给名册（防掏空下界），
+    /// 且没有一处留回"裸 `{"type": …}`"。
+    #[test]
+    fn the_five_edit_automation_slots_delegate_to_their_rosters() {
+        let schema = edit_automation();
+        let props = schema["properties"]
+            .as_object()
+            .expect("顶层 properties 是对象");
+
+        let written_required = props["written"]["required"].as_array().expect("…");
+        assert_eq!(
+            written_required.len(),
+            7,
+            "`written` 的七键是生产者 `json!` 的读数"
+        );
+        assert_eq!(
+            props["written"]["type"],
+            json!(["object", "null"]),
+            "`written` 可空（`self.write` 是 `Option`）"
+        );
+        // `read.values[]` 与 `valuesAfter[]` 共用一份六键名册（同一 `AutomationReading::to_value`）。
+        let before = &props["read"]["properties"]["values"]["items"];
+        let after = &props["valuesAfter"]["items"];
+        assert_eq!(
+            before, after,
+            "两处必须同源：同一份 `AutomationReading::to_value`"
+        );
+        assert_eq!(
+            before["required"].as_array().expect("…").len(),
+            6,
+            "`AutomationReading::to_value` 发六个键"
+        );
+        assert_eq!(
+            props["lane"]["properties"]["domain"]["required"]
+                .as_array()
+                .expect("…")
+                .len(),
+            2,
+            "`lane.domain` = `min`/`max`"
+        );
+        assert_eq!(
+            props["target"]["properties"].as_object().expect("…").len(),
+            crate::domain::render::TARGET_VALUES.len(),
+            "五个变体一个不少、一个不多"
+        );
+
+        // ⛔ 五处都不许是"裸类型声明"（本轮的交付本身就是这条）。
+        for name in ["target", "written"] {
+            assert!(
+                props[name].get("properties").is_some(),
+                "`{name}` 必须是逐键名册，⛔ 裸 `type`"
+            );
+        }
+        // 两处 array 槽各自都必须带**元素**名册（`valuesAfter` 与 `read.values` 同一份名册）。
+        for (label, slot) in [
+            ("valuesAfter", &props["valuesAfter"]),
+            ("read.values", &props["read"]["properties"]["values"]),
+        ] {
+            assert!(
+                slot.get("items").is_some(),
+                "`{label}` 必须是逐键元素名册，⛔ 裸 `type`"
+            );
+        }
+    }
+
+    /// ⭐ s35 判据三：破损值必红在**点名的路径**上、可空形状必放行；并如实钉住一条"留弱"读数。
+    #[test]
+    fn the_edit_automation_rosters_reject_broken_values_and_accept_the_nullable_ones() {
+        let rejects = |label: &str, schema: &Value, broken: &Value, path: &str| {
+            let violation = validate(schema, broken)
+                .err()
+                .unwrap_or_else(|| panic!("`{label}` 必须被拒，但校验通过了: {broken}"));
+            assert_eq!(violation.path, path, "`{label}` 必须红在点名的路径上");
+        };
+
+        // ① `written`：七键齐 ⇒ 过；少 `op` ⇒ 红在 `$.op`；`curve` 名字不在词表 ⇒ 红在 `$.curve`。
+        let written = json!({
+            "pointId": "00000000000000000000000012",
+            "tick": 1920,
+            "value": 0.25,
+            "curve": "Linear",
+            "existed": false,
+            "oldValue": null,
+            "op": "setPoint",
+        });
+        assert!(
+            validate(&automation_written(), &written).is_ok(),
+            "`oldValue: null` 是常态（此前没有该 tick 的点），必须放行"
+        );
+        let mut written_without_op = written.clone();
+        written_without_op
+            .as_object_mut()
+            .expect("对象")
+            .remove("op");
+        rejects(
+            "written 少 op",
+            &automation_written(),
+            &written_without_op,
+            "$.op",
+        );
+        rejects(
+            "written 的 curve 错名",
+            &automation_written(),
+            &json!({
+                "pointId": "00000000000000000000000012",
+                "tick": 1920,
+                "value": 0.25,
+                "curve": "Linear-ish",
+                "existed": false,
+                "oldValue": -3.0,
+                "op": "setPoint",
+            }),
+            "$.curve",
+        );
+
+        // ② `AutomationReading` 六键：`automationValue: null` 放行；`tick` 写成字符串 ⇒ 红在 `$.tick`。
+        let reading = json!({
+            "tick": 0,
+            "automationValue": null,
+            "staticValue": 0.5,
+            "effectiveValue": 0.5,
+            "source": "static",
+            "readEnabled": false,
+        });
+        assert!(
+            validate(&automation_reading_items(), &reading).is_ok(),
+            "`automationValue: null` 与 `0.0` 可区分，是这条契约的意义所在"
+        );
+        rejects(
+            "reading 的 tick 是字符串",
+            &automation_reading_items(),
+            &json!({
+                "tick": "0",
+                "automationValue": 0.0,
+                "staticValue": 0.5,
+                "effectiveValue": 0.5,
+                "source": "static",
+                "readEnabled": false,
+            }),
+            "$.tick",
+        );
+
+        // ③ `lane.domain`：整槽 `null` 放行；只有 `min` ⇒ 红在 `$.max`。
+        // ⚠ 可空性必须**嵌在一格里**测：[`validate`] 的入口恒要求顶层是对象
+        // （它的口径是"校验 `result.data`"，见模块头），直接喂 `Value::Null` 测到的是那条入口约束，
+        // ⛔ 不是这份名册的可空声明。
+        let host = json!({
+            "type": "object",
+            "required": ["domain"],
+            "properties": {"domain": automation_lane_domain()}
+        });
+        assert!(
+            validate(&host, &json!({"domain": null})).is_ok(),
+            "`lane.domain` 可空是常态（这条 lane 没声明定义域）"
+        );
+        assert!(
+            validate(&host, &json!({"domain": {"min": -80.0, "max": 120.0}})).is_ok(),
+            "非空时两键齐 ⇒ 放行"
+        );
+        rejects(
+            "lane.domain 少 max",
+            &automation_lane_domain(),
+            &json!({"min": -80.0}),
+            "$.max",
+        );
+
+        // ④ `target`：外部标签载荷逐个变体都要齐内键。
+        let target = {
+            let schema = edit_automation();
+            schema["properties"]["target"].clone()
+        };
+        assert!(
+            validate(
+                &target,
+                &json!({"DeviceParam": {"track_id": "00000000000000000000000007",
+                                        "slot_index": 2, "param_index": 0}})
+            )
+            .is_ok(),
+            "`DeviceParam` 的三个内键齐 ⇒ 放行"
+        );
+        rejects(
+            "target 的 SendGain 少 edge_id",
+            &target,
+            &json!({"SendGain": {"track_id": "00000000000000000000000007"}}),
+            "$.SendGain.edge_id",
+        );
+        // ⚠ **如实钉住"留弱"这条读数**（与 `the_unsupported_counts_slot_stays_weak_on_purpose` 同一口径）：
+        // 校验器没有 `min/maxProperties` 与 `propertyNames`（§22.22 路线甲）⇒ "恰好一键"与
+        // "不许出现第六个变体名"在这一槽上**不可机械断言**，空对象在这一槽上过得了。
+        assert!(
+            validate(&target, &json!({})).is_ok(),
+            "这是**已知**的弱面，写成读数而不是写成假象：等路线甲落地才收紧"
+        );
+    }
+
+    /// 把"生产者的键集"与"schema 的 `required` 键集"当**两个读数**比对（同集才算声明到位）。
+    ///
+    /// ⚠ 比的是集合不是顺序：`serde_json::Map` 在本仓没开 `preserve_order` ⇒ 键恒按字母序读出，
+    /// 顺序没有任何契约含义（`required` 数组里的顺序只是我声明的字段序，供人读）。
+    #[track_caller]
+    fn assert_same_key_set(produced: &Value, roster_name: &str, schema: &Value) -> usize {
+        let keys = produced
+            .as_object()
+            .unwrap_or_else(|| panic!("`{roster_name}` 的产出必须是对象"))
+            .keys()
+            .map(String::as_str)
+            .collect::<Vec<&str>>();
+        let mut declared = schema["required"]
+            .as_array()
+            .unwrap_or_else(|| panic!("`{roster_name}` 的 `required` 必须是数组"))
+            .iter()
+            .map(|item| item.as_str().expect("required 元素是字符串"))
+            .collect::<Vec<&str>>();
+        let mut produced_sorted = keys.clone();
+        produced_sorted.sort_unstable();
+        declared.sort_unstable();
+        assert_eq!(
+            produced_sorted, declared,
+            "`{roster_name}`：产出的键集与声明的键集必须同集（少声明 ⇒ agent 只能试；多声明 ⇒ 谎约）"
+        );
+        keys.len()
+    }
+
+    /// ⭐ s35 判据四（牙齿）：`yeban_query_engine_state` 的 `data.track` **整条**名册
+    /// 由**真生产者**验一遍 —— 取 `filled_project()` 里第一条带设备的音轨，调
+    /// `domain::engine_state::snapshot` 拿真实 `data.track`，逐层比对键集并整体校验。
+    ///
+    /// 这一条为什么长这样：`track` 是本轮唯一"生产者与声明分在两处拼装"的槽
+    /// （`device_chain_value` 的七键 + `snapshot` 追加的 `sends` ⇒ 八键），
+    /// ⛔ 靠手抄数字守不住；把真响应喂进名册才叫读数。
+    #[test]
+    fn the_query_track_roster_accepts_the_measured_snapshot_and_shares_its_key_sets() {
+        use crate::domain::engine_state::{ReadingsCursor, snapshot};
+        let project = yeban_model::samples::filled_project();
+        let session = yeban_model::SessionRuntimeState::new();
+        let track_id = *project
+            .tracks
+            .iter()
+            .find(|(_, track)| !track.devices.is_empty())
+            .expect("样本工程里必须有带设备的音轨")
+            .0;
+        let data = snapshot(
+            &project,
+            &session,
+            None,
+            None,
+            0,
+            Some(track_id),
+            ReadingsCursor {
+                revision: 0,
+                tail: &[],
+                since: None,
+            },
+        )
+        .expect("快照");
+        let schema = query_engine_state();
+        let props = schema["properties"].as_object().expect("顶层 properties");
+        let track = &data["track"];
+
+        // ① 逐层键集：track 八键 / devices[] 十二键 / params[] 七键 / inserts[] 九键 / sends[] 八键。
+        assert_eq!(assert_same_key_set(track, "track", &props["track"]), 8);
+        let devices = track["devices"].as_array().expect("devices 是数组");
+        assert!(
+            !devices.is_empty(),
+            "夹具必须给出非空设备链，否则下面的读数全是空集自证"
+        );
+        for device in devices {
+            assert_eq!(
+                assert_same_key_set(
+                    device,
+                    "devices[]",
+                    &props["track"]["properties"]["devices"]["items"]
+                ),
+                12
+            );
+            for param in device["params"].as_array().expect("params 是数组") {
+                assert_same_key_set(
+                    param,
+                    "devices[].params[]",
+                    &props["track"]["properties"]["devices"]["items"]["properties"]["params"]["items"],
+                );
+            }
+        }
+        for insert in track["inserts"].as_array().expect("inserts 是数组") {
+            assert_eq!(
+                assert_same_key_set(
+                    insert,
+                    "inserts[]",
+                    &props["track"]["properties"]["inserts"]["items"]
+                ),
+                9
+            );
+        }
+        for send in track["sends"].as_array().expect("sends 是数组") {
+            assert_same_key_set(
+                send,
+                "track.sends[]",
+                &props["track"]["properties"]["sends"]["items"],
+            );
+        }
+
+        // ② 真响应必须**整条**过名册（键集对上但类型不对，也会在这里红）。
+        validate(&props["track"], track)
+            .unwrap_or_else(|violation| panic!("真实 `data.track` 必须通过名册: {violation}"));
+
+        // ③ 键数⛔ 不许被掏空：声明的 `required` 与逐层键数就钉在这几个数字上。
+        assert_eq!(props["track"]["required"].as_array().expect("…").len(), 8);
+        assert_eq!(
+            props["track"]["properties"]["devices"]["items"]["required"]
+                .as_array()
+                .expect("…")
+                .len(),
+            12
+        );
+        assert_eq!(
+            props["track"]["properties"]["devices"]["items"]["properties"]["params"]["items"]
+                ["required"]
+                .as_array()
+                .expect("…")
+                .len(),
+            7
+        );
+        assert_eq!(
+            props["track"]["properties"]["inserts"]["items"]["required"]
+                .as_array()
+                .expect("…")
+                .len(),
+            9
+        );
+        // ④ 两处 `kind` 的词表⛔ 不是手抄：与输入侧同一份 `TRACK_KINDS` / `DEVICE_KINDS` 同集。
+        for (slot, table) in [
+            (
+                &props["track"]["properties"]["kind"],
+                crate::domain::notes::TRACK_KINDS.to_vec(),
+            ),
+            (
+                &props["track"]["properties"]["devices"]["items"]["properties"]["kind"],
+                crate::domain::notes::DEVICE_KINDS.to_vec(),
+            ),
+            (
+                &props["track"]["properties"]["inserts"]["items"]["properties"]["deviceKind"],
+                crate::domain::notes::DEVICE_KINDS.to_vec(),
+            ),
+        ] {
+            assert_eq!(
+                slot["enum"],
+                Value::Array(table.into_iter().map(Value::from).collect()),
+                "`kind` 的词表必须逐字等于生产者侧的那一份名册"
+            );
+        }
+    }
+
+    /// ⭐ s35 判据五：`stateSources` 的九键**实测**等于生产者那段 `json!` 的键集，且九个值全为字符串。
+    #[test]
+    fn the_state_sources_roster_is_the_producers_nine_string_keys() {
+        use crate::domain::engine_state::{ReadingsCursor, snapshot};
+        let project = yeban_model::samples::filled_project();
+        let session = yeban_model::SessionRuntimeState::new();
+        let data = snapshot(
+            &project,
+            &session,
+            None,
+            None,
+            0,
+            None,
+            ReadingsCursor {
+                revision: 0,
+                tail: &[],
+                since: None,
+            },
+        )
+        .expect("快照");
+        let schema = state_sources();
+        assert_eq!(
+            assert_same_key_set(&data["stateSources"], "stateSources", &schema),
+            9,
+            "生产者发九个来源键（`playhead` … `sceneLaunchesApplied`）"
+        );
+        validate(&schema, &data["stateSources"])
+            .unwrap_or_else(|violation| panic!("真实 `stateSources` 必须通过: {violation}"));
+        // 九个值全是字符串（没有一个数字/对象/可空）—— 这条决定了名册里⛔ 不出现 `null`。
+        for (key, value) in data["stateSources"].as_object().expect("对象") {
+            assert!(
+                value.is_string(),
+                "`stateSources.{key}` 必须是字符串，实际是 {value}"
+            );
+        }
+    }
+
+    /// ⭐ s35 判据六：`sends[].kind` 收成 `const` 的依据是**生产者的过滤器恒等**，不是措辞。
+    ///
+    /// 取 `filled_project()` 里**全部**发送边（该夹具同时含 `TrackToBus` / `SendToAux` 等边，
+    /// 所以"只发 SendToAux"是非空读数而非空集自证），逐条要求 `kind` 等于 schema 的 `const`，
+    /// 并把一条错种子的破损值喂进名册，要求红在 `$.kind` 上。
+    #[test]
+    fn the_sends_roster_pins_the_producer_filter_identity() {
+        let project = yeban_model::samples::filled_project();
+        let emits = crate::domain::engine_state::send_edges_value(&project, None);
+        let items = emits.as_array().expect("发送边名册是数组");
+        assert!(
+            !items.is_empty(),
+            "夹具必须给出至少一条发送边，否则本判据只是在数空集"
+        );
+        let schema = send_edge_items();
+        let wanted = schema["properties"]["kind"]["const"]
+            .as_str()
+            .expect("`kind` 必须声明成 const 字符串");
+        assert_eq!(
+            wanted,
+            serde_json::to_value(yeban_model::RoutingKind::SendToAux)
+                .expect("单元枚举序列化不失败")
+                .as_str()
+                .expect("serde 名是字符串"),
+            "`const` 的值必须来自模型 serde 名，⛔ 手抄"
+        );
+        for item in items {
+            assert_eq!(
+                item["kind"],
+                Value::from(wanted),
+                "生产者只发 `SendToAux`（那行 filter 是唯一来源），任何别的种类都是这条契约的破裂"
+            );
+            validate(&schema, item)
+                .unwrap_or_else(|violation| panic!("真实发送边必须通过: {violation}"));
+        }
+        // 破损值：别的种类必须被拒，且红在点名它的路径上。
+        let mut broken = items[0].clone();
+        broken["kind"] = Value::from("TrackToBus");
+        let violation = validate(&schema, &broken).expect_err("`kind` 写成非发送种类必须被拒");
+        assert_eq!(violation.path, "$.kind", "必须红在 `$.kind`");
     }
 }

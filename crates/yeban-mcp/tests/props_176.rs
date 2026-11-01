@@ -942,9 +942,18 @@ fn the_validator_can_go_red_and_the_schema_is_not_idealised() {
             "sceneLaunchesAppliedSource": "unavailable"
         },
         "track": null,
+        // ⭐ s35：`stateSources` 收成九键名册 ⇒ 这份夹具跟着写全
+        // （九个值逐字取自 `domain::engine_state::snapshot` 那段 `json!`）。
         "stateSources": {
             "playhead": "yeban_model::SessionRuntimeState",
-            "sampleRate": "project.audio_config.sample_rate"
+            "sampleRate": "project.audio_config.sample_rate",
+            "bufferFrames": "host injected EngineReadings mirror",
+            "devices": "project.tracks[].devices",
+            "inserts": "project.tracks[].devices (recognised against crate::effect_params)",
+            "sends": "project.routing_graph.edges where kind == SendToAux",
+            "undoCursor": "undo_session::UndoState::display().undoable (applied op count; same value as yeban_undo before.undoable) [#177]",
+            "readingsRevision": "host injected EngineReadings mirror (monotonic)",
+            "sceneLaunchesApplied": "host injected EngineStats::scene_launches_applied (None = this engine generation cannot read it)"
         }
     });
     output_schema::validate(&engine_schema, &without_sends).expect("sends 不是 required");
