@@ -123,11 +123,9 @@ fn a_real_click_on_the_save_button_lands_the_live_project_on_disk() {
     use yeban_app::live_surface::build_live_ui_with;
     use yeban_app::ui_mcp_serve::serve_wiring;
     use yeban_model::CommitGraph;
-    use yeban_model::container::{
-        ContainerLimits, read_project_container, write_project_container,
-    };
+    // ⛔ 读回容器的那两个名字在**助手** `on_disk` 里全路径限定：模块级函数看不见本函数作用域的 import。
+    use yeban_model::container::write_project_container;
     use yeban_model::samples::demo_project;
-    use yeban_ui_mcp::live::request_line;
     use yeban_ui_test_port::port::Permission;
     use yeban_ui_test_port::render::report_line;
 
@@ -255,7 +253,11 @@ fn a_real_click_on_the_save_button_lands_the_live_project_on_disk() {
 #[cfg(feature = "ui-mcp-http")]
 fn on_disk(path: &std::path::Path) -> OnDisk {
     let bytes = std::fs::read(path).expect("读回容器");
-    let archive = read_project_container(&bytes, &ContainerLimits::default()).expect("容器读回");
+    let archive = yeban_model::container::read_project_container(
+        &bytes,
+        &yeban_model::container::ContainerLimits::default(),
+    )
+    .expect("容器读回");
     OnDisk {
         tracks: archive.project.tracks.len(),
         history_bytes: archive.history_dag.len(),
