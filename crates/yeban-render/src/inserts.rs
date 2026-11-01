@@ -1,4 +1,4 @@
-//! **每轨插入链**的离线投影与运行态：[通道条（增益 → EQ → 低通）] ＋ [Freeverb] ＋ [卷积混响] ＋ [乒乓延迟]。
+//! **每轨插入链**的离线投影与运行态：[通道条（增益 → EQ → 低通）] ＋ [磁带饱和] ＋ [Freeverb] ＋ [卷积混响] ＋ [乒乓延迟]。
 //!
 //! ## 0. 这一份是**副本** —— 必须下移到 `yeban-dsp`（待办）
 //!
@@ -141,7 +141,7 @@
 //!   那一份；`set_params` 零分配）。
 //!
 //! 恒等泳道（无点 / `read_enabled:false` / 处处等于静态值）**不**强实例化 ⇒ 产物
-//! 与没有泳道逐字节相同。三族**分开**置位：混响泳道不会白实例化一条恒等通道条。
+//! 与没有泳道逐字节相同。四族**分开**置位：混响泳道不会白实例化一条恒等通道条。
 //!
 //! ## 4. 音频线程边界
 //!
@@ -155,8 +155,10 @@ use yeban_dsp::convolution_reverb::{ConvolutionReverb, ConvolutionReverbParams};
 use yeban_dsp::delay::{Delay, DelayParams};
 use yeban_dsp::device_param::delay_params_from_stage;
 use yeban_dsp::noise::Rng;
+use yeban_dsp::oversample::OS_TAPS;
 use yeban_dsp::reverb::{Reverb, ReverbParams};
 use yeban_dsp::shaping::EqParams;
+use yeban_dsp::tape::{TapeParams, TapeSaturation};
 use yeban_model::{DeviceDefinition, DeviceKind, EntityId, TrackV3, YebanProjectV1};
 
 /// 卷积混响 IR 的长度除数（帧数 = 采样率 ÷ 10）。
@@ -245,6 +247,8 @@ pub struct InsertChain {
     /// ⚠ 投影**如实**保留引擎给出的 `compressor_enabled`；`#303` 起运行态**照它执行**
     /// （之前是无条件关掉）。是否真的执行某一级由 [`Self::is_empty`] 与运行态共同决定。
     strip: Option<ChannelStripParams>,
+    /// 磁带饱和参数；`None` = 本轨没有磁带饱和。
+    saturation: Option<TapeParams>,
     /// Freeverb 参数；`None` = 本轨没有混响。
     reverb: Option<ReverbParams>,
     /// 卷积混响计划；`None` = 本轨没有卷积混响。
@@ -258,6 +262,9 @@ pub struct InsertChain {
     /// （`0 dB` ＋ 三级全关，[`Self::effective_strip`] 本来会返回 `None`），也必须有
     /// 一台器件让块边界的 `set_params` 有落点。恒等泳道**不**置这一位。
     force_strip: bool,
+    /// **编译期强制实例化磁带饱和**（`ADR-0062`）。与 [`Self::force_reverb`] 同理：
+    /// `tape_mix: 0` 的静态链会让 [`InsertRuntime`] 丢掉器件。
+    force_saturation: bool,
     /// **编译期强制实例化 Freeverb**（`#293`）。
     ///
     /// `true` = 本轨有**非恒等**的混响 `DeviceParam` 泳道。投影里 `reverb` 已经是
@@ -279,10 +286,12 @@ impl InsertChain {
     pub const fn empty() -> Self {
         Self {
             strip: None,
+            saturation: None,
             reverb: None,
             convolution: None,
             delay: None,
             force_strip: false,
+            force_saturation: false,
             force_reverb: false,
             force_convolution: false,
             force_delay: false,
@@ -303,6 +312,7 @@ impl InsertChain {
     #[must_use]
     pub fn from_devices(devices: &[DeviceDefinition], sample_rate: u32, bpm: f64) -> Self {
         let mut strip: Option<ChannelStripParams> = None;
+        let mut saturation: Option<TapeParams> = None;
         let mut reverb: Option<ReverbParams> = None;
         let mut convolution: Option<ConvolutionPlan> = None;
         let mut delay: Option<DelayParams> = None;
@@ -313,6 +323,9 @@ impl InsertChain {
             if strip.is_none() {
                 strip = strip_of(device);
             }
+            if saturation.is_none() {
+                saturation = tape_of(device);
+            }
             if reverb.is_none() {
                 reverb = reverb_of(device);
             }
@@ -322,16 +335,23 @@ impl InsertChain {
             if delay.is_none() {
                 delay = delay_of(device, bpm);
             }
-            if strip.is_some() && reverb.is_some() && convolution.is_some() && delay.is_some() {
+            if strip.is_some()
+                && saturation.is_some()
+                && reverb.is_some()
+                && convolution.is_some()
+                && delay.is_some()
+            {
                 break;
             }
         }
         Self {
             strip: strip.map(ChannelStripParams::sanitised),
+            saturation,
             reverb,
             convolution,
             delay,
             force_strip: false,
+            force_saturation: false,
             force_reverb: false,
             force_convolution: false,
             force_delay: false,
@@ -345,6 +365,13 @@ impl InsertChain {
     #[must_use]
     pub const fn with_forced_strip(mut self, force: bool) -> Self {
         self.force_strip = force;
+        self
+    }
+
+    /// 置"强制实例化磁带饱和"位（`ADR-0062`）。见 [`Self::force_saturation`]。
+    #[must_use]
+    pub const fn with_forced_saturation(mut self, force: bool) -> Self {
+        self.force_saturation = force;
         self
     }
 
@@ -375,6 +402,12 @@ impl InsertChain {
         self.force_strip
     }
 
+    /// 本链是否被编译期强制实例化了磁带饱和（读数用）。
+    #[must_use]
+    pub const fn is_forced_saturation(&self) -> bool {
+        self.force_saturation
+    }
+
     /// 本链是否被编译期强制实例化了 Freeverb（读数用）。
     #[must_use]
     pub const fn is_forced_reverb(&self) -> bool {
@@ -400,6 +433,7 @@ impl InsertChain {
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.effective_strip().is_none()
+            && self.saturation.is_none()
             && self.reverb.is_none()
             && self.convolution.is_none()
             && self.delay.is_none()
@@ -463,6 +497,12 @@ impl InsertChain {
         }
     }
 
+    /// 投影出来的磁带饱和参数（判据用；未 sanitised，器件 `set_params` 再钳制）。
+    #[must_use]
+    pub const fn saturation(&self) -> Option<TapeParams> {
+        self.saturation
+    }
+
     /// 投影出来的混响参数（判据用）。
     #[must_use]
     pub const fn reverb(&self) -> Option<ReverbParams> {
@@ -517,6 +557,8 @@ pub fn project_inserts(
 pub struct ForcedInsertInstances {
     /// 需要强制实例化通道条的轨。
     pub strip: BTreeSet<EntityId>,
+    /// 需要强制实例化磁带饱和的轨。
+    pub saturation: BTreeSet<EntityId>,
     /// 需要强制实例化 Freeverb 的轨。
     pub reverb: BTreeSet<EntityId>,
     /// 需要强制实例化卷积混响的轨。
@@ -530,6 +572,7 @@ impl ForcedInsertInstances {
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.strip.is_empty()
+            && self.saturation.is_empty()
             && self.reverb.is_empty()
             && self.convolution.is_empty()
             && self.delay.is_empty()
@@ -552,6 +595,7 @@ pub fn project_inserts_with_forced_instances(
         .filter_map(|(&id, track)| {
             let chain = InsertChain::from_devices(&track.devices, sample_rate, bpm)
                 .with_forced_strip(forced.strip.contains(&id))
+                .with_forced_saturation(forced.saturation.contains(&id))
                 .with_forced_reverb(forced.reverb.contains(&id))
                 .with_forced_convolution(forced.convolution.contains(&id))
                 .with_forced_delay(forced.delay.contains(&id));
@@ -659,7 +703,7 @@ pub fn track_has_unhandled_dsp(track: &TrackV3) -> bool {
 /// 本切片**消费**的参数名（小写）全集。
 ///
 /// 它**不是**另一张表：名字来自 [`DeviceParamField::from_name`]（通道条 — 含自
-/// `#304` 起的压缩 14 拼写 — / 混响 / 卷积标量 / 延迟的**同一张**拼写表）＋ 三个
+/// `#304` 起的压缩 14 拼写 — / 磁带饱和 / 混响 / 卷积标量 / 延迟的**同一张**拼写表）＋ 三个
 /// **构造期** IR 形状名字（`conv_ir_decay*` / `conv_ir_seed`，静态投影会消费它们，
 /// 但自动化不落点）。
 ///
@@ -692,6 +736,24 @@ pub fn strip_source_slot(track: &TrackV3) -> Option<usize> {
 pub fn strip_source_params(track: &TrackV3) -> Option<ChannelStripParams> {
     let slot = strip_source_slot(track)?;
     strip_of(&track.devices[slot]).map(ChannelStripParams::sanitised)
+}
+
+/// 本轨磁带饱和**来源设备**的投影参数（未 sanitised；器件 `set_params` 再钳制）。
+#[must_use]
+pub fn saturation_source_params(track: &TrackV3) -> Option<TapeParams> {
+    let slot = saturation_source_slot(track)?;
+    tape_of(&track.devices[slot])
+}
+
+/// 本轨 **磁带饱和来源设备**的下标（`from_devices` 的“首个含已识别饱和名字的设备”）。
+///
+/// 与 [`strip_source_slot`] 同一条规则；自动化只能落在这一台上，指向别的下标
+/// 那个参数**不是**进 DSP 的那一份。
+#[must_use]
+pub fn saturation_source_slot(track: &TrackV3) -> Option<usize> {
+    track.devices.iter().position(|device| {
+        !device.bypassed && device.kind == DeviceKind::InternalEffect && tape_of(device).is_some()
+    })
 }
 
 /// 本轨 **Freeverb 来源设备**的下标（`from_devices` 的“首个含已识别混响名字的设备”）。
@@ -757,14 +819,14 @@ pub fn delay_source_params(track: &TrackV3) -> Option<DelayStageParams> {
 /// （`crates/yeban-engine/src/insert.rs`）与离线渲染链必须读**同一组**"哪个名字有落点、
 /// 落点字段怎么钳制"的规则 ⇒ 唯一能共享的位置是 `yeban-dsp`。⛔ 这里不得再长出第二张表。
 ///
-/// ⚠ **导入路径不变**：`yeban_render::inserts::{StripField, ReverbField, ConvolutionField,
+/// ⚠ **导入路径不变**：`yeban_render::inserts::{StripField, TapeField, ReverbField, ConvolutionField,
 /// DelayField, DelayStageParams, DeviceParamField, DeviceParamFamily, sanitised_output_gain_db}` 仍然可用（消费方现读 **7** 个
 /// 文件：`yeban-render/src/automation.rs`、`yeban-app/src/engine_host.rs`、
 /// `yeban-app/tests/{compressor_export,device_param_automation_export}.rs`、
 /// `yeban-mcp/src/domain/notes.rs`、`yeban-mcp/tests/{render_audio_clips,fault_vocabulary}.rs`）。
 pub use yeban_dsp::device_param::{
     ConvolutionField, DelayField, DelayStageParams, DeviceParamFamily, DeviceParamField,
-    ReverbField, StripField, sanitised_output_gain_db,
+    ReverbField, StripField, TapeField, sanitised_output_gain_db,
 };
 
 /// 通道条被**强制实例化**、但本轨没有投影来源时的参数（任务单 `#266` 的缝）。
@@ -1088,6 +1150,22 @@ fn reverb_of(device: &DeviceDefinition) -> Option<ReverbParams> {
     if seen { Some(params) } else { None }
 }
 
+/// 单台设备 → 磁带饱和参数（`None` = 一个已识别的饱和名字都没有）。
+///
+/// 与 [`reverb_of`] 同式：只认 [`TapeField::SPELLINGS`]，⛔ 不认裸 `mix` /
+/// `drive`（那是通道条的名字）；未写字段保持 `TapeParams::DEFAULT`。
+fn tape_of(device: &DeviceDefinition) -> Option<TapeParams> {
+    let mut params = TapeParams::default();
+    let mut seen = false;
+    for param in &device.params {
+        if let Some(field) = TapeField::from_name(&param.name) {
+            field.store(&mut params, param.value);
+            seen = true;
+        }
+    }
+    if seen { Some(params) } else { None }
+}
+
 /// 单台设备 → 卷积的**投影中间态**：`(标量参数, IR 衰减秒, IR 种子)`。
 ///
 /// 与 [`convolution_of`] 的识别规则**同一份**；单独拆出来是为了让“来源设备”判定与
@@ -1178,6 +1256,8 @@ fn delay_of(device: &DeviceDefinition, bpm: f64) -> Option<DelayParams> {
 pub(crate) struct InsertRuntime {
     /// 通道条状态（输入增益 → EQ → 低通 → **动态** → 输出增益；动态级自 `#303` 起执行）。
     strip: Option<ChannelStrip>,
+    /// 磁带饱和状态；`None` = 不动（`drive = 0` 或 `mix = 0` 或没有）。
+    saturation: Option<TapeSaturation>,
     /// Freeverb 状态；`None` = 不动（`mix = 0` 或没有）。
     reverb: Option<Reverb>,
     /// 卷积混响状态；`None` = 不动（`wet = 0` 或没有）。
@@ -1195,6 +1275,10 @@ pub(crate) struct InsertRuntime {
     key_left: Vec<f32>,
     /// 键右声道去交错缓冲（仅 `process_with_key` 用，按块大小分配）。
     key_right: Vec<f32>,
+    /// 磁带饱和过采样缓冲（`2 × block_size`；`TapeSaturation::process` 的工作区）。
+    tape_upsampled: Vec<f32>,
+    /// 磁带饱和过采样划痕缓冲（`OS_TAPS − 1 + 2 × block_size`；同上）。
+    tape_scratch: Vec<f32>,
 }
 
 /// 通道条**动态级**的只读读数（任务单 `#303`；[`crate::render::InsertMeterReading`]
@@ -1236,6 +1320,17 @@ impl InsertRuntime {
         let strip = chain
             .effective_strip()
             .map(|params| ChannelStrip::new(params, sample_rate_f32));
+        let saturation = chain.saturation.and_then(|params| {
+            let mut state = TapeSaturation::new();
+            state.configure(sample_rate_f32);
+            state.set_params(params);
+            // ⭐ `ADR-0062`：与 Freeverb 同一条缝（静态 `tape_mix: 0`）。
+            if state.is_active() || chain.is_forced_saturation() {
+                Some(state)
+            } else {
+                None
+            }
+        });
         let reverb = chain.reverb.and_then(|params| {
             let mut state = Reverb::new();
             state.set_sample_rate(sample_rate_f32);
@@ -1282,6 +1377,7 @@ impl InsertRuntime {
         });
         Self {
             strip,
+            saturation,
             reverb,
             convolution,
             delay,
@@ -1290,6 +1386,8 @@ impl InsertRuntime {
             right: vec![0.0; block_size],
             key_left: vec![0.0; block_size],
             key_right: vec![0.0; block_size],
+            tape_upsampled: vec![0.0; 2 * block_size],
+            tape_scratch: vec![0.0; OS_TAPS - 1 + 2 * block_size],
         }
     }
 
@@ -1297,6 +1395,9 @@ impl InsertRuntime {
     pub(crate) fn reset(&mut self) {
         if let Some(strip) = &mut self.strip {
             strip.reset();
+        }
+        if let Some(saturation) = &mut self.saturation {
+            saturation.reset();
         }
         if let Some(reverb) = &mut self.reverb {
             reverb.reset();
@@ -1330,6 +1431,13 @@ impl InsertRuntime {
                     let mut params = strip.params();
                     field.store(&mut params, value);
                     strip.set_params(params);
+                }
+            }
+            DeviceParamField::Tape(field) => {
+                if let Some(saturation) = &mut self.saturation {
+                    let mut params = saturation.params();
+                    field.store(&mut params, value);
+                    saturation.set_params(params);
                 }
             }
             DeviceParamField::Reverb(field) => {
@@ -1369,8 +1477,8 @@ impl InsertRuntime {
 
     /// 原地处理一个**立体声交错**块（`buffer.len() == frames * 2`）。
     ///
-    /// 顺序与实时引擎同一条链：通道条 → Freeverb → 卷积混响 → 乒乓延迟。
-    /// 各级在参数为 0 时整级跳过（状态不推进），与器件自己的 `is_active` 守卫同口径。
+    /// 顺序与实时引擎同一条链：通道条 → 磁带饱和 → Freeverb → 卷积混响 → 乒乓延迟。各级在参数为 0 时
+    /// 整级跳过（状态不推进），与器件自己的 `is_active` 守卫同口径。
     ///
     /// ⚠ 延迟的 `mix = 0` 必须**整级跳过**、不能靠"乘零"混过去：`x + 0·w` 在
     /// `x = -0.0` 时符号翻转（`-0.0 + 0.0 = +0.0`）。门用钳制后 `mix`（非有限 ⇒ 0）。
@@ -1381,12 +1489,15 @@ impl InsertRuntime {
         }
         let Self {
             strip,
+            saturation,
             reverb,
             convolution,
             delay,
             delay_params,
             left,
             right,
+            tape_upsampled,
+            tape_scratch,
             ..
         } = self;
         for frame in 0..frames {
@@ -1395,6 +1506,14 @@ impl InsertRuntime {
         }
         if let Some(strip) = strip {
             strip.process_stereo(&mut left[..frames], &mut right[..frames]);
+        }
+        if let Some(saturation) = saturation {
+            saturation.process(
+                &mut left[..frames],
+                &mut right[..frames],
+                &mut tape_upsampled[..2 * frames],
+                &mut tape_scratch[..OS_TAPS - 1 + 2 * frames],
+            );
         }
         if let Some(reverb) = reverb {
             reverb.process(&mut left[..frames], &mut right[..frames]);
@@ -1434,12 +1553,17 @@ impl InsertRuntime {
         }
         let Self {
             strip,
+            saturation,
             reverb,
             convolution,
+            delay,
+            delay_params,
             left,
             right,
             key_left,
             key_right,
+            tape_upsampled,
+            tape_scratch,
         } = self;
         for frame in 0..frames {
             left[frame] = buffer[2 * frame];
@@ -1455,6 +1579,14 @@ impl InsertRuntime {
                 &key_right[..frames],
             );
         }
+        if let Some(saturation) = saturation {
+            saturation.process(
+                &mut left[..frames],
+                &mut right[..frames],
+                &mut tape_upsampled[..2 * frames],
+                &mut tape_scratch[..OS_TAPS - 1 + 2 * frames],
+            );
+        }
         if let Some(reverb) = reverb {
             reverb.process(&mut left[..frames], &mut right[..frames]);
         }
@@ -1464,11 +1596,19 @@ impl InsertRuntime {
                 buffer[2 * frame + 1] = right[frame];
             }
             convolution.process(&mut buffer[..2 * frames]);
-        } else {
             for frame in 0..frames {
-                buffer[2 * frame] = left[frame];
-                buffer[2 * frame + 1] = right[frame];
+                left[frame] = buffer[2 * frame];
+                right[frame] = buffer[2 * frame + 1];
             }
+        }
+        if let Some(delay) = delay
+            && DelayField::Mix.sanitise(delay_params.mix) != 0.0
+        {
+            delay.process(*delay_params, &mut left[..frames], &mut right[..frames]);
+        }
+        for frame in 0..frames {
+            buffer[2 * frame] = left[frame];
+            buffer[2 * frame + 1] = right[frame];
         }
     }
 }
@@ -1532,6 +1672,9 @@ mod tests {
     fn sample_device(field: DeviceParamField) -> f32 {
         match field {
             DeviceParamField::Strip(field) => sample(field),
+            DeviceParamField::Tape(TapeField::Drive | TapeField::Mix) => 0.8,
+            DeviceParamField::Tape(TapeField::TrimDb) => -6.0,
+            DeviceParamField::Tape(TapeField::HfHz) => 8_000.0,
             DeviceParamField::Reverb(ReverbField::Size | ReverbField::Damp | ReverbField::Wet) => {
                 0.72
             }
@@ -1571,6 +1714,18 @@ mod tests {
                         strip.read(&projected).to_bits(),
                         strip.sanitise(value).to_bits(),
                         "{name} 的投影值与恒等判定值必须同一个"
+                    );
+                }
+                DeviceParamField::Tape(tape) => {
+                    let projected = tape_of(&device(&[(name, value)]))
+                        .unwrap_or_else(|| panic!("{name}={value} 必须被 tape_of 认出来"));
+                    let mut device = TapeSaturation::new();
+                    device.configure(48_000.0);
+                    device.set_params(projected);
+                    assert_eq!(
+                        tape.read(&device.params()).to_bits(),
+                        tape.sanitise(value).to_bits(),
+                        "{name} 的器件读数与恒等判定值必须同一个"
                     );
                 }
                 DeviceParamField::Reverb(reverb) => {
@@ -1616,6 +1771,9 @@ mod tests {
         for field in StripField::ALL {
             assert_eq!(StripField::from_name(field.canonical_name()), Some(*field));
         }
+        for field in TapeField::ALL {
+            assert_eq!(TapeField::from_name(field.canonical_name()), Some(*field));
+        }
         for field in ReverbField::ALL {
             assert_eq!(ReverbField::from_name(field.canonical_name()), Some(*field));
         }
@@ -1655,6 +1813,18 @@ mod tests {
                 StripField::from_name(&alias.to_ascii_uppercase()),
                 Some(field),
                 "大小写不敏感：{alias}"
+            );
+        }
+        for (alias, field) in [
+            ("saturation_drive", TapeField::Drive),
+            ("saturation_mix", TapeField::Mix),
+            ("saturation_trim_db", TapeField::TrimDb),
+            ("saturation_hf_hz", TapeField::HfHz),
+        ] {
+            assert_eq!(
+                DeviceParamField::from_name(alias),
+                Some(DeviceParamField::Tape(field)),
+                "{alias}"
             );
         }
         for (alias, field) in [
@@ -1748,6 +1918,10 @@ mod tests {
             "conv_dry",
             "conv_wet",
             "conv_ir_gain_db",
+            "tape_drive",
+            "tape_mix",
+            "tape_trim_db",
+            "tape_hf_hz",
         ] {
             assert_eq!(StripField::from_name(name), None, "{name} 不是通道条字段");
             assert!(
@@ -2149,5 +2323,135 @@ mod tests {
         let chain = InsertChain::from_devices(&[both], 48_000, 120.0);
         assert!(chain.convolution().is_some(), "同一台可兼卷积来源");
         assert!(chain.delay().is_some(), "同一台可兼延迟来源");
+    }
+    /// ⭐ `ADR-0062`：磁带饱和字段的钳制镜像必须与**真实器件**逐位一致。
+    #[test]
+    fn tape_field_clamp_is_the_device_clamp() {
+        for field in TapeField::ALL {
+            for value in [
+                f32::NAN,
+                f32::INFINITY,
+                f32::NEG_INFINITY,
+                -1.0,
+                0.0,
+                0.25,
+                0.72,
+                1.0,
+                2.0,
+                f32::MIN,
+                f32::MAX,
+            ] {
+                let mut projected = TapeParams::default();
+                field.store(&mut projected, value);
+                let mut device = TapeSaturation::new();
+                device.configure(48_000.0);
+                device.set_params(projected);
+                assert_eq!(
+                    field.sanitise(value).to_bits(),
+                    field.read(&device.params()).to_bits(),
+                    "{field:?} {value}"
+                );
+            }
+        }
+    }
+
+    /// ⭐ `ADR-0062`：饱和名字进链、来源槽一致；裸 `mix` / `drive` 不是饱和名字。
+    #[test]
+    fn tape_names_project_and_source_slot_agrees() {
+        let dev = device(&[("tape_drive", 0.5), ("saturation_mix", 0.7)]);
+        let chain = InsertChain::from_devices(&[dev], 48_000, 120.0);
+        let params = chain.saturation().expect("饱和投影");
+        assert_eq!(params.drive.to_bits(), 0.5f32.to_bits());
+        assert_eq!(params.mix.to_bits(), 0.7f32.to_bits());
+        assert!(!chain.is_empty(), "含饱和的链非空");
+        // 来源槽：用一轨设备链验（track 构造走 TrackV3 的 devices 字段）。
+        let track = yeban_model::TrackV3 {
+            devices: vec![device(&[("tape_drive", 0.5)])],
+            ..Default::default()
+        };
+        assert_eq!(saturation_source_slot(&track), Some(0));
+        assert_eq!(
+            saturation_source_params(&track).map(|p| p.drive.to_bits()),
+            Some(0.5f32.to_bits())
+        );
+        // 裸名不认：只有 `mix` 的设备不是饱和来源。
+        assert_eq!(tape_of(&device(&[("mix", 0.7)])), None);
+        assert_eq!(tape_of(&device(&[("drive", 0.5)])), None);
+    }
+
+    /// ⭐ `ADR-0062` 判据 2（机制层）：静态 `tape_mix: 0` 的链在**不强制**时**不建**
+    /// 器件；一置 `force_saturation`，运行态就真的有一台饱和器可让块边界改它。
+    #[test]
+    fn forced_saturation_keeps_a_mix_zero_instance_alive() {
+        let chain = InsertChain::from_devices(
+            &[device(&[("tape_drive", 0.5), ("tape_mix", 0.0)])],
+            48_000,
+            120.0,
+        );
+        assert!(chain.saturation().is_some(), "静态投影认得饱和名字");
+        assert!(!chain.is_empty(), "链本身非空");
+        let quiet = InsertRuntime::new(&chain, 48_000, 128);
+        assert!(
+            quiet.saturation.is_none(),
+            "没有强制位 ⇒ 静态 `mix = 0` 仍整级跳过（既有口径）"
+        );
+
+        let forced = chain.with_forced_saturation(true);
+        assert!(forced.is_forced_saturation());
+        let mut runtime = InsertRuntime::new(&forced, 48_000, 128);
+        assert!(
+            runtime.saturation.is_some(),
+            "强制位 ⇒ 运行态必须有器件，否则泳道静默无效"
+        );
+
+        // 真的能改：从 0 拉到 1 之后器件是 active 的。
+        runtime.apply_device_params(DeviceParamField::Tape(TapeField::Mix), 1.0);
+        let saturation = runtime.saturation.as_ref().expect("器件");
+        assert_eq!(saturation.params().mix.to_bits(), 1.0f32.to_bits());
+        assert!(saturation.is_active());
+    }
+
+    /// ⭐ `ADR-0062`：运行态里饱和级真的处理（drive 1.0 / mix 1.0 的 0.9 常量块
+    /// 稳态 ≈ `pade_tanh(9)/10 = 0.12857`）；`mix = 0` 时整级丢掉 ⇒ 直通。
+    #[test]
+    fn tape_runtime_saturates_and_drops_an_inactive_stage() {
+        let chain = InsertChain::from_devices(
+            &[device(&[("tape_drive", 1.0), ("tape_mix", 1.0)])],
+            48_000,
+            120.0,
+        );
+        let mut runtime = InsertRuntime::new(&chain, 48_000, 512);
+        assert!(runtime.saturation.is_some());
+        let mut buffer = vec![0.0; 2 * 512];
+        for frame in 0..512 {
+            buffer[2 * frame] = 0.9;
+            buffer[2 * frame + 1] = 0.9;
+        }
+        runtime.process(&mut buffer);
+        for frame in 128..512 {
+            let sample = buffer[2 * frame];
+            assert!(
+                (sample - 0.128_571_4).abs() < 1e-3,
+                "稳态饱和值偏离 pade_tanh(9)/10，第 {frame} 帧实读 {sample}"
+            );
+        }
+
+        let quiet_chain = InsertChain::from_devices(
+            &[device(&[("tape_drive", 1.0), ("tape_mix", 0.0)])],
+            48_000,
+            120.0,
+        );
+        let mut quiet = InsertRuntime::new(&quiet_chain, 48_000, 512);
+        assert!(quiet.saturation.is_none(), "mix = 0 ⇒ 不建器件");
+        let mut passthrough = vec![0.0; 2 * 512];
+        for frame in 0..512 {
+            passthrough[2 * frame] = 0.9;
+            passthrough[2 * frame + 1] = -0.4;
+        }
+        quiet.process(&mut passthrough);
+        for frame in 0..512 {
+            assert_eq!(passthrough[2 * frame].to_bits(), 0.9f32.to_bits());
+            assert_eq!(passthrough[2 * frame + 1].to_bits(), (-0.4f32).to_bits());
+        }
     }
 }

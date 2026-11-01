@@ -36,8 +36,8 @@
 //!
 //! - 只接 [`AutomationTarget::TrackVolume`]（含主总线）、[`AutomationTarget::SendGain`]、
 //!   [`AutomationTarget::TrackPan`] 与 [`AutomationTarget::DeviceParam`] 里**插入链能改的
-//!   标量字段**（[`APPLIED_DEVICE_PARAM_NAMES`]：70 个拼写 = 39 个字段，含别名；
-//!   通道条 22（14 增益/EQ/滤波 ＋ 8 压缩）＋ Freeverb 4 ＋ 卷积标量 4 ＋ 延迟 9）；**卷积
+//!   标量字段**（[`APPLIED_DEVICE_PARAM_NAMES`]：78 个拼写 = 43 个字段，含别名；
+//!   通道条 22（14 增益/EQ/滤波 ＋ 8 压缩）＋ 磁带饱和 4 ＋ Freeverb 4 ＋ 卷积标量 4 ＋ 延迟 9）；**卷积
 //!   IR 形状**（`conv_ir_decay*` / `conv_ir_seed`）如实登记（⛔ 不冒充已支持）；
 //!   ⭐ `#304` 起**压缩 8 字段**也在这张表里（`compressor_enabled` + 7 个标量），
 //!   静态投影与自动化因此读**同一张**名字表；
@@ -72,7 +72,7 @@ use crate::inserts::{
     DeviceParamFamily, DeviceParamField, ForcedInsertInstances, StripField,
     convolution_source_params, convolution_source_slot, delay_source_params, delay_source_slot,
     forced_identity_strip, resolve_device_param, reverb_source_params, reverb_source_slot,
-    strip_source_params, strip_source_slot,
+    saturation_source_params, saturation_source_slot, strip_source_params, strip_source_slot,
 };
 use crate::render::{L1_BLOCK_SIZE, db_to_linear};
 
@@ -1120,6 +1120,15 @@ pub const APPLIED_DEVICE_PARAM_NAMES: &[&str] = &[
     "delay_sync_num",
     "delay_sync_den",
     "delay_sync_dotted",
+    // 磁带饱和标量（8 = 4 个字段；`ADR-0062`）。
+    "tape_drive",
+    "saturation_drive",
+    "tape_mix",
+    "saturation_mix",
+    "tape_trim_db",
+    "saturation_trim_db",
+    "tape_hf_hz",
+    "saturation_hf_hz",
 ];
 
 /// 名字是否是本切片会落点的设备参数（**大小写不敏感**，与静态投影的同一口径）。
@@ -1152,6 +1161,10 @@ fn static_strip(track: &TrackV3) -> ChannelStripParams {
 fn static_insert_field_value(track: &TrackV3, field: DeviceParamField) -> Option<f32> {
     match field {
         DeviceParamField::Strip(field) => Some(field.read(&static_strip(track))),
+        DeviceParamField::Tape(field) => {
+            let params = saturation_source_params(track)?;
+            Some(field.sanitise(field.read(&params)))
+        }
         DeviceParamField::Reverb(field) => {
             let params = reverb_source_params(track)?;
             Some(field.sanitise(field.read(&params)))
@@ -1176,7 +1189,7 @@ fn static_insert_field_value(track: &TrackV3, field: DeviceParamField) -> Option
 /// 2. 参数名不是任何器件族的字段（[`crate::inserts::DeviceParamField::from_name`]）；
 /// 3. 设备被旁通 / 不是内置效果器（规则同 `from_devices`）；
 /// 4. 该插槽**不是**本轨对应器件族的来源设备（`strip_source_slot` /
-///    `reverb_source_slot` / `convolution_source_slot` / `delay_source_slot`）—— 那台设备的参数根本不会
+///    `saturation_source_slot` / `reverb_source_slot` / `convolution_source_slot` / `delay_source_slot`）—— 那台设备的参数根本不会
 ///    进 DSP，改它没有落点。
 ///
 /// ## "全恒等设备"也是来源（`#266` 的边界裁决，`#267` 逐条沿用）
@@ -1213,6 +1226,7 @@ fn applicable_device_param(
                 !device.bypassed && device.kind == yeban_model::DeviceKind::InternalEffect
             }),
         },
+        DeviceParamFamily::Saturation => saturation_source_slot(track) == Some(slot_index),
         DeviceParamFamily::Reverb => reverb_source_slot(track) == Some(slot_index),
         DeviceParamFamily::Convolution => convolution_source_slot(track) == Some(slot_index),
         DeviceParamFamily::Delay => delay_source_slot(track) == Some(slot_index),
@@ -1774,6 +1788,9 @@ pub fn forced_insert_instances(
                 DeviceParamFamily::Strip => {
                     forced.strip.insert(*track_id);
                 }
+                DeviceParamFamily::Saturation => {
+                    forced.saturation.insert(*track_id);
+                }
                 DeviceParamFamily::Reverb => {
                     forced.reverb.insert(*track_id);
                 }
@@ -1798,6 +1815,16 @@ pub fn forced_strip_tracks(
     automations: &BTreeMap<EntityId, Vec<DeviceParamAutomation>>,
 ) -> BTreeSet<EntityId> {
     forced_insert_instances(automations).strip
+}
+
+/// 需要**强制实例化磁带饱和**的轨（`forced_insert_instances` 的 `saturation` 族）。
+///
+/// 与 [`forced_strip_tracks`] 同式：同一个扫描器的**投影**，⛔ 不是第二套判定。
+#[must_use]
+pub fn forced_saturation_tracks(
+    automations: &BTreeMap<EntityId, Vec<DeviceParamAutomation>>,
+) -> BTreeSet<EntityId> {
+    forced_insert_instances(automations).saturation
 }
 
 /// 一条 `DeviceParam` 泳道是否是**非恒等**的 `compressor_enabled` 开关（`#309`）。
@@ -1927,7 +1954,9 @@ mod tests {
     use super::*;
     use std::str::FromStr as _;
 
-    use crate::inserts::{ConvolutionField, DelayField, DeviceParamField, ReverbField, StripField};
+    use crate::inserts::{
+        ConvolutionField, DelayField, DeviceParamField, ReverbField, StripField, TapeField,
+    };
     use yeban_model::{
         AutomationLane, AutomationPoint, AutomationWriteMode, CurveType, DeviceDefinition,
         DeviceKind, MacroMapping, MacroParameter, ParameterValue, RoutingEdge, RoutingKind,
@@ -2909,6 +2938,25 @@ mod tests {
             0.0,
             1.0,
         ),
+        (
+            DeviceParamField::Tape(TapeField::Drive),
+            "tape_drive",
+            0.0,
+            0.8,
+        ),
+        (DeviceParamField::Tape(TapeField::Mix), "tape_mix", 0.0, 0.7),
+        (
+            DeviceParamField::Tape(TapeField::TrimDb),
+            "tape_trim_db",
+            0.0,
+            -6.0,
+        ),
+        (
+            DeviceParamField::Tape(TapeField::HfHz),
+            "tape_hf_hz",
+            20_000.0,
+            8_000.0,
+        ),
     ];
 
     /// 一个**名单拼写**的用例：落点、规范名、静态值、终点值。
@@ -2949,7 +2997,7 @@ mod tests {
                 field.canonical_name()
             );
         }
-        // 2. 三组各自的每个字段都有一条规范拼写在名单里，且拼写集合包含它自己。
+        // 2. 四组各自的每个字段都有一条规范拼写在名单里，且拼写集合包含它自己。
         for field in StripField::ALL {
             let canonical = field.canonical_name();
             assert!(
@@ -3002,7 +3050,20 @@ mod tests {
                 .collect();
             assert!(spellings.contains(&canonical), "{canonical}: {spellings:?}");
         }
-        // 3. 名单与四张**唯一名字表**的并集逐字相等（⛔ 少一个、多一个、重复都红）。
+        for field in TapeField::ALL {
+            let canonical = field.canonical_name();
+            assert!(
+                APPLIED_DEVICE_PARAM_NAMES.contains(&canonical),
+                "{canonical}"
+            );
+            let spellings: Vec<&str> = APPLIED_DEVICE_PARAM_NAMES
+                .iter()
+                .copied()
+                .filter(|name| TapeField::from_name(name) == Some(*field))
+                .collect();
+            assert!(spellings.contains(&canonical), "{canonical}: {spellings:?}");
+        }
+        // 3. 名单与五张**唯一名字表**的并集逐字相等（⛔ 少一个、多一个、重复都红）。
         assert_eq!(
             StripField::ALL.len(),
             22,
@@ -3011,6 +3072,7 @@ mod tests {
         assert_eq!(ReverbField::ALL.len(), 4, "Freeverb 4 个字段");
         assert_eq!(ConvolutionField::ALL.len(), 4, "卷积标量 4 个字段");
         assert_eq!(DelayField::ALL.len(), 9, "延迟 9 个字段");
+        assert_eq!(TapeField::ALL.len(), 4, "磁带饱和 4 个字段");
         assert_eq!(
             StripField::SPELLINGS.len(),
             41,
@@ -3019,12 +3081,13 @@ mod tests {
         let expected_len = StripField::SPELLINGS.len()
             + ReverbField::SPELLINGS.len()
             + ConvolutionField::SPELLINGS.len()
-            + DelayField::SPELLINGS.len();
-        assert_eq!(expected_len, 70, "41 + 6 + 8 + 15 = 70 个拼写");
+            + DelayField::SPELLINGS.len()
+            + TapeField::SPELLINGS.len();
+        assert_eq!(expected_len, 78, "41 + 6 + 8 + 15 + 8 = 78 个拼写");
         assert_eq!(
             APPLIED_DEVICE_PARAM_NAMES.len(),
             expected_len,
-            "名单与四张 SPELLINGS 的并集条数必须相等"
+            "名单与五张 SPELLINGS 的并集条数必须相等"
         );
         let mut sorted: Vec<&str> = APPLIED_DEVICE_PARAM_NAMES.to_vec();
         sorted.sort_unstable();
@@ -3034,9 +3097,10 @@ mod tests {
             .chain(ReverbField::SPELLINGS.iter().map(|(name, _)| *name))
             .chain(ConvolutionField::SPELLINGS.iter().map(|(name, _)| *name))
             .chain(DelayField::SPELLINGS.iter().map(|(name, _)| *name))
+            .chain(TapeField::SPELLINGS.iter().map(|(name, _)| *name))
             .collect();
         expected.sort_unstable();
-        assert_eq!(sorted, expected, "名单必须与四张 SPELLINGS 完全一致");
+        assert_eq!(sorted, expected, "名单必须与五张 SPELLINGS 完全一致");
         sorted.dedup();
         assert_eq!(
             sorted.len(),
@@ -3057,7 +3121,7 @@ mod tests {
         }
     }
 
-    /// ⭐ `#267`/`#293`/`#304` 判据 1/2：**39 个字段各一条**（70 个拼写逐个跑）—— 泳道从静态值
+    /// ⭐ `#267`/`#293`/`#304` 判据 1/2：**43 个字段各一条**（78 个拼写逐个跑）—— 泳道从静态值
     /// 渐变到终点值 ⇒ 求值器把**这个字段**接上（`field()` / `param_name()` / 静态值），
     /// 曲线在块边界上单调，且恒等判定为假。别名与规范名解析到**同一个**落点。
     #[test]

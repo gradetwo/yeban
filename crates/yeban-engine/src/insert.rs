@@ -431,11 +431,14 @@ pub use yeban_dsp::delay::Delay as DspDelay;
 // 延迟的投影期参数表（舞台参数 + 音符同步换算）住在 `yeban-dsp` 的 `device_param`。
 // 本模块只读它，不复制第二份拼写表与钳制（与 render 的 `inserts` 同一张表）。
 use yeban_dsp::device_param::{DelayField, DelayStageParams, delay_params_from_stage};
+// 磁带饱和的**唯一实现**住在 `yeban-dsp`（`crates/yeban-dsp/src/tape.rs`）。
+// 本模块只转发：类型 + 参数类型（`ADR-0062`）。
+pub use yeban_dsp::tape::{TapeParams, TapeSaturation};
 // IR 合成本身**不是**本模块的发明：白噪声源是 `yeban_dsp::noise::Rng`（xorshift32，
 // 显式播种、跨运行同序），本模块**不**定义第二份 PRNG。
 use yeban_dsp::noise::Rng;
 
-/// 一条轨的**插入链**投影（四件器件：通道条、混响、卷积混响与乒乓延迟）。
+/// 一条轨的**插入链**投影（五件器件：通道条、磁带饱和、混响、卷积混响与乒乓延迟）。
 ///
 /// 结构体保留一个"链"的形状而不是裸 `Option<ChannelStripParams>`：后续器件接线时
 /// 在这里**加字段**即可，实时侧的"逐轨查找 + 整段跳过"骨架不必改。
@@ -444,9 +447,11 @@ use yeban_dsp::noise::Rng;
 /// 见模块文档 §9）。⚠ 它同时是**本类型失去 `Copy` 的原因**：那一件器件必须携带一份 IR
 /// （`Vec<f32>`），见 [`ConvolutionPlan`]。
 ///
-/// ⚠ **本链的第四个器件仍然是"没有"**：`drums` 是**音源**（触发式），不是插入器件
-/// ⇒ 它住在 [`crate::synth`] 里，位置在本链**之前**。理由（插入链没有事件输入、
-/// `DrumMachine` 没有 `process_*`）见 [`crate::drums`] 模块文档 §2。
+/// ⚠ **本链的第四个器件是磁带饱和**（`ADR-0062`）：链级饱和器，位置在通道条之后、
+/// Freeverb 之前（离线链已接线；实时 `rt.rs` 的池接线是后续项，见 ADR-0062）。
+/// `drums` 仍然**不是**插入器件：它是**音源**（触发式）⇒ 住在 [`crate::synth`] 里，
+/// 位置在本链**之前**。理由（插入链没有事件输入、`DrumMachine` 没有 `process_*`）
+/// 见 [`crate::drums`] 模块文档 §2。
 /// `grep -rn 'use yeban_dsp' crates/yeban-engine/src` 现在有真实引用分布在
 /// `synth` / `insert` / `mixer` / `drums` 等模块（判据见
 /// `crates/yeban-engine/tests/drums_instrument.rs` 的 D2）。
@@ -454,6 +459,9 @@ use yeban_dsp::noise::Rng;
 pub struct InsertParams {
     /// 本轨的通道条参数：`None` = 本轨**没有**通道条（实时侧那段跳过）。
     strip: Option<ChannelStripParams>,
+    /// 本轨的磁带饱和参数：`None` = 本轨**没有**磁带饱和（离线链那段跳过；
+    /// 实时池接线见 ADR-0062 后续项）。
+    saturation: Option<TapeParams>,
     /// 本轨的混响参数：`None` = 本轨**没有**混响（实时侧那段跳过）。
     ///
     /// ⚠ 与通道条不同，这里**没有**"级开关"：`ReverbParams` 的五个字段全参与处理，
@@ -756,6 +764,7 @@ impl InsertParams {
     pub const fn empty() -> Self {
         Self {
             strip: None,
+            saturation: None,
             reverb: None,
             convolution: None,
             delay: None,
@@ -763,9 +772,9 @@ impl InsertParams {
     }
     /// 从模型层的设备链投影（**构造期**；见模块文档 §4、§8 与 §9 的规则表）。
     ///
-    /// 四件器件**各自独立**取来源：通道条取第一个含通道条参数名的设备，混响取第一个含
-    /// 混响参数名的设备，卷积混响取第一个含 `conv_` 参数名的设备，延迟取第一个含
-    /// `delay_` 参数名的设备（同一台设备可以同时是四者的来源）。这与"第一条含已识别参数的设备是唯一来源"是同一个口径 —— 已识别的
+    /// 五件器件**各自独立**取来源：通道条取第一个含通道条参数名的设备，磁带饱和取第一个含
+    /// 饱和参数名的设备，混响取第一个含混响参数名的设备，卷积混响取第一个含 `conv_` 参数名的设备，延迟取第一个含
+    /// `delay_` 参数名的设备（同一台设备可以同时是五者的来源）。这与"第一条含已识别参数的设备是唯一来源"是同一个口径 —— 已识别的
     /// 名字集合变大了，但每一件的**首个**来源仍然是首个（先命中者不被后来的覆盖）。
     ///
     /// `sample_rate` 只在卷积混响那一支用到（IR 的帧数 = 采样率 ÷ 10，
@@ -780,6 +789,7 @@ impl InsertParams {
         let strip: Option<ChannelStripParams> =
             strip_source_index(devices).and_then(|index| Self::strip_of(&devices[index]));
         let mut reverb: Option<ReverbParams> = None;
+        let mut saturation: Option<TapeParams> = None;
         let mut convolution: Option<ConvolutionPlan> = None;
         let mut delay: Option<DelayParams> = None;
         for device in devices {
@@ -791,19 +801,24 @@ impl InsertParams {
             if reverb.is_none() {
                 reverb = Self::reverb_of(device);
             }
+            if saturation.is_none() {
+                saturation = Self::tape_of(device);
+            }
             if convolution.is_none() {
                 convolution = Self::convolution_of(device, sample_rate);
             }
             if delay.is_none() {
                 delay = Self::delay_of(device, bpm);
             }
-            if reverb.is_some() && convolution.is_some() && delay.is_some() {
+            if reverb.is_some() && saturation.is_some() && convolution.is_some() && delay.is_some()
+            {
                 break;
             }
         }
         // 规则 7：快照里存的就是音频线程将要用的那一份数。
         Self {
             strip: strip.map(ChannelStripParams::sanitised),
+            saturation,
             reverb,
             convolution,
             delay,
@@ -837,6 +852,18 @@ impl InsertParams {
         resolved.into_params()
     }
 
+    /// 单台设备 → 磁带饱和参数（`None` = 一个已识别的饱和名字都没有）。
+    ///
+    /// 基值是 `yeban_dsp` 的设备默认值；只有**出现**的名字才覆盖它（`ADR-0062`）。
+    fn tape_of(device: &DeviceDefinition) -> Option<TapeParams> {
+        let mut resolved = TapeProjection::default();
+        for param in &device.params {
+            let name = param.name.to_ascii_lowercase();
+            resolved.apply(&name, param.value);
+        }
+        resolved.into_params()
+    }
+
     /// 本轨的**通道条参数**；`None` = 整段跳过。
     #[must_use]
     pub const fn strip(&self) -> Option<ChannelStripParams> {
@@ -850,6 +877,16 @@ impl InsertParams {
     #[must_use]
     pub const fn reverb(&self) -> Option<ReverbParams> {
         self.reverb
+    }
+
+    /// 本轨的**磁带饱和参数**；`None` = 整段跳过。
+    ///
+    /// 存在的理由与 [`Self::strip`] 相同：把"投影出来的那个数"变成可读的，
+    /// 判据就不必从音频输出反推。**只**被离线链（现阶段）用来调 `TapeSaturation::set_params`；
+    /// 实时池接线见 ADR-0062 后续项。
+    #[must_use]
+    pub const fn saturation(&self) -> Option<TapeParams> {
+        self.saturation
     }
 
     /// 单台设备 → 卷积混响计划（`None` = 一个已识别的 `conv_` 名字都没有）。
@@ -925,6 +962,7 @@ impl InsertParams {
     #[must_use]
     pub const fn is_empty(&self) -> bool {
         self.strip.is_none()
+            && self.saturation.is_none()
             && self.reverb.is_none()
             && self.convolution.is_none()
             && self.delay.is_none()
@@ -1188,6 +1226,47 @@ impl ReverbProjection {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default)]
+struct TapeProjection {
+    /// 出现过的饱和旋钮（`tape_drive` 等）。
+    seen: bool,
+    /// 基值 = 器件默认值（`ADR-0062`）。
+    params: TapeParams,
+}
+
+impl TapeProjection {
+    /// 把一条参数写进投影（**构造期**；名字已转小写）。
+    ///
+    /// ⚠ 裸 `mix` 与 `drive` **刻意不在**这个 `match` 里：那是通道条的名字，
+    /// 饱和只认带 `tape_` / `saturation_` 前缀的拼写（`TapeField::SPELLINGS`）。
+    fn apply(&mut self, name: &str, value: f32) {
+        match name {
+            "tape_drive" | "saturation_drive" => {
+                self.params.drive = value;
+                self.seen = true;
+            }
+            "tape_mix" | "saturation_mix" => {
+                self.params.mix = value;
+                self.seen = true;
+            }
+            "tape_trim_db" | "saturation_trim_db" => {
+                self.params.trim_db = value;
+                self.seen = true;
+            }
+            "tape_hf_hz" | "saturation_hf_hz" => {
+                self.params.hf_hz = value;
+                self.seen = true;
+            }
+            _ => {}
+        }
+    }
+
+    /// 收尾：`None` = 一个已识别的饱和名字都没有 ⇒ 本设备不是饱和来源。
+    fn into_params(self) -> Option<TapeParams> {
+        if self.seen { Some(self.params) } else { None }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1220,8 +1299,8 @@ mod tests {
 
     /// 带采样率与工程速度的投影（本模块判据统一用 [`TEST_SR`] 与 [`TEST_BPM`]）。
     ///
-    /// 单独包一层的理由：四件器件里卷积混响需要采样率（IR 帧数 = 采样率 ÷ 10）、
-    /// 延迟需要工程速度（音符同步换算），而既有判据关心的全是另外两件 ⇒ 一层转发让
+    /// 单独包一层的理由：五件器件里卷积混响需要采样率（IR 帧数 = 采样率 ÷ 10）、
+    /// 延迟需要工程速度（音符同步换算），而既有判据关心的全是另外三件 ⇒ 一层转发让
     /// 那些判据的正文一个字都不必改，也就不会在"改接线"的同时改动"既有期望值"。
     fn from_devices(devices: &[DeviceDefinition]) -> InsertParams {
         InsertParams::from_devices(devices, TEST_SR, TEST_BPM)
@@ -1859,28 +1938,33 @@ mod tests {
         assert!(negative_ir.iter().all(|v| v.is_finite()));
     }
 
-    /// 三件器件**各自独立**取来源：同一台设备可以同时是三者的来源（模块文档 §9 的
+    /// 四件器件**各自独立**取来源：同一台设备可以同时是四者的来源（模块文档 §9 的
     /// `from_devices` 文档）。
     #[test]
-    fn the_three_devices_take_their_sources_independently() {
-        let all_three = from_devices(&[device(
+    fn the_four_devices_take_their_sources_independently() {
+        let all_four = from_devices(&[device(
             DeviceKind::InternalEffect,
             false,
             &[
                 ("threshold_db", -20.0),
+                ("tape_drive", 0.5),
                 ("reverb_size", 0.7),
                 ("conv_wet", 0.5),
             ],
         )]);
-        assert!(all_three.strip().is_some(), "同一台设备要能同时出通道条");
-        assert!(all_three.reverb().is_some(), "同一台设备要能同时出混响");
+        assert!(all_four.strip().is_some(), "同一台设备要能同时出通道条");
         assert!(
-            all_three.convolution().is_some(),
+            all_four.saturation().is_some(),
+            "同一台设备要能同时出磁带饱和"
+        );
+        assert!(all_four.reverb().is_some(), "同一台设备要能同时出混响");
+        assert!(
+            all_four.convolution().is_some(),
             "同一台设备要能同时出卷积混响"
         );
-        assert!(!all_three.is_empty());
+        assert!(!all_four.is_empty());
 
-        // 首个来源不被后来的覆盖（三件各一条）。
+        // 首个来源不被后来的覆盖（四件各一条）。
         let ordered = from_devices(&[
             device(DeviceKind::InternalEffect, false, &[("conv_wet", 0.5)]),
             device(DeviceKind::InternalEffect, false, &[("conv_wet", 0.1)]),
@@ -1894,6 +1978,46 @@ mod tests {
                 .to_bits(),
             0.5f32.to_bits(),
             "首个来源不被后来的覆盖"
+        );
+        let ordered_tape = from_devices(&[
+            device(DeviceKind::InternalEffect, false, &[("tape_mix", 0.7)]),
+            device(DeviceKind::InternalEffect, false, &[("tape_mix", 0.2)]),
+        ]);
+        assert_eq!(
+            ordered_tape.saturation().expect("磁带饱和").mix.to_bits(),
+            0.7f32.to_bits(),
+            "首个来源不被后来的覆盖"
+        );
+    }
+
+    /// ⭐ `ADR-0062`：饱和投影只认带前缀的拼写；别名与规范名同落点；裸名不武装。
+    #[test]
+    fn tape_projection_recognises_only_prefixed_spellings() {
+        let aliased = from_devices(&[device(
+            DeviceKind::InternalEffect,
+            false,
+            &[("saturation_drive", 0.6), ("saturation_trim_db", -3.0)],
+        )]);
+        let params = aliased.saturation().expect("别名必须认出饱和来源");
+        assert_eq!(params.drive.to_bits(), 0.6f32.to_bits());
+        assert_eq!(params.trim_db.to_bits(), (-3.0f32).to_bits());
+        assert_eq!(
+            params.mix.to_bits(),
+            TapeParams::DEFAULT.mix.to_bits(),
+            "未写字段保持器件默认值"
+        );
+        let bare = from_devices(&[device(
+            DeviceKind::InternalEffect,
+            false,
+            &[("mix", 0.9), ("drive", 0.5)],
+        )]);
+        assert!(
+            bare.saturation().is_none(),
+            "裸 mix/drive 不得武装饱和（那是通道条的名字）"
+        );
+        assert!(
+            bare.strip().is_some(),
+            "裸 drive 仍武装通道条（歧义消解：饱和只认带前缀的拼写）"
         );
     }
 

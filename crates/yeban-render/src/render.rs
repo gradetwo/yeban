@@ -2876,7 +2876,7 @@ mod tests {
                 .collect(),
             latency_samples: 0,
         };
-        InsertChain::from_devices(&[device], 48_000)
+        InsertChain::from_devices(&[device], 48_000, 120.0)
     }
 
     /// 判据：键路由只在"目的已武装 + 源在子图 + 源层严格更早"时求值；
