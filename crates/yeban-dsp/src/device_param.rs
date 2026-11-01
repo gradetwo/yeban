@@ -885,7 +885,10 @@ mod tests {
     /// 同步关 ⇒ 保留写值；bpm 无效 ⇒ 同步不换算（退回写值，不编速度）。
     #[test]
     fn delay_sync_off_or_bad_bpm_keeps_written_time() {
-        let mut stage = DelayStageParams { time_s: 0.5, ..Default::default() };
+        let mut stage = DelayStageParams {
+            time_s: 0.5,
+            ..Default::default()
+        };
         assert_eq!(
             delay_params_from_stage(&stage, 120.0).time_s,
             0.5,
