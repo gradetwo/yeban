@@ -9,14 +9,15 @@
 //!
 //! ## 表的内容
 //!
-//! 三个**器件族**各一张字段表 ＋ 一张把三个族合起来的落点枚举：
+//! 四个**器件族**各一张字段表 ＋ 一张把四个族合起来的落点枚举：
 //!
 //! | 类型 | 内容 |
 //! | :--- | :--- |
 //! | [`StripField`] | 通道条 22 个可自动化字段（`41` 个拼写） |
 //! | [`ReverbField`] | Freeverb 的 4 个标量字段（`6` 个拼写） |
 //! | [`ConvolutionField`] | 卷积混响的 4 个标量字段（`8` 个拼写；IR 形状不落点） |
-//! | [`DeviceParamField`] / [`DeviceParamFamily`] | 三族的合流枚举与器件族标签 |
+//! | [`DelayField`] | 乒乓延迟的 9 个字段（`15` 个拼写；音符同步四字段只在投影期换算） |
+//! | [`DeviceParamField`] / [`DeviceParamFamily`] | 四族的合流枚举与器件族标签 |
 //!
 //! ⛔ **本模块不含**任何 I/O、模型类型或 GUI：每个 `sanitise` 都与器件内部**同一次**
 //! 钳制对齐（[`ChannelStripParams::sanitised`] / [`crate::reverb::Reverb::set_params`] /
@@ -28,6 +29,7 @@ use crate::channel_strip::ChannelStripParams;
 use crate::convolution_reverb::{
     ConvolutionReverbParams, MAX_IR_GAIN_DB, MAX_PRE_DELAY_SECONDS, MIN_IR_GAIN_DB,
 };
+use crate::delay::{DelayParams, MAX_DELAY_SECONDS};
 use crate::reverb::{REVERB_MAX_PREDELAY_S, ReverbParams};
 
 /// 通道条**实际会用的**输出增益值（`dB`）—— 与器件内部同一次钳制
@@ -515,6 +517,262 @@ impl ConvolutionField {
     }
 }
 
+/// 乒乓延迟的**投影期参数**：器件的 5 个标量字段 ＋ 音符同步的 4 个输入字段。
+///
+/// 为什么不直接用 [`DelayParams`]：同步四字段是**投影期输入**（按工程 `bpm` 换算成
+/// `time_s`），不是器件的运行参数；`delay.rs` 本单零改动 ⇒ 器件结构不能扩。
+/// 投影层（`yeban-render` / `yeban-engine` 各自的 `delay_of`）先把设备参数读进
+/// 这一份，再经 [`delay_params_from_stage`] 换算成器件参数。
+///
+/// 舞台缺省遵设计 §3.3（与器件缺省**在两处不同**：`mix = 0` ⇒ 级缺省关闭，
+/// `ping_pong = true` ⇒ 功能缺省即乒乓；其余与 [`DelayParams::new`] 同值）；
+/// 同步字段的缺省按设计 §3.3（关、3、8、附点）。
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct DelayStageParams {
+    /// 延迟时间（秒，写值；同步开时被换算值覆盖）。
+    pub time_s: f32,
+    /// 反馈量（0..0.95）。
+    pub feedback: f32,
+    /// 湿电平（0..1）；钳制后为 0 ⇒ 运行态不建器件（见 `-0.0` 注记）。
+    pub mix: f32,
+    /// 反馈高频阻尼（0..1）。
+    pub damp: f32,
+    /// 交叉馈送（回声左右交替）。
+    pub ping_pong: bool,
+    /// 音符同步开关。
+    pub sync_enabled: bool,
+    /// 同步分子（拍数，全音符为单位的分母体系）。
+    pub sync_num: f32,
+    /// 同步分母。
+    pub sync_den: f32,
+    /// 附点（×1.5）。
+    pub sync_dotted: bool,
+}
+
+impl Default for DelayStageParams {
+    fn default() -> Self {
+        Self {
+            time_s: 0.3,
+            feedback: 0.3,
+            mix: 0.0,
+            damp: 0.0,
+            ping_pong: true,
+            sync_enabled: false,
+            sync_num: 3.0,
+            sync_den: 8.0,
+            sync_dotted: true,
+        }
+    }
+}
+
+/// 乒乓延迟上**可被 `DeviceParam` 自动化落点**的字段。
+///
+/// 与静态投影（`delay_projection` / 引擎 `delay_of`）**同一张拼写表**
+///（[`Self::SPELLINGS`]）：静态投影与块边界自动化读的是同一组名字，⛔ 不写第二份。
+///
+/// 同步四字段只在投影期换算：块边界写同步字段只改投影结构里的输入值，
+/// 不重算 `time_s`（块边界没有 `bpm`）；同步泳道的"应用"口径见 ADR-0061。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum DelayField {
+    /// 延迟时间（秒）。`delay_time_s` / `delay_time`。
+    TimeS,
+    /// 反馈量（0..0.95）。`delay_feedback` / `delay_fb`。
+    Feedback,
+    /// 湿电平（0..1）。`delay_mix` / `delay_wet`。
+    Mix,
+    /// 反馈高频阻尼（0..1）。`delay_damp` / `delay_damping`。
+    Damp,
+    /// 交叉馈送开关。`delay_ping_pong` / `delay_pingpong`。
+    PingPong,
+    /// 音符同步开关。`delay_sync_enabled` / `delay_sync`。
+    SyncEnabled,
+    /// 同步分子（1..16）。`delay_sync_num`。
+    SyncNum,
+    /// 同步分母（1..16）。`delay_sync_den`。
+    SyncDen,
+    /// 附点开关。`delay_sync_dotted`。
+    SyncDotted,
+}
+
+impl DelayField {
+    /// 全部字段。
+    pub const ALL: &'static [Self] = &[
+        Self::TimeS,
+        Self::Feedback,
+        Self::Mix,
+        Self::Damp,
+        Self::PingPong,
+        Self::SyncEnabled,
+        Self::SyncNum,
+        Self::SyncDen,
+        Self::SyncDotted,
+    ];
+
+    /// **全部拼写** → 字段（`15` 条 = `9` 个字段）。
+    pub const SPELLINGS: &'static [(&'static str, Self)] = &[
+        ("delay_time_s", Self::TimeS),
+        ("delay_time", Self::TimeS),
+        ("delay_feedback", Self::Feedback),
+        ("delay_fb", Self::Feedback),
+        ("delay_mix", Self::Mix),
+        ("delay_wet", Self::Mix),
+        ("delay_damp", Self::Damp),
+        ("delay_damping", Self::Damp),
+        ("delay_ping_pong", Self::PingPong),
+        ("delay_pingpong", Self::PingPong),
+        ("delay_sync_enabled", Self::SyncEnabled),
+        ("delay_sync", Self::SyncEnabled),
+        ("delay_sync_num", Self::SyncNum),
+        ("delay_sync_den", Self::SyncDen),
+        ("delay_sync_dotted", Self::SyncDotted),
+    ];
+
+    /// 名字 → 字段（大小写不敏感）。
+    #[must_use]
+    pub fn from_name(name: &str) -> Option<Self> {
+        Self::SPELLINGS
+            .iter()
+            .find(|(spelling, _)| name.eq_ignore_ascii_case(spelling))
+            .map(|(_, field)| *field)
+    }
+
+    /// 规范名。
+    #[must_use]
+    pub const fn canonical_name(self) -> &'static str {
+        match self {
+            Self::TimeS => "delay_time_s",
+            Self::Feedback => "delay_feedback",
+            Self::Mix => "delay_mix",
+            Self::Damp => "delay_damp",
+            Self::PingPong => "delay_ping_pong",
+            Self::SyncEnabled => "delay_sync_enabled",
+            Self::SyncNum => "delay_sync_num",
+            Self::SyncDen => "delay_sync_den",
+            Self::SyncDotted => "delay_sync_dotted",
+        }
+    }
+
+    /// 本字段是否是**开关**（读作 `1.0` / `0.0`，写时非零即真）。
+    #[must_use]
+    pub const fn is_flag(self) -> bool {
+        matches!(self, Self::PingPong | Self::SyncEnabled | Self::SyncDotted)
+    }
+
+    /// 从投影参数里读这个字段（开关读成 `1.0` / `0.0`）。
+    #[must_use]
+    pub fn read(self, params: &DelayStageParams) -> f32 {
+        match self {
+            Self::TimeS => params.time_s,
+            Self::Feedback => params.feedback,
+            Self::Mix => params.mix,
+            Self::Damp => params.damp,
+            Self::PingPong => f32::from(u8::from(params.ping_pong)),
+            Self::SyncEnabled => f32::from(u8::from(params.sync_enabled)),
+            Self::SyncNum => params.sync_num,
+            Self::SyncDen => params.sync_den,
+            Self::SyncDotted => f32::from(u8::from(params.sync_dotted)),
+        }
+    }
+
+    /// 把**原生绝对值**写进投影参数（⛔ 不在这里钳制：钳制在器件的 `process`
+    /// 与 [`Self::sanitise`] 的恒等判定里）。
+    pub fn store(self, params: &mut DelayStageParams, value: f32) {
+        match self {
+            Self::TimeS => params.time_s = value,
+            Self::Feedback => params.feedback = value,
+            Self::Mix => params.mix = value,
+            Self::Damp => params.damp = value,
+            Self::PingPong => params.ping_pong = value != 0.0,
+            Self::SyncEnabled => params.sync_enabled = value != 0.0,
+            Self::SyncNum => params.sync_num = value,
+            Self::SyncDen => params.sync_den = value,
+            Self::SyncDotted => params.sync_dotted = value != 0.0,
+        }
+    }
+
+    /// 与器件**同一次**钳制/回落（只给恒等判定与运行态的建级门用）。
+    ///
+    /// 器件字段沿 `Delay::process` 的入口钳制（`time` 钳到 `0.001..MAX_DELAY_SECONDS`、
+    /// `feedback` 钳到 `0..0.95`、`mix` / `damp` 钳到 `0..1`，非有限值回落到下界）；
+    /// 同步分子/分母钳到 `1..16`（非有限值回落到缺省 3 / 8）；开关读作 `1.0` / `0.0`。
+    #[must_use]
+    pub fn sanitise(self, value: f32) -> f32 {
+        match self {
+            Self::TimeS => {
+                if value.is_finite() {
+                    value.clamp(0.001, MAX_DELAY_SECONDS)
+                } else {
+                    0.001
+                }
+            }
+            Self::Feedback => {
+                if value.is_finite() {
+                    value.clamp(0.0, 0.95)
+                } else {
+                    0.0
+                }
+            }
+            Self::Mix | Self::Damp => {
+                if value.is_finite() {
+                    value.clamp(0.0, 1.0)
+                } else {
+                    0.0
+                }
+            }
+            Self::PingPong | Self::SyncEnabled | Self::SyncDotted => {
+                f32::from(u8::from(value != 0.0))
+            }
+            Self::SyncNum => {
+                if value.is_finite() {
+                    value.clamp(1.0, 16.0)
+                } else {
+                    3.0
+                }
+            }
+            Self::SyncDen => {
+                if value.is_finite() {
+                    value.clamp(1.0, 16.0)
+                } else {
+                    8.0
+                }
+            }
+        }
+    }
+}
+
+/// 音符同步换算（投影期、控制线程做）：`time_s = 60/bpm × 4 × num/den × (附点 ? 1.5 : 1)`。
+///
+/// `num` / `den` 先钳到 `1..16` 再取整（拍数是整数）；结果钳到器件域
+/// `0.001..MAX_DELAY_SECONDS`（84 BPM 附点二分 2.1429 s ⇒ 钳到 2.0 s）。
+#[must_use]
+pub fn delay_sync_time_s(bpm: f64, num: f32, den: f32, dotted: bool) -> f32 {
+    let num = num.clamp(1.0, 16.0).round();
+    let den = den.clamp(1.0, 16.0).round();
+    let quarters = 4.0 * (f64::from(num) / f64::from(den)) * if dotted { 1.5 } else { 1.0 };
+    ((60.0 / bpm) * quarters) as f32
+}
+
+/// 投影期参数 → 器件参数：同步开且 `bpm` 有效时 `time_s` 被换算值覆盖，
+/// 否则保留写值（器件 `process` 入口再钳制一次）。
+///
+/// `bpm` 无效（非有限或 ≤ 0）时同步**不换算**（退回写值，不静默编一个速度）；
+/// 该回落口径见 ADR-0061。
+#[must_use]
+pub fn delay_params_from_stage(stage: &DelayStageParams, bpm: f64) -> DelayParams {
+    let mut params = DelayParams {
+        time_s: stage.time_s,
+        feedback: stage.feedback,
+        mix: stage.mix,
+        damp: stage.damp,
+        ping_pong: stage.ping_pong,
+    };
+    if stage.sync_enabled && bpm.is_finite() && bpm > 0.0 {
+        params.time_s = delay_sync_time_s(bpm, stage.sync_num, stage.sync_den, stage.sync_dotted)
+            .clamp(0.001, MAX_DELAY_SECONDS);
+    }
+    params
+}
+
 /// 一条 `DeviceParam` 泳道在离线插入链上的**落点**：器件族 ＋ 字段。
 ///
 /// [`Self::from_name`] 是“哪个名字有落点”的**唯一**判定处：静态投影
@@ -527,6 +785,8 @@ pub enum DeviceParamField {
     Reverb(ReverbField),
     /// 卷积混响**标量**字段。
     Convolution(ConvolutionField),
+    /// 乒乓延迟字段。
+    Delay(DelayField),
 }
 
 /// 强制实例化按**器件族**分开。
@@ -538,16 +798,19 @@ pub enum DeviceParamFamily {
     Reverb,
     /// 卷积混响。
     Convolution,
+    /// 乒乓延迟。
+    Delay,
 }
 
 impl DeviceParamField {
-    /// 名字 → 落点（大小写不敏感）。顺序：通道条 → 混响 → 卷积。
+    /// 名字 → 落点（大小写不敏感）。顺序：通道条 → 混响 → 卷积 → 延迟。
     #[must_use]
     pub fn from_name(name: &str) -> Option<Self> {
         StripField::from_name(name)
             .map(Self::Strip)
             .or_else(|| ReverbField::from_name(name).map(Self::Reverb))
             .or_else(|| ConvolutionField::from_name(name).map(Self::Convolution))
+            .or_else(|| DelayField::from_name(name).map(Self::Delay))
     }
 
     /// 规范名。
@@ -557,6 +820,7 @@ impl DeviceParamField {
             Self::Strip(field) => field.canonical_name(),
             Self::Reverb(field) => field.canonical_name(),
             Self::Convolution(field) => field.canonical_name(),
+            Self::Delay(field) => field.canonical_name(),
         }
     }
 
@@ -567,6 +831,7 @@ impl DeviceParamField {
             Self::Strip(_) => DeviceParamFamily::Strip,
             Self::Reverb(_) => DeviceParamFamily::Reverb,
             Self::Convolution(_) => DeviceParamFamily::Convolution,
+            Self::Delay(_) => DeviceParamFamily::Delay,
         }
     }
 
@@ -577,6 +842,100 @@ impl DeviceParamField {
             Self::Strip(field) => field.sanitise(value),
             Self::Reverb(field) => field.sanitise(value),
             Self::Convolution(field) => field.sanitise(value),
+            Self::Delay(field) => field.sanitise(value),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 84 BPM 音符同步换算表（设计 §3.3 的数值逐项断言；附点二分换算值为 2.142857，
+    /// 钳制到 2.0 s 发生在 `delay_params_from_stage`，不在纯换算里）。
+    #[test]
+    fn delay_sync_conversion_table_at_84_bpm() {
+        let bpm = 84.0;
+        let cases = [
+            (1.0, 8.0, false, 0.357_142_87),
+            (1.0, 8.0, true, 0.535_714_27),
+            (1.0, 4.0, false, 0.714_285_73),
+            (1.0, 4.0, true, 1.071_428_5),
+            (1.0, 2.0, false, 1.428_571_5),
+            (1.0, 2.0, true, 2.142_857),
+        ];
+        for (num, den, dotted, expected) in cases {
+            let got = delay_sync_time_s(bpm, num, den, dotted);
+            assert!(
+                (got - expected).abs() < 1e-4,
+                "84 BPM {num}/{den} dotted={dotted}：期望 {expected}，实得 {got}"
+            );
+        }
+        // 钳制在换算的下一层：附点二分经 `delay_params_from_stage` 落到 2.0 s。
+        let stage = DelayStageParams {
+            sync_enabled: true,
+            sync_num: 1.0,
+            sync_den: 2.0,
+            sync_dotted: true,
+            ..DelayStageParams::default()
+        };
+        assert_eq!(delay_params_from_stage(&stage, bpm).time_s, 2.0);
+    }
+
+    /// 同步关 ⇒ 保留写值；bpm 无效 ⇒ 同步不换算（退回写值，不编速度）。
+    #[test]
+    fn delay_sync_off_or_bad_bpm_keeps_written_time() {
+        let mut stage = DelayStageParams {
+            time_s: 0.5,
+            ..Default::default()
+        };
+        assert_eq!(
+            delay_params_from_stage(&stage, 120.0).time_s,
+            0.5,
+            "同步关时写值原样进器件"
+        );
+        stage.sync_enabled = true;
+        stage.sync_num = 1.0;
+        stage.sync_den = 2.0;
+        stage.sync_dotted = true;
+        for bad_bpm in [f64::NAN, f64::INFINITY, 0.0, -120.0] {
+            assert_eq!(
+                delay_params_from_stage(&stage, bad_bpm).time_s,
+                0.5,
+                "bpm={bad_bpm} 时同步不换算"
+            );
+        }
+        assert!(
+            (delay_params_from_stage(&stage, 84.0).time_s - 2.0).abs() < f32::EPSILON,
+            "84 BPM 附点二分换算后钳到 2.0 s"
+        );
+    }
+
+    /// 延迟拼写表：规范名与别名指向同一字段。
+    #[test]
+    fn delay_spellings_resolve_to_the_same_field() {
+        for field in DelayField::ALL {
+            assert_eq!(
+                DelayField::from_name(field.canonical_name()),
+                Some(*field),
+                "规范名 {} 必须解析",
+                field.canonical_name()
+            );
+        }
+        for (alias, field) in [
+            ("delay_time", DelayField::TimeS),
+            ("delay_fb", DelayField::Feedback),
+            ("delay_wet", DelayField::Mix),
+            ("delay_damping", DelayField::Damp),
+            ("delay_pingpong", DelayField::PingPong),
+            ("delay_sync", DelayField::SyncEnabled),
+        ] {
+            assert_eq!(
+                DelayField::from_name(alias),
+                Some(field),
+                "别名 {alias} 必须指向同一字段"
+            );
+        }
+        assert_eq!(DelayField::SPELLINGS.len(), 15, "延迟拼写共 15 条");
     }
 }

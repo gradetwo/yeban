@@ -36,8 +36,8 @@
 //!
 //! - 只接 [`AutomationTarget::TrackVolume`]（含主总线）、[`AutomationTarget::SendGain`]、
 //!   [`AutomationTarget::TrackPan`] 与 [`AutomationTarget::DeviceParam`] 里**插入链能改的
-//!   标量字段**（[`APPLIED_DEVICE_PARAM_NAMES`]：55 个拼写 = 30 个字段，含别名；
-//!   通道条 22（14 增益/EQ/滤波 ＋ 8 压缩）＋ Freeverb 4 ＋ 卷积标量 4）；**卷积
+//!   标量字段**（[`APPLIED_DEVICE_PARAM_NAMES`]：70 个拼写 = 39 个字段，含别名；
+//!   通道条 22（14 增益/EQ/滤波 ＋ 8 压缩）＋ Freeverb 4 ＋ 卷积标量 4 ＋ 延迟 9）；**卷积
 //!   IR 形状**（`conv_ir_decay*` / `conv_ir_seed`）如实登记（⛔ 不冒充已支持）；
 //!   ⭐ `#304` 起**压缩 8 字段**也在这张表里（`compressor_enabled` + 7 个标量），
 //!   静态投影与自动化因此读**同一张**名字表；
@@ -70,9 +70,9 @@ use yeban_model::{AutomationLane, AutomationTarget, EntityId, PPQ, TrackV3, Yeba
 
 use crate::inserts::{
     DeviceParamFamily, DeviceParamField, ForcedInsertInstances, StripField,
-    convolution_source_params, convolution_source_slot, forced_identity_strip,
-    resolve_device_param, reverb_source_params, reverb_source_slot, strip_source_params,
-    strip_source_slot,
+    convolution_source_params, convolution_source_slot, delay_source_params, delay_source_slot,
+    forced_identity_strip, resolve_device_param, reverb_source_params, reverb_source_slot,
+    strip_source_params, strip_source_slot,
 };
 use crate::render::{L1_BLOCK_SIZE, db_to_linear};
 
@@ -1104,6 +1104,22 @@ pub const APPLIED_DEVICE_PARAM_NAMES: &[&str] = &[
     "conv_wet_mix",
     "conv_ir_gain_db",
     "conv_ir_gain",
+    // 乒乓延迟（15 = 9 个字段；音符同步四字段只在投影期换算）。
+    "delay_time_s",
+    "delay_time",
+    "delay_feedback",
+    "delay_fb",
+    "delay_mix",
+    "delay_wet",
+    "delay_damp",
+    "delay_damping",
+    "delay_ping_pong",
+    "delay_pingpong",
+    "delay_sync_enabled",
+    "delay_sync",
+    "delay_sync_num",
+    "delay_sync_den",
+    "delay_sync_dotted",
 ];
 
 /// 名字是否是本切片会落点的设备参数（**大小写不敏感**，与静态投影的同一口径）。
@@ -1144,6 +1160,10 @@ fn static_insert_field_value(track: &TrackV3, field: DeviceParamField) -> Option
             let params = convolution_source_params(track)?;
             Some(field.sanitise(field.read(&params)))
         }
+        DeviceParamField::Delay(field) => {
+            let params = delay_source_params(track)?;
+            Some(field.sanitise(field.read(&params)))
+        }
     }
 }
 
@@ -1156,7 +1176,7 @@ fn static_insert_field_value(track: &TrackV3, field: DeviceParamField) -> Option
 /// 2. 参数名不是任何器件族的字段（[`crate::inserts::DeviceParamField::from_name`]）；
 /// 3. 设备被旁通 / 不是内置效果器（规则同 `from_devices`）；
 /// 4. 该插槽**不是**本轨对应器件族的来源设备（`strip_source_slot` /
-///    `reverb_source_slot` / `convolution_source_slot`）—— 那台设备的参数根本不会
+///    `reverb_source_slot` / `convolution_source_slot` / `delay_source_slot`）—— 那台设备的参数根本不会
 ///    进 DSP，改它没有落点。
 ///
 /// ## "全恒等设备"也是来源（`#266` 的边界裁决，`#267` 逐条沿用）
@@ -1195,6 +1215,7 @@ fn applicable_device_param(
         },
         DeviceParamFamily::Reverb => reverb_source_slot(track) == Some(slot_index),
         DeviceParamFamily::Convolution => convolution_source_slot(track) == Some(slot_index),
+        DeviceParamFamily::Delay => delay_source_slot(track) == Some(slot_index),
     };
     if !slot_is_source {
         return None;
@@ -1240,7 +1261,7 @@ pub enum LaneResidual {
     /// 目标是 `Macro` 或成环、空 mappings 都仍报本残差）。
     Macro,
     /// `DeviceParam`：没有插入链落点（名字不是通道条（含压缩）/ Freeverb / 卷积
-    /// 标量字段、设备被旁通、或指向的不是该器件族的来源设备）。
+    /// 标量 / 延迟字段、设备被旁通、或指向的不是该器件族的来源设备）。
     ///
     /// ⚠ 名字里的 `NotChannelStrip` 是**外部契约的稳定串**，本单 `#293` 扩到
     /// Freeverb/卷积、`#304` 扩到压缩后**不改**：它仍是“离线插入链没有这个落点”
@@ -1759,6 +1780,9 @@ pub fn forced_insert_instances(
                 DeviceParamFamily::Convolution => {
                     forced.convolution.insert(*track_id);
                 }
+                DeviceParamFamily::Delay => {
+                    forced.delay.insert(*track_id);
+                }
             }
         }
     }
@@ -1903,7 +1927,7 @@ mod tests {
     use super::*;
     use std::str::FromStr as _;
 
-    use crate::inserts::{ConvolutionField, DeviceParamField, ReverbField, StripField};
+    use crate::inserts::{ConvolutionField, DelayField, DeviceParamField, ReverbField, StripField};
     use yeban_model::{
         AutomationLane, AutomationPoint, AutomationWriteMode, CurveType, DeviceDefinition,
         DeviceKind, MacroMapping, MacroParameter, ParameterValue, RoutingEdge, RoutingKind,
@@ -2714,6 +2738,18 @@ mod tests {
         assert_eq!(forced.convolution, BTreeSet::from([conv_track]));
         assert!(forced.strip.is_empty() && forced.reverb.is_empty());
 
+        let (delay_project, delay_track) = project_with_device_lane(
+            &[("delay_mix", 0.0)],
+            &[(0, 0.0), (1_920, 1.0)],
+            true,
+            false,
+        );
+        let automations = device_param_automations(&delay_project, 48_000);
+        let forced = forced_insert_instances(&automations);
+        assert_eq!(forced.delay, BTreeSet::from([delay_track]));
+        assert!(forced.strip.is_empty() && forced.reverb.is_empty());
+        assert!(forced.convolution.is_empty());
+
         let (flat_project, _flat_track) = project_with_device_lane(
             &[("reverb_wet", 0.25)],
             &[(0, 0.25), (1_920, 0.25)],
@@ -2819,6 +2855,60 @@ mod tests {
             0.0,
             -12.0,
         ),
+        (
+            DeviceParamField::Delay(DelayField::TimeS),
+            "delay_time_s",
+            0.3,
+            0.7,
+        ),
+        (
+            DeviceParamField::Delay(DelayField::Feedback),
+            "delay_feedback",
+            0.2,
+            0.6,
+        ),
+        (
+            DeviceParamField::Delay(DelayField::Mix),
+            "delay_mix",
+            0.0,
+            1.0,
+        ),
+        (
+            DeviceParamField::Delay(DelayField::Damp),
+            "delay_damp",
+            0.1,
+            0.5,
+        ),
+        (
+            DeviceParamField::Delay(DelayField::PingPong),
+            "delay_ping_pong",
+            0.0,
+            1.0,
+        ),
+        (
+            DeviceParamField::Delay(DelayField::SyncEnabled),
+            "delay_sync_enabled",
+            0.0,
+            1.0,
+        ),
+        (
+            DeviceParamField::Delay(DelayField::SyncNum),
+            "delay_sync_num",
+            3.0,
+            4.0,
+        ),
+        (
+            DeviceParamField::Delay(DelayField::SyncDen),
+            "delay_sync_den",
+            4.0,
+            8.0,
+        ),
+        (
+            DeviceParamField::Delay(DelayField::SyncDotted),
+            "delay_sync_dotted",
+            0.0,
+            1.0,
+        ),
     ];
 
     /// 一个**名单拼写**的用例：落点、规范名、静态值、终点值。
@@ -2899,7 +2989,20 @@ mod tests {
                 .collect();
             assert!(spellings.contains(&canonical), "{canonical}: {spellings:?}");
         }
-        // 3. 名单与三张**唯一名字表**的并集逐字相等（⛔ 少一个、多一个、重复都红）。
+        for field in DelayField::ALL {
+            let canonical = field.canonical_name();
+            assert!(
+                APPLIED_DEVICE_PARAM_NAMES.contains(&canonical),
+                "{canonical}"
+            );
+            let spellings: Vec<&str> = APPLIED_DEVICE_PARAM_NAMES
+                .iter()
+                .copied()
+                .filter(|name| DelayField::from_name(name) == Some(*field))
+                .collect();
+            assert!(spellings.contains(&canonical), "{canonical}: {spellings:?}");
+        }
+        // 3. 名单与四张**唯一名字表**的并集逐字相等（⛔ 少一个、多一个、重复都红）。
         assert_eq!(
             StripField::ALL.len(),
             22,
@@ -2907,6 +3010,7 @@ mod tests {
         );
         assert_eq!(ReverbField::ALL.len(), 4, "Freeverb 4 个字段");
         assert_eq!(ConvolutionField::ALL.len(), 4, "卷积标量 4 个字段");
+        assert_eq!(DelayField::ALL.len(), 9, "延迟 9 个字段");
         assert_eq!(
             StripField::SPELLINGS.len(),
             41,
@@ -2914,12 +3018,13 @@ mod tests {
         );
         let expected_len = StripField::SPELLINGS.len()
             + ReverbField::SPELLINGS.len()
-            + ConvolutionField::SPELLINGS.len();
-        assert_eq!(expected_len, 55, "41 + 6 + 8 = 55 个拼写");
+            + ConvolutionField::SPELLINGS.len()
+            + DelayField::SPELLINGS.len();
+        assert_eq!(expected_len, 70, "41 + 6 + 8 + 15 = 70 个拼写");
         assert_eq!(
             APPLIED_DEVICE_PARAM_NAMES.len(),
             expected_len,
-            "名单与三张 SPELLINGS 的并集条数必须相等"
+            "名单与四张 SPELLINGS 的并集条数必须相等"
         );
         let mut sorted: Vec<&str> = APPLIED_DEVICE_PARAM_NAMES.to_vec();
         sorted.sort_unstable();
@@ -2928,9 +3033,10 @@ mod tests {
             .map(|(name, _)| *name)
             .chain(ReverbField::SPELLINGS.iter().map(|(name, _)| *name))
             .chain(ConvolutionField::SPELLINGS.iter().map(|(name, _)| *name))
+            .chain(DelayField::SPELLINGS.iter().map(|(name, _)| *name))
             .collect();
         expected.sort_unstable();
-        assert_eq!(sorted, expected, "名单必须与三张 SPELLINGS 完全一致");
+        assert_eq!(sorted, expected, "名单必须与四张 SPELLINGS 完全一致");
         sorted.dedup();
         assert_eq!(
             sorted.len(),
@@ -2951,7 +3057,7 @@ mod tests {
         }
     }
 
-    /// ⭐ `#267`/`#293`/`#304` 判据 1/2：**30 个字段各一条**（55 个拼写逐个跑）—— 泳道从静态值
+    /// ⭐ `#267`/`#293`/`#304` 判据 1/2：**39 个字段各一条**（70 个拼写逐个跑）—— 泳道从静态值
     /// 渐变到终点值 ⇒ 求值器把**这个字段**接上（`field()` / `param_name()` / 静态值），
     /// 曲线在块边界上单调，且恒等判定为假。别名与规范名解析到**同一个**落点。
     #[test]

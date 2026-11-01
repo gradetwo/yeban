@@ -42,7 +42,8 @@ const SOURCE: &str = include_str!("../src/insert.rs");
 /// 实时侧额外认、但⛔ 不是自动化落点的 **IR 形状**键（构造期烘焙）。
 const IR_SHAPE_NAMES: [&str; 3] = ["conv_ir_decay_s", "conv_ir_decay", "conv_ir_seed"];
 
-/// 冻结读数（与 `yeban-render` 的 `automation.rs` 同一条口径：41 ＋ 6 ＋ 8 ＝ 55 个拼写；
+/// 冻结读数（与 `yeban-render` 的 `automation.rs` 同一条口径：实时臂 41 ＋ 6 ＋ 11；
+/// 自动化名单另＋延迟 15 拼写（共享表，引擎经 `DelayField` 认）⇒ 名单共 70 个拼写；
 /// 实时侧再＋ 3 个 IR 形状键 ⇒ 卷积族在**本判据**里是 11）。
 const FROZEN_COUNTS: (usize, usize, usize) = (41, 6, 11);
 

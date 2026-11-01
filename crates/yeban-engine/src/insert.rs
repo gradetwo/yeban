@@ -422,11 +422,20 @@ pub use yeban_dsp::reverb::Reverb as DspReverb;
 pub use yeban_dsp::convolution_reverb::{ConvolutionReverb, ConvolutionReverbParams};
 // 与 `DspChannelStrip` 同一个理由：让判据能写出"dsp 类型 ← engine 路径"的赋值。
 pub use yeban_dsp::convolution_reverb::ConvolutionReverb as DspConvolutionReverb;
+// 乒乓延迟的**唯一实现**住在 `yeban-dsp`（`crates/yeban-dsp/src/delay.rs`）。本模块只转发：
+// 类型 + 参数类型。判据按这两个名字断言"引擎的延迟**就是** dsp 的延迟"（类型同一性 +
+// `process`/`configure`/`reset` 的函数地址同一性，与混响/卷积同款）。
+pub use yeban_dsp::delay::{Delay, DelayParams};
+// 与 `DspChannelStrip` 同一个理由：让判据能写出"dsp 类型 ← engine 路径"的赋值。
+pub use yeban_dsp::delay::Delay as DspDelay;
+// 延迟的投影期参数表（舞台参数 + 音符同步换算）住在 `yeban-dsp` 的 `device_param`。
+// 本模块只读它，不复制第二份拼写表与钳制（与 render 的 `inserts` 同一张表）。
+use yeban_dsp::device_param::{DelayField, DelayStageParams, delay_params_from_stage};
 // IR 合成本身**不是**本模块的发明：白噪声源是 `yeban_dsp::noise::Rng`（xorshift32，
 // 显式播种、跨运行同序），本模块**不**定义第二份 PRNG。
 use yeban_dsp::noise::Rng;
 
-/// 一条轨的**插入链**投影（三件器件：通道条、混响与卷积混响）。
+/// 一条轨的**插入链**投影（四件器件：通道条、混响、卷积混响与乒乓延迟）。
 ///
 /// 结构体保留一个"链"的形状而不是裸 `Option<ChannelStripParams>`：后续器件接线时
 /// 在这里**加字段**即可，实时侧的"逐轨查找 + 整段跳过"骨架不必改。
@@ -455,6 +464,13 @@ pub struct InsertParams {
     /// ⚠ 与前两件不同，这里装的**不只是参数**：它带着一份**已经在构造期合成好**的 IR
     /// （见 [`ConvolutionPlan`] 与模块文档 §9.1／§9.2）。这是模型层放不下 IR 的直接后果。
     convolution: Option<ConvolutionPlan>,
+    /// 本轨的**乒乓延迟参数**：`None` = 本轨**没有**延迟（实时侧那段跳过）。
+    ///
+    /// ⚠ 与卷积不同，这里装的是**已经换算好**的器件参数（音符同步在构造期按工程
+    /// `bpm` 换算成秒数并钳到器件上限，见 [`delay_params_from_stage`]）：快照里存的
+    /// 就是音频线程将要用的那一份数。`mix = 0` 的链仍投影为 `Some`（与 render 同口径），
+    /// 运行态按钳制后 mix 门决定建不建器件。
+    delay: Option<DelayParams>,
 }
 
 /// 一条轨的**卷积混响计划**：四个器件标量参数 ＋ 一份**已经就绪**的 IR。
@@ -742,20 +758,22 @@ impl InsertParams {
             strip: None,
             reverb: None,
             convolution: None,
+            delay: None,
         }
     }
     /// 从模型层的设备链投影（**构造期**；见模块文档 §4、§8 与 §9 的规则表）。
     ///
-    /// 三件器件**各自独立**取来源：通道条取第一个含通道条参数名的设备，混响取第一个含
-    /// 混响参数名的设备，卷积混响取第一个含 `conv_` 参数名的设备（同一台设备可以同时是
-    /// 三者的来源）。这与"第一条含已识别参数的设备是唯一来源"是同一个口径 —— 已识别的
+    /// 四件器件**各自独立**取来源：通道条取第一个含通道条参数名的设备，混响取第一个含
+    /// 混响参数名的设备，卷积混响取第一个含 `conv_` 参数名的设备，延迟取第一个含
+    /// `delay_` 参数名的设备（同一台设备可以同时是四者的来源）。这与"第一条含已识别参数的设备是唯一来源"是同一个口径 —— 已识别的
     /// 名字集合变大了，但每一件的**首个**来源仍然是首个（先命中者不被后来的覆盖）。
     ///
     /// `sample_rate` 只在卷积混响那一支用到（IR 的帧数 = 采样率 ÷ 10，
     /// 见 [`convolution_ir_frames`]）：**构造期**把 IR 合成出来，是模型层放不下样本数组
-    /// 的直接后果（模块文档 §9.1／§9.2）。
+    /// 的直接后果（模块文档 §9.1／§9.2）。`bpm` 只在延迟那一支用到（音符同步换算；
+    /// 同步关或 `bpm` 非法时保留写值，不编造速度）。
     #[must_use]
-    pub fn from_devices(devices: &[DeviceDefinition], sample_rate: u32) -> Self {
+    pub fn from_devices(devices: &[DeviceDefinition], sample_rate: u32, bpm: f64) -> Self {
         // 通道条来源走**同一个**谓词（[`strip_source_index`]）⇒ "哪台设备武装了这条
         // 通道条"这件事只有**一处**定义：实时侧 `output_gain_db` 自动化的落点判断
         // 读的就是它，⛔ 不可能与这里的投影各写一套答案。
@@ -763,6 +781,7 @@ impl InsertParams {
             strip_source_index(devices).and_then(|index| Self::strip_of(&devices[index]));
         let mut reverb: Option<ReverbParams> = None;
         let mut convolution: Option<ConvolutionPlan> = None;
+        let mut delay: Option<DelayParams> = None;
         for device in devices {
             // 规则 1 + 2：只看非旁通的内置效果器。
             if device.bypassed || device.kind != DeviceKind::InternalEffect {
@@ -775,7 +794,10 @@ impl InsertParams {
             if convolution.is_none() {
                 convolution = Self::convolution_of(device, sample_rate);
             }
-            if reverb.is_some() && convolution.is_some() {
+            if delay.is_none() {
+                delay = Self::delay_of(device, bpm);
+            }
+            if reverb.is_some() && convolution.is_some() && delay.is_some() {
                 break;
             }
         }
@@ -784,6 +806,7 @@ impl InsertParams {
             strip: strip.map(ChannelStripParams::sanitised),
             reverb,
             convolution,
+            delay,
         }
     }
 
@@ -854,6 +877,38 @@ impl InsertParams {
         self.convolution.as_ref()
     }
 
+    /// 单台设备 → 延迟参数（`None` = 一个已识别的 `delay_` 名字都没有）。
+    ///
+    /// 基值是**舞台缺省**（`DelayStageParams::default`：`mix = 0` ⇒ 级缺省关闭，
+    /// `ping_pong = true` ⇒ 功能缺省即乒乓）；只有**出现**的名字才覆盖它；音符同步
+    /// 在这里按 `bpm` 换算（投影期，见 [`delay_params_from_stage`]）。
+    fn delay_of(device: &DeviceDefinition, bpm: f64) -> Option<DelayParams> {
+        let mut stage = DelayStageParams::default();
+        let mut seen = false;
+        for param in &device.params {
+            let name = param.name.to_ascii_lowercase();
+            if let Some(field) = DelayField::from_name(&name) {
+                field.store(&mut stage, param.value);
+                seen = true;
+            }
+        }
+        if seen {
+            Some(delay_params_from_stage(&stage, bpm))
+        } else {
+            None
+        }
+    }
+
+    /// 本轨的**乒乓延迟参数**；`None` = 整段跳过。
+    ///
+    /// 存在的理由与 [`Self::strip`] 相同：把"投影出来的那个数"变成可读的，
+    /// 判据就不必从音频输出反推。**只**被音频线程用来调 `Delay::configure` 后的
+    /// 每块 `process` 参数（实时运行态接线见 ADR-0061 的已知缺口）。
+    #[must_use]
+    pub const fn delay(&self) -> Option<DelayParams> {
+        self.delay
+    }
+
     /// 本轨通道条的**动态级**参数（`ChannelStripParams::compressor` 的直读）。
     ///
     /// 存在的理由与 `c792fdc` 的同类读数一样：把"投影出来的那个数"变成可读的，
@@ -869,7 +924,10 @@ impl InsertParams {
     /// 快照只收录**非空**的链 ⇒ "不在表里"与"表里是空链"在实时侧同解。
     #[must_use]
     pub const fn is_empty(&self) -> bool {
-        self.strip.is_none() && self.reverb.is_none() && self.convolution.is_none()
+        self.strip.is_none()
+            && self.reverb.is_none()
+            && self.convolution.is_none()
+            && self.delay.is_none()
     }
 }
 
@@ -1139,6 +1197,9 @@ mod tests {
     /// `crates/yeban-dsp/src/convolution.rs` 模块文档 §8 代价表的第一行同值。
     const TEST_SR: u32 = 48_000;
 
+    /// 本模块判据用的工程速度（BPM）。延迟同步测试用 84.0（见末尾延迟判据）。
+    const TEST_BPM: f64 = 120.0;
+
     fn device(kind: DeviceKind, bypassed: bool, params: &[(&str, f32)]) -> DeviceDefinition {
         DeviceDefinition {
             id: EntityId::new(),
@@ -1157,14 +1218,16 @@ mod tests {
         }
     }
 
-    /// 带采样率的投影（本模块判据统一用 [`TEST_SR`]）。
+    /// 带采样率与工程速度的投影（本模块判据统一用 [`TEST_SR`] 与 [`TEST_BPM`]）。
     ///
-    /// 单独包一层的理由：三件器件里**只有**卷积混响需要采样率（IR 帧数 = 采样率 ÷ 10），
-    /// 而既有判据关心的全是另外两件 ⇒ 一层转发让那些判据的正文一个字都不必改，
-    /// 也就不会在"改接线"的同时改动"既有期望值"。
+    /// 单独包一层的理由：四件器件里卷积混响需要采样率（IR 帧数 = 采样率 ÷ 10）、
+    /// 延迟需要工程速度（音符同步换算），而既有判据关心的全是另外两件 ⇒ 一层转发让
+    /// 那些判据的正文一个字都不必改，也就不会在"改接线"的同时改动"既有期望值"。
     fn from_devices(devices: &[DeviceDefinition]) -> InsertParams {
-        InsertParams::from_devices(devices, TEST_SR)
+        InsertParams::from_devices(devices, TEST_SR, TEST_BPM)
     }
+
+    // 本模块判据用的工程速度（BPM）。延迟同步测试用 84.0（见末尾延迟判据）。
 
     /// **默认口径**：没有设备 / 没有已识别参数 ⇒ 空链（实时侧整段跳过）。
     #[test]
@@ -1867,6 +1930,207 @@ mod tests {
             ),
             "engine 的 insert.rs 必须把 dsp 卷积混响的**类型与参数类型**都再导出\
              （V7 的同一性判据靠它）"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // 第四件器件：乒乓延迟（设计 §3）
+    // -----------------------------------------------------------------------
+
+    /// 延迟 15 拼写全部投影；舞台缺省 `mix = 0`（级缺省关闭）、`ping_pong = true`
+    ///（功能缺省即乒乓）；别名与规范名同值。
+    #[test]
+    fn delay_names_project_to_delay_params() {
+        assert!(from_devices(&[]).delay().is_none());
+        assert!(
+            from_devices(&[device(DeviceKind::InternalEffect, false, &[])])
+                .delay()
+                .is_none()
+        );
+        let params = from_devices(&[device(
+            DeviceKind::InternalEffect,
+            false,
+            &[
+                ("delay_time_s", 0.5),
+                ("delay_feedback", 0.4),
+                ("delay_mix", 0.6),
+                ("delay_damp", 0.3),
+                ("delay_ping_pong", 0.0),
+            ],
+        )])
+        .delay()
+        .expect("延迟名字必须被识别");
+        assert_eq!(params.time_s, 0.5);
+        assert_eq!(params.feedback, 0.4);
+        assert_eq!(params.mix, 0.6);
+        assert_eq!(params.damp, 0.3);
+        assert!(!params.ping_pong, "写 0 ⇒ 关乒乓（与缺省不同）");
+
+        // 只写一个名字 ⇒ 其余字段取舞台缺省（不是器件缺省）。
+        let only_time = from_devices(&[device(
+            DeviceKind::InternalEffect,
+            false,
+            &[("delay_time_s", 0.5)],
+        )])
+        .delay()
+        .expect("单写时间也必须识别");
+        assert_eq!(only_time.mix, 0.0, "舞台缺省 mix = 0（级缺省关闭）");
+        assert!(only_time.ping_pong, "舞台缺省 ping_pong = true");
+
+        // 别名同值。
+        for alias in [
+            "delay_time",
+            "delay_fb",
+            "delay_wet",
+            "delay_damping",
+            "delay_pingpong",
+            "delay_sync",
+        ] {
+            let params =
+                from_devices(&[device(DeviceKind::InternalEffect, false, &[(alias, 1.0)])])
+                    .delay()
+                    .unwrap_or_else(|| panic!("别名 {alias} 必须被识别"));
+            match alias {
+                "delay_time" => assert_eq!(params.time_s, 1.0),
+                "delay_fb" => assert_eq!(params.feedback, 1.0),
+                "delay_wet" => assert_eq!(params.mix, 1.0),
+                "delay_damping" => assert_eq!(params.damp, 1.0),
+                "delay_pingpong" => assert!(params.ping_pong),
+                // 只开同步 ⇒ 缺省 3/8 附点：120 BPM 下 0.5 × 4 × 3/8 × 1.5 = 1.125 s。
+                "delay_sync" => assert_eq!(params.time_s, 1.125),
+                _ => unreachable!(),
+            }
+        }
+    }
+
+    /// 投影期音符同步换算：84 BPM 附点二分钳到 2.0 s；同步关保留写值；坏 bpm
+    /// 不编造速度（保留写值）。
+    #[test]
+    fn delay_sync_converts_at_84_bpm() {
+        let synced = device(
+            DeviceKind::InternalEffect,
+            false,
+            &[
+                ("delay_sync_enabled", 1.0),
+                ("delay_sync_num", 1.0),
+                ("delay_sync_den", 2.0),
+                ("delay_sync_dotted", 1.0),
+                ("delay_time_s", 0.3),
+            ],
+        );
+        let params = InsertParams::from_devices(&[synced], TEST_SR, 84.0)
+            .delay()
+            .expect("同步设备应被识别");
+        assert_eq!(params.time_s, 2.0, "84 BPM 附点二分 2.1429 s ⇒ 钳到 2.0 s");
+
+        let plain = device(DeviceKind::InternalEffect, false, &[("delay_time_s", 0.3)]);
+        assert_eq!(
+            InsertParams::from_devices(&[plain], TEST_SR, 84.0)
+                .delay()
+                .expect("普通设备")
+                .time_s,
+            0.3
+        );
+
+        let bad_bpm = device(
+            DeviceKind::InternalEffect,
+            false,
+            &[
+                ("delay_sync_enabled", 1.0),
+                ("delay_sync_num", 1.0),
+                ("delay_sync_den", 2.0),
+                ("delay_sync_dotted", 1.0),
+                ("delay_time_s", 0.3),
+            ],
+        );
+        assert_eq!(
+            InsertParams::from_devices(&[bad_bpm], TEST_SR, f64::NAN)
+                .delay()
+                .expect("坏 bpm 设备仍被识别")
+                .time_s,
+            0.3,
+            "bpm 非法时同步不换算，保留写值"
+        );
+    }
+
+    /// `delay_mix = 0` 仍投影为 `Some`（与 render 同口径；运行态建级门另算）。
+    #[test]
+    fn delay_mix_zero_still_projects() {
+        let insert = from_devices(&[device(
+            DeviceKind::InternalEffect,
+            false,
+            &[("delay_mix", 0.0)],
+        )]);
+        assert!(insert.delay().is_some());
+        assert!(!insert.is_empty());
+    }
+
+    /// 旁通设备与非内置效果器不是延迟来源；延迟设备不武装另外三件。
+    #[test]
+    fn delay_bypassed_and_non_internal_effect_ignored() {
+        let bypassed = device(DeviceKind::InternalEffect, true, &[("delay_time_s", 0.5)]);
+        assert!(from_devices(&[bypassed]).delay().is_none());
+        let external = device(DeviceKind::ExternalEffect, false, &[("delay_time_s", 0.5)]);
+        assert!(from_devices(&[external]).delay().is_none());
+
+        let only_delay = from_devices(&[device(
+            DeviceKind::InternalEffect,
+            false,
+            &[("delay_mix", 0.5)],
+        )]);
+        assert!(only_delay.strip().is_none());
+        assert!(only_delay.reverb().is_none());
+        assert!(only_delay.convolution().is_none());
+        assert!(only_delay.delay().is_some());
+    }
+
+    /// 延迟来源规则：首个含延迟名字的设备胜；同一台可兼四族来源。
+    #[test]
+    fn delay_first_source_wins() {
+        let first = device(DeviceKind::InternalEffect, false, &[("delay_time_s", 0.5)]);
+        let second = device(DeviceKind::InternalEffect, false, &[("delay_mix", 0.9)]);
+        let insert = from_devices(&[first, second]);
+        let params = insert.delay().expect("延迟应被识别");
+        assert_eq!(params.time_s, 0.5);
+        assert_eq!(params.mix, 0.0, "首个来源胜：第二台的 mix 不覆盖缺省");
+
+        let both = device(
+            DeviceKind::InternalEffect,
+            false,
+            &[
+                ("input_gain_db", 1.0),
+                ("reverb_wet", 0.5),
+                ("conv_wet", 0.5),
+                ("delay_mix", 0.5),
+            ],
+        );
+        let insert = from_devices(&[both]);
+        assert!(insert.strip().is_some());
+        assert!(insert.reverb().is_some());
+        assert!(insert.convolution().is_some());
+        assert!(insert.delay().is_some());
+    }
+
+    /// 判据：**engine 侧没有第二份延迟实现**（源码级机械检查，与前四件同款）。
+    ///
+    /// ⚠ 与前件同样的自我命中风险：本条注释里也**不许**出现被禁字面量。
+    #[test]
+    fn engine_insert_module_has_no_second_delay_implementation() {
+        let source = include_str!("insert.rs");
+        let forbidden = [
+            concat!("struct", " Delay", " {"),
+            concat!("struct", " DelayParams", " {"),
+            concat!("const", " MAX_DELAY_SECONDS"),
+        ];
+        for needle in forbidden {
+            assert!(
+                !source.contains(needle),
+                "engine 的 insert.rs 里出现了实现记号 `{needle}` —— 这里只允许投影 + `pub use`"
+            );
+        }
+        assert!(
+            source.contains("pub use yeban_dsp::delay::{Delay, DelayParams};"),
+            "engine 的 insert.rs 必须把 dsp 延迟的**类型与参数类型**都再导出"
         );
     }
 }

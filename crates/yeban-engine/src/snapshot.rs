@@ -813,14 +813,15 @@ impl EngineSnapshot {
         // 抄进快照（重数据 [`SfzPlan`] 仍由控制侧解码后经 [`EngineSnapshot::with_sfz`]
         // 注入）⇒ ⭐ 实时侧看不见本表 ⇒ 渲染逐位不变。
         let mut sfz_pending: BTreeMap<EntityId, PendingSfz> = BTreeMap::new();
-        // 三件插入器件里**只有卷积混响**需要采样率：它的 IR 帧数是 `采样率 ÷ 10` 的
+        // 四件插入器件里卷积混响需要采样率（IR 帧数是 `采样率 ÷ 10` 的
         // 引擎常量，而 IR 本身在**这里**（控制线程的构造期）合成 —— 模型层没有承载
-        // 样本数组的字段，理由与两处出处见 `crate::insert` 模块文档 §9.1／§9.2。
+        // 样本数组的字段，理由与两处出处见 `crate::insert` 模块文档 §9.1／§9.2），
+        // 延迟需要工程速度（音符同步换算，见设计 §3）。
         let sample_rate = project.audio_config.sample_rate.hz();
         for (id, track) in &project.tracks {
             tracks.insert(*id, TrackParams::from_track(track, latencies.get(id)));
             tones.insert(*id, ToneParams::from_devices(&track.devices));
-            let insert = InsertParams::from_devices(&track.devices, sample_rate);
+            let insert = InsertParams::from_devices(&track.devices, sample_rate, project.bpm);
             if !insert.is_empty() {
                 inserts.insert(*id, insert);
             }

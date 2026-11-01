@@ -1940,7 +1940,7 @@ impl AutomationReport {
             "targetsSupported": TARGETS_SUPPORTED,
             "targetsUnsupported": TARGETS_UNSUPPORTED,
             // ⭐ `#267`/`#293`/`#304`：`DeviceParam` 这一族接了**插入链能改的标量字段**
-            // （55 个拼写 = 41 通道条（含压缩 14）+ 6 混响 + 8 卷积，含别名）；哪些名字
+            // （70 个拼写 = 41 通道条（含压缩 14）+ 6 混响 + 8 卷积 + 15 延迟，含别名）；哪些名字
             // 有落点必须可读，且**只有一处来源**
             // （`yeban_render::automation::APPLIED_DEVICE_PARAM_NAMES`）——
             // ⛔ 不让 "DeviceParam 支持了" 这句话被读成 `is_supported_param` 全通。
@@ -2816,7 +2816,8 @@ pub fn build(
     // 静态 `wet = 0` 时 `is_active()` 为假，但块边界仍需有器件可改）。扫描器与 app 的
     // `--export-wav` 共用同一份（`yeban-render::automation`），已在构造音源之前算好
     // （`#309` 起 pre-pan 判据也要读它）。
-    let inserts = project_inserts_with_forced_instances(&project.tracks, sample_rate, &forced);
+    let inserts =
+        project_inserts_with_forced_instances(&project.tracks, sample_rate, project.bpm, &forced);
     let mut plan = RenderPlan::compile_with_latencies_and_inserts(
         &project.routing_graph,
         project.master_bus_track_id,
