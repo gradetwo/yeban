@@ -17833,3 +17833,70 @@ helper 里 ⇒ 必须不认（防假绿）。两条臂在旧实现上都会失�
 - **树况与磁盘**：s35 判绿后 `worktree.sh rm s35-automation-fields --purge` 释放 **2.8 G** `target`；`/home` 现读 **90%** 已用／**25 G** 余量。
   在飞：s36（`f0aafd20`，run `41275369612`，只剩 `rust (workspace 全量)`＋`macos`＋`windows`）、s37（未推送，等 s36 落地后按新 main 起步，⛔ 与 s36 抢 `ci.yml` 同一段）。
 
+### 22.35 ⭐ 四线并行收盘（s35 合流 `success`／s36 线 `success` 且宽腿真跑 46m20s／s37 的牙齿步在 CI `success`／s34 窄腿 `success`）＋ ⛔「#109 其实早被 s35 交付了」＋ s38 把词表守卫从 3 处扩到 **14** 处并当场量到抽取器两个洞
+
+本节只记**作业级**读数（`gh run view --json jobs` 的 `conclusion` ＋ 起止时间）；判据名的逐位读数只在"本票自己下过日志"的地方给出，⛔ 从别处引用。
+
+- **s35 全链收盘**：合流 run **`41277145990`**（headSha `a071a0a8`）= `completed / **success**`，十条作业 **9 条 `success`**
+  （`checks` 1m24s／`plan`／`deny`／`lockfile`／`e2e`／`rust (yeban-mcp)` 05:30:04→05:39:31 = **9m27s**／`rust (yeban-ui-mcp)` 3m41s／`macos` 15m25s／`windows` 05:30:00→06:09:49 = **39m49s**）＋ `rust (workspace 全量)` = **`skipped`**
+  （`plan` 给窄集合 ⇒ ⛔ 宽腿没开，本轮不引用全量基线）。⭐ **判据名的逐位读数不在这一枚上**：那七条已在**线 run** `41274783232`（§22.34）下日志核过，
+  本枚只证"合流后的同一棵树仍然编译、仍然全绿"，⛔ 把它写成"七条判据在合流腿上重测过"就是**推断冒充复测**。
+- **s36 线收盘**：线 run **`41275369612`**（headSha `f0aafd20`）= `completed / **success**`；
+  `plan` 给**全量** ⇒ `rust (${{ matrix.crate }})` = `skipped` 而 `rust (workspace 全量)` **真跑 05:02:56→05:49:16 = 46m20s**（`windows` 39m31s／`macos` 29m24s／`checks` 1m25s／`e2e` 1m11s）。
+  ⭐ 目标步**在场且成功**：`checks` 作业 `124756366119` 第 **11** 步「项目 schema 词表对账 (模型枚举 == project.schema.json 的三处 enum)」= `success`
+  —— 这条是 §22.6「新守卫不逐条列进 CI 就不算数」的又一次执行，⛔ 只看整体 success 会放过"守卫根本没被调用"。
+  ⚠ **另一枚 run（合流 `41278457997` = main tip `20aa3f0d`）写完本条时仍 `in_progress` ⇒ 判决记 `pending`**：现读 `checks`/`e2e`/`deny`/`lockfile` 已 `success`、窄矩阵腿 `skipped`、`rust (workspace 全量)` 与 `windows`/`macos` 在飞。
+- ⛔ **沿上一条 §22.34 的手误留痕（重复一次，⛔ 别在引用时丢掉）**：s36 的提交 `f0aafd20` 标题带 `[MUST-GATE-004]`，
+  该门禁实为「开源许可合规零告警」；本批真实对应的只有 `[MODEL-AST-002]`。已推送 ⇒ ⛔ 不 force-push。
+- **s37 判据级证据（本票自己下的读数）**：线 `d1103307`（`df3ca8b0` rebase 到新 main `20aa3f0d` 之上，唯一冲突在 `ci.yml`——
+  s36 的词表步与 s37 的牙齿步各加一行，**两条都保留**）的 run **`41278688839`**，`checks` 作业 `124765977236` 步骤级现读：
+  「守卫牙齿自检 (每枚 check_*.py 对故意做坏的输入必须报红)」= **`success`**，且「工作流结构自检 (R65)」= `success`。
+  ⭐ 这两行合起来**正好判掉 §22.34 留的那个本地控件红**：`check_workflow_structure.py` 在本机因缺 `pyyaml` 而控件红，
+  CI 里它的控件是绿的 ⇒ 牙齿自检在 CI 是**五枚守卫控件全绿 + 9 条变异规格全红**，不是"少跑了一枚"。
+  ⚠ 本条 run 整体仍 `in_progress`（宽腿在飞）⇒ **收盘判决记 `pending`**，步骤级读数只是"目标步已经在场且成功"。
+- **s34 线读数**：`87d20165` 的 run **`41278398109`**，`rust (yeban-mcp)` = **`success`**（05:49:46→06:06:38 = **16m52s**）、
+  `checks`/`e2e`/`deny`/`lockfile`/`rust (yeban-ui-mcp)` 全 `success`、宽腿 `skipped`；`windows`/`macos` 在飞 ⇒ **整体 pending**。
+  ⭐ 早一步的可执行结论：该腿步骤级 `clippy (-D warnings)` = `success` ⇒ 本票新增的三份 `willCreate` 名册与三条判据**编译通过**（`yeban-mcp` 本机不编译，AGENTS.md §5，这条只能这么拿）。
+- ⛔ **本票最值得留的一条：#109 是**已经交付**的票，我却为它开了新树**。task #109 的标题（`edit_automation` 五处 + `query_engine_state` 两处）
+  与 s35 的提交 `da71bc19` 标题**逐字同一件事**，而 §22.33 的裸槽盘点写在 s35 **之前** ⇒ 盘点没被回写。
+  发现方式：新树里 `grep '"written"\|"valuesAfter"\|"stateSources"' output_schema.rs` 直读那七处，**每一处都已经指向一份名册函数**
+  （`automation_target_variants()`／`automation_lane_domain()`／`automation_written()`／`automation_reading_items()`／`query_track()`／`state_sources()`）。
+  ⇒ 规则重申（AGENTS.md §6 第 3 条）：**先 grep 交付，再开工**；票面文字与台账里的**行号**都不是交付状态，函数名才是。
+  代价：一次 `worktree.sh add` ＋ 一次 `rm --force-purge`（该分支 0 枚独有提交、未推送 ⇒ 不丢工作，归档标签照样打了）。
+- ⚠ **一条脚本使用读数（⛔ 机制未复验，只登记现象）**：`worktree.sh add s40-... main | head -2` 之后，
+  `line/s40-...` 分支**已创建**而工作树目录**不存在**、`git worktree list` 里也没有那一行；第二次 `add` 报「分支已存在」。
+  ⇒ 现象与"脚本在打印第二行后被 SIGPIPE 打断"一致。⛔ 把这段当机制读；结论只到一句：**跑 `worktree.sh` 不要接 `head`**，
+  要截断就先 `>文件` 再读。
+- **s38（`line/s38-vocabulary-sites` @ `272d5910`，已推送，判决 pending）——词表守卫 3 处 → 14 处**：
+  现读 `schemas/project.schema.json` 全文 `enum` 数组 = **14** 处（单位：处），s36 钉住 **3** 处 ⇒ 本票补余下 **11** 处。
+  为此守卫必须会读**三类词汇生产者**：
+  ① `variants`（**10** 处）派生 serde 的 `pub enum` ⇒ 变体名逐字 == JSON 名。新纳 `BitDepth`／`PanLaw`／`LaunchQuantization`／
+     `AutomationWriteMode`／`MediaKind`，以及**同一个 `CurveType` 的两个站点**（automation 点、`clip_pool` 滑音）。
+     `CurveType` 住在 `music.rs` ⇒ 源文件从全局常量改成**每站点一条**；滑音那条指针穿过 `oneOf[0]`／`oneOf[1]` ⇒ 解析器要认 `[N]` 下标。
+  ② `int_serde`（**2** 处）`SampleRate`／`BlockSize` **手写** `Serialize`（源文件注释明写「契约要求整数，派生枚举会写成字符串」）
+     ⇒ 变体名与 JSON 值不同轨，① 的读法必错。改读两张真表：`pub const ALL` 给成员、accessor 的 `Self::X => N` 臂给数值 ⇒ 比**数值集合**，⛔ 手抄整数。
+  ③ `matches`（**2** 处）拍号分母没有枚举，真相是 `matches!(self.denominator, 1 | 2 | 4 | 8 | 16 | 32)` ⇒ 直接读那条白名单（同词汇两站点）。
+  下界由全局 `4` 改为**每站点登记**（值 = 该处当前条目数）：它只堵"两侧成对删空"，所以**删格**才需要人工上调，加格不需要；
+  前提检查同时覆盖**枚举级与变体级** `serde rename`。
+- ⛔ **本票量到两个抽取器缺陷（都不是新代码引入的，是被现读逼出来的）**：
+  1. s36 的变体字符集 `[A-Za-z0-9]*` **不认下划线** ⇒ `PanLaw::ConstantPowerMinus4_5dB` 漏读。
+     后果不是"少比一项"而是**假红**：契约里有、实现侧抽不到 ⇒ 报成"幽灵条款"，而真相是守卫读不动这个名字。
+     `PanLaw` 四个变体里恰好一个带 `_`，所以这一处一纳进来就红给我看。
+  2. ② 的第一版从**文件头**找 `pub const ALL` 与 accessor ⇒ `BlockSize` 拿到的是 `SampleRate` 的表，报「成员 `Hz44100` 在 `frames()` 里没有数值臂」。
+     同一份文件里两个同构枚举是**常态**，查找必须从各自 `pub enum` 那一行往后。
+  ⭐ 这两条共同印证 §22.34 那条 s37 立项目的：守卫的"能跑"⛔ 等于"能红"，抽取器的字符集与搜索范围都是无声假设。
+- **s38 的本机读数（⚠ 只有 CI 算数）**：真档 **14/14** 全绿、合计 **61** 项；变异探针 **9** 条全部报红 ——
+  ①②③ 各测「单侧删契约一格」与「两侧成对删同一格」（成对：②弹 `192000` + 删 `Self::Hz192000` ⇒ 报**下界**；③弹 `32` + 改 `matches!` ⇒ 报**下界**），
+  另加一条 ① 的**精确**成对删（模型末位 `Master` == 契约末位值 ⇒ 集合等式仍成立，只有下界能报红：`实现侧只剩 3 个（下界 4）`）。
+  ⚠ 本票**不动** `.github/workflows/ci.yml`（s37 正在改同一文件，一文件一写者）⇒ CI 里那一步的**步名**仍写着"三处"，
+  落后于守卫的实际覆盖（14 处）。由集成者下一次统一改步名，⛔ 让步名继续说假话。
+- **登记一条待办（s37 名册的下一次加强）**：`check_guard_teeth.py` 对词表守卫只给了 **2** 条规格（都打在 `TrackKind` 的 ① 类机制上）。
+  ②③ 两类抽取器（`int_serde`／`matches`）现在**没有**对应的变异规格 ⇒ 它们哪天静默退化（例如把 accessor 改名后 `fail` 文案换了但不再报红），牙齿自检抓不到。
+  下一票：给这两类各加一条规格（弹 `ALL` 末位 + 契约末位 ⇒ 期望红）。
+- **树况与磁盘**：`git worktree list` 现读 **4 行**（main ＋ s34 ＋ s37 ＋ s38）；`rm s36-schema-vocabularies --purge` 释放 **102 M**（该树无 `target`），
+  归档标签 `line-archive/s36-schema-vocabularies @ f0aafd20`；`/` 现读 **202 G 已用／27 G 余量（89%）**，仓库内 `target/debug` = **324 M**（本轮不删：
+  它是轻量 crate 本机复验的增量缓存，删了下次要重编，而 27 G 余量还够）。⛔ 仓库外那 **19 G** 缓存与 **5.2 G** rustup 仍卡在 #34 的人类裁决。
+- ⛔ **此刻不推 main**：`41278457997`（s36 合流）与 s34/s37 的 run 都在飞，而同分支并发组会**取消在飞判决** ⇒ 本批文档先在本地提交，
+  等合流读数回来再推（§0.6.0zh 那条教训的又一次执行）。
+
+

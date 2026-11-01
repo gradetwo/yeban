@@ -164,8 +164,15 @@ jobs:
       # `RoutingKind` 各一处 `enum`），此前**没有任何机器对账** ⇒ 模型加一个变体，归档校验会静默
       # 拒绝合法工程。本步按 s28 的**集合等式**口径比模型源与契约指针（台账 §22.34）。
       # ⚠ 同样必须逐条直调（§22.6）：只把文件丢进 scripts/guards/ 不进 CI。
-      - name: 项目 schema 词表对账 (模型枚举 == project.schema.json 的三处 enum)
+      # ⚠ 步名**不带站点数**（原写"三处"，s38 扩到 14 处后就成了陈旧措辞）：计数是守卫自己打印的**读数**，
+      #   把它抄进步名等于又造一份手抄值。
+      - name: 项目 schema 词表对账 (模型枚举 == project.schema.json 的 enum 名册)
         run: python3 scripts/guards/check_project_schema_vocabularies.py
+
+      # s37：守卫光"进 CI 且对好输入绿"只证了半条 —— 另一半是**对坏输入会红**。
+      # 这条把"手工试一次"变成常驻规格（台账 §22.34）。⚠ 同样必须逐条直调（§22.6）。
+      - name: 守卫牙齿自检 (每枚 check_*.py 对故意做坏的输入必须报红)
+        run: python3 scripts/guards/check_guard_teeth.py
 
       - name: JSON Schema 契约 (schema 自身合法性)
         run: |
