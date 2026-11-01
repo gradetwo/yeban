@@ -860,8 +860,8 @@ mod tests {
             (1.0, 8.0, false, 0.357_142_87),
             (1.0, 8.0, true, 0.535_714_27),
             (1.0, 4.0, false, 0.714_285_73),
-            (1.0, 4.0, true, 1.071_428_54),
-            (1.0, 2.0, false, 1.428_571_46),
+            (1.0, 4.0, true, 1.071_428_5),
+            (1.0, 2.0, false, 1.428_571_5),
             (1.0, 2.0, true, 2.142_857),
         ];
         for (num, den, dotted, expected) in cases {
@@ -885,8 +885,7 @@ mod tests {
     /// 同步关 ⇒ 保留写值；bpm 无效 ⇒ 同步不换算（退回写值，不编速度）。
     #[test]
     fn delay_sync_off_or_bad_bpm_keeps_written_time() {
-        let mut stage = DelayStageParams::default();
-        stage.time_s = 0.5;
+        let mut stage = DelayStageParams { time_s: 0.5, ..Default::default() };
         assert_eq!(
             delay_params_from_stage(&stage, 120.0).time_s,
             0.5,
