@@ -5,8 +5,11 @@
 //! 存进 `.yeban`，换机器打开就因 `sfz_load` 规则 1（绝对路径原样返回）硬错。
 //! 解析规则本身不动 —— 本函数只改**新存入**的值：
 //!
-//! - 输入是绝对路径，且按组件逐级落在 `library_root` 之下、余量非空 ⇒
-//!   存 `assets/samples/` ＋ 库根下相对部分（分隔符统一写 `/`）；
+//! - 输入有根（`has_root`：Unix 绝对路径；Windows 下带盘符的绝对路径与
+//!   `/x/…` 这类驱动器相对写法都有根 —— 后者 `is_absolute()` 为假、
+//!   故判据不用 `is_relative()`，否则 Windows 下 Unix 拼写的测试路径会被
+//!   误判为相对输入而原样返回），且按组件逐级落在 `library_root` 之下、
+//!   余量非空 ⇒ 存 `assets/samples/` ＋ 库根下相对部分（分隔符统一写 `/`）；
 //! - 输入已是相对形式 ⇒ 原样返回；
 //! - 输入恰等于库根本身（余量为空）⇒ 原样返回；
 //! - 输入是库根外的绝对路径 ⇒ 原样返回；
@@ -34,7 +37,10 @@ use std::path::{Component, Path};
 #[must_use]
 pub fn normalize_sampler_path_for_storage(library_root: &Path, path: &str) -> String {
     let raw = Path::new(path);
-    if raw.is_relative() {
+    // 有根才进相对化：Windows 下 `/x/…` 是驱动器相对写法（`is_absolute()` 为
+    // 假），但它有根、且与同样写法的库根逐组件可比 —— 用 `has_root()` 判，
+    // 真相对输入（无根）仍原样返回。
+    if !raw.has_root() {
         return path.to_owned();
     }
     if library_root.as_os_str().is_empty() {

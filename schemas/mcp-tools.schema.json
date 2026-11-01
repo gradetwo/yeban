@@ -5,11 +5,12 @@
   "description": "Standard JSON-RPC 2.0 interface and tool definitions for Yeban MCP. 根为 oneOf(ToolCall, ToolResponse, ReplayedToolResponse)：工具调用、工具响应与幂等重放信封的样本都必须通过根校验，否则本契约只是一堆没人引用的类型定义（ADR-0001 D25）。",
   "definitions": {
     "WarningCode": {
-      "description": "⭐ `data.warnings[]` 里 `code` 字段的**唯一权威名册**（机械对账见 `scripts/guards/check_warning_codes.py`：实现侧构造点与本 enum 必须**集合相等**）。警告一律**非阻断**：出现在响应里不代表操作失败。构造点：`unrecognisedEffectParam` / `deviceOnSilentTrack` = `domain/mod.rs`，`exportClipping` / `silentSources` = `domain/render.rs`，`sfzSamplesUnreadable` = `domain/sfz.rs`。⚠ 错误路径的 `data.reason`（如 `unknownEffectParam`）**不属于**本名册。",
+      "description": "⭐ `data.warnings[]` 里 `code` 字段的**唯一权威名册**（机械对账见 `scripts/guards/check_warning_codes.py`：实现侧构造点与本 enum 必须**集合相等**）。警告一律**非阻断**：出现在响应里不代表操作失败。构造点：`unrecognisedEffectParam` / `deviceOnSilentTrack` = `domain/mod.rs`，`exportClipping` / `silentSources` / `ignoredStripDevices` = `domain/render.rs`，`sfzSamplesUnreadable` = `domain/sfz.rs`。⚠ 错误路径的 `data.reason`（如 `unknownEffectParam`）**不属于**本名册。",
       "type": "string",
       "enum": [
         "deviceOnSilentTrack",
         "exportClipping",
+        "ignoredStripDevices",
         "sfzSamplesUnreadable",
         "silentSources",
         "unrecognisedEffectParam"

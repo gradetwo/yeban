@@ -990,11 +990,13 @@ impl TrackPanAutomation {
     }
 }
 
-/// 本切片**真的会落点**的设备参数名（**含别名**，`55` 个拼写 = `30` 个字段）。
+/// 本切片**真的会落点**的设备参数名（**含别名**，`78` 个拼写 = `43` 个字段）。
 ///
 /// `#266` 只开 `output_gain_db`；`#267` 扩到**通道条那一整组**（27 拼写 / 14 字段）；
 /// `#293` 再扩到 **Freeverb 的 4 个标量字段**（6 拼写）与**卷积混响的 4 个标量字段**
-/// （8 拼写）；⭐ `#304` 扩到**压缩的 8 个字段**（14 拼写）。
+/// （8 拼写）；⭐ `#304` 扩到**压缩的 8 个字段**（14 拼写）；
+/// 乒乓延迟（ADR-0061）扩到**延迟的 9 个字段**（15 拼写）；磁带饱和（ADR-0062）
+/// 扩到**磁带的 4 个字段**（8 拼写）。
 ///
 /// ⛔ 不是"白名单"：`crates/yeban-render/src/inserts.rs::is_supported_param` 的名字是
 /// **静态投影**消费的全集（只多三个构造期 IR 形状名）；本表是**自动化**这一层接上的
@@ -1018,9 +1020,14 @@ impl TrackPanAutomation {
 /// - 6 个混响拼写对应 [`crate::inserts::ReverbField`] 的 4 个字段
 ///   （`reverb_size` / `reverb_damp` / `reverb_wet`(＋`_mix`) / `reverb_predelay`(＋`_s`)）；
 /// - 8 个卷积拼写对应 [`crate::inserts::ConvolutionField`] 的 4 个字段
-///   （`conv_predelay*` / `conv_dry` / `conv_wet`(＋`_mix`) / `conv_ir_gain*`）。
+///   （`conv_predelay*` / `conv_dry` / `conv_wet`(＋`_mix`) / `conv_ir_gain*`）；
+/// - 15 个延迟拼写对应 [`crate::inserts::DelayField`] 的 9 个字段
+///   （`delay_time*` / `delay_feedback` / `delay_mix` / `delay_damp` / `delay_ping_pong` /
+///   `delay_sync*`）；
+/// - 8 个磁带拼写对应 [`crate::inserts::TapeField`] 的 4 个字段
+///   （`tape_drive` / `tape_mix` / `tape_trim_db` / `tape_hf_hz`，各＋`saturation_*` 别名）。
 ///
-/// 三者与静态投影**同一张拼写表** ⇒ 一条泳道改的正是静态投影会交给对应器件
+/// 五者与静态投影**同一张拼写表** ⇒ 一条泳道改的正是静态投影会交给对应器件
 /// `set_params` 的那个字段。
 ///
 /// ## 为什么**不**是别的名字
