@@ -118,27 +118,40 @@ fn tools_list_publishes_one_branch_per_parser_kind() {
 ///
 /// 这是对"字面量抄写"的机械对账（本 crate ⛔ 不依赖 `yeban-engine`，因此读源码
 /// 而不是链接）：少一个名字 / 多一个引擎不认的名字都会红。
+///
+/// 白名单住在两处，缺一不可：`insert.rs` 自己的匹配臂（通道条 / 混响 / 卷积）＋
+/// `yeban-dsp` 的 `device_param.rs` 共享拼写表（延迟 15 拼写；引擎的 `delay_of`
+/// 直接调 `DelayField::from_name`，⛔ 不在引擎里抄第二份表 —— 抄了就会漂）。
+/// 因此本判据同时扫这两份源码：名字只在其中一份里出现即算认下。
 #[test]
 fn every_published_effect_name_is_a_quoted_literal_in_insert_rs() {
-    let insert_rs = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+    let engine_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("..")
         .join("yeban-engine")
-        .join("src")
-        .join("insert.rs");
-    let source = std::fs::read_to_string(&insert_rs)
+        .join("src");
+    let insert_rs = engine_dir.join("insert.rs");
+    let insert_source = std::fs::read_to_string(&insert_rs)
         .unwrap_or_else(|error| panic!("读引擎白名单 {} 失败: {error}", insert_rs.display()));
+    let dsp_rs = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("yeban-dsp")
+        .join("src")
+        .join("device_param.rs");
+    let dsp_source = std::fs::read_to_string(&dsp_rs)
+        .unwrap_or_else(|error| panic!("读共享拼写表 {} 失败: {error}", dsp_rs.display()));
 
     let names = effect_params::recognised_names();
     assert!(names.len() >= 32, "公告名数量异常: {}", names.len());
     let mut missing: Vec<&str> = Vec::new();
     for name in &names {
-        if !source.contains(&format!("\"{name}\"")) {
+        let literal = format!("\"{name}\"");
+        if !insert_source.contains(&literal) && !dsp_source.contains(&literal) {
             missing.push(name);
         }
     }
     assert!(
         missing.is_empty(),
-        "这些公告名在 `insert.rs` 里找不到带引号字面量（引擎不认 ⇒ 公告是假的）: {missing:?}"
+        "这些公告名在 `insert.rs` 与共享拼写表里都找不到带引号字面量（引擎不认 ⇒ 公告是假的）: {missing:?}"
     );
     // 反向：引擎刻意不认的两个名字不得出现在公告里。
     for forbidden in ["reverb_mix", "reverb_width"] {

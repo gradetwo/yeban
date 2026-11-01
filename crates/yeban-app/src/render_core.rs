@@ -585,8 +585,12 @@ pub fn render_project_f32_with_plans_under(
     // ⛔ 本层不复制"哪些泳道/哪一族"的判定。
     let device_automations = device_param_automations(project, options.sample_rate);
     let forced = forced_insert_instances(&device_automations);
-    let inserts =
-        project_inserts_with_forced_instances(&project.tracks, options.sample_rate, &forced);
+    let inserts = project_inserts_with_forced_instances(
+        &project.tracks,
+        options.sample_rate,
+        project.bpm,
+        &forced,
+    );
     let mut plan = RenderPlan::compile_with_latencies_and_inserts(
         &project.routing_graph,
         project.master_bus_track_id,

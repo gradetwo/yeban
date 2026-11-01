@@ -427,9 +427,106 @@ const CONVOLUTION: EffectGroup = EffectGroup {
     ],
 };
 
+/// 乒乓延迟：左右交替回声的插入式延迟（复用 `yeban-dsp` 的 `Delay` 器件）。
+const DELAY: EffectGroup = EffectGroup {
+    id: "delay",
+    title: "乒乓延迟",
+    summary: "插入式乒乓延迟（链尾、卷积之后；`delay_mix = 0` 时整级不建）",
+    params: &[
+        EffectParam {
+            name: "delay_time_s",
+            aliases: &["delay_time"],
+            unit: "s",
+            min: 0.001,
+            max: 2.0,
+            default: 0.3,
+            doc: "延迟时间（同步关时直接用它；同步开时由工程拍速换算，超 2.0 s 钳制）",
+        },
+        EffectParam {
+            name: "delay_feedback",
+            aliases: &["delay_fb"],
+            unit: "",
+            min: 0.0,
+            max: 0.95,
+            default: 0.3,
+            doc: "反馈量（上限 0.95，防自激）",
+        },
+        EffectParam {
+            name: "delay_mix",
+            aliases: &["delay_wet"],
+            unit: "",
+            min: 0.0,
+            max: 1.0,
+            default: 0.0,
+            doc: "湿路电平；0 = 整级不建（级缺省关闭）",
+        },
+        EffectParam {
+            name: "delay_damp",
+            aliases: &["delay_damping"],
+            unit: "",
+            min: 0.0,
+            max: 1.0,
+            default: 0.0,
+            doc: "反馈回路里的高频阻尼",
+        },
+        EffectParam {
+            name: "delay_ping_pong",
+            aliases: &["delay_pingpong"],
+            unit: "",
+            min: 0.0,
+            max: 1.0,
+            default: 1.0,
+            doc: "乒乓开关（非零即真；缺省 1 = 功能缺省即乒乓）",
+        },
+        EffectParam {
+            name: "delay_sync_enabled",
+            aliases: &["delay_sync"],
+            unit: "",
+            min: 0.0,
+            max: 1.0,
+            default: 0.0,
+            doc: "音符同步开关（开时延迟时间由工程拍速在投影期换算，不在块边界重算）",
+        },
+        EffectParam {
+            name: "delay_sync_num",
+            aliases: &[],
+            unit: "",
+            min: 1.0,
+            max: 16.0,
+            default: 3.0,
+            doc: "同步分子（拍数，取整后换算）",
+        },
+        EffectParam {
+            name: "delay_sync_den",
+            aliases: &[],
+            unit: "",
+            min: 1.0,
+            max: 16.0,
+            default: 8.0,
+            doc: "同步分母（拍数，取整后换算）",
+        },
+        EffectParam {
+            name: "delay_sync_dotted",
+            aliases: &[],
+            unit: "",
+            min: 0.0,
+            max: 1.0,
+            default: 1.0,
+            doc: "附点开关（非零即真，时长 ×1.5；换算后超 2.0 s 钳制）",
+        },
+    ],
+};
+
 /// 全部**引擎真正认**的效果器参数，按器件分组（顺序稳定，schema 与读回共用）。
-pub const EFFECT_GROUPS: [EffectGroup; 6] =
-    [CHANNEL_STRIP, EQ, FILTER, DYNAMICS, REVERB, CONVOLUTION];
+pub const EFFECT_GROUPS: [EffectGroup; 7] = [
+    CHANNEL_STRIP,
+    EQ,
+    FILTER,
+    DYNAMICS,
+    REVERB,
+    CONVOLUTION,
+    DELAY,
+];
 
 /// 按名字（大小写不敏感）查一个参数的归属。
 ///

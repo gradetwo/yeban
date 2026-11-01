@@ -1,5 +1,5 @@
 //! **离线插入链**的判据：通道条（增益 → 3 段 EQ → 低通 → **压缩**）＋ Freeverb
-//! ＋ 卷积混响。
+//! ＋ 卷积混响 ＋ 乒乓延迟。
 //!
 //! ⭐ 任务单 `#303` 起**压缩级执行**（之前整级不执行；见 `src/inserts.rs` §1.1）。
 //! 本文件因此同时钉住三件事：① 压缩真的压（阈值以上）/ 真的不动（阈值以下）；
@@ -37,6 +37,9 @@ use yeban_render::render::{
 
 /// 判据统一用 48 kHz（卷积 IR = 4 800 帧 = 0.1 s，与实时引擎同值）。
 const SR: u32 = 48_000;
+
+/// 判据统一用 120 BPM（延迟音符同步换算的工程速度；84 BPM 另见延迟判据）。
+const BPM: f64 = 120.0;
 
 /// "第一个设备"用的固定 ULID 序号 —— 判据不依赖顺序，这里只为可读性。
 fn node(seed: u32) -> EntityId {
@@ -231,7 +234,7 @@ fn a_low_shelf_raises_the_fundamental_band_by_more_than_six_db() {
             ("eq_low_freq", 120.0),
         ])]),
     );
-    let inserts = project_inserts(&tracks, SR);
+    let inserts = project_inserts(&tracks, SR, BPM);
     assert!(!inserts.is_empty(), "EQ 设备必须投影出非空链");
     let with_eq = render(&routing, master, &inserts, frames, mono.clone(), track_node);
     let baseline = render(
@@ -281,7 +284,7 @@ fn the_reverb_on_the_aux_return_keeps_ringing_after_the_note_ends() {
         aux,
         track(vec![effect(&[("reverb_size", 0.8), ("reverb_wet", 1.0)])]),
     );
-    let wet_inserts = project_inserts(&wet_tracks, SR);
+    let wet_inserts = project_inserts(&wet_tracks, SR, BPM);
     let wet = render(&routing, master, &wet_inserts, frames, mono.clone(), source);
 
     let mut dry_tracks = BTreeMap::new();
@@ -289,7 +292,7 @@ fn the_reverb_on_the_aux_return_keeps_ringing_after_the_note_ends() {
         aux,
         track(vec![effect(&[("reverb_size", 0.8), ("reverb_wet", 0.0)])]),
     );
-    let dry_inserts = project_inserts(&dry_tracks, SR);
+    let dry_inserts = project_inserts(&dry_tracks, SR, BPM);
     let dry = render(&routing, master, &dry_inserts, frames, mono, source);
 
     // 音符结束 (4 800) 之后 200–700 ms。
@@ -342,7 +345,7 @@ fn the_convolution_on_the_aux_return_rings_for_the_length_of_its_ir() {
             ("conv_ir_seed", 1.0),
         ])]),
     );
-    let wet_inserts = project_inserts(&wet_tracks, SR);
+    let wet_inserts = project_inserts(&wet_tracks, SR, BPM);
     let wet = render(&routing, master, &wet_inserts, frames, mono.clone(), source);
 
     let mut dry_tracks = BTreeMap::new();
@@ -350,7 +353,7 @@ fn the_convolution_on_the_aux_return_rings_for_the_length_of_its_ir() {
         aux,
         track(vec![effect(&[("conv_wet", 0.0), ("conv_dry", 1.0)])]),
     );
-    let dry_inserts = project_inserts(&dry_tracks, SR);
+    let dry_inserts = project_inserts(&dry_tracks, SR, BPM);
     let dry = render(&routing, master, &dry_inserts, frames, mono, source);
 
     // IR = 4 800 帧 ⇒ 尾音只能活到音符结束后 100 ms（4 800 帧）。
@@ -404,7 +407,7 @@ fn two_renders_of_the_same_project_have_the_same_sha256() {
             effect(&[("conv_wet", 0.5), ("conv_dry", 0.5)]),
         ]),
     );
-    let inserts = project_inserts(&tracks, SR);
+    let inserts = project_inserts(&tracks, SR, BPM);
     let mut plan = RenderPlan::compile_with_latencies_and_inserts(
         &routing,
         master,
@@ -485,7 +488,7 @@ fn master_bus_inserts_are_applied() {
             ("eq_low_freq", 120.0),
         ])]),
     );
-    let with_master_inserts = project_inserts(&tracks, SR);
+    let with_master_inserts = project_inserts(&tracks, SR, BPM);
     assert!(
         with_master_inserts.contains_key(&master),
         "投影必须包含 master（投影规则本身不剔除任何节点）"
@@ -531,7 +534,7 @@ fn master_bus_inserts_are_applied() {
     bypassed.bypassed = true;
     let mut bypassed_tracks = BTreeMap::new();
     bypassed_tracks.insert(master, track(vec![bypassed]));
-    let bypassed_inserts = project_inserts(&bypassed_tracks, SR);
+    let bypassed_inserts = project_inserts(&bypassed_tracks, SR, BPM);
     assert!(
         !bypassed_inserts.contains_key(&master),
         "旁通的 master 设备不得投影成链"
@@ -569,7 +572,7 @@ fn unknown_or_bypassed_devices_leave_the_audio_bit_identical() {
             ("reverb_mix", 0.3),
         ])]),
     );
-    let unknown_inserts = project_inserts(&unknown_tracks, SR);
+    let unknown_inserts = project_inserts(&unknown_tracks, SR, BPM);
     assert!(unknown_inserts.is_empty(), "未知名字不得被猜成器件");
     assert!(
         track_has_unhandled_dsp(&unknown_tracks[&track_node]),
@@ -597,27 +600,37 @@ fn the_projection_recognises_only_the_documented_names() {
             ("eq_mid_q", 2.0),
         ])],
         SR,
+        BPM,
     );
     let params = eq.eq().expect("EQ 应被识别");
     assert_eq!(params.low_gain, 12.0);
     assert_eq!(params.low_freq, 120.0);
     assert_eq!(params.mid_q, 2.0);
 
-    let reverb =
-        InsertChain::from_devices(&[effect(&[("reverb_size", 0.8), ("reverb_wet", 1.0)])], SR);
+    let reverb = InsertChain::from_devices(
+        &[effect(&[("reverb_size", 0.8), ("reverb_wet", 1.0)])],
+        SR,
+        BPM,
+    );
     let params = reverb.reverb().expect("混响应被识别");
     assert_eq!(params.size, 0.8);
     assert_eq!(params.mix, 1.0);
 
-    let convolution =
-        InsertChain::from_devices(&[effect(&[("conv_wet", 1.0), ("conv_ir_seed", 7.0)])], SR);
+    let convolution = InsertChain::from_devices(
+        &[effect(&[("conv_wet", 1.0), ("conv_ir_seed", 7.0)])],
+        SR,
+        BPM,
+    );
     let plan = convolution.convolution().expect("卷积应被识别");
     assert_eq!(plan.ir().len(), 4_800, "48 kHz ⇒ IR = 采样率 ÷ 10");
     assert_eq!(plan.params().wet, 1.0);
 
     // `reverb_mix` / `reverb_width` 刻意不认（与引擎 §8.1 同口径）。
-    let not_recognised =
-        InsertChain::from_devices(&[effect(&[("reverb_mix", 0.3), ("reverb_width", 1.0)])], SR);
+    let not_recognised = InsertChain::from_devices(
+        &[effect(&[("reverb_mix", 0.3), ("reverb_width", 1.0)])],
+        SR,
+        BPM,
+    );
     assert!(not_recognised.is_empty());
 }
 
@@ -633,6 +646,7 @@ fn the_strip_projection_mirrors_the_engine_whitelist() {
             ("filter_drive", 0.25),
         ])],
         SR,
+        BPM,
     );
     let params = chain.strip().expect("通道条应被识别");
     assert_eq!(
@@ -652,11 +666,12 @@ fn the_strip_projection_mirrors_the_engine_whitelist() {
     assert!(!chain.is_empty());
 
     // ⚠ `filter_cutoff_hz` 刻意不认（引擎模块文档 §4.3）：只有 `cutoff_hz`。
-    let not_recognised = InsertChain::from_devices(&[effect(&[("filter_cutoff_hz", 800.0)])], SR);
+    let not_recognised =
+        InsertChain::from_devices(&[effect(&[("filter_cutoff_hz", 800.0)])], SR, BPM);
     assert!(not_recognised.is_empty());
 
     // ⭐ `#303`：只有压缩参数 ⇒ **非空链**（压缩级自本单起真的执行）。
-    let compressor_only = InsertChain::from_devices(&[effect(&[("threshold_db", -30.0)])], SR);
+    let compressor_only = InsertChain::from_devices(&[effect(&[("threshold_db", -30.0)])], SR, BPM);
     assert!(compressor_only.strip().is_some(), "压缩仍是通道条的一部分");
     assert!(
         !compressor_only.is_empty(),
@@ -667,7 +682,7 @@ fn the_strip_projection_mirrors_the_engine_whitelist() {
         "`threshold_db` ⇒ 压缩级执行"
     );
     // 显式写 0 的开关仍然关：全恒等 ⇒ 空链（`#303` ⛔ 不改变这条默认口径）。
-    let disabled = InsertChain::from_devices(&[effect(&[("compressor_enabled", 0.0)])], SR);
+    let disabled = InsertChain::from_devices(&[effect(&[("compressor_enabled", 0.0)])], SR, BPM);
     assert!(
         disabled.is_empty(),
         "`compressor_enabled: 0` 且三级全关 ⇒ 空链"
@@ -716,7 +731,7 @@ fn strip_names_are_the_engine_whitelist() {
     ];
     // ⭐ `#303`：28 个通道条拼写**全部**被消费（压缩从"整级不执行"变成"执行"）。
     for &name in STRIP_NAMES {
-        let chain = InsertChain::from_devices(&[effect(&[(name, 0.5)])], SR);
+        let chain = InsertChain::from_devices(&[effect(&[(name, 0.5)])], SR, BPM);
         assert!(chain.strip().is_some(), "`{name}` 必须被通道条投影认下");
         assert!(
             !track_has_unhandled_dsp(&track(vec![effect(&[(name, 0.5)])])),
@@ -747,7 +762,7 @@ fn strip_names_are_the_engine_whitelist() {
     ];
     for &name in COMPRESSOR_NAMES {
         let devices = [effect(&[(name, -20.0)])];
-        let chain = InsertChain::from_devices(&devices, SR);
+        let chain = InsertChain::from_devices(&devices, SR, BPM);
         assert!(chain.strip().is_some(), "`{name}` 仍是引擎认的通道条名字");
         assert!(
             chain.compresses_statically(),
@@ -761,7 +776,7 @@ fn strip_names_are_the_engine_whitelist() {
 
     for &name in &["filter_cutoff_hz", "reverb_mix", "reverb_width"] {
         let devices = [effect(&[(name, 0.5)])];
-        let chain = InsertChain::from_devices(&devices, SR);
+        let chain = InsertChain::from_devices(&devices, SR, BPM);
         assert!(chain.is_empty(), "`{name}` 刻意不认 ⇒ 不得投影出器件");
         assert!(
             track_has_unhandled_dsp(&track(vec![effect(&[(name, 0.5)])])),
@@ -794,7 +809,7 @@ fn the_gain_stages_scale_the_master_by_the_written_db() {
     for (name, value) in [("input_gain_db", -6.0f32), ("output_gain_db", -6.0f32)] {
         let mut tracks = BTreeMap::new();
         tracks.insert(track_node, track(vec![effect(&[(name, value)])]));
-        let inserts = project_inserts(&tracks, SR);
+        let inserts = project_inserts(&tracks, SR, BPM);
         assert!(!inserts.is_empty(), "`{name}` 必须投影出非空链");
         let rendered = render(&routing, master, &inserts, frames, mono.clone(), track_node);
         let energy = tone_energy(&rendered.samples, 6_000, frames, 440.0);
@@ -833,7 +848,7 @@ fn the_low_pass_filter_shapes_the_master() {
         track_node,
         track(vec![effect(&[("cutoff_hz", 500.0), ("resonance", 0.0)])]),
     );
-    let inserts = project_inserts(&tracks, SR);
+    let inserts = project_inserts(&tracks, SR, BPM);
     assert!(!inserts.is_empty(), "`cutoff_hz` 必须投影出非空链");
     let filtered = render(&routing, master, &inserts, frames, mono, track_node);
     let energy = tone_energy(&filtered.samples, 6_000, frames, 2_000.0);
@@ -947,7 +962,7 @@ fn a_non_stereo_target_refuses_a_non_empty_insert_chain() {
     let options = RenderOptions::l1(4_800, 1, SR, 1);
     let mut tracks = BTreeMap::new();
     tracks.insert(track_node, track(vec![effect(&[("reverb_wet", 0.5)])]));
-    let inserts = project_inserts(&tracks, SR);
+    let inserts = project_inserts(&tracks, SR, BPM);
     let result = RenderPlan::compile_with_latencies_and_inserts(
         &routing,
         master,
@@ -1000,7 +1015,7 @@ fn the_source_and_the_incoming_edge_are_summed_before_the_insert_chain() {
             ("eq_low_freq", 120.0),
         ])]),
     );
-    let inserts = project_inserts(&tracks, SR);
+    let inserts = project_inserts(&tracks, SR, BPM);
 
     // (bus 自己的源, 入边源) ⇒ 母带。`with_eq = false` 是输入端求和的直接读数。
     let render_pair = |bus_source: f32, incoming: f32, with_eq: bool| -> RenderOutput {
@@ -1109,10 +1124,10 @@ fn a_forced_strip_exists_even_when_the_projection_is_the_identity() {
     let mut tracks = BTreeMap::new();
     tracks.insert(track_id, track(vec![effect(&[("output_gain_db", 0.0)])]));
     assert!(
-        !project_inserts(&tracks, SR).contains_key(&track_id),
+        !project_inserts(&tracks, SR, BPM).contains_key(&track_id),
         "静态投影是恒等 ⇒ 默认不挂运行态"
     );
-    let forced = project_inserts_with_forced_strips(&tracks, SR, &BTreeSet::from([track_id]));
+    let forced = project_inserts_with_forced_strips(&tracks, SR, BPM, &BTreeSet::from([track_id]));
     let chain = forced.get(&track_id).expect("强制实例化必须留下一条链");
     assert!(chain.is_forced_strip());
     assert!(!chain.is_empty(), "有器件可改 ⇒ 不是空链");
@@ -1143,7 +1158,7 @@ fn strip_source_lookup_matches_the_projection_source() {
     assert_eq!(strip_source_slot(&tracks[&track_id]), Some(1));
     let projected = strip_source_params(&tracks[&track_id]).expect("槽位 1 是来源");
     assert_eq!(projected.output_gain_db.to_bits(), (-6.0f32).to_bits());
-    let chain = project_inserts(&tracks, SR);
+    let chain = project_inserts(&tracks, SR, BPM);
     let raw = chain[&track_id].strip().expect("投影出通道条");
     assert_eq!(
         raw.output_gain_db.to_bits(),
@@ -1164,14 +1179,14 @@ fn forcing_one_track_does_not_materialise_other_tracks() {
     let mut tracks = BTreeMap::new();
     tracks.insert(quiet, track(vec![effect(&[("output_gain_db", 0.0)])]));
     tracks.insert(loud, track(vec![effect(&[("output_gain_db", -12.0)])]));
-    let forced = project_inserts_with_forced_strips(&tracks, SR, &BTreeSet::from([quiet]));
+    let forced = project_inserts_with_forced_strips(&tracks, SR, BPM, &BTreeSet::from([quiet]));
     assert!(forced.contains_key(&quiet));
     assert!(forced.contains_key(&loud), "-12 dB 静态投影本来就非空");
-    let untouched = project_inserts(&tracks, SR);
+    let untouched = project_inserts(&tracks, SR, BPM);
     assert!(!untouched.contains_key(&quiet));
     assert!(untouched.contains_key(&loud));
     // 空集 ⇒ 与 `project_inserts` 逐项相同。
-    let empty = project_inserts_with_forced_strips(&tracks, SR, &BTreeSet::new());
+    let empty = project_inserts_with_forced_strips(&tracks, SR, BPM, &BTreeSet::new());
     assert_eq!(empty.len(), untouched.len());
     for (id, chain) in &untouched {
         assert_eq!(empty[id].is_empty(), chain.is_empty());
@@ -1269,7 +1284,7 @@ fn render_with_device_automations(
 ) -> (RenderOutput, Vec<InsertMeterReading>) {
     let automations = device_param_automations(project, SR);
     let forced = forced_insert_instances(&automations);
-    let inserts = project_inserts_with_forced_instances(&project.tracks, SR, &forced);
+    let inserts = project_inserts_with_forced_instances(&project.tracks, SR, BPM, &forced);
     let options = RenderOptions::l1(frames as u64, 2, SR, 0x155).with_threads(1);
     let mut plan = RenderPlan::compile_with_latencies_and_inserts(
         routing,
@@ -1361,7 +1376,7 @@ fn the_compressor_reduces_above_threshold_and_is_transparent_below_it() {
 
     let mut tracks = BTreeMap::new();
     tracks.insert(track_node, track(vec![hard_knee_compressor(-24.0)]));
-    let inserts = project_inserts(&tracks, SR);
+    let inserts = project_inserts(&tracks, SR, BPM);
     let chain = inserts.get(&track_node).expect("压缩参数必须投影出非空链");
     assert!(chain.compresses_statically(), "`threshold_db` ⇒ 压缩级执行");
     let (compressed, readings, longest_path) =
@@ -1668,7 +1683,7 @@ fn a_compressor_adds_no_latency_and_does_not_touch_pdc() {
             ("knee_db", 0.0),
         ])]),
     );
-    let inserts = project_inserts(&tracks, SR);
+    let inserts = project_inserts(&tracks, SR, BPM);
     let (compressed, readings, longest_path) =
         render_with_readings(&routing, master, &inserts, frames, mono, track_node);
 
@@ -1728,7 +1743,7 @@ fn a_project_without_compressor_params_keeps_its_master_bytes() {
 
     let mut tracks = BTreeMap::new();
     tracks.insert(track_node, track(vec![effect(&[("input_gain_db", -6.0)])]));
-    let inserts = project_inserts(&tracks, SR);
+    let inserts = project_inserts(&tracks, SR, BPM);
     assert!(!inserts.is_empty(), "增益级必须投影出非空链");
     assert!(
         inserts.values().all(|chain| !chain.compresses_statically()),
@@ -1775,7 +1790,7 @@ fn statically_compressing_nodes_agree_with_the_compiled_chains() {
         track(vec![effect(&[("threshold", -12.0)])]),
     );
 
-    let inserts = project_inserts(&tracks, SR);
+    let inserts = project_inserts(&tracks, SR, BPM);
     let from_chains: BTreeSet<EntityId> = inserts
         .iter()
         .filter(|(_, chain)| chain.compresses_statically())
@@ -1956,4 +1971,62 @@ fn pub_functions_about_compression_say_whether_they_mean_statically() {
         seen.contains("compresses_statically") && seen.contains("compressing_nodes_with_lanes"),
         "本判据必须真的扫到 `compresses_statically` 与 `compressing_nodes_with_lanes`：{seen:?}"
     );
+}
+
+/// 延迟 15 拼写冻结副本：单写任何一个，链的延迟投影都必须认下，且该名字
+/// 已被离线求值（不许再登记 `deviceChainDsp`）。
+#[test]
+fn delay_names_are_the_projection_whitelist() {
+    const DELAY_NAMES: &[&str] = &[
+        "delay_time_s",
+        "delay_time",
+        "delay_feedback",
+        "delay_fb",
+        "delay_mix",
+        "delay_wet",
+        "delay_damp",
+        "delay_damping",
+        "delay_ping_pong",
+        "delay_pingpong",
+        "delay_sync_enabled",
+        "delay_sync",
+        "delay_sync_num",
+        "delay_sync_den",
+        "delay_sync_dotted",
+    ];
+    for &name in DELAY_NAMES {
+        let chain = InsertChain::from_devices(&[effect(&[(name, 0.5)])], SR, BPM);
+        assert!(chain.delay().is_some(), "`{name}` 必须被延迟投影认下");
+        assert!(
+            !track_has_unhandled_dsp(&track(vec![effect(&[(name, 0.5)])])),
+            "`{name}` 已被消费，不该再登记 `deviceChainDsp`"
+        );
+    }
+    // 未知名字不是延迟来源。
+    let unknown = InsertChain::from_devices(&[effect(&[("delay_foo", 0.5)])], SR, BPM);
+    assert!(unknown.delay().is_none());
+}
+
+/// `project_inserts` 的 bpm 透传：同一台同步设备在 84 BPM 与 120 BPM 下
+/// 投影出不同的延迟时间（附点二分：84 BPM 钳到 2.0 s，120 BPM 为 1.5 s）。
+#[test]
+fn delay_projection_uses_the_project_bpm() {
+    let track_id = node(77);
+    let mut tracks = BTreeMap::new();
+    tracks.insert(
+        track_id,
+        track(vec![effect(&[
+            ("delay_sync_enabled", 1.0),
+            ("delay_sync_num", 1.0),
+            ("delay_sync_den", 2.0),
+            ("delay_sync_dotted", 1.0),
+            ("delay_time_s", 0.3),
+        ])]),
+    );
+    let at_84 = project_inserts(&tracks, SR, 84.0);
+    let chain_84 = at_84.get(&track_id).expect("84 BPM 应有插入链");
+    assert_eq!(chain_84.delay().expect("延迟").time_s, 2.0);
+    let at_120 = project_inserts(&tracks, SR, 120.0);
+    let chain_120 = at_120.get(&track_id).expect("120 BPM 应有插入链");
+    assert_eq!(chain_120.delay().expect("延迟").time_s, 1.5);
 }

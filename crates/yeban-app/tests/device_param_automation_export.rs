@@ -941,8 +941,8 @@ fn every_gain_eq_filter_field_gives_the_same_master_in_both_exports() {
             .expect("appliedDeviceParamNames");
         assert_eq!(
             listed.len(),
-            55,
-            "MCP 名单必须逐条来自 yeban-render（55 个拼写：41 通道条（含压缩）+ 6 混响 + 8 卷积）: {data}"
+            70,
+            "MCP 名单必须逐条来自 yeban-render（70 个拼写：41 通道条（含压缩）+ 6 混响 + 8 卷积 + 15 延迟）: {data}"
         );
         for name in [
             "output_gain_db",
@@ -968,6 +968,13 @@ fn every_gain_eq_filter_field_gives_the_same_master_in_both_exports() {
             assert!(
                 listed.iter().any(|value| value == name),
                 "{name} 自 #304 起必须在名单里: {data}"
+            );
+        }
+        // 延迟 15 拼写现在**必须**在名单里。
+        for name in ["delay_mix", "delay_time_s", "delay_sync_enabled"] {
+            assert!(
+                listed.iter().any(|value| value == name),
+                "{name} 必须在名单里: {data}"
             );
         }
     }

@@ -1,4 +1,4 @@
-//! **每轨插入链**的离线投影与运行态：[通道条（增益 → EQ → 低通）] ＋ [Freeverb] ＋ [卷积混响]。
+//! **每轨插入链**的离线投影与运行态：[通道条（增益 → EQ → 低通）] ＋ [Freeverb] ＋ [卷积混响] ＋ [乒乓延迟]。
 //!
 //! ## 0. 这一份是**副本** —— 必须下移到 `yeban-dsp`（待办）
 //!
@@ -152,6 +152,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use yeban_dsp::channel_strip::{ChannelStrip, ChannelStripParams};
 use yeban_dsp::convolution_reverb::{ConvolutionReverb, ConvolutionReverbParams};
+use yeban_dsp::delay::{Delay, DelayParams};
+use yeban_dsp::device_param::delay_params_from_stage;
 use yeban_dsp::noise::Rng;
 use yeban_dsp::reverb::{Reverb, ReverbParams};
 use yeban_dsp::shaping::EqParams;
@@ -232,10 +234,10 @@ impl ConvolutionPlan {
     }
 }
 
-/// 一条轨的**插入链投影**（通道条、Freeverb、卷积混响）。
+/// 一条轨的**插入链投影**（通道条、Freeverb、卷积混响、乒乓延迟）。
 ///
-/// 三件**各自独立**取来源（与引擎 `InsertParams::from_devices` 同口径）：同一台设备
-/// 可以同时是三者或其中之一的来源。`None` 表示"本轨没有这一件" ⇒ 运行态整级跳过。
+/// 四件**各自独立**取来源（与引擎 `InsertParams::from_devices` 同口径）：同一台设备
+/// 可以同时是四者或其中之一的来源。`None` 表示"本轨没有这一件" ⇒ 运行态整级跳过。
 #[derive(Clone, Debug, PartialEq)]
 pub struct InsertChain {
     /// 通道条参数（增益 / EQ / 滤波 / 压缩）；`None` = 没有通道条来源。
@@ -247,6 +249,9 @@ pub struct InsertChain {
     reverb: Option<ReverbParams>,
     /// 卷积混响计划；`None` = 本轨没有卷积混响。
     convolution: Option<ConvolutionPlan>,
+    /// 乒乓延迟参数（音符同步已在投影期按工程 `bpm` 换算成 `time_s`）；
+    /// `None` = 本轨没有延迟。
+    delay: Option<DelayParams>,
     /// **编译期强制实例化通道条**（任务单 `#266`）。
     ///
     /// `true` = 本轨有**非恒等**的 `DeviceParam` 泳道 ⇒ 即使投影结果是"全恒等"
@@ -263,6 +268,9 @@ pub struct InsertChain {
     /// **编译期强制实例化卷积混响**（`#293`）。与 [`Self::force_reverb`] 同理：
     /// `conv_wet: 0` 的静态链会让 `InsertRuntime` 丢掉器件。
     force_convolution: bool,
+    /// **编译期强制实例化乒乓延迟**（与 `#293` 同理）：静态 `delay_mix: 0`
+    /// 时运行态不建器件，但一条非恒等延迟泳道会在块边界把它拉起来。
+    force_delay: bool,
 }
 
 impl InsertChain {
@@ -273,9 +281,11 @@ impl InsertChain {
             strip: None,
             reverb: None,
             convolution: None,
+            delay: None,
             force_strip: false,
             force_reverb: false,
             force_convolution: false,
+            force_delay: false,
         }
     }
 
@@ -284,15 +294,18 @@ impl InsertChain {
     /// 规则与引擎 `InsertParams::from_devices` 逐条一致：
     ///
     /// 1. 只看**非旁通**的 [`DeviceKind::InternalEffect`]；
-    /// 2. 三件各自取**第一个**含该件已识别参数名的设备（先命中者不被后来者覆盖）；
+    /// 2. 四件各自取**第一个**含该件已识别参数名的设备（先命中者不被后来者覆盖）；
     /// 3. 未出现的字段保持 `yeban-dsp` 的默认值；
     /// 4. 同名参数**后者胜**；参数名大小写不敏感；
     /// 5. 没写旋钮的级不执行（`eq_enabled` 等开关写过的优先）。
+    ///
+    /// `bpm` 只在延迟那一支用到（音符同步换算，见 [`delay_params_from_stage`]）。
     #[must_use]
-    pub fn from_devices(devices: &[DeviceDefinition], sample_rate: u32) -> Self {
+    pub fn from_devices(devices: &[DeviceDefinition], sample_rate: u32, bpm: f64) -> Self {
         let mut strip: Option<ChannelStripParams> = None;
         let mut reverb: Option<ReverbParams> = None;
         let mut convolution: Option<ConvolutionPlan> = None;
+        let mut delay: Option<DelayParams> = None;
         for device in devices {
             if device.bypassed || device.kind != DeviceKind::InternalEffect {
                 continue;
@@ -306,7 +319,10 @@ impl InsertChain {
             if convolution.is_none() {
                 convolution = convolution_of(device, sample_rate);
             }
-            if strip.is_some() && reverb.is_some() && convolution.is_some() {
+            if delay.is_none() {
+                delay = delay_of(device, bpm);
+            }
+            if strip.is_some() && reverb.is_some() && convolution.is_some() && delay.is_some() {
                 break;
             }
         }
@@ -314,9 +330,11 @@ impl InsertChain {
             strip: strip.map(ChannelStripParams::sanitised),
             reverb,
             convolution,
+            delay,
             force_strip: false,
             force_reverb: false,
             force_convolution: false,
+            force_delay: false,
         }
     }
 
@@ -344,6 +362,13 @@ impl InsertChain {
         self
     }
 
+    /// 置"强制实例化乒乓延迟"位（与 `#293` 同理）。见 [`Self::force_delay`]。
+    #[must_use]
+    pub const fn with_forced_delay(mut self, force: bool) -> Self {
+        self.force_delay = force;
+        self
+    }
+
     /// 本链是否被编译期强制实例化了通道条（读数用）。
     #[must_use]
     pub const fn is_forced_strip(&self) -> bool {
@@ -362,13 +387,22 @@ impl InsertChain {
         self.force_convolution
     }
 
+    /// 本链是否被编译期强制实例化了乒乓延迟（读数用）。
+    #[must_use]
+    pub const fn is_forced_delay(&self) -> bool {
+        self.force_delay
+    }
+
     /// 本链是否为空（没有任何**离线会执行**的器件）。
     ///
     /// ⭐ `#303`：**只有压缩参数的通道条算非空** —— 压缩级现在真的执行（§1.1）。
     /// 反过来说，`compressor_enabled: 0` 且增益/EQ/滤波全关仍是空链（逐位不退化）。
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.effective_strip().is_none() && self.reverb.is_none() && self.convolution.is_none()
+        self.effective_strip().is_none()
+            && self.reverb.is_none()
+            && self.convolution.is_none()
+            && self.delay.is_none()
     }
 
     /// 本链的**静态投影**是否会执行**压缩级**（读数用；⛔ 不是生产判据）。
@@ -440,6 +474,12 @@ impl InsertChain {
     pub const fn convolution(&self) -> Option<&ConvolutionPlan> {
         self.convolution.as_ref()
     }
+
+    /// 投影出来的延迟参数（判据用；音符同步已按工程 `bpm` 换算）。
+    #[must_use]
+    pub const fn delay(&self) -> Option<DelayParams> {
+        self.delay
+    }
 }
 
 impl Default for InsertChain {
@@ -458,8 +498,14 @@ impl Default for InsertChain {
 pub fn project_inserts(
     tracks: &BTreeMap<EntityId, TrackV3>,
     sample_rate: u32,
+    bpm: f64,
 ) -> BTreeMap<EntityId, InsertChain> {
-    project_inserts_with_forced_instances(tracks, sample_rate, &ForcedInsertInstances::default())
+    project_inserts_with_forced_instances(
+        tracks,
+        sample_rate,
+        bpm,
+        &ForcedInsertInstances::default(),
+    )
 }
 
 /// 编译期强制实例化的**按器件族**集合（任务单 `#293`；`#266` 的通道条是其中一族）。
@@ -475,13 +521,18 @@ pub struct ForcedInsertInstances {
     pub reverb: BTreeSet<EntityId>,
     /// 需要强制实例化卷积混响的轨。
     pub convolution: BTreeSet<EntityId>,
+    /// 需要强制实例化乒乓延迟的轨。
+    pub delay: BTreeSet<EntityId>,
 }
 
 impl ForcedInsertInstances {
-    /// 三族都空。
+    /// 四族都空。
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.strip.is_empty() && self.reverb.is_empty() && self.convolution.is_empty()
+        self.strip.is_empty()
+            && self.reverb.is_empty()
+            && self.convolution.is_empty()
+            && self.delay.is_empty()
     }
 }
 
@@ -493,15 +544,17 @@ impl ForcedInsertInstances {
 pub fn project_inserts_with_forced_instances(
     tracks: &BTreeMap<EntityId, TrackV3>,
     sample_rate: u32,
+    bpm: f64,
     forced: &ForcedInsertInstances,
 ) -> BTreeMap<EntityId, InsertChain> {
     tracks
         .iter()
         .filter_map(|(&id, track)| {
-            let chain = InsertChain::from_devices(&track.devices, sample_rate)
+            let chain = InsertChain::from_devices(&track.devices, sample_rate, bpm)
                 .with_forced_strip(forced.strip.contains(&id))
                 .with_forced_reverb(forced.reverb.contains(&id))
-                .with_forced_convolution(forced.convolution.contains(&id));
+                .with_forced_convolution(forced.convolution.contains(&id))
+                .with_forced_delay(forced.delay.contains(&id));
             if chain.is_empty() {
                 None
             } else {
@@ -520,13 +573,14 @@ pub fn project_inserts_with_forced_instances(
 pub fn project_inserts_with_forced_strips(
     tracks: &BTreeMap<EntityId, TrackV3>,
     sample_rate: u32,
+    bpm: f64,
     forced_strip: &BTreeSet<EntityId>,
 ) -> BTreeMap<EntityId, InsertChain> {
     let forced = ForcedInsertInstances {
         strip: forced_strip.clone(),
         ..ForcedInsertInstances::default()
     };
-    project_inserts_with_forced_instances(tracks, sample_rate, &forced)
+    project_inserts_with_forced_instances(tracks, sample_rate, bpm, &forced)
 }
 
 /// 本工程里**静态投影**会执行压缩级的节点集合（任务单 `#303` 的 pre-pan tap 预扫描）。
@@ -605,7 +659,7 @@ pub fn track_has_unhandled_dsp(track: &TrackV3) -> bool {
 /// 本切片**消费**的参数名（小写）全集。
 ///
 /// 它**不是**另一张表：名字来自 [`DeviceParamField::from_name`]（通道条 — 含自
-/// `#304` 起的压缩 14 拼写 — / 混响 / 卷积标量的**同一张**拼写表）＋ 三个
+/// `#304` 起的压缩 14 拼写 — / 混响 / 卷积标量 / 延迟的**同一张**拼写表）＋ 三个
 /// **构造期** IR 形状名字（`conv_ir_decay*` / `conv_ir_seed`，静态投影会消费它们，
 /// 但自动化不落点）。
 ///
@@ -675,7 +729,28 @@ pub fn convolution_source_params(track: &TrackV3) -> Option<ConvolutionReverbPar
     convolution_projection(&track.devices[slot]).map(|(params, _decay_s, _seed)| params)
 }
 
-/// 设备参数落点表（三个器件族的字段枚举 ＋ 拼写表 ＋ 钳制）现读
+/// 本轨 **乒乓延迟来源设备**的下标（`from_devices` 的“首个含已识别延迟名字的设备”）。
+///
+/// 与 [`strip_source_slot`] 同一条规则；自动化只能落在这一台上，指向别的下标
+/// 那个参数**不是**进 DSP 的那一份。
+#[must_use]
+pub fn delay_source_slot(track: &TrackV3) -> Option<usize> {
+    track.devices.iter().position(|device| {
+        !device.bypassed
+            && device.kind == DeviceKind::InternalEffect
+            && delay_projection(device).is_some()
+    })
+}
+
+/// 本轨乒乓延迟**来源设备**的投影期参数（未换算；音符同步换算在 `delay_of` 里做，
+/// 与 `from_devices` 交给器件的同一份换算前输入）。
+#[must_use]
+pub fn delay_source_params(track: &TrackV3) -> Option<DelayStageParams> {
+    let slot = delay_source_slot(track)?;
+    delay_projection(&track.devices[slot])
+}
+
+/// 设备参数落点表（四个器件族的字段枚举 ＋ 拼写表 ＋ 钳制）现读
 /// [`yeban_dsp::device_param`]，这里只做 **re-export**。
 ///
 /// 为什么要下移：依赖方向是 `render → engine → dsp`，而实时插入链
@@ -683,13 +758,13 @@ pub fn convolution_source_params(track: &TrackV3) -> Option<ConvolutionReverbPar
 /// 落点字段怎么钳制"的规则 ⇒ 唯一能共享的位置是 `yeban-dsp`。⛔ 这里不得再长出第二张表。
 ///
 /// ⚠ **导入路径不变**：`yeban_render::inserts::{StripField, ReverbField, ConvolutionField,
-/// DeviceParamField, DeviceParamFamily, sanitised_output_gain_db}` 仍然可用（消费方现读 **7** 个
+/// DelayField, DelayStageParams, DeviceParamField, DeviceParamFamily, sanitised_output_gain_db}` 仍然可用（消费方现读 **7** 个
 /// 文件：`yeban-render/src/automation.rs`、`yeban-app/src/engine_host.rs`、
 /// `yeban-app/tests/{compressor_export,device_param_automation_export}.rs`、
 /// `yeban-mcp/src/domain/notes.rs`、`yeban-mcp/tests/{render_audio_clips,fault_vocabulary}.rs`）。
 pub use yeban_dsp::device_param::{
-    ConvolutionField, DeviceParamFamily, DeviceParamField, ReverbField, StripField,
-    sanitised_output_gain_db,
+    ConvolutionField, DelayField, DelayStageParams, DeviceParamFamily, DeviceParamField,
+    ReverbField, StripField, sanitised_output_gain_db,
 };
 
 /// 通道条被**强制实例化**、但本轨没有投影来源时的参数（任务单 `#266` 的缝）。
@@ -1069,6 +1144,33 @@ fn convolution_of(device: &DeviceDefinition, sample_rate: u32) -> Option<Convolu
     Some(ConvolutionPlan { params, ir })
 }
 
+/// 单台设备 → 延迟的**投影中间态**（`None` = 本设备不是延迟来源）。
+///
+/// 与 [`convolution_projection`] 同一款拆分：让"来源设备"判定与"器件参数"读取
+/// 不用重复换算（[`delay_source_slot`] / [`delay_source_params`]）。
+/// 名字表是 [`DelayField::SPELLINGS`]（与自动化**同一张**）。
+fn delay_projection(device: &DeviceDefinition) -> Option<DelayStageParams> {
+    let mut params = DelayStageParams::default();
+    let mut seen = false;
+    for param in &device.params {
+        if let Some(field) = DelayField::from_name(&param.name) {
+            field.store(&mut params, param.value);
+            seen = true;
+        }
+    }
+    if seen { Some(params) } else { None }
+}
+
+/// 单台设备 → 延迟参数（`None` = 本设备不是延迟来源）。
+///
+/// 音符同步在这里换算（投影期、控制线程；`bpm` 由调用方从工程取）。
+/// 与 [`reverb_of`] 同口径：`mix = 0` 仍返回 `Some`（运行态再按建级门丢弃，
+/// 强制位为真时保留实例供块边界拉起）。
+fn delay_of(device: &DeviceDefinition, bpm: f64) -> Option<DelayParams> {
+    let stage = delay_projection(device)?;
+    Some(delay_params_from_stage(&stage, bpm))
+}
+
 /// 一条链的**运行态**（每个渲染节点一份）。
 ///
 /// 构造期把全部缓冲与器件状态准备好；逐块处理**零分配**。器件状态跨块存活，
@@ -1080,6 +1182,11 @@ pub(crate) struct InsertRuntime {
     reverb: Option<Reverb>,
     /// 卷积混响状态；`None` = 不动（`wet = 0` 或没有）。
     convolution: Option<ConvolutionReverb>,
+    /// 乒乓延迟状态；`None` = 不动（静态 `delay_mix` 钳制后为 0 且未强制）。
+    delay: Option<Delay>,
+    /// 延迟当前参数（块边界自动化改这一份；`process` 按钳制后 `mix` 门控，
+    /// 见 [`Self::process`] 的 `-0.0` 注记）。
+    delay_params: DelayParams,
     /// 左声道去交错缓冲。
     left: Vec<f32>,
     /// 右声道去交错缓冲。
@@ -1155,10 +1262,26 @@ impl InsertRuntime {
                 None
             }
         });
+        // 乒乓延迟：建级门是钳制后 `mix != 0`（与 `#293` 同一条缝：静态
+        // `delay_mix: 0` 时不建器件，强制位为真时保留实例供块边界拉起）。
+        // 门用钳制值（非有限 ⇒ 0 ⇒ 不建），不用原始值：`NaN != 0.0` 为真，
+        // 拿原始值当门会把一台恒 0 的器件建出来。
+        let delay_params = chain.delay.unwrap_or_default();
+        let delay = chain.delay.and_then(|_| {
+            let mut state = Delay::new();
+            state.configure(sample_rate_f32);
+            if DelayField::Mix.sanitise(delay_params.mix) != 0.0 || chain.is_forced_delay() {
+                Some(state)
+            } else {
+                None
+            }
+        });
         Self {
             strip,
             reverb,
             convolution,
+            delay,
+            delay_params,
             left: vec![0.0; block_size],
             right: vec![0.0; block_size],
         }
@@ -1174,6 +1297,9 @@ impl InsertRuntime {
         }
         if let Some(convolution) = &mut self.convolution {
             convolution.reset();
+        }
+        if let Some(delay) = &mut self.delay {
+            delay.reset();
         }
     }
 
@@ -1214,13 +1340,34 @@ impl InsertRuntime {
                     convolution.set_params(params);
                 }
             }
+            // 延迟的 5 个器件字段直接写进运行参数（`Delay::process` 每块读它）；
+            // 同步四字段是**投影期输入**，块边界没有 `bpm` 可重算 ⇒ 这里不改
+            // `time_s`（同步泳道仍报 applied、仍强制建器件，见 ADR-0061）。
+            DeviceParamField::Delay(field) => {
+                if self.delay.is_some() {
+                    match field {
+                        DelayField::TimeS => self.delay_params.time_s = value,
+                        DelayField::Feedback => self.delay_params.feedback = value,
+                        DelayField::Mix => self.delay_params.mix = value,
+                        DelayField::Damp => self.delay_params.damp = value,
+                        DelayField::PingPong => self.delay_params.ping_pong = value != 0.0,
+                        DelayField::SyncEnabled
+                        | DelayField::SyncNum
+                        | DelayField::SyncDen
+                        | DelayField::SyncDotted => {}
+                    }
+                }
+            }
         }
     }
 
     /// 原地处理一个**立体声交错**块（`buffer.len() == frames * 2`）。
     ///
-    /// 顺序与实时引擎同一条链：通道条 → Freeverb → 卷积混响。各级在参数为 0 时
-    /// 整级跳过（状态不推进），与器件自己的 `is_active` 守卫同口径。
+    /// 顺序与实时引擎同一条链：通道条 → Freeverb → 卷积混响 → 乒乓延迟。
+    /// 各级在参数为 0 时整级跳过（状态不推进），与器件自己的 `is_active` 守卫同口径。
+    ///
+    /// ⚠ 延迟的 `mix = 0` 必须**整级跳过**、不能靠"乘零"混过去：`x + 0·w` 在
+    /// `x = -0.0` 时符号翻转（`-0.0 + 0.0 = +0.0`）。门用钳制后 `mix`（非有限 ⇒ 0）。
     pub(crate) fn process(&mut self, buffer: &mut [f32]) {
         let frames = buffer.len() / 2;
         if frames == 0 {
@@ -1230,6 +1377,8 @@ impl InsertRuntime {
             strip,
             reverb,
             convolution,
+            delay,
+            delay_params,
             left,
             right,
         } = self;
@@ -1249,11 +1398,19 @@ impl InsertRuntime {
                 buffer[2 * frame + 1] = right[frame];
             }
             convolution.process(&mut buffer[..2 * frames]);
-        } else {
             for frame in 0..frames {
-                buffer[2 * frame] = left[frame];
-                buffer[2 * frame + 1] = right[frame];
+                left[frame] = buffer[2 * frame];
+                right[frame] = buffer[2 * frame + 1];
             }
+        }
+        if let Some(delay) = delay
+            && DelayField::Mix.sanitise(delay_params.mix) != 0.0
+        {
+            delay.process(*delay_params, &mut left[..frames], &mut right[..frames]);
+        }
+        for frame in 0..frames {
+            buffer[2 * frame] = left[frame];
+            buffer[2 * frame + 1] = right[frame];
         }
     }
 }
@@ -1324,6 +1481,14 @@ mod tests {
             DeviceParamField::Convolution(ConvolutionField::PreDelay) => 0.05,
             DeviceParamField::Convolution(ConvolutionField::Dry | ConvolutionField::Wet) => 0.72,
             DeviceParamField::Convolution(ConvolutionField::IrGainDb) => -7.5,
+            DeviceParamField::Delay(DelayField::TimeS) => 0.5,
+            DeviceParamField::Delay(DelayField::Feedback) => 0.4,
+            DeviceParamField::Delay(DelayField::Mix) => 0.5,
+            DeviceParamField::Delay(DelayField::Damp) => 0.3,
+            DeviceParamField::Delay(DelayField::PingPong | DelayField::SyncEnabled) => 1.0,
+            DeviceParamField::Delay(DelayField::SyncDotted) => 0.0,
+            DeviceParamField::Delay(DelayField::SyncNum) => 4.0,
+            DeviceParamField::Delay(DelayField::SyncDen) => 4.0,
         }
     }
 
@@ -1374,6 +1539,15 @@ mod tests {
                         "{name} 的器件读数与恒等判定值必须同一个"
                     );
                 }
+                DeviceParamField::Delay(delay_field) => {
+                    let projected = delay_projection(&device(&[(name, value)]))
+                        .unwrap_or_else(|| panic!("{name}={value} 必须被 delay_projection 认出来"));
+                    assert_eq!(
+                        delay_field.read(&projected).to_bits(),
+                        delay_field.sanitise(value).to_bits(),
+                        "{name} 的投影值与恒等判定值必须同一个"
+                    );
+                }
             }
         }
     }
@@ -1392,6 +1566,9 @@ mod tests {
                 ConvolutionField::from_name(field.canonical_name()),
                 Some(*field)
             );
+        }
+        for field in DelayField::ALL {
+            assert_eq!(DelayField::from_name(field.canonical_name()), Some(*field));
         }
         for (alias, field) in [
             ("input_gain", StripField::InputGainDb),
@@ -1441,6 +1618,20 @@ mod tests {
             assert_eq!(
                 DeviceParamField::from_name(alias),
                 Some(DeviceParamField::Convolution(field)),
+                "{alias}"
+            );
+        }
+        for (alias, field) in [
+            ("delay_time", DelayField::TimeS),
+            ("delay_fb", DelayField::Feedback),
+            ("delay_wet", DelayField::Mix),
+            ("delay_damping", DelayField::Damp),
+            ("delay_pingpong", DelayField::PingPong),
+            ("delay_sync", DelayField::SyncEnabled),
+        ] {
+            assert_eq!(
+                DeviceParamField::from_name(alias),
+                Some(DeviceParamField::Delay(field)),
                 "{alias}"
             );
         }
@@ -1621,7 +1812,7 @@ mod tests {
     /// `apply_device_params` 找不到 `self.reverb` ⇒ **静默无效**。
     #[test]
     fn forced_reverb_keeps_a_wet_zero_instance_alive() {
-        let chain = InsertChain::from_devices(&[device(&[("reverb_wet", 0.0)])], 48_000);
+        let chain = InsertChain::from_devices(&[device(&[("reverb_wet", 0.0)])], 48_000, 120.0);
         assert!(chain.reverb().is_some(), "静态投影认得 `reverb_wet`");
         assert!(!chain.is_empty(), "链本身非空");
         let quiet = InsertRuntime::new(&chain, 48_000, 128);
@@ -1648,7 +1839,7 @@ mod tests {
     /// ⭐ `#293` 判据 2（机制层）：卷积同一条缝。
     #[test]
     fn forced_convolution_keeps_a_wet_zero_instance_alive() {
-        let chain = InsertChain::from_devices(&[device(&[("conv_wet", 0.0)])], 48_000);
+        let chain = InsertChain::from_devices(&[device(&[("conv_wet", 0.0)])], 48_000, 120.0);
         assert!(chain.convolution().is_some());
         let quiet = InsertRuntime::new(&chain, 48_000, 128);
         assert!(quiet.convolution.is_none(), "静态 `wet = 0` 整级跳过");
@@ -1673,5 +1864,232 @@ mod tests {
         assert!(!params.eq_enabled && !params.filter_enabled && !params.compressor_enabled);
         assert_eq!(params.input_gain_db.to_bits(), 0.0f32.to_bits());
         assert_eq!(params.output_gain_db.to_bits(), 0.0f32.to_bits());
+    }
+
+    /// 延迟字段的钳制表（与 `Delay::process` 的入口钳制同一组界）。
+    #[test]
+    fn delay_field_sanitise_grid() {
+        assert_eq!(DelayField::TimeS.sanitise(0.5), 0.5);
+        assert_eq!(DelayField::TimeS.sanitise(99.0), 2.0);
+        assert_eq!(DelayField::TimeS.sanitise(f32::NAN), 0.001);
+        assert_eq!(DelayField::Feedback.sanitise(2.0), 0.95);
+        assert_eq!(DelayField::Feedback.sanitise(f32::NAN), 0.0);
+        assert_eq!(DelayField::Mix.sanitise(2.0), 1.0);
+        assert_eq!(DelayField::Mix.sanitise(f32::NAN), 0.0);
+        assert_eq!(DelayField::Damp.sanitise(-1.0), 0.0);
+        assert_eq!(DelayField::PingPong.sanitise(0.25), 1.0);
+        assert_eq!(DelayField::PingPong.sanitise(0.0), 0.0);
+        assert_eq!(DelayField::SyncNum.sanitise(99.0), 16.0);
+        assert_eq!(DelayField::SyncNum.sanitise(f32::NAN), 3.0);
+        assert_eq!(DelayField::SyncDen.sanitise(0.0), 1.0);
+        assert_eq!(DelayField::SyncDen.sanitise(f32::NAN), 8.0);
+    }
+
+    /// 延迟的器件钳制与钳制表同解（`Delay::process` 的行为断言，不是抄数字）。
+    #[test]
+    fn delay_device_clamps_match_the_table() {
+        // 工具：单脉冲过一台指定参数的延迟，返回整段输出。
+        fn run(params: DelayParams, frames: usize) -> Vec<f32> {
+            let mut delay = Delay::new();
+            delay.configure(48_000.0);
+            let mut left = vec![0.0; frames];
+            let mut right = vec![0.0; frames];
+            left[0] = 1.0;
+            right[0] = 1.0;
+            delay.process(params, &mut left, &mut right);
+            left
+        }
+        let base = DelayParams {
+            time_s: 0.01,
+            feedback: 0.0,
+            mix: 1.0,
+            damp: 0.0,
+            ping_pong: false,
+        };
+        // mix 2.0 ≡ 1.0（钳到 1）；feedback 2.0 ≡ 0.95；time 99 ≡ 2.0。
+        let over_mix = DelayParams { mix: 2.0, ..base };
+        assert_eq!(run(over_mix, 600), run(base, 600));
+        let over_fb = DelayParams {
+            feedback: 2.0,
+            ..base
+        };
+        let at_cap = DelayParams {
+            feedback: 0.95,
+            ..base
+        };
+        assert_eq!(run(over_fb, 1200), run(at_cap, 1200));
+        let over_time = DelayParams {
+            time_s: 99.0,
+            ..base
+        };
+        let at_max = DelayParams {
+            time_s: 2.0,
+            ..base
+        };
+        assert_eq!(run(over_time, 96_100), run(at_max, 96_100));
+        // mix NaN ⇒ 湿路为 0 ⇒ 输出就是干信号。
+        let nan_mix = DelayParams {
+            mix: f32::NAN,
+            ..base
+        };
+        let out = run(nan_mix, 600);
+        assert_eq!(out[0], 1.0);
+        assert!(out[1..].iter().all(|&v| v == 0.0));
+    }
+
+    /// 延迟在链尾：脉冲过运行态，乒乓回声左右交替（480 帧左、960 帧右 @48 kHz）。
+    #[test]
+    fn delay_ping_pong_alternates_at_runtime() {
+        let chain = InsertChain::from_devices(
+            &[device(&[
+                ("delay_time_s", 0.01),
+                ("delay_feedback", 0.5),
+                ("delay_mix", 1.0),
+                ("delay_damp", 0.0),
+                ("delay_ping_pong", 1.0),
+            ])],
+            48_000,
+            120.0,
+        );
+        let params = chain.delay().expect("延迟应被识别");
+        assert_eq!(params.time_s, 0.01);
+        assert!(params.ping_pong);
+        let mut runtime = InsertRuntime::new(&chain, 48_000, 128);
+        assert!(runtime.delay.is_some());
+        // 128 帧一块喂 10 块；脉冲在全局第 0 帧（左右同 1.0）。
+        let mut blocks: Vec<Vec<f32>> = Vec::new();
+        for block in 0..10 {
+            let mut buffer = vec![0.0; 256];
+            if block == 0 {
+                buffer[0] = 1.0;
+                buffer[1] = 1.0;
+            }
+            runtime.process(&mut buffer);
+            blocks.push(buffer);
+        }
+        // 干信号：块 0 第 0 帧。
+        assert_eq!(blocks[0][0], 1.0);
+        assert_eq!(blocks[0][1], 1.0);
+        // 第一回声：全局 480 帧 = 块 3 偏移 96，只在左。
+        assert_eq!(blocks[3][96 * 2], 1.0);
+        assert_eq!(blocks[3][96 * 2 + 1], 0.0);
+        // 第二回声：全局 960 帧 = 块 7 偏移 64，只在右（反馈 0.5）。
+        assert_eq!(blocks[7][64 * 2], 0.0);
+        assert_eq!(blocks[7][64 * 2 + 1], 0.5);
+    }
+
+    /// `delay_mix = 0` 的运行态整级跳过：输出与输入**逐位**相同（含 `-0.0`）。
+    #[test]
+    fn delay_mix_zero_skips_bit_exact() {
+        let chain = InsertChain::from_devices(&[device(&[("delay_mix", 0.0)])], 48_000, 120.0);
+        assert!(chain.delay().is_some(), "静态投影认得 `delay_mix`");
+        assert!(!chain.is_empty(), "链本身非空");
+        let quiet = InsertRuntime::new(&chain, 48_000, 128);
+        assert!(quiet.delay.is_none(), "静态 `mix = 0` ⇒ 不建器件");
+
+        let forced = chain.with_forced_delay(true);
+        assert!(forced.is_forced_delay());
+        let mut runtime = InsertRuntime::new(&forced, 48_000, 128);
+        assert!(runtime.delay.is_some(), "强制位 ⇒ 运行态必须有器件");
+        let mut buffer = vec![0.0f32; 256];
+        buffer[0] = -0.0;
+        buffer[1] = 0.5;
+        buffer[2] = -0.0;
+        let input = buffer.clone();
+        runtime.process(&mut buffer);
+        assert_eq!(
+            buffer.iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
+            input.iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
+            "`mix = 0` 时不得乘零翻转 `-0.0` 的符号"
+        );
+    }
+
+    /// `#293` 同款缝：强制位让 `delay_mix = 0` 的器件活着，块边界能把它拉起来。
+    #[test]
+    fn forced_delay_keeps_a_mix_zero_instance_alive() {
+        let chain = InsertChain::from_devices(&[device(&[("delay_mix", 0.0)])], 48_000, 120.0);
+        let forced = chain.with_forced_delay(true);
+        let mut runtime = InsertRuntime::new(&forced, 48_000, 128);
+        runtime.apply_device_params(DeviceParamField::Delay(DelayField::Mix), 1.0);
+        assert_eq!(runtime.delay_params.mix.to_bits(), 1.0f32.to_bits());
+    }
+
+    /// 块边界改 5 个器件字段进运行参数；同步字段不改 `time_s`（投影期口径）。
+    #[test]
+    fn delay_apply_updates_device_fields_but_not_sync_time() {
+        let chain = InsertChain::from_devices(
+            &[device(&[
+                ("delay_time_s", 0.3),
+                ("delay_mix", 0.5),
+                ("delay_ping_pong", 0.0),
+            ])],
+            48_000,
+            120.0,
+        );
+        let mut runtime = InsertRuntime::new(&chain, 48_000, 128);
+        runtime.apply_device_params(DeviceParamField::Delay(DelayField::TimeS), 0.7);
+        runtime.apply_device_params(DeviceParamField::Delay(DelayField::Feedback), 0.6);
+        runtime.apply_device_params(DeviceParamField::Delay(DelayField::Mix), 0.9);
+        runtime.apply_device_params(DeviceParamField::Delay(DelayField::Damp), 0.2);
+        runtime.apply_device_params(DeviceParamField::Delay(DelayField::PingPong), 1.0);
+        assert_eq!(runtime.delay_params.time_s, 0.7);
+        assert_eq!(runtime.delay_params.feedback, 0.6);
+        assert_eq!(runtime.delay_params.mix, 0.9);
+        assert_eq!(runtime.delay_params.damp, 0.2);
+        assert!(runtime.delay_params.ping_pong);
+        runtime.apply_device_params(DeviceParamField::Delay(DelayField::SyncNum), 1.0);
+        runtime.apply_device_params(DeviceParamField::Delay(DelayField::SyncDen), 2.0);
+        assert_eq!(
+            runtime.delay_params.time_s, 0.7,
+            "同步字段块边界不重算 `time_s`（见 ADR-0061）"
+        );
+    }
+
+    /// 投影期音符同步换算：84 BPM 附点二分钳到 2.0 s；同步关保留写值。
+    #[test]
+    fn delay_of_converts_sync_at_projection() {
+        let synced = device(&[
+            ("delay_sync_enabled", 1.0),
+            ("delay_sync_num", 1.0),
+            ("delay_sync_den", 2.0),
+            ("delay_sync_dotted", 1.0),
+            ("delay_time_s", 0.3),
+        ]);
+        let params = delay_of(&synced, 84.0).expect("同步设备应被识别");
+        assert_eq!(params.time_s, 2.0, "84 BPM 附点二分 2.1429 s ⇒ 钳到 2.0 s");
+        let plain = device(&[("delay_time_s", 0.3)]);
+        assert_eq!(
+            delay_of(&plain, 84.0).expect("普通设备").time_s,
+            0.3,
+            "同步关时写值原样进器件"
+        );
+        let unknown = device(&[("delay_foo", 1.0)]);
+        assert!(delay_of(&unknown, 120.0).is_none(), "未知名字不是延迟来源");
+    }
+
+    /// 延迟来源规则：首个含延迟名字的设备胜；旁通设备跳过；同一台可兼多族来源。
+    #[test]
+    fn delay_first_source_wins_and_bypassed_ignored() {
+        let first = device(&[("delay_time_s", 0.5)]);
+        let second = device(&[("delay_mix", 0.9)]);
+        let chain = InsertChain::from_devices(&[first, second], 48_000, 120.0);
+        let params = chain.delay().expect("延迟应被识别");
+        assert_eq!(params.time_s, 0.5);
+        assert_eq!(
+            params.mix, 0.0,
+            "首个来源胜：第二台的 `delay_mix` 不覆盖舞台缺省（mix = 0）"
+        );
+
+        let mut bypassed = device(&[("delay_time_s", 0.5)]);
+        bypassed.bypassed = true;
+        let second_again = device(&[("delay_mix", 0.9)]);
+        let chain = InsertChain::from_devices(&[bypassed, second_again], 48_000, 120.0);
+        let params = chain.delay().expect("旁通跳过后第二台成来源");
+        assert_eq!(params.mix, 0.9);
+
+        let both = device(&[("conv_wet", 1.0), ("delay_mix", 0.5)]);
+        let chain = InsertChain::from_devices(&[both], 48_000, 120.0);
+        assert!(chain.convolution().is_some(), "同一台可兼卷积来源");
+        assert!(chain.delay().is_some(), "同一台可兼延迟来源");
     }
 }

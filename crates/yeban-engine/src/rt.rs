@@ -5718,7 +5718,7 @@ mod tests {
                 ..TrackV3::default()
             };
             tracks.insert(track, TrackParams::from_track(&model, 0));
-            let insert = crate::insert::InsertParams::from_devices(&model.devices, 48_000);
+            let insert = crate::insert::InsertParams::from_devices(&model.devices, 48_000, 120.0);
             if !insert.is_empty() {
                 inserts.insert(track, insert);
             }
