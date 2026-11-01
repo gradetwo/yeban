@@ -404,21 +404,21 @@ impl UiSurface for FakeSurface {
                 let raw = arguments.text("keyName").unwrap_or_default();
                 // 解析不出来就**原样**报回这个名字（⛔ 不猜一个键）：真调用的拒绝发生在
                 // 参数解析那一步，预览这一格只服务"看得见将要发生什么"。
-                let chord = yeban_ui_test_port::port::ChordKey::parse(raw).map_or_else(
-                    || raw.to_owned(),
-                    |key| {
-                        yeban_ui_test_port::port::KeyChord::new(
-                            key,
-                            yeban_ui_test_port::port::KeyChordModifiers {
-                                shift: arguments.is_true("shift").unwrap_or(false),
-                                ctrl: arguments.is_true("ctrl").unwrap_or(false),
-                                alt: arguments.is_true("alt").unwrap_or(false),
-                                meta: arguments.is_true("meta").unwrap_or(false),
-                            },
-                        )
-                        .name()
-                    },
-                );
+                // ⚠ `ChordKey::parse` 返回 `Result` ⇒ 用 `match`（`map_or_else` 的第一条
+                // 闭包在 `Result` 上要带拒绝值，CI 实测报 E0593）。
+                let chord = match yeban_ui_test_port::port::ChordKey::parse(raw) {
+                    Ok(key) => yeban_ui_test_port::port::KeyChord::new(
+                        key,
+                        yeban_ui_test_port::port::KeyChordModifiers {
+                            shift: arguments.is_true("shift").unwrap_or(false),
+                            ctrl: arguments.is_true("ctrl").unwrap_or(false),
+                            alt: arguments.is_true("alt").unwrap_or(false),
+                            meta: arguments.is_true("meta").unwrap_or(false),
+                        },
+                    )
+                    .name(),
+                    Err(_) => raw.to_owned(),
+                };
                 PreviewEffect::new(vec![
                     ("chord", ReportValue::Text(chord)),
                     ("isComposing", ReportValue::Bool(state.ime_composing)),
