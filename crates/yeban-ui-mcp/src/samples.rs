@@ -728,9 +728,10 @@ mod tests {
         assert_eq!(inject["productionForbidden"], true);
         assert_eq!(
             inject["methods"].as_array().expect("数组").len(),
-            6,
+            7,
             "`ui:inject` 一族 = §12.4 的四个注入方法 + `ADR-0004` S1 的 `ui/set_track_height` \
-             + `ui/dispatch_pointer_cancel`（§12.4 没有它的名字，是本仓工程裁决）"
+             + `ui/dispatch_pointer_cancel` + `ui/dispatch_key_chord`（§12.4 没有这两条的名字，\
+             是本仓工程裁决；后者待 `ADR-0064` 批准）"
         );
         assert_eq!(security["defaults"]["bindAddress"], "127.0.0.1");
         assert_eq!(security["defaults"]["injectInProduction"], "denied");

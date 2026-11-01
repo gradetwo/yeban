@@ -113,7 +113,7 @@ use yeban_app::engine_host::{
     EditMark, EngineHost, EngineHostError, HeartbeatReadings, SnapshotCounts,
 };
 use yeban_app::host;
-use yeban_app::input::{Focus, InputContext, Modifiers, PhysicalKey, Resolution};
+use yeban_app::input::{Focus, InputContext, LogicalKey, Modifiers, PhysicalKey, Resolution};
 // `ROAD-M4-008` 选项 (a)：控制面会话是**唯一可变权威**，界面是它的投影。
 // 这个句柄只存在于非默认 feature `in-process-mcp` 下 —— 默认构建里没有 `yeban-mcp`
 // （`grep -c "yeban-mcp" <tree -p yeban-app -e normal>` = 0），因此这里也必须 cfg。
@@ -131,7 +131,10 @@ use yeban_ui_mcp::service::UiService;
 use yeban_ui_mcp::surface::{
     AdminReport, PortAdapter, PreviewArguments, PreviewEffect, ReportValue, UiSurface,
 };
-use yeban_ui_test_port::port::{KeyCode, Permission, PointerButton, PortError, UiTestPort};
+use yeban_ui_test_port::port::{
+    ChordKey, KeyChord, KeyChordModifiers, KeyCode, Permission, PointerButton, PortError,
+    UiTestPort,
+};
 use yeban_ui_test_port::render::{LivePort, RenderError, Tier1Window};
 use yeban_ui_test_port::tree::{ControlTree, TreeError};
 use yeban_ui_test_port::{Rgb8Image, Size};
@@ -454,6 +457,27 @@ fn key_resolution(state: &InputContext, key: KeyCode) -> &'static str {
         },
         // 不在 `[UI-A11Y-001]` 的扫描码表里 ⇒ 不归 DAW 管（窗口仍然会收到它）。
         None => yeban_ui_mcp::ime::RESOLUTION_PASS_THROUGH,
+    }
+}
+
+/// 一次注入 chord 的**只读处置结论**（与 [`key_resolution`] 共用同一张策略表、
+/// 同一个词表 —— 差别只在修饰位来自实参而不是扫描码表）。
+fn chord_resolution(state: &InputContext, chord: &KeyChord) -> &'static str {
+    let Some(logical) = LogicalKey::from_text(&chord.text()) else {
+        // 词表漂移（控制面给了一个宿主解析不出来的 `text`）⇒ 与宿主自己的取向一致：不消费。
+        return yeban_ui_mcp::ime::RESOLUTION_PASS_THROUGH;
+    };
+    let flags = chord.modifiers;
+    let modifiers = Modifiers {
+        ctrl: flags.ctrl,
+        shift: flags.shift,
+        alt: flags.alt,
+        meta: flags.meta,
+    };
+    match state.resolve_logical(logical, modifiers) {
+        Resolution::ConsumedByIme => yeban_ui_mcp::ime::RESOLUTION_CONSUMED_BY_IME,
+        Resolution::Action(_) => yeban_ui_mcp::ime::RESOLUTION_ACTION,
+        Resolution::PassThrough => yeban_ui_mcp::ime::RESOLUTION_PASS_THROUGH,
     }
 }
 
@@ -1146,6 +1170,33 @@ impl UiTestPort for LiveAdminSurface {
         self.inner.dispatch_key_press_impl(key)
     }
 
+    /// `ui/dispatch_key_chord` 的**真实载体**（缺陷 `D-UI-3` 的修复落点）。
+    ///
+    /// ## 为什么是 `invoke_key_action`，不是 `self.inner`（平台事件）
+    ///
+    /// `dispatch_key_press_impl` 走的是 `window.key_press` / `type_char` 那一格 ——
+    /// 真实的**平台事件**通道。而 `slint::platform::WindowEvent::KeyPressed` 只有
+    /// `text`、**没有修饰位**（`i-slint-core-1.18.1/api.rs`），从那条路永远带不上
+    /// `Shift+↑` / `Shift+Z` / `Cmd+Shift+Z`：Slint 会把"修饰位"折叠进 `text`
+    /// 里（`Shift+Z` 到达时 `text == "Z"`），而本仓的 `input.rs` 恰恰把可打印键
+    /// **统一小写化**、由修饰位表达组合 ⇒ 从平台事件那一格注入 chord 只会得到一个裸键。
+    ///
+    /// 用户真键盘上的完整链路是：
+    /// `WindowEvent::KeyPressed` → `.slint` 的 `key-handler` → `key_action(text, shift, ctrl, alt, meta)`
+    /// → `host::wire_keys` 的 `on_key_action`（`resolve_logical` + `apply_action`）。
+    /// 本方法落在那一格的**入口**上，与用户键**同一个**回调、同一张策略表、同一个
+    /// `UndoPort`（`D-UI-1` 修好的那一条），因此它不是"绕过 UI 直接改状态"的旁路。
+    fn dispatch_key_chord_impl(&mut self, chord: &KeyChord) -> Result<bool, PortError> {
+        let modifiers = chord.modifiers;
+        Ok(self.window.invoke_key_action(
+            chord.text().into(),
+            modifiers.shift,
+            modifiers.ctrl,
+            modifiers.alt,
+            modifiers.meta,
+        ))
+    }
+
     fn switch_main_view_impl(&mut self, view: &str) -> Result<(), PortError> {
         self.apply_main_view(view)
     }
@@ -1374,6 +1425,40 @@ impl UiSurface for LiveAdminSurface {
                     (
                         "resolution",
                         ReportValue::Text(key_resolution(&input, key).to_owned()),
+                    ),
+                ])
+            }
+            // `ui/dispatch_key_chord` 的预览：`chord` 是**将要注入的名字**（`ChordKey::parse`
+            // ＋ `KeyChord::name` 的产物，⛔ 不是入参原样回显），IME 两格读的是**同一份**
+            // `InputContext`（`[UI-A11Y-002]` 的两格口径不变）。
+            //
+            // 解析不出键名 ⇒ 如实报 `None`（真调用的拒绝发生在服务层参数校验那一步，
+            // 预览不替它编一个"大概会注入哪个键"）。
+            yeban_ui_mcp::methods::METHOD_DISPATCH_KEY_CHORD => {
+                let raw = arguments.text("keyName").unwrap_or_default();
+                let Ok(key) = ChordKey::parse(raw) else {
+                    return Ok(None);
+                };
+                let chord = KeyChord::new(
+                    key,
+                    KeyChordModifiers {
+                        shift: arguments.is_true("shift").unwrap_or(false),
+                        ctrl: arguments.is_true("ctrl").unwrap_or(false),
+                        alt: arguments.is_true("alt").unwrap_or(false),
+                        meta: arguments.is_true("meta").unwrap_or(false),
+                    },
+                );
+                let input = self.input.borrow();
+                PreviewEffect::new(vec![
+                    ("chord", ReportValue::Text(chord.name())),
+                    ("isComposing", ReportValue::Bool(input.is_composing())),
+                    (
+                        "focus",
+                        ReportValue::Text(ime_focus_of(input.focus()).as_str().to_owned()),
+                    ),
+                    (
+                        "resolution",
+                        ReportValue::Text(chord_resolution(&input, &chord).to_owned()),
                     ),
                 ])
             }
@@ -1669,6 +1754,23 @@ impl LiveUi {
         key: yeban_ui_test_port::port::KeyCode,
     ) -> Result<(), PortError> {
         self.surface.inner.dispatch_key_press(key)
+    }
+
+    /// 在这个活窗口上注入一次组合键（`ui/dispatch_key_chord` 的**本体**，缺陷 `D-UI-3`）。
+    ///
+    /// 存在的理由与 [`Self::dispatch_key_press`] 逐字相同（判据既要走"注入 → 回调 →
+    /// 键位表 → 投影"这一段，又要保留 [`Self::tree_snapshot`] / [`Self::capture`] 的读数
+    /// 能力 —— `into_control_plane` 会把执行面装箱取走）。
+    ///
+    /// ⚠ 与 `dispatch_key_press` **不同格**：那条落 `self.inner`（Slint **平台事件**通道），
+    /// 这条落 `LiveAdminSurface` 自己的 `dispatch_key_chord_impl`（`.slint` 派发快捷键的
+    /// 那个回调 `invoke_key_action`），因为平台事件带不了修饰位。返回值是**界面是否消费**
+    /// （`false` = 这一组合没有绑定），⛔ 不是"调用失败"。
+    pub fn dispatch_key_chord(
+        &mut self,
+        chord: &yeban_ui_test_port::port::KeyChord,
+    ) -> Result<bool, PortError> {
+        self.surface.dispatch_key_chord(chord)
     }
 
     /// 在**这个活窗口**上换一份当前工程（`ui/open_project` 的**本体**，CLI `--open` 的孪生）。

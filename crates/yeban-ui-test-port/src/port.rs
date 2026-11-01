@@ -104,17 +104,23 @@ pub enum Operation {
     /// （轨道集合 / 走带 / 路由图），随后要换注册表、作废旧电平、重建引擎。
     /// 权限层级与 `ui/switch_main_view` / `ui/force_save` / `ui/reload_engine` 相同。
     OpenProject,
+    /// 注入一次**带修饰键的组合**（`Interactive`）—— [`Self::DispatchKey`] 的 chord 孪生。
+    ///
+    /// 它与 [`Self::DispatchKey`] **同一层级**（改的是同一件事：往活窗口送一次按键），
+    /// 因此生产模式下的硬禁、`ui:inject` 的 scope 都自动跟着走同一套。
+    DispatchKeyChord,
 }
 
 impl Operation {
     /// 全部操作，供"三级 × 全部操作"的穷举判据使用。
-    pub const ALL: [Self; 10] = [
+    pub const ALL: [Self; 11] = [
         Self::ReadTree,
         Self::ReadProperty,
         Self::CaptureScreenshot,
         Self::DispatchPointer,
         Self::DispatchKey,
         Self::SetTrackHeight,
+        Self::DispatchKeyChord,
         Self::SwitchMainView,
         Self::ForceSave,
         Self::ReloadEngine,
@@ -126,9 +132,10 @@ impl Operation {
     pub const fn required_permission(self) -> Permission {
         match self {
             Self::ReadTree | Self::ReadProperty | Self::CaptureScreenshot => Permission::ReadOnly,
-            Self::DispatchPointer | Self::DispatchKey | Self::SetTrackHeight => {
-                Permission::Interactive
-            }
+            Self::DispatchPointer
+            | Self::DispatchKey
+            | Self::SetTrackHeight
+            | Self::DispatchKeyChord => Permission::Interactive,
             Self::SwitchMainView | Self::ForceSave | Self::ReloadEngine | Self::OpenProject => {
                 Permission::Administrative
             }
@@ -145,6 +152,7 @@ impl Operation {
             Self::DispatchPointer => "dispatch_pointer",
             Self::DispatchKey => "dispatch_key",
             Self::SetTrackHeight => "set_track_height",
+            Self::DispatchKeyChord => "dispatch_key_chord",
             Self::SwitchMainView => "switch_main_view",
             Self::ForceSave => "force_save",
             Self::ReloadEngine => "reload_engine",
@@ -257,6 +265,248 @@ impl KeyCode {
             Self::ShiftEnter => "Shift+Enter".to_owned(),
             Self::Character(ch) => ch.to_string(),
         }
+    }
+}
+
+/// `ui/dispatch_key_chord` 的**修饰位**（顺序与 `.slint` 的
+/// `key_action(text, shift, ctrl, alt, meta)` 逐位一致）。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct KeyChordModifiers {
+    /// `Shift`。
+    pub shift: bool,
+    /// `Ctrl`。
+    pub ctrl: bool,
+    /// `Alt`。
+    pub alt: bool,
+    /// `Cmd` / `Super`。
+    pub meta: bool,
+}
+
+impl KeyChordModifiers {
+    /// 全裸（无修饰）—— 与 [`Self::is_bare`] 一起用于"这条 chord 其实是单键"的如实回报。
+    pub const NONE: Self = Self {
+        shift: false,
+        ctrl: false,
+        alt: false,
+        meta: false,
+    };
+
+    /// 没有任何修饰位。
+    #[must_use]
+    pub const fn is_bare(self) -> bool {
+        !self.shift && !self.ctrl && !self.alt && !self.meta
+    }
+
+    /// 按 §2.2 的展示顺序（`Cmd`/`Ctrl`/`Alt`/`Shift`）拼出 `Cmd+Shift+Z` 这样的名字。
+    #[must_use]
+    pub fn prefix(self) -> String {
+        let mut parts: Vec<&str> = Vec::with_capacity(4);
+        if self.meta {
+            parts.push("Cmd");
+        }
+        if self.ctrl {
+            parts.push("Ctrl");
+        }
+        if self.alt {
+            parts.push("Alt");
+        }
+        if self.shift {
+            parts.push("Shift");
+        }
+        if parts.is_empty() {
+            return String::new();
+        }
+        let mut joined = parts.join("+");
+        joined.push('+');
+        joined
+    }
+}
+
+/// `ui/dispatch_key_chord` 的**键名**词表（chord 的那一半）。
+///
+/// ## 为什么不是复用 [`KeyCode`]
+///
+/// `KeyCode` 是 §12.4 `dispatch_key_press(key_code)` 的形状，它的实现走的是**平台事件**
+/// 那一格（`render.rs` 的 `window.key_press` / `type_char`）。而
+/// `slint::platform::WindowEvent::KeyPressed` **没有修饰位字段**
+/// （`i-slint-core-1.18.1/api.rs`，只有 `text`）⇒ 平台事件这条路**表达不了** `Shift+Z`。
+/// chord 唯一的落点是 `.slint` 已经用来派发快捷键的那一个回调
+/// （`MainWindow::invoke_key_action(text, shift, ctrl, alt, meta)`，见
+/// `crates/yeban-app/src/host.rs` 的 `wire_keys`），它的输入是**一个字符 + 四个修饰位**。
+/// 因此这里要的是"`KeyEvent.text` 的取值表"，而不是"平台按键名"：
+/// [`ChordKey::text`] 与 `crates/yeban-app/src/input.rs` 的
+/// `LogicalKey::from_text`（**唯一**的解析点）同码位、互为正反，
+/// 往返由 `yeban-app` 那条判据钉住（词表漂移会立刻红在那条判据上，而不是红在"按了没反应"）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChordKey {
+    /// 空格（`" "`）。
+    Space,
+    /// `Tab`（`"\t"`）。
+    Tab,
+    /// `Esc`（`"\u{1b}"`）。
+    Escape,
+    /// `Enter` / `Return`（`"\n"`）。
+    Enter,
+    /// `Backspace`（`"\u{8}"`）。
+    Backspace,
+    /// `Delete`（`"\u{7f}"`）。
+    Delete,
+    /// `F5`（`"\u{f708}"`）。
+    F5,
+    /// `F6`（`"\u{f709}"`）。
+    F6,
+    /// `F7`（`"\u{f70a}"`）。
+    F7,
+    /// `F8`（`"\u{f70b}"`）。
+    F8,
+    /// `F9`（`"\u{f70c}"`）。
+    F9,
+    /// `↑`（`"\u{f700}"`）。
+    UpArrow,
+    /// `↓`（`"\u{f701}"`）。
+    DownArrow,
+    /// `←`（`"\u{f702}"`）。
+    LeftArrow,
+    /// `→`（`"\u{f703}"`）。
+    RightArrow,
+    /// 可打印键（原样交给解析点，大小写由 `LogicalKey::from_text` 统一小写化）。
+    Character(char),
+}
+
+impl ChordKey {
+    /// 全部**具名**键（判据用它穷举"每个名字都能解析、也都有 `text`"）。
+    pub const NAMED: [Self; 15] = [
+        Self::Space,
+        Self::Tab,
+        Self::Escape,
+        Self::Enter,
+        Self::Backspace,
+        Self::Delete,
+        Self::F5,
+        Self::F6,
+        Self::F7,
+        Self::F8,
+        Self::F9,
+        Self::UpArrow,
+        Self::DownArrow,
+        Self::LeftArrow,
+        Self::RightArrow,
+    ];
+
+    /// 解析键名（大小写不敏感；`Esc`/`Escape`、`Enter`/`Return` 都接受；
+    /// `Right` 与其余三个方向键同形）。
+    pub fn parse(raw: &str) -> Result<Self, PortError> {
+        let normalized = raw.trim();
+        let parsed = match normalized.to_ascii_lowercase().as_str() {
+            "space" | "spacebar" => Self::Space,
+            "tab" => Self::Tab,
+            "esc" | "escape" => Self::Escape,
+            "enter" | "return" => Self::Enter,
+            "backspace" => Self::Backspace,
+            "delete" | "del" => Self::Delete,
+            "f5" => Self::F5,
+            "f6" => Self::F6,
+            "f7" => Self::F7,
+            "f8" => Self::F8,
+            "f9" => Self::F9,
+            "up" | "uparrow" | "arrowup" => Self::UpArrow,
+            "down" | "downarrow" | "arrowdown" => Self::DownArrow,
+            "left" | "leftarrow" | "arrowleft" => Self::LeftArrow,
+            "right" | "rightarrow" | "arrowright" => Self::RightArrow,
+            _ => {
+                let mut chars = normalized.chars();
+                match (chars.next(), chars.next()) {
+                    (Some(ch), None) if ch.is_ascii_graphic() => Self::Character(ch),
+                    _ => {
+                        return Err(PortError::UnknownKey {
+                            key: raw.to_owned(),
+                        });
+                    }
+                }
+            }
+        };
+        Ok(parsed)
+    }
+
+    /// 这个键作为 Slint `KeyEvent.text` 应该携带的那一个字符。
+    #[must_use]
+    pub const fn char(self) -> char {
+        match self {
+            Self::Space => ' ',
+            Self::Tab => '\u{0009}',
+            Self::Enter => '\u{000a}',
+            Self::Backspace => '\u{0008}',
+            Self::Escape => '\u{001b}',
+            Self::Delete => '\u{007f}',
+            Self::F5 => '\u{f708}',
+            Self::F6 => '\u{f709}',
+            Self::F7 => '\u{f70a}',
+            Self::F8 => '\u{f70b}',
+            Self::F9 => '\u{f70c}',
+            Self::UpArrow => '\u{f700}',
+            Self::DownArrow => '\u{f701}',
+            Self::LeftArrow => '\u{f702}',
+            Self::RightArrow => '\u{f703}',
+            Self::Character(ch) => ch,
+        }
+    }
+
+    /// [`Self::char`] 的字符串形态（喂给 `invoke_key_action` 的第一实参）。
+    #[must_use]
+    pub fn text(self) -> String {
+        self.char().to_string()
+    }
+
+    /// 机器可读的规范名（与 [`Self::parse`] 互为逆；`RightArrow` → `"Right"`）。
+    #[must_use]
+    pub fn name(self) -> String {
+        match self {
+            Self::Space => "Space".to_owned(),
+            Self::Tab => "Tab".to_owned(),
+            Self::Escape => "Esc".to_owned(),
+            Self::Enter => "Enter".to_owned(),
+            Self::Backspace => "Backspace".to_owned(),
+            Self::Delete => "Delete".to_owned(),
+            Self::F5 => "F5".to_owned(),
+            Self::F6 => "F6".to_owned(),
+            Self::F7 => "F7".to_owned(),
+            Self::F8 => "F8".to_owned(),
+            Self::F9 => "F9".to_owned(),
+            Self::UpArrow => "Up".to_owned(),
+            Self::DownArrow => "Down".to_owned(),
+            Self::LeftArrow => "Left".to_owned(),
+            Self::RightArrow => "Right".to_owned(),
+            Self::Character(ch) => ch.to_uppercase().collect(),
+        }
+    }
+}
+
+/// 一次**带修饰键的组合**（`ui/dispatch_key_chord` 的实参形状）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct KeyChord {
+    /// 键名那一半。
+    pub key: ChordKey,
+    /// 修饰位那一半。
+    pub modifiers: KeyChordModifiers,
+}
+
+impl KeyChord {
+    /// 组装（服务层是**唯一**的构造点：键名解析失败在建不出来之前）。
+    #[must_use]
+    pub const fn new(key: ChordKey, modifiers: KeyChordModifiers) -> Self {
+        Self { key, modifiers }
+    }
+
+    /// 喂给界面回调的 `text`。
+    #[must_use]
+    pub fn text(&self) -> String {
+        self.key.text()
+    }
+
+    /// 人类可读名（`Cmd+Shift+Z` / `Shift+Up` / `Z`）。
+    #[must_use]
+    pub fn name(&self) -> String {
+        format!("{}{}", self.modifiers.prefix(), self.key.name())
     }
 }
 
@@ -388,6 +638,27 @@ pub trait UiTestPort {
     /// 注入键盘按下（`Interactive`）。
     fn dispatch_key_press_impl(&mut self, key: KeyCode) -> Result<(), PortError>;
 
+    /// 注入一次**带修饰键的组合**（`Interactive`）。返回**界面有没有消费**这一键
+    /// （`invoke_key_action` 的返回值口径，见 `crates/yeban-app/src/host.rs` 的 `wire_keys`）。
+    ///
+    /// ## 为什么这一条**有**默认实现（与 `dispatch_key_press_impl` 不同）
+    ///
+    /// 单键走的是**平台事件**那一格（`WindowEvent::KeyPressed`），本 crate 能自己发；
+    /// chord 走的是 `.slint` 的 `key_action` 回调那一格 —— 那个回调住在**具体的**
+    /// `MainWindow` 上，而本 crate 的执行面是**泛型**的（`LivePort<T: ComponentHandle>`），
+    /// 依赖方向不允许它认识 `yeban-app`。因此默认体**如实报"没有载体"**
+    /// （`PortError::Rejected` ⇒ 既有的 `-32005 NOT_IMPLEMENTED`，D25：不发明新错误码），
+    /// 与 [`Self::set_track_height_impl`] / [`Self::open_project_impl`] 同一族。
+    /// 真实载体是 `yeban-app/src/live_surface.rs` 的 `LiveAdminSurface`。
+    fn dispatch_key_chord_impl(&mut self, chord: &KeyChord) -> Result<bool, PortError> {
+        let _ = chord;
+        Err(PortError::Rejected {
+            message: "这个执行面没有 chord 回调的载体（`UiTestPort::dispatch_key_chord_impl` \
+                      用的是默认实现）"
+                .to_owned(),
+        })
+    }
+
     /// 切换工作区主视图（`Administrative`）。
     fn switch_main_view_impl(&mut self, view: &str) -> Result<(), PortError>;
 
@@ -480,6 +751,16 @@ pub trait UiTestPort {
     fn dispatch_key_press(&mut self, key: KeyCode) -> Result<(), PortError> {
         self.authorize_here(Operation::DispatchKey)?;
         self.dispatch_key_press_impl(key)
+    }
+
+    /// 注入一次带修饰键的组合。闸门与 [`Self::dispatch_key_press`] **同级**
+    /// （`Interactive`）⇒ chord 不是"可以少判一层"的旁路。
+    ///
+    /// ⚠ 规范 §12.4 点名的四条注入里**没有** chord（`dispatch_key_press(key_code)` 表达不了
+    /// 修饰位）；名字与形状是本仓的工程裁决，理由写在控制面那条方法的 `signature` 里。
+    fn dispatch_key_chord(&mut self, chord: &KeyChord) -> Result<bool, PortError> {
+        self.authorize_here(Operation::DispatchKeyChord)?;
+        self.dispatch_key_chord_impl(chord)
     }
 
     /// 切换工作区主视图（`Administrative`）。
@@ -631,6 +912,9 @@ mod tests {
             (Operation::DispatchPointer, Permission::Interactive),
             (Operation::DispatchKey, Permission::Interactive),
             (Operation::SetTrackHeight, Permission::Interactive),
+            // `ui/dispatch_key_chord`（`ADR-0064`）与 `dispatch_key` 同一把闸门 ——
+            // 判据 `chord_injection_shares_the_key_permission_gate` 逐字钉住这一点。
+            (Operation::DispatchKeyChord, Permission::Interactive),
             (Operation::SwitchMainView, Permission::Administrative),
             (Operation::ForceSave, Permission::Administrative),
             (Operation::ReloadEngine, Permission::Administrative),
@@ -702,6 +986,22 @@ mod tests {
                 actual: Permission::ReadOnly,
             })
         );
+        // 组合键与单键走**同一道** `Interactive` 闸门（⛔ 不是旁路）：
+        // "每一个写操作都被拒绝"这句判据里必须含上新增的 `dispatch_key_chord`。
+        assert_eq!(
+            port.dispatch_key_chord(&KeyChord::new(
+                ChordKey::Enter,
+                KeyChordModifiers {
+                    shift: true,
+                    ..KeyChordModifiers::NONE
+                },
+            )),
+            Err(PortError::PermissionDenied {
+                operation: Operation::DispatchKeyChord,
+                required: Permission::Interactive,
+                actual: Permission::ReadOnly,
+            })
+        );
         assert!(port.switch_main_view("arrangement").is_err());
         assert!(port.force_save().is_err());
         assert!(port.reload_engine().is_err());
@@ -762,7 +1062,7 @@ mod tests {
         assert!(port.open_project("somewhere.yeban", true).is_err());
     }
 
-    /// 判据 4: `Administrative` 放行全部 10 个操作 —— 穷举，不抽样。
+    /// 判据 4: `Administrative` 放行全部 11 个操作 —— 穷举，不抽样。
     #[test]
     fn administrative_allows_every_operation() {
         for operation in Operation::ALL {
@@ -789,7 +1089,7 @@ mod tests {
         );
     }
 
-    /// 判据 5: `authorize` 是纯函数 —— 三级 × 10 操作共 30 组判定必须与 `rank` 比较完全一致，
+    /// 判据 5: `authorize` 是纯函数 —— 三级 × 11 操作共 33 组判定必须与 `rank` 比较完全一致，
     /// 且重复调用结果恒同（无状态、无环境依赖）。
     #[test]
     fn authorize_is_a_pure_total_function() {
@@ -851,6 +1151,112 @@ mod tests {
             Err(PortError::UnknownElement {
                 id: "track-9-fader".to_owned()
             })
+        );
+    }
+
+    /// 判据 8（`ui/dispatch_key_chord`）: 每个具名键都解析得回来、都有 `text`，
+    /// 且 `text` 恰好是**一个**字符（chord 的落点是 `key_action(text, …)`，
+    /// 而那一格的解析点只认单字符 —— 多字符会被当成"已上屏的文本"而整键丢弃）。
+    #[test]
+    fn every_named_chord_key_round_trips_and_carries_one_char() {
+        for key in ChordKey::NAMED {
+            let name = key.name();
+            assert_eq!(ChordKey::parse(&name), Ok(key), "往返 `{name}`");
+            let text = key.text();
+            assert_eq!(
+                text.chars().count(),
+                1,
+                "`{name}` 的 text 必须恰好一个字符, 实得 {text:?}"
+            );
+        }
+        // 大小写与别名：`esc`/`Escape`、`Cmd` 风格的名字都能解析。
+        assert_eq!(ChordKey::parse("ESCAPE"), Ok(ChordKey::Escape));
+        assert_eq!(ChordKey::parse("up"), Ok(ChordKey::UpArrow));
+        assert_eq!(ChordKey::parse("Right"), Ok(ChordKey::RightArrow));
+        assert_eq!(ChordKey::parse("z"), Ok(ChordKey::Character('z')));
+        // 拼错 / 多字符 / 裸修饰键名 ⇒ 如实拒绝，不静默当成某个字符。
+        assert_eq!(
+            ChordKey::parse("shift+z"),
+            Err(PortError::UnknownKey {
+                key: "shift+z".to_owned()
+            })
+        );
+        assert_eq!(
+            ChordKey::parse("shift"),
+            Err(PortError::UnknownKey {
+                key: "shift".to_owned()
+            })
+        );
+    }
+
+    /// 判据 9: chord 的**展示名**按 §2.2 的顺序拼（`Cmd` → `Ctrl` → `Alt` → `Shift`），
+    /// 无修饰时没有前缀（`Z` 而不是 `+Z`）。
+    #[test]
+    fn chord_name_lists_modifiers_in_the_documented_order() {
+        let all = KeyChordModifiers {
+            shift: true,
+            ctrl: true,
+            alt: true,
+            meta: true,
+        };
+        assert_eq!(
+            KeyChord::new(ChordKey::Character('z'), all).name(),
+            "Cmd+Ctrl+Alt+Shift+Z"
+        );
+        assert_eq!(
+            KeyChord::new(
+                ChordKey::Character('z'),
+                KeyChordModifiers {
+                    shift: true,
+                    ..KeyChordModifiers::NONE
+                }
+            )
+            .name(),
+            "Shift+Z"
+        );
+        assert!(KeyChordModifiers::NONE.is_bare());
+        assert!(!all.is_bare());
+        assert_eq!(
+            KeyChord::new(ChordKey::Enter, KeyChordModifiers::NONE).name(),
+            "Enter"
+        );
+    }
+
+    /// 判据 10: chord 与单键**同一层级**（`Interactive`），因此 `ReadOnly` 一律拒；
+    /// 而默认实现（没有载体的执行面）如实报 `Rejected`，⛔ 不假装成功。
+    #[test]
+    fn chord_injection_shares_the_key_permission_gate() {
+        let chord = KeyChord::new(
+            ChordKey::Character('z'),
+            KeyChordModifiers {
+                shift: true,
+                ..KeyChordModifiers::NONE
+            },
+        );
+        assert_eq!(
+            Operation::DispatchKeyChord.required_permission(),
+            Operation::DispatchKey.required_permission(),
+            "chord 不能比单键更低一层"
+        );
+
+        let mut read_only = FakePort::with(Permission::ReadOnly);
+        assert_eq!(
+            read_only.dispatch_key_chord(&chord),
+            Err(PortError::PermissionDenied {
+                operation: Operation::DispatchKeyChord,
+                required: Permission::Interactive,
+                actual: Permission::ReadOnly,
+            })
+        );
+
+        // `FakePort` 没有覆写 `dispatch_key_chord_impl` ⇒ 走到默认体（如实"没有载体"）。
+        let mut interactive = FakePort::with(Permission::Interactive);
+        let error = interactive
+            .dispatch_key_chord(&chord)
+            .expect_err("默认实现不该报告成功");
+        assert!(
+            matches!(error, PortError::Rejected { .. }),
+            "默认实现应如实拒绝, 实得 {error:?}"
         );
     }
 }
