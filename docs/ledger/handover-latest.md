@@ -252,6 +252,30 @@
   再拿逐变体载荷名册（`Op` 有 **55** 个顶层变体，外部标签 ⇒ 元素恒"恰好一键"）。
 
 
+### 0.6.0zn ⭐ 尾批（2026-11-01 深夜·第十批）：**s35 线判绿（`da71bc19` = run `41274783232` **success**）→ 已 land `a071a0a8`（合流 run 记 pending）** ＋ ⛔ 标题"六条"实测 **7** 条 ＋ s37 牙齿自检抓到一条真洞
+
+- **线判决（单位：一枚 commit 一个 run）**：`da71bc19` 的 run **`41274783232`** = `completed / **success**`，十条作业 **9 success** ＋ `rust (workspace 全量)` = `skipped`（`plan` 窄集合）⇒ ⛔ 不引用全量基线数。
+- **验收读数（`rust (yeban-mcp)` 腿；单位：`test <名> ... ok` 的行数）**：**7** 条新判据**各 2 次**（两档）；s33 两条老判据**各 2 次**在场；
+  `test result:` **149** 行／`FAILED` **0** 行／`passed` 合计 **`2,744`** —— 与 §22.33 的 `2,730` 差 **14** = **7** × 两档 ⇒ 单位对齐才做这个减法。
+- ⚠ **§6.3 第 4 条的口径在这一腿上要换形态**：该腿日志里 `Running tests/` 出现 **0** 次（`--all-targets` 跑出来是 lib/unittest 抬头）⇒
+  判"没被 fail-fast 挤掉"在这里靠**逐名数 `test … ok`** ＋ `FAILED` 整行数，⛔ 别把一种日志形态当成唯一形态。
+- ⛔ **散文与交付不符（这次是判据条数）**：标题写"六条判据"，`git show da71bc19 | grep -c '^+[[:space:]]*#\[test\]'` = **7**，
+  第七条 `the_sends_roster_pins_the_producer_filter_identity` 在合入前的 `b7009e39` 里 `git grep -c` = **0** ⇒ 确系本批新增。已推送 ⇒ ⛔ 不 force-push，引用以 **7 条**为准。
+- ⛔ **另一批的 ID 手误**：s36 线 `f0aafd20` 标题带 `[MUST-GATE-004]`，而该门禁定义是「开源许可合规零告警」（`docs/YEBAN_ENGINEERING_IMPLEMENTATION_ROADMAP.md:383`），
+  本批只对应 `[MODEL-AST-002]`。同样 ⛔ 不 force-push，留痕见台账 §22.34。
+- ⭐ **s37（并行树 `line/s37-guard-teeth`，本地未推送）第一次让"守卫有没有牙"变成常驻读数**：
+  `scripts/guards/check_guard_teeth.py` 一条规格 = 「未变异暂存副本里该守卫退 **0**（控件）」+「一处确定性破坏后退**非** 0（牙齿）」，两半缺一不算；
+  名册 = 暂存副本里 `scripts/guards/check_*.py` 的**实际文件集**与规格表**集合相等**（⛔ 只写下界会在两边同时删空时空绿），⛔ 豁免。
+  **第一轮就抓到一条真洞**：`check_verify_teeth.py` 用**子串**判判据名 ⇒ 把 `"responses_are_complete_and_error_free"` 改成 `"…_renamed"` 时原名仍是前缀，守卫**绿着放过**名字漂移；
+  已改成"名字必须以 `"` 收尾"，并把「加前缀仍算在册」如实写进**已知不覆盖**（再收紧就要抄循环标签的合法前缀形态 = 第三份手抄）。
+  本地读数：**9** 条规格全部报红；`check_workflow_structure.py` 的控件在本机红（无 `pyyaml`，Traceback 为证）⇒ 如实记一条红，⛔ 不豁免，由 CI 的 `checks` 腿判。
+- **在飞**：s36（`f0aafd20`，run `41275369612`，剩 `rust (workspace 全量)`／`macos`／`windows`）、`main` `a071a0a8` 的合流 run（`ci-verdict.sh --watch main` 在读）。
+  ⛔ **别在 run 在飞时往同一线再推**（推送会取消在飞 run、毁证据，§0.6.0zh）；s37 等 s36 落地后按新 main 起步（两票都要在 `ci.yml` 同一段加步骤）。
+- **下一票的边界（现读）**：`COVERED_TOOLS` = **10** / schema `name.enum` = **26** ⇒ **16** 个工具**根本不广播** `outputSchema`（task **#114**，创作素材面优先）；
+  成功载荷构造点集中在 `domain/mod.rs`（**26** 处 `ToolResponse::success`），⛔ 靠 `domain/` 同名文件名推断（`export_midi.rs`／`record_wav.rs`／`scene_launch.rs` 各 **0** 处）。
+  #110（`willCreate` 三处槽）仍排在 #109 之后：两票同写 `output_schema.rs` ⇒ 一树串行。
+- **磁盘**：`worktree.sh rm s35-automation-fields --purge` 释放 **2.8 G**；`/home` **90%** 已用／**25 G** 余量（仓库外大头仍等人类裁决，task #34）。
+
 ### 0.6.0zm ⭐ 尾批（2026-11-01 深夜·第九批）：**s33 线判绿（修复批 `e897c5b0` = run `41267522810` **success**）→ 已 land `e3ecf1ec`** ＋ ⛔「`--log` 拒绝的粒度是 **run**，不是 job」 ＋ 裸槽全量盘点：**#109/#110 做完就见底**
 
 - **线判决链**：`c1ad2b1d`（名册 + 判据主体）= `failure`，红只有一处：`clippy (-D warnings)` 报 **`E0609: no field 'path' on type '()'`**（`output_schema.rs:3094`），

@@ -17796,3 +17796,40 @@ helper 里 ⇒ 必须不认（防假绿）。两条臂在旧实现上都会失�
   （`propose_section`/`edit_notes` 两份同构 `willCreate` 的六键 = task **#110**，生产者唯一：`section_build.rs:3198 summarize_ops`；
   `edit_automation` 的 `read.values`/`valuesAfter` 归 #109）。⇒ **#109 + #110 做完，机器可填的裸槽就见底了**。
 - **树况**：合流 `e3ecf1ec` 判绿后 `worktree.sh rm s33-merge-roster --purge`（归档标签自动生成）⇒ 本机只剩主干一棵树。task #108 收盘；#109/#110 已登记并串上依赖（两票都写 `output_schema.rs` ⇒ 一树串行，⛔ 并行）。
+
+### 22.34 ⭐ s35 判绿收盘（线 run `41274783232` = **success**：七条判据各 2 次／passed 合计 **2,744**）＋ ⛔ 提交标题写"六条"而实测交付 **7** 条 ＋ s37 的牙齿自检第一轮就量到一条真洞
+
+- **线判决（单位：一枚 commit = 一个 run，读它自己的 `conclusion`）**：`da71bc19` 的 run **`41274783232`** = `completed / **success**`；
+  十条作业里 **9 条 `success`**（`lockfile`／`checks`／`plan`／`deny`／`macos`／`e2e`／`windows`／`rust (yeban-mcp)`／`rust (yeban-ui-mcp)`）＋ `rust (workspace 全量)` = **`skipped`**
+  （`plan` 给窄集合）⇒ ⛔ 本轮不引用全量基线那组数。
+- **验收读数**（单位：`rust (yeban-mcp)` 腿日志里「`test <判据名> ... ok`」的**行数**；`test result:` 与 `FAILED` 按整行数）：
+  **7** 条新判据**各 2 次**（缺省档 + 合并特性档）；s33 的两条老判据 `the_three_merge_slots_share_one_roster_and_omit_commit_model`／
+  `the_broadcast_merge_slot_validates_the_real_auto_merge_receipt` **各 2 次**在场（回归没被 fail-fast 挤掉）；
+  `test result:` **149** 行／`FAILED` **0** 行／`passed` 合计 **`2,744`**。
+  ⭐ 与 §22.33 的 `2,730` 逐单位连续可比，差 **14** = 新增 **7** 条 × **两**档 ⇒ 这个减法只在单位对齐时才成立。
+- ⚠ **§6.3 第 4 条的"数 `Running tests/` 次数"在这一腿上不可执行**：实测该腿日志里 `Running tests/` 出现 **0** 次
+  （`cargo test -p yeban-mcp --all-targets` 这档跑出来的是 lib/unittest 形态的抬头，不是集成测试清单）⇒
+  该条口径要写成"要么数二进制抬头、要么逐名数 `test … ok`，⛔ 别把一种日志形态当成唯一形态"。
+- ⛔ **散文与交付不符（AGENTS.md §6.3 第 3 条），这次是判据**条数**自己**：提交标题写"六条判据实测生产者"，
+  而 `git show da71bc19 | grep -c '^+[[:space:]]*#\[test\]'` = **7**，第七条 `the_sends_roster_pins_the_producer_filter_identity`
+  在合入前的 `b7009e39` 里 `git grep -c` = **0** ⇒ 确系本批新增。**已推送 ⇒ ⛔ 不 force-push 改写历史**，在此登记，引用本批以 **7 条**为准（同 §22.33 的 `cb229821` 先例）。
+- **交付内容**：§22.33 裸槽盘点里的 #109 全部落地 —— `edit_automation` 的 **5** 处（`target` 按五个外部标签变体逐变体钉内键、`lane.domain`、`written`、`read.values[]`、`valuesAfter[]` 与 `read.values[]` 共用一份名册）
+  ＋ `query_engine_state` 的 **2** 处（`track`、`stateSources` 九个字符串键）；词表全部引用生产者侧常量（`domain::render::TARGET_VALUES`／`CURVE_NAMES`／新的 `TRACK_KINDS: [&str; 4]`），⛔ 第三份手抄。
+- **合流 run（`main` tip `a071a0a8`）**：推送后由 `scripts/dev/ci-verdict.sh --watch main` 读回；**本条写完时尚未收口 ⇒ 判决记 `pending`**，⛔ 不算已通过（§5.5／§6）。
+- ⛔ **另一批的 ID 手误留痕（s36 线 `f0aafd20`）**：标题带了 `[MUST-GATE-004]`，而 `docs/YEBAN_ENGINEERING_IMPLEMENTATION_ROADMAP.md:383` 把该门禁定义为「开源许可合规零告警」，与词表守卫无关；
+  本批真实对应的只有 `[MODEL-AST-002]`。已推送 ⇒ ⛔ 不 force-push，引用时按 **`[MODEL-AST-002]`** 读。
+- ⭐ **s37（并行树 `line/s37-guard-teeth`）的牙齿自检第一轮就抓到一条真洞**：`check_verify_teeth.py` 判"判据名还在不在"用的是**子串**口径，
+  把 `"responses_are_complete_and_error_free"` 改成 `"responses_are_complete_and_error_free_renamed"` 时原名仍是**前缀** ⇒ 守卫**绿着放过**了它名义上要防的"名字漂移"。
+  本仓库第一次有常驻机制能抓到这类洞：`scripts/guards/check_guard_teeth.py` 把"未变异副本退 0（控件）+ 破坏后退非 0（牙齿）"钉成一条规格，
+  名册 = 暂存副本里 `scripts/guards/check_*.py` 的**实际文件集**与规格表**集合相等**（⛔ 只写下界会在两边同时删空时空绿）。
+  修法取"名字必须以 `"` 收尾"（两份脚本里的判据名都是标签串的**最后一段**），并把「**加前缀**仍算在册」如实写进**已知不覆盖**：
+  再收紧就要把循环标签的合法前缀形态 `f"render{ident}_…"` 抄进守卫 = 第三份手抄，代价大于收益。
+- **s37 的本地读数（⚠ 只有 CI 算数）**：**9** 条变异规格全部报红（法务 3／warning 名册 2／verify 2／词表 2）；
+  `check_workflow_structure.py` 的**控件**在本机红（`import yaml` ⇒ `ModuleNotFoundError`，Traceback 为证），本机无 pyyaml ⇒
+  这条**如实记为本地一条红**，⛔ 不豁免、不静默跳过，由 CI 的 `checks` 腿（该守卫本来就在那条腿上跑）判它。
+- **下一批的边界（现读）**：`output_schema::COVERED_TOOLS` = **10** / schema `name.enum` = **26** ⇒ **16** 个工具根本不广播 `outputSchema`
+  （其中创作素材面 = `import_midi`／`export_midi`／`record_wav`／`load_sfz`／`render_sfz_wav`／`list_instruments`／`launch_scene`／`query_project`）= task **#114**；
+  成功载荷的构造点现读集中在 `domain/mod.rs`（`ToolResponse::success` **26** 处）⇒ ⛔ 靠 `domain/` 同名文件名推断（`export_midi.rs`／`record_wav.rs`／`scene_launch.rs` 各 **0** 处）。
+- **树况与磁盘**：s35 判绿后 `worktree.sh rm s35-automation-fields --purge` 释放 **2.8 G** `target`；`/home` 现读 **90%** 已用／**25 G** 余量。
+  在飞：s36（`f0aafd20`，run `41275369612`，只剩 `rust (workspace 全量)`＋`macos`＋`windows`）、s37（未推送，等 s36 落地后按新 main 起步，⛔ 与 s36 抢 `ci.yml` 同一段）。
+
