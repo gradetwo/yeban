@@ -271,7 +271,7 @@ impl Default for BitCrusher {
 
 /// 一节 RBJ biquad，转置直接 II 型，按 `a0` 归一化。
 #[derive(Clone, Copy, Debug)]
-struct Biquad {
+pub(crate) struct Biquad {
     b0: f32,
     b1: f32,
     b2: f32,
@@ -282,7 +282,7 @@ struct Biquad {
 }
 
 impl Biquad {
-    const fn identity() -> Self {
+    pub(crate) const fn identity() -> Self {
         Self {
             b0: 1.0,
             b1: 0.0,
@@ -336,8 +336,35 @@ impl Biquad {
         );
     }
 
+    /// RBJ 二阶高通（`12 dB/octave` 渐近线），`q = 0.7071` 时是 Butterworth。
+    ///
+    /// 通道条的低切级（`#341`）用它。⛔ 它**不是** `low_shelf(gain = -∞)`：
+    /// 低架在转折点以下趋于常值衰减，高通趋于零 —— 前者压不干净次声，后者才是"切掉"。
+    pub(crate) fn highpass(&mut self, sample_rate: f32, freq: f32, q: f32) {
+        let w0 = TAU * (freq / sample_rate);
+        let (sin, cos) = w0.sin_cos();
+        let alpha = sin / (2.0 * q.max(0.05));
+        self.set(
+            (1.0 + cos) * 0.5,
+            -(1.0 + cos),
+            (1.0 + cos) * 0.5,
+            1.0 + alpha,
+            -2.0 * cos,
+            1.0 - alpha,
+        );
+    }
+
+    /// RBJ 二阶带通（峰值 0 dB，`q` 定带宽）。动态 EQ 用它做**侧链检波**：
+    /// 只看被处理的那个频带，⛔ 不看全带宽 —— 否则一记大鼓就会把中频压下去。
+    pub(crate) fn bandpass(&mut self, sample_rate: f32, freq: f32, q: f32) {
+        let w0 = TAU * (freq / sample_rate);
+        let (sin, cos) = w0.sin_cos();
+        let alpha = sin / (2.0 * q.max(0.05));
+        self.set(alpha, 0.0, -alpha, 1.0 + alpha, -2.0 * cos, 1.0 - alpha);
+    }
+
     /// RBJ 峰值均衡，中心 `freq`、带宽 `q`。
-    fn peaking(&mut self, sample_rate: f32, freq: f32, q: f32, gain_db: f32) {
+    pub(crate) fn peaking(&mut self, sample_rate: f32, freq: f32, q: f32, gain_db: f32) {
         let a = gain_to_a(gain_db);
         let w0 = TAU * (freq / sample_rate);
         let (sin, cos) = w0.sin_cos();
@@ -353,7 +380,7 @@ impl Biquad {
     }
 
     #[inline(never)]
-    fn process_in_place(&mut self, left: &mut [f32], right: &mut [f32], frames: usize) {
+    pub(crate) fn process_in_place(&mut self, left: &mut [f32], right: &mut [f32], frames: usize) {
         for i in 0..frames {
             for (channel, x) in [left[i], right[i]].into_iter().enumerate() {
                 let v1 = self.v[channel][0];
@@ -368,6 +395,24 @@ impl Biquad {
                     right[i] = y;
                 }
             }
+        }
+    }
+
+    /// 单声道就地处理（**只用声道 0 的状态**）。
+    ///
+    /// 动态 EQ 的侧链检波器走这条路：检波只关心"这个频带此刻有多响"，
+    /// 与左右无关。⛔ 不要把它和 [`Self::process_in_place`] 混用在同一个实例上 ——
+    /// 两者共享 `v[0]`，交替调用会把两条递推搅在一起。
+    #[inline(never)]
+    pub(crate) fn process_mono_in_place(&mut self, buf: &mut [f32], frames: usize) {
+        for x in buf.iter_mut().take(frames) {
+            let v1 = self.v[0][0];
+            let v2 = self.v[0][1];
+            let v = *x - self.a1 * v1 - self.a2 * v2;
+            let y = self.b0 * v + self.b1 * v1 + self.b2 * v2;
+            self.v[0][0] = v;
+            self.v[0][1] = v1;
+            *x = y;
         }
     }
 }

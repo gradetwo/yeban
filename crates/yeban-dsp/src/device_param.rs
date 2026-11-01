@@ -13,7 +13,7 @@
 //!
 //! | 类型 | 内容 |
 //! | :--- | :--- |
-//! | [`StripField`] | 通道条 22 个可自动化字段（`41` 个拼写） |
+//! | [`StripField`] | 通道条 27 个可自动化字段（`51` 个拼写） |
 //! | [`ReverbField`] | Freeverb 的 4 个标量字段（`6` 个拼写） |
 //! | [`ConvolutionField`] | 卷积混响的 4 个标量字段（`8` 个拼写；IR 形状不落点） |
 //! | [`DelayField`] | 乒乓延迟的 9 个字段（`15` 个拼写；音符同步四字段只在投影期换算） |
@@ -119,6 +119,20 @@ pub enum StripField {
     ReleaseS,
     /// makeup 补偿增益（dB）。`makeup_db` / `makeup`。
     MakeupDb,
+    /// 低切转折频率（Hz，`<= 20` 旁通）。`hpf_hz` / `high_pass_hz`。
+    HpfHz,
+    /// 动态 EQ 的中心频率（Hz）。`deq_freq` / `dyn_eq_freq`。
+    DynEqFreq,
+    /// 动态 EQ 的触发阈值（dBFS）。`deq_threshold_db` / `dyn_eq_threshold_db`。
+    DynEqThresholdDb,
+    /// 动态 EQ 的最大衰减量（dB，`0` 旁通）。`deq_cut_db` / `dyn_eq_cut_db`。
+    DynEqMaxCutDb,
+    /// 立体声宽度（M/S 缩放，`1` = 原样）。`strip_width` / `channel_width`。
+    ///
+    /// ⛔ **不叫 `width`**：Freeverb 自己有一个 `width`（`ReverbField::Width`），
+    /// 两条拼写撞车会让 `from_name` 把混响的宽度解析成通道条的宽度 —— 实测
+    /// 那会让返回总线整体相位错乱（全曲相关度 0.81 → 0.00）。
+    Width,
 }
 
 impl StripField {
@@ -146,9 +160,14 @@ impl StripField {
         Self::AttackS,
         Self::ReleaseS,
         Self::MakeupDb,
+        Self::HpfHz,
+        Self::DynEqFreq,
+        Self::DynEqThresholdDb,
+        Self::DynEqMaxCutDb,
+        Self::Width,
     ];
 
-    /// **全部拼写** → 字段（`41` 条；这是"哪个名字能落点"的**唯一**名字表）。
+    /// **全部拼写** → 字段（`51` 条；这是"哪个名字能落点"的**唯一**名字表）。
     ///
     /// 与 `yeban_render::inserts::StripProjection::apply` 的通道条分支逐字同集：7 个参数各有 2 个拼写，
     /// 两个增益各有 3 个，两个开关与 `cutoff_hz` 各 1 个；⭐ `#304` 起压缩的 8 个
@@ -198,6 +217,16 @@ impl StripField {
         ("release", Self::ReleaseS),
         ("makeup_db", Self::MakeupDb),
         ("makeup", Self::MakeupDb),
+        ("hpf_hz", Self::HpfHz),
+        ("high_pass_hz", Self::HpfHz),
+        ("deq_freq", Self::DynEqFreq),
+        ("dyn_eq_freq", Self::DynEqFreq),
+        ("deq_threshold_db", Self::DynEqThresholdDb),
+        ("dyn_eq_threshold_db", Self::DynEqThresholdDb),
+        ("deq_cut_db", Self::DynEqMaxCutDb),
+        ("dyn_eq_cut_db", Self::DynEqMaxCutDb),
+        ("strip_width", Self::Width),
+        ("channel_width", Self::Width),
     ];
 
     /// 名字 → 字段（**大小写不敏感**，别名表与 `yeban_render::inserts::StripProjection::apply` 逐字同集）。
@@ -239,6 +268,11 @@ impl StripField {
             Self::AttackS => "attack_s",
             Self::ReleaseS => "release_s",
             Self::MakeupDb => "makeup_db",
+            Self::HpfHz => "hpf_hz",
+            Self::DynEqFreq => "deq_freq",
+            Self::DynEqThresholdDb => "deq_threshold_db",
+            Self::DynEqMaxCutDb => "deq_cut_db",
+            Self::Width => "strip_width",
         }
     }
 
@@ -280,6 +314,11 @@ impl StripField {
             Self::AttackS => params.compressor.attack_s,
             Self::ReleaseS => params.compressor.release_s,
             Self::MakeupDb => params.compressor.makeup_db,
+            Self::HpfHz => params.hpf.freq_hz,
+            Self::DynEqFreq => params.dyn_eq.freq_hz,
+            Self::DynEqThresholdDb => params.dyn_eq.threshold_db,
+            Self::DynEqMaxCutDb => params.dyn_eq.max_cut_db,
+            Self::Width => params.width,
         }
     }
 
@@ -312,6 +351,11 @@ impl StripField {
             Self::AttackS => params.compressor.attack_s = value,
             Self::ReleaseS => params.compressor.release_s = value,
             Self::MakeupDb => params.compressor.makeup_db = value,
+            Self::HpfHz => params.hpf.freq_hz = value,
+            Self::DynEqFreq => params.dyn_eq.freq_hz = value,
+            Self::DynEqThresholdDb => params.dyn_eq.threshold_db = value,
+            Self::DynEqMaxCutDb => params.dyn_eq.max_cut_db = value,
+            Self::Width => params.width = value,
         }
     }
 

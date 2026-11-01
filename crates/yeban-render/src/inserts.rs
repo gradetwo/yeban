@@ -1034,6 +1034,8 @@ struct StripProjection {
     eq: StripEq,
     filter_seen: bool,
     compressor_seen: bool,
+    hpf_seen: bool,
+    deq_seen: bool,
     eq_enabled: Option<bool>,
     filter_enabled: Option<bool>,
     compressor_enabled: Option<bool>,
@@ -1058,6 +1060,8 @@ impl Default for StripProjection {
             eq: StripEq::default(),
             filter_seen: false,
             compressor_seen: false,
+            hpf_seen: false,
+            deq_seen: false,
             eq_enabled: None,
             filter_enabled: None,
             compressor_enabled: None,
@@ -1150,6 +1154,27 @@ impl StripProjection {
                 self.params.compressor.makeup_db = value;
                 self.compressor_seen = true;
             }
+            // `#341` 低切与 `#342` 动态 EQ：两个字段组都有自己的"已见"标记，
+            // 否则一条只写了 `hpf_hz` 的设备会被 `into_params` 判成"什么都没写"。
+            "hpf_hz" | "high_pass_hz" => {
+                self.params.hpf.freq_hz = value;
+                self.hpf_seen = true;
+            }
+            "deq_freq" | "dyn_eq_freq" => {
+                self.params.dyn_eq.freq_hz = value;
+                self.deq_seen = true;
+            }
+            "deq_threshold_db" | "dyn_eq_threshold_db" => {
+                self.params.dyn_eq.threshold_db = value;
+                self.deq_seen = true;
+            }
+            "deq_cut_db" | "dyn_eq_cut_db" => {
+                self.params.dyn_eq.max_cut_db = value;
+                self.deq_seen = true;
+            }
+            "strip_width" | "channel_width" => {
+                self.params.width = value;
+            }
 
             _ => {}
         }
@@ -1159,6 +1184,8 @@ impl StripProjection {
         let recognised = self.eq.seen
             || self.filter_seen
             || self.compressor_seen
+            || self.hpf_seen
+            || self.deq_seen
             || self.eq_enabled.is_some()
             || self.filter_enabled.is_some()
             || self.params != ChannelStripParams::DEFAULT;
@@ -1726,6 +1753,11 @@ mod tests {
             StripField::AttackS => 0.010,
             StripField::ReleaseS => 0.100,
             StripField::MakeupDb => 3.0,
+            StripField::HpfHz => 120.0,
+            StripField::DynEqFreq => 320.0,
+            StripField::DynEqThresholdDb => -28.0,
+            StripField::DynEqMaxCutDb => 4.0,
+            StripField::Width => 1.4,
         }
     }
 

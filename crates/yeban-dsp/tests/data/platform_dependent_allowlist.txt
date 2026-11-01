@@ -1,4 +1,10 @@
 # R132 棘轮入口表：platform 类契约里**未在源码标注平台依赖**的那些。
 # 口径见 crates/yeban-dsp/tests/r77_hard_assertion_audit.rs 的 PLATFORM_MARKERS。
 # 本表只能收缩：新增未标注的 platform 判据会让判据红；标注后必须同时删行。
-# 当前入口数 = 0
+# 当前入口数 = 6
+src/channel_strip.rs|disabled_compressor_ignores_key
+src/channel_strip.rs|key_equal_to_program_matches_program_path_bit_for_bit
+src/channel_strip.rs|loud_key_ducks_quiet_program
+src/channel_strip.rs|silent_key_leaves_loud_program_uncompressed
+src/channel_strip.rs|the_narrow_output_gain_entry_is_bit_identical_to_the_static_projection
+src/channel_strip.rs|the_two_channels_keep_their_own_input

@@ -1095,6 +1095,18 @@ pub const APPLIED_DEVICE_PARAM_NAMES: &[&str] = &[
     "release",
     "makeup_db",
     "makeup",
+    // 低切与动态 EQ（8 = 4 个字段；`#341` / `#342`）。
+    "hpf_hz",
+    "high_pass_hz",
+    "deq_freq",
+    "dyn_eq_freq",
+    "deq_threshold_db",
+    "dyn_eq_threshold_db",
+    "deq_cut_db",
+    "dyn_eq_cut_db",
+    // 立体声宽度（2 = 1 个字段；⛔ 不叫 `width`，那是 Freeverb 的）。
+    "strip_width",
+    "channel_width",
     // Freeverb 标量（6 = 4 个字段）。
     "reverb_size",
     "reverb_damp",
@@ -2838,6 +2850,12 @@ mod tests {
         (StripField::AttackS, "attack_s", 0.002, 0.5),
         (StripField::ReleaseS, "release_s", 0.1, 1.0),
         (StripField::MakeupDb, "makeup_db", 0.0, 6.0),
+        // ⭐ `#341` / `#342`：低切 1 字段（2 拼写）＋ 动态 EQ 3 字段（6 拼写）。
+        (StripField::HpfHz, "hpf_hz", 20.0, 140.0),
+        (StripField::DynEqFreq, "deq_freq", 300.0, 420.0),
+        (StripField::DynEqThresholdDb, "deq_threshold_db", -24.0, -34.0),
+        (StripField::DynEqMaxCutDb, "deq_cut_db", 0.0, 5.0),
+        (StripField::Width, "strip_width", 1.0, 1.4),
     ];
 
     /// 非通道条字段（`#293`）的：落点、规范名、静态值、渐变终点值。
@@ -3083,8 +3101,8 @@ mod tests {
         // 3. 名单与五张**唯一名字表**的并集逐字相等（⛔ 少一个、多一个、重复都红）。
         assert_eq!(
             StripField::ALL.len(),
-            22,
-            "通道条 22 个字段（14 增益/EQ/滤波 ＋ 8 压缩）"
+            27,
+            "通道条 26 个字段（14 增益/EQ/滤波 ＋ 8 压缩 ＋ 1 低切 ＋ 3 动态 EQ）；             低切与动态 EQ 是 `#341` / `#342` 新增的两级"
         );
         assert_eq!(ReverbField::ALL.len(), 4, "Freeverb 4 个字段");
         assert_eq!(ConvolutionField::ALL.len(), 4, "卷积标量 4 个字段");
@@ -3096,15 +3114,15 @@ mod tests {
         );
         assert_eq!(
             StripField::SPELLINGS.len(),
-            41,
-            "通道条 41 个拼写（27 ＋ 压缩 14；⛔ 只有这一张表）"
+            51,
+            "通道条 51 个拼写（27 ＋ 压缩 14 ＋ 低切 2 ＋ 动态 EQ 6 ＋ 宽度 2；⛔ 只有这一张表）"
         );
         let expected_len = StripField::SPELLINGS.len()
             + ReverbField::SPELLINGS.len()
             + ConvolutionField::SPELLINGS.len()
             + DelayField::SPELLINGS.len()
             + TapeField::SPELLINGS.len();
-        assert_eq!(expected_len, 80, "41 + 6 + 8 + 15 + 10 = 80 个拼写");
+        assert_eq!(expected_len, 90, "51 + 6 + 8 + 15 + 10 = 90 个拼写");
         assert_eq!(
             APPLIED_DEVICE_PARAM_NAMES.len(),
             expected_len,
