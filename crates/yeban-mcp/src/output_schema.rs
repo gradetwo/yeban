@@ -463,17 +463,17 @@ fn undo_display_schema() -> Value {
 /// `effect_param_warnings` ＋ `device_on_silent_track_warnings`）的唯一调用点是 `propose_draft`，
 /// 而 `propose_draft` 的读数经 `apply_propose` 拼装点同时喂给 `propose_section` / `edit_notes` /
 /// `set_macro` ⇒ 这三个工具只会发这两枚。
-/// ⚠ 名册里的第五枚 `sfzSamplesUnreadable` ⛔ 不在任何子集里 —— 它只出自 `yeban_load_sfz` /
+/// ⚠ 名册里唯一不广播的 `sfzSamplesUnreadable` ⛔ 不在任何子集里 —— 它只出自 `yeban_load_sfz` /
 /// `yeban_render_sfz_wav`（`domain/sfz.rs` 的 `samples_warning`，唯一两个调用点在该文件的响应构造器里），
 /// 而 `for_tool` 对扩展工具返回 `None`（不广播 outputSchema，常驻判据
 /// `a_missing_schema_is_none_not_an_empty_object` 就在钉这条）⇒ 它由契约名册兜住，⛔ 不许为凑等式造假 schema。
 const PROPOSAL_WARNING_CODES: [&str; 2] = ["deviceOnSilentTrack", "unrecognisedEffectParam"];
 
-/// ⭐ `data.warnings[].code` 的逐工具子集（母带）。两条来源 `clipping_warning` +
-/// `silent_sources_warning` 只在 `domain/render.rs` 的同一处 `warnings` 装配里链起来
-/// （全库现读：这两个函数各只有一个调用点，都在那一条 `let warnings =` 上）⇒ 只有
-/// `yeban_render_master` 发这两枚（台账 §22.16 的现读）。
-const RENDER_WARNING_CODES: [&str; 2] = ["exportClipping", "silentSources"];
+/// ⭐ `data.warnings[].code` 的逐工具子集（母带）。三条来源 `clipping_warning` +
+/// `silent_sources_warning` + `ignored_strip_devices_warning` 只在 `domain/render.rs`
+/// 的同一处 `warnings` 装配里链起来（全库现读：这三个函数各只有一个调用点，都在那一条
+/// `let warnings =` 上）⇒ 只有 `yeban_render_master` 发这三枚（台账 §22.16 的现读）。
+const RENDER_WARNING_CODES: [&str; 3] = ["exportClipping", "ignoredStripDevices", "silentSources"];
 
 /// 提案族 `warnings[]` 的**逐条形状** —— 三个工具共用一份，因为它们的读数来自同一拼装点
 /// （⛔ 不是三份手抄：`edit_notes` 原本内联了这一份，只是 `code` 没带名册）。
@@ -2337,7 +2337,7 @@ mod tests {
                 .iter()
                 .map(|code| code.as_str().expect("code 是字符串").to_owned())
                 .collect();
-        assert_eq!(contract.len(), 5, "契约名册现读 5 枚: {contract:?}");
+        assert_eq!(contract.len(), 6, "契约名册现读 6 枚: {contract:?}");
 
         let broadcast = |tool: &str| -> std::collections::BTreeSet<String> {
             let schema = for_tool(tool).expect("schema");
@@ -2393,13 +2393,13 @@ mod tests {
             "广播侧发明了契约外的 code: {invented:?}"
         );
 
-        // ⭐ 第五枚**故意**不在任何子集里（它只出自两个扩展工具，而扩展工具不广播 outputSchema）。
+        // ⭐ `sfzSamplesUnreadable` **故意**不在任何子集里（它只出自两个扩展工具，而扩展工具不广播 outputSchema）。
         // 这一条把那句话钉成读数：契约与广播的差集必须**恰好**是它。
         let unbroadcast: Vec<String> = contract.difference(&all).cloned().collect();
         assert_eq!(
             unbroadcast,
             ["sfzSamplesUnreadable".to_owned()],
-            "契约里唯一不该被广播的 code 必须是 sfzSamplesUnreadable（其余四枚都必须广播）"
+            "契约里唯一不该被广播的 code 必须是 sfzSamplesUnreadable（其余五枚都必须广播）"
         );
     }
 
