@@ -252,6 +252,26 @@
   再拿逐变体载荷名册（`Op` 有 **55** 个顶层变体，外部标签 ⇒ 元素恒"恰好一键"）。
 
 
+### 0.6.0zl ⭐ 尾批（2026-11-01 深夜·第八批）：**s32 全链收盘**（线 `41260371411`／合流 `41264545558` 双 `success`、树已拆）＋ ⛔ 改正上一批那条 `passed` 合计 ＋ **s33 第一枚判红在 clippy（`E0609`）**
+
+- **s32 收盘**：线 run **`41260371411`**（tip `56a8ec0b`）= `completed / success`；红→绿的完整链在台账 §22.32（`3297a4e9` 栽 `E0308` → `31b38c1e` 栽在我自己写错层级的两条判据 → `56a8ec0b` 绿）。
+  合流 run **`41264545558`**（headSha `0150cb2e`）= `completed / success`：十腿现读 **9 条 `success`** ＋ `rust (workspace 全量)` = `skipped`（这批只动 `crates/yeban-mcp/**` ＋ `docs/**` ⇒ 印证 §22.31 的"docs/** 不开宽腿"）；
+  窄腿 `rust (yeban-mcp)` **15 步**、02:17:28→02:33:41 = **16:13** 真跑。树已拆 ⇒ 归档标签 **`line-archive/s32-automation-roster @ 56a8ec0b`**，task #107 收盘。
+- **交付**：`data.automation` 由"既不在 `required` 也不在 `properties`"变成 **38** 键名册（顶层 14／`granularity` 3／`domainTransfer` 3／`tracks[]` 3／`lanes[]` 15，其中 8 键 `null` 是常态 ⇒ `["…","null"]`）；
+  实现侧新加 `TARGET_VALUES`（5 个）并让 `targetsSupported`/`targetsUnsupported` 从它派生，`writeMode` 引用现成 `domain::notes::LANE_WRITE_MODES`（4 个）⇒ 单一来源到位。
+- ⛔ **改正上一批（§0.6.0zk）那条聚合读数**：单位 = 数**同一腿**日志里每行 `test result: ok. N passed` 的 N 之和。同单位重测两遍：
+  **s31 腿**（job `124684349433`）= `149` 行／`FAILED` `0`／**`2,714`**；**s32 腿** = `149` 行／`FAILED` `0`／**`2,724`**。
+  原先写的 **149,924** 用各种候选切法（四字段／不分腿／把 `failed`+`ignored` 也累加）**都复现不出来**（最接近的是"不分腿全 run"= `13,381`）⇒ ⛔ 引用作废，机制记为"未复现"。
+  ⭐ 新读数口径：**按第一个 tab 字段（job）筛，别按 step 名筛** —— macos/windows 腿的 step 名在日志里是 `UNKNOWN STEP`，按 step 筛会把跨平台那两次的证据漏掉。
+  这条改正同时把 s32 的判据读数从"各 2 次"升成 **各 4 次**（窄腿两档 feature ＋ windows ＋ macos）。
+- ⛔ **s33 第一枚判红（本轮在飞，接手时先读它）**：`c1ad2b1d` 的 run **`41267134766`** = `failure`，三条腿（`rust (yeban-mcp)`／`windows`／`macos`）**同红在 `clippy (-D warnings)`**、约 4 分钟即收 ⇒ 形状就是**编译红**。
+  红点 = **一处** `E0609: no field 'path' on type '()'`（`output_schema.rs:3094`）：我写的共用小工具拿 `validate(...).unwrap_or_else(|v| panic!(…)).path`，而 `validate` 的 **Ok 侧是 `()`** ⇒ `.path` 只能从 `Err` 侧取（改走 `.err().unwrap_or_else(…)`，判据 5 与 `auto_merge.rs` 那处本来就用 `expect_err`）。
+  ⚠ 教训与 s32 那轮同形：**"广播形状"的判据本身是代码，编译器抓得到** —— 推送前只跑 `cargo fmt` 拦不住 `E0609`／`E0308` 这类；`yeban-mcp` 本机⛔ 不可编译（重依赖），所以这类红**只能靠 CI**，一轮 ~4 分钟就能定性（比跑完全部门 ~18 分钟便宜）。
+  修复批 = `e897c5b0`（同线第二枚），run **`41267522810`** 在飞 ⇒ **接手第一件事：读回它**。
+- ⏭ **判绿后的链**（照 §22.32 那一套）：`worktree.sh land s33-merge-roster`（先比 `main` 与 `origin/main` 两枚 40 位 SHA）→ 推 `origin main:main` → 读**合流 run** → 补台账 **§22.33** ＋ handover §0.6.0zm → `worktree.sh rm s33-merge-roster --purge`（归档标签自动生成）→ task #108 收盘。
+- ⏭ **s33 的下一批**（同一棵树，⛔ 不碰 §22.22 路线甲未落地前留弱的两处）：`edit_automation` 的 `target`/`domain`/`written` 三处可空名册 ＋ `query_engine_state` 的 `track`/`stateSources`；
+  ⛔ `proposal_detail.ops`（裸 `properties`，55 变体外部标签）与 `unsupportedCounts` 必须等校验器补上 `propertyNames`/`min/maxProperties` 才能收紧。
+
 ### 0.6.0zk ⭐ 尾批（2026-11-01 深夜·第七批）：**s31 线判绿 `41250994144` = success → 已 land** ＋ ⛔「`--log` 下载不到」不是"没跑到" ＋ 落地前先比 `main` 与 `origin/main`
 
 - **线判决**：`25a767cb`（681 行进 `output_schema.rs` + 9 行进 `domain/render.rs`）的 run **`41250994144`** = `completed / success`。
@@ -259,7 +279,7 @@
   `rust (workspace 全量)` = `skipped`（`plan` 给窄集合）⇒ ⛔ 本轮同样不引用 `518 / 7 243` 那组全量基线。
 - **验收读数（单位：数该腿日志里 `test <名> ... ok` 整行的出现次数，按步骤分）**：四条新判据**每条 2 次**
   （`test` 默认 feature 档 + `test (合并特性)` 档各一次）⇒ "两种 feature 组合都成立"，⛔ 不是重复计数；
-  同腿聚合 `test result:` **149** 行／`FAILED` **0** 行／`passed` 合计 **149,924**；
+  同腿聚合 `test result:` **149** 行／`FAILED` **0** 行／`passed` 合计 **149,924**（⛔ 该合计已被 §22.32 改正为 **2,724** —— 字段切错的假读数，`149`／`0` 两数仍有效）；
   `tests/props_176.rs`（用**真实响应**跑 `validate_complete` 的二进制）两步都出现（日志 1736 / 3678 行）⇒ 新名册是被真实回执读到的，不自证。
 - ⛔ **本批最值得留的一条**：run 还在 `in_progress` 时 `gh run view --log` **直接拒绝**
   （实测 `run 41250994144 is still in progress; logs will be available when it is complete`）。
