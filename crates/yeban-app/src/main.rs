@@ -970,27 +970,9 @@ fn open_undo_session(
     loaded: &cli::Loaded,
     now_ms: u64,
 ) -> Result<UndoSession, cli::CliError> {
-    let graph = yeban_model::decode_history_dag(&loaded.archive.history_dag).map_err(|error| {
-        cli::CliError::Ui {
-            detail: format!(
-                "`{}` 的 `history.dag` 无法恢复（{error}）—— 拒绝猜一个空历史",
-                source
-            ),
-        }
-    })?;
-    match graph {
-        Some(graph) => UndoSession::open_with_graph(
-            source,
-            "yeban-app",
-            loaded.archive.project.clone(),
-            graph,
-            now_ms,
-        ),
-        None => UndoSession::open(source, "yeban-app", loaded.archive.project.clone(), now_ms),
-    }
-    .map_err(|error| cli::CliError::Ui {
-        detail: format!("撤销会话无法初始化: {error}"),
-    })
+    // 实现与报文住在 [`yeban_app::undo::open_undo_session`]（服务端测试装配
+    // `ADR-0057` A 共用同一条）；这里只转交，不再各自造会话。
+    yeban_app::undo::open_undo_session(source, loaded, now_ms)
 }
 
 /// `[ROAD-M4-001]` 形态 A 的运行态挂载（**只在 `--features in-process-mcp` 下存在**）。

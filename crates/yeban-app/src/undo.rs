@@ -68,6 +68,45 @@ pub use undo_session::{
     CommitRequest, UndoDisplay, UndoRefusal, UndoSession, UndoState, project_fingerprint,
 };
 
+/// 打开一个撤销会话（GUI 装配与服务端测试装配共用这一条，`ADR-0057` A）。
+///
+/// 与 `main.rs` 的旧私有函数同一份实现、同一报文：`history.dag` 恢复口径、
+/// 空图谱 ⇒ 新会话、非法图谱 ⇒ 如实报错不降级。两处装配调这里，不再各自造
+/// 会话（轻量端口没有历史恢复，撤销语义与 GUI 不一致）。
+///
+/// # Errors
+///
+/// 根提交被模型拒绝（容器版本门 / 结构校验不通过），或 `history.dag` 不是合法的
+/// `CommitGraph`（`ARCH-OPS-002`）。
+pub fn open_undo_session(
+    source: &str,
+    loaded: &cli::Loaded,
+    now_ms: u64,
+) -> Result<UndoSession, cli::CliError> {
+    let graph = yeban_model::decode_history_dag(&loaded.archive.history_dag).map_err(|error| {
+        cli::CliError::Ui {
+            detail: format!(
+                "`{}` 的 `history.dag` 无法恢复（{error}）—— 拒绝猜一个空历史",
+                source
+            ),
+        }
+    })?;
+    match graph {
+        Some(graph) => UndoSession::open_with_graph(
+            source,
+            "yeban-app",
+            loaded.archive.project.clone(),
+            graph,
+            now_ms,
+        ),
+        None => UndoSession::open(source, "yeban-app", loaded.archive.project.clone(), now_ms),
+    }
+    .map_err(|error| cli::CliError::Ui {
+        detail: format!("撤销会话无法初始化: {error}"),
+    })
+}
+
+use crate::cli;
 use crate::input::{Action, InputContext, LogicalKey, Modifiers, PhysicalKey, Resolution};
 
 /// 界面上的撤销类动作（**全部**撤销入口都归到这里）。
