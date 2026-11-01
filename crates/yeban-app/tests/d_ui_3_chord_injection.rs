@@ -26,6 +26,9 @@
 //! 同一个测试里**不能**建第二个 `LiveUi`。
 
 #[path = "../src/live_surface.rs"]
+// 本判据只用到 `live_surface.rs` 的一部分（三条 chord 判据 + 一个 `LiveUi`）⇒ 其余项在
+// 本测试目标里是 dead_code（`-D warnings` 会判红）。同款见 `tests/ui_bpm_field.rs`。
+#[allow(dead_code)]
 mod live;
 
 use std::rc::Rc;

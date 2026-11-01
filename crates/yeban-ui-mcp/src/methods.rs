@@ -898,6 +898,7 @@ mod tests {
                         Some(
                             Operation::DispatchPointer
                                 | Operation::DispatchKey
+                                | Operation::DispatchKeyChord
                                 | Operation::SetTrackHeight
                         )
                     ),
