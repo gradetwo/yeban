@@ -1102,6 +1102,18 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
                 false,
                 "⭐ 审评 2026-10-31（P1-1）: 显式渲染线程数（正整数）。缺省 = 单线程默认路径（仓库实测：M2 Max 上各规模并行都比单线程慢，缺省不动）。给了就透传给渲染器；输出与单线程逐字节相同（固定顺序汇聚，与线程数无关）。0 / 负数 / 非整数 ⇒ INVALID_PARAMETER_RANGE。`data.request.threads` 回显请求值（缺省为 null）",
             ),
+            param(
+                "maxSampleFiles",
+                "integer",
+                false,
+                "⭐ 每条采样器轨最多读多少个**不同**样本文件（去重后）；缺省 512，`0` = 不限。与 `yeban_load_sfz.maxSampleFiles` **同一份**解析实现与同一套缺省值。逐轨记账（一次渲染内已解码 PCM 跨轨共享）。截断如实进 `data.sources[].sampler.sampleReadsTruncated` + `sampleFailures`，预算本身在 `data.request.sampleLimits` 与 `sampler.sampleLimits` 回显",
+            ),
+            param(
+                "maxSampleFrames",
+                "integer",
+                false,
+                "⭐ 每条采样器轨最多读入多少帧（合计，按**解码后**规模算）；缺省 64000000，`0` = 不限。为什么缺省是 64000000 而不是 8000000：八百万帧只够 181 s 单声道，而真实乐器一件就要 4–37 M 帧（VSCO-2-CE 实测：FHornSus 12.66 M / SViolinVib 18.59 M / GM-StylePerc 36.82 M）⇒ 旧缺省下 `FHornSus` 报 `regions=29 samples=17 silent=12`，而采样器轨**没有正弦回退**，那 12 个音区就是数字静音。逐轨记账；已解码 PCM 由一次渲染内的共享池复用 ⇒ 峰值内存 ≈ 全部**不同**样本之和（本仓 12 件乐器实测 157.7 M 帧 ≈ 630 MB）",
+            ),
         ],
         // 这里声明的仍然是**规范表格那一行**的错误码。实现还会真实产出
         // `NO_ACTIVE_PROJECT` / `INVALID_PARAMETER_RANGE`（参数与路径护栏）/
@@ -1475,6 +1487,18 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
                 "number",
                 false,
                 "样本侧采样率 (Hz); 只进报告 (响应里的 `sampleHz` 回显, dryRun 预览同样回显), 本仓不读采样文件、也不计算播放速率比; 缺省 48000。同一份内容已登记 ⇒ 复用登记项, 本次的取值不生效 (回报登记时的值)",
+            ),
+            param(
+                "maxSampleFiles",
+                "integer",
+                false,
+                "本次装载最多读多少个**不同**样本文件 (去重后); 缺省 512, `0` = 不限。真实大库的一件乐器就会有上百份不同样本 (GM-StylePerc 184 份), 旧上界 128 会把大乐器的音区层/力度层**静默砍掉** —— 采样器轨没有正弦回退, 砍掉的音区就是数字静音。截断仍是响亮报告的 (`sampleReadsTruncated` + 逐条 `sampleFailures`), 响应里的 `sampleLimits` 回显本次用的预算",
+            ),
+            param(
+                "maxSampleFrames",
+                "integer",
+                false,
+                "本次装载最多读入多少帧 (所有文件合计, 按**解码后**规模算); 缺省 64000000, `0` = 不限。旧缺省 8000000 帧只够 181 s 单声道, 而 VSCO-2-CE 的 FHornSus 一件就要 1266 万帧 ⇒ 读数 `regions=29 samples=17 silent=12`。新缺省按「最重的一件真实乐器 (GM-StylePerc 3682 万帧) × 1.7 余量」取",
             ),
         ],
         errors: &[

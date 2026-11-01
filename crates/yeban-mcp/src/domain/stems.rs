@@ -675,6 +675,9 @@ fn stem_render_request(
         //（本函数不接调用方请求，`request` 也不在作用域里，⛔ 不虚构继承）。
         threads: None,
         sample_format: render::SampleFormat::Float32,
+        // 分轨与母带**同一份**预算：`stems` 没有预算实参 ⇒ 用缺省（缺省必须容得下
+        // 真实乐器，见 `SampleLimits` 的文档）⇒ 分轨出的每一轨与母带里那一轨逐位同源。
+        sample_limits: render::SampleLimits::default(),
     }
 }
 

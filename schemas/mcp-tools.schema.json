@@ -5,7 +5,7 @@
   "description": "Standard JSON-RPC 2.0 interface and tool definitions for Yeban MCP. 根为 oneOf(ToolCall, ToolResponse, ReplayedToolResponse)：工具调用、工具响应与幂等重放信封的样本都必须通过根校验，否则本契约只是一堆没人引用的类型定义（ADR-0001 D25）。",
   "definitions": {
     "WarningCode": {
-      "description": "\u2b50 `data.warnings[]` \u91cc `code` \u5b57\u6bb5\u7684**\u552f\u4e00\u6743\u5a01\u540d\u518c**\uff08\u673a\u68b0\u5bf9\u8d26\u89c1 `scripts/guards/check_warning_codes.py`\uff1a\u5b9e\u73b0\u4fa7\u6784\u9020\u70b9\u4e0e\u672c enum \u5fc5\u987b**\u96c6\u5408\u76f8\u7b49**\uff09\u3002\u8b66\u544a\u4e00\u5f8b**\u975e\u963b\u65ad**\uff1a\u51fa\u73b0\u5728\u54cd\u5e94\u91cc\u4e0d\u4ee3\u8868\u64cd\u4f5c\u5931\u8d25\u3002\u6784\u9020\u70b9\uff1a`unrecognisedEffectParam` / `deviceOnSilentTrack` = `domain/mod.rs`\uff0c`exportClipping` / `silentSources` = `domain/render.rs`\uff0c`sfzSamplesUnreadable` = `domain/sfz.rs`\u3002\u26a0 \u9519\u8bef\u8def\u5f84\u7684 `data.reason`\uff08\u5982 `unknownEffectParam`\uff09**\u4e0d\u5c5e\u4e8e**\u672c\u540d\u518c\u3002",
+      "description": "⭐ `data.warnings[]` 里 `code` 字段的**唯一权威名册**（机械对账见 `scripts/guards/check_warning_codes.py`：实现侧构造点与本 enum 必须**集合相等**）。警告一律**非阻断**：出现在响应里不代表操作失败。构造点：`unrecognisedEffectParam` / `deviceOnSilentTrack` = `domain/mod.rs`，`exportClipping` / `silentSources` = `domain/render.rs`，`sfzSamplesUnreadable` = `domain/sfz.rs`。⚠ 错误路径的 `data.reason`（如 `unknownEffectParam`）**不属于**本名册。",
       "type": "string",
       "enum": [
         "deviceOnSilentTrack",
@@ -637,7 +637,10 @@
             },
             "drumStyle": {
               "type": "string",
-              "enum": ["metric", "four-on-the-floor"],
+              "enum": [
+                "metric",
+                "four-on-the-floor"
+              ],
               "description": "鼓的**底鼓口径**（`ADR-0044`）。单位 = 档位名（⛔ 数字、⛔ 枚举下标）：`metric` = 底鼓落在**组起点**，`four-on-the-floor` = 底鼓落在**每一个拍的起点**。候选**恰等于** theory 公开的 `DrumStyle::ALL` × `name()`（本契约⛔ 另立一份字符串表）。⭐ 本键**故意没有 `default`**：缺省语义是「**不覆盖**该流派登记的 `GenreRule::drum_style`」，而现读 `GENRES` 182 条是 **169 条 `metric` / 13 条 `four-on-the-floor`** 两支（`disco`/`house`/`techno`/`trance` 那一支），写死一个字符串会把两支说成一支 ⇒ 键缺席时逐字节维持既有输出。消费点：**仅**鼓轨，要求与 `materialSource: \"theory\"` **且** `includeDrums: true` 同给；否则 ⇒ `INVALID_PARAMETER_RANGE`（带 `hint`）。未知取值 ⇒ `INVALID_PARAMETER_RANGE`（带 `field` + `value` + `accepted`，⛔ 夹紧、⛔ 静默降级）。⚠ 本键**只动底鼓**（实测 518 组里非底鼓击点的 (音色, 起点, 时值, 力度) 两档逐条相同），且「严格更多」⛔ 全局成立 —— 复合二拍（6/8）上两档逐字节相同，因为那两个拍起点恒是组起点。与 `drumBackbeat`、`swingPermille`、`onsetsPerBar`、`drumDensity` 是五根**不同**的轴。"
             },
             "beatGrouping": {
@@ -927,8 +930,8 @@
             }
           },
           "required": [
-              "name",
-              "license"
+            "name",
+            "license"
           ]
         },
         "yeban_export_diagnostics": {
@@ -1012,6 +1015,16 @@
             "sampleHz": {
               "type": "number",
               "description": "样本侧采样率 (Hz)；只进报告（响应里的 `sampleHz` 回显，dryRun 预览同样回显），本仓不读采样文件、也不计算播放速率比；缺省 48000。同一份内容已登记 ⇒ 复用登记项，本次的取值不生效（回报登记时的值）。"
+            },
+            "maxSampleFiles": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "本次装载最多读多少个**不同**样本文件（去重后）；缺省 512，`0` = 不限。真实大库的一件乐器就会有上百份不同样本（`GM-StylePerc` 184 份）—— 旧上界 128 会把大乐器的音区层/力度层**静默砍掉**，而采样器轨没有正弦回退 ⇒ 被砍的音区就是数字静音。截断仍是响亮报告的（`sampleReadsTruncated` ＋ 逐条 `sampleFailures`）。"
+            },
+            "maxSampleFrames": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "本次装载最多读入多少帧（所有文件合计，按**解码后**规模算）；缺省 64000000，`0` = 不限。旧缺省 8000000 帧只够 181 s 单声道，而 `FHornSus` 一件就要 1266 万帧 ⇒ 读数 `regions=29 samples=17 silent=12`。新缺省 = 最重的一件真实乐器（`GM-StylePerc` 3682 万帧）× 1.7 余量。"
             },
             "dryRun": {
               "type": "boolean",

@@ -3576,6 +3576,9 @@ fn plan_import_midi(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
 /// `yeban_open_project` 的 `plan` 真的读盘同一条口径）。
 fn plan_load_sfz(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
     let (path, sample_hz) = sfz::parse_load_arguments(&call.arguments)?;
+    // ⭐ 样本读取预算（`maxSampleFiles` / `maxSampleFrames`；缺省 = 合理默认值）。
+    // 与 `yeban_render_master` 的**同一份**解析实现 ⇒ 两个工具对同一条预算说同一句话。
+    let limits = sfz::parse_sample_limits(&call.arguments)?;
     // 先算内容摘要（`load` 内部会算），因此这里先用文件字节判重用。
     let bytes = std::fs::read(&path).map_err(|error| {
         Fault::domain_with_data(
@@ -3603,7 +3606,7 @@ fn plan_load_sfz(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
             record.reused = true;
             record
         }
-        None => sfz::load(&path, sample_hz, domain.sfz_next_id(), false)?,
+        None => sfz::load(&path, sample_hz, domain.sfz_next_id(), false, limits)?,
     };
     Ok(Plan::LoadSfz {
         load: Box::new(load),

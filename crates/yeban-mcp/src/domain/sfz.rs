@@ -150,17 +150,116 @@ const NOTE_FADE_FRAMES: u64 = 64;
 /// ⛔ **绝不静默截断**（截断会让"听到的"与"文件里的"不是同一段音频，且没人知道）。
 pub const MAX_SAMPLE_FILE_BYTES: u64 = 64 * 1024 * 1024;
 
-/// 一次调用最多读多少个**不同**样本文件（去重后）。
+/// 一次装载 / 一次渲染的**缺省**文件数上界（去重后**不同**文件数）。
 ///
-/// ⚠ 128 而不是 32：大库**单次装载**会被截断（真实 `freepats-spanish-classical-guitar`
-/// 48 个区域在 32 时只读到 26）。截断是**响亮报告**的（`sampleReadsTruncated`），
-/// 但"读不全"仍会让大乐器的力度层/音区层静默缺席 ⇒ 提高这一条直接补齐可演奏性。
-/// 内存的真实上界仍是 [`MAX_SAMPLE_FRAMES_TOTAL`]（按解码后帧数算），这一条只放行
-/// **文件数**，不放松总字节量。
-pub const MAX_SAMPLE_FILES_READ: usize = 128;
+/// ⚠ 512 而不是 32／128：真实大库的**一件**乐器就会有上百份不同样本 ——
+/// `GM-StylePerc`（220 区域 / 184 份 wav）、`freepats-spanish-classical-guitar`
+/// （48 区域在 32 时只读到 26）。截断是**响亮报告**的（`sampleReadsTruncated`），
+/// 但"读不全"会让大乐器的**力度层 / 音区层静默缺席** ⇒ 默认值必须容得下真实乐器。
+/// 这一条只放行**文件数**，内存的真实上界仍是 [`MAX_SAMPLE_FRAMES_TOTAL`]。
+///
+/// ⭐ 运行期可用 `yeban_load_sfz.maxSampleFiles` / `yeban_render_master.maxSampleFiles`
+/// 覆盖（见 [`SampleLimits`]），⛔ 不必改常量重编。
+pub const MAX_SAMPLE_FILES_READ: usize = 512;
 
-/// 一次调用最多读入多少帧（所有文件**合计**）——第二道上界，按**解码后**的规模算。
-pub const MAX_SAMPLE_FRAMES_TOTAL: u64 = 8_000_000;
+/// 一次装载 / 一次渲染的**缺省**帧数上界（所有文件**合计**，按**解码后**的规模算）。
+///
+/// ⚠ 为什么是 64,000,000 而不是 8,000,000：**八百万帧只够 181 s 单声道**，而真实乐器
+/// 一件就要 4–37 M 帧。VSCO-2-CE 的实测解码量（本仓库自带库，逐文件 WAV 头求和）：
+///
+/// | 乐器 | 帧数 | ≈ 内存 |
+/// | :--- | ---: | ---: |
+/// | `CelloEnsSpic` | 4.36 M | 17 MB |
+/// | `ViolinEnsSusVib` | 11.49 M | 46 MB |
+/// | `ContrabassSusVB` / `NV` | 11.99 / 13.20 M | 48 / 53 MB |
+/// | `FHornSus` | 12.66 M | 51 MB |
+/// | `TromboneSus` | 15.03 M | 60 MB |
+/// | `SViolinVib` | 18.59 M | 74 MB |
+/// | `GM-StylePerc` | **36.82 M** | 147 MB |
+///
+/// 旧默认值下装载 `FHornSus` 的读数是 `regions=29 samples=17 silent=12` —— **12 个音区
+/// 被预算砍掉，而采样器轨没有正弦回退**，那些音就是数字静音。旧值不是保护，是缺陷：
+/// 它等于"稍大一点的乐器就用不了力度分层"。
+///
+/// 新默认值按"一件最重的真实乐器 × 1.7 余量"取：64 M 帧 ＝ 256 MB 单声道 f32／轨。
+/// ⚠ 记账口径是**逐轨**（[`TrackSampleCache`]），一次渲染里已解码的 PCM 由
+/// [`SampleStore`] 跨轨共享 ⇒ 峰值内存 ≈ 全部**不同**样本之和（实测本曲 12 件
+/// 乐器合计 157.7 M 帧 ≈ 630 MB），⛔ 不是"轨数 × 上界"。
+///
+/// ⭐ 运行期可用 `maxSampleFrames` 覆盖（见 [`SampleLimits`]）；`0` ＝ 不限。
+pub const MAX_SAMPLE_FRAMES_TOTAL: u64 = 64_000_000;
+
+/// 一次装载 / 一次渲染的**样本读取预算**（运行期可配置，⛔ 不是编译期常量）。
+///
+/// 三条上界里，单文件字节数是**格式护栏**（[`MAX_SAMPLE_FILE_BYTES`]，与预算无关），
+/// 其余两条由本类型承载：不同文件数、文件数之外的累计解码帧数。
+///
+/// ## 优先级
+///
+/// `resolve(调用方给的文件数, 调用方给的帧数)`：
+/// ① 调用方显式给值（`yeban_load_sfz` / `yeban_render_master` 的 `maxSampleFiles` /
+///   `maxSampleFrames`）→ ② [`MAX_SAMPLE_FILES_READ`] / [`MAX_SAMPLE_FRAMES_TOTAL`]。
+///
+/// ⚠ **`0` ＝ 不限**（两条都如此）—— 给"我知道这库有多大，别拦我"留一条正门；
+/// 截断仍然是响亮报告的（`sampleReadsTruncated` ＋ 逐条 `sampleFailures`），
+/// ⛔ 从来不会静默丢弃。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SampleLimits {
+    /// 不同样本文件数上界（`0` ＝ 不限）。
+    pub max_files: usize,
+    /// 累计解码帧数上界（`0` ＝ 不限）。
+    pub max_frames: u64,
+}
+
+impl Default for SampleLimits {
+    fn default() -> Self {
+        Self {
+            max_files: MAX_SAMPLE_FILES_READ,
+            max_frames: MAX_SAMPLE_FRAMES_TOTAL,
+        }
+    }
+}
+
+impl SampleLimits {
+    /// 用调用方给的值（`None` ＝ 用默认值）解析出一份预算。
+    #[must_use]
+    pub fn resolve(max_files: Option<usize>, max_frames: Option<u64>) -> Self {
+        let defaults = Self::default();
+        Self {
+            max_files: max_files.unwrap_or(defaults.max_files),
+            max_frames: max_frames.unwrap_or(defaults.max_frames),
+        }
+    }
+
+    /// 文件数是否已到上限（`0` ＝ 不限 ⇒ 恒 `false`）。
+    #[must_use]
+    pub const fn files_exhausted(self, count: usize) -> bool {
+        self.max_files != 0 && count >= self.max_files
+    }
+
+    /// 再读 `frames` 帧是否会超上限（`0` ＝ 不限 ⇒ 恒 `false`）。
+    #[must_use]
+    pub const fn frames_exceeded(self, loaded: u64, frames: u64) -> bool {
+        self.max_frames != 0 && loaded.saturating_add(frames) > self.max_frames
+    }
+
+    /// 读数的 JSON 形态（响应里回显"这一次用的是哪一条预算"）。
+    #[must_use]
+    pub fn to_value(self) -> serde_json::Value {
+        let limit = |value: u64| {
+            if value == 0 {
+                serde_json::Value::Null
+            } else {
+                serde_json::Value::from(value)
+            }
+        };
+        serde_json::json!({
+            "maxSampleFiles": limit(self.max_files as u64),
+            "maxSampleFrames": limit(self.max_frames),
+            "unlimited": self.max_files == 0 && self.max_frames == 0,
+        })
+    }
+}
 
 /// 内存正弦回退的频率（Hz）——与 `app` 侧 `region_sample_for` 的回退同值。
 pub const FALLBACK_SINE_HZ: f32 = 440.0;
@@ -306,20 +405,30 @@ type SampleEntries = BTreeMap<PathBuf, Result<SampleFileReading, String>>;
 /// 一次调用里的**样本文件缓存**（去重 + 上界 + 逐条如实记账）。
 ///
 /// 上界三条（任一命中就**停止再读**并如实标注，⛔ 不静默丢弃）：
-/// ① 单个文件字节数 > [`MAX_SAMPLE_FILE_BYTES`]；② 不同文件数 > [`MAX_SAMPLE_FILES_READ`]；
-/// ③ 累计解码帧数 > [`MAX_SAMPLE_FRAMES_TOTAL`]。
+/// ① 单个文件字节数 > [`MAX_SAMPLE_FILE_BYTES`]；② 不同文件数 > `limits.max_files`；
+/// ③ 累计解码帧数 > `limits.max_frames`。②③ 由 [`SampleLimits`] 运行期给出。
 #[derive(Debug, Default)]
 pub struct SampleCache {
     entries: SampleEntries,
     frames_loaded: u64,
     truncated: bool,
+    limits: SampleLimits,
 }
 
 impl SampleCache {
-    /// 空缓存。
+    /// 空缓存（用[`SampleLimits::default`]）。
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// 空缓存，指定预算。
+    #[must_use]
+    pub fn with_limits(limits: SampleLimits) -> Self {
+        Self {
+            limits,
+            ..Self::default()
+        }
     }
 
     /// 取一份样本（命中缓存则**不**重复读盘）。
@@ -332,8 +441,16 @@ impl SampleCache {
             entries,
             frames_loaded,
             truncated,
+            limits,
         } = self;
-        cache_get(path, entries, frames_loaded, truncated, read_sample_file)
+        cache_get(
+            path,
+            entries,
+            frames_loaded,
+            truncated,
+            *limits,
+            read_sample_file,
+        )
     }
 
     /// 读成功的**不同**文件数。
@@ -389,29 +506,33 @@ fn cache_get(
     entries: &mut SampleEntries,
     frames_loaded: &mut u64,
     truncated: &mut bool,
+    limits: SampleLimits,
     read: impl FnOnce(&Path) -> Result<SampleFileReading, String>,
 ) -> Result<SampleFileReading, String> {
     if let Some(hit) = entries.get(path) {
         return hit.clone();
     }
-    if entries.len() >= MAX_SAMPLE_FILES_READ {
+    if limits.files_exhausted(entries.len()) {
         *truncated = true;
         let reason = format!(
-            "已有 {} 个不同样本文件, 达到本次调用的上限 {} ⇒ 不再读盘 (⛔ 不静默截断)",
+            "已有 {} 个不同样本文件, 达到本次调用的上限 {} ⇒ 不再读盘 (⛔ 不静默截断; \
+             可用实参 maxSampleFiles 提高, 0 = 不限)",
             entries.len(),
-            MAX_SAMPLE_FILES_READ
+            limits.max_files
         );
         entries.insert(path.to_path_buf(), Err(reason.clone()));
         return Err(reason);
     }
     let outcome = match read(path) {
         Ok(reading) => {
-            if frames_loaded.saturating_add(reading.frames) > MAX_SAMPLE_FRAMES_TOTAL {
+            if limits.frames_exceeded(*frames_loaded, reading.frames) {
                 *truncated = true;
                 Err(format!(
-                    "累计样本帧数会超过本次调用的上限 {} 帧 (已读 {}), 拒绝再读 {} (⛔ 不静默截断)",
-                    MAX_SAMPLE_FRAMES_TOTAL,
+                    "累计样本帧数会超过本次调用的上限 {} 帧 (已读 {}, 本文件 {} 帧), 拒绝再读 {} \
+                     (⛔ 不静默截断; 可用实参 maxSampleFrames 提高, 0 = 不限)",
+                    limits.max_frames,
                     *frames_loaded,
+                    reading.frames,
                     path.display()
                 ))
             } else {
@@ -440,6 +561,8 @@ pub trait SampleReads {
     fn truncated(&self) -> bool;
     /// 本次调用累计解码帧数（上界③的记账值）。
     fn frames_loaded(&self) -> u64;
+    /// 这次读取用的预算（回显用；⛔ 不从常量再读一遍 —— 那样会在"调用方覆盖过"时说错话）。
+    fn limits(&self) -> SampleLimits;
 }
 
 impl SampleReads for SampleCache {
@@ -457,6 +580,10 @@ impl SampleReads for SampleCache {
 
     fn frames_loaded(&self) -> u64 {
         self.frames_loaded
+    }
+
+    fn limits(&self) -> SampleLimits {
+        self.limits
     }
 }
 
@@ -508,17 +635,25 @@ pub struct TrackSampleCache<'a> {
     entries: SampleEntries,
     frames_loaded: u64,
     truncated: bool,
+    limits: SampleLimits,
 }
 
 impl<'a> TrackSampleCache<'a> {
-    /// 在共享池上开一条轨的预算视图。
+    /// 在共享池上开一条轨的预算视图（[`SampleLimits::default`]）。
     #[must_use]
     pub fn new(store: &'a mut SampleStore) -> Self {
+        Self::with_limits(store, SampleLimits::default())
+    }
+
+    /// 在共享池上开一条轨的预算视图，指定预算（渲染实参透传的那一份）。
+    #[must_use]
+    pub fn with_limits(store: &'a mut SampleStore, limits: SampleLimits) -> Self {
         Self {
             store,
             entries: SampleEntries::new(),
             frames_loaded: 0,
             truncated: false,
+            limits,
         }
     }
 }
@@ -530,10 +665,16 @@ impl SampleReads for TrackSampleCache<'_> {
             entries,
             frames_loaded,
             truncated,
+            limits,
         } = self;
-        cache_get(path, entries, frames_loaded, truncated, |resolved| {
-            store.read(resolved)
-        })
+        cache_get(
+            path,
+            entries,
+            frames_loaded,
+            truncated,
+            *limits,
+            |resolved| store.read(resolved),
+        )
     }
 
     fn entries(&self) -> &SampleEntries {
@@ -546,6 +687,10 @@ impl SampleReads for TrackSampleCache<'_> {
 
     fn frames_loaded(&self) -> u64 {
         self.frames_loaded
+    }
+
+    fn limits(&self) -> SampleLimits {
+        self.limits
     }
 }
 
@@ -656,6 +801,9 @@ pub struct SfzLoad {
     pub sample_reads_truncated: bool,
     /// 累计解码帧数（所有读成功的文件之和）。
     pub sample_frames_loaded: u64,
+    /// ⭐ 本次装载**用的**预算（回显；`sampleReadsTruncated` 是不是"被这条预算"截的，
+    /// 只有把它一起报出来才能判）。
+    pub limits: SampleLimits,
 }
 
 impl SfzLoad {
@@ -772,6 +920,7 @@ impl SfzLoad {
             "sampleFailures": self.sample_failures,
             "sampleReadsTruncated": self.sample_reads_truncated,
             "sampleFramesLoaded": self.sample_frames_loaded,
+            "sampleLimits": self.limits.to_value(),
             "sampleHz": self.sample_hz,
             "warnings": self.samples_warning().into_iter().collect::<Vec<_>>(),
             "sessionScoped": true,
@@ -801,6 +950,7 @@ impl SfzLoad {
             "sampleFailures": self.sample_failures,
             "sampleReadsTruncated": self.sample_reads_truncated,
             "sampleFramesLoaded": self.sample_frames_loaded,
+            "sampleLimits": self.limits.to_value(),
             "sampleHz": self.sample_hz,
             "warnings": self.samples_warning().into_iter().collect::<Vec<_>>(),
             "wouldRegister": {
@@ -922,6 +1072,44 @@ fn include_issues_value(issues: &[IncludeIssue]) -> serde_json::Value {
     )
 }
 
+/// 解析 `maxSampleFiles` / `maxSampleFrames` 两个预算实参（两个工具共用同一份口径）。
+///
+/// 形状规则（与工具面其余整数实参同一条纪律）：
+/// - 缺键 / `null` ⇒ `None` ⇒ 用[`SampleLimits::default`]；
+/// - 整数 `>= 0`（`0` ＝ **不限**）⇒ 覆盖；
+/// - 负数 / 非整数 / 布尔 / 字符串 ⇒ `INVALID_PARAMETER_RANGE`（⛔ 不静默钳制）。
+///
+/// # Errors
+///
+/// 两个键任一不是非负整数 ⇒ `INVALID_PARAMETER_RANGE`（带 `field` 与 `received`）。
+pub fn parse_sample_limits(
+    arguments: &serde_json::Map<String, serde_json::Value>,
+) -> Result<SampleLimits, Fault> {
+    let read = |field: &'static str| -> Result<Option<u64>, Fault> {
+        match arguments.get(field) {
+            None | Some(serde_json::Value::Null) => Ok(None),
+            Some(serde_json::Value::Number(number)) => number.as_u64().map(Some).ok_or_else(|| {
+                Fault::domain_with_data(
+                    CODE_RANGE,
+                    format!("`{field}` 必须是非负整数 (0 = 不限), 实际收到 {number}"),
+                    serde_json::json!({ "field": field, "received": number.to_string() }),
+                )
+            }),
+            Some(other) => Err(Fault::domain_with_data(
+                CODE_RANGE,
+                format!("`{field}` 必须是非负整数 (0 = 不限), 实际收到 {other}"),
+                serde_json::json!({ "field": field, "received": other.to_string() }),
+            )),
+        }
+    };
+    let max_files = read("maxSampleFiles")?.map(|value| {
+        // `usize` 在 32 位宿主上比 u64 窄 ⇒ 用 try_from 而不是 as（⛔ 不静默截断）。
+        usize::try_from(value).unwrap_or(usize::MAX)
+    });
+    let max_frames = read("maxSampleFrames")?;
+    Ok(SampleLimits::resolve(max_files, max_frames))
+}
+
 /// 解析 `yeban_load_sfz` 的实参（**只做形状校验**，读文件在 [`load`] 里）。
 ///
 /// # Errors
@@ -961,13 +1149,21 @@ pub fn parse_load_arguments(
 /// 装载一份 SFZ：读文件 ⇒ SHA-256 ⇒ 解析 ⇒ 区域摘要。
 ///
 /// **只读**：不写盘、不改工程。`assign_id` 由调用方（`Domain`）按已有的 registry 决定。
+/// `limits` 是这一次装载的样本读取预算（[`SampleLimits`]；实参
+/// `maxSampleFiles` / `maxSampleFrames` 由调用方解析后传进来）。
 ///
 /// # Errors
 ///
 /// - `IO_ERROR`：文件不存在 / 是目录 / 读失败；
 /// - `INVALID_PARAMETER_RANGE`：非 UTF-8 文本，或 SFZ 文本被解析器拒绝。
-pub fn load(path: &Path, sample_hz: f32, assign_id: u64, reused: bool) -> Result<SfzLoad, Fault> {
-    let mut cache = SampleCache::new();
+pub fn load(
+    path: &Path,
+    sample_hz: f32,
+    assign_id: u64,
+    reused: bool,
+    limits: SampleLimits,
+) -> Result<SfzLoad, Fault> {
+    let mut cache = SampleCache::with_limits(limits);
     load_with(path, sample_hz, assign_id, reused, &mut cache).map(|(load, _)| load)
 }
 
@@ -1168,6 +1364,8 @@ pub fn load_with(
             sample_failures,
             sample_reads_truncated,
             sample_frames_loaded,
+            // ⭐ 预算随装载一起登记：读数的"截没截"必须能对回是哪一条预算判的。
+            limits: cache.limits(),
         },
         provider,
     ))
