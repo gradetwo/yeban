@@ -46,6 +46,7 @@ pub mod music;
 pub mod note_plan;
 pub mod ops;
 pub mod project;
+pub mod sampler_path;
 pub mod samples;
 pub mod session;
 pub mod time_math;

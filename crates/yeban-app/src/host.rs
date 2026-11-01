@@ -2235,9 +2235,9 @@ fn wire_mixer_sampler(ui: &MainWindow, port: &Rc<UndoPort>) {
             // ⛔ 空文本不落到 `Some("")`（那会被引擎当成一条读不到的文件路径）。
             // 只报"这一下没有提交"，不假装做过什么。
             //
-            // ⚠ 界面侧对路径**只做一处**规范化：去掉首尾空白（粘贴常常带一个换行）。
-            // 除此之外**原样**交给模型（⛔ 不规范化、⛔ 不查存在性、⛔ 不判扩展名 ——
-            // 与 `TrackV3::sampler` 的字段口径逐字相同）。
+            // ⚠ 界面侧对路径做两处规范化：去掉首尾空白（粘贴常常带一个换行），
+            // 再经存入归一化（库根下绝对路径 ⇒ `assets/samples/` ＋ 库根下相对部分，
+            // 与 CLI 同一条规则）；其余原样（⛔ 不查存在性、⛔ 不判扩展名）。
             let trimmed = path.trim();
             if trimmed.is_empty() {
                 eprintln!("[yeban-app] SFZ 路径是空的 ⇒ 没有提交（解绑请用 Clear）");
@@ -2331,9 +2331,11 @@ fn commit_sampler_binding(
         return;
     };
     let new_sampler = new_path.map(|path| yeban_model::SamplerBinding {
-        path: path.to_owned(),
+        path: crate::samples::normalize_sampler_path_for_storage(path),
     });
     // 值没变 ⇒ 不制造"什么也没改"的一步撤销历史（见本函数调用者的文档）。
+    // 比较的是归一化后的新值与文档原值：文档里旧的绝对形式 ⇒ 仍提交一次
+    // （那次提交就是形式收敛本身，与 bridge 助手同一条口径）。
     if old_sampler == new_sampler {
         return;
     }

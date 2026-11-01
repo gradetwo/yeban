@@ -9229,10 +9229,22 @@ pub fn compile(
                         }),
                     )
                 })?;
+                // ⭐ 存入归一化（Wang 2026-11-01 定）：新值若是落在采样库根之下的
+                // 绝对路径，改写成 `assets/samples/` ＋ 库根下相对部分再存入
+                // （换机器仍可经规则 2 解析回原文件）；其余形式原样。
+                // `old_sampler` 读文档原样，⛔ 不经过归一化；已存的绝对路径不迁移。
+                let new_sampler = new_sampler
+                    .as_ref()
+                    .map(|binding| yeban_model::SamplerBinding {
+                        path: yeban_model::sampler_path::normalize_sampler_path_for_storage(
+                            &super::sample_roots::library_root(),
+                            &binding.path,
+                        ),
+                    });
                 Op::SetTrackSampler {
                     track_id: *track_id,
                     old_sampler: track.sampler.clone(),
-                    new_sampler: new_sampler.clone(),
+                    new_sampler,
                 }
             }
             NoteOp::SetClipPlacementMuted {

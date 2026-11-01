@@ -316,6 +316,18 @@ pub fn stamp_path() -> PathBuf {
     library_root().join(SAMPLE_LIBRARY_STAMP)
 }
 
+/// 采样器路径存入 `TrackV3::sampler` 之前的归一化（委托模型纯函数）。
+///
+/// 库根取本模块 [`library_root`]（⛔ 不在别处重算 env／平台逻辑）；
+/// 规则见 [`yeban_model::sampler_path::normalize_sampler_path_for_storage`]：
+/// 库根下绝对路径 ⇒ `assets/samples/` ＋ 库根下相对部分，其余原样。
+/// 调用点：CLI（`bridge::instrument_install_ops_on_probed`）与 UI
+///（`host::commit_sampler_binding`）—— 两处共用本包装，⛔ 不各写一份。
+#[must_use]
+pub fn normalize_sampler_path_for_storage(path: &str) -> String {
+    yeban_model::sampler_path::normalize_sampler_path_for_storage(&library_root(), path)
+}
+
 /// 安装戳的**轻量指纹**（长度 ＋ 修改时间；`None` = 戳不存在）。
 ///
 /// 用途：`bridge::installable_builtin_instruments` 的进程内缓存按它失效 ——
