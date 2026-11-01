@@ -1763,6 +1763,15 @@ impl LiveUi {
     /// 这条落 `LiveAdminSurface` 自己的 `dispatch_key_chord_impl`（`.slint` 派发快捷键的
     /// 那个回调 `invoke_key_action`），因为平台事件带不了修饰位。返回值是**界面是否消费**
     /// （`false` = 这一组合没有绑定），⛔ 不是"调用失败"。
+    // ⚠ 与模块头 §1 的取向**相冲**，因此把冲在哪写清楚：§1 说"判据只住一个目标 ⇒ 没人用
+    // 就删"，但那条前提今天已不成立 —— `grep -l 'path = "../src/live_surface.rs"' tests/`
+    // 实测 **28** 个目标装本文件，任何一个目标看不到某条入口都会报 `dead_code`
+    // （CI 实测：`error: method dispatch_key_chord is never used`，红在 `live_ui_mcp` 那份），
+    // `-D warnings` 再把它变成编译失败。处置按本文件的**近例**（`open_project_via_picker`、
+    // `capture` 同款）。⛔ 这不是"藏死代码"：本入口在产品腿
+    // 上有真实调用者 —— `ui/dispatch_key_chord` 经 `LiveAdminSurface::dispatch_key_chord_impl`
+    // 走的就是同一条实现，被装进测试目标时它只是**那个**目标没调它。
+    #[allow(dead_code)]
     pub fn dispatch_key_chord(
         &mut self,
         chord: &yeban_ui_test_port::port::KeyChord,
@@ -2085,6 +2094,11 @@ pub fn build_live_ui_with(
     // （真实指针事件 → Slint 命中测试 → `.slint` 的 `TouchArea` → 宿主写属性）。
     // 只有属性写入 ⇒ 不改工程、不需要 `UndoPort`，装配顺序上也不与撤销端口耦合。
     host::wire_view_callbacks(&window);
+    // ⭐ 左侧资源栏的条目**取数**（分类 / 条目点击 ⇒ 重注入数组）：与产品进程
+    // （`main.rs` 的 `wire_callbacks`）调的是**同一个** `host::wire_sidebar_contents`。
+    // 这里给的是装配视图的快照（与下面 `wire_clip_scope` 的回落同一手法）⇒ 无头端口注入的
+    // 分类点击与用户点击取同一份数、钳同一个区间。
+    host::wire_sidebar_contents(&window, Rc::new(RefCell::new(view.clone())));
     // ⭐ AI 提案抽屉：与产品进程调的是**同一个** `host::wire_proposal_drawer`
     // （`open-musical-pr` 的注册者只有它，因此上一行不再碰这个回调）。来源由装配决定：
     // 接在权威上的装配 ⇒ 打开抽屉时现读权威那份未合并清单；没接权威的装配 ⇒ 空态那句

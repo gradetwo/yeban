@@ -300,7 +300,7 @@ clip_widths / clip_ys / clip_heights` 全部是 `self.clips.iter()` **无过滤�
 | main（docs 批） | `41256461256` / `f6753cc8` | **success**，但 4 跑 5 跳 —— 纯文档批按计划空绿 | ⛔ 只算门禁绿，代码判决承上一行 |
 | sidebar goldens 重录 | `41254412881` | **success** 且 5 张 PNG **sha256 逐张相等** | 基准零变更（§13 已记） |
 | sidebar 判据第一批 | `41253471992` / `1da6ddd5` | **failure**：`391 passed; 1 failed` —— 抽屉单注入判据把 sidebar 本地同名声明 `empty-reason:` 误读为第二注入路径 | 根因修复 `d5ceab0d`：判据只数**实例绑定行**（豁免含 `property <` 的声明行；`MusicalPrDrawer` 全仓唯一实例化在 `app.slint`，真注入仍被抓） |
-| sidebar 重判 | `41256416978` / `d5ceab0d` | 在飞；合流由判决门控的后台流水线执行（绿⇒land⇒push⇒读回⇒拆树） | 结果到达后在本行补记 |
+| sidebar 重判 | `41256416978` / `d5ceab0d` | **success**（判决直读 GitHub）；判据门计数 `Running_tests=276`、`sidebar_category=2`、`sidebar_item=2`、`result_FAILED=0` ⇒ 收紧后的单注入判据在 yeban-app 与 windows 两腿全绿；合流 `983080d2` 已推送并远程确认 | 落地批 main run 读回与拆树见 §16（自动落账） |
 
 ## 15.1 合流流水线的两处判据耦合缺陷（在飞期间热修，2026-11-01）
 
@@ -311,3 +311,40 @@ clip_widths / clip_ys / clip_heights` 全部是 `self.clips.iter()` **无过滤�
 ⛔ 放宽为"看整体 conclusion"）。step6 原判据取 `--limit 1` 的"最新 main run"，与并发推送
 存在竞态；改按**精确 headSha** 定位。教训与 §15 判据误红同族：**任何自动化判据都不许耦合
 作业名/最新性这类会被计划裁剪与并发移动的表面坐标，要耦合就耦合内容（二进制名、SHA）。**
+
+## 16. sidebar 合流收盘（自动落账 2026-11-01，数值现读自流水线日志）
+
+- sidebar 重判 run `41256416978` / `d5ceab0d`：**success**（判据收紧后）。
+- 合流：`worktree.sh land sidebar-library` ⇒ 本地 main tip `983080d2`（与 §15 文档批同车推送）。
+- 落地批 main run `41259186362`：**success**（该 run 含 crates 改动 ⇒ 真腿；空绿不适用）。
+- 拆树：`worktree.sh rm sidebar-library --purge`（留档 tag `line-archive/sidebar-library`）。
+- 至此 zimmer 报告非 MCP 面**全部收盘**：可复现缺口已落地，U-13=A 维持现状，
+  U-09/U-10/U-12/N-UI-2 挂 `ADR-0058/0059/0060` 待人类批准（均 Proposed、零代码）。
+
+## 17. D-UI-4：UI 新建的 MIDI 轨自带一台内置乐器（`ADR-0062`，Proposed，2026-11-01）
+
+**这个数字在数什么**：单位＝**个**，对象＝活窗口里 `instrument-install-*-button` 的实例数。
+现读（`--ui-test-mode` 控制面，`ids("instrument-install-")`）= **0**，面板原因串逐字
+`INSTRUMENT_INSTALL_NO_BUILTIN_REASON`；根因是清单按**样本字节是否存在**过滤，而仓内
+音频样本 **0 个**（`ADR-0055` 同一读数）。⇒ 只用鼠标/键盘的用户建出的 MIDI 轨
+`TrackV3::default()` ⇒ `devices` 为空 ⇒ 引擎侧 `DeviceTone::is_source()` 判不出音源 ⇒
+`bypass()` ⇒ **画满音符仍然静音**（路由边、电平表、推子全部"看起来在工作"）。
+
+**落点**：`src/bridge.rs`（`BUILTIN_INSTRUMENT_NAME` / `BUILTIN_INSTRUMENT_PARAMS` /
+`builtin_instrument_device()` ＋ `track_create_ops` 对 `NewTrackKind::Midi` 追加一条
+`Op::InsertDevice{slot_index: 0}`）、`src/host.rs`（手势表同步）。⛔ 不新增控件：
+不想要就走**既有** `device-{i}-remove-button`；一次点击仍**恰好一次** `commit_ops`
+（同一批 Op 多一条 ⇒ Undo 一步复原）。
+
+**判据**：`tests/track_routing_crud.rs` ①（设备数/种类/非旁通/`latency_samples==0`/含音源键/
+九个键名逐条过引擎 `is_consumed_instrument_param`）＋ 新增 ①b（音频轨 `devices` 仍为空）。
+
+**被本票改写的既有假设（如实登记）**：`tests/device_clip_creation.rs` 判据 ⑦
+"建轨 → 装 EQ" 之后设备链原为 `[EQ]`，现为 `[内置合成器, EQ]`（`device_insert_ops`
+一直是**追加到链尾**，`slot_index = len`）⇒ 断言改为数量 2 ＋ 顺序，⛔ 不是把判据放宽。
+
+**残留风险（不在本票解决）**：默认音色的九个**值**写在 `bridge.rs`，是引擎
+`CONSUMED_INSTRUMENT_PARAMS` 之外的第二份表（键名有判据钉住，**值**没有契约位）；
+上提到共享契约属账本 `S6`（那份契约的家今天还在 `yeban-mcp`）。
+
+**判决读回**：待本批 CI run 读回后在此行补 `run / headSha / conclusion / Running 计数`。
