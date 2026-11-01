@@ -831,6 +831,12 @@ impl LiveAdminSurface {
     /// 两条路**不会**同时发生：有权威时**不**调用本地路径，权威拒绝时**不**回退到本地路径
     /// （回退会把"权威说不能写"变成一个偷偷写盘的分支）。因此"保存"这个动作在两种装配下
     /// 各自只有一个落点，且挂载时那个落点是会话。
+    ///
+    /// ⭐ 本地那条腿再分两种（缺陷 `D-UI-1` 的同一次修复）：装配给了**本地撤销端口**时，
+    /// 落盘的字节取自端口的当前工程（`UndoPort::try_project`，与生产心跳的发布来源同一个
+    /// 读数）—— 注入手势改的是端口，`self.project` 只是装配缓存，写它等于丢编辑。
+    /// 没有端口时本执行面就是唯一持有者，照旧写缓存。读数进
+    /// `savedFromUndoPort`（`bool`），因此"这一版到底从哪儿来"是可断言的而不是注释。
     fn save_now(&mut self) -> Result<(), PortError> {
         let Some(path) = self.save_path.clone() else {
             // 没有配置落点 = 这条能力在**这个装配上**没接线 ⇒ `-32005` 是诚实的。
@@ -870,11 +876,16 @@ impl LiveAdminSurface {
         // `wire_*` 的提交只走 `commit_ops → refresh_undo_window`（重投影窗口，不换
         // `self.project`）⇒ 按旧缓存写盘会把注入的编辑静默丢掉（比「什么都不发生」
         // 更坏）。端口没有活跃工程时回落到缓存（服务端装配恒有工程，此分支只防退化）。
-        let (save_source, written_from_undo_port) =
-            match self.undo.as_ref().and_then(|port| port.try_project()) {
-                Some(project) => (project, true),
-                None => (self.project.clone(), false),
-            };
+        // `D-UI-1` 追加的一拍：取到端口那一版时**同时**投影进界面 ⇒ 画面 / 控件树 /
+        // 磁盘同源（只写盘不重投影的话，保存成功了界面还挂在旧缓存上）。
+        let from_port = self.undo.as_ref().and_then(|port| port.try_project());
+        let (save_source, written_from_undo_port) = match &from_port {
+            Some(project) => {
+                self.apply_project(project).map_err(wiring_rejected)?;
+                (project.clone(), true)
+            }
+            None => (self.project.clone(), false),
+        };
         let saved = save_project_file(&save_source, &path).map_err(|error| match error {
             SaveError::Container(inner) => PortError::Rejected {
                 message: format!("容器写出被拒绝: {inner}"),

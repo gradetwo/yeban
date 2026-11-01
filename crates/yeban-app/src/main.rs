@@ -312,10 +312,7 @@ fn run_gui(options: &Options) -> Result<Vec<String>, cli::CliError> {
         .map_or(0, |elapsed| {
             u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX)
         });
-    let undo_source = match &loaded.source {
-        cli::ProjectSource::File { path, .. } => path.display().to_string(),
-        cli::ProjectSource::Sample(sample) => format!("sample:{}", sample.name()),
-    };
+    let undo_source = loaded.undo_source();
 
     // `[ROAD-M4-001]` 形态 A：把领域 MCP 的环回 HTTP 控制面挂进**本进程**。
     // 两道开关都在里面判：编译期是 `--features in-process-mcp`（这个 `cfg`），
