@@ -43,7 +43,7 @@
 //! | ② | serve 装配（`build_live_ui_with` + 带端口的选项）上，一次**真指针事件**点 `track-1-header` ⇒ `selected-track-id` 变成第 2 条轨的身份、投影的设备链标题跟着走，且 `commit_count` Δ0 | 用户点行与注入点行同一条链；选中⛔ 不是工程编辑 | 默认档 |
 //! | ③ | 同一次装配上先点行、再点 `clip-create-button` ⇒ 新摆放落在**被选中的那条轨**上，第 1 条轨的摆放数一位不动 | 直接钉住创作时撞上的症状（"15 颗全在第 1 条轨"） | 默认档 |
 //! | ④ | 同一装配上 `Alt+↓` 真的把选中态推到下一条轨（`consumed` 与状态**同时**成立） | 把 C 那一格（"说消费、没动"）钉死 | 默认档 |
-//! | ⑤ | 同一装配上按住行头向上拖 30 px ⇒ 那一行的注入行高**正好**长 30 px，且拖拽态两位（进行中 / 收尾清零）分别成立 | 行高这一条同样漏接的入口（`wire_track_height_drag`）；两位状态读数把"回调没转发"与"收尾没做"分开 | 默认档 |
+//! | ⑤ | 同一装配上按住行头**在本行内**向上拖 `rise` px ⇒ 那一行的注入行高**正好**长 `rise` px，且拖拽态两位（进行中 / 收尾清零）分别成立 | 行高这一条同样漏接的入口（`wire_track_height_drag`）；两位状态读数把"回调没转发"与"收尾没做"分开 | 默认档 |
 //!
 //! ## 若变红，怎么读
 //!
@@ -572,14 +572,25 @@ fn dragging_a_track_header_resizes_that_row_on_the_serve_surface() {
         w > HEADER_SAFE_X && h > 0.0,
         "轨道行几何不可用: {hx},{hy} {w}x{h}"
     );
+
+    // ⚠ 位移量必须**留在这一行内**，而且这是本判据的边界，不是巧合：
+    // 按下点在行中 ⇒ 向上的可用行程只有 `h/2`（实测行高 54 ⇒ 27 px）。
+    // 无头注入的 `ui/dispatch_pointer_move` 带的是**窗口绝对坐标**，事件按"当前落点
+    // 命中谁"归属；跨元素之后是否还保持按下那一刻的捕获 = **未证**（真实 winit 路径由
+    // Slint 自己抓指针，两条路不是一条，⛔ 不拿一条的存在去推另一条）。
+    // 因此这里取 `h/2 - 4`：留在行内、又足够大到一个像素格以上。
+    // 首版在这里写了"向上 30 px"（超出 `h/2`），CI 红在"高度一位没动"上 ——
+    // 那一条红**不能**读成"行高拖不动"，它读的是"指针离开了这一行"。
+    let rise = h / 2.0 - 4.0;
+
     rig.tap_start("track-1-header", HEADER_SAFE_X, h / 2.0);
     assert!(
         rig.drag_state().0,
         "按下后手势必须处于进行中（`.slint` 的 down → `track-height-grab` 转发了）"
     );
 
-    // 向上拖 30 px（Slint 的 y 轴向下 ⇒ 绝对 y 减小 = 变高）。
-    rig.pointer_move(hx + HEADER_SAFE_X, hy + h / 2.0 - 30.0);
+    // 向上拖 `rise` px（Slint 的 y 轴向下 ⇒ 绝对 y 减小 = 变高）。
+    rig.pointer_move(hx + HEADER_SAFE_X, hy + h / 2.0 - rise);
     rig.pointer_up();
 
     let (active, track) = rig.drag_state();
@@ -596,8 +607,8 @@ fn dragging_a_track_header_resizes_that_row_on_the_serve_surface() {
         "⛔ 一次行高手势不许改动行数（那是另一条链：`track-names` 的增删）"
     );
     assert!(
-        (after[1] - before[1] - 30.0).abs() < 1.0,
-        "向上拖 30 px ⇒ 第 2 行的矩形高必须长 30 px（乘子 100 时无损），实得 \
+        (after[1] - before[1] - rise).abs() < 1.0,
+        "向上拖 {rise} px ⇒ 第 2 行的矩形高必须长 {rise} px（乘子 100 时无损），实得 \
          {before:?} → {after:?}"
     );
     assert_eq!(
@@ -606,7 +617,24 @@ fn dragging_a_track_header_resizes_that_row_on_the_serve_surface() {
     );
 
     println!(
-        "[D-UI-11 ⑤] drag -30px ⇒ row1 {}→{}（其余 {before:?} → {after:?}）",
+        "[D-UI-11 ⑤] in-row drag -{rise}px ⇒ row1 {}→{}（其余 {before:?} → {after:?}）",
         before[1], after[1]
     );
+
+    // ---------------------------------------------------------------------
+    // 边界**观测**（⛔ 不是判据）：把指针拖出这一行之后，无头面还认不认这次捕获。
+    // 记下来是为了让报告能说清"行内可测"与"跨元素未证"这两件事的界线，
+    // 而不是把一次红误读成产品缺陷（首版就误读过一次）。
+    // ---------------------------------------------------------------------
+    rig.tap_start("track-1-header", HEADER_SAFE_X, h / 2.0);
+    rig.pointer_move(hx + HEADER_SAFE_X, hy - 10.0); // 行上沿以外
+    rig.pointer_up();
+    let outside = rig.heights();
+    println!(
+        "[D-UI-11 ⑤ 观测] 拖出该行上沿（绝对 y = {hy}-10）⇒ 行高 {} → {}（\
+         跨元素捕获在本面**未证**，故不断言）",
+        after[1], outside[1]
+    );
+    // 收尾：观测那一次拖拽**不许**把状态留在"进行中"（那是 `ADR-0004` 的粘住防线）。
+    assert!(!rig.drag_state().0, "观测手势收尾后 `drag-active` 必须为假");
 }
