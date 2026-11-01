@@ -167,6 +167,11 @@ jobs:
       - name: 项目 schema 词表对账 (模型枚举 == project.schema.json 的三处 enum)
         run: python3 scripts/guards/check_project_schema_vocabularies.py
 
+      # s37：守卫光"进 CI 且对好输入绿"只证了半条 —— 另一半是**对坏输入会红**。
+      # 这条把"手工试一次"变成常驻规格（台账 §22.34）。⚠ 同样必须逐条直调（§22.6）。
+      - name: 守卫牙齿自检 (每枚 check_*.py 对故意做坏的输入必须报红)
+        run: python3 scripts/guards/check_guard_teeth.py
+
       - name: JSON Schema 契约 (schema 自身合法性)
         run: |
           set -euo pipefail

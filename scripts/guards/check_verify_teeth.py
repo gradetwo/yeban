@@ -81,7 +81,15 @@ def check_stdio(problems: list[str]) -> list[str]:
             "⇒ 判据被删或被打字取代",
         )
     for name in CRITERIA_NAMES:
-        if name not in text:
+        # ⛔ 子串判名（旧写法 `name not in text`）实测漏判：把名字改成 `原名_renamed` 时原名仍是
+        # **前缀**，子串照在 ⇒ 守卫对它名义上防的"名字漂移"看不见。由 s37 牙齿自检
+        # （`check_guard_teeth.py` 的「判据名字被改名」规格）抓到。
+        # 规则取"名字必须以闭引号收尾"：两份脚本里的判据名都是标签字符串的**最后一段**
+        # （`"two_renders_are_byte_identical"` 与循环里的 `f"render{ident}_every_asset_..."`），
+        # 所以右边界是 `"`；左边界**故意放宽**，因为循环标签就是靠 `_` 前缀合成的。
+        # ⚠ 已知不覆盖：给名字**加前缀**（`x_原名"`）仍算在册 —— 要收紧就得把循环标签的
+        # 合法前缀形态抄进守卫（第三份手抄），代价大于收益，登记不补齐。
+        if re.search(rf"{re.escape(name)}\"", text) is None:
             fail(problems, f"判据 `{name}` 不在 stdio 脚本里 —— 名字漂移或被掏空")
     if "sys.exit(1)" not in text:
         fail(problems, "stdio 脚本没有 `sys.exit(1)`：任一判据为红也会 0 退出 ⇒ e2e 腿静默变绿")
