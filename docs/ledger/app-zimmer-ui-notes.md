@@ -482,3 +482,41 @@ main 在这期间把 `0061/0062/0063` 分别给了乒乓延迟／磁带饱和／
 
 **备份**：rebase 前的 tip 记在 `backup/pre-rebase-zimmer-ui` = `82cd7166`（⛔ 不删，
 新分支若判红要能逐字回到旧形状）。
+
+## 20. D-UI-9：状态栏的保存回执**人看得见、自动化读不出**（2026-11-01）
+
+**这个数字在数什么**：单位＝**个字符**，对象＝活窗口里 `ui/property("status-bar-save-status", …)`
+两种属性名各自读回的长度。现读：`label` → **11** 个字符（`最近一次保存工程的结果`，静态句），
+`value` → 修复前为 `null`（该节点没声明绑定状态）。修复后能读回多少字符**尚未实测**
+（要等含本票的二进制跑一次活体，或等判据 ③ 的 CI 回执）⇒ 这里⛔ 不写数字。
+
+**症状**（第二首曲子的收尾撞上）：真指针按「保存」后磁盘确实写了（容器 1187 → 510,010 字节，
+`mtime` 前进），脚本却判红 —— 因为断言写的是"回执必须以『已保存』开头"，而它读到的是那格
+**静态**的 `accessible-label`。这不是脚本笨：是控制面**给不出**人看见的那句话。
+
+**根因**（两条，都不在命中测试也不在权限）：
+1. `ui/status_bar.slint` 的回执文本只绑在 `text: root.save-status`，`accessible-label` 是
+   恒定的说明句（屏读器念它，⛔ 不该把它当读数）；
+2. 控制面的属性清单（`yeban-ui-test-port::inspect::property_of`）支持
+   `role/label/id/type/x/y/width/height/opacity/valid/value/checked` —— **没有**"读 `text` 内容"
+   这一格；而它下面那层 `ElementHandle`（`i-slint-backend-testing` 1.18.1）逐条枚举
+   （`search_api.rs:607..803`）确实**没有** `accessible_name()`，⛔ 不能凭空实现。
+
+⇒ 与 `engine_error_banner.rs` / `sfz_ui_selector.rs` 用的是**同一格既有通道**：把要给人读的话
+再声明成 `[ARCH-UI-004]` 的绑定状态 `accessible-value`。修复＝ `status_bar.slint` 一行
+（`accessible-value: root.save-status;`）＋为什么写在该行上方。⛔ 不新增方法、不新增属性名、
+不动端口与协议 —— 于是 `ui/property` 与 `ui/node` 的 `value` **同时**通（两者同源于
+`ElementHandle::accessible_value()`，见 `inspect.rs:186`）。
+
+**判据**：`d_ui_8_serve_save_gesture.rs` 加**判据 ③**（手动档 `all-features`）—— 同一次点击之后，
+`ui/property(…, "value")` 与 `ui/node` 的 `node.value` 都必须**逐字等于** Rust 侧的
+`window.get_save_status()`；走的是与创作脚本**同一个** JSON 行协议（⛔ 留 Rust 后门 = 判据绿而脚本仍读不出）。
+反证：摘掉那行 `accessible-value` ⇒ 读回 `""`，红在 ③ 的第一格。
+
+**创作侧同步**：`compose_ui.py` 的 `stage_save` 从 `label` 改读 `value`，并把"读不到"的报文
+分写成两种（① 二进制早于本修复：节点在树里但 `value` 为 `null`；② 保存腿没接：节点整个不在树里），
+⛔ 不再把两种原因混成一句"D-UI-8 回来了"。
+
+**判决**：`pending` —— 本票推送后按 §6.3 逐票读回（自动档 + 手动档 `all-features (yeban-app)`）。
+创作用的 arm64 二进制必须由**含本票**的构建分支产出（⛔ 拿 rebase 前的 `9db61c4b` 那份跑，
+`stage_save` 会红在 ① 那种情形）。

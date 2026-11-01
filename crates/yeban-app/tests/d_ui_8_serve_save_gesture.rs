@@ -25,6 +25,7 @@
 //! | :--- | :--- | :--- | :--- |
 //! | ① | `src/live_surface.rs` 里有 `host::wire_save(` 这一次注册，且本档的对话框腿是 `NoPicker`；`ui/force_save`（一条**命令**）不许被当成"人能按的保存" | 装配里确实存在保存腿；⛔ 拿命令冒充手势 | 默认档（读源码，不编译 Slint） |
 //! | ② | 端到端：`serve_wiring` 那**一份**选项装配活窗口 → 点 `track-create-midi-button`（真指针，轨数 +1）→ 点 `transport-save-button`（真指针）⇒ 磁盘上的容器读回轨数 +1 且 `history_dag` 非空；`save-status` 写了原话、`save-succeeded == true`；`status-bar-save-status` 进树而 `status-bar-shortcut-tip` 出树 | 保存按钮与用户点的是**同一条**链（写的是**此刻**的活会话，不是装配快照），并且回执**在人看得见的地方** | 手动档 `gates-manual.yml` 的 `all-features`（`ui-mcp-http` 不在自动档特性清单里） |
+//! | ③ | ⭐ `D-UI-9`：同一份回执必须**从控制面读得回来** —— `ui/property(status-bar-save-status, "value")` 与 `ui/node` 的 `node.value` 都**逐字等于** `window.get_save_status()`（载体是 `ui/status_bar.slint` 上新加的 `accessible-value: root.save-status`） | 人看得见 ≠ 自动化读得到：`accessible-label` 是静态说明句，而上游 `ElementHandle`（i-slint-backend-testing 1.18.1）**没有** `accessible_name()` ⇒ 不声明绑定状态时脚本只能"看见这格出现了"，读不出它写了什么 | 同上（`all-features`，走真 JSON 行协议，⛔ 不走 Rust 侧后门） |
 //!
 //! ## ② 若变红，怎么读
 //!
@@ -33,6 +34,15 @@
 //!   那是另一件事，且界面这次**说得出**它；
 //! - 红在磁盘 +1 而 `status-bar-save-status` 不在树里 ⇒ 回执没进界面属性（`ROAD-M4-008`
 //!   的那条承诺，与 `production_save_ui.rs` 判的是同一格）。
+//!
+//! ## ③ 若变红，怎么读
+//!
+//! - 红在 `ui/property` 报**未知属性** ⇒ 属性名写错了（`value` 在支持清单里，见
+//!   `yeban-ui-test-port::inspect::property_of`），与界面无关；
+//! - 红在读回 `""` 而 `save-status` 有原话 ⇒ `.slint` 那条 `accessible-value` 被摘掉了
+//!   （缺陷以另一个 id 回来：节点在树里、文本读不出）；
+//! - 红在 `ui/property` 对而 `ui/node` 的 `value` 为 `null` ⇒ 两个通道各自实现了一份，
+//!   ⛔ 只修一个（它们必须同源于 `ElementHandle::accessible_value()`）。
 //!
 //! ## 平台约束
 //!
@@ -214,6 +224,43 @@ fn a_real_click_on_the_save_button_lands_the_live_project_on_disk() {
         !has_element(&mut plane, 51, "status-bar-shortcut-tip"),
         "两格共用同一块宽度：写了回执 ⇒ 提示格必须让位（同一时刻只有一个在画）"
     );
+
+    // 5a'. ⭐ 缺陷 **D-UI-9**：回执**文本**本身必须是自动化读得出的东西（不是只有「这格出现了」）。
+    // `label` 是静态说明句，上游 `ElementHandle`（i-slint-backend-testing 1.18.1）**没有**
+    // `accessible_name()` ⇒ 唯一诚实的通道是把它再声明成 `[ARCH-UI-004]` 的绑定状态。
+    // 这里走的是与创作脚本**同一个** JSON 行协议（⛔ 不碰 Rust 侧的 `window.get_*`）。
+    {
+        use serde_json::json;
+        use yeban_ui_mcp::live::request_line;
+        let via_property = plane.plane().try_line(&request_line(
+            52,
+            "ui/property",
+            Some(json!({ "elementId": "status-bar-save-status", "name": "value" })),
+        ));
+        assert!(
+            !via_property.is_error(),
+            "`ui/property(..., \"value\")` 必须读得到（读不到 = 这一格没声明绑定状态）: {via_property:?}"
+        );
+        let read_back = via_property.result.expect("有 result")["value"]
+            .as_str()
+            .unwrap_or_default()
+            .to_owned();
+        assert_eq!(
+            read_back, status,
+            "控制面读回的 `value` 必须逐字等于人看见的那句回执 —— \
+             读不回文本时脚本只能「看见有一格」，看不见写了什么（D-UI-9）"
+        );
+        let via_node = plane.plane().try_line(&request_line(
+            53,
+            "ui/node",
+            Some(json!({ "elementId": "status-bar-save-status" })),
+        ));
+        assert_eq!(
+            via_node.result.expect("有 result")["node"]["value"].as_str(),
+            Some(status.as_str()),
+            "`ui/node` 的 `value` 字段必须同样带回那句回执（两个通道同一个来源，⛔ 只修一个）"
+        );
+    }
 
     // 5b. 磁盘：写出去的是**此刻**的活会话（轨数 +1、图谱非空），不是装配快照。
     let disk_after = on_disk(&target);
