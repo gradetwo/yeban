@@ -273,3 +273,10 @@ conclusion=**success**，`goldens` 作业实跑 23:56:23Z–00:00:37Z（≈4m14s
 
 ⇒ zimmer 报告面的 UI 项至此**全部收口**：可复现功能缺口全部已落地（§11/§12），U-13 有了人类姿态裁决
 （维持现状），其余四项**逐条登记为待人类裁决**——自主可做的 UI 功能切片仍为**零**，且不虚构。
+
+**登记升级（同批）**：`U-12` 与 `N-UI-2` 从"本台账一句话"升格为**可批可驳的正式票**——
+`ADR-0059`（主总线自动化泳道：A 维持排除／B 放开可编辑／C 只读显示；现读 `automation.rs` 的
+`filter(!= master_bus_track_id)` 与模块注释"判据断言跳过是有意的"）与 `ADR-0060`（循环重复 UI 表示：
+A 维持／B ×N 徽标／C 区间分割／D 可编辑循环区；现读 `yeban-model/src/loop_plan.rs` 的
+`ClipPlacement::loop_repeat()` 为唯一真相、三处共用），均 `Proposed`、零代码、已入 `docs/adr/README.md` 索引。
+U-09/U-10 的正式票即既有 `ADR-0058`；U-13 的正式票即既有 `ADR-0052`（待其提出方按本批裁决翻 `Accepted`）。
