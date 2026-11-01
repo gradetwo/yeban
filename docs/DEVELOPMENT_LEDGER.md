@@ -17755,3 +17755,44 @@ helper 里 ⇒ 必须不认（防假绿）。两条臂在旧实现上都会失�
 - ⭐ **`gh run watch` 的退出码只能在"它是作业里最后一条命令"时读**：本轮把它包进 `$( … )`／接了管道，退出码被吞，于是"watch 返回 0"这个**最便宜的 success 读数**丢了，只能回头再下一遍日志。后台收口作业 = 一条 `gh run watch <id> --exit-status >日志 2>&1`，⛔ 后面不再挂任何命令。
 - **树已拆**：`worktree.sh rm s32-automation-roster --purge` ⇒ 自动补归档标签 **`line-archive/s32-automation-roster @ 56a8ec0b`**（先保全再删），本地分支 `line/s32-automation-roster` 删除。
 - **树况**：`git worktree list` 现读两棵（主干 `0150cb2e` `git status --porcelain` 空 + `.worktrees/s33-merge-roster`）；s33 线（`c1ad2b1d`，run 在飞）已推 `line/s33-merge-roster`。task #107 收盘、#108（s33）在飞。
+
+### 22.33 ⭐ s33 判绿收盘（线两枚：`c1ad2b1d` = **failure** → 修复批 `e897c5b0` = **success**）：三处裸 `data.merge` 变成一份名册喂四处 ＋ ⛔ `validate` 的 Ok 侧是 `()`（E0609 只可能在 CI 露头）
+
+- **线判决链（单位：一枚 commit = 一个 run，各自读回自己的 `conclusion`）**：
+  `c1ad2b1d`（名册与判据主体）的 run **`41267134766`** = `completed / **failure**`，红只在一处语义：
+  `clippy (-D warnings)` 报 **`E0609: no field 'path' on type '()'`**（`crates/yeban-mcp/src/output_schema.rs:3094`），
+  三腿同红（窄腿 `rust (yeban-mcp)`、`windows`、`macos`）⇒ ⛔ 不必下日志猜别的，"三腿同一处编译错"这个形状就是读数本身。
+  修复批 `e897c5b0` 的 run **`41267522810`** = `completed / **success**`：九条腿里 `checks` 19 步／`e2e`／`deny`／`lockfile`／`plan`／`rust (yeban-ui-mcp)` 全真跑，
+  `rust (yeban-mcp)` 步骤级 `clippy (-D warnings)`／`test`／`test (doctests)`／`clippy (合并特性)`／`test (合并特性)` **逐条 `success`**（⇒ E0609 已消），
+  `rust (workspace 全量)` = `skipped`（`plan` 给窄集合）⇒ ⛔ 本轮同样不引用全量基线那组数。
+- **验收读数（`rust (yeban-mcp)` 腿，单位：数该腿日志里判据**名**作为子串出现的次数；`test result:` 行与 `FAILED` 行按整行数）**：
+  三条 s33 新判据 `the_three_merge_slots_share_one_roster_and_omit_commit_model`／`the_merge_slot_rejects_the_idempotent_shape_and_broken_values`／
+  `the_broadcast_merge_slot_validates_the_real_auto_merge_receipt` **各 2 次**（缺省 feature 档 + 合并特性档各一次 ⇒ "两种组合都成立"，⛔ 不是重复计数）；
+  s30/s31/s32 的三条老判据**各 2 次**在场（回归没被顺序挤掉）；聚合 `test result:` **149** 行／`FAILED` **0** 行／`passed` 合计 **`2,730`**。
+  ⭐ 这个合计**与 §22.32 的改正口径连续可比**：s32 腿 = `2,724`，s33 腿 = `2,730`，差的 **6** = 新增 **3** 条判据 × **两**档 ⇒ 单位一致才敢做减法。
+  `tests/props_176.rs`（用真实回执跑 `validate_complete` 的二进制）与 `tests/auto_merge.rs` 各 **2** 次在场 ⇒ 名册是被真回执读到的，不自证。
+- ⛔ **「下载不到日志 ≠ 没跑到」第二次遇到，且这次是新的形态**：run 级 `in_progress` 时 `gh run view --job <id> --log` **照样拒绝**
+  （实测 `run 41267522810 is still in progress; logs will be available when it is complete`），⚠ **哪怕目标那条腿早已 `success`**
+  ⇒ 拒绝的粒度是 **run**，不是 job。所以"窄腿步骤级全 `success`"（`/actions/runs/<id>/jobs` 的 `steps[].conclusion`）是收口前**唯一**可用读数；
+  要判据名就必须等 run 收口。⛔ 别把这两件事混成一条口径。
+- **交付内容**：§0.6.0zl 那张前置读数变成契约 —— 三个提案类工具里 `data.merge` 的**三处**裸 `{"type":"object"}`
+  填成一份 `merge_shape_properties()`（顶层 **7** 键：`merged`／`alreadyMerged`／`appliedOps`／`baseCommitMoved`／`projectDigest`（`["string","null"]`，生产者 `map_or(Null, …)` 是真话）／`commit`／`proposal`）
+  ＋ `merge_shape_roster()`（`required` = 同 **7** 键，因为那一槽装的是本次刚创建、状态恒 `Open` 的提案 ⇒ 幂等短形状在这条路径上不可达）；
+  `commit` 内层 **8** 键首次逐键声明；`proposal` **复用**现成的 `proposal_detail_schema()`（⛔ 第四份手抄）。
+  两处判据：`the_three_merge_slots_share_one_roster_and_omit_commit_model`（三槽逐字节同源 + `merge ∉ required` + `commitModel` 只注入**外层** + 防掏空下界 7/7/8）与
+  `the_merge_slot_rejects_the_idempotent_shape_and_broken_values`（幂等短形状必红 + 破损值逐路径点名）。
+- ⛔ **本批最值的一条实现教训**：`pub fn validate(&Value,&Value) -> Result<(), Violation>` 的 **Ok 侧是 `()`** ⇒
+  小工具里写 `validate(...).err().unwrap()` 之后想拿 `.path`，只能从 **Err 侧**取（`validate(...).err().unwrap_or_else(|| panic!(…))`）；
+  写成 `validate(...)?` 或直接对 Ok 侧取字段就 E0609。`yeban-mcp` **不在本地编译**（AGENTS.md §5：本机禁 `--workspace` 与重依赖构建，`cargo fmt` 是唯一本地语法证明）
+  ⇒ 这类错**必然**要等 ~4 分钟 CI 才露头；⛔ 判据小工具的 Ok/Err 侧类型要当场核，别指望本机。
+- **合流 run（`41270300591`，headSha `e3ecf1ec`）读数**：`completed / **success**`，十条作业里 **9 条 `success`**（`checks` 19 步／`deny`／`lockfile`／`plan`／`e2e`／`rust (yeban-mcp)`／`rust (yeban-ui-mcp)`／`windows`／`macos`）＋ `rust (workspace 全量)` = `skipped`。
+  `plan` 现读 = `"crates": ["yeban-mcp","yeban-ui-mcp"]` + `workspace_wide: false` ⇒ ⛔ 宽腿没开，本轮同样不引用全量基线那组数。
+  ⭐ **合流腿与线腿逐字节同读数**（同一 unit 重测）：三条 s33 判据各 **2** 次、s30/s32 的两条老判据各 **2** 次在场、`test result:` **149** 行／`FAILED` **0** 行／`passed` 合计 **`2,730`**
+  ⇒ "落地批把名册原样带进 main"这条只能由**两枚 run 同读数**证明，⛔ 不能只读合流那一枚就声称线判决过。
+- ⛔ **一处提交标题手误留痕**：上一节那批的 `cb229821` 标题把 **`s31 腿`** 写成了 **`s14 腿`**。已推送 ⇒ ⛔ 不 force-push 改写历史，在此登记，引用那条提交时以 **s31** 为准。
+- **下一批的边界已由现读盘点定死**（单位：数同一大括号内没有 `properties`/`items` 的裸槽行）：`output_schema.rs` 剩 **7** 处裸 object
+  （`edit_automation` 的 `target`/`lane.domain`/`written` ＋ `query_engine_state` 的 `track`/`stateSources` = task **#109**；
+  `:432` `proposal_detail.ops` 与 `:1650` `unsupportedCounts` = ⛔ 等 §22.22 路线甲）**＋ 14** 处裸 array
+  （`propose_section`/`edit_notes` 两份同构 `willCreate` 的六键 = task **#110**，生产者唯一：`section_build.rs:3198 summarize_ops`；
+  `edit_automation` 的 `read.values`/`valuesAfter` 归 #109）。⇒ **#109 + #110 做完，机器可填的裸槽就见底了**。
+- **树况**：合流 `e3ecf1ec` 判绿后 `worktree.sh rm s33-merge-roster --purge`（归档标签自动生成）⇒ 本机只剩主干一棵树。task #108 收盘；#109/#110 已登记并串上依赖（两票都写 `output_schema.rs` ⇒ 一树串行，⛔ 并行）。
