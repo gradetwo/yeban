@@ -584,6 +584,9 @@ fn b6_the_bus_convolution_tail_is_audible() {
 /// 作为裁决里"缓存翻倍"的量化背景。
 /// ⭐ 任务单 `#299` 的**代价**：`EngineSnapshot` **4576 → 4608 B**（＋32）——
 /// 主总线声相两个 `f32`（＋8）＋ 与 `routing.slots()` 平行的 `Vec<BusOutputStage>`（＋24）。
+/// ⭐ 七支合入后为 **4656 B**（＋48）——侧链 v1 给 `RoutingPlan` 新增 `key_routes` 与 `key_sources`
+/// 两个 `BTreeMap` 字段（各 24 B）；快照字段表本身未变，`PdcPlan`／`PanLaw` 在合入里无改动，
+/// 差值与两表之和精确对应。
 /// `EngineRuntime` **不变**（`#299` 当时仍是 186720 B）：新增的两个主总线声相 `f32` 落在既有对齐填充里。
 /// 分项：`Vec` 只是三个词（ptr/len/cap），真实表在堆上（每条总线 12 B，≤16 条 ⇒ ≤192 B），
 /// 与 `track_scratch` / `routing_buses` 同一条"构造期预分配、回调零分配"纪律。
@@ -611,8 +614,8 @@ fn b5_sizes_stay_under_the_192_kib_red_line() {
          `strip_output_gain_events` / `strip_output_gain_value_rejects`；见本判据文档）"
     );
     assert_eq!(
-        snapshot, 4_608,
-        "EngineSnapshot 必须是 4608 B（#299：主总线声相 2×f32 ＋ 总线 stage Vec ＝＋32；\
+        snapshot, 4_656,
+        "EngineSnapshot 必须是 4656 B（#299 的 4608 ＋ 侧链 v1 的 48：RoutingPlan 新增 key_routes 与 key_sources 两个 BTreeMap，各 24 B；\
          见本判据文档）"
     );
     assert_eq!(voice, 40, "SfzVoice 必须仍是 40 B");

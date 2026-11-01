@@ -485,7 +485,7 @@ fn the_shape_costs_are_read_not_hand_written() {
          见 `tests/bus_insert.rs` 的 B5）"
     );
     assert!(
-        (4_496..=4_608).contains(&snapshot),
-        "EngineSnapshot 只许为一个 BTreeMap 字段增长（实测 {snapshot} B；门槛不是本单的约束，但⛔ 不许长出重数据）"
+        (4_496..=4_656).contains(&snapshot),
+        "EngineSnapshot 上限随侧链 v1 放宽到 4656（4608 ＋ RoutingPlan 新增 key_routes／key_sources 两表各 24 B；实测 {snapshot} B；门槛不是本单的约束，但⛔ 不许长出重数据）"
     );
 }

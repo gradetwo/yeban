@@ -941,8 +941,8 @@ fn every_gain_eq_filter_field_gives_the_same_master_in_both_exports() {
             .expect("appliedDeviceParamNames");
         assert_eq!(
             listed.len(),
-            70,
-            "MCP 名单必须逐条来自 yeban-render（70 个拼写：41 通道条（含压缩）+ 6 混响 + 8 卷积 + 15 延迟）: {data}"
+            80,
+            "MCP 名单必须逐条来自 yeban-render（80 个拼写：41 通道条（含压缩）+ 6 混响 + 8 卷积 + 15 延迟 + 10 磁带（含不对称 2））: {data}"
         );
         for name in [
             "output_gain_db",
