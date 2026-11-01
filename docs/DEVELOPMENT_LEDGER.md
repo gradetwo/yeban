@@ -17710,6 +17710,15 @@ helper 里 ⇒ 必须不认（防假绿）。两条臂在旧实现上都会失�
   （它从下一个 `{` 起算），手工数生产者仍是 3 / 2，与名册一致 ⇒ **报告的 DIFF 要先复现再定性**，⛔ 别照着它改契约。
 - ⭐ **落地时发现本地 main 不是远端 main**：`git worktree list` 干净、`git status` 干净，但 `origin/main` 已被别的线推到 `93ee8eb3`（`merge(adr-drawer-keyboard)`，run `41251045953` success）。
   先 `git fetch` + `git merge --ff-only origin/main`，再 `--no-ff` 合 s31 ⇒ 纪律一句：**推 main 之前先比 `main` 与 `origin/main` 两个 40 位 SHA**，⛔ 别假设"我上次推的就是 tip"。
+- ⭐ **s31 合流 run `41253109997` = `completed / success`（2026-11-01 读回，补账）**：headSha 现读 = `f8ad60bc`
+  （= `--no-ff` 合并 s31 的 `ebee605b` 之上**一枚**文档批 `93ee8eb3..f8ad60bc` 共三枚提交）。
+  九条腿全 `success`（`plan`／`lockfile`／`deny`／`checks`／`e2e`／`macos`／`windows`／`rust (yeban-ui-mcp)`／`rust (yeban-mcp)`），
+  主判据腿 `rust (yeban-mcp)` **15 步**、耗时 **18:39**（23:34:56 → 23:53:35，非 0s ⇒ 真跑）；
+  `rust (workspace 全量)` = `skipped` —— ⭐ **新读数**：这批里根级只改了 `docs/**`，而 `plan` **不因 `docs/**` 开宽腿**
+  （§22.30 那条"根级改动 ⇒ 宽腿真跑"的成因是 `schemas/` 与 `scripts/gates/`，⛔ 不是任何根级文件）。
+  ⇒ 本轮同样⛔ 不引用 `518 / 7 243` 那组全量基线。
+- **树已拆**：`worktree.sh rm s31-render-rosters --purge` ⇒ 自动补归档标签 **`line-archive/s31-render-rosters @ 25a767cb`**（先保全再删），
+  本地分支删除；此后主干又并入别人的 `review-20261031-fixes` 系五枚文档/`app` 批（现读 `origin/main = f6753cc8`）。
 - ⭐ **s32 的前置读数（现读 `AutomationReport::to_value` `render.rs:1937-1964` 等四处，逐条手数）**：
   `data.automation` 是渲染回执里**唯一完全未声明**的键（既不在 `required` 也不在 `properties`，⛔ 不是"弱声明"）——
   顶层 **14** 键（`wired`/`evaluator`/`targetsSupported`/`targetsUnsupported`/`appliedDeviceParamNames`/`granularity`/`domainTransfer`/`smoother`/`timeConstantSeconds`/`lanes`/`evaluableLanes`/`appliedLanes`/`unsupportedLanes`/`tracks`）、
