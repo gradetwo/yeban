@@ -14,7 +14,7 @@
 //! | [`the_empty_state_is_an_empty_array_plus_one_sentence`] | 空态响应 | 1 个空数组 + 1 句逐字 `note` |
 //! | [`ten_broadcast_tools_publish_an_output_schema_their_real_responses_satisfy`] | [`COVERED_TOOLS`](yeban_mcp::output_schema::COVERED_TOOLS) 那十个工具的真实 `data` | **10 份 schema**，每份都被自己的响应反校 |
 //! | [`the_validator_can_go_red_and_the_schema_is_not_idealised`] | 校验器 | 5 种注入（少 required / 错类型 / 声明字段缺席 / 违 `const` / 违 `enum`）各 1 条 |
-//! | [`the_58_published_spellings_are_still_all_there`] | `insertDevice.device.params.items` | **拼写个数**（58） |
+//! | [`the_58_published_spellings_are_still_all_there`] | `insertDevice.device.params.items` | **拼写个数**（81） |
 //!
 //! 复跑读数：`cargo test -p yeban-mcp --test props_176 -- --nocapture`
 
@@ -982,18 +982,18 @@ fn the_validator_can_go_red_and_the_schema_is_not_idealised() {
     assert_eq!(violation.path, "$.commitModel");
 }
 
-/// 判据 ⑦：`#156` 的 **58 个拼写**（32 规范 + 26 别名）一个不少（两侧）。
+/// 判据 ⑦：`#156` 的 **81 个拼写**（45 规范 + 36 别名）一个不少（两侧）。
 #[test]
 fn the_58_published_spellings_are_still_all_there() {
     use yeban_mcp::{effect_params, op_schema};
     let names = effect_params::recognised_names();
-    assert_eq!(names.len(), 58, "32 规范 + 26 别名");
+    assert_eq!(names.len(), 81, "45 规范 + 36 别名");
     assert_eq!(
         effect_params::EFFECT_GROUPS
             .iter()
             .map(|group| group.params.len())
             .sum::<usize>(),
-        32
+        45
     );
     let items = op_schema::ops_items();
     let insert = items["oneOf"]
@@ -1005,7 +1005,7 @@ fn the_58_published_spellings_are_still_all_there() {
     let branches = insert["properties"]["device"]["properties"]["params"]["items"]["oneOf"]
         .as_array()
         .expect("device.params.items.oneOf");
-    assert_eq!(branches.len(), 32);
+    assert_eq!(branches.len(), 45);
     let published: usize = branches
         .iter()
         .map(|branch| {
@@ -1015,7 +1015,7 @@ fn the_58_published_spellings_are_still_all_there() {
                 .len()
         })
         .sum();
-    assert_eq!(published, 58, "公告面的拼写个数");
+    assert_eq!(published, 81, "公告面的拼写个数");
     assert!(effect_params::recognise("eq_low_gain").is_some());
     assert!(effect_params::recognise("eq_low_gian").is_none());
     assert_eq!(

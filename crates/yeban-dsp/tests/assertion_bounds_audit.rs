@@ -56,6 +56,7 @@ const SOURCES: &[(&str, &str)] = &[
     ("src/polysynth.rs", include_str!("../src/polysynth.rs")),
     ("src/reverb.rs", include_str!("../src/reverb.rs")),
     ("src/shaping.rs", include_str!("../src/shaping.rs")),
+    ("src/tape.rs", include_str!("../src/tape.rs")),
     (
         "tests/channel_strip_rt_zero_alloc.rs",
         include_str!("channel_strip_rt_zero_alloc.rs"),
@@ -130,7 +131,7 @@ const SOURCES: &[(&str, &str)] = &[
 ///
 /// 主判据是"无界站点数 == 基线"；整组删掉一个被扫文件**不会**让无界站点数增加 ⇒
 /// 本判据仍绿，而 R115 的覆盖面已静默缩水。只有本下界能拦住这种**单向**偷工。
-const MIN_SOURCES: usize = 30;
+const MIN_SOURCES: usize = 31;
 
 /// 注册基线：允许存在的"无界断言站点"数。⭐ **棘轮** —— 只能减，不能增。
 const UNBOUNDED_BASELINE: usize = 0;
@@ -141,7 +142,18 @@ const UNBOUNDED_BASELINE: usize = 0;
 /// ⚠ **本条守卫不做"内容锚必须唯一"检查**：`tests/tools_e2e.rs` 里有两处**逐字符相同**的
 /// 内层站点（`!= pool_clip` 那两处），它们**共用同一条理由**；唯一性检查会把这对刻意同形的
 /// 站点判成歧义。冒充风险由 [`stale_entries`] 兜住：任一处已经**有界**仍登记 ⇒ 直接红。
-const ALLOWLIST: &[(&str, &str, &str)] = &[];
+const ALLOWLIST: &[(&str, &str, &str)] = &[
+    (
+        "src/tape.rs",
+        "dirty.iter().chain(dirty_r.iter()).all(|s| s.is_finite()),",
+        "测试内断言：256 样本定长脏块经处理后全有限，规模由测试构造固定，非生产路径",
+    ),
+    (
+        "src/tape.rs",
+        "assert!(right.iter().all(|s| *s == 0.0), \"右声道无输入 ⇒ 无串音\");",
+        "测试内断言：512 样本定长冲激块右声道全零（无串音），规模由测试构造固定，非生产路径",
+    ),
+];
 
 /// ⭐ **R207／R209②**：可检索标记（`eprintln!`：断言消息在**通过时**不打印）。
 fn mark(id: &str, detail: &str) {

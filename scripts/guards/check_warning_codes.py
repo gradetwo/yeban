@@ -4,7 +4,10 @@
 数什么（单位：个）：
   ① 实现侧 = `crates/yeban-mcp/src/` 里 `"code": "camelCase"` 形态的**不同取值**个数；
   ② 契约侧 = `schemas/mcp-tools.schema.json` 里 `definitions.WarningCode.enum` 的**不同条目**个数。
-判据：① == ②（**集合等式**，⛔ 只写下界会在"两边同时删空"时空绿），且 ① ≥ 下界 5。
+判据：① == ②（**集合等式**，⛔ 只写下界会在"两边同时删空"时空绿），且 ① ≥ 下界 6。
+⚠ 下界是**棘轮**：必须等于当前名册数；新增警告码时同步抬高下界，否则两侧
+成对删同一格（集合仍相等、数仍 ≥ 旧下界）会静默漏网 —— 守卫牙齿自检
+（`check_guard_teeth.py`）正是考这一条。
 
 ⚠ 已知不覆盖（按纪律登记，不冒充全知）：只认**字面量**形态。将来若出现变量拼接的 code，
 本守卫会漏 —— 与台账 #44（"空集即期望值"不可机械化）、§0.6.0p 候选 B（"有 fn 即算过"）同一类盲点。
@@ -16,7 +19,7 @@ from pathlib import Path
 
 CAMEL = re.compile(r"^[a-z]+[A-Za-z0-9]*$")
 SITE = re.compile(r'"code"\s*:\s*"([A-Za-z][A-Za-z0-9]*)"')
-LOWER_BOUND = 5
+LOWER_BOUND = 6
 
 
 def fail(msg: str) -> None:

@@ -2475,11 +2475,11 @@ fn names_outside_the_insert_chain_do_not_land_but_are_never_silent() {
             expect_chain_dsp,
             "{param_name}: deviceChainDsp 的登记口径（见本判据的表）: {data}"
         );
-        // 名单是**唯一来源**：70 个拼写，且这个 IR 形状名字不在里面。
+        // 名单是**唯一来源**：78 个拼写，且这个 IR 形状名字不在里面。
         let listed = data["automation"]["appliedDeviceParamNames"]
             .as_array()
             .expect("appliedDeviceParamNames");
-        assert_eq!(listed.len(), 70, "{data}");
+        assert_eq!(listed.len(), 78, "{data}");
         assert!(
             !listed.iter().any(|value| value == param_name),
             "{param_name} 不在落点名单里"
@@ -2558,7 +2558,7 @@ fn an_automated_reverb_wet_lane_really_lands_and_is_not_silent() {
     let listed = data["automation"]["appliedDeviceParamNames"]
         .as_array()
         .expect("appliedDeviceParamNames");
-    assert_eq!(listed.len(), 70, "{data}");
+    assert_eq!(listed.len(), 78, "{data}");
     assert!(
         listed.iter().any(|value| value == "reverb_wet"),
         "reverb_wet 必须在名单里: {data}"
@@ -2656,7 +2656,7 @@ fn an_automated_compressor_threshold_really_lands_and_flat_is_byte_identical() {
     let listed = data["automation"]["appliedDeviceParamNames"]
         .as_array()
         .expect("appliedDeviceParamNames");
-    assert_eq!(listed.len(), 70, "{data}");
+    assert_eq!(listed.len(), 78, "{data}");
     assert!(
         listed.iter().any(|value| value == "threshold_db"),
         "threshold_db 必须在名单里: {data}"
