@@ -7,6 +7,8 @@ name: Zimmer creative arm64 build
 
 on:
   workflow_dispatch:
+  push:
+    branches: ["line/zimmer-creative-build"]
 
 permissions:
   contents: read
