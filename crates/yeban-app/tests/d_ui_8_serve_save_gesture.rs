@@ -132,12 +132,16 @@ fn a_real_click_on_the_save_button_lands_the_live_project_on_disk() {
     use yeban_app::cli::{Loaded, ProjectSource};
     use yeban_app::live_surface::build_live_ui_with;
     use yeban_app::ui_mcp_serve::serve_wiring;
+    use yeban_app::undo::UndoPort;
     use yeban_model::CommitGraph;
     // ⛔ 读回容器的那两个名字在**助手** `on_disk` 里全路径限定：模块级函数看不见本函数作用域的 import。
     use yeban_model::container::write_project_container;
     use yeban_model::samples::demo_project;
     use yeban_ui_test_port::port::Permission;
     use yeban_ui_test_port::render::report_line;
+
+    // 会话起点时间戳（固定值 ⇒ 判据可复现）；放在函数体内是为了不触发默认档的 `dead_code`。
+    const NOW: u64 = 1_760_000_000_000;
 
     let scratch = Scratch::new("save");
     let target = scratch.dir.join("serve.yeban");
@@ -161,7 +165,15 @@ fn a_real_click_on_the_save_button_lands_the_live_project_on_disk() {
             bytes: opened.file_bytes,
         },
     };
-    let wiring = serve_wiring(&loaded, Permission::Administrative).expect("serve 侧装配选项");
+    // 端口按 `run` 在**测试面**（两道门都过）那条路逐字构造：同一个入口、同一份资产池。
+    // `ADR-0057` 选项 A 之后，"要不要建会话"的判定留在 `run` 那道闸上，`serve_wiring` 退化成
+    // **纯装配** ⇒ 本判据必须自己把端口递进去，⛔ 不能再假设装配器内部替我建会话。
+    let undo_port = std::rc::Rc::new(UndoPort::new(
+        yeban_app::undo::open_undo_session(&loaded.undo_source(), &loaded, NOW)
+            .expect("测试面会话（与 run 同一个入口）"),
+    ));
+    undo_port.replace_assets(loaded.archive.assets.clone());
+    let wiring = serve_wiring(&loaded, Permission::Administrative, Some(undo_port));
     let port = wiring
         .undo
         .clone()
