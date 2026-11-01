@@ -160,6 +160,13 @@ jobs:
       - name: warnings 名册对账 (实现侧构造点 == schema 的 WarningCode.enum)
         run: python3 scripts/guards/check_warning_codes.py
 
+      # s36：`schemas/project.schema.json` 里手抄了模型三个枚举的名字（`TrackKind`／`DeviceKind`／
+      # `RoutingKind` 各一处 `enum`），此前**没有任何机器对账** ⇒ 模型加一个变体，归档校验会静默
+      # 拒绝合法工程。本步按 s28 的**集合等式**口径比模型源与契约指针（台账 §22.34）。
+      # ⚠ 同样必须逐条直调（§22.6）：只把文件丢进 scripts/guards/ 不进 CI。
+      - name: 项目 schema 词表对账 (模型枚举 == project.schema.json 的三处 enum)
+        run: python3 scripts/guards/check_project_schema_vocabularies.py
+
       - name: JSON Schema 契约 (schema 自身合法性)
         run: |
           set -euo pipefail
