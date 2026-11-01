@@ -347,4 +347,16 @@ clip_widths / clip_ys / clip_heights` 全部是 `self.clips.iter()` **无过滤�
 `CONSUMED_INSTRUMENT_PARAMS` 之外的第二份表（键名有判据钉住，**值**没有契约位）；
 上提到共享契约属账本 `S6`（那份契约的家今天还在 `yeban-mcp`）。
 
-**判决读回**：待本批 CI run 读回后在此行补 `run / headSha / conclusion / Running 计数`。
+**判决读回**（2026-11-01 现读 `gh run view`）：run `41286061770` / headSha `fd8768f2` /
+`conclusion = success`；9 作业里 `deny` `lockfile` `plan` `checks` `macos` `rust (yeban-app)`
+`windows` 全部 success，`e2e` 与 `rust (workspace 全量)` 为 **skipped**（本批不触发，⛔ 不计为绿）。
+`rust (yeban-app)` 腿的 `test result:` 行 **287** 条（＝测试二进制数）、累计
+**2197 passed**、`... FAILED` / `panicked` **0** 条。
+⚠ 该腿日志**没有** `Running tests/…` 这种行（计数为 0，见 §6.4 第 4 条要防的正是"判据名没出现"），
+因此"目标二进制真的跑了"这判断不靠 `Running` 行，而是逐条点名读回五条判据：
+`creating_a_midi_track_commits_once_and_wires_it_to_the_master`（判据 ①）、
+`creating_an_audio_track_leaves_the_device_chain_empty`（①b 防回归：音频轨仍空链）、
+`the_builtin_devices_take_every_default_from_the_shared_contract`（⑨ 键名对账引擎）、
+`inserting_a_reverb_commits_once_and_installs_the_reverb_params`（判据 ⑦ 改写后 `[内置合成器, EQ]`）、
+`creating_an_empty_clip_commits_once_and_places_four_bars_at_zero`（片段长度未被本票带偏）——
+五条在 `test (合并特性)` 步骤内均逐字读到 `... ok`。
