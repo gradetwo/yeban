@@ -17,7 +17,7 @@
 //! | [`ReverbField`] | Freeverb 的 4 个标量字段（`6` 个拼写） |
 //! | [`ConvolutionField`] | 卷积混响的 4 个标量字段（`8` 个拼写；IR 形状不落点） |
 //! | [`DelayField`] | 乒乓延迟的 9 个字段（`15` 个拼写；音符同步四字段只在投影期换算） |
-//! | [`TapeField`] | 磁带饱和的 4 个标量字段（`8` 个拼写） |
+//! | [`TapeField`] | 磁带饱和的 5 个标量字段（`10` 个拼写） |
 //! | [`DeviceParamField`] / [`DeviceParamFamily`] | 四族的合流枚举与器件族标签 |
 //!
 //! ⛔ **本模块不含**任何 I/O、模型类型或 GUI：每个 `sanitise` 都与器件内部**同一次**
@@ -792,13 +792,19 @@ pub enum TapeField {
     TrimDb,
     /// 湿路低通截止频率（Hz，2000..20000）。`tape_hf_hz` / `saturation_hf_hz`。
     HfHz,
+    /// ⭐ 曲线不对称量（0..0.5；`0` ＝ 对称 ⇒ 纯奇次）。`tape_asym` / `saturation_asym`。
+    ///
+    /// 它产生**偶次**谐波（磁带"暖"的来源）—— `pade_tanh` 是奇函数，只出奇次。
+    /// 见 `crate::tape` 模块文档的「⭐ 偶次谐波」一节。
+    Asym,
 }
 
 impl TapeField {
     /// 全部字段。
-    pub const ALL: &'static [Self] = &[Self::Drive, Self::Mix, Self::TrimDb, Self::HfHz];
+    pub const ALL: &'static [Self] =
+        &[Self::Drive, Self::Mix, Self::TrimDb, Self::HfHz, Self::Asym];
 
-    /// **全部拼写** → 字段（`8` 条 = `4` 个字段）。
+    /// **全部拼写** → 字段（`10` 条 = `5` 个字段）。
     pub const SPELLINGS: &'static [(&'static str, Self)] = &[
         ("tape_drive", Self::Drive),
         ("saturation_drive", Self::Drive),
@@ -808,6 +814,8 @@ impl TapeField {
         ("saturation_trim_db", Self::TrimDb),
         ("tape_hf_hz", Self::HfHz),
         ("saturation_hf_hz", Self::HfHz),
+        ("tape_asym", Self::Asym),
+        ("saturation_asym", Self::Asym),
     ];
 
     /// 名字 → 字段（大小写不敏感）。
@@ -827,6 +835,7 @@ impl TapeField {
             Self::Mix => "tape_mix",
             Self::TrimDb => "tape_trim_db",
             Self::HfHz => "tape_hf_hz",
+            Self::Asym => "tape_asym",
         }
     }
 
@@ -838,6 +847,7 @@ impl TapeField {
             Self::Mix => params.mix,
             Self::TrimDb => params.trim_db,
             Self::HfHz => params.hf_hz,
+            Self::Asym => params.asym,
         }
     }
 
@@ -848,6 +858,7 @@ impl TapeField {
             Self::Mix => params.mix = value,
             Self::TrimDb => params.trim_db = value,
             Self::HfHz => params.hf_hz = value,
+            Self::Asym => params.asym = value,
         }
     }
 

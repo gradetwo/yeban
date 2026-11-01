@@ -1737,6 +1737,7 @@ mod tests {
             DeviceParamField::Tape(TapeField::Drive | TapeField::Mix) => 0.8,
             DeviceParamField::Tape(TapeField::TrimDb) => -6.0,
             DeviceParamField::Tape(TapeField::HfHz) => 8_000.0,
+            DeviceParamField::Tape(TapeField::Asym) => 0.3,
             DeviceParamField::Reverb(ReverbField::Size | ReverbField::Damp | ReverbField::Wet) => {
                 0.72
             }

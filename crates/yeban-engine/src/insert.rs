@@ -1257,6 +1257,12 @@ impl TapeProjection {
                 self.params.hf_hz = value;
                 self.seen = true;
             }
+            // ⭐ 曲线不对称量（偶次谐波）：与 `dsp::device_param::TapeField::Asym`
+            // **同一张拼写表**的两个名字（判据 `device_param_spellings_pinned` 钉住等集）。
+            "tape_asym" | "saturation_asym" => {
+                self.params.asym = value;
+                self.seen = true;
+            }
             _ => {}
         }
     }

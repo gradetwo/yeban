@@ -605,8 +605,8 @@ fn b5_sizes_stay_under_the_192_kib_red_line() {
         196_608 - runtime
     );
     assert_eq!(
-        runtime, 186_736,
-        "EngineRuntime 必须是 186736 B（#261：逐边发送量表 ＋4784 B；\
+        runtime, 194_960,
+        "EngineRuntime 必须是 186736 B ＋ **round-robin 片 16 槽 × 512 B = 8192** ⇒ 194960 B（#261：逐边发送量表 ＋4784 B；\
          #173 的主总线插入 ＋1792 仍在里面；⭐ **S1 第一片** ＋16 B = 两个 `u64` 事件计数\
          `strip_output_gain_events` / `strip_output_gain_value_rejects`；见本判据文档）"
     );
@@ -616,7 +616,13 @@ fn b5_sizes_stay_under_the_192_kib_red_line() {
          见本判据文档）"
     );
     assert_eq!(voice, 40, "SfzVoice 必须仍是 40 B");
-    assert_eq!(pool, 1_712, "SfzVoicePool 必须仍是 1712 B");
-    assert_eq!(region, 6_160, "PreparedRegion 必须仍是 6160 B");
+    assert_eq!(
+        pool, 2_224,
+        "SfzVoicePool 必须仍是 1712 B ＋ round-robin 的 512 B ＝ 2224 B"
+    );
+    assert_eq!(
+        region, 6_168,
+        "PreparedRegion 必须仍是 6160 B ＋ round-robin 的 8 B ＝ 6168 B"
+    );
     assert!(runtime < 196_608, "EngineRuntime 必须 < 192 KiB");
 }

@@ -43,9 +43,9 @@ const SOURCE: &str = include_str!("../src/insert.rs");
 const IR_SHAPE_NAMES: [&str; 3] = ["conv_ir_decay_s", "conv_ir_decay", "conv_ir_seed"];
 
 /// 冻结读数（与 `yeban-render` 的 `automation.rs` 同一条口径：实时臂 41 ＋ 6 ＋ 11；
-/// 自动化名单另＋延迟 15 拼写（共享表，引擎经 `DelayField` 认）＋磁带饱和 8 拼写 ⇒ 名单共 78 个拼写；
+/// 自动化名单另＋延迟 15 拼写（共享表，引擎经 `DelayField` 认）＋磁带饱和 10 拼写（`tape_asym` 之后）⇒ 名单共 80 个拼写；
 /// 实时侧再＋ 3 个 IR 形状键 ⇒ 卷积族在**本判据**里是 11）。
-const FROZEN_COUNTS: (usize, usize, usize, usize) = (41, 6, 11, 8);
+const FROZEN_COUNTS: (usize, usize, usize, usize) = (41, 6, 11, 10);
 
 /// 取 `impl <header>` 块内 `fn apply(&mut self, name: &str, value: f32)` 的**臂名**列表。
 ///
@@ -169,7 +169,7 @@ fn the_realtime_reverb_arms_are_the_dsp_reverb_spellings() {
     assert_eq!(got, expected, "实时链与 dsp 的混响拼写表不一致");
 }
 
-/// **磁带饱和 8 拼写**：实时臂集 == [`TapeField::SPELLINGS`]。
+/// **磁带饱和 10 拼写**（`tape_asym` 之后）：实时臂集 == [`TapeField::SPELLINGS`]。
 #[test]
 fn the_realtime_tape_arms_are_the_dsp_tape_spellings() {
     let arms = apply_arm_names("impl TapeProjection {");

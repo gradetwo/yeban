@@ -36,7 +36,7 @@
 //!
 //! - 只接 [`AutomationTarget::TrackVolume`]（含主总线）、[`AutomationTarget::SendGain`]、
 //!   [`AutomationTarget::TrackPan`] 与 [`AutomationTarget::DeviceParam`] 里**插入链能改的
-//!   标量字段**（[`APPLIED_DEVICE_PARAM_NAMES`]：78 个拼写 = 43 个字段，含别名；
+//!   标量字段**（[`APPLIED_DEVICE_PARAM_NAMES`]：80 个拼写 = 44 个字段，含别名；
 //!   通道条 22（14 增益/EQ/滤波 ＋ 8 压缩）＋ 磁带饱和 4 ＋ Freeverb 4 ＋ 卷积标量 4 ＋ 延迟 9）；**卷积
 //!   IR 形状**（`conv_ir_decay*` / `conv_ir_seed`）如实登记（⛔ 不冒充已支持）；
 //!   ⭐ `#304` 起**压缩 8 字段**也在这张表里（`compressor_enabled` + 7 个标量），
@@ -990,7 +990,7 @@ impl TrackPanAutomation {
     }
 }
 
-/// 本切片**真的会落点**的设备参数名（**含别名**，`78` 个拼写 = `43` 个字段）。
+/// 本切片**真的会落点**的设备参数名（**含别名**，`80` 个拼写 = `44` 个字段）。
 ///
 /// `#266` 只开 `output_gain_db`；`#267` 扩到**通道条那一整组**（27 拼写 / 14 字段）；
 /// `#293` 再扩到 **Freeverb 的 4 个标量字段**（6 拼写）与**卷积混响的 4 个标量字段**
@@ -1127,7 +1127,7 @@ pub const APPLIED_DEVICE_PARAM_NAMES: &[&str] = &[
     "delay_sync_num",
     "delay_sync_den",
     "delay_sync_dotted",
-    // 磁带饱和标量（8 = 4 个字段；`ADR-0062`）。
+    // 磁带饱和标量（10 = 5 个字段；`ADR-0062`，`tape_asym` 为 0001 片新增）。
     "tape_drive",
     "saturation_drive",
     "tape_mix",
@@ -1136,6 +1136,8 @@ pub const APPLIED_DEVICE_PARAM_NAMES: &[&str] = &[
     "saturation_trim_db",
     "tape_hf_hz",
     "saturation_hf_hz",
+    "tape_asym",
+    "saturation_asym",
 ];
 
 /// 名字是否是本切片会落点的设备参数（**大小写不敏感**，与静态投影的同一口径）。
@@ -2964,6 +2966,14 @@ mod tests {
             20_000.0,
             8_000.0,
         ),
+        // ⭐ `asym` 只影响**波形对称性**（偶次谐波），对参数曲线本身没有非线性：
+        // 用例取 0.05 → 0.35，两端都在 `0.0..=0.5` 内，且差值 > 1e-3（判据要求中点真的在动）。
+        (
+            DeviceParamField::Tape(TapeField::Asym),
+            "tape_asym",
+            0.05,
+            0.35,
+        ),
     ];
 
     /// 一个**名单拼写**的用例：落点、规范名、静态值、终点值。
@@ -3079,7 +3089,11 @@ mod tests {
         assert_eq!(ReverbField::ALL.len(), 4, "Freeverb 4 个字段");
         assert_eq!(ConvolutionField::ALL.len(), 4, "卷积标量 4 个字段");
         assert_eq!(DelayField::ALL.len(), 9, "延迟 9 个字段");
-        assert_eq!(TapeField::ALL.len(), 4, "磁带饱和 4 个字段");
+        assert_eq!(
+            TapeField::ALL.len(),
+            5,
+            "磁带饱和 5 个字段（`tape_asym` 为 0001 片新增）"
+        );
         assert_eq!(
             StripField::SPELLINGS.len(),
             41,
@@ -3090,7 +3104,7 @@ mod tests {
             + ConvolutionField::SPELLINGS.len()
             + DelayField::SPELLINGS.len()
             + TapeField::SPELLINGS.len();
-        assert_eq!(expected_len, 78, "41 + 6 + 8 + 15 + 8 = 78 个拼写");
+        assert_eq!(expected_len, 80, "41 + 6 + 8 + 15 + 10 = 80 个拼写");
         assert_eq!(
             APPLIED_DEVICE_PARAM_NAMES.len(),
             expected_len,
@@ -3128,7 +3142,7 @@ mod tests {
         }
     }
 
-    /// ⭐ `#267`/`#293`/`#304` 判据 1/2：**43 个字段各一条**（78 个拼写逐个跑）—— 泳道从静态值
+    /// ⭐ `#267`/`#293`/`#304` 判据 1/2：**44 个字段各一条**（80 个拼写逐个跑）—— 泳道从静态值
     /// 渐变到终点值 ⇒ 求值器把**这个字段**接上（`field()` / `param_name()` / 静态值），
     /// 曲线在块边界上单调，且恒等判定为假。别名与规范名解析到**同一个**落点。
     #[test]

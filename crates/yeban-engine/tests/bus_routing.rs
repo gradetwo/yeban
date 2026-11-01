@@ -613,6 +613,12 @@ fn r6_sizes_stay_under_the_192_kib_red_line() {
     );
     assert!(runtime < 196_608, "EngineRuntime 必须 < 192 KiB");
     assert_eq!(voice, 40, "SfzVoice 必须仍是 40 B");
-    assert_eq!(pool, 1_712, "SfzVoicePool 必须仍是 1712 B");
-    assert_eq!(region, 6_160, "PreparedRegion 必须仍是 6160 B");
+    assert_eq!(
+        pool, 2_224,
+        "SfzVoicePool 必须仍是 1712 B ＋ round-robin 的 512 B ＝ 2224 B"
+    );
+    assert_eq!(
+        region, 6_168,
+        "PreparedRegion 必须仍是 6160 B ＋ round-robin 的 8 B ＝ 6168 B"
+    );
 }

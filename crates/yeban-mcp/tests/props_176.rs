@@ -982,18 +982,22 @@ fn the_validator_can_go_red_and_the_schema_is_not_idealised() {
     assert_eq!(violation.path, "$.commitModel");
 }
 
-/// 判据 ⑦：`#156` 的 **81 个拼写**（45 规范 + 36 别名）一个不少（两侧）。
+/// 判据 ⑦：`#156` 的 **83 个拼写**（46 规范 + 37 别名）一个不少（两侧）。
+///
+/// ⚠ 沿革：`#156` 当时的读数是 **81**（45 规范 + 36 别名）；**round-robin / tape_asym
+/// 片**给磁带组加了一条规范拼写 `tape_asym`（别名 `saturation_asym`）⇒ **＋1 规范、
+/// ＋1 别名 = 83**（读数由本判据现算，⛔ 不是抄来的数字）。
 #[test]
 fn the_58_published_spellings_are_still_all_there() {
     use yeban_mcp::{effect_params, op_schema};
     let names = effect_params::recognised_names();
-    assert_eq!(names.len(), 81, "45 规范 + 36 别名");
+    assert_eq!(names.len(), 83, "46 规范 + 37 别名");
     assert_eq!(
         effect_params::EFFECT_GROUPS
             .iter()
             .map(|group| group.params.len())
             .sum::<usize>(),
-        45
+        46
     );
     let items = op_schema::ops_items();
     let insert = items["oneOf"]
@@ -1005,7 +1009,7 @@ fn the_58_published_spellings_are_still_all_there() {
     let branches = insert["properties"]["device"]["properties"]["params"]["items"]["oneOf"]
         .as_array()
         .expect("device.params.items.oneOf");
-    assert_eq!(branches.len(), 45);
+    assert_eq!(branches.len(), 46);
     let published: usize = branches
         .iter()
         .map(|branch| {
@@ -1015,7 +1019,7 @@ fn the_58_published_spellings_are_still_all_there() {
                 .len()
         })
         .sum();
-    assert_eq!(published, 81, "公告面的拼写个数");
+    assert_eq!(published, 83, "公告面的拼写个数");
     assert!(effect_params::recognise("eq_low_gain").is_some());
     assert!(effect_params::recognise("eq_low_gian").is_none());
     assert_eq!(

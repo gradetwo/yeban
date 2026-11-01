@@ -60,7 +60,7 @@
 //! | ① | 力度增益 | **已修**（步 1：每力度一张表，⛔ 不再冻结在 100） |
 //! | ② | `trigger` 门控 | **已修**（步 1：走 `matches_query`；门控不过的区域掩码全 0） |
 //! | ③ | `offset`/`end`（`SampleSpan`） | ⭐ **步 3 已闭合**：离线 `render_note_into`／摊平 `render_block_into`／实时声部三条路共用 [`reduce_span`] 的**一份**归约 ⇒ `start`（起点）与 `end`（终点）都**真正应用**，两侧逐样本差 ＝ 0 |
-//! | ④ | 无 `group`/`off_by`/`note_polyphony`/`seq_` | ⭐ **`group`/`off_by` 已由任务 `#94` 接线、`note_polyphony` ＋ `note_selfmask` 已由任务 `#100` 接线**（语义由 `yeban-sfz` 裁、槽位与窃取由 `SynthEngine` 裁；见下面"独占组"与"同音复音限制"两节）；⛔ **仍未做：`seq_`**（round-robin 序列） |
+//! | ④ | 无 `group`/`off_by`/`note_polyphony`/`seq_` | ⭐ **`group`/`off_by` 已由任务 `#94` 接线、`note_polyphony` ＋ `note_selfmask` 已由任务 `#100` 接线**（语义由 `yeban-sfz` 裁、槽位与窃取由 `SynthEngine` 裁；见下面"独占组"与"同音复音限制"两节）；⛔ **仍未做：`seq_`**（round-robin 序列）　⭐ ⭐ **追加修订段（本片 `round-robin`）—— 被修订的是本行末句里 `seq_` 那一支**（⛔ 原文一字未删，口径同台账第 278 条：保留原文 ＋ 追加修订段 ＋ 点名被修订的支）：`seq_` **已接线** —— [`PreparedRegion`] 承载 `seq_position` / `seq_length`（解析与取值域在 `yeban-sfz` 里早已落地，本片只搬运），[`SfzVoicePool::trigger_note`] 按**每键触发计数**（`seq_occurrence[note]`）经 [`PreparedRegion::selects_occurrence`] 选变体；`seq_length <= 1` 的区域**照旧叠加**（后向兼容的全部：语料绝大多数没有 `seq_*`）。见下面「⭐ 轮替（`seq_*`）」一节与判据 `R1`～`R6`（`tests/sfz_round_robin.rs`） |
 //! | ⑤ | 无字节预算、无流式 | 未做（PCM 整段 clone 进摊平表；无预算上限、无流式解码）　⭐ ⭐ **追加修订段（任务单 `#125`）—— 被修订的是本行短标签里的「无字节预算」那一支**（⛔ 原文一字未删，口径同台账第 278 条：保留原文 ＋ 追加修订段 ＋ 点名被修订的支）：⭐ 任务单 `#84` 起**字节预算的读数已经落地** —— [`SfzByteBudget`] ／ [`SfzByteUsage`] ／ [`SfzBudgetOverrun`]、[`PreparedSfz::byte_usage`] ／ [`PreparedSfz::budget_overrun`]（判据 S25～S27）⇒ 今天**有**预算读数、**有**超预算报告 ＋ ⭐ **口径是"引擎只报数、控制侧决定"**（⛔ 不报错、⛔ 不截断、⛔ 不改摊平结果；见下面 `sfz-needs-8` 那一行的 `#84` 登记）。⚠ **本行括注里那两条仍逐字成立**：⛔ **不强制上限**（＝ 括注的「无预算上限」）＋ ⛔ **无流式**（PCM 仍整段 clone 进摊平表、无流式解码）。　⭐ **追加修订段（任务单 `#279`）—— 被修订的是括注里「PCM 仍整段 clone 进摊平表」那半句**：`PreparedSample.pcm` 与 `InMemorySample.pcm` 已改 `Arc<Vec<f32>>`，摊平表用 `Arc::clone` **共享**调用方那份已解码 PCM ⇒ ⛔ 不再整段 clone（同一份 PCM 只有一份字节）；⛔ **无流式解码仍逐字成立**。 |
 //! | ⑥ | 同一样本引两次 | ⭐ **步 3 已修**：去重键 ＝ `region.sample_path()`、容器 ＝ `BTreeMap`（确定性 [MODEL-AST-003]）⇒ 同一路径只 materialize **一份** [`PreparedSample`]；读数见 [`PreparedSfz::sample_count`] / [`PreparedSfz::pcm_bytes`] |
 //! | ⑦ | CC 轴交叉淡化 | 未做（回调侧没有 CC 状态 ⇒ 与离线 `playback_spec` 一致地**跳过**该轴）。⭐ ⭐ **任务单 `#108` 已接线**：上面这句是**原文保留**（第 278 条，⛔ 一字未删）；`#107` 之后"回调侧没有 CC 状态"这条**理由已不成立**，三条路现在都读探针 —— 见下面「⭐ CC 轴交叉淡化（任务单 `#108`）」一节 |
@@ -650,6 +650,67 @@
 //! 与两条路的代价逐条写在 [`CC_GATE_CAP`] 的文档里。⭐ 代价：
 //! `PreparedRegion` `5768 → 6152 B`（＋384 ＝ `128 × 3`；条数 `u8` 与尾部对齐共 6 B）；
 //! ⛔ `SfzVoice` 仍 `40 B`、⛔ `SfzVoicePool` 仍 `1712 B`、⛔ `EngineRuntime` 仍 `180144 B`。
+//!
+//! # ⭐ 轮替（`seq_*` / round-robin）—— 区域选择里唯一的**互斥**判据
+//!
+//! ## ⚠ 本片是**接线**，⛔ 不是新解析、⛔ 不是新裁决
+//!
+//! 解析与算法早就在 `yeban-sfz`：`Region::seq_position` / `Region::seq_length`
+//! （同一组 `read_u32` 判据）＋ [`Instrument::region_for_with`] 的 `occurrence` 语义
+//! （`instrument.rs:1496-1539` 的三段扫描：取组长 `L` → `target = occurrence % L + 1`
+//! → 无人命中则退回第一个匹配）。本片只做两件事：① 把两个 `u32` 搬进 [`PreparedRegion`]；
+//! ② 在**实时触发路径**上按每键触发计数选变体。
+//!
+//! ## 修的是什么（缺陷的具体形状，⛔ 不是"优化"）
+//!
+//! [`SfzVoicePool::trigger_note`] 的候选筛选只有 [`PreparedRegion::accepts`]
+//! （键/力度**掩码**）⇒ 同一音高上两条 `seq_position` 不同的区域**全部命中** ⇒
+//! 旧行为把两个变体**叠加**着发。三件事同时发生：
+//!
+//! * **电平／音色**：两个不同采样相加 ⇒ 既不是作者写的那个，也不是任何一层的原样；
+//! * **复音**：每音吃两个槽 ⇒ 有效复音减半、池满提前 ⇒ 窃取数翻倍
+//!   （实测：`Strings · Ostinato` 一支轨 183 s 里 **1084 次**窃取）；
+//! * **轮替消失**：`seq_*` 的全部意义（避免"机关枪效应"）被抹掉。
+//!
+//! 语料依据：`assets/samples/vsco2ce/Strings` 家族的 spiccato 用 `seq_length=2` ＋
+//! `seq_position=1|2` 两条区域做两音轮替。
+//!
+//! ## 规则（四条，逐条可判；判据 `R1`～`R6` 在 `tests/sfz_round_robin.rs`）
+//!
+//! 1. **`seq_length <= 1` ⇒ 恒发声**：没写 `seq_*` 的区域不参与轮替，照旧参与
+//!    "多匹配 ＝ 叠加"（多个不同采样叠同一音高是**合法写法**，⛔ 不是缺陷）。
+//!    ⭐ 这是**后向兼容的全部**：语料绝大多数没有 `seq_*` ⇒ 那条路上一个分支都不进。
+//! 2. **`seq_length > 1` ⇒ 只发 `seq_position == occurrence % seq_length + 1` 那一个**。
+//!    ⚠ 逐区域用**它自己**的 `seq_length` 取模（⛔ 不取"第一个匹配区域"的组长）：
+//!    实时路径没有"第一个匹配"这个中间量；同组同长时两者**逐音等价**，混合长度时更宽容。
+//! 3. **兜底**（[`SfzVoicePool::round_robin_fallback`]）：`seq_position` 不保证覆盖
+//!    `1..=seq_length`，一个都选不中时退回**第一个**满足 `accepts` ＋ `cc_gates_ok` 的
+//!    轮替区域 ⇒ ⛔ 不会因为"缺位"整组静音（同一裁决见 `region_for_with` 的第三段扫描）。
+//!    ⚠ 判的是"谁被 select"、⛔ 不是"谁真的发得出声"（缺样本走既有 `silent_regions` 报数路）。
+//! 4. **计数键 ＝ 音高**，每次 `trigger_note` 进 1（与该次命中几条区域无关），
+//!    [`SfzVoicePool::silence`]（`seek` / 快照重建都走它）归零 ⇒ 同一输入必然从第一个
+//!    变体起（[ARCH-DET-001]）。
+//!
+//! ## 代价（如实登记，⭐ 三处尺寸判据已同步）
+//!
+//! | 量 | 前 | 后 | 为什么 |
+//! | :--- | ---: | ---: | :--- |
+//! | `PreparedRegion` | 6160 | **6168** | 两个 `u32`（`seq_position` / `seq_length`） |
+//! | `SfzVoicePool` | 1712 | **2224** | `seq_occurrence: [u32; 128]`（每键一个计数） |
+//! | `EngineRuntime` | 186768 | **194960** | 16 个槽 × 512 B |
+//! | `SfzVoice` | 40 | **40** | ⛔ 一个字段都没加（推进量在池里） |
+//!
+//! ⚠ 计数用 `u32` 而⛔ 不是 `u8`：`selects_occurrence` 要对**每区域自己的**
+//! `seq_length` 取模，`u8` 在 256 处回绕会让 `256 % 3` 变成 `1`（错），`u32` 的回绕点
+//! 远大于任何 `seq_length` ⇒ 回绕不改变取模结果。
+//!
+//! ## ⛔ 本片不做（边界，⛔ 不假装已有）
+//!
+//! * `seq_position` 的**随机／洗牌**变体（ARIA 扩展；SFZ 规范未定义、语料 0 次）；
+//! * 跨键共享的轮替进度（每键独立推进，与 ARIA 的实测行为一致）；
+//! * 力度层切换时**重置**序列（不重置：序列属于键，⛔ 不属于层）。
+//!
+//! [`Instrument::region_for_with`]: yeban_sfz::instrument::Instrument::region_for_with
 //!
 //! # ⭐ 播放方向（`direction`，任务单 `#113`）
 //!
@@ -2871,6 +2932,22 @@ pub struct PreparedRegion {
     /// —— "The note polyphony is checked within a polyphony group, set by the `group` or
     /// `polyphony_group` opcodes."。
     note_polyphony: NotePolyphony,
+    /// ⭐ **轮替序号**（`seq_position`，缺省 1）。
+    ///
+    /// 解析与取值域在 `yeban-sfz` 里**早已落地**（[`Region::seq_position`]，与
+    /// [`Region::seq_length`] 同一组 `read_u32` 判据）⇒ 本字段只把那份 `u32` 搬进
+    /// 摊平表，⛔ 不新增解析、⛔ 不改取值域。
+    ///
+    /// ⚠ **它是"区域参数"、⛔ 不是"声部状态"**：轮替的**推进量**（第几次触发）活在
+    /// [`SfzVoicePool`] 的每键计数器里 ⇒ ⛔ `SfzVoice` 一个字段都不加（判据 `S9` 仍 40 B）。
+    /// 选择规则见 [`Self::selects_occurrence`]。
+    seq_position: u32,
+    /// ⭐ **轮替长度**（`seq_length`，缺省 1）。
+    ///
+    /// `<= 1` ＝ **本区域不参与轮替**（这是绝大多数语料的情形：没写 `seq_*`）
+    /// ⇒ 它照旧参与"多匹配 ＝ 叠加"。⭐ 这条是**后向兼容的全部**：`seq_length <= 1`
+    /// 的区域在触发路径上**一个新分支都不走**（判据见 `trigger_note`）。
+    seq_length: u32,
 }
 
 impl PreparedRegion {
@@ -2957,6 +3034,45 @@ impl PreparedRegion {
     #[must_use]
     pub const fn has_sample(&self) -> bool {
         self.sample_index != Self::NO_SAMPLE
+    }
+
+    /// ⭐ 轮替序号（`seq_position`，缺省 1；`1..=seq_length`）。
+    #[must_use]
+    pub const fn seq_position(&self) -> u32 {
+        self.seq_position
+    }
+
+    /// ⭐ 轮替长度（`seq_length`，缺省 1；`<= 1` ＝ 不参与轮替）。
+    #[must_use]
+    pub const fn seq_length(&self) -> u32 {
+        self.seq_length
+    }
+
+    /// ⭐ 本次触发（第 `occurrence` 次，**0-based**）该不该由本区域发声。
+    ///
+    /// # 规则（与 `yeban-sfz` 的 [`Instrument::region_for_with`] **同一条语义**）
+    ///
+    /// * `seq_length <= 1` ⇒ **恒 `true`**：没写 `seq_*` 的区域不参与轮替，
+    ///   照旧参与"多匹配 ＝ 叠加"（多个不同采样叠同一音高 = layering，是合法写法）。
+    /// * `seq_length > 1` ⇒ 只有 `seq_position == occurrence % seq_length + 1` 的
+    ///   那一个变体发声 ⇒ 同组变体**互斥**，不再是"全部叠加"。
+    ///
+    /// ⚠ **为什么不按"第一个匹配区域的 `seq_length`"算全长**（`region_for_with` 的
+    /// 写法）：实时路径是**逐区域**遍历的，没有"第一个匹配"这个中间量；而每个区域
+    /// 自带 `seq_length` 时逐区域判定与"取组长"在**同组同长**的语料上**逐音等价**
+    /// （`seq_position` 相同的区域必然同组同长），在混合长度时更宽容（不会因为
+    /// 一个 `seq_length=1` 的区域排在前面就把整组轮替废掉）。逐字差异登记在
+    /// 模块头的「⭐ 轮替（`seq_*`）」一节。
+    ///
+    /// 全过程只有一次取模与一次比较（`seq_length <= 1` 时连取模都不做）。
+    ///
+    /// [`Instrument::region_for_with`]: yeban_sfz::instrument::Instrument::region_for_with
+    #[must_use]
+    pub const fn selects_occurrence(&self, occurrence: u32) -> bool {
+        if self.seq_length <= 1 {
+            return true;
+        }
+        self.seq_position == occurrence % self.seq_length + 1
     }
 
     /// ⭐ **`span` 的归约结果**：`(源起点, 源终点)`（半开）；`None` ＝ 不产生采样输出。
@@ -3526,6 +3642,16 @@ pub struct PreparedSfz {
     /// ⚠ 形状是**定长内联数组**（⛔ 无 `Vec`、⛔ 零额外堆）：它随摊平表按值走，
     /// 快照边界只**读**它；⭐ **空表 ⇒ 播种机制一个字节都不动**（`#110` 的保命不变量）。
     cc_seeds: CcSeedTable,
+    /// ⭐ **本条乐器有没有轮替区域**（`seq_length > 1` 的条数 > 0）。
+    ///
+    /// 用途只有一个：让实时触发路径在**绝大多数语料**（一条轮替都没有）上
+    /// 一次多余扫描都不做 —— [`SfzVoicePool::trigger_note`] 拿它当"要不要推进序列
+    /// ／要不要算兜底"的开关。
+    ///
+    /// ⚠ **为什么是 `bool` 而不是计数**：实时路径只读"有没有"这一位；而
+    /// `PreparedSfz` 的字节数是判据 `S9`／`S91` 现读的量 ⇒ 多存一个 `usize`
+    /// 会白白推高它 8 B。要计数请用 [`Self::round_robin_region_count`]（现算，O(区域数)）。
+    has_round_robin: bool,
 }
 
 /// ✂️ **摊平后的一份样本**：路径（去重键）＋ PCM ＋ 原始采样率。
@@ -3809,6 +3935,7 @@ impl PreparedSfz {
         let sample_hz = source.sample_hz;
         let (regions, cc_seeds, builtin_silent_regions) =
             flatten_regions(instrument, engine_hz, |_region| (0u16, sample_hz))?;
+        let has_round_robin = regions.iter().any(|region| region.seq_length > 1);
         Ok(Self {
             regions,
             samples,
@@ -3819,6 +3946,7 @@ impl PreparedSfz {
             missing_samples: Vec::new(),
             engine_hz,
             cc_seeds,
+            has_round_robin,
         })
     }
 
@@ -3890,6 +4018,7 @@ impl PreparedSfz {
             })?;
         missing.sort();
         missing.dedup();
+        let has_round_robin = regions.iter().any(|region| region.seq_length > 1);
         Ok(Self {
             regions,
             samples,
@@ -3900,6 +4029,7 @@ impl PreparedSfz {
             missing_samples: missing,
             engine_hz,
             cc_seeds,
+            has_round_robin,
         })
     }
 
@@ -4020,6 +4150,24 @@ impl PreparedSfz {
     #[must_use]
     pub fn regions(&self) -> &[PreparedRegion] {
         &self.regions
+    }
+
+    /// ⭐ **参与轮替的区域数**（`seq_length > 1` 的条数；**现算**，O(区域数)）。
+    ///
+    /// `0` ＝ 这条乐器**完全没有** round-robin ⇒ 触发路径的轮替分支一次都不进
+    /// （与接线前**逐位相同**，见 [`SfzVoicePool::trigger_note`]）。
+    #[must_use]
+    pub fn round_robin_region_count(&self) -> usize {
+        self.regions
+            .iter()
+            .filter(|region| region.seq_length > 1)
+            .count()
+    }
+
+    /// ⭐ 这条乐器是否**有** round-robin（实时路径读的就是这一位）。
+    #[must_use]
+    pub const fn has_round_robin(&self) -> bool {
+        self.has_round_robin
     }
 
     /// ⭐ 摊平后的**样本表**（去重后；**只读借用**：实时侧⛔ 不 clone）。
@@ -4438,6 +4586,16 @@ fn flatten_regions(
                 // 白名单在 `yeban-sfz` 的 `PlayDirection::OPTIONS`）。
                 // 它是**区域参数**、不是声部状态 ⇒ `SfzVoice` 尺寸不变，⛔ 不进实时对象。
                 direction: region.direction,
+                // ⭐ 轮替（`seq_position` / `seq_length`）：`yeban-sfz` 早已解析并
+                // 判过取值域 ⇒ 本片只**搬运**两个 `u32`，⛔ 不新增解析。
+                // ⚠ `seq_position` **原样**搬（⛔ 不 `.max(1)`）：`0` 落在 `1..=L`
+                // 之外，按 `region_for_query` 的既有语义**永不命中 target** ——
+                // 这里夹一下就会让它"总在 target 1 时发声"，与解析层的裁决分叉。
+                // ⚠ `seq_length` 取 `.max(1)`（与 `region_for_query` 同一个 `max`）：
+                // `0` 是非法长度，按"不轮替"处理。
+                // 推进量（第几次触发）在声部池的每键计数器里 ⇒ `SfzVoice` 仍是 40 B。
+                seq_position: region.seq_position,
+                seq_length: region.seq_length.max(1),
             });
         }
         (regions, cc_seeds, builtin_silent_regions)
@@ -5288,6 +5446,25 @@ pub struct SfzVoicePool {
     dropped: u64,
     /// 池满时**窃取**（换掉别人）的声部数（**累计、单调递增**）。
     stolen: u64,
+    /// ⭐ **每音高的触发计数**（round-robin 的推进量；`seq_*` 用）。
+    ///
+    /// # 为什么按音高、为什么在池里而不是声部里
+    ///
+    /// * round-robin 的语义是"该键**第 n 次** note-on 用第 n 个变体"
+    ///   ⇒ 推进量的键是**音高**，⛔ 不是声部、⛔ 不是力度层（力度换层不该重置序列）；
+    /// * 它是**乐器级**状态（一只乐器一套序列）⇒ 放池里；⭐ `SfzVoice` 因此
+    ///   **一个字段都不加**（判据 `S9` 仍 40 B，与 `PreparedRegion` 的既有纪律同款）。
+    ///
+    /// ⚠ **`u32` 不是 `u8`**：`selects_occurrence` 要对**每个区域自己的**
+    /// `seq_length` 取模，`u8` 在 256 处回绕会让 `256 % 3` 变成 `1`（错），
+    /// 而 `u32` 的回绕点 2³² 远大于任何 `seq_length`（后者来自 `u32` 文本解析，
+    /// 语料里是 2–8）⇒ 回绕不改变取模结果。代价：每轨 **+512 B**
+    /// （`128 × 4`；相对池里两个 `[SfzVoice; N]` 是零头）。
+    ///
+    /// ⚠ **归零时机**：[`Self::silence`]（＝ `seek` 与快照重建都走它）⇒ "从停止
+    /// 状态开始"必然从序列第一个变体起，⛔ 不会因为上一次播放留下计数而在
+    /// 重渲染时换掉变体（[ARCH-DET-001] 要求同一输入逐位同输出）。
+    seq_occurrence: [u32; 128],
 }
 
 /// ⭐ **逐块路径的四个区域读数**（[`SfzVoicePool::slot_readings`] 的产物）。
@@ -5343,6 +5520,7 @@ impl SfzVoicePool {
             steal_fade_frames: steal_fade_frames_for(sample_rate),
             dropped: 0,
             stolen: 0,
+            seq_occurrence: [0; 128],
         }
     }
 
@@ -5453,8 +5631,35 @@ impl SfzVoicePool {
                 active_before |= 1u16 << index;
             }
         }
+        // ⭐ **round-robin**（`seq_position` / `seq_length`）：本次 note-on 是该键第几次。
+        //
+        // 修的是什么：`accepts()` 只判键/力度掩码 ⇒ 同一个音高上两条 `seq_position`
+        // 不同的区域**全部命中** ⇒ 旧行为把两个变体**叠加**着发（双倍声部、双倍电平、
+        // 双倍窃取），而 SFZ 的 `seq_*` 语义是**互斥轮替**（一次只发一个变体）。
+        // 语料依据：`assets/samples/vsco2ce/Strings` 家族的 spiccato 用
+        // `seq_length=2` ＋ `seq_position=1|2` 两条区域做两音轮替。
+        //
+        // ⚠ **后向兼容的全部**：没有 `seq_*` 的库（语料绝大多数）`seq_length == 1`
+        // ⇒ `has_round_robin()` 为 `false` ⇒ **计数器不推进、兜底不扫描**，
+        // 循环里每区域只多一次 `u32` 比较（恒 `true`）⇒ 建声部序列与接线前**逐位相同**。
+        let (occurrence, rr_fallback) = if plan.has_round_robin() {
+            let occurrence = self.next_occurrence(note);
+            let fallback = self.round_robin_fallback(plan, note, velocity, occurrence, cc);
+            (occurrence, fallback)
+        } else {
+            (0, None)
+        };
         for (region_index, region) in plan.regions().iter().enumerate() {
             if !region.accepts(note, velocity) {
+                continue;
+            }
+            // ⭐ 轮替筛选：`seq_length <= 1` ⇒ 恒通过（不参与轮替的区域照旧叠加）。
+            // ⚠ 位置在 `accepts()` **之后**（先做纯位测试，便宜的判据在前）、
+            // `off_by` 关断**之前** —— 被轮替跳过的区域**不发声**，因此它⛔ 不该
+            // 去关掉别人（与上面 `cc_gates_ok` 那条同一条理由）。
+            if !region.selects_occurrence(occurrence)
+                && rr_fallback != u16::try_from(region_index).ok()
+            {
                 continue;
             }
             // ⭐ CC 区域门控（任务单 `#109`）：掩码之上的**第二道**、也是**唯一按探针**的
@@ -6120,10 +6325,80 @@ impl SfzVoicePool {
     ///
     /// ⚠ 保留 [`Self::dropped`] / [`Self::stolen`]：它们是**累计**读数（与"活声部数"
     /// 这张量规配对），与 `DrumMachine::reset` 保留 `drum_hits` 同口径。
+    ///
+    /// ⭐ **round-robin 序列一并归零**（`seq_occurrence`）：它是**挥发性**的推进量，
+    /// 不是累计读数 —— "所有声部都停了"正是序列从头开始的时刻。定位 / 重渲染 /
+    /// 换音源都经这里 ⇒ 同一输入必然从第一个变体起，⛔ 不会因为上一次播放的余数
+    /// 而在第二次渲染里换掉变体（[ARCH-DET-001]）。
     pub fn silence(&mut self) {
         for index in 0..SFZ_VOICES_PER_TRACK {
             self.silence_slot(index);
         }
+        self.seq_occurrence = [0; 128];
+    }
+
+    /// ⭐ 某音高的**下一个**轮替序号（0-based；读后**自增**）。
+    ///
+    /// ⚠ 语义细节，逐条钉住：
+    /// * **每次 `trigger_note` 调用推进一次**，与该次命中几个区域无关
+    ///   （"第 n 次 note-on"就是 n，⛔ 不是"第 n 个命中的候选"）；
+    /// * **被门控挡掉的音也推进**：round-robin 的序列属于**键**，不属于"这次发没发声"
+    ///   —— 否则力度/CC 门控会让序列错位（那是更难解释的行为）；
+    /// * 只到 `u32::MAX` 回绕，⛔ 不读写时钟。
+    fn next_occurrence(&mut self, note: u8) -> u32 {
+        let slot = &mut self.seq_occurrence[note as usize];
+        let occurrence = *slot;
+        *slot = occurrence.wrapping_add(1);
+        occurrence
+    }
+
+    /// ⭐ **轮替组一个都选不中时的兜底**：返回唯一允许发声的那个区域下标。
+    ///
+    /// # 为什么需要兜底
+    ///
+    /// `seq_position` 不保证覆盖完整的 `1..=seq_length`。语料里合法但"缺位"的写法
+    /// （例：`seq_length=3` 只有 `seq_position=2` 一条区域）会让 `target` 落在空位上
+    /// ⇒ 严格按"只有 `seq_position == target` 才发"就是**整组静音**。
+    /// `yeban-sfz` 的 [`Instrument::region_for_with`] 对这种情况有第三段兜底
+    /// （"若无人命中，退回第一个完整匹配"），本函数是同一裁决在实时路径上的落地。
+    ///
+    /// # 判据边界（如实登记）
+    ///
+    /// 兜底判的是"**谁被 select**"（`accepts` ＋ `cc_gates_ok` ＋ `selects_occurrence`），
+    /// ⛔ 不是"谁真的发得出声"（那还要样本、速率、区间三关）。被 select 者若缺样本，
+    /// 走既有 [`PreparedSfz::silent_region_count`] / `missing_sample_paths` 那条**报数**
+    /// 路径 —— ⛔ 不在这里二次兜底（否则"缺样本"会变成"静音换别人采样"，那是
+    /// 明确禁止的内容错，见 `#217` 的归属裁决）。
+    ///
+    /// 代价：O(区域数) 一次线性扫描，且**只在** `has_round_robin()` 时执行；
+    /// 命中即提前返回。零分配。
+    ///
+    /// [`Instrument::region_for_with`]: yeban_sfz::instrument::Instrument::region_for_with
+    fn round_robin_fallback(
+        &self,
+        plan: &PreparedSfz,
+        note: u8,
+        velocity: u8,
+        occurrence: u32,
+        cc: Option<&dyn Fn(u8) -> u8>,
+    ) -> Option<u16> {
+        let mut first: Option<u16> = None;
+        for (index, region) in plan.regions().iter().enumerate() {
+            if region.seq_length() <= 1
+                || !region.accepts(note, velocity)
+                || !region.cc_gates_ok(cc)
+            {
+                continue;
+            }
+            // 有人被选中 ⇒ 不需要兜底（`None` 与"下标 0"必须分得开）。
+            if region.selects_occurrence(occurrence) {
+                return None;
+            }
+            if first.is_none() {
+                first = u16::try_from(index).ok();
+            }
+        }
+        first
     }
 
     /// 活声部数（**量规**：可升可降；淡出中的声部**仍计**）。

@@ -456,8 +456,8 @@ pub struct TransportActionRecord {
 /// `DeviceParam` / `Macro` 与 `SendGain` **不是**同一类：实时引擎没有槽位。
 /// ⚠ ⭐ **任务单 `#266` 修订了这段话的"连离线也没有落点"那一半，`#267`/`#293`/`#304` 再扩**：
 /// `DeviceParam` 里**插入链能改的标量字段**（`yeban_render::automation::
-/// APPLIED_DEVICE_PARAM_NAMES`，78 个拼写 / 43 个字段：通道条 22（14 增益/EQ/滤波
-/// ＋ 8 压缩）＋ 磁带饱和 4 ＋ Freeverb 4 ＋ 卷积标量 4 ＋ 延迟 9）现在有离线落点（`yeban_render` 的
+/// APPLIED_DEVICE_PARAM_NAMES`，80 个拼写 / 44 个字段：通道条 22（14 增益/EQ/滤波
+/// ＋ 8 压缩）＋ 磁带饱和 5 ＋ Freeverb 4 ＋ 卷积标量 4 ＋ 延迟 9）现在有离线落点（`yeban_render` 的
 /// `DeviceParamAutomation` → `InsertRuntime::apply_device_params`，只在导出/MCP 渲染里）；
 /// **卷积 IR 形状**（`conv_ir_decay*` / `conv_ir_seed`）/ 未知名字与 `Macro`
 /// **仍然**没有落点。⇒ 读数里**分开列**，⛔ 不混进 `send-gain`。
