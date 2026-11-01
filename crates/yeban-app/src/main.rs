@@ -312,10 +312,7 @@ fn run_gui(options: &Options) -> Result<Vec<String>, cli::CliError> {
         .map_or(0, |elapsed| {
             u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX)
         });
-    let undo_source = match &loaded.source {
-        cli::ProjectSource::File { path, .. } => path.display().to_string(),
-        cli::ProjectSource::Sample(sample) => format!("sample:{}", sample.name()),
-    };
+    let undo_source = loaded.undo_source();
 
     // `[ROAD-M4-001]` 形态 A：把领域 MCP 的环回 HTTP 控制面挂进**本进程**。
     // 两道开关都在里面判：编译期是 `--features in-process-mcp`（这个 `cfg`），
@@ -970,27 +967,11 @@ fn open_undo_session(
     loaded: &cli::Loaded,
     now_ms: u64,
 ) -> Result<UndoSession, cli::CliError> {
-    let graph = yeban_model::decode_history_dag(&loaded.archive.history_dag).map_err(|error| {
-        cli::CliError::Ui {
-            detail: format!(
-                "`{}` 的 `history.dag` 无法恢复（{error}）—— 拒绝猜一个空历史",
-                source
-            ),
-        }
-    })?;
-    match graph {
-        Some(graph) => UndoSession::open_with_graph(
-            source,
-            "yeban-app",
-            loaded.archive.project.clone(),
-            graph,
-            now_ms,
-        ),
-        None => UndoSession::open(source, "yeban-app", loaded.archive.project.clone(), now_ms),
-    }
-    .map_err(|error| cli::CliError::Ui {
-        detail: format!("撤销会话无法初始化: {error}"),
-    })
+    // 配方只有一份（`yeban_app::undo::session_from_archive`）：UI 控制面那条装配
+    // （`ui_mcp_serve`）走的是**同一个**函数，因此"以不同路径装配界面"不会再出现
+    // 两套恢复语义。两句逐字错误也住在那一侧。
+    yeban_app::undo::session_from_archive(source, &loaded.archive, now_ms)
+        .map_err(|detail| cli::CliError::Ui { detail })
 }
 
 /// `[ROAD-M4-001]` 形态 A 的运行态挂载（**只在 `--features in-process-mcp` 下存在**）。

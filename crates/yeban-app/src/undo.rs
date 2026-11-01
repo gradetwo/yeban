@@ -52,7 +52,7 @@ pub mod undo_session;
 
 use std::cell::{Cell, RefCell};
 
-use yeban_model::{AssetHash, CommitGraph, EntityId, Op, OpOrigin, YebanProjectV1};
+use yeban_model::{AssetHash, CommitGraph, EntityId, Op, OpOrigin, ProjectArchive, YebanProjectV1};
 
 // `ROAD-M4-008` 选项 (a) 第二片：挂载了控制面时，GUI 的写入口落到**那一个** `Domain` 上。
 // 这两个类型只存在于非默认 feature `in-process-mcp` 下（默认构建里没有 `yeban-mcp`）。
@@ -235,6 +235,43 @@ impl UiActionRecord {
             && self.fingerprint_before.is_some()
             && self.fingerprint_before != self.fingerprint_after
     }
+}
+
+/// 从**已读出的归档**开一份撤销会话（`src/main.rs` 的 `run_gui` 与 `src/ui_mcp_serve.rs`
+/// 的装配**共用这一份配方**）。
+///
+/// 它此前只住在 `main.rs` 里，于是"以别的路径装配界面"的调用方拿不到端口 —— 而端口的
+/// 缺席会让 [`crate::live_surface`] 整段跳过写入面接线（九个 `host::wire_*`）。这条函数
+/// 就是为了让那条装配**不需要第二次发明配方**而存在。
+///
+/// 判定口径与 `yeban-mcp` 一致（[`yeban_model::decode_history_dag`]）：空条目 ⇒ 新会话
+/// （一条根提交）；合法图谱 ⇒ `open_with_graph`（它自己再拒"没有 `main` 分支"的半个历史）；
+/// 非法 JSON / 不自洽的图谱 ⇒ **如实报错**，⛔ 不降级成空历史（降级等于把用户的历史
+/// 悄悄丢掉 —— 与 `store.rs` 的拒绝口径一致）。
+///
+/// # Errors
+///
+/// 根提交被模型拒绝（容器版本门 / 结构校验不通过），或 `history.dag` 不是合法的
+/// `CommitGraph`（`ARCH-OPS-002`）。返回的是**逐字**原因，由调用方决定包装成哪种错误。
+pub fn session_from_archive(
+    source: &str,
+    archive: &ProjectArchive,
+    now_ms: u64,
+) -> Result<UndoSession, String> {
+    let graph = yeban_model::decode_history_dag(&archive.history_dag).map_err(|error| {
+        format!("`{source}` 的 `history.dag` 无法恢复（{error}）—— 拒绝猜一个空历史")
+    })?;
+    match graph {
+        Some(graph) => UndoSession::open_with_graph(
+            source,
+            "yeban-app",
+            archive.project.clone(),
+            graph,
+            now_ms,
+        ),
+        None => UndoSession::open(source, "yeban-app", archive.project.clone(), now_ms),
+    }
+    .map_err(|error| format!("撤销会话无法初始化: {error}"))
 }
 
 /// 撤销端口的**后端** —— 决定"这一份工程 / 图谱 / 游标的权威是谁"。
