@@ -17,7 +17,9 @@
 //!   同一把尺子）；
 //! * ⭐ **没有音频出边的节点默认直连 master**（`gain = 1.0`）—— 这是**接线前的行为**，
 //!   也是"没有 route 边 ⇒ 输出逐位不变"的来源；
-//! * `Sidechain` 不搬运音频（本 crate 还没有侧链消费面）⇒ 只有侧链边的节点仍走默认直连；
+//! * `Sidechain` 不搬运音频 ⇒ 只有侧链边的节点仍走默认直连；但它**可以**是一条
+//!   键路由：[`RoutingPlan::key_route`] 在编译期按 v1 规则（源确定在循环里跑链 ＋
+//!   实体序 ＋ 首边胜出）算出"目的 → 键源抽头槽位"，实时侧逐块消费；
 //! * 目的地是**另一条非 master 轨** ⇒ 实时的立体声暂存（总线池）按拓扑序累积后转发；
 //!   `master` 是求和终点，不参与"被路由"这一侧。
 //! * ⭐ **`#158`**：目的地总线若有**已武装的插入器件**，实时侧在**转发之前**跑它的
@@ -133,6 +135,31 @@ pub struct RoutingPlan {
     routes: BTreeMap<EntityId, Vec<RouteTarget>>,
     /// 是否存在**非 master** 的目的地 ⇒ 实时侧是否需要总线暂存池。
     uses_buses: bool,
+    /// 侧链键路由（v1 单键）：目的节点 -> 源节点在抽头池里的槽位。
+    /// 每目的至多一条（边身份升序第一条**合格**边生效）；构造期算好，逐块零分配。
+    key_routes: BTreeMap<EntityId, usize>,
+    /// 键抽头源：源节点 -> 它在抽头池里的槽位（与 `key_routes` 的值同一把尺子）。
+    /// 逐轨循环只给这些节点写抽头。
+    key_sources: BTreeMap<EntityId, usize>,
+}
+
+/// `node` 是否会收到别的节点搬来的音频（[`RoutingPlan::has_incoming_audio`] 的
+/// 唯一实现：那条 getter 与 `compile` 的键路由计算共用它，⛔ 不各写一份）。
+///
+/// 口径与 getter 的文档一致：只有**在总线暂存池里**的节点可能收到音频
+/// （`slots` 里有它）；自己指向自己的边也算。
+#[must_use]
+fn node_has_incoming_audio(
+    slots: &[EntityId],
+    routes: &BTreeMap<EntityId, Vec<RouteTarget>>,
+    node: &EntityId,
+) -> bool {
+    slots.contains(node)
+        && slots.iter().any(|source| {
+            routes
+                .get(source)
+                .is_some_and(|targets| targets.iter().any(|route| route.destination() == *node))
+        })
 }
 
 impl RoutingPlan {
@@ -216,10 +243,58 @@ impl RoutingPlan {
             routes.insert(*node, targets);
         }
 
+        // --- 键路由（侧链 v1）：构造期算一次，逐块零分配 ---
+        //
+        // 保守规则（编译期没有武装信息时恒正确）：源必须**确定**在逐轨循环里跑链 ——
+        // 无入边（`process_bus_inserts` 的第一个条件已假）或零器件（武装表恒空）；
+        // 有入边且有器件的源可能在转发阶段跑链 ⇒ 排除（离线渲染覆盖这类源）。
+        // 目的 = 轨或 master；轨目的要求源的实体序**小于**目的（逐轨循环按键序），
+        // master 目的不受此限（主总线链在全部循环与转发之后）。
+        // 每目的只取边身份升序第一条**合格**边（`graph.edges` 本就是 BTreeMap 序；
+        // 不合格的边不占位，后面的边仍可生效）。
+        let slot_index: BTreeMap<EntityId, usize> = slots
+            .iter()
+            .enumerate()
+            .map(|(index, node)| (*node, index))
+            .collect();
+        let mut key_routes: BTreeMap<EntityId, usize> = BTreeMap::new();
+        let mut key_sources: BTreeMap<EntityId, usize> = BTreeMap::new();
+        for edge in graph.edges.values() {
+            if edge.kind != RoutingKind::Sidechain {
+                continue;
+            }
+            let source = edge.source_node;
+            let dest = edge.destination_node;
+            if source == master {
+                continue;
+            }
+            if dest != master && !tracks.contains_key(&dest) {
+                continue;
+            }
+            let Some(&source_slot) = slot_index.get(&source) else {
+                continue;
+            };
+            if node_has_incoming_audio(&slots, &routes, &source)
+                && tracks.get(&source).map_or(0, TrackParams::device_count) > 0
+            {
+                continue;
+            }
+            if dest != master && !(source < dest) {
+                continue;
+            }
+            if key_routes.contains_key(&dest) {
+                continue;
+            }
+            key_routes.insert(dest, source_slot);
+            key_sources.insert(source, source_slot);
+        }
+
         Self {
             slots,
             routes,
             uses_buses,
+            key_routes,
+            key_sources,
         }
     }
 
@@ -271,12 +346,21 @@ impl RoutingPlan {
     /// 默认工程（所有节点直连 master）一次都不调用。
     #[must_use]
     pub fn has_incoming_audio(&self, node: &EntityId) -> bool {
-        self.slot_of(node).is_some()
-            && self.slots.iter().any(|source| {
-                self.routes(source)
-                    .iter()
-                    .any(|route| route.destination() == *node)
-            })
+        node_has_incoming_audio(&self.slots, &self.routes, node)
+    }
+
+    /// 目的节点的键源抽头槽位（侧链 v1）：`None` = 该目的没有已求值的键路由
+    /// ⇒ 目的的压缩器走节目检波。
+    #[must_use]
+    pub fn key_route(&self, dest: &EntityId) -> Option<usize> {
+        self.key_routes.get(dest).copied()
+    }
+
+    /// 源节点是不是某条已求值键路由的源；是 ⇒ 返回它在抽头池里的槽位
+    /// （逐轨循环只给这些节点写抽头）。
+    #[must_use]
+    pub fn key_tap_slot(&self, source: &EntityId) -> Option<usize> {
+        self.key_sources.get(source).copied()
     }
 
     /// 计划里的节点数（判据/诊断用）。

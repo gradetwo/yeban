@@ -1452,6 +1452,13 @@ struct BranchShare<'a> {
     /// 与 `track_scratch` 同一条纪律：**构造期**预分配、逐块复用 ⇒ 零分配。
     /// 只有 `RoutingPlan::uses_buses()` 为真时才清空/使用（默认路径整段跳过）。
     routing_buses: &'a mut [AudioBlock<DEFAULT_BLOCK_FRAMES>; MAX_TRACK_SLOTS],
+    /// ⭐ **侧链键抽头池**（v1）：`[源槽位][帧]` 的单声道抽头，槽位 =
+    /// [`crate::routing::RoutingPlan::slot_of`]（与总线暂存池同源）。
+    /// 构造期预分配、逐块复用 ⇒ 零分配；每量子起点由 `render_branch` 清零
+    /// `key_tap_filled`（抽头本身不清零：未填充的槽位永不被读）。
+    key_taps: &'a mut [[f32; DEFAULT_BLOCK_FRAMES]; MAX_TRACK_SLOTS],
+    /// 本量子各抽头槽位是否已写满（`render_branch` 起点清零）。
+    key_tap_filled: &'a mut [bool; MAX_TRACK_SLOTS],
     scratch_meters: &'a mut [MeterFrame; SCRATCH_METERS],
     insert_gain_reductions: &'a mut u64,
     insert_max_reduction_db: &'a mut f32,
@@ -1500,6 +1507,9 @@ fn process_insert_chain(
     frames: usize,
     current_db: &mut f32,
     detector_db: &mut f32,
+    // 键源在抽头池里的槽位（`RoutingPlan::key_route` 的读数）；`None` = 本节点
+    // 没有已求值的键路由 ⇒ 走节目检波。
+    key_slot: Option<usize>,
 ) -> bool {
     let frames = frames.min(DEFAULT_BLOCK_FRAMES);
     let mut seen = false;
@@ -1518,7 +1528,18 @@ fn process_insert_chain(
     {
         let before_reductions = strip.gain_reduction_count();
         let before_frames = strip.processed_frames();
-        strip.process_mono(&mut share.track_scratch[..frames]);
+        // 键模式（侧链 v1）：路由表给了键源槽位、且本量子该槽位已写满抽头时，
+        // 检波器读键；否则（槽位未写满：源轨因电平容量跳过等）优雅降级为节目检波。
+        // 借用合法：`key` 只读 `key_taps`/`key_tap_filled`，与 `strip`（`armed_strips`
+        // 的一台）与 `track_scratch` 是不相交的字段。
+        let key = key_slot
+            .filter(|&slot| share.key_tap_filled[slot])
+            .map(|slot| &share.key_taps[slot][..frames]);
+        if let Some(key) = key {
+            strip.process_mono_with_key(&mut share.track_scratch[..frames], key);
+        } else {
+            strip.process_mono(&mut share.track_scratch[..frames]);
+        }
         let reduced = strip
             .gain_reduction_count()
             .saturating_sub(before_reductions);
@@ -1704,6 +1725,10 @@ fn render_branch(
         share.armed_send_replay[..send_slots].copy_from_slice(&share.armed_send_gain[..send_slots]);
         share.send_advanced[..send_slots].fill(false);
     }
+    // ⭐ 侧链键抽头（v1）：本量子的填充标记清零 —— 抽头本身不清零（未填充的
+    // 槽位永不被读）。不清零时上一量子的抽头会被当成本量子的键（错键）。
+    // 位置：任何路由之前；不论 `uses_buses()`（无总线的工程仍可能有键路由）。
+    share.key_tap_filled.fill(false);
     // ⭐ 任务单 `#154`：本快照的路由计划（构造期编译好的纯数据）。
     //
     // ⚠ **默认口径**：`uses_buses()` 为假（所有节点都只直连 master）⇒ 下面的
@@ -1867,9 +1892,20 @@ fn render_branch(
                 frames,
                 &mut insert_current_db,
                 &mut insert_detector_db,
+                routing.key_route(&track),
             )
         {
             insert_current_seen = true;
+        }
+        // ⭐ 侧链键抽头（v1）：链后、PDC 前、声相前（与离线抽头点同口径；
+        // 离线 PDC 在边上不在节点缓冲里，因此离线抽头天然不含 PDC —— 实时 PDC
+        // 在下面才跑，抽头同样不含它）。
+        // 只给**循环里跑链**的轨写：处理型总线的链在转发阶段才跑（`process_bus_inserts`
+        // 为真时这里的 `track_scratch` 还只是它自己的声源，不是链后信号）⇒ v1
+        // 不抽总线源（离线渲染覆盖这类源）。
+        if !process_bus_inserts && let Some(slot) = routing.key_tap_slot(&track) {
+            share.key_taps[slot][..frames].copy_from_slice(&share.track_scratch[..frames]);
+            share.key_tap_filled[slot] = true;
         }
         // ⭐ 任务单 `#158`：**处理型总线**的电平帧改在 3a⁗ **插入之后**计量
         // （读"发送之和 ＋ 自己的声源"，仍是单声道、仍是"插入之后"的口径）；
@@ -2099,6 +2135,7 @@ fn render_branch(
                     frames,
                     &mut insert_current_db,
                     &mut insert_detector_db,
+                    routing.key_route(node),
                 ) {
                     insert_current_seen = true;
                 }
@@ -2223,6 +2260,7 @@ fn render_branch(
             frames,
             &mut insert_current_db,
             &mut insert_detector_db,
+            routing.key_route(&master),
         ) {
             insert_current_seen = true;
         }
@@ -2322,6 +2360,15 @@ pub struct EngineRuntime {
     /// ⚠ 只在 [`crate::snapshot::EngineSnapshot::routing`] 的 `uses_buses()` 为真时
     /// 清空/使用 ⇒ 默认工程（全部直连 master）**一个字节都不碰**。
     routing_buses: Box<[AudioBlock<DEFAULT_BLOCK_FRAMES>; MAX_TRACK_SLOTS]>,
+    /// ⭐ **侧链键抽头池**（v1）：`[源槽位][帧]` 的单声道抽头。
+    ///
+    /// 为什么是堆上的定长数组（`Box<[[f32; 128]; 16]>`，值尺寸 = **一个瘦指针 8 B**）：
+    /// 内联会把 `EngineRuntime` 抬 8192 B；堆上那一块在 [`Self::new_boxed`] 的
+    /// 构造期分配一次。值尺寸因此只 +32 B（指针 8 B ＋ `key_tap_filled` 16 B ＋
+    /// 布局对齐填充 8 B），仍在 192 KiB 门槛内（判据见 `tests/rt_new_boxed.rs`）。
+    key_taps: Box<[[f32; DEFAULT_BLOCK_FRAMES]; MAX_TRACK_SLOTS]>,
+    /// 本量子各抽头槽位是否已写满（`render_branch` 起点清零）。
+    key_tap_filled: [bool; MAX_TRACK_SLOTS],
     /// 每节点电平状态机（峰值保持 / 平滑 RMS）。
     bank: MeterBank<SCRATCH_METERS>,
     /// 声部池 + 播放头（**真的合成**：见 [`crate::synth`]）。
@@ -2767,7 +2814,8 @@ impl EngineRuntime {
     /// 一个 `EngineRuntime` 都不在栈上；改动前 `new` 的调用期峰值 =
     /// `359312 + 129984` = `489296 B`（⚠ 两个字面读数是 `#107` **之前**实测的栈帧，⛔ 未重测）。
     /// 而**按值调用者**还要多留一份 `size_of::<Self>()` 的返回值位（`#261` 之后
-    /// 186720 ＋⭐ **S1 第一片**的两个 `u64` 计数 = **186736 B**；`#173` 时是 181936 —— ⛔ 上面那两个栈帧字面读数仍不重测）——
+    /// 186720 ＋⭐ **S1 第一片**的两个 `u64` 计数 = 186736；侧链 v1 再 ＋32 = **186768 B**；
+    /// `#173` 时是 181936 —— ⛔ 上面那两个栈帧字面读数仍不重测）——
     /// 那一份是装箱消掉的（见判据 `tests/rt_new_boxed.rs` 的阈值差 `176 KiB`）。
     ///
     /// # Panics
@@ -2782,7 +2830,7 @@ impl EngineRuntime {
         events: EventReceiver,
         meters: MeterPublisher,
     ) -> Box<Self> {
-        // 堆上只要一块 `size_of::<Self>()`（⭐ S1 之后 186736 B）；栈帧里只有一个 `Box` 指针。
+        // 堆上只要一块 `size_of::<Self>()`（侧链 v1 之后 186768 B）；栈帧里只有一个 `Box` 指针。
         let mut place = Box::<Self>::new_uninit();
         // SAFETY: `write_into` 的有效性前提由本函数满足（`place` 是堆上一块有效、对齐、
         // 未初始化的 `Self`），它写满全部字段；`Box::assume_init` 再把
@@ -2936,6 +2984,13 @@ impl EngineRuntime {
                 routing_buses,
                 Box::new(core::array::from_fn(|_| AudioBlock::new()))
             );
+            // ⭐ 侧链键抽头池（v1）：与总线暂存池同一条纪律 —— **构造期**一次分配
+            // 到堆上 ⇒ 回调内零分配；每量子起点由 `render_branch` 清零填充标记。
+            put!(
+                key_taps,
+                Box::new([[0.0; DEFAULT_BLOCK_FRAMES]; MAX_TRACK_SLOTS])
+            );
+            put!(key_tap_filled, [false; MAX_TRACK_SLOTS]);
             put!(bank, MeterBank::new());
             // 采样率先按 48 kHz 武装；第一次武装快照时按快照校准（`begin_snapshot`）。
             put!(synth, SynthEngine::new(48_000));
@@ -4074,6 +4129,8 @@ impl EngineRuntime {
             meter_capacity_drops,
             pending_launch,
             scene_launches_applied,
+            key_taps,
+            key_tap_filled,
             ..
         } = self;
 
@@ -4828,6 +4885,8 @@ impl EngineRuntime {
                     pan_automation_frames: &mut *pan_automation_frames,
                     meter_capacity_drops: &mut *meter_capacity_drops,
                     pan_gains: &mut pan_gains,
+                    key_taps: &mut *key_taps,
+                    key_tap_filled: &mut *key_tap_filled,
                 };
                 produced = render_branch(
                     &mut share,
@@ -8167,6 +8226,8 @@ mod tests {
                 master_insert_frames,
                 pan_automation_frames,
                 meter_capacity_drops,
+                key_taps,
+                key_tap_filled,
                 ..
             } = self;
             let quantum = *quanta;
@@ -8222,6 +8283,8 @@ mod tests {
                 pan_automation_frames,
                 meter_capacity_drops,
                 pan_gains: &mut pan_gains,
+                key_taps,
+                key_tap_filled,
             };
             let _ = render_branch(
                 &mut share,

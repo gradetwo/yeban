@@ -623,6 +623,12 @@ pub fn render_project_f32_with_plans_under(
         plan.attach_device_param_automation(automation);
     }
 
+    // ⭐ 侧链键输入（v1）：与 MCP 的 `yeban_render_master` 同一挂接点 —— 主计划
+    // 编译好、设备泳道挂好之后，武装集合 `compressing` 挂接键路由（求值规则见
+    // `RenderPlan::attach_key_armed_nodes`）。没有侧链边的工程不改任何计划槽 ⇒
+    // 产物逐字节不变。
+    plan.attach_key_armed_nodes(&compressing);
+
     // ---- 1d. ⭐ 输出级（任务单 `#296` ＋ B2）：总线推子 / 声相 / mute / solo ＋ 主总线声相 ----
     //
     // 与 MCP 的 `yeban_render_master` **同一份** `RenderPlan::attach_output_stage`：
@@ -744,10 +750,12 @@ pub fn render_project_f32_with_plans_under(
     // 本单在渲染器里定义了那个缺失的语义（源进输入端、与入边同权相加），因此这层
     // 绕法**不再需要**：aux 既注册源，也仍然接受入边。
     //
-    // ⚠ `Sidechain`（任务单 `#337`）：侧链边**不是音频边** —— 它是键输入的数据形态，
-    // 而本切片没有键输入消费面。`RenderPlan` 因此不把侧链边放进 `incoming`；侧链的目标
-    // 节点只按"自己有没有真正的音频入边"参与源/总线判定。**键控**仍未实现，侧链边
-    // 保留为"声明了、尚未求值"的数据（MCP 的 `yeban_render_master` 响应里如实报
+    // ⚠ `Sidechain`（任务单 `#337`）：侧链边**不是音频边** —— 它是键输入的数据形态。
+    // 侧链键输入（v1）：`RenderPlan` 不把侧链边放进 `incoming`（仍不搬音频），但
+    // `attach_key_armed_nodes` 按目的武装 / 源在保留子图 / 源层号严格更小 /
+    // 每目的边身份升序第一条合格边，把键信号送进目的压缩器的检波器；侧链的目标
+    // 节点只按"自己有没有真正的音频入边"参与源/总线判定。未求值的侧链边仍保留为
+    // "声明了、尚未求值"的数据（MCP 的 `yeban_render_master` 响应里如实报
     // `sidechainEdgesDeclaredWithoutKeyInput`），⛔ 不再把源材料悄悄加进目的轨。
     let renderable: Vec<EntityId> = plan
         .nodes()
