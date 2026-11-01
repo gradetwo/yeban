@@ -3088,13 +3088,10 @@ mod tests {
     /// 做成小函数而不是闭包，是为了让每条 `label` 都带上"红在点名路径"这句同一口径的断言。
     #[track_caller]
     fn merge_slot_rejects(label: &str, broken: &Value, path: &str) {
-        assert_eq!(
-            validate(&merge_shape_roster(), broken)
-                .unwrap_or_else(|violation| panic!("`{label}` 必须被拒: {violation}"))
-                .path,
-            path,
-            "`{label}` 必须红在点名的路径上"
-        );
+        let violation = validate(&merge_shape_roster(), broken)
+            .err()
+            .unwrap_or_else(|| panic!("`{label}` 必须被拒，但校验通过了: {broken}"));
+        assert_eq!(violation.path, path, "`{label}` 必须红在点名的路径上");
     }
 
     /// ⭐ s33 判据二（牙齿）：`data.merge` 名册**真的会拒** —— 少键／错型／嵌套错型都要红在
