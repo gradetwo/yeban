@@ -506,6 +506,70 @@ impl ChannelStrip {
         frames
     }
 
+    /// 原地处理一个立体声块（键模式），返回处理的样本数。
+    ///
+    /// 与 [`Self::process_stereo`] 同形，唯动态级的检波器输入取自 `key_left` /
+    /// `key_right`（与节目块同帧对齐）；EQ、滤波、输出增益、计量一律读节目。
+    /// 四个切片长度不等时只处理 `min(len)` 个帧（**不 panic**）；空切片 ⇒ 空操作。
+    /// `compressor_enabled` 为假时键被忽略，输出与 [`Self::process_stereo`] 一位不动。
+    /// 逐样本**零堆分配**（EQ 的中间缓冲是栈数组）。
+    pub fn process_stereo_with_key(
+        &mut self,
+        left: &mut [f32],
+        right: &mut [f32],
+        key_left: &[f32],
+        key_right: &[f32],
+    ) -> usize {
+        let frames = left
+            .len()
+            .min(right.len())
+            .min(key_left.len())
+            .min(key_right.len());
+        let mut eq_l = [0.0f32; EQ_CHUNK_FRAMES];
+        let mut eq_r = [0.0f32; EQ_CHUNK_FRAMES];
+        let mut start = 0usize;
+        while start < frames {
+            let n = EQ_CHUNK_FRAMES.min(frames - start);
+            let end = start + n;
+            for (l, r) in left[start..end]
+                .iter_mut()
+                .zip(right[start..end].iter_mut())
+            {
+                let (l_in, r_in) = self.observe_input(*l, *r);
+                *l = l_in * self.input_gain;
+                *r = r_in * self.input_gain;
+            }
+            if self.params.eq_enabled {
+                self.eq.process(
+                    &left[start..end],
+                    &right[start..end],
+                    &mut eq_l[..n],
+                    &mut eq_r[..n],
+                    self.params.eq,
+                    self.sample_rate,
+                );
+                left[start..end].copy_from_slice(&eq_l[..n]);
+                right[start..end].copy_from_slice(&eq_r[..n]);
+            }
+            for (index, (l, r)) in left[start..end]
+                .iter_mut()
+                .zip(right[start..end].iter_mut())
+                .enumerate()
+            {
+                let (out_l, out_r) = self.render_frame_with_key(
+                    *l,
+                    *r,
+                    key_left[start + index],
+                    key_right[start + index],
+                );
+                *l = out_l;
+                *r = out_r;
+            }
+            start = end;
+        }
+        frames
+    }
+
     /// 原地处理一个单声道块，返回处理的样本数。
     ///
     /// 立体声联动（[`Compressor::process_gain`] 的 `max(l², r²)`）在这里退化为
@@ -538,6 +602,44 @@ impl ChannelStrip {
             }
             for s in samples[start..end].iter_mut() {
                 let (out, _) = self.render_frame(*s, *s);
+                *s = out;
+            }
+            start = end;
+        }
+        frames
+    }
+
+    /// 原地处理一个**单声道**块（键模式），返回处理的样本数。
+    ///
+    /// 与 [`Self::process_mono`] 同形，唯动态级的检波器输入取自 `key`
+    /// （与节目块同帧对齐）。`compressor_enabled` 为假时键被忽略，输出与
+    /// [`Self::process_mono`] 一位不动。
+    pub fn process_mono_with_key(&mut self, samples: &mut [f32], key: &[f32]) -> usize {
+        let frames = samples.len().min(key.len());
+        let mut eq_l = [0.0f32; EQ_CHUNK_FRAMES];
+        let mut eq_r = [0.0f32; EQ_CHUNK_FRAMES];
+        let mut start = 0usize;
+        while start < frames {
+            let n = EQ_CHUNK_FRAMES.min(frames - start);
+            let end = start + n;
+            for s in samples[start..end].iter_mut() {
+                let (mono, _) = self.observe_input(*s, *s);
+                *s = mono * self.input_gain;
+            }
+            if self.params.eq_enabled {
+                self.eq.process(
+                    &samples[start..end],
+                    &samples[start..end],
+                    &mut eq_l[..n],
+                    &mut eq_r[..n],
+                    self.params.eq,
+                    self.sample_rate,
+                );
+                samples[start..end].copy_from_slice(&eq_l[..n]);
+            }
+            for (index, s) in samples[start..end].iter_mut().enumerate() {
+                let (out, _) =
+                    self.render_frame_with_key(*s, *s, key[start + index], key[start + index]);
                 *s = out;
             }
             start = end;
@@ -580,6 +682,53 @@ impl ChannelStrip {
         // ④ 动态：**一个**增益，两个声道共用（立体声联动，声像不被拉开）。
         let (l, r) = if self.params.compressor_enabled {
             let gain = self.compressor.process_gain(l, r);
+            (l * gain, r * gain)
+        } else {
+            (l, r)
+        };
+
+        // ⑤ 输出增益。
+        let l = l * self.output_gain;
+        let r = r * self.output_gain;
+
+        // 出口兜底：非有限值归零。见模块注释 §6。
+        let l = finite_or_zero(l);
+        let r = finite_or_zero(r);
+
+        let peak = l.abs().max(r.abs());
+        if peak > self.output_peak {
+            self.output_peak = peak;
+        }
+        self.output_mean_square += f64::from((l * l).max(r * r));
+
+        (l, r)
+    }
+
+    /// ③④⑤ 一帧（键模式）：滤波 → 动态（检波器读键）→ 输出增益，并记输出计量。
+    ///
+    /// 除动态级的检波器输入外与 [`Self::render_frame`] 逐字同：滤波、输出增益、
+    /// 输出计量一律读**节目**样本；只有压缩增益由键信号的检波决定。
+    /// `compressor_enabled` 为假时键被忽略，输出与 [`Self::render_frame`] 一位不动
+    /// （非键模式调用方仍走原方法，本方法是新增的键入口）。
+    #[inline]
+    fn render_frame_with_key(
+        &mut self,
+        left: f32,
+        right: f32,
+        key_left: f32,
+        key_right: f32,
+    ) -> (f32, f32) {
+        // ③ 滤波（逐样本；**两个声道各一份独立状态**，见 `filter_l` 的文档）。
+        let (l, r) = if self.params.filter_enabled {
+            (self.filter_l.process(left), self.filter_r.process(right))
+        } else {
+            (left, right)
+        };
+
+        // ④ 动态：**一个**增益，两个声道共用（立体声联动，声像不被拉开）。
+        //    增益由键信号的检波决定，乘到节目信号上；键不进混音。
+        let (l, r) = if self.params.compressor_enabled {
+            let gain = self.compressor.process_gain_with_key(key_left, key_right);
             (l * gain, r * gain)
         } else {
             (l, r)
@@ -2077,6 +2226,139 @@ mod tests {
                 untouched_right[frame].to_bits(),
                 "第 {frame} 帧右声道：同上"
             );
+        }
+    }
+
+    /// 键＝节目时，键模式与节目模式逐位相同（立体声与单声道各一）：
+    /// 键入口除检波器输入外不改任何状态。
+    #[test]
+    fn key_equal_to_program_matches_program_path_bit_for_bit() {
+        let params = dynamics_only(CompressorParams {
+            threshold_db: -12.0,
+            ratio: 4.0,
+            knee_db: 6.0,
+            detector_s: 0.005,
+            attack_s: 0.01,
+            release_s: 0.1,
+            makeup_db: 0.0,
+        });
+        let program = composite(5000);
+        // 立体声。
+        let mut plain_l = program.clone();
+        let mut plain_r = program.clone();
+        let mut keyed_l = program.clone();
+        let mut keyed_r = program.clone();
+        let mut plain = ChannelStrip::new(params, SR);
+        let mut keyed = ChannelStrip::new(params, SR);
+        plain.process_stereo(&mut plain_l, &mut plain_r);
+        keyed.process_stereo_with_key(&mut keyed_l, &mut keyed_r, &program, &program);
+        for frame in 0..program.len() {
+            assert_eq!(plain_l[frame].to_bits(), keyed_l[frame].to_bits());
+            assert_eq!(plain_r[frame].to_bits(), keyed_r[frame].to_bits());
+        }
+        // 单声道。
+        let mut plain_m = program.clone();
+        let mut keyed_m = program.clone();
+        let mut plain_mono = ChannelStrip::new(params, SR);
+        let mut keyed_mono = ChannelStrip::new(params, SR);
+        plain_mono.process_mono(&mut plain_m);
+        keyed_mono.process_mono_with_key(&mut keyed_m, &program);
+        for frame in 0..program.len() {
+            assert_eq!(plain_m[frame].to_bits(), keyed_m[frame].to_bits());
+        }
+    }
+
+    /// 键响、节目轻时条真的压下去；同一段节目走节目模式则一分不压。
+    #[test]
+    fn loud_key_ducks_quiet_program() {
+        let params = dynamics_only(CompressorParams {
+            threshold_db: -12.0,
+            ratio: 4.0,
+            knee_db: 0.0,
+            detector_s: 0.001,
+            attack_s: 0.001,
+            release_s: 0.05,
+            makeup_db: 0.0,
+        });
+        let program: Vec<f32> = (0..4800)
+            .map(|i| 0.01 * (core::f32::consts::TAU * 220.0 * i as f32 / SR).sin())
+            .collect();
+        let key = vec![1.0f32; 4800];
+        let mut keyed_l = program.clone();
+        let mut keyed_r = program.clone();
+        let mut keyed = ChannelStrip::new(params, SR);
+        keyed.process_stereo_with_key(&mut keyed_l, &mut keyed_r, &key, &key);
+        // 尾部峰值（已收敛）：头部帧的增益还没拉下来，不能算进峰值。
+        let tail = 1000;
+        let keyed_peak = keyed_l[keyed_l.len() - tail..]
+            .iter()
+            .fold(0.0f32, |peak, sample| peak.max(sample.abs()));
+        let mut plain_l = program.clone();
+        let mut plain_r = program.clone();
+        let mut plain = ChannelStrip::new(params, SR);
+        plain.process_stereo(&mut plain_l, &mut plain_r);
+        let plain_peak = plain_l[plain_l.len() - tail..]
+            .iter()
+            .fold(0.0f32, |peak, sample| peak.max(sample.abs()));
+        assert!(keyed_peak < 0.6 * plain_peak);
+        for frame in 0..program.len() {
+            assert_eq!(plain_l[frame].to_bits(), program[frame].to_bits());
+        }
+    }
+
+    /// 键静默、节目响时条不压；同一段节目走节目模式则压下去。
+    #[test]
+    fn silent_key_leaves_loud_program_uncompressed() {
+        let params = dynamics_only(CompressorParams {
+            threshold_db: -12.0,
+            ratio: 4.0,
+            knee_db: 0.0,
+            detector_s: 0.001,
+            attack_s: 0.001,
+            release_s: 0.05,
+            makeup_db: 0.0,
+        });
+        let program = vec![0.9f32; 4800];
+        let key = vec![0.0f32; 4800];
+        let mut keyed = program.clone();
+        let mut strip = ChannelStrip::new(params, SR);
+        strip.process_mono_with_key(&mut keyed, &key);
+        for frame in 0..program.len() {
+            assert_eq!(keyed[frame].to_bits(), program[frame].to_bits());
+        }
+        let mut plain = program.clone();
+        let mut plain_strip = ChannelStrip::new(params, SR);
+        plain_strip.process_mono(&mut plain);
+        // 尾部峰值（已收敛）：头部帧的增益还没拉下来，不能算进峰值。
+        let tail = 1000;
+        let plain_peak = plain[plain.len() - tail..]
+            .iter()
+            .fold(0.0f32, |peak, sample| peak.max(sample.abs()));
+        assert!(plain_peak < 0.6 * 0.9);
+    }
+
+    /// 压缩器未启用时键被完全忽略：键模式输出与节目模式一位不动。
+    #[test]
+    fn disabled_compressor_ignores_key() {
+        let params = ChannelStripParams {
+            eq_enabled: false,
+            filter_enabled: false,
+            compressor_enabled: false,
+            ..ChannelStripParams::DEFAULT
+        };
+        let program = composite(1000);
+        let key = vec![1.0f32; 1000];
+        let mut plain_l = program.clone();
+        let mut plain_r = program.clone();
+        let mut keyed_l = program.clone();
+        let mut keyed_r = program.clone();
+        let mut plain = ChannelStrip::new(params, SR);
+        let mut keyed = ChannelStrip::new(params, SR);
+        plain.process_stereo(&mut plain_l, &mut plain_r);
+        keyed.process_stereo_with_key(&mut keyed_l, &mut keyed_r, &key, &key);
+        for frame in 0..program.len() {
+            assert_eq!(plain_l[frame].to_bits(), keyed_l[frame].to_bits());
+            assert_eq!(plain_r[frame].to_bits(), keyed_r[frame].to_bits());
         }
     }
 }

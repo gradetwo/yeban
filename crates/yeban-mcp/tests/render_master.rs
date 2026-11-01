@@ -7511,6 +7511,65 @@ fn a_sidechain_edge_adds_nothing_to_the_master() {
     );
 }
 
+/// ⭐ 侧链键输入（v1）判据：**目的已武装时边被求值** ⇒ `without` 归零。
+///
+/// 形状：`lead → bus → master`（`project_with_bus_route`），总线上挂压缩器
+/// （与 `#303` 同形的 `InternalEffect` 压缩参数），再加一条 `lead → bus` 侧链边。
+/// 此时键信号 ＝ 总线节目（唯一音源就是 lead）⇒ 键模式增益轨迹与节目模式
+/// 逐位相同 ⇒ 母带必须与**无边压缩对照**逐字节相同；同时读数必须是
+/// `(0, 1, 0)`（求和 0、声明 1、没有键输入路径 0）—— 这是收据"求值后归零"
+/// 的唯一 MCP 级判据（`#337` 的旧夹具目的均无武装，只能覆盖 `without = N` 那一侧）。
+#[test]
+fn an_armed_destination_evaluates_its_sidechain_edge() {
+    let lead = id(2);
+    let bus = id(3);
+    let compressor = effect(
+        90,
+        &[
+            ("threshold_db", -30.0),
+            ("ratio", 4.0),
+            ("knee_db", 0.0),
+            ("attack_s", 0.002),
+            ("release_s", 0.050),
+            ("makeup_db", 0.0),
+        ],
+    );
+    let mut control = project_with_bus_route();
+    control
+        .tracks
+        .get_mut(&bus)
+        .expect("总线轨必须在夹具里")
+        .devices = vec![compressor];
+    // 总线夹具的音频边占了 41 / 42，侧链边用 45（⛔ 不许撞边身份）。
+    let keyed = with_sidechain_edge(control.clone(), 45, lead, bus);
+    let (control_result, control_bytes) = render_bytes(&control, "sidechain-armed-control");
+    let (keyed_result, keyed_bytes) = render_bytes(&keyed, "sidechain-armed-keyed");
+    assert_eq!(sidechain_readings(&control_result), (0, 0, 0));
+    assert_eq!(
+        sidechain_readings(&keyed_result),
+        (0, 1, 0),
+        "目的已武装 ⇒ 边被求值 ⇒ without 必须归零: {}",
+        keyed_result
+    );
+    assert_eq!(
+        keyed_bytes, control_bytes,
+        "键＝节目时键模式增益轨迹与节目模式逐位相同 ⇒ 母带不得变"
+    );
+    assert_eq!(
+        keyed_result["data"]["masterDigest"], control_result["data"]["masterDigest"],
+        "键＝节目时母带样本摘要不得变"
+    );
+    // ⭐ `unsupported` 的发射条件一个字节都没动：求值了也仍报（判据是"图里有没有
+    // 这种数据"，⛔ 不是"求值了没有"）。
+    let keys = keyed_result["data"]["unsupported"]
+        .as_array()
+        .unwrap_or_else(|| panic!("unsupported 必须是数组: {keyed_result}"));
+    assert!(
+        keys.iter().any(|key| key == "sidechainRouting"),
+        "求值了也必须继续报 sidechainRouting: {keyed_result}"
+    );
+}
+
 /// ⭐ `#337` 判据 2（负对照）：给**同一个目的节点**加一条普通音频边
 /// （`TrackToBus`）**必须**改变母带。没有这一条，判据 1 可能是"路由整体不搬音频"的假绿。
 ///

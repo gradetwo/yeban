@@ -55,7 +55,7 @@
 //! | ~~`notePitchBend`~~ | ⭐ **已退役（`#311b`）**：弯音曲线由引擎**真的求值**（音符局部 64 样本网格重算 `phase_inc`），因此**不再**登记。判据见 `yeban-engine/tests/pitch_bend.rs` 与 `render_master.rs` 的 `the_master_bends...` |
 //! | `noteLyrics` | **母带不会唱**：没有歌声合成（SVS 不存在），`syllable` / `phonemes` 不出声。⚠ 歌词**不是**"没有载体"：`syllable`（非空）已能写成 SMF `FF 05` 歌词元事件（`#312`），导入侧也按"唯一才归属"读回（`#317`）；`phonemes` 仍无 SMF 载体（SMF 只有一种文本槽，写进去等于把 SVS 对齐数据伪装成歌词 ⇒ 导出侧另报键 `phonemes`）。触发条件不变：任一音符带 `syllable` 或非空 `phonemes` 就登记 |
 //! | `busTrackClips` | 非源节点（总线/主轨）上的片段没有渲染（只有源节点有音源） |
-//! | `sidechainRouting` | 侧链边是**键输入**的数据形态，本渲染器**没有键输入消费面**（压缩器的检波器只读它自己正在压缩的那一路，`Compressor::process_gain` 不接受第二个输入）。⚠ `#315`：**这个键的判据是"图里有没有这种数据"**（一条两端都到不了 master 的悬挂边也照报），**说不出"发生了什么事"**。`#337` 起侧链边**不再**被当成普通音频边求和（修前平行时会 +6.0206 dB），因此"实际发生了什么"要看三个读数：`data.sidechainEdgesSummedAsOrdinaryAudio`（**真的被当成普通音频边求和进母带了几条**，修后恒 `0`）、`data.sidechainEdgesInRoutingGraph`（声明了几条）、以及 `data.sidechainEdgesDeclaredWithoutKeyInput`（**声明了、但没有键输入路径**的条数）。`0 / 0 / 0` = 没有侧链；`0 / N / N` = N 条侧链声明了，但一条都没有被求值（本切片没有检波器可喂）。修前 `#315` 的两个数**都不存在** ⇒ "报不支持却悄悄 +6.0206 dB"在响应里连一个字都没有（`#314` 的缺陷） |
+//! | `sidechainRouting` | 侧链边是**键输入**的数据形态，本渲染器**有键输入消费面（v1）**：压缩器的检波器可读键信号（`Compressor::process_gain_with_key`），离线 `RenderPlan::attach_key_armed_nodes` 按目的武装 / 源在保留子图 / 源层号严格更小 / 每目的边身份升序第一条合格边挂接。⚠ `#315`：**这个键的判据是"图里有没有这种数据"**（一条两端都到不了 master 的悬挂边也照报），**说不出"发生了什么事"**。`#337` 起侧链边**不再**被当成普通音频边求和（修前平行时会 +6.0206 dB），因此"实际发生了什么"要看三个读数：`data.sidechainEdgesSummedAsOrdinaryAudio`（**真的被当成普通音频边求和进母带了几条**，修后恒 `0`）、`data.sidechainEdgesInRoutingGraph`（声明了几条）、以及 `data.sidechainEdgesDeclaredWithoutKeyInput`（**声明了、但没有键输入路径**的条数）。`0 / 0 / 0` = 没有侧链；`0 / N / K` = N 条侧链声明了、K 条没有被求值（K = N 时一条都没有被求值）；`0 / N / 0` = 全部求值。修前 `#315` 的两个数**都不存在** ⇒ "报不支持却悄悄 +6.0206 dB"在响应里连一个字都没有（`#314` 的缺陷） |
 //! | `sfzAmplitude` | ⭐ `#274`：命中区域的 **`amplitude_oncc*`（CC 调制那一半）** 没有求值 —— 静态 `amplitude` 已由引擎的 SFZ 支路应用；CC 增量需要 CC 状态，本层没有。**只**在真的声明了 CC 调制时出现（静态 `amplitude=50` ⇒ ⛔ 不报） |
 //! | `sfzTuneCcModulation` | ⭐ `#223`：命中区域的 **`tune` 的 CC 调制**（`tune*ccN`，`pitch*ccN` 亦归此族）没有求值 —— 基准 `tune` 已烘进 `pitch_ratio`，CC 增量需要 CC 状态，本层没有。只在真的声明时出现 |
 //! | `sfzVolumeCcModulation` | ⭐ `#223`：命中区域的 **`volume` 的 CC 调制**（`volume*ccN` / `gain_ccN`）没有求值 —— 基准 `volume` 已折进 `total_gain()`，CC 增量（dB）需要 CC 状态，本层没有。只在真的声明时出现 |
@@ -2205,17 +2205,18 @@ pub struct RenderArtifact {
     /// 与另外两个读数对照读：声明了 N 条里，真的求和了 M 条（修后恒 0）、
     /// 没有键输入路径的有 K 条。差额是"连图上的音频子图都没进"的悬挂边。
     pub sidechain_edges_in_routing_graph: usize,
-    /// ⭐ `#337`：**声明了、但没有键输入路径**的侧链边条数。
+    /// ⭐ 侧链键输入（v1）：**声明了、但没有键输入路径**的侧链边条数。
     ///
-    /// 这是"侧链到底做没做事"的读数：本切片没有任何检波器/键输入消费面
-    /// （`yeban-dsp` 的压缩器只从**正在压缩的那一路**取检波输入，`process_gain(left,
-    /// right)` 没有第二个输入；`yeban-render` 也没有把任何信号送进第二个输入），
-    /// 因此**每一条**声明的侧链边都"没有键输入路径"。
+    /// 口径：声明条数 − `RenderPlan::attach_key_armed_nodes` 真的接上键输入的条数。
+    /// 一条边被求值当且仅当：目的节点已武装（静态压缩器启用，或非恒等
+    /// `compressor_enabled` 泳道）、源节点在保留子图里、源的层号严格小于目的的层号、
+    /// 且它是该目的边身份升序第一条合格边。未武装的目的、源被剪枝、层序不满足、
+    /// 非首条、环边一律不求值，仍计入本数。
     ///
     /// ⇒ 与 [`Self::sidechain_edges_summed_as_ordinary_audio`] 一起读：
-    /// `(0, 0)` = 工程里没有侧链；`(0, N)` = N 条侧链声明了、但一条都没有被求值
-    /// （"你的侧链现在什么都不做"）—— 这正是"问题看起来消失了"与"问题仍然存在"
-    /// 的分界。⛔ 不要把这个数读成"求和了"。
+    /// `(0, 0)` 且声明 `0` 条 = 工程里没有侧链；`(0, N)` = N 条侧链声明了、但一条
+    /// 都没有被求值（"你的侧链现在什么都不做"）；`(0, 0)` 且声明 `N > 0` 条 =
+    /// 全部求值。⛔ 不要把这个数读成"求和了"。
     pub sidechain_edges_declared_without_key_input: usize,
     /// 明确没渲染的部分（键序字典序，来自 `BTreeSet`）。
     pub unsupported: BTreeSet<&'static str>,
@@ -2501,8 +2502,9 @@ impl RenderArtifact {
             "sidechainEdgesInRoutingGraph".to_owned(),
             Value::from(self.sidechain_edges_in_routing_graph),
         );
-        // ⭐ `#337`：与"求和了几条"互补的第三个读数。修后求和恒 0，单看它会以为
-        // "问题消失了"；这个数说"声明了 N 条、**一条都没有键输入路径**"。
+        // ⭐ 侧链键输入（v1）：与"求和了几条"互补的第三个读数。修后求和恒 0，单看它会以为
+        // "问题消失了"；这个数说"声明了 N 条、其中 K 条**没有键输入路径**"（K = 声明 −
+        // 挂接时真的接上键输入的条数，见主计划编译后的挂接点）。
         map.insert(
             "sidechainEdgesDeclaredWithoutKeyInput".to_owned(),
             Value::from(self.sidechain_edges_declared_without_key_input),
@@ -2609,12 +2611,10 @@ pub fn build(
         .values()
         .filter(|edge| edge.kind == RoutingKind::Sidechain)
         .count();
-    // ⭐ `#337`：本渲染器**没有键输入消费面**（`yeban-dsp` 的压缩器检波器只读自己
-    // 正在压缩的那一路；`yeban-render` 没有把任何第二路信号送进检波器）。⇒ 每一条
-    // **声明**的侧链边都没有键输入路径。这个等式是当前事实，⛔ 不是省事的复制：
-    // 将来真有键输入时，这里必须改成"声明条数 − 真的接上键输入的条数"，并同步改
-    // `yeban-render` 的 `edge_ids()` 语义与本字段的文档。
-    let sidechain_edges_declared_without_key_input = sidechain_edges_in_routing_graph;
+    // ⭐ 侧链键输入（v1）：没有键输入路径的条数**不能**在这里绑定 —— 计划还没
+    // 编译，求值条数未知。它在主计划编译、设备泳道挂好、`attach_key_armed_nodes`
+    // 挂接之后才绑定（声明条数 − 真的接上键输入的条数），见下面的挂接点。
+    // （`#337` 的旧等式"without = 声明条数"在有键输入后已失效，⛔ 不许复用。）
     let sidechain_edges_summed_as_ordinary_audio = rendered_edges
         .iter()
         .filter(|edge_id| {
@@ -2838,6 +2838,15 @@ pub fn build(
     for automation in device_automations.into_values().flatten() {
         plan.attach_device_param_automation(automation);
     }
+    // ⭐ 侧链键输入（v1）：主计划编译好、设备泳道挂好之后挂接键路由。
+    // 武装集合就是 `compressing`（静态压缩器启用 ∪ 非恒等 `compressor_enabled` 泳道，
+    // 与 pre-pan tap 同一口径，⛔ 不手抄第二份判据）。求值规则见
+    // `RenderPlan::attach_key_armed_nodes`（目的武装、源在子图、源层号严格更小、
+    // 每目的边身份升序第一条合格边生效）。没有键输入路径的条数 = 声明条数 −
+    // 真的接上键输入的条数（已求值边恒是声明边的子集，减法不下溢）。
+    plan.attach_key_armed_nodes(&compressing);
+    let sidechain_edges_declared_without_key_input =
+        sidechain_edges_in_routing_graph - plan.key_evaluated_edge_ids().len();
     // ⭐ 任务单 `#296` ＋ B2：总线的**输出级**（`render_node` 的插入链之后）——
     // 推子 / `mute` / `solo` / 静态声相 / `TrackPan` 自动化。
     //

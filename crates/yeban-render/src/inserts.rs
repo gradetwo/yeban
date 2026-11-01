@@ -1191,6 +1191,10 @@ pub(crate) struct InsertRuntime {
     left: Vec<f32>,
     /// 右声道去交错缓冲。
     right: Vec<f32>,
+    /// 键左声道去交错缓冲（仅 `process_with_key` 用，按块大小分配）。
+    key_left: Vec<f32>,
+    /// 键右声道去交错缓冲（仅 `process_with_key` 用，按块大小分配）。
+    key_right: Vec<f32>,
 }
 
 /// 通道条**动态级**的只读读数（任务单 `#303`；[`crate::render::InsertMeterReading`]
@@ -1284,6 +1288,8 @@ impl InsertRuntime {
             delay_params,
             left: vec![0.0; block_size],
             right: vec![0.0; block_size],
+            key_left: vec![0.0; block_size],
+            key_right: vec![0.0; block_size],
         }
     }
 
@@ -1381,6 +1387,7 @@ impl InsertRuntime {
             delay_params,
             left,
             right,
+            ..
         } = self;
         for frame in 0..frames {
             left[frame] = buffer[2 * frame];
@@ -1411,6 +1418,57 @@ impl InsertRuntime {
         for frame in 0..frames {
             buffer[2 * frame] = left[frame];
             buffer[2 * frame + 1] = right[frame];
+        }
+    }
+
+    /// 原地处理一个**立体声交错**块（键模式）：与 [`Self::process`] 同形，
+    /// 唯通道条的动态级检波器输入取自 `key`（与节目块同帧对齐的交错键信号）。
+    /// 混响与卷积一律读节目；键不进混音。条不存在时与 [`Self::process`] 一位不动。
+    ///
+    /// 调用方契约：`key.len() == buffer.len()`（`render_node` 传抽头缓冲的同宽切片）；
+    /// 块帧数恒 `<= block_size` ⇒ 键去交错缓冲不越界。
+    pub(crate) fn process_with_key(&mut self, buffer: &mut [f32], key: &[f32]) {
+        let frames = buffer.len() / 2;
+        if frames == 0 {
+            return;
+        }
+        let Self {
+            strip,
+            reverb,
+            convolution,
+            left,
+            right,
+            key_left,
+            key_right,
+        } = self;
+        for frame in 0..frames {
+            left[frame] = buffer[2 * frame];
+            right[frame] = buffer[2 * frame + 1];
+            key_left[frame] = key[2 * frame];
+            key_right[frame] = key[2 * frame + 1];
+        }
+        if let Some(strip) = strip {
+            strip.process_stereo_with_key(
+                &mut left[..frames],
+                &mut right[..frames],
+                &key_left[..frames],
+                &key_right[..frames],
+            );
+        }
+        if let Some(reverb) = reverb {
+            reverb.process(&mut left[..frames], &mut right[..frames]);
+        }
+        if let Some(convolution) = convolution {
+            for frame in 0..frames {
+                buffer[2 * frame] = left[frame];
+                buffer[2 * frame + 1] = right[frame];
+            }
+            convolution.process(&mut buffer[..2 * frames]);
+        } else {
+            for frame in 0..frames {
+                buffer[2 * frame] = left[frame];
+                buffer[2 * frame + 1] = right[frame];
+            }
         }
     }
 }

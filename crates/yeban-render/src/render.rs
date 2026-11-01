@@ -60,7 +60,7 @@
 //!   推子仍由调用方在执行之后乘（主总线是终端节点）。其它节点是恒等输出级 ⇒
 //!   `render_node` 的最后一级一个样本都不碰（零默认回归）。
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Debug;
 
 use rayon::prelude::*;
@@ -353,6 +353,14 @@ struct NodeState {
     /// 有**非恒等**设备参数泳道的轨，对应器件在编译期被强制实例化
     /// （`#266` 通道条 / `#293` Freeverb 与卷积）⇒ 有器件可改。
     inserts: Option<InsertRuntime>,
+    /// 键抽头缓冲：仅当本节点是某条**已求值**侧链边的源时，`render_node`
+    /// 在插入链之后把本块样本拷到这里（抽头点：链后、声相前、推子前）。
+    /// 长度恒为 `block_size * channels`，只在挂接时分配；平时为空。
+    key_buffer: Vec<f32>,
+    /// 本节点若是某条已求值侧链边的目的，其源节点的槽位；否则 `None`。
+    key_input: Option<usize>,
+    /// 本节点是否被某条已求值侧链边抽头（`key_buffer` 是否有效）。
+    key_tap: bool,
     /// 本节点的**输出级**（任务单 `#296`）：插入链之后、母线求和之前。
     output: OutputStage,
 }
@@ -551,6 +559,11 @@ pub struct RenderPlan {
     options: RenderOptions,
     /// 槽位 -> 节点身份 (供 `bus_reduction_order` 使用)。
     slot_of: BTreeMap<EntityId, usize>,
+    /// 侧链边声明（编译期从图里抽出，边身份升序）：`(边身份, 源节点, 目的节点)`。
+    /// 只存声明，不存求值状态；求值状态在 `key_routes`。
+    sidechain_edges: Vec<(EntityId, EntityId, EntityId)>,
+    /// 已求值的键路由：目的槽位 -> （源槽位，边身份）。v1 单键：每目的至多一条。
+    key_routes: BTreeMap<usize, (usize, EntityId)>,
 }
 
 impl Debug for RenderPlan {
@@ -816,6 +829,15 @@ impl RenderPlan {
             })
             .collect();
 
+        // 侧链声明（`#337` 的另一半：边本身不搬音频，但声明要留给键挂接）。
+        // `BTreeMap` 值迭代 = 边身份升序 ⇒ 挂接时"第一条生效"即按此顺序。
+        let sidechain_edges: Vec<(EntityId, EntityId, EntityId)> = graph
+            .edges
+            .values()
+            .filter(|edge| edge.kind == RoutingKind::Sidechain)
+            .map(|edge| (edge.id, edge.source_node, edge.destination_node))
+            .collect();
+
         // ---- 2. PDC 关键路径分析 (与实时引擎共用的算法) ----
         let pdc_graph = pdc::Graph {
             nodes: keep.iter().copied().collect(),
@@ -906,6 +928,9 @@ impl RenderPlan {
                     delay_lines: Vec::new(),
                     scratch: vec![0.0; block_width],
                     inserts,
+                    key_buffer: Vec::new(),
+                    key_input: None,
+                    key_tap: false,
                     // 默认恒等：没有调用方挂总线推子 / 主总线声相时，`render_node`
                     // 的最后一级一个样本都不碰（零音频回归）。
                     output: OutputStage::new(),
@@ -948,6 +973,8 @@ impl RenderPlan {
             longest_path_frames: pdc_plan.longest_path,
             options,
             slot_of,
+            sidechain_edges,
+            key_routes: BTreeMap::new(),
         })
     }
 
@@ -961,6 +988,63 @@ impl RenderPlan {
     #[must_use]
     pub const fn longest_path_frames(&self) -> u32 {
         self.longest_path_frames
+    }
+
+    /// 挂接侧链键路由（v1 单键；单调：已挂接的目的不再改写，可重复调用）。
+    ///
+    /// 对每条编译期抽出的侧链声明（边身份升序），取**第一条**满足以下全部
+    /// 的边求值，其余登记未求值：
+    /// - 目的节点已武装（在 `armed` 里：静态压缩器启用，或非恒等压缩器泳道）；
+    /// - 源节点在保留子图里（有槽位）；
+    /// - 源的层号**严格小于**目的的层号（同层源因并行不可用；自边与环边因此
+    ///   至少一个方向落选，环永远不能完全求值）。
+    ///   求值后：目的的 `key_input` 指向源槽位、源的 `key_tap` 置真并按块宽分配
+    ///   抽头缓冲、`key_routes` 登记该边。未武装的目的、源不在子图、层序不满足
+    ///   的边一律不求值（收据里仍计未求值）。
+    ///
+    /// 调用纪律：构造期调用（允许分配），渲染执行前完成；执行中不调用。
+    pub fn attach_key_armed_nodes(&mut self, armed: &BTreeSet<EntityId>) {
+        // 槽位 -> 层号（`layers` 是每层的连续槽位区间）。
+        let mut level_of_slot = vec![0u32; self.states.len()];
+        for (level, &(start, end)) in self.layers.iter().enumerate() {
+            level_of_slot[start..end].fill(level as u32);
+        }
+        // 先克隆声明表：下面既读声明又写状态，借用上分不开。
+        let declarations = self.sidechain_edges.clone();
+        let block_width = self.options.block_size * self.options.channels;
+        for (edge_id, source_node, dest_node) in declarations {
+            let Some(&dest_slot) = self.slot_of.get(&dest_node) else {
+                continue;
+            };
+            if !armed.contains(&dest_node) {
+                continue;
+            }
+            if self.key_routes.contains_key(&dest_slot) {
+                continue;
+            }
+            let Some(&source_slot) = self.slot_of.get(&source_node) else {
+                continue;
+            };
+            if level_of_slot[source_slot] >= level_of_slot[dest_slot] {
+                continue;
+            }
+            self.states[dest_slot].key_input = Some(source_slot);
+            self.states[source_slot].key_tap = true;
+            if self.states[source_slot].key_buffer.is_empty() {
+                self.states[source_slot].key_buffer = vec![0.0; block_width];
+            }
+            self.key_routes.insert(dest_slot, (source_slot, edge_id));
+        }
+    }
+
+    /// 已求值的键路由边身份（按目的槽位序）。收据的"未求值"计数 =
+    /// 声明条数 − 本表长度。
+    #[must_use]
+    pub fn key_evaluated_edge_ids(&self) -> Vec<EntityId> {
+        self.key_routes
+            .values()
+            .map(|&(_, edge_id)| edge_id)
+            .collect()
     }
 
     /// 保留下来的节点身份 (按 `(层号, EntityId)` 排列)。
@@ -1289,6 +1373,9 @@ fn render_node(
         delay_lines,
         scratch,
         inserts,
+        key_buffer,
+        key_input,
+        key_tap,
         output,
     } = state;
 
@@ -1352,7 +1439,12 @@ fn render_node(
             .iter()
             .all(DeviceParamAutomation::is_identity)
         {
-            inserts.process(&mut buffer[..width]);
+            if let Some(source_slot) = *key_input {
+                inserts
+                    .process_with_key(&mut buffer[..width], &done[source_slot].key_buffer[..width]);
+            } else {
+                inserts.process(&mut buffer[..width]);
+            }
         } else {
             let channels = context.channels;
             let mut offset = 0usize;
@@ -1368,10 +1460,28 @@ fn render_node(
                         inserts.apply_device_params(field, value);
                     }
                 }
-                inserts.process(&mut buffer[offset * channels..(offset + chunk) * channels]);
+                if let Some(source_slot) = *key_input {
+                    let key = &done[source_slot].key_buffer
+                        [offset * channels..(offset + chunk) * channels];
+                    inserts.process_with_key(
+                        &mut buffer[offset * channels..(offset + chunk) * channels],
+                        key,
+                    );
+                } else {
+                    inserts.process(&mut buffer[offset * channels..(offset + chunk) * channels]);
+                }
                 offset += chunk;
             }
         }
+    }
+    // ---- 键抽头（侧链 v1）：插入链之后、输出级之前 ----
+    //
+    // 抽头点 = 链后、声相前、推子前（输出级即推子/声相的落点；离线 PDC 在边上
+    // 不在节点缓冲里，因此抽头天然不含 PDC）。只有被某条已求值侧链边抽头的节点
+    // 才写（`key_tap` 由 `attach_key_armed_nodes` 置真并配好块宽缓冲；
+    // `width <= block_size * channels` 恒成立 ⇒ 切片不越界）。
+    if *key_tap {
+        key_buffer[..width].copy_from_slice(&buffer[..width]);
     }
     // ---- 输出级（任务单 `#296`）：**插入链之后**、母线求和之前 ----
     //
@@ -1391,7 +1501,7 @@ fn render_node(
 mod tests {
     use super::*;
     use std::str::FromStr;
-    use yeban_model::{DeviceDefinition, RoutingEdge, RoutingKind};
+    use yeban_model::{DeviceDefinition, DeviceKind, ParameterValue, RoutingEdge, RoutingKind};
 
     /// Crockford Base32 字母表（ULID 的规范字母表，排除 I/L/O/U）。
     const CROCKFORD: &[u8; 32] = b"0123456789ABCDEFGHJKMNPQRSTVWXYZ";
@@ -2725,5 +2835,285 @@ mod tests {
             .filter(|(_, a, b)| core::mem::discriminant(a) != core::mem::discriminant(b))
             .count();
         assert_eq!(cross_variant, 2, "另有 2 对跨变体");
+    }
+
+    /// 侧链键挂接的测试夹具：一条显式身份的侧链边（`edge()` 造的是随机身份的音频边）。
+    fn sidechain_edge(id: EntityId, source: EntityId, destination: EntityId) -> RoutingEdge {
+        RoutingEdge {
+            id,
+            source_node: source,
+            destination_node: destination,
+            kind: RoutingKind::Sidechain,
+            gain_db: None,
+        }
+    }
+
+    /// 造一条带压缩器的插入链（bus 上的键目的）：阈值 −12 dB、4:1、硬膝、
+    /// 检波 1 ms、起振 1 ms、释放 50 ms、无 makeup。
+    fn compressing_chain() -> InsertChain {
+        let params = [
+            ("compressor_enabled", 1.0),
+            ("threshold_db", -12.0),
+            ("ratio", 4.0),
+            ("knee_db", 0.0),
+            ("detector_s", 0.001),
+            ("attack_s", 0.001),
+            ("release_s", 0.05),
+            ("makeup_db", 0.0),
+        ];
+        let device = DeviceDefinition {
+            id: EntityId::default(),
+            name: "strip".to_owned(),
+            kind: DeviceKind::InternalEffect,
+            bypassed: false,
+            params: params
+                .iter()
+                .map(|(name, value)| ParameterValue {
+                    name: (*name).to_owned(),
+                    value: *value,
+                    unit: None,
+                })
+                .collect(),
+            latency_samples: 0,
+        };
+        InsertChain::from_devices(&[device], 48_000)
+    }
+
+    /// 判据：键路由只在"目的已武装 + 源在子图 + 源层严格更早"时求值；
+    /// 求值后目的记源槽位、源记抽头并配好块宽缓冲；重复挂接不改写。
+    #[test]
+    fn key_route_evaluated_only_for_armed_destination_with_earlier_layer_source() {
+        let master = ulid(0xFFFF);
+        let kick = ulid(1);
+        let pad = ulid(2);
+        let bus = ulid(3);
+        let key_edge = ulid(100);
+        let routing = graph(
+            &[master, kick, pad, bus],
+            vec![
+                edge(kick, bus, None),
+                edge(pad, bus, None),
+                edge(bus, master, None),
+                sidechain_edge(key_edge, kick, bus),
+            ],
+        );
+        let options = RenderOptions::l1(256, 2, 48_000, 0).with_threads(1);
+        let mut plan = RenderPlan::compile(&routing, master, options).expect("编译");
+        let slots = plan.nodes();
+        let kick_slot = slots
+            .iter()
+            .position(|node| *node == kick)
+            .expect("kick 在计划里");
+        let bus_slot = slots
+            .iter()
+            .position(|node| *node == bus)
+            .expect("bus 在计划里");
+        let pad_slot = slots
+            .iter()
+            .position(|node| *node == pad)
+            .expect("pad 在计划里");
+        let armed: BTreeSet<EntityId> = [bus].into_iter().collect();
+        plan.attach_key_armed_nodes(&armed);
+        assert_eq!(plan.key_evaluated_edge_ids(), vec![key_edge]);
+        assert_eq!(plan.states[bus_slot].key_input, Some(kick_slot));
+        assert!(plan.states[kick_slot].key_tap);
+        assert_eq!(plan.states[kick_slot].key_buffer.len(), 128 * 2);
+        assert_eq!(plan.states[pad_slot].key_input, None);
+        assert!(!plan.states[pad_slot].key_tap);
+        // 单调：重复挂接不改写、不翻倍。
+        plan.attach_key_armed_nodes(&armed);
+        assert_eq!(plan.key_evaluated_edge_ids(), vec![key_edge]);
+        assert_eq!(plan.states[bus_slot].key_input, Some(kick_slot));
+    }
+
+    /// 判据：目的未武装 ⇒ 边保持声明未求值（收据里仍计未求值）。
+    #[test]
+    fn key_route_rejected_for_unarmed_destination() {
+        let master = ulid(0xFFFF);
+        let kick = ulid(1);
+        let pad = ulid(2);
+        let bus = ulid(3);
+        let routing = graph(
+            &[master, kick, pad, bus],
+            vec![
+                edge(kick, bus, None),
+                edge(pad, bus, None),
+                edge(bus, master, None),
+                sidechain_edge(ulid(100), kick, bus),
+            ],
+        );
+        let options = RenderOptions::l1(256, 2, 48_000, 0).with_threads(1);
+        let mut plan = RenderPlan::compile(&routing, master, options).expect("编译");
+        let slots = plan.nodes();
+        let kick_slot = slots
+            .iter()
+            .position(|node| *node == kick)
+            .expect("kick 在计划里");
+        let bus_slot = slots
+            .iter()
+            .position(|node| *node == bus)
+            .expect("bus 在计划里");
+        plan.attach_key_armed_nodes(&BTreeSet::new());
+        assert!(plan.key_evaluated_edge_ids().is_empty());
+        assert_eq!(plan.states[bus_slot].key_input, None);
+        assert!(!plan.states[kick_slot].key_tap);
+    }
+
+    /// 判据：源层不严格更早（同层自边、逆层边）⇒ 不求值。
+    #[test]
+    fn key_route_rejected_when_source_layer_not_strictly_earlier() {
+        let master = ulid(0xFFFF);
+        let kick = ulid(1);
+        let bus = ulid(2);
+        let routing = graph(
+            &[master, kick, bus],
+            vec![
+                edge(kick, bus, None),
+                edge(bus, master, None),
+                sidechain_edge(ulid(100), kick, kick),
+                sidechain_edge(ulid(101), bus, kick),
+            ],
+        );
+        let options = RenderOptions::l1(256, 2, 48_000, 0).with_threads(1);
+        let mut plan = RenderPlan::compile(&routing, master, options).expect("编译");
+        let armed: BTreeSet<EntityId> = [kick, bus].into_iter().collect();
+        plan.attach_key_armed_nodes(&armed);
+        assert!(plan.key_evaluated_edge_ids().is_empty());
+    }
+
+    /// 判据：v1 单键 —— 同一目的的多条边中边身份升序第一条生效，其余未求值；
+    /// 生效顺序与边的构造顺序无关（只与边身份有关）。
+    #[test]
+    fn first_sidechain_edge_wins_per_destination() {
+        let master = ulid(0xFFFF);
+        let kick = ulid(1);
+        let snare = ulid(2);
+        let bus = ulid(3);
+        let first = ulid(100);
+        let second = ulid(200);
+        let routing = graph(
+            &[master, kick, snare, bus],
+            vec![
+                edge(kick, bus, None),
+                edge(snare, bus, None),
+                edge(bus, master, None),
+                // 故意把大身份的边放在前面：BTreeMap 迭代仍按身份升序。
+                sidechain_edge(second, snare, bus),
+                sidechain_edge(first, kick, bus),
+            ],
+        );
+        let options = RenderOptions::l1(256, 2, 48_000, 0).with_threads(1);
+        let mut plan = RenderPlan::compile(&routing, master, options).expect("编译");
+        let armed: BTreeSet<EntityId> = [bus].into_iter().collect();
+        plan.attach_key_armed_nodes(&armed);
+        assert_eq!(plan.key_evaluated_edge_ids(), vec![first]);
+        let slots = plan.nodes();
+        let kick_slot = slots.iter().position(|node| *node == kick).expect("kick");
+        let snare_slot = slots.iter().position(|node| *node == snare).expect("snare");
+        let bus_slot = slots.iter().position(|node| *node == bus).expect("bus");
+        assert_eq!(plan.states[bus_slot].key_input, Some(kick_slot));
+        assert!(plan.states[kick_slot].key_tap);
+        assert!(!plan.states[snare_slot].key_tap);
+    }
+
+    /// 判据：源只以侧链边相连（不在音频保留子图里）⇒ 不求值。
+    #[test]
+    fn key_route_rejected_when_source_outside_retained_subgraph() {
+        let master = ulid(0xFFFF);
+        let lead = ulid(1);
+        let bus = ulid(2);
+        let orphan = ulid(3);
+        let routing = graph(
+            &[master, lead, bus, orphan],
+            vec![
+                edge(lead, bus, None),
+                edge(bus, master, None),
+                sidechain_edge(ulid(100), orphan, bus),
+            ],
+        );
+        let options = RenderOptions::l1(256, 2, 48_000, 0).with_threads(1);
+        let mut plan = RenderPlan::compile(&routing, master, options).expect("编译");
+        assert!(
+            !plan.nodes().contains(&orphan),
+            "只以侧链边相连的源必须被剪枝"
+        );
+        let armed: BTreeSet<EntityId> = [bus].into_iter().collect();
+        plan.attach_key_armed_nodes(&armed);
+        assert!(plan.key_evaluated_edge_ids().is_empty());
+    }
+
+    /// 判据（端到端）：bus 上的压缩器被 kick 的键信号压下去 —— 节目轻（pad 0.01）
+    /// 且键响（kick 1.0）时，bus 输出远小于无键时的输出；无键对照的尾部逐位等于
+    /// `1.0 + 0.01`（kick 直通 master + pad 原样过 bus）。
+    ///
+    /// 隔离设计：kick 只以**音频边**直通 master（因此它在保留子图里、有槽位可抽头），
+    /// 不进 bus 的节目；bus 的节目只有 pad。于是"有键"与"无键"之间唯一的变化就是键路由。
+    #[test]
+    fn keyed_bus_compressor_ducks_program_when_key_is_loud() {
+        let master = ulid(0xFFFF);
+        let kick = ulid(1);
+        let pad = ulid(2);
+        let bus = ulid(3);
+        let routing = graph(
+            &[master, kick, pad, bus],
+            vec![
+                edge(kick, master, None),
+                edge(pad, bus, None),
+                edge(bus, master, None),
+                sidechain_edge(ulid(100), kick, bus),
+            ],
+        );
+        let mut inserts = BTreeMap::new();
+        inserts.insert(bus, compressing_chain());
+        let options = RenderOptions::l1(4800, 2, 48_000, 0).with_threads(1);
+        let sources = || {
+            let mut map: BTreeMap<EntityId, Box<dyn AudioSource>> = BTreeMap::new();
+            map.insert(kick, Box::new(ConstantSource(1.0)));
+            map.insert(pad, Box::new(ConstantSource(0.01)));
+            map
+        };
+        let mut keyed = RenderPlan::compile_with_latencies_and_inserts(
+            &routing,
+            master,
+            options,
+            &BTreeMap::new(),
+            &inserts,
+        )
+        .expect("编译");
+        let armed: BTreeSet<EntityId> = [bus].into_iter().collect();
+        keyed.attach_key_armed_nodes(&armed);
+        assert_eq!(keyed.key_evaluated_edge_ids().len(), 1);
+        let keyed_output = keyed.execute(sources()).expect("有键渲染");
+        let mut plain = RenderPlan::compile_with_latencies_and_inserts(
+            &routing,
+            master,
+            options,
+            &BTreeMap::new(),
+            &inserts,
+        )
+        .expect("编译");
+        plain.attach_key_armed_nodes(&BTreeSet::new());
+        assert!(plain.key_evaluated_edge_ids().is_empty());
+        let plain_output = plain.execute(sources()).expect("无键渲染");
+        // 尾部 128 帧（已收敛）：无键 = kick 1.0 + pad 0.01 逐位；有键必须被压下去。
+        let tail = 128 * 2;
+        let keyed_tail = &keyed_output.samples[keyed_output.samples.len() - tail..];
+        let plain_tail = &plain_output.samples[plain_output.samples.len() - tail..];
+        let expected_plain = (1.0f32 + 0.01f32).to_bits();
+        for (index, sample) in plain_tail.iter().enumerate() {
+            assert_eq!(
+                sample.to_bits(),
+                expected_plain,
+                "无键尾部第 {index} 个样本必须逐位等于 1.0 + 0.01"
+            );
+        }
+        for (index, (keyed_sample, plain_sample)) in
+            keyed_tail.iter().zip(plain_tail.iter()).enumerate()
+        {
+            assert!(
+                keyed_sample < plain_sample,
+                "有键尾部第 {index} 个样本必须被压下去：有键 {keyed_sample} vs 无键 {plain_sample}"
+            );
+        }
     }
 }

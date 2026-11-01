@@ -716,24 +716,14 @@ impl Compressor {
         self.processed
     }
 
-    /// 推进**一个立体声帧**的检波器与弹道，返回该帧的**总线性增益**。
+    /// 推进检波器与弹道（步骤 ②–⑥），返回该帧的**总线性增益**。
     ///
-    /// ⚠ 这是本器件唯一的逐样本内核。它**只**推进状态并返回 `g`；
-    /// 把 `g` 乘到信号上由调用方做（[`Self::process_stereo`] /
-    /// [`Self::process_mono`]）。返回 `g` 而不是"压缩后的样本"，是为了让
-    /// 立体声与单声道两条路径共用**同一个** `g`，从而逐位一致。
-    ///
-    /// `NaN`/`±∞` 输入被归零（见 [`finite_or_zero`]）⇒ 返回值恒有限。
-    /// **逐样本无分配**：里面只有乘、加、`log10` 与比较；`log2` 只在出现新的
-    /// 最小增益时跑一次（[`Self::max_reduction_db`] 的统计用）。
+    /// `ms_in` 是本帧的检波器输入**均方**（`max(l², r²)` 的联动口径，见模块注释 §2）。
+    /// 调用方决定它来自哪一路：[`Self::process_gain`] 喂节目信号，
+    /// [`Self::process_gain_with_key`] 喂键信号。步骤 ②–⑥ 在此**只写一份**，
+    /// 因此两条路径除检波器输入外逐位相同（判据钉住）。
     #[inline]
-    pub fn process_gain(&mut self, left: f32, right: f32) -> f32 {
-        let l = finite_or_zero(left);
-        let r = finite_or_zero(right);
-
-        // ① 检波器：立体声联动，见模块注释 §2。
-        let ms_in = (l * l).max(r * r);
-
+    fn advance(&mut self, ms_in: f32) -> f32 {
         // ② 检波器平均：**对称**均方域一阶低通（模块注释 §3.2 / §3.4）。
         //    显式累加形式；均方是两个非负数的凸组合 ⇒ 恒 `≥ 0`，永不出现 −∞ / NaN。
         let mean_square = self.mean_square + self.alpha_detector * (ms_in - self.mean_square);
@@ -782,6 +772,45 @@ impl Compressor {
         // ⑥ 应用：本器件是**逐声道**器件。检波器联动、增益共享，但每个声道
         //    各自乘同一个增益 ⇒ 声像不被拉开（模块注释 §2）。
         self.gain_lin * self.makeup_gain
+    }
+
+    /// 推进**一个立体声帧**的检波器与弹道，返回该帧的**总线性增益**——
+    /// 但检波器输入取自**键信号**（侧链），而不是正在压缩的那一路。
+    ///
+    /// 除步骤 ① 的输入来源外，其余与 [`Self::process_gain`] **逐字同**
+    /// （共用 [`Self::advance`]）。键信号**不进混音**：返回的增益仍由调用方
+    /// 乘到节目信号上（[`crate::channel_strip`] 的键模式与此同口径）。
+    /// 键的 `NaN`/`±∞` 同样归零 ⇒ 返回值恒有限。
+    #[inline]
+    pub fn process_gain_with_key(&mut self, key_left: f32, key_right: f32) -> f32 {
+        let kl = finite_or_zero(key_left);
+        let kr = finite_or_zero(key_right);
+
+        // ① 检波器：立体声联动，见模块注释 §2——输入是键，不是节目。
+        let ms_in = (kl * kl).max(kr * kr);
+
+        self.advance(ms_in)
+    }
+
+    /// 推进**一个立体声帧**的检波器与弹道，返回该帧的**总线性增益**。
+    ///
+    /// ⚠ 这是本器件唯一的逐样本内核。它**只**推进状态并返回 `g`；
+    /// 把 `g` 乘到信号上由调用方做（[`Self::process_stereo`] /
+    /// [`Self::process_mono`]）。返回 `g` 而不是"压缩后的样本"，是为了让
+    /// 立体声与单声道两条路径共用**同一个** `g`，从而逐位一致。
+    ///
+    /// `NaN`/`±∞` 输入被归零（见 [`finite_or_zero`]）⇒ 返回值恒有限。
+    /// **逐样本无分配**：里面只有乘、加、`log10` 与比较；`log2` 只在出现新的
+    /// 最小增益时跑一次（[`Self::max_reduction_db`] 的统计用）。
+    #[inline]
+    pub fn process_gain(&mut self, left: f32, right: f32) -> f32 {
+        let l = finite_or_zero(left);
+        let r = finite_or_zero(right);
+
+        // ① 检波器：立体声联动，见模块注释 §2。
+        let ms_in = (l * l).max(r * r);
+
+        self.advance(ms_in)
     }
 
     /// 原地处理一个立体声块（两个切片必须等长）。
@@ -1937,5 +1966,108 @@ mod tests {
         assert_eq!(p.attack_s.to_bits(), 10.0f32.to_bits());
         assert_eq!(p.release_s.to_bits(), 10.0f32.to_bits());
         assert_eq!(p.makeup_db.to_bits(), 24.0f32.to_bits());
+    }
+
+    /// 键模式与节目模式除检波器输入外逐位相同：键＝节目时，两台压缩器的
+    /// 每帧增益、检波器电平与全部统计逐位一致（`advance` 只写一份的判据）。
+    #[test]
+    fn key_mode_with_key_equal_to_program_matches_program_mode_bit_for_bit() {
+        let make = || {
+            Compressor::new(
+                CompressorParams {
+                    threshold_db: -12.0,
+                    ratio: 4.0,
+                    knee_db: 6.0,
+                    detector_s: 0.005,
+                    attack_s: 0.01,
+                    release_s: 0.1,
+                    makeup_db: 0.0,
+                },
+                48_000.0,
+            )
+        };
+        let mut program_only = make();
+        let mut keyed = make();
+        // 一段过阈值的节目（含瞬态与回落），覆盖起振与释放。
+        let frames = [0.0, 0.5, 0.9, 0.9, 0.2, 0.05, 0.0, 0.8, 0.1, 0.0];
+        for &sample in &frames {
+            let gain_program = program_only.process_gain(sample, sample * 0.5);
+            let gain_key = keyed.process_gain_with_key(sample, sample * 0.5);
+            assert_eq!(gain_program.to_bits(), gain_key.to_bits());
+        }
+        assert_eq!(
+            program_only.level_db().to_bits(),
+            keyed.level_db().to_bits()
+        );
+        assert_eq!(
+            program_only.mean_square().to_bits(),
+            keyed.mean_square().to_bits()
+        );
+        assert_eq!(
+            program_only.gain_linear().to_bits(),
+            keyed.gain_linear().to_bits()
+        );
+        assert_eq!(
+            program_only.max_reduction_db().to_bits(),
+            keyed.max_reduction_db().to_bits()
+        );
+        assert_eq!(program_only.reduction_count(), keyed.reduction_count());
+        assert_eq!(program_only.processed_samples(), keyed.processed_samples());
+    }
+
+    /// 键响、节目轻时压缩器仍压（检波器读的是键，不是节目）；同一段节目
+    /// 走节目模式则一分不压。差分断言，不编收敛后的具体增益值。
+    #[test]
+    fn loud_key_ducks_quiet_program() {
+        let make = || {
+            Compressor::new(
+                CompressorParams {
+                    threshold_db: -12.0,
+                    ratio: 4.0,
+                    knee_db: 0.0,
+                    detector_s: 0.001,
+                    attack_s: 0.001,
+                    release_s: 0.05,
+                    makeup_db: 0.0,
+                },
+                48_000.0,
+            )
+        };
+        let mut keyed = make();
+        let mut program_only = make();
+        for _ in 0..200 {
+            keyed.process_gain_with_key(1.0, 1.0);
+            program_only.process_gain(0.01, 0.01);
+        }
+        assert!(keyed.gain_linear() < 0.9);
+        assert_eq!(program_only.gain_linear().to_bits(), 1.0f32.to_bits());
+    }
+
+    /// 键静默、节目响时压缩器不压（检波器读的是键）；同一段节目
+    /// 走节目模式则压下去。差分断言。
+    #[test]
+    fn silent_key_leaves_loud_program_uncompressed() {
+        let make = || {
+            Compressor::new(
+                CompressorParams {
+                    threshold_db: -12.0,
+                    ratio: 4.0,
+                    knee_db: 0.0,
+                    detector_s: 0.001,
+                    attack_s: 0.001,
+                    release_s: 0.05,
+                    makeup_db: 0.0,
+                },
+                48_000.0,
+            )
+        };
+        let mut keyed = make();
+        let mut program_only = make();
+        for _ in 0..200 {
+            keyed.process_gain_with_key(0.0, 0.0);
+            program_only.process_gain(1.0, 1.0);
+        }
+        assert_eq!(keyed.gain_linear().to_bits(), 1.0f32.to_bits());
+        assert!(program_only.gain_linear() < 0.9);
     }
 }
