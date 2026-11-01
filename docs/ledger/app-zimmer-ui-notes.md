@@ -311,3 +311,12 @@ clip_widths / clip_ys / clip_heights` 全部是 `self.clips.iter()` **无过滤�
 ⛔ 放宽为"看整体 conclusion"）。step6 原判据取 `--limit 1` 的"最新 main run"，与并发推送
 存在竞态；改按**精确 headSha** 定位。教训与 §15 判据误红同族：**任何自动化判据都不许耦合
 作业名/最新性这类会被计划裁剪与并发移动的表面坐标，要耦合就耦合内容（二进制名、SHA）。**
+
+## 16. sidebar 合流收盘（自动落账 2026-11-01，数值现读自流水线日志）
+
+- sidebar 重判 run `41256416978` / `d5ceab0d`：**success**（判据收紧后）。
+- 合流：`worktree.sh land sidebar-library` ⇒ 本地 main tip `983080d2`（与 §15 文档批同车推送）。
+- 落地批 main run `41259186362`：**success**（该 run 含 crates 改动 ⇒ 真腿；空绿不适用）。
+- 拆树：`worktree.sh rm sidebar-library --purge`（留档 tag `line-archive/sidebar-library`）。
+- 至此 zimmer 报告非 MCP 面**全部收盘**：可复现缺口已落地，U-13=A 维持现状，
+  U-09/U-10/U-12/N-UI-2 挂 `ADR-0058/0059/0060` 待人类批准（均 Proposed、零代码）。
