@@ -2155,6 +2155,40 @@ pub fn build_live_ui_with(
         // `host::wire_clip_drag`）调的是**同一个**函数 ⇒ 无头端口注入的拖动
         // 与用户手势走同一条链（拖动期只写草稿，松手 `commit_ops` 一次）。
         host::wire_clip_drag(&window, undo);
+        // ⭐ 缺陷 `D-UI-11`（2026-11-01，用这条控制面创作第二首时撞上）：**轨道头的
+        // 三条手势在本装配里没接线**。
+        //
+        // `--enable-ui-mcp-http` 在 `main.rs` 的 `main()` 里提前分流进 `ui_mcp_serve::run`，
+        // ⛔ 永远不执行 `run_gui` 的那一段接线（`host::wire_track_select` /
+        // `wire_track_height_drag` / `wire_undo` 都在那一段里）。Slint 的回调没注册
+        // handler 就是空操作 ⇒ 在这条执行面上：
+        //   · 点轨道行**不选轨**（`selected-track-id` 没有写者）⇒ 设备链 / 建片段 /
+        //     铅笔提交**恒指向第 1 条轨**（实测：UI 写出来的 6 轨工程里 15 颗剪辑
+        //     100% 挂在 MIDI 1，其余 5 条一颗没有）；
+        //   · `Alt+↑` / `Alt+↓` 被键面**消费**（`consumed = true`）却什么都不改 ——
+        //     比"不消费"更坏：调用方读到的是"这一键有绑定"（`host::apply_action` 的
+        //     `SelectTrackBy` 臂落到 `ui.invoke_track_select`，而那条回调没人听）；
+        //   · 拖轨道行**不改行高**（整块行头都是拖拽面，按下 = 选中 + 抓住行高）；
+        //     界面上的撤销入口（撤销弹窗开关 / 「撤销一步」/ 版本节点 / 走带区 ↻ /
+        //     诊断导出）**全部空转** —— `Ctrl+Z` 走 `wire_keys` 那条链照常有效，
+        //     分叉只在按钮这一格。
+        //
+        // ⚠ 为什么此前没有判据抓到它：`tests/track_selection.rs` 那条**名字叫
+        // `clicking_the_track_header_...`** 的判据实际调
+        // `invoke_accessible_default_action()`（无障碍默认动作），而 `ui/dispatch_pointer_*`
+        // 走的是 `window.pointer_down(窗口坐标)` ⇒ Slint 命中测试，两条路在 `.slint` 里
+        // 分别落在 Rectangle 的动作与该行的 `TouchArea` 上。判据侧过去**各自补一次**
+        // `host::wire_track_select`（`tests/track_selection.rs` /
+        // `tests/track_select_keyboard.rs` / `tests/mixer_keyboard_nudge.rs` /
+        // `tests/mixer_keyboard_switch.rs`），于是"这份装配接没接"永远读不出来。
+        // 同一族的防线是 `tests/d_ui_11_serve_header_gestures.rs` 的名单对账。
+        host::wire_track_select(&window, undo);
+        // `ADR-0004` S1 的纵向入口：与 `wire_track_select` 共用轨道头那一块 `TouchArea`
+        // （按下 = 选中 + 抓住行高，移动 = 改高，松手 / `Escape` = 收尾）。
+        host::wire_track_height_drag(&window, undo);
+        // 撤销的**界面**入口那六个回调（见上面的分解）：产品进程在 `run_gui` 里接的就是
+        // 这一对，本装配过去只接了按键那一条。
+        host::wire_undo(&window, undo);
     }
     // **四个模块入口**（导出 WAV / 导入 MIDI / 装载 SFZ / 录音）：与产品进程
     // （`main.rs` 的 `run_gui`）调的是**同一个** `host::wire_module_actions`。
