@@ -3216,7 +3216,10 @@ pub fn summarize_ops(ops: &[Op]) -> Value {
                 tracks.push(json!({
                     "id": track.id.to_canonical_string(),
                     "name": track.name,
-                    "kind": serde_json::to_value(track.kind).unwrap_or(Value::Null),
+                    // ⭐ s34：单元枚举（`TrackKind`）的 serde 输出**只可能是字符串** ⇒
+                    // 原先的 `unwrap_or(Value::Null)` 那条臂不可达，却把"可为 null"写进了事实里，
+                    // 迫使 `output_schema` 的 `tracks[].kind` 只能声明成可空。现改成响亮拒绝。
+                    "kind": serde_json::to_value(track.kind).expect("单元枚举序列化不失败"),
                 }));
             }
             Op::AddClip { clip } => {
@@ -3247,7 +3250,8 @@ pub fn summarize_ops(ops: &[Op]) -> Value {
                     "id": edge.id.to_canonical_string(),
                     "sourceNode": edge.source_node.to_canonical_string(),
                     "destinationNode": edge.destination_node.to_canonical_string(),
-                    "kind": serde_json::to_value(edge.kind).unwrap_or(Value::Null),
+                    // 同上：`RoutingKind` 也是单元枚举 ⇒ 不可达的 `null` 臂不写进名册。
+                    "kind": serde_json::to_value(edge.kind).expect("单元枚举序列化不失败"),
                     "gainDb": edge.gain_db,
                 }));
             }

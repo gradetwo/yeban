@@ -1,6 +1,13 @@
 # 交接（夜半第三阶段 · 2026-10-14 · 覆盖台账 R307–R1144）
 
-> ⭐ **2026-11-01 深夜（第六批）：当下状态看 §0.6.0zj**（**s30 全链收盘**：合流 run `41246376638` = `success`
+> ⭐ **2026-11-01 深夜（第十一批）：当下状态看 §0.6.0zo**（**四线并行在飞**：s35 合流 `41277145990` = `success`／
+> s36 线 `41275369612` = `success`（宽腿真跑 **46m20s**、目标步 `checks` 第 **11** 步在场且绿）／s37 的「守卫牙齿自检」步在 CI = `success`／
+> s34 窄腿 `clippy (-D warnings)` = `success`；⭐ 四枚 pending 判决 = s34 线 `41278398109`、**s36 合流 `41278457997`**、s37 线 `41278688839`、s38 线 `41279612150`；
+> ⏭ 接手第一件事 = 读回这四枚 ⇒ **s36 合流判绿先 land s34**（两票都碰 `crates/yeban-mcp`，⛔ 并行 land），随后 s37、s38；
+> ⛔ 在飞期间不推 main（同分支并发组会取消在飞判决）；本地已提交但未推的文档批 = tip `40198fa8`；
+> ⭐ 一条被现读纠回的打算：task #109 的六条裸清单**早被 s35 交付了**（`da71bc19`）⇒「票面文字与行号都不是交付状态，**函数名**才是」；
+> ⭐ 新落地能力：s38 把词表守卫从 **3 处扩到 14 处**、三类生产者（`variants`／`int_serde`／`matches`）各会读，并当场量到抽取器两个洞）；
+> ⭐ 上一批在 §0.6.0zj（**s30 全链收盘**：合流 run `41246376638` = `success`
 > （`plan` 给两枚 crate ⇒ 窄腿真跑、宽腿 `skipped`；这条 run 才是"s30 代码 × `threads` 批"第一次同树编译）、
 > 树已拆（归档标签 `line-archive/s30-items-shapes @ 539cc5c9`）⇒ ⏭ 下一步 = **s31**（task #106：`render_master` 的 10 处裸对象属性槽）；
 > ⭐ 上一批在 §0.6.0zi（**s30 收盘**：第三枚 `539cc5c9` 的 run `41238224956` = `success`
@@ -37,7 +44,7 @@
 
 ---
 
-## ⭐ ⭐ ⭐ §0.6 最新交接（**2026-10-28 起，最新到 2026-11-01 的 §0.6.0zj**，创作缺口审计 `G1..G18` 全轮 + 完成审计 + Zimmer 报告核账）—— 新会话先读这一节
+## ⭐ ⭐ ⭐ §0.6 最新交接（**2026-10-28 起，最新到 2026-11-01 的 §0.6.0zo**，创作缺口审计 `G1..G18` 全轮 + 完成审计 + Zimmer 报告核账）—— 新会话先读这一节
 
 > 本节是**当前**状态；下面 §0.5（2026-10-26，macOS 主机）与 §1／§1.9 是**历史快照**，
 > ⛔ 不要当成今天的事实 —— ⚠ 尤其 §0.5 里的路径与 env 是**另一台机器**的。
@@ -251,6 +258,114 @@
 - ⏭ **再下一片**（不在 s30）：`ops` 那处要走 §22.22 路线甲 —— 先给校验器补 `min/maxProperties`/`propertyNames`，
   再拿逐变体载荷名册（`Op` 有 **55** 个顶层变体，外部标签 ⇒ 元素恒"恰好一键"）。
 
+
+### 0.6.0zo ⭐ 尾批（2026-11-01 深夜·第十一批）：**四线并行（s35 合流 `success`／s36 线 `success`＋宽腿真跑 46m20s／s37 牙齿步 CI `success`／s34 窄腿 `success`）＋ s38 把词表守卫扩到 14 处** ＋ ⛔「#109 早被 s35 交付了，我为它开了一棵新树」
+
+- ⭐ **接手第一件事 = 读回四枚 pending 判决**（全部已推、都在飞；⛔ 未读回不算判决，§5.5）：
+  s34 线 `87d20165` = run **`41278398109`**（`rust (yeban-mcp)` **已 success**，只剩 `windows`/`macos`）；
+  s36 合流 `20aa3f0d` = run **`41278457997`**（`checks`/`e2e`/`deny`/`lockfile` success，`rust (workspace 全量)` 与 `windows`/`macos` 在飞）；
+  s37 线 `d1103307` = run **`41278688839`**（同上，宽腿在飞）；s38 线 `272d5910` = **run 待生成**。
+  ⇒ 顺序建议：**s36 合流判绿先落地 s34**（两票都碰 `crates/yeban-mcp`，⛔ 并行 land），随后 s37、s38 各自 land（都只碰 `scripts/**`）。
+- ⛔ **本批不推 main**：`41278457997` 在飞，同分支并发组会取消它 ⇒ 抹掉 s36 合流的证据。文档批（§22.35 ＋ 本节）已在本地提交，
+  等合流读数回来再推（§0.6.0zh 的教训第三次执行）。
+- ⭐ **s35 全链收盘**：合流 run `41277145990`（`a071a0a8`）= `completed / **success**`，9 条作业 success（`rust (yeban-mcp)` **9m27s**／`windows` **39m49s**／`macos` 15m25s／`ui-mcp` 3m41s／`checks` 1m24s／`e2e`／`deny`／`lockfile`）＋ `rust (workspace 全量)` = `skipped`。
+  ⛔ 判据名的逐位读数**不在这枚上**（那七条只在线 run `41274783232` 下过日志，§22.34）⇒ 本枚只证"合流后同一棵树仍全绿"，把它写成"重测过判据"就是**推断冒充复测**。
+- ⭐ **s36 线收盘 ＋ 一条在场证据**：线 run `41275369612`（`f0aafd20`）= `success`，`plan` 给全量 ⇒ 窄矩阵 `skipped`、
+  `rust (workspace 全量)` **真跑 46m20s**；目标步「项目 schema 词表对账」在 `checks` 作业 `124756366119` 第 **11** 步 = `success`
+  —— ⛔ 只看整体 success 会放过"守卫根本没被调用"（§22.6）。已 land = 合并提交 **`20aa3f0d`**，树已拆（`line-archive/s36-schema-vocabularies @ f0aafd20`）。
+  ⚠ 那条 `f0aafd20` 标题的手误 `[MUST-GATE-004]` → 应为 `[MODEL-AST-002]`，**引用时必须带着这条**（已推送 ⇒ ⛔ 不 force-push）。
+- ⭐ **s37 的目标步已经在 CI 里成功**（这条把 §22.34 留的"本地控件红"一次性判掉）：run `41278688839` 的 `checks` 作业 `124765977236` 现读
+  「守卫牙齿自检 (每枚 check_*.py 对故意做坏的输入必须报红)」= **`success`**，「工作流结构自检 (R65)」= `success`
+  ⇒ CI 里 pyyaml 在场，`check_workflow_structure.py` 的**控件**是绿的，牙齿自检 = **五枚控件全绿 + 9 条变异规格全红**，⛔ 不是"少跑一枚"。
+  本票动作：`df3ca8b0` **rebase 到新 main**（唯一冲突在 `ci.yml`：s36 的词表步与 s37 的牙齿步各加一行 ⇒ **两条都保留**）→ `d1103307` 已推。
+- ⭐ **s34（#110）的线腿已 success**：`87d20165` 的 `rust (yeban-mcp)` = `success`（16m52s），步骤级 `clippy (-D warnings)` = `success`
+  ⇒ 三份 `willCreate` 名册与三条新判据**编译通过**（`yeban-mcp` 本机不编译，AGENTS.md §5，这类结论只能这么拿）。
+  ⏭ 等 `windows`/`macos` 收口后 land；判据名的逐位读数要在那枚 run 收口后用 `gh run view --job --log` 取（口径见 §22.33：**三条新判据各 2 次**、`test result:` **149** 行、`FAILED` **0**，`passed` 合计应 **≥ 2,744 + 6 = 2,750**）。
+- ⛔⛔ **本批最贵的一条：我为一张**已经交付**的票开了新树**。task #109 的标题（`edit_automation` 五处 + `query_engine_state` 两处）
+  与 s35 的 `da71bc19` 标题**逐字同一件事**，而 §22.33 的"裸槽盘点"写在 s35 **之前**、没被回写 ⇒ 我照盘点开工。
+  发现方式是现读：新树里那七处**每一处都已指向名册函数**（`automation_target_variants()`／`automation_lane_domain()`／`automation_written()`／
+  `automation_reading_items()`／`query_track()`／`state_sources()`）。⇒ **#109 判 completed，裸槽系列（s30→s34）到此见底**。
+  重申 AGENTS.md §6 第 3 条：**先 grep 交付，再开工**。票面文字与台账里的**行号**都不是交付状态，**函数名**才是。
+- ⭐ **s38 = 词表守卫 3 处 → 14 处**（`line/s38-vocabulary-sites @ 272d5910`，已推，判决 pending）。现读该 schema 全文 `enum` 数组 = **14** 处，
+  本票按**三类生产者**分别会读：`variants` **10** 处（派生 serde ⇒ 变体名 == JSON 名；`CurveType` 在 `music.rs` ⇒ 源文件改成**每站点一条**；
+  滑音那处指针穿过 `oneOf[0]` ⇒ 解析器要认 `[N]`）／`int_serde` **2** 处（`SampleRate`/`BlockSize` 手写 serde ⇒ 读 `pub const ALL` + `Self::X => N` 臂的**数值**，⛔ 手抄整数）／
+  `matches` **2** 处（拍号分母读 `matches!(self.denominator, 1 | 2 | 4 | 8 | 16 | 32)`）。下界从全局 4 改为**每站点登记**（只堵"成对删空"，删格才需上调）。
+- ⛔ **s38 顺手量到抽取器两个真洞**（都不是新代码引入的，是被现读逼出来的）：
+  ① s36 的变体字符集 `[A-Za-z0-9]*` **不认下划线** ⇒ `PanLaw::ConstantPowerMinus4_5dB` 抽不到，一旦把 `PanLaw` 纳进来就报成"schema 登记了、模型里没有"的**假红**
+  （`PanLaw` 四个变体里恰好一个带 `_`，所以一进来就红给我看）；
+  ② 第一版从**文件头**找 `pub const ALL`/accessor ⇒ `BlockSize` 拿到 `SampleRate` 的表，报「成员 `Hz44100` 在 `frames()` 里没有数值臂」——
+  同一份文件里两个同构枚举是**常态**。⇒ 与 s37 的存在理由同一条：守卫"能跑"⛔ 等于"能红"。
+  本机读数：真档 **14/14** 绿（合计 **61** 项）＋ **9** 条变异探针全红（三类各测单侧删与成对删，另加 `TrackKind` 的**精确**成对删：等式成立、只有下界能红）。
+- ⚠ **一条脚本使用读数（⛔ 机制未复验，只登记现象）**：`worktree.sh add … | head -2` 之后分支已建、工作树目录**不存在**、`git worktree list` 无该行，
+  第二次 `add` 报「分支已存在」。结论只到一句：**跑 `worktree.sh` 不要接 `head`**（要截断就先重定向到文件）。
+- 🔧 **留给集成者的两小条**：① `ci.yml` 里词表那一步的**步名**仍写"三处"，实际已 14 处 —— s38 故意不动 `ci.yml`（s37 正在改同一文件，一文件一写者），
+  下一次由集成者与 s37 的落地批一起改；② `check_guard_teeth.py` 对词表守卫只有 **2** 条规格，且都打在 ① 类机制上 ⇒
+  `int_serde`/`matches` 两类抽取器**没有**变异规格，退化时牙齿自检抓不到（新票 **#115**）。
+- **树况与磁盘**：`git worktree list` 现读 **4 行**（main ＋ s34 ＋ s37 ＋ s38）；本批 `rm s36-schema-vocabularies --purge` 释放 **102 M**；
+  `/` 现读 **202 G 已用／27 G 余量（89%）**，`target/debug` = **324 M**（不删：轻量 crate 本机复验的增量缓存）。⛔ 仓库外 **19 G** 缓存 + **5.2 G** rustup 仍卡 **#34** 的人类裁决。
+- ⏭ **下一片 = task #114（s39）**：`COVERED_TOOLS` = **10** / `name.enum` = **26** ⇒ **16** 个工具不广播 `outputSchema`；
+  创作素材面子集 = `import_midi`／`export_midi`／`record_wav`／`load_sfz`／`render_sfz_wav`／`list_instruments`／`launch_scene`／`query_project`。
+  ⚠ 前置读数在 §22.34 末段：成功载荷构造点集中在 `domain/mod.rs`（`ToolResponse::success` **26** 处），⛔ 按 `domain/` 同名文件推断（那些文件各 **0** 处）。
+  ⛔ s39 写 `output_schema.rs` ⇒ 必须排在 **s34 落地之后**（同文件一写者）。
+
+
+
+- **线判决（单位：一枚 commit 一个 run）**：`da71bc19` 的 run **`41274783232`** = `completed / **success**`，十条作业 **9 success** ＋ `rust (workspace 全量)` = `skipped`（`plan` 窄集合）⇒ ⛔ 不引用全量基线数。
+- **验收读数（`rust (yeban-mcp)` 腿；单位：`test <名> ... ok` 的行数）**：**7** 条新判据**各 2 次**（两档）；s33 两条老判据**各 2 次**在场；
+  `test result:` **149** 行／`FAILED` **0** 行／`passed` 合计 **`2,744`** —— 与 §22.33 的 `2,730` 差 **14** = **7** × 两档 ⇒ 单位对齐才做这个减法。
+- ⚠ **§6.3 第 4 条的口径在这一腿上要换形态**：该腿日志里 `Running tests/` 出现 **0** 次（`--all-targets` 跑出来是 lib/unittest 抬头）⇒
+  判"没被 fail-fast 挤掉"在这里靠**逐名数 `test … ok`** ＋ `FAILED` 整行数，⛔ 别把一种日志形态当成唯一形态。
+- ⛔ **散文与交付不符（这次是判据条数）**：标题写"六条判据"，`git show da71bc19 | grep -c '^+[[:space:]]*#\[test\]'` = **7**，
+  第七条 `the_sends_roster_pins_the_producer_filter_identity` 在合入前的 `b7009e39` 里 `git grep -c` = **0** ⇒ 确系本批新增。已推送 ⇒ ⛔ 不 force-push，引用以 **7 条**为准。
+- ⛔ **另一批的 ID 手误**：s36 线 `f0aafd20` 标题带 `[MUST-GATE-004]`，而该门禁定义是「开源许可合规零告警」（`docs/YEBAN_ENGINEERING_IMPLEMENTATION_ROADMAP.md:383`），
+  本批只对应 `[MODEL-AST-002]`。同样 ⛔ 不 force-push，留痕见台账 §22.34。
+- ⭐ **s37（并行树 `line/s37-guard-teeth`，本地未推送）第一次让"守卫有没有牙"变成常驻读数**：
+  `scripts/guards/check_guard_teeth.py` 一条规格 = 「未变异暂存副本里该守卫退 **0**（控件）」+「一处确定性破坏后退**非** 0（牙齿）」，两半缺一不算；
+  名册 = 暂存副本里 `scripts/guards/check_*.py` 的**实际文件集**与规格表**集合相等**（⛔ 只写下界会在两边同时删空时空绿），⛔ 豁免。
+  **第一轮就抓到一条真洞**：`check_verify_teeth.py` 用**子串**判判据名 ⇒ 把 `"responses_are_complete_and_error_free"` 改成 `"…_renamed"` 时原名仍是前缀，守卫**绿着放过**名字漂移；
+  已改成"名字必须以 `"` 收尾"，并把「加前缀仍算在册」如实写进**已知不覆盖**（再收紧就要抄循环标签的合法前缀形态 = 第三份手抄）。
+  本地读数：**9** 条规格全部报红；`check_workflow_structure.py` 的控件在本机红（无 `pyyaml`，Traceback 为证）⇒ 如实记一条红，⛔ 不豁免，由 CI 的 `checks` 腿判。
+- **在飞**：s36（`f0aafd20`，run `41275369612`，剩 `rust (workspace 全量)`／`macos`／`windows`）、`main` `a071a0a8` 的合流 run（`ci-verdict.sh --watch main` 在读）。
+  ⛔ **别在 run 在飞时往同一线再推**（推送会取消在飞 run、毁证据，§0.6.0zh）；s37 等 s36 落地后按新 main 起步（两票都要在 `ci.yml` 同一段加步骤）。
+- **下一票的边界（现读）**：`COVERED_TOOLS` = **10** / schema `name.enum` = **26** ⇒ **16** 个工具**根本不广播** `outputSchema`（task **#114**，创作素材面优先）；
+  成功载荷构造点集中在 `domain/mod.rs`（**26** 处 `ToolResponse::success`），⛔ 靠 `domain/` 同名文件名推断（`export_midi.rs`／`record_wav.rs`／`scene_launch.rs` 各 **0** 处）。
+  #110（`willCreate` 三处槽）仍排在 #109 之后：两票同写 `output_schema.rs` ⇒ 一树串行。
+- **磁盘**：`worktree.sh rm s35-automation-fields --purge` 释放 **2.8 G**；`/home` **90%** 已用／**25 G** 余量（仓库外大头仍等人类裁决，task #34）。
+
+### 0.6.0zm ⭐ 尾批（2026-11-01 深夜·第九批）：**s33 线判绿（修复批 `e897c5b0` = run `41267522810` **success**）→ 已 land `e3ecf1ec`** ＋ ⛔「`--log` 拒绝的粒度是 **run**，不是 job」 ＋ 裸槽全量盘点：**#109/#110 做完就见底**
+
+- **线判决链**：`c1ad2b1d`（名册 + 判据主体）= `failure`，红只有一处：`clippy (-D warnings)` 报 **`E0609: no field 'path' on type '()'`**（`output_schema.rs:3094`），
+  三腿同红（`rust (yeban-mcp)`／`windows`／`macos`）⇒ ⛔ 这个形状本身就是"编译错"的读数，不必下日志猜语义。
+  修复批 `e897c5b0` = `success`：窄腿步骤级 `clippy (-D warnings)`／`test`／`test (doctests)`／`clippy (合并特性)`／`test (合并特性)` **逐条 `success`**；
+  `rust (workspace 全量)` = `skipped`（`plan` 给窄集合）⇒ ⛔ 不引用全量基线那组数。
+- **验收读数（`rust (yeban-mcp)` 腿；单位：判据**名**作子串出现的次数 / `test result:` 与 `FAILED` 按整行数）**：三条新判据
+  `the_three_merge_slots_share_one_roster_and_omit_commit_model`／`the_merge_slot_rejects_the_idempotent_shape_and_broken_values`／
+  `the_broadcast_merge_slot_validates_the_real_auto_merge_receipt` **各 2 次**（缺省档 + 合并特性档 ⇒ 两种组合都成立，⛔ 不是重复计数）；
+  s30/s31/s32 的三条老判据**各 2 次**在场；聚合 `test result:` **149** 行／`FAILED` **0** 行／`passed` 合计 **`2,730`**。
+  ⭐ **与 §0.6.0zl 那条改正连续可比**：s32 腿 `2,724` → s33 腿 `2,730`，差 **6** = 新判据 **3** 条 × **两**档 —— ⛔ 单位一致才敢做减法。
+  `tests/props_176.rs` 与 `tests/auto_merge.rs` 各 **2** 次在场 ⇒ 名册被真实回执读到，不自证。
+- ⛔ **本批最值得留的一条（把 §0.6.0zk 那条口径收窄）**：run 级还在 `in_progress` 时，`gh run view --job <id> --log` **照样拒绝**
+  （实测 `run 41267522810 is still in progress; logs will be available when it is complete`）—— ⚠ **哪怕目标那条腿早已 `success`**。
+  所以收口前唯一可用的是**步骤级**读数（`gh api …/jobs` 的 `steps[].conclusion`）；要判据名必须等 run 收口。⛔ 两件事别写成同一条口径。
+- ⛔ **实现教训（E0609 为什么一定等 CI 才露头）**：`pub fn validate(&Value,&Value) -> Result<(), Violation>` 的 **Ok 侧是 `()`** ⇒
+  想拿 `Violation.path` 只能从 Err 侧走（`.err().unwrap_or_else(|| panic!(…))`）。`yeban-mcp` **本机不编译**（AGENTS.md §5），
+  `cargo fmt` 是唯一本地语法证明 ⇒ 这类错必然要 ~4 分钟后在 CI 露头；⛔ 判据**小工具**的 Ok/Err 侧类型要当场对着签名核。
+- **交付内容**：三处裸 `data.merge` ⇒ 一份 `merge_shape_properties()`（顶层 **7** 键，`projectDigest` 声明 `["string","null"]` 是真话不是保守）
+  ＋ `merge_shape_roster()`（`required` = 同 **7** 键；那一槽装的是本次刚创建、状态恒 `Open` 的提案 ⇒ 幂等短形状在此路径不可达）；
+  `commit` 内层 **8** 键首次逐键声明；`proposal` **复用**现成 `proposal_detail_schema()`（⛔ 第四份手抄）。`merge_proposal` 顶层的幂等短形状另立 `required` 四键。
+- ⛔ **留痕一条手误**：`cb229821` 的标题把 **`s31 腿`** 写成 **`s14 腿`**。已推送 ⇒ ⛔ 不 force-push，在此登记；引用该提交时以 **s31** 为准。
+- ⭐ **裸槽全量盘点已做完，下一批的边界是硬的**（单位：数同一大括号内没有 `properties`/`items` 的裸槽行）：**7 处裸 object + 14 处裸 array**。
+  归 **#109**：`edit_automation` 的 `target`(`:1393`)/`lane.domain`(`:1405`)/`written`(`:1419`)/`read.values`(`:1415`)/`valuesAfter`(`:1420`)
+  ＋ `query_engine_state` 的 `track`(`:1507`)/`stateSources`(`:1509`)。归 **#110**：`willCreate` 的六处裸 array × 两工具（`propose_section` `:1070`、`edit_notes` `:1131`，都在 `COVERED_TOOLS` 里 ⇒ 会被真回执反校）。
+  ⛔ 留弱不动：`:432` `proposal_detail.ops` 与 `:1650` `unsupportedCounts`（等 §22.22 路线甲）。⇒ **#109 + #110 做完，机器可填的裸槽见底**。
+- ⏭ **接手第一件事**：本批**已就地闭合** —— 合流 run **`41270300591`**（headSha `e3ecf1ec`）= `completed / **success**`：
+  十条作业 **9 条 `success`**（`checks` 19 步／`deny`／`lockfile`／`plan`／`e2e`／两枚窄腿／`windows`／`macos`）＋ `rust (workspace 全量)` = `skipped`；
+  `plan` 现读 `["yeban-mcp","yeban-ui-mcp"]` + `workspace_wide: false` ⇒ ⛔ 宽腿没开。合流腿与线腿**逐字节同读数**（149 行／`FAILED` 0／`2,730`／三条判据各 2 次）。
+  ⭐ 这条"同读数"是落地批唯一的自证方式：⛔ 只读合流那一枚就说"线判决也过"是**推断**，两枚同读数才是**对账**。
+  剩下的收口动作：`worktree.sh rm s33-merge-roster --purge`（归档标签自动生成）→ task **#108** 收盘 → 推本批文档。
+- ⏭ **再下一片 = task #109**（已带完整前置读数与 `target` 槽的声明方案）：⚠ 若要钉 `kind`/`TrackKind`/`DeviceKind`/`RoutingKind` 的词表，
+  仓库里**没有**现成 `*_VALUES` 常量（现读 grep 零命中）⇒ 按 s31/s32 先例**先在 `yeban-model/src/project.rs` 补常量再引用**，⛔ 第三份手抄。
+  依赖已串：#110 blockedBy #109 blockedBy #108（两票都写 `output_schema.rs` ⇒ 一树串行，⛔ 并行）。
 
 ### 0.6.0zl ⭐ 尾批（2026-11-01 深夜·第八批）：**s32 全链收盘**（线 `41260371411`／合流 `41264545558` 双 `success`、树已拆）＋ ⛔ 改正上一批那条 `passed` 合计 ＋ **s33 第一枚判红在 clippy（`E0609`）**
 
