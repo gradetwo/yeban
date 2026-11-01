@@ -2,13 +2,13 @@
 #
 # 对标偃师 (Yanshi) 的 nightly.yml（2026-10-30 设计），按夜半仓库的既有约定改写。
 # 与偃师版的**三处有意不同**（不是照搬漏了，是夜半现状决定的取舍）：
-#   ① 只要 linux-x86_64 一个平台。偃师是四平台矩阵；夜半 release.yml 的 plan  job
-#      已逐条证明：今天唯一有 CI 证据能编 yeban-app 的目标就是 x86_64-unknown-linux-gnu，
-#      macOS（未在 CI 编过 app、缺 codesign/notarize 凭据）、Windows（app 从未在
-#      windows-latest 上编过）、arm64（app 从未在 ARM runner 上编过）今天都发不了。
-#      nightly 照抄四平台矩阵只会造出三个从未验证过的构建腿 ⇒ v1 只做有证据的一条，
-#      其余目标等 release.yml 的"未来目标"表逐项打通后再加（加目标时同步改下面的
-#      TARGET、artifact 名与发布校验里的归档数断言）。
+#   ① 只要两个 linux 平台（x86_64 + aarch64）。偃师是四平台矩阵；夜半 release.yml 的
+#      plan job 已逐条证明：macOS（未在 CI 编过 app、缺 codesign/notarize 凭据）、
+#      Windows（app 从未在 windows-latest 上编过）今天发不了；arm64 linux 经 Wang
+#      2026-11-01 确认没问题（runner 用 gates-manual 的 arm 档已在用的 ubuntu-24.04-arm，
+#      两腿都在各自原生 runner 上编，不加 --target）。其余目标等 release.yml 的
+#      "未来目标"表逐项打通后再加（加目标时同步改下面的 matrix、artifact 名与发布
+#      校验里的归档数断言）。
 #   ② 不重跑 release.yml 的重门禁（guards / deny / clippy --workspace / test --workspace）。
 #      那些判据在 main 每次 push 时已经由 ci.yml 跑过；nightly 只做"把 main 的树用默认
 #      feature 真编译一次、打成可核对的包"。夜半 nightly ≠ 夜半 release：release 的
@@ -70,14 +70,20 @@ env:
 
 jobs:
   build:
-    name: build (x86_64-unknown-linux-gnu)
-    runs-on: ubuntu-latest
+    name: build (${{ matrix.target }})
+    runs-on: ${{ matrix.runner }}
     # 与 release.yml 的 build 腿同为 150：冷编 yeban-app（含 Slint 等重依赖、无缓存）
     # 不是 60 分钟能稳过的量，超时只会让 nightly 无故断供。
     timeout-minutes: 150
-    outputs:
-      archive: ${{ steps.pack.outputs.archive }}
-      sha256: ${{ steps.pack.outputs.sha256 }}
+    strategy:
+      # 一腿红不掐另一腿：两腿的证据都要留下（尤其 arm64 是新增腿）。
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          - runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
     steps:
       - uses: actions/checkout@v4
 
@@ -127,7 +133,7 @@ jobs:
           print(tomllib.loads(pathlib.Path("Cargo.toml").read_text(encoding="utf-8"))["workspace"]["package"]["version"])
           PY
           )"
-          TARGET="x86_64-unknown-linux-gnu"
+          TARGET="${{ matrix.target }}"
           NAME="yeban-${VERSION}-${TARGET}"
           mkdir -p dist
 
@@ -154,9 +160,6 @@ jobs:
           tar --sort=name --mtime="@${SOURCE_DATE_EPOCH}" --owner=0 --group=0 --numeric-owner \
               --format=gnu -czf "dist/$NAME.tar.gz" -C stage "$NAME"
           ( cd dist && sha256sum "$NAME.tar.gz" > "$NAME.tar.gz.sha256" )
-          SHA="$(cut -d' ' -f1 < "dist/$NAME.tar.gz.sha256")"
-          printf 'archive=%s.tar.gz\nsha256=%s\n' "$NAME" "$SHA" >> "$GITHUB_OUTPUT"
-
           {
             echo "### nightly 归档"
             echo ""
@@ -207,7 +210,7 @@ jobs:
       - name: 上传归档（artifact；发布是 publish job 的事）
         uses: actions/upload-artifact@v4
         with:
-          name: yeban-nightly-x86_64-unknown-linux-gnu
+          name: yeban-nightly-${{ matrix.target }}
           path: dist/*
           if-no-files-found: error
           retention-days: 14
@@ -242,17 +245,16 @@ jobs:
           find artifacts -name '*.tar.gz' | sort | tee /tmp/nightly-archives.txt
           n_archives=$(wc -l < /tmp/nightly-archives.txt | tr -d ' ')
           echo "归档数 $n_archives"
-          # v1 只有一个平台：归档数不是 1 就是构建腿或取回腿漂移了 ⇒ 不许发布。
-          [ "$n_archives" -eq 1 ] || { echo "✗ 归档数 $n_archives ≠ 1 ⇒ 不许发布（加平台时同步改这里的断言）" >&2; exit 1; }
+          # v1 两个平台：归档数不是 2 就是构建腿或取回腿漂移了 ⇒ 不许发布。
+          [ "$n_archives" -eq 2 ] || { echo "✗ 归档数 $n_archives ≠ 2 ⇒ 不许发布（加平台时同步改这里的断言）" >&2; exit 1; }
           find artifacts -name '*.sha256' -exec cat {} \; > SHA256SUMS
           cat SHA256SUMS
-          # 自校验：证明传输没坏；再与构建 job 输出的摘要逐字比对（证明贴的就是 build 判过的那份字节）。
-          ( cd "$(dirname "$(find artifacts -name '*.tar.gz' | head -1)")" && sha256sum -c ./*.sha256 )
-          expected="${{ needs.build.outputs.sha256 }}"
-          actual="$(cut -d' ' -f1 < SHA256SUMS)"
-          echo "expected=$expected"
-          echo "actual  =$actual"
-          [ "$expected" = "$actual" ] || { echo "::error::publish job 拿到的摘要与 build job 的不一致"; exit 1; }
+          # 自校验：每个归档都在自己的 artifact 目录里凭随包 .sha256 验一遍（证明传输没坏）。
+          # ⛔ 不再与 build job 的 outputs 逐字比对：矩阵腿的 outputs 不能以 needs.build.outputs
+          # 单值寻址；监管链是 .sha256 文件由同一 build 腿生成、随同一 artifact 取回。
+          for f in $(cat /tmp/nightly-archives.txt); do
+            ( cd "$(dirname "$f")" && sha256sum -c ./*.sha256 )
+          done
           NOTES="Rolling nightly build from main.
           Commit: ${GITHUB_SHA}
           Built at (UTC): $(date -u +%Y-%m-%dT%H:%M:%SZ)"
