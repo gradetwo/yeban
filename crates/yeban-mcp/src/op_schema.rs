@@ -757,7 +757,7 @@ pub fn ops_items() -> Value {
                     "sampler": {
                         "type": ["string", "null"],
                         "minLength": 1,
-                        "description": "非空字符串 = SFZ 定义文件路径（原样留痕，不查存在性）；null = 解绑（缺键 ≠ 解绑）",
+                        "description": "非空字符串 = SFZ 定义文件路径（落在采样库根之下的绝对路径存入时改写成 assets/samples/ ＋ 库根下相对部分，其余原样；不查存在性）；null = 解绑（缺键 ≠ 解绑）",
                     },
                 }),
                 true,

@@ -3051,9 +3051,10 @@ pub fn instrument_label(track: Option<&TrackV3>) -> String {
 /// ⚠ 本函数因此**读盘**（SFZ 文本 ＋ 样本解码）：只跑在**控制侧**的一次点击上
 /// （⛔ 不在音频回调里，红线 7 不涉及）。
 ///
-/// ⚠ `path` 原样写进 [`SamplerBinding::path`]（⛔ 不规范化、⛔ 不改写）；相对路径的解析
-/// 与渲染共用 [`crate::sfz_load::resolve_sampler_path`]（绝对原样 ⇒ 工程目录 ⇒ 仓库根
-/// ⇒ cwd，见任务单 `#168`），⛔ 本模块不另写一份。
+/// ⚠ `path` 先经存入归一化再写进 [`SamplerBinding::path`]：库根下绝对路径 ⇒
+/// `assets/samples/` ＋ 库根下相对部分（Wang 2026-11-01 定），其余原样；
+/// 相对路径的解析与渲染共用 [`crate::sfz_load::resolve_sampler_path`]（绝对原样 ⇒
+/// 工程目录 ⇒ 库根 ⇒ 仓库根 ⇒ cwd，见任务单 `#168`），⛔ 本模块不另写一份。
 ///
 /// # Errors
 ///
@@ -3104,8 +3105,12 @@ pub fn instrument_install_ops_on_probed(
     path: &str,
 ) -> Result<Vec<Op>, &'static str> {
     let track = track.ok_or(INSTRUMENT_INSTALL_NO_TRACK_REASON)?;
+    // ⭐ 存入归一化（Wang 2026-11-01 定）：库根下绝对路径 ⇒ `assets/samples/` ＋
+    // 库根下相对部分（经 [`crate::samples::normalize_sampler_path_for_storage`]，
+    // 与 UI 提交同一条规则）；其余原样。比较仍对**存入值**做：文档里旧的绝对
+    // 形式与归一化后的新值不等 ⇒ 仍提交一次（这次提交就是形式收敛本身）。
     let new_sampler = Some(SamplerBinding {
-        path: path.to_owned(),
+        path: crate::samples::normalize_sampler_path_for_storage(path),
     });
     if track.sampler == new_sampler {
         return Ok(Vec::new());

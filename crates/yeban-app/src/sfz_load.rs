@@ -1811,4 +1811,32 @@ mod tests {
         );
         std::fs::remove_dir_all(&dir).ok();
     }
+
+    /// ⭐ 存入归一化往返（Wang 2026-11-01 定）：库根下绝对路径 ⇒ 模型纯函数
+    /// 存成 `assets/samples/…` 相对形式 ⇒ 本模块规则 2（显式库根）必须解析回
+    /// 原文件（⛔ 不是字符串自比：走真的 `resolve_sampler_path`）。
+    #[test]
+    fn stored_relative_form_resolves_back_through_rule_two() {
+        let dir = temp_dir("relative-store");
+        let library = dir.join("library");
+        let sfz_dir = library.join("vsco2ce");
+        std::fs::create_dir_all(&sfz_dir).expect("建库内目录");
+        let original = sfz_dir.join("Harp_slim.sfz");
+        std::fs::write(&original, "<region> sample=tone.wav\n").expect("写夹具 SFZ");
+        let stored = yeban_model::sampler_path::normalize_sampler_path_for_storage(
+            &library,
+            original.to_str().expect("夹具路径 UTF-8"),
+        );
+        assert_eq!(
+            stored, "assets/samples/vsco2ce/Harp_slim.sfz",
+            "存入形式必须是相对形式: {stored}"
+        );
+        let resolved = resolve_sampler_path(&stored, SfzRoots::none().with_library_root(&library))
+            .expect("规则 2 必须解析回原文件");
+        assert_eq!(
+            resolved, original,
+            "相对形式必须解析回同一文件（按路径比较）"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
 }

@@ -47,8 +47,10 @@
 //!   在 ①② 两种注入下**必须照旧绿** —— 它断言"手敲文本 ⇒ SET 仍然提交"与
 //!   "`NoPicker` ⇒ 一次都不弹"。注入 ①② 都动不了这两条（它们不经过对话框）。
 
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::sync::Mutex;
 
 use yeban_app::bridge::ViewState;
 use yeban_app::file_picker::{FilePicker, NoPicker, PickerRequest};
@@ -85,6 +87,44 @@ fn scratch(tag: &str) -> PathBuf {
     ));
     std::fs::create_dir_all(&dir).expect("建临时目录");
     dir
+}
+
+/// 进程级环境状态的串行锁（`YEBAN_SAMPLE_LIBRARY`；与 `sample_library.rs` 同一条纪律：
+/// 本文件内持锁的判据才碰这个变量；其余判据要么没有采样器绑定、要么存绝对路径
+/// —— 规则 1 不查库根，所以它们读不到这个变量）。
+static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+/// `YEBAN_SAMPLE_LIBRARY` 的 RAII 守卫（`Drop` 时恢复原值）。
+///
+/// SAFETY（Rust 2024 的 `set_var` 是 `unsafe`）：本文件的全部 env 判据都先拿 [`ENV_LOCK`]，
+/// 且调用方持有锁的期间本测试二进制里没有其它线程读这个变量；`Drop` 在同一把锁内恢复。
+struct LibraryEnv {
+    previous: Option<OsString>,
+}
+
+impl LibraryEnv {
+    /// ⚠ 调用方**必须**先持有 [`ENV_LOCK`]（本函数不再锁一次：那是同一把非重入锁）。
+    fn set(dir: &Path) -> Self {
+        let previous = std::env::var_os("YEBAN_SAMPLE_LIBRARY");
+        // SAFETY: 调用方持有 ENV_LOCK；本测试进程内没有其它线程读这个变量。
+        unsafe {
+            std::env::set_var("YEBAN_SAMPLE_LIBRARY", dir);
+        }
+        Self { previous }
+    }
+}
+
+impl Drop for LibraryEnv {
+    fn drop(&mut self) {
+        // SAFETY: 守卫比调用方的 ENV_LOCK 先析构（同一测试内后声明者先 drop），
+        // 且恢复的是进入时读到的原值。
+        unsafe {
+            match &self.previous {
+                Some(value) => std::env::set_var("YEBAN_SAMPLE_LIBRARY", value),
+                None => std::env::remove_var("YEBAN_SAMPLE_LIBRARY"),
+            }
+        }
+    }
 }
 
 /// 工程里那条**带 MIDI 音符**的非主总线轨（与 `sfz_ui_selector.rs` 同一份口径）。
@@ -714,6 +754,33 @@ fn the_text_box_and_the_cli_path_stay_usable_without_any_dialog() {
         "取消不是失败：状态文本保持空（⛔ 不写成一条错误）"
     );
 
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// ⭐ 存入相对化（Wang 2026-11-01 定）：手敲库根下绝对路径 ＋ SET ⇒ 存入值是
+/// `assets/samples/…` 相对形式（UI 路径走 `commit_sampler_binding`，与 CLI 同一条归一化）。
+#[test]
+fn typing_an_under_library_root_absolute_path_and_pressing_set_stores_the_relative_form() {
+    let _guard = ENV_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let dir = scratch("relstore");
+    let library = dir.join("library");
+    let sfz_dir = library.join("vsco2ce");
+    std::fs::create_dir_all(&sfz_dir).expect("建库根 SFZ 目录");
+    let sfz = write_sfz(&sfz_dir, "Harp_slim.sfz", &[60], "const.wav");
+    let _env = LibraryEnv::set(&library);
+    let fx = Fixture::new("relstore");
+    let typed = sfz.to_string_lossy().into_owned();
+    fx.type_path(&typed);
+    let set_id = fx.set_id();
+    fx.press(&set_id);
+    assert_eq!(
+        fx.sampler_of_lead().map(|binding| binding.path),
+        Some("assets/samples/vsco2ce/Harp_slim.sfz".to_owned()),
+        "库根下绝对路径手敲＋SET ⇒ 存入相对形式"
+    );
+    assert_eq!(fx.port.display().undoable, 1);
     std::fs::remove_dir_all(&dir).ok();
 }
 

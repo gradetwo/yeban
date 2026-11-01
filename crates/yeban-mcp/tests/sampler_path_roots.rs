@@ -633,3 +633,179 @@ fn two_tracks_sharing_one_sample_file_both_sound() {
             .collect::<Vec<_>>()
     );
 }
+
+/// 工具面管线（与 `set_clip_placement_loop.rs` 同一形状）。
+fn call_tool(dispatcher: &mut Dispatcher, auth: &str, name: &str, arguments: Value) -> Value {
+    let line = json!({
+        "jsonrpc": "2.0",
+        "id": "sampler-path-roots",
+        "method": "tools/call",
+        "params": {"name": name, "arguments": arguments}
+    })
+    .to_string();
+    let outcome = dispatcher.handle_line(Channel::Http, Some(auth), &line);
+    let response = outcome.response.expect("必须有响应");
+    assert!(
+        response.error.is_none(),
+        "{name} 不该有 JSON-RPC 层错误: {:?}",
+        response.error
+    );
+    response.result.expect("必须有 result")
+}
+
+/// `yeban_edit_notes` → `yeban_merge_proposal`（编辑先进隔离提案，合并后才落盘）。
+fn edit_and_merge(dispatcher: &mut Dispatcher, auth: &str, track: &str, sampler: &str) -> Value {
+    let proposed = call_tool(
+        dispatcher,
+        auth,
+        "yeban_edit_notes",
+        json!({"trackId": track, "ops": [{"kind": "setTrackSampler", "trackId": track, "sampler": sampler}]}),
+    );
+    assert_eq!(proposed["status"], "success", "编辑必须成功: {proposed}");
+    assert_eq!(
+        proposed["data"]["pendingMerge"], true,
+        "编辑必须先进隔离提案: {proposed}"
+    );
+    let proposal = proposed["data"]["proposal"]["proposalId"]
+        .as_str()
+        .expect("成功提案必须带 proposalId")
+        .to_owned();
+    let merged = call_tool(
+        dispatcher,
+        auth,
+        "yeban_merge_proposal",
+        json!({"proposalId": proposal, "commitMessage": "sampler relative store"}),
+    );
+    assert_eq!(merged["status"], "success", "合并必须成功: {merged}");
+    merged
+}
+
+/// filled_project 里 Lead 轨的身份（与 `project_with_sampler` 同一条找法）。
+fn lead_track_id(project: &YebanProjectV1) -> EntityId {
+    project
+        .tracks
+        .iter()
+        .find(|(_, track)| track.name == "Lead")
+        .map(|(id, _)| *id)
+        .expect("filled_project 必须有 Lead 轨")
+}
+
+/// ⭐ 存入相对化（Wang 2026-11-01 定）：MCP 绑库根下绝对路径 ⇒ 存入值是
+/// `assets/samples/…` 相对形式，且渲染仍经规则 2 解析回原文件、出声。
+#[test]
+fn storing_an_under_library_root_absolute_path_saves_the_relative_form_and_still_renders() {
+    let _guard = ENV_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let scratch = Scratch::new("relative-store");
+    let library = scratch.join("library");
+    let sfz = write_sfz_with_sample(&library.join("vsco2ce"), "Harp_slim");
+    let _env = LibraryEnv::set(&library);
+
+    let project = filled_project();
+    let lead = lead_track_id(&project);
+    let lead_str = lead.to_canonical_string();
+    let token = BearerToken::generate().token;
+    let auth = format!("Bearer {}", token.expose());
+    let mut dispatcher = Dispatcher::new(token, ScopeSet::all(), RunMode::Production);
+    dispatcher.domain_mut().set_now_ms(1_760_000_000_000);
+    let project_path = scratch.join("project").join("song.yeban");
+    std::fs::create_dir_all(project_path.parent().expect("有父目录")).expect("建工程目录");
+    dispatcher
+        .domain_mut()
+        .open_in_memory(project_path, project, false)
+        .expect("注入夹具工程");
+
+    edit_and_merge(
+        &mut dispatcher,
+        &auth,
+        &lead_str,
+        sfz.to_str().expect("夹具路径 UTF-8"),
+    );
+    let stored = dispatcher
+        .domain_mut()
+        .active_project()
+        .expect("必须有活跃工程")
+        .tracks
+        .get(&lead)
+        .expect("Lead 轨必须在")
+        .sampler
+        .clone()
+        .expect("绑定必须落盘");
+    assert_eq!(
+        stored.path, "assets/samples/vsco2ce/Harp_slim.sfz",
+        "库根下绝对路径必须存成相对形式"
+    );
+
+    let out = scratch.join("relative-store.wav");
+    let result = call_tool(
+        &mut dispatcher,
+        &auth,
+        "yeban_render_master",
+        json!({"format": "wav", "sampleRate": 48000, "path": out.display().to_string()}),
+    );
+    let sampler = sampler_report(&result);
+    assert_eq!(
+        resolved_path(sampler),
+        sfz,
+        "相对形式必须经规则 2 解析回原文件: {result}"
+    );
+    assert_eq!(
+        sampler["sampleFailures"],
+        json!([]),
+        "库内样本必须真的读到（missing=[]）: {result}"
+    );
+    assert_eq!(
+        sampler["notesUsingFileSample"], 4,
+        "四个音符都必须用文件样本发声: {result}"
+    );
+}
+
+/// ⭐ 库根外的绝对路径 ⇒ 存入值原样（行为不变）。
+#[test]
+fn storing_an_outside_library_root_absolute_path_stays_verbatim() {
+    let _guard = ENV_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let scratch = Scratch::new("relative-store-outside");
+    let library = scratch.join("library");
+    std::fs::create_dir_all(&library).expect("建库根目录");
+    let sfz = write_sfz_with_sample(&scratch.join("elsewhere"), "Harp");
+    let _env = LibraryEnv::set(&library);
+
+    let project = filled_project();
+    let lead = lead_track_id(&project);
+    let lead_str = lead.to_canonical_string();
+    let token = BearerToken::generate().token;
+    let auth = format!("Bearer {}", token.expose());
+    let mut dispatcher = Dispatcher::new(token, ScopeSet::all(), RunMode::Production);
+    dispatcher.domain_mut().set_now_ms(1_760_000_000_000);
+    let project_path = scratch.join("project").join("song.yeban");
+    std::fs::create_dir_all(project_path.parent().expect("有父目录")).expect("建工程目录");
+    dispatcher
+        .domain_mut()
+        .open_in_memory(project_path, project, false)
+        .expect("注入夹具工程");
+
+    edit_and_merge(
+        &mut dispatcher,
+        &auth,
+        &lead_str,
+        sfz.to_str().expect("夹具路径 UTF-8"),
+    );
+    let stored = dispatcher
+        .domain_mut()
+        .active_project()
+        .expect("必须有活跃工程")
+        .tracks
+        .get(&lead)
+        .expect("Lead 轨必须在")
+        .sampler
+        .clone()
+        .expect("绑定必须落盘");
+    assert_eq!(
+        stored.path,
+        sfz.to_str().expect("夹具路径 UTF-8"),
+        "库根外的绝对路径必须原样"
+    );
+}
