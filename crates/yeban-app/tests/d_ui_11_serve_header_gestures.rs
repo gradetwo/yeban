@@ -213,7 +213,7 @@ fn the_serve_surface_wires_every_wiring_the_gui_path_can_wire() {
 
     let missing: Vec<(&String, &str)> = gui
         .iter()
-        .filter(|name| !serve.contains(name.as_str()))
+        .filter(|name| !serve.contains(*name))
         .map(|name| (name, exception(name, ASSEMBLY_ONLY_IN_GUI).unwrap_or("")))
         .filter(|(_, why)| why.is_empty())
         .collect();
@@ -227,7 +227,7 @@ fn the_serve_surface_wires_every_wiring_the_gui_path_can_wire() {
     // 反向漂移：serve 侧接了 GUI 没有的 ⇒ 也要红（那意味着两面的能力开始各说一套）。
     let extra: Vec<(&String, &str)> = serve
         .iter()
-        .filter(|name| !gui.contains(name.as_ref()))
+        .filter(|name| !gui.contains(*name))
         .map(|name| (name, exception(name, ASSEMBLY_ONLY_IN_SERVE).unwrap_or("")))
         .filter(|(_, why)| why.is_empty())
         .collect();
@@ -497,7 +497,7 @@ fn a_clip_created_after_selecting_a_header_lands_on_that_track_not_the_first_one
     // 「新建剪辑」的按钮只在该页在场（与产品用户同一个入口）。
     rig.tap_center("tab-devices-button");
     rig.tap_header("track-1-header");
-    assert_eq!(rig.selected(), bass.id.to_canonical_string());
+    assert_eq!(rig.selected(), bass.to_canonical_string());
 
     let lead_before = rig.placements(lead);
     let bass_before = rig.placements(bass);
@@ -532,13 +532,13 @@ fn alt_down_on_the_serve_surface_moves_the_selection_and_not_only_reports_consum
     let aux = tracks[2].id;
 
     rig.tap_header("track-1-header");
-    assert_eq!(rig.selected(), bass.id.to_canonical_string());
+    assert_eq!(rig.selected(), bass.to_canonical_string());
 
     let consumed = rig.chord("Down", true);
     assert!(consumed, "`Alt+↓` 必须有绑定（键面 `SelectTrackBy`）");
     assert_eq!(
         rig.selected(),
-        aux.id.to_canonical_string(),
+        aux.to_canonical_string(),
         "缺陷现场的 C 那一格：`consumed = true` 而选中态一位不动 —— \
          绑定在场不等于接线在场，两件事必须分别成立"
     );
