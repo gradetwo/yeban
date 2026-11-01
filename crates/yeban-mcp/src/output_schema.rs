@@ -1214,6 +1214,121 @@ fn automation_lane_items() -> Value {
     ])
 }
 
+/// ⭐ s34：`data.willCreate` 的**一份**名册，喂三个提案类工具（六条清单逐键声明）。
+///
+/// 为什么必须一份：这一槽的生产者是**同一个函数** `domain::section_build::summarize_ops`
+/// —— `domain/mod.rs` 里 `dryRun` 预览（`preview.insert("willCreate", …)`）与
+/// `apply_propose` 回执（`let will_create = …`）两处都调它，注释明写"因此不可能漂移"
+/// ⇒ 三处广播的键集合是同一份代码的输出，⛔ 三份手抄。
+///
+/// ⚠ 八个键**全进** `required`：`summarize_ops` 的返回是逐字 `json!({...八键})` 字面量，
+/// 六条清单恒发。宏调用（`yeban_set_macro`）展开的是别的 op 变体 ⇒ 清单是**空数组**、
+/// 键仍在场 ⇒ 把六条写成"可缺省"就是假话，也会让防掏空失去读数。
+///
+/// ⚠ 两处词表的不同处理：`tracks[].kind` 的 `enum` **引用**唯一名册
+/// `domain::notes::TRACK_KINDS`（等式由常驻判据 `track_kinds_match_the_model_variant_names`
+/// 钉住）；`routingEdges[].kind` ⛔ 不上 `enum` —— 那份封闭词表登记在
+/// `schemas/project.schema.json`，`op_schema.rs` 的输入侧已另有一份，这里再抄就是**第三份手抄**。
+#[must_use]
+fn will_create_roster() -> Value {
+    roster(&[
+        ("opCount", json!({"type": "integer"})),
+        (
+            "opKinds",
+            json!({"type": "array", "items": {"type": "string"}}),
+        ),
+        (
+            "sections",
+            json!({"type": "array", "items": will_create_section_items()}),
+        ),
+        (
+            "tracks",
+            json!({"type": "array", "items": will_create_track_items()}),
+        ),
+        (
+            "clipPoolEntries",
+            json!({"type": "array", "items": will_create_clip_items()}),
+        ),
+        (
+            "placements",
+            json!({"type": "array", "items": will_create_placement_items()}),
+        ),
+        (
+            "routingNodes",
+            json!({"type": "array", "items": {"type": "string"}}),
+        ),
+        (
+            "routingEdges",
+            json!({"type": "array", "items": will_create_routing_edge_items()}),
+        ),
+    ])
+}
+
+/// `willCreate.sections[]`（4 键）。拼装点 = `summarize_ops` 的 `Op::SetSection` 臂；
+/// 两个 tick 是 `u64`（`SectionV3::{start_tick,end_tick}`），⛔ 不会是负数或小数。
+#[must_use]
+fn will_create_section_items() -> Value {
+    roster(&[
+        ("id", json!({"type": "string"})),
+        ("name", json!({"type": "string"})),
+        ("startTick", json!({"type": "integer"})),
+        ("endTick", json!({"type": "integer"})),
+    ])
+}
+
+/// `willCreate.tracks[]`（3 键）。拼装点 = `summarize_ops` 的 `Op::AddTrack` 臂。
+#[must_use]
+fn will_create_track_items() -> Value {
+    roster(&[
+        ("id", json!({"type": "string"})),
+        ("name", json!({"type": "string"})),
+        (
+            "kind",
+            json!({
+                "type": "string",
+                "enum": crate::domain::notes::TRACK_KINDS.to_vec()
+            }),
+        ),
+    ])
+}
+
+/// `willCreate.clipPoolEntries[]`（3 键）。拼装点 = `summarize_ops` 的 `Op::AddClip` 臂；
+/// ⚠ `notes` 是**音符条数**（`clip.content.notes().map_or(0, BTreeMap::len)`），
+/// 不是音符数组 —— 名字容易读成后者，所以类型在这里必须写实。
+#[must_use]
+fn will_create_clip_items() -> Value {
+    roster(&[
+        ("id", json!({"type": "string"})),
+        ("name", json!({"type": "string"})),
+        ("notes", json!({"type": "integer"})),
+    ])
+}
+
+/// `willCreate.placements[]`（5 键）。拼装点 = `summarize_ops` 的 `Op::AddClipPlacement` 臂。
+#[must_use]
+fn will_create_placement_items() -> Value {
+    roster(&[
+        ("id", json!({"type": "string"})),
+        ("trackId", json!({"type": "string"})),
+        ("clipId", json!({"type": "string"})),
+        ("startTick", json!({"type": "integer"})),
+        ("durationTicks", json!({"type": "integer"})),
+    ])
+}
+
+/// `willCreate.routingEdges[]`（5 键）。拼装点 = `summarize_ops` 的 `Op::ConnectRouting` 臂。
+/// `gainDb` 可空是真话：`RoutingEdge.gain_db` 是 `Option<f64>`，单位增益即 `null`。
+#[must_use]
+fn will_create_routing_edge_items() -> Value {
+    roster(&[
+        ("id", json!({"type": "string"})),
+        ("sourceNode", json!({"type": "string"})),
+        ("destinationNode", json!({"type": "string"})),
+        ("kind", json!({"type": "string"})),
+        ("gainDb", json!({"type": ["number", "null"]})),
+    ])
+}
+
 /// `yeban_propose_section` 的成功响应 `data`（创作面提案，与 [`edit_notes`] 同拼装点
 /// `domain::apply_propose`，[MCP-TOOL-005] 广播面扩展票）。
 fn propose_section() -> Value {
@@ -1231,7 +1346,8 @@ fn propose_section() -> Value {
              `\"applied-in-process:autoMerge\"`、`proposal` 换成合并后的投影\
              ⇒ 这三个键⛔ 不用 `const`，`autoMerged`/`merge` ⛔ 不进 `required`。\
              `proposal` 缺省是**摘要**（14 键），仅 `includeOps: true` 时多一个 `ops` 键\
-             ⇒ `ops` 只进 `properties`。`warnings[]` 与 `edit_notes` 同一份 plan 阶段读数\
+             ⇒ `ops` 只进 `properties`。`willCreate` 是 `summarize_ops` 从**同一份** `ops` \
+             数出来的八键派生清单（六条清单恒发，逐键见名册）。`warnings[]` 与 `edit_notes` 同一份 plan 阶段读数\
              （`code` / `hint` 逐条），可能为空数组。",
         ),
         &[
@@ -1252,20 +1368,7 @@ fn propose_section() -> Value {
             "mergeTool": {"type": "string"},
             "projectDigest": {"type": "string"},
             "unwired": {"type": "array", "items": {"type": "string"}},
-            "willCreate": {
-                "type": "object",
-                "required": ["opCount", "opKinds"],
-                "properties": {
-                    "opCount": {"type": "integer"},
-                    "opKinds": {"type": "array", "items": {"type": "string"}},
-                    "sections": {"type": "array"},
-                    "tracks": {"type": "array"},
-                    "clipPoolEntries": {"type": "array"},
-                    "placements": {"type": "array"},
-                    "routingNodes": {"type": "array"},
-                    "routingEdges": {"type": "array"}
-                }
-            },
+            "willCreate": will_create_roster(),
             "warnings": {"type": "array", "items": proposal_warning_items()},
             "proposal": proposal_detail_schema(),
             "autoMerged": {"type": "boolean"},
@@ -1313,20 +1416,7 @@ fn edit_notes() -> Value {
             "mergeTool": {"type": "string"},
             "projectDigest": {"type": "string"},
             "unwired": {"type": "array", "items": {"type": "string"}},
-            "willCreate": {
-                "type": "object",
-                "required": ["opCount", "opKinds"],
-                "properties": {
-                    "opCount": {"type": "integer"},
-                    "opKinds": {"type": "array", "items": {"type": "string"}},
-                    "sections": {"type": "array"},
-                    "tracks": {"type": "array"},
-                    "clipPoolEntries": {"type": "array"},
-                    "placements": {"type": "array"},
-                    "routingNodes": {"type": "array"},
-                    "routingEdges": {"type": "array"}
-                }
-            },
+            "willCreate": will_create_roster(),
             "warnings": {
                 "type": "array",
                 "items": proposal_warning_items()
@@ -1348,7 +1438,9 @@ fn set_macro() -> Value {
              逐字相同（键集合与两条分支语义见该工具的 schema，[ADR-0029]）：缺省 \
              `pendingMerge: true` / `projectUnchanged: true`；`autoMerge: true` 时多出 \
              `autoMerged` / `merge` 并翻值（`mergeTool: \"applied-in-process:autoMerge\"`）。\
-             `willCreate.opKinds` 反映宏展开的自动化形态；`warnings[]` 同一路算子，宏调用\
+             `willCreate` 与另两个提案类工具**共用同一份名册**（生产者同一个 `summarize_ops`）：\
+             宏展开的是自动化类 op ⇒ 六条清单**恒为空数组**，但八个键恒在（⛔ 不是「可缺省」）；\
+             `opKinds` 反映宏展开的自动化形态；`warnings[]` 同一路算子，宏调用\
              通常为空数组。`proposal` 缺省是摘要，仅 `includeOps: true` 时多 `ops` 一键。",
         ),
         &[
@@ -1369,14 +1461,7 @@ fn set_macro() -> Value {
             "mergeTool": {"type": "string"},
             "projectDigest": {"type": "string"},
             "unwired": {"type": "array", "items": {"type": "string"}},
-            "willCreate": {
-                "type": "object",
-                "required": ["opCount", "opKinds"],
-                "properties": {
-                    "opCount": {"type": "integer"},
-                    "opKinds": {"type": "array", "items": {"type": "string"}}
-                }
-            },
+            "willCreate": will_create_roster(),
             "warnings": {"type": "array", "items": proposal_warning_items()},
             "proposal": proposal_detail_schema(),
             "autoMerged": {"type": "boolean"},
@@ -3450,6 +3535,271 @@ mod tests {
             "proposal 少 opCount",
             &proposal_without_op_count,
             "$.proposal.opCount",
+        );
+    }
+
+    /// ⭐ s34 判据一（接线 + 防掏空）：三个提案类工具广播的 `data.willCreate` 必须**逐字等于**
+    /// 同一份 `will_create_roster()`，顶层八键与六条清单的元素键数**逐个点名**。
+    ///
+    /// ⚠ 本票真正的增量在 `yeban_set_macro`：它在 s34 之前只声明了 `opCount`/`opKinds` **两键**
+    /// （六条清单连键名都没有），而生产者同样发出那六条**空数组** ⇒ 那里的旧声明是"少说"的谎约。
+    #[test]
+    fn the_three_will_create_slots_share_one_roster_and_pin_all_eight_keys() {
+        for (label, schema) in [
+            ("yeban_propose_section", propose_section()),
+            ("yeban_edit_notes", edit_notes()),
+            ("yeban_set_macro", set_macro()),
+        ] {
+            let slot = schema["properties"]["willCreate"].clone();
+            assert_ne!(
+                slot,
+                json!({"type": "object"}),
+                "`{label}` 的 willCreate 不得退回裸声明"
+            );
+            assert_eq!(
+                slot,
+                will_create_roster(),
+                "`{label}` 广播的 willCreate 必须与名册函数逐字相同"
+            );
+        }
+
+        let roster = will_create_roster();
+        // 顶层八键（现读 `summarize_ops` 末尾那份 `json!({...})` 字面量）。
+        assert_eq!(
+            roster["required"]
+                .as_array()
+                .expect("required 必须是数组")
+                .len(),
+            8,
+            "`willCreate` 的恒发键数"
+        );
+        assert_eq!(
+            roster["properties"]
+                .as_object()
+                .expect("properties 必须是对象")
+                .len(),
+            8,
+            "`willCreate` 的声明键数必须与 required 同数（这一槽只有一种形状）"
+        );
+
+        // 六条清单逐条数**元素**键数：4/3/3/5/5 ＋ routingNodes 的元素是字符串。
+        for (slot, keys) in [
+            ("sections", 4),
+            ("tracks", 3),
+            ("clipPoolEntries", 3),
+            ("placements", 5),
+            ("routingEdges", 5),
+        ] {
+            let items = roster["properties"][slot]["items"].clone();
+            assert_eq!(
+                items["required"].as_array().expect("required").len(),
+                keys,
+                "`willCreate.{slot}[]` 的元素键数（防掏空下界）"
+            );
+            assert_eq!(
+                items["properties"].as_object().expect("properties").len(),
+                keys,
+                "`willCreate.{slot}[]` 的元素声明键数必须与 required 同数"
+            );
+        }
+        assert_eq!(
+            roster["properties"]["routingNodes"]["items"],
+            json!({"type": "string"}),
+            "routingNodes 的元素是 `EntityId` 规范串（生产者 `Vec<Value::from(node.to_canonical_string())`）"
+        );
+
+        // 词表的两样处理：tracks[].kind 上 `enum` 且**引用**唯一名册；routingEdges[].kind 故意不上。
+        let declared: Vec<&str> =
+            roster["properties"]["tracks"]["items"]["properties"]["kind"]["enum"]
+                .as_array()
+                .expect("kind 的 enum 必须是数组")
+                .iter()
+                .map(|item| item.as_str().expect("enum 的元素必须是字符串"))
+                .collect();
+        assert_eq!(
+            declared,
+            crate::domain::notes::TRACK_KINDS.to_vec(),
+            "`tracks[].kind` 的 enum 必须是 `TRACK_KINDS` 那一份名册本身（⛔ 手抄第二份）"
+        );
+        assert!(
+            roster["properties"]["routingEdges"]["items"]["properties"]["kind"]["enum"].is_null(),
+            "`routingEdges[].kind` 的封闭词表登记在 `schemas/project.schema.json` ⇒ 这里⛔ 抄第三份"
+        );
+    }
+
+    /// ⭐ s34 判据二（防漂移，真生产者）：拿 `section_build::plan` 的**真实 op 批次**过一遍
+    /// `summarize_ops`，把产出的 `willCreate` 喂进三个广播槽，并逐层做**键集等式**。
+    ///
+    /// 为什么必须有这一条：`willCreate` 的键集合是生产者字面量的读数，⛔ 靠手抄数字守不住
+    /// （判据一里的 8/4/3/3/5/5 只防"删短名册"，不防"生产者加了一个键"）。
+    /// 夹具参数逐字取自常驻判据 `unwired_is_derived_from_the_real_ops` 那一枚 ——
+    /// 它已实测这个批次同时含 `AddClip`/`AddTrack`/`AddClipPlacement`/`AddRoutingNode`/`ConnectRouting`，
+    /// 于是六条清单**都非空**（本条先对此断言，否则下面的读数全是空集自证）。
+    #[test]
+    fn the_will_create_roster_matches_what_the_producer_emits() {
+        let project = yeban_model::samples::filled_project();
+        let plan = crate::domain::section_build::plan(&project, "Chorus", "synthwave", 8, None)
+            .expect("规划");
+        let summary = crate::domain::section_build::summarize_ops(&plan.ops);
+
+        // ① 六条清单必须各有内容（单位：条数），先点名哪一条空了。
+        for slot in [
+            "sections",
+            "tracks",
+            "clipPoolEntries",
+            "placements",
+            "routingNodes",
+            "routingEdges",
+        ] {
+            let list = summary[slot]
+                .as_array()
+                .unwrap_or_else(|| panic!("`{slot}` 必须是数组"));
+            assert!(
+                !list.is_empty(),
+                "夹具的 `{slot}` 清单为空 ⇒ 本条退化成空集自证"
+            );
+        }
+
+        // ② 顶层键集等式：产出的八键 == 声明的 required 八键。
+        // ⚠ 先落成 `let` 绑定（s30 那枚 E0716 的教训：借临时值的数组会撞语句末释放）。
+        let roster = will_create_roster();
+        assert_eq!(
+            assert_same_key_set(&summary, "willCreate", &roster),
+            8,
+            "生产者实际发出的键数"
+        );
+
+        // ③ 三个广播槽都必须放行同一份真产出。
+        for (label, schema) in [
+            ("yeban_propose_section", propose_section()),
+            ("yeban_edit_notes", edit_notes()),
+            ("yeban_set_macro", set_macro()),
+        ] {
+            validate(&schema["properties"]["willCreate"], &summary)
+                .unwrap_or_else(|violation| panic!("`{label}` 必须放行真产出: {violation}"));
+        }
+
+        // ④ 元素层键集等式（逐条清单的第一个元素 vs 各自 items）。
+        for (slot, keys) in [
+            ("sections", 4),
+            ("tracks", 3),
+            ("clipPoolEntries", 3),
+            ("placements", 5),
+            ("routingEdges", 5),
+        ] {
+            let element = summary[slot].as_array().expect("数组")[0].clone();
+            let items = roster["properties"][slot]["items"].clone();
+            let name = format!("willCreate.{slot}[0]");
+            assert_eq!(
+                assert_same_key_set(&element, &name, &items),
+                keys,
+                "`{name}` 的实际键数"
+            );
+        }
+    }
+
+    /// ⭐ s34 判据三（牙齿）：名册**真的会拒** —— 少键／错型／越词表／退回 s34 之前的形态，
+    /// 每条都要红并**点名路径**；而宏调用那种"六条清单全空但八键在场"与 `gainDb: null` 必须放行。
+    #[test]
+    fn the_will_create_roster_rejects_broken_elements_and_accepts_the_empty_lists() {
+        let roster = will_create_roster();
+        let legal = json!({
+            "opCount": 6,
+            "opKinds": ["SetSection", "AddTrack", "AddClip", "AddClipPlacement",
+                        "AddRoutingNode", "ConnectRouting"],
+            "sections": [{"id": "01S", "name": "Chorus", "startTick": 0, "endTick": 30720}],
+            "tracks": [{"id": "01T", "name": "Lead", "kind": "Midi"}],
+            "clipPoolEntries": [{"id": "01C", "name": "motif", "notes": 4}],
+            "placements": [{"id": "01P", "trackId": "01T", "clipId": "01C",
+                            "startTick": 0, "durationTicks": 30720}],
+            "routingNodes": ["01N"],
+            "routingEdges": [{"id": "01E", "sourceNode": "01T", "destinationNode": "01B",
+                              "kind": "TrackToBus", "gainDb": null}],
+        });
+        validate(&roster, &legal)
+            .unwrap_or_else(|violation| panic!("合法 `willCreate` 必须通过: {violation}"));
+
+        // ① 宏调用形状：六条清单**全空**、八键在场 ⇒ 必须放行（这是"键恒发"这句真话的正面）。
+        let mut macro_shape = legal.clone();
+        for slot in [
+            "sections",
+            "tracks",
+            "clipPoolEntries",
+            "placements",
+            "routingNodes",
+            "routingEdges",
+        ] {
+            macro_shape[slot] = json!([]);
+        }
+        macro_shape["opCount"] = json!(2);
+        macro_shape["opKinds"] = json!(["SetAutomationPoint", "SetAutomationPoint"]);
+        validate(&roster, &macro_shape).expect("宏调用的清单是空数组，但键必须在场");
+
+        // ② `gainDb` 给数也要放行（可空不等于必须空）。
+        let mut numeric = legal.clone();
+        numeric["routingEdges"].as_array_mut().expect("数组")[0]["gainDb"] = json!(-12.0);
+        validate(&roster, &numeric).expect("显式增益边是 -12 dB，不是 null");
+
+        // ③ 退回 s34 之前的形态：六条清单缺席 ⇒ 红在**第一个缺席键**上。
+        let mut bare = legal.clone();
+        for slot in [
+            "sections",
+            "tracks",
+            "clipPoolEntries",
+            "placements",
+            "routingNodes",
+            "routingEdges",
+        ] {
+            bare.as_object_mut().expect("对象").remove(slot);
+        }
+        assert_eq!(
+            validate(&roster, &bare)
+                .expect_err("清单缺席就是少发恒发键，必须红")
+                .path,
+            "$.sections"
+        );
+
+        // ④ 少一个元素键 ⇒ 点名到那一层那一个下标。
+        let mut missing = legal.clone();
+        missing["placements"].as_array_mut().expect("数组")[0]
+            .as_object_mut()
+            .expect("对象")
+            .remove("durationTicks");
+        assert_eq!(
+            validate(&roster, &missing)
+                .expect_err("placements 少 durationTicks 必须红")
+                .path,
+            "$.placements[0].durationTicks"
+        );
+
+        // ⑤ 错型：tick 给字符串。
+        let mut wrong_type = legal.clone();
+        wrong_type["sections"].as_array_mut().expect("数组")[0]["startTick"] = json!("0");
+        assert_eq!(
+            validate(&roster, &wrong_type)
+                .expect_err("startTick 必须是整数")
+                .path,
+            "$.sections[0].startTick"
+        );
+
+        // ⑥ 越词表：`kind` 给模型没有的拼写（`TRACK_KINDS` 是四元封闭集）。
+        let mut off_vocab = legal.clone();
+        off_vocab["tracks"].as_array_mut().expect("数组")[0]["kind"] = json!("Drum");
+        assert_eq!(
+            validate(&roster, &off_vocab)
+                .expect_err("Drum 不是 TrackKind 的变体名")
+                .path,
+            "$.tracks[0].kind"
+        );
+
+        // ⑦ 元素类型：routingNodes 的元素是字符串，给对象必须红在元素本身。
+        let mut nodes_are_objects = legal.clone();
+        nodes_are_objects["routingNodes"] = json!([{"id": "01N"}]);
+        assert_eq!(
+            validate(&roster, &nodes_are_objects)
+                .expect_err("routingNodes 的元素必须是字符串")
+                .path,
+            "$.routingNodes[0]"
         );
     }
 
