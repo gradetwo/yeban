@@ -451,7 +451,8 @@ use yeban_render::automation::{
     forced_insert_instances, macro_cascade_reaches, send_gain_automations,
 };
 use yeban_render::inserts::{
-    project_inserts_with_forced_instances, resolve_device_param, track_has_unhandled_dsp,
+    ignored_strip_devices, project_inserts_with_forced_instances, resolve_device_param,
+    track_has_unhandled_dsp,
 };
 use yeban_render::mastering;
 use yeban_render::render::{
@@ -1185,6 +1186,55 @@ fn silent_sources_warning(reports: &[SourceReport]) -> Option<Value> {
         "blocking": false,
         "count": silent.len(),
         "sources": named,
+        "hint": hint,
+    }))
+}
+
+/// ⭐ 本修复：通道条来源规则忽略的设备预警（`data.warnings[]` 的一条来源）。
+///
+/// 来源规则只认每轨首台带通道条名字的设备；其余同类设备的通道条参数没有任何
+/// 离线路径执行（名字受支持 ≠ 被采纳，见 [`ignored_strip_devices`]）。
+/// 作用域与 `deviceChainDsp` 登记一致：只看渲染源节点（`source_nodes`），
+/// 不看未进渲染图的轨。
+/// ⛔ 只生成 JSON：不改样本 / 不改 `bytes` / 不改 `sha256`（与削波预警同一条纪律）。
+/// 空 ⇒ `None`（**没有这条预警**，不是恒报）。
+fn ignored_strip_devices_warning(
+    tracks: &BTreeMap<EntityId, TrackV3>,
+    source_nodes: &[EntityId],
+) -> Option<Value> {
+    let mut devices: Vec<Value> = Vec::new();
+    for node in source_nodes {
+        let Some(track) = tracks.get(node) else {
+            continue;
+        };
+        for ignored in ignored_strip_devices(track) {
+            let device = &track.devices[ignored.slot];
+            devices.push(serde_json::json!({
+                "track": track.name,
+                "trackNode": node.to_canonical_string(),
+                "slot": ignored.slot,
+                "device": device.name,
+                "deviceId": device.id.to_canonical_string(),
+                "ignoredParams": ignored.ignored_params,
+            }));
+        }
+    }
+    if devices.is_empty() {
+        return None;
+    }
+    let count = devices.len();
+    let hint = format!(
+        "本次渲染里有 {count} 台设备的通道条参数**没有被采纳**：通道条来源规则只认每轨首台 \
+         带通道条名字的设备，其余同类设备的通道条参数没有任何离线路径执行（名字在白名单里 \
+         不等于被采纳）。请逐条检查：把参数并进每轨首台设备，或调整设备顺序； \
+         ⛔ 本工具**不自动修**，音频一个字节都没动。"
+    );
+    Some(serde_json::json!({
+        "code": "ignoredStripDevices",
+        "severity": "warning",
+        "blocking": false,
+        "count": count,
+        "devices": devices,
         "hint": hint,
     }))
 }
@@ -3031,6 +3081,11 @@ pub fn build(
     .into_iter()
     // ⭐ G1：可闻、有内容、却一个非零样本都没出的源必须被点名（见 `silent_sources_warning`）。
     .chain(silent_sources_warning(&reports))
+    // ⭐ 本修复：通道条来源规则忽略的设备必须被点名（见 `ignored_strip_devices_warning`）。
+    .chain(ignored_strip_devices_warning(
+        &project.tracks,
+        &source_nodes,
+    ))
     .collect();
     // 10b. 响度读数 + 对 `targetLufs` 的判定（**只读**：在抖动之前的浮点母带上测）。
     //      刻意**在**抖动/量化之前：响度计量的对象是母带信号本身, 而抖动是
@@ -5739,6 +5794,44 @@ mod tests {
             value["tracks"][0]["lanes"][0]["resolvedDeviceId"],
             device_id.to_canonical_string(),
             "夹具必须真的解析到设备（否则本条只测了 null 那一支）"
+        );
+    }
+
+    /// 判据：回执的 `ignoredStripDevices` 预警必须点名第二台设备与被忽略参数。
+    ///
+    /// 只测预警 builder 本身（纯函数，不渲染音频）：两台通道条设备 ⇒ 预警出
+    /// 一条，点名轨 / 设备 / 参数；干净工程与源节点外 ⇒ `None`（不是恒报）。
+    #[test]
+    fn ignored_strip_devices_warning_names_device_and_params() {
+        let (project, track_id) = project_with(
+            vec![
+                device(node(11), &[("eq_low_gain", 6.0)]),
+                device(node(12), &[("eq_high_gain", 3.0), ("output_gain_db", -2.0)]),
+            ],
+            &[],
+        );
+        let warning = ignored_strip_devices_warning(&project.tracks, &[track_id])
+            .expect("第二台设备必须出预警");
+        assert_eq!(warning["code"], "ignoredStripDevices");
+        assert_eq!(warning["severity"], "warning");
+        assert_eq!(warning["blocking"], false);
+        assert_eq!(warning["count"], 1);
+        assert_eq!(warning["devices"][0]["track"], "Lead");
+        assert_eq!(warning["devices"][0]["slot"], 1);
+        assert_eq!(warning["devices"][0]["device"], "dev");
+        assert_eq!(warning["devices"][0]["ignoredParams"][0], "eq_high_gain");
+        assert_eq!(warning["devices"][0]["ignoredParams"][1], "output_gain_db");
+
+        // 干净工程 ⇒ None。
+        let (clean, clean_id) = project_with(vec![device(node(11), &[("eq_low_gain", 6.0)])], &[]);
+        assert!(
+            ignored_strip_devices_warning(&clean.tracks, &[clean_id]).is_none(),
+            "单台来源不是预警"
+        );
+        // 轨不在源节点里 ⇒ None（作用域与 deviceChainDsp 登记一致）。
+        assert!(
+            ignored_strip_devices_warning(&project.tracks, &[]).is_none(),
+            "未进渲染图的轨不预警"
         );
     }
 }

@@ -26,7 +26,7 @@ use yeban_render::automation::{
     compressing_nodes_with_lanes, device_param_automations, forced_insert_instances,
 };
 use yeban_render::inserts::{
-    InsertChain, project_inserts, project_inserts_with_forced_instances,
+    InsertChain, ignored_strip_devices, project_inserts, project_inserts_with_forced_instances,
     project_inserts_with_forced_strips, statically_compressing_nodes, strip_source_params,
     strip_source_slot, track_has_unhandled_dsp,
 };
@@ -1955,5 +1955,74 @@ fn pub_functions_about_compression_say_whether_they_mean_statically() {
     assert!(
         seen.contains("compresses_statically") && seen.contains("compressing_nodes_with_lanes"),
         "本判据必须真的扫到 `compresses_statically` 与 `compressing_nodes_with_lanes`：{seen:?}"
+    );
+}
+
+/// 判据：第二台带通道条名字的设备必须被标记 —— 名字受支持 ≠ 被采纳。
+///
+/// 来源规则（`strip_source_slot`）只认首台；第二台的通道条参数没有任何离线
+/// 路径执行。修前：`track_has_unhandled_dsp` 对全受支持名字返回 `false`，
+/// 第二台被静默忽略；修后：必须登记。
+#[test]
+fn second_strip_device_is_reported_not_silently_ignored() {
+    let two_strips = track(vec![
+        effect(&[("eq_low_gain", 6.0)]),
+        effect(&[("eq_high_gain", 3.0), ("output_gain_db", -2.0)]),
+    ]);
+    assert_eq!(
+        strip_source_slot(&two_strips),
+        Some(0),
+        "首台仍是来源：本修复不改单源语义"
+    );
+    let ignored = ignored_strip_devices(&two_strips);
+    assert_eq!(ignored.len(), 1, "恰一台被忽略的设备");
+    assert_eq!(ignored[0].slot, 1);
+    assert_eq!(
+        ignored[0].ignored_params,
+        vec!["eq_high_gain".to_owned(), "output_gain_db".to_owned()],
+        "被忽略的参数要点名"
+    );
+    assert!(
+        track_has_unhandled_dsp(&two_strips),
+        "第二台设备的参数没人消费 ⇒ 必须登记 deviceChainDsp"
+    );
+}
+
+/// 判据：`ignored_strip_devices` 的边界 —— 单台 / 顺序 / 旁通 / 别族 / 空参数。
+#[test]
+fn ignored_strip_devices_boundary_cases() {
+    // 单台来源 ⇒ 空，且仍被消费。
+    let single = track(vec![effect(&[("eq_low_gain", 6.0)])]);
+    assert!(ignored_strip_devices(&single).is_empty());
+    assert!(!track_has_unhandled_dsp(&single), "单台来源仍被消费");
+
+    // 来源不在下标 0：第一台无通道条名，第二台才是来源 ⇒ 空。
+    let reverb_first = track(vec![
+        effect(&[("reverb_decay_s", 1.2)]),
+        effect(&[("eq_low_gain", 6.0)]),
+    ]);
+    assert_eq!(strip_source_slot(&reverb_first), Some(1));
+    assert!(ignored_strip_devices(&reverb_first).is_empty());
+
+    // 第二台旁通 ⇒ 不算（旁通本来就不进信号链）。
+    let mut bypassed = effect(&[("eq_high_gain", 3.0)]);
+    bypassed.bypassed = true;
+    let bypassed_second = track(vec![effect(&[("eq_low_gain", 6.0)]), bypassed]);
+    assert!(ignored_strip_devices(&bypassed_second).is_empty());
+    assert!(!track_has_unhandled_dsp(&bypassed_second));
+
+    // 第二台只有混响名 ⇒ 不是被忽略的通道条设备（混响走各自的来源规则）。
+    let reverb_second = track(vec![
+        effect(&[("eq_low_gain", 6.0)]),
+        effect(&[("reverb_decay_s", 1.2)]),
+    ]);
+    assert!(ignored_strip_devices(&reverb_second).is_empty());
+
+    // 第二台空参数 ⇒ 已有空参数规则登记，但不进 strip 忽略表（没有通道条名可忽略）。
+    let empty_second = track(vec![effect(&[("eq_low_gain", 6.0)]), effect(&[])]);
+    assert!(ignored_strip_devices(&empty_second).is_empty());
+    assert!(
+        track_has_unhandled_dsp(&empty_second),
+        "空参数设备仍由既有规则登记"
     );
 }

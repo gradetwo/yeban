@@ -558,6 +558,60 @@ pub fn statically_compressing_nodes(tracks: &BTreeMap<EntityId, TrackV3>) -> BTr
         .collect()
 }
 
+/// 被通道条来源规则忽略的设备：下标 + 被忽略的通道条参数名（书写原样）。
+///
+/// `slot` 是设备在本轨 `devices` 里的下标；`ignored_params` 只含通道条族
+/// （[`DeviceParamFamily::Strip`]）的名字 —— 同一台设备上的混响 / 卷积名字走
+/// 各自的来源规则，不在这里报（⛔ 不把别族的名字说成被忽略的通道条参数）。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct IgnoredStripDevice {
+    /// 设备下标。
+    pub slot: usize,
+    /// 被忽略的通道条参数名（书写原样，设备参数顺序）。
+    pub ignored_params: Vec<String>,
+}
+
+/// 本轨被通道条来源规则忽略的设备。
+///
+/// 来源规则（[`strip_source_slot`]）只认**首台**带通道条名字的非旁通
+/// [`DeviceKind::InternalEffect`] 设备；其余带通道条名字的非旁通同类设备，
+/// 其通道条参数**没有任何离线路径执行** —— 名字在白名单里（`is_supported_param`）
+/// 只说明"这个名字有人认"，不说明"这台设备的这个参数被采纳了"。
+/// 旁通设备不算（旁通本来就不进信号链）；来源设备本身不算。
+/// 返回空 ⇒ 没有这类设备。
+#[must_use]
+pub fn ignored_strip_devices(track: &TrackV3) -> Vec<IgnoredStripDevice> {
+    let source = strip_source_slot(track);
+    track
+        .devices
+        .iter()
+        .enumerate()
+        .filter_map(|(slot, device)| {
+            if device.bypassed || device.kind != DeviceKind::InternalEffect || Some(slot) == source
+            {
+                return None;
+            }
+            let ignored_params: Vec<String> = device
+                .params
+                .iter()
+                .filter(|param| {
+                    DeviceParamField::from_name(&param.name.to_ascii_lowercase())
+                        .is_some_and(|field| field.family() == DeviceParamFamily::Strip)
+                })
+                .map(|param| param.name.clone())
+                .collect();
+            if ignored_params.is_empty() {
+                None
+            } else {
+                Some(IgnoredStripDevice {
+                    slot,
+                    ignored_params,
+                })
+            }
+        })
+        .collect()
+}
+
 /// 本轨是否仍有**离线路径没有消费**的设备参数（MCP 的 `deviceChainDsp` 登记口径）。
 ///
 /// 返回 `true` 的条件（任一成立）：
@@ -574,7 +628,10 @@ pub fn statically_compressing_nodes(tracks: &BTreeMap<EntityId, TrackV3>) -> BTr
 ///   （"没有参数可求值"不是"已经求值"—— 与既有 MCP 判据的口径一致）；
 /// - 有**非旁通** [`DeviceKind::InternalEffect`] 设备的任一参数名不在本切片的
 ///   白名单里（未知第三方旋钮 / 刻意不认的 `filter_cutoff_hz` / `reverb_mix` /
-///   `reverb_width`）。
+///   `reverb_width`）；
+/// - 有**非旁通** [`DeviceKind::InternalEffect`] 设备带通道条名字、却不是本轨的
+///   通道条来源设备（见 [`ignored_strip_devices`]）：名字受支持**不等于**被采纳 ——
+///   来源规则只认首台，第二台及之后的同类设备参数没有任何离线路径执行。
 ///
 /// 全部非旁通设备都被**某条**离线路径真的执行 ⇒ `false` ⇒ MCP 不再登记
 /// `deviceChainDsp`（报一个已经做到的键就是假话）。增益 / EQ / 滤波 / 压缩
@@ -582,6 +639,9 @@ pub fn statically_compressing_nodes(tracks: &BTreeMap<EntityId, TrackV3>) -> BTr
 /// G5 把这一半如实接进本判据）。
 #[must_use]
 pub fn track_has_unhandled_dsp(track: &TrackV3) -> bool {
+    if !ignored_strip_devices(track).is_empty() {
+        return true;
+    }
     track.devices.iter().any(|device| {
         if device.bypassed {
             return false;
@@ -626,6 +686,8 @@ fn is_supported_param(name: &str) -> bool {
 /// 设备参数自动化（任务单 `#266`）只能落在**这一台**设备上：`AutomationTarget::DeviceParam`
 /// 的 `slot_index` 若是别的下标，那个参数**不是**进 DSP 的那一份 ⇒ 不落点
 /// （由 [`crate::automation::device_param_lane_is_applicable`] 如实回答）。
+///
+/// 其余带通道条名字的设备见 [`ignored_strip_devices`]（它们的通道条参数没有离线路径执行）。
 #[must_use]
 pub fn strip_source_slot(track: &TrackV3) -> Option<usize> {
     track.devices.iter().position(|device| {
