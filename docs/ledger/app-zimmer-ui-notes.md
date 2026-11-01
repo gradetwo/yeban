@@ -360,3 +360,71 @@ clip_widths / clip_ys / clip_heights` 全部是 `self.clips.iter()` **无过滤�
 `inserting_a_reverb_commits_once_and_installs_the_reverb_params`（判据 ⑦ 改写后 `[内置合成器, EQ]`）、
 `creating_an_empty_clip_commits_once_and_places_four_bars_at_zero`（片段长度未被本票带偏）——
 五条在 `test (合并特性)` 步骤内均逐字读到 `... ok`。
+
+## 18. D-UI-8：UI 控制面装配里**保存入口未接线**（2026-11-01）
+
+**这个数字在数什么**：单位＝**字节 / 个**，对象＝点击 `transport-save-button` 之后
+①工程文件在磁盘上的**字节数与轨数**、②控件树里 `status-bar-save-status` 这个**节点是否存在**。
+两者都是"点了到底有没有用"的可证伪读数，⛔ 不是"回执字符串好不好看"。
+
+**症状**：第二首（只用人类手势）录到保存环节时，点「保存」与按 Ctrl+S **都不产生任何可见后果**。
+比报错更糟的是它**连失败都不报**：`.slint` 里 `status-bar-save-status` 的可见条件是
+`visible: root.save-status != ""` ⇒ `save-status` 空串时那个节点**根本不存在**，
+而控制面 `ui.value()` 把 `-32006 element-not-found` **咽成 `None`**。于是从外面看
+"点了没回复"和"回复是空"长得一模一样 —— 这是**沉默缺陷**，不是错误。
+
+**根因**（读代码定位，非从症状倒推）：`host::wire_save` 是 `save-project` 回调的**唯一登记点**，
+而它只被 `run_gui` 调用。`main.rs` 对 `--enable-ui-mcp-http` 的处理是**直接**进
+`ui_mcp_serve::run` ⇒ `run_gui` 在该进程里**永不执行** ⇒ 控制面进程用的是
+`build_live_ui_with` 这条装配路径，而它从来没调用 `wire_save`。
+真实 GUI 会话没事、只有控制面装配的窗口坏 —— 这解释了为什么此前所有判据都没抓到它。
+
+**修复形状**：`live_surface.rs` 的装配末尾补一次 `host::wire_save(&window, host::SaveStatus{
+target: options.save_path, project}, options.undo.clone(),
+std::rc::Rc::new(yeban_app::file_picker::NoPicker), None)`。⛔ 不新增控件、不新增方法。
+`NoPicker` 是既有的"无桌面选择器"实现：控制面进程没有弹框可用，给它一个**返回 `None`**
+的选择器正是既有语义。
+
+**判据**：`tests/d_ui_8_serve_save_gesture.rs` 两条。
+① `the_control_plane_assembly_registers_the_save_callback`（**默认档**可编译）＝源码文本断言：
+`live_surface.rs` 里出现 `host::wire_save(` / `options.undo.clone()` /
+`yeban_app::file_picker::NoPicker`，且 `ui_mcp_serve.rs` 里出现 `build_live_ui_with`
+（钉住"控制面确实走这条装配"这个前提，否则 ① 会随重构静默失效）。
+② `a_real_click_on_the_save_button_lands_the_live_project_on_disk`
+（`#[cfg(feature = "ui-mcp-http")]`）＝**真指针点击**：种子容器 → `open_project_document_file`
+→ `serve_wiring` → `build_live_ui_with`；先断言开局 `status-bar-save-status` **缺席**、
+`get_save_status()` 为空串（把"沉默"写成前置条件），再建一条 MIDI 轨（轨数 +1），点保存按钮，
+断言回执以「已保存」开头、`get_save_succeeded()` 为真、节点由缺席变存在、
+**磁盘字节变化**且读回容器的轨数 = 点击前 +1、`history_dag` 字节 > 0。
+
+**第一票红与热修**（run `41296475771` / 手动档 `gate=all-features crate=yeban-app`）：
+**4 个编译错误**，全部是同一条作用域规则 —— 判据 ② 的两个 `use`
+（`yeban_model::container::read_project_container` / `ContainerLimits`）写在 `#[test] fn`
+**函数作用域**里，而读回容器的代码在**模块级助手** `on_disk` 中 ⇒ 助手看不见。
+⚠ 这条缺陷之所以能躲过默认档 CI：`#[cfg(feature = "ui-mcp-http")]` 的腿**默认档根本不编译**。
+热修＝助手内改**全路径限定**，⛔ 不是把 import 提升到模块级（那会让默认档也依赖该 feature 的名字）。
+
+**判决读回**（2026-11-01 现读 `gh run view`）：
+- 手动档 run `41297680457` / headSha `9d4023d1`：**success**。11 作业里只有
+  `all-features (yeban-app)` 为 success，其余（fps / determinism / bench / inventory /
+  goldens / fuzz / windows / arm 对账 / arm 收据 / pending）全部 **skipped** ⇒ ⛔ 不计为绿。
+  该腿 `test result: ok` **145** 行、累计 **1175 passed**、`... FAILED` **0**、`panicked` **0**；
+  `Running … tests/d_ui_8_serve_save_gesture.rs` 在该腿日志中**在场**（此工作流的日志形状
+  与自动档不同：`^[[1m^[[92m     Running^[[0m tests/…` 里的转义是**字面的 `^[[` 两字符**，
+  直接 `grep 'Running tests/'` 记 0 是**形状**造成的、不是"没跑到"——计数须用
+  `grep -cE 'Running.*tests/.*\.rs'`，现读 **141**）。两条判据逐字读到 `... ok`，回执逐字：
+  `[D-UI-8] 真指针点击「保存」：权威 7 → 8 轨；磁盘 8001 → 10668 字节、7 → 8 轨、
+  history_dag 1845 字节；回执="已保存 10668 字节 → /tmp/yeban-d-ui-8-save-…/serve.yeban
+  （本地原子写）"；控件树里 status-bar-save-status 已由缺失变为存在`。
+- 自动档 CI（push `9d4023d1`）run `41297665481`：**success**（9 作业：deny / plan / lockfile /
+  checks / `rust (yeban-app)` / windows / macos 全 success，`rust (workspace 全量)` 与 `e2e`
+  **skipped** ⇒ ⛔ 不计为绿）。`rust (yeban-app)` 腿现读：`test result: ok` **289** 行、
+  累计 **2199 passed**、`... FAILED` **0**；`d_ui_8_serve_save_gesture` 在该腿日志中出现
+  **2** 次（二进制名 + 判据行）⇒ 目标二进制真跑了，⛔ 不是"判据名缺失"那种顺序空白。
+
+- ⚠ 修复本体 `1349e571` 自己那票 run `41296326041` 被同 ref 的并发组**取消**（`cancelled`）。
+  如实登记：**该票什么都没判**；其内容（fix + 判据）由 `9d4023d1` 这一批（同车 + 判据热修）覆盖。
+
+**残留缺口**（不在本票解决，如实登记）：接线修的是**控制面装配路径**。一个**没有 `--open`
+启动的真实 GUI 会话**里，`NoPicker` 返回 `None` ⇒ 「保存」按钮仍是没有目标可写；
+另存为/新建后首存的选择器路径属另一切片，⛔ 本片不私自发明文件对话框语义。
