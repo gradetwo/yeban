@@ -1937,8 +1937,8 @@ impl AutomationReport {
         serde_json::json!({
             "wired": true,
             "evaluator": "YebanProjectV1::automation_value_at",
-            "targetsSupported": ["TrackVolume", "TrackPan", "SendGain", "DeviceParam"],
-            "targetsUnsupported": ["Macro"],
+            "targetsSupported": TARGETS_SUPPORTED,
+            "targetsUnsupported": TARGETS_UNSUPPORTED,
             // ⭐ `#267`/`#293`/`#304`：`DeviceParam` 这一族接了**插入链能改的标量字段**
             // （55 个拼写 = 41 通道条（含压缩 14）+ 6 混响 + 8 卷积，含别名）；哪些名字
             // 有落点必须可读，且**只有一处来源**
@@ -1977,6 +1977,28 @@ fn automation_target_name(target: AutomationTarget) -> &'static str {
         AutomationTarget::Macro { .. } => "Macro",
     }
 }
+
+/// ⭐ s32：[`AutomationTarget`] 五个变体的**唯一名册** —— 上面的
+/// [`automation_target_name`] 每个臂贡献一个名字，判据
+/// `the_automation_word_tables_are_the_producers_partition` 钉住这个一一对应。
+/// `outputSchema` 的 `data.automation.tracks[].lanes[].target.enum` 直接引用它，
+/// 与 [`VERDICT_VALUES`] 同一条理由：⛔ 不在 schema 侧手抄第二份清单。
+pub const TARGET_VALUES: [&str; 5] = [
+    "TrackVolume",
+    "TrackPan",
+    "SendGain",
+    "DeviceParam",
+    "Macro",
+];
+
+/// 本渲染器**消费**的目标（= [`TARGET_VALUES`] 去掉 [`TARGETS_UNSUPPORTED`]；判据钉这个等式）。
+///
+/// ⚠ 这四个是"这类目标有落点"，⛔ 不是"这条泳道一定被应用" —— 是否应用还要看点、
+/// 读开关与落点在不在保留子图里，逐泳道读数就是 `lanes[]` 的 `evaluable` / `supported` / `applied`。
+pub const TARGETS_SUPPORTED: [&str; 4] = ["TrackVolume", "TrackPan", "SendGain", "DeviceParam"];
+
+/// 有可求值点、但本渲染器**不消费**的目标（⇒ 调用方登记 `automationLanes`，见模块表的 `#243` 行）。
+pub const TARGETS_UNSUPPORTED: [&str; 1] = ["Macro"];
 
 /// 写模式的稳定名字。
 #[must_use]
@@ -5592,5 +5614,130 @@ mod tests {
         );
         assert_eq!(before["unresolved"], Value::Null);
         assert_eq!(after["unresolved"], Value::Null);
+    }
+
+    /// ⭐ s32 判据一（词表）：`data.automation` 广播里的三个词表必须**逐字等于**生产者的东西 ——
+    /// `target` = [`automation_target_name`] 五个臂产出的名字（[`TARGET_VALUES`]），
+    /// `targetsSupported` / `targetsUnsupported` 是它的一个**不重不漏**的分割。
+    ///
+    /// 为什么钉"分割"而不是只钉长度：只比长度时，把 `Macro` 从 `targetsUnsupported`
+    /// 挪进 `targetsSupported` 会**看起来**什么都没坏（4+1 仍是 5），而那句话是假的
+    /// ——`automationLanes` 的口径正好被它定义（模块表 `#243` 行）。
+    #[test]
+    fn the_automation_word_tables_are_the_producers_partition() {
+        let targets = [
+            AutomationTarget::TrackVolume { track_id: node(1) },
+            AutomationTarget::TrackPan { track_id: node(1) },
+            AutomationTarget::SendGain {
+                track_id: node(1),
+                edge_id: node(2),
+            },
+            AutomationTarget::DeviceParam {
+                track_id: node(1),
+                slot_index: 0,
+                param_index: 0,
+            },
+            AutomationTarget::Macro {
+                track_id: node(1),
+                macro_index: 0,
+            },
+        ];
+        let produced: Vec<&str> = targets
+            .iter()
+            .map(|target| automation_target_name(*target))
+            .collect();
+        assert_eq!(
+            produced,
+            TARGET_VALUES.to_vec(),
+            "五个臂产出的名字必须与 TARGET_VALUES 同序同集"
+        );
+
+        // 分割：两份并起来 = 全集，交起来 = 空集。
+        let mut union = TARGETS_SUPPORTED.to_vec();
+        union.extend_from_slice(&TARGETS_UNSUPPORTED);
+        union.sort_unstable();
+        let mut whole = TARGET_VALUES.to_vec();
+        whole.sort_unstable();
+        assert_eq!(union, whole, "supported ∪ unsupported 必须是全集");
+        for name in TARGETS_SUPPORTED {
+            assert!(
+                !TARGETS_UNSUPPORTED.contains(name),
+                "{name} 同时被说成消费与不消费"
+            );
+        }
+
+        // 广播侧必须引用**同一份**东西（引用错了会在下面这条红：枚举里出现第五个名字之外的值）。
+        let schema = crate::output_schema::for_tool("yeban_render_master")
+            .expect("render_master 有 outputSchema");
+        let automation = &schema["properties"]["automation"];
+        let published_targets: Vec<&str> =
+            automation["properties"]["tracks"]["items"]["properties"]["target"]["enum"]
+                .as_array()
+                .expect("target 必须带 enum")
+                .iter()
+                .map(|value| value.as_str().expect("enum 的元素是字符串"))
+                .collect();
+        assert_eq!(
+            published_targets,
+            TARGET_VALUES.to_vec(),
+            "广播的 target.enum 必须逐字等于 TARGET_VALUES"
+        );
+        assert_eq!(
+            automation["properties"]["targetsSupported"]["const"],
+            serde_json::json!(TARGETS_SUPPORTED),
+            "广播的 targetsSupported 必须是生产者那份常量"
+        );
+        assert_eq!(
+            automation["properties"]["targetsUnsupported"]["const"],
+            serde_json::json!(TARGETS_UNSUPPORTED),
+            "广播的 targetsUnsupported 必须是生产者那份常量"
+        );
+    }
+
+    /// ⭐ s32 判据二（同源）：**生产者自己吐出的那份 JSON** 必须过广播的名册 —— 三种泳道形态
+    /// 各一份（有落点的 / 没落点的宏 / 关掉的读开关），⛔ 只拿手写夹具自证。
+    #[test]
+    fn the_producer_automation_report_passes_the_broadcast_roster() {
+        let automation = crate::output_schema::for_tool("yeban_render_master")
+            .expect("render_master 有 outputSchema")["properties"]["automation"]
+            .clone();
+
+        // ① 有落点的 `TrackVolume`（`rendered_nodes` 含该轨 ⇒ supported）。
+        let track_id = node(1);
+        let (project, _) = project_with(Vec::new(), &[AutomationTarget::TrackVolume { track_id }]);
+        let report = AutomationReport::from_project(&project, &[track_id], &[], &[track_id]);
+        crate::output_schema::validate(&automation, &report.to_value())
+            .expect("有落点的音量泳道必须过名册");
+
+        // ② `Macro` 泳道：不可消费 ⇒ `supported:false`，但**形状**仍要过（词表里有第五个名字）。
+        let (project, _) = project_with(
+            Vec::new(),
+            &[AutomationTarget::Macro {
+                track_id,
+                macro_index: 0,
+            }],
+        );
+        let report = AutomationReport::from_project(&project, &[], &[], &[]);
+        let value = report.to_value();
+        crate::output_schema::validate(&automation, &value).expect("宏泳道必须过名册");
+        assert_eq!(
+            value["tracks"][0]["lanes"][0]["target"], "Macro",
+            "本夹具测的必须是宏泳道"
+        );
+
+        // ③ `DeviceParam`：解析到设备 ⇒ 三个 `resolved*` 键有值，形状仍过。
+        let device_id = node(303);
+        let (project, _) = project_with(
+            vec![device(device_id, &[("input_gain_db", -3.0)])],
+            &[device_param(track_id, 0, 0)],
+        );
+        let report = AutomationReport::from_project(&project, &[], &[], &[track_id]);
+        let value = report.to_value();
+        crate::output_schema::validate(&automation, &value).expect("设备参数泳道必须过名册");
+        assert_eq!(
+            value["tracks"][0]["lanes"][0]["resolvedDeviceId"],
+            device_id.to_canonical_string(),
+            "夹具必须真的解析到设备（否则本条只测了 null 那一支）"
+        );
     }
 }
