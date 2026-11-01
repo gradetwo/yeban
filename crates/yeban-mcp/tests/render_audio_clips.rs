@@ -2475,7 +2475,7 @@ fn names_outside_the_insert_chain_do_not_land_but_are_never_silent() {
             expect_chain_dsp,
             "{param_name}: deviceChainDsp 的登记口径（见本判据的表）: {data}"
         );
-        // 名单是**唯一来源**：80 个拼写（`tape_asym` 之后），且这个 IR 形状名字不在里面。
+        // 名单是**唯一来源**：90 个拼写（`tape_asym` 与 hpf/dyn-eq/width 之后），且这个 IR 形状名字不在里面。
         let listed = data["automation"]["appliedDeviceParamNames"]
             .as_array()
             .expect("appliedDeviceParamNames");
