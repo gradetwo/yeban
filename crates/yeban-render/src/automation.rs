@@ -2853,7 +2853,12 @@ mod tests {
         // ⭐ `#341` / `#342`：低切 1 字段（2 拼写）＋ 动态 EQ 3 字段（6 拼写）。
         (StripField::HpfHz, "hpf_hz", 20.0, 140.0),
         (StripField::DynEqFreq, "deq_freq", 300.0, 420.0),
-        (StripField::DynEqThresholdDb, "deq_threshold_db", -24.0, -34.0),
+        (
+            StripField::DynEqThresholdDb,
+            "deq_threshold_db",
+            -24.0,
+            -34.0,
+        ),
         (StripField::DynEqMaxCutDb, "deq_cut_db", 0.0, 5.0),
         (StripField::Width, "strip_width", 1.0, 1.4),
     ];

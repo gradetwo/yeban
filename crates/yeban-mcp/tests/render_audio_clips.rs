@@ -3363,7 +3363,11 @@ fn the_seven_mcp_cases_are_the_compressor_fields_minus_threshold() {
     println!("### MCP #306 covered={covered:?}");
     println!("### MCP #306 expected={expected:?}");
     assert_eq!(EIGHT.len(), 8, "压缩字段是 8 个");
-    assert_eq!(StripField::ALL.len(), 22, "通道条共 22 个字段");
+    assert_eq!(
+        StripField::ALL.len(),
+        27,
+        "通道条共 27 个字段（14 增益/EQ/滤波 ＋ 8 压缩 ＋ 1 低切 ＋ 3 动态 EQ ＋ 1 宽度）"
+    );
     assert_eq!(MCP_COMP_CASES.len(), 7, "除 threshold_db 外是 7 个");
     assert_eq!(covered, expected, "MCP_COMP_CASES 必须逐字覆盖这 7 个字段");
     assert!(
