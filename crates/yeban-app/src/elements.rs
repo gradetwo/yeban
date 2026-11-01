@@ -4077,7 +4077,18 @@ mod tests {
             }
             let code = code_only(&std::fs::read_to_string(file).expect("读 .slint 失败"));
             for (slint_name, _) in MUSICAL_PR_PROPERTY_NAMES {
-                if code.contains(&format!("{slint_name}:")) {
+                let needle = format!("{slint_name}:");
+                // 只数**实例绑定行**：别处注入抽屉数据面**必须**经过
+                // `MusicalPrDrawer { … }` 的绑定行（全仓只有 `app.slint` 实例化它，
+                // 而 `app.slint` 已在上面豁免）。另一组件**声明自己的**同名属性
+                // （`in property <string> empty-reason:` —— sidebar 空态就是同名复用，
+                // 2026-11-01 run 41253471992 曾因这条宽匹配误红）写不到抽屉 ⇒ 豁免
+                // **含 `property <` 的声明行**；绑定行不含该子串，真注入照样被抓。
+                let injection = code
+                    .lines()
+                    .filter(|line| line.contains(&needle))
+                    .any(|line| !line.contains("property <"));
+                if injection {
                     extra_binds.push(format!("{rel}: {slint_name}:"));
                 }
             }
