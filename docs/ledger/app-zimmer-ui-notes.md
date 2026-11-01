@@ -291,3 +291,13 @@ clip_widths / clip_ys / clip_heights` 全部是 `self.clips.iter()` **无过滤�
 口径上答案是**可达**（N-UI-1 的窗口化不覆盖剪辑块）；"滚轮滚动行为"那一格仍属**未行为验证**，
 且编曲行区 `Flickable` 注释自证为**纵向专用**（`content-width: self.width`），横向口径
 按第 199 轮教训归宿主 `scroll-x`（⛔ 双重计算）。本条只登记代码事实，⛔ 不据此发明缺陷。
+
+## 15. 判决读回落账（2026-11-01，sidebar 合流前夜）
+
+| 票 | run / headSha | 读数 | 口径 |
+| :--- | :--- | :--- | :--- |
+| main（混音落地批） | `41253377080` / `4c0d3153` | **success**，真腿全跑：lockfile/plan/checks/deny/macos/**rust (yeban-app)**/windows | 本批代码判决 |
+| main（docs 批） | `41256461256` / `f6753cc8` | **success**，但 4 跑 5 跳 —— 纯文档批按计划空绿 | ⛔ 只算门禁绿，代码判决承上一行 |
+| sidebar goldens 重录 | `41254412881` | **success** 且 5 张 PNG **sha256 逐张相等** | 基准零变更（§13 已记） |
+| sidebar 判据第一批 | `41253471992` / `1da6ddd5` | **failure**：`391 passed; 1 failed` —— 抽屉单注入判据把 sidebar 本地同名声明 `empty-reason:` 误读为第二注入路径 | 根因修复 `d5ceab0d`：判据只数**实例绑定行**（豁免含 `property <` 的声明行；`MusicalPrDrawer` 全仓唯一实例化在 `app.slint`，真注入仍被抓） |
+| sidebar 重判 | `41256416978` / `d5ceab0d` | 在飞；合流由判决门控的后台流水线执行（绿⇒land⇒push⇒读回⇒拆树） | 结果到达后在本行补记 |
