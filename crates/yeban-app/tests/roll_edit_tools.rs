@@ -21,6 +21,7 @@
 //! | `a_click_at_the_host_frame_coordinates_does_not_select_the_painted_note` | **帧控制臂**：把**宿主坐标数**原样当绘制坐标注入（= 旧判据的做法）⇒ 点不到靶子（预期 ULID 不得进选区）。它与上一条一起把两件事钉住：`hit_test_visible` 说**宿主帧**，界面回调报**绘制帧**，两者差 `bridge::painted_to_host` |
 //! | `clicking_a_note_without_wire_roll_edit_still_selects_it` | **覆盖控制臂**：同样是 `build_live_ui` 但**不调** `wire_roll_edit`（= 覆盖发生前的形态）的同一个**绘制坐标**点击也选中它 ⇒ 把上一轮的缺陷隔离到"后装 handler 覆盖"，并证明坐标 / 夹具本身是对的 |
 //! | `the_eraser_click_deletes_the_note_under_the_cursor` | 橡皮擦点击接上后：点光标下的音符 ⇒ 权威工程音符 **−1**，删掉的正是点中的那个身份，且选区被清空（与键盘 `Delete` 同一取向） |
+//! | `a_scroll_drag_after_a_pencil_edit_redraws_the_live_project_not_the_wired_snapshot` | **D-UI-10**：铅笔加一个音符之后，一次越过 4px 阈值的水平拖动（= 人手上的"随手一拖"）必须把界面重投影成**此刻**的工程 ⇒ 那个音符的矩形仍在运行时树里、偏移确实动了。旧实现只在 `build_main_window_with_console_tab` 装一次滚动 handler 并抓住**装配/接线那一刻**的快照 ⇒ 拖动把整个界面重绘回快照（实测症状：刚画的音符整批从树里消失、读数变回 0 轨 / bpm 120.00，⛔ 没有 `Op`、⛔ 没有日志、撤销栈一位没动） |
 //!
 //! ## 未接的部分（如实登记，⛔ 不假装）
 //!
@@ -46,6 +47,9 @@
 //!   ⇒ 生产顺序那条判据的 `selected-note-count` 停在 0；**覆盖控制臂仍绿** ——
 //!   这正是"缺陷在覆盖、不在坐标"的证据。
 //! - 让橡皮擦分支重新什么都不做 ⇒ `the_eraser_click_deletes_the_note_under_the_cursor` 红。
+//! - 让 `install_roll_scroll` 退回"只抓快照、不读端口"（= 在 `host.rs` 的 `install_roll_scroll` 里把
+//!   `port` 参数恒传 `None`）⇒ D-UI-10 那条判据的 `note_rect_in_tree` 变 `false`（音符被重绘掉），
+//!   而偏移断言仍绿 —— 证明红在"重投影用错了工程"，不在"手势没送到"。
 
 #[path = "../src/live_surface.rs"]
 // 本判据只用到 `live_surface.rs` 的一部分 ⇒ 其余项在本测试目标里是 dead_code，
@@ -4308,4 +4312,127 @@ fn a_single_track_project_keeps_the_pre_166_pencil_result() {
         expected.duration_ticks,
         note_count(&port.project()),
     ));
+}
+
+/// 在卷帘面**中心**做一次越过规范的 4px 阈值的水平拖动（合计 `dx`，正 = 指针向右）。
+///
+/// 铅笔工具下 `note-drag-grab` 如实返回 `false` ⇒ `.slint` 走的是**滚动臂**
+/// （`root.scroll-requested(root.drag-last-x - self.mouse-x)`），⛔ 不是音符拖拽臂。
+fn drag_roll_horizontally(plane: &mut LiveControlPlane, seq: i64, dx: f32, steps: usize) {
+    let bounds = element_bounds(plane, seq, SCROLL_AREA);
+    #[allow(clippy::cast_precision_loss)]
+    let center = (
+        bounds["width"].as_f64().expect("width") as f32 / 2.0,
+        bounds["height"].as_f64().expect("height") as f32 / 2.0,
+    );
+    drag_in_roll_by_id_at(plane, seq, center, dx, 0.0, steps);
+}
+
+/// 某个音符的矩形是否**在运行时控件树里**（可见反馈的口径，与判据 ① 同一读数）。
+fn note_rect_in_tree(plane: &mut LiveControlPlane, seq: i64, ulid: &str) -> bool {
+    let node = plane.plane().try_line(&request_line(
+        seq,
+        METHOD_NODE,
+        Some(json!({ "elementId": format!("note-{ulid}-rect") })),
+    ));
+    !node.is_error()
+}
+
+/// 判据（D-UI-10）：**编辑之后的一次滚动拖动**必须重投影此刻的工程，⛔ 不得重投影
+/// `wire_roll_edit` 接线那一刻抓的快照。
+///
+/// ## 缺陷（本判据必须在修复前的代码上变红）
+///
+/// 滚动 handler 过去只在 `build_main_window_with_console_tab` 里装一次，闭包抓住**装配时**
+/// 的 `ViewState`，此后没有任何路径更新它；`wire_roll_edit` 也不重装它 ⇒ 生产路径上它抓住的是
+/// **接线那一刻**的工程（常常还是空的那一份）。于是卷帘内一次越过 4px 阈值的指针移动
+/// （人手上的"随手一拖"）会把 bpm / 轨道 / 剪辑 / 音符**整体**重绘回那份快照。
+///
+/// 实测症状（用控制面创作第二首歌时撞上的，`docs/ledger/app-zimmer-ui-notes.md`）：画完一批
+/// 音符后随手一拖，`ui/tree` 读数变成 **0 轨 / 0 剪辑 / bpm 120.00**，刚画的音符整批从树里
+/// 消失；⛔ 没有 `Op`、⛔ 没有日志、撤销栈一位没动（下一次端口侧动作重投影 ⇒ 又全部回来，
+/// 因此看起来像"一次 Redo 找回了整段会话"）。
+///
+/// ## 本判据断言什么
+///
+/// ① 前置：铅笔点击在**权威工程**里加一个音符，且它的矩形进树；② 一次越过阈值的水平拖动
+/// 确实推动了宿主拥有的 `roll-scroll-x`（证明 `scroll-requested` 这条路真的被驱动，⛔ 不是
+/// "事件没送到"造成的假绿）；③ 拖动之后那个音符**仍在树里** ⇒ 重投影用的是此刻的工程；
+/// ④ 拖动⛔ 不改工程、⛔ 不插新音符（`up` 只在未越阈值时才 fired `clicked`）。
+#[test]
+fn a_scroll_drag_after_a_pencil_edit_redraws_the_live_project_not_the_wired_snapshot() {
+    let (window, port, mut plane) = assemble();
+    let project_before = port.project();
+
+    // ---- 前置：找一个**真能落子**、并且向左滚 60px 之后仍在视口内的点击 x ----
+    // 视口裁剪会让一个太靠左的音符出树 —— 那是**正常行为**，⛔ 不是本判据要测的东西。
+    // 因此候选必须满足 `60 ≤ x ≤ 可见宽度 − 60`（可见宽度读自拖动面自己的包围盒）。
+    let scroll = 0.0_f32;
+    let drag_px = 60.0_f32;
+    let area = element_bounds(&mut plane, 1, SCROLL_AREA);
+    #[allow(clippy::cast_precision_loss)]
+    let grid_width = area["width"].as_f64().expect("width") as f32;
+    let hit_x = (0..240u8)
+        .map(|step| 10.0 * f32::from(step))
+        .filter(|x| (drag_px..=(grid_width - drag_px)).contains(x))
+        .find(|x| {
+            pencil_op_for(
+                &project_before,
+                scroll,
+                *x,
+                HIT_Y_IN_ROLL,
+                ROLL_SNAP_GRID_TICKS,
+                i32::from(PENCIL_TOOL_DIGIT),
+            )
+            .is_some()
+        })
+        .expect("夹具里必须存在一个可落子、且滚动 60px 后仍在视口内的位置");
+
+    window.set_active_tool(i32::from(PENCIL_TOOL_DIGIT));
+    click_in_roll_by_id(&mut plane, 10, hit_x);
+
+    let project_after = port.project();
+    let before_ids = notes(&project_before);
+    let mut new_ids: Vec<String> = notes(&project_after)
+        .into_iter()
+        .map(|(id, _, _)| id)
+        .filter(|id| !before_ids.iter().any(|(old, _, _)| old == id))
+        .collect();
+    assert_eq!(
+        new_ids.len(),
+        1,
+        "前置：铅笔点击必须恰好在权威工程里加一个音符"
+    );
+    let new_id = new_ids.pop().expect("前置音符身份");
+    assert!(
+        note_rect_in_tree(&mut plane, 20, &new_id),
+        "前置：新音符必须已在运行时树里（否则后面的断言测的是裁剪，不是重投影）"
+    );
+
+    // ---- 驱动滚动臂：指针向左 `drag_px`（`delta = last − now` ⇒ 偏移 +drag_px），分 3 步 ----
+    let offset_before = window.get_roll_scroll_x();
+    let notes_before = note_count(&project_after);
+    drag_roll_horizontally(&mut plane, 30, -drag_px, 3);
+    let offset_after = window.get_roll_scroll_x();
+    report_line(&format!(
+        "[roll-scroll-d-ui-10] 铅笔点 x={hit_x}（卷帘可见宽度 {grid_width}）加音符 {new_id}；\
+         拖动 {drag_px}px ⇒ 偏移 {offset_before} → {offset_after}"
+    ));
+    assert!(
+        (offset_after - offset_before).abs() > 0.5,
+        "前置：拖动必须真的推动宿主拥有的 `roll-scroll-x`（否则本判据没有驱动 `scroll-requested`）"
+    );
+
+    // ---- 核心断言 ----
+    let still_in_tree = note_rect_in_tree(&mut plane, 40, &new_id);
+    let project_now = port.project();
+    assert!(
+        still_in_tree,
+        "D-UI-10：一次滚动之后，铅笔刚画下的音符 `{new_id}` 必须仍在运行时树里 —— 滚动 handler 若重投影接线时的快照，它会整批消失"
+    );
+    assert_eq!(
+        note_count(&project_now),
+        notes_before,
+        "滚动手势⛔ 不改工程（`up` 只在未越 4px 阈值时才 fired `clicked`）"
+    );
 }
