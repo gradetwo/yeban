@@ -235,7 +235,16 @@ const RUNTIME_VELOCITY_BARS: usize = 229;
 /// ⚠ 代价边界与上面那些 Tab 3 数组**不同**：两个色标住在**默认帧**（编曲 / Session
 /// 视图）⇒ 这四格确实进入默认帧的绘制路径（5 张 Linux 基准已重录，见 `a7854d27`）；
 /// "颜色由工程驱动"的必付代价，不是被藏起来的抽屉控件。
-const PER_FRAME_ARRAY_REWRITE_BUDGET: usize = 56;
+/// ## 56 → 57 的追加（左侧资源栏条目接真实投影，任务单 `#133`，2026-10-30）
+///
+/// `ui.set_sidebar_items(strings(&content.items))` —— 一格**数组**，住在默认帧的
+/// 左资源栏（240px 那一列）。它是"条目集合由投影决定"的必付代价：旧版在
+/// `sidebar.slint` 里内联 8 个演示乐器名（含仓库里不存在的 "SFZ · 323 款"），
+/// 零成本但⛔ 是编造。取数侧的每帧成本只有 `bridge::library_instruments` 的
+/// **进程内缓存命中**（键 = 库根 ＋ 安装戳，一次 `stat`），⛔ 不读样本字节
+/// （`#165` 的教训）。③a 不动：两个写入点收在 `host::inject_sidebar` 里，
+/// `apply_view` 本体仍是 100 行 `ui.set_*`（本轮实测读数）。
+const PER_FRAME_ARRAY_REWRITE_BUDGET: usize = 57;
 /// `host.rs` 的 `apply_view` 函数体里的属性写入点个数上限（本单之后 **60**）。
 ///
 /// ## 39 → 40 的追加（任务单 `#82`，2026-10-16）
@@ -561,6 +570,9 @@ fn array_instance_addrs(ui: &yeban_app::ui::MainWindow) -> Vec<(&'static str, us
     );
     push!("automation-path-commands", get_automation_path_commands);
     push!("track-meter-levels", get_track_meter_levels);
+    // ⭐ 任务单 `#133` 的第二段：左侧资源栏的**条目数组**也在 `apply_view` 的每帧路径上
+    // （换分类时由宿主重注入，⛔ 不是手势路径）⇒ 必须计入这份清单，否则会漏数。
+    push!("sidebar-items", get_sidebar_items);
     out
 }
 

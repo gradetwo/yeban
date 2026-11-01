@@ -291,3 +291,32 @@ clip_widths / clip_ys / clip_heights` 全部是 `self.clips.iter()` **无过滤�
 口径上答案是**可达**（N-UI-1 的窗口化不覆盖剪辑块）；"滚轮滚动行为"那一格仍属**未行为验证**，
 且编曲行区 `Flickable` 注释自证为**纵向专用**（`content-width: self.width`），横向口径
 按第 199 轮教训归宿主 `scroll-x`（⛔ 双重计算）。本条只登记代码事实，⛔ 不据此发明缺陷。
+
+## 15. 判决读回落账（2026-11-01，sidebar 合流前夜）
+
+| 票 | run / headSha | 读数 | 口径 |
+| :--- | :--- | :--- | :--- |
+| main（混音落地批） | `41253377080` / `4c0d3153` | **success**，真腿全跑：lockfile/plan/checks/deny/macos/**rust (yeban-app)**/windows | 本批代码判决 |
+| main（docs 批） | `41256461256` / `f6753cc8` | **success**，但 4 跑 5 跳 —— 纯文档批按计划空绿 | ⛔ 只算门禁绿，代码判决承上一行 |
+| sidebar goldens 重录 | `41254412881` | **success** 且 5 张 PNG **sha256 逐张相等** | 基准零变更（§13 已记） |
+| sidebar 判据第一批 | `41253471992` / `1da6ddd5` | **failure**：`391 passed; 1 failed` —— 抽屉单注入判据把 sidebar 本地同名声明 `empty-reason:` 误读为第二注入路径 | 根因修复 `d5ceab0d`：判据只数**实例绑定行**（豁免含 `property <` 的声明行；`MusicalPrDrawer` 全仓唯一实例化在 `app.slint`，真注入仍被抓） |
+| sidebar 重判 | `41256416978` / `d5ceab0d` | **success**（判决直读 GitHub）；判据门计数 `Running_tests=276`、`sidebar_category=2`、`sidebar_item=2`、`result_FAILED=0` ⇒ 收紧后的单注入判据在 yeban-app 与 windows 两腿全绿；合流 `983080d2` 已推送并远程确认 | 落地批 main run 读回与拆树见 §16（自动落账） |
+
+## 15.1 合流流水线的两处判据耦合缺陷（在飞期间热修，2026-11-01）
+
+流水线 step3 原判据把「工作线全量验证」耦合到**作业名** `rust (workspace`：
+本 run 的受影响集合计划把全量腿**跳过**（分支只触 `yeban-app`），目标二进制实际跑在
+`rust (yeban-app)` 腿 —— 若不改，一次**真绿**会被空日志的跳过腿误判为 `exit 2` 拒落。
+热修：step3 改为拼接**所有** `rust (` 腿日志后再套同一判据（目标二进制在场 ⇒ 仍然可证伪；
+⛔ 放宽为"看整体 conclusion"）。step6 原判据取 `--limit 1` 的"最新 main run"，与并发推送
+存在竞态；改按**精确 headSha** 定位。教训与 §15 判据误红同族：**任何自动化判据都不许耦合
+作业名/最新性这类会被计划裁剪与并发移动的表面坐标，要耦合就耦合内容（二进制名、SHA）。**
+
+## 16. sidebar 合流收盘（自动落账 2026-11-01，数值现读自流水线日志）
+
+- sidebar 重判 run `41256416978` / `d5ceab0d`：**success**（判据收紧后）。
+- 合流：`worktree.sh land sidebar-library` ⇒ 本地 main tip `983080d2`（与 §15 文档批同车推送）。
+- 落地批 main run `41259186362`：**success**（该 run 含 crates 改动 ⇒ 真腿；空绿不适用）。
+- 拆树：`worktree.sh rm sidebar-library --purge`（留档 tag `line-archive/sidebar-library`）。
+- 至此 zimmer 报告非 MCP 面**全部收盘**：可复现缺口已落地，U-13=A 维持现状，
+  U-09/U-10/U-12/N-UI-2 挂 `ADR-0058/0059/0060` 待人类批准（均 Proposed、零代码）。
