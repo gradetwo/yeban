@@ -320,3 +320,31 @@ clip_widths / clip_ys / clip_heights` 全部是 `self.clips.iter()` **无过滤�
 - 拆树：`worktree.sh rm sidebar-library --purge`（留档 tag `line-archive/sidebar-library`）。
 - 至此 zimmer 报告非 MCP 面**全部收盘**：可复现缺口已落地，U-13=A 维持现状，
   U-09/U-10/U-12/N-UI-2 挂 `ADR-0058/0059/0060` 待人类批准（均 Proposed、零代码）。
+
+## 17. D-UI-4：UI 新建的 MIDI 轨自带一台内置乐器（`ADR-0062`，Proposed，2026-11-01）
+
+**这个数字在数什么**：单位＝**个**，对象＝活窗口里 `instrument-install-*-button` 的实例数。
+现读（`--ui-test-mode` 控制面，`ids("instrument-install-")`）= **0**，面板原因串逐字
+`INSTRUMENT_INSTALL_NO_BUILTIN_REASON`；根因是清单按**样本字节是否存在**过滤，而仓内
+音频样本 **0 个**（`ADR-0055` 同一读数）。⇒ 只用鼠标/键盘的用户建出的 MIDI 轨
+`TrackV3::default()` ⇒ `devices` 为空 ⇒ 引擎侧 `DeviceTone::is_source()` 判不出音源 ⇒
+`bypass()` ⇒ **画满音符仍然静音**（路由边、电平表、推子全部"看起来在工作"）。
+
+**落点**：`src/bridge.rs`（`BUILTIN_INSTRUMENT_NAME` / `BUILTIN_INSTRUMENT_PARAMS` /
+`builtin_instrument_device()` ＋ `track_create_ops` 对 `NewTrackKind::Midi` 追加一条
+`Op::InsertDevice{slot_index: 0}`）、`src/host.rs`（手势表同步）。⛔ 不新增控件：
+不想要就走**既有** `device-{i}-remove-button`；一次点击仍**恰好一次** `commit_ops`
+（同一批 Op 多一条 ⇒ Undo 一步复原）。
+
+**判据**：`tests/track_routing_crud.rs` ①（设备数/种类/非旁通/`latency_samples==0`/含音源键/
+九个键名逐条过引擎 `is_consumed_instrument_param`）＋ 新增 ①b（音频轨 `devices` 仍为空）。
+
+**被本票改写的既有假设（如实登记）**：`tests/device_clip_creation.rs` 判据 ⑦
+"建轨 → 装 EQ" 之后设备链原为 `[EQ]`，现为 `[内置合成器, EQ]`（`device_insert_ops`
+一直是**追加到链尾**，`slot_index = len`）⇒ 断言改为数量 2 ＋ 顺序，⛔ 不是把判据放宽。
+
+**残留风险（不在本票解决）**：默认音色的九个**值**写在 `bridge.rs`，是引擎
+`CONSUMED_INSTRUMENT_PARAMS` 之外的第二份表（键名有判据钉住，**值**没有契约位）；
+上提到共享契约属账本 `S6`（那份契约的家今天还在 `yeban-mcp`）。
+
+**判决读回**：待本批 CI run 读回后在此行补 `run / headSha / conclusion / Running 计数`。

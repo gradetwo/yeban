@@ -10,7 +10,7 @@
 //! | ④ 删设备 = Δ1 | `invoke_device_remove(身份)` ⇒ `commit_count +1`；读回设备数 −1、身份消失 | 证"每台一个 ✕，且按**身份**寻址" |
 //! | ⑤ 建 clip = Δ1 | `invoke_clip_create()` ⇒ `commit_count +1`；`clip_pool` +1、展示轨 `clips` +1、placement `start_tick=0` / `duration_ticks=15360`（4/4 的 4 小节）、文档 `validate() Ok` | 证"一个原子批次 = 一步撤销"；⛔ 不证钢琴卷帘里画出来 |
 //! | ⑥ 空态 / 禁用 | 只有主总线的工程 ⇒ 两个可用性 `false`、原因**逐字**等于 `bridge` 的常量；直接调回调也 Δ0 | 证"不静默禁用、也不靠界面拦" |
-//! | ⑦ 完整一首的头四步 | `default_project()`（只有主总线）⇒ `+ MIDI`（Δ1）⇒ 装 EQ（Δ1）⇒ 建 clip（Δ1），文档 `validate() Ok` | 证"新建工程 → 加轨 → 装设备 → 建 clip"这条链真的通 |
+//! | ⑦ 完整一首的头四步 | `default_project()`（只有主总线）⇒ `+ MIDI`（Δ1，⭐ `D-UI-4` 后该轨**自带一台内置乐器**）⇒ 装 EQ（Δ1，追加到链尾）⇒ 建 clip（Δ1），文档 `validate() Ok` | 证"新建工程 → 加轨 → 装设备 → 建 clip"这条链真的通，且**音源在前、效果器在后** |
 //!
 //! 预算三件套（§2 ⑦）不在本文件：读数在 `tests/perf_draw_budget.rs`（写点 / 数组常量与原因同处）。
 //!
@@ -21,7 +21,9 @@
 //! - 把 `clip_create_ops` 里的 `AddClipPlacement` 删掉 ⇒ ⑤ 的"展示轨 `clips` +1"红；
 //! - 把 `device_remove_ops` 的按身份寻址改成按界面行下标 ⇒ ④ 在"身份消失"那条断言上仍绿、
 //!   但 `device_remove_ops` 的单测（身份不存在 ⇒ 拒绝）会红；
-//! - 把 `builtin_effect_device` 的 `params` 写成空 `Vec` ⇒ ①③ 的"params 非空"红。
+//! - 把 `builtin_effect_device` 的 `params` 写成空 `Vec` ⇒ ①③ 的"params 非空"红；
+//! - 摘掉 `track_create_ops` 里 `D-UI-4` 那条 `InsertDevice` ⇒ ⑦ 的"槽 0 是内置乐器"红
+//!   （另见 `tests/track_routing_crud.rs` 判据 ①/①b）。
 //!
 //! ## 它**不**证什么（见交付报告的"能验与不能验"）
 //!
@@ -34,8 +36,9 @@ use std::rc::Rc;
 
 use slint::Model as _;
 use yeban_app::bridge::{
-    BuiltinEffect, CLIP_CREATE_NO_TRACK_REASON, DEVICE_INSERT_NO_TRACK_REASON, ViewState,
-    builtin_effect_device, device_insert_ops, device_remove_ops,
+    BUILTIN_INSTRUMENT_NAME, BuiltinEffect, CLIP_CREATE_NO_TRACK_REASON,
+    DEVICE_INSERT_NO_TRACK_REASON, ViewState, builtin_effect_device, device_insert_ops,
+    device_remove_ops,
 };
 use yeban_app::host;
 use yeban_app::scene::DemoScene;
@@ -611,8 +614,24 @@ fn the_empty_project_can_grow_a_track_a_device_and_a_clip() {
     let committed = port.project();
     assert_eq!(committed.tracks.len(), 2);
     let track = display_track(&committed);
-    assert_eq!(track.devices.len(), 1);
-    assert_eq!(track.devices[0].name, "EQ");
+    // ⭐ `D-UI-4`（`ADR-0062`）之后，"新建 MIDI 轨"这一步**自带一台内置乐器** ⇒
+    // 链上是 `[内置合成器, EQ]`：装设备仍然**追加到链尾**（`slot_index = len`），
+    // 音源在槽 0。反证 = 把 `track_create_ops` 里那条 `InsertDevice` 摘掉 ⇒ 红在本格。
+    assert_eq!(
+        track.devices.len(),
+        2,
+        "建轨自带 1 台 + 手装 1 台 = 2 台（实际 {}）",
+        track.devices.len()
+    );
+    assert_eq!(
+        track.devices[0].name, BUILTIN_INSTRUMENT_NAME,
+        "新轨的槽 0 必须是建轨自带的那台音源"
+    );
+    assert_eq!(track.devices[0].kind, DeviceKind::InternalInstrument);
+    assert_eq!(
+        track.devices[1].name, "EQ",
+        "手装的设备追加在链尾，不是插到音源前面"
+    );
     assert_eq!(committed.clip_pool.len(), 1);
     assert_eq!(track.clips.len(), 1);
     let placement = track.clips.values().next().expect("摆放");
@@ -622,11 +641,15 @@ fn the_empty_project_can_grow_a_track_a_device_and_a_clip() {
 
     report_line(&format!(
         "[#163 ⑦] 空工程 → 轨 → 设备 → clip：commit_count {} → {}（每步 Δ1）；\
-         轨 {}；设备 {:?}；clip_pool {}；clips {}；duration_ticks {}；validate={:?}",
+         轨 {}；设备链 {:?}；clip_pool {}；clips {}；duration_ticks {}；validate={:?}",
         baseline,
         port.display().commit_count,
         committed.tracks.len(),
-        track.devices[0].name,
+        track
+            .devices
+            .iter()
+            .map(|device| device.name.as_str())
+            .collect::<Vec<_>>(),
         committed.clip_pool.len(),
         track.clips.len(),
         placement.duration_ticks,

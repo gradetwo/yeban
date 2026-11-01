@@ -4244,8 +4244,8 @@ pub fn wire_macro_panel(ui: &MainWindow, port: &Rc<UndoPort>) {
 ///
 /// | 手势 | `.slint` 回调 | 提交的 `Op`（一次 `Batch`） | 撤销标签 |
 /// | :--- | :--- | :--- | :--- |
-/// | 新建 MIDI 轨 | `track-create-midi()` | `AddTrack` ＋ `AddRoutingNode` ＋ `ConnectRouting{TrackToBus}` | `"create track"` |
-/// | 新建音频轨 | `track-create-audio()` | 同上 | `"create track"` |
+/// | 新建 MIDI 轨 | `track-create-midi()` | `AddTrack` ＋ `InsertDevice{InternalInstrument}`（⭐ `D-UI-4`：建轨即挂一台能发声的内置乐器）＋ `AddRoutingNode` ＋ `ConnectRouting{TrackToBus}` | `"create track"` |
+/// | 新建音频轨 | `track-create-audio()` | `AddTrack` ＋ `AddRoutingNode` ＋ `ConnectRouting{TrackToBus}`（⛔ 不挂乐器：音频轨的音源是录进来的素材） | `"create track"` |
 /// | 新建辅助返回轨 | `track-create-aux()` | 同上，但边的 `kind` 是 `BusToMaster` | `"create track"` |
 /// | 删除展示轨 | `track-delete()` | `DisconnectRouting`×n ＋ `RemoveRoutingNode` ＋ `RemoveTrack` | `"delete track"` |
 ///
