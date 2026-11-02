@@ -3615,7 +3615,7 @@ pub struct ShortcutRow {
 /// 每一项把**规范写法**、**动作**、**键位**与**落地状态**放在一起。这张表的**意义**是
 /// 让策略表的判定结果可被人与 CI 直接阅读 —— 尤其是 `[UI-A11Y-002]` 的 IME 分支,
 /// 以及"规范点名了、本版本还没做"的那一列（见 [`UNIMPLEMENTED_MARKER`]）。
-const SHORTCUTS: [ShortcutRow; 46] = [
+const SHORTCUTS: [ShortcutRow; 47] = [
     ShortcutRow {
         label: "Space → 播放/暂停",
         action: Action::PlayPause,
@@ -3948,6 +3948,19 @@ const SHORTCUTS: [ShortcutRow; 46] = [
         action: Action::ToggleTrackSolo,
         key: PhysicalKey::KeyS,
         modifiers: Modifiers::none(),
+        implemented: true,
+    },
+    // ⭐ **界面决定**（⛔ 不是规范点名）：标准 DAW 的**剪辑**静音键 `Cmd/Ctrl+M`。
+    //
+    // 与上面两条的分工是**作用域**：轨静音 / 独奏动 `selected-track-id`，本键动
+    // `selected-clip-ulid`（唯一写者 `host::wire_clip_scope`）。三格互不相干：裸 `m` 是轨静音、
+    // `Cmd/Ctrl+Alt+M` 是控制台最大化（上面第 3 步那条既有绑定），`Cmd/Ctrl+Shift+M` 仍放行。
+    // 逐条理由见 `Action::ToggleClipMute` 的文档。
+    ShortcutRow {
+        label: "Cmd/Ctrl+M → 选中剪辑静音开/关",
+        action: Action::ToggleClipMute,
+        key: PhysicalKey::KeyM,
+        modifiers: Modifiers::meta(),
         implemented: true,
     },
     // ⭐ **界面决定**（⛔ 不是规范点名）：标准 DAW 的保存键 `Cmd/Ctrl+S`。

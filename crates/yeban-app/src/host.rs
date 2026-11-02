@@ -167,6 +167,12 @@ pub fn apply_view(ui: &MainWindow, view: &ViewState, viewport_width: f32, scroll
     ui.set_section_color_labels(strings(&view.section_color_labels()));
     ui.set_clip_ulids(strings(&view.clip_ulids()));
     ui.set_clip_labels(strings(&view.clip_labels()));
+    // ⭐ 每条摆放的静音态（`D-UI-16`）：`Cmd/Ctrl+M` 拨的就是这一位，界面必须**看得见**结果。
+    // 唯一事实源是 `ClipPlacement::muted`（工程字段），⛔ 界面不自己记一份；与 `track-mutes`
+    // / `track-solos` 同一族口径。默认全 `false` ⇒ 包头底色不变 ⇒ 基准帧逐像素不变。
+    // 这一个数组与这一处写入点分别计入 `PER_FRAME_ARRAY_REWRITE_BUDGET` 与
+    // `APPLY_VIEW_WRITE_SITE_BUDGET`（见 `tests/perf_draw_budget.rs` 的读数与注释）。
+    ui.set_clip_mutes(booleans(&view.clip_mutes()));
     ui.set_clip_positions(lengths(&view.clip_positions()));
     ui.set_clip_widths(lengths(&view.clip_widths()));
     // ⭐ 素材池（任务单 `#133`）：三个平行数组全部来自 `ViewState::asset_pool`
@@ -9764,6 +9770,24 @@ fn apply_action(
             refresh_undo_window(ui, port, true);
             true
         }
+        // ⭐ `Cmd/Ctrl+M`：静音**编曲视图选中的那条剪辑摆放**（`D-UI-16`）。
+        //
+        // 与上面 `ToggleTrackMute` / `ToggleTrackSolo` 的分工是**作用域**：那两条动
+        // `selected-track-id`，本条动 `selected-clip-ulid`（唯一写者 [`wire_clip_scope`]）。
+        // 四条口径（编曲视图门 / 无选中 / 解析不到 / 一步提交）全在
+        // [`toggle_selected_clip_mute`] 这一处，这里只负责取权威工程 —— ⛔ 不在键盘臂里
+        // 再写一份"没选中怎么办"，那会长出第二个口径。
+        // ⚠ 与轨静音**共用不了** `mixer_switch_commit_message`：轨级是 `Op::SetTrackMute`、
+        // 剪辑级是 `Op::SetClipPlacementMuted`，两个 op 形状不同（⛔ 不是同一件事的两种写法）。
+        Action::ToggleClipMute => {
+            let Some(port) = undo else {
+                return false;
+            };
+            let Some(project) = port.try_project() else {
+                return false;
+            };
+            toggle_selected_clip_mute(ui, port, &project)
+        }
         // 横向缩放（`Z` / `Shift+Z`）：**视图态**，不碰 `Op`、不进撤销栈。
         //
         // 语义（三条都是决定）：
@@ -11967,6 +11991,65 @@ fn delete_selected_clip_placement(
     }
     cancel_clip_drag(ui);
     ui.set_selected_clip_ulid("".into());
+    refresh_undo_window(ui, port, true);
+    true
+}
+
+/// 选中剪辑的身份 ⇒ 待提交的 `Op::SetClipPlacementMuted`（剪辑静音的**唯一** op 构造点）。
+///
+/// 与 [`clip_delete_ops_for`] 同一取向：**解析不到就回空**，⛔ 不动一个猜的对象。
+/// 纯函数（只读工程、不碰界面、不提交）⇒ 判据可以直接喂合成工程逐条对账。
+///
+/// ⚠ `old_muted` **从当前文档读**（模型的硬性前置条件：`old_muted` 必须逐值等于现值，
+/// 否则 [`yeban_model::ModelError::OpStateMismatch`]）⇒ 这里不信任何界面自己记的旧值，
+/// 界面那一份只是**读数**（`clip-mutes` 数组），事实源始终是工程。
+#[must_use]
+pub fn clip_mute_ops_for(
+    project: &yeban_model::YebanProjectV1,
+    selected_clip_ulid: &str,
+) -> Vec<yeban_model::ops::Op> {
+    let Some((track_id, placement_id, placement)) = clip_placement_for(project, selected_clip_ulid)
+    else {
+        return Vec::new();
+    };
+    vec![yeban_model::ops::Op::SetClipPlacementMuted {
+        track_id,
+        placement_id,
+        old_muted: placement.muted,
+        new_muted: !placement.muted,
+    }]
+}
+
+/// `Cmd/Ctrl+M` 落到**编曲视图选中的剪辑**上（`D-UI-16`）：一次原子提交、一步撤销。
+///
+/// 四条口径（与 [`delete_selected_clip_placement`] 逐条同款，差别只在"对象还在"）：
+/// 1. **只在编曲视图**生效（`arrangement-view`）：Session 视图里 `selected-clip-ulid`
+///    只是上一次编曲视图留下的读数 ⇒ 拿它改东西等于改用户此刻**看不见**的对象；
+/// 2. **没有选中 / 身份解析不到 ⇒ 不消费**（`false`），⛔ 也不"顺手"清掉那个陈旧读数；
+/// 3. **一次按键 = 一次** [`UndoPort::commit_ops`]（单条 op，`[ARCH-OPS-002]` 的原子性）；
+///    模型拒绝 ⇒ `false` 且⛔ **不重试**（`old_muted` 刚从权威读，重试要再读一遍，
+///    那不是本函数的职责，与 [`commit_clip_drag`] 同一取向）；
+/// 4. **选中态必须留下**：这条摆放改完还在原地（静音≠删除）⇒ ⛔ 不清 `selected-clip-ulid`，
+///    用户可以连着按第二下拨回来。改完**重投影**，否则"模型改了、包头还亮着"。
+fn toggle_selected_clip_mute(
+    ui: &MainWindow,
+    port: &Rc<UndoPort>,
+    project: &yeban_model::YebanProjectV1,
+) -> bool {
+    if !ui.get_arrangement_view() {
+        return false;
+    }
+    let selected = ui.get_selected_clip_ulid();
+    if selected.is_empty() {
+        return false;
+    }
+    let ops = clip_mute_ops_for(project, selected.as_str());
+    if ops.is_empty() {
+        return false;
+    }
+    if port.commit_ops(now_ms(), "mute clip", ops).is_err() {
+        return false;
+    }
     refresh_undo_window(ui, port, true);
     true
 }

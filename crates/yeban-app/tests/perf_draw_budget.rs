@@ -244,7 +244,11 @@ const RUNTIME_VELOCITY_BARS: usize = 229;
 /// **进程内缓存命中**（键 = 库根 ＋ 安装戳，一次 `stat`），⛔ 不读样本字节
 /// （`#165` 的教训）。③a 不动：两个写入点收在 `host::inject_sidebar` 里，
 /// `apply_view` 本体仍是 100 行 `ui.set_*`（本轮实测读数）。
-const PER_FRAME_ARRAY_REWRITE_BUDGET: usize = 57;
+/// ⭐ `D-UI-16`（2026-11-02）：`clip-mutes` —— `Cmd/Ctrl+M` 的**结果读数**（包头底色），
+/// 住在 `apply_view` 的每帧路径上 ⇒ **57 → 58**（多这一个数组，判据清单逐字多一项）。
+/// 它不改默认帧：演示 / 夹具工程里每条摆放默认 `muted = false` ⇒ 底色逐像素不变 ⇒
+/// ⛔ 无需重录基准。
+const PER_FRAME_ARRAY_REWRITE_BUDGET: usize = 58;
 /// `host.rs` 的 `apply_view` 函数体里的属性写入点个数上限（本单之后 **60**）。
 ///
 /// ## 39 → 40 的追加（任务单 `#82`，2026-10-16）
@@ -477,7 +481,10 @@ const PER_FRAME_ARRAY_REWRITE_BUDGET: usize = 57;
 /// `set_section_color_labels` ⇒ **96 → 100**。读数来自 CI run `40980667356`
 /// （③a 逐字报"`apply_view` 的属性写入点从 96 变成了 100"）；它们的消费者住在
 /// **默认帧**（编曲 / Session 视图）⇒ 5 张 Linux 基准已随 `a7854d27` 重录。
-const APPLY_VIEW_WRITE_SITE_BUDGET: usize = 100;
+/// ⭐ `D-UI-16`（2026-11-02）：多**一行** `ui.set_clip_mutes`（`Cmd/Ctrl+M` 的结果读数，
+/// 与上面 `track-mutes` 同族）⇒ **100 → 101**。它的消费者住在**默认帧**（编曲视图的
+/// `clip-{ulid}-header` 底色），但默认全 `muted = false` ⇒ 底色不变 ⇒ ⛔ 基准无需重录。
+const APPLY_VIEW_WRITE_SITE_BUDGET: usize = 101;
 
 /// 取 `[BASELINE-003]` 第 `frame` 帧的滚动偏移（与 `examples/fps_gpu.rs` 同款换算）。
 fn scroll_at(frame: usize) -> f32 {
@@ -514,6 +521,9 @@ fn array_instance_addrs(ui: &yeban_app::ui::MainWindow) -> Vec<(&'static str, us
     push!("section-widths", get_section_widths);
     push!("clip-ulids", get_clip_ulids);
     push!("clip-labels", get_clip_labels);
+    // ⭐ `D-UI-16`（2026-11-02）：`clip-mutes` 也在 `apply_view` 的每帧路径上（⛔ 不是手势路径，
+    // 它是 `Cmd/Ctrl+M` 的结果读数）⇒ 必须计入这份清单，否则"又加了一个每帧换模型实例的数组"会漏数。
+    push!("clip-mutes", get_clip_mutes);
     push!("clip-positions", get_clip_positions);
     push!("clip-widths", get_clip_widths);
     push!("clip-ys", get_clip_ys);

@@ -4522,6 +4522,18 @@ impl ViewState {
         self.clips.iter().map(|clip| clip.label.clone()).collect()
     }
 
+    /// 每条摆放的**静音态**（与 [`Self::clip_ulids`] **同序同长**，来源是
+    /// `ClipPlacement::muted` —— 工程字段，⛔ 不是界面自己记的第二份状态）。
+    ///
+    /// 存在理由：`Cmd/Ctrl+M` 拨的就是这一位，而界面必须**看得见**它的结果
+    /// （否则"按了没反应"与"没按"逐像素相同）。读点是
+    /// `ui/workspace/arrangement_view.slint` 的 `clip-{ulid}-header` 底色；
+    /// 唯一写者是 `host::apply_view`（与 `track-mutes` / `track-solos` 同一族）。
+    #[must_use]
+    pub fn clip_mutes(&self) -> Vec<bool> {
+        self.clips.iter().map(|clip| clip.muted).collect()
+    }
+
     /// 选中的**摆放身份** → 它引用的**片段池条目身份**（[`Self::visible_notes_scoped`] 的作用域）。
     ///
     /// 空串（没有选中）与"身份不在当前投影里"（过期身份 / 刚被撤销掉）都返回 `None`

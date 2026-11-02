@@ -1113,6 +1113,10 @@ export component MainWindow inherits Window {
     in property <[length]> section-widths: [];
     in property <[string]> clip-ulids: [];
     in property <[string]> clip-labels: [];
+    // 每条摆放的静音态（`ClipPlacement::muted`，与 `clip-ulids` 同序同长）。
+    // `Cmd/Ctrl+M` 的结果必须**看得见** ⇒ 界面读它；唯一写者是 `host::apply_view`
+    // （与 `track-mutes` / `track-solos` 同一族：工程字段，⛔ 不是界面自己记的第二份状态）。
+    in property <[bool]> clip-mutes: [];
     in property <[length]> clip-positions: [];
     in property <[length]> clip-widths: [];
     // 剪辑的行几何（y / 高，逻辑像素）—— 由投影从所在行派生（ADR-0004 S0）。
@@ -1621,6 +1625,7 @@ export component MainWindow inherits Window {
                         root.ruler-seek-bar(bar);
                     }
                     clip-labels: root.clip-labels;
+                    clip-mutes: root.clip-mutes;
                     clip-positions: root.clip-positions;
                     clip-widths: root.clip-widths;
                     clip-ys: root.clip-ys;

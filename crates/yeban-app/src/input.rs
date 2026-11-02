@@ -885,6 +885,27 @@ pub enum Action {
     /// 同 [`Self::ToggleTrackMute`]：界面决定、裸 `s` 此前未被占用、作用域是
     /// `selected-track-id`（视图态，唯一写者是 `host::wire_track_select`）。
     ToggleTrackSolo,
+    /// `Cmd/Ctrl+M`: 把**当前选中剪辑摆放**的静音开关拨到反面（键盘入口，界面决定）。
+    ///
+    /// ⚠ **规范没有点名这一动作**（`[UI-NOTE-005]` 只讲音符）⇒ 与 [`Action::ToggleTrackMute`]
+    /// 同一取向：**界面决定**。它补的是"剪辑能选、能拖、能删，就是不能单独静音"这一格：
+    /// `yeban_model::ClipPlacement::muted` 在模型里早已存在，`yeban-engine::snapshot` 与
+    /// `yeban-render::{als, logic}` 都**真的**按它不发声 / 不导出，MCP 侧
+    /// `yeban_mcp::domain::notes` 的 `NoteOp::SetClipPlacementMuted` 也早已能提交 ——
+    /// ⛔ 只有界面一处都没有（本切片之前 `grep -rn SetClipPlacementMuted crates/yeban-app/src` 为空）。
+    ///
+    /// 键位只受一条约束：⛔ 不覆盖任何已被规范点名、或已被既有判据如实钉成放行的组合。
+    /// 实测：`Cmd/Ctrl+M`（第 3 步里 `shift == false && alt == false` 那一格）此前落到该分支的
+    /// `_ => PassThrough`（`m` 在该分支只有 `+Alt` 一条 = 控制台最大化，见
+    /// [`Action::ToggleConsoleMaximize`]），而裸 `m` 是**轨**静音（第 6 步）⇒ 三格互不相干。
+    /// `Cmd/Ctrl+Shift+M` 与 `Cmd/Ctrl+Alt+M` 仍如实放行。
+    ///
+    /// ⚠ **与轨静音的分工是作用域**：[`Action::ToggleTrackMute`] 动 `selected-track-id`，
+    /// 本动作动 `selected-clip-ulid`（唯一写者 [`crate::host::wire_clip_scope`]；视图态，
+    /// 不进工程、不进撤销栈）。"没有撤销端口 / 不在编曲视图 / 没有选中剪辑 / 身份解析不到
+    /// 怎么办、要不要提交"全在 `host::apply_action` 的同一个臂里（与 `DeleteSelection`
+    /// 的剪辑臂同一套口径，⛔ 不在状态机里猜对象）。
+    ToggleClipMute,
     /// `B`: 在箭头与铅笔之间快速切换。
     TogglePencilTool,
     /// `Cmd/Ctrl+Alt+B`: 展开 / 收起左侧资源抽屉。
@@ -1101,6 +1122,11 @@ impl InputContext {
                 // `Shift` / `Alt` 变体仍放行（"打开最近"是另一票界面决定）。
                 (Key::Character('o'), false, false) => Resolution::Action(Action::OpenProject),
                 (Key::Character('b'), false, true) => Resolution::Action(Action::ToggleSidebar),
+                // **界面决定**（⛔ 不是规范点名）：标准 DAW 的**剪辑**静音键（轨静音是裸 `m`，
+                // 见第 6 步；两者靠作用域分开：`selected-track-id` vs `selected-clip-ulid`）。
+                // `m` 在本分支里此前只有 `+Alt` 一条（控制台最大化）⇒ `shift/alt` 都为
+                // `false` 的这一格此前落到 `_ => PassThrough`，加它不动任何既有绑定。
+                (Key::Character('m'), false, false) => Resolution::Action(Action::ToggleClipMute),
                 (Key::Character('m'), false, true) => {
                     Resolution::Action(Action::ToggleConsoleMaximize)
                 }
@@ -1264,7 +1290,7 @@ mod tests {
         AcceptAiSuggestion, AuditionMain, AuditionProposal, Cancel, DeleteSelection, Duplicate,
         GoToBeginning, NudgeMixerChannel, NudgeSelection, OpenProject, OpenTimeMachine, PlayPause,
         Redo, ResizeSelectionDuration, ResumeFromCursor, SaveProject, SaveProjectAs,
-        SelectConsoleTab, SelectTool, SelectTrackBy, ShowView, ToggleAiDrawer,
+        SelectConsoleTab, SelectTool, SelectTrackBy, ShowView, ToggleAiDrawer, ToggleClipMute,
         ToggleConsoleMaximize, TogglePencilTool, ToggleRecord, ToggleSidebar, ToggleTrackMute,
         ToggleTrackSolo, ToggleView, Undo, ZoomToFit, ZoomToSelection,
     };
@@ -1598,6 +1624,59 @@ mod tests {
         // ⚠ `Cmd/Ctrl+S` 与 `Cmd/Ctrl+Shift+S` **不再是放行**：它们是保存 / 另存为
         // （见 `ctrl_s_is_the_save_entry_and_does_not_disturb_its_neighbours`
         // 与 `ctrl_shift_s_is_the_save_as_entry`）。
+    }
+
+    /// 判据：`Cmd/Ctrl+M` = 拨**选中剪辑**的静音（**界面决定**，⛔ 不是规范点名），且不扰动邻居。
+    ///
+    /// 这一条钉三件事（缺任一就不是"每一键只做一件事"）：
+    /// 1. **两条入口同解**为 [`Action::ToggleClipMute`]（物理码 / 逻辑键 —— `N2` 裁决 (1)）；
+    /// 2. 邻居语义一位不动：裸 `m` 仍是**轨**静音（作用域是 `selected-track-id`），
+    ///    `Cmd/Ctrl+Alt+M` 仍是控制台最大化 —— 三格**互不相干**；
+    /// 3. 规范没点名的组合（`Cmd/Ctrl+Shift+M`）如实放行，文本域焦点下一律不消费。
+    #[test]
+    fn ctrl_m_mutes_the_selected_clip_without_disturbing_its_neighbours() {
+        assert_eq!(
+            canvas().resolve(KeyM, Modifiers::ctrl()),
+            Act(ToggleClipMute)
+        );
+        assert_eq!(
+            canvas().resolve(KeyM, Modifiers::meta()),
+            Act(ToggleClipMute)
+        );
+        // GUI 路径（逻辑键）与物理码路径**同解**。
+        assert_eq!(
+            canvas().resolve_logical(LKey::Character('m'), Modifiers::ctrl()),
+            Act(ToggleClipMute)
+        );
+        assert_eq!(
+            canvas().resolve_logical(LKey::Character('m'), Modifiers::meta()),
+            Act(ToggleClipMute)
+        );
+
+        // ---- ② 邻居键一位不动 ----
+        assert_eq!(
+            canvas().resolve(KeyM, Modifiers::none()),
+            Act(ToggleTrackMute),
+            "裸 `m` 必须是**轨**静音（剪辑静音必须带修饰）"
+        );
+        assert_eq!(
+            canvas().resolve(KeyM, Modifiers::ctrl_alt()),
+            Act(ToggleConsoleMaximize),
+            "`Cmd/Ctrl+Alt+M` 仍是控制台最大化（新键只占它点名的那一格）"
+        );
+        // ---- ③ 未被点名的组合一律放行（⛔ 不猜一个相近语义）----
+        assert_eq!(
+            canvas().resolve(
+                KeyM,
+                Modifiers {
+                    shift: true,
+                    ..Modifiers::ctrl()
+                }
+            ),
+            PassThrough
+        );
+        // 文本域焦点：整体放行给表单（与保存 / 打开键同一口径）。
+        assert_eq!(text_field().resolve(KeyM, Modifiers::ctrl()), PassThrough);
     }
 
     /// 判据：`Cmd/Ctrl+S` = 保存工程（**界面决定**，⛔ 不是规范点名），且不扰动邻居。
