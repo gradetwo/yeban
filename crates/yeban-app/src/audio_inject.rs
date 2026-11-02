@@ -268,6 +268,12 @@ pub(crate) struct AudioLookup {
 #[derive(Default)]
 pub(crate) struct AudioPcmCache {
     entries: BTreeMap<AssetHash, CacheEntry>,
+    /// 对齐拉伸后的替代 PCM（[ADR-0067] Pre-Insert warped 缓存，实时路）。
+    /// 键是**原素材**哈希（不是 warped 字节的哈希）：`lookup` 先查这里，
+    /// 命中即返回 warped PCM，不再解码原素材。条目不参与 LRU 淘汰
+    /// （显式覆盖，调用方负责 `set_warped` / `clear_warped`）；
+    /// `retain_live` 会同步裁掉非 live 哈希的 warped 条目。
+    warped: BTreeMap<AssetHash, ReadyAudio>,
     epoch: u64,
     readings: AudioCacheReadings,
 }
@@ -297,6 +303,9 @@ impl AudioPcmCache {
             }
             keep
         });
+        // Warped 覆盖与条目同生共死：资产被裁，覆盖也裁（否则僵尸覆盖
+        // 会在资产重回池时把旧 warped PCM 套到新素材上）。
+        self.warped.retain(|hash, _| live.contains(hash));
         self.readings.cached_bytes = self.readings.cached_bytes.saturating_sub(removed_bytes);
         self.readings.evicted_stale = self
             .readings
@@ -304,11 +313,62 @@ impl AudioPcmCache {
             .saturating_add(u64::try_from(before - self.entries.len()).unwrap_or(0));
     }
 
+    /// 装上对齐拉伸后的替代 PCM（声乐导入管线在 Pre-Insert 阶段调用）。
+    /// `pcm` 须已是目标率（快照率）下的 warped PCM；`source_rate` /
+    /// `source_frames` 是 warped 前 take 的原始率/帧数（记进 `AudioLookup`
+    /// 供调用方对账）。声道数只接受 1/2（与正常解码路同一拒绝口径）。
+    /// 当前仅测试调用：声乐导入管线（后续接线）将在 Pre-Insert 阶段调用它。
+    #[allow(dead_code)]
+    pub(crate) fn set_warped(
+        &mut self,
+        hash: AssetHash,
+        pcm: AudioPcm,
+        source_rate: u32,
+        source_frames: u64,
+    ) -> Result<(), String> {
+        let channels = pcm.channels();
+        if channels != 1 && channels != 2 {
+            return Err(
+                yeban_engine::audio_clip::AudioClipError::UnsupportedChannels(channels).to_string(),
+            );
+        }
+        let resampled = source_rate != pcm.sample_rate();
+        self.warped.insert(
+            hash,
+            ReadyAudio {
+                pcm,
+                source_rate,
+                source_frames,
+                resampled,
+            },
+        );
+        Ok(())
+    }
+
+    /// 清掉全部 warped 覆盖（下一次 `lookup` 回到原素材）。
+    /// 当前仅测试调用（后续接线见 `set_warped`）。
+    #[allow(dead_code)]
+    pub(crate) fn clear_warped(&mut self) {
+        self.warped.clear();
+    }
+
+    /// 当前 warped 覆盖条数（可观测性：覆盖是显式状态，不许静默存在）。
+    /// 当前仅测试调用（后续接线见 `set_warped`）。
+    #[allow(dead_code)]
+    pub(crate) fn warped_count(&self) -> usize {
+        self.warped.len()
+    }
+
     /// 取一份 PCM：命中 ⇒ `Arc` 克隆；未命中 ⇒ 走**同一条** app 侧解码器，
     /// 必要时（`sample_rate != target_rate`）再走**唯一那份**重采样器。
     ///
     /// `target_rate` 是**快照的**采样率（`EngineSnapshot::sample_rate()`）；缓存值按它
     /// 定形 —— 工程换了采样率 ⇒ 旧条目作废（见 [`ReadyAudio`]）。
+    ///
+    /// Warped 覆盖优先于一切（[ADR-0067]）：先查 `warped` 表，命中即返回
+    /// warped PCM（`from_cache: true`，计一次 `hits`）。覆盖 PCM 的率与
+    /// `target_rate` 不符时，用同一份重采样器现转（不覆盖存储的条目；
+    /// 工程率变了应由管线重新 `set_warped` 一份新率的 warped PCM）。
     ///
     /// # Errors
     ///
@@ -320,6 +380,36 @@ impl AudioPcmCache {
         source: Option<&AudioAssetSource>,
         target_rate: u32,
     ) -> Result<AudioLookup, String> {
+        if let Some(warped) = self.warped.get(hash) {
+            let lookup = if warped.pcm.sample_rate() == target_rate {
+                AudioLookup {
+                    pcm: warped.pcm.clone(),
+                    from_cache: true,
+                    source_sample_rate: warped.source_rate,
+                    source_frames: warped.source_frames,
+                    resampled: warped.resampled,
+                }
+            } else {
+                let converted = resample_to_target(
+                    warped.pcm.samples(),
+                    warped.pcm.channels(),
+                    warped.pcm.sample_rate(),
+                    target_rate,
+                )?;
+                self.readings.resamples = self.readings.resamples.saturating_add(1);
+                let pcm = AudioPcm::new(Arc::from(converted), warped.pcm.channels(), target_rate)
+                    .map_err(|error| error.to_string())?;
+                AudioLookup {
+                    pcm,
+                    from_cache: true,
+                    source_sample_rate: warped.source_rate,
+                    source_frames: warped.source_frames,
+                    resampled: true,
+                }
+            };
+            self.readings.hits = self.readings.hits.saturating_add(1);
+            return Ok(lookup);
+        }
         if let Some(entry) = self.entries.get(hash) {
             match &entry.value {
                 CachedAudio::Rejected(reason) => return Err(reason.clone()),
@@ -659,5 +749,95 @@ mod tests {
             .expect("单帧素材必须能注入");
         assert_eq!(single.source_frames, 1);
         assert_eq!(single.pcm.frames(), 2, "ceil(1 × 48000 / 44100) = 2");
+    }
+
+    /// [ADR-0067] warped 覆盖优先于解码原素材；清掉后回到原素材。
+    #[test]
+    fn warped_override_wins_then_clear_restores_original() {
+        let frames = 100_usize;
+        let raw: Vec<i16> = (0..frames)
+            .map(|index| i16::try_from(index as i32 * 97 - 4_800).unwrap())
+            .collect();
+        let bytes = wav_bytes("warped", 48_000, 1, &raw);
+        let hash = AssetHash::of_bytes(&bytes);
+        let mut cache = AudioPcmCache::default();
+        let plain = cache
+            .lookup(&hash, Some(&source(bytes.clone())), 48_000)
+            .expect("原素材必须能注入");
+        assert!(!plain.from_cache);
+
+        let warped_samples: Vec<f32> = (0..frames).map(|_| 0.5).collect();
+        let warped_pcm = AudioPcm::new(Arc::from(warped_samples.clone()), 1, 48_000)
+            .expect("warped PCM 必须能构造");
+        cache
+            .set_warped(hash.clone(), warped_pcm, 48_000, frames as u64)
+            .expect("warped 覆盖必须能装上");
+        assert_eq!(cache.warped_count(), 1);
+
+        let hit = cache.lookup(&hash, None, 48_000).expect("覆盖必须命中");
+        assert!(hit.from_cache);
+        assert!(!hit.resampled);
+        assert_eq!(hit.source_sample_rate, 48_000);
+        assert_eq!(hit.source_frames, frames as u64);
+        assert!(
+            hit.pcm
+                .samples()
+                .iter()
+                .map(|s| s.to_bits())
+                .eq(warped_samples.iter().map(|s| s.to_bits())),
+            "覆盖命中必须逐位返回 warped PCM，而不是原素材"
+        );
+
+        cache.clear_warped();
+        assert_eq!(cache.warped_count(), 0);
+        let back = cache
+            .lookup(&hash, None, 48_000)
+            .expect("清掉后必须回原素材");
+        assert!(back.from_cache);
+        assert!(
+            back.pcm.samples().iter().map(|s| s.to_bits()).eq(plain
+                .pcm
+                .samples()
+                .iter()
+                .map(|s| s.to_bits())),
+            "清掉覆盖后必须回到缓存里的原素材"
+        );
+    }
+
+    /// [ADR-0067] 覆盖率 ≠ 快照率时现转、不覆盖存储条目（下一次以原率
+    /// 查仍命中存储的 warped PCM，不被上一次的现转污染）。
+    #[test]
+    fn warped_rate_mismatch_resamples_without_overwriting_stored_entry() {
+        let frames = 44_100_usize;
+        let warped_samples = vec![0.25_f32; frames];
+        let warped_pcm =
+            AudioPcm::new(Arc::from(warped_samples), 1, 44_100).expect("warped PCM 必须能构造");
+        let hash = AssetHash::of_bytes(b"warped-rate-fixture");
+        let mut cache = AudioPcmCache::default();
+        cache
+            .set_warped(hash.clone(), warped_pcm, 44_100, frames as u64)
+            .expect("warped 覆盖必须能装上");
+
+        let converted = cache.lookup(&hash, None, 48_000).expect("现转必须成功");
+        assert!(converted.from_cache);
+        assert!(converted.resampled);
+        assert_eq!(converted.pcm.sample_rate(), 48_000);
+        assert_eq!(converted.pcm.frames(), 48_000);
+
+        let stored = cache
+            .lookup(&hash, None, 44_100)
+            .expect("原率必须命中存储条目");
+        assert!(stored.from_cache);
+        assert!(!stored.resampled);
+        assert_eq!(stored.pcm.sample_rate(), 44_100);
+        assert_eq!(stored.pcm.frames(), frames as u64);
+        assert!(
+            stored
+                .pcm
+                .samples()
+                .iter()
+                .all(|s| (*s - 0.25).abs() < 1e-6),
+            "存储条目必须仍是原率 warped PCM"
+        );
     }
 }
