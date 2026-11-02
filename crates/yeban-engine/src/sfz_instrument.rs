@@ -700,11 +700,23 @@
 //! | `SfzVoicePool` | 2224 | **2232** | `#341` `held_notes: Option<u32>`（触发那一刻的按住数，＋8） |
 //! | `EngineRuntime` | 186768 | **194960** | 16 个槽 × 512 B |
 //! | `EngineRuntime` | 194960 | **198496** | 通道条 hpf/dyn-eq/width 片：通道条 376 → 584（＋208 ＝ HPF 立体声 biquad ×2 ＋ 动态 EQ 检波/峰值 biquad ×3 ＋ 包络 ＋ 参数 5 标量）× 17 内联槽位；十臂 2 bool 落在填充里 ＋0 |
+//! | `SfzVoicePool` | 2232 | **2240** | portamento 池级四字段（`last_key: Option<u8>` 2 ＋ `porta_slot: u8` 1 ＋ `porta_delta: i8` 1 ＋ `porta_frame: u32` 4 ＝ 8 B） |
+//! | `EngineRuntime` | 198496 | **198752** | portamento：池 ＋8 ⇒ ＋256（实测）；红线 200 KiB ＝ 204800 |
 //! | `SfzVoice` | 40 | **40** | ⛔ 一个字段都没加（推进量在池里） |
 //!
 //! ⚠ 计数用 `u32` 而⛔ 不是 `u8`：`selects_occurrence` 要对**每区域自己的**
 //! `seq_length` 取模，`u8` 在 256 处回绕会让 `256 % 3` 变成 `1`（错），`u32` 的回绕点
 //! 远大于任何 `seq_length` ⇒ 回绕不改变取模结果。
+//!
+//! ⭐ **portamento 片再 ＋8 B / 池**（`last_key: Option<u8>` 2 ＋ `porta_slot: u8` 1 ＋
+//! `porta_delta: i8` 1 ＋ `porta_frame: u32` 4，合计 8 B，落在既有对齐里）：
+//! `SfzVoicePool` **2232 → 2240**、`EngineRuntime` **198496 → 198752**（＋256，实测；
+//! 红线 200 KiB ＝ 204800，余量 6048 B）。`SfzVoice` **仍是 40 B**，
+//! `PreparedRegion` **仍是 6168 B**（`pitch_eg: u16` 落进既有填充）。
+//!
+//! ⭐ 另：`PreparedSfz` **240 → 264 B**、`SfzPlan` **240 → 264 B**
+//! （＋24 ＝ `pitch_egs: Vec<PitchEg>` 的三个词）。这两张表都在**堆上**
+//! （每只乐器一份），⛔ 不进 `EngineRuntime` ⇒ 与 200 KiB 门槛无关。
 //!
 //! ## ⛔ 本片不做（边界，⛔ 不假装已有）
 //!
@@ -1661,7 +1673,10 @@ use yeban_sfz::modulation::{
 };
 // ⚠ 这两个是 **lib 构建**就需要的（`load` / `with_instrument` 都调用它们）⇒ ⛔ 不能放在 `#[cfg(test)]` 下，
 // 否则非测试构建会报 "cannot find type `ParseLimits`"（本批实测过一次：三项门全红）。
+// ⭐ portamento（本单）：`egN_pitch_oncc140|141` 的最小子集。求值本体在 `yeban-sfz`
+// ⇒ 解析、离线、摊平、实时四条路读的是**同一份** `level_at` / `cents_at`。
 use yeban_sfz::parser::{IncludeIssue, ParseLimits, SfzSource, parse_sources, parse_text};
+use yeban_sfz::pitch_eg::{PitchEg, PitchEgSource};
 use yeban_sfz::playback::{LoopWindow, RenderRates, SampleSpan};
 // ⭐ 衰减底（−60 dBFS）取自 `yeban-sfz` 的 [`StealFade`](yeban_sfz::voice_pool::StealFade)：
 // 引擎侧的 SFZ 窃取淡出与该库的 3 ms 指数淡出**同形状**（`FLOOR^(n/N)`），
@@ -2079,6 +2094,7 @@ impl SfzInstrument {
                 let region_written = mix_span_into(
                     &source.pcm,
                     &mut position,
+                    rate,
                     rate,
                     gain,
                     source_end,
@@ -2824,6 +2840,14 @@ pub struct PreparedRegion {
     /// ⚠ **沿革（任务单 `#115`）**：本字段是 `#115` 新增的**唯一**每区域开销
     /// （`PreparedRegion` 6160 → 6168，判据 `S100` 现读）。
     amplitude: f32,
+    /// ⭐ **portamento 的 pitch 包络下标**（`u16::MAX` ＝ 该区域没有）。
+    ///
+    /// 指向 [`PreparedSfz::pitch_egs`]。⭐ **为什么不内联 `Option<PitchEg>`**：
+    /// 后者是 20 B ⇒ `PreparedRegion` 会从 6160 涨到 6192（对齐填充 +12），
+    /// 实测把 `EngineRuntime` 顶出实时内存门槛（200 KiB ＝ 204800）。
+    /// 换成 `u16` 后落在既有尾部填充里 ⇒ **+0 B**（判据 `S100` 现读 6168）。
+    /// ⚠ 它是**区域参数**、不是声部状态：时间源与 key delta 在池里（`porta_*`）。
+    pitch_eg: u16,
     /// ⭐ **`ampeg_*` 的力度调制量**（`ampeg_vel2attack` 一族；任务单 `#106`）。
     ///
     /// 下标 ＝ [`AmpegParam`] 的声明序；`None` ＝ 该参数的 `ampeg_vel2…` opcode
@@ -3119,6 +3143,15 @@ impl PreparedRegion {
     #[must_use]
     pub const fn loop_end(&self) -> u32 {
         self.loop_end
+    }
+
+    /// ⭐ **portamento 的 pitch 包络**；`None` ＝ 音高不随时间变化。
+    ///
+    /// ⚠ 需要 `plan` 才能解析下标 —— 表在 [`PreparedSfz::pitch_egs`] 里
+    /// （理由见字段文档：`Option<PitchEg>` 内联会撑破实时内存门槛）。
+    #[must_use]
+    pub fn pitch_eg(&self, plan: &PreparedSfz) -> Option<PitchEg> {
+        plan.pitch_egs.get(usize::from(self.pitch_eg)).copied()
     }
 
     /// ⭐ 该区域的**生效循环模式**（原样，除 `trigger=release` 家族被覆写成 `one_shot`）。
@@ -3620,6 +3653,10 @@ pub struct PreparedSfz {
     regions: Vec<PreparedRegion>,
     /// ⭐ **去重后的样本表**：每个被区域引用的 `sample_path` 至多一份。
     samples: Vec<PreparedSample>,
+    /// ⭐ **portamento 的 pitch 包络表**（区域用 `u16` 下标指进来）。
+    ///
+    /// 摊平期按需 push（没有 `egN_pitch_oncc140|141` 的语料 ⇒ 表为空 ⇒ 一个字节都不占）。
+    pitch_egs: Vec<PitchEg>,
     /// 建表口径：`true` ⇒ 单样本重载 [`Self::prepare`] 的**广播**路径（⛔ 内容错，已登记）。
     broadcast: bool,
     /// ⭐ **不产生采样输出**的区域数（**计数**，⛔ 不静默）。
@@ -3942,12 +3979,13 @@ impl PreparedSfz {
         // 广播：只有**一份**样本（路径身份为空串），所有区域都指它。
         let samples = vec![PreparedSample::from_in_memory(String::new(), source)];
         let sample_hz = source.sample_hz;
-        let (regions, cc_seeds, builtin_silent_regions) =
+        let (regions, cc_seeds, builtin_silent_regions, pitch_egs) =
             flatten_regions(instrument, engine_hz, |_region| (0u16, sample_hz))?;
         let has_round_robin = regions.iter().any(|region| region.seq_length > 1);
         Ok(Self {
             regions,
             samples,
+            pitch_egs,
             broadcast: true,
             // ⭐ `#217`：广播重载也**不**把内建静音 region 指向 `samples[0]` ——
             // `flatten_regions` 已把它们标成 `NO_SAMPLE`，这里只把计数带出来。
@@ -4002,7 +4040,7 @@ impl PreparedSfz {
         // ⚠ 这里只数**缺样本**的区域；内建静音由 `flatten_regions` 另行计数
         // （两者在 `Self::silent_region_count` 里相加，`missing` 只收前者）。
         let mut missing_regions = 0usize;
-        let (regions, cc_seeds, builtin_silent_regions) =
+        let (regions, cc_seeds, builtin_silent_regions, pitch_egs) =
             flatten_regions(instrument, engine_hz, |region| {
                 let path = region.sample_path();
                 // 已 materialize 过 ⇒ 直接复用（**去重**：同一路径只解码/只 clone 一次）。
@@ -4031,6 +4069,7 @@ impl PreparedSfz {
         Ok(Self {
             regions,
             samples,
+            pitch_egs,
             broadcast: false,
             // ⭐ 两类静音分开数、报告里合并：`silent = 缺样本 + 内建静音`；
             // `missing_samples` **只**收缺样本的路径（`#217`：`*silence` 绝不在其中）。
@@ -4363,6 +4402,7 @@ impl PreparedSfz {
                 pcm,
                 &mut position,
                 rate,
+                rate,
                 gain,
                 source_end,
                 loop_window,
@@ -4392,12 +4432,15 @@ fn flatten_regions(
     instrument: &SfzInstrument,
     engine_hz: f32,
     mut resolve: impl FnMut(&Region<'_>) -> (u16, f32),
-) -> Result<(Vec<PreparedRegion>, CcSeedTable, usize), SfzError> {
+) -> Result<(Vec<PreparedRegion>, CcSeedTable, usize, Vec<PitchEg>), SfzError> {
     instrument.with_instrument(|parsed| {
         // ⭐ `set_ccN` 的初值：`<control>` 作用域、同名后者覆盖前者（解析层已归约）
         // ⇒ 这里只做"抄进会话 CC 域"与"域外计数"（见 [`CcSeedTable`]）。
         let cc_seeds = CcSeedTable::from_cc_defaults(parsed.cc_defaults());
         let mut regions = Vec::with_capacity(parsed.regions().len());
+        // ⭐ portamento 的 pitch 包络表：区域用 `u16` 下标指进来（见 `PreparedRegion::pitch_eg`）。
+        // 只有带 `egN_pitch_oncc140|141` 的区域才 push ⇒ 既有语料里这张表恒为空。
+        let mut pitch_egs: Vec<PitchEg> = Vec::new();
         // ⭐ 任务单 `#217`：内建静音伪样本（`sample=*silence`）的区域数。
         // 它在**调用方的解析闭包之前**被截住 ⇒ 既⛔ 不会被当成文件路径去查提供表
         // （⇒ 不进 `missing`），也不受广播重载影响（⇒ 广播它也不会播 `samples[0]`）。
@@ -4511,6 +4554,16 @@ fn flatten_regions(
                 "yeban-sfz 的 cc_in/cc_out 是按 `u8` CC 号索引的映射、且只收 cc ≤ 127 \
                  ⇒ 单区域的 CC 段 ≤ 2 × 128 = {CC_CROSSFADE_CAP}"
             );
+            // ⭐ portamento：透明/缺省 ⇒ `u16::MAX`（`pitch_eg()` 返回 `None`）。
+            // 索引上界：区域数 ≤ 65536，而 `u16::MAX` 是哨兵 ⇒ 最多 65535 条表项；
+            // 越界（>= 65535 条不同的 pitch eg，语料里不存在）按"无滑音"退休，⛔ 不 panic。
+            let pitch_eg_index = match region.pitch_eg {
+                Some(eg) if !eg.is_transparent() && pitch_egs.len() < usize::from(u16::MAX) => {
+                    pitch_egs.push(eg);
+                    u16::try_from(pitch_egs.len() - 1).unwrap_or(u16::MAX)
+                }
+                _ => u16::MAX,
+            };
             let mut velocity_gain = [0.0f32; 128];
             for (velocity, slot) in velocity_gain.iter_mut().enumerate() {
                 *slot = region.velocity_gain(velocity as u8);
@@ -4570,6 +4623,9 @@ fn flatten_regions(
                 // 摊平表（缺省 100）。它是**区域参数**（CC 逐块从探针读）⇒ `SfzVoice`
                 // 尺寸不变，⛔ 不进实时对象。求值点见 `amplitude_gain_with_cc`。
                 amplitude: region.amplitude,
+                // ⭐ portamento 的 pitch 包络（本单）：表项下标（表在 `PreparedSfz::pitch_egs`）。
+                // ⚠ 只有 `u16`（+0 B）—— `Option<PitchEg>` 内联会撑破实时内存门槛。
+                pitch_eg: pitch_eg_index,
                 // ⭐ 力度调制（任务单 `#106`）：五个**每参数**的力度调制量原样搬进
                 // 摊平表（`[Option<f32>; 5]`：`None` ＝ 该 opcode 没出现 ⇒ 求值期
                 // 一项算术都不做）。同样是**区域参数**、⛔ 不是声部状态
@@ -4613,7 +4669,7 @@ fn flatten_regions(
                 seq_length: region.seq_length.max(1),
             });
         }
-        (regions, cc_seeds, builtin_silent_regions)
+        (regions, cc_seeds, builtin_silent_regions, pitch_egs)
     })
 }
 
@@ -5020,6 +5076,13 @@ pub(crate) fn mix_span_into(
     pcm: &[f32],
     position: &mut f32,
     rate: f32,
+    // ⭐ **本段末的速率**（`rate == rate_end` ⇒ 恒定，与接线前**逐位相同**）。
+    //
+    // portamento 的 pitch 包络在块内是连续变化的，而 `rate` 只能表达"一个值"
+    // ⇒ 块内做**线性 ramp**：`rate_now += (rate_end − rate) / N`。
+    // `N` 是本段的帧数；`rate == rate_end` 时步长恰 `0.0` ⇒ `rate_now += 0.0`
+    // 对有限值**逐位不变**（IEEE：`x + 0.0 == x`）。
+    rate_end: f32,
     gain: f32,
     source_end: u64,
     loop_window: Option<LoopWindow>,
@@ -5050,6 +5113,14 @@ pub(crate) fn mix_span_into(
             .filter(|window| window.end as usize == pcm.len())
             .and_then(|_| pcm.len().checked_sub(1))
     };
+    // ⭐ 块内线性 ramp 的步长（`rate == rate_end` ⇒ 恰 `0.0`）。
+    // `out.is_empty()` 时不会被读到，但除法要在循环外做掉（⛔ 逐样本不做除法）。
+    let rate_step = if out.is_empty() {
+        0.0
+    } else {
+        (rate_end - rate) / out.len() as f32
+    };
+    let mut rate_now = rate;
     let mut written = 0usize;
     for slot in out.iter_mut() {
         // ⭐ 逐样本的引擎**绝对**帧（包络的释放进度 `k = abs − epoch` 靠它算；
@@ -5126,7 +5197,8 @@ pub(crate) fn mix_span_into(
         // 非淡出时 `fade.gain == 1.0` ⇒ `(sample × gain) × 1.0` 与接线前**逐位相同**；
         // 无包络时 `env_gain == 1.0` ⇒ 再乘一次 `1.0` 也**逐位相同**。
         *slot += sample * gain * fade.gain * env_gain;
-        *position += rate;
+        *position += rate_now;
+        rate_now += rate_step;
         written += 1;
         if fade.fading && !fade.advance() {
             break;
@@ -5243,6 +5315,11 @@ pub struct SfzVoice {
     /// 唯一决定（[`reduce_travel`] 是三条路共用的唯一归约）⇒ ⛔ 不新增字段。
     source_end: u64,
     /// **引擎侧终点**（绝对样本位置）：来自 [`crate::synth::ScheduledNote::end_sample`]。
+    ///
+    /// ⭐ **portamento 的运行态不在声部里**：`SfzVoice` 必须保持 **40 B**
+    /// （判据 `S9`；加 8 B 会把 `EngineRuntime` 顶出 196608 B 的实时内存门槛，
+    /// 实测 202592 B）。滑音是**单声部语义**（生态写法恒 `group=1` ＋ `off_by=1`）
+    /// ⇒ 时间源与 key delta 放在**池级**的三个字段里（见 [`SfzVoicePool::porta_slot`]）。
     end_sample: u64,
 }
 
@@ -5489,6 +5566,30 @@ pub struct SfzVoicePool {
     /// 由调用方在每次 `trigger_note` 之前用 [`Self::set_held_notes`] 设定
     /// （离线路径按音符自己的起点从调度表数出来）。
     held_notes: Option<u32>,
+    /// ⭐ **上一次 `trigger_note` 的音高**（portamento 的 key delta 来源）。
+    ///
+    /// `None` ＝ 本池还没触发过任何音 ⇒ 首个音的 delta 恰 `0`（**首音不滑**，
+    /// 与 `trigger=first` 区域不滑的规范语义一致）。
+    /// ⚠ 它是**池级**状态（不是逐声部）：portamento 的生态写法都是 mono
+    /// （`group=1` ＋ `off_by=1`）；多声部并存时本字段读作"相对**最近一次**触发"。
+    last_key: Option<u8>,
+    /// ⭐ **正在滑音的槽**（`u8::MAX` ＝ 没有）。
+    ///
+    /// # 为什么在池上而不是在 [`SfzVoice`] 里
+    ///
+    /// `SfzVoice` 必须保持 **40 B**（判据 `S9`）：**+8 B** 会让
+    /// `EngineRuntime` 从 `194960` 涨到 **`202592` B**，越过 `196608` 的实时
+    /// 内存门槛（实测差 **5984 B**）。而滑音本来就是**单声部语义**
+    /// （`group=1` ＋ `off_by=1`，见 Meatbass / Squidpipes / String Cyborgs 的写法）
+    /// ⇒ 每轨**一个**滑音态就够，代价 **8 B / 池**（⛔ 不是 8 B × 32 个声部）。
+    ///
+    /// ⚠ 如实登记的边界：同一轨上**同时**有两个带 `egN_pitch_oncc140` 的声部时，
+    /// 只有**最近触发**的那一个会滑（另一个按目标音高直接发声）。
+    porta_slot: u8,
+    /// 该滑音声部的 key delta（半音；`CC141` 在求值处取绝对值）。
+    porta_delta: i8,
+    /// 该滑音声部自触发起的帧数。
+    porta_frame: u32,
 }
 
 /// ⭐ **逐块路径的四个区域读数**（[`SfzVoicePool::slot_readings`] 的产物）。
@@ -5528,6 +5629,40 @@ struct SlotReadings {
     loop_during_release: bool,
     /// 该区域的帧口径包络参数；`None` ＝ 透明包络（⛔ 逐样本不加浮点运算）。
     env: Option<AmpegRun>,
+    /// ⭐ **portamento 的 pitch 轨迹**；`None` ＝ 该区域音高不随时间变化。
+    pitch: Option<PitchTrack>,
+}
+
+/// ⭐ **一个声部的 pitch 轨迹**（portamento）：包络 ＋ key delta ＋ 已走帧数。
+///
+/// 它只活在**栈上**（[`SlotReadings`] 的字段）⇒ ⛔ 不进 `SfzVoice` 之外的结构体。
+/// 求值口径与 `yeban-sfz` 的离线路径**同一份**（[`PitchEg::cents_at`]）。
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct PitchTrack {
+    /// 该区域的 pitch 包络（已按 `egN_pitch_oncc140|141` 定好来源）。
+    eg: PitchEg,
+    /// key delta（**有符号**半音；`KeyDeltaAbsolute` 已在构造处取了绝对值）。
+    key_delta: f32,
+    /// 自触发起的帧数（`SfzVoice::eg_frame` 的快照）。
+    frames: u32,
+}
+
+impl PitchTrack {
+    /// `frame` 那一帧的**速率乘子** `2^(cents / 1200)`。
+    ///
+    /// ⚠ 除零/非有限一律返回 `1.0`（调用方另有 [`rate_is_usable`] 兜底）——
+    /// 与 `sanitise_sample_rate` 同一条"调用方给不出正常采样率时不 panic"的口径。
+    fn ratio_at(&self, frame: u32, hz: f32) -> f32 {
+        // 非正/非有限一律返回 1.0（与原 !(> 0.0) 同义；clippy 禁止偏序上的否定比较）。
+        if hz.partial_cmp(&0.0) != Some(core::cmp::Ordering::Greater) || !hz.is_finite() {
+            return 1.0;
+        }
+        let cents = self.eg.cents_at(frame as f32 / hz, self.key_delta);
+        if !cents.is_finite() {
+            return 1.0;
+        }
+        (cents / 1200.0).exp2()
+    }
 }
 
 impl SfzVoicePool {
@@ -5557,6 +5692,10 @@ impl SfzVoicePool {
             stolen: 0,
             seq_occurrence: [0; 128],
             held_notes: None,
+            last_key: None,
+            porta_slot: u8::MAX,
+            porta_delta: 0,
+            porta_frame: 0,
         }
     }
 
@@ -5653,6 +5792,14 @@ impl SfzVoicePool {
         cc: Option<&dyn Fn(u8) -> u8>,
     ) -> usize {
         let n = note as usize;
+        // ⭐ **portamento 的 key delta**（CC140 的引擎侧来源）：当前音 − 上一个触发音。
+        // 首个音没有"上一个" ⇒ `0`（⇒ 包络乘子恒 `1.0`，首音不滑）。
+        // ⚠ 位置在**任何** `continue` 之前：delta 是"这次触发"的事实，与哪条区域命中无关。
+        let key_delta = match self.last_key {
+            Some(previous) => i32::from(note) - i32::from(previous),
+            None => 0,
+        };
+        self.last_key = Some(note);
         let mut created = 0usize;
         // ⭐ **触发前的在场快照**（任务单 `#94` 裁决 5：**触发者不自掐**）：只有本次调用
         // **之前**就 active 的槽位才是 `off_by` 的候选 victim ⇒ 无论本次新建的声部属于
@@ -5776,6 +5923,15 @@ impl SfzVoicePool {
                     self.voices[index] = voice;
                     self.pending_active[index] = false;
                     self.fade[index] = FadeRamp::NONE;
+                    // ⭐ **portamento**（本单）：这条区域带 `egN_pitch_oncc140|141`
+                    // ⇒ 记下"哪个槽在滑、从哪个音滑过来、滑了多久"。
+                    // ⚠ 池级单槽语义（见 [`Self::porta_slot`] 的文档）。
+                    if region.pitch_eg(plan).is_some_and(|eg| !eg.is_transparent()) {
+                        self.porta_slot = index as u8;
+                        self.porta_delta =
+                            key_delta.clamp(i32::from(i8::MIN), i32::from(i8::MAX)) as i8;
+                        self.porta_frame = 0;
+                    }
                     created += 1;
                 }
                 // ⭐ 池满 ⇒ **窃取**（sfz-needs-2 的落地点）；⛔ 不再丢弃。
@@ -6126,7 +6282,8 @@ impl SfzVoicePool {
         // --- 1) 淡出段：victim 在自己的窗口里继续发声，逐帧乘衰减增益 ---
         if self.voices[index].active && self.fade[index].is_fading() {
             let voice = self.voices[index];
-            let Some(readings) = Self::slot_readings(plan, voice, plan.engine_hz(), cc) else {
+            let Some(readings) = self.slot_readings(plan, index, voice, plan.engine_hz(), cc)
+            else {
                 // 摊平表与池不匹配（例如热更了另一份表）⇒ 如实退休。
                 self.silence_slot(index);
                 return;
@@ -6160,6 +6317,7 @@ impl SfzVoicePool {
                 sample.pcm(),
                 &mut local,
                 readings.rate,
+                readings.rate,
                 readings.gain,
                 voice.source_end,
                 readings.loop_window,
@@ -6185,7 +6343,7 @@ impl SfzVoicePool {
         if !voice.active {
             return;
         }
-        let Some(readings) = Self::slot_readings(plan, voice, plan.engine_hz(), cc) else {
+        let Some(readings) = self.slot_readings(plan, index, voice, plan.engine_hz(), cc) else {
             self.silence_slot(index);
             return;
         };
@@ -6215,10 +6373,31 @@ impl SfzVoicePool {
                 readings.loop_during_release,
             )
         });
+        // ⭐ **portamento 的块内速率**（本单）：块首 / 块末各求一次包络，中间线性 ramp
+        // （[`mix_span_into`] 的 `rate_end`）。`pitch == None` ⇒ 两者相等 ⇒ 与接线前逐位相同。
+        let frames = remaining.saturating_sub(offset);
+        let (rate, rate_end) = match readings.pitch {
+            Some(track) => {
+                let hz = plan.engine_hz();
+                let end_frame = track.frames.saturating_add(frames as u32);
+                (
+                    readings.rate * track.ratio_at(track.frames, hz),
+                    readings.rate * track.ratio_at(end_frame, hz),
+                )
+            }
+            None => (readings.rate, readings.rate),
+        };
+        // ⭐ `#117` 的守卫对**最终 rate** 再判一次（乘子可能让速率溢出）。
+        // 与另两条路同一个谓词 ⇒ 非法速率如实退休，⛔ 不让 `Inf` 进逐样本循环。
+        if !rate_is_usable(rate) || !rate_is_usable(rate_end) {
+            self.silence_slot(index);
+            return;
+        }
         let written = mix_span_into(
             sample.pcm(),
             &mut local,
-            readings.rate,
+            rate,
+            rate_end,
             readings.gain,
             voice.source_end,
             readings.loop_window,
@@ -6228,6 +6407,11 @@ impl SfzVoicePool {
         );
         self.voices[index].position = local;
         self.fade[index] = fade;
+        // ⭐ portamento 的时间源推进（`pitch == None` 时 `eg_frame` 恒 `0`，
+        // 这次 `saturating_add` 不改变任何读数）。
+        if self.porta_slot as usize == index {
+            self.porta_frame = self.porta_frame.saturating_add(written as u32);
+        }
         if let Some(run) = env {
             // ⭐ 包络状态**跨块延续**：段位 / 段内计数 / note-off↔释放 epoch。
             run.write_back(&mut self.voices[index]);
@@ -6269,7 +6453,9 @@ impl SfzVoicePool {
     ///   两处都**只**影响取值，⛔ 不参与 `region.accepts(...)`
     ///   （区域选择仍在摊平期，见模块头的门控登记）。
     fn slot_readings(
+        &self,
         plan: &PreparedSfz,
+        slot: usize,
         voice: SfzVoice,
         engine_hz: f32,
         cc: Option<&dyn Fn(u8) -> u8>,
@@ -6338,6 +6524,25 @@ impl SfzVoicePool {
         } else {
             voice.end_sample
         };
+        // ⭐ **portamento 的 pitch 轨迹**（本单）：只有带 `egN_pitch_oncc140|141`
+        // 且**不透明**的区域才产出 `Some`。`source` 决定用有符号 delta 还是绝对值
+        // （扩展页："keydelta: 140 / keydelta absolute: 141"）。
+        // ⚠ 无该 opcode 的语料恒 `None` ⇒ `render_slot` 走原来的恒定 rate，逐位不变。
+        let pitch = if self.porta_slot as usize == slot {
+            region
+                .pitch_eg(plan)
+                .filter(|eg| !eg.is_transparent())
+                .map(|eg| PitchTrack {
+                    eg,
+                    key_delta: match eg.source {
+                        PitchEgSource::KeyDeltaAbsolute => f32::from(self.porta_delta).abs(),
+                        PitchEgSource::KeyDelta => f32::from(self.porta_delta),
+                    },
+                    frames: self.porta_frame,
+                })
+        } else {
+            None
+        };
         Some(SlotReadings {
             loop_window,
             gain,
@@ -6354,6 +6559,7 @@ impl SfzVoicePool {
             loop_during_release: matches!(region.loop_mode(), LoopMode::LoopContinuous)
                 && loop_window.is_some(),
             env,
+            pitch,
         })
     }
 

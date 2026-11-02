@@ -355,6 +355,7 @@ pub mod label;
 pub mod midi;
 pub mod modulation;
 pub mod parser;
+pub mod pitch_eg;
 pub mod playback;
 pub mod velocity;
 pub mod voice_pool;
@@ -375,6 +376,7 @@ pub use parser::{
     Header, IncludeIssue, IncludeIssueKind, IncludeResolution, IncludeResolver, OpcodeValue,
     ParseLimits, SfzSource, Warning, parse_f32, parse_int, parse_note, parse_sources, parse_text,
 };
+pub use pitch_eg::{PitchEg, PitchEgSource};
 pub use playback::{
     FALLBACK_SAMPLE_RATE, LoopWindow, PlaybackSpec, RegionPlay, RenderRates, SampleSpan,
 };
