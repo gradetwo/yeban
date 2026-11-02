@@ -2276,6 +2276,13 @@ export component MainWindow inherits Window {
     /// 唯一读者 = 无头判据（`tests/export_dialog_key_capture.rs`）。
     out property <int> export-wav-focused-field: export_dialog.focused-field;
 
+    /// `D-UI-20`：轮转**全集**（七格）的读数：`0..3` = 四框，`4` = 限制器开关，
+    /// `5` = 「导出」，`6` = ✕ 关闭，`-1` = 焦点不在模态内。
+    /// 与上一条同口径 —— 纯转发弹窗内的**推导**读数，⛔ 这里不存第二份焦点状态。
+    /// 为什么单开一条：`export-wav-focused-field` 的值域被 `D-UI-19` 的判据按"四格"钉着，
+    /// 改它等于悄悄放宽既有判据。唯一读者 = 无头判据（`tests/export_dialog_button_focus.rs`）。
+    out property <int> export-wav-focused-control: export_dialog.focused-control;
+
     /// `D-UI-19`：把键盘交给**开着的那个**弹窗的第一格。⛔ 不是第三份焦点状态：
     /// 焦点仍只有 Slint 一个事实源，这里只是**命令**它（与上面的
     /// `focus-undo-tree-trap` / `focus-shortcut-layer` 同一机制）。

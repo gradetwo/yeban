@@ -1115,3 +1115,95 @@ run `41512495951`（tip `2f75ab73`，D-UI-18 ＋ D-UI-19 那一批）**红**，�
   `export_dialog_modal_closure.rs` 的路由一节因此不再声称自己钉的是哪一条 `Esc` 路径。
   修它 = 遮罩层加 `TouchArea` 吞掉点击，但那会改变"点遮罩不关面板"的既有语义、
   且牵动两条已判绿的视觉回归基准 ⇒ 单独一票。
+
+## §34 D-UI-20：弹窗里那三格手绘控件第一次能拿到键盘、能被 `Return` 触发（2026-11-03）
+
+**要补的句子**：§32 登记的 `D-UI-20` —— 「确认导出」钮、「✕」钮、限制器开关三格全是
+`Rectangle` + `TouchArea` 的手绘件，没有 `FocusScope` ⇒ 收不到焦点 ⇒ 键盘**既走不到导出，
+也走不到那个开关**。`D-UI-19` 让模态第一次持有键盘之后，这条缺口从"看不见"变成"看得见但按不到"：
+`Tab` 已经在弹窗里闭环了，闭环的却只有四格文本框。
+
+**交付**（`ui/dialogs/export_wav_dialog.slint` · `ui/app.slint` · 判据
+`tests/export_dialog_button_focus.rs`（新）· `tests/export_dialog_key_capture.rs`（4 格 → 7 格迁移）；
+`src/host.rs` **一位未动**）：
+
+1. **三枚零视觉 `FocusScope`**：`export-wav-close-focus`（195 行）、`export-wav-limiter-focus`（401）、
+   `export-wav-run-focus`（478）各自铺满所在格子（`x:0; y:0; width/height: parent`），
+   `key-pressed` 只认 `Key.Return || Key.Space` ⇒ 分别落到 `root.run()` /
+   `root.limiter = !root.limiter` / `root.close()`。⛔ 没有第二份动作实现：✕ 走的是**既有的**
+   `close()`（判据 ⑩ 数 `root.close()` = 4 条落点：无障碍 + 鼠标 + 键盘 + trap 的 `Esc`）。
+2. **轮转从四格扩到七格**：`focus-next-control()` / `focus-previous-control()`（570 / 589 行）
+   两端都绕回，`-1`（焦点不在模态内）时分别从首格 / 末格起步；「序号 → 控件」只有
+   `focus-control(index)`（549 行）**一张表**，加减法不许自己 `.focus()`。
+3. **四格文本框新增 `accepted => { root.run(); }`**（258 / 291 / 324 / 361 行）——
+   `TextInput.accepted` 只在非只读单行时触发并消费 `Return`。
+4. **读数第二条**：`out property <int> focused-control`（532 行，`MainWindow` 侧 2284 行**纯转发**）
+   与既有 `focused-field` 从**同一批** `has-focus` 推导。⛔ 不复用 `focused-field` 的理由已写进
+   注释：那条的值域被 `D-UI-19` 判据按"四格"钉死，改值域＝悄悄放宽既有判据。
+
+**两条界面决定**（`[UI-A11Y-003]` 未规定，本票定的不是默认值而是裁决，故留痕）：
+
+* **`Return` 在任一文本框里＝提交导出**（不是"编辑完这一格"）。四格 + 三钮共 7 个停止点里
+  有 7 条路通向同一个 `run()`；
+* **`Tab` 顺序把 ✕ 放在最后一格**（`0` 路径 → `1` 采样率 → `2` 位深 → `3` 秒数 →
+  `4` 限制器 → `5` 导出 → `6` ✕）。这样"打开即落在路径框"（`focus-first-field()`，543 行）
+  与"末档是取消"两件事不打架；⛔ 没有把 ✕ 提到前面去迎合"对话框第一格是取消"的另一种惯例。
+
+**实测引证**（决定形状的四条，全部来自 `~/.cargo` 里 vendored 的 1.18.1 源码）：
+
+| 事实 | 出处 | 对本票的意义 |
+| :--- | :--- | :--- |
+| `FocusScope::input_event_filter_before_children` 无条件返回 `ForwardEvent` | `i-slint-core-1.18.1/items/input_items.rs:657-665` | 新加的 scope **永不抢** `TouchArea` 的点击 |
+| `focus-on-click: false` 时 `input_event` 对 `Pressed` 返回 `EventIgnored` | 同上 667-688 | 鼠标路径逐字节不变（本票最怕的回归面） |
+| `focus_event` 只门控 `TabNavigation` / `PointerClick` | 同上 | 程序化 `.focus()` **必达**，不受可见性判定影响 |
+| `Key` 是**内置命名空间**，无需 import | `widgets/cupertino/button.slint:155`、`widgets/material/checkbox.slint:162` | `.slint` 里可以写 `Key.Return` / `Key.Space`，⛔ 不必再手敲 `\u{000a}` |
+
+**为什么不牵动已判绿的基准**：三枚 scope **不带 `accessible-id`** ⇒ 寻址面仍是 10（判据 ⑩ 断言），
+`export-wav-dialog` 的 `visible` 默认 `false` ⇒ 默认帧与 `tests/golden/linux/` 五张基准一位不改；
+scope 声明在各格 `TouchArea` **之前** ⇒ 命中测试层序也不变。运行时树那侧同理：
+`export_dialog_modal_closure.rs` 断言的是"关闭态 id 集合相等"，弹窗关着时新件根本不在树里。
+
+**本票⛔ 不管、如实登记的三条边界**：
+
+1. **没有焦点环** —— 加 scope 不改一个像素，但"看得见焦点在哪"要画环 ⇒ 动 Golden ⇒ 归人类裁决；
+2. **点击不改变焦点**（三格都 `focus-on-click: false`）。焦点入口只有两个：`Tab` 轮转与宿主打开时
+   那一次 `focus-first-field()`。鼠标用户不受影响（钮照点），但"点一下钮再用 `Return`"这条路**不存在**；
+   这条与 `D-UI-21`（遮罩不吞鼠标）**必须一起判** —— 单独给 scope 开 `focus-on-click` 会改变
+   `TouchArea` 与点击归属的现状；
+3. **模态持有键盘期间 `Cmd/Ctrl` 组合键到不了宿主**（trap 在祖先，`Ctrl/Alt/Meta + Tab` 一律 `reject`
+   但其余 chord 不冒泡）。`[UI-A11Y-001]` 的热键表在弹窗内是**暂停**的，这是模态的定义而非缺陷，
+   但"弹窗里按 `Cmd+S` 存盘"这类预期落空 ⇒ 记此以免日后当 bug 查。
+
+**判据**：`export_dialog_button_focus.rs` ①–⑨ 为活体（`Tab` 到第 5 格按 `Return` ⇒ **真落盘一个 WAV**
+并核 receipt 的 `frames`；第 6 格按 `Return` ⇒ 走既有 `close()` 且**不**落盘；⑨ 在钮上按 `Esc`
+证明模态仍持有键盘），⑩ 为源码纪律（14 项计数 + 两条读数无写者）。`export_dialog_key_capture.rs`
+的 ④⑤ 已从 4 格迁到 7 格，并新增一条交叉断言：焦点落在 `4/5/6` 这三格时 `focused-field` **必须**是 `-1`
+⇒ 两条读数不许互相矛盾。
+
+**判决**：`pending` —— 本机不编译 `yeban-app`（Slint 重依赖），CI 是唯一编译器。
+
+### 同批带上的一枚判据口径修正（`search_focus_key.rs`，run `41516839490` 教的）
+
+那票红在 `:188`：`the_focus_route_has_exactly_one_implementation` 数
+`ui.invoke_focus_sidebar_search()` 得 2，期望 1 —— 第二处是 `host.rs:9383` 的**说明注释**里
+逐字写了这个调用（带括号，长得就像调用点）。
+
+* ⚠ **修法是给计数定口径，⛔ 不是删掉那句注释来喂判据**。新增 `code_only()`：先按行剥掉
+  `//` 开头的行，再数 ⇒ 口径写进判据头与函数文档，读日志的人不必猜"这个 2 是代码还是注释"。
+* 这条口径**适用于本仓所有源码纪律型判据**（§34 的 ⑩ 也一律走 `code_only()`）：
+  **注释不是实现站点**。这是"字面量计数"这类判据的通用失效模式，与 §6.4-1「参考文档的警告是证据」
+  并列 —— 前者防"实现偏离已写的规矩"，这条防"判据把文字当代码"。
+* ⚠ 那票红的**覆盖**后果（§6.3-4）：`cargo test` fail-fast，`search_focus_key` 之后的
+  **47 / 153** 个测试二进制一位都没跑（`ui_export_dialog`、`sidebar_search`、`undo_tree_*`、
+  `sfz_*`、`volume_automation_export`…）。⇒ 在 `0c89f750` 上这些的判决是**未知**，⛔ 不是绿。
+  本票把它们一起推上去，正是为了拿到这份读数。
+
+### 落地方式（本机 git 传输坏死的处置，留痕以免下轮误判为"未推送"）
+
+`git push` / `git fetch` 在本机一律 `GnuTLS recv error (-110)` 或挂死，而 `gh` / `curl` 正常 ⇒
+本线的提交经 GitHub git-data API 重建对象后**非强制**移动 ref（`/tmp/api_push3.py`：按
+`rev-list 远端tip..本地HEAD` 逐条建 commit，最后一个 tree 必须等于本地 HEAD 的 tree 才动 ref）。
+由此**本地 sha 与远端 sha 不同**（`54036a5c` ↔ `0c89f750`，两者 tree 同为 `45a4cc83`，
+差异只有 committer 日期被规范化成 `Z` 与末尾空行）。⇒ 读判决时**认 tree，不认 sha**；
+待 git 传输恢复后用 `git fetch && git reset --hard origin/line/zimmer-export-limiter`
+把本地指针对齐（破坏性操作，需人类确认后再做，本票不擅自执行）。

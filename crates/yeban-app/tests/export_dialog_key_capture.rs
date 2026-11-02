@@ -9,7 +9,7 @@
 //! 按 `1` 画布换了工具，而四个框**一个都进不去**（`D-UI-14` 抓到左栏搜索框同款的
 //! 「有控件、摸不到键盘」，这一格是它的模态版）。
 //!
-//! 现在 `export-trap` 是那四格的**祖先** `FocusScope`（⛔ 不能像时光机那样放成兄弟覆盖层：
+//! 现在 `export-trap` 是那七格的**祖先** `FocusScope`（⛔ 不能像时光机那样放成兄弟覆盖层：
 //! Slint 的投递是「焦点项 ⇒ 只有**祖先**链」，见 `i-slint-core-1.18.1/window.rs` 里
 //! `Deliver key_event (to focused item, going up towards the window)` 那一段 ——
 //! 兄弟接不到 `TextInput` 拒绝的 `Tab`）。
@@ -20,9 +20,10 @@
 //! ② 打开（**宿主的入口**，与用户点按钮同一条链）⇒ 焦点落在第一格、快捷键层**失去**焦点；
 //! ③ 打一个可打印字符 ⇒ 它进**路径框**（两向绑定 `text <=> root.path` 的证据），
 //!    且画布的工具 / 视图一位不动；
-//! ④ `Tab` ×4 ⇒ `1→2→3→0`（**闭环 + 绕回**），期间左栏搜索框**从未**被选中，
-//!    画布语义的切视图 ⛔ 没被触发；
-//! ⑤ Backtab（`Shift+Tab` 的到达形态）⇒ 反向绕回，`0→3→2→1→0`；
+//! ④ `Tab` ×7 ⇒ `1→2→3→4→5→6→0`（**闭环 + 绕回**），期间左栏搜索框**从未**被选中，
+//!    画布语义的切视图 ⛔ 没被触发；并核对两条焦点读数**一致**（焦点在 4/5/6 那三格
+//!    按钮上时，四框读数如实为 `-1`）；
+//! ⑤ Backtab（`Shift+Tab` 的到达形态）⇒ 反向绕回，`0→6→5→4→3→2→1→0`；
 //! ⑥ 弹窗持键盘时按 `1` ⇒ 它落进**当前那一格**，`active-tool` ⛔ 不变 ——
 //!    与 ⑦ 的最后一个是**同一个键、两种落点**，那才是「捕获」二字的判别力所在；
 //! ⑦ `Esc` ⇒ 关闭 + 焦点**复位**到快捷键层 ⇒ 随后 `1` 又到达宿主（`active-tool` = 1）；
@@ -46,9 +47,11 @@
 //! * 关闭时复位目标是**快捷键层**，不是规范那句「触发控件」：触发方
 //!   `module-export-wav-button` 今天不是可聚焦控件（连 `FocusScope` 都没有）⇒ 要先给它
 //!   建焦点身份，那是另一票。
-//! * 「导出」/「关闭」/ 限制器开关三格**仍然只能鼠标与无障碍动作**（无 `FocusScope` 的
-//!   `Rectangle` + `TouchArea`）⇒ 键盘走完四格之后按 `Return` **不会**触发导出。那是
-//!   `D-UI-20`，本票不顺手猜它的命中测试。
+//! * 「导出」/「关闭」/ 限制器开关三格：本票落地时它们**没有** `FocusScope`（只有
+//!   `Rectangle` + `TouchArea`），故当时如实登记为"仍只能鼠标与无障碍动作"。
+//!   ⚠ `D-UI-20` 已把这三格各接上一枚零视觉 `FocusScope` 并把轮转从四格扩到七格 ⇒
+//!   那句边界**已失效**；本票的 ④⑤ 因此改成读七格读数（同一提交里一起改，否则红）。
+//!   这三格**按下去做什么**不在本票判据里，判据是 `tests/export_dialog_button_focus.rs`。
 //! * `Cmd/Ctrl` 组合（保存 / 撤销 / `D-UI-18` 的搜索聚焦）在弹窗打开期间**同样到不了宿主**。
 //!   ⚠ 这是模态持键盘的**目的**而非副作用，但成因有两条，⛔ 别记成一条：trap 只处理
 //!   `Tab` / `Backtab` / `Esc`，其余裸键 `reject` 后冒到本组件之外就没人接（`key-handler`
@@ -66,14 +69,14 @@
 //!
 //! | 若改成 | 本判据 |
 //! | :--- | :--- |
-//! | trap 的 `Tab` 分支不调 `focus-next-field()`（改回 `reject`） | ④ 红（读数停在 0；而 `Tab` 会撞上画布切视图） |
-//! | 轮转表把 `3 → 0` 写成 `3 → 3` | ④ 第 4 步红（绕不回第一格） |
+//! | trap 的 `Tab` 分支不调 `focus-next-control()`（改回 `reject`） | ④ 红（读数停在 0；而 `Tab` 会撞上画布切视图） |
+//! | 轮转表把 `6 → 0` 写成 `6 → 6` | ④ 第 7 步红（绕不回第一格） |
 //! | 把 `focus-on-tab-navigation` 打开 | ④ 的「左栏搜索框从未被选中」红 —— Slint 内建轮转走的是**整窗**链 |
 //! | 打开弹窗时不回焦（删掉 `invoke_focus_export_wav_dialog()`） | ② 红（读数停在 `-1`），③④⑤⑥ 随之全红 |
 //! | 关闭弹窗时不复位 | ⑦ 红（`active-tool` 停在 3） |
 //! | trap 的 `Esc` 分支不调 `close()` | ⑦ 红 —— ⚠ **只**红在这一条：`key-handler` 那条 `Action::Cancel` 路今天仍在，但已不是这条注入的必经之路（`tests/export_dialog_modal_closure.rs` 的 ③ 同口径更正） |
 //! | 给某个框新增一个 `accessible-id` | ⑧ 红（10 ⇒ 11），金帧与树基准随之要重录 —— 本票刻意不碰 |
-//! | 在别处再抄一份轮转（第 10 个 `.focus()`） | ⑧ 红（`.focus()` 计数 9 ⇒ 10） |
+//! | 在别处再抄一份轮转（第 9 个 `.focus()`） | ⑧ 红（`.focus()` 计数 8 ⇒ 9） |
 
 #[path = "../src/live_surface.rs"]
 // 本判据只用到 `live_surface.rs` 的一部分 ⇒ 其余项在本测试目标里是 dead_code（`-D warnings` 会判红）。
@@ -214,17 +217,29 @@ fn the_export_dialog_holds_the_keyboard_and_rotates_its_four_fields() {
     );
     trace.push(format!("`x` 后 path={path_after}"));
 
-    // ---- ④ `Tab` 闭环轮转：0→1→2→3→0，且焦点从不逃出模态 ----
-    for (step, expected) in [1_i32, 2, 3, 0].iter().enumerate() {
+    // ---- ④ `Tab` 闭环轮转：0→1→2→3→4→5→6→0，且焦点从不逃出模态 ----
+    // ⚠ 本票落地时轮转只有**四格文本框**（`0→1→2→3→0`）。`D-UI-20` 把三格手绘控件
+    // （限制器 / 导出 / ✕）接上键盘 ⇒ 全集成了**七格**，于是这一条改成读
+    // `focused-control`（七格读数），并**顺带核对**两条读数不互相矛盾：
+    // 焦点在按钮格上时，四框读数必须如实回 `-1`（⛔ 不许谎报"还在文本框里"）。
+    // 三格按钮各自的**行为**（按下去真导出 / 真翻开关 / 真关弹窗）不在本票，
+    // 判据是 `tests/export_dialog_button_focus.rs`。
+    for (step, expected) in [1_i32, 2, 3, 4, 5, 6, 0].iter().enumerate() {
         ui.dispatch_key_press(KeyCode::Tab)
             .expect("④ `Tab` 必须落到真实窗口");
-        let got = ui.ui().get_export_wav_focused_field();
+        let got = ui.ui().get_export_wav_focused_control();
         assert_eq!(
             got,
             *expected,
             "④ 第 {} 次 `Tab` 之后焦点必须在第 {} 格（读到 {got}）",
             step + 1,
             expected
+        );
+        assert_eq!(
+            ui.ui().get_export_wav_focused_field(),
+            if got <= 3 { got } else { -1 },
+            "④ 第 {} 次：四框读数必须与七格读数**一致**（焦点在 4/5/6 这三格按钮上时，四框读数得是 -1）",
+            step + 1
         );
         assert!(
             !ui.ui().get_sidebar_search_focused(),
@@ -237,15 +252,15 @@ fn the_export_dialog_holds_the_keyboard_and_rotates_its_four_fields() {
         );
         assert_eq!(ui.ui().get_active_tool(), 3, "④ 轮转期间工具不许被动");
     }
-    trace.push("Tab×4 ⇒ 1→2→3→0（闭环 + 绕回）".to_owned());
+    trace.push("Tab×7 ⇒ 1→2→3→4→5→6→0（七格闭环 + 绕回）".to_owned());
 
-    // ---- ⑤ Backtab 反向：0→3→2→1→0 ----
-    for (step, expected) in [3_i32, 2, 1, 0].iter().enumerate() {
+    // ---- ⑤ Backtab 反向：0→6→5→4→3→2→1→0 ----
+    for (step, expected) in [6_i32, 5, 4, 3, 2, 1, 0].iter().enumerate() {
         // `Shift+Tab` 以 Backtab `\u{19}` 到达（`i-slint-common` 的 `key_codes::Backtab`）；
         // 平台事件通道带不了修饰位 ⇒ 注入那个码位就是它在真键盘上的到达形态。
         ui.dispatch_key_press(KeyCode::Character('\u{19}'))
             .expect("⑤ Backtab 必须落到真实窗口");
-        let got = ui.ui().get_export_wav_focused_field();
+        let got = ui.ui().get_export_wav_focused_control();
         assert_eq!(
             got,
             *expected,
@@ -255,7 +270,7 @@ fn the_export_dialog_holds_the_keyboard_and_rotates_its_four_fields() {
         );
         assert_eq!(ui.ui().get_active_tool(), 3, "⑤ 反向轮转也不许动工具");
     }
-    trace.push("Backtab×4 ⇒ 3→2→1→0（反向绕回）".to_owned());
+    trace.push("Backtab×7 ⇒ 6→5→4→3→2→1→0（反向绕回）".to_owned());
 
     // ---- ⑥ 弹窗持键盘时，`1` 归文本框、⛔ 不归 DAW ----
     let len_before = ui.ui().get_export_wav_path().chars().count();
@@ -360,14 +375,18 @@ fn the_focus_readout_is_derived_and_no_new_control_becomes_addressable() {
     // ---- 轮转与焦点入口都只有一份 ----
     assert_eq!(
         dialog.matches(".focus()").count(),
-        9,
-        "⑧ 取焦调用点必须恰好 9 处（`focus-first-field` 1 + `focus-next-field` 4 + `focus-previous-field` 4）；\
-         多出来的那一处意味着轮转表在别处又被抄了一遍"
+        8,
+        "⑧ 取焦调用点必须恰好 8 处（`focus-first-field` 1 + 「序号 → 控件」表 7）；\
+         多出来的那一处意味着轮转表在别处又被抄了一遍。\
+         ⚠ 本票落地时这个数是 9（前进 4 + 后退 4 各抄一份表）；`D-UI-20` 把七格收成\
+         一张 `focus-control` 表 ⇒ 表只剩一份，加格只改那一处"
     );
     assert_eq!(
         dialog.matches(":= FocusScope").count(),
-        1,
-        "⑧ 模态内只能有**一个**焦点作用域（`export-trap`）；第二个就是第二个键盘入口"
+        4,
+        "⑧ 焦点作用域必须是 4 枚：`export-trap`（唯一的轮转入口）＋ `D-UI-20` 给三格\
+         手绘控件各加的一枚（✕ / 限制器 / 导出）。⚠ 本票落地时是 1 枚 —— 那三格当时\
+         根本没有取焦身份。第五枚才是第二个键盘入口：轮转仍然只由 trap 那一条分发"
     );
     for code in [r#""\u{9}""#, r#""\u{19}""#, r#""\u{1b}""#] {
         assert!(

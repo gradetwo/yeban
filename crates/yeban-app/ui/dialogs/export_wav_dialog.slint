@@ -41,18 +41,34 @@
 // | 键 | 落点 |
 // | :--- | :--- |
 // | 可打印字符 | `TextInput` 自己吃掉（编辑文本）⇒ ⛔ 不下发快捷键层 |
-// | `Tab` / `Shift+Tab`（`\u{9}` / `\u{19}` Backtab） | trap 做**四格闭环轮转**并 `accept` ⇒ 焦点逃不出模态 |
+// | `Tab` / `Shift+Tab`（`\u{9}` / `\u{19}` Backtab） | trap 做**七格闭环轮转**（四框 + 限制器 + 导出 + ✕）并 `accept` ⇒ 焦点逃不出模态 |
+// | `Return`（`\u{a}`）落在四框内 | 该框的 `accepted` ⇒ `root.run()` —— 与「导出」钮、`accessible-action-default` **同一条回调** |
+// | `Return` / `Space`（`\u{20}`）落在三格按钮上 | 那一格自己的 `FocusScope.key-pressed` ⇒ 与 `TouchArea.clicked` **逐字同一落点** |
 // | `Esc` | 调**既有的** `close` 回调（与 ✕ 按钮、`accessible-action-default` 同一条实现） |
 // | 其它裸键 | `reject` ⇒ 冒泡到本组件之外、无人消费 ⇒ 快捷键层⛔ 收不到（焦点不在那里） |
+//
+// ⭐ `D-UI-20`：那三格原本是**无 `FocusScope` 的** `Rectangle` + `TouchArea` ⇒ 收不到
+// 焦点，键盘既走不到「导出」也走不到限制器开关。现在每格里加一枚同尺寸的
+// `FocusScope`（⛔ 不加任何可见描边 ⇒ 一位像素不改），钮的取焦身份落在它上面，
+// `Return` / `Space` 触发的是**既有那一条**回调。命中测试实测过（Slint 1.18.1
+// `items/input_items.rs`）：`FocusScope::input_event_filter_before_children` 恒返回
+// `ForwardEvent`，而 `focus-on-click: false` 时 `input_event` 对 `Pressed` 返回
+// `EventIgnored` ⇒ 这枚容器**不吃鼠标**；再加它排在 `TouchArea` 之前（Slint 从最上层
+// 往下命中），`clicked` 那条路一位不变。
 //
 // ⚠ 已知边界（如实登记，⛔ 不假装覆盖）：
 // * 打开时焦点落**第一格**（`host` 调 `focus-export-wav-dialog`），关闭时宿主调
 //   既有的 `focus-shortcut-layer` **复位** —— 规范那句"复位至**触发控件**"今天做不到：
 //   触发方 `module-export-wav-button` 不是可聚焦控件（`FocusScope` 都没有），
 //   复位到"那一个"要先给它建焦点身份，那是另一票。
-// * 「导出」/「关闭」/限制器开关三格**仍是鼠标与无障碍动作**：它们是无 `FocusScope`
-//   的 `Rectangle` + `TouchArea`，要接键盘得先给每格加可聚焦容器（并实测它不与
-//   `TouchArea` 抢命中测试）⇒ D-UI-20，本票不顺手猜。
+// * `D-UI-20` 的两条残留：
+//   1. **点击不改变焦点**（三格都是 `focus-on-click: false`）。焦点的入口只有两个：
+//      宿主打开时那一次 + `Tab` 轮转。要"鼠标点哪焦点在哪"得先把命中测试让给
+//      `FocusScope`，那会牵动 `D-UI-21`（遮罩不吞鼠标）那条一并重判 ⇒ 单独一票。
+//   2. **焦点在按钮上时看不见**。三格容器刻意⛔ 不画焦点描边 —— 画了就改像素，
+//      而"弹窗打开态"的视觉基准已在两条 `tests/golden/` 判据里判绿，改基准属
+//      人类/集成者裁决（`docs/ledger/app-zimmer-ui-notes.md` §32 的 `D-UI-20` 边界 2）。
+//      ⇒ 今天键盘用户能**走**到这三格并**按**得动，只是看不出站在哪一格。
 // * `Cmd/Ctrl` 组合（保存、撤销、`D-UI-18` 的搜索聚焦）在弹窗打开期间**同样到不了宿主**
 //   —— 模态持有键盘是本票的目的，不是副作用。
 
@@ -83,8 +99,8 @@ export component ExportWavDialog inherits Rectangle {
     accessible-label: "WAV 导出设置";
 
     // ------------------------------------------------- 键盘（D-UI-19）：焦点陷阱
-    // `FocusScope` 只有在**孩子的键被拒绝、往上冒泡**时才收到事件 ⇒ 它必须包住那四格
-    // （⛔ 不能像时光机那样当兄弟覆盖层放：那接不到 `TextInput` 拒绝的 `Tab`）。
+    // `FocusScope` 只有在**孩子的键被拒绝、往上冒泡**时才收到事件 ⇒ 它必须包住全部
+    // 七格（⛔ 不能像时光机那样当兄弟覆盖层放：那接不到 `TextInput` 拒绝的 `Tab`）。
     export-trap := FocusScope {
         x: 0;
         y: 0;
@@ -105,10 +121,10 @@ export component ExportWavDialog inherits Rectangle {
                     // "无其它修饰键"）。落在这里 ⇒ 快捷键层也收不到（模态持有键盘）。
                     reject
                 } else if (event.text == "\u{19}" || event.modifiers.shift) {
-                    root.focus-previous-field();
+                    root.focus-previous-control();
                     accept
                 } else {
-                    root.focus-next-field();
+                    root.focus-next-control();
                     accept
                 }
             } else if (event.text == "\u{1b}") {
@@ -172,6 +188,30 @@ export component ExportWavDialog inherits Rectangle {
                     horizontal-alignment: center;
                 }
 
+                // ⭐ `D-UI-20`：这一格的取焦身份。⛔ 不画任何东西（`FocusScope` 无视觉，
+                // `bounding_rect` 甚至把尺寸折成零），也⛔ 不新增 `accessible-id` ⇒ 默认帧、
+                // 金帧、运行时寻址面一位不改。排在 `TouchArea` **之前**（Slint 从上往下命中，
+                // 让鼠标那条路保持在最上层），并显式 `focus-on-click: false`。
+                export-wav-close-focus := FocusScope {
+                    x: 0;
+                    y: 0;
+                    width: parent.width;
+                    height: parent.height;
+                    focus-on-click: false;
+                    // 与 `TouchArea.clicked` / `accessible-action-default` 逐字同一落点。
+                    // `Key.Return` = `\u{000a}`、`Key.Space` = `\u{0020}`（`i-slint-common`
+                    // 的 `key_codes.rs`），与 std Button 的 `StateLayer` 同一对键。
+                    key-pressed(event) => {
+                        if (event.text == Key.Return || event.text == Key.Space) {
+                            root.close();
+                            accept
+                        } else {
+                            // `Tab` 等 ⇒ 冒泡到 `export-trap` 去做轮转。
+                            reject
+                        }
+                    }
+                }
+
                 TouchArea {
                     width: parent.width;
                     height: parent.height;
@@ -209,6 +249,13 @@ export component ExportWavDialog inherits Rectangle {
                 accessible-label: "WAV 输出路径";
                 accessible-value: root.path;
                 accessible-read-only: false;
+                // ⭐ `D-UI-20`：`Return` = 默认动作（导出）。`TextInput.accepted` 只在
+                // **非只读 + 单行**时触发（`i-slint-core` 的 `items/text.rs`），这两条本框
+                // 都满足 ⇒ 这一键被框自己吃掉，⛔ 不会同时冒泡到 trap（不存在"既打字又导出"）。
+                // 落点与「导出」钮**逐字同一条** `root.run()` ⇒ ⛔ 没有第二份导出实现。
+                // ⚠ 规范没有点名"Enter 提交"（§7.3 只要求焦点闭环），⇒ 这是**界面决定**，
+                //   理由记在 `docs/ledger/app-zimmer-ui-notes.md` §34。
+                accepted => { root.run(); }
             }
 
             // ------------------------------------------------------------ 采样率
@@ -241,6 +288,7 @@ export component ExportWavDialog inherits Rectangle {
                 accessible-label: "采样率（auto 或 Hz）";
                 accessible-value: root.sample-rate;
                 accessible-read-only: false;
+                accepted => { root.run(); } // 同「导出」钮（见路径框那条注释）
             }
 
             // ------------------------------------------------------------ 位深
@@ -273,6 +321,7 @@ export component ExportWavDialog inherits Rectangle {
                 accessible-label: "位深（16 / 24 / 32f）";
                 accessible-value: root.bit-depth;
                 accessible-read-only: false;
+                accepted => { root.run(); } // 同「导出」钮
             }
 
             // ------------------------------------------------------------ 时长
@@ -309,6 +358,7 @@ export component ExportWavDialog inherits Rectangle {
                 accessible-label: "导出时长（秒）";
                 accessible-value: root.seconds;
                 accessible-read-only: false;
+                accepted => { root.run(); } // 同「导出」钮
             }
 
             // ------------------------------------------------------------ 母线限制器
@@ -342,8 +392,27 @@ export component ExportWavDialog inherits Rectangle {
                 accessible-label: "母线限制器（仅本次导出）";
                 accessible-checkable: true;
                 accessible-checked: root.limiter;
-                // `[UI-A11Y-003]` §7.3：无障碍动作与下面 `TouchArea.clicked` **逐字同一落点**。
+                // `[UI-A11Y-003]` §7.3：无障碍动作、下面 `TouchArea.clicked`、与
+                // `export-wav-limiter-focus` 的键盘动作三者**逐字同一落点**。
                 accessible-action-default => { root.limiter = !root.limiter; }
+
+                // ⭐ `D-UI-20`：开关的取焦身份（⛔ 无视觉、⛔ 不新增 `accessible-id`）。
+                // 它落在 `Rectangle` 之内、`TouchArea` 之前 ⇒ 鼠标那条路一位不变。
+                export-wav-limiter-focus := FocusScope {
+                    x: 0;
+                    y: 0;
+                    width: parent.width;
+                    height: parent.height;
+                    focus-on-click: false;
+                    key-pressed(event) => {
+                        if (event.text == Key.Return || event.text == Key.Space) {
+                            root.limiter = !root.limiter;
+                            accept
+                        } else {
+                            reject
+                        }
+                    }
+                }
 
                 UiText {
                     x: 0;
@@ -403,6 +472,25 @@ export component ExportWavDialog inherits Rectangle {
                 accessible-label: "按这些选项导出 WAV";
                 accessible-action-default => { root.run(); }
 
+                // ⭐ `D-UI-20`：「导出」的取焦身份。`Return` / `Space` 调的是**同一条**
+                // `root.run()`（`TouchArea.clicked`、无障碍默认动作也走它）⇒ ⛔ 没有第四份
+                // "导出"的实现，宿主侧 `on_run_export_wav` 仍是唯一落点。
+                export-wav-run-focus := FocusScope {
+                    x: 0;
+                    y: 0;
+                    width: parent.width;
+                    height: parent.height;
+                    focus-on-click: false;
+                    key-pressed(event) => {
+                        if (event.text == Key.Return || event.text == Key.Space) {
+                            root.run();
+                            accept
+                        } else {
+                            reject
+                        }
+                    }
+                }
+
                 UiText {
                     x: 0;
                     y: 0;
@@ -423,8 +511,9 @@ export component ExportWavDialog inherits Rectangle {
         }
     }
 
-    // ---- 焦点读数（D-UI-19）-------------------------------------------------
-    /// 哪一格正持有键盘：`0` 路径 / `1` 采样率 / `2` 位深 / `3` 时长 / `-1` 不在任何格内。
+    // ---- 焦点读数（D-UI-19 / D-UI-20）---------------------------------------
+    /// 四格**文本框**里哪一格正持有键盘：`0` 路径 / `1` 采样率 / `2` 位深 / `3` 时长 /
+    /// `-1` 不在任何文本框内（焦点在三格按钮上，或根本不在模态里）。
     /// ⚠ 这是从 Slint **自己的**焦点状态**推导**出来的（四个 `has-focus` 就是天然事实源），
     /// ⛔ 不是第三份"我以为焦点在哪"的写态 —— 与 `app.slint` 的 `shortcut-layer-focused`
     /// （`FocusScope.has-focus` 的镜像）同口径。唯一读者 = 宿主与无头判据。
@@ -435,35 +524,83 @@ export component ExportWavDialog inherits Rectangle {
         : export-wav-seconds-input.has-focus ? 3
         : -1;
 
+    /// `D-UI-20`：轮转**全集**的读数 —— 七格。`0..3` 同上，`4` 限制器开关 / `5` 导出 /
+    /// `6` ✕ 关闭 / `-1` 不在模态内。⛔ 不是第二份状态：它与前一条从**同一批** `has-focus`
+    /// 推导，只是多读三格按钮的容器 ⇒ 两条读数不可能互相矛盾。
+    /// 为什么⛔ 不复用 `focused-field`：那条已由 `D-UI-19` 的判据按"四格"钉死（打开落 `0`、
+    /// 关闭落 `-1`），改它的**值域**等于悄悄放宽一条既有判据。
+    out property <int> focused-control:
+        export-wav-path-input.has-focus ? 0
+        : export-wav-sample-rate-input.has-focus ? 1
+        : export-wav-bit-depth-input.has-focus ? 2
+        : export-wav-seconds-input.has-focus ? 3
+        : export-wav-limiter-focus.has-focus ? 4
+        : export-wav-run-focus.has-focus ? 5
+        : export-wav-close-focus.has-focus ? 6
+        : -1;
+
     /// 打开时由宿主调用：焦点进**第一格**。停在遮罩上等于"看得见但打不了字"。
     public function focus-first-field() {
         export-wav-path-input.focus();
     }
 
-    /// `Tab`：路径 → 采样率 → 位深 → 时长 → 回第一格。两端都闭合（焦点逃不出去）。
-    /// `-1`（从外部进来 / 焦点被清）⇒ 落回第一格 ⇒ ⛔ 不存在"按 Tab 跳到左栏"这一态。
-    public function focus-next-field() {
-        if (root.focused-field == 0) {
-            export-wav-sample-rate-input.focus();
-        } else if (root.focused-field == 1) {
-            export-wav-bit-depth-input.focus();
-        } else if (root.focused-field == 2) {
-            export-wav-seconds-input.focus();
-        } else {
+    /// 七格的**唯一**一张「序号 → 控件」表：下面两条轮转只做序号加减，取焦一律走这里
+    /// ⇒ 再加一格只改这一处（`D-UI-19` 那条"轮转只有一份"的纪律由此继续成立）。
+    public function focus-control(index: int) {
+        if (index == 0) {
             export-wav-path-input.focus();
+        } else if (index == 1) {
+            export-wav-sample-rate-input.focus();
+        } else if (index == 2) {
+            export-wav-bit-depth-input.focus();
+        } else if (index == 3) {
+            export-wav-seconds-input.focus();
+        } else if (index == 4) {
+            export-wav-limiter-focus.focus();
+        } else if (index == 5) {
+            export-wav-run-focus.focus();
+        } else if (index == 6) {
+            export-wav-close-focus.focus();
+        }
+    }
+
+    /// `Tab`：路径 → 采样率 → 位深 → 时长 → 限制器 → 导出 → ✕ → 回第一格。
+    /// 两端都闭合（焦点逃不出去）；`-1`（从外部进来 / 焦点被清）⇒ 落回第一格 ⇒
+    /// ⛔ 不存在"按 Tab 跳到左栏"这一态。
+    public function focus-next-control() {
+        if (root.focused-control == 0) {
+            root.focus-control(1);
+        } else if (root.focused-control == 1) {
+            root.focus-control(2);
+        } else if (root.focused-control == 2) {
+            root.focus-control(3);
+        } else if (root.focused-control == 3) {
+            root.focus-control(4);
+        } else if (root.focused-control == 4) {
+            root.focus-control(5);
+        } else if (root.focused-control == 5) {
+            root.focus-control(6);
+        } else {
+            root.focus-control(0);
         }
     }
 
     /// `Shift+Tab`：反向；第一格再退 ⇒ 末格（`-1` 同样退到末格）。
-    public function focus-previous-field() {
-        if (root.focused-field == 1) {
-            export-wav-path-input.focus();
-        } else if (root.focused-field == 2) {
-            export-wav-sample-rate-input.focus();
-        } else if (root.focused-field == 3) {
-            export-wav-bit-depth-input.focus();
+    public function focus-previous-control() {
+        if (root.focused-control == 1) {
+            root.focus-control(0);
+        } else if (root.focused-control == 2) {
+            root.focus-control(1);
+        } else if (root.focused-control == 3) {
+            root.focus-control(2);
+        } else if (root.focused-control == 4) {
+            root.focus-control(3);
+        } else if (root.focused-control == 5) {
+            root.focus-control(4);
+        } else if (root.focused-control == 6) {
+            root.focus-control(5);
         } else {
-            export-wav-seconds-input.focus();
+            root.focus-control(6);
         }
     }
 
