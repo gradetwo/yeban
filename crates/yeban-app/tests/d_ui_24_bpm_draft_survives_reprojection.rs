@@ -190,8 +190,11 @@ fn bool_column(model: &slint::ModelRc<bool>) -> Vec<bool> {
     model.iter().collect()
 }
 
-/// 把界面那一列 `String` 压成 `Vec`（`track-ids`：行下标 → 身份，宿主自己就是靠它查的）。
-fn string_column(model: &slint::ModelRc<String>) -> Vec<String> {
+/// 把界面那一列轨身份压成 `Vec`（`track-ids`：行下标 → 身份，宿主自己就是靠它查的）。
+///
+/// ⚠ 元素类型是 `slint::SharedString`（`get_track_ids()` 的返回），⛔ 不是 `std::string::String`
+/// —— 这一条是 CI 教的：写成 `String` 时整个测试二进制编译不过（run `41545628710`）。
+fn string_column(model: &slint::ModelRc<slint::SharedString>) -> Vec<String> {
     use slint::Model as _;
     model.iter().map(|text| text.to_string()).collect()
 }

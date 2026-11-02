@@ -1696,3 +1696,69 @@ error[yanked]: detected yanked crate (try `cargo update -p async-executor`)
 `deny` failure ＋ `rust (workspace 全量)` / `e2e` 两条 `skipped`。⇒ "yanked 的传递依赖把
 `deny` 腿打红、⛔ 动摇任何测试判决"这条判断有第三例支撑。
 
+## §45 `D-UI-24` ③ 重写后的判决读回：run `41545628710` —— 三条腿同一枚 `E0308`，测试腿**一个二进制都没跑到**（2026-11-03）
+
+**先说指标**：数的是同一作业日志里 `Running tests/` 出现的**次数**（单位：次）与
+`test result:` 出现的**行数**（单位：行）—— 二者即"`cargo test` 真的开跑了几批判据"的现场证据
+（§6.3 第 2、4 条）。`rust (yeban-app)` 腿实测 **0 次 / 0 行**。
+
+| 作业 | 结论 | 现场 |
+|---|---|---|
+| `lockfile` / `plan` / `checks` | success | fmt 与红线守卫都过 ⇒ ⛔ 类型层的事 |
+| `deny (cargo-deny)` | failure | §44 那条仓库级红，与本判决无因果 |
+| `rust (yeban-app)` | failure | **clippy 阶段**退出码 101，`Running tests/` = 0 |
+| `windows` / `macos` | failure | 同一条 `E0308`，同一行号 |
+| `e2e` / `rust (workspace 全量)` | skipped | 空绿，⛔ 计入任何覆盖 |
+
+**根因**（一枚，三条腿共享）：我在 §43 里改写的 `③` 用了自造的 helper
+
+```rust
+fn string_column(model: &slint::ModelRc<String>) -> Vec<String>   // ✗ CI 判的
+```
+
+而 `get_track_ids()` 的元素类型是 `slint::SharedString` ⇒ `expected &ModelRc<String>,
+found &ModelRc<SharedString>`。
+
+**为什么只有这一条红，而同一段里的 `bool_column` 没事**：`bool_column` 是从
+`tests/mixer_keyboard_switch.rs:146` **原样抄**的（类型自带）；`string_column` 是我**发明**的
+（凭"界面那一列是字符串"推断签名）。同一文件里"抄来的"与"发明的"并排时，红的是发明的这一条。
+本仓库对同一个属性**早有现成读法**：`tests/d_ui_11_serve_header_gestures.rs:412` 的
+`track_ids()` 直接 `.iter().map(|id| id.to_string())`，让类型由属性的 getter 自己决定。
+
+**新登记的测量规则**（§5 的推论，⛔ 靠自觉）：本机⛔ 能编译 Slint ⇒ **类型层错误只有 CI 会抓**。
+所以任何**新增的"读界面某一列"**，落笔前必须先 `grep` 同一个属性的**已有读法**并照抄；
+⛔ 从签名形状推断元素类型。
+
+**对同批另两枚的影响**（如实切开，⛔ 连坐也⛔ 免罪）：`af28382e` / `611b0ee3`（`D-UI-26`）
+在本轮**只有"编译过"这一条证据**（clippy 对那两个文件未报错，因为它先把整个 target 图跑完才退出），
+**运行时判据一条都没执行** ⇒ 它们的 10 条守卫仍是 `pending`，⛔ 得写成"绿"也⛔ 得写成"红"。
+
+**改法**：签名换成 `&slint::ModelRc<slint::SharedString>`，并把"`get_track_ids()` 返回
+`SharedString`、这一条是 CI 教的"写进 helper 的文档注释，防下一轮再猜。
+`cargo fmt -p yeban-app -- --check` `rc=0`。`git diff --numstat`：
+`tests/d_ui_24_bpm_draft_survives_reprojection.rs 5/2`。判决：`pending`（重跑）。
+
+## §46 取证：`git push | tail` 的退出码是 `tail` 的 —— 一次**假成功推送**被 `git ls-remote` 抓回（2026-11-03）
+
+**事实**（本轮实测）：把推送命令接上 `| tail -5` 后，工具报 **exit code 0**，而 stderr 里其实是
+
+```text
+fatal: Failed to connect to github.com port 443 after 133929 ms: Connection timed out
+```
+
+管道的退出码默认取**最后一条命令**（这里是 `tail`），于是网络失败被包装成"成功"。
+
+**怎么抓回的**：不采信包装层的判决，去**远端**现读 —— `git ls-remote origin line/zimmer-export-limiter`
+仍返回 `26a23966…`（推送前的值）⇒ 本地"已推送"的信念与远端事实不符。随后
+⛔ 接管道重跑，并用 `; echo "rc=$?"` 把退出码打在**命令本身**上，真成功才是
+`26a23966..82818d20`。
+
+**通用规则**：
+1. 推送 / 上传 / 任何"改变远端状态"的命令⛔ 接管道；要截输出就在命令上直接取 `$?`，或 `set -o pipefail`；
+2. **判决从远端读回**（`git ls-remote` 的 ref、`gh run list` 的 `headSha`），⛔ 从本地命令的退出码推断；
+3. 本轮还叠了一层风险：那条推送是**后台任务**，"completed (exit code 0)" 更容易被当成权威 ⇒
+   后台任务的 exit code 只说明**包装脚本**没崩。
+
+⚠ 另两次纯网络失败（`GnuTLS recv error (-110)`、`HTTP2 framing layer error`）是同一原因的
+不同表现，绕过方式是 `git -c http.version=HTTP/1.1`；它们**都**被 `ls-remote` 现读判决，⛔ 靠猜。
+
