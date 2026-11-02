@@ -1008,7 +1008,7 @@ Slint 事件循环这一路停摆：期间没有任何点击、按键、重投�
 2. 焦点在画布时 `Tab` = `Action::ToggleView`（`src/input.rs:1418` 的既有判据逐字如此，
    规范 §2.2 也把 `Tab` 限定在画布）；
 3. `key-pressed` 只有 in `key-action` 返回 `false` 时才 `reject`（`app.slint:728-733`），
-   而注释逐字写着 **`accept` ⇒ "Slint 也不做 `Tab` 焦点轮转"**（`app.slint:717`）。
+   而注释逐字写着 **`accept` ⇒ "Slint 也不做 `Tab` 焦点轮转"**（`app.slint:716`）。
 
 ⇒ 焦点一旦落在快捷键层，`Tab` 被 DAW 吃掉、永不轮转 ⇒ **`bpm-input`（`transport.slint:281`）、
 搜索框（`sidebar.slint` 的 `sidebar-search-input`）、导出弹窗那 4 个框，纯键盘用户一个都进不去**。
@@ -1301,3 +1301,18 @@ scope 声明在各格 `TouchArea` **之前** ⇒ 命中测试层序也不变。�
 **判决**：`pending` —— 本机不编译 `yeban-app`；`cargo fmt` / `cargo fmt --check` 均 `rc=0`
 （只能证语法与格式，见 §35），守卫脚本本地全绿，⑦ 的四个计数已在本地用真实源码模拟过
 （`dialog: TouchArea 4 / clicked 3 / ids 10 / 遮罩在面板之前 = true`，`time_machine: 4 / 3 / 7 / true`）。
+
+## §37 `D-UI-22` 编号落定：从画布进文本框的键位是**规范冲突**，⛔ 不是漏接线（2026-11-03）
+
+§31 那句"文本框全都摸不到键盘"从今天起有编号、有票、⛔ 没有代码。
+
+* **为什么不直接接线**：`Tab` 在画布上已被 `[UI-A11Y-001]` 键位表（`DESKTOP_UI_UX:300`）钉成
+  "视图切换"，而 `[UI-A11Y-003]` §7.3 第 1/4 条要求"全界面 Tab 序列"并把轮转列为 CI **MUST**。
+  两句对**同一个键**说相反的话 ⇒ 满足一句必然违反另一句，这是产品裁决（§5.7：⛔ 不私自发明答案）。
+* 留痕：`docs/adr/ADR-0067-keyboard-entry-into-text-fields.md`（`Proposed`，三条路线 D1/D2/D3，
+  建议 D1 = `D-UI-18` 专属 chord 那条成例的推广；README 索引已同步，G20 本地绿）。
+* ⚠ **修掉一处腐烂的行号**（§6.1-1 那条"别写行号"的教训第三次生效）：§31 里那句
+  `app.slint:717` 的注释在 D-UI-19/20 之后落在 `:716`。⇒ 本票新增的引用一律**同时给出锚点**
+  （"`key-action` 返回值那段注释"），行号只作辅助。
+* **可达性现状**（本票现读，逐条对过 grep）：搜索框 ✅ ／ 导出弹窗七格 ✅ ／ 时光机 ✅ ／
+  `bpm-input` ⛔ 仅鼠标 ／ `device-*` 文本框 ⛔ 仅鼠标。后两条是 D1 的工单范围。
