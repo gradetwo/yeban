@@ -1827,7 +1827,13 @@ fn a_send_gain_ramp_is_strictly_monotonic_and_reported_applied() {
     assert_eq!(data["automation"]["unsupportedLanes"], 0);
     assert_eq!(
         data["automation"]["targetsSupported"],
-        json!(["TrackVolume", "TrackPan", "SendGain", "DeviceParam"]),
+        json!([
+            "TrackVolume",
+            "TrackPan",
+            "SendGain",
+            "DeviceParam",
+            "MidiCc"
+        ]),
         "⭐ #257：TrackPan 也进了支持集合；⭐ #266：DeviceParam 进集合（只到 output_gain_db）"
     );
     assert_eq!(
@@ -2176,7 +2182,13 @@ fn a_track_pan_ramp_moves_left_to_right_and_matches_the_cli_digest() {
     assert_eq!(data["automation"]["tracks"][0]["lanes"][0]["applied"], true);
     assert_eq!(
         data["automation"]["targetsSupported"],
-        json!(["TrackVolume", "TrackPan", "SendGain", "DeviceParam"])
+        json!([
+            "TrackVolume",
+            "TrackPan",
+            "SendGain",
+            "DeviceParam",
+            "MidiCc"
+        ])
     );
     assert!(
         !data["unsupported"]
@@ -2297,7 +2309,13 @@ fn a_device_param_ramp_lowers_the_master_and_matches_the_cli_digest() {
     assert_eq!(lane["unresolved"], Value::Null);
     assert_eq!(
         data["automation"]["targetsSupported"],
-        json!(["TrackVolume", "TrackPan", "SendGain", "DeviceParam"]),
+        json!([
+            "TrackVolume",
+            "TrackPan",
+            "SendGain",
+            "DeviceParam",
+            "MidiCc"
+        ]),
         "⭐ #266：DeviceParam 已支持（只到 output_gain_db）"
     );
     assert_eq!(
