@@ -9,7 +9,9 @@
 //     分类标签用 `sidebar-category-{i}-button`, 不污染 `tab-` 前缀 (elements.rs 的
 //     覆盖判据就是靠这个前缀成立的)。
 //
-// 数据流方向: 只读 + 通知。折叠状态住在 app.slint 的 MainWindow。
+// 数据流方向: 只读 + 通知，**一个例外** —— 搜索框里的字（`search-text` ↔
+// `MainWindow.sidebar-search`）是可编辑的视图态，但它⛔ 不改工程、⛔ 不进撤销栈，
+// 与折叠态同一档。折叠状态住在 app.slint 的 MainWindow。
 //
 // ⭐ 条目数组**不再是演示数据**（旧版在这里内联 8 个乐器名，含 "SFZ · 323 款采样预置"
 // —— 一个仓库里并不存在的数字）。它由宿主按**当前分类**注入，三个来源逐字是：
@@ -22,6 +24,10 @@
 //
 // ⚠ 空态**不是**"什么都不画"：一个只写着理由的文本节点（`sidebar-empty`）。
 // 把"这一类今天没有可用条目"说成缺失的 UI，比编造 8 条名字诚实得多。
+//
+// ⭐ D-UI-14 起，那张表是**过滤前**的来源：宿主在注入前再过一道
+// `bridge::filter_sidebar_content(那份投影, 搜索框的字)`。于是"空态"有两种，理由必须分开：
+// 本类一条都没有（沿用表里那个理由）vs 本类有 N 条但都不匹配「query」（新的理由，带条数）。
 
 import { Tokens, UiText, UiMonoText, UiTitleText } from "tokens.slint";
 
@@ -29,8 +35,9 @@ export component Sidebar inherits Rectangle {
     in property <bool> compact: false;
     in property <string> search-hint: "搜索乐器 / 采样 / 预置";
     // ⭐ 当前分类的条目显示名。默认**空** ⇒ 这一层不再内联任何演示数据；
-    // 唯一写者 = 宿主（`host::apply_view` 装配期注入 + `select-sidebar-category` 回调
-    // 换分类时重注入），数组内容与 `MainWindow.sidebar-category` **同源**。
+    // 唯一写者 = 宿主（`host::inject_sidebar`，三个调用点：`host::apply_view` 装配期注入、
+    // `select-sidebar-category` 换分类重注入、`sidebar-search-changed` 换搜索词重注入），
+    // 数组内容与 `MainWindow.sidebar-category` / `MainWindow.sidebar-search` **同源**。
     in property <[string]> items: [];
 
     // ⭐ `items` 为空时画出来的**理由**（同样由宿主按分类注入：乐器 = 采样库没下载，
@@ -43,18 +50,41 @@ export component Sidebar inherits Rectangle {
     // 的挥发性层）、不进 `.yeban`、不进撤销栈。
     in property <int> active-category: 0;
 
-    // ⭐ 当前选中的资源条目（合法区间 = **当前分类**的 `items` 长度，宿主按它钳位）。
-    // 与 `active-category` 同一档：唯一写者 = 宿主钳位后写 `MainWindow.sidebar-item`，
-    // 纯视图态（⛔ 不进 `.yeban`、⛔ 不进撤销栈、⛔ 不改工程）。
-    // ⚠ 换分类 ⇒ 条目集合换了 ⇒ 宿主在重注入数组的**同一次**里将选中态落回合法值；
-    // 界面**不**自己钳（那会与宿主分叉）。
+    // ⭐ 当前选中的资源条目（合法区间 = **注入的那一份** `items` 的长度 —— 分类 ∩ 搜索词，
+    // 宿主按它钳位）。与 `active-category` 同一档：唯一写者 = 宿主钳位后写
+    // `MainWindow.sidebar-item`，纯视图态（⛔ 不进 `.yeban`、⛔ 不进撤销栈、⛔ 不改工程）。
+    // ⚠ 条目集合一变（换分类 / 换搜索词）⇒ 宿主在重注入数组的**同一次**里将选中态落回
+    // 合法值；界面**不**自己钳（那会与宿主分叉）。
     in property <int> active-item: 0;
+
+    // ⭐ 搜索框里的**字**（D-UI-14）。两向绑定到 `MainWindow.sidebar-search`：
+    // 界面这一层只承载"用户敲进去的串"，⛔ 不做任何匹配 —— Slint 1.18.1 的字符串内置集
+    // 里没有 `contains`，也没有字符串版 `index-of`（实测 `i-slint-compiler-1.18.1/lookup.rs`
+    // 的内置表只有 `is-float / to-float / is-empty / character-count / to-lowercase /
+    // to-uppercase / starts-with / ends-with / replace-all`；数组的 `index-of / any / all /
+    // find-index` 在 experimental 开关后面）。子串匹配只有一处，在 Rust：
+    // `bridge::filter_sidebar_content`（宿主 `sidebar-search-changed` 调它）。
+    in-out property <string> search-text: "";
 
     callback toggle-collapse();
     /// 点击分类标签 ⇒ 请求切到该分类；落点 = 宿主钳位后写 `MainWindow.sidebar-category`。
     callback select-category(int);
     /// 点击资源条目 ⇒ 请求选中它；落点 = 宿主钳位后写 `MainWindow.sidebar-item`。
     callback select-item(int);
+    /// 搜索框**每敲一个字**报一次当前整串；落点 = 宿主重算投影并重注入条目数组。
+    /// ⛔ 界面不自己过滤（见上面 `search-text` 的内置函数实测清单）。
+    callback search-changed(string);
+    // ⚠ **本框不接** `[UI-A11Y-002]` §7.2 那条输入法通道（`ime-composition-changed` /
+    // `ime-focus-changed`），这是**登记过的边界**而不是遗漏：全仓库只有 `transport.slint`
+    // 的 `bpm-input` 接了它，而宿主的 `wire_input` 把"失焦"硬编码为**回到画布**
+    // （`src/host.rs` 里那条注释原话："将来有第二个敲入控件时，这里必须改成问焦点系统
+    // 当前焦点是谁"）。在改好那一格之前接第二路，两个 `changed has-focus` 的**先后顺序**
+    // 没有上游保证 ⇒ `InputContext` 会随点击次序落进错误状态（比"没接"更糟）。
+    // 导出弹窗的 4 个输入框同样未接（实测 `ui/dialogs/export_wav_dialog.slint`）⇒ 本框
+    // 与仓库现状一致。搜索这一格用不到它：过滤器的输入是 `text`，而候选词住在**另一个**
+    // 属性 `preedit-text`（`i-slint-compiler-1.18.1/builtin_elements.rs:2323`）⇒ 被送进
+    // `filter_sidebar_content` 的永远是已经落定的那一份字。⚠ "合成期间 `text` 一次也不被写"
+    // 本机**没有**实测（无输入法可注入），故本票不把它当判据、也不依赖它才能工作。
 
     background: Tokens.bg-panel;
     border-width: 1px;
@@ -120,7 +150,17 @@ export component Sidebar inherits Rectangle {
     }
 
     // ---------------------------------------------------------------- 搜索框
-    // 文本输入框: 规范 §7.2 的 IME 合成态防护针对的就是这类控件。
+    // ⭐ D-UI-14：这一格**从前是假的** —— 一个 `role=text-input` 的占位矩形里放一句静态
+    // `UiText`，敲进去什么都不动（与 `transport.slint:239` 记录的"上一版只有占位矩形……
+    // 合成事件根本没有源"同型）。现在是**真的** `TextInput`：
+    //   * 语义节点挂在 `TextInput` 自己上（外层矩形只做皮肤）⇒ 运行时树里该 id 仍然
+    //     **恰好一个**节点（`tests/pane_no_overlap.rs` 的 `sidebar_controls` 按"恰好一个"
+    //     计数，`tests/compact_follows_window_width.rs` 按 `!compact` 判在场性）；
+    //   * 提示文案还是原来那个 `UiText`，⛔ 不换成 `TextInput.placeholder-text`：换上去
+    //     字体/颜色/落点都会挪，默认帧的像素跟着搬家 ⇒ `tests/golden/**` 五张基准整批
+    //     重录。它只在**框里没字**时在场，因此空框那一帧逐位不变；
+    //   * 匹配⛔ 不在这里：见上面 `search-text` 处抄录的 Slint 1.18.1 内置函数实测清单
+    //     （没有 `contains`）。这里只把字交给宿主那一个入口。
     Rectangle {
         x: Tokens.space-4;
         y: 40px;
@@ -131,12 +171,6 @@ export component Sidebar inherits Rectangle {
         border-width: 1px;
         border-color: Tokens.line-strong;
         visible: !root.compact;
-        accessible-role: text-input;
-        accessible-id: "sidebar-search-field";
-        accessible-label: "搜索资源";
-        accessible-placeholder-text: root.search-hint;
-        accessible-value: "";
-        accessible-read-only: false;
 
         UiText {
             x: Tokens.space-3;
@@ -146,6 +180,41 @@ export component Sidebar inherits Rectangle {
             text: root.search-hint;
             color: Tokens.ink-2;
             font-size: Tokens.font-size-xs;
+            visible: root.search-text == "";
+        }
+
+        // 编辑面。⚠ `text` 必须**双向**（`[PATCH export-wav-dialog-binding]` 那条教训：
+        // 单向绑定会被用户第一次按键打断，从此输入框与宿主各说各话）。
+        sidebar-search-input := TextInput {
+            x: Tokens.space-3;
+            y: 0;
+            width: parent.width - 8px - Tokens.space-3;
+            height: parent.height;
+            text <=> root.search-text;
+            single-line: true;
+            read-only: false;
+            font-family: Tokens.font-ui;
+            color: Tokens.ink-1;
+            font-size: Tokens.font-size-xs;
+            vertical-alignment: center;
+            // ⛔ 折叠断点下这个节点必须**离场**（不是"隐身"）：在场性 == `!compact`
+            // 由 `tests/pane_no_overlap.rs` 与 `tests/compact_follows_window_width.rs`
+            // 两处判据钉住。Slint 的 a11y 树按**父链可见性**裁剪，但本节点自己声明一次
+            // 才算把前提写死（⛔ 不依赖"父矩形会替我挡"）。
+            visible: !root.compact;
+            accessible-role: text-input;
+            accessible-id: "sidebar-search-field";
+            accessible-label: "搜索资源";
+            accessible-placeholder-text: root.search-hint;
+            accessible-value: root.search-text;
+            accessible-read-only: false;
+
+            // 每敲一个字报一次整串 ⇒ 宿主重算投影（过滤的唯一一处是
+            // `bridge::filter_sidebar_content`）。落点⛔ 不是写回本属性：那会与
+            // `text <=> root.search-text` 这条绑定互为回路。
+            changed text => {
+                root.search-changed(self.text);
+            }
         }
     }
 

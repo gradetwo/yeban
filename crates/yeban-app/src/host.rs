@@ -177,16 +177,21 @@ pub fn apply_view(ui: &MainWindow, view: &ViewState, viewport_width: f32, scroll
     ui.set_asset_pool_names(strings(&view.asset_pool_names()));
     ui.set_asset_pool_kinds(strings(&view.asset_pool_kinds()));
     ui.set_asset_pool_details(strings(&view.asset_pool_details()));
-    // ⭐ 左侧资源栏的条目（任务单 `#133`）：一个数组 ＋ 一个逐字理由**标量**。
+    // ⭐ 左侧资源栏的条目（任务单 `#133` ＋ `D-UI-14`）：一个数组 ＋ 一个逐字理由**标量**。
     // 唯一事实源 = `crate::bridge::sidebar_category_content`（按**当前分类**取数：
-    // 0 = 进程缓存的库扫描、1 = 上面的素材池投影、2 = 模型层登记的缺口），
-    // `ElementRegistry::from_view` 读的是**同一个**函数 ⇒ "注册表说 N 条 / 屏幕画 M 条"
-    // 在结构上不可能。⛔ 界面不自己取数（旧版在这里内联 8 个乐器名，含仓库里不存在的
-    // "SFZ · 323 款"）。分类 0 走缓存 ⇒ 每帧成本是一次 `stat` ＋ 名字数组拷贝，
+    // 0 = 进程缓存的库扫描、1 = 上面的素材池投影、2 = 模型层登记的缺口）再过一道
+    // `crate::bridge::filter_sidebar_content`（按**搜索框那份字**做子串过滤），
+    // `ElementRegistry::from_view` 读的是**同一个**取数函数（注册表登记**过滤前**的全量，
+    // 运行时是它的子集 ⇒ `ui/coverage` 的"注册表 ⊇ 运行时"成立）
+    // ⇒ "注册表说 N 条 / 屏幕画 M 条"在结构上不可能。⛔ 界面不自己取数（旧版在这里内联
+    // 8 个乐器名，含仓库里不存在的 "SFZ · 323 款"）。搜索串为空时过滤是**原样返回**
+    // ⇒ 默认帧与过滤存在前逐字相同。分类 0 走缓存 ⇒ 每帧成本是一次 `stat` ＋ 名字数组拷贝，
     // 与既有 `asset_pool_names` 同一档（⛔ 不读样本字节，`#165` 的教训）。
-    let sidebar =
-        crate::bridge::sidebar_category_content(view, ui.get_sidebar_category().max(0) as usize);
-    inject_sidebar(ui, &sidebar);
+    inject_sidebar(
+        ui,
+        &sidebar_category_at(view, ui.get_sidebar_category()),
+        &ui.get_sidebar_search(),
+    );
     // ⭐ 设备机架（任务单 `#157`）：`ViewState::devices` / `eq_low_gain` 是**唯一**事实源。
     // 四个平行数组同索引集；五个标量来自同一次投影。它们只在完整重投影（换工程 /
     // 撤销 / 打开 / 一次设备手势提交之后）时变化，但 `apply_view` 每次都会新建
@@ -5715,13 +5720,14 @@ pub fn wire_view_callbacks(ui: &MainWindow) {
 }
 
 /// ⭐ 左侧资源栏的**取数**接线：分类点击 ⇒ 重注入该分类的条目数组 ＋ 空态理由；
-/// 条目点击 ⇒ 按**当次投影条数**钳位后写 `sidebar-item`。
+/// 条目点击 ⇒ 按**当次投影条数**钳位后写 `sidebar-item`；搜索框每敲一个字 ⇒ 用那份字
+/// 重过滤后重注入（任务单 `D-UI-14`）。
 ///
 /// | 读 / 写 | 事实源 |
 /// | :--- | :--- |
-/// | 写 | `sidebar-items` / `sidebar-empty-reason` / `sidebar-category` / `sidebar-item`（唯一写者 = 这里与 [`apply_view`]，两处都只调**同一个** `crate::bridge::sidebar_category_content`） |
-/// | 读 | `.slint` 的 `for item_text[item_index] in root.items`（数组驱动）＋ `sidebar-empty` 文本节点（理由驱动） |
-/// | 不进 | `Op` / `.yeban` / 撤销栈 —— 分类与选中都是视图态（`MODEL-ISO-001` 的挥发性层） |
+/// | 写 | `sidebar-items` / `sidebar-empty-reason` / `sidebar-category` / `sidebar-item`（唯一写者 = 这里与 [`apply_view`]，两处都只调**同一个** [`inject_sidebar`]，过滤串是它的**必填形参** —— 想漏掉过滤就编译不过） |
+/// | 读 | `.slint` 的 `for item_text[item_index] in root.items`（数组驱动）＋ `sidebar-empty` 文本节点（理由驱动）＋ `MainWindow.sidebar-search`（搜索框的字，写者只有输入框） |
+/// | 不进 | `Op` / `.yeban` / 撤销栈 —— 分类、选中、搜索串都是视图态（`MODEL-ISO-001` 的挥发性层） |
 ///
 /// ## 为什么它从 [`wire_view_callbacks`] 里单独出来
 ///
@@ -5729,6 +5735,16 @@ pub fn wire_view_callbacks(ui: &MainWindow) {
 /// （旧版 `SIDEBAR_ITEM_COUNT = 8` 是内联演示数据的长度），必须是**当次投影的长度** ⇒
 /// 这里需要一份 `Rc<RefCell<ViewState>>`。装配时没有更新的视图快照可用也没关系：
 /// 分类 1 的条目就是 `apply_view` 每帧注入的素材池投影，⛔ 界面不持有第二份清单。
+///
+/// ## 搜索为什么也住在这里（以及它为什么⛔ 不写回那个串）
+///
+/// 子串匹配只可能住在 Rust（Slint 1.18.1 的字符串内置集没有 `contains`，实测见
+/// `ui/sidebar.slint` 的 `search-text` 处清单）。`sidebar-search-changed` 的落点是
+/// **重算投影并重注入**，⛔ 不是 `set_sidebar_search` —— 那份字的唯一写者是输入框的
+/// 两向绑定 `text <=> root.sidebar-search`，宿主再写一次就与绑定互为回路。
+/// 于是本回调带进来的那份字**就是**界面上那份（不依赖"读属性时绑定已经传播完"这个
+/// 未证前提；读属性那两处 —— [`apply_view`] 与条目钳位 —— 都发生在两次敲字之间，
+/// 那时绑定早已落定）。
 pub fn wire_sidebar_contents(ui: &MainWindow, view: Rc<RefCell<ViewState>>) {
     let weak = ui.as_weak();
     ui.on_select_sidebar_category({
@@ -5741,37 +5757,68 @@ pub fn wire_sidebar_contents(ui: &MainWindow, view: Rc<RefCell<ViewState>>) {
             };
             let clamped = category.clamp(0, SIDEBAR_CATEGORY_COUNT - 1);
             ui.set_sidebar_category(clamped);
-            let content = crate::bridge::sidebar_category_content(&view.borrow(), clamped as usize);
-            inject_sidebar(&ui, &content);
-            // 换分类 ⇒ 条目集合换了 ⇒ 选中态落回**新集合**的合法区间（⛔ 不保留越界值，
-            // ⛔ 不保留"这一列根本不存在的那一行"）。空集合 ⇒ 落回 0（没有行可选）。
-            ui.set_sidebar_item(if content.is_empty() {
-                0
-            } else {
-                ui.get_sidebar_item()
-                    .clamp(0, sidebar_last_index(&content) as i32)
-            });
+            // ⭐ 换分类**不**清空搜索串：那一句是用户敲的，⛔ 不是分类的一部分。
+            // 于是新分类看到的是同一个串过滤后的那一份（口径 = [`inject_sidebar`]）。
+            inject_sidebar(
+                &ui,
+                &sidebar_category_at(&view.borrow(), clamped),
+                &ui.get_sidebar_search(),
+            );
         }
     });
     ui.on_select_sidebar_item({
         let weak = weak.clone();
+        let view = Rc::clone(&view);
         move |item| {
             let Some(ui) = weak.upgrade() else {
                 debug_assert!(false, "MainWindow 在回调执行期间被销毁");
                 return;
             };
-            let content = crate::bridge::sidebar_category_content(
-                &view.borrow(),
-                ui.get_sidebar_category().max(0) as usize,
-            );
+            let shown = sidebar_shown(&ui, &view.borrow());
             // 越界请求（`99` / `-5`）落不到界面上；没有条目时**一位不写**（⛔ 不写幻影选中）。
-            if content.is_empty() {
+            // ⚠ 钳位的分母是**过滤后**的条数 —— 拿全量条数钳位会允许"选中一行根本不存在的
+            // 条目"：过滤器把第 5 行藏起来、属性却写 5 ⇒ 画面没有高亮，而 `ui/node`
+            // 读出 5，屏读器报的选中行是空气。
+            if shown.is_empty() {
                 ui.set_sidebar_item(0);
                 return;
             }
-            ui.set_sidebar_item(item.clamp(0, sidebar_last_index(&content) as i32));
+            ui.set_sidebar_item(item.clamp(0, sidebar_last_index(&shown) as i32));
         }
     });
+    ui.on_sidebar_search_changed({
+        let weak = weak.clone();
+        let view = Rc::clone(&view);
+        move |query| {
+            let Some(ui) = weak.upgrade() else {
+                debug_assert!(false, "MainWindow 在回调执行期间被销毁");
+                return;
+            };
+            // 用**回调带进来的那份字**过滤，⛔ 不读 `get_sidebar_search()`：那一刻那条
+            // 两向绑定是否已经传播完没有上游保证，读到旧值 = 过滤器永远慢一个字。
+            inject_sidebar(
+                &ui,
+                &sidebar_category_at(&view.borrow(), ui.get_sidebar_category()),
+                &query,
+            );
+        }
+    });
+}
+
+/// 第 `category` 类的侧栏投影（**过滤前**的全量；越界由取数口兜底，这里只再钳一次负数）。
+fn sidebar_category_at(view: &ViewState, category: i32) -> crate::bridge::SidebarCategoryContent {
+    crate::bridge::sidebar_category_content(view, category.max(0) as usize)
+}
+
+/// 画面**此刻**该看到的那一份（当前分类 ∩ 当前搜索串）—— 读侧的口径。
+///
+/// 只有`select-sidebar-item` 用它（钳位的分母）。写侧一律走 [`inject_sidebar`]，
+/// 那里过滤是**必填形参** ⇒ 两侧不可能各数一遍。
+fn sidebar_shown(ui: &MainWindow, view: &ViewState) -> crate::bridge::SidebarCategoryContent {
+    crate::bridge::filter_sidebar_content(
+        &sidebar_category_at(view, ui.get_sidebar_category()),
+        &ui.get_sidebar_search(),
+    )
 }
 
 /// 当前投影的**最后一条**条目下标（⚠ 调用方须先判空：`len == 0` 时会下溢）。
@@ -5779,10 +5826,28 @@ fn sidebar_last_index(content: &crate::bridge::SidebarCategoryContent) -> usize 
     content.len() - 1
 }
 
-/// 把一份条目投影写进窗口：数组 ＋ 空态理由（唯一写点，`apply_view` 与分类回调共用）。
-fn inject_sidebar(ui: &MainWindow, content: &crate::bridge::SidebarCategoryContent) {
-    ui.set_sidebar_items(strings(&content.items));
-    ui.set_sidebar_empty_reason(content.empty_reason.clone().into());
+/// ⭐ 左栏的**唯一注入点**：全量分类投影 ＋ 搜索串 ⇒ 过滤 ⇒ 写数组 + 写空态理由 +
+/// 把选中态落回**这一份**的合法区间。三个调用点：[`apply_view`]（每帧）、
+/// `select-sidebar-category`（换分类）、`sidebar-search-changed`（换搜索词）。
+///
+/// `query` 是**必填形参**而不是"函数自己去读属性"，为的是让搜索框那一条回调能用它
+/// 带进来的那份字（读属性要依赖"绑定已传播完"这个上游没保证的前提）。
+/// 也是为的是：将来加第四个入口时，"注入一份没过过滤的数组"在类型上就写不出来。
+///
+/// ⭐ 钳位跟着注入走而不是各写一处：条目集合一变短（换分类、换搜索词、素材池被删空），
+/// 留在集合外的 `sidebar-item` 就是一次**幻影选中** —— 属性说选着第 5 行，画面第 5 行
+/// 不存在，`for` 里 `item_index == active-item` 永不成立 ⇒ 既没有高亮也读不到名字。
+/// 空集合 ⇒ 落回 0（没有行可选）。
+fn inject_sidebar(ui: &MainWindow, content: &crate::bridge::SidebarCategoryContent, query: &str) {
+    let shown = crate::bridge::filter_sidebar_content(content, query);
+    ui.set_sidebar_items(strings(&shown.items));
+    ui.set_sidebar_empty_reason(shown.empty_reason.clone().into());
+    ui.set_sidebar_item(if shown.is_empty() {
+        0
+    } else {
+        ui.get_sidebar_item()
+            .clamp(0, sidebar_last_index(&shown) as i32)
+    });
 }
 
 /// AI 提案抽屉：**四个回调的唯一注册者** ＋ **数据面的唯一写者**。

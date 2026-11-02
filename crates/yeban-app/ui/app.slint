@@ -421,19 +421,29 @@ export component MainWindow inherits Window {
     /// （先钳到 `0..=2` 再写）；界面**不自己**翻转选中态。⛔ 不是工程数据
     /// （`MODEL-ISO-001` 的挥发性层）、不进 `.yeban`、不进撤销栈。
     in-out property <int> sidebar-category: 0;
-    /// ⭐ 当前分类的条目**显示名**数组。唯一写者 = 宿主（装配期 `host::apply_view` 按
-    /// `sidebar-category` 注入 + `select-sidebar-category` 回调换分类时重注入），来源逐字是
-    /// `bridge::sidebar_category_content()` —— 与 `ElementRegistry::from_view` 读的是**同一个**
-    /// 投影函数 ⇒ "注册表说 N 条、屏幕画 M 条"这类分叉在结构上不可能发生。
+    /// ⭐ 当前分类的条目**显示名**数组。唯一写者 = 宿主的 `host::inject_sidebar`
+    /// （三个调用点：装配期 `host::apply_view`、`select-sidebar-category` 换分类、
+    /// `sidebar-search-changed` 换搜索词），来源逐字是
+    /// `bridge::sidebar_category_content()` 再过一道 `bridge::filter_sidebar_content()`
+    /// —— 与 `ElementRegistry::from_view` 读的是**同一个**投影函数（注册表按**过滤前**
+    /// 的全量登记，运行时是它的子集 ⇒ `ui/coverage` 的"注册表 ⊇ 运行时"成立）
+    /// ⇒ "注册表说 N 条、屏幕画 M 条"这类分叉在结构上不可能发生。
     /// ⛔ 不是工程数据（`MODEL-ISO-001` 的挥发性层）、不进 `.yeban`、不进撤销栈。
     in-out property <[string]> sidebar-items: [];
     /// ⭐ `sidebar-items` 为空时画出来的**理由**（同样由宿主按分类注入）。⛔ 不是占位文案。
     in-out property <string> sidebar-empty-reason: "";
-    /// ⭐ 左侧资源栏选中的条目（合法区间 = **当前分类**的 `sidebar-items` 长度）。
+    /// ⭐ 左侧资源栏选中的条目（合法区间 = **注入的那一份** `sidebar-items` 的长度 ——
+    /// 分类 ∩ 搜索词）。
     /// 唯一写者 = `host::wire_sidebar_contents` 的 `select-sidebar-item` 回调
     /// （按当次投影条数钳位后再写，⛔ 不是常量区间）；界面**不自己**翻转选中态。⛔ 不是工程数据
     /// （`MODEL-ISO-001` 的挥发性层）、不进 `.yeban`、不进撤销栈。
     in-out property <int> sidebar-item: 0;
+    /// ⭐ D-UI-14：左栏搜索框里的字。写者**只有**输入框自己（`text <=> root.search-text`
+    /// 那条两向绑定链，宿主一个字节都不写）；读者 = 宿主的三个注入调用点，它们把这份字
+    /// 交给 `bridge::filter_sidebar_content` 算出**上面那个数组**。
+    /// 默认**空串** ⇒ 装配期"不过滤"，`sidebar-items` 逐字等于全量投影 ⇒
+    /// `tests/golden/**` 的基准帧一位不动。⛔ 不是工程数据、不进 `.yeban`、不进撤销栈。
+    in-out property <string> sidebar-search: "";
     in-out property <bool> ai-drawer-open: false;
     in-out property <bool> musical-pr-open: false;
     // ---- AI 提案抽屉的**读数**（唯一写者 = src/host.rs 的 apply_proposal_drawer）----
@@ -533,8 +543,13 @@ export component MainWindow inherits Window {
     callback toggle-sidebar();
     /// ⭐ 左侧资源分类标签的点击入口：宿主把分类号钳到 `0..=2` 再写 `sidebar-category`。
     callback select-sidebar-category(int);
-    /// ⭐ 左侧资源条目的点击入口：宿主把条目号钳到**当前分类的投影条数**再写 `sidebar-item`。
+    /// ⭐ 左侧资源条目的点击入口：宿主把条目号钳到**当前注入的那一份**投影条数再写 `sidebar-item`。
     callback select-sidebar-item(int);
+    /// ⭐ D-UI-14：左栏搜索框**每敲一个字**报一次整串。落点 = 宿主
+    /// `host::wire_sidebar_contents` 的 `on_sidebar_search_changed`：拿这份字重算
+    /// `bridge::filter_sidebar_content` 并重注入数组 + 钳位选中态。
+    /// 宿主⛔ 不把这个串写回任何属性（写者是输入框那条两向绑定，写回会成环）。
+    callback sidebar-search-changed(string);
     callback toggle-ai-drawer();
     /// ⭐ 控制台右上角 ⤢ 的点击入口：与 `Cmd/Ctrl+Alt+M`（`Action::ToggleConsoleMaximize`）
     /// 落到**同一个**属性 `console-maximized`（唯一实现 = 宿主写属性，界面不自己翻转）。
@@ -1473,6 +1488,15 @@ export component MainWindow inherits Window {
                 active-item: root.sidebar-item;
                 select-item(item) => {
                     root.select-sidebar-item(item);
+                }
+
+                // ⭐ D-UI-14：搜索框里的**字**由输入框自己写（两向绑定），主窗口只转发
+                // "敲了一个字"这件事。输入法那两条**不**从这里转发 —— 理由逐字写在
+                // `ui/sidebar.slint` 的 `search-changed` 处（`wire_input` 的"失焦 ⇒ 画布"
+                // 硬编码只容得下一个敲入控件，接第二路会把 `InputContext` 写成顺序依赖）。
+                search-text <=> root.sidebar-search;
+                search-changed(query) => {
+                    root.sidebar-search-changed(query);
                 }
             }
 
