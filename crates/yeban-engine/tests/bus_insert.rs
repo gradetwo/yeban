@@ -621,8 +621,8 @@ fn b5_sizes_stay_under_the_192_kib_red_line() {
     );
     assert_eq!(voice, 40, "SfzVoice 必须仍是 40 B");
     assert_eq!(
-        pool, 2_224,
-        "SfzVoicePool 必须仍是 1712 B ＋ round-robin 的 512 B ＝ 2224 B"
+        pool, 2_232,
+        "SfzVoicePool 必须是 1712 B ＋ round-robin 的 512 B ＋ `#341` held_notes `Option<u32>` 的 8 B ＝ 2232 B"
     );
     assert_eq!(
         region, 6_168,

@@ -1062,10 +1062,10 @@ fn s9_sizes_are_printed_and_the_runtime_stays_under_200_kib() {
          ＝ 144 字节（定长、全 `Copy`、⛔ 无 `Vec`／`HashMap`）"
     );
     assert_eq!(
-        pool, 2224,
+        pool, 2232,
         "声部池 = 16 槽 ×（声部 40 ＋ 挂起 40 ＋ 淡出 16 ＋ 序号 8）＋ 挂起标志 16 \
          ＋ 计数器 28（序号舵 8 ＋ 丢弃 8 ＋ 窃取 8 ＋ 淡出帧数 4）⇒ 对齐到 1712；\
-         ⭐ **round-robin 的每键 `u32` 计数器 `[u32; 128]` ⇒ ＋512 ＝ 2224**"
+         ⭐ **round-robin 的每键 `u32` 计数器 `[u32; 128]` ⇒ ＋512 ＝ 2224，再加 `#341` held_notes `Option<u32>` ＋8 ＝ 2232**"
     );
     assert!(
         runtime < 200 * 1024,
@@ -7588,8 +7588,8 @@ fn s71_the_cap_provenance_and_the_sizes_are_judgeable() {
     );
     assert_eq!(voice, 40, "⛔ `SfzVoice` 必须 ＋0（仍是 40 B）");
     assert_eq!(
-        pool, 2224,
-        "⛔ `SfzVoicePool` 必须 ＋0（1712 B）；⭐ **round-robin 片的每键 `u32` 计数器 ⇒ 2224 B（＋512）**"
+        pool, 2232,
+        "⛔ `SfzVoicePool` 必须 ＋0（1712 B）；⭐ **round-robin 片的每键 `u32` 计数器 ⇒ 2224 B（＋512），再加 `#341` held_notes `Option<u32>` ⇒ 2232 B（＋8）**"
     );
     assert!(
         runtime < 200 * 1024,
@@ -8062,8 +8062,8 @@ fn s85_the_gate_cap_provenance_and_the_sizes_are_judgeable() {
     );
     assert_eq!(voice, 40, "⛔ `SfzVoice` 必须 ＋0（仍是 40 B）");
     assert_eq!(
-        pool, 2224,
-        "⛔ `SfzVoicePool` 必须 ＋0（1712 B）；⭐ **round-robin 片的每键 `u32` 计数器 ⇒ 2224 B（＋512）**"
+        pool, 2232,
+        "⛔ `SfzVoicePool` 必须 ＋0（1712 B）；⭐ **round-robin 片的每键 `u32` 计数器 ⇒ 2224 B（＋512），再加 `#341` held_notes `Option<u32>` ⇒ 2232 B（＋8）**"
     );
     assert!(
         runtime < 200 * 1024,
@@ -9002,8 +9002,8 @@ fn s91_the_110_registration_the_bound_and_the_sizes_are_judgeable() {
     );
     assert_eq!(voice, 40, "⛔ `SfzVoice` 必须 ＋0（仍是 40 B）");
     assert_eq!(
-        pool, 2224,
-        "⛔ `SfzVoicePool` 必须 ＋0（1712 B）；⭐ **round-robin 片的每键 `u32` 计数器 ⇒ 2224 B（＋512）**"
+        pool, 2232,
+        "⛔ `SfzVoicePool` 必须 ＋0（1712 B）；⭐ **round-robin 片的每键 `u32` 计数器 ⇒ 2224 B（＋512），再加 `#341` held_notes `Option<u32>` ⇒ 2232 B（＋8）**"
     );
     assert_eq!(
         cc_state, 144,
@@ -9777,8 +9777,8 @@ fn s98_the_direction_sizes_and_the_zero_allocation_disposition_are_judgeable() {
     );
     assert_eq!(voice, 40, "⛔ `SfzVoice` 必须 ＋0（零新逐声部字段）");
     assert_eq!(
-        pool, 2224,
-        "⛔ `SfzVoicePool` 必须 ＋0；⭐ **round-robin ⇒ 2224 B（＋512）**"
+        pool, 2232,
+        "⛔ `SfzVoicePool` 必须 ＋0；⭐ **round-robin ⇒ 2224 B（＋512），再加 held_notes ＋8 ⇒ 2232 B**"
     );
     assert_eq!(
         runtime, ENGINE_RUNTIME_BYTES,
@@ -10083,8 +10083,8 @@ fn s100_the_target_enum_the_census_and_the_sizes_are_judgeable() {
     );
     assert_eq!(voice, 40, "⛔ `SfzVoice` 必须 ＋0（仍是 40 B）");
     assert_eq!(
-        pool, 2224,
-        "⛔ `SfzVoicePool` 必须 ＋0（1712 B）；⭐ **round-robin 片的每键 `u32` 计数器 ⇒ 2224 B（＋512）**"
+        pool, 2232,
+        "⛔ `SfzVoicePool` 必须 ＋0（1712 B）；⭐ **round-robin 片的每键 `u32` 计数器 ⇒ 2224 B（＋512），再加 `#341` held_notes `Option<u32>` ⇒ 2232 B（＋8）**"
     );
     assert_eq!(
         runtime, ENGINE_RUNTIME_BYTES,
@@ -10705,8 +10705,8 @@ fn s106_the_tune_spec_the_census_and_the_sizes_are_judgeable() {
     );
     assert_eq!(voice, 40, "⛔ `SfzVoice` 必须 ＋0（仍是 40 B）");
     assert_eq!(
-        pool, 2224,
-        "⛔ `SfzVoicePool` 必须 ＋0（1712 B）；⭐ **round-robin 片的每键 `u32` 计数器 ⇒ 2224 B（＋512）**"
+        pool, 2232,
+        "⛔ `SfzVoicePool` 必须 ＋0（1712 B）；⭐ **round-robin 片的每键 `u32` 计数器 ⇒ 2224 B（＋512），再加 `#341` held_notes `Option<u32>` ⇒ 2232 B（＋8）**"
     );
     assert_eq!(
         runtime, ENGINE_RUNTIME_BYTES,
@@ -11693,8 +11693,8 @@ fn s111_the_unit_is_explicit_and_tune_rejects_the_percent_suffix() {
     );
     assert_eq!(voice, 40, "⛔ `SfzVoice` 必须 ＋0（仍是 40 B）");
     assert_eq!(
-        pool, 2224,
-        "⛔ `SfzVoicePool` 必须 ＋0（1712 B）；⭐ **round-robin 片的每键 `u32` 计数器 ⇒ 2224 B（＋512）**"
+        pool, 2232,
+        "⛔ `SfzVoicePool` 必须 ＋0（1712 B）；⭐ **round-robin 片的每键 `u32` 计数器 ⇒ 2224 B（＋512），再加 `#341` held_notes `Option<u32>` ⇒ 2232 B（＋8）**"
     );
     assert_eq!(
         runtime, ENGINE_RUNTIME_BYTES,
@@ -12765,8 +12765,8 @@ fn s113_the_pitch_family_is_the_tune_alias_across_three_paths() {
     );
     assert_eq!(voice, 40, "⛔ `SfzVoice` 必须 ＋0（仍是 40 B）");
     assert_eq!(
-        pool, 2224,
-        "⛔ `SfzVoicePool` 必须 ＋0（1712 B）；⭐ **round-robin 片的每键 `u32` 计数器 ⇒ 2224 B（＋512）**"
+        pool, 2232,
+        "⛔ `SfzVoicePool` 必须 ＋0（1712 B）；⭐ **round-robin 片的每键 `u32` 计数器 ⇒ 2224 B（＋512），再加 `#341` held_notes `Option<u32>` ⇒ 2232 B（＋8）**"
     );
     assert_eq!(
         runtime, ENGINE_RUNTIME_BYTES,
@@ -13690,8 +13690,8 @@ fn s114_the_volume_family_is_the_third_unit_category_across_three_paths() {
     );
     assert_eq!(voice, 40, "⛔ `SfzVoice` 必须 ＋0（仍是 40 B）");
     assert_eq!(
-        pool, 2224,
-        "⛔ `SfzVoicePool` 必须 ＋0（1712 B）；⭐ **round-robin 片的每键 `u32` 计数器 ⇒ 2224 B（＋512）**"
+        pool, 2232,
+        "⛔ `SfzVoicePool` 必须 ＋0（1712 B）；⭐ **round-robin 片的每键 `u32` 计数器 ⇒ 2224 B（＋512），再加 `#341` held_notes `Option<u32>` ⇒ 2232 B（＋8）**"
     );
     assert_eq!(
         runtime, ENGINE_RUNTIME_BYTES,
@@ -14231,7 +14231,7 @@ fn s115_the_three_revised_volume_counters_and_the_scope_absence() {
     );
     assert_eq!(
         (region, voice, pool, runtime),
-        (6168, 40, 2224, ENGINE_RUNTIME_BYTES),
+        (6168, 40, 2232, ENGINE_RUNTIME_BYTES),
         "⛔ `#121` 只改文档 ＋ 计数 ⇒ 四个尺寸读数全 ＋0"
     );
 }
@@ -14847,7 +14847,7 @@ fn s116_the_ampeg_attack_three_tiers_name_their_caliber() {
     );
     assert_eq!(
         (region, voice, pool, runtime),
-        (6168, 40, 2224, ENGINE_RUNTIME_BYTES),
+        (6168, 40, 2232, ENGINE_RUNTIME_BYTES),
         "⛔ `#123` 只改文档 ＋ 判据 ⇒ 四个尺寸读数全 ＋0"
     );
 }
@@ -15807,7 +15807,7 @@ fn s117_the_gain_spelling_is_the_volume_alias_across_three_paths() {
     );
     assert_eq!(
         (region, voice, pool, runtime),
-        (6168, 40, 2224, ENGINE_RUNTIME_BYTES),
+        (6168, 40, 2232, ENGINE_RUNTIME_BYTES),
         "⛔ `#124` 只加一个**名字**（识别支）⇒ 四个尺寸读数全 ＋0"
     );
     assert!(runtime < 200 * 1024, "⛔ `EngineRuntime` 必须 < 200 KiB");
@@ -16483,7 +16483,7 @@ fn s118_the_not_done_registrations_are_swept_and_still_hold() {
     );
     assert_eq!(
         (region, voice, pool, runtime),
-        (6168, 40, 2224, ENGINE_RUNTIME_BYTES),
+        (6168, 40, 2232, ENGINE_RUNTIME_BYTES),
         "⛔ `#125` 只改注释／登记／判据 ⇒ 四个尺寸读数全 ＋0"
     );
     assert!(runtime < 200 * 1024, "⛔ `EngineRuntime` 必须 < 200 KiB");
