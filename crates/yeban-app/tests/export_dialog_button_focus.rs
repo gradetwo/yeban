@@ -177,17 +177,22 @@ fn the_three_hand_drawn_controls_are_reachable_and_firable_by_keyboard() {
     .expect("真实界面 + Tier-1 执行面");
     ui.pump_meters();
 
-    let control = || ui.ui().get_export_wav_focused_control();
-    let field = || ui.ui().get_export_wav_focused_field();
-    let mut trace: Vec<String> = vec![format!("起点 control={}", control())];
+    let mut trace: Vec<String> = vec![format!(
+        "起点 control={}",
+        ui.ui().get_export_wav_focused_control()
+    )];
 
     // ---- ① 起点：弹窗关着 ⇒ 焦点归快捷键层，两个读数都是 `-1` ----
     assert_eq!(
-        control(),
+        ui.ui().get_export_wav_focused_control(),
         -1,
         "① 起点：弹窗没开 ⇒ 焦点不许在七格里的任何一格"
     );
-    assert_eq!(field(), -1, "① 起点：四框读数同样为 -1");
+    assert_eq!(
+        ui.ui().get_export_wav_focused_field(),
+        -1,
+        "① 起点：四框读数同样为 -1"
+    );
     assert!(
         ui.ui().get_shortcut_layer_focused(),
         "① 起点：快捷键层必须持焦"
@@ -210,8 +215,16 @@ fn the_three_hand_drawn_controls_are_reachable_and_firable_by_keyboard() {
     // ---- ② 打开：走宿主的入口（与用户点 `module-export-wav-button` 同一条链）----
     ui.ui().invoke_open_export_wav();
     ui.pump_meters();
-    assert_eq!(control(), PATH, "② 打开 ⇒ 焦点落第一格（路径框）");
-    assert_eq!(field(), PATH, "② 打开 ⇒ 四框读数同为 0");
+    assert_eq!(
+        ui.ui().get_export_wav_focused_control(),
+        PATH,
+        "② 打开 ⇒ 焦点落第一格（路径框）"
+    );
+    assert_eq!(
+        ui.ui().get_export_wav_focused_field(),
+        PATH,
+        "② 打开 ⇒ 四框读数同为 0"
+    );
     assert!(
         !ui.ui().get_shortcut_layer_focused(),
         "② 弹窗持键盘时快捷键层 ⛔ 不得同时持焦"
@@ -228,7 +241,7 @@ fn the_three_hand_drawn_controls_are_reachable_and_firable_by_keyboard() {
     {
         ui.dispatch_key_press(KeyCode::Tab)
             .expect("③ `Tab` 必须落到真实窗口");
-        let got = control();
+        let got = ui.ui().get_export_wav_focused_control();
         assert_eq!(
             got,
             *expected,
@@ -243,7 +256,7 @@ fn the_three_hand_drawn_controls_are_reachable_and_firable_by_keyboard() {
         assert_eq!(ui.ui().get_active_tool(), 3, "③ 轮转期间工具不许被动");
     }
     assert_eq!(
-        field(),
+        ui.ui().get_export_wav_focused_field(),
         -1,
         "③ 焦点在**按钮格**上时四框读数必须如实为 `-1`（⛔ 不许谎报「还在文本框里」）"
     );
@@ -256,12 +269,20 @@ fn the_three_hand_drawn_controls_are_reachable_and_firable_by_keyboard() {
         ui.ui().get_export_wav_limiter(),
         "④ 焦点在限制器格上按 `Space` ⇒ 开关必须翻真（这是键盘第一次拨得动它）"
     );
-    assert_eq!(control(), LIMITER, "④ 激活一格 ⛔ 不得把焦点搬走");
+    assert_eq!(
+        ui.ui().get_export_wav_focused_control(),
+        LIMITER,
+        "④ 激活一格 ⛔ 不得把焦点搬走"
+    );
 
     // ---- ⑤ `Tab` 到「导出」，`Return` ⇒ 真的落盘 ----
     ui.dispatch_key_press(KeyCode::Tab)
         .expect("⑤ `Tab` 必须落到真实窗口");
-    assert_eq!(control(), RUN, "⑤ 第 5 格必须是「导出」");
+    assert_eq!(
+        ui.ui().get_export_wav_focused_control(),
+        RUN,
+        "⑤ 第 5 格必须是「导出」"
+    );
     // 四框一位不改（此刻是宿主播种 + `app.slint` 的缺省 `auto` / `24` / `8`）⇒
     // ⑧ 之后拿"改了时长的那一次"与这一次比，才有严格的 `frames` 关系。
     ui.dispatch_key_press(KeyCode::Return)
@@ -292,14 +313,22 @@ fn the_three_hand_drawn_controls_are_reachable_and_firable_by_keyboard() {
         "⑤ 导出**不关**弹窗（既有事实：`set_export_wav_open(` 的两个写者都不是这条路）⇒ \
          这一条钉的是现状，⛔ 不是把「导出即关闭」当已实现"
     );
-    assert_eq!(control(), RUN, "⑤ 导出之后焦点仍在那一格");
+    assert_eq!(
+        ui.ui().get_export_wav_focused_control(),
+        RUN,
+        "⑤ 导出之后焦点仍在那一格"
+    );
     trace.push(format!("Return@导出 ⇒ outcome=ok frames={frames_first}"));
 
     // ---- ⑥ `Tab` 到 ✕，`Return` ⇒ 关弹窗（同一条 `close()`），且不跑动作 ----
     let status_before_close = ui.ui().get_module_status().to_string();
     ui.dispatch_key_press(KeyCode::Tab)
         .expect("⑥ `Tab` 必须落到真实窗口");
-    assert_eq!(control(), CLOSE, "⑥ 第 6 格必须是 ✕ 关闭");
+    assert_eq!(
+        ui.ui().get_export_wav_focused_control(),
+        CLOSE,
+        "⑥ 第 6 格必须是 ✕ 关闭"
+    );
     ui.dispatch_key_press(KeyCode::Return)
         .expect("⑥ `Return` 必须落到真实窗口");
     ui.pump_meters();
@@ -307,8 +336,16 @@ fn the_three_hand_drawn_controls_are_reachable_and_firable_by_keyboard() {
         !ui.ui().get_export_wav_open(),
         "⑥ 焦点在 ✕ 上按 `Return` 必须关掉弹窗（走的是既有的 `close()`）"
     );
-    assert_eq!(control(), -1, "⑥ 关闭之后七格读数必须回 `-1`");
-    assert_eq!(field(), -1, "⑥ 关闭之后四框读数必须回 `-1`");
+    assert_eq!(
+        ui.ui().get_export_wav_focused_control(),
+        -1,
+        "⑥ 关闭之后七格读数必须回 `-1`"
+    );
+    assert_eq!(
+        ui.ui().get_export_wav_focused_field(),
+        -1,
+        "⑥ 关闭之后四框读数必须回 `-1`"
+    );
     assert!(
         ui.ui().get_shortcut_layer_focused(),
         "⑥ 关闭之后焦点必须复位到快捷键层"
@@ -327,11 +364,15 @@ fn the_three_hand_drawn_controls_are_reachable_and_firable_by_keyboard() {
     // ---- ⑦ 重开 ⇒ 0；反向轮转也闭合：0 → 6 → 5 → 4 ----
     ui.ui().invoke_open_export_wav();
     ui.pump_meters();
-    assert_eq!(control(), PATH, "⑦ 重开 ⇒ 焦点回第一格");
+    assert_eq!(
+        ui.ui().get_export_wav_focused_control(),
+        PATH,
+        "⑦ 重开 ⇒ 焦点回第一格"
+    );
     for (step, expected) in [CLOSE, RUN, LIMITER].iter().enumerate() {
         ui.dispatch_key_press(KeyCode::Character('\u{19}'))
             .expect("⑦ Backtab 必须落到真实窗口");
-        let got = control();
+        let got = ui.ui().get_export_wav_focused_control();
         assert_eq!(
             got,
             *expected,
@@ -346,11 +387,15 @@ fn the_three_hand_drawn_controls_are_reachable_and_firable_by_keyboard() {
     ui.dispatch_key_press(KeyCode::Character('\u{19}'))
         .expect("⑧ Backtab 必须落到真实窗口");
     assert_eq!(
-        control(),
+        ui.ui().get_export_wav_focused_control(),
         SECONDS,
         "⑧ 退一格应在时长框（焦点在框里才谈 `accepted`）"
     );
-    assert_eq!(field(), SECONDS, "⑧ 四框读数必须与七格读数在这一格一致");
+    assert_eq!(
+        ui.ui().get_export_wav_focused_field(),
+        SECONDS,
+        "⑧ 四框读数必须与七格读数在这一格一致"
+    );
     // 由 Rust 改这一格（两向绑定的正向那半），再把 `Return` 按下去。
     ui.ui().set_export_wav_seconds("1".into());
     ui.dispatch_key_press(KeyCode::Return)
@@ -387,7 +432,7 @@ fn the_three_hand_drawn_controls_are_reachable_and_firable_by_keyboard() {
     ui.dispatch_key_press(KeyCode::Tab)
         .expect("⑨ `Tab` 必须落到真实窗口");
     assert_eq!(
-        control(),
+        ui.ui().get_export_wav_focused_control(),
         RUN,
         "⑨ 前置：焦点必须挪到「导出」格（不在文本框里）"
     );
