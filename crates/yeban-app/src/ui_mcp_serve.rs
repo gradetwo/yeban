@@ -100,6 +100,51 @@ const POLL_IDLE: Duration = Duration::from_millis(5);
 /// `accept` / 连接级失败后的退避（与 `crate::mcp_mount` 的工作线程同款）。
 const ACCEPT_RETRY_BACKOFF: Duration = Duration::from_millis(10);
 
+/// 本档执行面的**装配选项**（从 [`run`] 抽出，让"写入面有没有接线"成为可判据的东西）。
+///
+/// ## 为什么要抽出来
+///
+/// ⭐ 缺陷 `D-UI-1`：这里曾经把 [`LiveWiringOptions`] 的 `undo` 字段写成 `None`，而
+/// [`crate::live_surface`] 把九个**改工程**的接线（`wire_mixer_edit` /
+/// `wire_device_rack` / `wire_send_strip` / `wire_macro_panel` / `wire_bpm_commit` /
+/// `wire_track_strip` / `wire_clip_create` / `wire_roll_edit` / `wire_clip_drag`）
+/// 整体 gate 在这个字段上。实际后果：`ui/dispatch_*` 与 `ui/dispatch_key_press`
+/// **永远改不动工程** —— 按钮照投影画成"可用"（`Tokens.gold-deep` 填充），点下去却
+/// 既不提交、也不打印、也不报错（Slint 的回调没注册 handler 就是空操作）。
+/// 当时写在旁边的理由是"GUI 键盘路径由 `main.rs` 的装配负责"，而 `main.rs` 在本档
+/// **直接 `return`**（`run_gui` 根本不跑），进程里不存在第二个装配者 —— 那句话不成立。
+///
+/// ## rebase 到 `ADR-0057` A 之后的分工（2026-11-01）
+///
+/// `ADR-0057` 选项 A 落地后，"要不要建会话"这件事有了**人类裁决**的口径：两道门
+/// （`--ui-test-mode` + `YEBAN_ALLOW_UI_INJECT=1`）都过才建，生产面恒 `None`（只读）。
+/// 于是那条**闸**留在 [`run`]（它读得到 `options` 与环境变量），本函数退化成
+/// **纯装配**：把已经决定好的端口放进选项里。这样判据仍然能直接对**这一份**选项
+/// 断言 `undo` 是不是 `Some`，并拿它去装配活窗口、注入一次真指针点击 ⇒ 轨数 +1
+/// 且落盘 —— 而不是去测一个"装配好之后没法从测试里进去"的 `run`。
+#[must_use]
+pub fn serve_wiring(
+    loaded: &cli::Loaded,
+    permission: Permission,
+    undo: Option<std::rc::Rc<crate::undo::UndoPort>>,
+) -> LiveWiringOptions {
+    LiveWiringOptions {
+        permission,
+        // 底部控制台 Tab 0 = 卷帘（与 `--headless-idle` / 默认 GUI 一致）。
+        console_tab: 0,
+        // `ui/force_save` 的落点：`--open` 的那个文件（样本形态没有磁盘对应物 ⇒
+        // 该动作会**如实**报错，而不是猜一个文件名）。
+        save_path: loaded.source.save_target(),
+        // 装配阶段不推量子（`ui/reload_engine` 才建引擎）。
+        engine_quanta: 0,
+        // [ADR-0057 A] 测试面（两道门都过）给端口 ⇒ 写表面接线，注入的编辑进工程；
+        // 生产面如实 `None` ⇒ 提交类控件在这份装配上是惰性的（方法规约写明，不再像 bug）。
+        // ⛔ 这里**不许**再写死 `None`：那正是 `D-UI-1` 的形状。
+        undo,
+        proposal_source: crate::proposals::ProposalSource::none(),
+    }
+}
+
 /// 跑一次 `--enable-ui-mcp-http`：装配 → 绑定 → 落令牌 → 服务 → 停机并释放。
 ///
 /// ## 顺序是契约（每一段都有理由）
@@ -148,10 +193,7 @@ pub fn run(options: &Options) -> Result<Vec<String>, CliError> {
     // 都过才建与 GUI 同款会话（`open_undo_session`，含 `history.dag` 恢复）⇒ 写表面
     // 在测试面接线，注入的编辑真的进工程。门缺一 ⇒ 会话 `None`，走老路；
     // 后面那道检查照旧报错，错误 precedence 不变。生产面永远 `None`（只读）。
-    let undo_source = match &loaded.source {
-        cli::ProjectSource::File { path, .. } => path.display().to_string(),
-        cli::ProjectSource::Sample(sample) => format!("sample:{}", sample.name()),
-    };
+    let undo_source = loaded.undo_source();
     let test_undo = if options.ui_test_mode
         && std::env::var("YEBAN_ALLOW_UI_INJECT").ok().as_deref() == Some("1")
     {
@@ -160,11 +202,16 @@ pub fn run(options: &Options) -> Result<Vec<String>, CliError> {
             .map_or(0, |elapsed| {
                 u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX)
             });
-        Some(Rc::new(UndoPort::new(open_undo_session(
+        let port = Rc::new(UndoPort::new(open_undo_session(
             &undo_source,
             &loaded,
             now_ms,
-        )?)))
+        )?));
+        // ⭐ `D-UI-1` 的第二条边界（GUI 那条装配在 `main.rs` 里一直做，服务端这条漏了）：
+        // 端口必须带上归档的**资产池**。不带 ⇒ "打开一个带样本的工程，注入编辑后保存"
+        // 会写出一份池为空的容器（工程能读回、样本全没了）。
+        port.replace_assets(loaded.archive.assets.clone());
+        Some(port)
     } else {
         None
     };
@@ -174,21 +221,7 @@ pub fn run(options: &Options) -> Result<Vec<String>, CliError> {
     // 这一级的 scope 集合里，但**生产模式**会让它在服务端被硬拒 —— 这正是我们要的：
     // 作用域给全、能力由模式闸住（与领域控制面 `ScopeSet::all()` + `RunMode::Production` 同款）。
     let permission = Permission::Administrative;
-    let wiring = LiveWiringOptions {
-        permission,
-        // 底部控制台 Tab 0 = 卷帘（与 `--headless-idle` / 默认 GUI 一致）。
-        console_tab: 0,
-        // `ui/force_save` 的落点：`--open` 的那个文件（样本形态没有磁盘对应物 ⇒
-        // 该动作会**如实**报错，而不是猜一个文件名）。
-        save_path: loaded.source.save_target(),
-        // 装配阶段不推量子（`ui/reload_engine` 才建引擎）。
-        engine_quanta: 0,
-        // [ADR-0057 A] 测试面建会话 ⇒ 写表面接线（注入的编辑进工程）；
-        // 生产面（与 env 缺省的测试面）如实 `None` ⇒ 撤销族按键不被这一份消费，
-        // 提交类控件在无会话装配上是惰性的（方法规约写明，不再像 bug）。
-        undo: test_undo,
-        proposal_source: crate::proposals::ProposalSource::none(),
-    };
+    let wiring = serve_wiring(&loaded, permission, test_undo);
     let live =
         build_live_ui_with(&loaded.archive.project, &wiring).map_err(|error| CliError::Ui {
             detail: format!(

@@ -221,6 +221,15 @@ export component StatusBar inherits Rectangle {
         // 语义 ID 寻址它，屏读器按它念出最近一次保存的结果。
         accessible-id: "status-bar-save-status";
         accessible-label: "最近一次保存工程的结果";
+        // ⭐ 缺陷 **D-UI-9**：`accessible-label` 是**静态**说明句，真正的回执在 `text` 里，
+        // 而控制面的属性清单（`yeban-ui-test-port::inspect::property_of`）没有"读 text 内容"
+        // 这一格 —— 上游 `ElementHandle` 也**没有** `accessible_name()`（1.18.1 只有
+        // label / value / description / id / checked …）。于是自动化只能看出"这格出现了"，
+        // **读不出它写了什么**：人看见"已保存 10668 字节 → …"，脚本看见"最近一次保存工程的结果"。
+        // 把同一句话再声明成 `[ARCH-UI-004]` 的绑定状态（`accessible-value`），两个通道
+        // （`ui/property` 与 `ui/node` 的 `value`）就都能现读，⛔ 不需要截图 OCR、
+        // ⛔ 不需要给测试留一条 Rust 侧后门（判据走的是与脚本**同一个** JSON 行协议）。
+        accessible-value: root.save-status;
     }
 
     UiMonoText {
