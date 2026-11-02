@@ -581,15 +581,14 @@ impl AudioSource for EngineTrackSource {
         // ⭐ `#341`：本块的 CC 表（`None` ＝ 本轨没有 CC 自动化 ⇒ 下面走无探针入口，
         //    与接线前逐位相同）。表是 `[u8; 128]` 的**按值副本** ⇒ 探针闭包只借它，
         //    不与 `self.engine` / `self.mono` 的借用相交。
-        let cc_table = self.cc.as_mut().and_then(|cc| cc.table_at(context.first_frame));
+        let cc_table = self
+            .cc
+            .as_mut()
+            .and_then(|cc| cc.table_at(context.first_frame));
         match cc_table {
             Some(table) => {
-                let probe = |controller: u8| {
-                    table
-                        .get(usize::from(controller))
-                        .copied()
-                        .unwrap_or(0)
-                };
+                let probe =
+                    |controller: u8| table.get(usize::from(controller)).copied().unwrap_or(0);
                 self.engine.render_track_with_cc(
                     self.track,
                     self.schedule.as_ref(),
