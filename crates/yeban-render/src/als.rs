@@ -989,6 +989,13 @@ fn automation_target_label(target: &yeban_model::AutomationTarget) -> String {
             "Macro@{}:index={macro_index}",
             track_id.to_canonical_string()
         ),
+        Target::MidiCc {
+            track_id,
+            controller,
+        } => format!(
+            "MidiCc@{}:controller={controller}",
+            track_id.to_canonical_string()
+        ),
     }
 }
 

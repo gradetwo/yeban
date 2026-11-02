@@ -854,7 +854,10 @@ pub fn render_project_f32_with_plans_under(
                 // ⭐ `#251`：`render_track` 输出的是**声相之前**的单声道 ⇒ 在这里注入 pan。
                 Box::new(
                     EngineTrackSource::new(std::sync::Arc::clone(snapshot), track_id)?
-                        .with_pan(pan),
+                        .with_pan(pan)
+                        // ⭐ `#341`：把 `MidiCc` 泳道接成离线探针（无 CC 泳道时内部仍是
+                        // `None` ⇒ 输出与接线前逐位相同）。
+                        .with_cc(project),
                 ),
             );
         }

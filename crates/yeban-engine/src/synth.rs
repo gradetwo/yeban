@@ -663,6 +663,19 @@ impl Default for ToneParams {
     }
 }
 
+/// ⭐ `#341`：`at` 这一刻**更早开始且尚未结束**的音符数（`trigger=first` / `legato` 的输入）。
+///
+/// 口径：只看调度表里**下标更小**（更早开始）的音符 —— 同刻起音的音符不算"按住"
+/// （`.sfz` 的 `trigger=first` 语义是"乐句第一个音"，同刻齐奏不构成连音）。
+/// 复杂度 `O(index)`，每音符一次（⛔ 不在逐样本路径上）。
+fn held_before(notes: &[ScheduledNote], index: usize, at: u64) -> u32 {
+    let held = notes[..index]
+        .iter()
+        .filter(|other| other.end_sample > at)
+        .count();
+    u32::try_from(held).unwrap_or(u32::MAX)
+}
+
 /// 构造期算好的**一个已调度音符**（实时侧只读）。
 ///
 /// 全部字段在 [`crate::snapshot`] 的投影里由模型算出：实时侧只做整数比较与
@@ -2336,6 +2349,16 @@ impl SynthEngine {
                             break;
                         }
                         if note.end_sample > cursor_frame
+                            && {
+                                // ⭐ `#341`：本音符起音那一刻"其它音符的按住数"
+                                // （`trigger=first` / `legato` 的运行时门控输入）。
+                                slot.sfz.set_held_notes(Some(held_before(
+                                    notes,
+                                    slot.cursor,
+                                    note.start_sample,
+                                )));
+                                true
+                            }
                             && slot.sfz.trigger_note(
                                 plan,
                                 note.pitch,
@@ -2406,6 +2429,11 @@ impl SynthEngine {
                                 // `loccN`/`hiccN` 是**区域选择**判据（规范逐字见
                                 // `SfzVoicePool::trigger_note` 的文档）⇒ 门控不成立的
                                 // 区域在这里就**不建声部**（⛔ 不是逐块调制）。
+                                slot.sfz.set_held_notes(Some(held_before(
+                                    notes,
+                                    slot.cursor,
+                                    note.start_sample,
+                                )));
                                 if slot.sfz.trigger_note(
                                     plan,
                                     note.pitch,

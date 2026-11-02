@@ -342,6 +342,8 @@ pub fn target_key(target: &AutomationTarget) -> String {
             ..
         } => format!("device-{slot_index}-{param_index}"),
         AutomationTarget::Macro { macro_index, .. } => format!("macro-{macro_index}"),
+        // ⭐ `#341`：`cc-{controller}`（控制器号本身唯一 ⇒ 段内不再加前缀）。
+        AutomationTarget::MidiCc { controller, .. } => format!("cc-{controller}"),
     }
 }
 
@@ -632,6 +634,8 @@ fn target_label(track: &TrackV3, target: &AutomationTarget) -> String {
             .macros
             .get(*macro_index)
             .map_or_else(|| format!("宏 {macro_index}"), |macro_| macro_.name.clone()),
+        // CC 没有名字可查（规范只给编号）⇒ 用人话短名 + 编号。
+        AutomationTarget::MidiCc { controller, .. } => format!("CC {controller}"),
     }
     .trim()
     .to_owned()
