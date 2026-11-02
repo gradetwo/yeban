@@ -42,8 +42,8 @@ const SOURCE: &str = include_str!("../src/insert.rs");
 /// 实时侧额外认、但⛔ 不是自动化落点的 **IR 形状**键（构造期烘焙）。
 const IR_SHAPE_NAMES: [&str; 3] = ["conv_ir_decay_s", "conv_ir_decay", "conv_ir_seed"];
 
-/// 冻结读数（与 `yeban-render` 的 `automation.rs` 同一条口径：实时臂 51 ＋ 6 ＋ 11；
-/// 自动化名单另＋延迟 15 拼写（共享表，引擎经 `DelayField` 认）＋磁带饱和 10 拼写（`tape_asym` 之后）⇒ 名单共 90 个拼写；
+/// 冻结读数（与 `yeban-render` 的 `automation.rs` 同一条口径：实时臂 53 ＋ 6 ＋ 11；
+/// 自动化名单另＋延迟 15 拼写（共享表，引擎经 `DelayField` 认）＋磁带饱和 10 拼写（`tape_asym` 之后）⇒ 名单共 92 个拼写；
 /// 实时侧再＋ 3 个 IR 形状键 ⇒ 卷积族在**本判据**里是 11）。
 // ⭐ `#344`：通道条 51 → 53（mono-maker 一个字段两个拼写 `mono_below_hz` /
 // `mono_maker_hz`）；其余三族未动。
