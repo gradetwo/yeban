@@ -2160,6 +2160,7 @@ pub fn builtin_effect_device(effect: BuiltinEffect) -> Option<DeviceDefinition> 
         bypassed: false,
         params,
         latency_samples: 0,
+        plugin: None,
     })
 }
 

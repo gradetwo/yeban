@@ -2008,6 +2008,7 @@ fn project_master_with_two_devices() -> YebanProjectV1 {
                 unit: Some("dB".to_owned()),
             }],
             latency_samples: 0,
+            plugin: None,
         },
         DeviceDefinition {
             id: EntityId::new(),
@@ -2016,6 +2017,7 @@ fn project_master_with_two_devices() -> YebanProjectV1 {
             bypassed: true,
             params: vec![],
             latency_samples: 0,
+            plugin: None,
         },
     ];
     let mut tracks: BTreeMap<EntityId, TrackV3> = BTreeMap::new();
@@ -2048,6 +2050,7 @@ fn project_master_with_devices(count: usize) -> YebanProjectV1 {
             bypassed: index % 2 == 1,
             params: vec![],
             latency_samples: 0,
+            plugin: None,
         })
         .collect();
     let mut tracks: BTreeMap<EntityId, TrackV3> = BTreeMap::new();

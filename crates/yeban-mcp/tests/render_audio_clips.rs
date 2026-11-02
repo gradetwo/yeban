@@ -271,6 +271,7 @@ fn fixture(bytes: Vec<u8>, tune: &Tune) -> Fixture {
             bypassed: false,
             params: Vec::new(),
             latency_samples: tune.device_latency,
+            plugin: None,
         }]
     };
     let mut track = TrackV3 {
@@ -1210,6 +1211,7 @@ fn pdc_shifts_the_audio_clip_branch_by_exactly_the_device_latency() {
                 bypassed: false,
                 params: Vec::new(),
                 latency_samples: 48,
+                plugin: None,
             }],
             clips: BTreeMap::from([(
                 slow_placement,
@@ -1982,6 +1984,7 @@ fn send_gain_applies_while_device_param_and_macro_stay_unsupported() {
             unit: Some("%".to_owned()),
         }],
         latency_samples: 0,
+        plugin: None,
     }];
     fixture.project.tracks.get_mut(&id(2)).expect("Lead").macros =
         vec![yeban_model::MacroParameter {
@@ -2227,6 +2230,7 @@ fn with_device_param_lane(
             unit: None,
         }],
         latency_samples: 0,
+        plugin: None,
     });
     let target = AutomationTarget::DeviceParam {
         track_id,
@@ -2741,6 +2745,7 @@ fn add_disabled_compressor(project: &mut YebanProjectV1, track_id: EntityId) -> 
             },
         ],
         latency_samples: 0,
+        plugin: None,
     });
     slot
 }
@@ -3114,6 +3119,7 @@ fn with_strip(
             })
             .collect(),
         latency_samples: 0,
+        plugin: None,
     });
     if let Some(lane) = lane {
         let points = lane.points;

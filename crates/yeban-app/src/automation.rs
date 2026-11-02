@@ -882,6 +882,7 @@ mod tests {
                 unit: Some("Hz".to_owned()),
             }],
             latency_samples: 0,
+            plugin: None,
         }];
         track.automation_lanes.clear();
         let mut points: BTreeMap<EntityId, AutomationPoint> = BTreeMap::new();

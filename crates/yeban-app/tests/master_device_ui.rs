@@ -85,6 +85,7 @@ fn device(name: &str, params: &[(&str, f32, Option<&str>)]) -> DeviceDefinition 
             })
             .collect(),
         latency_samples: 0,
+        plugin: None,
     }
 }
 

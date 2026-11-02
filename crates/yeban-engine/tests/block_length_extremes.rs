@@ -286,6 +286,7 @@ fn effect(name: &str, params: &[(&str, f32)]) -> DeviceDefinition {
             })
             .collect(),
         latency_samples: 0,
+        plugin: None,
     }
 }
 
@@ -305,6 +306,7 @@ fn instrument(params: &[(&str, f32)]) -> DeviceDefinition {
             })
             .collect(),
         latency_samples: 0,
+        plugin: None,
     }
 }
 
@@ -454,6 +456,7 @@ fn pdc_project(
         bypassed: false,
         params: Vec::new(),
         latency_samples: slow_latency,
+        plugin: None,
     }];
 
     let mut tracks = BTreeMap::new();

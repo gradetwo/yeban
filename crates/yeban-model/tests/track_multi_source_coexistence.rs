@@ -138,6 +138,7 @@ fn multi_source_device(device_id: EntityId) -> DeviceDefinition {
         bypassed: false,
         params,
         latency_samples: 0,
+        plugin: None,
     }
 }
 

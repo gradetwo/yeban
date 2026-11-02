@@ -2904,6 +2904,7 @@ mod tests {
                 })
                 .collect(),
             latency_samples: 0,
+            plugin: None,
         };
         InsertChain::from_devices(&[device], 48_000, 120.0)
     }

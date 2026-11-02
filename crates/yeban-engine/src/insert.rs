@@ -1338,6 +1338,7 @@ mod tests {
                 })
                 .collect(),
             latency_samples: 0,
+            plugin: None,
         }
     }
 

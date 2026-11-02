@@ -215,6 +215,7 @@ fn convolution_device() -> DeviceDefinition {
             },
         ],
         latency_samples: 0,
+        plugin: None,
     }
 }
 

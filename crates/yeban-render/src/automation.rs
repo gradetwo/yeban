@@ -2664,6 +2664,7 @@ mod tests {
                     })
                     .collect(),
                 latency_samples: 0,
+                plugin: None,
             }],
             ..TrackV3::default()
         };
@@ -2781,6 +2782,7 @@ mod tests {
                         unit: None,
                     }],
                     latency_samples: 0,
+                    plugin: None,
                 },
                 DeviceDefinition {
                     id: EntityId::from_str("01J8Z5Q0R7K3M9X2V4B6N8D002").expect("ULID"),
@@ -2793,6 +2795,7 @@ mod tests {
                         unit: None,
                     }],
                     latency_samples: 0,
+                    plugin: None,
                 },
             ],
             ..TrackV3::default()

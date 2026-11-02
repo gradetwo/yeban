@@ -86,8 +86,8 @@ enum BoundStatus {
     Unbounded(&'static str),
 }
 
-/// 30 条 string 参数声明（`TOOLS` 里 `json_type == "string"` 的**不同名**）。
-const STRING_PARAM_BOUNDS: [(&str, BoundStatus); 30] = [
+/// 32 条 string 参数声明（`TOOLS` 里 `json_type == "string"` 的**不同名**）。
+const STRING_PARAM_BOUNDS: [(&str, BoundStatus); 32] = [
     ("idempotencyKey", BoundStatus::Length(None, Some(256))),
     ("name", BoundStatus::Length(Some(1), None)),
     ("license", BoundStatus::Length(Some(1), None)),
@@ -188,6 +188,22 @@ const STRING_PARAM_BOUNDS: [(&str, BoundStatus); 30] = [
     // 未知值由 `drum_style_choice` 拒绝并列出 `accepted`；`schemas/**` 同步声明 `enum`、
     // ⛔ `default`（182 个 GENRES 里 169 走 `metric`／13 走 `four-on-the-floor` ⇒ 无单一默认）。
     ("drumStyle", BoundStatus::WordList),
+    // ADR-0064：`yeban_load_plugin` 的插件路径与类指名。两者都是操作员自选的
+    // 本机路径／类标识：长度维无界（路径长度由操作系统定，类名／CID 由插件厂商定）。
+    // 后果限于该次调用的报文长度；绑定记录落盘时原值进工程文件（与 `path` 同一条纪律）。
+    // 收口面：`schemas/**` 的 `maxLength`（集成者独占）。
+    (
+        "pluginPath",
+        BoundStatus::Unbounded(
+            "插件路径：操作员自选的本机 .vst3 包／动态库路径或测试桩标识。后果限于该次调用的加载失败报文长度；绑定记录落盘时原值进工程文件（与 `path` 同一条纪律）。\n收口面：`schemas/**` 的 `maxLength`（集成者独占）。",
+        ),
+    ),
+    (
+        "pluginId",
+        BoundStatus::Unbounded(
+            "插件类指名：类名或 32 位十六进制 CID，取值空间由插件厂商定。未知值走类查找拒绝（`INVALID_PARAMETER_RANGE`），长度维无界。后果限于该次调用的报文长度。\n收口面：`schemas/**` 的 `maxLength`（集成者独占）。",
+        ),
+    ),
 ];
 
 #[test]

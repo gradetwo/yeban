@@ -200,6 +200,7 @@ pub fn tuned_project(notes: &[NoteSpec], mix: MixSpec) -> Fixture {
                 },
             ],
             latency_samples: 0,
+            plugin: None,
         }];
     }
     fixture
@@ -637,6 +638,7 @@ fn rebind_project(
         bypassed: false,
         params: Vec::new(),
         latency_samples: PDC_REBIND_LATENCY,
+        plugin: None,
     }];
     tracks.insert(slow, slow_track);
     tracks.insert(

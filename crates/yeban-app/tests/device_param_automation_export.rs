@@ -188,6 +188,7 @@ fn project(tune: &Tune<'_>, bytes: &[u8], seed: u32) -> YebanProjectV1 {
                 })
                 .collect(),
             latency_samples: 0,
+            plugin: None,
         }],
         ..TrackV3::default()
     };

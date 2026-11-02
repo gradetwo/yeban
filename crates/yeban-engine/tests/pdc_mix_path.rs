@@ -194,6 +194,7 @@ fn project(
         bypassed: false,
         params: Vec::new(),
         latency_samples: slow_latency,
+        plugin: None,
     }];
 
     let mut tracks = BTreeMap::new();

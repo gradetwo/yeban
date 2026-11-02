@@ -349,6 +349,16 @@ impl EngineTimbre {
             .map_or(0, NoteSchedule::len)
     }
 
+    /// 该轨的调度表克隆（ADR-0064：插件源与引擎源读**同一份**快照投影，
+    /// 不各自重算；`None` = 该轨在快照里没有调度表，插件源按静音推进处理）。
+    ///
+    /// 与 [`EngineTrackSource::new`] 的取法同一行（`schedules().get(&track).cloned()`），
+    /// 只是不附带武装一台 109 KB 引擎 —— 插件轨不需要引擎声，建它纯属浪费。
+    #[must_use]
+    pub fn schedule(&self, track: EntityId) -> Option<NoteSchedule> {
+        self.snapshot.schedules().get(&track).cloned()
+    }
+
     /// 为一条轨道武装一个引擎源。
     ///
     /// # Errors
@@ -519,6 +529,13 @@ impl EngineTrackSource {
     #[must_use]
     pub fn scheduled_notes(&self) -> usize {
         self.schedule.as_ref().map_or(0, NoteSchedule::len)
+    }
+
+    /// 本源的调度表（加法访问器，无行为变化；供 MCP 插件源构造时复用——
+    /// 插件源与引擎源读同一份调度表，不各自重算）。
+    #[must_use]
+    pub fn schedule(&self) -> Option<&NoteSchedule> {
+        self.schedule.as_ref()
     }
 
     /// 引擎当前播放头（绝对帧）。判据用它证明"每块恰好推进一次"。
