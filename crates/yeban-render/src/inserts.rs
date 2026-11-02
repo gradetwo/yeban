@@ -1175,6 +1175,10 @@ impl StripProjection {
             "strip_width" | "channel_width" => {
                 self.params.width = value;
             }
+            // `#344` mono-maker（与引擎 `insert.rs` 的同名投影逐字同集）。
+            "mono_below_hz" | "mono_maker_hz" => {
+                self.params.mono_below_hz = value;
+            }
 
             _ => {}
         }
@@ -1633,9 +1637,13 @@ impl InsertRuntime {
     /// 唯通道条的动态级检波器输入取自 `key`（与节目块同帧对齐的交错键信号）。
     /// 混响与卷积一律读节目；键不进混音。条不存在时与 [`Self::process`] 一位不动。
     ///
+    /// `key_gain` 是这条侧链边的**键增益**（线性，来自边的 `gain_db`；`1.0` = 不缩放）。
+    /// 乘在去交错这一步，因此既不额外分配、也不改`key`本身的样本：同一个抽头缓冲
+    /// 可以按各自的增益喂多个目的。
+    ///
     /// 调用方契约：`key.len() == buffer.len()`（`render_node` 传抽头缓冲的同宽切片）；
     /// 块帧数恒 `<= block_size` ⇒ 键去交错缓冲不越界。
-    pub(crate) fn process_with_key(&mut self, buffer: &mut [f32], key: &[f32]) {
+    pub(crate) fn process_with_key(&mut self, buffer: &mut [f32], key: &[f32], key_gain: f32) {
         let frames = buffer.len() / 2;
         if frames == 0 {
             return;
@@ -1657,8 +1665,8 @@ impl InsertRuntime {
         for frame in 0..frames {
             left[frame] = buffer[2 * frame];
             right[frame] = buffer[2 * frame + 1];
-            key_left[frame] = key[2 * frame];
-            key_right[frame] = key[2 * frame + 1];
+            key_left[frame] = key[2 * frame] * key_gain;
+            key_right[frame] = key[2 * frame + 1] * key_gain;
         }
         if let Some(strip) = strip {
             strip.process_stereo_with_key(
@@ -1758,6 +1766,7 @@ mod tests {
             StripField::DynEqThresholdDb => -28.0,
             StripField::DynEqMaxCutDb => 4.0,
             StripField::Width => 1.4,
+            StripField::MonoBelowHz => 120.0,
         }
     }
 

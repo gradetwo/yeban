@@ -17907,8 +17907,11 @@ helper 里 ⇒ 必须不认（防假绿）。两条臂在旧实现上都会失�
 ### 23.1 交付物与身份（⛔ 在仓库外，所以 SHA 可以写死 —— 与 §23.4-3 那条"自我指涉"教训不冲突）
 
 - 包 = `/home/polar/zimmer_store/ZIMMER_CREATIVE_DELIVERABLE.zip`：**181,381,520 字节／条目 143／CRC `testzip()`=None**，
-  SHA-256 = `b8cdd2be2dc27d3f8a907630dce5ad899342312d75e88633b0423318ef797b77`（`sha256sum -c` 于同目录通过；
+  SHA-256 = `b8cdd2be2dc27d3f8a907630dce5ad899342312d75e88633b0423318ef797b77`（当时 `sha256sum -c` 于同目录通过；
   包外 `.sha256` 随包同步，历史值 `606f77ec…`／`b6b83a2a…`／`54ad79ac…`／`5c325960…` 已作废）。
+  ⚠⚠ **本节这两行现在读的是 v1，且已被下一段推翻**：收盘读满判决后重出 **v2**（`ccb38f33…`，见下面的 §23.7），
+  v1 原件在同目录改名 `ZIMMER_CREATIVE_DELIVERABLE_v1_SUPERSEDED.zip`，那份 `.sha256` 现在写的是 v2 并给 v1 标了 `SUPERSEDED`
+  ⇒ ⛔ 别再拿 `b8cdd2be…` 验收。
 - **抽包复跑过一次**（⛔ 不是"我相信我自己的表"）：全新目录解包后只用包内脚本量包内母带 ⇒
   `measure_wav.py` song1 **−14.00 LUFS**／song2 **−19.82 LUFS**、`measure_peak.py` song1 触轨 2 平顶 0／
   song2 峰值 **−1.023 dBFS** 触轨 0 平顶 0，两份都是 **180.0 s**，与报告 §1/§4.7 逐字相同；
@@ -17971,8 +17974,10 @@ helper 里 ⇒ 必须不认（防假绿）。两条臂在旧实现上都会失�
 ### 23.5 收盘状态与下一单
 
 - 工作线 `line/zimmer-ui-write-surface`（tip `a95851e2`）**未合流 main**：等 §23.3 那两条导出腿的人类裁决，
-  以及报告 §8 建议 10 的两问。线的判决已全部读回（见报告 §9.1 台账；手动档 `41371903917` = success，
-  判据门 145 个测试二进制、0 FAILED）。
+  以及报告 §8 建议 10 的两问。~~线的判决已全部读回~~（⚠ **这句是过强的，下一节 §23.7 现读后改正**：
+  手动档 `41371903917` = success、判据门 145 个测试二进制 0 FAILED 这两半都成立，
+  但线尖 `a95851e2` 的**自动档** run `41370538851` 落笔时 `windows` 腿还在飞，我把"未收口"写进了交付物 ——
+  收口后它是 **failure**，红在我自己写的判据上。留这一句划掉的原话，因为"当时为什么写成那样"本身就是要登记的东西）。
 - ~~⛔ **本批文档此刻不推 main**~~ —— 本节的**持有条件已在落笔当场解除并读回**（⛔ 不是"以为该好了"，是现读）：
   草稿写就时 `e67f58fe`（main tip）与 `fb5b01ed` 两条 run 都在飞，同分支并发组会**取消在飞判决**，故先压在 `/home/polar/zimmer_store/`；
   推之前用 `gh run list` 现读：`41379451755`（`e67f58fe`）= **completed/success**、`41378258995`（`fb5b01ed`）= **completed/failure**（⛔ 那不是我这条线的票），
@@ -18007,3 +18012,36 @@ helper 里 ⇒ 必须不认（防假绿）。两条臂在旧实现上都会失�
   ⛔ 没有 `limiter`，而 `pub limiter: bool` 早在 `export_wav.rs:118`（CLI `--limiter` / MCP `yeban_render` 已消费）
   ⇒ 待办 #38 的最小切片确实只差"对话框一格 + `resolve()` 一参 + 调用处传值"这三行接线，⛔ 不要新造限幅器。
 - 定时任务已建（每 2 小时 fetch + `--ff-only` pull，并逐条比对上游改动是否吃掉本线的活或作废报告 §6 的某条结论）。
+
+### 23.7 v2 重出（2026-11-02）：§23.5 那句"线的判决已全部读回"过强 —— 现读改正、热修判据、重出交付包（v1 标 `SUPERSEDED`）
+
+- **过强在哪、代价是什么**：§23.5 落笔时线尖 `a95851e2` 的自动档 run `41370538851` 的 `windows` 腿还在飞，
+  我把"未收口"当留白交付了；收口后**整条 run = failure**，全腿唯一失败判据 = 我自己写的
+  `the_serve_path_hands_the_write_surface_an_undo_port`（`crates/yeban-app/tests/d_ui_1_serve_write_surface.rs`）。
+  根因 ⛔ 不在产品代码：那条判据读盘后用**跨行字面量** `contains("…\n…")` 断言，而本仓根 `.gitattributes`
+  刻意**没有** `* text=auto`（全仓归一的爆炸半径远超收益；只有 `crates/yeban-render/tests/data/*.json` 因需要逐字节钉了 `-text`），
+  Windows runner 的 `core.autocrlf=true` 把源码检出成 CRLF ⇒ 该字面量在 Windows 上**永不匹配**。
+  `macos` 腿红在 `yeban-engine` 的结构体尺寸钉 = **继承来的**（合并落点 `81285810` 自己那票 `41358382606` 同红，上游 `47f8ace4` 已修）。
+- **怎么修的**：热修票 `05c54275`（仅测试文件：`crate_source()` 读盘后 `.replace("\r\n", "\n")`，函数上方写明"判文本内容就归一行尾，判逐字节就钉 `-text`"）
+  ＋ 合并票 `a8dd3292`（`origin/main` 并进本线，0 冲突 ⇒ 主干现在是本线祖先，技术上可快进）。
+  判决读回 = run `41393391415`（自动档、`event=push`、`conclusion=success`）：执行 **16** 个作业、`skipped` **1** 个
+  （`rust (workspace 全量)` ⇒ 空绿口径照 §6.3-2 记成"没验证"）。三条腿逐段现读（报告 §9.1 最后两行）：
+  `windows` 分母 **313 段 / 去重 306**、`test result:` 328 行、**5,399 passed / 0 failed**；
+  `macos` 同一套分母、**5,420 passed / 0 failed**，上轮红的四件尺寸钉 `bus_insert` 6 / `bus_routing` 8 / `rt_new_boxed` 4 / `sfz_instrument` 111 **全 ok**；
+  `rust (yeban-app)` **290 段 / 去重 145**、**2,231 passed / 0 failed**，本线判据 `d_ui_1` / `d_ui_13` / `d_ui_11` / `roll_edit_tools` / `device_clip_creation` 逐字在场。
+- ⚠ **两条读数口径的坑，算进 §6 家族的第 4 种成因**：
+  ① 分母 263（红那票）↔ 313（修后这票）⛔ 不是"多了 50 个测试"，是**载体取法不同** ——
+     `gh run view --log-failed --job=` 只含失败步骤的日志，`--log --job=` 含全量 ⇒ 同一支线两票的段数不可直接比（现场佐证：`cargo test` 出现次数 6 → 8）；
+  ② 读回工具 `readback_leg.py` 本轮修了三处（`gh` 输出里的 ANSI 是**字面量** `^[[1m` 三个字符而非 0x1b 字节；Windows 日志路径是反斜杠 `tests\foo.rs`；
+     每行还带 `<作业>\t<步骤>\t<时间戳>Z ` 前缀），修之前那条腿的分母被读成 **0** ⇒ 差点把"跑了 313 个二进制"读成"一个都没跑"。
+     所以"读不到"现在有**四种**成因：没跑／没编译进去／读法不对／**平台检出差异**。取日志与数段的动作也脚本化进包（`repro/collect_leg_log.py`）。
+- **包身份（v2）**：`/home/polar/zimmer_store/ZIMMER_CREATIVE_DELIVERABLE.zip` = **198,149,089 B / 条目 171 / `testzip()`=None**，
+  SHA-256 `ccb38f3328d948b5046fe7ef47851fd35621aeaa2c6a06c3b365c169619cd20e`；**v1 `b8cdd2be…` 作废**（原件留盘 `ZIMMER_CREATIVE_DELIVERABLE_v1_SUPERSEDED.zip`，
+  包外那份 `.sha256` 已写 `SUPERSEDED` 注）。差异不是声明出来的、是**逐文件比哈希算出来的**：v1 的 143 条目里 **136** 个与 v2 逐字节相同
+  （两首母带、五份工程、全部性能 CSV 与 measurements ⇒ 交付物本体一毫米没动），改动 **7** 个（报告、README、`SERIES.txt`、mbox、`CHECKSUMS`、`make_zip.py`、`readback_leg.py`），
+  新增 **28** 个（CI 日志载体 15 ＋ 脚本 12 ＋ 补丁 1）。抽包复跑：`sha256sum -c CHECKSUMS.sha256` = **170 行全 OK / 0 不符**，
+  只用包内脚本量包内母带 ⇒ song1 **−14.00 LUFS** / 触轨 2 / 平顶 0，song2 **−19.82 LUFS** / 峰值 **−1.023443 dBFS** / 平顶 0，与 §23.1 逐字相同。
+- 补丁口径随本轮重读：三点 + `--cherry-pick` + `--no-merges` = **23** 枚 / **32** 个文件（⛔ 文件数不变：热修那个测试文件本来就在这 32 个里）；
+  两点 `origin/main..HEAD` = **24** = 23 枚补丁 + 1 张合并票。⚠ 这是 §23.4-2"引用会漂"的第二次实测，这次漂的是**我自己的数** ⇒ 按新事实登记，不粉饰。
+- ⛔ 本线仍**未合流 main**：等的还是 §23.3 那两条导出腿的人类裁决；tip 现在是绿的、主干是它的祖先，但**没有人类授权不动 main**。
+

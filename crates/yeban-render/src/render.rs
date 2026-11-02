@@ -354,13 +354,25 @@ struct NodeState {
     /// （`#266` 通道条 / `#293` Freeverb 与卷积）⇒ 有器件可改。
     inserts: Option<InsertRuntime>,
     /// 键抽头缓冲：仅当本节点是某条**已求值**侧链边的源时，`render_node`
-    /// 在插入链之后把本块样本拷到这里（抽头点：链后、声相前、推子前）。
+    /// 在插入链之后把本块样本拷到这里（抽头点：链后、声相前）。
+    ///
+    /// ⚠ **推子前后取决于节点种类**（实测，不是"文档说推子前就推子前"）：
+    /// 有音源的轨，推子是在**源侧**乘进样本的（采样器轨走引擎的
+    /// `NoteSchedule::track_gain`、其它源走 `TrackSource` 的左右增益），因此抽头
+    /// 是**推子后**；总线节点的推子在 [`OutputStage`]（抽头之后）才是推子前。
+    /// 想让"键"不受推子影响，请用边的 `gain_db` 补（`attach_key_armed_nodes` 的
+    /// 键增益，`#346`）。
     /// 长度恒为 `block_size * channels`，只在挂接时分配；平时为空。
     key_buffer: Vec<f32>,
     /// 本节点若是某条已求值侧链边的目的，其源节点的槽位；否则 `None`。
     key_input: Option<usize>,
     /// 本节点是否被某条已求值侧链边抽头（`key_buffer` 是否有效）。
     key_tap: bool,
+    /// 已求值侧链边的**键增益**（线性；边 `gain_db` 的线性值，`None` ⇒ 1.0）。
+    ///
+    /// 乘在**读键**这一侧（目的节点），不乘节目、不乘抽头缓冲：同一条源可以喂多个
+    /// 目的而各带各的增益。默认 1.0 ⇒ 没有侧链时限幅为恒等，产物逐位不变。
+    key_gain: f32,
     /// 本节点的**输出级**（任务单 `#296`）：插入链之后、母线求和之前。
     output: OutputStage,
 }
@@ -559,9 +571,10 @@ pub struct RenderPlan {
     options: RenderOptions,
     /// 槽位 -> 节点身份 (供 `bus_reduction_order` 使用)。
     slot_of: BTreeMap<EntityId, usize>,
-    /// 侧链边声明（编译期从图里抽出，边身份升序）：`(边身份, 源节点, 目的节点)`。
+    /// 侧链边声明（编译期从图里抽出，边身份升序）：
+    /// `(边身份, 源节点, 目的节点, 边的 gain_db)`。
     /// 只存声明，不存求值状态；求值状态在 `key_routes`。
-    sidechain_edges: Vec<(EntityId, EntityId, EntityId)>,
+    sidechain_edges: Vec<(EntityId, EntityId, EntityId, Option<f32>)>,
     /// 已求值的键路由：目的槽位 -> （源槽位，边身份）。v1 单键：每目的至多一条。
     key_routes: BTreeMap<usize, (usize, EntityId)>,
 }
@@ -831,11 +844,18 @@ impl RenderPlan {
 
         // 侧链声明（`#337` 的另一半：边本身不搬音频，但声明要留给键挂接）。
         // `BTreeMap` 值迭代 = 边身份升序 ⇒ 挂接时"第一条生效"即按此顺序。
-        let sidechain_edges: Vec<(EntityId, EntityId, EntityId)> = graph
+        let sidechain_edges: Vec<(EntityId, EntityId, EntityId, Option<f32>)> = graph
             .edges
             .values()
             .filter(|edge| edge.kind == RoutingKind::Sidechain)
-            .map(|edge| (edge.id, edge.source_node, edge.destination_node))
+            .map(|edge| {
+                (
+                    edge.id,
+                    edge.source_node,
+                    edge.destination_node,
+                    edge.gain_db,
+                )
+            })
             .collect();
 
         // ---- 2. PDC 关键路径分析 (与实时引擎共用的算法) ----
@@ -931,6 +951,7 @@ impl RenderPlan {
                     key_buffer: Vec::new(),
                     key_input: None,
                     key_tap: false,
+                    key_gain: 1.0,
                     // 默认恒等：没有调用方挂总线推子 / 主总线声相时，`render_node`
                     // 的最后一级一个样本都不碰（零音频回归）。
                     output: OutputStage::new(),
@@ -1012,7 +1033,7 @@ impl RenderPlan {
         // 先克隆声明表：下面既读声明又写状态，借用上分不开。
         let declarations = self.sidechain_edges.clone();
         let block_width = self.options.block_size * self.options.channels;
-        for (edge_id, source_node, dest_node) in declarations {
+        for (edge_id, source_node, dest_node, key_gain_db) in declarations {
             let Some(&dest_slot) = self.slot_of.get(&dest_node) else {
                 continue;
             };
@@ -1029,6 +1050,7 @@ impl RenderPlan {
                 continue;
             }
             self.states[dest_slot].key_input = Some(source_slot);
+            self.states[dest_slot].key_gain = key_gain_db.map_or(1.0, db_to_linear);
             self.states[source_slot].key_tap = true;
             if self.states[source_slot].key_buffer.is_empty() {
                 self.states[source_slot].key_buffer = vec![0.0; block_width];
@@ -1376,6 +1398,7 @@ fn render_node(
         key_buffer,
         key_input,
         key_tap,
+        key_gain,
         output,
     } = state;
 
@@ -1440,8 +1463,11 @@ fn render_node(
             .all(DeviceParamAutomation::is_identity)
         {
             if let Some(source_slot) = *key_input {
-                inserts
-                    .process_with_key(&mut buffer[..width], &done[source_slot].key_buffer[..width]);
+                inserts.process_with_key(
+                    &mut buffer[..width],
+                    &done[source_slot].key_buffer[..width],
+                    *key_gain,
+                );
             } else {
                 inserts.process(&mut buffer[..width]);
             }
@@ -1466,6 +1492,7 @@ fn render_node(
                     inserts.process_with_key(
                         &mut buffer[offset * channels..(offset + chunk) * channels],
                         key,
+                        *key_gain,
                     );
                 } else {
                     inserts.process(&mut buffer[offset * channels..(offset + chunk) * channels]);
@@ -1476,8 +1503,10 @@ fn render_node(
     }
     // ---- 键抽头（侧链 v1）：插入链之后、输出级之前 ----
     //
-    // 抽头点 = 链后、声相前、推子前（输出级即推子/声相的落点；离线 PDC 在边上
-    // 不在节点缓冲里，因此抽头天然不含 PDC）。只有被某条已求值侧链边抽头的节点
+    // 抽头点 = 链后、声相前；**推子前后看节点种类**：有音源的轨，推子在源侧就已
+    // 乘进样本（`NoteSchedule::track_gain` / `TrackSource` 的增益）⇒ 这里是推子**后**；
+    // 总线节点的推子在本函数末尾的 `output.apply`（抽头之后）⇒ 那里才是推子前。
+    // 离线 PDC 在边上、不在节点缓冲里，因此抽头天然不含 PDC。只有被某条已求值侧链边抽头的节点
     // 才写（`key_tap` 由 `attach_key_armed_nodes` 置真并配好块宽缓冲；
     // `width <= block_size * channels` 恒成立 ⇒ 切片不越界）。
     if *key_tap {

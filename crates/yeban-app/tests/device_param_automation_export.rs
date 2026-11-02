@@ -950,9 +950,9 @@ fn every_gain_eq_filter_field_gives_the_same_master_in_both_exports() {
         assert_eq!(
             listed.as_slice(),
             expected.as_slice(),
-            "MCP 名单必须逐条来自 yeban-render（现读名册，⛔ 不手抄个数；上游最近一次 \
-             给名册加了低切 / 动态 EQ / 宽度 ⇒ 90 个拼写 = 51 通道条 + 6 混响 + 8 卷积 \
-             + 15 延迟 + 10 磁带）: {data}"
+            "MCP 名单必须逐条来自 yeban-render（⛔ 不手抄个数：名册从 \
+             `yeban_render::automation::APPLIED_DEVICE_PARAM_NAMES` 现读。写死数字每加一件器件 \
+             就会红一次 —— 磁带（`ADR-0062`）与 mono-maker（`#345`）都已经这么红过一轮）: {data}"
         );
         for name in [
             "output_gain_db",
