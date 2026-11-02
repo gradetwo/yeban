@@ -1376,3 +1376,63 @@ scope 声明在各格 `TouchArea` **之前** ⇒ 命中测试层序也不变。�
 `input.rs 4/2`、`metronome.rs 11/22` ＋ 判据文件一枚。⚠ 本票**没有** `.slint` 改动 ⇒
 不需要金帧重录；`wire_record` / `wire_record_at` 的签名**未变**（`undo` 参数本来就在）⇒
 既有调用点一处不改。CI 回来前不落"通过"。
+
+## §39 `D-UI-24`：重投影**不再抹掉**正在敲的 BPM 草稿（编辑保护只写在一个地方）（2026-11-03）
+
+症状（§31 那一族的另一个形状，⛔ 不是"键白按"而是"字白打"）：在走带条的速度框里敲到一半
+（例：`128.00` 里删掉尾数打成 `13`），**点一下卷帘里的剪辑**（或 AI 会话侧改一次工程），
+框里那串**立刻**变成权威读数 `128.00` —— 用户看到的是"打的字没了"。
+
+* **根因**（一条无条件写的语句，⛔ 不是缺一条 `commit`）：`host::apply_view` 每次重投影都
+  **无条件** `set_bpm_display(权威读数)`，而它正是"权威 → 界面"那一面的**唯一注入点**。
+* **为什么点击会触发**（前提取证，判据 ⑥ 从源码现数）：画布那三层
+  （`ui/workspace/arrangement_view.slint` / `ui/console/piano_roll.slint` /
+  `ui/workspace/session_view.slint`）里 `FocusScope` **0** 处、`.focus(` **0** 处 ⇒
+  点剪辑**不会**让文本框失焦，焦点一直留在 `bpm-input` 里；而那一次编辑会提交 ⇒
+  `refresh_undo_window` 重投影 ⇒ 盖掉。第二条触发腿是 `reproject.rs`（会话侧 `tools/call`
+  改工程后重投影同一个活窗口），两条都**不需要 AI 在场**才成立。
+* **修复形状**（三个"只有一处"）：门 = `MainWindow` 的一格 `in property <bool>
+  bpm-field-editing`；**读者只有 `apply_view` 那一句**；**写者只有两个** —— `wire_input`
+  把 `bpm-input` 自己在 `changed has-focus` 里发出的**那条既有事件**镜像过去（与
+  `[UI-A11Y-002]` §7.2 喂 `InputContext::set_focus` 的是**同一次**通知 ⇒ ⛔ 不新造事件源、
+  ⛔ 不轮询焦点系统），加上 `wire_bpm_commit` 进门**清零**。判据 ⑦ 把这四个数钉死。
+* **为什么它是 `in` ⛔ 不是派生 `out`**（与 `shortcut-layer-focused` / `export-wav-focused-field`
+  不同形的原因）：`bpm-input` 声明在**子组件** `Transport` 内部，主窗口层的绑定取不到那个标识
+  ⇒ 只能由宿主把已存在的事件搬过来。
+* **既有两条口径一位不动**（本票⛔ 不改变"提交后写什么"）：回车**本身解决草稿** ——
+  清零之后 `wire_bpm_commit` 里那一个 `refresh_undo_window` 照常写：非法 / 同值 ⇒ 写回
+  权威读数（`tests/ui_bpm_field.rs` ③/④"⛔ 不留冒充权威的草稿"），合法 ⇒ 归一化 `{:.2}`。
+  ⚠ 清零的语义是"这串草稿已有裁决"，⛔ 不是"焦点离开了框"（判据 ⑤ 在**没有**失焦事件的
+  情况下断言门已假）。
+* **判据**：`crates/yeban-app/tests/d_ui_24_bpm_draft_survives_reprojection.rs`，七例 ——
+  ① 对照臂（没在编辑 ⇒ 注入照常写，保护⛔ 不许外溢成整次注入不跑）② 编辑中 ⇒ 草稿活着
+  **且同一次注入的标题那格照改**（⛔ 不能让"没被盖"混成"注入没执行"那种假绿）
+  ③ 由**真改文档**的一次按键（`Cmd/Ctrl+Alt+D` ⇒ 预备拍 +1 条提交）引发的重投影⛔ 不吃草稿
+  ④ 失焦后下一次注入写回权威 ⇒ ⛔ 造出永久分叉 ⑤ 回车两支（拒 `"9999"` / 收 `"140"`）
+  都归一化 + 门清零 ⑥ 前提取证（三层画布 0 处 `FocusScope` / 0 处 `.focus(`）
+  ⑦ 出处纪律（`set_bpm_display(` = **1**、`get_bpm_field_editing(` = **1**、
+  `set_bpm_field_editing(` = **2**、`app.slint` 代码行里 `bpm-field-editing` = **1**，
+  `text <=> root.bpm-display;` 那一句双向绑定仍在）。⚠ 四个数都在提交前**现读源码**核过
+  （`code_only` 先剥 `//` 行 ⇒ 注释⛔ 算实现站点）。
+* **如实登记的边界**（⛔ 不假装整类缺陷修完了）：
+  1. **同类缺陷还剩一处没修**：`mixer_console.slint:738` 的 `sampler-path-field`。它的 `text`
+     取的是 `track-sampler-paths[i]`，而那整个数组由 `apply_view`（`host.rs:168`
+     `set_track_sampler_paths`）**无条件**重写 ⇒ 敲 SFZ 路径到一半同样会被盖掉。本票⛔ 不顺手
+     改它：全仓库只有 `bpm-input` 接了 §7.2 那条焦点通道（`sidebar.slint:77-78` 那段注释是
+     **登记过的主动不接**，理由是两路 `changed has-focus` 的先后顺序没有上游保证），要接第二路
+     必须先按 `host.rs` 那条注释原话把"失焦 = 回到画布"改成**问焦点系统当前焦点是谁** ——
+     那是**下一票**的形状，⛔ 塞进本票会把"一个门只有一个读者"这条性质弄丢。
+  2. 左栏搜索框**没有**这个缺陷，且⛔ 不该有门：`sidebar-search` 的唯一写者是输入框自己的
+     两向绑定，宿主刻意⛔ 不 `set_sidebar_search`（`host.rs:5795-5797` 原话：再写一次就与
+     绑定互为回路）。导出弹窗那四格⛔ 不在 `apply_view` 的注入面上 ⇒ 与本票无关。
+  3. 回车之后门已被清零 ⇒ **同一次聚焦会话里**再打第二串草稿仍然暴露在同一触发下（要再点一次
+     才会重新置门）。这条只在判据 ⑤ 之后成立，本票⛔ 不把它说成已闭合。
+  4. 判据 ③ 借预备拍键只当一个**真的会改文档并重投影**的漏斗用，⛔ 不是主张"文本框聚焦时
+     DAW 热键照常触发"—— 真实键盘下字符键归文本框，那是 `ADR-0067`（`D-UI-22`）未决的
+     规范冲突，无头注入绕过的是**派发**那一层。
+
+**判决**：`pending` —— 本机不编译 `yeban-app`（Slint 是重依赖）。本地只证到
+`cargo fmt -p yeban-app -- --check` `rc=0`，加上 ⑦ 那四个数与 ⑥ 那六个 0 的**现读对账**。
+`git diff --numstat`：`src/host.rs 32/1`、`ui/app.slint 23/0` ＋ 判据文件一枚。
+⚠ `app.slint` 那 23 行**只有一格属性声明**（`in property <bool>`，画不出任何东西、
+不改任何坐标）⇒ 本票**零像素改动**，不需要金帧重录。

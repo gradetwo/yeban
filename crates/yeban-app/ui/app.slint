@@ -506,6 +506,29 @@ export component MainWindow inherits Window {
     in-out property <string> bpm-display: "120.00";
     in-out property <string> branch-name: "main";
 
+    // ⭐ 任务单 `D-UI-24`：**「BPM 框此刻正被敲」的宿主可见标记**（编辑保护的门）。
+    //
+    // 修前的事实（现读链条）：`host::apply_view` 每次重投影都**无条件**写
+    // `set_bpm_display(权威读数)`，而画布那一侧（卷帘 / 编排）**没有** `FocusScope`
+    // ⇒ 用户在 BPM 框里敲到一半时点一下剪辑，焦点**不会**离开文本框，但那一次编辑
+    // 会提交并重投影 ⇒ 草稿被权威读数直接盖掉（会话侧 `tools/call` 改动同理）。
+    //
+    // 口径（⛔ 不是第二份焦点状态）：本属性的唯一写者是 `src/host.rs` 的
+    // `wire_input` —— 写的是 `bpm-input` 自己在 `changed has-focus` 里发出的那一条
+    // **既有**事件（与 `[UI-A11Y-002]` §7.2 喂给 `InputContext::set_focus` 的是**同一次**
+    // 通知，⛔ 不新造事件源、⛔ 不轮询焦点系统）。唯一读者 = `apply_view` 的那一句
+    // 编辑保护 ＋ 无头判据 `tests/d_ui_24_bpm_draft_survives_reprojection.rs`。
+    //
+    // ⚠ **为什么它是 `in` 而不是像 `shortcut-layer-focused` 那样的派生 `out`**：
+    // `bpm-input` 声明在**子组件** `Transport` 内部，主窗口层的绑定够不到那个标识
+    // ⇒ 只能由宿主把已经存在的那条焦点事件镜像过来。这也是本属性与
+    // `export-wav-focused-field`（派生读数）**不同形**的原因，判据 ⑦ 钉着写者数量。
+    //
+    // ⚠ 提交（`accepted`）本身**解决**草稿：`wire_bpm_commit` 一进门就把本标记清零
+    // ⇒ 合法值归一化成 `{:.2}` 读数、非法值写回权威读数（`ui/transport.slint` 的
+    // "⛔ 不留下一个冒充成权威值的草稿"那条既有口径因此一位不动）。
+    in property <bool> bpm-field-editing: false;
+
     // 走带光标的位置（960 PPQ tick）。唯一写者 = `src/host.rs` 的 `apply_transport`
     // （与 `timecode` 同一次引擎读数）；编曲 / 卷帘两条 playhead 都由它派生 x
     // （`tick ÷ ticks-per-pixel`，与投影里音符 / 小节线的整数除法同口径）。

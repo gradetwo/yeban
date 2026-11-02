@@ -126,7 +126,21 @@ fn to_color(color: RgbColor) -> slint::Color {
 /// 在同一个活窗口上切换两个工程）。
 pub fn apply_view(ui: &MainWindow, view: &ViewState, viewport_width: f32, scroll_x: f32) {
     ui.set_window_title(view.title.clone().into());
-    ui.set_bpm_display(view.bpm_display.clone().into());
+    // ⭐ **编辑保护**（任务单 `D-UI-24`）：BPM 框**正被敲**时 ⛔ 不用投影盖掉草稿。
+    //
+    // 现读的触发面（两条都不需要"AI 在场"才成立）：
+    // ① 画布那两侧（卷帘 / 编排）**没有** `FocusScope` ⇒ 用户在 BPM 框里敲到一半时
+    //    点一下剪辑**不会**让焦点离开文本框，而那一次编辑会提交并重投影；
+    // ② 会话侧一次 `tools/call` 改工程后经 `reproject.rs` 重投影同一个活窗口。
+    // 修前这两条都把用户敲了一半的速度直接抹成权威读数（"打的字没了"）。
+    //
+    // ⛔ 保护只写在**这一处**：本行是 `bpm-display` 的唯一写点（判据 ⑦ 钉着），
+    // 因此"什么时候能不写"也只有一处答案。提交那条路自己解决草稿
+    // （`wire_bpm_commit` 进门清零 ⇒ 既有"非法 ⇒ 写回权威、不留冒充权威值的草稿"
+    // 口径一位不动，`tests/ui_bpm_field.rs` ③/④ 照常）。
+    if !ui.get_bpm_field_editing() {
+        ui.set_bpm_display(view.bpm_display.clone().into());
+    }
     // 时间码的拍号网格：**唯一**的注入点（本函数）。`None`（模型层拒绝该拍号）
     // 一律写 0，`apply_transport` 见到 0 就如实退回 tick 文本 —— 见 `timecode_grid_of`。
     let grid = view.timecode_grid();
@@ -6414,6 +6428,11 @@ pub fn wire_input(ui: &MainWindow, context: Rc<RefCell<InputContext>>) {
     });
     // 焦点：文本域 ⇄ 画布。`set_focus` 会在离开文本域时顺手结束合成态。
     let focused = context;
+    // ⭐ `D-UI-24`：同一次通知**顺手**镜像给界面的编辑保护门（唯一读者 = `apply_view`）。
+    // ⛔ 不是第二个事件源 —— 读的就是 `bpm-input` 的 `changed has-focus` 发出来的这**一次**
+    // 回调；`as_weak` 的取回形状与 `wire_bpm_commit` 同款（本仓判据 D-20 那一课：
+    // 闭包里⛔ 不按 `&MainWindow` 捕获端口，升级出**局部**那份再写）。
+    let focused_window = ui.as_weak();
     ui.on_ime_focus_changed(move |focused_now| {
         let mut context = focused.borrow_mut();
         context.set_focus(if focused_now {
@@ -6424,6 +6443,12 @@ pub fn wire_input(ui: &MainWindow, context: Rc<RefCell<InputContext>>) {
             // 这里必须改成"问焦点系统当前焦点是谁"，而不是假定画布。
             Focus::MainCanvas
         });
+        // 镜像的是**同一个** `focused_now`：Slint 的焦点状态只有一个事实源，
+        // 本属性只是把它搬到宿主够得着的那一格（够不着的原因：`bpm-input`
+        // 声明在子组件 `Transport` 内部，主窗口层的绑定取不到那个标识）。
+        if let Some(window) = focused_window.upgrade() {
+            window.set_bpm_field_editing(focused_now);
+        }
     });
 }
 
@@ -6457,6 +6482,12 @@ pub fn wire_bpm_commit(ui: &MainWindow, port: &Rc<UndoPort>) {
             debug_assert!(false, "MainWindow 在回调执行期间被销毁");
             return;
         };
+        // ⭐ `D-UI-24`：**回车本身就解决草稿** ⇒ 编辑保护在本条路上让路（清零后
+        // 下面那一个 `refresh_undo_window` 会照常写 `bpm-display`）：合法值归一化成
+        // `{:.2}` 读数、非法 / 同值写回权威读数 —— `ui/transport.slint` 那条既有口径
+        // （"⛔ 不留下一个冒充成权威值的草稿"）与 `tests/ui_bpm_field.rs` ③/④ 因此
+        // 一位不动。⚠ 清零的语义是"这串草稿已经有了裁决"，⛔ 不是"焦点离开了框"。
+        ui.set_bpm_field_editing(false);
         // 权威工程读不出来 ⇒ 出声不画（与 `refresh_undo_window` 同款纪律）。
         let Some(project) = port.try_project() else {
             eprintln!("[yeban-app] BPM 敲入没有可投影的工程: 权威会话此刻没有活跃工程");
