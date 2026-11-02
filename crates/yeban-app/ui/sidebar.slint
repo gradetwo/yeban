@@ -92,15 +92,26 @@ export component Sidebar inherits Rectangle {
     /// 同一机制：`public function` + 宿主 `ui.invoke_*`，⛔ 不新增第二份真相源）。
     /// 唯一调用者 = `host::apply_action` 的 `Action::FocusSidebarSearch` 臂
     /// （键位 `Cmd/Ctrl+F`）。
+    ///
+    /// ⚠ `!root.compact` 这一道闸是**本文件自己**落的，⛔ 不是"信 Slint 会替我拦"：
+    /// `sidebar-search-input` 的在场性就是 `visible: !root.compact`（见下面那条绑定），
+    /// 而 `root.compact` 在 `app.slint` 里绑的是 `root.compact || root.sidebar-collapsed`
+    /// ⇒ 这道闸与"框在场"**同一条件**，同时覆盖窄窗口断点与手动折叠导轨两种离场。
+    /// `.focus()` 会不会给一个不在场的控件置焦，上游没有承诺（本机未实测）。若真给不在场
+    /// 的控件落了焦，用户看到的是一按 `Cmd+F` **什么都没发生**、而快捷键层却从此收不到键
+    /// （界面变聋）⇒ 所以这里直接不调用。宿主那侧因此拿到 `false` 读数 ⇒ 如实**不消费**
+    /// （⛔ 不假装成功）。折叠态按 `Cmd+F` 仍能用：宿主**先展开**再调本函数（判据 ④）。
     public function focus-search() {
-        sidebar-search-input.focus();
+        if (!root.compact) {
+            sidebar-search-input.focus();
+        }
     }
 
     /// 上面那次取焦的**读数**：Slint 的焦点不在控件树里，因此镜像成属性
     /// （与 `app.slint: shortcut-layer-focused` 同款；唯一读者 = 宿主与无头判据）。
-    /// 宿主拿它决定这一键**消费还是放行**：窄栏 / 折叠时 `sidebar-search-input`
-    /// 是 `visible: false` 的，取焦落不下去 ⇒ 读数 `false` ⇒ ⛔ 不假装成功。
-    out property <bool> search-has-focus: sidebar-search-input.has-focus;
+    /// `!root.compact &&` 是把"焦点落在一个不在场的框里"这种状态**读不出来**，
+    /// 于是这一枚读数的含义恰好等于"用户看得见的那个框正持有键盘"。
+    out property <bool> search-has-focus: !root.compact && sidebar-search-input.has-focus;
 
     background: Tokens.bg-panel;
     border-width: 1px;

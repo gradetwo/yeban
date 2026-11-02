@@ -31,6 +31,9 @@
 //!    证明没有第二份"我以为焦点在哪"的状态；
 //! ⑥ 真平台按键落进**已由键盘取得焦点**的框里：敲 `b` ⇒ 框里是 `b`，而 ⛔ 画笔工具
 //!    没被切换（`active-tool` 一位不动）。这一条是"能聚焦"与"聚焦了有用"的分界。
+//! ⑦ `compact` 断点（框**离场**）⇒ 这一键如实**不消费**、焦点⛔ 不落在不在场的框上、
+//!    画布层仍持有键盘。这道闸由 `sidebar.slint` 的 `if (!root.compact)` 落下，
+//!    ⛔ 不是"信 Slint 会替我拦"（上游对"给 `visible: false` 的控件调 `.focus()`"无承诺）。
 //!
 //! ## 变异表（每条都写明它应当让谁变红）
 //!
@@ -42,6 +45,7 @@
 //! | 把 `resolve_logical` 第 3 步的 `'f'` 那一格删掉 | A 层红 ＋ 本文件 ② 红（键不消费） |
 //! | 把 `cli.rs` 那一行的 `key` 写成 `PhysicalKey::KeyB` | `tests/cli_contract.rs` 的 B11b 红（标签与键位对不上） |
 //! | `wire_input` 之外再写一份"焦点在搜索框"的布尔状态 | ⑤ 红（`public function` 出现次数 != 恰好一处） |
+//! | 删掉 `sidebar.slint` 里 `if (!root.compact)` 这道闸 | 判别力**取决于上游**：若上游肯给 `visible: false` 的控件置焦 ⇒ ⑦ 红（谎报消费 ＋ 画布层失焦、界面变聋）；若上游本就拒绝 ⇒ ⑦ 仍绿。⚠ 本行如实登记这个边界：⑦ 钉的是"承诺写在本仓的代码里"，不是"上游会兜住" |
 
 #[path = "../src/live_surface.rs"]
 // 本判据只用到 `live_surface.rs` 的一部分 ⇒ 其余项在本测试目标里是 dead_code（`-D warnings` 会判红）。
@@ -105,7 +109,7 @@ fn cmd_ctrl_f_moves_the_keyboard_focus_into_the_search_box() {
     );
 
     // ---- ③ 未点名的修饰变体 ⇒ 不消费、焦点不动 ----
-    for (shift, ctrl, alt, meta) in [
+    for (shift, ctrl, alt, _meta) in [
         (true, false, false, false),  // `Shift+F`
         (false, false, true, false),  // `Alt+F`
         (false, false, false, false), // 裸 `f`
@@ -213,5 +217,41 @@ fn a_real_key_press_goes_to_the_box_and_not_to_the_canvas() {
         ui.ui().get_active_tool(),
         tool_before,
         "⑥ 同一个 `b` ⛔ 不得再触发画布上的单键语义（`[UI-A11Y-002]` 要的就是这一条）"
+    );
+}
+
+/// ⑦ —— **不在场的框不许接焦点**：`compact` 断点下搜索节点离场，这一键必须如实不消费，
+/// 而画布层必须仍然持有键盘（⛔ 不许把界面按聋）。
+///
+/// 本条钉的是 `ui/sidebar.slint` 里那句 `if (!root.compact)` —— 这道闸由**本仓**落下，
+/// ⛔ 不是"信 Slint 会替我拦"：上游对"给 `visible: false` 的控件调 `.focus()` 会怎样"
+/// 没有承诺，本机也没实测。若上游本来就会拒绝，删掉这道闸 ⑦ 仍绿；本条证的是
+/// **"承诺写在自己的代码里"**，与 ⑤ 的"焦点路由恰好一处"同一口径。
+#[test]
+fn an_absent_search_box_refuses_the_key_instead_of_making_the_ui_go_deaf() {
+    let ui = build();
+    // 造的是**状态**而不是实现：`compact` 是 `MainWindow` 的 `in-out` 属性（绑定
+    // `self.width < Tokens.breakpoint-full-hd`），置位手法取自
+    // `src/test_port_adapter.rs`（`port.ui().set_compact(true)`）。⛔ 不是抄
+    // `tests/compact_follows_window_width.rs` —— 那条判据明写自己「只走生产构造入口，不碰
+    // `set_compact`」。
+    ui.ui().set_compact(true);
+    assert!(
+        canvas_layer_focused(&ui),
+        "⑦ 前置：焦点还在画布键盘层（`compact` 本身不该动焦点）"
+    );
+
+    let consumed = ui
+        .ui()
+        .invoke_key_action("f".into(), false, true, false, false);
+
+    assert!(
+        !consumed,
+        "⑦ 框离场 ⇒ 焦点读数必须是 `false` ⇒ 宿主必须**不消费**（⛔ 不假装成功）"
+    );
+    assert!(!search_focused(&ui), "⑦ 焦点不得落在一个不在场的框上");
+    assert!(
+        canvas_layer_focused(&ui),
+        "⑦ 画布层必须仍然持有键盘 —— 一次失败的聚焦⛔ 不能让快捷键失灵"
     );
 }
