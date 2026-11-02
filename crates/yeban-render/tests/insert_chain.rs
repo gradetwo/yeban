@@ -446,7 +446,7 @@ fn the_stereo_convolution_switch_decorrelates_the_aux_return() {
     };
     let off = render_aux(0.0);
     let mut max_diff_off = 0.0f32;
-    for frame in off.samples.chunks_exact(2) {
+    for frame in off.samples.as_chunks::<2>().0 {
         max_diff_off = max_diff_off.max((frame[0] - frame[1]).abs());
     }
     assert_eq!(max_diff_off, 0.0, "开关关 ⇒ 母带左右必须逐位相同");
@@ -458,7 +458,7 @@ fn the_stereo_convolution_switch_decorrelates_the_aux_return() {
     let mut sum_rr = 0.0f64;
     let mut sum_lr = 0.0f64;
     let mut max_diff_on = 0.0f32;
-    for frame in on.samples.chunks_exact(2) {
+    for frame in on.samples.as_chunks::<2>().0 {
         let l = f64::from(frame[0]);
         let r = f64::from(frame[1]);
         sum_l += l;
