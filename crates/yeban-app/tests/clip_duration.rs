@@ -959,9 +959,7 @@ fn clip_duration_ops_for_is_the_only_set_clip_placement_duration_construction_si
         "已在下限 ⇒ 必须是**空批**（⛔ 不是 `new = 0`，那会被模型的 `ZeroDuration` 拒）"
     );
     assert_eq!(
-        clip_duration_ops_for(&floor_project, &a_ulid, GRID_EXPECTED as i64)
-            .iter()
-            .count(),
+        clip_duration_ops_for(&floor_project, &a_ulid, GRID_EXPECTED as i64).len(),
         1,
         "同一份夹具在**延长**方向仍应产出 op（下限只挡缩短）"
     );
