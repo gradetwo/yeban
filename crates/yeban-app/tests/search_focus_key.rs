@@ -28,7 +28,9 @@
 //!    两个读数同时兑现；
 //! ⑤ 文本层接线（源码层，与 `tests/sidebar_search.rs` ⑨ 同一口径）：`public function`
 //!    在 `sidebar.slint` / `app.slint` 各**恰好一处**，宿主臂**恰好一次**调用它 ——
-//!    证明没有第二份"我以为焦点在哪"的状态；
+//!    证明没有第二份"我以为焦点在哪"的状态。计数口径 = **代码行**（`//` 开头的行先删，
+//!    见 `code_only`）：注释里提到方法名不是调用点，把它算进去会假红（实测于 run
+//!    `41516839490`），⛔ 而"为喂判据删注释"是把解释删掉、把缺陷留下。
 //! ⑥ 真平台按键落进**已由键盘取得焦点**的框里：敲 `b` ⇒ 框里是 `b`，而 ⛔ 画笔工具
 //!    没被切换（`active-tool` 一位不动）。这一条是"能聚焦"与"聚焦了有用"的分界。
 //! ⑦ `compact` 断点（框**离场**）⇒ 这一键如实**不消费**、焦点⛔ 不落在不在场的框上、
@@ -54,6 +56,19 @@ mod live;
 
 use live::{LiveWiringOptions, build_live_ui_with};
 use yeban_ui_test_port::port::{KeyCode, Permission};
+
+/// ⑤ 的口径：只在**代码行**上数，注释里提到这个名字不算调用点。
+///
+/// ⚠ 这条口径本身是被 CI 教出来的：run `41516839490` 红在这里，因为 `host.rs` 的
+/// 说明注释里写了一次 `ui.invoke_focus_sidebar_search()`（带括号，看起来像调用），
+/// 于是"恰好一处"数成了两处。⛔ 不去删注释来喂判据（那会把要解释的东西删掉），
+/// 而是把"数的是代码"这件事写进判据。
+fn code_only(text: &str) -> String {
+    text.lines()
+        .filter(|line| !line.trim_start().starts_with("//"))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
 
 /// 焦点读数：`app.slint` 镜像出来的两条（`sidebar-search-focused` / `shortcut-layer-focused`）。
 fn search_focused(ui: &live::LiveUi) -> bool {
@@ -166,9 +181,9 @@ fn cmd_ctrl_f_expands_a_collapsed_sidebar_before_focusing_it() {
 /// ⑤ —— 文本层接线：一条入口，没有第二份焦点状态。
 #[test]
 fn the_focus_route_has_exactly_one_implementation() {
-    let sidebar = include_str!("../ui/sidebar.slint");
-    let app = include_str!("../ui/app.slint");
-    let host = include_str!("../src/host.rs");
+    let sidebar = code_only(include_str!("../ui/sidebar.slint"));
+    let app = code_only(include_str!("../ui/app.slint"));
+    let host = code_only(include_str!("../src/host.rs"));
 
     assert_eq!(
         sidebar.matches("public function focus-search()").count(),
