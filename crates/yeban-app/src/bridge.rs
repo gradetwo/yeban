@@ -4623,10 +4623,9 @@ impl ViewState {
         let mut hit: Option<usize> = None;
         for index in self.notes_visible_in(scroll_x, viewport_width) {
             let note = &self.notes[index];
-            if let Some(scope) = clip_scope {
-                if note.clip_id.as_str() != scope {
-                    continue;
-                }
+            // 作用域过滤发生在**择优之前**（与 [`Self::visible_notes_scoped`] 同一口径）。
+            if clip_scope.is_some_and(|scope| note.clip_id.as_str() != scope) {
+                continue;
             }
             // 位置是**相对视口**的（与注入的数组同一口径, 见 `visible_notes`）。
             let left = note.x - left_edge;
