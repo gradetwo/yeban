@@ -98,7 +98,10 @@ fn without_a_pitch_envelope_the_second_note_starts_at_its_own_pitch() {
         (head - 659.3).abs() < 15.0,
         "对照臂必须立刻是目标音高（659 Hz），实读 {head} Hz"
     );
-    assert!((tail - 659.3).abs() < 15.0, "对照臂尾部仍是 659 Hz，实读 {tail} Hz");
+    assert!(
+        (tail - 659.3).abs() < 15.0,
+        "对照臂尾部仍是 659 Hz，实读 {tail} Hz"
+    );
 }
 
 /// 判据 B：**有 `eg1_*` ⇒ 第二个音从上一个音的音高起滑，0.3 s 后到位**。

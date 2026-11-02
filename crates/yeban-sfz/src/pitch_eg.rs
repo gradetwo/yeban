@@ -143,7 +143,8 @@ impl PitchEg {
         if self.time1 <= 0.0 {
             return self.level1;
         }
-        if !(seconds > 0.0) {
+        // NaN 与 ≤ 0 同走 level0（与原 !(> 0.0) 同义；clippy 禁止偏序上的否定比较）。
+        if seconds.partial_cmp(&0.0) != Some(core::cmp::Ordering::Greater) {
             return self.level0;
         }
         if seconds >= self.time1 {
@@ -234,13 +235,11 @@ fn read_f32(
     let Some(value) = scope_value(scopes, name) else {
         return Ok(None);
     };
-    let parsed = value
-        .parse::<f32>()
-        .map_err(|_| SfzError::InvalidFloat {
-            line: scopes.line,
-            opcode: name.to_string(),
-            value: value.to_string(),
-        })?;
+    let parsed = value.parse::<f32>().map_err(|_| SfzError::InvalidFloat {
+        line: scopes.line,
+        opcode: name.to_string(),
+        value: value.to_string(),
+    })?;
     if !parsed.is_finite() || parsed < min || parsed > max {
         return Err(SfzError::FloatOutOfRange {
             line: scopes.line,

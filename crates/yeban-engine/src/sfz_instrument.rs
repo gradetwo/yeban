@@ -5653,7 +5653,8 @@ impl PitchTrack {
     /// ⚠ 除零/非有限一律返回 `1.0`（调用方另有 [`rate_is_usable`] 兜底）——
     /// 与 `sanitise_sample_rate` 同一条"调用方给不出正常采样率时不 panic"的口径。
     fn ratio_at(&self, frame: u32, hz: f32) -> f32 {
-        if !(hz > 0.0) || !hz.is_finite() {
+        // 非正/非有限一律返回 1.0（与原 !(> 0.0) 同义；clippy 禁止偏序上的否定比较）。
+        if hz.partial_cmp(&0.0) != Some(core::cmp::Ordering::Greater) || !hz.is_finite() {
             return 1.0;
         }
         let cents = self.eg.cents_at(frame as f32 / hz, self.key_delta);
@@ -6528,16 +6529,17 @@ impl SfzVoicePool {
         // （扩展页："keydelta: 140 / keydelta absolute: 141"）。
         // ⚠ 无该 opcode 的语料恒 `None` ⇒ `render_slot` 走原来的恒定 rate，逐位不变。
         let pitch = if self.porta_slot as usize == slot {
-            region.pitch_eg(plan).filter(|eg| !eg.is_transparent()).map(|eg| {
-                PitchTrack {
+            region
+                .pitch_eg(plan)
+                .filter(|eg| !eg.is_transparent())
+                .map(|eg| PitchTrack {
                     eg,
                     key_delta: match eg.source {
                         PitchEgSource::KeyDeltaAbsolute => f32::from(self.porta_delta).abs(),
                         PitchEgSource::KeyDelta => f32::from(self.porta_delta),
                     },
                     frames: self.porta_frame,
-                }
-            })
+                })
         } else {
             None
         };
