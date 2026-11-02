@@ -44,13 +44,17 @@
 //!
 //! | 面 | reason 数 | 规范行数 | SHA-256 |
 //! | :--- | ---: | ---: | :--- |
-//! | `reason`（**可分类**面：字面量 ＋ 可解析的字面量 `let` ＋ **调用点传播**，含顺序） | 207 | 906 | `4890ba25908a83444859edd023e7109b02eb5e33646f46a7b9633ae39443dd43` |
+//! | `reason`（**可分类**面：字面量 ＋ 可解析的字面量 `let` ＋ **调用点传播**，含顺序） | 232 | 993 | `d2d4d5d5315f4a7c8e25ab1e010d0ed107e3fe1e24260d72dc8c309f0b8d44bd` |
 //!
 //! ⚠ `ADR-0030`（`yeban_export_stems`）：两条新字面站点 `masterBusTrack` /
 //! `notASourceNode`（各带 `trackId` / `name` / `reason` 三个同级键）进入规范文本
 //! ⇒ 164 → 166 个 reason、742 → 750 行；**新摘要照抄判据自己的报出值**（本表里那一位
 //! 与 `FROZEN_REASON_SURFACE_SHA256` 在同一次提交里一起换成新值 —— 两者不许各说各话）。
 //! ⚠ 同一批还把生产区 `.rs` 文件分母从 **44** 推到 **45**（新增 `src/domain/stems.rs`）。
+//!
+//! ⚠ SVS（`synthesize_singing` / `svs_job`）：16 条新字面站点进入规范文本
+//! ⇒ 216 → 232 个 reason、940 → 993 行；生产区 `.rs` 文件分母 45 → 46（新增 `src/domain/svs.rs`）；
+//! **新摘要照抄判据自己的报出值**（本表里那一位与 `FROZEN_REASON_SURFACE_SHA256` 在同一次提交里一起换成新值）。
 //!
 //! ⚠ `#274`：摘要随"登记位置搬进 provider"重钉（集合不变、顺序变了）；
 //! 见 `FROZEN_REASON_SURFACE_SHA256` 的沿革注释。
@@ -69,7 +73,7 @@ use yeban_mcp::undo_session::read_rust_sources;
 /// （2026-10-28 起, 见 [`PROPAGATED_REASON_SITES`]）。⛔ 真看不见的运行时站点不进这张表，
 /// 由 [`EXEMPT_DYNAMIC_REASON_SITES`] 逐条登记。
 /// 这是黄金表：任何改名 / 新增 / 删除都必须**故意**改这一行。
-pub const GOLDEN_REASONS: [&str; 212] = [
+pub const GOLDEN_REASONS: [&str; 228] = [
     "assetChannelLayout",
     "assetDecodeFailed",
     "assetHashMismatch",
@@ -308,6 +312,26 @@ pub const GOLDEN_REASONS: [&str; 212] = [
     "sectionNameMustBeNonEmptyStringMustBeString",
     "trackColorMustBeNonEmptyStringMustBeString",
     "trackSamplerMustBeNonEmptyStringMustBeString",
+    // ⭐ SVS：`domain/svs.rs` 新增的 16 条字面量 reason（服务地址校验 4 条、请求/任务/回执/音频 4 条、
+    // 服务故障 4 条、任务失败/未完成/回执缺件 4 条——其中 `serviceUrlBadPort` 占 2 站点、
+    // `svsJobNotFound` 占 2 站点、`serviceBadResponse` 占 5 站点；另两处 `"reason": reason`
+    // 变量站点见 `EXEMPT_DYNAMIC_REASON_SITES` 的 SVS 登记项，不贡献值）。
+    "httpsNotSupported",
+    "jobNotCompleted",
+    "receiptNotReady",
+    "serviceBadJson",
+    "serviceBadResponse",
+    "serviceHttp",
+    "serviceUnreachable",
+    "serviceUrlBadPort",
+    "serviceUrlNoHost",
+    "serviceUrlNotHttp",
+    "svsAudioNotFound",
+    "svsJobFailed",
+    "svsJobNotFound",
+    "svsPartNotInReceipt",
+    "svsRequestEncodeFailed",
+    "svsTakeNotInReceipt",
 ];
 
 /// 本平台（64 位 `usize`）**不可达**的 `reason`，逐条给机械理由。
@@ -1329,7 +1353,7 @@ struct DynamicReasonSite {
 ///
 /// ⚠ 这张表是**显式盲区清单**，不是"这些值不重要"：每一条都写清值从哪来、怎么退役。
 /// ⛔ 不许为了让判据变绿而把新的动态站点塞进来 —— 能给出常量/枚举的，先给出名字。
-const EXEMPT_DYNAMIC_REASON_SITES: [DynamicReasonSite; 4] = [
+const EXEMPT_DYNAMIC_REASON_SITES: [DynamicReasonSite; 5] = [
     DynamicReasonSite {
         file: "domain/mod.rs",
         expr: "Value::from(reason.clone())",
@@ -1369,6 +1393,14 @@ const EXEMPT_DYNAMIC_REASON_SITES: [DynamicReasonSite; 4] = [
         retires_when: "把这条声明改成**闭合词表**（`\"enum\": [...]` 或 `\"const\"`）⇒ 本站点成为可解析\
                        的字面站点，本登记项必须删掉；或者 schema 不再广播 `reason` 键（长形状去掉）\
                        同理退役。",
+    },
+    // ⭐ SVS：`domain/svs.rs` 里两处 `"reason": reason` 变量站点（同一 (file, expr) 键，出现 2 次）。
+    DynamicReasonSite {
+        file: "domain/svs.rs",
+        expr: "reason",
+        occurrences: 2,
+        forwards: "`io_fault` 的 `match`（TimedOut ⇒ `serviceTimeout` / ConnectionRefused|NotFound ⇒ \\\n                   `serviceUnreachable` / 其余 ⇒ `serviceIoError`；其中 `serviceUnreachable` 已有字面量站点）\\\n                   与 `param_fault` 的 `reason` 入参（47 个调用点送进来的字面量校验词，40 个不同值）\\\n                   ⇒ 扫描器看不见运行时的值：`match` 不在可解析 `let` 形状内（只认单个字面量与 \\\n                   `if/else`），`reason` 又不是 `param_fault` 的最后一个入参（末参是 `message`），调用点传播不适用。",
+        retires_when: "`io_fault` 改成字面量 `if/else` 链或闭合枚举，且 `param_fault` 的 `reason` 改成最后一个入参\\\n                       并登记调用点传播时退役（届时两处都成为可分类站点，本登记项必须删掉）。",
     },
 ];
 
@@ -1427,15 +1459,17 @@ const REASON_ARGUMENT_NAME_USES: [ReasonArgumentNameUse; 3] = [
 // （恒等式仍闭合：227 = 字面 218 ＋ 可解析 `let` 2 ＋ 运行时 4 ＋ 传播 3；
 // 230 = 227 ＋ 参数名 3。⚠ 字面/`let`/传播/参数名四条读数**一个都没动** ——
 // 本片在生产区只加了这一条）。
-const REASON_OCCURRENCES_TOTAL: usize = 230;
+// SVS：恒等式仍闭合：258 = 字面 247 ＋ 可解析 `let` 2 ＋ 运行时 6 ＋ 传播 3；
+// 261 = 258 ＋ 参数名 3（字面 +29 站点、运行时 +2 站点）。
+const REASON_OCCURRENCES_TOTAL: usize = 261;
 // ⭐ MCP-TOOL-003：键站点 208 → 216、字面站点 200 → 208 —— 新形态在
 // `domain/notes.rs` / `tools.rs` 里新增的 8 处字面 `"reason"` 站点
 // （tick 0、`bpmOutOfRange` 复用、`tempoPointNotFound`、`timeSignaturePointNotFound`
 // 与描述文本里的键形状；逐文件拆分以扫描器读数为准，此处不手数）。
-const REASON_KEY_SITES_TOTAL: usize = 227;
-const REASON_LITERAL_SITES_TOTAL: usize = 218;
+const REASON_KEY_SITES_TOTAL: usize = 258;
+const REASON_LITERAL_SITES_TOTAL: usize = 247;
 const REASON_RESOLVED_SITES_TOTAL: usize = 2;
-const REASON_DYNAMIC_SITES_TOTAL: usize = 4;
+const REASON_DYNAMIC_SITES_TOTAL: usize = 6;
 const REASON_PROPAGATED_SITES_TOTAL: usize = 3;
 const REASON_ARGUMENT_NAME_TOTAL: usize = 3;
 
@@ -1756,7 +1790,7 @@ fn every_reason_is_asserted_somewhere() {
 /// 每条 `reason` 在生产区**字面 `json!` 对象**里带的同级键（排序）。
 /// ⚠ 口径：只收字面 `json!` 里的键；运行时 `map.insert(...)` 加进去的键不在内。
 /// 空数组 = 该 reason 的 `data` 里**没有**同级键（或 Data 由别的构造方式给出）。
-pub const GOLDEN_REASON_PAYLOADS: [(&str, &[&str]); 212] = [
+pub const GOLDEN_REASON_PAYLOADS: [(&str, &[&str]); 228] = [
     (
         "assetChannelLayout",
         &[
@@ -2558,6 +2592,26 @@ pub const GOLDEN_REASON_PAYLOADS: [(&str, &[&str]); 212] = [
         "trackSamplerMustBeNonEmptyStringMustBeString",
         &["field", "reason", "received"],
     ),
+    // ⭐ SVS：与 `GOLDEN_REASONS` 的 SVS 批同批（同级键 = 各字面 `json!` 对象的并集）。
+    ("httpsNotSupported", &["field", "reason"]),
+    ("jobNotCompleted", &["job_id", "reason", "status"]),
+    ("receiptNotReady", &["detail", "job_id", "reason"]),
+    ("serviceBadJson", &["reason"]),
+    ("serviceBadResponse", &["reason"]),
+    ("serviceHttp", &["httpStatus", "reason"]),
+    ("serviceUnreachable", &["reason"]),
+    ("serviceUrlBadPort", &["field", "reason"]),
+    ("serviceUrlNoHost", &["field", "reason"]),
+    ("serviceUrlNotHttp", &["field", "reason"]),
+    ("svsAudioNotFound", &["job_id", "part", "reason", "take"]),
+    ("svsJobFailed", &["error", "job_id", "reason"]),
+    ("svsJobNotFound", &["job_id", "reason"]),
+    (
+        "svsPartNotInReceipt",
+        &["availableParts", "job_id", "part", "reason"],
+    ),
+    ("svsRequestEncodeFailed", &["reason"]),
+    ("svsTakeNotInReceipt", &["job_id", "part", "reason", "take"]),
 ];
 
 /// **非标识符形状**的 `reason` 值（成功路径上的说明性字段），4 条。
@@ -2915,12 +2969,12 @@ fn the_reason_payload_shape_is_the_published_table() {
 /// `duplicateClipPlacementPairRequired`）⇒ 207 → **216** 个 reason。
 /// 新摘要由本判据的 `left:` 报出值照抄（⛔ 不手算）。
 pub const FROZEN_REASON_SURFACE_SHA256: &str =
-    "d0c76cd1935cb8406c8c18d32599f7e1a40f2d08451c9bd3dd9fa028c24899ba";
+    "d2d4d5d5315f4a7c8e25ab1e010d0ed107e3fe1e24260d72dc8c309f0b8d44bd";
 
 /// 规范形式里的 reason 数 / 规范行数（与摘要一起构成"两端"读数）。
-pub const REASON_SURFACE_REASONS: usize = 216;
+pub const REASON_SURFACE_REASONS: usize = 232;
 /// 规范行数（每个 reason 一行 ＋ 每个键一行）。
-pub const REASON_SURFACE_LINES: usize = 940;
+pub const REASON_SURFACE_LINES: usize = 993;
 
 /// 单文件里的 `reason` 面：**保留出现顺序**的 `(reason, keys)`。
 ///
@@ -3066,8 +3120,10 @@ fn the_reason_surface_digest_is_frozen_and_documented() {
     // #345：新增 `src/domain/import_midi.rs` ⇒ 43 → 44（同样不含 `reason` 键，摘要逐位不变）
     // `ADR-0030`：新增 `src/domain/stems.rs` ⇒ 44 → 45，**这次带两条新字面站点**
     // （`masterBusTrack` / `notASourceNode`）⇒ 摘要同批重钉。
+    // SVS：新增 `src/domain/svs.rs` ⇒ 45 → 46，带 16 条新字面站点（29 处字面出现）与 2 处
+    // 动态变量站点（`io_fault` 的 `match` 与 `param_fault` 的入参，见豁免登记）⇒ 摘要同批重钉。
     // ⇒ 本条只证明"分母变了一位"。
-    assert_eq!(files.len(), 45, "生产区 `.rs` 文件数（规范形式的分母之一）");
+    assert_eq!(files.len(), 46, "生产区 `.rs` 文件数（规范形式的分母之一）");
     let canonical = reason_surface(&files);
     let digest = yeban_model::AssetHash::of_bytes(canonical.as_bytes())
         .as_str()

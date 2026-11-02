@@ -1806,11 +1806,13 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
                 false,
                 "落轨时乐谱起点 tick（缺省 0；只在给了 `trackId` 时有效；SoulX 按此贴轨，VocalRender 在此基础上按实测首音节移位）",
             ),
-            param(
+            bounded_param(
                 "license",
                 "string",
                 false,
                 "落轨时必填：资产许可标识（须在 `assets/samples/manifest.json` 白名单内，如 `CC0-1.0`；与 `yeban_import_audio` 同一条 MUST-GATE-014 判定，本工具不发明默认值）",
+                Some(1),
+                None,
             ),
             param(
                 "gainDb",
