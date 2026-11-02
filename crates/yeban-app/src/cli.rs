@@ -3860,17 +3860,18 @@ const SHORTCUTS: [ShortcutRow; 47] = [
         implemented: true,
     },
     // `[UI-NOTE-005]` §3 项 3：`Shift+←/→` = 时值缩短 / 延长一个吸附网格
-    //（`Op::SetNoteTiming`）。⚠ 标签以 `Shift+` 开头 ⇒ 与无修饰 `← / →` 那两条的
+    //（有音符选区 ⇒ `Op::SetNoteTiming`；选区为空 ⇒ `Op::SetClipPlacementDuration`，
+    // `D-UI-17`）。⚠ 标签以 `Shift+` 开头 ⇒ 与无修饰 `← / →` 那两条的
     // `starts_with` 对账不会互相误配。
     ShortcutRow {
-        label: "Shift+← → 选区时值缩短一个网格",
+        label: "Shift+← → 时值缩短一个网格（选区音符，选区空则选中剪辑）",
         action: Action::ResizeSelectionDuration { direction: -1 },
         key: PhysicalKey::LeftArrow,
         modifiers: Modifiers::shift(),
         implemented: true,
     },
     ShortcutRow {
-        label: "Shift+→ → 选区时值延长一个网格",
+        label: "Shift+→ → 时值延长一个网格（选区音符，选区空则选中剪辑）",
         action: Action::ResizeSelectionDuration { direction: 1 },
         key: PhysicalKey::RightArrow,
         modifiers: Modifiers::shift(),

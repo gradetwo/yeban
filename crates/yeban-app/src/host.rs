@@ -9651,8 +9651,11 @@ fn apply_action(
         // 1. 选区读点与 [`Action::NudgeSelection`] 同一个（`selected-ulids`）；
         // 2. 幅度由 [`resize_duration_delta_for`] **唯一**换算（一个吸附网格）；
         // 3. 批解析走 [`resize_duration_ops_for`]（纯函数）：**逐音符**夹紧到 ≥ 1 tick，
-        //    没变的音符不写 op；整批为空（空选区 / 全部已在下限）⇒ **0 提交**、
-        //    返回 `false`（不吞键，与 `DeleteSelection` / `NudgeSelection` 同一取向）。
+        //    没变的音符不写 op；整批为空 ⇒ 看**选区**决定去向：
+        //    * 选区**非空**（全部已在 1 tick 下限）⇒ **0 提交**、返回 `false`（不吞键，与
+        //      `DeleteSelection` / `NudgeSelection` 同一取向），⛔ 不跨界去改剪辑；
+        //    * 选区**为空** ⇒ 交给 [`resize_selected_clip_duration`]（`D-UI-17`：同一把键
+        //      裁剪选中的剪辑摆放，先音符后剪辑的优先级与 `Delete` 那条同款）。
         // 一次按键 = 一次 `commit_ops` = 一步撤销（`undo_session` 包成一个 `Op::Batch`）。
         // 起点不变 ⇒ 选区身份仍然有效，提交后照常重投影。
         Action::ResizeSelectionDuration { direction } => {
@@ -9672,7 +9675,15 @@ fn apply_action(
             let delta_ticks = resize_duration_delta_for(direction);
             let ops = resize_duration_ops_for(&project, &selected, delta_ticks);
             if ops.is_empty() {
-                return false;
+                // `D-UI-17`：音符选区**为空** ⇒ 同一把键落到选中的剪辑摆放上。
+                //
+                // 分派看的是**选区**而不是**结果**：选区非空但每颗音符都已在 1 tick 下限
+                // （`resize_duration_ops_for` 对没变的音符不产出 op）时⛔ 不跨界去改剪辑 ——
+                // 用户此刻指着的是音符，"键没起作用"是诚实的结果，"顺手改了别的东西"不是。
+                if !selected.is_empty() {
+                    return false;
+                }
+                return resize_selected_clip_duration(ui, port, &project, delta_ticks);
             }
             if port
                 .commit_ops(now_ms(), "resize selection duration", ops)
@@ -12053,6 +12064,87 @@ fn toggle_selected_clip_mute(
         return false;
     }
     if port.commit_ops(now_ms(), "mute clip", ops).is_err() {
+        return false;
+    }
+    refresh_undo_window(ui, port, true);
+    true
+}
+
+/// 选中剪辑的身份 ＋ 一档增量 ⇒ 待提交的 `Op::SetClipPlacementDuration`
+/// （剪辑时长改动的**唯一** op 构造点，`D-UI-17`）。
+///
+/// 纯函数（只读工程、不碰界面、不提交）⇒ 判据可以直接喂合成工程逐字段对账。
+///
+/// 三条口径与音符那一族 [`resize_duration_ops_for`] **逐条同款**：
+/// 1. 幅度是**一个吸附网格**（[`resize_duration_delta_for`] 唯一换算），⛔ 不是像素级自由
+///    裁剪 —— 拖动裁剪右缘是另一票（要新加命中区，会动默认帧）；
+/// 2. 夹紧到 `≥ 1` tick：`ClipPlacement::validate` 与 op 前置条件走的是同一条
+///    `ModelError::ZeroDuration` ⇒ 这里⛔ 不自造第二个下限；
+/// 3. **算完没变**（已 1 tick 又按缩短 / `delta_ticks == 0`）⇒ 空批，上层因此既不提交
+///    也不消费（"把键吞掉却什么都不做，比不处理更糟"）。
+#[must_use]
+pub fn clip_duration_ops_for(
+    project: &yeban_model::YebanProjectV1,
+    selected_clip_ulid: &str,
+    delta_ticks: i64,
+) -> Vec<yeban_model::ops::Op> {
+    let Some((track_id, placement_id, placement)) = clip_placement_for(project, selected_clip_ulid)
+    else {
+        return Vec::new();
+    };
+    let old_duration_ticks = placement.duration_ticks;
+    // `unsigned_abs()` 而不是 `-delta_ticks`：后者在 `i64::MIN` 上会溢出，而这里没有
+    // 任何理由去赌调用方给的增量有多宽。
+    let step = delta_ticks.unsigned_abs();
+    let new_duration_ticks = if delta_ticks < 0 {
+        old_duration_ticks.saturating_sub(step).max(1)
+    } else {
+        old_duration_ticks.saturating_add(step)
+    };
+    if new_duration_ticks == old_duration_ticks {
+        return Vec::new();
+    }
+    vec![yeban_model::ops::Op::SetClipPlacementDuration {
+        track_id,
+        placement_id,
+        old_duration_ticks,
+        new_duration_ticks,
+    }]
+}
+
+/// `Shift+←/→` 落到**编曲视图选中的剪辑摆放**上（`D-UI-17`）：一次原子提交、一步撤销。
+///
+/// 四条口径与 [`toggle_selected_clip_mute`] 逐条同款，差别只在改的是 `duration_ticks`：
+/// 1. **只在编曲视图**生效（`arrangement-view`）；
+/// 2. 没有选中 / 身份解析不到 ⇒ **不消费**，⛔ 也不顺手清掉那个陈旧读数；
+/// 3. 一次按键 = **一次** [`UndoPort::commit_ops`]（单条 op）；模型拒绝 ⇒ `false` 且⛔ 不重试；
+/// 4. 剪辑**不销毁**（改的是长度，身份仍然有效）⇒ 选中态留下，可以连按第二下继续裁剪。
+///
+/// 提交后⛔ 不需要新写任何界面属性：剪辑的**宽度**本来就是投影算出来的
+/// （`ViewState::clip_widths` ← `ClipPlacement::duration_ticks`），重投影一跑，
+/// 那块剪辑块就在像素上变长 / 变短 —— 与 `D-UI-16` 的"静音要有新数组属性"不同，本票
+/// 在 `.slint` 侧**零改动**，默认帧因此逐像素不变（⛔ 不触发基准重录）。
+fn resize_selected_clip_duration(
+    ui: &MainWindow,
+    port: &Rc<UndoPort>,
+    project: &yeban_model::YebanProjectV1,
+    delta_ticks: i64,
+) -> bool {
+    if !ui.get_arrangement_view() {
+        return false;
+    }
+    let selected = ui.get_selected_clip_ulid();
+    if selected.is_empty() {
+        return false;
+    }
+    let ops = clip_duration_ops_for(project, selected.as_str(), delta_ticks);
+    if ops.is_empty() {
+        return false;
+    }
+    if port
+        .commit_ops(now_ms(), "resize clip duration", ops)
+        .is_err()
+    {
         return false;
     }
     refresh_undo_window(ui, port, true);

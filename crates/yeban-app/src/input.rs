@@ -829,6 +829,10 @@ pub enum Action {
     /// 宿主侧的 `Op` 也不同（`Op::MoveNote` vs `Op::SetNoteTiming`）。
     /// 与 [`Self::NudgeSelection`] 同一条分工：本状态机只回答"这一键代表哪个动作"，
     /// "选区为空 / 已经缩到 1 tick 怎么办"由 `host::apply_action` 的臂决定。
+    ///
+    /// ⚠ **作用域有两格**（`D-UI-17`）：音符选区**为空**时同一动作落到编曲视图里选中的
+    /// **剪辑摆放**（`Op::SetClipPlacementDuration`）。变体名里的 "Selection" 因此指的是
+    /// "此刻被指着的东西"，⛔ 不是"只作用于卷帘选区"。
     ResizeSelectionDuration {
         /// `-1` = `Shift+←` 缩短；`+1` = `Shift+→` 延长。
         direction: i8,
