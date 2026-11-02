@@ -98,6 +98,8 @@ fn a_key_in_the_band_ducks_the_program_and_a_key_outside_it_does_not() {
         freq_hz: 85.0,
         threshold_db: -30.0,
         max_cut_db: 6.0,
+        q: DynEqParams::Q,
+        ratio: DynEqParams::RATIO,
     };
 
     let program = sine(85.0, 0.01, 1.0);
@@ -142,6 +144,8 @@ fn the_key_never_reaches_the_output() {
         freq_hz: 85.0,
         threshold_db: -30.0,
         max_cut_db: 6.0,
+        q: DynEqParams::Q,
+        ratio: DynEqParams::RATIO,
     };
     let silence = vec![0.0f32; (SR * 0.5) as usize];
     let key = sine(85.0, 0.8, 0.5);
@@ -261,6 +265,8 @@ fn the_dyn_eq_frequency_upper_bound_is_twelve_kilo() {
             freq_hz: hz,
             threshold_db: -30.0,
             max_cut_db: 6.0,
+            q: DynEqParams::Q,
+            ratio: DynEqParams::RATIO,
         }
         .sanitised()
         .freq_hz
@@ -283,6 +289,8 @@ fn a_dyn_eq_at_seven_kilo_really_ducks_seven_kilo() {
         freq_hz: 7_000.0,
         threshold_db: -30.0,
         max_cut_db: 6.0,
+        q: DynEqParams::Q,
+        ratio: DynEqParams::RATIO,
     };
 
     // 节目够响（−2 dBFS）⇒ 自检波压满 6 dB。
