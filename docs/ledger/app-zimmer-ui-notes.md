@@ -976,3 +976,42 @@ Slint 事件循环这一路停摆：期间没有任何点击、按键、重投�
 
 **处置**：`pending`，等裁决。创作轮里它的实际代价是"点导出＝冻 2.5 秒、期间界面看起来死了"，
 属于**可用性缺陷但不是错误结果**——回执与文件本身是对的，所以不阻塞 D-EX-1 那一批。
+
+## §31 死控件普查的结果：**没有新的死键**，但**文本框全都摸不到键盘**
+
+普查口径（一次只读扫描，`.slint` 侧与 `src/` 侧**双向**核验才算）：
+(A) 声明了按钮外观却没有点击源；(B) 点击源调用的回调走到 `app.slint` 就断了；
+(C) 渲染字面量却冒充实时读数。
+
+**(A) 三处，全部是**已登记**的那三条** —— `src/elements.rs:4551` 的
+`KNOWN_ACTIONLESS_CONTROLS [&str;3]` 逐条对得上：`ai-rail-intent-button`
+（`app.slint:119`）、`transport-commit-button`（`transport.slint:378`，有
+`commit_area := TouchArea` 却**空体**）、`transport-branch-button`（`transport.slint:347`，
+`elements.rs:3603` 原话"今天不得有点击源"）。⇒ **没有遗漏的死键**，这三条继续等人类裁决
+（见本文件前面的 pending 清单）。
+
+**(B) 空。** 每个被 `clicked` / `accessible-action-default` 触发的回调，要么在 `app.slint`
+转发到一个 `src/` 里有 `on_` 处理器的 `MainWindow` 回调，要么落到宿主会读的视图态属性上。
+
+**(C) 一处，但它不是假控件**：`ui/status_bar.slint:131` 的 `chord: "(none)"` 在
+`src/elements.rs:379` 登记为**动态区**（第五位 `true`），且 `status_bar.slint:127-129` 自己写着
+"`chord` 则永远停在无读数形态（**能力不存在**）" ⇒ 与 `device_rack.slint` 那两处
+"(占位)" / "[v2.0.0 · 未实现]" 同族：如实报"没有读数"。⚠ 若要补这一格，
+`yeban-theory::chord::Chord::from_voicing`（`crates/yeban-theory/src/chord.rs:571`）就是现成的
+反向识别（音集 → 符号），⛔ 不必新造算法；但 `yeban-app` 现在**不依赖** `yeban-theory`
+（`Cargo.toml` 只有 `yeban-model`），且"哪些音符算进来"（播放头？未静音轨？选区？）
+规范里没有答案 ⇒ 那是**要 ADR 的语义决定**，不是接线。本票不动它。
+
+**⭐ 真正的缺口在这里：文本框只能靠鼠标点。** 现读链条：
+
+1. `ui/app.slint:725` `forward-focus: key-handler` ⇒ 窗口建立时焦点在快捷键层；
+2. 焦点在画布时 `Tab` = `Action::ToggleView`（`src/input.rs:1418` 的既有判据逐字如此，
+   规范 §2.2 也把 `Tab` 限定在画布）；
+3. `key-pressed` 只有 in `key-action` 返回 `false` 时才 `reject`（`app.slint:728-733`），
+   而注释逐字写着 **`accept` ⇒ "Slint 也不做 `Tab` 焦点轮转"**（`app.slint:717`）。
+
+⇒ 焦点一旦落在快捷键层，`Tab` 被 DAW 吃掉、永不轮转 ⇒ **`bpm-input`（`transport.slint:281`）、
+搜索框（`sidebar.slint` 的 `sidebar-search-input`）、导出弹窗那 4 个框，纯键盘用户一个都进不去**。
+仓库里唯一的程序性回焦成例是时光机那一对（`app.slint:2237` `undo_tree_trap.focus()` /
+`2240` `key-handler.focus()`）⇒ **有办法补**（键位 → 转发 → `.focus()`），
+D-UI-18 就是把搜索框接进键盘可达面。
