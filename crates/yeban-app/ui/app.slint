@@ -2252,7 +2252,7 @@ export component MainWindow inherits Window {
     }
 
     // WAV 导出设置（隐藏的模态；默认关着 ⇒ 默认帧一位不变）
-    ExportWavDialog {
+    export_dialog := ExportWavDialog {
         x: 0;
         y: 0;
         width: root.width;
@@ -2268,5 +2268,20 @@ export component MainWindow inherits Window {
 
         run => { root.export-wav(); }
         close => { root.close-export-wav(); }
+    }
+
+    /// 导出弹窗的焦点读数（`-1` = 焦点不在任何输入格内；`0..3` = 路径 / 采样率 / 位深 / 时长）。
+    /// 纯转发弹窗内的**推导**读数（`export_wav_dialog.slint` 的 `focused-field`，从四个
+    /// `TextInput.has-focus` 算出）⇒ ⛔ 这里不存第二份"我以为焦点在哪"的状态。
+    /// 唯一读者 = 无头判据（`tests/export_dialog_key_capture.rs`）。
+    out property <int> export-wav-focused-field: export_dialog.focused-field;
+
+    /// `D-UI-19`：把键盘交给**开着的那个**弹窗的第一格。⛔ 不是第三份焦点状态：
+    /// 焦点仍只有 Slint 一个事实源，这里只是**命令**它（与上面的
+    /// `focus-undo-tree-trap` / `focus-shortcut-layer` 同一机制）。
+    /// 唯一调用者 = `host::wire_module_actions_with_capture` 打开弹窗那一处
+    /// （与 `export-wav-open` 的写者同一个地方 ⇒ 开关与焦点不可能分叉）。
+    public function focus-export-wav-dialog() {
+        export_dialog.focus-first-field();
     }
 }

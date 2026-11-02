@@ -1015,3 +1015,56 @@ Slint 事件循环这一路停摆：期间没有任何点击、按键、重投�
 仓库里唯一的程序性回焦成例是时光机那一对（`app.slint:2237` `undo_tree_trap.focus()` /
 `2240` `key-handler.focus()`）⇒ **有办法补**（键位 → 转发 → `.focus()`），
 D-UI-18 就是把搜索框接进键盘可达面。
+
+## §32 D-UI-19 导出弹窗的键盘捕获（模态第一次真的持有键盘）＋ 两条只登记的缺口
+
+**要补的句子**：`[UI-A11Y-003]` §7.3 第 1 条 —— 模态面板内焦点必须闭环，`Tab` 不得逃出，
+`Esc` 必须收尾。§31 那条链在弹窗这一侧的表现是：那四格（路径 / 采样率 / 位深 / 秒数）
+**只能靠鼠标点**，而键盘整个停在 `key-handler` 上 —— 弹窗盖住整帧却一个键也接不到。
+
+**交付**（`ui/dialogs/export_wav_dialog.slint` · `ui/app.slint` · `src/host.rs` ·
+判据 `tests/export_dialog_key_capture.rs`；`tests/export_dialog_modal_closure.rs` 只改说明）：
+
+1. **捕获点在祖先，不在兄弟**：`export-trap := FocusScope` 包住整块面板（不是时光机那种
+   兄弟覆盖层）。理由实测自 `i-slint-core-1.18.1/window.rs:1324-1348`：键事件从焦点件
+   **只往上冒给祖先** ⇒ 兄弟 `FocusScope` 永远接不到 `TextInput` 拒绝的键。
+2. **`Tab` / `Shift+Tab` 由模态自己轮转**：`focus-on-tab-navigation: false` 是**必需**的 ——
+   内建那段（`window.rs:1350-1370`）只在"没人 accept"时跑，且按**可见**筛，而此刻左栏搜索框
+   与 BPM 框同样可见 ⇒ 焦点会跳出模态。`Ctrl/Alt/Meta + Tab` 一律 `reject`，与内建同口径。
+   `Shift+Tab` 在注入侧写作 `Character('\u{19}')`（`KeyCode` **没有** Backtab 变体）。
+3. **`Esc` 落既有那条回调**：`root.close()` ⇒ 宿主 `on_close_export_wav`，⛔ 不是第二份关闭逻辑
+   （`export_dialog_modal_closure.rs` ⑥ 钉的就是"这个形状只有一处"）。
+4. **进入/退出的焦点转移写在宿主**：打开站点在同一个闭包里调 `invoke_focus_export_wav_dialog()`；
+   关闭站点**只在 `was_open` 时**调 `invoke_focus_shortcut_layer()` —— 否则"本来就没开"的
+   关闭路径会把快捷键层抢过来（那是一条真实的越权改焦点）。
+5. **读数是派生的**：`out property <int> focused-field` 由四件的 `has-focus` 三元链算出，
+   ⛔ 没有新增可寻址控件、⛔ 没有第二处 setter。
+
+**⚠ 读数语义**（判据里逐字写了，别误读）：那个整数是**四格文本框**的 `has-focus`，
+**不是 trap 的** —— `move_focus`（`window.rs:1591-1629`）把 `has-focus` 发在**目标件**上，
+trap 自己那条恒为假。又因 `.slint` 的 `item.focus()` 生成
+`set_focus_item(.., FocusReason::Programmatic)`（`i-slint-compiler-1.18.1/generator/rust.rs:4541`）
+⇒ 既**绕过可见性判定**（这就是 `focus-on-*` 两个 false 仍进得去的原因），也
+**不 select-all**（那段只在 `TabNavigation` 里全选，`items/text.rs:1243-1246`）⇒ 判据 ③ 才敢
+断言"插入一个字符后长度恰好 +1、去掉那一个字符等于种子串"。
+
+**判决**：`pending` —— 本机不编译 `yeban-app`（Slint 重依赖），CI 是唯一编译器。
+
+**同一轮新发现、本票⛔ 不顺手改的两条**：
+
+* **`D-UI-20` 弹窗里的"按钮"没有一格可聚焦 ⇒ `Return` 触发不了导出。** 现读
+  `export_wav_dialog.slint`：`export-wav-close-button`（`accessible-role: button`，159 行）、
+  `export-wav-limiter-switch`（`switch`，330 行）、`export-wav-run-button`（`button`，401 行）
+  全是 `Rectangle` + `TouchArea` 的手绘件 —— 没有 `Button`/`FocusScope` 容器 ⇒ 收不到焦点
+  ⇒ 键盘既走不到"确认导出"也走不到那个开关。修法要**先实测**可聚焦容器不与
+  `TouchArea` 抢命中测试（§7.3 的第 2 条也正是这么要求的），不是加一行 `.focus()` 的事。
+* **`D-UI-21` 模态遮罩不吞鼠标 ⇒ 弹窗开着时点击仍穿到下层。** 遮罩就是组件根那枚
+  `Rectangle`（`background: mask-black.with-alpha(0.65)`），而 `Rectangle` 对鼠标事件返回
+  `EventIgnored`（Slint 里只有 `TouchArea` 会吞）⇒ 整帧遮罩**只挡眼睛不挡手**；
+  `D-UI-19` 新加的 trap 也帮不上 —— 它 `focus-on-click: false`，`FocusScope::input_event`
+  在这种情况下同样 `EventIgnored`（实测 `items/input_items.rs`）。时光机同款：
+  `undo_tree_modal.slint` 全文只有三处 `TouchArea`（✕ 钮、DAG 节点、"撤销一步"钮，
+  149 / 197 / 306 行），**没有**全屏遮罩层。⇒ 现在"弹窗开着还能改下层"是真实行为，
+  `export_dialog_modal_closure.rs` 的路由一节因此不再声称自己钉的是哪一条 `Esc` 路径。
+  修它 = 遮罩层加 `TouchArea` 吞掉点击，但那会改变"点遮罩不关面板"的既有语义、
+  且牵动两条已判绿的视觉回归基准 ⇒ 单独一票。

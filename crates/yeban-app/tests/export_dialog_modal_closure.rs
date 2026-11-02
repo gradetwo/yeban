@@ -1,4 +1,4 @@
-//! **`Esc` 收尾导出设置弹窗**（`host::apply_action` 的 `Action::Cancel` 臂）—— 端到端 + 源码判据。
+//! **`Esc` 收尾导出设置弹窗**（终点 = 那**唯一**一条 `close-export-wav` 回调）—— 端到端 + 源码判据。
 //!
 //! 规范来源：`[UI-A11Y-003]` §7.3（模态面板的收尾键）· `[UI-TEST-001]`（稳定语义 ID 的寻址面）。
 //!
@@ -6,8 +6,10 @@
 //!
 //! `ui/dialogs/export_wav_dialog.slint` 盖住整帧（遮罩 `mask-black @ 0.65`），在本次接线之前
 //! **只有一条**出路：鼠标点 `export-wav-close-button`。时光机那一半早就接了 `Esc`
-//! （`tests/undo_tree_focus_trap.rs` ⑤），弹窗这一半漏了。现在 `Action::Cancel` 在
+//! （`tests/undo_tree_focus_trap.rs` ⑤），弹窗这一半漏了。补上之后 `Action::Cancel` 在
 //! "弹窗开着"时落**既有的那条** `close-export-wav` 回调 ⇒ 键盘与鼠标走的是同一条路。
+//! `D-UI-19`（`tests/export_dialog_key_capture.rs`）又把模态的键盘接上了，它那条 `Esc`
+//! 分支落的仍是**同一条**回调 `close-export-wav` —— 本文件钉的就是"这条回调是唯一的收尾形状"。
 //!
 //! ## 判据（一条链，六个读数）
 //!
@@ -15,17 +17,31 @@
 //! | :--- | :--- |
 //! | ① 起点 | 弹窗关着、不在运行时控件树里、`module-status` 为空 |
 //! | ② 打开 | `open-export-wav` ⇒ 属性为真，且十个 `export-wav-*` ID 全部进树 |
-//! | ③ `Esc` 真的关闭 | 走**注入 → Slint 事件源 → `key-handler` → 宿主**全链路（⛔ 不是直接 invoke 回调）⇒ 属性转假、那十个 ID 全部离开树、寻址面回到 ① 的**同一集合** |
+//! | ③ `Esc` 真的关闭 | 端到端注入那一条 `Esc`（⛔ 不是直接 invoke 回调）⇒ 属性转假、那十个 ID 全部离开树、寻址面回到 ① 的**同一集合**。**走的是哪一段**见下面的"路由"一节 —— `D-UI-19` 把它换过一次 |
 //! | ④ 正对照：`Esc` **不导出** | 目标 WAV 文件**不存在**、`module-status` 仍为空 —— 没有这一条，"关闭"可能顺带跑了导出而看不出来 |
 //! | ⑤ 关闭后键盘层还在 | 再按 `1` 仍到达宿主（`active-tool` = 1）；无弹窗无手势时再按 `Esc` 落空**不改**任何读数 |
 //! | ⑥ 源码纪律（唯一写者） | `src/host.rs` 里那个属性的 setter **恰好两处**（打开 / 关闭），键盘臂里 `invoke_close_export_wav` **恰好一处** ⇒ 不存在第二个真相源 |
 //!
-//! ## 如实登记的边界（⛔ 不假装覆盖）
+//! ## 路由（`D-UI-19` 之后本文件的这条 `Esc` 走的是哪一段）
 //!
-//! 本判据证的是**焦点仍在快捷键层**时的那条 `Esc`（打开弹窗这一步不移焦 ⇒ ② 之后就是这一态）。
-//! 用户**点进**某个输入框之后再按 `Esc` 归谁，取决于 Slint 内建 `TextInput` 对 `Escape` 的
-//! 内部处置（本机不编译 Slint ⇒ 无实测）；本文件因此**不**声称"输入框里按 `Esc` 也会关"，
-//! ✕ 按钮那条出路一位未动。
+//! ⚠ 本节于 `D-UI-19` 改写：那之前这里写的是"注入 → Slint 事件源 → `key-handler` → 宿主
+//! `Action::Cancel`"，而 `D-UI-19` 把键盘交给了模态 ⇒ 那句话**今天不再成立**。
+//! 本判据的断言一位未动（⛔ 没有为了迁就新实现去放宽任何一条），改的只有这段说明。
+//!
+//! * **② 打开之后焦点已在第一格里**（`host` 在 `set_export_wav_open(true)` 的同一个闭包中
+//!   调 `invoke_focus_export_wav_dialog()`）⇒ ③ 注入的 `Esc` 落点是
+//!   `TextInput` → `export-trap` → **既有的** `close` 回调 → 宿主 `on_close_export_wav`，
+//!   ⛔ 不再经过 `key-handler`（它是弹窗的**兄弟**，不是祖先；Slint 的投递只往上冒）。
+//! * 两条路**终点同一个**：`Action::Cancel` 臂与 trap 的 `Esc` 分支都落 `close-export-wav`
+//!   那**唯一**一条回调（⑥ 钉的正是"这个形状只有一处"）⇒ 本判据证的"能关、关得干净、
+//!   不顺手导出"这三条读数一位都没有因为实现换路而放宽。
+//! * `Escape` 在 `TextInput` 里**不会被吃掉**这一点现在有实测：
+//!   `i-slint-core-1.18.1/items/text.rs` 的"Only insert/interpreter non-control character
+//!   strings"那一段把控制字符（含 `\u{1b}`）一律 `EventIgnored` ⇒ 冒泡给祖先 `export-trap`。
+//!   上一版这里写的是"本机不编译 Slint ⇒ 无实测"，那条不确定性已由 `D-UI-19` 消除。
+//! * 弹窗开着而焦点**不在**弹窗里（模态遮罩不吞鼠标 ⇒ 点击仍会穿到下层，`D-UI-21` 已登记）
+//!   时，`Esc` 走的还是 `key-handler` → `Action::Cancel` 那一条。两条都在，⛔ 本文件不再
+//!   声称自己钉的是哪一条 —— 端到端只读到"关掉了"。
 
 #[path = "../src/live_surface.rs"]
 // 本判据只用到 `live_surface.rs` 的一部分 ⇒ 其余项在本测试目标里是 dead_code（`-D warnings` 会判红）。
@@ -174,7 +190,9 @@ fn escape_closes_the_export_dialog_without_running_an_export() {
         opened.len()
     );
 
-    // ---- ③ 真的按键：注入 → `key-handler` → 宿主 `Action::Cancel` ----
+    // ---- ③ 真的按键：注入 → `TextInput` → `export-trap` → 宿主 `close-export-wav` ----
+    // ⚠ 这一段路由由 `D-UI-19` 换过（那之前焦点还在快捷键层 ⇒ 走 `key-handler` → `Action::Cancel`）；
+    // 两条路的**终点是同一条回调**，下面的断言一位未动。详见文件头"路由"一节。
     ui.dispatch_key_press(KeyCode::Escape)
         .expect("③ `Esc` 必须落到真实窗口（Interactive 档）");
     let esc_closed = !ui.ui().get_export_wav_open();

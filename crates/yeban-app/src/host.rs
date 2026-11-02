@@ -7903,6 +7903,11 @@ pub fn wire_module_actions_with_capture(
                 ui.set_export_wav_path(default_target.to_string_lossy().to_string().into());
             }
             ui.set_export_wav_open(true);
+            // `D-UI-19`（`[UI-A11Y-003]` §7.3 第 1 条）：遮罩盖住整帧 ⇒ 键盘也必须进来。
+            // 在这一处同步取焦（⛔ 不用 `.slint` 的 `changed` 处理器：它要等事件循环
+            // 下一拍，而无头判据设置属性后并不跑循环 ⇒ 焦点会停在原地，与
+            // `apply_undo` 里时光机那一对同一个理由）。焦点的写者仍只有 Slint 一个。
+            ui.invoke_focus_export_wav_dialog();
         });
     }
     {
@@ -7912,7 +7917,16 @@ pub fn wire_module_actions_with_capture(
                 debug_assert!(false, "MainWindow 在回调执行期间被销毁");
                 return;
             };
+            // `D-UI-19`：关闭 ⇒ 键盘**复位**回快捷键层（`[UI-A11Y-003]` §7.3 第 1 条的
+            // 后半句"关闭时焦点精准复位"）。只在**真的开 → 关**那一次复位：弹窗本就关着时
+            // ⛔ 不许无端改焦（例如把焦点从 `D-UI-18` 的搜索框手里抢走）。
+            // 复位目标是**快捷键层**而不是"触发控件"：`module-export-wav-button` 今天不是
+            // 可聚焦控件（无 `FocusScope`）⇒ 规范那句要等它先有焦点身份，见判据文件的边界登记。
+            let was_open = ui.get_export_wav_open();
             ui.set_export_wav_open(false);
+            if was_open {
+                ui.invoke_focus_shortcut_layer();
+            }
         });
     }
 
