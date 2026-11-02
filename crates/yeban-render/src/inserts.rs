@@ -1804,8 +1804,12 @@ mod tests {
             StripField::DynEqFreq => 320.0,
             StripField::DynEqThresholdDb => -28.0,
             StripField::DynEqMaxCutDb => 4.0,
+            StripField::DynEqQ => 2.8,
+            StripField::DynEqRatio => 8.0,
             StripField::Width => 1.4,
             StripField::MonoBelowHz => 120.0,
+            StripField::MsMidGainDb => 3.0,
+            StripField::MsMidFreqHz => 3_000.0,
         }
     }
 

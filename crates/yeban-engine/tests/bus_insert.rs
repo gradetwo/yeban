@@ -609,10 +609,10 @@ fn b5_sizes_stay_under_the_192_kib_red_line() {
         204_800usize.saturating_sub(runtime)
     );
     assert_eq!(
-        runtime, 199_296,
+        runtime, 200_112,
         "EngineRuntime 必须是 186736 B ＋ **round-robin 片 16 槽 × 512 B = 8192** ⇒ 194960 B（#261：逐边发送量表 ＋4784 B；\
          #173 的主总线插入 ＋1792 仍在里面；⭐ **S1 第一片** ＋16 B = 两个 `u64` 事件计数\
-         `strip_output_gain_events` / `strip_output_gain_value_rejects`；⭐ **通道条 hpf/dyn-eq/width 片** ＋3536 B ⇒ 198496 B（通道条 376 → 584，＋208 ＝ HPF 立体声 biquad ×2 ＋ 动态 EQ 检波/峰值 biquad ×3 ＋ 包络 f32 ＋ 参数 5 标量，布局对齐到 8，× 17 内联槽位；十臂两 bool 落在填充里 ＋0）；⭐ **portamento 片** ＋256 B ⇒ 198752 B（池 ＋8，实测）；⭐ **mono-maker 片（`#344`）** ＋544 B ⇒ 199296 B（通道条 ＋32 × 17 内联槽位：side 低通 biquad 5 系数 ＋ 4 状态 ＝ 36 B，对齐后 ＋32）；见本判据文档）"
+         `strip_output_gain_events` / `strip_output_gain_value_rejects`；⭐ **通道条 hpf/dyn-eq/width 片** ＋3536 B ⇒ 198496 B（通道条 376 → 584，＋208 ＝ HPF 立体声 biquad ×2 ＋ 动态 EQ 检波/峰值 biquad ×3 ＋ 包络 f32 ＋ 参数 5 标量，布局对齐到 8，× 17 内联槽位；十臂两 bool 落在填充里 ＋0）；⭐ **portamento 片** ＋256 B ⇒ 198752 B（池 ＋8，实测）；⭐ **mono-maker 片（`#344`）** ＋544 B ⇒ 199296 B（通道条 ＋32 × 17 内联槽位：side 低通 biquad 5 系数 ＋ 4 状态 ＝ 36 B，对齐后 ＋32）；⭐ **nightfall 片** ＋816 B ⇒ 200112 B（通道条 ＋48 × 17 内联槽位，实测；余量 4688 B）；见本判据文档）"
     );
     assert_eq!(
         snapshot, 4_656,
