@@ -821,3 +821,44 @@ error[E0106]: missing lifetime specifier
 判决：本票与 §25 / §26 同批，`f0a57180` 的 run `41476987648` **在飞** ⇒ 三票全部记 `pending`；
 读回时必须逐条确认 `sidebar_search` / `delete_selected_clip` / `clip_mute_toggle` 三个二进制
 都出现在 `Running tests/` 名单里且各有 `test result:` 行。
+
+## 28. `41476987648` 读回：第二枚**我写的代码**红（`clippy::clone_on_copy`），仍是零读数
+
+读法（run 尚未整体结束 ⇒ `gh run view --log-failed` 直接拒绝："logs will be available when it is
+complete"）⇒ 改走 **per-job API**：`gh api --allow-escape-sequences repos/gradetwo/yeban/actions/
+jobs/<job-id>/logs`，先 `sed 's/\x1b\[[0-9;]*[a-zA-Z]//g'` 去 ANSI 再 `grep`。⚠ 这条"整体在飞时
+拿不到日志"是本轮新学：判在飞 run 的单票结论要用 `gh run view --json jobs` 的**作业级**
+`conclusion`，日志只能等 run 结束后取（或按作业 id 取）。
+
+作业级现读（`f0a57180`）：`lockfile` / `checks` / `plan` / `deny` = success；
+**`rust (yeban-app)` = failure**、**`windows (...)` = failure**；`macos` 排队；
+`rust (workspace 全量)` / `e2e` 被 plan 跳过（⛔ 那两格的 success/skipped 不构成任何验证，§6.3 第 2 条）。
+
+失败内容是**一条** clippy 硬错，linux 与 windows 同源（非平台抖动）：
+
+```
+error: using `clone` on type `ClipPlacement` which implements the `Copy` trait
+   --> crates/yeban-app/src/host.rs:11950:29
+11950 |         previous_placement: placement.clone(),
+```
+
+根因是 §26 那枚修复的**副作用**：`clip_placement_for` 改成回 `&'p ClipPlacement` 之后，
+`clip_delete_ops_for` 里那句 `placement.clone()` 的对象从"非 Copy 的引用目标"变成了
+"**Copy 类型的 clone**" ⇒ `clippy::all` 在 `-D warnings` 下判硬错。改法 = `*placement`
+（`ClipPlacement`  derive `Copy`，语义还是一份快照，撤销载荷一位不少）。
+
+⚠ 与 §26 同一半代价，且这次更贵：错误仍在 **lib** 编译期 ⇒ `sidebar_search` /
+`delete_selected_clip` / `clip_mute_toggle` 三个判据二进制**第二次**从未被编译。
+两连红的共同形状是"**改签名/改类型后没有重读调用点**"——本机不编译 Slint 时，这类
+错误的唯一防线是把"这一改动会让哪些调用点的类型变掉"逐条列出来看一遍，而不是等 CI。
+
+本轮顺手做了该自检（覆盖 §26 / §28 两处改动波及的全部调用点）：
+`clip_placement_for` 的六个使用点里只有 11950 一处用到整份摆放，其余只读标量字段；
+三个新判据文件则逐符号核过 `#[test]` 之外的**未使用**导入 / 助手 / 绑定（0 处），
+并逐一现读它们依赖的 API 形状：`ActionOutcome::changed()`（`undo.rs:221`）、
+`UndoDisplay::commit_count`（`yeban-mcp/src/undo_session.rs:343`）、
+`Rgb8Image::pixel(u32,u32)->Option<Rgb>` / `pixels()` / `Rect::new(i32,i32,u32,u32)`（`image.rs`）、
+`LiveWiringOptions` 有 `impl Default`（`live_surface.rs:196`）且 `undo: Some(..)` 那一路会
+真的接 `wire_clip_scope` / `wire_clip_drag` / `wire_track_select`、
+`.slint` 侧 `key-action(string,bool,bool,bool,bool)->bool` / `clip-select(string)` /
+`track-select(int)` / `in property <[bool]> clip-mutes` / `clip-{ulid}-header` 全部在场。

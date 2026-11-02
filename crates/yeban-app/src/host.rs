@@ -11947,7 +11947,9 @@ pub fn clip_delete_ops_for(
         track_id,
         placement_id,
         // 自带撤销载荷：摆放整份留在 op 里，撤销不需要回放历史（同 `DeleteNote`）。
-        previous_placement: placement.clone(),
+        // `ClipPlacement` 是 `Copy` ⇒ 解引用拿走一份，⛔ 不用 `.clone()`（`clippy::clone_on_copy`
+        // 在 `-D clippy::all` 下是硬错；CI run `41476987648` 就红在这一行）。
+        previous_placement: *placement,
     }]
 }
 
