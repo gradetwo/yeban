@@ -1175,6 +1175,10 @@ impl StripProjection {
             "strip_width" | "channel_width" => {
                 self.params.width = value;
             }
+            // `#344` mono-maker（与引擎 `insert.rs` 的同名投影逐字同集）。
+            "mono_below_hz" | "mono_maker_hz" => {
+                self.params.mono_below_hz = value;
+            }
 
             _ => {}
         }
@@ -1758,6 +1762,7 @@ mod tests {
             StripField::DynEqThresholdDb => -28.0,
             StripField::DynEqMaxCutDb => 4.0,
             StripField::Width => 1.4,
+            StripField::MonoBelowHz => 120.0,
         }
     }
 
