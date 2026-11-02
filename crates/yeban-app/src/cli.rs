@@ -2920,6 +2920,20 @@ impl Loaded {
             ProjectSource::Sample(_) => None,
         }
     }
+
+    /// 撤销会话的**来源标签**（进 `history.dag` 的提交出处，也是那句"谁的 `history.dag`
+    /// 无法恢复"里的那个名字）。
+    ///
+    /// 放在这里而不是各装配点自己 `match`：生产 GUI（`src/main.rs`）与 UI 控制面
+    /// （`src/ui_mcp_serve.rs`）必须给同一份配方同一个标签，否则两条装配出来的会话
+    /// 在工程里留下两种来源写法。
+    #[must_use]
+    pub fn undo_source(&self) -> String {
+        match &self.source {
+            ProjectSource::File { path, .. } => path.display().to_string(),
+            ProjectSource::Sample(sample) => format!("sample:{}", sample.name()),
+        }
+    }
 }
 
 /// 命令行的失败（每一种都带**精确**原因与退出码）。

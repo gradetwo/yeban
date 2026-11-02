@@ -939,10 +939,20 @@ fn every_gain_eq_filter_field_gives_the_same_master_in_both_exports() {
         let listed = data["automation"]["appliedDeviceParamNames"]
             .as_array()
             .expect("appliedDeviceParamNames");
+        // 名单是**唯一来源**：响应里的数组必须与 `yeban-render` 的名册逐字同序同集。
+        // ⛔ 不在这里手抄个数 —— `ADR-0062`（磁带饱和）给名册加了 8 个拼写，把上一版硬编码的
+        // 「70」变成了一条与内容无关的红判决（手动档 `all-features (yeban-app)`，run 41303198552）。
+        let expected: Vec<serde_json::Value> = yeban_render::automation::APPLIED_DEVICE_PARAM_NAMES
+            .iter()
+            .copied()
+            .map(serde_json::Value::from)
+            .collect();
         assert_eq!(
-            listed.len(),
-            92,
-            "MCP 名单必须逐条来自 yeban-render（92 个拼写：53 通道条（含压缩、低切、动态 EQ、宽度、mono-maker）+ 6 混响 + 8 卷积 + 15 延迟 + 10 磁带（含不对称 2））: {data}"
+            listed.as_slice(),
+            expected.as_slice(),
+            "MCP 名单必须逐条来自 yeban-render（⛔ 不手抄个数：名册从 \
+             `yeban_render::automation::APPLIED_DEVICE_PARAM_NAMES` 现读。写死数字每加一件器件 \
+             就会红一次 —— 磁带（`ADR-0062`）与 mono-maker（`#345`）都已经这么红过一轮）: {data}"
         );
         for name in [
             "output_gain_db",
