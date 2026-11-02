@@ -862,3 +862,77 @@ error: using `clone` on type `ClipPlacement` which implements the `Copy` trait
 真的接 `wire_clip_scope` / `wire_clip_drag` / `wire_track_select`、
 `.slint` 侧 `key-action(string,bool,bool,bool,bool)->bool` / `clip-select(string)` /
 `track-select(int)` / `in property <[bool]> clip-mutes` / `clip-{ulid}-header` 全部在场。
+
+## §29 run `41479416456`（tip `ff0be316`）读回 —— **第三次零读数**，根因移进判据文件
+
+逐作业结论（`gh run view 41479416456 --json conclusion,headSha,jobs`，`headSha` 逐位 = `ff0be316`）：
+
+| 作业 | 结论 |
+|---|---|
+| `lockfile` / `plan` / `checks` / `deny` | success |
+| `rust (yeban-app)` | **failure** |
+| `windows (…)` | **failure** |
+| `macos (…)` | **failure**（这一腿这次真跑了，不再是从未开始） |
+| `rust (workspace 全量)` / `e2e` | skipped ⇒ 空绿（§6.3-2） |
+
+在飞的 run 没有 `--log-failed`，取法同 §28：`gh run view --json jobs` 拿三个 failure 的
+`databaseId`（`125393605895` / `…5945` / `…6031`）⇒ `gh api --allow-escape-sequences
+repos/gradetwo/yeban/actions/jobs/<id>/logs` ⇒ 剥 ANSI ⇒ `/tmp/log-41479416456-app.log`。
+
+**判决内容（单位：`error` 行数 = 2，二者同在一个二进制里）**：`lib` 这次编译过了
+（日志里 `Compiling yeban-app v0.0.1` 之后没有 lib 侧错误），红的是
+`crates/yeban-app (test "clip_mute_toggle")`：
+
+1. `unused_parens` @ `tests/clip_mute_toggle.rs:346` —— `.map(|v| (if *v { '1' } else { '0' }))`，
+   `-D warnings` 下是硬错；改法 = 去掉那对括号。
+2. `E0716` temporary dropped while borrowed @ 同文件 `301` ——
+   `let muted_after: Vec<&String> = placements(&project_after).iter()….collect();`
+   `placements()` 回的是**拥有所有权的 `Vec<(String, ClipPlacement)>`**，`.iter()` 借的是那个
+   临时值，它在本语句结束即释放而借用活到下一句 `assert_eq!`。改法 = 先把 `placements(..)`
+   绑成一个局部量再迭代。
+
+后果（这是本节的重点，不是第 1 条那种小事）：`grep -c "Running tests/" = 0` ⇒ 编译期失败，
+测试阶段**整体没有开始**，D-UI-14 / 15 / 16 三个判据**第三次**零读数，判决仍是 `pending`。
+
+⚠ §28 末尾那句自检结论是**假的**："三个新判据文件则逐符号核过……（0 处）"。它核的是
+"未使用的导入 / 助手 / 绑定"，而真正致命的是**表达式的生命周期**与 **`clippy::all` 的形状类
+lint**（这两类都不在"有没有用到"这个清单里）。教训要这样记：**"我检查过 X" 不等于"我检查过
+判据文件"**，X 是自检清单里那一小截，写进账本时必须把 X 的名字写出来，否则下一次会拿着
+半张清单当全绿。
+
+本轮改的流程（本机跑不了 `cargo clippy -p yeban-app` —— Slint 依赖，AGENTS.md §5.2；CI 是
+唯一编译器）：推送前对**每一个从未编译过的判据文件**做一次并行子代理静态审计，口径固定四项 ——
+①每个被调符号对照**真实定义**核名字/元数/参数与返回类型/是否 `pub`（跨 `tests/*.rs` 的私有
+助手不可达：每个集成测试文件是自己的 crate）；②`use` 与助手是否全部被用（`unused_imports` /
+`dead_code` 都是硬错）；③`clippy::all` 清单逐条过（工作区 `Cargo.toml:115-118` 实测
+`all = "deny"`，`float_cmp` 之类 `restriction` 不在其中、cast 类是 `pedantic` 也不在其中）；
+④哑断言（同一份读数自己比自己、`assert_eq!(X, X)`、缺按键前快照的"其余逐值不变"）。
+
+这套审计在**推送之前**抓到 7 处会被 CI 判红的真错，全部已改：
+
+| 文件:位置 | 类 | 改法 |
+|---|---|---|
+| `clip_duration.rs:428-437` | 编译错 E0369 | `Option<f32>` 与 `f32` 比较（`.unwrap_or_default()` 收尾）⇒ 整段换成前后两列按下标逐值对账 |
+| `clip_duration.rs:434` / `:594-598` / `:533-539` / `:846-852` | `clippy::eq_op` ＋ 零信息 | 四处"自己比自己"的占位断言删除，改为按键前快照（`widths_before` / `duration_before`）对账 |
+| `clip_duration.rs:395-417` | 判据自身假阳性 | 过滤器写成"时长 ≠ A 的**原值**"，把本来就不等于 A 的 B（夹具 960 ≠ 3840）也捞进"改动"⇒ 改成**同一行前后**对比（`changed_rows == vec![a_row]`） |
+| `clip_duration.rs:691-693` | 编译错（格式串） | `"…（实测 {:?"` 占位符没有闭合；改为先绑 `duration_now` 再写 `{duration_now:?}` |
+| `clip_duration.rs:199` / 两个文件的 `UiAction` 导入 | `dead_code` / `unused_imports` | 删除已无人调用的 `width_at` 助手与随之失效的导入 |
+| `delete_selected_clip.rs:522-545`、`clip_mute_toggle.rs:598-622` | **必红**的运行时前提 | 见 §29.1 |
+| `sidebar_search.rs:287-291` | 哑断言 | 原来敲的是夹具里**没绑任何 Action** 的字母 ⇒ 焦点走没走 `active-tool` 都不动；改为敲数字 `3`（工具矩阵第 3 行）两个方向都可证，敲完立刻退格以保住后面每一臂的过滤前提 |
+
+### §29.1 一条值得单列的界面事实：`UndoPort::perform` **不**重投影
+
+`crates/yeban-app/src/undo.rs` 里端口自己写着"端口碰不到 Slint"（`UiAction::SelectTool`
+那一臂的注释是同一处证据）。因此
+`port.perform(UiAction::Undo)` 之后读 `window.get_clip_ulids()` / `clip-mutes` 读到的是
+**撤销之前那一帧**的界面属性 —— 三个判据文件原先都在这里断言"画面跟得上权威"，那是
+**断言了一个不存在的行为**，下一次真跑必然红（不是空转，是假红里最坏的一种：实现没错，判据错）。
+
+唯一能让界面跟着撤销的入口是**键路径**：`invoke_key_action(..)` → `on_key_action` →
+`apply_action` 的 `Action::Undo | Action::Redo` 那一臂（`host.rs:9446-9455`）→ 末尾
+`refresh_undo_window(ui, port, true)`（`reproject = matches!(action, Undo | Redo)`）→
+`project_with_view_state` + `apply_view`。走带区的 ↻ 与弹窗的"撤销一步"两个按钮回调
+（`host.rs:10081` / `10124`）也是"先 `port.perform` 再手动 `refresh_undo(.., true)`"，
+即**重投影是调用方的责任，不是端口的**。三个判据的撤销臂已统一改为键路径，并顺手把
+**redo 之后画面也跟上**这一条从"没断言"补成断言（`clip_duration` ⑦ / `delete_selected_clip` ⑥ /
+`clip_mute_toggle` ⑦）。这条纪律将来适用于任何"撤销/重做后读界面"的判据。

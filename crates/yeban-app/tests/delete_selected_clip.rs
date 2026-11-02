@@ -58,7 +58,7 @@ use slint::Model as _;
 use yeban_app::bridge::ViewState;
 use yeban_app::host::clip_delete_ops_for;
 use yeban_app::ui::MainWindow;
-use yeban_app::undo::{UiAction, UndoPort, UndoSession};
+use yeban_app::undo::{UndoPort, UndoSession};
 use yeban_model::{ClipPlacement, EntityId, YebanProjectV1};
 use yeban_ui_mcp::live::request_line;
 use yeban_ui_mcp::methods::{METHOD_DISPATCH_KEY_PRESS, METHOD_NODE};
@@ -503,6 +503,14 @@ fn a_stale_or_illegal_clip_ulid_is_not_consumed() {
 ///
 /// 这条同时是"撤销不需要回放历史"的证据：模型对 `AddClipPlacement` 的前置条件之一是
 /// 片段仍在池子里 —— 判据 ② 证了池子没动，这里才可能放回成功。
+///
+/// ⚠ 撤销 / redo 都走**人用的那一格键**（`Ctrl+Z` / `Ctrl+Shift+Z`），⛔ 不是
+/// `port.perform(UiAction::Undo)`：端口是**纯模型**入口（`undo.rs` 自己写着"端口碰不到
+/// Slint"），它一位都不回写界面属性 ⇒ 拿它撤销之后再读 `clip-ulids` 读到的是删除后那份
+/// 旧清单，会把"画面其实跟得上"误判成"撤销没画回来"。键路径经 [`apply_action`] 的
+/// `Action::Undo | Action::Redo` 那一臂，末尾 `refresh_undo_window(ui, port, true)`
+/// **才**重投影 —— 只有走这条，下面两句"回到 / 离开绘制清单"才是真判据。
+/// 注入写法与 `live_ui_mcp.rs` 里已绿的 `Cmd+Z` 判据逐位一致（`text, shift, ctrl, alt, meta`）。
 #[test]
 fn one_undo_puts_the_placement_back_byte_for_byte() {
     let (window, port, _plane, _input) = assemble();
@@ -510,6 +518,7 @@ fn one_undo_puts_the_placement_back_byte_for_byte() {
     let clip = painted[0].clone();
     select_clip(&window, &clip);
     let bytes_before = serde_json::to_vec(&port.project()).expect("序列化");
+    let undone_before = port.display().undone;
 
     let consumed = window.invoke_key_action(DELETE_TEXT.into(), false, false, false, false);
     assert!(consumed, "夹具前提：编曲视图里这一键必须消费");
@@ -518,16 +527,28 @@ fn one_undo_puts_the_placement_back_byte_for_byte() {
         bytes_before,
         "夹具前提：工程确实被改过"
     );
+    assert!(
+        !clip_ulids(&window).iter().any(|id| id == &clip),
+        "夹具前提：删掉之后 `{clip}` 已离开绘制清单（否则下面'回到清单'一句是空话）"
+    );
 
-    let undone = port.perform(UiAction::Undo);
-    assert!(undone.changed(), "撤销必须真的改了工程");
+    assert!(
+        window.invoke_key_action("z".into(), false, true, false, false),
+        "`Cmd/Ctrl+Z` 必须被消费"
+    );
+    assert_eq!(
+        port.display().undone,
+        undone_before + 1,
+        "撤销必须真的回退了一步"
+    );
     assert_eq!(
         serde_json::to_vec(&port.project()).expect("序列化"),
         bytes_before,
         "**一步**撤销必须将工程逐字节放回删除前（载荷自带整份摆放）"
     );
     assert_eq!(
-        placement_by_ulid(&port.project(), &clip).map(|p| p.id.to_canonical_string()),
+        placement_by_ulid(&port.project(), &clip)
+            .map(|placement| placement.id.to_canonical_string()),
         Some(clip.clone()),
         "放回后 `{clip}` 必须在原轨上"
     );
@@ -536,16 +557,23 @@ fn one_undo_puts_the_placement_back_byte_for_byte() {
         "重投影后 `{clip}` 必须回到绘制清单（画面跟得上权威）"
     );
 
-    let redone = port.perform(UiAction::Redo);
-    assert!(redone.changed(), "redo 必须真的改了工程");
+    assert!(
+        window.invoke_key_action("z".into(), true, true, false, false),
+        "`Cmd/Ctrl+Shift+Z` 必须被消费（redo 是同一把键的 shift 变体）"
+    );
     assert_eq!(
         placement_by_ulid(&port.project(), &clip),
         None,
         "redo 后 `{clip}` 再次被取走"
     );
+    assert!(
+        !clip_ulids(&window).iter().any(|id| id == &clip),
+        "redo 后 `{clip}` 必须再次离开绘制清单（撤销能画回来不算， redo 也得跟上）"
+    );
 
     report_line(&format!(
-        "[delete-clip] `{clip}`：删除 → 一步撤销逐字节放回（{} 字节工程相同）→ redo 再取走",
+        "[delete-clip] `{clip}`：删除 → `Ctrl+Z` 一步放回（{} 字节工程逐字节相同 ＋ 回到清单）\
+         → `Ctrl+Shift+Z` 再取走（并再次离开清单）",
         bytes_before.len()
     ));
 }
@@ -632,11 +660,19 @@ fn the_view_state_projects_a_project_with_the_placement_removed() {
     for track in project.tracks.values_mut() {
         track.clips.remove(&a_id);
     }
-    assert!(
-        placements(&project).len() < placed.len(),
-        "夹具前提：这里确实取走了一条摆放"
+    let remaining = placements(&project);
+    assert_eq!(
+        remaining.len(),
+        placed.len() - 1,
+        "夹具前提：这里**恰好**取走了一条摆放（拿走两条 ⇒ `{a_ulid}` 这个身份在夹具里出现在多条轨上，\
+         下面的对账就没有唯一对象；单位：条）"
     );
     let view = ViewState::from_project(&project).expect("删除后的工程必须仍能投影");
+    assert_eq!(
+        view.clip_ulids().len(),
+        placed.len() - 1,
+        "绘制清单也必须**恰好**少一条（投影既不漏画也不造出已删的摆放）"
+    );
     assert!(
         !view.clip_ulids().iter().any(|id| id.as_str() == a_ulid),
         "投影出的绘制清单里不得留下被删的 `{a_ulid}`"

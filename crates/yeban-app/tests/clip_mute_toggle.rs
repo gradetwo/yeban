@@ -58,7 +58,7 @@ use slint::Model as _;
 use yeban_app::bridge::ViewState;
 use yeban_app::host::clip_mute_ops_for;
 use yeban_app::ui::MainWindow;
-use yeban_app::undo::{UiAction, UndoPort, UndoSession};
+use yeban_app::undo::{UndoPort, UndoSession};
 use yeban_model::{ClipPlacement, EntityId, YebanProjectV1};
 use yeban_ui_mcp::live::request_line;
 use yeban_ui_mcp::methods::METHOD_NODE;
@@ -298,7 +298,8 @@ fn cmd_m_on_a_selected_clip_placement_mutes_exactly_that_placement() {
         Some(placement_b),
         "另一条摆放 `{b}` 必须**逐字段**不变（含它的 `muted` 一位都不许动）"
     );
-    let muted_after: Vec<&String> = placements(&project_after)
+    let placements_after = placements(&project_after);
+    let muted_after: Vec<&String> = placements_after
         .iter()
         .filter(|(_, placement)| placement.muted)
         .map(|(id, _)| id)
@@ -343,7 +344,7 @@ fn cmd_m_on_a_selected_clip_placement_mutes_exactly_that_placement() {
         pool_before.len(),
         clip_mutes(&window)
             .iter()
-            .map(|v| (if *v { '1' } else { '0' }))
+            .map(|v| if *v { '1' } else { '0' })
             .collect::<String>()
     ));
 }
@@ -579,6 +580,12 @@ fn a_stale_or_illegal_clip_ulid_is_not_consumed() {
 }
 
 /// ⑦ **一步**撤销逐字节放回（载荷自带 `old_muted`），再 **redo** 又翻过去。
+///
+/// ⚠ 撤销 / redo 走**人用的那一格键**（`Ctrl+Z` / `Ctrl+Shift+Z`），⛔ 不是
+/// `port.perform(UiAction::Undo)`：端口是**纯模型**入口（`undo.rs` 自己写着"端口碰不到
+/// Slint"），不回写任何界面属性 ⇒ 拿它撤销之后再读 `clip-mutes` 会读到翻面后的旧那一格，
+/// 把"画面其实跟得上"误判成"撤销没画回来"。键路径经 [`apply_action`] 的
+/// `Action::Undo | Action::Redo` 那一臂，末尾 `refresh_undo_window(ui, port, true)` 才重投影。
 #[test]
 fn one_undo_unmutes_the_placement_byte_for_byte() {
     let (window, port, _plane) = assemble();
@@ -586,6 +593,7 @@ fn one_undo_unmutes_the_placement_byte_for_byte() {
     let a = painted[0].clone();
     select_clip(&window, &a);
     let bytes_before = serde_json::to_vec(&port.project()).expect("序列化");
+    let undone_before = port.display().undone;
 
     assert!(press_cmd_m(&window), "夹具前提：编曲视图里这一键必须消费");
     assert_ne!(
@@ -593,16 +601,28 @@ fn one_undo_unmutes_the_placement_byte_for_byte() {
         bytes_before,
         "夹具前提：工程确实被改过"
     );
+    assert_eq!(
+        muted_at(&window, &a),
+        Some(true),
+        "夹具前提：静音列那一格已经跟上（否则下面'翻回来'一句是空话）"
+    );
 
-    let undone = port.perform(UiAction::Undo);
-    assert!(undone.changed(), "撤销必须真的改了工程");
+    assert!(
+        window.invoke_key_action("z".into(), false, true, false, false),
+        "`Cmd/Ctrl+Z` 必须被消费"
+    );
+    assert_eq!(
+        port.display().undone,
+        undone_before + 1,
+        "撤销必须真的回退了一步"
+    );
     assert_eq!(
         serde_json::to_vec(&port.project()).expect("序列化"),
         bytes_before,
         "**一步**撤销必须将工程逐字节放回翻面前（载荷里的 `old_muted` 就是它）"
     );
     assert_eq!(
-        placement_by_ulid(&port.project(), &a).map(|p| p.muted),
+        placement_by_ulid(&port.project(), &a).map(|placement| placement.muted),
         Some(false),
         "放回后 `{a}` 必须未静音"
     );
@@ -612,12 +632,19 @@ fn one_undo_unmutes_the_placement_byte_for_byte() {
         "重投影后静音列那格也必须翻回来（画面跟得上权威）"
     );
 
-    let redone = port.perform(UiAction::Redo);
-    assert!(redone.changed(), "redo 必须真的改了工程");
+    assert!(
+        window.invoke_key_action("z".into(), true, true, false, false),
+        "`Cmd/Ctrl+Shift+Z` 必须被消费（redo 是同一把键的 shift 变体）"
+    );
     assert_eq!(
-        placement_by_ulid(&port.project(), &a).map(|p| p.muted),
+        placement_by_ulid(&port.project(), &a).map(|placement| placement.muted),
         Some(true),
         "redo 后 `{a}` 再次静音"
+    );
+    assert_eq!(
+        muted_at(&window, &a),
+        Some(true),
+        "redo 后静音列那格必须再翻过去（撤销能画回来不算， redo 也得跟上）"
     );
     assert_eq!(
         window.get_selected_clip_ulid().as_str(),

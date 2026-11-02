@@ -262,10 +262,15 @@ fn typing_in_the_sidebar_search_field_filters_the_injected_projection() {
     let first_row = bounds_of(&mut port, "sidebar-item-0");
 
     // ---- ② 真实点击 + 逐字敲入 ----
+    //      ⚠ 注册一条**未证前提**（测量纪律 §6.1 的"先登记再断言"）：本仓库已有的绿判据里，
+    //      `dispatch_pointer_down` 落在 `TouchArea` 上是证过的（`tests/sidebar_item.rs` 等），
+    //      而落在 **Slint 内置 `TextInput`** 上、由该 item 自己把焦点拿走 —— **没有**先例。
+    //      若这一臂在 CI 上红在"字没进框"，那是**焦点路由**的问题（Tier-1 平台 / Slint 内置
+    //      item 的 `mouse_event`），⛔ 不是过滤逻辑的问题 —— ②b 的数字键断言就是为了把这两者
+    //      分开：字进了框而工具没跳 ⇒ 路由与让路都成立。
     let fragment = pick_fragment(&full.items);
     let field_bounds = bounds_of(&mut port, FIELD);
     click(&mut port, FIELD, field_bounds);
-    let tool_before = port.ui().get_active_tool();
     for ch in fragment.chars() {
         port.dispatch_key_press(KeyCode::Character(ch))
             .unwrap_or_else(|error| panic!("② 输入 `{ch}` 必须送达活窗口: {error:?}"));
@@ -284,10 +289,31 @@ fn typing_in_the_sidebar_search_field_filters_the_injected_projection() {
         Some(fragment.as_str()),
         "② 屏读器读到的值（`accessible-value`）必须同步 = 框里那份字"
     );
+    // ---- ②b 焦点**确实**在框里：拿一把**已绑定动作**的键来验（数字 `3` = 工具矩阵第 3 行）----
+    //      ⚠ 上一稿这里只比"敲 `fragment` 那些字母之后 `active-tool` 不变"，而夹具里那些字母
+    //      **没有绑到任何 Action** ⇒ "框吃下键"与"DAW 吃下键"两种实现下这个读数都不动 ⇒
+    //      那一臂永远不会红（哑断言）。数字键两个方向都可证：落到框里 ⇒ 搜索串多一个 `3`；
+    //      被 DAW 截走 ⇒ `active-tool` 从默认那一行搬到第 3 行。敲完立刻退格，后面的臂
+    //      仍在同一份过滤串上。
+    let tool_before_bound = port.ui().get_active_tool().to_string();
+    port.dispatch_key_press(KeyCode::Character('3'))
+        .expect("②b 数字键必须送达活窗口");
     assert_eq!(
-        port.ui().get_active_tool(),
-        tool_before,
-        "② 焦点被搜索框拿走时，单键快捷键**不许**同时被 DAW 吃掉（`ui/app.slint:722` 记的规范语义）"
+        port.ui().get_sidebar_search().to_string(),
+        format!("{fragment}3"),
+        "②b 焦点在框里时数字也必须落进搜索串（被 DAW 截走 = 用户敲不进带数字的资源名）"
+    );
+    assert_eq!(
+        port.ui().get_active_tool().to_string(),
+        tool_before_bound,
+        "②b 同一把键⛔ 不得同时切换工具矩阵（焦点归输入框时 DAW 让路，`[UI-A11Y-002]` 的口径）"
+    );
+    port.dispatch_key_press(KeyCode::Backspace)
+        .expect("②b 退格必须送达");
+    assert_eq!(
+        port.ui().get_sidebar_search().to_string(),
+        fragment,
+        "②b 退格回到原串（后面每一臂的过滤前提不变）"
     );
 
     // ---- ③ 过滤口径 ＋ ④ 布局 ----
