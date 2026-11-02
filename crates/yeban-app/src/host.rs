@@ -11914,10 +11914,13 @@ pub fn clip_drag_preview_dx_px(start_tick: u64, target_tick: u64, ticks_per_pixe
 /// 摆放当撤销载荷（`Op::RemoveClipPlacement` 的 `previous_placement`）。两条写路径共用这
 /// **一个**解析点 ⇒ 不再长第二遍 `tracks` 遍历，也就不可能出现"一边认得这条摆放、
 /// 一边认不得"的分叉。
-fn clip_placement_for(
-    project: &yeban_model::YebanProjectV1,
+/// ⚠ 返回借用 ⇒ 生命周期**必须点名系在 `project` 上**：签名里另有 `placement_ulid: &str`
+/// 这一个输入生命周期，省略式写法会让 rustc 判 `E0106`（"不知道从哪个借的"）——
+/// CI run `41472437095` 就是红在这一行（三条 `yeban-app` 腿的 `clippy -D warnings` 全挂）。
+fn clip_placement_for<'p>(
+    project: &'p yeban_model::YebanProjectV1,
     placement_ulid: &str,
-) -> Option<(EntityId, EntityId, &yeban_model::project::ClipPlacement)> {
+) -> Option<(EntityId, EntityId, &'p yeban_model::project::ClipPlacement)> {
     let placement_id = placement_ulid.parse::<EntityId>().ok()?;
     project.tracks.iter().find_map(|(track_id, track)| {
         track
