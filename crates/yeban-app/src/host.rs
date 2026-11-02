@@ -4246,8 +4246,8 @@ pub fn wire_macro_panel(ui: &MainWindow, port: &Rc<UndoPort>) {
 ///
 /// | 手势 | `.slint` 回调 | 提交的 `Op`（一次 `Batch`） | 撤销标签 |
 /// | :--- | :--- | :--- | :--- |
-/// | 新建 MIDI 轨 | `track-create-midi()` | `AddTrack` ＋ `AddRoutingNode` ＋ `ConnectRouting{TrackToBus}` | `"create track"` |
-/// | 新建音频轨 | `track-create-audio()` | 同上 | `"create track"` |
+/// | 新建 MIDI 轨 | `track-create-midi()` | `AddTrack` ＋ `InsertDevice{InternalInstrument}`（⭐ `D-UI-4`：建轨即挂一台能发声的内置乐器）＋ `AddRoutingNode` ＋ `ConnectRouting{TrackToBus}` | `"create track"` |
+/// | 新建音频轨 | `track-create-audio()` | `AddTrack` ＋ `AddRoutingNode` ＋ `ConnectRouting{TrackToBus}`（⛔ 不挂乐器：音频轨的音源是录进来的素材） | `"create track"` |
 /// | 新建辅助返回轨 | `track-create-aux()` | 同上，但边的 `kind` 是 `BusToMaster` | `"create track"` |
 /// | 删除展示轨 | `track-delete()` | `DisconnectRouting`×n ＋ `RemoveRoutingNode` ＋ `RemoveTrack` | `"delete track"` |
 ///
@@ -10859,7 +10859,10 @@ pub fn wire_roll_edit(ui: &MainWindow, port: &Rc<UndoPort>) {
     // `[UI-NOTE-003]` 左键**拖拽**的两条臂（移动 / 力度）：与点击**同一个**装配点
     // （本函数是卷帘编辑面唯一的接线函数）⇒ 产品进程（`main.rs`）与无头面
     // （`live_surface.rs`）不可能只接一半。
-    install_roll_note_drag(ui, view, Some(Rc::clone(port)));
+    install_roll_note_drag(ui, Rc::clone(&view), Some(Rc::clone(port)));
+    // D-UI-10：滚动**同样**带端口重装 —— 每帧从端口此刻的工程投影，而不是本函数接线那一刻
+    // 抓的 `view`（那时工程常常还是空的，于是"随手一拖界面就回到载入态"）。
+    install_roll_scroll(ui, view, Some(Rc::clone(port)));
 }
 
 /// `[UI-NOTE-003]` 卷帘点击的**唯一派发器**（`src/**` 里 `ui.on_clicked(` 只有这一处写者）。
@@ -10935,12 +10938,11 @@ fn install_roll_click(ui: &MainWindow, fallback_view: Rc<ViewState>, port: Optio
             let scope = roll_scope(&ui, view);
             // ---- 第一段：命中 + 选区（**总是**执行）----
             // 音符框高与 `.slint` 的矩形一致；值写在一处, 免得命中测试去猜（账本第 495 轮）。
-            let mut hit = view
-                .hit_test_visible(scroll, width, x, y, NOTE_HEIGHT_PX)
-                .filter(|&index| match scope {
-                    Some(scope) => view.notes[index].clip_id.as_str() == scope,
-                    None => true,
-                });
+            // `[D-UI-13]` 作用域过滤发生在命中测试**内部**（择优之前）：⛔ 不是"先在全工程里
+            // 挑最后绘制的那颗、再事后丢掉作用域外的" —— 那样别的轨在同一 x/y 上的音符会
+            // 遮住正在编辑的这颗，返回 `None`，选区为空，于是选择 / 橡皮擦 / 剪刀 / 箭头
+            // 全部静默失效（多轨工程里 6 个剪辑只有 1 个点得中）。
+            let mut hit = view.hit_test_visible_scoped(scroll, width, x, y, NOTE_HEIGHT_PX, scope);
             // ⭐ 力度工具的**单击**（规范 §3.3 "选中对应音符的底部力度柱"）：力度柱画在
             // `roll-velocity-lane-top` 之下的车道里 ⇒ 那一带永远命中不到音符框。这里用与
             // 拖拽臂**同一个** [`velocity_bar_at`]（同一 x 口径 = 绘制帧、同一车道内 y 换算、
@@ -11369,7 +11371,11 @@ fn begin_note_drag(
     if tool.drag() != crate::input::ToolDrag::MoveNote {
         return false;
     }
-    let Some(index) = view.hit_test_visible(scroll, width, x, y, NOTE_HEIGHT_PX) else {
+    // `[D-UI-13]` 与 [`install_roll_click`] **同一个**作用域口径（择优之前过滤）：这一按要拖的
+    // 必须是**屏幕上看得见、正在编辑的那个剪辑**里的音符，⛔ 不是"全工程最后绘制的那颗"。
+    let scope = roll_scope(ui, view);
+    let Some(index) = view.hit_test_visible_scoped(scroll, width, x, y, NOTE_HEIGHT_PX, scope)
+    else {
         return false;
     };
     let note = &view.notes[index];
@@ -11975,6 +11981,51 @@ fn reproject_roll(ui: &MainWindow, port: &UndoPort, width: f32, scroll: f32) {
     }
 }
 
+/// `[ROAD-M3-002]` 卷帘滚动手势的**唯一**派发器（与 [`install_roll_click`] 同一取向：
+/// Slint 一个回调只留一个 handler ⇒ 后来的接线是**重装**，不是第二个写者）。
+///
+/// # 为什么端口必须在事件**发生时**读，而不是在接线时抓一份快照
+///
+/// 缺陷 D-UI-10（创作第二首歌时实测，`docs/ledger/app-zimmer-ui-notes.md`）：旧实现只在
+/// [`build_main_window_with_console_tab`] 里装一次 handler，闭包抓住的是**装配时**的
+/// `ViewState`。此后没有任何路径更新那份快照 ⇒ 卷帘内一次超过拖拽阈值（4px）的指针移动
+/// 就会触发 `scroll-requested`，把 bpm / 轨道 / 剪辑 / 音符**整体**重绘回快照内容。
+/// 产品路径上 `wire_roll_edit` 随后重装时抓的是"接线那一刻"的工程（那时工程还是空的），
+/// 于是症状是"画了几个音符之后随手一拖，界面回到载入态"——⛔ 没有 `Op`、⛔ 没有日志、
+/// ⛔ 撤销栈一位没动（下一次端口侧动作重投影，全部又回来了）。
+///
+/// `fallback_view` 只在端口缺席、或它此刻没有活跃工程时使用（与 [`install_roll_click`]
+/// 的 `fallback_view` 同一语义）：那时如实退回快照，而不是在一个 Slint 回调里 panic。
+fn install_roll_scroll(
+    ui: &MainWindow,
+    fallback_view: std::rc::Rc<ViewState>,
+    port: Option<std::rc::Rc<UndoPort>>,
+) {
+    // 偏移的**唯一**事实源就是界面属性 `roll-scroll-x`（[`apply_view`] 每次注入都写它，
+    // 见那里的 `set_roll_scroll_x`）⇒ 事件发生时直接从它读回当前值，不在宿主侧再存一份
+    // 内存镜像。存副本的话"重新接线"就要手工播种、别的写者改了偏移也会被镜像盖回去
+    // （与 [`install_roll_click`] 从 `selected-ulids` 播种是同一件事，但这里连播种都不需要）。
+    let weak = ui.as_weak();
+    ui.on_scroll_requested(move |delta| {
+        let Some(ui) = weak.upgrade() else {
+            debug_assert!(false, "MainWindow 在回调执行期间被销毁");
+            return;
+        };
+        // 下限 0：不滚到时间轴之前；上限暂不设（内容长度由投影决定, 见账本第 199 轮）。
+        let next = advance_scroll(ui.get_roll_scroll_x(), delta);
+        let width = slint::ComponentHandle::window(&ui).size().width as f32;
+        match port
+            .as_ref()
+            .and_then(|port| port.try_project())
+            .and_then(|project| project_with_view_state(&project, &ui).ok())
+        {
+            // 端口在场 ⇒ 用**此刻**的工程投影（与 [`reproject_roll`] 同一条链）。
+            Some(refreshed) => apply_view(&ui, &refreshed, width, next),
+            None => apply_view(&ui, &fallback_view, width, next),
+        }
+    });
+}
+
 /// 撤销动作之后把界面拉回**模型读数**（显示态）+ **投影**（工程画面）。
 ///
 /// `reproject` 为 `false` 时只回写显示态：`toggle-undo-tree` 不改工程，
@@ -12212,32 +12263,17 @@ pub fn build_main_window_with_console_tab(
     apply_view(&ui, view, ui.window().size().width as f32, 0.0);
     // `[ROAD-M3-002]` 滚动手势（账本第 199 轮）：偏移由**宿主**拥有 —— 因为裁剪也在宿主侧。
     // 卷帘只报告增量, 宿主 clamp + 累加后**重新注入**；不用 `Flickable`, 否则会与宿主偏移双重计算。
-    let scroll = std::rc::Rc::new(std::cell::RefCell::new(0.0_f32));
     // `[UI-NOTE-003]` 选区与工具派发共用**唯一**的点击派发器 `install_roll_click`：
     // 这里先装"只做选区"的形态（此刻还没有撤销端口），`wire_roll_edit` 随后用**同一个**
     // 派发器重装一次把铅笔/橡皮擦接上。两次装的是同一份实现 ⇒ 重装是超集而不是覆盖
     // （旧实现两个写者各写一半，后装的铅笔派发器把选区写者挤掉 —— 缺陷见 `wire_roll_edit`）。
+    //
+    // 滚动走**同一个**取向（[`install_roll_scroll`]）：这里装的无端口形态只在没有撤销会话时
+    // 兜底；`wire_roll_edit` 会带着端口重装一次，让每一帧从**此刻**的工程投影。装配时抓快照
+    // 并且此后不再更新，就是缺陷 D-UI-10（一次超过拖拽阈值的指针移动把整个界面重绘回载入态）。
     let view_snapshot = std::rc::Rc::new(view.clone());
     install_roll_click(&ui, std::rc::Rc::clone(&view_snapshot), None);
-    {
-        let weak = ui.as_weak();
-        let scroll = std::rc::Rc::clone(&scroll);
-        let view_snapshot = std::rc::Rc::clone(&view_snapshot);
-        ui.on_scroll_requested(move |delta| {
-            let Some(ui) = weak.upgrade() else {
-                debug_assert!(false, "MainWindow 在回调执行期间被销毁");
-                return;
-            };
-            let next = {
-                let mut current = scroll.borrow_mut();
-                // 下限 0：不滚到时间轴之前；上限暂不设（内容长度由投影决定, 见账本第 199 轮）。
-                *current = advance_scroll(*current, delta);
-                *current
-            };
-            // `Rc<ViewState>` 是不可变共享 ⇒ 直接解引用, 无需 `borrow`。
-            apply_view(&ui, &view_snapshot, ui.window().size().width as f32, next);
-        });
-    }
+    install_roll_scroll(&ui, view_snapshot, None);
 
     Ok(ui)
 }

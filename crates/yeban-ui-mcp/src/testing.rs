@@ -397,6 +397,48 @@ impl UiSurface for FakeSurface {
                     ),
                 ])
             }
+            // chord 的预览与单键**同一套两档口径**（假面没有键表 ⇒ 只有"合成态拦截"
+            // 与"放行"两档；`resolution` 取值仍来自 `crate::ime` 的唯一词表）。
+            crate::methods::METHOD_DISPATCH_KEY_CHORD => {
+                let consumed = state.ime_composing && state.ime_focus == ImeFocus::TextInput;
+                let raw = arguments.text("keyName").unwrap_or_default();
+                // 解析不出来就**原样**报回这个名字（⛔ 不猜一个键）：真调用的拒绝发生在
+                // 参数解析那一步，预览这一格只服务"看得见将要发生什么"。
+                // ⚠ `ChordKey::parse` 返回 `Result` ⇒ 用 `match`（`map_or_else` 的第一条
+                // 闭包在 `Result` 上要带拒绝值，CI 实测报 E0593）。
+                let chord = match yeban_ui_test_port::port::ChordKey::parse(raw) {
+                    Ok(key) => yeban_ui_test_port::port::KeyChord::new(
+                        key,
+                        yeban_ui_test_port::port::KeyChordModifiers {
+                            shift: arguments.is_true("shift").unwrap_or(false),
+                            ctrl: arguments.is_true("ctrl").unwrap_or(false),
+                            alt: arguments.is_true("alt").unwrap_or(false),
+                            meta: arguments.is_true("meta").unwrap_or(false),
+                        },
+                    )
+                    .name(),
+                    Err(_) => raw.to_owned(),
+                };
+                PreviewEffect::new(vec![
+                    ("chord", ReportValue::Text(chord)),
+                    ("isComposing", ReportValue::Bool(state.ime_composing)),
+                    (
+                        "focus",
+                        ReportValue::Text(state.ime_focus.as_str().to_owned()),
+                    ),
+                    (
+                        "resolution",
+                        ReportValue::Text(
+                            if consumed {
+                                crate::ime::RESOLUTION_CONSUMED_BY_IME
+                            } else {
+                                crate::ime::RESOLUTION_PASS_THROUGH
+                            }
+                            .to_owned(),
+                        ),
+                    ),
+                ])
+            }
             // `ui/open_project`：将要打开的路径 + 当前已打开的路径（**只读**回读）。
             //
             // 假面没有容器层（零依赖方向：它不认识 `yeban-app` 的 `open_project_file`），
@@ -498,6 +540,19 @@ impl yeban_ui_test_port::port::UiTestPort for FakeSurface {
             .calls
             .push(format!("key_press:{}", key.as_str()));
         Ok(())
+    }
+    fn dispatch_key_chord_impl(
+        &mut self,
+        chord: &yeban_ui_test_port::port::KeyChord,
+    ) -> Result<bool, PortError> {
+        self.state
+            .borrow_mut()
+            .calls
+            .push(format!("key_chord:{}", chord.name()));
+        // 假面**没有键表**（`[UI-A11Y-001]` 的策略表住在 `yeban_app::input`）⇒
+        // 它如实报"这一键没有被任何东西消费"，⛔ 不为了回执好看而报 `true`。
+        // 真实载体（`live_surface.rs`）交回的是 `invoke_key_action` 的那个 `bool`。
+        Ok(false)
     }
     fn switch_main_view_impl(&mut self, view: &str) -> Result<(), PortError> {
         let mut state = self.state.borrow_mut();
