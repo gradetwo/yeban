@@ -615,8 +615,8 @@ fn r6_sizes_stay_under_the_200_kib_red_line() {
     assert!(runtime < 204_800, "EngineRuntime 必须 < 200 KiB");
     assert_eq!(voice, 40, "SfzVoice 必须仍是 40 B");
     assert_eq!(
-        pool, 2_232,
-        "SfzVoicePool 必须是 1712 B ＋ round-robin 的 512 B ＋ `#341` held_notes `Option<u32>` 的 8 B ＝ 2232 B"
+        pool, 2_240,
+        "SfzVoicePool 必须是 1712 B ＋ round-robin 的 512 B ＋ `#341` held_notes `Option<u32>` 的 8 B ＋ portamento 池级四字段 8 B ＝ 2240 B"
     );
     assert_eq!(
         region, 6_168,

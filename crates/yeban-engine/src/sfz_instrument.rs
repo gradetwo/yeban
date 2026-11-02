@@ -700,21 +700,23 @@
 //! | `SfzVoicePool` | 2224 | **2232** | `#341` `held_notes: Option<u32>`（触发那一刻的按住数，＋8） |
 //! | `EngineRuntime` | 186768 | **194960** | 16 个槽 × 512 B |
 //! | `EngineRuntime` | 194960 | **198496** | 通道条 hpf/dyn-eq/width 片：通道条 376 → 584（＋208 ＝ HPF 立体声 biquad ×2 ＋ 动态 EQ 检波/峰值 biquad ×3 ＋ 包络 ＋ 参数 5 标量）× 17 内联槽位；十臂 2 bool 落在填充里 ＋0 |
+//! | `SfzVoicePool` | 2232 | **2240** | portamento 池级四字段（`last_key: Option<u8>` 2 ＋ `porta_slot: u8` 1 ＋ `porta_delta: i8` 1 ＋ `porta_frame: u32` 4 ＝ 8 B） |
+//! | `EngineRuntime` | 198496 | **198752** | portamento：池 ＋8 ⇒ ＋256（实测）；红线 200 KiB ＝ 204800 |
 //! | `SfzVoice` | 40 | **40** | ⛔ 一个字段都没加（推进量在池里） |
 //!
 //! ⚠ 计数用 `u32` 而⛔ 不是 `u8`：`selects_occurrence` 要对**每区域自己的**
 //! `seq_length` 取模，`u8` 在 256 处回绕会让 `256 % 3` 变成 `1`（错），`u32` 的回绕点
 //! 远大于任何 `seq_length` ⇒ 回绕不改变取模结果。
 //!
-//! ⭐ **portamento 片再 ＋16 B / 池**（`last_key: Option<u8>` 2 ＋ `porta_slot: u8` 1 ＋
-//! `porta_delta: i8` 1 ＋ `porta_frame: u32` 4，对齐到 **16 B**）：
-//! `SfzVoicePool` **2224 → 2240**、`EngineRuntime` 16 槽 ⇒ **195216**（1.99 口径；
-//! 本机 1.93 实测 198752，两版布局差 3536 B）。`SfzVoice` **仍是 40 B**，
+//! ⭐ **portamento 片再 ＋8 B / 池**（`last_key: Option<u8>` 2 ＋ `porta_slot: u8` 1 ＋
+//! `porta_delta: i8` 1 ＋ `porta_frame: u32` 4，合计 8 B，落在既有对齐里）：
+//! `SfzVoicePool` **2232 → 2240**、`EngineRuntime` **198496 → 198752**（＋256，实测；
+//! 红线 200 KiB ＝ 204800，余量 6048 B）。`SfzVoice` **仍是 40 B**，
 //! `PreparedRegion` **仍是 6168 B**（`pitch_eg: u16` 落进既有填充）。
 //!
 //! ⭐ 另：`PreparedSfz` **240 → 264 B**、`SfzPlan` **240 → 264 B**
 //! （＋24 ＝ `pitch_egs: Vec<PitchEg>` 的三个词）。这两张表都在**堆上**
-//! （每只乐器一份），⛔ 不进 `EngineRuntime` ⇒ 与 192 KiB 门槛无关。
+//! （每只乐器一份），⛔ 不进 `EngineRuntime` ⇒ 与 200 KiB 门槛无关。
 //!
 //! ## ⛔ 本片不做（边界，⛔ 不假装已有）
 //!
@@ -2842,8 +2844,8 @@ pub struct PreparedRegion {
     ///
     /// 指向 [`PreparedSfz::pitch_egs`]。⭐ **为什么不内联 `Option<PitchEg>`**：
     /// 后者是 20 B ⇒ `PreparedRegion` 会从 6160 涨到 6192（对齐填充 +12），
-    /// 实测把 `EngineRuntime` 顶出 `196608` 的实时内存门槛（差 **2144 B**）。
-    /// 换成 `u16` 后落在既有尾部填充里 ⇒ **+0 B**（判据 `S100` 现读 6160）。
+    /// 实测把 `EngineRuntime` 顶出实时内存门槛（200 KiB ＝ 204800）。
+    /// 换成 `u16` 后落在既有尾部填充里 ⇒ **+0 B**（判据 `S100` 现读 6168）。
     /// ⚠ 它是**区域参数**、不是声部状态：时间源与 key delta 在池里（`porta_*`）。
     pitch_eg: u16,
     /// ⭐ **`ampeg_*` 的力度调制量**（`ampeg_vel2attack` 一族；任务单 `#106`）。
