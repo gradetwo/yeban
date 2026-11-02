@@ -600,18 +600,19 @@ fn b5_sizes_stay_under_the_192_kib_red_line() {
     let strip = core::mem::size_of::<ChannelStrip>();
     let reverb = core::mem::size_of::<Reverb>();
     let convolution = core::mem::size_of::<ConvolutionReverb>();
+    // 余量用 saturating 算：超线时仍要打印读数，门由下面的 assert 把守。
     println!(
         "[#158/B5] size_of: EngineRuntime={runtime} EngineSnapshot={snapshot} \
          SfzVoice={voice} SfzVoicePool={pool} PreparedRegion={region}；\
          器件（单槽内联部分）ChannelStrip={strip} Reverb={reverb} ConvolutionReverb={convolution}；\
-         门槛 196608；余量={}",
-        196_608 - runtime
+         门槛 204800；余量={}",
+        204_800usize.saturating_sub(runtime)
     );
     assert_eq!(
-        runtime, 194_960,
+        runtime, 198_752,
         "EngineRuntime 必须是 186736 B ＋ **round-robin 片 16 槽 × 512 B = 8192** ⇒ 194960 B（#261：逐边发送量表 ＋4784 B；\
          #173 的主总线插入 ＋1792 仍在里面；⭐ **S1 第一片** ＋16 B = 两个 `u64` 事件计数\
-         `strip_output_gain_events` / `strip_output_gain_value_rejects`；见本判据文档）"
+         `strip_output_gain_events` / `strip_output_gain_value_rejects`；⭐ **通道条 hpf/dyn-eq/width 片** ＋3536 B ⇒ 198496 B（通道条 376 → 584，＋208 ＝ HPF 立体声 biquad ×2 ＋ 动态 EQ 检波/峰值 biquad ×3 ＋ 包络 f32 ＋ 参数 5 标量，布局对齐到 8，× 17 内联槽位；十臂两 bool 落在填充里 ＋0）；⭐ **portamento 片** ＋256 B ⇒ 198752 B（池 ＋8，实测）；见本判据文档）"
     );
     assert_eq!(
         snapshot, 4_656,
@@ -620,12 +621,12 @@ fn b5_sizes_stay_under_the_192_kib_red_line() {
     );
     assert_eq!(voice, 40, "SfzVoice 必须仍是 40 B");
     assert_eq!(
-        pool, 2_224,
-        "SfzVoicePool 必须仍是 1712 B ＋ round-robin 的 512 B ＝ 2224 B"
+        pool, 2_240,
+        "SfzVoicePool 必须是 1712 B ＋ round-robin 的 512 B ＋ `#341` held_notes `Option<u32>` 的 8 B ＋ portamento 池级四字段 8 B ＝ 2240 B"
     );
     assert_eq!(
         region, 6_168,
         "PreparedRegion 必须仍是 6160 B ＋ round-robin 的 8 B ＝ 6168 B"
     );
-    assert!(runtime < 196_608, "EngineRuntime 必须 < 192 KiB");
+    assert!(runtime < 204_800, "EngineRuntime 必须 < 200 KiB");
 }

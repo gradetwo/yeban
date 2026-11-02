@@ -1971,7 +1971,8 @@ impl AutomationReport {
                     AutomationTarget::TrackVolume { .. }
                     | AutomationTarget::TrackPan { .. }
                     | AutomationTarget::SendGain { .. }
-                    | AutomationTarget::Macro { .. } => (None, None, None),
+                    | AutomationTarget::Macro { .. }
+                    | AutomationTarget::MidiCc { .. } => (None, None, None),
                 };
                 lane_reports.push(AutomationLaneReport {
                     target: automation_target_name(*target),
@@ -2052,6 +2053,7 @@ fn automation_target_name(target: AutomationTarget) -> &'static str {
         AutomationTarget::SendGain { .. } => "SendGain",
         AutomationTarget::DeviceParam { .. } => "DeviceParam",
         AutomationTarget::Macro { .. } => "Macro",
+        AutomationTarget::MidiCc { .. } => "MidiCc",
     }
 }
 
@@ -2060,19 +2062,27 @@ fn automation_target_name(target: AutomationTarget) -> &'static str {
 /// `the_automation_word_tables_are_the_producers_partition` 钉住这个一一对应。
 /// `outputSchema` 的 `data.automation.tracks[].lanes[].target.enum` 直接引用它，
 /// 与 [`VERDICT_VALUES`] 同一条理由：⛔ 不在 schema 侧手抄第二份清单。
-pub const TARGET_VALUES: [&str; 5] = [
+pub const TARGET_VALUES: [&str; 6] = [
     "TrackVolume",
     "TrackPan",
     "SendGain",
     "DeviceParam",
     "Macro",
+    "MidiCc",
 ];
 
 /// 本渲染器**消费**的目标（= [`TARGET_VALUES`] 去掉 [`TARGETS_UNSUPPORTED`]；判据钉这个等式）。
 ///
 /// ⚠ 这四个是"这类目标有落点"，⛔ 不是"这条泳道一定被应用" —— 是否应用还要看点、
 /// 读开关与落点在不在保留子图里，逐泳道读数就是 `lanes[]` 的 `evaluable` / `supported` / `applied`。
-pub const TARGETS_SUPPORTED: [&str; 4] = ["TrackVolume", "TrackPan", "SendGain", "DeviceParam"];
+pub const TARGETS_SUPPORTED: [&str; 5] = [
+    "TrackVolume",
+    "TrackPan",
+    "SendGain",
+    "DeviceParam",
+    // ⭐ `#341`：离线渲染把 `MidiCc` 泳道求值成探针（`EngineTrackSource::with_cc`）。
+    "MidiCc",
+];
 
 /// 有可求值点、但本渲染器**不消费**的目标（⇒ 调用方登记 `automationLanes`，见模块表的 `#243` 行）。
 pub const TARGETS_UNSUPPORTED: [&str; 1] = ["Macro"];
@@ -4932,7 +4942,10 @@ fn build_source(
                         }),
                     )
                 })?
-                .with_pan((engine_l, engine_r)),
+                .with_pan((engine_l, engine_r))
+                // ⭐ `#341`：把 `MidiCc` 泳道接成离线 CC 探针（没有 CC 泳道时
+                // 内部仍是 `None` ⇒ 走 `render_track`，与接线前逐位相同）。
+                .with_cc(project),
         )
     };
     // ⭐ `#274`：把采样器轨的**声部窃取**句柄留到渲染之后（⛔ 不猜、⛔ 不静默）。
@@ -5745,6 +5758,10 @@ mod tests {
             AutomationTarget::Macro {
                 track_id: node(1),
                 macro_index: 0,
+            },
+            AutomationTarget::MidiCc {
+                track_id: node(1),
+                controller: 11,
             },
         ];
         let produced: Vec<&str> = targets

@@ -1827,7 +1827,13 @@ fn a_send_gain_ramp_is_strictly_monotonic_and_reported_applied() {
     assert_eq!(data["automation"]["unsupportedLanes"], 0);
     assert_eq!(
         data["automation"]["targetsSupported"],
-        json!(["TrackVolume", "TrackPan", "SendGain", "DeviceParam"]),
+        json!([
+            "TrackVolume",
+            "TrackPan",
+            "SendGain",
+            "DeviceParam",
+            "MidiCc"
+        ]),
         "⭐ #257：TrackPan 也进了支持集合；⭐ #266：DeviceParam 进集合（只到 output_gain_db）"
     );
     assert_eq!(
@@ -2176,7 +2182,13 @@ fn a_track_pan_ramp_moves_left_to_right_and_matches_the_cli_digest() {
     assert_eq!(data["automation"]["tracks"][0]["lanes"][0]["applied"], true);
     assert_eq!(
         data["automation"]["targetsSupported"],
-        json!(["TrackVolume", "TrackPan", "SendGain", "DeviceParam"])
+        json!([
+            "TrackVolume",
+            "TrackPan",
+            "SendGain",
+            "DeviceParam",
+            "MidiCc"
+        ])
     );
     assert!(
         !data["unsupported"]
@@ -2297,7 +2309,13 @@ fn a_device_param_ramp_lowers_the_master_and_matches_the_cli_digest() {
     assert_eq!(lane["unresolved"], Value::Null);
     assert_eq!(
         data["automation"]["targetsSupported"],
-        json!(["TrackVolume", "TrackPan", "SendGain", "DeviceParam"]),
+        json!([
+            "TrackVolume",
+            "TrackPan",
+            "SendGain",
+            "DeviceParam",
+            "MidiCc"
+        ]),
         "⭐ #266：DeviceParam 已支持（只到 output_gain_db）"
     );
     assert_eq!(
@@ -2475,7 +2493,7 @@ fn names_outside_the_insert_chain_do_not_land_but_are_never_silent() {
             expect_chain_dsp,
             "{param_name}: deviceChainDsp 的登记口径（见本判据的表）: {data}"
         );
-        // 名单是**唯一来源**：80 个拼写（`tape_asym` 之后），且这个 IR 形状名字不在里面。
+        // 名单是**唯一来源**：90 个拼写（`tape_asym` 与 hpf/dyn-eq/width 之后），且这个 IR 形状名字不在里面。
         let listed = data["automation"]["appliedDeviceParamNames"]
             .as_array()
             .expect("appliedDeviceParamNames");

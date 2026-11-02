@@ -1601,7 +1601,9 @@ fn automation_target_variants() -> Value {
         "TrackPan": roster(&[("track_id", id())]),
         "SendGain": roster(&[("track_id", id()), ("edge_id", id())]),
         "DeviceParam": roster(&[("track_id", id()), ("slot_index", index()), ("param_index", index())]),
-        "Macro": roster(&[("track_id", id()), ("macro_index", index())])
+        "Macro": roster(&[("track_id", id()), ("macro_index", index())]),
+        // ⭐ `#341`：MIDI CC（`controller` 是 0..=127 的整数）。
+        "MidiCc": roster(&[("track_id", id()), ("controller", index())])
     })
 }
 

@@ -1140,6 +1140,7 @@ mod tests {
                 for transpose in [-127i32, -1, 0, 1, 127] {
                     for tune in [-100i32, 0, 100] {
                         let region = Region {
+                            pitch_eg: None,
                             sample: std::borrow::Cow::Borrowed("a.wav"),
                             default_path: None,
                             lokey: 0,

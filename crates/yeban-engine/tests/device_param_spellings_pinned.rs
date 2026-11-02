@@ -29,7 +29,7 @@
 //!
 //! ## 非真空（R93／R100）
 //!
-//! 每族解析出的拼写数**必须**等于冻结读数（41／8／6／11），且四族解析各**必须**找到
+//! 每族解析出的拼写数**必须**等于冻结读数（51／10／6／11），且四族解析各**必须**找到
 //! 唯一一个 `fn apply` ⇒ 解析器退化（读不到臂）只会变红，不会变"空集即通过"。
 
 use std::collections::BTreeSet;
@@ -42,10 +42,10 @@ const SOURCE: &str = include_str!("../src/insert.rs");
 /// 实时侧额外认、但⛔ 不是自动化落点的 **IR 形状**键（构造期烘焙）。
 const IR_SHAPE_NAMES: [&str; 3] = ["conv_ir_decay_s", "conv_ir_decay", "conv_ir_seed"];
 
-/// 冻结读数（与 `yeban-render` 的 `automation.rs` 同一条口径：实时臂 41 ＋ 6 ＋ 11；
-/// 自动化名单另＋延迟 15 拼写（共享表，引擎经 `DelayField` 认）＋磁带饱和 10 拼写（`tape_asym` 之后）⇒ 名单共 80 个拼写；
+/// 冻结读数（与 `yeban-render` 的 `automation.rs` 同一条口径：实时臂 51 ＋ 6 ＋ 11；
+/// 自动化名单另＋延迟 15 拼写（共享表，引擎经 `DelayField` 认）＋磁带饱和 10 拼写（`tape_asym` 之后）⇒ 名单共 90 个拼写；
 /// 实时侧再＋ 3 个 IR 形状键 ⇒ 卷积族在**本判据**里是 11）。
-const FROZEN_COUNTS: (usize, usize, usize, usize) = (41, 6, 11, 10);
+const FROZEN_COUNTS: (usize, usize, usize, usize) = (51, 6, 11, 10);
 
 /// 取 `impl <header>` 块内 `fn apply(&mut self, name: &str, value: f32)` 的**臂名**列表。
 ///
@@ -135,7 +135,7 @@ fn dsp_names<T>(spellings: &[(&'static str, T)]) -> BTreeSet<String> {
         .collect()
 }
 
-/// **通道条 41 拼写**：实时臂集 == [`StripField::SPELLINGS`]，且非真空。
+/// **通道条 51 拼写**：实时臂集 == [`StripField::SPELLINGS`]，且非真空。
 #[test]
 fn the_realtime_strip_arms_are_the_dsp_strip_spellings() {
     let arms = apply_arm_names("impl StripProjection {");
