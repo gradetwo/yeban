@@ -29,7 +29,7 @@
 //! | :--- | :--- |
 //! | ①（对照臂：没在编辑 ⇒ 照常写） | 焦点事件**没发过**（默认假）时，注入一份"速度 140 ＋ 标题另写"的投影 ⇒ 框里变成 `140.00`。这条是 ② 的**分母**：没有它，② 的"没变"可能只是"注入整体没跑" |
 //! | ②（编辑中 ⇒ 草稿活着，而注入**真的**跑了） | 焦点进入 ⇒ 打草稿 ⇒ 同一份注入 ⇒ 框里**仍是草稿**，但**窗口标题**已经换成那份投影的标题 ⇒ 保护只咬住这一格，⛔ 不是"跳过整次投影" |
-//! | ③（真编辑走的也是这一条路） | 焦点进入 ＋ 草稿 ⇒ 按 `Cmd/Ctrl+Alt+D`（预备拍键，`D-UI-23` 落的那条**文档**臂）⇒ 文档里 `count_in_bars` 变了（证明重投影确实发生）而框里**仍是草稿** |
+//! | ③（真编辑那一次重投影由**鼠标**发起） | 焦点进入 ＋ 草稿 ⇒ 点一下调音台某轨的静音键（`mixer-mute-toggle(int)` → `Op::SetTrackMute` → `refresh_undo_window`）⇒ 文档那一轨的 `mute` 翻了、`track-mutes` 那一列也翻了（这一列**只**由 `apply_view` 写 ⇒ 它就是"这一次注入真的跑了"的现场证据）而框里**仍是草稿** |
 //! | ④（失焦就归位，不留永久分叉） | 焦点退出 ⇒ 再注入同一份投影 ⇒ 框里变回权威读数 `140.00` |
 //! | ⑤（回车**解决**草稿：两条腿） | 被拒（`"9999"`）⇒ 文档一位不动、提交条数不变、框里写回权威 `128.00`；合法（`140`）⇒ 恰好 `+1` 条、文档 `140.0`、框里归一化成 `140.00`。两条都在**焦点仍在框里**的状态下做 ⇒ 证明清零发生在提交入口，⛔ 不是靠失焦事件 |
 //! | ⑥（前提取证：画布够不到焦点） | `arrangement_view.slint` / `piano_roll.slint` / `session_view.slint` 里 `FocusScope` 与 `.focus()` **各 0 处**（代码行口径）⇒ 点画布不可能把焦点从文本框移走 |
@@ -47,10 +47,14 @@
 //! 3. 回车之后焦点**仍在**框里而镜像已被清零 ⇒ 若用户**继续**敲第二串草稿，
 //!    下一次重投影仍会盖掉它。如实登记：本票的口径是"一次回车 = 一次草稿有了裁决"，
 //!    ⛔ 不是"焦点在框里就永远不写"（那会让非法输入的写回失效，见 ⑤）。
-//! 4. 判据 ③ 用快捷键注入是因为**无头形态只有这一条真编辑路**可走：真窗口里焦点在
-//!    `TextInput` 上时那一带修饰的键会被文本控件吃掉（`input.rs` 的既有策略），
-//!    本条证的是"**一次改了文档并重投影的动作**不再抹草稿"这个漏斗，⛔ 不是"焦点在
-//!    文本框里还能按动 DAW 快捷键"（那不是本票的命题，也不是产品行为）。
+//! 4. 判据 ③ 走**鼠标**那条腿，⛔ 不走键盘：焦点在文本框里时，除 `F5`/`F6` 以外的
+//!    每一个键（**包括**带 `Cmd`/`Ctrl` 的组合）都被 `input.rs` §7.2 的文本域策略
+//!    整体放行给文本控件 ⇒ `invoke_key_action` 返回"未消费"、一个 `Op` 也不会提交。
+//!    ⚠ 这一条是**判决教出来的**：本判据原先用预备拍键 `Cmd/Ctrl+Alt+D` 注入，
+//!    run `41537282778` 在 Linux / Windows / macOS 三条腿上**同一条**红在同一句
+//!    "必须被消费"上 —— 无头端口与真窗口共用**同一个** `resolve_logical`，
+//!    所以"无头形态另有一条能绕过文本域策略的真编辑路"这个假设⛔ 不成立。
+//!    本条证的仍是"**一次改了文档并重投影的动作**不再抹草稿"这个漏斗。
 //!
 //! ## 像素
 //!
@@ -96,8 +100,17 @@ const OTHER_BPM: f64 = 140.0;
 /// 所以 ②/③/④ 里没有任何一条靠"这串恰好能被解析"成立。
 const DRAFT: &str = "13";
 
-/// 预备拍键的字面（逻辑键，与 `D-UI-23` 同一注入形状：`text, shift, control, alt, meta`）。
-const COUNT_IN_KEY: (&str, bool, bool, bool, bool) = ("d", false, true, true, false);
+/// 判据 ③ 点的那一轨在**通道条列**里的下标（单位：**行**，0 起）。
+///
+/// ⚠ 这个下标由 `apply_view` 注入的 `track-ids` 定义（`bridge` 只把**非主控**轨放进
+/// `ViewState::tracks` ⇒ 主控通道条没有下标，与 `mixer-mute-toggle` 的入参口径一致）。
+const MUTE_ROW: i32 = 0;
+
+/// 夹具的通道条数（`yeban_model::samples::filled_project()`）。
+///
+/// 为什么钉住：`track-mutes` 是**按位置**索引的，夹具换轨数会让下面那句"翻了"
+/// 落到另一条轨上 —— 与本文件其余钉值（[`FIXTURE_BPM`]）同一档纪律。
+const MUTE_ROWS: usize = 3;
 
 fn displayed(bpm: f64) -> String {
     format!("{bpm:.2}")
@@ -168,6 +181,25 @@ fn other_projection() -> (yeban_model::YebanProjectV1, ViewState) {
 fn live_project(port: &UndoPort) -> yeban_model::YebanProjectV1 {
     port.try_project()
         .expect("端口必须有一份权威工程（没有 ⇒ 本文件的每一条都无从判起）")
+}
+
+/// 把界面那一列 `bool` 压成 `Vec`（读法与 `tests/mixer_keyboard_switch.rs` 同款：
+/// `ModelRc<bool>::iter()` 逐格给**拥有**的 `bool`）。
+fn bool_column(model: &slint::ModelRc<bool>) -> Vec<bool> {
+    use slint::Model as _;
+    model.iter().collect()
+}
+
+/// 把界面那一列 `String` 压成 `Vec`（`track-ids`：行下标 → 身份，宿主自己就是靠它查的）。
+fn string_column(model: &slint::ModelRc<String>) -> Vec<String> {
+    use slint::Model as _;
+    model.iter().map(|text| text.to_string()).collect()
+}
+
+/// 按**身份**取一轨的静音位 —— 读的是权威文档，⛔ 不是界面那一格。
+fn track_mute(project: &yeban_model::YebanProjectV1, ulid: &str) -> Option<bool> {
+    let id = ulid.parse::<yeban_model::EntityId>().ok()?;
+    project.tracks.get(&id).map(|track| track.mute)
 }
 
 /// 把源码压成**只有代码行**：注释里出现的字面量⛔ 不算实现站点
@@ -253,35 +285,59 @@ fn the_draft_survives_a_re_projection_while_the_field_is_being_edited() {
     );
 }
 
-/// ③（真编辑的那一次重投影）：按一次**改文档**的键，草稿仍在，而文档真的改了。
+/// ③（真编辑的那一次重投影由**鼠标**发起）：点一下调音台的静音键，草稿仍在，而文档真的改了。
+///
+/// ## 为什么这一条走鼠标、⛔ 不走键盘（run `41537282778` 三条腿同判教出来的）
+///
+/// 焦点在文本框里时，`input.rs` §7.2 的文本域策略把**除 `F5`/`F6` 之外**的每一个键
+/// —— 包括带 `Cmd`/`Ctrl` 的组合 —— 整体放行给文本控件。而 `invoke_key_action` 走的
+/// 就是产品那一张表（`host::apply_action` ← `resolve_logical`），所以"无头端口能绕过
+/// 文本域策略"这个假设是假的：那一次预备拍键返回**未消费**、一个 `Op` 也没提交。
+/// 鼠标那条腿（`mixer-mute-toggle(int)`）不受这张表管，且同样落到
+/// `commit_ops` → `refresh_undo_window(.., true)` ⇒ 它才是本缺陷在真窗口里的形状。
 #[test]
-fn a_document_edit_that_re_projects_does_not_lose_the_draft() {
+fn a_document_edit_from_a_mouse_click_does_not_lose_the_draft() {
     let h = assemble();
     h.window.invoke_ime_focus_changed(true);
     h.window.set_bpm_display(DRAFT.into());
 
-    let bars_before = live_project(&h.port).transport.count_in_bars;
-    let commits_before = h.port.display().commit_count;
-    // 预备拍键：`Cmd/Ctrl+Alt+D` ⇒ 一条 `Op::SetTransportConfig` ⇒ `refresh_undo_window`。
-    assert!(
-        h.window.invoke_key_action(
-            COUNT_IN_KEY.0.into(),
-            COUNT_IN_KEY.1,
-            COUNT_IN_KEY.2,
-            COUNT_IN_KEY.3,
-            COUNT_IN_KEY.4,
-        ),
-        "预备拍键必须被消费（否则本条没有发生重投影，②的\"没变\"就成了无源之水）"
+    // 行的**身份**从界面那列取（与宿主回调同一个 `track_id_at` 口径），⛔ 判据不另数一遍。
+    let ids = string_column(&h.window.get_track_ids());
+    assert_eq!(
+        ids.len(),
+        MUTE_ROWS,
+        "夹具的通道条数变了：下标 {MUTE_ROW} 会落到另一条轨上"
     );
-    let after = live_project(&h.port).transport.count_in_bars;
-    assert_ne!(
-        after, bars_before,
-        "文档里的预备拍必须被这一次按键改掉（单位：小节）—— 没改 ⇒ 没有重投影，本条无从判"
+    assert_eq!(
+        bool_column(&h.window.get_track_mutes()).len(),
+        MUTE_ROWS,
+        "`track-mutes` 与 `track-ids` 必须等长（同一次注入的两列）"
+    );
+    let ulid = ids[MUTE_ROW as usize].clone();
+    let mute_before = track_mute(&live_project(&h.port), &ulid)
+        .expect("那一行的身份必须在权威工程里（不在 ⇒ 下标与身份脱钩了）");
+    let commits_before = h.port.display().commit_count;
+
+    // 调音台通道条的 M 键 ⇒ 恰好一条 `Op::SetTrackMute` ⇒ `refresh_undo_window(.., true)`。
+    h.window.invoke_mixer_mute_toggle(MUTE_ROW);
+
+    assert_eq!(
+        track_mute(&live_project(&h.port), &ulid).expect("同上"),
+        !mute_before,
+        "文档里那一轨的静音位必须被这一次点击翻掉（单位：**位**）—— 没翻 ⇒ 没有重投影，本条无从判"
+    );
+    // ⭐ "这一次注入真的跑了"的现场证据：`track-mutes` 那一列**只**由 `apply_view` 写，
+    //    因此它翻了就说明 `apply_view` 执行到了 —— ⛔ 不是"回调提前 return 所以草稿没被盖"
+    //    那种假绿（那几条早退在本回调里有四处，全都出声或静默）。
+    let mutes_after = bool_column(&h.window.get_track_mutes());
+    assert_eq!(
+        mutes_after[MUTE_ROW as usize], !mute_before,
+        "界面上那一格必须跟着文档翻 ⇒ 证明那一次 `apply_view` 真的执行过"
     );
     assert_eq!(
         h.port.display().commit_count,
         commits_before + 1,
-        "一次按键恰好一条提交（`D-UI-23` ② 的口径，这里只复核\"真的提交了\"）"
+        "一次点击恰好一条提交（`D-UI-23` ② 的口径，这里只复核\"真的提交了\"）"
     );
     assert_eq!(
         h.window.get_bpm_display().as_str(),

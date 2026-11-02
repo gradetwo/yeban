@@ -1430,6 +1430,8 @@ scope 声明在各格 `TouchArea` **之前** ⇒ 命中测试层序也不变。�
   4. 判据 ③ 借预备拍键只当一个**真的会改文档并重投影**的漏斗用，⛔ 不是主张"文本框聚焦时
      DAW 热键照常触发"—— 真实键盘下字符键归文本框，那是 `ADR-0067`（`D-UI-22`）未决的
      规范冲突，无头注入绕过的是**派发**那一层。
+     ⛔⛔ **这一条在写下当天就被判决证伪**（见 §43）：无头注入⛔ 绕过不了任何一层，
+     `invoke_key_action` 与真窗口共用**同一个** `resolve_logical`。
 
 **判决**：`pending` —— 本机不编译 `yeban-app`（Slint 是重依赖）。本地只证到
 `cargo fmt -p yeban-app -- --check` `rc=0`，加上 ⑦ 那四个数与 ⑥ 那六个 0 的**现读对账**。
@@ -1594,3 +1596,103 @@ scope 声明在各格 `TouchArea` **之前** ⇒ 命中测试层序也不变。�
 **判决**：`pending`（交 CI）。`git diff --numstat`：`tests/d_ui_26_labelled_chords_are_bound.rs 236/15`
 —— ⛔ `.slint` 改动、⛔ 像素改动，纯判据扩展（文件现为 **10** 条 `#[test]`，§41 里那句"8 条"记的是
 当时那一枚提交）。
+
+---
+
+## §43 `D-UI-24` 判决读回：**7 条里 ③ 红**，红在我自己的注入假设上（2026-11-03）
+
+**读数对象**：run `41537282778`（`headSha=26a23966`，即 §39 那一枚提交）。单位：**作业（job）**
+与**测试二进制里的 `test result:` 行**（§6.3 第 2、4 条：跳过的作业⛔ 不是绿，判据名缺失 = 没跑到）。
+
+| 作业 | 结论 | 是不是本票的证据 |
+| :--- | :--- | :--- |
+| `rust (yeban-app)` | **failure** | ✅ 是 —— 目标二进制**跑到了**（日志里有 `Running tests/d_ui_24_bpm_draft_survives_reprojection.rs` ＋ `test result:` 行） |
+| `windows (…) / macos (…)` | failure | ✅ 同一条判据、同一行号 |
+| `deny (cargo-deny 开源合规)` | failure | ❌ 与本票无关，见 §44 |
+| `rust (workspace 全量)` / `e2e (…)` | **skipped** | ⛔ 空绿，不作任何验证 |
+
+`rust (yeban-app)` 里那一条的原文（三条腿逐字一致，仅路径分隔符不同）：
+
+```
+running 7 tests
+…
+test a_document_edit_that_re_projects_does_not_lose_the_draft ... FAILED
+thread '…' panicked at crates/yeban-app/tests/d_ui_24_bpm_draft_survives_reprojection.rs:266:5:
+预备拍键必须被消费（否则本条没有发生重投影，②的"没变"就成了无源之水）
+test result: FAILED. 6 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out
+```
+
+⇒ **①②④⑤⑥⑦ 六条拿到了真的绿读数**（含本票的正 面 ② 与两条纪律 ⑥⑦）；红的只有 ③。
+
+### 根因：§39 边界 4 那句"无头注入绕过的是派发那一层"是**错的**
+
+现读链条（三条都是代码事实，⛔ 推测）：
+
+1. `src/host.rs` `wire_input` 的 `on_ime_focus_changed` 把 `focused_now = true` 落成
+   `InputContext::set_focus(Focus::TextInput)`；
+2. `src/input.rs` `resolve_logical` 的**第 1 步**只放行 `F5`/`F6`，**第 2 步**是
+   `if self.focus == Focus::TextInput { return PassThrough }` —— 带 `Cmd`/`Ctrl` 的组合排在
+   **第 3 步**，因此焦点在文本框里时**一把也到不了**；
+3. `invoke_key_action` 不是旁路：它经 `wire_keys` 调的正是**同一个** `resolve_logical`。
+   判据先把焦点置进文本框、再从同一张表要一次"消费"⇒ 必然返回未消费，`Op` 一条也没提交。
+
+⚠ 这条教训的形状正是 `AGENTS.md` §6.3 第 4 条的反面：**我⛔ 是把判据名缺失当成"没跑到"，
+而是把一个从未被任何一条腿执行过的假设写进了判据**。本机⛔ 编译 `yeban-app` ⇒ 这条判据从写下到
+CI 之间**一次都没有运行过**；它红得准确，红的是我自己那句前提。
+
+### 改法：③ 换到**鼠标**那条腿（同一缺陷在真窗口里的形状）
+
+`mixer-mute-toggle(int)`（调音台通道条的 M 键）→ `host::wire_mixer_switch` →
+**恰好一条** `Op::SetTrackMute` → `refresh_undo_window(.., true)` → `apply_view`。它不受键表管，
+所以"焦点在框里"这件事⛔ 会把它一起挡掉 —— 而这正是 §39 开头登记的触发面 ①（"画布上点一下"）。
+
+非空转的**现场证据**换了落点：`track-mutes` 那一列**只由 `apply_view` 写**（`src/host.rs` 的
+`ui.set_track_mutes(...)` 是唯一写者），所以"那一格翻了"就等于"那一次注入执行到了"，
+⛔ 不是"回调在四处早退里返回了所以草稿没被盖"那种假绿。四条断言：文档那一轨翻了 ⇒
+界面那一列跟着翻 ⇒ 提交条数 `+1` ⇒ 框里**仍是草稿**。
+
+顺带**新增一条钉值**（单位：**行**）：`track-ids` / `track-mutes` 两列各 `3` 条
+（`filled_project()` 的通道条数，与 `tests/mixer_keyboard_switch.rs` 同一钉法）—— 判据按下标索引，
+夹具换轨数时必须**先红在这里**，⛔ 让下标悄悄落到另一条轨上。
+
+**判决**：本条改动**待 CI**（本机⛔ 编译）。`git diff --numstat`：
+`tests/d_ui_24_bpm_draft_survives_reprojection.rs 81/25`。§39 的修法（`apply_view` 那一句门）
+**一位未动** —— 判决⛔ 曾要求改它，红的只有判据 ③ 的注入方式。
+
+## §44 取证：`deny` 那条腿现在是**全仓库红**，`async-executor v1.14.0` 被上游 yank（2026-11-03）
+
+**读数对象**：两条 run 的 `deny (cargo-deny 开源合规)` 作业。单位：**作业结论**。
+
+- 本线 run `41537282778`（`26a23966`）：`advisories FAILED, bans ok, licenses ok, sources ok`；
+- `main` 的 run `41542884885`（`61ff8825`，**别的线**刚推的"nightfall v14 落地点补齐"）：
+  同一作业同样 `failure`，而它⛔ 含我一行代码。
+
+失败原文（`deny` 自己给的处置建议）：
+
+```
+error[yanked]: detected yanked crate (try `cargo update -p async-executor`)
+```
+
+依赖链是**现读**的：`async-executor v1.14.0` ← `accesskit_unix v0.22.1` / `zbus v5.19.0`
+← `i-slint-backend-winit v1.18.1` ← `slint v1.18.1` ⇒ **Slint 的传递依赖**，本仓库⛔ 直接声明它。
+
+**处置**（⛔ 本线自行改依赖）：
+
+1. 本批三枚提交（`af28382e` / `611b0ee3` / 本条）的 `git diff --name-only` 实测只含
+   `.slint` / `.rs` / `.md` ⇒ **零**个 `Cargo.toml` / `Cargo.lock` 改动，红与它们无因果；
+2. `Cargo.lock` 是根级共享文件（`AGENTS.md` §5.6 归集成者），且 yanked crate 属**供应链信号**
+   （`MUST-GATE` 之一）⇒ 一次 `cargo update -p async-executor` 该由谁来跑、要不要连着
+   重验金帧，是**人类/集成者**的决定，留在此处等裁决，⛔ 在本线偷偷 resolve；
+3. 因此**本线的 `deny` 腿预期继续红**：读回判决时必须把"这一枚提交的测试腿"与
+   "仓库级 `deny` 红"分开记（§6.3 第 2 条：一条红的作业不污染另一条的读数，
+   但⛔ 不能再把整批写成绿）。
+
+⚠ 另一处噪声：同一作业日志早期还有一行
+`error: override toolchain '1.99.0-x86_64-unknown-linux-musl' is not installed`，
+它之后 `deny` 仍然跑出了完整报告 ⇒ 那是该 step 的**工具链回退**，⛔ 是本次失败的原因。
+
+**第三个独立数据点**：本线更早的 run `41525041679`（`D-UI-21` 那一枚提交）现在读回来也是
+**只有** `deny` 一条红，测试腿（Linux / Windows / macOS）**全绿** —— 现读非成功作业清单：
+`deny` failure ＋ `rust (workspace 全量)` / `e2e` 两条 `skipped`。⇒ "yanked 的传递依赖把
+`deny` 腿打红、⛔ 动摇任何测试判决"这条判断有第三例支撑。
+
