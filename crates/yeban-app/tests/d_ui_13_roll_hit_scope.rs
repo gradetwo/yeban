@@ -143,7 +143,7 @@ fn edited_of(project: &yeban_model::YebanProjectV1) -> Edited {
 
     let mut placements: Vec<(EntityId, EntityId)> = Vec::new();
     for (track_id, track) in &project.tracks {
-        for (_placement_id, placement) in &track.clips {
+        for placement in track.clips.values() {
             if placement.clip_id == clip_id {
                 placements.push((*track_id, placement.id));
             }
