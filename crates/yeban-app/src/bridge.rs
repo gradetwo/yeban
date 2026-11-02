@@ -4598,11 +4598,38 @@ impl ViewState {
         y: f32,
         note_height: f32,
     ) -> Option<usize> {
+        self.hit_test_visible_scoped(scroll_x, viewport_width, x, y, note_height, None)
+    }
+
+    /// 与 [`Self::hit_test_visible`] 同一条命中路径，外加**作用域**（片段池条目身份）。
+    ///
+    /// `[D-UI-13]`：过滤必须发生在**择优之前**，与 [`Self::visible_notes_scoped`] 同一口径 ——
+    /// 卷帘只画作用域内的音符（`apply_view` 注入的就是它的六条平行数组），所以"屏幕上唯一
+    /// 可能被点到的音符"就是这批。若在择优**之后**才丢，别的轨在同一个 x/y 上的音符
+    /// （纵向只有 16 条泳道、音高要折叠）就会遮住正在编辑的这颗：命中返回它的下标 →
+    /// 事后过滤成 `None` → 选区为空 → 选择 / 橡皮擦 / 剪刀 / 箭头全部静默失效。
+    /// 作用域为 `None` ⇒ 与 [`Self::hit_test_visible`] **逐项相同**。
+    #[must_use]
+    pub fn hit_test_visible_scoped(
+        &self,
+        scroll_x: f32,
+        viewport_width: f32,
+        x: f32,
+        y: f32,
+        note_height: f32,
+        clip_scope: Option<&str>,
+    ) -> Option<usize> {
+        let left_edge = scroll_x.max(0.0);
         let mut hit: Option<usize> = None;
         for index in self.notes_visible_in(scroll_x, viewport_width) {
             let note = &self.notes[index];
+            if let Some(scope) = clip_scope {
+                if note.clip_id.as_str() != scope {
+                    continue;
+                }
+            }
             // 位置是**相对视口**的（与注入的数组同一口径, 见 `visible_notes`）。
-            let left = note.x - scroll_x.max(0.0);
+            let left = note.x - left_edge;
             let right = left + note.width;
             if x >= left && x <= right && y >= note.y && y <= note.y + note_height {
                 hit = Some(index);

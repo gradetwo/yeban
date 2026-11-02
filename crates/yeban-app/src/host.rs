@@ -10938,12 +10938,11 @@ fn install_roll_click(ui: &MainWindow, fallback_view: Rc<ViewState>, port: Optio
             let scope = roll_scope(&ui, view);
             // ---- 第一段：命中 + 选区（**总是**执行）----
             // 音符框高与 `.slint` 的矩形一致；值写在一处, 免得命中测试去猜（账本第 495 轮）。
-            let mut hit = view
-                .hit_test_visible(scroll, width, x, y, NOTE_HEIGHT_PX)
-                .filter(|&index| match scope {
-                    Some(scope) => view.notes[index].clip_id.as_str() == scope,
-                    None => true,
-                });
+            // `[D-UI-13]` 作用域过滤发生在命中测试**内部**（择优之前）：⛔ 不是"先在全工程里
+            // 挑最后绘制的那颗、再事后丢掉作用域外的" —— 那样别的轨在同一 x/y 上的音符会
+            // 遮住正在编辑的这颗，返回 `None`，选区为空，于是选择 / 橡皮擦 / 剪刀 / 箭头
+            // 全部静默失效（多轨工程里 6 个剪辑只有 1 个点得中）。
+            let mut hit = view.hit_test_visible_scoped(scroll, width, x, y, NOTE_HEIGHT_PX, scope);
             // ⭐ 力度工具的**单击**（规范 §3.3 "选中对应音符的底部力度柱"）：力度柱画在
             // `roll-velocity-lane-top` 之下的车道里 ⇒ 那一带永远命中不到音符框。这里用与
             // 拖拽臂**同一个** [`velocity_bar_at`]（同一 x 口径 = 绘制帧、同一车道内 y 换算、
@@ -11372,7 +11371,11 @@ fn begin_note_drag(
     if tool.drag() != crate::input::ToolDrag::MoveNote {
         return false;
     }
-    let Some(index) = view.hit_test_visible(scroll, width, x, y, NOTE_HEIGHT_PX) else {
+    // `[D-UI-13]` 与 [`install_roll_click`] **同一个**作用域口径（择优之前过滤）：这一按要拖的
+    // 必须是**屏幕上看得见、正在编辑的那个剪辑**里的音符，⛔ 不是"全工程最后绘制的那颗"。
+    let scope = roll_scope(ui, view);
+    let Some(index) = view.hit_test_visible_scoped(scroll, width, x, y, NOTE_HEIGHT_PX, scope)
+    else {
         return false;
     };
     let note = &view.notes[index];
