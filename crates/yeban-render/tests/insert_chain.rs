@@ -2099,3 +2099,74 @@ fn ignored_strip_devices_boundary_cases() {
         "空参数设备仍由既有规则登记"
     );
 }
+
+/// `#346`：动态 EQ 的两个新字段（`deq_q` / `deq_ratio`）必须穿过**离线投影**。
+///
+/// 这条判据存在的理由是本版实测到的反例：`#341`/`#342` 的字段名在引擎
+/// （`yeban-engine/src/insert.rs`）与渲染（本 crate 的 `inserts.rs`）里各有一张
+/// 白名单，**两张表漂移时静默**——参数写了、工程里看得见、渲染一位不动。
+/// 这里用同一台设备同时写三个字段，断言的读数与 DSP 的钳制同源。
+#[test]
+fn the_dynamic_eq_q_and_ratio_survive_the_projection() {
+    let chain = InsertChain::from_devices(
+        &[effect(&[
+            ("deq_freq", 4800.0),
+            ("deq_threshold_db", -30.0),
+            ("deq_cut_db", 4.0),
+            ("deq_q", 3.5),
+            ("deq_ratio", 6.0),
+        ])],
+        SR,
+        BPM,
+    );
+    let strip = chain.strip().expect("五个 deq 字段都识别 ⇒ 必有通道条");
+    assert_eq!(strip.dyn_eq.freq_hz, 4800.0);
+    assert_eq!(strip.dyn_eq.max_cut_db, 4.0);
+    assert_eq!(strip.dyn_eq.q, 3.5, "`deq_q` 必须落到 DynEqParams::q");
+    assert_eq!(
+        strip.dyn_eq.ratio, 6.0,
+        "`deq_ratio` 必须落到 DynEqParams::ratio"
+    );
+
+    // 别名与主名同义（与 `deq_freq` / `dyn_eq_freq` 的既有口径一致）。
+    let alias = InsertChain::from_devices(
+        &[effect(&[
+            ("dyn_eq_q", 2.0),
+            ("dyn_eq_ratio", 2.0),
+            ("deq_cut_db", 3.0),
+        ])],
+        SR,
+        BPM,
+    );
+    let strip = alias.strip().expect("别名同样识别");
+    assert_eq!(strip.dyn_eq.q, 2.0);
+    assert_eq!(strip.dyn_eq.ratio, 2.0);
+}
+
+/// `#346`：M/S 中频（`ms_mid_gain_db` / `ms_mid_freq_hz`）穿过离线投影。
+#[test]
+fn the_ms_mid_fields_survive_the_projection() {
+    let chain = InsertChain::from_devices(
+        &[effect(&[
+            ("ms_mid_gain_db", 2.5),
+            ("ms_mid_freq_hz", 3200.0),
+            ("mono_below_hz", 180.0),
+        ])],
+        SR,
+        BPM,
+    );
+    let strip = chain.strip().expect("三个字段都识别");
+    assert_eq!(strip.ms_mid_gain_db, 2.5);
+    assert_eq!(strip.ms_mid_freq_hz, 3200.0);
+    assert_eq!(strip.mono_below_hz, 180.0);
+
+    // 别名的读法与 `deq_*` 一族同式。
+    let alias = InsertChain::from_devices(
+        &[effect(&[("ms_mid_gain", -1.5), ("ms_mid_freq", 4000.0)])],
+        SR,
+        BPM,
+    );
+    let strip = alias.strip().expect("别名同样识别");
+    assert_eq!(strip.ms_mid_gain_db, -1.5);
+    assert_eq!(strip.ms_mid_freq_hz, 4000.0);
+}

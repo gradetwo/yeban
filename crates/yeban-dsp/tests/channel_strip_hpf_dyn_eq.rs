@@ -108,6 +108,8 @@ fn the_dynamic_eq_cuts_its_own_band_and_leaves_the_rest_alone() {
         freq_hz: 300.0,
         threshold_db: -30.0,
         max_cut_db: 6.0,
+        q: DynEqParams::Q,
+        ratio: DynEqParams::RATIO,
     };
 
     // 300 Hz、幅度 0.5（−6 dBFS 的带通电平）⇒ 远超 −30 dB 阈值 ⇒ 吃满 6 dB。
@@ -138,6 +140,8 @@ fn a_dynamic_eq_with_zero_depth_is_a_no_op() {
                 freq_hz: 300.0,
                 threshold_db: -60.0,
                 max_cut_db: 0.0,
+                q: DynEqParams::Q,
+                ratio: DynEqParams::RATIO,
             },
             ..transparent_strip()
         },
@@ -168,6 +172,8 @@ fn the_new_stages_keep_the_mono_path_equal_to_a_duplicated_stereo_pair() {
         freq_hz: 280.0,
         threshold_db: -30.0,
         max_cut_db: 5.0,
+        q: DynEqParams::Q,
+        ratio: DynEqParams::RATIO,
     };
 
     // 一段同时有低频与中频的混合信号：低切与动态 EQ 都会动它。
@@ -306,4 +312,165 @@ fn width_scales_only_the_side_signal() {
         delta.abs() < 0.01,
         "中信号不该被宽度改动，实测 {delta:+.3} dB"
     );
+}
+
+// ---------------------------------------------------------------------------
+// `#346`：动态 EQ 的 Q 与比率是**可调字段**（本仓新增）
+// ---------------------------------------------------------------------------
+
+/// 同一频率、同一阈值与深度下，**窄 Q 的凹槽只碰自己那一段**。
+///
+/// 造法与 `the_dynamic_eq_cuts_its_own_band_and_leaves_the_rest_alone` 同源：
+/// 4.8 kHz 的检波器被 4.8 kHz 的正弦喂到远超阈值（`−6 dBFS` 带通电平 vs `−30` 阈值），
+/// 然后**在 2.4 kHz 上测稳态增益**——两个八度之外，`Q 0.9` 的峰值滤波器仍有可闻的
+/// 拖尾，`Q 4.0` 几乎没有。
+///
+/// 判据是**差值**而不是绝对值：`2.4 kHz` 处的绝对衰减取决于 RBJ 峰值的过渡带形状，
+/// 但"窄的比宽的少压"是单调的、与采样率无关的性质。
+#[test]
+fn a_narrow_dynamic_eq_q_leaves_the_neighbours_alone() {
+    let band = sine(4800.0, 0.5, 1.0);
+    let neighbour = sine(2400.0, 0.5, 1.0);
+
+    let cut_at = |q: f32| -> f64 {
+        let mut p = transparent_strip();
+        p.dyn_eq = DynEqParams {
+            freq_hz: 4800.0,
+            threshold_db: -30.0,
+            max_cut_db: 6.0,
+            q,
+            ratio: 4.0,
+        };
+        // 先让检波器吃满带内能量（同一台器件上跑一遍），再测邻居。
+        let (_, band_out) = run(p, band.as_slice());
+        let band_cut = rms_db(&band) - band_out;
+        let (_, nb_out) = run(p, neighbour.as_slice());
+        let nb_cut = rms_db(&neighbour) - nb_out;
+        // 带内被压、邻居少压 —— 两条一起返回，便于失败时看清楚。
+        println!("Q={q}: band_cut={band_cut:+.2} dB  neighbour_cut={nb_cut:+.2} dB");
+        nb_cut
+    };
+
+    let wide = cut_at(DynEqParams::Q);
+    let narrow = cut_at(4.0);
+    assert!(
+        narrow < wide - 0.5,
+        "窄 Q（4.0）在两个八度外必须比缺省 Q（0.9）少压 ≥0.5 dB：窄 {narrow:+.2} / 宽 {wide:+.2}"
+    );
+}
+
+/// `ratio = 1.0` 是**不压**：超过阈值也只有 0 dB 衰减量。
+#[test]
+fn a_dynamic_eq_ratio_of_one_never_cuts() {
+    let mut p = transparent_strip();
+    p.dyn_eq = DynEqParams {
+        freq_hz: 4800.0,
+        threshold_db: -40.0,
+        max_cut_db: 6.0,
+        q: 2.0,
+        ratio: 1.0,
+    };
+    let input = sine(4800.0, 0.5, 1.0);
+    let (_, out) = run(p, input.as_slice());
+    let cut = rms_db(&input) - out;
+    assert!(cut.abs() < 0.05, "ratio=1 必须一位不动，实测 {cut:+.3} dB");
+}
+
+/// `q` / `ratio` 的钳制：`0` 与 `NaN` 落在缺省，超出上界落上界。
+#[test]
+fn the_new_dyn_eq_fields_are_sanitised() {
+    let p = DynEqParams {
+        freq_hz: 4800.0,
+        threshold_db: -30.0,
+        max_cut_db: 4.0,
+        q: 0.0,
+        ratio: f32::NAN,
+    }
+    .sanitised();
+    // 有限值走**钳制**（`0` → 下界 `0.3`），非有限值才走**缺省**
+    // （与 `clamp_or` 的全仓同一口径：`clamp` 对 `NaN` 是恒等，必须单独兜住）。
+    assert_eq!(p.q, DynEqParams::MIN_Q, "q=0 必须钳到下界");
+    assert_eq!(p.ratio, DynEqParams::RATIO, "NaN 比率必须归到缺省比率");
+    let p = DynEqParams {
+        q: f32::NAN,
+        ..DynEqParams::DEFAULT
+    }
+    .sanitised();
+    assert_eq!(p.q, DynEqParams::Q, "NaN Q 必须归到缺省 Q");
+
+    let p = DynEqParams {
+        q: 1.0e9,
+        ratio: 1.0e9,
+        ..DynEqParams::DEFAULT
+    }
+    .sanitised();
+    assert_eq!(p.q, DynEqParams::MAX_Q);
+    assert_eq!(p.ratio, DynEqParams::MAX_RATIO);
+}
+
+// ---------------------------------------------------------------------------
+// `#346`：M/S 中频（`ms_mid_gain_db` / `ms_mid_freq_hz`）—— 评审 §2 的
+// "Mid Channel 提升 2–4 kHz"
+// ---------------------------------------------------------------------------
+
+/// 把一段**立体声**跑过通道条，返回两侧 RMS（dBFS）。
+fn run_stereo(params: ChannelStripParams, l: &[f32], r: &[f32]) -> (f64, f64, f64, f64) {
+    let mut strip = ChannelStrip::new(params, SR);
+    let mut a = l.to_vec();
+    let mut b = r.to_vec();
+    strip.process_stereo(&mut a, &mut b);
+    let skip = (SR * 0.1) as usize;
+    (
+        rms_db(&l[skip..]),
+        rms_db(&a[skip..]),
+        rms_db(&r[skip..]),
+        rms_db(&b[skip..]),
+    )
+}
+
+/// mid 被抬、side 一位不动 —— 这是"M/S 中频"的全部意义。
+///
+/// 造法：`L = R = 3 kHz 正弦` ⇒ 全是 mid；`L = −R` ⇒ 全是 side。
+/// 同一条通道条（3 kHz 处 +6 dB）在两种输入上的增益差必须分别是 ≈ +6 dB 与 ≈ 0 dB。
+#[test]
+fn the_ms_mid_bell_moves_the_mid_and_leaves_the_side_alone() {
+    let mut p = transparent_strip();
+    p.ms_mid_gain_db = 6.0;
+    p.ms_mid_freq_hz = 3000.0;
+
+    let mono = sine(3000.0, 0.25, 1.0);
+    let (in_db, out_db, _, _) = run_stereo(p, &mono, &mono);
+    let mid_gain = out_db - in_db;
+    assert!(
+        (4.5..=7.5).contains(&mid_gain),
+        "纯 mid 在 3 kHz 应被抬 ≈6 dB（固定 Q 0.9 的峰值），实测 {mid_gain:+.2} dB"
+    );
+
+    let inverted: Vec<f32> = mono.iter().map(|x| -x).collect();
+    let (in_db, _, _, out_db) = run_stereo(p, &mono, &inverted);
+    let side_gain = out_db - in_db;
+    assert!(
+        side_gain.abs() < 0.05,
+        "纯 side（L = −R）必须一位不动，实测 {side_gain:+.3} dB"
+    );
+}
+
+/// `ms_mid_gain_db == 0` 时**逐位透明**（连 M/S 往返都不做）。
+#[test]
+fn a_zero_ms_mid_gain_is_bit_identical() {
+    let l = sine(3000.0, 0.3, 0.25);
+    let r = sine(1370.0, 0.2, 0.25);
+
+    let mut a = ChannelStrip::new(transparent_strip(), SR);
+    let (mut x, mut y) = (l.clone(), r.clone());
+    a.process_stereo(&mut x, &mut y);
+
+    let mut p = transparent_strip();
+    p.ms_mid_gain_db = 0.0;
+    p.ms_mid_freq_hz = 3000.0;
+    let mut b = ChannelStrip::new(p, SR);
+    let (mut x2, mut y2) = (l, r);
+    b.process_stereo(&mut x2, &mut y2);
+    assert_eq!(x, x2);
+    assert_eq!(y, y2);
 }

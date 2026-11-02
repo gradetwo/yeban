@@ -478,12 +478,12 @@ fn the_shape_costs_are_read_not_hand_written() {
         "AudioClipSchedule = Vec 头部 24 + placements 计数 8"
     );
     assert_eq!(
-        runtime, 199_296,
+        runtime, 200_112,
         "EngineRuntime 的现读值（`#261` 之后 186720 = `#173` 的 181936 ＋ 4784 B 的\
          逐边发送量表/平滑器/重放副本；⭐ **S1 第一片**再加 **16 B** = 两个 `u64` 事件计数\
          `strip_output_gain_events` / `strip_output_gain_value_rejects`，⛔ 不新增任何表\
          ——落点复用既有的 `armed_strips`；本判据只要求音频片段**不再**加字节 ——\
-         见 `tests/bus_insert.rs` 的 B5；⭐ **通道条 hpf/dyn-eq/width 片** 再 ＋3536 B ⇒ 198496 B（通道条 ＋208 × 17 内联槽位）；⭐ **portamento 片** ＋256 B ⇒ 198752 B（池 ＋8，实测）；⭐ **mono-maker 片（`#344`）** ＋544 B ⇒ 199296 B（通道条 ＋32 × 17 内联槽位：side 低通 biquad 5 系数 ＋ 4 状态 ＝ 36 B，对齐后 ＋32）"
+         见 `tests/bus_insert.rs` 的 B5；⭐ **通道条 hpf/dyn-eq/width 片** 再 ＋3536 B ⇒ 198496 B（通道条 ＋208 × 17 内联槽位）；⭐ **portamento 片** ＋256 B ⇒ 198752 B（池 ＋8，实测）；⭐ **mono-maker 片（`#344`）** ＋544 B ⇒ 199296 B（通道条 ＋32 × 17 内联槽位：side 低通 biquad 5 系数 ＋ 4 状态 ＝ 36 B，对齐后 ＋32）；⭐ **nightfall 片** ＋816 B ⇒ 200112 B（通道条 ＋48 × 17 内联槽位，实测；余量 4688 B）"
     );
     assert!(
         (4_496..=4_656).contains(&snapshot),
