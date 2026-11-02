@@ -467,8 +467,8 @@ impl ReverbField {
 
 /// 卷积混响上**可被 `DeviceParam` 自动化落点**的**标量**字段。
 ///
-/// 刻意**不含** IR 形状（`conv_ir_decay_s` / `conv_ir_decay` / `conv_ir_seed`）：
-/// 那三个是**构造期烘焙**，换值要重新合成 IR 并走 `set_impulse_response`
+/// 刻意**不含** IR 形状（`conv_ir_decay_s` / `conv_ir_decay` / `conv_ir_seed` / `conv_ir_stereo`）：
+/// 那四个是**构造期烘焙**，换值要重新合成 IR 并走 `set_impulse_response`
 /// （`yeban-dsp` 文档逐字“分配入口之一”）⇒ 不是块边界能改的标量。
 ///
 /// 四个字段都是 `ConvolutionReverb::set_params` 的入参；该函数文档承诺**零分配、

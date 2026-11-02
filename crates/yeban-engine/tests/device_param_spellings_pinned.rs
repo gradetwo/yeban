@@ -23,13 +23,13 @@
 //!   `=>` **之前**出现的每个双引号字符串。臂体（`=>` 之后）里的字符串字面量**不**算拼写。
 //! * **归属**按 `impl` 块名判定（`impl StripProjection`／`impl TapeProjection`／
 //!   `impl ReverbProjection`／`impl ConvProjection`），⛔ 不按"集合恰好等于哪张表"反推 —— 后者会让断言自我确认。
-//! * **唯一允许的已知差集**：实时侧额外认 **3** 个 IR 形状键（[`IR_SHAPE_NAMES`]）。
+//! * **唯一允许的已知差集**：实时侧额外认 **4** 个 IR 形状键（[`IR_SHAPE_NAMES`]）。
 //!   它们是**构造期**烘焙参数、⛔ 不是自动化落点，故刻意不在 dsp 的 `ConvolutionField::SPELLINGS`
 //!   里（口径同 `yeban_render::inserts::is_supported_param`）。
 //!
 //! ## 非真空（R93／R100）
 //!
-//! 每族解析出的拼写数**必须**等于冻结读数（51／10／6／11），且四族解析各**必须**找到
+//! 每族解析出的拼写数**必须**等于冻结读数（51／10／6／12），且四族解析各**必须**找到
 //! 唯一一个 `fn apply` ⇒ 解析器退化（读不到臂）只会变红，不会变"空集即通过"。
 
 use std::collections::BTreeSet;
@@ -40,12 +40,17 @@ use yeban_dsp::device_param::{ConvolutionField, ReverbField, StripField, TapeFie
 const SOURCE: &str = include_str!("../src/insert.rs");
 
 /// 实时侧额外认、但⛔ 不是自动化落点的 **IR 形状**键（构造期烘焙）。
-const IR_SHAPE_NAMES: [&str; 3] = ["conv_ir_decay_s", "conv_ir_decay", "conv_ir_seed"];
+const IR_SHAPE_NAMES: [&str; 4] = [
+    "conv_ir_decay_s",
+    "conv_ir_decay",
+    "conv_ir_seed",
+    "conv_ir_stereo",
+];
 
-/// 冻结读数（与 `yeban-render` 的 `automation.rs` 同一条口径：实时臂 51 ＋ 6 ＋ 11；
+/// 冻结读数（与 `yeban-render` 的 `automation.rs` 同一条口径：实时臂 51 ＋ 6 ＋ 12；
 /// 自动化名单另＋延迟 15 拼写（共享表，引擎经 `DelayField` 认）＋磁带饱和 10 拼写（`tape_asym` 之后）⇒ 名单共 90 个拼写；
-/// 实时侧再＋ 3 个 IR 形状键 ⇒ 卷积族在**本判据**里是 11）。
-const FROZEN_COUNTS: (usize, usize, usize, usize) = (51, 6, 11, 10);
+/// 实时侧再＋ 4 个 IR 形状键 ⇒ 卷积族在**本判据**里是 12）。
+const FROZEN_COUNTS: (usize, usize, usize, usize) = (51, 6, 12, 10);
 
 /// 取 `impl <header>` 块内 `fn apply(&mut self, name: &str, value: f32)` 的**臂名**列表。
 ///
@@ -186,8 +191,8 @@ fn the_realtime_tape_arms_are_the_dsp_tape_spellings() {
     assert_eq!(got, expected, "实时链与 dsp 的饱和拼写表不一致");
 }
 
-/// **卷积 8 ＋ IR 形状 3**：实时臂集 == [`ConvolutionField::SPELLINGS`] ∪ [`IR_SHAPE_NAMES`]，
-/// 且这三键确实**不在** dsp 表里（否则本条登记的差集就是空话）。
+/// **卷积 8 ＋ IR 形状 4**：实时臂集 == [`ConvolutionField::SPELLINGS`] ∪ [`IR_SHAPE_NAMES`]，
+/// 且这四键确实**不在** dsp 表里（否则本条登记的差集就是空话）。
 #[test]
 fn the_realtime_convolution_arms_add_only_the_registered_ir_shapes() {
     let arms = apply_arm_names("impl ConvProjection {");
@@ -205,7 +210,7 @@ fn the_realtime_convolution_arms_add_only_the_registered_ir_shapes() {
     assert_eq!(
         got.len(),
         FROZEN_COUNTS.2,
-        "实时卷积解析出 {} 个拼写（8 可自动化 ＋ 3 IR 形状 = 11）",
+        "实时卷积解析出 {} 个拼写（8 可自动化 ＋ 4 IR 形状 = 12）",
         got.len()
     );
     assert_eq!(
