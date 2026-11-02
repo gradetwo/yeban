@@ -9478,8 +9478,9 @@ fn apply_action(
             };
             let ops = delete_ops_for(&project, &selected);
             if ops.is_empty() {
-                // 选区的对象一个都不在工程里 ⇒ 没有可停靠的编辑, 如实不消费。
-                return false;
+                // 选区的对象一个都不在工程里 ⇒ 先看**编曲视图选中的剪辑**（`D-UI-15`：
+                // 剪辑从前只能移动、不能删）。两条都不成立才如实不消费。
+                return delete_selected_clip_placement(ui, port, &project);
             }
             if port.commit_ops(now_ms(), "delete selection", ops).is_err() {
                 return false;
@@ -11877,25 +11878,97 @@ pub fn clip_drag_preview_dx_px(start_tick: u64, target_tick: u64, ticks_per_pixe
     px
 }
 
-/// 摆放身份 ⇒ `(track_id, placement_id, 当前起点 tick)`（**唯一**的身份解析）。
+/// 摆放身份 ⇒ `(track_id, placement_id, 摆放本身)`（**唯一**的身份解析）。
 ///
 /// 剪辑是**直接住在轨道里**的（`TrackV3::clips`，不像音符那样先住片段池）⇒ 遍历
 /// `project.tracks`（`BTreeMap` 键序确定）找**第一条**含该键的轨。身份文本非法 /
 /// 不在任何轨道上 ⇒ `None`（调用方什么都不做）。
 ///
-/// 起点从**权威工程**现读：`Op::MoveClipPlacement` 的 `old_start_tick` 必须与文档现值
-/// 逐值相同（模型前置条件），从这里带出来就不可能拿到第二份读数。
+/// 返回的是**借用**而不是 `start_tick` 一个标量：拖动只读它的 `start_tick`
+/// （`Op::MoveClipPlacement` 的 `old_start_tick` 必须与文档现值逐值相同 —— 模型前置条件，
+/// 从这里带出来就不可能拿到第二份读数），而删除（[`clip_delete_ops_for`]）要带走**整份**
+/// 摆放当撤销载荷（`Op::RemoveClipPlacement` 的 `previous_placement`）。两条写路径共用这
+/// **一个**解析点 ⇒ 不再长第二遍 `tracks` 遍历，也就不可能出现"一边认得这条摆放、
+/// 一边认不得"的分叉。
 fn clip_placement_for(
     project: &yeban_model::YebanProjectV1,
     placement_ulid: &str,
-) -> Option<(EntityId, EntityId, u64)> {
+) -> Option<(EntityId, EntityId, &yeban_model::project::ClipPlacement)> {
     let placement_id = placement_ulid.parse::<EntityId>().ok()?;
     project.tracks.iter().find_map(|(track_id, track)| {
         track
             .clips
             .get(&placement_id)
-            .map(|placement| (*track_id, placement_id, placement.start_tick))
+            .map(|placement| (*track_id, placement_id, placement))
     })
+}
+
+/// 选中剪辑的身份 ⇒ 待提交的 `Op::RemoveClipPlacement`（剪辑删除的**唯一** op 构造点）。
+///
+/// 与 [`delete_ops_for`] 同一取向：**解析不到就回空**，⛔ 不删一个猜的对象。
+/// 纯函数（只读工程、不碰界面、不提交）⇒ 判据可以直接喂合成工程逐条对账。
+#[must_use]
+pub fn clip_delete_ops_for(
+    project: &yeban_model::YebanProjectV1,
+    selected_clip_ulid: &str,
+) -> Vec<yeban_model::ops::Op> {
+    let Some((track_id, placement_id, placement)) = clip_placement_for(project, selected_clip_ulid)
+    else {
+        return Vec::new();
+    };
+    vec![yeban_model::ops::Op::RemoveClipPlacement {
+        track_id,
+        placement_id,
+        // 自带撤销载荷：摆放整份留在 op 里，撤销不需要回放历史（同 `DeleteNote`）。
+        previous_placement: placement.clone(),
+    }]
+}
+
+/// `Delete` / `Backspace` 落到**编曲视图选中的剪辑**上（`D-UI-15`）：一次原子提交、一步撤销。
+///
+/// 为什么它只在**音符选区为空**时才被调用（[`apply_action`] 的那一条先算 [`delete_ops_for`]）：
+/// `Delete` 的既有承诺是"删除选中的音符"，优先级⛔ 不能反过来 —— 卷帘的作用域就是那条
+/// 选中剪辑，若"选中了音符"与"选中了剪辑"同时成立时去删整条摆放，一次按键会带走用户
+/// 正指着的那一片音符所在的**整个**剪辑。
+///
+/// 四条口径（每一条都是决定，不是意外）：
+/// 1. **只在编曲视图**生效（`arrangement-view`）：Session 视图里没有"选中的剪辑"这一格，
+///    那里的 `selected-clip-ulid` 只是上一次编曲视图留下的读数 ⇒ 拿它删东西等于删掉
+///    用户此刻**看不见**的对象；
+/// 2. **一次按键 = 一次** [`UndoPort::commit_ops`]（单条 op ⇒ 一步撤销就把整条摆放连同
+///    `previous_placement` 放回原处，`[ARCH-OPS-002]` 的原子性）。模型拒绝 ⇒ 返回 `false`
+///    且⛔ **不重试**：载荷里的现值是刚从权威读的，重试要再读一遍，那不是本函数的职责
+///    （与 [`commit_clip_drag`] 同一取向）；
+/// 3. **提交成功后先收掉手上的拖动草稿**（[`cancel_clip_drag`]）：草稿指向的身份马上就
+///    不存在了，留着它 = 松手时提交一条指向已删摆放的 op；
+/// 4. **选中态必须跟着走**：清空 `selected-clip-ulid` **再**重投影 —— 那条属性是卷帘
+///    作用域的键（`[UI-NOTE-001]` 的"当前编辑片段"），顺序反过来就会有一帧画面停在
+///    一个已经不存在的剪辑的音符上。这与音符那条"删完清空 `selected-ulids`"同一条纪律。
+fn delete_selected_clip_placement(
+    ui: &MainWindow,
+    port: &Rc<UndoPort>,
+    project: &yeban_model::YebanProjectV1,
+) -> bool {
+    if !ui.get_arrangement_view() {
+        return false;
+    }
+    let selected = ui.get_selected_clip_ulid();
+    if selected.is_empty() {
+        return false;
+    }
+    let ops = clip_delete_ops_for(project, selected.as_str());
+    if ops.is_empty() {
+        // 选中的身份不在工程里（换工程 / 外部编辑留下的陈旧读数）⇒ 不消费，
+        // ⛔ 也不"顺手"清掉那个陈旧选中态：那是另一件事，不归这一键。
+        return false;
+    }
+    if port.commit_ops(now_ms(), "delete clip", ops).is_err() {
+        return false;
+    }
+    cancel_clip_drag(ui);
+    ui.set_selected_clip_ulid("".into());
+    refresh_undo_window(ui, port, true);
+    true
 }
 
 /// 剪辑拖动的**草稿清零**（松手提交之后 / `Escape` / 指针取消三条路径共用）。
@@ -11943,11 +12016,12 @@ fn preview_clip_drag(ui: &MainWindow, port: Option<&Rc<UndoPort>>, clip_ulid: &s
     let Some(project) = port.try_project() else {
         return;
     };
-    let Some((_, _, start_tick)) = clip_placement_for(&project, clip_ulid) else {
+    let Some((_, _, placement)) = clip_placement_for(&project, clip_ulid) else {
         // 拖到一半工程里没有这条摆放了（外部编辑）⇒ 草稿归零，画面回到投影位置。
         ui.set_clip_drag_preview_dx(0.0);
         return;
     };
+    let start_tick = placement.start_tick;
     let ticks_per_pixel = roll_ticks_per_pixel(ui);
     let target =
         clip_drag_target_tick(start_tick, x - ui.get_clip_drag_origin_x(), ticks_per_pixel);
@@ -11970,10 +12044,10 @@ fn commit_clip_drag(ui: &MainWindow, port: Option<&Rc<UndoPort>>, clip_ulid: &st
     let Some(project) = port.try_project() else {
         return;
     };
-    let Some((track_id, placement_id, old_start_tick)) = clip_placement_for(&project, clip_ulid)
-    else {
+    let Some((track_id, placement_id, placement)) = clip_placement_for(&project, clip_ulid) else {
         return;
     };
+    let old_start_tick = placement.start_tick;
     let ticks_per_pixel = roll_ticks_per_pixel(ui);
     let new_start_tick = clip_drag_target_tick(old_start_tick, x - origin, ticks_per_pixel);
     if new_start_tick == old_start_tick {
