@@ -66,6 +66,10 @@ impl Drop for Scratch {
     }
 }
 
+// 本仓刻意没有 `* text=auto`（见根 `.gitattributes`：全仓归一的爆炸半径远超收益），
+// 而 Windows runner 的 `core.autocrlf=true` 会把源码检出成 CRLF ⇒ 本文件那些**跨行**的
+// `contains("…\n…")` 在 Windows 上永不匹配（实测红在 run 41370538851 的 windows 腿）。
+// 判的是"文本内容"而非"逐字节"，所以读盘后归一行尾才是正解（`.gitattributes` 头部也这么分）。
 fn crate_source(name: &str) -> String {
     std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -73,6 +77,7 @@ fn crate_source(name: &str) -> String {
             .join(name),
     )
     .expect("读源码")
+    .replace("\r\n", "\n")
 }
 
 // ===========================================================================
