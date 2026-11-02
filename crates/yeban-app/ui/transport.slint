@@ -502,7 +502,7 @@ export component Transport inherits Rectangle {
     // 1024 档实测：徽章 `(640,8,120,32)` ⟂ `transport-view-session-button (720,8,92,32)`
     // —— 40px 宽、32px 高的真实重叠（`#186` 判据的负方向正对照）。
     // 窄档下同一个动作仍有入口：右栏 `ai-rail-musical-pr-button`（1024 档在树里），
-    // 以及 `Cmd/Ctrl + \` 的抽屉键 —— 所以这里隐藏的是**重复入口**，不是唯一入口。
+    // 以及 `Cmd/Ctrl+Alt+A` 的抽屉键 —— 所以这里隐藏的是**重复入口**，不是唯一入口。
     Rectangle {
         visible: root.width >= 1064px;
         x: 640px;
@@ -702,7 +702,13 @@ export component Transport inherits Rectangle {
         border-radius: Tokens.radius-md;
         accessible-role: button;
         accessible-id: "transport-ai-drawer-button";
-        accessible-label: "AI 协作栏抽屉 (Cmd/Ctrl + 反斜杠)";
+        // ⚠ 括号里的和弦是对用户的**承诺**（屏读器会把它念出来）：必须就是
+        // `src/input.rs` 那张表真绑的**那一把** —— `Cmd/Ctrl + Alt + A`
+        // （`ADR-0064` 第 4 条点名的键位之一，端到端判据 = `tests/ai_drawer_key_ui.rs`）。
+        // 这里曾写 `(Cmd/Ctrl + 反斜杠)`：键表⛔ 有 `'\\'` 那一臂 ⇒ 念出来的键按下去
+        // 什么都不会发生。判据 `tests/d_ui_26_labelled_chords_are_bound.rs` 钉住
+        // "界面上印出来的每一把和弦 ⇒ `resolve_logical` 必须解析出动作"。
+        accessible-label: "AI 协作栏抽屉 (Cmd/Ctrl + Alt + A)";
         accessible-expandable: true;
         accessible-expanded: root.ai-drawer-open;
         // `[UI-A11Y-003]` §7.3：落点与 `drawer_area` 的 `clicked` 逐字相同。

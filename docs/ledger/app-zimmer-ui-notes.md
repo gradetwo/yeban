@@ -1415,13 +1415,13 @@ scope 声明在各格 `TouchArea` **之前** ⇒ 命中测试层序也不变。�
   `text <=> root.bpm-display;` 那一句双向绑定仍在）。⚠ 四个数都在提交前**现读源码**核过
   （`code_only` 先剥 `//` 行 ⇒ 注释⛔ 算实现站点）。
 * **如实登记的边界**（⛔ 不假装整类缺陷修完了）：
-  1. **同类缺陷还剩一处没修**：`mixer_console.slint:738` 的 `sampler-path-field`。它的 `text`
-     取的是 `track-sampler-paths[i]`，而那整个数组由 `apply_view`（`host.rs:168`
-     `set_track_sampler_paths`）**无条件**重写 ⇒ 敲 SFZ 路径到一半同样会被盖掉。本票⛔ 不顺手
-     改它：全仓库只有 `bpm-input` 接了 §7.2 那条焦点通道（`sidebar.slint:77-78` 那段注释是
-     **登记过的主动不接**，理由是两路 `changed has-focus` 的先后顺序没有上游保证），要接第二路
-     必须先按 `host.rs` 那条注释原话把"失焦 = 回到画布"改成**问焦点系统当前焦点是谁** ——
-     那是**下一票**的形状，⛔ 塞进本票会把"一个门只有一个读者"这条性质弄丢。
+  1. ⚠ **本条第一版写错了，由 §40 从上游源码改正**（原文声称"调音台 SFZ 路径格同样会被
+     重投影盖掉"）。改正后的事实：`mixer_console.slint:738` 的 `sampler-path-field` 是
+     **单向**绑定（`text: root.track-sampler-paths[track_index]`），而单向绑定在用户**第一次
+     按键**时就被打断（`i-slint-core-1.18.1/properties.rs:1029-1043`：`Property::set` 在默认
+     `intercept_set == false` 的绑定上 `remove_binding`）⇒ 它**不会**被盖掉，它得的是**反面**
+     缺陷：**从此再也不跟随权威**（浏览按钮填不进框、撤销/AI 侧改动显示不出来）。
+     那一格本票一位没动，⛔ 也不能照本票的形状修（Slint 的 `<=>` 拒绝下标左值 ⇒ §40）。
   2. 左栏搜索框**没有**这个缺陷，且⛔ 不该有门：`sidebar-search` 的唯一写者是输入框自己的
      两向绑定，宿主刻意⛔ 不 `set_sidebar_search`（`host.rs:5795-5797` 原话：再写一次就与
      绑定互为回路）。导出弹窗那四格⛔ 不在 `apply_view` 的注入面上 ⇒ 与本票无关。
@@ -1436,3 +1436,115 @@ scope 声明在各格 `TouchArea` **之前** ⇒ 命中测试层序也不变。�
 `git diff --numstat`：`src/host.rs 32/1`、`ui/app.slint 23/0` ＋ 判据文件一枚。
 ⚠ `app.slint` 那 23 行**只有一格属性声明**（`in property <bool>`，画不出任何东西、
 不改任何坐标）⇒ 本票**零像素改动**，不需要金帧重录。
+
+## §40 取证：全仓库**六个** `TextInput`，只有调音台 SFZ 那格是单向绑定 —— 它得的缺陷与 `D-UI-24` **反面**（2026-11-03）
+
+数什么（单位：个）：`grep` 全部 `ui/**/*.slint` 里 `:= TextInput` 的**控件数**与其 `text`
+的绑定形态 ⇒ **6** 个输入框：`bpm-input` / 导出弹窗四格（`path` `sample-rate` `bit-depth`
+`seconds`）/ `sidebar-search-input` = **5** 个 `text <=> …`（双向），
+`mixer_console.slint:738` 的 `sampler-path-field` = **1** 个 `text: root.track-sampler-paths[track_index]`（**单向**）。
+⇒ 它是全仓库唯一的例外，而本仓早已把"单向绑定会被第一次按键打断"写成教训
+（`transport.slint:30`、`transport.slint:285`、`sidebar.slint:214`、`[PATCH export-wav-dialog-binding]`）。
+
+* **用户可见的两条害**（都由"绑定已死 ⇒ 这格不再跟随权威"推出）：
+  1. **浏览按钮填不进框**：`wire_mixer_sampler_browse`（`host.rs:2312-2335`）只
+  `set_track_sampler_paths(...)`，⛔ 不提交、不改文档（口径写在 `host.rs:2297`）。用户若**先敲过
+  一个字**再点"…"选中文件，那一次的数组重写进不到已断绑定的这一格 ⇒ 框里仍是旧草稿，
+  看起来"浏览没反应"。
+  2. ⭐ **骗 AI**（比视觉问题重）：`TextInput` 的 `accessible-value` 自动 == `text`
+  （上游 `lower_accessibility.rs`，本仓 `mixer_console.slint:715-719` 逐字记着这条），
+  而 `text` 停在草稿上 ⇒ 控制面 / 屏读器读 `track-{i}-sampler-path` 读到的是**非权威**的串，
+  与文档里的 `TrackV3::sampler` 分叉。撤销一次 SFZ 绑定、或 AI 侧改路径，界面上那格都不动。
+* **上游证据**（版本钉 `1.18.1`，本机读 `~/.cargo/registry`，⛔ 不需要编译）：
+  1. **单向绑定确实会被打断**：`i-slint-core-1.18.1/properties.rs:1029-1044`
+     `Property::set` 先问绑定的 `intercept_set`，默认绑定返回假（`:353`）⇒ `remove_binding()`（`:685`）；
+     双向绑定自己 `intercept_set == true` 因此活得下来（`properties/two_way_binding.rs:21-24`）。
+     按键那条路就是普通 `set`：`items/text.rs:1679-1681` `set_text_internal` 里 `self.text.set(text)`。
+  2. ⛔ **修法不能是"改成 `<=>` 就完事"**：`i-slint-compiler-1.18.1/passes/resolving.rs:3169-3211`
+     只接受 `PropertyReference` / `StructFieldAccess` / `RepeaterModelReference` 三种左值，
+     下标 `arr[i]` 解成 `Expression::ArrayIndex` ⇒ 落到 `:3257-3261` 那条原话诊断
+     `Two-way bindings can only target property references`。**这是一堵编译错误的墙**，
+     ⛔ 一个"写法没写好"的问题。
+  3. 上游**唯一**支持的"逐行可编辑"两向形态是绑到 `for` 的**行数据**（`TwoWayBinding::ModelData`），
+     回写走 `model_set_row_data`（`generator/rust.rs:926` 与 `:4120`；`generator/cpp.rs:716`）
+     ⇒ 要它跟随权威，就得把被迭代的那个模型从 `[string]` 换成**带字段的 struct 模型**
+     （现状：`mixer_console.slint:503` `for track_name[track_index] in root.track-names`）。
+* **为什么它⛔ 是 `D-UI-24` 的复制品**：那一票的症状是"写得太勤"（每次重投影都盖掉草稿），
+  这一格的症状是"**再也不写**"（断绑定之后权威进不来）。反过来，一旦真把两向链接到行数据上，
+  宿主每投影换整份模型 ⇒ **又变回盖掉**那一族 ⇒ 这一票要同时成立，**前置**是"带身份的焦点上报"
+  （`host.rs` 里那条注释原话：失焦⛔ 能硬编码成"回到画布"，得改成问焦点系统当前是谁）。
+  两路 `changed has-focus` 的**先后顺序**没有上游保证（`sidebar.slint:77-82` 登记的就是这一条）
+  ⇒ 身份必须进通知（只有 `id` 对得上的失焦才准清零），⛔ 是一个布尔位能表达的。
+* **需要的设计裁决**（⛔ 由 Agent 私自定，属状态分层决策）：调音台 SFZ 那一格的事实源怎么放 ——
+  **A** 把 `track-names` 升成 struct 模型（`{ name, sampler-path }`），行数据成为**瞬态草稿镜像**
+  （权威仍是文档），配带身份的焦点门 ⇒ 唯一能同时拿到"跟随权威"＋"可手敲"的形状，工作量最大
+  （`.slint` 里 `track_name` 的每一处引用要改、宿主注入要造 struct 数组、焦点通道要接第二路）；
+  **B** 收掉可编辑面：那一格改**只读**显示，路径只经"浏览 / SET" ⇒ 症状消失，代价是用户不能手敲粘贴；
+  **C** 维持现状，把上面两条害按已知缺陷登记（本 §）。
+  ⇒ 本票⛔ 动一行代码，等 A/B/C 的裁决；一有裁决这就是**下一票**的形状。
+
+**判决**：`pending`（本条是**取证与登记**，⛔ 有代码改动）—— 证据全部来自本机现读：`ui/**/*.slint`
+的 `TextInput` 清单、`host.rs` 的两个函数、以及 `~/.cargo/registry` 里 `1.18.1` 的上游源码。
+⛔ 本机没有编译任何东西，因此"改 `<=>` 会红"这一条是**读上游诊断得出的**，⛔ 是 CI 实测的；
+若将来有人按 A/B/C 动手，第一手判据应当是**先量出这一格当前的跟随行为**（敲一个字 → 改权威 →
+读 `track-{i}-sampler-path` 的 `accessible-value`），把结论写在判据里再谈修法。
+
+---
+
+## §41 `D-UI-26`：界面上**印出来的和弦**里有一把根本⛔ 存在 —— 修文案，⛔ 补键（2026-11-03）
+
+**症状**（用户可见的那一面）：AI 协作栏抽屉的按钮把键位写在 `accessible-label` 里 ——
+`"AI 协作栏抽屉 (Cmd/Ctrl + 反斜杠)"`。屏读器会念这句，用户照着按 `⌘\` / `Ctrl+\`：**什么都没发生**。
+⇒ 这是"按钮点了没反应"同族、却更难发现的一族缺陷：⛔ 缺像素、⛔ 缺回调，只缺一行文案与键表的 correspondence。
+
+**根因**（现读 `src/input.rs`）：第 3 步 `if modifiers.command()` 那张匹配表里**从未**有过
+`'\\'` 这一臂 ⇒ `Cmd/Ctrl + \` 落到 `_ => Resolution::PassThrough`。抽屉真正的键盘入口是
+`Cmd/Ctrl+Alt+A`（`ADR-0064` 第 4 条点名；端到端判据 = `tests/ai_drawer_key_ui.rs`，
+注入的是 `("a", false, true, …)`）。⇒ **修法是⭐ 把文案改成真绑的那一把**，⛔ 是给 `\` 补一臂
+（那会造出**第二把**键干同一件事 —— 键位是界面决定，⛔ 由 Agent 顺手发明）。
+同一句假承诺还在 `ui/app.slint:2117` 与 `ui/transport.slint:505` 的**注释**里各留了一份
+（注释⛔ 承诺，但它会教下一个读代码的人相信那把键存在）⇒ 一并改成 `Cmd/Ctrl+Alt+A`。
+
+**取证时挖出来的第二件事：承诺有**两个**源。** `src/elements.rs` 的
+`registry.add(id, kind, file, name, ..)` 里那份 `name` 也带键位（`yeban-ui-test-port` 的控件树
+读数，屏读与 AI 都从这里取），实测有 **3** 格携带和弦：`transport-metronome-button`
+`"节拍器 (Cmd/Ctrl + Alt + N)"`、`musical-pr-accept-button` `"采纳提案 (Shift+Enter)"`、
+`undo-tree-undo-button` `"撤销一步 (Cmd+Z)"` —— 三者都**逐字等于**对应 `.slint` 里的那条字面
+（今天一致 ⇒ 不是缺陷，但它是**下一个** `D-UI-26` 的温床：改 label 而忘改登记名，界面与控件树
+就各说一把键）。因此本判据把两边一起扫，并把"不许漂移"钉成一条（⑤）。
+⚠ Rust 侧只扫 `registry.add(..)` 参数**区间**：`elements.rs` 的**散文**里也出现
+`Shift+Enter`（实测第 3964 行那条 assert 消息），把散文当承诺会让守卫变成假红机器 ——
+同一区间外还有一处 `'Enter`'` 会命中"键名不在词表"，正是靠区间口径排除的。
+
+**清点口径**（单位：**一次印刷** = 一条 `Chord`；⛔ 是"不同的键"）：
+17 个 `.slint`（编译期 `include_str!`）扫出 **6** 处印刷，登记表扫出 **3** 处，合计 **9** 处、
+**4** 把不同的和弦 —— `Cmd/Ctrl + Alt + N` ×2、`Cmd/Ctrl + Alt + A` ×1、`Cmd+Z` ×3、
+`Shift+Enter` ×3（次数含**两源**合并）。写坏了的键位提示（修饰词接不到 `+ 键名`）：**0** 处；
+词表不认识的键名：**0** 处。磁盘上 `.slint` 文件 **17** 个 == 清单 **17** 项。
+
+**判据**（`crates/yeban-app/tests/d_ui_26_labelled_chords_are_bound.rs`，**8** 条 `#[test]`）：
+①多重集 == `PINNED_PROMISES`（原话与次数都钉住 ⇒ 新增承诺必须同步扩表）；②每一把喂
+`InputContext::resolve_logical`（画布焦点）都出**期望的那个** `Action`，`Cmd/Ctrl` 的 `ctrl`
+与 `meta` **两条腿都验**（`Modifiers::command()` 就是 `ctrl \|\| meta`）；③`Cmd/Ctrl+\` 仍 ⇒
+`PassThrough` 且扫出的和弦⛔ 含 `'\'`（假承诺⛔ 许回来）；④AI 抽屉 label 逐字 == 真绑那把、
+登记名那一格⛔ 带和弦、且 transport 里承诺 `'a'` 的键位**恰好一处**；⑤带和弦的登记名必须与某条
+`.slint` 字面逐字相同；⑥磁盘 == 嵌入清单（`read_dir` 只用于这一条对账，口径同
+`tests/assertion_bounds_audit.rs`）；⑦"承诺写全"棘轮（incomplete/unknown 必须为空集）；
+⑧同一把和弦在 `Focus::TextInput` 下必须仍 ⇒ `PassThrough`（那是 `ADR-0067` 登记的**现状**，
+⛔ 让 ② 的绿被读成"任何焦点下都生效"）。
+
+**本机怎么验的（⚠ 这条决定判决的可信边界）**：`AGENTS.md` §5 ⇒ 本机⛔ 编译 `yeban-app`。
+所以我把这个判据文件**原样**搬进一个零依赖的桩 crate（`ui/`、`src/elements.rs` 用符号链接指向真实
+文件，只把 `input` 的类型形状照抄、键表只放钉住的那几臂），`cargo test` **8 条全绿**，并用
+**变异检验**证明它⛔ 空转：删掉桩表里 `(Character('a'), false, true)` 那一臂 ⇒ ② 立刻红在
+`ui/transport.slint:711 印着 Cmd/Ctrl + Alt + A（整条字面 "AI 协作栏抽屉 (Cmd/Ctrl + Alt + A)"）
+—— Ctrl 形态在键表里解析成 PassThrough`。⇒ 桩证明的是**扫描器与对账逻辑**（词表、区间口径、
+多重集、逐字相同、清单完整性）；**真键表那几臂**是现读 `src/input.rs` 第 3/5 步核出来的，
+⛔ 经 CI 实测。本地另加 `cargo fmt -p yeban-app -- --check` `rc=0`。
+
+**判决**：`pending` —— 交 CI。`git diff --numstat`：`tests/d_ui_26_labelled_chords_are_bound.rs 761/0`
+（新判据一枚）＋ `ui/app.slint 1/1`、`ui/transport.slint 8/2`。
+⚠ 界面侧改的是 `accessible-label` 的**文本**与三处**注释**：无坐标、无尺寸、无颜色变化 ⇒
+**零像素改动**，⛔ 需要金帧重录（`[UI-MCP-003]` 那条不触发）；但它**确实**改变无障碍树里的
+`accessible-name`，所以任何按名字断言的既有判据都应当跟着改 —— 实测仓库内按这句 label 断言的
+只有本文件（`elements.rs` 的登记名⛔ 带键位，因此它⛔ 是第二处要同步的文本）。
