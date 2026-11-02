@@ -363,6 +363,15 @@ impl Biquad {
         self.set(alpha, 0.0, -alpha, 1.0 + alpha, -2.0 * cos, 1.0 - alpha);
     }
 
+    /// 清空递推状态，**保留系数**。
+    ///
+    /// 与 `ShapingEq::reset`（整只换新，系数回恒等）不同：通道条的 mono-maker
+    /// 在换参数时**不清状态**（§「set_params 不清状态」），只有在 `ChannelStrip::reset`
+    /// 里才需要把积分器归零而不动已经配好的低通系数。
+    pub(crate) fn clear_state(&mut self) {
+        self.v = [[0.0; 2]; 2];
+    }
+
     /// RBJ 峰值均衡，中心 `freq`、带宽 `q`。
     pub(crate) fn peaking(&mut self, sample_rate: f32, freq: f32, q: f32, gain_db: f32) {
         let a = gain_to_a(gain_db);

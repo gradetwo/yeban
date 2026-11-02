@@ -702,6 +702,7 @@
 //! | `EngineRuntime` | 194960 | **198496** | 通道条 hpf/dyn-eq/width 片：通道条 376 → 584（＋208 ＝ HPF 立体声 biquad ×2 ＋ 动态 EQ 检波/峰值 biquad ×3 ＋ 包络 ＋ 参数 5 标量）× 17 内联槽位；十臂 2 bool 落在填充里 ＋0 |
 //! | `SfzVoicePool` | 2232 | **2240** | portamento 池级四字段（`last_key: Option<u8>` 2 ＋ `porta_slot: u8` 1 ＋ `porta_delta: i8` 1 ＋ `porta_frame: u32` 4 ＝ 8 B） |
 //! | `EngineRuntime` | 198496 | **198752** | portamento：池 ＋8 ⇒ ＋256（实测）；红线 200 KiB ＝ 204800 |
+//! | `EngineRuntime` | 198752 | **199296** | `#344` mono-maker：通道条 ＋32 B（side 低通 biquad：5 系数 ＋ 4 状态 ＝ 36 B，8 字节对齐后 32）× 17 内联槽位 ＝ ＋544；余量 5504 B |
 //! | `SfzVoice` | 40 | **40** | ⛔ 一个字段都没加（推进量在池里） |
 //!
 //! ⚠ 计数用 `u32` 而⛔ 不是 `u8`：`selects_occurrence` 要对**每区域自己的**
@@ -713,6 +714,12 @@
 //! `SfzVoicePool` **2232 → 2240**、`EngineRuntime` **198496 → 198752**（＋256，实测；
 //! 红线 200 KiB ＝ 204800，余量 6048 B）。`SfzVoice` **仍是 40 B**，
 //! `PreparedRegion` **仍是 6168 B**（`pitch_eg: u16` 落进既有填充）。
+//!
+//! ⭐ **mono-maker 片再 ＋32 B / 通道条**（`#344`：`side_lp: Biquad` ＝ 5 个系数 ＋
+//! `2 × 2` 的状态，共 36 B，8 字节对齐后 32）：`EngineRuntime` **198752 → 199296**
+//! （＋544 ＝ 32 × 17 内联槽位，实测；余量 5504 B，⛔ 未改门槛）。
+//! 同一片还放开了动态 EQ 的频率上限（4000 → 12000 Hz）与键检波入口 ——
+//! 两者都⛔ 不加字节（前者是一个 `const`，后者复用既有 `deq_*` 状态）。
 //!
 //! ⭐ 另：`PreparedSfz` **240 → 264 B**、`SfzPlan` **240 → 264 B**
 //! （＋24 ＝ `pitch_egs: Vec<PitchEg>` 的三个词）。这两张表都在**堆上**
