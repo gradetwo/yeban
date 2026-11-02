@@ -279,6 +279,10 @@ jobs:
 
       - name: 校验归档 + 冒烟（解包后跑包里的 yeban-app --version，对清单版本）
         shell: bash
+        env:
+          # Windows runner 的 Python stdout 缺省是 cp1252，本步 heredoc 里有中文打印
+          #（sha256 自验通过），不置 UTF-8 会在 Windows 腿上以 UnicodeEncodeError 失败。
+          PYTHONUTF8: '1'
         run: |
           set -euo pipefail
           ls -la dist
