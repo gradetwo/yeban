@@ -14,8 +14,8 @@
 //! | 判据 | 证的事 |
 //! | :--- | :--- |
 //! | ① 起点 | 弹窗关着、不在运行时控件树里、`module-status` 为空 |
-//! | ② 打开 | `open-export-wav` ⇒ 属性为真，且九个 `export-wav-*` ID 全部进树 |
-//! | ③ `Esc` 真的关闭 | 走**注入 → Slint 事件源 → `key-handler` → 宿主**全链路（⛔ 不是直接 invoke 回调）⇒ 属性转假、那九个 ID 全部离开树、寻址面回到 ① 的**同一集合** |
+//! | ② 打开 | `open-export-wav` ⇒ 属性为真，且十个 `export-wav-*` ID 全部进树 |
+//! | ③ `Esc` 真的关闭 | 走**注入 → Slint 事件源 → `key-handler` → 宿主**全链路（⛔ 不是直接 invoke 回调）⇒ 属性转假、那十个 ID 全部离开树、寻址面回到 ① 的**同一集合** |
 //! | ④ 正对照：`Esc` **不导出** | 目标 WAV 文件**不存在**、`module-status` 仍为空 —— 没有这一条，"关闭"可能顺带跑了导出而看不出来 |
 //! | ⑤ 关闭后键盘层还在 | 再按 `1` 仍到达宿主（`active-tool` = 1）；无弹窗无手势时再按 `Esc` 落空**不改**任何读数 |
 //! | ⑥ 源码纪律（唯一写者） | `src/host.rs` 里那个属性的 setter **恰好两处**（打开 / 关闭），键盘臂里 `invoke_close_export_wav` **恰好一处** ⇒ 不存在第二个真相源 |
@@ -43,8 +43,9 @@ use yeban_ui_test_port::render::report_line;
 /// 会话打开时刻（与既有撤销判据同一个夹具常量）。
 const NOW: u64 = 1_760_000_000_000;
 
-/// 弹窗在树里的九个语义 ID（与 `tests/ui_export_dialog.rs` 同一份口径）。
-const DIALOG_IDS: [&str; 9] = [
+/// 弹窗在树里的语义 ID（与 `tests/ui_export_dialog.rs` 同一份口径）。
+/// ⭐ `D-EX-1` 加了第五格 ⇒ 第九格之后是 `export-wav-limiter-switch`。
+const DIALOG_IDS: [&str; 10] = [
     "export-wav-dialog",
     "export-wav-panel",
     "export-wav-close-button",
@@ -52,6 +53,7 @@ const DIALOG_IDS: [&str; 9] = [
     "export-wav-sample-rate-input",
     "export-wav-bit-depth-input",
     "export-wav-seconds-input",
+    "export-wav-limiter-switch",
     "export-wav-options-note",
     "export-wav-run-button",
 ];

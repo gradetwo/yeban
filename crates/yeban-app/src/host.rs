@@ -7903,13 +7903,19 @@ pub fn wire_module_actions_with_capture(
             // ⭐ 与 CLI 的 `--export-wav` **共用唯一解析处**（⛔ 不各写一份缺省）：
             // 三个选项都给 `None` 时与 CLI 不给 `--wav-*` 的产物**逐字节相同**
             // （8 秒 / 24-bit / 采样率跟随工程）。
-            let wav_options = crate::export_wav::WavExportOptions::resolve(
+            // ⭐ `D-EX-1`：母线限制器的 GUI 落点。⛔ 不给 `resolve()` 加形参（GUI 与 CLI
+            // 共用的唯一口径不能拆成两份），而是在它**之后**赋值 —— 与 `cli.rs` 的
+            // `wav_options.limiter = options.wav_limiter` 逐字同形。
+            // 先单独取一份读数：`wav_options` 下面要被移动进导出器，届时读不到它的字段。
+            let limiter_requested = ui.get_export_wav_limiter();
+            let mut wav_options = crate::export_wav::WavExportOptions::resolve(
                 &project,
                 sample_rate,
                 bit_depth,
                 seconds,
                 None::<u64>,
             );
+            wav_options.limiter = limiter_requested;
             let (receipt, ok, clipping_warning) = match crate::export_wav::export_wav_with_sfz_file(
                 &project,
                 &target,
@@ -7927,12 +7933,38 @@ pub fn wire_module_actions_with_capture(
                         format!("bytes={}", report.bytes),
                         format!("source={}", report.source),
                         format!("digest={}", report.digest),
+                        // ⭐ `D-EX-1`：**峰值读数恒发**。`#229` 旧门是"只有削波才发"，于是
+                        // "贴轨但没削平"那一格永远看不见任何数（创作轮里我就把这格判错过一次：
+                        // 引擎自报 `headroomDb = 5.18e-07`，回执却什么都没有）。这四个数**早就算好了**
+                        // （`render_core` 的限制器压样本计数 ＋ 量化前浮点母带上的真峰值），
+                        // 这里只是把它们发出去，⛔ 不新增任何测量、⛔ 不改一个样本。
+                        //
+                        // ⚠ 发在 `clipping_note` **之前**：`#229` 记下过长文案落在**最后一个
+                        // 字段**时会被 264px 的 `module-status` 行 `elide`（`#230` 因此另开了一行）
+                        // —— 保持 `clipping_note` 在最后，那条已知行为一位不改。
+                        format!("limiter={}", if limiter_requested { "on" } else { "off" }),
+                        format!("limiter_reductions={}", report.limiter_reductions),
+                        format!(
+                            "true_peak_dbfs={}",
+                            report
+                                .true_peak_dbfs
+                                .map_or_else(|| "null".to_owned(), |v| format!("{v:.6}"))
+                        ),
+                        format!(
+                            "headroom_db={}",
+                            report
+                                .headroom_db
+                                .map_or_else(|| "null".to_owned(), |v| format!("{v:.6}"))
+                        ),
                     ];
-                    // ⭐ 任务单 `#229`：**削波时多一条字段**，内容是 CLI 的同一条
+                    // ⭐ 任务单 `#229`：**削波时再多一条字段**，内容是 CLI 的同一条
                     // [`crate::export_wav::WavExportReport::clipping_note`]（`clippedSamples` /
-                    // `suggestedTrimDb` / 最响的源都在里面）。⛔ 不削波时**一个字段都不加**
-                    // ⇒ 既有回执逐字不变（判据
-                    // `tests/gui_export_clipping.rs` 的干净臂：整条字符串等值断言）。
+                    // `suggestedTrimDb` / 最响的源都在里面）。⛔ 不削波时**这条不加**
+                    // —— 长文案不进干净回执（判据 `tests/gui_export_clipping.rs` 的干净臂）。
+                    //
+                    // ⚠ 它原来写的"不削波时一个字段都不加 ⇒ 整条回执逐字不变"从 `D-EX-1`
+                    // 起**不再成立**：峰值读数改成恒发（见上面那段）。改的是"发不发"，
+                    // ⛔ 不是"量不量"，也⛔ 不是那条长文案的门。
                     //
                     // 为什么放在**末尾**而不是把字段拆开：① 与 CLI `--export-wav` 的
                     // "多一行"同一个口径（`#226`），区别只是这一行的行首有字段名；

@@ -469,6 +469,10 @@ export component MainWindow inherits Window {
     in-out property <string> export-wav-sample-rate: "auto";
     in-out property <string> export-wav-bit-depth: "24";
     in-out property <string> export-wav-seconds: "8";
+    // ⭐ `D-EX-1`：母线限制器开关（第五格，布尔量 ⇒ ⛔ 不经上面那条文本解析口径）。
+    // 缺省 `false` 逐字等于 CLI 不给 `--limiter`。宿主在 `resolve()` **之后**读它并赋
+    // `wav_options.limiter`；它是每次调用的修饰量（任务单 `#302`），⛔ 不进工程、不进撤销栈。
+    in-out property <bool> export-wav-limiter: false;
     // ---- 撤销能力的显示态（**模型读数**，唯一写者 = src/host.rs 的 apply_undo）------
     // 能不能撤销、还能撤几步、已撤几步、提交多少条 —— 全部由 `undo_session::UndoDisplay`
     // 从 `CommitGraph` + `UndoCursor` 读出（ADR-0001 D45）。界面不自己推断。
@@ -2220,6 +2224,7 @@ export component MainWindow inherits Window {
         sample-rate <=> root.export-wav-sample-rate;
         bit-depth <=> root.export-wav-bit-depth;
         seconds <=> root.export-wav-seconds;
+        limiter <=> root.export-wav-limiter;
 
         run => { root.export-wav(); }
         close => { root.close-export-wav(); }

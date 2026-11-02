@@ -293,6 +293,15 @@ pub struct WavExportReport {
     ///
     /// `None` = 本次没有任何源产生非零样本。
     pub loudest_source: Option<WavLoudestSource>,
+    /// ⭐ `D-EX-1`：母线限制器本次**压过的样本数**（`Limiter::reduction_count` 的口径：
+    /// 增益 < 1.0 时写出的样本数，⛔ 不是帧数）；`limiter: false` ⇒ 恒 `0`。
+    ///
+    /// 从 `render_core` 的同名读数**如实转发**（⛔ 不在这里另算一份 —— 两份实现迟早漂移）。
+    /// 加它的原因很具体：「GUI 的勾选项接上了」与「限制器真的在母带上工作过」是两件事，
+    /// 没有这个数时一个接错线的勾选框照样能报"导出成功"。断言它 `> 0` 而不是断言
+    /// "峰值 ≤ 阈值"：后者在**从未越阈值**的夹具上永真（假绿，`yeban-dsp/src/limiter.rs`
+    /// 的 `reduction_count` 文档自己就警告过这一点）。
+    pub limiter_reductions: u64,
 }
 
 impl WavExportReport {
@@ -948,6 +957,7 @@ pub fn export_wav_with_sfz_file_and_assets_under(
         trim_basis_dbfs,
         trim_basis,
         loudest_source,
+        limiter_reductions: rendered.limiter_reductions,
     })
 }
 

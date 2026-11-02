@@ -13,6 +13,11 @@
 // （`host::wire_module_actions_with_capture`），由它按
 // `export_wav::WavExportOptions::resolve` 的**唯一**口径解析；解析失败时回执
 // `error=invalid-options`，**不落盘半成品文件**。
+// 第五格 `export-wav-limiter-switch` 是布尔量，⛔ 不经那条解析路径：宿主在 `resolve()`
+// **之后**直接赋 `wav_options.limiter`（与 CLI `cli.rs` 的 `wav_options.limiter =
+// options.wav_limiter` 同款）。⛔ 没有给 `resolve()` 加形参 —— 它是 GUI 与 CLI **共用**
+// 的唯一口径处，加形参会把"两边缺省逐字节相同"这条不变量拆成两份（判据
+// `tests/gui_export_clipping.rs` 的对照臂就钉在它上面）。
 // 默认值逐字等于 CLI 不给 `--wav-*` 时的口径：
 //   - 采样率 `auto`      ⇒ 跟随工程（`project.sample_rate()`）
 //   - 位深   `24`        ⇒ 24-bit 整数（TPDF 抖动）
@@ -34,6 +39,13 @@ export component ExportWavDialog inherits Rectangle {
     in-out property <string> sample-rate: "auto";
     in-out property <string> bit-depth: "24";
     in-out property <string> seconds: "8";
+    // ⭐ `D-EX-1`：母线限制器开关。第五格，但**不是**文本框 —— 它是布尔量，
+    // 用 `switch` 而不是"再开一个能填错的输入框"。默认 `false` 逐字等于 CLI 不给
+    // `--limiter`（`WavExportOptions::default()`）。
+    //
+    // ⚠ 它是**每次调用**的导出修饰量（任务单 `#302` 的硬边界：⛔ 不进
+    // `project.schema.json`）⇒ 本控件**不**产生 `Op`、**不**进撤销栈、⛔ 不改工程。
+    in-out property <bool> limiter: false;
 
     callback run();
     callback close();
@@ -201,7 +213,11 @@ export component ExportWavDialog inherits Rectangle {
         UiText {
             x: Tokens.space-6;
             y: 164px;
-            width: parent.width - 48px;
+            // ⭐ `D-EX-1`：原来这格标题**通栏**（`parent.width - 48px`），因为这一行右边
+            // 什么都没有。第五格（母线限制器）落在同一行的右半 ⇒ 标题收窄到与它自己的
+            // 输入框同宽（200px，与上面「采样率」那格的标题同款），⛔ 两个标题的矩形
+            // 不许重叠 —— 面板高度一位不改（弹窗默认关着 ⇒ 默认帧与 5 张金帧不动）。
+            width: 200px;
             height: 16px;
             text: "时长 秒（空 = 缺省 8 秒）";
             color: Tokens.ink-2;
@@ -227,6 +243,59 @@ export component ExportWavDialog inherits Rectangle {
             accessible-label: "导出时长（秒）";
             accessible-value: root.seconds;
             accessible-read-only: false;
+        }
+
+        // ------------------------------------------------------------ 母线限制器
+        // ⭐ `D-EX-1`：限制器**本来就存在**（`WavExportOptions.limiter`；CLI `--limiter`
+        // 与 MCP `yeban_render` 的 `limiter` 都能开，`render_core` 真的消费它），
+        // 缺的只是 GUI 这条路到不了它 —— 本控件就是补那条路。
+        // 落点选在「时长」那一格的**右侧空位**（x 与位深格同列）⇒ 面板高度一位不改：
+        // 弹窗默认关着，整帧不变，`tests/golden/linux/` 的 5 张基准不受影响。
+        UiText {
+            x: Tokens.space-6 + 216px;
+            y: 164px;
+            width: parent.width - 48px - 216px;
+            height: 16px;
+            text: "母线限制器（仅本次导出）";
+            color: Tokens.ink-2;
+            font-size: Tokens.font-size-xs;
+        }
+
+        export-wav-limiter-switch := Rectangle {
+            x: Tokens.space-6 + 216px;
+            y: 184px;
+            width: 200px;
+            height: 24px;
+            background: root.limiter ? Tokens.gold-deep : Tokens.bg-void;
+            border-radius: Tokens.radius-sm;
+            border-width: 1px;
+            border-color: root.limiter ? Tokens.gold : Tokens.line-strong;
+
+            accessible-role: switch;
+            accessible-id: "export-wav-limiter-switch";
+            accessible-label: "母线限制器（仅本次导出）";
+            accessible-checkable: true;
+            accessible-checked: root.limiter;
+            // `[UI-A11Y-003]` §7.3：无障碍动作与下面 `TouchArea.clicked` **逐字同一落点**。
+            accessible-action-default => { root.limiter = !root.limiter; }
+
+            UiText {
+                x: 0;
+                y: 0;
+                width: parent.width;
+                height: parent.height;
+                text: root.limiter ? "限制器：开" : "限制器：关";
+                color: root.limiter ? Tokens.gold-bright : Tokens.ink-1;
+                font-size: Tokens.font-size-xs;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+
+            TouchArea {
+                width: parent.width;
+                height: parent.height;
+                clicked => { root.limiter = !root.limiter; }
+            }
         }
 
         // ------------------------------------------------------------ 说明行
