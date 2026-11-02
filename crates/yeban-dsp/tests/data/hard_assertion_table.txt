@@ -2,7 +2,7 @@
 # 分类口径：float_bits ＝ 判据体内有 to_bits()；integer_count ＝ 只比整数/长度
 # class：hard ＝ 产线可达集无宿主 libm 超越函数；platform ＝ 有（只在本架构有意义）
 #        no_callee ＝ 不调用本 crate 产线函数
-# 合计 295 条：float_bits 79 ／ integer_count 216；其中 hard 64 ／ platform 12
+# 合计 304 条：float_bits 79 ／ integer_count 225；其中 hard 64 ／ platform 12
 # 列：kind | class | reach | host | file | test
 integer_count | no_callee | 0 | - | src/block.rs | accumulate_matches_scalar_reference
 integer_count | no_callee | 0 | - | src/block.rs | mismatched_lengths_are_truncated_instead_of_panicking
@@ -299,3 +299,12 @@ integer_count | no_callee | 0 | - | src/tape.rs | oversampling_aliasing_is_below
 integer_count | no_callee | 0 | - | src/tape.rs | reset_reproduces_a_freshly_built_device_bit_for_bit
 integer_count | no_callee | 0 | - | src/tape.rs | sanitised_clamps_every_field_into_its_documented_domain
 integer_count | no_callee | 0 | - | src/tape.rs | small_signal_gain_is_approximately_one
+integer_count | no_callee | 0 | - | src/vocal_refine.rs | refine_finds_vop_pre_off_and_f0
+integer_count | no_callee | 0 | - | src/vocal_refine.rs | refine_legato_fallback_finds_second_vowel
+integer_count | no_callee | 0 | - | src/vocal_timemap.rs | build_gap_silence_absorbs_slack
+integer_count | no_callee | 0 | - | src/vocal_timemap.rs | build_single_syllable_locks
+integer_count | no_callee | 0 | - | src/vocal_timemap.rs | gate_pass_and_fail
+integer_count | no_callee | 0 | - | src/vocal_timemap.rs | map_interpolates_and_extends
+integer_count | no_callee | 0 | - | src/vocal_timemap.rs | render_burst_alignment_identity_and_stretched
+integer_count | no_callee | 0 | - | src/vocal_timemap.rs | render_identity_is_deterministic
+integer_count | no_callee | 0 | - | src/vocal_timemap.rs | render_silence_stays_silence

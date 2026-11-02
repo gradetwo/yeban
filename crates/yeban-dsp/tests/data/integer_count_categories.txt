@@ -2,7 +2,7 @@
 # 列：file|test|category|首条整数断言的证据（截断 90 字符）
 # 口径（R118）：只有 collection_size **界定集合大小** ⇒ 才算非真空下界；
 #   值界／元素值界／条件计数器 **⛔ 不算**。分类优先级：condition_counter > collection_size > element_value_bound > value_bound。
-# 合计 216 条：collection_size 34 ／ value_bound 173 ／ element_value_bound 5 ／ condition_counter 4
+# 合计 225 条：collection_size 37 ／ value_bound 179 ／ element_value_bound 5 ／ condition_counter 4
 src/block.rs|accumulate_matches_scalar_reference|value_bound|assert!((out[i] - expect[i]).abs() < 1e-6, "mismatch at {i}"
 src/block.rs|mismatched_lengths_are_truncated_instead_of_panicking|value_bound|assert_eq!(out[..4], [1.0, 1.0, 1.0, 0.0]
 src/block.rs|mix2_handles_non_multiple_of_four|value_bound|assert!((v - 1.0).abs() < 1e-6
@@ -219,3 +219,12 @@ src/tape.rs|oversampling_aliasing_is_below_the_direct_formula|value_bound|assert
 src/tape.rs|reset_reproduces_a_freshly_built_device_bit_for_bit|value_bound|assert_eq!(left, left2
 src/tape.rs|sanitised_clamps_every_field_into_its_documented_domain|value_bound|assert_eq!(nan.asym, 0.0, "非有限的 `asym` 归 `0`（＝对称 ⇒ 恒等）"
 src/tape.rs|small_signal_gain_is_approximately_one|value_bound|assert!(                     (*sample - 0.01).abs() < 1e-3,                     "drive {dr
+src/vocal_refine.rs|refine_finds_vop_pre_off_and_f0|value_bound|assert!(             (note.f0_median_hz - 150.0).abs() <= 5.0,             "F0 {} must be 
+src/vocal_refine.rs|refine_legato_fallback_finds_second_vowel|value_bound|assert!(             (note.f0_median_hz - 200.0).abs() <= 5.0,             "F0 {} must be 
+src/vocal_timemap.rs|build_gap_silence_absorbs_slack|collection_size|assert_eq!(cores.len(), 2
+src/vocal_timemap.rs|build_single_syllable_locks|value_bound|assert!(             (delta - 0.10).abs() < 1e-6,             "lock window slope must be 1
+src/vocal_timemap.rs|gate_pass_and_fail|collection_size|assert_eq!(fail_hard.out_of_hard_count, 1
+src/vocal_timemap.rs|map_interpolates_and_extends|value_bound|assert!((map.map(2.0) - 2.0 / 1.5).abs() < 1e-9
+src/vocal_timemap.rs|render_burst_alignment_identity_and_stretched|value_bound|assert!(                 error_ms <= bound,                 "identity burst alignment erro
+src/vocal_timemap.rs|render_identity_is_deterministic|collection_size|assert_eq!(a.len(), sr / 2
+src/vocal_timemap.rs|render_silence_stays_silence|value_bound|assert!(peak < 1e-4, "silence in must stay silence, peak {peak}"
