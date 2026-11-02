@@ -734,3 +734,90 @@ match port.as_ref().and_then(|p| p.try_project())
 **判决**：`5e9dc6a2` 自动档 `41314892958`、手动档 `41314963972` **在飞** ⇒ 本条记 `pending`；
 读回时必须确认 `roll_edit_tools` 二进制出现在 `Running tests/` 名单里且有 `test result:` 行
 （§6.3 第 4 条：fail-fast 之下"名字缺失"既不是失败也不是通过）。
+
+## 23. D-UI-11 与 D-UI-13 的收盘（判决现读，2026-11-02）
+
+两票都在合流前的 `line/zimmer-ui-write-surface` 上，本分支查不到 per-commit run ⇒ 用
+`gh run list --branch line/zimmer-ui-write-surface` 现读（单位＝**个 run 的结论**）：
+
+| 提交 | 内容 | 本提交自己的 run | 结论 |
+| :--- | :--- | :--- | :--- |
+| `708ed3f4` | serve 那份装配漏接选轨 / 行高拖拽 / 撤销三条 | 无（同批推送，tip 才有 run） | 由 `05c54275` 的 run 覆盖 |
+| `8ca460ba` | 卷帘命中测试不分作用域 | `41369170925` | **failure**（修复前的红形态，下一枚热修接手） |
+| `6809d13e` / `a95851e2` | 同票的 `collapsible_if` / `for_kv_map` 两处 clippy 红 | `41369885862` / `41370538851` | **failure** ⇒ `a95851e2` 的手动档 `41371903917` **success** |
+| `9157dcb2` | D-UI-11 判据 ⑤ 改为本行内拖拽 | `41363718543` | **failure**（同上，红在判据前提） |
+| `05c54275` | 批尖（D-UI-1 判据读盘归一行尾） | `41393391415` | **success** ⇒ 整批（含两票）到此有判决 |
+
+⚠ 中间那些红**不是**"最后一条绿了所以前面不用看"：`collapsible_if` 与 `for_kv_map` 都是在
+`-D warnings` 下直接判红的编译期错误，写代码时就该现读 `clippy` 输出而不是等 CI（本节第 4 行
+两枚热修 = 两次往返 ≈ 26 分钟墙钟）。
+
+## 24. D-EX-1 的四次读回与"空绿"陷阱（2026-11-02）
+
+| run | 触发 | 时长 | 结论 | 这句话能说 / 不能说 |
+| :--- | :--- | :--- | :--- | :--- |
+| `41436916743` | push `df64c9da` | — | **failure** | 红在 `deny` 一条腿（RUSTSEC-2026-0433 / pulldown-cmark 0.13.5）⇒ 与本片代码无关，但⛔ 不能当"已过" |
+| `41446828680` | push `607fd495`（升 0.13.6） | — | **failure** | 红在 `checks` 的**依赖许可清单漂移**一条 ⇒ 升版本必须同批重生成清单 |
+| `41460622795` | push `343461a4`（重生成清单） | **1m12s** | success | ⚠ **空绿**（§6.3 第 2 条）：纯 `docs/**` 改动 ⇒ plan 返回空集合，rust 腿全 `-`/`0s`，不构成任何验证 |
+| `41461978083` | 手动档（workflow_dispatch，树 = `343461a4`） | **48m43s** | **success** | D-EX-1 的代码在这一棵树里被真跑过 ⇒ 本票判决以这一条为准 |
+
+读回时另按 §6.3 第 4 条核过：`gui_export_limiter` 这个名字确实出现在该 run 的
+`Running tests/` 名单里（⚠ 直接 `grep -c "Running tests/"` 会因 ANSI 转义把计数打成 **0**，
+匹配二进制名才拿到真读数）。
+
+## 25. D-UI-14：左栏搜索框此前是**假的**（`83d151c3`，判决 pending）
+
+现场：`ui/sidebar.slint` 那一格挂着 `accessible-role: text-input` 与语义 ID
+`sidebar-search-field`，可寻址、可被屏读念出，但它是**一个占位矩形** ⇒ 敲进去什么都不动。
+修法与判据逐条写在提交正文（两向绑定、过滤只在 Rust 一处、空态分两档、钳位分母 = 过滤后的
+条数、⑨ 文本层取证）。⛔ 不换 `placeholder-text`：那会让默认帧像素搬家 ⇒ 5 张 Linux 基准整批重录。
+
+判决：`83d151c3` 自己**没有** per-commit run（与 `5d80c42c` 同批推送，只有批尖有 run，L32）；
+批尖 `5d80c42c` 的 `41472437095` = **failure** ⇒ 本票判据从未被执行（见 §26）⇒ 记 `pending`，
+以 `f0a57180` 的 run `41476987648` 为准。
+
+## 26. D-UI-15 的第一票红：一个**签名生命周期**（`5d80c42c` → 热修 `f0a57180`）
+
+现场：`41472437095` 三条 `yeban-app` 腿（`rust` / `windows` / `macos`）的
+`clippy (-D warnings)` 全挂，报错一条：
+
+```
+error[E0106]: missing lifetime specifier
+   --> crates/yeban-app/src/host.rs:11896:34
+    = help: this function's return type contains a borrowed value, but the signature
+            does not say whether it is borrowed from `project` or `placement_ulid`
+```
+
+根因：本片把 `clip_placement_for` 从"只回一个 `start_tick` 标量"改成**回借用**
+（`Option<(EntityId, EntityId, &ClipPlacement)>`，让拖动与删除共用同一个身份解析点），
+但签名里有两个输入生命周期 ⇒ 返回值的生命周期无法省略。`41436916743` 那一族是环境红，
+这一条是**我写的代码**红。
+
+⚠ 代价被低估的那一半：错误在 **lib** 编译期 ⇒ 同一批里三个判据文件（`sidebar_search.rs`、
+`delete_selected_clip.rs`、以及本票之后的 `clip_mute_toggle.rs`）**从未被编译，更未执行**。
+所以这一票既不是"判据失败"也不是"判据通过"，是**零读数**（§6.3 第 4 条的形状）。
+
+教训登记：把函数改成回借用时，⛔ 不要假设"省略式能推出来"——只有**一个**输入生命周期时才推得出。
+本机不编译 Slint ⇒ 这一类形状只能在 CI 撞上，所以每票落地前先做一次
+"这个签名有几个输入生命周期、返回值借的是哪一个"的自检。
+
+## 27. D-UI-16：剪辑能选、能拖、能删，就是不能单独静音（`e48bf59c`，判决 pending）
+
+缺口证据（现读命令，单位＝**个匹配**）：切片之前 `grep -rn SetClipPlacementMuted crates/yeban-app/src`
+= **空**，而同一条 `Op` 在 `yeban-model/src/ops.rs` 有 apply / inverse / 前置条件，
+在 `yeban-engine/src/snapshot.rs`、`yeban-render/src/{als,logic}.rs`、
+`yeban-mcp/src/domain/notes.rs` 都是**真读数** ⇒ 引擎与 MCP 早已诚实，只有界面那一半没接。
+
+切片形状（与 `D-UI-15` 同一族口径：⛔ 不加新按钮 ⇒ 不动元素注册表、⛔ 默认帧逐像素不变）：
+键 `Cmd/Ctrl+M`（实测该格此前是第 3 步的 `_ => PassThrough`）＋ `host::clip_mute_ops_for`
+（全 app 唯一构造点）＋ `apply_view` 注入 `clip-mutes` ＋ 包头底色
+`bg-raised(#1e2733) → bg-void(#0e1216)` ＋ 读屏标签后缀"（静音）"。
+与轨静音的分工是**作用域**：裸 `m` 动 `selected-track-id`，本键动 `selected-clip-ulid`。
+
+机械副作用现读补账（⛔ 不等 CI 报红再改）：`APPLY_VIEW_WRITE_SITE_BUDGET` **100 → 101**、
+`PER_FRAME_ARRAY_REWRITE_BUDGET` **57 → 58**、快捷键表 `SHORTCUTS` **46 → 47**
+（判据 B11b 同时改条目数与那句分解文案）。
+
+判决：本票与 §25 / §26 同批，`f0a57180` 的 run `41476987648` **在飞** ⇒ 三票全部记 `pending`；
+读回时必须逐条确认 `sidebar_search` / `delete_selected_clip` / `clip_mute_toggle` 三个二进制
+都出现在 `Running tests/` 名单里且各有 `test result:` 行。
