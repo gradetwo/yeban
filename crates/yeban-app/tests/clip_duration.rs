@@ -19,7 +19,7 @@
 //! | :--- | :--- |
 //! | ①（夹具前提） | 至少两条摆放、⛔ 没有音符选区、`clip-widths` 与 `clip-ulids` 同长且都 `> 0`、每条时长都够缩一档 |
 //! | ②（写权威 ＋ 带读数） | `Shift+→` ⇒ 只有那条摆放 `duration_ticks` **+一个网格**（另一条**逐字段**不变）、`start_tick`/`muted`/`loop_config` 一位不动、片段池字节不变、提交 **+1**、选中态**留下**、`clip-widths` 那一格变大 |
-//! | ③（画得出来 ＋ 可逆） | 变宽的改变像素**全部**落在 `clip-{A}-body` 前后两框的**并集**内（内 `> 0` / 外 `== 0`）；`Shift+←` 延回原值 ⇒ 帧与基准**逐字节相同** |
+//! | ③（画得出来 ＋ 可逆） | 变宽的改变像素**全部**落在 `clip-{A}` **自身**前后两态的并集内（包头 `clip-{A}-header` ∪ 拖动面 `clip-{A}-body`；内 `> 0` / 外 `== 0`，非零时打印差异包围盒与前三个像素的颜色）；`Shift+←` 延回原值 ⇒ 帧与基准**逐字节相同** |
 //! | ④（优先级与边界） | 音符与剪辑**同时**有选中态 ⇒ 只动**音符**、剪辑一位不动；音符已经卡在 1 tick 下限 ⇒ **不消费、0 提交**、⛔ 不跨界去改剪辑（"分派看选区，不看结果"） |
 //! | ⑤（视图门控） | Session 视图里同一份选中态**不消费、0 提交、工程不变**；回编曲视图立刻生效 |
 //! | ⑥（解析不到 ⇒ 不消费） | 陈旧 / 非法 / 空 三种选中态都 `consumed == false`、0 提交、⛔ 不动选中态 |
@@ -226,19 +226,28 @@ fn element_bounds(plane: &mut LiveControlPlane, seq: i64, element_id: &str) -> R
     )
 }
 
-/// 两个包围盒的**并集**（外扩 2px 吸收边框 / 抗锯齿的取整 —— 与 `tests/clip_drag.rs`
-/// 的 `union_rect` 同一余量口径）。裁剪改变的是"右缘往哪停"，所以前后两框都必须算期望区域。
-fn union_rect(before: Rect, after: Rect) -> Rect {
+/// 任意多个包围盒的**并集**（外扩 2px 吸收边框 / 抗锯齿的取整 —— 与 `tests/clip_drag.rs`
+/// 的 `union_rect` 同一余量口径，余量只加**一次**，嵌套调用会把余量叠成 4px）。
+fn union_of(rects: &[Rect]) -> Rect {
     let margin = 2_i32;
-    let x0 = before.x.min(after.x) - margin;
-    let y0 = before.y.min(after.y) - margin;
-    let x1 = before.right().max(after.right()) + margin;
-    let y1 = before.bottom().max(after.bottom()) + margin;
+    assert!(!rects.is_empty(), "并集至少得有一个框");
+    let mut left = i32::MAX;
+    let mut top = i32::MAX;
+    let mut right = i32::MIN;
+    let mut bottom = i32::MIN;
+    for rect in rects {
+        left = left.min(rect.x);
+        top = top.min(rect.y);
+        right = right.max(rect.right());
+        bottom = bottom.max(rect.bottom());
+    }
+    let (left, top) = (left - margin, top - margin);
+    let (right, bottom) = (right + margin, bottom + margin);
     Rect::new(
-        x0,
-        y0,
-        u32::try_from(x1 - x0).expect("并集宽度在 u32 内"),
-        u32::try_from(y1 - y0).expect("并集高度在 u32 内"),
+        left,
+        top,
+        u32::try_from(right - left).expect("并集宽度在 u32 内"),
+        u32::try_from(bottom - top).expect("并集高度在 u32 内"),
     )
 }
 
@@ -269,6 +278,43 @@ fn diff_split(before: &Rgb8Image, after: &Rgb8Image, rect: Rect) -> (u64, u64) {
         }
     }
     (inside, outside)
+}
+
+/// `rect` **外**那些差异像素的取证摘要：数量 + 差异包围盒 + 前 3 个像素的两种颜色。
+///
+/// 只在计数非零时被调用（一轮 CI ≈ 7 分钟，红一次必须换回"在哪、什么颜色"这两个事实，
+/// 而不是换一个猜测 —— AGENTS §6.3-3）。
+fn outside_forensics(before: &Rgb8Image, after: &Rgb8Image, rect: Rect) -> String {
+    let (x0, y0) = (i64::from(rect.x), i64::from(rect.y));
+    let (x1, y1) = (i64::from(rect.right()), i64::from(rect.bottom()));
+    let mut bbox: Option<(u32, u32, u32, u32)> = None;
+    let mut samples: Vec<String> = Vec::new();
+    let mut count = 0_u64;
+    for y in 0..after.height() {
+        for x in 0..after.width() {
+            let (Some(old), Some(new)) = (before.pixel(x, y), after.pixel(x, y)) else {
+                continue;
+            };
+            if old == new {
+                continue;
+            }
+            let in_rect =
+                i64::from(x) >= x0 && i64::from(x) < x1 && i64::from(y) >= y0 && i64::from(y) < y1;
+            if in_rect {
+                continue;
+            }
+            count += 1;
+            bbox = Some(match bbox {
+                None => (x, y, x, y),
+                Some((bx0, by0, bx1, by1)) => (bx0.min(x), by0.min(y), bx1.max(x), by1.max(y)),
+            });
+            if samples.len() < 3 {
+                samples.push(format!("({x},{y}) {old:?} → {new:?}"));
+            }
+        }
+    }
+    let picked = samples.join(" / ");
+    format!("{count} 个像素落在区域外; 差异包围盒 {bbox:?}; 前几个: {picked}")
 }
 
 /// ① 夹具前提：至少两条摆放、**没有**音符选区、宽度列同源、时长够缩一档。
@@ -552,12 +598,19 @@ fn shift_left_shortens_the_selected_placement_by_the_same_grid() {
     ));
 }
 
-/// ③ **画得出来 ＋ 可逆**：变宽只发生在并集内，延回原值后帧与基准**逐字节相同**。
+/// ③ **画得出来 ＋ 可逆**：变宽只发生在这条剪辑**自己的几何**里，延回原值后帧与基准**逐字节相同**。
 ///
-/// 为什么区域是"前后两框的并集"而不是"原来那块剪辑"：裁剪改变的就是右缘往哪停，
-/// 新盖住的那几条像素列本来就在旧框**之外**，把它们判成"越界"是判据写错，不是实现错。
+/// 区域 = 前后两态的 `clip-{ulid}-header` ∪ `clip-{ulid}-body`（外扩 2px）。两件事都必须写下来，
+/// 因为它们各是一次真实红过：
+/// * **为什么不是"原来那块剪辑"**：裁剪改变的就是右缘往哪停，新盖住的那几列像素本来就在旧框**之外**，
+///   把它们判成"越界"是判据写错，不是实现错；
+/// * **为什么不能只取 `body`**：`clip-{ulid}-body` 是**拖动面**（`arrangement_view.slint` 的
+///   `TouchArea`，`y = clip-ys + 18px`、`height = clip-heights - 18px`），它**不含**上面那 18px 的
+///   包头，而包头的 `width: parent.width` 跟着变宽、里面的 ulid 文本还是 `overflow: elide` ——
+///   多出来的 8px 会**露出新的字**。2026-11-03 实测红在此处：203 个改变像素全落在 `y < 110`
+///   的包头带内（并集只从 110 起），实现一位没错。⛔ 把区域退回"整个编曲区"就变成空判据。
 #[test]
-fn the_resize_is_drawn_within_the_union_of_the_two_bodies_and_leaves_no_trace() {
+fn the_resize_is_drawn_within_the_clips_own_bounds_and_leaves_no_trace() {
     let (window, port, mut plane) = assemble();
     let a = clip_ulids(&window)[0].clone();
     select_clip(&window, &a);
@@ -565,30 +618,42 @@ fn the_resize_is_drawn_within_the_union_of_the_two_bodies_and_leaves_no_trace() 
         .expect("A 在场")
         .duration_ticks;
     let body_id = format!("clip-{a}-body");
+    let header_id = format!("clip-{a}-header");
 
     let body_before = element_bounds(&mut plane, 10, &body_id);
+    let header_before = element_bounds(&mut plane, 11, &header_id);
     assert!(
         body_before.width > 0 && body_before.height > 0,
         "裁剪面必须有可见几何: {body_before:?}"
     );
+    assert_eq!(
+        header_before.width, body_before.width,
+        "夹具前提：包头与拖动面同宽（都读 `clip-widths`）⇒ 区域才是这条剪辑本身"
+    );
     let baseline = plane.capture().expect("Tier-1 截图");
 
     assert!(press_shift_right(&window), "夹具前提：这一键必须被消费");
-    let body_after = element_bounds(&mut plane, 11, &body_id);
+    let body_after = element_bounds(&mut plane, 12, &body_id);
+    let header_after = element_bounds(&mut plane, 13, &header_id);
     assert!(
         body_after.width > body_before.width,
         "延长后剪辑体的包围盒必须更宽（否则像素判据在空转）: {body_before:?} → {body_after:?}"
     );
     let resized = plane.capture().expect("Tier-1 截图");
-    let area = union_rect(body_before, body_after);
+    let area = union_of(&[body_before, body_after, header_before, header_after]);
     let (inside, outside) = diff_split(&baseline, &resized, area);
     assert!(
         inside > 0,
         "裁剪必须**真的画出来**：实测并集区域 {area:?} 内 0 个差异像素"
     );
+    let forensics = if outside > 0 {
+        outside_forensics(&baseline, &resized, area)
+    } else {
+        String::new()
+    };
     assert_eq!(
         outside, 0,
-        "裁剪态的改变像素必须全部落在 `clip-{a}-body` 前后两框的并集内（{area:?}）"
+        "裁剪态的改变像素必须全部落在 `clip-{a}` 自己前后两态（包头＋拖动面）的并集内（{area:?}）：{forensics}"
     );
 
     // ---- `Shift+←` 延回原值 ⇒ 与基准帧逐字节相同（不留痕）----
@@ -608,13 +673,14 @@ fn the_resize_is_drawn_within_the_union_of_the_two_bodies_and_leaves_no_trace() 
         "延回原值后画面必须与基准**逐字节相同**（裁剪不留痕）"
     );
     assert_eq!(
-        element_bounds(&mut plane, 12, &body_id),
+        element_bounds(&mut plane, 14, &body_id),
         body_before,
         "回到原时长后包围盒也必须回到原样"
     );
 
     report_line(&format!(
-        "[clip-duration] `{a}` 变宽：并集 {area:?} 内 {inside} 个差异像素 / 外 0；延回原值后帧与基准逐字节相同"
+        "[clip-duration] `{a}` 变宽：自身并集 {area:?}（包头 ∪ 拖动面 × 前后两态）内 {inside} 个差异像素 / 外 0；\
+         延回原值后帧与基准逐字节相同"
     ));
 }
 
