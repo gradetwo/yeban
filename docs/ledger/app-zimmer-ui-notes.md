@@ -1207,3 +1207,97 @@ scope 声明在各格 `TouchArea` **之前** ⇒ 命中测试层序也不变。�
 差异只有 committer 日期被规范化成 `Z` 与末尾空行）。⇒ 读判决时**认 tree，不认 sha**；
 待 git 传输恢复后用 `git fetch && git reset --hard origin/line/zimmer-export-limiter`
 把本地指针对齐（破坏性操作，需人类确认后再做，本票不擅自执行）。
+
+## §35 run `41522031319` 读回：**第四次零读数**，根因是我写的闭包 borrows（2026-11-03）
+
+远端 tip `1f771c1d`（tree 同本地 `6eac4231`）。各作业结论：`checks` / `plan` / `lockfile` **绿**；
+`deny` **红**（还是集成者那枚 `Cargo.lock` 里的 yanked `async-executor 1.14.0`，与本线无关，⛔ 我不动锁文件）；
+`windows` 与 `rust (yeban-app)` **红**；`macos` 当时仍在跑；`rust (workspace 全量)` 与 `e2e` **skipped**（§6.3-2 的空绿，不算验证）。
+
+`rust (yeban-app)`（作业 `125540651732`）的日志里，单位＝**行条数**：
+
+| 数什么 | 值 |
+| :--- | ---: |
+| `Running tests/` 出现的行（= 编译并跑起来的测试二进制数） | **0** |
+| `test result:` 出现的行（= 真正给出的判决数） | **0** |
+| `error[E0502]` 出现的行 | **17** |
+| 涉及的源文件（去重） | 只有 `tests/export_dialog_button_focus.rs` |
+
+⇒ **D-UI-20 的判据从未编过**，`0c89f750` 那一批未跑的 47/153 依旧未跑。这是第四次零读数，
+而且根因与前三次都不同（前三次：`E0425` 少 import、注释里的字面量喂了计数、`&usize` 比整数）。
+
+**缺陷本身**：`:180-181` 写了 `let control = || ui.ui().get_export_wav_focused_control();`。
+闭包按 `&ui` 捕获端口，而 `LiveUi::pump_meters(&mut self)` / `dispatch_key_press(&mut self)`
+要 `&mut ui` ⇒ 之后每一次按键注入都与这个仍然活着的不可变借用冲突（17 处，全是同一枚闭包的账）。
+`ui.ui()` 自己是 `&self`（`live_surface.rs:1739`），所以问题**不在读属性**，在**闭包把借用延续了整段**。
+
+* **修法**：删掉两枚闭包，改成与已判绿的 `tests/export_dialog_key_capture.rs`（D-UI-19）**逐字同款**的
+  内联读法 `ui.ui().get_export_wav_focused_control()`（`control()` 12 处、`field()` 5 处全部替换）。
+  ⛔ 不是"把断言改松"，⛔ 不是删掉某条判据 —— 判据数量、口径、期望值一位未动。
+* ⚠ **generalisable 的规矩**：本机对 `yeban-app` 唯一的语法神谕是 `cargo fmt`（它只做**解析**，
+  §33 就靠它兜住字面量），而**借用检查不在其中** ⇒ `cargo fmt` 绿⛔ 不等于能编。
+  因此新增一条自查：**判据文件里不许写捕获端口的闭包**；要复用读数就内联，或写成
+  `fn xxx(port: &mut Port)` 这种**显式形参**的自由函数（`tests/d_ui_21_modal_mask_swallows_clicks.rs` 用的是后者）。
+
+## §36 D-UI-21：遮罩**第一次真的**吞掉鼠标（导出弹窗 ＋ 时光机，2026-11-03）
+
+§32/§34 登记的"点遮罩会穿到下层"这条，今天闭环。缺陷的机制只有一句：两份模态的遮罩都只是
+一层 `Rectangle` 背景，而 **`Rectangle` 对鼠标事件返回 `EventIgnored`**；Slint 里只有 `TouchArea`
+会拦 —— `i-slint-core-1.18.1/items/input_items.rs` 的 `Pressed` 那一支只要 `enabled` 就返回
+`GrabMouse`，**与有没有写 `clicked` 无关**（这条是实测，不是推断：正因为无关，才能加一枚"只吞不做"的遮罩）。
+
+### 交付
+
+1. `ui/dialogs/export_wav_dialog.slint:115-120` —— 组件根 `Rectangle` 的**第一个**孩子：
+   全尺寸、无回调、无 `accessible-id` 的 `TouchArea { x:0; y:0; width: parent.width; height: parent.height; }`。
+2. `ui/dialogs/undo_tree_modal.slint:92` —— 同一枚，位置同理（声明在面板 `undo-tree-panel` **之前**）。
+3. `crates/yeban-app/tests/d_ui_21_modal_mask_swallows_clicks.rs` —— 两条 `#[test]`：
+   活体 ①–⑥ ＋ 源码纪律 ⑦（不开窗口）。
+
+### 为什么"只吞不做"是对的语义，而不是偷懒
+
+既有的关面板路径只有两条：✕ 与 `Esc`（`export-wav-dialog.slint` 的 `close` 回调，宿主
+`on_close_export_wav`）。若给遮罩补一条 `clicked => { root.close(); }`，就把"点外面不关"改成了
+"点外面就关" —— 那是**交互裁决**，不属于本票（本票的职责只有一个：下层收不到）。
+所以 ③ 同时钉两条：**属性不翻**（吞掉了）且**弹窗仍开着**（没顺手关）。
+
+### 为什么它不改任何像素、也不改运行时树
+
+* 无 `background` / `border` ⇒ `TouchArea` 本身不可见；
+* ⛔ 无 `accessible-id` ⇒ 装配时与运行时的可寻址面一位不变 ⇒ `tests/golden/linux/` 的五张基准、
+  `tests/ui_export_dialog.rs` 的寻址断言、`tests/export_dialog_modal_closure.rs` 的闭合 id 集全部不受影响；
+* 声明在面板**之前** = Slint 命中测试从最上层往下走时，面板及其里的控件**仍在遮罩之上**
+  ⇒ ④「点弹窗内的 ✕ 必须真的关弹窗」证的正是这条顺序（把遮罩移到面板之后 ⇒ 弹窗把自己也挡聋，④ 会红）。
+
+### 判据（①–⑥ 是同一条链，不是六个独立断言）
+
+`VICTIM = "console-maximize-button"`：底部控制台右上角的 `⤢`，它的点击跟一枚**纯视图态布尔**
+`console-maximized`（`tests/console_maximize.rs` 已证这条路是活的）。
+
+| | 证的事 |
+| :--- | :--- |
+| ① 对照臂 | 弹窗**关着**时真点击 ⇒ 翻 `true`，再点 ⇒ 翻回 `false`。⛔ 这条不成立时 ③ 的"没翻"什么也不证 |
+| ② 前提几何 | 弹窗开着 ⇒ 遮罩与受害者**同时在**运行时树里，且受害者**中心不在** `export-wav-panel` 的矩形内 ⇒ 挡住它的是遮罩，⛔ 不是"控件不在场"、⛔ 不是"面板压着它" |
+| ③ 吞 | 同一坐标再点 ⇒ 属性**仍是** `false`，且弹窗仍开着（**修前这一条是红的**） |
+| ④ 面板仍可点 | 点 `export-wav-close-button` ⇒ 弹窗关闭 |
+| ⑤ 关掉后复活 | 再点同一处 ⇒ 翻 `true` ⇒ 证 ③ 是遮罩，⛔ 不是回调坏了 |
+| ⑥ 时光机同款 | `set_undo_tree_open(true)` 期间点 ⇒ 不翻（属性停在 `true`）；关掉 ⇒ 翻回来 |
+| ⑦ 源码纪律 | 两份模态各有**恰好一枚**"无 `clicked` 的全尺寸 `TouchArea`"，且它排在面板 id 之前；`TouchArea {` 恒 4、`clicked =>` 恒 3、`accessible-id:` 恒 10 / 7 —— 一律走 §34 的 `code_only()` 口径 |
+
+每次点击之前**重抓控件树**：`dispatch_pointer_down` 用的是端口里缓存的包围盒，而 ① 之后控制台
+真的变高了（会移动）。偏移 `(2.0, 2.0)` 与 `console_maximize.rs` / `undo_tree_close_button.rs` 逐字同款。
+
+### 边界（如实登记，⛔ 不假装覆盖）
+
+1. **`Esc` / 键盘那条路径不在本票** —— 模态持键盘已由 D-UI-19/20 覆盖，本票只管鼠标。
+2. **点遮罩不关面板**：见上，属交互裁决。若人类要改成"点外面就关"，那是新的一票（要同时改 ③ 的期望）。
+3. **其他两份覆盖层没带遮罩拦截**：`ai-rail` / `musical-pr-drawer` / `macro-panel` 不是模态
+   （它们没有持键盘），本票⛔ 顺手给它们加"点不进下层"——那会改变非模态面板的行为，属另一票。
+4. **鼠标悬停态（本票⛔ 未测，只登记推断）**：命中测试是**同一套**从上往下的顺序，所以遮罩那枚
+   `TouchArea` 成为最上层的鼠标敏感项后，下层的 `hovered` 状态理论上不再点亮 ⇒ "弹窗开着时
+   下层按钮不会再高亮"。这一条**没有判据**（本票的 ①–⑥ 全读属性，不读 hover），
+   属同机制的推论，若将来要钉需另开一票并先确认没有基准依赖 hover 态。
+
+**判决**：`pending` —— 本机不编译 `yeban-app`；`cargo fmt` / `cargo fmt --check` 均 `rc=0`
+（只能证语法与格式，见 §35），守卫脚本本地全绿，⑦ 的四个计数已在本地用真实源码模拟过
+（`dialog: TouchArea 4 / clicked 3 / ids 10 / 遮罩在面板之前 = true`，`time_machine: 4 / 3 / 7 / true`）。
