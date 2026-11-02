@@ -1000,8 +1000,10 @@ pub enum Action {
     ToggleMetronome,
     /// `Cmd/Ctrl+Alt+D`：拨**预备拍**（`transport.count_in_bars` 0 ⇄ 1）。
     ///
-    /// ⚠ 它与 `metronome_enabled` 同在 `TransportConfig` 里、同样投影进快照
-    /// ⇒ 走**同一条**服务、同一套恢复（`crate::metronome::set_count_in_bars`）。
+    /// ⚠ 它与 `metronome_enabled` 同在 `TransportConfig` 里，但落点**不同**（`D-UI-23`）：
+    /// 它走**文档级提交** `Op::SetTransportConfig`（⛔ 不换引擎 —— 实时引擎不实现预备拍，
+    /// 把它列在"仍未实现"那一栏 ⇒ 换代是纯代价），读者是录音那条腿
+    /// （`crate::record_wav::count_in_frames`，读的是**活文档**）。
     ToggleCountIn,
     /// `Esc`：收尾 —— 关闭面板（时光机 / 导出设置弹窗 / AI 提案抽屉）、取消进行中的拖拽手势。
     ///

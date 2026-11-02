@@ -1316,3 +1316,63 @@ scope 声明在各格 `TouchArea` **之前** ⇒ 命中测试层序也不变。�
   （"`key-action` 返回值那段注释"），行号只作辅助。
 * **可达性现状**（本票现读，逐条对过 grep）：搜索框 ✅ ／ 导出弹窗七格 ✅ ／ 时光机 ✅ ／
   `bpm-input` ⛔ 仅鼠标 ／ `device-*` 文本框 ⛔ 仅鼠标。后两条是 D1 的工单范围。
+
+## §38 `D-UI-23`：预备拍开关**关不掉、也持久化不了** —— 落点从"换一代引擎"搬到"改文档"（2026-11-03）
+
+症状（§31 那一族"键白按"的一个新形状）：`Cmd/Ctrl+Alt+D` 按第二下，预备拍**还是开着**；
+关掉之后保存工程，下次打开又是开的。界面上一切看起来"响应了"。
+
+* **事实源错位**（根因，⛔ 不是漏了一条 `commit`）：那条臂算"下一个值"读的是
+  `EngineCommandContext::project` —— 装配期**冻结**的那份 `Rc<YebanProjectV1>`（`main.rs`
+  只在**换工程**时经 `after` 重装配）。冻结快照永不因按键而变 ⇒ 每一下都算出同一个"下一个值"
+  ⇒ **单向置位**，不是开关；而文档一位没改 ⇒ **没有东西可持久化**。
+  ⚠ 唯一的读者 `record_wav::count_in_frames` 读的**也是**那份冻结快照 ⇒ 换的那一代引擎里
+  `count_in_bars` 仍是旧值，录音前照样空转。
+* **换代是纯代价**：`metronome::set_count_in_bars` 走 `apply_transport_config` ⇒
+  先 `stop` → `reload` → `seek` → 恢复走带（位置还会漂移几个 tick，见 `MAX_RESTORE_DRIFT_TICKS`）。
+  而实时引擎⛔ **不实现**预备拍 —— `crates/yeban-engine/src/lib.rs` 逐字把"预备拍
+  （`transport.count_in_bars`）"列在**仍未实现**那一栏。⇒ 停走带的代价付了，收益为零。
+  ⇒ **判据由此改写**：`action_needs_engine` 的入选门槛是「**实时引擎自己读这个字段**」，
+  ⛔ 不是「字段住在 `TransportConfig` 里」。节拍器留下（它的计划在快照投影期进快照），预备拍摘出。
+* **修复形状**（三条性质同时拿到）：落点搬到 `apply_action` 的**文档级提交** ——
+  `Op::SetTransportConfig { old_config, new_config }`（`old_config` 从 `UndoPort::try_project()`
+  现读，模型对陈旧 `old_config` 会以 `OpStateMismatch` 拒绝 ⇒ 不是自己拼一份"我以为的当前值"）。
+  ⇒ ⭐ 可撤销、⭐ 会持久化、⭐ 下一个读者读到的就是它。
+  ⚠ `metronome_enabled` 与 `launch_quantization` **逐字带着走**（整体替换那条 op 的代价就在兄弟字段上：
+  顺手把节拍器的运行态镜面写进文档 = 造出第二个事实源）。
+* **取数三档**（新函数 `host::record_count_in(undo, frozen, sample_rate)`，单位：**帧**）：
+  端口在场 ⇒ 读**活文档**（端口在场但读不出工程 ⇒ 如实 0，⛔ 不拿冻结那份冒充现状）；
+  无端口（判据 / 无头装配）⇒ 照旧退回装配期那份，⛔ 不改既有形态；两份都没有 ⇒ 0。
+  抽成一个函数不是为了节拍器开旁路，而是**优先级只写一次**、判据能**逐档问它**
+  （⛔ 不必起线程拉设备源才能观测）。
+* **真的拆掉了**：`metronome::set_count_in_bars` 删除（内核 `apply_transport_config` 保留，
+  `set_enabled` 还在用）⇒ ⛔ 不留一枚没人调的 `pub fn`（判据 ⑨ 从源码现数：代码里 0 处）。
+  ⚠ 顺带一处 clippy 陷阱：摘掉预备拍后 `apply_engine_command` 的判据 ① 只剩一条动作，
+  写成单元素 `for` 在 `-D warnings` 下**直接红**（`clippy::single_element_loop`）⇒ 改成裸块。
+  集合奇偶由 `src/test_port_adapter.rs` 的 `only_engine_commands_take_the_engine_borrow`
+  从**源码文本**对账（注释先剥掉 ⇒ 注释不是实现站点）。
+* **判据**：`crates/yeban-app/tests/d_ui_23_count_in_writes_the_document.rs`，四例九档 ——
+  ① 前提读数（`count_in_bars = 2` **小节**、`bpm = 128.0`、分子 4 ⇒ 180 000 **帧** @ 48 kHz）
+  ② 第一下真的改文档（2→0 小节、提交恰好 +1 **条**）③ 开关两极性（0→1→0，合计 +3 条）
+  ④ 兄弟字段与界面镜面 `metronome-on` 一位不动 ⑤ 重投影不许画歪六格读数（两档**非自比较**对照）
+  ⑥ `Cmd+Z` 放回 1 小节 + redo 回 0 ⑦ `undo = None` 的装配 ⇒ 返回 `false` 不消费
+  （对照臂：同一装配里数字键照常换工具，否则 `false` 可能只是"这键整体没接"）
+  ⑧ 取数三档逐档 ⑨ 源码出处纪律（`Op::SetTransportConfig {` 构造点 1 处、`record_count_in(`
+  定义+唯一调用 2 处、`Action::ToggleCountIn` 在 `host.rs` 代码里 1 处、`set_count_in_bars` 0 处）。
+* **如实登记的边界**（⛔ 不假装整条链通了）：
+  1. **实时播放里仍然听不到预备拍** —— 引擎不实现它（上面那一栏）。本票修的是
+     "UI 的开关 ⇒ 文档 ⇒ 读得到文档的读者"，⛔ 不是"走带时会数拍子"；那是**引擎功能请求**。
+  2. **界面上没有预备拍那一格** —— `ui/**/*.slint` 里 `count_in` / `countIn` / `预备拍`
+     **0 命中**（不加限定的 `count` 子串有 91 处，全是 `accessible-item-count` /
+     `routing-count-label` / `undo-commit-count`，没有一处承载 `count_in_bars`）
+     ⇒ 拨完开关用户**看不见**状态。本票⛔ 不新增控件（加控件 = 改像素 = 金帧重录 = 人类裁决），
+     这条与 §37（`ADR-0067`）一起等 UI 面裁决。
+  3. 端口在场但会话被控制面关掉（`try_project() == None`）⇒ 0 帧 + 一行 stderr + 不消费；
+     判据造不出这一档（那个 `None` 只在 `UndoBackend::Authority` 那一支，夹具是 `Local` ⇒ 恒 `Some`），
+     故只登记不验。
+
+**判决**：`pending` —— 本机不编译 `yeban-app`（Slint 是重依赖）。本地只证到
+`cargo fmt -p yeban-app -- --check` `rc=0`；`git diff --numstat`：`cli.rs 4/2`、`host.rs 112/27`、
+`input.rs 4/2`、`metronome.rs 11/22` ＋ 判据文件一枚。⚠ 本票**没有** `.slint` 改动 ⇒
+不需要金帧重录；`wire_record` / `wire_record_at` 的签名**未变**（`undo` 参数本来就在）⇒
+既有调用点一处不改。CI 回来前不落"通过"。

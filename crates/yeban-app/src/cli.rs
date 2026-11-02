@@ -3760,8 +3760,10 @@ const SHORTCUTS: [ShortcutRow; 48] = [
         implemented: true,
     },
     // ⭐ 节拍器族（`[ARCH-RT-001]`）：两条**加性**键，⛔ 不动既有键语义。
-    // ⚠ `implemented: true` 是**如实**的：两条都在 `apply_action` 里接了臂
-    // （产品装配 `main.rs` 传引擎上下文；其它装配传 `None` ⇒ 那一刻不消费，见臂上的注释）。
+    // ⚠ `implemented: true` 是**如实**的：两条都在 `apply_action` 里接了臂。
+    // 两者的**前提不同**（⭐ `D-UI-23` 分家）：`Cmd/Ctrl+Alt+N` 要**引擎上下文**
+    // （`main.rs` 传，其它装配传 `None` ⇒ 那一刻不消费）；`Cmd/Ctrl+Alt+D` 要**撤销端口**
+    // （它提交 `Op::SetTransportConfig`，⛔ 不换引擎 ⇒ 没有端口的那一刻同样不消费）。
     ShortcutRow {
         label: "Cmd/Ctrl+Alt+N → 节拍器开关",
         action: Action::ToggleMetronome,

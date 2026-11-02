@@ -5324,6 +5324,34 @@ impl RecordOutcomePort for UiRecordOutcome {
 const RECORD_REENTRY_STDERR: &str =
     "[yeban-app] 忽略 toggle-record：录音器正被同一线程借用（重入）⇒ 本次按键无效";
 
+/// ⭐ **预备拍长度（帧）的唯一取数口径**（`D-UI-23`）。
+///
+/// ## 为什么把它抽成一个函数（⛔ 不是为节拍器开的旁路）
+///
+/// `transport.count_in_bars` 有两个候选事实源：**活文档**（`UndoPort` 里那份，权威）
+/// 与**装配期冻结**的那份 `Rc<YebanProjectV1>`（只在换工程时重装配）。修前录音那条腿
+/// 读的是后者 ⇒ 界面把预备拍拨成关，按录音键**照样**空转几秒才录（键白按）。
+/// 取数规则抽出来之后：① 优先级只写一次（端口 > 冻结 > 不知道 ⇒ 0）；
+/// ② 判据能**逐档**问它（单位＝**帧**），⛔ 不必起线程拉设备源才能观测。
+///
+/// ⚠ 端口在场但读不出工程（会话被控制面关掉）⇒ 如实返回 0，⛔ 不拿冻结那份冒充现状。
+#[must_use]
+pub fn record_count_in(
+    undo: Option<&UndoPort>,
+    frozen: Option<&YebanProjectV1>,
+    sample_rate: u32,
+) -> u64 {
+    match undo {
+        Some(port) => port.try_project().map_or(0, |live_project| {
+            crate::record_wav::count_in_frames(&live_project, sample_rate)
+        }),
+        // 没有权威会话（判据 / 无头装配）⇒ 退回装配期那份，既有形态一位不改。
+        None => frozen.map_or(0, |project| {
+            crate::record_wav::count_in_frames(project, sample_rate)
+        }),
+    }
+}
+
 /// ⭐⭐ **录音键的接线**（任务单 `#88`）：把"按下去"这件事接到**可注入的源工厂**上。
 ///
 /// ## 形状（与 `[ARCH-REC-001]` 的三段链一一对应）
@@ -5428,9 +5456,14 @@ pub fn wire_record_at(
         // 录音键若从 `winit::key_down` 一类 FFI 边界进来，panic 不能 unwind ⇒ **abort**。
         // 因此这里同时上两道防线：① 作用域收窄（[`RecordToggle`] 只装结果）；
         // ② `try_borrow_mut()` 兜底（借不到 ⇒ 一行 stderr ＋ 本次按键无效）。
-        let count_in = project.as_ref().map_or(0, |project| {
-            crate::record_wav::count_in_frames(project, plan.options.sample_rate)
-        });
+        // ⭐⭐ `D-UI-23`：预备拍读的是**活文档**（端口在场 ⇒ 权威工程），⛔ 不是装配期
+        // 冻结的那份 `Rc<YebanProjectV1>` —— 后者只换工程时才重装配（见 `main.rs` 的
+        // `after`），于是"按 `Cmd/Ctrl+Alt+D` 拨一下、再按录音键"仍按**旧长度**预备（键白按）。
+        let count_in = record_count_in(
+            undo.as_deref(),
+            project.as_deref(),
+            plan.options.sample_rate,
+        );
         let toggle = {
             let mut recorder = match recorder_cell.try_borrow_mut() {
                 Ok(recorder) => recorder,
@@ -6474,9 +6507,16 @@ pub fn wire_bpm_commit(ui: &MainWindow, port: &Rc<UndoPort>) {
 /// ## 与 [`apply_engine_command`] 的对应（⭐ 两处必须同时改）
 ///
 /// 返回 `true` 的集合必须**恰好等于** [`apply_engine_command`] 处理的那几条
-/// （今天：`Action::ToggleMetronome` / `Action::ToggleCountIn` —— 它们只碰
-/// `metronome::set_enabled` / `set_count_in_bars`，那两个函数的入参是 `&mut EngineHost`
-/// ＋ `&YebanProjectV1`，**不碰界面**）。
+/// （今天只剩 `Action::ToggleMetronome` —— 它只碰 `metronome::set_enabled`，入参是
+/// `&mut EngineHost` ＋ `&YebanProjectV1`，**不碰界面**）。
+///
+/// ⭐ **`D-UI-23` 把 `Action::ToggleCountIn` 从这条链上摘下来了**（⛔ 不是漏改）：
+/// 换一代引擎**只**为"预备拍"服务，而实时引擎根本不读这个字段
+/// （`crates/yeban-engine/src/lib.rs` 把它列在**仍未实现**那一栏）⇒ 代价（走带被停住再
+/// 恢复）付了、收益为零，而文档字段一位没动 ⇒ **这个开关关不掉、也持久化不了**。
+/// 它现在走**文档级提交**（`Op::SetTransportConfig`，落点在 `apply_action` 的
+/// `Action::ToggleCountIn` 臂）⇒
+/// 既不借宿主，也就不需要出现在下面那张集合里。
 ///
 /// ⚠ 这条耦合由 `src/test_port_adapter.rs` 的 `only_engine_commands_take_the_engine_borrow`
 /// 从**源码文本**对账（两个函数的 `Action::*` 集合必须逐条相同）—— 新增一条"要动引擎"
@@ -6495,7 +6535,7 @@ pub fn wire_bpm_commit(ui: &MainWindow, port: &Rc<UndoPort>) {
 /// `GoToBeginning` 放进"界面回调族"逐条断言它不在借内。
 #[must_use]
 pub fn action_needs_engine(action: Action) -> bool {
-    matches!(action, Action::ToggleMetronome | Action::ToggleCountIn)
+    matches!(action, Action::ToggleMetronome)
 }
 
 /// 把界面的**键盘事件源**接到动作上（`N2` 裁决 **(1)**：GUI 绑**逻辑键**）。
@@ -9127,9 +9167,14 @@ pub fn action_has_implementation(action: Action) -> bool {
 ///
 /// ## 为什么需要它（以及为什么是"通行"的）
 ///
-/// `apply_action` 原先只拿得到 `ui` 与 `undo`，而有一类动作**必须**动引擎：凡是
-/// "改 `TransportConfig` 才生效"的开关（节拍器、预备拍，以及将来任何投影进快照的走带
-/// 设置）都要**换一代引擎**再恢复走带 ⇒ 那个落点需要 `host` ＋ 一份**工程**。
+/// `apply_action` 原先只拿得到 `ui` 与 `undo`，而有一类动作**必须**动引擎：凡"实时引擎
+/// 自己读这个字段"的开关（今天只剩**节拍器** —— 它的计划在快照投影期进快照）都要
+/// **换一代引擎**再恢复走带 ⇒ 那个落点需要 `host` ＋ 一份**工程**。
+///
+/// ⚠ **判据是"引擎读不读"，不是"字段住在 `TransportConfig` 里"**（`D-UI-23` 的分工）：
+/// 预备拍同样是一个走带开关，但实时引擎⛔ 不读它（`crates/yeban-engine/src/lib.rs`
+/// 把它列在**仍未实现**那一栏）⇒ 它的落点是**文档级提交**（`Op::SetTransportConfig`），
+/// 不走这里。换代那条路只会停走带、并留下一个没人读的字段。
 ///
 /// ⚠ **借用形状是借用、⛔ 不是拥有**：调用方（[`wire_keys`]）从既有的
 /// `Rc<RefCell<EngineHost>>` 现借（⭐ 与 `wire_transport(ui, engine)` **同款**范式）
@@ -9147,7 +9192,8 @@ pub struct EngineCommandContext<'a> {
     /// ## 为什么需要它（而不是永远读文档）
     ///
     /// `transport.metronome_enabled` 住在**持久化文档**里，而今天拨动开关**不写文档**
-    /// （文档级提交要走 `Op::SetTransportConfig`，那条通道尚未接线）。若"下一个值"
+    /// （文档级提交那条通道今天只由**预备拍**在用 —— `Op::SetTransportConfig` 与它同一条
+    /// 通道的节拍器那一支仍未接）。若"下一个值"
     /// 永远从文档算，第二次按键/点击会再次算出 `true` ⇒ **开关关不掉**。
     /// 界面路径把 `MainWindow.metronome-on`（唯一运行态镜面）注进来，
     /// 于是 `Cmd/Ctrl+Alt+N` 与节拍器按钮**同一个落点、同一个取值依据**。
@@ -9156,8 +9202,9 @@ pub struct EngineCommandContext<'a> {
 
 /// ⭐ **"要动引擎"的动作的落点**（⭐ **不依赖界面** ⇒ 判据可无窗口地测它）。
 ///
-/// ⚠ 这正是本切片要求的"**通行**形状"：凡是要改 `TransportConfig`（＝必须换一代引擎）
-/// 的开关都走这一处；⛔ 界面不参与，⛔ 不为节拍器开特例。
+/// ⚠ **通行形状**，⛔ 不是为节拍器开的旁路；但入选门槛是「**实时引擎自己读这个字段**」，
+/// ⛔ 不是「字段住在 `TransportConfig` 里」（`D-UI-23`：预备拍也住那里，引擎⛔ 不读它
+/// ⇒ 它的落点是 `apply_action` 的文档级提交，⛔ 不走这里）。⛔ 界面不参与。
 ///
 /// ⚠ `MainWindow` 需要 Tier-1 平台且 macOS 上 `EventLoop` 是**单例 + 必须主线程**
 /// ⇒ 若把这些臂写在 `apply_action` 里、只能经真窗口测，判据就建不出窗口（实测踩过：
@@ -9175,15 +9222,9 @@ pub fn apply_engine_command(context: &mut EngineCommandContext<'_>, action: Acti
                 .unwrap_or(context.project.transport.metronome_enabled);
             crate::metronome::set_enabled(context.host, context.project, !current).is_ok()
         }
-        // 拨**预备拍**：`count_in_bars` 0 ⇄ 1。
-        Action::ToggleCountIn => {
-            let next = if context.project.transport.count_in_bars == 0 {
-                1
-            } else {
-                0
-            };
-            crate::metronome::set_count_in_bars(context.host, context.project, next).is_ok()
-        }
+        // ⭐ `D-UI-23`：**预备拍不在这里**（⛔ 不是漏了一条臂）。它今天只被**文档**读
+        // （`record_wav::count_in_frames`），实时引擎不实现它 ⇒ 换一代引擎是纯代价。
+        // 它的落点改在 `apply_action` 的文档级提交那一臂。
         // ⚠ 其余动作**不**在这条链上（它们不动引擎）⇒ 如实返回 `false`。
         _ => false,
     }
@@ -9233,14 +9274,11 @@ fn apply_action(
         // 拨**节拍器**开关（`Cmd/Ctrl+Alt+N`）。⚠ 它更换一代引擎（计划在投影期进快照）
         // ⇒ 走 `metronome::set_enabled` 的"先停 ⇒ 换 ⇒ 恢复位置与状态"。
         // ⚠ 引擎/工程不在手（`context == None`）⇒ ⛔ 不消费（照旧放行，⛔ 不假装成功）。
-        Action::ToggleMetronome | Action::ToggleCountIn => {
+        Action::ToggleMetronome => {
             let Some(context) = context else {
                 return false;
             };
-            if matches!(action, Action::ToggleCountIn) {
-                return apply_engine_command(context, action);
-            }
-            // ⭐ `Action::ToggleMetronome`：**运行态镜面**是"下一个值"的唯一依据
+            // ⭐ **运行态镜面**是"下一个值"的唯一依据
             // （文档字段只是装配期的初值；拨动本身不写文档）。
             let current = ui.get_metronome_on();
             context.metronome_on = Some(current);
@@ -9251,6 +9289,53 @@ fn apply_action(
                 ui.set_metronome_on(!current);
             }
             applied
+        }
+        // ⭐⭐ `D-UI-23`：拨**预备拍**（`Cmd/Ctrl+Alt+D`）＝ **改文档**，⛔ 不换引擎。
+        //
+        // ## 为什么落点从"换一代引擎"搬到这里（⛔ 不是随手挪）
+        //
+        // 修前那条臂算的是 `context.project.transport.count_in_bars` 的"下一个值"，
+        // 而 `context.project` 是**装配期冻结**的那份 `Rc<YebanProjectV1>`（只在换工程时
+        // 重装配，见 `main.rs` 的 `after`）⇒ ① 第二下永远还算出同一个值 ⇒ **关不掉**；
+        // ② 文档一位没改 ⇒ **持久化不了**；③ 唯一的读者（录音那条腿）读的还是那份冻结快照
+        // ⇒ 换的那一代里 `count_in_bars` 仍是旧值。而换引擎要把走带**停住再恢复**
+        // ——代价付了，实时引擎根本不读这个字段（`crates/yeban-engine/src/lib.rs` 逐字把
+        // "预备拍"列在**仍未实现**那一栏）。
+        //
+        // ⇒ 事实源本就该是**文档**：`Op::SetTransportConfig`（既有的、整体替换
+        // `TransportConfig` 三个字段的那条 op）⭐ 可撤销、⭐ 会持久化、⭐ 下一个读者读到
+        // 的就是它。⚠ `metronome_enabled` 与 `launch_quantization` 两个字段**逐字带着走**
+        // （`old_config` 就是当前文档 ⇒ ⛔ 不顺手改它们，那会把节拍器的运行态镜面写进
+        // 文档，制造第二个事实源）。
+        //
+        // ⚠ 没有撤销端口（= 没有权威会话）⇒ ⛔ 不消费、⛔ 不假装成功（与 `#212` 那类
+        // "降级要响亮"的纪律同款；判据侧的装配正是这一形）。
+        Action::ToggleCountIn => {
+            let Some(port) = undo else {
+                return false;
+            };
+            // 权威工程读不出来 ⇒ 出声、不画（与 `wire_bpm_commit` 同款纪律）。
+            let Some(project) = port.try_project() else {
+                eprintln!("[yeban-app] 预备拍拨动没有可投影的工程: 权威会话此刻没有活跃工程");
+                return false;
+            };
+            let old_config = project.transport;
+            let mut new_config = old_config;
+            new_config.count_in_bars = if old_config.count_in_bars == 0 { 1 } else { 0 };
+            let op = yeban_model::Op::SetTransportConfig {
+                old_config,
+                new_config,
+            };
+            if port
+                .commit_ops(now_ms(), "toggle count-in", vec![op])
+                .is_err()
+            {
+                eprintln!("[yeban-app] 预备拍提交被拒绝（工程未改）");
+                refresh_undo_window(ui, port, true);
+                return false;
+            }
+            refresh_undo_window(ui, port, true);
+            true
         }
         // `[UI-NOTE-003]` 工具选择：数字键 → 矩阵行号 → `active-tool`（**单一数字口径**）。
         // 撤销端口在场时同时记一条动作日志（`UiAction::SelectTool` 只报显示态、不改工程）。

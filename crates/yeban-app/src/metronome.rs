@@ -107,24 +107,6 @@ pub fn set_enabled(
     })
 }
 
-/// ⭐ 拨**预备拍**（`transport.count_in_bars`，`u8`）。
-///
-/// ⚠ 它与 `metronome_enabled` **同在 `TransportConfig` 里、同样投影进快照**
-/// ⇒ 走**同一个** [`apply_transport_config`] 内核与**同一套**走带恢复（⛔ 不复制一份）。
-///
-/// # Errors
-///
-/// 同 [`set_enabled`]（快照投影失败）。
-pub fn set_count_in_bars(
-    host: &mut EngineHost,
-    project: &YebanProjectV1,
-    bars: u8,
-) -> Result<MetronomeOutcome, EngineHostError> {
-    apply_transport_config(host, project, |next| {
-        next.transport.count_in_bars = bars;
-    })
-}
-
 /// ⭐ **改 `TransportConfig` 的通用内核**（⭐ 通行形状：任何"投影进快照的走带设置"都走它）。
 ///
 /// 顺序（⭐ 负责人裁决 A 的 1–3 条）：① 抓现场 + **先 `stop`** ⇒ ② 改字段 + `reload`
@@ -528,8 +510,10 @@ mod dispatch_tests {
         let mut host = EngineHost::new();
         host.reload(&project, 0).expect("建引擎");
 
-        // ① 支持的两个动作 ⇒ 被消费。
-        for action in [Action::ToggleMetronome, Action::ToggleCountIn] {
+        // ① 支持的引擎动作 ⇒ 被消费（⭐ `D-UI-23` 起**只剩节拍器**：预备拍改走文档级
+        // 提交，它不在这条链上 ⇒ 见下面的 ②）。
+        // ⛔ 不写成单元素 `for`：`clippy::single_element_loop` 在 `-D warnings` 下直接红。
+        {
             let mut context = EngineCommandContext {
                 host: &mut host,
                 project: &project,
@@ -537,17 +521,22 @@ mod dispatch_tests {
                 metronome_on: None,
             };
             assert!(
-                apply_engine_command(&mut context, action),
-                "⭐ {action:?} 必须被**消费**（它是本落点支持的引擎动作）"
+                apply_engine_command(&mut context, Action::ToggleMetronome),
+                "⭐ `Action::ToggleMetronome` 必须被**消费**（它是本落点支持的引擎动作）"
             );
         }
 
         // ② ⛔ **不支持的动作必须被拒**（这正是原 `_ => false` 通配变成显式分支后的行为）。
+        // ⭐ `Action::ToggleCountIn` 现在是这一族：`D-UI-23` 把它从"换一代引擎"搬到
+        // `Op::SetTransportConfig` 的文档级提交（实时引擎不实现预备拍 ⇒ 换代是纯代价）。
+        // ⛔ 它**不得**再出现在这里之外的引擎集合里 —— 那条耦合由
+        // `src/test_port_adapter.rs` 的 `only_engine_commands_take_the_engine_borrow` 钉。
         for action in [
             Action::Cancel,
             Action::Undo,
             Action::PlayPause,
             Action::AcceptAiSuggestion,
+            Action::ToggleCountIn,
         ] {
             let mut context = EngineCommandContext {
                 host: &mut host,
