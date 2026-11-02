@@ -355,7 +355,7 @@ fn note_selection_out_rank_the_clip_deletion() {
     let clip = painted[0].clone();
     select_clip(&window, &clip);
     let note = note_ulids(&project_before)[0].clone();
-    select_notes(&window, &[note.clone()]);
+    select_notes(&window, std::slice::from_ref(&note));
 
     let commits_before = port.display().commit_count;
     let consumed = window.invoke_key_action(DELETE_TEXT.into(), false, false, false, false);
