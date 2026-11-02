@@ -720,6 +720,11 @@ pub struct Region<'a> {
     pub sw_down: Option<u8>,
     /// 要求未按下的 keyswitch（`sw_up`）。
     pub sw_up: Option<u8>,
+    /// ⭐ **portamento 的 pitch 包络**（`egN_*` 的最小子集，见 [`crate::pitch_eg`]）。
+    ///
+    /// `None` ＝ 该区域**没有** `egN_pitch_oncc140|141` ⇒ 音高不随时间变化
+    /// （既有语料全部落在这一支 ⇒ 逐位不变）。
+    pub pitch_eg: Option<crate::pitch_eg::PitchEg>,
     /// MIDI CC 门控集合（按 CC 号升序，确定性）。
     pub cc_gates: Vec<CcGate>,
     /// 交叉淡化集合（`xfin_*` / `xfout_*`，见 [`crate::crossfade`]）。
@@ -1591,12 +1596,12 @@ fn region_matches(region: &Region<'_>, query: &RegionQuery<'_>) -> bool {
 ///
 /// 四级链的规范依据："The master header is an extra level added inbetween group and
 /// global for the ARIA player." <https://sfzformat.com/headers/>
-struct Scopes<'m, 'a> {
-    region: &'m OpcodeMap<'a>,
-    group: &'m OpcodeMap<'a>,
-    master: &'m OpcodeMap<'a>,
-    global: &'m OpcodeMap<'a>,
-    line: usize,
+pub(crate) struct Scopes<'m, 'a> {
+    pub(crate) region: &'m OpcodeMap<'a>,
+    pub(crate) group: &'m OpcodeMap<'a>,
+    pub(crate) master: &'m OpcodeMap<'a>,
+    pub(crate) global: &'m OpcodeMap<'a>,
+    pub(crate) line: usize,
 }
 
 impl<'a> Scopes<'_, 'a> {
@@ -1881,6 +1886,9 @@ pub(crate) fn build_region<'a>(
         })
         .collect();
 
+    // ---- portamento 的 pitch 包络（egN_*，见 crate::pitch_eg） ----
+    let pitch_eg = crate::pitch_eg::read_pitch_eg(&scopes)?;
+
     // ---- 交叉淡化（xfin_* / xfout_*，见 crate::crossfade） ----
     let crossfades = read_crossfades(&scopes, line)?;
 
@@ -1913,6 +1921,7 @@ pub(crate) fn build_region<'a>(
         ampeg_release,
         cc_mods,
         ampeg_vel2,
+        pitch_eg,
         offset,
         end,
         direction,
@@ -2763,6 +2772,7 @@ mod tests {
 
     fn region(note: u8, seq_position: u32, seq_length: u32) -> Region<'static> {
         Region {
+            pitch_eg: None,
             sample: Cow::Borrowed("x.wav"),
             default_path: None,
             lokey: i32::from(note),
