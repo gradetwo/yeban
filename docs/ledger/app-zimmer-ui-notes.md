@@ -1056,8 +1056,55 @@ trap 自己那条恒为假。又因 `.slint` 的 `item.focus()` 生成
   `export_wav_dialog.slint`：`export-wav-close-button`（`accessible-role: button`，159 行）、
   `export-wav-limiter-switch`（`switch`，330 行）、`export-wav-run-button`（`button`，401 行）
   全是 `Rectangle` + `TouchArea` 的手绘件 —— 没有 `Button`/`FocusScope` 容器 ⇒ 收不到焦点
-  ⇒ 键盘既走不到"确认导出"也走不到那个开关。修法要**先实测**可聚焦容器不与
-  `TouchArea` 抢命中测试（§7.3 的第 2 条也正是这么要求的），不是加一行 `.focus()` 的事。
+  ⇒ 键盘既走不到"确认导出"也走不到那个开关。
+  **⚠ 本条登记的"要先实测可聚焦容器会不会与 `TouchArea` 抢命中测试"于同日实测完毕，答案是
+  不会**：`FocusScope::input_event_filter_before_children` 无条件 `ForwardEvent`
+  （`items/input_items.rs:657-665`）⇒ 孩子先收到点击；`FocusScope::input_event`（667-688）
+  只在 `enabled && focus-on-click && Pressed && !has-focus` 时才吞。Slint 自家 `Button`
+  就是这个形状：`forward-focus` 到一个内含 `FocusScope` 的 `StateLayer`，后者
+  `key-pressed(event) => { if (event.text == Key.Space || event.text == Key.Return) { … } }`
+  （`i-slint-compiler-1.18.1/widgets/material/components.slint:77-88`）⇒ **`Key.Return`
+  / `Key.Space` 是 `.slint` 里的合法写法**（本仓此前只用 `\u{...}` 转义，因为 `"\t"` 不编译），
+  原始码位为 Return = `\u{a}`、Space = `\u{20}`（`i-slint-common/key_codes.rs`）。
+  ⇒ 剩下的边界只有一个：**焦点可见性**。给这三格加 `FocusScope` 不改一个像素，
+  但"看得见焦点在哪"要画焦点环 ⇒ 那会动两条已判绿的 Golden 基准 ⇒ 归人类/集成者裁决。
+
+## §33 判据从未编过：两枚编译红 ＋ 一条**全局**门禁红（2026-11-03）
+
+run `41512495951`（tip `2f75ab73`，D-UI-18 ＋ D-UI-19 那一批）**红**，三个作业各自红在
+不同的地方 —— 逐条读回：
+
+| 作业 | 判决 | 根因 |
+| :--- | :--- | :--- |
+| `rust (yeban-app)` | 红 | `export_dialog_key_capture.rs:409` `error[E0277]` —— `match_indices` 给的是 `&usize`，我拿它跟整数比 ⇒ 已在 `2f75ab73` 之后热修（`let offset = *offset;`） |
+| `macos` | 红 | `search_focus_key.rs:112` `error[E0425] cannot find value 'meta'` —— 我把循环第四个元组元素绑成了 `_meta`，而第 119 行用的是 `meta`。⚠ **这条 D-UI-18 的判据从写下起从未在任何平台上编译成功过** |
+| `deny (cargo-deny 开源合规)` | 红 | ⛔ **不是本线的改动**：`error[yanked]: detected yanked crate (try 'cargo update -p async-executor')`，`Cargo.lock:30` 的 `async-executor 1.14.0` 在 crates.io 被撤回。同一 sha 在 18:54 那票（`41504236343`）deny 还是绿的 ⇒ **上游撤回**，与代码无关 |
+
+**为什么第二条是在 macos 而不是在 linux 发现的**（这是本仓库结构性的盲区，不是运气）：
+`cargo clippy --all-targets` 与 `cargo test --all-targets` 都按**目标**并行编译，
+但**第一个失败的目标就让作业退出**（`warning: build failed, waiting for other jobs to finish…`
+之后就是 `exit code 101`）。linux 先撞见字母序靠前的 `export_dialog_key_capture`，
+于是 `search_focus_key` 的错误**一位都看不见**；macos 那条腿（编译顺序不同）才把它爆出来。
+⇒ 与 §6.3-4 的 `Running tests/` 截断是**同一件事的编译期版本**：
+**一票红只覆盖它第一个撞上的目标**，⛔ 不许把"只看到一个错"读成"只有一个错"。
+
+**本轮学到的机械核验（写判据的当场就要做，⛔ 不等 CI）**：
+
+1. **每个 `get_/set_/invoke_` 名字都对着 `.slint` 的界面表面过一遍** —— 用脚本把
+   `ui/app.slint` 里的 `property` / `function` / `callback` 声明提成集合，再把判据里用到的
+   访问器逐个下划线转连字符去查（本轮两枚判据共 9 ＋ 8 个访问器，全部命中；
+   编译错误**不在名字上**，在类型与绑定上 ⇒ 说明这道核验不能替代编译，只能缩小失败面）。
+2. **`for (a, b, c, d) in [...]` 里每个绑定都必须被用到**：`-D warnings` 下
+   `unused_variables` 会红，而 `_x` 又把 `x` 变不存在 —— 唯一的正解是**真的用它**，
+   ⛔ 不是加下划线把问题藏起来。
+3. **迭代器给的索引常是引用**（`match_indices`、`iter().enumerate()` 配合 `.filter(|(i, _)| …)`
+   ⇒ `&usize`），跨平台编译器不会替本机"看起来对"背书。
+
+**`async-executor` 这条不在本线的处置权限内**：`Cargo.lock` 是根级共享文件（多线并发写它
+必然互相覆盖），而"要不要接一个更新的 semver 兼容版本"是供应链裁决 ⇒ **只上报，不自行
+`cargo update`**。在这一条解决之前，任何线的 `deny` 作业都会红 ⇒ **"tip 绿"目前不可达**，
+合入 `main` 的默认门禁（`MUST-GATE` 要求 `cargo deny check` 通过）因此**卡住**，
+与本线的代码质量无关。
 * **`D-UI-21` 模态遮罩不吞鼠标 ⇒ 弹窗开着时点击仍穿到下层。** 遮罩就是组件根那枚
   `Rectangle`（`background: mask-black.with-alpha(0.65)`），而 `Rectangle` 对鼠标事件返回
   `EventIgnored`（Slint 里只有 `TouchArea` 会吞）⇒ 整帧遮罩**只挡眼睛不挡手**；

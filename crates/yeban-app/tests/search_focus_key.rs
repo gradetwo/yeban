@@ -109,7 +109,15 @@ fn cmd_ctrl_f_moves_the_keyboard_focus_into_the_search_box() {
     );
 
     // ---- ③ 未点名的修饰变体 ⇒ 不消费、焦点不动 ----
-    for (shift, ctrl, alt, _meta) in [
+    //
+    // ⚠ 元位（`meta` = macOS 的 `Cmd`）在这里**恒为 `false`**：本条判据的落点是
+    // "没被点名的组合不许消费"，而 `Cmd+F` **是**被点名的那一半 —— 它不该出现在这里。
+    // 它在**解析层**已由 `src/input.rs` 的 `cmd_ctrl_f_focuses_the_sidebar_search_and_stays_behind_the_text_policy`
+    // 钉住（`resolve(KeyF, Modifiers::meta())` 与 `ctrl` 同解）；⛔ 本文件不重复钉它，
+    // 因为 `command()` 那一条分支在**焦点位于文本框时**整段让位给文本框
+    // （`resolve_logical` 的 TextInput 策略，同那条单测的第二组断言）⇒ 在 GUI 判据里
+    // 想证 `Cmd+F` 必须先把焦点搬回画布层，那是**另一步前置**，不塞进这条变体循环里。
+    for (shift, ctrl, alt, meta) in [
         (true, false, false, false),  // `Shift+F`
         (false, false, true, false),  // `Alt+F`
         (false, false, false, false), // 裸 `f`

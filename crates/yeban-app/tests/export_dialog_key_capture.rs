@@ -405,6 +405,7 @@ fn writes_of(name: &str, source: &str) -> usize {
     source
         .match_indices(name)
         .filter(|(offset, _)| {
+            let offset = *offset;
             let after = offset + name.len();
             let independent = (offset == 0 || !is_ident(bytes[offset - 1]))
                 && (after == bytes.len() || !is_ident(bytes[after]));
