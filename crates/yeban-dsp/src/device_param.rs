@@ -13,11 +13,11 @@
 //!
 //! | 类型 | 内容 |
 //! | :--- | :--- |
-//! | [`StripField`] | 通道条 22 个可自动化字段（`41` 个拼写） |
+//! | [`StripField`] | 通道条 28 个可自动化字段（`53` 个拼写） |
 //! | [`ReverbField`] | Freeverb 的 4 个标量字段（`6` 个拼写） |
 //! | [`ConvolutionField`] | 卷积混响的 4 个标量字段（`8` 个拼写；IR 形状不落点） |
 //! | [`DelayField`] | 乒乓延迟的 9 个字段（`15` 个拼写；音符同步四字段只在投影期换算） |
-//! | [`TapeField`] | 磁带饱和的 4 个标量字段（`8` 个拼写） |
+//! | [`TapeField`] | 磁带饱和的 5 个标量字段（`10` 个拼写） |
 //! | [`DeviceParamField`] / [`DeviceParamFamily`] | 四族的合流枚举与器件族标签 |
 //!
 //! ⛔ **本模块不含**任何 I/O、模型类型或 GUI：每个 `sanitise` 都与器件内部**同一次**
@@ -119,6 +119,26 @@ pub enum StripField {
     ReleaseS,
     /// makeup 补偿增益（dB）。`makeup_db` / `makeup`。
     MakeupDb,
+    /// 低切转折频率（Hz，`<= 20` 旁通）。`hpf_hz` / `high_pass_hz`。
+    HpfHz,
+    /// 动态 EQ 的中心频率（Hz）。`deq_freq` / `dyn_eq_freq`。
+    DynEqFreq,
+    /// 动态 EQ 的触发阈值（dBFS）。`deq_threshold_db` / `dyn_eq_threshold_db`。
+    DynEqThresholdDb,
+    /// 动态 EQ 的最大衰减量（dB，`0` 旁通）。`deq_cut_db` / `dyn_eq_cut_db`。
+    DynEqMaxCutDb,
+    /// 立体声宽度（M/S 缩放，`1` = 原样）。`strip_width` / `channel_width`。
+    ///
+    /// ⛔ **不叫 `width`**：Freeverb 自己有一个 `width`（`ReverbField::Width`），
+    /// 两条拼写撞车会让 `from_name` 把混响的宽度解析成通道条的宽度 —— 实测
+    /// 那会让返回总线整体相位错乱（全曲相关度 0.81 → 0.00）。
+    Width,
+    /// mono-maker 的转折频率（Hz，`0` = 旁通）。`mono_below_hz` / `mono_maker_hz`。
+    ///
+    /// `#344`：把这一频率以下的 side 整段丢掉（`0 = 旁通`），让 120 Hz 以下钉在中间。
+    /// ⛔ **不叫 `width` / `mono`**：`mono` 太泛（会被误当成"整条单声道开关"，
+    /// 那是 `strip_width = 0`），而 `width` 已经归 [`Self::Width`]。
+    MonoBelowHz,
 }
 
 impl StripField {
@@ -146,9 +166,15 @@ impl StripField {
         Self::AttackS,
         Self::ReleaseS,
         Self::MakeupDb,
+        Self::HpfHz,
+        Self::DynEqFreq,
+        Self::DynEqThresholdDb,
+        Self::DynEqMaxCutDb,
+        Self::Width,
+        Self::MonoBelowHz,
     ];
 
-    /// **全部拼写** → 字段（`41` 条；这是"哪个名字能落点"的**唯一**名字表）。
+    /// **全部拼写** → 字段（`51` 条；这是"哪个名字能落点"的**唯一**名字表）。
     ///
     /// 与 `yeban_render::inserts::StripProjection::apply` 的通道条分支逐字同集：7 个参数各有 2 个拼写，
     /// 两个增益各有 3 个，两个开关与 `cutoff_hz` 各 1 个；⭐ `#304` 起压缩的 8 个
@@ -198,6 +224,19 @@ impl StripField {
         ("release", Self::ReleaseS),
         ("makeup_db", Self::MakeupDb),
         ("makeup", Self::MakeupDb),
+        ("hpf_hz", Self::HpfHz),
+        ("high_pass_hz", Self::HpfHz),
+        ("deq_freq", Self::DynEqFreq),
+        ("dyn_eq_freq", Self::DynEqFreq),
+        ("deq_threshold_db", Self::DynEqThresholdDb),
+        ("dyn_eq_threshold_db", Self::DynEqThresholdDb),
+        ("deq_cut_db", Self::DynEqMaxCutDb),
+        ("dyn_eq_cut_db", Self::DynEqMaxCutDb),
+        ("strip_width", Self::Width),
+        ("channel_width", Self::Width),
+        // `#344` mono-maker：一个字段两个拼写（`mono_below_hz` 是规范名）。
+        ("mono_below_hz", Self::MonoBelowHz),
+        ("mono_maker_hz", Self::MonoBelowHz),
     ];
 
     /// 名字 → 字段（**大小写不敏感**，别名表与 `yeban_render::inserts::StripProjection::apply` 逐字同集）。
@@ -239,6 +278,12 @@ impl StripField {
             Self::AttackS => "attack_s",
             Self::ReleaseS => "release_s",
             Self::MakeupDb => "makeup_db",
+            Self::HpfHz => "hpf_hz",
+            Self::DynEqFreq => "deq_freq",
+            Self::DynEqThresholdDb => "deq_threshold_db",
+            Self::DynEqMaxCutDb => "deq_cut_db",
+            Self::Width => "strip_width",
+            Self::MonoBelowHz => "mono_below_hz",
         }
     }
 
@@ -280,6 +325,12 @@ impl StripField {
             Self::AttackS => params.compressor.attack_s,
             Self::ReleaseS => params.compressor.release_s,
             Self::MakeupDb => params.compressor.makeup_db,
+            Self::HpfHz => params.hpf.freq_hz,
+            Self::DynEqFreq => params.dyn_eq.freq_hz,
+            Self::DynEqThresholdDb => params.dyn_eq.threshold_db,
+            Self::DynEqMaxCutDb => params.dyn_eq.max_cut_db,
+            Self::Width => params.width,
+            Self::MonoBelowHz => params.mono_below_hz,
         }
     }
 
@@ -312,6 +363,12 @@ impl StripField {
             Self::AttackS => params.compressor.attack_s = value,
             Self::ReleaseS => params.compressor.release_s = value,
             Self::MakeupDb => params.compressor.makeup_db = value,
+            Self::HpfHz => params.hpf.freq_hz = value,
+            Self::DynEqFreq => params.dyn_eq.freq_hz = value,
+            Self::DynEqThresholdDb => params.dyn_eq.threshold_db = value,
+            Self::DynEqMaxCutDb => params.dyn_eq.max_cut_db = value,
+            Self::Width => params.width = value,
+            Self::MonoBelowHz => params.mono_below_hz = value,
         }
     }
 
@@ -792,13 +849,19 @@ pub enum TapeField {
     TrimDb,
     /// 湿路低通截止频率（Hz，2000..20000）。`tape_hf_hz` / `saturation_hf_hz`。
     HfHz,
+    /// ⭐ 曲线不对称量（0..0.5；`0` ＝ 对称 ⇒ 纯奇次）。`tape_asym` / `saturation_asym`。
+    ///
+    /// 它产生**偶次**谐波（磁带"暖"的来源）—— `pade_tanh` 是奇函数，只出奇次。
+    /// 见 `crate::tape` 模块文档的「⭐ 偶次谐波」一节。
+    Asym,
 }
 
 impl TapeField {
     /// 全部字段。
-    pub const ALL: &'static [Self] = &[Self::Drive, Self::Mix, Self::TrimDb, Self::HfHz];
+    pub const ALL: &'static [Self] =
+        &[Self::Drive, Self::Mix, Self::TrimDb, Self::HfHz, Self::Asym];
 
-    /// **全部拼写** → 字段（`8` 条 = `4` 个字段）。
+    /// **全部拼写** → 字段（`10` 条 = `5` 个字段）。
     pub const SPELLINGS: &'static [(&'static str, Self)] = &[
         ("tape_drive", Self::Drive),
         ("saturation_drive", Self::Drive),
@@ -808,6 +871,8 @@ impl TapeField {
         ("saturation_trim_db", Self::TrimDb),
         ("tape_hf_hz", Self::HfHz),
         ("saturation_hf_hz", Self::HfHz),
+        ("tape_asym", Self::Asym),
+        ("saturation_asym", Self::Asym),
     ];
 
     /// 名字 → 字段（大小写不敏感）。
@@ -827,6 +892,7 @@ impl TapeField {
             Self::Mix => "tape_mix",
             Self::TrimDb => "tape_trim_db",
             Self::HfHz => "tape_hf_hz",
+            Self::Asym => "tape_asym",
         }
     }
 
@@ -838,6 +904,7 @@ impl TapeField {
             Self::Mix => params.mix,
             Self::TrimDb => params.trim_db,
             Self::HfHz => params.hf_hz,
+            Self::Asym => params.asym,
         }
     }
 
@@ -848,6 +915,7 @@ impl TapeField {
             Self::Mix => params.mix = value,
             Self::TrimDb => params.trim_db = value,
             Self::HfHz => params.hf_hz = value,
+            Self::Asym => params.asym = value,
         }
     }
 

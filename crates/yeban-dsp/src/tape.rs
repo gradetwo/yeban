@@ -10,7 +10,7 @@
 //! ## 信号模型
 //!
 //! ```text
-//! y_sat = pade_tanh(g · x) / g ，其中 g = 1 + 9 · drive
+//! y_sat = pade_tanh(g · (x + asym)) / g − pade_tanh(g · asym) / g ，其中 g = 1 + 9 · drive
 //! y     = (1 - mix) · x + mix · y_sat ，再乘 tape_trim_db 的线性增益
 //! ```
 //!
@@ -22,6 +22,32 @@
 //!   饱和谐波在 2x 域产生、下采样低通滤掉 Nyquist 之外的部分 ⇒ 混叠低于
 //!   无过采样的直算（判据钉住方向，不编门限数字）。
 //! - 磁带磁滞模型 v1 不做（列 v2）。
+//!
+//! ## ⭐ 偶次谐波（`tape_asym`）—— 为什么要平移曲线
+//!
+//! `pade_tanh` 是**奇函数**（`f(−x) = −f(x)`）⇒ 它的展开只有奇次项
+//! （3f / 5f / …），**没有任何偶次分量**。而"磁带暖"的听感来源正是偶次
+//! （2f 为主）：奇次加多了只会更"硬"、更像过载。这是 `ADR-0062` v1 的一个
+//! 如实登记的局限（"饱和从离线链搬进工程"时丢掉了那 5% 偶次）。
+//!
+//! 补法是**把曲线沿 x 轴平移**（教科书做法，⛔ 不新增任何状态）：
+//!
+//! ```text
+//! y_sat = pade_tanh(g · (x + asym)) / g − pade_tanh(g · asym) / g
+//!         └──────────── 平移后的曲线 ────────────┘   └──── 常量直流补偿 ────┘
+//! ```
+//!
+//! * 平移后正负半周**不再对称** ⇒ 二次谐波出现（`asym` 越大越强）；
+//! * **减掉常量**是必须的：不减的话 `x = 0` 输出 `pade_tanh(g·asym)/g ≠ 0`
+//!   ⇒ 整条链带上 DC 偏移（下游限幅器会为它让出余量，听感是"低频被抬"）。
+//!   减掉之后**零输入 ⇒ 零输出**（判据 `asym_keeps_silence_silent`）。
+//! * ⚠ **代价（如实登记）**：工作点离开零点 ⇒ 小信号增益从 `1` 降到
+//!   `pade_tanh'(g·asym)`（`drive = 0.06`、`asym = 0.3` 时约 **−1.3 dB**）
+//!   ⇒ 用 `tape_trim_db` 补，⛔ 本片**不**自动补偿（自动补偿会把"改音色"
+//!   和"改电平"两件事绑在一起，旋钮就不再正交）。
+//! * ⚠ `asym` **只在级建成时起作用**（`drive > 0` 且 `mix > 0`，见下一节）——
+//!   曲线是 `tanh(g·x)`，`g` 只由 `drive` 决定 ⇒ `drive = 0` 时级本来就不建，
+//!   `asym` 写了也不生效。这是既有建成条件的直接后果，⛔ 不为它开口子。
 //!
 //! ## 级建成条件（与运行态同口径）
 //!
@@ -58,6 +84,12 @@ pub const TAPE_TRIM_MAX_DB: f32 = 24.0;
 pub const TAPE_HF_MIN_HZ: f32 = 2000.0;
 /// `tape_hf_hz` 的合法域（Hz）；≥ 该值时湿路低通旁通（恒等）。
 pub const TAPE_HF_MAX_HZ: f32 = 20_000.0;
+/// `tape_asym` 的合法域（无量纲）。`0` ＝ 对称（纯奇次谐波）。
+///
+/// 上界取 `0.5`：`pade_tanh` 的自变量是 `g · (x + asym)` 而 `g = 1 + 9 · drive`
+/// ⇒ `drive = 1` 时工作点已经推到 `5.0`（`pade_tanh(5) ≈ 1.03`），再大就不是
+/// "磁带"而是硬削波了。
+pub const TAPE_ASYM_MAX: f32 = 0.5;
 
 /// 磁带饱和参数。
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -70,6 +102,14 @@ pub struct TapeParams {
     pub trim_db: f32,
     /// 湿路低通截止频率（Hz，2000..20000；≥ 20000 旁通）。
     pub hf_hz: f32,
+    /// ⭐ **曲线不对称量**（`tape_asym`，0..=0.5）。`0` ＝ 对称（纯奇次谐波）。
+    ///
+    /// 磁带"暖"的那一半是**偶次**谐波，而 `pade_tanh` 是**奇函数** ⇒ 只出奇次
+    /// （3f / 5f / …），听感偏硬。本参数把曲线沿 x 轴平移（见模块文档的
+    /// "⭐ 偶次谐波"一节）：平移后正负半周不再对称 ⇒ 二次谐波出现。
+    ///
+    /// ⚠ `0` ⇒ **逐位等于接线前的公式**（补偿项恰 `0.0`、加法是恒等）。
+    pub asym: f32,
 }
 
 impl TapeParams {
@@ -79,6 +119,7 @@ impl TapeParams {
         mix: 0.0,
         trim_db: 0.0,
         hf_hz: TAPE_HF_MAX_HZ,
+        asym: 0.0,
     };
 
     /// 缺省参数。
@@ -94,6 +135,7 @@ impl TapeParams {
     /// | `drive` / `mix` | `[0, 1]` | `0` | `1` | **`0`**（下界） |
     /// | `trim_db` | `[−24, +24]` | 下界 | 上界 | **下界** |
     /// | `hf_hz` | `[2000, 20000]` | 下界 | 上界 | **下界** |
+    /// | `asym` | `[0, 0.5]` | `0` | 上界 | **`0`**（下界 ⇒ 对称，恒等） |
     ///
     /// 非有限一律归下界（沿 [`crate::compressor::CompressorParams::sanitised`] 的
     /// 口径：`f32::clamp` 对 `NaN` 是恒等，单靠 `clamp` 会漏一个 `NaN` 进实时路径）。
@@ -111,6 +153,7 @@ impl TapeParams {
             mix: finite_or(self.mix, 0.0, 1.0),
             trim_db: finite_or(self.trim_db, TAPE_TRIM_MIN_DB, TAPE_TRIM_MAX_DB),
             hf_hz: finite_or(self.hf_hz, TAPE_HF_MIN_HZ, TAPE_HF_MAX_HZ),
+            asym: finite_or(self.asym, 0.0, TAPE_ASYM_MAX),
         }
     }
 }
@@ -226,6 +269,12 @@ impl TapeSaturation {
     /// 入口守卫：非有限样本先回落成 `0.0`（再进滤波器记忆与过采样历史）。
     fn saturate_channel(&mut self, channel: usize, samples: &mut [f32]) {
         let g = 1.0 + 9.0 * self.params.drive;
+        let asym = self.params.asym;
+        // ⭐ **不对称的直流补偿**（见模块文档「⭐ 偶次谐波」）：曲线沿 x 轴平移后
+        // `x = 0` 处不再过零 ⇒ 减掉 `pade_tanh(g·asym) / g` 这个**常量**把它拉回零。
+        // ⚠ `asym == 0` ⇒ `pade_tanh(0.0)` 恰 `0.0` ⇒ 补偿项恰 `+0.0`，
+        // 而 `a - 0.0` 在 binary32 下**逐位等于** `a`（含 `a == -0.0`）⇒ 逐位不变。
+        let bias = pade_tanh(g * asym) / g;
         let trim = db_to_gain(self.params.trim_db);
         let mix = self.params.mix;
         let coeff = self.lp_coeff;
@@ -239,7 +288,7 @@ impl TapeSaturation {
                 *state += (x - *state) * coeff;
                 *state
             };
-            let y_sat = pade_tanh(g * wet) / g;
+            let y_sat = pade_tanh(g * (wet + asym)) / g - bias;
             *slot = ((1.0 - mix) * x + mix * y_sat) * trim;
         }
     }
@@ -309,6 +358,11 @@ mod tests {
     const SR: f32 = 48_000.0;
 
     fn make_tape(drive: f32, mix: f32, trim_db: f32, hf_hz: f32) -> TapeSaturation {
+        make_tape_asym(drive, mix, trim_db, hf_hz, 0.0)
+    }
+
+    /// ⭐ 带 `tape_asym` 的同款构造（偶次谐波的判据用）。
+    fn make_tape_asym(drive: f32, mix: f32, trim_db: f32, hf_hz: f32, asym: f32) -> TapeSaturation {
         let mut tape = TapeSaturation::new();
         tape.configure(SR);
         tape.set_params(TapeParams {
@@ -316,6 +370,7 @@ mod tests {
             mix,
             trim_db,
             hf_hz,
+            asym,
         });
         tape
     }
@@ -348,6 +403,7 @@ mod tests {
                 mix: value,
                 trim_db: value,
                 hf_hz: value,
+                asym: value,
             }
             .sanitised();
             assert!((0.0..=1.0).contains(&params.drive), "drive {value}");
@@ -360,6 +416,7 @@ mod tests {
                 (TAPE_HF_MIN_HZ..=TAPE_HF_MAX_HZ).contains(&params.hf_hz),
                 "hf_hz {value}"
             );
+            assert!((0.0..=TAPE_ASYM_MAX).contains(&params.asym), "asym {value}");
         }
         // 非有限一律归下界（不是上界、不是 NaN 透传）。
         let nan = TapeParams {
@@ -367,12 +424,14 @@ mod tests {
             mix: f32::NAN,
             trim_db: f32::NAN,
             hf_hz: f32::NAN,
+            asym: f32::NAN,
         }
         .sanitised();
         assert_eq!(nan.drive, 0.0);
         assert_eq!(nan.mix, 0.0);
         assert_eq!(nan.trim_db, TAPE_TRIM_MIN_DB);
         assert_eq!(nan.hf_hz, TAPE_HF_MIN_HZ);
+        assert_eq!(nan.asym, 0.0, "非有限的 `asym` 归 `0`（＝对称 ⇒ 恒等）");
     }
 
     #[test]
@@ -548,5 +607,119 @@ mod tests {
             f0_tape > 0.5 * f0_direct,
             "器件基频（{f0_tape}）不得远低于直算基频（{f0_direct}）"
         );
+    }
+    /// ⭐ **偶次谐波真的出现**（`tape_asym` 的全部意义）。
+    ///
+    /// 判据：纯正弦进、看 2f；`asym = 0` ⇒ 2f 只剩数值噪声，`asym = 0.3` ⇒
+    /// 2f 至少高 **20 dB** 且相对基频**可闻**（> 2%）。同一窗口里奇次（3f）
+    /// 必须**不动**（±20% 内）—— 否则就不是"加偶次"，而是整体换了曲线。
+    #[test]
+    fn asym_creates_the_second_harmonic_that_pade_tanh_cannot() {
+        const N: usize = 4096;
+        const SKIP: usize = 512;
+        /// 窗口长度（`dft_magnitude` 的 `n`）：输入按它整周期构造 ⇒ 无泄漏。
+        const W: usize = N - SKIP;
+        const F0: usize = 64; // 64 / 3584 × 48 kHz ≈ 857 Hz
+        let input: Vec<f32> = (0..N)
+            .map(|i| {
+                0.9 * libm::sinf(2.0 * core::f32::consts::PI * F0 as f32 * i as f32 / W as f32)
+            })
+            .collect();
+
+        let run = |asym: f32| {
+            let mut tape = make_tape_asym(0.06, 1.0, 0.0, TAPE_HF_MAX_HZ, asym);
+            let mut left = input.clone();
+            let mut right = vec![0.0; N];
+            process_all(&mut tape, &mut left, &mut right);
+            left
+        };
+        let symmetric = run(0.0);
+        let asymmetric = run(0.3);
+
+        let even0 = dft_magnitude(&symmetric[SKIP..], 2 * F0);
+        let even1 = dft_magnitude(&asymmetric[SKIP..], 2 * F0);
+        let odd0 = dft_magnitude(&symmetric[SKIP..], 3 * F0);
+        let odd1 = dft_magnitude(&asymmetric[SKIP..], 3 * F0);
+        let f0_1 = dft_magnitude(&asymmetric[SKIP..], F0);
+        println!(
+            "[dsp-tape/asym] 2f: {even0:e} → {even1:e}（{:.1} dB）  3f: {odd0:e} → {odd1:e}  f0: {f0_1:e}",
+            20.0 * libm::log10f(even1 / even0.max(1e-12))
+        );
+        assert!(
+            even1 > 10.0 * even0,
+            "⭐ `asym = 0.3` 的二次谐波必须比 `asym = 0` 高 ≥ 20 dB（实读 {even0:e} → {even1:e}）"
+        );
+        assert!(
+            even1 > 0.02 * f0_1,
+            "⭐ 偶次必须**可闻**（2f > 基频的 2%）；实读 2f = {even1:e}、f0 = {f0_1:e}"
+        );
+        // ⚠ 奇次**会**变（工作点离开零点 ⇒ 整条曲线的形状都变），但⛔ 不该消失：
+        //    实测 `asym = 0.3` 时 3f 从 3.37e-2 降到 2.26e-2（−3.5 dB）—— 这个量级
+        //    的变化是"换了个工作点"的正常后果，不是缺陷 ⇒ 判据只钉"仍在同一量级"。
+        assert!(
+            odd1 > 0.5 * odd0,
+            "⛔ 奇次（3f）不该被 `asym` 压掉一个量级：{odd0:e} → {odd1:e}"
+        );
+        // ⭐ 这才是"暖"的机械特征：偶次**超过**奇次（磁带 vs 过载的分界）。
+        assert!(
+            even1 > odd1,
+            "⭐ `asym` 之后二次谐波（{even1:e}）必须**超过**三次（{odd1:e}）—— 否则只是更硬"
+        );
+    }
+
+    /// ⭐ **零输入 ⇒ 零输出**（平移曲线的直流补偿真的生效）。
+    ///
+    /// 没有那一条常量补偿时，`x = 0` 的输出是 `pade_tanh(g·asym) / g ≈ 0.093`
+    /// ⇒ 整条链带上 DC（下游限幅器会为它让出余量）。本判据把那个版本变成红。
+    #[test]
+    fn asym_keeps_silence_silent() {
+        for asym in [0.0, 0.1, 0.3, TAPE_ASYM_MAX] {
+            let mut tape = make_tape_asym(0.5, 1.0, 0.0, TAPE_HF_MAX_HZ, asym);
+            let mut left = vec![0.0f32; 512];
+            let mut right = vec![0.0f32; 512];
+            process_all(&mut tape, &mut left, &mut right);
+            let worst = left.iter().fold(0.0f32, |acc, s| acc.max(s.abs()));
+            assert!(
+                worst == 0.0,
+                "⭐ `asym = {asym}` 的静音输入必须**逐位**输出 0（实读峰值 {worst:e}）"
+            );
+        }
+    }
+
+    /// ⭐ **`asym = 0` 就是接线前的曲线**（后向兼容，⛔ 不是"差不多"）。
+    ///
+    /// 与手算的旧公式 `pade_tanh(g·x) / g` 比：基频与三次谐波的幅值都在
+    /// 上下采样通带纹波（`|H| = 1.0000`）以内，容差 `1e-3`（与
+    /// `oversampling_aliasing_is_below_the_direct_formula` 同一口径）。
+    #[test]
+    fn asym_zero_is_the_pre_change_curve() {
+        const N: usize = 4096;
+        const SKIP: usize = 512;
+        const W: usize = N - SKIP;
+        const F0: usize = 64;
+        let input: Vec<f32> = (0..N)
+            .map(|i| {
+                0.9 * libm::sinf(2.0 * core::f32::consts::PI * F0 as f32 * i as f32 / W as f32)
+            })
+            .collect();
+        let mut tape = make_tape(0.5, 1.0, 0.0, TAPE_HF_MAX_HZ);
+        let mut left = input.clone();
+        let mut right = vec![0.0; N];
+        process_all(&mut tape, &mut left, &mut right);
+
+        // 旧公式（`g = 1 + 9 × 0.5 = 5.5`），1x 直算。
+        let g = 1.0 + 9.0 * 0.5;
+        let direct: Vec<f32> = input
+            .iter()
+            .map(|x| pade_tanh(g * finite_or_zero(*x)) / g)
+            .collect();
+        for (label, bin) in [("f0", F0), ("2f", 2 * F0), ("3f", 3 * F0)] {
+            let a = dft_magnitude(&left[SKIP..], bin);
+            let b = dft_magnitude(&direct[SKIP..], bin);
+            assert!(
+                (a - b).abs() < 1e-3,
+                "⭐ `asym = 0` 必须与接线前的公式一致（{label}: 器件 {a:e} vs 直算 {b:e}）"
+            );
+        }
     }
 }

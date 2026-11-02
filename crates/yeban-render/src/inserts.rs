@@ -1034,6 +1034,8 @@ struct StripProjection {
     eq: StripEq,
     filter_seen: bool,
     compressor_seen: bool,
+    hpf_seen: bool,
+    deq_seen: bool,
     eq_enabled: Option<bool>,
     filter_enabled: Option<bool>,
     compressor_enabled: Option<bool>,
@@ -1058,6 +1060,8 @@ impl Default for StripProjection {
             eq: StripEq::default(),
             filter_seen: false,
             compressor_seen: false,
+            hpf_seen: false,
+            deq_seen: false,
             eq_enabled: None,
             filter_enabled: None,
             compressor_enabled: None,
@@ -1150,6 +1154,31 @@ impl StripProjection {
                 self.params.compressor.makeup_db = value;
                 self.compressor_seen = true;
             }
+            // `#341` 低切与 `#342` 动态 EQ：两个字段组都有自己的"已见"标记，
+            // 否则一条只写了 `hpf_hz` 的设备会被 `into_params` 判成"什么都没写"。
+            "hpf_hz" | "high_pass_hz" => {
+                self.params.hpf.freq_hz = value;
+                self.hpf_seen = true;
+            }
+            "deq_freq" | "dyn_eq_freq" => {
+                self.params.dyn_eq.freq_hz = value;
+                self.deq_seen = true;
+            }
+            "deq_threshold_db" | "dyn_eq_threshold_db" => {
+                self.params.dyn_eq.threshold_db = value;
+                self.deq_seen = true;
+            }
+            "deq_cut_db" | "dyn_eq_cut_db" => {
+                self.params.dyn_eq.max_cut_db = value;
+                self.deq_seen = true;
+            }
+            "strip_width" | "channel_width" => {
+                self.params.width = value;
+            }
+            // `#344` mono-maker（与引擎 `insert.rs` 的同名投影逐字同集）。
+            "mono_below_hz" | "mono_maker_hz" => {
+                self.params.mono_below_hz = value;
+            }
 
             _ => {}
         }
@@ -1159,6 +1188,8 @@ impl StripProjection {
         let recognised = self.eq.seen
             || self.filter_seen
             || self.compressor_seen
+            || self.hpf_seen
+            || self.deq_seen
             || self.eq_enabled.is_some()
             || self.filter_enabled.is_some()
             || self.params != ChannelStripParams::DEFAULT;
@@ -1606,9 +1637,13 @@ impl InsertRuntime {
     /// 唯通道条的动态级检波器输入取自 `key`（与节目块同帧对齐的交错键信号）。
     /// 混响与卷积一律读节目；键不进混音。条不存在时与 [`Self::process`] 一位不动。
     ///
+    /// `key_gain` 是这条侧链边的**键增益**（线性，来自边的 `gain_db`；`1.0` = 不缩放）。
+    /// 乘在去交错这一步，因此既不额外分配、也不改`key`本身的样本：同一个抽头缓冲
+    /// 可以按各自的增益喂多个目的。
+    ///
     /// 调用方契约：`key.len() == buffer.len()`（`render_node` 传抽头缓冲的同宽切片）；
     /// 块帧数恒 `<= block_size` ⇒ 键去交错缓冲不越界。
-    pub(crate) fn process_with_key(&mut self, buffer: &mut [f32], key: &[f32]) {
+    pub(crate) fn process_with_key(&mut self, buffer: &mut [f32], key: &[f32], key_gain: f32) {
         let frames = buffer.len() / 2;
         if frames == 0 {
             return;
@@ -1630,8 +1665,8 @@ impl InsertRuntime {
         for frame in 0..frames {
             left[frame] = buffer[2 * frame];
             right[frame] = buffer[2 * frame + 1];
-            key_left[frame] = key[2 * frame];
-            key_right[frame] = key[2 * frame + 1];
+            key_left[frame] = key[2 * frame] * key_gain;
+            key_right[frame] = key[2 * frame + 1] * key_gain;
         }
         if let Some(strip) = strip {
             strip.process_stereo_with_key(
@@ -1726,6 +1761,12 @@ mod tests {
             StripField::AttackS => 0.010,
             StripField::ReleaseS => 0.100,
             StripField::MakeupDb => 3.0,
+            StripField::HpfHz => 120.0,
+            StripField::DynEqFreq => 320.0,
+            StripField::DynEqThresholdDb => -28.0,
+            StripField::DynEqMaxCutDb => 4.0,
+            StripField::Width => 1.4,
+            StripField::MonoBelowHz => 120.0,
         }
     }
 
@@ -1737,6 +1778,7 @@ mod tests {
             DeviceParamField::Tape(TapeField::Drive | TapeField::Mix) => 0.8,
             DeviceParamField::Tape(TapeField::TrimDb) => -6.0,
             DeviceParamField::Tape(TapeField::HfHz) => 8_000.0,
+            DeviceParamField::Tape(TapeField::Asym) => 0.3,
             DeviceParamField::Reverb(ReverbField::Size | ReverbField::Damp | ReverbField::Wet) => {
                 0.72
             }

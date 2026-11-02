@@ -991,6 +991,10 @@ struct StripProjection {
     filter_seen: bool,
     /// 出现过动态旋钮（或 `compressor_enabled`）。
     compressor_seen: bool,
+    /// 出现过低切旋钮（`#341`）。
+    hpf_seen: bool,
+    /// 出现过动态 EQ 旋钮（`#342`）。
+    deq_seen: bool,
     /// 设备写过的开关（`eq_enabled` / `filter_enabled` / `compressor_enabled`）。
     eq_enabled: Option<bool>,
     filter_enabled: Option<bool>,
@@ -1017,6 +1021,8 @@ impl Default for StripProjection {
             eq: StripEq::default(),
             filter_seen: false,
             compressor_seen: false,
+            hpf_seen: false,
+            deq_seen: false,
             eq_enabled: None,
             filter_enabled: None,
             compressor_enabled: None,
@@ -1125,6 +1131,35 @@ impl StripProjection {
                 self.compressor_seen = true;
             }
 
+            // `#341` 低切与 `#342` 动态 EQ：两个字段组都有自己的“已见”标记，
+            // 否则一条只写了 `hpf_hz` 的设备会被 `into_params` 判成“什么都没写”。
+            // （与 `yeban-render/src/inserts.rs` 的同名投影逐字同集；宽度无标记：
+            // 宽度只在 != 默认值时才被 `params != DEFAULT` 兜底认下。）
+            "hpf_hz" | "high_pass_hz" => {
+                self.params.hpf.freq_hz = value;
+                self.hpf_seen = true;
+            }
+            "deq_freq" | "dyn_eq_freq" => {
+                self.params.dyn_eq.freq_hz = value;
+                self.deq_seen = true;
+            }
+            "deq_threshold_db" | "dyn_eq_threshold_db" => {
+                self.params.dyn_eq.threshold_db = value;
+                self.deq_seen = true;
+            }
+            "deq_cut_db" | "dyn_eq_cut_db" => {
+                self.params.dyn_eq.max_cut_db = value;
+                self.deq_seen = true;
+            }
+            "strip_width" | "channel_width" => {
+                self.params.width = value;
+            }
+            // `#344` mono-maker：与宽度同一条兜底（宽度也没自己的 `*_seen` 标记 —
+            // 两个字段的默认值都是"旁通"，写 0 与不写等价，`params != DEFAULT` 就够）。
+            "mono_below_hz" | "mono_maker_hz" => {
+                self.params.mono_below_hz = value;
+            }
+
             _ => {}
         }
     }
@@ -1133,15 +1168,18 @@ impl StripProjection {
     ///
     /// `None` = 一个已识别参数都没有 ⇒ 本设备不是通道条来源（规则 8）。
     fn into_params(self) -> Option<ChannelStripParams> {
-        // "已识别"的三个来源：EQ 旋钮 / 滤波旋钮 / 动态旋钮（含 `compressor_enabled`）、
+        // "已识别"的来源：EQ 旋钮 / 滤波旋钮 / 动态旋钮（含 `compressor_enabled`）、
+        // 低切旋钮（`#341`）/ 动态 EQ 旋钮（`#342`）、
         // 三个级开关、以及任何非旋钮字段（增益等）被写过。
         // ⚠ `params != DEFAULT` 是**兜底**：任何一条被 `apply` 认下的名字都至少改到一处，
-        // 因此它只可能漏掉"写了一个与默认值逐位相同的值"——那种写法由三个 `*_seen`
+        // 因此它只可能漏掉"写了一个与默认值逐位相同的值"——那种写法由五个 `*_seen`
         // 标志覆盖（`compressor_enabled` 自己也设 `compressor_seen`）。
         // `eq_enabled` / `filter_enabled` 单独列出：它们是**其他**参数都不写时唯一的痕迹。
         let recognised = self.eq.seen
             || self.filter_seen
             || self.compressor_seen
+            || self.hpf_seen
+            || self.deq_seen
             || self.eq_enabled.is_some()
             || self.filter_enabled.is_some()
             || self.params != ChannelStripParams::DEFAULT;
@@ -1255,6 +1293,12 @@ impl TapeProjection {
             }
             "tape_hf_hz" | "saturation_hf_hz" => {
                 self.params.hf_hz = value;
+                self.seen = true;
+            }
+            // ⭐ 曲线不对称量（偶次谐波）：与 `dsp::device_param::TapeField::Asym`
+            // **同一张拼写表**的两个名字（判据 `device_param_spellings_pinned` 钉住等集）。
+            "tape_asym" | "saturation_asym" => {
+                self.params.asym = value;
                 self.seen = true;
             }
             _ => {}

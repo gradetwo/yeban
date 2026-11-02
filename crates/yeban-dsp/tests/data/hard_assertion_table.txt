@@ -2,7 +2,7 @@
 # 分类口径：float_bits ＝ 判据体内有 to_bits()；integer_count ＝ 只比整数/长度
 # class：hard ＝ 产线可达集无宿主 libm 超越函数；platform ＝ 有（只在本架构有意义）
 #        no_callee ＝ 不调用本 crate 产线函数
-# 合计 275 条：float_bits 72 ／ integer_count 203；其中 hard 66 ／ platform 3
+# 合计 295 条：float_bits 79 ／ integer_count 216；其中 hard 64 ／ platform 12
 # 列：kind | class | reach | host | file | test
 integer_count | no_callee | 0 | - | src/block.rs | accumulate_matches_scalar_reference
 integer_count | no_callee | 0 | - | src/block.rs | mismatched_lengths_are_truncated_instead_of_panicking
@@ -12,19 +12,23 @@ integer_count | no_callee | 0 | - | src/channel_strip.rs | bypassing_the_dynamic
 integer_count | no_callee | 0 | - | src/channel_strip.rs | chunking_does_not_change_output
 integer_count | no_callee | 0 | - | src/channel_strip.rs | compression_happens_and_matches_the_arithmetic
 integer_count | no_callee | 0 | - | src/channel_strip.rs | degenerate_slice_lengths_do_not_panic
+float_bits | platform | 18 | exp,log10 | src/channel_strip.rs | disabled_compressor_ignores_key
 integer_count | no_callee | 0 | - | src/channel_strip.rs | eq_before_filter_is_observable
 integer_count | no_callee | 0 | - | src/channel_strip.rs | hostile_inputs_never_escape_as_non_finite
+float_bits | platform | 22 | exp,log10 | src/channel_strip.rs | key_equal_to_program_matches_program_path_bit_for_bit
 integer_count | no_callee | 0 | - | src/channel_strip.rs | latency_is_zero
+float_bits | platform | 18 | exp,log10 | src/channel_strip.rs | loud_key_ducks_quiet_program
 integer_count | no_callee | 0 | - | src/channel_strip.rs | mono_path_matches_a_duplicated_stereo_pair
 integer_count | no_callee | 0 | - | src/channel_strip.rs | sanitised_clamps_every_field_into_its_documented_domain
 integer_count | no_callee | 0 | - | src/channel_strip.rs | set_params_and_sample_rate_are_live_and_allocation_free_paths
+float_bits | platform | 18 | exp,log10 | src/channel_strip.rs | silent_key_leaves_loud_program_uncompressed
 integer_count | no_callee | 0 | - | src/channel_strip.rs | stage_order_is_the_contract
 integer_count | no_callee | 0 | - | src/channel_strip.rs | the_chain_matches_an_independently_built_reference_chain
 integer_count | no_callee | 0 | - | src/channel_strip.rs | the_eq_really_changes_the_level
 integer_count | no_callee | 0 | - | src/channel_strip.rs | the_filter_really_removes_the_high_component
-float_bits | hard | 13 | - | src/channel_strip.rs | the_narrow_output_gain_entry_is_bit_identical_to_the_static_projection
+float_bits | platform | 21 | exp,log10 | src/channel_strip.rs | the_narrow_output_gain_entry_is_bit_identical_to_the_static_projection
 integer_count | no_callee | 0 | - | src/channel_strip.rs | the_same_input_twice_is_bit_identical
-float_bits | hard | 7 | - | src/channel_strip.rs | the_two_channels_keep_their_own_input
+float_bits | platform | 15 | exp,log10 | src/channel_strip.rs | the_two_channels_keep_their_own_input
 integer_count | no_callee | 0 | - | src/comb.rs | a_fixed_length_matches_a_textbook_ring_buffer_bit_for_bit
 integer_count | no_callee | 0 | - | src/comb.rs | one_wavelength_per_delay_at_any_sample_rate
 integer_count | no_callee | 0 | - | src/comb.rs | retuning_never_replays_audio_from_outside_the_line
@@ -34,20 +38,23 @@ integer_count | no_callee | 0 | - | src/compressor.rs | alpha_matches_an_indepen
 integer_count | no_callee | 0 | - | src/compressor.rs | below_threshold_is_bit_transparent
 integer_count | no_callee | 0 | - | src/compressor.rs | changing_the_sample_rate_recomputes_alpha
 integer_count | no_callee | 0 | - | src/compressor.rs | chunking_does_not_change_output
-float_bits | platform | 11 | log10 | src/compressor.rs | finite_block_inputs_are_bit_identical_to_input_times_gain
+float_bits | platform | 12 | log10 | src/compressor.rs | finite_block_inputs_are_bit_identical_to_input_times_gain
 integer_count | no_callee | 0 | - | src/compressor.rs | gain_attack_follows_the_declared_attack_constant
 integer_count | no_callee | 0 | - | src/compressor.rs | hostile_blocks_never_write_a_non_finite_sample
+float_bits | platform | 15 | log10 | src/compressor.rs | key_mode_with_key_equal_to_program_matches_program_mode_bit_for_bit
 integer_count | no_callee | 0 | - | src/compressor.rs | latency_is_zero
+float_bits | platform | 10 | log10 | src/compressor.rs | loud_key_ducks_quiet_program
 integer_count | no_callee | 0 | - | src/compressor.rs | mean_square_never_leaves_its_domain
-float_bits | platform | 11 | log10 | src/compressor.rs | non_finite_input_samples_are_written_back_as_zero
+float_bits | platform | 12 | log10 | src/compressor.rs | non_finite_input_samples_are_written_back_as_zero
 integer_count | no_callee | 0 | - | src/compressor.rs | over_full_scale_input_stays_finite
 integer_count | no_callee | 0 | - | src/compressor.rs | processed_sample_counting_is_per_channel
 integer_count | no_callee | 0 | - | src/compressor.rs | reset_clears_state_and_statistics
 integer_count | no_callee | 0 | - | src/compressor.rs | reset_reproduces_a_freshly_built_compressor_bit_for_bit
 integer_count | no_callee | 0 | - | src/compressor.rs | silence_stays_silent_and_never_becomes_nan
+float_bits | platform | 10 | log10 | src/compressor.rs | silent_key_leaves_loud_program_uncompressed
 integer_count | no_callee | 0 | - | src/compressor.rs | static_curve_matches_the_closed_form_on_a_grid
 integer_count | no_callee | 0 | - | src/compressor.rs | stereo_and_mono_paths_agree_bit_for_bit_on_identical_channels
-float_bits | platform | 11 | log10 | src/compressor.rs | stereo_linking_compresses_a_quiet_channel_by_the_loud_one
+float_bits | platform | 12 | log10 | src/compressor.rs | stereo_linking_compresses_a_quiet_channel_by_the_loud_one
 float_bits | hard | 2 | - | src/compressor.rs | the_documented_domains_are_pinned_by_literals_not_by_themselves
 integer_count | no_callee | 0 | - | src/compressor.rs | the_gain_attack_settle_time_scales_linearly_with_attack_s
 integer_count | no_callee | 0 | - | src/compressor.rs | the_soft_knee_is_continuous_at_both_junctions
@@ -100,6 +107,9 @@ integer_count | no_callee | 0 | - | src/delay.rs | reset_reproduces_a_freshly_bu
 integer_count | no_callee | 0 | - | src/delay.rs | the_delay_time_is_seconds_not_samples
 integer_count | no_callee | 0 | - | src/delay.rs | the_time_floor_is_folded_onto_the_documented_minimum
 integer_count | no_callee | 0 | - | src/delay.rs | two_instances_do_not_share_time_or_feedback
+integer_count | no_callee | 0 | - | src/device_param.rs | delay_spellings_resolve_to_the_same_field
+integer_count | no_callee | 0 | - | src/device_param.rs | delay_sync_conversion_table_at_84_bpm
+integer_count | no_callee | 0 | - | src/device_param.rs | delay_sync_off_or_bad_bpm_keeps_written_time
 integer_count | no_callee | 0 | - | src/drums/mod.rs | a_closed_hat_chokes_every_ringing_open_hat
 integer_count | no_callee | 0 | - | src/drums/mod.rs | a_finished_hit_frees_its_slot
 integer_count | no_callee | 0 | - | src/drums/mod.rs | an_untouched_machine_renders_bit_exact_silence
@@ -279,3 +289,13 @@ integer_count | no_callee | 0 | - | src/smoothing.rs | the_response_matches_the_
 float_bits | hard | 7 | - | src/smoothing.rs | the_snap_threshold_has_an_absolute_floor_for_tiny_parameters
 float_bits | hard | 8 | - | src/smoothing.rs | the_snap_threshold_sits_between_the_stall_point_and_the_audible_error
 integer_count | no_callee | 0 | - | src/smoothing.rs | the_time_constant_is_five_milliseconds
+integer_count | no_callee | 0 | - | src/tape.rs | asym_creates_the_second_harmonic_that_pade_tanh_cannot
+integer_count | no_callee | 0 | - | src/tape.rs | asym_keeps_silence_silent
+integer_count | no_callee | 0 | - | src/tape.rs | asym_zero_is_the_pre_change_curve
+integer_count | no_callee | 0 | - | src/tape.rs | latency_samples_is_the_oversampler_round_trip
+integer_count | no_callee | 0 | - | src/tape.rs | mix_zero_is_identity_within_float_tolerance
+integer_count | no_callee | 0 | - | src/tape.rs | non_finite_input_falls_back_to_zero_and_does_not_poison_state
+integer_count | no_callee | 0 | - | src/tape.rs | oversampling_aliasing_is_below_the_direct_formula
+integer_count | no_callee | 0 | - | src/tape.rs | reset_reproduces_a_freshly_built_device_bit_for_bit
+integer_count | no_callee | 0 | - | src/tape.rs | sanitised_clamps_every_field_into_its_documented_domain
+integer_count | no_callee | 0 | - | src/tape.rs | small_signal_gain_is_approximately_one

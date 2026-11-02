@@ -125,7 +125,7 @@ use crate::compressor::{Compressor, CompressorParams};
 use crate::filter::LadderFilter;
 use crate::math::{db_to_gain, sanitise_sample_rate};
 use crate::meter::{dbfs, sanitize_sample};
-use crate::shaping::{EqParams, ShapingEq};
+use crate::shaping::{Biquad, EqParams, ShapingEq};
 
 // ---------------------------------------------------------------------------
 // 常量
@@ -149,6 +149,17 @@ pub const MAX_CUTOFF_HZ: f32 = 20_000.0;
 /// 它**不影响输出**（§3 / §5），只影响系数重算的频率。`64` 与"每量子一次系数重算"
 /// 同量级，且让栈占用保持在 4 × 64 × 4 B = 1 KiB。
 pub const EQ_CHUNK_FRAMES: usize = 64;
+
+/// mono-maker 转折频率的上界（Hz）。
+///
+/// `1000 Hz` 是"还能叫 mono-maker"的上限：再往上就把整个低频段以上的 side 也丢了，
+/// 那是 [`ChannelStripParams::width`] 的活儿（`width = 0` 就是全频段单声道），
+/// 而不是一条"只折低频"的判据。判据 `the_mono_maker_only_touches_the_side_band`
+/// 用 `120 Hz` 这个实际取值钉住方向。
+pub const MAX_MONO_BELOW_HZ: f32 = 1000.0;
+
+/// mono-maker 的旁通阈值（Hz）：`mono_below_hz <= 0` 时整级不执行。
+pub const MONO_BELOW_BYPASS_HZ: f32 = 0.0;
 
 // ---------------------------------------------------------------------------
 // 参数
@@ -202,6 +213,148 @@ impl Default for FilterParams {
     }
 }
 
+/// 低切（高通）参数。`#341`。
+///
+/// **旁通语义**：`freq_hz <= [`Self::BYPASS_HZ`]` 时整级不执行。用频率而不是布尔开关，
+/// 是因为"低切 0 Hz"在设备参数表里只是一个数字 —— 不需要第二个字段表达"关"，
+/// 也就不会出现 `enabled = true` 而 `freq = 0` 这种自相矛盾的组合。
+///
+/// Q 固定 [`Self::Q`]（Butterworth，最平坦的通带）：低切的作用是**去掉**，
+/// 不是"在转折点做一个峰"。要共振用 EQ 的低架或中频峰。
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct HpfParams {
+    /// 转折频率（Hz）。钳到 `20..=1000`；`<= BYPASS_HZ` 表示旁通。
+    pub freq_hz: f32,
+}
+
+impl HpfParams {
+    /// 低于等于此频率视为旁通（`20 Hz` 已是听阈下沿，切在这里等于没切）。
+    pub const BYPASS_HZ: f32 = 20.0;
+    /// 频率下界（Hz，与 [`BYPASS_HZ`](Self::BYPASS_HZ) 同值）。
+    pub const MIN_HZ: f32 = 20.0;
+    /// 频率上界（Hz）。
+    pub const MAX_HZ: f32 = 1000.0;
+    /// 固定 Q（Butterworth，`1/√2`）。
+    pub const Q: f32 = core::f32::consts::FRAC_1_SQRT_2;
+    /// 默认：旁通。
+    pub const DEFAULT: Self = Self {
+        freq_hz: Self::BYPASS_HZ,
+    };
+
+    /// 钳到合法域；非有限值归到**旁通**（最不改变信号的一侧）。
+    #[must_use]
+    pub fn sanitised(self) -> Self {
+        Self {
+            freq_hz: clamp_or(self.freq_hz, Self::MIN_HZ, Self::MAX_HZ, Self::BYPASS_HZ),
+        }
+    }
+
+    /// 是否旁通。
+    #[must_use]
+    pub fn is_bypassed(self) -> bool {
+        self.freq_hz <= Self::BYPASS_HZ
+    }
+}
+
+impl Default for HpfParams {
+    fn default() -> Self {
+        Self::DEFAULT
+    }
+}
+
+/// 动态 EQ 参数。`#342`。
+///
+/// 一个**只看自己那一段**的中频压缩：带通检波 → 超过阈值按 [`Self::RATIO`] 压 →
+/// 峰值衰减不超过 [`Self::max_cut_db`]。固定参数（Q / 比率 / 时间常数）写在这里而不是
+/// 暴露成字段，理由是它们没有"调错会毁掉音色"的区间，而暴露它们会让设备参数表
+/// 多出 4 个几乎不会被自动化的拼写。
+///
+/// ## 检波源：键路由在 ⇒ 吃键（`#345`）
+///
+/// 同一台器件有两条入口：[`ChannelStrip::process_stereo`] 走**自检波**（检波器读
+/// 节目自己的带通），[`ChannelStrip::process_stereo_with_key`] 走**键检波**
+/// （检波器读键信号的同一段带通，处理仍施加在节目上）。
+/// 因此"Bass 在 Kick 的 85 Hz 上让路"不需要第二台器件、也不需要新的布尔开关 ——
+/// **有没有键**就是那个开关：引擎只在图里存在 `RoutingKind::Sidechain` 边时
+/// 才会把键送进来（`RoutingPlan::key_route`）。
+///
+/// **旁通语义**：`max_cut_db <= 0` 时整级不执行。
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct DynEqParams {
+    /// 被处理频带的中心频率（Hz）。钳到 `80..=12000`。
+    pub freq_hz: f32,
+    /// 触发阈值（dBFS，带通电平）。钳到 `-60..=0`。
+    pub threshold_db: f32,
+    /// 最大衰减量（dB，正数）。钳到 `0..=18`；`0` = 旁通。
+    pub max_cut_db: f32,
+}
+
+impl DynEqParams {
+    /// 中心频率下界（Hz）。
+    pub const MIN_FREQ: f32 = 80.0;
+    /// 中心频率上界（Hz）。
+    ///
+    /// `#345` 从 `4000` 提到 `12000`：`4000` 让"6–10 kHz 的 De-Esser"这一档
+    /// **根本够不到**（`deq_freq=7000` 会被钳回 4000，听感与预期完全不符）。
+    /// 上界取 `12000` 而不是更高，理由有两条：
+    ///
+    /// 1. **Nyquist**：本仓库最低支持 [`crate::MIN_SAMPLE_RATE`]（44.1 kHz 系）⇒
+    ///    Nyquist 22.05 kHz；`12000 / 22050 = 0.54` 仍让双二阶的极点远离单位圆，
+    ///    `48 kHz` 下更宽松（`0.25`）。再往上（例如 16 kHz）在 44.1 kHz 会贴近
+    ///    双二阶的数值病态区，而本仓库不做频率预畸变的二次校正。
+    /// 2. **判据覆盖**：`Q` 固定 [`Self::Q`]（`0.9`）⇒ `12 kHz` 处的 −3 dB 带宽
+    ///    约 `12 kHz / 0.9 ≈ 13 kHz`，已覆盖到 Nyquist 之上；再高的中心频率
+    ///    只是把整条带的检波器变成"高频总和"，没有新的分辨力。
+    pub const MAX_FREQ: f32 = 12000.0;
+    /// 固定 Q（与 EQ 中频段的默认带宽同量级）。
+    pub const Q: f32 = 0.9;
+    /// 固定压缩比。
+    pub const RATIO: f32 = 4.0;
+    /// 起振时间常数（秒）。`8 ms` 跟得上音符包络，慢到不会在单个周期上抽气。
+    pub const ATTACK_S: f32 = 0.008;
+    /// 释放时间常数（秒）。`160 ms` 让句子之间能回位。
+    pub const RELEASE_S: f32 = 0.160;
+    /// 衰减量上界（dB）。
+    pub const MAX_CUT_DB: f32 = 18.0;
+    /// 阈值下界（dBFS）。
+    pub const MIN_THRESHOLD_DB: f32 = -60.0;
+    /// 阈值上界（dBFS）。
+    pub const MAX_THRESHOLD_DB: f32 = 0.0;
+    /// 默认：**旁通**（`max_cut_db = 0`），因此未配置的通道条与接线前逐位相同。
+    pub const DEFAULT: Self = Self {
+        freq_hz: 300.0,
+        threshold_db: -24.0,
+        max_cut_db: 0.0,
+    };
+
+    /// 钳到合法域；非有限值归到**旁通**。
+    #[must_use]
+    pub fn sanitised(self) -> Self {
+        Self {
+            freq_hz: clamp_or(self.freq_hz, Self::MIN_FREQ, Self::MAX_FREQ, 300.0),
+            threshold_db: clamp_or(
+                self.threshold_db,
+                Self::MIN_THRESHOLD_DB,
+                Self::MAX_THRESHOLD_DB,
+                -24.0,
+            ),
+            max_cut_db: clamp_or(self.max_cut_db, 0.0, Self::MAX_CUT_DB, 0.0),
+        }
+    }
+
+    /// 是否旁通。
+    #[must_use]
+    pub fn is_bypassed(self) -> bool {
+        self.max_cut_db <= 0.0
+    }
+}
+
+impl Default for DynEqParams {
+    fn default() -> Self {
+        Self::DEFAULT
+    }
+}
+
 /// 通道条的全部参数。
 ///
 /// 全部字段是 `f32` 或 `bool`；单位在字段名里写明（`_db` = dB、`_hz` = Hz）。
@@ -211,6 +364,8 @@ impl Default for FilterParams {
 pub struct ChannelStripParams {
     /// 输入增益（trim，dB）。链上**第一级**。钳到 `[`[`MIN_GAIN_DB`]`, `[`MAX_GAIN_DB`]`]`。
     pub input_gain_db: f32,
+    /// 低切级参数（`#341`）。链上**第二级**，在 EQ 之前。
+    pub hpf: HpfParams,
     /// 是否执行 EQ 级（见模块注释 §4 的旁通语义）。
     pub eq_enabled: bool,
     /// EQ 参数，直接交给 [`ShapingEq::process`]。
@@ -223,6 +378,19 @@ pub struct ChannelStripParams {
     pub compressor_enabled: bool,
     /// 压缩器参数，**复用** [`CompressorParams`]（本模块不定义第二份）。
     pub compressor: CompressorParams,
+    /// 动态 EQ 参数（`#342`）。链上**第四级**，在 EQ 之后、低通之前。
+    pub dyn_eq: DynEqParams,
+    /// 立体声宽度（M/S 缩放，`#343`）。`1.0` = 原样，`0.0` = 单声道，`2.0` = 加倍。
+    /// 钳到 `0..=2`。
+    pub width: f32,
+    /// **mono-maker**（`#344`）：把这个频率以下的 side 分量整段丢掉的转折频率（Hz）。
+    /// `0` = 旁通；钳到 `0..=`[`MAX_MONO_BELOW_HZ`]。
+    ///
+    /// 语义（**这是契约**）：`side ← HighPass₂(side, mono_below_hz)`。
+    /// 二阶 Butterworth：转折点 −3 dB、一个八度以下 −12 dB、两个八度 −24 dB。
+    /// 本级**不改变 mid**、不改变高频 side（`mono_below_hz` 的 4 倍以上一位不动）。
+    /// `width` 在它**之前**生效 ⇒ 宽度缩放整条 side（含低频），mono-maker 再切低频。
+    pub mono_below_hz: f32,
     /// 输出增益（推子，dB）。链上**最后一级**。
     pub output_gain_db: f32,
 }
@@ -233,6 +401,7 @@ impl ChannelStripParams {
     /// 压缩用 [`CompressorParams::DEFAULT`]。
     pub const DEFAULT: Self = Self {
         input_gain_db: 0.0,
+        hpf: HpfParams::DEFAULT,
         eq_enabled: true,
         eq: EqParams {
             low_gain: 0.0,
@@ -247,6 +416,9 @@ impl ChannelStripParams {
         filter: FilterParams::DEFAULT,
         compressor_enabled: true,
         compressor: CompressorParams::DEFAULT,
+        dyn_eq: DynEqParams::DEFAULT,
+        width: 1.0,
+        mono_below_hz: MONO_BELOW_BYPASS_HZ,
         output_gain_db: 0.0,
     };
 
@@ -265,12 +437,21 @@ impl ChannelStripParams {
     pub fn sanitised(self) -> Self {
         Self {
             input_gain_db: sanitise_gain_db(self.input_gain_db),
+            hpf: self.hpf.sanitised(),
             eq_enabled: self.eq_enabled,
             eq: sanitise_eq(self.eq),
             filter_enabled: self.filter_enabled,
             filter: self.filter.sanitised(),
             compressor_enabled: self.compressor_enabled,
             compressor: self.compressor.sanitised(),
+            dyn_eq: self.dyn_eq.sanitised(),
+            width: clamp_or(self.width, 0.0, 2.0, 1.0),
+            mono_below_hz: clamp_or(
+                self.mono_below_hz,
+                MONO_BELOW_BYPASS_HZ,
+                MAX_MONO_BELOW_HZ,
+                MONO_BELOW_BYPASS_HZ,
+            ),
             output_gain_db: sanitise_gain_db(self.output_gain_db),
         }
     }
@@ -298,8 +479,26 @@ pub struct ChannelStrip {
     input_gain: f32,
     /// 输出增益的线性值。
     output_gain: f32,
-    /// ② 级状态。
+    /// ② 低切级状态（左右各一份，理由同 `filter_l`：biquad 的状态是逐声道递推）。
+    hpf_l: Biquad,
+    /// ② 低切级状态，右声道。
+    hpf_r: Biquad,
+    /// ③ 级状态。
     eq: ShapingEq,
+    /// ④ 动态 EQ 的**侧链检波**带通（单声道，只用 `v[0]`）。
+    deq_det: Biquad,
+    /// ④ 动态 EQ 的峰值滤波器，左。
+    deq_l: Biquad,
+    /// ④ 动态 EQ 的峰值滤波器，右。
+    deq_r: Biquad,
+    /// ④ 动态 EQ 的包络（线性，带通电平的跟随值）。
+    deq_env: f32,
+    /// ④⁗ mono-maker 的 **side 高通**（`#344`）：二阶，状态是左右声道**共用的那一条**
+    /// side 序列（`0.5·(L−R)`）的递推 —— 一个双二阶就够，⛔ 不是左右各一份。
+    ///
+    /// 旁通时它是 [`Biquad::identity`] 且**不被调用**（`mono_below_hz <= 0` 时整级跳过）
+    /// ⇒ 不会污染 `width == 1.0` 的逐位透明。
+    side_hp: Biquad,
     /// ③ 级状态，**左**声道。
     ///
     /// ⚠ [`LadderFilter`] 是**单声道**器件（一个 4 级状态、一个输入一个输出）。
@@ -324,7 +523,188 @@ pub struct ChannelStrip {
     frames: u64,
 }
 
+/// 把一只 biquad 配成低切（或旁通时置为单位变换）。
+fn configure_hpf(bq: &mut Biquad, sample_rate: f32, params: HpfParams) {
+    if params.is_bypassed() {
+        *bq = Biquad::identity();
+    } else {
+        bq.highpass(sample_rate, params.freq_hz, HpfParams::Q);
+    }
+}
+
+/// 把检波带通配到动态 EQ 的中心频率。
+fn configure_deq_detector(bq: &mut Biquad, sample_rate: f32, params: DynEqParams) {
+    bq.bandpass(sample_rate, params.freq_hz, DynEqParams::Q);
+}
+
+/// 把一只峰值滤波器配到动态 EQ 的中心频率，增益 `gain_db`（负数是切除）。
+fn configure_deq_peak(bq: &mut Biquad, sample_rate: f32, params: DynEqParams, gain_db: f32) {
+    bq.peaking(sample_rate, params.freq_hz, DynEqParams::Q, gain_db);
+}
+
+/// 把 mono-maker 的 side 高通配到转折频率（旁通时置为单位变换）。
+///
+/// `Q` 取 [`HpfParams::Q`]（`1/√2`，Butterworth）：转折点 −3 dB、一个八度以下
+/// −12 dB、两个八度 −24 dB。
+///
+/// ⚠ **为什么是"直接高通 side"而不是"side − 低通(side)"**：后者在纸上是分子互补、
+/// 逐点重构恒等，但 `120 Hz / 48 kHz` 这一档的双二阶极点几乎贴在单位圆上
+/// （`a₂ ≈ 0.989`），`f32` 的直接 I 型在这里要靠两次大数相减才能得到 DC 增益 ——
+/// 实测 `60 Hz` 处只掉 `2.8 dB`（应 ≈ 30）。直接高通只需一次递推，没有那次相消。
+fn configure_mono_maker(bq: &mut Biquad, sample_rate: f32, mono_below_hz: f32) {
+    if mono_below_hz <= MONO_BELOW_BYPASS_HZ {
+        *bq = Biquad::identity();
+    } else {
+        bq.highpass(sample_rate, mono_below_hz, HpfParams::Q);
+    }
+}
+
 impl ChannelStrip {
+    /// ④′ 动态 EQ（`#342`）：带通检波 → 包络 → 超阈值按 [`DynEqParams::RATIO`]
+    /// 切除，上限 [`DynEqParams::max_cut_db`]。
+    ///
+    /// 切除量**每块**（[`EQ_CHUNK_FRAMES`] = 64 帧 ≈ 1.3 ms）重算一次，块内恒定。
+    /// 这是"块级动态"而不是"逐样本动态"：逐样本要每帧重算两次 `sin_cos`
+    /// （左右各一次），而 1.3 ms 的台阶在 200–400 Hz 这个频段上听不出来 ——
+    /// 那一段的周期本来就是 2.5–5 ms。
+    ///
+    /// 检波器读的是 `0.5 · (L + R)` 的带通：动态 EQ 压的是**节目内容**，
+    /// 而节目内容在中间；⛔ 不是读某一侧（那会让声像偏的一侧少压）。
+    fn apply_dyn_eq(&mut self, left: &mut [f32], right: &mut [f32], frames: usize) {
+        let params = self.params.dyn_eq;
+        if params.is_bypassed() || frames == 0 {
+            return;
+        }
+        let mut band = [0.0f32; EQ_CHUNK_FRAMES];
+        for i in 0..frames {
+            band[i] = 0.5 * (left[i] + right[i]);
+        }
+        self.deq_det.process_mono_in_place(&mut band, frames);
+        let cut = self.deq_cut(&band, frames, params);
+        configure_deq_peak(&mut self.deq_l, self.sample_rate, params, -cut);
+        configure_deq_peak(&mut self.deq_r, self.sample_rate, params, -cut);
+        self.deq_l.process_in_place(left, right, frames);
+    }
+
+    /// ④⁗ mono-maker（`#344`）：一帧的 M/S 分解 → side 去掉低频 → 合成回去。
+    ///
+    /// ```text
+    /// mid  = 0.5·(l + r)              // 不动
+    /// side = 0.5·(l − r)
+    /// side ← HighPass₂(side)          // 二阶 Butterworth，转折 = mono_below_hz
+    /// (l, r) = (mid + side, mid − side)
+    /// ```
+    ///
+    /// **斜率与落点**：转折点 −3 dB、一个八度以下 −12 dB、两个八度 −24 dB。因此
+    /// `mono_below_hz = 120` 时，`60 Hz` 的 side 只剩四分之一（≈ −12 dB）、
+    /// `30 Hz` 只剩十六分之一（≈ −24 dB），`240 Hz` 以上一位不动。
+    ///
+    /// ⛔ 这不是"120 Hz 以下**完全**单声道"（那条需要砖墙式分频或线性相位交叉，
+    /// 二阶最小相位做不到）；它是业界常见的那一档：低频 side 被按斜率压下去，
+    /// 耳朵听到的是"低频钉在中间"。
+    ///
+    /// **旁通**：`mono_below_hz <= 0` 时直接返回入参（**一个样本都不碰**），
+    /// 且不推进 `side_hp` 的状态 ⇒ `width == 1.0` 的现行输出逐位不变。
+    #[inline]
+    fn mono_make(&mut self, l: f32, r: f32) -> (f32, f32) {
+        if self.params.mono_below_hz <= MONO_BELOW_BYPASS_HZ {
+            return (l, r);
+        }
+        let mid = 0.5 * (l + r);
+        let mut side = [0.5 * (l - r)];
+        self.side_hp.process_mono_in_place(&mut side, 1);
+        (mid + side[0], mid - side[0])
+    }
+
+    /// ④′ 动态 EQ（**键检波**，`#345`）：与 [`Self::apply_dyn_eq`] 逐条相同，
+    /// 唯检波器的输入取自 `key_*`（与节目同帧对齐的键信号），处理仍施加在节目上。
+    ///
+    /// 这就是"底鼓在敲、管弦乐让路"的那一步：键过同一只带通（`deq_det`），
+    /// 得到的带通电平决定**节目**上的峰值切除量。于是
+    ///
+    /// * 衰减量与键的**那个频带**有关（Kick 的 85 Hz 重击 → Bass 的 85 Hz 让 3.5 dB）；
+    /// * 键的其他频段不参与（一记 6 kHz 的镲片不会让 Bass 让路）；
+    /// * 键**不进混音**（它只喂检波器，不参与求和）。
+    ///
+    /// 与 [`Self::apply_dyn_eq`] **共用** `deq_env` 与 `deq_det` 的状态 —— 一台通道条
+    /// 同一时刻只有一种检波源（引擎按"有没有键路由"整块选择入口，⛔ 不逐块混用）。
+    fn apply_dyn_eq_keyed(
+        &mut self,
+        left: &mut [f32],
+        right: &mut [f32],
+        key_left: &[f32],
+        key_right: &[f32],
+        frames: usize,
+    ) {
+        let params = self.params.dyn_eq;
+        if params.is_bypassed() || frames == 0 {
+            return;
+        }
+        let mut band = [0.0f32; EQ_CHUNK_FRAMES];
+        for i in 0..frames {
+            band[i] = 0.5 * (key_left[i] + key_right[i]);
+        }
+        self.deq_det.process_mono_in_place(&mut band, frames);
+        let cut = self.deq_cut(&band, frames, params);
+        configure_deq_peak(&mut self.deq_l, self.sample_rate, params, -cut);
+        configure_deq_peak(&mut self.deq_r, self.sample_rate, params, -cut);
+        self.deq_l.process_in_place(left, right, frames);
+    }
+
+    /// 把一段**已经过带通**的检波信号换算成衰减量（dB，正数）。
+    ///
+    /// 两条入口（节目检波 / 键检波）共用这一支：**唯一的差别是 `band` 的来源**，
+    /// 包络与换算不该有第二份实现。包络口径与压缩器同一条纪律：`peak` 取块内
+    /// **包络的最大值**而不是块内样本峰值（后者会让衰减量随块相位抖动）。
+    fn deq_cut(&mut self, band: &[f32], frames: usize, params: DynEqParams) -> f32 {
+        let sample_rate = self.sample_rate;
+        let attack = (-1.0 / (DynEqParams::ATTACK_S * sample_rate)).exp();
+        let release = (-1.0 / (DynEqParams::RELEASE_S * sample_rate)).exp();
+        let mut env = self.deq_env;
+        let mut peak = 0.0f32;
+        for x in band.iter().take(frames) {
+            let level = x.abs();
+            let coeff = if level > env { attack } else { release };
+            env = coeff * env + (1.0 - coeff) * level;
+            if env > peak {
+                peak = env;
+            }
+        }
+        self.deq_env = if env.is_finite() { env } else { 0.0 };
+
+        let level_db = 20.0 * peak.max(1.0e-9).log10();
+        let over = (level_db - params.threshold_db).max(0.0);
+        (over * (1.0 - 1.0 / DynEqParams::RATIO)).min(params.max_cut_db)
+    }
+
+    /// 单声道版的 [`Self::apply_dyn_eq`]：检波与处理都只看这一路。
+    fn apply_dyn_eq_mono(&mut self, samples: &mut [f32], frames: usize) {
+        let params = self.params.dyn_eq;
+        if params.is_bypassed() || frames == 0 {
+            return;
+        }
+        let mut band = [0.0f32; EQ_CHUNK_FRAMES];
+        band[..frames].copy_from_slice(&samples[..frames]);
+        self.deq_det.process_mono_in_place(&mut band, frames);
+        let cut = self.deq_cut(&band, frames, params);
+        configure_deq_peak(&mut self.deq_l, self.sample_rate, params, -cut);
+        self.deq_l.process_mono_in_place(samples, frames);
+    }
+
+    /// 单声道动态 EQ（键检波，`#345`）：检波读 `key`，处理施加在 `samples` 上。
+    fn apply_dyn_eq_keyed_mono(&mut self, samples: &mut [f32], key: &[f32], frames: usize) {
+        let params = self.params.dyn_eq;
+        if params.is_bypassed() || frames == 0 {
+            return;
+        }
+        let mut band = [0.0f32; EQ_CHUNK_FRAMES];
+        band[..frames].copy_from_slice(&key[..frames]);
+        self.deq_det.process_mono_in_place(&mut band, frames);
+        let cut = self.deq_cut(&band, frames, params);
+        configure_deq_peak(&mut self.deq_l, self.sample_rate, params, -cut);
+        self.deq_l.process_mono_in_place(samples, frames);
+    }
+
     /// 构造。非法参数与非法采样率在这里被钳到合法域（[`ChannelStripParams::sanitised`]）。
     #[must_use]
     pub fn new(params: ChannelStripParams, sample_rate: f32) -> Self {
@@ -339,10 +719,29 @@ impl ChannelStrip {
         );
         filter_l.configure(sample_rate, cutoff, resonance, drive);
         filter_r.configure(sample_rate, cutoff, resonance, drive);
+        let mut hpf_l = Biquad::identity();
+        let mut hpf_r = Biquad::identity();
+        configure_hpf(&mut hpf_l, sample_rate, params.hpf);
+        configure_hpf(&mut hpf_r, sample_rate, params.hpf);
+        let mut deq_det = Biquad::identity();
+        configure_deq_detector(&mut deq_det, sample_rate, params.dyn_eq);
+        let mut deq_l = Biquad::identity();
+        let mut deq_r = Biquad::identity();
+        configure_deq_peak(&mut deq_l, sample_rate, params.dyn_eq, 0.0);
+        configure_deq_peak(&mut deq_r, sample_rate, params.dyn_eq, 0.0);
+        let mut side_hp = Biquad::identity();
+        configure_mono_maker(&mut side_hp, sample_rate, params.mono_below_hz);
         Self {
             input_gain: db_to_gain(params.input_gain_db),
             output_gain: db_to_gain(params.output_gain_db),
+            hpf_l,
+            hpf_r,
             eq: ShapingEq::new(),
+            deq_det,
+            deq_l,
+            deq_r,
+            deq_env: 0.0,
+            side_hp,
             filter_l,
             filter_r,
             compressor: Compressor::new(params.compressor, sample_rate),
@@ -373,6 +772,23 @@ impl ChannelStrip {
         self.filter_r
             .configure(self.sample_rate, cutoff, resonance, drive);
         self.compressor.set_params(params.compressor);
+        // 低切与动态 EQ：频率/阈值变了才重算系数（⛔ 不清 biquad 状态，
+        // 与「set_params 不清状态」同纪律）。切除量每块在 `apply_dyn_eq` 里重算。
+        if params.hpf != self.params.hpf {
+            configure_hpf(&mut self.hpf_l, self.sample_rate, params.hpf);
+            configure_hpf(&mut self.hpf_r, self.sample_rate, params.hpf);
+        }
+        if params.dyn_eq.freq_hz != self.params.dyn_eq.freq_hz {
+            configure_deq_detector(&mut self.deq_det, self.sample_rate, params.dyn_eq);
+        }
+        if params.dyn_eq.is_bypassed() {
+            self.deq_env = 0.0;
+        }
+        // mono-maker（`#344`）：只有转折频率变了才重算 side 低通的系数（⛔ 不清状态，
+        // 与上面几级同纪律）。
+        if params.mono_below_hz != self.params.mono_below_hz {
+            configure_mono_maker(&mut self.side_hp, self.sample_rate, params.mono_below_hz);
+        }
         self.params = params;
     }
 
@@ -420,6 +836,8 @@ impl ChannelStrip {
         self.filter_r
             .configure(sample_rate, cutoff, resonance, drive);
         self.compressor.set_sample_rate(sample_rate);
+        // mono-maker 的系数是采样率的函数 ⇒ 换采样率必须重配（`#344`）。
+        configure_mono_maker(&mut self.side_hp, sample_rate, self.params.mono_below_hz);
     }
 
     /// 清空**全部**状态与**全部**计量读数（EQ、滤波、压缩器的状态 + 峰值/RMS/帧数）。
@@ -428,6 +846,8 @@ impl ChannelStrip {
         self.filter_l.reset();
         self.filter_r.reset();
         self.compressor.reset();
+        // mono-maker 的积分器（系数保留：`reset` 清状态不清配置，与其它级同口径）。
+        self.side_hp.clear_state();
         self.input_peak = 0.0;
         self.input_mean_square = 0.0;
         self.output_peak = 0.0;
@@ -479,6 +899,11 @@ impl ChannelStrip {
                 *l = l_in * self.input_gain;
                 *r = r_in * self.input_gain;
             }
+            // ②′ 低切（`#341`）：系数在 `set_params` 里配好，此处逐样本零超越函数。
+            if !self.params.hpf.is_bypassed() {
+                self.hpf_l
+                    .process_in_place(&mut left[start..end], &mut right[start..end], n);
+            }
             // ② EQ 级（块 API，落在栈数组上）。
             if self.params.eq_enabled {
                 self.eq.process(
@@ -492,6 +917,8 @@ impl ChannelStrip {
                 left[start..end].copy_from_slice(&eq_l[..n]);
                 right[start..end].copy_from_slice(&eq_r[..n]);
             }
+            // ④′ 动态 EQ（`#342`）：只看自己那一段的压缩。
+            self.apply_dyn_eq(&mut left[start..end], &mut right[start..end], n);
             // ③④⑤ 逐样本。
             for (l, r) in left[start..end]
                 .iter_mut()
@@ -539,6 +966,11 @@ impl ChannelStrip {
                 *l = l_in * self.input_gain;
                 *r = r_in * self.input_gain;
             }
+            // ②′ 低切（`#341`）：系数在 `set_params` 里配好，此处逐样本零超越函数。
+            if !self.params.hpf.is_bypassed() {
+                self.hpf_l
+                    .process_in_place(&mut left[start..end], &mut right[start..end], n);
+            }
             if self.params.eq_enabled {
                 self.eq.process(
                     &left[start..end],
@@ -551,6 +983,14 @@ impl ChannelStrip {
                 left[start..end].copy_from_slice(&eq_l[..n]);
                 right[start..end].copy_from_slice(&eq_r[..n]);
             }
+            // ④′ 动态 EQ（`#342`）：**键模式**下检波器读键（`#345`），处理仍读节目。
+            self.apply_dyn_eq_keyed(
+                &mut left[start..end],
+                &mut right[start..end],
+                &key_left[start..end],
+                &key_right[start..end],
+                n,
+            );
             for (index, (l, r)) in left[start..end]
                 .iter_mut()
                 .zip(right[start..end].iter_mut())
@@ -587,6 +1027,10 @@ impl ChannelStrip {
                 let (mono, _) = self.observe_input(*s, *s);
                 *s = mono * self.input_gain;
             }
+            if !self.params.hpf.is_bypassed() {
+                self.hpf_l
+                    .process_mono_in_place(&mut samples[start..end], n);
+            }
             if self.params.eq_enabled {
                 // 两个声道都喂同一个信号：EQ 的左右状态因此保持相同，
                 // 取左声道的输出就是这条单声道流的输出。
@@ -600,6 +1044,7 @@ impl ChannelStrip {
                 );
                 samples[start..end].copy_from_slice(&eq_l[..n]);
             }
+            self.apply_dyn_eq_mono(&mut samples[start..end], n);
             for s in samples[start..end].iter_mut() {
                 let (out, _) = self.render_frame(*s, *s);
                 *s = out;
@@ -626,6 +1071,10 @@ impl ChannelStrip {
                 let (mono, _) = self.observe_input(*s, *s);
                 *s = mono * self.input_gain;
             }
+            if !self.params.hpf.is_bypassed() {
+                self.hpf_l
+                    .process_mono_in_place(&mut samples[start..end], n);
+            }
             if self.params.eq_enabled {
                 self.eq.process(
                     &samples[start..end],
@@ -637,6 +1086,8 @@ impl ChannelStrip {
                 );
                 samples[start..end].copy_from_slice(&eq_l[..n]);
             }
+            // ④′ 动态 EQ：**键模式**下检波器读键（`#345`）。
+            self.apply_dyn_eq_keyed_mono(&mut samples[start..end], &key[start..end], n);
             for (index, s) in samples[start..end].iter_mut().enumerate() {
                 let (out, _) =
                     self.render_frame_with_key(*s, *s, key[start + index], key[start + index]);
@@ -687,6 +1138,20 @@ impl ChannelStrip {
             (l, r)
         };
 
+        // ④‴ 立体声宽度（M/S 缩放，`#343`）。
+        // `width == 1.0` 时**一个乘法都不做** —— M/S 往返在 `f32` 下不是逐位恒等，
+        // 而"默认参数逐位透明"是这条链的既有承诺。
+        let (l, r) = if self.params.width == 1.0 {
+            (l, r)
+        } else {
+            let mid = 0.5 * (l + r);
+            let side = 0.5 * (l - r) * self.params.width;
+            (mid + side, mid - side)
+        };
+
+        // ④⁗ mono-maker（`#344`）：把 `mono_below_hz` 以下的 side 丢掉。
+        let (l, r) = self.mono_make(l, r);
+
         // ⑤ 输出增益。
         let l = l * self.output_gain;
         let r = r * self.output_gain;
@@ -733,6 +1198,19 @@ impl ChannelStrip {
         } else {
             (l, r)
         };
+
+        // ④‴ 立体声宽度（M/S 缩放，`#343`）。
+        let (l, r) = if self.params.width == 1.0 {
+            (l, r)
+        } else {
+            let mid = 0.5 * (l + r);
+            let side = 0.5 * (l - r) * self.params.width;
+            (mid + side, mid - side)
+        };
+
+        // ④⁗ mono-maker（`#344`）：把 `mono_below_hz` 以下的 side 丢掉。
+        //    旁通时 `mono_make` 原样返回 ⇒ `width == 1.0` 的逐位透明不受影响。
+        let (l, r) = self.mono_make(l, r);
 
         // ⑤ 输出增益。
         let l = l * self.output_gain;
@@ -1007,6 +1485,7 @@ mod tests {
     fn sanitised_clamps_every_field_into_its_documented_domain() {
         let hostile = ChannelStripParams {
             input_gain_db: f32::NAN,
+            hpf: HpfParams { freq_hz: f32::NAN },
             eq_enabled: true,
             eq: EqParams {
                 low_gain: f32::NAN,
@@ -1033,6 +1512,13 @@ mod tests {
                 release_s: f32::NAN,
                 makeup_db: f32::NAN,
             },
+            dyn_eq: DynEqParams {
+                freq_hz: f32::INFINITY,
+                threshold_db: f32::NAN,
+                max_cut_db: -1.0e9,
+            },
+            width: f32::NAN,
+            mono_below_hz: f32::NEG_INFINITY,
             output_gain_db: f32::INFINITY,
         };
         let p = hostile.sanitised();
@@ -1067,6 +1553,11 @@ mod tests {
         assert_eq!(c.attack_s, crate::compressor::MIN_TIME_S);
         assert_eq!(c.release_s, crate::compressor::MIN_TIME_S);
         assert_eq!(c.makeup_db, -crate::compressor::MAX_MAKEUP_DB);
+        assert_eq!(p.width, 1.0, "NaN 宽度必须归到恒等（1.0）");
+        assert_eq!(
+            p.mono_below_hz, 0.0,
+            "−∞ 的 mono-maker 转折频率必须归到旁通（0）"
+        );
         assert_eq!(p, p.sanitised(), "sanitised 必须幂等");
         // 每个字段都真的有限。
         assert!(p.input_gain_db.is_finite() && p.output_gain_db.is_finite());

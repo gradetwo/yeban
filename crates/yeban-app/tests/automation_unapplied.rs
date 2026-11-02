@@ -395,6 +395,7 @@ fn headless_cli_names_the_unapplied_send_gain_lane() {
     assert_eq!(field(line, "send-gain").as_deref(), Some("1"), "{line}");
     assert_eq!(field(line, "device-param").as_deref(), Some("0"), "{line}");
     assert_eq!(field(line, "macro").as_deref(), Some("0"), "{line}");
+    assert_eq!(field(line, "midi-cc").as_deref(), Some("0"), "{line}");
     assert!(
         line.contains("监听里没落地"),
         "读数必须说清「没落地」而不是只给一个数: {line}"
@@ -412,11 +413,13 @@ fn the_diagnostic_line_is_present_even_when_nothing_is_unapplied() {
     assert_eq!(
         line,
         "automation-engine: unapplied-lanes=0 send-gain=0 device-param=0 macro=0 \
+         midi-cc=0 \
          note=\"有 0 条自动化泳道在监听里没落地；SendGain 的边在监听里没有落点\
          （离线导出/MCP 按边求值），DeviceParam 的 output_gain_db 在有通道条来源的轨上有实时落点\
          （拼写 output_gain / fader_db 同一条），其余通道条（含压缩）/混响/卷积标量名字在离线导出/MCP \
          渲染里有落点（卷积 IR 形状没有），Macro 在监听里没有落点\
-         （离线导出/MCP 只在存在 Macro 泳道时按映射级联）\""
+         （离线导出/MCP 只在存在 Macro 泳道时按映射级联），MIDI CC 在监听里没有落点\
+         （离线导出/MCP 把 MidiCc 泳道求值成探针，逐块喂给 render_track_with_cc）\""
     );
 }
 

@@ -17899,4 +17899,149 @@ helper 里 ⇒ 必须不认（防假绿）。两条臂在旧实现上都会失�
 - ⛔ **此刻不推 main**：`41278457997`（s36 合流）与 s34/s37 的 run 都在飞，而同分支并发组会**取消在飞判决** ⇒ 本批文档先在本地提交，
   等合流读数回来再推（§0.6.0zh 那条教训的又一次执行）。
 
+## §23 创作轮收盘（2026-11-02）：MCP 面与 UI 面各一首 3 分钟季默风 —— 两面**往返单价差 2.5×、同一首歌的调用数差 55×**，导出腿新增两条缺陷（D-EX-1 限幅器 GUI 不可达／D-EX-2 渲染占 UI 线程）
+
+> 本批 ⛔ 无 Rust 源码改动（源码改动全在工作线 `line/zimmer-ui-write-surface` 的 22 个提交里，判决已逐票读回）。
+> 本节只做三件事：**交付物身份**、**两条面的成本读数**、**导出腿的登记与待裁决问题**。
+
+### 23.1 交付物与身份（⛔ 在仓库外，所以 SHA 可以写死 —— 与 §23.4-3 那条"自我指涉"教训不冲突）
+
+- 包 = `/home/polar/zimmer_store/ZIMMER_CREATIVE_DELIVERABLE.zip`：**181,381,520 字节／条目 143／CRC `testzip()`=None**，
+  SHA-256 = `b8cdd2be2dc27d3f8a907630dce5ad899342312d75e88633b0423318ef797b77`（当时 `sha256sum -c` 于同目录通过；
+  包外 `.sha256` 随包同步，历史值 `606f77ec…`／`b6b83a2a…`／`54ad79ac…`／`5c325960…` 已作废）。
+  ⚠⚠ **本节这两行现在读的是 v1，且已被下一段推翻**：收盘读满判决后重出 **v2**（`ccb38f33…`，见下面的 §23.7），
+  v1 原件在同目录改名 `ZIMMER_CREATIVE_DELIVERABLE_v1_SUPERSEDED.zip`，那份 `.sha256` 现在写的是 v2 并给 v1 标了 `SUPERSEDED`
+  ⇒ ⛔ 别再拿 `b8cdd2be…` 验收。
+- **抽包复跑过一次**（⛔ 不是"我相信我自己的表"）：全新目录解包后只用包内脚本量包内母带 ⇒
+  `measure_wav.py` song1 **−14.00 LUFS**／song2 **−19.82 LUFS**、`measure_peak.py` song1 触轨 2 平顶 0／
+  song2 峰值 **−1.023 dBFS** 触轨 0 平顶 0，两份都是 **180.0 s**，与报告 §1/§4.7 逐字相同；
+  解包后逐文件比 `CHECKSUMS.sha256` **142 行 0 不符**，包内报告 == 落盘报告（96,667 B），patch **22** 个。
+- 内容：主报告 `report/ZIMMER_CREATIVE_AUDIT.md`（96,667 B，§1 摘要 → §9.3 包身份）、
+  **22 个 `.patch` + `SERIES.txt` + `ALL-series.mbox`**（tip `a95851e2bbec67879a0c1630c82fce05b7f93a0a`，
+  收盘时复核：工作树干净、远程 `origin/line/zimmer-ui-write-surface` 同物）、
+  工程 5 份（两首交付版 + 第二首三份 `REJECTED_*` 留档）、母带 5 份、复现脚本 38 份（**含打包脚本与包体复核脚本本体**）、
+  CI 日志原件＋剥 ANSI 版、逐调用原始流水 `perf/raw_calls/`（MCP 113 行／UI 交付轮 6,276 行）。
+- 两首成品：**song1（MCP 面）** 113 次调用、`−14.0 LUFS`、`51,840,694 B`；
+  **song2（UI 面，交付 = remix2）** = rerun9 那一版**只重混**（推子 −5 dB）重导，
+  `−19.82 LUFS`／峰值 `−1.02 dBFS`／**平顶段 0**（rerun9 未重导前是 82 段、最长 24 样本）。
+  同一段 180.000 s（BPM 20、15 小节、960 PPQ）、同一套主题，两条面各写一遍 —— 这是本批的可比性来源。
+
+### 23.2 两条面的成本读数（全部现读，⛔ 手抄值一律不复用）
+
+| 面 | 往返数 | RPC 合计 | **单价** | 备注 |
+|---|---|---|---|---|
+| MCP | 113 次（非渲染 111） | 294.0 ms（非渲染） | **2.65 ms**/次 | 渲染 2 次不计入单价 |
+| UI（交付轮 rerun9） | 6,253 次 | 42,965.4 ms | **6.87 ms**/次 | `perf/song2_UI_rerun9_perf.csv` 的 `calls`/`rpc_ms` 列求和 |
+
+⇒ 单价差 **2.5×**，同一首歌的往返数差 **55×**（⚠ 单位：个 RPC 往返；两面的"动作"不同单位，⛔ 不许再拿手势数除请求数 ——
+本节改写前这里写的是"≈24×"，是口径混用的产物，已删）。
+- UI 面时间**不花在改状态**，花在"读回界面"：每次读前 `refresh_before_read()` 全量重建无障碍树
+  （`crates/yeban-app/src/ui_mcp/service.rs:315` → `live_surface.rs:545 refresh_tree()`），单价跨轮稳定 **6.7–6.9 ms**
+  ⇒ 优化点在**调用数**（rebase 前 18,184 → 交付轮 6,253，靠批量化与少读），不在单价。
+- `song` 阶段 301.0 s 墙钟里 **262.4 s 是主动等待**（等重投影/重绘），CPU 均值 3.6%。
+- 两次离线渲染都是**单核**（`CPU% ≈ 100`，从未 >100）—— 见报告 §5.1。
+
+### 23.3 导出腿的两条新缺陷（⛔ 本批只登记，未动代码）
+
+- **D-EX-1｜限幅器在 GUI 面上不可达**：导出 = 线性求和，界面推子 0.75 dB/px、范围 [−60,+6]，
+  ⇒ 1 dB 推子 = 1 dB 峰值 = 1 dB LUFS。实测交付面天花板 **−19.8 LUFS**（探测法：逐轨静音归因 + 净空上限外推），
+  而 MCP 面做到 `−14.0 LUFS` 且不削波 ⇒ 差的 **5.8 dB** 全是"峰值治理"，UI 面**结构上拿不到**。
+  判据落点 = 报告 §8 建议 9：元素 id `export-wav-limiter-check`、`resolve()` 增 `limiter: bool`、
+  回执常驻 `true_peak_db`/`headroom_db`，判据 = 同工程两跑，limiter-on ⇒ 平顶段 **0**。
+- **D-EX-2｜导出在 UI 事件循环里同步渲染**：一次 `ui/dispatch_pointer_up` = **3,142 ms**（180 s MIDI-only 母带），
+  根因 `crates/yeban-app/src/host.rs:7913` 就地调 `export_wav_with_sfz_file`，回执在 `match` 之后才落 UI；
+  反证读数：`grep std::thread|spawn` 在该路径 = **0**，`grep progress|busy|spinner` 在 `export_wav_dialog.slint` = **0**。
+  分轨导出有先例 **63 s** ⇒ 外推到 10 轨整曲就是"窗口僵死一分钟"。判据形状 5×5 ms vs 1×3,142 ms（报告 §5.2c）。
+  ⛔ 需要人类裁决两问：渲染期间是否允许写手势（会改工程快照 ⇒ 与确定性契约相关）；
+  服务装配与本地导出是否同一条腿。留痕落 `docs/adr/` 前不动调度。
+
+### 23.4 手法教训（三条，都属 `AGENTS.md` §6 家族）
+
+1. **载体不同源 ⇒ 不能互相对账**。工作目录那份 `out/ui/calls.jsonl` 是**多轮拼接**（`id` 每轮从 1 重起）
+   且被轮换截断的，只有 3,085 行，**覆盖不到交付轮**；交付轮原件在 `.../zimmer_store/rerun9/calls.jsonl`（6,276 行）。
+   对账式（本轮现算）：**6,276 = 6,253（CSV `calls` 求和）+ 7（每 stage 计数点前那条握手）+ 16（起进程后的探段，未列为 stage）**。
+   ⇒ 差点把截断那份当交付轮流水打进包里，代价是包内证据与结论不同源。
+2. **"某个引用现在停在哪"不是内容**。收盘过程中当场演示了一遍：
+   本地 `main` 停在 `82323b2e` 时 `git rev-list --count main..HEAD` = **78**（= 本线 22 + 别人的 56）；
+   一次 `git pull --ff-only`（`82323b2e → e67f58fe`）后**同一条命令**读回 **22**。
+   ⇒ 补丁数只认耦合内容的口径 `--no-merges --cherry-pick --right-only origin/main...HEAD` = **22**（32 个文件），
+   与 §15.1「判据要耦合内容不耦合表面坐标」同族。
+3. **自我指涉的数字不要写死**。报告在包内 ⇒ 容器字节、解压后合计、`report/` 那一格三处随报告字数漂
+   （本轮实测漂了两次：170,065,337 → 181,374,957 → 181,380,647）。
+   §9.2/§9.3 已改成"近似值 + 现读脚本 `repro/zipstats.py`"，而**条目数与其余九格不漂**，可核对；
+   包外那份 `.sha256` 才是包本体的权威身份。
+
+### 23.5 收盘状态与下一单
+
+- 工作线 `line/zimmer-ui-write-surface`（tip `a95851e2`）**未合流 main**：等 §23.3 那两条导出腿的人类裁决，
+  以及报告 §8 建议 10 的两问。~~线的判决已全部读回~~（⚠ **这句是过强的，下一节 §23.7 现读后改正**：
+  手动档 `41371903917` = success、判据门 145 个测试二进制 0 FAILED 这两半都成立，
+  但线尖 `a95851e2` 的**自动档** run `41370538851` 落笔时 `windows` 腿还在飞，我把"未收口"写进了交付物 ——
+  收口后它是 **failure**，红在我自己写的判据上。留这一句划掉的原话，因为"当时为什么写成那样"本身就是要登记的东西）。
+- ~~⛔ **本批文档此刻不推 main**~~ —— 本节的**持有条件已在落笔当场解除并读回**（⛔ 不是"以为该好了"，是现读）：
+  草稿写就时 `e67f58fe`（main tip）与 `fb5b01ed` 两条 run 都在飞，同分支并发组会**取消在飞判决**，故先压在 `/home/polar/zimmer_store/`；
+  推之前用 `gh run list` 现读：`41379451755`（`e67f58fe`）= **completed/success**、`41378258995`（`fb5b01ed`）= **completed/failure**（⛔ 那不是我这条线的票），
+  `--status queued --status in_progress` = **空** ⇒ 无在飞判决可被取消，本节才追加进账本并推 main。
+- ⚠ **本票的判决口径提前说清**：这是**纯文档批次** ⇒ 规划步骤会返回 `{"crates": [], "workspace_wide": false}`，
+  rust 作业大概率全是 `-`／`0s` 的**空绿**（`AGENTS.md` §6.3-2）。推完只报"该 run 的结论与真正执行过的作业"，
+  ⛔ 不把跳过的作业说成验证，也不拿它给 §23.3 那两条缺陷的任何结论背书（那些结论的证据在包内与 §23.1 的抽包复跑里）。
+- **本节那笔（`6dd1d92b`）的判决已按上面那条口径读回**（run `41385981571` = **completed/success**，`headSha` 逐字对得上本节这笔）：
+  真跑的 **4** 个作业 = `plan` 13s／`lockfile` 19s／**`checks` 1m32s**／`deny` 48s；
+  ⛔ 跳过的 **5** 个 = `rust (矩阵)`／`rust (workspace 全量)`／`windows`／`macos`／`e2e`，全是 `-` 且 `0s` ⇒ **本票没有任何构建或测试判决**。
+  `checks` 那 1m32s 里 **21 步全 success**，日志现读到的证据行：`守卫全部通过 (20 条)`、
+  `文档检查通过（186 个文件，6 条保护文件警告（不阻断））`、`[ok] 规范 ID 审计（方向 1）: 代码声明的 41 个 ID 全部存在于四份规范中`、
+  `[ok] id_dictionary_audit: 字典的 32 个族与规范的 32 个族一致`、`gate-status.md` 那条对账 ——
+  ⇒ 这一票**真正被验证的**只有"文档契约与守卫仍然绿"，正是文档批次该拿到的那一点。
+- ⚠ **推送当场的另一条读数（手法留痕）**：`git fetch` 前两次分别红在
+  `GnuTLS recv error (-110)` 与 `Failed to connect to github.com port 443 after 134554 ms`；
+  第一次我没带 `pipefail` 就写 `git fetch ... | tail -2`，**管道报的是 `tail` 的退出码 ⇒ 失败的 fetch 被读成成功**
+  （`docs/DEV_WORKFLOW.md` §2「绝不管道化门禁」这条又被证明一次）。第三次加 `set -o pipefail` 后取到真退出码，fetch 才成功。
+- 下一单候选：① 建议 9 的限幅器切片（一个 `.slint` 复选框 + `resolve()` 一参 + 回执两字段，判据可证伪）；
+  ② 建议 10 的导出离线程化（先取人类裁决）；③ UI 面继续压**调用数**（`song` 阶段 262.4 s 等待是最大单项，
+  报告 G-10 给了分解）。
+
+### 23.6 收盘时按"先 pull 再动手"重跑了一遍重复劳动检查（人类指令：定时同步上游，避免重复开发与重复修复）
+
+- pull 读数：本地 main 从 `82323b2e` 快进到 `e67f58fe`（`git pull --ff-only`，⛔ 未推送任何东西）。
+- **交集 = 0**：本线 22 个提交触及 **32** 个文件；rebase 落点之后上游新增的 9 个提交触及 **28** 个文件；
+  两者 `comm -12` 现读**没有重叠文件** ⇒ 这一窗口内 ⛔ 没有重复开发（上游那批走的是 DSP/通道条/sampler/MCP 广播面，
+  本线走的是 `ui_mcp/` 写入面与卷帘命中）。
+- **两条已登记缺陷在新 main 上仍然成立**（现读，⛔ 不假设自己上一轮的结论）：
+  `git show origin/main:crates/yeban-app/ui/export_wav_dialog.slint | grep -icE "limiter|progress|busy|spinner"` = **0**
+  ⇒ D-EX-1 与 D-EX-2 的界面面都没动；`WavExportOptions::resolve()`（`export_wav.rs:168`）仍是 5 个形参、
+  ⛔ 没有 `limiter`，而 `pub limiter: bool` 早在 `export_wav.rs:118`（CLI `--limiter` / MCP `yeban_render` 已消费）
+  ⇒ 待办 #38 的最小切片确实只差"对话框一格 + `resolve()` 一参 + 调用处传值"这三行接线，⛔ 不要新造限幅器。
+- 定时任务已建（每 2 小时 fetch + `--ff-only` pull，并逐条比对上游改动是否吃掉本线的活或作废报告 §6 的某条结论）。
+
+### 23.7 v2 重出（2026-11-02）：§23.5 那句"线的判决已全部读回"过强 —— 现读改正、热修判据、重出交付包（v1 标 `SUPERSEDED`）
+
+- **过强在哪、代价是什么**：§23.5 落笔时线尖 `a95851e2` 的自动档 run `41370538851` 的 `windows` 腿还在飞，
+  我把"未收口"当留白交付了；收口后**整条 run = failure**，全腿唯一失败判据 = 我自己写的
+  `the_serve_path_hands_the_write_surface_an_undo_port`（`crates/yeban-app/tests/d_ui_1_serve_write_surface.rs`）。
+  根因 ⛔ 不在产品代码：那条判据读盘后用**跨行字面量** `contains("…\n…")` 断言，而本仓根 `.gitattributes`
+  刻意**没有** `* text=auto`（全仓归一的爆炸半径远超收益；只有 `crates/yeban-render/tests/data/*.json` 因需要逐字节钉了 `-text`），
+  Windows runner 的 `core.autocrlf=true` 把源码检出成 CRLF ⇒ 该字面量在 Windows 上**永不匹配**。
+  `macos` 腿红在 `yeban-engine` 的结构体尺寸钉 = **继承来的**（合并落点 `81285810` 自己那票 `41358382606` 同红，上游 `47f8ace4` 已修）。
+- **怎么修的**：热修票 `05c54275`（仅测试文件：`crate_source()` 读盘后 `.replace("\r\n", "\n")`，函数上方写明"判文本内容就归一行尾，判逐字节就钉 `-text`"）
+  ＋ 合并票 `a8dd3292`（`origin/main` 并进本线，0 冲突 ⇒ 主干现在是本线祖先，技术上可快进）。
+  判决读回 = run `41393391415`（自动档、`event=push`、`conclusion=success`）：执行 **16** 个作业、`skipped` **1** 个
+  （`rust (workspace 全量)` ⇒ 空绿口径照 §6.3-2 记成"没验证"）。三条腿逐段现读（报告 §9.1 最后两行）：
+  `windows` 分母 **313 段 / 去重 306**、`test result:` 328 行、**5,399 passed / 0 failed**；
+  `macos` 同一套分母、**5,420 passed / 0 failed**，上轮红的四件尺寸钉 `bus_insert` 6 / `bus_routing` 8 / `rt_new_boxed` 4 / `sfz_instrument` 111 **全 ok**；
+  `rust (yeban-app)` **290 段 / 去重 145**、**2,231 passed / 0 failed**，本线判据 `d_ui_1` / `d_ui_13` / `d_ui_11` / `roll_edit_tools` / `device_clip_creation` 逐字在场。
+- ⚠ **两条读数口径的坑，算进 §6 家族的第 4 种成因**：
+  ① 分母 263（红那票）↔ 313（修后这票）⛔ 不是"多了 50 个测试"，是**载体取法不同** ——
+     `gh run view --log-failed --job=` 只含失败步骤的日志，`--log --job=` 含全量 ⇒ 同一支线两票的段数不可直接比（现场佐证：`cargo test` 出现次数 6 → 8）；
+  ② 读回工具 `readback_leg.py` 本轮修了三处（`gh` 输出里的 ANSI 是**字面量** `^[[1m` 三个字符而非 0x1b 字节；Windows 日志路径是反斜杠 `tests\foo.rs`；
+     每行还带 `<作业>\t<步骤>\t<时间戳>Z ` 前缀），修之前那条腿的分母被读成 **0** ⇒ 差点把"跑了 313 个二进制"读成"一个都没跑"。
+     所以"读不到"现在有**四种**成因：没跑／没编译进去／读法不对／**平台检出差异**。取日志与数段的动作也脚本化进包（`repro/collect_leg_log.py`）。
+- **包身份（v2）**：`/home/polar/zimmer_store/ZIMMER_CREATIVE_DELIVERABLE.zip` = **198,149,089 B / 条目 171 / `testzip()`=None**，
+  SHA-256 `ccb38f3328d948b5046fe7ef47851fd35621aeaa2c6a06c3b365c169619cd20e`；**v1 `b8cdd2be…` 作废**（原件留盘 `ZIMMER_CREATIVE_DELIVERABLE_v1_SUPERSEDED.zip`，
+  包外那份 `.sha256` 已写 `SUPERSEDED` 注）。差异不是声明出来的、是**逐文件比哈希算出来的**：v1 的 143 条目里 **136** 个与 v2 逐字节相同
+  （两首母带、五份工程、全部性能 CSV 与 measurements ⇒ 交付物本体一毫米没动），改动 **7** 个（报告、README、`SERIES.txt`、mbox、`CHECKSUMS`、`make_zip.py`、`readback_leg.py`），
+  新增 **28** 个（CI 日志载体 15 ＋ 脚本 12 ＋ 补丁 1）。抽包复跑：`sha256sum -c CHECKSUMS.sha256` = **170 行全 OK / 0 不符**，
+  只用包内脚本量包内母带 ⇒ song1 **−14.00 LUFS** / 触轨 2 / 平顶 0，song2 **−19.82 LUFS** / 峰值 **−1.023443 dBFS** / 平顶 0，与 §23.1 逐字相同。
+- 补丁口径随本轮重读：三点 + `--cherry-pick` + `--no-merges` = **23** 枚 / **32** 个文件（⛔ 文件数不变：热修那个测试文件本来就在这 32 个里）；
+  两点 `origin/main..HEAD` = **24** = 23 枚补丁 + 1 张合并票。⚠ 这是 §23.4-2"引用会漂"的第二次实测，这次漂的是**我自己的数** ⇒ 按新事实登记，不粉饰。
+- ⛔ 本线仍**未合流 main**：等的还是 §23.3 那两条导出腿的人类裁决；tip 现在是绿的、主干是它的祖先，但**没有人类授权不动 main**。
 

@@ -559,6 +559,17 @@ const TAPE: EffectGroup = EffectGroup {
             default: 20000.0,
             doc: "湿路一阶低通截止频率（≥ 20000 时旁通）",
         },
+        EffectParam {
+            name: "tape_asym",
+            aliases: &["saturation_asym"],
+            unit: "",
+            min: 0.0,
+            max: 0.5,
+            default: 0.0,
+            doc: "曲线不对称量（0 = 对称 ⇒ 纯奇次谐波；> 0 产生偶次谐波，磁带「暖」的来源）。\
+                  ⚠ 只在级建成时生效（`tape_drive > 0` 且 `tape_mix > 0`）；\
+                  小信号增益会略降（−1 dB 量级），用 `tape_trim_db` 补",
+        },
     ],
 };
 
