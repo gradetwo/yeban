@@ -698,6 +698,7 @@
 //! | `PreparedRegion` | 6160 | **6168** | 两个 `u32`（`seq_position` / `seq_length`） |
 //! | `SfzVoicePool` | 1712 | **2224** | `seq_occurrence: [u32; 128]`（每键一个计数） |
 //! | `EngineRuntime` | 186768 | **194960** | 16 个槽 × 512 B |
+//! | `EngineRuntime` | 194960 | **198496** | 通道条 hpf/dyn-eq/width 片：通道条 376 → 584（＋208 ＝ HPF 立体声 biquad ×2 ＋ 动态 EQ 检波/峰值 biquad ×3 ＋ 包络 ＋ 参数 5 标量）× 17 内联槽位；十臂 2 bool 落在填充里 ＋0 |
 //! | `SfzVoice` | 40 | **40** | ⛔ 一个字段都没加（推进量在池里） |
 //!
 //! ⚠ 计数用 `u32` 而⛔ 不是 `u8`：`selects_occurrence` 要对**每区域自己的**

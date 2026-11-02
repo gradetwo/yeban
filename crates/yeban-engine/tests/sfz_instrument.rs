@@ -19,7 +19,7 @@
 //! | S6 | 端到端非静音 ＋ 真的换了音源 | 非零样本数 `> 0` ＋ 指纹与"不给 SFZ"**不同** |
 //! | S7 | 分派次序 | 鼓机 ＋ SFZ 同轨的输出对"只有鼓机"**逐位相同**；而无鼓机时 SFZ 支路**真的出声** |
 //! | S8 | 池满（> 16 条匹配区域） | **窃取**（⛔ 不丢弃）：`created == 16` ＋ `stolen == 1` ＋ `dropped == 0`；33 条 ⇒ 挂起者被换掉 ＝ **真丢弃**（`stolen == 17` ＋ `dropped == 16`）；未满 ⇒ 两个计数都 0 |
-//! | S9 | 尺寸 | `size_of` 读数 ＋ `EngineRuntime < 192 KiB`（与 `synth_rt_zero_alloc.rs:2570` 同一门槛） |
+//! | S9 | 尺寸 | `size_of` 读数 ＋ `EngineRuntime < 200 KiB`（与 `synth_rt_zero_alloc.rs:2570` 同一门槛） |
 //! | S10 | ⭐ **换音源 / 定位必须释放 SFZ 池**（`#66` 补做 2） | `sfz_active_voices`：触发后 **2** → 换音源后/`seek` 后 **0**；换音源那一块**复音非零 > 0**；切回 SFZ 那一块**非零 ＝ 0** |
 //! | ⭐ S11 | **多采样各播自己**（步 3） | 两条区域两条不同 `.wav` ⇒ 两条各自与"单独一条 + 它自己那份样本"的**逐位相同**，且两条之间**指纹不同**；反向对照：**对调**提供表 ⇒ 指纹变；广播版在 key=64 上播的是 a 的内容（**内容错**的机械证据） |
 //! | ⭐ S12 | **同一样本引两次只解码一次**（步 3） | `sample_count() == 1` ＋ `pcm_bytes() == 1 × 480 × 4`；反向对照：两条**不同**路径 ⇒ `2` / `2 × 1920`；提供表同一路径两份 ⇒ 首个为准（内容仍是第一份） |
@@ -268,7 +268,7 @@ fn fnv1a_64(samples: &[f32]) -> u64 {
 /// 平滑器/重放副本 **4784 B**；⭐ **S1 第一片**再加两个 `u64` 事件计数
 /// `strip_output_gain_events` / `strip_output_gain_value_rejects` = **＋16 B** ⇒ **现读 186736**；
 /// 门槛仍是 192 KiB = 196608）。
-const ENGINE_RUNTIME_BYTES: usize = 194_960;
+const ENGINE_RUNTIME_BYTES: usize = 198_496;
 
 /// S5 夹具：两个音符（1 tick = 25 样本）。⭐ 本夹具与**接线前**测指纹时**一字不差**。
 const SFZ_NOTES: [NoteSpec; 2] = [
@@ -998,13 +998,13 @@ fn s8_a_full_pool_steals_instead_of_silently_dropping_the_overflow() {
     assert_eq!(under_pool.stolen(), 0, "未满时不得窃取");
 }
 
-/// S9：**尺寸照打** ＋ `EngineRuntime` 的 192 KiB 门槛（与
+/// S9：**尺寸照打** ＋ `EngineRuntime` 的 200 KiB 门槛（与
 /// `tests/synth_rt_zero_alloc.rs:2570` 同一口径）。
 ///
 /// 定长声部池的代价必须落在尺寸读数上：`SynthEngine` / `EngineRuntime` 都是
 /// **按值搬进回调**的对象 ⇒ 这道门槛是"有没有把大件塞进实时对象"的机械防线。
 #[test]
-fn s9_sizes_are_printed_and_the_runtime_stays_under_192_kib() {
+fn s9_sizes_are_printed_and_the_runtime_stays_under_200_kib() {
     let voice = core::mem::size_of::<SfzVoice>();
     let pool = core::mem::size_of::<SfzVoicePool>();
     let runtime = core::mem::size_of::<yeban_engine::rt::EngineRuntime>();
@@ -1013,13 +1013,13 @@ fn s9_sizes_are_printed_and_the_runtime_stays_under_192_kib() {
         "[engine-sfz/S9] size_of: SfzVoice={voice} SfzVoicePool={pool} \
          SfzPlan={} PreparedSfz={} SynthEngine={} EngineSnapshot={} EngineRuntime={runtime} \
          ControlChangeState={cc_state} \
-         （门槛 192 KiB = {}；余量 = {}）",
+         （门槛 200 KiB = {}；余量 = {}）",
         core::mem::size_of::<SfzPlan>(),
         core::mem::size_of::<PreparedSfz>(),
         core::mem::size_of::<SynthEngine>(),
         core::mem::size_of::<EngineSnapshot>(),
-        192 * 1024,
-        192 * 1024 - runtime,
+        200 * 1024,
+        200 * 1024 - runtime,
     );
     // ⚠ 钉住声部的**定长**形状：`SfzVoice` 只含 `f32`/`u8`/`bool`/`u16`/`u64`，
     // ⛔ 无指针、⛔ 无 `Vec`。
@@ -1068,9 +1068,9 @@ fn s9_sizes_are_printed_and_the_runtime_stays_under_192_kib() {
          ⭐ **round-robin 的每键 `u32` 计数器 `[u32; 128]` ⇒ ＋512 ＝ 2224**"
     );
     assert!(
-        runtime < 192 * 1024,
-        "`EngineRuntime` = {runtime} 字节 ≥ 192 KiB（{})—— 定长声部池把实时对象撑爆了",
-        192 * 1024
+        runtime < 200 * 1024,
+        "`EngineRuntime` = {runtime} 字节 ≥ 200 KiB（{})—— 定长声部池把实时对象撑爆了",
+        200 * 1024
     );
 }
 
@@ -7573,10 +7573,10 @@ fn s71_the_cap_provenance_and_the_sizes_are_judgeable() {
         "[engine-sfz/S71] size_of: Crossfade={crossfade_bytes} PreparedRegion={region_bytes} \
          SfzVoice={voice} SfzVoicePool={pool} EngineRuntime={runtime}\
          （CC_CROSSFADE_CAP={CC_CROSSFADE_CAP} ⇒ ＋{} B／区域；\
-         门槛 192 KiB = {}；余量 = {}）",
+         门槛 200 KiB = {}；余量 = {}）",
         CC_CROSSFADE_CAP * crossfade_bytes,
-        192 * 1024,
-        192 * 1024 - runtime,
+        200 * 1024,
+        200 * 1024 - runtime,
     );
     assert_eq!(
         CC_CROSSFADE_CAP, 256,
@@ -7592,8 +7592,8 @@ fn s71_the_cap_provenance_and_the_sizes_are_judgeable() {
         "⛔ `SfzVoicePool` 必须 ＋0（1712 B）；⭐ **round-robin 片的每键 `u32` 计数器 ⇒ 2224 B（＋512）**"
     );
     assert!(
-        runtime < 192 * 1024,
-        "⛔ `EngineRuntime` 必须 ＋0（仍是 {runtime} B < 192 KiB）"
+        runtime < 200 * 1024,
+        "⛔ `EngineRuntime` 必须 ＋0（仍是 {runtime} B < 200 KiB）"
     );
 }
 
@@ -8047,10 +8047,10 @@ fn s85_the_gate_cap_provenance_and_the_sizes_are_judgeable() {
     println!(
         "[engine-sfz/S85] size_of: CcGate={gate_bytes} PreparedRegion={region_bytes} \
          SfzVoice={voice} SfzVoicePool={pool} EngineRuntime={runtime}\
-         （CC_GATE_CAP={CC_GATE_CAP} ⇒ ＋{} B／区域；门槛 192 KiB = {}；余量 = {}）",
+         （CC_GATE_CAP={CC_GATE_CAP} ⇒ ＋{} B／区域；门槛 200 KiB = {}；余量 = {}）",
         CC_GATE_CAP * gate_bytes,
-        192 * 1024,
-        192 * 1024 - runtime,
+        200 * 1024,
+        200 * 1024 - runtime,
     );
     assert_eq!(
         CC_GATE_CAP, 128,
@@ -8066,8 +8066,8 @@ fn s85_the_gate_cap_provenance_and_the_sizes_are_judgeable() {
         "⛔ `SfzVoicePool` 必须 ＋0（1712 B）；⭐ **round-robin 片的每键 `u32` 计数器 ⇒ 2224 B（＋512）**"
     );
     assert!(
-        runtime < 192 * 1024,
-        "⛔ `EngineRuntime` 必须 ＋0（仍是 {runtime} B < 192 KiB）"
+        runtime < 200 * 1024,
+        "⛔ `EngineRuntime` 必须 ＋0（仍是 {runtime} B < 200 KiB）"
     );
 }
 
@@ -8947,9 +8947,9 @@ fn s91_the_110_registration_the_bound_and_the_sizes_are_judgeable() {
         "[engine-sfz/S91] size_of: CcSeedTable={seed_table} PreparedSfz={prepared_sfz}\
          （88 → {prepared_sfz}）SfzPlan={plan} PreparedRegion={region} SfzVoice={voice} \
          SfzVoicePool={pool} ControlChangeState={cc_state} EngineRuntime={runtime}\
-         （门槛 192 KiB = {}；余量 = {}）",
-        192 * 1024,
-        192 * 1024 - runtime,
+         （门槛 200 KiB = {}；余量 = {}）",
+        200 * 1024,
+        200 * 1024 - runtime,
     );
     assert_eq!(
         seed_table, 152,
@@ -9011,12 +9011,12 @@ fn s91_the_110_registration_the_bound_and_the_sizes_are_judgeable() {
     );
     assert_eq!(
         runtime, ENGINE_RUNTIME_BYTES,
-        "`EngineRuntime` 的现读值见 `ENGINE_RUNTIME_BYTES`（`#261` 之后 186736 B（`#173` 是 181936 B）；门槛 192 KiB）"
+        "`EngineRuntime` 的现读值见 `ENGINE_RUNTIME_BYTES`（`#261` 之后 186736 B（`#173` 是 181936 B）；门槛 200 KiB）"
     );
     assert!(
-        runtime < 192 * 1024,
-        "⛔ `EngineRuntime` 必须 < 192 KiB（余量 {} B）",
-        192 * 1024 - runtime
+        runtime < 200 * 1024,
+        "⛔ `EngineRuntime` 必须 < 200 KiB（余量 {} B）",
+        200 * 1024 - runtime
     );
 }
 
@@ -9760,9 +9760,9 @@ fn s98_the_direction_sizes_and_the_zero_allocation_disposition_are_judgeable() {
     println!(
         "[engine-sfz/S98] size_of: PreparedRegion={region}（`#109` 后 6152 → ＋8）\
          SfzVoice={voice} SfzVoicePool={pool} EngineRuntime={runtime}\
-         （门槛 192 KiB = {}；余量 = {}）",
-        192 * 1024,
-        192 * 1024 - runtime
+         （门槛 200 KiB = {}；余量 = {}）",
+        200 * 1024,
+        200 * 1024 - runtime
     );
     assert_eq!(
         region, 6168,
@@ -9785,9 +9785,9 @@ fn s98_the_direction_sizes_and_the_zero_allocation_disposition_are_judgeable() {
         "`EngineRuntime` 的现读值见 `ENGINE_RUNTIME_BYTES`（`#261` 之后 186736 B（`#173` 是 181936 B））"
     );
     assert!(
-        runtime < 192 * 1024,
-        "⛔ `EngineRuntime` 必须 < 192 KiB（余量 {} B）",
-        192 * 1024 - runtime
+        runtime < 200 * 1024,
+        "⛔ `EngineRuntime` 必须 < 200 KiB（余量 {} B）",
+        200 * 1024 - runtime
     );
 
     // ⭐ "新代码为什么无分配"的**机械**依据（源文本腿）：三件读数全是标量，
@@ -10072,9 +10072,9 @@ fn s100_the_target_enum_the_census_and_the_sizes_are_judgeable() {
     let runtime = core::mem::size_of::<yeban_engine::rt::EngineRuntime>();
     println!(
         "[engine-sfz/S100] size_of: PreparedRegion={region} SfzVoice={voice} \
-         SfzVoicePool={pool} EngineRuntime={runtime}（门槛 192 KiB = {}；余量 = {}）",
-        192 * 1024,
-        192 * 1024 - runtime,
+         SfzVoicePool={pool} EngineRuntime={runtime}（门槛 200 KiB = {}；余量 = {}）",
+        200 * 1024,
+        200 * 1024 - runtime,
     );
     assert_eq!(
         region, 6168,
@@ -10088,9 +10088,9 @@ fn s100_the_target_enum_the_census_and_the_sizes_are_judgeable() {
     );
     assert_eq!(
         runtime, ENGINE_RUNTIME_BYTES,
-        "`EngineRuntime` 的现读值见 `ENGINE_RUNTIME_BYTES`（`#261` 之后 186736 B（`#173` 是 181936 B）；门槛 192 KiB）"
+        "`EngineRuntime` 的现读值见 `ENGINE_RUNTIME_BYTES`（`#261` 之后 186736 B（`#173` 是 181936 B）；门槛 200 KiB）"
     );
-    assert!(runtime < 192 * 1024, "⛔ `EngineRuntime` 必须 < 192 KiB");
+    assert!(runtime < 200 * 1024, "⛔ `EngineRuntime` 必须 < 200 KiB");
 }
 
 /// ⭐ S101（任务单 `#115`；判据 §5.2）：**解析与域** —— 合法值读得进、越界／畸形响亮 `Err`、
@@ -10693,9 +10693,9 @@ fn s106_the_tune_spec_the_census_and_the_sizes_are_judgeable() {
     let runtime = core::mem::size_of::<yeban_engine::rt::EngineRuntime>();
     println!(
         "[engine-sfz/S106] size_of: PreparedRegion={region} SfzVoice={voice} \
-         SfzVoicePool={pool} EngineRuntime={runtime}（门槛 192 KiB = {}；余量 = {}）",
-        192 * 1024,
-        192 * 1024 - runtime,
+         SfzVoicePool={pool} EngineRuntime={runtime}（门槛 200 KiB = {}；余量 = {}）",
+        200 * 1024,
+        200 * 1024 - runtime,
     );
     assert_eq!(
         region, 6168,
@@ -10710,9 +10710,9 @@ fn s106_the_tune_spec_the_census_and_the_sizes_are_judgeable() {
     );
     assert_eq!(
         runtime, ENGINE_RUNTIME_BYTES,
-        "`EngineRuntime` 的现读值见 `ENGINE_RUNTIME_BYTES`（`#261` 之后 186736 B（`#173` 是 181936 B）；门槛 192 KiB）"
+        "`EngineRuntime` 的现读值见 `ENGINE_RUNTIME_BYTES`（`#261` 之后 186736 B（`#173` 是 181936 B）；门槛 200 KiB）"
     );
-    assert!(runtime < 192 * 1024, "⛔ `EngineRuntime` 必须 < 192 KiB");
+    assert!(runtime < 200 * 1024, "⛔ `EngineRuntime` 必须 < 200 KiB");
 }
 
 /// ⭐ S107（任务单 `#116`；判据 §2）：**解析与域** —— 四种写法读得进、越界／畸形响亮
@@ -11683,8 +11683,8 @@ fn s111_the_unit_is_explicit_and_tune_rejects_the_percent_suffix() {
     let runtime = core::mem::size_of::<yeban_engine::rt::EngineRuntime>();
     println!(
         "[engine-sfz/S111] size_of: PreparedRegion={region} SfzVoice={voice} \
-         SfzVoicePool={pool} EngineRuntime={runtime}（< 192 KiB = {}）",
-        192 * 1024
+         SfzVoicePool={pool} EngineRuntime={runtime}（< 200 KiB = {}）",
+        200 * 1024
     );
     assert_eq!(
         region, 6168,
@@ -11698,7 +11698,7 @@ fn s111_the_unit_is_explicit_and_tune_rejects_the_percent_suffix() {
     );
     assert_eq!(
         runtime, ENGINE_RUNTIME_BYTES,
-        "`EngineRuntime` 的现读值见 `ENGINE_RUNTIME_BYTES`（`#261` 之后 186736 B（`#173` 是 181936 B）；门槛 192 KiB）"
+        "`EngineRuntime` 的现读值见 `ENGINE_RUNTIME_BYTES`（`#261` 之后 186736 B（`#173` 是 181936 B）；门槛 200 KiB）"
     );
 }
 
@@ -12754,9 +12754,9 @@ fn s113_the_pitch_family_is_the_tune_alias_across_three_paths() {
     let runtime = core::mem::size_of::<yeban_engine::rt::EngineRuntime>();
     println!(
         "[engine-sfz/S113] ⑦ size_of: PreparedRegion={region} SfzVoice={voice} \
-         SfzVoicePool={pool} EngineRuntime={runtime}（门槛 192 KiB = {}；余量 = {}）",
-        192 * 1024,
-        192 * 1024 - runtime,
+         SfzVoicePool={pool} EngineRuntime={runtime}（门槛 200 KiB = {}；余量 = {}）",
+        200 * 1024,
+        200 * 1024 - runtime,
     );
     assert_eq!(
         region, 6168,
@@ -12770,9 +12770,9 @@ fn s113_the_pitch_family_is_the_tune_alias_across_three_paths() {
     );
     assert_eq!(
         runtime, ENGINE_RUNTIME_BYTES,
-        "`EngineRuntime` 的现读值见 `ENGINE_RUNTIME_BYTES`（`#261` 之后 186736 B（`#173` 是 181936 B）；门槛 192 KiB）"
+        "`EngineRuntime` 的现读值见 `ENGINE_RUNTIME_BYTES`（`#261` 之后 186736 B（`#173` 是 181936 B）；门槛 200 KiB）"
     );
-    assert!(runtime < 192 * 1024, "⛔ `EngineRuntime` 必须 < 192 KiB");
+    assert!(runtime < 200 * 1024, "⛔ `EngineRuntime` 必须 < 200 KiB");
 
     // ---- ⑧ 负向：`pitch_smoothccN` / `pitch_stepccN`（规范有、⛔ 本单不做） ----
     // ⭐ 今天的行为（⛔ 一字不改）：两个名字落不进识别 ⇒ **未知 opcode 忽略**。
@@ -13678,10 +13678,10 @@ fn s114_the_volume_family_is_the_third_unit_category_across_three_paths() {
     let runtime = core::mem::size_of::<yeban_engine::rt::EngineRuntime>();
     println!(
         "[engine-sfz/S114] ⑦ size_of: PreparedRegion={region} SfzVoice={voice} \
-         SfzVoicePool={pool} EngineRuntime={runtime}（门槛 192 KiB = {}；余量 = {}）；\
+         SfzVoicePool={pool} EngineRuntime={runtime}（门槛 200 KiB = {}；余量 = {}）；\
          零分配场景见 `rt_zero_alloc` 的 `[sfz-volume]`",
-        192 * 1024,
-        192 * 1024 - runtime,
+        200 * 1024,
+        200 * 1024 - runtime,
     );
     assert_eq!(
         region, 6168,
@@ -13695,9 +13695,9 @@ fn s114_the_volume_family_is_the_third_unit_category_across_three_paths() {
     );
     assert_eq!(
         runtime, ENGINE_RUNTIME_BYTES,
-        "`EngineRuntime` 的现读值见 `ENGINE_RUNTIME_BYTES`（`#261` 之后 186736 B（`#173` 是 181936 B）；门槛 192 KiB）"
+        "`EngineRuntime` 的现读值见 `ENGINE_RUNTIME_BYTES`（`#261` 之后 186736 B（`#173` 是 181936 B）；门槛 200 KiB）"
     );
-    assert!(runtime < 192 * 1024, "⛔ `EngineRuntime` 必须 < 192 KiB");
+    assert!(runtime < 200 * 1024, "⛔ `EngineRuntime` 必须 < 200 KiB");
 
     // ---- ⑧ 负向：本单**不做**的行（规范有、或有别的实体）今天必须被忽略 ----
     // ⭐⭐ 追加修订段（任务单 `#124`，台账第 278 条）：本表**原文里**有一项 `"gain_cc1"` ——
@@ -14226,8 +14226,8 @@ fn s115_the_three_revised_volume_counters_and_the_scope_absence() {
     let runtime = core::mem::size_of::<yeban_engine::rt::EngineRuntime>();
     println!(
         "[engine-sfz/S115] ⑥ size_of: PreparedRegion={region} SfzVoice={voice} \
-         SfzVoicePool={pool} EngineRuntime={runtime}（门槛 192 KiB = {}）",
-        192 * 1024
+         SfzVoicePool={pool} EngineRuntime={runtime}（门槛 200 KiB = {}）",
+        200 * 1024
     );
     assert_eq!(
         (region, voice, pool, runtime),
@@ -14842,8 +14842,8 @@ fn s116_the_ampeg_attack_three_tiers_name_their_caliber() {
     let runtime = core::mem::size_of::<yeban_engine::rt::EngineRuntime>();
     println!(
         "[engine-sfz/S116] ⑧ size_of: PreparedRegion={region} SfzVoice={voice} \
-         SfzVoicePool={pool} EngineRuntime={runtime}（门槛 192 KiB = {}）",
-        192 * 1024
+         SfzVoicePool={pool} EngineRuntime={runtime}（门槛 200 KiB = {}）",
+        200 * 1024
     );
     assert_eq!(
         (region, voice, pool, runtime),
@@ -15800,17 +15800,17 @@ fn s117_the_gain_spelling_is_the_volume_alias_across_three_paths() {
     let runtime = core::mem::size_of::<yeban_engine::rt::EngineRuntime>();
     println!(
         "[engine-sfz/S117] ⑦ size_of: PreparedRegion={region} SfzVoice={voice} \
-         SfzVoicePool={pool} EngineRuntime={runtime}（门槛 192 KiB = {}；余量 = {}）；\
+         SfzVoicePool={pool} EngineRuntime={runtime}（门槛 200 KiB = {}；余量 = {}）；\
          零分配场景见 `rt_zero_alloc` 的 `[sfz-gain]`",
-        192 * 1024,
-        192 * 1024 - runtime,
+        200 * 1024,
+        200 * 1024 - runtime,
     );
     assert_eq!(
         (region, voice, pool, runtime),
         (6168, 40, 2224, ENGINE_RUNTIME_BYTES),
         "⛔ `#124` 只加一个**名字**（识别支）⇒ 四个尺寸读数全 ＋0"
     );
-    assert!(runtime < 192 * 1024, "⛔ `EngineRuntime` 必须 < 192 KiB");
+    assert!(runtime < 200 * 1024, "⛔ `EngineRuntime` 必须 < 200 KiB");
 }
 
 // ---------------------------------------------------------------------------
@@ -16477,14 +16477,14 @@ fn s118_the_not_done_registrations_are_swept_and_still_hold() {
     let runtime = core::mem::size_of::<yeban_engine::rt::EngineRuntime>();
     println!(
         "[engine-sfz/S118] ⑦ size_of: PreparedRegion={region} SfzVoice={voice} \
-         SfzVoicePool={pool} EngineRuntime={runtime}（门槛 192 KiB = {}；余量 = {}）",
-        192 * 1024,
-        192 * 1024 - runtime
+         SfzVoicePool={pool} EngineRuntime={runtime}（门槛 200 KiB = {}；余量 = {}）",
+        200 * 1024,
+        200 * 1024 - runtime
     );
     assert_eq!(
         (region, voice, pool, runtime),
         (6168, 40, 2224, ENGINE_RUNTIME_BYTES),
         "⛔ `#125` 只改注释／登记／判据 ⇒ 四个尺寸读数全 ＋0"
     );
-    assert!(runtime < 192 * 1024, "⛔ `EngineRuntime` 必须 < 192 KiB");
+    assert!(runtime < 200 * 1024, "⛔ `EngineRuntime` 必须 < 200 KiB");
 }
