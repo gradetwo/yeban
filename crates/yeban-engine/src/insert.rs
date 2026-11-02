@@ -1209,6 +1209,11 @@ impl StripProjection {
             "strip_width" | "channel_width" => {
                 self.params.width = value;
             }
+            // `#344` mono-maker：与宽度同一条兜底（宽度也没自己的 `*_seen` 标记 —
+            // 两个字段的默认值都是"旁通"，写 0 与不写等价，`params != DEFAULT` 就够）。
+            "mono_below_hz" | "mono_maker_hz" => {
+                self.params.mono_below_hz = value;
+            }
 
             _ => {}
         }

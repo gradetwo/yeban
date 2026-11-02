@@ -47,10 +47,12 @@ const IR_SHAPE_NAMES: [&str; 4] = [
     "conv_ir_stereo",
 ];
 
-/// 冻结读数（与 `yeban-render` 的 `automation.rs` 同一条口径：实时臂 51 ＋ 6 ＋ 12；
-/// 自动化名单另＋延迟 15 拼写（共享表，引擎经 `DelayField` 认）＋磁带饱和 10 拼写（`tape_asym` 之后）⇒ 名单共 90 个拼写；
+/// 冻结读数（与 `yeban-render` 的 `automation.rs` 同一条口径：实时臂 53 ＋ 6 ＋ 12；
+/// 自动化名单另＋延迟 15 拼写（共享表，引擎经 `DelayField` 认）＋磁带饱和 10 拼写（`tape_asym` 之后）⇒ 名单共 92 个拼写；
 /// 实时侧再＋ 4 个 IR 形状键 ⇒ 卷积族在**本判据**里是 12）。
-const FROZEN_COUNTS: (usize, usize, usize, usize) = (51, 6, 12, 10);
+// ⭐ `#344`：通道条 51 → 53（mono-maker 一个字段两个拼写 `mono_below_hz` /
+// `mono_maker_hz`）；卷积 11 → 12（`conv_ir_stereo` IR 形状键）。
+const FROZEN_COUNTS: (usize, usize, usize, usize) = (53, 6, 12, 10);
 
 /// 取 `impl <header>` 块内 `fn apply(&mut self, name: &str, value: f32)` 的**臂名**列表。
 ///
@@ -140,7 +142,7 @@ fn dsp_names<T>(spellings: &[(&'static str, T)]) -> BTreeSet<String> {
         .collect()
 }
 
-/// **通道条 51 拼写**：实时臂集 == [`StripField::SPELLINGS`]，且非真空。
+/// **通道条 53 拼写**：实时臂集 == [`StripField::SPELLINGS`]，且非真空。
 #[test]
 fn the_realtime_strip_arms_are_the_dsp_strip_spellings() {
     let arms = apply_arm_names("impl StripProjection {");

@@ -36,8 +36,8 @@
 //!
 //! - 只接 [`AutomationTarget::TrackVolume`]（含主总线）、[`AutomationTarget::SendGain`]、
 //!   [`AutomationTarget::TrackPan`] 与 [`AutomationTarget::DeviceParam`] 里**插入链能改的
-//!   标量字段**（[`APPLIED_DEVICE_PARAM_NAMES`]：90 个拼写 = 49 个字段，含别名；
-//!   通道条 27（14 增益/EQ/滤波 ＋ 8 压缩 ＋ 1 低切 ＋ 3 动态 EQ ＋ 1 宽度）＋ 磁带饱和 5 ＋ Freeverb 4 ＋ 卷积标量 4 ＋ 延迟 9）；**卷积
+//!   标量字段**（[`APPLIED_DEVICE_PARAM_NAMES`]：92 个拼写 = 50 个字段，含别名；
+//!   通道条 28（14 增益/EQ/滤波 ＋ 8 压缩 ＋ 1 低切 ＋ 3 动态 EQ ＋ 1 宽度 ＋ 1 mono-maker）＋ 磁带饱和 5 ＋ Freeverb 4 ＋ 卷积标量 4 ＋ 延迟 9）；**卷积
 //!   IR 形状**（`conv_ir_decay*` / `conv_ir_seed` / `conv_ir_stereo`）如实登记（⛔ 不冒充已支持）；
 //!   ⭐ `#304` 起**压缩 8 字段**也在这张表里（`compressor_enabled` + 7 个标量），
 //!   静态投影与自动化因此读**同一张**名字表；
@@ -1016,8 +1016,8 @@ impl TrackPanAutomation {
 ///
 /// ## 为什么**是**这些
 ///
-/// - 51 个通道条拼写对应 [`crate::inserts::StripField`] 的 27 个字段
-///   （14 增益/EQ/滤波 ＋ 8 压缩 ＋ 1 低切 ＋ 3 动态 EQ ＋ 1 宽度）；
+/// - 53 个通道条拼写对应 [`crate::inserts::StripField`] 的 28 个字段
+///   （14 增益/EQ/滤波 ＋ 8 压缩 ＋ 1 低切 ＋ 3 动态 EQ ＋ 1 宽度 ＋ 1 mono-maker）；
 /// - 6 个混响拼写对应 [`crate::inserts::ReverbField`] 的 4 个字段
 ///   （`reverb_size` / `reverb_damp` / `reverb_wet`(＋`_mix`) / `reverb_predelay`(＋`_s`)）；
 /// - 8 个卷积拼写对应 [`crate::inserts::ConvolutionField`] 的 4 个字段
@@ -1108,6 +1108,9 @@ pub const APPLIED_DEVICE_PARAM_NAMES: &[&str] = &[
     // 立体声宽度（2 = 1 个字段；⛔ 不叫 `width`，那是 Freeverb 的）。
     "strip_width",
     "channel_width",
+    // mono-maker（`#344`，2 = 1 个字段）。
+    "mono_below_hz",
+    "mono_maker_hz",
     // Freeverb 标量（6 = 4 个字段）。
     "reverb_size",
     "reverb_damp",
@@ -3013,6 +3016,9 @@ mod tests {
         ),
         (StripField::DynEqMaxCutDb, "deq_cut_db", 0.0, 5.0),
         (StripField::Width, "strip_width", 1.0, 1.4),
+        // `#344` mono-maker：0（旁通）→ 120 Hz。两端都是合法值，且差分足以让
+        // "中点在动"的断言成立。
+        (StripField::MonoBelowHz, "mono_below_hz", 0.0, 120.0),
     ];
 
     /// 非通道条字段（`#293`）的：落点、规范名、静态值、渐变终点值。
@@ -3258,8 +3264,8 @@ mod tests {
         // 3. 名单与五张**唯一名字表**的并集逐字相等（⛔ 少一个、多一个、重复都红）。
         assert_eq!(
             StripField::ALL.len(),
-            27,
-            "通道条 26 个字段（14 增益/EQ/滤波 ＋ 8 压缩 ＋ 1 低切 ＋ 3 动态 EQ）；             低切与动态 EQ 是 `#341` / `#342` 新增的两级"
+            28,
+            "通道条 28 个字段（14 增益/EQ/滤波 ＋ 8 压缩 ＋ 1 低切 ＋ 3 动态 EQ ＋ 1 宽度 ＋ 1 mono-maker）；             低切、动态 EQ、宽度与 mono-maker 是 `#341` / `#342` / `#343` / `#344` 新增的四级"
         );
         assert_eq!(ReverbField::ALL.len(), 4, "Freeverb 4 个字段");
         assert_eq!(ConvolutionField::ALL.len(), 4, "卷积标量 4 个字段");
@@ -3271,15 +3277,15 @@ mod tests {
         );
         assert_eq!(
             StripField::SPELLINGS.len(),
-            51,
-            "通道条 51 个拼写（27 ＋ 压缩 14 ＋ 低切 2 ＋ 动态 EQ 6 ＋ 宽度 2；⛔ 只有这一张表）"
+            53,
+            "通道条 53 个拼写（27 ＋ 压缩 14 ＋ 低切 2 ＋ 动态 EQ 6 ＋ 宽度 2 ＋ mono-maker 2；⛔ 只有这一张表）"
         );
         let expected_len = StripField::SPELLINGS.len()
             + ReverbField::SPELLINGS.len()
             + ConvolutionField::SPELLINGS.len()
             + DelayField::SPELLINGS.len()
             + TapeField::SPELLINGS.len();
-        assert_eq!(expected_len, 90, "51 + 6 + 8 + 15 + 10 = 90 个拼写");
+        assert_eq!(expected_len, 92, "53 + 6 + 8 + 15 + 10 = 92 个拼写");
         assert_eq!(
             APPLIED_DEVICE_PARAM_NAMES.len(),
             expected_len,
@@ -3318,7 +3324,7 @@ mod tests {
         }
     }
 
-    /// ⭐ `#267`/`#293`/`#304` 判据 1/2：**49 个字段各一条**（90 个拼写逐个跑）—— 泳道从静态值
+    /// ⭐ `#267`/`#293`/`#304` 判据 1/2：**50 个字段各一条**（92 个拼写逐个跑）—— 泳道从静态值
     /// 渐变到终点值 ⇒ 求值器把**这个字段**接上（`field()` / `param_name()` / 静态值），
     /// 曲线在块边界上单调，且恒等判定为假。别名与规范名解析到**同一个**落点。
     #[test]

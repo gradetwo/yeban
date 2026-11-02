@@ -13,7 +13,7 @@
 //!
 //! | 类型 | 内容 |
 //! | :--- | :--- |
-//! | [`StripField`] | 通道条 27 个可自动化字段（`51` 个拼写） |
+//! | [`StripField`] | 通道条 28 个可自动化字段（`53` 个拼写） |
 //! | [`ReverbField`] | Freeverb 的 4 个标量字段（`6` 个拼写） |
 //! | [`ConvolutionField`] | 卷积混响的 4 个标量字段（`8` 个拼写；IR 形状不落点） |
 //! | [`DelayField`] | 乒乓延迟的 9 个字段（`15` 个拼写；音符同步四字段只在投影期换算） |
@@ -133,6 +133,12 @@ pub enum StripField {
     /// 两条拼写撞车会让 `from_name` 把混响的宽度解析成通道条的宽度 —— 实测
     /// 那会让返回总线整体相位错乱（全曲相关度 0.81 → 0.00）。
     Width,
+    /// mono-maker 的转折频率（Hz，`0` = 旁通）。`mono_below_hz` / `mono_maker_hz`。
+    ///
+    /// `#344`：把这一频率以下的 side 整段丢掉（`0 = 旁通`），让 120 Hz 以下钉在中间。
+    /// ⛔ **不叫 `width` / `mono`**：`mono` 太泛（会被误当成"整条单声道开关"，
+    /// 那是 `strip_width = 0`），而 `width` 已经归 [`Self::Width`]。
+    MonoBelowHz,
 }
 
 impl StripField {
@@ -165,6 +171,7 @@ impl StripField {
         Self::DynEqThresholdDb,
         Self::DynEqMaxCutDb,
         Self::Width,
+        Self::MonoBelowHz,
     ];
 
     /// **全部拼写** → 字段（`51` 条；这是"哪个名字能落点"的**唯一**名字表）。
@@ -227,6 +234,9 @@ impl StripField {
         ("dyn_eq_cut_db", Self::DynEqMaxCutDb),
         ("strip_width", Self::Width),
         ("channel_width", Self::Width),
+        // `#344` mono-maker：一个字段两个拼写（`mono_below_hz` 是规范名）。
+        ("mono_below_hz", Self::MonoBelowHz),
+        ("mono_maker_hz", Self::MonoBelowHz),
     ];
 
     /// 名字 → 字段（**大小写不敏感**，别名表与 `yeban_render::inserts::StripProjection::apply` 逐字同集）。
@@ -273,6 +283,7 @@ impl StripField {
             Self::DynEqThresholdDb => "deq_threshold_db",
             Self::DynEqMaxCutDb => "deq_cut_db",
             Self::Width => "strip_width",
+            Self::MonoBelowHz => "mono_below_hz",
         }
     }
 
@@ -319,6 +330,7 @@ impl StripField {
             Self::DynEqThresholdDb => params.dyn_eq.threshold_db,
             Self::DynEqMaxCutDb => params.dyn_eq.max_cut_db,
             Self::Width => params.width,
+            Self::MonoBelowHz => params.mono_below_hz,
         }
     }
 
@@ -356,6 +368,7 @@ impl StripField {
             Self::DynEqThresholdDb => params.dyn_eq.threshold_db = value,
             Self::DynEqMaxCutDb => params.dyn_eq.max_cut_db = value,
             Self::Width => params.width = value,
+            Self::MonoBelowHz => params.mono_below_hz = value,
         }
     }
 
