@@ -86,6 +86,22 @@ export component Sidebar inherits Rectangle {
     // `filter_sidebar_content` 的永远是已经落定的那一份字。⚠ "合成期间 `text` 一次也不被写"
     // 本机**没有**实测（无输入法可注入），故本票不把它当判据、也不依赖它才能工作。
 
+    // ---------------------------------------------------------------- 键盘入口（D-UI-18）
+    /// 把**键盘焦点**交给搜索框。焦点是 Slint 自己的状态，⛔ 不是属性 ⇒ 宿主只能
+    /// **命令**它（与 `app.slint` 的 `focus-undo-tree-trap` / `focus-shortcut-layer`
+    /// 同一机制：`public function` + 宿主 `ui.invoke_*`，⛔ 不新增第二份真相源）。
+    /// 唯一调用者 = `host::apply_action` 的 `Action::FocusSidebarSearch` 臂
+    /// （键位 `Cmd/Ctrl+F`）。
+    public function focus-search() {
+        sidebar-search-input.focus();
+    }
+
+    /// 上面那次取焦的**读数**：Slint 的焦点不在控件树里，因此镜像成属性
+    /// （与 `app.slint: shortcut-layer-focused` 同款；唯一读者 = 宿主与无头判据）。
+    /// 宿主拿它决定这一键**消费还是放行**：窄栏 / 折叠时 `sidebar-search-input`
+    /// 是 `visible: false` 的，取焦落不下去 ⇒ 读数 `false` ⇒ ⛔ 不假装成功。
+    out property <bool> search-has-focus: sidebar-search-input.has-focus;
+
     background: Tokens.bg-panel;
     border-width: 1px;
     border-color: Tokens.line;

@@ -9363,6 +9363,24 @@ fn apply_action(
             ui.set_sidebar_collapsed(!ui.get_sidebar_collapsed());
             true
         }
+        // `Cmd/Ctrl+F`：把键盘焦点交给左栏搜索框（D-UI-18，界面决定）。
+        //
+        // ⚠ 焦点**不是属性** ⇒ 这里是"命令一次 Slint"，不是"写一个状态"：唯一实现 =
+        // `ui.invoke_focus_sidebar_search()`（`app.slint` 的 `public function`，里面只有
+        // `sidebar-search-input.focus()`）。
+        // ⭐ 折叠态先展开：写的仍是 `Action::ToggleSidebar` 那**同一个**属性
+        // `sidebar-collapsed`（唯一写者是 `wire_view_callbacks` 与本臂 ⇒ 不新增真相源），
+        // 因为框在折叠时 `visible: false`，取焦落不下去。
+        // ⭐ 返回值 = **焦点真的落地了吗**：读数 `sidebar-search-focused` 是 Slint 焦点的
+        // 镜像（`app.slint`），窄栏（`compact` ⇒ 框根本不在场）时它保持 `false` ⇒ 本键
+        // **不消费**（⛔ 不假装成功，与本文件"引擎拒绝 ⇒ 放行"的既有取向一致）。
+        Action::FocusSidebarSearch => {
+            if ui.get_sidebar_collapsed() {
+                ui.set_sidebar_collapsed(false);
+            }
+            ui.invoke_focus_sidebar_search();
+            ui.get_sidebar_search_focused()
+        }
         Action::ToggleConsoleMaximize => {
             ui.set_console_maximized(!ui.get_console_maximized());
             true

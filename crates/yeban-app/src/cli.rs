@@ -3615,7 +3615,7 @@ pub struct ShortcutRow {
 /// 每一项把**规范写法**、**动作**、**键位**与**落地状态**放在一起。这张表的**意义**是
 /// 让策略表的判定结果可被人与 CI 直接阅读 —— 尤其是 `[UI-A11Y-002]` 的 IME 分支,
 /// 以及"规范点名了、本版本还没做"的那一列（见 [`UNIMPLEMENTED_MARKER`]）。
-const SHORTCUTS: [ShortcutRow; 47] = [
+const SHORTCUTS: [ShortcutRow; 48] = [
     ShortcutRow {
         label: "Space → 播放/暂停",
         action: Action::PlayPause,
@@ -3726,6 +3726,16 @@ const SHORTCUTS: [ShortcutRow; 47] = [
         action: Action::ToggleSidebar,
         key: PhysicalKey::KeyB,
         modifiers: Modifiers::ctrl_alt(),
+        implemented: true,
+    },
+    // ⭐ D-UI-18（**界面决定**，⛔ 规范未点名某个键去聚焦某个控件）：把键盘焦点交给左栏
+    // 搜索框。补的是"`Tab` 在画布上是视图切换 ⇒ 纯键盘用户进不到任何文本框"这一格
+    // （实测登记 `docs/ledger/app-zimmer-ui-notes.md` §31）。
+    ShortcutRow {
+        label: "Cmd/Ctrl+F → 聚焦左栏搜索框",
+        action: Action::FocusSidebarSearch,
+        key: PhysicalKey::KeyF,
+        modifiers: Modifiers::ctrl(),
         implemented: true,
     },
     ShortcutRow {

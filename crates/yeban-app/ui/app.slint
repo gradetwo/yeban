@@ -1465,7 +1465,7 @@ export component MainWindow inherits Window {
             vertical-stretch: root.console-maximized ? 0 : Tokens.workspace-stretch;
 
             // 240px 左资源栏 (compact 时 36px 图标导轨)
-            Sidebar {
+            sidebar := Sidebar {
                 compact: root.compact || root.sidebar-collapsed;
                 min-width: (root.compact || root.sidebar-collapsed) ? Tokens.left-rail-collapsed-width : Tokens.left-rail-width;
                 max-width: (root.compact || root.sidebar-collapsed) ? Tokens.left-rail-collapsed-width : Tokens.left-rail-width;
@@ -2229,6 +2229,17 @@ export component MainWindow inherits Window {
     // （唯一读者 = 无头判据 `tests/undo_tree_focus_trap.rs`；界面自己不读）。
     out property <bool> shortcut-layer-focused: key-handler.has-focus;
     out property <bool> undo-tree-focus-trapped: undo_tree_trap.has-focus;
+
+    // ---------------------------------------------------------------- D-UI-18：搜索框的键盘入口
+    // `Cmd/Ctrl+F` 的唯一落点（调用者 = `host::apply_action` 的 `FocusSidebarSearch` 臂）。
+    // ⛔ 焦点不是属性：`public function` 是宿主**命令**Slint 焦点的唯一方式，
+    // 因此这里没有第二份"我以为焦点在哪"的状态。读数镜像在下面一条。
+    public function focus-sidebar-search() {
+        sidebar.focus-search();
+    }
+    /// 焦点读数：`true` ⇒ 键盘此刻归左栏搜索框。宿主用它决定这一键**消费还是放行**
+    /// （折叠 / 窄栏时框不在场 ⇒ 取焦落不下去 ⇒ 返回 `false` ⇒ ⛔ 不假装成功）。
+    out property <bool> sidebar-search-focused: sidebar.search-has-focus;
 
     // 取焦/复位由**宿主** `host::apply_undo` 在开关翻转时同步调用（`undo-tree-open`
     // 的唯一写者就是它）。⛔ 不用 `changed undo-tree-open`：该处理器要等事件循环

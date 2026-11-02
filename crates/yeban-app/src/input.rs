@@ -206,6 +206,8 @@ pub enum PhysicalKey {
     /// `A` —— 与 `Cmd/Ctrl+Alt` 组合展开 / 收起 AI 抽屉（走带 `transport-ai-drawer-button`
     /// 的键盘入口，界面决定）。
     KeyA,
+    /// `F` —— 与 `Cmd/Ctrl` 组合把**键盘焦点交给左栏搜索框**（D-UI-18，界面决定）。
+    KeyF,
     /// `1`–`5` —— 卷帘工具矩阵。
     Digit(u8),
     /// `[` —— 切到主线版本试听。
@@ -256,6 +258,7 @@ impl PhysicalKey {
             Self::KeyO => LogicalKey::Character('o'),
             Self::KeyR => LogicalKey::Character('r'),
             Self::KeyA => LogicalKey::Character('a'),
+            Self::KeyF => LogicalKey::Character('f'),
             Self::Digit(digit) => {
                 LogicalKey::Character(char::from_digit(u32::from(digit), 10).unwrap_or('\u{0}'))
             }
@@ -914,6 +917,26 @@ pub enum Action {
     TogglePencilTool,
     /// `Cmd/Ctrl+Alt+B`: 展开 / 收起左侧资源抽屉。
     ToggleSidebar,
+    /// `Cmd/Ctrl+F`: 把**键盘焦点**交给左栏资源搜索框（D-UI-18，界面决定）。
+    ///
+    /// ⚠ **补的是"摸不到键盘"这一格，不是"没有输入框"**：搜索框自 D-UI-14 起是
+    /// 真 `TextInput`（`ui/sidebar.slint` 的 `sidebar-search-input`），鼠标点进去能敲；
+    /// 但 `Tab` 在画布上被解析成 [`Self::ToggleView`]（`[UI-A11Y-003]` §7.3 第 1 条
+    /// 要求的"严密的 Tab 序列"在仓库里是**另一票**，⛔ 不在本动作里改它），而画布
+    /// 键处理器 `accept` 之后 Slint 不再做焦点轮转 ⇒ 纯键盘用户**永远进不到任何文本框**
+    /// （实测登记见 `docs/ledger/app-zimmer-ui-notes.md` §31）。
+    ///
+    /// ⚠ **规范没有点名这一动作**（`[UI-A11Y-003]` 那一条讲焦点序列，没点名某个键去聚焦
+    /// 某个控件）⇒ **界面决定**，取的是全行业一致的"查找"键位。键位只受一条约束：
+    /// ⛔ 不覆盖任何已被规范点名或已被既有判据钉成放行的组合 —— `f` 在 `Cmd/Ctrl` 分支
+    /// 里此前**一格都没有**（该分支当时只有 `z`/`h`/`d`/`s`/`o`/`b`/`m`/`a`/`n` + 方向键），
+    /// 裸 `f` 与 `Alt+F` / `Shift+F` 也从未绑定（实测 `f` 不出现在本文件任何一条既有绑定里）。
+    ///
+    /// 落点**唯一**：`host::apply_action` 的 `FocusSidebarSearch` 臂 ⇒
+    /// `ui.invoke_focus_sidebar_search()` ⇒ `Sidebar` 暴露的那一个 `public function`
+    /// 里的 `sidebar-search-input.focus()`。⛔ 不写工程、⛔ 不进撤销栈、⛔ 不改视图态
+    /// 属性 —— 焦点是 **Slint 自己的状态**，本动作只是一次命令。
+    FocusSidebarSearch,
     /// `Z`: 把选区撑满视口。
     ZoomToSelection,
     /// `Shift+Z`: 恢复全曲总览缩放。
@@ -1125,6 +1148,13 @@ impl InputContext {
                 //（`o` 至今不在本表任何一步里）⇒ 两者都不覆盖既有语义。
                 // `Shift` / `Alt` 变体仍放行（"打开最近"是另一票界面决定）。
                 (Key::Character('o'), false, false) => Resolution::Action(Action::OpenProject),
+                // **界面决定**（⛔ 不是规范点名）：D-UI-18 的"查找"键位。`f` 在本分支里
+                // 此前**一格都没有**（该分支当时只有 `z`/`h`/`d`/`s`/`o`/`b`/`m`/`a`/`n` +
+                // 方向键），裸 `f` 也从未出现在任何一步 ⇒ 加它不动任何既有绑定。
+                // `Shift` / `Alt` 变体仍放行（⛔ 不顺手发明"聚焦后一个控件"这类邻近语义）。
+                (Key::Character('f'), false, false) => {
+                    Resolution::Action(Action::FocusSidebarSearch)
+                }
                 (Key::Character('b'), false, true) => Resolution::Action(Action::ToggleSidebar),
                 // **界面决定**（⛔ 不是规范点名）：标准 DAW 的**剪辑**静音键（轨静音是裸 `m`，
                 // 见第 6 步；两者靠作用域分开：`selected-track-id` vs `selected-clip-ulid`）。
@@ -1292,18 +1322,18 @@ mod tests {
 
     use Action::{
         AcceptAiSuggestion, AuditionMain, AuditionProposal, Cancel, DeleteSelection, Duplicate,
-        GoToBeginning, NudgeMixerChannel, NudgeSelection, OpenProject, OpenTimeMachine, PlayPause,
-        Redo, ResizeSelectionDuration, ResumeFromCursor, SaveProject, SaveProjectAs,
-        SelectConsoleTab, SelectTool, SelectTrackBy, ShowView, ToggleAiDrawer, ToggleClipMute,
-        ToggleConsoleMaximize, TogglePencilTool, ToggleRecord, ToggleSidebar, ToggleTrackMute,
-        ToggleTrackSolo, ToggleView, Undo, ZoomToFit, ZoomToSelection,
+        FocusSidebarSearch, GoToBeginning, NudgeMixerChannel, NudgeSelection, OpenProject,
+        OpenTimeMachine, PlayPause, Redo, ResizeSelectionDuration, ResumeFromCursor, SaveProject,
+        SaveProjectAs, SelectConsoleTab, SelectTool, SelectTrackBy, ShowView, ToggleAiDrawer,
+        ToggleClipMute, ToggleConsoleMaximize, TogglePencilTool, ToggleRecord, ToggleSidebar,
+        ToggleTrackMute, ToggleTrackSolo, ToggleView, Undo, ZoomToFit, ZoomToSelection,
     };
     use Focus::{MainCanvas, Other, TextInput};
     use MixerParam::{Pan, Volume};
     use PhysicalKey::{
         Backspace, BracketLeft, BracketRight, Delete, Digit, DownArrow, Enter, Escape, F5, F6, F7,
-        F8, F9, KeyA, KeyB, KeyD, KeyH, KeyM, KeyN, KeyO, KeyR, KeyS, KeyZ, LeftArrow, RightArrow,
-        Space, Tab, UpArrow,
+        F8, F9, KeyA, KeyB, KeyD, KeyF, KeyH, KeyM, KeyN, KeyO, KeyR, KeyS, KeyZ, LeftArrow,
+        RightArrow, Space, Tab, UpArrow,
     };
     use Resolution::{Action as Act, ConsumedByIme, PassThrough};
 
@@ -1867,6 +1897,62 @@ mod tests {
         composing.set_focus(TextInput);
         composing.begin_composition();
         assert_eq!(composing.resolve(F8, Modifiers::none()), ConsumedByIme);
+    }
+
+    /// D-UI-18 的 **A 层**（纯解析）：`Cmd/Ctrl+F` 解出"把键盘焦点交给左栏搜索框"。
+    /// 活窗口那一层在 `tests/search_focus_key.rs`（两层不可互相代替：这一层证明
+    /// 状态机把这一个键位**认成**这一个动作，那一层证明认出来之后**真有人接**）。
+    #[test]
+    fn cmd_ctrl_f_focuses_the_sidebar_search_and_stays_behind_the_text_policy() {
+        // ① 两条入口同解（物理码 / 逻辑键 —— `N2` 裁决 (1) 的同一纪律）。
+        // `command()` 同时认 `ctrl` 与 `meta`（macOS 上 Slint 把 `Cmd` 送进 `control`，
+        // 见本文件 [`Modifiers`] 的文档），因此两个都得解出同一个动作。
+        assert_eq!(
+            canvas().resolve(KeyF, Modifiers::ctrl()),
+            Act(FocusSidebarSearch),
+            "物理码入口：`Ctrl+F`"
+        );
+        assert_eq!(
+            canvas().resolve(KeyF, Modifiers::meta()),
+            Act(FocusSidebarSearch),
+            "物理码入口：`Cmd+F`（macOS 那一侧的字段）"
+        );
+        assert_eq!(
+            canvas().resolve_logical(LKey::Character('f'), Modifiers::ctrl()),
+            Act(FocusSidebarSearch),
+            "逻辑键入口（GUI 路径实际走的一条）"
+        );
+
+        // ② 未点名的变体**如实放行**（⛔ 不顺手发明"聚焦下一个控件"这类邻近语义）。
+        for modifiers in [
+            Modifiers::none(),
+            Modifiers::shift(),
+            Modifiers::alt(),
+            Modifiers::ctrl_shift(),
+            Modifiers::ctrl_alt(),
+        ] {
+            assert_eq!(
+                canvas().resolve(KeyF, modifiers),
+                PassThrough,
+                "`f` 的修饰组合 {modifiers:?} 未被点名 ⇒ 放行"
+            );
+        }
+
+        // ③ 文本域策略**先行**：焦点已经在某个输入框时，连 `Cmd/Ctrl+F` 都不归 DAW 管
+        //（否则在框里敲 `Cmd+F` 会把焦点抢走 —— 与 `F7`/`F8` 那一条同一口径）。
+        assert_eq!(
+            text_field().resolve(KeyF, Modifiers::ctrl()),
+            PassThrough,
+            "文本域 ⇒ 第 2 步先返回，永远到不了 `Cmd/Ctrl` 分支"
+        );
+        let mut composing = InputContext::new();
+        composing.set_focus(TextInput);
+        composing.begin_composition();
+        assert_eq!(
+            composing.resolve(KeyF, Modifiers::ctrl()),
+            ConsumedByIme,
+            "合成态 ⇒ 一切按键归输入法（`[UI-A11Y-002]` 第 2 条）"
+        );
     }
 
     // ---------------------------------------------------------------- 工具矩阵
