@@ -297,7 +297,8 @@ impl TrackGainAutomation {
             // 本模块不构造其它目标；退回单位增益并让恒等快路径兜住。
             AutomationTarget::TrackPan { .. }
             | AutomationTarget::DeviceParam { .. }
-            | AutomationTarget::Macro { .. } => 0.0,
+            | AutomationTarget::Macro { .. }
+            | AutomationTarget::MidiCc { .. } => 0.0,
         };
         let static_gain = db_to_linear(static_db);
         let target_exists = match target {
@@ -1378,6 +1379,17 @@ pub fn unsupported_lane_reason(
                 Some(LaneResidual::BusTrack)
             }
         }
+        AutomationTarget::MidiCc { track_id, .. } => {
+            // ⭐ `#341`：CC 只在**引擎音源**（源节点）上有落点 —— 探针由
+            // `EngineTrackSource` 每块喂给 `render_track_with_cc`，而只有源节点
+            // 才跑引擎乐器。总线轨没有音源 ⇒ 与 `TrackVolume` / `TrackPan`
+            // 对"不可达轨"的裁决同款，如实报 `BusTrack`。
+            if source_nodes.contains(track_id) {
+                None
+            } else {
+                Some(LaneResidual::BusTrack)
+            }
+        }
         AutomationTarget::DeviceParam { track_id, .. } => {
             if rendered_nodes.contains(track_id) && device_param_lane_is_applicable(project, target)
             {
@@ -1968,6 +1980,146 @@ fn automation_ratio(automation_db: f32, static_gain: f32) -> f32 {
     }
     let ratio = db_to_linear(automation_db) / static_gain;
     if ratio.is_finite() { ratio } else { 1.0 }
+}
+
+/// 一条轨的 **MIDI CC 求值器**：把 `MidiCc` 泳道折算成**逐块**的 `[u8; 128]` 表。
+///
+/// # 为什么要它（`#341`）
+///
+/// 引擎的 SFZ 分支早就接受一个 `Fn(u8) -> u8` 的 CC 探针
+/// （[`crate`] 之外的 `SynthEngine::render_track_with_cc`），但**离线路径**
+/// （`EngineTrackSource`）一直传 `None`。而 `None` 在引擎里的语义是**严格失败**，
+/// 不是"取缺省值"：
+///
+/// - `PreparedRegion::cc_gates_ok(None)` ⇒ `false` ⇒ 带 `loccN` / `hiccN` 的区域
+///   **永不触发**；
+/// - `cc_value_with_baked(None)` ⇒ 基值 ⇒ `*_onccN` 的调制量恒为 `0`；
+/// - `Trigger::held_notes_ok(None)` ⇒ `false` ⇒ `trigger=first` / `legato` 恒不匹配。
+///
+/// ⇒ 探针缺失时，任何依赖 CC 的音源都会被**静默**削成"只剩不依赖 CC 的那一层"：
+/// 不报错、不影响上下文之外的区域，只是那一层永远不响。本类型把工程里的
+/// `MidiCc` 泳道求值成那张表，[`crate::engine_source::EngineTrackSource`] 每块取一次。
+///
+/// # 取值与舍入
+///
+/// 泳道值是 `f32`（模型允许连续点与曲线），CC 是 7 位整数 ⇒ 这里**四舍五入**后
+/// 钳到 `0..=127`。钳制不是"修正输入"：SFZ 的 CC 域本来就到 127 为止，
+/// 越界的曲线值只能投影到边界。
+///
+/// `controller > 127` 的泳道（`u8` 允许到 255）**整条忽略** —— 模型层不拦它
+/// （见 `AutomationTarget::MidiCc` 的文档），消费侧也不猜"最接近的控制器"。
+#[derive(Clone, Debug)]
+pub struct CcProbe {
+    /// 每个被自动化的控制器一项（按控制器号升序 ⇒ 逐块求值顺序确定）。
+    lanes: Vec<CcLane>,
+    /// 工程速度表（tick ↔ 帧；空表 = 恒定 `project.bpm`）。
+    tempo: TempoMap,
+    /// 采样率。
+    sample_rate: u32,
+    /// 已被求值的块数（读数用）。
+    blocks: u64,
+}
+
+/// [`CcProbe`] 里的一路控制器。
+#[derive(Clone, Debug)]
+struct CcLane {
+    /// 控制器号（恒 `0..=127`）。
+    controller: u8,
+    /// 该控制器的泳道副本（`read_enabled == false` 或空泳道 ⇒ `None`）。
+    lane: Option<AutomationLane>,
+    /// 映射到本目标的宏级联（与 `TrackVolume` 共用同一份实现）。
+    cascade: MacroCascade,
+}
+
+impl CcProbe {
+    /// 扫描一条轨的 `MidiCc` 泳道。
+    #[must_use]
+    pub fn new(project: &YebanProjectV1, track_id: EntityId, sample_rate: u32) -> Self {
+        let mut lanes = Vec::new();
+        if let Some(track) = project.tracks.get(&track_id) {
+            for (target, lane) in &track.automation_lanes {
+                let AutomationTarget::MidiCc { controller, .. } = target else {
+                    continue;
+                };
+                if *controller > 127 {
+                    continue;
+                }
+                let cascade = MacroCascade::for_target(project, target);
+                // `read_enabled == false` ⇒ 曲线不参与，但宏级联仍要保留：
+                // 与 `composed_db_at` 的 `None if has_sources` 分支**同一条口径**。
+                let lane = if lane.read_enabled && !lane.points.is_empty() {
+                    Some(lane.clone())
+                } else {
+                    None
+                };
+                if lane.is_none() && cascade.is_zero() {
+                    continue;
+                }
+                lanes.push(CcLane {
+                    controller: *controller,
+                    lane,
+                    cascade,
+                });
+            }
+        }
+        lanes.sort_by_key(|lane| lane.controller);
+        Self {
+            lanes,
+            tempo: project.tempo(),
+            sample_rate,
+            blocks: 0,
+        }
+    }
+
+    /// 本轨是否**没有**任何 CC 自动化（⇒ 调用方走不带探针的快路径）。
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.lanes.is_empty()
+    }
+
+    /// 被自动化的控制器个数（读数用）。
+    #[must_use]
+    pub fn controllers(&self) -> usize {
+        self.lanes.len()
+    }
+
+    /// 已被求值的块数（读数用）。
+    #[must_use]
+    pub fn blocks(&self) -> u64 {
+        self.blocks
+    }
+
+    /// 取 `first_frame` 所在块的 128 项 CC 表。
+    ///
+    /// 没有任何 CC 泳道 ⇒ `None`：调用方**必须**走 `render_track`，
+    /// 于是未使用 CC 的工程与接线前**逐位相同**。
+    pub fn table_at(&mut self, first_frame: u64) -> Option<[u8; 128]> {
+        if self.lanes.is_empty() {
+            return None;
+        }
+        self.blocks = self.blocks.saturating_add(1);
+        let tick = self
+            .tempo
+            .ticks_at_frame(first_frame, PPQ, self.sample_rate)
+            .unwrap_or(0);
+        let mut table = [0u8; 128];
+        for lane in &self.lanes {
+            let base = lane.lane.as_ref().and_then(|curve| curve.value_at(tick));
+            let offset = lane.cascade.offset_at(tick);
+            let value = match base {
+                Some(value) => value + offset,
+                None if lane.cascade.is_zero() => 0.0,
+                None => offset,
+            };
+            let clamped = if value.is_finite() {
+                value.round().clamp(0.0, 127.0)
+            } else {
+                0.0
+            };
+            table[usize::from(lane.controller)] = clamped as u8;
+        }
+        Some(table)
+    }
 }
 
 #[cfg(test)]
@@ -3330,5 +3482,106 @@ mod tests {
                 "{name}: 泳道 == 静态值 ⇒ 恒等（不白实例化器件）"
             );
         }
+    }
+
+    /// ⭐ `#341`：`MidiCc` 泳道被求值成 `[u8; 128]` 表，且**越界值钳到 0..=127**。
+    ///
+    /// 这条钉住三件事：① 泳道真的被读到；② 负值钳到下界、>127 钳到上界；
+    /// ③ 表里其它控制器仍是 `0`（缺省值 = 无 CC）。
+    #[test]
+    fn the_cc_probe_evaluates_lanes_and_clamps_to_the_seven_bit_domain() {
+        let track_id = EntityId::from_str("01J8Z5Q0R7K3M9X2V4B6N8P002").expect("ULID");
+        let target = AutomationTarget::MidiCc {
+            track_id,
+            controller: 11,
+        };
+        let low = point(1, 0, -20.0);
+        let high = point(2, 960, 200.0);
+        let mut points = std::collections::BTreeMap::new();
+        points.insert(low.id, low);
+        points.insert(high.id, high);
+        let mut track = TrackV3 {
+            id: track_id,
+            ..TrackV3::default()
+        };
+        track.automation_lanes.insert(
+            target,
+            AutomationLane {
+                target,
+                points,
+                read_enabled: true,
+                write_mode: AutomationWriteMode::Off,
+                domain: None,
+            },
+        );
+        let mut project = YebanProjectV1::default();
+        project.tracks.insert(track_id, track);
+
+        let mut probe = CcProbe::new(&project, track_id, 48_000);
+        assert_eq!(probe.controllers(), 1, "一条 MidiCc 泳道");
+        let table = probe.table_at(0).expect("有泳道 ⇒ 有表");
+        assert_eq!(table[11], 0, "负值必须钳到下界 0");
+        assert_eq!(table[1], 0, "没被自动化的控制器仍是 0");
+
+        // 960 tick @ 84 BPM = 960/1344 s ⇒ 该帧正好落在第二个点上。
+        let frame = 48_000u64 * 960 / 1344;
+        let table = probe.table_at(frame).expect("有泳道 ⇒ 有表");
+        assert_eq!(table[11], 127, "200 必须钳到上界 127");
+    }
+
+    /// ⭐ `#341`：**没有** `MidiCc` 泳道 ⇒ `None`。
+    ///
+    /// 这就是"未使用 CC 的工程逐位不变"的入口条件：调用方拿到 `None` 后必须走
+    /// `render_track`（无探针）而不是 `render_track_with_cc`。
+    #[test]
+    fn the_cc_probe_is_absent_without_a_cc_lane() {
+        let track_id = EntityId::from_str("01J8Z5Q0R7K3M9X2V4B6N8P003").expect("ULID");
+        let mut track = TrackV3 {
+            id: track_id,
+            ..TrackV3::default()
+        };
+        track.automation_lanes.insert(
+            AutomationTarget::TrackVolume { track_id },
+            AutomationLane::implicit(AutomationTarget::TrackVolume { track_id }),
+        );
+        let mut project = YebanProjectV1::default();
+        project.tracks.insert(track_id, track);
+
+        let mut probe = CcProbe::new(&project, track_id, 48_000);
+        assert!(probe.is_empty(), "只有 TrackVolume 泳道 ⇒ 没有 CC 探针");
+        assert!(probe.table_at(0).is_none(), "没有 CC 泳道必须返回 None");
+    }
+
+    /// ⭐ `#341`：`controller > 127` 的泳道**整条忽略**（`u8` 允许到 255）。
+    #[test]
+    fn the_cc_probe_ignores_out_of_range_controllers() {
+        let track_id = EntityId::from_str("01J8Z5Q0R7K3M9X2V4B6N8P004").expect("ULID");
+        let target = AutomationTarget::MidiCc {
+            track_id,
+            controller: 200,
+        };
+        let only = point(3, 0, 100.0);
+        let mut points = std::collections::BTreeMap::new();
+        points.insert(only.id, only);
+        let mut track = TrackV3 {
+            id: track_id,
+            ..TrackV3::default()
+        };
+        track.automation_lanes.insert(
+            target,
+            AutomationLane {
+                target,
+                points,
+                read_enabled: true,
+                write_mode: AutomationWriteMode::Off,
+                domain: None,
+            },
+        );
+        let mut project = YebanProjectV1::default();
+        project.tracks.insert(track_id, track);
+
+        let mut probe = CcProbe::new(&project, track_id, 48_000);
+        assert!(probe.is_empty(), "controller 200 不是合法控制器号");
+        assert!(probe.table_at(0).is_none());
     }
 }

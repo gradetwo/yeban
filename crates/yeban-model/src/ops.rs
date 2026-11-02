@@ -3375,6 +3375,11 @@ pub(crate) fn read_param(
             track_id,
             macro_index,
         } => read_macro(doc, &track_id, macro_index),
+        // ⭐ `MidiCc` **没有**静态参数：它的当前值就是泳道曲线本身（缺省 0）。
+        //   若在这里返回一个"文档里的值"，就会和"泳道求值"形成两个事实源 ⇒ 明确拒绝。
+        AutomationTarget::MidiCc { .. } => Err(ModelError::AutomationTargetNotApplicable {
+            detail: "MIDI CC has no static parameter: its value is the lane curve itself",
+        }),
     }
 }
 
@@ -3440,6 +3445,9 @@ fn write_param(
             macro_parameter.value = value;
             Ok(())
         }
+        AutomationTarget::MidiCc { .. } => Err(ModelError::AutomationTargetNotApplicable {
+            detail: "MIDI CC has no static parameter: write its lane points instead",
+        }),
     }
 }
 
@@ -7316,6 +7324,10 @@ mod tests {
             track_id: track,
             macro_index: 0,
         };
+        let cc = AutomationTarget::MidiCc {
+            track_id: track,
+            controller: 11,
+        };
 
         /// R48 探针：**无通配符** `match`。加变体而不更新本函数 ⇒ 编译错。
         const fn arm(target: AutomationTarget) -> usize {
@@ -7325,10 +7337,11 @@ mod tests {
                 AutomationTarget::SendGain { .. } => 2,
                 AutomationTarget::DeviceParam { .. } => 3,
                 AutomationTarget::Macro { .. } => 4,
+                AutomationTarget::MidiCc { .. } => 5,
             }
         }
 
-        const ARM_COUNT: usize = 5;
+        const ARM_COUNT: usize = 6;
         // (编号, 目标, 该臂的判决：`true` = 取值域由本函数判, `false` = 本函数放行)
         let table: [(usize, AutomationTarget, bool); ARM_COUNT] = [
             (0, volume, false),
@@ -7336,6 +7349,9 @@ mod tests {
             (2, send, false),
             (3, device, false),
             (4, mac, true),
+            // `MidiCc`：取值是控制器原始 7 位值，模型层**不**判界（越界值由渲染层
+            // 钳到 `0..=127`，裁定见 `AutomationTarget::MidiCc` 的文档）⇒ 无界臂。
+            (5, cc, false),
         ];
         let mut numbered: Vec<usize> = Vec::new();
         for (index, target, bounded) in table {

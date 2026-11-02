@@ -494,6 +494,13 @@ pub struct UnappliedAutomationLanes {
     pub device_param: u64,
     /// 开着的 `Macro` 泳道数（实时与离线**都**没有落点）。
     pub macro_lanes: u64,
+    /// ⭐ `#341`：开着的 `MidiCc` 泳道数。
+    ///
+    /// **实时**没有落点：监听里的 CC 只来自用户操作／外部 MIDI
+    /// （`EngineEvent::ControlChange`），不是从泳道采样下发的；
+    /// **离线**有落点：`EngineTrackSource::with_cc` 把泳道求值成探针，
+    /// 逐块喂给 `render_track_with_cc`。
+    pub midi_cc: u64,
 }
 
 impl UnappliedAutomationLanes {
@@ -503,6 +510,7 @@ impl UnappliedAutomationLanes {
         self.send_gain
             .saturating_add(self.device_param)
             .saturating_add(self.macro_lanes)
+            .saturating_add(self.midi_cc)
     }
 
     /// 一条都没有（实时引擎能执行本工程里的**全部**自动化泳道）。
@@ -625,6 +633,9 @@ pub fn unapplied_automation_lanes(project: &YebanProjectV1) -> UnappliedAutomati
                 AutomationTarget::Macro { .. } => {
                     lanes.macro_lanes = lanes.macro_lanes.saturating_add(1);
                 }
+                AutomationTarget::MidiCc { .. } => {
+                    lanes.midi_cc = lanes.midi_cc.saturating_add(1);
+                }
                 AutomationTarget::TrackVolume { .. } | AutomationTarget::TrackPan { .. } => {}
             }
         }
@@ -646,15 +657,18 @@ pub fn unapplied_automation_lanes(project: &YebanProjectV1) -> UnappliedAutomati
 pub fn automation_unapplied_line(lanes: UnappliedAutomationLanes) -> String {
     format!(
         "automation-engine: unapplied-lanes={} send-gain={} device-param={} macro={} \
+         midi-cc={} \
          note=\"有 {} 条自动化泳道在监听里没落地；SendGain 的边在监听里没有落点\
          （离线导出/MCP 按边求值），DeviceParam 的 output_gain_db 在有通道条来源的轨上有实时落点\
          （拼写 output_gain / fader_db 同一条），其余通道条（含压缩）/混响/卷积标量名字在离线导出/MCP \
          渲染里有落点（卷积 IR 形状没有），Macro 在监听里没有落点\
-         （离线导出/MCP 只在存在 Macro 泳道时按映射级联）\"",
+         （离线导出/MCP 只在存在 Macro 泳道时按映射级联），MIDI CC 在监听里没有落点\
+         （离线导出/MCP 把 MidiCc 泳道求值成探针，逐块喂给 render_track_with_cc）\"",
         lanes.total(),
         lanes.send_gain,
         lanes.device_param,
         lanes.macro_lanes,
+        lanes.midi_cc,
         lanes.total(),
     )
 }

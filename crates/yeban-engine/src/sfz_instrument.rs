@@ -1644,6 +1644,7 @@ use yeban_sfz::crossfade::{Crossfade, XfAxis, XfCurve, XfDirection, XfRange};
 use yeban_sfz::error::SfzError;
 use yeban_sfz::instrument::{
     CcGate, Instrument, LoopMode, NotePolyphony, OffMode, PlayDirection, Region, RegionQuery,
+    Trigger,
 };
 // ⭐ 任务单 `#104`：CC 调制（`ccN` / `_ccN` / `_onccN` / `_curveccN`）；
 // ⭐ 任务单 `#115`：目标从五个 `ampeg_*` 推广成 [`ModTarget`]（首个增益族目标
@@ -2724,6 +2725,12 @@ pub struct PreparedRegion {
     key_mask: [u64; 2],
     /// 力度掩码：第 `v` 位为 1 表示该区域接受 `velocity == v`（门控不过时全 0）。
     vel_mask: [u64; 2],
+    /// ⭐ `#341`：`trigger` opcode 的取值。
+    ///
+    /// `first` / `legato` 的"其它音符按住数"是**会话运行态**，⛔ 不能烘进掩码
+    /// （摊平期不知道将来哪一刻按住几个音）⇒ 掩码对这两族**照常放行**，
+    /// 由触发期的 `Trigger::held_notes_ok` 用它裁决。其余取值不影响选择。
+    trigger: Trigger,
     /// 每个音符的播放速率（构造期由 `Region::playback_rate` 求值）。
     rate_per_note: [f32; 128],
     /// 键轴（`xf*_*key`）交叉淡化的每音符因子；无该轴时恒 `1.0`。
@@ -4311,6 +4318,11 @@ impl PreparedSfz {
             if !region.cc_gates_ok(cc) {
                 continue;
             }
+            // ⭐ `#341`：单音一次性渲染里**没有别的音符** ⇒ 按住数恰为 0：
+            // `trigger=first` 照常发声、`trigger=legato` 不发声（规范语义）。
+            if !region.trigger.held_notes_ok(Some(0)) {
+                continue;
+            }
             let Some(sample) = self.sample(region.sample_index) else {
                 continue;
             };
@@ -4525,6 +4537,7 @@ fn flatten_regions(
             regions.push(PreparedRegion {
                 key_mask,
                 vel_mask,
+                trigger: region.trigger,
                 rate_per_note,
                 key_crossfade,
                 velocity_fade_in,
@@ -4637,7 +4650,9 @@ fn non_cc_gates_open(region: &Region<'_>, note: u8, velocity: u8) -> bool {
         && region
             .trigger
             .responds_to(yeban_sfz::instrument::TriggerEvent::NoteOn)
-        && region.trigger.held_notes_ok(None)
+        // ⭐ `#341`：`trigger=first` / `legato` 的"按住数"是**运行态**，摊平期
+        // 无法判定 ⇒ 这里**不再**按 `held_notes_ok(None)` 清零掩码（那会让这两族
+        // 区域**永久静默且不报错**）。改由触发期的 `held_notes_ok(self.held_notes)` 裁决。
         && {
             // keyswitch：与 `region_matches` 的**同一串**判定
             // （`sw_last` 无 `sw_default` ⇒ 严格策略不过；`sw_down`/`sw_up` 无探针 ⇒ 不过）。
@@ -5466,6 +5481,13 @@ pub struct SfzVoicePool {
     /// 状态开始"必然从序列第一个变体起，⛔ 不会因为上一次播放留下计数而在
     /// 重渲染时换掉变体（[ARCH-DET-001] 要求同一输入逐位同输出）。
     seq_occurrence: [u32; 128],
+    /// ⭐ `#341`：**触发那一刻**"其它音符的按住数"（`trigger=first` / `legato` 用）。
+    ///
+    /// `None` ＝ 调用方未提供该状态 ⇒ 严格策略下这两族区域**不匹配**
+    /// （与 `cc_gates_ok(None)` 同一条纪律：不猜"大概没有别的音"）。
+    /// 由调用方在每次 `trigger_note` 之前用 [`Self::set_held_notes`] 设定
+    /// （离线路径按音符自己的起点从调度表数出来）。
+    held_notes: Option<u32>,
 }
 
 /// ⭐ **逐块路径的四个区域读数**（[`SfzVoicePool::slot_readings`] 的产物）。
@@ -5508,6 +5530,17 @@ struct SlotReadings {
 }
 
 impl SfzVoicePool {
+    /// ⭐ `#341`：设定**本次触发**的"其它音符按住数"。
+    ///
+    /// 调用方在每次 [`Self::trigger_note`] **之前**设定（离线路径按音符自己的起点
+    /// 从调度表数出"更早开始且尚未结束"的音符数）。`None` ＝ 不提供状态 ⇒
+    /// `trigger=first` / `legato` 两族区域不匹配（严格策略，与 `cc_gates_ok(None)` 同款）。
+    ///
+    /// ⚠ 零成本：一个 `Option<u32>` 写；⛔ 不进逐样本路径、⛔ 不新增声部字段。
+    pub fn set_held_notes(&mut self, held: Option<u32>) {
+        self.held_notes = held;
+    }
+
     /// 空池（⛔ 无分配：整个池是栈上/结构体内的定长数组）；淡出帧数按 `sample_rate` 定。
     #[must_use]
     pub fn new(sample_rate: f32) -> Self {
@@ -5522,6 +5555,7 @@ impl SfzVoicePool {
             dropped: 0,
             stolen: 0,
             seq_occurrence: [0; 128],
+            held_notes: None,
         }
     }
 
@@ -5669,6 +5703,13 @@ impl SfzVoicePool {
             // （与"`end=-1` 的静音区域**照旧**关断别人"那条**不冲突**：那条区域是
             // **CC 门控通过**的，只是没有采样输出 ⇒ 它仍然走到下面的关断扫描）。
             if !region.cc_gates_ok(cc) {
+                continue;
+            }
+            // ⭐ `#341`：`trigger=first` / `legato` 的**运行时**门控。位置与
+            // `cc_gates_ok` **同一条理由**：被挡住（或尚未判定）的区域不发声，
+            // 因此⛔ 不该去关掉别人（`off_by` 在其后）。`held_notes` 由调用方在
+            // 每次触发前用 `set_held_notes` 设定（离线路径按音符起点从调度表数）。
+            if !region.trigger.held_notes_ok(self.held_notes) {
                 continue;
             }
             // ⭐ `off_by`：在**建自己的声部之前**关掉它点名的那个组（`0` ＝ 不关任何人）。

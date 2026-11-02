@@ -64,7 +64,8 @@ impl AutomationTarget {
             | Self::TrackPan { track_id }
             | Self::SendGain { track_id, .. }
             | Self::DeviceParam { track_id, .. }
-            | Self::Macro { track_id, .. } => *track_id,
+            | Self::Macro { track_id, .. }
+            | Self::MidiCc { track_id, .. } => *track_id,
         }
     }
 
@@ -75,7 +76,7 @@ impl AutomationTarget {
             Self::TrackVolume { .. } | Self::SendGain { .. } => AutomationUnit::Decibels,
             Self::TrackPan { .. } => AutomationUnit::Bipolar,
             Self::Macro { .. } => AutomationUnit::Normalized,
-            Self::DeviceParam { .. } => AutomationUnit::Native,
+            Self::DeviceParam { .. } | Self::MidiCc { .. } => AutomationUnit::Native,
         }
     }
 
@@ -93,6 +94,7 @@ impl AutomationTarget {
             }
             Self::TrackPan { .. } => AutomationValueDomain::pinned(-1.0, 1.0),
             Self::Macro { .. } => AutomationValueDomain::pinned(0.0, 1.0),
+            Self::MidiCc { .. } => AutomationValueDomain::pinned(0.0, 127.0),
             Self::DeviceParam { .. } => return None,
         };
         Some(domain)
@@ -114,6 +116,18 @@ impl AutomationTarget {
         let track = doc.track(&self.track_id())?;
         match self {
             Self::TrackVolume { .. } | Self::TrackPan { .. } => Ok(()),
+            // `MidiCc` 的取值是控制器原始 7 位值：`u8` 允许 128..=255，而 SFZ 的
+            // `*_onccN` / `loccN` 域只到 127 ⇒ 越界值在这里拒掉，⛔ 不让它一路
+            // 走到渲染层再"静默不生效"。
+            Self::MidiCc { controller, .. } => {
+                if *controller <= 127 {
+                    Ok(())
+                } else {
+                    Err(ModelError::AutomationTargetNotApplicable {
+                        detail: "MIDI CC controller must be within 0..=127",
+                    })
+                }
+            }
             Self::SendGain { edge_id, .. } => {
                 if doc.routing_graph.edges.contains_key(edge_id) {
                     Ok(())

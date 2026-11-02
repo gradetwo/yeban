@@ -72,6 +72,7 @@ use yeban_engine::synth::{NoteSchedule, SynthEngine};
 use yeban_model::{EntityId, YebanProjectV1};
 use yeban_sfz::parser::ParseLimits;
 
+use crate::automation::CcProbe;
 use crate::render::{AudioSource, BlockContext, RenderError};
 
 /// 引擎音源装配失败（快照投影 / `arm_from_snapshot`）。
@@ -430,6 +431,14 @@ pub struct EngineTrackSource {
     /// 导出把用户拉过的 pan 完全丢掉（`#250` 勘察的实测缺陷）。
     /// 值来自调用方的 `track_pan_gains`（与音频片段同一条曲线）。
     pan: (f32, f32),
+    /// ⭐ `#341`：本轨的 **MIDI CC 探针**（`MidiCc` 泳道 ⇒ 逐块 `[u8; 128]`）。
+    ///
+    /// `None` ⇒ 走 `render_track`（无探针），与接线前**逐位相同**；
+    /// `Some(_)` ⇒ 走 `render_track_with_cc`：SFZ 分支的 `loccN`/`hiccN` 门控与
+    /// `*_onccN` 调制才有裁决依据。⚠ 只有 `with_cc` 会填它 —— 因此
+    /// **没接 `with_cc` 的调用点，CC 泳道不生效**（这是有意的：探针要工程，
+    /// 而 `new()` 只拿得到快照）。
+    cc: Option<CcProbe>,
     /// ⭐ `#274`：**声部窃取**读数（引擎 SFZ 声部池 16 槽，池满 ⇒ 窃取最老的声部）。
     ///
     /// 为什么是 `Arc<AtomicU64>`：本值在**渲染之后**才有意义，而渲染期间本结构体被
@@ -466,6 +475,8 @@ impl EngineTrackSource {
             mono: Vec::new(),
             // ⭐ 默认**居中**（`1.0, 1.0`）：没注入时导出字节与接线前逐位相同（`#251`）。
             pan: (1.0, 1.0),
+            // ⭐ `#341`：默认**没有** CC 探针 ⇒ `render_track`（逐位等于接线前）。
+            cc: None,
             steals: Arc::new(AtomicU64::new(0)),
         })
     }
@@ -478,6 +489,24 @@ impl EngineTrackSource {
     pub const fn with_pan(mut self, pan: (f32, f32)) -> Self {
         self.pan = pan;
         self
+    }
+
+    /// ⭐ `#341`：把本轨的 `MidiCc` 泳道接成**离线 CC 探针**。
+    ///
+    /// 没有 `MidiCc` 泳道 ⇒ 内部仍是 `None` ⇒ `render_block` 走 `render_track`
+    /// ⇒ 输出与接线前**逐位相同**（判据 `cc_probe_is_bit_identical_when_unused`）。
+    #[must_use]
+    pub fn with_cc(mut self, project: &YebanProjectV1) -> Self {
+        let sample_rate = self.snapshot.sample_rate();
+        let probe = CcProbe::new(project, self.track, sample_rate);
+        self.cc = (!probe.is_empty()).then_some(probe);
+        self
+    }
+
+    /// 被 CC 自动化的控制器个数（读数用；没接 `with_cc` 恒 `0`）。
+    #[must_use]
+    pub fn cc_controllers(&self) -> usize {
+        self.cc.as_ref().map_or(0, CcProbe::controllers)
     }
 
     /// 本源负责的轨道 ID。
@@ -549,12 +578,33 @@ impl AudioSource for EngineTrackSource {
             .sfz()
             .get(&self.track)
             .map(yeban_engine::sfz_instrument::SfzPlan::prepared);
-        self.engine.render_track(
-            self.track,
-            self.schedule.as_ref(),
-            sfz,
-            &mut self.mono[..frames],
-        );
+        // ⭐ `#341`：本块的 CC 表（`None` ＝ 本轨没有 CC 自动化 ⇒ 下面走无探针入口，
+        //    与接线前逐位相同）。表是 `[u8; 128]` 的**按值副本** ⇒ 探针闭包只借它，
+        //    不与 `self.engine` / `self.mono` 的借用相交。
+        let cc_table = self.cc.as_mut().and_then(|cc| cc.table_at(context.first_frame));
+        match cc_table {
+            Some(table) => {
+                let probe = |controller: u8| {
+                    table
+                        .get(usize::from(controller))
+                        .copied()
+                        .unwrap_or(0)
+                };
+                self.engine.render_track_with_cc(
+                    self.track,
+                    self.schedule.as_ref(),
+                    sfz,
+                    &mut self.mono[..frames],
+                    Some(&probe),
+                );
+            }
+            None => self.engine.render_track(
+                self.track,
+                self.schedule.as_ref(),
+                sfz,
+                &mut self.mono[..frames],
+            ),
+        }
         // ⭐ `#209`：**必须**推进播放头，否则每个块都从位置 0 渲染
         //    ⇒ 只有 tick 0 的音符会被触发一次并一直拖长，其余音符永不发声
         //    （`#207` 实测 `--export-wav` ⇒ `distinct=1`）。
@@ -977,6 +1027,7 @@ mod tests {
             "{TRACKS} 条轨全量武装必须触发槽位耗尽计数（否则这条牙齿没咬住）"
         );
         let mut legacy = EngineTrackSource {
+            cc: None,
             engine,
             track: last,
             schedule: snapshot.schedules().get(&last).cloned(),
