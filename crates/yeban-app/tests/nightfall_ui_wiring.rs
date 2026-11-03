@@ -112,7 +112,7 @@ fn synth_nightfall_scale_project() -> YebanProjectV1 {
     ];
 
     let mut track_ids = Vec::new();
-    for (i, name) in midi_names.iter().enumerate() {
+    for name in &midi_names {
         let tid = EntityId::new();
         track_ids.push(tid);
         let mut t = synth_track(tid, name, TrackKind::Midi);
@@ -139,7 +139,7 @@ fn synth_nightfall_scale_project() -> YebanProjectV1 {
         "Hall · 3.6s",
         "Room · 0.8s",
     ];
-    for (i, name) in aux_names.iter().enumerate() {
+    for name in &aux_names {
         let tid = EntityId::new();
         let mut t = synth_track(tid, name, TrackKind::AuxReturn);
         t.devices.push(DeviceDefinition {
