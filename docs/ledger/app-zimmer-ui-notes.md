@@ -2304,3 +2304,130 @@ error: variable does not need to be mutable
 `d_ui_29_metronome_writes_the_document`、`d_ui_30_serve_transport_is_wired`、
 `d_ui_11_serve_header_gestures`（外加 `live_ui_mcp`）。
 
+---
+
+## §52 `D-UI-31`：serve 那份装配**从没接**定位族 —— 标尺 / 段落卡片 / 场景按钮现在落在自己的宿主与**同一格活投影**上（2026-11-03）
+
+### 一、缺陷（用户会怎么撞上）与它的读数
+
+§51 第六节第五格登记的那"仍缺的一票"。`--enable-ui-mcp-http` 提前分流 ⇒ `main.rs`
+`wire_callbacks` 里这三条永不执行。现读（剥 `^[[:space:]]*//` 后只数**代码行**，单位：处）：
+
+| 接线 | `src/main.rs` | `src/live_surface.rs`（修前） | 修后 |
+| :--- | ---: | ---: | ---: |
+| `host::wire_ruler_seek(` | 1 | **0** | 1 |
+| `host::wire_section_seek(` | 1 | **0** | 1 |
+| `host::wire_scene_launch(` | 1 | **0** | 1 |
+
+Slint 的 `on_*` 无注册者 = 空操作 ⇒ 人真的拿来作曲的那份界面上：
+
+1. ⛔ 点标尺 / 拖标尺不改播放头（`ruler-seek`）；
+2. ⛔ 屏读器「上/下一小节」与 `SetValue`「定位到第 N 小节」空转（`ruler-step` / `ruler-seek-bar`）；
+3. ⛔ 点段落卡片不跳段（`section-seek`）；
+4. ⛔ 点场景按钮连一句"没送到"都不给（`scene-launch`）—— 而控制面 `ui/launch_scene`
+   **是**通的 ⇒ **"`ui/launch_scene` 能做、界面上点不动"**：工具与界面分叉，是这条家族里最难从外部看出来的形状。
+
+⭐ 第二半不是"少三句接线"，是**投影的存法**：修前 `LiveAdminSurface.view` 是**裸值**，
+而 `wire_sidebar_contents` / `wire_clip_scope` **各造一份** `Rc<new(RefCell::new(view.clone()))`
+⇒ 装配现场共 **3** 份互不相干的投影（单位：份），其中 **2** 份永远停在装配期那个工程
+（`apply_project` 只换裸值）。这三条定位接线的契约恰恰是"从**当前**投影现读"
+（小节长度 / 网格右缘 / 段落起点 / 场景 tempo 全从投影取）⇒ 就算补上接线，拿装配期快照也只会
+把 `D-UI-10` 那一族重新写一遍。
+
+### 二、为什么此前的判据一条都没抓到（例外清单**第二次**把缺陷掩护成结构）
+
+- **判据侧各自补接线**：`tests/arrangement_ruler_seek.rs` / `arrangement_section_seek.rs` /
+  `scene_launch_wiring.rs` 每份都**新建**一个 `Rc<RefCell<EngineHost>>` **和**一份
+  `Rc<RefCell<ViewState>>` 再自己 `wire_*` ⇒ 装配接没接、接的是不是**同一个**宿主与**同一格**
+  投影，从外面读不出来（判据全绿、装配全哑）。§51 第二节同一格。
+- ⭐⭐ **例外清单第二次**：`D-UI-11` 的 `ASSEMBLY_ONLY_IN_GUI` 把这三条记成
+  `需要活投影 Rc<RefCell<ViewState>>（本装配存裸值）`。这句话**当场为真**（修前确实是裸值），
+  但清单要的是"**结构上**装不出来"—— 把裸值升成共享格正是本票。**"现在没有"被写成了"装不出来"**，
+  于是奇偶守卫不但没抓到缺陷，反而给它盖了章。同一族两次（§51 第二节的"需要引擎句柄" + 本条）
+  ⇒ 已把这条核验写进 `d_ui_11` 的"若变红，怎么读"：**每一格例外都要核验"缺的那个运行期对象是不是
+  真的缺"**，两张先例（句柄 / 活投影）就印在那段文字里。清单实测 **8 → 5** 条（单位：条），
+  剩下的 5 条缺的都是**原生文件对话框**（无头面问不出路径，与 `host::wire_save` 的 `NoPicker` 同口径）。
+
+### 三、修法（为什么这里⛔ 不重接，而 §51 的走带**要**重接）
+
+1. `LiveAdminSurface.view`：裸值 `ViewState` → `Rc<RefCell<ViewState>>`；装配只建**一个**
+   `RefCell`（`Rc::new(RefCell::new(view.clone()))` 现读 = **1** 处），下面**五条**接线各拿
+   `Rc::clone(&live_view)`（现读 = **5** 处：资源栏 / 剪辑作用域 / 标尺 / 段落 / 场景）。
+2. 两个重投影点（`apply_project` / `apply_track_height`）改为 `*self.view.borrow_mut() = view;`
+   —— **写进那一格**而不是换一个 `Rc` ⇒ 已接好的闭包下次 `borrow` 就读到新工程，
+   于是⛔ 不需要（也**不该**）在任何重投影点重接接线。
+   ⚠ 与 §51 的走带**恰好相反**：`wire_transport` 的闭包捕获的是**工程**（`Option<Rc<YebanProjectV1>>`），
+   换工程必须重接一次（本文件 `host::wire_transport(` = 2 处）；而定位族捕获的是**投影的位置**，
+   位置共享了就自动跟着走。**区别不在风格，在闭包抓住了什么。**
+3. 判据证据那份仍是**值**拷贝：`into_control_plane` / `into_production_control_plane` 各
+   `self.surface.view.borrow().clone()`（现读 = **2** 处）—— ⛔ 不是把 `Rc` 分出去，
+   否则"证据"会跟着执行面一起变，失去对照意义。
+4. `borrow` 的作用域纪律（`#212` 那一族）：`pump_meters`、`apply_track_height`、
+   `METHOD_SET_TRACK_HEIGHT` 三处都是**先读完立刻放借，再碰窗口属性**—— 读窗口属性会求值
+   Slint 绑定，带着 `Ref` 进去就是 `RefCell` 双重借用 `abort` 的入口。
+5. 三条新读数（`view_current_scene_name` / `view_section_start_tick` / `view_scene_name`）
+   各带**定点** `#[allow(dead_code)]` ＋ 写明调用者（§51 第五节那条 43 个编译单元的课）。
+
+### 四、判据（`tests/d_ui_31_serve_seek_is_wired.rs`：8 例 / 61 条静态 `assert` / 716 行）
+
+| 例 | 判的事 | 关键读数 |
+| :--- | :--- | :--- |
+| ① | 标尺一次按下 ⇒ **本装配自己的**宿主 | 前置 `commands_applied = 0`、位置 `0` ⇒ 在第 3 条小节线按一次**恰好 +1**、位置离开 0、镜面 `playhead-ticks` 与引擎读数同值；再用 `SetValue("3")` ⇒ 再 +1 且**落点与指针那条完全相同**（两条入口、一个换算） |
+| ② | 小节号阶梯 | `"1"`⇒0、`"2"`、`"3"` 严格递增且两次差分**相等**；坏输入 `"not-a-bar"` ⇒ **零**命令、位置不动 |
+| ③ | 两端是**夹紧**、⛔ 不回绕 | 0 往左一步仍 0；一步 / 两步差分相等；退回两步恰好回 0；`"9999"` ⇒ 右缘 `> 0`；从右缘再往右三步**仍钉在右缘** |
+| ④ | 段落卡片 = 投影里那段起点，且⛔ 不碰文档 | 每按下一张：命令**恰好 +1** 且位置 `== view_section_start_tick(i)`（期望值从**这一格**投影现读）；整段之后 `commit_count` **Δ0**（`MODEL-ISO-001` 第二层）；越界下标 ⇒ 零命令 |
+| ⑤ | 换工程后读的是**新**投影 | 前置：`filled` = 2 段 / 1 景 ⇒ 下标 2 `None`、界面 2 张卡；`apply_project(demo)`（4 段 / 4 景）⇒ 卡片变多、下标 2 从 `None` 变 `Some(tick>0)` 且 `!=` 换代后的停留位置 ⇒ 按下卡片**正是**那个 tick；同一 `SetValue`/下标 2 的场景按钮现在报**新工程**那景的名字 |
+| ⑥ | `scene-launch` 写的是**同一格**投影 | 启动态 `-1` / `""` / `None` ⇒ 按一次：状态行 `已排队：{名字}`、`current-scene-index = 0`、`current-scene-name`、**执行面自己那一格**也说同一个名字（三处一致）；`apply_project` 之后三位一起作废 |
+| ⑦ | 没有引擎时如实冷读 | 四个入口 ⇒ 命令恒 `0`、位置恒 `0`、镜面恒 `0`；场景按钮 ⇒ 状态行如实说"没有送到引擎"、`index` 仍 `-1`、投影里仍无当前场景 |
+| ⑧ | 出处纪律（纯读源码，不建窗口） | live 三条各 **1** / main 三条各仍 **1**（两族⛔ 不互删）、`Rc::new(RefCell::new(view.clone()))` = **1**、`Rc::clone(&live_view)` = **5**、`borrow().clone()` = **2**、`EngineHost::new(` = **1**；执行面**自己**发命令 / 算坐标 **0** 处（`send_transport(` `.seek(` `.play()` `.stop()` `stop_and_rewind(` `commit_seek(` `queue_scene_launch(` `ruler_seek_tick(` `ruler_step_tick(` `ruler_bar_tick(` `ruler_span_ticks(` `tick_to_px(` `roll_ticks_per_pixel(`）；**本判据文件** `host::wire_` **0** 处 |
+
+注入 ⇔ 变红的对应关系（写进判据文件头，⛔ 只登记"删掉接线会红"这一种）：
+删三条接线 ⇒ ①②③④⑤⑥ + ⑧；投影改回裸值/装配期快照 ⇒ ⑤⑥ + ⑧（`RefCell` 那处从 1 变 2/3）；
+在 `apply_project` 里补重接 ⇒ ⑧（每条从 1 变 2，Slint 是覆盖语义 ⇒ 只有计数能抓到）；
+心跳里替用户 `seek` 一次 ⇒ ① 的前置读数 + ⑧；判据侧自己补接线 ⇒ ⑧ 最后一条。
+
+### 五、本票换来的三条纪律
+
+1. ⭐ **判据文件的"自计数"要防搜索词自己**：⑧ 那条"本文件 `host::wire_` 必须 0 处"，
+   如果本文件的 token 数组里字面写着 `host::wire_ruler_seek(`，判据就**永远红**。
+   ⇒ 前缀用 `concat!("host::", "wire_")` 拼（两段之间隔着 `", "` ⇒ 代码里没有完整串），
+   循环里用 `format!("{WIRE_PREFIX}{name}(")`。实测（代码行内拼接后的完整前缀出现次数）= **0**。
+   同类：常量声明必须在该函数**第一条语句之前**（`clippy::items_after_statements` 本仓库是 deny 级）。
+2. ⭐ **夹具的名字要现读，⛔ 不信上一轮的转述**：本轮开工前的一份上下文摘要写着
+   "`filled_project()` 没有段落 / 没有场景" —— 现读 `crates/yeban-model/src/samples.rs`
+   是 **2 段（Intro@0 / Drop@7680）+ 1 景（Scene 1）**。若照那句去写"越界"前置断言，
+   ⑤ 会红在一个**不存在**的前提上。⇒ `§6` 测量纪律对"记忆里的数字"同样成立：
+   **先跑现读，再写断言**（本票因此把 ⑤ 的判别子改成"下标 2 在 `filled` 越界、在 `demo` 有值"，
+   并把前置态**显式断言**出来）。
+3. **判据⛔ 不算网格**：所有期望值都从本装配那一格投影现读（段落起点、场景名、小节线列），
+   差分关系用"相等 / 严格递增 / 钉住"表达 ⇒ 全文件**零**个 tick / BPM / 像素常量。
+   像素侧同理：`bar_positions` 是 `floor(tick / ticks_per_pixel)`（`bridge::tick_to_px`），
+   `ruler_seek_tick` 再乘回来并吸附到**最近**小节线 ⇒ 本票夹具（4/4，`bar_length_ticks = 3840`）
+   的向下取整误差最多 `MAX_TICKS_PER_PIXEL - 1 = 959` tick，**小于半小节 1920** ⇒ 任何合法缩放档
+   都必定吸回那一条小节线（① 的"指针与 `SetValue` 同落点"因此不是运气）。
+   ⚠ **如实登记的限度**：这个保证依赖"一小节 ≥ 2×960 tick"；若将来在**极短小节**的拍号
+   （如 1/4 ⇒ `bar = 960`）上复用同样的两条入口对账，取整误差可能吸到**邻格** ⇒ 那一档要另写判据，
+   ⛔ 不要沿用本票的断言形状。
+
+### 六、如实登记的边界
+
+1. ⛔ 不证明"听得到"：位置与命令读数取自走带镜面（RT→控制侧），逐样本在 `crates/yeban-engine`；
+2. ⛔ 不证明"下一小节线才生效"：⑥ 证的是命令送达（`SceneLaunchDisposition::Direct`）
+   ＋ 三处读数一致；生效帧与 `retune` 由 `tests/mcp_scene_launch.rs` / `scene_launch_wiring.rs` 判；
+3. ⛔ 不注入真指针：本文件直接 `invoke_*`（与 §51 同口径），命中测试与像素→局部坐标那一段
+   由 `tests/arrangement_ruler_seek.rs` 判 —— 那里的 `Rig` 自己接线 ⇒ 它⛔ 覆盖不到"装配接没接"；
+4. ⛔ 不判卷帘横向滚动偏移（`ruler-seek` 报的是带内局部像素，滚动住在 `.slint` 侧）；
+5. ⛔ 不动 `launch_quantization`：量化档从投影现读，本票不改走带配置 ⇒ 不引入对 `Bar` / `Off` 的新假设；
+6. ⛔ 不动录音那颗键（理由见 §51 第六节第 1 格）。
+
+判决：**`pending`** —— 本机只过 `cargo fmt`（rustfmt 解析了这 716 行 ⇒ 语法过关），
+Slint 是重依赖 ⇒ 编译与判决交 CI（`§5`）。⚠ 本票**推送时**上一个 run（`66637663` 的
+`41569883250`）仍在跑：分支级 `concurrency` 会**取消**在飞的 run（`.github/workflows/ci.yml`），
+故必须等它结束再推。读回时要**数 `Running tests/`** 并确认这**五个**二进制都在里头：
+`d_ui_28_export_length_seeds_from_audible_end`、`d_ui_29_metronome_writes_the_document`、
+`d_ui_30_serve_transport_is_wired`、**`d_ui_31_serve_seek_is_wired`**、
+`d_ui_11_serve_header_gestures`（外加 `live_ui_mcp`）—— 前面四票的判决到目前为止仍是
+**第四次作废**（§51 第八节），本票若再停在编译就是**第五次**。
+另：`deny` 那枚红与本票无关（`async-executor v1.14.0` 被上游 yank，`§44`），`Cargo.lock` 一位未动。
+
+

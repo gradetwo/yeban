@@ -379,7 +379,21 @@ struct LiveAdminSurface {
     /// —— 因此"权威换了工程而界面还画着旧的那份"需要有人**跳过**这一次调用才可能发生，
     /// 而 `sync_authority` 就是那个唯一的调用点。
     project: YebanProjectV1,
-    view: ViewState,
+    /// ⭐ `D-UI-31`：与 `D-UI-30` 对宿主做的那一跳**同款**形状 —— `Rc<RefCell<..>>`
+    /// 而**不是**裸值，因为 [`host::wire_ruler_seek`] / [`host::wire_section_seek`] /
+    /// [`host::wire_scene_launch`]（以及既有那两条 `wire_sidebar_contents` /
+    /// `wire_clip_scope`）的回调要从这份投影**现读**（网格右缘、小节长度、段落起点、
+    /// 场景 tempo），而 [`Self::apply_project`] 会把它整体换掉。
+    ///
+    /// ⛔ 这不是"第二份投影"：装配只建**一个** `RefCell`，交给上面那五条接线的是
+    /// `Rc::clone`（计数 +1）。存裸值的旧形状有两种，都留了洞：
+    ///  · 装配期快照（`Rc::new(RefCell::new(view.clone()))`）⇒ 换工程之后读数停在旧工程；
+    ///  · 裸值 + 每次换工程重接 ⇒ 每条读投影的接线都要在**每一个**重投影点重接一次，
+    ///    漏一个点就回到"停在旧工程"（本文件有两个重投影点：`apply_project` /
+    ///    `apply_track_height`；未来的第三个会静默复发 —— 那是 `D-UI-10` 那一族）。
+    /// `main.rs` 的产品装配用的正是这一份共享（`view_cell`，`main.rs` 的
+    /// `wire_callbacks` 拿 `Rc::clone(&view_cell)`）。
+    view: Rc<RefCell<ViewState>>,
     save_path: Option<PathBuf>,
     meters: MeterRuntime,
     /// ⭐ `D-UI-30`：与产品路径（[`host::ProductionLoop`]）与 `main.rs` 的走带**同款**形状
@@ -692,7 +706,12 @@ impl LiveAdminSurface {
     /// 长度不等长时**也要**重抓：界面此刻是对的（[`host::apply_view`] 已经按当前投影
     /// 重置了电平数组），树只是要跟上界面。
     fn pump_meters(&mut self) -> host::MeterPump {
-        let pump = host::pump_meters(&self.window, &mut self.meters, &self.view);
+        // 投影按 `D-UI-31` 住在共享的那一格：读之前 `borrow`，读完立刻放下
+        // （`refresh_tree` 会重投影，绝不能带着 `Ref` 进去 —— `#212` 同一条纪律）。
+        let pump = {
+            let view = self.view.borrow();
+            host::pump_meters(&self.window, &mut self.meters, &view)
+        };
         // 电平标签变了 ⇒ 控件树必须重抓（失败也不该让一次电平刷新变成错误：
         // 界面已经是新值，重抓失败只是"控制面看到的树旧了一点"）。
         let _ = self.refresh_tree();
@@ -719,7 +738,10 @@ impl LiveAdminSurface {
             0.0,
         );
         self.project = project.clone();
-        self.view = view;
+        // ⭐ `D-UI-31`：写进**共享的那一格**（不是换一个 `Rc`）⇒ 已经接好的标尺 / 段落 /
+        // 场景 / 资源栏 / 剪辑作用域五条接线，下一次读投影时读到的就是这一份 ⇒
+        // 这里⛔ 不需要（也**不该**）再重接一次。
+        *self.view.borrow_mut() = view;
         self.registry = registry;
         // 旧读数不再代表任何东西：清空面板，并把"等长静音"写进界面。
         self.meters = MeterRuntime::empty();
@@ -839,10 +861,12 @@ impl LiveAdminSurface {
     ///
     /// 它**不**碰工程、不落盘、不过引擎：行高是视图态（`ADR-0004` S1 / Q4-A，零 schema）。
     fn apply_track_height(&mut self, element_id: &str, height_px: u32) -> Result<(), PortError> {
-        let track_id = track_id_of_header(element_id, &self.view).ok_or_else(|| {
-            PortError::UnknownElement {
-                id: element_id.to_owned(),
-            }
+        let track_id = {
+            let view = self.view.borrow();
+            track_id_of_header(element_id, &view)
+        }
+        .ok_or_else(|| PortError::UnknownElement {
+            id: element_id.to_owned(),
         })?;
         let changed =
             yeban_app::host::set_track_height_override(&self.window, &track_id, height_px);
@@ -868,7 +892,8 @@ impl LiveAdminSurface {
             .iter()
             .find(|track| track.id == track_id)
             .map_or(0.0_f32, |track| track.height);
-        self.view = view;
+        // 同上：写共享的那一格（`D-UI-31`）⇒ 读行高/小节长度那几条接线不需要重接。
+        *self.view.borrow_mut() = view;
         self.registry = registry;
         // 电平对齐 + 重抓树（顺序是契约：注入必须在重抓之前）。
         self.pump_meters();
@@ -1091,7 +1116,7 @@ impl LiveAdminSurface {
         // `meterRows` = 界面电平数组的长度。
         // 三者等长正是"没有串轨"的可断言形态（`host::apply_meters` 的 `debug_assert_eq!` 钉的
         // 就是前两者；`.slint` 按下标取，不等长会把 A 轨的电平画到 B 轨上）。
-        let tracks = self.view.tracks.len() as u64;
+        let tracks = self.view.borrow().tracks.len() as u64;
         let rows = slint::Model::row_count(&self.window.get_track_names()) as u64;
         let meter_rows = slint::Model::row_count(&self.window.get_track_meter_levels()) as u64;
         self.report = Some(AdminReport::new(
@@ -1351,17 +1376,22 @@ impl UiSurface for LiveAdminSurface {
             }
             yeban_ui_mcp::methods::METHOD_SET_TRACK_HEIGHT => {
                 let element_id = arguments.text("elementId").unwrap_or_default();
-                let Some(track_id) = track_id_of_header(element_id, &self.view) else {
-                    // 语义 ID 不是轨道头 ⇒ 真调用会报 `-32006`；dryRun 也如实报"这条预测不了"。
-                    return Ok(None);
+                // 一次 `borrow` 读完两条（语义 ID 与矩形高都出自**同一格**投影），读完就放下 ——
+                // 下面那次窗口属性读取会求值 Slint 绑定，⛔ 不许带着 `Ref` 进去（`#212` 纪律）。
+                let (track_id, drawn_px) = {
+                    let view = self.view.borrow();
+                    let Some(track_id) = track_id_of_header(element_id, &view) else {
+                        // 语义 ID 不是轨道头 ⇒ 真调用会报 `-32006`；dryRun 也如实报"这条预测不了"。
+                        return Ok(None);
+                    };
+                    let drawn_px = view
+                        .tracks
+                        .iter()
+                        .find(|track| track.id == track_id)
+                        .map_or(0.0_f32, |track| track.height);
+                    (track_id, drawn_px)
                 };
                 let layout = yeban_app::host::track_height_layout(&self.window);
-                let drawn_px = self
-                    .view
-                    .tracks
-                    .iter()
-                    .find(|track| track.id == track_id)
-                    .map_or(0.0_f32, |track| track.height);
                 PreviewEffect::new(vec![
                     ("trackId", ReportValue::Text(track_id.clone())),
                     (
@@ -1386,7 +1416,10 @@ impl UiSurface for LiveAdminSurface {
                     ReportValue::Uint(self.engine.borrow().generation().saturating_add(1)),
                 ),
                 ("quanta", ReportValue::Uint(self.engine_quanta)),
-                ("tracks", ReportValue::Uint(self.view.tracks.len() as u64)),
+                (
+                    "tracks",
+                    ReportValue::Uint(self.view.borrow().tracks.len() as u64),
+                ),
             ]),
             yeban_ui_mcp::methods::METHOD_OPEN_PROJECT => {
                 let path = arguments.text("path").unwrap_or_default();
@@ -1436,7 +1469,7 @@ impl UiSurface for LiveAdminSurface {
                     ("saveFirst", ReportValue::Bool(save_first)),
                     (
                         "currentTracks",
-                        ReportValue::Uint(self.view.tracks.len() as u64),
+                        ReportValue::Uint(self.view.borrow().tracks.len() as u64),
                     ),
                     ("openedTracks", ReportValue::Uint(opened_tracks)),
                     (
@@ -1539,7 +1572,9 @@ impl LiveUi {
     pub fn into_control_plane(self, permission: Permission) -> LiveControlPlane {
         // 投影与注册表在**把执行面移进 `Box` 之前**取出：它们只有执行面里的那一份
         // （`apply_project` 换掉的也是它）。顺序反了就是 E0382（CI 第一次抓到的就是这条）。
-        let view = self.surface.view.clone();
+        // `D-UI-31`：投影住在 `Rc<RefCell<..>>` 里 ⇒ 这里要的是**值**的一份拷贝（判据证据），
+        // ⛔ 不是把那个 `Rc` 再分出去（那会让"证据"跟着执行面一起变，失去对照的意义）。
+        let view = self.surface.view.borrow().clone();
         let registry = self.surface.registry.clone();
         // 窗口句柄也在装箱前取出：它是 `Rc` **共享**（不是第二份窗口状态），
         // 只用来读"这个窗口渲染了几帧"这个探针（见 [`LiveControlPlane::rendered_frames`]）。
@@ -1579,7 +1614,9 @@ impl LiveUi {
     /// `scopes_for_permission`）：调用方只说"我要哪一级"，不在这里手写 scope 清单。
     #[must_use]
     pub fn into_production_control_plane(self, permission: Permission) -> LiveControlPlane {
-        let view = self.surface.view.clone();
+        // `D-UI-31`：投影住在 `Rc<RefCell<..>>` 里 ⇒ 这里要的是**值**的一份拷贝（判据证据），
+        // ⛔ 不是把那个 `Rc` 再分出去（那会让"证据"跟着执行面一起变，失去对照的意义）。
+        let view = self.surface.view.borrow().clone();
         let registry = self.surface.registry.clone();
         let window = self.surface.inner.port().window().clone();
         let plane = ControlPlane::production(permission, Box::new(self.surface));
@@ -1753,6 +1790,61 @@ impl LiveUi {
     #[must_use]
     pub fn engine_transport_position_ticks(&self) -> u64 {
         self.surface.engine.borrow().transport().position_ticks
+    }
+
+    /// ⭐ 装配**那一格活投影**里的「当前场景」名（没有启动过场景 ⇒ `None`）。
+    ///
+    /// `D-UI-31` 用它证一件光看界面属性看不出来的事：[`crate::host::wire_scene_launch`]
+    /// 成功后把 `CurrentScene` 写进的是**本执行面读的那同一格**投影，而不是接线时的
+    /// 一份装配期快照。判据的对照形状是"界面镜面 `current-scene-index` 已是 2，
+    /// 而执行面自己那份投影还说没有场景" —— 那正是两份投影各说各话。
+    ///
+    /// ⛔ 不是第四份状态：它 `borrow` 的就是 `LiveAdminSurface.view` 那一格。
+    /// 没有 `borrow_mut` ⇒ 本读数⛔ 不参与任何写入。
+    // ⚠ `#[allow(dead_code)]`：同款近例见 `engine_metronome_enabled` 上方那条
+    // （本文件被多个测试目标经 `#[path]` 各装一份，本读数只有 `tests/d_ui_31_*` 调）。
+    #[allow(dead_code)]
+    #[must_use]
+    pub fn view_current_scene_name(&self) -> Option<String> {
+        self.surface
+            .view
+            .borrow()
+            .current_scene
+            .as_ref()
+            .map(|scene| scene.name.clone())
+    }
+
+    /// ⭐ 活投影里第 `index` 个**段落**的起点 tick（下标越界 ⇒ `None`，不猜）。
+    ///
+    /// `D-UI-31` ④⑤ 用它对账「章节卡片按下去之后的引擎位置」：期望值必须从**这一格**
+    /// 投影现读 —— 换工程之后若装配用的是装配期快照，这里读到的是新工程的段落而
+    /// 位置停在旧工程的 tick，那条红就是本票要抓的形状。
+    // ⚠ `#[allow(dead_code)]`：同款近例见 `engine_metronome_enabled` 上方那条。
+    #[allow(dead_code)]
+    #[must_use]
+    pub fn view_section_start_tick(&self, index: usize) -> Option<u64> {
+        self.surface
+            .view
+            .borrow()
+            .sections
+            .get(index)
+            .map(|section| section.start_tick)
+    }
+
+    /// ⭐ 活投影里第 `index` 个**场景**的名字（下标越界 ⇒ `None`）。
+    ///
+    /// `D-UI-31` ⑥ 用它对照状态行里那句「已排队：{name}」，并顺手证"下标解析用的是
+    /// 当时那一格投影"（换工程之后同一个下标对应的是**新**场景的名字）。
+    // ⚠ `#[allow(dead_code)]`：同款近例见 `engine_metronome_enabled` 上方那条。
+    #[allow(dead_code)]
+    #[must_use]
+    pub fn view_scene_name(&self, index: usize) -> Option<String> {
+        self.surface
+            .view
+            .borrow()
+            .scenes
+            .get(index)
+            .map(|scene| scene.name.clone())
     }
 
     /// 音频读路径累计换过多少次快照（`SnapshotReader::begin_block` 里的计数）。
@@ -2172,6 +2264,12 @@ pub fn build_live_ui_with(
     options: &LiveWiringOptions,
 ) -> Result<LiveUi, LiveWiringError> {
     let view = ViewState::from_project(project)?;
+    // ⭐ `D-UI-31`：**活投影**那一格 —— 与本执行面**同一个** `Rc<RefCell<ViewState>>`，
+    // 交给下面每一条"要读投影"的接线（资源栏 / 剪辑作用域 / 标尺 / 段落 / 场景）。
+    // 本地那份 `view` 从此只用来播种窗口（`build_main_window_with_console_tab` 的注入），
+    // ⛔ 不再被任何回调持有：旧写法给 `wire_sidebar_contents` 与 `wire_clip_scope`
+    // **各造一份** `Rc<RefCell<view.clone()>>`，换工程之后两份都停在装配期那个工程上。
+    let live_view = Rc::new(RefCell::new(view.clone()));
     let scene = DemoScene::from_view(&view);
     let size = Size::new(scene.viewport_width, scene.viewport_height);
     let registry = control_tree_from_registry(&ElementRegistry::from_view(&view))?;
@@ -2214,23 +2312,18 @@ pub fn build_live_ui_with(
     // 只有属性写入 ⇒ 不改工程、不需要 `UndoPort`，装配顺序上也不与撤销端口耦合。
     host::wire_view_callbacks(&window);
     // ⭐ 左侧资源栏的条目**取数**（分类 / 条目点击 ⇒ 重注入数组）：与产品进程
-    // （`main.rs` 的 `wire_callbacks`）调的是**同一个** `host::wire_sidebar_contents`。
-    // 这里给的是装配视图的快照（与下面 `wire_clip_scope` 的回落同一手法）⇒ 无头端口注入的
-    // 分类点击与用户点击取同一份数、钳同一个区间。
-    host::wire_sidebar_contents(&window, Rc::new(RefCell::new(view.clone())));
+    // （`main.rs` 的 `wire_callbacks`）调的是**同一个** `host::wire_sidebar_contents`，
+    // 而且拿的是**同一格**活投影（`D-UI-31`）⇒ 换工程之后分类计数与条目数组跟着新工程走。
+    host::wire_sidebar_contents(&window, Rc::clone(&live_view));
     // ⭐ AI 提案抽屉：与产品进程调的是**同一个** `host::wire_proposal_drawer`
     // （`open-musical-pr` 的注册者只有它，因此上一行不再碰这个回调）。来源由装配决定：
     // 接在权威上的装配 ⇒ 打开抽屉时现读权威那份未合并清单；没接权威的装配 ⇒ 空态那句
     // "没有来源"。⛔ 判据侧不存在"绕过来源直接写属性"的第二条路。
     host::wire_proposal_drawer(&window, options.proposal_source.clone());
     // ⭐ `[UI-NOTE-001]` 剪辑选中态 ⇒ 卷帘作用域：与产品进程（`main.rs` 的 `wire_callbacks`）
-    // 调的是**同一个** `host::wire_clip_scope`。装配视图克隆一份作为"没有撤销端口"时的回落
-    // （与 `build_main_window_with_console_tab` 的 `view_snapshot` 同一手法）。
-    host::wire_clip_scope(
-        &window,
-        Rc::new(RefCell::new(view.clone())),
-        options.undo.clone(),
-    );
+    // 调的是**同一个** `host::wire_clip_scope`，同样拿**同一格**活投影（`D-UI-31`；
+    // 旧写法在这里也 `view.clone()` 造了**第三份**投影）。
+    host::wire_clip_scope(&window, Rc::clone(&live_view), options.undo.clone());
     // 混音台（控制台 Tab 2）的**写入面**：与产品进程（`main.rs` 的 `wire_callbacks`）调的是
     // **同一个**函数。它需要 `UndoPort`（工程内容必须走 `Op`，`ADR-0005`）⇒ 只在装配给了
     // 端口时接上；`options.undo` 为 `None` 的既有判据因此照旧"没有写入面"，行为一位不变。
@@ -2384,12 +2477,39 @@ pub fn build_live_ui_with(
         Some(Rc::new(project.clone())),
         options.undo.clone(),
     );
+    // ⭐ 缺陷 `D-UI-31`（2026-11-03，与 `D-UI-11` / `D-UI-30` 同族、同一格漏）：**定位族
+    // 在本装配里没接线**。三条的唯一调用点过去都在 `main.rs` 的 `wire_callbacks`
+    // （现读：`main.rs` = 3 处、本文件 = 修前 **0** 处；单位：处），而 `--enable-ui-mcp-http`
+    // 在 `main()` 里提前分流进 `ui_mcp_serve::run` ⇒ 那一段根本不跑。Slint 的 `on_*`
+    // 没注册者就是空操作，于是这份执行面上：
+    //   · 拖标尺 / 点标尺不改播放头（`ruler-seek` 没有读者）；屏读器的「上/下一小节」
+    //     与「定位到第 N 小节」同样空转；
+    //   · 点编曲区的段落卡片不定位（`section-seek`）；
+    //   · 点场景按钮不启动场景（`scene-launch`）—— 而 `ui/launch_scene` 那条**控制面**
+    //     命令走的是另一条路，因此"工具能做、界面上点不动"这件事在这份装配里一直存在。
+    //
+    // ⚠ 为什么此前没有判据抓到它：判据侧各自补一次接线（`tests/arrangement_ruler_seek.rs`
+    // 就是"新建一个 `Rc<RefCell<EngineHost>>` + 新建一份 `Rc<RefCell<ViewState>>` 再
+    // `wire_ruler_seek`"），于是"这份装配接没接、接的是不是同一个宿主/同一格投影"
+    // 从外面读不出来。同一族的防线是 `tests/d_ui_11_serve_header_gestures.rs` 的名单对账
+    // （本票把那三条从"只在 GUI 有"的例外清单里删掉）。
+    //
+    // 与 `D-UI-30` 的区别在**投影**那一半：这三条要的不是"重接一次"，而是**同一格活的**
+    // `Rc<RefCell<ViewState>>` —— 它们从投影现读小节长度 / 网格右缘 / 段落起点 / 场景 tempo。
+    // 拿装配期快照会在换工程之后静默停在旧工程（`apply_project` 有两个重投影点，
+    // 靠"每处重接"追平就是把 `D-UI-10` 那一族重新写一遍），因此本票把 `view` 字段
+    // 升成共享格（与 `main.rs` 的 `view_cell` 同款），接线的闭包与本执行面读同一份。
+    host::wire_ruler_seek(&window, Rc::clone(&engine), Rc::clone(&live_view));
+    host::wire_section_seek(&window, Rc::clone(&engine), Rc::clone(&live_view));
+    host::wire_scene_launch(&window, Rc::clone(&engine), Rc::clone(&live_view));
     let admin = LiveAdminSurface {
         inner: surface,
         window,
         registry,
         project: project.clone(),
-        view,
+        // 这里是把**那一格本身移进去**（⛔ 不是再造一份）⇒ 本执行面与上面五条接线
+        // 读的永远是同一份投影。
+        view: live_view,
         save_path: options.save_path.clone(),
         meters: MeterRuntime::empty(),
         engine,
