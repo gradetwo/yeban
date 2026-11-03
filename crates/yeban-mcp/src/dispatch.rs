@@ -1045,6 +1045,76 @@ mod tests {
         );
     }
 
+    /// **回归判据（2026-11-03 制作实测）**：`yeban_edit_notes` `create:true`
+    /// 批量建材料时校验失败（`duplicateNoteId`），同键重发必须 promptly
+    /// 重放首次失败 —— 不得重执行，更不得挂起。制作侧曾报“同键重发
+    /// 服务端挂起 6 分钟以上”；本判据把该序列钉在分发器层：537 音符
+    /// 批量、1 处身份冲突（与制作侧钢琴声部 537 音、535 个不同
+    /// (start,pitch,duration) 三元组同构；这里用显式 id 撞出同一
+    /// `duplicateNoteId`，不依赖派生路径）。
+    #[test]
+    fn failed_create_replays_promptly_on_same_key() {
+        let mut dispatcher = dispatcher();
+        seed_project(&mut dispatcher, unique_project_path());
+        let auth = bearer(&dispatcher);
+        let mut ops = Vec::new();
+        let mut dup_id = String::new();
+        for i in 0..537 {
+            let id = if i == 200 {
+                dup_id.clone()
+            } else {
+                format!("01J8ZQ{:020}", 1000 + i)
+            };
+            if i == 100 {
+                dup_id = id.clone();
+            }
+            ops.push(serde_json::json!({"kind": "add", "note": {
+                "id": id, "startTick": i * 96,
+                "pitch": 60 + (i % 12), "durationTicks": 96, "velocity": 80}}));
+        }
+        let arguments = serde_json::json!({
+            "trackId": "01J8ZQ00000000000000000001",
+            "clipId": "01J8ZQ00000000000000009000",
+            "create": true, "ops": ops, "idempotencyKey": "midi2-f-s5-piano"});
+        let line = |id: &str| {
+            serde_json::json!({
+                "jsonrpc": "2.0", "id": id, "method": "tools/call",
+                "params": {"name": "yeban_edit_notes",
+                           "arguments": arguments.clone()}
+            })
+            .to_string()
+        };
+        let first = dispatcher.handle_line(Channel::Http, Some(&auth), &line("c1"));
+        assert_eq!(first.error_code(), None, "领域失败是带内的");
+        assert_eq!(first.http_status, 200);
+        let first_result = first.response.expect("响应").result.expect("result");
+        assert_eq!(first_result["status"], "error", "{first_result}");
+        assert_eq!(first_result["error"]["code"], "INVALID_PARAMETER_RANGE");
+        assert_eq!(
+            first_result["error"]["data"]["reason"], "duplicateNoteId",
+            "{first_result}"
+        );
+        assert_eq!(dispatcher.idempotency_len(), 1, "失败同样入缓存");
+        assert_eq!(
+            dispatcher.idempotency_keys(),
+            vec!["yeban_edit_notes:midi2-f-s5-piano"]
+        );
+
+        let second = dispatcher.handle_line(Channel::Http, Some(&auth), &line("c2"));
+        assert_eq!(dispatcher.replayed(), 1, "第二次必须命中**失败**缓存");
+        assert_eq!(dispatcher.idempotency_len(), 1, "缓存不得增长");
+        assert_eq!(second.http_status, 200, "重放沿用首次的状态码");
+        let envelope = second.response.expect("响应");
+        assert_eq!(envelope.id, Id::Text("c2".to_owned()), "必须回显当前 id");
+        let replayed = envelope.result.expect("result");
+        assert_eq!(replayed["replayed"], true, "{replayed}");
+        assert_eq!(replayed["response"]["id"], "c2", "内层也用当前 id");
+        assert_eq!(
+            replayed["response"]["result"], first_result,
+            "重放的失败主体必须与首次逐字节相同"
+        );
+    }
+
     /// **本判据存在的理由（实测事故）**：上面那条测试对**每个注册工具**做一次
     /// **真执行**，而带输出文件面的工具会真的写盘。本线开发中 `yeban_record_wav`
     /// 用默认 2 秒在 `crates/yeban-mcp/` 里留下了
