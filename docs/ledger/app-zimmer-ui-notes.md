@@ -1853,3 +1853,78 @@ fatal: Failed to connect to github.com port 443 after 133929 ms: Connection time
 候选项在任务表里改判为"**已登记，待裁 ⛔ 实现**"。
 
 `cargo fmt -p yeban-app -- --check` `rc=0`（整个 crate 干净）。判决：`pending`（交 CI）。
+
+---
+
+## §48 判决读回：run `41550904195` —— **一枚 clippy lint 吃掉三条腿**，于是把 CI 同款 `clippy 1.99` 搬进本机零依赖桩（2026-11-03）
+
+### 一、读数（§6.3 的口径：先数作业真跑了什么）
+
+指标：run `41550904195`（`headSha 6167f3b2`）各作业的 `conclusion`，与 `rust (yeban-app)` 日志里
+`Running tests/` 的**次数**（单位：次）和 `test result:` 的行数（单位：行）。
+
+| 作业 | conclusion | 实跑测试二进制数 |
+| :--- | :--- | ---: |
+| `plan` / `checks (fmt / 红线守卫 / schema)` / `lockfile` | success | — |
+| `rust (yeban-app)` | **failure** | **0** |
+| `windows (… / yeban-app / …)` | **failure** | 0 |
+| `macos (… / yeban-app / …)` | **failure** | 0 |
+| `deny (cargo-deny)` | failure | —— 与本章无关，仍是 §44 那个被 `yank` 的 `async-executor` |
+| `e2e` / `rust (workspace 全量)` | skipped | —— ⛔ 是绿（§6.3 ②） |
+
+日志里的原文（三条腿逐字同判）：
+
+```text
+error: the loop variable `index` is only used to index `chars`
+   --> crates/yeban-app/tests/d_ui_27_status_bar_tip_promises_are_bound.rs:313:18
+   = note: `-D clippy::needless-range-loop` implied by `-D clippy::all`
+error: could not compile `yeban-app` (test "d_ui_27_status_bar_tip_promises_are_bound") due to 1 previous error
+##[error]Process completed with exit code 101.
+```
+
+⇒ `Running tests/` = **0**、`test result:` = **0**：**`D-UI-24` / `D-UI-26` / `D-UI-27` 到今天仍然一条运行时读数都没有**（连续第三个 run）。
+`checks` 腿的 `cargo fmt --check` 是绿的 ⇒ 这⛔ 是格式问题，是 **lint**（`clippy::needless_range_loop`，
+`for index in open..chars.len()` 只为索引 `chars`）。修法就是 §47 那条改写：`windows()/position()`
+定位 + `for &ch in &chars[open..]`。
+
+### 二、真正的教训：**一枚 lint ⇒ 三条腿 ⇒ 整批零读数**，而 lint 本机⛔ 看不见？—— 看得见的
+
+`§47` 已经记过"手写 char 比较会招 `manual_pattern_char_comparison`"，本票又踩第二枚。两次都是
+**同一个通用 lint 家族**，都⛔ 需要 Slint，都本机看不见 —— 因为我只在 `stable`（`clippy 0.1.96`）上跑过，
+而 CI 是 **`rust-1.99.0`**。实测本机 `rustup` 里**装着 1.99.0 工具链**：
+
+```console
+$ cargo +1.99.0 clippy --version
+clippy 0.1.99 (b940084d7e 2026-09-28)
+```
+
+⇒ **本机就能跑 CI 同款 lint**。桩的做法（§47 的桩，这次改成**脚本可复现**，`/tmp/dcheck`）：
+
+1. `src/input.rs` = 真源码截到内部 `#[cfg(test)]` 之前（1319 行，逐字）；
+2. `src/host.rs` = 从 `src/host.rs:9164` 起的 `action_has_implementation`，尾部用**第一个顶格 `}`** 定位
+   （⚠ 别按花括号计数：函数体注释里成对的 `{`/`}` 会把终点推到 **+820 行**，实测把整段宿主塞进桩里换来满屏 `E0432`）；
+3. 把 `crates/yeban-app/ui/**/*.slint` 整个复制进桩（`include_str!("../ui/…")` 原样可解析），
+   `src/{host,elements}.rs` 复制进 `fixtures/`；
+4. 测试副本里 `use yeban_app::` → `use dcheck::`，`read_dir("ui")` → `read_dir(env!("CARGO_MANIFEST_DIR"))`。
+
+**先核验这台机器真的能抓 lint**（⛔ 拿"没报错"当"通过"）：把 §47 的旧写法原样塞回桩再跑 ——
+
+```text
+error: the loop variable `index` is only used to index `chars`
+error: could not compile `dcheck` (test "d_ui_27") due to 1 previous error
+```
+
+同一条 lint、同一条信息（`rust-1.96.0` 的 index 页与 CI 的 `rust-1.99.0` 一致）⇒ 预检器**有效**。
+改回后：`cargo +1.99.0 clippy --tests --all-targets -- -D warnings` 干净，
+`cargo +1.99.0 test` **`d_ui_26` 10/10、`d_ui_27` 8/8 真的执行了**。
+
+⛔ 把桩的绿当判决（§47 同一句）：桩是另一份编译单元，`SharedString` 那类签名漂移只有 CI 看得见；
+桩这次覆盖的是**通用 lint + 本文件逻辑** —— 而这两样正是连吃三个 run 的东西。
+
+### 三、新到的工作纪律（写下来，⛔ 靠自觉）
+
+> **任何新增/改动的 `.rs` 测试文件，若能塞进零依赖桩，就先在桩里跑 `cargo +1.99.0 clippy --tests -D warnings` 再推。**
+> 塞不进去的（`d_ui_21/23/24` 那类要 `bridge/ui/undo/scene` 的），⛔ 本机预检 ⇒ 推之前**逐条自查 lint 面**：
+> `for i in 0..v.len()` 只为索引、`.split(|c: char| c == …)`、`&v[..]` 手抄切片这类形状一律改写成迭代器形式。
+
+`cargo fmt -p yeban-app -- --check` `rc=0`。判决：本条改写交 CI 读回（`pending`）。

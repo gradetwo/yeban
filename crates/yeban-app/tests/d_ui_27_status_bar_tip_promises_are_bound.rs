@@ -304,14 +304,14 @@ fn spelling_hits_in(segment: &str, spelling: &str) -> usize {
 fn component_block(source: &str, header: &str) -> String {
     let chars: Vec<char> = source.chars().collect();
     let needle: Vec<char> = header.chars().collect();
-    let start = (0..chars.len())
-        .find(|at| chars[*at..].starts_with(&needle))
+    let start = chars
+        .windows(needle.len())
+        .position(|window| window == needle.as_slice())
         .unwrap_or_else(|| panic!("源码里找不到 `{header}`"));
     let open = start + needle.len() - 1; // `StatusBar {` 的那个 '{'
     let mut depth = 0;
     let mut out = String::new();
-    for index in open..chars.len() {
-        let ch = chars[index];
+    for &ch in &chars[open..] {
         if ch == '{' {
             depth += 1;
         } else if ch == '}' {
