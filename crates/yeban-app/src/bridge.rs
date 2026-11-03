@@ -3062,6 +3062,57 @@ pub fn sidebar_category_content(view: &ViewState, category: usize) -> SidebarCat
     }
 }
 
+/// ⭐ 左栏搜索框的**子串过滤**（大小写不敏感）—— 全仓唯一的一处匹配（任务单 `D-UI-14`）。
+///
+/// 为什么住在 Rust 而不是 `.slint`：Slint 1.18.1 的字符串内置集里**没有** `contains`，
+/// 也没有字符串版 `index-of`（实测 `i-slint-compiler-1.18.1/lookup.rs` 的内置表只有
+/// `is-float / to-float / is-empty / character-count / to-lowercase / to-uppercase /
+/// starts-with / ends-with / replace-all`；数组的 `index-of / any / all / find-index`
+/// 在 `experimental_lookup_enabled()` 后面）。界面里那个框因此只负责"把字交出去"。
+///
+/// 三条口径，逐条都有判据钉住（`crates/yeban-app/tests/sidebar_search.rs`）：
+/// 1. **空串 = 不过滤**，原样返回 ⇒ 装配期与默认帧逐字等于过滤存在前的形状
+///    （`tests/golden/**` 的基准一位不动）；
+/// 2. 命中**按原顺序**保留（⛔ 不重排：`sidebar-item-{i}` 的下标与画面自上而下的顺序
+///    同源，重排会让注册表的读数搬家）；
+/// 3. 空态理由分两档 —— 本类本来就 0 条 ⇒ **沿用**原那份 `empty_reason`
+///    （⛔ 不许把"库是空的"说成"没匹配上"）；本类有 N 条但一条都不匹配 ⇒
+///    [`sidebar_no_match_reason`]（带 query 与条数）。
+#[must_use]
+pub fn filter_sidebar_content(
+    content: &SidebarCategoryContent,
+    query: &str,
+) -> SidebarCategoryContent {
+    if query.is_empty() {
+        return content.clone();
+    }
+    let needle = query.to_lowercase();
+    let items: Vec<String> = content
+        .items
+        .iter()
+        .filter(|name| name.to_lowercase().contains(&needle))
+        .cloned()
+        .collect();
+    let empty_reason = if !items.is_empty() {
+        String::new()
+    } else if content.items.is_empty() {
+        content.empty_reason.clone()
+    } else {
+        sidebar_no_match_reason(query, content.items.len())
+    };
+    SidebarCategoryContent {
+        items,
+        empty_reason,
+    }
+}
+
+/// 「有 N 条、但都不匹配」那句理由的**唯一**构造点（宿主与判据都从这里取，
+/// ⛔ 不在测试里手抄第二份措辞 —— 措辞一改就红的那种）。
+#[must_use]
+pub fn sidebar_no_match_reason(query: &str, total: usize) -> String {
+    format!("没有匹配「{query}」的条目（本类共 {total} 条；清空搜索框回到全部）")
+}
+
 /// "装乐器"的可用性 ＋ 不可用时的**逐字**原因（可用时是空串）。
 ///
 /// 两个前置条件，顺序即优先级：
@@ -4469,6 +4520,18 @@ impl ViewState {
     #[must_use]
     pub fn clip_labels(&self) -> Vec<String> {
         self.clips.iter().map(|clip| clip.label.clone()).collect()
+    }
+
+    /// 每条摆放的**静音态**（与 [`Self::clip_ulids`] **同序同长**，来源是
+    /// `ClipPlacement::muted` —— 工程字段，⛔ 不是界面自己记的第二份状态）。
+    ///
+    /// 存在理由：`Cmd/Ctrl+M` 拨的就是这一位，而界面必须**看得见**它的结果
+    /// （否则"按了没反应"与"没按"逐像素相同）。读点是
+    /// `ui/workspace/arrangement_view.slint` 的 `clip-{ulid}-header` 底色；
+    /// 唯一写者是 `host::apply_view`（与 `track-mutes` / `track-solos` 同一族）。
+    #[must_use]
+    pub fn clip_mutes(&self) -> Vec<bool> {
+        self.clips.iter().map(|clip| clip.muted).collect()
     }
 
     /// 选中的**摆放身份** → 它引用的**片段池条目身份**（[`Self::visible_notes_scoped`] 的作用域）。

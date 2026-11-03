@@ -158,8 +158,13 @@ impl WavExportOptions {
     ///   （见 [`crate::audio_clip`]）。内置三份夹具工程都是 48 kHz ⇒ 默认产物与旧行为
     ///   **逐字节相同**；`--wav-sample-rate 48000` 可强制回旧口径。
     /// - **时长 8 秒**（[`DEFAULT_WAV_SECONDS`]）⇒ 帧数 = `round(秒 × 采样率)`。
-    ///   ⛔ 缺省**不**改成"工程可闻末端"：那不是接线而是**新能力**（导出路径今天没有
-    ///   "工程有多长"的唯一权威读数），且会改变既有判据钉住的产物长度。
+    ///   ⛔ 缺省**不**改成"工程可闻末端"：那会改变既有判据钉住的产物长度，而且 GUI /
+    ///   CLI / MCP 共用这一份缺省，改一处 ⇒ 三侧同变。
+    ///   ⚠ 本条原句的**理由**（"导出路径今天没有'工程有多长'的唯一权威读数"）今天已经
+    ///   **不成立** —— `crate::bridge::ViewState::content_end_tick` 就是那个读数（标尺与
+    ///   `Shift+Z` 早就在用它）。因此 `D-UI-28` 把"按末端导出"落在**调用方**：宿主打开
+    ///   导出弹窗时把末端算成秒、播进时长那一格（`host::audible_end_seconds`），
+    ///   本函数的缺省一位不改 ⇒ 两侧已钉住的字节仍然对得上。
     /// - **精确帧数**（`--wav-frames`）：与 MCP `render_master` 的 `frames` 同一量纲，
     ///   用来逐字节对齐两侧的产物长度。给了它就**不再**做秒×采样率的换算；
     ///   与 `seconds` 互斥由 CLI 的解析层守卫（⛔ 不在这里靠"谁优先"发明语义）。
@@ -293,6 +298,15 @@ pub struct WavExportReport {
     ///
     /// `None` = 本次没有任何源产生非零样本。
     pub loudest_source: Option<WavLoudestSource>,
+    /// ⭐ `D-EX-1`：母线限制器本次**压过的样本数**（`Limiter::reduction_count` 的口径：
+    /// 增益 < 1.0 时写出的样本数，⛔ 不是帧数）；`limiter: false` ⇒ 恒 `0`。
+    ///
+    /// 从 `render_core` 的同名读数**如实转发**（⛔ 不在这里另算一份 —— 两份实现迟早漂移）。
+    /// 加它的原因很具体：「GUI 的勾选项接上了」与「限制器真的在母带上工作过」是两件事，
+    /// 没有这个数时一个接错线的勾选框照样能报"导出成功"。断言它 `> 0` 而不是断言
+    /// "峰值 ≤ 阈值"：后者在**从未越阈值**的夹具上永真（假绿，`yeban-dsp/src/limiter.rs`
+    /// 的 `reduction_count` 文档自己就警告过这一点）。
+    pub limiter_reductions: u64,
 }
 
 impl WavExportReport {
@@ -948,6 +962,7 @@ pub fn export_wav_with_sfz_file_and_assets_under(
         trim_basis_dbfs,
         trim_basis,
         loudest_source,
+        limiter_reductions: rendered.limiter_reductions,
     })
 }
 
@@ -1458,7 +1473,8 @@ mod tests {
     /// ① **采样率缺省跟随工程**：工程 48 kHz ⇒ `resolve` 与 `default()` **逐字段相同**
     ///    （⇒ 内置三份夹具的产物与旧行为逐字节一致）；工程 44.1 kHz ⇒ 跟随成 44.1 kHz
     ///    （⛔ 不是固定 48000），且**时长**仍是 8 秒（帧数 = 8 × 采样率，⛔ 不是 384000）。
-    /// ② **时长缺省 8 秒**：⛔ 缺省**不**改成"工程可闻末端"。
+    /// ② **时长缺省 8 秒**：⛔ `resolve` 的缺省**不**改成"工程可闻末端"（GUI 那条路走的是
+    ///    宿主播种，见 `D-UI-28` / `host::audible_end_seconds`，⛔ 不是动这一份共用口径）。
     /// ③ 位深缺省 24-bit 整数；给了就用给了的。
     #[test]
     fn resolve_follows_the_project_rate_and_keeps_the_eight_second_default() {

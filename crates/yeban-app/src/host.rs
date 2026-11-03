@@ -126,7 +126,21 @@ fn to_color(color: RgbColor) -> slint::Color {
 /// 在同一个活窗口上切换两个工程）。
 pub fn apply_view(ui: &MainWindow, view: &ViewState, viewport_width: f32, scroll_x: f32) {
     ui.set_window_title(view.title.clone().into());
-    ui.set_bpm_display(view.bpm_display.clone().into());
+    // ⭐ **编辑保护**（任务单 `D-UI-24`）：BPM 框**正被敲**时 ⛔ 不用投影盖掉草稿。
+    //
+    // 现读的触发面（两条都不需要"AI 在场"才成立）：
+    // ① 画布那两侧（卷帘 / 编排）**没有** `FocusScope` ⇒ 用户在 BPM 框里敲到一半时
+    //    点一下剪辑**不会**让焦点离开文本框，而那一次编辑会提交并重投影；
+    // ② 会话侧一次 `tools/call` 改工程后经 `reproject.rs` 重投影同一个活窗口。
+    // 修前这两条都把用户敲了一半的速度直接抹成权威读数（"打的字没了"）。
+    //
+    // ⛔ 保护只写在**这一处**：本行是 `bpm-display` 的唯一写点（判据 ⑦ 钉着），
+    // 因此"什么时候能不写"也只有一处答案。提交那条路自己解决草稿
+    // （`wire_bpm_commit` 进门清零 ⇒ 既有"非法 ⇒ 写回权威、不留冒充权威值的草稿"
+    // 口径一位不动，`tests/ui_bpm_field.rs` ③/④ 照常）。
+    if !ui.get_bpm_field_editing() {
+        ui.set_bpm_display(view.bpm_display.clone().into());
+    }
     // 时间码的拍号网格：**唯一**的注入点（本函数）。`None`（模型层拒绝该拍号）
     // 一律写 0，`apply_transport` 见到 0 就如实退回 tick 文本 —— 见 `timecode_grid_of`。
     let grid = view.timecode_grid();
@@ -167,6 +181,12 @@ pub fn apply_view(ui: &MainWindow, view: &ViewState, viewport_width: f32, scroll
     ui.set_section_color_labels(strings(&view.section_color_labels()));
     ui.set_clip_ulids(strings(&view.clip_ulids()));
     ui.set_clip_labels(strings(&view.clip_labels()));
+    // ⭐ 每条摆放的静音态（`D-UI-16`）：`Cmd/Ctrl+M` 拨的就是这一位，界面必须**看得见**结果。
+    // 唯一事实源是 `ClipPlacement::muted`（工程字段），⛔ 界面不自己记一份；与 `track-mutes`
+    // / `track-solos` 同一族口径。默认全 `false` ⇒ 包头底色不变 ⇒ 基准帧逐像素不变。
+    // 这一个数组与这一处写入点分别计入 `PER_FRAME_ARRAY_REWRITE_BUDGET` 与
+    // `APPLY_VIEW_WRITE_SITE_BUDGET`（见 `tests/perf_draw_budget.rs` 的读数与注释）。
+    ui.set_clip_mutes(booleans(&view.clip_mutes()));
     ui.set_clip_positions(lengths(&view.clip_positions()));
     ui.set_clip_widths(lengths(&view.clip_widths()));
     // ⭐ 素材池（任务单 `#133`）：三个平行数组全部来自 `ViewState::asset_pool`
@@ -177,16 +197,21 @@ pub fn apply_view(ui: &MainWindow, view: &ViewState, viewport_width: f32, scroll
     ui.set_asset_pool_names(strings(&view.asset_pool_names()));
     ui.set_asset_pool_kinds(strings(&view.asset_pool_kinds()));
     ui.set_asset_pool_details(strings(&view.asset_pool_details()));
-    // ⭐ 左侧资源栏的条目（任务单 `#133`）：一个数组 ＋ 一个逐字理由**标量**。
+    // ⭐ 左侧资源栏的条目（任务单 `#133` ＋ `D-UI-14`）：一个数组 ＋ 一个逐字理由**标量**。
     // 唯一事实源 = `crate::bridge::sidebar_category_content`（按**当前分类**取数：
-    // 0 = 进程缓存的库扫描、1 = 上面的素材池投影、2 = 模型层登记的缺口），
-    // `ElementRegistry::from_view` 读的是**同一个**函数 ⇒ "注册表说 N 条 / 屏幕画 M 条"
-    // 在结构上不可能。⛔ 界面不自己取数（旧版在这里内联 8 个乐器名，含仓库里不存在的
-    // "SFZ · 323 款"）。分类 0 走缓存 ⇒ 每帧成本是一次 `stat` ＋ 名字数组拷贝，
+    // 0 = 进程缓存的库扫描、1 = 上面的素材池投影、2 = 模型层登记的缺口）再过一道
+    // `crate::bridge::filter_sidebar_content`（按**搜索框那份字**做子串过滤），
+    // `ElementRegistry::from_view` 读的是**同一个**取数函数（注册表登记**过滤前**的全量，
+    // 运行时是它的子集 ⇒ `ui/coverage` 的"注册表 ⊇ 运行时"成立）
+    // ⇒ "注册表说 N 条 / 屏幕画 M 条"在结构上不可能。⛔ 界面不自己取数（旧版在这里内联
+    // 8 个乐器名，含仓库里不存在的 "SFZ · 323 款"）。搜索串为空时过滤是**原样返回**
+    // ⇒ 默认帧与过滤存在前逐字相同。分类 0 走缓存 ⇒ 每帧成本是一次 `stat` ＋ 名字数组拷贝，
     // 与既有 `asset_pool_names` 同一档（⛔ 不读样本字节，`#165` 的教训）。
-    let sidebar =
-        crate::bridge::sidebar_category_content(view, ui.get_sidebar_category().max(0) as usize);
-    inject_sidebar(ui, &sidebar);
+    inject_sidebar(
+        ui,
+        &sidebar_category_at(view, ui.get_sidebar_category()),
+        &ui.get_sidebar_search(),
+    );
     // ⭐ 设备机架（任务单 `#157`）：`ViewState::devices` / `eq_low_gain` 是**唯一**事实源。
     // 四个平行数组同索引集；五个标量来自同一次投影。它们只在完整重投影（换工程 /
     // 撤销 / 打开 / 一次设备手势提交之后）时变化，但 `apply_view` 每次都会新建
@@ -4829,11 +4854,17 @@ impl ProductionLoop {
         }
         let mut published_revision = None;
         let mut publish_error = None;
+        // ⭐ `D-UI-29`：**这一跳新快照**里节拍器那一格的值（`Some` = 真的换上了一份）。
+        // 镜面必须与快照来自**同一次**文档读 ⇒ 只在 `publish_project` 成功时取值。
+        let mut snapshot_metronome = None;
         if engine.should_publish(mark)
             && let Some(project) = project
         {
             match engine.publish_project(project, mark) {
-                Ok(revision) => published_revision = Some(revision),
+                Ok(revision) => {
+                    published_revision = Some(revision);
+                    snapshot_metronome = Some(project.transport.metronome_enabled);
+                }
                 // 投影失败**不改播放侧**（旧快照原样保留）⇒ 如实出声，不静默。
                 Err(error) => {
                     eprintln!("[yeban-app] 快照发布失败（播放侧仍是上一版）: {error}");
@@ -4905,6 +4936,9 @@ impl ProductionLoop {
         // （`drop(engine)` 之后才写界面 ⇒ ⛔ 不重新引入持借写界面，`#212` 的崩法）。
         // 每一跳都写：播放中数字每帧变；停止后 `position_ticks` 保留 ⇒ 显示与引擎一致。
         apply_transport(ui, transport);
+        // ⭐ `D-UI-29`：**节拍器镜面跟着这一跳换上的那一代快照**（与 `apply_transport`
+        // 同一处、同一条"借外写界面"的纪律）。`None`（标记没变 / 发布失败）⇒ 一位不动。
+        apply_metronome_mirror(ui, snapshot_metronome);
         // ⭐ 自动化标签的落点：与时间码同一次读数（⛔ 不另读一次走带位置）。
         if let Some(labels) = cursor_labels {
             ui.set_automation_lane_labels(strings(&labels));
@@ -5215,32 +5249,39 @@ pub fn wire_transport(
     });
 
     // ⭐ **节拍器开关**（`[ARCH-RT-001]` 的界面侧）：`ui/transport.slint` 的
-    // `transport-metronome-button` 与 `Cmd/Ctrl+Alt+N` 走**同一个落点**
-    // （[`apply_engine_command`]），`metronome-on` 也只有一个写者 —— 这里与
-    // [`apply_action`] 的同一个臂。
+    // `transport-metronome-button` 与 `Cmd/Ctrl+Alt+N` 走**同一个落点** [`apply_action`]
+    // （`D-UI-29`；⛔ 不是两条腿各算一次"下一个值"），`metronome-on` 的写者也只剩
+    // "文档的投影"这一条规则（拨动时立刻跟一跳 + [`apply_metronome_mirror`] 每跳校正）。
     //
     // ## 初始值
     //
-    // 装配期从工程文档读一次（`transport.metronome_enabled`）；此后由两个入口维护。
-    // ⛔ 不由 `apply_view` 写：撤销 / 重投影会把镜面打回文档的旧值，让界面与引擎分叉。
-    //
-    // ## 为什么"下一个值"来自界面属性（而不是 `context.project`）
-    //
-    // 拨动今天**不写文档**（`Op::SetTransportConfig` 的提交通道未接线）⇒ 文档字段
-    // 恒为装配期初值。若从它算，第二次点击会再次算出 `true`（开关关不掉）。
+    // 装配期从工程文档读一次（`transport.metronome_enabled`）。⛔ 不由 `apply_view` 写：
+    // 那一条的属性写入点预算被 `tests/perf_draw_budget.rs` 钉着，而运行期换工程 / 撤销
+    // 都会经过发布那一跳 ⇒ 由 [`apply_metronome_mirror`] 在那一处校正。
     if let Some(project) = project.as_ref() {
         ui.set_metronome_on(project.transport.metronome_enabled);
     }
     let metronome_engine = Rc::clone(&engine);
     let metronome_project = project.as_ref().map(Rc::clone);
+    let metronome_undo = undo.clone();
     let metronome_ui = slint::ComponentHandle::as_weak(ui);
     ui.on_toggle_metronome(move || {
         let Some(ui) = metronome_ui.upgrade() else {
             debug_assert!(false, "MainWindow 在回调执行期间被销毁");
             return;
         };
+        // ⭐ `D-UI-29`：**有权威会话**这一支⛔ 不借宿主 —— 落点是改文档，发声交给既有的
+        // 60 Hz 发布腿（`ProductionLoop::tick` → `publish_project`）。少借一次 `RefCell`
+        // 也少一类重入面（`#212`），而播放位置连漂移都没有。
+        if metronome_undo.is_some() {
+            apply_action(&ui, metronome_undo.as_ref(), None, Action::ToggleMetronome);
+            return;
+        }
+        // 没有权威会话 ⇒ 只剩"当场换一代引擎"那条腿，它需要装配期那份工程。
         let Some(project) = metronome_project.as_ref() else {
-            eprintln!("[yeban-app] 忽略 toggle-metronome：装配层没有工程 ⇒ 本次按键无效");
+            eprintln!(
+                "[yeban-app] 忽略 toggle-metronome：装配层既没有权威会话也没有工程 ⇒ 本次按键无效"
+            );
             return;
         };
         // `#212` 同款边界兜底：借不到就降级（⛔ 不 panic、⛔ 不假装切换过）。
@@ -5250,18 +5291,14 @@ pub fn wire_transport(
             );
             return;
         };
-        let current = ui.get_metronome_on();
         let mut context = EngineCommandContext {
             host: &mut engine,
             project: project.as_ref(),
-            metronome_on: Some(current),
+            metronome_on: Some(ui.get_metronome_on()),
         };
-        let applied = apply_engine_command(&mut context, Action::ToggleMetronome);
-        // ⭐ 先放借、再写界面（与 `on_toggle_play` 同款作用域纪律）。
-        drop(engine);
-        if applied {
-            ui.set_metronome_on(!current);
-        }
+        // ⭐ 与键盘**同一个**落点（`apply_action` 里那条臂），⛔ 不是这里再算一遍下一个值。
+        apply_action(&ui, None, Some(&mut context), Action::ToggleMetronome);
+        // ⭐ 作用域纪律：**借在这里放掉**（体内只剩属性写入，`apply_action` 已经写完镜面）。
     });
 
     // ⭐ **录音键**（`[ARCH-REC-001]`，任务单 `#88`）：接线搬进 [`wire_record_at`] ——
@@ -5312,6 +5349,34 @@ impl RecordOutcomePort for UiRecordOutcome {
 /// 文案只有一个真相源（⛔ 两处手抄）。
 const RECORD_REENTRY_STDERR: &str =
     "[yeban-app] 忽略 toggle-record：录音器正被同一线程借用（重入）⇒ 本次按键无效";
+
+/// ⭐ **预备拍长度（帧）的唯一取数口径**（`D-UI-23`）。
+///
+/// ## 为什么把它抽成一个函数（⛔ 不是为节拍器开的旁路）
+///
+/// `transport.count_in_bars` 有两个候选事实源：**活文档**（`UndoPort` 里那份，权威）
+/// 与**装配期冻结**的那份 `Rc<YebanProjectV1>`（只在换工程时重装配）。修前录音那条腿
+/// 读的是后者 ⇒ 界面把预备拍拨成关，按录音键**照样**空转几秒才录（键白按）。
+/// 取数规则抽出来之后：① 优先级只写一次（端口 > 冻结 > 不知道 ⇒ 0）；
+/// ② 判据能**逐档**问它（单位＝**帧**），⛔ 不必起线程拉设备源才能观测。
+///
+/// ⚠ 端口在场但读不出工程（会话被控制面关掉）⇒ 如实返回 0，⛔ 不拿冻结那份冒充现状。
+#[must_use]
+pub fn record_count_in(
+    undo: Option<&UndoPort>,
+    frozen: Option<&YebanProjectV1>,
+    sample_rate: u32,
+) -> u64 {
+    match undo {
+        Some(port) => port.try_project().map_or(0, |live_project| {
+            crate::record_wav::count_in_frames(&live_project, sample_rate)
+        }),
+        // 没有权威会话（判据 / 无头装配）⇒ 退回装配期那份，既有形态一位不改。
+        None => frozen.map_or(0, |project| {
+            crate::record_wav::count_in_frames(project, sample_rate)
+        }),
+    }
+}
 
 /// ⭐⭐ **录音键的接线**（任务单 `#88`）：把"按下去"这件事接到**可注入的源工厂**上。
 ///
@@ -5417,9 +5482,14 @@ pub fn wire_record_at(
         // 录音键若从 `winit::key_down` 一类 FFI 边界进来，panic 不能 unwind ⇒ **abort**。
         // 因此这里同时上两道防线：① 作用域收窄（[`RecordToggle`] 只装结果）；
         // ② `try_borrow_mut()` 兜底（借不到 ⇒ 一行 stderr ＋ 本次按键无效）。
-        let count_in = project.as_ref().map_or(0, |project| {
-            crate::record_wav::count_in_frames(project, plan.options.sample_rate)
-        });
+        // ⭐⭐ `D-UI-23`：预备拍读的是**活文档**（端口在场 ⇒ 权威工程），⛔ 不是装配期
+        // 冻结的那份 `Rc<YebanProjectV1>` —— 后者只换工程时才重装配（见 `main.rs` 的
+        // `after`），于是"按 `Cmd/Ctrl+Alt+D` 拨一下、再按录音键"仍按**旧长度**预备（键白按）。
+        let count_in = record_count_in(
+            undo.as_deref(),
+            project.as_deref(),
+            plan.options.sample_rate,
+        );
         let toggle = {
             let mut recorder = match recorder_cell.try_borrow_mut() {
                 Ok(recorder) => recorder,
@@ -5715,13 +5785,14 @@ pub fn wire_view_callbacks(ui: &MainWindow) {
 }
 
 /// ⭐ 左侧资源栏的**取数**接线：分类点击 ⇒ 重注入该分类的条目数组 ＋ 空态理由；
-/// 条目点击 ⇒ 按**当次投影条数**钳位后写 `sidebar-item`。
+/// 条目点击 ⇒ 按**当次投影条数**钳位后写 `sidebar-item`；搜索框每敲一个字 ⇒ 用那份字
+/// 重过滤后重注入（任务单 `D-UI-14`）。
 ///
 /// | 读 / 写 | 事实源 |
 /// | :--- | :--- |
-/// | 写 | `sidebar-items` / `sidebar-empty-reason` / `sidebar-category` / `sidebar-item`（唯一写者 = 这里与 [`apply_view`]，两处都只调**同一个** `crate::bridge::sidebar_category_content`） |
-/// | 读 | `.slint` 的 `for item_text[item_index] in root.items`（数组驱动）＋ `sidebar-empty` 文本节点（理由驱动） |
-/// | 不进 | `Op` / `.yeban` / 撤销栈 —— 分类与选中都是视图态（`MODEL-ISO-001` 的挥发性层） |
+/// | 写 | `sidebar-items` / `sidebar-empty-reason` / `sidebar-category` / `sidebar-item`（唯一写者 = 这里与 [`apply_view`]，两处都只调**同一个** [`inject_sidebar`]，过滤串是它的**必填形参** —— 想漏掉过滤就编译不过） |
+/// | 读 | `.slint` 的 `for item_text[item_index] in root.items`（数组驱动）＋ `sidebar-empty` 文本节点（理由驱动）＋ `MainWindow.sidebar-search`（搜索框的字，写者只有输入框） |
+/// | 不进 | `Op` / `.yeban` / 撤销栈 —— 分类、选中、搜索串都是视图态（`MODEL-ISO-001` 的挥发性层） |
 ///
 /// ## 为什么它从 [`wire_view_callbacks`] 里单独出来
 ///
@@ -5729,6 +5800,16 @@ pub fn wire_view_callbacks(ui: &MainWindow) {
 /// （旧版 `SIDEBAR_ITEM_COUNT = 8` 是内联演示数据的长度），必须是**当次投影的长度** ⇒
 /// 这里需要一份 `Rc<RefCell<ViewState>>`。装配时没有更新的视图快照可用也没关系：
 /// 分类 1 的条目就是 `apply_view` 每帧注入的素材池投影，⛔ 界面不持有第二份清单。
+///
+/// ## 搜索为什么也住在这里（以及它为什么⛔ 不写回那个串）
+///
+/// 子串匹配只可能住在 Rust（Slint 1.18.1 的字符串内置集没有 `contains`，实测见
+/// `ui/sidebar.slint` 的 `search-text` 处清单）。`sidebar-search-changed` 的落点是
+/// **重算投影并重注入**，⛔ 不是 `set_sidebar_search` —— 那份字的唯一写者是输入框的
+/// 两向绑定 `text <=> root.sidebar-search`，宿主再写一次就与绑定互为回路。
+/// 于是本回调带进来的那份字**就是**界面上那份（不依赖"读属性时绑定已经传播完"这个
+/// 未证前提；读属性那两处 —— [`apply_view`] 与条目钳位 —— 都发生在两次敲字之间，
+/// 那时绑定早已落定）。
 pub fn wire_sidebar_contents(ui: &MainWindow, view: Rc<RefCell<ViewState>>) {
     let weak = ui.as_weak();
     ui.on_select_sidebar_category({
@@ -5741,37 +5822,68 @@ pub fn wire_sidebar_contents(ui: &MainWindow, view: Rc<RefCell<ViewState>>) {
             };
             let clamped = category.clamp(0, SIDEBAR_CATEGORY_COUNT - 1);
             ui.set_sidebar_category(clamped);
-            let content = crate::bridge::sidebar_category_content(&view.borrow(), clamped as usize);
-            inject_sidebar(&ui, &content);
-            // 换分类 ⇒ 条目集合换了 ⇒ 选中态落回**新集合**的合法区间（⛔ 不保留越界值，
-            // ⛔ 不保留"这一列根本不存在的那一行"）。空集合 ⇒ 落回 0（没有行可选）。
-            ui.set_sidebar_item(if content.is_empty() {
-                0
-            } else {
-                ui.get_sidebar_item()
-                    .clamp(0, sidebar_last_index(&content) as i32)
-            });
+            // ⭐ 换分类**不**清空搜索串：那一句是用户敲的，⛔ 不是分类的一部分。
+            // 于是新分类看到的是同一个串过滤后的那一份（口径 = [`inject_sidebar`]）。
+            inject_sidebar(
+                &ui,
+                &sidebar_category_at(&view.borrow(), clamped),
+                &ui.get_sidebar_search(),
+            );
         }
     });
     ui.on_select_sidebar_item({
         let weak = weak.clone();
+        let view = Rc::clone(&view);
         move |item| {
             let Some(ui) = weak.upgrade() else {
                 debug_assert!(false, "MainWindow 在回调执行期间被销毁");
                 return;
             };
-            let content = crate::bridge::sidebar_category_content(
-                &view.borrow(),
-                ui.get_sidebar_category().max(0) as usize,
-            );
+            let shown = sidebar_shown(&ui, &view.borrow());
             // 越界请求（`99` / `-5`）落不到界面上；没有条目时**一位不写**（⛔ 不写幻影选中）。
-            if content.is_empty() {
+            // ⚠ 钳位的分母是**过滤后**的条数 —— 拿全量条数钳位会允许"选中一行根本不存在的
+            // 条目"：过滤器把第 5 行藏起来、属性却写 5 ⇒ 画面没有高亮，而 `ui/node`
+            // 读出 5，屏读器报的选中行是空气。
+            if shown.is_empty() {
                 ui.set_sidebar_item(0);
                 return;
             }
-            ui.set_sidebar_item(item.clamp(0, sidebar_last_index(&content) as i32));
+            ui.set_sidebar_item(item.clamp(0, sidebar_last_index(&shown) as i32));
         }
     });
+    ui.on_sidebar_search_changed({
+        let weak = weak.clone();
+        let view = Rc::clone(&view);
+        move |query| {
+            let Some(ui) = weak.upgrade() else {
+                debug_assert!(false, "MainWindow 在回调执行期间被销毁");
+                return;
+            };
+            // 用**回调带进来的那份字**过滤，⛔ 不读 `get_sidebar_search()`：那一刻那条
+            // 两向绑定是否已经传播完没有上游保证，读到旧值 = 过滤器永远慢一个字。
+            inject_sidebar(
+                &ui,
+                &sidebar_category_at(&view.borrow(), ui.get_sidebar_category()),
+                &query,
+            );
+        }
+    });
+}
+
+/// 第 `category` 类的侧栏投影（**过滤前**的全量；越界由取数口兜底，这里只再钳一次负数）。
+fn sidebar_category_at(view: &ViewState, category: i32) -> crate::bridge::SidebarCategoryContent {
+    crate::bridge::sidebar_category_content(view, category.max(0) as usize)
+}
+
+/// 画面**此刻**该看到的那一份（当前分类 ∩ 当前搜索串）—— 读侧的口径。
+///
+/// 只有`select-sidebar-item` 用它（钳位的分母）。写侧一律走 [`inject_sidebar`]，
+/// 那里过滤是**必填形参** ⇒ 两侧不可能各数一遍。
+fn sidebar_shown(ui: &MainWindow, view: &ViewState) -> crate::bridge::SidebarCategoryContent {
+    crate::bridge::filter_sidebar_content(
+        &sidebar_category_at(view, ui.get_sidebar_category()),
+        &ui.get_sidebar_search(),
+    )
 }
 
 /// 当前投影的**最后一条**条目下标（⚠ 调用方须先判空：`len == 0` 时会下溢）。
@@ -5779,10 +5891,28 @@ fn sidebar_last_index(content: &crate::bridge::SidebarCategoryContent) -> usize 
     content.len() - 1
 }
 
-/// 把一份条目投影写进窗口：数组 ＋ 空态理由（唯一写点，`apply_view` 与分类回调共用）。
-fn inject_sidebar(ui: &MainWindow, content: &crate::bridge::SidebarCategoryContent) {
-    ui.set_sidebar_items(strings(&content.items));
-    ui.set_sidebar_empty_reason(content.empty_reason.clone().into());
+/// ⭐ 左栏的**唯一注入点**：全量分类投影 ＋ 搜索串 ⇒ 过滤 ⇒ 写数组 + 写空态理由 +
+/// 把选中态落回**这一份**的合法区间。三个调用点：[`apply_view`]（每帧）、
+/// `select-sidebar-category`（换分类）、`sidebar-search-changed`（换搜索词）。
+///
+/// `query` 是**必填形参**而不是"函数自己去读属性"，为的是让搜索框那一条回调能用它
+/// 带进来的那份字（读属性要依赖"绑定已传播完"这个上游没保证的前提）。
+/// 也是为的是：将来加第四个入口时，"注入一份没过过滤的数组"在类型上就写不出来。
+///
+/// ⭐ 钳位跟着注入走而不是各写一处：条目集合一变短（换分类、换搜索词、素材池被删空），
+/// 留在集合外的 `sidebar-item` 就是一次**幻影选中** —— 属性说选着第 5 行，画面第 5 行
+/// 不存在，`for` 里 `item_index == active-item` 永不成立 ⇒ 既没有高亮也读不到名字。
+/// 空集合 ⇒ 落回 0（没有行可选）。
+fn inject_sidebar(ui: &MainWindow, content: &crate::bridge::SidebarCategoryContent, query: &str) {
+    let shown = crate::bridge::filter_sidebar_content(content, query);
+    ui.set_sidebar_items(strings(&shown.items));
+    ui.set_sidebar_empty_reason(shown.empty_reason.clone().into());
+    ui.set_sidebar_item(if shown.is_empty() {
+        0
+    } else {
+        ui.get_sidebar_item()
+            .clamp(0, sidebar_last_index(&shown) as i32)
+    });
 }
 
 /// AI 提案抽屉：**四个回调的唯一注册者** ＋ **数据面的唯一写者**。
@@ -6310,6 +6440,11 @@ pub fn wire_input(ui: &MainWindow, context: Rc<RefCell<InputContext>>) {
     });
     // 焦点：文本域 ⇄ 画布。`set_focus` 会在离开文本域时顺手结束合成态。
     let focused = context;
+    // ⭐ `D-UI-24`：同一次通知**顺手**镜像给界面的编辑保护门（唯一读者 = `apply_view`）。
+    // ⛔ 不是第二个事件源 —— 读的就是 `bpm-input` 的 `changed has-focus` 发出来的这**一次**
+    // 回调；`as_weak` 的取回形状与 `wire_bpm_commit` 同款（本仓判据 D-20 那一课：
+    // 闭包里⛔ 不按 `&MainWindow` 捕获端口，升级出**局部**那份再写）。
+    let focused_window = ui.as_weak();
     ui.on_ime_focus_changed(move |focused_now| {
         let mut context = focused.borrow_mut();
         context.set_focus(if focused_now {
@@ -6320,6 +6455,12 @@ pub fn wire_input(ui: &MainWindow, context: Rc<RefCell<InputContext>>) {
             // 这里必须改成"问焦点系统当前焦点是谁"，而不是假定画布。
             Focus::MainCanvas
         });
+        // 镜像的是**同一个** `focused_now`：Slint 的焦点状态只有一个事实源，
+        // 本属性只是把它搬到宿主够得着的那一格（够不着的原因：`bpm-input`
+        // 声明在子组件 `Transport` 内部，主窗口层的绑定取不到那个标识）。
+        if let Some(window) = focused_window.upgrade() {
+            window.set_bpm_field_editing(focused_now);
+        }
     });
 }
 
@@ -6353,6 +6494,12 @@ pub fn wire_bpm_commit(ui: &MainWindow, port: &Rc<UndoPort>) {
             debug_assert!(false, "MainWindow 在回调执行期间被销毁");
             return;
         };
+        // ⭐ `D-UI-24`：**回车本身就解决草稿** ⇒ 编辑保护在本条路上让路（清零后
+        // 下面那一个 `refresh_undo_window` 会照常写 `bpm-display`）：合法值归一化成
+        // `{:.2}` 读数、非法 / 同值写回权威读数 —— `ui/transport.slint` 那条既有口径
+        // （"⛔ 不留下一个冒充成权威值的草稿"）与 `tests/ui_bpm_field.rs` ③/④ 因此
+        // 一位不动。⚠ 清零的语义是"这串草稿已经有了裁决"，⛔ 不是"焦点离开了框"。
+        ui.set_bpm_field_editing(false);
         // 权威工程读不出来 ⇒ 出声不画（与 `refresh_undo_window` 同款纪律）。
         let Some(project) = port.try_project() else {
             eprintln!("[yeban-app] BPM 敲入没有可投影的工程: 权威会话此刻没有活跃工程");
@@ -6403,9 +6550,23 @@ pub fn wire_bpm_commit(ui: &MainWindow, port: &Rc<UndoPort>) {
 /// ## 与 [`apply_engine_command`] 的对应（⭐ 两处必须同时改）
 ///
 /// 返回 `true` 的集合必须**恰好等于** [`apply_engine_command`] 处理的那几条
-/// （今天：`Action::ToggleMetronome` / `Action::ToggleCountIn` —— 它们只碰
-/// `metronome::set_enabled` / `set_count_in_bars`，那两个函数的入参是 `&mut EngineHost`
-/// ＋ `&YebanProjectV1`，**不碰界面**）。
+/// （今天只剩 `Action::ToggleMetronome` —— 它只碰 `metronome::set_enabled`，入参是
+/// `&mut EngineHost` ＋ `&YebanProjectV1`，**不碰界面**）。
+///
+/// ⚠ ⭐ **`D-UI-29` 之后这个集合的名字要读成"可能**要**动引擎"，而不是"一定动"**：
+/// 节拍器在**有权威会话**时走文档级提交（`apply_action` 里那一支会 `refresh_undo_window`
+/// → `apply_view` ⇒ 一整批界面写入），只有**没有会话**时才落进 `metronome::set_enabled`。
+/// ⇒ [`wire_keys`] 在借宿主**之前**先问端口：有端口 ⇒ ⛔ 不借。集合本身⛔ 不能把
+/// `Action::ToggleMetronome` 摘掉 —— 摘了就没宿主可借，**无会话装配**（判据 / 无头）
+/// 那支开关会从此按了不出声（`tests/metronome_switch.rs` 正是那一形）。
+///
+/// ⭐ **`D-UI-23` 把 `Action::ToggleCountIn` 从这条链上摘下来了**（⛔ 不是漏改）：
+/// 换一代引擎**只**为"预备拍"服务，而实时引擎根本不读这个字段
+/// （`crates/yeban-engine/src/lib.rs` 把它列在**仍未实现**那一栏）⇒ 代价（走带被停住再
+/// 恢复）付了、收益为零，而文档字段一位没动 ⇒ **这个开关关不掉、也持久化不了**。
+/// 它现在走**文档级提交**（`Op::SetTransportConfig`，落点在 `apply_action` 的
+/// `Action::ToggleCountIn` 臂）⇒
+/// 既不借宿主，也就不需要出现在下面那张集合里。
 ///
 /// ⚠ 这条耦合由 `src/test_port_adapter.rs` 的 `only_engine_commands_take_the_engine_borrow`
 /// 从**源码文本**对账（两个函数的 `Action::*` 集合必须逐条相同）—— 新增一条"要动引擎"
@@ -6424,7 +6585,7 @@ pub fn wire_bpm_commit(ui: &MainWindow, port: &Rc<UndoPort>) {
 /// `GoToBeginning` 放进"界面回调族"逐条断言它不在借内。
 #[must_use]
 pub fn action_needs_engine(action: Action) -> bool {
-    matches!(action, Action::ToggleMetronome | Action::ToggleCountIn)
+    matches!(action, Action::ToggleMetronome)
 }
 
 /// 把界面的**键盘事件源**接到动作上（`N2` 裁决 **(1)**：GUI 绑**逻辑键**）。
@@ -6516,6 +6677,13 @@ pub fn wire_keys(
                 // ⚠ 借到的这一段仍然只活在这条臂里（⛔ 不跨回调、⛔ 不存起来），并且
                 // 已经在借用中就**不消费**（⛔ 不 panic）。
                 if !action_needs_engine(action) {
+                    return apply_action(&ui, undo.as_ref(), None, action);
+                }
+                // ⭐ `D-UI-29`：**有权威会话**时节拍器走的是**文档级提交**那一支 ⇒ 它
+                // 要 `refresh_undo_window`（→ `apply_view`，一整批界面写入）。带着宿主的
+                // `RefMut` 进那一条臂就是 `#212` 的形态（"持借调界面"）⇒ **在这里就分岔**：
+                // 有端口 ⇒ ⛔ 压根不借宿主；借宿主只留给"没有可提交的对象"那一支。
+                if undo.is_some() {
                     return apply_action(&ui, undo.as_ref(), None, action);
                 }
                 match (engine.as_ref(), project.as_ref()) {
@@ -7541,6 +7709,53 @@ impl ModulePaths {
     }
 }
 
+/// ⭐ `D-UI-28`：「导出 WAV」弹窗给**时长**那一格播种的上限（单位：秒）。
+///
+/// 与 MCP 那条同源：`yeban-mcp` 的 `MAX_RENDER_FRAMES = 48_000 × 3600` 也是"一小时母带"。
+/// 超过它 ⇒ 播 `3600.000`（那一格看得见这个数），⛔ 不播一个会把 UI 线程阻塞几十分钟的
+/// 数（`D-EX-2` 登记的"导出同步阻塞 UI 线程"今天仍在）。
+const EXPORT_SEED_MAX_SECONDS: f64 = 3600.0;
+
+/// 工程**可闻末端**的秒数（向上取整到毫秒）——「导出 WAV」时长格的缺省播种值。
+///
+/// 链条只有三跳，每一跳都是既存的**唯一**实现，⛔ 在这里另写一份：
+/// ① [`crate::bridge::ViewState::content_end_tick`] —— 铺标尺与 `Shift+Z` 全曲总览读的
+/// 就是这一个数（剪辑摆放末端与段末端的最大值）；
+/// ② `YebanProjectV1::tempo().frames_at_tick(tick, PPQ, sr)` —— 模型层 `#339` 的分段
+/// 常速换算（变速工程按段累加、只取整一次）；
+/// ③ 帧 ÷ 采样率 = 秒。
+///
+/// ⚠ **向上**取整到毫秒：导出那侧是 `WavExportOptions::resolve` 的 `round(秒 × 采样率)`。
+/// 四舍五入会把末端最后半帧**切掉** —— `time_math` 的反向换算因此同样选向上（静默丢音）。
+///
+/// `None` = 没有可播的东西（空工程 / 没有撤销端口 / 换算失败 / 病态采样率）⇒ 调用方
+/// ⛔ 不播种，让 [`crate::export_wav::DEFAULT_WAV_SECONDS`]（8 秒）那条既有缺省继续生效 ——
+/// 这一档与 CLI `--export-wav` 不给 `--wav-seconds` 时逐字节相同（⛔ 本票⛔ 动 `resolve`
+/// 的缺省：GUI / CLI / MCP 共用那一份，改它会改两侧已钉住的产物长度）。
+#[must_use]
+fn audible_end_seconds(port: Option<&Rc<UndoPort>>, ui: &MainWindow) -> Option<f64> {
+    let project = port?.try_project()?;
+    let end_tick = project_with_view_state(&project, ui)
+        .ok()?
+        .content_end_tick();
+    if end_tick == 0 {
+        return None;
+    }
+    let hz = project.sample_rate().hz();
+    let frames = project
+        .tempo()
+        .frames_at_tick(end_tick, yeban_model::PPQ, hz)?;
+    // ⚠ `f64::from` 只到 `u32`（`frames` 是 `u64` ⇒ 那里会 E0277，CI 的 clippy 腿抓到过）。
+    // `as f64` 在 `2^53` 帧以内是**精确**的（48 kHz 下 ≈ 5,900 年：2^53 / 48000 / 3.15576e7），
+    // 因此这里的 `cast_precision_loss` 是 lint 的形状而非本行的实际误差。
+    #[allow(clippy::cast_precision_loss)]
+    let seconds = frames as f64 / f64::from(hz);
+    if !seconds.is_finite() || seconds <= 0.0 {
+        return None;
+    }
+    Some((seconds.min(EXPORT_SEED_MAX_SECONDS) * 1000.0).ceil() / 1000.0)
+}
+
 /// 导出对话框三格文本解析出的覆盖参数（`None` = 用后端缺省）。
 type WavExportOverrides = (
     Option<yeban_model::project::SampleRate>,
@@ -7820,9 +8035,19 @@ pub fn wire_module_actions_with_capture(
     // 「导出 WAV」入口现在打开 `ui/dialogs/export_wav_dialog.slint`。打开 / 关闭都
     // **只改视图态**（⛔ 不碰工程、⛔ 不写盘）。路径在第一次打开时由 `ModulePaths`
     // 播种；用户改过之后重开保留用户值（`YEBAN_UI_EXPORT_WAV_PATH` 仍是缺省来源）。
+    //
+    // ⭐ `D-UI-28`：时长那一格同样在**打开时**由工程可闻末端播种（见
+    // [`audible_end_seconds`]）。⛔ 播种点在宿主、⛔ 不在
+    // [`crate::export_wav::WavExportOptions::resolve`]：那一份是 GUI / CLI / MCP
+    // 共用的缺省，改它会改掉两侧已钉死的产物长度；而"UI 里一打开就写死 8 秒"是
+    // 一个用户可见的静默截断 —— 几分钟的工程按缺省导出只剩 8 秒。
     {
         let weak = ui.as_weak();
         let default_target = paths.export_wav.clone();
+        // **宿主最后一次播的值**（不是"用户填的值"）：判据是"没人动过 ⇒ 刷新"，
+        // 所以需要知道眼前这串字符是不是宿主自己上一次写进去的。`None` = 还没播过。
+        let seeded_seconds: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(None));
+        let port_for_seed = port.clone();
         ui.on_open_export_wav(move || {
             let Some(ui) = weak.upgrade() else {
                 debug_assert!(false, "MainWindow 在回调执行期间被销毁");
@@ -7831,7 +8056,31 @@ pub fn wire_module_actions_with_capture(
             if ui.get_export_wav_path().trim().is_empty() {
                 ui.set_export_wav_path(default_target.to_string_lossy().to_string().into());
             }
+            // 「空 = 从没填过」与「等于宿主上一次播的值 = 用户没动」都算**没人动过** ⇒ 按
+            // 当前工程刷新；其余（用户自己敲的数）重开时逐字符保留（与路径那一格同一口径）。
+            let current = ui.get_export_wav_seconds().to_string();
+            let untouched = current.trim().is_empty()
+                || seeded_seconds.borrow().as_deref() == Some(current.as_str());
+            if untouched {
+                match audible_end_seconds(port_for_seed.as_ref(), &ui) {
+                    Some(seconds) => {
+                        let text = format!("{seconds:.3}");
+                        ui.set_export_wav_seconds(text.as_str().into());
+                        *seeded_seconds.borrow_mut() = Some(text);
+                    }
+                    None => {
+                        // 空工程 / 没有端口 ⇒ ⛔ 播一个假数；留空让后端那条既有缺省（8 秒）生效。
+                        ui.set_export_wav_seconds("".into());
+                        *seeded_seconds.borrow_mut() = None;
+                    }
+                }
+            }
             ui.set_export_wav_open(true);
+            // `D-UI-19`（`[UI-A11Y-003]` §7.3 第 1 条）：遮罩盖住整帧 ⇒ 键盘也必须进来。
+            // 在这一处同步取焦（⛔ 不用 `.slint` 的 `changed` 处理器：它要等事件循环
+            // 下一拍，而无头判据设置属性后并不跑循环 ⇒ 焦点会停在原地，与
+            // `apply_undo` 里时光机那一对同一个理由）。焦点的写者仍只有 Slint 一个。
+            ui.invoke_focus_export_wav_dialog();
         });
     }
     {
@@ -7841,7 +8090,16 @@ pub fn wire_module_actions_with_capture(
                 debug_assert!(false, "MainWindow 在回调执行期间被销毁");
                 return;
             };
+            // `D-UI-19`：关闭 ⇒ 键盘**复位**回快捷键层（`[UI-A11Y-003]` §7.3 第 1 条的
+            // 后半句"关闭时焦点精准复位"）。只在**真的开 → 关**那一次复位：弹窗本就关着时
+            // ⛔ 不许无端改焦（例如把焦点从 `D-UI-18` 的搜索框手里抢走）。
+            // 复位目标是**快捷键层**而不是"触发控件"：`module-export-wav-button` 今天不是
+            // 可聚焦控件（无 `FocusScope`）⇒ 规范那句要等它先有焦点身份，见判据文件的边界登记。
+            let was_open = ui.get_export_wav_open();
             ui.set_export_wav_open(false);
+            if was_open {
+                ui.invoke_focus_shortcut_layer();
+            }
         });
     }
 
@@ -7903,13 +8161,19 @@ pub fn wire_module_actions_with_capture(
             // ⭐ 与 CLI 的 `--export-wav` **共用唯一解析处**（⛔ 不各写一份缺省）：
             // 三个选项都给 `None` 时与 CLI 不给 `--wav-*` 的产物**逐字节相同**
             // （8 秒 / 24-bit / 采样率跟随工程）。
-            let wav_options = crate::export_wav::WavExportOptions::resolve(
+            // ⭐ `D-EX-1`：母线限制器的 GUI 落点。⛔ 不给 `resolve()` 加形参（GUI 与 CLI
+            // 共用的唯一口径不能拆成两份），而是在它**之后**赋值 —— 与 `cli.rs` 的
+            // `wav_options.limiter = options.wav_limiter` 逐字同形。
+            // 先单独取一份读数：`wav_options` 下面要被移动进导出器，届时读不到它的字段。
+            let limiter_requested = ui.get_export_wav_limiter();
+            let mut wav_options = crate::export_wav::WavExportOptions::resolve(
                 &project,
                 sample_rate,
                 bit_depth,
                 seconds,
                 None::<u64>,
             );
+            wav_options.limiter = limiter_requested;
             let (receipt, ok, clipping_warning) = match crate::export_wav::export_wav_with_sfz_file(
                 &project,
                 &target,
@@ -7927,12 +8191,38 @@ pub fn wire_module_actions_with_capture(
                         format!("bytes={}", report.bytes),
                         format!("source={}", report.source),
                         format!("digest={}", report.digest),
+                        // ⭐ `D-EX-1`：**峰值读数恒发**。`#229` 旧门是"只有削波才发"，于是
+                        // "贴轨但没削平"那一格永远看不见任何数（创作轮里我就把这格判错过一次：
+                        // 引擎自报 `headroomDb = 5.18e-07`，回执却什么都没有）。这四个数**早就算好了**
+                        // （`render_core` 的限制器压样本计数 ＋ 量化前浮点母带上的真峰值），
+                        // 这里只是把它们发出去，⛔ 不新增任何测量、⛔ 不改一个样本。
+                        //
+                        // ⚠ 发在 `clipping_note` **之前**：`#229` 记下过长文案落在**最后一个
+                        // 字段**时会被 264px 的 `module-status` 行 `elide`（`#230` 因此另开了一行）
+                        // —— 保持 `clipping_note` 在最后，那条已知行为一位不改。
+                        format!("limiter={}", if limiter_requested { "on" } else { "off" }),
+                        format!("limiter_reductions={}", report.limiter_reductions),
+                        format!(
+                            "true_peak_dbfs={}",
+                            report
+                                .true_peak_dbfs
+                                .map_or_else(|| "null".to_owned(), |v| format!("{v:.6}"))
+                        ),
+                        format!(
+                            "headroom_db={}",
+                            report
+                                .headroom_db
+                                .map_or_else(|| "null".to_owned(), |v| format!("{v:.6}"))
+                        ),
                     ];
-                    // ⭐ 任务单 `#229`：**削波时多一条字段**，内容是 CLI 的同一条
+                    // ⭐ 任务单 `#229`：**削波时再多一条字段**，内容是 CLI 的同一条
                     // [`crate::export_wav::WavExportReport::clipping_note`]（`clippedSamples` /
-                    // `suggestedTrimDb` / 最响的源都在里面）。⛔ 不削波时**一个字段都不加**
-                    // ⇒ 既有回执逐字不变（判据
-                    // `tests/gui_export_clipping.rs` 的干净臂：整条字符串等值断言）。
+                    // `suggestedTrimDb` / 最响的源都在里面）。⛔ 不削波时**这条不加**
+                    // —— 长文案不进干净回执（判据 `tests/gui_export_clipping.rs` 的干净臂）。
+                    //
+                    // ⚠ 它原来写的"不削波时一个字段都不加 ⇒ 整条回执逐字不变"从 `D-EX-1`
+                    // 起**不再成立**：峰值读数改成恒发（见上面那段）。改的是"发不发"，
+                    // ⛔ 不是"量不量"，也⛔ 不是那条长文案的门。
                     //
                     // 为什么放在**末尾**而不是把字段拆开：① 与 CLI `--export-wav` 的
                     // "多一行"同一个口径（`#226`），区别只是这一行的行首有字段名；
@@ -9010,9 +9300,14 @@ pub fn action_has_implementation(action: Action) -> bool {
 ///
 /// ## 为什么需要它（以及为什么是"通行"的）
 ///
-/// `apply_action` 原先只拿得到 `ui` 与 `undo`，而有一类动作**必须**动引擎：凡是
-/// "改 `TransportConfig` 才生效"的开关（节拍器、预备拍，以及将来任何投影进快照的走带
-/// 设置）都要**换一代引擎**再恢复走带 ⇒ 那个落点需要 `host` ＋ 一份**工程**。
+/// `apply_action` 原先只拿得到 `ui` 与 `undo`，而有一类动作**必须**动引擎：凡"实时引擎
+/// 自己读这个字段"的开关（今天只剩**节拍器** —— 它的计划在快照投影期进快照）都要
+/// **换一代引擎**再恢复走带 ⇒ 那个落点需要 `host` ＋ 一份**工程**。
+///
+/// ⚠ **判据是"引擎读不读"，不是"字段住在 `TransportConfig` 里"**（`D-UI-23` 的分工）：
+/// 预备拍同样是一个走带开关，但实时引擎⛔ 不读它（`crates/yeban-engine/src/lib.rs`
+/// 把它列在**仍未实现**那一栏）⇒ 它的落点是**文档级提交**（`Op::SetTransportConfig`），
+/// 不走这里。换代那条路只会停走带、并留下一个没人读的字段。
 ///
 /// ⚠ **借用形状是借用、⛔ 不是拥有**：调用方（[`wire_keys`]）从既有的
 /// `Rc<RefCell<EngineHost>>` 现借（⭐ 与 `wire_transport(ui, engine)` **同款**范式）
@@ -9023,24 +9318,34 @@ pub fn action_has_implementation(action: Action) -> bool {
 pub struct EngineCommandContext<'a> {
     /// 引擎宿主（换代与恢复走带都经它）。
     pub host: &'a mut EngineHost,
-    /// **当前工程**（动作要基于它算"下一个值"）。
+    /// **当前工程**（没有权威会话时，动作要基于它算"下一个值"）。
     pub project: &'a YebanProjectV1,
     /// ⭐ **节拍器开关的运行态镜面**（界面路径注入；`None` ⇒ 退回落文档字段）。
     ///
-    /// ## 为什么需要它（而不是永远读文档）
+    /// ## 它只在**没有权威会话**那一支被读（`D-UI-29` 之后的形状）
     ///
-    /// `transport.metronome_enabled` 住在**持久化文档**里，而今天拨动开关**不写文档**
-    /// （文档级提交要走 `Op::SetTransportConfig`，那条通道尚未接线）。若"下一个值"
-    /// 永远从文档算，第二次按键/点击会再次算出 `true` ⇒ **开关关不掉**。
-    /// 界面路径把 `MainWindow.metronome-on`（唯一运行态镜面）注进来，
-    /// 于是 `Cmd/Ctrl+Alt+N` 与节拍器按钮**同一个落点、同一个取值依据**。
+    /// 有会话时"下一个值"从**文档**算（那条臂提交 `Op::SetTransportConfig` ⇒ ⭐ 可撤销、
+    /// ⭐ 会持久化、⭐ 由既有的 60 Hz 发布腿换快照）。只有**没有可提交的对象**时
+    /// （判据 / 无头装配），文档字段恒为装配期初值 ⇒ 若"下一个值"还从它算，第二次
+    /// 按键/点击会再次算出 `true` ⇒ **开关关不掉**（`#16` 登记的那条）。那一支只能拿
+    /// `MainWindow.metronome-on` 当累加器，并当场 `metronome::set_enabled` 换代。
+    ///
+    /// ⚠ 本字段**不是**第二事实源：它只在那一支参与取值，而镜面本身由
+    /// [`apply_metronome_mirror`] 每一跳按快照校正。
     pub metronome_on: Option<bool>,
 }
 
 /// ⭐ **"要动引擎"的动作的落点**（⭐ **不依赖界面** ⇒ 判据可无窗口地测它）。
 ///
-/// ⚠ 这正是本切片要求的"**通行**形状"：凡是要改 `TransportConfig`（＝必须换一代引擎）
-/// 的开关都走这一处；⛔ 界面不参与，⛔ 不为节拍器开特例。
+/// ⚠ **通行形状**，⛔ 不是为节拍器开的旁路；但入选门槛是「**实时引擎自己读这个字段**」，
+/// ⛔ 不是「字段住在 `TransportConfig` 里」（`D-UI-23`：预备拍也住那里，引擎⛔ 不读它
+/// ⇒ 它的落点是 `apply_action` 的文档级提交，⛔ 不走这里）。⛔ 界面不参与。
+///
+/// ⚠ ⭐ `D-UI-29` 之后本落点**只剩"没有权威会话"那一支**：有会话时节拍器也改走文档级
+/// 提交（`apply_action` 的那条臂），发声由既有的 60 Hz 发布腿负责 —— 那条腿本来就是
+/// "编辑 ⇒ 发声"的唯一通路，且⛔ 不动走带、⛔ 不重建引擎。本函数因此**不再**是产品
+/// 拨动的必经点，但它是**无会话装配**（判据 / 无头）唯一能让开关出声的方式，
+/// 也就仍是 `action_needs_engine` 列出的那一条。
 ///
 /// ⚠ `MainWindow` 需要 Tier-1 平台且 macOS 上 `EventLoop` 是**单例 + 必须主线程**
 /// ⇒ 若把这些臂写在 `apply_action` 里、只能经真窗口测，判据就建不出窗口（实测踩过：
@@ -9058,15 +9363,9 @@ pub fn apply_engine_command(context: &mut EngineCommandContext<'_>, action: Acti
                 .unwrap_or(context.project.transport.metronome_enabled);
             crate::metronome::set_enabled(context.host, context.project, !current).is_ok()
         }
-        // 拨**预备拍**：`count_in_bars` 0 ⇄ 1。
-        Action::ToggleCountIn => {
-            let next = if context.project.transport.count_in_bars == 0 {
-                1
-            } else {
-                0
-            };
-            crate::metronome::set_count_in_bars(context.host, context.project, next).is_ok()
-        }
+        // ⭐ `D-UI-23`：**预备拍不在这里**（⛔ 不是漏了一条臂）。它今天只被**文档**读
+        // （`record_wav::count_in_frames`），实时引擎不实现它 ⇒ 换一代引擎是纯代价。
+        // 它的落点改在 `apply_action` 的文档级提交那一臂。
         // ⚠ 其余动作**不**在这条链上（它们不动引擎）⇒ 如实返回 `false`。
         _ => false,
     }
@@ -9103,6 +9402,42 @@ pub(crate) fn apply_action_for_criteria(
     apply_engine_command(&mut context, action)
 }
 
+/// ⭐ **`TransportConfig` 文档级提交的唯一落点**（`D-UI-23` 开的道，`D-UI-29` 让节拍器也走它）。
+///
+/// ## 为什么必须是这一个函数，而不是两条臂各写一遍
+///
+/// `Op::SetTransportConfig` 是**整体替换**那三个字段的 op ⇒ 每个"拨走带开关"的落点都要
+/// 先读**当前文档**、再把它不关心那两格**逐字带上**。写两遍就会有两个"下一个值"的算法
+/// （必分叉），而本仓的判据（`tests/d_ui_23_count_in_writes_the_document.rs` 的 ⑨）
+/// 从源码文本钉住"`Op::SetTransportConfig {` 的构造点恰好 1 处"。
+///
+/// ⚠ `old_config` **必须**来自调用方刚读到的那份权威工程（模型的前置条件比的就是它），
+/// 因此这里不自己再读一遍工程：那样就是第二次读数，而"读哪一次"会变成新的分叉点。
+///
+/// 提交之后走一次 [`refresh_undo_window`]（`reproject = true`）：时光机的深度 / 分支读数
+/// 跟着这条新提交变（预备拍那一支的重投影⛔ 不许动卷帘那六格读数 —— 判据 ⑤ 钉着）。
+///
+/// 返回 `false` = 提交被模型拒绝（文档一位没改，界面按当前文档重投影一次如实回报）。
+fn commit_transport_config(
+    ui: &MainWindow,
+    port: &UndoPort,
+    message: &str,
+    old_config: yeban_model::TransportConfig,
+    new_config: yeban_model::TransportConfig,
+) -> bool {
+    let op = yeban_model::Op::SetTransportConfig {
+        old_config,
+        new_config,
+    };
+    if port.commit_ops(now_ms(), message, vec![op]).is_err() {
+        eprintln!("[yeban-app] 走带设置提交被拒绝（工程未改）: {message}");
+        refresh_undo_window(ui, port, true);
+        return false;
+    }
+    refresh_undo_window(ui, port, true);
+    true
+}
+
 fn apply_action(
     ui: &MainWindow,
     undo: Option<&Rc<UndoPort>>,
@@ -9113,18 +9448,62 @@ fn apply_action(
         return false;
     }
     match action {
-        // 拨**节拍器**开关（`Cmd/Ctrl+Alt+N`）。⚠ 它更换一代引擎（计划在投影期进快照）
-        // ⇒ 走 `metronome::set_enabled` 的"先停 ⇒ 换 ⇒ 恢复位置与状态"。
-        // ⚠ 引擎/工程不在手（`context == None`）⇒ ⛔ 不消费（照旧放行，⛔ 不假装成功）。
-        Action::ToggleMetronome | Action::ToggleCountIn => {
+        // ⭐⭐ `D-UI-29`：拨**节拍器**（`Cmd/Ctrl+Alt+N` / 走带区那颗键）＝ **改文档**。
+        //
+        // ## 为什么落点从"换一代引擎"搬到文档（⛔ 不是随手挪）
+        //
+        // 修前那条臂交给 `metronome::set_enabled` 的 `project` 是**装配期冻结**的那份
+        // `Rc<YebanProjectV1>`（只在换工程时重装配）⇒ 拨一次开关会把引擎**换代回那份旧
+        // 文档**：用户此后画的音符、改的速度在播放侧**全部消失**，而界面上还在。代价还不
+        // 止走带 —— `reload` 不保位置，本模块要 stop → reload → seek 补回来，控制驱动形态
+        // 下必然漂移几个 tick（`src/metronome.rs` 的模块文档逐字登记）。而文档字段一位没改
+        // ⇒ **保存 / 重开就弹回装配期那个值**。
+        //
+        // ⇒ 事实源本就是**文档**，而"编辑 ⇒ 发声"那条腿**早就存在**：`main.rs` 的 60 Hz
+        // 心跳在 `EditMark`（活跃分支头 / 已撤销步数）一变时就 `UndoPort::try_project()`
+        // → `ProductionLoop::tick` → `EngineHost::publish_project` →
+        // `EngineSnapshot::from_project`（节拍器计划正是在**投影期**进快照的那一格）。
+        // 这条腿**不重建引擎、不推量子、不动走带** ⇒ 提交一次 op 同时拿到：⭐ 发声
+        // （下一跳 ≤ 16 ms）、⭐ 无损走带（连那几个 tick 的漂移都没有）、⭐ 可撤销、
+        // ⭐ 会持久化。所以这一支⛔ 不借宿主 —— 那份 `Rc<RefCell<EngineHost>>` 只有
+        // **没有**权威会话时才需要。
+        //
+        // ⚠ **镜面在这里立刻跟着写**（不等心跳）：那颗键的 `accessible-checked` 与颜色读的
+        // 就是它，而判据装配里不跑心跳。它**不是**第二个事实源 —— [`ProductionLoop::tick`]
+        // 与 `live_surface` 的执行面都在每次**发布成功**的那一跳按文档校正它（见
+        // [`apply_metronome_mirror`]），撤销、运行期换工程、控制面写入因此都不留旧值。
+        Action::ToggleMetronome => {
+            if let Some(port) = undo {
+                // 权威工程读不出来 ⇒ 出声、不画（与预备拍那条臂同款纪律）。
+                let Some(project) = port.try_project() else {
+                    eprintln!("[yeban-app] 节拍器拨动没有可投影的工程: 权威会话此刻没有活跃工程");
+                    return false;
+                };
+                // ⭐ "下一个值"从**文档**算，⛔ 不从镜面算：镜面可能比文档旧（撤销回来的、
+                // 控制面改的）⇒ 拿它算就是让界面当事实源，那正是修前的形态。
+                let old_config = project.transport;
+                let mut new_config = old_config;
+                new_config.metronome_enabled = !old_config.metronome_enabled;
+                // ⛔ 另外两格（预备拍 / 场景量化）逐字带着走（`Op::SetTransportConfig` 是
+                // 整体替换），`D-UI-23` 的判据 ④ 与这一支对称。
+                let committed =
+                    commit_transport_config(ui, port, "toggle metronome", old_config, new_config);
+                if committed {
+                    ui.set_metronome_on(new_config.metronome_enabled);
+                }
+                return committed;
+            }
+            // ⭐ **没有权威会话**（判据 / 无头装配的形状）⇒ 落回引擎换代那条腿。
+            //
+            // ⚠ 这一支只会在"没有可提交的对象"时可达：发布腿靠 `EditMark` 变化驱动，
+            // 没有端口就没有提交、也就没有新快照 ⇒ 只能当场 `metronome::set_enabled`。
+            // 那时文档恒为装配期初值（拨动无处可写）⇒ "下一个值"的依据只能是镜面，
+            // 否则第二次点击会再算出同一个值 ⇒ **开关关不掉**（`#16` 登记的那条）。
+            // ⚠ 引擎/工程不在手（`context == None`）⇒ ⛔ 不消费（照旧放行，⛔ 不假装成功）。
             let Some(context) = context else {
                 return false;
             };
-            if matches!(action, Action::ToggleCountIn) {
-                return apply_engine_command(context, action);
-            }
-            // ⭐ `Action::ToggleMetronome`：**运行态镜面**是"下一个值"的唯一依据
-            // （文档字段只是装配期的初值；拨动本身不写文档）。
+            // ⭐ **运行态镜面**是"下一个值"的唯一依据（文档字段只是装配期的初值）。
             let current = ui.get_metronome_on();
             context.metronome_on = Some(current);
             let applied = apply_engine_command(context, action);
@@ -9134,6 +9513,40 @@ fn apply_action(
                 ui.set_metronome_on(!current);
             }
             applied
+        }
+        // ⭐⭐ `D-UI-23`：拨**预备拍**（`Cmd/Ctrl+Alt+D`）＝ **改文档**，⛔ 不换引擎。
+        //
+        // ## 为什么落点从"换一代引擎"搬到这里（⛔ 不是随手挪）
+        //
+        // 修前那条臂算的是 `context.project.transport.count_in_bars` 的"下一个值"，
+        // 而 `context.project` 是**装配期冻结**的那份 `Rc<YebanProjectV1>`（只在换工程时
+        // 重装配，见 `main.rs` 的 `after`）⇒ ① 第二下永远还算出同一个值 ⇒ **关不掉**；
+        // ② 文档一位没改 ⇒ **持久化不了**；③ 唯一的读者（录音那条腿）读的还是那份冻结快照
+        // ⇒ 换的那一代里 `count_in_bars` 仍是旧值。而换引擎要把走带**停住再恢复**
+        // ——代价付了，实时引擎根本不读这个字段（`crates/yeban-engine/src/lib.rs` 逐字把
+        // "预备拍"列在**仍未实现**那一栏）。
+        //
+        // ⇒ 事实源本就该是**文档**：`Op::SetTransportConfig`（既有的、整体替换
+        // `TransportConfig` 三个字段的那条 op）⭐ 可撤销、⭐ 会持久化、⭐ 下一个读者读到
+        // 的就是它。⚠ `metronome_enabled` 与 `launch_quantization` 两个字段**逐字带着走**
+        // （`old_config` 就是当前文档）：那一支的落点是节拍器**自己**那条臂（`D-UI-29`）
+        // 与量化那格尚无落点 ⇒ 这里顺手改就是替别人写它的字段，两个落点必分叉。
+        //
+        // ⚠ 没有撤销端口（= 没有权威会话）⇒ ⛔ 不消费、⛔ 不假装成功（与 `#212` 那类
+        // "降级要响亮"的纪律同款；判据侧的装配正是这一形）。
+        Action::ToggleCountIn => {
+            let Some(port) = undo else {
+                return false;
+            };
+            // 权威工程读不出来 ⇒ 出声、不画（与 `wire_bpm_commit` 同款纪律）。
+            let Some(project) = port.try_project() else {
+                eprintln!("[yeban-app] 预备拍拨动没有可投影的工程: 权威会话此刻没有活跃工程");
+                return false;
+            };
+            let old_config = project.transport;
+            let mut new_config = old_config;
+            new_config.count_in_bars = if old_config.count_in_bars == 0 { 1 } else { 0 };
+            commit_transport_config(ui, port, "toggle count-in", old_config, new_config)
         }
         // `[UI-NOTE-003]` 工具选择：数字键 → 矩阵行号 → `active-tool`（**单一数字口径**）。
         // 撤销端口在场时同时记一条动作日志（`UiAction::SelectTool` 只报显示态、不改工程）。
@@ -9260,6 +9673,24 @@ fn apply_action(
             ui.set_sidebar_collapsed(!ui.get_sidebar_collapsed());
             true
         }
+        // `Cmd/Ctrl+F`：把键盘焦点交给左栏搜索框（D-UI-18，界面决定）。
+        //
+        // ⚠ 焦点**不是属性** ⇒ 这里是"命令一次 Slint"，不是"写一个状态"：唯一实现 =
+        // `ui.invoke_focus_sidebar_search()`（`app.slint` 的 `public function`，里面只有
+        // `sidebar-search-input.focus()`）。
+        // ⭐ 折叠态先展开：写的仍是 `Action::ToggleSidebar` 那**同一个**属性
+        // `sidebar-collapsed`（唯一写者是 `wire_view_callbacks` 与本臂 ⇒ 不新增真相源），
+        // 因为框在折叠时 `visible: false`，取焦落不下去。
+        // ⭐ 返回值 = **焦点真的落地了吗**：读数 `sidebar-search-focused` 是 Slint 焦点的
+        // 镜像（`app.slint`），窄栏（`compact` ⇒ 框根本不在场）时它保持 `false` ⇒ 本键
+        // **不消费**（⛔ 不假装成功，与本文件"引擎拒绝 ⇒ 放行"的既有取向一致）。
+        Action::FocusSidebarSearch => {
+            if ui.get_sidebar_collapsed() {
+                ui.set_sidebar_collapsed(false);
+            }
+            ui.invoke_focus_sidebar_search();
+            ui.get_sidebar_search_focused()
+        }
         Action::ToggleConsoleMaximize => {
             ui.set_console_maximized(!ui.get_console_maximized());
             true
@@ -9381,8 +9812,9 @@ fn apply_action(
             };
             let ops = delete_ops_for(&project, &selected);
             if ops.is_empty() {
-                // 选区的对象一个都不在工程里 ⇒ 没有可停靠的编辑, 如实不消费。
-                return false;
+                // 选区的对象一个都不在工程里 ⇒ 先看**编曲视图选中的剪辑**（`D-UI-15`：
+                // 剪辑从前只能移动、不能删）。两条都不成立才如实不消费。
+                return delete_selected_clip_placement(ui, port, &project);
             }
             if port.commit_ops(now_ms(), "delete selection", ops).is_err() {
                 return false;
@@ -9547,8 +9979,11 @@ fn apply_action(
         // 1. 选区读点与 [`Action::NudgeSelection`] 同一个（`selected-ulids`）；
         // 2. 幅度由 [`resize_duration_delta_for`] **唯一**换算（一个吸附网格）；
         // 3. 批解析走 [`resize_duration_ops_for`]（纯函数）：**逐音符**夹紧到 ≥ 1 tick，
-        //    没变的音符不写 op；整批为空（空选区 / 全部已在下限）⇒ **0 提交**、
-        //    返回 `false`（不吞键，与 `DeleteSelection` / `NudgeSelection` 同一取向）。
+        //    没变的音符不写 op；整批为空 ⇒ 看**选区**决定去向：
+        //    * 选区**非空**（全部已在 1 tick 下限）⇒ **0 提交**、返回 `false`（不吞键，与
+        //      `DeleteSelection` / `NudgeSelection` 同一取向），⛔ 不跨界去改剪辑；
+        //    * 选区**为空** ⇒ 交给 [`resize_selected_clip_duration`]（`D-UI-17`：同一把键
+        //      裁剪选中的剪辑摆放，先音符后剪辑的优先级与 `Delete` 那条同款）。
         // 一次按键 = 一次 `commit_ops` = 一步撤销（`undo_session` 包成一个 `Op::Batch`）。
         // 起点不变 ⇒ 选区身份仍然有效，提交后照常重投影。
         Action::ResizeSelectionDuration { direction } => {
@@ -9568,7 +10003,15 @@ fn apply_action(
             let delta_ticks = resize_duration_delta_for(direction);
             let ops = resize_duration_ops_for(&project, &selected, delta_ticks);
             if ops.is_empty() {
-                return false;
+                // `D-UI-17`：音符选区**为空** ⇒ 同一把键落到选中的剪辑摆放上。
+                //
+                // 分派看的是**选区**而不是**结果**：选区非空但每颗音符都已在 1 tick 下限
+                // （`resize_duration_ops_for` 对没变的音符不产出 op）时⛔ 不跨界去改剪辑 ——
+                // 用户此刻指着的是音符，"键没起作用"是诚实的结果，"顺手改了别的东西"不是。
+                if !selected.is_empty() {
+                    return false;
+                }
+                return resize_selected_clip_duration(ui, port, &project, delta_ticks);
             }
             if port
                 .commit_ops(now_ms(), "resize selection duration", ops)
@@ -9665,6 +10108,24 @@ fn apply_action(
             }
             refresh_undo_window(ui, port, true);
             true
+        }
+        // ⭐ `Cmd/Ctrl+M`：静音**编曲视图选中的那条剪辑摆放**（`D-UI-16`）。
+        //
+        // 与上面 `ToggleTrackMute` / `ToggleTrackSolo` 的分工是**作用域**：那两条动
+        // `selected-track-id`，本条动 `selected-clip-ulid`（唯一写者 [`wire_clip_scope`]）。
+        // 四条口径（编曲视图门 / 无选中 / 解析不到 / 一步提交）全在
+        // [`toggle_selected_clip_mute`] 这一处，这里只负责取权威工程 —— ⛔ 不在键盘臂里
+        // 再写一份"没选中怎么办"，那会长出第二个口径。
+        // ⚠ 与轨静音**共用不了** `mixer_switch_commit_message`：轨级是 `Op::SetTrackMute`、
+        // 剪辑级是 `Op::SetClipPlacementMuted`，两个 op 形状不同（⛔ 不是同一件事的两种写法）。
+        Action::ToggleClipMute => {
+            let Some(port) = undo else {
+                return false;
+            };
+            let Some(project) = port.try_project() else {
+                return false;
+            };
+            toggle_selected_clip_mute(ui, port, &project)
         }
         // 横向缩放（`Z` / `Shift+Z`）：**视图态**，不碰 `Op`、不进撤销栈。
         //
@@ -9806,6 +10267,34 @@ fn zoom_action(ui: &MainWindow, port: &UndoPort, action: Action) -> bool {
     };
     apply_view(ui, &next, viewport_px as f32, scroll_x);
     true
+}
+
+/// ⭐ **镜面 `metronome-on` 的文档校正点**（`D-UI-29`）。
+///
+/// ## 它补的是哪一格
+///
+/// 那颗键的 `accessible-checked` 与颜色读的是 `MainWindow.metronome-on`，而**播放里的**
+/// 节拍器来自快照（`SnapshotArmed::armed_metronome_enabled`）。修前两者只在拨动那一刻
+/// 一起动 ⇒ 凡是**不经拨动**改到文档字段的路，界面与耳朵就此分叉：
+/// 撤销 / 重做（游标动了 ⇒ `EditMark` 动 ⇒ 快照换了）、运行期「打开工程」、
+/// 控制面（MCP）写文档。⇒ 本函数挂在**发布快照的那同一跳**上：镜面永远写的是
+/// "此刻引擎里那一代快照"投影用的那个值。
+///
+/// ⚠ 与 [`apply_engine_error`] 同一条纪律：生产心跳（[`ProductionLoop::tick`]）与
+/// `src/live_surface.rs` 的执行面调的是**同一个**函数 ⇒ 两条腿的界面读数不可能漂移。
+///
+/// `None` = 这一跳**没有**换上按新文档投影的快照（标记没变 / 没有工程可送 / 投影失败）
+/// ⇒ 一位不动。⚠ 投影失败时文档与快照本来就不同，那时镜面必须跟着**引擎**（旧值），
+/// 否则界面上点亮的是"没有发生的事" —— 那句"播放侧仍是上一版"已经由横幅如实说出去了。
+pub fn apply_metronome_mirror(ui: &MainWindow, snapshot_enabled: Option<bool>) {
+    let Some(enabled) = snapshot_enabled else {
+        return;
+    };
+    // ⚠ 先比对再写：属性写入会让绑定的那一格重算（那颗键的颜色 / `accessible-checked`），
+    // 而这一跳每 16 ms 一次 ⇒ 无条件写就是每跳两次无谓重算。
+    if ui.get_metronome_on() != enabled {
+        ui.set_metronome_on(enabled);
+    }
 }
 
 /// 把**撤销的**模型读数注入界面（显示态 + 时光机弹窗开关 + 图谱节点）。
@@ -11780,25 +12269,242 @@ pub fn clip_drag_preview_dx_px(start_tick: u64, target_tick: u64, ticks_per_pixe
     px
 }
 
-/// 摆放身份 ⇒ `(track_id, placement_id, 当前起点 tick)`（**唯一**的身份解析）。
+/// 摆放身份 ⇒ `(track_id, placement_id, 摆放本身)`（**唯一**的身份解析）。
 ///
 /// 剪辑是**直接住在轨道里**的（`TrackV3::clips`，不像音符那样先住片段池）⇒ 遍历
 /// `project.tracks`（`BTreeMap` 键序确定）找**第一条**含该键的轨。身份文本非法 /
 /// 不在任何轨道上 ⇒ `None`（调用方什么都不做）。
 ///
-/// 起点从**权威工程**现读：`Op::MoveClipPlacement` 的 `old_start_tick` 必须与文档现值
-/// 逐值相同（模型前置条件），从这里带出来就不可能拿到第二份读数。
-fn clip_placement_for(
-    project: &yeban_model::YebanProjectV1,
+/// 返回的是**借用**而不是 `start_tick` 一个标量：拖动只读它的 `start_tick`
+/// （`Op::MoveClipPlacement` 的 `old_start_tick` 必须与文档现值逐值相同 —— 模型前置条件，
+/// 从这里带出来就不可能拿到第二份读数），而删除（[`clip_delete_ops_for`]）要带走**整份**
+/// 摆放当撤销载荷（`Op::RemoveClipPlacement` 的 `previous_placement`）。两条写路径共用这
+/// **一个**解析点 ⇒ 不再长第二遍 `tracks` 遍历，也就不可能出现"一边认得这条摆放、
+/// 一边认不得"的分叉。
+/// ⚠ 返回借用 ⇒ 生命周期**必须点名系在 `project` 上**：签名里另有 `placement_ulid: &str`
+/// 这一个输入生命周期，省略式写法会让 rustc 判 `E0106`（"不知道从哪个借的"）——
+/// CI run `41472437095` 就是红在这一行（三条 `yeban-app` 腿的 `clippy -D warnings` 全挂）。
+fn clip_placement_for<'p>(
+    project: &'p yeban_model::YebanProjectV1,
     placement_ulid: &str,
-) -> Option<(EntityId, EntityId, u64)> {
+) -> Option<(EntityId, EntityId, &'p yeban_model::project::ClipPlacement)> {
     let placement_id = placement_ulid.parse::<EntityId>().ok()?;
     project.tracks.iter().find_map(|(track_id, track)| {
         track
             .clips
             .get(&placement_id)
-            .map(|placement| (*track_id, placement_id, placement.start_tick))
+            .map(|placement| (*track_id, placement_id, placement))
     })
+}
+
+/// 选中剪辑的身份 ⇒ 待提交的 `Op::RemoveClipPlacement`（剪辑删除的**唯一** op 构造点）。
+///
+/// 与 [`delete_ops_for`] 同一取向：**解析不到就回空**，⛔ 不删一个猜的对象。
+/// 纯函数（只读工程、不碰界面、不提交）⇒ 判据可以直接喂合成工程逐条对账。
+#[must_use]
+pub fn clip_delete_ops_for(
+    project: &yeban_model::YebanProjectV1,
+    selected_clip_ulid: &str,
+) -> Vec<yeban_model::ops::Op> {
+    let Some((track_id, placement_id, placement)) = clip_placement_for(project, selected_clip_ulid)
+    else {
+        return Vec::new();
+    };
+    vec![yeban_model::ops::Op::RemoveClipPlacement {
+        track_id,
+        placement_id,
+        // 自带撤销载荷：摆放整份留在 op 里，撤销不需要回放历史（同 `DeleteNote`）。
+        // `ClipPlacement` 是 `Copy` ⇒ 解引用拿走一份，⛔ 不用 `.clone()`（`clippy::clone_on_copy`
+        // 在 `-D clippy::all` 下是硬错；CI run `41476987648` 就红在这一行）。
+        previous_placement: *placement,
+    }]
+}
+
+/// `Delete` / `Backspace` 落到**编曲视图选中的剪辑**上（`D-UI-15`）：一次原子提交、一步撤销。
+///
+/// 为什么它只在**音符选区为空**时才被调用（[`apply_action`] 的那一条先算 [`delete_ops_for`]）：
+/// `Delete` 的既有承诺是"删除选中的音符"，优先级⛔ 不能反过来 —— 卷帘的作用域就是那条
+/// 选中剪辑，若"选中了音符"与"选中了剪辑"同时成立时去删整条摆放，一次按键会带走用户
+/// 正指着的那一片音符所在的**整个**剪辑。
+///
+/// 四条口径（每一条都是决定，不是意外）：
+/// 1. **只在编曲视图**生效（`arrangement-view`）：Session 视图里没有"选中的剪辑"这一格，
+///    那里的 `selected-clip-ulid` 只是上一次编曲视图留下的读数 ⇒ 拿它删东西等于删掉
+///    用户此刻**看不见**的对象；
+/// 2. **一次按键 = 一次** [`UndoPort::commit_ops`]（单条 op ⇒ 一步撤销就把整条摆放连同
+///    `previous_placement` 放回原处，`[ARCH-OPS-002]` 的原子性）。模型拒绝 ⇒ 返回 `false`
+///    且⛔ **不重试**：载荷里的现值是刚从权威读的，重试要再读一遍，那不是本函数的职责
+///    （与 [`commit_clip_drag`] 同一取向）；
+/// 3. **提交成功后先收掉手上的拖动草稿**（[`cancel_clip_drag`]）：草稿指向的身份马上就
+///    不存在了，留着它 = 松手时提交一条指向已删摆放的 op；
+/// 4. **选中态必须跟着走**：清空 `selected-clip-ulid` **再**重投影 —— 那条属性是卷帘
+///    作用域的键（`[UI-NOTE-001]` 的"当前编辑片段"），顺序反过来就会有一帧画面停在
+///    一个已经不存在的剪辑的音符上。这与音符那条"删完清空 `selected-ulids`"同一条纪律。
+fn delete_selected_clip_placement(
+    ui: &MainWindow,
+    port: &Rc<UndoPort>,
+    project: &yeban_model::YebanProjectV1,
+) -> bool {
+    if !ui.get_arrangement_view() {
+        return false;
+    }
+    let selected = ui.get_selected_clip_ulid();
+    if selected.is_empty() {
+        return false;
+    }
+    let ops = clip_delete_ops_for(project, selected.as_str());
+    if ops.is_empty() {
+        // 选中的身份不在工程里（换工程 / 外部编辑留下的陈旧读数）⇒ 不消费，
+        // ⛔ 也不"顺手"清掉那个陈旧选中态：那是另一件事，不归这一键。
+        return false;
+    }
+    if port.commit_ops(now_ms(), "delete clip", ops).is_err() {
+        return false;
+    }
+    cancel_clip_drag(ui);
+    ui.set_selected_clip_ulid("".into());
+    refresh_undo_window(ui, port, true);
+    true
+}
+
+/// 选中剪辑的身份 ⇒ 待提交的 `Op::SetClipPlacementMuted`（剪辑静音的**唯一** op 构造点）。
+///
+/// 与 [`clip_delete_ops_for`] 同一取向：**解析不到就回空**，⛔ 不动一个猜的对象。
+/// 纯函数（只读工程、不碰界面、不提交）⇒ 判据可以直接喂合成工程逐条对账。
+///
+/// ⚠ `old_muted` **从当前文档读**（模型的硬性前置条件：`old_muted` 必须逐值等于现值，
+/// 否则 [`yeban_model::ModelError::OpStateMismatch`]）⇒ 这里不信任何界面自己记的旧值，
+/// 界面那一份只是**读数**（`clip-mutes` 数组），事实源始终是工程。
+#[must_use]
+pub fn clip_mute_ops_for(
+    project: &yeban_model::YebanProjectV1,
+    selected_clip_ulid: &str,
+) -> Vec<yeban_model::ops::Op> {
+    let Some((track_id, placement_id, placement)) = clip_placement_for(project, selected_clip_ulid)
+    else {
+        return Vec::new();
+    };
+    vec![yeban_model::ops::Op::SetClipPlacementMuted {
+        track_id,
+        placement_id,
+        old_muted: placement.muted,
+        new_muted: !placement.muted,
+    }]
+}
+
+/// `Cmd/Ctrl+M` 落到**编曲视图选中的剪辑**上（`D-UI-16`）：一次原子提交、一步撤销。
+///
+/// 四条口径（与 [`delete_selected_clip_placement`] 逐条同款，差别只在"对象还在"）：
+/// 1. **只在编曲视图**生效（`arrangement-view`）：Session 视图里 `selected-clip-ulid`
+///    只是上一次编曲视图留下的读数 ⇒ 拿它改东西等于改用户此刻**看不见**的对象；
+/// 2. **没有选中 / 身份解析不到 ⇒ 不消费**（`false`），⛔ 也不"顺手"清掉那个陈旧读数；
+/// 3. **一次按键 = 一次** [`UndoPort::commit_ops`]（单条 op，`[ARCH-OPS-002]` 的原子性）；
+///    模型拒绝 ⇒ `false` 且⛔ **不重试**（`old_muted` 刚从权威读，重试要再读一遍，
+///    那不是本函数的职责，与 [`commit_clip_drag`] 同一取向）；
+/// 4. **选中态必须留下**：这条摆放改完还在原地（静音≠删除）⇒ ⛔ 不清 `selected-clip-ulid`，
+///    用户可以连着按第二下拨回来。改完**重投影**，否则"模型改了、包头还亮着"。
+fn toggle_selected_clip_mute(
+    ui: &MainWindow,
+    port: &Rc<UndoPort>,
+    project: &yeban_model::YebanProjectV1,
+) -> bool {
+    if !ui.get_arrangement_view() {
+        return false;
+    }
+    let selected = ui.get_selected_clip_ulid();
+    if selected.is_empty() {
+        return false;
+    }
+    let ops = clip_mute_ops_for(project, selected.as_str());
+    if ops.is_empty() {
+        return false;
+    }
+    if port.commit_ops(now_ms(), "mute clip", ops).is_err() {
+        return false;
+    }
+    refresh_undo_window(ui, port, true);
+    true
+}
+
+/// 选中剪辑的身份 ＋ 一档增量 ⇒ 待提交的 `Op::SetClipPlacementDuration`
+/// （剪辑时长改动的**唯一** op 构造点，`D-UI-17`）。
+///
+/// 纯函数（只读工程、不碰界面、不提交）⇒ 判据可以直接喂合成工程逐字段对账。
+///
+/// 三条口径与音符那一族 [`resize_duration_ops_for`] **逐条同款**：
+/// 1. 幅度是**一个吸附网格**（[`resize_duration_delta_for`] 唯一换算），⛔ 不是像素级自由
+///    裁剪 —— 拖动裁剪右缘是另一票（要新加命中区，会动默认帧）；
+/// 2. 夹紧到 `≥ 1` tick：`ClipPlacement::validate` 与 op 前置条件走的是同一条
+///    `ModelError::ZeroDuration` ⇒ 这里⛔ 不自造第二个下限；
+/// 3. **算完没变**（已 1 tick 又按缩短 / `delta_ticks == 0`）⇒ 空批，上层因此既不提交
+///    也不消费（"把键吞掉却什么都不做，比不处理更糟"）。
+#[must_use]
+pub fn clip_duration_ops_for(
+    project: &yeban_model::YebanProjectV1,
+    selected_clip_ulid: &str,
+    delta_ticks: i64,
+) -> Vec<yeban_model::ops::Op> {
+    let Some((track_id, placement_id, placement)) = clip_placement_for(project, selected_clip_ulid)
+    else {
+        return Vec::new();
+    };
+    let old_duration_ticks = placement.duration_ticks;
+    // `unsigned_abs()` 而不是 `-delta_ticks`：后者在 `i64::MIN` 上会溢出，而这里没有
+    // 任何理由去赌调用方给的增量有多宽。
+    let step = delta_ticks.unsigned_abs();
+    let new_duration_ticks = if delta_ticks < 0 {
+        old_duration_ticks.saturating_sub(step).max(1)
+    } else {
+        old_duration_ticks.saturating_add(step)
+    };
+    if new_duration_ticks == old_duration_ticks {
+        return Vec::new();
+    }
+    vec![yeban_model::ops::Op::SetClipPlacementDuration {
+        track_id,
+        placement_id,
+        old_duration_ticks,
+        new_duration_ticks,
+    }]
+}
+
+/// `Shift+←/→` 落到**编曲视图选中的剪辑摆放**上（`D-UI-17`）：一次原子提交、一步撤销。
+///
+/// 四条口径与 [`toggle_selected_clip_mute`] 逐条同款，差别只在改的是 `duration_ticks`：
+/// 1. **只在编曲视图**生效（`arrangement-view`）；
+/// 2. 没有选中 / 身份解析不到 ⇒ **不消费**，⛔ 也不顺手清掉那个陈旧读数；
+/// 3. 一次按键 = **一次** [`UndoPort::commit_ops`]（单条 op）；模型拒绝 ⇒ `false` 且⛔ 不重试；
+/// 4. 剪辑**不销毁**（改的是长度，身份仍然有效）⇒ 选中态留下，可以连按第二下继续裁剪。
+///
+/// 提交后⛔ 不需要新写任何界面属性：剪辑的**宽度**本来就是投影算出来的
+/// （`ViewState::clip_widths` ← `ClipPlacement::duration_ticks`），重投影一跑，
+/// 那块剪辑块就在像素上变长 / 变短 —— 与 `D-UI-16` 的"静音要有新数组属性"不同，本票
+/// 在 `.slint` 侧**零改动**，默认帧因此逐像素不变（⛔ 不触发基准重录）。
+fn resize_selected_clip_duration(
+    ui: &MainWindow,
+    port: &Rc<UndoPort>,
+    project: &yeban_model::YebanProjectV1,
+    delta_ticks: i64,
+) -> bool {
+    if !ui.get_arrangement_view() {
+        return false;
+    }
+    let selected = ui.get_selected_clip_ulid();
+    if selected.is_empty() {
+        return false;
+    }
+    let ops = clip_duration_ops_for(project, selected.as_str(), delta_ticks);
+    if ops.is_empty() {
+        return false;
+    }
+    if port
+        .commit_ops(now_ms(), "resize clip duration", ops)
+        .is_err()
+    {
+        return false;
+    }
+    refresh_undo_window(ui, port, true);
+    true
 }
 
 /// 剪辑拖动的**草稿清零**（松手提交之后 / `Escape` / 指针取消三条路径共用）。
@@ -11846,11 +12552,12 @@ fn preview_clip_drag(ui: &MainWindow, port: Option<&Rc<UndoPort>>, clip_ulid: &s
     let Some(project) = port.try_project() else {
         return;
     };
-    let Some((_, _, start_tick)) = clip_placement_for(&project, clip_ulid) else {
+    let Some((_, _, placement)) = clip_placement_for(&project, clip_ulid) else {
         // 拖到一半工程里没有这条摆放了（外部编辑）⇒ 草稿归零，画面回到投影位置。
         ui.set_clip_drag_preview_dx(0.0);
         return;
     };
+    let start_tick = placement.start_tick;
     let ticks_per_pixel = roll_ticks_per_pixel(ui);
     let target =
         clip_drag_target_tick(start_tick, x - ui.get_clip_drag_origin_x(), ticks_per_pixel);
@@ -11873,10 +12580,10 @@ fn commit_clip_drag(ui: &MainWindow, port: Option<&Rc<UndoPort>>, clip_ulid: &st
     let Some(project) = port.try_project() else {
         return;
     };
-    let Some((track_id, placement_id, old_start_tick)) = clip_placement_for(&project, clip_ulid)
-    else {
+    let Some((track_id, placement_id, placement)) = clip_placement_for(&project, clip_ulid) else {
         return;
     };
+    let old_start_tick = placement.start_tick;
     let ticks_per_pixel = roll_ticks_per_pixel(ui);
     let new_start_tick = clip_drag_target_tick(old_start_tick, x - origin, ticks_per_pixel);
     if new_start_tick == old_start_tick {

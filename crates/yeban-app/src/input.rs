@@ -206,6 +206,8 @@ pub enum PhysicalKey {
     /// `A` —— 与 `Cmd/Ctrl+Alt` 组合展开 / 收起 AI 抽屉（走带 `transport-ai-drawer-button`
     /// 的键盘入口，界面决定）。
     KeyA,
+    /// `F` —— 与 `Cmd/Ctrl` 组合把**键盘焦点交给左栏搜索框**（D-UI-18，界面决定）。
+    KeyF,
     /// `1`–`5` —— 卷帘工具矩阵。
     Digit(u8),
     /// `[` —— 切到主线版本试听。
@@ -256,6 +258,7 @@ impl PhysicalKey {
             Self::KeyO => LogicalKey::Character('o'),
             Self::KeyR => LogicalKey::Character('r'),
             Self::KeyA => LogicalKey::Character('a'),
+            Self::KeyF => LogicalKey::Character('f'),
             Self::Digit(digit) => {
                 LogicalKey::Character(char::from_digit(u32::from(digit), 10).unwrap_or('\u{0}'))
             }
@@ -829,6 +832,10 @@ pub enum Action {
     /// 宿主侧的 `Op` 也不同（`Op::MoveNote` vs `Op::SetNoteTiming`）。
     /// 与 [`Self::NudgeSelection`] 同一条分工：本状态机只回答"这一键代表哪个动作"，
     /// "选区为空 / 已经缩到 1 tick 怎么办"由 `host::apply_action` 的臂决定。
+    ///
+    /// ⚠ **作用域有两格**（`D-UI-17`）：音符选区**为空**时同一动作落到编曲视图里选中的
+    /// **剪辑摆放**（`Op::SetClipPlacementDuration`）。变体名里的 "Selection" 因此指的是
+    /// "此刻被指着的东西"，⛔ 不是"只作用于卷帘选区"。
     ResizeSelectionDuration {
         /// `-1` = `Shift+←` 缩短；`+1` = `Shift+→` 延长。
         direction: i8,
@@ -885,10 +892,51 @@ pub enum Action {
     /// 同 [`Self::ToggleTrackMute`]：界面决定、裸 `s` 此前未被占用、作用域是
     /// `selected-track-id`（视图态，唯一写者是 `host::wire_track_select`）。
     ToggleTrackSolo,
+    /// `Cmd/Ctrl+M`: 把**当前选中剪辑摆放**的静音开关拨到反面（键盘入口，界面决定）。
+    ///
+    /// ⚠ **规范没有点名这一动作**（`[UI-NOTE-005]` 只讲音符）⇒ 与 [`Action::ToggleTrackMute`]
+    /// 同一取向：**界面决定**。它补的是"剪辑能选、能拖、能删，就是不能单独静音"这一格：
+    /// `yeban_model::ClipPlacement::muted` 在模型里早已存在，`yeban-engine::snapshot` 与
+    /// `yeban-render::{als, logic}` 都**真的**按它不发声 / 不导出，MCP 侧
+    /// `yeban_mcp::domain::notes` 的 `NoteOp::SetClipPlacementMuted` 也早已能提交 ——
+    /// ⛔ 只有界面一处都没有（本切片之前 `grep -rn SetClipPlacementMuted crates/yeban-app/src` 为空）。
+    ///
+    /// 键位只受一条约束：⛔ 不覆盖任何已被规范点名、或已被既有判据如实钉成放行的组合。
+    /// 实测：`Cmd/Ctrl+M`（第 3 步里 `shift == false && alt == false` 那一格）此前落到该分支的
+    /// `_ => PassThrough`（`m` 在该分支只有 `+Alt` 一条 = 控制台最大化，见
+    /// [`Action::ToggleConsoleMaximize`]），而裸 `m` 是**轨**静音（第 6 步）⇒ 三格互不相干。
+    /// `Cmd/Ctrl+Shift+M` 与 `Cmd/Ctrl+Alt+M` 仍如实放行。
+    ///
+    /// ⚠ **与轨静音的分工是作用域**：[`Action::ToggleTrackMute`] 动 `selected-track-id`，
+    /// 本动作动 `selected-clip-ulid`（唯一写者 [`crate::host::wire_clip_scope`]；视图态，
+    /// 不进工程、不进撤销栈）。"没有撤销端口 / 不在编曲视图 / 没有选中剪辑 / 身份解析不到
+    /// 怎么办、要不要提交"全在 `host::apply_action` 的同一个臂里（与 `DeleteSelection`
+    /// 的剪辑臂同一套口径，⛔ 不在状态机里猜对象）。
+    ToggleClipMute,
     /// `B`: 在箭头与铅笔之间快速切换。
     TogglePencilTool,
     /// `Cmd/Ctrl+Alt+B`: 展开 / 收起左侧资源抽屉。
     ToggleSidebar,
+    /// `Cmd/Ctrl+F`: 把**键盘焦点**交给左栏资源搜索框（D-UI-18，界面决定）。
+    ///
+    /// ⚠ **补的是"摸不到键盘"这一格，不是"没有输入框"**：搜索框自 D-UI-14 起是
+    /// 真 `TextInput`（`ui/sidebar.slint` 的 `sidebar-search-input`），鼠标点进去能敲；
+    /// 但 `Tab` 在画布上被解析成 [`Self::ToggleView`]（`[UI-A11Y-003]` §7.3 第 1 条
+    /// 要求的"严密的 Tab 序列"在仓库里是**另一票**，⛔ 不在本动作里改它），而画布
+    /// 键处理器 `accept` 之后 Slint 不再做焦点轮转 ⇒ 纯键盘用户**永远进不到任何文本框**
+    /// （实测登记见 `docs/ledger/app-zimmer-ui-notes.md` §31）。
+    ///
+    /// ⚠ **规范没有点名这一动作**（`[UI-A11Y-003]` 那一条讲焦点序列，没点名某个键去聚焦
+    /// 某个控件）⇒ **界面决定**，取的是全行业一致的"查找"键位。键位只受一条约束：
+    /// ⛔ 不覆盖任何已被规范点名或已被既有判据钉成放行的组合 —— `f` 在 `Cmd/Ctrl` 分支
+    /// 里此前**一格都没有**（该分支当时只有 `z`/`h`/`d`/`s`/`o`/`b`/`m`/`a`/`n` + 方向键），
+    /// 裸 `f` 与 `Alt+F` / `Shift+F` 也从未绑定（实测 `f` 不出现在本文件任何一条既有绑定里）。
+    ///
+    /// 落点**唯一**：`host::apply_action` 的 `FocusSidebarSearch` 臂 ⇒
+    /// `ui.invoke_focus_sidebar_search()` ⇒ `Sidebar` 暴露的那一个 `public function`
+    /// 里的 `sidebar-search-input.focus()`。⛔ 不写工程、⛔ 不进撤销栈、⛔ 不改视图态
+    /// 属性 —— 焦点是 **Slint 自己的状态**，本动作只是一次命令。
+    FocusSidebarSearch,
     /// `Z`: 把选区撑满视口。
     ZoomToSelection,
     /// `Shift+Z`: 恢复全曲总览缩放。
@@ -947,13 +995,25 @@ pub enum Action {
     AcceptAiSuggestion,
     /// `Cmd/Ctrl+Alt+N`：拨**节拍器**开关（`[ARCH-RT-001]` 的宿主侧落点）。
     ///
-    /// ⚠ 它会**换一代引擎**（节拍器的计划在快照投影期进快照，见 `crate::metronome`）
-    /// ⇒ 实现必须**先停、再恢复位置与状态**（负责人裁决 A 的 1–3 条）。
+    /// ⭐ **它改的是文档**（`D-UI-29`）：`host::apply_action` 的那条臂提交一条
+    /// `Op::SetTransportConfig`，发声交给**既有的** 60 Hz 发布腿（`EditMark` 一变 ⇒
+    /// `EngineHost::publish_project` ⇒ 快照按新文档投影）。⇒ ⭐ 可撤销、⭐ 会持久化、
+    /// ⭐ 不动走带（连几个 tick 的漂移都没有）。
+    ///
+    /// ⚠ **前提 = 撤销端口**（与 `Cmd/Ctrl+Alt+D` 同一档，`D-UI-23` 那条分工因此合流）。
+    /// 没有端口（判据 / 无头装配）⇒ 落回 `crate::metronome::set_enabled` 那条**换代**腿：
+    /// 必须先停、再恢复位置与状态（负责人裁决 A 的 1–3 条），控制驱动形态下漂几个 tick。
+    ///
+    /// ⚠ **键与按钮共用同一个落点**（`ui/transport.slint` 那颗键的回调也调 `apply_action`），
+    /// ⛔ 两份"下一个值"的算法；界面上的点亮态 `metronome-on` 由
+    /// `host::apply_metronome_mirror` 在每次发布成功的那一跳按快照校正。
     ToggleMetronome,
     /// `Cmd/Ctrl+Alt+D`：拨**预备拍**（`transport.count_in_bars` 0 ⇄ 1）。
     ///
-    /// ⚠ 它与 `metronome_enabled` 同在 `TransportConfig` 里、同样投影进快照
-    /// ⇒ 走**同一条**服务、同一套恢复（`crate::metronome::set_count_in_bars`）。
+    /// ⚠ 它与 `metronome_enabled` 同在 `TransportConfig` 里，但落点**不同**（`D-UI-23`）：
+    /// 它走**文档级提交** `Op::SetTransportConfig`（⛔ 不换引擎 —— 实时引擎不实现预备拍，
+    /// 把它列在"仍未实现"那一栏 ⇒ 换代是纯代价），读者是录音那条腿
+    /// （`crate::record_wav::count_in_frames`，读的是**活文档**）。
     ToggleCountIn,
     /// `Esc`：收尾 —— 关闭面板（时光机 / 导出设置弹窗 / AI 提案抽屉）、取消进行中的拖拽手势。
     ///
@@ -1100,7 +1160,19 @@ impl InputContext {
                 //（`o` 至今不在本表任何一步里）⇒ 两者都不覆盖既有语义。
                 // `Shift` / `Alt` 变体仍放行（"打开最近"是另一票界面决定）。
                 (Key::Character('o'), false, false) => Resolution::Action(Action::OpenProject),
+                // **界面决定**（⛔ 不是规范点名）：D-UI-18 的"查找"键位。`f` 在本分支里
+                // 此前**一格都没有**（该分支当时只有 `z`/`h`/`d`/`s`/`o`/`b`/`m`/`a`/`n` +
+                // 方向键），裸 `f` 也从未出现在任何一步 ⇒ 加它不动任何既有绑定。
+                // `Shift` / `Alt` 变体仍放行（⛔ 不顺手发明"聚焦后一个控件"这类邻近语义）。
+                (Key::Character('f'), false, false) => {
+                    Resolution::Action(Action::FocusSidebarSearch)
+                }
                 (Key::Character('b'), false, true) => Resolution::Action(Action::ToggleSidebar),
+                // **界面决定**（⛔ 不是规范点名）：标准 DAW 的**剪辑**静音键（轨静音是裸 `m`，
+                // 见第 6 步；两者靠作用域分开：`selected-track-id` vs `selected-clip-ulid`）。
+                // `m` 在本分支里此前只有 `+Alt` 一条（控制台最大化）⇒ `shift/alt` 都为
+                // `false` 的这一格此前落到 `_ => PassThrough`，加它不动任何既有绑定。
+                (Key::Character('m'), false, false) => Resolution::Action(Action::ToggleClipMute),
                 (Key::Character('m'), false, true) => {
                     Resolution::Action(Action::ToggleConsoleMaximize)
                 }
@@ -1262,18 +1334,18 @@ mod tests {
 
     use Action::{
         AcceptAiSuggestion, AuditionMain, AuditionProposal, Cancel, DeleteSelection, Duplicate,
-        GoToBeginning, NudgeMixerChannel, NudgeSelection, OpenProject, OpenTimeMachine, PlayPause,
-        Redo, ResizeSelectionDuration, ResumeFromCursor, SaveProject, SaveProjectAs,
-        SelectConsoleTab, SelectTool, SelectTrackBy, ShowView, ToggleAiDrawer,
-        ToggleConsoleMaximize, TogglePencilTool, ToggleRecord, ToggleSidebar, ToggleTrackMute,
-        ToggleTrackSolo, ToggleView, Undo, ZoomToFit, ZoomToSelection,
+        FocusSidebarSearch, GoToBeginning, NudgeMixerChannel, NudgeSelection, OpenProject,
+        OpenTimeMachine, PlayPause, Redo, ResizeSelectionDuration, ResumeFromCursor, SaveProject,
+        SaveProjectAs, SelectConsoleTab, SelectTool, SelectTrackBy, ShowView, ToggleAiDrawer,
+        ToggleClipMute, ToggleConsoleMaximize, TogglePencilTool, ToggleRecord, ToggleSidebar,
+        ToggleTrackMute, ToggleTrackSolo, ToggleView, Undo, ZoomToFit, ZoomToSelection,
     };
     use Focus::{MainCanvas, Other, TextInput};
     use MixerParam::{Pan, Volume};
     use PhysicalKey::{
         Backspace, BracketLeft, BracketRight, Delete, Digit, DownArrow, Enter, Escape, F5, F6, F7,
-        F8, F9, KeyA, KeyB, KeyD, KeyH, KeyM, KeyN, KeyO, KeyR, KeyS, KeyZ, LeftArrow, RightArrow,
-        Space, Tab, UpArrow,
+        F8, F9, KeyA, KeyB, KeyD, KeyF, KeyH, KeyM, KeyN, KeyO, KeyR, KeyS, KeyZ, LeftArrow,
+        RightArrow, Space, Tab, UpArrow,
     };
     use Resolution::{Action as Act, ConsumedByIme, PassThrough};
 
@@ -1600,6 +1672,59 @@ mod tests {
         // 与 `ctrl_shift_s_is_the_save_as_entry`）。
     }
 
+    /// 判据：`Cmd/Ctrl+M` = 拨**选中剪辑**的静音（**界面决定**，⛔ 不是规范点名），且不扰动邻居。
+    ///
+    /// 这一条钉三件事（缺任一就不是"每一键只做一件事"）：
+    /// 1. **两条入口同解**为 [`Action::ToggleClipMute`]（物理码 / 逻辑键 —— `N2` 裁决 (1)）；
+    /// 2. 邻居语义一位不动：裸 `m` 仍是**轨**静音（作用域是 `selected-track-id`），
+    ///    `Cmd/Ctrl+Alt+M` 仍是控制台最大化 —— 三格**互不相干**；
+    /// 3. 规范没点名的组合（`Cmd/Ctrl+Shift+M`）如实放行，文本域焦点下一律不消费。
+    #[test]
+    fn ctrl_m_mutes_the_selected_clip_without_disturbing_its_neighbours() {
+        assert_eq!(
+            canvas().resolve(KeyM, Modifiers::ctrl()),
+            Act(ToggleClipMute)
+        );
+        assert_eq!(
+            canvas().resolve(KeyM, Modifiers::meta()),
+            Act(ToggleClipMute)
+        );
+        // GUI 路径（逻辑键）与物理码路径**同解**。
+        assert_eq!(
+            canvas().resolve_logical(LKey::Character('m'), Modifiers::ctrl()),
+            Act(ToggleClipMute)
+        );
+        assert_eq!(
+            canvas().resolve_logical(LKey::Character('m'), Modifiers::meta()),
+            Act(ToggleClipMute)
+        );
+
+        // ---- ② 邻居键一位不动 ----
+        assert_eq!(
+            canvas().resolve(KeyM, Modifiers::none()),
+            Act(ToggleTrackMute),
+            "裸 `m` 必须是**轨**静音（剪辑静音必须带修饰）"
+        );
+        assert_eq!(
+            canvas().resolve(KeyM, Modifiers::ctrl_alt()),
+            Act(ToggleConsoleMaximize),
+            "`Cmd/Ctrl+Alt+M` 仍是控制台最大化（新键只占它点名的那一格）"
+        );
+        // ---- ③ 未被点名的组合一律放行（⛔ 不猜一个相近语义）----
+        assert_eq!(
+            canvas().resolve(
+                KeyM,
+                Modifiers {
+                    shift: true,
+                    ..Modifiers::ctrl()
+                }
+            ),
+            PassThrough
+        );
+        // 文本域焦点：整体放行给表单（与保存 / 打开键同一口径）。
+        assert_eq!(text_field().resolve(KeyM, Modifiers::ctrl()), PassThrough);
+    }
+
     /// 判据：`Cmd/Ctrl+S` = 保存工程（**界面决定**，⛔ 不是规范点名），且不扰动邻居。
     ///
     /// 三条子句（缺一条就不是"这一键只做一件事"）：
@@ -1784,6 +1909,62 @@ mod tests {
         composing.set_focus(TextInput);
         composing.begin_composition();
         assert_eq!(composing.resolve(F8, Modifiers::none()), ConsumedByIme);
+    }
+
+    /// D-UI-18 的 **A 层**（纯解析）：`Cmd/Ctrl+F` 解出"把键盘焦点交给左栏搜索框"。
+    /// 活窗口那一层在 `tests/search_focus_key.rs`（两层不可互相代替：这一层证明
+    /// 状态机把这一个键位**认成**这一个动作，那一层证明认出来之后**真有人接**）。
+    #[test]
+    fn cmd_ctrl_f_focuses_the_sidebar_search_and_stays_behind_the_text_policy() {
+        // ① 两条入口同解（物理码 / 逻辑键 —— `N2` 裁决 (1) 的同一纪律）。
+        // `command()` 同时认 `ctrl` 与 `meta`（macOS 上 Slint 把 `Cmd` 送进 `control`，
+        // 见本文件 [`Modifiers`] 的文档），因此两个都得解出同一个动作。
+        assert_eq!(
+            canvas().resolve(KeyF, Modifiers::ctrl()),
+            Act(FocusSidebarSearch),
+            "物理码入口：`Ctrl+F`"
+        );
+        assert_eq!(
+            canvas().resolve(KeyF, Modifiers::meta()),
+            Act(FocusSidebarSearch),
+            "物理码入口：`Cmd+F`（macOS 那一侧的字段）"
+        );
+        assert_eq!(
+            canvas().resolve_logical(LKey::Character('f'), Modifiers::ctrl()),
+            Act(FocusSidebarSearch),
+            "逻辑键入口（GUI 路径实际走的一条）"
+        );
+
+        // ② 未点名的变体**如实放行**（⛔ 不顺手发明"聚焦下一个控件"这类邻近语义）。
+        for modifiers in [
+            Modifiers::none(),
+            Modifiers::shift(),
+            Modifiers::alt(),
+            Modifiers::ctrl_shift(),
+            Modifiers::ctrl_alt(),
+        ] {
+            assert_eq!(
+                canvas().resolve(KeyF, modifiers),
+                PassThrough,
+                "`f` 的修饰组合 {modifiers:?} 未被点名 ⇒ 放行"
+            );
+        }
+
+        // ③ 文本域策略**先行**：焦点已经在某个输入框时，连 `Cmd/Ctrl+F` 都不归 DAW 管
+        //（否则在框里敲 `Cmd+F` 会把焦点抢走 —— 与 `F7`/`F8` 那一条同一口径）。
+        assert_eq!(
+            text_field().resolve(KeyF, Modifiers::ctrl()),
+            PassThrough,
+            "文本域 ⇒ 第 2 步先返回，永远到不了 `Cmd/Ctrl` 分支"
+        );
+        let mut composing = InputContext::new();
+        composing.set_focus(TextInput);
+        composing.begin_composition();
+        assert_eq!(
+            composing.resolve(KeyF, Modifiers::ctrl()),
+            ConsumedByIme,
+            "合成态 ⇒ 一切按键归输入法（`[UI-A11Y-002]` 第 2 条）"
+        );
     }
 
     // ---------------------------------------------------------------- 工具矩阵

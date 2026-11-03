@@ -83,6 +83,19 @@ export component UndoTreeModal inherits Rectangle {
     accessible-id: "undo-tree-modal";
     accessible-label: "编曲版本时光机图谱";
 
+    // ⭐ `D-UI-21`：遮罩**真的**吞掉鼠标 —— 与 `dialogs/export_wav_dialog.slint` 同一条修复。
+    // 组件根本身是 `Rectangle`，而 `Rectangle` 对鼠标事件返回 `EventIgnored`：Slint 里只有
+    // `TouchArea` 会拦（`i-slint-core-1.18.1` 的 `items/input_items.rs`，`Pressed` 那一支
+    // 返回 `GrabMouse`，与有没有写 `clicked` 无关）⇒ 修前"时光机开着还能点穿到卷帘/调音台"
+    // 是遮罩只挡眼睛不挡手。这一枚刻意⛔ 没有任何回调（关面板今天只有 ✕ 与 `Esc` 两条），
+    // 声明在面板**之前** ⇒ 面板内的 ✕、节点、"撤销一步"仍在最上层，鼠标路径一位不变。
+    TouchArea {
+        x: 0;
+        y: 0;
+        width: parent.width;
+        height: parent.height;
+    }
+
     // ---------------------------------------------------------------- 弹窗面板
     Rectangle {
         x: (root.width - 720px) / 2;

@@ -1090,9 +1090,12 @@ fn mount_in_process_mcp(
 /// `console-maximize-toggle` / `back-to-arrangement` → [`host::wire_view_callbacks`] →
 /// 分别写 `arrangement-view` / `sidebar-collapsed` / `ai-drawer-open` /
 /// `console-maximized` / `arrangement-view`；
-/// `select-sidebar-category` / `select-sidebar-item` → [`host::wire_sidebar_contents`] →
+/// `select-sidebar-category` / `select-sidebar-item` / `sidebar-search-changed`
+/// → [`host::wire_sidebar_contents`] →
 /// 写 `sidebar-category` / `sidebar-item` **并重注入** `sidebar-items` /
-/// `sidebar-empty-reason`（分类 0 = 库扫描、1 = 素材池、2 = 模型缺口；钳位用**当次投影条数**）；
+/// `sidebar-empty-reason`（分类 0 = 库扫描、1 = 素材池、2 = 模型缺口；钳位用**当次投影条数**；
+/// 第三条是 `D-UI-14` 的搜索框 —— 每敲一个字重算 `bridge::filter_sidebar_content` 后重注入，
+/// 宿主⛔ 不写回那个串，字的唯一写者是输入框的两向绑定）；
 /// `clip-select` → [`host::wire_clip_scope`] → `selected-clip-ulid`（`back-to-arrangement`
 /// 只写 `true`，与 `toggle-view` 同一属性；`clip-select` 先校验身份确实在 `clip-ulids`
 /// 里再写，并按新身份重注入卷帘作用域 —— `[UI-NOTE-001]` 的"当前编辑片段"）。

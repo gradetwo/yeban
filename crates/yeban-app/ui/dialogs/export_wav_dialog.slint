@@ -13,10 +13,18 @@
 // （`host::wire_module_actions_with_capture`），由它按
 // `export_wav::WavExportOptions::resolve` 的**唯一**口径解析；解析失败时回执
 // `error=invalid-options`，**不落盘半成品文件**。
+// 第五格 `export-wav-limiter-switch` 是布尔量，⛔ 不经那条解析路径：宿主在 `resolve()`
+// **之后**直接赋 `wav_options.limiter`（与 CLI `cli.rs` 的 `wav_options.limiter =
+// options.wav_limiter` 同款）。⛔ 没有给 `resolve()` 加形参 —— 它是 GUI 与 CLI **共用**
+// 的唯一口径处，加形参会把"两边缺省逐字节相同"这条不变量拆成两份（判据
+// `tests/gui_export_clipping.rs` 的对照臂就钉在它上面）。
 // 默认值逐字等于 CLI 不给 `--wav-*` 时的口径：
 //   - 采样率 `auto`      ⇒ 跟随工程（`project.sample_rate()`）
 //   - 位深   `24`        ⇒ 24-bit 整数（TPDF 抖动）
-//   - 时长   `8`         ⇒ `export_wav::DEFAULT_WAV_SECONDS`
+//   - 时长   `""`（空）  ⇒ **打开时由宿主播种**为工程可闻末端（`D-UI-28`）；播不出
+//                          （空工程 / 无端口）⇒ 留空，后端 `export_wav::DEFAULT_WAV_SECONDS`
+//                          （8 秒）那条既有缺省继续生效 ⇒ 与 CLI 的口径逐字节相同。
+//                          界面⛔ 不写死 "8"：那会让几分钟的工程按缺省导出只剩 8 秒。
 // 空串与 `auto` 同义（= 不覆盖）。界面上**看不到**工程当前的采样率 —— 那需要一条
 // 真实的投影读数，本切片没有造它，因此用 `auto` 而不是编一个假数字。
 //
@@ -25,6 +33,53 @@
 // 弹窗默认**关着**（`MainWindow.export-wav-open = false`），因此默认帧与
 // `tests/golden/linux/` 的 5 张基准一位不变。打开后是整帧遮罩（与
 // `dialogs/undo_tree_modal.slint` 同款）。
+//
+// ## 键盘（D-UI-19：`[UI-A11Y-003]` §7.3 第 1 条 —— 模态对话框内焦点闭环）
+//
+// 遮罩盖住整帧，但在此之前它**不接键盘**：焦点始终停在画布那层 `key-handler`，
+// 于是"弹窗开着"与"键盘归 DAW"同时成立 —— 用户在填导出路径，按 `Space` 后面的走带
+// 就开始播放，按 `1` 画布换了工具，而四个输入框**一个都进不去**（只能鼠标点）。
+// 现在 `export-trap` 是这四个框的**祖先** `FocusScope`：
+//
+// | 键 | 落点 |
+// | :--- | :--- |
+// | 可打印字符 | `TextInput` 自己吃掉（编辑文本）⇒ ⛔ 不下发快捷键层 |
+// | `Tab` / `Shift+Tab`（`\u{9}` / `\u{19}` Backtab） | trap 做**七格闭环轮转**（四框 + 限制器 + 导出 + ✕）并 `accept` ⇒ 焦点逃不出模态 |
+// | `Return`（`\u{a}`）落在四框内 | 该框的 `accepted` ⇒ `root.run()` —— 与「导出」钮、`accessible-action-default` **同一条回调** |
+// | `Return` / `Space`（`\u{20}`）落在三格按钮上 | 那一格自己的 `FocusScope.key-pressed` ⇒ 与 `TouchArea.clicked` **逐字同一落点** |
+// | `Esc` | 调**既有的** `close` 回调（与 ✕ 按钮、`accessible-action-default` 同一条实现） |
+// | 其它裸键 | `reject` ⇒ 冒泡到本组件之外、无人消费 ⇒ 快捷键层⛔ 收不到（焦点不在那里） |
+//
+// ⭐ `D-UI-20`：那三格原本是**无 `FocusScope` 的** `Rectangle` + `TouchArea` ⇒ 收不到
+// 焦点，键盘既走不到「导出」也走不到限制器开关。现在每格里加一枚同尺寸的
+// `FocusScope`（⛔ 不加任何可见描边 ⇒ 一位像素不改），钮的取焦身份落在它上面，
+// `Return` / `Space` 触发的是**既有那一条**回调。命中测试实测过（Slint 1.18.1
+// `items/input_items.rs`）：`FocusScope::input_event_filter_before_children` 恒返回
+// `ForwardEvent`，而 `focus-on-click: false` 时 `input_event` 对 `Pressed` 返回
+// `EventIgnored` ⇒ 这枚容器**不吃鼠标**；再加它排在 `TouchArea` 之前（Slint 从最上层
+// 往下命中），`clicked` 那条路一位不变。
+//
+// ⚠ 已知边界（如实登记，⛔ 不假装覆盖）：
+// * 打开时焦点落**第一格**（`host` 调 `focus-export-wav-dialog`），关闭时宿主调
+//   既有的 `focus-shortcut-layer` **复位** —— 规范那句"复位至**触发控件**"今天做不到：
+//   触发方 `module-export-wav-button` 不是可聚焦控件（`FocusScope` 都没有），
+//   复位到"那一个"要先给它建焦点身份，那是另一票。
+// * `D-UI-20` 的两条残留：
+//   1. **点击不改变焦点**（三格都是 `focus-on-click: false`）。焦点的入口只有两个：
+//      宿主打开时那一次 + `Tab` 轮转。⚠ 这条与 `D-UI-21`（遮罩吞鼠标）**不是一件事**，
+//      而且已经不必再捆绑裁决：`D-UI-21` 单独落地后，遮罩那一枚 `TouchArea` 只负责
+//      **接住**落在遮罩上的一击，弹窗内三格的命中测试仍是 `TouchArea` 在先 ⇒
+//      要让"点哪焦点在哪"，只需把那三枚容器的 `focus-on-click` 翻成 `true`，
+//      但那会第一次让焦点可见性变成硬需求（看不见焦点=更糟）⇒ 仍是一票，且排在焦点环之后。
+//   2. **焦点在按钮上时看不见**。三格容器刻意⛔ 不画焦点描边 —— 画了就改像素，
+//      而"弹窗打开态"的视觉基准已在两条 `tests/golden/` 判据里判绿，改基准属
+//      人类/集成者裁决（`docs/ledger/app-zimmer-ui-notes.md` §32 的 `D-UI-20` 边界 2）。
+//      ⇒ 今天键盘用户能**走**到这三格并**按**得动，只是看不出站在哪一格。
+// * ⭐ `D-UI-21`（本文件下方那枚遮罩 `TouchArea`）改了模态的**鼠标**语义：弹窗开着时
+//   落在遮罩上的一击被吃掉 ⇒ 下层控件收不到。⛔ 它不关面板（点遮罩不关 = 既有关义），
+//   ⛔ 它不改变焦点。时光机那一份在同款位置（`undo_tree_modal.slint`）。
+// * `Cmd/Ctrl` 组合（保存、撤销、`D-UI-18` 的搜索聚焦）在弹窗打开期间**同样到不了宿主**
+//   —— 模态持有键盘是本票的目的，不是副作用。
 
 import { Tokens, UiText, UiTitleText } from "../tokens.slint";
 
@@ -33,7 +88,14 @@ export component ExportWavDialog inherits Rectangle {
     in-out property <string> path: "";
     in-out property <string> sample-rate: "auto";
     in-out property <string> bit-depth: "24";
-    in-out property <string> seconds: "8";
+    in-out property <string> seconds: "";
+    // ⭐ `D-EX-1`：母线限制器开关。第五格，但**不是**文本框 —— 它是布尔量，
+    // 用 `switch` 而不是"再开一个能填错的输入框"。默认 `false` 逐字等于 CLI 不给
+    // `--limiter`（`WavExportOptions::default()`）。
+    //
+    // ⚠ 它是**每次调用**的导出修饰量（任务单 `#302` 的硬边界：⛔ 不进
+    // `project.schema.json`）⇒ 本控件**不**产生 `Op`、**不**进撤销栈、⛔ 不改工程。
+    in-out property <bool> limiter: false;
 
     callback run();
     callback close();
@@ -45,245 +107,528 @@ export component ExportWavDialog inherits Rectangle {
     accessible-id: "export-wav-dialog";
     accessible-label: "WAV 导出设置";
 
-    Rectangle {
-        x: (root.width - 560px) / 2;
-        y: (root.height - 320px) / 2;
-        width: 560px;
-        height: 320px;
-        background: Tokens.bg-panel;
-        border-radius: Tokens.radius-lg;
-        border-width: 1px;
-        border-color: Tokens.gold-deep;
-        clip: true;
+    // ⭐ `D-UI-21`：遮罩**真的**吞掉鼠标。组件根本身是 `Rectangle`，而 `Rectangle` 对鼠标
+    // 事件返回 `EventIgnored` —— Slint 里只有 `TouchArea` 会拦（`i-slint-core-1.18.1`
+    // `items/input_items.rs` 的 `Pressed` 那一支返回 `GrabMouse`，与有没有写 `clicked` 无关）。
+    // ⇒ 修前"弹窗开着还能点穿到下层"是遮罩**只挡眼睛不挡手**的直接后果。
+    // 这一枚刻意⛔ 没有任何回调：既有语义"点遮罩不关面板"保持不变（今天关面板只有 ✕ 与 `Esc`），
+    // 它的唯一职责就是把这一击**吃掉**，让下层的 `TouchArea` 收不到。
+    // 声明在 `export-trap` 与面板**之前** ⇒ Slint 从最上层往下命中 ⇒ 面板里的控件仍然在上面，
+    // 鼠标落在弹窗内的路径一位不变；⛔ 无 `accessible-id` ⇒ 运行时寻址面也不变。
+    TouchArea {
+        x: 0;
+        y: 0;
+        width: parent.width;
+        height: parent.height;
+    }
 
-        accessible-role: region;
-        accessible-id: "export-wav-panel";
-        accessible-label: "WAV 导出设置面板";
-
-        UiTitleText {
-            x: Tokens.space-6;
-            y: Tokens.space-4;
-            width: parent.width - 96px;
-            height: 24px;
-            text: "导出 WAV · 选项";
-            color: Tokens.gold-bright;
-            font-size: Tokens.font-size-xl;
-        }
-
-        // 关闭
-        Rectangle {
-            x: parent.width - 36px;
-            y: Tokens.space-4;
-            width: 24px;
-            height: 24px;
-            background: Tokens.bg-void;
-            border-radius: Tokens.radius-sm;
-            accessible-role: button;
-            accessible-id: "export-wav-close-button";
-            accessible-label: "关闭导出设置";
-            accessible-action-default => { root.close(); }
-
-            UiText {
-                x: 0;
-                y: 0;
-                width: parent.width;
-                height: parent.height;
-                text: "×";
-                color: Tokens.ink-1;
-                font-size: Tokens.font-size-xl;
-                horizontal-alignment: center;
+    // ------------------------------------------------- 键盘（D-UI-19）：焦点陷阱
+    // `FocusScope` 只有在**孩子的键被拒绝、往上冒泡**时才收到事件 ⇒ 它必须包住全部
+    // 七格（⛔ 不能像时光机那样当兄弟覆盖层放：那接不到 `TextInput` 拒绝的 `Tab`）。
+    export-trap := FocusScope {
+        x: 0;
+        y: 0;
+        width: root.width;
+        height: root.height;
+        // 点遮罩⛔ 不动焦点：焦点的入口只有两个 —— 宿主打开时那一次，与 `Tab` 轮转。
+        focus-on-click: false;
+        // ⛔ 不参与**全局**轮转：Slint 内建的 `Tab` 遍历按"可见"筛，而此刻左栏搜索框与
+        // BPM 框同样可见 ⇒ 焦点会跳出模态。模态必须自己闭环（`[UI-A11Y-003]` §7.3 第 1 条）。
+        focus-on-tab-navigation: false;
+        key-pressed(event) => {
+            // Slint 的字符串转义只认 `\u{...}`（`\t` 会编译失败）；`Tab` = `\u{9}`，
+            // `Shift+Tab` 在部分平台以 Backtab `\u{19}` 到达（见 `i-slint-core` 的
+            // `window.rs`：内建那段两种都认）。
+            if (event.text == "\u{9}" || event.text == "\u{19}") {
+                if (event.modifiers.control || event.modifiers.alt || event.modifiers.meta) {
+                    // `Ctrl+Tab` / `Alt+Tab` ⛔ 不当作轮转 —— 与内建同口径（那段也要求
+                    // "无其它修饰键"）。落在这里 ⇒ 快捷键层也收不到（模态持有键盘）。
+                    reject
+                } else if (event.text == "\u{19}" || event.modifiers.shift) {
+                    root.focus-previous-control();
+                    accept
+                } else {
+                    root.focus-next-control();
+                    accept
+                }
+            } else if (event.text == "\u{1b}") {
+                // `Esc` 调**既有的** `close` 回调：与 ✕ 按钮、`accessible-action-default`
+                // 同一实现（宿主 `on_close_export_wav`）⇒ ⛔ 不是第二份"关闭弹窗"的逻辑。
+                root.close();
+                accept
+            } else {
+                // 其余一律 `reject`：往上冒出本组件无人接，而快捷键层⛔ 不是祖先
+                // ⇒ 模态开着时 DAW 收不到键 —— 这正是本票要证的"捕获"。
+                reject
             }
-
-            TouchArea {
-                width: parent.width;
-                height: parent.height;
-                clicked => { root.close(); }
-            }
         }
 
-        // ------------------------------------------------------------ 输出路径
-        UiText {
-            x: Tokens.space-6;
-            y: 52px;
-            width: parent.width - 48px;
-            height: 16px;
-            text: "输出路径（空 = 宿主缺省）";
-            color: Tokens.ink-2;
-            font-size: Tokens.font-size-xs;
-        }
-
-        export-wav-path-input := TextInput {
-            x: Tokens.space-6;
-            y: 72px;
-            width: parent.width - 48px;
-            height: 24px;
-            // [PATCH export-wav-dialog-binding] 两向绑定：`text:` 是**单向**赋值，
-            // 用户一敲键，TextInput 自己的 text 就与 root.path 脱钩，root 永远停在
-            // 宿主播种的初值 ⇒ 导出恒用初值（8 秒 / 跟随工程的采样率）。
-            text <=> root.path;
-            single-line: true;
-            font-family: Tokens.font-mono;
-            color: Tokens.gold;
-            font-size: Tokens.font-size-xs;
-            vertical-alignment: center;
-            accessible-role: text-input;
-            accessible-id: "export-wav-path-input";
-            accessible-label: "WAV 输出路径";
-            accessible-value: root.path;
-            accessible-read-only: false;
-        }
-
-        // ------------------------------------------------------------ 采样率
-        UiText {
-            x: Tokens.space-6;
-            y: 108px;
-            width: 200px;
-            height: 16px;
-            text: "采样率 Hz（auto = 跟随工程）";
-            color: Tokens.ink-2;
-            font-size: Tokens.font-size-xs;
-        }
-
-        export-wav-sample-rate-input := TextInput {
-            x: Tokens.space-6;
-            y: 128px;
-            width: 200px;
-            height: 24px;
-            // [PATCH export-wav-dialog-binding] 两向绑定：`text:` 是**单向**赋值，
-            // 用户一敲键，TextInput 自己的 text 就与 root.sample-rate 脱钩，root 永远停在
-            // 宿主播种的初值 ⇒ 导出恒用初值（8 秒 / 跟随工程的采样率）。
-            text <=> root.sample-rate;
-            single-line: true;
-            font-family: Tokens.font-mono;
-            color: Tokens.gold;
-            font-size: Tokens.font-size-xs;
-            vertical-alignment: center;
-            accessible-role: text-input;
-            accessible-id: "export-wav-sample-rate-input";
-            accessible-label: "采样率（auto 或 Hz）";
-            accessible-value: root.sample-rate;
-            accessible-read-only: false;
-        }
-
-        // ------------------------------------------------------------ 位深
-        UiText {
-            x: Tokens.space-6 + 216px;
-            y: 108px;
-            width: parent.width - 48px - 216px;
-            height: 16px;
-            text: "位深（16 / 24 / 32f）";
-            color: Tokens.ink-2;
-            font-size: Tokens.font-size-xs;
-        }
-
-        export-wav-bit-depth-input := TextInput {
-            x: Tokens.space-6 + 216px;
-            y: 128px;
-            width: parent.width - 48px - 216px;
-            height: 24px;
-            // [PATCH export-wav-dialog-binding] 两向绑定：`text:` 是**单向**赋值，
-            // 用户一敲键，TextInput 自己的 text 就与 root.bit-depth 脱钩，root 永远停在
-            // 宿主播种的初值 ⇒ 导出恒用初值（8 秒 / 跟随工程的采样率）。
-            text <=> root.bit-depth;
-            single-line: true;
-            font-family: Tokens.font-mono;
-            color: Tokens.gold;
-            font-size: Tokens.font-size-xs;
-            vertical-alignment: center;
-            accessible-role: text-input;
-            accessible-id: "export-wav-bit-depth-input";
-            accessible-label: "位深（16 / 24 / 32f）";
-            accessible-value: root.bit-depth;
-            accessible-read-only: false;
-        }
-
-        // ------------------------------------------------------------ 时长
-        UiText {
-            x: Tokens.space-6;
-            y: 164px;
-            width: parent.width - 48px;
-            height: 16px;
-            text: "时长 秒（空 = 缺省 8 秒）";
-            color: Tokens.ink-2;
-            font-size: Tokens.font-size-xs;
-        }
-
-        export-wav-seconds-input := TextInput {
-            x: Tokens.space-6;
-            y: 184px;
-            width: 200px;
-            height: 24px;
-            // [PATCH export-wav-dialog-binding] 两向绑定：`text:` 是**单向**赋值，
-            // 用户一敲键，TextInput 自己的 text 就与 root.seconds 脱钩，root 永远停在
-            // 宿主播种的初值 ⇒ 导出恒用初值（8 秒 / 跟随工程的采样率）。
-            text <=> root.seconds;
-            single-line: true;
-            font-family: Tokens.font-mono;
-            color: Tokens.gold;
-            font-size: Tokens.font-size-xs;
-            vertical-alignment: center;
-            accessible-role: text-input;
-            accessible-id: "export-wav-seconds-input";
-            accessible-label: "导出时长（秒）";
-            accessible-value: root.seconds;
-            accessible-read-only: false;
-        }
-
-        // ------------------------------------------------------------ 说明行
         Rectangle {
-            x: Tokens.space-6;
-            y: 220px;
-            width: parent.width - 48px;
-            height: 16px;
+            x: (root.width - 560px) / 2;
+            y: (root.height - 320px) / 2;
+            width: 560px;
+            height: 320px;
+            background: Tokens.bg-panel;
+            border-radius: Tokens.radius-lg;
+            border-width: 1px;
+            border-color: Tokens.gold-deep;
             clip: true;
 
-            accessible-role: text;
-            accessible-id: "export-wav-options-note";
-            accessible-label: "无效的采样率 / 位深 / 时长会让导出如实失败，不写半成品文件。";
+            accessible-role: region;
+            accessible-id: "export-wav-panel";
+            accessible-label: "WAV 导出设置面板";
 
+            UiTitleText {
+                x: Tokens.space-6;
+                y: Tokens.space-4;
+                width: parent.width - 96px;
+                height: 24px;
+                text: "导出 WAV · 选项";
+                color: Tokens.gold-bright;
+                font-size: Tokens.font-size-xl;
+            }
+
+            // 关闭
+            Rectangle {
+                x: parent.width - 36px;
+                y: Tokens.space-4;
+                width: 24px;
+                height: 24px;
+                background: Tokens.bg-void;
+                border-radius: Tokens.radius-sm;
+                accessible-role: button;
+                accessible-id: "export-wav-close-button";
+                accessible-label: "关闭导出设置";
+                accessible-action-default => { root.close(); }
+
+                UiText {
+                    x: 0;
+                    y: 0;
+                    width: parent.width;
+                    height: parent.height;
+                    text: "×";
+                    color: Tokens.ink-1;
+                    font-size: Tokens.font-size-xl;
+                    horizontal-alignment: center;
+                }
+
+                // ⭐ `D-UI-20`：这一格的取焦身份。⛔ 不画任何东西（`FocusScope` 无视觉，
+                // `bounding_rect` 甚至把尺寸折成零），也⛔ 不新增 `accessible-id` ⇒ 默认帧、
+                // 金帧、运行时寻址面一位不改。排在 `TouchArea` **之前**（Slint 从上往下命中，
+                // 让鼠标那条路保持在最上层），并显式 `focus-on-click: false`。
+                export-wav-close-focus := FocusScope {
+                    x: 0;
+                    y: 0;
+                    width: parent.width;
+                    height: parent.height;
+                    focus-on-click: false;
+                    // 与 `TouchArea.clicked` / `accessible-action-default` 逐字同一落点。
+                    // `Key.Return` = `\u{000a}`、`Key.Space` = `\u{0020}`（`i-slint-common`
+                    // 的 `key_codes.rs`），与 std Button 的 `StateLayer` 同一对键。
+                    key-pressed(event) => {
+                        if (event.text == Key.Return || event.text == Key.Space) {
+                            root.close();
+                            accept
+                        } else {
+                            // `Tab` 等 ⇒ 冒泡到 `export-trap` 去做轮转。
+                            reject
+                        }
+                    }
+                }
+
+                TouchArea {
+                    width: parent.width;
+                    height: parent.height;
+                    clicked => { root.close(); }
+                }
+            }
+
+            // ------------------------------------------------------------ 输出路径
             UiText {
-                x: 0;
-                y: 0;
-                width: parent.width;
-                height: parent.height;
-                text: "无效的采样率 / 位深 / 时长会让导出如实失败，不写半成品文件。";
+                x: Tokens.space-6;
+                y: 52px;
+                width: parent.width - 48px;
+                height: 16px;
+                text: "输出路径（空 = 宿主缺省）";
                 color: Tokens.ink-2;
                 font-size: Tokens.font-size-xs;
-                overflow: elide;
             }
-        }
 
-        // ------------------------------------------------------------ 执行
-        Rectangle {
-            x: Tokens.space-6;
-            y: parent.height - 56px;
-            width: 160px;
-            height: 32px;
-            background: Tokens.bg-raised;
-            border-radius: Tokens.radius-md;
-            border-width: 1px;
-            border-color: Tokens.gold;
-            accessible-role: button;
-            accessible-id: "export-wav-run-button";
-            accessible-label: "按这些选项导出 WAV";
-            accessible-action-default => { root.run(); }
-
-            UiText {
-                x: 0;
-                y: 0;
-                width: parent.width;
-                height: parent.height;
-                text: "导出";
-                color: Tokens.gold-bright;
+            export-wav-path-input := TextInput {
+                x: Tokens.space-6;
+                y: 72px;
+                width: parent.width - 48px;
+                height: 24px;
+                // [PATCH export-wav-dialog-binding] 两向绑定：`text:` 是**单向**赋值，
+                // 用户一敲键，TextInput 自己的 text 就与 root.path 脱钩，root 永远停在
+                // 宿主播种的初值 ⇒ 导出恒用初值（8 秒 / 跟随工程的采样率）。
+                text <=> root.path;
+                single-line: true;
+                font-family: Tokens.font-mono;
+                color: Tokens.gold;
                 font-size: Tokens.font-size-xs;
-                horizontal-alignment: center;
+                vertical-alignment: center;
+                accessible-role: text-input;
+                accessible-id: "export-wav-path-input";
+                accessible-label: "WAV 输出路径";
+                accessible-value: root.path;
+                accessible-read-only: false;
+                // ⭐ `D-UI-20`：`Return` = 默认动作（导出）。`TextInput.accepted` 只在
+                // **非只读 + 单行**时触发（`i-slint-core` 的 `items/text.rs`），这两条本框
+                // 都满足 ⇒ 这一键被框自己吃掉，⛔ 不会同时冒泡到 trap（不存在"既打字又导出"）。
+                // 落点与「导出」钮**逐字同一条** `root.run()` ⇒ ⛔ 没有第二份导出实现。
+                // ⚠ 规范没有点名"Enter 提交"（§7.3 只要求焦点闭环），⇒ 这是**界面决定**，
+                //   理由记在 `docs/ledger/app-zimmer-ui-notes.md` §34。
+                accepted => { root.run(); }
             }
 
-            TouchArea {
-                width: parent.width;
-                height: parent.height;
-                clicked => { root.run(); }
+            // ------------------------------------------------------------ 采样率
+            UiText {
+                x: Tokens.space-6;
+                y: 108px;
+                width: 200px;
+                height: 16px;
+                text: "采样率 Hz（auto = 跟随工程）";
+                color: Tokens.ink-2;
+                font-size: Tokens.font-size-xs;
+            }
+
+            export-wav-sample-rate-input := TextInput {
+                x: Tokens.space-6;
+                y: 128px;
+                width: 200px;
+                height: 24px;
+                // [PATCH export-wav-dialog-binding] 两向绑定：`text:` 是**单向**赋值，
+                // 用户一敲键，TextInput 自己的 text 就与 root.sample-rate 脱钩，root 永远停在
+                // 宿主播种的初值 ⇒ 导出恒用初值（8 秒 / 跟随工程的采样率）。
+                text <=> root.sample-rate;
+                single-line: true;
+                font-family: Tokens.font-mono;
+                color: Tokens.gold;
+                font-size: Tokens.font-size-xs;
+                vertical-alignment: center;
+                accessible-role: text-input;
+                accessible-id: "export-wav-sample-rate-input";
+                accessible-label: "采样率（auto 或 Hz）";
+                accessible-value: root.sample-rate;
+                accessible-read-only: false;
+                accepted => { root.run(); } // 同「导出」钮（见路径框那条注释）
+            }
+
+            // ------------------------------------------------------------ 位深
+            UiText {
+                x: Tokens.space-6 + 216px;
+                y: 108px;
+                width: parent.width - 48px - 216px;
+                height: 16px;
+                text: "位深（16 / 24 / 32f）";
+                color: Tokens.ink-2;
+                font-size: Tokens.font-size-xs;
+            }
+
+            export-wav-bit-depth-input := TextInput {
+                x: Tokens.space-6 + 216px;
+                y: 128px;
+                width: parent.width - 48px - 216px;
+                height: 24px;
+                // [PATCH export-wav-dialog-binding] 两向绑定：`text:` 是**单向**赋值，
+                // 用户一敲键，TextInput 自己的 text 就与 root.bit-depth 脱钩，root 永远停在
+                // 宿主播种的初值 ⇒ 导出恒用初值（8 秒 / 跟随工程的采样率）。
+                text <=> root.bit-depth;
+                single-line: true;
+                font-family: Tokens.font-mono;
+                color: Tokens.gold;
+                font-size: Tokens.font-size-xs;
+                vertical-alignment: center;
+                accessible-role: text-input;
+                accessible-id: "export-wav-bit-depth-input";
+                accessible-label: "位深（16 / 24 / 32f）";
+                accessible-value: root.bit-depth;
+                accessible-read-only: false;
+                accepted => { root.run(); } // 同「导出」钮
+            }
+
+            // ------------------------------------------------------------ 时长
+            UiText {
+                x: Tokens.space-6;
+                y: 164px;
+                // ⭐ `D-EX-1`：原来这格标题**通栏**（`parent.width - 48px`），因为这一行右边
+                // 什么都没有。第五格（母线限制器）落在同一行的右半 ⇒ 标题收窄到与它自己的
+                // 输入框同宽（200px，与上面「采样率」那格的标题同款），⛔ 两个标题的矩形
+                // 不许重叠 —— 面板高度一位不改（弹窗默认关着 ⇒ 默认帧与 5 张金帧不动）。
+                width: 200px;
+                height: 16px;
+                // ⭐ `D-UI-28`：标题原来写"空 = 缺省 8 秒"。今天这一格由宿主按**工程可闻
+                // 末端**播种 ⇒ 打开就能看到全曲长度；措辞改短（比原句还短 ⇒ 200px 那格
+                // ⛔ 不会截断）。空工程播不出 ⇒ 仍留空、后端那条 8 秒缺省继续生效。
+                text: "时长 秒（缺省 = 全曲末端）";
+                color: Tokens.ink-2;
+                font-size: Tokens.font-size-xs;
+            }
+
+            export-wav-seconds-input := TextInput {
+                x: Tokens.space-6;
+                y: 184px;
+                width: 200px;
+                height: 24px;
+                // [PATCH export-wav-dialog-binding] 两向绑定：`text:` 是**单向**赋值，
+                // 用户一敲键，TextInput 自己的 text 就与 root.seconds 脱钩，root 永远停在
+                // 宿主播种的初值 ⇒ 导出恒用初值（8 秒 / 跟随工程的采样率）。
+                text <=> root.seconds;
+                single-line: true;
+                font-family: Tokens.font-mono;
+                color: Tokens.gold;
+                font-size: Tokens.font-size-xs;
+                vertical-alignment: center;
+                accessible-role: text-input;
+                accessible-id: "export-wav-seconds-input";
+                accessible-label: "导出时长（秒）";
+                accessible-value: root.seconds;
+                accessible-read-only: false;
+                accepted => { root.run(); } // 同「导出」钮
+            }
+
+            // ------------------------------------------------------------ 母线限制器
+            // ⭐ `D-EX-1`：限制器**本来就存在**（`WavExportOptions.limiter`；CLI `--limiter`
+            // 与 MCP `yeban_render` 的 `limiter` 都能开，`render_core` 真的消费它），
+            // 缺的只是 GUI 这条路到不了它 —— 本控件就是补那条路。
+            // 落点选在「时长」那一格的**右侧空位**（x 与位深格同列）⇒ 面板高度一位不改：
+            // 弹窗默认关着，整帧不变，`tests/golden/linux/` 的 5 张基准不受影响。
+            UiText {
+                x: Tokens.space-6 + 216px;
+                y: 164px;
+                width: parent.width - 48px - 216px;
+                height: 16px;
+                text: "母线限制器（仅本次导出）";
+                color: Tokens.ink-2;
+                font-size: Tokens.font-size-xs;
+            }
+
+            export-wav-limiter-switch := Rectangle {
+                x: Tokens.space-6 + 216px;
+                y: 184px;
+                width: 200px;
+                height: 24px;
+                background: root.limiter ? Tokens.gold-deep : Tokens.bg-void;
+                border-radius: Tokens.radius-sm;
+                border-width: 1px;
+                border-color: root.limiter ? Tokens.gold : Tokens.line-strong;
+
+                accessible-role: switch;
+                accessible-id: "export-wav-limiter-switch";
+                accessible-label: "母线限制器（仅本次导出）";
+                accessible-checkable: true;
+                accessible-checked: root.limiter;
+                // `[UI-A11Y-003]` §7.3：无障碍动作、下面 `TouchArea.clicked`、与
+                // `export-wav-limiter-focus` 的键盘动作三者**逐字同一落点**。
+                accessible-action-default => { root.limiter = !root.limiter; }
+
+                // ⭐ `D-UI-20`：开关的取焦身份（⛔ 无视觉、⛔ 不新增 `accessible-id`）。
+                // 它落在 `Rectangle` 之内、`TouchArea` 之前 ⇒ 鼠标那条路一位不变。
+                export-wav-limiter-focus := FocusScope {
+                    x: 0;
+                    y: 0;
+                    width: parent.width;
+                    height: parent.height;
+                    focus-on-click: false;
+                    key-pressed(event) => {
+                        if (event.text == Key.Return || event.text == Key.Space) {
+                            root.limiter = !root.limiter;
+                            accept
+                        } else {
+                            reject
+                        }
+                    }
+                }
+
+                UiText {
+                    x: 0;
+                    y: 0;
+                    width: parent.width;
+                    height: parent.height;
+                    text: root.limiter ? "限制器：开" : "限制器：关";
+                    color: root.limiter ? Tokens.gold-bright : Tokens.ink-1;
+                    font-size: Tokens.font-size-xs;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+
+                TouchArea {
+                    width: parent.width;
+                    height: parent.height;
+                    clicked => { root.limiter = !root.limiter; }
+                }
+            }
+
+            // ------------------------------------------------------------ 说明行
+            Rectangle {
+                x: Tokens.space-6;
+                y: 220px;
+                width: parent.width - 48px;
+                height: 16px;
+                clip: true;
+
+                accessible-role: text;
+                accessible-id: "export-wav-options-note";
+                accessible-label: "无效的采样率 / 位深 / 时长会让导出如实失败，不写半成品文件。";
+
+                UiText {
+                    x: 0;
+                    y: 0;
+                    width: parent.width;
+                    height: parent.height;
+                    text: "无效的采样率 / 位深 / 时长会让导出如实失败，不写半成品文件。";
+                    color: Tokens.ink-2;
+                    font-size: Tokens.font-size-xs;
+                    overflow: elide;
+                }
+            }
+
+            // ------------------------------------------------------------ 执行
+            Rectangle {
+                x: Tokens.space-6;
+                y: parent.height - 56px;
+                width: 160px;
+                height: 32px;
+                background: Tokens.bg-raised;
+                border-radius: Tokens.radius-md;
+                border-width: 1px;
+                border-color: Tokens.gold;
+                accessible-role: button;
+                accessible-id: "export-wav-run-button";
+                accessible-label: "按这些选项导出 WAV";
+                accessible-action-default => { root.run(); }
+
+                // ⭐ `D-UI-20`：「导出」的取焦身份。`Return` / `Space` 调的是**同一条**
+                // `root.run()`（`TouchArea.clicked`、无障碍默认动作也走它）⇒ ⛔ 没有第四份
+                // "导出"的实现，宿主侧 `on_run_export_wav` 仍是唯一落点。
+                export-wav-run-focus := FocusScope {
+                    x: 0;
+                    y: 0;
+                    width: parent.width;
+                    height: parent.height;
+                    focus-on-click: false;
+                    key-pressed(event) => {
+                        if (event.text == Key.Return || event.text == Key.Space) {
+                            root.run();
+                            accept
+                        } else {
+                            reject
+                        }
+                    }
+                }
+
+                UiText {
+                    x: 0;
+                    y: 0;
+                    width: parent.width;
+                    height: parent.height;
+                    text: "导出";
+                    color: Tokens.gold-bright;
+                    font-size: Tokens.font-size-xs;
+                    horizontal-alignment: center;
+                }
+
+                TouchArea {
+                    width: parent.width;
+                    height: parent.height;
+                    clicked => { root.run(); }
+                }
             }
         }
     }
+
+    // ---- 焦点读数（D-UI-19 / D-UI-20）---------------------------------------
+    /// 四格**文本框**里哪一格正持有键盘：`0` 路径 / `1` 采样率 / `2` 位深 / `3` 时长 /
+    /// `-1` 不在任何文本框内（焦点在三格按钮上，或根本不在模态里）。
+    /// ⚠ 这是从 Slint **自己的**焦点状态**推导**出来的（四个 `has-focus` 就是天然事实源），
+    /// ⛔ 不是第三份"我以为焦点在哪"的写态 —— 与 `app.slint` 的 `shortcut-layer-focused`
+    /// （`FocusScope.has-focus` 的镜像）同口径。唯一读者 = 宿主与无头判据。
+    out property <int> focused-field:
+        export-wav-path-input.has-focus ? 0
+        : export-wav-sample-rate-input.has-focus ? 1
+        : export-wav-bit-depth-input.has-focus ? 2
+        : export-wav-seconds-input.has-focus ? 3
+        : -1;
+
+    /// `D-UI-20`：轮转**全集**的读数 —— 七格。`0..3` 同上，`4` 限制器开关 / `5` 导出 /
+    /// `6` ✕ 关闭 / `-1` 不在模态内。⛔ 不是第二份状态：它与前一条从**同一批** `has-focus`
+    /// 推导，只是多读三格按钮的容器 ⇒ 两条读数不可能互相矛盾。
+    /// 为什么⛔ 不复用 `focused-field`：那条已由 `D-UI-19` 的判据按"四格"钉死（打开落 `0`、
+    /// 关闭落 `-1`），改它的**值域**等于悄悄放宽一条既有判据。
+    out property <int> focused-control:
+        export-wav-path-input.has-focus ? 0
+        : export-wav-sample-rate-input.has-focus ? 1
+        : export-wav-bit-depth-input.has-focus ? 2
+        : export-wav-seconds-input.has-focus ? 3
+        : export-wav-limiter-focus.has-focus ? 4
+        : export-wav-run-focus.has-focus ? 5
+        : export-wav-close-focus.has-focus ? 6
+        : -1;
+
+    /// 打开时由宿主调用：焦点进**第一格**。停在遮罩上等于"看得见但打不了字"。
+    public function focus-first-field() {
+        export-wav-path-input.focus();
+    }
+
+    /// 七格的**唯一**一张「序号 → 控件」表：下面两条轮转只做序号加减，取焦一律走这里
+    /// ⇒ 再加一格只改这一处（`D-UI-19` 那条"轮转只有一份"的纪律由此继续成立）。
+    public function focus-control(index: int) {
+        if (index == 0) {
+            export-wav-path-input.focus();
+        } else if (index == 1) {
+            export-wav-sample-rate-input.focus();
+        } else if (index == 2) {
+            export-wav-bit-depth-input.focus();
+        } else if (index == 3) {
+            export-wav-seconds-input.focus();
+        } else if (index == 4) {
+            export-wav-limiter-focus.focus();
+        } else if (index == 5) {
+            export-wav-run-focus.focus();
+        } else if (index == 6) {
+            export-wav-close-focus.focus();
+        }
+    }
+
+    /// `Tab`：路径 → 采样率 → 位深 → 时长 → 限制器 → 导出 → ✕ → 回第一格。
+    /// 两端都闭合（焦点逃不出去）；`-1`（从外部进来 / 焦点被清）⇒ 落回第一格 ⇒
+    /// ⛔ 不存在"按 Tab 跳到左栏"这一态。
+    public function focus-next-control() {
+        if (root.focused-control == 0) {
+            root.focus-control(1);
+        } else if (root.focused-control == 1) {
+            root.focus-control(2);
+        } else if (root.focused-control == 2) {
+            root.focus-control(3);
+        } else if (root.focused-control == 3) {
+            root.focus-control(4);
+        } else if (root.focused-control == 4) {
+            root.focus-control(5);
+        } else if (root.focused-control == 5) {
+            root.focus-control(6);
+        } else {
+            root.focus-control(0);
+        }
+    }
+
+    /// `Shift+Tab`：反向；第一格再退 ⇒ 末格（`-1` 同样退到末格）。
+    public function focus-previous-control() {
+        if (root.focused-control == 1) {
+            root.focus-control(0);
+        } else if (root.focused-control == 2) {
+            root.focus-control(1);
+        } else if (root.focused-control == 3) {
+            root.focus-control(2);
+        } else if (root.focused-control == 4) {
+            root.focus-control(3);
+        } else if (root.focused-control == 5) {
+            root.focus-control(4);
+        } else if (root.focused-control == 6) {
+            root.focus-control(5);
+        } else {
+            root.focus-control(6);
+        }
+    }
+
 }
