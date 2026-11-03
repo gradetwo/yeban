@@ -666,13 +666,11 @@ fn logic_pro_workflow_view_toggles_and_zoom() {
         "按 P 后控制台标签必须切换到钢琴卷帘 (Tab 0)"
     );
 
-    // 3. 测试 A 键与 Cmd+Shift+A 键切换自动化泳道显示 (Logic Pro 自动化视图对齐)
+    // 3. 测试 Cmd+Shift+A 键切换自动化泳道显示 (Logic Pro 自动化视图对齐)
     assert!(ui.get_automation_visible(), "自动化泳道默认可见");
     let consumed_bare_a = ui.invoke_key_action("a".into(), false, false, false, false);
-    assert!(consumed_bare_a, "按 A 必须被消费");
-    assert!(!ui.get_automation_visible(), "按 A 后自动化泳道隐藏");
-    ui.invoke_key_action("a".into(), false, false, false, false);
-    assert!(ui.get_automation_visible(), "再次按 A 后自动化泳道恢复可见");
+    assert!(!consumed_bare_a, "裸 A 键保持放行 (保证全局/输入框不被拦截)");
+    assert!(ui.get_automation_visible(), "裸 A 不改变自动化泳道可见性");
     let consumed_a = ui.invoke_key_action("a".into(), true, false, false, true);
     assert!(consumed_a, "按 Cmd+Shift+A 必须被消费");
     assert!(
