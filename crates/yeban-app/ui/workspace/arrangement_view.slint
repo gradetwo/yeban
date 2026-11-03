@@ -547,7 +547,7 @@ export component ArrangementView inherits Rectangle {
             y: 26px;
             width: 22px;
             height: 18px;
-            background: (track_index < root.track-arms.length && root.track-arms[track_index]) ? Tokens.record-red : Tokens.bg-void;
+            background: (track_index < root.track-arms.length && root.track-arms[track_index]) ? Tokens.record-red : transparent;
             border-radius: Tokens.radius-sm;
             accessible-role: button;
             accessible-id: "track-" + track_index + "-arm-button";
