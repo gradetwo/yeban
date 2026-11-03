@@ -5397,7 +5397,7 @@ fn the_tool_surface_binds_two_different_samplers_and_query_reads_them_back() {
     let rhythm = id(3).to_canonical_string();
     let (mut dispatcher, auth) = dispatcher_with(&project, &scratch.join("bind.yeban"));
 
-    // ---- ① tools/list：26 个工具，逐字 ----
+    // ---- ① tools/list：28 个工具，逐字 ----
     let listed = request(&mut dispatcher, &auth, "tools/list", json!({}));
     let tools = listed["tools"].as_array().expect("tools");
     println!(
@@ -5407,8 +5407,8 @@ fn the_tool_surface_binds_two_different_samplers_and_query_reads_them_back() {
     assert_eq!(tools.len(), TOOL_COUNT, "工具面条数必须等于 TOOL_COUNT");
     assert_eq!(
         tools.len(),
-        26,
-        "`#220` 的逐字读数曾是 22；`#290` 新增 `yeban_launch_scene` ⇒ 23；`#345` 新增 `yeban_import_midi` ⇒ 24；`ADR-0030` 新增 `yeban_export_stems` ⇒ 25；审计 `N13` 新增 `yeban_list_instruments` ⇒ 26"
+        28,
+        "`#220` 的逐字读数曾是 22；`#290` 新增 `yeban_launch_scene` ⇒ 23；`#345` 新增 `yeban_import_midi` ⇒ 24；`ADR-0030` 新增 `yeban_export_stems` ⇒ 25；审计 `N13` 新增 `yeban_list_instruments` ⇒ 26；SVS 新增 `synthesize_singing` 与 `svs_job` ⇒ 28"
     );
 
     // ---- ② `yeban_edit_notes` 的 kind 表：与 `OP_KINDS` 逐字同序 ----

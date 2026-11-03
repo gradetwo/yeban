@@ -402,7 +402,7 @@ impl Dispatcher {
 ///
 /// ⚠ 必须带工具名（2026-10-29 实测缺陷）：缓存若只按调用方给的 key 存，**两个不同工具**
 /// 用同一个 key 会互相命中 ⇒ 第二个工具根本走不到 `domain::execute`（副作用不发生），
-/// 却收到第一个工具的结果。工具名来自 25 个固定注册名，因此 `:` 分隔无歧义。
+/// 却收到第一个工具的结果。工具名来自 28 个固定注册名，因此 `:` 分隔无歧义。
 fn scoped_idempotency_key(call: &ToolCall) -> Option<String> {
     call.idempotency_key()
         .map(|key| format!("{}:{key}", call.tool.name))
