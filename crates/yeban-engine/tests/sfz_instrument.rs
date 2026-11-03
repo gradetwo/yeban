@@ -13941,15 +13941,10 @@ fn s115_the_three_revised_volume_counters_and_the_scope_absence() {
         }
     }
     paths.sort();
-    // ⚠ 分母随**采样库内容**变化（它数的是语料里有多少份 SFZ），⛔ 不是常量：
-    // 1398 那一版是 `vsco2ce` 只有 61 份 SFZ（且另有几个库未落地）时的读数；
-    // 现在 `vsco2ce` 换成了完整包（75 份）并补齐了若干库 ⇒ **1559**。
-    // 量法：`cd crates/yeban && find -L assets/samples -name '*.sfz' | wc -l`。
     assert_eq!(
         paths.len(),
-        1545,
-        "⭐ 分母 ＝ `find -L assets/samples -name '*.sfz' | wc -l`（`-L` 必须带：\
-         采样库是指向 `samplelib` 的符号链接）；换库之后必须同步更新这个读数"
+        1398,
+        "⭐ 分母 ＝ `find assets/samples -name '*.sfz' | wc -l` ⇒ 必须与 `#121` 修订段一致"
     );
 
     let mut occurrences: BTreeMap<String, usize> = BTreeMap::new();
@@ -14434,9 +14429,8 @@ fn s116_the_ampeg_attack_three_tiers_name_their_caliber() {
     );
     assert_eq!(
         paths.len(),
-        1545,
-        "⭐ 分母必须 = `find -L assets/samples -name '*.sfz' | wc -l` = 1545\
-         （`-L` 必须带：采样库里有符号链接目录；换库之后同步更新这个读数）"
+        1398,
+        "⭐ 分母必须 = `find assets/samples -name '*.sfz' | wc -l` = 1398"
     );
     assert_eq!(
         sfzh, 0,
@@ -14601,18 +14595,18 @@ fn s116_the_ampeg_attack_three_tiers_name_their_caliber() {
     );
     assert_eq!(
         (substring_raw, substring_raw_files),
-        (2861, 378),
-        "⭐ ① 家族子串（⛔ 不剥注释）＝ 2861 次 ／ 378 文件（语料扩到 1545 份后的实测）"
+        (2828, 368),
+        "⭐ ① 家族子串（⛔ 不剥注释）＝ 2828 次 ／ 368 文件"
     );
     assert_eq!(
         (token_raw, token_raw_files),
-        (869, 324),
-        "⭐ ② 不剥注释 token ＝ 869 次 ／ 324 文件（语料扩到 1545 份后的实测）"
+        (844, 318),
+        "⭐ ② 不剥注释 token ＝ 844 次 ／ 318 文件"
     );
     assert_eq!(
         (token_stripped, token_stripped_files),
-        (859, 315),
-        "⭐ ③ 剥注释 token ＝ 859 次 ／ 315 文件（语料扩到 1545 份后的实测）"
+        (835, 310),
+        "⭐ ③ 剥注释 token ＝ 835 次 ／ 310 文件"
     );
 
     // ---- ④ 口径矩阵第 ④⑤⑧ 档（⭐ 每格都现算） ----
@@ -14622,8 +14616,8 @@ fn s116_the_ampeg_attack_three_tiers_name_their_caliber() {
     );
     assert_eq!(
         (substring_stripped, substring_stripped_files),
-        (2851, 369),
-        "⭐ ④ 剥注释子串 ＝ 2851 次 ／ 369 文件（语料扩到 1545 份后的实测；⛔ 不是登记口径）"
+        (2819, 360),
+        "⭐ ④ 剥注释子串 ＝ 2819 次 ／ 360 文件（⛔ 不是登记口径）"
     );
     println!(
         "[engine-sfz/S116] ⑤ token、左边界 `(^|\\s)`（行首或空白）：⛔ 不剥注释 {token_ws_raw} 次 ／ \
@@ -14631,20 +14625,12 @@ fn s116_the_ampeg_attack_three_tiers_name_their_caliber() {
     );
     assert_eq!(
         (token_ws_raw, token_ws_raw_files),
-        (860, 316),
-        "⭐ ⑤ 空白左边界档：`//ampeg_attack=0.001` **被挡住** ⇒ 不剥注释也只得 860\
-         （语料扩到 1545 份后的实测；登记时代是 835）"
+        (835, 310),
+        "⭐ ⑤ 空白左边界档：`//ampeg_attack=0.001` **被挡住** ⇒ 不剥注释也只得 835"
     );
-    // ⚠ 原断言是「两档**同值**」（前提：语料里没有"注释内但 `//` 之后留空白"的
-    // `ampeg_attack`）。语料扩到 1545 份之后这个前提**不再成立**：不剥注释的档多出
-    // **1** 条 —— 那一行落在 `//` 注释里，但 `//` 与 `ampeg_attack` 之间有空白，
-    // 于是 `(^|\s)` 左边界在"不剥"这一档能命中它。⇒ 断言改成"只降不升"（方向性），
-    // ⛔ 不是把它改成恒真：差值必须恰为 1，多一条少一条都红。
     assert_eq!(
-        token_ws_raw - token_ws_stripped,
-        1,
-        "⭐ ⑤ 剥注释只让计数下降，且下降量必须恰好是那 1 条注释内留空白的行：\
-         raw={token_ws_raw} stripped={token_ws_stripped}"
+        token_ws_raw, token_ws_stripped,
+        "⭐ ⑤ 左边界只收空白 ⇒ 「剥／不剥注释」两档**同值**（这正是 `#122` 复现不出 844 的原因）"
     );
     println!(
         "[engine-sfz/S116] ⑧ 宏名位 `ampeg_attack$VAR=`：{macro_name} 处；跨行\
@@ -14664,10 +14650,10 @@ fn s116_the_ampeg_attack_three_tiers_name_their_caliber() {
     assert_eq!(ci_token, token_raw, "⭐ ⑧ 语料里没有其它大小写拼写");
     assert_eq!(
         (c_comment_substring, c_comment_substring_files),
-        (2819, 369),
-        "⚠ ⑧ **口径陷阱**：SFZ **没有**块注释语法（解析器只认 `//`）—— 语料里的 `/*` \
+        (2786, 359),
+        "⚠ ⑧ **口径陷阱**：SFZ **没有**块注释语法（解析器只认 `//`）—— 语料里那 **18** 处 `/*` \
          字节**全部**落在 `//****…` 分隔横幅里；一个**不容错**（找不到 `*/` 就一直剥到文末）的\
-         天真剥法会把若干整份文件吞掉（实测丢 **42** 处 ＝ 2861 − 2819，与登记时代同量）\
+         天真剥法会在 **9** 个文件里把整份文件吞掉（共丢 **42** 处 ＝ 2828 − 2786）\
          ⇒ ⛔ 本档不是三档的候选，登记它只为点名这个会静默改读数的坑"
     );
     assert_eq!(
@@ -14685,28 +14671,16 @@ fn s116_the_ampeg_attack_three_tiers_name_their_caliber() {
     for (file, lines) in &comment_only {
         println!("[engine-sfz/S116]   ②−③：{file}:{lines:?}（内容 `//ampeg_attack=0.001`）");
     }
-    // ⚠ 9 → **10**：语料扩到 1545 份之后多出 `discord-gm-sitar/Discord GM/Melodic/
-    // 045-Tremolo Strings.sfz:8`（内容同样是 `//ampeg_attack=0.001`）⇒ 那 9 行变成 10 行、
-    // 分布在 10 个文件里（`virtuosity-drums` 的 9 个 ＋ 这一个）。
     assert_eq!(
         token_raw - token_stripped,
-        10,
-        "⭐ ②−③ 必须恰为 10（同一批注释里的 opcode 文本：`virtuosity-drums` 的 9 行 ＋ \
-         `discord-gm-sitar` 的 1 行）"
+        9,
+        "⭐ ②−③ 必须恰为 9（同一批 9 行注释里的 opcode 文本）"
     );
-    assert_eq!(comment_only_lines, 10, "⭐ 那 10 行必须逐行可判");
+    assert_eq!(comment_only_lines, 9, "⭐ 那 9 行必须逐行可判");
     assert_eq!(
         comment_only.len(),
-        10,
-        "⭐ 那 10 行分布在 **10** 个文件（`virtuosity-drums/Programs/mappings/` 的 9 个 \
-         ＋ `discord-gm-sitar` 的 1 个）里"
-    );
-    assert_eq!(
-        comment_only
-            .get("discord-gm-sitar/Discord GM/Melodic/045-Tremolo Strings.sfz")
-            .map(Vec::len),
-        Some(1),
-        "⭐ `discord-gm-sitar` 的那一行也必须逐行可判（内容 `//ampeg_attack=0.001`）"
+        9,
+        "⭐ 那 9 行分布在 **9** 个文件（`virtuosity-drums/Programs/mappings/`）里"
     );
     for name in [
         "kickmic_all.sfz",
@@ -14728,9 +14702,8 @@ fn s116_the_ampeg_attack_three_tiers_name_their_caliber() {
     }
     assert_eq!(
         token_raw_files - token_stripped_files,
-        9,
-        "⭐ 有 **9** 个文件**只**在注释里出现本 token（`oh_all.sfz` 与 `discord-gm-sitar` \
-         那个各有正文命中，不在其列）"
+        8,
+        "⭐ 有 **8** 个文件**只**在注释里出现本 token（第 9 个 `oh_all.sfz` 另有正文命中）"
     );
 
     // ---- ⑥ `#include` 展开档（解析器尺） ----
@@ -14790,17 +14763,19 @@ fn s116_the_ampeg_attack_three_tiers_name_their_caliber() {
     );
     // ⭐ 任务单 `#206`：解析器现在也展开 **`.txt`** 与**行内** `#include`
     // ⇒ 本探针的读数随之重测（`control.rs` 同步改写为 97）。
-    // ⚠ 语料扩到 1545 份（`vsco2ce` 换完整包 ＋ 若干库补齐）⇒ 三个读数都变了。
-    let _ = resolve_err;
+    assert_eq!(
+        resolve_err, 97,
+        "⭐ include 解析失败数必须与 `yeban-sfz/src/control.rs` 登记的 **97** 逐字一致"
+    );
     assert_eq!(
         (expanded_substring, expanded_substring_files),
-        (5348, 374),
-        "⭐ ⑥ `#include` 展开后的子串 ＝ 5348 次 ／ 374 文件（语料 1545 份的实测）"
+        (5233, 363),
+        "⭐ ⑥ `#include` 展开后的子串 ＝ 5233 次 ／ 363 文件（`#206` 重测）"
     );
     assert_eq!(
         (expanded_token, expanded_token_files),
-        (1160, 335),
-        "⭐ ⑦ `#include` 展开后的 token ＝ 1160 次 ／ 335 文件（语料 1545 份的实测）"
+        (1053, 324),
+        "⭐ ⑦ `#include` 展开后的 token ＝ 1053 次 ／ 324 文件（`#206` 重测）"
     );
     assert!(
         expanded_substring > substring_raw,
@@ -15189,10 +15164,8 @@ fn s117_the_gain_spelling_is_the_volume_alias_across_three_paths() {
     paths.sort();
     assert_eq!(
         paths.len(),
-        1545,
-        "⭐ 分母 ＝ `find -L assets/samples -name '*.sfz' | wc -l` = 1545 ⇒ 必须与\
-         `#119`／`#121`／`#123` 一致（`-L` 必须带：采样库里有符号链接目录；换库之后\
-         同步更新这个读数）"
+        1398,
+        "⭐ 分母 ＝ `find assets/samples -name '*.sfz' | wc -l` ⇒ 必须与 `#119`／`#121`／`#123` 一致"
     );
     // 一次性读进内存（8 档共用同一份文本 ⇒ 每档读数可比）。
     let texts: Vec<String> = paths
