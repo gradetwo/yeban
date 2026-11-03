@@ -1370,6 +1370,11 @@ fn no_tool_answers_with_a_blanket_not_implemented() {
         "<region> sample=a.wav key=60 pitch_keycenter=60\n<region> sample=b.wav key=64 pitch_keycenter=64\n",
     )
     .expect("写 SFZ 夹具");
+    // 一个刚释放的环回端口：绑定后立即丢掉 ⇒ 连接必被拒（SVS 用例的服务地址）。
+    let closed_port = {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind 环回端口");
+        listener.local_addr().expect("读端口").port()
+    };
     let arguments: Vec<(&str, Value)> = vec![
         (
             "yeban_open_project",
@@ -1475,6 +1480,32 @@ fn no_tool_answers_with_a_blanket_not_implemented() {
         (
             "yeban_export_stems",
             json!({ "outDir": scratch.text("stems-not-created") }),
+        ),
+        // 伶人 SVS 两条：服务地址指到一个刚释放的环回端口 ⇒ 连接被拒，
+        // 走带内 `IO_ERROR`（不是实现级出口）；这里只要求"走到领域实现 +
+        // 契约形状"，真服务链路的证据在 `tests/svs_tools.rs`（桩服务）。
+        (
+            "synthesize_singing",
+            json!({
+                "parts": [{
+                    "label": "lead",
+                    "score": {
+                        "bpm": 120.0,
+                        "notes": [
+                            {"lyric": "la", "midi": 69, "start_s": 0.0, "dur_s": 1.0},
+                        ],
+                    },
+                    "voice_id": "v1",
+                }],
+                "service_url": format!("http://127.0.0.1:{}", closed_port),
+            }),
+        ),
+        (
+            "svs_job",
+            json!({
+                "job_id": "abcdef0123456789",
+                "service_url": format!("http://127.0.0.1:{}", closed_port),
+            }),
         ),
         // 关闭放最后: 前面的用例都要有活跃工程。
         ("yeban_close_project", json!({ "saveFirst": false })),

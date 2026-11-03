@@ -150,7 +150,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use yeban_dsp::channel_strip::{ChannelStrip, ChannelStripParams};
+use yeban_dsp::channel_strip::{ChannelStrip, ChannelStripParams, MONO_BELOW_BYPASS_HZ};
 use yeban_dsp::convolution_reverb::{ConvolutionReverb, ConvolutionReverbParams};
 use yeban_dsp::delay::{Delay, DelayParams};
 use yeban_dsp::device_param::delay_params_from_stage;
@@ -474,7 +474,18 @@ impl InsertChain {
     }
 
     /// 实际会交给运行态的通道条参数：`compressor_enabled` **照投影执行**，
-    /// 且"三级全关 + 增益 0 dB"⇒ `None`。
+    /// 且"三级全关 + 增益 0 dB + 其余各级都在旁通位"⇒ `None`。
+    ///
+    /// ⭐ **`#348`：无开关的级也要算进"是否恒等"**。`hpf` / `dyn_eq` / `width` /
+    /// `mono_below_hz` / `ms_mid_*` 这五处**没有布尔开关**（旁通位就是"参数在
+    /// 中性值"），所以旧判据只看三个 `*_enabled` 与两个增益时，一台**只写了**
+    /// `hpf_hz`（或只写了 `deq_*`、只写了 `width`）的设备会被判成"恒等 ⇒
+    /// 不建级"，整条通道条连一遍都不跑 —— 参数照常进运行态、读出来也对，
+    /// 但**一个样本都没被处理过**。
+    ///
+    /// 实测（Nightfall v12/v13）：总线路由节点上 `hpf_hz = 2000 Hz` 与基线
+    /// **逐字节相同**，而 `runtime_strip` 里明明有 `Some(1000.0)`；7 条声部轨的
+    /// `deq` 开到 `cut 18 dB / threshold −60` 也**一位不动**。两处都是这一条。
     ///
     /// 例外：[`Self::force_strip`] 为真时**恒返回 `Some`** —— 那是"有设备参数泳道要改
     /// 这台器件"的编译期声明（任务单 `#266`），此时"全恒等参数"不是"没有器件"，
@@ -488,12 +499,26 @@ impl InsertChain {
         if self.force_strip {
             return Some(params);
         }
-        let identity = params.input_gain_db == 0.0
+        Some(params).filter(|params| !Self::strip_is_transparent(params))
+    }
+
+    /// 一台通道条**是否完全透明**（＝跑与不跑逐位相同 ⇒ 可以不建级）。
+    ///
+    /// 判据必须覆盖**全部**级：三个带开关的级看 `*_enabled`，五个不带开关的级看
+    /// 各自的中性值（`#348`）。少看任何一级，那一级就会"参数写进去了但永远不执行"——
+    /// 而这种失败**没有错误码**，只能靠耳朵或逐字节比对发现。
+    fn strip_is_transparent(params: &ChannelStripParams) -> bool {
+        params.input_gain_db == 0.0
             && params.output_gain_db == 0.0
             && !params.eq_enabled
             && !params.filter_enabled
-            && !params.compressor_enabled;
-        if identity { None } else { Some(params) }
+            && !params.compressor_enabled
+            // ⭐ 无开关的五级（`#348`）：旁通位就是"在中性值"。
+            && params.hpf.is_bypassed()
+            && params.dyn_eq.is_bypassed()
+            && params.width == 1.0
+            && params.mono_below_hz == MONO_BELOW_BYPASS_HZ
+            && params.ms_mid_gain_db == 0.0
     }
 
     /// 投影出来的 EQ 参数（判据用；EQ 级未启用时为 `None`）。
@@ -1183,12 +1208,26 @@ impl StripProjection {
                 self.params.dyn_eq.max_cut_db = value;
                 self.deq_seen = true;
             }
+            "deq_q" | "dyn_eq_q" => {
+                self.params.dyn_eq.q = value;
+                self.deq_seen = true;
+            }
+            "deq_ratio" | "dyn_eq_ratio" => {
+                self.params.dyn_eq.ratio = value;
+                self.deq_seen = true;
+            }
             "strip_width" | "channel_width" => {
                 self.params.width = value;
             }
             // `#344` mono-maker（与引擎 `insert.rs` 的同名投影逐字同集）。
             "mono_below_hz" | "mono_maker_hz" => {
                 self.params.mono_below_hz = value;
+            }
+            "ms_mid_gain_db" | "ms_mid_gain" => {
+                self.params.ms_mid_gain_db = value;
+            }
+            "ms_mid_freq_hz" | "ms_mid_freq" => {
+                self.params.ms_mid_freq_hz = value;
             }
 
             _ => {}
@@ -1804,8 +1843,12 @@ mod tests {
             StripField::DynEqFreq => 320.0,
             StripField::DynEqThresholdDb => -28.0,
             StripField::DynEqMaxCutDb => 4.0,
+            StripField::DynEqQ => 2.8,
+            StripField::DynEqRatio => 8.0,
             StripField::Width => 1.4,
             StripField::MonoBelowHz => 120.0,
+            StripField::MsMidGainDb => 3.0,
+            StripField::MsMidFreqHz => 3_000.0,
         }
     }
 
@@ -2240,6 +2283,52 @@ mod tests {
         assert!(!params.eq_enabled && !params.filter_enabled && !params.compressor_enabled);
         assert_eq!(params.input_gain_db.to_bits(), 0.0f32.to_bits());
         assert_eq!(params.output_gain_db.to_bits(), 0.0f32.to_bits());
+    }
+
+    /// ⭐ **`#348`：没有开关的五级也必须算进"是否恒等"**。
+    ///
+    /// 判据：一台**只写了** `hpf_hz` / `deq_*` / `width` / `mono_below_hz` /
+    /// `ms_mid_gain_db` 之一的设备，运行态必须真的建出通道条 —— 否则参数投影
+    /// 全部正确、MCP 读数也漂亮，唯独**一个样本都不会被处理**。
+    ///
+    /// 补丁前这五条全部返回 `None`（实测：总线 `hpf_hz = 2000` 与基线逐字节相同、
+    /// `deq` 开到 `cut 18 dB / threshold −60` 也一位不动）。
+    #[test]
+    fn a_strip_with_only_a_switchless_stage_still_builds_a_channel_strip() {
+        // 每条都是"只写了某一级"的**完整**写法（只有 `deq_freq` 没有 `deq_cut_db`
+        // 的 `deq` 本来就是旁通 —— `max_cut_db <= 0`；那不是缺陷，别拿它当判据）。
+        let cases: [(&str, &[(&str, f32)]); 5] = [
+            ("hpf", &[("hpf_hz", 2_000.0)]),
+            ("deq", &[("deq_freq", 4_800.0), ("deq_cut_db", 6.0)]),
+            ("width", &[("strip_width", 0.5)]),
+            ("mono-maker", &[("mono_below_hz", 180.0)]),
+            (
+                "ms-mid",
+                &[("ms_mid_gain_db", 0.6), ("ms_mid_freq_hz", 3_000.0)],
+            ),
+        ];
+        for (label, params) in cases {
+            let chain = InsertChain::from_devices(&[device(params)], 48_000, 120.0);
+            let projected = chain
+                .effective_strip()
+                .unwrap_or_else(|| panic!("`{label}` 单独出现时必须算「有器件」"));
+            let runtime = InsertRuntime::new(&chain, 48_000, 128);
+            assert!(
+                runtime.strip.is_some(),
+                "`{label}` 单独出现 ⇒ 运行态必须建出通道条（否则该级静默空转）"
+            );
+            // 同时确认"其余各级仍在旁通位"：只有被写的那一级是活的。
+            assert!(
+                !projected.eq_enabled && !projected.filter_enabled && !projected.compressor_enabled
+            );
+        }
+        // 反例 1：什么都没写 ⇒ 不建级（既有口径，⛔ 不为修这条把恒等判据拆掉）。
+        let empty = InsertChain::from_devices(&[device(&[])], 48_000, 120.0);
+        assert!(empty.effective_strip().is_none());
+        assert!(InsertRuntime::new(&empty, 48_000, 128).strip.is_none());
+        // 反例 2：写了但落在旁通位（`deq` 只给频率、`mono` 给 0）⇒ 仍不建级。
+        let inert = InsertChain::from_devices(&[device(&[("deq_freq", 4_800.0)])], 48_000, 120.0);
+        assert!(inert.effective_strip().is_none());
     }
 
     /// 延迟字段的钳制表（与 `Delay::process` 的入口钳制同一组界）。

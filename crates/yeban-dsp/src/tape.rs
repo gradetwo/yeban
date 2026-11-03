@@ -10,7 +10,7 @@
 //! ## 信号模型
 //!
 //! ```text
-//! y_sat = pade_tanh(g · (x + asym)) / g − pade_tanh(g · asym) / g ，其中 g = 1 + 9 · drive
+//! y_sat = [ pade_tanh(g · (x + asym)) / g − pade_tanh(g · asym) / g ] / pade_tanh'(g · asym) ，其中 g = 1 + 9 · drive
 //! y     = (1 - mix) · x + mix · y_sat ，再乘 tape_trim_db 的线性增益
 //! ```
 //!
@@ -35,16 +35,24 @@
 //! ```text
 //! y_sat = pade_tanh(g · (x + asym)) / g − pade_tanh(g · asym) / g
 //!         └──────────── 平移后的曲线 ────────────┘   └──── 常量直流补偿 ────┘
+//!         整个结果再 ÷ pade_tanh'(g · asym)   ← 工作点斜率归一化（`#347`）
 //! ```
 //!
 //! * 平移后正负半周**不再对称** ⇒ 二次谐波出现（`asym` 越大越强）；
 //! * **减掉常量**是必须的：不减的话 `x = 0` 输出 `pade_tanh(g·asym)/g ≠ 0`
 //!   ⇒ 整条链带上 DC 偏移（下游限幅器会为它让出余量，听感是"低频被抬"）。
 //!   减掉之后**零输入 ⇒ 零输出**（判据 `asym_keeps_silence_silent`）。
-//! * ⚠ **代价（如实登记）**：工作点离开零点 ⇒ 小信号增益从 `1` 降到
-//!   `pade_tanh'(g·asym)`（`drive = 0.06`、`asym = 0.3` 时约 **−1.3 dB**）
-//!   ⇒ 用 `tape_trim_db` 补，⛔ 本片**不**自动补偿（自动补偿会把"改音色"
-//!   和"改电平"两件事绑在一起，旋钮就不再正交）。
+//! * ⭐ **还要按工作点斜率归一化**（`#347`）：减常量只把 `x = 0` 的输出拉回 `0`，
+//!   **没有**把小信号**增益**拉回 `1`。平移把工作点从 `0`（斜率恰 `1`）搬到
+//!   `g·asym`，那里 `pade_tanh' < 1` ⇒ 整条湿路被静默压低。实测：
+//!   `drive = 0.20`、`asym = 0.32`（`g·asym = 0.896`，斜率 `0.517`）是 **−5.7 dB**；
+//!   把整首 183 s 的作品走一遍母带 LUFS，就是 **−25.33 → −19.86 LUFS**（差 5.47 dB）。
+//!   ⇒ 除以 `pade_tanh'(g·asym)`（[`crate::math::pade_tanh_slope`]），小信号增益
+//!   恒 `1`，`tape_drive` / `tape_asym` 才是真"只改谐波"、`tape_trim_db` 才只是
+//!   作者的手动配平。
+//!   - `asym == 0` ⇒ 斜率恰 `1.0` ⇒ `÷ 1.0` 在 binary32 下逐位恒等（后向兼容）。
+//!   - 斜率下界 [`MIN_ASYMMETRY_SLOPE`]（`1/8`）⇒ 归一化最多 `+18 dB`；
+//!     `drive → 1`、`asym → 0.5` 时曲线被压平，那已不是"配平"而是"改动态"。
 //! * ⚠ `asym` **只在级建成时起作用**（`drive > 0` 且 `mix > 0`，见下一节）——
 //!   曲线是 `tanh(g·x)`，`g` 只由 `drive` 决定 ⇒ `drive = 0` 时级本来就不建，
 //!   `asym` 写了也不生效。这是既有建成条件的直接后果，⛔ 不为它开口子。
@@ -73,7 +81,13 @@
 //! - `configure` 是**唯一**的状态初始化入口（采样率＋清零），必须在音频回调之外
 //!   调用一次；未 `configure` 时 [`TapeSaturation::process`] 是直通（不改变缓冲）。
 
-use crate::math::{db_to_gain, finite_or_zero, pade_tanh, sanitise_sample_rate};
+use crate::math::{db_to_gain, finite_or_zero, pade_tanh, pade_tanh_slope, sanitise_sample_rate};
+
+/// 工作点斜率的下界（`#347`）：归一化增益最多 `+18 dB`。
+///
+/// `g · asym` 在合法域内最大到 `10 · 0.5 = 5`，闭式斜率 `0.036` ⇒ 不钳的话
+/// 归一化会要 `27.5×`（+28.8 dB）——那已经不是"配平电平"而是"把曲线压平"。
+const MIN_ASYMMETRY_SLOPE: f32 = 1.0 / 8.0;
 use crate::oversample::{OS_LATENCY, OS_TAPS, Oversampler2x};
 
 /// `tape_trim_db` 的合法域（dB）。
@@ -275,6 +289,15 @@ impl TapeSaturation {
         // ⚠ `asym == 0` ⇒ `pade_tanh(0.0)` 恰 `0.0` ⇒ 补偿项恰 `+0.0`，
         // 而 `a - 0.0` 在 binary32 下**逐位等于** `a`（含 `a == -0.0`）⇒ 逐位不变。
         let bias = pade_tanh(g * asym) / g;
+        // ⭐ **工作点斜率归一化**（`#347`，见模块文档「⭐ 偶次谐波」末段）：
+        // 平移把工作点从 `0`（`pade_tanh'(0) = 1`）搬到 `g·asym`，斜率随之降到
+        // `pade_tanh'(g·asym)` ⇒ 小信号增益跟着掉（`drive 0.2 / asym 0.32` 实测
+        // **−5.7 dB**）。这里把它除回去，`drive` / `asym` 才真的"只改谐波"，
+        // `tape_trim_db` 才真的只做"作者的手动配平"。
+        // 上界 `8.0`（+18 dB）：`drive → 1`、`asym → 0.5` 时 `g·asym = 5`，
+        // 闭式斜率 `0.036` ⇒ 归一化会要 `27.5×`，那是"把曲线压平"而不是电平配平。
+        let slope = pade_tanh_slope(g * asym).clamp(MIN_ASYMMETRY_SLOPE, 1.0);
+        let normalise = 1.0 / slope;
         let trim = db_to_gain(self.params.trim_db);
         let mix = self.params.mix;
         let coeff = self.lp_coeff;
@@ -288,7 +311,7 @@ impl TapeSaturation {
                 *state += (x - *state) * coeff;
                 *state
             };
-            let y_sat = pade_tanh(g * (wet + asym)) / g - bias;
+            let y_sat = (pade_tanh(g * (wet + asym)) / g - bias) * normalise;
             *slot = ((1.0 - mix) * x + mix * y_sat) * trim;
         }
     }
@@ -447,6 +470,63 @@ mod tests {
                 assert!(
                     (*sample - 0.01).abs() < 1e-3,
                     "drive {drive}: 小信号增益偏离 0.01，实读 {sample}"
+                );
+            }
+        }
+    }
+
+    /// ⭐ **`asym` 不改小信号电平**（`#347`）。
+    ///
+    /// 归一化不是万能的：`pade_tanh` 在 `|x| → 3` 处压平（斜率 → 0），`g·asym`
+    /// 一旦进到那一带，"电平中性"本身就没有意义（那是硬削波区，不是磁带）。
+    /// 因此判据只钉**能钉的那一段**，其余如实登记：
+    ///
+    /// | 区间 | 要求 | 依据 |
+    /// | :--- | :--- | :--- |
+    /// | 音乐区间 `drive ≤ 0.2`、`asym ≤ 0.32`（`g·asym ≤ 0.9`） | 与对称时相差 **< 0.5 dB** | 斜率 `≥ 0.5` ⇒ 归一化 `≤ 2×`，未触上界 |
+    /// | 上界触发（`slope < 1/8`） | 归一化**恰好**取 [`MIN_ASYMMETRY_SLOPE`] | 钳制行为本身可验证 |
+    ///
+    /// 补丁前音乐区间就是 **−5.7 dB**（`drive 0.2 / asym 0.32`）。
+    #[test]
+    fn asym_does_not_change_the_small_signal_level() {
+        let level = |asym: f32, drive: f32| {
+            let mut tape = make_tape_asym(drive, 1.0, 0.0, TAPE_HF_MAX_HZ, asym);
+            let mut left = vec![0.01; 4096];
+            let mut right = vec![0.01; 4096];
+            process_all(&mut tape, &mut left, &mut right);
+            // 稳态取尾部（FIR 建立段之后），用均值而不是单点（压掉残余纹波）。
+            let tail = &left[2048..];
+            tail.iter().sum::<f32>() / tail.len() as f32
+        };
+        let error_db =
+            |drive: f32, asym: f32| 20.0 * libm::log10f(level(asym, drive) / level(0.0, drive));
+        for drive in [0.06, 0.12, 0.2] {
+            for asym in [0.1, 0.2, 0.32] {
+                let db = error_db(drive, asym);
+                assert!(
+                    db.abs() < 0.5,
+                    "drive {drive} / asym {asym}: 电平必须与对称时一致，实差 {db:+.2} dB"
+                );
+            }
+        }
+        // 钳制行为：斜率跌破下界时，归一化恰好是 `1 / MIN_ASYMMETRY_SLOPE`。
+        // 合法域里最陡的工作点是 `drive = 1`、`asym = 0.5` ⇒ `g·asym = 5`。
+        let slope_at_extreme = crate::math::pade_tanh_slope(5.0);
+        assert!(slope_at_extreme < MIN_ASYMMETRY_SLOPE);
+        assert!(
+            (slope_at_extreme.clamp(MIN_ASYMMETRY_SLOPE, 1.0) - MIN_ASYMMETRY_SLOPE).abs()
+                < f32::EPSILON
+        );
+        // ⚠ **如实登记的边界**：`g·asym ≳ 1.5` 之后曲线已进硬削波段
+        // （`pade_tanh` 在 `|x| > 3` 甚至非单调），那里"电平中性"没有定义，
+        // 归一化只能钳在上界。判据只钉"绝不小于 1"（不反过来压电平）。
+        for drive in [0.5, 1.0] {
+            for asym in [0.32, 0.5] {
+                let slope = crate::math::pade_tanh_slope((1.0 + 9.0 * drive) * asym);
+                let normalise = 1.0 / slope.clamp(MIN_ASYMMETRY_SLOPE, 1.0);
+                assert!(
+                    (1.0..=8.0).contains(&normalise),
+                    "drive {drive} / asym {asym}: 归一化 {normalise} 必须落在 [1, 8]"
                 );
             }
         }

@@ -1206,6 +1206,14 @@ impl StripProjection {
                 self.params.dyn_eq.max_cut_db = value;
                 self.deq_seen = true;
             }
+            "deq_q" | "dyn_eq_q" => {
+                self.params.dyn_eq.q = value;
+                self.deq_seen = true;
+            }
+            "deq_ratio" | "dyn_eq_ratio" => {
+                self.params.dyn_eq.ratio = value;
+                self.deq_seen = true;
+            }
             "strip_width" | "channel_width" => {
                 self.params.width = value;
             }
@@ -1213,6 +1221,12 @@ impl StripProjection {
             // 两个字段的默认值都是"旁通"，写 0 与不写等价，`params != DEFAULT` 就够）。
             "mono_below_hz" | "mono_maker_hz" => {
                 self.params.mono_below_hz = value;
+            }
+            "ms_mid_gain_db" | "ms_mid_gain" => {
+                self.params.ms_mid_gain_db = value;
+            }
+            "ms_mid_freq_hz" | "ms_mid_freq" => {
+                self.params.ms_mid_freq_hz = value;
             }
 
             _ => {}
