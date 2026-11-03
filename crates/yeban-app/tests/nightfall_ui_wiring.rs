@@ -29,13 +29,12 @@ use yeban_app::bridge::{ViewState, display_track};
 use yeban_app::host;
 use yeban_app::open::open_project_file;
 use yeban_app::scene::DemoScene;
-use yeban_app::ui::MainWindow;
 use yeban_app::undo::{UndoPort, UndoSession};
 use yeban_model::ids::EntityId;
 use yeban_model::music::MidiNote;
 use yeban_model::project::{
-    AutomationLane, AutomationTarget, AutomationWriteMode, ClipContent, ClipPlacement,
-    ClipPoolEntry, DeviceDefinition, DeviceKind, LoopConfig, TrackKind, TrackV3, YebanProjectV1,
+    AutomationLane, AutomationTarget, ClipContent, ClipPlacement, ClipPoolEntry, DeviceDefinition,
+    DeviceKind, LoopConfig, TrackKind, TrackV3, YebanProjectV1,
 };
 use yeban_model::samples::filled_project;
 use yeban_ui_test_port::Size;
@@ -61,7 +60,7 @@ fn synth_track(id: EntityId, name: &str, kind: TrackKind) -> TrackV3 {
         sampler: None,
         devices: Vec::new(),
         macros: Vec::new(),
-        automation_lanes: Vec::new(),
+        automation_lanes: BTreeMap::new(),
         clips: BTreeMap::new(),
     }
 }
@@ -128,13 +127,9 @@ fn synth_nightfall_scale_project() -> YebanProjectV1 {
             latency_samples: 0,
         });
         // 加自动化
-        t.automation_lanes.push(AutomationLane {
-            target: AutomationTarget::TrackVolume { track_id: tid },
-            points: BTreeMap::new(),
-            read_enabled: true,
-            write_mode: AutomationWriteMode::Off,
-            explicit_domain: None,
-        });
+        let target = AutomationTarget::TrackVolume { track_id: tid };
+        t.automation_lanes
+            .insert(target.clone(), AutomationLane::implicit(target));
         tracks.insert(tid, t);
     }
 
