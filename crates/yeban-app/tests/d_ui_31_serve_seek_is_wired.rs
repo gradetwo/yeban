@@ -46,7 +46,7 @@
 //! | ⑤（换工程之后读的是**新**投影） | 装配用 `filled_project`（2 段 / 1 景）⇒ 下标 2 越界；`apply_project(demo_project)`（4 段 / 4 景）⇒ 界面上的章节卡行数从 2 变 4、`view_section_start_tick(2)` 从 `None` 变 `Some(tick>0)`，按下卡片 ⇒ 位置**正是**那个 `tick`；同一个下标 2 的场景按钮现在报的是**新工程**那条场景的名字。⭐ 冻结的装配期快照在这里必然红（早退 ⇒ 位置停在 0） |
 //! | ⑥（`scene-launch` 写的是**同一格**投影） | 启动态：`current-scene-index = -1`、状态行 `""`、`view_current_scene_name() = None`；按一次 ⇒ 状态行 `已排队：{名字}`、界面 `current-scene-index = 0`、`current-scene-name = 名字`，而**执行面自己那一格**投影也说同一个名字（⛔ 不是两份投影各说一套）；`apply_project` 之后回到 `-1` / `None` / `""`（完整重投影 ⇒ 读数作废） |
 //! | ⑦（没有引擎时如实冷读，⛔ 不假装） | 不起引擎的装配：指针按下 / `SetValue` / 章节卡片 ⇒ 命令计数恒 `0`、位置恒 `0`、界面镜面恒 `0`；场景按钮 ⇒ 状态行如实说"没有送到引擎"，`current-scene-index` 仍 `-1`，投影里仍没有当前场景 |
-//! | ⑧（出处纪律） | 源码现读（先剥 `//` ⇒ **注释不是实现站点**）：`live_surface.rs` 里三条定位接线**各恰好 1 处**、`Rc::new(RefCell::new(view.clone()))` **1 处**（投影只有一份，就在装配现场建）、`Rc::clone(&live_view)` **5 处**（五条接线共享它）、`EngineHost::new(` **1 处**、执行面**自己**发命令/算坐标 **0 处**（`send_transport(` / `.seek(` / `.play()` / `.stop()` / `commit_seek(` / `ruler_seek_tick(` / `ruler_step_tick(` / `ruler_bar_tick(` / `ruler_span_ticks(` / `tick_to_px(` 各 0）；`main.rs` 三条各仍为 1（两族⛔ 不互删）；**本判据文件自己** 0 处 `host::wire_` |
+//! | ⑧（出处纪律） | 源码现读（先剥 `//` ⇒ **注释不是实现站点**）：`live_surface.rs` 里三条定位接线**各恰好 1 处**、`Rc::new(RefCell::new(view.clone()))` **1 处**（投影只有一份，就在装配现场建）、`Rc::clone(&live_view)` **5 处**（五条接线共享它）、`EngineHost::new(` **1 处**、执行面**自己**发命令/算坐标 **0 处**（`send_transport(` / `.seek(` / `.play()` / `commit_seek(` / `ruler_seek_tick(` / `ruler_step_tick(` / `ruler_bar_tick(` / `ruler_span_ticks(` / `tick_to_px(` 各 0；⭐ `.stop()` 自 D-UI-32 起**不在这张表里** —— 换代即停住是义务，其计数由 `tests/d_ui_32_serve_parks_every_new_engine.rs` ⑧ 钉）；`main.rs` 三条各仍为 1（两族⛔ 不互删）；**本判据文件自己** 0 处 `host::wire_` |
 //!
 //! ## 注入（每一条都由本文件的判据打红）
 //!
@@ -678,11 +678,16 @@ fn the_execution_surface_wires_seek_once_and_keeps_one_projection_cell() {
     );
 
     // 执行面自己不发送命令、不算坐标：算术⛔ 只住在 `host` / `bridge` 里。
+    //
+    // ⭐ `.stop()` 于 D-UI-32 **不在**这张表里了（run `41581138067` 教的）：换代即停住是
+    // **控制面的义务**（引擎 `Transport::free_running` 是刻意设计，见 `rt.rs`），不是
+    // "替用户按了一次播放键"。它的正确计数（live 恰好 1 处、且必须住在 `rebuild_engine`
+    // 体内）由 `tests/d_ui_32_serve_parks_every_new_engine.rs` 的 ⑧ 钉 —— ⛔ 本票不重复钉
+    // 同一个事实（两处抄同一个数 = 下一个改动要同时记得两处，正是这批红的来源）。
     for token in [
         "send_transport(",
         ".seek(",
         ".play()",
-        ".stop()",
         "stop_and_rewind(",
         "commit_seek(",
         "queue_scene_launch(",
