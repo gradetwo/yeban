@@ -6208,6 +6208,7 @@ pub fn apply_proposal_drawer(
 /// 同一条再点一次 ⇒ 一位不动（`clip_selection` 判据 ⑤ 的"不白重画"）。
 pub fn wire_clip_scope(ui: &MainWindow, view: Rc<RefCell<ViewState>>, undo: Option<Rc<UndoPort>>) {
     let weak = ui.as_weak();
+    let undo_for_select = undo.clone();
     ui.on_clip_select(move |clip_ulid| {
         use slint::Model as _;
         let Some(ui) = weak.upgrade() else {
@@ -6218,6 +6219,24 @@ pub fn wire_clip_scope(ui: &MainWindow, view: Rc<RefCell<ViewState>>, undo: Opti
         if !known.iter().any(|id| id.as_str() == clip_ulid.as_str()) {
             return;
         }
+        // 剪辑所属音轨联动选中（Logic Pro 对齐）：
+        let track_target = undo_for_select.as_ref().and_then(|port| {
+            let project = port.try_project()?;
+            let (track_id, _, _) = clip_placement_for(&project, clip_ulid.as_str())?;
+            Some(track_id)
+        });
+        if let Some(track_id) = track_target {
+            let track_str = track_id.to_string();
+            if ui.get_selected_track_id().as_str() != track_str.as_str() {
+                let track_ids = ui.get_track_ids();
+                if let Some(pos) = track_ids
+                    .iter()
+                    .position(|id| id.as_str() == track_str.as_str())
+                {
+                    ui.invoke_track_select(pos as i32);
+                }
+            }
+        }
         if ui.get_selected_clip_ulid().as_str() == clip_ulid.as_str() {
             return;
         }
@@ -6225,7 +6244,7 @@ pub fn wire_clip_scope(ui: &MainWindow, view: Rc<RefCell<ViewState>>, undo: Opti
         // 作用域重注入：只读的重投影，不 `commit_ops`。
         let scroll = ui.get_roll_scroll_x();
         let width = slint::ComponentHandle::window(&ui).size().width as f32;
-        let fresh = undo
+        let fresh = undo_for_select
             .as_ref()
             .and_then(|port| port.try_project())
             .and_then(|project| project_with_view_state(&project, &ui).ok());
@@ -10254,7 +10273,11 @@ fn apply_action(
             true
         }
         // Logic Pro 工作流：C 走带循环区开关
-        Action::ToggleCycle => true,
+        Action::ToggleCycle => {
+            let current = ui.get_cycle_enabled();
+            ui.set_cycle_enabled(!current);
+            true
+        }
         // 时间轴水平缩放
         Action::ZoomIn => zoom_horizontal_step(ui, undo.map(|u| u.as_ref()), true),
         Action::ZoomOut => zoom_horizontal_step(ui, undo.map(|u| u.as_ref()), false),
@@ -12544,9 +12567,35 @@ fn duplicate_selected_clip_placement(
     else {
         return false;
     };
+    let Some(clip_entry) = project.clip_pool.get(&placement.clip_id) else {
+        return false;
+    };
+    let new_clip_id = yeban_model::EntityId::new();
+    let new_content = match &clip_entry.content {
+        yeban_model::project::ClipContent::Midi { notes } => {
+            let mut new_notes = std::collections::BTreeMap::new();
+            for note in notes.values() {
+                let mut note_copy = note.clone();
+                note_copy.id = yeban_model::EntityId::new();
+                new_notes.insert(note_copy.id, note_copy);
+            }
+            yeban_model::project::ClipContent::Midi { notes: new_notes }
+        }
+        yeban_model::project::ClipContent::Audio { asset, gain_db } => {
+            yeban_model::project::ClipContent::Audio {
+                asset: asset.clone(),
+                gain_db: *gain_db,
+            }
+        }
+    };
+    let new_clip_entry = yeban_model::project::ClipPoolEntry {
+        id: new_clip_id,
+        name: format!("{} (Copy)", clip_entry.name),
+        content: new_content,
+    };
     let new_placement = yeban_model::project::ClipPlacement {
         id: yeban_model::EntityId::new(),
-        clip_id: placement.clip_id,
+        clip_id: new_clip_id,
         start_tick: placement
             .start_tick
             .saturating_add(placement.duration_ticks),
@@ -12555,10 +12604,15 @@ fn duplicate_selected_clip_placement(
         muted: placement.muted,
     };
     let new_id = new_placement.id.to_string();
-    let ops = vec![yeban_model::ops::Op::AddClipPlacement {
-        track_id,
-        placement: new_placement,
-    }];
+    let ops = vec![
+        yeban_model::ops::Op::AddClip {
+            clip: new_clip_entry,
+        },
+        yeban_model::ops::Op::AddClipPlacement {
+            track_id,
+            placement: new_placement,
+        },
+    ];
     if port
         .commit_ops(now_ms(), "duplicate clip placement", ops)
         .is_err()
@@ -12597,24 +12651,92 @@ fn split_selected_clip_at_playhead(
     if left_duration == 0 || right_duration == 0 {
         return false;
     }
+    let Some(clip_entry) = project.clip_pool.get(&placement.clip_id) else {
+        return false;
+    };
+
+    let shorten_delta = -((placement.duration_ticks.saturating_sub(left_duration)) as i64);
+    let mut ops = clip_duration_ops_for(project, selected.as_str(), shorten_delta);
+    if ops.is_empty() {
+        return false;
+    }
+
+    let right_clip_id = yeban_model::EntityId::new();
+    let (right_content, note_ops) = match &clip_entry.content {
+        yeban_model::project::ClipContent::Midi { notes } => {
+            let mut right_notes = std::collections::BTreeMap::new();
+            let mut n_ops = Vec::new();
+            for (&nid, note) in notes {
+                if note.start_tick >= left_duration {
+                    // 音符完全落在切分点后：从左侧片段移除，并在右侧片段重新对齐起点
+                    n_ops.push(yeban_model::ops::Op::DeleteNote {
+                        track_id,
+                        clip_id: placement.clip_id,
+                        note_id: nid,
+                        previous_note: note.clone(),
+                    });
+                    let mut r_note = note.clone();
+                    r_note.id = yeban_model::EntityId::new();
+                    r_note.start_tick = note.start_tick - left_duration;
+                    right_notes.insert(r_note.id, r_note);
+                } else if note.start_tick + note.duration_ticks > left_duration {
+                    // 音符跨越切分点：在左侧截断时值，在右侧作为新音符从 tick 0 继续
+                    let left_dur = left_duration - note.start_tick;
+                    let right_dur = (note.start_tick + note.duration_ticks) - left_duration;
+                    n_ops.push(yeban_model::ops::Op::SetNoteTiming {
+                        track_id,
+                        clip_id: placement.clip_id,
+                        note_id: nid,
+                        old_start_tick: note.start_tick,
+                        old_duration_ticks: note.duration_ticks,
+                        new_start_tick: note.start_tick,
+                        new_duration_ticks: left_dur,
+                    });
+                    let mut r_note = note.clone();
+                    r_note.id = yeban_model::EntityId::new();
+                    r_note.start_tick = 0;
+                    r_note.duration_ticks = right_dur;
+                    right_notes.insert(r_note.id, r_note);
+                }
+                // note.start_tick + note.duration_ticks <= left_duration：完全在左侧，保持不动
+            }
+            (
+                yeban_model::project::ClipContent::Midi { notes: right_notes },
+                n_ops,
+            )
+        }
+        yeban_model::project::ClipContent::Audio { asset, gain_db } => (
+            yeban_model::project::ClipContent::Audio {
+                asset: asset.clone(),
+                gain_db: *gain_db,
+            },
+            Vec::new(),
+        ),
+    };
+
+    ops.extend(note_ops);
+
+    let right_entry = yeban_model::project::ClipPoolEntry {
+        id: right_clip_id,
+        name: format!("{} (Part 2)", clip_entry.name),
+        content: right_content,
+    };
+    ops.push(yeban_model::ops::Op::AddClip { clip: right_entry });
+
     let right_placement = yeban_model::project::ClipPlacement {
         id: yeban_model::EntityId::new(),
-        clip_id: placement.clip_id,
+        clip_id: right_clip_id,
         start_tick: split_tick,
         duration_ticks: right_duration,
         loop_config: placement.loop_config,
         muted: placement.muted,
     };
     let new_right_id = right_placement.id.to_string();
-    let shorten_delta = -((placement.duration_ticks.saturating_sub(left_duration)) as i64);
-    let mut ops = clip_duration_ops_for(project, selected.as_str(), shorten_delta);
-    if ops.is_empty() {
-        return false;
-    }
     ops.push(yeban_model::ops::Op::AddClipPlacement {
         track_id,
         placement: right_placement,
     });
+
     if port
         .commit_ops(now_ms(), "split clip at playhead", ops)
         .is_err()

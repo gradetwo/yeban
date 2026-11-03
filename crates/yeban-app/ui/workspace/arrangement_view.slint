@@ -84,6 +84,9 @@ export component ArrangementView inherits Rectangle {
     in property <[bool]> track-solos: [];
     in property <[bool]> track-arms: [];
     in property <bool> automation-visible: true;
+    in property <bool> cycle-enabled: false;
+    in property <int> cycle-start-ticks: 0;
+    in property <int> cycle-end-ticks: 15360;
     // 轨道色标：`[color]` 由投影解析后的 RGB 构造（十六进制语法只在 `src/bridge.rs`，
     // 非法 / 缺失已在那边回退）；`track-color-labels` 是同一颜色的规范化 `#RRGGBB` 文本，
     // 只用于无障碍标签 —— 于是"界面画的颜色"与"控件树读到的色标"来自同一个值。
@@ -346,6 +349,16 @@ export component ArrangementView inherits Rectangle {
             width: 1px;
             height: parent.height;
             background: bar_index.mod(4) == 0 ? Tokens.line-strong : Tokens.line;
+        }
+
+        // Logic Pro 循环区指示带 (Cycle/Loop bar)
+        if root.cycle-enabled : Rectangle {
+            x: max(0px, (root.cycle-start-ticks / max(1, root.ticks-per-pixel)) * 1px);
+            y: 0px;
+            width: max(4px, ((root.cycle-end-ticks - root.cycle-start-ticks) / max(1, root.ticks-per-pixel)) * 1px);
+            height: 4px;
+            background: Tokens.gold;
+            border-radius: 2px;
         }
     }
 

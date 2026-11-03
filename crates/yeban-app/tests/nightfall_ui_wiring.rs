@@ -668,6 +668,12 @@ fn logic_pro_workflow_view_toggles_and_zoom() {
 
     // 3. 测试 Cmd+Shift+A 键切换自动化泳道显示 (Logic Pro 自动化视图对齐)
     assert!(ui.get_automation_visible(), "自动化泳道默认可见");
+    let consumed_bare_a = ui.invoke_key_action("a".into(), false, false, false, false);
+    assert!(
+        !consumed_bare_a,
+        "裸 A 键保持放行 (保证全局/输入框不被拦截)"
+    );
+    assert!(ui.get_automation_visible(), "裸 A 不改变自动化泳道可见性");
     let consumed_a = ui.invoke_key_action("a".into(), true, false, false, true);
     assert!(consumed_a, "按 Cmd+Shift+A 必须被消费");
     assert!(
@@ -679,6 +685,14 @@ fn logic_pro_workflow_view_toggles_and_zoom() {
         ui.get_automation_visible(),
         "再次按 Cmd+Shift+A 后自动化泳道恢复可见"
     );
+
+    // 3b. 测试 C 键走带循环区开关 (Logic Pro C 键对齐)
+    assert!(!ui.get_cycle_enabled(), "走带循环区默认未开启");
+    let consumed_c = ui.invoke_key_action("c".into(), false, false, false, false);
+    assert!(consumed_c, "按 C 键必须被消费");
+    assert!(ui.get_cycle_enabled(), "按 C 键后循环区必须开启");
+    ui.invoke_key_action("c".into(), false, false, false, false);
+    assert!(!ui.get_cycle_enabled(), "再次按 C 键后循环区恢复关闭");
 
     // 4. 测试 = 与 - 键横向缩放 (Zoom In / Zoom Out)
     let zoom_start = host::roll_ticks_per_pixel(ui);
@@ -734,6 +748,7 @@ fn logic_pro_workflow_clip_double_click_opens_piano_roll() {
     .expect("Tier-1 活窗口构造");
     let ui = live.ui();
     let view_rc = Rc::new(std::cell::RefCell::new(view.clone()));
+    host::wire_track_select(ui, &port);
     host::wire_clip_scope(ui, view_rc, Some(Rc::clone(&port)));
 
     let clip_ulids: Vec<String> = ui.get_clip_ulids().iter().map(|s| s.to_string()).collect();
@@ -753,6 +768,10 @@ fn logic_pro_workflow_clip_double_click_opens_piano_roll() {
         ui.get_console_tab(),
         0,
         "双击剪辑必须自动切换到底部钢琴卷帘 (Tab 0)"
+    );
+    assert!(
+        !ui.get_selected_track_id().is_empty(),
+        "双击剪辑必须联动选中所属音轨"
     );
 }
 
@@ -792,6 +811,7 @@ fn logic_pro_workflow_clip_split_and_duplicate() {
         .sum::<usize>();
 
     // 1. 测试 Cmd+D 复制当前剪辑 (Logic Pro Cmd+D 对齐)
+    let initial_pool_len = port.project().clip_pool.len();
     let consumed_dup = ui.invoke_key_action("d".into(), false, false, false, true);
     assert!(consumed_dup, "Cmd+D 复制选中的剪辑必须被消费");
     let after_dup_clip_count = port
@@ -803,7 +823,13 @@ fn logic_pro_workflow_clip_split_and_duplicate() {
     assert_eq!(
         after_dup_clip_count,
         initial_clip_count + 1,
-        "剪辑总数必须加 1"
+        "剪辑摆放总数必须加 1"
+    );
+    let after_dup_pool_len = port.project().clip_pool.len();
+    assert_eq!(
+        after_dup_pool_len,
+        initial_pool_len + 1,
+        "复制剪辑必须在片段池创建独立的克隆副本"
     );
     let newly_selected = ui.get_selected_clip_ulid().to_string();
     assert_ne!(newly_selected, target_clip_str, "复制后应选中新生成的剪辑");
@@ -831,6 +857,7 @@ fn logic_pro_workflow_clip_split_and_duplicate() {
         .values()
         .map(|t| t.clips.len())
         .sum::<usize>();
+    let pool_before_split = port.project().clip_pool.len();
     let consumed_split = ui.invoke_key_action("t".into(), false, false, false, true);
     assert!(consumed_split, "Cmd+T 在光标处切分剪辑必须被消费");
     let count_after_split = port
@@ -842,7 +869,13 @@ fn logic_pro_workflow_clip_split_and_duplicate() {
     assert_eq!(
         count_after_split,
         count_before_split + 1,
-        "切分后剪辑总数必须增加 1"
+        "切分后摆放总数必须增加 1"
+    );
+    let pool_after_split = port.project().clip_pool.len();
+    assert_eq!(
+        pool_after_split,
+        pool_before_split + 1,
+        "切分后片段池必须生成独立的右侧片段条目"
     );
 }
 

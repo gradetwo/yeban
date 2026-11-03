@@ -1664,7 +1664,7 @@ mod tests {
         };
         assert_eq!(canvas().resolve(KeyA, meta_alt), Act(ToggleAiDrawer));
 
-        // 邻居：规范没点名的组合一律放行（含加 `Shift` 的那一格）。
+        // 规范没点名的修饰组合一律放行。
         assert_eq!(canvas().resolve(KeyA, Modifiers::none()), PassThrough);
         assert_eq!(canvas().resolve(KeyA, Modifiers::alt()), PassThrough);
         assert_eq!(canvas().resolve(KeyA, Modifiers::shift()), PassThrough);
