@@ -52,7 +52,7 @@ use support::{NoteSpec, note_project, render, render_with_limiter};
 use yeban_engine::level::MAX_LINEAR_MAGNITUDE;
 use yeban_engine::meter::meter_channel;
 use yeban_engine::mixer::BUS_LIMITER_LATENCY_FRAMES;
-use yeban_engine::param::{MASTER_GAIN_SLOT, PARAM_SLOTS, TRACK_GAIN_SLOT};
+use yeban_engine::param::{MASTER_GAIN_SLOT, TRACK_GAIN_SLOT};
 use yeban_engine::ring::{EngineEvent, ParamAddress, event_channel};
 use yeban_engine::rt::EngineRuntime;
 use yeban_engine::snapshot::{EngineSnapshot, SnapshotSlot, retire_channel};
