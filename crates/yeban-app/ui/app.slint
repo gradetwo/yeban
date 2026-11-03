@@ -1866,6 +1866,11 @@ export component MainWindow inherits Window {
             track-sampler-paths: root.track-sampler-paths;
             track-colors: root.track-colors;
             track-color-labels: root.track-color-labels;
+            track-ids: root.track-ids;
+            selected-track-id: root.selected-track-id;
+            track-select(track_index) => {
+                root.track-select(track_index);
+            }
             track-meter-peaks: root.track-meter-peaks;
             track-meter-rmss: root.track-meter-rmss;
             track-meter-levels: root.track-meter-levels;

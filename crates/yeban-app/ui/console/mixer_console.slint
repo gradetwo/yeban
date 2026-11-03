@@ -49,6 +49,11 @@ export component MixerConsole inherits Rectangle {
     in property <[string]> track-sampler-paths: [];
     in property <[color]> track-colors: [];
     in property <[string]> track-color-labels: [];
+    // ⭐ 轨道身份数组与当前选中轨身份（与编曲视图同款，按身份键控）
+    in property <[string]> track-ids: [];
+    in property <string> selected-track-id: "";
+    // 点击通道条 ⇒ 选中这条轨（宿主写 selected-track-id 并重投影）
+    callback track-select(int);
 
     // ---- ⭐ 素材池（任务单 `#133`）---------------------------------------------
     // 三个平行数组由 `src/host.rs` 的 `apply_view` 单向注入，唯一事实源是
@@ -507,12 +512,25 @@ export component MixerConsole inherits Rectangle {
             height: parent.height - 16px;
             background: track_index.mod(2) == 0 ? Tokens.bg-panel : Tokens.bg-shell;
             border-radius: Tokens.radius-md;
-            border-width: 1px;
-            border-color: Tokens.line;
+            border-width: (root.selected-track-id != "" && root.selected-track-id == root.track-ids[track_index]) ? 2px : 1px;
+            border-color: (root.selected-track-id != "" && root.selected-track-id == root.track-ids[track_index]) ? Tokens.gold : Tokens.line;
             clip: true;
             accessible-role: groupbox;
             accessible-id: "track-" + track_index + "-channel-strip";
             accessible-label: "通道条 " + track_name;
+            accessible-item-selected: root.selected-track-id != "" && root.selected-track-id == root.track-ids[track_index];
+            accessible-action-default => { root.track-select(track_index); }
+
+            // 点击通道条标题栏 ⇒ 选中本轨（与编曲视图同款，发 track-select(track_index)）
+            TouchArea {
+                x: 0;
+                y: 0;
+                width: parent.width;
+                height: 20px;
+                clicked => {
+                    root.track-select(track_index);
+                }
+            }
 
             UiMediumText {
                 x: Tokens.space-3;
