@@ -1762,3 +1762,94 @@ fatal: Failed to connect to github.com port 443 after 133929 ms: Connection time
 ⚠ 另两次纯网络失败（`GnuTLS recv error (-110)`、`HTTP2 framing layer error`）是同一原因的
 不同表现，绕过方式是 `git -c http.version=HTTP/1.1`；它们**都**被 `ls-remote` 现读判决，⛔ 靠猜。
 
+## §47 `D-UI-27`：状态栏那句**快捷键提示**是一句承诺 —— 守卫落地，并实测出一处能力层过承诺（2026-11-03）
+
+### 一、先把上一轮的判决读回（run `41548239565` = `b5a3084a` 自己的 run）
+
+**先说指标**：与 §45 同两条口径 —— 同一作业日志里 `Running tests/` 的**次数**（单位：次）与
+`test result:` 的**行数**（单位：行）。`rust (yeban-app)` 腿实测 **0 次 / 0 行**（与 §45 同型）。
+
+| 作业 | 结论 | 现场 |
+|---|---|---|
+| `lockfile` / `plan` / `checks` | success | fmt 与红线守卫过 |
+| `deny (cargo-deny)` | failure | §44 那条仓库级红，**根因未变**：`error[yanked]: detected yanked crate (try cargo update -p async-executor)`，末行 `advisories FAILED, bans ok, licenses ok, sources ok` |
+| `rust (yeban-app)` | failure | **clippy 阶段**退出码 101，唯一的 error 是 `d_ui_26_labelled_chords_are_bound.rs:431` 的 `clippy::manual_pattern_char_comparison` |
+| `windows` / `macos` | failure | 同一条 lint |
+| `e2e` / `rust (workspace 全量)` | skipped | 空绿 |
+
+**两条分开的读数，⛔ 混成一条**：
+1. ⭐ **§45 那枚 `E0308` 确实修好了** —— 本轮日志里**只有这一处** error，且它在 `d_ui_26` 而非
+   `d_ui_24`；clippy 会把 target 图跑完再退出，所以"`d_ui_24` 没报错"就是"`d_ui_24` 编译过"的证据。
+2. ⛔ **但 `d_ui_24`/`d_ui_26` 的判据仍一条没跑** —— 编译过 ≠ 跑过（§6.3 第 4 条）。
+   所以 §39/§41/§42/§43/§45 里的 `pending` **原样保留**，本轮⛔ 能把任何一条写成绿。
+
+**新 lint 为什么本机看不见**：`AGENTS.md` §5 禁止本机编译 Slint ⇒ `cargo clippy -p yeban-app
+--all-targets -D warnings` 本机⛔ 跑，`rust 1.99.0` 的新 lint 只有 CI 会报。
+**规则（§45 那条的姊妹）**：在测试文件里写**手写字符比较**（`.split(|c: char| c == ',' || …)`、
+`.any(|c| c == …)`）之前，直接写成 clippy 要的形式 —— `split([',', '，', '、'])`；
+⛔ 指望本机 lint 兜住。**一枚 lint 会打死同腿所有测试二进制**（fail-fast ⇒ 一整批判据零读数），
+代价与一枚类型错误同级。
+
+**改法**：`d_ui_26:431` 的手写比较换成 char 数组 pattern（语义等价：同一个 `split`，同一组分隔符）。
+
+### 二、本片：`D-UI-27` 守卫 `tests/d_ui_27_status_bar_tip_promises_are_bound.rs`
+
+**缺口是什么**：`ui/status_bar.slint:132` 的 `tip` 默认值是一句**画在屏幕上的**用户承诺
+
+```text
+空格 播放/暂停 · Tab 切视图 (画布聚焦时) · 1–5 工具 · [ ] A/B 盲听
+```
+
+`app.slint` 的 `StatusBar {` 实例⛔ 传 `tip`、`host.rs` 的 `set_tip(` 命中 **0 处**（现读）
+⇒ 用户看到的逐字就是这个字面量。而 `D-UI-26` 的守卫只认两种形状（**带修饰的和弦**、
+**括号里的裸键**），这句话里 **四段承诺一段都不是**那两种：中文键名 `空格`、括号里装**限定语**
+⛔ 键名的 `Tab … (画布聚焦时)`、数字区间 `1–5`（连接号是 en-dash `U+2013`）、方括号键 `[ ]`。
+⇒ 承诺与键表的一致性今天**零机械防线**：顺手加一把 `Q 量化` 就是第二个"念出来却什么都不发生"。
+
+**八条判据**：① 清点（段数 4 / 承诺 9 把 / 词表不认识的段 0，身份串＝写法+键+原话+限定语四元组逐字对账）
+② 兑现·画布 ③ **限定语双向对账（读解析出来的文案，⛔ 读钉死表）** ④ 文本域口径（现状 `PassThrough`，
+⛔ 算兑现，`ADR-0067` 未决）⑤ 画的==扫的（`text: root.tip;` 在 + 实例⛔ 传 `tip:` + 宿主 `set_tip(` = 0）
+⑥ 一段⛔ 两个键名来源 ⑦ 语义 ID `status-bar-shortcut-tip` 仍在登记面 ⑧ **能力层读数**（见下）。
+
+### 三、实测出来的过承诺：`[ ]` 两把键**已绑、无落地实现**（⑧ 把它从注释升级成判据名）
+
+`host::action_has_implementation` 今天只把 `AuditionMain` / `AuditionProposal` 判 `false`
+（其余承诺全 `true`）—— `[ARCH-RT-005]` 要求的"主线与提案并发渲染 + 30ms 等功率瞬切 + 2048 采样预滚"
+在仓库里一处都不存在 ⇒ 按 `[` 今天唯一能发生的事是⛔ 任何东西。这与 `D-UI-26` 的 `Cmd/Ctrl+\`
+**同族而低一层**：那把键⛔ 绑（修法是删文案），这两把**绑了却死**。
+
+⛔ 本切片自行修：两个方向都归人类 —— (A) 补 A/B 试听能力，或 (B) 删 `· [ ] A/B 盲听` 那一段
+（**用户可见**文本 ⇒ `tests/golden/linux/` 基准过期 ⇒ `gates-manual.yml` 的 `gate=goldens` + 人工复核，`HD-56`）。
+本片做的是**把它钉成读数**：⑧ 断言"死键集合 == `{'[', ']'}`"，两边任何一边动都会红
+（实现→⑧ 红，逼着回来升级承诺并重录基准；顺手删文案→⑧ 的另一半与 ① 一起红）。
+
+### 四、桩方法与六条变异检验的读数（本机拿得到的最强证据）
+
+`src/input.rs` 本身是**零依赖状态机**（文件里 `use` 语句 **0 条**）⇒ 本机把它原样搬进
+`/tmp/d27check`（`input.rs` 截到内部 `#[cfg(test)]` 之前，共 1320 行；`host.rs` 桩 = 逐字抄
+`action_has_implementation` 的函数体；四个 `include_str!` 指向真文件的**副本**），
+`cargo test` **真跑八条判据**：
+
+- 基线：**8 passed / 0 failed**。
+- M1 删掉文案里的 `(画布聚焦时)` ⇒ **③ + ① 红**（6 passed / 2 failed）。
+  ⚠ 这一条改写了本票的设计：③ 最初读**钉死表**里的限定语，M1 之下它**绿着说谎**；
+  改成读**解析出来的**文案后 M1 才按承诺的方式红。**"文案↔键表"的对账必须读文案**。
+- M2 加一段 `· Q 量化` ⇒ **① + ③ + ⑥ 红**（5 passed / 3 failed；③ 是先拒绝在未解析文本上推理）。
+- M3 `app.slint` 的实例开始传 `tip:` ⇒ **⑤ 红**。
+- M4 把桩改成"全 `true`"（模拟 A/B 被实现）⇒ **⑧ 红**。
+- M5 宿主里加一处 `window.set_tip(…)` ⇒ **⑤ 红**（`assertion left==right failed: … 现读 1 处`）。
+- M6 从 `elements.rs` 抹掉 `status-bar-shortcut-tip` ⇒ **⑦ 红**。
+
+⛔ 把桩的绿当判决：桩里 `yeban_app` 被换成 `d27check`，是**另一份编译单元**；键表/宿主 API
+的签名漂移只有 CI 看得见（§45 的 `SharedString` 就是它教的）。桩只证**本文件逻辑与断言方向**。
+
+### 五、顺手关掉一条误登记
+
+上一轮的"候选 D-UI-27：顶栏「提交」按钮与「分支」格有标签无点击源"**⛔ 是本线的活** ——
+它已被 `docs/adr/ADR-0052-actionless-drawn-controls-disposition.md`（`Proposed`）登记，
+覆盖 `ai-rail-intent-button` / `transport-commit-button` / `transport-branch-button` 三格
+（各自缺的层不同：无产品入口 / 无暂存编辑态 / 无域级切分支动作面，而模型侧
+`CommitGraph::fork_anonymous`、`create_branch` 早已存在）。编号因此让给本票（状态栏提示守卫），
+候选项在任务表里改判为"**已登记，待裁 ⛔ 实现**"。
+
+`cargo fmt -p yeban-app -- --check` `rc=0`（整个 crate 干净）。判决：`pending`（交 CI）。

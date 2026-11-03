@@ -428,7 +428,7 @@ fn bare_promises(file: &'static str, line: usize, literal: &str) -> Vec<BareProm
         let group = &after[..close];
         if group.chars().count() <= BARE_GROUP_LIMIT {
             let head = group
-                .split(|c: char| c == ',' || c == '，' || c == '、')
+                .split([',', '，', '、'])
                 .next()
                 .unwrap_or_default()
                 .trim();
