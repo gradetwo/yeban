@@ -7683,6 +7683,49 @@ impl ModulePaths {
     }
 }
 
+/// ⭐ `D-UI-28`：「导出 WAV」弹窗给**时长**那一格播种的上限（单位：秒）。
+///
+/// 与 MCP 那条同源：`yeban-mcp` 的 `MAX_RENDER_FRAMES = 48_000 × 3600` 也是"一小时母带"。
+/// 超过它 ⇒ 播 `3600.000`（那一格看得见这个数），⛔ 不播一个会把 UI 线程阻塞几十分钟的
+/// 数（`D-EX-2` 登记的"导出同步阻塞 UI 线程"今天仍在）。
+const EXPORT_SEED_MAX_SECONDS: f64 = 3600.0;
+
+/// 工程**可闻末端**的秒数（向上取整到毫秒）——「导出 WAV」时长格的缺省播种值。
+///
+/// 链条只有三跳，每一跳都是既存的**唯一**实现，⛔ 在这里另写一份：
+/// ① [`crate::bridge::ViewState::content_end_tick`] —— 铺标尺与 `Shift+Z` 全曲总览读的
+/// 就是这一个数（剪辑摆放末端与段末端的最大值）；
+/// ② `YebanProjectV1::tempo().frames_at_tick(tick, PPQ, sr)` —— 模型层 `#339` 的分段
+/// 常速换算（变速工程按段累加、只取整一次）；
+/// ③ 帧 ÷ 采样率 = 秒。
+///
+/// ⚠ **向上**取整到毫秒：导出那侧是 `WavExportOptions::resolve` 的 `round(秒 × 采样率)`。
+/// 四舍五入会把末端最后半帧**切掉** —— `time_math` 的反向换算因此同样选向上（静默丢音）。
+///
+/// `None` = 没有可播的东西（空工程 / 没有撤销端口 / 换算失败 / 病态采样率）⇒ 调用方
+/// ⛔ 不播种，让 [`crate::export_wav::DEFAULT_WAV_SECONDS`]（8 秒）那条既有缺省继续生效 ——
+/// 这一档与 CLI `--export-wav` 不给 `--wav-seconds` 时逐字节相同（⛔ 本票⛔ 动 `resolve`
+/// 的缺省：GUI / CLI / MCP 共用那一份，改它会改两侧已钉住的产物长度）。
+#[must_use]
+fn audible_end_seconds(port: Option<&Rc<UndoPort>>, ui: &MainWindow) -> Option<f64> {
+    let project = port?.try_project()?;
+    let end_tick = project_with_view_state(&project, ui)
+        .ok()?
+        .content_end_tick();
+    if end_tick == 0 {
+        return None;
+    }
+    let hz = project.sample_rate().hz();
+    let frames = project
+        .tempo()
+        .frames_at_tick(end_tick, yeban_model::PPQ, hz)?;
+    let seconds = f64::from(frames) / f64::from(hz);
+    if !seconds.is_finite() || seconds <= 0.0 {
+        return None;
+    }
+    Some((seconds.min(EXPORT_SEED_MAX_SECONDS) * 1000.0).ceil() / 1000.0)
+}
+
 /// 导出对话框三格文本解析出的覆盖参数（`None` = 用后端缺省）。
 type WavExportOverrides = (
     Option<yeban_model::project::SampleRate>,
@@ -7962,9 +8005,19 @@ pub fn wire_module_actions_with_capture(
     // 「导出 WAV」入口现在打开 `ui/dialogs/export_wav_dialog.slint`。打开 / 关闭都
     // **只改视图态**（⛔ 不碰工程、⛔ 不写盘）。路径在第一次打开时由 `ModulePaths`
     // 播种；用户改过之后重开保留用户值（`YEBAN_UI_EXPORT_WAV_PATH` 仍是缺省来源）。
+    //
+    // ⭐ `D-UI-28`：时长那一格同样在**打开时**由工程可闻末端播种（见
+    // [`audible_end_seconds`]）。⛔ 播种点在宿主、⛔ 不在
+    // [`crate::export_wav::WavExportOptions::resolve`]：那一份是 GUI / CLI / MCP
+    // 共用的缺省，改它会改掉两侧已钉死的产物长度；而"UI 里一打开就写死 8 秒"是
+    // 一个用户可见的静默截断 —— 几分钟的工程按缺省导出只剩 8 秒。
     {
         let weak = ui.as_weak();
         let default_target = paths.export_wav.clone();
+        // **宿主最后一次播的值**（不是"用户填的值"）：判据是"没人动过 ⇒ 刷新"，
+        // 所以需要知道眼前这串字符是不是宿主自己上一次写进去的。`None` = 还没播过。
+        let seeded_seconds: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(None));
+        let port_for_seed = port.clone();
         ui.on_open_export_wav(move || {
             let Some(ui) = weak.upgrade() else {
                 debug_assert!(false, "MainWindow 在回调执行期间被销毁");
@@ -7972,6 +8025,25 @@ pub fn wire_module_actions_with_capture(
             };
             if ui.get_export_wav_path().trim().is_empty() {
                 ui.set_export_wav_path(default_target.to_string_lossy().to_string().into());
+            }
+            // 「空 = 从没填过」与「等于宿主上一次播的值 = 用户没动」都算**没人动过** ⇒ 按
+            // 当前工程刷新；其余（用户自己敲的数）重开时逐字符保留（与路径那一格同一口径）。
+            let current = ui.get_export_wav_seconds().to_string();
+            let untouched = current.trim().is_empty()
+                || seeded_seconds.borrow().as_deref() == Some(current.as_str());
+            if untouched {
+                match audible_end_seconds(port_for_seed.as_ref(), &ui) {
+                    Some(seconds) => {
+                        let text = format!("{seconds:.3}");
+                        ui.set_export_wav_seconds(text.as_str().into());
+                        *seeded_seconds.borrow_mut() = Some(text);
+                    }
+                    None => {
+                        // 空工程 / 没有端口 ⇒ ⛔ 播一个假数；留空让后端那条既有缺省（8 秒）生效。
+                        ui.set_export_wav_seconds("".into());
+                        *seeded_seconds.borrow_mut() = None;
+                    }
+                }
             }
             ui.set_export_wav_open(true);
             // `D-UI-19`（`[UI-A11Y-003]` §7.3 第 1 条）：遮罩盖住整帧 ⇒ 键盘也必须进来。

@@ -21,7 +21,10 @@
 // 默认值逐字等于 CLI 不给 `--wav-*` 时的口径：
 //   - 采样率 `auto`      ⇒ 跟随工程（`project.sample_rate()`）
 //   - 位深   `24`        ⇒ 24-bit 整数（TPDF 抖动）
-//   - 时长   `8`         ⇒ `export_wav::DEFAULT_WAV_SECONDS`
+//   - 时长   `""`（空）  ⇒ **打开时由宿主播种**为工程可闻末端（`D-UI-28`）；播不出
+//                          （空工程 / 无端口）⇒ 留空，后端 `export_wav::DEFAULT_WAV_SECONDS`
+//                          （8 秒）那条既有缺省继续生效 ⇒ 与 CLI 的口径逐字节相同。
+//                          界面⛔ 不写死 "8"：那会让几分钟的工程按缺省导出只剩 8 秒。
 // 空串与 `auto` 同义（= 不覆盖）。界面上**看不到**工程当前的采样率 —— 那需要一条
 // 真实的投影读数，本切片没有造它，因此用 `auto` 而不是编一个假数字。
 //
@@ -85,7 +88,7 @@ export component ExportWavDialog inherits Rectangle {
     in-out property <string> path: "";
     in-out property <string> sample-rate: "auto";
     in-out property <string> bit-depth: "24";
-    in-out property <string> seconds: "8";
+    in-out property <string> seconds: "";
     // ⭐ `D-EX-1`：母线限制器开关。第五格，但**不是**文本框 —— 它是布尔量，
     // 用 `switch` 而不是"再开一个能填错的输入框"。默认 `false` 逐字等于 CLI 不给
     // `--limiter`（`WavExportOptions::default()`）。
@@ -355,7 +358,10 @@ export component ExportWavDialog inherits Rectangle {
                 // 不许重叠 —— 面板高度一位不改（弹窗默认关着 ⇒ 默认帧与 5 张金帧不动）。
                 width: 200px;
                 height: 16px;
-                text: "时长 秒（空 = 缺省 8 秒）";
+                // ⭐ `D-UI-28`：标题原来写"空 = 缺省 8 秒"。今天这一格由宿主按**工程可闻
+                // 末端**播种 ⇒ 打开就能看到全曲长度；措辞改短（比原句还短 ⇒ 200px 那格
+                // ⛔ 不会截断）。空工程播不出 ⇒ 仍留空、后端那条 8 秒缺省继续生效。
+                text: "时长 秒（缺省 = 全曲末端）";
                 color: Tokens.ink-2;
                 font-size: Tokens.font-size-xs;
             }

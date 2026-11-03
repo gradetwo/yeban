@@ -478,7 +478,11 @@ export component MainWindow inherits Window {
     in-out property <string> export-wav-path: "";
     in-out property <string> export-wav-sample-rate: "auto";
     in-out property <string> export-wav-bit-depth: "24";
-    in-out property <string> export-wav-seconds: "8";
+    // ⭐ `D-UI-28`：这一格**不再写死 "8"**。空 = "还没打开过对话框"，打开时由宿主按
+    // **工程可闻末端**播种（`host::audible_end_seconds`）；播不出（空工程）⇒ 继续留空，
+    // 让后端那条既有缺省 8 秒生效。⛔ 两侧（根属性与对话框自己）初始值必须同为空串：
+    // `seconds <=> root.export-wav-seconds` 是两向绑定，两边各写字面量时谁生效不确定。
+    in-out property <string> export-wav-seconds: "";
     // ⭐ `D-EX-1`：母线限制器开关（第五格，布尔量 ⇒ ⛔ 不经上面那条文本解析口径）。
     // 缺省 `false` 逐字等于 CLI 不给 `--limiter`。宿主在 `resolve()` **之后**读它并赋
     // `wav_options.limiter`；它是每次调用的修饰量（任务单 `#302`），⛔ 不进工程、不进撤销栈。
