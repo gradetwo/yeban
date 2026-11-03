@@ -82,7 +82,7 @@ pub mod store;
 pub mod svs;
 pub mod view;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use serde_json::{Map, Value};
@@ -4923,9 +4923,14 @@ fn proposal_warnings(project: &YebanProjectV1, ops: &[Op]) -> Vec<Value> {
     warnings
 }
 
-/// 一条音轨"有没有东西可发声"的**实测读数**（`#178` 的警告条件只读它）。
+/// 一条音轨**自己**"有没有东西可发声"的**实测读数**。
 ///
-/// 逐项与 `yeban_render_master` 的 `sources[].kind` 同源：
+/// 只数本轨的摆放，不看路由图 —— 总线轨 / 主总线收到的音频不在这份读数里。
+/// 与 `yeban_render_master` 的 `sources[].kind` 的同源关系只对**源轨**成立：
+/// `sources[]` 只列源节点，总线 / 主总线从不进 `sources[]`，所以"本轨读数
+/// 为静音"从来覆盖不了总线轨（见 [`track_has_sounding_upstream`] 与
+/// [`device_on_silent_track_warnings`] 的豁免规则）。
+///
 /// - 摆放被 `muted` ⇒ 渲染器 `continue`，这里也不计；
 /// - MIDI 片段：音符要先过 [`yeban_model::MidiNote::triggers`]（**同一个**概率判定
 ///   入口，本层不另掷骰子）才算"会发声"；
@@ -4982,6 +4987,37 @@ fn survey_track_playable(project: &YebanProjectV1, track: &TrackV3) -> TrackPlay
     survey
 }
 
+/// 该轨经路由图**入边传递闭包**是否连到一条可发声的源轨。
+///
+/// 总线轨自己 0 摆放是常态：它的声音来自上游汇总 —— 只数本轨摆放会把
+/// 每条有入边的总线轨都误判成静音。判定沿 `destination_node == 当前轨` 的
+/// 边向上游走，任一上游轨的 [`survey_track_playable`] 有可发声摆放即成立。
+/// `visited` 防环：路由图校验不禁环，遍历不带已访集会在环上打转。
+fn track_has_sounding_upstream(
+    project: &YebanProjectV1,
+    track_id: EntityId,
+    visited: &mut BTreeSet<EntityId>,
+) -> bool {
+    for edge in project.routing_graph.edges.values() {
+        if edge.destination_node != track_id {
+            continue;
+        }
+        let source = edge.source_node;
+        if !visited.insert(source) {
+            continue;
+        }
+        if let Some(source_track) = project.tracks.get(&source)
+            && survey_track_playable(project, source_track).sounding_placements > 0
+        {
+            return true;
+        }
+        if track_has_sounding_upstream(project, source, visited) {
+            return true;
+        }
+    }
+    false
+}
+
 /// `usize` → `u64`（`saturating` 口径；读数是给人看的，不因平台宽度变化而回绕）。
 fn count_u64(value: usize) -> u64 {
     u64::try_from(value).unwrap_or(u64::MAX)
@@ -5003,7 +5039,17 @@ fn count_u64(value: usize) -> u64 {
 /// ⇒ **0 clip** 与 **有 clip 但音符全空 / 全被静音 / 概率判定全不触发** 都算静音，
 /// 因为渲染器的 `kind` 也只看"排程到的音符 + 真的渲染的音频片段"：
 /// 两处若采用不同的口径，就会出现"装设备时不说、渲染时才说"的第二条裂缝。
-/// ⭐ 同一批里给这条轨摆了片段 ⇒ 模拟后的工程里有东西可发声 ⇒ **不误报**。
+/// ⭐ 同一批里给这条轨摆了片段 ⇒ 模拟后的工程里有东西可发声 ⇒ **不误报**.
+///
+/// ## 豁免（只对源轨裁决"静音"，总线 / 主总线不适用本条）
+///
+/// - 主总线（`master_bus_track_id`）永不报：本轨 0 片段是结构使然，且离线
+///   渲染里它的设备链跑在"求和之后 → 插入"（`project_inserts` 不剔除任何
+///   节点），旧规则对主总线必报是误报。
+/// - 经路由入边（传递闭包）连到可发声源的轨不报：汇总进来的音频同样会过
+///   它的设备链；只有上游（传递闭包）也全静音时才报。
+/// - `sources[].kind` 的对照只对源轨成立：总线 / 主总线从不进 `sources[]`，
+///   "静音源"读数从来覆盖不了总线轨。
 ///
 /// ⚠ **不阻断**：装是合法的（先装设备、后写片段是正常顺序），`proposalCount` /
 /// `commitCount` 照常前进，`code` 不是 `reason`。
@@ -5021,8 +5067,18 @@ fn device_on_silent_track_warnings(project: &YebanProjectV1, ops: &[Op]) -> Vec<
         let Some(track) = project.tracks.get(track_id) else {
             continue;
         };
+        // 主总线永不报：本轨 0 片段是结构使然，且离线渲染里它的设备链跑在
+        // "求和之后 → 插入"，旧规则对主总线必报是误报。
+        if track.id == project.master_bus_track_id {
+            continue;
+        }
         let survey = survey_track_playable(project, track);
         if survey.sounding_placements > 0 {
+            continue;
+        }
+        // 经路由入边（传递闭包）连到可发声源的总线轨也不报：汇总进来的音频
+        // 同样会过它的设备链；只有上游也全静音时才报。
+        if track_has_sounding_upstream(project, track.id, &mut BTreeSet::new()) {
             continue;
         }
         // 两句话都只陈述**实测到的**事实：0 摆放与"有摆放但都发不出声"不是一回事，
