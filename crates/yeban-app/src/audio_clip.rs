@@ -142,6 +142,11 @@ struct ClipSpan {
 pub(crate) struct AudioClipSource {
     /// 共享的已解码素材。
     asset: Arc<DecodedAsset>,
+    /// 对齐拉伸后的替代 PCM（[ADR-0067] Pre-Insert warped 缓存）。
+    /// `Some` 时渲染读它、不读 `asset`；`None`（默认）时行为与旧版逐位
+    /// 相同。调用方（声乐导入管线）负责保证替代 PCM 与 `asset` 同采样
+    /// 率、同声道数；本类型不做重采样、不做声道转换。
+    warped: Option<Arc<DecodedAsset>>,
     /// 声道布局。
     layout: ChannelLayout,
     /// 摆放区间，**已按 `(start, end, source_offset, 增益位型)` 全序排好**。
@@ -149,10 +154,18 @@ pub(crate) struct AudioClipSource {
 }
 
 impl AudioClipSource {
+    /// 装上对齐拉伸后的替代 PCM（链式调用用）。
+    /// 当前仅测试调用：声乐导入管线（后续接线）将在 Pre-Insert 阶段调用它。
+    #[allow(dead_code)]
+    pub(crate) fn with_warped(mut self, warped: Arc<DecodedAsset>) -> Self {
+        self.warped = Some(warped);
+        self
+    }
+
     /// 本块内某一帧在**素材**里的下标（超出素材则 `None`）。
-    fn asset_frame(&self, span: &ClipSpan, global: i64) -> Option<usize> {
+    fn asset_frame(asset: &DecodedAsset, span: &ClipSpan, global: i64) -> Option<usize> {
         let offset = global - span.start + span.source_offset;
-        if offset < 0 || u64::try_from(offset).ok()? >= self.asset.frames {
+        if offset < 0 || u64::try_from(offset).ok()? >= asset.frames {
             return None;
         }
         usize::try_from(offset).ok()
@@ -184,10 +197,12 @@ impl AudioSource for AudioClipSource {
     fn render_block(&mut self, context: BlockContext, out: &mut [f32]) -> Result<(), RenderError> {
         // 调用方（`TrackSource` 的 MIDI 基座）已经写过/清过 `out`；这里只**累加**。
         let channels = context.channels;
-        if channels == 0 || self.spans.is_empty() || self.asset.frames == 0 {
+        // Warped 替代优先：有替代 PCM 时整块读它（帧数/声道/采样率由调用方保证一致）。
+        let asset = self.warped.as_ref().unwrap_or(&self.asset);
+        if channels == 0 || self.spans.is_empty() || asset.frames == 0 {
             return Ok(());
         }
-        let source_channels = usize::from(self.asset.source_channels);
+        let source_channels = usize::from(asset.source_channels);
         let block_start = i64::try_from(context.first_frame).unwrap_or(i64::MAX);
         let block_end =
             block_start.saturating_add(i64::try_from(context.frames).unwrap_or(i64::MAX));
@@ -201,7 +216,7 @@ impl AudioSource for AudioClipSource {
             let from = span.start.max(block_start);
             let to = span.end.min(block_end);
             for global in from..to {
-                let Some(asset_frame) = self.asset_frame(span, global) else {
+                let Some(asset_frame) = Self::asset_frame(asset, span, global) else {
                     continue;
                 };
                 let source_base = asset_frame * source_channels;
@@ -211,20 +226,18 @@ impl AudioSource for AudioClipSource {
                     ChannelLayout::Identity => {
                         for channel in 0..channels {
                             let gain = channel_gain(span, channel);
-                            out[out_base + channel] +=
-                                self.asset.samples[source_base + channel] * gain;
+                            out[out_base + channel] += asset.samples[source_base + channel] * gain;
                         }
                     }
                     ChannelLayout::MonoToAll => {
-                        let value = self.asset.samples[source_base];
+                        let value = asset.samples[source_base];
                         for channel in 0..channels {
                             out[out_base + channel] += value * channel_gain(span, channel);
                         }
                     }
                     ChannelLayout::StereoToMono => {
-                        let mixed = (self.asset.samples[source_base]
-                            + self.asset.samples[source_base + 1])
-                            * 0.5;
+                        let mixed =
+                            (asset.samples[source_base] + asset.samples[source_base + 1]) * 0.5;
                         out[out_base] += mixed * span.gain_l;
                     }
                 }
@@ -509,6 +522,7 @@ pub(crate) fn resolve_track_clips(
                 .unwrap_or(ChannelLayout::MonoToAll);
             let mut source = AudioClipSource {
                 asset,
+                warped: None,
                 layout,
                 spans,
             };
@@ -1028,5 +1042,67 @@ mod tests {
             "失败原因必须明说会跳过（⛔ 不静默）: {reason}"
         );
         println!("[#141/resample-failure] reason={reason}");
+    }
+
+    /// [ADR-0067] warped 覆盖：无覆盖时渲染原素材；有覆盖时逐位渲染
+    /// warped PCM（同一份 warped 字节在 app 与 MCP 两侧必须读出同一结果，
+    /// 见 MCP 侧同名判据）。
+    #[test]
+    fn warped_override_renders_warped_samples_bit_for_bit() {
+        let original = DecodedAsset {
+            samples: vec![0.1, 0.2, 0.3, 0.4],
+            source_channels: 1,
+            sample_rate: 48_000,
+            frames: 4,
+        };
+        let warped = DecodedAsset {
+            samples: vec![0.9, 0.8, 0.7, 0.6],
+            source_channels: 1,
+            sample_rate: 48_000,
+            frames: 4,
+        };
+        let span = ClipSpan {
+            start: 0,
+            end: 4,
+            source_offset: 0,
+            gain_l: 1.0,
+            gain_r: 1.0,
+        };
+        let context = BlockContext {
+            block_index: 0,
+            first_frame: 0,
+            frames: 4,
+            channels: 1,
+            sample_rate: 48_000,
+            seed: 0,
+        };
+        let mut plain = AudioClipSource {
+            asset: Arc::new(original),
+            warped: None,
+            layout: ChannelLayout::MonoToAll,
+            spans: vec![span],
+        };
+        let mut out = vec![0.0_f32; 4];
+        plain
+            .render_block(context, &mut out)
+            .expect("原素材必须能渲染");
+        assert_eq!(out, vec![0.1, 0.2, 0.3, 0.4]);
+
+        let mut covered = AudioClipSource {
+            asset: plain.asset.clone(),
+            warped: None,
+            layout: ChannelLayout::MonoToAll,
+            spans: vec![span],
+        }
+        .with_warped(Arc::new(warped));
+        let mut out = vec![0.0_f32; 4];
+        covered
+            .render_block(context, &mut out)
+            .expect("覆盖必须能渲染");
+        assert_eq!(
+            out,
+            vec![0.9, 0.8, 0.7, 0.6],
+            "有覆盖时必须逐位渲染 warped PCM，而不是原素材"
+        );
     }
 }

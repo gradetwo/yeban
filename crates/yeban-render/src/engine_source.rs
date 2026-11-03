@@ -349,7 +349,7 @@ impl EngineTimbre {
             .map_or(0, NoteSchedule::len)
     }
 
-    /// 该轨的调度表克隆（ADR-0064：插件源与引擎源读**同一份**快照投影，
+    /// 该轨的调度表克隆（ADR-0068：插件源与引擎源读**同一份**快照投影，
     /// 不各自重算；`None` = 该轨在快照里没有调度表，插件源按静音推进处理）。
     ///
     /// 与 [`EngineTrackSource::new`] 的取法同一行（`schedules().get(&track).cloned()`），

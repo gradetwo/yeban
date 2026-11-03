@@ -368,7 +368,7 @@ const REVERB: EffectGroup = EffectGroup {
 const CONVOLUTION: EffectGroup = EffectGroup {
     id: "convolution",
     title: "卷积混响",
-    summary: "插入式卷积混响（引擎按 `conv_ir_decay_s` / `conv_ir_seed` 合成 IR）",
+    summary: "插入式卷积混响（引擎按 `conv_ir_decay_s` / `conv_ir_seed` 合成 IR；`conv_ir_stereo` 开立体声 IR）",
     params: &[
         EffectParam {
             name: "conv_predelay_s",
@@ -423,6 +423,15 @@ const CONVOLUTION: EffectGroup = EffectGroup {
             max: 4_294_967_295.0,
             default: 1.0,
             doc: "合成 IR 的随机种子（f32 → u32 饱和转换）",
+        },
+        EffectParam {
+            name: "conv_ir_stereo",
+            aliases: &[],
+            unit: "",
+            min: 0.0,
+            max: 1.0,
+            default: 0.0,
+            doc: "IR 立体声开关：0 = 左右同 IR（缺省，老工程不变），非 0 = 左右独立 IR（左 = seed，右 = seed + 黄金比例常数）；构造期烘焙，不可自动化",
         },
     ],
 };

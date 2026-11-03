@@ -203,7 +203,11 @@ CATEGORIES = (
 )
 
 #: 表里允许出现的名字形态：工具名与方法名。
-TABLE_TOOL_RE = re.compile(r"yeban_[a-z_]+")
+#: ⭐ SVS 例外（Phase 2）：`synthesize_singing` / `svs_job` 的名字由 Phase 1
+#: 规格定（跨线契约），不带 `yeban_` 前缀；判据 1 要求 schema 里的每个工具
+#: 名都在表里出现，因此正则必须认这两条，否则任何规格名的工具都过不了
+#: 本守卫。例外只此两条（与 `crates/yeban-mcp/src/tools.rs` 注册判据同步）。
+TABLE_TOOL_RE = re.compile(r"yeban_[a-z_]+|synthesize_singing|svs_job")
 #: ⚠ 两侧的边界都是**承重**的：`crates/yeban-app/ui/dialogs/undo_tree_modal.slint` 与
 #: `ui/transport.slint` 这类**文件路径**也含 `ui/<片段>`，朴素的 `ui/[a-z_]+` 会把
 #: `ui/dialogs` / `ui/sidebar` / `ui/transport` 当成"方法名"，于是判据 2 会把真实存在的

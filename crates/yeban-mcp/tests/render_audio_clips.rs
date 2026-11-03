@@ -2497,11 +2497,11 @@ fn names_outside_the_insert_chain_do_not_land_but_are_never_silent() {
             expect_chain_dsp,
             "{param_name}: deviceChainDsp 的登记口径（见本判据的表）: {data}"
         );
-        // 名单是**唯一来源**：92 个拼写（`tape_asym`、hpf/dyn-eq/width 与 `#344` mono-maker 之后），且这个 IR 形状名字不在里面。
+        // 名单是**唯一来源**：100 个拼写（`tape_asym`、hpf/dyn-eq/width 与 `#344` mono-maker 之后，＋ nightfall deq_q/deq_ratio/ms_mid_gain_db/ms_mid_freq_hz 各一对规范名与别名），且这个 IR 形状名字不在里面。
         let listed = data["automation"]["appliedDeviceParamNames"]
             .as_array()
             .expect("appliedDeviceParamNames");
-        assert_eq!(listed.len(), 92, "{data}");
+        assert_eq!(listed.len(), 100, "{data}");
         assert!(
             !listed.iter().any(|value| value == param_name),
             "{param_name} 不在落点名单里"
@@ -2580,7 +2580,7 @@ fn an_automated_reverb_wet_lane_really_lands_and_is_not_silent() {
     let listed = data["automation"]["appliedDeviceParamNames"]
         .as_array()
         .expect("appliedDeviceParamNames");
-    assert_eq!(listed.len(), 92, "{data}");
+    assert_eq!(listed.len(), 100, "{data}");
     assert!(
         listed.iter().any(|value| value == "reverb_wet"),
         "reverb_wet 必须在名单里: {data}"
@@ -2678,7 +2678,7 @@ fn an_automated_compressor_threshold_really_lands_and_flat_is_byte_identical() {
     let listed = data["automation"]["appliedDeviceParamNames"]
         .as_array()
         .expect("appliedDeviceParamNames");
-    assert_eq!(listed.len(), 92, "{data}");
+    assert_eq!(listed.len(), 100, "{data}");
     assert!(
         listed.iter().any(|value| value == "threshold_db"),
         "threshold_db 必须在名单里: {data}"
@@ -3389,8 +3389,8 @@ fn the_seven_mcp_cases_are_the_compressor_fields_minus_threshold() {
     assert_eq!(EIGHT.len(), 8, "压缩字段是 8 个");
     assert_eq!(
         StripField::ALL.len(),
-        28,
-        "通道条共 28 个字段（14 增益/EQ/滤波 ＋ 8 压缩 ＋ 1 低切 ＋ 3 动态 EQ ＋ 1 宽度 ＋ 1 mono-maker）"
+        32,
+        "通道条共 32 个字段（14 增益/EQ/滤波 ＋ 8 压缩 ＋ 1 低切 ＋ 5 动态 EQ ＋ 1 宽度 ＋ 1 mono-maker ＋ 2 ms_mid）"
     );
     assert_eq!(MCP_COMP_CASES.len(), 7, "除 threshold_db 外是 7 个");
     assert_eq!(covered, expected, "MCP_COMP_CASES 必须逐字覆盖这 7 个字段");

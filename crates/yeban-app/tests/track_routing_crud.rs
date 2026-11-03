@@ -4,7 +4,8 @@
 //!
 //! | §2 | 断言 | 证什么 / 不证什么 |
 //! | :--- | :--- | :--- |
-//! | ① 加 MIDI 轨 = Δ1 | 点击一次 ⇒ `commit_count +1`、`tracks +1`、新轨 `kind == Midi`、**有一条到 master 的 `TrackToBus` 边**、`nodes +1`；`TrackRouting` 引擎计划里该轨的目的地是 master、线性增益 1.0 | 证"一次点击 = 一步可撤销的编辑，且新轨在路由图里真的接上了" |
+//! | ① 加 MIDI 轨 = Δ1 | 点击一次 ⇒ `commit_count +1`、`tracks +1`、新轨 `kind == Midi`、**有一条到 master 的 `TrackToBus` 边**、`nodes +1`；⭐ `D-UI-4`：链上**恰 1 台**设备、`kind == InternalInstrument`、非旁通、`latency_samples == 0`、含 `cutoff_hz` 或振荡器键（= 引擎 `DeviceTone::is_source` 的音源判据）、九个键名逐条过 `yeban_engine::synth::is_consumed_instrument_param`；`TrackRouting` 引擎计划里该轨的目的地是 master、线性增益 1.0 | 证"一次点击 = 一步可撤销的编辑，新轨在路由图里真的接上了，**且它带的设备被引擎算作音源**（不是效果器）" |
+//! | ①b 加音频轨不带乐器 | `demo_project` ⇒ 一次点击恰一条新轨、`kind == Audio`、**`devices` 为空** | 证 `D-UI-4` 的默认音源**只给 MIDI 轨**（音频轨的音源是录进来的素材） |
 //! | ② 加 AuxReturn = Δ1 | `demo_project`（0 条 aux）⇒ `send-create-available == false`，建一条 aux 轨之后 **Δ1** 且 `send-create-available` 从 `false` 变 `true`；随后一次 `send-create` 再 Δ1 | 证"灰按钮变可用不是画上去的" |
 //! | ③ 删轨 = Δ1 | `filled_project` 的展示轨（Lead）有 2 条边 ⇒ 删除后 `tracks −1`、`edges −2`、`nodes −1`、轨数读数 `4 → 3` | 证"删轨把引用它的边 / 节点一起收干净"（否则 `RemoveRoutingNode` 会被 `RoutingNodeInUse` 拒掉） |
 //! | ④ 主总线不可删 | 只剩主总线的工程 ⇒ `track-delete-available == false`、原因逐字 `主总线（Master）不可删除`；直接调用回调也 **Δ0**；`track_delete_ops` 返回 `Err(同一个原因)` | 证"禁用不是只画个灰" |
@@ -16,6 +17,10 @@
 //! ## 反向腿（去掉本片改动 ⇒ 哪条红）
 //!
 //! - 把 `track_create_ops` 里的 `ConnectRouting` 摘掉 ⇒ ① 的"有一条到 master 的边"红；
+//! - 把 `track_create_ops` 里 `D-UI-4` 那条 `InsertDevice` 摘掉 ⇒ ① 的"链上恰 1 台
+//!   `InternalInstrument`"红（连带 `tests/device_clip_creation.rs` 判据 ⑦ 的
+//!   "设备链 `[内置合成器, EQ]`"红）；把它改成 `InternalEffect` 或改掉任一引擎不认的
+//!   键名 ⇒ 同一格红；把它也加到音频轨上 ⇒ ①b 红；
 //! - 把 `track_delete_ops` 里的 `DisconnectRouting` 循环摘掉 ⇒ ③ 提交会被
 //!   `RemoveRoutingNode` 的前置条件拒掉（`commit_count` 不动）；
 //! - 把 `send_create_availability` 的重复分支删掉 ⇒ ⑥ 的 `+0` 变 `+1`；
@@ -25,7 +30,9 @@
 //! ## 它**不**证什么（见交付报告的"能验与不能验"）
 //!
 //! ⛔ 不证"人耳听到声音"：本判据只证工程里多了一条到 master 的边、引擎的
-//! `RoutingPlan` 把它编译成 `source → master`。
+//! `RoutingPlan` 把它编译成 `source → master`，以及轨上那台设备**被引擎算作音源**。
+//! 真出声由本线的创作验收去量（UI 建轨 → UI 画音符 → 导出 WAV 的时长与响度读数），
+//! ⛔ 不由这一格替代。
 //!
 //! ⭐ `#161` 补的那一条：**0 音轨空工程能建轨**。`default_project()` 现在出厂自带
 //! 1 条主总线，`track_create_ops(&default_project(), Midi)` 不再是 `NoMaster`；
@@ -51,7 +58,9 @@ use yeban_app::scene::DemoScene;
 use yeban_app::ui::MainWindow;
 use yeban_app::undo::{UndoPort, UndoSession};
 use yeban_model::ids::EntityId;
-use yeban_model::project::{RoutingEdge, RoutingKind, TrackKind, TrackV3, YebanProjectV1};
+use yeban_model::project::{
+    DeviceKind, RoutingEdge, RoutingKind, TrackKind, TrackV3, YebanProjectV1,
+};
 use yeban_model::samples::{default_project, demo_project, filled_project};
 use yeban_ui_test_port::Size;
 use yeban_ui_test_port::inspect::tree_from_element_root;
@@ -224,6 +233,40 @@ fn creating_a_midi_track_commits_once_and_wires_it_to_the_master() {
     );
     assert_eq!(edges[0].gain_db, None, "新边是单位增益");
 
+    // ⭐ 缺陷 **D-UI-4**：一次点击建出的 MIDI 轨必须**自带一台能发声的内置乐器**。
+    // 反证 = 把 `track_create_ops` 里那条 `InsertDevice` 摘掉 ⇒ 红在本格（轨建好了、
+    // 路由好了、音符画得满，但物理静音 —— 用户看不见"为什么没声音"）。
+    assert_eq!(
+        track.devices.len(),
+        1,
+        "新建的 MIDI 轨必须恰好挂 1 台设备（实际 {} 台）",
+        track.devices.len()
+    );
+    let device = &track.devices[0];
+    assert_eq!(device.kind, DeviceKind::InternalInstrument);
+    assert_eq!(device.name, yeban_app::bridge::BUILTIN_INSTRUMENT_NAME);
+    assert!(!device.bypassed, "默认音色不得是旁通态");
+    assert_eq!(
+        device.latency_samples, 0,
+        "没有公布的延迟 ⇒ 报 0，⛔ 不编数字"
+    );
+    assert!(
+        device
+            .params
+            .iter()
+            .any(|param| param.name == "cutoff_hz" || param.name.starts_with("osc")),
+        "只有 `resonance`/`drive` 的设备**不算音源**（`DeviceTone::is_source`）⇒ 装上也是静音"
+    );
+    // 参数名的唯一权威 = 引擎的求值白名单。写一个引擎不认的名字 ⇒ 参数被静默丢弃，
+    // 这台设备就从"有默认音色"退化成"没音色"，而界面上看不出来。
+    for param in &device.params {
+        assert!(
+            yeban_engine::synth::is_consumed_instrument_param(&param.name),
+            "默认音色里的旋钮 `{}` 引擎不认 ⇒ 会被静默丢弃（这是第二份参数表的征兆）",
+            param.name
+        );
+    }
+
     // 引擎能消费：`RoutingPlan` 里这条轨的目的地是 master、线性增益 1.0。
     let snapshot =
         yeban_engine::snapshot::EngineSnapshot::from_project(&committed, 1).expect("引擎快照");
@@ -261,6 +304,35 @@ fn creating_a_midi_track_commits_once_and_wires_it_to_the_master() {
         track.name,
         route.gain(),
         live.ui().get_routing_count_label()
+    ));
+}
+
+// ===========================================================================
+// 判据 ①b（⭐ 缺陷 `D-UI-4` 的反面）：**只有 MIDI 轨**自带内置乐器
+// ===========================================================================
+#[test]
+fn creating_an_audio_track_leaves_the_device_chain_empty() {
+    let project = demo_project();
+    let before_ids: BTreeSet<EntityId> = project.tracks.keys().copied().collect();
+    let (live, port) = live_window_with_undo(&project, "D-UI-4 建音频轨");
+    live.ui().invoke_track_create_audio();
+    let committed = port.project();
+    let mut fresh = committed
+        .tracks
+        .values()
+        .filter(|track| !before_ids.contains(&track.id));
+    let track = fresh.next().expect("必须有一条新轨");
+    assert!(fresh.next().is_none(), "一次点击只许建一条轨");
+    assert_eq!(track.kind, TrackKind::Audio);
+    assert!(
+        track.devices.is_empty(),
+        "音频轨的音源是录进来的素材 ⇒ 不许自动挂内置乐器（实际 {} 台）",
+        track.devices.len()
+    );
+    report_line(&format!(
+        "[D-UI-4 ①b] 建音频轨 {:?}：devices={}（内置乐器只给 MIDI 轨）",
+        track.name,
+        track.devices.len()
     ));
 }
 

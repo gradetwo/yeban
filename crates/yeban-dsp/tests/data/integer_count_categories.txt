@@ -2,7 +2,7 @@
 # 列：file|test|category|首条整数断言的证据（截断 90 字符）
 # 口径（R118）：只有 collection_size **界定集合大小** ⇒ 才算非真空下界；
 #   值界／元素值界／条件计数器 **⛔ 不算**。分类优先级：condition_counter > collection_size > element_value_bound > value_bound。
-# 合计 216 条：collection_size 34 ／ value_bound 173 ／ element_value_bound 5 ／ condition_counter 4
+# 合计 227 条：collection_size 37 ／ value_bound 181 ／ element_value_bound 5 ／ condition_counter 4
 src/block.rs|accumulate_matches_scalar_reference|value_bound|assert!((out[i] - expect[i]).abs() < 1e-6, "mismatch at {i}"
 src/block.rs|mismatched_lengths_are_truncated_instead_of_panicking|value_bound|assert_eq!(out[..4], [1.0, 1.0, 1.0, 0.0]
 src/block.rs|mix2_handles_non_multiple_of_four|value_bound|assert!((v - 1.0).abs() < 1e-6
@@ -127,6 +127,7 @@ src/math.rs|soft_limit_is_transparent_then_bounded|value_bound|assert!(soft_limi
 src/math.rs|soft_limit_never_produces_nan|value_bound|assert_eq!(soft_limit(f32::NAN), 0.0
 src/math.rs|the_shared_fft_puts_a_sine_in_one_bin|value_bound|assert!(power < 1e-6, "energy leaked into bin {bin}"
 src/math.rs|the_shared_fft_round_trips|value_bound|assert!(re[0].abs() > 1.0
+src/math.rs|the_slope_matches_the_numerical_derivative_of_pade_tanh|value_bound|assert!(                 (numeric - closed).abs() < 5e-3 * numeric.abs() + 1e-6,          
 src/meter.rs|ballistics_reject_invalid_parameters_without_nan|value_bound|assert!((later.peak_hold - loud.peak_hold).abs() < 1e-6
 src/meter.rs|dbfs_is_the_exact_inverse_of_the_documented_definition|value_bound|assert_eq!(dbfs(0.0), f32::NEG_INFINITY
 src/meter.rs|eight_times_oversampling_fixes_the_four_tenths_nyquist_underread|value_bound|assert!(             (four_times - expected_four).abs() < 2e-3,             "构造前提: 4× 应读到 
@@ -210,6 +211,7 @@ src/smoothing.rs|sample_rate_changes_recompute_the_coefficient|value_bound|asser
 src/smoothing.rs|the_response_matches_the_closed_form|value_bound|assert!(                 (value - expected).abs() < 1e-4,                 "sample {sample}
 src/smoothing.rs|the_time_constant_is_five_milliseconds|value_bound|assert!(             crossing.abs_diff(expected) <= 2,             "63.2% at sample {cross
 src/tape.rs|asym_creates_the_second_harmonic_that_pade_tanh_cannot|value_bound|assert!(             even1 > 10.0 * even0,             "⭐ `asym = 0.3` 的二次谐波必须比 `asym = 0`
+src/tape.rs|asym_does_not_change_the_small_signal_level|value_bound|assert!(                     db.abs() < 0.5,                     "drive {drive} / asym {as
 src/tape.rs|asym_keeps_silence_silent|value_bound|assert!(                 worst == 0.0,                 "⭐ `asym = {asym}` 的静音输入必须**逐位**输出 
 src/tape.rs|asym_zero_is_the_pre_change_curve|value_bound|assert!(                 (a - b).abs() < 1e-3,                 "⭐ `asym = 0` 必须与接线前的公式一致（{
 src/tape.rs|latency_samples_is_the_oversampler_round_trip|value_bound|assert_eq!(OS_LATENCY, 31
@@ -219,3 +221,12 @@ src/tape.rs|oversampling_aliasing_is_below_the_direct_formula|value_bound|assert
 src/tape.rs|reset_reproduces_a_freshly_built_device_bit_for_bit|value_bound|assert_eq!(left, left2
 src/tape.rs|sanitised_clamps_every_field_into_its_documented_domain|value_bound|assert_eq!(nan.asym, 0.0, "非有限的 `asym` 归 `0`（＝对称 ⇒ 恒等）"
 src/tape.rs|small_signal_gain_is_approximately_one|value_bound|assert!(                     (*sample - 0.01).abs() < 1e-3,                     "drive {dr
+src/vocal_refine.rs|refine_finds_vop_pre_off_and_f0|value_bound|assert!(             (note.f0_median_hz - 150.0).abs() <= 5.0,             "F0 {} must be 
+src/vocal_refine.rs|refine_legato_fallback_finds_second_vowel|value_bound|assert!(             (note.f0_median_hz - 200.0).abs() <= 5.0,             "F0 {} must be 
+src/vocal_timemap.rs|build_gap_silence_absorbs_slack|collection_size|assert_eq!(cores.len(), 2
+src/vocal_timemap.rs|build_single_syllable_locks|value_bound|assert!(             (delta - 0.10).abs() < 1e-6,             "lock window slope must be 1
+src/vocal_timemap.rs|gate_pass_and_fail|collection_size|assert_eq!(fail_hard.out_of_hard_count, 1
+src/vocal_timemap.rs|map_interpolates_and_extends|value_bound|assert!((map.map(2.0) - 2.0 / 1.5).abs() < 1e-9
+src/vocal_timemap.rs|render_burst_alignment_identity_and_stretched|value_bound|assert!(                 error_ms <= bound,                 "identity burst alignment erro
+src/vocal_timemap.rs|render_identity_is_deterministic|collection_size|assert_eq!(a.len(), sr / 2
+src/vocal_timemap.rs|render_silence_stays_silence|value_bound|assert!(peak < 1e-4, "silence in must stay silence, peak {peak}"

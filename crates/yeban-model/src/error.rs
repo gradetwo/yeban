@@ -267,7 +267,7 @@ pub enum ModelError {
         len: usize,
     },
 
-    /// 插件绑定挂在了非外部设备上（ADR-0064 D4：只有 `ExternalInstrument` /
+    /// 插件绑定挂在了非外部设备上（ADR-0068 D4：只有 `ExternalInstrument` /
     /// `ExternalEffect` 可带绑定）。
     #[error("plugin binding on non-external device kind {kind:?}")]
     PluginBindingKindMismatch {

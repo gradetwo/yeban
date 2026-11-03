@@ -113,7 +113,7 @@ use yeban_app::engine_host::{
     EditMark, EngineHost, EngineHostError, HeartbeatReadings, SnapshotCounts,
 };
 use yeban_app::host;
-use yeban_app::input::{Focus, InputContext, Modifiers, PhysicalKey, Resolution};
+use yeban_app::input::{Focus, InputContext, LogicalKey, Modifiers, PhysicalKey, Resolution};
 // `ROAD-M4-008` 选项 (a)：控制面会话是**唯一可变权威**，界面是它的投影。
 // 这个句柄只存在于非默认 feature `in-process-mcp` 下 —— 默认构建里没有 `yeban-mcp`
 // （`grep -c "yeban-mcp" <tree -p yeban-app -e normal>` = 0），因此这里也必须 cfg。
@@ -131,7 +131,10 @@ use yeban_ui_mcp::service::UiService;
 use yeban_ui_mcp::surface::{
     AdminReport, PortAdapter, PreviewArguments, PreviewEffect, ReportValue, UiSurface,
 };
-use yeban_ui_test_port::port::{KeyCode, Permission, PointerButton, PortError, UiTestPort};
+use yeban_ui_test_port::port::{
+    ChordKey, KeyChord, KeyChordModifiers, KeyCode, Permission, PointerButton, PortError,
+    UiTestPort,
+};
 use yeban_ui_test_port::render::{LivePort, RenderError, Tier1Window};
 use yeban_ui_test_port::tree::{ControlTree, TreeError};
 use yeban_ui_test_port::{Rgb8Image, Size};
@@ -454,6 +457,27 @@ fn key_resolution(state: &InputContext, key: KeyCode) -> &'static str {
         },
         // 不在 `[UI-A11Y-001]` 的扫描码表里 ⇒ 不归 DAW 管（窗口仍然会收到它）。
         None => yeban_ui_mcp::ime::RESOLUTION_PASS_THROUGH,
+    }
+}
+
+/// 一次注入 chord 的**只读处置结论**（与 [`key_resolution`] 共用同一张策略表、
+/// 同一个词表 —— 差别只在修饰位来自实参而不是扫描码表）。
+fn chord_resolution(state: &InputContext, chord: &KeyChord) -> &'static str {
+    let Some(logical) = LogicalKey::from_text(&chord.text()) else {
+        // 词表漂移（控制面给了一个宿主解析不出来的 `text`）⇒ 与宿主自己的取向一致：不消费。
+        return yeban_ui_mcp::ime::RESOLUTION_PASS_THROUGH;
+    };
+    let flags = chord.modifiers;
+    let modifiers = Modifiers {
+        ctrl: flags.ctrl,
+        shift: flags.shift,
+        alt: flags.alt,
+        meta: flags.meta,
+    };
+    match state.resolve_logical(logical, modifiers) {
+        Resolution::ConsumedByIme => yeban_ui_mcp::ime::RESOLUTION_CONSUMED_BY_IME,
+        Resolution::Action(_) => yeban_ui_mcp::ime::RESOLUTION_ACTION,
+        Resolution::PassThrough => yeban_ui_mcp::ime::RESOLUTION_PASS_THROUGH,
     }
 }
 
@@ -831,6 +855,12 @@ impl LiveAdminSurface {
     /// 两条路**不会**同时发生：有权威时**不**调用本地路径，权威拒绝时**不**回退到本地路径
     /// （回退会把"权威说不能写"变成一个偷偷写盘的分支）。因此"保存"这个动作在两种装配下
     /// 各自只有一个落点，且挂载时那个落点是会话。
+    ///
+    /// ⭐ 本地那条腿再分两种（缺陷 `D-UI-1` 的同一次修复）：装配给了**本地撤销端口**时，
+    /// 落盘的字节取自端口的当前工程（`UndoPort::try_project`，与生产心跳的发布来源同一个
+    /// 读数）—— 注入手势改的是端口，`self.project` 只是装配缓存，写它等于丢编辑。
+    /// 没有端口时本执行面就是唯一持有者，照旧写缓存。读数进
+    /// `writtenFromUndoPort`（`bool`），因此"这一版到底从哪儿来"是可断言的而不是注释。
     fn save_now(&mut self) -> Result<(), PortError> {
         let Some(path) = self.save_path.clone() else {
             // 没有配置落点 = 这条能力在**这个装配上**没接线 ⇒ `-32005` 是诚实的。
@@ -870,11 +900,16 @@ impl LiveAdminSurface {
         // `wire_*` 的提交只走 `commit_ops → refresh_undo_window`（重投影窗口，不换
         // `self.project`）⇒ 按旧缓存写盘会把注入的编辑静默丢掉（比「什么都不发生」
         // 更坏）。端口没有活跃工程时回落到缓存（服务端装配恒有工程，此分支只防退化）。
-        let (save_source, written_from_undo_port) =
-            match self.undo.as_ref().and_then(|port| port.try_project()) {
-                Some(project) => (project, true),
-                None => (self.project.clone(), false),
-            };
+        // `D-UI-1` 追加的一拍：取到端口那一版时**同时**投影进界面 ⇒ 画面 / 控件树 /
+        // 磁盘同源（只写盘不重投影的话，保存成功了界面还挂在旧缓存上）。
+        let from_port = self.undo.as_ref().and_then(|port| port.try_project());
+        let (save_source, written_from_undo_port) = match &from_port {
+            Some(project) => {
+                self.apply_project(project).map_err(wiring_rejected)?;
+                (project.clone(), true)
+            }
+            None => (self.project.clone(), false),
+        };
         let saved = save_project_file(&save_source, &path).map_err(|error| match error {
             SaveError::Container(inner) => PortError::Rejected {
                 message: format!("容器写出被拒绝: {inner}"),
@@ -1135,6 +1170,33 @@ impl UiTestPort for LiveAdminSurface {
         self.inner.dispatch_key_press_impl(key)
     }
 
+    /// `ui/dispatch_key_chord` 的**真实载体**（缺陷 `D-UI-3` 的修复落点）。
+    ///
+    /// ## 为什么是 `invoke_key_action`，不是 `self.inner`（平台事件）
+    ///
+    /// `dispatch_key_press_impl` 走的是 `window.key_press` / `type_char` 那一格 ——
+    /// 真实的**平台事件**通道。而 `slint::platform::WindowEvent::KeyPressed` 只有
+    /// `text`、**没有修饰位**（`i-slint-core-1.18.1/api.rs`），从那条路永远带不上
+    /// `Shift+↑` / `Shift+Z` / `Cmd+Shift+Z`：Slint 会把"修饰位"折叠进 `text`
+    /// 里（`Shift+Z` 到达时 `text == "Z"`），而本仓的 `input.rs` 恰恰把可打印键
+    /// **统一小写化**、由修饰位表达组合 ⇒ 从平台事件那一格注入 chord 只会得到一个裸键。
+    ///
+    /// 用户真键盘上的完整链路是：
+    /// `WindowEvent::KeyPressed` → `.slint` 的 `key-handler` → `key_action(text, shift, ctrl, alt, meta)`
+    /// → `host::wire_keys` 的 `on_key_action`（`resolve_logical` + `apply_action`）。
+    /// 本方法落在那一格的**入口**上，与用户键**同一个**回调、同一张策略表、同一个
+    /// `UndoPort`（`D-UI-1` 修好的那一条），因此它不是"绕过 UI 直接改状态"的旁路。
+    fn dispatch_key_chord_impl(&mut self, chord: &KeyChord) -> Result<bool, PortError> {
+        let modifiers = chord.modifiers;
+        Ok(self.window.invoke_key_action(
+            chord.text().into(),
+            modifiers.shift,
+            modifiers.ctrl,
+            modifiers.alt,
+            modifiers.meta,
+        ))
+    }
+
     fn switch_main_view_impl(&mut self, view: &str) -> Result<(), PortError> {
         self.apply_main_view(view)
     }
@@ -1363,6 +1425,40 @@ impl UiSurface for LiveAdminSurface {
                     (
                         "resolution",
                         ReportValue::Text(key_resolution(&input, key).to_owned()),
+                    ),
+                ])
+            }
+            // `ui/dispatch_key_chord` 的预览：`chord` 是**将要注入的名字**（`ChordKey::parse`
+            // ＋ `KeyChord::name` 的产物，⛔ 不是入参原样回显），IME 两格读的是**同一份**
+            // `InputContext`（`[UI-A11Y-002]` 的两格口径不变）。
+            //
+            // 解析不出键名 ⇒ 如实报 `None`（真调用的拒绝发生在服务层参数校验那一步，
+            // 预览不替它编一个"大概会注入哪个键"）。
+            yeban_ui_mcp::methods::METHOD_DISPATCH_KEY_CHORD => {
+                let raw = arguments.text("keyName").unwrap_or_default();
+                let Ok(key) = ChordKey::parse(raw) else {
+                    return Ok(None);
+                };
+                let chord = KeyChord::new(
+                    key,
+                    KeyChordModifiers {
+                        shift: arguments.is_true("shift").unwrap_or(false),
+                        ctrl: arguments.is_true("ctrl").unwrap_or(false),
+                        alt: arguments.is_true("alt").unwrap_or(false),
+                        meta: arguments.is_true("meta").unwrap_or(false),
+                    },
+                );
+                let input = self.input.borrow();
+                PreviewEffect::new(vec![
+                    ("chord", ReportValue::Text(chord.name())),
+                    ("isComposing", ReportValue::Bool(input.is_composing())),
+                    (
+                        "focus",
+                        ReportValue::Text(ime_focus_of(input.focus()).as_str().to_owned()),
+                    ),
+                    (
+                        "resolution",
+                        ReportValue::Text(chord_resolution(&input, &chord).to_owned()),
                     ),
                 ])
             }
@@ -1658,6 +1754,32 @@ impl LiveUi {
         key: yeban_ui_test_port::port::KeyCode,
     ) -> Result<(), PortError> {
         self.surface.inner.dispatch_key_press(key)
+    }
+
+    /// 在这个活窗口上注入一次组合键（`ui/dispatch_key_chord` 的**本体**，缺陷 `D-UI-3`）。
+    ///
+    /// 存在的理由与 [`Self::dispatch_key_press`] 逐字相同（判据既要走"注入 → 回调 →
+    /// 键位表 → 投影"这一段，又要保留 [`Self::tree_snapshot`] / [`Self::capture`] 的读数
+    /// 能力 —— `into_control_plane` 会把执行面装箱取走）。
+    ///
+    /// ⚠ 与 `dispatch_key_press` **不同格**：那条落 `self.inner`（Slint **平台事件**通道），
+    /// 这条落 `LiveAdminSurface` 自己的 `dispatch_key_chord_impl`（`.slint` 派发快捷键的
+    /// 那个回调 `invoke_key_action`），因为平台事件带不了修饰位。返回值是**界面是否消费**
+    /// （`false` = 这一组合没有绑定），⛔ 不是"调用失败"。
+    // ⚠ 与模块头 §1 的取向**相冲**，因此把冲在哪写清楚：§1 说"判据只住一个目标 ⇒ 没人用
+    // 就删"，但那条前提今天已不成立 —— `grep -l 'path = "../src/live_surface.rs"' tests/`
+    // 实测 **28** 个目标装本文件，任何一个目标看不到某条入口都会报 `dead_code`
+    // （CI 实测：`error: method dispatch_key_chord is never used`，红在 `live_ui_mcp` 那份），
+    // `-D warnings` 再把它变成编译失败。处置按本文件的**近例**（`open_project_via_picker`、
+    // `capture` 同款）。⛔ 这不是"藏死代码"：本入口在产品腿
+    // 上有真实调用者 —— `ui/dispatch_key_chord` 经 `LiveAdminSurface::dispatch_key_chord_impl`
+    // 走的就是同一条实现，被装进测试目标时它只是**那个**目标没调它。
+    #[allow(dead_code)]
+    pub fn dispatch_key_chord(
+        &mut self,
+        chord: &yeban_ui_test_port::port::KeyChord,
+    ) -> Result<bool, PortError> {
+        self.surface.dispatch_key_chord(chord)
     }
 
     /// 在**这个活窗口**上换一份当前工程（`ui/open_project` 的**本体**，CLI `--open` 的孪生）。
@@ -2033,6 +2155,40 @@ pub fn build_live_ui_with(
         // `host::wire_clip_drag`）调的是**同一个**函数 ⇒ 无头端口注入的拖动
         // 与用户手势走同一条链（拖动期只写草稿，松手 `commit_ops` 一次）。
         host::wire_clip_drag(&window, undo);
+        // ⭐ 缺陷 `D-UI-11`（2026-11-01，用这条控制面创作第二首时撞上）：**轨道头的
+        // 三条手势在本装配里没接线**。
+        //
+        // `--enable-ui-mcp-http` 在 `main.rs` 的 `main()` 里提前分流进 `ui_mcp_serve::run`，
+        // ⛔ 永远不执行 `run_gui` 的那一段接线（`host::wire_track_select` /
+        // `wire_track_height_drag` / `wire_undo` 都在那一段里）。Slint 的回调没注册
+        // handler 就是空操作 ⇒ 在这条执行面上：
+        //   · 点轨道行**不选轨**（`selected-track-id` 没有写者）⇒ 设备链 / 建片段 /
+        //     铅笔提交**恒指向第 1 条轨**（实测：UI 写出来的 6 轨工程里 15 颗剪辑
+        //     100% 挂在 MIDI 1，其余 5 条一颗没有）；
+        //   · `Alt+↑` / `Alt+↓` 被键面**消费**（`consumed = true`）却什么都不改 ——
+        //     比"不消费"更坏：调用方读到的是"这一键有绑定"（`host::apply_action` 的
+        //     `SelectTrackBy` 臂落到 `ui.invoke_track_select`，而那条回调没人听）；
+        //   · 拖轨道行**不改行高**（整块行头都是拖拽面，按下 = 选中 + 抓住行高）；
+        //     界面上的撤销入口（撤销弹窗开关 / 「撤销一步」/ 版本节点 / 走带区 ↻ /
+        //     诊断导出）**全部空转** —— `Ctrl+Z` 走 `wire_keys` 那条链照常有效，
+        //     分叉只在按钮这一格。
+        //
+        // ⚠ 为什么此前没有判据抓到它：`tests/track_selection.rs` 那条**名字叫
+        // `clicking_the_track_header_...`** 的判据实际调
+        // `invoke_accessible_default_action()`（无障碍默认动作），而 `ui/dispatch_pointer_*`
+        // 走的是 `window.pointer_down(窗口坐标)` ⇒ Slint 命中测试，两条路在 `.slint` 里
+        // 分别落在 Rectangle 的动作与该行的 `TouchArea` 上。判据侧过去**各自补一次**
+        // `host::wire_track_select`（`tests/track_selection.rs` /
+        // `tests/track_select_keyboard.rs` / `tests/mixer_keyboard_nudge.rs` /
+        // `tests/mixer_keyboard_switch.rs`），于是"这份装配接没接"永远读不出来。
+        // 同一族的防线是 `tests/d_ui_11_serve_header_gestures.rs` 的名单对账。
+        host::wire_track_select(&window, undo);
+        // `ADR-0004` S1 的纵向入口：与 `wire_track_select` 共用轨道头那一块 `TouchArea`
+        // （按下 = 选中 + 抓住行高，移动 = 改高，松手 / `Escape` = 收尾）。
+        host::wire_track_height_drag(&window, undo);
+        // 撤销的**界面**入口那六个回调（见上面的分解）：产品进程在 `run_gui` 里接的就是
+        // 这一对，本装配过去只接了按键那一条。
+        host::wire_undo(&window, undo);
     }
     // **四个模块入口**（导出 WAV / 导入 MIDI / 装载 SFZ / 录音）：与产品进程
     // （`main.rs` 的 `run_gui`）调的是**同一个** `host::wire_module_actions`。
@@ -2045,6 +2201,41 @@ pub fn build_live_ui_with(
         &window,
         options.undo.clone(),
         options.save_path.as_deref().and_then(|path| path.parent()),
+    );
+    // ⭐ 缺陷 `D-UI-8`（2026-11-01，创作第二首时撞上）：**保存入口在本装配里没接线**。
+    //
+    // 上面的那九个 `wire_*` 是**改工程**的写入面，而"把改完的工程写进文件"这一条
+    // 曾经只有 `ui/force_save`（一条**控制面命令**，见 `LiveAdminSurface::save_now`）——
+    // `host::wire_save` 的唯一调用点在 `main.rs` 的 `run_gui`，而本档在 `main.rs`
+    // 里**直接 `return`**，`run_gui` 根本不跑。后果是用户可见的：顶栏那颗
+    // `transport-save-button` 与 `Ctrl+S` 都调 `invoke_save_project`，而回调**没有注册者**
+    // ⇒ Slint 空操作。它比"报错"更坏：`save-status` 一位不写，而状态栏那行文本只在
+    // `save-status != ""` 时才进控件树 ⇒ 自动化界面**读不到任何失败**，人只看到"点了没反应"。
+    //
+    // 接法与产品 `run_gui` 逐字同源（同一条 `Op`/会话 → `save_action::dispatch_save` →
+    // `apply_save_outcome` 写界面回执），只有一处按本档的形态收窄：
+    //
+    // | 参数 | 产品 `run_gui` | 本装配 | 为什么 |
+    // | :--- | :--- | :--- | :--- |
+    // | `port.target` | `--open` 的那个文件 | 同一个来源（`options.save_path`） | 落点只能是装配期给的那个文件 |
+    // | `live_port` | 活会话端口 | `options.undo` —— 与那九个写入面**同一个** `Rc` | 写出去的是此刻的工程，不是装配快照 |
+    // | `picker` | `NativeFilePicker` | `yeban_app::file_picker::NoPicker` | 本档**没有 OS 窗口**（模块文档：只装 Tier-1 软件平台），弹一次模态原生框既没人能答、又会把控制面钉死。给了落点时产品腿也一次都不问 ⇒ 差异只在"没给 `--open`"那一档 |
+    // | `authority` | 挂载时给权威 | `None` | 本装配不挂进程内权威（挂权威的是 `build_live_ui_from_authority_with`，它的 `ui/force_save` 仍走权威那条腿） |
+    // | `engine` | 走带那一份宿主 | `None` ⇒ 与 `host::wire_save` 逐位相同 | `NoPicker` ⇒ 「另存为」在本档问不出路径，落点恒为装配期那个文件 ⇒ `#170` 的"目录跟着新文件走"这一跳没有可到达的输入 |
+    //
+    // ⚠ 由此留下的**如实空白**（已进创作审核报告，不在代码里假装）：本档没给 `--open`
+    // 时保存按钮仍是空操作（`NoPicker` 返回 `None` ⇒ 回调提前返回，与"取消不是失败"同一条
+    // 口径）。要它变成一句可见的失败，得先决定"无 OS 窗口的界面该怎么问落点"——
+    // 那是规范缺口，不是这里能私自补齐的答案。
+    host::wire_save(
+        &window,
+        host::SaveStatus {
+            target: options.save_path.clone(),
+            project: project.clone(),
+        },
+        options.undo.clone(),
+        std::rc::Rc::new(yeban_app::file_picker::NoPicker),
+        None,
     );
     let mut admin = LiveAdminSurface {
         inner: surface,

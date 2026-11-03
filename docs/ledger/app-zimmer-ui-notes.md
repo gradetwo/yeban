@@ -320,3 +320,417 @@ clip_widths / clip_ys / clip_heights` 全部是 `self.clips.iter()` **无过滤�
 - 拆树：`worktree.sh rm sidebar-library --purge`（留档 tag `line-archive/sidebar-library`）。
 - 至此 zimmer 报告非 MCP 面**全部收盘**：可复现缺口已落地，U-13=A 维持现状，
   U-09/U-10/U-12/N-UI-2 挂 `ADR-0058/0059/0060` 待人类批准（均 Proposed、零代码）。
+
+## 17. D-UI-4：UI 新建的 MIDI 轨自带一台内置乐器（`ADR-0065`，Proposed，2026-11-01）
+
+**这个数字在数什么**：单位＝**个**，对象＝活窗口里 `instrument-install-*-button` 的实例数。
+现读（`--ui-test-mode` 控制面，`ids("instrument-install-")`）= **0**，面板原因串逐字
+`INSTRUMENT_INSTALL_NO_BUILTIN_REASON`；根因是清单按**样本字节是否存在**过滤，而仓内
+音频样本 **0 个**（`ADR-0055` 同一读数）。⇒ 只用鼠标/键盘的用户建出的 MIDI 轨
+`TrackV3::default()` ⇒ `devices` 为空 ⇒ 引擎侧 `DeviceTone::is_source()` 判不出音源 ⇒
+`bypass()` ⇒ **画满音符仍然静音**（路由边、电平表、推子全部"看起来在工作"）。
+
+**落点**：`src/bridge.rs`（`BUILTIN_INSTRUMENT_NAME` / `BUILTIN_INSTRUMENT_PARAMS` /
+`builtin_instrument_device()` ＋ `track_create_ops` 对 `NewTrackKind::Midi` 追加一条
+`Op::InsertDevice{slot_index: 0}`）、`src/host.rs`（手势表同步）。⛔ 不新增控件：
+不想要就走**既有** `device-{i}-remove-button`；一次点击仍**恰好一次** `commit_ops`
+（同一批 Op 多一条 ⇒ Undo 一步复原）。
+
+**判据**：`tests/track_routing_crud.rs` ①（设备数/种类/非旁通/`latency_samples==0`/含音源键/
+九个键名逐条过引擎 `is_consumed_instrument_param`）＋ 新增 ①b（音频轨 `devices` 仍为空）。
+
+**被本票改写的既有假设（如实登记）**：`tests/device_clip_creation.rs` 判据 ⑦
+"建轨 → 装 EQ" 之后设备链原为 `[EQ]`，现为 `[内置合成器, EQ]`（`device_insert_ops`
+一直是**追加到链尾**，`slot_index = len`）⇒ 断言改为数量 2 ＋ 顺序，⛔ 不是把判据放宽。
+
+**残留风险（不在本票解决）**：默认音色的九个**值**写在 `bridge.rs`，是引擎
+`CONSUMED_INSTRUMENT_PARAMS` 之外的第二份表（键名有判据钉住，**值**没有契约位）；
+上提到共享契约属账本 `S6`（那份契约的家今天还在 `yeban-mcp`）。
+
+**判决读回**（2026-11-01 现读 `gh run view`）：run `41286061770` / headSha `fd8768f2` /
+`conclusion = success`；9 作业里 `deny` `lockfile` `plan` `checks` `macos` `rust (yeban-app)`
+`windows` 全部 success，`e2e` 与 `rust (workspace 全量)` 为 **skipped**（本批不触发，⛔ 不计为绿）。
+`rust (yeban-app)` 腿的 `test result:` 行 **287** 条（＝测试二进制数）、累计
+**2197 passed**、`... FAILED` / `panicked` **0** 条。
+⚠ 该腿日志**没有** `Running tests/…` 这种行（计数为 0，见 §6.4 第 4 条要防的正是"判据名没出现"），
+因此"目标二进制真的跑了"这判断不靠 `Running` 行，而是逐条点名读回五条判据：
+`creating_a_midi_track_commits_once_and_wires_it_to_the_master`（判据 ①）、
+`creating_an_audio_track_leaves_the_device_chain_empty`（①b 防回归：音频轨仍空链）、
+`the_builtin_devices_take_every_default_from_the_shared_contract`（⑨ 键名对账引擎）、
+`inserting_a_reverb_commits_once_and_installs_the_reverb_params`（判据 ⑦ 改写后 `[内置合成器, EQ]`）、
+`creating_an_empty_clip_commits_once_and_places_four_bars_at_zero`（片段长度未被本票带偏）——
+五条在 `test (合并特性)` 步骤内均逐字读到 `... ok`。
+
+## 18. D-UI-8：UI 控制面装配里**保存入口未接线**（2026-11-01）
+
+**这个数字在数什么**：单位＝**字节 / 个**，对象＝点击 `transport-save-button` 之后
+①工程文件在磁盘上的**字节数与轨数**、②控件树里 `status-bar-save-status` 这个**节点是否存在**。
+两者都是"点了到底有没有用"的可证伪读数，⛔ 不是"回执字符串好不好看"。
+
+**症状**：第二首（只用人类手势）录到保存环节时，点「保存」与按 Ctrl+S **都不产生任何可见后果**。
+比报错更糟的是它**连失败都不报**：`.slint` 里 `status-bar-save-status` 的可见条件是
+`visible: root.save-status != ""` ⇒ `save-status` 空串时那个节点**根本不存在**，
+而控制面 `ui.value()` 把 `-32006 element-not-found` **咽成 `None`**。于是从外面看
+"点了没回复"和"回复是空"长得一模一样 —— 这是**沉默缺陷**，不是错误。
+
+**根因**（读代码定位，非从症状倒推）：`host::wire_save` 是 `save-project` 回调的**唯一登记点**，
+而它只被 `run_gui` 调用。`main.rs` 对 `--enable-ui-mcp-http` 的处理是**直接**进
+`ui_mcp_serve::run` ⇒ `run_gui` 在该进程里**永不执行** ⇒ 控制面进程用的是
+`build_live_ui_with` 这条装配路径，而它从来没调用 `wire_save`。
+真实 GUI 会话没事、只有控制面装配的窗口坏 —— 这解释了为什么此前所有判据都没抓到它。
+
+**修复形状**：`live_surface.rs` 的装配末尾补一次 `host::wire_save(&window, host::SaveStatus{
+target: options.save_path, project}, options.undo.clone(),
+std::rc::Rc::new(yeban_app::file_picker::NoPicker), None)`。⛔ 不新增控件、不新增方法。
+`NoPicker` 是既有的"无桌面选择器"实现：控制面进程没有弹框可用，给它一个**返回 `None`**
+的选择器正是既有语义。
+
+**判据**：`tests/d_ui_8_serve_save_gesture.rs` 两条。
+① `the_control_plane_assembly_registers_the_save_callback`（**默认档**可编译）＝源码文本断言：
+`live_surface.rs` 里出现 `host::wire_save(` / `options.undo.clone()` /
+`yeban_app::file_picker::NoPicker`，且 `ui_mcp_serve.rs` 里出现 `build_live_ui_with`
+（钉住"控制面确实走这条装配"这个前提，否则 ① 会随重构静默失效）。
+② `a_real_click_on_the_save_button_lands_the_live_project_on_disk`
+（`#[cfg(feature = "ui-mcp-http")]`）＝**真指针点击**：种子容器 → `open_project_document_file`
+→ `serve_wiring` → `build_live_ui_with`；先断言开局 `status-bar-save-status` **缺席**、
+`get_save_status()` 为空串（把"沉默"写成前置条件），再建一条 MIDI 轨（轨数 +1），点保存按钮，
+断言回执以「已保存」开头、`get_save_succeeded()` 为真、节点由缺席变存在、
+**磁盘字节变化**且读回容器的轨数 = 点击前 +1、`history_dag` 字节 > 0。
+
+**第一票红与热修**（run `41296475771` / 手动档 `gate=all-features crate=yeban-app`）：
+**4 个编译错误**，全部是同一条作用域规则 —— 判据 ② 的两个 `use`
+（`yeban_model::container::read_project_container` / `ContainerLimits`）写在 `#[test] fn`
+**函数作用域**里，而读回容器的代码在**模块级助手** `on_disk` 中 ⇒ 助手看不见。
+⚠ 这条缺陷之所以能躲过默认档 CI：`#[cfg(feature = "ui-mcp-http")]` 的腿**默认档根本不编译**。
+热修＝助手内改**全路径限定**，⛔ 不是把 import 提升到模块级（那会让默认档也依赖该 feature 的名字）。
+
+**判决读回**（2026-11-01 现读 `gh run view`）：
+- 手动档 run `41297680457` / headSha `9d4023d1`：**success**。11 作业里只有
+  `all-features (yeban-app)` 为 success，其余（fps / determinism / bench / inventory /
+  goldens / fuzz / windows / arm 对账 / arm 收据 / pending）全部 **skipped** ⇒ ⛔ 不计为绿。
+  该腿 `test result: ok` **145** 行、累计 **1175 passed**、`... FAILED` **0**、`panicked` **0**；
+  `Running … tests/d_ui_8_serve_save_gesture.rs` 在该腿日志中**在场**（此工作流的日志形状
+  与自动档不同：`^[[1m^[[92m     Running^[[0m tests/…` 里的转义是**字面的 `^[[` 两字符**，
+  直接 `grep 'Running tests/'` 记 0 是**形状**造成的、不是"没跑到"——计数须用
+  `grep -cE 'Running.*tests/.*\.rs'`，现读 **141**）。两条判据逐字读到 `... ok`，回执逐字：
+  `[D-UI-8] 真指针点击「保存」：权威 7 → 8 轨；磁盘 8001 → 10668 字节、7 → 8 轨、
+  history_dag 1845 字节；回执="已保存 10668 字节 → /tmp/yeban-d-ui-8-save-…/serve.yeban
+  （本地原子写）"；控件树里 status-bar-save-status 已由缺失变为存在`。
+- 自动档 CI（push `9d4023d1`）run `41297665481`：**success**（9 作业：deny / plan / lockfile /
+  checks / `rust (yeban-app)` / windows / macos 全 success，`rust (workspace 全量)` 与 `e2e`
+  **skipped** ⇒ ⛔ 不计为绿）。`rust (yeban-app)` 腿现读：`test result: ok` **289** 行、
+  累计 **2199 passed**、`... FAILED` **0**；`d_ui_8_serve_save_gesture` 在该腿日志中出现
+  **2** 次（二进制名 + 判据行）⇒ 目标二进制真跑了，⛔ 不是"判据名缺失"那种顺序空白。
+
+- ⚠ 修复本体 `1349e571` 自己那票 run `41296326041` 被同 ref 的并发组**取消**（`cancelled`）。
+  如实登记：**该票什么都没判**；其内容（fix + 判据）由 `9d4023d1` 这一批（同车 + 判据热修）覆盖。
+
+**残留缺口**（不在本票解决，如实登记）：接线修的是**控制面装配路径**。一个**没有 `--open`
+启动的真实 GUI 会话**里，`NoPicker` 返回 `None` ⇒ 「保存」按钮仍是没有目标可写；
+另存为/新建后首存的选择器路径属另一切片，⛔ 本片不私自发明文件对话框语义。
+
+## 19. rebase 到 main（51 票之后）的碰撞与分工收盘（2026-11-01）
+
+**这个数字在数什么**：单位＝**个**，对象＝`line/zimmer-ui-write-surface` 的 9 支票在
+`git rebase origin/main` 里**真正发生内容冲突**的文件数，以及 main 已经覆盖 / 未覆盖的
+本线修复数。来源＝逐支 `git status` 的 `UU` 计数与 `git show origin/main:<file> | grep -c` 的现读。
+
+**为什么要单开一节**：负责人要求"先 pull 到最新再 rebase，让第二首曲子用上新落地的修复"。
+main 在这期间**独立落了 `ADR-0057` 选项 A**（测试面才建撤销会话，生产面恒 `None`），它修的就是
+`D-UI-1` 的**同一个症状**。于是"我的补丁还剩什么"必须现读，⛔ 不能靠"我写过所以还在"。
+
+**分工现读**（main 侧那份文件逐字核对）：
+
+| 本线的修复 | main 是否已覆盖 | 证据（现读） |
+| :--- | :--- | :--- |
+| `D-UI-1` 核心：serve 侧不再 `undo: None` | **已覆盖**（同一形状，闸在 `run`、装配是纯函数） | `origin/main` 的 `ui_mcp_serve.rs:155` 起 `let test_undo = if options.ui_test_mode && env YEBAN_ALLOW_UI_INJECT == "1"`，`:189` `undo: test_undo` |
+| 服务端端口的**资产池**（`#132` 那条边界） | **未覆盖** | `git show origin/main:.../ui_mcp_serve.rs \| grep -c replace_assets` = **0**（GUI 那条装配在 `main.rs` 一直做，服务端漏） |
+| `D-UI-8`：控制面装配里**保存入口**未接线 | **未覆盖** | `git show origin/main:.../live_surface.rs \| grep -c "host::wire_save("` = **0** |
+| `D-UI-3`：修饰键 chord 注入 | **未覆盖**（main 无此方法） | `origin/main` 的 `methods.rs` 声明长度行逐字 `MethodSpec; 17`（本线现读 **18**） |
+| `D-UI-4`：建 MIDI 轨即挂内置乐器 | **未覆盖** | main 侧 `bridge.rs` 无 `builtin_instrument_device` |
+
+⇒ rebase 后本线剩下的是**真增量**，⛔ 不是重复劳动；`D-UI-1` 那一支从"我自己造一份配方"
+改写成"**把 main 那道闸开出来的端口喂进装配**"（`serve_wiring` 变纯装配 + `run` 侧
+`replace_assets` 补池），会话配方收敛到 `undo::open_undo_session → session_from_archive`
+一条（`main.rs` 与本档调**同一个**入口）。
+
+**改号**（按仓内既有惯例"后落地的一方改号"，先例 `c5e83a46` / `f0499302`）：
+`ADR-0061`（chord）→ **`ADR-0064`**；`ADR-0062`（内置乐器）→ **`ADR-0065`**。
+main 在这期间把 `0061/0062/0063` 分别给了乒乓延迟／磁带饱和／侧链键输入。
+引用面逐条改：`README.md` 表两行、`bridge.rs`、`device_clip_creation.rs`、
+`app-zimmer-ui-notes.md` §17 标题、`feature-alignment.md`（5 处）与 `phase-status.md`（1 处）
+—— ⚠ 本节的 4 处是**改号收尾时的漏网**：第一批只改了 6 个文件，`grep -rn "ADR-0061" docs/ledger`
+现读仍有 5＋1 处才补上。⛔ main 的磁带／乒乓票在 `yeban-render`／`yeban-engine`／`yeban-dsp`
+里的 `ADR-0061/0062` 引用一位未动（同名不同票，按语义甄别而不是全局替换）。
+两处号位说明写进 ADR 正文（blockquote），裁决内容一字未改。
+
+**融合收尾的一处陈旧读数**：`live_surface.rs` 的 `save_now` 文档注释在本线改名成
+`savedFromUndoPort` 而 main 的字段叫 `writtenFromUndoPort` ⇒ rebase 保留 main 的字段名后
+注释变成**指向一个不存在的读数**，已就地改正（⛔ 判据只钉字符串，注释里的名字不在射程内，
+这正是"注释腐烂"的形状）。
+
+**静态复核**（本机不编译 Slint，§5 纪律 ⇒ 把默认档那两条**读源码**判据的每个断言逐条
+`grep -F` 复刻一遍，单位＝**个断言**）：`d_ui_1` 判据 ① 的 11 条断言全过（含 `undo,\n
+        proposal_source` 那一支析取），`d_ui_8` 判据 ① 的 4 条全过；
+`methods.rs` 的三处机械读数自洽（声明 `MethodSpec; 18` = 条目 18 = 两处 `METHOD_COUNT` 断言 18），
+`mutating: true` **11** / `false` **7**，`service.rs:2724` 写死的 `supporting.len() == 11` 仍然成立
+⇒ 干跑没有把"计数漂移"带进新 base。`cargo fmt` 以 `rustfmt +stable --edition 2024 --check`
+对本票触及的 `.rs` 逐文件跑过（无输出）。
+
+**判决**：`pending` —— 推送后按 §6.3 逐票读回（自动档 `CI` + 手动档
+`gates-manifest gate=all-features crate=yeban-app` 的 `ui-mcp-http` 腿），⛔ 不写"通过"。
+
+**备份**：rebase 前的 tip 记在 `backup/pre-rebase-zimmer-ui` = `82cd7166`（⛔ 不删，
+新分支若判红要能逐字回到旧形状）。
+
+## 20. D-UI-9：状态栏的保存回执**人看得见、自动化读不出**（2026-11-01）
+
+**这个数字在数什么**：单位＝**个字符**，对象＝活窗口里 `ui/property("status-bar-save-status", …)`
+两种属性名各自读回的长度。现读：`label` → **11** 个字符（`最近一次保存工程的结果`，静态句），
+`value` → 修复前为 `null`（该节点没声明绑定状态）。修复后能读回多少字符**尚未实测**
+（要等含本票的二进制跑一次活体，或等判据 ③ 的 CI 回执）⇒ 这里⛔ 不写数字。
+
+**症状**（第二首曲子的收尾撞上）：真指针按「保存」后磁盘确实写了（容器 1187 → 510,010 字节，
+`mtime` 前进），脚本却判红 —— 因为断言写的是"回执必须以『已保存』开头"，而它读到的是那格
+**静态**的 `accessible-label`。这不是脚本笨：是控制面**给不出**人看见的那句话。
+
+**根因**（两条，都不在命中测试也不在权限）：
+1. `ui/status_bar.slint` 的回执文本只绑在 `text: root.save-status`，`accessible-label` 是
+   恒定的说明句（屏读器念它，⛔ 不该把它当读数）；
+2. 控制面的属性清单（`yeban-ui-test-port::inspect::property_of`）支持
+   `role/label/id/type/x/y/width/height/opacity/valid/value/checked` —— **没有**"读 `text` 内容"
+   这一格；而它下面那层 `ElementHandle`（`i-slint-backend-testing` 1.18.1）逐条枚举
+   （`search_api.rs:607..803`）确实**没有** `accessible_name()`，⛔ 不能凭空实现。
+
+⇒ 与 `engine_error_banner.rs` / `sfz_ui_selector.rs` 用的是**同一格既有通道**：把要给人读的话
+再声明成 `[ARCH-UI-004]` 的绑定状态 `accessible-value`。修复＝ `status_bar.slint` 一行
+（`accessible-value: root.save-status;`）＋为什么写在该行上方。⛔ 不新增方法、不新增属性名、
+不动端口与协议 —— 于是 `ui/property` 与 `ui/node` 的 `value` **同时**通（两者同源于
+`ElementHandle::accessible_value()`，见 `inspect.rs:186`）。
+
+**判据**：`d_ui_8_serve_save_gesture.rs` 加**判据 ③**（手动档 `all-features`）—— 同一次点击之后，
+`ui/property(…, "value")` 与 `ui/node` 的 `node.value` 都必须**逐字等于** Rust 侧的
+`window.get_save_status()`；走的是与创作脚本**同一个** JSON 行协议（⛔ 留 Rust 后门 = 判据绿而脚本仍读不出）。
+反证：摘掉那行 `accessible-value` ⇒ 读回 `""`，红在 ③ 的第一格。
+
+**创作侧同步**：`compose_ui.py` 的 `stage_save` 从 `label` 改读 `value`，并把"读不到"的报文
+分写成两种（① 二进制早于本修复：节点在树里但 `value` 为 `null`；② 保存腿没接：节点整个不在树里），
+⛔ 不再把两种原因混成一句"D-UI-8 回来了"。
+
+**判决**：`pending` —— 本票推送后按 §6.3 逐票读回（自动档 + 手动档 `all-features (yeban-app)`）。
+创作用的 arm64 二进制必须由**含本票**的构建分支产出（⛔ 拿 rebase 前的 `9db61c4b` 那份跑，
+`stage_save` 会红在 ① 那种情形）。
+
+## 21. rebase 之后的**第二处**融合断裂，与 D-UI-9 判据 ③ 的活体读数（2026-11-01）
+
+**这个数字在数什么**：单位＝**个 JSON 数组元素**，对象＝`yeban_render::automation::APPLIED_DEVICE_PARAM_NAMES`
+（= 渲染响应里 `data.automation.appliedDeviceParamNames` 的长度）。现读：**78**。
+`origin/main` 与本线上那一版判据硬编码的期望值：**70**。差的 8 个是磁带饱和那张票
+（`ADR-0062`）带进来的 `tape_drive` / `saturation_drive` / `tape_mix` / `saturation_mix` /
+`tape_trim_db` / `saturation_trim_db` / `tape_hf_hz` / `saturation_hf_hz`。
+
+**症状**：手动档 `all-features (yeban-app)`（run `41303198552`，headSha `7f108ea4`）**failure**，
+但 §19 那处编译断裂已经消失：作业里 `error[E…]` **0** 格，测试真的跑起来了。唯一一格红——
+
+```
+test every_gain_eq_filter_field_gives_the_same_master_in_both_exports ... FAILED
+assertion `left == right` failed: MCP 名单必须逐条来自 yeban-render（…）
+  left: 78   right: 70
+```
+
+**根因（⛔ 不是本票造成）**：`git diff --stat origin/main HEAD -- crates/yeban-app/tests/device_param_automation_export.rs`
+= 空（逐字节同 `main`）⇒ 红在 **main 自己身上**：`ADR-0062` 给名册加了 8 个拼写时，同一份名册的
+**两个读数点只有一个跟着改了** —— `crates/yeban-mcp/tests/render_audio_clips.rs` 改成 78，
+`crates/yeban-app/tests/device_param_automation_export.rs` 留着手抄的 70。本线 rebase 上来才看得见。
+`yeban-render/src/automation.rs:39` 的模块注释已经写"78 个拼写 = 43 个字段"⇒ **只有测试在说谎**，
+能力面没问题。
+
+**修法**（按判据自己那句话，⛔ 不再手抄第二个数）：断言从"比长度"改成"比内容"——
+把响应数组与 `yeban_render::automation::APPLIED_DEVICE_PARAM_NAMES` **逐字同序同集**比对。
+这同时把旧写法**看不见**的一类回归纳入射程：长度对、内容换掉。名册今后再加拼写，本判据不用动。
+`crates/yeban-mcp/src/domain/render.rs:2020` 的注释仍写"70 个拼写 = 41 通道条（含压缩 14）＋ 6 混响
+＋ 8 卷积 ＋ 15 延迟"⇒ **登记，不在本线改**（那是 `yeban-mcp` 的文件，一线一写者；且它是注释不是判据，
+⛔ 判据红不红与它无关）。
+
+**判据 ③ 的活体读数**（本票真正要的东西，§20 遗留的那格 `pending`）：
+同一份日志里 `Running^[[0m tests/d_ui_8_serve_save_gesture.rs` 之后是
+`running 2 tests` ⇒ 两条都 `ok`，`test result: ok. 2 passed; 0 failed`。判据 ③ **不是第三个 test
+函数**，而是并进了 ② 那一次真指针点击里（`d_ui_8_serve_save_gesture.rs:241-276`，seq 52/53），
+所以它随 ② 一起为绿 ⇒ **D-UI-9 的修复在二进制里生效**：`ui/property(…, "value")` 与
+`ui/node` 的 `node.value` 都逐字等于 `window.get_save_status()`。
+
+⚠ **同一批的其余二进制一位没跑**：`cargo test` fail-fast（§6.3 第 4 条），红排在第 **24** 个
+`Running tests/`（上一次全绿的手动档 run `41297680457` 读过 **145** 个）。本票的判据 ③
+字母序在红之前（`d_ui_8` < `device_param`），所以**它的绿有效**，
+但这一票整批评不了"全绿"—— 由 `d3f3250f` 的重跑（run `41305782409`）补。
+
+**判决读回**（逐票，单位＝**个 run 的 conclusion**）：
+
+| 提交 | 自动档 `CI` | 手动档 `all-features (yeban-app)` |
+| :--- | :--- | :--- |
+| `4c89225b`（D-UI-9） | `41302641177` = **cancelled**（被下一票的 push 并发取消）⇒ 无判决 | 无本票自己的 dispatch；判据 ③ 的绿读在 `7f108ea4` 那份（含本票） |
+| `7f108ea4`（融合热修） | `41303177658` = **cancelled**（被 `d3f3250f` 的 push 取消；9 作业，`windows`/`macos` 两格的"失败"是取消传导，不是判据红） | `41303198552` = **failure**：唯一红＝上面那格手抄个数；`error[E…]` 0 格 |
+| `d3f3250f`（本票） | `41305769056` = **failure**，但红的只有 `windows`／`macos` 两格（同一时间 `main` 自己也红在这两格）；`rust (yeban-app)` = **success**、`checks`/`deny`/`lockfile`/`plan` 全绿 | `41305782409` = **success** |
+
+**判决**：`d3f3250f` 的**判据腿已读回为绿**（自动档 `rust (yeban-app)` success + 手动档
+`all-features (yeban-app)` success）；整票 `conclusion` 仍是 failure，只因 `windows`/`macos`
+两格**与 main 同源**的红 —— 那不是本票造成的（下方 §21.1 现读自 `main` 的 run）。
+§20 里那句"修复后能读回多少字符尚未实测"由**创作用活体**补：第二首曲子在 `dist6`
+（CI 产物 `480b3a8e`，`sha256` 与 `SHA256SUMS` 逐字节相符，`--help` 输出与 CI 的 `help.txt` 全同）
+上重跑，`stage_save` 现读 `value` 的字符数写进 §22。
+
+### 21.1 同一格判据在 `main` 上是红的（2026-11-01 现读，单位＝**个名单元素**）
+
+`main` tip `f3621406b` 的自动档 run `41313635970` = **failure**，红的五格里有一格是
+`rust (yeban-app)`（本线同名的格子是**绿**的）。日志里的 panic 头两行：
+
+```
+thread 'every_gain_eq_filter_field_gives_the_same_master_in_both_exports' panicked at
+  crates/yeban-app/tests/device_param_automation_export.rs:942:9:
+assertion `left == right` failed: MCP 名单必须逐条来自 yeban-render（70 个拼写：…）
+  left: 80    right: 70
+```
+
+⇒ 本票（`d3f3250f`）改的正是这一格，且**改法在 `main` 的最新名册上依然成立**：断言比的是
+**内容**，不是长度 ⇒ 名册从 70 → 78 → **80**（`tape_asym` / `saturation_asym` 又被 `main`
+合进来两个拼写）都不需要动判据。⚠ **这也把 §21 开头那句"现读 78"变成了陈旧值**：
+78 是本线 rebase 那一刻 `yeban-render` 的读数，`main` 现在的是 80 ⇒ **名册数只能现读，
+⛔ 不许把任何一个数抄进结论**（§6 测量纪律的第 3 条同类）。
+
+顺带一句口径：`main` 红的另外四格 `windows` / `macos` / `rust (yeban-dsp)` / `rust (yeban-engine)`
+里，`windows`/`macos` 本线也红（同源），`yeban-dsp`/`yeban-engine` 本线的自动档**根本没跑这两格**
+（受影响集合把本线划在它们之外）⇒ ⛔ 不得据此说"main 的问题与本线无关"，只能说
+"本线的 `yeban-app` 判据腿绿"。
+
+## 22. D-UI-10：卷帘一次滚动把界面**抹回载入态** —— 现场、根因、修法、判据（2026-11-01）
+
+**这个数字在数什么**：单位＝**次自愈**，对象＝创作脚本 `compose_ui.py` 里
+`heal_scene()` 记下的"现场读数与期望不符 ⇒ 按 `Ctrl+Shift+Z` 找回"事件；
+现场读数的三元组 = `(轨道行数, 剪辑数, 速度)`，全部现读自 UI 控制面
+（`ui/tree` 的 `track-header*` / `clip-header*` 计数 + `transport-tempo` 的读数）。
+
+### 22.1 现场（第二首歌，模拟人类 UI 模式，二进制 = `dist6` / commit `480b3a8e`）
+
+铅笔在卷帘里连按十几下之后，`ui/tree` 的三个计数**同时**回到播种那份空工程：
+
+| 批次 | 自愈次数 | 每一次的现场 | 找回方式 |
+| :--- | :--- | :--- | :--- |
+| `rerun6` | **3** | 全部 = `(0, 0, '120.00')`（期望 6 轨） | 各 **1** 发 Redo ⇒ `(6, n, '20.00')` |
+| `rerun7` | **6** | 全部 = `(0, 0, '120.00')`（期望 6 轨） | 各 **1** 发 Redo ⇒ `(6, n, '20.00')` |
+
+`rerun7` 的六次标签（现读自 `out/ui/rerun7.log`）：`erase roll`、`song:脉冲低音 bar8`、
+`song:脉冲低音 bar11`、`song:重音打击#0`、`song:固定音型 bar11`、`song:铜管齐奏#0`。
+⚠ `state.json` 的 `scene_heals` 数组里有 **9** 条，前 3 条是 `rerun6` 留下的**同一批**
+（`erase roll` / `bar8` / `bar11`）⇒ 数组长度 ⛔ 不等于本轮次数，次数以日志为准（§6 第 5 条）。
+
+三个特征把这条判成**静默重投影**，而不是"编辑丢了"：
+① 归零的是**整屏**（轨道 + 剪辑 + 速度三样一起），不是单个音符；
+② `app.log` 对此**一个字不写**；
+③ **一发** Redo 就把**整段会话**带回来 ⇒ 撤销栈一位没动，工程对象也没动 ——
+坏的只有**界面上那份投影**。两次独立批次在同一点（`脉冲低音 bar8`，一次越界拖拽之后）
+塌掉 ⇒ **确定性**，不是偶发。
+
+### 22.2 根因（`crates/yeban-app/src/host.rs`，修复前的代码逐行）
+
+`build_main_window_with_console_tab` 里装的 `scroll-requested` handler 长这样（⛔ 摘要有失真，
+这是 `git show 5e9dc6a2` 的 `-` 行原文）：
+
+```rust
+let scroll = std::rc::Rc::new(std::cell::RefCell::new(0.0_f32));
+…
+    let view_snapshot = std::rc::Rc::clone(&view_snapshot);   // ← 装配那一刻的投影
+    ui.on_scroll_requested(move |delta| {
+        let next = { let mut current = scroll.borrow_mut(); *current = advance_scroll(*current, delta); *current };
+        apply_view(&ui, &view_snapshot, ui.window().size().width as f32, next);
+    });
+```
+
+两处耦合起来才致命：
+
+1. **快照冻结**：闭包抓的是 `Rc<ViewState>`，此后**没有任何路径**更新它 ⇒ 每次滚动都
+   把那份**旧投影**整份 `apply_view` 回去（bpm、轨道、剪辑、音符一起回写）。
+2. **偏移双份所有权**：宿主在 `Rc<RefCell<f32>>` 里自己存了一份偏移，而 `apply_view`
+   写的是界面属性 `roll-scroll-x`（`host.rs:314` 的 `set_roll_scroll_x`）⇒ 两份会互相盖，
+   重新接线时还要手工播种。
+
+产品路径上 `wire_roll_edit` 随后会**重装** handler，抓的是"接线那一刻"的工程 ——
+而创作时那一刻工程**还是空的**（先装配、后播种/画音符），于是症状正是
+"画了几个音符之后随手一拖，界面回到载入态"。触发门槛只有**拖拽阈值 4px**，
+所以"随手"两个字是字面意义的。
+
+### 22.3 修法（同一提交 `5e9dc6a2`）
+
+新增唯一的派发器 `install_roll_scroll(ui, fallback_view, port)`（`host.rs:11996`），两条腿：
+
+```rust
+let next = advance_scroll(ui.get_roll_scroll_x(), delta);      // 偏移唯一事实源 = 界面属性
+match port.as_ref().and_then(|p| p.try_project())
+          .and_then(|project| project_with_view_state(&project, &ui).ok()) {
+    Some(refreshed) => apply_view(&ui, &refreshed, width, next),  // 端口在场 ⇒ 用**此刻**的工程
+    None            => apply_view(&ui, &fallback_view, width, next),
+}
+```
+
+- ⛔ 不再存宿主侧偏移镜像 ⇒ 顺带消掉"双重计算"这一类回归的土壤；
+- 投影**每次重新取自端口**（与 `reproject_roll` 同一条链），端口缺席/无活跃工程才如实退回
+  快照（⛔ 不在 Slint 回调里 panic，与 `install_roll_click` 的 `fallback_view` 同一语义）；
+- **两个装配点都装**：`build_main_window_with_console_tab`（`host.rs:12273`，无端口）与
+  `wire_roll_edit`（`host.rs:10865`，带端口）⇒ 产品进程与无头面不可能只接一半。
+
+### 22.4 判据（`crates/yeban-app/tests/roll_edit_tools.rs:4363`）
+
+`a_scroll_drag_after_a_pencil_edit_redraws_the_live_project_not_the_wired_snapshot`
+—— 走**生产装配顺序**（`assemble()` 里就调 `wire_roll_edit`，⛔ 不是测试自己拼的半边）：
+
+1. 铅笔点一下 ⇒ 工程 `note_count` +1，且 `note-{ULID}-rect` **在树里**（拖动前先确认，
+   免得视口裁剪把"本来就看不见"误读成"被抹掉了"）；候选 x 只取 `60 ≤ x ≤ grid_width − 60`
+    ⇒ 保证那 60px 的拖动不会把音符推出可视区；
+2. 注入 `down → move×3 → up` 水平拖 60px，断言 `|Δroll-scroll-x| > 0.5`
+   —— 这一条是**前置**：不成立就说明本判据根本没驱动 `scroll-requested`，后面的断言都是空的；
+3. **核心**：那次滚动之后，刚画下的音符 `{ULID}-rect` **必须仍在树里**；
+4. 滚动手势 ⛔ 不改工程：`note_count` 与拖动前**逐只相同**。
+
+**怎么变红**：把 handler 换回"用冻结快照 `apply_view`"，第 3 步立刻红（音符整批消失），
+第 4 步仍绿 —— 正是本缺陷的签名：**工程没错，投影错了**。
+
+### 22.5 顺带量到的两件事（都进创作者报告）
+
+1. **保存回执可读（D-UI-9 的活体读数，§20/§21 遗留的 `pending` 到此收盘）**：
+   `ui.value("status-bar-save-status")` 现读
+   `已保存 215740 字节 → /tmp/zimmer_creative/out/ui/zimmer_ui.yeban（本地原子写）`
+   = **66 个字符**（单位＝**个 Unicode 码点**，Python `len()`），磁盘同一次
+   **1187 → 215,740 字节**、`mtime` 递增 ⇒ 回执里的字节数与磁盘**逐字节对齐**，
+   ⛔ 不是"写的是装配快照"。
+2. **混音台推子的度量口径**（本机现读，⛔ 规范没写）：`track-N-fader` 的包围盒是
+   **22×16 px**；一次拖动的位移换算 = **0.75 dB / 像素**（现测 `6.0 → 3.0`（4px）
+   `→ −3.0`（8px）`→ −18.0`（20px）`→ −12.0`（−8px）），`dy > 0`（向下）= **变轻**；
+   推子是**相对**手势 ⛔ 不是绝对定位 ⇒ **手柄的视觉位置与 dB 读数不对应**。
+   后果落在创作上：`stage_mixer` 第一版按"从底部上拖 `height × 比例`"设电平，
+   六条推子**全部顶到 +6 dB 上限**（读数 `6.0/6.0/6.0/5.8/5.3/6.0`）＋ 总线也 `6.0 dB`
+   ⇒ 导出 WAV `peak = 0.0 dBFS`、集成 `+0.09 LUFS`（削波）。
+   **根因分两半**：harness 的错（该闭环读 dB 而不是猜像素）＋ 界面的缺
+   （⛔ 无数值输入、⛔ 无削波/安全余量提示、22×16px 上 0.75 dB/px 根本点不准）。
+   修复后的 `stage_mixer` = 读当前 dB → `dy = (have − want) / 0.75` → 拖 → 再读 → 修正（≤4 轮），
+   并把总线目标设为 **0 dB**。
+
+### 22.6 第二首歌 `rerun7` 的创作读数（供报告与对照）
+
+| 指标 | 单位 | 现读 |
+| :--- | :--- | :--- |
+| 音符总数（工程侧） | 只 | **172** |
+| 音符逐只回读比对 | 次 | 172，⛔失配 **0** |
+| 时长改写命中 | 次 | `dur_presses = 0`、`duration_changed = 0` ⇒ **本轮没走成时值臂**（见下） |
+| 工具切换回退点击 | 次 | 31（`tool_click_fallback`） |
+| 盲拖（越出可读区） | 次 | 4（`blind`） |
+| 音高折半（超界钳制） | 只 | 122 |
+| 保存回执 | 字符 | 66（`已保存 215740 字节 …`） |
+| 导出 WAV 墙钟 | ms | **2,516**（44.1 kHz / 24 bit / 180.0 s，47,628,068 字节） |
+| 场景自愈 | 次 | 6 |
+
+⚠ `dur_presses = 0` 与 §22.5 的第 2 条同属"人类面太窄"这一族：时值只有 `Shift+←/→`
+一条写入路径（一档 = 一个吸附网格），而本批次**根本没触发它** ⇒ 登记为待查，
+⛔ 不得写成"时值功能正常"。
+
+**判决**：`5e9dc6a2` 自动档 `41314892958`、手动档 `41314963972` **在飞** ⇒ 本条记 `pending`；
+读回时必须确认 `roll_edit_tools` 二进制出现在 `Running tests/` 名单里且有 `test result:` 行
+（§6.3 第 4 条：fail-fast 之下"名字缺失"既不是失败也不是通过）。

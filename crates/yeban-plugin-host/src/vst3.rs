@@ -48,7 +48,7 @@
 //!   ok 式调用（`setupProcessing` 等）用 `check`（负值＝失败）；
 //!   只有 `queryInterface` 要求严格等于 0。
 //!
-//! 一期局限（写进 ADR-0064，不藏）：
+//! 一期局限（写进 ADR-0068，不藏）：
 //! - 宿主侧对象（`IHostApplication`、`IComponentHandler`）的 `queryInterface`
 //!   只应答 `FUnknown`，其余返回 `kNoInterface`：插件按指针直调方法的常规
 //!   路径不受影响；个别插件若先 `queryInterface` 再确认宿主对象类型，可能走
@@ -1437,7 +1437,7 @@ impl PluginInstance for Vst3Instance {
                 } => Event::note_off(channel, pitch, velocity, note_id, event.sample_offset),
             });
         }
-        // 同块同偏移先 off 后 on（ADR-0064 D7：off 优先，避免同音符粘连）；
+        // 同块同偏移先 off 后 on（ADR-0068 D7：off 优先，避免同音符粘连）；
         // 稳定排序：同偏移同类型保持调度顺序。
         vst_events.sort_by_key(|event| {
             (
