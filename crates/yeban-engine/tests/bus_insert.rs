@@ -609,8 +609,11 @@ fn b5_sizes_stay_under_the_192_kib_red_line() {
         204_800usize.saturating_sub(runtime)
     );
     assert_eq!(
-        runtime, 200_112,
-        "EngineRuntime 必须是 186736 B ＋ **round-robin 片 16 槽 × 512 B = 8192** ⇒ 194960 B（#261：逐边发送量表 ＋4784 B；\
+        runtime, 45_648,
+        "**`P2`（轨道槽可配）之后从 200112 降到 45648**：声部池、插入池、混响池、\
+         卷积池、声相表、键抽头表全部改成**构造期堆分配**（`Box<[_]>`）⇒ 结构体本身\
+         只剩瘦指针，「每槽一格」的表不再随容量把它撑大；分配次数与回调内零分配\
+         [MUST-GATE-001] 都不变。历史读数（⛔ 不删）：EngineRuntime 必须是 186736 B ＋ **round-robin 片 16 槽 × 512 B = 8192** ⇒ 194960 B（#261：逐边发送量表 ＋4784 B；\
          #173 的主总线插入 ＋1792 仍在里面；⭐ **S1 第一片** ＋16 B = 两个 `u64` 事件计数\
          `strip_output_gain_events` / `strip_output_gain_value_rejects`；⭐ **通道条 hpf/dyn-eq/width 片** ＋3536 B ⇒ 198496 B（通道条 376 → 584，＋208 ＝ HPF 立体声 biquad ×2 ＋ 动态 EQ 检波/峰值 biquad ×3 ＋ 包络 f32 ＋ 参数 5 标量，布局对齐到 8，× 17 内联槽位；十臂两 bool 落在填充里 ＋0）；⭐ **portamento 片** ＋256 B ⇒ 198752 B（池 ＋8，实测）；⭐ **mono-maker 片（`#344`）** ＋544 B ⇒ 199296 B（通道条 ＋32 × 17 内联槽位：side 低通 biquad 5 系数 ＋ 4 状态 ＝ 36 B，对齐后 ＋32）；⭐ **nightfall 片** ＋816 B ⇒ 200112 B（通道条 ＋48 × 17 内联槽位，实测；余量 4688 B）；见本判据文档）"
     );

@@ -262,10 +262,12 @@ pub const STRIP_OUTPUT_GAIN_SLOT: u16 = 5;
 /// 上面第 ② 条兜底。
 pub const SEND_SLOTS: usize = 64;
 
-/// 参数目标表的槽位数：与声部池的轨道上限**同一个事实源**。
+/// 参数目标表的**默认**槽位数：与声部池的默认轨道数**同一个事实源**。
 ///
-/// 理由与 `PDC_SLOTS` 相同：不是"刚好够用"，而是"不为同一件事造第二个上限"。
-pub const PARAM_SLOTS: usize = crate::synth::MAX_TRACK_SLOTS;
+/// ⚠ 自「轨道槽可配」之后，它⛔ 不再是"表能不能装下"的判据 —— 真正的容量是
+/// [`ParamTable::slots`] 的长度（构造期由 [`crate::synth::DEFAULT_TRACK_SLOTS`] 或
+/// 显式参数决定）。这里保留常量只是给"默认容量"一个可引用的名字。
+pub const PARAM_SLOTS: usize = crate::synth::DEFAULT_TRACK_SLOTS;
 
 /// 一条 `SetParam` 事件的裁决结果。
 ///
@@ -293,9 +295,11 @@ pub struct ParamTable {
     ///
     /// 只有前 `len` 项是活的；`bool` 为假表示"槽位已建、还没有收到过目标"
     /// （此时增益恒为 `1.0`，[`Self::apply`] 走恒等快路径）。
-    slots: [(EntityId, bool); PARAM_SLOTS],
-    /// 每个槽位的平滑器。初值 `1.0`（恒等）。
-    gains: [ParamSmoother; PARAM_SLOTS],
+    /// ⚠ `Box<[_]>` 而不是定长数组：容量是**运行期**值（可配），
+    /// 1024 项的定长数组会随 `EngineRuntime` 一起按值搬到回调栈上。
+    slots: Box<[(EntityId, bool)]>,
+    /// 每个槽位的平滑器。初值 `1.0`（恒等）。长度恒等于 [`Self::slots`]。
+    gains: Box<[ParamSmoother]>,
     /// 已分配的槽位数（只增不减，见模块文档 §4）。
     len: usize,
     /// **主总线**增益乘子的平滑器（与逐轨槽位分开的一格，见模块文档 §2.3）。
@@ -323,14 +327,25 @@ impl ParamTable {
     /// 全部槽位的初值是 `1.0`／目标 `1.0` ⇒ 本表在收到任何事件之前对音频**零影响**。
     #[must_use]
     pub fn new(sample_rate: f32) -> Self {
-        let mut gains = [ParamSmoother::new(sample_rate, DEFAULT_TIME_CONSTANT_S); PARAM_SLOTS];
+        Self::with_slots(sample_rate, PARAM_SLOTS)
+    }
+
+    /// 构造：按**指定**槽位数建满逐轨平滑器 ＋ 一个主总线平滑器（**构造期**）。
+    ///
+    /// `slots` 只影响"能记住多少条轨的增益"：装满之后多出来的轨由
+    /// [`Self::capacity_drops`] 计数（⛔ 不静默）。
+    #[must_use]
+    pub fn with_slots(sample_rate: f32, slots: usize) -> Self {
+        let slots = slots.max(1);
+        let mut gains = vec![ParamSmoother::new(sample_rate, DEFAULT_TIME_CONSTANT_S); slots]
+            .into_boxed_slice();
         for gain in &mut gains {
             gain.snap_to(1.0);
         }
         let mut master = ParamSmoother::new(sample_rate, DEFAULT_TIME_CONSTANT_S);
         master.snap_to(1.0);
         Self {
-            slots: [(EntityId::default(), false); PARAM_SLOTS],
+            slots: vec![(EntityId::default(), false); slots].into_boxed_slice(),
             gains,
             len: 0,
             master,
@@ -399,7 +414,7 @@ impl ParamTable {
         let index = match self.index_of(address.entity) {
             Some(index) => index,
             None => {
-                if self.len >= PARAM_SLOTS {
+                if self.len >= self.slots.len() {
                     self.capacity_drops = self.capacity_drops.wrapping_add(1);
                     return ParamOutcome::Full;
                 }

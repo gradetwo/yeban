@@ -478,8 +478,13 @@ fn the_shape_costs_are_read_not_hand_written() {
         "AudioClipSchedule = Vec 头部 24 + placements 计数 8"
     );
     assert_eq!(
-        runtime, 200_112,
-        "EngineRuntime 的现读值（`#261` 之后 186720 = `#173` 的 181936 ＋ 4784 B 的\
+        runtime, 45_648,
+        "EngineRuntime 的现读值。**`P2`（轨道槽可配）之后从 200112 降到 45648**：\
+         声部池（默认 1024 槽）、插入池（65 槽）、混响池、卷积池、声相表、键抽头表\
+         全部改成**构造期堆分配**（`Box<[_]>`）⇒ 结构体本身只剩瘦指针，\
+         而「每槽一格」的表不再随容量增长把它撑大。⛔ 这不是「省掉了功能」：\
+         分配次数仍是构造期那几次，回调内依旧零分配 [MUST-GATE-001]。\
+         改前读数（历史）：（`#261` 之后 186720 = `#173` 的 181936 ＋ 4784 B 的\
          逐边发送量表/平滑器/重放副本；⭐ **S1 第一片**再加 **16 B** = 两个 `u64` 事件计数\
          `strip_output_gain_events` / `strip_output_gain_value_rejects`，⛔ 不新增任何表\
          ——落点复用既有的 `armed_strips`；本判据只要求音频片段**不再**加字节 ——\
