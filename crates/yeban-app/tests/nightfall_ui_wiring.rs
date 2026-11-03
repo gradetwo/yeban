@@ -223,9 +223,9 @@ fn synth_nightfall_scale_project() -> YebanProjectV1 {
 /// 判据 1：源码接线核验 —— 确保 MixerConsole、ConsoleTabs 与 MainWindow 的 track-select 完全闭环。
 #[test]
 fn slint_source_wirings_cover_mixer_track_selection() {
-    let mixer = include_str!("../ui/console/mixer_console.slint");
-    let tabs = include_str!("../ui/console/console_tabs.slint");
-    let app = include_str!("../ui/app.slint");
+    let mixer = include_str!("../ui/console/mixer_console.slint").replace("\r\n", "\n");
+    let tabs = include_str!("../ui/console/console_tabs.slint").replace("\r\n", "\n");
+    let app = include_str!("../ui/app.slint").replace("\r\n", "\n");
 
     // MixerConsole 必须声明 selected-track-id, track-ids 与 callback track-select
     assert!(
