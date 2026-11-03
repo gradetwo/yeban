@@ -735,15 +735,42 @@ fn split_directive(line: &str) -> (&str, &str) {
     }
 }
 
-/// 找到「下一个 opcode 名」的起点：空白之后紧跟标识符再跟 `=`。
+/// 找到「下一个 opcode 名」的起点：空白之后紧跟标识符再跟 `=`，
+/// **或**紧贴着上一个取值之后就是 `标识符=`（见 [`is_complete_scalar`]）。
 ///
 /// 这条规则让 `sample=My Drums/kick.wav key=36` 切成两个 opcode，
 /// 同时保留取值里的空格（文件名含空格）。
+///
+/// ## 为什么还需要「没有空白也算边界」
+///
+/// 库里的 `Discord GM/Drums/001-Standard Kit.sfz:1405` 是这么写的：
+///
+/// ```text
+/// <region> sample=... kick.wav hikey=72offset=320
+/// ```
+///
+/// `hikey=72` 与 `offset=320` **中间没有空格**。按"必须有空白"切，取值成了
+/// `72offset=320`，`as_note` 拒收 ⇒ **整个程序** `sfzParseFailed` ⇒ 这条轨在
+/// 成品里是数字静音（不是"少一个音"，是整条轨没了）。而 `=` 本身就是 SFZ 的
+/// 分割符，粘连写法在其它采样器里是合法的。
+///
+/// 加这条边界必须**不误伤文件名**（`sample=foo bar=1.wav` 是合法文件名）：
+/// 所以只在「已经读到的前缀是一个**完整的标量**」时才认边界 —— `72` / `-1` / `0.5`
+/// / `C#4` 这类，而 `foo` / `My Drums/kick` 不算。
 fn opcode_boundary(value: &str) -> usize {
     let bytes = value.as_bytes();
     let mut i = 0usize;
     while i < bytes.len() {
         if !bytes[i].is_ascii_whitespace() {
+            // 粘连写法：`72offset=320`。⚠ 先确认 `i` 落在字符边界上 —— 取值里可以有
+            // 多字节字符（`sample=é.wav`），按字节下标切片会 panic。
+            if i > 0
+                && value.is_char_boundary(i)
+                && is_complete_scalar(&value[..i])
+                && ident_equals_at(value, i).is_some()
+            {
+                return i;
+            }
             i += 1;
             continue;
         }
@@ -754,19 +781,70 @@ fn opcode_boundary(value: &str) -> usize {
         if k >= bytes.len() {
             return i;
         }
-        let start = k;
-        while k < bytes.len()
-            && (bytes[k].is_ascii_alphanumeric() || bytes[k] == b'_' || bytes[k] == b'$')
-        {
-            k += 1;
-        }
-        if k > start && k < bytes.len() && bytes[k] == b'=' {
+        if ident_equals_at(value, k).is_some() {
             return i;
         }
         i += 1;
     }
     bytes.len()
 }
+
+/// `text[at..]` 如果是 `标识符=`，返回标识符结束位置。
+///
+/// ⚠ 标识符**不能**以数字开头：否则 `hikey=72offset=320` 会在 `7` 之后就断开
+/// （`2offset` 被当成标识符）⇒ 取值变 `7`、尾随 `2offset=320` 变成未知 opcode。
+fn ident_equals_at(text: &str, at: usize) -> Option<usize> {
+    let bytes = text.as_bytes();
+    if at >= bytes.len() || !(bytes[at].is_ascii_alphabetic() || bytes[at] == b'_' || bytes[at] == b'$')
+    {
+        return None;
+    }
+    let mut k = at;
+    while k < bytes.len()
+        && (bytes[k].is_ascii_alphanumeric() || bytes[k] == b'_' || bytes[k] == b'$')
+    {
+        k += 1;
+    }
+    if k > at && bytes.get(k) == Some(&b'=') {
+        Some(k)
+    } else {
+        None
+    }
+}
+
+/// 前缀是否已经是一个**完整的标量**（整数 / 小数 / 音名）。
+///
+/// 只用来判定"能不能在这里断开"，不参与取值解析 —— 判错的代价是多切一刀，
+/// 所以宁可窄：只认这三种写法。
+fn is_complete_scalar(prefix: &str) -> bool {
+    let text = prefix.trim_end();
+    if text.is_empty() {
+        return false;
+    }
+    if parse_int(text).is_some() || parse_f32(text).is_some() {
+        return true;
+    }
+    // 音名：字母 + 可选升降号 + 可选八度数字（`C#4` / `Db4` / `c5`）。不接受 `-1`
+    // 之外的负数八度记法（`C-1` 由 `parse_note` 处理，这里给 `parse_note` 留一致口径）。
+    let bytes = text.as_bytes();
+    if !bytes[0].is_ascii_alphabetic() {
+        return false;
+    }
+    let mut k = 1;
+    while k < bytes.len() && matches!(bytes[k], b'#' | b'b' | b'f' | b's') {
+        k += 1;
+    }
+    let mut digits = 0;
+    if k < bytes.len() && bytes[k] == b'-' {
+        k += 1;
+    }
+    while k < bytes.len() && bytes[k].is_ascii_digit() {
+        k += 1;
+        digits += 1;
+    }
+    k == bytes.len() && digits > 0 && parse_note(text).is_some_and(|n| (0..=127).contains(&n))
+}
+
 
 /// 一个 `opcode=value` 迭代器（零分配）。
 ///
@@ -2400,6 +2478,60 @@ mod tests {
             pairs,
             vec![("sample", "My Drums/kick 01.wav"), ("key", "36")]
         );
+    }
+
+    /// `Discord GM/Drums/001-Standard Kit.sfz:1405` 的写法：`hikey=72offset=320`。
+    /// 改前 ⇒ 取值 `72offset=320` ⇒ `as_note` 拒收 ⇒ 整条轨静音。
+    #[test]
+    fn splits_a_glued_opcode_after_a_complete_scalar() {
+        let line = "sample=kick.wav hikey=72offset=320 pitch_keycenter=60";
+        let pairs: Vec<(&str, &str)> = (OpcodeIter {
+            rest: strip_comment(line),
+        })
+        .collect();
+        assert_eq!(
+            pairs,
+            vec![
+                ("sample", "kick.wav"),
+                ("hikey", "72"),
+                ("offset", "320"),
+                ("pitch_keycenter", "60"),
+            ]
+        );
+    }
+
+    /// 同一规则对音名、负数、小数都成立（判据是"前缀已是完整标量"，不是"前缀是整数"）。
+    #[test]
+    fn glued_boundaries_cover_notes_negatives_and_decimals() {
+        for (line, want) in [
+            ("lokey=C#4hikey=Db5", vec![("lokey", "C#4"), ("hikey", "Db5")]),
+            ("tune=-1200volume=-6", vec![("tune", "-1200"), ("volume", "-6")]),
+            ("ampeg_attack=0.5hikey=c5", vec![("ampeg_attack", "0.5"), ("hikey", "c5")]),
+        ] {
+            let pairs: Vec<(&str, &str)> = (OpcodeIter {
+                rest: strip_comment(line),
+            })
+            .collect();
+            assert_eq!(pairs, want, "line = {line}");
+        }
+    }
+
+    /// ⛔ 反例：粘连处不是标量时**不能**切（否则文件名会被切开）。
+    ///
+    /// `kick2offset=3.wav` 与 `Cello Section/arco=off.wav` 里都有 `名字=` 形态，
+    /// 但断点之前的 `kick2offset` / `Cello` 不是完整标量 ⇒ 整个取值保持原样。
+    #[test]
+    fn a_glued_value_that_is_not_a_scalar_is_kept_whole() {
+        for (line, whole) in [
+            ("sample=kick2offset=3.wav key=36", "kick2offset=3.wav"),
+            ("sample=Cello_Section/arco=off.wav key=36", "Cello_Section/arco=off.wav"),
+        ] {
+            let pairs: Vec<(&str, &str)> = (OpcodeIter {
+                rest: strip_comment(line),
+            })
+            .collect();
+            assert_eq!(pairs, vec![("sample", whole), ("key", "36")], "line = {line}");
+        }
     }
 
     #[test]
