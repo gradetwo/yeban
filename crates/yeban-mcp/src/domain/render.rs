@@ -4480,7 +4480,7 @@ pub(crate) fn decode_error_class(error: &DecodeError) -> &'static str {
 /// 四档都不是文件 ⇒ `RENDER_FAILED` + `data.reason = "samplerUnreadable"`
 /// （带 `tried` 列表，逐条按尝试顺序）。⛔ **绝不**静默回退成正弦 —— 那正是
 /// `#220` 缺陷 ② 的形状。
-fn resolve_sampler_path(raw: &str, project_path: &Path) -> Result<PathBuf, Fault> {
+pub(crate) fn resolve_sampler_path(raw: &str, project_path: &Path) -> Result<PathBuf, Fault> {
     use super::sample_roots::{library_root, repo_root};
 
     let candidate = Path::new(raw);
