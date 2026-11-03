@@ -795,7 +795,8 @@ fn opcode_boundary(value: &str) -> usize {
 /// （`2offset` 被当成标识符）⇒ 取值变 `7`、尾随 `2offset=320` 变成未知 opcode。
 fn ident_equals_at(text: &str, at: usize) -> Option<usize> {
     let bytes = text.as_bytes();
-    if at >= bytes.len() || !(bytes[at].is_ascii_alphabetic() || bytes[at] == b'_' || bytes[at] == b'$')
+    if at >= bytes.len()
+        || !(bytes[at].is_ascii_alphabetic() || bytes[at] == b'_' || bytes[at] == b'$')
     {
         return None;
     }
@@ -844,7 +845,6 @@ fn is_complete_scalar(prefix: &str) -> bool {
     }
     k == bytes.len() && digits > 0 && parse_note(text).is_some_and(|n| (0..=127).contains(&n))
 }
-
 
 /// 一个 `opcode=value` 迭代器（零分配）。
 ///
@@ -2504,9 +2504,18 @@ mod tests {
     #[test]
     fn glued_boundaries_cover_notes_negatives_and_decimals() {
         for (line, want) in [
-            ("lokey=C#4hikey=Db5", vec![("lokey", "C#4"), ("hikey", "Db5")]),
-            ("tune=-1200volume=-6", vec![("tune", "-1200"), ("volume", "-6")]),
-            ("ampeg_attack=0.5hikey=c5", vec![("ampeg_attack", "0.5"), ("hikey", "c5")]),
+            (
+                "lokey=C#4hikey=Db5",
+                vec![("lokey", "C#4"), ("hikey", "Db5")],
+            ),
+            (
+                "tune=-1200volume=-6",
+                vec![("tune", "-1200"), ("volume", "-6")],
+            ),
+            (
+                "ampeg_attack=0.5hikey=c5",
+                vec![("ampeg_attack", "0.5"), ("hikey", "c5")],
+            ),
         ] {
             let pairs: Vec<(&str, &str)> = (OpcodeIter {
                 rest: strip_comment(line),
@@ -2524,13 +2533,20 @@ mod tests {
     fn a_glued_value_that_is_not_a_scalar_is_kept_whole() {
         for (line, whole) in [
             ("sample=kick2offset=3.wav key=36", "kick2offset=3.wav"),
-            ("sample=Cello_Section/arco=off.wav key=36", "Cello_Section/arco=off.wav"),
+            (
+                "sample=Cello_Section/arco=off.wav key=36",
+                "Cello_Section/arco=off.wav",
+            ),
         ] {
             let pairs: Vec<(&str, &str)> = (OpcodeIter {
                 rest: strip_comment(line),
             })
             .collect();
-            assert_eq!(pairs, vec![("sample", whole), ("key", "36")], "line = {line}");
+            assert_eq!(
+                pairs,
+                vec![("sample", whole), ("key", "36")],
+                "line = {line}"
+            );
         }
     }
 

@@ -2880,7 +2880,14 @@ impl EngineRuntime {
         // 未初始化的 `Self`），它写满全部字段；`Box::assume_init` 再把
         // `Box<MaybeUninit<Self>>` 变成 `Box<Self>`（⛔ 不搬值、⛔ 不复制）。
         unsafe {
-            Self::write_into(place.as_mut_ptr(), slot, retire, events, meters, track_slots);
+            Self::write_into(
+                place.as_mut_ptr(),
+                slot,
+                retire,
+                events,
+                meters,
+                track_slots,
+            );
             place.assume_init()
         }
     }
@@ -2919,10 +2926,8 @@ impl EngineRuntime {
         track_slots: usize,
     ) {
         // 声部池与参数表的容量由调用方决定（[`Self::new_boxed_with_track_slots`]）。
-        let track_slots = track_slots.clamp(
-            crate::synth::MIN_TRACK_SLOTS,
-            crate::synth::MAX_TRACK_SLOTS,
-        );
+        let track_slots =
+            track_slots.clamp(crate::synth::MIN_TRACK_SLOTS, crate::synth::MAX_TRACK_SLOTS);
         // 混响延迟线的**唯一**分配点（[`crate::insert`] 模块文档 §8.4 / §8.5）：
         // 采样率取自**初始快照**——调用方（`EngineHost::reload` / `device` 腿）都是
         // 先用工程建好快照、再建运行时，因此这里拿到的就是本工程将要用的采样率。
@@ -6667,9 +6672,8 @@ mod tests {
         // ⚠ 声部池**显式取 16 槽**：默认是 1024，300 条轨一条都不会被丢 ⇒ 这条判据
         // 就变成了"没踩到边界也绿"。边界必须能被一次踩到（`with_track_slots` 就是
         // 为这类判据准备的入口）。
-        let mut runtime = *EngineRuntime::new_boxed_with_track_slots(
-            &slot, retire, receiver, publisher, 16,
-        );
+        let mut runtime =
+            *EngineRuntime::new_boxed_with_track_slots(&slot, retire, receiver, publisher, 16);
         let mut out = [0.0f32; DEFAULT_BLOCK_FRAMES * 2];
         runtime.process_quantum(&mut out, 2);
         let stats = runtime.stats();
@@ -6706,10 +6710,7 @@ mod tests {
         // 插入池的**格数**是 `INSERT_SLOTS = PDC_SLOTS + 1`（最后一格留给主总线）
         // ⇒ 踩边界的夹具是 `PDC_SLOTS + 1` 条带通道条的轨：前 `PDC_SLOTS` 条进池，
         // 第 `PDC_SLOTS + 1` 条必须被拒（⛔ 越界写、⛔ panic）。
-        let slot = SnapshotSlot::new(snapshot_with_master_track_and_strips(
-            1,
-            PDC_SLOTS + 1,
-        ));
+        let slot = SnapshotSlot::new(snapshot_with_master_track_and_strips(1, PDC_SLOTS + 1));
         let (retire, _queue) = retire_channel(16);
         let (_sender, receiver) = event_channel(64);
         let (publisher, _collector) = meter_channel(1024);

@@ -417,9 +417,7 @@ fn track_slots_from_env() -> usize {
     match raw.trim().parse::<usize>() {
         Ok(slots) => slots,
         Err(error) => {
-            eprintln!(
-                "YEBAN_TRACK_SLOTS=`{raw}` 不是合法槽位数（{error}）⇒ 退回默认 {fallback}"
-            );
+            eprintln!("YEBAN_TRACK_SLOTS=`{raw}` 不是合法槽位数（{error}）⇒ 退回默认 {fallback}");
             fallback
         }
     }

@@ -114,7 +114,11 @@ impl ParamRig {
         let (sender, receiver) = event_channel(64);
         let (publisher, _collector) = meter_channel(4096);
         let runtime = *EngineRuntime::new_boxed_with_track_slots(
-            &slot, retire, receiver, publisher, track_slots,
+            &slot,
+            retire,
+            receiver,
+            publisher,
+            track_slots,
         );
         Self {
             slot,

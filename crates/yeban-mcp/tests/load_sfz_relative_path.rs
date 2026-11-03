@@ -287,10 +287,7 @@ fn an_unresolvable_load_path_fails_with_the_raw_path() {
         json!({ "path": relative }),
     );
     let data = load_failure(&loaded);
-    assert_eq!(
-        data["reason"], "sfzReadFailed",
-        "错误原因词表不变: {data}"
-    );
+    assert_eq!(data["reason"], "sfzReadFailed", "错误原因词表不变: {data}");
     assert_eq!(
         data["path"], relative,
         "解析不出时必须**原样**回显入参（⛔ 不发明路径）: {data}"
@@ -342,8 +339,10 @@ fn the_project_directory_wins_over_the_library_root() {
     // 工程目录：`<工程目录>/assets/samples/p1-order-fixture/one_region.sfz`（好文件）
     let projects = scratch.join("projects");
     std::fs::create_dir_all(&projects).expect("建工程目录");
-    let project_copy =
-        scratch.put("projects/assets/samples/p1-order-fixture/one_region.sfz", ONE_REGION);
+    let project_copy = scratch.put(
+        "projects/assets/samples/p1-order-fixture/one_region.sfz",
+        ONE_REGION,
+    );
     assert_ne!(project_copy, library_copy, "两份必须真的不是同一个文件");
 
     let mut dispatcher = dispatcher_with_project_at(&projects.join("demo.yeban"));
