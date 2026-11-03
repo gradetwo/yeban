@@ -561,8 +561,8 @@ export component ArrangementView inherits Rectangle {
                 y: 0;
                 width: parent.width;
                 height: parent.height;
-                text: "R";
-                color: Tokens.ink-2;
+                text: (track_index < root.track-arms.length && root.track-arms[track_index]) ? "R" : "";
+                color: Tokens.ink-0;
                 font-size: Tokens.font-size-xs;
                 horizontal-alignment: center;
             }
