@@ -2877,4 +2877,157 @@ mod integration_tests {
         versioned.close();
         restored.close();
     }
+
+    // --- D 夹具测试（设计 §6／§7.6）-------------------------------------------
+    // 夹具 `tests/fixtures/fixture_ara_plugin.rs` 现场编译，不依赖真插件，
+    // 故本测试不设 `YEBAN_ARA_TEST_PLUGIN` 门（CI 机器上无真插件也能跑）。
+    // 夹具发布固定 8 音符集（⛔ 不是分析结果）；断言查询结果与固定集逐项一致。
+    // 边界：夹具只验证机制，不能替代真插件放行，真插件门仍敞开；② 的
+    // PitchNet 失败仍记为插件限制，不因夹具通过而改写。
+
+    #[cfg(target_os = "windows")]
+    const ARA_FIXTURE_EXT: &str = "dll";
+    #[cfg(target_os = "macos")]
+    const ARA_FIXTURE_EXT: &str = "dylib";
+    #[cfg(all(unix, not(target_os = "macos")))]
+    const ARA_FIXTURE_EXT: &str = "so";
+
+    static ARA_FIXTURE_COUNTER: std::sync::atomic::AtomicUsize =
+        std::sync::atomic::AtomicUsize::new(0);
+
+    /// D 夹具专用的临时目录（并行测试互不干扰：pid＋单调计数）。
+    fn ara_fixture_dir() -> std::path::PathBuf {
+        use std::sync::atomic::Ordering;
+        let id = ARA_FIXTURE_COUNTER.fetch_add(1, Ordering::SeqCst);
+        let dir = std::env::temp_dir().join(format!(
+            "yeban-ara-fixture-test-{}-{id}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).expect("建 D 夹具测试临时目录");
+        dir
+    }
+
+    /// 用 `rustc` 把 D 夹具源码现场编译成 cdylib，返回产物路径。
+    fn compile_ara_fixture(dir: &std::path::Path) -> std::path::PathBuf {
+        let source = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/fixture_ara_plugin.rs");
+        assert!(source.is_file(), "D 夹具源码不在 {source:?}");
+        let out = dir.join(format!("fixture_ara_plugin.{ARA_FIXTURE_EXT}"));
+        let rustc = std::env::var("RUSTC").unwrap_or_else(|_| "rustc".to_owned());
+        let output = std::process::Command::new(&rustc)
+            .args([
+                "--crate-type",
+                "cdylib",
+                "--edition",
+                "2021",
+                "-o",
+                out.to_str().expect("产物路径可转 UTF-8"),
+                source.to_str().expect("夹具路径可转 UTF-8"),
+            ])
+            .output()
+            .unwrap_or_else(|error| panic!("启动 {rustc} 失败: {error}"));
+        assert!(
+            output.status.success(),
+            "D 夹具编译失败（{}）：\n{}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(out.is_file(), "D 夹具产物不在 {out:?}");
+        out
+    }
+
+    /// 在 D 夹具上开会话（阶梯正弦代用信号，与固定音符集同音高）。
+    fn open_fixture_session(dir: &std::path::Path) -> (AraSession, std::path::PathBuf) {
+        let plugin = compile_ara_fixture(dir);
+        let clip = AraClip {
+            name: "ara-fixture-clip".to_owned(),
+            persistent_id: "ara-fixture-clip-asset".to_owned(),
+            kind: AraClipKind::Audio,
+            pcm: synthetic_melody(),
+            tempo_bpm: 120.0,
+        };
+        let session = AraSession::open(
+            plugin.to_str().expect("夹具路径可转 UTF-8"),
+            Some("TestAra"),
+            clip,
+            AraPlacement::default(),
+        )
+        .unwrap_or_else(|error| panic!("D 夹具 ARA 会话打开失败: {error}"));
+        (session, plugin)
+    }
+
+    /// 固定音符集的期望值（与夹具 `fixed_notes()` 同口径：音高、起音、时长）。
+    fn expected_fixture_notes() -> Vec<(i32, f64, f64, f64, f64, f32)> {
+        let midi_notes = [57, 60, 62, 64, 65, 67, 69, 72];
+        midi_notes
+            .iter()
+            .enumerate()
+            .map(|(index, note)| {
+                let frequency = 440.0 * 2.0_f64.powf((f64::from(*note) - 69.0) / 12.0);
+                (*note, index as f64 * 0.5, 0.02, 0.5, 0.5, frequency as f32)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn fixture_ara_scan_finds_factory() {
+        let dir = ara_fixture_dir();
+        let plugin = compile_ara_fixture(&dir);
+        let resolved = crate::host::resolve_module_path(std::path::Path::new(&plugin))
+            .expect("D 夹具路径解析失败");
+        let module = Vst3Module::load(&resolved.to_string_lossy())
+            .unwrap_or_else(|error| panic!("D 夹具模块加载失败: {error}"));
+        let info = inspect_ara_factory(&module).expect("D 夹具 ARA factory 未发现");
+        assert_eq!(info.plug_in_name, "TestAra");
+        assert_eq!(info.version, "0.1.0");
+        assert!(info.analyzeable_content_types.contains(&CONTENT_TYPE_NOTES));
+    }
+
+    #[test]
+    fn fixture_ara_notes_query_returns_published_notes() {
+        let dir = ara_fixture_dir();
+        let (mut session, _plugin) = open_fixture_session(&dir);
+        assert_eq!(session.factory_info().plug_in_name, "TestAra");
+        // 分析前查询须响亮失败（fail-closed），不得返回空集冒充完成。
+        assert!(
+            session.notes().is_err(),
+            "分析前音符查询须响亮失败，不得静默返回"
+        );
+        session
+            .wait_for_analysis(Duration::from_secs(30))
+            .unwrap_or_else(|error| panic!("D 夹具分析等待失败: {error}"));
+        assert!(
+            session
+                .analysis_available()
+                .expect("D 夹具分析可用性查询失败"),
+            "D 夹具分析完成后内容须可用"
+        );
+        assert!(
+            !session
+                .analysis_incomplete()
+                .expect("D 夹具分析未完成查询失败"),
+            "D 夹具分析完成后未完成标志须为假"
+        );
+        let notes = session
+            .notes()
+            .unwrap_or_else(|error| panic!("D 夹具音符查询失败: {error}"));
+        let expected = expected_fixture_notes();
+        assert_eq!(notes.len(), expected.len(), "D 夹具音符数须为 8");
+        for (note, (pitch, start, attack, duration, signal, frequency)) in
+            notes.iter().zip(expected.iter())
+        {
+            assert_eq!(note.pitch_number, *pitch, "音高号须与固定集一致");
+            assert_eq!(note.start_position, *start, "起音须与固定集一致");
+            assert_eq!(note.attack_duration, *attack, "起音锚点须与固定集一致");
+            assert_eq!(note.note_duration, *duration, "音符时长须与固定集一致");
+            assert_eq!(note.signal_duration, *signal, "信号时长须与固定集一致");
+            assert_eq!(note.volume, 1.0, "力度须为 1.0");
+            assert!(
+                (note.frequency - frequency).abs() < 1e-3,
+                "频率须与 MIDI 音高对应（{frequency} Hz 附近），实际 {}",
+                note.frequency
+            );
+        }
+        session.close();
+    }
 }
