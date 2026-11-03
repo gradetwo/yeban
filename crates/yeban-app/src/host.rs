@@ -10393,7 +10393,7 @@ fn zoom_horizontal_step(ui: &MainWindow, port: Option<&UndoPort>, zoom_in: bool)
             t
         }
     } else {
-        let t = (current_tpp * 4 + 2) / 3;
+        let t = (current_tpp * 4).div_ceil(3);
         if t <= current_tpp {
             current_tpp.saturating_add(1)
         } else {
@@ -10407,14 +10407,13 @@ fn zoom_horizontal_step(ui: &MainWindow, port: Option<&UndoPort>, zoom_in: bool)
     if !set_roll_ticks_per_pixel(ui, target_clamped) {
         return false;
     }
-    if let Some(port) = port {
-        if let Some(project) = port.try_project() {
-            if let Ok(next) = project_with_view_state(&project, ui) {
-                let viewport_px = slint::ComponentHandle::window(ui).size().width;
-                let scroll_x = ui.get_roll_scroll_x();
-                apply_view(ui, &next, viewport_px as f32, scroll_x);
-            }
-        }
+    if let Some(next) = port
+        .and_then(|p| p.try_project())
+        .and_then(|proj| project_with_view_state(&proj, ui).ok())
+    {
+        let viewport_px = slint::ComponentHandle::window(ui).size().width;
+        let scroll_x = ui.get_roll_scroll_x();
+        apply_view(ui, &next, viewport_px as f32, scroll_x);
     }
     true
 }
