@@ -40,6 +40,7 @@
 //! [`apply_meters`] 填真实读数"，而不是"只写一次、之后靠运气对齐"。
 
 use slint::ComponentHandle as _;
+use slint::Model as _;
 use std::cell::RefCell;
 use std::rc::Rc;
 
