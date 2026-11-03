@@ -13,7 +13,7 @@
 //!    经 `ConsoleTabs` 透传至根窗口 `MainWindow.track-select`，触发宿主 `host::wire_track_select`，
 //!    使 `selected-track-id` 实时更新，且选中的通道条高亮 (`border-width: 2px` / `Tokens.gold`)；
 //! 2. **设备架与检查器联动**：在混音台选择某轨后，底部控制台 Tab 2 的设备架立即可见该轨的
-//!    设备链 (`device_track_label` / `device_names`)；
+//!    设备链 (`device_track_label` / `device_names`) 与发送条 (`send_strip_projection`)；
 //! 3. **夜半完整工程加载与片段类型识别**：支持加载包含 30 轨、36 个剪辑池条目、56 条自动化曲线
 //!    的夜半工程，精确识别 MIDI 与 Audio 片段内容；
 //! 4. **CI 兼容与零回归**：若磁盘存在 `/home/crow/work/qoder/nightfall_v17.yeban`，直接进行真文件对账；
@@ -24,7 +24,7 @@ use std::path::Path;
 use std::rc::Rc;
 
 use slint::Model as _;
-use yeban_app::bridge::{ViewState, display_track};
+use yeban_app::bridge::{ViewState, display_track, send_strip_projection};
 use yeban_app::host;
 use yeban_app::open::open_project_file;
 use yeban_app::scene::DemoScene;
@@ -35,7 +35,6 @@ use yeban_model::project::{
     AutomationLane, AutomationTarget, ClipContent, ClipPlacement, ClipPoolEntry, DeviceDefinition,
     DeviceKind, LoopConfig, TrackKind, TrackV3, YebanProjectV1,
 };
-use yeban_model::samples::filled_project;
 use yeban_ui_test_port::Size;
 use yeban_ui_test_port::port::Permission;
 use yeban_ui_test_port::render::LivePort;
@@ -65,91 +64,155 @@ fn synth_track(id: EntityId, name: &str, kind: TrackKind) -> TrackV3 {
 }
 
 /// 构造一个具有与 nightfall_v17.yeban 相同拓扑与规模的工程：
-/// 30 轨（25 MIDI，4 AuxReturn，1 Master），包含 MIDI 与音频剪辑，自动化与设备链。
+/// 30 轨（25 MIDI，4 AuxReturn，1 Master），包含 MIDI 与音频剪辑，自动化、路由与设备链。
 fn synth_nightfall_scale_project() -> YebanProjectV1 {
-    let master_id = EntityId::new();
+    // nightfall_v17.yeban 实际轨道身份与类型（按 EntityId 升序排列）
+    let track_defs: [(&str, &str, TrackKind); 30] = [
+        (
+            "01M6AKK32R0PPHTFNDQAVFX7FG",
+            "Woodwinds_Arp",
+            TrackKind::Midi,
+        ),
+        (
+            "01M6AKK32R7TQAYA9BB7S8KE6C",
+            "French_Horns_Theme",
+            TrackKind::Midi,
+        ),
+        (
+            "01M6AKK32RB0M80VX9MTSRCYVX",
+            "Cello_Bass_Drone",
+            TrackKind::Midi,
+        ),
+        (
+            "01M6AKK32RNPFVZJ4W2FMDE3CX",
+            "Cinematic_Taiko",
+            TrackKind::Midi,
+        ),
+        (
+            "01M6AKK32RWSJDWDG579X3NY40",
+            "Choir_Synth_Pad",
+            TrackKind::Midi,
+        ),
+        (
+            "01YYYYYYYY0000000002F3EYDH",
+            "Solo Violin · Hook",
+            TrackKind::Midi,
+        ),
+        (
+            "01YYYYYYYY00000075GYACZ4KK",
+            "Cathedral · 9.5s",
+            TrackKind::AuxReturn,
+        ),
+        (
+            "01YYYYYYYY00000075KSSD8A88",
+            "Ambience · Wind",
+            TrackKind::Midi,
+        ),
+        (
+            "01YYYYYYYY00000075M3NV43YC",
+            "Harp · Reprise",
+            TrackKind::Midi,
+        ),
+        (
+            "01YYYYYYYY000001MSYQW9HCAA",
+            "Choir_Synth_Pad · Haas",
+            TrackKind::Midi,
+        ),
+        ("01ZZZ0AR5JZCS6K0DT7M1EV8N2", "Tape Air", TrackKind::Midi),
+        (
+            "01ZZZM416K0DT7M1EV8N2FW9P3",
+            "Strings · Trem",
+            TrackKind::Midi,
+        ),
+        ("01ZZZM41DT7M1EV8N2FW9P3GXA", "Final Bell", TrackKind::Midi),
+        ("01ZZZM41M1EV8N2FW9P3GXAQ4H", "FX Riser", TrackKind::Midi),
+        (
+            "01ZZZM519TBWDYF0H2K4N6Q8SA",
+            "Plate · 5.5s",
+            TrackKind::AuxReturn,
+        ),
+        (
+            "01ZZZZZZ01S323EHN89WZ580P1",
+            "Violins · 8va",
+            TrackKind::Midi,
+        ),
+        ("01ZZZZZZ026Z0B6NFBKM1AFTKN", "Sub · Drone", TrackKind::Midi),
+        ("01ZZZZZZ03T33WWANZBZX6R9ZZ", "Low Brass", TrackKind::Midi),
+        ("01ZZZZZZ0499YDYXBD2AJSTN37", "Taiko · Sub", TrackKind::Midi),
+        ("01ZZZZZZ05KM0KPPYVA2RPCV8W", "Choir · 8va", TrackKind::Midi),
+        ("01ZZZZZZ06A5YA4JHN7YBB0SMA", "Arp · 15ma", TrackKind::Midi),
+        ("01ZZZZZZ07ZGVXXZ99421RC2S2", "Strings", TrackKind::Midi),
+        ("01ZZZZZZ0849YPH77RE4EKZ0BD", "Low End", TrackKind::Midi),
+        ("01ZZZZZZ093ZRQB2YHST1H2MK2", "Brass", TrackKind::Midi),
+        ("01ZZZZZZ0AQ6XZ13A4J9YXWRGH", "Percussion", TrackKind::Midi),
+        (
+            "01ZZZZZZ0BWTT81DNMZTNM4A32",
+            "Choir & Synth",
+            TrackKind::Midi,
+        ),
+        (
+            "01ZZZZZZ0CA3SMPMK4N2F9JD2N",
+            "Hall · 3.6s",
+            TrackKind::AuxReturn,
+        ),
+        (
+            "01ZZZZZZ0DSKVT3QR58W9KPXDW",
+            "Room · 0.8s",
+            TrackKind::AuxReturn,
+        ),
+        ("0SPK09ZEQCWAT9DKHQMFGCDRSD", "Master", TrackKind::Master),
+        (
+            "55DWXS5XBTYGTQ5WNYFMNXAHTW",
+            "Strings · Ostinato",
+            TrackKind::Midi,
+        ),
+    ];
+
+    let master_id =
+        EntityId::from_canonical("0SPK09ZEQCWAT9DKHQMFGCDRSD").expect("master EntityId 必须合法");
     let mut tracks = BTreeMap::new();
+    let mut routing_graph = yeban_model::project::RoutingGraph::default();
 
-    // 1 Master track
-    let mut master_track = synth_track(master_id, "Master", TrackKind::Master);
-    master_track.devices.push(DeviceDefinition {
-        id: EntityId::new(),
-        name: "Master CS".to_string(),
-        kind: DeviceKind::InternalEffect,
-        bypassed: false,
-        params: Vec::new(),
-        latency_samples: 0,
-    });
-    tracks.insert(master_id, master_track);
-
-    // 25 MIDI tracks
-    let midi_names = [
-        "Woodwinds_Arp",
-        "French_Horns_Theme",
-        "Cello_Bass_Drone",
-        "Cinematic_Taiko",
-        "Choir_Synth_Pad",
-        "Tape Air",
-        "Strings · Trem",
-        "Final Bell",
-        "FX Riser",
-        "Violins · 8va",
-        "Sub · Drone",
-        "Low Brass",
-        "Taiko · Sub",
-        "Choir · 8va",
-        "Arp · 15ma",
-        "Strings",
-        "Low End",
-        "Brass",
-        "Percussion",
-        "Choir & Synth",
-        "Strings · Ostinato",
-        "Ambience · Wind",
-        "Harp · Reprise",
-        "Choir_Synth_Pad · Haas",
-        "Solo Violin · Hook",
-    ];
-
-    let mut track_ids = Vec::new();
-    for name in &midi_names {
-        let tid = EntityId::new();
-        track_ids.push(tid);
-        let mut t = synth_track(tid, name, TrackKind::Midi);
-        // 装设备
-        t.devices.push(DeviceDefinition {
-            id: EntityId::new(),
-            name: format!("VA · {name}"),
-            kind: DeviceKind::InternalInstrument,
-            bypassed: false,
-            params: Vec::new(),
-            latency_samples: 0,
-        });
-        // 加自动化
-        let target = AutomationTarget::TrackVolume { track_id: tid };
-        t.automation_lanes
-            .insert(target, AutomationLane::implicit(target));
-        tracks.insert(tid, t);
-    }
-
-    // 4 AuxReturn tracks
-    let aux_names = [
-        "Cathedral · 9.5s",
-        "Plate · 5.5s",
-        "Hall · 3.6s",
-        "Room · 0.8s",
-    ];
-    for name in &aux_names {
-        let tid = EntityId::new();
-        let mut t = synth_track(tid, name, TrackKind::AuxReturn);
-        t.devices.push(DeviceDefinition {
-            id: EntityId::new(),
-            name: format!("REV · {name}"),
-            kind: DeviceKind::InternalEffect,
-            bypassed: false,
-            params: Vec::new(),
-            latency_samples: 0,
-        });
+    for (id_str, name, kind) in track_defs {
+        let tid = EntityId::from_canonical(id_str).expect("EntityId 必须合法");
+        routing_graph.nodes.insert(tid);
+        let mut t = synth_track(tid, name, kind);
+        match kind {
+            TrackKind::Master => {
+                t.devices.push(DeviceDefinition {
+                    id: EntityId::new(),
+                    name: "Master CS".to_string(),
+                    kind: DeviceKind::InternalEffect,
+                    bypassed: false,
+                    params: Vec::new(),
+                    latency_samples: 0,
+                });
+            }
+            TrackKind::AuxReturn => {
+                t.devices.push(DeviceDefinition {
+                    id: EntityId::new(),
+                    name: format!("REV · {name}"),
+                    kind: DeviceKind::InternalEffect,
+                    bypassed: false,
+                    params: Vec::new(),
+                    latency_samples: 0,
+                });
+            }
+            TrackKind::Midi => {
+                t.devices.push(DeviceDefinition {
+                    id: EntityId::new(),
+                    name: format!("VA · {name}"),
+                    kind: DeviceKind::InternalInstrument,
+                    bypassed: false,
+                    params: Vec::new(),
+                    latency_samples: 0,
+                });
+                let target = AutomationTarget::TrackVolume { track_id: tid };
+                t.automation_lanes
+                    .insert(target, AutomationLane::implicit(target));
+            }
+            _ => {}
+        }
         tracks.insert(tid, t);
     }
 
@@ -188,10 +251,15 @@ fn synth_nightfall_scale_project() -> YebanProjectV1 {
         );
     }
 
-    // Place 30 clips across tracks: 22 MIDI placements, 8 Audio placements (matching nightfall_v17.yeban)
+    // 摆放 30 条片段：22 条 MIDI 摆放 + 8 条 Audio 摆放（精确对齐 nightfall_v17.yeban）
     let mut placement_count = 0;
-    // 22 MIDI clip placements
-    for (i, tid) in track_ids.iter().take(22).enumerate() {
+    // 22 条 MIDI 摆放覆盖 MIDI 轨道（排除仅承载音频的轨道）
+    let midi_track_ids: Vec<EntityId> = tracks
+        .values()
+        .filter(|t| t.kind == TrackKind::Midi && t.name != "Tape Air")
+        .map(|t| t.id)
+        .collect();
+    for (i, tid) in midi_track_ids.iter().take(22).enumerate() {
         let pid = EntityId::new();
         let cid = midi_clip_ids[i % 22];
         if let Some(t) = tracks.get_mut(tid) {
@@ -209,35 +277,75 @@ fn synth_nightfall_scale_project() -> YebanProjectV1 {
             placement_count += 1;
         }
     }
-    // 8 Audio clip placements across FX and audio-hosting tracks
-    let audio_host_indices = [5, 8, 8, 8, 8, 8, 8, 23];
-    for (i, &track_idx) in audio_host_indices.iter().enumerate() {
-        if let Some(tid) = track_ids.get(track_idx) {
+    // 8 条 Audio 摆放：1 条在 Tape Air, 6 条在 FX Riser, 1 条在 Ambience · Wind（对齐夜半真实工程）
+    let tape_air_id = EntityId::from_canonical("01ZZZ0AR5JZCS6K0DT7M1EV8N2").unwrap();
+    let fx_riser_id = EntityId::from_canonical("01ZZZM41M1EV8N2FW9P3GXAQ4H").unwrap();
+    let wind_id = EntityId::from_canonical("01YYYYYYYY00000075KSSD8A88").unwrap();
+
+    let audio_targets = [
+        (tape_air_id, 0),
+        (fx_riser_id, 1),
+        (fx_riser_id, 2),
+        (fx_riser_id, 3),
+        (fx_riser_id, 4),
+        (fx_riser_id, 5),
+        (fx_riser_id, 6),
+        (wind_id, 7),
+    ];
+    for (i, (tid, clip_idx)) in audio_targets.iter().enumerate() {
+        if let Some(t) = tracks.get_mut(tid) {
             let pid = EntityId::new();
-            let cid = audio_clip_ids[i % 14];
-            if let Some(t) = tracks.get_mut(tid) {
-                t.clips.insert(
-                    pid,
-                    ClipPlacement {
-                        id: pid,
-                        clip_id: cid,
-                        start_tick: ((i + 22) as u64) * 960,
-                        duration_ticks: 3840,
-                        loop_config: LoopConfig::default(),
-                        muted: false,
-                    },
-                );
-                placement_count += 1;
-            }
+            let cid = audio_clip_ids[*clip_idx];
+            t.clips.insert(
+                pid,
+                ClipPlacement {
+                    id: pid,
+                    clip_id: cid,
+                    start_tick: ((i + 22) as u64) * 960,
+                    duration_ticks: 3840,
+                    loop_config: LoopConfig::default(),
+                    muted: false,
+                },
+            );
+            placement_count += 1;
         }
     }
     assert_eq!(placement_count, 30, "合成夹具必须恰好摆放 30 条片段");
+
+    // 路由图：构建真实 SendToAux 发送边（对齐夜半工程：Woodwinds_Arp 发送到 Hall 和 Room）
+    let ww_id = EntityId::from_canonical("01M6AKK32R0PPHTFNDQAVFX7FG").unwrap();
+    let hall_id = EntityId::from_canonical("01ZZZZZZ0CA3SMPMK4N2F9JD2N").unwrap();
+    let room_id = EntityId::from_canonical("01ZZZZZZ0DSKVT3QR58W9KPXDW").unwrap();
+
+    let e1 = EntityId::from_canonical("01ZZZZZZ2JZMK2PDNECNWB749D").unwrap();
+    routing_graph.edges.insert(
+        e1,
+        yeban_model::project::RoutingEdge {
+            id: e1,
+            source_node: ww_id,
+            destination_node: hall_id,
+            kind: yeban_model::project::RoutingKind::SendToAux,
+            gain_db: Some(-16.0),
+        },
+    );
+    let e2 = EntityId::from_canonical("01ZZZZZZ2PNG8SN84H987MWK7Q").unwrap();
+    routing_graph.edges.insert(
+        e2,
+        yeban_model::project::RoutingEdge {
+            id: e2,
+            source_node: ww_id,
+            destination_node: room_id,
+            kind: yeban_model::project::RoutingKind::SendToAux,
+            gain_db: Some(-20.0),
+        },
+    );
 
     YebanProjectV1 {
         title: "夜半 · Nightfall 规模测试夹具".to_string(),
         master_bus_track_id: master_id,
         tracks,
         clip_pool,
+        routing_graph,
         ..Default::default()
     }
 }
@@ -322,7 +430,12 @@ fn mixer_track_selection_syncs_with_host_and_device_rack() {
     let ui = live.ui();
 
     let track_ids: Vec<String> = ui.get_track_ids().iter().map(|s| s.to_string()).collect();
+    let track_names = view.track_names();
     assert_eq!(track_ids.len(), 29, "夜半工程有 29 条非主总线轨");
+    assert_eq!(track_names.len(), 29, "非主总线轨道名数量必须为 29");
+    assert_eq!(track_names[0], "Woodwinds_Arp");
+    assert_eq!(track_names[14], "Plate · 5.5s");
+    assert_eq!(track_names[28], "Strings · Ostinato");
 
     // 切换到混音台 Tab 1
     ui.set_console_tab(1);
@@ -345,12 +458,12 @@ fn mixer_track_selection_syncs_with_host_and_device_rack() {
         ui.get_device_track_label()
     );
 
-    // 模拟点击 AuxReturn 通道条 (第 9 轨 Plate · 5.5s)
-    ui.invoke_track_select(9);
+    // 模拟点击 AuxReturn 通道条 (第 14 轨 Plate · 5.5s)
+    ui.invoke_track_select(14);
     assert_eq!(
         ui.get_selected_track_id().as_str(),
-        track_ids[9].as_str(),
-        "点击通道条 9 (AuxReturn) 必须将 selected-track-id 更新为 Aux 轨道的 EntityId"
+        track_ids[14].as_str(),
+        "点击通道条 14 (AuxReturn) 必须将 selected-track-id 更新为 Aux 轨道的 EntityId"
     );
     assert!(
         ui.get_device_track_label()
@@ -360,12 +473,41 @@ fn mixer_track_selection_syncs_with_host_and_device_rack() {
         ui.get_device_track_label()
     );
 
-    // 模拟点击高序号通道条 (第 28 轨)
+    // 模拟点击末尾通道条 (第 28 轨 Strings · Ostinato)
     ui.invoke_track_select(28);
     assert_eq!(
         ui.get_selected_track_id().as_str(),
         track_ids[28].as_str(),
         "点击通道条 28 必须更新为末尾轨道的 EntityId"
+    );
+    assert!(
+        ui.get_device_track_label()
+            .as_str()
+            .contains("Strings · Ostinato"),
+        "设备架标题必须联动切换到 Strings · Ostinato: {}",
+        ui.get_device_track_label()
+    );
+
+    // 再次切回通道条 0，验证发送条与路由图联动
+    ui.invoke_track_select(0);
+    assert_eq!(ui.get_selected_track_id().as_str(), track_ids[0].as_str());
+    let resolved_ww =
+        display_track(&project, Some(track_ids[0].as_str())).expect("解析 Woodwinds_Arp");
+    let (sends, _, _) = send_strip_projection(&project, Some(resolved_ww));
+    assert_eq!(
+        sends.len(),
+        2,
+        "Woodwinds_Arp 必须恰好投射出 2 条 SendToAux 边"
+    );
+    assert!(
+        sends
+            .iter()
+            .any(|s| s.destination_name.contains("Hall · 3.6s"))
+    );
+    assert!(
+        sends
+            .iter()
+            .any(|s| s.destination_name.contains("Room · 0.8s"))
     );
 }
 
