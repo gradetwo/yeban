@@ -2105,12 +2105,145 @@ error: could not compile `dcheck` (test "d_ui_27") due to 1 previous error
    （`main.rs` 3 处）⇒ 无头执行面上走带那一族（播放 / 停止 / 录音 / 节拍器）**没有注册者**，
    与 `D-UI-11` 同族。本票⛔ 顺手补整条走带接线（那要把 `EngineHost` 换成可共享的
    `Rc<RefCell<…>>`，是另一票）；判据 ⑧ 因此只能从**源码文本**判"同一个落点"。
+   ⭐ **该缺口已由 `D-UI-30`（`§51`）补上** ⇒ 本条的"点不动"不再成立；⑧ 留在本文件是因为
+   它钉的是**出处**纪律（两个入口⛔ 不许各算一次下一个值），与谁来按无关。
 2. ⛔ 不证明"听得到咔哒声"：本文件判的是"快照里有没有节拍器计划"；逐样本那一侧在
    `crates/yeban-engine/tests/rt_zero_alloc.rs`（`armed_metronome_enabled`）。
 3. ⛔ 不新加控件 ⇒ 与金帧无关（`ui/*.slint` 只改了**注释**）。
 
-判决：**`pending`** —— 本机 `cargo fmt -p yeban-app` `rc=0`（rustfmt 真的解析了这 542 行 ⇒
+判决：**`pending`**（两枚 run 读回后**作废**，见下）—— 本机 `cargo fmt -p yeban-app` `rc=0`（rustfmt 真的解析了这 542 行 ⇒
 语法过关），但 Slint 是重依赖 ⇒ 编译与判决交 CI（§5）。读回时必须**数 `Running tests/`**
 并确认 `d_ui_29_metronome_writes_the_document` 这个二进制在里头（§6.3 第 4 条），
 另外要确认这三枚**没有被我改红**：`metronome_switch`、`d_ui_23_count_in_writes_the_document`
 （⑨ 的那几个计数）、`engine_error_banner`（同一执行面的心跳）。
+
+⚠ **判决读回（2026-11-03，两枚都作废 ⇒ 本节以上全部仍是 `pending`）**：
+
+| run | 提交 | 结论 | 死因 | 判据跑到几个 |
+| :--- | :--- | :--- | :--- | :--- |
+| `41560793479` | `c5b58c70`（本票） | failure | `error[E0277]: the trait bound \`f64: From<u64>\`` @ `host.rs:7748` | **0**（`Running tests/` 计数 = 0 ⇒ 一条判据都没跑） |
+| `41563030182` | `678ae900`（E0277 单修一枚） | failure | `error: method \`engine_metronome_enabled\` is never used`，红在 `test "live_ui_mcp"` | **0**（同上，`test` / `doctests` / `clippy (合并特性)` / `test (合并特性)` 全是 `-`） |
+
+⇒ `D-UI-28` 与 `D-UI-29` 的判决**从来没有成立过**（两枚 run 都停在编译）。E0277 那条是我自己的
+API 误记（`f64::from` 只覆盖到 `u32`，而 `frames_at_tick` 返回 `u64`），单独一枚 `678ae900` 提交
+是为了让判决可归因；第二枚死因（`#[path]` 目标的 `dead_code`）见 `§51` 第五节。
+
+---
+
+## §51 `D-UI-30`：serve 那份装配**从没接**走带 —— 播放 / 停止 / 节拍器 / `Space` 现在落在自己的宿主上（2026-11-03）
+
+### 一、缺陷（用户会怎么撞上）与它的读数
+
+`--enable-ui-mcp-http` 在 `main()` 里**提前**分流进 `ui_mcp_serve::run`，而
+`host::wire_transport` 唯一的调用点在 `main.rs` 的 `wire_callbacks` 里 ⇒ 那一段根本不跑。
+现读（`grep -v '^[[:space:]]*//'` 之后只数**代码行**，单位：处）：
+
+| 事实源 | `host::wire_transport(` | 备注 |
+| :--- | ---: | :--- |
+| `src/main.rs`（产品 GUI 腿） | **1** | 文本共 3 处，另 2 处是注释 |
+| `src/live_surface.rs`（修前） | **0** | ⭐ 人真的拿来作曲的那份装配 |
+
+Slint 的 `on_*` **没有注册者就是空操作** ⇒ 那份执行面上：
+
+1. ⛔ 播放 / 停止 / 录音 / 节拍器四颗按钮按下去什么都不动；
+2. ⭐⭐ **比"不消费"更坏的一条**：`Space` 经 `wire_keys` 的 `PlayPause` 臂落到
+   `ui.invoke_toggle_play()`，而 `apply_action` 返回 `true`（含义是"这一键**有绑定**"）——
+   于是控制面读到"按了、被消费了"，界面上什么都不发生。
+   ⇒ **"消费"与"落地"是两件事**：返回 `true` 只证键位表里有这一条，不证有人听；
+3. ⛔ `metronome-on` 的**装配期初值**一起丢（`wire_transport` 是它唯一的初值写者 ——
+   `host.rs` 里那句"工程在场就从 `transport.metronome_enabled` 播种"）⇒ 文档写着开、界面画着关。
+
+### 二、为什么此前**六份**判据都没抓到它（清单把缺陷掩护成了结构）
+
+`tests/metronome_switch.rs` / `tests/rewind_sound.rs` / `tests/transport_timecode_tick.rs` /
+`tests/arrangement_ruler_seek.rs` / `tests/d_ui_11_serve_header_gestures.rs` 各自**补一次**
+`host::wire_transport`，而且补的是**自己新建的** `Rc<RefCell<EngineHost>>` ⇒
+"这份装配接没接、接的是不是同一个宿主"从外面**永远读不出来**（判据全绿，装配全哑）。
+
+⭐ 更坏的是 `D-UI-11` 的奇偶守卫把这条**登记成了结构**：例外清单里写着
+`("host::wire_transport", "需要引擎句柄")`。而句柄从来不是障碍 ——
+`LiveAdminSurface` **本来就持有**一个 `EngineHost`，缺的只是把它装成 `Rc<RefCell<…>>`。
+⇒ 教训（写进判据文件的"若变红，怎么读"）：**例外清单的每一格都要核验"缺的那个运行期对象
+是不是真的缺"**，否则守卫只会把缺陷存档，甚至反过来为缺陷提供合法性。
+本票删掉那一条，同时把其余八条的理由改成**如实**的两类：缺**活投影** `Rc<RefCell<ViewState>>`（3 条）／
+缺**原生文件对话框**（5 条）。
+
+### 三、修法
+
+1. `LiveAdminSurface.engine`：裸值 `EngineHost` → `Rc<RefCell<EngineHost>>`
+   （与 `host::ProductionLoop` / `main.rs` **同款**范式；`Rc` 计数 +1 ⇒ ⛔ 不是第二份宿主，
+   `EngineHost::new(` 在 `live_surface.rs` 里仍**恰好 1 处**）；
+2. `build_live_ui_with` 装配期接一次，`apply_project` 换工程后**重接**一次（共 **2** 处调用）——
+   依据是 Slint 的 `on_*` 是**设值/覆盖**语义：重接是把闭包里的工程换成这一份，⛔ 不是第二个注册者；
+3. ⚠ 心跳那一段的 `borrow_mut()` **作用域只包住动引擎的部分**，放借之后才碰界面 ——
+   与本票新接的 `wire_transport` 共用同一个宿主，那两个回调自己也要 `borrow_mut()`。
+   这就是 `#212` 那类 `RefCell` 双重借用 `abort` 的入口（见 `§50` 第四节同一条纪律）。
+
+### 四、判据（`tests/d_ui_30_serve_transport_is_wired.rs`，8 例 / 23 条静态 assert（⑧ 的 5 条在循环里 ⇒ 运行期 27 条）/ 525 行）
+
+⭐ **第一条纪律**：`assemble()` 里⛔ 不调 `host::wire_transport`（接线必须是装配自己的事，
+那是本票的命题），判据只按界面上那颗键，然后读**装配自己的**宿主的 `TransportReading`。
+
+| 例 | 判的事 | 关键读数 |
+| :--- | :--- | :--- |
+| ① | 播放按钮 ⇒ 本装配宿主 | 前置 `commands_applied = 0`、`running = false` ⇒ 按一次**恰好 +1**、`running = true`、镜面 `playing` 跟 |
+| ② | 停止 = 停住**并**回起点 | 起播 + 推 64 量子 ⇒ 位置离开 0（前提）⇒ `>= +2` 条命令、`position_ticks = 0`、`playhead-ticks = 0` |
+| ③ | `#227` 那套连按语义在装配里活着 | 播 → `Space` 停（+1、位置保留）→ `Space` 只回起点（+1、仍停住）→ 第四下是**新的起播** |
+| ④ | `Space` 那条**键路**接到同一个宿主 | ⭐ `consumed = true` **且** `commands_applied = 1`（修前正是 `true` + **0** 这个组合） |
+| ⑤ | 节拍器那颗按钮真的写文档 | 初值 == 文档字段（修前从未播种）⇒ 按一次：文档 `true`、提交**恰好 +1**、快照**修订号一位不涨**；下一跳心跳 ⇒ `published_revision = +1`、快照 `true`（= `D-UI-29` ⑧ 的运行期版本） |
+| ⑥ | 换工程**重接**是覆盖不是追加 | `apply_project(metronome=true)` ⇒ 镜面初值跟新工程；一次按下 ⇒ 命令**恰好 +1**（`+2` 就是追加了第二个注册者） |
+| ⑦ | 没有引擎时如实冷读，⛔ 不假装 | 三路读数全为冷（`send_transport` 在 `!transport_ready()` 返回 `TransportReading::cold()`） |
+| ⑧ | 出处纪律（纯读源码，不建窗口） | live `wire_transport(` = **2**、main = **1**、live `EngineHost::new(` = **1**、live `set_metronome_on(` = **0**、执行面自发走带命令 `send_transport(` / `.play()` / `.stop()` / `stop_and_rewind(` / `.seek(` 各 **0** |
+
+⛔ 增量**不钉死** `②` 的两条命令（`>= +2` + 一跳 `drive_audio(1)`）：那会依赖某个 drain 深度；
+`≥` 之后位置与状态仍从引擎读。同族做法见 `tests/rewind_sound.rs`（只报数、不钉数）。
+
+### 五、第二条 CI 教训：加一条 `LiveUi` 读数 = 触碰 **43** 个编译单元
+
+`run 41563030182`（`678ae900`）的第二枚死因：
+
+```
+error: method `engine_metronome_enabled` is never used
+  --> crates/yeban-app/tests/../src/live_surface.rs:1667:12
+error: could not compile `yeban-app` (test "live_ui_mcp")
+```
+
+根因不是那个访问器没用 —— 它在 `tests/d_ui_29_*` 里有真实调用者。根因是
+**`live_surface.rs` 被 43 个测试目标经 `#[path]` 各装一份**（现读
+`grep -rl 'path = "../src/live_surface.rs"' tests/ | wc -l` = **43**，单位：个目标），
+每一份都是**私有模块** ⇒ 任何一条读数只要在**某一个目标**里没被调，`dead_code` 就报，
+`-D warnings` 再把它变成编译失败；而 43 份里只有 `tests/live_ui_mcp.rs` 那份的 `include`
+不带 `#[allow(dead_code)]`。
+
+处置按本文件**已有近例**（`dispatch_key_chord` / `open_project_via_picker` / `capture`）：
+在**那一条**读数上放 `#[allow(dead_code)]` ＋ 一行写明真实调用者住在哪个判据。⛔ 两样都没做：
+⛔ 删读数（判据要用）、⛔ 在 `include` 上整体放行（那会把"这块代码真没人用"这个信号一起盖掉，
+也正是 `live_ui_mcp.rs` 这份刻意不放行的价值）。
+连带改正 `live_surface.rs` 模块头 §1：它旧文的取向是"没人用就**删**"，前提是"判据只住在
+`live_ui_mcp` **一个**目标里"—— 该前提自 `D-UI-3` 起就不成立，28 这个数字也已陈旧 ⇒ 改为
+**43** 与"保留读数 + 定点 allow + 写明调用者"。
+
+⇒ **纪律**：给 `LiveUi` 加 `pub fn` 时，⛔ 只在 `live_ui_mcp.rs` 一个目标里验证；本文件这类
+判据性读数**默认**要带定点 `#[allow(dead_code)]`，并把"哪个判据调它"写在旁边。
+
+### 六、如实登记的边界
+
+1. ⛔ **不按录音键**：`wire_transport` 内部经 `host::wire_record_at` 注册 `on_toggle_record`，
+   而它要一个**采集设备**（`default_input_factory()`）并有写文件的副作用 ⇒ 本票只证"有了注册者"，
+   落盘那一侧由 `tests/record_*.rs` 那族判；
+2. ⛔ 不证明"听得到"：②③ 读的是引擎自己的走带镜面（RT→控制侧），逐样本在 `crates/yeban-engine`；
+3. ③ 依赖 1.5 s 连按窗口（`HEAD_DOUBLE_TAP_WINDOW` 用 `Instant`）：三次注入之间无任何 I/O ⇒ 窗口恒成立；
+4. `wire_keys` 的**无端口**回退臂仍拿 `engine: None`（本票⛔ 不扩范围）⇒ 没有会话的装配里
+   节拍器键照旧不消费（`D-UI-29` ⑨ 已钉住该形状）；
+5. ⭐ **仍缺的那一票**：`wire_ruler_seek` / `wire_section_seek` / `wire_scene_launch` 要一份
+   **活投影** `Rc<RefCell<ViewState>>`，而本装配把投影存成**裸值** `view`。给它配 `Rc<RefCell<..>>`
+   是把投影变成两份事实源的入口 ⇒ 属**独立的一票**，不在本票里顺手扩范围（已在跟踪表登记）。
+
+判决：**`pending`** —— 提交 `e11153dd`（推送后 `git ls-remote` == `git rev-parse HEAD` 已核，§46），
+run `41565699055`。本机只过了 `cargo fmt`（rustfmt 真的解析了这 525 行 ⇒ 语法过关）；
+Slint 是重依赖 ⇒ 编译与判决交 CI（§5）。读回时要**数 `Running tests/`** 并确认
+`d_ui_30_serve_transport_is_wired` 这个二进制在里头，同时确认这三枚**没被本票改红**：
+`d_ui_11_serve_header_gestures`（例外清单从 9 条删成 8 条）、`d_ui_29_metronome_writes_the_document`
+（边界 1 改了文字，⑧ 的计数⛔ 未动）、`live_ui_mcp`（本票的 `dead_code` 修的就是它）。
+另：`deny` 那枚红与本票**无关**（`async-executor v1.14.0` 被上游 yank，`§44`），`Cargo.lock` 一位未动。
+
