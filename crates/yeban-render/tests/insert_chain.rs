@@ -382,6 +382,109 @@ fn the_convolution_on_the_aux_return_rings_for_the_length_of_its_ir() {
     assert_eq!(dry_late, 0.0);
 }
 
+/// 判据：`conv_ir_stereo` 开关 —— 关 = 双单声道（左右逐位相同），开 = 真立体声。
+///
+/// 投影级：开关开 ⇒ 计划带右 IR，左 IR 与关时逐位相同，右 IR 与左 IR 不同；
+/// 渲染级：同一双单声道激励进 Aux，关时母带左右逐位相同，开时左右去相关。
+#[test]
+fn the_stereo_convolution_switch_decorrelates_the_aux_return() {
+    // 投影级。
+    let mono_chain = InsertChain::from_devices(
+        &[effect(&[("conv_wet", 1.0), ("conv_ir_seed", 7.0)])],
+        SR,
+        BPM,
+    );
+    let mono_plan = mono_chain.convolution().expect("卷积应被识别");
+    assert!(mono_plan.ir_r().is_none(), "缺省关 ⇒ 没有右 IR");
+    let stereo_chain = InsertChain::from_devices(
+        &[effect(&[
+            ("conv_wet", 1.0),
+            ("conv_ir_seed", 7.0),
+            ("conv_ir_stereo", 1.0),
+        ])],
+        SR,
+        BPM,
+    );
+    let stereo_plan = stereo_chain.convolution().expect("卷积应被识别");
+    let right = stereo_plan.ir_r().expect("开关开 ⇒ 必须有右 IR");
+    assert_eq!(
+        stereo_plan.ir(),
+        mono_plan.ir(),
+        "左 IR 与单声道模式逐位相同"
+    );
+    assert_ne!(stereo_plan.ir(), right, "右 IR 必须是另一条噪声");
+    assert_eq!(right.len(), mono_plan.ir().len());
+
+    // 渲染级：双单声道激励 → Aux（卷积）→ 母带。
+    let master = node(0xFF);
+    let source = node(1);
+    let aux = node(2);
+    let routing = graph(
+        &[master, source, aux],
+        &[
+            (source, aux, RoutingKind::SendToAux),
+            (aux, master, RoutingKind::TrackToBus),
+        ],
+    );
+    let frames = 72_000;
+    let note_frames = 4_800;
+    let mono = burst(440.0, frames, note_frames, 0.3);
+    let render_aux = |stereo: f32| {
+        let mut tracks = BTreeMap::new();
+        tracks.insert(
+            aux,
+            track(vec![effect(&[
+                ("conv_wet", 1.0),
+                ("conv_dry", 0.0),
+                ("conv_ir_decay_s", 0.35),
+                ("conv_ir_seed", 1.0),
+                ("conv_ir_stereo", stereo),
+            ])]),
+        );
+        let inserts = project_inserts(&tracks, SR, BPM);
+        render(&routing, master, &inserts, frames, mono.clone(), source)
+    };
+    let off = render_aux(0.0);
+    let mut max_diff_off = 0.0f32;
+    for frame in off.samples.as_chunks::<2>().0 {
+        max_diff_off = max_diff_off.max((frame[0] - frame[1]).abs());
+    }
+    assert_eq!(max_diff_off, 0.0, "开关关 ⇒ 母带左右必须逐位相同");
+
+    let on = render_aux(1.0);
+    let mut sum_l = 0.0f64;
+    let mut sum_r = 0.0f64;
+    let mut sum_ll = 0.0f64;
+    let mut sum_rr = 0.0f64;
+    let mut sum_lr = 0.0f64;
+    let mut max_diff_on = 0.0f32;
+    for frame in on.samples.as_chunks::<2>().0 {
+        let l = f64::from(frame[0]);
+        let r = f64::from(frame[1]);
+        sum_l += l;
+        sum_r += r;
+        sum_ll += l * l;
+        sum_rr += r * r;
+        sum_lr += l * r;
+        max_diff_on = max_diff_on.max((frame[0] - frame[1]).abs());
+    }
+    let n = (on.samples.len() / 2) as f64;
+    let mean_l = sum_l / n;
+    let mean_r = sum_r / n;
+    let cov = sum_lr / n - mean_l * mean_r;
+    let var_l = sum_ll / n - mean_l * mean_l;
+    let var_r = sum_rr / n - mean_r * mean_r;
+    let corr = cov / (var_l * var_r).sqrt();
+    assert!(
+        max_diff_on > 1.0e-3,
+        "开关开 ⇒ 左右必须分开：{max_diff_on:.9e}"
+    );
+    assert!(
+        corr < 0.99,
+        "开关开 ⇒ 左右必须去相关（相关度 {corr:.4}，不是双单声道）"
+    );
+}
+
 /// 判据 5：同一工程连渲两次 ⇒ SHA-256 相同（同一计划重复执行 + 全新编译各一次）。
 #[test]
 fn two_renders_of_the_same_project_have_the_same_sha256() {

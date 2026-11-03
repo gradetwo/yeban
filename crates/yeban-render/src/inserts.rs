@@ -60,7 +60,7 @@
 //!
 //! **没接**：
 //!
-//! - **卷积 IR 形状**（`conv_ir_decay*` / `conv_ir_seed`）：构造期烘焙，自动化不落点
+//! - **卷积 IR 形状**（`conv_ir_decay*` / `conv_ir_seed` / `conv_ir_stereo`）：构造期烘焙，自动化不落点
 //!   （与 `#293` 的边界同款：静态生效 ≠ 可自动化）；
 //! - **未知旋钮 / 外部器件**：同一条如实登记口径。
 //!
@@ -218,8 +218,10 @@ fn synthesise_impulse_response(
 pub struct ConvolutionPlan {
     /// 器件的四个标量参数。
     params: ConvolutionReverbParams,
-    /// 单声道 IR（`h_LL = h_RR = ir`，交叉通路为零）。
+    /// 左声道 IR（`h_LL`；立体声开时 `h_RR` 用 [`Self::ir_r`]）。
     ir: Vec<f32>,
+    /// 右声道 IR；`None` = 双单声道（`h_LL = h_RR = ir`，交叉通路为零）。
+    ir_r: Option<Vec<f32>>,
 }
 
 impl ConvolutionPlan {
@@ -229,10 +231,16 @@ impl ConvolutionPlan {
         self.params
     }
 
-    /// 单声道 IR。
+    /// 左声道 IR。
     #[must_use]
     pub fn ir(&self) -> &[f32] {
         &self.ir
+    }
+
+    /// 右声道 IR；`None` = 双单声道（与 [`Self::ir`] 同一条）。
+    #[must_use]
+    pub fn ir_r(&self) -> Option<&[f32]> {
+        self.ir_r.as_deref()
     }
 }
 
@@ -788,8 +796,8 @@ pub fn track_has_unhandled_dsp(track: &TrackV3) -> bool {
 /// 本切片**消费**的参数名（小写）全集。
 ///
 /// 它**不是**另一张表：名字来自 [`DeviceParamField::from_name`]（通道条 — 含自
-/// `#304` 起的压缩 14 拼写 — / 磁带饱和 / 混响 / 卷积标量 / 延迟的**同一张**拼写表）＋ 三个
-/// **构造期** IR 形状名字（`conv_ir_decay*` / `conv_ir_seed`，静态投影会消费它们，
+/// `#304` 起的压缩 14 拼写 — / 磁带饱和 / 混响 / 卷积标量 / 延迟的**同一张**拼写表）＋ 四个
+/// **构造期** IR 形状名字（`conv_ir_decay*` / `conv_ir_seed` / `conv_ir_stereo`，静态投影会消费它们，
 /// 但自动化不落点）。
 ///
 /// ⚠ 自 `#304` 起**压缩不再有第二张表**：14 个拼写住在 [`StripField::SPELLINGS`]，
@@ -798,7 +806,10 @@ pub fn track_has_unhandled_dsp(track: &TrackV3) -> bool {
 /// （引擎同样不认）。写这些名字的设备会被 [`track_has_unhandled_dsp`] 如实登记。
 fn is_supported_param(name: &str) -> bool {
     DeviceParamField::from_name(name).is_some()
-        || matches!(name, "conv_ir_decay_s" | "conv_ir_decay" | "conv_ir_seed")
+        || matches!(
+            name,
+            "conv_ir_decay_s" | "conv_ir_decay" | "conv_ir_seed" | "conv_ir_stereo"
+        )
 }
 
 /// 本轨通道条的**来源设备下标**：`from_devices` 的"首个含已识别通道条名字的设备"规则。
@@ -875,7 +886,7 @@ pub fn convolution_source_slot(track: &TrackV3) -> Option<usize> {
 #[must_use]
 pub fn convolution_source_params(track: &TrackV3) -> Option<ConvolutionReverbParams> {
     let slot = convolution_source_slot(track)?;
-    convolution_projection(&track.devices[slot]).map(|(params, _decay_s, _seed)| params)
+    convolution_projection(&track.devices[slot]).map(|(params, _decay_s, _seed, _stereo)| params)
 }
 
 /// 本轨 **乒乓延迟来源设备**的下标（`from_devices` 的“首个含已识别延迟名字的设备”）。
@@ -1298,17 +1309,26 @@ fn tape_of(device: &DeviceDefinition) -> Option<TapeParams> {
     if seen { Some(params) } else { None }
 }
 
-/// 单台设备 → 卷积的**投影中间态**：`(标量参数, IR 衰减秒, IR 种子)`。
+/// 立体声 IR 的右声道种子偏移（黄金比例常数，与 `Rng` 的 0 回落常数同值）。
+///
+/// 右声道种子 = `seed.wrapping_add(Self)`。它**永不**与左声道种子撞车：
+/// 偏移非零 ⇒ 加后种子 ≠ 原种子；唯一回落点是加后种子恰为 0（此时 `Rng`
+/// 把它换成偏移本身），而那时左种子是 `2^32 - 偏移 ≠ 偏移` ⇒ 两条流仍不同。
+/// 于是立体声开时左 IR 与单声道模式**逐位相同**，只有右 IR 是新的一条。
+const CONV_IR_STEREO_SEED_OFFSET: u32 = 0x9E37_79B9;
+
+/// 单台设备 → 卷积的**投影中间态**：`(标量参数, IR 衰减秒, IR 种子, IR 立体声开关)`。
 ///
 /// 与 [`convolution_of`] 的识别规则**同一份**；单独拆出来是为了让“来源设备”判定与
 /// 标量参数读取**不用重烘 IR**（[`convolution_source_slot`] /
 /// [`convolution_source_params`]）。`None` = 本设备不是卷积来源。
 fn convolution_projection(
     device: &DeviceDefinition,
-) -> Option<(ConvolutionReverbParams, f32, u32)> {
+) -> Option<(ConvolutionReverbParams, f32, u32, bool)> {
     let mut params = ConvolutionReverbParams::default();
     let mut decay_s = CONV_IR_DEFAULT_DECAY_S;
     let mut seed = CONV_IR_DEFAULT_SEED as u32;
+    let mut stereo = false;
     let mut seen = false;
     for param in &device.params {
         let name = param.name.to_ascii_lowercase();
@@ -1327,11 +1347,17 @@ fn convolution_projection(
                 seed = value as u32;
                 seen = true;
             }
+            // 构造期烘焙的形状开关（与 `conv_ir_decay*` / `conv_ir_seed` 同一条纪律：
+            // 自动化不落点）。非 0 即开；缺省 0 = 双单声道（老工程逐位不变）。
+            "conv_ir_stereo" => {
+                stereo = value != 0.0;
+                seen = true;
+            }
             _ => {}
         }
     }
     if seen {
-        Some((params, decay_s, seed))
+        Some((params, decay_s, seed, stereo))
     } else {
         None
     }
@@ -1339,7 +1365,7 @@ fn convolution_projection(
 
 /// 单台设备 → 卷积计划（`None` = 本设备不是卷积来源）。
 fn convolution_of(device: &DeviceDefinition, sample_rate: u32) -> Option<ConvolutionPlan> {
-    let (params, decay_s, seed) = convolution_projection(device)?;
+    let (params, decay_s, seed, stereo) = convolution_projection(device)?;
     let decay_s = if decay_s.is_finite() {
         decay_s.clamp(CONV_IR_MIN_DECAY_S, CONV_IR_MAX_DECAY_S)
     } else {
@@ -1351,7 +1377,16 @@ fn convolution_of(device: &DeviceDefinition, sample_rate: u32) -> Option<Convolu
         sample_rate,
         seed,
     );
-    Some(ConvolutionPlan { params, ir })
+    // 立体声开：左 IR 就是单声道模式那一条（逐位相同），右 IR 用偏移种子新合成。
+    let ir_r = stereo.then(|| {
+        synthesise_impulse_response(
+            convolution_ir_frames(sample_rate),
+            decay_s,
+            sample_rate,
+            seed.wrapping_add(CONV_IR_STEREO_SEED_OFFSET),
+        )
+    });
+    Some(ConvolutionPlan { params, ir, ir_r })
 }
 
 /// 单台设备 → 延迟的**投影中间态**（`None` = 本设备不是延迟来源）。
@@ -1481,7 +1516,11 @@ impl InsertRuntime {
             state.set_sample_rate(sample_rate_f32);
             let ir = plan.ir();
             let silence = vec![0.0f32; ir.len()];
-            let frames = state.set_impulse_response(ir, &silence, &silence, ir);
+            // 立体声开：四通路喂（左 IR，零，零，右 IR）；关：双单声道（与修前逐位相同）。
+            let frames = match plan.ir_r() {
+                Some(right) => state.set_impulse_response(ir, &silence, &silence, right),
+                None => state.set_impulse_response(ir, &silence, &silence, ir),
+            };
             if frames == 0 {
                 return None;
             }
@@ -1888,7 +1927,7 @@ mod tests {
                     );
                 }
                 DeviceParamField::Convolution(convolution_field) => {
-                    let (projected, _, _) = convolution_projection(&device(&[(name, value)]))
+                    let (projected, _, _, _) = convolution_projection(&device(&[(name, value)]))
                         .unwrap_or_else(|| panic!("{name}={value} 必须被 convolution_of 认出来"));
                     let mut device = ConvolutionReverb::new();
                     device.set_sample_rate(48_000.0);
@@ -2020,6 +2059,7 @@ mod tests {
             "conv_ir_decay_s",
             "conv_ir_decay",
             "conv_ir_seed",
+            "conv_ir_stereo",
             "reverb_mix",
             "reverb_width",
             "filter_cutoff_hz",

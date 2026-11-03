@@ -38,7 +38,7 @@
 //!   [`AutomationTarget::TrackPan`] 与 [`AutomationTarget::DeviceParam`] 里**插入链能改的
 //!   标量字段**（[`APPLIED_DEVICE_PARAM_NAMES`]：100 个拼写 = 54 个字段，含别名；
 //!   通道条 28（14 增益/EQ/滤波 ＋ 8 压缩 ＋ 1 低切 ＋ 3 动态 EQ ＋ 1 宽度 ＋ 1 mono-maker）＋ 磁带饱和 5 ＋ Freeverb 4 ＋ 卷积标量 4 ＋ 延迟 9）；**卷积
-//!   IR 形状**（`conv_ir_decay*` / `conv_ir_seed`）如实登记（⛔ 不冒充已支持）；
+//!   IR 形状**（`conv_ir_decay*` / `conv_ir_seed` / `conv_ir_stereo`）如实登记（⛔ 不冒充已支持）；
 //!   ⭐ `#304` 起**压缩 8 字段**也在这张表里（`compressor_enabled` + 7 个标量），
 //!   静态投影与自动化因此读**同一张**名字表；
 //! - `#297` 起 [`AutomationTarget::Macro`] **接上了离线渲染**，口径是
@@ -1033,7 +1033,7 @@ impl TrackPanAutomation {
 ///
 /// ## 为什么**不**是别的名字
 ///
-/// - **卷积 IR 形状**（`conv_ir_decay_s` / `conv_ir_decay` / `conv_ir_seed`）：那是
+/// - **卷积 IR 形状**（`conv_ir_decay_s` / `conv_ir_decay` / `conv_ir_seed` / `conv_ir_stereo`）：那是
 ///   **构造期烘焙**，换值要重新合成 IR 并走 `set_impulse_response`（分配入口）⇒
 ///   每 128 帧重烘会破坏“IR 构造期烘好 / `process` 零分配”的架构契约；
 /// - 未知旋钮。
@@ -1127,7 +1127,7 @@ pub const APPLIED_DEVICE_PARAM_NAMES: &[&str] = &[
     "reverb_wet_mix",
     "reverb_predelay",
     "reverb_predelay_s",
-    // 卷积混响标量（8 = 4 个字段；⛔ 不含 `conv_ir_decay*` / `conv_ir_seed`）。
+    // 卷积混响标量（8 = 4 个字段；⛔ 不含 `conv_ir_decay*` / `conv_ir_seed` / `conv_ir_stereo`）。
     "conv_predelay_s",
     "conv_pre_delay_s",
     "conv_predelay",
@@ -3329,6 +3329,7 @@ mod tests {
             "conv_ir_decay_s",
             "conv_ir_decay",
             "conv_ir_seed",
+            "conv_ir_stereo",
             "mix",
             "filter_cutoff_hz",
         ] {
@@ -3433,7 +3434,7 @@ mod tests {
             Some(DeviceParamField::Strip(StripField::OutputGainDb))
         );
 
-        for name in ["conv_ir_decay_s", "conv_ir_seed", "mix"] {
+        for name in ["conv_ir_decay_s", "conv_ir_seed", "conv_ir_stereo", "mix"] {
             let (project, track) =
                 project_with_device_lane(&[(name, 1.0)], &[(0, 0.0), (960, 2.0)], true, false);
             let automation = DeviceParamAutomation::new(&project, track, 0, 0, 48_000);

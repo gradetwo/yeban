@@ -4779,11 +4779,15 @@ impl EngineRuntime {
                             // （时间状态）保留 ⇒ 输出逐位不变（判据 V4 的第二半）。
                             conv_pool[slot].set_params(plan.params());
                         } else {
+                            // 立体声开：四通路喂（左 IR，零，零，右 IR）；关：双单声道（与修前逐位相同）。
+                            // 实时插入本身是单声道下混（`#158`），立体声 IR 在监听里听不出，
+                            // 但计划必须如实带两条 IR，否则离线与实时对同一工程的回答会分叉。
+                            let right = plan.ir_r().unwrap_or_else(|| plan.ir());
                             let accepted = conv_pool[slot].set_impulse_response(
                                 plan.ir(),
                                 plan.silence(),
                                 plan.silence(),
-                                plan.ir(),
+                                right,
                             );
                             if accepted != plan.ir_frames() {
                                 // 器件拒绝（非有限样本 / 频谱溢出）⇒ 整台已回到未配置直通。
