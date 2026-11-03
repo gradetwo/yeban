@@ -300,6 +300,7 @@ mod tests {
             .render_block(context(64, 64, 2), &mut out)
             .expect("渲染");
         assert_eq!(source.position(), 128);
+        assert_eq!(out.len(), 64 * 2);
         assert!(out.iter().all(|sample| *sample == 0.0));
     }
 
@@ -368,6 +369,7 @@ mod tests {
             .render_block(context(0, 64, 2), &mut out)
             .expect("渲染");
         assert_eq!(source.position(), 64);
+        assert_eq!(out.len(), 64 * 2);
         assert!(out.iter().all(|sample| *sample == 0.0));
     }
 
