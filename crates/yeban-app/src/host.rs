@@ -6220,19 +6220,20 @@ pub fn wire_clip_scope(ui: &MainWindow, view: Rc<RefCell<ViewState>>, undo: Opti
             return;
         }
         // 剪辑所属音轨联动选中（Logic Pro 对齐）：
-        if let Some(port) = undo_for_select.as_ref() {
-            if let Some(project) = port.try_project() {
-                if let Some((track_id, _, _)) = clip_placement_for(&project, clip_ulid.as_str()) {
-                    let track_str = track_id.to_string();
-                    if ui.get_selected_track_id().as_str() != track_str.as_str() {
-                        let track_ids = ui.get_track_ids();
-                        if let Some(pos) = track_ids
-                            .iter()
-                            .position(|id| id.as_str() == track_str.as_str())
-                        {
-                            ui.invoke_track_select(pos as i32);
-                        }
-                    }
+        if let Some(track_id) = undo_for_select
+            .as_ref()
+            .and_then(|port| port.try_project())
+            .and_then(|project| clip_placement_for(&project, clip_ulid.as_str()))
+            .map(|(track_id, _, _)| track_id)
+        {
+            let track_str = track_id.to_string();
+            if ui.get_selected_track_id().as_str() != track_str.as_str() {
+                let track_ids = ui.get_track_ids();
+                if let Some(pos) = track_ids
+                    .iter()
+                    .position(|id| id.as_str() == track_str.as_str())
+                {
+                    ui.invoke_track_select(pos as i32);
                 }
             }
         }
