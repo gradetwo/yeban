@@ -577,12 +577,40 @@ impl LiveAdminSurface {
             .len())
     }
 
-    /// 引擎重建（`ui/reload_engine` 与 `apply_project` 共用同一条路径）。
+    /// 引擎重建（`ui/reload_engine`、`start_engine` 与 `apply_project` 共用同一条路径）。
     ///
     /// ⭐ 任务单 `#136`：来源是装配给本执行面的**同一个** `Rc<UndoPort>`（会话 CAS 池），
     /// 在 `reload` **之前**接上 —— 第 1.3 步要当场注入 `ClipContent::Audio` 的 PCM。
     /// 没有端口（`options.undo == None` 的旧装配）⇒ 不接来源，音频片段被逐条记为
     /// "跳过"（可见，⛔ 不静默），与接线前逐位相同。
+    ///
+    /// # ⭐ `D-UI-32`：换代之后必须**装载即停住**
+    ///
+    /// `EngineRuntime` 的走带**构造默认是 `Playing`**（`Transport::free_running`）。那不是
+    /// 缺陷而是刻意：接入走带之前 `process_quantum` 的语义就是"快照一发布就从 tick 0 起滚"，
+    /// 默认值改成停住会让既有判据变红。引擎侧为此把话写死在
+    /// `crates/yeban-engine/src/transport.rs` 的 `Transport` 文档里：
+    /// **"要『加载即停住』的控制面发一条 `Stop` 即可（`yeban-app::engine_host` 就是这么做的）"**。
+    ///
+    /// 生产那条腿照做了（`src/main.rs` 建完引擎就 `engine_handle().borrow_mut().stop()`，
+    /// 再把读数投回界面），而**本执行面三处换代站点一处都没做** ⇒ 用户可见的症状是三件：
+    ///
+    /// | 症状 | 成因 |
+    /// | :--- | :--- |
+    /// | 界面一开就显示「播放中」，没人按过播放 | 第一跳心跳的 `apply_transport` 如实投出引擎的 `Playing` |
+    /// | 播放头自己往前走 | 自由跑：每量子都在推进 tick |
+    /// | 第一次按「播放」是**停** | `wire_transport` 读镜面 `playing`（那时已为真）⇒ 走的是"停住"那一支 |
+    ///
+    /// ⚠ 为什么停在这里、⛔ 不在三个调用点各写一遍：这个缺陷的**成因**就是"两个装配现场
+    /// 各抄一次同一步骤，其中一份抄漏了"（`main.rs` 有、`live_surface.rs` 没有）。把它写在
+    /// **唯一的换代入口**里 ⇒ 第四个换代点将来也不可能漏。与 `D-UI-30`/`D-UI-31` 同一课。
+    ///
+    /// ⚠ `reload` 内部**刻意不**发这条 `Stop`（见 `EngineHost::reload` 第 5 步那条注释：
+    /// 让命令在量子边界生效要**多推一个量子**，会把 `ui/reload_engine` 报的 `quanta` 顶到
+    /// 调用方要的数字之外，实测红在 `tests/live_ui_mcp.rs` 的
+    /// `admin_reload_engine_rebuilds_and_resets_the_meter_tap`）。本处的 `stop()` 在
+    /// `reload` **之后**，因此 `EngineRebuild` 里那几个数字一位不动；代价只有一个：控制驱动
+    /// 形态下多发一条命令 = 多推一个量子，而那条命令是 `Stop` ⇒ **位置一位不走**。
     fn rebuild_engine(&mut self) -> Result<yeban_app::engine_host::EngineRebuild, LiveWiringError> {
         if let Some(undo) = self.undo.as_ref() {
             let port = Rc::clone(undo);
@@ -590,10 +618,15 @@ impl LiveAdminSurface {
                 .borrow_mut()
                 .set_audio_asset_source(Box::new(move |hash| port.asset_bytes(hash)));
         }
-        self.engine
+        let rebuild = self
+            .engine
             .borrow_mut()
             .reload(&self.project, self.engine_quanta)
-            .map_err(LiveWiringError::from)
+            .map_err(LiveWiringError::from)?;
+        // ⭐ 作用域纪律：**先放借、再碰界面**（`apply_transport` 写属性 = 求值 Slint 绑定）。
+        let parked = self.engine.borrow_mut().stop();
+        host::apply_transport(&self.window, parked);
+        Ok(rebuild)
     }
 
     /// **编辑 ⇒ 发声**的一跳：按需增量发布快照 ＋ 回收（生产 60Hz 心跳的三步）。
@@ -1761,7 +1794,8 @@ impl LiveUi {
     /// （不 panic、不假装），因此这一位在 `start_engine()` **之前**按下会是 `false`
     /// —— 那正是"没有引擎"的事实。
     // ⚠ `#[allow(dead_code)]`：同款近例见 `engine_metronome_enabled` 上方那条
-    // （本文件被多个测试目标经 `#[path]` 各装一份，本读数只有 `tests/d_ui_30_*` 调）。
+    // （本文件被多个测试目标经 `#[path]` 各装一份，本读数的调用者是 `tests/d_ui_30_*` 与
+    // `tests/d_ui_32_*`）。
     #[allow(dead_code)]
     #[must_use]
     pub fn engine_transport_running(&self) -> bool {
@@ -1773,7 +1807,8 @@ impl LiveUi {
     /// 它是"按钮 ⇒ 引擎"那条链的直接读数：0 = 一条都没发出去（回调没人注册，或没有引擎），
     /// `>0` = 发出去了。⛔ 不是从界面属性反推的。
     // ⚠ `#[allow(dead_code)]`：同款近例见 `engine_metronome_enabled` 上方那条
-    // （本文件被多个测试目标经 `#[path]` 各装一份，本读数只有 `tests/d_ui_30_*` 调）。
+    // （本文件被多个测试目标经 `#[path]` 各装一份，本读数的调用者是 `tests/d_ui_30_*` 与
+    // `tests/d_ui_32_*`）。
     #[allow(dead_code)]
     #[must_use]
     pub fn engine_transport_commands_applied(&self) -> u64 {
@@ -1785,7 +1820,8 @@ impl LiveUi {
     /// `D-UI-30` 用它判「停止按钮 = 停住**并回起点**」这条语义：起播 + 推量子 ⇒ 位置离开 0，
     /// 按停止 ⇒ 状态停 **且** 位置回 0（⛔ 只看状态会把"停在中途"读成通过）。
     // ⚠ `#[allow(dead_code)]`：同款近例见 `engine_metronome_enabled` 上方那条
-    // （本文件被多个测试目标经 `#[path]` 各装一份，本读数只有 `tests/d_ui_30_*` 调）。
+    // （本文件被多个测试目标经 `#[path]` 各装一份，本读数的调用者是 `tests/d_ui_30_*` 与
+    // `tests/d_ui_32_*`）。
     #[allow(dead_code)]
     #[must_use]
     pub fn engine_transport_position_ticks(&self) -> u64 {

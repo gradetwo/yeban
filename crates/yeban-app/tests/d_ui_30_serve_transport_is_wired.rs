@@ -33,14 +33,14 @@
 //!
 //! | 判据 | 证的事 |
 //! | :--- | :--- |
-//! | ①（按钮 ⇒ 本装配的宿主） | 前置读数 `commands_applied = 0`、`running = false`；按一次播放 ⇒ 同一宿主 `commands_applied` **+1**、`running = true`、界面镜面 `playing` 跟着变真。⭐ 修前这条红在**第一件事**上（回调无注册者 ⇒ 计数恒 0） |
+//! | ①（按钮 ⇒ 本装配的宿主） | 前置读数 `commands_applied = 1`（装载即停住那一条 `Stop`，`D-UI-32`）、`running = false`、位置 `0`、镜面 `playing = false`；按一次播放 ⇒ 同一宿主 `commands_applied` **+1**（累计 2）、`running = true`、界面镜面 `playing` 跟着变真。⭐ 修前这条红在**第一件事**上（回调无注册者 ⇒ 计数恒 0） |
 //! | ②（停止 = 停住**并**回起点） | 起播 + 推 64 个量子 ⇒ 播放头离开 0；按停止 ⇒ 状态停 **且** 位置回 `0`（`Stop` + `SeekTicks(0)` 两条命令都应用）＋ 界面 `playhead-ticks` 归 0 |
 //! | ③（`#227` 那套连按状态在本装配里活着） | 播放 → `Space` 停 → `Space` 再按 ⇒ **只是**回起点（仍停住、位置 0、命令 +1）；第四下才是新的起播 |
-//! | ④（`Space` 那条键路接到同一个宿主） | 全新装配 + 起引擎 ⇒ 注入 `" "` 返回 `true`（消费）**且** `commands_applied` **+1** ＋ `running = true`。⭐ 修前正是"返回 `true` 而计数恒 0"这个组合 |
+//! | ④（`Space` 那条键路接到同一个宿主） | 全新装配 + 起引擎 ⇒ 前置读数**恰好** 1（只有装载那条 `Stop`）；注入 `" "` 返回 `true`（消费）**且** `commands_applied` **+1**（累计 2）＋ `running = true`。⭐ 修前正是"返回 `true` 而计数恒 0"这个组合 |
 //! | ⑤（节拍器那颗按钮真的写文档） | 带会话装配里按一次 ⇒ 文档 `false → true` ＋ 恰好 `+1` 条提交 ＋ 快照**修订号**一位不涨（⛔ 不换引擎）；下一跳心跳 ⇒ 快照变 `true`。这是 `D-UI-29` ⑧ 那条"两个入口、一个落点"的**运行期**版本 |
 //! | ⑥（换工程重接一次，且是**覆盖**不是第二个注册者） | `apply_project(新工程)` ⇒ 界面 `metronome-on` 的初值**跟着新工程走**（真值为 `true`），而一次播放按下 ⇒ 命令计数**恰好 +1**（双注册会是 `+2`） |
 //! | ⑦（没有引擎时如实冷读，⛔ 不假装） | 不起引擎的装配里按播放 ⇒ `commands_applied` 仍 `0`、`running` 仍 `false`、界面 `playing` 仍 `false`（`EngineHost::send_transport` 在 `!transport_ready()` 时返回 `TransportReading::cold()`） |
-//! | ⑧（出处纪律） | 从源码现读（先剥 `//` 行 ⇒ **注释不是实现站点**）：`live_surface.rs` 里 `host::wire_transport(` = **2 处**（装配 + 换工程重接）、`EngineHost::new(` = **恰好 1 处**（⛔ 第二份宿主）、执行面**自己**发走带命令 = **0 处**（`send_transport(` / `.play()` / `.stop()` / `stop_and_rewind(` / `.seek(` 各 0）⇒ 发命令的唯一入口是界面回调 |
+//! | ⑧（出处纪律） | 从源码现读（先剥 `//` 行 ⇒ **注释不是实现站点**）：`live_surface.rs` 里 `host::wire_transport(` = **2 处**（装配 + 换工程重接）、`EngineHost::new(` = **恰好 1 处**（⛔ 第二份宿主）、执行面**替用户**发的命令 = **0 处**（`send_transport(` / `.play()` / `stop_and_rewind(` / `.seek(` 各 0）⇒ 发那些命令的唯一入口是界面回调；唯一的例外是装载即停住那一条 `.stop()`，它必须**恰好 1 处**且在换代入口里（`D-UI-32`），而 `main.rs` 的 `.stop()` 必须仍是 **2 处**（装载停住 + ALSA 挂载关闭） |
 //!
 //! ## 注入（每一条都由本文件的判据打红）
 //!
@@ -51,8 +51,11 @@
 //! * **注入 ③「`apply_project` 里不再重接」**⇒ ⑥ 红（`metronome-on` 停在旧工程的初值）；
 //! * **注入 ④「`apply_project` 里再装一次成追加语义」**（假设 Slint 改成注册列表）⇒ ⑥ 的
 //!   命令计数 `+1` 变 `+2`；
-//! * **注入 ⑤「换代之后替用户 `stop()` 一下」**（在 `rebuild_engine` 里加一句）⇒ ① 的
-//!   前置读数 `0` 变 `1` ＋ ⑧ 的 `.stop()` 计数 `0` 变 `1`；
+//! * **注入 ⑤「换代之后**不**停住」（把 `rebuild_engine` 里那条 `stop()` 删掉）**⇒ ① 的前置
+//!   读数 `1` 变 `0`、`running` 由假变**真**（引擎的构造默认就是 `Playing`）、镜面 `playing`
+//!   变真；⑧ 的 `.stop()` 计数 `1` 变 `0`。⚠ 这一格**本票第一版就是红在这一处**：判据当时
+//!   把"起引擎后必须停住"当成**显然成立**的前提，而它其实是控制面必须做、`main.rs` 做了、
+//!   serve 没做的一步 ⇒ 单独立票 `D-UI-32`（判据 `tests/d_ui_32_serve_parks_every_new_engine.rs`）；
 //! * **注入 ⑥「节拍器那颗按钮改回拿装配期工程换引擎」**（去掉 `metronome_undo.is_some()`
 //!   那一支）⇒ ⑤ 红（文档不翻、修订号涨）。
 //!
@@ -109,7 +112,8 @@ const DRIVE_QUANTA: u64 = 64;
 /// 装配一台**带权威会话**的活窗口（端口当装配选项传进去 ⇒ `host::wire_transport` /
 /// `host::wire_keys` 从第一刻起就握着它，与产品进程同一形态）。
 ///
-/// `start = true` ⇒ 顺手起一代引擎。
+/// `start = true` ⇒ 顺手起一代引擎，而它**必须是停住的**（装载即停住 = `D-UI-32`；
+/// ⛔ 不是"引擎构造完自己在跑"—— 那会让下面每一条 `+1` 都读成"按下是停"）。
 ///
 /// ⛔ 本函数**不调** `host::wire_transport`：接线必须是装配自己的事（那是本票的命题）。
 fn assemble(tag: &str, start: bool) -> (LiveUi, Rc<UndoPort>, MainWindow) {
@@ -181,26 +185,40 @@ fn code_only(source: &str) -> String {
 fn the_play_button_drives_the_assemblys_own_engine() {
     let (live, _port, window) = assemble("<d-ui-30-play>", true);
 
-    // ---- 前置读数：这台引擎一次走带命令都没收过 ----
+    // ---- 前置读数：这台装配只发过**装载即停住**那一条（`D-UI-32`）----
     assert_eq!(
         live.engine_transport_commands_applied(),
-        0,
-        "① 前提：装配 + 起引擎⛔ 不许自发走带命令（实测已经应用 {} 条）—— \
-         这条读数一旦非 0，后面所有 `+1` 都失去意义",
+        1,
+        "① 前提：装配 + 起引擎⛔ 不许自发「替用户按」的命令，但**必须**自发一条 `Stop` \
+         （换代即停住，`D-UI-32`）—— 实测已经应用 {} 条。0 条 = 没停住（引擎的构造默认是\
+         自由跑 `Playing`）；2 条以上 = 有第二个替用户按键的站点",
         live.engine_transport_commands_applied()
     );
     assert!(
         !live.engine_transport_running(),
-        "① 前提：起引擎后必须是停住的（第一次按播放的语义才是起播）"
+        "① 前提：起引擎后必须是停住的（第一次按播放的语义才是起播）。⚠ 这条前提是\
+         `D-UI-32` 修出来的：`EngineRuntime` 的走带**构造默认 `Playing`**（刻意的，见 \
+         `crates/yeban-engine/src/transport.rs` 的 `Transport` 文档），控制面必须补一条 \
+         `Stop` —— 本票第一版在这里读到的就是「按播放 = 停」"
+    );
+    assert_eq!(
+        live.engine_transport_position_ticks(),
+        0,
+        "① 前提：`Stop` 只换状态、**位置保留**（新换代的位置本就在 0；实测 {} tick）",
+        live.engine_transport_position_ticks()
+    );
+    assert!(
+        !window.get_playing(),
+        "① 前提：镜面⛔ 不许比引擎多说一句 —— 换代之后界面上必须是停住的"
     );
 
     window.invoke_toggle_play();
 
     assert_eq!(
         live.engine_transport_commands_applied(),
-        1,
-        "① 一次按下必须让**本装配的宿主**恰好应用 1 条命令（实测 {} 条）—— \
-         0 = 回调没有注册者（修前的形状），2 = 装了第二个注册者",
+        2,
+        "① 一次按下必须让**本装配的宿主**恰好再应用 1 条命令（实测累计 {} 条 = 装载那条 \
+         + 这一条）—— 增量 0 = 回调没有注册者（修前的形状），增量 2 = 装了第二个注册者",
         live.engine_transport_commands_applied()
     );
     assert!(
@@ -213,7 +231,9 @@ fn the_play_button_drives_the_assemblys_own_engine() {
         "① 界面镜面 `playing` 必须跟着引擎读数变真（它是投影，不能反过来当事实源）"
     );
 
-    report_line("[d-ui-30] ① 播放按钮 ⇒ 本装配宿主：commands_applied=1、running=true");
+    report_line(
+        "[d-ui-30] ① 播放按钮 ⇒ 本装配宿主：装载即停住 + 按下 commands_applied=2、running=true",
+    );
 }
 
 /// ② 那颗**停止**按钮 = 停住**并**回起点（`Stop` + `SeekTicks(0)`）。
@@ -328,7 +348,11 @@ fn the_double_tap_rewind_lands_on_the_same_engine() {
 fn the_space_key_reaches_the_engine_instead_of_only_being_consumed() {
     let (live, _port, window) = assemble("<d-ui-30-space>", true);
     let before = live.engine_transport_commands_applied();
-    assert_eq!(before, 0, "④ 前提：这台装配一次走带命令都没发过");
+    assert_eq!(
+        before, 1,
+        "④ 前提：这台装配只发过装载那条 `Stop`（`D-UI-32`；实测 {} 条）",
+        before
+    );
 
     // 裸键 `" "`（无修饰）走 `.slint` 的 `key-action` ⇒ `wire_keys` ⇒ `apply_action`。
     let consumed = press_space(&window);
@@ -336,9 +360,10 @@ fn the_space_key_reaches_the_engine_instead_of_only_being_consumed() {
     assert!(consumed, "④ `Space` 必须被消费（它有绑定）");
     assert_eq!(
         live.engine_transport_commands_applied(),
-        1,
-        "④ ⭐ 本票的正主：消费 ⇒ **必须**同时有命令进引擎（实测 {} 条）。修前这里是 \
-         `consumed = true` 而计数恒 **0** —— 界面读起来就是「按了没反应」",
+        2,
+        "④ ⭐ 本票的正主：消费 ⇒ **必须**同时有命令进引擎（实测累计 {} 条 = 装载那条 \
+         `Stop` + 这一条）。修前这里是 `consumed = true` 而计数停在 **0** —— 界面读起来\
+         就是「按了没反应」",
         live.engine_transport_commands_applied()
     );
     assert!(
@@ -346,7 +371,9 @@ fn the_space_key_reaches_the_engine_instead_of_only_being_consumed() {
         "④ 键路与按钮共用同一个宿主 ⇒ 按下之后必须在跑"
     );
 
-    report_line("[d-ui-30] ④ `Space`：consumed=true 且 commands_applied=1（同一个宿主）");
+    report_line(
+        "[d-ui-30] ④ `Space`：consumed=true 且 commands_applied 累计 2（装载 + 这一条，同一个宿主）",
+    );
 }
 
 /// ⑤ 那颗**节拍器**按钮在有会话时写的是文档（`D-UI-29` ⑧ 那条源码纪律的运行期版本）。
@@ -494,22 +521,36 @@ fn the_execution_surface_wires_once_and_never_sends_transport_itself() {
          出现第二处就是「界面上按的」与「判据读的」两份走带",
         live.matches("EngineHost::new(").count()
     );
-    // 执行面自己不发送走带命令：唯一入口是 `wire_transport` 装的那些回调（⛔ 不在心跳里替用户按）。
-    for token in [
-        "send_transport(",
-        ".play()",
-        ".stop()",
-        "stop_and_rewind(",
-        ".seek(",
-    ] {
+    // 执行面自己不**替用户**发送走带命令：唯一入口是 `wire_transport` 装的那些回调。
+    // ⭐ 唯一合法的例外是「装载即停住」那一条 `Stop`（`D-UI-32`），它单独钉在下面。
+    for token in ["send_transport(", ".play()", "stop_and_rewind(", ".seek("] {
         assert_eq!(
             live.matches(token).count(),
             0,
-            "⑧ `live_surface.rs` 代码里 `{token}` 必须 0 处（实测 {} 处）—— 执行面自己发\
-             走带命令就等于替用户按了一次键（① 的前置读数与 ⑥ 的增量都失去意义）",
+            "⑧ `live_surface.rs` 代码里 `{token}` 必须 0 处（实测 {} 处）—— 执行面自己\
+             播/停/回起点/定位就等于替用户按了一次键（① 的前置读数与 ⑥ 的增量都失去意义）",
             live.matches(token).count()
         );
     }
+    // ⭐ `D-UI-32`：装载即停住那一条**必须**在，而且**只在**换代入口里。
+    assert_eq!(
+        live.matches(".stop()").count(),
+        1,
+        "⑧ `live_surface.rs` 代码里 `.stop()` 必须**恰好 1 处**（实测 {} 处）—— \
+         0 处 = 新一代引擎带着构造默认的 `Playing` 交给用户（界面一开就「在播」、播放头\
+         自己走、第一次按播放是**停**，即 `D-UI-32`）；≥2 处 = 停住这一步被抄成了两处\
+         事实源（那正是本缺陷的成因形态）",
+        live.matches(".stop()").count()
+    );
+    assert_eq!(
+        main.matches(".stop()").count(),
+        2,
+        "⑧ `main.rs` 里 `.stop()` 必须仍是 **2 处**（实测 {} 处）：装载即停住那一条 \
+         + ALSA 设备挂载关闭那一条（`mount.stop()`，与走带无关）。两族⛔ 不得互删；\
+         若掉到 1，界面上「打开即播放」就回来了，而本判据的 serve 那一半仍然绿 ⇒ \
+         只有这条能看见",
+        main.matches(".stop()").count()
+    );
     // 初值那一格在**宿主**里写，⛔ 不在执行面重算（`apply_view` 不碰这一格：`D-UI-29` ⑩ 同口径）。
     assert_eq!(
         live.matches("set_metronome_on(").count(),

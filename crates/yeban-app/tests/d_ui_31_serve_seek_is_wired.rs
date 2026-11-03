@@ -39,7 +39,7 @@
 //!
 //! | 判据 | 证的事 |
 //! | :--- | :--- |
-//! | ①（按下 ⇒ 本装配的宿主） | 前置读数 `commands_applied = 0`；在第 3 条小节线上按一次 ⇒ 同一宿主 `+1` 条、位置离开 0、界面镜面 `playhead-ticks` 跟着回写；再用屏读器 `SetValue` 定位到"第 3 小节"⇒ **落点与指针那条完全相同**（两条入口、一个换算）。⭐ 修前红在第一件事上（无注册者 ⇒ 计数恒 0） |
+//! | ①（按下 ⇒ 本装配的宿主） | 前置读数 `commands_applied = 1`（装载即停住那一条 `Stop`，`D-UI-32`）；在第 3 条小节线上按一次 ⇒ 同一宿主 `+1` 条、位置离开 0、界面镜面 `playhead-ticks` 跟着回写；再用屏读器 `SetValue` 定位到"第 3 小节"⇒ **落点与指针那条完全相同**（两条入口、一个换算）。⭐ 修前红在第一件事上（无注册者 ⇒ 计数一直停在装载那一条） |
 //! | ②（小节号是等差的） | `"1"` ⇒ 0、`"2"`、`"3"` ⇒ 三步**严格递增**且两次差分**相等**（⛔ 不写死任何 tick 常量）；每一步 `+1` 条命令；`"not-a-bar"` ⇒ 一条都不发、位置不动 |
 //! | ③（夹在网格两端，⛔ 不回绕） | 从 0 往左一步 ⇒ 仍是 0；一步、两步 ⇒ 差分相等；`"9999"` ⇒ 停在右缘 `r > 0`；从 `r` 再往右三步 ⇒ **仍是 `r`**（回绕会把它送回左边） |
 //! | ④（章节卡片 = 投影里的那个起点，且不碰文档） | 逐个下标按下去 ⇒ 每次恰好 `+1` 条命令**且**引擎位置 `== live.view_section_start_tick(i)`（期望值从**本装配那一格投影**现读）；整段之后 `commit_count` **Δ0**（定位是会话运行态，`MODEL-ISO-001` 第二层） |
@@ -163,18 +163,19 @@ fn bar_line_px(window: &MainWindow, index: usize) -> f32 {
 fn a_ruler_press_seeks_the_assemblys_own_host() {
     let (live, _port, window) = assemble("<d-ui-31-ruler>", true);
 
-    // ---- 前置读数：这台引擎一次走带命令都没收过 ----
+    // ---- 前置读数：这台装配只发过**装载即停住**那一条（`D-UI-32`）----
     assert_eq!(
         live.engine_transport_commands_applied(),
-        0,
-        "① 前提：装配 + 起引擎⛔ 不许自发走带命令（实测已应用 {} 条）—— 这条读数一旦非 0，\
-         后面所有 `+1` 都失去意义",
+        1,
+        "① 前提：装配 + 起引擎⛔ 不许自发「替用户定位」的命令，但**必须**自发一条 `Stop` \
+         （换代即停住，`D-UI-32`；实测已应用 {} 条）—— 这条读数一旦 > 1，后面所有 `+1` \
+         都失去意义",
         live.engine_transport_commands_applied()
     );
     assert_eq!(
         live.engine_transport_position_ticks(),
         0,
-        "① 前提：起引擎不推量子 ⇒ 位置在 0"
+        "① 前提：起引擎 + 停住 ⇒ 位置在 0（⛔ 自由跑会把播放头自己走出去）"
     );
 
     // 落在第 3 条小节线上（= 屏读器口径的"第 3 小节"）。
@@ -188,9 +189,9 @@ fn a_ruler_press_seeks_the_assemblys_own_host() {
 
     assert_eq!(
         live.engine_transport_commands_applied(),
-        1,
-        "① ⭐ 一次按下必须**恰好**发一条命令到本装配的宿主（实测 {} 条）—— 0 条正是修前\
-         「`ruler-seek` 没有注册者」的形状",
+        2,
+        "① ⭐ 一次按下必须**恰好**再发一条命令到本装配的宿主（实测累计 {} 条 = 装载那条 \
+         `Stop` + 这一条）—— 增量 0 条正是修前「`ruler-seek` 没有注册者」的形状",
         live.engine_transport_commands_applied()
     );
     let pointer_tick = live.engine_transport_position_ticks();
@@ -208,8 +209,8 @@ fn a_ruler_press_seeks_the_assemblys_own_host() {
     window.invoke_ruler_seek_bar("3".into());
     assert_eq!(
         live.engine_transport_commands_applied(),
-        2,
-        "① `SetValue` 也是**一条**命令（实测 {} 条）",
+        3,
+        "① `SetValue` 也是**一条**命令（实测累计 {} 条）",
         live.engine_transport_commands_applied()
     );
     assert_eq!(
@@ -254,8 +255,8 @@ fn the_bar_number_ladder_is_evenly_spaced() {
     );
     assert_eq!(
         live.engine_transport_commands_applied(),
-        3,
-        "② 三次按下 = 三条命令（实测 {} 条）",
+        4,
+        "② 三次按下 = 三条命令（实测累计 {} 条 = 装载那条 `Stop` + 这三条）",
         live.engine_transport_commands_applied()
     );
 
