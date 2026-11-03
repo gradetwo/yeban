@@ -780,6 +780,13 @@ impl ElementRegistry {
                 &format!("轨道 {} 独奏", track.name),
                 false,
             );
+            registry.add(
+                &format!("track-{track_index}-arm-button"),
+                ElementKind::Button,
+                "workspace/arrangement_view.slint",
+                &format!("轨道 {} 录音准备", track.name),
+                false,
+            );
             // 轨道色标：标签携带**规范化**的 `#RRGGBB`（非法 / 缺失已在投影层回退）。
             // 它让"投影 ↔ 控件树"的色标一致性在纯 Rust 侧与 Tier-1 运行时树两侧都能断言
             // （`[UI-A11Y-004]` 的色标纪律；见 docs/ledger/app-completion-notes.md §2）。
@@ -2332,6 +2339,7 @@ mod tests {
                 "header",
                 "mute-button",
                 "solo-button",
+                "arm-button",
                 "channel-strip",
                 "meter",
                 "color-swatch",

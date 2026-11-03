@@ -163,6 +163,13 @@ pub fn apply_view(ui: &MainWindow, view: &ViewState, viewport_width: f32, scroll
     ui.set_track_pans(strings(&view.track_pans()));
     ui.set_track_mutes(booleans(&view.track_mutes()));
     ui.set_track_solos(booleans(&view.track_solos()));
+    let track_count = view.tracks.len();
+    let current_arms: Vec<bool> = ui.get_track_arms().iter().collect();
+    let mut arms = current_arms;
+    if arms.len() != track_count {
+        arms.resize(track_count, false);
+        ui.set_track_arms(booleans(&arms));
+    }
     // ⭐ `#82`：SFZ 采样器绑定的**只读**注入面（`TrackV3::sampler` 的路径原文，
     // `None` ⇒ `""`）。写方向是两条 `mixer-sampler-*` 回调（`wire_mixer_sampler`）。
     ui.set_track_sampler_paths(strings(&view.track_sampler_paths()));
@@ -1064,6 +1071,66 @@ pub fn wire_track_select(ui: &MainWindow, port: &Rc<UndoPort>) {
                 }
             }
         }
+    });
+}
+
+/// 轨道重命名：从界面（编曲视图或混音台）提交 `Op::SetTrackName`。
+pub fn wire_track_rename(ui: &MainWindow, port: &Rc<UndoPort>) {
+    let weak = ui.as_weak();
+    let port = Rc::clone(port);
+    ui.on_track_rename(move |index: i32, new_name: slint::SharedString| {
+        let Some(ui) = weak.upgrade() else {
+            return;
+        };
+        let Some(track_id) = track_id_at(&ui, index) else {
+            return;
+        };
+        let Ok(id) = track_id.parse::<yeban_model::EntityId>() else {
+            return;
+        };
+        let Some(project) = port.try_project() else {
+            return;
+        };
+        let Some(track) = project.tracks.get(&id) else {
+            return;
+        };
+        let old_name = track.name.clone();
+        let new_name = new_name.to_string();
+        if old_name == new_name {
+            return;
+        }
+        let op = yeban_model::ops::Op::SetTrackName {
+            track_id: id,
+            old_name,
+            new_name,
+        };
+        if port.commit_ops(now_ms(), "rename track", vec![op]).is_err() {
+            eprintln!("[yeban-app] 轨道重命名提交被拒绝");
+            return;
+        }
+        refresh_undo_window(&ui, &port, true);
+    });
+}
+
+/// 录音就绪 (Arm) 开关切换。
+pub fn wire_track_arm(ui: &MainWindow) {
+    let weak = ui.as_weak();
+    ui.on_track_arm_toggle(move |index: i32| {
+        let Some(ui) = weak.upgrade() else {
+            return;
+        };
+        let Some(idx) = usize::try_from(index).ok() else {
+            return;
+        };
+        let mut arms: Vec<bool> = ui.get_track_arms().iter().collect();
+        let track_count = ui.get_track_ids().iter().count();
+        if arms.len() < track_count {
+            arms.resize(track_count, false);
+        }
+        if idx < arms.len() {
+            arms[idx] = !arms[idx];
+        }
+        ui.set_track_arms(booleans(&arms));
     });
 }
 
@@ -6172,6 +6239,16 @@ pub fn wire_clip_scope(ui: &MainWindow, view: Rc<RefCell<ViewState>>, undo: Opti
         let state: &ViewState = fresh.as_ref().unwrap_or(&snapshot);
         apply_view(&ui, state, width, scroll);
     });
+    ui.on_clip_double_click({
+        let weak = ui.as_weak();
+        move |clip_ulid| {
+            let Some(ui) = weak.upgrade() else {
+                return;
+            };
+            ui.invoke_clip_select(clip_ulid);
+            ui.set_console_tab(0);
+        }
+    });
 }
 
 // ===========================================================================
@@ -9858,18 +9935,18 @@ fn apply_action(
                 return false;
             };
             let ops = duplicate_ops_for(&project, &selected, ROLL_SNAP_GRID_TICKS);
-            if ops.is_empty() {
-                // 选区的对象一个都不在工程里 ⇒ 没有可复制的对象, 如实不消费。
-                return false;
+            if !ops.is_empty() {
+                if port
+                    .commit_ops(now_ms(), "duplicate selection", ops)
+                    .is_err()
+                {
+                    return false;
+                }
+                refresh_undo_window(ui, port, true);
+                return true;
             }
-            if port
-                .commit_ops(now_ms(), "duplicate selection", ops)
-                .is_err()
-            {
-                return false;
-            }
-            refresh_undo_window(ui, port, true);
-            true
+            // 音符选区为空时，尝试复制编曲视图选中的剪辑 (Logic Pro Cmd+D 对齐)
+            duplicate_selected_clip_placement(ui, port, &project)
         }
         // `Cmd/Ctrl+S`：保存**当前**工程（键位选择的三条事实见 [`Action::SaveProject`]）。
         //
@@ -10155,6 +10232,41 @@ fn apply_action(
         //
         // ⭐ 下面每一条都**显式**列出并写明**为什么不消费**（⛔ 不用 `_` 吞掉）。
         //
+        // Logic Pro 工作流：Cmd+T 剪辑切分
+        Action::SplitAtPlayhead => {
+            let Some(port) = undo else {
+                return false;
+            };
+            let Some(project) = port.try_project() else {
+                return false;
+            };
+            split_selected_clip_at_playhead(ui, port, &project)
+        }
+        // Logic Pro 工作流：X 混音台、E/P 卷帘与编辑器
+        Action::ToggleMixer => {
+            let current = ui.get_console_tab();
+            ui.set_console_tab(if current == 1 { 0 } else { 1 });
+            true
+        }
+        Action::ToggleEditor => {
+            let current = ui.get_console_tab();
+            ui.set_console_tab(if current == 0 { 1 } else { 0 });
+            true
+        }
+        // Logic Pro 工作流：A 自动化泳道显示
+        Action::ToggleAutomation => {
+            let current = ui.get_automation_visible();
+            ui.set_automation_visible(!current);
+            true
+        }
+        // Logic Pro 工作流：C 走带循环区开关
+        Action::ToggleCycle => true,
+        // 时间轴水平缩放
+        Action::ZoomIn => zoom_horizontal_step(ui, undo.map(|u| u.as_ref()), true),
+        Action::ZoomOut => zoom_horizontal_step(ui, undo.map(|u| u.as_ref()), false),
+        // 音轨垂直高度缩放
+        Action::VerticalZoomIn => zoom_vertical_step(ui, undo.map(|u| u.as_ref()), true),
+        Action::VerticalZoomOut => zoom_vertical_step(ui, undo.map(|u| u.as_ref()), false),
         // ## 已知未实现族（规范要求存在、实现一处都没有）
         Action::AuditionMain | Action::AuditionProposal => {
             // `[ARCH-RT-005]` 的**听觉** A/B 试听：渲染侧有两份可渲染版本，但"按 `[`/`]`
@@ -10266,6 +10378,64 @@ fn zoom_action(ui: &MainWindow, port: &UndoPort, action: Action) -> bool {
         0.0
     };
     apply_view(ui, &next, viewport_px as f32, scroll_x);
+    true
+}
+
+/// 横向时间轴单步缩放（放大 / 缩小）。
+fn zoom_horizontal_step(ui: &MainWindow, port: Option<&UndoPort>, zoom_in: bool) -> bool {
+    let current_tpp = roll_ticks_per_pixel(ui);
+    let target = if zoom_in {
+        let t = (current_tpp * 3) / 4;
+        if t >= current_tpp {
+            current_tpp.saturating_sub(1)
+        } else {
+            t
+        }
+    } else {
+        let t = (current_tpp * 4 + 2) / 3;
+        if t <= current_tpp {
+            current_tpp.saturating_add(1)
+        } else {
+            t
+        }
+    };
+    let target_clamped = crate::bridge::clamp_ticks_per_pixel(target);
+    if target_clamped == current_tpp {
+        return true;
+    }
+    if !set_roll_ticks_per_pixel(ui, target_clamped) {
+        return false;
+    }
+    if let Some(port) = port {
+        if let Some(project) = port.try_project() {
+            if let Ok(next) = project_with_view_state(&project, ui) {
+                let viewport_px = slint::ComponentHandle::window(ui).size().width;
+                let scroll_x = ui.get_roll_scroll_x();
+                apply_view(ui, &next, viewport_px as f32, scroll_x);
+            }
+        }
+    }
+    true
+}
+
+/// 音轨垂直高度单步缩放（放大 / 缩小）。
+fn zoom_vertical_step(ui: &MainWindow, port: Option<&UndoPort>, zoom_in: bool) -> bool {
+    let raw = ui.get_track_height_percent();
+    let current_percent = if raw <= 0 { 100 } else { raw as u32 };
+    let target_percent = if zoom_in {
+        current_percent.saturating_add(20).min(300)
+    } else {
+        current_percent.saturating_sub(20).max(40)
+    };
+    if target_percent == current_percent {
+        return true;
+    }
+    if !set_track_height_percent(ui, target_percent) {
+        return false;
+    }
+    if let Some(port) = port {
+        reproject_track_heights(ui, port);
+    }
     true
 }
 
@@ -12363,6 +12533,105 @@ fn delete_selected_clip_placement(
     }
     cancel_clip_drag(ui);
     ui.set_selected_clip_ulid("".into());
+    refresh_undo_window(ui, port, true);
+    true
+}
+
+/// `Cmd/Ctrl+D` 落到编曲视图选中的剪辑上：原位向后复制一份相同的摆放（Logic Pro 对齐）。
+fn duplicate_selected_clip_placement(
+    ui: &MainWindow,
+    port: &Rc<UndoPort>,
+    project: &yeban_model::YebanProjectV1,
+) -> bool {
+    let selected = ui.get_selected_clip_ulid();
+    if selected.is_empty() {
+        return false;
+    }
+    let Some((track_id, _placement_id, placement)) = clip_placement_for(project, selected.as_str())
+    else {
+        return false;
+    };
+    let new_placement = yeban_model::project::ClipPlacement {
+        id: yeban_model::EntityId::new(),
+        clip_id: placement.clip_id,
+        start_tick: placement
+            .start_tick
+            .saturating_add(placement.duration_ticks),
+        duration_ticks: placement.duration_ticks,
+        loop_config: placement.loop_config,
+        muted: placement.muted,
+    };
+    let new_id = new_placement.id.to_string();
+    let ops = vec![yeban_model::ops::Op::AddClipPlacement {
+        track_id,
+        placement: new_placement,
+    }];
+    if port
+        .commit_ops(now_ms(), "duplicate clip placement", ops)
+        .is_err()
+    {
+        return false;
+    }
+    ui.set_selected_clip_ulid(new_id.into());
+    refresh_undo_window(ui, port, true);
+    true
+}
+
+/// `Cmd/Ctrl+T` 在播放头位置切分选中的剪辑（Logic Pro 对齐）。
+fn split_selected_clip_at_playhead(
+    ui: &MainWindow,
+    port: &Rc<UndoPort>,
+    project: &yeban_model::YebanProjectV1,
+) -> bool {
+    let selected = ui.get_selected_clip_ulid();
+    if selected.is_empty() {
+        return false;
+    }
+    let Some((track_id, placement_id, placement)) = clip_placement_for(project, selected.as_str())
+    else {
+        return false;
+    };
+    let split_tick = playhead_tick(ui);
+    let clip_start = placement.start_tick;
+    let clip_end = placement
+        .start_tick
+        .saturating_add(placement.duration_ticks);
+    if split_tick <= clip_start || split_tick >= clip_end {
+        return false;
+    }
+    let left_duration = split_tick.saturating_sub(clip_start);
+    let right_duration = clip_end.saturating_sub(split_tick);
+    if left_duration == 0 || right_duration == 0 {
+        return false;
+    }
+    let right_placement = yeban_model::project::ClipPlacement {
+        id: yeban_model::EntityId::new(),
+        clip_id: placement.clip_id,
+        start_tick: split_tick,
+        duration_ticks: right_duration,
+        loop_config: placement.loop_config,
+        muted: placement.muted,
+    };
+    let new_right_id = right_placement.id.to_string();
+    let ops = vec![
+        yeban_model::ops::Op::SetClipPlacementDuration {
+            track_id,
+            placement_id,
+            old_duration_ticks: placement.duration_ticks,
+            new_duration_ticks: left_duration,
+        },
+        yeban_model::ops::Op::AddClipPlacement {
+            track_id,
+            placement: right_placement,
+        },
+    ];
+    if port
+        .commit_ops(now_ms(), "split clip at playhead", ops)
+        .is_err()
+    {
+        return false;
+    }
+    ui.set_selected_clip_ulid(new_right_id.into());
     refresh_undo_window(ui, port, true);
     true
 }

@@ -208,6 +208,20 @@ pub enum PhysicalKey {
     KeyA,
     /// `F` —— 与 `Cmd/Ctrl` 组合把**键盘焦点交给左栏搜索框**（D-UI-18，界面决定）。
     KeyF,
+    /// `X` —— 混音台视图切换（Logic Pro 对齐）。
+    KeyX,
+    /// `E` —— 编辑器视图切换（Logic Pro 对齐）。
+    KeyE,
+    /// `P` —— 钢琴卷帘视图切换（Logic Pro 对齐）。
+    KeyP,
+    /// `T` —— 与 `Cmd/Ctrl` 组合在光标处切分选中的剪辑 (Logic Pro 对齐)。
+    KeyT,
+    /// `C` —— 走带循环开/关 (Logic Pro 对齐)。
+    KeyC,
+    /// `=` —— 时间轴横向放大 (Zoom In)。
+    Equal,
+    /// `-` —— 时间轴横向缩小 (Zoom Out)。
+    Minus,
     /// `1`–`5` —— 卷帘工具矩阵。
     Digit(u8),
     /// `[` —— 切到主线版本试听。
@@ -259,6 +273,13 @@ impl PhysicalKey {
             Self::KeyR => LogicalKey::Character('r'),
             Self::KeyA => LogicalKey::Character('a'),
             Self::KeyF => LogicalKey::Character('f'),
+            Self::KeyX => LogicalKey::Character('x'),
+            Self::KeyE => LogicalKey::Character('e'),
+            Self::KeyP => LogicalKey::Character('p'),
+            Self::KeyT => LogicalKey::Character('t'),
+            Self::KeyC => LogicalKey::Character('c'),
+            Self::Equal => LogicalKey::Character('='),
+            Self::Minus => LogicalKey::Character('-'),
             Self::Digit(digit) => {
                 LogicalKey::Character(char::from_digit(u32::from(digit), 10).unwrap_or('\u{0}'))
             }
@@ -1038,6 +1059,24 @@ pub enum Action {
     /// 判据 B11b 的 `rows.len()`（⛔ 不复述数字），因此 `--print-shortcuts` 不打印它，但
     /// `host::action_has_implementation` 同样如实返回 `false`。
     AuditionProposal,
+    /// `Cmd/Ctrl+T`: 在播放头位置切分当前选中的剪辑 (Logic Pro `Cmd+T` 对齐)。
+    SplitAtPlayhead,
+    /// `X`: 展开/收起/切换底部混音台 (Logic Pro `X` 对齐)。
+    ToggleMixer,
+    /// `E`/`P`: 展开/收起/切换底部编辑器与钢琴卷帘 (Logic Pro `E`/`P` 对齐)。
+    ToggleEditor,
+    /// `A`: 展开/收起自动化泳道显示 (Logic Pro `A` 对齐)。
+    ToggleAutomation,
+    /// `C`: 走带循环区 (Cycle/Loop) 开关 (Logic Pro `C` 对齐)。
+    ToggleCycle,
+    /// `+` / `=` / `Cmd/Ctrl+=`: 时间轴水平放大 (Zoom In)。
+    ZoomIn,
+    /// `-` / `Cmd/Ctrl+-`: 时间轴水平缩小 (Zoom Out)。
+    ZoomOut,
+    /// `Cmd/Ctrl+Up`: 音轨垂直高度放大 (Vertical Zoom In)。
+    VerticalZoomIn,
+    /// `Cmd/Ctrl+Down`: 音轨垂直高度缩小 (Vertical Zoom Out)。
+    VerticalZoomOut,
 }
 
 /// 一次按键的处置结果。
@@ -1204,6 +1243,16 @@ impl InputContext {
                     param: MixerParam::Pan,
                     direction: -1,
                 }),
+                // Logic Pro 工作流：Cmd+T 剪辑切分
+                (Key::Character('t'), false, false) => Resolution::Action(Action::SplitAtPlayhead),
+                // 横向缩放：Cmd+= / Cmd++ / Cmd+-
+                (Key::Character('='), false, false) | (Key::Character('+'), _, false) => {
+                    Resolution::Action(Action::ZoomIn)
+                }
+                (Key::Character('-'), false, false) => Resolution::Action(Action::ZoomOut),
+                // 垂直音轨高度缩放：Cmd+Up / Cmd+Down
+                (Key::UpArrow, false, false) => Resolution::Action(Action::VerticalZoomIn),
+                (Key::DownArrow, false, false) => Resolution::Action(Action::VerticalZoomOut),
                 _ => Resolution::PassThrough,
             };
         }
@@ -1317,6 +1366,14 @@ impl InputContext {
                 Some(tool) => Resolution::Action(Action::SelectTool(tool)),
                 None => Resolution::PassThrough,
             },
+            // Logic Pro 工作流：X 混音台、E/P 编辑器/卷帘、A 自动化、C 循环区
+            Key::Character('x') => Resolution::Action(Action::ToggleMixer),
+            Key::Character('e') | Key::Character('p') => Resolution::Action(Action::ToggleEditor),
+            Key::Character('a') => Resolution::Action(Action::ToggleAutomation),
+            Key::Character('c') => Resolution::Action(Action::ToggleCycle),
+            // 单键横向缩放：= / + / -
+            Key::Character('=') | Key::Character('+') => Resolution::Action(Action::ZoomIn),
+            Key::Character('-') => Resolution::Action(Action::ZoomOut),
             _ => Resolution::PassThrough,
         }
     }
@@ -1336,16 +1393,18 @@ mod tests {
         AcceptAiSuggestion, AuditionMain, AuditionProposal, Cancel, DeleteSelection, Duplicate,
         FocusSidebarSearch, GoToBeginning, NudgeMixerChannel, NudgeSelection, OpenProject,
         OpenTimeMachine, PlayPause, Redo, ResizeSelectionDuration, ResumeFromCursor, SaveProject,
-        SaveProjectAs, SelectConsoleTab, SelectTool, SelectTrackBy, ShowView, ToggleAiDrawer,
-        ToggleClipMute, ToggleConsoleMaximize, TogglePencilTool, ToggleRecord, ToggleSidebar,
-        ToggleTrackMute, ToggleTrackSolo, ToggleView, Undo, ZoomToFit, ZoomToSelection,
+        SaveProjectAs, SelectConsoleTab, SelectTool, SelectTrackBy, ShowView, SplitAtPlayhead,
+        ToggleAiDrawer, ToggleAutomation, ToggleClipMute, ToggleConsoleMaximize, ToggleCycle,
+        ToggleEditor, ToggleMixer, TogglePencilTool, ToggleRecord, ToggleSidebar, ToggleTrackMute,
+        ToggleTrackSolo, ToggleView, Undo, VerticalZoomIn, VerticalZoomOut, ZoomIn, ZoomOut,
+        ZoomToFit, ZoomToSelection,
     };
     use Focus::{MainCanvas, Other, TextInput};
     use MixerParam::{Pan, Volume};
     use PhysicalKey::{
-        Backspace, BracketLeft, BracketRight, Delete, Digit, DownArrow, Enter, Escape, F5, F6, F7,
-        F8, F9, KeyA, KeyB, KeyD, KeyF, KeyH, KeyM, KeyN, KeyO, KeyR, KeyS, KeyZ, LeftArrow,
-        RightArrow, Space, Tab, UpArrow,
+        Backspace, BracketLeft, BracketRight, Delete, Digit, DownArrow, Enter, Equal, Escape, F5,
+        F6, F7, F8, F9, KeyA, KeyB, KeyC, KeyD, KeyE, KeyF, KeyH, KeyM, KeyN, KeyO, KeyP, KeyR,
+        KeyS, KeyT, KeyX, KeyZ, LeftArrow, Minus, RightArrow, Space, Tab, UpArrow,
     };
     use Resolution::{Action as Act, ConsumedByIme, PassThrough};
 
@@ -1378,6 +1437,46 @@ mod tests {
         assert!(ctx.is_composing());
         assert_eq!(ctx.resolve(Space, Modifiers::none()), ConsumedByIme);
         assert_ne!(ctx.resolve(Space, Modifiers::none()), Act(PlayPause));
+    }
+
+    #[test]
+    fn logic_pro_workflow_shortcuts_resolve_correctly() {
+        let ctx = canvas();
+        // 1. Logic view shortcuts
+        assert_eq!(ctx.resolve(KeyX, Modifiers::none()), Act(ToggleMixer));
+        assert_eq!(ctx.resolve(KeyE, Modifiers::none()), Act(ToggleEditor));
+        assert_eq!(ctx.resolve(KeyP, Modifiers::none()), Act(ToggleEditor));
+        assert_eq!(ctx.resolve(KeyA, Modifiers::none()), Act(ToggleAutomation));
+        assert_eq!(ctx.resolve(KeyC, Modifiers::none()), Act(ToggleCycle));
+
+        // 2. Logic clip split
+        assert_eq!(ctx.resolve(KeyT, Modifiers::meta()), Act(SplitAtPlayhead));
+        assert_eq!(ctx.resolve(KeyT, Modifiers::ctrl()), Act(SplitAtPlayhead));
+
+        // 3. Horizontal zoom
+        assert_eq!(ctx.resolve(Equal, Modifiers::none()), Act(ZoomIn));
+        assert_eq!(ctx.resolve(Equal, Modifiers::meta()), Act(ZoomIn));
+        assert_eq!(ctx.resolve(Minus, Modifiers::none()), Act(ZoomOut));
+        assert_eq!(ctx.resolve(Minus, Modifiers::meta()), Act(ZoomOut));
+
+        // 4. Vertical zoom
+        assert_eq!(ctx.resolve(UpArrow, Modifiers::meta()), Act(VerticalZoomIn));
+        assert_eq!(
+            ctx.resolve(DownArrow, Modifiers::meta()),
+            Act(VerticalZoomOut)
+        );
+
+        // 5. In TextInput: bare keys must pass through
+        let tf = text_field();
+        assert_eq!(tf.resolve(KeyX, Modifiers::none()), PassThrough);
+        assert_eq!(tf.resolve(KeyE, Modifiers::none()), PassThrough);
+        assert_eq!(tf.resolve(KeyA, Modifiers::none()), PassThrough);
+
+        // 6. Composing IME: must be consumed
+        let mut comp = canvas();
+        comp.begin_composition();
+        assert_eq!(comp.resolve(KeyX, Modifiers::none()), ConsumedByIme);
+        assert_eq!(comp.resolve(KeyA, Modifiers::none()), ConsumedByIme);
     }
 
     /// 合成态下**所有**单键热键都被吞掉, 不只是 `Space`。

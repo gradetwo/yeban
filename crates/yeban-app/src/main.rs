@@ -841,6 +841,8 @@ fn run_gui(options: &Options) -> Result<Vec<String>, cli::CliError> {
     // 落点是 `ui.set_selected-track-id`（唯一写点）+ 用同一个端口重投影，
     // ⛔ 不调用 `UndoPort::commit_ops`。端口在这里只用来取"此刻权威的工程"。
     host::wire_track_select(&ui, &undo_port);
+    host::wire_track_rename(&ui, &undo_port);
+    host::wire_track_arm(&ui);
     // 混音台（控制台 Tab 2）的**写入面**：推子 / 声相 / 静音 / 独奏。
     //
     // 工程内容是**领域内容** ⇒ 走 `Op` + `UndoPort`（`ADR-0005`）：拖动期间只写视图态，

@@ -851,6 +851,12 @@ export component MainWindow inherits Window {
     // `undoable` / `projectDigest` 全部 Δ0 —— 选中是视图态，不是工程内容。
     /// 点击轨道头：`(轨道下标)`。
     callback track-select(int);
+    /// 轨道重命名：`(轨道下标, 新名称)`。
+    callback track-rename(int, string);
+    /// 轨道录音就绪 (Arm) 开关：`(轨道下标)`。
+    callback track-arm-toggle(int);
+    /// 双击剪辑：直达钢琴卷帘（Logic Pro 对齐）。
+    callback clip-double-click(string);
     /// 点击剪辑包头：`(片段身份)` —— 身份由界面原样上报（它在 `clip-ulids` 的循环里就有），
     /// 校验与写入全在 `host::wire_clip_select`。
     callback clip-select(string);
@@ -1117,6 +1123,8 @@ export component MainWindow inherits Window {
     in property <[string]> track-volumes: [];
     in property <[bool]> track-mutes: [];
     in property <[bool]> track-solos: [];
+    in property <[bool]> track-arms: [];
+    in-out property <bool> automation-visible: true;
     // ⭐ SFZ 采样器路径（`TrackV3::sampler` 的路径原文；`None` ⇒ `""`）——
     // 注入面与 `track-mutes` / `track-solos` 同族（`host::apply_view` 是唯一写者；
     // `ui.set_track_sampler_paths` 在 `src/host.rs`）。
@@ -1606,6 +1614,14 @@ export component MainWindow inherits Window {
                     track-volumes: root.track-volumes;
                     track-mutes: root.track-mutes;
                     track-solos: root.track-solos;
+                    track-arms: root.track-arms;
+                    automation-visible: root.automation-visible;
+                    track-arm-toggle(track_index) => {
+                        root.track-arm-toggle(track_index);
+                    }
+                    track-rename(track_index, name) => {
+                        root.track-rename(track_index, name);
+                    }
                     sections: root.section-names;
                     section-colors: root.section-colors;
                     section-color-labels: root.section-color-labels;
@@ -1622,6 +1638,9 @@ export component MainWindow inherits Window {
                     // 包头点击 ⇒ 原样上抛身份，宿主校验后写 `selected-clip-ulid`。
                     clip-select(clip_ulid) => {
                         root.clip-select(clip_ulid);
+                    }
+                    clip-double-click(clip_ulid) => {
+                        root.clip-double-click(clip_ulid);
                     }
                     // ⭐ 剪辑平移：草稿读数由宿主写，界面只转发四段手势。
                     clip-drag-ulid: root.clip-drag-ulid;
@@ -1870,6 +1889,9 @@ export component MainWindow inherits Window {
             selected-track-id: root.selected-track-id;
             track-select(track_index) => {
                 root.track-select(track_index);
+            }
+            track-rename(track_index, name) => {
+                root.track-rename(track_index, name);
             }
             track-meter-peaks: root.track-meter-peaks;
             track-meter-rmss: root.track-meter-rmss;

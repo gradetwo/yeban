@@ -193,6 +193,7 @@ export component ConsoleTabs inherits Rectangle {
     callback mixer-mute-toggle(int);
     callback mixer-solo-toggle(int);
     callback track-select(int);
+    callback track-rename(int, string);
     // ⭐ 主控通道条的静音 / 独奏：与上面两个同款只上抛（宿主 `host::wire_mixer_edit`
     // 按主总线身份提交，⛔ 界面不解析、不提交、不改任何工程值）。
     callback mixer-master-mute-toggle();
@@ -442,6 +443,9 @@ export component ConsoleTabs inherits Rectangle {
         selected-track-id: root.selected-track-id;
         track-select(index) => {
             root.track-select(index);
+        }
+        track-rename(index, new_name) => {
+            root.track-rename(index, new_name);
         }
         // ⭐ 素材池（`#133`）：同样只透传（`AssetPoolPanel` 住在 `MixerConsole` 里）。
         asset-pool-names: root.asset-pool-names;
