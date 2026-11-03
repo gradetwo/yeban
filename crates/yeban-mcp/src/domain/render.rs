@@ -2675,6 +2675,7 @@ pub fn build(
         .map_err(|error| render_error("渲染计划探针编译", &error))?;
     let nodes = probe.nodes;
     let source_nodes = probe.source_nodes;
+    let bus_source_nodes = probe.bus_source_nodes;
     let rendered_edges = probe.rendered_edges;
     // ⭐ `#315` / `#337`：三个侧链读数（"声明了 N 条、求和了 M 条、没有键输入路径 K 条"）。
     // **纯读**，⛔ 不碰一个样本。
@@ -2750,8 +2751,12 @@ pub fn build(
     //      `Macro` 泳道（`#297`）真的被应用（见 `TrackSource`、第 9 步、
     //      `RenderPlan::attach_send_automation` 与
     //      `RenderPlan::attach_device_param_automation`）。
+    // ⭐ TrackVolume 修复：收据的源节点集也要含总线源轨 —— 它们的引擎源真的渲染
+    // （`MidiCc` 泳道因此落点），写侧读数与导出读数才同源。
+    let mut report_source_nodes = source_nodes.clone();
+    report_source_nodes.extend(bus_source_nodes.iter().copied());
     let automation =
-        AutomationReport::from_project(project, &source_nodes, &rendered_edges, &nodes);
+        AutomationReport::from_project(project, &report_source_nodes, &rendered_edges, &nodes);
     if automation.unsupported > 0 {
         note_unsupported(&mut unsupported, &mut counts, "automationLanes");
     }
@@ -2774,30 +2779,42 @@ pub fn build(
     let mut sampler_loads: BTreeMap<EntityId, ArmedSamplerTrack> = BTreeMap::new();
     let mut sampler_failure: Option<Fault> = None;
     let mut sampler_store = sfz::SampleStore::new();
-    let timbre = EngineTimbre::from_project_armed(project, sample_rate as f32, |track, raw| {
-        match prepare_sampler_track(
-            track,
-            raw,
-            project,
-            project_path,
-            &mut sampler_store,
-            request.sample_limits,
-        ) {
-            Ok((armed, samples)) => {
-                // ⭐ `#279`：解码表**直接**交给引擎（`(sample= 原样字符串, (PCM, 原始采样率))`），
-                // ⛔ 不再经 `ArmedSamplerTrack` 中转一次深拷贝（旧 `armed.samples.clone()`）。
-                let resolved = armed.load.path.clone();
-                sampler_loads.insert(track, armed);
-                ArmedSfzInput::new(resolved, samples)
-            }
-            Err(fault) => {
-                if sampler_failure.is_none() {
-                    sampler_failure = Some(fault);
-                }
-                ArmedSfzInput::empty(raw)
-            }
+    // ⭐ TrackVolume 修复：快照投影用的工程副本里把总线源轨的静态推子置 0 dB
+    // （mute/solo 门保留：输出级用同一谓词，幂等），否则引擎源先乘一次推子、
+    // 输出级再乘一次（推子平方）。采样器武装仍用真实工程（provider 闭包里传
+    // `project`），副本只影响快照的 `track_gain_scale`；速度/声相/设备参数一律不动。
+    // 没有总线源轨的工程：副本与原工程逐位等价 ⇒ 渲染逐字节不变。
+    let mut timbre_project = project.clone();
+    for node in &bus_source_nodes {
+        if let Some(track) = timbre_project.tracks.get_mut(node) {
+            track.volume_db = 0.0;
         }
-    });
+    }
+    let timbre =
+        EngineTimbre::from_project_armed(&timbre_project, sample_rate as f32, |track, raw| {
+            match prepare_sampler_track(
+                track,
+                raw,
+                project,
+                project_path,
+                &mut sampler_store,
+                request.sample_limits,
+            ) {
+                Ok((armed, samples)) => {
+                    // ⭐ `#279`：解码表**直接**交给引擎（`(sample= 原样字符串, (PCM, 原始采样率))`），
+                    // ⛔ 不再经 `ArmedSamplerTrack` 中转一次深拷贝（旧 `armed.samples.clone()`）。
+                    let resolved = armed.load.path.clone();
+                    sampler_loads.insert(track, armed);
+                    ArmedSfzInput::new(resolved, samples)
+                }
+                Err(fault) => {
+                    if sampler_failure.is_none() {
+                        sampler_failure = Some(fault);
+                    }
+                    ArmedSfzInput::empty(raw)
+                }
+            }
+        });
     if let Some(fault) = sampler_failure {
         return Err(fault);
     }
@@ -2817,7 +2834,16 @@ pub fn build(
     // ⭐ `#274`：逐轨的**声部窃取**句柄（渲染之后才有读数，见 `9a` 的同一条时机）。
     let mut sampler_steals: BTreeMap<EntityId, Arc<AtomicU64>> = BTreeMap::new();
     let mut end_tick = 0u64;
-    for &node in &source_nodes {
+    // ⭐ TrackVolume 修复：总线源轨也要建源（过去这里只跑 `source_nodes`，总线源轨
+    // 自己的声音整段被丢掉，轨上的 `TrackVolume` 泳道与静态推子对它全无作用）。
+    // 源侧推子/声相/自动化全部中性化（`bus_source = true`），推子只由输出级对
+    // 整条和（自有源＋入边求和）乘一次 —— 与 CLI `render_core` 的 #240 语义同一条
+    // （⛔ 不在这里复刻“只乘自己的源”，那正是旧缺陷的另一半）。
+    for (node, bus_source) in source_nodes
+        .iter()
+        .map(|node| (*node, false))
+        .chain(bus_source_nodes.iter().map(|node| (*node, true)))
+    {
         let track = project.tracks.get(&node).ok_or_else(|| {
             render_failed(
                 "路由图里的源节点没有对应的音轨, 无法知道该渲染什么",
@@ -2838,6 +2864,7 @@ pub fn build(
             &mut unsupported,
             &mut counts,
             compressing.contains(&node),
+            bus_source,
         )?;
         end_tick = end_tick.max(report.end_tick);
         reports.push(report);
@@ -3669,6 +3696,10 @@ pub(super) struct ProbeSubgraph {
     pub(super) nodes: Vec<EntityId>,
     /// 其中的源节点（没有入边的节点；主总线也算）。
     pub(super) source_nodes: Vec<EntityId>,
+    /// 其中的**总线源节点**：保留子图里有入边、非主总线、且自带片段摆放的节点
+    /// （`TrackVolume` 修复：这类节点过去根本不建源，自己的声音在离线渲染里被丢掉；
+    /// 建源时源侧推子/声相/自动化必须中性化，推子只由输出级对整条和乘一次）。
+    pub(super) bus_source_nodes: Vec<EntityId>,
     /// 保留子图里的全部边（`RenderPlan::edge_ids()`）。
     pub(super) rendered_edges: Vec<EntityId>,
 }
@@ -3699,10 +3730,23 @@ pub(super) fn probe_subgraph(
         .copied()
         .filter(|node| is_source_node(&plan, *node))
         .collect();
+    let bus_source_nodes = nodes
+        .iter()
+        .copied()
+        .filter(|node| {
+            *node != project.master_bus_track_id
+                && !is_source_node(&plan, *node)
+                && project
+                    .tracks
+                    .get(node)
+                    .is_some_and(|track| !track.clips.is_empty())
+        })
+        .collect();
     let rendered_edges = plan.edge_ids();
     Ok(ProbeSubgraph {
         nodes,
         source_nodes,
+        bus_source_nodes,
         rendered_edges,
     })
 }
@@ -3731,10 +3775,14 @@ pub(super) fn offline_lane_status(
     let sample_rate = project.audio_config.sample_rate.hz();
     match probe_subgraph(project, sample_rate) {
         Ok(probe) => {
+            // ⭐ TrackVolume 修复：与导出收据同一份源节点集（含总线源轨），否则
+            // 写侧读数与导出读数各判一套。
+            let mut source_nodes = probe.source_nodes;
+            source_nodes.extend(probe.bus_source_nodes.iter().copied());
             let residual = yeban_render::automation::unsupported_lane_reason(
                 project,
                 target,
-                &probe.source_nodes,
+                &source_nodes,
                 &probe.rendered_edges,
                 &probe.nodes,
             );
@@ -4512,6 +4560,10 @@ fn build_source(
     counts: &mut BTreeMap<&'static str, u64>,
     // ⭐ `#303`：本轨会执行压缩 ⇒ 源侧**不带声相**（pre-pan tap；输出级负责声相）。
     pre_pan: bool,
+    // ⭐ TrackVolume 修复：本轨是有入边的总线源轨 ⇒ 源侧静态推子/声相/自动化
+    // 全部中性化（推子与自动化只由输出级对整条和乘一次）；片段增益只取片段自身，
+    // 引擎推子由调用方在快照投影副本里置 0 dB。`false` 时与修前逐位相同。
+    bus_source: bool,
 ) -> Result<(TrackSource, SourceReport), Fault> {
     // solo 语义（B2 起也作用于辅助返回总线 —— 见 `build` 的输出级）；判据与源轨
     // 同一条 `track_is_audible`：只要工程里有任一音轨 solo, 未 solo 且非 solo-safe
@@ -4530,8 +4582,11 @@ fn build_source(
     // 且不挂 `pan_automation` ⇒ 压缩器的检波器看到**声相之前**的电平（与实时同序）。
     let pan_automation = TrackPanAutomation::new(project, track.id, sample_rate);
     let pan_identity = pan_automation.is_identity() || pre_pan;
-    let source_pan = if pan_identity {
-        if pre_pan { 0.0 } else { track.pan }
+    // ⭐ 总线源轨：静态与自动化声相都交给输出级（整条和只乘一次声相）⇒ 源侧声相恒 0。
+    let source_pan = if bus_source || pre_pan {
+        0.0
+    } else if pan_identity {
+        track.pan
     } else {
         0.0
     };
@@ -4683,8 +4738,10 @@ fn build_source(
             }
             ClipContent::Audio { asset, gain_db } => {
                 // 片段增益与音轨音量都是 dB ⇒ 先求和（一次超越函数求值）再转线性。
-                let Some(combined_db) =
-                    clip_math::combined_gain_db(*gain_db, track.volume_db, audible)
+                // ⭐ 总线源轨：片段增益只取片段自身（轨推子由输出级对整条和乘一次；
+                // `audible` 门保留：静音轨仍不解码，输出级同谓词再乘 0，幂等）。
+                let track_db = if bus_source { 0.0 } else { track.volume_db };
+                let Some(combined_db) = clip_math::combined_gain_db(*gain_db, track_db, audible)
                 else {
                     // 音轨被 mute/solo 门控掉: 不发声、**不解码**, 但仍计入时间轴末端。
                     clips_gated = clips_gated.saturating_add(1);
@@ -4965,14 +5022,16 @@ fn build_source(
         sampler_steals.insert(track.id, counter);
     }
     // ⭐ 本轨的 `TrackVolume` 自动化：构造期判定恒等快路径，非恒等才挂到源上。
+    // ⭐ 总线源轨：音量/声相自动化都不挂源上（输出级对整条和乘一次；挂这里会
+    // 只乘自己的源、漏掉入边求和，还会与输出级重复）。
     let automation = TrackGainAutomation::new(project, track.id, sample_rate);
     let source = TrackSource {
         midi,
         sampler_bound,
         clips,
-        automation: (!automation.is_identity()).then_some(automation),
+        automation: (!automation.is_identity() && !bus_source).then_some(automation),
         // ⭐ `#257`：声相自动化（恒等时 `None`，源侧静态声相保持原样）。
-        pan_automation: (!pan_identity).then_some(pan_automation),
+        pan_automation: (!pan_identity && !bus_source).then_some(pan_automation),
     };
     let report = SourceReport {
         node: track.id,
