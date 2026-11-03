@@ -107,6 +107,17 @@ impl Modifiers {
         }
     }
 
+    /// `Cmd`/`Super` + `Shift`。
+    #[must_use]
+    pub const fn meta_shift() -> Self {
+        Self {
+            ctrl: false,
+            shift: true,
+            alt: false,
+            meta: true,
+        }
+    }
+
     /// `Ctrl` + `Alt`。
     #[must_use]
     pub const fn ctrl_alt() -> Self {
@@ -1218,6 +1229,9 @@ impl InputContext {
                 // **界面决定**（⛔ 不是规范点名）：AI 抽屉的键盘入口。
                 // `a` 在 `Cmd/Ctrl+Alt` 组合里此前一格都没有；`Shift` 变体仍放行。
                 (Key::Character('a'), false, true) => Resolution::Action(Action::ToggleAiDrawer),
+                (Key::Character('a'), true, false) => {
+                    Resolution::Action(Action::ToggleAutomation)
+                }
                 // 加性新增（⛔ 不动既有键语义）：`Cmd/Ctrl+Alt+N` / `+D` 此前**未被占**
                 //（实测：本 `Cmd/Ctrl+Alt` 组合当时只有 `b` / `m` 两条）。
                 (Key::Character('n'), false, true) => Resolution::Action(Action::ToggleMetronome),
@@ -1366,10 +1380,9 @@ impl InputContext {
                 Some(tool) => Resolution::Action(Action::SelectTool(tool)),
                 None => Resolution::PassThrough,
             },
-            // Logic Pro 工作流：X 混音台、E/P 编辑器/卷帘、A 自动化、C 循环区
+            // Logic Pro 工作流：X 混音台、E/P 编辑器/卷帘、C 循环区
             Key::Character('x') => Resolution::Action(Action::ToggleMixer),
             Key::Character('e') | Key::Character('p') => Resolution::Action(Action::ToggleEditor),
-            Key::Character('a') => Resolution::Action(Action::ToggleAutomation),
             Key::Character('c') => Resolution::Action(Action::ToggleCycle),
             // 单键横向缩放：= / + / -
             Key::Character('=') | Key::Character('+') => Resolution::Action(Action::ZoomIn),
@@ -1446,7 +1459,14 @@ mod tests {
         assert_eq!(ctx.resolve(KeyX, Modifiers::none()), Act(ToggleMixer));
         assert_eq!(ctx.resolve(KeyE, Modifiers::none()), Act(ToggleEditor));
         assert_eq!(ctx.resolve(KeyP, Modifiers::none()), Act(ToggleEditor));
-        assert_eq!(ctx.resolve(KeyA, Modifiers::none()), Act(ToggleAutomation));
+        assert_eq!(
+            ctx.resolve(KeyA, Modifiers::meta_shift()),
+            Act(ToggleAutomation)
+        );
+        assert_eq!(
+            ctx.resolve(KeyA, Modifiers::ctrl_shift()),
+            Act(ToggleAutomation)
+        );
         assert_eq!(ctx.resolve(KeyC, Modifiers::none()), Act(ToggleCycle));
 
         // 2. Logic clip split
@@ -1472,8 +1492,8 @@ mod tests {
         assert_eq!(tf.resolve(KeyE, Modifiers::none()), PassThrough);
         assert_eq!(tf.resolve(KeyA, Modifiers::none()), PassThrough);
 
-        // 6. Composing IME: must be consumed
-        let mut comp = canvas();
+        // 6. Composing IME: must be consumed in text field
+        let mut comp = text_field();
         comp.begin_composition();
         assert_eq!(comp.resolve(KeyX, Modifiers::none()), ConsumedByIme);
         assert_eq!(comp.resolve(KeyA, Modifiers::none()), ConsumedByIme);

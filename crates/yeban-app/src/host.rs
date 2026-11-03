@@ -164,13 +164,6 @@ pub fn apply_view(ui: &MainWindow, view: &ViewState, viewport_width: f32, scroll
     ui.set_track_pans(strings(&view.track_pans()));
     ui.set_track_mutes(booleans(&view.track_mutes()));
     ui.set_track_solos(booleans(&view.track_solos()));
-    let track_count = view.tracks.len();
-    let current_arms: Vec<bool> = ui.get_track_arms().iter().collect();
-    let mut arms = current_arms;
-    if arms.len() != track_count {
-        arms.resize(track_count, false);
-        ui.set_track_arms(booleans(&arms));
-    }
     // ⭐ `#82`：SFZ 采样器绑定的**只读**注入面（`TrackV3::sampler` 的路径原文，
     // `None` ⇒ `""`）。写方向是两条 `mixer-sampler-*` 回调（`wire_mixer_sampler`）。
     ui.set_track_sampler_paths(strings(&view.track_sampler_paths()));
@@ -12613,18 +12606,15 @@ fn split_selected_clip_at_playhead(
         muted: placement.muted,
     };
     let new_right_id = right_placement.id.to_string();
-    let ops = vec![
-        yeban_model::ops::Op::SetClipPlacementDuration {
-            track_id,
-            placement_id,
-            old_duration_ticks: placement.duration_ticks,
-            new_duration_ticks: left_duration,
-        },
-        yeban_model::ops::Op::AddClipPlacement {
-            track_id,
-            placement: right_placement,
-        },
-    ];
+    let shorten_delta = -((placement.duration_ticks.saturating_sub(left_duration)) as i64);
+    let mut ops = clip_duration_ops_for(project, selected.as_str(), shorten_delta);
+    if ops.is_empty() {
+        return false;
+    }
+    ops.push(yeban_model::ops::Op::AddClipPlacement {
+        track_id,
+        placement: right_placement,
+    });
     if port
         .commit_ops(now_ms(), "split clip at playhead", ops)
         .is_err()
@@ -13230,6 +13220,7 @@ pub fn build_main_window_with_console_tab(
     ui.set_arrangement_view(scene.arrangement_by_default);
     ui.set_playing(false);
     ui.set_console_tab(console_tab);
+    ui.set_track_arms(booleans(&vec![false; view.tracks.len()]));
     // ⭐ `#191`：这里**不再**写 `compact`。`ui/app.slint` 的 `MainWindow.compact` 是
     // `width < Tokens.breakpoint-full-hd` 的表达式绑定 ⇒ 断点跟着**真实窗口宽**走
     //（⭐ `#195` 起该令牌是 `1180`）。原来这一行写的是
