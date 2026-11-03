@@ -2274,3 +2274,33 @@ error: variable does not need to be mutable
 ⇒ 只有装配现场那一条是多余的）。判据文件同理：`let (mut live, …)` 的每一例都要真的动 `live`
 （①④⑦ 三例只读 ⇒ ⛔ 不带 `mut`）。
 
+### 八、第四枚编译红：`clone_on_copy` —— 而它⛔ 不在本票的文件里
+
+`run 41566875640`（`a13ef426`）的读回（`gh run view --log` 三腿逐条剥 ANSI 后现读）：
+
+| 腿 | 结论 | 死因（`error:` 行数：单位 条） | `Running tests/`（单位：个二进制） |
+| :--- | :--- | :--- | :--- |
+| `rust (yeban-app)` · `clippy (-D warnings)` | failure | **1**：`using 'clone' on type 'EntityId' which implements the 'Copy' trait` → `could not compile yeban-app (test "d_ui_28_export_length_seeds_from_audible_end")` | **0** |
+| `windows (… / yeban-app / …)` | failure | 同上，同一行 | **0** |
+| `macos (… / yeban-app / …)` | failure | 同上，同一行 | **0** |
+
+⇒ 三腿**死因逐字相同**，判据仍一条没跑 ⇒ `D-UI-28` / `D-UI-29` / `D-UI-30` 的判决**第四次全部作废**
+（死因链：`E0277` → `dead_code` → `unused_mut` → `clone_on_copy`）。
+`checks`（fmt / 红线守卫 / schema）与 `lockfile` 绿；`deny` 那枚与本票无关（`§44`）。
+
+那一条 `.clone()` 在 **`D-UI-28` 的判据文件**里（⑧ 给 `Op::SetSection` 绑同一个 ULID），⛔ 不是本票的：
+`EntityId` 是 `#[derive(Clone, Copy, …)]`（现读 `crates/yeban-model/src/ids.rs:40`）⇒ 同一个绑定用两次
+本来就⛔ 需要 `clone`。修前那句注释写的是"先绑一个**再克隆**"—— 措辞本身就把 `Copy` 当成了
+`Clone`，所以⛔ 只删 `.clone()`、注释同时改成"同一个绑定用两次"，否则下一个人还会照着旧措辞补回来。
+
+⇒ **纪律 ①（`§48` 的人工 lint 自查要加一项）**：判据文件里**每一处** `.clone()` 都要去目标的
+`derive` 现读一次；`Copy` ⇒ 直接删。本机桩装不动 `live_surface.rs`，这条只能靠"逐处对 derive"。
+⇒ **纪律 ②（clippy 也是 fail-fast）**：一条 lint 就把整个 `cargo` 调用杀掉（本次日志里
+`error:` 只有 1 条，而该批次里还有另外几份判据文件没轮到）。因此"这一枚修完也许还有下一枚"
+是**默认预期**，⛔ 把一次红读成"只剩这一处"。
+
+判决：**`pending`**（同上）—— 已修并推送的批次的判决由下一个 run 给；读回时除数
+`Running tests/` 外，还要**确认这四个二进制在里头**：`d_ui_28_export_length_seeds_from_audible_end`、
+`d_ui_29_metronome_writes_the_document`、`d_ui_30_serve_transport_is_wired`、
+`d_ui_11_serve_header_gestures`（外加 `live_ui_mcp`）。
+

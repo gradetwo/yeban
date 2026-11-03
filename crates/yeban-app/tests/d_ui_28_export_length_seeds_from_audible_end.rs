@@ -257,13 +257,15 @@ fn the_export_length_field_seeds_from_the_audible_end_of_the_project() {
     port.open_project_session("<判据 D-UI-28 ⑧: 超长工程>", project, Vec::new(), 4)
         .expect("换回 filled 工程（用来挂段落）");
     // ⚠ `Op::SetSection` 的前置条件之一是 `new_section.id == section_id`（两处必须是**同一个**
-    // ULID）⇒ 先绑一个再克隆，⛔ 不能各调一次 `EntityId::new()`。
+    // ULID）⇒ 同一个绑定用两次，⛔ 不能各调一次 `EntityId::new()`。`EntityId` 是 `Copy` ⇒
+    // 第二次直接传值即可（`.clone()` 会被 clippy 判 `clone_on_copy`：run `41566875640` 的
+    // linux / windows / macos **三条腿同时红在这一行**）。
     let long_section_id = yeban_model::ids::EntityId::new();
     port.commit_ops(
         5,
         "判据 ⑧：把段落末端推到一千万 tick 之外",
         vec![yeban_model::Op::SetSection {
-            section_id: long_section_id.clone(),
+            section_id: long_section_id,
             old_section: None,
             new_section: yeban_model::SectionV3 {
                 id: long_section_id,
