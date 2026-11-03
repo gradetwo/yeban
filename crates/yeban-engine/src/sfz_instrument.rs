@@ -703,6 +703,7 @@
 //! | `SfzVoicePool` | 2232 | **2240** | portamento 池级四字段（`last_key: Option<u8>` 2 ＋ `porta_slot: u8` 1 ＋ `porta_delta: i8` 1 ＋ `porta_frame: u32` 4 ＝ 8 B） |
 //! | `EngineRuntime` | 198496 | **198752** | portamento：池 ＋8 ⇒ ＋256（实测）；红线 200 KiB ＝ 204800 |
 //! | `EngineRuntime` | 198752 | **199296** | `#344` mono-maker：通道条 ＋32 B（side 低通 biquad：5 系数 ＋ 4 状态 ＝ 36 B，8 字节对齐后 32）× 17 内联槽位 ＝ ＋544；余量 5504 B |
+//! | `EngineRuntime` | 199296 | **200112** | nightfall 片：通道条 ＋48 × 17 内联槽位 ＝ ＋816（实测）；余量 4688 B |
 //! | `SfzVoice` | 40 | **40** | ⛔ 一个字段都没加（推进量在池里） |
 //!
 //! ⚠ 计数用 `u32` 而⛔ 不是 `u8`：`selects_occurrence` 要对**每区域自己的**

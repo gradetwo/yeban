@@ -270,10 +270,11 @@
 //!
 //! ### 9.2 本票的裁决：**不扩模型形状**，改为在构造期**合成** IR
 //!
-//! 投影因此走一条与前两件器件不同的路：**三个标量旋钮 → 一条确定的合成 IR**。三个旋钮是
+//! 投影因此走一条与前两件器件不同的路：**标量旋钮 → 确定的合成 IR**。旋钮是
 //! [`ConvProjection`] 认下的 `conv_ir_decay_s` 与 `conv_ir_seed`（外加"这台设备算不算一台
-//! 卷积混响"的 `seen` 口径），合成发生在 [`InsertParams::from_devices`] 里 —— 那是**控制线程的
-//! 构造期**，允许分配、允许任何运算。合成结果与四个标量器件参数一起进快照
+//! 卷积混响"的 `seen` 口径），以及立体声开关 `conv_ir_stereo`（关 = 左右同 IR，
+//! 开 = 左 IR 不变、右 IR 用偏移种子另合成一条），合成发生在 [`InsertParams::from_devices`]
+//! 里 —— 那是**控制线程的构造期**，允许分配、允许任何运算。合成结果与四个标量器件参数一起进快照
 //! （[`ConvolutionPlan`]）。
 //!
 //! ⚠ **这是一条合成的 IR，不是一段测量到的 IR**。它由 `yeban_dsp::noise::Rng`（xorshift32，
@@ -493,8 +494,11 @@ pub struct InsertParams {
 pub struct ConvolutionPlan {
     /// 器件的四个标量参数（预延迟／干／湿／IR 增益）。器件在 `set_params` 里再净化一次。
     params: ConvolutionReverbParams,
-    /// 单声道 IR：`h_LL = h_RR = ir`（两条**交叉**通路见 [`Self::silence`]）。
+    /// 左声道 IR（立体声开时 `h_RR` 用 [`Self::ir_r`]；关时 `h_LL = h_RR = ir`，
+    /// 两条**交叉**通路见 [`Self::silence`]）。
     ir: Vec<f32>,
+    /// 右声道 IR；`None` = 双单声道。
+    ir_r: Option<Vec<f32>>,
     /// 与 [`Self::ir`] **等长**的全零切片（`h_LR = h_RL`）。
     ///
     /// ⚠ 它**必须**预先算好，不能留给音频线程：器件要求四条 IR 等长
@@ -534,6 +538,19 @@ fn ir_fingerprint(samples: &[f32]) -> u64 {
     hash
 }
 
+/// 两条 IR 的联合标识：同一条 FNV-1a 流先后喂左、右 IR（不是两个哈希异或 ——
+/// 异或会让“左右互换”与“只改一条”撞车）。立体声开关翻转 ⇒ 哈希必变。
+fn ir_fingerprint_two(first: &[f32], second: &[f32]) -> u64 {
+    let mut hash = 0xcbf2_9ce4_8422_2325u64;
+    for sample in first.iter().chain(second.iter()) {
+        for byte in sample.to_bits().to_le_bytes() {
+            hash ^= u64::from(byte);
+            hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+    }
+    hash
+}
+
 impl ConvolutionPlan {
     /// 器件的四个标量参数（**只**被音频线程用来调 `ConvolutionReverb::set_params`）。
     #[must_use]
@@ -541,7 +558,7 @@ impl ConvolutionPlan {
         self.params
     }
 
-    /// 单声道 IR（`h_LL` 与 `h_RR` 两条对角通路都用它）。
+    /// 左声道 IR（`h_LL`；立体声开时 `h_RR` 用 [`Self::ir_r`]）。
     ///
     /// 存在的理由与前两件器件的 `*_of` 读数一样：把"将要交给器件的那个数组"变成**可读**的，
     /// 判据就不必从音频输出反推（并且能对 IR 本身做哈希对账）。
@@ -550,13 +567,19 @@ impl ConvolutionPlan {
         &self.ir
     }
 
+    /// 右声道 IR；`None` = 双单声道（与 [`Self::ir`] 同一条）。
+    #[must_use]
+    pub fn ir_r(&self) -> Option<&[f32]> {
+        self.ir_r.as_deref()
+    }
+
     /// 两条交叉通路的全零切片（与 [`Self::ir`] 等长）。
     #[must_use]
     pub fn silence(&self) -> &[f32] {
         &self.silence
     }
 
-    /// [`Self::ir`] 的**内容标识**（FNV-1a 64）。**只**被音频线程用来判断"IR 换没换"：
+    /// [`Self::ir`]（立体声开时含 [`Self::ir_r`]）的**内容标识**（FNV-1a 64）。**只**被音频线程用来判断"IR 换没换"：
     /// 相同 ⇒ 只调 `set_params`（保留器件状态），不同 ⇒ 才调 `set_impulse_response`。
     #[must_use]
     pub const fn ir_hash(&self) -> u64 {
@@ -604,6 +627,15 @@ const CONV_IR_MAX_DECAY_S: f32 = 5.0;
 /// ⚠ 取一个非零常数而不是 `0`：`Rng::new(0)` 自己会把 0 换成内部常数，那样"缺省"与
 /// "显式写 0"就**不可区分**了。这里让缺省是一个**可复述**的数。
 const CONV_IR_DEFAULT_SEED: f32 = 1.0;
+
+/// 立体声 IR 的右声道种子偏移（黄金比例常数，与 `Rng` 的 0 回落常数同值；与离线
+/// 投影的同名常量**同值** ⇒ 两条路径的立体声 IR 逐位相同）。
+///
+/// 右声道种子 = `seed.wrapping_add(Self)`。它**永不**与左声道种子撞车：
+/// 偏移非零 ⇒ 加后种子 ≠ 原种子；唯一回落点是加后种子恰为 0（此时 `Rng`
+/// 把它换成偏移本身），而那时左种子是 `2^32 - 偏移 ≠ 偏移` ⇒ 两条流仍不同。
+/// 于是立体声开时左 IR 与单声道模式**逐位相同**，只有右 IR 是新的一条。
+const CONV_IR_STEREO_SEED_OFFSET: u32 = 0x9E37_79B9;
 
 /// 构造期**合成**一条单声道 IR（模块文档 §9.2）：白噪声 × 指数衰减包络，再峰值归一化。
 ///
@@ -663,6 +695,9 @@ struct ConvProjection {
     decay_s: f32,
     /// IR 种子的基值。
     seed: u32,
+    /// IR 立体声开关的基值（`false` = 双单声道；与 `conv_ir_decay*` / `conv_ir_seed`
+    /// 同一条纪律：构造期烘焙，自动化不落点）。
+    stereo: bool,
 }
 
 impl Default for ConvProjection {
@@ -672,6 +707,7 @@ impl Default for ConvProjection {
             params: ConvolutionReverbParams::default(),
             decay_s: CONV_IR_DEFAULT_DECAY_S,
             seed: CONV_IR_DEFAULT_SEED as u32,
+            stereo: false,
         }
     }
 }
@@ -706,6 +742,11 @@ impl ConvProjection {
                 self.seed = value as u32;
                 self.seen = true;
             }
+            // 立体声开关：非 0 即开（与离线投影同一条口径）；缺省关 = 老工程逐位不变。
+            "conv_ir_stereo" => {
+                self.stereo = value != 0.0;
+                self.seen = true;
+            }
             _ => {}
         }
     }
@@ -725,11 +766,25 @@ impl ConvProjection {
         };
         let frames = convolution_ir_frames(sample_rate);
         let ir = synthesise_impulse_response(frames, decay_s, sample_rate, self.seed);
-        let ir_hash = ir_fingerprint(&ir);
+        // 立体声开：左 IR 就是单声道模式那一条（逐位相同），右 IR 用偏移种子新合成。
+        let ir_r = self.stereo.then(|| {
+            synthesise_impulse_response(
+                frames,
+                decay_s,
+                sample_rate,
+                self.seed.wrapping_add(CONV_IR_STEREO_SEED_OFFSET),
+            )
+        });
+        // 快照标识必须覆盖两条 IR：只看左 IR 时，开关翻转会被误判成"同一条 IR"。
+        let ir_hash = match &ir_r {
+            Some(right) => ir_fingerprint_two(&ir, right),
+            None => ir_fingerprint(&ir),
+        };
         let silence = vec![0.0f32; frames];
         Some(ConvolutionPlan {
             params: self.params,
             ir,
+            ir_r,
             silence,
             ir_hash,
         })
@@ -1151,6 +1206,14 @@ impl StripProjection {
                 self.params.dyn_eq.max_cut_db = value;
                 self.deq_seen = true;
             }
+            "deq_q" | "dyn_eq_q" => {
+                self.params.dyn_eq.q = value;
+                self.deq_seen = true;
+            }
+            "deq_ratio" | "dyn_eq_ratio" => {
+                self.params.dyn_eq.ratio = value;
+                self.deq_seen = true;
+            }
             "strip_width" | "channel_width" => {
                 self.params.width = value;
             }
@@ -1158,6 +1221,12 @@ impl StripProjection {
             // 两个字段的默认值都是"旁通"，写 0 与不写等价，`params != DEFAULT` 就够）。
             "mono_below_hz" | "mono_maker_hz" => {
                 self.params.mono_below_hz = value;
+            }
+            "ms_mid_gain_db" | "ms_mid_gain" => {
+                self.params.ms_mid_gain_db = value;
+            }
+            "ms_mid_freq_hz" | "ms_mid_freq" => {
+                self.params.ms_mid_freq_hz = value;
             }
 
             _ => {}
@@ -1929,6 +1998,45 @@ mod tests {
         let both = plan(&[("conv_ir_decay_s", 0.05), ("conv_ir_seed", 9.0)]);
         assert_ne!(both, short);
         assert_ne!(both, other_seed);
+    }
+
+    /// 判据：**立体声开关真的交出第二条 IR**（`conv_ir_stereo` 这条接线）。
+    ///
+    /// 关 ⇒ 没有右 IR；开 ⇒ 右 IR 存在、左 IR 与关时逐位相同、右 IR 不同、
+    /// 快照标识必变（边界靠它判断"IR 换没换"，只看左 IR 时开关翻转会被误判成同一条 IR）。
+    #[test]
+    fn the_stereo_switch_hands_a_second_ir_to_the_plan() {
+        let plan = |params: &[(&str, f32)]| {
+            let owned = from_devices(&[device(DeviceKind::InternalEffect, false, params)]);
+            let plan = owned.convolution().expect("`conv_` 名字出现过 ⇒ 必须武装");
+            (
+                plan.ir().to_vec(),
+                plan.ir_r().map(<[f32]>::to_vec),
+                plan.ir_hash(),
+            )
+        };
+        let (mono_ir, mono_right, mono_hash) = plan(&[("conv_ir_seed", 7.0)]);
+        assert!(mono_right.is_none(), "缺省关 ⇒ 没有右 IR");
+        let (stereo_ir, stereo_right, stereo_hash) =
+            plan(&[("conv_ir_seed", 7.0), ("conv_ir_stereo", 1.0)]);
+        let right = stereo_right.as_ref().expect("开关开 ⇒ 必须有右 IR");
+        assert_eq!(stereo_ir, mono_ir, "左 IR 与单声道模式逐位相同");
+        assert_ne!(
+            stereo_ir.as_slice(),
+            right.as_slice(),
+            "右 IR 必须是另一条噪声"
+        );
+        assert_eq!(right.len(), mono_ir.len());
+        assert_ne!(
+            stereo_hash, mono_hash,
+            "开关翻转 ⇒ 快照标识必变，否则边界会误判成同一条 IR"
+        );
+        // 同一组旋钮再算一次 ⇒ 同一个计划（哈希稳定，不是每次都变）。
+        let (again_ir, again_right, again_hash) =
+            plan(&[("conv_ir_seed", 7.0), ("conv_ir_stereo", 1.0)]);
+        assert_eq!(stereo_ir, again_ir);
+        assert_eq!(stereo_right, again_right);
+        assert_eq!(stereo_hash, again_hash);
     }
 
     /// 判据：**非法 IR 旋钮有定义**（非有限值回落缺省、超界钳制），并且整台器件仍能用。
