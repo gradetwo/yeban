@@ -114,14 +114,11 @@ mod platform {
 
     // SAFETY: `kernel32` 的公开接口；`LoadLibraryA` 要求 ANSI 路径，
     // 调用方已按 UTF-8→ANSI 有损转换（见模块文档）。
+    #[link(name = "kernel32")]
     unsafe extern "system" {
-        #[link(name = "kernel32")]
         fn LoadLibraryA(name: *const c_char) -> *mut c_void;
-        #[link(name = "kernel32")]
         fn GetProcAddress(module: *mut c_void, name: *const c_char) -> *mut c_void;
-        #[link(name = "kernel32")]
         fn FreeLibrary(module: *mut c_void) -> i32;
-        #[link(name = "kernel32")]
         fn GetLastError() -> u32;
     }
 

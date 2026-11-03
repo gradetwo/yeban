@@ -579,8 +579,12 @@ unsafe extern "system" fn event_list_get(this: *mut c_void, index: i32, out: *mu
     // 无残留危害。
     // SAFETY: 内联汇编只写 `rdx`（调用方保存寄存器，调用约定允许宿主改写），
     // 不碰栈与其它寄存器；`out.add(1)` 仅作指针算术，不解引用。
+    // x86_64 专属：`mov rdx` 在 aarch64 上非法，故与 `let next` 同块门控；
+    // 非 x86_64 下两句皆为空操作（`next` 不存在，不触发 unused 警告）。
+    #[cfg(target_arch = "x86_64")]
     let next = unsafe { out.add(1) };
     // SAFETY: 见上文（只写 `rdx`，不碰栈与其它寄存器）。
+    #[cfg(target_arch = "x86_64")]
     unsafe {
         core::arch::asm!("mov rdx, {next}", next = in(reg) next, options(nostack));
     }

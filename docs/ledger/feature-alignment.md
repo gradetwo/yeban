@@ -1,4 +1,4 @@
-# 三方对齐矩阵（系统 / UI / MCP，79 行）
+# 三方对齐矩阵（系统 / UI / MCP，81 行）
 
 > **一句话定位**：这份文件回答**唯一**一个问题 ——
 > **"某个功能在系统侧实现了没有、在 UI 侧暴露了没有、在 MCP 侧暴露了没有，三者错位在哪、为什么、谁来补、什么时候补"**。
@@ -32,11 +32,11 @@
 
 - 三方齐全：33 行
 - 系统+UI（MCP 无）：6 行
-- 系统+MCP（UI 无）：19 行
+- 系统+MCP（UI 无）：21 行
 - 仅系统：12 行
 - 仅计划（系统也未实现）：6 行
 - UI 或 MCP 独有（系统没有）：3 行
-- **合计：79 行**
+- **合计：81 行**
 
 > ⚠ 只改表格不改这一节 ⇒ `check_feature_alignment.py` 立刻变红（第 4 条判据）。数字要么能被命令复核，要么别写。
 
@@ -211,6 +211,8 @@
 | MLS Ping 声学脉冲延迟校准 | 无｜`crates/yeban-services/src/lib.rs` 只有文档占位；`grep -rn -i "mls\|ping" docs/ledger/audio-latency-notes.md` 命中 0 | 无｜无 | 无｜无 | 原因：完全未实现（与 `BASELINE-005` 的"机器就绪、门禁仍 PENDING"是两件事）；计划：`yeban-services` 线；状态：未到期 |
 | ASIO 可选特性与反向 VST3 打包（`yeban-vst`） | 无｜`grep -rn -i asio crates/*/Cargo.toml Cargo.toml` 命中 0（`docs/ledger/phase-status.md` §1 `ROAD-M-1-004`）；`crates/yeban-vst/src/lib.rs` 是 11 行占位且 `[dependencies]` 为空（`ROAD-M-1-003`） | 无｜无 | 无｜无 | 原因：法务确认未做（`HD-34`），且没有 `asio` 特性可标 `unverified`；反向打包属 `[v2.0.0]`；计划：人类法务签字 + v2.0.0；状态：人类决策中 ⚠ **2026-10-22 就地更正（读数）**：`grep -rn -i asio crates/*/Cargo.toml Cargo.toml` 实测 **1** 命中（`crates/yeban-midi-io/Cargo.toml:18` 的注释「`asio`/`experimental-*` 同族处理」），**不是 0**。**结论与读数分开**：结论「`asio` 未定义、不引入」**仍成立**（唯一命中是说明性注释，不是特性声明）；而「命中 0」为假。 |
 | 待合并提案列表 | 待接线｜`crates/yeban-mcp/src/domain/mod.rs` 的 `Domain.proposals: BTreeMap<EntityId, Proposal>`（内存记录，`Plan::ListProposals` 只读回传；`src/output_schema.rs` 给五个主力工具发布 `outputSchema`） | 无｜无提案列表面板 | 有｜`yeban_list_proposals`（可选 `kind`；出参 `proposals[]` / `openCount` / `totalCount` / `mergeTool`） | 原因：`#174` 验收发现提案不跨进程且无法列出 ⇒ 进程崩溃后成孤儿；计划：本工具让同一进程内可发现与可恢复，⛔ 不承诺跨进程恢复（记录不进 `project.json`）；状态：已实现 |
+| VST3 插件扫描（`yeban_scan_plugins`） | 已实现｜`crates/yeban-plugin-host/src/host.rs:98`（`scan`，枚举目录、打开库、逐个实例化探针）；MCP 侧装配在 `crates/yeban-mcp/src/tools.rs:1753`（`yeban_scan_plugins`） | 无｜无插件扫描面板 | 有｜`yeban_scan_plugins`（`paths`，可选数组；不给则只扫环境变量与平台标准路径） | 原因：插件宿主为一期 MCP 线，UI 侧无插件面板；计划：UI 插件面板待排期；状态：待接线 |
+| VST3 插件装载（`yeban_load_plugin`） | 已实现｜`crates/yeban-plugin-host/src/host.rs:144`（`load`，打开插件、按类指名、验证激活）；MCP 侧装配在 `crates/yeban-mcp/src/tools.rs:1776`（`yeban_load_plugin`） | 无｜无插件装载面板 | 有｜`yeban_load_plugin`（`trackId` / `pluginPath` 必填；`pluginId` / `autoMerge` / `mergeCommitMessage` 可选） | 原因：插件宿主为一期 MCP 线，UI 侧无插件面板；计划：UI 插件面板待排期；状态：待接线 |
 
 ## 16. 建表过程中发现的**具体错位**（本表最有价值的部分）
 
