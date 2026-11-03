@@ -658,7 +658,8 @@ fn the_execution_surface_wires_seek_once_and_keeps_one_projection_cell() {
         live.matches("Rc::clone(&live_view)").count(),
         5,
         "⑧ `Rc::clone(&live_view)` 必须是 **5 处**（资源栏 / 剪辑作用域 / 标尺 / 段落 / 场景，\
-         实测 {} 处）—— 少一处就是那条接线没拿共享格"
+         实测 {} 处）—— 少一处就是那条接线没拿共享格",
+        live.matches("Rc::clone(&live_view)").count()
     );
     // 判据证据那份必须是**值**拷贝（⛔ 不是把 `Rc` 分出去，否则证据跟着执行面一起变）。
     assert_eq!(
