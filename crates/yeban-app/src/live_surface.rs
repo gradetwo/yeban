@@ -84,11 +84,18 @@
 //!
 //! 1. **`-D warnings` 下任何没人用的项都是硬错误**。CI 第 1 轮实测就死在这里：
 //!    `error: method \`scene\` is never used`（那个访问器判据没用到）。
-//!    处置是**删掉**它（`docs/ledger/live-port-notes.md` §6.1），
+//!    当时的处置是**删掉**它（`docs/ledger/live-port-notes.md` §6.1），
 //!    而不是 `#[allow(dead_code)]` —— 后者会把"这块代码没人用"这个真实信号一起盖掉。
 //!    ⇒ **本文件的公开 API 只包含当前真的被调用的东西**；加方法时要么同时接上调用方，
 //!    要么就别加。判据只住在 `crates/yeban-app/tests/live_ui_mcp.rs` **一个**目标里，
 //!    这样"用了什么"与"提供了什么"可以对齐（多目标会让某个目标看不到某个方法 ⇒ 假死代码）。
+//!    ⚠ **这条的前提于 `D-UI-3` 起已不成立，2026-11-03 实测再核一遍**：装本文件的测试目标
+//!    是 `grep -l 'path = "../src/live_surface.rs"' tests/ | wc -l` = **43** 个（单位：个目标），
+//!    因此"某目标看不到某方法"是**常态**而非意外。处置随之改成：⛔ 不删判据要用的读数，
+//!    在**那一条**读数上放 `#[allow(dead_code)]` ＋ 一行写明**真实调用者住在哪个判据**
+//!    （近例：`dispatch_key_chord`、`open_project_via_picker`、`capture`、
+//!    `engine_metronome_enabled`、`engine_transport_*`）。信号没被盖掉 —— 被盖掉的只是
+//!    "在这个特定目标里没人调"这一条**每目标都不同**的事实。
 //! 2. **它不会进 release 构建**（dev-dependency 的直接后果，红线 6 要的正是这个）。
 //!    哪天要把它变成产品路径，做法是"加一个非默认 feature + 把依赖从 dev 段挪到
 //!    `[dependencies]` 的 optional 段"，而不是让测试目标继续当它的唯一编译者。
@@ -375,7 +382,13 @@ struct LiveAdminSurface {
     view: ViewState,
     save_path: Option<PathBuf>,
     meters: MeterRuntime,
-    engine: EngineHost,
+    /// ⭐ `D-UI-30`：与产品路径（[`host::ProductionLoop`]）与 `main.rs` 的走带**同款**形状
+    /// —— `Rc<RefCell<..>>` 而**不是**裸值，因为 [`host::wire_transport`] 的回调要拿
+    /// **同一个**实例（`Rc` 计数 +1，不是第二份宿主）。
+    ///
+    /// ⛔ 这里不存在"第二份走带"：装配接了 `wire_transport` 之后，界面上的播放 / 停止 /
+    /// 节拍器按钮与本执行面驱动的 `engine_tick` / `rebuild_engine` 作用在**同一个**宿主上。
+    engine: Rc<RefCell<EngineHost>>,
     engine_quanta: u64,
     save_epoch: u64,
     report: Option<AdminReport>,
@@ -560,9 +573,11 @@ impl LiveAdminSurface {
         if let Some(undo) = self.undo.as_ref() {
             let port = Rc::clone(undo);
             self.engine
+                .borrow_mut()
                 .set_audio_asset_source(Box::new(move |hash| port.asset_bytes(hash)));
         }
         self.engine
+            .borrow_mut()
             .reload(&self.project, self.engine_quanta)
             .map_err(LiveWiringError::from)
     }
@@ -603,22 +618,29 @@ impl LiveAdminSurface {
         let mut publish_error = None;
         // ⭐ `D-UI-29`：与生产 `ProductionLoop::tick` **同一格**取值（只在发布成功时）。
         let mut snapshot_metronome = None;
-        if self.engine.has_engine()
-            && self.engine.should_publish(mark)
-            && let Some(project) = project
-        {
-            match self.engine.publish_project(project, mark) {
-                Ok(revision) => {
-                    published_revision = Some(revision);
-                    snapshot_metronome = Some(project.transport.metronome_enabled);
-                }
-                Err(error) => {
-                    // ⭐ 保留原文供控制面/判据读（不是 `.ok()`），并出声。
-                    eprintln!("[yeban-app] 快照发布失败（播放侧仍是上一版）: {error}");
-                    publish_error = Some(error.to_string());
+        // ⭐ `D-UI-30`：借的**作用域只包住动引擎那一段**，放借之后才碰界面 ——
+        // 与本文件新接的 [`host::wire_transport`] 共用同一个宿主，那两个回调也会
+        // `borrow_mut()` 它。`#212` 的教训就是"持借调界面"。
+        let readings = {
+            let mut engine = self.engine.borrow_mut();
+            if engine.has_engine()
+                && engine.should_publish(mark)
+                && let Some(project) = project
+            {
+                match engine.publish_project(project, mark) {
+                    Ok(revision) => {
+                        published_revision = Some(revision);
+                        snapshot_metronome = Some(project.transport.metronome_enabled);
+                    }
+                    Err(error) => {
+                        // ⭐ 保留原文供控制面/判据读（不是 `.ok()`），并出声。
+                        eprintln!("[yeban-app] 快照发布失败（播放侧仍是上一版）: {error}");
+                        publish_error = Some(error.to_string());
+                    }
                 }
             }
-        }
+            engine.heartbeat()
+        };
         // ⭐ `#86` 甲：**本执行面**的投影点（与生产 `ProductionLoop::tick` 调的是
         // **同一个**函数 ⇒ 两条腿的界面读数不可能漂移）。
         //
@@ -639,7 +661,7 @@ impl LiveAdminSurface {
         EngineTick {
             published_revision,
             publish_error,
-            readings: self.engine.heartbeat(),
+            readings,
         }
     }
 
@@ -648,7 +670,7 @@ impl LiveAdminSurface {
     /// 本机没有 cpal 回调线程（AGENTS.md §5），判据用它把"读者换了快照、旧快照进了
     /// 退役队列"这个窗口造出来，再由**心跳**回收。
     fn drive_audio(&mut self, quanta: u64) -> u64 {
-        self.engine.drive_audio(quanta)
+        self.engine.borrow_mut().drive_audio(quanta)
     }
 
     /// 一轮电平消费：**生产那一份**（[`host::pump_meters`]）＋ 重抓树。
@@ -677,7 +699,7 @@ impl LiveAdminSurface {
         pump
     }
 
-    /// 换一个工程：投影 → 注入 → 换注册表 → 作废旧电平 → （若引擎已起）换代 → 重抓树。
+    /// 换一个工程：投影 → 注入 → 换注册表 → 作废旧电平 → 重接走带 → （若引擎已起）换代 → 重抓树。
     ///
     /// 它与 `main.rs` 的 `--project-sample` 走的是**同一条**数据流
     /// （`ViewState::from_project` → `host::apply_view`），只是发生在**已存在的窗口**上。
@@ -703,7 +725,19 @@ impl LiveAdminSurface {
         self.meters = MeterRuntime::empty();
         self.save_epoch = 0;
         self.report = None;
-        if self.engine.has_engine() {
+        // ⭐ `D-UI-30`：**重接走带**，与 `main.rs` 换工程那段（`wire_callbacks` + `wire_keys`
+        // 用新的 `Rc<YebanProjectV1>` 再走一遍）同一步。Slint 的 `on_*` 是**覆盖**语义
+        // ⇒ 这里不是"第二个注册者"，而是把闭包里的工程换成**这一份**。
+        // 不重接的后果：录音键读的是装配期那份的 `count_in_bars`（`#132` 那条"第一个读者"
+        // 从此变成陈旧值），而 `metronome-on` 的初值也是旧工程里的开关。
+        // 宿主 `Rc` 传的是**同一个**实例（计数 +1），因此走带不会因此变成两份。
+        host::wire_transport(
+            &self.window,
+            Rc::clone(&self.engine),
+            Some(Rc::new(project.clone())),
+            self.undo.clone(),
+        );
+        if self.engine.borrow().has_engine() {
             let rebuild = self.rebuild_engine()?;
             self.meters.adopt(rebuild.collector);
         }
@@ -1047,7 +1081,7 @@ impl LiveAdminSurface {
         let project_dir = PathBuf::from(path)
             .parent()
             .map(std::path::Path::to_path_buf);
-        self.engine.set_project_dir(project_dir);
+        self.engine.borrow_mut().set_project_dir(project_dir);
         self.apply_project(&project).map_err(wiring_rejected)?;
         // ④ 落点跟着新工程走。
         self.save_path = Some(PathBuf::from(path));
@@ -1349,7 +1383,7 @@ impl UiSurface for LiveAdminSurface {
             yeban_ui_mcp::methods::METHOD_RELOAD_ENGINE => PreviewEffect::new(vec![
                 (
                     "generation",
-                    ReportValue::Uint(self.engine.generation().saturating_add(1)),
+                    ReportValue::Uint(self.engine.borrow().generation().saturating_add(1)),
                 ),
                 ("quanta", ReportValue::Uint(self.engine_quanta)),
                 ("tracks", ReportValue::Uint(self.view.tracks.len() as u64)),
@@ -1641,7 +1675,7 @@ impl LiveUi {
     /// 当前快照槽的计数（判据读 `published` / `pending_len` / `pruned`；没有引擎时 `None`）。
     #[must_use]
     pub fn engine_snapshot_counts(&self) -> Option<SnapshotCounts> {
-        self.surface.engine.snapshot_counts()
+        self.surface.engine.borrow().snapshot_counts()
     }
 
     /// 当前引擎快照里某轨的音量（**dB**，f32）—— 判据读回的"那一个字面字段"。
@@ -1651,6 +1685,7 @@ impl LiveUi {
     pub fn engine_track_volume_db(&self, track_id: &EntityId) -> Option<f32> {
         self.surface
             .engine
+            .borrow()
             .current_snapshot()?
             .track(track_id)
             .map(|params| params.volume_db())
@@ -1663,9 +1698,61 @@ impl LiveUi {
     /// `metronome-on`。⛔ 这不是第四份状态：它读的就是音频线程拿去投影的那个字段本身。
     ///
     /// 没有引擎 ⇒ `None`（不猜）。
+    // ⚠ `#[allow(dead_code)]` 的必要性见本文件 `LiveUi::dispatch_key_chord` 上方的**近例**：
+    // 本文件被 43 个测试目标经 `#[path]` 各自装成私有模块（2026-11-03 现读；单位：个目标），
+    // 某条读数只要有一个目标没调它，
+    // `dead_code` + `-D warnings` 就把它变成编译失败（CI 实测红在 `test "live_ui_mcp"`：
+    // `error: method engine_metronome_enabled is never used`）。⛔ 不是藏死代码：这些读数在
+    // `tests/d_ui_29_*` / `tests/d_ui_30_*` 里有真实调用者。
+    #[allow(dead_code)]
     #[must_use]
     pub fn engine_metronome_enabled(&self) -> Option<bool> {
-        Some(self.surface.engine.current_snapshot()?.metronome_enabled())
+        Some(
+            self.surface
+                .engine
+                .borrow()
+                .current_snapshot()?
+                .metronome_enabled(),
+        )
+    }
+
+    /// ⭐ 装配**这一条走带**是否在跑 —— 读的是 `EngineHost::transport()`（RT→控制侧的
+    /// 镜面读数），⛔ 不是界面属性 `playing`（那只是它的投影）。
+    ///
+    /// `D-UI-30` 用它见证"界面上的播放按钮真的把命令发给了**本装配**的宿主"：
+    /// 没起引擎时 `EngineHost::send_transport` 如实返回 `TransportReading::cold()`
+    /// （不 panic、不假装），因此这一位在 `start_engine()` **之前**按下会是 `false`
+    /// —— 那正是"没有引擎"的事实。
+    // ⚠ `#[allow(dead_code)]`：同款近例见 `engine_metronome_enabled` 上方那条
+    // （本文件被多个测试目标经 `#[path]` 各装一份，本读数只有 `tests/d_ui_30_*` 调）。
+    #[allow(dead_code)]
+    #[must_use]
+    pub fn engine_transport_running(&self) -> bool {
+        self.surface.engine.borrow().transport().state.is_running()
+    }
+
+    /// ⭐ 装配这一条走带**累计被应用**的命令条数（`TransportReading::commands_applied`）。
+    ///
+    /// 它是"按钮 ⇒ 引擎"那条链的直接读数：0 = 一条都没发出去（回调没人注册，或没有引擎），
+    /// `>0` = 发出去了。⛔ 不是从界面属性反推的。
+    // ⚠ `#[allow(dead_code)]`：同款近例见 `engine_metronome_enabled` 上方那条
+    // （本文件被多个测试目标经 `#[path]` 各装一份，本读数只有 `tests/d_ui_30_*` 调）。
+    #[allow(dead_code)]
+    #[must_use]
+    pub fn engine_transport_commands_applied(&self) -> u64 {
+        self.surface.engine.borrow().transport().commands_applied
+    }
+
+    /// ⭐ 装配这一条走带的**绝对位置**（单位：tick，960 PPQ；读 `TransportReading`）。
+    ///
+    /// `D-UI-30` 用它判「停止按钮 = 停住**并回起点**」这条语义：起播 + 推量子 ⇒ 位置离开 0，
+    /// 按停止 ⇒ 状态停 **且** 位置回 0（⛔ 只看状态会把"停在中途"读成通过）。
+    // ⚠ `#[allow(dead_code)]`：同款近例见 `engine_metronome_enabled` 上方那条
+    // （本文件被多个测试目标经 `#[path]` 各装一份，本读数只有 `tests/d_ui_30_*` 调）。
+    #[allow(dead_code)]
+    #[must_use]
+    pub fn engine_transport_position_ticks(&self) -> u64 {
+        self.surface.engine.borrow().transport().position_ticks
     }
 
     /// 音频读路径累计换过多少次快照（`SnapshotReader::begin_block` 里的计数）。
@@ -1673,6 +1760,7 @@ impl LiveUi {
     pub fn engine_snapshot_switches(&self) -> Option<u64> {
         self.surface
             .engine
+            .borrow()
             .engine_stats()
             .map(|stats| stats.snapshot_switches)
     }
@@ -1690,7 +1778,7 @@ impl LiveUi {
         &self,
         track_id: &EntityId,
     ) -> Option<(usize, usize, Vec<String>)> {
-        let snapshot = self.surface.engine.current_snapshot()?;
+        let snapshot = self.surface.engine.borrow().current_snapshot()?;
         let prepared = snapshot.sfz_plan(track_id)?.prepared();
         Some((
             prepared.region_count(),
@@ -1704,7 +1792,14 @@ impl LiveUi {
     /// `None` = 没有引擎。`Some(0)` = 已摊平 / 一条绑定都没有。
     #[must_use]
     pub fn engine_sfz_pending_len(&self) -> Option<usize> {
-        Some(self.surface.engine.current_snapshot()?.sfz_pending().len())
+        Some(
+            self.surface
+                .engine
+                .borrow()
+                .current_snapshot()?
+                .sfz_pending()
+                .len(),
+        )
     }
 
     /// 换一个工程（同一个活窗口上的重新投影 + 重新注入）。
@@ -1788,7 +1883,8 @@ impl LiveUi {
     /// （`false` = 这一组合没有绑定），⛔ 不是"调用失败"。
     // ⚠ 与模块头 §1 的取向**相冲**，因此把冲在哪写清楚：§1 说"判据只住一个目标 ⇒ 没人用
     // 就删"，但那条前提今天已不成立 —— `grep -l 'path = "../src/live_surface.rs"' tests/`
-    // 实测 **28** 个目标装本文件，任何一个目标看不到某条入口都会报 `dead_code`
+    // 实测 **43** 个目标装本文件（2026-11-03 现读；单位：个目标），任何一个目标看不到某条
+    // 入口都会报 `dead_code`
     // （CI 实测：`error: method dispatch_key_chord is never used`，红在 `live_ui_mcp` 那份），
     // `-D warnings` 再把它变成编译失败。处置按本文件的**近例**（`open_project_via_picker`、
     // `capture` 同款）。⛔ 这不是"藏死代码"：本入口在产品腿
@@ -2257,6 +2353,37 @@ pub fn build_live_ui_with(
         std::rc::Rc::new(yeban_app::file_picker::NoPicker),
         None,
     );
+    // ⭐ 缺陷 `D-UI-30`（2026-11-03，与 `D-UI-11` 同族、同一格漏）：**走带全家在本装配里
+    // 没接线**。`host::wire_transport` 的唯一调用点过去在 `main.rs` 的 `wire_callbacks`，
+    // 而 `--enable-ui-mcp-http` 在 `main()` 里提前分流进 `ui_mcp_serve::run` ⇒ 那一段
+    // 根本不跑（实测：修前本文件对 `wire_transport` 的引用数是 **0** 处，`main.rs` 是
+    // 文本 3 处 / 代码 **1** 处（另两处是注释）—— 单位：处）。
+    // Slint 的 `on_*` 没注册者就是空操作，于是这份**人真的拿来作曲的执行面**上：
+    //   · 播放 / 停止 / 录音 / 节拍器四颗按钮按下去什么都不动；
+    //   · `Space` 比"不消费"更坏 —— `wire_keys` 的 `PlayPause` 臂落到
+    //     `ui.invoke_toggle_play()`（`host::apply_action` 返回 `true` = "这一键有绑定"），
+    //     而那条回调没人听 ⇒ 界面读起来是"按了没反应"；
+    //   · `metronome-on` 的**装配期初值**也一起丢（`wire_transport` 是它唯一的初值写者）。
+    //
+    // ⚠ 为什么此前没有判据抓到它：判据侧**各自补一次** `host::wire_transport`
+    // （`tests/metronome_switch.rs` / `tests/rewind_sound.rs` /
+    // `tests/transport_timecode_tick.rs` / `tests/arrangement_ruler_seek.rs` /
+    // `tests/d_ui_11_serve_header_gestures.rs`），而且补的是**自己新建的**
+    // `Rc<RefCell<EngineHost>>` ⇒ "这份装配接没接、接的是不是同一个宿主"永远读不出来。
+    // 同一族的防线是 `tests/d_ui_11_serve_header_gestures.rs` 的名单对账。
+    //
+    // 因此宿主从裸值升成 `Rc<RefCell<..>>`（与 [`host::ProductionLoop`] / `main.rs` 同款
+    // 范式；`Rc` 计数 +1，⛔ 不是第二份宿主），并把**同一个**实例交给 `wire_transport`
+    // ⇒ 本执行面的 `engine_tick` / `rebuild_engine` 与用户点击作用在同一条走带上。
+    // 工程参数给装配期那份克隆：`apply_project` 换工程后会按 `main.rs` 的 ③ 同款
+    // **重接**（`on_*` 是覆盖语义），因此它不是第二份事实源。
+    let engine: Rc<RefCell<EngineHost>> = Rc::new(RefCell::new(EngineHost::new()));
+    host::wire_transport(
+        &window,
+        Rc::clone(&engine),
+        Some(Rc::new(project.clone())),
+        options.undo.clone(),
+    );
     let mut admin = LiveAdminSurface {
         inner: surface,
         window,
@@ -2265,7 +2392,7 @@ pub fn build_live_ui_with(
         view,
         save_path: options.save_path.clone(),
         meters: MeterRuntime::empty(),
-        engine: EngineHost::new(),
+        engine,
         engine_quanta: options.engine_quanta,
         save_epoch: 0,
         report: None,
@@ -2287,7 +2414,7 @@ pub fn build_live_ui_with(
         .as_deref()
         .and_then(std::path::Path::parent)
         .map(std::path::Path::to_path_buf);
-    admin.engine.set_project_dir(project_dir);
+    admin.engine.borrow_mut().set_project_dir(project_dir);
     Ok(LiveUi {
         reference,
         surface: admin,

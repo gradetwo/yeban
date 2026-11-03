@@ -58,11 +58,13 @@
 //!
 //! ## 如实登记的边界（⛔ 不假装整条链都通了）
 //!
-//! 1. **本装配没有走带接线**：`live_surface` 不调 `host::wire_transport`（那份
-//!    `Rc<RefCell<EngineHost>>` 在 `LiveSurface` 里、没有以可共享的形态交出去）⇒
-//!    无头执行面上**那颗按钮**（以及播放 / 停止 / 录音）本来就没有注册者。因此 ⑧ 只能
-//!    从**源码文本**证「两个入口同一个落点」；按按钮那一格只在生产 `run_gui` 里可达。
-//!    该缺口与 `D-UI-11` 同族，已登记台账（⛔ 本票不扩范围去补整条走带接线）。
+//! 1. **⑧ 只从源码文本证「同一个落点」**：本文件全部运行期判据走的是**键**那条入口
+//!    （`Cmd/Ctrl+Alt+N` ⇒ `wire_keys` ⇒ `apply_action`）。⚠ 本装配的走带接线在
+//!    `D-UI-30`（2026-11-03）**之前**是缺的（`live_surface` 不调 `host::wire_transport`
+//!    ⇒ 那颗按钮没有注册者），因此当时**只能**这样判；该缺口现已补上 ⇒ **按按钮**那一格
+//!    的运行期版本在 `tests/d_ui_30_serve_transport_is_wired.rs` 的 ⑤（同一个夹具、
+//!    同一个落点、同样证「写文档 + 不换引擎」）。⑧ 仍然留在本文件：它钉的是
+//!    「两个入口⛔ 不许各算一次下一个值」这条**出处**纪律，与谁来按无关。
 //! 2. **不证明「听得到咔哒声」**：本文件判的是「快照里有没有节拍器计划」
 //!    （`EngineSnapshot::metronome_enabled` = 投影自那个字段）。逐样本那一侧由
 //!    `crates/yeban-engine/tests/rt_zero_alloc.rs` 的 `armed_metronome_enabled` 判据负责。
@@ -395,8 +397,9 @@ fn the_mirror_follows_the_published_snapshot_and_no_publish_writes_nothing() {
 
 /// ⑧ 两个入口、一个落点：键与走带按钮的回调都交给 `apply_action` 的**同一条臂**。
 ///
-/// ⚠ 本装配（`live_surface`）⛔ 不调 `wire_transport` ⇒ 按钮的 `on_toggle_metronome`
-/// 在这里**没有注册者**（文件头的边界 1 如实登记），因此这一条只能从**源码文本**判。
+/// ⚠ 这一条**只**从源码文本判「同一个落点」（它钉的是出处纪律，与谁来按无关）；
+/// 按**按钮**那一路的运行期版本在 `tests/d_ui_30_serve_transport_is_wired.rs` 的 ⑤
+/// —— 自 `D-UI-30` 起本装配自己接了 `host::wire_transport`，那颗按钮有注册者了。
 #[test]
 fn the_button_and_the_key_share_one_landing_point_in_source() {
     let host = code_only(include_str!("../src/host.rs"));

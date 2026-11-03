@@ -48,7 +48,9 @@
 //! ## 若变红，怎么读
 //!
 //! - ① 红 ⇒ 有人往 `run_gui` 加了接线而 serve 侧没跟上：要么补接线，要么把**理由**写进
-//!   `ASSEMBLY_ONLY_IN_GUI`（那一格必须写清"缺的是引擎还是文件对话框"，⛔ 不许写"判据太严"）；
+//!   `ASSEMBLY_ONLY_IN_GUI`（那一格必须写清**缺的是哪个运行期对象**——活投影 `Rc<RefCell<ViewState>>`
+//!   还是原生文件对话框，⛔ 不许写"判据太严"；`D-UI-30` 之前这里有一条写"需要引擎句柄"的
+//!   `host::wire_transport`，那是**被清单掩护着的缺陷**：句柄装配一直给得出）；
 //! - ②③④⑤ 任一条红而 ① 绿 ⇒ 接线在场但**回调没落到状态**，那是 `host::wire_*` 自己的回退，
 //!   与本条修复同源；
 //! - ② 红在"命中不到"（`ui/node` 报 no bounds）⇒ 编排行几何漂了，先看 ① 之外的第三条线
@@ -151,21 +153,35 @@ fn wiring_calls(source: &str) -> Vec<String> {
 
 /// 例外清单（GUI → serve 方向）：这些接线在 serve 装配里**结构上装不出来**，理由逐条写死。
 ///
-/// 前五条要一个**引擎句柄**：`serve_wiring` 的 `engine_quanta` 口径写明
-/// "装配阶段不推量子（`ui/reload_engine` 才建引擎）"，而 `ui/reload_engine` 之后
-/// 走的仍是这一对回调 —— 那是另一条线（登记在台账），不是本判据要掩盖的分叉。
-/// 后四条要一个**原生文件对话框**：无头执行面问不出路径（与 `host::wire_save`
+/// ⭐ `D-UI-30`（2026-11-03）把 `host::wire_transport` 从这张表里**删掉了** —— 它当时
+/// 记的理由是"需要引擎句柄"，而句柄从来不是障碍：`LiveAdminSurface` 本来就**持有**一个
+/// `EngineHost`，缺的只是把它装成 `Rc<RefCell<..>>`（与 `host::ProductionLoop` 同款）。
+/// 这条例外因此是**被清单掩护着的缺陷**，正是本守卫要抓的形状。
+///
+/// 前三条要一份**活投影** `Rc<RefCell<ViewState>>`：本装配把投影存成**裸值** `view`
+/// （换工程时整体换掉，见 `LiveAdminSurface::apply_project`），因此"网格右缘 / 场景 tempo
+/// 要从**当前**投影读"这一格在 serve 侧装不出来 —— 给它配一个 `Rc<RefCell<..>>`
+/// 是把投影变成两份事实源的入口，属于独立的一票（⛔ 不在本票里顺手扩范围）。
+/// 第 4 条与后四条要一个**原生文件对话框**：无头执行面问不出路径（与 `host::wire_save`
 /// 在 serve 侧用 `NoPicker` 同一口径）。
 ///
 /// ⚠ 名字必须是 [`wiring_calls`] 吐出的**裸名**（不带 `(`），且两族相邻名字不能靠
 /// 前缀匹配 —— `host::wire_save` 是 `host::wire_save_with_engine` 的前缀，
 /// 因此下面的对账一律用**全等**。
 const ASSEMBLY_ONLY_IN_GUI: &[(&str, &str)] = &[
-    ("host::wire_transport", "需要引擎句柄"),
-    ("host::wire_ruler_seek", "需要引擎句柄"),
-    ("host::wire_section_seek", "需要引擎句柄"),
-    ("host::wire_scene_launch", "需要引擎句柄"),
-    ("host::wire_save_with_engine", "需要引擎句柄"),
+    (
+        "host::wire_ruler_seek",
+        "需要活投影 `Rc<RefCell<ViewState>>`（本装配存裸值）",
+    ),
+    (
+        "host::wire_section_seek",
+        "需要活投影 `Rc<RefCell<ViewState>>`（本装配存裸值）",
+    ),
+    (
+        "host::wire_scene_launch",
+        "需要活投影 `Rc<RefCell<ViewState>>`（本装配存裸值）",
+    ),
+    ("host::wire_save_with_engine", "需要原生文件对话框"),
     ("host::wire_new_project", "需要原生文件对话框"),
     ("host::wire_open_project", "需要原生文件对话框"),
     ("host::wire_import_audio", "需要原生文件对话框"),
@@ -221,7 +237,7 @@ fn the_serve_surface_wires_every_wiring_the_gui_path_can_wire() {
         missing.is_empty(),
         "`run_gui` 接了而 serve 装配没接、又不在例外清单里的接线 = {missing:?}。 \
          每条 `D-UI-*`（1 / 8 / 11）都是这么长出来的：补接线，或把**结构性理由** \
-         （缺引擎 / 缺对话框）写进 `ASSEMBLY_ONLY_IN_GUI`"
+         （缺活投影 / 缺对话框）写进 `ASSEMBLY_ONLY_IN_GUI`"
     );
 
     // 反向漂移：serve 侧接了 GUI 没有的 ⇒ 也要红（那意味着两面的能力开始各说一套）。
@@ -237,7 +253,8 @@ fn the_serve_surface_wires_every_wiring_the_gui_path_can_wire() {
     );
 
     println!(
-        "[D-UI-11 ①] GUI 接线 {} 条 / serve 接线 {} 条 / 例外 GUI→serve {} 条（引擎 5 + 对话框 4）\
+        "[D-UI-11 ①] GUI 接线 {} 条 / serve 接线 {} 条 / 例外 GUI→serve {} 条\
+         （活投影 3 + 对话框 5；`D-UI-30` 把 `host::wire_transport` 从这里删掉了）\
          / serve→GUI {} 条",
         gui.len(),
         serve.len(),
