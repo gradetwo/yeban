@@ -7745,7 +7745,11 @@ fn audible_end_seconds(port: Option<&Rc<UndoPort>>, ui: &MainWindow) -> Option<f
     let frames = project
         .tempo()
         .frames_at_tick(end_tick, yeban_model::PPQ, hz)?;
-    let seconds = f64::from(frames) / f64::from(hz);
+    // ⚠ `f64::from` 只到 `u32`（`frames` 是 `u64` ⇒ 那里会 E0277，CI 的 clippy 腿抓到过）。
+    // `as f64` 在 `2^53` 帧以内是**精确**的（48 kHz 下 ≈ 5,900 年：2^53 / 48000 / 3.15576e7），
+    // 因此这里的 `cast_precision_loss` 是 lint 的形状而非本行的实际误差。
+    #[allow(clippy::cast_precision_loss)]
+    let seconds = frames as f64 / f64::from(hz);
     if !seconds.is_finite() || seconds <= 0.0 {
         return None;
     }
