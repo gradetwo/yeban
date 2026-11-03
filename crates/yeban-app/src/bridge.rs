@@ -4522,6 +4522,21 @@ impl ViewState {
         self.clips.iter().map(|clip| clip.label.clone()).collect()
     }
 
+    /// 剪辑内容类型（`"midi"` / `"audio"`）。
+    #[must_use]
+    pub fn clip_contents(&self) -> Vec<&'static str> {
+        self.clips.iter().map(|clip| clip.content).collect()
+    }
+
+    /// 剪辑片段显示名（`ClipPoolEntry::name`）。
+    #[must_use]
+    pub fn clip_names(&self) -> Vec<String> {
+        self.clips
+            .iter()
+            .map(|clip| clip.clip_name.clone())
+            .collect()
+    }
+
     /// 每条摆放的**静音态**（与 [`Self::clip_ulids`] **同序同长**，来源是
     /// `ClipPlacement::muted` —— 工程字段，⛔ 不是界面自己记的第二份状态）。
     ///
