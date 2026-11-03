@@ -1229,9 +1229,7 @@ impl InputContext {
                 // **界面决定**（⛔ 不是规范点名）：AI 抽屉的键盘入口。
                 // `a` 在 `Cmd/Ctrl+Alt` 组合里此前一格都没有；`Shift` 变体仍放行。
                 (Key::Character('a'), false, true) => Resolution::Action(Action::ToggleAiDrawer),
-                (Key::Character('a'), true, false) => {
-                    Resolution::Action(Action::ToggleAutomation)
-                }
+                (Key::Character('a'), true, false) => Resolution::Action(Action::ToggleAutomation),
                 // 加性新增（⛔ 不动既有键语义）：`Cmd/Ctrl+Alt+N` / `+D` 此前**未被占**
                 //（实测：本 `Cmd/Ctrl+Alt` 组合当时只有 `b` / `m` 两条）。
                 (Key::Character('n'), false, true) => Resolution::Action(Action::ToggleMetronome),

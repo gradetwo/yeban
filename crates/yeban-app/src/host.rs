@@ -12580,7 +12580,7 @@ fn split_selected_clip_at_playhead(
     if selected.is_empty() {
         return false;
     }
-    let Some((track_id, placement_id, placement)) = clip_placement_for(project, selected.as_str())
+    let Some((track_id, _placement_id, placement)) = clip_placement_for(project, selected.as_str())
     else {
         return false;
     };
