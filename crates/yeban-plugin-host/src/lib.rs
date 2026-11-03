@@ -1,7 +1,9 @@
-//! 插件宿主（`yeban-plugin-host`）：VST3 乐器的一期进程内宿主。
+//! 插件宿主（`yeban-plugin-host`）：VST3 乐器的一期进程内宿主＋效果器宿主。
 //!
 //! 一期范围（ADR-0064）：扫描／验证／加载＋MIDI 输入＋音频渲染拉取＋
 //! 参数＋状态保存恢复；VST3 先行，CLAP 随后；跨进程隔离＋shm＋看门狗为 phase 2。
+//! 效果器线：实例化＋立体声音频总线＋`process_audio`＋参数＋状态往返；
+//! 效果器接轨内插入点（首个非旁通带绑定效果器胜出，见渲染装配）。
 //!
 //! 设计要点：
 //! - 零新增第三方依赖：只用 std＋手写 FFI（`dlopen`／`LoadLibrary`＋COM 虚表）。
@@ -28,7 +30,7 @@ pub mod vst3;
 
 pub use error::HostError;
 pub use host::Host;
-pub use stub::{STUB_SINE_ID, StubInstrument};
+pub use stub::{STUB_GAIN_ID, STUB_SINE_ID, StubEffect, StubInstrument};
 pub use types::{
     MidiEvent, MidiEventKind, ParamInfo, PluginClass, PluginDescriptor, PluginInstance, PluginKind,
     PluginState,

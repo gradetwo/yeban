@@ -1774,7 +1774,7 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
     ToolSpec {
         spec_id: "MCP-TOOL-EXT-LOAD-PLUGIN",
         name: "yeban_load_plugin",
-        summary: "验证加载一个 VST3 插件并经提案路径把它挂到指定轨道上（ADR-0064）：先用宿主打开 `pluginPath`、按 `pluginId` 指名类（不给则取首个乐器类）、做验证激活，失败则整个调用失败、不写提案；成功后以缺省提案挂一台 ExternalInstrument 设备（name 为插件名，latency_samples 为实例上报值，plugin 绑定记 path 与 class），slot_index 为该轨 devices 长度（追加到末尾）。缺省建提案；`autoMerge` 为真时当场落 main，与 `yeban_edit_notes` 同一条提案纪律，不另设直写路。音源优先级：非旁通的已宿主外部乐器胜过引擎合成器与采样器绑定；带绑定但加载失败的轨在渲染时响亮失败。测试桩 stub:sine 可用（仅测试夹具）。",
+        summary: "验证加载一个 VST3 插件并经提案路径把它挂到指定轨道上（ADR-0064）：先用宿主打开 `pluginPath`、按 `pluginId` 指名类（不给则按 `kind` 取首个同类）、做验证激活，失败则整个调用失败、不写提案；成功后以缺省提案挂一台外部设备（name 为插件名，latency_samples 为实例上报值，plugin 绑定记 path 与 class），slot_index 为该轨 devices 长度（追加到末尾）。`kind` 缺省 `instrument`（挂 ExternalInstrument；音源优先级：非旁通的已宿主外部乐器胜过引擎合成器与采样器绑定）；`kind` 为 `effect` 时挂 ExternalEffect（渲染时包在轨源输出之外，首个非旁通带绑定效果器胜出，其余仍进 externalPlugins 收据）。缺省建提案；`autoMerge` 为真时当场落 main，与 `yeban_edit_notes` 同一条提案纪律，不另设直写路。带绑定但加载失败的轨在渲染时响亮失败。测试桩 stub:sine（乐器）／stub:gain（效果器）可用（仅测试夹具）。",
         scope: Scope::AppAdmin,
         // 提案路径：建提案（ProjectState），autoMerge 时同一调用内合并；⛔ 不直写 main。
         side_effect: SideEffect::ProjectState,
@@ -1798,7 +1798,13 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
                 "pluginId",
                 "string",
                 false,
-                "类名或类 CID 十六进制；不给则取首个乐器类；指名类不存在或不是乐器 ⇒ `INVALID_PARAMETER_RANGE`",
+                "类名或类 CID 十六进制；不给则按 `kind` 取首个同类；指名类不存在或 kind 不对 ⇒ `INVALID_PARAMETER_RANGE`",
+            ),
+            param(
+                "kind",
+                "string",
+                false,
+                "插件种类：`instrument`（缺省，挂 ExternalInstrument）或 `effect`（挂 ExternalEffect）；其它值 ⇒ `INVALID_PARAMETER_RANGE`",
             ),
             param(
                 "autoMerge",

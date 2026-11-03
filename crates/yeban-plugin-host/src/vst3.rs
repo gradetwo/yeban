@@ -1035,31 +1035,81 @@ impl PluginInstance for Vst3Instance {
                 "setupProcessing",
                 (proc_vtbl.setup_processing)(self.processor, &setup),
             )?;
-            // 输出总线：立体声。`setBusArrangements` 的返回值语义是
-            // “接受（1）／拒绝（0）”，不是 ok／error；接受与否以事后
-            // `getBusArrangement` 的实测排布为准。
+            // 总线排布按 kind 分支（效果器线新增）：一期只接立体声。
+            // `setBusArrangements` 的返回值语义是“接受（1）／拒绝（0）”，
+            // 不是 ok／error；接受与否以事后 `getBusArrangement` 的实测排布为准。
+            // 未知 kind（既无事件输入又无音频输入）无法定排布 ⇒ 响亮失败。
             let mut out_arr = [ARRANGEMENT_STEREO];
-            let _ = (proc_vtbl.set_bus_arrangements)(
-                self.processor,
-                ptr::null_mut(),
-                0,
-                out_arr.as_mut_ptr(),
-                1,
-            );
             let mut actual: u64 = 0;
-            check(
-                "getBusArrangement",
-                (proc_vtbl.get_bus_arrangement)(self.processor, DIR_OUTPUT, 0, &mut actual),
-            )?;
-            if actual != ARRANGEMENT_STEREO {
-                return Err(HostError::OutputNotStereo);
+            match self.kind {
+                PluginKind::Instrument => {
+                    let _ = (proc_vtbl.set_bus_arrangements)(
+                        self.processor,
+                        ptr::null_mut(),
+                        0,
+                        out_arr.as_mut_ptr(),
+                        1,
+                    );
+                    check(
+                        "getBusArrangement",
+                        (proc_vtbl.get_bus_arrangement)(self.processor, DIR_OUTPUT, 0, &mut actual),
+                    )?;
+                    if actual != ARRANGEMENT_STEREO {
+                        return Err(HostError::OutputNotStereo);
+                    }
+                }
+                PluginKind::Effect => {
+                    let mut in_arr = [ARRANGEMENT_STEREO];
+                    let _ = (proc_vtbl.set_bus_arrangements)(
+                        self.processor,
+                        in_arr.as_mut_ptr(),
+                        1,
+                        out_arr.as_mut_ptr(),
+                        1,
+                    );
+                    check(
+                        "getBusArrangement",
+                        (proc_vtbl.get_bus_arrangement)(self.processor, DIR_INPUT, 0, &mut actual),
+                    )?;
+                    if actual != ARRANGEMENT_STEREO {
+                        return Err(HostError::InputNotStereo);
+                    }
+                    check(
+                        "getBusArrangement",
+                        (proc_vtbl.get_bus_arrangement)(self.processor, DIR_OUTPUT, 0, &mut actual),
+                    )?;
+                    if actual != ARRANGEMENT_STEREO {
+                        return Err(HostError::OutputNotStereo);
+                    }
+                }
+                PluginKind::Unknown => {
+                    return Err(HostError::Other(
+                        "插件类未能判定 kind（既无事件输入又无音频输入），无法激活".to_owned(),
+                    ));
+                }
             }
             let comp_vtbl = vtbl::<ComponentVtbl>(self.component);
-            // 主总线激活：事件输入 0 号、音频输出 0 号（失败 ⇒ 响亮失败）。
-            check(
-                "activateBus",
-                (comp_vtbl.activate_bus)(self.component, MEDIA_EVENT, DIR_INPUT, 0, 1),
-            )?;
+            // 主总线激活（失败 ⇒ 响亮失败）：乐器＝事件输入 0 号＋音频输出 0 号；
+            // 效果器＝音频输入 0 号＋音频输出 0 号（事件总线一期不接）。
+            match self.kind {
+                PluginKind::Instrument => {
+                    check(
+                        "activateBus",
+                        (comp_vtbl.activate_bus)(self.component, MEDIA_EVENT, DIR_INPUT, 0, 1),
+                    )?;
+                }
+                PluginKind::Effect => {
+                    check(
+                        "activateBus",
+                        (comp_vtbl.activate_bus)(self.component, MEDIA_AUDIO, DIR_INPUT, 0, 1),
+                    )?;
+                }
+                PluginKind::Unknown => {
+                    return Err(HostError::Other(
+                        "插件类未能判定 kind，无法激活总线".to_owned(),
+                    ));
+                }
+            }
             check(
                 "activateBus",
                 (comp_vtbl.activate_bus)(self.component, MEDIA_AUDIO, DIR_OUTPUT, 0, 1),
@@ -1218,6 +1268,11 @@ impl PluginInstance for Vst3Instance {
         if !self.active {
             return Err(HostError::NotActivated);
         }
+        if self.kind == PluginKind::Effect {
+            return Err(HostError::Other(
+                "效果器实例不能走乐器 process 路径（须用 process_audio）".to_owned(),
+            ));
+        }
         if out_l.len() != frames || out_r.len() != frames {
             return Err(HostError::Other(format!(
                 "输出片长（{}／{}）≠ 帧数 {frames}",
@@ -1290,6 +1345,77 @@ impl PluginInstance for Vst3Instance {
         };
         // SAFETY: `processor` 是本实例的有效指针；`data` 指向调用帧内的
         // 总线与事件列表，插件在 `process` 返回前只用它们。
+        unsafe {
+            let proc_vtbl = vtbl::<AudioProcessorVtbl>(self.processor);
+            check("process", (proc_vtbl.process)(self.processor, &mut data))
+        }
+    }
+
+    fn process_audio(
+        &mut self,
+        in_l: &[f32],
+        in_r: &[f32],
+        out_l: &mut [f32],
+        out_r: &mut [f32],
+    ) -> Result<(), HostError> {
+        if !self.active {
+            return Err(HostError::NotActivated);
+        }
+        if self.kind != PluginKind::Effect {
+            return Err(HostError::NotAnEffect(
+                "乐器实例没有音频输入总线，不能走效果器 process_audio 路径".to_owned(),
+            ));
+        }
+        let frames = out_l.len();
+        if in_l.len() != frames || in_r.len() != frames || out_r.len() != frames {
+            return Err(HostError::Other(format!(
+                "效果器片长不对（入 {}／{}，出 {}／{}）",
+                in_l.len(),
+                in_r.len(),
+                out_l.len(),
+                out_r.len()
+            )));
+        }
+        if frames > self.max_block {
+            return Err(HostError::Other(format!(
+                "帧数 {frames} ＞ 激活块上限 {}",
+                self.max_block
+            )));
+        }
+        // 输入指针：VST3 契约里输入与输出片分离时插件 ⛔ 不得写输入；
+        // 本方法只在输入／输出片分离的前提下被调用（见 trait 文档）。
+        // SAFETY: `in_l`／`in_r` 在调用帧内有效；插件在 `process` 返回前只读它们。
+        let mut in_ptrs: [*mut f32; 2] = [in_l.as_ptr() as *mut f32, in_r.as_ptr() as *mut f32];
+        let mut in_bus = AudioBusBuffers {
+            num_channels: 2,
+            _pad: 0,
+            silence_flags: 0,
+            channel_buffers: in_ptrs.as_mut_ptr(),
+        };
+        let mut out_ptrs: [*mut f32; 2] = [out_l.as_mut_ptr(), out_r.as_mut_ptr()];
+        let mut out_bus = AudioBusBuffers {
+            num_channels: 2,
+            _pad: 0,
+            silence_flags: 0,
+            channel_buffers: out_ptrs.as_mut_ptr(),
+        };
+        let mut data = ProcessData {
+            process_mode: PROCESS_REALTIME,
+            symbolic_sample_size: SAMPLE_32,
+            num_samples: frames as i32,
+            num_inputs: 1,
+            num_outputs: 1,
+            _pad: 0,
+            inputs: &mut in_bus,
+            outputs: &mut out_bus,
+            input_events: ptr::null_mut(),
+            output_events: ptr::null_mut(),
+            input_parameter_changes: ptr::null_mut(),
+            output_parameter_changes: ptr::null_mut(),
+            process_context: ptr::null_mut(),
+        };
+        // SAFETY: `processor` 是本实例的有效指针；`data` 指向调用帧内的
+        // 总线，插件在 `process` 返回前只用它们。
         unsafe {
             let proc_vtbl = vtbl::<AudioProcessorVtbl>(self.processor);
             check("process", (proc_vtbl.process)(self.processor, &mut data))

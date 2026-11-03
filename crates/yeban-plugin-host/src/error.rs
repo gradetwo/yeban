@@ -15,12 +15,16 @@ pub enum HostError {
     ClassNotFound(String),
     /// 类存在但不是乐器（无事件输入总线，或有音频输入总线）。
     NotAnInstrument(String),
+    /// 类存在但不是效果器（无音频输入总线）。
+    NotAnEffect(String),
     /// 插件没有实现一期必需的接口（`IComponent`／`IAudioProcessor`）。
     InterfaceMissing(&'static str),
     /// 插件不支持 32 位浮点处理（`canProcessSampleSize(kSample32)` 非真）。
     SampleSizeUnsupported,
     /// 插件输出总线不是立体声（一期只接立体声输出）。
     OutputNotStereo,
+    /// 插件输入总线不是立体声（效果器线一期只接立体声输入）。
+    InputNotStereo,
     /// 某次 COM 调用返回负值（`tresult` 错误码）。
     ///
     /// ⚠ `tresult` 的著名歧义：`kResultFalse == kResultOk == 0`，因此“非负”才是
@@ -49,11 +53,15 @@ impl fmt::Display for HostError {
             Self::FactoryMissing => write!(f, "动态库没有 `GetPluginFactory` 导出，不是 VST3 模块"),
             Self::ClassNotFound(detail) => write!(f, "插件类找不到: {detail}"),
             Self::NotAnInstrument(detail) => write!(f, "插件类不是乐器: {detail}"),
+            Self::NotAnEffect(detail) => write!(f, "插件类不是效果器: {detail}"),
             Self::InterfaceMissing(interface) => {
                 write!(f, "插件没有实现一期必需的接口 `{interface}`")
             }
             Self::SampleSizeUnsupported => write!(f, "插件不支持 32 位浮点处理"),
             Self::OutputNotStereo => write!(f, "插件输出总线不是立体声（一期只接立体声输出）"),
+            Self::InputNotStereo => {
+                write!(f, "插件输入总线不是立体声（效果器线一期只接立体声输入）")
+            }
             Self::CallFailed { method, code } => {
                 write!(f, "插件调用 `{method}` 失败（tresult = {code}）")
             }

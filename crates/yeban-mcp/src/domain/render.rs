@@ -442,7 +442,9 @@ use yeban_model::{
 use yeban_render::dither::{BitDepth, quantize};
 // ⭐ `ADR-0011`（`#268`）：引擎音色源适配器（CSV：CLI 与 MCP 共用同一份实现）。
 // 本 crate ⛔ 不直接依赖 `yeban-engine`（`scripts/gates/check_mcp_dependency_direction.py`）。
+use yeban_plugin_host::PluginInstance;
 use yeban_render::engine_source::{ArmedSfzInput, ArmedSfzSample, EngineTimbre, EngineTrackSource};
+use yeban_render::plugin_effect::PluginEffectSource;
 use yeban_render::plugin_source::PluginTrackSource;
 // 插入链的投影与"是否还有未消费参数"的判据都住在 `yeban-render`：MCP 不复制
 // 第二份白名单（`yeban-engine` 的投影是同一份规则的来源，但 MCP 不能依赖它）。
@@ -1678,6 +1680,8 @@ pub struct SourceReport {
     /// 测点是 `yeban-render` 的源节点输出（[`PeakTap`] 在 `render_block` 返回后扫一遍），
     /// 因此**含**轨音量 / 声相 / 采样器与音频片段增益，⛔ **不含**该轨的插入链
     /// （EQ / 混响 / 卷积在 `render_node` 里、探针之后才处理）与路由边增益。
+    /// ⭐ 效果器线：宿主效果器包在源节点**内**（探针在效果器之外），因此峰值
+    /// **含**效果器输出 —— 效果器增益推出的削波由本峰值预警点名。
     /// 单位与 `peak.after` 相同（满刻度线性幅度，⛔ 不是 dB、⛔ 不是文件峰值）。
     pub peak: f32,
     /// ⭐ 采样器绑定（`TrackV3.sampler`）的实测读数；`None` = 这条轨没有绑采样器。
@@ -2648,6 +2652,12 @@ impl RenderArtifact {
     }
 }
 
+/// 待挂接的轨源：轨节点＋轨源＋可选宿主效果器实例（`None` = 本轨无宿主效果器）。
+type PendingSource = (EntityId, TrackSource, Option<Box<dyn PluginInstance>>);
+/// 轨源装配产物：轨源＋可选宿主效果器实例＋收据。
+/// （乐器实例不住在这里 —— 它在装配期内已包进 `TrackSource.plugin`。）
+type SourceAssembly = (TrackSource, Option<Box<dyn PluginInstance>>, SourceReport);
+
 /// 从工程构造一份**已编码**的母带产物（只读、不落盘）。
 ///
 /// 这是本模块唯一的入口：`plan_render_master` 调它拿 [`RenderArtifact`]，
@@ -2821,7 +2831,7 @@ pub fn build(
         )
     })?;
     let mut registry: BTreeMap<EntityId, Box<dyn AudioSource>> = BTreeMap::new();
-    let mut pending: Vec<(EntityId, TrackSource)> = Vec::new();
+    let mut pending: Vec<PendingSource> = Vec::new();
     let mut reports: Vec<SourceReport> = Vec::new();
     // ⭐ `#274`：逐轨的**声部窃取**句柄（渲染之后才有读数，见 `9a` 的同一条时机）。
     let mut sampler_steals: BTreeMap<EntityId, Arc<AtomicU64>> = BTreeMap::new();
@@ -2833,7 +2843,7 @@ pub fn build(
                 serde_json::json!({ "node": node.to_canonical_string() }),
             )
         })?;
-        let (source, report) = build_source(
+        let (source, effect, report) = build_source(
             project,
             &timbre,
             track,
@@ -2850,7 +2860,7 @@ pub fn build(
         )?;
         end_tick = end_tick.max(report.end_tick);
         reports.push(report);
-        pending.push((node, source));
+        pending.push((node, source, effect));
     }
     // 5. 非源节点(总线/主轨)上的片段: 不渲染, 但**明确登记**, 不静默丢。
     for &node in &nodes {
@@ -2888,13 +2898,37 @@ pub fn build(
     //
     // ⭐ #225：每个源外面套一个只读的 [`PeakTap`]（逐源峰值），句柄留在
     // `peak_taps` 里，渲染结束后把读数填回 `reports[]`。探针**只读** `out`。
+    // ⭐ 效果器线：有宿主效果器的轨先把轨源包进 `PluginEffectSource`，再套探针
+    // ⇒ `sources[].peak` 含效果器输出（效果器在源节点内），⛔ 不含内置插入链
+    // （仍在探针之后跑）；激活失败 ⇒ 渲染构造期 RENDER_FAILED。
     let mut peak_taps: BTreeMap<EntityId, Arc<AtomicU32>> = BTreeMap::new();
-    for (node, mut source) in pending {
+    for (node, mut source, effect) in pending {
         source.clamp_to(frames);
         let peak_bits = Arc::new(AtomicU32::new(0));
         peak_taps.insert(node, Arc::clone(&peak_bits));
+        let boxed: Box<dyn AudioSource> = match effect {
+            Some(instance) => Box::new(
+                PluginEffectSource::new(
+                    instance,
+                    Box::new(source),
+                    node,
+                    f64::from(sample_rate),
+                    8192,
+                )
+                .map_err(|error| {
+                    render_failed(
+                        format!("效果器激活失败: {error}"),
+                        serde_json::json!({
+                            "reason": "pluginEffectActivate",
+                            "node": node.to_canonical_string(),
+                        }),
+                    )
+                })?,
+            ),
+            None => Box::new(source),
+        };
         let boxed: Box<dyn AudioSource> = Box::new(PeakTap {
-            inner: source,
+            inner: boxed,
             peak_bits,
         });
         registry.insert(node, boxed);
@@ -3994,7 +4028,8 @@ struct TrackSource {
 /// 源轨**把声相搬到了输出级 ⇒ 这类轨的 `sources[].peak` 是**声相之前**的读数
 /// （`pan == 0` 时与搬前逐位相同）。插入链在探针之后 ⇒ **压缩本身**永远不改这个数。
 struct PeakTap {
-    inner: TrackSource,
+    /// 内层源（轨源，或包了效果器的轨源；⛔ 不是“必为 TrackSource”）。
+    inner: Box<dyn AudioSource>,
     /// 峰值位型（非负有限 `f32` 的位型与数值同序 ⇒ `fetch_max` 就是"取更大"）。
     peak_bits: Arc<AtomicU32>,
 }
@@ -4526,7 +4561,7 @@ fn build_source(
     counts: &mut BTreeMap<&'static str, u64>,
     // ⭐ `#303`：本轨会执行压缩 ⇒ 源侧**不带声相**（pre-pan tap；输出级负责声相）。
     pre_pan: bool,
-) -> Result<(TrackSource, SourceReport), Fault> {
+) -> Result<SourceAssembly, Fault> {
     // solo 语义（B2 起也作用于辅助返回总线 —— 见 `build` 的输出级）；判据与源轨
     // 同一条 `track_is_audible`：只要工程里有任一音轨 solo, 未 solo 且非 solo-safe
     // 的轨就不发声。`any_solo` 扫全部轨（含主总线）。
@@ -4575,9 +4610,16 @@ fn build_source(
     }
     // ⭐ ADR-0064：已被宿主的那台设备（首个非旁通、带绑定的外部乐器）不再登记
     // `externalPlugins` —— 它有音源了，不是"未消费"。其它外部设备（第二台绑定
-    // 乐器、效果器、未绑定设备）仍登记。加载失败时装配期已响亮返回，本行走不到。
+    // 乐器、未绑定设备）仍登记。加载失败时装配期已响亮返回，本行走不到。
     let hosted_plugin_index = track.devices.iter().position(|device| {
         !device.bypassed && device.kind == DeviceKind::ExternalInstrument && device.plugin.is_some()
+    });
+    // ⭐ 效果器线：首个非旁通、带绑定的外部效果器同样被宿主（包在轨源输出之外），
+    // 因此也不登记 `externalPlugins`；第二台及以上带绑定效果器仍登记（first-source
+    // 语义；多实例链是 slotlists 折中的后续项）。无源总线轨的效果器本票不接
+    // （见 `PluginEffectSource` 模块文档），仍登记。
+    let hosted_effect_index = track.devices.iter().position(|device| {
+        !device.bypassed && device.kind == DeviceKind::ExternalEffect && device.plugin.is_some()
     });
     if track.devices.iter().enumerate().any(|(index, device)| {
         !device.bypassed
@@ -4586,9 +4628,36 @@ fn build_source(
                 DeviceKind::ExternalInstrument | DeviceKind::ExternalEffect
             )
             && Some(index) != hosted_plugin_index
+            && Some(index) != hosted_effect_index
     }) {
         note_unsupported(unsupported, counts, "externalPlugins");
     }
+    // ⭐ 效果器线：首个非旁通、带绑定的外部效果器（`hosted_effect_index`）：
+    // 加载成功 ⇒ 实例交回调用方（由 `build` 包在轨源输出之外）；加载失败 ⇒
+    // 渲染构造期 RENDER_FAILED（与乐器线同一条纪律：坏绑定不配静默过关）。
+    // 效果器不改变音源选择（`midi`／`plugin`／片段仍按原口径建），只处理求和输出。
+    let effect = match hosted_effect_index {
+        Some(index) => {
+            let binding = track.devices[index]
+                .plugin
+                .as_ref()
+                .expect("hosted_effect_index 只指向带绑定的设备");
+            let instance =
+                yeban_plugin_host::Host::load_effect(&binding.path, binding.class.as_deref())
+                    .map_err(|error| {
+                        render_failed(
+                            format!("效果器装载失败: {error}"),
+                            serde_json::json!({
+                                "reason": "pluginEffectLoad",
+                                "pluginPath": binding.path,
+                                "pluginId": binding.class,
+                            }),
+                        )
+                    })?;
+            Some(instance)
+        }
+        None => None,
+    };
     // ⭐ `#221`：采样器轨的音符（`(起始帧, 时值帧, 音高, 力度)`）。
     // ⭐ `#268`（`ADR-0011`）：**非采样器轨**的音符不再在本层排成"正弦参数"——
     //    它们由 `yeban-engine` 的 `EngineSnapshot::from_project` 投影成 `NoteSchedule`，
@@ -5067,7 +5136,7 @@ fn build_source(
         peak: 0.0,
         sampler: sampler_report,
     };
-    Ok((source, report))
+    Ok((source, effect, report))
 }
 
 /// 等功率（−3 dB）声相增益：`θ = (pan + 1) * π/4`，`(cos θ, sin θ)`。

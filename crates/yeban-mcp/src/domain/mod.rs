@@ -3616,12 +3616,14 @@ fn plan_scan_plugins(call: &ToolCall) -> Result<Plan, Fault> {
 /// `yeban_load_plugin`：验证加载一个 VST3 插件，经提案路径挂到指定轨道上（ADR-0064 D13）。
 ///
 /// 顺序承重：先 `require_active`，再解析 `trackId`、查轨（无则 `TRACK_NOT_FOUND`），
-/// 再 `Host::load` 验证（失败响亮，不写提案 —— 坏插件不配进提案模拟），
-/// 最后 `propose_draft` 挂一台 `ExternalInstrument` 设备（`autoMerge` 与
+/// 再按 `kind` 验证（失败响亮，不写提案 —— 坏插件不配进提案模拟），
+/// 最后 `propose_draft` 挂一台外部设备（`autoMerge` 与
 /// `mergeCommitMessage` 由提案收尾从 `call` 实参读，与 `yeban_edit_notes` 同一条纪律）。
+/// `kind` 缺省 `instrument`（`Host::load` → `ExternalInstrument`）；`effect`
+///（`Host::load_effect` → `ExternalEffect`）；其它值 ⇒ `INVALID_PARAMETER_RANGE`。
 ///
 /// 设备字段：`name` = 插件名（VST3 类名；桩 = `stub:` 标识），`latency_samples` =
-/// 验证激活时实例上报的延迟（`Host::load` 的激活循环已读过，停用后缓存值仍在），
+/// 验证激活时实例上报的延迟（验证激活循环已读过，停用后缓存值仍在），
 /// `plugin` 绑定记 `path` 与 `class`（`pluginId` 未给时记实际选中的类名）。
 /// 提案类别是新的 `"plugin"`（创建与无过滤清单都走通；`yeban_list_proposals`
 /// 的 `kind` 过滤词表仍是 section / notes / macro 三个，过滤 `"plugin"` 会被
@@ -3639,7 +3641,18 @@ fn plan_load_plugin(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
         Fault::domain(ErrorCode::InvalidParameterRange, "`pluginPath` 是必填实参")
     })?;
     let class = arg_str(call, "pluginId");
-    let instance = Host::load(path, class).map_err(|error| {
+    let kind = arg_str(call, "kind").unwrap_or("instrument");
+    let (instance, device_kind) = match kind {
+        "instrument" => (Host::load(path, class), DeviceKind::ExternalInstrument),
+        "effect" => (Host::load_effect(path, class), DeviceKind::ExternalEffect),
+        _ => {
+            return Err(Fault::domain(
+                ErrorCode::InvalidParameterRange,
+                format!("`kind` 只能是 instrument 或 effect，实为 `{kind}`"),
+            ));
+        }
+    };
+    let instance = instance.map_err(|error| {
         let code = match error {
             HostError::LibraryLoad(_) => ErrorCode::IoError,
             _ => ErrorCode::InvalidParameterRange,
@@ -3657,7 +3670,7 @@ fn plan_load_plugin(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
     let device = DeviceDefinition {
         id: EntityId::new(),
         name: instance.name().to_owned(),
-        kind: DeviceKind::ExternalInstrument,
+        kind: device_kind,
         bypassed: false,
         params: Vec::new(),
         latency_samples: instance.latency_samples(),
@@ -5702,6 +5715,83 @@ mod tests {
             .next()
             .copied()
             .expect("至少一个音符")
+    }
+
+    #[test]
+    fn load_plugin_kind_effect_mounts_external_effect_and_bad_kind_fails() {
+        let domain = domain();
+        let track = fixture_track(&domain);
+        // kind=effect：挂 ExternalEffect，绑定记 stub:gain。
+        let effect_call = call(
+            "yeban_load_plugin",
+            serde_json::json!({
+                "trackId": track.to_canonical_string(),
+                "pluginPath": "stub:gain",
+                "kind": "effect",
+            }),
+        );
+        let planned = plan(&domain, &effect_call).expect("效果器装载规划应成功");
+        let Plan::Propose { draft, .. } = planned else {
+            panic!("装载应产出提案计划");
+        };
+        assert_eq!(draft.ops.len(), 1);
+        let Op::InsertDevice { device, .. } = &draft.ops[0] else {
+            panic!("装载提案应为 InsertDevice");
+        };
+        assert_eq!(device.kind, DeviceKind::ExternalEffect);
+        assert_eq!(device.name, "stub:gain");
+        let binding = device.plugin.as_ref().expect("绑定必须在场");
+        assert_eq!(binding.path, "stub:gain");
+        assert_eq!(binding.class.as_deref(), Some("stub:gain"));
+        // kind 缺省：仍是乐器路（stub:sine → ExternalInstrument）。
+        let default_call = call(
+            "yeban_load_plugin",
+            serde_json::json!({
+                "trackId": track.to_canonical_string(),
+                "pluginPath": "stub:sine",
+            }),
+        );
+        let planned = plan(&domain, &default_call).expect("缺省 kind 规划应成功");
+        let Plan::Propose { draft, .. } = planned else {
+            panic!("装载应产出提案计划");
+        };
+        let Op::InsertDevice { device, .. } = &draft.ops[0] else {
+            panic!("装载提案应为 InsertDevice");
+        };
+        assert_eq!(device.kind, DeviceKind::ExternalInstrument);
+        // kind 非法值：规划期响亮拒绝。
+        let bad_kind_call = call(
+            "yeban_load_plugin",
+            serde_json::json!({
+                "trackId": track.to_canonical_string(),
+                "pluginPath": "stub:gain",
+                "kind": "chorus",
+            }),
+        );
+        let error = plan(&domain, &bad_kind_call).expect_err("非法 kind 必须失败");
+        assert!(
+            matches!(
+                error,
+                Fault::Domain {
+                    code: ErrorCode::InvalidParameterRange,
+                    ..
+                }
+            ),
+            "非法 kind 应报 INVALID_PARAMETER_RANGE，实为 {error:?}"
+        );
+        // kind 与桩不匹配：stub:sine 不是效果器 ⇒ 规划期响亮拒绝。
+        let mismatch_call = call(
+            "yeban_load_plugin",
+            serde_json::json!({
+                "trackId": track.to_canonical_string(),
+                "pluginPath": "stub:sine",
+                "kind": "effect",
+            }),
+        );
+        assert!(
+            plan(&domain, &mismatch_call).is_err(),
+            "乐器桩走效果器路必须失败"
+        );
     }
 
     #[test]

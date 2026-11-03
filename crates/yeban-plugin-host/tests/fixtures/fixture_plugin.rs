@@ -8,7 +8,7 @@
 //! 独立重写：两边按同一 SDK 文本对齐，测试验证的是“宿主按 SDK 行事”，
 //! 而不是“宿主与夹具共享同一份（可能错的）定义”。
 //!
-//! 两个类：
+//! 三个类：
 //! - `TestSine`（组合式）：同一对象实现 `IComponent`＋`IAudioProcessor`＋
 //!   `IEditController`（`getControllerClassId` 返回假，宿主走组合式分支）。
 //! - `TestSineSeparate`（分离式）：组件与控制器是两个对象；控制器经工厂
@@ -17,6 +17,9 @@
 //!   控制器建实例时取回它——这是**夹具的简写**，不是 VST3 机制
 //!   （真实分离式插件靠 `IConnectionPoint` 同步，宿主一期不支持，
 //!   见 ADR-0064 D9 注记；夹具只借此验证分离式建实例与直设参数的链路）。
+//! - `TestGain`（组合式效果器）：音频输入 1 条＋音频输出 1 条，无事件输入；
+//!   `process` 把立体声输入 × 增益写到立体声输出（直通增益 1.0 时逐位不变）。
+//!   宿主探针据此定 kind＝`Effect`，效果器线经它证明 VST3 音频输入路径。
 //!
 //! 内存规则（夹具专用）：视图与状态对象一律泄漏不释放（`release` 只减计数，
 //! 从不 `drop`）：测试进程短命，OS 回收；⛔ 杜绝悬空指针，不求零泄漏。
@@ -66,6 +69,8 @@ const CID_COMBINED: Tuid = tuid(0x1111_1111, 0x2222_2222, 0x3333_3333, 0x4444_44
 const CID_SEPARATE: Tuid = tuid(0x5555_5555, 0x6666_6666, 0x7777_7777, 0x8888_8888);
 /// 分离式控制器类标识（夹具自造）。
 const CID_SEPARATE_CTRL: Tuid = tuid(0x9999_9999, 0xAAAA_AAAA, 0xBBBB_BBBB, 0xCCCC_CCCC);
+/// 效果器类标识（夹具自造）。
+const CID_EFFECT: Tuid = tuid(0xDDDD_DDDD, 0xEEEE_EEEE, 0xFFFF_FFFF, 0x1212_1212);
 
 const RESULT_OK: i32 = 0;
 const RESULT_NO_INTERFACE: i32 = -1;
@@ -306,6 +311,8 @@ impl Voice {
 struct Inner {
     refcount: u32,
     combined: bool,
+    /// 是否效果器（总线排布与 `process` 语义按此分支）。
+    effect: bool,
     gain_cell: *mut f32,
     sample_rate: f64,
     active: bool,
@@ -314,10 +321,11 @@ struct Inner {
 }
 
 impl Inner {
-    fn new(combined: bool, gain_cell: *mut f32) -> *mut Inner {
+    fn new(combined: bool, gain_cell: *mut f32, effect: bool) -> *mut Inner {
         Box::into_raw(Box::new(Inner {
             refcount: 1,
             combined,
+            effect,
             gain_cell,
             sample_rate: 48000.0,
             active: false,
@@ -478,7 +486,14 @@ unsafe extern "system" fn comp_set_io_mode(_this: *mut c_void, _mode: i32) -> i3
     RESULT_OK
 }
 unsafe extern "system" fn comp_get_bus_count(this: *mut c_void, media: i32, dir: i32) -> i32 {
-    let _ = this;
+    let inner = unsafe { &*inner_of(this) };
+    if inner.effect {
+        return match (media, dir) {
+            (0, 0) => 1, // 音频输入 1 条。
+            (0, 1) => 1, // 音频输出 1 条。
+            _ => 0,
+        };
+    }
     match (media, dir) {
         (1, 0) => 1, // 事件输入 1 条。
         (0, 1) => 1, // 音频输出 1 条。
@@ -486,7 +501,7 @@ unsafe extern "system" fn comp_get_bus_count(this: *mut c_void, media: i32, dir:
     }
 }
 unsafe extern "system" fn comp_get_bus_info(
-    _this: *mut c_void,
+    this: *mut c_void,
     media: i32,
     dir: i32,
     index: i32,
@@ -495,10 +510,19 @@ unsafe extern "system" fn comp_get_bus_info(
     if index != 0 {
         return 0;
     }
-    let (channel_count, name) = match (media, dir) {
-        (1, 0) => (1, "Event In"),
-        (0, 1) => (2, "Audio Out"),
-        _ => return 0,
+    let inner = unsafe { &*inner_of(this) };
+    let (channel_count, name) = if inner.effect {
+        match (media, dir) {
+            (0, 0) => (2, "Audio In"),
+            (0, 1) => (2, "Audio Out"),
+            _ => return 0,
+        }
+    } else {
+        match (media, dir) {
+            (1, 0) => (1, "Event In"),
+            (0, 1) => (2, "Audio Out"),
+            _ => return 0,
+        }
     };
     let slot = unsafe { &mut *info };
     slot.media_type = media;
@@ -574,24 +598,27 @@ unsafe extern "system" fn ctrl_get_state(this: *mut c_void, stream: *mut c_void)
 
 unsafe extern "system" fn proc_set_bus_arrangements(
     _this: *mut c_void,
-    _inputs: *mut u64,
-    _num_ins: i32,
+    inputs: *mut u64,
+    num_ins: i32,
     outputs: *mut u64,
     num_outs: i32,
 ) -> i32 {
-    if num_outs >= 1 && unsafe { *outputs } == 0x3 {
-        1
-    } else {
-        0
+    if num_outs < 1 || unsafe { *outputs } != 0x3 {
+        return 0;
     }
+    if num_ins >= 1 && unsafe { *inputs } != 0x3 {
+        return 0;
+    }
+    1
 }
 unsafe extern "system" fn proc_get_bus_arrangement(
-    _this: *mut c_void,
+    this: *mut c_void,
     dir: i32,
     index: i32,
     arr: *mut u64,
 ) -> i32 {
-    if dir == 1 && index == 0 {
+    let inner = unsafe { &*inner_of(this) };
+    if index == 0 && ((dir == 1) || (dir == 0 && inner.effect)) {
         unsafe { *arr = 0x3 };
         RESULT_OK
     } else {
@@ -622,6 +649,34 @@ unsafe extern "system" fn proc_process(this: *mut c_void, data: *mut ProcessData
     let inner = unsafe { &mut *inner_of(this) };
     let data = unsafe { &mut *data };
     let frames = data.num_samples.max(0) as usize;
+    // 效果器分支：立体声输入 × 增益 → 立体声输出（不读事件）。
+    if inner.effect {
+        if data.num_inputs < 1 || data.inputs.is_null() || data.num_outputs < 1 || data.outputs.is_null()
+        {
+            return RESULT_NOT_IMPLEMENTED;
+        }
+        let in_bus = unsafe { &*data.inputs };
+        let out_bus = unsafe { &*data.outputs };
+        if in_bus.num_channels < 2
+            || in_bus.channel_buffers.is_null()
+            || out_bus.num_channels < 2
+            || out_bus.channel_buffers.is_null()
+        {
+            return RESULT_NOT_IMPLEMENTED;
+        }
+        let gain = inner.gain();
+        let in_l = unsafe { *in_bus.channel_buffers };
+        let in_r = unsafe { *in_bus.channel_buffers.add(1) };
+        let out_l = unsafe { *out_bus.channel_buffers };
+        let out_r = unsafe { *out_bus.channel_buffers.add(1) };
+        for sample in 0..frames {
+            unsafe {
+                *out_l.add(sample) = *in_l.add(sample) * gain;
+                *out_r.add(sample) = *in_r.add(sample) * gain;
+            }
+        }
+        return RESULT_OK;
+    }
     // 事件：读宿主事件列表（虚表布局与 SDK 一致），按偏移收集后逐采样应用
     // （插件负责块内偏移精度：偏移 N 的事件在采样 N 之前生效）。
     let mut pending: Vec<(u32, i32, u8, f32, i32)> = Vec::new();
@@ -742,20 +797,22 @@ unsafe extern "system" fn ctrl_get_param_count(_this: *mut c_void) -> i32 {
     1
 }
 unsafe extern "system" fn ctrl_get_param_info(
-    _this: *mut c_void,
+    this: *mut c_void,
     index: i32,
     info: *mut ParameterInfoRaw,
 ) -> i32 {
     if index != 0 {
         return 0;
     }
+    let inner = unsafe { &*inner_of(this) };
     let slot = unsafe { &mut *info };
     slot.id = 0;
     write_string128(&mut slot.title, "Gain");
     write_string128(&mut slot.short_title, "Gain");
     write_string128(&mut slot.units, "");
     slot.step_count = 0;
-    slot.default_normalized = 0.8;
+    // 缺省与工厂建实例的增益单元一致（乐器 0.8／效果器 1.0）。
+    slot.default_normalized = if inner.effect { 1.0 } else { 0.8 };
     slot.unit_id = 0;
     slot.flags = 1;
     RESULT_OK
@@ -908,7 +965,7 @@ unsafe extern "system" fn factory_get_info(_this: *mut c_void, info: *mut PFacto
     RESULT_OK
 }
 unsafe extern "system" fn factory_count(_this: *mut c_void) -> i32 {
-    2
+    3
 }
 unsafe extern "system" fn factory_get_class(_this: *mut c_void, index: i32, info: *mut PClassInfo) -> i32 {
     let slot = unsafe { &mut *info };
@@ -924,6 +981,11 @@ unsafe extern "system" fn factory_get_class(_this: *mut c_void, index: i32, info
             write_char_str(&mut slot.category, "Audio Module Class");
             write_char_str(&mut slot.name, "TestSineSeparate");
         }
+        2 => {
+            slot.cid = CID_EFFECT;
+            write_char_str(&mut slot.category, "Audio Module Class");
+            write_char_str(&mut slot.name, "TestGain");
+        }
         _ => return 0,
     }
     RESULT_OK
@@ -936,9 +998,37 @@ unsafe extern "system" fn factory_create(
 ) -> i32 {
     let cid = unsafe { *cid };
     let iid = unsafe { *iid };
-    if cid == CID_COMBINED {
+    if cid == CID_EFFECT {
+        // 效果器走组合式控制器（与 TestSine 同款视图分发，只换总线与处理语义）。
+        let gain_cell = Box::into_raw(Box::new(1.0_f32));
+        let inner = Inner::new(true, gain_cell, true);
+        if iid == ICOMPONENT_IID {
+            let view = Box::into_raw(Box::new(ComponentView {
+                vtbl: &COMPONENT_VTBL,
+                inner,
+            }));
+            unsafe { *out = view as *mut c_void };
+            RESULT_OK
+        } else if iid == IAUDIO_PROCESSOR_IID {
+            let view = Box::into_raw(Box::new(ProcessorView {
+                vtbl: &PROCESSOR_VTBL,
+                inner,
+            }));
+            unsafe { *out = view as *mut c_void };
+            RESULT_OK
+        } else if iid == IEDIT_CONTROLLER_IID {
+            let view = Box::into_raw(Box::new(ControllerView {
+                vtbl: &CONTROLLER_VTBL,
+                inner,
+            }));
+            unsafe { *out = view as *mut c_void };
+            RESULT_OK
+        } else {
+            RESULT_NO_INTERFACE
+        }
+    } else if cid == CID_COMBINED {
         let gain_cell = Box::into_raw(Box::new(0.8_f32));
-        let inner = Inner::new(true, gain_cell);
+        let inner = Inner::new(true, gain_cell, false);
         if iid == ICOMPONENT_IID {
             let view = Box::into_raw(Box::new(ComponentView {
                 vtbl: &COMPONENT_VTBL,
@@ -971,7 +1061,7 @@ unsafe extern "system" fn factory_create(
         if let Ok(mut guard) = LAST_SEPARATE_GAIN_CELL.lock() {
             *guard = Some(gain_cell as usize);
         }
-        let inner = Inner::new(false, gain_cell);
+        let inner = Inner::new(false, gain_cell, false);
         let view = Box::into_raw(Box::new(ComponentView {
             vtbl: &COMPONENT_VTBL,
             inner,
@@ -988,7 +1078,7 @@ unsafe extern "system" fn factory_create(
                 .unwrap_or_else(|| Box::into_raw(Box::new(0.8_f32))),
             Err(_) => Box::into_raw(Box::new(0.8_f32)),
         };
-        let inner = Inner::new(false, gain_cell);
+        let inner = Inner::new(false, gain_cell, false);
         let view = Box::into_raw(Box::new(ControllerView {
             vtbl: &CONTROLLER_VTBL,
             inner,

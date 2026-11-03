@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use yeban_plugin_host::{Host, HostError, MidiEvent, MidiEventKind, PluginState};
+use yeban_plugin_host::{Host, HostError, MidiEvent, MidiEventKind, PluginKind, PluginState};
 
 /// 平台动态库扩展名（与宿主 `host.rs` 同款口径）。
 #[cfg(target_os = "windows")]
@@ -23,6 +23,7 @@ const DYLIB_EXT: &str = "so";
 /// 夹具类标识的十六进制（夹具 `fixture_plugin.rs` 的自造 CID 大端串联）。
 const COMBINED_CID_HEX: &str = "11111111222222223333333344444444";
 const SEPARATE_CID_HEX: &str = "55555555666666667777777788888888";
+const EFFECT_CID_HEX: &str = "ddddddddeeeeeeeeffffffff12121212";
 
 static TEST_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
@@ -245,6 +246,141 @@ fn process_before_activate_and_bad_slices_fail_loudly() {
 }
 
 #[test]
+fn fixture_effect_loads_and_processes_audio() {
+    let dir = test_dir();
+    let plugin = compile_fixture(&dir);
+    let mut instance =
+        Host::load_effect(plugin.to_str().unwrap(), Some("TestGain")).expect("效果器应能加载");
+    assert_eq!(instance.name(), "TestGain");
+    let params = instance.parameters().expect("参数枚举");
+    assert_eq!(params.len(), 1);
+    assert_eq!(params[0].title, "Gain");
+    assert!((params[0].default_normalized - 1.0).abs() < 1e-9);
+    assert_eq!(instance.parameter_value(0), Some(f64::from(1.0_f32)));
+    instance.activate(48_000.0, 1024).expect("激活");
+    // 缺省增益 1.0 ⇒ 直通（逐位不变）。
+    let in_l: Vec<f32> = (0..16).map(|i| i as f32 / 16.0).collect();
+    let in_r: Vec<f32> = (0..16).map(|i| 1.0 - i as f32 / 16.0).collect();
+    let mut out_l = vec![0.0_f32; 16];
+    let mut out_r = vec![0.0_f32; 16];
+    instance
+        .process_audio(&in_l, &in_r, &mut out_l, &mut out_r)
+        .expect("直通渲染");
+    assert_eq!(out_l, in_l, "缺省增益 1.0 应逐位直通");
+    assert_eq!(out_r, in_r);
+    // 增益 0.5 ⇒ 输出减半。
+    instance.set_parameter(0, 0.5).expect("直设参数");
+    instance
+        .process_audio(&in_l, &in_r, &mut out_l, &mut out_r)
+        .expect("减半渲染");
+    for index in 0..16 {
+        assert!(
+            (out_l[index] - in_l[index] * 0.5).abs() < 1e-6,
+            "左声道第 {index} 采样应减半"
+        );
+        assert!(
+            (out_r[index] - in_r[index] * 0.5).abs() < 1e-6,
+            "右声道第 {index} 采样应减半"
+        );
+    }
+    // 效果器实例走乐器路径必须响亮失败。
+    let mut sink_l = vec![0.0_f32; 16];
+    let mut sink_r = vec![0.0_f32; 16];
+    assert!(
+        instance.process(&[], 16, &mut sink_l, &mut sink_r).is_err(),
+        "效果器走乐器 process 必须失败"
+    );
+}
+
+#[test]
+fn fixture_load_effect_without_id_picks_first_effect_class() {
+    let dir = test_dir();
+    let plugin = compile_fixture(&dir);
+    let instance = Host::load_effect(plugin.to_str().unwrap(), None).expect("不指名应能加载");
+    assert_eq!(instance.name(), "TestGain", "首个效果器类应为 TestGain");
+    let instance = Host::load_effect(plugin.to_str().unwrap(), Some(EFFECT_CID_HEX))
+        .expect("CID 十六进制指名应能加载");
+    assert_eq!(instance.name(), "TestGain");
+}
+
+#[test]
+fn load_effect_rejects_wrong_kind() {
+    let dir = test_dir();
+    let plugin = compile_fixture(&dir);
+    assert!(matches!(
+        Host::load_effect(plugin.to_str().unwrap(), Some("TestSine")),
+        Err(HostError::NotAnEffect(_))
+    ));
+    assert!(matches!(
+        Host::load(plugin.to_str().unwrap(), Some("TestGain")),
+        Err(HostError::NotAnInstrument(_))
+    ));
+    assert!(matches!(
+        Host::load_effect("stub:sine", None),
+        Err(HostError::NotAnEffect(_))
+    ));
+    assert!(matches!(
+        Host::load("stub:gain", None),
+        Err(HostError::NotAnInstrument(_))
+    ));
+}
+
+#[test]
+fn stub_gain_processes_audio_and_roundtrips_state() {
+    let mut instance = Host::load_effect("stub:gain", None).expect("桩效果器应能加载");
+    assert_eq!(instance.name(), "stub:gain");
+    assert_eq!(instance.parameter_value(0), Some(1.0));
+    instance.activate(48_000.0, 1024).expect("激活");
+    let in_l = vec![0.25_f32; 16];
+    let in_r = vec![-0.5_f32; 16];
+    let mut out_l = vec![0.0_f32; 16];
+    let mut out_r = vec![0.0_f32; 16];
+    instance
+        .process_audio(&in_l, &in_r, &mut out_l, &mut out_r)
+        .expect("直通渲染");
+    assert_eq!(out_l, in_l);
+    assert_eq!(out_r, in_r);
+    instance.set_parameter(0, 0.25).expect("增益置 0.25");
+    instance
+        .process_audio(&in_l, &in_r, &mut out_l, &mut out_r)
+        .expect("衰减渲染");
+    assert!(out_l.iter().all(|sample| (*sample - 0.0625).abs() < 1e-6));
+    assert!(out_r.iter().all(|sample| (*sample + 0.125).abs() < 1e-6));
+    let state = instance.save_state().expect("保存桩状态");
+    let mut second = Host::load_effect("stub:gain", None).expect("桩应能二次加载");
+    second.restore_state(&state).expect("恢复桩状态");
+    assert_eq!(second.parameter_value(0), Some(0.25));
+    // 桩效果器走乐器路径必须响亮失败。
+    let mut sink_l = vec![0.0_f32; 16];
+    let mut sink_r = vec![0.0_f32; 16];
+    assert!(
+        second.process(&[], 16, &mut sink_l, &mut sink_r).is_err(),
+        "桩效果器走乐器 process 必须失败"
+    );
+}
+
+#[test]
+fn effect_process_audio_before_activate_and_bad_slices_fail_loudly() {
+    let mut instance = Host::load_effect("stub:gain", None).expect("桩效果器应能加载");
+    let in_l = vec![0.0_f32; 16];
+    let in_r = vec![0.0_f32; 16];
+    let mut out_l = vec![0.0_f32; 16];
+    let mut out_r = vec![0.0_f32; 16];
+    assert!(matches!(
+        instance.process_audio(&in_l, &in_r, &mut out_l, &mut out_r),
+        Err(HostError::NotActivated)
+    ));
+    instance.activate(48_000.0, 1024).expect("激活");
+    let mut short_r = vec![0.0_f32; 8];
+    assert!(
+        instance
+            .process_audio(&in_l, &in_r, &mut out_l, &mut short_r)
+            .is_err(),
+        "片长不对必须失败"
+    );
+}
+
+#[test]
 fn stub_sine_renders_and_roundtrips_state() {
     let mut instance = Host::load("stub:sine", None).expect("桩应能加载");
     assert_eq!(instance.name(), "stub:sine");
@@ -323,13 +459,13 @@ fn scan_lists_usable_plugins_and_isolates_bad_files() {
         .expect("坏文件应在扫描结果里");
     assert!(!bad.usable());
     assert!(bad.error.is_some());
-    // 散文件可用：2 个类，均为乐器。
+    // 散文件可用：3 个类（2 乐器＋1 效果器）。
     let loose_entry = found
         .iter()
         .find(|entry| entry.path == loose.to_string_lossy())
         .expect("散文件应在扫描结果里");
     assert!(loose_entry.usable());
-    assert_eq!(loose_entry.classes.len(), 2);
+    assert_eq!(loose_entry.classes.len(), 3);
     assert!(
         loose_entry
             .classes
@@ -338,6 +474,11 @@ fn scan_lists_usable_plugins_and_isolates_bad_files() {
         "夹具类探针应全通过"
     );
     assert_eq!(loose_entry.classes[0].name, "TestSine");
+    assert_eq!(loose_entry.classes[0].kind, PluginKind::Instrument);
+    assert_eq!(loose_entry.classes[1].name, "TestSineSeparate");
+    assert_eq!(loose_entry.classes[1].kind, PluginKind::Instrument);
+    assert_eq!(loose_entry.classes[2].name, "TestGain");
+    assert_eq!(loose_entry.classes[2].kind, PluginKind::Effect);
     // 包内文件可用（路径指向包内动态库，不是包目录本身）。
     let bundle_entry = found
         .iter()

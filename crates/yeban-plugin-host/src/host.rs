@@ -10,7 +10,7 @@
 use std::path::{Path, PathBuf};
 
 use crate::error::HostError;
-use crate::stub::StubInstrument;
+use crate::stub::{StubEffect, StubInstrument};
 use crate::types::{PluginDescriptor, PluginInstance, PluginKind, tuid_hex};
 use crate::vst3::{Vst3Instance, Vst3Module, inspect_module};
 
@@ -130,9 +130,9 @@ impl Host {
         out
     }
 
-    /// 加载一个插件并做验证激活循环（激活 → 停用），返回未激活实例。
+    /// 加载一个乐器插件并做验证激活循环（激活 → 停用），返回未激活实例。
     ///
-    /// - `stub:` 路径走进程内桩（目前仅 `stub:sine`）。
+    /// - `stub:` 路径走进程内桩（`stub:sine`）。
     /// - `plugin_id` 指名：精确匹配类名，否则按 CID 十六进制匹配；
     ///   不指名时取首个乐器类；无乐器类 ⇒ `NotAnInstrument`。
     /// - 验证激活用 48 kHz／4096 帧：只证明整链可激活，渲染时由渲染源
@@ -142,15 +142,40 @@ impl Host {
     ///
     /// 路径非法、模块失败、类找不到、不是乐器、验证激活失败 ⇒ [`HostError`]。
     pub fn load(path: &str, plugin_id: Option<&str>) -> Result<Box<dyn PluginInstance>, HostError> {
+        Self::load_kind(path, plugin_id, PluginKind::Instrument)
+    }
+
+    /// 加载一个效果器插件并做验证激活循环（激活 → 停用），返回未激活实例。
+    ///
+    /// 与 [`Self::load`] 同款流程，只把 kind 换成效果器：`stub:` 走 `stub:gain`；
+    /// 不指名时取首个效果器类；无效果器类 ⇒ `NotAnEffect`；指名了乐器类 ⇒
+    /// `NotAnEffect`（不是“不是乐器”的反向口径 —— 拒绝的理由就是 kind 不对）。
+    ///
+    /// # Errors
+    ///
+    /// 路径非法、模块失败、类找不到、不是效果器、验证激活失败 ⇒ [`HostError`]。
+    pub fn load_effect(
+        path: &str,
+        plugin_id: Option<&str>,
+    ) -> Result<Box<dyn PluginInstance>, HostError> {
+        Self::load_kind(path, plugin_id, PluginKind::Effect)
+    }
+
+    /// 按 kind 加载（`load`／`load_effect` 的共享实现）。
+    fn load_kind(
+        path: &str,
+        plugin_id: Option<&str>,
+        want_kind: PluginKind,
+    ) -> Result<Box<dyn PluginInstance>, HostError> {
         if let Some(stub_name) = path.strip_prefix(STUB_PREFIX) {
-            return Self::load_stub(stub_name);
+            return Self::load_stub(stub_name, want_kind);
         }
         let module = Vst3Module::load(path)?;
         let raw = module.classes_raw();
         if raw.is_empty() {
             return Err(HostError::ClassNotFound("工厂没有登记任何类".to_owned()));
         }
-        // 类选择：指名优先（类名精确，或 CID 十六进制）；不指名取首个乐器类。
+        // 类选择：指名优先（类名精确，或 CID 十六进制）；不指名取首个目标 kind 类。
         let chosen = if let Some(want) = plugin_id {
             raw.iter()
                 .find(|(cid, name, _)| name == want || tuid_hex(cid).eq_ignore_ascii_case(want))
@@ -159,31 +184,48 @@ impl Host {
                 })?
                 .clone()
         } else {
-            // 不指名：逐个实例化探针，首个乐器类胜出（探针失败的类跳过）。
+            // 不指名：逐个实例化探针，首个目标 kind 类胜出（探针失败的类跳过）。
             let mut found: Option<(crate::types::Tuid, String, String)> = None;
             for (cid, name, category) in &raw {
                 match Vst3Instance::open(&module, cid, name) {
-                    Ok(instance) if instance.kind() == PluginKind::Instrument => {
+                    Ok(instance) if instance.kind() == want_kind => {
                         found = Some((*cid, name.clone(), category.clone()));
                         break;
                     }
                     _ => continue,
                 }
             }
-            found.ok_or_else(|| {
-                HostError::NotAnInstrument(format!(
+            found.ok_or_else(|| match want_kind {
+                PluginKind::Instrument => HostError::NotAnInstrument(format!(
                     "模块 `{path}` 没有乐器类（共 {} 个类）",
                     raw.len()
-                ))
+                )),
+                PluginKind::Effect => HostError::NotAnEffect(format!(
+                    "模块 `{path}` 没有效果器类（共 {} 个类）",
+                    raw.len()
+                )),
+                PluginKind::Unknown => {
+                    HostError::Other("load_kind 不接受 Unknown 目标 kind".to_owned())
+                }
             })?
         };
         let mut instance = Vst3Instance::open(&module, &chosen.0, &chosen.1)?;
-        if instance.kind() != PluginKind::Instrument {
-            return Err(HostError::NotAnInstrument(format!(
-                "类 `{}` 不是乐器（kind＝{:?}）",
-                chosen.1,
-                instance.kind()
-            )));
+        if instance.kind() != want_kind {
+            return Err(match want_kind {
+                PluginKind::Instrument => HostError::NotAnInstrument(format!(
+                    "类 `{}` 不是乐器（kind＝{:?}）",
+                    chosen.1,
+                    instance.kind()
+                )),
+                PluginKind::Effect => HostError::NotAnEffect(format!(
+                    "类 `{}` 不是效果器（kind＝{:?}）",
+                    chosen.1,
+                    instance.kind()
+                )),
+                PluginKind::Unknown => {
+                    HostError::Other("load_kind 不接受 Unknown 目标 kind".to_owned())
+                }
+            });
         }
         // 验证激活循环：证明整链可激活，再停用交还（渲染时重激活）。
         instance.activate(48_000.0, 4096)?;
@@ -191,12 +233,19 @@ impl Host {
         Ok(Box::new(instance))
     }
 
-    /// `stub:` 桩分发（目前仅 `stub:sine`；未知桩 ⇒ 响亮失败）。
-    fn load_stub(name: &str) -> Result<Box<dyn PluginInstance>, HostError> {
-        match name {
-            "sine" => Ok(Box::new(StubInstrument::new())),
+    /// `stub:` 桩分发（`stub:sine` 乐器／`stub:gain` 效果器；kind 不对或未知桩 ⇒ 响亮失败）。
+    fn load_stub(name: &str, want_kind: PluginKind) -> Result<Box<dyn PluginInstance>, HostError> {
+        match (name, want_kind) {
+            ("sine", PluginKind::Instrument) => Ok(Box::new(StubInstrument::new())),
+            ("gain", PluginKind::Effect) => Ok(Box::new(StubEffect::new())),
+            ("sine", PluginKind::Effect) => Err(HostError::NotAnEffect(
+                "测试桩 `stub:sine` 是乐器，不是效果器".to_owned(),
+            )),
+            ("gain", PluginKind::Instrument) => Err(HostError::NotAnInstrument(
+                "测试桩 `stub:gain` 是效果器，不是乐器".to_owned(),
+            )),
             _ => Err(HostError::InvalidPluginPath(format!(
-                "未知测试桩 `stub:{name}`（目前仅 `stub:sine`）"
+                "未知测试桩 `stub:{name}`（目前仅 `stub:sine`／`stub:gain`）"
             ))),
         }
     }

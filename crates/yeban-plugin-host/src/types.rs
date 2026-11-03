@@ -336,4 +336,26 @@ pub trait PluginInstance: Send + Sync {
         out_l: &mut [f32],
         out_r: &mut [f32],
     ) -> Result<(), HostError>;
+
+    /// 效果器渲染一块：立体声输入 → 立体声输出（长度必须等于 `frames`）。
+    ///
+    /// 缺省实现响亮失败（乐器实例不是效果器）：效果器实现必须覆盖本方法。
+    /// 输入与输出片 ⛔ 不得重叠（宿主不保证原地处理；包装层一律用分离缓冲）。
+    /// 只走离线路径，⛔ 不进 RT 回调。
+    ///
+    /// # Errors
+    ///
+    /// 未激活、不是效果器、片长不对、插件 `process` 返回负值 ⇒ [`HostError`]。
+    fn process_audio(
+        &mut self,
+        in_l: &[f32],
+        in_r: &[f32],
+        out_l: &mut [f32],
+        out_r: &mut [f32],
+    ) -> Result<(), HostError> {
+        let _ = (in_l, in_r, out_l, out_r);
+        Err(HostError::NotAnEffect(
+            "该实例不是效果器（process_audio 只有效果器实现）".to_owned(),
+        ))
+    }
 }
