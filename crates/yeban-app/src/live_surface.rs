@@ -2384,7 +2384,7 @@ pub fn build_live_ui_with(
         Some(Rc::new(project.clone())),
         options.undo.clone(),
     );
-    let mut admin = LiveAdminSurface {
+    let admin = LiveAdminSurface {
         inner: surface,
         window,
         registry,

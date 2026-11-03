@@ -2239,11 +2239,38 @@ error: could not compile `yeban-app` (test "live_ui_mcp")
    **活投影** `Rc<RefCell<ViewState>>`，而本装配把投影存成**裸值** `view`。给它配 `Rc<RefCell<..>>`
    是把投影变成两份事实源的入口 ⇒ 属**独立的一票**，不在本票里顺手扩范围（已在跟踪表登记）。
 
-判决：**`pending`** —— 提交 `e11153dd`（推送后 `git ls-remote` == `git rev-parse HEAD` 已核，§46），
-run `41565699055`。本机只过了 `cargo fmt`（rustfmt 真的解析了这 525 行 ⇒ 语法过关）；
+判决：**`pending`** —— 见下面第七节：run `41565699055` 又停在编译（第三枚），判据一条没跑。
+本机只过了 `cargo fmt`（rustfmt 真的解析了这 525 行 ⇒ 语法过关）；
 Slint 是重依赖 ⇒ 编译与判决交 CI（§5）。读回时要**数 `Running tests/`** 并确认
 `d_ui_30_serve_transport_is_wired` 这个二进制在里头，同时确认这三枚**没被本票改红**：
 `d_ui_11_serve_header_gestures`（例外清单从 9 条删成 8 条）、`d_ui_29_metronome_writes_the_document`
 （边界 1 改了文字，⑧ 的计数⛔ 未动）、`live_ui_mcp`（本票的 `dead_code` 修的就是它）。
 另：`deny` 那枚红与本票**无关**（`async-executor v1.14.0` 被上游 yank，`§44`），`Cargo.lock` 一位未动。
+
+### 七、第三枚编译红：`unused_mut` —— 换字段类型会**顺带**让装配现场的 `mut` 变成硬错误
+
+`run 41565699055`（`e11153dd`）死在 `clippy (-D warnings)` 一条：
+
+```
+error: variable does not need to be mutable
+  --> crates/yeban-app/tests/../src/live_surface.rs:2387:9
+2387 |     let mut admin = LiveAdminSurface {
+     |         ----^^^^^
+     = note: `-D unused-mut` implied by `-D warnings`
+```
+
+`Running tests/` 计数仍是 **0** ⇒ `D-UI-28` / `D-UI-29` / `D-UI-30` 三票的判决**继续全部作废**
+（这是本线连第三枚停在编译的 run，死因每枚都不同：`E0277` → `dead_code` → `unused_mut`）。
+
+根因就在第三节那一跳：`admin.engine.set_project_dir(..)` 升成 `admin.engine.borrow_mut().set_project_dir(..)`
+之后，`RefCell` 的**内部可变性**接管了这次写入 ⇒ 那个绑定不再需要 `mut`。也就是说
+**"把字段换成 `Rc<RefCell<..>>`"不是只改类型**：它会同时改变所有经由这个字段做的写入
+所需的最小可变性，而这类红**不在** `§48` 那台本机零依赖桩里（桩不装 `live_surface.rs` ——
+它依赖 slint / yeban-ui-mcp 等重依赖）。
+⇒ **纪律**：改完这类字段之后，除了 `cargo fmt`，还要把**该文件里每一条 `let mut`** 逐条问一遍
+"这个绑定在这个作用域里还剩不剩下需要 `mut` 的写入"（本文件现读 5 条：`published_revision` /
+`publish_error` / `snapshot_metronome` 三条在分支里被赋值、`let mut engine = self.engine.borrow_mut()`
+要 `&mut` 调 `publish_project` / `heartbeat`、`build_live_ui_from_authority_with` 里那条要 `start_engine()`
+⇒ 只有装配现场那一条是多余的）。判据文件同理：`let (mut live, …)` 的每一例都要真的动 `live`
+（①④⑦ 三例只读 ⇒ ⛔ 不带 `mut`）。
 
