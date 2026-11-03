@@ -4537,6 +4537,12 @@ impl ViewState {
             .collect()
     }
 
+    /// 非主总线轨道的类型（`"midi"` / `"audio"` / `"aux-return"`）。
+    #[must_use]
+    pub fn track_kinds(&self) -> Vec<&'static str> {
+        self.tracks.iter().map(|track| track.kind).collect()
+    }
+
     /// 每条摆放的**静音态**（与 [`Self::clip_ulids`] **同序同长**，来源是
     /// `ClipPlacement::muted` —— 工程字段，⛔ 不是界面自己记的第二份状态）。
     ///

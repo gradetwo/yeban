@@ -521,12 +521,10 @@ export component MixerConsole inherits Rectangle {
             accessible-item-selected: root.selected-track-id != "" && root.selected-track-id == root.track-ids[track_index];
             accessible-action-default => { root.track-select(track_index); }
 
-            // 点击通道条标题栏 ⇒ 选中本轨（与编曲视图同款，发 track-select(track_index)）
+            // 点击通道条任意空白区域 ⇒ 选中本轨（对齐 Apple Logic Pro）
             TouchArea {
-                x: 0;
-                y: 0;
                 width: parent.width;
-                height: 20px;
+                height: parent.height;
                 clicked => {
                     root.track-select(track_index);
                 }
@@ -906,12 +904,14 @@ export component MixerConsole inherits Rectangle {
                 y: 54px;
                 width: 48px;
                 height: 116px;
-                // 双击 ⇒ 这一轨推子回 unity（`0 dB`）。几何一位不动（见上面那条回调的边界说明）。
+                // 双击 ⇒ 这一轨推子回 unity（`0 dB`）。
                 double-clicked => {
+                    root.track-select(track_index);
                     root.mixer-fader-reset(track_index);
                 }
                 pointer-event(event) => {
                     if event.kind == PointerEventKind.down {
+                        root.track-select(track_index);
                         root.mixer-fader-grab(track_index, self.mouse-y);
                     } else if event.kind == PointerEventKind.move {
                         root.mixer-fader-drag(track_index, self.mouse-y);
@@ -930,10 +930,12 @@ export component MixerConsole inherits Rectangle {
                 height: 18px;
                 // 双击 ⇒ 这一轨声相回中央（`0.0`）。
                 double-clicked => {
+                    root.track-select(track_index);
                     root.mixer-pan-reset(track_index);
                 }
                 pointer-event(event) => {
                     if event.kind == PointerEventKind.down {
+                        root.track-select(track_index);
                         root.mixer-pan-grab(track_index, self.mouse-x);
                     } else if event.kind == PointerEventKind.move {
                         root.mixer-pan-drag(track_index, self.mouse-x);
