@@ -13,7 +13,7 @@
 //!    经 `ConsoleTabs` 透传至根窗口 `MainWindow.track-select`，触发宿主 `host::wire_track_select`，
 //!    使 `selected-track-id` 实时更新，且选中的通道条高亮 (`border-width: 2px` / `Tokens.gold`)；
 //! 2. **设备架与检查器联动**：在混音台选择某轨后，底部控制台 Tab 2 的设备架立即可见该轨的
-//!    设备链 (`device_track_label` / `device_names`) 与发送条 (`send_strip_projection`)；
+//!    设备链 (`device_track_label` / `device_names`) 与发送条 (`send_destination_names`)；
 //! 3. **夜半完整工程加载与片段类型识别**：支持加载包含 30 轨、36 个剪辑池条目、56 条自动化曲线
 //!    的夜半工程，精确识别 MIDI 与 Audio 片段内容；
 //! 4. **CI 兼容与零回归**：若磁盘存在 `/home/crow/work/qoder/nightfall_v17.yeban`，直接进行真文件对账；
@@ -22,9 +22,10 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 use std::rc::Rc;
+use std::str::FromStr as _;
 
 use slint::Model as _;
-use yeban_app::bridge::{ViewState, display_track, send_strip_projection};
+use yeban_app::bridge::{TrackHeightLayout, ViewState, display_track};
 use yeban_app::host;
 use yeban_app::open::open_project_file;
 use yeban_app::scene::DemoScene;
@@ -42,6 +43,10 @@ use yeban_ui_test_port::render::LivePort;
 const WINDOW: Size = Size::new(1440, 900);
 const NOW_MS: u64 = 1_760_000_000_000;
 const NIGHTFALL_FILE: &str = "/home/crow/work/qoder/nightfall_v17.yeban";
+
+fn eid(s: &str) -> EntityId {
+    EntityId::from_str(s).expect("有效 EntityId 规范文本")
+}
 
 fn synth_track(id: EntityId, name: &str, kind: TrackKind) -> TrackV3 {
     TrackV3 {
@@ -168,14 +173,13 @@ fn synth_nightfall_scale_project() -> YebanProjectV1 {
         ),
     ];
 
-    let master_id =
-        EntityId::from_canonical("0SPK09ZEQCWAT9DKHQMFGCDRSD").expect("master EntityId 必须合法");
+    let master_id = eid("0SPK09ZEQCWAT9DKHQMFGCDRSD");
     let mut tracks = BTreeMap::new();
     let mut routing_graph = yeban_model::project::RoutingGraph::default();
 
     for (id_str, name, kind) in track_defs {
-        let tid = EntityId::from_canonical(id_str).expect("EntityId 必须合法");
-        routing_graph.nodes.insert(tid);
+        let tid = eid(id_str);
+        routing_graph.nodes.push(tid);
         let mut t = synth_track(tid, name, kind);
         match kind {
             TrackKind::Master => {
@@ -278,9 +282,9 @@ fn synth_nightfall_scale_project() -> YebanProjectV1 {
         }
     }
     // 8 条 Audio 摆放：1 条在 Tape Air, 6 条在 FX Riser, 1 条在 Ambience · Wind（对齐夜半真实工程）
-    let tape_air_id = EntityId::from_canonical("01ZZZ0AR5JZCS6K0DT7M1EV8N2").unwrap();
-    let fx_riser_id = EntityId::from_canonical("01ZZZM41M1EV8N2FW9P3GXAQ4H").unwrap();
-    let wind_id = EntityId::from_canonical("01YYYYYYYY00000075KSSD8A88").unwrap();
+    let tape_air_id = eid("01ZZZ0AR5JZCS6K0DT7M1EV8N2");
+    let fx_riser_id = eid("01ZZZM41M1EV8N2FW9P3GXAQ4H");
+    let wind_id = eid("01YYYYYYYY00000075KSSD8A88");
 
     let audio_targets = [
         (tape_air_id, 0),
@@ -313,11 +317,11 @@ fn synth_nightfall_scale_project() -> YebanProjectV1 {
     assert_eq!(placement_count, 30, "合成夹具必须恰好摆放 30 条片段");
 
     // 路由图：构建真实 SendToAux 发送边（对齐夜半工程：Woodwinds_Arp 发送到 Hall 和 Room）
-    let ww_id = EntityId::from_canonical("01M6AKK32R0PPHTFNDQAVFX7FG").unwrap();
-    let hall_id = EntityId::from_canonical("01ZZZZZZ0CA3SMPMK4N2F9JD2N").unwrap();
-    let room_id = EntityId::from_canonical("01ZZZZZZ0DSKVT3QR58W9KPXDW").unwrap();
+    let ww_id = eid("01M6AKK32R0PPHTFNDQAVFX7FG");
+    let hall_id = eid("01ZZZZZZ0CA3SMPMK4N2F9JD2N");
+    let room_id = eid("01ZZZZZZ0DSKVT3QR58W9KPXDW");
 
-    let e1 = EntityId::from_canonical("01ZZZZZZ2JZMK2PDNECNWB749D").unwrap();
+    let e1 = eid("01ZZZZZZ2JZMK2PDNECNWB749D");
     routing_graph.edges.insert(
         e1,
         yeban_model::project::RoutingEdge {
@@ -328,7 +332,7 @@ fn synth_nightfall_scale_project() -> YebanProjectV1 {
             gain_db: Some(-16.0),
         },
     );
-    let e2 = EntityId::from_canonical("01ZZZZZZ2PNG8SN84H987MWK7Q").unwrap();
+    let e2 = eid("01ZZZZZZ2PNG8SN84H987MWK7Q");
     routing_graph.edges.insert(
         e2,
         yeban_model::project::RoutingEdge {
@@ -491,23 +495,33 @@ fn mixer_track_selection_syncs_with_host_and_device_rack() {
     // 再次切回通道条 0，验证发送条与路由图联动
     ui.invoke_track_select(0);
     assert_eq!(ui.get_selected_track_id().as_str(), track_ids[0].as_str());
-    let resolved_ww =
-        display_track(&project, Some(track_ids[0].as_str())).expect("解析 Woodwinds_Arp");
-    let (sends, _, _) = send_strip_projection(&project, Some(resolved_ww));
+    let view_ww = ViewState::from_project_with_zoom_layout_and_selection(
+        &project,
+        30,
+        &TrackHeightLayout::default(),
+        Some(track_ids[0].as_str()),
+    )
+    .expect("投影 Woodwinds_Arp 选轨视图");
+    let dests = view_ww.send_destination_names();
     assert_eq!(
-        sends.len(),
+        dests.len(),
         2,
-        "Woodwinds_Arp 必须恰好投射出 2 条 SendToAux 边"
+        "Woodwinds_Arp 必须恰好投射出 2 条 SendToAux 目的地"
     );
+    assert!(dests.iter().any(|name| name.contains("Hall · 3.6s")));
+    assert!(dests.iter().any(|name| name.contains("Room · 0.8s")));
+
+    // 选 AuxReturn 轨道时验证发送条为空
+    let view_plate = ViewState::from_project_with_zoom_layout_and_selection(
+        &project,
+        30,
+        &TrackHeightLayout::default(),
+        Some(track_ids[14].as_str()),
+    )
+    .expect("投影 Plate · 5.5s 选轨视图");
     assert!(
-        sends
-            .iter()
-            .any(|s| s.destination_name.contains("Hall · 3.6s"))
-    );
-    assert!(
-        sends
-            .iter()
-            .any(|s| s.destination_name.contains("Room · 0.8s"))
+        view_plate.send_destination_names().is_empty(),
+        "AuxReturn 轨道没有 SendToAux 出边"
     );
 }
 
