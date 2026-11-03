@@ -49,6 +49,7 @@
 //! | [`sfz`] | `yeban_load_sfz` / `yeban_render_sfz_wav`：`yeban-sfz` 装载 + 用 SFZ 区域离线导出 WAV |
 //! | [`record_wav`] | `yeban_record_wav`：`ARCH-REC-001` 三段（无锁环 + 后台抽干）→ 24-bit WAV |
 
+pub mod ara;
 pub mod automation;
 pub mod automation_audit;
 pub mod diagnostics;
@@ -91,7 +92,10 @@ use yeban_model::{
     OpOrigin, PluginBinding, SessionRuntimeState, StampedOp, TrackV3, YebanProjectV1,
 };
 
-use yeban_plugin_host::{Host, HostError, PluginKind, types::tuid_hex};
+use yeban_plugin_host::{
+    AraClip, AraClipKind, AraPlacement, AraSession, Host, HostError, PcmData, PluginKind,
+    types::tuid_hex,
+};
 
 use crate::jsonrpc::ErrorObject;
 use crate::tools::{ErrorCode, ToolCall, ToolResponse};
@@ -239,6 +243,14 @@ pub struct Domain {
     sfz_instruments: BTreeMap<u64, sfz::SfzLoad>,
     /// 下一个 `instrumentId`（单调；从 1 开始，`0` 从不出现 ⇒ 客户端可把它当"未提供"）。
     sfz_next_id: u64,
+    /// **会话内已绑定的 ARA 会话**（`yeban_ara_bind` 的登记表），键 = sessionId。
+    ///
+    /// 与 SFZ registry 同一条纪律：**会话运行态**（`MODEL-ISO-001` 第 2 层），
+    /// 打开 / 关闭工程整体重置，不进 `project.json`、不进 `history.dag`；
+    /// sessionId 只在本会话有效，不能跨会话引用。
+    ara_sessions: BTreeMap<String, AraSession>,
+    /// 下一个 ARA sessionId 序号（单调；从 1 开始，id 形如 `ara-1`）。
+    ara_next_id: u64,
     /// **施加修订号**：每施加一个**可能改工程**的计划就 +1（只读计划不推进）。
     ///
     /// 它是**宿主投影刷新的触发口径**（`ROAD-M4-008` 选项 (a)）：形态 A 的
@@ -276,6 +288,8 @@ impl Domain {
             now_ms: 0,
             sfz_instruments: BTreeMap::new(),
             sfz_next_id: 1,
+            ara_sessions: BTreeMap::new(),
+            ara_next_id: 1,
             apply_revision: 0,
         }
     }
@@ -310,6 +324,25 @@ impl Domain {
     #[must_use]
     pub const fn sfz_next_id(&self) -> u64 {
         self.sfz_next_id
+    }
+
+    /// 按 sessionId 取一份已绑定的 ARA 会话（只读；`yeban_ara_query` /
+    /// `yeban_ara_render` 的唯一来源）。
+    #[must_use]
+    pub fn ara_session(&self, id: &str) -> Option<&AraSession> {
+        self.ara_sessions.get(id)
+    }
+
+    /// 已绑定的 ARA sessionId（升序）。
+    #[must_use]
+    pub fn ara_session_ids(&self) -> Vec<String> {
+        self.ara_sessions.keys().cloned().collect()
+    }
+
+    /// 下一个 ARA sessionId 序号（`yeban_ara_bind` 的 `apply` 用它给出**确定性**身份）。
+    #[must_use]
+    pub const fn ara_next_id(&self) -> u64 {
+        self.ara_next_id
     }
 
     /// **施加修订号**（`0` = 从未施加过任何可能改工程的计划）。
@@ -771,6 +804,10 @@ impl Domain {
         // 乐器"悄悄参与这一份工程的导出）。
         self.sfz_instruments.clear();
         self.sfz_next_id = 1;
+        // ARA 会话同样是会话运行态：换工程 ⇒ 旧 sessionId 一律作废
+        // （旧会话持有的插件实例与文档控制器随会话关闭而释放）。
+        self.ara_sessions.clear();
+        self.ara_next_id = 1;
         // 场景启动队列与引擎读数都是**会话运行态**：换工程 ⇒ 上一份工程的排队请求
         // 与旧引擎的 applied 计数一律作废（⛔ 不让它们跨打开边界存活）。
         self.pending_scene_launches.clear();
@@ -1173,6 +1210,32 @@ pub enum Plan {
         /// 已经渲染并编码好的产物（`apply` 只落盘）。
         artifact: Box<sfz::SfzWavArtifact>,
     },
+    /// `yeban_ara_bind`：绑定一段音频到 ARA 插件（`apply` 打开会话并登记）。
+    AraBind {
+        /// 插件路径（.vst3 包路径或散动态库路径；`Host::resolve_module_path` 口径）。
+        plugin_path: String,
+        /// ARA 类名（不给则取首个 ARA 类；类名配对见 `AraSession::open`）。
+        plugin_id: Option<String>,
+        /// 片段 wav 路径（`plan` 已解码；`apply` 只用 PCM，不再读盘）。
+        wav_path: PathBuf,
+        /// 解码后的片段 PCM（`plan` 的产物）。
+        pcm: PcmData,
+        /// 片段速度（BPM；缺省 120）。
+        tempo_bpm: f64,
+        /// 循环迭代数（≥1；缺省 1）。
+        loop_iterations: usize,
+        /// 静音摆放（缺省 false）。
+        muted: bool,
+    },
+    /// `yeban_ara_render`：把已绑定 ARA 会话离线渲染成 WAV（`apply` 渲染 + 落盘）。
+    AraRender {
+        /// 会话 id（`yeban_ara_bind` 的响应）。
+        session_id: String,
+        /// 输出 wav 路径。
+        out_path: PathBuf,
+        /// 渲染块大小（1..=4096；缺省 1024）。
+        block_frames: usize,
+    },
     /// `yeban_export_stems`（`ADR-0030`）：逐轨弹分轨（`N + 1` 次渲染与编码都在 `plan` 里）。
     ExportStems {
         /// 已经渲染并编码好的整批分轨（`apply` 只逐条落盘）。
@@ -1226,6 +1289,8 @@ impl Plan {
             Self::ImportMidi(_) => "import_midi",
             Self::LoadSfz { .. } => "load_sfz",
             Self::RenderSfzWav { .. } => "render_sfz_wav",
+            Self::AraBind { .. } => "ara_bind",
+            Self::AraRender { .. } => "ara_render",
             Self::ExportStems { .. } => "export_stems",
             Self::RecordWav { .. } => "record_wav",
             Self::MidiInputProbe { .. } => "midi_input_probe",
@@ -1276,6 +1341,8 @@ impl Plan {
             // SFZ 装载只动**会话态** registry（不是工程文档）；SFZ 导出与录音只写盘。
             | Self::LoadSfz { .. }
             | Self::RenderSfzWav { .. }
+            | Self::AraBind { .. }
+            | Self::AraRender { .. }
             | Self::ExportStems { .. }
             | Self::RecordWav { .. }
             // 物理 MIDI 探针只读硬件端口，⛔ 不碰工程文档、⛔ 不落盘。
@@ -1352,6 +1419,9 @@ impl Plan {
             // SFZ 装载只动会话态 registry（不是工程文档）；SFZ 导出与录音只写盘。
             | Self::LoadSfz { .. }
             | Self::RenderSfzWav { .. }
+            // ARA 绑定只动会话态 registry；ARA 渲染只写盘（两者都不改工程文档）。
+            | Self::AraBind { .. }
+            | Self::AraRender { .. }
             | Self::ExportStems { .. }
             | Self::RecordWav { .. }
             // 物理 MIDI 探针只读硬件端口（连工程都不要求活跃）。
@@ -1495,6 +1565,9 @@ impl Plan {
             | Self::ExportMidi { .. }
             | Self::LoadSfz { .. }
             | Self::RenderSfzWav { .. }
+            // ARA 绑定只动会话态 registry；ARA 渲染只写盘（两者都不改工程文档）。
+            | Self::AraBind { .. }
+            | Self::AraRender { .. }
             | Self::ExportStems { .. }
             | Self::RecordWav { .. }
             // 探针不改工程内容（连工程都不要求活跃）。
@@ -1853,6 +1926,28 @@ impl Plan {
                 }
                 preview.insert("wouldApply".to_owned(), Value::from(true));
             }
+            Self::AraBind {
+                plugin_path,
+                wav_path,
+                ..
+            } => {
+                preview.insert("pluginPath".to_owned(), Value::from(plugin_path.clone()));
+                preview.insert(
+                    "wavPath".to_owned(),
+                    Value::from(wav_path.display().to_string()),
+                );
+            }
+            Self::AraRender {
+                session_id,
+                out_path,
+                ..
+            } => {
+                preview.insert("sessionId".to_owned(), Value::from(session_id.clone()));
+                preview.insert(
+                    "outPath".to_owned(),
+                    Value::from(out_path.display().to_string()),
+                );
+            }
             // 宿主动作没有工具信封可预览；顶部的 `plan` 键 + 下面的工程摘要已足够。
             // （`plan` 永不产出这个变体，因此这条分支在实践中不可达。）
             Self::Host(_) => {}
@@ -2194,6 +2289,9 @@ pub fn plan(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
         "yeban_list_proposals" => plan_list_proposals(domain, call),
         "yeban_list_instruments" => plan_list_instruments(domain, call),
         "yeban_scan_plugins" => plan_scan_plugins(call),
+        "yeban_ara_bind" => plan_ara_bind(call),
+        "yeban_ara_query" => plan_ara_query(domain, call),
+        "yeban_ara_render" => plan_ara_render(domain, call),
         "yeban_load_plugin" => plan_load_plugin(domain, call),
         "yeban_import_audio" => plan_import_audio(domain, call),
         "yeban_export_diagnostics" => plan_export_diagnostics(domain, call),
@@ -3581,6 +3679,7 @@ fn plan_scan_plugins(call: &ToolCall) -> Result<Plan, Fault> {
                 "kind": "unknown",
                 "usable": false,
                 "error": descriptor.error,
+                "ara": ara_factory_json(&descriptor),
             }));
             continue;
         }
@@ -3597,6 +3696,7 @@ fn plan_scan_plugins(call: &ToolCall) -> Result<Plan, Fault> {
                 },
                 "usable": class.error.is_none(),
                 "error": class.error,
+                "ara": ara_factory_json(&descriptor),
             }));
         }
     }
@@ -3611,6 +3711,294 @@ fn plan_scan_plugins(call: &ToolCall) -> Result<Plan, Fault> {
             "usableCount": usable_count,
         }),
     })
+}
+
+/// 扫描行的 ARA 能力列（`descriptor.ara` 的 JSON 形状）。
+///
+/// 模块打不开 / 无 ARA factory ⇒ `null`（不阻塞扫描、不记入模块 `error`，
+/// 与 host 层 `PluginDescriptor.ara` 的口径一致）；否则给 factory 名、
+/// 版本、factoryId 与可分析内容类型（`yeban_scan_plugins` 的 `ara` 列）。
+fn ara_factory_json(descriptor: &yeban_plugin_host::PluginDescriptor) -> Value {
+    match &descriptor.ara {
+        None => Value::Null,
+        Some(info) => serde_json::json!({
+            "name": info.plug_in_name,
+            "version": info.version,
+            "factoryId": info.factory_id,
+            "analyzeableContentTypes": info.analyzeable_content_types,
+        }),
+    }
+}
+
+/// `HostError` → `Fault`（与 `plan_load_plugin` 同一条映射：打不开库 ⇒
+/// `IO_ERROR`，其余 ⇒ `INVALID_PARAMETER_RANGE`）。
+fn ara_host_error(error: HostError) -> Fault {
+    let code = match error {
+        HostError::LibraryLoad(_) => ErrorCode::IoError,
+        _ => ErrorCode::InvalidParameterRange,
+    };
+    Fault::domain(code, format!("ARA 操作失败: {error}"))
+}
+
+/// 没有 ARA 会话时的 Fault（`reason: araSessionNotFound` + 已登记 id 清单，
+/// 与 `yeban_render_sfz_wav` 的"乐器不存在"同一口径）。
+fn ara_session_not_found(domain: &Domain, session_id: &str) -> Fault {
+    Fault::domain_with_data(
+        ErrorCode::InvalidParameterRange,
+        format!("没有 ARA 会话 `{session_id}`"),
+        serde_json::json!({
+            "reason": "araSessionNotFound",
+            "loadedSessionIds": domain.ara_session_ids(),
+        }),
+    )
+}
+
+/// `yeban_ara_bind`：把一段音频 wav 绑定到 ARA 插件（只做实参校验 + 解码）。
+///
+/// **不打开插件**：打开会话（模块加载、ARA 绑定、文档图构建）是 `apply`
+/// 的事，与 `yeban_load_sfz`（plan 解析、apply 登记）同一条切分。
+/// **不要求活跃工程**（会话 registry 与工程无关；SFZ 装载同款口径）。
+///
+/// 实参：`pluginPath`（必填）、`pluginId`（可选，不给取首个 ARA 类）、
+/// `wavPath`（必填）、`tempoBpm`（可选，缺省 120，须 > 0）、
+/// `loopIterations`（可选，缺省 1，须 ≥ 1）、`muted`（可选，缺省 false）。
+fn plan_ara_bind(call: &ToolCall) -> Result<Plan, Fault> {
+    let plugin_path = arg_str(call, "pluginPath").ok_or_else(|| {
+        Fault::domain(ErrorCode::InvalidParameterRange, "`pluginPath` 是必填实参")
+    })?;
+    let plugin_id = arg_str(call, "pluginId").map(str::to_owned);
+    let wav_path = arg_str(call, "wavPath")
+        .ok_or_else(|| Fault::domain(ErrorCode::InvalidParameterRange, "`wavPath` 是必填实参"))?;
+    let tempo_bpm = match call.arguments.get("tempoBpm") {
+        None => 120.0,
+        Some(Value::Number(number)) => number.as_f64().ok_or_else(|| {
+            Fault::domain(ErrorCode::InvalidParameterRange, "`tempoBpm` 须为数字")
+        })?,
+        Some(_) => {
+            return Err(Fault::domain(
+                ErrorCode::InvalidParameterRange,
+                "`tempoBpm` 须为数字",
+            ));
+        }
+    };
+    // 有限正数：NaN 与 inf 都不是合法速度（JSON 极大指数可解析成 inf）。
+    if !tempo_bpm.is_finite() || tempo_bpm <= 0.0 {
+        return Err(Fault::domain(
+            ErrorCode::InvalidParameterRange,
+            "`tempoBpm` 须为有限正数",
+        ));
+    }
+    let loop_iterations = arg_u64(call, "loopIterations")?.unwrap_or(1);
+    if loop_iterations == 0 {
+        return Err(Fault::domain(
+            ErrorCode::InvalidParameterRange,
+            "`loopIterations` 须 ≥ 1",
+        ));
+    }
+    let loop_iterations = usize::try_from(loop_iterations).map_err(|_| {
+        Fault::domain(
+            ErrorCode::InvalidParameterRange,
+            "`loopIterations` 超出范围",
+        )
+    })?;
+    let muted = arg_bool(call, "muted", false);
+    let pcm = ara::decode_wav_to_pcm(Path::new(wav_path))?;
+    Ok(Plan::AraBind {
+        plugin_path: plugin_path.to_owned(),
+        plugin_id,
+        wav_path: PathBuf::from(wav_path),
+        pcm,
+        tempo_bpm,
+        loop_iterations,
+        muted,
+    })
+}
+
+/// `yeban_ara_query`：ARA 会话的分析状态与内容查询（只读）。
+///
+/// 会话不存在 ⇒ `INVALID_PARAMETER_RANGE` + `araSessionNotFound`。
+/// 内容不可用时**不**报错：响应里 `analysisAvailable: false` + `notesError`
+/// 如实说明 —— 状态查询工具的职责是报状态，不是把"未完成"当失败
+/// （PitchNet 无头流程从不发布 Notes 内容，见 `AraSession` 的分析门注释）。
+fn plan_ara_query(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
+    let session_id = arg_str(call, "sessionId")
+        .ok_or_else(|| Fault::domain(ErrorCode::InvalidParameterRange, "`sessionId` 是必填实参"))?;
+    let session = domain
+        .ara_session(session_id)
+        .ok_or_else(|| ara_session_not_found(domain, session_id))?;
+    let available = session.analysis_available().map_err(ara_host_error)?;
+    let (notes, notes_error) = match session.notes() {
+        Ok(notes) => (
+            Some(
+                notes
+                    .iter()
+                    .map(|note| {
+                        serde_json::json!({
+                            "frequencyHz": note.frequency,
+                            "pitchNumber": note.pitch_number,
+                            "volume": note.volume,
+                            "startSeconds": note.start_position,
+                            "attackSeconds": note.attack_duration,
+                            "noteSeconds": note.note_duration,
+                            "signalSeconds": note.signal_duration,
+                        })
+                    })
+                    .collect::<Vec<Value>>(),
+            ),
+            None,
+        ),
+        Err(error) => (None, Some(error.to_string())),
+    };
+    let (head_seconds, tail_seconds) = session.head_tail().map_err(ara_host_error)?;
+    Ok(Plan::Query {
+        data: serde_json::json!({
+            "sessionId": session_id,
+            "factoryName": session.factory_info().plug_in_name,
+            "factoryVersion": session.factory_info().version,
+            "analysisAvailable": available,
+            "regionCount": session.region_count(),
+            "headSeconds": head_seconds,
+            "tailSeconds": tail_seconds,
+            "notes": notes,
+            "notesError": notes_error,
+            "sessionScoped": true,
+        }),
+    })
+}
+
+/// `yeban_ara_render`：把已绑定 ARA 会话离线渲染成 WAV（只校验实参 +
+/// 会话存在；渲染 + 编码 + 落盘是 `apply` 的事）。
+///
+/// 实参：`sessionId`（必填）、`outPath`（必填）、`blockFrames`
+/// （可选，缺省 1024，须在 1..=4096 内，与激活上限一致）。
+fn plan_ara_render(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
+    let session_id = arg_str(call, "sessionId")
+        .ok_or_else(|| Fault::domain(ErrorCode::InvalidParameterRange, "`sessionId` 是必填实参"))?;
+    if domain.ara_session(session_id).is_none() {
+        return Err(ara_session_not_found(domain, session_id));
+    }
+    let out_path = arg_str(call, "outPath")
+        .ok_or_else(|| Fault::domain(ErrorCode::InvalidParameterRange, "`outPath` 是必填实参"))?;
+    let block_frames = arg_u64(call, "blockFrames")?.unwrap_or(1024);
+    if !(1..=4096).contains(&block_frames) {
+        return Err(Fault::domain(
+            ErrorCode::InvalidParameterRange,
+            "`blockFrames` 须在 1..=4096 内",
+        ));
+    }
+    let block_frames = usize::try_from(block_frames)
+        .map_err(|_| Fault::domain(ErrorCode::InvalidParameterRange, "`blockFrames` 超出范围"))?;
+    Ok(Plan::AraRender {
+        session_id: session_id.to_owned(),
+        out_path: PathBuf::from(out_path),
+        block_frames,
+    })
+}
+
+/// `yeban_ara_bind` 的施加参数（clippy 形参上限 7 个；字段与
+/// `Plan::AraBind` 一一对应，施加臂由变体字段原样构造）。
+struct AraBindRequest {
+    plugin_path: String,
+    plugin_id: Option<String>,
+    wav_path: PathBuf,
+    pcm: PcmData,
+    tempo_bpm: f64,
+    loop_iterations: usize,
+    muted: bool,
+}
+
+/// `yeban_ara_bind` 的施加：打开 ARA 会话并登记进会话 registry。
+///
+/// sessionId 在**打开成功后**才消耗序号（打开失败不消耗，与 SFZ 的
+/// "复用不消耗 id"同一精神：失败调用不污染 id 序列）。片段名取 wav
+/// 文件 stem；persistent_id 取 `{sessionId}-clip`（文档内唯一）。
+fn apply_ara_bind(domain: &mut Domain, request: AraBindRequest) -> Result<ToolResponse, Fault> {
+    let AraBindRequest {
+        plugin_path,
+        plugin_id,
+        wav_path,
+        pcm,
+        tempo_bpm,
+        loop_iterations,
+        muted,
+    } = request;
+    let id = format!("ara-{}", domain.ara_next_id());
+    let clip_name = wav_path
+        .file_stem()
+        .map(|stem| stem.to_string_lossy().into_owned())
+        .unwrap_or_else(|| id.clone());
+    let frames = pcm.frames();
+    let sample_rate = pcm.sample_rate;
+    let clip = AraClip {
+        name: clip_name,
+        persistent_id: format!("{id}-clip"),
+        kind: AraClipKind::Audio,
+        pcm,
+        tempo_bpm,
+    };
+    let placement = AraPlacement {
+        loop_iterations,
+        muted,
+    };
+    let session = AraSession::open(&plugin_path, plugin_id.as_deref(), clip, placement)
+        .map_err(ara_host_error)?;
+    let factory = session.factory_info().clone();
+    domain.ara_sessions.insert(id.clone(), session);
+    domain.ara_next_id = domain.ara_next_id.saturating_add(1);
+    Ok(ToolResponse::success(serde_json::json!({
+        "sessionId": id,
+        "pluginPath": plugin_path,
+        "pluginId": plugin_id,
+        "wavPath": wav_path.display().to_string(),
+        "factoryName": factory.plug_in_name,
+        "factoryVersion": factory.version,
+        "factoryId": factory.factory_id,
+        "analyzeableContentTypes": factory.analyzeable_content_types,
+        "frames": frames,
+        "sampleRateHz": sample_rate,
+        "loopIterations": loop_iterations,
+        "muted": muted,
+        "sessionScoped": true,
+    })))
+}
+
+/// `yeban_ara_render` 的施加：离线渲染 + f32 WAV 编码 + 原子落盘。
+///
+/// 落盘走 [`store::write_project_atomic`]（`ARCH-SEC-004`，与 SFZ 导出
+/// 同款）。渲染后另取文档 blob 计 SHA-256 回传供对账：blob 字节本身
+/// 不进工程 JSON（CAS 口径；会话态无工程可附，blob 存取往返由插件
+/// 宿主集成测试覆盖）。
+fn apply_ara_render(
+    domain: &mut Domain,
+    session_id: &str,
+    out_path: &Path,
+    block_frames: usize,
+) -> Result<ToolResponse, Fault> {
+    let session = match domain.ara_sessions.get_mut(session_id) {
+        Some(session) => session,
+        // `None` 臂里没有悬着的可变借用，可以再不可变借 domain 报结构化原因。
+        None => return Err(ara_session_not_found(domain, session_id)),
+    };
+    let total_frames = session.clip_frames();
+    let rendered = session
+        .render(total_frames, block_frames)
+        .map_err(ara_host_error)?;
+    let sample_rate = session.clip_sample_rate() as u32;
+    let bytes = ara::encode_f32_wav_stereo(&rendered.left, &rendered.right, sample_rate)?;
+    store::write_project_atomic(out_path, &bytes)?;
+    let blob = session.store_blob().map_err(ara_host_error)?;
+    let blob_sha256 = AssetHash::of_bytes(&blob).as_str().to_owned();
+    Ok(ToolResponse::success(serde_json::json!({
+        "sessionId": session_id,
+        "outPath": out_path.display().to_string(),
+        "frames": rendered.left.len(),
+        "peak": rendered.peak(),
+        "nonzeroFrames": rendered.nonzero_frames(),
+        "bytes": bytes.len(),
+        "blobBytes": blob.len(),
+        "blobSha256": blob_sha256,
+        "note": "blob 字节不进工程 JSON（CAS 口径）；哈希供对账，blob 存取往返见插件宿主集成测试。",
+    })))
 }
 
 /// `yeban_load_plugin`：验证加载一个 VST3 插件，经提案路径挂到指定轨道上（ADR-0064 D13）。
@@ -4203,7 +4591,8 @@ pub fn commit_model_of(plan: &Plan) -> &'static str {
         | Plan::Redo { .. }
         | Plan::ImportAudio { .. }
         | Plan::ImportMidi(_)
-        | Plan::LoadSfz { .. } => "direct",
+        | Plan::LoadSfz { .. }
+        | Plan::AraBind { .. } => "direct",
         // 宿主动作里除了"放弃提案"都是当场生效；放弃与 `Plan::Reject` 同一读数
         // （只改记录, 不产生任何提交）。
         Plan::Host(action) => match action {
@@ -4227,6 +4616,7 @@ pub fn commit_model_of(plan: &Plan) -> &'static str {
         | Plan::ListInstruments { .. }
         | Plan::ExportMidi { .. }
         | Plan::RenderSfzWav { .. }
+        | Plan::AraRender { .. }
         | Plan::ExportStems { .. }
         | Plan::RecordWav { .. }
         | Plan::MidiInputProbe { .. } => "none",
@@ -4317,6 +4707,31 @@ fn apply_plan_model(domain: &mut Domain, plan: Plan) -> Result<ToolResponse, Fau
         Plan::MidiInputProbe { report } => Ok(ToolResponse::success(report.data())),
         Plan::LoadSfz { load } => apply_load_sfz(domain, *load),
         Plan::RenderSfzWav { artifact } => apply_render_sfz_wav(&artifact),
+        Plan::AraBind {
+            plugin_path,
+            plugin_id,
+            wav_path,
+            pcm,
+            tempo_bpm,
+            loop_iterations,
+            muted,
+        } => apply_ara_bind(
+            domain,
+            AraBindRequest {
+                plugin_path,
+                plugin_id,
+                wav_path,
+                pcm,
+                tempo_bpm,
+                loop_iterations,
+                muted,
+            },
+        ),
+        Plan::AraRender {
+            session_id,
+            out_path,
+            block_frames,
+        } => apply_ara_render(domain, &session_id, &out_path, block_frames),
         Plan::ExportStems { batch } => stems::write(&batch).map(ToolResponse::success),
         Plan::RecordWav { artifact } => apply_record_wav(&artifact),
     }
@@ -5427,6 +5842,159 @@ mod tests {
         path
     }
 
+    /// 一份**真 WAV**（16-bit 单声道 44100Hz, 1 秒 440Hz 正弦，幅度 0.5）——
+    /// `yeban_ara_bind` 的 live 测试用它绑定真插件并离线渲染（44100Hz 是
+    /// PitchNet 渲染器的固定采样率，非 44100 片段渲染会响亮失败）。
+    fn ara_sine_wav_fixture() -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "yeban-mcp-unit-ara-{}-{}",
+            std::process::id(),
+            EntityId::new().to_canonical_string()
+        ));
+        std::fs::create_dir_all(&dir).expect("建临时目录");
+        let path = dir.join("sine-440.wav");
+        let samples: Vec<i16> = (0..44_100)
+            .map(|frame| {
+                (0.5 * (2.0 * std::f64::consts::PI * 440.0 * frame as f64 / 44_100.0).sin()
+                    * i16::MAX as f64) as i16
+            })
+            .collect();
+        let data: Vec<u8> = samples
+            .iter()
+            .flat_map(|sample| sample.to_le_bytes())
+            .collect();
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(b"RIFF");
+        bytes.extend_from_slice(&u32::try_from(36 + data.len()).expect("小").to_le_bytes());
+        bytes.extend_from_slice(b"WAVEfmt ");
+        bytes.extend_from_slice(&16_u32.to_le_bytes());
+        bytes.extend_from_slice(&1_u16.to_le_bytes()); // PCM
+        bytes.extend_from_slice(&1_u16.to_le_bytes()); // 单声道
+        bytes.extend_from_slice(&44_100_u32.to_le_bytes());
+        bytes.extend_from_slice(&(44_100_u32 * 2).to_le_bytes());
+        bytes.extend_from_slice(&2_u16.to_le_bytes());
+        bytes.extend_from_slice(&16_u16.to_le_bytes());
+        bytes.extend_from_slice(b"data");
+        bytes.extend_from_slice(&u32::try_from(data.len()).expect("小").to_le_bytes());
+        bytes.extend_from_slice(&data);
+        std::fs::write(&path, &bytes).expect("写 ARA 正弦夹具");
+        path
+    }
+
+    /// ARA 三工具 live 通路（门控 `YEBAN_ARA_TEST_PLUGIN`，未设置时跳过）。
+    ///
+    /// 绑定真插件 → 查询（只断言 `analysisAvailable` 键在场与 sessionId
+    /// 一致，**不**断言 notes 非空：PitchNet 无头流程从不发布 Notes 内容）
+    /// → 渲染（出声：peak > 0，文件存在；音高正确性见插件宿主集成测试）。
+    #[test]
+    fn ara_bind_query_render_live() {
+        let plugin = match std::env::var("YEBAN_ARA_TEST_PLUGIN") {
+            Ok(path) => path,
+            Err(_) => return,
+        };
+        let mut domain = Domain::new();
+        let wav = ara_sine_wav_fixture();
+        let bind_plan = plan(
+            &domain,
+            &call(
+                "yeban_ara_bind",
+                serde_json::json!({
+                    "pluginPath": plugin,
+                    "wavPath": wav.display().to_string(),
+                }),
+            ),
+        )
+        .expect("ARA 绑定规划");
+        let ToolResponse::Success { data: bind_data } =
+            apply(&mut domain, bind_plan).expect("ARA 绑定施加")
+        else {
+            panic!("ARA 绑定施加不是成功响应");
+        };
+        let session_id = bind_data["sessionId"]
+            .as_str()
+            .expect("绑定响应含 sessionId")
+            .to_owned();
+        let query_plan = plan(
+            &domain,
+            &call(
+                "yeban_ara_query",
+                serde_json::json!({"sessionId": session_id}),
+            ),
+        )
+        .expect("ARA 查询规划");
+        let ToolResponse::Success { data: query_data } =
+            apply(&mut domain, query_plan).expect("ARA 查询施加")
+        else {
+            panic!("ARA 查询施加不是成功响应");
+        };
+        assert_eq!(query_data["sessionId"].as_str(), Some(session_id.as_str()));
+        assert!(
+            query_data.get("analysisAvailable").is_some(),
+            "查询响应须含 analysisAvailable: {query_data}"
+        );
+        let out = wav.with_file_name("rendered.wav");
+        let render_plan = plan(
+            &domain,
+            &call(
+                "yeban_ara_render",
+                serde_json::json!({
+                    "sessionId": session_id,
+                    "outPath": out.display().to_string(),
+                }),
+            ),
+        )
+        .expect("ARA 渲染规划");
+        let ToolResponse::Success { data: render_data } =
+            apply(&mut domain, render_plan).expect("ARA 渲染施加")
+        else {
+            panic!("ARA 渲染施加不是成功响应");
+        };
+        assert!(
+            render_data["peak"].as_f64().unwrap_or(0.0) > 0.0,
+            "ARA 渲染须出声: {render_data}"
+        );
+        assert!(out.exists(), "ARA 渲染须落盘: {}", out.display());
+    }
+
+    /// 扫描 `ara` 列的映射（不依赖真插件）：有 factory ⇒ 四字段齐全；
+    /// 无 factory ⇒ `null`（不阻塞扫描、不记入模块 `error` 的口径）。
+    #[test]
+    fn ara_scan_column_maps_factory_info_and_null() {
+        let with_factory = yeban_plugin_host::PluginDescriptor {
+            path: "/x/PitchNet.vst3".to_owned(),
+            vendor: "Session Loops".to_owned(),
+            classes: Vec::new(),
+            error: None,
+            ara: Some(yeban_plugin_host::AraFactoryInfo {
+                plug_in_name: "PitchNet".to_owned(),
+                manufacturer: "Session Loops".to_owned(),
+                version: "0.7.4".to_owned(),
+                factory_id: "com.sessionloops.pitchnet.arafactory.0.7.4".to_owned(),
+                document_archive_id: "com.sessionloops.pitchnet.aradocumentarchive.1".to_owned(),
+                analyzeable_content_types: vec![10],
+                supported_playback_transformation_flags: 0,
+                lowest_api_generation: 3,
+                highest_api_generation: 4,
+            }),
+        };
+        let column = ara_factory_json(&with_factory);
+        assert_eq!(column["name"].as_str(), Some("PitchNet"));
+        assert_eq!(column["version"].as_str(), Some("0.7.4"));
+        assert_eq!(
+            column["factoryId"].as_str(),
+            Some("com.sessionloops.pitchnet.arafactory.0.7.4")
+        );
+        assert_eq!(column["analyzeableContentTypes"][0].as_i64(), Some(10));
+        let without_factory = yeban_plugin_host::PluginDescriptor {
+            path: "/x/NoAra.vst3".to_owned(),
+            vendor: String::new(),
+            classes: Vec::new(),
+            error: None,
+            ara: None,
+        };
+        assert!(ara_factory_json(&without_factory).is_null());
+    }
+
     fn domain() -> Domain {
         let mut domain = Domain::new();
         domain.set_now_ms(1_760_000_000_000);
@@ -5593,6 +6161,31 @@ mod tests {
                     "pluginPath": "stub:sine",
                 }),
             ),
+            // ARA2 宿主原型：绑定只做解码（不打开插件）⇒ 指向不存在的插件路径
+            // 也规划成功（真 wav 夹具）；打开失败只在 apply 里响亮。
+            (
+                "yeban_ara_bind",
+                serde_json::json!({
+                    "pluginPath": "/nonexistent/PitchNet.vst3",
+                    "wavPath": wav_fixture().display().to_string(),
+                }),
+            ),
+            // ARA2 宿主原型：查询 / 渲染一个不存在的会话 ⇒ 规划阶段响亮拒绝
+            // （`araSessionNotFound`，见下面的 match 分支）。
+            (
+                "yeban_ara_query",
+                serde_json::json!({"sessionId": "ara-999"}),
+            ),
+            (
+                "yeban_ara_render",
+                serde_json::json!({
+                    "sessionId": "ara-999",
+                    "outPath": std::env::temp_dir()
+                        .join("yeban-mcp-unit-ara-out.wav")
+                        .display()
+                        .to_string(),
+                }),
+            ),
         ];
         for spec in &crate::tools::TOOLS {
             assert!(
@@ -5660,6 +6253,17 @@ mod tests {
                     // `sfz_load_then_render_writes_a_non_silent_wav` 覆盖。
                     let fault = outcome.expect_err("会话里没有已装载的 SFZ");
                     assert_eq!(fault.domain_code(), Some(ErrorCode::InvalidParameterRange));
+                }
+                "yeban_ara_query" | "yeban_ara_render" => {
+                    // 这个夹具**没有**绑定过 ARA 会话 ⇒ 规划阶段响亮拒绝
+                    // （`araSessionNotFound` + 已登记 id 清单）。
+                    let fault = outcome.expect_err("会话里没有 ARA 会话");
+                    assert_eq!(fault.domain_code(), Some(ErrorCode::InvalidParameterRange));
+                    let rendered = format!("{fault:?}");
+                    assert!(
+                        rendered.contains("araSessionNotFound"),
+                        "缺失会话必须带 `araSessionNotFound`: {rendered}"
+                    );
                 }
                 "yeban_export_stems" => {
                     // `ADR-0030` D7：`outDir` 必须**已存在** ⇒ 规划阶段在任何渲染之前

@@ -21,6 +21,8 @@ pub enum HostError {
     SampleSizeUnsupported,
     /// 插件输出总线不是立体声（一期只接立体声输出）。
     OutputNotStereo,
+    /// 效果器输入总线不是立体声（ARA 原型只接立体声输入）。
+    InputNotStereo,
     /// 某次 COM 调用返回负值（`tresult` 错误码）。
     ///
     /// ⚠ `tresult` 的著名歧义：`kResultFalse == kResultOk == 0`，因此“非负”才是
@@ -54,6 +56,7 @@ impl fmt::Display for HostError {
             }
             Self::SampleSizeUnsupported => write!(f, "插件不支持 32 位浮点处理"),
             Self::OutputNotStereo => write!(f, "插件输出总线不是立体声（一期只接立体声输出）"),
+            Self::InputNotStereo => write!(f, "效果器输入总线不是立体声（ARA 原型只接立体声输入）"),
             Self::CallFailed { method, code } => {
                 write!(f, "插件调用 `{method}` 失败（tresult = {code}）")
             }

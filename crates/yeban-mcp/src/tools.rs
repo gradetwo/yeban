@@ -38,6 +38,9 @@
 //! | `yeban_launch_scene` | 把一次**量化场景启动**交给宿主（`#290`；引擎由形态 A 的 app 经 attach 口接上） | `MCP-TOOL-EXT-SCENE-LAUNCH` |
 //! | `yeban_export_stems` | 一次调用把每条轨弹成**一个 32-bit float WAV 分轨**（`ADR-0030`；`N + 1` 次渲染，母带 24-bit 路径逐字节不变） | `MCP-TOOL-EXT-EXPORT-STEMS` |
 //! | `yeban_list_instruments` | 会话 SFZ registry 的只读枚举（审计 `N13`） | `MCP-TOOL-EXT-LIST-INSTRUMENTS` |
+//! | `yeban_ara_bind` | 音频 wav 绑定到 ARA 插件进会话 registry（plan 解码、apply 打开会话） | `MCP-TOOL-EXT-ARA-BIND` |
+//! | `yeban_ara_query` | ARA 会话的分析状态与内容查询（只读；内容不可用时报状态不报错） | `MCP-TOOL-EXT-ARA-QUERY` |
+//! | `yeban_ara_render` | 已绑定 ARA 会话离线渲染成 WAV（原子落盘 + 文档 blob 哈希回传） | `MCP-TOOL-EXT-ARA-RENDER` |
 //!
 //! ### 为什么它们的 `specId` 不是 `MCP-TOOL-011/012`
 //!
@@ -105,7 +108,7 @@ pub const INCLUDE_OPS_PARAM: &str = "includeOps";
 pub const COMMIT_MODEL_KEY: &str = "commitModel";
 
 /// 工具集规模（规范表格的 10 个 + `ADR-0001` D45/D46 的扩展）。
-pub const TOOL_COUNT: usize = 28;
+pub const TOOL_COUNT: usize = 31;
 
 /// **规范表格**里的工具数（`MCP-TOOL-001..010`）。
 pub const DOCUMENTED_TOOL_COUNT: usize = 10;
@@ -117,8 +120,11 @@ pub const DOCUMENTED_TOOL_COUNT: usize = 10;
 /// + **分轨导出 1 条**（`ADR-0030`，一次调用弹完 N 条轨）
 /// + **会话乐器清单 1 条**（审计 `N13`，会话 SFZ registry 的只读枚举）
 /// + **插件扫描 1 条**（`ADR-0064`，VST3 发现与验证的只读枚举）
-/// + **插件装载 1 条**（`ADR-0064`，验证加载后经提案路径挂外部乐器设备）。
-pub const EXTENSION_TOOL_COUNT: usize = 18;
+/// + **插件装载 1 条**（`ADR-0064`，验证加载后经提案路径挂外部乐器设备）
+/// + **ARA 绑定 1 条**（ARA2 宿主原型：音频 wav 绑定到 ARA 插件进会话 registry）
+/// + **ARA 查询 1 条**（ARA2 宿主原型：会话分析状态与内容查询，只读）
+/// + **ARA 渲染 1 条**（ARA2 宿主原型：已绑定会话离线渲染成 WAV，写盘）。
+pub const EXTENSION_TOOL_COUNT: usize = 21;
 
 /// 扩展工具的规范 ID 前缀。
 ///
@@ -150,6 +156,9 @@ pub const EXTENSION_NAMES: [&str; EXTENSION_TOOL_COUNT] = [
     "yeban_list_instruments",
     "yeban_scan_plugins",
     "yeban_load_plugin",
+    "yeban_ara_bind",
+    "yeban_ara_query",
+    "yeban_ara_render",
 ];
 
 /// 规范 ID 前缀。
@@ -1819,9 +1828,107 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
             ErrorCode::InvalidParameterRange,
         ],
     },
+    ToolSpec {
+        spec_id: "MCP-TOOL-EXT-ARA-BIND",
+        name: "yeban_ara_bind",
+        summary: "把一段音频 wav 绑定到 ARA 插件（ARA2 宿主原型）：plan 只做实参校验 + wav 解码，apply 打开 ARA 会话（模块加载、ARA 类名配对、文档图构建）并以 sessionId 登记进会话 registry。绑定不改工程、不落盘（会话运行态；打开 / 关闭工程整体重置）；sessionId 只在本会话有效。pluginId 不给则取首个 ARA 类；tempoBpm 缺省 120；loopIterations 缺省 1（每次迭代各建一个 playback region）；muted 缺省 false（静音摆放不建 region）。MIDI 轨不能挂 ARA（构造期响亮失败，须先渲染成音频）。",
+        scope: Scope::AppAdmin,
+        // 只动会话态 registry（与 load_sfz 同款口径）：不改工程、不落盘。
+        side_effect: SideEffect::ReadOnly,
+        params: &[
+            // ⚠ 必须与 `schemas/mcp-tools.schema.json` 的 `$defs.yeban_ara_bind` 逐字段一致
+            // （判据 `tests/contract.rs::extension_argument_constraints_match_the_registry`
+            // 双向核对属性集合 / 类型 / 必填集合）。
+            param(
+                "pluginPath",
+                "string",
+                true,
+                "插件路径：.vst3 包路径或散动态库路径；打不开 ⇒ `IO_ERROR`",
+            ),
+            param(
+                "pluginId",
+                "string",
+                false,
+                "ARA 类名；不给则取首个 ARA 类；指名类不存在或无同名 Audio Module 类 ⇒ `INVALID_PARAMETER_RANGE`",
+            ),
+            param(
+                "wavPath",
+                "string",
+                true,
+                "片段 wav 路径；解码失败 ⇒ `IO_ERROR`",
+            ),
+            param(
+                "tempoBpm",
+                "number",
+                false,
+                "片段速度（BPM）；缺省 120；须大于 0",
+            ),
+            param(
+                "loopIterations",
+                "integer",
+                false,
+                "循环迭代数；缺省 1；须 ≥ 1",
+            ),
+            param(
+                "muted",
+                "boolean",
+                false,
+                "静音摆放；缺省 false；静音时不建 playback region",
+            ),
+        ],
+        errors: &[ErrorCode::InvalidParameterRange, ErrorCode::IoError],
+    },
+    ToolSpec {
+        spec_id: "MCP-TOOL-EXT-ARA-QUERY",
+        name: "yeban_ara_query",
+        summary: "ARA 会话的分析状态与内容查询（只读）：回 sessionId、factory 名与版本、analysisAvailable、regionCount、head/tail 秒数、notes（可用时）与 notesError（不可用时）。会话不存在 ⇒ `INVALID_PARAMETER_RANGE` + `araSessionNotFound`；内容不可用时不报错（状态查询工具报状态，不把未完成当失败 —— PitchNet 无头流程从不发布 Notes 内容）。",
+        scope: Scope::AppAdmin,
+        // 纯只读：读会话 registry 与插件内容查询，不写任何状态。
+        side_effect: SideEffect::ReadOnly,
+        params: &[
+            // ⚠ 必须与 `schemas/mcp-tools.schema.json` 的 `$defs.yeban_ara_query` 逐字段一致。
+            param(
+                "sessionId",
+                "string",
+                true,
+                "会话 id（`yeban_ara_bind` 的响应）；不存在 ⇒ `INVALID_PARAMETER_RANGE`",
+            ),
+        ],
+        errors: &[ErrorCode::InvalidParameterRange],
+    },
+    ToolSpec {
+        spec_id: "MCP-TOOL-EXT-ARA-RENDER",
+        name: "yeban_ara_render",
+        summary: "把已绑定 ARA 会话离线渲染成 WAV（ARA2 宿主原型 companion API）：按块调处理器 process() 渲染整段，编成 32-bit float WAV 后原子落盘（`ARCH-SEC-004` 同目录临时文件 + fsync + rename）。回帧数、峰值、非零帧数、字节数与文档 blob 的字节数与 SHA-256（blob 字节本身不进工程 JSON，CAS 口径）。渲染仅支持 44100Hz 片段（PitchNet 渲染器固定 44100Hz），非 44100 片段响亮失败、不静默变调或截断。会话不存在 ⇒ `INVALID_PARAMETER_RANGE` + `araSessionNotFound`。",
+        scope: Scope::AppAdmin,
+        // 写盘（渲染 WAV）；不改工程文档。
+        side_effect: SideEffect::Disk,
+        params: &[
+            // ⚠ 必须与 `schemas/mcp-tools.schema.json` 的 `$defs.yeban_ara_render` 逐字段一致。
+            param(
+                "sessionId",
+                "string",
+                true,
+                "会话 id（`yeban_ara_bind` 的响应）；不存在 ⇒ `INVALID_PARAMETER_RANGE`",
+            ),
+            param(
+                "outPath",
+                "string",
+                true,
+                "输出 wav 路径；父目录不存在 ⇒ `IO_ERROR`",
+            ),
+            param(
+                "blockFrames",
+                "integer",
+                false,
+                "渲染块大小；缺省 1024；须在 1..=4096 内",
+            ),
+        ],
+        errors: &[ErrorCode::InvalidParameterRange, ErrorCode::IoError],
+    },
 ];
 
-/// 按名查找工具（`const` 数组上的线性查找；28 个元素，无需哈希表）。
+/// 按名查找工具（`const` 数组上的线性查找；31 个元素，无需哈希表）。
 #[must_use]
 pub fn tool(name: &str) -> Option<&'static ToolSpec> {
     TOOLS.iter().find(|spec| spec.name == name)
@@ -2573,7 +2680,12 @@ mod tests {
                 // 审计 `N13`：会话 SFZ registry 枚举 —— 只读 `domain.sfz_instruments`。
                 "yeban_list_instruments",
                 // 插件扫描：只枚举路径并逐个实例化探针，不改工程、不落盘 ⇒ 读-only。
-                "yeban_scan_plugins"
+                "yeban_scan_plugins",
+                // ARA 绑定：只动**会话态** registry（与 load_sfz 同款口径），
+                // 打开插件是 apply 的事，但既不改工程也不落盘 ⇒ 读-only。
+                "yeban_ara_bind",
+                // ARA 查询：纯只读（读会话 registry 与插件内容查询）。
+                "yeban_ara_query"
             ],
             "只读工具必须显式分类为 read-only"
         );

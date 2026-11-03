@@ -19,6 +19,7 @@
 
 #![deny(missing_docs)]
 
+pub mod ara;
 pub mod dylib;
 pub mod error;
 pub mod host;
@@ -26,6 +27,10 @@ pub mod stub;
 pub mod types;
 pub mod vst3;
 
+pub use ara::{
+    AraClip, AraClipKind, AraFactoryInfo, AraNote, AraPlacement, AraRenderedAudio,
+    AraRestoreOutcome, AraSession, PcmData, inspect_ara_factory,
+};
 pub use error::HostError;
 pub use host::Host;
 pub use stub::{STUB_SINE_ID, StubInstrument};
@@ -33,4 +38,4 @@ pub use types::{
     MidiEvent, MidiEventKind, ParamInfo, PluginClass, PluginDescriptor, PluginInstance, PluginKind,
     PluginState,
 };
-pub use vst3::{Vst3Instance, Vst3Module};
+pub use vst3::{ProcessContext, Vst3Instance, Vst3Module};
