@@ -78,9 +78,9 @@ const RESULT_NOT_IMPLEMENTED: i32 = 0x8000_4001_u32 as i32;
 #[repr(C)]
 #[derive(Clone, Copy)]
 struct PFactoryInfo {
-    vendor: [u16; 128],
-    url: [u16; 128],
-    email: [u16; 128],
+    vendor: [u8; 64],
+    url: [u8; 256],
+    email: [u8; 128],
     flags: i32,
 }
 
@@ -146,23 +146,25 @@ struct ProcessData {
     _pad: i32,
     inputs: *mut AudioBusBuffers,
     outputs: *mut AudioBusBuffers,
-    input_events: *mut c_void,
-    output_events: *mut c_void,
     input_parameter_changes: *mut c_void,
     output_parameter_changes: *mut c_void,
+    input_events: *mut c_void,
+    output_events: *mut c_void,
     process_context: *mut c_void,
 }
 
+/// 插件消费端实测顺序（⛔ 与宿主 `vst3.rs` 的 `Event` 保持一致）：`bus`、`offset`、
+/// `ppq`、`flags`、`type` i16 在偏移 18、保留 u32、联合体在偏移 24；NoteOn 速度
+/// 在联合＋8、NoteOff 速度在联合＋4。
 #[repr(C)]
 #[derive(Clone, Copy)]
 struct Event {
-    event_type: i32,
     bus_index: i32,
     sample_offset: i32,
-    _pad: i32,
     ppq_position: f64,
     flags: u16,
-    _pad2: u16,
+    event_type: i16,
+    _reserved: u32,
     data: [u8; 20],
 }
 
@@ -227,7 +229,7 @@ struct ComponentVtbl {
 
 #[repr(C)]
 struct AudioProcessorVtbl {
-    base: PluginBaseVtbl,
+    base: FUnknownVtbl,
     set_bus_arrangements:
         unsafe extern "system" fn(*mut c_void, *mut u64, i32, *mut u64, i32) -> i32,
     get_bus_arrangement: unsafe extern "system" fn(*mut c_void, i32, i32, *mut u64) -> i32,
@@ -468,10 +470,10 @@ unsafe extern "system" fn comp_terminate(_this: *mut c_void) -> i32 {
 unsafe extern "system" fn comp_get_controller_cid(this: *mut c_void, cid: *mut Tuid) -> i32 {
     let inner = unsafe { &*inner_of(this) };
     if inner.combined {
-        0 // 假：宿主走组合式分支。
+        1 // 假（`kResultFalse`）：无分离控制器，宿主走组合式分支。
     } else {
         unsafe { *cid = CID_SEPARATE_CTRL };
-        1 // 真：宿主走分离式分支。
+        0 // 真（`kResultTrue`）：宿主走分离式分支。
     }
 }
 unsafe extern "system" fn comp_set_io_mode(_this: *mut c_void, _mode: i32) -> i32 {
@@ -599,10 +601,11 @@ unsafe extern "system" fn proc_get_bus_arrangement(
     }
 }
 unsafe extern "system" fn proc_can_process(_this: *mut c_void, size: i32) -> i32 {
+    // SDK 布尔约定：`kResultTrue`＝0＝支持，`kResultFalse`＝1＝不支持。
     if size == 0 {
-        1
-    } else {
         0
+    } else {
+        1
     }
 }
 unsafe extern "system" fn proc_latency(_this: *mut c_void) -> u32 {
@@ -624,20 +627,19 @@ unsafe extern "system" fn proc_process(this: *mut c_void, data: *mut ProcessData
     let frames = data.num_samples.max(0) as usize;
     // 事件：读宿主事件列表（虚表布局与 SDK 一致），按偏移收集后逐采样应用
     // （插件负责块内偏移精度：偏移 N 的事件在采样 N 之前生效）。
-    let mut pending: Vec<(u32, i32, u8, f32, i32)> = Vec::new();
+    let mut pending: Vec<(u32, i16, u8, f32, i32)> = Vec::new();
     if !data.input_events.is_null() {
         let list = data.input_events;
         let vtbl = unsafe { &*(*(list as *mut *const EventListVtbl)) };
         let count = unsafe { (vtbl.get_event_count)(list) };
         for index in 0..count {
             let mut event = Event {
-                event_type: 0,
                 bus_index: 0,
                 sample_offset: 0,
-                _pad: 0,
                 ppq_position: 0.0,
                 flags: 0,
-                _pad2: 0,
+                _reserved: 0,
+                event_type: 0,
                 data: [0; 20],
             };
             let code = unsafe { (vtbl.get_event)(list, index, &mut event) };
@@ -645,12 +647,23 @@ unsafe extern "system" fn proc_process(this: *mut c_void, data: *mut ProcessData
                 continue;
             }
             let pitch = i16::from_le_bytes([event.data[2], event.data[3]]) as u8;
-            let velocity = f32::from_le_bytes([
-                event.data[4],
-                event.data[5],
-                event.data[6],
-                event.data[7],
-            ]);
+            // NoteOn 速度在联合＋8（长度在＋4），NoteOff 速度在联合＋4：
+            // 与宿主 `vst3.rs` 的 `Event` 保持一致（⛔ 不可凭 SDK 印象改）。
+            let velocity = if event.event_type == 0 {
+                f32::from_le_bytes([
+                    event.data[8],
+                    event.data[9],
+                    event.data[10],
+                    event.data[11],
+                ])
+            } else {
+                f32::from_le_bytes([
+                    event.data[4],
+                    event.data[5],
+                    event.data[6],
+                    event.data[7],
+                ])
+            };
             let note_id = match event.event_type {
                 0 => i32::from_le_bytes([
                     event.data[16],
@@ -829,14 +842,10 @@ static COMPONENT_VTBL: ComponentVtbl = ComponentVtbl {
 };
 
 static PROCESSOR_VTBL: AudioProcessorVtbl = AudioProcessorVtbl {
-    base: PluginBaseVtbl {
-        base: FUnknownVtbl {
-            query_interface: query_processor,
-            add_ref: ref_processor,
-            release: rel_processor,
-        },
-        initialize: comp_initialize,
-        terminate: comp_terminate,
+    base: FUnknownVtbl {
+        query_interface: query_processor,
+        add_ref: ref_processor,
+        release: rel_processor,
     },
     set_bus_arrangements: proc_set_bus_arrangements,
     get_bus_arrangement: proc_get_bus_arrangement,
@@ -901,14 +910,14 @@ unsafe extern "system" fn factory_ref(_this: *mut c_void) -> u32 {
 }
 unsafe extern "system" fn factory_get_info(_this: *mut c_void, info: *mut PFactoryInfo) -> i32 {
     let slot = unsafe { &mut *info };
-    write_string128(&mut slot.vendor, "Yeban Test");
-    write_string128(&mut slot.url, "");
-    write_string128(&mut slot.email, "");
+    write_char_str(&mut slot.vendor, "Yeban Test");
+    write_char_str(&mut slot.url, "");
+    write_char_str(&mut slot.email, "");
     slot.flags = 0;
     RESULT_OK
 }
 unsafe extern "system" fn factory_count(_this: *mut c_void) -> i32 {
-    2
+    3
 }
 unsafe extern "system" fn factory_get_class(_this: *mut c_void, index: i32, info: *mut PClassInfo) -> i32 {
     let slot = unsafe { &mut *info };
@@ -923,6 +932,12 @@ unsafe extern "system" fn factory_get_class(_this: *mut c_void, index: i32, info
             slot.cid = CID_SEPARATE;
             write_char_str(&mut slot.category, "Audio Module Class");
             write_char_str(&mut slot.name, "TestSineSeparate");
+        }
+        // 控制器类（枚举可见，但不能以组件身份创建：扫描应单列说明，不记失败）。
+        2 => {
+            slot.cid = CID_SEPARATE_CTRL;
+            write_char_str(&mut slot.category, "Component Controller Class");
+            write_char_str(&mut slot.name, "TestSineController");
         }
         _ => return 0,
     }

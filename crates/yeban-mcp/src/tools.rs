@@ -1751,7 +1751,7 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
     ToolSpec {
         spec_id: "MCP-TOOL-EXT-SCAN-PLUGINS",
         name: "yeban_scan_plugins",
-        summary: "枚举本机可用的 VST3 插件（ADR-0064 的扫描与验证，类比 Logic 的 auval 准入）：扫描 YEBAN_VST3_PATHS 环境变量给出的目录与平台标准路径，另加 `paths` 给出的额外目录；每个候选都尝试打开、枚举类、逐个实例化探针，失败逐个记原因、不中断扫描、不进可用列表。响应 data.plugins[]：每条给 path / className / classId / kind（instrument / effect / unknown）/ usable / error（失败时才有）；失败项也在列表里，但 usable 为假。只读：不改工程、不装载进工程、不落盘。扫描只证明插件能打开、能实例化、能通过验证激活，不证明它在真实工程里出声；真实商业插件兼容性未经验证。",
+        summary: "枚举本机可用的 VST3 插件（ADR-0064 的扫描与验证，类比 Logic 的 auval 准入）：扫描 YEBAN_VST3_PATHS 环境变量给出的目录与平台标准路径，另加 `paths` 给出的额外目录；每个候选都尝试打开、枚举类、逐个实例化探针（控制器／兼容类不作组件探针，单列说明），失败逐个记原因、不中断扫描、不进可用列表。响应 data.plugins[]：每条给 path / className / classId / kind（instrument / effect / unknown）/ usable / error（失败时才有）；失败项也在列表里，但 usable 为假。只读：不改工程、不装载进工程、不落盘。扫描只证明插件能打开、能实例化、能通过验证激活，不证明它在真实工程里出声；真实商业插件兼容性未经验证。",
         scope: Scope::AppAdmin,
         // 只读枚举：Host::scan 只读目录、打开库、实例化探针，不写工程、不落盘。
         side_effect: SideEffect::ReadOnly,

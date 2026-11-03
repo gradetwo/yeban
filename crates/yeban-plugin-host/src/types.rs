@@ -44,11 +44,19 @@ pub const IAUDIO_PROCESSOR_IID: Tuid = tuid(0x4204_3F99, 0xB7DA_453C, 0xA569_E79
 /// `Vst::IEditController` 的 IID（`vst/ivsteditcontroller.h` 原文）。
 pub const IEDIT_CONTROLLER_IID: Tuid = tuid(0xDCD7_BBE3, 0x7742_448D, 0xA874_AACC, 0x979C_759E);
 
+/// `IConnectionPoint`（`pluginterfaces/base/iconnectionpoint.h` 原文；字节取自
+/// Dexed.so 的 `Steinberg::Vst::IConnectionPoint_iid`，2026-11-03 实测）。
+pub const ICONNECTIONPOINT_IID: Tuid = tuid(0x70A4_156F, 0x6E6E_4026, 0x9891_48BF, 0xAA60_D8D1);
+
 /// `tresult` 成功（`kResultOk`）。
 pub const RESULT_OK: i32 = 0;
 
-/// `tresult` 真（`kResultTrue`）。
-pub const RESULT_TRUE: i32 = 1;
+/// `tresult` 真（`kResultTrue`）。注意 SDK 原文：`kResultTrue == kResultOk == 0`，
+/// 与 C 布尔惯例（真＝1）相反；真插件（JUCE）实测亦如此。
+pub const RESULT_TRUE: i32 = 0;
+
+/// `tresult` 假（`kResultFalse`）。
+pub const RESULT_FALSE: i32 = 1;
 
 /// `tresult` 无接口（`kNoInterface`）。
 pub const RESULT_NO_INTERFACE: i32 = -1;

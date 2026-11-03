@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 use crate::error::HostError;
 use crate::stub::StubInstrument;
 use crate::types::{PluginDescriptor, PluginInstance, PluginKind, tuid_hex};
-use crate::vst3::{Vst3Instance, Vst3Module, inspect_module};
+use crate::vst3::{Vst3Instance, Vst3Module, inspect_module, is_non_component_class};
 
 /// `stub:` 桩的前缀（仅测试夹具与演示工程用，⛔ 不是真实插件路径）。
 pub const STUB_PREFIX: &str = "stub:";
@@ -145,7 +145,19 @@ impl Host {
         if let Some(stub_name) = path.strip_prefix(STUB_PREFIX) {
             return Self::load_stub(stub_name);
         }
-        let module = Vst3Module::load(path)?;
+        // `.vst3` 包路径先解析到包内平台动态库（与扫描侧同一口径；不解析则 `Is a directory`）。
+        let module_path = {
+            let candidate = Path::new(path);
+            if candidate.extension().is_some_and(|ext| ext == "vst3") {
+                resolve_bundle_binary(candidate).ok_or_else(|| {
+                    HostError::InvalidPluginPath(format!("`.vst3` 包 `{path}` 内找不到平台动态库"))
+                })?
+            } else {
+                candidate.to_path_buf()
+            }
+        };
+        let module_path = module_path.to_string_lossy().into_owned();
+        let module = Vst3Module::load(&module_path)?;
         let raw = module.classes_raw();
         if raw.is_empty() {
             return Err(HostError::ClassNotFound("工厂没有登记任何类".to_owned()));
@@ -159,9 +171,13 @@ impl Host {
                 })?
                 .clone()
         } else {
-            // 不指名：逐个实例化探针，首个乐器类胜出（探针失败的类跳过）。
+            // 不指名：逐个实例化探针，首个乐器类胜出（探针失败的类跳过；
+            // 控制器／兼容类不作组件探针，见 `is_non_component_class`）。
             let mut found: Option<(crate::types::Tuid, String, String)> = None;
             for (cid, name, category) in &raw {
+                if is_non_component_class(category) {
+                    continue;
+                }
                 match Vst3Instance::open(&module, cid, name) {
                     Ok(instance) if instance.kind() == PluginKind::Instrument => {
                         found = Some((*cid, name.clone(), category.clone()));
