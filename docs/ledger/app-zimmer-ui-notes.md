@@ -2014,3 +2014,103 @@ error: could not compile `dcheck` (test "d_ui_27") due to 1 previous error
 判决：**`pending`** —— `rust (yeban-app)` / `windows` / `macos` 三条腿要等 run 读回，
 读回时必须**数 `Running tests/`**、确认 `d_ui_28_export_length_seeds_from_audible_end`
 这个二进制在里头（§6.3 第 4 条：判据名没出现＝没跑到）。
+
+## §50 `D-UI-29`：节拍器开关真的**写进文档** —— 拨动不再拿装配期那份快照换一代引擎（2026-11-03）
+
+### 一、缺口（用户会怎么撞上）
+
+`Cmd/Ctrl+Alt+N` 或走带区那颗键，修前落在 `apply_engine_command` →
+`crate::metronome::set_enabled(host, project, !current)`，而那个 `project` 是**装配期冻结**的
+`Rc<YebanProjectV1>`（`main.rs` 只在换工程时重新装配）。⇒ 四条同时成立：
+
+1. **文档一位没改** ⇒ 保存 / 重开之后开关弹回装配期初值；
+2. **没有提交** ⇒ 撤销 / 重做管不到它（时光机里看不见这一笔）；
+3. ⭐⭐ **最坏的一条**：换代 = 把那份**旧文档**重放进快照 ⇒ 用户此后画的音符、改的速度、
+   混音台写进去的音量，在**播放侧当场消失**，而界面上全都还在。按一次节拍器 = 回滚一次工程；
+4. 走带被 `stop` → `reload` → `seek` 补回来 ⇒ 控制驱动形态下必然漂几个 tick
+   （本模块自己逐字登记 `MAX_RESTORE_DRIFT_TICKS = 16`）。
+
+### 二、取证：那条"编辑 ⇒ 发声"的腿**早就存在**（这条发现把修法整个翻过来了）
+
+第一反应的修法是"读活文档、再把引擎重装一次"。读完 `main.rs` 之后发现**根本不必修引擎那一侧**：
+
+| 读到的事实 | 出处（现读，⛔ 手抄） |
+| :--- | :--- |
+| `slint::Timer` 心跳 `HEARTBEAT_PERIOD_MS = 16` ⇒ **62.5 Hz** | `src/main.rs:90`、`:528` |
+| 心跳在 `EditMark` 变化时才 `try_project()` → `ProductionLoop::tick` | `src/main.rs` 心跳那段 |
+| `EditMark { head: Option<EntityId>, undone: usize }`＝"活跃分支头 ＋ 已撤销步数" | `src/engine_host.rs:268` `from_display` |
+| `publish_project` = **增量发布**：`EngineSnapshot::from_project(..)` ＋ `slot.publish_arc`，⛔ 不重建 runtime、⛔ 不推量子、⛔ 不碰走带 | `src/engine_host.rs:1380-1405` |
+| 节拍器计划在**投影期**进快照：`.with_metronome(project.transport.metronome_enabled.then(..))` | `crates/yeban-engine/src/snapshot.rs:862` |
+| 快照上就有现成的读数口 `metronome_enabled()`（= `metronome.is_some()`） | 同上 `:1140` |
+| 实时侧武装位 `armed_metronome_enabled`（逐样本那条腿） | `crates/yeban-engine/src/rt.rs:3949`、`:4825` |
+
+⇒ **提交一条 op 同时拿到**：⭐ 发声（下一跳 ≤ 16 ms）、⭐ 无损走带（连那几个 tick 的漂移都没有）、
+⭐ 可撤销、⭐ 会持久化。落点因此从"换引擎"搬到"改文档"，与 `D-UI-23`（预备拍）合流成**同一个**
+提交函数 `commit_transport_config`。
+
+`reload` 那条腿**没有被删** —— 它是"没有可提交的对象"（`undo: None` 的判据 / 无头装配）时
+唯一还能出声的方式，`tests/metronome_switch.rs` 的夹具正是那一形（本票只改它的**文案**，
+一条判据没动）。宿主代码里 `metronome::set_enabled(` 现读 **1 处**（`apply_engine_command`）。
+
+### 三、镜面：`metronome-on` 从此是**快照的投影**，不是第二个状态
+
+拨动那一格写镜面（不等心跳 ⇒ 键按下去立刻点亮，判据装配里也不跑事件循环），
+**其余一切**由 `host::apply_metronome_mirror(ui, Option<bool>)` 在"发布成功的那一跳"校正：
+`ProductionLoop::tick`（生产）与 `live_surface::engine_tick`（执行面）调的是**同一个**函数，
+与 `apply_engine_error` 同一条纪律。补掉的旧值类别：撤销 / 重做、运行期「打开工程」、
+控制面（MCP）写文档。`None`（标记没变 / 没有工程可送 / **投影失败**）⇒ **一位不动** ——
+发布失败时文档与快照本来就不同，那时镜面必须跟着**引擎**，否则界面上点亮的是没发生的事。
+
+`set_metronome_on` 的写点现读 `host.rs` **4 处**（装配初值 / 有会话拨动 / 无会话拨动 / 每跳校正），
+`bridge.rs`（`apply_view` 那一族）**0 处** ⇒ 镜面⛔ 不是重投影的一部分，这一点由判据 ⑥⑦ 钉：
+撤销之后镜面最多陈旧**一跳**。取舍登记在判据文件的"边界 3"。
+
+### 四、⚠ 差点造出的 `#212` 复发（自己造的，自己抓回来的）
+
+把拨动搬到文档那一支之后，落点里多了 `refresh_undo_window` → `apply_view` ⇒ **一整批界面写入**。
+而 `wire_keys` 原先是"先 `try_borrow_mut()` 借住宿主，再看动作" ⇒ 带着 `RefMut` 进这一支
+= `#212` 那次 `key_down` 边上的 `abort`（同一棵树、同一个 `Rc<RefCell<EngineHost>>`）。
+⇒ 两处都在**借之前**分岔：`wire_keys` 加 `if undo.is_some() { return apply_action(…) }`，
+`wire_transport` 的按钮闭包加 `if metronome_undo.is_some() { … }`。
+`action_needs_engine` 的集合**不变**（仍只列 `ToggleMetronome`）—— 它现在的读法是
+"可能**要**动引擎"，而实际借不借由端口决定；删掉那一条会让无会话装配的开关**变哑**
+（`tests/metronome_switch.rs` 正是那一形）。文本对账由两处 `is_some()` 各 1 处 +
+`only_engine_commands_take_the_engine_borrow` 一起守。
+
+### 五、判据（`tests/d_ui_29_metronome_writes_the_document.rs`，6 例 / 51 条 assert / 542 行）
+
+夹具 = `UndoPort` + `build_live_ui_with(undo: Some(port), engine_quanta: 0)` + `start_engine()` +
+`EditMark::from_display(&port.display())` 的心跳（与 `main.rs` 同一调用序列）。
+三个读数同时判：**文档**（只读 `UndoPort::try_project()`）／**快照**（新增
+`LiveUi::engine_metronome_enabled()`，读 `EngineSnapshot::metronome_enabled`）／**镜面**。
+
+- ① 装配时三者同为 `false`；② 第一下 ⇒ 文档 `true` ＋ 恰好 `+1` 条提交 ＋ 镜面跟，
+  ⭐ 而快照仍 `false`、快照**修订号一位没涨**（"拨动没碰引擎"的直接读数，修前红）；
+- ③ 下一跳 ⇒ `published_revision = 修订号 + 1`、快照 `true`；④ 第二下关得掉（极性）；
+- ⑤ 兄弟字段 `count_in_bars` / `launch_quantization` 逐字不动 ＋ 反向对照（预备拍那一臂
+  ⛔ 动节拍器那一格）；⑥ 不发布的那一跳⛔ 写镜面（人为拨歪后仍不动）；
+- ⑦ 撤销 ⇒ 文档先回 `false`、镜面**此刻仍** `true`、下一跳三者对齐；
+- ⑧ 两个入口在源码里各 1 处调用 `apply_action` 的同一条臂；⑨ 无端口装配里该键返回 `false`
+  （对照臂：数字键照常消费）；⑩ 出处纪律：`Op::SetTransportConfig {` 仍 1 处、
+  `commit_transport_config(` 3 处（定义＋2 调用）、`set_enabled(` 1 处、校正点 host 2 / live 1、
+  `bridge.rs` 0 处写入、两处 `is_some()` 分岔各 1 处。
+
+顺带补的**测试面**（⛔ 不是产品面）：`LiveUi::engine_metronome_enabled()`（`Option<bool>`，
+没有引擎 ⇒ `None`）—— 判据要读"播放侧真正在用的那一代"，而 `current_snapshot()` 只在
+`EngineHost` 上、`LiveSurface` 不公开宿主。
+
+### 六、如实登记的边界
+
+1. ⛔ **本装配点不动那颗按钮**：`live_surface.rs` 里 `wire_transport` 现读 **0 处**
+   （`main.rs` 3 处）⇒ 无头执行面上走带那一族（播放 / 停止 / 录音 / 节拍器）**没有注册者**，
+   与 `D-UI-11` 同族。本票⛔ 顺手补整条走带接线（那要把 `EngineHost` 换成可共享的
+   `Rc<RefCell<…>>`，是另一票）；判据 ⑧ 因此只能从**源码文本**判"同一个落点"。
+2. ⛔ 不证明"听得到咔哒声"：本文件判的是"快照里有没有节拍器计划"；逐样本那一侧在
+   `crates/yeban-engine/tests/rt_zero_alloc.rs`（`armed_metronome_enabled`）。
+3. ⛔ 不新加控件 ⇒ 与金帧无关（`ui/*.slint` 只改了**注释**）。
+
+判决：**`pending`** —— 本机 `cargo fmt -p yeban-app` `rc=0`（rustfmt 真的解析了这 542 行 ⇒
+语法过关），但 Slint 是重依赖 ⇒ 编译与判决交 CI（§5）。读回时必须**数 `Running tests/`**
+并确认 `d_ui_29_metronome_writes_the_document` 这个二进制在里头（§6.3 第 4 条），
+另外要确认这三枚**没有被我改红**：`metronome_switch`、`d_ui_23_count_in_writes_the_document`
+（⑨ 的那几个计数）、`engine_error_banner`（同一执行面的心跳）。

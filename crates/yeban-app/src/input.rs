@@ -995,8 +995,18 @@ pub enum Action {
     AcceptAiSuggestion,
     /// `Cmd/Ctrl+Alt+N`：拨**节拍器**开关（`[ARCH-RT-001]` 的宿主侧落点）。
     ///
-    /// ⚠ 它会**换一代引擎**（节拍器的计划在快照投影期进快照，见 `crate::metronome`）
-    /// ⇒ 实现必须**先停、再恢复位置与状态**（负责人裁决 A 的 1–3 条）。
+    /// ⭐ **它改的是文档**（`D-UI-29`）：`host::apply_action` 的那条臂提交一条
+    /// `Op::SetTransportConfig`，发声交给**既有的** 60 Hz 发布腿（`EditMark` 一变 ⇒
+    /// `EngineHost::publish_project` ⇒ 快照按新文档投影）。⇒ ⭐ 可撤销、⭐ 会持久化、
+    /// ⭐ 不动走带（连几个 tick 的漂移都没有）。
+    ///
+    /// ⚠ **前提 = 撤销端口**（与 `Cmd/Ctrl+Alt+D` 同一档，`D-UI-23` 那条分工因此合流）。
+    /// 没有端口（判据 / 无头装配）⇒ 落回 `crate::metronome::set_enabled` 那条**换代**腿：
+    /// 必须先停、再恢复位置与状态（负责人裁决 A 的 1–3 条），控制驱动形态下漂几个 tick。
+    ///
+    /// ⚠ **键与按钮共用同一个落点**（`ui/transport.slint` 那颗键的回调也调 `apply_action`），
+    /// ⛔ 两份"下一个值"的算法；界面上的点亮态 `metronome-on` 由
+    /// `host::apply_metronome_mirror` 在每次发布成功的那一跳按快照校正。
     ToggleMetronome,
     /// `Cmd/Ctrl+Alt+D`：拨**预备拍**（`transport.count_in_bars` 0 ⇄ 1）。
     ///

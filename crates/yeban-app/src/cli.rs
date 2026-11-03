@@ -3761,9 +3761,11 @@ const SHORTCUTS: [ShortcutRow; 48] = [
     },
     // ⭐ 节拍器族（`[ARCH-RT-001]`）：两条**加性**键，⛔ 不动既有键语义。
     // ⚠ `implemented: true` 是**如实**的：两条都在 `apply_action` 里接了臂。
-    // 两者的**前提不同**（⭐ `D-UI-23` 分家）：`Cmd/Ctrl+Alt+N` 要**引擎上下文**
-    // （`main.rs` 传，其它装配传 `None` ⇒ 那一刻不消费）；`Cmd/Ctrl+Alt+D` 要**撤销端口**
-    // （它提交 `Op::SetTransportConfig`，⛔ 不换引擎 ⇒ 没有端口的那一刻同样不消费）。
+    // ⭐ `D-UI-29` 之后两条的**前提相同**：都要**撤销端口**（两者都提交
+    // `Op::SetTransportConfig`，都靠既有的 60 Hz 发布腿换快照发声 ⇒ ⛔ 都不换引擎）。
+    // 端口不在场的那一刻不消费（`live_surface` 的无会话装配正是这一形，判据 ⑨ 钉着）。
+    // （修前 `N` 那一支要的是"引擎上下文"，而那份工程是装配期冻结的 ⇒ 拨一次开关会把
+    // 播放侧退回旧文档；见 `docs/ledger/app-zimmer-ui-notes.md` §50。）
     ShortcutRow {
         label: "Cmd/Ctrl+Alt+N → 节拍器开关",
         action: Action::ToggleMetronome,

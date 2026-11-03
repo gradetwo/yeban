@@ -601,12 +601,17 @@ impl LiveAdminSurface {
     fn engine_tick(&mut self, mark: EditMark, project: Option<&YebanProjectV1>) -> EngineTick {
         let mut published_revision = None;
         let mut publish_error = None;
+        // ⭐ `D-UI-29`：与生产 `ProductionLoop::tick` **同一格**取值（只在发布成功时）。
+        let mut snapshot_metronome = None;
         if self.engine.has_engine()
             && self.engine.should_publish(mark)
             && let Some(project) = project
         {
             match self.engine.publish_project(project, mark) {
-                Ok(revision) => published_revision = Some(revision),
+                Ok(revision) => {
+                    published_revision = Some(revision);
+                    snapshot_metronome = Some(project.transport.metronome_enabled);
+                }
                 Err(error) => {
                     // ⭐ 保留原文供控制面/判据读（不是 `.ok()`），并出声。
                     eprintln!("[yeban-app] 快照发布失败（播放侧仍是上一版）: {error}");
@@ -628,6 +633,9 @@ impl LiveAdminSurface {
                 (None, None) => host::EnginePublishOutcome::Unchanged,
             },
         );
+        // ⭐ `D-UI-29`：**节拍器镜面**与生产心跳调的是**同一个**校正点 ⇒ 本执行面驱动
+        // 的判据也能读到"快照换了 ⇒ 界面跟着换"（撤销 / 控制面写 / 换工程都不留旧值）。
+        host::apply_metronome_mirror(&self.window, snapshot_metronome);
         EngineTick {
             published_revision,
             publish_error,
@@ -1646,6 +1654,18 @@ impl LiveUi {
             .current_snapshot()?
             .track(track_id)
             .map(|params| params.volume_db())
+    }
+
+    /// ⭐ 当前引擎快照里的**节拍器开关** —— `transport.metronome_enabled` 在**投影期**写进
+    /// 快照的那一格（`EngineSnapshot::metronome_enabled`，逐字 = "快照里有没有节拍器计划"）。
+    ///
+    /// `D-UI-29` 用它对账**三个**读数：权威文档字段 ⇄ 播放侧真正在用的那一代 ⇄ 界面镜面
+    /// `metronome-on`。⛔ 这不是第四份状态：它读的就是音频线程拿去投影的那个字段本身。
+    ///
+    /// 没有引擎 ⇒ `None`（不猜）。
+    #[must_use]
+    pub fn engine_metronome_enabled(&self) -> Option<bool> {
+        Some(self.surface.engine.current_snapshot()?.metronome_enabled())
     }
 
     /// 音频读路径累计换过多少次快照（`SnapshotReader::begin_block` 里的计数）。

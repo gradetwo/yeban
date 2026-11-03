@@ -16,7 +16,7 @@
 // | 属性 | 今天的事实源 | 写点 |
 // | :--- | :--- | :--- |
 // | `playing` / `timecode` | 引擎的 `TransportReading`（`state.is_running()` / `bridge::timecode_for_ticks(grid, position_ticks)`） | `host::apply_transport` |
-// | `metronome-on` | 工程读数 `project.transport.metronome_enabled`；拨动的两个落点写**同一个**属性（点击与键盘不分叉） | `host::wire_transport`（装配读数 + `on_toggle_metronome`）/ `host::apply_action`（`Cmd/Ctrl+Alt+N`） |
+// | `metronome-on` | 工程文档字段 `project.transport.metronome_enabled`（`D-UI-29`：拨动**提交**这一格，快照由 60 Hz 发布腿按它投影） | `host::wire_transport`（装配读数）/ `host::apply_action`（两个入口同一个落点，提交成功后立刻跟一跳）/ `host::apply_metronome_mirror`（每次发布成功的那一跳按快照校正）|
 // | `bpm-display` | `ViewState::bpm_display`（工程 tempo 的投影） | `host::apply_view` |
 // | `branch-name` / 电平表 | `branch-name` 仍是装配期注入（模型没有"分支"载体）；电平走 Meter SPSC，不经过本文件 | — |
 //
@@ -554,7 +554,8 @@ export component Transport inherits Rectangle {
     // ⇒ `visible: root.width >= 1120px`。1024 档隐藏重复入口；窄档仍有
     // `Cmd/Ctrl+Alt+N`（同一动作，同一个宿主落点）。
     //
-    // ⚠ 状态只有一个写者：`root.metronome-on` 由宿主写（`host::wire_transport`），
+    // ⚠ 状态只有一个写者：`root.metronome-on` 由宿主写（拨动落在 `host::apply_action`，
+    // 每一跳由 `host::apply_metronome_mirror` 按快照校正 —— `D-UI-29`），
     // 这里只读它画选中态与 `accessible-checked`；`clicked` 只发回调，⛔ 不自己翻转。
     Rectangle {
         visible: root.width >= 1120px;

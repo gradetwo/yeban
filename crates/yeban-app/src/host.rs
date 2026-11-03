@@ -4854,11 +4854,17 @@ impl ProductionLoop {
         }
         let mut published_revision = None;
         let mut publish_error = None;
+        // ⭐ `D-UI-29`：**这一跳新快照**里节拍器那一格的值（`Some` = 真的换上了一份）。
+        // 镜面必须与快照来自**同一次**文档读 ⇒ 只在 `publish_project` 成功时取值。
+        let mut snapshot_metronome = None;
         if engine.should_publish(mark)
             && let Some(project) = project
         {
             match engine.publish_project(project, mark) {
-                Ok(revision) => published_revision = Some(revision),
+                Ok(revision) => {
+                    published_revision = Some(revision);
+                    snapshot_metronome = Some(project.transport.metronome_enabled);
+                }
                 // 投影失败**不改播放侧**（旧快照原样保留）⇒ 如实出声，不静默。
                 Err(error) => {
                     eprintln!("[yeban-app] 快照发布失败（播放侧仍是上一版）: {error}");
@@ -4930,6 +4936,9 @@ impl ProductionLoop {
         // （`drop(engine)` 之后才写界面 ⇒ ⛔ 不重新引入持借写界面，`#212` 的崩法）。
         // 每一跳都写：播放中数字每帧变；停止后 `position_ticks` 保留 ⇒ 显示与引擎一致。
         apply_transport(ui, transport);
+        // ⭐ `D-UI-29`：**节拍器镜面跟着这一跳换上的那一代快照**（与 `apply_transport`
+        // 同一处、同一条"借外写界面"的纪律）。`None`（标记没变 / 发布失败）⇒ 一位不动。
+        apply_metronome_mirror(ui, snapshot_metronome);
         // ⭐ 自动化标签的落点：与时间码同一次读数（⛔ 不另读一次走带位置）。
         if let Some(labels) = cursor_labels {
             ui.set_automation_lane_labels(strings(&labels));
@@ -5240,32 +5249,39 @@ pub fn wire_transport(
     });
 
     // ⭐ **节拍器开关**（`[ARCH-RT-001]` 的界面侧）：`ui/transport.slint` 的
-    // `transport-metronome-button` 与 `Cmd/Ctrl+Alt+N` 走**同一个落点**
-    // （[`apply_engine_command`]），`metronome-on` 也只有一个写者 —— 这里与
-    // [`apply_action`] 的同一个臂。
+    // `transport-metronome-button` 与 `Cmd/Ctrl+Alt+N` 走**同一个落点** [`apply_action`]
+    // （`D-UI-29`；⛔ 不是两条腿各算一次"下一个值"），`metronome-on` 的写者也只剩
+    // "文档的投影"这一条规则（拨动时立刻跟一跳 + [`apply_metronome_mirror`] 每跳校正）。
     //
     // ## 初始值
     //
-    // 装配期从工程文档读一次（`transport.metronome_enabled`）；此后由两个入口维护。
-    // ⛔ 不由 `apply_view` 写：撤销 / 重投影会把镜面打回文档的旧值，让界面与引擎分叉。
-    //
-    // ## 为什么"下一个值"来自界面属性（而不是 `context.project`）
-    //
-    // 拨动今天**不写文档**（`Op::SetTransportConfig` 的提交通道未接线）⇒ 文档字段
-    // 恒为装配期初值。若从它算，第二次点击会再次算出 `true`（开关关不掉）。
+    // 装配期从工程文档读一次（`transport.metronome_enabled`）。⛔ 不由 `apply_view` 写：
+    // 那一条的属性写入点预算被 `tests/perf_draw_budget.rs` 钉着，而运行期换工程 / 撤销
+    // 都会经过发布那一跳 ⇒ 由 [`apply_metronome_mirror`] 在那一处校正。
     if let Some(project) = project.as_ref() {
         ui.set_metronome_on(project.transport.metronome_enabled);
     }
     let metronome_engine = Rc::clone(&engine);
     let metronome_project = project.as_ref().map(Rc::clone);
+    let metronome_undo = undo.clone();
     let metronome_ui = slint::ComponentHandle::as_weak(ui);
     ui.on_toggle_metronome(move || {
         let Some(ui) = metronome_ui.upgrade() else {
             debug_assert!(false, "MainWindow 在回调执行期间被销毁");
             return;
         };
+        // ⭐ `D-UI-29`：**有权威会话**这一支⛔ 不借宿主 —— 落点是改文档，发声交给既有的
+        // 60 Hz 发布腿（`ProductionLoop::tick` → `publish_project`）。少借一次 `RefCell`
+        // 也少一类重入面（`#212`），而播放位置连漂移都没有。
+        if metronome_undo.is_some() {
+            apply_action(&ui, metronome_undo.as_ref(), None, Action::ToggleMetronome);
+            return;
+        }
+        // 没有权威会话 ⇒ 只剩"当场换一代引擎"那条腿，它需要装配期那份工程。
         let Some(project) = metronome_project.as_ref() else {
-            eprintln!("[yeban-app] 忽略 toggle-metronome：装配层没有工程 ⇒ 本次按键无效");
+            eprintln!(
+                "[yeban-app] 忽略 toggle-metronome：装配层既没有权威会话也没有工程 ⇒ 本次按键无效"
+            );
             return;
         };
         // `#212` 同款边界兜底：借不到就降级（⛔ 不 panic、⛔ 不假装切换过）。
@@ -5275,18 +5291,14 @@ pub fn wire_transport(
             );
             return;
         };
-        let current = ui.get_metronome_on();
         let mut context = EngineCommandContext {
             host: &mut engine,
             project: project.as_ref(),
-            metronome_on: Some(current),
+            metronome_on: Some(ui.get_metronome_on()),
         };
-        let applied = apply_engine_command(&mut context, Action::ToggleMetronome);
-        // ⭐ 先放借、再写界面（与 `on_toggle_play` 同款作用域纪律）。
-        drop(engine);
-        if applied {
-            ui.set_metronome_on(!current);
-        }
+        // ⭐ 与键盘**同一个**落点（`apply_action` 里那条臂），⛔ 不是这里再算一遍下一个值。
+        apply_action(&ui, None, Some(&mut context), Action::ToggleMetronome);
+        // ⭐ 作用域纪律：**借在这里放掉**（体内只剩属性写入，`apply_action` 已经写完镜面）。
     });
 
     // ⭐ **录音键**（`[ARCH-REC-001]`，任务单 `#88`）：接线搬进 [`wire_record_at`] ——
@@ -6541,6 +6553,13 @@ pub fn wire_bpm_commit(ui: &MainWindow, port: &Rc<UndoPort>) {
 /// （今天只剩 `Action::ToggleMetronome` —— 它只碰 `metronome::set_enabled`，入参是
 /// `&mut EngineHost` ＋ `&YebanProjectV1`，**不碰界面**）。
 ///
+/// ⚠ ⭐ **`D-UI-29` 之后这个集合的名字要读成"可能**要**动引擎"，而不是"一定动"**：
+/// 节拍器在**有权威会话**时走文档级提交（`apply_action` 里那一支会 `refresh_undo_window`
+/// → `apply_view` ⇒ 一整批界面写入），只有**没有会话**时才落进 `metronome::set_enabled`。
+/// ⇒ [`wire_keys`] 在借宿主**之前**先问端口：有端口 ⇒ ⛔ 不借。集合本身⛔ 不能把
+/// `Action::ToggleMetronome` 摘掉 —— 摘了就没宿主可借，**无会话装配**（判据 / 无头）
+/// 那支开关会从此按了不出声（`tests/metronome_switch.rs` 正是那一形）。
+///
 /// ⭐ **`D-UI-23` 把 `Action::ToggleCountIn` 从这条链上摘下来了**（⛔ 不是漏改）：
 /// 换一代引擎**只**为"预备拍"服务，而实时引擎根本不读这个字段
 /// （`crates/yeban-engine/src/lib.rs` 把它列在**仍未实现**那一栏）⇒ 代价（走带被停住再
@@ -6658,6 +6677,13 @@ pub fn wire_keys(
                 // ⚠ 借到的这一段仍然只活在这条臂里（⛔ 不跨回调、⛔ 不存起来），并且
                 // 已经在借用中就**不消费**（⛔ 不 panic）。
                 if !action_needs_engine(action) {
+                    return apply_action(&ui, undo.as_ref(), None, action);
+                }
+                // ⭐ `D-UI-29`：**有权威会话**时节拍器走的是**文档级提交**那一支 ⇒ 它
+                // 要 `refresh_undo_window`（→ `apply_view`，一整批界面写入）。带着宿主的
+                // `RefMut` 进那一条臂就是 `#212` 的形态（"持借调界面"）⇒ **在这里就分岔**：
+                // 有端口 ⇒ ⛔ 压根不借宿主；借宿主只留给"没有可提交的对象"那一支。
+                if undo.is_some() {
                     return apply_action(&ui, undo.as_ref(), None, action);
                 }
                 match (engine.as_ref(), project.as_ref()) {
@@ -9288,18 +9314,20 @@ pub fn action_has_implementation(action: Action) -> bool {
 pub struct EngineCommandContext<'a> {
     /// 引擎宿主（换代与恢复走带都经它）。
     pub host: &'a mut EngineHost,
-    /// **当前工程**（动作要基于它算"下一个值"）。
+    /// **当前工程**（没有权威会话时，动作要基于它算"下一个值"）。
     pub project: &'a YebanProjectV1,
     /// ⭐ **节拍器开关的运行态镜面**（界面路径注入；`None` ⇒ 退回落文档字段）。
     ///
-    /// ## 为什么需要它（而不是永远读文档）
+    /// ## 它只在**没有权威会话**那一支被读（`D-UI-29` 之后的形状）
     ///
-    /// `transport.metronome_enabled` 住在**持久化文档**里，而今天拨动开关**不写文档**
-    /// （文档级提交那条通道今天只由**预备拍**在用 —— `Op::SetTransportConfig` 与它同一条
-    /// 通道的节拍器那一支仍未接）。若"下一个值"
-    /// 永远从文档算，第二次按键/点击会再次算出 `true` ⇒ **开关关不掉**。
-    /// 界面路径把 `MainWindow.metronome-on`（唯一运行态镜面）注进来，
-    /// 于是 `Cmd/Ctrl+Alt+N` 与节拍器按钮**同一个落点、同一个取值依据**。
+    /// 有会话时"下一个值"从**文档**算（那条臂提交 `Op::SetTransportConfig` ⇒ ⭐ 可撤销、
+    /// ⭐ 会持久化、⭐ 由既有的 60 Hz 发布腿换快照）。只有**没有可提交的对象**时
+    /// （判据 / 无头装配），文档字段恒为装配期初值 ⇒ 若"下一个值"还从它算，第二次
+    /// 按键/点击会再次算出 `true` ⇒ **开关关不掉**（`#16` 登记的那条）。那一支只能拿
+    /// `MainWindow.metronome-on` 当累加器，并当场 `metronome::set_enabled` 换代。
+    ///
+    /// ⚠ 本字段**不是**第二事实源：它只在那一支参与取值，而镜面本身由
+    /// [`apply_metronome_mirror`] 每一跳按快照校正。
     pub metronome_on: Option<bool>,
 }
 
@@ -9308,6 +9336,12 @@ pub struct EngineCommandContext<'a> {
 /// ⚠ **通行形状**，⛔ 不是为节拍器开的旁路；但入选门槛是「**实时引擎自己读这个字段**」，
 /// ⛔ 不是「字段住在 `TransportConfig` 里」（`D-UI-23`：预备拍也住那里，引擎⛔ 不读它
 /// ⇒ 它的落点是 `apply_action` 的文档级提交，⛔ 不走这里）。⛔ 界面不参与。
+///
+/// ⚠ ⭐ `D-UI-29` 之后本落点**只剩"没有权威会话"那一支**：有会话时节拍器也改走文档级
+/// 提交（`apply_action` 的那条臂），发声由既有的 60 Hz 发布腿负责 —— 那条腿本来就是
+/// "编辑 ⇒ 发声"的唯一通路，且⛔ 不动走带、⛔ 不重建引擎。本函数因此**不再**是产品
+/// 拨动的必经点，但它是**无会话装配**（判据 / 无头）唯一能让开关出声的方式，
+/// 也就仍是 `action_needs_engine` 列出的那一条。
 ///
 /// ⚠ `MainWindow` 需要 Tier-1 平台且 macOS 上 `EventLoop` 是**单例 + 必须主线程**
 /// ⇒ 若把这些臂写在 `apply_action` 里、只能经真窗口测，判据就建不出窗口（实测踩过：
@@ -9364,6 +9398,42 @@ pub(crate) fn apply_action_for_criteria(
     apply_engine_command(&mut context, action)
 }
 
+/// ⭐ **`TransportConfig` 文档级提交的唯一落点**（`D-UI-23` 开的道，`D-UI-29` 让节拍器也走它）。
+///
+/// ## 为什么必须是这一个函数，而不是两条臂各写一遍
+///
+/// `Op::SetTransportConfig` 是**整体替换**那三个字段的 op ⇒ 每个"拨走带开关"的落点都要
+/// 先读**当前文档**、再把它不关心那两格**逐字带上**。写两遍就会有两个"下一个值"的算法
+/// （必分叉），而本仓的判据（`tests/d_ui_23_count_in_writes_the_document.rs` 的 ⑨）
+/// 从源码文本钉住"`Op::SetTransportConfig {` 的构造点恰好 1 处"。
+///
+/// ⚠ `old_config` **必须**来自调用方刚读到的那份权威工程（模型的前置条件比的就是它），
+/// 因此这里不自己再读一遍工程：那样就是第二次读数，而"读哪一次"会变成新的分叉点。
+///
+/// 提交之后走一次 [`refresh_undo_window`]（`reproject = true`）：时光机的深度 / 分支读数
+/// 跟着这条新提交变（预备拍那一支的重投影⛔ 不许动卷帘那六格读数 —— 判据 ⑤ 钉着）。
+///
+/// 返回 `false` = 提交被模型拒绝（文档一位没改，界面按当前文档重投影一次如实回报）。
+fn commit_transport_config(
+    ui: &MainWindow,
+    port: &UndoPort,
+    message: &str,
+    old_config: yeban_model::TransportConfig,
+    new_config: yeban_model::TransportConfig,
+) -> bool {
+    let op = yeban_model::Op::SetTransportConfig {
+        old_config,
+        new_config,
+    };
+    if port.commit_ops(now_ms(), message, vec![op]).is_err() {
+        eprintln!("[yeban-app] 走带设置提交被拒绝（工程未改）: {message}");
+        refresh_undo_window(ui, port, true);
+        return false;
+    }
+    refresh_undo_window(ui, port, true);
+    true
+}
+
 fn apply_action(
     ui: &MainWindow,
     undo: Option<&Rc<UndoPort>>,
@@ -9374,15 +9444,62 @@ fn apply_action(
         return false;
     }
     match action {
-        // 拨**节拍器**开关（`Cmd/Ctrl+Alt+N`）。⚠ 它更换一代引擎（计划在投影期进快照）
-        // ⇒ 走 `metronome::set_enabled` 的"先停 ⇒ 换 ⇒ 恢复位置与状态"。
-        // ⚠ 引擎/工程不在手（`context == None`）⇒ ⛔ 不消费（照旧放行，⛔ 不假装成功）。
+        // ⭐⭐ `D-UI-29`：拨**节拍器**（`Cmd/Ctrl+Alt+N` / 走带区那颗键）＝ **改文档**。
+        //
+        // ## 为什么落点从"换一代引擎"搬到文档（⛔ 不是随手挪）
+        //
+        // 修前那条臂交给 `metronome::set_enabled` 的 `project` 是**装配期冻结**的那份
+        // `Rc<YebanProjectV1>`（只在换工程时重装配）⇒ 拨一次开关会把引擎**换代回那份旧
+        // 文档**：用户此后画的音符、改的速度在播放侧**全部消失**，而界面上还在。代价还不
+        // 止走带 —— `reload` 不保位置，本模块要 stop → reload → seek 补回来，控制驱动形态
+        // 下必然漂移几个 tick（`src/metronome.rs` 的模块文档逐字登记）。而文档字段一位没改
+        // ⇒ **保存 / 重开就弹回装配期那个值**。
+        //
+        // ⇒ 事实源本就是**文档**，而"编辑 ⇒ 发声"那条腿**早就存在**：`main.rs` 的 60 Hz
+        // 心跳在 `EditMark`（活跃分支头 / 已撤销步数）一变时就 `UndoPort::try_project()`
+        // → `ProductionLoop::tick` → `EngineHost::publish_project` →
+        // `EngineSnapshot::from_project`（节拍器计划正是在**投影期**进快照的那一格）。
+        // 这条腿**不重建引擎、不推量子、不动走带** ⇒ 提交一次 op 同时拿到：⭐ 发声
+        // （下一跳 ≤ 16 ms）、⭐ 无损走带（连那几个 tick 的漂移都没有）、⭐ 可撤销、
+        // ⭐ 会持久化。所以这一支⛔ 不借宿主 —— 那份 `Rc<RefCell<EngineHost>>` 只有
+        // **没有**权威会话时才需要。
+        //
+        // ⚠ **镜面在这里立刻跟着写**（不等心跳）：那颗键的 `accessible-checked` 与颜色读的
+        // 就是它，而判据装配里不跑心跳。它**不是**第二个事实源 —— [`ProductionLoop::tick`]
+        // 与 `live_surface` 的执行面都在每次**发布成功**的那一跳按文档校正它（见
+        // [`apply_metronome_mirror`]），撤销、运行期换工程、控制面写入因此都不留旧值。
         Action::ToggleMetronome => {
+            if let Some(port) = undo {
+                // 权威工程读不出来 ⇒ 出声、不画（与预备拍那条臂同款纪律）。
+                let Some(project) = port.try_project() else {
+                    eprintln!("[yeban-app] 节拍器拨动没有可投影的工程: 权威会话此刻没有活跃工程");
+                    return false;
+                };
+                // ⭐ "下一个值"从**文档**算，⛔ 不从镜面算：镜面可能比文档旧（撤销回来的、
+                // 控制面改的）⇒ 拿它算就是让界面当事实源，那正是修前的形态。
+                let old_config = project.transport;
+                let mut new_config = old_config;
+                new_config.metronome_enabled = !old_config.metronome_enabled;
+                // ⛔ 另外两格（预备拍 / 场景量化）逐字带着走（`Op::SetTransportConfig` 是
+                // 整体替换），`D-UI-23` 的判据 ④ 与这一支对称。
+                let committed =
+                    commit_transport_config(ui, port, "toggle metronome", old_config, new_config);
+                if committed {
+                    ui.set_metronome_on(new_config.metronome_enabled);
+                }
+                return committed;
+            }
+            // ⭐ **没有权威会话**（判据 / 无头装配的形状）⇒ 落回引擎换代那条腿。
+            //
+            // ⚠ 这一支只会在"没有可提交的对象"时可达：发布腿靠 `EditMark` 变化驱动，
+            // 没有端口就没有提交、也就没有新快照 ⇒ 只能当场 `metronome::set_enabled`。
+            // 那时文档恒为装配期初值（拨动无处可写）⇒ "下一个值"的依据只能是镜面，
+            // 否则第二次点击会再算出同一个值 ⇒ **开关关不掉**（`#16` 登记的那条）。
+            // ⚠ 引擎/工程不在手（`context == None`）⇒ ⛔ 不消费（照旧放行，⛔ 不假装成功）。
             let Some(context) = context else {
                 return false;
             };
-            // ⭐ **运行态镜面**是"下一个值"的唯一依据
-            // （文档字段只是装配期的初值；拨动本身不写文档）。
+            // ⭐ **运行态镜面**是"下一个值"的唯一依据（文档字段只是装配期的初值）。
             let current = ui.get_metronome_on();
             context.metronome_on = Some(current);
             let applied = apply_engine_command(context, action);
@@ -9408,8 +9525,8 @@ fn apply_action(
         // ⇒ 事实源本就该是**文档**：`Op::SetTransportConfig`（既有的、整体替换
         // `TransportConfig` 三个字段的那条 op）⭐ 可撤销、⭐ 会持久化、⭐ 下一个读者读到
         // 的就是它。⚠ `metronome_enabled` 与 `launch_quantization` 两个字段**逐字带着走**
-        // （`old_config` 就是当前文档 ⇒ ⛔ 不顺手改它们，那会把节拍器的运行态镜面写进
-        // 文档，制造第二个事实源）。
+        // （`old_config` 就是当前文档）：那一支的落点是节拍器**自己**那条臂（`D-UI-29`）
+        // 与量化那格尚无落点 ⇒ 这里顺手改就是替别人写它的字段，两个落点必分叉。
         //
         // ⚠ 没有撤销端口（= 没有权威会话）⇒ ⛔ 不消费、⛔ 不假装成功（与 `#212` 那类
         // "降级要响亮"的纪律同款；判据侧的装配正是这一形）。
@@ -9425,20 +9542,7 @@ fn apply_action(
             let old_config = project.transport;
             let mut new_config = old_config;
             new_config.count_in_bars = if old_config.count_in_bars == 0 { 1 } else { 0 };
-            let op = yeban_model::Op::SetTransportConfig {
-                old_config,
-                new_config,
-            };
-            if port
-                .commit_ops(now_ms(), "toggle count-in", vec![op])
-                .is_err()
-            {
-                eprintln!("[yeban-app] 预备拍提交被拒绝（工程未改）");
-                refresh_undo_window(ui, port, true);
-                return false;
-            }
-            refresh_undo_window(ui, port, true);
-            true
+            commit_transport_config(ui, port, "toggle count-in", old_config, new_config)
         }
         // `[UI-NOTE-003]` 工具选择：数字键 → 矩阵行号 → `active-tool`（**单一数字口径**）。
         // 撤销端口在场时同时记一条动作日志（`UiAction::SelectTool` 只报显示态、不改工程）。
@@ -10159,6 +10263,34 @@ fn zoom_action(ui: &MainWindow, port: &UndoPort, action: Action) -> bool {
     };
     apply_view(ui, &next, viewport_px as f32, scroll_x);
     true
+}
+
+/// ⭐ **镜面 `metronome-on` 的文档校正点**（`D-UI-29`）。
+///
+/// ## 它补的是哪一格
+///
+/// 那颗键的 `accessible-checked` 与颜色读的是 `MainWindow.metronome-on`，而**播放里的**
+/// 节拍器来自快照（`SnapshotArmed::armed_metronome_enabled`）。修前两者只在拨动那一刻
+/// 一起动 ⇒ 凡是**不经拨动**改到文档字段的路，界面与耳朵就此分叉：
+/// 撤销 / 重做（游标动了 ⇒ `EditMark` 动 ⇒ 快照换了）、运行期「打开工程」、
+/// 控制面（MCP）写文档。⇒ 本函数挂在**发布快照的那同一跳**上：镜面永远写的是
+/// "此刻引擎里那一代快照"投影用的那个值。
+///
+/// ⚠ 与 [`apply_engine_error`] 同一条纪律：生产心跳（[`ProductionLoop::tick`]）与
+/// `src/live_surface.rs` 的执行面调的是**同一个**函数 ⇒ 两条腿的界面读数不可能漂移。
+///
+/// `None` = 这一跳**没有**换上按新文档投影的快照（标记没变 / 没有工程可送 / 投影失败）
+/// ⇒ 一位不动。⚠ 投影失败时文档与快照本来就不同，那时镜面必须跟着**引擎**（旧值），
+/// 否则界面上点亮的是"没有发生的事" —— 那句"播放侧仍是上一版"已经由横幅如实说出去了。
+pub fn apply_metronome_mirror(ui: &MainWindow, snapshot_enabled: Option<bool>) {
+    let Some(enabled) = snapshot_enabled else {
+        return;
+    };
+    // ⚠ 先比对再写：属性写入会让绑定的那一格重算（那颗键的颜色 / `accessible-checked`），
+    // 而这一跳每 16 ms 一次 ⇒ 无条件写就是每跳两次无谓重算。
+    if ui.get_metronome_on() != enabled {
+        ui.set_metronome_on(enabled);
+    }
 }
 
 /// 把**撤销的**模型读数注入界面（显示态 + 时光机弹窗开关 + 图谱节点）。

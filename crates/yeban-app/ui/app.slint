@@ -558,7 +558,8 @@ export component MainWindow inherits Window {
     /// ⭐ 录音键（`[ARCH-REC-001]`）：按下 ⇒ 起录 / 停录。
     callback toggle-record();
     /// ⭐ 节拍器开关（`Cmd/Ctrl+Alt+N` 的可点等价物）。界面只发通知；
-    /// 状态属性 `metronome-on` 的唯一写者仍是宿主（`host::wire_transport`）。
+    /// 状态属性 `metronome-on` 的唯一写者仍是宿主（`D-UI-29`：落点在
+    /// `host::apply_action` 的节拍器那一臂，运行态由 `host::apply_metronome_mirror` 校正）。
     callback toggle-metronome();
     // 走带的"停止"（停住 + 回到起点）。它与 `toggle-play` 一样由 Rust 侧接线，
     // 界面**不自己翻转**任何走带状态 —— 见 `src/host.rs` 的 `wire_transport`。
@@ -1421,7 +1422,8 @@ export component MainWindow inherits Window {
             branch-name: root.branch-name;
             arrangement-view: root.arrangement-view;
             ai-drawer-open: root.ai-drawer-open;
-            // ⚠ 单向（子只读）：`metronome-on` 的唯一写者是宿主，写的是
+            // ⚠ 单向（子只读）：`metronome-on` 的唯一写者是宿主（`host::apply_action` 的
+            // 节拍器那一臂 + `host::apply_metronome_mirror` 的每跳校正），写的是
             // `root.metronome-on`；子组件的 `accessible-checked` 与选中态读这一份。
             metronome-on: root.metronome-on;
 
