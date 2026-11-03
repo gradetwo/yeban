@@ -468,3 +468,53 @@ error[rejected]: failed to satisfy license requirements
   回归证据：切回演示的截图指纹与改造前**逐字节相同**。
 - 注册表条目数**未变**（184 条 / 14 个动态区）—— 本线的改造没有偷偷改变语义寻址面。
 
+---
+
+## 追加（2026-11-03，`line/ui-id-closure`）：`[TEST-SPEC-006]` 的 ID 闭环 + 一条会静默少测的钉
+
+**先说指标**（单位与对象，避免"看起来有"）：本节数的两个数字，单位＝**个**；
+① 对象＝`theme_selection.rs` 里 `wcag_cases` 的**前景/背景配对条目数**（现读 `; 18]` ⇒ **18 对**，
+逐支重算 4 副调色板）；② 对象＝`crates/*/tests/*` 里出现字符串 `TEST-SPEC-006` 的**文件数**
+（改造前 `git grep -l TEST-SPEC-006 main -- 'crates/*'` ⇒ **0**）。
+
+1. **`[TEST-SPEC-006]`「WCAG 2.1 AA 对比度自动化校验」的自动化其实早已存在，缺的是 ID 标注**。
+   `AGENTS.md` §3 DoD 3 要求每个切片把规范 ID 闭环到判据；此前该 ID 在 `crates/` 里**零载体**，
+   而 `theme_selection.rs` 的 ①c / ①c-bis / ①c-quater 已经在**现读活组件 token 取值**并
+   `contrast_ratio` 计算（阈值 7.0 / 4.5 / 3.0，一支皮肤都没放宽）。本线只把这条既有实现
+   **标注**到它满足的规范 ID 上（文件头「规范来源」补 `TEST-SPEC-006` / `UI-A11Y-004` 两条），
+   ⛔ 没有新增任何配对、⛔ 没有改任何颜色。
+   > 教训（写进测量纪律的同一族）：**"grep 判据名 = 0" 不等于 "覆盖 = 0"**。本线一开始据此
+   > 判"对比度门禁缺失"，读到文件里才发现门禁完整；若照那个结论去"补一套 WCAG 判据"，
+   > 就会造出与 ①c-bis 重复的第二份事实源。词面读数必须先打开交付本身核验。
+
+2. **差点加进去的 5 对配对是**虚构覆盖**，已否决并留下证据**：`bg-head` / `bg-control` /
+   `bg-lane` / `bg-lane2` 在 `crates/yeban-app/ui/**` 里**从不**作为 `background:` 出现
+   （`grep -rn -E "background: Tokens\.(bg-head|bg-control|bg-lane2?)" crates/yeban-app/ui/` ⇒
+   **0 命中**），`bg-shell` 作为背景的落点只有 `app.slint:1479` 一处且该块内无文字。
+   `wcag_cases` 的既有约定是「表里每一对都是**真实存在**的配对」⇒ 把这些面写进表＝给界面里
+   不存在的配对造判据，正是 `line/honesty` 系列在防的形状。**未采纳**，理由记在此处。
+
+3. **修了一条会静默少测的钉**：①c-quater 用 `recorded.iter().zip(surfaces.iter())` 配对，
+   而 **zip 在较短的一侧静默停止** ⇒ 只要有人给 `surfaces` 多加一块板、忘了在 `recorded`
+   补一行（或反过来），这段会**少测若干对且全绿**。本线在 zip 之前钉死两侧长度
+   （`assert_eq!(recorded.len(), surfaces.len())`，失败消息给出两个数）。
+   这是**防未来漂移**，不改变当前测到的数字（两侧现均为 3）。
+
+4. **`[UI-A11Y-004]` 第 2 条仍未实现，且本线不代为补齐**：该条要求"提供经过 WCAG 2.1 AAA
+   级认证的**高对比度模式**"。现读 `ui/tokens.slint` 的 `enum YebanTheme { brand, yeban,
+   inkmoor, plume }` —— **没有任何高对比度分支**（全仓 `high.?contrast` 在 `crates/yeban-app`
+   下只命中 golden PNG 的二进制噪声）。补它必须**新增一组颜色取值**，而调色板是负责人下发的
+   权威输入：`ui/tokens.slint` §6e 已就 `ink-2` 霜灰写明「这是负责人调色板自身的缺口 ⇒
+   登记为 `OWNER_TEXT_FAINT_SHORTFALL` 并给出数字, **不悄悄改色**」，同一条纪律适用于新建皮肤。
+   ⇒ **属人类裁决项**，按 `AGENTS.md` §5.7 登记不补。
+   同时如实登记本线实测到的 `ink-2` 三级文字缺口面（单位＝比值，`contrast_ratio` 同式现算）：
+   低于 3:1 的配对为 yeban `bg-panel` 2.99 / `bg-panel-alt` 2.86 / `bg-raised` 2.57、
+   brand `bg-panel-alt` 2.81 / `bg-raised` 2.39、plume `bg-raised` 2.87
+   （plume `bg-panel` 3.20 与 `bg-panel-alt` 3.11 均 **≥ 3:1**，不是缺口；inkmoor 三对
+   3.49 / 3.39 / 3.12 全部达标 —— 负责人修订版把霜灰调亮后旧缺口消失）。
+   这些已由 ①c-bis / ①c-quater 逐对钉死；`--txt-faint` 若用于**正文**则 WCAG 1.4.3 要求 4.5:1，
+   其最好一档也只有 3.23:1 ⇒ 差距是**负责人调色板**的事实，不是判据的漏洞。
+
+**判决**：本线改动 = `theme_selection.rs`（注释 + 一条长度断言）与本节台账，⛔ 零行为变更。
+CI 判决**尚未读回 ⇒ pending**；`ui-id-closure` 落地前不得写作"通过"。
+
