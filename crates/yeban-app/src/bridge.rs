@@ -1823,6 +1823,7 @@ pub fn builtin_instrument_device() -> DeviceDefinition {
             })
             .collect(),
         latency_samples: 0,
+        plugin: None,
     }
 }
 
