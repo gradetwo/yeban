@@ -12,6 +12,11 @@
 //! | [`an_empty_note_clip_is_silent_too_with_its_own_reading`] | 有摆放但片段里 0 音符 | 1 条警告 ＋ `placements:1` / `notes:0` |
 //! | [`the_warned_track_is_the_silent_source_in_render_master`] | 同一工程的两处读数 | `warnings[0].track == sources[].track` 且 `kind:"silent"` |
 //! | [`dry_run_preview_carries_the_same_warning`] | `dryRun:true` 的 `preview.warnings` | 与真实响应同一份 |
+//! | [`a_device_on_master_never_warns`] | 装到 `Master` 的 `warnings[]` | 0 条（主总线永不报） |
+//! | [`a_device_on_a_bus_fed_by_sounding_source_has_no_warning`] | 装到接有声源的总线轨 | 0 条（入边上游有声） |
+//! | [`a_device_on_a_transitive_bus_has_no_warning`] | 装到二级总线轨（总线→总线） | 0 条（传递闭包） |
+//! | [`a_device_on_a_bus_fed_only_by_silent_tracks_still_warns`] | 装到只接静音轨的总线轨 | 1 条警告（上游全静音；与静音轨成环也不打转） |
+//! | [`a_device_on_master_never_warns_even_when_everything_is_silent`] | 全静音工程里装到 `Master` | 0 条（主总线豁免无条件）；同工程里装到静音源轨仍 1 条 |
 //!
 //! 复跑读数：`cargo test -p yeban-mcp --test trap_178 -- --nocapture`
 
@@ -184,6 +189,203 @@ fn fixture(empty_clip: bool) -> Fixture {
     }
 }
 
+/// 总线夹具：`Track 1`（有声）→ `Bus` → `Bus 2` → `Master`；`Track 2`（静音）
+/// → `Quiet Bus` → `Master`，且 `Quiet Bus` ↔ `Track 2` 成环。
+/// 顶层身份复用 `fixture(false)` 的 ULID，使 `insert_device_on` 可直接用。
+struct BusFixture {
+    project: YebanProjectV1,
+    master: EntityId,
+    bus: EntityId,
+    bus2: EntityId,
+    quiet_bus: EntityId,
+}
+
+fn bus_fixture() -> BusFixture {
+    let base = fixture(false);
+    let master = base.project.master_bus_track_id;
+    let bus = ulid("01ARZ3NDEKTSV4RRFFQ69G5F04");
+    let bus2 = ulid("01ARZ3NDEKTSV4RRFFQ69G5F05");
+    let quiet_bus = ulid("01ARZ3NDEKTSV4RRFFQ69G5F06");
+    let mut project = base.project;
+    project.tracks.insert(
+        bus,
+        TrackV3 {
+            id: bus,
+            name: "Bus".to_owned(),
+            kind: TrackKind::AuxReturn,
+            ..TrackV3::default()
+        },
+    );
+    project.tracks.insert(
+        bus2,
+        TrackV3 {
+            id: bus2,
+            name: "Bus 2".to_owned(),
+            kind: TrackKind::AuxReturn,
+            ..TrackV3::default()
+        },
+    );
+    project.tracks.insert(
+        quiet_bus,
+        TrackV3 {
+            id: quiet_bus,
+            name: "Quiet Bus".to_owned(),
+            kind: TrackKind::AuxReturn,
+            ..TrackV3::default()
+        },
+    );
+    let edge = |id: &str, source: EntityId, destination: EntityId| {
+        (
+            ulid(id),
+            RoutingEdge {
+                id: ulid(id),
+                source_node: source,
+                destination_node: destination,
+                kind: RoutingKind::TrackToBus,
+                gain_db: None,
+            },
+        )
+    };
+    project.routing_graph.nodes.extend([bus, bus2, quiet_bus]);
+    project.routing_graph.edges.extend([
+        edge("01ARZ3NDEKTSV4RRFFQ69G5F42", base.lead, bus),
+        edge("01ARZ3NDEKTSV4RRFFQ69G5F43", bus, bus2),
+        edge("01ARZ3NDEKTSV4RRFFQ69G5F44", bus2, master),
+        edge("01ARZ3NDEKTSV4RRFFQ69G5F45", base.empty, quiet_bus),
+        // 成环：Quiet Bus → Track 2。上游遍历必须带已访集，否则在这里打转。
+        edge("01ARZ3NDEKTSV4RRFFQ69G5F46", quiet_bus, base.empty),
+        edge("01ARZ3NDEKTSV4RRFFQ69G5F47", quiet_bus, master),
+    ]);
+    project
+        .validate()
+        .unwrap_or_else(|error| panic!("总线夹具工程必须合法: {error}"));
+    BusFixture {
+        project,
+        master,
+        bus,
+        bus2,
+        quiet_bus,
+    }
+}
+
+/// 全静音夹具：`Silent Track` 只有一个 0 音符片段，`Track 2` 没有摆放，
+/// 两轨都接 `Master`。用于钉"主总线豁免无条件"：工程里没有任何可发声内容时，
+/// 装到 `Master` 仍不报，而装到静音源轨仍报。
+struct SilentFixture {
+    project: YebanProjectV1,
+    master: EntityId,
+    silent_lead: EntityId,
+    silent_clip: EntityId,
+    empty: EntityId,
+}
+
+fn silent_fixture() -> SilentFixture {
+    let master = ulid("01ARZ3NDEKTSV4RRFFQ69G5F61");
+    let silent_lead = ulid("01ARZ3NDEKTSV4RRFFQ69G5F62");
+    let empty = ulid("01ARZ3NDEKTSV4RRFFQ69G5F63");
+    let silent_clip = ulid("01ARZ3NDEKTSV4RRFFQ69G5F70");
+    let placement = ulid("01ARZ3NDEKTSV4RRFFQ69G5F80");
+    let lead_edge = ulid("01ARZ3NDEKTSV4RRFFQ69G5F90");
+    let empty_edge = ulid("01ARZ3NDEKTSV4RRFFQ69G5F91");
+
+    let mut project = YebanProjectV1 {
+        id: ulid("01ARZ3NDEKTSV4RRFFQ69G5F99"),
+        title: "trap-178-silent".to_owned(),
+        bpm: 120.0,
+        master_bus_track_id: master,
+        ..YebanProjectV1::default()
+    };
+    project.audio_config.sample_rate = SampleRate::Hz48000;
+    project.tracks.insert(
+        master,
+        TrackV3 {
+            id: master,
+            name: "Master".to_owned(),
+            kind: TrackKind::Master,
+            ..TrackV3::default()
+        },
+    );
+    project.tracks.insert(
+        silent_lead,
+        TrackV3 {
+            id: silent_lead,
+            name: "Silent Track".to_owned(),
+            kind: TrackKind::Midi,
+            ..TrackV3::default()
+        },
+    );
+    project.tracks.insert(
+        empty,
+        TrackV3 {
+            id: empty,
+            name: "Track 2".to_owned(),
+            kind: TrackKind::Midi,
+            ..TrackV3::default()
+        },
+    );
+    project.clip_pool.insert(
+        silent_clip,
+        ClipPoolEntry {
+            id: silent_clip,
+            name: "Empty Clip".to_owned(),
+            content: ClipContent::Midi {
+                notes: BTreeMap::new(),
+            },
+        },
+    );
+    project
+        .tracks
+        .get_mut(&silent_lead)
+        .expect("silent lead")
+        .clips
+        .insert(
+            placement,
+            ClipPlacement {
+                id: placement,
+                clip_id: silent_clip,
+                start_tick: 0,
+                duration_ticks: 960,
+                loop_config: LoopConfig::default(),
+                muted: false,
+            },
+        );
+    project.routing_graph = RoutingGraph {
+        nodes: vec![silent_lead, empty, master],
+        edges: BTreeMap::from([
+            (
+                lead_edge,
+                RoutingEdge {
+                    id: lead_edge,
+                    source_node: silent_lead,
+                    destination_node: master,
+                    kind: RoutingKind::TrackToBus,
+                    gain_db: None,
+                },
+            ),
+            (
+                empty_edge,
+                RoutingEdge {
+                    id: empty_edge,
+                    source_node: empty,
+                    destination_node: master,
+                    kind: RoutingKind::TrackToBus,
+                    gain_db: None,
+                },
+            ),
+        ]),
+    };
+    project
+        .validate()
+        .unwrap_or_else(|error| panic!("全静音夹具工程必须合法: {error}"));
+    SilentFixture {
+        project,
+        master,
+        silent_lead,
+        silent_clip,
+        empty,
+    }
+}
+
 fn dispatcher(project: &YebanProjectV1) -> (Dispatcher, String) {
     let token = BearerToken::generate().token;
     let auth = format!("Bearer {}", token.expose());
@@ -238,13 +440,33 @@ fn insert_device_on(
     dry_run: bool,
 ) -> Value {
     let fixture = fixture(false);
+    insert_device_on_with_top(
+        dispatcher,
+        auth,
+        fixture.lead,
+        fixture.clip,
+        target,
+        dry_run,
+    )
+}
+
+/// 与 `insert_device_on` 相同，但顶层 `trackId` / `clipId` 由调用方指定
+///（供自带夹具的测试用）。
+fn insert_device_on_with_top(
+    dispatcher: &mut Dispatcher,
+    auth: &str,
+    top_track: EntityId,
+    top_clip: EntityId,
+    target: EntityId,
+    dry_run: bool,
+) -> Value {
     call(
         dispatcher,
         auth,
         "yeban_edit_notes",
         json!({
-            "trackId": fixture.lead.to_canonical_string(),
-            "clipId": fixture.clip.to_canonical_string(),
+            "trackId": top_track.to_canonical_string(),
+            "clipId": top_clip.to_canonical_string(),
             "dryRun": dry_run,
             "ops": [{
                 "kind": "insertDevice",
@@ -493,6 +715,102 @@ fn dry_run_preview_carries_the_same_warning() {
         planned["data"]["preview"]["warnings"], written["data"]["warnings"],
         "dryRun 与真实响应的 warnings 必须逐字相同"
     );
+}
+
+/// 总线 / 主总线豁免判据：`Master` 本轨 0 片段是结构使然，且离线渲染里
+/// 它的设备链跑在"求和之后 → 插入" —— 旧规则对主总线必报是误报。
+#[test]
+fn a_device_on_master_never_warns() {
+    let fixture = bus_fixture();
+    let (mut dispatcher, auth) = dispatcher(&fixture.project);
+    let written = insert_device_on(&mut dispatcher, &auth, fixture.master, false);
+    assert_eq!(written["status"], "success", "{written}");
+    assert_eq!(
+        written["data"]["warnings"],
+        json!([]),
+        "主总线永不报 deviceOnSilentTrack: {written}"
+    );
+}
+
+/// 总线轨经入边连到有声源 ⇒ 汇总音频会过它的设备链 ⇒ 不报。
+#[test]
+fn a_device_on_a_bus_fed_by_sounding_source_has_no_warning() {
+    let fixture = bus_fixture();
+    let (mut dispatcher, auth) = dispatcher(&fixture.project);
+    let written = insert_device_on(&mut dispatcher, &auth, fixture.bus, false);
+    assert_eq!(written["status"], "success", "{written}");
+    assert_eq!(
+        written["data"]["warnings"],
+        json!([]),
+        "接有声源的总线轨不该有警告: {written}"
+    );
+}
+
+/// 传递闭包：`Bus 2` 的上游是 `Bus`，`Bus` 的上游才是有声的 `Track 1`。
+#[test]
+fn a_device_on_a_transitive_bus_has_no_warning() {
+    let fixture = bus_fixture();
+    let (mut dispatcher, auth) = dispatcher(&fixture.project);
+    let written = insert_device_on(&mut dispatcher, &auth, fixture.bus2, false);
+    assert_eq!(written["status"], "success", "{written}");
+    assert_eq!(
+        written["data"]["warnings"],
+        json!([]),
+        "二级总线轨（传递闭包连到有声源）不该有警告: {written}"
+    );
+}
+
+/// 反向钉子：只接静音轨的总线轨仍报 —— 豁免不是"总线轨一律不报"。
+/// 夹具里 `Quiet Bus` ↔ `Track 2` 成环：遍历必须终止且仍判静音。
+#[test]
+fn a_device_on_a_bus_fed_only_by_silent_tracks_still_warns() {
+    let fixture = bus_fixture();
+    let (mut dispatcher, auth) = dispatcher(&fixture.project);
+    let written = insert_device_on(&mut dispatcher, &auth, fixture.quiet_bus, false);
+    assert_eq!(written["status"], "success", "{written}");
+    let warnings = written["data"]["warnings"]
+        .as_array()
+        .expect("warnings 必须是数组");
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    assert_eq!(warnings[0]["code"], "deviceOnSilentTrack", "{warnings:?}");
+    assert_eq!(warnings[0]["track"], "Quiet Bus", "{warnings:?}");
+}
+
+/// 主总线豁免无条件：全静音工程里装到 `Master` 仍不报；同工程里装到
+/// 静音源轨仍报 1 条（对照：豁免只覆盖主总线，不覆盖源轨）。
+#[test]
+fn a_device_on_master_never_warns_even_when_everything_is_silent() {
+    let fixture = silent_fixture();
+    let (mut dispatcher, auth) = dispatcher(&fixture.project);
+    let on_master = insert_device_on_with_top(
+        &mut dispatcher,
+        &auth,
+        fixture.silent_lead,
+        fixture.silent_clip,
+        fixture.master,
+        false,
+    );
+    assert_eq!(on_master["status"], "success", "{on_master}");
+    assert_eq!(
+        on_master["data"]["warnings"],
+        json!([]),
+        "全静音工程里主总线仍不报: {on_master}"
+    );
+
+    let on_silent = insert_device_on_with_top(
+        &mut dispatcher,
+        &auth,
+        fixture.silent_lead,
+        fixture.silent_clip,
+        fixture.empty,
+        false,
+    );
+    assert_eq!(on_silent["status"], "success", "{on_silent}");
+    let warnings = on_silent["data"]["warnings"]
+        .as_array()
+        .expect("warnings 必须是数组");
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    assert_eq!(warnings[0]["code"], "deviceOnSilentTrack", "{warnings:?}");
 }
 
 /// 测试用临时目录（Drop 即清理；不落在工作树里）。
