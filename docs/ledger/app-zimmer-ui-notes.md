@@ -2433,4 +2433,104 @@ Slint 是重依赖 ⇒ 编译与判决交 CI（`§5`）。⚠ 本票**推送时*
 **第四次作废**（§51 第八节），本票若再停在编译就是**第五次**。
 另：`deny` 那枚红与本票无关（`async-executor v1.14.0` 被上游 yank，`§44`），`Cargo.lock` 一位未动。
 
+## §53 `D-UI-32`：换代必须**装载即停住** —— serve 那份装配三处换代站点一处都没 park（2026-11-03）
+
+### 一、缺陷（用户会怎么撞上）与它的读数
+
+本票不是从界面报告来的，是 `D-UI-30` 那条 `assert!(!running)` **前提**在 CI 上红的五格教出来的
+（run `41569883250`：`d_ui_30_serve_transport_is_wired` = 3 passed / **5 failed**，五条全红在
+"起完引擎之后它在跑"这一格）。
+
+引擎侧事实（现读，单位：处）：`crates/yeban-engine/src/rt.rs` 里 `Transport::free_running(` = **1**
+⇒ `EngineRuntime` 的走带**构造默认是 `Playing`**。那是刻意的：接走带之前 `process_quantum` 的语义
+就是"快照一发布就从 tick 0 起滚"，默认值改成停住会让引擎侧既有判据变红。引擎把出口写死在自己的
+文档里（`crates/yeban-engine/src/transport.rs` 的 `Transport` 文档）：
+**"要『加载即停住』的控制面发一条 `Stop` 即可（`yeban-app::engine_host` 就是这么做的）"**
+⇒ **这一步是控制面的义务**，而两条腿只有一条履行了（现读 `.stop()`，剥掉 `//`/`///` 后只数代码行）：
+
+| 腿 | 装载即停住 | `.stop()`（修前） | `.stop()`（修后） |
+| :--- | :--- | ---: | ---: |
+| 生产 GUI（`src/main.rs`） | ✅ 建完引擎 `engine_handle().borrow_mut().stop()` 再把读数投回界面 | 2 | 2（未动） |
+| serve 执行面（`src/live_surface.rs`） | ❌ 三处换代站点（`start_engine` / `apply_project` / `reload_engine_now`）**一处都没做** | **0** | **1**（在 `rebuild_engine` 体内） |
+
+用户可见三件：① 界面一开就显示「播放中」（第一跳心跳如实投出引擎的 `Playing`）；
+② **第一次按「播放」是停**（`wire_transport` 的切换读镜面 `playing`，那时已为真 ⇒ 走"停住"那一支；
+现象是"按了播放，键跳回去，什么都没播"）；③ 播放头会自己走（有人推量子就推进 tick）。
+
+### 二、为什么此前的判据一条都没抓到
+
+- `tests/transport_timecode_tick.rs` / `rewind_sound.rs` / `metronome_switch.rs` 都是**判据侧自己**
+  `host::wire_transport` + 自己 `host.play()`，先把状态摆成"在播"再按 ⇒ 从来不读"装配刚建完引擎时
+  它在不在跑"；
+- `tests/new_project_ui.rs` / `open_project_ui.rs` 断的是 `!window.get_playing()`，而那是**没有心跳**
+  的装配 ⇒ 镜面还停在 Slint 默认 `false`（引擎在跑，从界面属性读不出来 —— §51 第三节同一格）；
+- ⭐ `D-UI-30` 把这条当成**显然成立的前提**写了断言 ⇒ **前提本身是一条需要控制的义务**。
+  那五格红**不是**判据写坏了：判据要的形态是对的一侧，缺的是装配那一步。
+
+### 三、修法（一句话：在**唯一的换代入口**补一条 `Stop`，再把读数投回界面）
+
+`LiveAdminSurface::rebuild_engine`（三处换代站点的共同入口）末尾：
+`reload` 之后 `self.engine.borrow_mut().stop()` ⇒ `host::apply_transport(&self.window, parked)`。
+
+1. ⛔ **不搬进 `EngineHost::reload`**：`reload` 第 5 步那条注释已经把理由印在源码里 —— 命令在量子边界
+   生效必须**多推一个量子** ⇒ `ui/reload_engine` 报的 `quanta` 比调用方要的多 1（实测红在
+   `tests/live_ui_mcp.rs` 的 `admin_reload_engine_rebuilds_and_resets_the_meter_tap`，
+   那边 `engine_quanta: 4` 必须报 4）。本票的 `stop()` 在 `reload` **之后** ⇒ `EngineRebuild`
+   里那几个数字一位不动（⑦ 是这一条的机械防线）。
+2. ⛔ **不改引擎默认值**：那会连带改掉"没接走带时"的行为，代价见引擎侧文档。
+3. ⛔ **不在三个调用点各抄一遍**：本缺陷的**成因形态**就是"同一步骤在两个装配现场各抄一次，
+   其中一份抄漏"（`main.rs` 有、`live_surface.rs` 没有）⇒ 写在单一入口，第四个换代点将来也不可能漏。
+4. 是 `Stop` 而非 `stop_and_rewind`：新代的位置本就在 0，多发一条 = 执行面**替用户**按键
+   （违反 `D-UI-30` ⑧ 那条纪律，唯一的例外就是这一条装载 `Stop`）。
+5. 作用域纪律（`#212` 那一族）：**先放借、再碰窗口属性**（`apply_transport` 写属性 = 求值 Slint 绑定）。
+
+### 四、判据（`tests/d_ui_32_serve_parks_every_new_engine.rs`：8 例 / 38 条静态 `assert` / 528 行）
+
+| 例 | 判的事 | 关键读数 |
+| :--- | :--- | :--- |
+| ① | 起引擎 ⇒ 停住 | `running = false`、`commands_applied` **恰好 1**（0=没停住，≥2=替用户按键）、位置 `0`、界面镜面 `playing = false`（⛔ 不等心跳） |
+| ② | **第一次**按播放是起播 | 前置停住 ⇒ 按后 `running = true`、计数 `1→2`、镜面跟真 |
+| ③ | 没人按 ⇒ 播放头不动 | 推 64 个量子：`driven == 64`（前提：真推了）、位置**逐位 0**、`running` 仍假、命令**增量 0** |
+| ④ | 第二代也一样，且计数器是**每一代自己的** | 修订号 `+1`、`running = false`、计数**回到 1**（每代新建全零 `TransportMirror` ⇒ 跨代累加是误读）、位置 0、镜面重新假 |
+| ⑤ | 换工程那处站点也 park | 先按播放（证明"停住"是新事件不是初值）⇒ `apply_project(demo)` 后 `running=false`、位置 0、计数 1、镜面 false |
+| ⑥ | 没有引擎不许假装停过 | 一路冷读数：0 条 / 停住 / 镜面 false，按下也不动（`!transport_ready()` ⇒ `TransportReading::cold()`） |
+| ⑦ | 防线：修法⛔ 不搬进 `reload`／引擎 | 裸 `EngineHost::new()` + `reload(&project, 0)` ⇒ `state.is_running()` **仍为真**、计数 `0`、位置 `0`；阳性对照 `host.stop()` ⇒ 停住、计数 1 |
+| ⑧ | 出处纪律（纯读源码，不建窗口） | live 的 `send_transport(` / `.play()` / `stop_and_rewind(` / `.seek(` 各 **0** 处；live `.stop()` = **1** 且落在 `fn rebuild_engine` **体内**；`rebuild_engine()` 调用点 = **3**；`fn engine_tick` 体内 `.stop()` = **0**；`main.rs` `.stop()` 仍 **2**（装载 park + ALSA `mount.stop()`，两族⛔ 不互删）；`rt.rs` `Transport::free_running(` 仍 **1** |
+
+注入 ⇔ 变红：删掉 `rebuild_engine` 里那条 `stop()` ⇒ ①②③④⑤ + ⑧；搬进 `reload` ⇒ ⑦ +
+`live_ui_mcp` 的 `quanta` 那条；改引擎默认值 ⇒ ⑦ + ⑧ + 引擎侧那族；拆成三处各抄 ⇒ ⑧（1→3）；
+心跳里也停一次 ⇒ ⑧（`engine_tick` 出现 `.stop()`）+ ③（计数不再恰好 1）。
+
+`D-UI-30` / `D-UI-31` 的判据同步**升到修后的契约**（⛔ 削弱）：走带 `commands_applied` 前置
+`0 → 1`（装载那条 `Stop`）、按下之后 `1 → 2` / `2 → 3`，②的三档阶梯 `3 → 4`，`D-UI-30` ⑧ 把
+`.stop()` 从零列表挪成"live **1** 处 / main **2** 处"两条计数断言。
+
+### 五、本票换来的一条纪律
+
+⭐ **"显然成立的前提"必须自己带一条读数**：本票五格红全部红在**前提**上（"装配建完引擎是停住的"），
+而那条前提在任何判据里从来没有独立读数 ⇒ 一旦成立就没人看，一旦不成立就把整票打成红、
+看起来像"判据写坏了"。写前提断言时同时写一句"这条红意味着装配缺哪一步"（本票 ① 的消息串就是
+这么写的），否则下一次会再花一轮去怀疑判据。
+
+### 六、如实登记的边界
+
+1. ⛔ 不证明"听得到"（读数取自 RT→控制侧镜面，逐样本在 `crates/yeban-engine`）；
+2. ⛔ 不动设备腿：`open_device` 把新运行时带到**当前**走带位置，本票那步 `stop()` 发生在控制驱动形态
+   （`runtime.is_some()` ⇒ `pump(1)`）⇒ 代价如实登记：控制驱动形态下每次换代多应用一条命令 =
+   多推一个量子，而那条命令是 `Stop` ⇒ **位置一位不走**（③ 钉的就是这一句）；
+3. ⛔ 不按录音键（`wire_record_at` 要采集设备，无头 CI 因机而异；落盘侧由 `tests/record_*.rs` 那族判）；
+4. ⛔ **没顺手补 `mark_applied`**：`main.rs` 建完引擎还记了"当前快照就是这份工程"（免得第一次心跳
+   白发一份投影），本执行面没有 ⇒ 第一跳心跳会多发一份**同内容**快照。那不是错误（发布幂等、修订号 +1），
+   但它会挪动 `D-UI-29`/`D-UI-30` ⑤ 那两条"心跳发布**恰好一代**"的读数 ⇒ 属另一件事，
+   **needs**：单独一票把"装配期的已反映标记"钉清楚。
+
+判决：**`pending`** —— 本机只过 `cargo fmt`（rustfmt 解析了这 528 行 + 两份改动的判据 ⇒ 语法过关），
+Slint 是重依赖 ⇒ 编译与判决交 CI（`§5`）。推送前须确认分支上无在飞 run（`concurrency` 会取消在飞的）。
+读回时要**数 `Running tests/`** 并确认这些二进制都在里头：
+`d_ui_30_serve_transport_is_wired`、`d_ui_31_serve_seek_is_wired`、
+**`d_ui_32_serve_parks_every_new_engine`**、`live_ui_mcp`（`admin_reload_engine_...` 那格是本票的
+反证靶）、外加此前四票的 `d_ui_28_*` / `d_ui_29_*` / `d_ui_11_*` —— 前面几票的判决到目前为止仍是
+**第四次作废**（§51 第八节），本票若再停在编译就是**第五次**。
+另：`deny` 那枚红与本票无关（`async-executor v1.14.0` 被上游 yank，`§44`），`Cargo.lock` 一位未动。
+
 
