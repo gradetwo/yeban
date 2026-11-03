@@ -22,7 +22,6 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 use std::rc::Rc;
-use std::str::FromStr as _;
 
 use slint::Model as _;
 use yeban_app::bridge::{ViewState, display_track};
@@ -68,13 +67,13 @@ fn synth_track(id: EntityId, name: &str, kind: TrackKind) -> TrackV3 {
 /// 构造一个具有与 nightfall_v17.yeban 相同拓扑与规模的工程：
 /// 30 轨（25 MIDI，4 AuxReturn，1 Master），包含 MIDI 与音频剪辑，自动化与设备链。
 fn synth_nightfall_scale_project() -> YebanProjectV1 {
-    let master_id = EntityId::from_str("0SPK09ZEQCWAT9DKHQMFGCDRSD").unwrap();
+    let master_id = EntityId::new();
     let mut tracks = BTreeMap::new();
 
     // 1 Master track
     let mut master_track = synth_track(master_id, "Master", TrackKind::Master);
     master_track.devices.push(DeviceDefinition {
-        id: EntityId::from_str("01DEV000000000000000000001").unwrap(),
+        id: EntityId::new(),
         name: "Master CS".to_string(),
         kind: DeviceKind::InternalEffect,
         bypassed: false,
@@ -114,12 +113,12 @@ fn synth_nightfall_scale_project() -> YebanProjectV1 {
 
     let mut track_ids = Vec::new();
     for (i, name) in midi_names.iter().enumerate() {
-        let tid = EntityId::from_str(&format!("01M6AKK32R{:020X}", i + 1)).unwrap();
+        let tid = EntityId::new();
         track_ids.push(tid);
         let mut t = synth_track(tid, name, TrackKind::Midi);
         // 装设备
         t.devices.push(DeviceDefinition {
-            id: EntityId::from_str(&format!("01DEV000000000000000001{:02X}", i)).unwrap(),
+            id: EntityId::new(),
             name: format!("VA · {name}"),
             kind: DeviceKind::InternalInstrument,
             bypassed: false,
@@ -141,10 +140,10 @@ fn synth_nightfall_scale_project() -> YebanProjectV1 {
         "Room · 0.8s",
     ];
     for (i, name) in aux_names.iter().enumerate() {
-        let tid = EntityId::from_str(&format!("01AUX000000000000000000{:02X}", i + 1)).unwrap();
+        let tid = EntityId::new();
         let mut t = synth_track(tid, name, TrackKind::AuxReturn);
         t.devices.push(DeviceDefinition {
-            id: EntityId::from_str(&format!("01DEV000000000000000002{:02X}", i)).unwrap(),
+            id: EntityId::new(),
             name: format!("REV · {name}"),
             kind: DeviceKind::InternalEffect,
             bypassed: false,
@@ -156,10 +155,12 @@ fn synth_nightfall_scale_project() -> YebanProjectV1 {
 
     // Clip pool: 22 MIDI clips, 14 Audio clips = 36 total
     let mut clip_pool = BTreeMap::new();
+    let mut midi_clip_ids = Vec::new();
     for i in 0..22 {
-        let cid = EntityId::from_str(&format!("01CLPMIDI0000000000000{:02X}", i)).unwrap();
+        let cid = EntityId::new();
+        midi_clip_ids.push(cid);
         let mut notes = BTreeMap::new();
-        let nid = EntityId::from_str(&format!("01NOT000000000000000000{:02X}", i)).unwrap();
+        let nid = EntityId::new();
         notes.insert(nid, MidiNote::new(nid, 0, 60, 480));
         clip_pool.insert(
             cid,
@@ -170,8 +171,10 @@ fn synth_nightfall_scale_project() -> YebanProjectV1 {
             },
         );
     }
+    let mut audio_clip_ids = Vec::new();
     for i in 0..14 {
-        let cid = EntityId::from_str(&format!("01CLPAUDIO000000000000{:02X}", i)).unwrap();
+        let cid = EntityId::new();
+        audio_clip_ids.push(cid);
         clip_pool.insert(
             cid,
             ClipPoolEntry {
@@ -187,11 +190,11 @@ fn synth_nightfall_scale_project() -> YebanProjectV1 {
 
     // Place 30 clips across tracks
     for (i, tid) in track_ids.iter().take(20).enumerate() {
-        let pid = EntityId::from_str(&format!("01PLC00000000000000000{:02X}", i)).unwrap();
+        let pid = EntityId::new();
         let cid = if i % 2 == 0 {
-            EntityId::from_str(&format!("01CLPMIDI0000000000000{:02X}", i % 22)).unwrap()
+            midi_clip_ids[i % 22]
         } else {
-            EntityId::from_str(&format!("01CLPAUDIO000000000000{:02X}", i % 14)).unwrap()
+            audio_clip_ids[i % 14]
         };
         if let Some(t) = tracks.get_mut(tid) {
             t.clips.insert(
