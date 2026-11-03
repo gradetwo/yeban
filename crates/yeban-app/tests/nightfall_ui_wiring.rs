@@ -24,6 +24,7 @@ use std::path::Path;
 use std::rc::Rc;
 use std::str::FromStr as _;
 
+use slint::Model as _;
 use yeban_app::bridge::{ViewState, display_track};
 use yeban_app::host;
 use yeban_app::open::open_project_file;
@@ -31,20 +32,39 @@ use yeban_app::scene::DemoScene;
 use yeban_app::ui::MainWindow;
 use yeban_app::undo::{UndoPort, UndoSession};
 use yeban_model::ids::EntityId;
+use yeban_model::music::MidiNote;
 use yeban_model::project::{
-    AutomationLane, AutomationTarget, ClipContent, ClipPlacement, ClipPoolEntry, DeviceDefinition,
-    DeviceKind, LoopConfig, MidiNote, RoutingEdge, RoutingGraph, RoutingKind, TrackKind, TrackV3,
-    YebanProjectV1,
+    AutomationLane, AutomationTarget, AutomationWriteMode, ClipContent, ClipPlacement,
+    ClipPoolEntry, DeviceDefinition, DeviceKind, LoopConfig, TrackKind, TrackV3, YebanProjectV1,
 };
 use yeban_model::samples::filled_project;
 use yeban_ui_test_port::Size;
-use yeban_ui_test_port::inspect::find_by_accessible_id;
 use yeban_ui_test_port::port::Permission;
 use yeban_ui_test_port::render::LivePort;
 
 const WINDOW: Size = Size::new(1440, 900);
 const NOW_MS: u64 = 1_760_000_000_000;
 const NIGHTFALL_FILE: &str = "/home/crow/work/qoder/nightfall_v17.yeban";
+
+fn synth_track(id: EntityId, name: &str, kind: TrackKind) -> TrackV3 {
+    TrackV3 {
+        id,
+        name: name.to_string(),
+        kind,
+        volume_db: 0.0,
+        pan: 0.0,
+        mute: false,
+        solo: false,
+        solo_safe: false,
+        folder_id: None,
+        color: None,
+        sampler: None,
+        devices: Vec::new(),
+        macros: Vec::new(),
+        automation_lanes: Vec::new(),
+        clips: BTreeMap::new(),
+    }
+}
 
 /// 构造一个具有与 nightfall_v17.yeban 相同拓扑与规模的工程：
 /// 30 轨（25 MIDI，4 AuxReturn，1 Master），包含 MIDI 与音频剪辑，自动化与设备链。
@@ -53,13 +73,14 @@ fn synth_nightfall_scale_project() -> YebanProjectV1 {
     let mut tracks = BTreeMap::new();
 
     // 1 Master track
-    let mut master_track = TrackV3::new_master(master_id, "Master");
+    let mut master_track = synth_track(master_id, "Master", TrackKind::Master);
     master_track.devices.push(DeviceDefinition {
         id: EntityId::from_str("01DEV000000000000000000001").unwrap(),
         name: "Master CS".to_string(),
-        kind: DeviceKind::ChannelStrip,
+        kind: DeviceKind::InternalEffect,
         bypassed: false,
-        params: BTreeMap::new(),
+        params: Vec::new(),
+        latency_samples: 0,
     });
     tracks.insert(master_id, master_track);
 
@@ -96,20 +117,23 @@ fn synth_nightfall_scale_project() -> YebanProjectV1 {
     for (i, name) in midi_names.iter().enumerate() {
         let tid = EntityId::from_str(&format!("01M6AKK32R{:020X}", i + 1)).unwrap();
         track_ids.push(tid);
-        let mut t = TrackV3::new_midi(tid, name);
+        let mut t = synth_track(tid, name, TrackKind::Midi);
         // 装设备
         t.devices.push(DeviceDefinition {
-            id: EntityId::from_str(&format!("01DEV0000000000000000001{:02X}", i)).unwrap(),
+            id: EntityId::from_str(&format!("01DEV000000000000000001{:02X}", i)).unwrap(),
             name: format!("VA · {name}"),
-            kind: DeviceKind::VirtualAnalog,
+            kind: DeviceKind::InternalInstrument,
             bypassed: false,
-            params: BTreeMap::new(),
+            params: Vec::new(),
+            latency_samples: 0,
         });
         // 加自动化
         t.automation_lanes.push(AutomationLane {
-            id: EntityId::from_str(&format!("01AUT0000000000000000001{:02X}", i)).unwrap(),
             target: AutomationTarget::TrackVolume { track_id: tid },
-            points: Vec::new(),
+            points: BTreeMap::new(),
+            read_enabled: true,
+            write_mode: AutomationWriteMode::Off,
+            explicit_domain: None,
         });
         tracks.insert(tid, t);
     }
@@ -122,14 +146,15 @@ fn synth_nightfall_scale_project() -> YebanProjectV1 {
         "Room · 0.8s",
     ];
     for (i, name) in aux_names.iter().enumerate() {
-        let tid = EntityId::from_str(&format!("01AUX0000000000000000000{:02X}", i + 1)).unwrap();
-        let mut t = TrackV3::new_aux(tid, name);
+        let tid = EntityId::from_str(&format!("01AUX000000000000000000{:02X}", i + 1)).unwrap();
+        let mut t = synth_track(tid, name, TrackKind::AuxReturn);
         t.devices.push(DeviceDefinition {
-            id: EntityId::from_str(&format!("01DEV0000000000000000002{:02X}", i)).unwrap(),
+            id: EntityId::from_str(&format!("01DEV000000000000000002{:02X}", i)).unwrap(),
             name: format!("REV · {name}"),
-            kind: DeviceKind::Freeverb,
+            kind: DeviceKind::InternalEffect,
             bypassed: false,
-            params: BTreeMap::new(),
+            params: Vec::new(),
+            latency_samples: 0,
         });
         tracks.insert(tid, t);
     }
@@ -137,9 +162,9 @@ fn synth_nightfall_scale_project() -> YebanProjectV1 {
     // Clip pool: 22 MIDI clips, 14 Audio clips = 36 total
     let mut clip_pool = BTreeMap::new();
     for i in 0..22 {
-        let cid = EntityId::from_str(&format!("01CLPMIDI00000000000000{:02X}", i)).unwrap();
+        let cid = EntityId::from_str(&format!("01CLPMIDI0000000000000{:02X}", i)).unwrap();
         let mut notes = BTreeMap::new();
-        let nid = EntityId::from_str(&format!("01NOT0000000000000000000{:02X}", i)).unwrap();
+        let nid = EntityId::from_str(&format!("01NOT000000000000000000{:02X}", i)).unwrap();
         notes.insert(nid, MidiNote::new(nid, 0, 60, 480));
         clip_pool.insert(
             cid,
@@ -151,14 +176,14 @@ fn synth_nightfall_scale_project() -> YebanProjectV1 {
         );
     }
     for i in 0..14 {
-        let cid = EntityId::from_str(&format!("01CLPAUDIO0000000000000{:02X}", i)).unwrap();
+        let cid = EntityId::from_str(&format!("01CLPAUDIO000000000000{:02X}", i)).unwrap();
         clip_pool.insert(
             cid,
             ClipPoolEntry {
                 id: cid,
                 name: format!("Audio Stem {i}"),
                 content: ClipContent::Audio {
-                    asset: yeban_model::AssetHash::of_bytes(&format!("stem-{i}").into_bytes()),
+                    asset: yeban_model::AssetHash::of_bytes(format!("stem-{i}").as_bytes()),
                     gain_db: 0.0,
                 },
             },
@@ -167,11 +192,11 @@ fn synth_nightfall_scale_project() -> YebanProjectV1 {
 
     // Place 30 clips across tracks
     for (i, tid) in track_ids.iter().take(20).enumerate() {
-        let pid = EntityId::from_str(&format!("01PLC0000000000000000000{:02X}", i)).unwrap();
+        let pid = EntityId::from_str(&format!("01PLC00000000000000000{:02X}", i)).unwrap();
         let cid = if i % 2 == 0 {
-            EntityId::from_str(&format!("01CLPMIDI00000000000000{:02X}", i % 22)).unwrap()
+            EntityId::from_str(&format!("01CLPMIDI0000000000000{:02X}", i % 22)).unwrap()
         } else {
-            EntityId::from_str(&format!("01CLPAUDIO0000000000000{:02X}", i % 14)).unwrap()
+            EntityId::from_str(&format!("01CLPAUDIO000000000000{:02X}", i % 14)).unwrap()
         };
         if let Some(t) = tracks.get_mut(tid) {
             t.clips.insert(
@@ -311,7 +336,7 @@ fn mixer_track_selection_syncs_with_host_and_device_rack() {
 #[test]
 fn nightfall_scale_project_load_and_clip_content_differentiation() {
     let (project, source_desc) = if Path::new(NIGHTFALL_FILE).exists() {
-        let p = open_project_file(Path::new(NIGHTFALL_FILE), Default::default())
+        let p = open_project_file(Path::new(NIGHTFALL_FILE))
             .expect("真实夜半工程 nightfall_v17.yeban 必须成功打开");
         (p, "真实 nightfall_v17.yeban 文件")
     } else {
