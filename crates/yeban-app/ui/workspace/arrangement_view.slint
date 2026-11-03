@@ -82,6 +82,8 @@ export component ArrangementView inherits Rectangle {
     in property <[string]> track-volumes: [];
     in property <[bool]> track-mutes: [];
     in property <[bool]> track-solos: [];
+    in property <[bool]> track-arms: [];
+    in property <bool> automation-visible: true;
     // 轨道色标：`[color]` 由投影解析后的 RGB 构造（十六进制语法只在 `src/bridge.rs`，
     // 非法 / 缺失已在那边回退）；`track-color-labels` 是同一颜色的规范化 `#RRGGBB` 文本，
     // 只用于无障碍标签 —— 于是"界面画的颜色"与"控件树读到的色标"来自同一个值。
@@ -207,6 +209,12 @@ export component ArrangementView inherits Rectangle {
     callback track-mute-toggle(int);
     /// 点击轨道头的独奏开关：`(轨道下标)`。取反与 `Op::SetTrackSolo` 由宿主提交。
     callback track-solo-toggle(int);
+    /// 点击轨道头的录音就绪 (Arm) 开关：`(轨道下标)`。
+    callback track-arm-toggle(int);
+    /// 轨道重命名：`(轨道下标, 新名称)`。
+    callback track-rename(int, string);
+    /// 双击剪辑：直达钢琴卷帘（Logic Pro 对齐）。
+    callback clip-double-click(string);
 
     // ---------------------------------------------------------------- 标尺定位（点击走带）
     //
@@ -533,6 +541,41 @@ export component ArrangementView inherits Rectangle {
             }
         }
 
+        // 录音就绪 (Arm) 开关 —— [UI-TEST-001]
+        Rectangle {
+            x: 58px;
+            y: 26px;
+            width: 22px;
+            height: 18px;
+            background: (track_index < root.track-arms.length && root.track-arms[track_index]) ? Tokens.record-red : transparent;
+            border-radius: Tokens.radius-sm;
+            accessible-role: button;
+            accessible-id: "track-" + track_index + "-arm-button";
+            accessible-label: "轨道 " + track_name + " 录音准备";
+            accessible-checkable: true;
+            accessible-checked: track_index < root.track-arms.length && root.track-arms[track_index];
+            accessible-action-default => { root.track-arm-toggle(track_index); }
+
+            UiText {
+                x: 0;
+                y: 0;
+                width: parent.width;
+                height: parent.height;
+                text: (track_index < root.track-arms.length && root.track-arms[track_index]) ? "R" : "";
+                color: Tokens.ink-0;
+                font-size: Tokens.font-size-xs;
+                horizontal-alignment: center;
+            }
+
+            TouchArea {
+                width: parent.width;
+                height: parent.height;
+                clicked => {
+                    root.track-arm-toggle(track_index);
+                }
+            }
+        }
+
         // 音量显示 = `TrackV3::volume_db` 的字符串形态（投影层格式化）
         UiMonoText {
             x: 120px;
@@ -607,6 +650,7 @@ export component ArrangementView inherits Rectangle {
                 width: parent.width;
                 height: parent.height;
                 clicked => { root.clip-select(clip_ulid); }
+                double-clicked => { root.clip-double-click(clip_ulid); }
             }
 
             UiMonoText {
@@ -686,6 +730,10 @@ export component ArrangementView inherits Rectangle {
                 root.clip-drag-cancel();
             }
         }
+
+        double-clicked => {
+            root.clip-double-click(clip_ulid);
+        }
     }
 
     // ---------------------------------------------------------------- 自动化曲线 (自动化泳道)
@@ -714,6 +762,7 @@ export component ArrangementView inherits Rectangle {
         height: root.automation-lane-band-heights[lane_index];
         background: transparent;
         clip: true;
+        visible: root.automation-visible;
 
         accessible-role: image;
         // `track-{i}-automation-{目标键}-lane` —— 三段字面量 + 两个注入片段。

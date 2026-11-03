@@ -2428,6 +2428,8 @@ pub fn build_live_ui_with(
         // `tests/mixer_keyboard_switch.rs`），于是"这份装配接没接"永远读不出来。
         // 同一族的防线是 `tests/d_ui_11_serve_header_gestures.rs` 的名单对账。
         host::wire_track_select(&window, undo);
+        host::wire_track_rename(&window, undo);
+        host::wire_track_arm(&window);
         // `ADR-0004` S1 的纵向入口：与 `wire_track_select` 共用轨道头那一块 `TouchArea`
         // （按下 = 选中 + 抓住行高，移动 = 改高，松手 / `Escape` = 收尾）。
         host::wire_track_height_drag(&window, undo);

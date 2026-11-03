@@ -54,6 +54,8 @@ export component MixerConsole inherits Rectangle {
     in property <string> selected-track-id: "";
     // 点击通道条 ⇒ 选中这条轨（宿主写 selected-track-id 并重投影）
     callback track-select(int);
+    /// 轨道重命名：`(轨道下标, 新名称)`。
+    callback track-rename(int, string);
 
     // ---- ⭐ 素材池（任务单 `#133`）---------------------------------------------
     // 三个平行数组由 `src/host.rs` 的 `apply_view` 单向注入，唯一事实源是

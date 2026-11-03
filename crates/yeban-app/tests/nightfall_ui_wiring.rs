@@ -609,3 +609,279 @@ fn nightfall_scale_project_load_and_clip_content_differentiation() {
     let resolved_last = display_track(&project, Some(track_id_last.as_str())).expect("解析末尾轨");
     assert_eq!(resolved_last.id.to_string(), *track_id_last);
 }
+
+/// 判据 4：Logic Pro 对齐的视图快捷切换（X 混音台、E/P 卷帘、A 自动化）与水平/垂直缩放。
+#[test]
+fn logic_pro_workflow_view_toggles_and_zoom() {
+    let project = synth_nightfall_scale_project();
+    let view = ViewState::from_project(&project).expect("投影");
+    let scene = DemoScene::from_view(&view);
+    let port = Rc::new(UndoPort::new(
+        UndoSession::open("<workflow_test>", "yeban-app", project.clone(), NOW_MS)
+            .expect("打开撤销会话"),
+    ));
+
+    let live = LivePort::new(WINDOW, Permission::Interactive, None, || {
+        host::build_main_window(&view, &scene)
+    })
+    .expect("Tier-1 活窗口构造");
+    let ui = live.ui();
+    let input_ctx = Rc::new(std::cell::RefCell::new(
+        yeban_app::input::InputContext::default(),
+    ));
+    host::wire_keys(ui, input_ctx, Some(Rc::clone(&port)), None, None);
+
+    // 1. 测试 X 键切换混音台 (Logic Pro X 对齐)
+    ui.set_console_tab(0);
+    let consumed_x = ui.invoke_key_action("x".into(), false, false, false, false);
+    assert!(consumed_x, "按 X 必须被消费");
+    assert_eq!(
+        ui.get_console_tab(),
+        1,
+        "按 X 后控制台标签必须切换到混音台 (Tab 1)"
+    );
+    ui.invoke_key_action("x".into(), false, false, false, false);
+    assert_eq!(
+        ui.get_console_tab(),
+        0,
+        "再次按 X 必须切换回钢琴卷帘/编辑器 (Tab 0)"
+    );
+
+    // 2. 测试 E / P 键切换编辑器与钢琴卷帘 (Logic Pro E/P 对齐)
+    ui.set_console_tab(1);
+    let consumed_e = ui.invoke_key_action("e".into(), false, false, false, false);
+    assert!(consumed_e, "按 E 必须被消费");
+    assert_eq!(
+        ui.get_console_tab(),
+        0,
+        "按 E 后控制台标签必须切换到钢琴卷帘 (Tab 0)"
+    );
+
+    ui.set_console_tab(1);
+    let consumed_p = ui.invoke_key_action("p".into(), false, false, false, false);
+    assert!(consumed_p, "按 P 必须被消费");
+    assert_eq!(
+        ui.get_console_tab(),
+        0,
+        "按 P 后控制台标签必须切换到钢琴卷帘 (Tab 0)"
+    );
+
+    // 3. 测试 Cmd+Shift+A 键切换自动化泳道显示 (Logic Pro 自动化视图对齐)
+    assert!(ui.get_automation_visible(), "自动化泳道默认可见");
+    let consumed_a = ui.invoke_key_action("a".into(), true, false, false, true);
+    assert!(consumed_a, "按 Cmd+Shift+A 必须被消费");
+    assert!(
+        !ui.get_automation_visible(),
+        "按 Cmd+Shift+A 后自动化泳道隐藏"
+    );
+    ui.invoke_key_action("a".into(), true, false, false, true);
+    assert!(
+        ui.get_automation_visible(),
+        "再次按 Cmd+Shift+A 后自动化泳道恢复可见"
+    );
+
+    // 4. 测试 = 与 - 键横向缩放 (Zoom In / Zoom Out)
+    let zoom_start = host::roll_ticks_per_pixel(ui);
+    let consumed_zoom_in = ui.invoke_key_action("=".into(), false, false, false, false);
+    assert!(consumed_zoom_in, "按 = 水平放大必须被消费");
+    let zoom_after_in = host::roll_ticks_per_pixel(ui);
+    assert!(
+        zoom_after_in <= zoom_start,
+        "水平放大后 ticks_per_pixel 必须变小或等于最小限值"
+    );
+
+    let consumed_zoom_out = ui.invoke_key_action("-".into(), false, false, false, false);
+    assert!(consumed_zoom_out, "按 - 水平缩小必须被消费");
+    let zoom_after_out = host::roll_ticks_per_pixel(ui);
+    assert!(
+        zoom_after_out >= zoom_after_in,
+        "水平缩小后 ticks_per_pixel 必须变大"
+    );
+
+    // 5. 测试 Cmd+Up / Cmd+Down 纵向音轨高度缩放 (Vertical Zoom In / Out)
+    let h_start = ui.get_track_height_percent();
+    let consumed_v_in = ui.invoke_key_action("\u{f700}".into(), false, false, false, true);
+    assert!(consumed_v_in, "Cmd+Up 纵向放大必须被消费");
+    let h_after_in = ui.get_track_height_percent();
+    assert!(
+        h_after_in > h_start,
+        "Cmd+Up 后 track_height_percent 必须增大"
+    );
+
+    let consumed_v_out = ui.invoke_key_action("\u{f701}".into(), false, false, false, true);
+    assert!(consumed_v_out, "Cmd+Down 纵向缩小必须被消费");
+    let h_after_out = ui.get_track_height_percent();
+    assert!(
+        h_after_out < h_after_in,
+        "Cmd+Down 后 track_height_percent 必须减小"
+    );
+}
+
+/// 判据 5：双击剪辑直达钢琴卷帘（Logic Pro 对齐）。
+#[test]
+fn logic_pro_workflow_clip_double_click_opens_piano_roll() {
+    let project = synth_nightfall_scale_project();
+    let view = ViewState::from_project(&project).expect("投影");
+    let scene = DemoScene::from_view(&view);
+    let port = Rc::new(UndoPort::new(
+        UndoSession::open("<clip_dbl_test>", "yeban-app", project.clone(), NOW_MS)
+            .expect("打开撤销会话"),
+    ));
+
+    let live = LivePort::new(WINDOW, Permission::Interactive, None, || {
+        host::build_main_window(&view, &scene)
+    })
+    .expect("Tier-1 活窗口构造");
+    let ui = live.ui();
+    let view_rc = Rc::new(std::cell::RefCell::new(view.clone()));
+    host::wire_clip_scope(ui, view_rc, Some(Rc::clone(&port)));
+
+    let clip_ulids: Vec<String> = ui.get_clip_ulids().iter().map(|s| s.to_string()).collect();
+    assert!(!clip_ulids.is_empty(), "必须存在剪辑");
+    let target_clip = clip_ulids[0].clone();
+
+    ui.set_console_tab(1);
+    assert_ne!(ui.get_selected_clip_ulid().as_str(), target_clip.as_str());
+
+    ui.invoke_clip_double_click(target_clip.clone().into());
+    assert_eq!(
+        ui.get_selected_clip_ulid().as_str(),
+        target_clip.as_str(),
+        "双击剪辑必须设置 selected-clip-ulid"
+    );
+    assert_eq!(
+        ui.get_console_tab(),
+        0,
+        "双击剪辑必须自动切换到底部钢琴卷帘 (Tab 0)"
+    );
+}
+
+/// 判据 6：Cmd+D 复制选中的剪辑与 Cmd+T 在光标处切分选中的剪辑（Logic Pro 对齐）。
+#[test]
+fn logic_pro_workflow_clip_split_and_duplicate() {
+    let project = synth_nightfall_scale_project();
+    let view = ViewState::from_project(&project).expect("投影");
+    let scene = DemoScene::from_view(&view);
+    let port = Rc::new(UndoPort::new(
+        UndoSession::open("<clip_ops_test>", "yeban-app", project.clone(), NOW_MS)
+            .expect("打开撤销会话"),
+    ));
+
+    let live = LivePort::new(WINDOW, Permission::Interactive, None, || {
+        host::build_main_window(&view, &scene)
+    })
+    .expect("Tier-1 活窗口构造");
+    let ui = live.ui();
+    let input_ctx = Rc::new(std::cell::RefCell::new(
+        yeban_app::input::InputContext::default(),
+    ));
+    host::wire_keys(ui, input_ctx, Some(Rc::clone(&port)), None, None);
+
+    let clip_ulids: Vec<String> = ui.get_clip_ulids().iter().map(|s| s.to_string()).collect();
+    assert!(!clip_ulids.is_empty());
+    let target_clip_str = clip_ulids[0].clone();
+
+    // 选中该剪辑
+    ui.set_selected_clip_ulid(target_clip_str.clone().into());
+
+    let initial_clip_count = port
+        .project()
+        .tracks
+        .values()
+        .map(|t| t.clips.len())
+        .sum::<usize>();
+
+    // 1. 测试 Cmd+D 复制当前剪辑 (Logic Pro Cmd+D 对齐)
+    let consumed_dup = ui.invoke_key_action("d".into(), false, false, false, true);
+    assert!(consumed_dup, "Cmd+D 复制选中的剪辑必须被消费");
+    let after_dup_clip_count = port
+        .project()
+        .tracks
+        .values()
+        .map(|t| t.clips.len())
+        .sum::<usize>();
+    assert_eq!(
+        after_dup_clip_count,
+        initial_clip_count + 1,
+        "剪辑总数必须加 1"
+    );
+    let newly_selected = ui.get_selected_clip_ulid().to_string();
+    assert_ne!(newly_selected, target_clip_str, "复制后应选中新生成的剪辑");
+
+    // 2. 测试 Cmd+T 在光标处切分选中的剪辑 (Logic Pro Cmd+T 对齐)
+    ui.set_selected_clip_ulid(target_clip_str.clone().into());
+    let target_placement = port
+        .project()
+        .tracks
+        .values()
+        .find_map(|t| {
+            t.clips
+                .values()
+                .find(|c| c.id.to_string() == target_clip_str)
+                .copied()
+        })
+        .expect("找到 target_placement");
+
+    let split_pos = target_placement.start_tick + target_placement.duration_ticks / 2;
+    ui.set_playhead_ticks(split_pos as i32);
+
+    let count_before_split = port
+        .project()
+        .tracks
+        .values()
+        .map(|t| t.clips.len())
+        .sum::<usize>();
+    let consumed_split = ui.invoke_key_action("t".into(), false, false, false, true);
+    assert!(consumed_split, "Cmd+T 在光标处切分剪辑必须被消费");
+    let count_after_split = port
+        .project()
+        .tracks
+        .values()
+        .map(|t| t.clips.len())
+        .sum::<usize>();
+    assert_eq!(
+        count_after_split,
+        count_before_split + 1,
+        "切分后剪辑总数必须增加 1"
+    );
+}
+
+/// 判据 7：轨道重命名与录音就绪 (Arm) 交互闭环。
+#[test]
+fn logic_pro_workflow_track_rename_and_arm() {
+    let project = synth_nightfall_scale_project();
+    let view = ViewState::from_project(&project).expect("投影");
+    let scene = DemoScene::from_view(&view);
+    let port = Rc::new(UndoPort::new(
+        UndoSession::open("<track_ctrl_test>", "yeban-app", project.clone(), NOW_MS)
+            .expect("打开撤销会话"),
+    ));
+
+    let live = LivePort::new(WINDOW, Permission::Interactive, None, || {
+        host::build_main_window(&view, &scene)
+    })
+    .expect("Tier-1 活窗口构造");
+    let ui = live.ui();
+    host::wire_track_rename(ui, &port);
+    host::wire_track_arm(ui);
+
+    // 1. 测试轨道重命名
+    let old_name = port.project().tracks.values().next().unwrap().name.clone();
+    assert_ne!(old_name, "Master_Lead_Synth");
+    ui.invoke_track_rename(0, "Master_Lead_Synth".into());
+    let new_name = port.project().tracks.values().next().unwrap().name.clone();
+    assert_eq!(
+        new_name, "Master_Lead_Synth",
+        "轨道名称必须通过 Op::SetTrackName 成功修改"
+    );
+
+    // 2. 测试录音准备 (Arm) 切换
+    let arms_before: Vec<bool> = ui.get_track_arms().iter().collect();
+    let arm_0_before = arms_before.first().copied().unwrap_or(false);
+    ui.invoke_track_arm_toggle(0);
+    let arms_after: Vec<bool> = ui.get_track_arms().iter().collect();
+    assert_eq!(
+        arms_after[0], !arm_0_before,
+        "调用 track_arm_toggle 后轨 0 的 arm 状态必须取反"
+    );
+}
