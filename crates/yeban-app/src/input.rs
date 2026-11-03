@@ -1378,10 +1378,11 @@ impl InputContext {
                 Some(tool) => Resolution::Action(Action::SelectTool(tool)),
                 None => Resolution::PassThrough,
             },
-            // Logic Pro 工作流：X 混音台、E/P 编辑器/卷帘、C 循环区
+            // Logic Pro 工作流：X 混音台、E/P 编辑器/卷帘、C 循环区、A 自动化泳道
             Key::Character('x') => Resolution::Action(Action::ToggleMixer),
             Key::Character('e') | Key::Character('p') => Resolution::Action(Action::ToggleEditor),
             Key::Character('c') => Resolution::Action(Action::ToggleCycle),
+            Key::Character('a') => Resolution::Action(Action::ToggleAutomation),
             // 单键横向缩放：= / + / -
             Key::Character('=') | Key::Character('+') => Resolution::Action(Action::ZoomIn),
             Key::Character('-') => Resolution::Action(Action::ZoomOut),
@@ -1457,6 +1458,7 @@ mod tests {
         assert_eq!(ctx.resolve(KeyX, Modifiers::none()), Act(ToggleMixer));
         assert_eq!(ctx.resolve(KeyE, Modifiers::none()), Act(ToggleEditor));
         assert_eq!(ctx.resolve(KeyP, Modifiers::none()), Act(ToggleEditor));
+        assert_eq!(ctx.resolve(KeyA, Modifiers::none()), Act(ToggleAutomation));
         assert_eq!(
             ctx.resolve(KeyA, Modifiers::meta_shift()),
             Act(ToggleAutomation)
@@ -1664,8 +1666,11 @@ mod tests {
         };
         assert_eq!(canvas().resolve(KeyA, meta_alt), Act(ToggleAiDrawer));
 
-        // 邻居：规范没点名的组合一律放行（含加 `Shift` 的那一格）。
-        assert_eq!(canvas().resolve(KeyA, Modifiers::none()), PassThrough);
+        // 裸 A 是 Logic Pro 自动化切换；规范没点名的修饰组合一律放行。
+        assert_eq!(
+            canvas().resolve(KeyA, Modifiers::none()),
+            Act(ToggleAutomation)
+        );
         assert_eq!(canvas().resolve(KeyA, Modifiers::alt()), PassThrough);
         assert_eq!(canvas().resolve(KeyA, Modifiers::shift()), PassThrough);
         let ctrl_alt_shift = Modifiers {

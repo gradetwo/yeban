@@ -1125,6 +1125,9 @@ export component MainWindow inherits Window {
     in property <[bool]> track-solos: [];
     in property <[bool]> track-arms: [];
     in-out property <bool> automation-visible: true;
+    in-out property <bool> cycle-enabled: false;
+    in-out property <int> cycle-start-ticks: 0;
+    in-out property <int> cycle-end-ticks: 15360;
     // ⭐ SFZ 采样器路径（`TrackV3::sampler` 的路径原文；`None` ⇒ `""`）——
     // 注入面与 `track-mutes` / `track-solos` 同族（`host::apply_view` 是唯一写者；
     // `ui.set_track_sampler_paths` 在 `src/host.rs`）。
@@ -1616,6 +1619,9 @@ export component MainWindow inherits Window {
                     track-solos: root.track-solos;
                     track-arms: root.track-arms;
                     automation-visible: root.automation-visible;
+                    cycle-enabled: root.cycle-enabled;
+                    cycle-start-ticks: root.cycle-start-ticks;
+                    cycle-end-ticks: root.cycle-end-ticks;
                     track-arm-toggle(track_index) => {
                         root.track-arm-toggle(track_index);
                     }
