@@ -129,7 +129,7 @@ fn synth_nightfall_scale_project() -> YebanProjectV1 {
         // 加自动化
         let target = AutomationTarget::TrackVolume { track_id: tid };
         t.automation_lanes
-            .insert(target.clone(), AutomationLane::implicit(target));
+            .insert(target, AutomationLane::implicit(target));
         tracks.insert(tid, t);
     }
 
@@ -208,12 +208,13 @@ fn synth_nightfall_scale_project() -> YebanProjectV1 {
         }
     }
 
-    let mut project = YebanProjectV1::default();
-    project.title = "夜半 · Nightfall 规模测试夹具".to_string();
-    project.master_bus_track_id = master_id;
-    project.tracks = tracks;
-    project.clip_pool = clip_pool;
-    project
+    YebanProjectV1 {
+        title: "夜半 · Nightfall 规模测试夹具".to_string(),
+        master_bus_track_id: master_id,
+        tracks,
+        clip_pool,
+        ..Default::default()
+    }
 }
 
 /// 判据 1：源码接线核验 —— 确保 MixerConsole、ConsoleTabs 与 MainWindow 的 track-select 完全闭环。
@@ -377,8 +378,8 @@ fn nightfall_scale_project_load_and_clip_content_differentiation() {
     );
 
     // 验证同时存在 MIDI 和 Audio 剪辑
-    let has_midi = contents.iter().any(|c| *c == "midi");
-    let has_audio = contents.iter().any(|c| *c == "audio");
+    let has_midi = contents.contains(&"midi");
+    let has_audio = contents.contains(&"audio");
     assert!(
         has_midi && has_audio,
         "夜半工程必须同时包含 MIDI 与 Audio 片段内容，识别结果: midi={}, audio={}",
