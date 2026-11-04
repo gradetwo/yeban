@@ -188,7 +188,7 @@ const STRING_PARAM_BOUNDS: [(&str, BoundStatus); 36] = [
     // 未知值由 `drum_style_choice` 拒绝并列出 `accepted`；`schemas/**` 同步声明 `enum`、
     // ⛔ `default`（182 个 GENRES 里 169 走 `metric`／13 走 `four-on-the-floor` ⇒ 无单一默认）。
     ("drumStyle", BoundStatus::WordList),
-    // ADR-0068：`yeban_load_plugin` 的插件路径与类指名。两者都是操作员自选的
+    // ADR-0069：`yeban_load_plugin` 的插件路径与类指名。两者都是操作员自选的
     // 本机路径／类标识：长度维无界（路径长度由操作系统定，类名／CID 由插件厂商定）。
     // 后果限于该次调用的报文长度；绑定记录落盘时原值进工程文件（与 `path` 同一条纪律）。
     // 收口面：`schemas/**` 的 `maxLength`（集成者独占）。

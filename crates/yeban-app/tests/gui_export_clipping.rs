@@ -7,14 +7,22 @@
 //! | 能力（`WavExportReport`） | ✓ `clipped_samples` / `true_peak_dbfs` / `headroom_db` / `suggested_trim_db` / `loudest_source` |
 //! | CLI 出口 | ✓ `--export-wav` 削波时**多打一行** |
 //! | **GUI 出口** | ⛔ **`on_export_wav` 走 `module_receipt`，回执里没有削波字段** ⇒ 人在窗口里看不到 |
-//! | ⭐ **本单** | ⭐ `on_export_wav` 的成功回执在**削波时多一条** `clipping_note="…"`（内容 = CLI 同一条 `clipping_note()`）；⛔ 不削波时回执**逐字不变** |
+//! | ⭐ **本单** | ⭐ `on_export_wav` 的成功回执在**削波时多一条** `clipping_note="…"`（内容 = CLI 同一条 `clipping_note()`） |
+//! | ⭐ `D-EX-1`（后续） | ⭐ 四条峰值读数（`limiter` / `limiter_reductions` / `true_peak_dbfs` / `headroom_db`）改成**恒发**，发在 `clipping_note` **之前**。<br>于是本文件的"干净臂逐字 ＝ 九字段"变成"九字段 ＋ 四读数"；`clipping_note` 仍**只在削波时**出现（那条长文案的门一位未动） |
+//!
+//! ## `D-EX-1` 为什么改的是"发不发"，不是"量不量"
+//!
+//! `#229` 把四个读数拴在"削波"这一个条件上 ⇒ **贴轨但没削平**的那一格永远看不见任何数
+//! （创作轮里实测：引擎自报 `headroomDb = 5.18e-07`，GUI 回执里却一个字段都没有）。
+//! 四个数本来就在那条路上算好了（`render_core` 的压样本计数 ＋ 量化前浮点母带的真峰值），
+//! 本单只是把它们发出去：⛔ 不新增测量、⛔ 不改一个样本 —— 判据 ③ 的自比就是这个意思。
 //!
 //! # 判据（两条臂 + 一条字节臂）
 //!
 //! | 判据 | 钉住的事实 |
 //! | :--- | :--- |
 //! | ①（削波臂） | 经**真窗口的回调**（`invoke_export_wav`）导出过载工程 ⇒ 回执多一条 `clipping_note`，且它含 `clippedSamples` / `suggestedTrimDb` / 最响的源 |
-//! | ②（干净臂） | 同一装配导出不削波工程 ⇒ 回执**逐字等于** `#226` 之前的九字段形状（⛔ 没有 `clipping_note`、⛔ 没有"削波"） |
+//! | ②（干净臂） | 同一装配导出不削波工程 ⇒ 回执**逐字等于**"九字段 ＋ 四条恒发读数"（⛔ 没有 `clipping_note`、⛔ 没有"削波"），且四个读数**在场**、真峰值**非** `null` |
 //! | ③（不改音频） | 两条臂的 GUI 产物与**同一次运行里直接调用** [`export_wav`] 的产物 `sha256` 相同（**自比**）⇒ 提示只加文字、一个字节都没动 |
 //!
 //! ## 判据怎么变红
@@ -38,11 +46,15 @@
 #[allow(dead_code)]
 mod live;
 
+// ⭐ `D-EX-1`：回执形状是**共享**的第二份（`tests/common/mod.rs` 里有它的住户说明）。
+mod common;
+
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::str::FromStr as _;
 
+use common::wav_export_receipt;
 use live::{LiveWiringOptions, build_live_ui_with};
 use yeban_app::export_wav::{WavExportOptions, export_wav};
 use yeban_app::host::{ModulePaths, wire_module_actions_with};
@@ -58,8 +70,9 @@ use yeban_ui_test_port::render::report_line;
 //   "不改音频"一律用**同一台机器上的自比**（GUI 产物 vs 直接调用同一导出器）。
 
 /// 回执字段名闭集（只用于把"值里自带的冒号"排除在切分边界之外；口径照
-/// `tests/ui_module_actions.rs` 的 `receipt_field_end`）。⭐ 本单新增 `clipping_note`。
-const RECEIPT_KEYS: [&str; 10] = [
+/// `tests/ui_module_actions.rs` 的 `receipt_field_end`）。
+/// ⭐ 本单新增 `clipping_note`；`D-EX-1` 再加**恒发**的四个峰值读数字段。
+const RECEIPT_KEYS: [&str; 14] = [
     "action",
     "outcome",
     "path",
@@ -70,6 +83,10 @@ const RECEIPT_KEYS: [&str; 10] = [
     "bytes",
     "source",
     "digest",
+    "limiter",
+    "limiter_reductions",
+    "true_peak_dbfs",
+    "headroom_db",
 ];
 
 fn fixture_id(tail: &str) -> EntityId {
@@ -288,7 +305,7 @@ fn the_gui_export_reports_clipping_only_when_the_master_clips() {
     //    会用**同一次运行里直接导出**的 `clip_report.digest` 逐字对上它。
 
     // ③ 不改音频：GUI 这条路径的产物与**同一台机器上直接调用**同一导出器的产物逐字节相同。
-    //    对照导出同时给出**同一份工程**的九字段回执（用来钉"恰好多一条"）。
+    //    对照导出同时给出**同一份工程**的完整回执（用来钉"恰好多一条 `clipping_note`"）。
     let clip_oracle = dir.join("clip-oracle.wav");
     let clip_report = export_wav(
         &clipping_project,
@@ -296,17 +313,10 @@ fn the_gui_export_reports_clipping_only_when_the_master_clips() {
         WavExportOptions::resolve(&clipping_project, None, None, None, None),
     )
     .expect("对照导出必须成功");
-    let clip_legacy = format!(
-        "module:action=export-wav:outcome=ok:path={}:frames={}:sample_rate={}:channels={}:bits={}:bytes={}:source={}:digest={}",
-        clip_path.display(),
-        clip_report.frames,
-        clip_report.sample_rate,
-        clip_report.channels,
-        clip_report.bits,
-        clip_report.bytes,
-        clip_report.source,
-        clip_report.digest
-    );
+    // ⭐ `D-EX-1`：形状从"九字段"变成"九字段 ＋ 四条恒发读数"。⛔ 这不是把旧判据改宽：
+    //    整条回执仍是**逐字**等值，只是参照的形状跟着宿主一起变了（见文件头的登记表），
+    //    而形状本身只写在 `tests/common/mod.rs` 一处。
+    let clip_legacy = wav_export_receipt(&clip_report, &clip_path, false);
     let report_note = clip_report.clipping_note().expect("削波报告必须有提示");
     assert_eq!(
         note.trim_matches('"'),
@@ -316,7 +326,20 @@ fn the_gui_export_reports_clipping_only_when_the_master_clips() {
     assert_eq!(
         receipt,
         format!("{clip_legacy}:clipping_note=\"{report_note}\""),
-        "削波回执必须**恰好**是既有九字段 ＋ 一条 `clipping_note`"
+        "削波回执必须**恰好**是既有九字段 ＋ 四条恒发读数 ＋ 一条 `clipping_note`"
+    );
+    // ⭐ `D-EX-1`：这一臂**顺带**证明"算得出来"——过载夹具的峰值读数不是 `null`
+    //（"没测到"在回执里的唯一表达是 `null`，⛔ 不是空串、不是缺字段）。
+    assert_ne!(
+        field_of(&receipt, "true_peak_dbfs"),
+        "null",
+        "过载工程必须量得出真峰值: {receipt}"
+    );
+    assert_eq!(field_of(&receipt, "limiter"), "off", "{receipt}");
+    assert_eq!(
+        field_of(&receipt, "limiter_reductions"),
+        "0",
+        "没开限制器 ⇒ 压样本计数恒 0（`render_core` 整段不跑）: {receipt}"
     );
     // 自比（⛔ 不钉绝对常量）：同一次运行里 GUI 路径与直接调用必须产出同一串字节。
     assert_eq!(
@@ -358,7 +381,7 @@ fn the_gui_export_reports_clipping_only_when_the_master_clips() {
         "不削波时回执不得多任何字段: {clean_receipt}"
     );
 
-    // 逐字：用**同一个导出器**在干净工程上的报告重建既有九字段形状（顺序也逐字对上）。
+    // 逐字：用**同一个导出器**在干净工程上的报告重建回执形状（顺序也逐字对上）。
     let oracle_path = dir.join("oracle.wav");
     let report = export_wav(
         &clean_project,
@@ -366,20 +389,28 @@ fn the_gui_export_reports_clipping_only_when_the_master_clips() {
         WavExportOptions::resolve(&clean_project, None, None, None, None),
     )
     .expect("对照导出必须成功");
-    let legacy = format!(
-        "module:action=export-wav:outcome=ok:path={}:frames={}:sample_rate={}:channels={}:bits={}:bytes={}:source={}:digest={}",
-        clean_path.display(),
-        report.frames,
-        report.sample_rate,
-        report.channels,
-        report.bits,
-        report.bytes,
-        report.source,
-        report.digest
-    );
+    let legacy = wav_export_receipt(&report, &clean_path, false);
     assert_eq!(
         clean_receipt, legacy,
-        "不削波时 GUI 回执必须与 `#226` 之前的九字段形状**逐字相同**"
+        "不削波时 GUI 回执必须是**既有九字段 ＋ 四条恒发读数**，⛔ 不多一条 `clipping_note`"
+    );
+    // ⭐ `D-EX-1` 的**本体**：不削波也看得见数。修前这四个字段整块拴在
+    // `if let Some(note) = report.clipping_note()` 上 ⇒ 干净回执里连 `true_peak_dbfs`
+    // 这个键都没有，"贴轨但没削平"那一格永远是一片空白。
+    assert_ne!(
+        field_of(&clean_receipt, "true_peak_dbfs"),
+        "null",
+        "干净工程同样必须量得出真峰值（`null` ＝ 如实报'测不出'，⛔ 这里不是）: {clean_receipt}"
+    );
+    assert_eq!(
+        field_of(&clean_receipt, "limiter"),
+        "off",
+        "{clean_receipt}"
+    );
+    assert_eq!(
+        field_of(&clean_receipt, "limiter_reductions"),
+        "0",
+        "{clean_receipt}"
     );
     // 自比（⛔ 不钉绝对常量）：GUI 与直接调用的音频逐字节相同。
     assert_eq!(

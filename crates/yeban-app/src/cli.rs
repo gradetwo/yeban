@@ -3615,7 +3615,7 @@ pub struct ShortcutRow {
 /// 每一项把**规范写法**、**动作**、**键位**与**落地状态**放在一起。这张表的**意义**是
 /// 让策略表的判定结果可被人与 CI 直接阅读 —— 尤其是 `[UI-A11Y-002]` 的 IME 分支,
 /// 以及"规范点名了、本版本还没做"的那一列（见 [`UNIMPLEMENTED_MARKER`]）。
-const SHORTCUTS: [ShortcutRow; 46] = [
+const SHORTCUTS: [ShortcutRow; 48] = [
     ShortcutRow {
         label: "Space → 播放/暂停",
         action: Action::PlayPause,
@@ -3728,6 +3728,16 @@ const SHORTCUTS: [ShortcutRow; 46] = [
         modifiers: Modifiers::ctrl_alt(),
         implemented: true,
     },
+    // ⭐ D-UI-18（**界面决定**，⛔ 规范未点名某个键去聚焦某个控件）：把键盘焦点交给左栏
+    // 搜索框。补的是"`Tab` 在画布上是视图切换 ⇒ 纯键盘用户进不到任何文本框"这一格
+    // （实测登记 `docs/ledger/app-zimmer-ui-notes.md` §31）。
+    ShortcutRow {
+        label: "Cmd/Ctrl+F → 聚焦左栏搜索框",
+        action: Action::FocusSidebarSearch,
+        key: PhysicalKey::KeyF,
+        modifiers: Modifiers::ctrl(),
+        implemented: true,
+    },
     ShortcutRow {
         label: "Z → 选区撑满视口",
         action: Action::ZoomToSelection,
@@ -3750,8 +3760,12 @@ const SHORTCUTS: [ShortcutRow; 46] = [
         implemented: true,
     },
     // ⭐ 节拍器族（`[ARCH-RT-001]`）：两条**加性**键，⛔ 不动既有键语义。
-    // ⚠ `implemented: true` 是**如实**的：两条都在 `apply_action` 里接了臂
-    // （产品装配 `main.rs` 传引擎上下文；其它装配传 `None` ⇒ 那一刻不消费，见臂上的注释）。
+    // ⚠ `implemented: true` 是**如实**的：两条都在 `apply_action` 里接了臂。
+    // ⭐ `D-UI-29` 之后两条的**前提相同**：都要**撤销端口**（两者都提交
+    // `Op::SetTransportConfig`，都靠既有的 60 Hz 发布腿换快照发声 ⇒ ⛔ 都不换引擎）。
+    // 端口不在场的那一刻不消费（`live_surface` 的无会话装配正是这一形，判据 ⑨ 钉着）。
+    // （修前 `N` 那一支要的是"引擎上下文"，而那份工程是装配期冻结的 ⇒ 拨一次开关会把
+    // 播放侧退回旧文档；见 `docs/ledger/app-zimmer-ui-notes.md` §50。）
     ShortcutRow {
         label: "Cmd/Ctrl+Alt+N → 节拍器开关",
         action: Action::ToggleMetronome,
@@ -3860,17 +3874,18 @@ const SHORTCUTS: [ShortcutRow; 46] = [
         implemented: true,
     },
     // `[UI-NOTE-005]` §3 项 3：`Shift+←/→` = 时值缩短 / 延长一个吸附网格
-    //（`Op::SetNoteTiming`）。⚠ 标签以 `Shift+` 开头 ⇒ 与无修饰 `← / →` 那两条的
+    //（有音符选区 ⇒ `Op::SetNoteTiming`；选区为空 ⇒ `Op::SetClipPlacementDuration`，
+    // `D-UI-17`）。⚠ 标签以 `Shift+` 开头 ⇒ 与无修饰 `← / →` 那两条的
     // `starts_with` 对账不会互相误配。
     ShortcutRow {
-        label: "Shift+← → 选区时值缩短一个网格",
+        label: "Shift+← → 时值缩短一个网格（选区音符，选区空则选中剪辑）",
         action: Action::ResizeSelectionDuration { direction: -1 },
         key: PhysicalKey::LeftArrow,
         modifiers: Modifiers::shift(),
         implemented: true,
     },
     ShortcutRow {
-        label: "Shift+→ → 选区时值延长一个网格",
+        label: "Shift+→ → 时值延长一个网格（选区音符，选区空则选中剪辑）",
         action: Action::ResizeSelectionDuration { direction: 1 },
         key: PhysicalKey::RightArrow,
         modifiers: Modifiers::shift(),
@@ -3948,6 +3963,19 @@ const SHORTCUTS: [ShortcutRow; 46] = [
         action: Action::ToggleTrackSolo,
         key: PhysicalKey::KeyS,
         modifiers: Modifiers::none(),
+        implemented: true,
+    },
+    // ⭐ **界面决定**（⛔ 不是规范点名）：标准 DAW 的**剪辑**静音键 `Cmd/Ctrl+M`。
+    //
+    // 与上面两条的分工是**作用域**：轨静音 / 独奏动 `selected-track-id`，本键动
+    // `selected-clip-ulid`（唯一写者 `host::wire_clip_scope`）。三格互不相干：裸 `m` 是轨静音、
+    // `Cmd/Ctrl+Alt+M` 是控制台最大化（上面第 3 步那条既有绑定），`Cmd/Ctrl+Shift+M` 仍放行。
+    // 逐条理由见 `Action::ToggleClipMute` 的文档。
+    ShortcutRow {
+        label: "Cmd/Ctrl+M → 选中剪辑静音开/关",
+        action: Action::ToggleClipMute,
+        key: PhysicalKey::KeyM,
+        modifiers: Modifiers::meta(),
         implemented: true,
     },
     // ⭐ **界面决定**（⛔ 不是规范点名）：标准 DAW 的保存键 `Cmd/Ctrl+S`。

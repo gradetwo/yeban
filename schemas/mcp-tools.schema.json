@@ -1342,7 +1342,7 @@
         "yeban_scan_plugins": {
           "title": "yeban_scan_plugins",
           "type": "object",
-          "description": "枚举本机可用的 VST3 插件（ADR-0068 的扫描与验证，类比 Logic 的 auval 准入）：扫描 YEBAN_VST3_PATHS 环境变量给出的目录与平台标准路径，另加 paths 给出的额外目录；每个候选都尝试打开、枚举类、逐个实例化探针，失败逐个记原因、不中断扫描、不进可用列表。响应 data.plugins[]：每条给 path / className / classId / kind（instrument / effect / unknown）/ usable / error（失败时才有）；失败项也在列表里，但 usable 为假。只读：不改工程、不装载进工程、不落盘。",
+          "description": "枚举本机可用的 VST3 插件（ADR-0069 的扫描与验证，类比 Logic 的 auval 准入）：扫描 YEBAN_VST3_PATHS 环境变量给出的目录与平台标准路径，另加 paths 给出的额外目录；每个候选都尝试打开、枚举类、逐个实例化探针，失败逐个记原因、不中断扫描、不进可用列表。响应 data.plugins[]：每条给 path / className / classId / kind（instrument / effect / unknown）/ usable / error（失败时才有）；失败项也在列表里，但 usable 为假。只读：不改工程、不装载进工程、不落盘。",
           "properties": {
             "paths": {
               "type": "array",
@@ -1364,7 +1364,7 @@
         "yeban_load_plugin": {
           "title": "yeban_load_plugin",
           "type": "object",
-          "description": "验证加载一个 VST3 插件并经提案路径把它挂到指定轨道上（ADR-0068）：先用宿主打开 pluginPath、按 pluginId 指名类（不给则取首个乐器类）、做验证激活，失败则整个调用失败、不写提案；成功后以缺省提案挂一台 ExternalInstrument 设备（name 为插件名，latency_samples 为实例上报值，plugin 绑定记 path 与 class），slot_index 为该轨 devices 长度（追加到末尾）。缺省建提案；autoMerge 为真时当场落 main，与 yeban_edit_notes 同一条提案纪律，不另设直写路。音源优先级：非旁通的已宿主外部乐器胜过引擎合成器与采样器绑定；带绑定但加载失败的轨在渲染时响亮失败。",
+          "description": "验证加载一个 VST3 插件并经提案路径把它挂到指定轨道上（ADR-0069）：先用宿主打开 pluginPath、按 pluginId 指名类（不给则取首个乐器类）、做验证激活，失败则整个调用失败、不写提案；成功后以缺省提案挂一台 ExternalInstrument 设备（name 为插件名，latency_samples 为实例上报值，plugin 绑定记 path 与 class），slot_index 为该轨 devices 长度（追加到末尾）。缺省建提案；autoMerge 为真时当场落 main，与 yeban_edit_notes 同一条提案纪律，不另设直写路。音源优先级：非旁通的已宿主外部乐器胜过引擎合成器与采样器绑定；带绑定但加载失败的轨在渲染时响亮失败。",
           "properties": {
             "trackId": {
               "type": "string",

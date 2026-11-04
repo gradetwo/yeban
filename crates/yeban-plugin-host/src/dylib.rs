@@ -3,7 +3,7 @@
 //! ⚠ 本模块的 `extern` 声明只覆盖一期用到的 4 个 Unix 符号与 3 个 Windows 符号；
 //! 不做通用 FFI 封装。Windows 上符号名必须是 ANSI（`LoadLibraryA`），
 //! 因此路径在加载前先按 UTF-8→ANSI 有损转换——含非 ASCII 的路径在 Windows 上
-//! 可能打不开（已知一期限缩，见 ADR-0068 D12 注）。
+//! 可能打不开（已知一期限缩，见 ADR-0069 D12 注）。
 
 use std::ffi::{CString, c_void};
 

@@ -1,4 +1,4 @@
-# ADR-0068 — 插件宿主 v2 一期：进程内 VST3 乐器接入（离线渲染）
+# ADR-0069 — 插件宿主 v2 一期：进程内 VST3 乐器接入（离线渲染）
 
 - **状态**: **Accepted**（Wang 2026-11-03 06:15 委托批准）
 - **决定者**: Wang 委托，Muse 批准（2026-11-03）
@@ -6,7 +6,7 @@
   Wang 2026-11-02 决定（插件宿主部分提前开工：乐器接入优先、VST3 优先；跨进程隔离＋shm＋看门狗、
   RT 回调插件处理、效果器链接入、AU 宿主均不在本期）；`ADR-0011`（快照投影）；
   `ADR-0063`（行为变更声明先例）；Logic Pro 的 `auval` 准入（扫描与验证类比）。
-- **落点（本票）**: `docs/adr/ADR-0068-plugin-host-v2-phase1.md`（本文件）＋
+- **落点（本票）**: `docs/adr/ADR-0069-plugin-host-v2-phase1.md`（本文件）＋
   `docs/adr/README.md`（索引行）＋
   `crates/yeban-plugin-host/src/lib.rs`（范围文档重写）＋
   `crates/yeban-plugin-host/src/error.rs`（`HostError`）＋

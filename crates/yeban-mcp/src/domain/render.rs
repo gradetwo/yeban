@@ -636,7 +636,7 @@ pub const SAMPLER_SOURCE_KIND: &str = "sfz-sampler";
 /// 音频源种类：采样器音符与音频片段**都有**的源。
 pub const SAMPLER_MIXED_SOURCE_KIND: &str = "sfz-sampler+audio-clip";
 
-/// 音频源种类：⭐ 宿主插件乐器（ADR-0068）：带绑定且加载成功的非旁通外部乐器轨。
+/// 音频源种类：⭐ 宿主插件乐器（ADR-0069）：带绑定且加载成功的非旁通外部乐器轨。
 ///
 /// 只有插件音符的源（插件源胜出时 `midi` 为空，⛔ 不叠引擎声）。
 pub const PLUGIN_SOURCE_KIND: &str = "plugin-instrument";
@@ -4006,7 +4006,7 @@ fn channel_gain(span: &ClipSpan, channel: usize) -> f32 {
 /// （旧的 `SamplerTrackSource` 已退休，⛔ 不再有第二份采样音源）。
 struct TrackSource {
     midi: Option<EngineTrackSource>,
-    /// ⭐ ADR-0068：本轨的宿主插件音源（`Some` ⇒ `midi` 为空，插件胜出；
+    /// ⭐ ADR-0069：本轨的宿主插件音源（`Some` ⇒ `midi` 为空，插件胜出；
     /// 采样器分支亦被胜出 —— 插件轨不建引擎源，⛔ 不叠两份声音）。
     plugin: Option<PluginTrackSource>,
     /// 本轨是否绑了 `TrackV3.sampler`（`kind` 命名用）。
@@ -4081,7 +4081,7 @@ impl TrackSource {
     ///
     /// ⭐ `#274`：`has_sampler` 现在看 `sampler_bound`（不再有 `SamplerTrackSource`）——
     /// 只影响**命名**，发声仍由 `midi` 那一支（引擎 SFZ 支路）负责。
-    /// ⭐ ADR-0068：插件源先判（有音符 ⇒ 插件命名；无音符的插件轨落到原有分支，
+    /// ⭐ ADR-0069：插件源先判（有音符 ⇒ 插件命名；无音符的插件轨落到原有分支，
     /// 与无音符的引擎轨同一条静音口径）。
     fn kind(&self) -> &'static str {
         let has_plugin = self
@@ -4113,7 +4113,7 @@ impl AudioSource for TrackSource {
         // ⚠ 引擎源是**有状态**的（内部播放头）：它自己 `out.fill(0.0)` 再写单声道，
         //    且强制"块必须从第 0 帧起连续升序"（见 `EngineTrackSource::render_block`）。
         //    它是本容器的**第一路**，因此覆写不会抹掉别的贡献。
-        // ⭐ ADR-0068：插件源与引擎源互斥（插件胜出时 `midi` 为空），因此插件源
+        // ⭐ ADR-0069：插件源与引擎源互斥（插件胜出时 `midi` 为空），因此插件源
         //    同样可以占"第一路"的填位；片段源在后累加。
         if let Some(midi) = &mut self.midi {
             midi.render_block(context, out)?;
@@ -4639,7 +4639,7 @@ fn build_source(
     if track_has_unhandled_dsp(track) || sampler_drops_instrument_params {
         note_unsupported(unsupported, counts, "deviceChainDsp");
     }
-    // ⭐ ADR-0068：已被宿主的那台设备（首个非旁通、带绑定的外部乐器）不再登记
+    // ⭐ ADR-0069：已被宿主的那台设备（首个非旁通、带绑定的外部乐器）不再登记
     // `externalPlugins` —— 它有音源了，不是"未消费"。其它外部设备（第二台绑定
     // 乐器、效果器、未绑定设备）仍登记。加载失败时装配期已响亮返回，本行走不到。
     let hosted_plugin_index = track.devices.iter().position(|device| {
@@ -5020,7 +5020,7 @@ fn build_source(
     // 轨增益已经在引擎的 `note.gain` 里 ⇒ 这一层⛔ 不再乘第二次。
     // `pan == 0` / 声相自动化接管时它逐位等于 `(1.0, 1.0)`（与 CLI 同一条快路径）。
     //
-    // ⭐ ADR-0068：宿主插件音源（优先级高于引擎与采样器）。
+    // ⭐ ADR-0069：宿主插件音源（优先级高于引擎与采样器）。
     // 首个非旁通、带绑定的外部乐器：加载成功 ⇒ 插件源（`midi` 置空，采样器
     // 分支亦被胜出 —— 插件轨不建引擎源，⛔ 不叠两份声音）；加载失败 ⇒ 渲染
     // 构造期 RENDER_FAILED（无音符的轨也一样 —— 坏绑定不配静默过关）。
@@ -5071,7 +5071,7 @@ fn build_source(
     // ⚠ 采样器轨**不建引擎源**（`#221` 的 `sampler` 分支是整体替换，与 CLI 的
     //   `--sfz` 旁路同形）⇒ 否则采样与复音会叠成两份声音。
     // ⚠ 没有可发声音符的纯音频轨也不建（一台引擎约 109 KB，白建没有收益）。
-    // ⭐ ADR-0068：插件轨同样不建引擎源（插件胜出时 `midi` 为空）。
+    // ⭐ ADR-0069：插件轨同样不建引擎源（插件胜出时 `midi` 为空）。
     let midi = if plugin.is_some() || timbre.scheduled_notes(track.id) == 0 {
         None
     } else {
