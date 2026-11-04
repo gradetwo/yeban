@@ -1017,7 +1017,9 @@ mod tests {
         let timbre = EngineTimbre::from_project(&project).expect("多轨夹具必须成快照");
         let snapshot = Arc::clone(&timbre.snapshot);
         let last = *ids.last().expect("夹具必须有轨");
-        let mut engine = Box::new(SynthEngine::new(snapshot.sample_rate()));
+        // 槽位容量现已可配（P2），默认 1024 条轨装得下 ⇒ 这里显式用 16 槽建引擎，
+        // 牙齿咬的仍是“超容武装丢轨、丢轨静音”这条语义，不随默认值漂移。
+        let mut engine = Box::new(SynthEngine::with_track_slots(snapshot.sample_rate(), 16));
         engine
             .arm_from_snapshot(&snapshot)
             .expect("全量武装本身必须成功（它只是丢槽）");
