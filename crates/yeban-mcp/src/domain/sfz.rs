@@ -342,7 +342,7 @@ pub fn read_sample_file(path: &Path) -> Result<SampleFileReading, String> {
 /// ⚠ 只决定**走哪条腿**，⛔ 不决定成功与否（与 app 的 `is_wav_suffix` 逐字同一条判据）。
 /// ⛔ 不用内容嗅探：那会给 `.wav` 多一次读盘/探测，见 [`read_sample_file`] 的文档。
 #[must_use]
-fn is_plain_wav_suffix(path: &Path) -> bool {
+pub(crate) fn is_plain_wav_suffix(path: &Path) -> bool {
     path.extension()
         .and_then(|extension| extension.to_str())
         .is_some_and(|extension| {
