@@ -2581,6 +2581,7 @@ fn insert_effect(name: &str, params: &[(&str, f32)]) -> DeviceDefinition {
             })
             .collect(),
         latency_samples: 0,
+        plugin: None,
     }
 }
 
@@ -2736,6 +2737,7 @@ fn instrument_device(name: &str, params: &[(&str, f32)]) -> DeviceDefinition {
             })
             .collect(),
         latency_samples: 0,
+        plugin: None,
     }
 }
 
@@ -4142,6 +4144,7 @@ fn scenario_bus_insert(report: &mut Report) {
                     },
                 ],
                 latency_samples: 0,
+                plugin: None,
             }],
             ..TrackV3::default()
         },
@@ -4251,6 +4254,7 @@ fn scenario_master_insert(report: &mut Report) {
                 },
             ],
             latency_samples: 0,
+            plugin: None,
         },
         DeviceDefinition {
             id: EntityId::new(),
@@ -4270,6 +4274,7 @@ fn scenario_master_insert(report: &mut Report) {
                 },
             ],
             latency_samples: 0,
+            plugin: None,
         },
         DeviceDefinition {
             id: EntityId::new(),
@@ -4282,6 +4287,7 @@ fn scenario_master_insert(report: &mut Report) {
                 unit: None,
             }],
             latency_samples: 0,
+            plugin: None,
         },
     ];
     // 构造期（窗口之外）确认：这份夹具的投影里**真的有**主总线的链。

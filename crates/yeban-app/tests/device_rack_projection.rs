@@ -79,6 +79,7 @@ fn device(name: &str, bypassed: bool, params: &[(&str, f32, Option<&str>)]) -> D
             })
             .collect(),
         latency_samples: 0,
+        plugin: None,
     }
 }
 

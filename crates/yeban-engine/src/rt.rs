@@ -5777,6 +5777,7 @@ mod tests {
                         unit: None,
                     }],
                     latency_samples: 0,
+                    plugin: None,
                 }],
                 ..TrackV3::default()
             };

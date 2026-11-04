@@ -1,6 +1,6 @@
 [package]
 name = "yeban-plugin-host"
-description = "[v2.0.0] 跨进程崩溃隔离商业插件宿主 (clack + POSIX shm)"
+description = "进程内 VST3 乐器宿主一期（扫描／加载／MIDI／渲染／参数／状态；跨进程隔离为 phase 2）"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

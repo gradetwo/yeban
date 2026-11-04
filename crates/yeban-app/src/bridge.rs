@@ -1823,6 +1823,7 @@ pub fn builtin_instrument_device() -> DeviceDefinition {
             })
             .collect(),
         latency_samples: 0,
+        plugin: None,
     }
 }
 
@@ -2225,6 +2226,7 @@ pub fn builtin_effect_device(effect: BuiltinEffect) -> Option<DeviceDefinition> 
         bypassed: false,
         params,
         latency_samples: 0,
+        plugin: None,
     })
 }
 

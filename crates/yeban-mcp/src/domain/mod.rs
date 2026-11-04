@@ -88,9 +88,11 @@ use std::path::{Path, PathBuf};
 use serde_json::{Map, Value};
 
 use yeban_model::{
-    AssetHash, ClipContent, CommitDraft, CommitGraph, EntityId, Op, OpOrigin, SessionRuntimeState,
-    StampedOp, TrackV3, YebanProjectV1,
+    AssetHash, ClipContent, CommitDraft, CommitGraph, DeviceDefinition, DeviceKind, EntityId, Op,
+    OpOrigin, PluginBinding, SessionRuntimeState, StampedOp, TrackV3, YebanProjectV1,
 };
+
+use yeban_plugin_host::{Host, HostError, PluginKind, types::tuid_hex};
 
 use crate::jsonrpc::ErrorObject;
 use crate::tools::{ErrorCode, ToolCall, ToolResponse};
@@ -2288,6 +2290,8 @@ pub fn plan(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
         "yeban_launch_scene" => plan_launch_scene(domain, call),
         "yeban_list_proposals" => plan_list_proposals(domain, call),
         "yeban_list_instruments" => plan_list_instruments(domain, call),
+        "yeban_scan_plugins" => plan_scan_plugins(call),
+        "yeban_load_plugin" => plan_load_plugin(domain, call),
         "yeban_import_audio" => plan_import_audio(domain, call),
         "yeban_export_diagnostics" => plan_export_diagnostics(domain, call),
         "yeban_export_midi" => plan_export_midi(domain, call),
@@ -3640,6 +3644,147 @@ fn plan_list_instruments(domain: &Domain, _call: &ToolCall) -> Result<Plan, Faul
             "note": note,
         }),
     })
+}
+
+/// `yeban_scan_plugins`（**只读**）：枚举本机可用的 VST3 插件（ADR-0069 D12）。
+///
+/// 不要求活跃工程：扫描读的是本机目录，不是工程。`paths` 给出的额外目录与
+/// 环境变量／平台标准路径一起扫；不存在的目录静默跳过（`Host::scan` 的口径）。
+/// 失败的候选是**数据**（`usable: false` + `error`），不是调用失败 —— 扫描的
+/// 意义就是把坏插件点名，而不是被第一个坏插件打断。
+///
+/// 响应形状：一行 = 一个类（同一模块的多类各占一行）；模块级失败（打不开／
+/// 无工厂／无类）时类字段为空、单独占一行。`usable` 是**类级**探针结论
+/// （模块级 `usable()` 只用于“至少一类通过”的粗判断，不直接当行读数）。
+fn plan_scan_plugins(call: &ToolCall) -> Result<Plan, Fault> {
+    let mut paths = Host::default_search_paths();
+    if let Some(items) = call.arguments.get("paths").and_then(Value::as_array) {
+        for item in items {
+            let dir = item.as_str().ok_or_else(|| {
+                Fault::domain(
+                    ErrorCode::InvalidParameterRange,
+                    format!("`paths` 的每一项都必须是路径字符串，实际收到 {item}"),
+                )
+            })?;
+            paths.push(PathBuf::from(dir));
+        }
+    }
+    let mut plugins: Vec<Value> = Vec::new();
+    for descriptor in Host::scan(&paths) {
+        if descriptor.classes.is_empty() {
+            plugins.push(serde_json::json!({
+                "path": descriptor.path,
+                "vendor": descriptor.vendor,
+                "className": "",
+                "classId": "",
+                "kind": "unknown",
+                "usable": false,
+                "error": descriptor.error,
+            }));
+            continue;
+        }
+        for class in &descriptor.classes {
+            plugins.push(serde_json::json!({
+                "path": descriptor.path,
+                "vendor": descriptor.vendor,
+                "className": class.name,
+                "classId": tuid_hex(&class.id),
+                "kind": match class.kind {
+                    PluginKind::Instrument => "instrument",
+                    PluginKind::Effect => "effect",
+                    PluginKind::Unknown => "unknown",
+                },
+                "usable": class.error.is_none(),
+                "error": class.error,
+            }));
+        }
+    }
+    let usable_count = plugins
+        .iter()
+        .filter(|row| row["usable"].as_bool().unwrap_or(false))
+        .count();
+    Ok(Plan::Query {
+        data: serde_json::json!({
+            "plugins": plugins,
+            "count": plugins.len(),
+            "usableCount": usable_count,
+        }),
+    })
+}
+
+/// `yeban_load_plugin`：验证加载一个 VST3 插件，经提案路径挂到指定轨道上（ADR-0069 D13）。
+///
+/// 顺序承重：先 `require_active`，再解析 `trackId`、查轨（无则 `TRACK_NOT_FOUND`），
+/// 再 `Host::load` 验证（失败响亮，不写提案 —— 坏插件不配进提案模拟），
+/// 最后 `propose_draft` 挂一台 `ExternalInstrument` 设备（`autoMerge` 与
+/// `mergeCommitMessage` 由提案收尾从 `call` 实参读，与 `yeban_edit_notes` 同一条纪律）。
+///
+/// 设备字段：`name` = 插件名（VST3 类名；桩 = `stub:` 标识），`latency_samples` =
+/// 验证激活时实例上报的延迟（`Host::load` 的激活循环已读过，停用后缓存值仍在），
+/// `plugin` 绑定记 `path` 与 `class`（`pluginId` 未给时记实际选中的类名）。
+/// 提案类别是新的 `"plugin"`（创建与无过滤清单都走通；`yeban_list_proposals`
+/// 的 `kind` 过滤词表仍是 section / notes / macro 三个，过滤 `"plugin"` 会被
+/// 拒绝 —— 词表扩展示后续票，不在本票里顺带改过滤语义）。
+fn plan_load_plugin(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
+    let project = require_active(domain)?;
+    let track_id = arg_id(call, "trackId")?;
+    let track = project.tracks.get(&track_id).ok_or_else(|| {
+        Fault::domain(
+            ErrorCode::TrackNotFound,
+            format!("目标音轨不存在: {}", track_id.to_canonical_string()),
+        )
+    })?;
+    let path = arg_str(call, "pluginPath").ok_or_else(|| {
+        Fault::domain(ErrorCode::InvalidParameterRange, "`pluginPath` 是必填实参")
+    })?;
+    let class = arg_str(call, "pluginId");
+    let instance = Host::load(path, class).map_err(|error| {
+        let code = match error {
+            HostError::LibraryLoad(_) => ErrorCode::IoError,
+            _ => ErrorCode::InvalidParameterRange,
+        };
+        Fault::domain_with_data(
+            code,
+            format!("插件验证加载失败: {error}"),
+            serde_json::json!({
+                "reason": "pluginLoadFailed",
+                "pluginPath": path,
+                "pluginId": class,
+            }),
+        )
+    })?;
+    let device = DeviceDefinition {
+        id: EntityId::new(),
+        name: instance.name().to_owned(),
+        kind: DeviceKind::ExternalInstrument,
+        bypassed: false,
+        params: Vec::new(),
+        latency_samples: instance.latency_samples(),
+        plugin: Some(PluginBinding {
+            path: path.to_owned(),
+            class: Some(
+                class
+                    .map(str::to_owned)
+                    .unwrap_or_else(|| instance.name().to_owned()),
+            ),
+        }),
+    };
+    let title = format!("装载插件: {} → {}", device.name, track.name);
+    // `slot_index` = 链尾（`Op::InsertDevice` 的口径：等于 `len` 即追加）。
+    let slot_index = track.devices.len();
+    propose_draft(
+        domain,
+        project,
+        "plugin",
+        title,
+        format!("load_plugin {} {}", path, track_id.to_canonical_string()),
+        vec![Op::InsertDevice {
+            track_id,
+            slot_index,
+            device,
+        }],
+        call,
+    )
 }
 
 /// `yeban_export_midi`（**只读**）：把活跃工程交给 `yeban-midi` 的**共享**映射层。
@@ -5616,6 +5761,16 @@ mod tests {
             ),
             // 审计 `N13`：会话乐器清单（只读枚举；空 registry 也是合法成功）。
             ("yeban_list_instruments", serde_json::json!({})),
+            // ADR-0069：插件扫描（只读枚举；空目录 / 无插件也是合法成功）。
+            ("yeban_scan_plugins", serde_json::json!({})),
+            // ADR-0069：插件装载（验证加载测试桩后经提案路径挂设备；提案成功）。
+            (
+                "yeban_load_plugin",
+                serde_json::json!({
+                    "trackId": track.to_canonical_string(),
+                    "pluginPath": "stub:sine",
+                }),
+            ),
             // SVS 提交：合法 parts + 不可达服务 ⇒ 规划阶段响亮 `IO_ERROR`。
             (
                 "synthesize_singing",

@@ -209,6 +209,7 @@ fn instrument(params: &[(&str, f32)]) -> DeviceDefinition {
             })
             .collect(),
         latency_samples: 0,
+        plugin: None,
     }
 }
 

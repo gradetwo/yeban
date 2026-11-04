@@ -52,6 +52,8 @@
             "yeban_launch_scene",
             "yeban_export_stems",
             "yeban_list_instruments",
+            "yeban_scan_plugins",
+            "yeban_load_plugin",
             "synthesize_singing",
             "svs_job"
           ]
@@ -373,6 +375,44 @@
             "properties": {
               "arguments": {
                 "$ref": "#/definitions/ExtensionToolArguments/$defs/yeban_list_instruments"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "name"
+            ],
+            "properties": {
+              "name": {
+                "const": "yeban_scan_plugins"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "arguments": {
+                "$ref": "#/definitions/ExtensionToolArguments/$defs/yeban_scan_plugins"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "name"
+            ],
+            "properties": {
+              "name": {
+                "const": "yeban_load_plugin"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "arguments": {
+                "$ref": "#/definitions/ExtensionToolArguments/$defs/yeban_load_plugin"
               }
             }
           }
@@ -1298,6 +1338,67 @@
               "maxLength": 256
             }
           }
+        },
+        "yeban_scan_plugins": {
+          "title": "yeban_scan_plugins",
+          "type": "object",
+          "description": "枚举本机可用的 VST3 插件（ADR-0069 的扫描与验证，类比 Logic 的 auval 准入）：扫描 YEBAN_VST3_PATHS 环境变量给出的目录与平台标准路径，另加 paths 给出的额外目录；每个候选都尝试打开、枚举类、逐个实例化探针，失败逐个记原因、不中断扫描、不进可用列表。响应 data.plugins[]：每条给 path / className / classId / kind（instrument / effect / unknown）/ usable / error（失败时才有）；失败项也在列表里，但 usable 为假。只读：不改工程、不装载进工程、不落盘。",
+          "properties": {
+            "paths": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "额外扫描目录（数组，逐项为路径字符串）；不给则只扫环境变量与平台标准路径；不存在的目录静默跳过，不报错"
+            },
+            "dryRun": {
+              "type": "boolean",
+              "default": false
+            },
+            "idempotencyKey": {
+              "type": "string",
+              "maxLength": 256
+            }
+          }
+        },
+        "yeban_load_plugin": {
+          "title": "yeban_load_plugin",
+          "type": "object",
+          "description": "验证加载一个 VST3 插件并经提案路径把它挂到指定轨道上（ADR-0069）：先用宿主打开 pluginPath、按 pluginId 指名类（不给则取首个乐器类）、做验证激活，失败则整个调用失败、不写提案；成功后以缺省提案挂一台 ExternalInstrument 设备（name 为插件名，latency_samples 为实例上报值，plugin 绑定记 path 与 class），slot_index 为该轨 devices 长度（追加到末尾）。缺省建提案；autoMerge 为真时当场落 main，与 yeban_edit_notes 同一条提案纪律，不另设直写路。音源优先级：非旁通的已宿主外部乐器胜过引擎合成器与采样器绑定；带绑定但加载失败的轨在渲染时响亮失败。",
+          "properties": {
+            "trackId": {
+              "type": "string",
+              "description": "目标音轨 EntityId（26 字符 ULID）；设备追加到该轨 devices 末尾；音轨不存在 ⇒ TRACK_NOT_FOUND"
+            },
+            "pluginPath": {
+              "type": "string",
+              "description": "插件路径：.vst3 包路径、散动态库路径，或测试桩 stub:sine（仅测试夹具）；打不开 ⇒ IO_ERROR"
+            },
+            "pluginId": {
+              "type": "string",
+              "description": "类名或类 CID 十六进制；不给则取首个乐器类；指名类不存在或不是乐器 ⇒ INVALID_PARAMETER_RANGE"
+            },
+            "autoMerge": {
+              "type": "boolean",
+              "description": "[ADR-0029]：缺省 false = 只建提案；true = 同一次调用内背靠背执行既有的合并实现（与 yeban_edit_notes 同一条纪律）"
+            },
+            "mergeCommitMessage": {
+              "type": "string",
+              "description": "[ADR-0029]：autoMerge 合并提交的信息，只随 autoMerge:true 生效；缺省同手动合并的既有缺省"
+            },
+            "dryRun": {
+              "type": "boolean",
+              "default": false
+            },
+            "idempotencyKey": {
+              "type": "string",
+              "maxLength": 256
+            }
+          },
+          "required": [
+            "trackId",
+            "pluginPath"
+          ]
         },
         "synthesize_singing": {
           "title": "synthesize_singing",

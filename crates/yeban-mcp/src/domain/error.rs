@@ -189,6 +189,7 @@ pub fn code_for_model(error: &ModelError) -> ErrorCode {
         | ModelError::InvalidHash { .. }
         | ModelError::InvalidEntityId { .. }
         | ModelError::NonFiniteValue { .. }
+        | ModelError::PluginBindingKindMismatch { .. }
         | ModelError::PitchBendTicksNotAscending { .. }
         | ModelError::TempoMapZeroTick { .. } => ErrorCode::InvalidParameterRange,
         ModelError::SchemaVersionTooNew { .. }

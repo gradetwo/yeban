@@ -68,6 +68,7 @@ fn device(id: EntityId, name: &str) -> DeviceDefinition {
             unit: None,
         }],
         latency_samples: 0,
+        plugin: None,
     }
 }
 

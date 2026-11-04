@@ -445,6 +445,7 @@ fn pdc_shortfall_project() -> YebanProjectV1 {
                 bypassed: false,
                 params: Vec::new(),
                 latency_samples: over_capacity,
+                plugin: None,
             }];
         }
         tracks.insert(id, track);
@@ -547,6 +548,7 @@ fn drum_device(extra: &[(&str, f32)], map: [f32; 5]) -> DeviceDefinition {
         bypassed: false,
         params,
         latency_samples: 0,
+        plugin: None,
     }
 }
 
@@ -605,6 +607,7 @@ fn osc_device(osc: OscFixture) -> DeviceDefinition {
             },
         ],
         latency_samples: 0,
+        plugin: None,
     }
 }
 
@@ -982,6 +985,7 @@ fn judgement_body() -> ExitCode {
                 },
             ],
             latency_samples: 0,
+            plugin: None,
         }];
     }
     let insert_snapshot =
@@ -1104,6 +1108,7 @@ fn judgement_body() -> ExitCode {
                 },
             ],
             latency_samples: 0,
+            plugin: None,
         }];
     }
     {
@@ -1147,6 +1152,7 @@ fn judgement_body() -> ExitCode {
                 },
             ],
             latency_samples: 0,
+            plugin: None,
         }];
     }
     let strip_snapshot = EngineSnapshot::from_project(&strip_project, 1).expect("通道条夹具快照");
@@ -1334,6 +1340,7 @@ fn judgement_body() -> ExitCode {
                 },
             ],
             latency_samples: 0,
+            plugin: None,
         }];
     }
     {
@@ -1359,6 +1366,7 @@ fn judgement_body() -> ExitCode {
                 },
             ],
             latency_samples: 0,
+            plugin: None,
         }];
     }
     let reverb_snapshot = EngineSnapshot::from_project(&reverb_project, 1).expect("混响夹具快照");
@@ -1575,6 +1583,7 @@ fn judgement_body() -> ExitCode {
                 },
             ],
             latency_samples: 0,
+            plugin: None,
         }];
     }
     let drum_snapshot = EngineSnapshot::from_project(&drum_project, 1).expect("鼓机夹具快照");
@@ -1845,6 +1854,7 @@ fn judgement_body() -> ExitCode {
                 unit: Some("Hz".to_owned()),
             }],
             latency_samples: 0,
+            plugin: None,
         }];
     }
     let synth_again_snapshot = EngineSnapshot::from_project(&synth_again, 36).expect("换回快照");
@@ -2421,6 +2431,7 @@ fn judgement_body() -> ExitCode {
                 },
             ],
             latency_samples: 0,
+            plugin: None,
         }];
     }
     {
@@ -2451,6 +2462,7 @@ fn judgement_body() -> ExitCode {
                 },
             ],
             latency_samples: 0,
+            plugin: None,
         }];
     }
     let conv_snapshot = EngineSnapshot::from_project(&conv_project, 1).expect("卷积混响夹具快照");

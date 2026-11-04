@@ -124,6 +124,7 @@ fn effect(params: &[(&str, f32)]) -> DeviceDefinition {
             })
             .collect(),
         latency_samples: 0,
+        plugin: None,
     }
 }
 
@@ -159,6 +160,7 @@ fn drum_kit() -> DeviceDefinition {
             })
             .collect(),
         latency_samples: 0,
+        plugin: None,
     }
 }
 

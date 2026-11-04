@@ -1481,6 +1481,16 @@ fn no_tool_answers_with_a_blanket_not_implemented() {
             "yeban_export_stems",
             json!({ "outDir": scratch.text("stems-not-created") }),
         ),
+        // 插件宿主一期两条：扫描是只读枚举（空结果也是合法成功）；
+        // 装载走测试桩 stub:sine，经提案路径挂设备（提案成功）。
+        ("yeban_scan_plugins", json!({})),
+        (
+            "yeban_load_plugin",
+            json!({
+                "trackId": track,
+                "pluginPath": "stub:sine",
+            }),
+        ),
         // 伶人 SVS 两条：服务地址指到一个刚释放的环回端口 ⇒ 连接被拒，
         // 走带内 `IO_ERROR`（不是实现级出口）；这里只要求"走到领域实现 +
         // 契约形状"，真服务链路的证据在 `tests/svs_tools.rs`（桩服务）。

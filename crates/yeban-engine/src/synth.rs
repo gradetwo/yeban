@@ -2942,6 +2942,7 @@ mod tests {
             })
             .collect(),
             latency_samples: 0,
+            plugin: None,
         };
         let params = DrumsParams::from_devices(&[device]).expect("五个键位写全 ⇒ 必须武装");
         let ids: Vec<EntityId> = (0..MAX_TRACK_SLOTS + 1).map(|_| EntityId::new()).collect();
@@ -3214,6 +3215,7 @@ mod tests {
                 bypassed: false,
                 params,
                 latency_samples: 0,
+                plugin: None,
             }
         };
         let baseline = ToneParams::from_devices(std::slice::from_ref(&device_with(

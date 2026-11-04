@@ -104,8 +104,8 @@ pub const INCLUDE_OPS_PARAM: &str = "includeOps";
 /// 调用方的记忆里搬进生产代码）。
 pub const COMMIT_MODEL_KEY: &str = "commitModel";
 
-/// 工具集规模（规范表格的 10 个 + `ADR-0001` D45/D46 的扩展 + 伶人 SVS 2 条）。
-pub const TOOL_COUNT: usize = 28;
+/// 工具集规模（规范表格的 10 个 + `ADR-0001` D45/D46 的扩展 + 插件扫描／装载 2 条 + 伶人 SVS 2 条）。
+pub const TOOL_COUNT: usize = 30;
 
 /// **规范表格**里的工具数（`MCP-TOOL-001..010`）。
 pub const DOCUMENTED_TOOL_COUNT: usize = 10;
@@ -116,8 +116,10 @@ pub const DOCUMENTED_TOOL_COUNT: usize = 10;
 /// + **未合并提案清单 1 条**（`#176`，`#174` 坑②）+ **场景启动 1 条**（`#290`）
 /// + **分轨导出 1 条**（`ADR-0030`，一次调用弹完 N 条轨）
 /// + **会话乐器清单 1 条**（审计 `N13`，会话 SFZ registry 的只读枚举）
+/// + **插件扫描 1 条**（`ADR-0069`，VST3 发现与验证的只读枚举）
+/// + **插件装载 1 条**（`ADR-0069`，验证加载后经提案路径挂外部乐器设备）。
 /// + **伶人 SVS 2 条**（`synthesize_singing` 提交 + `svs_job` 查询/取回，Phase 2）。
-pub const EXTENSION_TOOL_COUNT: usize = 18;
+pub const EXTENSION_TOOL_COUNT: usize = 20;
 
 /// 扩展工具的规范 ID 前缀。
 ///
@@ -147,6 +149,8 @@ pub const EXTENSION_NAMES: [&str; EXTENSION_TOOL_COUNT] = [
     "yeban_launch_scene",
     "yeban_export_stems",
     "yeban_list_instruments",
+    "yeban_scan_plugins",
+    "yeban_load_plugin",
     "synthesize_singing",
     "svs_job",
 ];
@@ -637,7 +641,14 @@ pub fn entity_id_items() -> Value {
     serde_json::json!({ "type": "string" })
 }
 
-/// 二十三个工具，**规范顺序**（`MCP-TOOL-001..010` 在前，D45/D46 及后续的扩展在后）。
+/// `paths` 这类**自由字符串数组**的 item schema：逐项 = 一条文件系统路径
+/// （⛔ 不是实体身份，别复用 `entity_id_items` —— 那名字会让人以为逐项是 ULID）。
+#[must_use]
+pub fn string_items() -> Value {
+    serde_json::json!({ "type": "string" })
+}
+
+/// 二十八个工具，**规范顺序**（`MCP-TOOL-001..010` 在前，D45/D46 及后续的扩展在后）。
 pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
     ToolSpec {
         spec_id: "MCP-TOOL-001",
@@ -1745,6 +1756,77 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
         errors: &[ErrorCode::InvalidParameterRange],
     },
     ToolSpec {
+        spec_id: "MCP-TOOL-EXT-SCAN-PLUGINS",
+        name: "yeban_scan_plugins",
+        summary: "枚举本机可用的 VST3 插件（ADR-0069 的扫描与验证，类比 Logic 的 auval 准入）：扫描 YEBAN_VST3_PATHS 环境变量给出的目录与平台标准路径，另加 `paths` 给出的额外目录；每个候选都尝试打开、枚举类、逐个实例化探针（控制器／兼容类不作组件探针，单列说明），失败逐个记原因、不中断扫描、不进可用列表。响应 data.plugins[]：每条给 path / className / classId / kind（instrument / effect / unknown）/ usable / error（失败时才有）；失败项也在列表里，但 usable 为假。只读：不改工程、不装载进工程、不落盘。扫描只证明插件能打开、能实例化、能通过验证激活，不证明它在真实工程里出声；真实商业插件兼容性未经验证。",
+        scope: Scope::AppAdmin,
+        // 只读枚举：Host::scan 只读目录、打开库、实例化探针，不写工程、不落盘。
+        side_effect: SideEffect::ReadOnly,
+        params: &[
+            // ⚠ 必须与 `schemas/mcp-tools.schema.json` 的 `$defs.yeban_scan_plugins` 逐字段一致
+            // （判据 `tests/contract.rs::extension_argument_constraints_match_the_registry`
+            // 双向核对属性集合 / 类型 / 必填集合）。
+            array_param(
+                "paths",
+                false,
+                "额外扫描目录（数组，逐项为路径字符串）；不给则只扫环境变量与平台标准路径；不存在的目录静默跳过，不报错",
+                crate::tools::string_items,
+            ),
+        ],
+        // 扫描本身没有业务失败面（坏插件是数据，不是错误）；仍声明
+        // `InvalidParameterRange`：契约的实参形状校验（多余键等）走这个码
+        // —— 判据要求每个工具至少声明一个 D25 联集内的码，⛔ 留空。
+        errors: &[ErrorCode::InvalidParameterRange],
+    },
+    ToolSpec {
+        spec_id: "MCP-TOOL-EXT-LOAD-PLUGIN",
+        name: "yeban_load_plugin",
+        summary: "验证加载一个 VST3 插件并经提案路径把它挂到指定轨道上（ADR-0069）：先用宿主打开 `pluginPath`、按 `pluginId` 指名类（不给则取首个乐器类）、做验证激活，失败则整个调用失败、不写提案；成功后以缺省提案挂一台 ExternalInstrument 设备（name 为插件名，latency_samples 为实例上报值，plugin 绑定记 path 与 class），slot_index 为该轨 devices 长度（追加到末尾）。缺省建提案；`autoMerge` 为真时当场落 main，与 `yeban_edit_notes` 同一条提案纪律，不另设直写路。音源优先级：非旁通的已宿主外部乐器胜过引擎合成器与采样器绑定；带绑定但加载失败的轨在渲染时响亮失败。测试桩 stub:sine 可用（仅测试夹具）。",
+        scope: Scope::AppAdmin,
+        // 提案路径：建提案（ProjectState），autoMerge 时同一调用内合并；⛔ 不直写 main。
+        side_effect: SideEffect::ProjectState,
+        params: &[
+            // ⚠ 必须与 `schemas/mcp-tools.schema.json` 的 `$defs.yeban_load_plugin` 逐字段一致
+            // （判据 `tests/contract.rs::extension_argument_constraints_match_the_registry`
+            // 双向核对属性集合 / 类型 / 必填集合）。
+            param(
+                "trackId",
+                "string",
+                true,
+                "目标音轨 EntityId（26 字符 ULID）；设备追加到该轨 devices 末尾；音轨不存在 ⇒ `TRACK_NOT_FOUND`",
+            ),
+            param(
+                "pluginPath",
+                "string",
+                true,
+                "插件路径：.vst3 包路径、散动态库路径，或测试桩 stub:sine（仅测试夹具）；打不开 ⇒ `IO_ERROR`",
+            ),
+            param(
+                "pluginId",
+                "string",
+                false,
+                "类名或类 CID 十六进制；不给则取首个乐器类；指名类不存在或不是乐器 ⇒ `INVALID_PARAMETER_RANGE`",
+            ),
+            param(
+                "autoMerge",
+                "boolean",
+                false,
+                "[ADR-0029]：缺省 false = 只建提案；true = 同一次调用内背靠背执行既有的合并实现（与 `yeban_edit_notes` 同一条纪律）",
+            ),
+            param(
+                "mergeCommitMessage",
+                "string",
+                false,
+                "[ADR-0029]：`autoMerge` 合并提交的信息，只随 `autoMerge:true` 生效；缺省同手动合并的既有缺省",
+            ),
+        ],
+        errors: &[
+            ErrorCode::TrackNotFound,
+            ErrorCode::IoError,
+            ErrorCode::InvalidParameterRange,
+        ],
+    },
+    ToolSpec {
         spec_id: "MCP-TOOL-EXT-SVS-SUBMIT",
         name: "synthesize_singing",
         summary: "把乐谱提交到伶人 SVS 服务（只提交、不含推理）：`parts` 数组每项 `{label, score, voice_id, model?, variant?, takes?, seeds?, options?}`，与 `POST /v1/synthesize` 的 part 形状一致；`score = {bpm, language?, notes: [{lyric, midi, start_s, dur_s, tie?, phoneme?}]}`，`lyric` 为 `''` 或 `'<SP>'` 表示休止；`takes` 缺省 1（1..=8）。返回 `{jobId, status, partsTotal, takesTotal, serviceUrl}`；提交失败（连不上、4xx/5xx）直接报 `IO_ERROR`，⛔ 不返回空任务。配置：服务地址 = 实参 `service_url` > 环境变量 `YEBAN_SVS_URL` > 缺省 `http://127.0.0.1:8000`；API key **只**从环境变量 `YEBAN_SVS_API_KEY` 读，⛔ 不是工具参数、⛔ 不进工程文件、⛔ 不出现在响应里。只支持 `http`（`std` 客户端无 TLS，`https` 在配置解析时就响亮拒绝，见 `domain::svs` 模块头）。`dryRun` 只校验参数、不提交。⚠ 工具名**不带** `yeban_` 前缀：名字由 Phase 1 规格定，是跨线契约（服务文档与调用方都按此名），见注册判据的例外说明。",
@@ -1838,7 +1920,7 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
     },
 ];
 
-/// 按名查找工具（`const` 数组上的线性查找；28 个元素，无需哈希表）。
+/// 按名查找工具（`const` 数组上的线性查找；30 个元素，无需哈希表）。
 #[must_use]
 pub fn tool(name: &str) -> Option<&'static ToolSpec> {
     TOOLS.iter().find(|spec| spec.name == name)
@@ -2593,7 +2675,9 @@ mod tests {
                 // #176：未合并提案清单 —— 只读 `domain.proposals`，不动工程、不动提案记录。
                 "yeban_list_proposals",
                 // 审计 `N13`：会话 SFZ registry 枚举 —— 只读 `domain.sfz_instruments`。
-                "yeban_list_instruments"
+                "yeban_list_instruments",
+                // 插件扫描：只枚举路径并逐个实例化探针，不改工程、不落盘 ⇒ 读-only。
+                "yeban_scan_plugins"
             ],
             "只读工具必须显式分类为 read-only"
         );

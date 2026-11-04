@@ -44,7 +44,7 @@
 //!
 //! | 面 | reason 数 | 规范行数 | SHA-256 |
 //! | :--- | ---: | ---: | :--- |
-//! | `reason`（**可分类**面：字面量 ＋ 可解析的字面量 `let` ＋ **调用点传播**，含顺序） | 232 | 993 | `d2d4d5d5315f4a7c8e25ab1e010d0ed107e3fe1e24260d72dc8c309f0b8d44bd` |
+//! | `reason`（**可分类**面：字面量 ＋ 可解析的字面量 `let` ＋ **调用点传播**，含顺序） | 235 | 1005 | `3c692193f04fe7bfc3eb4e3869f11bfe9dfc301f3792f31f9ab2b2ab00fc26a9` |
 //!
 //! ⚠ `ADR-0030`（`yeban_export_stems`）：两条新字面站点 `masterBusTrack` /
 //! `notASourceNode`（各带 `trackId` / `name` / `reason` 三个同级键）进入规范文本
@@ -73,7 +73,7 @@ use yeban_mcp::undo_session::read_rust_sources;
 /// （2026-10-28 起, 见 [`PROPAGATED_REASON_SITES`]）。⛔ 真看不见的运行时站点不进这张表，
 /// 由 [`EXEMPT_DYNAMIC_REASON_SITES`] 逐条登记。
 /// 这是黄金表：任何改名 / 新增 / 删除都必须**故意**改这一行。
-pub const GOLDEN_REASONS: [&str; 228] = [
+pub const GOLDEN_REASONS: [&str; 231] = [
     "assetChannelLayout",
     "assetDecodeFailed",
     "assetHashMismatch",
@@ -174,6 +174,9 @@ pub const GOLDEN_REASONS: [&str; 228] = [
     "placementIdConflict",
     "placementNotFound",
     "placementWithoutTrack",
+    "pluginActivate",
+    "pluginLoad",
+    "pluginLoadFailed",
     "pointAddressIsAmbiguous",
     "pointAddressRequired",
     "projectAlreadyExists",
@@ -1459,15 +1462,24 @@ const REASON_ARGUMENT_NAME_USES: [ReasonArgumentNameUse; 3] = [
 // （恒等式仍闭合：227 = 字面 218 ＋ 可解析 `let` 2 ＋ 运行时 4 ＋ 传播 3；
 // 230 = 227 ＋ 参数名 3。⚠ 字面/`let`/传播/参数名四条读数**一个都没动** ——
 // 本片在生产区只加了这一条）。
+// ⭐ VST3 乐器宿主一期（本支）：`domain/render.rs` 的 `pluginLoad` / `pluginActivate`
+// 与 `domain/mod.rs` 的 `pluginLoadFailed` 3 处新字面 `"reason"` 键站点
+// ⇒ 出现 230 → 233、键站点 227 → 230、字面站点 218 → 221
+// （恒等式仍闭合：230 = 字面 221 ＋ 可解析 `let` 2 ＋ 运行时 4 ＋ 传播 3；
+// 233 = 230 ＋ 参数名 3。）
 // SVS：恒等式仍闭合：258 = 字面 247 ＋ 可解析 `let` 2 ＋ 运行时 6 ＋ 传播 3；
 // 261 = 258 ＋ 参数名 3（字面 +29 站点、运行时 +2 站点）。
-const REASON_OCCURRENCES_TOTAL: usize = 261;
+// 合入树（插件宿主一期 ＋ SVS）：插件 3 处新字面键站点（`pluginLoad` /
+// `pluginActivate` / `pluginLoadFailed`）⇒ 字面 247 → 250、键站点 258 → 261、
+// 总出现 261 → 264；恒等式仍闭合：261 = 字面 250 ＋ 可解析 `let` 2 ＋
+// 运行时 6 ＋ 传播 3；264 = 261 ＋ 参数名 3。
+const REASON_OCCURRENCES_TOTAL: usize = 264;
 // ⭐ MCP-TOOL-003：键站点 208 → 216、字面站点 200 → 208 —— 新形态在
 // `domain/notes.rs` / `tools.rs` 里新增的 8 处字面 `"reason"` 站点
 // （tick 0、`bpmOutOfRange` 复用、`tempoPointNotFound`、`timeSignaturePointNotFound`
 // 与描述文本里的键形状；逐文件拆分以扫描器读数为准，此处不手数）。
-const REASON_KEY_SITES_TOTAL: usize = 258;
-const REASON_LITERAL_SITES_TOTAL: usize = 247;
+const REASON_KEY_SITES_TOTAL: usize = 261;
+const REASON_LITERAL_SITES_TOTAL: usize = 250;
 const REASON_RESOLVED_SITES_TOTAL: usize = 2;
 const REASON_DYNAMIC_SITES_TOTAL: usize = 6;
 const REASON_PROPAGATED_SITES_TOTAL: usize = 3;
@@ -1790,7 +1802,7 @@ fn every_reason_is_asserted_somewhere() {
 /// 每条 `reason` 在生产区**字面 `json!` 对象**里带的同级键（排序）。
 /// ⚠ 口径：只收字面 `json!` 里的键；运行时 `map.insert(...)` 加进去的键不在内。
 /// 空数组 = 该 reason 的 `data` 里**没有**同级键（或 Data 由别的构造方式给出）。
-pub const GOLDEN_REASON_PAYLOADS: [(&str, &[&str]); 228] = [
+pub const GOLDEN_REASON_PAYLOADS: [(&str, &[&str]); 231] = [
     (
         "assetChannelLayout",
         &[
@@ -2055,6 +2067,9 @@ pub const GOLDEN_REASON_PAYLOADS: [(&str, &[&str]); 228] = [
         ],
     ),
     ("placementWithoutTrack", &["field", "reason"]),
+    ("pluginActivate", &["pluginId", "pluginPath", "reason"]),
+    ("pluginLoad", &["pluginId", "pluginPath", "reason"]),
+    ("pluginLoadFailed", &["pluginId", "pluginPath", "reason"]),
     (
         "pointAddressIsAmbiguous",
         &["addressFields", "field", "reason"],
@@ -2969,12 +2984,12 @@ fn the_reason_payload_shape_is_the_published_table() {
 /// `duplicateClipPlacementPairRequired`）⇒ 207 → **216** 个 reason。
 /// 新摘要由本判据的 `left:` 报出值照抄（⛔ 不手算）。
 pub const FROZEN_REASON_SURFACE_SHA256: &str =
-    "d2d4d5d5315f4a7c8e25ab1e010d0ed107e3fe1e24260d72dc8c309f0b8d44bd";
+    "3c692193f04fe7bfc3eb4e3869f11bfe9dfc301f3792f31f9ab2b2ab00fc26a9";
 
 /// 规范形式里的 reason 数 / 规范行数（与摘要一起构成"两端"读数）。
-pub const REASON_SURFACE_REASONS: usize = 232;
+pub const REASON_SURFACE_REASONS: usize = 235;
 /// 规范行数（每个 reason 一行 ＋ 每个键一行）。
-pub const REASON_SURFACE_LINES: usize = 993;
+pub const REASON_SURFACE_LINES: usize = 1005;
 
 /// 单文件里的 `reason` 面：**保留出现顺序**的 `(reason, keys)`。
 ///
@@ -3122,6 +3137,9 @@ fn the_reason_surface_digest_is_frozen_and_documented() {
     // （`masterBusTrack` / `notASourceNode`）⇒ 摘要同批重钉。
     // SVS：新增 `src/domain/svs.rs` ⇒ 45 → 46，带 16 条新字面站点（29 处字面出现）与 2 处
     // 动态变量站点（`io_fault` 的 `match` 与 `param_fault` 的入参，见豁免登记）⇒ 摘要同批重钉。
+    // 插件宿主一期：新增 `pluginLoad` / `pluginActivate` / `pluginLoadFailed` 3 条
+    // reason（各带 `pluginId` / `pluginPath` / `reason` 3 键）⇒ reason 数 232 → 235、
+    // 规范行数 993 → 1005（3 reason 行 ＋ 9 键行）、摘要同批重钉。
     // ⇒ 本条只证明"分母变了一位"。
     assert_eq!(files.len(), 46, "生产区 `.rs` 文件数（规范形式的分母之一）");
     let canonical = reason_surface(&files);

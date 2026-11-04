@@ -6470,6 +6470,7 @@ fn parse_device(payload: &Map<String, Value>) -> Result<DeviceDefinition, Fault>
         bypassed,
         params,
         latency_samples,
+        plugin: None,
     })
 }
 
