@@ -47,6 +47,7 @@
 //! | [`extension_pure`] | 三个扩展工具的**零第三方依赖**纯逻辑（词表 / 来源二选一 / 确定性标签），本机可单独验证 |
 //! | [`extension_audit`] | **零依赖**文本守卫：写路径 / `dryRun` 入口 / 错误码词表 / 无孤儿模块，本机可单独验证 |
 //! | [`sfz`] | `yeban_load_sfz` / `yeban_render_sfz_wav`：`yeban-sfz` 装载 + 用 SFZ 区域离线导出 WAV |
+//! | [`sfz_stream`] | P2 磁盘流式引擎：后台读盘线程＋逐声部无锁环＋起音预载（预览＝已用区域、实时＝整件乐器） |
 //! | [`record_wav`] | `yeban_record_wav`：`ARCH-REC-001` 三段（无锁环 + 后台抽干）→ 24-bit WAV |
 
 pub mod automation;
@@ -77,6 +78,7 @@ pub mod scene_launch;
 pub mod section;
 pub mod section_build;
 pub mod sfz;
+pub mod sfz_stream;
 pub mod stems;
 pub mod store;
 pub mod svs;

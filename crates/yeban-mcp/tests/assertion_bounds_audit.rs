@@ -57,6 +57,10 @@ const SOURCES: &[(&str, &str)] = &[
         "src/domain/section_build.rs",
         include_str!("../src/domain/section_build.rs"),
     ),
+    (
+        "src/domain/sfz_stream.rs",
+        include_str!("../src/domain/sfz_stream.rs"),
+    ),
     ("src/domain/svs.rs", include_str!("../src/domain/svs.rs")),
     ("src/security.rs", include_str!("../src/security.rs")),
     ("src/tools.rs", include_str!("../src/tools.rs")),
@@ -98,6 +102,7 @@ const SOURCES: &[(&str, &str)] = &[
         "tests/section_velocity.rs",
         include_str!("section_velocity.rs"),
     ),
+    ("tests/sfz_stream.rs", include_str!("sfz_stream.rs")),
     ("tests/sfz_tools.rs", include_str!("sfz_tools.rs")),
     ("tests/stdio_e2e.rs", include_str!("stdio_e2e.rs")),
     ("tests/tools_e2e.rs", include_str!("tools_e2e.rs")),
@@ -107,7 +112,7 @@ const SOURCES: &[(&str, &str)] = &[
 ///
 /// 主判据是"无界站点数 == 基线"；整组删掉一个被扫文件**不会**让无界站点数增加 ⇒
 /// 本判据仍绿，而 R115 的覆盖面已静默缩水。只有本下界能拦住这种**单向**偷工。
-const MIN_SOURCES: usize = 23;
+const MIN_SOURCES: usize = 25;
 
 /// 注册基线：允许存在的"无界断言站点"数。⭐ **棘轮** —— 只能减，不能增。
 const UNBOUNDED_BASELINE: usize = 0;
