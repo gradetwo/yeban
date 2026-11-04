@@ -190,6 +190,7 @@ fn synth_nightfall_scale_project() -> YebanProjectV1 {
                     bypassed: false,
                     params: Vec::new(),
                     latency_samples: 0,
+                    plugin: None,
                 });
             }
             TrackKind::AuxReturn => {
@@ -200,6 +201,7 @@ fn synth_nightfall_scale_project() -> YebanProjectV1 {
                     bypassed: false,
                     params: Vec::new(),
                     latency_samples: 0,
+                    plugin: None,
                 });
             }
             TrackKind::Midi => {
@@ -210,6 +212,7 @@ fn synth_nightfall_scale_project() -> YebanProjectV1 {
                     bypassed: false,
                     params: Vec::new(),
                     latency_samples: 0,
+                    plugin: None,
                 });
                 let target = AutomationTarget::TrackVolume { track_id: tid };
                 t.automation_lanes
