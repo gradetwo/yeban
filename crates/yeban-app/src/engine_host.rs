@@ -400,6 +400,29 @@ struct FreshRuntime {
     collector: MeterCollector,
 }
 
+/// 声部池的轨道槽数：`YEBAN_TRACK_SLOTS` 覆盖默认值。
+///
+/// 默认 [`yeban_engine::synth::DEFAULT_TRACK_SLOTS`] = **1024**。超界不报错——
+/// [`EngineRuntime::new_boxed_with_track_slots`] 会把它钳进
+/// `[MIN_TRACK_SLOTS, MAX_TRACK_SLOTS]`，并在引擎侧留下
+/// `requested_track_slots` 与 `track_slots` 的差可查。
+///
+/// ⚠ 解析失败**不静默**：打一行 stderr 再退回默认。这一行只在造引擎时出现一次
+/// （不在音频线程上），但它决定了"为什么我的 300 轨工程只响了 16 条"能不能被查出来。
+fn track_slots_from_env() -> usize {
+    let fallback = yeban_engine::synth::DEFAULT_TRACK_SLOTS;
+    let Ok(raw) = std::env::var("YEBAN_TRACK_SLOTS") else {
+        return fallback;
+    };
+    match raw.trim().parse::<usize>() {
+        Ok(slots) => slots,
+        Err(error) => {
+            eprintln!("YEBAN_TRACK_SLOTS=`{raw}` 不是合法槽位数（{error}）⇒ 退回默认 {fallback}");
+            fallback
+        }
+    }
+}
+
 /// 用**当前快照槽**造一套全新端点（[`EngineRuntime::new_boxed`] 要求全部通道在开设备之前建立）。
 ///
 /// ⚠ 构造入口是 [`EngineRuntime::new_boxed`]（⛔ 不是按值返回的 `new`）：在堆上就地构造，
@@ -408,7 +431,13 @@ fn fresh_runtime(slot: &std::sync::Arc<SnapshotSlot>) -> FreshRuntime {
     let (retire_producer, retire) = retire_channel(RETIRE_CAPACITY);
     let (events, event_receiver) = event_channel(EVENT_CAPACITY);
     let (publisher, collector) = meter_channel(DEFAULT_METER_CAPACITY);
-    let runtime = EngineRuntime::new_boxed(slot, retire_producer, event_receiver, publisher);
+    let runtime = EngineRuntime::new_boxed_with_track_slots(
+        slot,
+        retire_producer,
+        event_receiver,
+        publisher,
+        track_slots_from_env(),
+    );
     let mirror = std::sync::Arc::clone(runtime.transport_mirror());
     FreshRuntime {
         runtime,
@@ -1602,7 +1631,10 @@ impl EngineHost {
         self.automation_unapplied = unapplied_automation_lanes(project);
         let tick = self.transport().position_ticks;
         let batch_capacity = Self::automation_batch_capacity();
-        let mut batch = [EngineEvent::Idle; Self::automation_batch_capacity()];
+        // ⚠ `vec!` 而不是定长栈数组：`PARAM_SLOTS` 随声部槽一起从 16 提到 1024
+        // ⇒ 容量 4160 项，栈上放不下（也不该放：本函数跑在 UI 定时器上，
+        // ⛔ 不是音频线程 [MUST-GATE-001]）。分配一次，与批的生命周期同长。
+        let mut batch = vec![EngineEvent::Idle; batch_capacity];
         let mut len = 0usize;
         let mut dropped = 0u64;
         for track in project.tracks.values() {

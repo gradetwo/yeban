@@ -1117,11 +1117,29 @@ pub fn parse_sample_limits(
 
 /// 解析 `yeban_load_sfz` 的实参（**只做形状校验**，读文件在 [`load`] 里）。
 ///
+/// # 相对路径（⭐ 补丁 `P1`）
+///
+/// `path` 为**相对路径**时，按 [`super::render::resolve_sampler_path`] 的**四档**解析
+/// （工程目录 ⇒ 采样库根 ⇒ 仓库根 ⇒ cwd），与 `yeban_render_master` 说同一句话。
+/// 修前这里只 `PathBuf::from(path)`，随后直接 `fs::metadata` —— 于是"哪条路径算数"
+/// 在工具面有**两套**答案：装载要绝对、渲染要相对；而
+/// `docs/SFZ_SAMPLE_ACQUISITION.md` 教的正是在工程里存 `assets/samples/<乐器>/…`
+/// 这种相对形态。
+///
+/// 三条纪律：
+///
+/// - **绝对路径⛔ 不过四档**：原样返回，前序调用逐字节不变（严格扩张）；
+/// - **四档都不中⛔ 不报错**：仍返回原样路径，由 [`load`] / [`plan_load_sfz`] 以既有
+///   的 `sfzReadFailed` 报告 —— 错误码与 `data.reason` 的形状不变，只是 `path`
+///   现在可能已被解析成绝对路径；
+/// - `project_dir` 为 `None`（没打开工程）⇒ 少掉"工程目录"一档，其余三档照试。
+///
 /// # Errors
 ///
 /// 缺 `path` / 空 `path` / `sampleHz` 非有限正数 ⇒ `INVALID_PARAMETER_RANGE`。
 pub fn parse_load_arguments(
     arguments: &serde_json::Map<String, serde_json::Value>,
+    project_dir: Option<&std::path::Path>,
 ) -> Result<(PathBuf, f32), Fault> {
     let path = arguments
         .get("path")
@@ -1148,7 +1166,27 @@ pub fn parse_load_arguments(
             hz
         }
     };
-    Ok((PathBuf::from(path), sample_hz))
+    Ok((resolve_load_path(path, project_dir), sample_hz))
+}
+
+/// `path` → **真的存在**的那份文件；解析不出（四档都不中）⇒ 原样返回。
+///
+/// 与 [`super::render::resolve_sampler_path`] 是**同一个函数**（⛔ 不复制候选表）：
+/// 后者在绝对路径 / 四档都不中时返回 `Fault`，这里把它翻成"原样"，因为装载失败
+/// 的报告职责在 [`load`]，本函数只管"能不能先换成一份找得到的路径"。
+fn resolve_load_path(raw: &str, project_dir: Option<&std::path::Path>) -> PathBuf {
+    // ⚠ `resolve_sampler_path` 收的是**工程文件**的路径、内部取 `parent()` 当"工程目录"。
+    // 所以这里要**补一个文件名**再交过去 —— 直接传目录会再被削一层（实测：传
+    // `/x/projects` ⇒ 候选变成 `/x/assets/samples/…`，工程目录那一档整个失效）。
+    // 没有活跃工程时给一个不存在的相对名 ⇒ `parent()` 为空 ⇒ 跳过该档。
+    let anchor = match project_dir {
+        Some(dir) => dir.join("__active_project__.yeban"),
+        None => PathBuf::from("__no_project__"),
+    };
+    match super::render::resolve_sampler_path(raw, &anchor) {
+        Ok(resolved) => resolved,
+        Err(_) => PathBuf::from(raw),
+    }
 }
 
 /// 装载一份 SFZ：读文件 ⇒ SHA-256 ⇒ 解析 ⇒ 区域摘要。
@@ -2750,21 +2788,21 @@ mod tests {
             map
         };
         assert_eq!(
-            parse_load_arguments(&arguments(None))
+            parse_load_arguments(&arguments(None), None)
                 .expect("缺省组合法")
                 .1,
             DEFAULT_SAMPLE_HZ,
             "缺省 ⇒ {DEFAULT_SAMPLE_HZ}"
         );
         assert_eq!(
-            parse_load_arguments(&arguments(Some(serde_json::json!(44_100))))
+            parse_load_arguments(&arguments(Some(serde_json::json!(44_100))), None)
                 .expect("数字合法")
                 .1,
             44_100.0
         );
 
         let Fault::Domain { code, message, .. } =
-            parse_load_arguments(&arguments(Some(serde_json::json!("fast"))))
+            parse_load_arguments(&arguments(Some(serde_json::json!("fast"))), None)
                 .expect_err("非数字必须被拒")
         else {
             panic!("必须是领域失败");
@@ -2777,7 +2815,7 @@ mod tests {
 
         for bad in [0.0, -1.0] {
             let Fault::Domain { code, message, .. } =
-                parse_load_arguments(&arguments(Some(serde_json::json!(bad))))
+                parse_load_arguments(&arguments(Some(serde_json::json!(bad))), None)
                     .expect_err("非正数必须被拒")
             else {
                 panic!("必须是领域失败");

@@ -268,7 +268,7 @@ fn fnv1a_64(samples: &[f32]) -> u64 {
 /// 平滑器/重放副本 **4784 B**；⭐ **S1 第一片**再加两个 `u64` 事件计数
 /// `strip_output_gain_events` / `strip_output_gain_value_rejects` = **＋16 B** ⇒ **现读 186736**；
 /// 门槛仍是 192 KiB = 196608）。
-const ENGINE_RUNTIME_BYTES: usize = 200_112;
+const ENGINE_RUNTIME_BYTES: usize = 45_648;
 
 /// S5 夹具：两个音符（1 tick = 25 样本）。⭐ 本夹具与**接线前**测指纹时**一字不差**。
 const SFZ_NOTES: [NoteSpec; 2] = [

@@ -3819,7 +3819,14 @@ fn plan_import_midi(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
 /// **不碰工程状态**、**不落盘**。读盘是"装载"这件事本身的语义（与
 /// `yeban_open_project` 的 `plan` 真的读盘同一条口径）。
 fn plan_load_sfz(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
-    let (path, sample_hz) = sfz::parse_load_arguments(&call.arguments)?;
+    // ⭐ 补丁 `P1`：**相对路径**（`assets/samples/<乐器>/…`）先按渲染侧那**四档**
+    // 解析成一份找得到的文件（工程目录 ⇒ 采样库根 ⇒ 仓库根 ⇒ cwd），再交给 `load`。
+    // 修前本行是 `parse_load_arguments(&call.arguments)?`，返回的 `PathBuf` 原样
+    // 进 `fs::read` ⇒ 相对路径必失败，与 `yeban_render_master` 的解析口径不一致。
+    let project_dir = domain
+        .active_path()
+        .and_then(|path| path.parent().map(Path::to_path_buf));
+    let (path, sample_hz) = sfz::parse_load_arguments(&call.arguments, project_dir.as_deref())?;
     // ⭐ 样本读取预算（`maxSampleFiles` / `maxSampleFrames`；缺省 = 合理默认值）。
     // 与 `yeban_render_master` 的**同一份**解析实现 ⇒ 两个工具对同一条预算说同一句话。
     let limits = sfz::parse_sample_limits(&call.arguments)?;

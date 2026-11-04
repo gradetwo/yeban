@@ -163,12 +163,33 @@ use crate::snapshot::{EngineSnapshot, SnapshotError};
 /// 与 `yeban-dsp::limiter` 上移后 `mixer.rs` 只 `pub use` 同形 [ARCH-DSP-001]。
 pub use yeban_dsp::polysynth::VOICES_PER_SLOT as VOICES_PER_TRACK;
 
-/// 声部池支持的**轨道槽**上限（定长，构造期确定）。
+/// 声部池的**默认轨道槽数**（构造期确定，运行期可覆盖）。
 ///
-/// 超过上限的轨道不参与合成（不 panic、不扩容），由 [`SynthEngine::track_drops`] 计数。
-/// 16 条合成轨道足够一个最小引擎；提高它需要重新评估实时侧内存占用
-/// （每槽 16 个声部 ≈ 1.4 KiB）。
-pub const MAX_TRACK_SLOTS: usize = 16;
+/// 为什么从 16 提到 1024：16 条轨是"最小引擎"的尺寸，而**三部以上**的组曲、
+/// 影视配乐、逐轨分轨渲染都会轻易越过它，越过之后引擎**不报错**——只是把多出来的
+/// 轨道静默丢弃（只有 [`SynthEngine::track_drops`] 计数）。这不是"够不够用"的
+/// 调优问题，是"工程规模稍大就少声部"的正确性问题。
+///
+/// 代价（构造期一次性分配，**不在音频线程上**）：每槽 ≈
+/// `size_of::<TrackSlot>()`（16 个复音声部 ≈ 1.4 KiB ＋ 一台鼓机 13 616 B）
+/// ⇒ 1024 槽 ≈ **15.4 MiB** 堆。⛔ 不是栈：见 [`SynthEngine`] 的字段文档。
+///
+/// 调小/调大用 [`SynthEngine::with_track_slots`]；上限 [`MAX_TRACK_SLOTS`]。
+pub const DEFAULT_TRACK_SLOTS: usize = 1024;
+
+/// 声部池支持的**轨道槽**硬上限（构造期校验，`with_track_slots` 越界即钳到它）。
+///
+/// 它⛔ 不再是"实际容量"，只是"参数调整的合法区间"的上端。取 2048 而不是更大的
+/// 理由**不是**声部池本身（它每格 1.4 KiB，8192 也只 11 MiB），而是
+/// `rt.rs` 里那批**与它同源**的表：`armed_pan_gains` / `armed_pan_l` /
+/// `armed_pan_r` / `armed_strips` / `key_taps` / `routing_buses` 都按这个长度定长，
+/// 而且其中几张在每个量子上都要整体拷一次（`rt.rs` 的 `#300` 声相段）。
+/// 2048 是"两档"：默认 1024，够调高一倍，又不让那些**每量子**的拷贝变成
+/// 几十 KiB 一次的常态开销。
+pub const MAX_TRACK_SLOTS: usize = 2048;
+
+/// 声部池的**最少**轨道槽数（至少要能装一条轨）。
+pub const MIN_TRACK_SLOTS: usize = 1;
 
 /// 单轨音符调度表的容量上限（条）。
 ///
@@ -1227,7 +1248,13 @@ pub struct SynthEngine {
     steal_fade_frames: u32,
     /// 播放头（绝对样本位置）。
     position: u64,
-    slots: [TrackSlot; MAX_TRACK_SLOTS],
+    /// **声部槽表**（容量 = 构造期传入的 `track_slots`，见 [`DEFAULT_TRACK_SLOTS`]）。
+    ///
+    /// ⚠ 从定长数组改成 `Box<[_]>` 的原因不是风格：1024 槽 × `size_of::<TrackSlot>()`
+    /// ≈ 15 MiB，而 [`crate::rt::EngineRuntime`] 是**按值**构造、按值搬进回调的
+    /// ⇒ 放在栈上会在打开设备时直接爆栈。分配次数 **1**，发生在
+    /// [`SynthEngine::with_track_slots`]（⛔ 不在 `begin_snapshot` 里）。
+    slots: Box<[TrackSlot]>,
     track_drops: u64,
     notes_triggered: u64,
     /// **每槽一台鼓机**（`line/engine-drums`）。下标与 [`Self::slots`] 同源。
@@ -1249,7 +1276,7 @@ pub struct SynthEngine {
     /// 同时是审计状态：快照边界用它做"参数变了才 `set_params`"的比较、
     /// "换轨 ⇒ `reset`"，以及 [`SynthEngine::drum_params`] 的读数。
     /// 槽位身份一起存（`EntityId`），因为"本槽被另一条轨接管"必须能分辨。
-    drum_slots: [Option<(EntityId, DrumsParams)>; MAX_TRACK_SLOTS],
+    drum_slots: Box<[Option<(EntityId, DrumsParams)>]>,
     /// 累计的**鼓击触发数**（每触发一次 [`DrumMachine::trigger`] 记 1）。
     ///
     /// 它是"鼓机真的接在信号路径上"的覆盖度读数 —— 与 `EngineStats::metronome_clicks`
@@ -1262,35 +1289,83 @@ pub struct SynthEngine {
     /// ⇒ 三件同轨 = `3`，而分派次序（鼓机 ＞ SFZ ＞ 复音）只让**一件**发声
     /// ⇒ [`Self::ignored_sources`] = `2`：这就是 `sfz-needs-3` 的**可读信号**
     /// （⛔ 不是把三件叠加）。`u8` ⇒ 定长数组，⛔ 不分配、不进逐样本路径。
-    armed_sources: [u8; MAX_TRACK_SLOTS],
+    armed_sources: Box<[u8]>,
+    /// `begin_snapshot` 的**音色投影暂存**（容量 = `track_slots`，构造期分配一次）。
+    ///
+    /// 为什么是字段而不是局部变量：`begin_snapshot` 运行在音频线程上
+    /// [MUST-GATE-001] ⇒ 那里**一次也不许分配**；而"按 id 查本轨音色"又必须先把
+    /// 一次性迭代器 `tones` 落下来才能对着 `slots` 查两遍。定长栈数组在容量可配置
+    /// 之后不再可行（1024 项 × `size_of::<(EntityId, ToneParams)>`），
+    /// ⇒ 用一个**复用的**堆缓冲，语义与原来的 `wanted` 栈数组逐位相同。
+    wanted_tones: Box<[(EntityId, ToneParams)]>,
+    /// `begin_snapshot` 的**鼓机投影暂存**（与 [`Self::wanted_tones`] 同一条纪律）。
+    wanted_drums: Box<[Option<(EntityId, DrumsParams)>]>,
+    /// 构造时**请求**的轨道槽数（与 [`Self::slots`] 的长度对照，用来看是否被钳过）。
+    requested_track_slots: usize,
 }
 
 impl SynthEngine {
-    /// 构造：建好波形库与各槽的器件（**允许分配**：这一步在打开设备之前）。
+    /// 构造：按**默认**轨道槽数（[`DEFAULT_TRACK_SLOTS`] = 1024）建好波形库与各槽器件。
+    ///
+    /// 需要别的容量用 [`Self::with_track_slots`]（这是唯一的容量入口）。
+    #[must_use]
+    pub fn new(sample_rate: u32) -> Self {
+        Self::with_track_slots(sample_rate, DEFAULT_TRACK_SLOTS)
+    }
+
+    /// 构造：按**指定**轨道槽数建好波形库与各槽器件（**允许分配**：这一步在打开设备前）。
+    ///
+    /// `track_slots` 会被钳进 `[`MIN_TRACK_SLOTS`, `MAX_TRACK_SLOTS`]`：
+    /// 越界不报错（构造期没有可上报的地方），但会被记在
+    /// [`Self::requested_track_slots`] 与 [`Self::track_slots`] 的差上 ⇒
+    /// "参数被钳过"是可读的，⛔ 不是静默。
     ///
     /// 波形库按 [`ENGINE_WAVE_RECIPES`] 建**五张**表（下标 0 = [`HOLLOW`]）。
     /// `sample_rate` 先按传入值武装；真正的采样率在第一次
     /// [`begin_snapshot`](Self::begin_snapshot) 时按快照校准。
+    ///
+    /// # 内存
+    ///
+    /// 三条 `Box<[_]>` 各分配**一次**（`slots` / `drums` / `drum_slots` /
+    /// `armed_sources` / 两份投影暂存），全部在这一次调用里完成，回调内一次也不分配。
     #[must_use]
-    pub fn new(sample_rate: u32) -> Self {
+    pub fn with_track_slots(sample_rate: u32, track_slots: usize) -> Self {
         let sample_rate_f32 = sanitise_sample_rate(sample_rate);
         let wave_recipes = ENGINE_WAVE_RECIPES.map(|(_, recipe)| recipe);
+        let capacity = track_slots.clamp(MIN_TRACK_SLOTS, MAX_TRACK_SLOTS);
         Self {
             tables: PolySynthTables::from_recipes(&wave_recipes),
             sample_rate: sample_rate_f32,
             steal_fade_frames: steal_fade_frames_for(sample_rate_f32),
             position: 0,
-            slots: [TrackSlot::empty(sample_rate); MAX_TRACK_SLOTS],
+            slots: vec![TrackSlot::empty(sample_rate); capacity].into_boxed_slice(),
             track_drops: 0,
             notes_triggered: 0,
             // 鼓机池：**构造期一次性分配**（`vec!` 在这里，不在 `begin_snapshot` 里），
             // 分配次数 1（见字段文档的尺寸读数与理由）。
-            drums: vec![DrumMachine::new(sample_rate); MAX_TRACK_SLOTS].into_boxed_slice(),
-            drum_slots: [None; MAX_TRACK_SLOTS],
+            drums: vec![DrumMachine::new(sample_rate); capacity].into_boxed_slice(),
+            drum_slots: vec![None; capacity].into_boxed_slice(),
             drum_hits: 0,
             // ⭐ `0` = 本槽还没渲染过（见字段文档）；渲染一次即写入真实件数。
-            armed_sources: [0; MAX_TRACK_SLOTS],
+            armed_sources: vec![0; capacity].into_boxed_slice(),
+            // 投影暂存：与槽位数同长（`ToneParams` 是 `Copy` ⇒ 用哨兵填充即可）。
+            wanted_tones: vec![(EntityId::default(), ToneParams::bypass()); capacity]
+                .into_boxed_slice(),
+            wanted_drums: vec![None; capacity].into_boxed_slice(),
+            requested_track_slots: track_slots,
         }
+    }
+
+    /// 本引擎**实际**的轨道槽数（构造期确定，运行期不变）。
+    #[must_use]
+    pub fn track_slots(&self) -> usize {
+        self.slots.len()
+    }
+
+    /// 构造时**请求**的轨道槽数（可能被钳过，见 [`Self::with_track_slots`]）。
+    #[must_use]
+    pub const fn requested_track_slots(&self) -> usize {
+        self.requested_track_slots
     }
 
     /// 当前播放头（绝对样本位置）。
@@ -1991,31 +2066,28 @@ impl SynthEngine {
             self.steal_fade_frames = steal_fade_frames_for(sample_rate);
         }
 
-        // 先把本快照的每轨音色收进一个**定长数组**（栈上，无分配）：
-        // 轨道槽最多 MAX_TRACK_SLOTS 个，因此"查表"永远不需要分配。
-        let mut wanted: [(EntityId, ToneParams); MAX_TRACK_SLOTS] =
-            [(EntityId::default(), ToneParams::bypass()); MAX_TRACK_SLOTS];
+        // 先把本快照的每轨音色收进**构造期就分配好的**暂存（⚠ 不能是栈数组：
+        // 容量现在是运行期值，1024 项放在栈上既爆栈也不可移植 [MUST-GATE-001]）。
+        let capacity = self.slots.len();
         let mut wanted_len = 0usize;
         for (id, tone) in tones {
-            if wanted_len >= MAX_TRACK_SLOTS {
+            if wanted_len >= capacity {
                 break;
             }
-            wanted[wanted_len] = (*id, *tone);
+            self.wanted_tones[wanted_len] = (*id, *tone);
             wanted_len += 1;
         }
 
-        // 同理收鼓机投影（**定长数组，栈上，无分配**）：`DrumsParams` 是 `Copy`
-        // 值类型（`DrumKitParams` 128 字节 + 五个 `u8`），16 项 ≈ 2.7 KiB 栈。
+        // 同理收鼓机投影（**复用的堆暂存，零分配**）：`DrumsParams` 是 `Copy`
+        // 值类型（`DrumKitParams` 128 字节 + 五个 `u8`）。
         // 用 `Option` 而不是哨兵值：本 crate 的槽位身份是 `EntityId`，而"未占用"
         // 槽位的 id 就是 nil —— 哨兵会让"未占用槽位"误命中。
-        let mut wanted_drums: [Option<(EntityId, DrumsParams)>; MAX_TRACK_SLOTS] =
-            [None; MAX_TRACK_SLOTS];
         let mut wanted_drums_len = 0usize;
         for (id, params) in drums {
-            if wanted_drums_len >= MAX_TRACK_SLOTS {
+            if wanted_drums_len >= capacity {
                 break;
             }
-            wanted_drums[wanted_drums_len] = Some((*id, *params));
+            self.wanted_drums[wanted_drums_len] = Some((*id, *params));
             wanted_drums_len += 1;
         }
 
@@ -2054,7 +2126,7 @@ impl SynthEngine {
         let tables = &self.tables;
         let steal_fade_frames = self.steal_fade_frames;
         for slot in &mut self.slots {
-            let tone = wanted[..wanted_len]
+            let tone = self.wanted_tones[..wanted_len]
                 .iter()
                 .find(|(id, _)| *id == slot.id)
                 .map(|(_, tone)| *tone)
@@ -2091,9 +2163,13 @@ impl SynthEngine {
             slots,
             drums,
             drum_slots,
+            wanted_drums,
             ..
         } = self;
-        for index in 0..MAX_TRACK_SLOTS {
+        let wanted_drums = &wanted_drums[..wanted_drums_len];
+        // ⚠ 槽位数是**运行期**值（`with_track_slots` 决定）⇒ 循环边界取数组长度，
+        // ⛔ 不再是编译期常量。三张表长度由构造期同一次 `capacity` 保证一致。
+        for index in 0..slots.len() {
             let present_id = if slots[index].assigned && slots[index].present {
                 Some(slots[index].id)
             } else {
@@ -2897,28 +2973,54 @@ mod tests {
     }
 
     /// 判据：轨道槽耗尽不 panic，只计数。
+    ///
+    /// ⚠ 用 **4 槽**的小引擎跑（`with_track_slots(.., 4)`），而不是默认的 1024：
+    /// 这条判据量的是"越界只计数"这条**边界**，⛔ 不是容量本身 ⇒ 边界必须能被
+    /// 一次性踩到，否则判据既慢又测不到东西。
     #[test]
     fn slot_exhaustion_is_counted_and_never_panics() {
-        let mut engine = SynthEngine::new(48_000);
-        let ids: Vec<EntityId> = (0..MAX_TRACK_SLOTS + 3).map(|_| EntityId::new()).collect();
+        let mut engine = SynthEngine::with_track_slots(48_000, 4);
+        assert_eq!(engine.track_slots(), 4, "容量必须是运行期可配的那一个");
+        let ids: Vec<EntityId> = (0..7).map(|_| EntityId::new()).collect();
         engine.begin_snapshot(48_000, &ids, [], []);
         assert_eq!(engine.track_drops(), 3);
         assert_eq!(engine.table_levels(), yeban_dsp::oscillator::LEVELS);
     }
 
-    /// 判据：**鼓机投影**的槽位上限与声部池是**同一条边界**（`>= MAX_TRACK_SLOTS`）。
+    /// 判据：**默认**容量是 [`DEFAULT_TRACK_SLOTS`]（1024），且越界请求被钳。
+    #[test]
+    fn track_slot_capacity_is_configurable_and_clamped() {
+        assert_eq!(SynthEngine::new(48_000).track_slots(), DEFAULT_TRACK_SLOTS);
+        assert_eq!(
+            SynthEngine::with_track_slots(48_000, 0).track_slots(),
+            MIN_TRACK_SLOTS,
+            "0 必须被钳到下限（⛔ 不是建一个没有槽的引擎）"
+        );
+        assert_eq!(
+            SynthEngine::with_track_slots(48_000, MAX_TRACK_SLOTS + 1).track_slots(),
+            MAX_TRACK_SLOTS,
+            "超上限必须被钳（⛔ 不是无界分配）"
+        );
+        let engine = SynthEngine::with_track_slots(48_000, 32);
+        assert_eq!(engine.track_slots(), 32);
+        assert_eq!(engine.requested_track_slots(), 32);
+    }
+
+    /// 判据：**鼓机投影**的槽位边界与声部池是**同一条边界**（`>= capacity`）。
     ///
-    /// `begin_snapshot` 把本快照的鼓机收进一个**定长栈数组**
-    /// `wanted_drums: [Option<(EntityId, DrumsParams)>; MAX_TRACK_SLOTS]`。
-    /// 守卫若写成 `wanted_drums_len > MAX_TRACK_SLOTS`，第 `MAX_TRACK_SLOTS + 1` 条
-    /// 鼓机轨就会写 `wanted_drums[MAX_TRACK_SLOTS]` ⇒ **数组越界 panic**。
-    /// 声部池那一侧（上一条判据）早已被钉住，鼓机这一侧此前没有判据 ——
-    /// 同一道边界的**两半必须各自有判据**。
+    /// `begin_snapshot` 把本快照的鼓机收进构造期分配的暂存
+    /// `wanted_drums: Box<[Option<(EntityId, DrumsParams)>]>`（长度 = 槽位数）。
+    /// 守卫若写成 `wanted_drums_len > capacity`，第 `capacity + 1` 条鼓机轨就会写
+    /// `wanted_drums[capacity]` ⇒ **越界 panic**。声部池那一侧（上一条判据）早已被
+    /// 钉住，鼓机这一侧此前没有判据 —— 同一道边界的**两半必须各自有判据**。
     ///
-    /// **量什么**：`MAX_TRACK_SLOTS + 1` 条鼓机轨下 `begin_snapshot` 是否返回
+    /// **量什么**：`capacity + 1` 条鼓机轨下 `begin_snapshot` 是否返回
     /// （不 panic）、`track_drops`（条）、以及第一条鼓机轨是否真的被武装（覆盖度见证）。
     ///
-    /// 注入实测：`if wanted_drums_len >= MAX_TRACK_SLOTS {` → `>`
+    /// ⚠ 容量取 **4**（运行期可配）⇒ 边界一次性踩到；用默认 1024 跑这条判据
+    /// 既慢又只是在"没踩到边界"上拿绿灯。
+    ///
+    /// 注入实测：`if wanted_drums_len >= capacity {` → `>`
     /// （`synth.rs`）⇒ 本判据实测变红（`index out of bounds`）。
     #[test]
     fn drum_slot_exhaustion_is_counted_and_never_panics() {
@@ -2945,16 +3047,16 @@ mod tests {
             plugin: None,
         };
         let params = DrumsParams::from_devices(&[device]).expect("五个键位写全 ⇒ 必须武装");
-        let ids: Vec<EntityId> = (0..MAX_TRACK_SLOTS + 1).map(|_| EntityId::new()).collect();
+        const CAPACITY: usize = 4;
+        let ids: Vec<EntityId> = (0..CAPACITY + 1).map(|_| EntityId::new()).collect();
         let drums: Vec<(&EntityId, &DrumsParams)> = ids.iter().map(|id| (id, &params)).collect();
 
-        let mut engine = SynthEngine::new(48_000);
+        let mut engine = SynthEngine::with_track_slots(48_000, CAPACITY);
         engine.begin_snapshot(48_000, &ids, [], drums);
         assert_eq!(
             engine.track_drops(),
             1,
-            "第 {} 条轨必须被计数（不 panic、不扩容）",
-            MAX_TRACK_SLOTS + 1
+            "第 {CAPACITY} 条轨必须被计数（不 panic、不扩容）"
         );
         assert!(
             engine.drum_params(ids[0]).is_some(),
