@@ -84,6 +84,7 @@ fn attach_latency_device(project: &mut YebanProjectV1, track: EntityId, frames: 
         bypassed: false,
         params: Vec::new(),
         latency_samples: frames,
+        plugin: None,
     };
     project
         .tracks

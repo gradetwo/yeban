@@ -49,6 +49,13 @@ export component MixerConsole inherits Rectangle {
     in property <[string]> track-sampler-paths: [];
     in property <[color]> track-colors: [];
     in property <[string]> track-color-labels: [];
+    // ⭐ 轨道身份数组与当前选中轨身份（与编曲视图同款，按身份键控）
+    in property <[string]> track-ids: [];
+    in property <string> selected-track-id: "";
+    // 点击通道条 ⇒ 选中这条轨（宿主写 selected-track-id 并重投影）
+    callback track-select(int);
+    /// 轨道重命名：`(轨道下标, 新名称)`。
+    callback track-rename(int, string);
 
     // ---- ⭐ 素材池（任务单 `#133`）---------------------------------------------
     // 三个平行数组由 `src/host.rs` 的 `apply_view` 单向注入，唯一事实源是
@@ -507,12 +514,23 @@ export component MixerConsole inherits Rectangle {
             height: parent.height - 16px;
             background: track_index.mod(2) == 0 ? Tokens.bg-panel : Tokens.bg-shell;
             border-radius: Tokens.radius-md;
-            border-width: 1px;
-            border-color: Tokens.line;
+            border-width: (root.selected-track-id != "" && root.selected-track-id == root.track-ids[track_index]) ? 2px : 1px;
+            border-color: (root.selected-track-id != "" && root.selected-track-id == root.track-ids[track_index]) ? Tokens.gold : Tokens.line;
             clip: true;
             accessible-role: groupbox;
             accessible-id: "track-" + track_index + "-channel-strip";
             accessible-label: "通道条 " + track_name;
+            accessible-item-selected: root.selected-track-id != "" && root.selected-track-id == root.track-ids[track_index];
+            accessible-action-default => { root.track-select(track_index); }
+
+            // 点击通道条任意空白区域 ⇒ 选中本轨（对齐 Apple Logic Pro）
+            TouchArea {
+                width: parent.width;
+                height: parent.height;
+                clicked => {
+                    root.track-select(track_index);
+                }
+            }
 
             UiMediumText {
                 x: Tokens.space-3;
@@ -888,12 +906,14 @@ export component MixerConsole inherits Rectangle {
                 y: 54px;
                 width: 48px;
                 height: 116px;
-                // 双击 ⇒ 这一轨推子回 unity（`0 dB`）。几何一位不动（见上面那条回调的边界说明）。
+                // 双击 ⇒ 这一轨推子回 unity（`0 dB`）。
                 double-clicked => {
+                    root.track-select(track_index);
                     root.mixer-fader-reset(track_index);
                 }
                 pointer-event(event) => {
                     if event.kind == PointerEventKind.down {
+                        root.track-select(track_index);
                         root.mixer-fader-grab(track_index, self.mouse-y);
                     } else if event.kind == PointerEventKind.move {
                         root.mixer-fader-drag(track_index, self.mouse-y);
@@ -912,10 +932,12 @@ export component MixerConsole inherits Rectangle {
                 height: 18px;
                 // 双击 ⇒ 这一轨声相回中央（`0.0`）。
                 double-clicked => {
+                    root.track-select(track_index);
                     root.mixer-pan-reset(track_index);
                 }
                 pointer-event(event) => {
                     if event.kind == PointerEventKind.down {
+                        root.track-select(track_index);
                         root.mixer-pan-grab(track_index, self.mouse-x);
                     } else if event.kind == PointerEventKind.move {
                         root.mixer-pan-drag(track_index, self.mouse-x);

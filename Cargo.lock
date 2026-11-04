@@ -6667,6 +6667,7 @@ dependencies = [
  "yeban-midi",
  "yeban-midi-io",
  "yeban-model",
+ "yeban-plugin-host",
  "yeban-record",
  "yeban-render",
  "yeban-sfz",
@@ -6729,6 +6730,7 @@ dependencies = [
  "yeban-engine",
  "yeban-midi",
  "yeban-model",
+ "yeban-plugin-host",
  "yeban-sfz",
 ]
 

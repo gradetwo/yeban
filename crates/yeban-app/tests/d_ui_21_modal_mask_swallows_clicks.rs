@@ -1,0 +1,264 @@
+//! **模态遮罩吞掉鼠标** —— `D-UI-21` 端到端判据。
+//!
+//! ## 本文件要证的句子
+//!
+//! 模态开着的时候，鼠标**点不到下层**：落在遮罩上的一击被吃掉，下层控件收不到。
+//! 修前的事实是（`docs/ledger/app-zimmer-ui-notes.md` §32/§33 登记）：两份模态的遮罩都只是一层
+//! `Rectangle` 背景，而 **`Rectangle` 对鼠标事件返回 `EventIgnored`** —— Slint 里只有 `TouchArea`
+//! 会拦（`i-slint-core-1.18.1/items/input_items.rs`：`Pressed` 那一支返回 `GrabMouse`，
+//! 与有没有写 `clicked` **无关**）⇒ 「弹窗开着还能改下层」是遮罩**只挡眼睛不挡手**的直接后果。
+//!
+//! ## 判据
+//!
+//! | 判据 | 证的事 |
+//! | :--- | :--- |
+//! | ① 对照臂 | 弹窗**关着**时，注入一次真指针点击到 `console-maximize-button` ⇒ `console-maximized` 翻 `true`；再点 ⇒ 翻回 `false`。⛔ 这条先把「这条路本来是活的」钉住，否则 ③ 的「没翻」什么也不证 |
+//! | ② 前提几何 | 弹窗开着 ⇒ 重抓的运行时树里 `console-maximize-button` **仍在场且有包围盒**，其中心**不在** `export-wav-panel` 的矩形内 ⇒ 待会儿挡住它的是**遮罩**，⛔ 不是「控件不在场」，也⛔ 不是「面板压着它」 |
+//! | ③ 遮罩真的吞 | 同一坐标再点一次 ⇒ `console-maximized` **必须仍是** `false`，且弹窗仍开着（一击被吃掉：⛔ 既不穿到下层，也⛔ 不误关面板） |
+//! | ④ 面板自己仍可点 | 点弹窗内的 ✕（`export-wav-close-button`）⇒ 弹窗关闭 ⇒ 遮罩声明在面板**之前**，面板里的命中测试一位未动 |
+//! | ⑤ 关掉后同一条路复活 | 弹窗已关 ⇒ 再点同一处 ⇒ 翻 `true` ⇒ 证 ③ 的「没翻」是遮罩，⛔ 不是回调坏了 |
+//! | ⑥ 时光机同款 | `undo-tree-open` 期间点同一处 ⇒ **不翻**；关掉 ⇒ 翻回来 ⇒ 两份模态一起钉 |
+//! | ⑦ 源码纪律 | 两份模态各有**恰好一枚**「无 `clicked` 的全尺寸 `TouchArea`」，且它排在面板 id 之前；`accessible-id` 位数一位未增（⛔ 不新增可寻址控件） |
+//!
+//! ⚠ 本文件**不**跑导出：只开合弹窗与点按钮 ⇒ ⛔ 不写任何文件（`export-wav` 的落盘路径因此
+//! 不需要覆盖成临时目录）。
+//!
+//! ## 平台约束
+//!
+//! `slint::platform::set_platform` 是线程局部的，且每个线程只能装配一次 ⇒ **活体**判据只有
+//! 一个 `#[test]`（与 `tests/console_maximize.rs` 同款）；⑦ 不碰 Slint，另开一个。
+
+use yeban_app::bridge::ViewState;
+use yeban_app::host;
+use yeban_app::scene::DemoScene;
+use yeban_ui_test_port::render::LivePort;
+use yeban_ui_test_port::{Permission, PointerButton, Rect, Size, UiTestPort as _};
+
+/// 与其余 Tier-1 判据同款。
+const WINDOW: Size = Size::new(1440, 900);
+
+/// 下层那个「受害者」：底部控制台右上角的 `⤢`。选它的理由有三 ——
+/// 它离弹窗面板足够远（② 现算现证）、它的点击有**一个纯视图态布尔**跟着翻（读得到）、
+/// 它不需要 `UndoPort`（本装配⛔ 不接撤销面）。
+const VICTIM: &str = "console-maximize-button";
+
+type Port = LivePort<yeban_app::ui::MainWindow>;
+
+fn live_window() -> Port {
+    let project = yeban_model::samples::filled_project();
+    let view = ViewState::from_project(&project).expect("夹具必须能投影");
+    let scene = DemoScene::from_view(&view);
+    let port = LivePort::new(WINDOW, Permission::Interactive, None, || {
+        host::build_main_window(&view, &scene)
+    })
+    .expect("Tier-1 平台 + 生产窗口构造入口");
+    // 生产接线（`main.rs` 与无头装配调的是**同一个**函数）。
+    host::wire_view_callbacks(port.ui());
+    // ⭐ 开合弹窗那两条回调挂在模块入口的装配里 ⇒ ④ 点 ✕ 走的必须是**宿主那条**
+    // `on_close_export_wav`（⛔ 不是判据自己 `set_export_wav_open(false)` 冒充用户）。
+    // `None` 那个参数是有意的：本文件从不**跑**导出（那才需要工程事实源），只开合弹窗。
+    let _midi_in_state = host::wire_module_actions(port.ui(), None);
+    port
+}
+
+/// 重抓几何后，按**元素自身**的 `(2, 2)` 注入一次真实左键：按下 → 抬起。
+///
+/// ⚠ 每一次之前都要重抓控件树：`dispatch_pointer_down` 用的是端口里**缓存**的包围盒，
+/// 而 ① 之后控制台的高度真的变了（最大化 ⇒ 按钮会移动）。偏移取 `(2.0, 2.0)` 与
+/// `tests/console_maximize.rs` / `tests/undo_tree_close_button.rs` 逐字同款 —— 命中面是
+/// 那些控件盒子里左上角那枚铺满的 `TouchArea`。
+fn click(port: &mut Port, element_id: &str) {
+    port.refresh_tree(None).expect("注入之前必须重抓几何");
+    port.dispatch_pointer_down(element_id, 2.0, 2.0, PointerButton::Left)
+        .unwrap_or_else(|error| {
+            panic!("`{element_id}` 的按下必须落到活窗口（Interactive 档）：{error:?}")
+        });
+    port.dispatch_pointer_up(PointerButton::Left)
+        .expect("指针释放必须落到活窗口");
+}
+
+/// 某个 id 在本帧运行时树里的包围盒（不在场就 panic —— 那是前提不成立，⛔ 不是判据要绿的结论）。
+fn bounds_of(port: &mut Port, id: &str) -> Rect {
+    let tree = port.refresh_tree(None).expect("必须能重抓控件树");
+    tree.find_by_id(id)
+        .unwrap_or_else(|| panic!("运行时控件树里找不到 `{id}`"))
+        .bounds
+        .unwrap_or_else(|| panic!("`{id}` 必须有几何包围盒"))
+}
+
+/// 某个 id 这一帧在不在运行时树里。
+fn present(port: &mut Port, id: &str) -> bool {
+    let tree = port.refresh_tree(None).expect("必须能重抓控件树");
+    tree.find_by_id(id).is_some()
+}
+
+#[test]
+fn an_open_modal_swallows_pointer_clicks_that_would_otherwise_reach_the_layer_below() {
+    let mut port = live_window();
+
+    // ---- ① 对照臂：弹窗关着时这条路是活的 ----
+    assert!(
+        !port.ui().get_console_maximized(),
+        "装配态必须是**未最大化**（否则 ① 的翻转方向说不清）"
+    );
+    click(&mut port, VICTIM);
+    assert!(
+        port.ui().get_console_maximized(),
+        "① 对照臂：`{VICTIM}` 的真点击必须真的翻属性 —— ⛔ 这条不成立时，③ 的「没翻」什么也不证"
+    );
+    click(&mut port, VICTIM);
+    assert!(
+        !port.ui().get_console_maximized(),
+        "① 对照臂的可逆性：第二次点击必须还原（属性停在 true 会让 ③ 与 ⑤ 失去区分度）"
+    );
+
+    // ---- ② 前提几何：挡住它的必须是遮罩，不是「不在场」也不是「面板压着」 ----
+    port.ui().invoke_open_export_wav();
+    assert!(
+        port.ui().get_export_wav_open(),
+        "② 弹窗必须已打开（走的是宿主 `on_open_export_wav` 那一条，与用户点模块入口同一条链）"
+    );
+    assert!(
+        present(&mut port, "export-wav-dialog") && present(&mut port, VICTIM),
+        "② 弹窗与下层受害者必须**同时在**运行时树里：证的是遮挡，⛔ 不是缺席"
+    );
+    let victim = bounds_of(&mut port, VICTIM);
+    let panel = bounds_of(&mut port, "export-wav-panel");
+    let center_x = f64::from(victim.x) + f64::from(victim.width) / 2.0;
+    let center_y = f64::from(victim.y) + f64::from(victim.height) / 2.0;
+    let inside_panel = f64::from(panel.x) <= center_x
+        && center_x < f64::from(panel.x) + f64::from(panel.width)
+        && f64::from(panel.y) <= center_y
+        && center_y < f64::from(panel.y) + f64::from(panel.height);
+    assert!(
+        !inside_panel,
+        "② 受害者的中心必须落在弹窗**面板之外**（否则 ③ 挡住它的是面板，不是遮罩）：\
+         victim={victim:?} panel={panel:?}"
+    );
+
+    // ---- ③ 遮罩真的吞这一击 ----
+    click(&mut port, VICTIM);
+    assert!(
+        !port.ui().get_console_maximized(),
+        "③ 弹窗开着时，同一处的点击必须被遮罩**吃掉** ⇒ 下层属性不许翻（修前这一条是红的：\
+         `Rectangle` 遮罩对鼠标返回 `EventIgnored`，点击穿到下层）"
+    );
+    assert!(
+        port.ui().get_export_wav_open(),
+        "③ 遮罩只吞、不关：点遮罩⛔ 不许关掉面板（既有关义 —— 关面板只有 ✕ 与 `Esc` 两条）"
+    );
+
+    // ---- ④ 面板自己的鼠标路径一位未动 ----
+    click(&mut port, "export-wav-close-button");
+    assert!(
+        !port.ui().get_export_wav_open(),
+        "④ 点面板内的 ✕ 必须真的关弹窗：遮罩声明在面板**之前**（Slint 从最上层往下命中），\
+         ⛔ 它不许把弹窗自己也挡聋"
+    );
+
+    // ---- ⑤ 关掉之后同一条路复活 ----
+    click(&mut port, VICTIM);
+    assert!(
+        port.ui().get_console_maximized(),
+        "⑤ 弹窗关闭后，①/② 那一击必须恢复生效 ⇒ 证 ③ 的「没翻」是遮罩，⛔ 不是回调坏了、\
+         也不是属性再也翻不动"
+    );
+
+    // ---- ⑥ 时光机同款 ----
+    port.ui().set_undo_tree_open(true);
+    assert!(
+        present(&mut port, "undo-tree-modal"),
+        "⑥ 时光机必须真的在场（`undo-tree-open` 是纯界面态，写者与键盘 `Cmd/Ctrl+Shift+H` 同处）"
+    );
+    click(&mut port, VICTIM);
+    assert!(
+        port.ui().get_console_maximized(),
+        "⑥ 时光机开着时同一处点击也必须被吃掉（属性停在 `true`，翻成 `false` 就是穿模）——\
+         两份模态共用同一条修复，⛔ 不许一份管一份不管"
+    );
+    port.ui().set_undo_tree_open(false);
+    click(&mut port, VICTIM);
+    assert!(
+        !port.ui().get_console_maximized(),
+        "⑥ 关掉时光机后必须又翻得动（与 ⑤ 同理，给这份模态也留一条对照）"
+    );
+}
+
+/// 把源码压成**只有代码行**：注释里出现过的字面量不算实现站点。
+///
+/// ⚠ 口径的来源是 `tests/search_focus_key.rs` 的同名判据被 CI 教的那一课
+/// （run `41516839490`：`host.rs` 的说明注释里逐字写了一次 `ui.invoke_focus_sidebar_search()`
+/// ⇒ 「唯一实现」数出 2）。源码纪律型判据一律先剥注释再数，⛔ 不靠「注释里不会写这个」的运气。
+fn code_only(text: &str) -> String {
+    text.lines()
+        .filter(|line| !line.trim_start().starts_with("//"))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// 第一枚 `TouchArea {` 起的那一段（到下一个空行为止 —— 足够盖住遮罩那六行）。
+fn first_touch_area_block(source: &str) -> String {
+    let start = source
+        .find("TouchArea {")
+        .expect("遮罩那枚 `TouchArea` 必须是本文件里第一枚");
+    source[start..]
+        .split("\n\n")
+        .next()
+        .unwrap_or_default()
+        .to_owned()
+}
+
+#[test]
+fn each_modal_has_exactly_one_actionless_full_size_pointer_blocker() {
+    let dialog = code_only(include_str!("../ui/dialogs/export_wav_dialog.slint"));
+    let time_machine = code_only(include_str!("../ui/dialogs/undo_tree_modal.slint"));
+
+    for (name, source, panel_id, id_count) in [
+        ("导出弹窗", dialog.as_str(), "export-wav-panel", 10_usize),
+        ("时光机", time_machine.as_str(), "undo-tree-panel", 7_usize),
+    ] {
+        // 三枚会做事的 + 一枚只吞不做的 = 四枚。
+        assert_eq!(
+            source.matches("TouchArea {").count(),
+            4,
+            "⑦ `{name}` 的 `TouchArea` 必须是 4 枚（三枚动作 + 遮罩那一枚）"
+        );
+        assert_eq!(
+            source.matches("clicked =>").count(),
+            3,
+            "⑦ `{name}` 的 `clicked` 必须仍是 3 枚 ⇒ **恰好一枚** `TouchArea` 只吞不做\
+             （它若带了 `clicked`，就把「点遮罩不关面板」这条既有语义改了）"
+        );
+
+        let blocker = first_touch_area_block(source);
+        assert!(
+            blocker.contains("width: parent.width;") && blocker.contains("height: parent.height;"),
+            "⑦ `{name}` 第一枚 `TouchArea` 必须**铺满**模态（遮不住整帧就会从边角穿模）：{blocker}"
+        );
+        assert!(
+            !blocker.contains("clicked"),
+            "⑦ `{name}` 遮罩那一枚必须⛔ 没有任何动作：{blocker}"
+        );
+        assert!(
+            !blocker.contains("accessible-id"),
+            "⑦ `{name}` 遮罩必须⛔ 不带语义 ID ⇒ 运行时寻址面一位不改（默认帧/金帧同此）"
+        );
+
+        // 遮罩排在面板**之前** = Slint 里排在下面 = 面板仍在上层。
+        let blocker_at = source.find("TouchArea {").expect("⑦ 遮罩必须在场");
+        let panel_at = source
+            .find(panel_id)
+            .unwrap_or_else(|| panic!("⑦ `{name}` 必须有 `{panel_id}`"));
+        assert!(
+            blocker_at < panel_at,
+            "⑦ `{name}` 遮罩必须声明在面板之前（修前穿模；修后若把遮罩移到面板之后，\
+             弹窗自己也会被自己挡聋 —— 两条都得红）"
+        );
+
+        assert_eq!(
+            source.matches("accessible-id:").count(),
+            id_count,
+            "⑦ `{name}` 的可寻址控件数必须一位未增（本票⛔ 不新增控件）"
+        );
+    }
+}

@@ -734,3 +734,1803 @@ match port.as_ref().and_then(|p| p.try_project())
 **判决**：`5e9dc6a2` 自动档 `41314892958`、手动档 `41314963972` **在飞** ⇒ 本条记 `pending`；
 读回时必须确认 `roll_edit_tools` 二进制出现在 `Running tests/` 名单里且有 `test result:` 行
 （§6.3 第 4 条：fail-fast 之下"名字缺失"既不是失败也不是通过）。
+
+## 23. D-UI-11 与 D-UI-13 的收盘（判决现读，2026-11-02）
+
+两票都在合流前的 `line/zimmer-ui-write-surface` 上，本分支查不到 per-commit run ⇒ 用
+`gh run list --branch line/zimmer-ui-write-surface` 现读（单位＝**个 run 的结论**）：
+
+| 提交 | 内容 | 本提交自己的 run | 结论 |
+| :--- | :--- | :--- | :--- |
+| `708ed3f4` | serve 那份装配漏接选轨 / 行高拖拽 / 撤销三条 | 无（同批推送，tip 才有 run） | 由 `05c54275` 的 run 覆盖 |
+| `8ca460ba` | 卷帘命中测试不分作用域 | `41369170925` | **failure**（修复前的红形态，下一枚热修接手） |
+| `6809d13e` / `a95851e2` | 同票的 `collapsible_if` / `for_kv_map` 两处 clippy 红 | `41369885862` / `41370538851` | **failure** ⇒ `a95851e2` 的手动档 `41371903917` **success** |
+| `9157dcb2` | D-UI-11 判据 ⑤ 改为本行内拖拽 | `41363718543` | **failure**（同上，红在判据前提） |
+| `05c54275` | 批尖（D-UI-1 判据读盘归一行尾） | `41393391415` | **success** ⇒ 整批（含两票）到此有判决 |
+
+⚠ 中间那些红**不是**"最后一条绿了所以前面不用看"：`collapsible_if` 与 `for_kv_map` 都是在
+`-D warnings` 下直接判红的编译期错误，写代码时就该现读 `clippy` 输出而不是等 CI（本节第 4 行
+两枚热修 = 两次往返 ≈ 26 分钟墙钟）。
+
+## 24. D-EX-1 的四次读回与"空绿"陷阱（2026-11-02）
+
+| run | 触发 | 时长 | 结论 | 这句话能说 / 不能说 |
+| :--- | :--- | :--- | :--- | :--- |
+| `41436916743` | push `df64c9da` | — | **failure** | 红在 `deny` 一条腿（RUSTSEC-2026-0433 / pulldown-cmark 0.13.5）⇒ 与本片代码无关，但⛔ 不能当"已过" |
+| `41446828680` | push `607fd495`（升 0.13.6） | — | **failure** | 红在 `checks` 的**依赖许可清单漂移**一条 ⇒ 升版本必须同批重生成清单 |
+| `41460622795` | push `343461a4`（重生成清单） | **1m12s** | success | ⚠ **空绿**（§6.3 第 2 条）：纯 `docs/**` 改动 ⇒ plan 返回空集合，rust 腿全 `-`/`0s`，不构成任何验证 |
+| `41461978083` | 手动档（workflow_dispatch，树 = `343461a4`） | **48m43s** | **success** | D-EX-1 的代码在这一棵树里被真跑过 ⇒ 本票判决以这一条为准 |
+
+读回时另按 §6.3 第 4 条核过：`gui_export_limiter` 这个名字确实出现在该 run 的
+`Running tests/` 名单里（⚠ 直接 `grep -c "Running tests/"` 会因 ANSI 转义把计数打成 **0**，
+匹配二进制名才拿到真读数）。
+
+## 25. D-UI-14：左栏搜索框此前是**假的**（`83d151c3`，判决 pending）
+
+现场：`ui/sidebar.slint` 那一格挂着 `accessible-role: text-input` 与语义 ID
+`sidebar-search-field`，可寻址、可被屏读念出，但它是**一个占位矩形** ⇒ 敲进去什么都不动。
+修法与判据逐条写在提交正文（两向绑定、过滤只在 Rust 一处、空态分两档、钳位分母 = 过滤后的
+条数、⑨ 文本层取证）。⛔ 不换 `placeholder-text`：那会让默认帧像素搬家 ⇒ 5 张 Linux 基准整批重录。
+
+判决：`83d151c3` 自己**没有** per-commit run（与 `5d80c42c` 同批推送，只有批尖有 run，L32）；
+批尖 `5d80c42c` 的 `41472437095` = **failure** ⇒ 本票判据从未被执行（见 §26）⇒ 记 `pending`，
+以 `f0a57180` 的 run `41476987648` 为准。
+
+## 26. D-UI-15 的第一票红：一个**签名生命周期**（`5d80c42c` → 热修 `f0a57180`）
+
+现场：`41472437095` 三条 `yeban-app` 腿（`rust` / `windows` / `macos`）的
+`clippy (-D warnings)` 全挂，报错一条：
+
+```
+error[E0106]: missing lifetime specifier
+   --> crates/yeban-app/src/host.rs:11896:34
+    = help: this function's return type contains a borrowed value, but the signature
+            does not say whether it is borrowed from `project` or `placement_ulid`
+```
+
+根因：本片把 `clip_placement_for` 从"只回一个 `start_tick` 标量"改成**回借用**
+（`Option<(EntityId, EntityId, &ClipPlacement)>`，让拖动与删除共用同一个身份解析点），
+但签名里有两个输入生命周期 ⇒ 返回值的生命周期无法省略。`41436916743` 那一族是环境红，
+这一条是**我写的代码**红。
+
+⚠ 代价被低估的那一半：错误在 **lib** 编译期 ⇒ 同一批里三个判据文件（`sidebar_search.rs`、
+`delete_selected_clip.rs`、以及本票之后的 `clip_mute_toggle.rs`）**从未被编译，更未执行**。
+所以这一票既不是"判据失败"也不是"判据通过"，是**零读数**（§6.3 第 4 条的形状）。
+
+教训登记：把函数改成回借用时，⛔ 不要假设"省略式能推出来"——只有**一个**输入生命周期时才推得出。
+本机不编译 Slint ⇒ 这一类形状只能在 CI 撞上，所以每票落地前先做一次
+"这个签名有几个输入生命周期、返回值借的是哪一个"的自检。
+
+## 27. D-UI-16：剪辑能选、能拖、能删，就是不能单独静音（`e48bf59c`，判决 pending）
+
+缺口证据（现读命令，单位＝**个匹配**）：切片之前 `grep -rn SetClipPlacementMuted crates/yeban-app/src`
+= **空**，而同一条 `Op` 在 `yeban-model/src/ops.rs` 有 apply / inverse / 前置条件，
+在 `yeban-engine/src/snapshot.rs`、`yeban-render/src/{als,logic}.rs`、
+`yeban-mcp/src/domain/notes.rs` 都是**真读数** ⇒ 引擎与 MCP 早已诚实，只有界面那一半没接。
+
+切片形状（与 `D-UI-15` 同一族口径：⛔ 不加新按钮 ⇒ 不动元素注册表、⛔ 默认帧逐像素不变）：
+键 `Cmd/Ctrl+M`（实测该格此前是第 3 步的 `_ => PassThrough`）＋ `host::clip_mute_ops_for`
+（全 app 唯一构造点）＋ `apply_view` 注入 `clip-mutes` ＋ 包头底色
+`bg-raised(#1e2733) → bg-void(#0e1216)` ＋ 读屏标签后缀"（静音）"。
+与轨静音的分工是**作用域**：裸 `m` 动 `selected-track-id`，本键动 `selected-clip-ulid`。
+
+机械副作用现读补账（⛔ 不等 CI 报红再改）：`APPLY_VIEW_WRITE_SITE_BUDGET` **100 → 101**、
+`PER_FRAME_ARRAY_REWRITE_BUDGET` **57 → 58**、快捷键表 `SHORTCUTS` **46 → 47**
+（判据 B11b 同时改条目数与那句分解文案）。
+
+判决：本票与 §25 / §26 同批，`f0a57180` 的 run `41476987648` **在飞** ⇒ 三票全部记 `pending`；
+读回时必须逐条确认 `sidebar_search` / `delete_selected_clip` / `clip_mute_toggle` 三个二进制
+都出现在 `Running tests/` 名单里且各有 `test result:` 行。
+
+## 28. `41476987648` 读回：第二枚**我写的代码**红（`clippy::clone_on_copy`），仍是零读数
+
+读法（run 尚未整体结束 ⇒ `gh run view --log-failed` 直接拒绝："logs will be available when it is
+complete"）⇒ 改走 **per-job API**：`gh api --allow-escape-sequences repos/gradetwo/yeban/actions/
+jobs/<job-id>/logs`，先 `sed 's/\x1b\[[0-9;]*[a-zA-Z]//g'` 去 ANSI 再 `grep`。⚠ 这条"整体在飞时
+拿不到日志"是本轮新学：判在飞 run 的单票结论要用 `gh run view --json jobs` 的**作业级**
+`conclusion`，日志只能等 run 结束后取（或按作业 id 取）。
+
+作业级现读（`f0a57180`）：`lockfile` / `checks` / `plan` / `deny` = success；
+**`rust (yeban-app)` = failure**、**`windows (...)` = failure**；`macos` 排队；
+`rust (workspace 全量)` / `e2e` 被 plan 跳过（⛔ 那两格的 success/skipped 不构成任何验证，§6.3 第 2 条）。
+
+失败内容是**一条** clippy 硬错，linux 与 windows 同源（非平台抖动）：
+
+```
+error: using `clone` on type `ClipPlacement` which implements the `Copy` trait
+   --> crates/yeban-app/src/host.rs:11950:29
+11950 |         previous_placement: placement.clone(),
+```
+
+根因是 §26 那枚修复的**副作用**：`clip_placement_for` 改成回 `&'p ClipPlacement` 之后，
+`clip_delete_ops_for` 里那句 `placement.clone()` 的对象从"非 Copy 的引用目标"变成了
+"**Copy 类型的 clone**" ⇒ `clippy::all` 在 `-D warnings` 下判硬错。改法 = `*placement`
+（`ClipPlacement`  derive `Copy`，语义还是一份快照，撤销载荷一位不少）。
+
+⚠ 与 §26 同一半代价，且这次更贵：错误仍在 **lib** 编译期 ⇒ `sidebar_search` /
+`delete_selected_clip` / `clip_mute_toggle` 三个判据二进制**第二次**从未被编译。
+两连红的共同形状是"**改签名/改类型后没有重读调用点**"——本机不编译 Slint 时，这类
+错误的唯一防线是把"这一改动会让哪些调用点的类型变掉"逐条列出来看一遍，而不是等 CI。
+
+本轮顺手做了该自检（覆盖 §26 / §28 两处改动波及的全部调用点）：
+`clip_placement_for` 的六个使用点里只有 11950 一处用到整份摆放，其余只读标量字段；
+三个新判据文件则逐符号核过 `#[test]` 之外的**未使用**导入 / 助手 / 绑定（0 处），
+并逐一现读它们依赖的 API 形状：`ActionOutcome::changed()`（`undo.rs:221`）、
+`UndoDisplay::commit_count`（`yeban-mcp/src/undo_session.rs:343`）、
+`Rgb8Image::pixel(u32,u32)->Option<Rgb>` / `pixels()` / `Rect::new(i32,i32,u32,u32)`（`image.rs`）、
+`LiveWiringOptions` 有 `impl Default`（`live_surface.rs:196`）且 `undo: Some(..)` 那一路会
+真的接 `wire_clip_scope` / `wire_clip_drag` / `wire_track_select`、
+`.slint` 侧 `key-action(string,bool,bool,bool,bool)->bool` / `clip-select(string)` /
+`track-select(int)` / `in property <[bool]> clip-mutes` / `clip-{ulid}-header` 全部在场。
+
+## §29 run `41479416456`（tip `ff0be316`）读回 —— **第三次零读数**，根因移进判据文件
+
+逐作业结论（`gh run view 41479416456 --json conclusion,headSha,jobs`，`headSha` 逐位 = `ff0be316`）：
+
+| 作业 | 结论 |
+|---|---|
+| `lockfile` / `plan` / `checks` / `deny` | success |
+| `rust (yeban-app)` | **failure** |
+| `windows (…)` | **failure** |
+| `macos (…)` | **failure**（这一腿这次真跑了，不再是从未开始） |
+| `rust (workspace 全量)` / `e2e` | skipped ⇒ 空绿（§6.3-2） |
+
+在飞的 run 没有 `--log-failed`，取法同 §28：`gh run view --json jobs` 拿三个 failure 的
+`databaseId`（`125393605895` / `…5945` / `…6031`）⇒ `gh api --allow-escape-sequences
+repos/gradetwo/yeban/actions/jobs/<id>/logs` ⇒ 剥 ANSI ⇒ `/tmp/log-41479416456-app.log`。
+
+**判决内容（单位：`error` 行数 = 2，二者同在一个二进制里）**：`lib` 这次编译过了
+（日志里 `Compiling yeban-app v0.0.1` 之后没有 lib 侧错误），红的是
+`crates/yeban-app (test "clip_mute_toggle")`：
+
+1. `unused_parens` @ `tests/clip_mute_toggle.rs:346` —— `.map(|v| (if *v { '1' } else { '0' }))`，
+   `-D warnings` 下是硬错；改法 = 去掉那对括号。
+2. `E0716` temporary dropped while borrowed @ 同文件 `301` ——
+   `let muted_after: Vec<&String> = placements(&project_after).iter()….collect();`
+   `placements()` 回的是**拥有所有权的 `Vec<(String, ClipPlacement)>`**，`.iter()` 借的是那个
+   临时值，它在本语句结束即释放而借用活到下一句 `assert_eq!`。改法 = 先把 `placements(..)`
+   绑成一个局部量再迭代。
+
+后果（这是本节的重点，不是第 1 条那种小事）：`grep -c "Running tests/" = 0` ⇒ 编译期失败，
+测试阶段**整体没有开始**，D-UI-14 / 15 / 16 三个判据**第三次**零读数，判决仍是 `pending`。
+
+⚠ §28 末尾那句自检结论是**假的**："三个新判据文件则逐符号核过……（0 处）"。它核的是
+"未使用的导入 / 助手 / 绑定"，而真正致命的是**表达式的生命周期**与 **`clippy::all` 的形状类
+lint**（这两类都不在"有没有用到"这个清单里）。教训要这样记：**"我检查过 X" 不等于"我检查过
+判据文件"**，X 是自检清单里那一小截，写进账本时必须把 X 的名字写出来，否则下一次会拿着
+半张清单当全绿。
+
+本轮改的流程（本机跑不了 `cargo clippy -p yeban-app` —— Slint 依赖，AGENTS.md §5.2；CI 是
+唯一编译器）：推送前对**每一个从未编译过的判据文件**做一次并行子代理静态审计，口径固定四项 ——
+①每个被调符号对照**真实定义**核名字/元数/参数与返回类型/是否 `pub`（跨 `tests/*.rs` 的私有
+助手不可达：每个集成测试文件是自己的 crate）；②`use` 与助手是否全部被用（`unused_imports` /
+`dead_code` 都是硬错）；③`clippy::all` 清单逐条过（工作区 `Cargo.toml:115-118` 实测
+`all = "deny"`，`float_cmp` 之类 `restriction` 不在其中、cast 类是 `pedantic` 也不在其中）；
+④哑断言（同一份读数自己比自己、`assert_eq!(X, X)`、缺按键前快照的"其余逐值不变"）。
+
+这套审计在**推送之前**抓到 7 处会被 CI 判红的真错，全部已改：
+
+| 文件:位置 | 类 | 改法 |
+|---|---|---|
+| `clip_duration.rs:428-437` | 编译错 E0369 | `Option<f32>` 与 `f32` 比较（`.unwrap_or_default()` 收尾）⇒ 整段换成前后两列按下标逐值对账 |
+| `clip_duration.rs:434` / `:594-598` / `:533-539` / `:846-852` | `clippy::eq_op` ＋ 零信息 | 四处"自己比自己"的占位断言删除，改为按键前快照（`widths_before` / `duration_before`）对账 |
+| `clip_duration.rs:395-417` | 判据自身假阳性 | 过滤器写成"时长 ≠ A 的**原值**"，把本来就不等于 A 的 B（夹具 960 ≠ 3840）也捞进"改动"⇒ 改成**同一行前后**对比（`changed_rows == vec![a_row]`） |
+| `clip_duration.rs:691-693` | 编译错（格式串） | `"…（实测 {:?"` 占位符没有闭合；改为先绑 `duration_now` 再写 `{duration_now:?}` |
+| `clip_duration.rs:199` / 两个文件的 `UiAction` 导入 | `dead_code` / `unused_imports` | 删除已无人调用的 `width_at` 助手与随之失效的导入 |
+| `delete_selected_clip.rs:522-545`、`clip_mute_toggle.rs:598-622` | **必红**的运行时前提 | 见 §29.1 |
+| `sidebar_search.rs:287-291` | 哑断言 | 原来敲的是夹具里**没绑任何 Action** 的字母 ⇒ 焦点走没走 `active-tool` 都不动；改为敲数字 `3`（工具矩阵第 3 行）两个方向都可证，敲完立刻退格以保住后面每一臂的过滤前提 |
+
+### §29.1 一条值得单列的界面事实：`UndoPort::perform` **不**重投影
+
+`crates/yeban-app/src/undo.rs` 里端口自己写着"端口碰不到 Slint"（`UiAction::SelectTool`
+那一臂的注释是同一处证据）。因此
+`port.perform(UiAction::Undo)` 之后读 `window.get_clip_ulids()` / `clip-mutes` 读到的是
+**撤销之前那一帧**的界面属性 —— 三个判据文件原先都在这里断言"画面跟得上权威"，那是
+**断言了一个不存在的行为**，下一次真跑必然红（不是空转，是假红里最坏的一种：实现没错，判据错）。
+
+唯一能让界面跟着撤销的入口是**键路径**：`invoke_key_action(..)` → `on_key_action` →
+`apply_action` 的 `Action::Undo | Action::Redo` 那一臂（`host.rs:9446-9455`）→ 末尾
+`refresh_undo_window(ui, port, true)`（`reproject = matches!(action, Undo | Redo)`）→
+`project_with_view_state` + `apply_view`。走带区的 ↻ 与弹窗的"撤销一步"两个按钮回调
+（`host.rs:10081` / `10124`）也是"先 `port.perform` 再手动 `refresh_undo(.., true)`"，
+即**重投影是调用方的责任，不是端口的**。三个判据的撤销臂已统一改为键路径，并顺手把
+**redo 之后画面也跟上**这一条从"没断言"补成断言（`clip_duration` ⑦ / `delete_selected_clip` ⑥ /
+`clip_mute_toggle` ⑦）。这条纪律将来适用于任何"撤销/重做后读界面"的判据。
+
+## §30 D-EX-2 登记：**导出那 2.5 秒 UI 线程不处理任何事件**（只登记，本切片一行代码没改）
+
+> 来源：创作轮 §22.6 的那一行「导出 WAV 墙钟 = 2,516 ms」；本票只补"它为什么是缺陷"与"缺哪两个裁决"。
+
+**结构现读（三处证据，全部 `crates/yeban-app/src/host.rs`）**：
+
+| 位置 | 事实 |
+| :--- | :--- |
+| `7925` | `ui.on_export_wav(move \|\| { … })` —— 导出弹窗「导出」键的宿主回调 |
+| `7990` | 回调体内**同步**调用 `crate::export_wav::export_wav_with_sfz_file(…)`，拿返回值直接拼回执 |
+| `7930` / `8067` | `Instant::now()` 与 `module_trace("export-wav", started, …)` ⇒ 计时点就在这条同步调用的两侧 |
+
+**指标（数什么：一次导出从按下到回执写出的墙钟，单位 ms）**：§22.6 现读 **2,516 ms**
+（44.1 kHz / 24 bit / 180.0 s 音频 / 47,628,068 字节）。这段时间 `on_export_wav` 不返回 ⇒
+Slint 事件循环这一路停摆：期间没有任何点击、按键、重投影能进来。
+
+**对照：本仓库已经有两处「长活不占 UI 线程」的成例**，导出是**第三处长活却没用这个模式**：
+
+| 长活 | 中间态 | 工作线程 |
+| :--- | :--- | :--- |
+| 乐器采样体检 `host.rs:3241` → `3248` | 在 `spawn` **之前**同步写「检查中…：<名字>」 | `std::thread::spawn` |
+| MIDI 采集 `host.rs:8421` → `8450` | 同上纪律 | `std::thread::spawn` |
+| **导出 WAV `host.rs:7990`** | ⛔ 无（回执只在渲染完之后出现） | ⛔ 无（UI 线程自己渲） |
+
+**未证的部分（登记，⛔ 不补齐，遵 §6.4-4）**：我没有测「停摆期间的点击是否被丢弃还是排队到
+渲染完再处理」，也没有测「导出期间**声音**是否照常」——后者取决于渲染路径有没有与音频线程
+争同一把工程锁，我没有读回来。因此本票**不**写成"导出会丢点击 / 导出会把播放打断"。
+
+**要人类裁决才动得的两件事**（擅自选边就是私自发明答案）：
+
+1. **进度反馈的形态**：「导出中…」是加一个界面属性 + 弹窗按钮禁用态，还是复用 `module-status`
+   那条既有读数？前一种会改**默认帧像素** ⇒ `tests/golden/**` 整批重录（同一族代价见
+   `ui/sidebar.slint` 里搜索框那段注释），需要人类批准重录。
+2. **渲在哪、怎么汇合**：沿用上面那两条成例的「spawn + UI 线程排空」，还是接进已有的 worker
+   槽抽象（`host.rs:2693` / `8542` 那两个 `JoinHandle` 槽位）；并且**同一目标文件并发两次导出**
+   允不允许（现有纪律里没有这一条的答案）。
+
+**处置**：`pending`，等裁决。创作轮里它的实际代价是"点导出＝冻 2.5 秒、期间界面看起来死了"，
+属于**可用性缺陷但不是错误结果**——回执与文件本身是对的，所以不阻塞 D-EX-1 那一批。
+
+## §31 死控件普查的结果：**没有新的死键**，但**文本框全都摸不到键盘**
+
+普查口径（一次只读扫描，`.slint` 侧与 `src/` 侧**双向**核验才算）：
+(A) 声明了按钮外观却没有点击源；(B) 点击源调用的回调走到 `app.slint` 就断了；
+(C) 渲染字面量却冒充实时读数。
+
+**(A) 三处，全部是**已登记**的那三条** —— `src/elements.rs:4551` 的
+`KNOWN_ACTIONLESS_CONTROLS [&str;3]` 逐条对得上：`ai-rail-intent-button`
+（`app.slint:119`）、`transport-commit-button`（`transport.slint:378`，有
+`commit_area := TouchArea` 却**空体**）、`transport-branch-button`（`transport.slint:347`，
+`elements.rs:3603` 原话"今天不得有点击源"）。⇒ **没有遗漏的死键**，这三条继续等人类裁决
+（见本文件前面的 pending 清单）。
+
+**(B) 空。** 每个被 `clicked` / `accessible-action-default` 触发的回调，要么在 `app.slint`
+转发到一个 `src/` 里有 `on_` 处理器的 `MainWindow` 回调，要么落到宿主会读的视图态属性上。
+
+**(C) 一处，但它不是假控件**：`ui/status_bar.slint:131` 的 `chord: "(none)"` 在
+`src/elements.rs:379` 登记为**动态区**（第五位 `true`），且 `status_bar.slint:127-129` 自己写着
+"`chord` 则永远停在无读数形态（**能力不存在**）" ⇒ 与 `device_rack.slint` 那两处
+"(占位)" / "[v2.0.0 · 未实现]" 同族：如实报"没有读数"。⚠ 若要补这一格，
+`yeban-theory::chord::Chord::from_voicing`（`crates/yeban-theory/src/chord.rs:571`）就是现成的
+反向识别（音集 → 符号），⛔ 不必新造算法；但 `yeban-app` 现在**不依赖** `yeban-theory`
+（`Cargo.toml` 只有 `yeban-model`），且"哪些音符算进来"（播放头？未静音轨？选区？）
+规范里没有答案 ⇒ 那是**要 ADR 的语义决定**，不是接线。本票不动它。
+
+**⭐ 真正的缺口在这里：文本框只能靠鼠标点。** 现读链条：
+
+1. `ui/app.slint:725` `forward-focus: key-handler` ⇒ 窗口建立时焦点在快捷键层；
+2. 焦点在画布时 `Tab` = `Action::ToggleView`（`src/input.rs:1418` 的既有判据逐字如此，
+   规范 §2.2 也把 `Tab` 限定在画布）；
+3. `key-pressed` 只有 in `key-action` 返回 `false` 时才 `reject`（`app.slint:728-733`），
+   而注释逐字写着 **`accept` ⇒ "Slint 也不做 `Tab` 焦点轮转"**（`app.slint:716`）。
+
+⇒ 焦点一旦落在快捷键层，`Tab` 被 DAW 吃掉、永不轮转 ⇒ **`bpm-input`（`transport.slint:281`）、
+搜索框（`sidebar.slint` 的 `sidebar-search-input`）、导出弹窗那 4 个框，纯键盘用户一个都进不去**。
+仓库里唯一的程序性回焦成例是时光机那一对（`app.slint:2237` `undo_tree_trap.focus()` /
+`2240` `key-handler.focus()`）⇒ **有办法补**（键位 → 转发 → `.focus()`），
+D-UI-18 就是把搜索框接进键盘可达面。
+
+## §32 D-UI-19 导出弹窗的键盘捕获（模态第一次真的持有键盘）＋ 两条只登记的缺口
+
+**要补的句子**：`[UI-A11Y-003]` §7.3 第 1 条 —— 模态面板内焦点必须闭环，`Tab` 不得逃出，
+`Esc` 必须收尾。§31 那条链在弹窗这一侧的表现是：那四格（路径 / 采样率 / 位深 / 秒数）
+**只能靠鼠标点**，而键盘整个停在 `key-handler` 上 —— 弹窗盖住整帧却一个键也接不到。
+
+**交付**（`ui/dialogs/export_wav_dialog.slint` · `ui/app.slint` · `src/host.rs` ·
+判据 `tests/export_dialog_key_capture.rs`；`tests/export_dialog_modal_closure.rs` 只改说明）：
+
+1. **捕获点在祖先，不在兄弟**：`export-trap := FocusScope` 包住整块面板（不是时光机那种
+   兄弟覆盖层）。理由实测自 `i-slint-core-1.18.1/window.rs:1324-1348`：键事件从焦点件
+   **只往上冒给祖先** ⇒ 兄弟 `FocusScope` 永远接不到 `TextInput` 拒绝的键。
+2. **`Tab` / `Shift+Tab` 由模态自己轮转**：`focus-on-tab-navigation: false` 是**必需**的 ——
+   内建那段（`window.rs:1350-1370`）只在"没人 accept"时跑，且按**可见**筛，而此刻左栏搜索框
+   与 BPM 框同样可见 ⇒ 焦点会跳出模态。`Ctrl/Alt/Meta + Tab` 一律 `reject`，与内建同口径。
+   `Shift+Tab` 在注入侧写作 `Character('\u{19}')`（`KeyCode` **没有** Backtab 变体）。
+3. **`Esc` 落既有那条回调**：`root.close()` ⇒ 宿主 `on_close_export_wav`，⛔ 不是第二份关闭逻辑
+   （`export_dialog_modal_closure.rs` ⑥ 钉的就是"这个形状只有一处"）。
+4. **进入/退出的焦点转移写在宿主**：打开站点在同一个闭包里调 `invoke_focus_export_wav_dialog()`；
+   关闭站点**只在 `was_open` 时**调 `invoke_focus_shortcut_layer()` —— 否则"本来就没开"的
+   关闭路径会把快捷键层抢过来（那是一条真实的越权改焦点）。
+5. **读数是派生的**：`out property <int> focused-field` 由四件的 `has-focus` 三元链算出，
+   ⛔ 没有新增可寻址控件、⛔ 没有第二处 setter。
+
+**⚠ 读数语义**（判据里逐字写了，别误读）：那个整数是**四格文本框**的 `has-focus`，
+**不是 trap 的** —— `move_focus`（`window.rs:1591-1629`）把 `has-focus` 发在**目标件**上，
+trap 自己那条恒为假。又因 `.slint` 的 `item.focus()` 生成
+`set_focus_item(.., FocusReason::Programmatic)`（`i-slint-compiler-1.18.1/generator/rust.rs:4541`）
+⇒ 既**绕过可见性判定**（这就是 `focus-on-*` 两个 false 仍进得去的原因），也
+**不 select-all**（那段只在 `TabNavigation` 里全选，`items/text.rs:1243-1246`）⇒ 判据 ③ 才敢
+断言"插入一个字符后长度恰好 +1、去掉那一个字符等于种子串"。
+
+**判决**：`pending` —— 本机不编译 `yeban-app`（Slint 重依赖），CI 是唯一编译器。
+
+**同一轮新发现、本票⛔ 不顺手改的两条**：
+
+* **`D-UI-20` 弹窗里的"按钮"没有一格可聚焦 ⇒ `Return` 触发不了导出。** 现读
+  `export_wav_dialog.slint`：`export-wav-close-button`（`accessible-role: button`，159 行）、
+  `export-wav-limiter-switch`（`switch`，330 行）、`export-wav-run-button`（`button`，401 行）
+  全是 `Rectangle` + `TouchArea` 的手绘件 —— 没有 `Button`/`FocusScope` 容器 ⇒ 收不到焦点
+  ⇒ 键盘既走不到"确认导出"也走不到那个开关。
+  **⚠ 本条登记的"要先实测可聚焦容器会不会与 `TouchArea` 抢命中测试"于同日实测完毕，答案是
+  不会**：`FocusScope::input_event_filter_before_children` 无条件 `ForwardEvent`
+  （`items/input_items.rs:657-665`）⇒ 孩子先收到点击；`FocusScope::input_event`（667-688）
+  只在 `enabled && focus-on-click && Pressed && !has-focus` 时才吞。Slint 自家 `Button`
+  就是这个形状：`forward-focus` 到一个内含 `FocusScope` 的 `StateLayer`，后者
+  `key-pressed(event) => { if (event.text == Key.Space || event.text == Key.Return) { … } }`
+  （`i-slint-compiler-1.18.1/widgets/material/components.slint:77-88`）⇒ **`Key.Return`
+  / `Key.Space` 是 `.slint` 里的合法写法**（本仓此前只用 `\u{...}` 转义，因为 `"\t"` 不编译），
+  原始码位为 Return = `\u{a}`、Space = `\u{20}`（`i-slint-common/key_codes.rs`）。
+  ⇒ 剩下的边界只有一个：**焦点可见性**。给这三格加 `FocusScope` 不改一个像素，
+  但"看得见焦点在哪"要画焦点环 ⇒ 那会动两条已判绿的 Golden 基准 ⇒ 归人类/集成者裁决。
+
+## §33 判据从未编过：两枚编译红 ＋ 一条**全局**门禁红（2026-11-03）
+
+run `41512495951`（tip `2f75ab73`，D-UI-18 ＋ D-UI-19 那一批）**红**，三个作业各自红在
+不同的地方 —— 逐条读回：
+
+| 作业 | 判决 | 根因 |
+| :--- | :--- | :--- |
+| `rust (yeban-app)` | 红 | `export_dialog_key_capture.rs:409` `error[E0277]` —— `match_indices` 给的是 `&usize`，我拿它跟整数比 ⇒ 已在 `2f75ab73` 之后热修（`let offset = *offset;`） |
+| `macos` | 红 | `search_focus_key.rs:112` `error[E0425] cannot find value 'meta'` —— 我把循环第四个元组元素绑成了 `_meta`，而第 119 行用的是 `meta`。⚠ **这条 D-UI-18 的判据从写下起从未在任何平台上编译成功过** |
+| `deny (cargo-deny 开源合规)` | 红 | ⛔ **不是本线的改动**：`error[yanked]: detected yanked crate (try 'cargo update -p async-executor')`，`Cargo.lock:30` 的 `async-executor 1.14.0` 在 crates.io 被撤回。同一 sha 在 18:54 那票（`41504236343`）deny 还是绿的 ⇒ **上游撤回**，与代码无关 |
+
+**为什么第二条是在 macos 而不是在 linux 发现的**（这是本仓库结构性的盲区，不是运气）：
+`cargo clippy --all-targets` 与 `cargo test --all-targets` 都按**目标**并行编译，
+但**第一个失败的目标就让作业退出**（`warning: build failed, waiting for other jobs to finish…`
+之后就是 `exit code 101`）。linux 先撞见字母序靠前的 `export_dialog_key_capture`，
+于是 `search_focus_key` 的错误**一位都看不见**；macos 那条腿（编译顺序不同）才把它爆出来。
+⇒ 与 §6.3-4 的 `Running tests/` 截断是**同一件事的编译期版本**：
+**一票红只覆盖它第一个撞上的目标**，⛔ 不许把"只看到一个错"读成"只有一个错"。
+
+**本轮学到的机械核验（写判据的当场就要做，⛔ 不等 CI）**：
+
+1. **每个 `get_/set_/invoke_` 名字都对着 `.slint` 的界面表面过一遍** —— 用脚本把
+   `ui/app.slint` 里的 `property` / `function` / `callback` 声明提成集合，再把判据里用到的
+   访问器逐个下划线转连字符去查（本轮两枚判据共 9 ＋ 8 个访问器，全部命中；
+   编译错误**不在名字上**，在类型与绑定上 ⇒ 说明这道核验不能替代编译，只能缩小失败面）。
+2. **`for (a, b, c, d) in [...]` 里每个绑定都必须被用到**：`-D warnings` 下
+   `unused_variables` 会红，而 `_x` 又把 `x` 变不存在 —— 唯一的正解是**真的用它**，
+   ⛔ 不是加下划线把问题藏起来。
+3. **迭代器给的索引常是引用**（`match_indices`、`iter().enumerate()` 配合 `.filter(|(i, _)| …)`
+   ⇒ `&usize`），跨平台编译器不会替本机"看起来对"背书。
+
+**`async-executor` 这条不在本线的处置权限内**：`Cargo.lock` 是根级共享文件（多线并发写它
+必然互相覆盖），而"要不要接一个更新的 semver 兼容版本"是供应链裁决 ⇒ **只上报，不自行
+`cargo update`**。在这一条解决之前，任何线的 `deny` 作业都会红 ⇒ **"tip 绿"目前不可达**，
+合入 `main` 的默认门禁（`MUST-GATE` 要求 `cargo deny check` 通过）因此**卡住**，
+与本线的代码质量无关。
+* **`D-UI-21` 模态遮罩不吞鼠标 ⇒ 弹窗开着时点击仍穿到下层。** 遮罩就是组件根那枚
+  `Rectangle`（`background: mask-black.with-alpha(0.65)`），而 `Rectangle` 对鼠标事件返回
+  `EventIgnored`（Slint 里只有 `TouchArea` 会吞）⇒ 整帧遮罩**只挡眼睛不挡手**；
+  `D-UI-19` 新加的 trap 也帮不上 —— 它 `focus-on-click: false`，`FocusScope::input_event`
+  在这种情况下同样 `EventIgnored`（实测 `items/input_items.rs`）。时光机同款：
+  `undo_tree_modal.slint` 全文只有三处 `TouchArea`（✕ 钮、DAG 节点、"撤销一步"钮，
+  149 / 197 / 306 行），**没有**全屏遮罩层。⇒ 现在"弹窗开着还能改下层"是真实行为，
+  `export_dialog_modal_closure.rs` 的路由一节因此不再声称自己钉的是哪一条 `Esc` 路径。
+  修它 = 遮罩层加 `TouchArea` 吞掉点击，但那会改变"点遮罩不关面板"的既有语义、
+  且牵动两条已判绿的视觉回归基准 ⇒ 单独一票。
+
+## §34 D-UI-20：弹窗里那三格手绘控件第一次能拿到键盘、能被 `Return` 触发（2026-11-03）
+
+**要补的句子**：§32 登记的 `D-UI-20` —— 「确认导出」钮、「✕」钮、限制器开关三格全是
+`Rectangle` + `TouchArea` 的手绘件，没有 `FocusScope` ⇒ 收不到焦点 ⇒ 键盘**既走不到导出，
+也走不到那个开关**。`D-UI-19` 让模态第一次持有键盘之后，这条缺口从"看不见"变成"看得见但按不到"：
+`Tab` 已经在弹窗里闭环了，闭环的却只有四格文本框。
+
+**交付**（`ui/dialogs/export_wav_dialog.slint` · `ui/app.slint` · 判据
+`tests/export_dialog_button_focus.rs`（新）· `tests/export_dialog_key_capture.rs`（4 格 → 7 格迁移）；
+`src/host.rs` **一位未动**）：
+
+1. **三枚零视觉 `FocusScope`**：`export-wav-close-focus`（195 行）、`export-wav-limiter-focus`（401）、
+   `export-wav-run-focus`（478）各自铺满所在格子（`x:0; y:0; width/height: parent`），
+   `key-pressed` 只认 `Key.Return || Key.Space` ⇒ 分别落到 `root.run()` /
+   `root.limiter = !root.limiter` / `root.close()`。⛔ 没有第二份动作实现：✕ 走的是**既有的**
+   `close()`（判据 ⑩ 数 `root.close()` = 4 条落点：无障碍 + 鼠标 + 键盘 + trap 的 `Esc`）。
+2. **轮转从四格扩到七格**：`focus-next-control()` / `focus-previous-control()`（570 / 589 行）
+   两端都绕回，`-1`（焦点不在模态内）时分别从首格 / 末格起步；「序号 → 控件」只有
+   `focus-control(index)`（549 行）**一张表**，加减法不许自己 `.focus()`。
+3. **四格文本框新增 `accepted => { root.run(); }`**（258 / 291 / 324 / 361 行）——
+   `TextInput.accepted` 只在非只读单行时触发并消费 `Return`。
+4. **读数第二条**：`out property <int> focused-control`（532 行，`MainWindow` 侧 2284 行**纯转发**）
+   与既有 `focused-field` 从**同一批** `has-focus` 推导。⛔ 不复用 `focused-field` 的理由已写进
+   注释：那条的值域被 `D-UI-19` 判据按"四格"钉死，改值域＝悄悄放宽既有判据。
+
+**两条界面决定**（`[UI-A11Y-003]` 未规定，本票定的不是默认值而是裁决，故留痕）：
+
+* **`Return` 在任一文本框里＝提交导出**（不是"编辑完这一格"）。四格 + 三钮共 7 个停止点里
+  有 7 条路通向同一个 `run()`；
+* **`Tab` 顺序把 ✕ 放在最后一格**（`0` 路径 → `1` 采样率 → `2` 位深 → `3` 秒数 →
+  `4` 限制器 → `5` 导出 → `6` ✕）。这样"打开即落在路径框"（`focus-first-field()`，543 行）
+  与"末档是取消"两件事不打架；⛔ 没有把 ✕ 提到前面去迎合"对话框第一格是取消"的另一种惯例。
+
+**实测引证**（决定形状的四条，全部来自 `~/.cargo` 里 vendored 的 1.18.1 源码）：
+
+| 事实 | 出处 | 对本票的意义 |
+| :--- | :--- | :--- |
+| `FocusScope::input_event_filter_before_children` 无条件返回 `ForwardEvent` | `i-slint-core-1.18.1/items/input_items.rs:657-665` | 新加的 scope **永不抢** `TouchArea` 的点击 |
+| `focus-on-click: false` 时 `input_event` 对 `Pressed` 返回 `EventIgnored` | 同上 667-688 | 鼠标路径逐字节不变（本票最怕的回归面） |
+| `focus_event` 只门控 `TabNavigation` / `PointerClick` | 同上 | 程序化 `.focus()` **必达**，不受可见性判定影响 |
+| `Key` 是**内置命名空间**，无需 import | `widgets/cupertino/button.slint:155`、`widgets/material/checkbox.slint:162` | `.slint` 里可以写 `Key.Return` / `Key.Space`，⛔ 不必再手敲 `\u{000a}` |
+
+**为什么不牵动已判绿的基准**：三枚 scope **不带 `accessible-id`** ⇒ 寻址面仍是 10（判据 ⑩ 断言），
+`export-wav-dialog` 的 `visible` 默认 `false` ⇒ 默认帧与 `tests/golden/linux/` 五张基准一位不改；
+scope 声明在各格 `TouchArea` **之前** ⇒ 命中测试层序也不变。运行时树那侧同理：
+`export_dialog_modal_closure.rs` 断言的是"关闭态 id 集合相等"，弹窗关着时新件根本不在树里。
+
+**本票⛔ 不管、如实登记的三条边界**：
+
+1. **没有焦点环** —— 加 scope 不改一个像素，但"看得见焦点在哪"要画环 ⇒ 动 Golden ⇒ 归人类裁决；
+2. **点击不改变焦点**（三格都 `focus-on-click: false`）。焦点入口只有两个：`Tab` 轮转与宿主打开时
+   那一次 `focus-first-field()`。鼠标用户不受影响（钮照点），但"点一下钮再用 `Return`"这条路**不存在**；
+   这条与 `D-UI-21`（遮罩不吞鼠标）**必须一起判** —— 单独给 scope 开 `focus-on-click` 会改变
+   `TouchArea` 与点击归属的现状；
+3. **模态持有键盘期间 `Cmd/Ctrl` 组合键到不了宿主**（trap 在祖先，`Ctrl/Alt/Meta + Tab` 一律 `reject`
+   但其余 chord 不冒泡）。`[UI-A11Y-001]` 的热键表在弹窗内是**暂停**的，这是模态的定义而非缺陷，
+   但"弹窗里按 `Cmd+S` 存盘"这类预期落空 ⇒ 记此以免日后当 bug 查。
+
+**判据**：`export_dialog_button_focus.rs` ①–⑨ 为活体（`Tab` 到第 5 格按 `Return` ⇒ **真落盘一个 WAV**
+并核 receipt 的 `frames`；第 6 格按 `Return` ⇒ 走既有 `close()` 且**不**落盘；⑨ 在钮上按 `Esc`
+证明模态仍持有键盘），⑩ 为源码纪律（14 项计数 + 两条读数无写者）。`export_dialog_key_capture.rs`
+的 ④⑤ 已从 4 格迁到 7 格，并新增一条交叉断言：焦点落在 `4/5/6` 这三格时 `focused-field` **必须**是 `-1`
+⇒ 两条读数不许互相矛盾。
+
+**判决**：`pending` —— 本机不编译 `yeban-app`（Slint 重依赖），CI 是唯一编译器。
+
+### 同批带上的一枚判据口径修正（`search_focus_key.rs`，run `41516839490` 教的）
+
+那票红在 `:188`：`the_focus_route_has_exactly_one_implementation` 数
+`ui.invoke_focus_sidebar_search()` 得 2，期望 1 —— 第二处是 `host.rs:9383` 的**说明注释**里
+逐字写了这个调用（带括号，长得就像调用点）。
+
+* ⚠ **修法是给计数定口径，⛔ 不是删掉那句注释来喂判据**。新增 `code_only()`：先按行剥掉
+  `//` 开头的行，再数 ⇒ 口径写进判据头与函数文档，读日志的人不必猜"这个 2 是代码还是注释"。
+* 这条口径**适用于本仓所有源码纪律型判据**（§34 的 ⑩ 也一律走 `code_only()`）：
+  **注释不是实现站点**。这是"字面量计数"这类判据的通用失效模式，与 §6.4-1「参考文档的警告是证据」
+  并列 —— 前者防"实现偏离已写的规矩"，这条防"判据把文字当代码"。
+* ⚠ 那票红的**覆盖**后果（§6.3-4）：`cargo test` fail-fast，`search_focus_key` 之后的
+  **47 / 153** 个测试二进制一位都没跑（`ui_export_dialog`、`sidebar_search`、`undo_tree_*`、
+  `sfz_*`、`volume_automation_export`…）。⇒ 在 `0c89f750` 上这些的判决是**未知**，⛔ 不是绿。
+  本票把它们一起推上去，正是为了拿到这份读数。
+
+### 落地方式（本机 git 传输坏死的处置，留痕以免下轮误判为"未推送"）
+
+`git push` / `git fetch` 在本机一律 `GnuTLS recv error (-110)` 或挂死，而 `gh` / `curl` 正常 ⇒
+本线的提交经 GitHub git-data API 重建对象后**非强制**移动 ref（`/tmp/api_push3.py`：按
+`rev-list 远端tip..本地HEAD` 逐条建 commit，最后一个 tree 必须等于本地 HEAD 的 tree 才动 ref）。
+由此**本地 sha 与远端 sha 不同**（`54036a5c` ↔ `0c89f750`，两者 tree 同为 `45a4cc83`，
+差异只有 committer 日期被规范化成 `Z` 与末尾空行）。⇒ 读判决时**认 tree，不认 sha**；
+待 git 传输恢复后用 `git fetch && git reset --hard origin/line/zimmer-export-limiter`
+把本地指针对齐（破坏性操作，需人类确认后再做，本票不擅自执行）。
+
+## §35 run `41522031319` 读回：**第四次零读数**，根因是我写的闭包 borrows（2026-11-03）
+
+远端 tip `1f771c1d`（tree 同本地 `6eac4231`）。各作业结论：`checks` / `plan` / `lockfile` **绿**；
+`deny` **红**（还是集成者那枚 `Cargo.lock` 里的 yanked `async-executor 1.14.0`，与本线无关，⛔ 我不动锁文件）；
+`windows` 与 `rust (yeban-app)` **红**；`macos` 当时仍在跑；`rust (workspace 全量)` 与 `e2e` **skipped**（§6.3-2 的空绿，不算验证）。
+
+`rust (yeban-app)`（作业 `125540651732`）的日志里，单位＝**行条数**：
+
+| 数什么 | 值 |
+| :--- | ---: |
+| `Running tests/` 出现的行（= 编译并跑起来的测试二进制数） | **0** |
+| `test result:` 出现的行（= 真正给出的判决数） | **0** |
+| `error[E0502]` 出现的行 | **17** |
+| 涉及的源文件（去重） | 只有 `tests/export_dialog_button_focus.rs` |
+
+⇒ **D-UI-20 的判据从未编过**，`0c89f750` 那一批未跑的 47/153 依旧未跑。这是第四次零读数，
+而且根因与前三次都不同（前三次：`E0425` 少 import、注释里的字面量喂了计数、`&usize` 比整数）。
+
+**缺陷本身**：`:180-181` 写了 `let control = || ui.ui().get_export_wav_focused_control();`。
+闭包按 `&ui` 捕获端口，而 `LiveUi::pump_meters(&mut self)` / `dispatch_key_press(&mut self)`
+要 `&mut ui` ⇒ 之后每一次按键注入都与这个仍然活着的不可变借用冲突（17 处，全是同一枚闭包的账）。
+`ui.ui()` 自己是 `&self`（`live_surface.rs:1739`），所以问题**不在读属性**，在**闭包把借用延续了整段**。
+
+* **修法**：删掉两枚闭包，改成与已判绿的 `tests/export_dialog_key_capture.rs`（D-UI-19）**逐字同款**的
+  内联读法 `ui.ui().get_export_wav_focused_control()`（`control()` 12 处、`field()` 5 处全部替换）。
+  ⛔ 不是"把断言改松"，⛔ 不是删掉某条判据 —— 判据数量、口径、期望值一位未动。
+* ⚠ **generalisable 的规矩**：本机对 `yeban-app` 唯一的语法神谕是 `cargo fmt`（它只做**解析**，
+  §33 就靠它兜住字面量），而**借用检查不在其中** ⇒ `cargo fmt` 绿⛔ 不等于能编。
+  因此新增一条自查：**判据文件里不许写捕获端口的闭包**；要复用读数就内联，或写成
+  `fn xxx(port: &mut Port)` 这种**显式形参**的自由函数（`tests/d_ui_21_modal_mask_swallows_clicks.rs` 用的是后者）。
+
+## §36 D-UI-21：遮罩**第一次真的**吞掉鼠标（导出弹窗 ＋ 时光机，2026-11-03）
+
+§32/§34 登记的"点遮罩会穿到下层"这条，今天闭环。缺陷的机制只有一句：两份模态的遮罩都只是
+一层 `Rectangle` 背景，而 **`Rectangle` 对鼠标事件返回 `EventIgnored`**；Slint 里只有 `TouchArea`
+会拦 —— `i-slint-core-1.18.1/items/input_items.rs` 的 `Pressed` 那一支只要 `enabled` 就返回
+`GrabMouse`，**与有没有写 `clicked` 无关**（这条是实测，不是推断：正因为无关，才能加一枚"只吞不做"的遮罩）。
+
+### 交付
+
+1. `ui/dialogs/export_wav_dialog.slint:115-120` —— 组件根 `Rectangle` 的**第一个**孩子：
+   全尺寸、无回调、无 `accessible-id` 的 `TouchArea { x:0; y:0; width: parent.width; height: parent.height; }`。
+2. `ui/dialogs/undo_tree_modal.slint:92` —— 同一枚，位置同理（声明在面板 `undo-tree-panel` **之前**）。
+3. `crates/yeban-app/tests/d_ui_21_modal_mask_swallows_clicks.rs` —— 两条 `#[test]`：
+   活体 ①–⑥ ＋ 源码纪律 ⑦（不开窗口）。
+
+### 为什么"只吞不做"是对的语义，而不是偷懒
+
+既有的关面板路径只有两条：✕ 与 `Esc`（`export-wav-dialog.slint` 的 `close` 回调，宿主
+`on_close_export_wav`）。若给遮罩补一条 `clicked => { root.close(); }`，就把"点外面不关"改成了
+"点外面就关" —— 那是**交互裁决**，不属于本票（本票的职责只有一个：下层收不到）。
+所以 ③ 同时钉两条：**属性不翻**（吞掉了）且**弹窗仍开着**（没顺手关）。
+
+### 为什么它不改任何像素、也不改运行时树
+
+* 无 `background` / `border` ⇒ `TouchArea` 本身不可见；
+* ⛔ 无 `accessible-id` ⇒ 装配时与运行时的可寻址面一位不变 ⇒ `tests/golden/linux/` 的五张基准、
+  `tests/ui_export_dialog.rs` 的寻址断言、`tests/export_dialog_modal_closure.rs` 的闭合 id 集全部不受影响；
+* 声明在面板**之前** = Slint 命中测试从最上层往下走时，面板及其里的控件**仍在遮罩之上**
+  ⇒ ④「点弹窗内的 ✕ 必须真的关弹窗」证的正是这条顺序（把遮罩移到面板之后 ⇒ 弹窗把自己也挡聋，④ 会红）。
+
+### 判据（①–⑥ 是同一条链，不是六个独立断言）
+
+`VICTIM = "console-maximize-button"`：底部控制台右上角的 `⤢`，它的点击跟一枚**纯视图态布尔**
+`console-maximized`（`tests/console_maximize.rs` 已证这条路是活的）。
+
+| | 证的事 |
+| :--- | :--- |
+| ① 对照臂 | 弹窗**关着**时真点击 ⇒ 翻 `true`，再点 ⇒ 翻回 `false`。⛔ 这条不成立时 ③ 的"没翻"什么也不证 |
+| ② 前提几何 | 弹窗开着 ⇒ 遮罩与受害者**同时在**运行时树里，且受害者**中心不在** `export-wav-panel` 的矩形内 ⇒ 挡住它的是遮罩，⛔ 不是"控件不在场"、⛔ 不是"面板压着它" |
+| ③ 吞 | 同一坐标再点 ⇒ 属性**仍是** `false`，且弹窗仍开着（**修前这一条是红的**） |
+| ④ 面板仍可点 | 点 `export-wav-close-button` ⇒ 弹窗关闭 |
+| ⑤ 关掉后复活 | 再点同一处 ⇒ 翻 `true` ⇒ 证 ③ 是遮罩，⛔ 不是回调坏了 |
+| ⑥ 时光机同款 | `set_undo_tree_open(true)` 期间点 ⇒ 不翻（属性停在 `true`）；关掉 ⇒ 翻回来 |
+| ⑦ 源码纪律 | 两份模态各有**恰好一枚**"无 `clicked` 的全尺寸 `TouchArea`"，且它排在面板 id 之前；`TouchArea {` 恒 4、`clicked =>` 恒 3、`accessible-id:` 恒 10 / 7 —— 一律走 §34 的 `code_only()` 口径 |
+
+每次点击之前**重抓控件树**：`dispatch_pointer_down` 用的是端口里缓存的包围盒，而 ① 之后控制台
+真的变高了（会移动）。偏移 `(2.0, 2.0)` 与 `console_maximize.rs` / `undo_tree_close_button.rs` 逐字同款。
+
+### 边界（如实登记，⛔ 不假装覆盖）
+
+1. **`Esc` / 键盘那条路径不在本票** —— 模态持键盘已由 D-UI-19/20 覆盖，本票只管鼠标。
+2. **点遮罩不关面板**：见上，属交互裁决。若人类要改成"点外面就关"，那是新的一票（要同时改 ③ 的期望）。
+3. **其他两份覆盖层没带遮罩拦截**：`ai-rail` / `musical-pr-drawer` / `macro-panel` 不是模态
+   （它们没有持键盘），本票⛔ 顺手给它们加"点不进下层"——那会改变非模态面板的行为，属另一票。
+4. **鼠标悬停态（本票⛔ 未测，只登记推断）**：命中测试是**同一套**从上往下的顺序，所以遮罩那枚
+   `TouchArea` 成为最上层的鼠标敏感项后，下层的 `hovered` 状态理论上不再点亮 ⇒ "弹窗开着时
+   下层按钮不会再高亮"。这一条**没有判据**（本票的 ①–⑥ 全读属性，不读 hover），
+   属同机制的推论，若将来要钉需另开一票并先确认没有基准依赖 hover 态。
+
+**判决**：`pending` —— 本机不编译 `yeban-app`；`cargo fmt` / `cargo fmt --check` 均 `rc=0`
+（只能证语法与格式，见 §35），守卫脚本本地全绿，⑦ 的四个计数已在本地用真实源码模拟过
+（`dialog: TouchArea 4 / clicked 3 / ids 10 / 遮罩在面板之前 = true`，`time_machine: 4 / 3 / 7 / true`）。
+
+## §37 `D-UI-22` 编号落定：从画布进文本框的键位是**规范冲突**，⛔ 不是漏接线（2026-11-03）
+
+§31 那句"文本框全都摸不到键盘"从今天起有编号、有票、⛔ 没有代码。
+
+* **为什么不直接接线**：`Tab` 在画布上已被 `[UI-A11Y-001]` 键位表（`DESKTOP_UI_UX:300`）钉成
+  "视图切换"，而 `[UI-A11Y-003]` §7.3 第 1/4 条要求"全界面 Tab 序列"并把轮转列为 CI **MUST**。
+  两句对**同一个键**说相反的话 ⇒ 满足一句必然违反另一句，这是产品裁决（§5.7：⛔ 不私自发明答案）。
+* 留痕：`docs/adr/ADR-0068-keyboard-entry-into-text-fields.md`（`Proposed`，三条路线 D1/D2/D3，
+  建议 D1 = `D-UI-18` 专属 chord 那条成例的推广；README 索引已同步，G20 本地绿）。
+* ⚠ **修掉一处腐烂的行号**（§6.1-1 那条"别写行号"的教训第三次生效）：§31 里那句
+  `app.slint:717` 的注释在 D-UI-19/20 之后落在 `:716`。⇒ 本票新增的引用一律**同时给出锚点**
+  （"`key-action` 返回值那段注释"），行号只作辅助。
+* **可达性现状**（本票现读，逐条对过 grep）：搜索框 ✅ ／ 导出弹窗七格 ✅ ／ 时光机 ✅ ／
+  `bpm-input` ⛔ 仅鼠标 ／ `device-*` 文本框 ⛔ 仅鼠标。后两条是 D1 的工单范围。
+
+## §38 `D-UI-23`：预备拍开关**关不掉、也持久化不了** —— 落点从"换一代引擎"搬到"改文档"（2026-11-03）
+
+症状（§31 那一族"键白按"的一个新形状）：`Cmd/Ctrl+Alt+D` 按第二下，预备拍**还是开着**；
+关掉之后保存工程，下次打开又是开的。界面上一切看起来"响应了"。
+
+* **事实源错位**（根因，⛔ 不是漏了一条 `commit`）：那条臂算"下一个值"读的是
+  `EngineCommandContext::project` —— 装配期**冻结**的那份 `Rc<YebanProjectV1>`（`main.rs`
+  只在**换工程**时经 `after` 重装配）。冻结快照永不因按键而变 ⇒ 每一下都算出同一个"下一个值"
+  ⇒ **单向置位**，不是开关；而文档一位没改 ⇒ **没有东西可持久化**。
+  ⚠ 唯一的读者 `record_wav::count_in_frames` 读的**也是**那份冻结快照 ⇒ 换的那一代引擎里
+  `count_in_bars` 仍是旧值，录音前照样空转。
+* **换代是纯代价**：`metronome::set_count_in_bars` 走 `apply_transport_config` ⇒
+  先 `stop` → `reload` → `seek` → 恢复走带（位置还会漂移几个 tick，见 `MAX_RESTORE_DRIFT_TICKS`）。
+  而实时引擎⛔ **不实现**预备拍 —— `crates/yeban-engine/src/lib.rs` 逐字把"预备拍
+  （`transport.count_in_bars`）"列在**仍未实现**那一栏。⇒ 停走带的代价付了，收益为零。
+  ⇒ **判据由此改写**：`action_needs_engine` 的入选门槛是「**实时引擎自己读这个字段**」，
+  ⛔ 不是「字段住在 `TransportConfig` 里」。节拍器留下（它的计划在快照投影期进快照），预备拍摘出。
+* **修复形状**（三条性质同时拿到）：落点搬到 `apply_action` 的**文档级提交** ——
+  `Op::SetTransportConfig { old_config, new_config }`（`old_config` 从 `UndoPort::try_project()`
+  现读，模型对陈旧 `old_config` 会以 `OpStateMismatch` 拒绝 ⇒ 不是自己拼一份"我以为的当前值"）。
+  ⇒ ⭐ 可撤销、⭐ 会持久化、⭐ 下一个读者读到的就是它。
+  ⚠ `metronome_enabled` 与 `launch_quantization` **逐字带着走**（整体替换那条 op 的代价就在兄弟字段上：
+  顺手把节拍器的运行态镜面写进文档 = 造出第二个事实源）。
+* **取数三档**（新函数 `host::record_count_in(undo, frozen, sample_rate)`，单位：**帧**）：
+  端口在场 ⇒ 读**活文档**（端口在场但读不出工程 ⇒ 如实 0，⛔ 不拿冻结那份冒充现状）；
+  无端口（判据 / 无头装配）⇒ 照旧退回装配期那份，⛔ 不改既有形态；两份都没有 ⇒ 0。
+  抽成一个函数不是为了节拍器开旁路，而是**优先级只写一次**、判据能**逐档问它**
+  （⛔ 不必起线程拉设备源才能观测）。
+* **真的拆掉了**：`metronome::set_count_in_bars` 删除（内核 `apply_transport_config` 保留，
+  `set_enabled` 还在用）⇒ ⛔ 不留一枚没人调的 `pub fn`（判据 ⑨ 从源码现数：代码里 0 处）。
+  ⚠ 顺带一处 clippy 陷阱：摘掉预备拍后 `apply_engine_command` 的判据 ① 只剩一条动作，
+  写成单元素 `for` 在 `-D warnings` 下**直接红**（`clippy::single_element_loop`）⇒ 改成裸块。
+  集合奇偶由 `src/test_port_adapter.rs` 的 `only_engine_commands_take_the_engine_borrow`
+  从**源码文本**对账（注释先剥掉 ⇒ 注释不是实现站点）。
+* **判据**：`crates/yeban-app/tests/d_ui_23_count_in_writes_the_document.rs`，四例九档 ——
+  ① 前提读数（`count_in_bars = 2` **小节**、`bpm = 128.0`、分子 4 ⇒ 180 000 **帧** @ 48 kHz）
+  ② 第一下真的改文档（2→0 小节、提交恰好 +1 **条**）③ 开关两极性（0→1→0，合计 +3 条）
+  ④ 兄弟字段与界面镜面 `metronome-on` 一位不动 ⑤ 重投影不许画歪六格读数（两档**非自比较**对照）
+  ⑥ `Cmd+Z` 放回 1 小节 + redo 回 0 ⑦ `undo = None` 的装配 ⇒ 返回 `false` 不消费
+  （对照臂：同一装配里数字键照常换工具，否则 `false` 可能只是"这键整体没接"）
+  ⑧ 取数三档逐档 ⑨ 源码出处纪律（`Op::SetTransportConfig {` 构造点 1 处、`record_count_in(`
+  定义+唯一调用 2 处、`Action::ToggleCountIn` 在 `host.rs` 代码里 1 处、`set_count_in_bars` 0 处）。
+* **如实登记的边界**（⛔ 不假装整条链通了）：
+  1. **实时播放里仍然听不到预备拍** —— 引擎不实现它（上面那一栏）。本票修的是
+     "UI 的开关 ⇒ 文档 ⇒ 读得到文档的读者"，⛔ 不是"走带时会数拍子"；那是**引擎功能请求**。
+  2. **界面上没有预备拍那一格** —— `ui/**/*.slint` 里 `count_in` / `countIn` / `预备拍`
+     **0 命中**（不加限定的 `count` 子串有 91 处，全是 `accessible-item-count` /
+     `routing-count-label` / `undo-commit-count`，没有一处承载 `count_in_bars`）
+     ⇒ 拨完开关用户**看不见**状态。本票⛔ 不新增控件（加控件 = 改像素 = 金帧重录 = 人类裁决），
+     这条与 §37（`ADR-0068`）一起等 UI 面裁决。
+  3. 端口在场但会话被控制面关掉（`try_project() == None`）⇒ 0 帧 + 一行 stderr + 不消费；
+     判据造不出这一档（那个 `None` 只在 `UndoBackend::Authority` 那一支，夹具是 `Local` ⇒ 恒 `Some`），
+     故只登记不验。
+
+**判决**：`pending` —— 本机不编译 `yeban-app`（Slint 是重依赖）。本地只证到
+`cargo fmt -p yeban-app -- --check` `rc=0`；`git diff --numstat`：`cli.rs 4/2`、`host.rs 112/27`、
+`input.rs 4/2`、`metronome.rs 11/22` ＋ 判据文件一枚。⚠ 本票**没有** `.slint` 改动 ⇒
+不需要金帧重录；`wire_record` / `wire_record_at` 的签名**未变**（`undo` 参数本来就在）⇒
+既有调用点一处不改。CI 回来前不落"通过"。
+
+## §39 `D-UI-24`：重投影**不再抹掉**正在敲的 BPM 草稿（编辑保护只写在一个地方）（2026-11-03）
+
+症状（§31 那一族的另一个形状，⛔ 不是"键白按"而是"字白打"）：在走带条的速度框里敲到一半
+（例：`128.00` 里删掉尾数打成 `13`），**点一下卷帘里的剪辑**（或 AI 会话侧改一次工程），
+框里那串**立刻**变成权威读数 `128.00` —— 用户看到的是"打的字没了"。
+
+* **根因**（一条无条件写的语句，⛔ 不是缺一条 `commit`）：`host::apply_view` 每次重投影都
+  **无条件** `set_bpm_display(权威读数)`，而它正是"权威 → 界面"那一面的**唯一注入点**。
+* **为什么点击会触发**（前提取证，判据 ⑥ 从源码现数）：画布那三层
+  （`ui/workspace/arrangement_view.slint` / `ui/console/piano_roll.slint` /
+  `ui/workspace/session_view.slint`）里 `FocusScope` **0** 处、`.focus(` **0** 处 ⇒
+  点剪辑**不会**让文本框失焦，焦点一直留在 `bpm-input` 里；而那一次编辑会提交 ⇒
+  `refresh_undo_window` 重投影 ⇒ 盖掉。第二条触发腿是 `reproject.rs`（会话侧 `tools/call`
+  改工程后重投影同一个活窗口），两条都**不需要 AI 在场**才成立。
+* **修复形状**（三个"只有一处"）：门 = `MainWindow` 的一格 `in property <bool>
+  bpm-field-editing`；**读者只有 `apply_view` 那一句**；**写者只有两个** —— `wire_input`
+  把 `bpm-input` 自己在 `changed has-focus` 里发出的**那条既有事件**镜像过去（与
+  `[UI-A11Y-002]` §7.2 喂 `InputContext::set_focus` 的是**同一次**通知 ⇒ ⛔ 不新造事件源、
+  ⛔ 不轮询焦点系统），加上 `wire_bpm_commit` 进门**清零**。判据 ⑦ 把这四个数钉死。
+* **为什么它是 `in` ⛔ 不是派生 `out`**（与 `shortcut-layer-focused` / `export-wav-focused-field`
+  不同形的原因）：`bpm-input` 声明在**子组件** `Transport` 内部，主窗口层的绑定取不到那个标识
+  ⇒ 只能由宿主把已存在的事件搬过来。
+* **既有两条口径一位不动**（本票⛔ 不改变"提交后写什么"）：回车**本身解决草稿** ——
+  清零之后 `wire_bpm_commit` 里那一个 `refresh_undo_window` 照常写：非法 / 同值 ⇒ 写回
+  权威读数（`tests/ui_bpm_field.rs` ③/④"⛔ 不留冒充权威的草稿"），合法 ⇒ 归一化 `{:.2}`。
+  ⚠ 清零的语义是"这串草稿已有裁决"，⛔ 不是"焦点离开了框"（判据 ⑤ 在**没有**失焦事件的
+  情况下断言门已假）。
+* **判据**：`crates/yeban-app/tests/d_ui_24_bpm_draft_survives_reprojection.rs`，七例 ——
+  ① 对照臂（没在编辑 ⇒ 注入照常写，保护⛔ 不许外溢成整次注入不跑）② 编辑中 ⇒ 草稿活着
+  **且同一次注入的标题那格照改**（⛔ 不能让"没被盖"混成"注入没执行"那种假绿）
+  ③ 由**真改文档**的一次按键（`Cmd/Ctrl+Alt+D` ⇒ 预备拍 +1 条提交）引发的重投影⛔ 不吃草稿
+  ④ 失焦后下一次注入写回权威 ⇒ ⛔ 造出永久分叉 ⑤ 回车两支（拒 `"9999"` / 收 `"140"`）
+  都归一化 + 门清零 ⑥ 前提取证（三层画布 0 处 `FocusScope` / 0 处 `.focus(`）
+  ⑦ 出处纪律（`set_bpm_display(` = **1**、`get_bpm_field_editing(` = **1**、
+  `set_bpm_field_editing(` = **2**、`app.slint` 代码行里 `bpm-field-editing` = **1**，
+  `text <=> root.bpm-display;` 那一句双向绑定仍在）。⚠ 四个数都在提交前**现读源码**核过
+  （`code_only` 先剥 `//` 行 ⇒ 注释⛔ 算实现站点）。
+* **如实登记的边界**（⛔ 不假装整类缺陷修完了）：
+  1. ⚠ **本条第一版写错了，由 §40 从上游源码改正**（原文声称"调音台 SFZ 路径格同样会被
+     重投影盖掉"）。改正后的事实：`mixer_console.slint:738` 的 `sampler-path-field` 是
+     **单向**绑定（`text: root.track-sampler-paths[track_index]`），而单向绑定在用户**第一次
+     按键**时就被打断（`i-slint-core-1.18.1/properties.rs:1029-1043`：`Property::set` 在默认
+     `intercept_set == false` 的绑定上 `remove_binding`）⇒ 它**不会**被盖掉，它得的是**反面**
+     缺陷：**从此再也不跟随权威**（浏览按钮填不进框、撤销/AI 侧改动显示不出来）。
+     那一格本票一位没动，⛔ 也不能照本票的形状修（Slint 的 `<=>` 拒绝下标左值 ⇒ §40）。
+  2. 左栏搜索框**没有**这个缺陷，且⛔ 不该有门：`sidebar-search` 的唯一写者是输入框自己的
+     两向绑定，宿主刻意⛔ 不 `set_sidebar_search`（`host.rs:5795-5797` 原话：再写一次就与
+     绑定互为回路）。导出弹窗那四格⛔ 不在 `apply_view` 的注入面上 ⇒ 与本票无关。
+  3. 回车之后门已被清零 ⇒ **同一次聚焦会话里**再打第二串草稿仍然暴露在同一触发下（要再点一次
+     才会重新置门）。这条只在判据 ⑤ 之后成立，本票⛔ 不把它说成已闭合。
+  4. 判据 ③ 借预备拍键只当一个**真的会改文档并重投影**的漏斗用，⛔ 不是主张"文本框聚焦时
+     DAW 热键照常触发"—— 真实键盘下字符键归文本框，那是 `ADR-0068`（`D-UI-22`）未决的
+     规范冲突，无头注入绕过的是**派发**那一层。
+     ⛔⛔ **这一条在写下当天就被判决证伪**（见 §43）：无头注入⛔ 绕过不了任何一层，
+     `invoke_key_action` 与真窗口共用**同一个** `resolve_logical`。
+
+**判决**：`pending` —— 本机不编译 `yeban-app`（Slint 是重依赖）。本地只证到
+`cargo fmt -p yeban-app -- --check` `rc=0`，加上 ⑦ 那四个数与 ⑥ 那六个 0 的**现读对账**。
+`git diff --numstat`：`src/host.rs 32/1`、`ui/app.slint 23/0` ＋ 判据文件一枚。
+⚠ `app.slint` 那 23 行**只有一格属性声明**（`in property <bool>`，画不出任何东西、
+不改任何坐标）⇒ 本票**零像素改动**，不需要金帧重录。
+
+## §40 取证：全仓库**六个** `TextInput`，只有调音台 SFZ 那格是单向绑定 —— 它得的缺陷与 `D-UI-24` **反面**（2026-11-03）
+
+数什么（单位：个）：`grep` 全部 `ui/**/*.slint` 里 `:= TextInput` 的**控件数**与其 `text`
+的绑定形态 ⇒ **6** 个输入框：`bpm-input` / 导出弹窗四格（`path` `sample-rate` `bit-depth`
+`seconds`）/ `sidebar-search-input` = **5** 个 `text <=> …`（双向），
+`mixer_console.slint:738` 的 `sampler-path-field` = **1** 个 `text: root.track-sampler-paths[track_index]`（**单向**）。
+⇒ 它是全仓库唯一的例外，而本仓早已把"单向绑定会被第一次按键打断"写成教训
+（`transport.slint:30`、`transport.slint:285`、`sidebar.slint:214`、`[PATCH export-wav-dialog-binding]`）。
+
+* **用户可见的两条害**（都由"绑定已死 ⇒ 这格不再跟随权威"推出）：
+  1. **浏览按钮填不进框**：`wire_mixer_sampler_browse`（`host.rs:2312-2335`）只
+  `set_track_sampler_paths(...)`，⛔ 不提交、不改文档（口径写在 `host.rs:2297`）。用户若**先敲过
+  一个字**再点"…"选中文件，那一次的数组重写进不到已断绑定的这一格 ⇒ 框里仍是旧草稿，
+  看起来"浏览没反应"。
+  2. ⭐ **骗 AI**（比视觉问题重）：`TextInput` 的 `accessible-value` 自动 == `text`
+  （上游 `lower_accessibility.rs`，本仓 `mixer_console.slint:715-719` 逐字记着这条），
+  而 `text` 停在草稿上 ⇒ 控制面 / 屏读器读 `track-{i}-sampler-path` 读到的是**非权威**的串，
+  与文档里的 `TrackV3::sampler` 分叉。撤销一次 SFZ 绑定、或 AI 侧改路径，界面上那格都不动。
+* **上游证据**（版本钉 `1.18.1`，本机读 `~/.cargo/registry`，⛔ 不需要编译）：
+  1. **单向绑定确实会被打断**：`i-slint-core-1.18.1/properties.rs:1029-1044`
+     `Property::set` 先问绑定的 `intercept_set`，默认绑定返回假（`:353`）⇒ `remove_binding()`（`:685`）；
+     双向绑定自己 `intercept_set == true` 因此活得下来（`properties/two_way_binding.rs:21-24`）。
+     按键那条路就是普通 `set`：`items/text.rs:1679-1681` `set_text_internal` 里 `self.text.set(text)`。
+  2. ⛔ **修法不能是"改成 `<=>` 就完事"**：`i-slint-compiler-1.18.1/passes/resolving.rs:3169-3211`
+     只接受 `PropertyReference` / `StructFieldAccess` / `RepeaterModelReference` 三种左值，
+     下标 `arr[i]` 解成 `Expression::ArrayIndex` ⇒ 落到 `:3257-3261` 那条原话诊断
+     `Two-way bindings can only target property references`。**这是一堵编译错误的墙**，
+     ⛔ 一个"写法没写好"的问题。
+  3. 上游**唯一**支持的"逐行可编辑"两向形态是绑到 `for` 的**行数据**（`TwoWayBinding::ModelData`），
+     回写走 `model_set_row_data`（`generator/rust.rs:926` 与 `:4120`；`generator/cpp.rs:716`）
+     ⇒ 要它跟随权威，就得把被迭代的那个模型从 `[string]` 换成**带字段的 struct 模型**
+     （现状：`mixer_console.slint:503` `for track_name[track_index] in root.track-names`）。
+* **为什么它⛔ 是 `D-UI-24` 的复制品**：那一票的症状是"写得太勤"（每次重投影都盖掉草稿），
+  这一格的症状是"**再也不写**"（断绑定之后权威进不来）。反过来，一旦真把两向链接到行数据上，
+  宿主每投影换整份模型 ⇒ **又变回盖掉**那一族 ⇒ 这一票要同时成立，**前置**是"带身份的焦点上报"
+  （`host.rs` 里那条注释原话：失焦⛔ 能硬编码成"回到画布"，得改成问焦点系统当前是谁）。
+  两路 `changed has-focus` 的**先后顺序**没有上游保证（`sidebar.slint:77-82` 登记的就是这一条）
+  ⇒ 身份必须进通知（只有 `id` 对得上的失焦才准清零），⛔ 是一个布尔位能表达的。
+* **需要的设计裁决**（⛔ 由 Agent 私自定，属状态分层决策）：调音台 SFZ 那一格的事实源怎么放 ——
+  **A** 把 `track-names` 升成 struct 模型（`{ name, sampler-path }`），行数据成为**瞬态草稿镜像**
+  （权威仍是文档），配带身份的焦点门 ⇒ 唯一能同时拿到"跟随权威"＋"可手敲"的形状，工作量最大
+  （`.slint` 里 `track_name` 的每一处引用要改、宿主注入要造 struct 数组、焦点通道要接第二路）；
+  **B** 收掉可编辑面：那一格改**只读**显示，路径只经"浏览 / SET" ⇒ 症状消失，代价是用户不能手敲粘贴；
+  **C** 维持现状，把上面两条害按已知缺陷登记（本 §）。
+  ⇒ 本票⛔ 动一行代码，等 A/B/C 的裁决；一有裁决这就是**下一票**的形状。
+
+**判决**：`pending`（本条是**取证与登记**，⛔ 有代码改动）—— 证据全部来自本机现读：`ui/**/*.slint`
+的 `TextInput` 清单、`host.rs` 的两个函数、以及 `~/.cargo/registry` 里 `1.18.1` 的上游源码。
+⛔ 本机没有编译任何东西，因此"改 `<=>` 会红"这一条是**读上游诊断得出的**，⛔ 是 CI 实测的；
+若将来有人按 A/B/C 动手，第一手判据应当是**先量出这一格当前的跟随行为**（敲一个字 → 改权威 →
+读 `track-{i}-sampler-path` 的 `accessible-value`），把结论写在判据里再谈修法。
+
+---
+
+## §41 `D-UI-26`：界面上**印出来的和弦**里有一把根本⛔ 存在 —— 修文案，⛔ 补键（2026-11-03）
+
+**症状**（用户可见的那一面）：AI 协作栏抽屉的按钮把键位写在 `accessible-label` 里 ——
+`"AI 协作栏抽屉 (Cmd/Ctrl + 反斜杠)"`。屏读器会念这句，用户照着按 `⌘\` / `Ctrl+\`：**什么都没发生**。
+⇒ 这是"按钮点了没反应"同族、却更难发现的一族缺陷：⛔ 缺像素、⛔ 缺回调，只缺一行文案与键表的 correspondence。
+
+**根因**（现读 `src/input.rs`）：第 3 步 `if modifiers.command()` 那张匹配表里**从未**有过
+`'\\'` 这一臂 ⇒ `Cmd/Ctrl + \` 落到 `_ => Resolution::PassThrough`。抽屉真正的键盘入口是
+`Cmd/Ctrl+Alt+A`（`ADR-0064` 第 4 条点名；端到端判据 = `tests/ai_drawer_key_ui.rs`，
+注入的是 `("a", false, true, …)`）。⇒ **修法是⭐ 把文案改成真绑的那一把**，⛔ 是给 `\` 补一臂
+（那会造出**第二把**键干同一件事 —— 键位是界面决定，⛔ 由 Agent 顺手发明）。
+同一句假承诺还在 `ui/app.slint:2117` 与 `ui/transport.slint:505` 的**注释**里各留了一份
+（注释⛔ 承诺，但它会教下一个读代码的人相信那把键存在）⇒ 一并改成 `Cmd/Ctrl+Alt+A`。
+
+**取证时挖出来的第二件事：承诺有**两个**源。** `src/elements.rs` 的
+`registry.add(id, kind, file, name, ..)` 里那份 `name` 也带键位（`yeban-ui-test-port` 的控件树
+读数，屏读与 AI 都从这里取），实测有 **3** 格携带和弦：`transport-metronome-button`
+`"节拍器 (Cmd/Ctrl + Alt + N)"`、`musical-pr-accept-button` `"采纳提案 (Shift+Enter)"`、
+`undo-tree-undo-button` `"撤销一步 (Cmd+Z)"` —— 三者都**逐字等于**对应 `.slint` 里的那条字面
+（今天一致 ⇒ 不是缺陷，但它是**下一个** `D-UI-26` 的温床：改 label 而忘改登记名，界面与控件树
+就各说一把键）。因此本判据把两边一起扫，并把"不许漂移"钉成一条（⑤）。
+⚠ Rust 侧只扫 `registry.add(..)` 参数**区间**：`elements.rs` 的**散文**里也出现
+`Shift+Enter`（实测第 3964 行那条 assert 消息），把散文当承诺会让守卫变成假红机器 ——
+同一区间外还有一处 `'Enter`'` 会命中"键名不在词表"，正是靠区间口径排除的。
+
+**清点口径**（单位：**一次印刷** = 一条 `Chord`；⛔ 是"不同的键"）：
+17 个 `.slint`（编译期 `include_str!`）扫出 **6** 处印刷，登记表扫出 **3** 处，合计 **9** 处、
+**4** 把不同的和弦 —— `Cmd/Ctrl + Alt + N` ×2、`Cmd/Ctrl + Alt + A` ×1、`Cmd+Z` ×3、
+`Shift+Enter` ×3（次数含**两源**合并）。写坏了的键位提示（修饰词接不到 `+ 键名`）：**0** 处；
+词表不认识的键名：**0** 处。磁盘上 `.slint` 文件 **17** 个 == 清单 **17** 项。
+
+**判据**（`crates/yeban-app/tests/d_ui_26_labelled_chords_are_bound.rs`，**8** 条 `#[test]`）：
+①多重集 == `PINNED_PROMISES`（原话与次数都钉住 ⇒ 新增承诺必须同步扩表）；②每一把喂
+`InputContext::resolve_logical`（画布焦点）都出**期望的那个** `Action`，`Cmd/Ctrl` 的 `ctrl`
+与 `meta` **两条腿都验**（`Modifiers::command()` 就是 `ctrl \|\| meta`）；③`Cmd/Ctrl+\` 仍 ⇒
+`PassThrough` 且扫出的和弦⛔ 含 `'\'`（假承诺⛔ 许回来）；④AI 抽屉 label 逐字 == 真绑那把、
+登记名那一格⛔ 带和弦、且 transport 里承诺 `'a'` 的键位**恰好一处**；⑤带和弦的登记名必须与某条
+`.slint` 字面逐字相同；⑥磁盘 == 嵌入清单（`read_dir` 只用于这一条对账，口径同
+`tests/assertion_bounds_audit.rs`）；⑦"承诺写全"棘轮（incomplete/unknown 必须为空集）；
+⑧同一把和弦在 `Focus::TextInput` 下必须仍 ⇒ `PassThrough`（那是 `ADR-0068` 登记的**现状**，
+⛔ 让 ② 的绿被读成"任何焦点下都生效"）。
+
+**本机怎么验的（⚠ 这条决定判决的可信边界）**：`AGENTS.md` §5 ⇒ 本机⛔ 编译 `yeban-app`。
+所以我把这个判据文件**原样**搬进一个零依赖的桩 crate（`ui/`、`src/elements.rs` 用符号链接指向真实
+文件，只把 `input` 的类型形状照抄、键表只放钉住的那几臂），`cargo test` **8 条全绿**，并用
+**变异检验**证明它⛔ 空转：删掉桩表里 `(Character('a'), false, true)` 那一臂 ⇒ ② 立刻红在
+`ui/transport.slint:711 印着 Cmd/Ctrl + Alt + A（整条字面 "AI 协作栏抽屉 (Cmd/Ctrl + Alt + A)"）
+—— Ctrl 形态在键表里解析成 PassThrough`。⇒ 桩证明的是**扫描器与对账逻辑**（词表、区间口径、
+多重集、逐字相同、清单完整性）；**真键表那几臂**是现读 `src/input.rs` 第 3/5 步核出来的，
+⛔ 经 CI 实测。本地另加 `cargo fmt -p yeban-app -- --check` `rc=0`。
+
+**判决**：`pending` —— 交 CI。`git diff --numstat`：`tests/d_ui_26_labelled_chords_are_bound.rs 761/0`
+（新判据一枚）＋ `ui/app.slint 1/1`、`ui/transport.slint 8/2`。
+⚠ 界面侧改的是 `accessible-label` 的**文本**与三处**注释**：无坐标、无尺寸、无颜色变化 ⇒
+**零像素改动**，⛔ 需要金帧重录（`[UI-MCP-003]` 那条不触发）；但它**确实**改变无障碍树里的
+`accessible-name`，所以任何按名字断言的既有判据都应当跟着改 —— 实测仓库内按这句 label 断言的
+只有本文件（`elements.rs` 的登记名⛔ 带键位，因此它⛔ 是第二处要同步的文本）。
+
+---
+
+## §42 `D-UI-26` 的姊妹族：括号里印出来的**裸键**也是承诺 —— 守卫从 8 条扩到 10 条（2026-11-03）
+
+**为什么这一票要补**：§41 那枚判据只认**带修饰词的和弦**（解析器从修饰词起跳）。同一条"念出来却
+什么都不会发生"的缺陷，另一半分长这样：`ui/transport.slint:673` 的 label 写
+`切换 Session / Arrangement (Tab, 仅画布聚焦时)` —— 括号里是**一把裸键**。守卫⛔ 覆盖它 ⇒ 有人
+把这把键改掉或删掉那一臂，判据一声不响。本票把这一族一并钉住，⛔ 另开一票（同一句承诺、同一张
+键表、同一个解析器）。
+
+**现读的四个裸键承诺**（单位：**一次印刷** = 一条 `BarePromise`；`.slint` 与 `elements.rs` 各一份）：
+`Space` ×2（`播放 / 暂停 (Space)`）、`F5` ×2（`Session 触发矩阵 (F5)`）、`F6` ×2
+（`Arrangement 时间轴 (F6)`）、`Tab` ×2（`切换 Session / Arrangement (Tab, 仅画布聚焦时)`）
+⇒ **8 处、4 把**。逐条对 `src/input.rs`：第 1 步 `F5`⇒`ShowView(Session)`、`F6`⇒`ShowView(Arrangement)`
+（**全局**，连合成态都放行）；第 6 步裸键 `Space`⇒`PlayPause`、`Tab`⇒ **只在 `Focus::MainCanvas`**
+`ToggleView`，其余焦点 `PassThrough` 交给焦点系统 ⇒ 那句 `仅画布聚焦时` 的限定语**是真的**
+（本票⛔ 造缺陷，是把已经对的行为钉住）。
+
+**新增两条判据**（⑨/⑩，口径对称）：
+* ⑨ 裸键多重集 == 钉值清单（`Space`/`F5`/`F6`/`Tab` 各 2 次），且每把在**画布**焦点下解析出钉住的
+  `Action`；
+* ⑩ 文案里那句**焦点限定语**必须就是键表的行为，两半分各挡一种空绿：
+  带限定语的 ⇒ 在 `Other`（推子/旋钮/标签）与 `TextInput` 下必须**真的⛔ 吞键**（挡"文案说只在画布，
+  实现却哪儿都吞"）；⛔ 带限定语的 ⇒ 在 `MainCanvas` **与** `Other` 两条腿上都必须兑现（挡"只验画布，
+  于是'哪儿都生效'的承诺被读成'只在画布生效'"）。
+
+**解析口径**（防假红）：只认 `( … )` 括号组里**逗号前第一节**恰好等于词表键名的；组长 >32 字符按散文
+处理。⚠ `BARE_KEY_WORDS` 刻意**⛔ 收中文键名** —— `删除` / `空格` / `回车` 在中文文案里首先是**动词**
+（`撤销一步`、`删除选中` 这类 label 处处都是），把它们当裸键名会把散文读成承诺 ⇒ 假红；中文键名只在
+**和弦**里认（`Cmd+删除` 那种写法才成立）。`Shift+Enter` 这类和弦⛔ 与裸键族重叠（第一节是
+`Shift+Enter`，⛔ 在裸键词表里）。
+
+**顺带把 ⑤ 补硬**：原来只要求"**带和弦**的登记名"与 `.slint` 逐字相同；登记名里另外那 4 句裸键提示
+同样是对 AI/屏读的承诺 ⇒ 现在 ⑤ 管**全部 7 句**（3 和弦 ＋ 4 裸键），并加了"一句都没扫到 ⇒ 红"
+的空集防线（口径：⛔ 让守卫靠空集转正）。
+
+**本机怎么验的**（同 §41 那条边界：本机⛔ 编译 `yeban-app`，判据逻辑搬进零依赖桩 crate 跑）：
+**10 条全绿**；且 ⑩ 做了两半分各自的**变异检验** —— 把桩表里 `Tab` 的 `MainCanvas` 门去掉 ⇒ ⑩ 红在
+`ui/transport.slint:673 … 键表却在 Other 焦点下也吞了这把键`；把 `Space` 加上 `MainCanvas` 门 ⇒ ⑩ 红在
+`ui/transport.slint:123 … 这是对「哪儿都生效」的承诺，但键表在 Other 焦点下解析成 PassThrough`。
+⇒ 这两条绿⛔ 是白给的。`cargo fmt -p yeban-app -- --check` `rc=0`。
+
+**判决**：`pending`（交 CI）。`git diff --numstat`：`tests/d_ui_26_labelled_chords_are_bound.rs 236/15`
+—— ⛔ `.slint` 改动、⛔ 像素改动，纯判据扩展（文件现为 **10** 条 `#[test]`，§41 里那句"8 条"记的是
+当时那一枚提交）。
+
+---
+
+## §43 `D-UI-24` 判决读回：**7 条里 ③ 红**，红在我自己的注入假设上（2026-11-03）
+
+**读数对象**：run `41537282778`（`headSha=26a23966`，即 §39 那一枚提交）。单位：**作业（job）**
+与**测试二进制里的 `test result:` 行**（§6.3 第 2、4 条：跳过的作业⛔ 不是绿，判据名缺失 = 没跑到）。
+
+| 作业 | 结论 | 是不是本票的证据 |
+| :--- | :--- | :--- |
+| `rust (yeban-app)` | **failure** | ✅ 是 —— 目标二进制**跑到了**（日志里有 `Running tests/d_ui_24_bpm_draft_survives_reprojection.rs` ＋ `test result:` 行） |
+| `windows (…) / macos (…)` | failure | ✅ 同一条判据、同一行号 |
+| `deny (cargo-deny 开源合规)` | failure | ❌ 与本票无关，见 §44 |
+| `rust (workspace 全量)` / `e2e (…)` | **skipped** | ⛔ 空绿，不作任何验证 |
+
+`rust (yeban-app)` 里那一条的原文（三条腿逐字一致，仅路径分隔符不同）：
+
+```
+running 7 tests
+…
+test a_document_edit_that_re_projects_does_not_lose_the_draft ... FAILED
+thread '…' panicked at crates/yeban-app/tests/d_ui_24_bpm_draft_survives_reprojection.rs:266:5:
+预备拍键必须被消费（否则本条没有发生重投影，②的"没变"就成了无源之水）
+test result: FAILED. 6 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out
+```
+
+⇒ **①②④⑤⑥⑦ 六条拿到了真的绿读数**（含本票的正 面 ② 与两条纪律 ⑥⑦）；红的只有 ③。
+
+### 根因：§39 边界 4 那句"无头注入绕过的是派发那一层"是**错的**
+
+现读链条（三条都是代码事实，⛔ 推测）：
+
+1. `src/host.rs` `wire_input` 的 `on_ime_focus_changed` 把 `focused_now = true` 落成
+   `InputContext::set_focus(Focus::TextInput)`；
+2. `src/input.rs` `resolve_logical` 的**第 1 步**只放行 `F5`/`F6`，**第 2 步**是
+   `if self.focus == Focus::TextInput { return PassThrough }` —— 带 `Cmd`/`Ctrl` 的组合排在
+   **第 3 步**，因此焦点在文本框里时**一把也到不了**；
+3. `invoke_key_action` 不是旁路：它经 `wire_keys` 调的正是**同一个** `resolve_logical`。
+   判据先把焦点置进文本框、再从同一张表要一次"消费"⇒ 必然返回未消费，`Op` 一条也没提交。
+
+⚠ 这条教训的形状正是 `AGENTS.md` §6.3 第 4 条的反面：**我⛔ 是把判据名缺失当成"没跑到"，
+而是把一个从未被任何一条腿执行过的假设写进了判据**。本机⛔ 编译 `yeban-app` ⇒ 这条判据从写下到
+CI 之间**一次都没有运行过**；它红得准确，红的是我自己那句前提。
+
+### 改法：③ 换到**鼠标**那条腿（同一缺陷在真窗口里的形状）
+
+`mixer-mute-toggle(int)`（调音台通道条的 M 键）→ `host::wire_mixer_switch` →
+**恰好一条** `Op::SetTrackMute` → `refresh_undo_window(.., true)` → `apply_view`。它不受键表管，
+所以"焦点在框里"这件事⛔ 会把它一起挡掉 —— 而这正是 §39 开头登记的触发面 ①（"画布上点一下"）。
+
+非空转的**现场证据**换了落点：`track-mutes` 那一列**只由 `apply_view` 写**（`src/host.rs` 的
+`ui.set_track_mutes(...)` 是唯一写者），所以"那一格翻了"就等于"那一次注入执行到了"，
+⛔ 不是"回调在四处早退里返回了所以草稿没被盖"那种假绿。四条断言：文档那一轨翻了 ⇒
+界面那一列跟着翻 ⇒ 提交条数 `+1` ⇒ 框里**仍是草稿**。
+
+顺带**新增一条钉值**（单位：**行**）：`track-ids` / `track-mutes` 两列各 `3` 条
+（`filled_project()` 的通道条数，与 `tests/mixer_keyboard_switch.rs` 同一钉法）—— 判据按下标索引，
+夹具换轨数时必须**先红在这里**，⛔ 让下标悄悄落到另一条轨上。
+
+**判决**：本条改动**待 CI**（本机⛔ 编译）。`git diff --numstat`：
+`tests/d_ui_24_bpm_draft_survives_reprojection.rs 81/25`。§39 的修法（`apply_view` 那一句门）
+**一位未动** —— 判决⛔ 曾要求改它，红的只有判据 ③ 的注入方式。
+
+## §44 取证：`deny` 那条腿现在是**全仓库红**，`async-executor v1.14.0` 被上游 yank（2026-11-03）
+
+**读数对象**：两条 run 的 `deny (cargo-deny 开源合规)` 作业。单位：**作业结论**。
+
+- 本线 run `41537282778`（`26a23966`）：`advisories FAILED, bans ok, licenses ok, sources ok`；
+- `main` 的 run `41542884885`（`61ff8825`，**别的线**刚推的"nightfall v14 落地点补齐"）：
+  同一作业同样 `failure`，而它⛔ 含我一行代码。
+
+失败原文（`deny` 自己给的处置建议）：
+
+```
+error[yanked]: detected yanked crate (try `cargo update -p async-executor`)
+```
+
+依赖链是**现读**的：`async-executor v1.14.0` ← `accesskit_unix v0.22.1` / `zbus v5.19.0`
+← `i-slint-backend-winit v1.18.1` ← `slint v1.18.1` ⇒ **Slint 的传递依赖**，本仓库⛔ 直接声明它。
+
+**处置**（⛔ 本线自行改依赖）：
+
+1. 本批三枚提交（`af28382e` / `611b0ee3` / 本条）的 `git diff --name-only` 实测只含
+   `.slint` / `.rs` / `.md` ⇒ **零**个 `Cargo.toml` / `Cargo.lock` 改动，红与它们无因果；
+2. `Cargo.lock` 是根级共享文件（`AGENTS.md` §5.6 归集成者），且 yanked crate 属**供应链信号**
+   （`MUST-GATE` 之一）⇒ 一次 `cargo update -p async-executor` 该由谁来跑、要不要连着
+   重验金帧，是**人类/集成者**的决定，留在此处等裁决，⛔ 在本线偷偷 resolve；
+3. 因此**本线的 `deny` 腿预期继续红**：读回判决时必须把"这一枚提交的测试腿"与
+   "仓库级 `deny` 红"分开记（§6.3 第 2 条：一条红的作业不污染另一条的读数，
+   但⛔ 不能再把整批写成绿）。
+
+⚠ 另一处噪声：同一作业日志早期还有一行
+`error: override toolchain '1.99.0-x86_64-unknown-linux-musl' is not installed`，
+它之后 `deny` 仍然跑出了完整报告 ⇒ 那是该 step 的**工具链回退**，⛔ 是本次失败的原因。
+
+**第三个独立数据点**：本线更早的 run `41525041679`（`D-UI-21` 那一枚提交）现在读回来也是
+**只有** `deny` 一条红，测试腿（Linux / Windows / macOS）**全绿** —— 现读非成功作业清单：
+`deny` failure ＋ `rust (workspace 全量)` / `e2e` 两条 `skipped`。⇒ "yanked 的传递依赖把
+`deny` 腿打红、⛔ 动摇任何测试判决"这条判断有第三例支撑。
+
+## §45 `D-UI-24` ③ 重写后的判决读回：run `41545628710` —— 三条腿同一枚 `E0308`，测试腿**一个二进制都没跑到**（2026-11-03）
+
+**先说指标**：数的是同一作业日志里 `Running tests/` 出现的**次数**（单位：次）与
+`test result:` 出现的**行数**（单位：行）—— 二者即"`cargo test` 真的开跑了几批判据"的现场证据
+（§6.3 第 2、4 条）。`rust (yeban-app)` 腿实测 **0 次 / 0 行**。
+
+| 作业 | 结论 | 现场 |
+|---|---|---|
+| `lockfile` / `plan` / `checks` | success | fmt 与红线守卫都过 ⇒ ⛔ 类型层的事 |
+| `deny (cargo-deny)` | failure | §44 那条仓库级红，与本判决无因果 |
+| `rust (yeban-app)` | failure | **clippy 阶段**退出码 101，`Running tests/` = 0 |
+| `windows` / `macos` | failure | 同一条 `E0308`，同一行号 |
+| `e2e` / `rust (workspace 全量)` | skipped | 空绿，⛔ 计入任何覆盖 |
+
+**根因**（一枚，三条腿共享）：我在 §43 里改写的 `③` 用了自造的 helper
+
+```rust
+fn string_column(model: &slint::ModelRc<String>) -> Vec<String>   // ✗ CI 判的
+```
+
+而 `get_track_ids()` 的元素类型是 `slint::SharedString` ⇒ `expected &ModelRc<String>,
+found &ModelRc<SharedString>`。
+
+**为什么只有这一条红，而同一段里的 `bool_column` 没事**：`bool_column` 是从
+`tests/mixer_keyboard_switch.rs:146` **原样抄**的（类型自带）；`string_column` 是我**发明**的
+（凭"界面那一列是字符串"推断签名）。同一文件里"抄来的"与"发明的"并排时，红的是发明的这一条。
+本仓库对同一个属性**早有现成读法**：`tests/d_ui_11_serve_header_gestures.rs:412` 的
+`track_ids()` 直接 `.iter().map(|id| id.to_string())`，让类型由属性的 getter 自己决定。
+
+**新登记的测量规则**（§5 的推论，⛔ 靠自觉）：本机⛔ 能编译 Slint ⇒ **类型层错误只有 CI 会抓**。
+所以任何**新增的"读界面某一列"**，落笔前必须先 `grep` 同一个属性的**已有读法**并照抄；
+⛔ 从签名形状推断元素类型。
+
+**对同批另两枚的影响**（如实切开，⛔ 连坐也⛔ 免罪）：`af28382e` / `611b0ee3`（`D-UI-26`）
+在本轮**只有"编译过"这一条证据**（clippy 对那两个文件未报错，因为它先把整个 target 图跑完才退出），
+**运行时判据一条都没执行** ⇒ 它们的 10 条守卫仍是 `pending`，⛔ 得写成"绿"也⛔ 得写成"红"。
+
+**改法**：签名换成 `&slint::ModelRc<slint::SharedString>`，并把"`get_track_ids()` 返回
+`SharedString`、这一条是 CI 教的"写进 helper 的文档注释，防下一轮再猜。
+`cargo fmt -p yeban-app -- --check` `rc=0`。`git diff --numstat`：
+`tests/d_ui_24_bpm_draft_survives_reprojection.rs 5/2`。判决：`pending`（重跑）。
+
+## §46 取证：`git push | tail` 的退出码是 `tail` 的 —— 一次**假成功推送**被 `git ls-remote` 抓回（2026-11-03）
+
+**事实**（本轮实测）：把推送命令接上 `| tail -5` 后，工具报 **exit code 0**，而 stderr 里其实是
+
+```text
+fatal: Failed to connect to github.com port 443 after 133929 ms: Connection timed out
+```
+
+管道的退出码默认取**最后一条命令**（这里是 `tail`），于是网络失败被包装成"成功"。
+
+**怎么抓回的**：不采信包装层的判决，去**远端**现读 —— `git ls-remote origin line/zimmer-export-limiter`
+仍返回 `26a23966…`（推送前的值）⇒ 本地"已推送"的信念与远端事实不符。随后
+⛔ 接管道重跑，并用 `; echo "rc=$?"` 把退出码打在**命令本身**上，真成功才是
+`26a23966..82818d20`。
+
+**通用规则**：
+1. 推送 / 上传 / 任何"改变远端状态"的命令⛔ 接管道；要截输出就在命令上直接取 `$?`，或 `set -o pipefail`；
+2. **判决从远端读回**（`git ls-remote` 的 ref、`gh run list` 的 `headSha`），⛔ 从本地命令的退出码推断；
+3. 本轮还叠了一层风险：那条推送是**后台任务**，"completed (exit code 0)" 更容易被当成权威 ⇒
+   后台任务的 exit code 只说明**包装脚本**没崩。
+
+⚠ 另两次纯网络失败（`GnuTLS recv error (-110)`、`HTTP2 framing layer error`）是同一原因的
+不同表现，绕过方式是 `git -c http.version=HTTP/1.1`；它们**都**被 `ls-remote` 现读判决，⛔ 靠猜。
+
+## §47 `D-UI-27`：状态栏那句**快捷键提示**是一句承诺 —— 守卫落地，并实测出一处能力层过承诺（2026-11-03）
+
+### 一、先把上一轮的判决读回（run `41548239565` = `b5a3084a` 自己的 run）
+
+**先说指标**：与 §45 同两条口径 —— 同一作业日志里 `Running tests/` 的**次数**（单位：次）与
+`test result:` 的**行数**（单位：行）。`rust (yeban-app)` 腿实测 **0 次 / 0 行**（与 §45 同型）。
+
+| 作业 | 结论 | 现场 |
+|---|---|---|
+| `lockfile` / `plan` / `checks` | success | fmt 与红线守卫过 |
+| `deny (cargo-deny)` | failure | §44 那条仓库级红，**根因未变**：`error[yanked]: detected yanked crate (try cargo update -p async-executor)`，末行 `advisories FAILED, bans ok, licenses ok, sources ok` |
+| `rust (yeban-app)` | failure | **clippy 阶段**退出码 101，唯一的 error 是 `d_ui_26_labelled_chords_are_bound.rs:431` 的 `clippy::manual_pattern_char_comparison` |
+| `windows` / `macos` | failure | 同一条 lint |
+| `e2e` / `rust (workspace 全量)` | skipped | 空绿 |
+
+**两条分开的读数，⛔ 混成一条**：
+1. ⭐ **§45 那枚 `E0308` 确实修好了** —— 本轮日志里**只有这一处** error，且它在 `d_ui_26` 而非
+   `d_ui_24`；clippy 会把 target 图跑完再退出，所以"`d_ui_24` 没报错"就是"`d_ui_24` 编译过"的证据。
+2. ⛔ **但 `d_ui_24`/`d_ui_26` 的判据仍一条没跑** —— 编译过 ≠ 跑过（§6.3 第 4 条）。
+   所以 §39/§41/§42/§43/§45 里的 `pending` **原样保留**，本轮⛔ 能把任何一条写成绿。
+
+**新 lint 为什么本机看不见**：`AGENTS.md` §5 禁止本机编译 Slint ⇒ `cargo clippy -p yeban-app
+--all-targets -D warnings` 本机⛔ 跑，`rust 1.99.0` 的新 lint 只有 CI 会报。
+**规则（§45 那条的姊妹）**：在测试文件里写**手写字符比较**（`.split(|c: char| c == ',' || …)`、
+`.any(|c| c == …)`）之前，直接写成 clippy 要的形式 —— `split([',', '，', '、'])`；
+⛔ 指望本机 lint 兜住。**一枚 lint 会打死同腿所有测试二进制**（fail-fast ⇒ 一整批判据零读数），
+代价与一枚类型错误同级。
+
+**改法**：`d_ui_26:431` 的手写比较换成 char 数组 pattern（语义等价：同一个 `split`，同一组分隔符）。
+
+### 二、本片：`D-UI-27` 守卫 `tests/d_ui_27_status_bar_tip_promises_are_bound.rs`
+
+**缺口是什么**：`ui/status_bar.slint:132` 的 `tip` 默认值是一句**画在屏幕上的**用户承诺
+
+```text
+空格 播放/暂停 · Tab 切视图 (画布聚焦时) · 1–5 工具 · [ ] A/B 盲听
+```
+
+`app.slint` 的 `StatusBar {` 实例⛔ 传 `tip`、`host.rs` 的 `set_tip(` 命中 **0 处**（现读）
+⇒ 用户看到的逐字就是这个字面量。而 `D-UI-26` 的守卫只认两种形状（**带修饰的和弦**、
+**括号里的裸键**），这句话里 **四段承诺一段都不是**那两种：中文键名 `空格`、括号里装**限定语**
+⛔ 键名的 `Tab … (画布聚焦时)`、数字区间 `1–5`（连接号是 en-dash `U+2013`）、方括号键 `[ ]`。
+⇒ 承诺与键表的一致性今天**零机械防线**：顺手加一把 `Q 量化` 就是第二个"念出来却什么都不发生"。
+
+**八条判据**：① 清点（段数 4 / 承诺 9 把 / 词表不认识的段 0，身份串＝写法+键+原话+限定语四元组逐字对账）
+② 兑现·画布 ③ **限定语双向对账（读解析出来的文案，⛔ 读钉死表）** ④ 文本域口径（现状 `PassThrough`，
+⛔ 算兑现，`ADR-0068` 未决）⑤ 画的==扫的（`text: root.tip;` 在 + 实例⛔ 传 `tip:` + 宿主 `set_tip(` = 0）
+⑥ 一段⛔ 两个键名来源 ⑦ 语义 ID `status-bar-shortcut-tip` 仍在登记面 ⑧ **能力层读数**（见下）。
+
+### 三、实测出来的过承诺：`[ ]` 两把键**已绑、无落地实现**（⑧ 把它从注释升级成判据名）
+
+`host::action_has_implementation` 今天只把 `AuditionMain` / `AuditionProposal` 判 `false`
+（其余承诺全 `true`）—— `[ARCH-RT-005]` 要求的"主线与提案并发渲染 + 30ms 等功率瞬切 + 2048 采样预滚"
+在仓库里一处都不存在 ⇒ 按 `[` 今天唯一能发生的事是⛔ 任何东西。这与 `D-UI-26` 的 `Cmd/Ctrl+\`
+**同族而低一层**：那把键⛔ 绑（修法是删文案），这两把**绑了却死**。
+
+⛔ 本切片自行修：两个方向都归人类 —— (A) 补 A/B 试听能力，或 (B) 删 `· [ ] A/B 盲听` 那一段
+（**用户可见**文本 ⇒ `tests/golden/linux/` 基准过期 ⇒ `gates-manual.yml` 的 `gate=goldens` + 人工复核，`HD-56`）。
+本片做的是**把它钉成读数**：⑧ 断言"死键集合 == `{'[', ']'}`"，两边任何一边动都会红
+（实现→⑧ 红，逼着回来升级承诺并重录基准；顺手删文案→⑧ 的另一半与 ① 一起红）。
+
+### 四、桩方法与六条变异检验的读数（本机拿得到的最强证据）
+
+`src/input.rs` 本身是**零依赖状态机**（文件里 `use` 语句 **0 条**）⇒ 本机把它原样搬进
+`/tmp/d27check`（`input.rs` 截到内部 `#[cfg(test)]` 之前，共 1320 行；`host.rs` 桩 = 逐字抄
+`action_has_implementation` 的函数体；四个 `include_str!` 指向真文件的**副本**），
+`cargo test` **真跑八条判据**：
+
+- 基线：**8 passed / 0 failed**。
+- M1 删掉文案里的 `(画布聚焦时)` ⇒ **③ + ① 红**（6 passed / 2 failed）。
+  ⚠ 这一条改写了本票的设计：③ 最初读**钉死表**里的限定语，M1 之下它**绿着说谎**；
+  改成读**解析出来的**文案后 M1 才按承诺的方式红。**"文案↔键表"的对账必须读文案**。
+- M2 加一段 `· Q 量化` ⇒ **① + ③ + ⑥ 红**（5 passed / 3 failed；③ 是先拒绝在未解析文本上推理）。
+- M3 `app.slint` 的实例开始传 `tip:` ⇒ **⑤ 红**。
+- M4 把桩改成"全 `true`"（模拟 A/B 被实现）⇒ **⑧ 红**。
+- M5 宿主里加一处 `window.set_tip(…)` ⇒ **⑤ 红**（`assertion left==right failed: … 现读 1 处`）。
+- M6 从 `elements.rs` 抹掉 `status-bar-shortcut-tip` ⇒ **⑦ 红**。
+
+⛔ 把桩的绿当判决：桩里 `yeban_app` 被换成 `d27check`，是**另一份编译单元**；键表/宿主 API
+的签名漂移只有 CI 看得见（§45 的 `SharedString` 就是它教的）。桩只证**本文件逻辑与断言方向**。
+
+### 五、顺手关掉一条误登记
+
+上一轮的"候选 D-UI-27：顶栏「提交」按钮与「分支」格有标签无点击源"**⛔ 是本线的活** ——
+它已被 `docs/adr/ADR-0052-actionless-drawn-controls-disposition.md`（`Proposed`）登记，
+覆盖 `ai-rail-intent-button` / `transport-commit-button` / `transport-branch-button` 三格
+（各自缺的层不同：无产品入口 / 无暂存编辑态 / 无域级切分支动作面，而模型侧
+`CommitGraph::fork_anonymous`、`create_branch` 早已存在）。编号因此让给本票（状态栏提示守卫），
+候选项在任务表里改判为"**已登记，待裁 ⛔ 实现**"。
+
+`cargo fmt -p yeban-app -- --check` `rc=0`（整个 crate 干净）。判决：`pending`（交 CI）。
+
+---
+
+## §48 判决读回：run `41550904195` —— **一枚 clippy lint 吃掉三条腿**，于是把 CI 同款 `clippy 1.99` 搬进本机零依赖桩（2026-11-03）
+
+### 一、读数（§6.3 的口径：先数作业真跑了什么）
+
+指标：run `41550904195`（`headSha 6167f3b2`）各作业的 `conclusion`，与 `rust (yeban-app)` 日志里
+`Running tests/` 的**次数**（单位：次）和 `test result:` 的行数（单位：行）。
+
+| 作业 | conclusion | 实跑测试二进制数 |
+| :--- | :--- | ---: |
+| `plan` / `checks (fmt / 红线守卫 / schema)` / `lockfile` | success | — |
+| `rust (yeban-app)` | **failure** | **0** |
+| `windows (… / yeban-app / …)` | **failure** | 0 |
+| `macos (… / yeban-app / …)` | **failure** | 0 |
+| `deny (cargo-deny)` | failure | —— 与本章无关，仍是 §44 那个被 `yank` 的 `async-executor` |
+| `e2e` / `rust (workspace 全量)` | skipped | —— ⛔ 是绿（§6.3 ②） |
+
+日志里的原文（三条腿逐字同判）：
+
+```text
+error: the loop variable `index` is only used to index `chars`
+   --> crates/yeban-app/tests/d_ui_27_status_bar_tip_promises_are_bound.rs:313:18
+   = note: `-D clippy::needless-range-loop` implied by `-D clippy::all`
+error: could not compile `yeban-app` (test "d_ui_27_status_bar_tip_promises_are_bound") due to 1 previous error
+##[error]Process completed with exit code 101.
+```
+
+⇒ `Running tests/` = **0**、`test result:` = **0**：**`D-UI-24` / `D-UI-26` / `D-UI-27` 到今天仍然一条运行时读数都没有**（连续第三个 run）。
+`checks` 腿的 `cargo fmt --check` 是绿的 ⇒ 这⛔ 是格式问题，是 **lint**（`clippy::needless_range_loop`，
+`for index in open..chars.len()` 只为索引 `chars`）。修法就是 §47 那条改写：`windows()/position()`
+定位 + `for &ch in &chars[open..]`。
+
+### 二、真正的教训：**一枚 lint ⇒ 三条腿 ⇒ 整批零读数**，而 lint 本机⛔ 看不见？—— 看得见的
+
+`§47` 已经记过"手写 char 比较会招 `manual_pattern_char_comparison`"，本票又踩第二枚。两次都是
+**同一个通用 lint 家族**，都⛔ 需要 Slint，都本机看不见 —— 因为我只在 `stable`（`clippy 0.1.96`）上跑过，
+而 CI 是 **`rust-1.99.0`**。实测本机 `rustup` 里**装着 1.99.0 工具链**：
+
+```console
+$ cargo +1.99.0 clippy --version
+clippy 0.1.99 (b940084d7e 2026-09-28)
+```
+
+⇒ **本机就能跑 CI 同款 lint**。桩的做法（§47 的桩，这次改成**脚本可复现**，`/tmp/dcheck`）：
+
+1. `src/input.rs` = 真源码截到内部 `#[cfg(test)]` 之前（1319 行，逐字）；
+2. `src/host.rs` = 从 `src/host.rs:9164` 起的 `action_has_implementation`，尾部用**第一个顶格 `}`** 定位
+   （⚠ 别按花括号计数：函数体注释里成对的 `{`/`}` 会把终点推到 **+820 行**，实测把整段宿主塞进桩里换来满屏 `E0432`）；
+3. 把 `crates/yeban-app/ui/**/*.slint` 整个复制进桩（`include_str!("../ui/…")` 原样可解析），
+   `src/{host,elements}.rs` 复制进 `fixtures/`；
+4. 测试副本里 `use yeban_app::` → `use dcheck::`，`read_dir("ui")` → `read_dir(env!("CARGO_MANIFEST_DIR"))`。
+
+**先核验这台机器真的能抓 lint**（⛔ 拿"没报错"当"通过"）：把 §47 的旧写法原样塞回桩再跑 ——
+
+```text
+error: the loop variable `index` is only used to index `chars`
+error: could not compile `dcheck` (test "d_ui_27") due to 1 previous error
+```
+
+同一条 lint、同一条信息（`rust-1.96.0` 的 index 页与 CI 的 `rust-1.99.0` 一致）⇒ 预检器**有效**。
+改回后：`cargo +1.99.0 clippy --tests --all-targets -- -D warnings` 干净，
+`cargo +1.99.0 test` **`d_ui_26` 10/10、`d_ui_27` 8/8 真的执行了**。
+
+⛔ 把桩的绿当判决（§47 同一句）：桩是另一份编译单元，`SharedString` 那类签名漂移只有 CI 看得见；
+桩这次覆盖的是**通用 lint + 本文件逻辑** —— 而这两样正是连吃三个 run 的东西。
+
+### 三、新到的工作纪律（写下来，⛔ 靠自觉）
+
+> **任何新增/改动的 `.rs` 测试文件，若能塞进零依赖桩，就先在桩里跑 `cargo +1.99.0 clippy --tests -D warnings` 再推。**
+> 塞不进去的（`d_ui_21/23/24` 那类要 `bridge/ui/undo/scene` 的），⛔ 本机预检 ⇒ 推之前**逐条自查 lint 面**：
+> `for i in 0..v.len()` 只为索引、`.split(|c: char| c == …)`、`&v[..]` 手抄切片这类形状一律改写成迭代器形式。
+
+`cargo fmt -p yeban-app -- --check` `rc=0`。判决：本条改写交 CI 读回（`pending`）。
+
+## §49 `D-UI-28`：导出弹窗的时长那一格 = **工程可闻末端**（宿主在打开那一刻播种）（2026-11-03）
+
+### 一、缺口是真的（不是审美）
+
+`ui/app.slint:481` 与 `ui/dialogs/export_wav_dialog.slint:88` **两处各写死** `seconds: "8"`。
+于是"点开「导出 WAV」⇒ 什么都不改 ⇒ 按「导出」"这条最短路径，把一份几分钟的工程**静默裁成
+8 秒**，界面上没有任何一处说这件事。`tests/` 里五处判据钉住 `frames=384000` 把这一格的行为
+锁得更死 —— 那五处钉的是**共用缺省**，不是钉住"弹窗里必须写 8"。
+
+这一条与 §47 那族"界面印出来的承诺"是同类的，只是方向相反：那里是**承诺了没做**，这里是
+**做了没人知道**（做出来的是截断）。
+
+### 二、动手前先立的三条事实（三条都实测过，缺一条就不该做）
+
+1. **旧裁决的前提已经不成立。** `export_wav.rs` 里那句"⛔ 缺省不改成工程可闻末端：导出路径
+   今天没有'工程有多长'的唯一权威读数"—— 今天**有**了：`bridge.rs:4818 pub fn
+   content_end_tick()`（全部剪辑摆放末端与全部段落末端的 `max`），而且它**已经是**标尺铺设
+   （`bridge.rs:3946` 那个循环与它同一口径）与 `Shift+Z` 全曲总览（`host.rs` 走带族）的输入。
+   ⇒ 这一票是**接线**，⛔ 不是新能力。裁决原文⛔ 动：`resolve()` 的 8 秒缺省**一位没改**，
+   只把它那句**过期的理由**就地改成事实（GUI 那条路走宿主播种，见
+   `host::audible_end_seconds`），⛔ 不改共用口径所以⛔ 不需要 ADR。
+2. **没有一张金帧画到这个弹窗。** 五张金帧全是主窗口、弹窗默认关着 ⇒ 该格从 `"8"` 变成
+   `""` ⇒ 默认帧一位不动 ⇒ 不需要 `gate=goldens` 重录、不需要 `HD-56` 人类复核。
+   （⚠ 这条只覆盖**隐藏态**；标题那句 `时长 秒（空 = 缺省 8 秒）` 改成
+   `时长 秒（缺省 = 全曲末端）` 是**可见文本**改动，但它落在只有打开才画得出来的面板里 ⇒
+   今天的金帧集合看不见它。这不是"永久免遮罩"：一旦哪天给弹窗录基准，这两处都要跟着重录。）
+3. **五处 `frames=384000` 与"会打开弹窗的判据"是两个不相交的集合**（`grep -rln` 实测：
+   钉 384000 的 `export_wav_clipping / module_drawer_receipt / ui_module_actions /
+   gui_export_clipping / cli_contract / gui_clipping_warning / export_wav_aux_sampler` 里，
+   没有一处调用 `invoke_open_export_wav`；调用它的是 `ui_export_dialog /
+   export_dialog_key_capture / export_dialog_modal_closure / export_dialog_button_focus /
+   d_ui_21_modal_mask`，没有一处钉 384000）。⇒ 播种点放在"打开"这一刻，那五处逐字节不变。
+   ⭐ 新判据的 ① 把 384000 **又钉了一遍**（未打开 ⇒ 空 ⇒ 后端缺省），把它从"侥幸不相交"
+   升成"有人守着"。
+
+### 三、落点（为什么是宿主、为什么要有"上一次播的值"）
+
+- **播种只发生在 `on_open_export_wav` 里**（与路径那一格同一个闭包、同一个理由：视图态，
+  ⛔ 不碰工程、⛔ 不写盘）。⛔ 不给 `resolve()` 加形参、⛔ 不在 `.slint` 里算秒数：
+  那两侧都是**共用面**（`D-EX-1` 落限制器时同一句理由）。
+- **判据是"没人动过 ⇒ 刷新"**，所以闭包里多了一枚 `Rc<RefCell<Option<String>>>` 记住
+  **宿主最后一次播的值**（⛔ 记住"用户填的值"是另一种语义）：
+  空串 = 从没填过 ⇒ 播；等于上一次播的值 = 用户没动 ⇒ 按当前工程刷新；其余 ⇒ 逐字保留。
+  ⇒ ④"用户改过重开不被覆盖"与⑤"清空后重开会重播"、⑥"工程变长会刷新"**同时**成立 ——
+  少了这枚记号，⑤⑥ 与 ④ 互相排斥（要么永远不播，要么永远覆盖）。
+- **两侧初始值一起改成 `""`**（根属性 + 组件属性）：`seconds <=> root.export-wav-seconds`
+  是两向绑定，两边各写一个字面量时"谁赢"是不确定的 ⇒ ⛔ 把不确定性留在判据里。
+- **上限 `EXPORT_SEED_MAX_SECONDS = 3600.0`**（与 MCP `MAX_RENDER_FRAMES = 48_000 × 3600`
+  同一"一小时母带"口径）：⛔ 把 4735 秒那种数原样播进一格里 —— `D-EX-2` 登记的
+  "导出同步阻塞 UI 线程"今天还在，按下去就是几十分钟的冻屏。封顶值是**看得见**的数，
+  用户自己改掉它即可。
+- **`None` ⇒ 不播**（空工程 / `undo: None` / 换算失败）：留空 = 后端 8 秒缺省继续生效。
+  ⛔ 播 `"0.000"`（导出 0 帧），⛔ 编一个默认数。
+
+### 四、把数字算出来（⛔ 手抄，全部从源码现读）
+
+链条：`content_end_tick` → `TempoMap::frames_at_tick(tick, PPQ=960, sr)` → 帧 ÷ 采样率 →
+**向上**取整到毫秒（导出那侧是 `round(秒 × 采样率)`，四舍五入会把末端最后半帧切掉）。
+
+| 工程 | 末端 tick | 帧 | 播进去的串 | 按它导出的帧数 |
+| :--- | :--- | :--- | :--- | :--- |
+| `filled_project()`（128 → 7680 处 132） | 15360（`Intro 0..7680` / `Drop 7680..15360`） | round(180000 + 174545.4545…) = **354545** | `"7.387"` | round(7.387×48000) = **354576** ≥ 354545 |
+| 同上 + `Op::SetTempo { 128 → 20 }` | 15360 | round(1152000 + 174545.4545…) = 1326545 | `"27.637"` | （⑥ 不真导出） |
+| `default_project()`（只有母线轨） | **0** | — | `""`（不播） | 384000（既有缺省） |
+| 同上 + 一条 `0..10_000_000` 的段落 | 10_000_000 | 227278182 = 4735.003… 秒 | `"3600.000"`（封顶） | （⑧ 不真导出：3600 秒 = 172.8 M 帧） |
+
+三处**必须先读源码才敢钉**的点：`Op::SetTempo` 只写顶层 `bpm`、⛔ 不碰 `tempo_map`
+（`ops.rs:3176`）⇒ 第二段的 132 仍在；它的前置条件要求 `doc.bpm == old_bpm` **逐位相等**
+（`ops.rs:1951` 那句"⛔ 不信调用方声明的旧状态"）⇒ 载荷必须写 128.0；
+`Op::SetSection` 要求 `new_section.id == section_id` ⇒ 测试里**同一个 ULID 用两次**
+（第一版各调一次 `EntityId::new()`，写完就发现了）。`SectionV3::validate` 只查
+`end_tick > start_tick`、`YebanProjectV1::validate` ⛔ 不封顶 tick ⇒ 一千万 tick 是合法工程。
+
+### 五、本机预检的边界（这一票够不到桩）
+
+新判据要 `live_surface` + `bridge` + `undo` + Slint ⇒ **塞不进** §48 那枚零依赖桩 ⇒
+按 §48 那条纪律的后半句走："推之前逐条自查 lint 面"。本次自查的形状：无 `for i in 0..len`
+只为索引（回执字段用 `for part in receipt.split(':')`）、`meta.len() > 0` 是**照抄**已在 CI
+绿过的 `export_dialog_button_focus.rs` 同款（不是新形状）、`unwrap_or_else(|e| panic!(…))`、
+`{lengthened}` 内联格式化变量（2021 edition 捕获）。
+`cargo fmt --check -p yeban-app` `rc=0`。
+
+判决：**`pending`** —— `rust (yeban-app)` / `windows` / `macos` 三条腿要等 run 读回，
+读回时必须**数 `Running tests/`**、确认 `d_ui_28_export_length_seeds_from_audible_end`
+这个二进制在里头（§6.3 第 4 条：判据名没出现＝没跑到）。
+
+## §50 `D-UI-29`：节拍器开关真的**写进文档** —— 拨动不再拿装配期那份快照换一代引擎（2026-11-03）
+
+### 一、缺口（用户会怎么撞上）
+
+`Cmd/Ctrl+Alt+N` 或走带区那颗键，修前落在 `apply_engine_command` →
+`crate::metronome::set_enabled(host, project, !current)`，而那个 `project` 是**装配期冻结**的
+`Rc<YebanProjectV1>`（`main.rs` 只在换工程时重新装配）。⇒ 四条同时成立：
+
+1. **文档一位没改** ⇒ 保存 / 重开之后开关弹回装配期初值；
+2. **没有提交** ⇒ 撤销 / 重做管不到它（时光机里看不见这一笔）；
+3. ⭐⭐ **最坏的一条**：换代 = 把那份**旧文档**重放进快照 ⇒ 用户此后画的音符、改的速度、
+   混音台写进去的音量，在**播放侧当场消失**，而界面上全都还在。按一次节拍器 = 回滚一次工程；
+4. 走带被 `stop` → `reload` → `seek` 补回来 ⇒ 控制驱动形态下必然漂几个 tick
+   （本模块自己逐字登记 `MAX_RESTORE_DRIFT_TICKS = 16`）。
+
+### 二、取证：那条"编辑 ⇒ 发声"的腿**早就存在**（这条发现把修法整个翻过来了）
+
+第一反应的修法是"读活文档、再把引擎重装一次"。读完 `main.rs` 之后发现**根本不必修引擎那一侧**：
+
+| 读到的事实 | 出处（现读，⛔ 手抄） |
+| :--- | :--- |
+| `slint::Timer` 心跳 `HEARTBEAT_PERIOD_MS = 16` ⇒ **62.5 Hz** | `src/main.rs:90`、`:528` |
+| 心跳在 `EditMark` 变化时才 `try_project()` → `ProductionLoop::tick` | `src/main.rs` 心跳那段 |
+| `EditMark { head: Option<EntityId>, undone: usize }`＝"活跃分支头 ＋ 已撤销步数" | `src/engine_host.rs:268` `from_display` |
+| `publish_project` = **增量发布**：`EngineSnapshot::from_project(..)` ＋ `slot.publish_arc`，⛔ 不重建 runtime、⛔ 不推量子、⛔ 不碰走带 | `src/engine_host.rs:1380-1405` |
+| 节拍器计划在**投影期**进快照：`.with_metronome(project.transport.metronome_enabled.then(..))` | `crates/yeban-engine/src/snapshot.rs:862` |
+| 快照上就有现成的读数口 `metronome_enabled()`（= `metronome.is_some()`） | 同上 `:1140` |
+| 实时侧武装位 `armed_metronome_enabled`（逐样本那条腿） | `crates/yeban-engine/src/rt.rs:3949`、`:4825` |
+
+⇒ **提交一条 op 同时拿到**：⭐ 发声（下一跳 ≤ 16 ms）、⭐ 无损走带（连那几个 tick 的漂移都没有）、
+⭐ 可撤销、⭐ 会持久化。落点因此从"换引擎"搬到"改文档"，与 `D-UI-23`（预备拍）合流成**同一个**
+提交函数 `commit_transport_config`。
+
+`reload` 那条腿**没有被删** —— 它是"没有可提交的对象"（`undo: None` 的判据 / 无头装配）时
+唯一还能出声的方式，`tests/metronome_switch.rs` 的夹具正是那一形（本票只改它的**文案**，
+一条判据没动）。宿主代码里 `metronome::set_enabled(` 现读 **1 处**（`apply_engine_command`）。
+
+### 三、镜面：`metronome-on` 从此是**快照的投影**，不是第二个状态
+
+拨动那一格写镜面（不等心跳 ⇒ 键按下去立刻点亮，判据装配里也不跑事件循环），
+**其余一切**由 `host::apply_metronome_mirror(ui, Option<bool>)` 在"发布成功的那一跳"校正：
+`ProductionLoop::tick`（生产）与 `live_surface::engine_tick`（执行面）调的是**同一个**函数，
+与 `apply_engine_error` 同一条纪律。补掉的旧值类别：撤销 / 重做、运行期「打开工程」、
+控制面（MCP）写文档。`None`（标记没变 / 没有工程可送 / **投影失败**）⇒ **一位不动** ——
+发布失败时文档与快照本来就不同，那时镜面必须跟着**引擎**，否则界面上点亮的是没发生的事。
+
+`set_metronome_on` 的写点现读 `host.rs` **4 处**（装配初值 / 有会话拨动 / 无会话拨动 / 每跳校正），
+`bridge.rs`（`apply_view` 那一族）**0 处** ⇒ 镜面⛔ 不是重投影的一部分，这一点由判据 ⑥⑦ 钉：
+撤销之后镜面最多陈旧**一跳**。取舍登记在判据文件的"边界 3"。
+
+### 四、⚠ 差点造出的 `#212` 复发（自己造的，自己抓回来的）
+
+把拨动搬到文档那一支之后，落点里多了 `refresh_undo_window` → `apply_view` ⇒ **一整批界面写入**。
+而 `wire_keys` 原先是"先 `try_borrow_mut()` 借住宿主，再看动作" ⇒ 带着 `RefMut` 进这一支
+= `#212` 那次 `key_down` 边上的 `abort`（同一棵树、同一个 `Rc<RefCell<EngineHost>>`）。
+⇒ 两处都在**借之前**分岔：`wire_keys` 加 `if undo.is_some() { return apply_action(…) }`，
+`wire_transport` 的按钮闭包加 `if metronome_undo.is_some() { … }`。
+`action_needs_engine` 的集合**不变**（仍只列 `ToggleMetronome`）—— 它现在的读法是
+"可能**要**动引擎"，而实际借不借由端口决定；删掉那一条会让无会话装配的开关**变哑**
+（`tests/metronome_switch.rs` 正是那一形）。文本对账由两处 `is_some()` 各 1 处 +
+`only_engine_commands_take_the_engine_borrow` 一起守。
+
+### 五、判据（`tests/d_ui_29_metronome_writes_the_document.rs`，6 例 / 51 条 assert / 542 行）
+
+夹具 = `UndoPort` + `build_live_ui_with(undo: Some(port), engine_quanta: 0)` + `start_engine()` +
+`EditMark::from_display(&port.display())` 的心跳（与 `main.rs` 同一调用序列）。
+三个读数同时判：**文档**（只读 `UndoPort::try_project()`）／**快照**（新增
+`LiveUi::engine_metronome_enabled()`，读 `EngineSnapshot::metronome_enabled`）／**镜面**。
+
+- ① 装配时三者同为 `false`；② 第一下 ⇒ 文档 `true` ＋ 恰好 `+1` 条提交 ＋ 镜面跟，
+  ⭐ 而快照仍 `false`、快照**修订号一位没涨**（"拨动没碰引擎"的直接读数，修前红）；
+- ③ 下一跳 ⇒ `published_revision = 修订号 + 1`、快照 `true`；④ 第二下关得掉（极性）；
+- ⑤ 兄弟字段 `count_in_bars` / `launch_quantization` 逐字不动 ＋ 反向对照（预备拍那一臂
+  ⛔ 动节拍器那一格）；⑥ 不发布的那一跳⛔ 写镜面（人为拨歪后仍不动）；
+- ⑦ 撤销 ⇒ 文档先回 `false`、镜面**此刻仍** `true`、下一跳三者对齐；
+- ⑧ 两个入口在源码里各 1 处调用 `apply_action` 的同一条臂；⑨ 无端口装配里该键返回 `false`
+  （对照臂：数字键照常消费）；⑩ 出处纪律：`Op::SetTransportConfig {` 仍 1 处、
+  `commit_transport_config(` 3 处（定义＋2 调用）、`set_enabled(` 1 处、校正点 host 2 / live 1、
+  `bridge.rs` 0 处写入、两处 `is_some()` 分岔各 1 处。
+
+顺带补的**测试面**（⛔ 不是产品面）：`LiveUi::engine_metronome_enabled()`（`Option<bool>`，
+没有引擎 ⇒ `None`）—— 判据要读"播放侧真正在用的那一代"，而 `current_snapshot()` 只在
+`EngineHost` 上、`LiveSurface` 不公开宿主。
+
+### 六、如实登记的边界
+
+1. ⛔ **本装配点不动那颗按钮**：`live_surface.rs` 里 `wire_transport` 现读 **0 处**
+   （`main.rs` 3 处）⇒ 无头执行面上走带那一族（播放 / 停止 / 录音 / 节拍器）**没有注册者**，
+   与 `D-UI-11` 同族。本票⛔ 顺手补整条走带接线（那要把 `EngineHost` 换成可共享的
+   `Rc<RefCell<…>>`，是另一票）；判据 ⑧ 因此只能从**源码文本**判"同一个落点"。
+   ⭐ **该缺口已由 `D-UI-30`（`§51`）补上** ⇒ 本条的"点不动"不再成立；⑧ 留在本文件是因为
+   它钉的是**出处**纪律（两个入口⛔ 不许各算一次下一个值），与谁来按无关。
+2. ⛔ 不证明"听得到咔哒声"：本文件判的是"快照里有没有节拍器计划"；逐样本那一侧在
+   `crates/yeban-engine/tests/rt_zero_alloc.rs`（`armed_metronome_enabled`）。
+3. ⛔ 不新加控件 ⇒ 与金帧无关（`ui/*.slint` 只改了**注释**）。
+
+判决：**`pending`**（两枚 run 读回后**作废**，见下）—— 本机 `cargo fmt -p yeban-app` `rc=0`（rustfmt 真的解析了这 542 行 ⇒
+语法过关），但 Slint 是重依赖 ⇒ 编译与判决交 CI（§5）。读回时必须**数 `Running tests/`**
+并确认 `d_ui_29_metronome_writes_the_document` 这个二进制在里头（§6.3 第 4 条），
+另外要确认这三枚**没有被我改红**：`metronome_switch`、`d_ui_23_count_in_writes_the_document`
+（⑨ 的那几个计数）、`engine_error_banner`（同一执行面的心跳）。
+
+⚠ **判决读回（2026-11-03，两枚都作废 ⇒ 本节以上全部仍是 `pending`）**：
+
+| run | 提交 | 结论 | 死因 | 判据跑到几个 |
+| :--- | :--- | :--- | :--- | :--- |
+| `41560793479` | `c5b58c70`（本票） | failure | `error[E0277]: the trait bound \`f64: From<u64>\`` @ `host.rs:7748` | **0**（`Running tests/` 计数 = 0 ⇒ 一条判据都没跑） |
+| `41563030182` | `678ae900`（E0277 单修一枚） | failure | `error: method \`engine_metronome_enabled\` is never used`，红在 `test "live_ui_mcp"` | **0**（同上，`test` / `doctests` / `clippy (合并特性)` / `test (合并特性)` 全是 `-`） |
+
+⇒ `D-UI-28` 与 `D-UI-29` 的判决**从来没有成立过**（两枚 run 都停在编译）。E0277 那条是我自己的
+API 误记（`f64::from` 只覆盖到 `u32`，而 `frames_at_tick` 返回 `u64`），单独一枚 `678ae900` 提交
+是为了让判决可归因；第二枚死因（`#[path]` 目标的 `dead_code`）见 `§51` 第五节。
+
+---
+
+## §51 `D-UI-30`：serve 那份装配**从没接**走带 —— 播放 / 停止 / 节拍器 / `Space` 现在落在自己的宿主上（2026-11-03）
+
+### 一、缺陷（用户会怎么撞上）与它的读数
+
+`--enable-ui-mcp-http` 在 `main()` 里**提前**分流进 `ui_mcp_serve::run`，而
+`host::wire_transport` 唯一的调用点在 `main.rs` 的 `wire_callbacks` 里 ⇒ 那一段根本不跑。
+现读（`grep -v '^[[:space:]]*//'` 之后只数**代码行**，单位：处）：
+
+| 事实源 | `host::wire_transport(` | 备注 |
+| :--- | ---: | :--- |
+| `src/main.rs`（产品 GUI 腿） | **1** | 文本共 3 处，另 2 处是注释 |
+| `src/live_surface.rs`（修前） | **0** | ⭐ 人真的拿来作曲的那份装配 |
+
+Slint 的 `on_*` **没有注册者就是空操作** ⇒ 那份执行面上：
+
+1. ⛔ 播放 / 停止 / 录音 / 节拍器四颗按钮按下去什么都不动；
+2. ⭐⭐ **比"不消费"更坏的一条**：`Space` 经 `wire_keys` 的 `PlayPause` 臂落到
+   `ui.invoke_toggle_play()`，而 `apply_action` 返回 `true`（含义是"这一键**有绑定**"）——
+   于是控制面读到"按了、被消费了"，界面上什么都不发生。
+   ⇒ **"消费"与"落地"是两件事**：返回 `true` 只证键位表里有这一条，不证有人听；
+3. ⛔ `metronome-on` 的**装配期初值**一起丢（`wire_transport` 是它唯一的初值写者 ——
+   `host.rs` 里那句"工程在场就从 `transport.metronome_enabled` 播种"）⇒ 文档写着开、界面画着关。
+
+### 二、为什么此前**六份**判据都没抓到它（清单把缺陷掩护成了结构）
+
+`tests/metronome_switch.rs` / `tests/rewind_sound.rs` / `tests/transport_timecode_tick.rs` /
+`tests/arrangement_ruler_seek.rs` / `tests/d_ui_11_serve_header_gestures.rs` 各自**补一次**
+`host::wire_transport`，而且补的是**自己新建的** `Rc<RefCell<EngineHost>>` ⇒
+"这份装配接没接、接的是不是同一个宿主"从外面**永远读不出来**（判据全绿，装配全哑）。
+
+⭐ 更坏的是 `D-UI-11` 的奇偶守卫把这条**登记成了结构**：例外清单里写着
+`("host::wire_transport", "需要引擎句柄")`。而句柄从来不是障碍 ——
+`LiveAdminSurface` **本来就持有**一个 `EngineHost`，缺的只是把它装成 `Rc<RefCell<…>>`。
+⇒ 教训（写进判据文件的"若变红，怎么读"）：**例外清单的每一格都要核验"缺的那个运行期对象
+是不是真的缺"**，否则守卫只会把缺陷存档，甚至反过来为缺陷提供合法性。
+本票删掉那一条，同时把其余八条的理由改成**如实**的两类：缺**活投影** `Rc<RefCell<ViewState>>`（3 条）／
+缺**原生文件对话框**（5 条）。
+
+### 三、修法
+
+1. `LiveAdminSurface.engine`：裸值 `EngineHost` → `Rc<RefCell<EngineHost>>`
+   （与 `host::ProductionLoop` / `main.rs` **同款**范式；`Rc` 计数 +1 ⇒ ⛔ 不是第二份宿主，
+   `EngineHost::new(` 在 `live_surface.rs` 里仍**恰好 1 处**）；
+2. `build_live_ui_with` 装配期接一次，`apply_project` 换工程后**重接**一次（共 **2** 处调用）——
+   依据是 Slint 的 `on_*` 是**设值/覆盖**语义：重接是把闭包里的工程换成这一份，⛔ 不是第二个注册者；
+3. ⚠ 心跳那一段的 `borrow_mut()` **作用域只包住动引擎的部分**，放借之后才碰界面 ——
+   与本票新接的 `wire_transport` 共用同一个宿主，那两个回调自己也要 `borrow_mut()`。
+   这就是 `#212` 那类 `RefCell` 双重借用 `abort` 的入口（见 `§50` 第四节同一条纪律）。
+
+### 四、判据（`tests/d_ui_30_serve_transport_is_wired.rs`，8 例 / 23 条静态 assert（⑧ 的 5 条在循环里 ⇒ 运行期 27 条）/ 525 行）
+
+⭐ **第一条纪律**：`assemble()` 里⛔ 不调 `host::wire_transport`（接线必须是装配自己的事，
+那是本票的命题），判据只按界面上那颗键，然后读**装配自己的**宿主的 `TransportReading`。
+
+| 例 | 判的事 | 关键读数 |
+| :--- | :--- | :--- |
+| ① | 播放按钮 ⇒ 本装配宿主 | 前置 `commands_applied = 0`、`running = false` ⇒ 按一次**恰好 +1**、`running = true`、镜面 `playing` 跟 |
+| ② | 停止 = 停住**并**回起点 | 起播 + 推 64 量子 ⇒ 位置离开 0（前提）⇒ `>= +2` 条命令、`position_ticks = 0`、`playhead-ticks = 0` |
+| ③ | `#227` 那套连按语义在装配里活着 | 播 → `Space` 停（+1、位置保留）→ `Space` 只回起点（+1、仍停住）→ 第四下是**新的起播** |
+| ④ | `Space` 那条**键路**接到同一个宿主 | ⭐ `consumed = true` **且** `commands_applied = 1`（修前正是 `true` + **0** 这个组合） |
+| ⑤ | 节拍器那颗按钮真的写文档 | 初值 == 文档字段（修前从未播种）⇒ 按一次：文档 `true`、提交**恰好 +1**、快照**修订号一位不涨**；下一跳心跳 ⇒ `published_revision = +1`、快照 `true`（= `D-UI-29` ⑧ 的运行期版本） |
+| ⑥ | 换工程**重接**是覆盖不是追加 | `apply_project(metronome=true)` ⇒ 镜面初值跟新工程；一次按下 ⇒ 命令**恰好 +1**（`+2` 就是追加了第二个注册者） |
+| ⑦ | 没有引擎时如实冷读，⛔ 不假装 | 三路读数全为冷（`send_transport` 在 `!transport_ready()` 返回 `TransportReading::cold()`） |
+| ⑧ | 出处纪律（纯读源码，不建窗口） | live `wire_transport(` = **2**、main = **1**、live `EngineHost::new(` = **1**、live `set_metronome_on(` = **0**、执行面自发走带命令 `send_transport(` / `.play()` / `.stop()` / `stop_and_rewind(` / `.seek(` 各 **0** |
+
+⛔ 增量**不钉死** `②` 的两条命令（`>= +2` + 一跳 `drive_audio(1)`）：那会依赖某个 drain 深度；
+`≥` 之后位置与状态仍从引擎读。同族做法见 `tests/rewind_sound.rs`（只报数、不钉数）。
+
+### 五、第二条 CI 教训：加一条 `LiveUi` 读数 = 触碰 **43** 个编译单元
+
+`run 41563030182`（`678ae900`）的第二枚死因：
+
+```
+error: method `engine_metronome_enabled` is never used
+  --> crates/yeban-app/tests/../src/live_surface.rs:1667:12
+error: could not compile `yeban-app` (test "live_ui_mcp")
+```
+
+根因不是那个访问器没用 —— 它在 `tests/d_ui_29_*` 里有真实调用者。根因是
+**`live_surface.rs` 被 43 个测试目标经 `#[path]` 各装一份**（现读
+`grep -rl 'path = "../src/live_surface.rs"' tests/ | wc -l` = **43**，单位：个目标），
+每一份都是**私有模块** ⇒ 任何一条读数只要在**某一个目标**里没被调，`dead_code` 就报，
+`-D warnings` 再把它变成编译失败；而 43 份里只有 `tests/live_ui_mcp.rs` 那份的 `include`
+不带 `#[allow(dead_code)]`。
+
+处置按本文件**已有近例**（`dispatch_key_chord` / `open_project_via_picker` / `capture`）：
+在**那一条**读数上放 `#[allow(dead_code)]` ＋ 一行写明真实调用者住在哪个判据。⛔ 两样都没做：
+⛔ 删读数（判据要用）、⛔ 在 `include` 上整体放行（那会把"这块代码真没人用"这个信号一起盖掉，
+也正是 `live_ui_mcp.rs` 这份刻意不放行的价值）。
+连带改正 `live_surface.rs` 模块头 §1：它旧文的取向是"没人用就**删**"，前提是"判据只住在
+`live_ui_mcp` **一个**目标里"—— 该前提自 `D-UI-3` 起就不成立，28 这个数字也已陈旧 ⇒ 改为
+**43** 与"保留读数 + 定点 allow + 写明调用者"。
+
+⇒ **纪律**：给 `LiveUi` 加 `pub fn` 时，⛔ 只在 `live_ui_mcp.rs` 一个目标里验证；本文件这类
+判据性读数**默认**要带定点 `#[allow(dead_code)]`，并把"哪个判据调它"写在旁边。
+
+### 六、如实登记的边界
+
+1. ⛔ **不按录音键**：`wire_transport` 内部经 `host::wire_record_at` 注册 `on_toggle_record`，
+   而它要一个**采集设备**（`default_input_factory()`）并有写文件的副作用 ⇒ 本票只证"有了注册者"，
+   落盘那一侧由 `tests/record_*.rs` 那族判；
+2. ⛔ 不证明"听得到"：②③ 读的是引擎自己的走带镜面（RT→控制侧），逐样本在 `crates/yeban-engine`；
+3. ③ 依赖 1.5 s 连按窗口（`HEAD_DOUBLE_TAP_WINDOW` 用 `Instant`）：三次注入之间无任何 I/O ⇒ 窗口恒成立；
+4. `wire_keys` 的**无端口**回退臂仍拿 `engine: None`（本票⛔ 不扩范围）⇒ 没有会话的装配里
+   节拍器键照旧不消费（`D-UI-29` ⑨ 已钉住该形状）；
+5. ⭐ **仍缺的那一票**：`wire_ruler_seek` / `wire_section_seek` / `wire_scene_launch` 要一份
+   **活投影** `Rc<RefCell<ViewState>>`，而本装配把投影存成**裸值** `view`。给它配 `Rc<RefCell<..>>`
+   是把投影变成两份事实源的入口 ⇒ 属**独立的一票**，不在本票里顺手扩范围（已在跟踪表登记）。
+   ⛔ 上面那句"是把投影变成两份事实源的入口"这个前提是**错的**（本票 §二 第二格的同一族教训：
+   把"现在没有"当成"装不出来"）—— 已由 `§52`（`D-UI-31`）落地：共享**同一格** `Rc<RefCell<..>>`
+   正是**消掉**多份事实源的做法，装配现场建 **1** 处、五条接线共享。
+
+判决：**`pending`** —— 见下面第七节：run `41565699055` 又停在编译（第三枚），判据一条没跑。
+本机只过了 `cargo fmt`（rustfmt 真的解析了这 525 行 ⇒ 语法过关）；
+Slint 是重依赖 ⇒ 编译与判决交 CI（§5）。读回时要**数 `Running tests/`** 并确认
+`d_ui_30_serve_transport_is_wired` 这个二进制在里头，同时确认这三枚**没被本票改红**：
+`d_ui_11_serve_header_gestures`（例外清单从 9 条删成 8 条）、`d_ui_29_metronome_writes_the_document`
+（边界 1 改了文字，⑧ 的计数⛔ 未动）、`live_ui_mcp`（本票的 `dead_code` 修的就是它）。
+另：`deny` 那枚红与本票**无关**（`async-executor v1.14.0` 被上游 yank，`§44`），`Cargo.lock` 一位未动。
+
+### 七、第三枚编译红：`unused_mut` —— 换字段类型会**顺带**让装配现场的 `mut` 变成硬错误
+
+`run 41565699055`（`e11153dd`）死在 `clippy (-D warnings)` 一条：
+
+```
+error: variable does not need to be mutable
+  --> crates/yeban-app/tests/../src/live_surface.rs:2387:9
+2387 |     let mut admin = LiveAdminSurface {
+     |         ----^^^^^
+     = note: `-D unused-mut` implied by `-D warnings`
+```
+
+`Running tests/` 计数仍是 **0** ⇒ `D-UI-28` / `D-UI-29` / `D-UI-30` 三票的判决**继续全部作废**
+（这是本线连第三枚停在编译的 run，死因每枚都不同：`E0277` → `dead_code` → `unused_mut`）。
+
+根因就在第三节那一跳：`admin.engine.set_project_dir(..)` 升成 `admin.engine.borrow_mut().set_project_dir(..)`
+之后，`RefCell` 的**内部可变性**接管了这次写入 ⇒ 那个绑定不再需要 `mut`。也就是说
+**"把字段换成 `Rc<RefCell<..>>`"不是只改类型**：它会同时改变所有经由这个字段做的写入
+所需的最小可变性，而这类红**不在** `§48` 那台本机零依赖桩里（桩不装 `live_surface.rs` ——
+它依赖 slint / yeban-ui-mcp 等重依赖）。
+⇒ **纪律**：改完这类字段之后，除了 `cargo fmt`，还要把**该文件里每一条 `let mut`** 逐条问一遍
+"这个绑定在这个作用域里还剩不剩下需要 `mut` 的写入"（本文件现读 5 条：`published_revision` /
+`publish_error` / `snapshot_metronome` 三条在分支里被赋值、`let mut engine = self.engine.borrow_mut()`
+要 `&mut` 调 `publish_project` / `heartbeat`、`build_live_ui_from_authority_with` 里那条要 `start_engine()`
+⇒ 只有装配现场那一条是多余的）。判据文件同理：`let (mut live, …)` 的每一例都要真的动 `live`
+（①④⑦ 三例只读 ⇒ ⛔ 不带 `mut`）。
+
+### 八、第四枚编译红：`clone_on_copy` —— 而它⛔ 不在本票的文件里
+
+`run 41566875640`（`a13ef426`）的读回（`gh run view --log` 三腿逐条剥 ANSI 后现读）：
+
+| 腿 | 结论 | 死因（`error:` 行数：单位 条） | `Running tests/`（单位：个二进制） |
+| :--- | :--- | :--- | :--- |
+| `rust (yeban-app)` · `clippy (-D warnings)` | failure | **1**：`using 'clone' on type 'EntityId' which implements the 'Copy' trait` → `could not compile yeban-app (test "d_ui_28_export_length_seeds_from_audible_end")` | **0** |
+| `windows (… / yeban-app / …)` | failure | 同上，同一行 | **0** |
+| `macos (… / yeban-app / …)` | failure | 同上，同一行 | **0** |
+
+⇒ 三腿**死因逐字相同**，判据仍一条没跑 ⇒ `D-UI-28` / `D-UI-29` / `D-UI-30` 的判决**第四次全部作废**
+（死因链：`E0277` → `dead_code` → `unused_mut` → `clone_on_copy`）。
+`checks`（fmt / 红线守卫 / schema）与 `lockfile` 绿；`deny` 那枚与本票无关（`§44`）。
+
+那一条 `.clone()` 在 **`D-UI-28` 的判据文件**里（⑧ 给 `Op::SetSection` 绑同一个 ULID），⛔ 不是本票的：
+`EntityId` 是 `#[derive(Clone, Copy, …)]`（现读 `crates/yeban-model/src/ids.rs:40`）⇒ 同一个绑定用两次
+本来就⛔ 需要 `clone`。修前那句注释写的是"先绑一个**再克隆**"—— 措辞本身就把 `Copy` 当成了
+`Clone`，所以⛔ 只删 `.clone()`、注释同时改成"同一个绑定用两次"，否则下一个人还会照着旧措辞补回来。
+
+⇒ **纪律 ①（`§48` 的人工 lint 自查要加一项）**：判据文件里**每一处** `.clone()` 都要去目标的
+`derive` 现读一次；`Copy` ⇒ 直接删。本机桩装不动 `live_surface.rs`，这条只能靠"逐处对 derive"。
+⇒ **纪律 ②（clippy 也是 fail-fast）**：一条 lint 就把整个 `cargo` 调用杀掉（本次日志里
+`error:` 只有 1 条，而该批次里还有另外几份判据文件没轮到）。因此"这一枚修完也许还有下一枚"
+是**默认预期**，⛔ 把一次红读成"只剩这一处"。
+
+判决：**`pending`**（同上）—— 已修并推送的批次的判决由下一个 run 给；读回时除数
+`Running tests/` 外，还要**确认这四个二进制在里头**：`d_ui_28_export_length_seeds_from_audible_end`、
+`d_ui_29_metronome_writes_the_document`、`d_ui_30_serve_transport_is_wired`、
+`d_ui_11_serve_header_gestures`（外加 `live_ui_mcp`）。
+
+---
+
+## §52 `D-UI-31`：serve 那份装配**从没接**定位族 —— 标尺 / 段落卡片 / 场景按钮现在落在自己的宿主与**同一格活投影**上（2026-11-03）
+
+### 一、缺陷（用户会怎么撞上）与它的读数
+
+§51 第六节第五格登记的那"仍缺的一票"。`--enable-ui-mcp-http` 提前分流 ⇒ `main.rs`
+`wire_callbacks` 里这三条永不执行。现读（剥 `^[[:space:]]*//` 后只数**代码行**，单位：处）：
+
+| 接线 | `src/main.rs` | `src/live_surface.rs`（修前） | 修后 |
+| :--- | ---: | ---: | ---: |
+| `host::wire_ruler_seek(` | 1 | **0** | 1 |
+| `host::wire_section_seek(` | 1 | **0** | 1 |
+| `host::wire_scene_launch(` | 1 | **0** | 1 |
+
+Slint 的 `on_*` 无注册者 = 空操作 ⇒ 人真的拿来作曲的那份界面上：
+
+1. ⛔ 点标尺 / 拖标尺不改播放头（`ruler-seek`）；
+2. ⛔ 屏读器「上/下一小节」与 `SetValue`「定位到第 N 小节」空转（`ruler-step` / `ruler-seek-bar`）；
+3. ⛔ 点段落卡片不跳段（`section-seek`）；
+4. ⛔ 点场景按钮连一句"没送到"都不给（`scene-launch`）—— 而控制面 `ui/launch_scene`
+   **是**通的 ⇒ **"`ui/launch_scene` 能做、界面上点不动"**：工具与界面分叉，是这条家族里最难从外部看出来的形状。
+
+⭐ 第二半不是"少三句接线"，是**投影的存法**：修前 `LiveAdminSurface.view` 是**裸值**，
+而 `wire_sidebar_contents` / `wire_clip_scope` **各造一份** `Rc<new(RefCell::new(view.clone()))`
+⇒ 装配现场共 **3** 份互不相干的投影（单位：份），其中 **2** 份永远停在装配期那个工程
+（`apply_project` 只换裸值）。这三条定位接线的契约恰恰是"从**当前**投影现读"
+（小节长度 / 网格右缘 / 段落起点 / 场景 tempo 全从投影取）⇒ 就算补上接线，拿装配期快照也只会
+把 `D-UI-10` 那一族重新写一遍。
+
+### 二、为什么此前的判据一条都没抓到（例外清单**第二次**把缺陷掩护成结构）
+
+- **判据侧各自补接线**：`tests/arrangement_ruler_seek.rs` / `arrangement_section_seek.rs` /
+  `scene_launch_wiring.rs` 每份都**新建**一个 `Rc<RefCell<EngineHost>>` **和**一份
+  `Rc<RefCell<ViewState>>` 再自己 `wire_*` ⇒ 装配接没接、接的是不是**同一个**宿主与**同一格**
+  投影，从外面读不出来（判据全绿、装配全哑）。§51 第二节同一格。
+- ⭐⭐ **例外清单第二次**：`D-UI-11` 的 `ASSEMBLY_ONLY_IN_GUI` 把这三条记成
+  `需要活投影 Rc<RefCell<ViewState>>（本装配存裸值）`。这句话**当场为真**（修前确实是裸值），
+  但清单要的是"**结构上**装不出来"—— 把裸值升成共享格正是本票。**"现在没有"被写成了"装不出来"**，
+  于是奇偶守卫不但没抓到缺陷，反而给它盖了章。同一族两次（§51 第二节的"需要引擎句柄" + 本条）
+  ⇒ 已把这条核验写进 `d_ui_11` 的"若变红，怎么读"：**每一格例外都要核验"缺的那个运行期对象是不是
+  真的缺"**，两张先例（句柄 / 活投影）就印在那段文字里。清单实测 **8 → 5** 条（单位：条），
+  剩下的 5 条缺的都是**原生文件对话框**（无头面问不出路径，与 `host::wire_save` 的 `NoPicker` 同口径）。
+
+### 三、修法（为什么这里⛔ 不重接，而 §51 的走带**要**重接）
+
+1. `LiveAdminSurface.view`：裸值 `ViewState` → `Rc<RefCell<ViewState>>`；装配只建**一个**
+   `RefCell`（`Rc::new(RefCell::new(view.clone()))` 现读 = **1** 处），下面**五条**接线各拿
+   `Rc::clone(&live_view)`（现读 = **5** 处：资源栏 / 剪辑作用域 / 标尺 / 段落 / 场景）。
+2. 两个重投影点（`apply_project` / `apply_track_height`）改为 `*self.view.borrow_mut() = view;`
+   —— **写进那一格**而不是换一个 `Rc` ⇒ 已接好的闭包下次 `borrow` 就读到新工程，
+   于是⛔ 不需要（也**不该**）在任何重投影点重接接线。
+   ⚠ 与 §51 的走带**恰好相反**：`wire_transport` 的闭包捕获的是**工程**（`Option<Rc<YebanProjectV1>>`），
+   换工程必须重接一次（本文件 `host::wire_transport(` = 2 处）；而定位族捕获的是**投影的位置**，
+   位置共享了就自动跟着走。**区别不在风格，在闭包抓住了什么。**
+3. 判据证据那份仍是**值**拷贝：`into_control_plane` / `into_production_control_plane` 各
+   `self.surface.view.borrow().clone()`（现读 = **2** 处）—— ⛔ 不是把 `Rc` 分出去，
+   否则"证据"会跟着执行面一起变，失去对照意义。
+4. `borrow` 的作用域纪律（`#212` 那一族）：`pump_meters`、`apply_track_height`、
+   `METHOD_SET_TRACK_HEIGHT` 三处都是**先读完立刻放借，再碰窗口属性**—— 读窗口属性会求值
+   Slint 绑定，带着 `Ref` 进去就是 `RefCell` 双重借用 `abort` 的入口。
+5. 三条新读数（`view_current_scene_name` / `view_section_start_tick` / `view_scene_name`）
+   各带**定点** `#[allow(dead_code)]` ＋ 写明调用者（§51 第五节那条 43 个编译单元的课）。
+
+### 四、判据（`tests/d_ui_31_serve_seek_is_wired.rs`：8 例 / 61 条静态 `assert` / 716 行）
+
+| 例 | 判的事 | 关键读数 |
+| :--- | :--- | :--- |
+| ① | 标尺一次按下 ⇒ **本装配自己的**宿主 | 前置 `commands_applied = 0`、位置 `0` ⇒ 在第 3 条小节线按一次**恰好 +1**、位置离开 0、镜面 `playhead-ticks` 与引擎读数同值；再用 `SetValue("3")` ⇒ 再 +1 且**落点与指针那条完全相同**（两条入口、一个换算） |
+| ② | 小节号阶梯 | `"1"`⇒0、`"2"`、`"3"` 严格递增且两次差分**相等**；坏输入 `"not-a-bar"` ⇒ **零**命令、位置不动 |
+| ③ | 两端是**夹紧**、⛔ 不回绕 | 0 往左一步仍 0；一步 / 两步差分相等；退回两步恰好回 0；`"9999"` ⇒ 右缘 `> 0`；从右缘再往右三步**仍钉在右缘** |
+| ④ | 段落卡片 = 投影里那段起点，且⛔ 不碰文档 | 每按下一张：命令**恰好 +1** 且位置 `== view_section_start_tick(i)`（期望值从**这一格**投影现读）；整段之后 `commit_count` **Δ0**（`MODEL-ISO-001` 第二层）；越界下标 ⇒ 零命令 |
+| ⑤ | 换工程后读的是**新**投影 | 前置：`filled` = 2 段 / 1 景 ⇒ 下标 2 `None`、界面 2 张卡；`apply_project(demo)`（4 段 / 4 景）⇒ 卡片变多、下标 2 从 `None` 变 `Some(tick>0)` 且 `!=` 换代后的停留位置 ⇒ 按下卡片**正是**那个 tick；同一 `SetValue`/下标 2 的场景按钮现在报**新工程**那景的名字 |
+| ⑥ | `scene-launch` 写的是**同一格**投影 | 启动态 `-1` / `""` / `None` ⇒ 按一次：状态行 `已排队：{名字}`、`current-scene-index = 0`、`current-scene-name`、**执行面自己那一格**也说同一个名字（三处一致）；`apply_project` 之后三位一起作废 |
+| ⑦ | 没有引擎时如实冷读 | 四个入口 ⇒ 命令恒 `0`、位置恒 `0`、镜面恒 `0`；场景按钮 ⇒ 状态行如实说"没有送到引擎"、`index` 仍 `-1`、投影里仍无当前场景 |
+| ⑧ | 出处纪律（纯读源码，不建窗口） | live 三条各 **1** / main 三条各仍 **1**（两族⛔ 不互删）、`Rc::new(RefCell::new(view.clone()))` = **1**、`Rc::clone(&live_view)` = **5**、`borrow().clone()` = **2**、`EngineHost::new(` = **1**；执行面**自己**发命令 / 算坐标 **0** 处（`send_transport(` `.seek(` `.play()` `.stop()` `stop_and_rewind(` `commit_seek(` `queue_scene_launch(` `ruler_seek_tick(` `ruler_step_tick(` `ruler_bar_tick(` `ruler_span_ticks(` `tick_to_px(` `roll_ticks_per_pixel(`）；**本判据文件** `host::wire_` **0** 处 |
+
+注入 ⇔ 变红的对应关系（写进判据文件头，⛔ 只登记"删掉接线会红"这一种）：
+删三条接线 ⇒ ①②③④⑤⑥ + ⑧；投影改回裸值/装配期快照 ⇒ ⑤⑥ + ⑧（`RefCell` 那处从 1 变 2/3）；
+在 `apply_project` 里补重接 ⇒ ⑧（每条从 1 变 2，Slint 是覆盖语义 ⇒ 只有计数能抓到）；
+心跳里替用户 `seek` 一次 ⇒ ① 的前置读数 + ⑧；判据侧自己补接线 ⇒ ⑧ 最后一条。
+
+### 五、本票换来的三条纪律
+
+1. ⭐ **判据文件的"自计数"要防搜索词自己**：⑧ 那条"本文件 `host::wire_` 必须 0 处"，
+   如果本文件的 token 数组里字面写着 `host::wire_ruler_seek(`，判据就**永远红**。
+   ⇒ 前缀用 `concat!("host::", "wire_")` 拼（两段之间隔着 `", "` ⇒ 代码里没有完整串），
+   循环里用 `format!("{WIRE_PREFIX}{name}(")`。实测（代码行内拼接后的完整前缀出现次数）= **0**。
+   同类：常量声明必须在该函数**第一条语句之前**（`clippy::items_after_statements` 本仓库是 deny 级）。
+2. ⭐ **夹具的名字要现读，⛔ 不信上一轮的转述**：本轮开工前的一份上下文摘要写着
+   "`filled_project()` 没有段落 / 没有场景" —— 现读 `crates/yeban-model/src/samples.rs`
+   是 **2 段（Intro@0 / Drop@7680）+ 1 景（Scene 1）**。若照那句去写"越界"前置断言，
+   ⑤ 会红在一个**不存在**的前提上。⇒ `§6` 测量纪律对"记忆里的数字"同样成立：
+   **先跑现读，再写断言**（本票因此把 ⑤ 的判别子改成"下标 2 在 `filled` 越界、在 `demo` 有值"，
+   并把前置态**显式断言**出来）。
+3. **判据⛔ 不算网格**：所有期望值都从本装配那一格投影现读（段落起点、场景名、小节线列），
+   差分关系用"相等 / 严格递增 / 钉住"表达 ⇒ 全文件**零**个 tick / BPM / 像素常量。
+   像素侧同理：`bar_positions` 是 `floor(tick / ticks_per_pixel)`（`bridge::tick_to_px`），
+   `ruler_seek_tick` 再乘回来并吸附到**最近**小节线 ⇒ 本票夹具（4/4，`bar_length_ticks = 3840`）
+   的向下取整误差最多 `MAX_TICKS_PER_PIXEL - 1 = 959` tick，**小于半小节 1920** ⇒ 任何合法缩放档
+   都必定吸回那一条小节线（① 的"指针与 `SetValue` 同落点"因此不是运气）。
+   ⚠ **如实登记的限度**：这个保证依赖"一小节 ≥ 2×960 tick"；若将来在**极短小节**的拍号
+   （如 1/4 ⇒ `bar = 960`）上复用同样的两条入口对账，取整误差可能吸到**邻格** ⇒ 那一档要另写判据，
+   ⛔ 不要沿用本票的断言形状。
+
+### 六、如实登记的边界
+
+1. ⛔ 不证明"听得到"：位置与命令读数取自走带镜面（RT→控制侧），逐样本在 `crates/yeban-engine`；
+2. ⛔ 不证明"下一小节线才生效"：⑥ 证的是命令送达（`SceneLaunchDisposition::Direct`）
+   ＋ 三处读数一致；生效帧与 `retune` 由 `tests/mcp_scene_launch.rs` / `scene_launch_wiring.rs` 判；
+3. ⛔ 不注入真指针：本文件直接 `invoke_*`（与 §51 同口径），命中测试与像素→局部坐标那一段
+   由 `tests/arrangement_ruler_seek.rs` 判 —— 那里的 `Rig` 自己接线 ⇒ 它⛔ 覆盖不到"装配接没接"；
+4. ⛔ 不判卷帘横向滚动偏移（`ruler-seek` 报的是带内局部像素，滚动住在 `.slint` 侧）；
+5. ⛔ 不动 `launch_quantization`：量化档从投影现读，本票不改走带配置 ⇒ 不引入对 `Bar` / `Off` 的新假设；
+6. ⛔ 不动录音那颗键（理由见 §51 第六节第 1 格）。
+
+判决：**`pending`** —— 本机只过 `cargo fmt`（rustfmt 解析了这 716 行 ⇒ 语法过关），
+Slint 是重依赖 ⇒ 编译与判决交 CI（`§5`）。⚠ 本票**推送时**上一个 run（`66637663` 的
+`41569883250`）仍在跑：分支级 `concurrency` 会**取消**在飞的 run（`.github/workflows/ci.yml`），
+故必须等它结束再推。读回时要**数 `Running tests/`** 并确认这**五个**二进制都在里头：
+`d_ui_28_export_length_seeds_from_audible_end`、`d_ui_29_metronome_writes_the_document`、
+`d_ui_30_serve_transport_is_wired`、**`d_ui_31_serve_seek_is_wired`**、
+`d_ui_11_serve_header_gestures`（外加 `live_ui_mcp`）—— 前面四票的判决到目前为止仍是
+**第四次作废**（§51 第八节），本票若再停在编译就是**第五次**。
+另：`deny` 那枚红与本票无关（`async-executor v1.14.0` 被上游 yank，`§44`），`Cargo.lock` 一位未动。
+
+## §53 `D-UI-32`：换代必须**装载即停住** —— serve 那份装配三处换代站点一处都没 park（2026-11-03）
+
+### 一、缺陷（用户会怎么撞上）与它的读数
+
+本票不是从界面报告来的，是 `D-UI-30` 那条 `assert!(!running)` **前提**在 CI 上红的五格教出来的
+（run `41569883250`：`d_ui_30_serve_transport_is_wired` = 3 passed / **5 failed**，五条全红在
+"起完引擎之后它在跑"这一格）。
+
+引擎侧事实（现读，单位：处）：`crates/yeban-engine/src/rt.rs` 里 `Transport::free_running(` = **1**
+⇒ `EngineRuntime` 的走带**构造默认是 `Playing`**。那是刻意的：接走带之前 `process_quantum` 的语义
+就是"快照一发布就从 tick 0 起滚"，默认值改成停住会让引擎侧既有判据变红。引擎把出口写死在自己的
+文档里（`crates/yeban-engine/src/transport.rs` 的 `Transport` 文档）：
+**"要『加载即停住』的控制面发一条 `Stop` 即可（`yeban-app::engine_host` 就是这么做的）"**
+⇒ **这一步是控制面的义务**，而两条腿只有一条履行了（现读 `.stop()`，剥掉 `//`/`///` 后只数代码行）：
+
+| 腿 | 装载即停住 | `.stop()`（修前） | `.stop()`（修后） |
+| :--- | :--- | ---: | ---: |
+| 生产 GUI（`src/main.rs`） | ✅ 建完引擎 `engine_handle().borrow_mut().stop()` 再把读数投回界面 | 2 | 2（未动） |
+| serve 执行面（`src/live_surface.rs`） | ❌ 三处换代站点（`start_engine` / `apply_project` / `reload_engine_now`）**一处都没做** | **0** | **1**（在 `rebuild_engine` 体内） |
+
+用户可见三件：① 界面一开就显示「播放中」（第一跳心跳如实投出引擎的 `Playing`）；
+② **第一次按「播放」是停**（`wire_transport` 的切换读镜面 `playing`，那时已为真 ⇒ 走"停住"那一支；
+现象是"按了播放，键跳回去，什么都没播"）；③ 播放头会自己走（有人推量子就推进 tick）。
+
+### 二、为什么此前的判据一条都没抓到
+
+- `tests/transport_timecode_tick.rs` / `rewind_sound.rs` / `metronome_switch.rs` 都是**判据侧自己**
+  `host::wire_transport` + 自己 `host.play()`，先把状态摆成"在播"再按 ⇒ 从来不读"装配刚建完引擎时
+  它在不在跑"；
+- `tests/new_project_ui.rs` / `open_project_ui.rs` 断的是 `!window.get_playing()`，而那是**没有心跳**
+  的装配 ⇒ 镜面还停在 Slint 默认 `false`（引擎在跑，从界面属性读不出来 —— §51 第三节同一格）；
+- ⭐ `D-UI-30` 把这条当成**显然成立的前提**写了断言 ⇒ **前提本身是一条需要控制的义务**。
+  那五格红**不是**判据写坏了：判据要的形态是对的一侧，缺的是装配那一步。
+
+### 三、修法（一句话：在**唯一的换代入口**补一条 `Stop`，再把读数投回界面）
+
+`LiveAdminSurface::rebuild_engine`（三处换代站点的共同入口）末尾：
+`reload` 之后 `self.engine.borrow_mut().stop()` ⇒ `host::apply_transport(&self.window, parked)`。
+
+1. ⛔ **不搬进 `EngineHost::reload`**：`reload` 第 5 步那条注释已经把理由印在源码里 —— 命令在量子边界
+   生效必须**多推一个量子** ⇒ `ui/reload_engine` 报的 `quanta` 比调用方要的多 1（实测红在
+   `tests/live_ui_mcp.rs` 的 `admin_reload_engine_rebuilds_and_resets_the_meter_tap`，
+   那边 `engine_quanta: 4` 必须报 4）。本票的 `stop()` 在 `reload` **之后** ⇒ `EngineRebuild`
+   里那几个数字一位不动（⑦ 是这一条的机械防线）。
+2. ⛔ **不改引擎默认值**：那会连带改掉"没接走带时"的行为，代价见引擎侧文档。
+3. ⛔ **不在三个调用点各抄一遍**：本缺陷的**成因形态**就是"同一步骤在两个装配现场各抄一次，
+   其中一份抄漏"（`main.rs` 有、`live_surface.rs` 没有）⇒ 写在单一入口，第四个换代点将来也不可能漏。
+4. 是 `Stop` 而非 `stop_and_rewind`：新代的位置本就在 0，多发一条 = 执行面**替用户**按键
+   （违反 `D-UI-30` ⑧ 那条纪律，唯一的例外就是这一条装载 `Stop`）。
+5. 作用域纪律（`#212` 那一族）：**先放借、再碰窗口属性**（`apply_transport` 写属性 = 求值 Slint 绑定）。
+
+### 四、判据（`tests/d_ui_32_serve_parks_every_new_engine.rs`：8 例 / 38 条静态 `assert` / 528 行）
+
+| 例 | 判的事 | 关键读数 |
+| :--- | :--- | :--- |
+| ① | 起引擎 ⇒ 停住 | `running = false`、`commands_applied` **恰好 1**（0=没停住，≥2=替用户按键）、位置 `0`、界面镜面 `playing = false`（⛔ 不等心跳） |
+| ② | **第一次**按播放是起播 | 前置停住 ⇒ 按后 `running = true`、计数 `1→2`、镜面跟真 |
+| ③ | 没人按 ⇒ 播放头不动 | 推 64 个量子：`driven == 64`（前提：真推了）、位置**逐位 0**、`running` 仍假、命令**增量 0** |
+| ④ | 第二代也一样，且计数器是**每一代自己的** | 修订号 `+1`、`running = false`、计数**回到 1**（每代新建全零 `TransportMirror` ⇒ 跨代累加是误读）、位置 0、镜面重新假 |
+| ⑤ | 换工程那处站点也 park | 先按播放（证明"停住"是新事件不是初值）⇒ `apply_project(demo)` 后 `running=false`、位置 0、计数 1、镜面 false |
+| ⑥ | 没有引擎不许假装停过 | 一路冷读数：0 条 / 停住 / 镜面 false，按下也不动（`!transport_ready()` ⇒ `TransportReading::cold()`） |
+| ⑦ | 防线：修法⛔ 不搬进 `reload`／引擎 | 裸 `EngineHost::new()` + `reload(&project, 0)` ⇒ `state.is_running()` **仍为真**、计数 `0`、位置 `0`；阳性对照 `host.stop()` ⇒ 停住、计数 1 |
+| ⑧ | 出处纪律（纯读源码，不建窗口） | live 的 `send_transport(` / `.play()` / `stop_and_rewind(` / `.seek(` 各 **0** 处；live `.stop()` = **1** 且落在 `fn rebuild_engine` **体内**；`rebuild_engine()` 调用点 = **3**；`fn engine_tick` 体内 `.stop()` = **0**；`main.rs` `.stop()` 仍 **2**（装载 park + ALSA `mount.stop()`，两族⛔ 不互删）；`rt.rs` `Transport::free_running(` 仍 **1** |
+
+注入 ⇔ 变红：删掉 `rebuild_engine` 里那条 `stop()` ⇒ ①②③④⑤ + ⑧；搬进 `reload` ⇒ ⑦ +
+`live_ui_mcp` 的 `quanta` 那条；改引擎默认值 ⇒ ⑦ + ⑧ + 引擎侧那族；拆成三处各抄 ⇒ ⑧（1→3）；
+心跳里也停一次 ⇒ ⑧（`engine_tick` 出现 `.stop()`）+ ③（计数不再恰好 1）。
+
+`D-UI-30` / `D-UI-31` 的判据同步**升到修后的契约**（⛔ 削弱）：走带 `commands_applied` 前置
+`0 → 1`（装载那条 `Stop`）、按下之后 `1 → 2` / `2 → 3`，②的三档阶梯 `3 → 4`，`D-UI-30` ⑧ 把
+`.stop()` 从零列表挪成"live **1** 处 / main **2** 处"两条计数断言。
+
+### 五、本票换来的一条纪律
+
+⭐ **"显然成立的前提"必须自己带一条读数**：本票五格红全部红在**前提**上（"装配建完引擎是停住的"），
+而那条前提在任何判据里从来没有独立读数 ⇒ 一旦成立就没人看，一旦不成立就把整票打成红、
+看起来像"判据写坏了"。写前提断言时同时写一句"这条红意味着装配缺哪一步"（本票 ① 的消息串就是
+这么写的），否则下一次会再花一轮去怀疑判据。
+
+### 六、如实登记的边界
+
+1. ⛔ 不证明"听得到"（读数取自 RT→控制侧镜面，逐样本在 `crates/yeban-engine`）；
+2. ⛔ 不动设备腿：`open_device` 把新运行时带到**当前**走带位置，本票那步 `stop()` 发生在控制驱动形态
+   （`runtime.is_some()` ⇒ `pump(1)`）⇒ 代价如实登记：控制驱动形态下每次换代多应用一条命令 =
+   多推一个量子，而那条命令是 `Stop` ⇒ **位置一位不走**（③ 钉的就是这一句）；
+3. ⛔ 不按录音键（`wire_record_at` 要采集设备，无头 CI 因机而异；落盘侧由 `tests/record_*.rs` 那族判）；
+4. ⛔ **没顺手补 `mark_applied`**：`main.rs` 建完引擎还记了"当前快照就是这份工程"（免得第一次心跳
+   白发一份投影），本执行面没有 ⇒ 第一跳心跳会多发一份**同内容**快照。那不是错误（发布幂等、修订号 +1），
+   但它会挪动 `D-UI-29`/`D-UI-30` ⑤ 那两条"心跳发布**恰好一代**"的读数 ⇒ 属另一件事，
+   **needs**：单独一票把"装配期的已反映标记"钉清楚。
+
+判决：**`pending`** —— 本机只过 `cargo fmt`（rustfmt 解析了这 528 行 + 两份改动的判据 ⇒ 语法过关），
+Slint 是重依赖 ⇒ 编译与判决交 CI（`§5`）。推送前须确认分支上无在飞 run（`concurrency` 会取消在飞的）。
+读回时要**数 `Running tests/`** 并确认这些二进制都在里头：
+`d_ui_30_serve_transport_is_wired`、`d_ui_31_serve_seek_is_wired`、
+**`d_ui_32_serve_parks_every_new_engine`**、`live_ui_mcp`（`admin_reload_engine_...` 那格是本票的
+反证靶）、外加此前四票的 `d_ui_28_*` / `d_ui_29_*` / `d_ui_11_*` —— 前面几票的判决到目前为止仍是
+**第四次作废**（§51 第八节），本票若再停在编译就是**第五次**。
+另：`deny` 那枚红与本票无关（`async-executor v1.14.0` 被上游 yank，`§44`），`Cargo.lock` 一位未动。
+
+

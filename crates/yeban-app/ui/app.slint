@@ -421,19 +421,29 @@ export component MainWindow inherits Window {
     /// （先钳到 `0..=2` 再写）；界面**不自己**翻转选中态。⛔ 不是工程数据
     /// （`MODEL-ISO-001` 的挥发性层）、不进 `.yeban`、不进撤销栈。
     in-out property <int> sidebar-category: 0;
-    /// ⭐ 当前分类的条目**显示名**数组。唯一写者 = 宿主（装配期 `host::apply_view` 按
-    /// `sidebar-category` 注入 + `select-sidebar-category` 回调换分类时重注入），来源逐字是
-    /// `bridge::sidebar_category_content()` —— 与 `ElementRegistry::from_view` 读的是**同一个**
-    /// 投影函数 ⇒ "注册表说 N 条、屏幕画 M 条"这类分叉在结构上不可能发生。
+    /// ⭐ 当前分类的条目**显示名**数组。唯一写者 = 宿主的 `host::inject_sidebar`
+    /// （三个调用点：装配期 `host::apply_view`、`select-sidebar-category` 换分类、
+    /// `sidebar-search-changed` 换搜索词），来源逐字是
+    /// `bridge::sidebar_category_content()` 再过一道 `bridge::filter_sidebar_content()`
+    /// —— 与 `ElementRegistry::from_view` 读的是**同一个**投影函数（注册表按**过滤前**
+    /// 的全量登记，运行时是它的子集 ⇒ `ui/coverage` 的"注册表 ⊇ 运行时"成立）
+    /// ⇒ "注册表说 N 条、屏幕画 M 条"这类分叉在结构上不可能发生。
     /// ⛔ 不是工程数据（`MODEL-ISO-001` 的挥发性层）、不进 `.yeban`、不进撤销栈。
     in-out property <[string]> sidebar-items: [];
     /// ⭐ `sidebar-items` 为空时画出来的**理由**（同样由宿主按分类注入）。⛔ 不是占位文案。
     in-out property <string> sidebar-empty-reason: "";
-    /// ⭐ 左侧资源栏选中的条目（合法区间 = **当前分类**的 `sidebar-items` 长度）。
+    /// ⭐ 左侧资源栏选中的条目（合法区间 = **注入的那一份** `sidebar-items` 的长度 ——
+    /// 分类 ∩ 搜索词）。
     /// 唯一写者 = `host::wire_sidebar_contents` 的 `select-sidebar-item` 回调
     /// （按当次投影条数钳位后再写，⛔ 不是常量区间）；界面**不自己**翻转选中态。⛔ 不是工程数据
     /// （`MODEL-ISO-001` 的挥发性层）、不进 `.yeban`、不进撤销栈。
     in-out property <int> sidebar-item: 0;
+    /// ⭐ D-UI-14：左栏搜索框里的字。写者**只有**输入框自己（`text <=> root.search-text`
+    /// 那条两向绑定链，宿主一个字节都不写）；读者 = 宿主的三个注入调用点，它们把这份字
+    /// 交给 `bridge::filter_sidebar_content` 算出**上面那个数组**。
+    /// 默认**空串** ⇒ 装配期"不过滤"，`sidebar-items` 逐字等于全量投影 ⇒
+    /// `tests/golden/**` 的基准帧一位不动。⛔ 不是工程数据、不进 `.yeban`、不进撤销栈。
+    in-out property <string> sidebar-search: "";
     in-out property <bool> ai-drawer-open: false;
     in-out property <bool> musical-pr-open: false;
     // ---- AI 提案抽屉的**读数**（唯一写者 = src/host.rs 的 apply_proposal_drawer）----
@@ -468,7 +478,15 @@ export component MainWindow inherits Window {
     in-out property <string> export-wav-path: "";
     in-out property <string> export-wav-sample-rate: "auto";
     in-out property <string> export-wav-bit-depth: "24";
-    in-out property <string> export-wav-seconds: "8";
+    // ⭐ `D-UI-28`：这一格**不再写死 "8"**。空 = "还没打开过对话框"，打开时由宿主按
+    // **工程可闻末端**播种（`host::audible_end_seconds`）；播不出（空工程）⇒ 继续留空，
+    // 让后端那条既有缺省 8 秒生效。⛔ 两侧（根属性与对话框自己）初始值必须同为空串：
+    // `seconds <=> root.export-wav-seconds` 是两向绑定，两边各写字面量时谁生效不确定。
+    in-out property <string> export-wav-seconds: "";
+    // ⭐ `D-EX-1`：母线限制器开关（第五格，布尔量 ⇒ ⛔ 不经上面那条文本解析口径）。
+    // 缺省 `false` 逐字等于 CLI 不给 `--limiter`。宿主在 `resolve()` **之后**读它并赋
+    // `wav_options.limiter`；它是每次调用的修饰量（任务单 `#302`），⛔ 不进工程、不进撤销栈。
+    in-out property <bool> export-wav-limiter: false;
     // ---- 撤销能力的显示态（**模型读数**，唯一写者 = src/host.rs 的 apply_undo）------
     // 能不能撤销、还能撤几步、已撤几步、提交多少条 —— 全部由 `undo_session::UndoDisplay`
     // 从 `CommitGraph` + `UndoCursor` 读出（ADR-0001 D45）。界面不自己推断。
@@ -491,6 +509,29 @@ export component MainWindow inherits Window {
     in-out property <string> timecode: "001.01.000";
     in-out property <string> bpm-display: "120.00";
     in-out property <string> branch-name: "main";
+
+    // ⭐ 任务单 `D-UI-24`：**「BPM 框此刻正被敲」的宿主可见标记**（编辑保护的门）。
+    //
+    // 修前的事实（现读链条）：`host::apply_view` 每次重投影都**无条件**写
+    // `set_bpm_display(权威读数)`，而画布那一侧（卷帘 / 编排）**没有** `FocusScope`
+    // ⇒ 用户在 BPM 框里敲到一半时点一下剪辑，焦点**不会**离开文本框，但那一次编辑
+    // 会提交并重投影 ⇒ 草稿被权威读数直接盖掉（会话侧 `tools/call` 改动同理）。
+    //
+    // 口径（⛔ 不是第二份焦点状态）：本属性的唯一写者是 `src/host.rs` 的
+    // `wire_input` —— 写的是 `bpm-input` 自己在 `changed has-focus` 里发出的那一条
+    // **既有**事件（与 `[UI-A11Y-002]` §7.2 喂给 `InputContext::set_focus` 的是**同一次**
+    // 通知，⛔ 不新造事件源、⛔ 不轮询焦点系统）。唯一读者 = `apply_view` 的那一句
+    // 编辑保护 ＋ 无头判据 `tests/d_ui_24_bpm_draft_survives_reprojection.rs`。
+    //
+    // ⚠ **为什么它是 `in` 而不是像 `shortcut-layer-focused` 那样的派生 `out`**：
+    // `bpm-input` 声明在**子组件** `Transport` 内部，主窗口层的绑定够不到那个标识
+    // ⇒ 只能由宿主把已经存在的那条焦点事件镜像过来。这也是本属性与
+    // `export-wav-focused-field`（派生读数）**不同形**的原因，判据 ⑦ 钉着写者数量。
+    //
+    // ⚠ 提交（`accepted`）本身**解决**草稿：`wire_bpm_commit` 一进门就把本标记清零
+    // ⇒ 合法值归一化成 `{:.2}` 读数、非法值写回权威读数（`ui/transport.slint` 的
+    // "⛔ 不留下一个冒充成权威值的草稿"那条既有口径因此一位不动）。
+    in property <bool> bpm-field-editing: false;
 
     // 走带光标的位置（960 PPQ tick）。唯一写者 = `src/host.rs` 的 `apply_transport`
     // （与 `timecode` 同一次引擎读数）；编曲 / 卷帘两条 playhead 都由它派生 x
@@ -517,7 +558,8 @@ export component MainWindow inherits Window {
     /// ⭐ 录音键（`[ARCH-REC-001]`）：按下 ⇒ 起录 / 停录。
     callback toggle-record();
     /// ⭐ 节拍器开关（`Cmd/Ctrl+Alt+N` 的可点等价物）。界面只发通知；
-    /// 状态属性 `metronome-on` 的唯一写者仍是宿主（`host::wire_transport`）。
+    /// 状态属性 `metronome-on` 的唯一写者仍是宿主（`D-UI-29`：落点在
+    /// `host::apply_action` 的节拍器那一臂，运行态由 `host::apply_metronome_mirror` 校正）。
     callback toggle-metronome();
     // 走带的"停止"（停住 + 回到起点）。它与 `toggle-play` 一样由 Rust 侧接线，
     // 界面**不自己翻转**任何走带状态 —— 见 `src/host.rs` 的 `wire_transport`。
@@ -529,8 +571,13 @@ export component MainWindow inherits Window {
     callback toggle-sidebar();
     /// ⭐ 左侧资源分类标签的点击入口：宿主把分类号钳到 `0..=2` 再写 `sidebar-category`。
     callback select-sidebar-category(int);
-    /// ⭐ 左侧资源条目的点击入口：宿主把条目号钳到**当前分类的投影条数**再写 `sidebar-item`。
+    /// ⭐ 左侧资源条目的点击入口：宿主把条目号钳到**当前注入的那一份**投影条数再写 `sidebar-item`。
     callback select-sidebar-item(int);
+    /// ⭐ D-UI-14：左栏搜索框**每敲一个字**报一次整串。落点 = 宿主
+    /// `host::wire_sidebar_contents` 的 `on_sidebar_search_changed`：拿这份字重算
+    /// `bridge::filter_sidebar_content` 并重注入数组 + 钳位选中态。
+    /// 宿主⛔ 不把这个串写回任何属性（写者是输入框那条两向绑定，写回会成环）。
+    callback sidebar-search-changed(string);
     callback toggle-ai-drawer();
     /// ⭐ 控制台右上角 ⤢ 的点击入口：与 `Cmd/Ctrl+Alt+M`（`Action::ToggleConsoleMaximize`）
     /// 落到**同一个**属性 `console-maximized`（唯一实现 = 宿主写属性，界面不自己翻转）。
@@ -804,6 +851,12 @@ export component MainWindow inherits Window {
     // `undoable` / `projectDigest` 全部 Δ0 —— 选中是视图态，不是工程内容。
     /// 点击轨道头：`(轨道下标)`。
     callback track-select(int);
+    /// 轨道重命名：`(轨道下标, 新名称)`。
+    callback track-rename(int, string);
+    /// 轨道录音就绪 (Arm) 开关：`(轨道下标)`。
+    callback track-arm-toggle(int);
+    /// 双击剪辑：直达钢琴卷帘（Logic Pro 对齐）。
+    callback clip-double-click(string);
     /// 点击剪辑包头：`(片段身份)` —— 身份由界面原样上报（它在 `clip-ulids` 的循环里就有），
     /// 校验与写入全在 `host::wire_clip_select`。
     callback clip-select(string);
@@ -1070,6 +1123,11 @@ export component MainWindow inherits Window {
     in property <[string]> track-volumes: [];
     in property <[bool]> track-mutes: [];
     in property <[bool]> track-solos: [];
+    in property <[bool]> track-arms: [];
+    in-out property <bool> automation-visible: true;
+    in-out property <bool> cycle-enabled: false;
+    in-out property <int> cycle-start-ticks: 0;
+    in-out property <int> cycle-end-ticks: 15360;
     // ⭐ SFZ 采样器路径（`TrackV3::sampler` 的路径原文；`None` ⇒ `""`）——
     // 注入面与 `track-mutes` / `track-solos` 同族（`host::apply_view` 是唯一写者；
     // `ui.set_track_sampler_paths` 在 `src/host.rs`）。
@@ -1094,6 +1152,10 @@ export component MainWindow inherits Window {
     in property <[length]> section-widths: [];
     in property <[string]> clip-ulids: [];
     in property <[string]> clip-labels: [];
+    // 每条摆放的静音态（`ClipPlacement::muted`，与 `clip-ulids` 同序同长）。
+    // `Cmd/Ctrl+M` 的结果必须**看得见** ⇒ 界面读它；唯一写者是 `host::apply_view`
+    // （与 `track-mutes` / `track-solos` 同一族：工程字段，⛔ 不是界面自己记的第二份状态）。
+    in property <[bool]> clip-mutes: [];
     in property <[length]> clip-positions: [];
     in property <[length]> clip-widths: [];
     // 剪辑的行几何（y / 高，逻辑像素）—— 由投影从所在行派生（ADR-0004 S0）。
@@ -1371,7 +1433,8 @@ export component MainWindow inherits Window {
             branch-name: root.branch-name;
             arrangement-view: root.arrangement-view;
             ai-drawer-open: root.ai-drawer-open;
-            // ⚠ 单向（子只读）：`metronome-on` 的唯一写者是宿主，写的是
+            // ⚠ 单向（子只读）：`metronome-on` 的唯一写者是宿主（`host::apply_action` 的
+            // 节拍器那一臂 + `host::apply_metronome_mirror` 的每跳校正），写的是
             // `root.metronome-on`；子组件的 `accessible-checked` 与选中态读这一份。
             metronome-on: root.metronome-on;
 
@@ -1442,7 +1505,7 @@ export component MainWindow inherits Window {
             vertical-stretch: root.console-maximized ? 0 : Tokens.workspace-stretch;
 
             // 240px 左资源栏 (compact 时 36px 图标导轨)
-            Sidebar {
+            sidebar := Sidebar {
                 compact: root.compact || root.sidebar-collapsed;
                 min-width: (root.compact || root.sidebar-collapsed) ? Tokens.left-rail-collapsed-width : Tokens.left-rail-width;
                 max-width: (root.compact || root.sidebar-collapsed) ? Tokens.left-rail-collapsed-width : Tokens.left-rail-width;
@@ -1469,6 +1532,15 @@ export component MainWindow inherits Window {
                 active-item: root.sidebar-item;
                 select-item(item) => {
                     root.select-sidebar-item(item);
+                }
+
+                // ⭐ D-UI-14：搜索框里的**字**由输入框自己写（两向绑定），主窗口只转发
+                // "敲了一个字"这件事。输入法那两条**不**从这里转发 —— 理由逐字写在
+                // `ui/sidebar.slint` 的 `search-changed` 处（`wire_input` 的"失焦 ⇒ 画布"
+                // 硬编码只容得下一个敲入控件，接第二路会把 `InputContext` 写成顺序依赖）。
+                search-text <=> root.sidebar-search;
+                search-changed(query) => {
+                    root.sidebar-search-changed(query);
                 }
             }
 
@@ -1545,6 +1617,17 @@ export component MainWindow inherits Window {
                     track-volumes: root.track-volumes;
                     track-mutes: root.track-mutes;
                     track-solos: root.track-solos;
+                    track-arms: root.track-arms;
+                    automation-visible: root.automation-visible;
+                    cycle-enabled: root.cycle-enabled;
+                    cycle-start-ticks: root.cycle-start-ticks;
+                    cycle-end-ticks: root.cycle-end-ticks;
+                    track-arm-toggle(track_index) => {
+                        root.track-arm-toggle(track_index);
+                    }
+                    track-rename(track_index, name) => {
+                        root.track-rename(track_index, name);
+                    }
                     sections: root.section-names;
                     section-colors: root.section-colors;
                     section-color-labels: root.section-color-labels;
@@ -1561,6 +1644,9 @@ export component MainWindow inherits Window {
                     // 包头点击 ⇒ 原样上抛身份，宿主校验后写 `selected-clip-ulid`。
                     clip-select(clip_ulid) => {
                         root.clip-select(clip_ulid);
+                    }
+                    clip-double-click(clip_ulid) => {
+                        root.clip-double-click(clip_ulid);
                     }
                     // ⭐ 剪辑平移：草稿读数由宿主写，界面只转发四段手势。
                     clip-drag-ulid: root.clip-drag-ulid;
@@ -1593,6 +1679,7 @@ export component MainWindow inherits Window {
                         root.ruler-seek-bar(bar);
                     }
                     clip-labels: root.clip-labels;
+                    clip-mutes: root.clip-mutes;
                     clip-positions: root.clip-positions;
                     clip-widths: root.clip-widths;
                     clip-ys: root.clip-ys;
@@ -1804,6 +1891,14 @@ export component MainWindow inherits Window {
             track-sampler-paths: root.track-sampler-paths;
             track-colors: root.track-colors;
             track-color-labels: root.track-color-labels;
+            track-ids: root.track-ids;
+            selected-track-id: root.selected-track-id;
+            track-select(track_index) => {
+                root.track-select(track_index);
+            }
+            track-rename(track_index, name) => {
+                root.track-rename(track_index, name);
+            }
             track-meter-peaks: root.track-meter-peaks;
             track-meter-rmss: root.track-meter-rmss;
             track-meter-levels: root.track-meter-levels;
@@ -2061,7 +2156,7 @@ export component MainWindow inherits Window {
         text: root.engine-error;
     }
 
-    // compact 断点: 右栏变抽屉 (Cmd/Ctrl + 反斜杠 呼出)
+    // compact 断点: 右栏变抽屉 (Cmd/Ctrl+Alt+A 呼出)
     AiRail {
         x: root.width - Tokens.right-rail-width;
         y: 0;
@@ -2197,6 +2292,17 @@ export component MainWindow inherits Window {
     out property <bool> shortcut-layer-focused: key-handler.has-focus;
     out property <bool> undo-tree-focus-trapped: undo_tree_trap.has-focus;
 
+    // ---------------------------------------------------------------- D-UI-18：搜索框的键盘入口
+    // `Cmd/Ctrl+F` 的唯一落点（调用者 = `host::apply_action` 的 `FocusSidebarSearch` 臂）。
+    // ⛔ 焦点不是属性：`public function` 是宿主**命令**Slint 焦点的唯一方式，
+    // 因此这里没有第二份"我以为焦点在哪"的状态。读数镜像在下面一条。
+    public function focus-sidebar-search() {
+        sidebar.focus-search();
+    }
+    /// 焦点读数：`true` ⇒ 键盘此刻归左栏搜索框。宿主用它决定这一键**消费还是放行**
+    /// （折叠 / 窄栏时框不在场 ⇒ 取焦落不下去 ⇒ 返回 `false` ⇒ ⛔ 不假装成功）。
+    out property <bool> sidebar-search-focused: sidebar.search-has-focus;
+
     // 取焦/复位由**宿主** `host::apply_undo` 在开关翻转时同步调用（`undo-tree-open`
     // 的唯一写者就是它）。⛔ 不用 `changed undo-tree-open`：该处理器要等事件循环
     // 的下一拍才跑，而无头判据设置属性后并不跑事件循环 ⇒ 焦点永远停在原地。
@@ -2208,7 +2314,7 @@ export component MainWindow inherits Window {
     }
 
     // WAV 导出设置（隐藏的模态；默认关着 ⇒ 默认帧一位不变）
-    ExportWavDialog {
+    export_dialog := ExportWavDialog {
         x: 0;
         y: 0;
         width: root.width;
@@ -2220,8 +2326,31 @@ export component MainWindow inherits Window {
         sample-rate <=> root.export-wav-sample-rate;
         bit-depth <=> root.export-wav-bit-depth;
         seconds <=> root.export-wav-seconds;
+        limiter <=> root.export-wav-limiter;
 
         run => { root.export-wav(); }
         close => { root.close-export-wav(); }
+    }
+
+    /// 导出弹窗的焦点读数（`-1` = 焦点不在任何输入格内；`0..3` = 路径 / 采样率 / 位深 / 时长）。
+    /// 纯转发弹窗内的**推导**读数（`export_wav_dialog.slint` 的 `focused-field`，从四个
+    /// `TextInput.has-focus` 算出）⇒ ⛔ 这里不存第二份"我以为焦点在哪"的状态。
+    /// 唯一读者 = 无头判据（`tests/export_dialog_key_capture.rs`）。
+    out property <int> export-wav-focused-field: export_dialog.focused-field;
+
+    /// `D-UI-20`：轮转**全集**（七格）的读数：`0..3` = 四框，`4` = 限制器开关，
+    /// `5` = 「导出」，`6` = ✕ 关闭，`-1` = 焦点不在模态内。
+    /// 与上一条同口径 —— 纯转发弹窗内的**推导**读数，⛔ 这里不存第二份焦点状态。
+    /// 为什么单开一条：`export-wav-focused-field` 的值域被 `D-UI-19` 的判据按"四格"钉着，
+    /// 改它等于悄悄放宽既有判据。唯一读者 = 无头判据（`tests/export_dialog_button_focus.rs`）。
+    out property <int> export-wav-focused-control: export_dialog.focused-control;
+
+    /// `D-UI-19`：把键盘交给**开着的那个**弹窗的第一格。⛔ 不是第三份焦点状态：
+    /// 焦点仍只有 Slint 一个事实源，这里只是**命令**它（与上面的
+    /// `focus-undo-tree-trap` / `focus-shortcut-layer` 同一机制）。
+    /// 唯一调用者 = `host::wire_module_actions_with_capture` 打开弹窗那一处
+    /// （与 `export-wav-open` 的写者同一个地方 ⇒ 开关与焦点不可能分叉）。
+    public function focus-export-wav-dialog() {
+        export_dialog.focus-first-field();
     }
 }

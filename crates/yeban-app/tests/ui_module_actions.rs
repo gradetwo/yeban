@@ -136,7 +136,7 @@ const MINIMAL_SFZ: &str = "<region> sample=tone.wav lokey=0 hikey=127 pitch_keyc
 /// 回执的字段名闭集（唯一的一份：名字在这里，切分就按这里）。
 ///
 /// 加一个字段就加一行 —— 漏加不会静默：那个字段取不到值，判据会失败并打印整条回执。
-const RECEIPT_KEYS: [&str; 34] = [
+const RECEIPT_KEYS: [&str; 38] = [
     "action",
     "outcome",
     "error",
@@ -176,6 +176,14 @@ const RECEIPT_KEYS: [&str; 34] = [
     // `WavExportReport::clipping_note()`）。它在 `digest` **之后** ⇒ 不登记的话
     // `field_of(&receipt, "digest")` 会静默多带一截。
     "clipping_note",
+    // ⭐ `D-EX-1`：GUI 导出回执里**恒发**的四条峰值读数（开还是关都发，位置在
+    // `digest` 与 `clipping_note` 之间）。同上一条的理由：不登记 ⇒ 它们会被
+    // `field_of(&receipt, "source")` 这类取值**静默多带一截**（本文件自己的规则：
+    // "加一个字段就加一行"）。
+    "limiter",
+    "limiter_reductions",
+    "true_peak_dbfs",
+    "headroom_db",
     // ⭐ 任务单 `#319`：GUI 导入回执末尾的两个损失字段（只挂 import-midi 的成功臂）。
     // 它们在 `origin` **之后** ⇒ 不登记的话 `field_of(&receipt, "origin")` 会静默
     // 多带一截（`loss_detail` 的值里还有 `<kind>-read=`，但**没有** `:` ⇒ 切分只按

@@ -479,6 +479,20 @@ impl ParameterValue {
     }
 }
 
+/// 插件绑定（ADR-0069 D4）：设备挂接的外部插件。
+///
+/// 只有 `ExternalInstrument` / `ExternalEffect` 可带绑定（[`DeviceDefinition::validate`]
+/// 强制执行）；其它 kind 带绑定 ⇒ 模型校验拒绝。`path` 约定：`.vst3` 包路径／
+/// 动态库路径／`stub:` 测试桩（仅测试夹具）。缺省 `None` ⇒ 旧文档逐字可读
+/// （`serde(default)` + `skip_serializing_if`：无绑定的设备序列化后与加字段前逐字节相同）。
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct PluginBinding {
+    /// 插件路径（包／动态库／`stub:` 桩）。
+    pub path: String,
+    /// 类指名（类名或 CID 十六进制；`None` = 取首个乐器类，由宿主在加载时解析）。
+    pub class: Option<String>,
+}
+
 /// 设备定义（设备链中的一格）。
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct DeviceDefinition {
@@ -510,6 +524,13 @@ pub struct DeviceDefinition {
     /// **合法**上报值不可区分，缺字段会被静默读成"零延迟设备"，而 PDC 的相位对齐恰恰
     /// 依赖这个数字。缺字段 ⇒ 响亮失败。
     pub latency_samples: u32,
+    /// 插件绑定（ADR-0069 D4；`None` = 无绑定，旧文档逐字可读）。
+    ///
+    /// 只有 `ExternalInstrument` / `ExternalEffect` 可带绑定（见 [`Self::validate`]）。
+    /// `params` 是 f32 数值对，路径放不进 ⇒ 绑定必须是一个独立字段，随工程落盘
+    /// （会话注册表在进程重启／换机器后丢绑定，不能当事实源）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plugin: Option<PluginBinding>,
 }
 
 impl Default for DeviceDefinition {
@@ -521,19 +542,29 @@ impl Default for DeviceDefinition {
             bypassed: false,
             params: Vec::new(),
             latency_samples: 0,
+            plugin: None,
         }
     }
 }
 
 impl DeviceDefinition {
-    /// 校验全部参数有限性。
+    /// 校验全部参数有限性与插件绑定的 kind 约束。
     ///
     /// # Errors
     ///
-    /// 任意参数非有限 → [`ModelError::NonFiniteValue`]。
+    /// 任意参数非有限 → [`ModelError::NonFiniteValue`]；
+    /// 插件绑定挂在非外部设备上 → [`ModelError::PluginBindingKindMismatch`]。
     pub fn validate(&self) -> Result<(), ModelError> {
         for param in &self.params {
             param.validate()?;
+        }
+        if self.plugin.is_some()
+            && !matches!(
+                self.kind,
+                DeviceKind::ExternalInstrument | DeviceKind::ExternalEffect
+            )
+        {
+            return Err(ModelError::PluginBindingKindMismatch { kind: self.kind });
         }
         Ok(())
     }
@@ -5917,6 +5948,7 @@ mod tests {
         assert!(!device.bypassed);
         assert!(device.params.is_empty());
         assert_eq!(device.latency_samples, 0);
+        assert!(device.plugin.is_none());
     }
 
     /// `TrackV3::default()` 的载荷逐字段钉住。

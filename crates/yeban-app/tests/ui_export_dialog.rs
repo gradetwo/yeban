@@ -12,11 +12,13 @@
 //! | 判据 | 证的事 |
 //! | :--- | :--- |
 //! | ①（隐藏态） | 装配后对话框**不在**运行时控件树里（`export-wav-open=false`），金帧因此不变；`module-status` 仍为空 |
-//! | ②（可寻址） | `open-export-wav` ⇒ 9 个语义 ID 全部出现在树里、角色与注册表一致、路径由 `ModulePaths` 播种；树里没有注册表之外的 ID |
+//! | ②（可寻址） | `open-export-wav` ⇒ 10 个语义 ID 全部出现在树里、角色与注册表一致、路径由 `ModulePaths` 播种；树里没有注册表之外的 ID |
 //! | ③（选项真的生效） | 采样率 44100 / 位深 16 / 时长 0.5 ⇒ 回执 `sample_rate=44100:bits=16:frames=22050`，字节数与磁盘一致 |
 //! | ④（非法选项不落盘） | 位深 `cd` ⇒ `outcome=error:error=invalid-options`，目标文件**不存在** |
 //! | ⑤（关闭还原） | `close-export-wav` ⇒ 对话框节点全部消失，ID 集合回到打开前的**同一集合**；用户改过的路径重开时**不被**缺省值覆盖 |
 //! | ⑥（键盘输入真的进根属性） | 审评 2026-10-31（P0-2 跟进）：在路径输入框里**真实敲键盘**（点按聚焦 + 退格清掉旧值 + 逐字输入新路径）⇒ 根属性必须跟着变，导出必须落到**新**路径；单向绑定（修前）下根属性纹丝不动、导出仍落旧路径，判据必红 |
+//! | ⑦（⭐ `D-EX-1` 读数恒发） | 一条**成功**回执里 `limiter` / `limiter_reductions` / `true_peak_dbfs` / `headroom_db` 四条字段**必须在**（`#229` 的旧门把它们拴在"削波"上 ⇒ 不削波那一格连字段名都没有），且值是 `null` 或一个数；`limiter_reductions` 在关着时恒 `0` |
+//! | ⑧（⭐ `D-EX-1` 开关经真实点按可达） | 走 `注入 → Slint 事件源 → TouchArea.clicked → 根属性` 全链路点 `export-wav-limiter-switch`：奇数次为开、偶数次为关，`accessible-checked` 跟着翻，导出的 `limiter` 字段变成 `on` —— ⛔ 不是测试直接 `set_`（那只证"宿主读了属性"，不证"人摸得到控件"） |
 //!
 //! ## 平台约束
 //!
@@ -38,6 +40,7 @@ use yeban_app::undo::{UndoPort, UndoSession};
 use yeban_model::YebanProjectV1;
 use yeban_ui_mcp::tree::UiTree;
 use yeban_ui_test_port::port::Permission;
+use yeban_ui_test_port::render::report_line;
 
 /// 测试产物落在临时目录里（`Drop` 时清理，**绝不污染仓库**）。
 struct Scratch {
@@ -66,8 +69,12 @@ impl Drop for Scratch {
     }
 }
 
-/// 对话框在树里的九个语义 ID 与登记角色（`elements.rs` 是同一份口径）。
-const DIALOG_IDS: [(&str, ElementKind); 9] = [
+/// 对话框在树里的语义 ID 与登记角色（`elements.rs` 是同一份口径）。
+///
+/// ⭐ `D-EX-1` 加上第五格 `export-wav-limiter-switch`（布尔量，角色 `switch`）。
+/// 这条闭集判据是"UI 加了控件却忘了登记"的第一道防线：`unknown` 那段会在**注册表漏登记**
+/// 时红，`DIALOG_IDS` 少了它则永远不会被发现 —— 所以两处一起加。
+const DIALOG_IDS: [(&str, ElementKind); 10] = [
     ("export-wav-dialog", ElementKind::Region),
     ("export-wav-panel", ElementKind::Region),
     ("export-wav-close-button", ElementKind::Button),
@@ -75,12 +82,17 @@ const DIALOG_IDS: [(&str, ElementKind); 9] = [
     ("export-wav-sample-rate-input", ElementKind::TextInput),
     ("export-wav-bit-depth-input", ElementKind::TextInput),
     ("export-wav-seconds-input", ElementKind::TextInput),
+    ("export-wav-limiter-switch", ElementKind::Switch),
     ("export-wav-options-note", ElementKind::Text),
     ("export-wav-run-button", ElementKind::Button),
 ];
 
-/// 回执字段名闭集（只收本判据可能遇到的字段；`clipping_note` 在 `digest` 之后）。
-const RECEIPT_KEYS: [&str; 13] = [
+/// 回执字段名闭集（只收本判据可能遇到的字段；`clipping_note` 在**最末**）。
+///
+/// ⭐ `D-EX-1` 新增四个**恒发**的峰值读数键（`limiter` / `limiter_reductions` /
+/// `true_peak_dbfs` / `headroom_db`）。它们必须进这张表，否则 `receipt_field_end`
+/// 认不出字段边界，取到的值会把后面的键一起吞进来。
+const RECEIPT_KEYS: [&str; 17] = [
     "action",
     "outcome",
     "error",
@@ -93,6 +105,10 @@ const RECEIPT_KEYS: [&str; 13] = [
     "bytes",
     "source",
     "digest",
+    "limiter",
+    "limiter_reductions",
+    "true_peak_dbfs",
+    "headroom_db",
     "clipping_note",
 ];
 
@@ -199,7 +215,7 @@ fn the_export_dialog_is_hidden_until_opened_and_its_options_reach_the_wav_writer
     assert!(!ui.get_export_wav_open(), "初始必须是关闭态");
     assert_eq!(ui.get_module_status(), "", "刚装配的状态行必须是空的");
 
-    // ---- ② 打开 ⇒ 九个 ID 可寻址，路径由 ModulePaths 播种 ----
+    // ---- ② 打开 ⇒ 十个 ID 可寻址，路径由 ModulePaths 播种 ----
     ui.invoke_open_export_wav();
     assert!(ui.get_export_wav_open(), "open-export-wav 必须打开对话框");
     assert_eq!(
@@ -380,6 +396,118 @@ fn the_export_dialog_is_hidden_until_opened_and_its_options_reach_the_wav_writer
         !kept.exists(),
         "导出必须落到键盘输入的新路径，不许仍写到旧路径: {}",
         kept.display()
+    );
+
+    // ---- ⑦ ⭐ `D-EX-1`：峰值读数**恒发** ----
+    //
+    // `#229` 的旧门是"只有削波才发"⇒ 不削波的那一格连**字段名**都没有。修后四个读数
+    // 无条件进回执（长文案 `clipping_note` 的门一位未动 —— 那条由
+    // `tests/gui_export_clipping.rs` 的削波／干净两条臂钉）。
+    //
+    // ⚠ 本臂**不**假设 `filled_project` 削不削波（那是另一件事），只钉"字段在不在、
+    // 值是什么形态"。数值的**对账**在 `tests/gui_export_limiter.rs`：那里用同一次运行的
+    // 直接导出当参照，逐字重建整条回执。
+    assert_eq!(field_of(&receipt, "limiter"), "off", "{receipt}");
+    assert_eq!(
+        field_of(&receipt, "limiter_reductions"),
+        "0",
+        "没开限制器 ⇒ 压样本计数恒 0（⛔ 不是缺字段、不是猜的值）: {receipt}"
+    );
+    for key in ["true_peak_dbfs", "headroom_db"] {
+        // `field_of` 在字段缺席时直接 panic ⇒ 走到这里就是"发了"。值的形态只有两种：
+        // `null`（如实报"测不出"）或一个定点小数（`{:.6}`）。⛔ 空串不是其中之一，
+        // 一截被吞掉的下一个字段也不是（那说明 `RECEIPT_KEYS` 漏登记了这个键）。
+        let value = field_of(&receipt, key);
+        assert!(
+            value == "null" || value.parse::<f32>().is_ok(),
+            "`{key}` 的值必须是 `null` 或一个数: {receipt}"
+        );
+        report_line(&format!("[D-EX-1] 回执读数: {key}={value}"));
+    }
+
+    // ---- ⑧ ⭐ `D-EX-1`：限制器开关经**真实点按**可达，且宿主真的读它 ----
+    //
+    // 缺陷本体：能力（`WavExportOptions.limiter`）一直在，CLI `--limiter` 与 MCP
+    // `yeban_render` 的 `limiter` 都开得了，只有 GUI 这条路到不了 ⇒ 人在窗口里永远
+    // 导出一个不限制的版本，还以为导出＝听到的那个。
+    //
+    // 为什么驱动方式是**点按**而不是 `set_export_wav_limiter`：后者只证明"宿主读了这个
+    // 属性"，不证明"人摸得到这个控件"。走 `注入 → Slint 事件源 → TouchArea.clicked
+    // → 根属性` 全链路（与 ⑥ 同一口径），再加树里读回的 `accessible-checked`，
+    // 证的才是"第五格真的在界面上工作"。
+    let click_switch = |plane: &mut LiveControlPlane| {
+        let (tree, _) = plane.plane().tree().expect("ui/tree");
+        let bounds = node(&tree, "export-wav-limiter-switch")
+            .bounds
+            .expect("限制器开关必须有几何");
+        plane
+            .plane()
+            .call(
+                yeban_ui_mcp::methods::METHOD_DISPATCH_POINTER_DOWN,
+                Some(serde_json::json!({
+                    "elementId": "export-wav-limiter-switch",
+                    "xOffset": f64::from(bounds.width) / 2.0,
+                    "yOffset": f64::from(bounds.height) / 2.0,
+                    "button": "left",
+                })),
+            )
+            .expect("点按限制器开关必须送达");
+        plane
+            .plane()
+            .call(
+                yeban_ui_mcp::methods::METHOD_DISPATCH_POINTER_UP,
+                Some(serde_json::json!({ "button": "left" })),
+            )
+            .expect("松开鼠标必须送达");
+    };
+    let (tree, _) = plane.plane().tree().expect("ui/tree");
+    assert_eq!(
+        node(&tree, "export-wav-limiter-switch").checked,
+        Some(false),
+        "初始必须是关（`accessible-checked` 缺省 ⇒ 与'没有勾选语义'不可分辨，那是假绿）"
+    );
+    click_switch(&mut plane);
+    assert!(
+        ui.get_export_wav_limiter(),
+        "点一次必须把根属性翻成开（漏接线/单向接的控件在这里红）"
+    );
+    click_switch(&mut plane);
+    assert!(
+        !ui.get_export_wav_limiter(),
+        "点两次必须回到关 —— 开关是**取反**，不是置真"
+    );
+    click_switch(&mut plane);
+    let (tree, _) = plane.plane().tree().expect("ui/tree");
+    assert_eq!(
+        node(&tree, "export-wav-limiter-switch").checked,
+        Some(true),
+        "奇数次点按后 `accessible-checked` 必须为真 —— 读屏听到的就是这个数"
+    );
+    assert!(ui.get_export_wav_limiter(), "奇数次点按后根属性必须是开");
+
+    ui.invoke_export_wav();
+    let limited = ui.get_module_status().to_string();
+    assert!(
+        ui.get_module_status_succeeded(),
+        "开着限制器导出应当成功: {limited}"
+    );
+    assert_eq!(field_of(&limited, "limiter"), "on", "{limited}");
+    // ⚠ 这里**不**要求 `limiter_reductions > 0`：`filled_project` 的母线远在阈值
+    // （`LIMITER_THRESHOLD` = 0.9）之下时，限制器确实可以一次都不压 —— 把"字段为 0"
+    // 当失败会让这条判据在安静工程上永假，把"字段存在"当通过又会让接错线的勾选框过关。
+    // "压过 N > 0 个样本"的**结构证据**在 `tests/gui_export_limiter.rs` 的过载夹具上钉。
+    let limited_reductions = field_of(&limited, "limiter_reductions");
+    assert!(
+        limited_reductions.parse::<u64>().is_ok(),
+        "`limiter_reductions` 必须是非负整数读数: {limited}"
+    );
+    report_line(&format!(
+        "[D-EX-1] 开关经点按为开 ⇒ limiter=on / limiter_reductions={limited_reductions}"
+    ));
+    assert_eq!(
+        field_of(&limited, "frames"),
+        field_of(&receipt, "frames"),
+        "限制器不改请求帧数（33 帧前瞻延迟在 `render_core` 里补掉）"
     );
 
     // SAFETY: 同上 —— 单 `#[test]` 的进程。

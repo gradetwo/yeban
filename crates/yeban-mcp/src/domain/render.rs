@@ -443,6 +443,7 @@ use yeban_render::dither::{BitDepth, quantize};
 // ⭐ `ADR-0011`（`#268`）：引擎音色源适配器（CSV：CLI 与 MCP 共用同一份实现）。
 // 本 crate ⛔ 不直接依赖 `yeban-engine`（`scripts/gates/check_mcp_dependency_direction.py`）。
 use yeban_render::engine_source::{ArmedSfzInput, ArmedSfzSample, EngineTimbre, EngineTrackSource};
+use yeban_render::plugin_source::PluginTrackSource;
 // 插入链的投影与"是否还有未消费参数"的判据都住在 `yeban-render`：MCP 不复制
 // 第二份白名单（`yeban-engine` 的投影是同一份规则的来源，但 MCP 不能依赖它）。
 use yeban_render::automation::{
@@ -634,6 +635,14 @@ pub const SAMPLER_SOURCE_KIND: &str = "sfz-sampler";
 
 /// 音频源种类：采样器音符与音频片段**都有**的源。
 pub const SAMPLER_MIXED_SOURCE_KIND: &str = "sfz-sampler+audio-clip";
+
+/// 音频源种类：⭐ 宿主插件乐器（ADR-0069）：带绑定且加载成功的非旁通外部乐器轨。
+///
+/// 只有插件音符的源（插件源胜出时 `midi` 为空，⛔ 不叠引擎声）。
+pub const PLUGIN_SOURCE_KIND: &str = "plugin-instrument";
+
+/// 音频源种类：插件音符与音频片段**都有**的源。
+pub const PLUGIN_MIXED_SOURCE_KIND: &str = "plugin-instrument+audio-clip";
 
 /// ⭐ `#243`：**音量自动化的读数块**（`data.automation`）与上面的 `unsupported`
 /// 是**互补**的。`unsupported` 只说“少了什么”，`data.automation` 把每条泳道的
@@ -1528,6 +1537,11 @@ pub struct SamplerReport {
     /// 与 `yeban_load_sfz` / `yeban_list_instruments` 的 `silentRegionCount` **同一个
     /// 含义**（报告缺口 `G4` 起对齐；`builtinSilentRegionCount` 才是内建静音子集）。
     pub silent_regions: usize,
+    /// ⭐ P1 按需装载：本次渲染因判定为不会发声而跳过解码的区域数。
+    ///
+    /// ⛔ 不进 `label()`：`label` 与 app 的 `--export-wav` 同形（`#221` 判据逐字比它），
+    /// 只在 JSON 里报 `skippedRegions`。
+    pub skipped_regions: usize,
     /// 排程进采样器的音符数。
     pub notes: u64,
     /// 没匹配到任何区域的音符数（合法：该音高在这份 SFZ 里不发声）。
@@ -1608,6 +1622,7 @@ impl SamplerReport {
             "resolvedPath": self.resolved_path,
             "regions": self.regions,
             "silentRegionCount": self.silent_regions,
+            "skippedRegions": self.skipped_regions,
             "notes": self.notes,
             "notesUnmatched": self.notes_unmatched,
             "notesUsingFileSample": self.notes_using_file_sample,
@@ -3997,6 +4012,9 @@ fn channel_gain(span: &ClipSpan, channel: usize) -> f32 {
 /// （旧的 `SamplerTrackSource` 已退休，⛔ 不再有第二份采样音源）。
 struct TrackSource {
     midi: Option<EngineTrackSource>,
+    /// ⭐ ADR-0069：本轨的宿主插件音源（`Some` ⇒ `midi` 为空，插件胜出；
+    /// 采样器分支亦被胜出 —— 插件轨不建引擎源，⛔ 不叠两份声音）。
+    plugin: Option<PluginTrackSource>,
     /// 本轨是否绑了 `TrackV3.sampler`（`kind` 命名用）。
     sampler_bound: bool,
     clips: Vec<AudioClipSource>,
@@ -4069,20 +4087,28 @@ impl TrackSource {
     ///
     /// ⭐ `#274`：`has_sampler` 现在看 `sampler_bound`（不再有 `SamplerTrackSource`）——
     /// 只影响**命名**，发声仍由 `midi` 那一支（引擎 SFZ 支路）负责。
+    /// ⭐ ADR-0069：插件源先判（有音符 ⇒ 插件命名；无音符的插件轨落到原有分支，
+    /// 与无音符的引擎轨同一条静音口径）。
     fn kind(&self) -> &'static str {
+        let has_plugin = self
+            .plugin
+            .as_ref()
+            .is_some_and(|plugin| plugin.scheduled_notes() > 0);
         let has_midi = self
             .midi
             .as_ref()
             .is_some_and(|midi| midi.scheduled_notes() > 0);
         let has_sampler = self.sampler_bound && has_midi;
         let has_audio = self.clips.iter().any(|clips| !clips.spans.is_empty());
-        match (has_sampler, has_midi, has_audio) {
-            (true, _, true) => SAMPLER_MIXED_SOURCE_KIND,
-            (true, _, false) => SAMPLER_SOURCE_KIND,
-            (false, true, true) => MIXED_SOURCE_KIND,
-            (false, true, false) => SOURCE_KIND,
-            (false, false, true) => AUDIO_SOURCE_KIND,
-            (false, false, false) => SILENT_SOURCE_KIND,
+        match (has_plugin, has_sampler, has_midi, has_audio) {
+            (true, _, _, true) => PLUGIN_MIXED_SOURCE_KIND,
+            (true, _, _, false) => PLUGIN_SOURCE_KIND,
+            (false, true, _, true) => SAMPLER_MIXED_SOURCE_KIND,
+            (false, true, _, false) => SAMPLER_SOURCE_KIND,
+            (false, false, true, true) => MIXED_SOURCE_KIND,
+            (false, false, true, false) => SOURCE_KIND,
+            (false, false, false, true) => AUDIO_SOURCE_KIND,
+            (false, false, false, false) => SILENT_SOURCE_KIND,
         }
     }
 }
@@ -4093,8 +4119,13 @@ impl AudioSource for TrackSource {
         // ⚠ 引擎源是**有状态**的（内部播放头）：它自己 `out.fill(0.0)` 再写单声道，
         //    且强制"块必须从第 0 帧起连续升序"（见 `EngineTrackSource::render_block`）。
         //    它是本容器的**第一路**，因此覆写不会抹掉别的贡献。
+        // ⭐ ADR-0069：插件源与引擎源互斥（插件胜出时 `midi` 为空），因此插件源
+        //    同样可以占"第一路"的填位；片段源在后累加。
         if let Some(midi) = &mut self.midi {
             midi.render_block(context, out)?;
+        }
+        if let Some(plugin) = &mut self.plugin {
+            plugin.render_block(context, out)?;
         }
         for clips in &mut self.clips {
             clips.render_block(context, out)?;
@@ -4164,7 +4195,7 @@ struct ArmedSamplerTrack {
 ///
 /// 路径解析不到 / SFZ 文件读不到 / 文本非法 ⇒ `RENDER_FAILED`（报文与原形状逐字相同）。
 fn prepare_sampler_track(
-    _track: EntityId,
+    track: EntityId,
     raw: &str,
     project: &YebanProjectV1,
     project_path: &Path,
@@ -4174,6 +4205,9 @@ fn prepare_sampler_track(
     let resolved = resolve_sampler_path(raw, project_path)?;
     // ⭐ `#276`：装载与提供表**同一次解析**；解码由 `store` 去重（同一文件只解一次）。
     // ⭐ 预算来自本次渲染的实参（`maxSampleFiles` / `maxSampleFrames`），⛔ 不是常量。
+    // ⭐ P1 按需装载：只解码本轨音符/CC 判定为会发声的区域（见 `sfz::DemandLoadFilter`）；
+    // 预算只对已用子集记账，已用子集超预算仍响亮拒绝（`TrackSampleCache` 原有行为）。
+    let filter = sfz::DemandLoadFilter::from_project_track(project, track);
     let mut cache = sfz::TrackSampleCache::with_limits(store, limits);
     let (load, table) = sfz::load_with(
         &resolved,
@@ -4181,6 +4215,7 @@ fn prepare_sampler_track(
         0,
         false,
         &mut cache,
+        Some(&filter),
     )
     .map_err(|fault| {
         let cause = fault.into_result().map_or_else(
@@ -4614,12 +4649,19 @@ fn build_source(
     if track_has_unhandled_dsp(track) || sampler_drops_instrument_params {
         note_unsupported(unsupported, counts, "deviceChainDsp");
     }
-    if track.devices.iter().any(|device| {
+    // ⭐ ADR-0069：已被宿主的那台设备（首个非旁通、带绑定的外部乐器）不再登记
+    // `externalPlugins` —— 它有音源了，不是"未消费"。其它外部设备（第二台绑定
+    // 乐器、效果器、未绑定设备）仍登记。加载失败时装配期已响亮返回，本行走不到。
+    let hosted_plugin_index = track.devices.iter().position(|device| {
+        !device.bypassed && device.kind == DeviceKind::ExternalInstrument && device.plugin.is_some()
+    });
+    if track.devices.iter().enumerate().any(|(index, device)| {
         !device.bypassed
             && matches!(
                 device.kind,
                 DeviceKind::ExternalInstrument | DeviceKind::ExternalEffect
             )
+            && Some(index) != hosted_plugin_index
     }) {
         note_unsupported(unsupported, counts, "externalPlugins");
     }
@@ -4958,6 +5000,7 @@ fn build_source(
                 resolved_path: summary.resolved_path.display().to_string(),
                 regions: summary.regions,
                 silent_regions: summary.silent_regions,
+                skipped_regions: armed.load.skipped_regions,
                 notes: u64::try_from(timbre.scheduled_notes(track.id)).unwrap_or(u64::MAX),
                 notes_unmatched: survey.notes_unmatched,
                 notes_using_file_sample: survey.notes_using_file_sample,
@@ -4988,10 +5031,59 @@ fn build_source(
     // 轨增益已经在引擎的 `note.gain` 里 ⇒ 这一层⛔ 不再乘第二次。
     // `pan == 0` / 声相自动化接管时它逐位等于 `(1.0, 1.0)`（与 CLI 同一条快路径）。
     //
+    // ⭐ ADR-0069：宿主插件音源（优先级高于引擎与采样器）。
+    // 首个非旁通、带绑定的外部乐器：加载成功 ⇒ 插件源（`midi` 置空，采样器
+    // 分支亦被胜出 —— 插件轨不建引擎源，⛔ 不叠两份声音）；加载失败 ⇒ 渲染
+    // 构造期 RENDER_FAILED（无音符的轨也一样 —— 坏绑定不配静默过关）。
+    // 无绑定的外部设备走旧口径（上面的 `externalPlugins` 登记＋静音）。
+    let plugin = match hosted_plugin_index {
+        Some(index) => {
+            let binding = track.devices[index]
+                .plugin
+                .as_ref()
+                .expect("hosted_plugin_index 只指向带绑定的设备");
+            let instance = yeban_plugin_host::Host::load(&binding.path, binding.class.as_deref())
+                .map_err(|error| {
+                render_failed(
+                    format!("插件装载失败: {error}"),
+                    serde_json::json!({
+                        "reason": "pluginLoad",
+                        "pluginPath": binding.path,
+                        "pluginId": binding.class,
+                    }),
+                )
+            })?;
+            // 声相取引擎源同一条等功率半边（`centered_pan_gains`）；轨增益由
+            // 插件源内部按调度表的 `track_gain()` 乘（与引擎路径同一口径）。
+            let (engine_l, engine_r) = centered_pan_gains(source_pan, pan_gains);
+            Some(
+                PluginTrackSource::new(
+                    instance,
+                    track.id,
+                    timbre.schedule(track.id),
+                    f64::from(sample_rate),
+                    8192,
+                    (engine_l, engine_r),
+                )
+                .map_err(|error| {
+                    render_failed(
+                        format!("插件激活失败: {error}"),
+                        serde_json::json!({
+                            "reason": "pluginActivate",
+                            "pluginPath": binding.path,
+                            "pluginId": binding.class,
+                        }),
+                    )
+                })?,
+            )
+        }
+        None => None,
+    };
     // ⚠ 采样器轨**不建引擎源**（`#221` 的 `sampler` 分支是整体替换，与 CLI 的
     //   `--sfz` 旁路同形）⇒ 否则采样与复音会叠成两份声音。
     // ⚠ 没有可发声音符的纯音频轨也不建（一台引擎约 109 KB，白建没有收益）。
-    let midi = if timbre.scheduled_notes(track.id) == 0 {
+    // ⭐ ADR-0069：插件轨同样不建引擎源（插件胜出时 `midi` 为空）。
+    let midi = if plugin.is_some() || timbre.scheduled_notes(track.id) == 0 {
         None
     } else {
         let (engine_l, engine_r) = centered_pan_gains(source_pan, pan_gains);
@@ -5027,6 +5119,7 @@ fn build_source(
     let automation = TrackGainAutomation::new(project, track.id, sample_rate);
     let source = TrackSource {
         midi,
+        plugin,
         sampler_bound,
         clips,
         automation: (!automation.is_identity() && !bus_source).then_some(automation),
@@ -5038,9 +5131,13 @@ fn build_source(
         track: track.name.clone(),
         kind: source.kind(),
         audible,
-        notes: source.midi.as_ref().map_or(0, |midi| {
-            u64::try_from(midi.scheduled_notes()).unwrap_or(u64::MAX)
-        }),
+        notes: source
+            .plugin
+            .as_ref()
+            .map(|plugin| plugin.scheduled_notes())
+            .or_else(|| source.midi.as_ref().map(|midi| midi.scheduled_notes()))
+            .map(|count| u64::try_from(count).unwrap_or(u64::MAX))
+            .unwrap_or(0),
         audio_clips,
         audio_clips_unrendered: clips_unrendered,
         audio_clips_gated: clips_gated,
@@ -5584,6 +5681,7 @@ mod tests {
                 .map(|(name, value)| param(name, *value))
                 .collect(),
             latency_samples: 0,
+            plugin: None,
         }
     }
 

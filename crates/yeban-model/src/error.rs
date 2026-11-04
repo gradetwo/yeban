@@ -267,6 +267,14 @@ pub enum ModelError {
         len: usize,
     },
 
+    /// 插件绑定挂在了非外部设备上（ADR-0069 D4：只有 `ExternalInstrument` /
+    /// `ExternalEffect` 可带绑定）。
+    #[error("plugin binding on non-external device kind {kind:?}")]
+    PluginBindingKindMismatch {
+        /// 实际的设备类型。
+        kind: crate::project::DeviceKind,
+    },
+
     /// 参数下标越界。
     #[error("parameter index {index} out of range (len {len})")]
     ParamIndexOutOfRange {

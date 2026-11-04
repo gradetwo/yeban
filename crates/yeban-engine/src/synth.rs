@@ -3044,6 +3044,7 @@ mod tests {
             })
             .collect(),
             latency_samples: 0,
+            plugin: None,
         };
         let params = DrumsParams::from_devices(&[device]).expect("五个键位写全 ⇒ 必须武装");
         const CAPACITY: usize = 4;
@@ -3316,6 +3317,7 @@ mod tests {
                 bypassed: false,
                 params,
                 latency_samples: 0,
+                plugin: None,
             }
         };
         let baseline = ToneParams::from_devices(std::slice::from_ref(&device_with(

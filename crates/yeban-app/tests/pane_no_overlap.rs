@@ -1405,7 +1405,7 @@ fn check_arrangement(width: u32, height: u32) {
     // ---- ④-2 头内子节点（叶子组）：两两不相交 ＋ 各自落在自己的头里。
     let mut child_ids: Vec<String> = Vec::new();
     for track in 0..6 {
-        for suffix in ["color-swatch", "mute-button", "solo-button"] {
+        for suffix in ["color-swatch", "mute-button", "solo-button", "arm-button"] {
             child_ids.push(format!("track-{track}-{suffix}"));
         }
     }
@@ -1414,7 +1414,7 @@ fn check_arrangement(width: u32, height: u32) {
     report_line(&assert_ids_pairwise(&tree, &child_refs, &label));
     for track in 0..6 {
         let header = format!("track-{track}-header");
-        for suffix in ["color-swatch", "mute-button", "solo-button"] {
+        for suffix in ["color-swatch", "mute-button", "solo-button", "arm-button"] {
             let child = format!("track-{track}-{suffix}");
             assert_inside(
                 &tree,
@@ -2008,6 +2008,7 @@ fn project_master_with_two_devices() -> YebanProjectV1 {
                 unit: Some("dB".to_owned()),
             }],
             latency_samples: 0,
+            plugin: None,
         },
         DeviceDefinition {
             id: EntityId::new(),
@@ -2016,6 +2017,7 @@ fn project_master_with_two_devices() -> YebanProjectV1 {
             bypassed: true,
             params: vec![],
             latency_samples: 0,
+            plugin: None,
         },
     ];
     let mut tracks: BTreeMap<EntityId, TrackV3> = BTreeMap::new();
@@ -2048,6 +2050,7 @@ fn project_master_with_devices(count: usize) -> YebanProjectV1 {
             bypassed: index % 2 == 1,
             params: vec![],
             latency_samples: 0,
+            plugin: None,
         })
         .collect();
     let mut tracks: BTreeMap<EntityId, TrackV3> = BTreeMap::new();

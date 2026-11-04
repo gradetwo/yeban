@@ -3644,14 +3644,26 @@ fn admin_reload_engine_rebuilds_and_resets_the_meter_tap() {
 
     // ---- 副作用：**注入的那一帧作废了**，界面转而显示新引擎自己的读数 ----
     //
-    // ⚠ 这条判据的期望值在 `line/engine-sound` 合并后**必须改**（CI run 37244018311 红在这里）:
-    // 旧期望是"电平回到下限 −120 dB", 那个期望**建立在"渲染是占位静音"之上** ——
-    // 真实合成接上后, 新引擎对"鼓"轨立刻渲染出真实电平（实测 峰值 −6.0 / RMS −23.4 dBFS）,
-    // 于是"回下限"不再成立。**但判据真正要证明的东西没变**: 注入的 0.0/0.0 必须被丢掉、
-    // 界面必须接上**新引擎的电平队列**。所以改成断言那件真正的事:
-    //   ① 注入值（0.0/0.0）确实不在了; ② 读数是新引擎的真实、有限、非下限的读数。
-    // 这是"跨线前提是隐式契约"的第二个实例（第一个是 engine-sound 自己发现的 S3）:
-    // 凡是"因为另一处还没实现, 所以这里可以这样测"的判据, 前提消失时都要主动复核。
+    // ⚠ 这条判据的期望值改过**两次**，两次都不是判据本身在错，是**跨线前提**在动：
+    //
+    // 1. `line/engine-sound` 合并后（CI run 37244018311 红在这里）：旧期望是"电平回到下限
+    //    −120 dB"，那个期望建立在"渲染是占位静音"之上。真实合成接上后，新引擎对"鼓"轨
+    //    立刻渲染出真实电平（实测 峰值 −6.0 / RMS −23.4 dBFS），"回下限"不再成立，于是
+    //    改成"有限且高于下限"。
+    // 2. `D-UI-32` 落地后（CI run 41581138067 红在这里）：`rebuild_engine` 换代即 `stop()` +
+    //    发一帧 park 读数（这是**控制面的义务**，见 `rt.rs` 的 `Transport::free_running` 与
+    //    `docs/` 里对"加载即停住"的裁决）。park 之后最后一帧就是**静音下限**，
+    //    "高于下限"也不再是"新引擎的 tap 接上了"的正确代理 —— 那个代理本身就不该是声学事实，
+    //    声学事实在 `meter_rt_contract.rs` 的 S3/S5 里钉。
+    //
+    // 判据**真正要证明**的东西两次都没变：注入的 0.0/0.0 必须被丢掉、界面必须接上**新引擎**的
+    // 电平队列。所以这里只钉两件机械可读的事：
+    //   ① 注入值（0.0/0.0）确实不在了（下面两条 `assert_ne!`）；
+    //   ② 读数来自新引擎的 tap（有限、不是 NaN —— 若 tap 没接上，label 里仍是注入值，
+    //      已被 ① 拒掉；若 tap 接上了但读数坏掉，会是 NaN，这里拒）。
+    // D-UI-32 的 park 由**另一条正面读数**钉（见下面 `transport-play-button checked == "false"`），
+    // 不在电平上找它。凡是"因为另一处还没实现，所以这里可以这样测"的判据，
+    // 前提消失时都要主动复核 —— 这条判据自己就是这句话的第二个实例。
     let (after, _) = plane.plane().tree().expect("ui/tree");
     let track_label = label_in(&after, "track-0-meter");
     assert_ne!(
@@ -3663,15 +3675,33 @@ fn admin_reload_engine_rebuilds_and_resets_the_meter_tap() {
         master_label, "主控电平表 峰值 0.0 RMS 0.0 dBFS",
         "主控电平也必须来自新引擎的队列"
     );
-    // 读数必须是**真实合成**的结果: 有限、且不在静音下限上。
+    // 读数必须是**有限**的（不是 NaN、也不是注入的 0.0/0.0 —— 后者已被上面的 `assert_ne!` 拒）。
+    // "playing ⇒ 非下限电平"属引擎侧契约（`meter_rt_contract.rs` 的 S3/S5），⛔ 不由本条复钉。
     for (what, label) in [("轨道", &track_label), ("主控", &master_label)] {
         let peak =
             dbfs_value(label).unwrap_or_else(|| panic!("{what} 电平标签里应当有峰值: {label}"));
         assert!(
-            peak.is_finite() && peak > -120.0,
-            "{what} 换代后应当有新引擎的**真实读数**(有限且高于 −120 dB 下限), 实际: {label}"
+            peak.is_finite(),
+            "{what} 换代后的读数必须是**有限值**（tap 接上新引擎；若 tap 没接或坏了会是 NaN）, \
+             实际: {label}"
         );
     }
+
+    // ⭐ D-UI-32 的**正面读数**：换代即停住是**控制面的义务**，而这条义务必须**可在控制面观察**。
+    // `transport-play-button` 的 `accessible-checked` 绑窗口的 `playing` 属性；`rebuild_engine`
+    // 在换代之后调 `stop()` 并把 park 读数写回界面 —— 于是勾选态从"新引擎默认的 playing"
+    // 变成 "false"。这一条与上面的电平断言**各钉一件事**：电平钉"tap 接上"，勾选钉"停住"。
+    let parked = plane.plane().try_line(
+        r#"{"jsonrpc":"2.0","id":63,"method":"ui/property","params":{"elementId":"transport-play-button","name":"checked"}}"#,
+    );
+    assert!(!parked.is_error(), "`ui/property` checked: {parked:?}");
+    assert_eq!(
+        parked.result.expect("有 result")["value"],
+        "false",
+        "D-UI-32：换代后新引擎必须**装载即停住**（`transport-play-button` 的 `checked` 读数）—— \
+         这条不是更严的期望，是把 park 从靠电平猜改成有直接读数（电平被静音下限时，\
+         只凭电平无法区分停了与没停但渲到下限）"
+    );
 
     // 再重建一次 ⇒ 代数递增（不是把同一个数字报两遍）。
     let again = plane

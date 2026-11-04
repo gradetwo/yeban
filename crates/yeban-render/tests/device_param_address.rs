@@ -53,6 +53,7 @@ fn device(id: EntityId, params: &[(&str, f32)]) -> DeviceDefinition {
             .map(|(name, value)| param(name, *value))
             .collect(),
         latency_samples: 0,
+        plugin: None,
     }
 }
 

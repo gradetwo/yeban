@@ -963,6 +963,7 @@ fn a_transport_seek_releases_the_drum_tail() {
         })
         .collect(),
         latency_samples: 0,
+        plugin: None,
     };
     project
         .tracks

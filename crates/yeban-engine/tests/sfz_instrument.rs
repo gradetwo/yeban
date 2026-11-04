@@ -866,6 +866,7 @@ fn s7_drums_win_over_sfz_which_wins_over_polyphony() {
         })
         .collect(),
         latency_samples: 0,
+        plugin: None,
     };
     let params = DrumsParams::from_devices(&[device]).expect("五个键位名写全 ⇒ 识别为鼓机");
     let schedule =
@@ -1856,6 +1857,7 @@ fn drum_kit_device() -> DeviceDefinition {
         })
         .collect(),
         latency_samples: 0,
+        plugin: None,
     }
 }
 

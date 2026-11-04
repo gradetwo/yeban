@@ -1395,7 +1395,7 @@ fn edit_notes() -> Value {
              `warnings[]` 逐条报出**非阻断**问题：`code:\"unrecognisedEffectParam\"` = 引擎不认但又不是\
              拼错的设备参数名（带 `deviceName` / `paramName` / `knownParams` —— \
              后者逐字列出引擎认的全部拼写，可当场改拼写重发）；`code:\"deviceOnSilentTrack\"` = 设备装到了\
-             一条没有任何可发声内容的音轨上（带 `trackId` / `track` / `placements` / `notes` 与逐字 `hint`）。\
+             一条没有任何可发声内容的源轨上（主总线与有可发声上游的总线轨不报）（带 `trackId` / `track` / `placements` / `notes` 与逐字 `hint`）。\
              两者都可能为空数组。",
         ),
         &[
