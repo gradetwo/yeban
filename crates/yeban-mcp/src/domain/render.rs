@@ -1528,6 +1528,11 @@ pub struct SamplerReport {
     /// 与 `yeban_load_sfz` / `yeban_list_instruments` 的 `silentRegionCount` **同一个
     /// 含义**（报告缺口 `G4` 起对齐；`builtinSilentRegionCount` 才是内建静音子集）。
     pub silent_regions: usize,
+    /// ⭐ P1 按需装载：本次渲染因判定为不会发声而跳过解码的区域数。
+    ///
+    /// ⛔ 不进 `label()`：`label` 与 app 的 `--export-wav` 同形（`#221` 判据逐字比它），
+    /// 只在 JSON 里报 `skippedRegions`。
+    pub skipped_regions: usize,
     /// 排程进采样器的音符数。
     pub notes: u64,
     /// 没匹配到任何区域的音符数（合法：该音高在这份 SFZ 里不发声）。
@@ -1608,6 +1613,7 @@ impl SamplerReport {
             "resolvedPath": self.resolved_path,
             "regions": self.regions,
             "silentRegionCount": self.silent_regions,
+            "skippedRegions": self.skipped_regions,
             "notes": self.notes,
             "notesUnmatched": self.notes_unmatched,
             "notesUsingFileSample": self.notes_using_file_sample,
@@ -4164,7 +4170,7 @@ struct ArmedSamplerTrack {
 ///
 /// 路径解析不到 / SFZ 文件读不到 / 文本非法 ⇒ `RENDER_FAILED`（报文与原形状逐字相同）。
 fn prepare_sampler_track(
-    _track: EntityId,
+    track: EntityId,
     raw: &str,
     project: &YebanProjectV1,
     project_path: &Path,
@@ -4174,6 +4180,9 @@ fn prepare_sampler_track(
     let resolved = resolve_sampler_path(raw, project_path)?;
     // ⭐ `#276`：装载与提供表**同一次解析**；解码由 `store` 去重（同一文件只解一次）。
     // ⭐ 预算来自本次渲染的实参（`maxSampleFiles` / `maxSampleFrames`），⛔ 不是常量。
+    // ⭐ P1 按需装载：只解码本轨音符/CC 判定为会发声的区域（见 `sfz::DemandLoadFilter`）；
+    // 预算只对已用子集记账，已用子集超预算仍响亮拒绝（`TrackSampleCache` 原有行为）。
+    let filter = sfz::DemandLoadFilter::from_project_track(project, track);
     let mut cache = sfz::TrackSampleCache::with_limits(store, limits);
     let (load, table) = sfz::load_with(
         &resolved,
@@ -4181,6 +4190,7 @@ fn prepare_sampler_track(
         0,
         false,
         &mut cache,
+        Some(&filter),
     )
     .map_err(|fault| {
         let cause = fault.into_result().map_or_else(
@@ -4958,6 +4968,7 @@ fn build_source(
                 resolved_path: summary.resolved_path.display().to_string(),
                 regions: summary.regions,
                 silent_regions: summary.silent_regions,
+                skipped_regions: armed.load.skipped_regions,
                 notes: u64::try_from(timbre.scheduled_notes(track.id)).unwrap_or(u64::MAX),
                 notes_unmatched: survey.notes_unmatched,
                 notes_using_file_sample: survey.notes_using_file_sample,
