@@ -553,6 +553,7 @@ mod tests {
         let ring = SampleRing::new(8);
         let mut out = [9.0_f32; 4];
         assert_eq!(ring.read(&mut out), 0);
+        assert_eq!(out.len(), 4, "守卫界：输出块非空，all 断言非真空");
         assert!(out.iter().all(|&sample| sample == 0.0));
     }
 

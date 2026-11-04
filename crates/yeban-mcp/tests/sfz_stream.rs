@@ -342,5 +342,6 @@ fn missing_file_voice_is_silent_and_finished() {
     let read = voice.read_block(&mut block);
     assert_eq!(read.from_ring, 0, "失败声部无实声");
     assert_eq!(read.underrun, 128, "失败声部全块补零");
+    assert_eq!(block.len(), 128, "守卫界：读块非空，all 断言非真空");
     assert!(block.iter().all(|&sample| sample == 0.0));
 }
