@@ -15,16 +15,21 @@ pub enum HostError {
     ClassNotFound(String),
     /// 类存在但不是乐器（无事件输入总线，或有音频输入总线）。
     NotAnInstrument(String),
+    /// 类存在但不是效果器（无音频输入总线）。
+    NotAnEffect(String),
     /// 插件没有实现一期必需的接口（`IComponent`／`IAudioProcessor`）。
     InterfaceMissing(&'static str),
     /// 插件不支持 32 位浮点处理（`canProcessSampleSize(kSample32)` 非真）。
     SampleSizeUnsupported,
     /// 插件输出总线不是立体声（一期只接立体声输出）。
     OutputNotStereo,
+    /// 插件输入总线不是立体声（效果器线一期只接立体声输入）。
+    InputNotStereo,
     /// 某次 COM 调用返回负值（`tresult` 错误码）。
     ///
-    /// ⚠ `tresult` 的著名歧义：`kResultFalse == kResultOk == 0`，因此“非负”才是
-    /// 通用成功；只有 `queryInterface` 要求严格等于 `kResultOk`（见 `vst3.rs`）。
+    /// ⚠ `tresult` 的约定与 C 布尔惯例相反：`kResultTrue == kResultOk == 0`、
+    /// `kResultFalse == 1`；因此“非负”才是通用成功；只有 `queryInterface`
+    /// 要求严格等于 `kResultOk`（见 `vst3.rs`）。
     CallFailed {
         /// 调用的方法名（诊断用，不含插件私有信息）。
         method: &'static str,
@@ -33,6 +38,8 @@ pub enum HostError {
     },
     /// 实例未激活就被要求渲染（`process` 之前必须先 `activate`）。
     NotActivated,
+    /// 激活态直设参数被拒（参数变化须走每块参数变化通道；停用后可直设）。
+    SetParameterWhileActive,
     /// 插件路径非法（空串、或既非文件又非 `.vst3` 包）。
     InvalidPluginPath(String),
     /// 状态容器损坏（magic／版本／长度对不上）。
@@ -49,15 +56,23 @@ impl fmt::Display for HostError {
             Self::FactoryMissing => write!(f, "动态库没有 `GetPluginFactory` 导出，不是 VST3 模块"),
             Self::ClassNotFound(detail) => write!(f, "插件类找不到: {detail}"),
             Self::NotAnInstrument(detail) => write!(f, "插件类不是乐器: {detail}"),
+            Self::NotAnEffect(detail) => write!(f, "插件类不是效果器: {detail}"),
             Self::InterfaceMissing(interface) => {
                 write!(f, "插件没有实现一期必需的接口 `{interface}`")
             }
             Self::SampleSizeUnsupported => write!(f, "插件不支持 32 位浮点处理"),
             Self::OutputNotStereo => write!(f, "插件输出总线不是立体声（一期只接立体声输出）"),
+            Self::InputNotStereo => {
+                write!(f, "插件输入总线不是立体声（效果器线一期只接立体声输入）")
+            }
             Self::CallFailed { method, code } => {
                 write!(f, "插件调用 `{method}` 失败（tresult = {code}）")
             }
             Self::NotActivated => write!(f, "插件实例未激活就被要求渲染（须先 activate）"),
+            Self::SetParameterWhileActive => write!(
+                f,
+                "激活态直设参数被拒：参数变化须走每块参数变化通道（停用后可直设）"
+            ),
             Self::InvalidPluginPath(detail) => write!(f, "插件路径非法: {detail}"),
             Self::StateCorrupt(detail) => write!(f, "插件状态容器损坏: {detail}"),
             Self::Other(detail) => write!(f, "{detail}"),

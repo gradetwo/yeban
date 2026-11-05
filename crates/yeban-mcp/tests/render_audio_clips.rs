@@ -45,8 +45,8 @@ use yeban_mcp::tools::ErrorCode;
 use yeban_model::{
     AssetHash, AssetMetadata, AutomationLane, AutomationPoint, AutomationTarget,
     AutomationWriteMode, ClipContent, ClipPlacement, ClipPoolEntry, CurveType, DeviceDefinition,
-    DeviceKind, EntityId, LoopConfig, MediaKind, ParameterValue, RoutingEdge, RoutingKind,
-    SampleRate, TrackKind, TrackV3, YebanProjectV1,
+    DeviceKind, EntityId, LoopConfig, MediaKind, ParameterValue, PluginBinding, RoutingEdge,
+    RoutingKind, SampleRate, TrackKind, TrackV3, YebanProjectV1,
 };
 use yeban_render::rf64::parse_container;
 
@@ -209,6 +209,10 @@ struct Tune {
     device_latency: u32,
     /// ⭐ `#241`：摆放的循环配置（缺省 = 关闭）。
     loop_config: LoopConfig,
+    /// ⭐ 效果器线：音轨是否挂一台带 `stub:gain` 绑定的外部效果器（缺省增益 1.0＝直通）。
+    effect_stub: bool,
+    /// ⭐ 效果器线：坏绑定路径（打不开的插件；与 `effect_stub` 二选一）。
+    effect_bad_path: bool,
 }
 
 impl Default for Tune {
@@ -224,6 +228,8 @@ impl Default for Tune {
             declare_in_index: true,
             device_latency: 0,
             loop_config: LoopConfig::default(),
+            effect_stub: false,
+            effect_bad_path: false,
         }
     }
 }
@@ -261,7 +267,7 @@ fn fixture(bytes: Vec<u8>, tune: &Tune) -> Fixture {
             ..TrackV3::default()
         },
     );
-    let devices = if tune.device_latency == 0 {
+    let mut devices = if tune.device_latency == 0 {
         Vec::new()
     } else {
         vec![DeviceDefinition {
@@ -274,6 +280,34 @@ fn fixture(bytes: Vec<u8>, tune: &Tune) -> Fixture {
             plugin: None,
         }]
     };
+    if tune.effect_stub {
+        devices.push(DeviceDefinition {
+            id: id(102),
+            name: "stub-gain".to_owned(),
+            kind: DeviceKind::ExternalEffect,
+            bypassed: false,
+            params: Vec::new(),
+            latency_samples: 0,
+            plugin: Some(PluginBinding {
+                path: "stub:gain".to_owned(),
+                class: None,
+            }),
+        });
+    }
+    if tune.effect_bad_path {
+        devices.push(DeviceDefinition {
+            id: id(103),
+            name: "bad-effect".to_owned(),
+            kind: DeviceKind::ExternalEffect,
+            bypassed: false,
+            params: Vec::new(),
+            latency_samples: 0,
+            plugin: Some(PluginBinding {
+                path: "/definitely/not/a/plugin.so".to_owned(),
+                class: None,
+            }),
+        });
+    }
     let mut track = TrackV3 {
         id: lead,
         name: "Lead".to_owned(),
@@ -3829,4 +3863,76 @@ fn a_lane_that_switches_a_statically_disabled_compressor_on_keeps_the_mcp_detect
             "静态开 pan={pan}: pre-pan tap 下压缩量必须与 pan 无关（相对差 {relative:.3e}）"
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// 效果器线：宿主效果器包在轨源输出之外
+// ---------------------------------------------------------------------------
+
+/// 效果器线 [①]：轨上挂 `stub:gain`（缺省增益 1.0＝直通）时渲染成功、输出与素材
+/// 逐样本一致（容差同判据 1 的 2 LSB），且 `externalPlugins` 不再登记它
+/// （已被宿主消费）；`sources[].peak` 含效果器输出（恒定 0.5 素材 ⇒ 峰值 0.5）。
+///
+/// 收据的另一半是既有口径，不是本票的让步：`track_has_unhandled_dsp` 按 kind
+/// 一刀切（任何非旁通外部设备都算），宿主状态不改变它 —— 一期乐器线同样如此
+/// （`externalPlugins` 排除、 `deviceChainDsp` 仍记）。因此本判据断言收据**恰为**
+/// `["deviceChainDsp"]`：效果器被消费（无 `externalPlugins`），而插件内部参数
+/// 不在模型里、离线路径无法核验（`deviceChainDsp` 如实保留）。
+///
+/// 增益 ≠ 1 的处理本身由宿主层（夹具 TestGain 0.5）与渲染层（`PluginEffectSource`
+/// 0.5 包装）各自证明；本层证明“装配接上了、没静默丢、没把效果器当未消费登记”。
+#[test]
+fn a_hosted_effect_passes_audio_through_and_leaves_the_receipt() {
+    let scratch = Scratch::new("effect-passthrough");
+    let samples = constant(480, 0.5);
+    let tune = Tune {
+        effect_stub: true,
+        ..Default::default()
+    };
+    let fixture = fixture(wav_f32(2, 48_000, &samples), &tune);
+    let out = scratch.join("master.wav");
+    let artifact = build_with(&fixture.project, &pool(&fixture), &out, args(&out)).expect("渲染");
+    let data = artifact.response_data();
+    assert_eq!(
+        data["unsupported"],
+        json!(["deviceChainDsp"]),
+        "已宿主的效果器不得登记 externalPlugins，但 deviceChainDsp 按既有 kind 口径仍记: {}",
+        data["unsupported"]
+    );
+    let peak = data["sources"][0]["peak"].as_f64().expect("峰值读数");
+    assert!(
+        (peak - 0.5).abs() < 1e-6,
+        "sources[].peak 应含效果器输出（恒定 0.5 素材 ⇒ 0.5），实为 {peak}"
+    );
+    let rendered = payload_samples(&artifact);
+    let tolerance = 2.0 / 8_388_608.0;
+    let mut worst = 0.0f32;
+    for (index, expected) in samples.iter().enumerate() {
+        worst = worst.max((rendered[index] - expected).abs());
+    }
+    assert!(
+        worst <= tolerance,
+        "直通效果器不得改样本：最大偏差 {worst} > 容差 {tolerance}"
+    );
+}
+
+/// 效果器线 [②]：坏绑定（打不开的插件路径）的轨在渲染构造期响亮失败，
+/// ⛔ 不静默当静音、⛔ 不把坏效果器登记成 unsupported 蒙混过关。
+#[test]
+fn a_broken_effect_binding_fails_the_render_loudly() {
+    let scratch = Scratch::new("effect-bad-binding");
+    let samples = constant(480, 0.5);
+    let tune = Tune {
+        effect_bad_path: true,
+        ..Default::default()
+    };
+    let fixture = fixture(wav_f32(2, 48_000, &samples), &tune);
+    let out = scratch.join("master.wav");
+    let error = build_with(&fixture.project, &pool(&fixture), &out, args(&out))
+        .expect_err("坏效果器绑定必须让渲染失败");
+    let message = format!("{error:?}");
+    assert!(
+        message.contains("pluginEffectLoad") || message.contains("效果器装载失败"),
+        "失败原因应指向效果器装载，实为 {message}"
+    );
 }
