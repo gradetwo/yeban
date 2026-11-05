@@ -757,12 +757,11 @@ pub struct RenderRequest {
     pub contributions: bool,
     /// ⭐ 审评 2026-10-31（P1-1）：调用方显式请求的渲染线程数（`None` = 缺省路径）。
     ///
-    /// `None` ⇒ `RenderOptions::threads` 保持 `None` ⇒ 渲染器按 `unwrap_or(1)` 走**单线程**
-    /// （仓库实测结论：M2 Max 上 4/8/16/32/64 轨 × 30 秒，并行在每个规模都比单线程
-    /// 慢 1.9–4.4 倍；固定顺序汇聚保逐字节等价 —— 见 `yeban-render` 的线程数注释）。
+    /// `None` ⇒ `RenderOptions::threads` 保持 `None` ⇒ 渲染器按可用并行度走**多线程**
+    /// （Nightfall v1，Wang 2026-11-01 定；历史实测：M2 Max 上 4/8/16/32/64 轨 × 30 秒，
+    /// 并行在每个规模都比单线程慢 1.9–4.4 倍 —— 见 `yeban-render` 的线程数注释）。
     /// 显式给值 ⇒ 透传给 `RenderOptions::with_threads`；输出与单线程逐字节相同
     /// （固定顺序汇聚，与线程数无关；`yeban-render` 判据覆盖 1/2/4/8 线程等价）。
-    /// ⛔ 缺省绝不改：改缺省 = 推翻实测结论，需先量出真正的交叉点。
     pub threads: Option<usize>,
     /// ⭐ `ADR-0030` D2：容器**样本格式**（母带 = [`SampleFormat::Pcm24`]，分轨 = `Float32`）。
     ///
@@ -847,7 +846,7 @@ impl RenderRequest {
             "bitDepth": self.sample_format.bit_depth(),
             "channels": MASTER_CHANNELS,
             "contributions": self.contributions,
-            // ⭐ 审评 2026-10-31（P1-1）：显式线程数回显（`null` = 缺省单线程路径）。
+            // ⭐ 审评 2026-10-31（P1-1）：显式线程数回显（`null` = 缺省多线程路径）。
             "threads": self.threads,
             // ⭐ 样本读取预算回显（缺省值也报 ⇒ 读数自带"这次用的是哪一条预算"）。
             "sampleLimits": self.sample_limits.to_value(),
@@ -1454,7 +1453,7 @@ pub fn validate(arguments: &Map<String, Value>) -> Result<RenderRequest, Fault> 
             ));
         }
     };
-    // ⭐ 审评 2026-10-31（P1-1）：显式线程数。缺省 `None` ⇒ 单线程默认路径不变；
+    // ⭐ 审评 2026-10-31（P1-1）：显式线程数。缺省 `None` ⇒ 多线程默认路径；
     // 给值必须是正整数（0 / 负数 / 非整数 ⇒ 显式拒绝，⛔ 不静默钳制、不静默忽略）。
     let threads = match arguments.get("threads") {
         None => None,
@@ -2968,8 +2967,8 @@ pub fn build(
     }
     // 8. 真编译 + 真执行。
     let options = RenderOptions::l1(frames, MASTER_CHANNELS, sample_rate, project.rng_seed);
-    // ⭐ 审评 2026-10-31（P1-1）：显式线程数透传；缺省 `None` ⇒ 渲染器按 `unwrap_or(1)`
-    // 走单线程默认路径（输出逐字节不变；并行与否只影响耗时，不影响字节）。
+    // ⭐ 审评 2026-10-31（P1-1）：显式线程数透传；缺省 `None` ⇒ 渲染器按可用并行度
+    // 走多线程默认路径（Nightfall v1；输出逐字节不变；并行与否只影响耗时，不影响字节）。
     let options = match request.threads {
         Some(threads) => options.with_threads(threads),
         None => options,

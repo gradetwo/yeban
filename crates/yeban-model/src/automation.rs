@@ -11,6 +11,11 @@
 //!   （下游若自己读 `track.volume_db` / 设备参数，就又造出第二份事实源）；
 //! - [`AutomationTarget::validate_against`] —— 目标在文档里是否真的存在。
 //!
+//! ⭐ 遮蔽：[`YebanProjectV1::automation_value_at`] 返回 `Some(value)` 时，该值就是该 tick
+//! 用的值，静态值被**遮蔽**（不叠加、不平均）；返回 `None` 时调用方退回静态值。Macro 泳道
+//! 不在这条遮蔽里：它是目标当前值之上的偏移（`目标当前值 + depth × macro_value`，
+//! 见渲染层级联）。
+//!
 //! ## 求值口径（确定性）
 //!
 //! 采样点集合是 `BTreeMap<EntityId, AutomationPoint>`（键是点身份，不是 tick），
@@ -325,7 +330,7 @@ impl YebanProjectV1 {
     /// - `Ok(None)`：目标存在，但**没有**可用的自动化值（无泳道 / 空泳道 /
     ///   泳道 `read_enabled == false`）⇒ 调用方应退回
     ///   [`AutomationTarget::static_value`]；
-    /// - `Ok(Some(value))`：该 tick 处的自动化值。
+    /// - `Ok(Some(value))`：该 tick 处的自动化值；静态值被**遮蔽**（不叠加、不平均）。
     ///
     /// # Errors
     ///

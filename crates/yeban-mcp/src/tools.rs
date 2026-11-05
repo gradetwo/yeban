@@ -1062,7 +1062,7 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
     ToolSpec {
         spec_id: "MCP-TOOL-008",
         name: "yeban_render_master",
-        summary: "触发 `yeban-render` 离线导出广播级 WAV 并返回哈希与路径（缺省单线程；`threads` 实参可开并行，逐字节相同）; 响应带实测削波读数: `data.clippedSamples` (会被 24-bit 量化器钳住的样本数, 整数) / `data.truePeakDbfs` (16x 多相过采样的真峰值, 0 = 满量程, >0 = 过载) / `data.headroomDb` (= -truePeakDbfs, 负值 = 已过载)。⭐ 削波时 `data.warnings[]` 里**恰好一条** `code:\"exportClipping\"`: 带 `clippedSamples` / `truePeakDbfs` / `suggestedTrimDb` (= -(ceil(truePeakDbfs * 2) / 2), 向上取整到 0.5 dB) / `loudestSource` (最响的源: `node` / `track` / `peakDbfs`) / `hint`; ⭐ 可闻、排了内容、却 `peak == 0.0` (源节点一个非零样本都没出) 的源另由**一条** `code:\"silentSources\"` 逐条点名 (`count` / `sources[]` / `hint`, 非阻断、不自动修); 两条来源都不出现时 `warnings` 是**空数组**。⛔ 本工具**不自动改增益** (那会静默改用户意图) —— 只是读数 + 建议; 逐源峰值见 `data.sources[].peak` / `.peakDbfs` (源节点输出, ⛔ 不含该轨插入链与路由边增益)。⚠ `data.peak.before` / `data.peak.after` 是**归一化前 / 归一化后的样本峰值** (`max |sample|`), 作用在 TPDF 抖动与量化**之前**的浮点母带上 —— ⛔ 不是写盘文件的峰值, 也⛔ 不是真峰值。⭐ `#252`: 可选 `frames` (整数) / `durationSeconds` (秒) 显式指定总长度 —— 缺省仍按工程末端推导 (与加这个实参之前逐字节相同), 用途是把本工具与 CLI `--export-wav --wav-frames` 的帧数**逐帧**对齐。⭐ `ADR-0020`: 可选 `contributions: true` 让响应额外带逐轨贡献读数 (`data.contributions` / `data.contributionsBasis`, 见该实参), ⛔ 不改写盘字节",
+        summary: "触发 `yeban-render` 离线导出广播级 WAV 并返回哈希与路径（缺省多线程；`threads` 实参可指定线程数，逐字节相同）; 响应带实测削波读数: `data.clippedSamples` (会被 24-bit 量化器钳住的样本数, 整数) / `data.truePeakDbfs` (16x 多相过采样的真峰值, 0 = 满量程, >0 = 过载) / `data.headroomDb` (= -truePeakDbfs, 负值 = 已过载)。⭐ 削波时 `data.warnings[]` 里**恰好一条** `code:\"exportClipping\"`: 带 `clippedSamples` / `truePeakDbfs` / `suggestedTrimDb` (= -(ceil(truePeakDbfs * 2) / 2), 向上取整到 0.5 dB) / `loudestSource` (最响的源: `node` / `track` / `peakDbfs`) / `hint`; ⭐ 可闻、排了内容、却 `peak == 0.0` (源节点一个非零样本都没出) 的源另由**一条** `code:\"silentSources\"` 逐条点名 (`count` / `sources[]` / `hint`, 非阻断、不自动修); 两条来源都不出现时 `warnings` 是**空数组**。⛔ 本工具**不自动改增益** (那会静默改用户意图) —— 只是读数 + 建议; 逐源峰值见 `data.sources[].peak` / `.peakDbfs` (源节点输出, ⛔ 不含该轨插入链与路由边增益)。⚠ `data.peak.before` / `data.peak.after` 是**归一化前 / 归一化后的样本峰值** (`max |sample|`), 作用在 TPDF 抖动与量化**之前**的浮点母带上 —— ⛔ 不是写盘文件的峰值, 也⛔ 不是真峰值。⭐ `#252`: 可选 `frames` (整数) / `durationSeconds` (秒) 显式指定总长度 —— 缺省仍按工程末端推导 (与加这个实参之前逐字节相同), 用途是把本工具与 CLI `--export-wav --wav-frames` 的帧数**逐帧**对齐。⭐ `ADR-0020`: 可选 `contributions: true` 让响应额外带逐轨贡献读数 (`data.contributions` / `data.contributionsBasis`, 见该实参), ⛔ 不改写盘字节",
         scope: Scope::AppAdmin,
         side_effect: SideEffect::Disk,
         params: &[
@@ -1118,7 +1118,7 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
                 "threads",
                 "integer",
                 false,
-                "⭐ 审评 2026-10-31（P1-1）: 显式渲染线程数（正整数）。缺省 = 单线程默认路径（仓库实测：M2 Max 上各规模并行都比单线程慢，缺省不动）。给了就透传给渲染器；输出与单线程逐字节相同（固定顺序汇聚，与线程数无关）。0 / 负数 / 非整数 ⇒ INVALID_PARAMETER_RANGE。`data.request.threads` 回显请求值（缺省为 null）",
+                "⭐ 审评 2026-10-31（P1-1）: 显式渲染线程数（正整数）。缺省 = 多线程默认路径（可用并行度；Nightfall v1）。给了就透传给渲染器；输出与单线程逐字节相同（固定顺序汇聚，与线程数无关）。0 / 负数 / 非整数 ⇒ INVALID_PARAMETER_RANGE。`data.request.threads` 回显请求值（缺省为 null）",
             ),
             param(
                 "maxSampleFiles",
@@ -1213,7 +1213,7 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
     ToolSpec {
         spec_id: "MCP-TOOL-EXT-AUTOMATION",
         name: "yeban_edit_automation",
-        summary: "读某条自动化泳道的点与值 (唯一求值入口) 并写入一个点 (Op, 可逆)。⭐ 给 `point` 时**本调用直接提交**到当前文档 (`OpOrigin::McpEdit`): ⛔ 不创建提案、没有 `proposalId`、不需要 `yeban_merge_proposal`; 成功响应 `data.applied` 为 `true`。",
+        summary: "读某条自动化泳道的点与值 (唯一求值入口) 并写入一个点 (Op, 可逆)。⭐ 给 `point` 时**本调用直接提交**到当前文档 (`OpOrigin::McpEdit`): ⛔ 不创建提案、没有 `proposalId`、不需要 `yeban_merge_proposal`; 成功响应 `data.applied` 为 `true`。⭐ 遮蔽：有自动化值时用自动化值，静态值被遮蔽（不叠加）；无自动化值时退回静态值。",
         scope: Scope::AppAdmin,
         // 按**最坏情况**声明：给了 `point` 就改工程状态。只读调用在响应里如实标
         // `readOnly: true`（不给 `point` 时一位都不改）。
@@ -1433,7 +1433,7 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
     ToolSpec {
         spec_id: "MCP-TOOL-EXT-IMPORT-MIDI",
         name: "yeban_import_midi",
-        summary: "从磁盘读取 Standard MIDI File (.mid) 解析并导入进指定的空 MIDI 片段，采纳单值头元数据并原子提交到撤销历史。⭐ [ARCH-EXT-002]：响应 `data` 逐条回报采纳结果 —— `adoptedTempoBpm` / `adoptedTimeSignature` / `adoptedTempoMap`（tick > 0 的变速映射点，形如 `{ \"<tick>\": bpm }`，与工程 `tempo_map` 同口径）/ `adoptedTimeSignatureMap`（tick > 0 的拍号映射点，形如 `{ \"<tick>\": { \"numerator\": u8, \"denominator\": u8 } }`，与工程 `time_signature_map` 同口径）/ `adoptedKeySignature`（`FF 59` 唯一 tick 0 调号 ⇒ `project.key_signature`，形如 `{ \"sharpsFlats\": i8, \"isMinor\": bool }`）/ `adoptedTrackName` / `adoptedTitle`（导体轨名或 `FF 01` 文本 ⇒ `project.title`）/ `adoptedCopyright`（`FF 02` ⇒ `project.author`）；未采纳的一律为 `null`，⛔ 不拿没做的事填个值；未采纳的原因在 `data.losses.aux_events` 对应类别的 `reason`。多轨拆分 (`splitTracks: true`) 时另报 `createdTracks`（多轨拆分新建音轨列表，每项含 `trackId`、`name`、`clipId`；未拆轨或仅单轨时为空数组）。⭐ 歌词五桶 `data.lyricCounts`：`read` / `attached` / `dropped`（恒有 `read == attached + dropped`）＋ `nonUtf8` / `empty`（连候选都不算的两类 `FF 05`，⛔ 猜文本、⛔ 不进 `losses.aux_events`）；`orphan` 是 `dropped` 的同值旧别名，保留仅为兼容",
+        summary: "从磁盘读取 Standard MIDI File (.mid) 解析并导入进指定的空 MIDI 片段，采纳单值头元数据并原子提交到撤销历史。⭐ [ARCH-EXT-002]：响应 `data` 逐条回报采纳结果 —— `adoptedTempoBpm` / `adoptedTimeSignature` / `adoptedTempoMap`（tick > 0 的变速映射点，形如 `{ \"<tick>\": bpm }`，与工程 `tempo_map` 同口径）/ `adoptedTimeSignatureMap`（tick > 0 的拍号映射点，形如 `{ \"<tick>\": { \"numerator\": u8, \"denominator\": u8 } }`，与工程 `time_signature_map` 同口径）/ `adoptedKeySignature`（`FF 59` 唯一 tick 0 调号 ⇒ `project.key_signature`，形如 `{ \"sharpsFlats\": i8, \"isMinor\": bool }`）/ `adoptedTrackName` / `adoptedTitle`（导体轨名或 `FF 01` 文本 ⇒ `project.title`）/ `adoptedCopyright`（`FF 02` ⇒ `project.author`）；未采纳的一律为 `null`，⛔ 不拿没做的事填个值；未采纳的原因在 `data.losses.aux_events` 对应类别的 `reason`。多轨拆分 (`splitTracks: true`) 时另报 `createdTracks`（多轨拆分新建音轨列表，每项含 `trackId`、`name`、`clipId`；未拆轨或仅单轨时为空数组）。⭐ 自动连 master：拆分新建的每条音轨都带一条到 master 的路由边（`TrackToBus`，单位增益），导入的音符无需手动接线即可出声。⭐ 歌词五桶 `data.lyricCounts`：`read` / `attached` / `dropped`（恒有 `read == attached + dropped`）＋ `nonUtf8` / `empty`（连候选都不算的两类 `FF 05`，⛔ 猜文本、⛔ 不进 `losses.aux_events`）；`orphan` 是 `dropped` 的同值旧别名，保留仅为兼容",
         scope: Scope::AppAdmin,
         side_effect: SideEffect::ProjectState,
         params: &[
