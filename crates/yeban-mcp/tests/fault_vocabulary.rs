@@ -44,7 +44,7 @@
 //!
 //! | 面 | reason 数 | 规范行数 | SHA-256 |
 //! | :--- | ---: | ---: | :--- |
-//! | `reason`（**可分类**面：字面量 ＋ 可解析的字面量 `let` ＋ **调用点传播**，含顺序） | 235 | 1005 | `3c692193f04fe7bfc3eb4e3869f11bfe9dfc301f3792f31f9ab2b2ab00fc26a9` |
+//! | `reason`（**可分类**面：字面量 ＋ 可解析的字面量 `let` ＋ **调用点传播**，含顺序） | 237 | 1012 | `79753d74374871f57706552a213dc49858545f415254e264fa47990f1c30348b` |
 //!
 //! ⚠ `ADR-0030`（`yeban_export_stems`）：两条新字面站点 `masterBusTrack` /
 //! `notASourceNode`（各带 `trackId` / `name` / `reason` 三个同级键）进入规范文本
@@ -55,6 +55,10 @@
 //! ⚠ SVS（`synthesize_singing` / `svs_job`）：16 条新字面站点进入规范文本
 //! ⇒ 216 → 232 个 reason、940 → 993 行；生产区 `.rs` 文件分母 45 → 46（新增 `src/domain/svs.rs`）；
 //! **新摘要照抄判据自己的报出值**（本表里那一位与 `FROZEN_REASON_SURFACE_SHA256` 在同一次提交里一起换成新值）。
+//! ⚠ 效果器宿主（本支）：`domain/render.rs` 的 `pluginEffectActivate`（`reason` / `node` 2 键）
+//! 与 `pluginEffectLoad`（`reason` / `pluginPath` / `pluginId` 3 键）2 条新字面站点进入规范文本
+//! ⇒ 235 → 237 个 reason、1005 → 1012 行（2 reason 行 ＋ 5 键行）；**新摘要照抄判据自己的报出值**
+//! （本表里那一位与 `FROZEN_REASON_SURFACE_SHA256` 在同一次提交里一起换成新值）。
 //!
 //! ⚠ `#274`：摘要随"登记位置搬进 provider"重钉（集合不变、顺序变了）；
 //! 见 `FROZEN_REASON_SURFACE_SHA256` 的沿革注释。
@@ -73,7 +77,7 @@ use yeban_mcp::undo_session::read_rust_sources;
 /// （2026-10-28 起, 见 [`PROPAGATED_REASON_SITES`]）。⛔ 真看不见的运行时站点不进这张表，
 /// 由 [`EXEMPT_DYNAMIC_REASON_SITES`] 逐条登记。
 /// 这是黄金表：任何改名 / 新增 / 删除都必须**故意**改这一行。
-pub const GOLDEN_REASONS: [&str; 231] = [
+pub const GOLDEN_REASONS: [&str; 233] = [
     "assetChannelLayout",
     "assetDecodeFailed",
     "assetHashMismatch",
@@ -175,6 +179,8 @@ pub const GOLDEN_REASONS: [&str; 231] = [
     "placementNotFound",
     "placementWithoutTrack",
     "pluginActivate",
+    "pluginEffectActivate",
+    "pluginEffectLoad",
     "pluginLoad",
     "pluginLoadFailed",
     "pointAddressIsAmbiguous",
@@ -1473,13 +1479,17 @@ const REASON_ARGUMENT_NAME_USES: [ReasonArgumentNameUse; 3] = [
 // `pluginActivate` / `pluginLoadFailed`）⇒ 字面 247 → 250、键站点 258 → 261、
 // 总出现 261 → 264；恒等式仍闭合：261 = 字面 250 ＋ 可解析 `let` 2 ＋
 // 运行时 6 ＋ 传播 3；264 = 261 ＋ 参数名 3。
-const REASON_OCCURRENCES_TOTAL: usize = 264;
+// ⭐ 效果器宿主（本支）：`domain/render.rs` 的 `pluginEffectActivate` / `pluginEffectLoad`
+// 2 处新字面 `"reason"` 键站点 ⇒ 出现 264 → 266、键站点 261 → 263、字面站点 250 → 252
+// （恒等式仍闭合：263 = 字面 252 ＋ 可解析 `let` 2 ＋ 运行时 6 ＋ 传播 3；
+// 266 = 263 ＋ 参数名 3。）
+const REASON_OCCURRENCES_TOTAL: usize = 266;
 // ⭐ MCP-TOOL-003：键站点 208 → 216、字面站点 200 → 208 —— 新形态在
 // `domain/notes.rs` / `tools.rs` 里新增的 8 处字面 `"reason"` 站点
 // （tick 0、`bpmOutOfRange` 复用、`tempoPointNotFound`、`timeSignaturePointNotFound`
 // 与描述文本里的键形状；逐文件拆分以扫描器读数为准，此处不手数）。
-const REASON_KEY_SITES_TOTAL: usize = 261;
-const REASON_LITERAL_SITES_TOTAL: usize = 250;
+const REASON_KEY_SITES_TOTAL: usize = 263;
+const REASON_LITERAL_SITES_TOTAL: usize = 252;
 const REASON_RESOLVED_SITES_TOTAL: usize = 2;
 const REASON_DYNAMIC_SITES_TOTAL: usize = 6;
 const REASON_PROPAGATED_SITES_TOTAL: usize = 3;
@@ -1802,7 +1812,7 @@ fn every_reason_is_asserted_somewhere() {
 /// 每条 `reason` 在生产区**字面 `json!` 对象**里带的同级键（排序）。
 /// ⚠ 口径：只收字面 `json!` 里的键；运行时 `map.insert(...)` 加进去的键不在内。
 /// 空数组 = 该 reason 的 `data` 里**没有**同级键（或 Data 由别的构造方式给出）。
-pub const GOLDEN_REASON_PAYLOADS: [(&str, &[&str]); 231] = [
+pub const GOLDEN_REASON_PAYLOADS: [(&str, &[&str]); 233] = [
     (
         "assetChannelLayout",
         &[
@@ -2068,6 +2078,8 @@ pub const GOLDEN_REASON_PAYLOADS: [(&str, &[&str]); 231] = [
     ),
     ("placementWithoutTrack", &["field", "reason"]),
     ("pluginActivate", &["pluginId", "pluginPath", "reason"]),
+    ("pluginEffectActivate", &["node", "reason"]),
+    ("pluginEffectLoad", &["pluginId", "pluginPath", "reason"]),
     ("pluginLoad", &["pluginId", "pluginPath", "reason"]),
     ("pluginLoadFailed", &["pluginId", "pluginPath", "reason"]),
     (
@@ -2984,12 +2996,12 @@ fn the_reason_payload_shape_is_the_published_table() {
 /// `duplicateClipPlacementPairRequired`）⇒ 207 → **216** 个 reason。
 /// 新摘要由本判据的 `left:` 报出值照抄（⛔ 不手算）。
 pub const FROZEN_REASON_SURFACE_SHA256: &str =
-    "3c692193f04fe7bfc3eb4e3869f11bfe9dfc301f3792f31f9ab2b2ab00fc26a9";
+    "79753d74374871f57706552a213dc49858545f415254e264fa47990f1c30348b";
 
 /// 规范形式里的 reason 数 / 规范行数（与摘要一起构成"两端"读数）。
-pub const REASON_SURFACE_REASONS: usize = 235;
+pub const REASON_SURFACE_REASONS: usize = 237;
 /// 规范行数（每个 reason 一行 ＋ 每个键一行）。
-pub const REASON_SURFACE_LINES: usize = 1005;
+pub const REASON_SURFACE_LINES: usize = 1012;
 
 /// 单文件里的 `reason` 面：**保留出现顺序**的 `(reason, keys)`。
 ///
@@ -3140,6 +3152,9 @@ fn the_reason_surface_digest_is_frozen_and_documented() {
     // 插件宿主一期：新增 `pluginLoad` / `pluginActivate` / `pluginLoadFailed` 3 条
     // reason（各带 `pluginId` / `pluginPath` / `reason` 3 键）⇒ reason 数 232 → 235、
     // 规范行数 993 → 1005（3 reason 行 ＋ 9 键行）、摘要同批重钉。
+    // 效果器宿主（本支）：新增 `pluginEffectActivate`（`reason` / `node` 2 键）与
+    // `pluginEffectLoad`（`reason` / `pluginPath` / `pluginId` 3 键）⇒ reason 数 235 → 237、
+    // 规范行数 1005 → 1012（2 reason 行 ＋ 5 键行）、摘要同批重钉。
     // P2：新增 `src/domain/sfz_stream.rs` ⇒ 46 → 47（同样不含 `reason` 键，摘要逐位不变）。
     // ⇒ 本条只证明"分母变了一位"。
     assert_eq!(files.len(), 47, "生产区 `.rs` 文件数（规范形式的分母之一）");
