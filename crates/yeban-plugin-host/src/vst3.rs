@@ -1661,9 +1661,12 @@ mod tests {
 
     /// `IAudioProcessor` 虚表槽位必须与 SDK 一致（`FUnknown` 3 项前缀，无 `IPluginBase` 垫项）。
     /// 2026-11-03 真插件 SIGSEGV 回归：垫两项会使 `canProcessSampleSize` 命中 `setupProcessing`。
+    /// nih-plug 布局回归网：槽位偏移＋总大小共同锁定——带 `initialize`／`terminate`
+    /// 的错布局是 13 个槽，本布局恒为 11 个槽（3 `FUnknown`＋8 方法）。
     #[test]
     fn audio_processor_vtable_slots_match_sdk() {
         let ptr = size_of::<*const ()>();
+        assert_eq!(size_of::<AudioProcessorVtbl>(), 11 * ptr);
         assert_eq!(
             offset_of!(AudioProcessorVtbl, set_bus_arrangements),
             3 * ptr

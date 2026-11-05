@@ -27,8 +27,9 @@ pub enum HostError {
     InputNotStereo,
     /// 某次 COM 调用返回负值（`tresult` 错误码）。
     ///
-    /// ⚠ `tresult` 的著名歧义：`kResultFalse == kResultOk == 0`，因此“非负”才是
-    /// 通用成功；只有 `queryInterface` 要求严格等于 `kResultOk`（见 `vst3.rs`）。
+    /// ⚠ `tresult` 的约定与 C 布尔惯例相反：`kResultTrue == kResultOk == 0`、
+    /// `kResultFalse == 1`；因此“非负”才是通用成功；只有 `queryInterface`
+    /// 要求严格等于 `kResultOk`（见 `vst3.rs`）。
     CallFailed {
         /// 调用的方法名（诊断用，不含插件私有信息）。
         method: &'static str,

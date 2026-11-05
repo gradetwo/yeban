@@ -424,6 +424,20 @@ fn stub_sine_renders_and_roundtrips_state() {
 }
 
 #[test]
+fn fixture_activate_rejects_f32_when_plugin_refuses() {
+    let dir = test_dir();
+    let plugin = compile_fixture(&dir);
+    // 拒 f32 类：`open` 成功（open 不问样本格式），激活须报 `SampleSizeUnsupported`。
+    // 结果码负向覆盖：夹具 `canProcessSampleSize` 恒返 1（`kResultFalse`），
+    // 宿主须认 1 为拒绝、0 为接受；旧判定 `code != 1` 会把 1 当接受而放行。
+    // 正向（0 通过）由其余全部夹具激活测试覆盖。
+    assert!(matches!(
+        Host::load(plugin.to_str().unwrap(), Some("TestRejectF32")),
+        Err(HostError::SampleSizeUnsupported)
+    ));
+}
+
+#[test]
 fn load_failures_are_loud() {
     assert!(matches!(
         Host::load("/definitely/not/a/plugin.so", None),
@@ -483,13 +497,13 @@ fn scan_lists_usable_plugins_and_isolates_bad_files() {
         .expect("坏文件应在扫描结果里");
     assert!(!bad.usable());
     assert!(bad.error.is_some());
-    // 散文件可用：4 个类（2 乐器＋1 效果器＋1 控制器）。
+    // 散文件可用：5 个类（3 乐器＋1 效果器＋1 控制器）。
     let loose_entry = found
         .iter()
         .find(|entry| entry.path == loose.to_string_lossy())
         .expect("散文件应在扫描结果里");
     assert!(loose_entry.usable());
-    assert_eq!(loose_entry.classes.len(), 4);
+    assert_eq!(loose_entry.classes.len(), 5);
     assert!(
         loose_entry.classes[..2]
             .iter()

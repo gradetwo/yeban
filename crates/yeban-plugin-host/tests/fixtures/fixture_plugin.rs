@@ -20,6 +20,15 @@
 //! - `TestGain`（组合式效果器）：音频输入 1 条＋音频输出 1 条，无事件输入；
 //!   `process` 把立体声输入 × 增益写到立体声输出（直通增益 1.0 时逐位不变）。
 //!   宿主探针据此定 kind＝`Effect`，效果器线经它证明 VST3 音频输入路径。
+//! - `TestRejectF32`（组合式乐器，与 `TestSine` 同款视图，只差
+//!   `canProcessSampleSize` 恒返 1／`kResultFalse`）：结果码负向夹具——
+//!   宿主 `activate` 必须报 `SampleSizeUnsupported`；旧判定 `code != 1`
+//!   会把 1 当接受而放行。
+//!
+//! 处理器虚表是 nih-plug 布局（`IAudioProcessor` 直接继承 `FUnknown`，无
+//! `initialize`／`terminate` 垫项）：宿主若误垫两项，`canProcessSampleSize`
+//! 调用即命中本夹具的 `setupProcessing`（空指针解引用而崩溃），
+//! 故端到端测试本身就是布局回归网。
 //!
 //! 内存规则（夹具专用）：视图与状态对象一律泄漏不释放（`release` 只减计数，
 //! 从不 `drop`）：测试进程短命，OS 回收；⛔ 杜绝悬空指针，不求零泄漏。
@@ -71,6 +80,8 @@ const CID_SEPARATE: Tuid = tuid(0x5555_5555, 0x6666_6666, 0x7777_7777, 0x8888_88
 const CID_SEPARATE_CTRL: Tuid = tuid(0x9999_9999, 0xAAAA_AAAA, 0xBBBB_BBBB, 0xCCCC_CCCC);
 /// 效果器类标识（夹具自造）。
 const CID_EFFECT: Tuid = tuid(0xDDDD_DDDD, 0xEEEE_EEEE, 0xFFFF_FFFF, 0x1212_1212);
+/// 拒 f32 类标识（夹具自造）。
+const CID_REJECT_F32: Tuid = tuid(0xAAAA_AAAA, 0xBBBB_BBBB, 0xCCCC_CCCC, 0xDDDD_DDDD);
 
 const RESULT_OK: i32 = 0;
 const RESULT_NO_INTERFACE: i32 = -1;
@@ -315,6 +326,8 @@ struct Inner {
     combined: bool,
     /// 是否效果器（总线排布与 `process` 语义按此分支）。
     effect: bool,
+    /// 是否恒拒 f32（`TestRejectF32` 专用：`canProcessSampleSize` 恒返 1）。
+    reject_f32: bool,
     gain_cell: *mut f32,
     sample_rate: f64,
     active: bool,
@@ -328,6 +341,7 @@ impl Inner {
             refcount: 1,
             combined,
             effect,
+            reject_f32: false,
             gain_cell,
             sample_rate: 48000.0,
             active: false,
@@ -627,12 +641,14 @@ unsafe extern "system" fn proc_get_bus_arrangement(
         RESULT_NOT_IMPLEMENTED
     }
 }
-unsafe extern "system" fn proc_can_process(_this: *mut c_void, size: i32) -> i32 {
+unsafe extern "system" fn proc_can_process(this: *mut c_void, size: i32) -> i32 {
+    let inner = unsafe { &*inner_of(this) };
     // SDK 布尔约定：`kResultTrue`＝0＝支持，`kResultFalse`＝1＝不支持。
-    if size == 0 {
-        0
-    } else {
+    // 拒 f32 类恒返 1（宿主须报 SampleSizeUnsupported，见结果码负向测试）。
+    if inner.reject_f32 || size != 0 {
         1
+    } else {
+        0
     }
 }
 unsafe extern "system" fn proc_latency(_this: *mut c_void) -> u32 {
@@ -974,7 +990,7 @@ unsafe extern "system" fn factory_get_info(_this: *mut c_void, info: *mut PFacto
     RESULT_OK
 }
 unsafe extern "system" fn factory_count(_this: *mut c_void) -> i32 {
-    4
+    5
 }
 unsafe extern "system" fn factory_get_class(_this: *mut c_void, index: i32, info: *mut PClassInfo) -> i32 {
     let slot = unsafe { &mut *info };
@@ -1000,6 +1016,12 @@ unsafe extern "system" fn factory_get_class(_this: *mut c_void, index: i32, info
             slot.cid = CID_SEPARATE_CTRL;
             write_char_str(&mut slot.category, "Component Controller Class");
             write_char_str(&mut slot.name, "TestSineController");
+        }
+        // 拒 f32 类（枚举可见、组件探针通过，激活才失败：结果码负向测试用）。
+        4 => {
+            slot.cid = CID_REJECT_F32;
+            write_char_str(&mut slot.category, "Audio Module Class");
+            write_char_str(&mut slot.name, "TestRejectF32");
         }
         _ => return 0,
     }
@@ -1041,9 +1063,13 @@ unsafe extern "system" fn factory_create(
         } else {
             RESULT_NO_INTERFACE
         }
-    } else if cid == CID_COMBINED {
+    } else if cid == CID_COMBINED || cid == CID_REJECT_F32 {
         let gain_cell = Box::into_raw(Box::new(0.8_f32));
         let inner = Inner::new(true, gain_cell, false);
+        // 拒 f32 类与 TestSine 同款视图，只把 `canProcessSampleSize` 置为恒拒。
+        if cid == CID_REJECT_F32 {
+            unsafe { (*inner).reject_f32 = true };
+        }
         if iid == ICOMPONENT_IID {
             let view = Box::into_raw(Box::new(ComponentView {
                 vtbl: &COMPONENT_VTBL,
