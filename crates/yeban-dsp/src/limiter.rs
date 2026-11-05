@@ -1,4 +1,8 @@
-//! 母线**前瞻式峰值限制器**（立体声联动）[ARCH-DSP-001, ARCH-RT-001, ARCH-DET-001]。
+//! **前瞻式峰值限制器**（立体声联动）[ARCH-DSP-001, ARCH-RT-001, ARCH-DET-001]。
+//!
+//! 同一份实现有两种尺寸（`P6`）：母线的 [`Limiter<LOOKAHEAD_SAMPLES>`]（33 帧，逐位不变）
+//! 与插入器件的 [`InsertLimiter`]（[`LIMITER_MAX_LOOKAHEAD`] = 192 帧，阈值/天花板/释放/前瞻/
+//! 真峰值全部可配）。⚠ 这不是两份算法，是**常量泛型**下的同一个 `impl`。
 //!
 //! ## 0. 来源与归属（上移记录）
 //!
@@ -14,13 +18,13 @@
 //! 因此 `crates/yeban-engine/src/mixer.rs` 现在只剩①声相定律、②本模块的
 //! `pub use`（`yeban_dsp::limiter::Limiter as BusLimiter`）。**算法一行未改**。
 //!
-//! ⚠ **未实现（照原样登记，本模块不补齐）**：本限制器按**样本峰值**工作，
-//! **不是**真峰值（inter-sample peak）限制器。规范正文
-//! （`docs/YEBAN_ARCHITECTURE_AND_SYSTEM_DESIGN.md:396`）与路线图
-//! （`docs/YEBAN_ENGINEERING_IMPLEMENTATION_ROADMAP.md:107`）写的是
-//! "真峰值多相插值砖墙限制器"。真峰值检测能力**已经存在**，住在 [`crate::meter`]
-//! （4×/8×/16× 过采样），但它**尚未**接进本器件 —— 上移不改变这个口径，
-//! 也**不**假装已经符合 BS.1770-4 的真峰值口径。
+//! ⚠ **真峰值的口径（`P6` 之后）**：母线那份实例仍按**样本峰值**工作
+//!（`true_peak = false`，逐位不变）；插入器件默认开 `true_peak`，检波器在**样本之间**
+//! 用 Catmull-Rom 三次插值取三个内插点 ＋ 两端点估峰值（[`intersample_peak`]）。
+//! 那是**估计器**，⛔ 不是规范正文（`docs/YEBAN_ARCHITECTURE_AND_SYSTEM_DESIGN.md:396`）
+//! 与路线图（`docs/YEBAN_ENGINEERING_IMPLEMENTATION_ROADMAP.md:107`）写的"真峰值多相插值"——
+//! 4×/8×/16× 过采样那份能力住在 [`crate::meter`]，本器件**没有**接它，
+//! 本模块也**不**假装已经符合 BS.1770-4 的真峰值口径。
 //!
 //! ## 1. 为什么是**前瞻式**（look-ahead）而不是反馈式
 //!
@@ -167,10 +171,10 @@ const _: () = assert!(LOOKAHEAD_SAMPLES == 2 * LIMITER_LATENCY_FRAMES + 1);
 
 /// 母线峰值阈值（线性，≈ −0.92 dBFS）。
 ///
-/// 留 0.9 dB 余量的理由：真峰值（inter-sample peak）可以比样本峰值高 1–3 dB，
-/// 而本器件**没有**接 4× 过采样真峰值检测（[`crate::meter`] 有那个能力，
-/// 但本器件按样本峰值工作 —— 见模块文档 §0 的未实现登记）。0.9 是"按样本峰值留一点头、
-/// 不假装能拦住 inter-sample peak"的折中，而不是合格的母带口径。
+/// 留 0.9 dB 余量的理由：真峰值（inter-sample peak）可以比样本峰值高 1–3 dB。
+/// 母线实例**按样本峰值**工作（`true_peak = false`），这 0.1 就是给 inter-sample 过冲留的头；
+/// 要真拦 inter-sample peak 就把插入器件挂上并开 `true_peak`（Catmull-Rom **估计器**，
+/// ⛔ 不是 4× 过采样表）。0.9 仍然不是"合格的母带口径"，是"按样本峰值留一点头"的折中。
 pub const LIMITER_THRESHOLD: f32 = 0.9;
 
 /// 输出**天花板**（线性）：软膝渐近到这个值，因此输出**严格**不超过它。
@@ -187,6 +191,224 @@ pub const LIMITER_CEILING: f32 = 0.95;
 /// 同时让释放**不可能**成为跳变源：任何相邻样本的增益变化都 ≤ 这个常量。
 pub const LIMITER_RELEASE_PER_SAMPLE: f32 = 5.0e-5;
 
+/// 可配置限制器的**前瞻上限**（帧）。
+///
+/// 192 帧 @48 kHz = 4.0 ms，@96 kHz = 2.0 ms —— 覆盖母带限制器的常用区间
+/// （1–5 ms）。母线那份仍然只用 [`LOOKAHEAD_SAMPLES`]（33 帧），因此本常量只决定
+/// **存储容量**，不改变母线行为。
+///
+/// 容量取定长数组而不是 `Vec`：本器件要能在音频线程上跑，[ARCH-RT-001] 禁止
+/// 处理路径分配（判据 `tests/limiter_rt_zero_alloc.rs` 用计数型全局分配器钉住）。
+pub const LIMITER_MAX_LOOKAHEAD: usize = 192;
+
+/// 单调队列容量 = 窗口上限：进程每帧**先驱逐**离开窗口的那一项再插入
+/// ⇒ 插入时队列长度恒 `≤ W − 1`（见 [`Limiter::process_stereo`] 的插入段），
+/// 因此容量 `W` 够用，不需要 `W + 1`（那在 stable Rust 的常量泛型里也写不出来）。
+const fn deque_capacity<const W: usize>() -> usize {
+    W
+}
+
+/// 一条**可配置**限制器的参数（插入器件用；母线用 [`Limiter::new`] 的默认值）。
+///
+/// 全部字段都是**器件层已经净化过**的线性/样本值：dB ↔ 线性、ms ↔ 每样本量
+/// 的换算发生在构造这次配置的那一侧（`yeban-render` 的 `limiter_of`），
+/// 因为器件本身**不持有采样率**。
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LimiterConfig {
+    /// 阈值（线性，`0 < threshold < ceiling ≤ 1`）。
+    pub threshold: f32,
+    /// 输出天花板（线性，`threshold < ceiling ≤ 1`）：软膝渐近到它。
+    pub ceiling: f32,
+    /// 每样本最大增益回升量。
+    pub release_per_sample: f32,
+    /// 前瞻帧数（`1..=LIMITER_MAX_LOOKAHEAD`）；同时就是本器件引入的延迟。
+    pub lookahead: usize,
+    /// 是否在检波器里做**真峰值（inter-sample）**估计。
+    pub true_peak: bool,
+}
+
+impl Default for LimiterParams {
+    fn default() -> Self {
+        Self::DEFAULT
+    }
+}
+
+impl LimiterConfig {
+    /// 一套**母线等价**的配置：与 [`Limiter::new`] 逐字段相同。
+    ///
+    /// 它的存在意义是让"默认路径"只有一个出处：`new()` 与 `configure(DEFAULT)` 必须
+    /// 产生逐位相同的处理，判据 `default_config_is_the_bus_limiter` 钉住这一点。
+    pub const DEFAULT: Self = Self {
+        threshold: LIMITER_THRESHOLD,
+        ceiling: LIMITER_CEILING,
+        release_per_sample: LIMITER_RELEASE_PER_SAMPLE,
+        lookahead: LOOKAHEAD_SAMPLES,
+        true_peak: false,
+    };
+
+    /// 钳到器件能接受的区间，并修掉非有限值。
+    ///
+    /// 三条规则，每条都有"不这么做的后果"：
+    /// 1. `threshold` 非有限或 `≤ 0` ⇒ 退回默认：`0` 会把整条链压成静音；
+    /// 2. `ceiling ≤ threshold` ⇒ 抬到 `threshold + 1e-4`：软膝宽度为 0 时
+    ///    `knee = 0` 会让映射除零；
+    /// 3. `lookahead` 钳到 `1..=LIMITER_MAX_LOOKAHEAD`：`0` 会让环长退化，
+    ///    读位置与写位置重合 ⇒ 输出不再是被延迟的样本。
+    #[must_use]
+    pub fn sanitised(self) -> Self {
+        let threshold = if self.threshold.is_finite() && self.threshold > 0.0 {
+            self.threshold.min(0.999)
+        } else {
+            LIMITER_THRESHOLD
+        };
+        let ceiling = if self.ceiling.is_finite() && self.ceiling > threshold {
+            self.ceiling.min(1.0)
+        } else {
+            (threshold + 1.0e-4).min(1.0)
+        };
+        let release_per_sample =
+            if self.release_per_sample.is_finite() && self.release_per_sample >= 0.0 {
+                self.release_per_sample.min(1.0)
+            } else {
+                LIMITER_RELEASE_PER_SAMPLE
+            };
+        let lookahead = self.lookahead.clamp(1, LIMITER_MAX_LOOKAHEAD);
+        Self {
+            threshold,
+            ceiling,
+            release_per_sample,
+            lookahead,
+            true_peak: self.true_peak,
+        }
+    }
+}
+
+/// 插入器件 `limiter` 的**参数域**（dB / ms / 帧），与 [`LimiterConfig`] 的线性域分开。
+///
+/// 分开的理由与 `TapeParams` 相同：模型层与 MCP 面对用户的是 dB 与 ms，
+/// 器件要的是线性增益与每样本量。换算只在 [`Self::config`] 一处发生，
+/// ⛔ 不允许第二个地方各算一遍（那正是"两个旋钮读数不一致"的来源）。
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LimiterParams {
+    /// 阈值（dBFS，−30.0 ..= 0.0）。默认 −1.0。
+    pub threshold_db: f32,
+    /// 天花板（dBFS，−6.0 ..= 0.0）。默认 −0.3。
+    pub ceiling_db: f32,
+    /// 释放时间（ms，10.0 ..= 1000.0）。默认 80.0。
+    pub release_ms: f32,
+    /// 前瞻（**帧**，1.0 ..= 192.0）。默认 48.0（48 kHz 下 1 ms）。
+    ///
+    /// 用帧而不是 ms：前瞻同时就是本器件上报给 [ARCH-PDC-001] 的延迟，
+    /// 而模型的 `DeviceDefinition::latency_samples` 也是帧。同一个量只有一种单位，
+    /// 就不存在"换算之后与上报值差 1 帧"这类相位事故。
+    pub lookahead: f32,
+    /// 真峰值检测开关（`0.0` / `1.0`）。默认 1.0。
+    pub true_peak: f32,
+}
+
+impl LimiterParams {
+    /// 默认值：−1 dBFS 阈值、−0.3 dBFS 天花板、80 ms 释放、48 帧前瞻、真峰值开。
+    pub const DEFAULT: Self = Self {
+        threshold_db: -1.0,
+        ceiling_db: -0.3,
+        release_ms: 80.0,
+        lookahead: 48.0,
+        true_peak: 1.0,
+    };
+
+    /// 钳到合法区间并修掉非有限值（器件内部**再**净化一次，见 [`LimiterConfig::sanitised`]）。
+    #[must_use]
+    pub fn sanitised(self) -> Self {
+        let threshold_db = if self.threshold_db.is_finite() {
+            self.threshold_db.clamp(-30.0, 0.0)
+        } else {
+            Self::DEFAULT.threshold_db
+        };
+        let ceiling_db = if self.ceiling_db.is_finite() {
+            self.ceiling_db.clamp(-6.0, 0.0)
+        } else {
+            Self::DEFAULT.ceiling_db
+        };
+        // 天花板必须严格高于阈值，否则软膝宽度为 0（除零）。把天花板抬到阈值之上
+        // 1e-3 dB —— 比"把阈值压下来"更符合用户意图（他拧的是天花板）。
+        let ceiling_db = if ceiling_db <= threshold_db {
+            (threshold_db + 1.0e-3).min(0.0)
+        } else {
+            ceiling_db
+        };
+        let release_ms = if self.release_ms.is_finite() {
+            self.release_ms.clamp(10.0, 1000.0)
+        } else {
+            Self::DEFAULT.release_ms
+        };
+        let lookahead = if self.lookahead.is_finite() {
+            self.lookahead
+                .clamp(1.0, LIMITER_MAX_LOOKAHEAD as f32)
+                .round()
+        } else {
+            Self::DEFAULT.lookahead
+        };
+        let true_peak = if self.true_peak.is_finite() && self.true_peak > 0.5 {
+            1.0
+        } else {
+            0.0
+        };
+        Self {
+            threshold_db,
+            ceiling_db,
+            release_ms,
+            lookahead,
+            true_peak,
+        }
+    }
+
+    /// 换算成器件配置（`sample_rate` 只在这里用到）。
+    ///
+    /// 释放：`release_per_sample = 1 / (ms/1000 × sr)` —— 也就是"增益从 0 爬到 1 需要
+    /// `release_ms`"。这与 [`LIMITER_RELEASE_PER_SAMPLE`] 的口径一致
+    /// （`5e-5` ⇒ 0.42 s）。
+    #[must_use]
+    pub fn config(self, sample_rate: f32) -> LimiterConfig {
+        let params = self.sanitised();
+        let sample_rate = if sample_rate.is_finite() && sample_rate > 0.0 {
+            sample_rate
+        } else {
+            48_000.0
+        };
+        let release_frames = (params.release_ms * 0.001 * sample_rate).max(1.0);
+        LimiterConfig {
+            threshold: db_to_linear(params.threshold_db),
+            ceiling: db_to_linear(params.ceiling_db),
+            release_per_sample: 1.0 / release_frames,
+            lookahead: params.lookahead as usize,
+            true_peak: params.true_peak > 0.5,
+        }
+        .sanitised()
+    }
+
+    /// 本参数对应的**上报延迟**（帧）。与 [`Self::config`] 的前瞻是同一个数。
+    #[must_use]
+    pub fn latency_frames(self) -> u32 {
+        self.sanitised().lookahead.max(1.0) as u32
+    }
+}
+
+/// dB → 线性（走 `libm`，[ARCH-DET-001] 要求统一）。
+#[inline]
+#[must_use]
+fn db_to_linear(db: f32) -> f32 {
+    if !db.is_finite() {
+        return 1.0;
+    }
+    libm::powf(10.0, db / 20.0)
+}
+
+/// 插入器件用的**宽窗口**实例（前瞻上限 192 帧）。
+///
+/// 与母线共用同一份实现（[`Limiter`] 的常量泛型），只是把窗口开大 —— 这不是第二份
+/// 实现，是同一个类型的一个实例化。
+pub type InsertLimiter = Limiter<LIMITER_MAX_LOOKAHEAD>;
+
 /// 母线**前瞻式峰值限制器**（立体声联动）。
 ///
 /// 立体声联动 = 两侧共用**同一个**增益：由两侧窗口峰值的**最大者**决定。
@@ -196,76 +418,150 @@ pub const LIMITER_RELEASE_PER_SAMPLE: f32 = 5.0e-5;
 /// 状态全部定长、`Copy`：`[[f32; LOOKAHEAD_SAMPLES]; 2]` + 读/写下标 + 增益。
 /// 详见模块文档 §1–§4。
 #[derive(Clone, Copy, Debug)]
-pub struct Limiter {
-    /// 环形延迟缓冲（左右各一条）。
-    ring: [[f32; LOOKAHEAD_SAMPLES]; 2],
+pub struct Limiter<const W: usize = LOOKAHEAD_SAMPLES> {
+    /// 环形延迟缓冲（左右各一条）。长度 = 泛型参数 `W`（= 本实例的**最大**前瞻）。
+    ///
+    /// 为什么是常量泛型而不是统一 192：母线只要 33 帧，而 `EngineRuntime` 是**内联**
+    /// 持有它的一份实例 —— 统一放大到 192 会让每个运行时白背 3.9 KB（实测
+    /// `size_of::<EngineRuntime>()` 45 648 → 49 520 B）。泛型让"一处实现、两种尺寸"，
+    /// 而不是"两份实现"（[ADR-0001 D44(c)] 禁止后者）。
+    ring: [[f32; W]; 2],
     /// 下一个写入位置。
     write: usize,
+    /// 前瞻帧数（= 输出延迟）。母线用 [`LOOKAHEAD_SAMPLES`]，插入器件可配。
+    lookahead: usize,
     /// 前瞻窗口峰值的**单调双端队列**：存 `(环位置, 合并峰值)`，按值单调递减，
-    /// 队首即窗口峰值。定长数组 + 首/长索引，无堆分配（容量 = 窗口大小，天然有界）。
+    /// 队首即窗口峰值。定长数组 + 首/长索引，无堆分配（容量 = 窗口上限 + 1）。
     ///
-    /// 窗口语义与旧实现严格一致：旧代码每样本扫描 `read..read+LOOKAHEAD`，
-    /// 33 次步进恰好覆盖整个环 ⇒ 窗口恒 = 环上全部槽位。每帧恰好覆写 `write`
-    /// 位置 ⇒ 维护时先驱逐该位置的旧候选（若仍在队中必为队首），再插入新值。
-    peak_deque: [(usize, f32); LOOKAHEAD_SAMPLES],
+    /// 窗口语义：**最近 `lookahead` 个输入样本**（`x[n-lookahead+1] … x[n]`）。
+    /// 被延迟输出的那个样本是 `x[n-lookahead]`，比窗口早一格 —— 这一格由
+    /// [`soft_knee`] 的天花板兜住（与母线实现同一口径，见模块文档 §3）。
+    peak_deque: [(usize, f32); W],
     /// 队首（最老候选）在 `peak_deque` 中的下标。
     deque_head: usize,
-    /// 队中候选数（`≤ LOOKAHEAD_SAMPLES`；每帧更新后恒 `≥ 1`）。
+    /// 队中候选数（`≤ DEQUE_CAP`；每帧更新后恒 `≥ 1`）。
     deque_len: usize,
     /// 当前增益（1.0 = 完全透明）。
     gain: f32,
-    /// 目标阈值。默认 [`LIMITER_THRESHOLD`]；可注入用于判据（**非**实时路径）。
+    /// 目标阈值。默认 [`LIMITER_THRESHOLD`]；可注入用于判据与插入器件。
     threshold: f32,
+    /// 输出天花板（软膝渐近值）。默认 [`LIMITER_CEILING`]。
+    ceiling: f32,
     /// 每样本最大增益回升量。默认 [`LIMITER_RELEASE_PER_SAMPLE`]。
     release_per_sample: f32,
+    /// 检波器是否做真峰值（inter-sample）估计。
+    true_peak: bool,
+    /// 真峰值估计用的前两个输入样本（左右各一条，`[n-2], [n-1]`）。
+    history: [[f32; 3]; 2],
     /// 峰值是否曾达到阈值（诊断/判据：证明夹具真的驱动过限制器）。
     engaged: bool,
     /// 累计**被压过**的样本数（增益 < 1.0 时输出的那些样本）。
     reductions: u64,
 }
 
-impl Limiter {
-    /// 构造：缓冲清零、增益 1.0、阈值与释放率取规范常量。
+impl Limiter<LOOKAHEAD_SAMPLES> {
+    /// 构造**母线**实例：窗口 [`LOOKAHEAD_SAMPLES`]（33 帧）、参数取规范常量。
+    ///
+    /// 只在这个尺寸上提供 `new()`，因此 `Limiter::new()` 不需要写泛型参数；
+    /// 插入器件用 [`InsertLimiter::with_config`]。
     #[must_use]
     pub const fn new() -> Self {
+        Self::blank()
+    }
+}
+
+impl<const W: usize> Limiter<W> {
+    /// 一块清零的实例（泛型尺寸的构造基元）。
+    #[must_use]
+    const fn blank() -> Self {
         Self {
-            ring: [[0.0; LOOKAHEAD_SAMPLES]; 2],
+            ring: [[0.0; W]; 2],
             write: 0,
-            peak_deque: [(0, 0.0); LOOKAHEAD_SAMPLES],
+            lookahead: LOOKAHEAD_SAMPLES,
+            peak_deque: [(0, 0.0); W],
             deque_head: 0,
             deque_len: 0,
             gain: 1.0,
             threshold: LIMITER_THRESHOLD,
+            ceiling: LIMITER_CEILING,
             release_per_sample: LIMITER_RELEASE_PER_SAMPLE,
+            true_peak: false,
+            history: [[0.0; 3]; 2],
             engaged: false,
             reductions: 0,
         }
     }
 
+    /// 按配置构造（**插入器件**的入口；母线继续用 [`Self::new`]）。
+    ///
+    /// `LimiterConfig::DEFAULT` 必须与 [`Self::new`] 逐位等价 ——
+    /// 判据 `default_config_is_the_bus_limiter` 钉住这一条。
+    #[must_use]
+    pub fn with_config(config: LimiterConfig) -> Self {
+        let mut limiter = Self::blank();
+        limiter.configure(config);
+        limiter
+    }
+
+    /// 改参数（**不**清状态：块边界的自动化改参不该让增益回 1.0）。
+    ///
+    /// 改 `lookahead` 会改变延迟，因此**调用方**必须保证它只在建级时设定：
+    /// 渲染侧把前瞻写进 `DeviceDefinition::latency_samples`，[ARCH-PDC-001] 的补偿
+    /// 按那个值算；播放中途改前瞻会让补偿量与真实延迟脱钩。
+    pub fn configure(&mut self, config: LimiterConfig) {
+        let mut config = config.sanitised();
+        // 本实例的窗口上限是 `W`（母线 33、插入器件 192）。
+        config.lookahead = config.lookahead.min(W).max(1);
+        self.threshold = config.threshold;
+        self.ceiling = config.ceiling;
+        self.release_per_sample = config.release_per_sample;
+        self.lookahead = config.lookahead;
+        self.true_peak = config.true_peak;
+    }
+
+    /// 当前配置（读回用）。
+    #[must_use]
+    pub const fn config(&self) -> LimiterConfig {
+        LimiterConfig {
+            threshold: self.threshold,
+            ceiling: self.ceiling,
+            release_per_sample: self.release_per_sample,
+            lookahead: self.lookahead,
+            true_peak: self.true_peak,
+        }
+    }
+
     /// 清空状态（seek / 重新武装设备时调用；实时路径上不分配）。
     pub fn reset(&mut self) {
-        self.ring = [[0.0; LOOKAHEAD_SAMPLES]; 2];
+        self.ring = [[0.0; W]; 2];
         self.write = 0;
         self.deque_head = 0;
         self.deque_len = 0;
         self.gain = 1.0;
+        self.history = [[0.0; 3]; 2];
         self.engaged = false;
         self.reductions = 0;
     }
 
     /// 前瞻延迟（帧）。它就是"输出相对输入后移多少帧"。
     ///
-    /// 注意：它是**环长** [`LOOKAHEAD_SAMPLES`]，不是"看到未来的帧数"
-    ///（窗口 = 被延迟的样本 + 它之后的 [`LIMITER_LATENCY_FRAMES`] 帧）。
+    /// 母线默认 [`LOOKAHEAD_SAMPLES`]（33 帧 @48k ≈ 0.69 ms）；插入器件可配到
+    /// [`LIMITER_MAX_LOOKAHEAD`]。
     #[must_use]
     pub const fn latency_samples(&self) -> usize {
-        LOOKAHEAD_SAMPLES
+        self.lookahead
     }
 
     /// 当前阈值。
     #[must_use]
     pub const fn threshold(&self) -> f32 {
         self.threshold
+    }
+
+    /// 当前天花板。
+    #[must_use]
+    pub const fn ceiling(&self) -> f32 {
+        self.ceiling
     }
 
     /// 当前增益（诊断/判据用）。
@@ -301,6 +597,11 @@ impl Limiter {
         } else {
             LIMITER_THRESHOLD
         };
+        // 阈值抬到天花板之上会把软膝的宽度变成非正数（`knee <= 0` ⇒ 除零）。
+        // 这里连同天花板一起抬，保持"阈值 < 天花板"这条不变量。
+        if self.ceiling <= self.threshold {
+            self.ceiling = (self.threshold + 1.0e-4).min(1.0);
+        }
     }
 
     /// 覆盖每样本释放量（**判据/注入用**；0.0 = 增益只降不升）。
@@ -325,41 +626,56 @@ impl Limiter {
             return 0;
         }
         let threshold = self.threshold;
+        let ceiling = self.ceiling;
         let release = self.release_per_sample;
+        let lookahead = self.lookahead;
+        let true_peak = self.true_peak;
         for frame in 0..frames {
             let input_l = nan_to_zero(left[frame]);
             let input_r = nan_to_zero(right[frame]);
 
-            // 写位置上的**旧值**就是 `L` 帧之前的样本（本实现不使用显式延迟线，
-            // 而是让环形缓冲本身承担延迟：写位置在读位置"前面" `L` 帧）。
-            let sample_l = self.ring[0][self.write];
-            let sample_r = self.ring[1][self.write];
+            // 读位置 = 写位置回退 `lookahead` 格。环长恒为 `LIMITER_MAX_LOOKAHEAD`，
+            // 因此"写位置上的旧值"**不再**是延迟样本（母线那一版环长 == 前瞻，
+            // 两者恰好重合）—— 这里必须显式算读位置。
+            let read = if self.write >= lookahead {
+                self.write - lookahead
+            } else {
+                self.write + W - lookahead
+            };
+            let sample_l = self.ring[0][read];
+            let sample_r = self.ring[1][read];
             self.ring[0][self.write] = input_l;
             self.ring[1][self.write] = input_r;
 
             // ---- 前瞻窗口峰值：单调双端队列 ----
-            // 旧实现每样本扫描 `read..read+LOOKAHEAD`（33 槽 × 2 通道）；
-            // 33 次步进恰好覆盖整个环 ⇒ 窗口恒 = 环上全部槽位 = 最近 33 帧。
-            // 每帧恰好覆写 `write` 位置：先驱逐该位置的旧候选（若仍在队中，
-            // 它必是队首——插入顺序即覆写顺序，每位置在队中至多一项），
-            // 再把新样本的合并峰值 `max(|l|, |r|)` 按单调递减插入
-            // （`<=` 踢掉队尾：等值留新的，峰值读数逐位不变）。
+            // 窗口 = 最近 `lookahead` 个输入样本。写入 `write` 槽后，离开窗口的是
+            // 读位置上的那一个（`x[n-lookahead]`）⇒ 先驱逐它的旧候选（若仍在队中，
+            // 必是队首——插入顺序即覆写顺序，每槽在队中至多一项），
+            // 再把新样本的合并峰值按单调递减插入（`<=` 踢掉队尾：等值留新的）。
             // 环上值经 `nan_to_zero` 入环、`.abs()` 恒 `≥ 0` 非 NaN ⇒
             // 比较是全序，`f32::max` 的 NaN/符号零分支永不可达，逐位一致。
-            let evict = self.write;
+            let evict = read;
             if self.deque_len > 0 && self.peak_deque[self.deque_head].0 == evict {
                 self.deque_head += 1;
-                if self.deque_head == LOOKAHEAD_SAMPLES {
+                if self.deque_head == deque_capacity::<W>() {
                     self.deque_head = 0;
                 }
                 self.deque_len -= 1;
             }
-            let fresh = input_l.abs().max(input_r.abs());
+            let mut fresh = input_l.abs().max(input_r.abs());
+            if true_peak {
+                // 真峰值估计用的是**上一段**（`x[n-2] → x[n-1]`）：Catmull-Rom 需要
+                // 四个点，最右那个必须是已到的样本，否则估计要额外延迟。
+                // 这一段落在前瞻窗口里（`lookahead ≥ 2` 时），所以不影响"来得及压"。
+                fresh = fresh
+                    .max(intersample_peak(&self.history[0], input_l))
+                    .max(intersample_peak(&self.history[1], input_r));
+            }
             while self.deque_len > 0 {
                 let back = self.deque_head + self.deque_len - 1;
-                // `head + len - 1 < 2 * LOOKAHEAD_SAMPLES` 恒成立 ⇒ 减一次即取模。
-                let back = if back >= LOOKAHEAD_SAMPLES {
-                    back - LOOKAHEAD_SAMPLES
+                // `head + len - 1 < 2 * DEQUE_CAP` 恒成立 ⇒ 减一次即取模。
+                let back = if back >= deque_capacity::<W>() {
+                    back - deque_capacity::<W>()
                 } else {
                     back
                 };
@@ -370,8 +686,8 @@ impl Limiter {
                 }
             }
             let slot = self.deque_head + self.deque_len;
-            let slot = if slot >= LOOKAHEAD_SAMPLES {
-                slot - LOOKAHEAD_SAMPLES
+            let slot = if slot >= deque_capacity::<W>() {
+                slot - deque_capacity::<W>()
             } else {
                 slot
             };
@@ -381,9 +697,10 @@ impl Limiter {
             let peak = self.peak_deque[self.deque_head].1;
 
             // ---- 目标增益：窗口峰值不超阈值时为 1.0（完全透明） ----
-            // 窗口峰值 `W(n)` 一定 ≥ 被延迟的那个样本 `|x[n-d]|`（它就在窗口里），
-            // 而增益被钳在 `T / W(n)` 之上（下面那一句）⇒ 上界证明成立：
-            // `|y[n]| = |x[n-d]| · g[n] ≤ |x[n-d]| · T / |x[n-d]| = T`。
+            // 增益被钳在 `T / W(n)` 之上（下面那一句）。窗口比被延迟的样本晚一格
+            // （`W(n)` 覆盖 `x[n-lookahead+1] … x[n]`，而输出的是 `x[n-lookahead]`），
+            // 因此"输出 ≤ 阈值"的**逐样本**保证由 [`soft_knee`] 的天花板负责，
+            // 增益只负责把绝大多数样本提前压到位 —— 与母线实现同一口径（§3、§4）。
             let target = if peak > threshold {
                 self.engaged = true;
                 threshold / peak
@@ -419,10 +736,14 @@ impl Limiter {
             if self.gain < 1.0 {
                 self.reductions = self.reductions.saturating_add(1);
             }
-            left[frame] = soft_knee(sample_l * self.gain);
-            right[frame] = soft_knee(sample_r * self.gain);
+            left[frame] = soft_knee(sample_l * self.gain, threshold, ceiling);
+            right[frame] = soft_knee(sample_r * self.gain, threshold, ceiling);
 
-            self.write = if self.write + 1 == LOOKAHEAD_SAMPLES {
+            // 真峰值估计的历史窗口（只看最后三点；`[0]` 最老）。
+            self.history[0] = [self.history[0][1], self.history[0][2], input_l];
+            self.history[1] = [self.history[1][1], self.history[1][2], input_r];
+
+            self.write = if self.write + 1 == W {
                 0
             } else {
                 self.write + 1
@@ -432,9 +753,11 @@ impl Limiter {
     }
 }
 
-impl Default for Limiter {
+impl<const W: usize> Default for Limiter<W> {
     fn default() -> Self {
-        Self::new()
+        // 泛型块里不能调 `new()`（它只长在 `Limiter<LOOKAHEAD_SAMPLES>` 上）；
+        // `blank()` 的初值就是母线参数，与 `new()` 逐位相同。
+        Self::blank()
     }
 }
 
@@ -455,20 +778,54 @@ impl Default for Limiter {
 /// 因此不能共用 —— 但形状同族，参数不同。
 #[inline]
 #[must_use]
-fn soft_knee(sample: f32) -> f32 {
+fn soft_knee(sample: f32, threshold: f32, ceiling: f32) -> f32 {
     let magnitude = sample.abs();
     // 阈值以下**逐位恒等**（这一句是"未超阈值不改写"的实现本体）。
-    if magnitude <= LIMITER_THRESHOLD {
+    if magnitude <= threshold {
         return sample;
     }
-    let knee = LIMITER_CEILING - LIMITER_THRESHOLD;
+    let knee = ceiling - threshold;
     // ⚠ 形状在 `magnitude == 阈值` 处从 `阈值` 起步：`1 - exp(0) == 0` 在那里给出
     // `LIMITER_THRESHOLD` 本身。**不要**用 `1e-6` 之类的小量做保护 ——
     // 那会在阈值处引入一个 1e-6 量级的下陷（实测：`soft_knee(0.9) == 0.89999986`），
     // 让函数在边界上不单调，而判据 `>` 与 `<=` 在同一处断言时就会互相打架。
-    let shaped =
-        LIMITER_THRESHOLD + knee * (1.0 - libm::expf(-(magnitude - LIMITER_THRESHOLD) / knee));
+    let shaped = threshold + knee * (1.0 - libm::expf(-(magnitude - threshold) / knee));
     shaped.copysign(sample)
+}
+
+/// **真峰值（inter-sample）估计**：在 `history[1] → history[2]` 这一段上做
+/// Catmull-Rom 三次插值，取 3 个内插点与两个端点的最大绝对值。
+///
+/// 为什么需要它：数字域的样本峰值会低估模拟域（或重建后）的峰值。一个每周期 2–4 个
+/// 样本的高频信号，`0.9` 的样本可以重建出 1.2 的峰 —— 这正是"−0.7 dBTP 的母带
+/// 转成 mp3 之后会削波"的来由。
+///
+/// ⚠ **口径**：本函数是**估计器**，不是 ITU-R BS.1770-4 规定的 4× 过采样真峰值表
+/// （那要求 ≥ 4 倍插值 + 特定滤波器）。它与 `ffmpeg ebur128=peak=true` 的差异
+/// 在实测报告里给出（正弦 0.9/周期 3 样本这个最坏情形下差 < 0.5 dB），
+/// ⛔ 不要拿它当"合规真峰值"报数。
+///
+/// 为什么用**上一段**（`x[n-2] → x[n-1]`）而不是最新一段：三次插值要 4 个点，
+/// 最右那个必须是已到的样本。早一格的代价可以接受 —— 真峰值点仍然落在前瞻窗口里。
+#[inline]
+#[must_use]
+fn intersample_peak(history: &[f32; 3], current: f32) -> f32 {
+    let p0 = history[0];
+    let p1 = history[1];
+    let p2 = history[2];
+    let p3 = current;
+    let mut peak = p1.abs().max(p2.abs());
+    for t in [0.25f32, 0.5, 0.75] {
+        let c1 = -p0 + p2;
+        let c2 = 2.0 * p0 - 5.0 * p1 + 4.0 * p2 - p3;
+        let c3 = -p0 + 3.0 * p1 - 3.0 * p2 + p3;
+        let value = 0.5 * (2.0 * p1 + c1 * t + c2 * t * t + c3 * t * t * t);
+        let magnitude = value.abs();
+        if magnitude > peak {
+            peak = magnitude;
+        }
+    }
+    peak
 }
 
 /// `NaN` ⇒ `0.0`（±∞ 原样保留）。
@@ -623,7 +980,7 @@ mod tests {
         );
         // 阈值以上的所有幅度都必须 ≤ **字面** 0.95（不是 ≤ `LIMITER_CEILING`）。
         for magnitude in [0.9f32, 1.0, 1.2, 10.0, 1.0e6] {
-            let shaped = soft_knee(magnitude);
+            let shaped = soft_knee(magnitude, LIMITER_THRESHOLD, LIMITER_CEILING);
             assert!(
                 shaped <= 0.95,
                 "soft_knee({magnitude}) = {shaped} 越过字面天花板 0.95"
@@ -634,14 +991,21 @@ mod tests {
             );
         }
         // 正对照（非空证明）：夹具必须**真的**触到渐近区，否则上面两条是空断言。
-        assert_eq!(soft_knee(1.0e6), 0.95, "极端幅度必须恰好落在天花板上");
+        assert_eq!(
+            soft_knee(1.0e6, LIMITER_THRESHOLD, LIMITER_CEILING),
+            0.95,
+            "极端幅度必须恰好落在天花板上"
+        );
         assert!(
-            soft_knee(1.0) < 0.95,
+            soft_knee(1.0, LIMITER_THRESHOLD, LIMITER_CEILING) < 0.95,
             "1.0 幅度还不到天花板 ⇒ 渐近区被真的走到"
         );
         // 阈值以下逐位恒等（天花板的另一侧）。
         for sample in [0.9f32, 0.5, -0.9, -0.25, 0.0, -0.0] {
-            assert_eq!(soft_knee(sample).to_bits(), sample.to_bits());
+            assert_eq!(
+                soft_knee(sample, LIMITER_THRESHOLD, LIMITER_CEILING).to_bits(),
+                sample.to_bits()
+            );
         }
     }
     // 平台感知（R135／裁决 R24-R25）：本位型比较只在本架构（冻结架构）上有意义，
@@ -1145,5 +1509,190 @@ mod tests {
                 "第 {frame} 帧左路应为逐位静音"
             );
         }
+    }
+
+    /// **判据（新写，可红）**：`LimiterConfig::DEFAULT` 与 `Limiter::new()` 逐位等价。
+    ///
+    /// 量什么：同一段过载信号过两种构造，输出**逐样本位型**比较。
+    ///
+    /// 为什么需要它：母线（`Limiter::new`）与插入器件（`with_config`）将来是两条
+    /// 构造路径。若两者默认值不同，母线的输出会在无人察觉的情况下改变 —— 而母线的
+    /// 输出是**每一首既有作品**的成品，不能变。
+    ///
+    /// 链路只有比较、乘加与一次 `exp` ⇒ 输入相同则输出位型必须相同（不是"近似"）。
+    #[test]
+    fn default_config_is_the_bus_limiter() {
+        let mut bus = Limiter::new();
+        let mut configured = Limiter::<LOOKAHEAD_SAMPLES>::with_config(LimiterConfig::DEFAULT);
+        let mut left_a = [0.0f32; FRAMES];
+        let mut right_a = [0.0f32; FRAMES];
+        let mut left_b = [0.0f32; FRAMES];
+        let mut right_b = [0.0f32; FRAMES];
+        let mut phase = 0.0f32;
+        for _ in 0..16 {
+            for frame in 0..FRAMES {
+                let value = 1.35 * phase.sin();
+                phase += core::f32::consts::TAU * 220.0 / 48_000.0;
+                left_a[frame] = value;
+                right_a[frame] = value * 0.6;
+                left_b[frame] = value;
+                right_b[frame] = value * 0.6;
+            }
+            bus.process_stereo(&mut left_a, &mut right_a);
+            configured.process_stereo(&mut left_b, &mut right_b);
+            for frame in 0..FRAMES {
+                assert_eq!(
+                    left_a[frame].to_bits(),
+                    left_b[frame].to_bits(),
+                    "第 {frame} 帧左路位型不同（母线 {} vs 配置 {}）",
+                    left_a[frame],
+                    left_b[frame]
+                );
+                assert_eq!(right_a[frame].to_bits(), right_b[frame].to_bits());
+            }
+        }
+        assert!(bus.engaged(), "夹具必须真的驱动限制器");
+        assert_eq!(bus.reduction_count(), configured.reduction_count());
+    }
+
+    /// **判据（新写，可红）**：前瞻可配，且**延迟恰好等于配置值**。
+    ///
+    /// 量什么：单样本脉冲（第 0 帧为 1.0）在输出端的首个非零帧号。
+    ///
+    /// 为什么需要它：前瞻是这台器件的**唯一**成本（[ARCH-PDC-001] 要按它补相位）。
+    /// 报错 1 帧就是全工程 1 帧的相位误差；没测过的延迟等于没报。
+    #[test]
+    fn a_longer_lookahead_delays_the_output_by_exactly_that_many_frames() {
+        for lookahead in [1usize, 33, 96, LIMITER_MAX_LOOKAHEAD] {
+            let mut limiter = InsertLimiter::with_config(LimiterConfig {
+                lookahead,
+                threshold: 0.9,
+                ..LimiterConfig::DEFAULT
+            });
+            let mut left = vec![0.0f32; lookahead + 64];
+            let mut right = vec![0.0f32; lookahead + 64];
+            left[0] = 1.0;
+            right[0] = 1.0;
+            limiter.process_stereo(&mut left, &mut right);
+            let first = left.iter().position(|v| *v != 0.0);
+            assert_eq!(
+                first,
+                Some(lookahead),
+                "前瞻 {lookahead}：输出首个非零帧在 {first:?}，延迟报的是 {}",
+                limiter.latency_samples()
+            );
+            assert_eq!(limiter.latency_samples(), lookahead);
+        }
+    }
+
+    /// **判据（新写，可红）**：自定义天花板必须真的成为边界。
+    ///
+    /// 量什么：阈值 −6 dBFS（0.501）、天花板 −3 dBFS（0.708）下，1.0 幅度正弦的
+    /// 输出峰值。
+    ///
+    /// 为什么需要它：母线的天花板是常量 0.95，插入器件的天花板是**用户参数**。
+    /// 若 `soft_knee` 仍读常量，用户把天花板设成 −6 dB 也压不到 —— 这正是本仓库
+    /// 反复出现过的"旋钮转了但没接线"。
+    #[test]
+    fn a_custom_ceiling_bounds_the_output() {
+        let ceiling = 0.708f32;
+        let threshold = 0.501f32;
+        let mut limiter = Limiter::<LOOKAHEAD_SAMPLES>::with_config(LimiterConfig {
+            threshold,
+            ceiling,
+            ..LimiterConfig::DEFAULT
+        });
+        let mut left = [0.0f32; FRAMES];
+        let mut right = [0.0f32; FRAMES];
+        let mut phase = 0.0f32;
+        let mut peak = 0.0f32;
+        for _ in 0..32 {
+            for frame in 0..FRAMES {
+                let value = 1.0 * phase.sin();
+                phase += core::f32::consts::TAU * 500.0 / 48_000.0;
+                left[frame] = value;
+                right[frame] = value;
+            }
+            limiter.process_stereo(&mut left, &mut right);
+            for sample in left.iter() {
+                peak = peak.max(sample.abs());
+            }
+        }
+        assert!(limiter.engaged(), "夹具必须真的驱动限制器");
+        assert!(
+            peak <= ceiling,
+            "输出峰值 {peak} 越过自定义天花板 {ceiling}"
+        );
+        assert!(
+            peak > ceiling * 0.5,
+            "峰值 {peak} 掉得太狠（天花板 {ceiling}）—— 弹道或阈值接错"
+        );
+    }
+
+    /// **判据（新写，可红）**：真峰值检测能抓到**样本之间**的峰。
+    ///
+    /// 夹具：`fs/4` 的正弦（48 kHz 下 12 kHz），相位偏 45°，幅度 0.8
+    /// ⇒ 每个样本都是 ±0.566，而重建波形的峰是 **0.8**。阈值取 0.6：
+    /// 样本峰值（0.566）**低于**阈值，所以关掉真峰值时增益必须恒为 1.0；
+    /// 打开真峰值时检波器看到 ~0.8 > 0.6 ⇒ 必须压。
+    ///
+    /// 为什么需要它：「真峰值」是这台器件唯一超出样本域的承诺。没有这条判据，
+    /// `true_peak = true` 与 `false` 可能跑出同一份输出而没人发现。
+    #[test]
+    fn true_peak_detection_engages_on_an_inter_sample_peak() {
+        let amplitude = 0.8f32;
+        let threshold = 0.6f32;
+        let run = |true_peak: bool| {
+            let mut limiter = Limiter::<LOOKAHEAD_SAMPLES>::with_config(LimiterConfig {
+                threshold,
+                true_peak,
+                ..LimiterConfig::DEFAULT
+            });
+            let mut left = [0.0f32; FRAMES];
+            let mut right = [0.0f32; FRAMES];
+            let mut peak = 0.0f32;
+            let mut sample_peak = 0.0f32;
+            let mut phase = core::f32::consts::FRAC_PI_4;
+            for _ in 0..16 {
+                for frame in 0..FRAMES {
+                    let value = amplitude * phase.sin();
+                    phase += core::f32::consts::FRAC_PI_2;
+                    if phase > core::f32::consts::TAU {
+                        phase -= core::f32::consts::TAU;
+                    }
+                    sample_peak = sample_peak.max(value.abs());
+                    left[frame] = value;
+                    right[frame] = value;
+                }
+                limiter.process_stereo(&mut left, &mut right);
+                for sample in left.iter() {
+                    peak = peak.max(sample.abs());
+                }
+            }
+            (
+                limiter.engaged(),
+                limiter.reduction_count(),
+                peak,
+                sample_peak,
+            )
+        };
+        let (engaged_off, reductions_off, peak_off, sample_peak) = run(false);
+        let (engaged_on, reductions_on, peak_on, _) = run(true);
+        assert!(
+            sample_peak < threshold,
+            "夹具前提：样本峰值 {sample_peak} 必须低于阈值 {threshold}（否则证明不了是插值抓到的）"
+        );
+        assert!(
+            !engaged_off && reductions_off == 0,
+            "关掉真峰值时不该压（样本峰值 {sample_peak} < 阈值 {threshold}）"
+        );
+        assert!(
+            engaged_on && reductions_on > 0,
+            "打开真峰值后仍然没压 —— 检波器没接上插值"
+        );
+        assert!(
+            peak_on < peak_off,
+            "真峰值限制后的峰值 {peak_on} 不低于关闭时的 {peak_off}"
+        );
     }
 }

@@ -987,17 +987,22 @@ fn the_validator_can_go_red_and_the_schema_is_not_idealised() {
 /// ⚠ 沿革：`#156` 当时的读数是 **81**（45 规范 + 36 别名）；**round-robin / tape_asym
 /// 片**给磁带组加了一条规范拼写 `tape_asym`（别名 `saturation_asym`）⇒ **＋1 规范、
 /// ＋1 别名 = 83**；**立体声卷积**给卷积组加一条规范拼写 `conv_ir_stereo`（无别名）⇒ **＋1 规范、＋0 别名 = 84**（读数由本判据现算，⛔ 不是抄来的数字）。
+/// ⭐ **`P6` 插入式限制器**新增第九组 `limiter`，5 条规范拼写、**0 别名**
+/// （`limiter_threshold_db` / `limiter_ceiling_db` / `limiter_release_ms` /
+/// `limiter_lookahead` / `limiter_true_peak`）⇒ **52 规范 + 37 别名 = 89**。
+/// ⛔ 故意不给裸 `threshold_db` 之类别名：它已经被压缩器占着，同名会让"写进设备的是
+/// 谁的阈值"变成猜的。
 #[test]
 fn the_58_published_spellings_are_still_all_there() {
     use yeban_mcp::{effect_params, op_schema};
     let names = effect_params::recognised_names();
-    assert_eq!(names.len(), 84, "47 规范 + 37 别名");
+    assert_eq!(names.len(), 89, "52 规范 + 37 别名");
     assert_eq!(
         effect_params::EFFECT_GROUPS
             .iter()
             .map(|group| group.params.len())
             .sum::<usize>(),
-        47
+        52
     );
     let items = op_schema::ops_items();
     let insert = items["oneOf"]
@@ -1009,7 +1014,7 @@ fn the_58_published_spellings_are_still_all_there() {
     let branches = insert["properties"]["device"]["properties"]["params"]["items"]["oneOf"]
         .as_array()
         .expect("device.params.items.oneOf");
-    assert_eq!(branches.len(), 47);
+    assert_eq!(branches.len(), 52);
     let published: usize = branches
         .iter()
         .map(|branch| {
@@ -1019,7 +1024,7 @@ fn the_58_published_spellings_are_still_all_there() {
                 .len()
         })
         .sum();
-    assert_eq!(published, 84, "公告面的拼写个数");
+    assert_eq!(published, 89, "公告面的拼写个数");
     assert!(effect_params::recognise("eq_low_gain").is_some());
     assert!(effect_params::recognise("eq_low_gian").is_none());
     assert_eq!(
