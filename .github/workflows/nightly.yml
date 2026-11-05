@@ -29,7 +29,12 @@
 #   ⚠ 这与 release.yml 的 cancel-in-progress: false **不冲突**：release 绝不能半途被掐
 #   （会留半份产物）；nightly 的 publish job 在全部构建完成之后才跑，被取消的 run
 #   永远到不了 publish ⇒ 同样留不下半更新的 Release。
-# **绝不半新半旧**：一个 publish 作业统一更新滚动 Release（构建 job 全绿是它的 needs）。
+# **删后重建**：`gh release edit` 不动 published_at，页面边栏日期永远停在首次创建日
+#   （实测：Release 创建于 2026-11-02，11-03 的资产已是最新，边栏仍显示“2 days ago”）。
+#   故 publish 改为先 delete（--cleanup-tag 连 tag 一并删）再 create：边栏日期＝本次
+#   创建日，tag 也随 create 落在本次 SHA。代价：publish 中途失败会留空缺（无 Release
+#   或资产不全），下次 main 推送的 publish 重建完整一套；publish 只在 5 归档全验后、
+#   构建全绿时才跑。
 # **分支 dispatch 只编不发**：publish 作业 gate 在 `github.ref == 'refs/heads/main'` ⇒
 #   分支上 dispatch 只能验证构建路，绝不会把分支二进制发成 nightly。
 #   合入后的第一次证明，是合入后 main 上第一次 push 触发的 run 真正发了 nightly。
@@ -40,7 +45,7 @@
 #   LICENSE、BUILD-INFO.txt）。改动打包路时两边要同步改，并说明理由。
 # **归档名稳定 ⇒ 无需清理旧包**：偃师版要删旧归档，是因为它的归档名里带 commit 短哈希；
 #   夜半归档名是 yeban-<工作区版本>-<目标>.tar.gz（版本在两次发版之间不变），
-#   `gh release upload --clobber` 同名即覆盖 ⇒ Release 里永远只有最新一套包。
+#   新 Release 里只有本次 5 个归档＋SHA256SUMS ⇒ Release 里永远只有最新一套包。
 # **冒烟**：解包后跑包里的 yeban-app --version，与工作区清单版本逐字比对
 #  （release.yml 的版本对账同款判据；yeban-mcp 没有 --version 开关，不拿它冒烟，
 #   只验它在包里存在且可执行）。
@@ -381,15 +386,14 @@ jobs:
           NOTES="Rolling nightly build from main.
           Commit: ${GITHUB_SHA}
           Built at (UTC): $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          # 删后重建（见文件头“删后重建”）：edit 不动 published_at，故先删再建；
+          # create 会把 tag 建在本次 SHA，不再需要 tag PATCH。
           if gh release view nightly --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            gh release edit nightly --title "nightly" --notes "$NOTES" --target "${GITHUB_SHA}" --repo "$GITHUB_REPOSITORY"
-          else
-            gh release create nightly --title "nightly" --notes "$NOTES" --target "${GITHUB_SHA}" --repo "$GITHUB_REPOSITORY"
+            gh release delete nightly --yes --cleanup-tag --repo "$GITHUB_REPOSITORY"
           fi
-          # 同步 tag 到本次 SHA：只 edit 不移 tag 时，Source code 包永远停在创建提交。
-          gh api -X PATCH "repos/${GITHUB_REPOSITORY}/git/refs/tags/nightly" -f sha="${GITHUB_SHA}" -F force=true --silent
+          gh release create nightly --title "nightly" --notes "$NOTES" --target "${GITHUB_SHA}" --repo "$GITHUB_REPOSITORY"
           for f in $(find artifacts -name '*.tar.gz' | sort); do
-            gh release upload nightly "$f" --clobber --repo "$GITHUB_REPOSITORY"
+            gh release upload nightly "$f" --repo "$GITHUB_REPOSITORY"
           done
-          gh release upload nightly SHA256SUMS --clobber --repo "$GITHUB_REPOSITORY"
+          gh release upload nightly SHA256SUMS --repo "$GITHUB_REPOSITORY"
           echo "== 滚动 nightly 已更新 ✓（commit ${GITHUB_SHA}，$n_archives 个平台归档）=="

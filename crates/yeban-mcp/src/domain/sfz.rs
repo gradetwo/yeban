@@ -96,10 +96,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use yeban_model::{AssetHash, ClipContent, PPQ, YebanProjectV1};
+use yeban_model::{AssetHash, AutomationTarget, ClipContent, EntityId, PPQ, YebanProjectV1};
 use yeban_render::wav::read_plain_wav_mono_f32;
 use yeban_sfz::SampleEnd;
-use yeban_sfz::instrument::{AMPLITUDE_DEFAULT_PERCENT, Instrument, Region};
+use yeban_sfz::instrument::{AMPLITUDE_DEFAULT_PERCENT, Instrument, Region, Trigger};
 use yeban_sfz::modulation::ModTarget;
 use yeban_sfz::parser::{
     IncludeIssue, IncludeIssueKind, IncludeResolver, ParseLimits, SfzSource, parse_sources,
@@ -342,7 +342,7 @@ pub fn read_sample_file(path: &Path) -> Result<SampleFileReading, String> {
 /// ⚠ 只决定**走哪条腿**，⛔ 不决定成功与否（与 app 的 `is_wav_suffix` 逐字同一条判据）。
 /// ⛔ 不用内容嗅探：那会给 `.wav` 多一次读盘/探测，见 [`read_sample_file`] 的文档。
 #[must_use]
-fn is_plain_wav_suffix(path: &Path) -> bool {
+pub(crate) fn is_plain_wav_suffix(path: &Path) -> bool {
     path.extension()
         .and_then(|extension| extension.to_str())
         .is_some_and(|extension| {
@@ -789,6 +789,11 @@ pub struct SfzLoad {
     ///
     /// 与 app 的 `builtin_silent_region_count` 同口径；`silent_regions` 已包含它。
     pub builtin_silent_regions: usize,
+    /// ⭐ P1 按需装载：本次渲染因判定为不会发声而跳过解码的区域数。
+    ///
+    /// ⛔ 不计入 `silent_regions`：它们不是缺样本，是渲染步按本轨音符/CC 主动不读；
+    /// 逐条摘要的 `sample_file_state` 登记为 `skippedDemandLoad`。
+    pub skipped_regions: usize,
     /// 是否复用了已装载的同一份内容（内容寻址 ⇒ 同文本同一个 instrumentId）。
     pub reused: bool,
     /// 请求的样本侧采样率（进报告；它只用于**回退正弦**与报告口径）。
@@ -1112,11 +1117,29 @@ pub fn parse_sample_limits(
 
 /// 解析 `yeban_load_sfz` 的实参（**只做形状校验**，读文件在 [`load`] 里）。
 ///
+/// # 相对路径（⭐ 补丁 `P1`）
+///
+/// `path` 为**相对路径**时，按 [`super::render::resolve_sampler_path`] 的**四档**解析
+/// （工程目录 ⇒ 采样库根 ⇒ 仓库根 ⇒ cwd），与 `yeban_render_master` 说同一句话。
+/// 修前这里只 `PathBuf::from(path)`，随后直接 `fs::metadata` —— 于是"哪条路径算数"
+/// 在工具面有**两套**答案：装载要绝对、渲染要相对；而
+/// `docs/SFZ_SAMPLE_ACQUISITION.md` 教的正是在工程里存 `assets/samples/<乐器>/…`
+/// 这种相对形态。
+///
+/// 三条纪律：
+///
+/// - **绝对路径⛔ 不过四档**：原样返回，前序调用逐字节不变（严格扩张）；
+/// - **四档都不中⛔ 不报错**：仍返回原样路径，由 [`load`] / [`plan_load_sfz`] 以既有
+///   的 `sfzReadFailed` 报告 —— 错误码与 `data.reason` 的形状不变，只是 `path`
+///   现在可能已被解析成绝对路径；
+/// - `project_dir` 为 `None`（没打开工程）⇒ 少掉"工程目录"一档，其余三档照试。
+///
 /// # Errors
 ///
 /// 缺 `path` / 空 `path` / `sampleHz` 非有限正数 ⇒ `INVALID_PARAMETER_RANGE`。
 pub fn parse_load_arguments(
     arguments: &serde_json::Map<String, serde_json::Value>,
+    project_dir: Option<&std::path::Path>,
 ) -> Result<(PathBuf, f32), Fault> {
     let path = arguments
         .get("path")
@@ -1143,7 +1166,27 @@ pub fn parse_load_arguments(
             hz
         }
     };
-    Ok((PathBuf::from(path), sample_hz))
+    Ok((resolve_load_path(path, project_dir), sample_hz))
+}
+
+/// `path` → **真的存在**的那份文件；解析不出（四档都不中）⇒ 原样返回。
+///
+/// 与 [`super::render::resolve_sampler_path`] 是**同一个函数**（⛔ 不复制候选表）：
+/// 后者在绝对路径 / 四档都不中时返回 `Fault`，这里把它翻成"原样"，因为装载失败
+/// 的报告职责在 [`load`]，本函数只管"能不能先换成一份找得到的路径"。
+fn resolve_load_path(raw: &str, project_dir: Option<&std::path::Path>) -> PathBuf {
+    // ⚠ `resolve_sampler_path` 收的是**工程文件**的路径、内部取 `parent()` 当"工程目录"。
+    // 所以这里要**补一个文件名**再交过去 —— 直接传目录会再被削一层（实测：传
+    // `/x/projects` ⇒ 候选变成 `/x/assets/samples/…`，工程目录那一档整个失效）。
+    // 没有活跃工程时给一个不存在的相对名 ⇒ `parent()` 为空 ⇒ 跳过该档。
+    let anchor = match project_dir {
+        Some(dir) => dir.join("__active_project__.yeban"),
+        None => PathBuf::from("__no_project__"),
+    };
+    match super::render::resolve_sampler_path(raw, &anchor) {
+        Ok(resolved) => resolved,
+        Err(_) => PathBuf::from(raw),
+    }
 }
 
 /// 装载一份 SFZ：读文件 ⇒ SHA-256 ⇒ 解析 ⇒ 区域摘要。
@@ -1164,7 +1207,7 @@ pub fn load(
     limits: SampleLimits,
 ) -> Result<SfzLoad, Fault> {
     let mut cache = SampleCache::with_limits(limits);
-    load_with(path, sample_hz, assign_id, reused, &mut cache).map(|(load, _)| load)
+    load_with(path, sample_hz, assign_id, reused, &mut cache, None).map(|(load, _)| load)
 }
 
 /// 提供表的一行：`sample=` 的**原样字符串** ＋ 该文件的读取结果（读不到 ⇒ `Err`）。
@@ -1177,6 +1220,225 @@ pub type SampledProviderTable = Vec<SampledProviderEntry>;
 
 /// [`load`] 的**共享样本池 ＋ 提供表**版本（⭐ `#276`）。
 ///
+/// ⭐ P1 按需装载：渲染步的命中区域判定器。
+///
+/// 只供渲染路径（[`load_with`] 的 `wanted` 参数）使用：按本轨的音符与 CC 状态，
+/// 判断一条 SFZ 区域在本次离线渲染里会不会发声。判定**逐条复刻引擎自己的选择语义**
+/// （`SfzVoicePool::trigger_note` ＋ `flatten_regions` 的摊平门控），⛔ 不是按音高估算：
+///
+/// - **通道**：采样器路径不传通道，摊平固定通道 `1` ⇒ 区域必须含通道 `1`。
+/// - **键位切换**（摊平期 `last=None`、`down≡false` 时的 `keyswitch_ok`）：`sw_down` ⇒ 永假；
+///   `sw_last` 有值且与 `sw_default` 不等（含无缺省）⇒ 假；`sw_up` 不挡；无门控 ⇒ 过。
+/// - **CC 门控**：离线探针只来自本轨 `MidiCc` 泳道 ＋ 宏级联（`CcProbe`；`set_ccN` 种子只进
+///   实时会话 CC 域，⛔ 不进离线触发探针）。**没有探针不等于控制器不可达**：MIDI CC 的
+///   缺省值是 `0`，所以无探针时每一路控制器都按 `(0, 0)` 参与门控判定 —— 含 `0` 的区间
+///   （例如 `hicc105=63`、`locc1=0 hicc1=127`）照常发声，不含 `0` 的区间（例如
+///   `locc105=64`）不发声。有探针时，无泳道的控制器同样恒 `0`，有泳道的控制器取值落在
+///   「曲线值域 ＋ 宏偏移值域」内（`value_at` 首末保持、段内插值 ⇒ 值恒在点值域内；
+///   宏偏移 ＝ 各路 `depth × 宏曲线值` 之和）。CC 门控一控制器一门 ⇒ 逐门区间交集
+///   判定是精确的（各控制器取值独立选取）。
+///
+///   ⚠ 修前这一条写的是「无有效探针 ⇒ 门控区域一律不发声」。实测后果：`locc/hicc`
+///   分层选奏法的库（`cithara-barbarica` 的 `locc105=64`/`hicc105=63`、
+///   `aliexpress-erhu`、`ixox-flute` 的 `locc$F1_ART=0 hicc$F1_ART=42`）在没有 CC 泳道
+///   的工程里被**整件判死** —— 渲染回执是 `samples=0`、`silent=全部区域`、
+///   `missing=[全部样本]`，而同一个 sfz 走 `yeban_load_sfz` 却逐条 `file(... frames=…)`。
+///   这就是「编辑器里能试听、渲染出来整轨没声」的根因。
+/// - **音符匹配**：键/力度范围（`trigger_by_note == false` 即 `key=-1` ⇒ 永不命中）＋ trigger 族。
+///   `Attack`/`First`/`Legato` 走 note-on 掩码；`First` 要求 `held == 0`（轨内首个音符起音时
+///   恒成立 ⇒ 只要有匹配音符就计入，多算安全）；`Legato` 要求 `held > 0`（至少两个音符
+///   才可能 ⇒ 音符总数 `< 2` 时排除，多算安全）；`Release`/`ReleaseKey` 族当前引擎无
+///   note-off 样本触发入口，但按任务要求保守计入（匹配音符即命中，多算安全）。
+/// - **超集安全**：静音摆放、概率音符、循环重复、超 `MAX_NOTES_PER_TRACK` 丢弃的音符
+///   一律照常计入 —— 它们至多让过滤器多读文件，⛔ 绝不会让可发声区域被漏掉。
+///   轮询变体（`seq_*`）不在区域判定里：同一音高的全部变体按同一音符命中 ⇒ 全计入。
+///
+/// 构造只读工程模型（音符、泳道、宏映射），⛔ 不碰文件系统、不解码。
+pub struct DemandLoadFilter {
+    /// 本轨全部 MIDI 音符的 `(pitch, velocity)`（含静音摆放的音符，见超集安全）。
+    notes: Vec<(u8, u8)>,
+    /// 本轨音符总数（`Legato` 门控用）。
+    total_notes: usize,
+    /// 每路控制器的离线探针可达整数区间 `[lo, hi]`（已 clamp 到 `0..=127`）。
+    /// 无条目的控制器恒 `0`（与「没有探针」同一条缺省，见 `wants` 的 CC 分支）。
+    cc_reachable: BTreeMap<u8, (u8, u8)>,
+}
+
+impl DemandLoadFilter {
+    /// 从真实工程与本轨身份构造判定器。
+    #[must_use]
+    pub fn from_project_track(project: &YebanProjectV1, track: EntityId) -> Self {
+        let mut notes = Vec::new();
+        if let Some(track_v3) = project.tracks.get(&track) {
+            for placement in track_v3.clips.values() {
+                if let Some(entry) = project.clip_pool.get(&placement.clip_id)
+                    && let ClipContent::Midi { notes: midi_notes } = &entry.content
+                {
+                    for note in midi_notes.values() {
+                        notes.push((note.pitch, note.velocity));
+                    }
+                }
+            }
+        }
+        let total_notes = notes.len();
+        // 本轨 MidiCc 泳道的曲线值域（`read_enabled` 且有点 ⇒ 有效；否则不算曲线）。
+        let mut curve_range: BTreeMap<u8, (f32, f32)> = BTreeMap::new();
+        // 宏级联到本轨 MidiCc 目标的偏移值域（`depth × 宏曲线值` 之和；逐控制器累加）。
+        let mut cascade_range: BTreeMap<u8, (f32, f32)> = BTreeMap::new();
+        // 宏级联是否非零（`CcProbe::is_zero` 口径：全部点都 `0.0` ⇒ 级联为零）。
+        let mut cascade_nonzero: BTreeSet<u8> = BTreeSet::new();
+        if let Some(track_v3) = project.tracks.get(&track) {
+            for (target, lane) in &track_v3.automation_lanes {
+                if let AutomationTarget::MidiCc {
+                    track_id,
+                    controller,
+                } = target
+                    && *track_id == track
+                    && *controller <= 127
+                    && lane.read_enabled
+                    && !lane.points.is_empty()
+                {
+                    let mut lo = f32::MAX;
+                    let mut hi = f32::MIN;
+                    for point in lane.points.values() {
+                        lo = lo.min(point.value);
+                        hi = hi.max(point.value);
+                    }
+                    curve_range.insert(*controller, (lo, hi));
+                }
+            }
+        }
+        // 宏级联扫描与 `MacroCascade::for_target` 同口径：全部音轨的 `Macro` 泳道
+        // （`read_enabled` 且有点）→ 所属宏参数的映射 → 目标是本轨 MidiCc 且 `depth != 0`。
+        for track_v3 in project.tracks.values() {
+            for (lane_target, lane) in &track_v3.automation_lanes {
+                let AutomationTarget::Macro {
+                    track_id: macro_track_id,
+                    macro_index,
+                } = lane_target
+                else {
+                    continue;
+                };
+                if !lane.read_enabled || lane.points.is_empty() {
+                    continue;
+                }
+                let Some(macro_track) = project.tracks.get(macro_track_id) else {
+                    continue;
+                };
+                let Some(macro_param) = macro_track.macros.get(*macro_index) else {
+                    continue;
+                };
+                let mut lo = f32::MAX;
+                let mut hi = f32::MIN;
+                let mut any_nonzero = false;
+                for point in lane.points.values() {
+                    lo = lo.min(point.value);
+                    hi = hi.max(point.value);
+                    any_nonzero |= point.value != 0.0;
+                }
+                for mapping in &macro_param.mappings {
+                    if let AutomationTarget::MidiCc {
+                        track_id,
+                        controller,
+                    } = mapping.target
+                        && track_id == track
+                        && controller <= 127
+                        && mapping.depth != 0.0
+                    {
+                        let (off_lo, off_hi) =
+                            cascade_range.entry(controller).or_insert((0.0, 0.0));
+                        let a = mapping.depth * lo;
+                        let b = mapping.depth * hi;
+                        *off_lo += a.min(b);
+                        *off_hi += a.max(b);
+                        if any_nonzero {
+                            cascade_nonzero.insert(controller);
+                        }
+                    }
+                }
+            }
+        }
+        let mut cc_reachable: BTreeMap<u8, (u8, u8)> = BTreeMap::new();
+        let controllers: BTreeSet<u8> = curve_range
+            .keys()
+            .copied()
+            .chain(cascade_range.keys().copied())
+            .collect();
+        for controller in controllers {
+            let has_curve = curve_range.contains_key(&controller);
+            let has_cascade = cascade_nonzero.contains(&controller);
+            // `CcProbe::new` 的取舍：曲线 present 或级联非零 ⇒ 该控制器进探针；
+            // 否则该控制器不在探针里（探针存在时恒 `0`，见 `wants` 的缺省分支）。
+            if !has_curve && !has_cascade {
+                continue;
+            }
+            let (mut raw_lo, mut raw_hi) = if has_curve {
+                curve_range[&controller]
+            } else {
+                (0.0, 0.0)
+            };
+            if has_cascade {
+                let (off_lo, off_hi) = cascade_range[&controller];
+                raw_lo += off_lo;
+                raw_hi += off_hi;
+            }
+            let lo = raw_lo.clamp(0.0, 127.0).round() as u8;
+            let hi = raw_hi.clamp(0.0, 127.0).round() as u8;
+            cc_reachable.insert(controller, (lo, hi));
+        }
+        Self {
+            notes,
+            total_notes,
+            cc_reachable,
+        }
+    }
+
+    /// 该区域在本次离线渲染里会不会发声（见结构体文档的语义逐条）。
+    #[must_use]
+    pub fn wants(&self, region: &Region<'_>) -> bool {
+        // 通道：摊平固定通道 1。
+        if region.lochan > 1 || region.hichan < 1 {
+            return false;
+        }
+        // 键位切换摊平规则（`keyswitch_ok(None, |_| false)`）。
+        if region.sw_down.is_some() {
+            return false;
+        }
+        if let Some(expected) = region.sw_last
+            && region.sw_default != Some(expected)
+        {
+            return false;
+        }
+        // CC 门控。⚠ 无探针时**不是**"一律不发声"：MIDI CC 的缺省值是 0，
+        // `locc/hicc` 的常见写法正是「0..63 一层、64..127 另一层」，缺省 0 落在第一层。
+        // 修前这里 `if !probe_exists { return false }` 把整件库判死（见结构体文档）。
+        for gate in &region.cc_gates {
+            let (lo, hi) = self.cc_reachable.get(&gate.cc).copied().unwrap_or((0, 0));
+            if hi < gate.lo || lo > gate.hi {
+                return false;
+            }
+        }
+        // `key=-1` 的区域不被任何音符触发。
+        if !region.trigger_by_note {
+            return false;
+        }
+        let key_vel_hit = self.notes.iter().any(|&(pitch, velocity)| {
+            i32::from(pitch) >= region.lokey
+                && i32::from(pitch) <= region.hikey
+                && velocity >= region.lovel
+                && velocity <= region.hivel
+        });
+        if !key_vel_hit {
+            return false;
+        }
+        match region.trigger {
+            Trigger::Attack | Trigger::First | Trigger::Release | Trigger::ReleaseKey => true,
+            // `Legato` 要求起音时已有别的音符按住 ⇒ 至少两个音符才可能。
+            Trigger::Legato => self.total_notes >= 2,
+        }
+    }
+}
+
 /// 与 [`load`] 在**同一次解析**里多产出一件东西：引擎摊平要的那张
 /// `(sample= 的**原样字符串**, 读取结果)` 表 —— 按区域首见顺序、按原样字符串去重，
 /// 跳过内建静音（`*silence`）与空 `sample=`。于是渲染路径
@@ -1196,6 +1458,7 @@ pub fn load_with(
     assign_id: u64,
     reused: bool,
     cache: &mut dyn SampleReads,
+    wanted: Option<&DemandLoadFilter>,
 ) -> Result<(SfzLoad, SampledProviderTable), Fault> {
     let metadata = std::fs::metadata(path).map_err(|error| {
         Fault::domain_with_data(
@@ -1255,6 +1518,7 @@ pub fn load_with(
         regions,
         silent_regions,
         builtin_silent_regions,
+        skipped_regions,
         sample_sources,
         sample_failures,
         sample_reads_truncated,
@@ -1271,8 +1535,20 @@ pub fn load_with(
         let mut provider_seen: BTreeSet<String> = BTreeSet::new();
         let mut silent_regions = 0usize;
         let mut builtin_silent_regions = 0usize;
+        let mut skipped_regions = 0usize;
         for (index, region) in instrument.regions().iter().enumerate() {
             let mut summary = summarize(index, region);
+            // ⭐ P1 按需装载：判定器说本区域在本次渲染里不会发声 ⇒ 跳过解码。
+            // 不进提供表（引擎摊平按路径查表 ⇒ 缺项即 `NO_SAMPLE`，即静音）、
+            // 不占预算、不计静音（它不是缺样本，是主动不读）。
+            if let Some(filter) = wanted
+                && !filter.wants(region)
+            {
+                summary.sample_file_state = "skippedDemandLoad".to_owned();
+                skipped_regions += 1;
+                regions.push(summary);
+                continue;
+            }
             // 本条区域会不会产生采样输出（引擎摊平口径）：内建静音 / 没声明 `sample=` /
             // 声明的文件读不到 ⇒ 静音；读到了 ⇒ 有声。
             let silent = if summary.builtin_silence {
@@ -1334,6 +1610,7 @@ pub fn load_with(
             regions,
             silent_regions,
             builtin_silent_regions,
+            skipped_regions,
             sample_sources,
             sample_failures,
             cache.truncated(),
@@ -1358,6 +1635,7 @@ pub fn load_with(
             regions,
             silent_regions,
             builtin_silent_regions,
+            skipped_regions,
             reused,
             sample_hz,
             sample_sources,
@@ -2511,21 +2789,21 @@ mod tests {
             map
         };
         assert_eq!(
-            parse_load_arguments(&arguments(None))
+            parse_load_arguments(&arguments(None), None)
                 .expect("缺省组合法")
                 .1,
             DEFAULT_SAMPLE_HZ,
             "缺省 ⇒ {DEFAULT_SAMPLE_HZ}"
         );
         assert_eq!(
-            parse_load_arguments(&arguments(Some(serde_json::json!(44_100))))
+            parse_load_arguments(&arguments(Some(serde_json::json!(44_100))), None)
                 .expect("数字合法")
                 .1,
             44_100.0
         );
 
         let Fault::Domain { code, message, .. } =
-            parse_load_arguments(&arguments(Some(serde_json::json!("fast"))))
+            parse_load_arguments(&arguments(Some(serde_json::json!("fast"))), None)
                 .expect_err("非数字必须被拒")
         else {
             panic!("必须是领域失败");
@@ -2538,7 +2816,7 @@ mod tests {
 
         for bad in [0.0, -1.0] {
             let Fault::Domain { code, message, .. } =
-                parse_load_arguments(&arguments(Some(serde_json::json!(bad))))
+                parse_load_arguments(&arguments(Some(serde_json::json!(bad))), None)
                     .expect_err("非正数必须被拒")
             else {
                 panic!("必须是领域失败");
@@ -2640,5 +2918,366 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// P1 单测共用：26 位 ULID（与本模块既有测试同一拼法）。
+    fn demand_uid(n: u128) -> EntityId {
+        use std::str::FromStr as _;
+        EntityId::from_str(&format!("01J8Z5Q0R7K3M9X2V4B6N8{n:04}")).expect("合法 ULID")
+    }
+
+    /// P1 单测共用：含一条 MIDI 片段（给定音高/力度）的最小工程。
+    fn demand_project(track_id: EntityId, notes: &[(u8, u8)]) -> YebanProjectV1 {
+        let mut project = YebanProjectV1::default();
+        let clip_id = demand_uid(9001);
+        let mut midi_notes = BTreeMap::new();
+        for (i, &(pitch, velocity)) in notes.iter().enumerate() {
+            let id = demand_uid(9100 + i as u128);
+            let mut note = yeban_model::MidiNote::new(id, (i as u64) * 960, pitch, 960);
+            note.velocity = velocity;
+            midi_notes.insert(id, note);
+        }
+        project.clip_pool.insert(
+            clip_id,
+            yeban_model::ClipPoolEntry {
+                id: clip_id,
+                name: "t".to_owned(),
+                content: ClipContent::Midi { notes: midi_notes },
+            },
+        );
+        let mut track = yeban_model::TrackV3 {
+            id: track_id,
+            ..yeban_model::TrackV3::default()
+        };
+        let placement_id = demand_uid(9200);
+        track.clips.insert(
+            placement_id,
+            yeban_model::ClipPlacement {
+                id: placement_id,
+                clip_id,
+                start_tick: 0,
+                duration_ticks: 960 * notes.len().max(1) as u64,
+                loop_config: yeban_model::LoopConfig::default(),
+                muted: false,
+            },
+        );
+        project.tracks.insert(track_id, track);
+        project
+    }
+
+    /// P1 单测共用：给本轨加一条 MidiCc 泳道（点值即原始 7 位值）。
+    fn demand_cc_lane(
+        project: &mut YebanProjectV1,
+        track_id: EntityId,
+        controller: u8,
+        points: &[(u64, f32)],
+        read_enabled: bool,
+    ) {
+        let target = AutomationTarget::MidiCc {
+            track_id,
+            controller,
+        };
+        let mut lane_points = BTreeMap::new();
+        for (i, &(tick, value)) in points.iter().enumerate() {
+            let id = demand_uid(9300 + i as u128);
+            lane_points.insert(
+                id,
+                yeban_model::AutomationPoint {
+                    id,
+                    tick,
+                    value,
+                    curve: yeban_model::CurveType::Linear,
+                },
+            );
+        }
+        let track = project.tracks.get_mut(&track_id).expect("轨在");
+        track.automation_lanes.insert(
+            target,
+            yeban_model::AutomationLane {
+                target,
+                points: lane_points,
+                read_enabled,
+                write_mode: yeban_model::AutomationWriteMode::Off,
+                domain: None,
+            },
+        );
+    }
+
+    /// P1：Attack 区域按键/力度命中，范围外不命中。
+    #[test]
+    fn demand_load_attack_region_hit_by_matching_note_only() {
+        let track_id = demand_uid(1001);
+        let project = demand_project(track_id, &[(60, 100)]);
+        let filter = DemandLoadFilter::from_project_track(&project, track_id);
+        let text = "<region> sample=a.wav key=60\n<region> sample=b.wav key=61\n<region> sample=c.wav key=60 lovel=101\n<region> sample=d.wav key=60 hivel=99\n";
+        let instrument = parse_text(text, &ParseLimits::default()).expect("解析");
+        let regions = instrument.regions();
+        assert!(filter.wants(&regions[0]), "键 60 力度 100 命中");
+        assert!(!filter.wants(&regions[1]), "键 61 不命中");
+        assert!(!filter.wants(&regions[2]), "力度下界 101 不命中");
+        assert!(!filter.wants(&regions[3]), "力度上界 99 不命中");
+    }
+
+    /// P1：通道门固定为 1（采样器路径不传通道）。
+    #[test]
+    fn demand_load_channel_gate_is_fixed_to_one() {
+        let track_id = demand_uid(1002);
+        let project = demand_project(track_id, &[(60, 100)]);
+        let filter = DemandLoadFilter::from_project_track(&project, track_id);
+        let text = "<region> sample=a.wav key=60 lochan=2 hichan=2\n<region> sample=b.wav key=60 lochan=1 hichan=16\n";
+        let instrument = parse_text(text, &ParseLimits::default()).expect("解析");
+        let regions = instrument.regions();
+        assert!(!filter.wants(&regions[0]), "不含通道 1 的区域不命中");
+        assert!(filter.wants(&regions[1]), "含通道 1 的区域命中");
+    }
+
+    /// P1：键位切换摊平规则（`keyswitch_ok(None, |_| false)`）。
+    #[test]
+    fn demand_load_keyswitch_flatten_rule() {
+        let track_id = demand_uid(1003);
+        let project = demand_project(track_id, &[(60, 100)]);
+        let filter = DemandLoadFilter::from_project_track(&project, track_id);
+        let text = "<region> sample=a.wav key=60 sw_last=60\n<region> sample=b.wav key=60 sw_last=60 sw_default=60\n<region> sample=c.wav key=60 sw_last=60 sw_default=61\n<region> sample=d.wav key=60 sw_down=61\n<region> sample=e.wav key=60 sw_up=61\n";
+        let instrument = parse_text(text, &ParseLimits::default()).expect("解析");
+        let regions = instrument.regions();
+        assert!(!filter.wants(&regions[0]), "sw_last 无缺省 ⇒ 假");
+        assert!(filter.wants(&regions[1]), "sw_last == sw_default ⇒ 过");
+        assert!(!filter.wants(&regions[2]), "sw_last != sw_default ⇒ 假");
+        assert!(!filter.wants(&regions[3]), "sw_down ⇒ 永假");
+        assert!(filter.wants(&regions[4]), "sw_up 不挡（down 恒假）");
+    }
+
+    /// P1：CC 门控跟离线探针（无探针 ⇒ 控制器取缺省 0；有探针 ⇒ 无泳道控制器恒 0）。
+    #[test]
+    fn demand_load_cc_gates_follow_offline_probe() {
+        let track_id = demand_uid(1004);
+        // 无任何泳道 ⇒ 无探针 ⇒ 每一路控制器取缺省值 0 ⇒ 含 0 的门过、不含 0 的门假。
+        let project = demand_project(track_id, &[(60, 100)]);
+        let filter = DemandLoadFilter::from_project_track(&project, track_id);
+        let text = "<region> sample=a.wav key=60 locc1=0 hicc1=127\n\
+                    <region> sample=b.wav key=60 locc105=64 hicc105=127\n\
+                    <region> sample=c.wav key=60 hicc105=63\n";
+        let instrument = parse_text(text, &ParseLimits::default()).expect("解析");
+        let regions = instrument.regions();
+        assert!(filter.wants(&regions[0]), "缺省 0 落在 [0,127] ⇒ 发声");
+        assert!(
+            !filter.wants(&regions[1]),
+            "缺省 0 不在 [64,127] ⇒ 不发声（这是 cithara 的上层奏法）"
+        );
+        assert!(
+            filter.wants(&regions[2]),
+            "缺省 0 落在 [..,63] ⇒ 发声（这是 cithara 的默认奏法）"
+        );
+        // 有一条 CC2 泳道 ⇒ 探针存在；CC1 无泳道 ⇒ 恒 0。
+        let mut project = demand_project(track_id, &[(60, 100)]);
+        demand_cc_lane(&mut project, track_id, 2, &[(0, 64.0)], true);
+        let filter = DemandLoadFilter::from_project_track(&project, track_id);
+        let text = "<region> sample=a.wav key=60 locc1=0 hicc1=0\n<region> sample=b.wav key=60 locc1=1 hicc1=127\n";
+        let instrument = parse_text(text, &ParseLimits::default()).expect("解析");
+        let regions = instrument.regions();
+        assert!(filter.wants(&regions[0]), "无泳道控制器恒 0 ⇒ 含 0 的门过");
+        assert!(
+            !filter.wants(&regions[1]),
+            "无泳道控制器恒 0 ⇒ 不含 0 的门假"
+        );
+        // CC1 泳道值域 [10, 20] ⇒ 交集判定。
+        let mut project = demand_project(track_id, &[(60, 100)]);
+        demand_cc_lane(&mut project, track_id, 1, &[(0, 10.0), (960, 20.0)], true);
+        let filter = DemandLoadFilter::from_project_track(&project, track_id);
+        let text = "<region> sample=a.wav key=60 locc1=15 hicc1=25\n<region> sample=b.wav key=60 locc1=30 hicc1=40\n";
+        let instrument = parse_text(text, &ParseLimits::default()).expect("解析");
+        let regions = instrument.regions();
+        assert!(filter.wants(&regions[0]), "值域 [10,20] 与 [15,25] 相交");
+        assert!(!filter.wants(&regions[1]), "值域 [10,20] 与 [30,40] 不交");
+        // 泳道被关掉 ⇒ 不算曲线 ⇒ 该控制器退回缺省 0。
+        let mut project = demand_project(track_id, &[(60, 100)]);
+        demand_cc_lane(&mut project, track_id, 1, &[(0, 10.0)], false);
+        let filter = DemandLoadFilter::from_project_track(&project, track_id);
+        let text = "<region> sample=a.wav key=60 locc1=0 hicc1=127\n\
+                    <region> sample=b.wav key=60 locc1=64 hicc1=127\n";
+        let instrument = parse_text(text, &ParseLimits::default()).expect("解析");
+        let regions = instrument.regions();
+        assert!(
+            filter.wants(&regions[0]),
+            "关掉的泳道 ⇒ 退回缺省 0 ⇒ 含 0 过"
+        );
+        assert!(
+            !filter.wants(&regions[1]),
+            "关掉的泳道 ⇒ 退回缺省 0 ⇒ 不含 0 假"
+        );
+    }
+
+    /// P1：宏级联进离线探针（偏移值域 ＝ depth × 宏曲线值域；全零点 ⇒ 级联为零）。
+    #[test]
+    fn demand_load_macro_cascade_feeds_cc_probe() {
+        let track_id = demand_uid(1005);
+        let mut project = demand_project(track_id, &[(60, 100)]);
+        let track = project.tracks.get_mut(&track_id).expect("轨在");
+        track.macros.push(yeban_model::MacroParameter {
+            name: "m".to_owned(),
+            value: 0.5,
+            mappings: vec![yeban_model::MacroMapping {
+                target: AutomationTarget::MidiCc {
+                    track_id,
+                    controller: 1,
+                },
+                depth: 10.0,
+            }],
+        });
+        let macro_target = AutomationTarget::Macro {
+            track_id,
+            macro_index: 0,
+        };
+        let mut points = BTreeMap::new();
+        for (i, &(tick, value)) in [(0, 0.0), (960, 1.0)].iter().enumerate() {
+            let id = demand_uid(9400 + i as u128);
+            points.insert(
+                id,
+                yeban_model::AutomationPoint {
+                    id,
+                    tick,
+                    value,
+                    curve: yeban_model::CurveType::Linear,
+                },
+            );
+        }
+        project
+            .tracks
+            .get_mut(&track_id)
+            .expect("轨在")
+            .automation_lanes
+            .insert(
+                macro_target,
+                yeban_model::AutomationLane {
+                    target: macro_target,
+                    points,
+                    read_enabled: true,
+                    write_mode: yeban_model::AutomationWriteMode::Off,
+                    domain: None,
+                },
+            );
+        let filter = DemandLoadFilter::from_project_track(&project, track_id);
+        let text = "<region> sample=a.wav key=60 locc1=5 hicc1=15\n<region> sample=b.wav key=60 locc1=20 hicc1=30\n";
+        let instrument = parse_text(text, &ParseLimits::default()).expect("解析");
+        let regions = instrument.regions();
+        assert!(
+            filter.wants(&regions[0]),
+            "宏偏移值域 [0,10] 与 [5,15] 相交"
+        );
+        assert!(
+            !filter.wants(&regions[1]),
+            "宏偏移值域 [0,10] 与 [20,30] 不交"
+        );
+        // 全零宏点 ⇒ 级联为零 ⇒ 无探针 ⇒ 门控假。
+        let mut project = demand_project(track_id, &[(60, 100)]);
+        let track = project.tracks.get_mut(&track_id).expect("轨在");
+        track.macros.push(yeban_model::MacroParameter {
+            name: "m".to_owned(),
+            value: 0.0,
+            mappings: vec![yeban_model::MacroMapping {
+                target: AutomationTarget::MidiCc {
+                    track_id,
+                    controller: 1,
+                },
+                depth: 10.0,
+            }],
+        });
+        let mut points = BTreeMap::new();
+        for (i, &(tick, value)) in [(0, 0.0), (960, 0.0)].iter().enumerate() {
+            let id = demand_uid(9500 + i as u128);
+            points.insert(
+                id,
+                yeban_model::AutomationPoint {
+                    id,
+                    tick,
+                    value,
+                    curve: yeban_model::CurveType::Linear,
+                },
+            );
+        }
+        project
+            .tracks
+            .get_mut(&track_id)
+            .expect("轨在")
+            .automation_lanes
+            .insert(
+                macro_target,
+                yeban_model::AutomationLane {
+                    target: macro_target,
+                    points,
+                    read_enabled: true,
+                    write_mode: yeban_model::AutomationWriteMode::Off,
+                    domain: None,
+                },
+            );
+        let filter = DemandLoadFilter::from_project_track(&project, track_id);
+        // 全零宏级联 ⇒ 该控制器不进探针 ⇒ 取值退回缺省 0（⛔ 不是"整件不发声"）。
+        let text = "<region> sample=a.wav key=60 locc1=0 hicc1=127\n\
+                    <region> sample=b.wav key=60 locc1=64 hicc1=127\n";
+        let instrument = parse_text(text, &ParseLimits::default()).expect("解析");
+        let regions = instrument.regions();
+        assert!(filter.wants(&regions[0]), "全零级联 ⇒ 缺省 0 ⇒ 含 0 的门过");
+        assert!(
+            !filter.wants(&regions[1]),
+            "全零级联 ⇒ 缺省 0 ⇒ 不含 0 的门假"
+        );
+    }
+
+    /// P1：First / Legato 的 held 规则（单音 ⇒ First 过、Legato 假；双音 ⇒ Legato 过）。
+    #[test]
+    fn demand_load_first_and_legato_held_rules() {
+        let track_id = demand_uid(1006);
+        let project = demand_project(track_id, &[(60, 100)]);
+        let filter = DemandLoadFilter::from_project_track(&project, track_id);
+        let text = "<region> sample=a.wav key=60 trigger=first\n<region> sample=b.wav key=60 trigger=legato\n";
+        let instrument = parse_text(text, &ParseLimits::default()).expect("解析");
+        let regions = instrument.regions();
+        assert!(filter.wants(&regions[0]), "首音起音时 held==0 ⇒ First 过");
+        assert!(
+            !filter.wants(&regions[1]),
+            "单音不可能有 held>0 ⇒ Legato 假"
+        );
+        let project = demand_project(track_id, &[(60, 100), (64, 100)]);
+        let filter = DemandLoadFilter::from_project_track(&project, track_id);
+        assert!(filter.wants(&regions[1]), "双音 ⇒ Legato 可能（多算安全）");
+    }
+
+    /// P1：释放族按匹配音符保守计入；`key=-1` 永不命中。
+    #[test]
+    fn demand_load_release_family_and_key_minus_one() {
+        let track_id = demand_uid(1007);
+        let project = demand_project(track_id, &[(60, 100)]);
+        let filter = DemandLoadFilter::from_project_track(&project, track_id);
+        let text = "<region> sample=a.wav key=60 trigger=release\n<region> sample=b.wav key=61 trigger=release\n<region> sample=c.wav key=60 trigger=release_key\n<region> sample=d.wav key=-1\n";
+        let instrument = parse_text(text, &ParseLimits::default()).expect("解析");
+        let regions = instrument.regions();
+        assert!(filter.wants(&regions[0]), "匹配音符的 release 计入");
+        assert!(!filter.wants(&regions[1]), "不匹配音符的 release 不计入");
+        assert!(filter.wants(&regions[2]), "匹配音符的 release_key 计入");
+        assert!(!filter.wants(&regions[3]), "key=-1 永不命中");
+    }
+
+    /// P1：与引擎自身判定的一致性（无 CC 门控的 Attack 区域：`wants` ⟺ 存在音符使
+    /// `matches_query` 成立；后者是引擎控制侧查询的同一谓词）。
+    #[test]
+    fn demand_load_agrees_with_engine_query_on_plain_attack_regions() {
+        use yeban_sfz::instrument::RegionQuery;
+        let track_id = demand_uid(1008);
+        let notes = [(60, 100), (64, 80), (72, 127)];
+        let project = demand_project(track_id, &notes);
+        let filter = DemandLoadFilter::from_project_track(&project, track_id);
+        let text = "<region> sample=a.wav key=60\n<region> sample=b.wav key=61\n<region> sample=c.wav key=60 lovel=101\n<region> sample=d.wav key=64 lovel=80 hivel=80\n<region> sample=e.wav key=72 hivel=126\n<region> sample=f.wav key=60 sw_last=60\n";
+        let instrument = parse_text(text, &ParseLimits::default()).expect("解析");
+        for region in instrument.regions() {
+            let query_hit = notes
+                .iter()
+                .any(|&(pitch, velocity)| region.matches_query(&RegionQuery::new(pitch, velocity)));
+            assert_eq!(
+                filter.wants(region),
+                query_hit,
+                "区域 sample={} 的 wants 必须等于存在音符使 matches_query 成立",
+                region.sample.as_ref()
+            );
+        }
     }
 }

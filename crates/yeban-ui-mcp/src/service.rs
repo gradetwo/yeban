@@ -75,7 +75,9 @@ use yeban_mcp::jsonrpc::{self, ErrorObject, FORBIDDEN, Id, NOT_IMPLEMENTED, Requ
 use yeban_mcp::security::{
     AuthContext, BearerToken, Channel, Denial, RunMode, ScopeSet, authenticate, authorize,
 };
-use yeban_ui_test_port::port::{KeyCode, PointerButton, PortError};
+use yeban_ui_test_port::port::{
+    ChordKey, KeyChord, KeyChordModifiers, KeyCode, PointerButton, PortError,
+};
 use yeban_ui_test_port::{image::Rect, mask};
 
 use crate::dry_run;
@@ -453,6 +455,38 @@ impl UiService {
                 let mut root = Map::new();
                 root.insert("dispatched".to_owned(), Value::from("key_press"));
                 root.insert("keyCode".to_owned(), Value::from(key.as_str()));
+                Ok(Value::Object(root))
+            }
+            methods::METHOD_DISPATCH_KEY_CHORD => {
+                let raw = required_text(params, "keyName");
+                // 键名解析与真调用**共用同一条**（与 `ui/dispatch_key_press` 同一取向）：
+                // 拼错的键名在 `dryRun` 与真调用上拿到**同一个** `-32602`。
+                let key = ChordKey::parse(&raw)
+                    .map_err(|error| port_error(PortContext::Inject, error))?;
+                let chord = KeyChord::new(
+                    key,
+                    KeyChordModifiers {
+                        shift: bool_param(params, "shift").unwrap_or(false),
+                        ctrl: bool_param(params, "ctrl").unwrap_or(false),
+                        alt: bool_param(params, "alt").unwrap_or(false),
+                        meta: bool_param(params, "meta").unwrap_or(false),
+                    },
+                );
+                if dry_run {
+                    return self.preview(spec, params);
+                }
+                let consumed = self
+                    .surface
+                    .dispatch_key_chord(&chord)
+                    .map_err(|error| port_error(PortContext::Inject, error))?;
+                let mut root = Map::new();
+                root.insert("dispatched".to_owned(), Value::from("key_chord"));
+                root.insert("chord".to_owned(), Value::from(chord.name()));
+                // `consumed` 是**界面自己**的回答（`invoke_key_action` 的返回值）：
+                // `false` = 这一组合没有绑定、被放行给焦点系统。⛔ 不是"调用失败"，
+                // 也不是"成功"—— 一个只有 `accepted: true` 的回执会把"按键没绑任何东西"
+                // 与"快捷键生效"写成同一句话，那正是自动化最容易被骗的地方。
+                root.insert("consumed".to_owned(), Value::from(consumed));
                 Ok(Value::Object(root))
             }
             methods::METHOD_SET_TRACK_HEIGHT => {
@@ -1736,7 +1770,7 @@ mod tests {
     }
 
     /// 判据 ⑩: `ui/methods` 是能力发现 —— 生产模式下 `injectAllowed=false`，
-    /// 列出全部 17 条方法与各自的 scope。
+    /// 列出全部 18 条方法与各自的 scope。
     #[test]
     fn methods_discovery_reports_scopes_and_inject_availability() {
         let state = shared(Permission::ReadOnly);
@@ -2022,6 +2056,10 @@ mod tests {
                 serde_json::json!({"keyCode": "Space"}),
             ),
             (
+                methods::METHOD_DISPATCH_KEY_CHORD,
+                serde_json::json!({"keyName": "z", "shift": true}),
+            ),
+            (
                 methods::METHOD_SWITCH_MAIN_VIEW,
                 serde_json::json!({"view": "arrangement"}),
             ),
@@ -2058,6 +2096,7 @@ mod tests {
                 .to_owned()
         };
         let number = |key: &str| arguments.get(key).cloned().unwrap_or(Value::Null);
+        let flag = |key: &str| arguments.get(key).and_then(Value::as_bool).unwrap_or(false);
         match method {
             methods::METHOD_DISPATCH_POINTER_DOWN => format!(
                 "pointer_down:{}:{}:{}:{}",
@@ -2074,6 +2113,21 @@ mod tests {
             // （`FakeSurface::dispatch_pointer_cancel_impl` 逐字对齐）。
             methods::METHOD_DISPATCH_POINTER_CANCEL => "pointer_cancel".to_owned(),
             methods::METHOD_DISPATCH_KEY_PRESS => format!("key_press:{}", text("keyCode")),
+            // chord 的日志条目由**同一套**类型算出（`KeyChord::name()`），因此"预览描述的
+            // 组合"与"执行面真收到的组合"若分叉（比如服务层漏读了一个修饰位），本判据红。
+            methods::METHOD_DISPATCH_KEY_CHORD => format!(
+                "key_chord:{}",
+                KeyChord::new(
+                    ChordKey::parse(&text("keyName")).expect("夹具的 `keyName` 必须解析得回来"),
+                    KeyChordModifiers {
+                        shift: flag("shift"),
+                        ctrl: flag("ctrl"),
+                        alt: flag("alt"),
+                        meta: flag("meta"),
+                    }
+                )
+                .name()
+            ),
             methods::METHOD_SET_TRACK_HEIGHT => format!(
                 "set_track_height:{}:{}",
                 text("elementId"),
@@ -2280,6 +2334,17 @@ mod tests {
                     // `[UI-A11Y-002]`: 预览必须说清"这一键会不会被输入法吞掉"，
                     // 而它读的是**同一份** IME 状态（判据 ⑥ 钉方向）。
                     assert_eq!(effect["isComposing"], after["imeComposing"]);
+                    assert_eq!(
+                        effect["resolution"],
+                        Value::from(ime::RESOLUTION_PASS_THROUGH)
+                    );
+                }
+                methods::METHOD_DISPATCH_KEY_CHORD => {
+                    // 与 `ui/dispatch_key_press` 同一套两格预览：IME 那一格读**同一份**状态，
+                    // chord 那一格说清"将要注入哪一个组合"（`Shift+Z` 这种名字必须是
+                    // `ChordKey::parse` + `KeyChord::name` 的产物，⛔ 不是入参原样回显）。
+                    assert_eq!(effect["isComposing"], after["imeComposing"]);
+                    assert_eq!(effect["chord"], Value::from("Shift+Z"));
                     assert_eq!(
                         effect["resolution"],
                         Value::from(ime::RESOLUTION_PASS_THROUGH)
@@ -2592,7 +2657,7 @@ mod tests {
         );
     }
 
-    /// 判据 ⑧（D48）: `dryRun` **没有污染真调用的响应形状** —— 既有 17 条方法的线上
+    /// 判据 ⑧（D48）: `dryRun` **没有污染真调用的响应形状** —— 既有全部（现 18 条）方法的线上
     /// 结果与从前逐字节相同（`dryRun` 的三个旗标只出现在 `dryRun=true` 的响应里）。
     #[test]
     fn dry_run_does_not_leak_into_the_real_response_shapes() {
@@ -2653,7 +2718,14 @@ mod tests {
             .filter(|entry| entry["dryRunSupported"].as_bool() == Some(true))
             .map(|entry| entry["name"].as_str().expect("字符串"))
             .collect();
-        assert_eq!(supporting.len(), 10, "支持 dryRun 的方法: {supporting:?}");
+        // ⭐ 2026-11-01（D-UI-3）：`ui/dispatch_key_chord` 与 `ui/dispatch_key_press` 同为
+        //    注入面 ⇒ 同样支持 dryRun 预览，本计数 10 → 11。判漂移靠点名，不靠数数：
+        //    两条键注入方法必须一起在场。
+        assert_eq!(supporting.len(), 11, "支持 dryRun 的方法: {supporting:?}");
+        assert!(
+            supporting.contains(&methods::METHOD_DISPATCH_KEY_CHORD),
+            "键注入支持 dryRun 而组合键不支持 ⇒ 两条注入面能力漂移: {supporting:?}"
+        );
         for method in supporting {
             assert!(
                 methods::method(method).expect("注册表里有").mutating,

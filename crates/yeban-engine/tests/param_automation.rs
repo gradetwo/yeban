@@ -52,7 +52,7 @@ use support::{NoteSpec, note_project, render, render_with_limiter};
 use yeban_engine::level::MAX_LINEAR_MAGNITUDE;
 use yeban_engine::meter::meter_channel;
 use yeban_engine::mixer::BUS_LIMITER_LATENCY_FRAMES;
-use yeban_engine::param::{MASTER_GAIN_SLOT, PARAM_SLOTS, TRACK_GAIN_SLOT};
+use yeban_engine::param::{MASTER_GAIN_SLOT, TRACK_GAIN_SLOT};
 use yeban_engine::ring::{EngineEvent, ParamAddress, event_channel};
 use yeban_engine::rt::EngineRuntime;
 use yeban_engine::snapshot::{EngineSnapshot, SnapshotSlot, retire_channel};
@@ -101,11 +101,25 @@ impl ParamRig {
     }
 
     fn from_snapshot(snapshot: EngineSnapshot) -> Self {
+        Self::from_snapshot_with_track_slots(snapshot, yeban_engine::synth::DEFAULT_TRACK_SLOTS)
+    }
+
+    /// 同 [`Self::from_snapshot`]，但显式指定参数表/声部池的槽位数。
+    ///
+    /// ⚠ 容量判据（P6）必须用**小容量**引擎跑：默认 1024 槽意味着"填满表"要发
+    /// 1025 条事件，而事件环只有 64 格 ⇒ 判据还没走到边界就先丢事件了。
+    fn from_snapshot_with_track_slots(snapshot: EngineSnapshot, track_slots: usize) -> Self {
         let slot = SnapshotSlot::new(snapshot);
         let (retire, queue) = retire_channel(64);
         let (sender, receiver) = event_channel(64);
         let (publisher, _collector) = meter_channel(4096);
-        let runtime = EngineRuntime::new(&slot, retire, receiver, publisher);
+        let runtime = *EngineRuntime::new_boxed_with_track_slots(
+            &slot,
+            retire,
+            receiver,
+            publisher,
+            track_slots,
+        );
         Self {
             slot,
             queue,
@@ -302,12 +316,18 @@ fn a_step_target_is_smoothed_rather_than_jumped() {
 /// 判据 P6：槽位表满时不静默；前 [`PARAM_SLOTS`] 个实体仍然各自可用。
 #[test]
 fn a_full_table_is_counted_and_earlier_slots_keep_working() {
+    // 槽位数取 16（运行期可配）：`PARAM_SLOTS` 现在是默认值 1024，用它填表要发
+    // 1025 条事件，而事件环只有 64 格 ⇒ 判据会在走到边界之前先被环容量截断。
+    const SLOTS: usize = 16;
     let fixture = note_project(&[NOTE]);
-    let mut rig = ParamRig::new(&fixture.project, 1);
+    let mut rig = ParamRig::from_snapshot_with_track_slots(
+        EngineSnapshot::from_project(&fixture.project, 1).expect("夹具工程必须能编译"),
+        SLOTS,
+    );
     // 第一个实体是**真的**那条轨（因此音频确实被乘），其余是随机实体
     // （`accept` 只按地址建槽位，不要求实体在快照里 —— 那是模块文档 §4 的口径）。
     rig.set_param(fixture.track, TRACK_GAIN_SLOT, 0.5);
-    for _ in 1..PARAM_SLOTS {
+    for _ in 1..SLOTS {
         rig.set_param(EntityId::new(), TRACK_GAIN_SLOT, 0.5);
     }
     let overflow = EntityId::new();
@@ -315,12 +335,12 @@ fn a_full_table_is_counted_and_earlier_slots_keep_working() {
     rig.quanta(QUANTA);
 
     let stats = rig.runtime.stats();
-    assert_eq!(rig.runtime.armed_param_slot_count(), PARAM_SLOTS);
+    assert_eq!(rig.runtime.armed_param_slot_count(), SLOTS);
     assert_eq!(
         stats.param_capacity_drops,
         1,
         "第 {} 个实体必须被计数（不静默）",
-        PARAM_SLOTS + 1
+        SLOTS + 1
     );
     assert_eq!(
         rig.runtime.armed_param_target(&overflow),

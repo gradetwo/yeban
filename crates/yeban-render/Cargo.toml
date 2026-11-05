@@ -57,7 +57,7 @@ yeban-model.workspace = true
 # `cargo test -p yeban-render` / `-p yeban-mcp` **不编 `cpal`**。
 # ⚠ `--workspace` 全量构建仍会为 `yeban-app` 编 `cpal` —— ⛔ 本行不声称"整仓不编 cpal"。
 yeban-engine = { workspace = true, default-features = false }
-# ⭐ ADR-0064 一期：插件轨音源（`plugin_source`）经本 trait 消费插件实例；
+# ⭐ ADR-0069 一期：插件轨音源（`plugin_source`）经本 trait 消费插件实例；
 # 本 crate 里只有 `plugin_source` 模块碰它（与 `engine_source` 的引擎边同款纪律）。
 # 零新增第三方包（`yeban-plugin-host` 自身只用 std＋手写 FFI）。
 yeban-plugin-host = { path = "../yeban-plugin-host" }

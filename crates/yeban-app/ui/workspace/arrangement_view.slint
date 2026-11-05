@@ -30,6 +30,10 @@ export component ArrangementView inherits Rectangle {
     in property <[string]> clip-ulids: [];
     // `"{轨道} · {片段}"` —— 由投影拼好, 界面不再自己拼字符串
     in property <[string]> clip-labels: [];
+    // ⭐ 每条摆放的**静音态**（`ClipPlacement::muted`，与 `clip-ulids` 同序同长）。
+    // 唯一写者是 `host::apply_view`；界面只读它画包头底色 —— 与 `track-mutes` 同一族口径：
+    // **工程字段**，⛔ 不是界面自己记的第二份状态。默认全 `false` ⇒ 基准帧逐像素不变。
+    in property <[bool]> clip-mutes: [];
     // 时间轴相对 x / 宽度 (逻辑像素; 由整数 tick ÷ ticks_per_pixel 得出)
     in property <[length]> clip-positions: [];
     in property <[length]> clip-widths: [];
@@ -78,6 +82,11 @@ export component ArrangementView inherits Rectangle {
     in property <[string]> track-volumes: [];
     in property <[bool]> track-mutes: [];
     in property <[bool]> track-solos: [];
+    in property <[bool]> track-arms: [];
+    in property <bool> automation-visible: true;
+    in property <bool> cycle-enabled: false;
+    in property <int> cycle-start-ticks: 0;
+    in property <int> cycle-end-ticks: 15360;
     // 轨道色标：`[color]` 由投影解析后的 RGB 构造（十六进制语法只在 `src/bridge.rs`，
     // 非法 / 缺失已在那边回退）；`track-color-labels` 是同一颜色的规范化 `#RRGGBB` 文本，
     // 只用于无障碍标签 —— 于是"界面画的颜色"与"控件树读到的色标"来自同一个值。
@@ -203,6 +212,12 @@ export component ArrangementView inherits Rectangle {
     callback track-mute-toggle(int);
     /// 点击轨道头的独奏开关：`(轨道下标)`。取反与 `Op::SetTrackSolo` 由宿主提交。
     callback track-solo-toggle(int);
+    /// 点击轨道头的录音就绪 (Arm) 开关：`(轨道下标)`。
+    callback track-arm-toggle(int);
+    /// 轨道重命名：`(轨道下标, 新名称)`。
+    callback track-rename(int, string);
+    /// 双击剪辑：直达钢琴卷帘（Logic Pro 对齐）。
+    callback clip-double-click(string);
 
     // ---------------------------------------------------------------- 标尺定位（点击走带）
     //
@@ -334,6 +349,16 @@ export component ArrangementView inherits Rectangle {
             width: 1px;
             height: parent.height;
             background: bar_index.mod(4) == 0 ? Tokens.line-strong : Tokens.line;
+        }
+
+        // Logic Pro 循环区指示带 (Cycle/Loop bar)
+        if root.cycle-enabled : Rectangle {
+            x: max(0px, (root.cycle-start-ticks / max(1, root.ticks-per-pixel)) * 1px);
+            y: 0px;
+            width: max(4px, ((root.cycle-end-ticks - root.cycle-start-ticks) / max(1, root.ticks-per-pixel)) * 1px);
+            height: 4px;
+            background: Tokens.gold;
+            border-radius: 2px;
         }
     }
 
@@ -529,6 +554,41 @@ export component ArrangementView inherits Rectangle {
             }
         }
 
+        // 录音就绪 (Arm) 开关 —— [UI-TEST-001]
+        Rectangle {
+            x: 58px;
+            y: 26px;
+            width: 22px;
+            height: 18px;
+            background: (track_index < root.track-arms.length && root.track-arms[track_index]) ? Tokens.record-red : transparent;
+            border-radius: Tokens.radius-sm;
+            accessible-role: button;
+            accessible-id: "track-" + track_index + "-arm-button";
+            accessible-label: "轨道 " + track_name + " 录音准备";
+            accessible-checkable: true;
+            accessible-checked: track_index < root.track-arms.length && root.track-arms[track_index];
+            accessible-action-default => { root.track-arm-toggle(track_index); }
+
+            UiText {
+                x: 0;
+                y: 0;
+                width: parent.width;
+                height: parent.height;
+                text: (track_index < root.track-arms.length && root.track-arms[track_index]) ? "R" : "";
+                color: Tokens.ink-0;
+                font-size: Tokens.font-size-xs;
+                horizontal-alignment: center;
+            }
+
+            TouchArea {
+                width: parent.width;
+                height: parent.height;
+                clicked => {
+                    root.track-arm-toggle(track_index);
+                }
+            }
+        }
+
         // 音量显示 = `TrackV3::volume_db` 的字符串形态（投影层格式化）
         UiMonoText {
             x: 120px;
@@ -577,14 +637,20 @@ export component ArrangementView inherits Rectangle {
             y: 0;
             width: parent.width;
             height: 18px;
-            background: Tokens.bg-raised;
+            // 静音态 = 包头底色从 `bg-raised`（绀灰 `#1e2733`）沉到 `bg-void`
+            // （玄夜 `#0e1216`，每通道约低一半 ⇒ "这一条不出声"）。
+            // 与上面轨静音按钮的 `record-red` **不同**：按钮是一枚小方片，整条 18px 包头
+            // 若也刷红会把整行染成告警色；这里取"沉下去"的读法。名字里带上"（静音）"
+            // 让读屏念得出来。未静音（默认全 false）⇒ 逐像素不变。
+            background: root.clip-mutes[clip_index] ? Tokens.bg-void : Tokens.bg-raised;
             // 选中态 = 包头描边（与音符矩形同一支令牌 `selection`；⛔ 不改填充）。
             // 没有选中（默认）⇒ 0px 无描边 ⇒ 默认帧逐像素不变。
             border-width: root.selected-clip-ulid == clip_ulid ? 2px : 0px;
             border-color: root.selected-clip-ulid == clip_ulid ? Tokens.selection : transparent;
             accessible-role: list-item;
             accessible-id: "clip-" + clip_ulid + "-header";
-            accessible-label: "剪辑 " + root.clip-labels[clip_index];
+            accessible-label: "剪辑 " + root.clip-labels[clip_index]
+                + (root.clip-mutes[clip_index] ? "（静音）" : "");
             accessible-item-index: clip_index;
             accessible-item-count: root.clip-ulids.length;
             accessible-item-selectable: true;
@@ -597,6 +663,7 @@ export component ArrangementView inherits Rectangle {
                 width: parent.width;
                 height: parent.height;
                 clicked => { root.clip-select(clip_ulid); }
+                double-clicked => { root.clip-double-click(clip_ulid); }
             }
 
             UiMonoText {
@@ -676,6 +743,10 @@ export component ArrangementView inherits Rectangle {
                 root.clip-drag-cancel();
             }
         }
+
+        double-clicked => {
+            root.clip-double-click(clip_ulid);
+        }
     }
 
     // ---------------------------------------------------------------- 自动化曲线 (自动化泳道)
@@ -704,6 +775,7 @@ export component ArrangementView inherits Rectangle {
         height: root.automation-lane-band-heights[lane_index];
         background: transparent;
         clip: true;
+        visible: root.automation-visible;
 
         accessible-role: image;
         // `track-{i}-automation-{目标键}-lane` —— 三段字面量 + 两个注入片段。

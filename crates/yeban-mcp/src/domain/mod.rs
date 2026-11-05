@@ -47,6 +47,7 @@
 //! | [`extension_pure`] | 三个扩展工具的**零第三方依赖**纯逻辑（词表 / 来源二选一 / 确定性标签），本机可单独验证 |
 //! | [`extension_audit`] | **零依赖**文本守卫：写路径 / `dryRun` 入口 / 错误码词表 / 无孤儿模块，本机可单独验证 |
 //! | [`sfz`] | `yeban_load_sfz` / `yeban_render_sfz_wav`：`yeban-sfz` 装载 + 用 SFZ 区域离线导出 WAV |
+//! | [`sfz_stream`] | P2 磁盘流式引擎：后台读盘线程＋逐声部无锁环＋起音预载（预览＝已用区域、实时＝整件乐器） |
 //! | [`record_wav`] | `yeban_record_wav`：`ARCH-REC-001` 三段（无锁环 + 后台抽干）→ 24-bit WAV |
 
 pub mod automation;
@@ -77,11 +78,13 @@ pub mod scene_launch;
 pub mod section;
 pub mod section_build;
 pub mod sfz;
+pub mod sfz_stream;
 pub mod stems;
 pub mod store;
+pub mod svs;
 pub mod view;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use serde_json::{Map, Value};
@@ -1192,6 +1195,31 @@ pub enum Plan {
         /// 已经收完并算好的读数（`apply` 原样回传，一位都不改）。
         report: Box<midi_input::ProbeReport>,
     },
+    /// `synthesize_singing`（伶人 SVS 提交）：提交回执（或 `dryRun` 预览）。
+    ///
+    /// 提交本身是**外部**副作用（服务端建任务），不改工程文档、不落盘；
+    /// `dryRun` 时 `plan` 只校验参数、不提交（见 `svs` 模块头的分工说明）。
+    SvsSubmit {
+        /// 提交回执 `{jobId, status, partsTotal, takesTotal, serviceUrl}`
+        /// 或 `dryRun` 预览 `{wouldSubmit, serviceUrl, partsTotal, takesTotal}`。
+        data: Value,
+    },
+    /// `svs_job`（状态 / 回执）：只读读数，`plan` 里已取好，`apply` 原样回传。
+    SvsJob {
+        /// 状态摘要 `{jobId, status, partsTotal, takesTotal, partsCompleted,
+        /// takesCompleted, error}` 或回执 `{jobId, receipt}`。
+        data: Value,
+    },
+    /// `svs_job`（`want=audio`）：取回 wav；`trackId` 给定时落轨。
+    ///
+    /// `import` 为 `Some` ⇔ 真落轨（`apply` 走 `import_audio::apply` 再合并
+    /// 报告）；`None` ⇔ 只取回（不落轨）或 `dryRun` 预览。
+    SvsAudio {
+        /// 只读规划的产物（`import_audio::plan` 的同一产物；落轨时才有）。
+        import: Option<Box<import_audio::AudioImport>>,
+        /// SVS 侧报告（任务 / part / 遍 / 模型 / 放置语义 / 暂存路径）。
+        report: Value,
+    },
     /// **宿主动作**（形态 A 的 GUI 经唯一可变权威写入；`ROAD-M4-008` 选项 (a) 第二片）。
     ///
     /// 工具面的 [`plan`] **永远不产出**这个变体（它不是任何一个 `yeban_*` 工具）；
@@ -1229,6 +1257,9 @@ impl Plan {
             Self::ExportStems { .. } => "export_stems",
             Self::RecordWav { .. } => "record_wav",
             Self::MidiInputProbe { .. } => "midi_input_probe",
+            Self::SvsSubmit { .. } => "svs_submit",
+            Self::SvsJob { .. } => "svs_job",
+            Self::SvsAudio { .. } => "svs_audio",
             // 宿主动作不是工具（`plan` 不产出它）；名字只用于留痕与判据点名。
             Self::Host(_) => "host_action",
         }
@@ -1246,6 +1277,10 @@ impl Plan {
             Self::EditAutomation { edit } => usize::from(edit.write.is_some()),
             // 真登记才提交；幂等命中（内容已存在）一位都不改。
             Self::ImportAudio { import } => usize::from(!import.ops.is_empty()),
+            // SVS 落轨与音频导入同一口径；只取回 / 预览 = 0。
+            Self::SvsAudio { import, .. } => import
+                .as_ref()
+                .map_or(0, |import| usize::from(!import.ops.is_empty())),
             Self::ImportMidi(_) => 1,
             // 宿主动作：提交恰好一条 `Op::Batch`；撤销 / 重做不动图谱。
             Self::Host(action) => match action {
@@ -1280,6 +1315,9 @@ impl Plan {
             | Self::RecordWav { .. }
             // 物理 MIDI 探针只读硬件端口，⛔ 不碰工程文档、⛔ 不落盘。
             | Self::MidiInputProbe { .. }
+            // SVS 提交 / 状态 / 回执不产生提交；落轨那条走上面的 `SvsAudio` 臂。
+            | Self::SvsSubmit { .. }
+            | Self::SvsJob { .. }
             // 场景启动不改工程文档（只改会话/引擎运行态）⇒ 提交数不变。
             | Self::LaunchScene { .. }
             // 撤销 / 重做**不动提交图谱**（只动文档与游标）⇒ 提交数不变。
@@ -1325,6 +1363,10 @@ impl Plan {
             Self::EditAutomation { edit } => edit.write.is_some(),
             // 真登记才改工程；幂等命中（内容已存在）一位都不改。
             Self::ImportAudio { import } => !import.ops.is_empty(),
+            // SVS 落轨与音频导入同一口径；只取回 / 预览不改工程。
+            Self::SvsAudio { import, .. } => import
+                .as_ref()
+                .is_some_and(|import| !import.ops.is_empty()),
             Self::ImportMidi(import) => !import.ops.is_empty(),
             // 宿主动作：撤销 / 重做真的动工程字节；提交在携带 op 时才算（空批不改文档）。
             Self::Host(action) => match action {
@@ -1358,7 +1400,10 @@ impl Plan {
             | Self::MidiInputProbe { .. }
             // 场景启动只往宿主队列里放一条请求：工程文档一个字节都不改
             // ⇒ ⛔ 不推进 `apply_revision`（界面不需要重投影）。
-            | Self::LaunchScene { .. } => false,
+            | Self::LaunchScene { .. }
+            // SVS 提交 / 状态 / 回执不改工程文档（提交是外部副作用）。
+            | Self::SvsSubmit { .. }
+            | Self::SvsJob { .. } => false,
         }
     }
 
@@ -1422,6 +1467,24 @@ impl Plan {
                 }
                 Ok(Some(simulated))
             }
+            // SVS 落轨与音频导入同一段模拟；只取回 / 预览 / 幂等命中 = 工程不变。
+            Self::SvsAudio { import, .. } => {
+                let Some(import) = import else {
+                    return Ok(None);
+                };
+                if import.ops.is_empty() {
+                    return Ok(None);
+                }
+                let current = domain.active_project().ok_or_else(no_active_project)?;
+                let mut simulated = current.clone();
+                for op in &import.ops {
+                    op.apply(&mut simulated)
+                        .map_err(|failure| error::from_model("SVS 音频落轨模拟", &failure))?;
+                }
+                Ok(Some(simulated))
+            }
+            // SVS 提交 / 状态 / 回执不改工程内容 ⇒ `dryRun` 的工程差异是 `None`。
+            Self::SvsSubmit { .. } | Self::SvsJob { .. } => Ok(None),
             Self::ImportMidi(import) => {
                 if import.ops.is_empty() {
                     return Ok(None);
@@ -1853,6 +1916,42 @@ impl Plan {
                 }
                 preview.insert("wouldApply".to_owned(), Value::from(true));
             }
+            // SVS 提交：`dryRun` 预览就是 plan 的 data（`wouldSubmit` 在内）；
+            // 真提交不走预览。⛔ 不标 `readOnly` —— 提交是外部副作用。
+            Self::SvsSubmit { data } => {
+                if let Value::Object(fields) = data.clone() {
+                    for (key, value) in fields {
+                        preview.insert(key, value);
+                    }
+                }
+            }
+            // SVS 状态 / 回执：只读查询，预览 = 真做。
+            Self::SvsJob { data } => {
+                if let Value::Object(fields) = data.clone() {
+                    for (key, value) in fields {
+                        preview.insert(key, value);
+                    }
+                }
+                preview.insert("readOnly".to_owned(), Value::from(true));
+                preview.insert("result".to_owned(), data.clone());
+            }
+            // SVS 取音频：报告键 +（落轨时）导入计划的 `data()`，与音频导入同款。
+            Self::SvsAudio { import, report } => {
+                if let Value::Object(fields) = report.clone() {
+                    for (key, value) in fields {
+                        preview.insert(key, value);
+                    }
+                }
+                if let Some(import) = import {
+                    let data = import.data()?;
+                    if let Value::Object(fields) = data {
+                        for (key, value) in fields {
+                            preview.insert(key, value);
+                        }
+                    }
+                    preview.insert("wouldApply".to_owned(), Value::from(!import.ops.is_empty()));
+                }
+            }
             // 宿主动作没有工具信封可预览；顶部的 `plan` 键 + 下面的工程摘要已足够。
             // （`plan` 永不产出这个变体，因此这条分支在实践中不可达。）
             Self::Host(_) => {}
@@ -2204,6 +2303,8 @@ pub fn plan(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
         "yeban_record_wav" => plan_record_wav(domain, call),
         "yeban_export_stems" => plan_export_stems(domain, call),
         "yeban_midi_input_probe" => plan_midi_input_probe(call),
+        "synthesize_singing" => svs::plan_synthesize(domain, call),
+        "svs_job" => svs::plan_svs_job(domain, call),
         // `ToolCall::from_params` 已按契约枚举把关, 因此这里不可达;
         // 用 CONFLICT 而不是 panic: 未知工具名不该让服务进程倒下。
         other => Err(Fault::domain(
@@ -3547,7 +3648,7 @@ fn plan_list_instruments(domain: &Domain, _call: &ToolCall) -> Result<Plan, Faul
     })
 }
 
-/// `yeban_scan_plugins`（**只读**）：枚举本机可用的 VST3 插件（ADR-0064 D12）。
+/// `yeban_scan_plugins`（**只读**）：枚举本机可用的 VST3 插件（ADR-0069 D12）。
 ///
 /// 不要求活跃工程：扫描读的是本机目录，不是工程。`paths` 给出的额外目录与
 /// 环境变量／平台标准路径一起扫；不存在的目录静默跳过（`Host::scan` 的口径）。
@@ -3613,7 +3714,7 @@ fn plan_scan_plugins(call: &ToolCall) -> Result<Plan, Fault> {
     })
 }
 
-/// `yeban_load_plugin`：验证加载一个 VST3 插件，经提案路径挂到指定轨道上（ADR-0064 D13）。
+/// `yeban_load_plugin`：验证加载一个 VST3 插件，经提案路径挂到指定轨道上（ADR-0069 D13）。
 ///
 /// 顺序承重：先 `require_active`，再解析 `trackId`、查轨（无则 `TRACK_NOT_FOUND`），
 /// 再按 `kind` 验证（失败响亮，不写提案 —— 坏插件不配进提案模拟），
@@ -3733,7 +3834,14 @@ fn plan_import_midi(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
 /// **不碰工程状态**、**不落盘**。读盘是"装载"这件事本身的语义（与
 /// `yeban_open_project` 的 `plan` 真的读盘同一条口径）。
 fn plan_load_sfz(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
-    let (path, sample_hz) = sfz::parse_load_arguments(&call.arguments)?;
+    // ⭐ 补丁 `P1`：**相对路径**（`assets/samples/<乐器>/…`）先按渲染侧那**四档**
+    // 解析成一份找得到的文件（工程目录 ⇒ 采样库根 ⇒ 仓库根 ⇒ cwd），再交给 `load`。
+    // 修前本行是 `parse_load_arguments(&call.arguments)?`，返回的 `PathBuf` 原样
+    // 进 `fs::read` ⇒ 相对路径必失败，与 `yeban_render_master` 的解析口径不一致。
+    let project_dir = domain
+        .active_path()
+        .and_then(|path| path.parent().map(Path::to_path_buf));
+    let (path, sample_hz) = sfz::parse_load_arguments(&call.arguments, project_dir.as_deref())?;
     // ⭐ 样本读取预算（`maxSampleFiles` / `maxSampleFrames`；缺省 = 合理默认值）。
     // 与 `yeban_render_master` 的**同一份**解析实现 ⇒ 两个工具对同一条预算说同一句话。
     let limits = sfz::parse_sample_limits(&call.arguments)?;
@@ -4217,6 +4325,14 @@ pub fn commit_model_of(plan: &Plan) -> &'static str {
         | Plan::ImportAudio { .. }
         | Plan::ImportMidi(_)
         | Plan::LoadSfz { .. } => "direct",
+        // SVS 落轨：真登记才算当场生效；只取回 / 预览 / 幂等命中 = 没有提交。
+        Plan::SvsAudio { import, .. } => {
+            if import.as_ref().is_some_and(|import| !import.ops.is_empty()) {
+                "direct"
+            } else {
+                "none"
+            }
+        }
         // 宿主动作里除了"放弃提案"都是当场生效；放弃与 `Plan::Reject` 同一读数
         // （只改记录, 不产生任何提交）。
         Plan::Host(action) => match action {
@@ -4242,7 +4358,9 @@ pub fn commit_model_of(plan: &Plan) -> &'static str {
         | Plan::RenderSfzWav { .. }
         | Plan::ExportStems { .. }
         | Plan::RecordWav { .. }
-        | Plan::MidiInputProbe { .. } => "none",
+        | Plan::MidiInputProbe { .. }
+        | Plan::SvsSubmit { .. }
+        | Plan::SvsJob { .. } => "none",
     }
 }
 
@@ -4322,6 +4440,9 @@ fn apply_plan_model(domain: &mut Domain, plan: Plan) -> Result<ToolResponse, Fau
         Plan::ListProposals { data } => Ok(ToolResponse::success(data)),
         Plan::ListInstruments { data } => Ok(ToolResponse::success(data)),
         Plan::ImportAudio { import } => import_audio::apply(domain, &import),
+        Plan::SvsSubmit { data } => Ok(ToolResponse::success(data)),
+        Plan::SvsJob { data } => Ok(ToolResponse::success(data)),
+        Plan::SvsAudio { import, report } => svs::apply_svs_audio(domain, import, report),
         Plan::Diagnostics { export } => diagnostics::apply(domain, &export),
         // 只读：字节在 `plan` 里就编好了，`apply` 原样回传（一位都不改、不落盘）。
         Plan::ExportMidi { export } => Ok(ToolResponse::success(export.data())),
@@ -4969,9 +5090,14 @@ fn proposal_warnings(project: &YebanProjectV1, ops: &[Op]) -> Vec<Value> {
     warnings
 }
 
-/// 一条音轨"有没有东西可发声"的**实测读数**（`#178` 的警告条件只读它）。
+/// 一条音轨**自己**"有没有东西可发声"的**实测读数**。
 ///
-/// 逐项与 `yeban_render_master` 的 `sources[].kind` 同源：
+/// 只数本轨的摆放，不看路由图 —— 总线轨 / 主总线收到的音频不在这份读数里。
+/// 与 `yeban_render_master` 的 `sources[].kind` 的同源关系只对**源轨**成立：
+/// `sources[]` 只列源节点，总线 / 主总线从不进 `sources[]`，所以"本轨读数
+/// 为静音"从来覆盖不了总线轨（见 [`track_has_sounding_upstream`] 与
+/// [`device_on_silent_track_warnings`] 的豁免规则）。
+///
 /// - 摆放被 `muted` ⇒ 渲染器 `continue`，这里也不计；
 /// - MIDI 片段：音符要先过 [`yeban_model::MidiNote::triggers`]（**同一个**概率判定
 ///   入口，本层不另掷骰子）才算"会发声"；
@@ -5028,6 +5154,37 @@ fn survey_track_playable(project: &YebanProjectV1, track: &TrackV3) -> TrackPlay
     survey
 }
 
+/// 该轨经路由图**入边传递闭包**是否连到一条可发声的源轨。
+///
+/// 总线轨自己 0 摆放是常态：它的声音来自上游汇总 —— 只数本轨摆放会把
+/// 每条有入边的总线轨都误判成静音。判定沿 `destination_node == 当前轨` 的
+/// 边向上游走，任一上游轨的 [`survey_track_playable`] 有可发声摆放即成立。
+/// `visited` 防环：路由图校验不禁环，遍历不带已访集会在环上打转。
+fn track_has_sounding_upstream(
+    project: &YebanProjectV1,
+    track_id: EntityId,
+    visited: &mut BTreeSet<EntityId>,
+) -> bool {
+    for edge in project.routing_graph.edges.values() {
+        if edge.destination_node != track_id {
+            continue;
+        }
+        let source = edge.source_node;
+        if !visited.insert(source) {
+            continue;
+        }
+        if let Some(source_track) = project.tracks.get(&source)
+            && survey_track_playable(project, source_track).sounding_placements > 0
+        {
+            return true;
+        }
+        if track_has_sounding_upstream(project, source, visited) {
+            return true;
+        }
+    }
+    false
+}
+
 /// `usize` → `u64`（`saturating` 口径；读数是给人看的，不因平台宽度变化而回绕）。
 fn count_u64(value: usize) -> u64 {
     u64::try_from(value).unwrap_or(u64::MAX)
@@ -5049,7 +5206,17 @@ fn count_u64(value: usize) -> u64 {
 /// ⇒ **0 clip** 与 **有 clip 但音符全空 / 全被静音 / 概率判定全不触发** 都算静音，
 /// 因为渲染器的 `kind` 也只看"排程到的音符 + 真的渲染的音频片段"：
 /// 两处若采用不同的口径，就会出现"装设备时不说、渲染时才说"的第二条裂缝。
-/// ⭐ 同一批里给这条轨摆了片段 ⇒ 模拟后的工程里有东西可发声 ⇒ **不误报**。
+/// ⭐ 同一批里给这条轨摆了片段 ⇒ 模拟后的工程里有东西可发声 ⇒ **不误报**.
+///
+/// ## 豁免（只对源轨裁决"静音"，总线 / 主总线不适用本条）
+///
+/// - 主总线（`master_bus_track_id`）永不报：本轨 0 片段是结构使然，且离线
+///   渲染里它的设备链跑在"求和之后 → 插入"（`project_inserts` 不剔除任何
+///   节点），旧规则对主总线必报是误报。
+/// - 经路由入边（传递闭包）连到可发声源的轨不报：汇总进来的音频同样会过
+///   它的设备链；只有上游（传递闭包）也全静音时才报。
+/// - `sources[].kind` 的对照只对源轨成立：总线 / 主总线从不进 `sources[]`，
+///   "静音源"读数从来覆盖不了总线轨。
 ///
 /// ⚠ **不阻断**：装是合法的（先装设备、后写片段是正常顺序），`proposalCount` /
 /// `commitCount` 照常前进，`code` 不是 `reason`。
@@ -5067,8 +5234,18 @@ fn device_on_silent_track_warnings(project: &YebanProjectV1, ops: &[Op]) -> Vec<
         let Some(track) = project.tracks.get(track_id) else {
             continue;
         };
+        // 主总线永不报：本轨 0 片段是结构使然，且离线渲染里它的设备链跑在
+        // "求和之后 → 插入"，旧规则对主总线必报是误报。
+        if track.id == project.master_bus_track_id {
+            continue;
+        }
         let survey = survey_track_playable(project, track);
         if survey.sounding_placements > 0 {
+            continue;
+        }
+        // 经路由入边（传递闭包）连到可发声源的总线轨也不报：汇总进来的音频
+        // 同样会过它的设备链；只有上游也全静音时才报。
+        if track_has_sounding_upstream(project, track.id, &mut BTreeSet::new()) {
             continue;
         }
         // 两句话都只陈述**实测到的**事实：0 摆放与"有摆放但都发不出声"不是一回事，
@@ -5465,6 +5642,16 @@ mod tests {
         // 十个工具都必须能进 `plan`（不再一律 -32005）。
         let domain = domain();
         let track = fixture_track(&domain);
+        // SVS 服务不在：绑一个临时端口后立刻释放 ⇒ 连接必被拒
+        //（不依赖“某个端口恰好没人用”这种运气）。
+        let closed_service_url = {
+            let port = std::net::TcpListener::bind("127.0.0.1:0")
+                .expect("临时端口")
+                .local_addr()
+                .expect("端口号")
+                .port();
+            format!("http://127.0.0.1:{port}")
+        };
         let cases: Vec<(&str, Value)> = vec![
             (
                 "yeban_open_project",
@@ -5596,14 +5783,37 @@ mod tests {
             ),
             // 审计 `N13`：会话乐器清单（只读枚举；空 registry 也是合法成功）。
             ("yeban_list_instruments", serde_json::json!({})),
-            // ADR-0064：插件扫描（只读枚举；空目录 / 无插件也是合法成功）。
+            // ADR-0069：插件扫描（只读枚举；空目录 / 无插件也是合法成功）。
             ("yeban_scan_plugins", serde_json::json!({})),
-            // ADR-0064：插件装载（验证加载测试桩后经提案路径挂设备；提案成功）。
+            // ADR-0069：插件装载（验证加载测试桩后经提案路径挂设备；提案成功）。
             (
                 "yeban_load_plugin",
                 serde_json::json!({
                     "trackId": track.to_canonical_string(),
                     "pluginPath": "stub:sine",
+                }),
+            ),
+            // SVS 提交：合法 parts + 不可达服务 ⇒ 规划阶段响亮 `IO_ERROR`。
+            (
+                "synthesize_singing",
+                serde_json::json!({
+                    "parts": [{
+                        "label": "lead",
+                        "score": {
+                            "bpm": 120.0,
+                            "notes": [{"lyric": "la", "midi": 69, "start_s": 0.0, "dur_s": 1.0}],
+                        },
+                        "voice_id": "v1",
+                    }],
+                    "service_url": closed_service_url.clone(),
+                }),
+            ),
+            // SVS 任务：状态查询 + 不可达服务 ⇒ 同样响亮 `IO_ERROR`。
+            (
+                "svs_job",
+                serde_json::json!({
+                    "job_id": "abcdef0123456789",
+                    "service_url": closed_service_url,
                 }),
             ),
         ];
@@ -5684,6 +5894,12 @@ mod tests {
                         rendered.contains("missing"),
                         "目录缺席必须带 `data.missing`: {rendered}"
                     );
+                }
+                "synthesize_singing" | "svs_job" => {
+                    // 服务不在 ⇒ 连接被拒 ⇒ 结构化 `IO_ERROR`
+                    //（响亮失败，绝不静默空成功；正向通路在 `tests/svs_tools.rs`）。
+                    let fault = outcome.expect_err("服务不可达必须响亮失败");
+                    assert_eq!(fault.domain_code(), Some(ErrorCode::IoError));
                 }
                 _ => {
                     outcome.unwrap_or_else(|fault| panic!("{name} 规划失败: {fault:?}"));

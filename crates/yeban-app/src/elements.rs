@@ -780,6 +780,13 @@ impl ElementRegistry {
                 &format!("轨道 {} 独奏", track.name),
                 false,
             );
+            registry.add(
+                &format!("track-{track_index}-arm-button"),
+                ElementKind::Button,
+                "workspace/arrangement_view.slint",
+                &format!("轨道 {} 录音准备", track.name),
+                false,
+            );
             // 轨道色标：标签携带**规范化**的 `#RRGGBB`（非法 / 缺失已在投影层回退）。
             // 它让"投影 ↔ 控件树"的色标一致性在纯 Rust 侧与 Tier-1 运行时树两侧都能断言
             // （`[UI-A11Y-004]` 的色标纪律；见 docs/ledger/app-completion-notes.md §2）。
@@ -2001,6 +2008,17 @@ impl ElementRegistry {
             "导出时长（秒，留空用后端默认）",
             false,
         );
+        // ⭐ `D-EX-1`：母线限制器开关。能力（`WavExportOptions.limiter`）早就有，
+        // CLI `--limiter` 与 MCP `yeban_render` 的 `limiter` 都能开，缺的是 GUI 这条路
+        // 到不了它 ⇒ 本条登记补的就是这一个可寻址落点。它是**布尔量**，
+        // ⛔ 不经上面那四个文本框的解析口径（宿主在 `resolve()` 之后直接赋值）。
+        registry.add(
+            "export-wav-limiter-switch",
+            ElementKind::Switch,
+            "dialogs/export_wav_dialog.slint",
+            "母线限制器（仅本次导出，不进工程）",
+            false,
+        );
         registry.add(
             "export-wav-options-note",
             ElementKind::Text,
@@ -2321,6 +2339,7 @@ mod tests {
                 "header",
                 "mute-button",
                 "solo-button",
+                "arm-button",
                 "channel-strip",
                 "meter",
                 "color-swatch",

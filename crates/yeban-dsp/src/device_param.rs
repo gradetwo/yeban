@@ -53,7 +53,7 @@ pub fn sanitised_output_gain_db(value: f32) -> f32 {
 ///
 /// - **混响 / 卷积**（`reverb_*` / `conv_*`）：它们不是**通道条**字段，而是
 ///   [`ReverbField`] / [`ConvolutionField`] 的落点（`#293`）。其中卷积的 IR 形状
-///   （`conv_ir_decay*` / `conv_ir_seed`）是构造期烘焙、不可自动化；其余标量由对应
+///   （`conv_ir_decay*` / `conv_ir_seed` / `conv_ir_stereo`）是构造期烘焙、不可自动化；其余标量由对应
 ///   器件的 `set_params` 在块边界改（⛔ 不是 `ChannelStrip::set_params`）；
 /// - 未知旋钮。
 ///
@@ -127,6 +127,10 @@ pub enum StripField {
     DynEqThresholdDb,
     /// 动态 EQ 的最大衰减量（dB，`0` 旁通）。`deq_cut_db` / `dyn_eq_cut_db`。
     DynEqMaxCutDb,
+    /// 动态 EQ 带通/峰值的 Q。`deq_q` / `dyn_eq_q`（钳 `0.3..=8.0`，缺省 `0.9`）。
+    DynEqQ,
+    /// 动态 EQ 的压缩比。`deq_ratio` / `dyn_eq_ratio`（钳 `1.0..=20.0`，缺省 `4.0`）。
+    DynEqRatio,
     /// 立体声宽度（M/S 缩放，`1` = 原样）。`strip_width` / `channel_width`。
     ///
     /// ⛔ **不叫 `width`**：Freeverb 自己有一个 `width`（`ReverbField::Width`），
@@ -139,6 +143,10 @@ pub enum StripField {
     /// ⛔ **不叫 `width` / `mono`**：`mono` 太泛（会被误当成"整条单声道开关"，
     /// 那是 `strip_width = 0`），而 `width` 已经归 [`Self::Width`]。
     MonoBelowHz,
+    /// M/S 中频增益（dB，`0` = 旁通）。`ms_mid_gain_db` / `ms_mid_gain`。
+    MsMidGainDb,
+    /// M/S 中频中心频率（Hz）。`ms_mid_freq_hz` / `ms_mid_freq`。
+    MsMidFreqHz,
 }
 
 impl StripField {
@@ -170,11 +178,15 @@ impl StripField {
         Self::DynEqFreq,
         Self::DynEqThresholdDb,
         Self::DynEqMaxCutDb,
+        Self::DynEqQ,
+        Self::DynEqRatio,
         Self::Width,
         Self::MonoBelowHz,
+        Self::MsMidGainDb,
+        Self::MsMidFreqHz,
     ];
 
-    /// **全部拼写** → 字段（`51` 条；这是"哪个名字能落点"的**唯一**名字表）。
+    /// **全部拼写** → 字段（`61` 条；这是"哪个名字能落点"的**唯一**名字表）。
     ///
     /// 与 `yeban_render::inserts::StripProjection::apply` 的通道条分支逐字同集：7 个参数各有 2 个拼写，
     /// 两个增益各有 3 个，两个开关与 `cutoff_hz` 各 1 个；⭐ `#304` 起压缩的 8 个
@@ -237,6 +249,16 @@ impl StripField {
         // `#344` mono-maker：一个字段两个拼写（`mono_below_hz` 是规范名）。
         ("mono_below_hz", Self::MonoBelowHz),
         ("mono_maker_hz", Self::MonoBelowHz),
+        // ⭐ nightfall v14 落地：0001 的四字段各两拼写（与两路投影的 `apply` 臂同集，
+        // 否则引擎拼写判据报单侧漂移）。DynEq 两字段的规范名沿 `deq_*` 短式。
+        ("deq_q", Self::DynEqQ),
+        ("dyn_eq_q", Self::DynEqQ),
+        ("deq_ratio", Self::DynEqRatio),
+        ("dyn_eq_ratio", Self::DynEqRatio),
+        ("ms_mid_gain_db", Self::MsMidGainDb),
+        ("ms_mid_gain", Self::MsMidGainDb),
+        ("ms_mid_freq_hz", Self::MsMidFreqHz),
+        ("ms_mid_freq", Self::MsMidFreqHz),
     ];
 
     /// 名字 → 字段（**大小写不敏感**，别名表与 `yeban_render::inserts::StripProjection::apply` 逐字同集）。
@@ -282,8 +304,12 @@ impl StripField {
             Self::DynEqFreq => "deq_freq",
             Self::DynEqThresholdDb => "deq_threshold_db",
             Self::DynEqMaxCutDb => "deq_cut_db",
+            Self::DynEqQ => "deq_q",
+            Self::DynEqRatio => "deq_ratio",
             Self::Width => "strip_width",
             Self::MonoBelowHz => "mono_below_hz",
+            Self::MsMidGainDb => "ms_mid_gain_db",
+            Self::MsMidFreqHz => "ms_mid_freq_hz",
         }
     }
 
@@ -329,8 +355,12 @@ impl StripField {
             Self::DynEqFreq => params.dyn_eq.freq_hz,
             Self::DynEqThresholdDb => params.dyn_eq.threshold_db,
             Self::DynEqMaxCutDb => params.dyn_eq.max_cut_db,
+            Self::DynEqQ => params.dyn_eq.q,
+            Self::DynEqRatio => params.dyn_eq.ratio,
             Self::Width => params.width,
             Self::MonoBelowHz => params.mono_below_hz,
+            Self::MsMidGainDb => params.ms_mid_gain_db,
+            Self::MsMidFreqHz => params.ms_mid_freq_hz,
         }
     }
 
@@ -367,8 +397,12 @@ impl StripField {
             Self::DynEqFreq => params.dyn_eq.freq_hz = value,
             Self::DynEqThresholdDb => params.dyn_eq.threshold_db = value,
             Self::DynEqMaxCutDb => params.dyn_eq.max_cut_db = value,
+            Self::DynEqQ => params.dyn_eq.q = value,
+            Self::DynEqRatio => params.dyn_eq.ratio = value,
             Self::Width => params.width = value,
             Self::MonoBelowHz => params.mono_below_hz = value,
+            Self::MsMidGainDb => params.ms_mid_gain_db = value,
+            Self::MsMidFreqHz => params.ms_mid_freq_hz = value,
         }
     }
 
@@ -480,8 +514,8 @@ impl ReverbField {
 
 /// 卷积混响上**可被 `DeviceParam` 自动化落点**的**标量**字段。
 ///
-/// 刻意**不含** IR 形状（`conv_ir_decay_s` / `conv_ir_decay` / `conv_ir_seed`）：
-/// 那三个是**构造期烘焙**，换值要重新合成 IR 并走 `set_impulse_response`
+/// 刻意**不含** IR 形状（`conv_ir_decay_s` / `conv_ir_decay` / `conv_ir_seed` / `conv_ir_stereo`）：
+/// 那四个是**构造期烘焙**，换值要重新合成 IR 并走 `set_impulse_response`
 /// （`yeban-dsp` 文档逐字“分配入口之一”）⇒ 不是块边界能改的标量。
 ///
 /// 四个字段都是 `ConvolutionReverb::set_params` 的入参；该函数文档承诺**零分配、

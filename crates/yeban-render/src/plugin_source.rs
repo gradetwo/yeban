@@ -1,6 +1,6 @@
 //! 插件轨音源（`PluginTrackSource`）：轨 MIDI → 宿主乐器 → 音频。
 //!
-//! 一期范围（ADR-0064 D5／D7／D10）：
+//! 一期范围（ADR-0069 D5／D7／D10）：
 //! - 音源优先级由调用方（MCP 渲染装配）裁决：本源只负责“插件已选定”后的渲染。
 //! - 事件：只发音符 on／off（帧精确，`note_id`＝调度下标；同块同偏移先 off 后 on）。
 //!   CC／弯音／滑音一期不发（VST3 无通用 CC 输入事件；`ScheduledNote` 也不带通道）。
@@ -59,7 +59,7 @@ impl PluginTrackSource {
     ///
     /// `max_block` 是插件 `setupProcessing` 的块上限：必须 ≥ 渲染计划的块大小
     /// （调用方保证；超限时 `process` 响亮失败，不静默截断）。
-    /// 激活失败 ⇒ [`RenderError::Source`]（响亮失败，见 ADR-0064 D6）。
+    /// 激活失败 ⇒ [`RenderError::Source`]（响亮失败，见 ADR-0069 D6）。
     ///
     /// # Errors
     ///
@@ -164,7 +164,7 @@ impl PluginTrackSource {
             self.active.push((note.end_sample(), note_id, note.pitch()));
             self.cursor += 1;
         }
-        // 同块同偏移先 off 后 on（ADR-0064 D7）；稳定排序保同组内调度顺序。
+        // 同块同偏移先 off 后 on（ADR-0069 D7）；稳定排序保同组内调度顺序。
         self.events.sort_by_key(|event| {
             (
                 event.sample_offset,
@@ -300,6 +300,7 @@ mod tests {
             .render_block(context(64, 64, 2), &mut out)
             .expect("渲染");
         assert_eq!(source.position(), 128);
+        assert_eq!(out.len(), 64 * 2);
         assert!(out.iter().all(|sample| *sample == 0.0));
     }
 
@@ -368,6 +369,7 @@ mod tests {
             .render_block(context(0, 64, 2), &mut out)
             .expect("渲染");
         assert_eq!(source.position(), 64);
+        assert_eq!(out.len(), 64 * 2);
         assert!(out.iter().all(|sample| *sample == 0.0));
     }
 

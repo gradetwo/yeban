@@ -638,7 +638,7 @@ pub const SAMPLER_SOURCE_KIND: &str = "sfz-sampler";
 /// 音频源种类：采样器音符与音频片段**都有**的源。
 pub const SAMPLER_MIXED_SOURCE_KIND: &str = "sfz-sampler+audio-clip";
 
-/// 音频源种类：⭐ 宿主插件乐器（ADR-0064）：带绑定且加载成功的非旁通外部乐器轨。
+/// 音频源种类：⭐ 宿主插件乐器（ADR-0069）：带绑定且加载成功的非旁通外部乐器轨。
 ///
 /// 只有插件音符的源（插件源胜出时 `midi` 为空，⛔ 不叠引擎声）。
 pub const PLUGIN_SOURCE_KIND: &str = "plugin-instrument";
@@ -1539,6 +1539,11 @@ pub struct SamplerReport {
     /// 与 `yeban_load_sfz` / `yeban_list_instruments` 的 `silentRegionCount` **同一个
     /// 含义**（报告缺口 `G4` 起对齐；`builtinSilentRegionCount` 才是内建静音子集）。
     pub silent_regions: usize,
+    /// ⭐ P1 按需装载：本次渲染因判定为不会发声而跳过解码的区域数。
+    ///
+    /// ⛔ 不进 `label()`：`label` 与 app 的 `--export-wav` 同形（`#221` 判据逐字比它），
+    /// 只在 JSON 里报 `skippedRegions`。
+    pub skipped_regions: usize,
     /// 排程进采样器的音符数。
     pub notes: u64,
     /// 没匹配到任何区域的音符数（合法：该音高在这份 SFZ 里不发声）。
@@ -1619,6 +1624,7 @@ impl SamplerReport {
             "resolvedPath": self.resolved_path,
             "regions": self.regions,
             "silentRegionCount": self.silent_regions,
+            "skippedRegions": self.skipped_regions,
             "notes": self.notes,
             "notesUnmatched": self.notes_unmatched,
             "notesUsingFileSample": self.notes_using_file_sample,
@@ -2694,6 +2700,7 @@ pub fn build(
         .map_err(|error| render_error("渲染计划探针编译", &error))?;
     let nodes = probe.nodes;
     let source_nodes = probe.source_nodes;
+    let bus_source_nodes = probe.bus_source_nodes;
     let rendered_edges = probe.rendered_edges;
     // ⭐ `#315` / `#337`：三个侧链读数（"声明了 N 条、求和了 M 条、没有键输入路径 K 条"）。
     // **纯读**，⛔ 不碰一个样本。
@@ -2769,8 +2776,12 @@ pub fn build(
     //      `Macro` 泳道（`#297`）真的被应用（见 `TrackSource`、第 9 步、
     //      `RenderPlan::attach_send_automation` 与
     //      `RenderPlan::attach_device_param_automation`）。
+    // ⭐ TrackVolume 修复：收据的源节点集也要含总线源轨 —— 它们的引擎源真的渲染
+    // （`MidiCc` 泳道因此落点），写侧读数与导出读数才同源。
+    let mut report_source_nodes = source_nodes.clone();
+    report_source_nodes.extend(bus_source_nodes.iter().copied());
     let automation =
-        AutomationReport::from_project(project, &source_nodes, &rendered_edges, &nodes);
+        AutomationReport::from_project(project, &report_source_nodes, &rendered_edges, &nodes);
     if automation.unsupported > 0 {
         note_unsupported(&mut unsupported, &mut counts, "automationLanes");
     }
@@ -2793,30 +2804,42 @@ pub fn build(
     let mut sampler_loads: BTreeMap<EntityId, ArmedSamplerTrack> = BTreeMap::new();
     let mut sampler_failure: Option<Fault> = None;
     let mut sampler_store = sfz::SampleStore::new();
-    let timbre = EngineTimbre::from_project_armed(project, sample_rate as f32, |track, raw| {
-        match prepare_sampler_track(
-            track,
-            raw,
-            project,
-            project_path,
-            &mut sampler_store,
-            request.sample_limits,
-        ) {
-            Ok((armed, samples)) => {
-                // ⭐ `#279`：解码表**直接**交给引擎（`(sample= 原样字符串, (PCM, 原始采样率))`），
-                // ⛔ 不再经 `ArmedSamplerTrack` 中转一次深拷贝（旧 `armed.samples.clone()`）。
-                let resolved = armed.load.path.clone();
-                sampler_loads.insert(track, armed);
-                ArmedSfzInput::new(resolved, samples)
-            }
-            Err(fault) => {
-                if sampler_failure.is_none() {
-                    sampler_failure = Some(fault);
-                }
-                ArmedSfzInput::empty(raw)
-            }
+    // ⭐ TrackVolume 修复：快照投影用的工程副本里把总线源轨的静态推子置 0 dB
+    // （mute/solo 门保留：输出级用同一谓词，幂等），否则引擎源先乘一次推子、
+    // 输出级再乘一次（推子平方）。采样器武装仍用真实工程（provider 闭包里传
+    // `project`），副本只影响快照的 `track_gain_scale`；速度/声相/设备参数一律不动。
+    // 没有总线源轨的工程：副本与原工程逐位等价 ⇒ 渲染逐字节不变。
+    let mut timbre_project = project.clone();
+    for node in &bus_source_nodes {
+        if let Some(track) = timbre_project.tracks.get_mut(node) {
+            track.volume_db = 0.0;
         }
-    });
+    }
+    let timbre =
+        EngineTimbre::from_project_armed(&timbre_project, sample_rate as f32, |track, raw| {
+            match prepare_sampler_track(
+                track,
+                raw,
+                project,
+                project_path,
+                &mut sampler_store,
+                request.sample_limits,
+            ) {
+                Ok((armed, samples)) => {
+                    // ⭐ `#279`：解码表**直接**交给引擎（`(sample= 原样字符串, (PCM, 原始采样率))`），
+                    // ⛔ 不再经 `ArmedSamplerTrack` 中转一次深拷贝（旧 `armed.samples.clone()`）。
+                    let resolved = armed.load.path.clone();
+                    sampler_loads.insert(track, armed);
+                    ArmedSfzInput::new(resolved, samples)
+                }
+                Err(fault) => {
+                    if sampler_failure.is_none() {
+                        sampler_failure = Some(fault);
+                    }
+                    ArmedSfzInput::empty(raw)
+                }
+            }
+        });
     if let Some(fault) = sampler_failure {
         return Err(fault);
     }
@@ -2836,7 +2859,16 @@ pub fn build(
     // ⭐ `#274`：逐轨的**声部窃取**句柄（渲染之后才有读数，见 `9a` 的同一条时机）。
     let mut sampler_steals: BTreeMap<EntityId, Arc<AtomicU64>> = BTreeMap::new();
     let mut end_tick = 0u64;
-    for &node in &source_nodes {
+    // ⭐ TrackVolume 修复：总线源轨也要建源（过去这里只跑 `source_nodes`，总线源轨
+    // 自己的声音整段被丢掉，轨上的 `TrackVolume` 泳道与静态推子对它全无作用）。
+    // 源侧推子/声相/自动化全部中性化（`bus_source = true`），推子只由输出级对
+    // 整条和（自有源＋入边求和）乘一次 —— 与 CLI `render_core` 的 #240 语义同一条
+    // （⛔ 不在这里复刻“只乘自己的源”，那正是旧缺陷的另一半）。
+    for (node, bus_source) in source_nodes
+        .iter()
+        .map(|node| (*node, false))
+        .chain(bus_source_nodes.iter().map(|node| (*node, true)))
+    {
         let track = project.tracks.get(&node).ok_or_else(|| {
             render_failed(
                 "路由图里的源节点没有对应的音轨, 无法知道该渲染什么",
@@ -2857,6 +2889,7 @@ pub fn build(
             &mut unsupported,
             &mut counts,
             compressing.contains(&node),
+            bus_source,
         )?;
         end_tick = end_tick.max(report.end_tick);
         reports.push(report);
@@ -3712,6 +3745,10 @@ pub(super) struct ProbeSubgraph {
     pub(super) nodes: Vec<EntityId>,
     /// 其中的源节点（没有入边的节点；主总线也算）。
     pub(super) source_nodes: Vec<EntityId>,
+    /// 其中的**总线源节点**：保留子图里有入边、非主总线、且自带片段摆放的节点
+    /// （`TrackVolume` 修复：这类节点过去根本不建源，自己的声音在离线渲染里被丢掉；
+    /// 建源时源侧推子/声相/自动化必须中性化，推子只由输出级对整条和乘一次）。
+    pub(super) bus_source_nodes: Vec<EntityId>,
     /// 保留子图里的全部边（`RenderPlan::edge_ids()`）。
     pub(super) rendered_edges: Vec<EntityId>,
 }
@@ -3742,10 +3779,23 @@ pub(super) fn probe_subgraph(
         .copied()
         .filter(|node| is_source_node(&plan, *node))
         .collect();
+    let bus_source_nodes = nodes
+        .iter()
+        .copied()
+        .filter(|node| {
+            *node != project.master_bus_track_id
+                && !is_source_node(&plan, *node)
+                && project
+                    .tracks
+                    .get(node)
+                    .is_some_and(|track| !track.clips.is_empty())
+        })
+        .collect();
     let rendered_edges = plan.edge_ids();
     Ok(ProbeSubgraph {
         nodes,
         source_nodes,
+        bus_source_nodes,
         rendered_edges,
     })
 }
@@ -3774,10 +3824,14 @@ pub(super) fn offline_lane_status(
     let sample_rate = project.audio_config.sample_rate.hz();
     match probe_subgraph(project, sample_rate) {
         Ok(probe) => {
+            // ⭐ TrackVolume 修复：与导出收据同一份源节点集（含总线源轨），否则
+            // 写侧读数与导出读数各判一套。
+            let mut source_nodes = probe.source_nodes;
+            source_nodes.extend(probe.bus_source_nodes.iter().copied());
             let residual = yeban_render::automation::unsupported_lane_reason(
                 project,
                 target,
-                &probe.source_nodes,
+                &source_nodes,
                 &probe.rendered_edges,
                 &probe.nodes,
             );
@@ -3863,6 +3917,10 @@ struct PreparedAsset {
 ///   依次累加（[ARCH-DET-002]：浮点加法不满足结合律，顺序必须与输入顺序无关）。
 struct AudioClipSource {
     asset: Arc<PreparedAsset>,
+    /// 对齐拉伸后的替代 PCM（[ADR-0067] Pre-Insert warped 缓存，与 app
+    /// 侧 `AudioClipSource::warped` 同一语义）。`Some` 时渲染读它；
+    /// `None`（默认）时行为与旧版逐位相同。调用方保证同采样率、同声道数。
+    warped: Option<Arc<PreparedAsset>>,
     /// 声道布局（素材声道数 → 母线声道数）。
     layout: clip_math::ChannelLayout,
     /// 摆放区间，**已按 `(start, end, gain)` 全序排好**。
@@ -3870,6 +3928,13 @@ struct AudioClipSource {
 }
 
 impl AudioClipSource {
+    /// 装上对齐拉伸后的替代 PCM（链式调用用）。
+    /// 当前仅测试调用：声乐导入管线（后续接线）将在 Pre-Insert 阶段调用它。
+    #[allow(dead_code)]
+    fn with_warped(mut self, warped: Arc<PreparedAsset>) -> Self {
+        self.warped = Some(warped);
+        self
+    }
     /// 把每个区间夹进 `[0, frames)`（母带长度在构造之后才知道）。
     fn clamp_to(&mut self, frames: u64) {
         let limit = i64::try_from(frames).unwrap_or(i64::MAX);
@@ -3893,9 +3958,9 @@ impl AudioClipSource {
     }
 
     /// 本块内某一帧在**素材**里的下标（超出素材则 `None`）。
-    fn asset_frame(&self, span: &ClipSpan, global: i64) -> Option<usize> {
+    fn asset_frame(asset: &PreparedAsset, span: &ClipSpan, global: i64) -> Option<usize> {
         let offset = global - span.start + span.source_offset;
-        if offset < 0 || offset >= self.asset.frames {
+        if offset < 0 || offset >= asset.frames {
             return None;
         }
         usize::try_from(offset).ok()
@@ -3905,10 +3970,12 @@ impl AudioClipSource {
 impl AudioSource for AudioClipSource {
     fn render_block(&mut self, context: BlockContext, out: &mut [f32]) -> Result<(), RenderError> {
         let channels = context.channels;
-        if channels == 0 || self.spans.is_empty() || self.asset.frames <= 0 {
+        // Warped 替代优先（与 app 侧同一语义）。
+        let asset = self.warped.as_ref().unwrap_or(&self.asset);
+        if channels == 0 || self.spans.is_empty() || asset.frames <= 0 {
             return Ok(());
         }
-        let source_channels = usize::from(self.asset.source_channels);
+        let source_channels = usize::from(asset.source_channels);
         let block_start = i64::try_from(context.first_frame).unwrap_or(i64::MAX);
         let block_end =
             block_start.saturating_add(i64::try_from(context.frames).unwrap_or(i64::MAX));
@@ -3923,7 +3990,7 @@ impl AudioSource for AudioClipSource {
             let from = span.start.max(block_start);
             let to = span.end.min(block_end);
             for global in from..to {
-                let Some(asset_frame) = self.asset_frame(span, global) else {
+                let Some(asset_frame) = Self::asset_frame(asset, span, global) else {
                     continue;
                 };
                 let source_base = asset_frame * source_channels;
@@ -3933,21 +4000,19 @@ impl AudioSource for AudioClipSource {
                     clip_math::ChannelLayout::Identity => {
                         for channel in 0..channels {
                             let gain = channel_gain(span, channel);
-                            out[out_base + channel] +=
-                                self.asset.samples[source_base + channel] * gain;
+                            out[out_base + channel] += asset.samples[source_base + channel] * gain;
                         }
                     }
                     clip_math::ChannelLayout::MonoToAll => {
-                        let value = self.asset.samples[source_base];
+                        let value = asset.samples[source_base];
                         for channel in 0..channels {
                             let gain = channel_gain(span, channel);
                             out[out_base + channel] += value * gain;
                         }
                     }
                     clip_math::ChannelLayout::StereoToMono => {
-                        let mixed = (self.asset.samples[source_base]
-                            + self.asset.samples[source_base + 1])
-                            * 0.5;
+                        let mixed =
+                            (asset.samples[source_base] + asset.samples[source_base + 1]) * 0.5;
                         out[out_base] += mixed * span.gain_l;
                     }
                 }
@@ -3981,7 +4046,7 @@ fn channel_gain(span: &ClipSpan, channel: usize) -> f32 {
 /// （旧的 `SamplerTrackSource` 已退休，⛔ 不再有第二份采样音源）。
 struct TrackSource {
     midi: Option<EngineTrackSource>,
-    /// ⭐ ADR-0064：本轨的宿主插件音源（`Some` ⇒ `midi` 为空，插件胜出；
+    /// ⭐ ADR-0069：本轨的宿主插件音源（`Some` ⇒ `midi` 为空，插件胜出；
     /// 采样器分支亦被胜出 —— 插件轨不建引擎源，⛔ 不叠两份声音）。
     plugin: Option<PluginTrackSource>,
     /// 本轨是否绑了 `TrackV3.sampler`（`kind` 命名用）。
@@ -4057,7 +4122,7 @@ impl TrackSource {
     ///
     /// ⭐ `#274`：`has_sampler` 现在看 `sampler_bound`（不再有 `SamplerTrackSource`）——
     /// 只影响**命名**，发声仍由 `midi` 那一支（引擎 SFZ 支路）负责。
-    /// ⭐ ADR-0064：插件源先判（有音符 ⇒ 插件命名；无音符的插件轨落到原有分支，
+    /// ⭐ ADR-0069：插件源先判（有音符 ⇒ 插件命名；无音符的插件轨落到原有分支，
     /// 与无音符的引擎轨同一条静音口径）。
     fn kind(&self) -> &'static str {
         let has_plugin = self
@@ -4089,7 +4154,7 @@ impl AudioSource for TrackSource {
         // ⚠ 引擎源是**有状态**的（内部播放头）：它自己 `out.fill(0.0)` 再写单声道，
         //    且强制"块必须从第 0 帧起连续升序"（见 `EngineTrackSource::render_block`）。
         //    它是本容器的**第一路**，因此覆写不会抹掉别的贡献。
-        // ⭐ ADR-0064：插件源与引擎源互斥（插件胜出时 `midi` 为空），因此插件源
+        // ⭐ ADR-0069：插件源与引擎源互斥（插件胜出时 `midi` 为空），因此插件源
         //    同样可以占"第一路"的填位；片段源在后累加。
         if let Some(midi) = &mut self.midi {
             midi.render_block(context, out)?;
@@ -4165,7 +4230,7 @@ struct ArmedSamplerTrack {
 ///
 /// 路径解析不到 / SFZ 文件读不到 / 文本非法 ⇒ `RENDER_FAILED`（报文与原形状逐字相同）。
 fn prepare_sampler_track(
-    _track: EntityId,
+    track: EntityId,
     raw: &str,
     project: &YebanProjectV1,
     project_path: &Path,
@@ -4175,6 +4240,9 @@ fn prepare_sampler_track(
     let resolved = resolve_sampler_path(raw, project_path)?;
     // ⭐ `#276`：装载与提供表**同一次解析**；解码由 `store` 去重（同一文件只解一次）。
     // ⭐ 预算来自本次渲染的实参（`maxSampleFiles` / `maxSampleFrames`），⛔ 不是常量。
+    // ⭐ P1 按需装载：只解码本轨音符/CC 判定为会发声的区域（见 `sfz::DemandLoadFilter`）；
+    // 预算只对已用子集记账，已用子集超预算仍响亮拒绝（`TrackSampleCache` 原有行为）。
+    let filter = sfz::DemandLoadFilter::from_project_track(project, track);
     let mut cache = sfz::TrackSampleCache::with_limits(store, limits);
     let (load, table) = sfz::load_with(
         &resolved,
@@ -4182,6 +4250,7 @@ fn prepare_sampler_track(
         0,
         false,
         &mut cache,
+        Some(&filter),
     )
     .map_err(|fault| {
         let cause = fault.into_result().map_or_else(
@@ -4481,7 +4550,7 @@ pub(crate) fn decode_error_class(error: &DecodeError) -> &'static str {
 /// 四档都不是文件 ⇒ `RENDER_FAILED` + `data.reason = "samplerUnreadable"`
 /// （带 `tried` 列表，逐条按尝试顺序）。⛔ **绝不**静默回退成正弦 —— 那正是
 /// `#220` 缺陷 ② 的形状。
-fn resolve_sampler_path(raw: &str, project_path: &Path) -> Result<PathBuf, Fault> {
+pub(crate) fn resolve_sampler_path(raw: &str, project_path: &Path) -> Result<PathBuf, Fault> {
     use super::sample_roots::{library_root, repo_root};
 
     let candidate = Path::new(raw);
@@ -4561,6 +4630,10 @@ fn build_source(
     counts: &mut BTreeMap<&'static str, u64>,
     // ⭐ `#303`：本轨会执行压缩 ⇒ 源侧**不带声相**（pre-pan tap；输出级负责声相）。
     pre_pan: bool,
+    // ⭐ TrackVolume 修复：本轨是有入边的总线源轨 ⇒ 源侧静态推子/声相/自动化
+    // 全部中性化（推子与自动化只由输出级对整条和乘一次）；片段增益只取片段自身，
+    // 引擎推子由调用方在快照投影副本里置 0 dB。`false` 时与修前逐位相同。
+    bus_source: bool,
 ) -> Result<SourceAssembly, Fault> {
     // solo 语义（B2 起也作用于辅助返回总线 —— 见 `build` 的输出级）；判据与源轨
     // 同一条 `track_is_audible`：只要工程里有任一音轨 solo, 未 solo 且非 solo-safe
@@ -4579,8 +4652,11 @@ fn build_source(
     // 且不挂 `pan_automation` ⇒ 压缩器的检波器看到**声相之前**的电平（与实时同序）。
     let pan_automation = TrackPanAutomation::new(project, track.id, sample_rate);
     let pan_identity = pan_automation.is_identity() || pre_pan;
-    let source_pan = if pan_identity {
-        if pre_pan { 0.0 } else { track.pan }
+    // ⭐ 总线源轨：静态与自动化声相都交给输出级（整条和只乘一次声相）⇒ 源侧声相恒 0。
+    let source_pan = if bus_source || pre_pan {
+        0.0
+    } else if pan_identity {
+        track.pan
     } else {
         0.0
     };
@@ -4608,7 +4684,7 @@ fn build_source(
     if track_has_unhandled_dsp(track) || sampler_drops_instrument_params {
         note_unsupported(unsupported, counts, "deviceChainDsp");
     }
-    // ⭐ ADR-0064：已被宿主的那台设备（首个非旁通、带绑定的外部乐器）不再登记
+    // ⭐ ADR-0069：已被宿主的那台设备（首个非旁通、带绑定的外部乐器）不再登记
     // `externalPlugins` —— 它有音源了，不是"未消费"。其它外部设备（第二台绑定
     // 乐器、未绑定设备）仍登记。加载失败时装配期已响亮返回，本行走不到。
     let hosted_plugin_index = track.devices.iter().position(|device| {
@@ -4773,8 +4849,10 @@ fn build_source(
             }
             ClipContent::Audio { asset, gain_db } => {
                 // 片段增益与音轨音量都是 dB ⇒ 先求和（一次超越函数求值）再转线性。
-                let Some(combined_db) =
-                    clip_math::combined_gain_db(*gain_db, track.volume_db, audible)
+                // ⭐ 总线源轨：片段增益只取片段自身（轨推子由输出级对整条和乘一次；
+                // `audible` 门保留：静音轨仍不解码，输出级同谓词再乘 0，幂等）。
+                let track_db = if bus_source { 0.0 } else { track.volume_db };
+                let Some(combined_db) = clip_math::combined_gain_db(*gain_db, track_db, audible)
                 else {
                     // 音轨被 mute/solo 门控掉: 不发声、**不解码**, 但仍计入时间轴末端。
                     clips_gated = clips_gated.saturating_add(1);
@@ -4919,6 +4997,7 @@ fn build_source(
                 .unwrap_or(clip_math::ChannelLayout::MonoToAll);
             let mut source = AudioClipSource {
                 asset,
+                warped: None,
                 layout,
                 spans,
             };
@@ -4990,6 +5069,7 @@ fn build_source(
                 resolved_path: summary.resolved_path.display().to_string(),
                 regions: summary.regions,
                 silent_regions: summary.silent_regions,
+                skipped_regions: armed.load.skipped_regions,
                 notes: u64::try_from(timbre.scheduled_notes(track.id)).unwrap_or(u64::MAX),
                 notes_unmatched: survey.notes_unmatched,
                 notes_using_file_sample: survey.notes_using_file_sample,
@@ -5020,7 +5100,7 @@ fn build_source(
     // 轨增益已经在引擎的 `note.gain` 里 ⇒ 这一层⛔ 不再乘第二次。
     // `pan == 0` / 声相自动化接管时它逐位等于 `(1.0, 1.0)`（与 CLI 同一条快路径）。
     //
-    // ⭐ ADR-0064：宿主插件音源（优先级高于引擎与采样器）。
+    // ⭐ ADR-0069：宿主插件音源（优先级高于引擎与采样器）。
     // 首个非旁通、带绑定的外部乐器：加载成功 ⇒ 插件源（`midi` 置空，采样器
     // 分支亦被胜出 —— 插件轨不建引擎源，⛔ 不叠两份声音）；加载失败 ⇒ 渲染
     // 构造期 RENDER_FAILED（无音符的轨也一样 —— 坏绑定不配静默过关）。
@@ -5071,7 +5151,7 @@ fn build_source(
     // ⚠ 采样器轨**不建引擎源**（`#221` 的 `sampler` 分支是整体替换，与 CLI 的
     //   `--sfz` 旁路同形）⇒ 否则采样与复音会叠成两份声音。
     // ⚠ 没有可发声音符的纯音频轨也不建（一台引擎约 109 KB，白建没有收益）。
-    // ⭐ ADR-0064：插件轨同样不建引擎源（插件胜出时 `midi` 为空）。
+    // ⭐ ADR-0069：插件轨同样不建引擎源（插件胜出时 `midi` 为空）。
     let midi = if plugin.is_some() || timbre.scheduled_notes(track.id) == 0 {
         None
     } else {
@@ -5103,15 +5183,17 @@ fn build_source(
         sampler_steals.insert(track.id, counter);
     }
     // ⭐ 本轨的 `TrackVolume` 自动化：构造期判定恒等快路径，非恒等才挂到源上。
+    // ⭐ 总线源轨：音量/声相自动化都不挂源上（输出级对整条和乘一次；挂这里会
+    // 只乘自己的源、漏掉入边求和，还会与输出级重复）。
     let automation = TrackGainAutomation::new(project, track.id, sample_rate);
     let source = TrackSource {
         midi,
         plugin,
         sampler_bound,
         clips,
-        automation: (!automation.is_identity()).then_some(automation),
+        automation: (!automation.is_identity() && !bus_source).then_some(automation),
         // ⭐ `#257`：声相自动化（恒等时 `None`，源侧静态声相保持原样）。
-        pan_automation: (!pan_identity).then_some(pan_automation),
+        pan_automation: (!pan_identity && !bus_source).then_some(pan_automation),
     };
     let report = SourceReport {
         node: track.id,
@@ -6055,6 +6137,65 @@ mod tests {
         assert!(
             ignored_strip_devices_warning(&project.tracks, &[]).is_none(),
             "未进渲染图的轨不预警"
+        );
+    }
+
+    /// [ADR-0067] warped 覆盖：与 app 侧同名判据逐位对应 —— 同一份
+    /// warped 字节在两路离线实现里必须读出同一结果（Pre-Insert 一致性）。
+    #[test]
+    fn warped_override_renders_warped_samples_bit_for_bit() {
+        let original = PreparedAsset {
+            samples: Arc::from(vec![0.1_f32, 0.2, 0.3, 0.4]),
+            source_channels: 1,
+            frames: 4,
+        };
+        let warped = PreparedAsset {
+            samples: Arc::from(vec![0.9_f32, 0.8, 0.7, 0.6]),
+            source_channels: 1,
+            frames: 4,
+        };
+        let span = ClipSpan {
+            start: 0,
+            end: 4,
+            source_offset: 0,
+            gain_l: 1.0,
+            gain_r: 1.0,
+        };
+        let context = BlockContext {
+            block_index: 0,
+            first_frame: 0,
+            frames: 4,
+            channels: 1,
+            sample_rate: 48_000,
+            seed: 0,
+        };
+        let mut plain = AudioClipSource {
+            asset: Arc::new(original),
+            warped: None,
+            layout: clip_math::ChannelLayout::MonoToAll,
+            spans: vec![span],
+        };
+        let mut out = vec![0.0_f32; 4];
+        plain
+            .render_block(context, &mut out)
+            .expect("原素材必须能渲染");
+        assert_eq!(out, vec![0.1, 0.2, 0.3, 0.4]);
+
+        let mut covered = AudioClipSource {
+            asset: plain.asset.clone(),
+            warped: None,
+            layout: clip_math::ChannelLayout::MonoToAll,
+            spans: vec![span],
+        }
+        .with_warped(Arc::new(warped));
+        let mut out = vec![0.0_f32; 4];
+        covered
+            .render_block(context, &mut out)
+            .expect("覆盖必须能渲染");
+        assert_eq!(
+            out,
+            vec![0.9, 0.8, 0.7, 0.6],
+            "有覆盖时必须逐位渲染 warped PCM，而不是原素材"
         );
     }
 }

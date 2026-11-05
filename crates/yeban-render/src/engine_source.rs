@@ -349,7 +349,7 @@ impl EngineTimbre {
             .map_or(0, NoteSchedule::len)
     }
 
-    /// 该轨的调度表克隆（ADR-0064：插件源与引擎源读**同一份**快照投影，
+    /// 该轨的调度表克隆（ADR-0069：插件源与引擎源读**同一份**快照投影，
     /// 不各自重算；`None` = 该轨在快照里没有调度表，插件源按静音推进处理）。
     ///
     /// 与 [`EngineTrackSource::new`] 的取法同一行（`schedules().get(&track).cloned()`），
@@ -997,7 +997,7 @@ mod tests {
         peak
     }
 
-    /// **实测缺陷回归（G1）**：工程源数超过实时槽位上限（`MAX_TRACK_SLOTS` = 16）时，
+    /// **实测缺陷回归（G1）**：工程源数超过实时槽位上限（`MAX_TRACK_SLOTS` = 2048）时，
     /// 第 17 条起的源**不得**静音。
     ///
     /// 缺陷：每个源独享一台引擎却全量武装快照 ⇒ 第 17 条起拿不到槽位、整轨数字静音。
@@ -1034,7 +1034,9 @@ mod tests {
         let timbre = EngineTimbre::from_project(&project).expect("多轨夹具必须成快照");
         let snapshot = Arc::clone(&timbre.snapshot);
         let last = *ids.last().expect("夹具必须有轨");
-        let mut engine = Box::new(SynthEngine::new(snapshot.sample_rate()));
+        // 槽位容量现已可配（P2），默认 1024 条轨装得下 ⇒ 这里显式用 16 槽建引擎，
+        // 牙齿咬的仍是“超容武装丢轨、丢轨静音”这条语义，不随默认值漂移。
+        let mut engine = Box::new(SynthEngine::with_track_slots(snapshot.sample_rate(), 16));
         engine
             .arm_from_snapshot(&snapshot)
             .expect("全量武装本身必须成功（它只是丢槽）");

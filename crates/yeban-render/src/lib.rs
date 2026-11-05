@@ -114,7 +114,7 @@ pub mod render;
 // 另一个是 `plugin_source`，它只读调度表类型，不复制引擎音色逻辑）。
 // CLI 的 `export_wav` 与 MCP 的 `yeban_render_master` 共用这一份 —— ⛔ 不写第二份音源。
 pub mod engine_source;
-// ⭐ ADR-0064 一期：插件轨音源（轨 MIDI → 宿主乐器 → 音频；只读调度表，不碰引擎音色）。
+// ⭐ ADR-0069 一期：插件轨音源（轨 MIDI → 宿主乐器 → 音频；只读调度表，不碰引擎音色）。
 pub mod plugin_effect;
 pub mod plugin_source;
 pub mod rf64;

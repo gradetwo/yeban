@@ -7,23 +7,54 @@
 //! 布局要点（实测自 SDK 头文件，⛔ 不可凭记忆改）：
 //! - 每张虚表前 3 项都是 `FUnknown` 的 `queryInterface`／`addRef`／`release`。
 //! - `String128` ＝ 128 个 UTF-16 单元 ＝ 256 字节（⛔ 不是 128 字节）：
-//!   `PFactoryInfo` 772 字节，`BusInfo` 276 字节，`ParameterInfo` 792 字节。
+//!   `BusInfo` 276 字节，`ParameterInfo` 792 字节。`PFactoryInfo` 是例外：
+//!   452 字节，`vendor`／`url`／`email` 是单字节 `char` 串（⛔ 不是 `String128`），
+//!   按字节解码；把它当 UTF-16 读会把 ASCII 厂商名拼成 CJK 乱码
+//!   （2026-11-03 真插件实证，见接入测试报告 P4）。
+//! - 继承陷阱（2026-11-03 真插件 SIGSEGV 的根因）：`IAudioProcessor` 直接继承
+//!   `FUnknown`（⛔ 不是 `IPluginBase`），故其虚表只有 3 项 `FUnknown` 前缀；
+//!   若误垫 `initialize`／`terminate` 两项，全部方法槽位后移 2 位，宿主调
+//!   `canProcessSampleSize` 实际命中 `setupProcessing`，整数 0 被当成 NULL 的
+//!   `ProcessSetup` 指针，插件在读 `symbolicSampleSize`（偏移 4）时崩溃。
+//!   `IComponent`／`IEditController` 才继承 `IPluginBase`。
 //! - `PClassInfo` 116 字节（`category`／`name` 是单字节 `char` 串，⛔ 不是 `String128`）。
-//! - `Event` 48 字节：头（`type` i32＋总线＋偏移＋`ppqPosition` f64＋`flags` u16＋补齐）
-//!   28 字节＋联合 20 字节（最大成员 `NoteOnEvent` 20 字节）。
-//! - `ProcessData` 80 字节，`AudioBusBuffers` 24 字节，`ProcessSetup` 24 字节。
+//! - `Event` 48 字节：头（总线 i32＋偏移 i32＋`ppqPosition` f64＋`flags` u16＋
+//!   `type` i16＋保留 u32）24 字节＋联合 20 字节（最大成员 `NoteOnEvent` 20 字节），
+//!   尾部补齐至 8 对齐。⛔ `type` 在偏移 18（i16），不在偏移 20（2026-11-03
+//!   Dexed 反汇编实证：`type` 读在缓冲＋18，通道＋24、音高＋26；旧布局把
+//!   `type` 写成 i32 于偏移 20，NoteOff 被误读为 NoteOn）。
+//! - `NoteOnEvent` 联合布局（2026-11-03 Dexed 反汇编＋探针出声实证，⛔ 不可凭
+//!   SDK 印象写）：通道 i16（联合＋0）＋音高 i16（＋2）＋长度 i32（＋4）＋
+//!   速度 f32（＋8）＋`tuning` f32（＋12）＋`noteId` i32（＋16）。速度在＋8，
+//!   不在＋4：速度写＋4 时 JUCE 读到的是长度字段（整型位模式当浮点≈0），
+//!   MIDI 速度为 0（等于 note-off），合成器永不起音。`NoteOffEvent` 速度在＋4
+//!   （通道＋0、音高＋2、速度＋4、`noteId`＋8、`tuning`＋12），与 NoteOn 不同。
+//! - `IConnectionPoint` 连接是事件投递的前提（2026-11-03 真插件实证）：
+//!   组件与控制器须双向连接，否则 JUCE 插件的 `process()` 在 `getEvent` 处
+//!   得空写槽（宿主拷贝触发 panic）；双向连接后 `getEvent` 得有效写槽，
+//!   音符正常投递。连接失败只忽略（非 JUCE 插件不依赖此路径）。
+//! - `ProcessData` 80 字节（⛔ 字段顺序按插件消费端实测，不按 SDK 印象写）：
+//!   参数对在前（`input_parameter_changes` 偏移 40、`output_parameter_changes`
+//!   偏移 48），事件对在后（`input_events` 偏移 56、`output_events` 偏移 64），
+//!   `process_context` 偏移 72。旧布局把事件对放 40／48，恰落在 JUCE 读参数
+//!   的位置，音符循环读到的参数槽为 NULL 而直接跳过，全程静音（2026-11-03
+//!   Dexed／Surge XT 探针实证：互换后出声）。
+//! - `AudioBusBuffers` 24 字节，`ProcessSetup` 24 字节。
 //! - 虚表函数一律 `extern "system"`（Windows 上＝`__stdcall`，即 COM 调用约定；
 //!   Unix 上＝C 调用约定，`this` 为首参，与 Itanium 虚表 ABI 一致）。
-//! - `tresult` 歧义：`kResultFalse == kResultOk == 0`。通用调用“非负＝成功”；
-//!   只有 `queryInterface` 要求严格等于 0（`kNoInterface` 为 -1）。
+//! - `tresult` 约定（SDK `pluginterfaces/base/ftypes.h` 原文，与 C 布尔惯例相反）：
+//!   `kResultTrue == kResultOk == 0`，`kResultFalse == 1`，`kNoInterface == -1`。
+//!   布尔查询（`canProcessSampleSize`、`getControllerClassId`）按 0＝真／1＝假判；
+//!   ok 式调用（`setupProcessing` 等）用 `check`（负值＝失败）；
+//!   只有 `queryInterface` 要求严格等于 0。
 //!
-//! 一期局限（写进 ADR-0064，不藏）：
+//! 一期局限（写进 ADR-0069，不藏）：
 //! - 宿主侧对象（`IHostApplication`、`IComponentHandler`）的 `queryInterface`
 //!   只应答 `FUnknown`，其余返回 `kNoInterface`：插件按指针直调方法的常规
 //!   路径不受影响；个别插件若先 `queryInterface` 再确认宿主对象类型，可能走
 //!   降级分支（`initialize` 仍成功，插件按“无宿主名”继续）。
-//! - 单独控制器不做 `IConnectionPoint` 连接（`connect`／`disconnect` 一期不用）：
-//!   控制器拿不到处理器侧的参数变化通知，参数以构造期＋渲染前直设为准。
+//! - 单独控制器做 `IConnectionPoint` 双向连接（见上）：控制器拿不到处理器侧
+//!   的参数变化通知时，参数以构造期＋渲染前直设为准（连接本身只解决事件投递）。
 
 use std::ffi::{c_char, c_void};
 use std::ptr;
@@ -31,9 +62,10 @@ use std::ptr;
 use crate::dylib::Library;
 use crate::error::HostError;
 use crate::types::{
-    FUNKNOWN_IID, IAUDIO_PROCESSOR_IID, ICOMPONENT_IID, IEDIT_CONTROLLER_IID, MidiEvent,
-    MidiEventKind, ParamInfo, PluginClass, PluginInstance, PluginKind, PluginState,
-    RESULT_NO_INTERFACE, RESULT_NOT_IMPLEMENTED, RESULT_OK, TUID_INVALID, Tuid,
+    FUNKNOWN_IID, IAUDIO_PROCESSOR_IID, ICOMPONENT_IID, ICONNECTIONPOINT_IID, IEDIT_CONTROLLER_IID,
+    MidiEvent, MidiEventKind, ParamInfo, PluginClass, PluginInstance, PluginKind, PluginState,
+    RESULT_FALSE, RESULT_NO_INTERFACE, RESULT_NOT_IMPLEMENTED, RESULT_OK, RESULT_TRUE,
+    TUID_INVALID, Tuid,
 };
 
 // ---------------------------------------------------------------------------
@@ -56,10 +88,10 @@ pub const PROCESS_REALTIME: i32 = 0;
 pub const SAMPLE_32: i32 = 0;
 /// 立体声扬声器排布（`SpeakerArrangement`，`kStereo = 0x3`）。
 pub const ARRANGEMENT_STEREO: u64 = 0x3;
-/// 事件类型：音符开。
-pub const EVENT_NOTE_ON: i32 = 0;
-/// 事件类型：音符关。
-pub const EVENT_NOTE_OFF: i32 = 1;
+/// 事件类型：音符开（`Event.type` 为 i16，见模块文档）。
+pub const EVENT_NOTE_ON: i16 = 0;
+/// 事件类型：音符关（`Event.type` 为 i16，见模块文档）。
+pub const EVENT_NOTE_OFF: i16 = 1;
 /// `IBStream::seek` 模式：从头。
 pub const SEEK_SET: i32 = 0;
 /// `IBStream::seek` 模式：从当前位置。
@@ -104,13 +136,13 @@ fn decode_char_str(bytes: &[u8]) -> String {
 // SDK 结构体（`#[repr(C)]`，布局见模块文档）
 // ---------------------------------------------------------------------------
 
-/// `PFactoryInfo`：772 字节。
+/// `PFactoryInfo`：452 字节（`vendor` 64＋`url` 256＋`email` 128＋`flags` 4；皆单字节 `char` 串）。
 #[repr(C)]
 #[derive(Clone, Copy)]
 struct PFactoryInfo {
-    vendor: [u16; 128],
-    url: [u16; 128],
-    email: [u16; 128],
+    vendor: [u8; 64],
+    url: [u8; 256],
+    email: [u8; 128],
     flags: i32,
 }
 
@@ -191,44 +223,44 @@ struct ProcessData {
     _pad: i32,
     inputs: *mut AudioBusBuffers,
     outputs: *mut AudioBusBuffers,
-    input_events: *mut c_void,
-    output_events: *mut c_void,
     input_parameter_changes: *mut c_void,
     output_parameter_changes: *mut c_void,
+    input_events: *mut c_void,
+    output_events: *mut c_void,
     process_context: *mut c_void,
 }
 
-/// `Event`：48 字节（头 28＋联合 20；联合只写 NoteOn／NoteOff，见模块文档）。
+/// `Event`：48 字节（头 24＋联合 20，尾部补齐至 8 对齐；联合只写 NoteOn／NoteOff，见模块文档）。
+/// `type` 为 i16 于偏移 18（联合于偏移 24）；`NoteOn` 速度在联合＋8、长度在＋4，
+/// `NoteOff` 速度在联合＋4（见模块文档，⛔ 不可凭 SDK 印象改）。
 #[repr(C)]
 #[derive(Clone, Copy)]
 struct Event {
-    event_type: i32,
     bus_index: i32,
     sample_offset: i32,
-    _pad: i32,
     ppq_position: f64,
     flags: u16,
-    _pad2: u16,
+    event_type: i16,
+    _reserved: u32,
     data: [u8; 20],
 }
 
 impl Event {
-    /// 写 NoteOn 联合体（`channel` i16＋`pitch` i16＋`velocity` f32＋
-    /// `length` i32（0＝未知）＋`tuning` f32（0）＋`noteId` i32）。
+    /// 写 NoteOn 联合体（`channel` i16＋`pitch` i16＋`length` i32（0＝未知）＋
+    /// `velocity` f32＋`tuning` f32（0）＋`noteId` i32；速度在联合＋8，⛔ 不在＋4）。
     fn note_on(channel: u8, pitch: u8, velocity: f32, note_id: i32, offset: u32) -> Self {
         let mut data = [0_u8; 20];
         data[0..2].copy_from_slice(&(channel as i16).to_le_bytes());
         data[2..4].copy_from_slice(&(pitch as i16).to_le_bytes());
-        data[4..8].copy_from_slice(&velocity.to_le_bytes());
+        data[8..12].copy_from_slice(&velocity.to_le_bytes());
         data[16..20].copy_from_slice(&note_id.to_le_bytes());
         Self {
-            event_type: EVENT_NOTE_ON,
             bus_index: 0,
             sample_offset: offset as i32,
-            _pad: 0,
             ppq_position: 0.0,
             flags: 0,
-            _pad2: 0,
+            event_type: EVENT_NOTE_ON,
+            _reserved: 0,
             data,
         }
     }
@@ -241,13 +273,12 @@ impl Event {
         data[4..8].copy_from_slice(&velocity.to_le_bytes());
         data[8..12].copy_from_slice(&note_id.to_le_bytes());
         Self {
-            event_type: EVENT_NOTE_OFF,
             bus_index: 0,
             sample_offset: offset as i32,
-            _pad: 0,
             ppq_position: 0.0,
             flags: 0,
-            _pad2: 0,
+            _reserved: 0,
+            event_type: EVENT_NOTE_OFF,
             data,
         }
     }
@@ -265,6 +296,14 @@ struct FUnknownVtbl {
     query_interface: QueryFn,
     add_ref: RefFn,
     release: RefFn,
+}
+
+/// `IConnectionPoint` 虚表（`FUnknown` 3 项＋`connect`／`disconnect`）。
+#[repr(C)]
+struct ConnectionPointVtbl {
+    base: FUnknownVtbl,
+    connect: unsafe extern "system" fn(*mut c_void, *mut c_void) -> i32,
+    disconnect: unsafe extern "system" fn(*mut c_void, *mut c_void) -> i32,
 }
 
 #[repr(C)]
@@ -299,9 +338,10 @@ struct ComponentVtbl {
     get_state: unsafe extern "system" fn(*mut c_void, *mut c_void) -> i32,
 }
 
+/// `IAudioProcessor` 虚表（⛔ 直接继承 `FUnknown`，不是 `IPluginBase`：见模块文档继承陷阱）。
 #[repr(C)]
 struct AudioProcessorVtbl {
-    base: PluginBaseVtbl,
+    base: FUnknownVtbl,
     set_bus_arrangements:
         unsafe extern "system" fn(*mut c_void, *mut u64, i32, *mut u64, i32) -> i32,
     get_bus_arrangement: unsafe extern "system" fn(*mut c_void, i32, i32, *mut u64) -> i32,
@@ -517,11 +557,36 @@ unsafe extern "system" fn event_list_get(this: *mut c_void, index: i32, out: *mu
     // SAFETY: `this` 是调用帧内的 `HostEventList`；`out` 是插件提供的写槽。
     let list = unsafe { &*this.cast::<HostEventList>() };
     if index < 0 || index >= list.count {
-        return 0; // `kResultFalse`：越界＝无此事件（与 `kResultOk` 同值，语义不同）。
+        return RESULT_FALSE; // `kResultFalse`：越界＝无此事件。
     }
     // SAFETY: 下标已在上文越界检查后；`out` 是插件提供的 Event 写槽。
+    // 正常宿主流程下 `out` 恒有效：JUCE 插件要求组件与控制器已
+    // `IConnectionPoint` 双向连接（见 `open()` 的连接步骤），未连接时
+    // JUCE 传空写槽；非 JUCE 插件传栈上 Event 地址。空写槽属宿主／插件
+    // 契约破坏，严格拷贝触发的 panic 即定位信号，不静默丢事件。
     unsafe {
         ptr::copy_nonoverlapping(list.events.add(index as usize), out, 1);
+    }
+    // JUCE quirks（2026-11-03 真插件＋反汇编实证，⛔ 不可删）：
+    // JUCE 的参数循环（`ProcessData`＋0x28 槽）在每次 `getParameterData` 调用前
+    // 不设 `rdx`（`out`）：首个参数的 `out` 由 `process` 入口置入（连接后有效，
+    // 即控制器对象起始处），后续参数的 `out` 沿用上一次调用返回时残留在 `rdx`
+    // 里的值。宿主若用 `memcpy` 拷贝（`rdx`＝字节数 48），下一次调用即得
+    // `out`＝0x30，写 0x30 处段错误（旧布局下参数循环误读事件列表时实测）。
+    // 故返回前显式把 `rdx` 置为下一事件槽（`out + 1` 个 `Event`）：事件循环
+    // 每次调用前自设 `rdx`，此残留值无影响；参数循环若将来收到非空参数列表，
+    // 残留值指向连续槽位而非 0x30。单事件块／下一 `process` 入口会重设 `rdx`，
+    // 无残留危害。
+    // SAFETY: 内联汇编只写 `rdx`（调用方保存寄存器，调用约定允许宿主改写），
+    // 不碰栈与其它寄存器；`out.add(1)` 仅作指针算术，不解引用。
+    // x86_64 专属：`mov rdx` 在 aarch64 上非法，故与 `let next` 同块门控；
+    // 非 x86_64 下两句皆为空操作（`next` 不存在，不触发 unused 警告）。
+    #[cfg(target_arch = "x86_64")]
+    let next = unsafe { out.add(1) };
+    // SAFETY: 见上文（只写 `rdx`，不碰栈与其它寄存器）。
+    #[cfg(target_arch = "x86_64")]
+    unsafe {
+        core::arch::asm!("mov rdx, {next}", next = in(reg) next, options(nostack));
     }
     RESULT_OK
 }
@@ -658,19 +723,25 @@ type GetPluginFactoryFn = unsafe extern "system" fn() -> *mut c_void;
 
 /// 模块内芯（`Arc` 共享：扫描探针要从同一个模块开多个类实例，
 ///
-/// 每个实例各持一个 `Arc`，库在最后一个实例释放后才关闭）。
+/// 每个实例各持一个 `Arc`；库一旦打开即保活至进程退出，⛔ 永不关闭：
+/// JUCE 等插件在库内起自有线程（`juce::detail::MessageThread`），宿主
+/// 侧无任何 VST3 接口可停该线程；`dlclose` 解映射时该线程若仍在库
+/// 代码中执行，取指即落在已解映射区而段错误（2026-11-03 gdb 实证：
+/// 崩溃线程 `juce::detail::MessageThread::run()+737`，`si_addr == rip`，
+/// 且崩溃时映射表里已无插件 `.so`，主线程正停在 `dlclose` 内）。
+/// 进程期泄漏一至数个插件映射是宿主侧的常规代价，不作卸载）。
 struct Vst3ModuleInner {
-    // 仅为保活持有：`Library` 的 `Drop` 在内芯释放时关闭动态库；
+    // 仅为保活持有：`ManuallyDrop` 使库句柄永不关闭（见上文）；
     // 工厂指针在库生命周期内有效，实例持 `Arc` 故库活得比实例久。
     #[allow(dead_code)]
-    lib: Library,
+    lib: std::mem::ManuallyDrop<Library>,
     factory: *mut c_void,
 }
 
 // SAFETY: `lib` 单主拥有（`Arc` 只共享所有权，不共享可变访问）；
 // 工厂指针在库生命周期内有效，而实例持 `Arc` 故库活得比实例久。
 unsafe impl Send for Vst3ModuleInner {}
-// SAFETY: 内芯无可变共享状态（`lib` 只在 `Arc` 释放时关闭；`factory` 只读）。
+// SAFETY: 内芯无可变共享状态（`lib` 永不关闭；`factory` 只读）。
 unsafe impl Sync for Vst3ModuleInner {}
 
 /// 一个已打开的 VST3 模块（工厂指针向库借用，⛔ 永不 `release`）。
@@ -697,7 +768,10 @@ impl Vst3Module {
             return Err(HostError::FactoryMissing);
         }
         Ok(Self {
-            inner: std::sync::Arc::new(Vst3ModuleInner { lib, factory }),
+            inner: std::sync::Arc::new(Vst3ModuleInner {
+                lib: std::mem::ManuallyDrop::new(lib),
+                factory,
+            }),
         })
     }
 
@@ -706,8 +780,8 @@ impl Vst3Module {
         // SAFETY: `factory` 是 `load` 证实非空的指针；虚表首字段为工厂虚表。
         let vtbl = unsafe { vtbl::<PluginFactoryVtbl>(self.inner.factory) };
         let mut info = PFactoryInfo {
-            vendor: [0; 128],
-            url: [0; 128],
+            vendor: [0; 64],
+            url: [0; 256],
             email: [0; 128],
             flags: 0,
         };
@@ -716,7 +790,7 @@ impl Vst3Module {
         if code < 0 {
             return String::new();
         }
-        decode_string128(&info.vendor)
+        decode_char_str(&info.vendor)
     }
 
     /// 枚举全部类（`countClasses`＋`getClassInfo`；任一失败 ⇒ 空表）。
@@ -824,8 +898,9 @@ fn bus_count(component: *mut c_void, media: i32, dir: i32) -> Result<i32, HostEr
 /// VST3 实例（`PluginInstance` 的 VST3 实现）。
 ///
 /// 所有权规则（⛔ 不可错）：
-/// - `module` 是 `Arc`：库在最后一个实例释放后才关闭；`factory` 指针向库借用，
-///   **永不** `release`。
+/// - `module` 是 `Arc`：库一旦打开即保活至进程退出，⛔ 永不关闭（见
+///   `Vst3ModuleInner` 的说明：插件自有线程使 `dlclose` 不安全）；
+///   `factory` 指针向库借用，**永不** `release`。
 /// - `component`（`createInstance` 得来）、`processor`（`queryInterface` 得来）、
 ///   `controller`（工厂另建或 `queryInterface` 得来）各持一个引用，
 ///   `Drop` 时各 `release` **一次**（组合式对象三指针相同，三个引用仍各算一次）。
@@ -840,6 +915,13 @@ pub struct Vst3Instance {
     component: *mut c_void,
     processor: *mut c_void,
     controller: Option<*mut c_void>,
+    // 控制器是否分离式（工厂另建）：分离式须单独 `initialize`／`terminate`；
+    // 组合式（`queryInterface` 得来，与组件同一对象）已随组件初始化，勿重复。
+    controller_separate: bool,
+    // 双向连接点（`queryInterface` 各持一引用；`Drop` 内先断开组件侧再释放
+    // 组件侧查询引用，控制器侧查询引用故意不释放（见 `Drop` 的说明）；
+    // 连接失败／无控制器时为 `None`，不拦 `open`）。
+    connection: Option<(*mut c_void, *mut c_void)>,
     // 仅为保活持有：插件存裸指针，`Box` 在实例生命周期内不替换，
     // 故指针地址稳定；代码不读它们，只保证它们活着。
     #[allow(dead_code)]
@@ -865,6 +947,30 @@ unsafe impl Send for Vst3Instance {}
 // ⛔ 不进插件；故跨线程共享 `&` 时插件状态不可能被并发触碰。
 unsafe impl Sync for Vst3Instance {}
 
+/// 总线探针粗分类（扫描与加载的乐器判定共用）。
+///
+/// 乐器 ⟺ 事件输入 ≥1（与音频输入无关）：按 Steinberg 宿主实践，能收音符事件
+/// 的插件即音源；JUCE 宿主侧同样以事件输入总线数判合成器。音频输入只说明插件
+/// 带侧链／音频输入振荡器（如 Surge XT），⛔ 不是效果器的证据。类 `category`
+/// 字符串不能作区分：JUCE 插件的类 category 恒为 `Audio Module Class`
+/// （2026-11-03 探针实测：Surge XT、Surge XT Effects、Dexed 均为此值）。
+/// 代价：带 MIDI 输入的效果器（如声码器）会判为乐器，与 JUCE 宿主行为一致。
+fn classify_kind(event_in: i32, audio_in: i32) -> PluginKind {
+    if event_in >= 1 {
+        PluginKind::Instrument
+    } else if audio_in >= 1 {
+        PluginKind::Effect
+    } else {
+        PluginKind::Unknown
+    }
+}
+
+/// 非组件类（控制器／兼容类）：不能以 `IComponent` 身份创建，属 VST3 正常现象，
+/// ⛔ 不是加载失败；扫描与选类探针应跳过，不作失败计数。
+pub(crate) fn is_non_component_class(category: &str) -> bool {
+    category == "Component Controller Class" || category == "Plugin Compatibility Class"
+}
+
 impl Vst3Instance {
     /// 打开一个类并初始化到“可探针”状态（⛔ 不激活：激活要采样率，渲染时才定）。
     ///
@@ -887,7 +993,9 @@ impl Vst3Instance {
         let mut component: *mut c_void = ptr::null_mut();
         let mut processor: *mut c_void = ptr::null_mut();
         let mut controller: Option<*mut c_void> = None;
-        let result = (|| -> Result<PluginKind, HostError> {
+        // `open` 闭包的返回三元组（`kind`、双向连接点、控制器是否分离式）。
+        type OpenOutcome = (PluginKind, Option<(*mut c_void, *mut c_void)>, bool);
+        let result = (|| -> Result<OpenOutcome, HostError> {
             component = module.create_instance(class_id, &ICOMPONENT_IID)?;
             // SAFETY: `component` 刚创建有效；虚表为组件虚表。
             let comp_vtbl = unsafe { vtbl::<ComponentVtbl>(component) };
@@ -900,17 +1008,10 @@ impl Vst3Instance {
             check("initialize", code)?;
             processor = Vst3Module::query_interface(component, &IAUDIO_PROCESSOR_IID)
                 .map_err(|_| HostError::InterfaceMissing("IAudioProcessor"))?;
-            // 总线探针定 `kind`：乐器 ⟺ 事件输入 ≥1 且无音频输入；
-            // 有音频输入 ⟺ 效果器；其余 ⟺ 未知。
+            // 总线探针定 `kind`（见 `classify_kind`）。
             let event_in = bus_count(component, MEDIA_EVENT, DIR_INPUT)?;
             let audio_in = bus_count(component, MEDIA_AUDIO, DIR_INPUT)?;
-            let kind = if event_in >= 1 && audio_in == 0 {
-                PluginKind::Instrument
-            } else if audio_in >= 1 {
-                PluginKind::Effect
-            } else {
-                PluginKind::Unknown
-            };
+            let kind = classify_kind(event_in, audio_in);
             // 控制器解析：先问分离式（`getControllerClassId` 真值＋非零 CID），
             // 否则问组合式（`queryInterface(IEditController)`），都没有也允许
             // （无控制器插件：参数为空集，状态只有处理器段）。
@@ -918,10 +1019,25 @@ impl Vst3Instance {
             // SAFETY: `component` 是刚创建的组件对象；虚表调用按 SDK 签名。
             let code =
                 unsafe { (comp_vtbl.get_controller_class_id)(component, &mut controller_cid) };
-            if code == 1 && controller_cid != TUID_INVALID {
+            if code == RESULT_TRUE && controller_cid != TUID_INVALID {
                 controller = Some(module.create_instance(&controller_cid, &IEDIT_CONTROLLER_IID)?);
             } else {
                 controller = Vst3Module::query_interface(component, &IEDIT_CONTROLLER_IID).ok();
+            }
+            // 分离式控制器须单独 `initialize`（SDK 要求；未初始化的 JUCE 控制器
+            // 在连接后被组件经 `IEditController` 指针访问时会崩溃）。
+            let controller_separate = code == RESULT_TRUE && controller_cid != TUID_INVALID;
+            let ctrl_to_init = if controller_separate {
+                controller
+            } else {
+                None
+            };
+            if let Some(ctrl) = ctrl_to_init {
+                // SAFETY: `ctrl` 是刚工厂创建的控制器指针。
+                let ctrl_vtbl = unsafe { vtbl::<EditControllerVtbl>(ctrl) };
+                // SAFETY: `ctrl` 是刚工厂创建的控制器指针；`host_ptr` 由实例拥有。
+                let code = unsafe { (ctrl_vtbl.base.initialize)(ctrl, host_ptr) };
+                check("controller initialize", code)?;
             }
             // 控制器拿到后挂实例拥有的 handler（失败忽略：handler 只是通知通道）。
             if let Some(ctrl) = controller {
@@ -930,14 +1046,54 @@ impl Vst3Instance {
                 // SAFETY: `ctrl` 是刚解析的控制器指针；handler 指针由实例拥有，地址稳定。
                 let _ = unsafe { (ctrl_vtbl.set_component_handler)(ctrl, handler_ptr) };
             }
-            Ok(kind)
+            // 双向连接（事件投递前提，见模块文档）：组件连接点接控制器连接点，
+            // 控制器连接点接回组件连接点；任一查询失败即跳过，不拦 `open`。
+            // 组合式控制器（与组件同一对象）不另连：同一指针自连无意义。
+            let mut connection = None;
+            if let Some(ctrl) = controller {
+                let comp_cp = Vst3Module::query_interface(component, &ICONNECTIONPOINT_IID).ok();
+                let ctrl_cp = Vst3Module::query_interface(ctrl, &ICONNECTIONPOINT_IID).ok();
+                match (comp_cp, ctrl_cp) {
+                    (Some(comp_cp), Some(ctrl_cp)) if comp_cp != ctrl_cp => {
+                        // SAFETY: 两连接点刚查询有效；虚表首 3 项为 `FUnknown`。
+                        let comp_cp_vtbl = unsafe { vtbl::<ConnectionPointVtbl>(comp_cp) };
+                        // SAFETY: 同上，控制器连接点刚查询有效。
+                        let ctrl_cp_vtbl = unsafe { vtbl::<ConnectionPointVtbl>(ctrl_cp) };
+                        // SAFETY: 两连接点刚查询有效；`connect` 只存对端指针并 `addRef`。
+                        let _ = unsafe { (comp_cp_vtbl.connect)(comp_cp, ctrl_cp) };
+                        // SAFETY: 同上，回连只存对端指针并 `addRef`。
+                        let _ = unsafe { (ctrl_cp_vtbl.connect)(ctrl_cp, comp_cp) };
+                        connection = Some((comp_cp, ctrl_cp));
+                    }
+                    (Some(comp_cp), Some(ctrl_cp)) => {
+                        // 同一指针（组合式）：不自连，各释放一次。
+                        // SAFETY: 两引用刚查询有效，未存入实例。
+                        unsafe {
+                            Vst3Module::release(comp_cp);
+                            Vst3Module::release(ctrl_cp);
+                        }
+                    }
+                    (Some(comp_cp), None) => {
+                        // SAFETY: 引用刚查询有效，未存入实例。
+                        unsafe { Vst3Module::release(comp_cp) };
+                    }
+                    (None, Some(ctrl_cp)) => {
+                        // SAFETY: 引用刚查询有效，未存入实例。
+                        unsafe { Vst3Module::release(ctrl_cp) };
+                    }
+                    (None, None) => {}
+                }
+            }
+            Ok((kind, connection, controller_separate))
         })();
         match result {
-            Ok(kind) => Ok(Self {
+            Ok((kind, connection, controller_separate)) => Ok(Self {
                 module: std::sync::Arc::clone(&module.inner),
                 component,
                 processor,
                 controller,
+                controller_separate,
+                connection,
                 handler,
                 host_app,
                 name: class_name.to_owned(),
@@ -989,13 +1145,42 @@ impl Vst3Instance {
 
 impl Drop for Vst3Instance {
     fn drop(&mut self) {
-        self.deactivate_inner();
+        // 断开连接须在停用之前：JUCE 控制器的 `disconnect` 会访问处理期状态，
+        // 停用（`setActive(0)`）后该状态已拆，控制器侧 `disconnect` 段错误
+        //（2026-11-03 实测：先停用后断开，第一实例 ok、已渲染实例 crash 于 disc2）。
         // SAFETY: 三指针的配对关系见结构体文档；各 `release` 一次。
-        // `terminate` 在 `release` 之前（SDK 顺序）。
+        unsafe {
+            if let Some((comp_cp, ctrl_cp)) = self.connection {
+                let comp_cp_vtbl = vtbl::<ConnectionPointVtbl>(comp_cp);
+                // 只断开组件侧：组件侧 `connect` 曾 `addRef` 控制器，组件侧
+                // `disconnect` 平衡该引用。控制器侧不调 `disconnect`：JUCE 控制器的
+                // `connect` 不走 `ComponentBase` 的 +0x28 连接字段（它存处理器接口
+                // 于 +0xb0 并问宿主应用），故控制器侧 `disconnect` 不属于 JUCE 的
+                // 连接生命周期；实测已渲染实例的控制器侧 `disconnect` 段错误
+                //（两种断开顺序皆然，未渲染实例则正常）。对称式非 JUCE 控制器
+                // 若用 `ComponentBase::connect` 双向持引用，跳过控制器侧断开会
+                // 漏放组件的一引用（仅影响对象销毁时序，进程退出时回收），记后续。
+                let _ = (comp_cp_vtbl.disconnect)(comp_cp, ctrl_cp);
+                Vst3Module::release(comp_cp);
+                // 控制器侧连接点查询引用故意不释放：实测已渲染实例在此处
+                // `release(ctrl_cp)` 段错误（组件连接点释放正常）。JUCE 的引用
+                // 计数与 `ComponentBase` 模型不一致（组件侧 `connect` 未必如
+                // 模型般 `addRef`），提前释放即提前析构控制器。跳过＝每实例漏
+                // 一引用（控制器对象不析构，进程退出时回收），属进程期泄漏，
+                // 与模块永不卸载的策略一致；JUCE 引用模型的精确账本记后续。
+            }
+        }
+        self.deactivate_inner();
+        // SAFETY: `terminate` 在 `release` 之前（SDK 顺序）。
         unsafe {
             let comp_vtbl = vtbl::<ComponentVtbl>(self.component);
             let _ = (comp_vtbl.base.terminate)(self.component);
             if let Some(ctrl) = self.controller {
+                // 分离式控制器单独 `terminate`（组合式已随组件 `terminate`，勿重复）。
+                if self.controller_separate {
+                    let ctrl_vtbl = vtbl::<EditControllerVtbl>(ctrl);
+                    let _ = (ctrl_vtbl.base.terminate)(ctrl);
+                }
                 Vst3Module::release(ctrl);
             }
             Vst3Module::release(self.processor);
@@ -1019,9 +1204,9 @@ impl PluginInstance for Vst3Instance {
         // SAFETY: `processor`／`component` 是本实例的有效指针。
         unsafe {
             let proc_vtbl = vtbl::<AudioProcessorVtbl>(self.processor);
-            // 32 位浮点必须被插件接受（`kResultTrue`＝1；0＝不支持）。
+            // 32 位浮点必须被插件接受（`kResultTrue`＝0；1＝`kResultFalse`＝不支持）。
             let code = (proc_vtbl.can_process_sample_size)(self.processor, SAMPLE_32);
-            if code != 1 {
+            if code != RESULT_TRUE {
                 return Err(HostError::SampleSizeUnsupported);
             }
             let setup = ProcessSetup {
@@ -1036,8 +1221,9 @@ impl PluginInstance for Vst3Instance {
                 (proc_vtbl.setup_processing)(self.processor, &setup),
             )?;
             // 总线排布按 kind 分支（效果器线新增）：一期只接立体声。
-            // `setBusArrangements` 的返回值语义是“接受（1）／拒绝（0）”，
-            // 不是 ok／error；接受与否以事后 `getBusArrangement` 的实测排布为准。
+            // `setBusArrangements` 的返回值语义是布尔式（0＝`kResultTrue`＝接受，
+            // 1＝`kResultFalse`＝拒绝），不是 ok／error；接受与否以事后
+            // `getBusArrangement` 的实测排布为准。
             // 未知 kind（既无事件输入又无音频输入）无法定排布 ⇒ 响亮失败。
             let mut out_arr = [ARRANGEMENT_STEREO];
             let mut actual: u64 = 0;
@@ -1307,7 +1493,7 @@ impl PluginInstance for Vst3Instance {
                 } => Event::note_off(channel, pitch, velocity, note_id, event.sample_offset),
             });
         }
-        // 同块同偏移先 off 后 on（ADR-0064 D7：off 优先，避免同音符粘连）；
+        // 同块同偏移先 off 后 on（ADR-0069 D7：off 优先，避免同音符粘连）；
         // 稳定排序：同偏移同类型保持调度顺序。
         vst_events.sort_by_key(|event| {
             (
@@ -1437,6 +1623,17 @@ pub(crate) fn inspect_module(path: &str) -> Result<(String, Vec<PluginClass>), H
     }
     let mut classes = Vec::new();
     for (cid, name, category) in raw {
+        // 控制器／兼容类不作组件探针（见 `is_non_component_class`）：单列说明，不记失败。
+        if is_non_component_class(&category) {
+            classes.push(PluginClass {
+                id: cid,
+                name,
+                category,
+                kind: PluginKind::Unknown,
+                error: Some("控制器／兼容类：不作组件实例化（VST3 正常现象）".to_owned()),
+            });
+            continue;
+        }
         match Vst3Instance::open(&module, &cid, &name) {
             Ok(instance) => classes.push(PluginClass {
                 id: cid,
@@ -1455,4 +1652,50 @@ pub(crate) fn inspect_module(path: &str) -> Result<(String, Vec<PluginClass>), H
         }
     }
     Ok((vendor, classes))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::mem::{offset_of, size_of};
+
+    /// `IAudioProcessor` 虚表槽位必须与 SDK 一致（`FUnknown` 3 项前缀，无 `IPluginBase` 垫项）。
+    /// 2026-11-03 真插件 SIGSEGV 回归：垫两项会使 `canProcessSampleSize` 命中 `setupProcessing`。
+    #[test]
+    fn audio_processor_vtable_slots_match_sdk() {
+        let ptr = size_of::<*const ()>();
+        assert_eq!(
+            offset_of!(AudioProcessorVtbl, set_bus_arrangements),
+            3 * ptr
+        );
+        assert_eq!(offset_of!(AudioProcessorVtbl, get_bus_arrangement), 4 * ptr);
+        assert_eq!(
+            offset_of!(AudioProcessorVtbl, can_process_sample_size),
+            5 * ptr
+        );
+        assert_eq!(offset_of!(AudioProcessorVtbl, get_latency_samples), 6 * ptr);
+        assert_eq!(offset_of!(AudioProcessorVtbl, setup_processing), 7 * ptr);
+        assert_eq!(offset_of!(AudioProcessorVtbl, set_processing), 8 * ptr);
+        assert_eq!(offset_of!(AudioProcessorVtbl, process), 9 * ptr);
+        assert_eq!(offset_of!(AudioProcessorVtbl, get_tail_samples), 10 * ptr);
+    }
+
+    #[test]
+    fn classify_kind_uses_event_inputs() {
+        // Surge XT：事件输入＋音频输入 ⟹ 乐器。
+        assert_eq!(classify_kind(1, 1), PluginKind::Instrument);
+        // Dexed：仅事件输入 ⟹ 乐器。
+        assert_eq!(classify_kind(1, 0), PluginKind::Instrument);
+        // Surge XT Effects：仅音频输入 ⟹ 效果器。
+        assert_eq!(classify_kind(0, 1), PluginKind::Effect);
+        // 皆无 ⟹ 未知。
+        assert_eq!(classify_kind(0, 0), PluginKind::Unknown);
+    }
+
+    #[test]
+    fn non_component_classes_are_known() {
+        assert!(is_non_component_class("Component Controller Class"));
+        assert!(is_non_component_class("Plugin Compatibility Class"));
+        assert!(!is_non_component_class("Audio Module Class"));
+    }
 }

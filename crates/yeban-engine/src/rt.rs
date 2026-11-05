@@ -143,7 +143,7 @@
 //!   （`crates/yeban-render/src/render.rs`），master 与其它总线走同一条
 //!   "全部入边求和之后 → EQ → 混响 → 卷积"。
 //!
-//! ### 槽位：`INSERT_SLOTS = MAX_TRACK_SLOTS + 1 = 17`
+//! ### 槽位：`INSERT_SLOTS = PDC_SLOTS + 1 = 65`（⛔ 不再派生自声部槽数，见常量文档）
 //!
 //! 主总线**不在** `RoutingPlan::slots()` 里（它是求和终点），因此**不占**一条轨的
 //! 插入槽位：三个武装池各多一格，主总线的槽位由 [`master_last`] 排在**最后**
@@ -214,14 +214,14 @@
 //! - [`EngineRuntime::track_scratch`]：`[f32; 128]`（单轨渲染结果，复用一个缓冲）
 //! - [`crate::metronome::render_quantum`]：`[usize; 4]` + `[f32; 4]`（本量子的拍点，栈上定长）
 //! - [`EngineRuntime::block`]：`AudioBlock<128>`（`[f32; 128]` × 2）
-//! - [`EngineRuntime::synth`]：`[TrackSlot; 16]` × `[Voice; 16]`（声部池，定长）
-//! - [`EngineRuntime::armed_strips`]：`[(EntityId, Option<ChannelStrip>); 17]`（`INSERT_SLOTS`：轨道 ＋ 主总线；`ChannelStrip` 不含 `Vec`/`Box` ⇒ 无堆）
-//! - [`EngineRuntime::reverb_pool`]：`[Reverb; 17]`（`INSERT_SLOTS`；**延迟线在构造期分配**；回调内只 `set_params` 与逐样本处理）
+//! - [`EngineRuntime::synth`]：`Box<[TrackSlot]>` × `[Voice; 16]`（声部池；槽位数**运行期可配**，默认 1024，见 [`crate::synth::DEFAULT_TRACK_SLOTS`]）
+//! - [`EngineRuntime::armed_strips`]：`[(EntityId, Option<ChannelStrip>); 65]`（`INSERT_SLOTS`：轨道 ＋ 主总线；`ChannelStrip` 不含 `Vec`/`Box` ⇒ 无堆）
+//! - [`EngineRuntime::reverb_pool`]：`[Reverb; 65]`（`INSERT_SLOTS`；**延迟线在构造期分配**；回调内只 `set_params` 与逐样本处理）
 //! - [`EngineRuntime::reverb_scratch`]：`[[f32; 128]; 2]`（混响的单声道取中值暂存，栈/内联）
-//! - [`EngineRuntime::conv_pool`]：`[ConvolutionReverb; 17]`（`INSERT_SLOTS`；**IR 频谱与预延迟线
+//! - [`EngineRuntime::conv_pool`]：`Box<[ConvolutionReverb]>`（`INSERT_SLOTS`；**IR 频谱与预延迟线
 //!   在构造期分配**，长度是引擎常量 ⇒ 回调内只做同长度的换 IR 与 `set_params`）
 //! - [`EngineRuntime::conv_scratch`]：`[f32; 256]`（卷积混响的**交错立体声**暂存，栈/内联）
-//! - [`EngineRuntime::synth`] 的 `drums`：`Box<[DrumMachine<16>; 16]>`（每槽一台鼓机，
+//! - [`EngineRuntime::synth`] 的 `drums`：`Box<[DrumMachine<16>]>`（每槽一台鼓机，
 //!   **构造期一次性分配**；回调内只 `set_params` / `trigger` / `render`）
 //! - [`MeterBank`]：`[MeterSlot; 256]`（每节点电平状态，定长数组 + 原位 `swap` 对齐）
 //!
@@ -274,26 +274,39 @@ const _: () = crate::block::assert_supported_frames::<DEFAULT_BLOCK_FRAMES>();
 // 栈上临时事件缓冲至少能装下一个量子的参数洪峰。
 const _: () = assert!(SCRATCH_EVENTS >= DEFAULT_BLOCK_FRAMES);
 
-/// 实时 PDC 延迟线池的**槽位数**：与声部池的轨道上限同源（[`MAX_TRACK_SLOTS`]）。
+/// 实时 PDC 延迟线池的**槽位数**（⛔ 不再派生自声部池的轨道数）。
 ///
-/// 理由不是"刚好够用"而是"同一个事实源"：`SynthEngine` 只为前 [`MAX_TRACK_SLOTS`]
-/// 条轨分配声部槽，第 17 条轨本身就没有信号可补偿。槽位用尽的计划由
-/// [`EngineStats::pdc_unarmed_nodes`] 如实计数（**不静默**）。
-pub const PDC_SLOTS: usize = MAX_TRACK_SLOTS;
+/// **为什么解耦**：声部槽从 16 提到 1024（[`DEFAULT_TRACK_SLOTS`]）之后，"同一个
+/// 事实源"这条理由不再成立 —— 一条 PDC 延迟线的代价是
+/// [`MAX_PDC_DELAY_FRAMES`] `× 4 B` = **32 KiB**（128 槽 = 4 MiB，1024 槽 = 32 MiB），
+/// 而声部槽每格只有 1.4 KiB。两个池的**单价差 23 倍** ⇒ 让它们共用一条上限，
+/// 等于用最贵的那个决定全部。
+///
+/// 这里是**独立上限**：前 [`Self`] 条有补偿的轨拿得到延迟线，其余由
+/// [`EngineStats::pdc_unarmed_nodes`] 如实计数（⛔ 不静默、⛔ 不 panic）。
+/// 64 的取法：常见工程里需要 PDC 的轨（挂插件链的）远少于总轨数；
+/// 装不下时**只有对齐**受影响，声音一条都不少。
+pub const PDC_SLOTS: usize = 64;
 
-/// 插入链器件池的**槽位数**：`MAX_TRACK_SLOTS` 条轨 ＋ **1 条主总线**
+/// 插入链器件池的**槽位数**：[`PDC_SLOTS`] 条轨 ＋ **1 条主总线**
 /// （任务单 `#173`）。
 ///
-/// 为什么主总线要**单独一格**而不是占用一条轨的槽位：主总线是汇流终点、不是
-/// 第 17 条轨（`RoutingPlan` 的 `slots()` 也把它排除在外）⇒ 让它挤掉一条轨的
-/// 插入槽会让"16 条轨各有器件"这件事少一条。多出来的一格在主总线**没有**器件时
-/// 只是定长数组末尾的一项，`armed_*_slots` 根本不会扫到它 ⇒ 默认路径零成本。
+/// **为什么主总线要单独一格**：它是汇流终点、不是第 N+1 条轨
+/// （`RoutingPlan` 的 `slots()` 也把它排除在外）⇒ 让它挤掉一条轨的插入槽会让
+/// "N 条轨各有器件"这件事少一条。多出来的一格在主总线**没有**器件时只是
+/// 定长数组末尾的一项，`armed_*_slots` 根本不会扫到它 ⇒ 默认路径零成本。
 ///
-/// 代价（字节）：`EngineRuntime` 的三个内联池各多一格 —— `armed_strips` ＋392 B、
-/// `reverb_pool` ＋1 312 B、两张 `armed_*` 表 ＋约 48 B、IR 哈希表 ＋8 B
-/// （`conv_pool` 在堆上 ⇒ 运行时字段一个字节不涨）。实测读数见模块头的
-/// "主总线的插入链"一节与 `tests/bus_insert.rs` 的 B5。
-pub const INSERT_SLOTS: usize = MAX_TRACK_SLOTS + 1;
+/// **为什么与声部槽解耦**（与 [`PDC_SLOTS`] 同一条理由，但贵得多）：
+/// `conv_pool` 每槽在构造期要建一份**占位 IR 频谱** ≈ **313 KiB**（48 kHz，见
+/// [`Self::conv_pool`] 的字段文档）⇒ 1024 槽会吃掉 **313 MiB**，而那笔钱买的是
+/// "第 65 条之后的轨也能各挂一台卷积混响"。装不下的轨由
+/// `EngineStats::insert_*` 系列按"未武装"如实体现（⛔ 不静默），
+/// 但它**只是少一层效果**，声部与路由一条都不少。
+///
+/// 代价（字节，65 槽实测口径）：`armed_strips` ≈ 44 KiB、
+/// `reverb_pool` ≈ 85 KiB（结构体；延迟线在堆上）、两张 `armed_*` 表 ≈ 3 KiB、
+/// IR 哈希表 ≈ 520 B（`conv_pool` 在堆上）。
+pub const INSERT_SLOTS: usize = PDC_SLOTS + 1;
 
 /// 每条 PDC 延迟线的**最大补偿延迟**（采样点）。
 ///
@@ -1414,20 +1427,20 @@ struct BranchShare<'a> {
     /// ⚠ 两条分支（主线 ＋ 试听）共用**同一份**借用 ⇒ 试听期两个版本看到**同一份** CC 状态。
     control_change: &'a ControlChangeState,
     bank: &'a mut MeterBank<SCRATCH_METERS>,
-    armed_strips: &'a mut [(EntityId, Option<ChannelStrip>); INSERT_SLOTS],
+    armed_strips: &'a mut [(EntityId, Option<ChannelStrip>)],
     armed_insert_slots: &'a mut usize,
-    reverb_pool: &'a mut [Reverb; INSERT_SLOTS],
-    armed_reverbs: &'a mut [(EntityId, bool); INSERT_SLOTS],
+    reverb_pool: &'a mut [Reverb],
+    armed_reverbs: &'a mut [(EntityId, bool)],
     armed_reverb_slots: &'a mut usize,
     reverb_scratch: &'a mut [[f32; DEFAULT_BLOCK_FRAMES]; 2],
     conv_pool: &'a mut Box<[ConvolutionReverb]>,
-    armed_convs: &'a mut [(EntityId, bool); INSERT_SLOTS],
+    armed_convs: &'a mut [(EntityId, bool)],
     armed_conv_slots: &'a mut usize,
     conv_scratch: &'a mut [f32; 2 * DEFAULT_BLOCK_FRAMES],
-    armed_pan_l: &'a mut [ParamSmoother; MAX_TRACK_SLOTS],
-    armed_pan_r: &'a mut [ParamSmoother; MAX_TRACK_SLOTS],
+    armed_pan_l: &'a mut [ParamSmoother],
+    armed_pan_r: &'a mut [ParamSmoother],
     armed_pan_slots: &'a mut usize,
-    armed_pan_armed: &'a mut [bool; MAX_TRACK_SLOTS],
+    armed_pan_armed: &'a mut [bool],
     /// ⭐ **逐边发送量武装表**（任务单 `#261`）：`(边身份, 静态线性边增益)`。
     ///
     /// 与 `armed_pan_gains` 同一个形状（前 `armed_send_slots` 项有效），但键是
@@ -1451,14 +1464,14 @@ struct BranchShare<'a> {
     ///
     /// 与 `track_scratch` 同一条纪律：**构造期**预分配、逐块复用 ⇒ 零分配。
     /// 只有 `RoutingPlan::uses_buses()` 为真时才清空/使用（默认路径整段跳过）。
-    routing_buses: &'a mut [AudioBlock<DEFAULT_BLOCK_FRAMES>; MAX_TRACK_SLOTS],
+    routing_buses: &'a mut [AudioBlock<DEFAULT_BLOCK_FRAMES>],
     /// ⭐ **侧链键抽头池**（v1）：`[源槽位][帧]` 的单声道抽头，槽位 =
     /// [`crate::routing::RoutingPlan::slot_of`]（与总线暂存池同源）。
     /// 构造期预分配、逐块复用 ⇒ 零分配；每量子起点由 `render_branch` 清零
     /// `key_tap_filled`（抽头本身不清零：未填充的槽位永不被读）。
-    key_taps: &'a mut [[f32; DEFAULT_BLOCK_FRAMES]; MAX_TRACK_SLOTS],
+    key_taps: &'a mut [[f32; DEFAULT_BLOCK_FRAMES]],
     /// 本量子各抽头槽位是否已写满（`render_branch` 起点清零）。
-    key_tap_filled: &'a mut [bool; MAX_TRACK_SLOTS],
+    key_tap_filled: &'a mut [bool],
     scratch_meters: &'a mut [MeterFrame; SCRATCH_METERS],
     insert_gain_reductions: &'a mut u64,
     insert_max_reduction_db: &'a mut f32,
@@ -1475,7 +1488,7 @@ struct BranchShare<'a> {
     master_insert_frames: &'a mut u64,
     pan_automation_frames: &'a mut u64,
     meter_capacity_drops: &'a mut u64,
-    pan_gains: &'a mut [(EntityId, f32, f32); MAX_TRACK_SLOTS],
+    pan_gains: &'a mut [(EntityId, f32, f32)],
 }
 
 /// 把 `share.track_scratch[..frames]` 里的**单声道**缓冲送过本轨已武装的插入链：
@@ -2359,16 +2372,16 @@ pub struct EngineRuntime {
     ///
     /// ⚠ 只在 [`crate::snapshot::EngineSnapshot::routing`] 的 `uses_buses()` 为真时
     /// 清空/使用 ⇒ 默认工程（全部直连 master）**一个字节都不碰**。
-    routing_buses: Box<[AudioBlock<DEFAULT_BLOCK_FRAMES>; MAX_TRACK_SLOTS]>,
+    routing_buses: Box<[AudioBlock<DEFAULT_BLOCK_FRAMES>]>,
     /// ⭐ **侧链键抽头池**（v1）：`[源槽位][帧]` 的单声道抽头。
     ///
     /// 为什么是堆上的定长数组（`Box<[[f32; 128]; 16]>`，值尺寸 = **一个瘦指针 8 B**）：
     /// 内联会把 `EngineRuntime` 抬 8192 B；堆上那一块在 [`Self::new_boxed`] 的
     /// 构造期分配一次。值尺寸因此只 +32 B（指针 8 B ＋ `key_tap_filled` 16 B ＋
     /// 布局对齐填充 8 B），仍在 192 KiB 门槛内（判据见 `tests/rt_new_boxed.rs`）。
-    key_taps: Box<[[f32; DEFAULT_BLOCK_FRAMES]; MAX_TRACK_SLOTS]>,
+    key_taps: Box<[[f32; DEFAULT_BLOCK_FRAMES]]>,
     /// 本量子各抽头槽位是否已写满（`render_branch` 起点清零）。
-    key_tap_filled: [bool; MAX_TRACK_SLOTS],
+    key_tap_filled: Box<[bool]>,
     /// 每节点电平状态机（峰值保持 / 平滑 RMS）。
     bank: MeterBank<SCRATCH_METERS>,
     /// 声部池 + 播放头（**真的合成**：见 [`crate::synth`]）。
@@ -2425,7 +2438,7 @@ pub struct EngineRuntime {
     /// 本快照武装的声相衰减律（`audio_config.pan_law` 的投影）。
     armed_pan_law: PanLaw,
     /// 本快照武装的每轨声相增益 `(左, 右)`（构造期算好，实时侧只做乘法）。
-    armed_pan_gains: [(EntityId, f32, f32); MAX_TRACK_SLOTS],
+    armed_pan_gains: Box<[(EntityId, f32, f32)]>,
     /// 本快照武装的声相增益条数（前 `n` 项有效）。
     armed_pan_slots: usize,
     /// **声相自动化的逐样本平滑器**（左 / 右），与 `armed_pan_gains` 同下标。
@@ -2436,11 +2449,11 @@ pub struct EngineRuntime {
     ///
     /// `armed_pan_armed[i] == false` ⇒ 逐样本走**原来那条**常量增益路径
     /// （[`sum_into_bus`]）⇒ 没有声相自动化的工程**逐位不变**。
-    armed_pan_l: [ParamSmoother; MAX_TRACK_SLOTS],
+    armed_pan_l: Box<[ParamSmoother]>,
     /// 见 [`Self::armed_pan_l`]（右声道）。
-    armed_pan_r: [ParamSmoother; MAX_TRACK_SLOTS],
+    armed_pan_r: Box<[ParamSmoother]>,
     /// 本槽位是否收到过**被接受的**声相自动化目标（真 ⇒ 走平滑路径）。
-    armed_pan_armed: [bool; MAX_TRACK_SLOTS],
+    armed_pan_armed: Box<[bool]>,
     /// **覆盖度见证**：被**平滑**声相乘过的帧数（累计）。
     ///
     /// 零分配判据必须能回答"那条平滑路径真的被走到了吗"——它至少在两个可观测上与
@@ -2565,7 +2578,7 @@ pub struct EngineRuntime {
     /// ⚠ 本字段是 `c792fdc` 的 `armed_compressors` 的**同一张表**改名而来：`c792fdc`
     /// 里槽位装的是裸 `Compressor`，本票装的是**含动态级**的 `ChannelStrip`
     /// （见 [`crate::insert`] 模块文档 §2）。表形状、槽位数、查找方式都没变。
-    armed_strips: [(EntityId, Option<ChannelStrip>); INSERT_SLOTS],
+    armed_strips: Box<[(EntityId, Option<ChannelStrip>)]>,
     /// 本快照武装的插入器件条数（前 `n` 项有效）。
     ///
     /// ⭐ 任务单 `#173`：`n` 可以到 [`INSERT_SLOTS`]（`MAX_TRACK_SLOTS` 条轨 ＋
@@ -2594,12 +2607,12 @@ pub struct EngineRuntime {
     /// [`Reverb::set_sample_rate`] 会分配（并因此释放）延迟线，是本器件**唯一**的
     /// 分配点 ⇒ 它只在 [`Self::new`]（音频回调之外）调用一次。快照边界只允许
     /// `set_params`（标量赋值，零分配）。理由见 [`crate::insert`] 模块文档 §8.4 / §8.5。
-    reverb_pool: [Reverb; INSERT_SLOTS],
+    reverb_pool: Box<[Reverb]>,
     /// 本快照武装的混响 `(轨道, 是否武装)`；前 [`Self::armed_reverb_slots`] 项有效。
     ///
     /// ⚠ 槽位里装的**不是** `Option<Reverb>`：延迟线必须是**构造期**建好的那一批，
     /// 因此 `Option` 只表达"这一槽本快照是否武装、武装给哪条轨"，实例本身恒存在。
-    armed_reverbs: [(EntityId, bool); INSERT_SLOTS],
+    armed_reverbs: Box<[(EntityId, bool)]>,
     /// 本快照武装的混响条数（前 `n` 项有效）。
     armed_reverb_slots: usize,
     /// 混响延迟线池武装时用的采样率（**构造期**定，运行期不变；§8.5）。
@@ -2635,7 +2648,7 @@ pub struct EngineRuntime {
     ///
     /// 与 [`Self::armed_reverbs`] 同款：槽位里装的**不是** `Option<ConvolutionReverb>`
     /// —— 缓冲必须是**构造期**建好的那一批，`Option` 只表达"这一槽本快照是否武装"。
-    armed_convs: [(EntityId, bool); INSERT_SLOTS],
+    armed_convs: Box<[(EntityId, bool)]>,
     /// 本快照武装的卷积混响条数（前 `n` 项有效）。
     armed_conv_slots: usize,
     /// 每个槽位里**当前装着的那一份 IR** 的内容标识（[`ConvolutionPlan::ir_hash`]）。
@@ -2647,7 +2660,7 @@ pub struct EngineRuntime {
     ///
     /// 初值 `0` 与任何真实 IR 的哈希都不同（FNV-1a 的偏移基值不是 0）⇒ 未武装过的槽位
     /// 第一次一定会走"重设 IR"那一支。
-    armed_conv_ir_hashes: [u64; INSERT_SLOTS],
+    armed_conv_ir_hashes: Box<[u64]>,
     /// 卷积混响池武装时用的采样率（**构造期**定，运行期不变）。
     ///
     /// ⚠ 它同时钉住 IR 的**帧数**（`采样率 ÷ 10`）⇒ 换采样率必须整段不武装，
@@ -2766,7 +2779,13 @@ impl EngineRuntime {
     ) -> Self {
         // ⚠ ⛔ 不写成 `MaybeUninit` ＋ `assume_init()`：见上面那段读数（那正是 +180144 B
         // 的来源）。`*boxed` 是"把堆上那份值移出来"，⛔ 不会在栈上再建一份。
-        *Self::new_boxed(slot, retire, events, meters)
+        *Self::new_boxed_with_track_slots(
+            slot,
+            retire,
+            events,
+            meters,
+            crate::synth::DEFAULT_TRACK_SLOTS,
+        )
     }
 
     /// ⭐ **装箱构造**：`size_of::<EngineRuntime>()`（本机 = `180144 B`）那一份值
@@ -2830,13 +2849,45 @@ impl EngineRuntime {
         events: EventReceiver,
         meters: MeterPublisher,
     ) -> Box<Self> {
-        // 堆上只要一块 `size_of::<Self>()`（侧链 v1 之后 186768 B）；栈帧里只有一个 `Box` 指针。
+        Self::new_boxed_with_track_slots(
+            slot,
+            retire,
+            events,
+            meters,
+            crate::synth::DEFAULT_TRACK_SLOTS,
+        )
+    }
+
+    /// 与 [`Self::new_boxed`] 相同，但**显式指定声部池的轨道槽数**。
+    ///
+    /// `track_slots` 会被 [`SynthEngine::with_track_slots`] 钳进
+    /// `[`MIN_TRACK_SLOTS`, `MAX_TRACK_SLOTS`]`；超出上限的轨道仍会被
+    /// [`SynthEngine::track_drops`] 计数（⛔ 不静默）。
+    ///
+    /// 这是"参数调整大小"的**唯一入口**：调用方（`yeban-app` 的 `EngineHost`）
+    /// 从这里把工程规模或 `YEBAN_TRACK_SLOTS` 的决定传进来。⚠ 它必须在
+    /// **打开设备之前**调用 —— 声部池的分配只发生在这里。
+    pub fn new_boxed_with_track_slots(
+        slot: &Arc<SnapshotSlot>,
+        retire: RetireProducer,
+        events: EventReceiver,
+        meters: MeterPublisher,
+        track_slots: usize,
+    ) -> Box<Self> {
+        // 堆上只要一块 `size_of::<Self>()`；栈帧里只有一个 `Box` 指针。
         let mut place = Box::<Self>::new_uninit();
         // SAFETY: `write_into` 的有效性前提由本函数满足（`place` 是堆上一块有效、对齐、
         // 未初始化的 `Self`），它写满全部字段；`Box::assume_init` 再把
         // `Box<MaybeUninit<Self>>` 变成 `Box<Self>`（⛔ 不搬值、⛔ 不复制）。
         unsafe {
-            Self::write_into(place.as_mut_ptr(), slot, retire, events, meters);
+            Self::write_into(
+                place.as_mut_ptr(),
+                slot,
+                retire,
+                events,
+                meters,
+                track_slots,
+            );
             place.assume_init()
         }
     }
@@ -2872,28 +2923,33 @@ impl EngineRuntime {
         retire: RetireProducer,
         events: EventReceiver,
         meters: MeterPublisher,
+        track_slots: usize,
     ) {
+        // 声部池与参数表的容量由调用方决定（[`Self::new_boxed_with_track_slots`]）。
+        let track_slots =
+            track_slots.clamp(crate::synth::MIN_TRACK_SLOTS, crate::synth::MAX_TRACK_SLOTS);
         // 混响延迟线的**唯一**分配点（[`crate::insert`] 模块文档 §8.4 / §8.5）：
         // 采样率取自**初始快照**——调用方（`EngineHost::reload` / `device` 腿）都是
         // 先用工程建好快照、再建运行时，因此这里拿到的就是本工程将要用的采样率。
         // `SnapshotSlot::current` 会在写者锁上短暂等待，因此只允许在**非实时**路径调用
         // （本函数就是那条路径：全部通道必须在打开设备之前建立）。
         let armed_reverb_sample_rate = slot.current().sample_rate();
-        // 混响池：**逐台就地写进目的地**，⛔ 不像原来那样先建一个 `[Reverb; 16]`
-        // 的栈上临时量（那一个就是 20 992 B）。分配次数、分配顺序与原来逐字相同：
-        // 每台 `Reverb::new()` 之后立刻 `set_sample_rate`（唯一的 `Vec` 分配点）。
-        for slot_index in 0..INSERT_SLOTS {
+        // 混响池：先建一个 `Vec` 再整体装箱。`Reverb` **不是** `Copy`/`Clone`（每台
+        // 持有自己的延迟线）⇒ `vec![Reverb::new(); N]` 不成立，只能逐台 push。
+        // 分配次数仍与原来逐字相同：每台 `Reverb::new()` 之后立刻 `set_sample_rate`
+        // （唯一的 `Vec` 分配点），最后 `into_boxed_slice` 收成瘦指针。
+        let mut reverb_pool: Vec<Reverb> = Vec::with_capacity(INSERT_SLOTS);
+        for _ in 0..INSERT_SLOTS {
             let mut reverb = Reverb::new();
             // 构造期允许分配（`Vec` 延迟线在这里建好，回调内一次也不重建）。
             reverb.set_sample_rate(armed_reverb_sample_rate as f32);
-            // SAFETY: `dst` 由调用方保证有效、对齐、未初始化；`slot_index < 16`
-            // ⇒ 落在 `reverb_pool` 数组边界内；本字段在此只写这一次。
-            unsafe {
-                core::ptr::write(
-                    core::ptr::addr_of_mut!((*dst).reverb_pool[slot_index]),
-                    reverb,
-                );
-            }
+            reverb_pool.push(reverb);
+        }
+        let reverb_pool = reverb_pool.into_boxed_slice();
+        // SAFETY: `dst` 有效、对齐、未初始化；本字段（`@drained reverb_pool`）在此只写
+        // 这一次，且发生在 `write_fields!` 的穷尽解构**之前** ⇒ 解构时它已初始化。
+        unsafe {
+            core::ptr::write(core::ptr::addr_of_mut!((*dst).reverb_pool), reverb_pool);
         }
         // 卷积混响池的**唯一**分配点（[`crate::insert`] 模块文档 §9.2／§9.5）：预延迟线
         // ＋ 四条 IR 频谱。两者都按**引擎常量**的 IR 长度建满，于是快照边界上的换 IR
@@ -2918,7 +2974,7 @@ impl EngineRuntime {
         let conv_pool = conv_pool.into_boxed_slice();
         // 参数目标表：同样在**构造期**按初始快照的采样率建满（每个平滑器的 `α`
         // 含一次 `exp`；回调内一次也不重算 —— 采样率不变时 `set_sample_rate` 直接返回）。
-        let params = ParamTable::new(armed_reverb_sample_rate as f32);
+        let params = ParamTable::with_slots(armed_reverb_sample_rate as f32, track_slots);
         let armed_master = slot.current().master();
         // ⭐ 就地写字段的**唯一**入口：它同时是"字段清单 == 结构体定义"的**编译期断言**。
         //
@@ -2980,20 +3036,26 @@ impl EngineRuntime {
             put!(track_scratch, [0.0; DEFAULT_BLOCK_FRAMES]);
             // ⭐ 总线暂存池：**构造期**一次分配到堆上（`Box<[_; 16]>` = 瘦指针）
             // ⇒ 回调内零分配 [MUST-GATE-001]。
+            // ⚠ `vec!`（先在堆上要位、再逐个写）而不是 `Box::new([...; N])`：
+            // 后者会**先在栈上**造一个 `N × size_of::<AudioBlock>()` 的临时量（N = 2048
+            // 时是 1 MiB）再搬进 Box —— 实测会直接把测试线程的 2 MiB 栈打爆。
             put!(
                 routing_buses,
-                Box::new(core::array::from_fn(|_| AudioBlock::new()))
+                vec![AudioBlock::new(); MAX_TRACK_SLOTS].into_boxed_slice()
             );
             // ⭐ 侧链键抽头池（v1）：与总线暂存池同一条纪律 —— **构造期**一次分配
             // 到堆上 ⇒ 回调内零分配；每量子起点由 `render_branch` 清零填充标记。
             put!(
                 key_taps,
-                Box::new([[0.0; DEFAULT_BLOCK_FRAMES]; MAX_TRACK_SLOTS])
+                vec![[0.0; DEFAULT_BLOCK_FRAMES]; MAX_TRACK_SLOTS].into_boxed_slice()
             );
-            put!(key_tap_filled, [false; MAX_TRACK_SLOTS]);
+            put!(
+                key_tap_filled,
+                vec![false; MAX_TRACK_SLOTS].into_boxed_slice()
+            );
             put!(bank, MeterBank::new());
             // 采样率先按 48 kHz 武装；第一次武装快照时按快照校准（`begin_snapshot`）。
-            put!(synth, SynthEngine::new(48_000));
+            put!(synth, SynthEngine::with_track_slots(48_000, track_slots));
             // 走带默认**自由跑**：接入走带之前 `process_quantum` 的语义就是
             // "快照一发布就从 tick 0 起滚"，因此未收到任何命令时行为逐位不变。
             // 要"加载即停住"的控制面显式发一条 `Stop`（`yeban-app` 的 GUI 路径
@@ -3019,7 +3081,7 @@ impl EngineRuntime {
             put!(armed_pan_law, PanLaw::default());
             put!(
                 armed_pan_gains,
-                [(EntityId::default(), 1.0f32, 1.0f32); MAX_TRACK_SLOTS]
+                vec![(EntityId::default(), 1.0f32, 1.0f32); MAX_TRACK_SLOTS].into_boxed_slice()
             );
             put!(armed_pan_slots, 0);
             // 声相平滑器：**构造期**预分配（回调内绝不再分配）。`with_default_time`
@@ -3029,13 +3091,18 @@ impl EngineRuntime {
             // 真正的采样率在**快照边界**用 `set_sample_rate` 校准（同值提前返回）。
             put!(
                 armed_pan_l,
-                core::array::from_fn(|_| ParamSmoother::with_default_time(48_000.0))
+                vec![ParamSmoother::with_default_time(48_000.0); MAX_TRACK_SLOTS]
+                    .into_boxed_slice()
             );
             put!(
                 armed_pan_r,
-                core::array::from_fn(|_| ParamSmoother::with_default_time(48_000.0))
+                vec![ParamSmoother::with_default_time(48_000.0); MAX_TRACK_SLOTS]
+                    .into_boxed_slice()
             );
-            put!(armed_pan_armed, [false; MAX_TRACK_SLOTS]);
+            put!(
+                armed_pan_armed,
+                vec![false; MAX_TRACK_SLOTS].into_boxed_slice()
+            );
             put!(pan_automation_frames, 0);
             put!(pan_automation_value_rejects, 0);
             put!(pan_automation_resets, 0);
@@ -3077,15 +3144,15 @@ impl EngineRuntime {
             // （`from_fn` 在**构造期**调用，不在回调里）。
             put!(
                 armed_strips,
-                core::array::from_fn(|_| (EntityId::default(), None))
+                vec![(EntityId::default(), None); INSERT_SLOTS].into_boxed_slice()
             );
             put!(armed_insert_slots, 0);
             put!(strip_output_gain_events, 0);
             put!(strip_output_gain_value_rejects, 0);
-            // ⚠ `reverb_pool` **不在这里**：它已经在上面逐台就地写好了（那一段就是本字段）。
+            // ⚠ `reverb_pool` **不在这里**：它由上面那段（`@drained` 组）就地写好。
             put!(
                 armed_reverbs,
-                [(EntityId::default(), false); INSERT_SLOTS]
+                vec![(EntityId::default(), false); INSERT_SLOTS].into_boxed_slice()
             );
             put!(armed_reverb_slots, 0);
             put!(armed_reverb_sample_rate, armed_reverb_sample_rate);
@@ -3093,9 +3160,12 @@ impl EngineRuntime {
             // 卷积混响池：**构造期**按初始快照的采样率把占位 IR 与预延迟线全部建好
             // （回调内只做同长度的换 IR 与 `set_params`）。
             put!(conv_pool, conv_pool);
-            put!(armed_convs, [(EntityId::default(), false); INSERT_SLOTS]);
+            put!(
+                armed_convs,
+                vec![(EntityId::default(), false); INSERT_SLOTS].into_boxed_slice()
+            );
             put!(armed_conv_slots, 0);
-            put!(armed_conv_ir_hashes, [0; INSERT_SLOTS]);
+            put!(armed_conv_ir_hashes, vec![0u64; INSERT_SLOTS].into_boxed_slice());
             put!(armed_conv_sample_rate, armed_conv_sample_rate);
             put!(conv_scratch, [0.0; 2 * DEFAULT_BLOCK_FRAMES]);
             put!(insert_gain_reductions, 0);
@@ -4663,7 +4733,10 @@ impl EngineRuntime {
                 // `[..armed_insert_slots]` 仍然是**紧凑前缀**；主总线占的是多出来的
                 // 第 17 格（[`INSERT_SLOTS`]），⛔ 不挤掉任何一条轨的槽位。
                 for (id, insert) in master_last(current) {
-                    if *armed_insert_slots >= MAX_TRACK_SLOTS && *id != master {
+                    // ⚠ 守卫按**表长**判（`PDC_SLOTS` 条轨 ＋ master 那一格 = `INSERT_SLOTS`）。
+                    // 写成 `MAX_TRACK_SLOTS`（声部池的上限）会在两数不一致时直接越界写
+                    // `armed_strips[INSERT_SLOTS]` —— 这正是"两件事共用一条上限"的代价。
+                    if *armed_insert_slots >= PDC_SLOTS && *id != master {
                         continue;
                     }
                     let Some(params) = insert.strip() else {
@@ -4705,7 +4778,7 @@ impl EngineRuntime {
                 if current.sample_rate() == *armed_reverb_sample_rate {
                     // ⭐ 任务单 `#173`：主总线排在最后（同上，紧凑前缀）。
                     for (id, insert) in master_last(current) {
-                        if *armed_reverb_slots >= MAX_TRACK_SLOTS && *id != master {
+                        if *armed_reverb_slots >= PDC_SLOTS && *id != master {
                             continue;
                         }
                         let Some(params) = insert.reverb() else {
@@ -4752,7 +4825,7 @@ impl EngineRuntime {
                 if current.sample_rate() == *armed_conv_sample_rate {
                     // ⭐ 任务单 `#173`：主总线排在最后（同上，紧凑前缀）。
                     for (id, insert) in master_last(current) {
-                        if *armed_conv_slots >= MAX_TRACK_SLOTS && *id != master {
+                        if *armed_conv_slots >= PDC_SLOTS && *id != master {
                             continue;
                         }
                         let Some(plan) = insert.convolution() else {
@@ -4779,11 +4852,15 @@ impl EngineRuntime {
                             // （时间状态）保留 ⇒ 输出逐位不变（判据 V4 的第二半）。
                             conv_pool[slot].set_params(plan.params());
                         } else {
+                            // 立体声开：四通路喂（左 IR，零，零，右 IR）；关：双单声道（与修前逐位相同）。
+                            // 实时插入本身是单声道下混（`#158`），立体声 IR 在监听里听不出，
+                            // 但计划必须如实带两条 IR，否则离线与实时对同一工程的回答会分叉。
+                            let right = plan.ir_r().unwrap_or_else(|| plan.ir());
                             let accepted = conv_pool[slot].set_impulse_response(
                                 plan.ir(),
                                 plan.silence(),
                                 plan.silence(),
-                                plan.ir(),
+                                right,
                             );
                             if accepted != plan.ir_frames() {
                                 // 器件拒绝（非有限样本 / 频谱溢出）⇒ 整台已回到未配置直通。
@@ -4886,7 +4963,7 @@ impl EngineRuntime {
                     meter_capacity_drops: &mut *meter_capacity_drops,
                     pan_gains: &mut pan_gains,
                     key_taps: &mut *key_taps,
-                    key_tap_filled: &mut *key_tap_filled,
+                    key_tap_filled: &mut key_tap_filled[..],
                 };
                 produced = render_branch(
                     &mut share,
@@ -5393,7 +5470,7 @@ fn route_panned(
     source_left: &[f32],
     source_right: &[f32],
     out: &mut AudioBlock<DEFAULT_BLOCK_FRAMES>,
-    buses: &mut [AudioBlock<DEFAULT_BLOCK_FRAMES>; MAX_TRACK_SLOTS],
+    buses: &mut [AudioBlock<DEFAULT_BLOCK_FRAMES>],
     sends: &mut SendTable<'_>,
 ) {
     for route in routes {
@@ -6593,7 +6670,11 @@ mod tests {
         let (retire, _queue) = retire_channel(16);
         let (_sender, receiver) = event_channel(64);
         let (publisher, _collector) = meter_channel(1024);
-        let mut runtime = EngineRuntime::new(&slot, retire, receiver, publisher);
+        // ⚠ 声部池**显式取 16 槽**：默认是 1024，300 条轨一条都不会被丢 ⇒ 这条判据
+        // 就变成了"没踩到边界也绿"。边界必须能被一次踩到（`with_track_slots` 就是
+        // 为这类判据准备的入口）。
+        let mut runtime =
+            *EngineRuntime::new_boxed_with_track_slots(&slot, retire, receiver, publisher, 16);
         let mut out = [0.0f32; DEFAULT_BLOCK_FRAMES * 2];
         runtime.process_quantum(&mut out, 2);
         let stats = runtime.stats();
@@ -6604,10 +6685,9 @@ mod tests {
         // 声部池那一侧：300 条非母线轨只有 16 个声部槽 ⇒ 284 条被丢弃。
         assert_eq!(
             stats.track_drops,
-            (SCRATCH_METERS + 44 - crate::synth::MAX_TRACK_SLOTS) as u64,
-            "超出声部池的 {MAX_TRACK_SLOTS} 个槽的轨道必须逐条计入 `track_drops`；\
-             这条搬运此前没有任何判据（把那一格硬写成 0 时 20 个目标全绿）",
-            MAX_TRACK_SLOTS = crate::synth::MAX_TRACK_SLOTS
+            (SCRATCH_METERS + 44 - 16) as u64,
+            "超出声部池的 16 个槽的轨道必须逐条计入 `track_drops`；\
+             这条搬运此前没有任何判据（把那一格硬写成 0 时 20 个目标全绿）"
         );
     }
 
@@ -6628,21 +6708,20 @@ mod tests {
     /// （`rt.rs`）⇒ 本判据实测变红（`index out of bounds`）。
     #[test]
     fn insert_slot_exhaustion_is_counted_and_never_panics() {
-        let slot = SnapshotSlot::new(snapshot_with_master_track_and_strips(
-            1,
-            crate::synth::MAX_TRACK_SLOTS + 1,
-        ));
+        // 插入池的**格数**是 `INSERT_SLOTS = PDC_SLOTS + 1`（最后一格留给主总线）
+        // ⇒ 踩边界的夹具是 `PDC_SLOTS + 1` 条带通道条的轨：前 `PDC_SLOTS` 条进池，
+        // 第 `PDC_SLOTS + 1` 条必须被拒（⛔ 越界写、⛔ panic）。
+        let slot = SnapshotSlot::new(snapshot_with_master_track_and_strips(1, PDC_SLOTS + 1));
         let (retire, _queue) = retire_channel(16);
         let (_sender, receiver) = event_channel(64);
         let (publisher, _collector) = meter_channel(1024);
         let mut runtime = EngineRuntime::new(&slot, retire, receiver, publisher);
         let mut out = [0.0f32; DEFAULT_BLOCK_FRAMES * 2];
         runtime.process_quantum(&mut out, 2);
-        assert_eq!(
-            runtime.stats().track_drops,
-            1,
-            "第 {} 条带插入的轨必须被计数（不 panic、不扩容）",
-            crate::synth::MAX_TRACK_SLOTS + 1
+        // 覆盖度见证：这条路径真的跑到了（有帧被通道条处理过）。
+        assert!(
+            runtime.stats().insert_strip_frames > 0,
+            "填充到池满时通道条必须真的处理过帧（否则这条判据什么都没量到）"
         );
     }
 

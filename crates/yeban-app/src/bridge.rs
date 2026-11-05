@@ -1777,13 +1777,64 @@ pub fn new_track_name(project: &YebanProjectV1, kind: NewTrackKind) -> String {
     format!("{} {}", kind.name_prefix(), existing + 1)
 }
 
+/// ⭐ 缺陷 **D-UI-4** 的默认音色：内置乐器（wavetable 多音合成器）的设备名。
+pub const BUILTIN_INSTRUMENT_NAME: &str = "内置合成器";
+
+/// 内置乐器的**默认音色**（九个引擎识别键，值取自引擎文档里那份投影示例）。
+///
+/// 形状的唯一来源 = `crates/yeban-engine/src/synth.rs` 的 `ToneParams` 文档块
+/// （它把"设备链里一台音源长什么样"写成九键示例）；参数名必须逐字是引擎认下的键
+/// （权威判据 `yeban_engine::synth::is_consumed_instrument_param`）。⚠ **不能**只写
+/// `resonance` / `drive`：`DeviceTone::is_source` 只把 `cutoff_hz` 与六个振荡器键算
+/// 音源，其余 ⇒ 装上去是一台**哑设备**（工程改了，听不见）。
+///
+/// 单位只在共享契约里**已有**该键时逐字照抄（`cutoff_hz` = `Hz`，见
+/// `yeban-mcp/src/effect_params.rs` 的 `filter` 分组）；契约没有的键（振荡器电平 /
+/// 失谐）⛔ 不发明单位字符串。
+const BUILTIN_INSTRUMENT_PARAMS: [(&str, f32, Option<&str>); 9] = [
+    ("cutoff_hz", 1200.0, Some("Hz")),
+    ("resonance", 0.2, None),
+    ("drive", 0.0, None),
+    ("osc1_wave", 1.0, None),
+    ("osc2_wave", 4.0, None),
+    ("osc1_level", 0.8, None),
+    ("osc1_detune_cents", -6.0, None),
+    ("osc2_level", 0.5, None),
+    ("osc2_detune_cents", 7.0, None),
+];
+
+/// 一台**可以直接发声**的内置乐器（身份新分配，参数 = [`BUILTIN_INSTRUMENT_PARAMS`]）。
+///
+/// `latency_samples` 写 `0`：与 [`builtin_effect_device`] 同一条纪律 —— 没有公布的
+/// 延迟就报零，⛔ 不编一个数字。
+#[must_use]
+pub fn builtin_instrument_device() -> DeviceDefinition {
+    DeviceDefinition {
+        id: EntityId::new(),
+        name: BUILTIN_INSTRUMENT_NAME.to_owned(),
+        kind: DeviceKind::InternalInstrument,
+        bypassed: false,
+        params: BUILTIN_INSTRUMENT_PARAMS
+            .iter()
+            .map(|(name, value, unit)| ParameterValue {
+                name: (*name).to_owned(),
+                value: *value,
+                unit: (*unit).map(str::to_owned),
+            })
+            .collect(),
+        latency_samples: 0,
+        plugin: None,
+    }
+}
+
 /// 建轨的**完整** `Op` 批次（⛔ 不是"只 `AddTrack`"）。
 ///
-/// 返回 `[AddTrack, AddRoutingNode(新轨), ConnectRouting(新轨 → master)]`（主总线
-/// 不在 `nodes` 里时先补它的 `AddRoutingNode`）。三条形状与 `yeban-mcp` 的
-/// `project_create::build` **同一份**（`AddTrack` ＋ `AddRoutingNode` ＋
-/// `ConnectRouting{kind: TrackToBus, gain_db: None}`）⇒ 新轨在路由图里**有一条显式的
-/// 到主总线的边**，而不是靠引擎"没有出边 ⇒ 默认直连 master"这条回退。
+/// 返回 `[AddTrack, (MIDI 轨：InsertDevice 一台内置乐器), AddRoutingNode(新轨),
+/// ConnectRouting(新轨 → master)]`（主总线不在 `nodes` 里时先补它的 `AddRoutingNode`）。
+/// 路由那三条的形状与 `yeban-mcp` 的 `project_create::build` **同一份**
+/// （`AddTrack` ＋ `AddRoutingNode` ＋ `ConnectRouting{kind: TrackToBus, gain_db: None}`）
+/// ⇒ 新轨在路由图里**有一条显式的到主总线的边**，而不是靠引擎"没有出边 ⇒ 默认直连
+/// master"这条回退。
 ///
 /// ⚠ 引擎的回退确实存在（`yeban-engine/src/routing.rs` 模块头）：没有音频出边的节点默认
 /// 直连 master。本函数仍然显式建边，因为 ① 演示 / 填充 / MCP 建工程三条既有路径都建了；
@@ -1816,8 +1867,23 @@ pub fn track_create_ops(
         kind: kind.routing_kind(),
         gain_db: None,
     };
-    let mut ops = Vec::with_capacity(4);
+    let mut ops = Vec::with_capacity(5);
     ops.push(Op::AddTrack { track });
+    // ⭐ 缺陷 **D-UI-4**：MIDI 轨**建轨即挂一台内置乐器**。在这之前，只用鼠标/键盘的
+    // 用户建出来的 MIDI 轨设备链是空的（`TrackV3::default()`），而界面里唯一的"装乐器"
+    // 入口是 SFZ 库按钮 `instrument-install-{i}-button`，其清单按**样本字节是否存在**
+    // 过滤 ⇒ 仓内无样本时清单为空（`INSTRUMENT_INSTALL_NO_BUILTIN_REASON`，0 个按钮）。
+    // 结果：画满音符也**物理静音**。音频轨不加（它的音源是录进来的素材）。
+    // 不想要这台乐器的做法是既有的"删设备"（`device-{i}-remove-button`），⛔ 不必
+    // 为"默认带音源"再加控件。裁决登记 `docs/adr/ADR-0065-midi-track-default-instrument.md`
+    // （`Proposed`）。
+    if kind == NewTrackKind::Midi {
+        ops.push(Op::InsertDevice {
+            track_id,
+            slot_index: 0,
+            device: builtin_instrument_device(),
+        });
+    }
     ops.push(Op::AddRoutingNode { node: track_id });
     // 主总线**通常**已经在 `nodes` 里（`validate()` 要求）；缺失时补一格，否则
     // `ConnectRouting` 的前置条件（两端都在 `nodes` 里）会拒掉整批。
@@ -2996,6 +3062,57 @@ pub fn sidebar_category_content(view: &ViewState, category: usize) -> SidebarCat
             String::new()
         },
     }
+}
+
+/// ⭐ 左栏搜索框的**子串过滤**（大小写不敏感）—— 全仓唯一的一处匹配（任务单 `D-UI-14`）。
+///
+/// 为什么住在 Rust 而不是 `.slint`：Slint 1.18.1 的字符串内置集里**没有** `contains`，
+/// 也没有字符串版 `index-of`（实测 `i-slint-compiler-1.18.1/lookup.rs` 的内置表只有
+/// `is-float / to-float / is-empty / character-count / to-lowercase / to-uppercase /
+/// starts-with / ends-with / replace-all`；数组的 `index-of / any / all / find-index`
+/// 在 `experimental_lookup_enabled()` 后面）。界面里那个框因此只负责"把字交出去"。
+///
+/// 三条口径，逐条都有判据钉住（`crates/yeban-app/tests/sidebar_search.rs`）：
+/// 1. **空串 = 不过滤**，原样返回 ⇒ 装配期与默认帧逐字等于过滤存在前的形状
+///    （`tests/golden/**` 的基准一位不动）；
+/// 2. 命中**按原顺序**保留（⛔ 不重排：`sidebar-item-{i}` 的下标与画面自上而下的顺序
+///    同源，重排会让注册表的读数搬家）；
+/// 3. 空态理由分两档 —— 本类本来就 0 条 ⇒ **沿用**原那份 `empty_reason`
+///    （⛔ 不许把"库是空的"说成"没匹配上"）；本类有 N 条但一条都不匹配 ⇒
+///    [`sidebar_no_match_reason`]（带 query 与条数）。
+#[must_use]
+pub fn filter_sidebar_content(
+    content: &SidebarCategoryContent,
+    query: &str,
+) -> SidebarCategoryContent {
+    if query.is_empty() {
+        return content.clone();
+    }
+    let needle = query.to_lowercase();
+    let items: Vec<String> = content
+        .items
+        .iter()
+        .filter(|name| name.to_lowercase().contains(&needle))
+        .cloned()
+        .collect();
+    let empty_reason = if !items.is_empty() {
+        String::new()
+    } else if content.items.is_empty() {
+        content.empty_reason.clone()
+    } else {
+        sidebar_no_match_reason(query, content.items.len())
+    };
+    SidebarCategoryContent {
+        items,
+        empty_reason,
+    }
+}
+
+/// 「有 N 条、但都不匹配」那句理由的**唯一**构造点（宿主与判据都从这里取，
+/// ⛔ 不在测试里手抄第二份措辞 —— 措辞一改就红的那种）。
+#[must_use]
+pub fn sidebar_no_match_reason(query: &str, total: usize) -> String {
+    format!("没有匹配「{query}」的条目（本类共 {total} 条；清空搜索框回到全部）")
 }
 
 /// "装乐器"的可用性 ＋ 不可用时的**逐字**原因（可用时是空串）。
@@ -4407,6 +4524,39 @@ impl ViewState {
         self.clips.iter().map(|clip| clip.label.clone()).collect()
     }
 
+    /// 剪辑内容类型（`"midi"` / `"audio"`）。
+    #[must_use]
+    pub fn clip_contents(&self) -> Vec<&'static str> {
+        self.clips.iter().map(|clip| clip.content).collect()
+    }
+
+    /// 剪辑片段显示名（`ClipPoolEntry::name`）。
+    #[must_use]
+    pub fn clip_names(&self) -> Vec<String> {
+        self.clips
+            .iter()
+            .map(|clip| clip.clip_name.clone())
+            .collect()
+    }
+
+    /// 非主总线轨道的类型（`"midi"` / `"audio"` / `"aux-return"`）。
+    #[must_use]
+    pub fn track_kinds(&self) -> Vec<&'static str> {
+        self.tracks.iter().map(|track| track.kind).collect()
+    }
+
+    /// 每条摆放的**静音态**（与 [`Self::clip_ulids`] **同序同长**，来源是
+    /// `ClipPlacement::muted` —— 工程字段，⛔ 不是界面自己记的第二份状态）。
+    ///
+    /// 存在理由：`Cmd/Ctrl+M` 拨的就是这一位，而界面必须**看得见**它的结果
+    /// （否则"按了没反应"与"没按"逐像素相同）。读点是
+    /// `ui/workspace/arrangement_view.slint` 的 `clip-{ulid}-header` 底色；
+    /// 唯一写者是 `host::apply_view`（与 `track-mutes` / `track-solos` 同一族）。
+    #[must_use]
+    pub fn clip_mutes(&self) -> Vec<bool> {
+        self.clips.iter().map(|clip| clip.muted).collect()
+    }
+
     /// 选中的**摆放身份** → 它引用的**片段池条目身份**（[`Self::visible_notes_scoped`] 的作用域）。
     ///
     /// 空串（没有选中）与"身份不在当前投影里"（过期身份 / 刚被撤销掉）都返回 `None`
@@ -4534,11 +4684,37 @@ impl ViewState {
         y: f32,
         note_height: f32,
     ) -> Option<usize> {
+        self.hit_test_visible_scoped(scroll_x, viewport_width, x, y, note_height, None)
+    }
+
+    /// 与 [`Self::hit_test_visible`] 同一条命中路径，外加**作用域**（片段池条目身份）。
+    ///
+    /// `[D-UI-13]`：过滤必须发生在**择优之前**，与 [`Self::visible_notes_scoped`] 同一口径 ——
+    /// 卷帘只画作用域内的音符（`apply_view` 注入的就是它的六条平行数组），所以"屏幕上唯一
+    /// 可能被点到的音符"就是这批。若在择优**之后**才丢，别的轨在同一个 x/y 上的音符
+    /// （纵向只有 16 条泳道、音高要折叠）就会遮住正在编辑的这颗：命中返回它的下标 →
+    /// 事后过滤成 `None` → 选区为空 → 选择 / 橡皮擦 / 剪刀 / 箭头全部静默失效。
+    /// 作用域为 `None` ⇒ 与 [`Self::hit_test_visible`] **逐项相同**。
+    #[must_use]
+    pub fn hit_test_visible_scoped(
+        &self,
+        scroll_x: f32,
+        viewport_width: f32,
+        x: f32,
+        y: f32,
+        note_height: f32,
+        clip_scope: Option<&str>,
+    ) -> Option<usize> {
+        let left_edge = scroll_x.max(0.0);
         let mut hit: Option<usize> = None;
         for index in self.notes_visible_in(scroll_x, viewport_width) {
             let note = &self.notes[index];
+            // 作用域过滤发生在**择优之前**（与 [`Self::visible_notes_scoped`] 同一口径）。
+            if clip_scope.is_some_and(|scope| note.clip_id.as_str() != scope) {
+                continue;
+            }
             // 位置是**相对视口**的（与注入的数组同一口径, 见 `visible_notes`）。
-            let left = note.x - scroll_x.max(0.0);
+            let left = note.x - left_edge;
             let right = left + note.width;
             if x >= left && x <= right && y >= note.y && y <= note.y + note_height {
                 hit = Some(index);

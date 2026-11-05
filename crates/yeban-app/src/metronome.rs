@@ -5,7 +5,19 @@
 //! ⭐ 引擎的节拍器计划**住在快照里**：`EngineSnapshot::from_project` 在**投影期**读
 //! `project.transport.metronome_enabled`（`snapshot.rs:515` 的 `with_metronome(..)`），
 //! 实时侧读的是 `SnapshotArmed::armed_metronome_enabled`（`rt.rs:1515`）—— ⛔ **不是**
-//! `Transport` 上的可变位。⇒ **改工程字段必须重装快照**（`EngineHost::reload`）。
+//! `Transport` 上的可变位。⇒ **改工程字段必须让快照换代**。
+//!
+//! ## ⭐⭐ 但"换代"有两条路，而产品的这一条⛔ 不是本模块（`D-UI-29`）
+//!
+//! | 路 | 谁能走到 | 代价 |
+//! | :--- | :--- | :--- |
+//! | ⭐ `EngineHost::publish_project`（**增量发布**：不重建 runtime、不推量子、不动走带） | **产品**：`src/main.rs` 的 60 Hz 心跳在 `EditMark`（活跃分支头 ＋ 已撤销步数）一变时，把**权威文档**投影成新一代快照（落点 `host::ProductionLoop::tick`）⇒ 界面上拨一次开关只需提交一条 `Op::SetTransportConfig` 就发声 | ⛔ 零：位置与走带状态一位不动，而且⭐ 可撤销、⭐ 会持久化 |
+//! | `EngineHost::reload`（**换一代引擎** = 本模块 [`set_enabled`]） | 只在**没有可提交的对象**时可达：没有 `UndoPort` ⇒ 没有提交 ⇒ 标记永远不变 ⇒ 上面那条腿根本不会被触发（判据 / 无头装配那一形，见 `tests/metronome_switch.rs`） | 走带 `stop` → `reload` → `seek`，控制驱动形态下漂几个 tick（下一段） |
+//!
+//! ⇒ 本模块**不是**"用户拨节拍器"的必经点。它的调用方只剩
+//! [`crate::host::apply_engine_command`] 那**一处**（`D-UI-29` 之后），
+//! 由 `tests/d_ui_29_metronome_writes_the_document.rs` 的 ⑩ 从源码文本钉住。
+//!
 //!
 //! ## ⚠ 换引擎的代价，以及本模块**必须**补回的两件事
 //!
@@ -88,6 +100,10 @@ impl MetronomeOutcome {
 
 /// ⭐ **把工程里的节拍器开关拨到 `enabled`**，并**无损**恢复走带现场。
 ///
+/// ⚠ **调用方只剩"没有权威会话"那一支**（`D-UI-29`）：有 `UndoPort` 时界面拨动走的是
+/// **文档级提交** ＋ 既有的 60 Hz 发布腿（见模块文档那张表），压根不调到这里 ——
+/// 那条路⛔ 停走带、⛔ 换代、⛔ 漂移，而且可撤销、会持久化。
+///
 /// 顺序（⭐ 负责人裁决 A 的 1–3 条，逐条对应）：
 /// 1. 抓现场 ⇒ **先 `stop`**；
 /// 2. 改工程字段 ⇒ `reload`（⭐ 换一代引擎，**这一步就是代价**）；
@@ -104,24 +120,6 @@ pub fn set_enabled(
 ) -> Result<MetronomeOutcome, EngineHostError> {
     apply_transport_config(host, project, |next| {
         next.transport.metronome_enabled = enabled;
-    })
-}
-
-/// ⭐ 拨**预备拍**（`transport.count_in_bars`，`u8`）。
-///
-/// ⚠ 它与 `metronome_enabled` **同在 `TransportConfig` 里、同样投影进快照**
-/// ⇒ 走**同一个** [`apply_transport_config`] 内核与**同一套**走带恢复（⛔ 不复制一份）。
-///
-/// # Errors
-///
-/// 同 [`set_enabled`]（快照投影失败）。
-pub fn set_count_in_bars(
-    host: &mut EngineHost,
-    project: &YebanProjectV1,
-    bars: u8,
-) -> Result<MetronomeOutcome, EngineHostError> {
-    apply_transport_config(host, project, |next| {
-        next.transport.count_in_bars = bars;
     })
 }
 
@@ -528,8 +526,10 @@ mod dispatch_tests {
         let mut host = EngineHost::new();
         host.reload(&project, 0).expect("建引擎");
 
-        // ① 支持的两个动作 ⇒ 被消费。
-        for action in [Action::ToggleMetronome, Action::ToggleCountIn] {
+        // ① 支持的引擎动作 ⇒ 被消费（⭐ `D-UI-23` 起**只剩节拍器**：预备拍改走文档级
+        // 提交，它不在这条链上 ⇒ 见下面的 ②）。
+        // ⛔ 不写成单元素 `for`：`clippy::single_element_loop` 在 `-D warnings` 下直接红。
+        {
             let mut context = EngineCommandContext {
                 host: &mut host,
                 project: &project,
@@ -537,17 +537,22 @@ mod dispatch_tests {
                 metronome_on: None,
             };
             assert!(
-                apply_engine_command(&mut context, action),
-                "⭐ {action:?} 必须被**消费**（它是本落点支持的引擎动作）"
+                apply_engine_command(&mut context, Action::ToggleMetronome),
+                "⭐ `Action::ToggleMetronome` 必须被**消费**（它是本落点支持的引擎动作）"
             );
         }
 
         // ② ⛔ **不支持的动作必须被拒**（这正是原 `_ => false` 通配变成显式分支后的行为）。
+        // ⭐ `Action::ToggleCountIn` 现在是这一族：`D-UI-23` 把它从"换一代引擎"搬到
+        // `Op::SetTransportConfig` 的文档级提交（实时引擎不实现预备拍 ⇒ 换代是纯代价）。
+        // ⛔ 它**不得**再出现在这里之外的引擎集合里 —— 那条耦合由
+        // `src/test_port_adapter.rs` 的 `only_engine_commands_take_the_engine_borrow` 钉。
         for action in [
             Action::Cancel,
             Action::Undo,
             Action::PlayPause,
             Action::AcceptAiSuggestion,
+            Action::ToggleCountIn,
         ] {
             let mut context = EngineCommandContext {
                 host: &mut host,

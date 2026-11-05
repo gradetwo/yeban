@@ -86,8 +86,8 @@ enum BoundStatus {
     Unbounded(&'static str),
 }
 
-/// 32 条 string 参数声明（`TOOLS` 里 `json_type == "string"` 的**不同名**）。
-const STRING_PARAM_BOUNDS: [(&str, BoundStatus); 32] = [
+/// 36 条 string 参数声明（`TOOLS` 里 `json_type == "string"` 的**不同名**）。
+const STRING_PARAM_BOUNDS: [(&str, BoundStatus); 36] = [
     ("idempotencyKey", BoundStatus::Length(None, Some(256))),
     ("name", BoundStatus::Length(Some(1), None)),
     ("license", BoundStatus::Length(Some(1), None)),
@@ -188,7 +188,7 @@ const STRING_PARAM_BOUNDS: [(&str, BoundStatus); 32] = [
     // 未知值由 `drum_style_choice` 拒绝并列出 `accepted`；`schemas/**` 同步声明 `enum`、
     // ⛔ `default`（182 个 GENRES 里 169 走 `metric`／13 走 `four-on-the-floor` ⇒ 无单一默认）。
     ("drumStyle", BoundStatus::WordList),
-    // ADR-0064：`yeban_load_plugin` 的插件路径与类指名。两者都是操作员自选的
+    // ADR-0069：`yeban_load_plugin` 的插件路径与类指名。两者都是操作员自选的
     // 本机路径／类标识：长度维无界（路径长度由操作系统定，类名／CID 由插件厂商定）。
     // 后果限于该次调用的报文长度；绑定记录落盘时原值进工程文件（与 `path` 同一条纪律）。
     // 收口面：`schemas/**` 的 `maxLength`（集成者独占）。
@@ -202,6 +202,27 @@ const STRING_PARAM_BOUNDS: [(&str, BoundStatus); 32] = [
         "pluginId",
         BoundStatus::Unbounded(
             "插件类指名：类名或 32 位十六进制 CID，取值空间由插件厂商定。未知值走类查找拒绝（`INVALID_PARAMETER_RANGE`），长度维无界。后果限于该次调用的报文长度。\n收口面：`schemas/**` 的 `maxLength`（集成者独占）。",
+        ),
+    ),
+    // SVS：`synthesize_singing` 与 `svs_job` 新增的 4 个不同名 string 参数（`license` 已在表内，
+    // `trackId` 已在表内；两处 `service_url` 的规格一致，见方向 ③）。
+    (
+        "service_url",
+        BoundStatus::Parsed(
+            "http URL 形状：只支持 http、有 host、端口全数字（`domain::svs` 的服务地址解析）",
+        ),
+    ),
+    (
+        "job_id",
+        BoundStatus::Parsed(
+            "服务端生成的 16 位十六进制 id；本层只接受字母/数字/`_`/`-`，防 URL 路径与暂存文件名越界",
+        ),
+    ),
+    ("want", BoundStatus::WordList),
+    (
+        "part",
+        BoundStatus::Unbounded(
+            "调用方自选的任务内 part 标签；后果限于该次调用的查找失败与报文长度。收口面：`schemas/**`。",
         ),
     ),
 ];

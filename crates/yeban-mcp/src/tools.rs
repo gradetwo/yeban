@@ -104,8 +104,8 @@ pub const INCLUDE_OPS_PARAM: &str = "includeOps";
 /// 调用方的记忆里搬进生产代码）。
 pub const COMMIT_MODEL_KEY: &str = "commitModel";
 
-/// 工具集规模（规范表格的 10 个 + `ADR-0001` D45/D46 的扩展）。
-pub const TOOL_COUNT: usize = 28;
+/// 工具集规模（规范表格的 10 个 + `ADR-0001` D45/D46 的扩展 + 插件扫描／装载 2 条 + 伶人 SVS 2 条）。
+pub const TOOL_COUNT: usize = 30;
 
 /// **规范表格**里的工具数（`MCP-TOOL-001..010`）。
 pub const DOCUMENTED_TOOL_COUNT: usize = 10;
@@ -116,9 +116,10 @@ pub const DOCUMENTED_TOOL_COUNT: usize = 10;
 /// + **未合并提案清单 1 条**（`#176`，`#174` 坑②）+ **场景启动 1 条**（`#290`）
 /// + **分轨导出 1 条**（`ADR-0030`，一次调用弹完 N 条轨）
 /// + **会话乐器清单 1 条**（审计 `N13`，会话 SFZ registry 的只读枚举）
-/// + **插件扫描 1 条**（`ADR-0064`，VST3 发现与验证的只读枚举）
-/// + **插件装载 1 条**（`ADR-0064`，验证加载后经提案路径挂外部乐器设备）。
-pub const EXTENSION_TOOL_COUNT: usize = 18;
+/// + **插件扫描 1 条**（`ADR-0069`，VST3 发现与验证的只读枚举）
+/// + **插件装载 1 条**（`ADR-0069`，验证加载后经提案路径挂外部乐器设备）。
+/// + **伶人 SVS 2 条**（`synthesize_singing` 提交 + `svs_job` 查询/取回，Phase 2）。
+pub const EXTENSION_TOOL_COUNT: usize = 20;
 
 /// 扩展工具的规范 ID 前缀。
 ///
@@ -150,6 +151,8 @@ pub const EXTENSION_NAMES: [&str; EXTENSION_TOOL_COUNT] = [
     "yeban_list_instruments",
     "yeban_scan_plugins",
     "yeban_load_plugin",
+    "synthesize_singing",
+    "svs_job",
 ];
 
 /// 规范 ID 前缀。
@@ -365,6 +368,9 @@ pub enum SideEffect {
     ProjectState,
     /// 写盘：工程文件、CAS 资产或渲染产物。
     Disk,
+    /// 外部副作用：不改工程、不落盘，但在外部服务侧产生状态
+    /// （`synthesize_singing` 在 SVS 服务侧建任务）。`dryRun` 必须短路它。
+    External,
 }
 
 impl SideEffect {
@@ -375,6 +381,7 @@ impl SideEffect {
             Self::ReadOnly => "read-only",
             Self::ProjectState => "project-state",
             Self::Disk => "disk",
+            Self::External => "external",
         }
     }
 
@@ -919,7 +926,7 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
     ToolSpec {
         spec_id: "MCP-TOOL-006",
         name: "yeban_edit_notes",
-        summary: "⭐ **本调用永远写入隔离提案分支，必须 `yeban_merge_proposal` 才落到 main**（缺省响应的 `data.pendingMerge` 为 `true`、`data.projectUnchanged` 为 `true`, 成功只代表提案已创建, ⛔ 不代表已落盘; ⭐ `ADR-0029`: 给 `autoMerge:true` 时**本次调用内**执行**同一条**合并实现 —— 等价于背靠背调用 `yeban_merge_proposal`, ⛔ 不存在第二条落到 main 的路, 响应改为 `pendingMerge:false` + `autoMerged:true` + `merge:{…}`）。⭐ 用 `yeban_list_proposals` 查未合并的提案（`proposalId` / `title` / `opCount` / `opKinds` / `createdAt`）；⭐ 效果器参数名拼错（与某个已识别拼写的编辑距离 ≤ 2）会在**解析期** `INVALID_PARAMETER_RANGE`（`unknownEffectParam`，带最近邻建议）；引擎不认但距离更远的未知名字照旧接受, 并在响应的 `data.warnings[]` 里逐条报出。⭐ `#178`：`insertDevice` 装到一条**没有任何可发声内容**的音轨上时, 同一条 `warnings[]` 会多一条 `code:\"deviceOnSilentTrack\"`（带 `trackId` / `track` / `placements` / `notes` / 逐字 `hint`），⛔ **不阻断**提案（装是合法的, 只是该设备对这条轨的渲染输出不会产生影响；渲染侧的同一读数在 `sources[].kind:\"silent\"`）。⭐ `G5`（审计 2026-10-27）: 内置**音色选择**的入口就是 `insertDevice` + `device.kind:\"InternalInstrument\"` —— 引擎在渲染时**真的求值**这些参数名: `osc1_wave` / `osc2_wave`（取值 = 波表下标 `0`=hollow / `1`=organ / `2`=vocal / `3`=metallic / `4`=glass, 越界钳到末表）、`osc1_level` / `osc1_detune_cents` / `osc2_level` / `osc2_detune_cents`、`cutoff_hz`(`cutoff`) / `resonance`(`res`) / `drive`, 以及鼓机键位 `kick_note` 等五个 `*_note` 与 `kick_*`/`snare_*`/`hihat_*`/`clap_*`/`master_level` 旋钮（权威判据: `yeban_engine::synth::is_consumed_instrument_param`）; **非采样器轨**上这些名字⛔ 不再触发 `deviceChainDsp` 登记（采样器轨的音源是 SFZ, 音源参数不生效 ⇒ 仍如实登记）。; ⭐ `ADR-0018`: 可与 `placement` 同给, 单次提案原子生成 `Op::AddClip` + `Op::AddClipPlacement`在指定片段执行音符增删改, 自动进行音域与发声数合法性校验; `create:true` 时用这个身份新建一条 MIDI 片段池条目 (材料创建); `ops[].kind:\"removeClip\"` 单独出现时把 `clipId` 这个**已有的**片段池条目取走 (`Op::RemoveClip`, 还有摆放引用它则报 `CONFLICT`); `placement.kind` 选择摆放编辑 (`add` 把已有片段摆到音轨时间轴上 / `move` 平移一条已有摆放 / `remove` 取走一条已有摆放); `ops[].kind` 的五个音轨级形态写 `trackId` 那条轨的静态混音值、通道条开关、自动化泳道属性与自动化点 (`setParam` 音量 / 声相 · `setTrackMute` · `setTrackSolo` 三者都可用 `ops[].trackId` 逐条点名另一条音轨, 单次提案即可批量跨轨静音/独奏/调音 · `setAutomationLane` 读开关 / 写模式 / 取值域 / 取走泳道 · `removeAutomationPoint` 取走一个点); `ops[].kind:\"setRoutingGain\"` 写 `edgeId` 那条路由边的静态增益 (`Op::SetRoutingGain`; `value:null` = 单位增益, 与 `0.0` 可区分); `ops[].kind:\"disconnectRouting\"` 把 `edgeId` 那条路由边**取走** (`Op::DisconnectRouting`; 撤销载荷 `previous_edge` 从当前文档读); `ops[].kind:\"removeRoutingNode\"` 把 `nodeId` 那个路由**节点**从 `routing_graph.nodes` 取走 (`Op::RemoveRoutingNode`; 载荷只有节点身份, 主总线节点被响亮拒绝); `ops[].kind:\"removeSection\"` 把 `sectionId` 那个**曲式段落**从工程里取走 (`Op::RemoveSection`, `sectionId` 是本操作自带的寻址; 撤销载荷 `previousSection` 从当前文档读, 段落不存在报 `ENTITY_NOT_FOUND` (reason `sectionNotFound`)); `ops[].kind:\"removeTrack\"` 把 `trackId` 那条**音轨本身**从工程里取走 (`Op::RemoveTrack`, `trackId` 是本操作自带的寻址, 顶层 `trackId`/`clipId` 对本形态无意义; 撤销载荷 `previousTrack` 从当前文档读 (整条音轨, 含它的摆放与自动化泳道), 音轨不存在报 `ENTITY_NOT_FOUND` (reason `trackNotFound`), 主总线被响亮拒绝 (reason `masterBusTrackCannotBeRemoved`); 提案里在它**之前**排上该轨在路由图里的逐条断边与移除节点 (`disconnectRouting` → `removeRoutingNode`, 顺序承重), 一次 `yeban_undo` 把边、节点与音轨一起复原; 本形态只能**单独**出现, 不能与别的 `kind` 或 `placement` 同给); `ops[].kind:\"removeScene\"` 把 `sceneId` 那个**场景**从工程里取走 (`Op::RemoveScene`, `sceneId` 是本操作自带的寻址; 撤销载荷 `previousScene` 从当前文档读, 场景不存在报 `ENTITY_NOT_FOUND` (reason `sceneNotFound`)); `ops[].kind:\"setScene\"` 写 `scene.sceneId` 那个**场景** (`Op::SetScene`; `scene.create:true` = 新建 (身份必须**不在**工程里, 否则 `CONFLICT` (reason `sceneAlreadyExists`), 且 `name` 必填), 缺省 = 更新 (身份必须**在**工程里, 否则 `ENTITY_NOT_FOUND` (reason `sceneNotFound`); 三个属性 `name`/`tempo`/`color` 按**合并**语义施加 (缺省 = 保留现值), 显式 `null` 清空 `tempo`/`color`); 撤销载荷 `oldScene` 从当前文档读 (新建时为空, 更新时是整条现值 → 一次 `yeban_undo` 就能把这个场景整条取走)",
+        summary: "⭐ **本调用永远写入隔离提案分支，必须 `yeban_merge_proposal` 才落到 main**（缺省响应的 `data.pendingMerge` 为 `true`、`data.projectUnchanged` 为 `true`, 成功只代表提案已创建, ⛔ 不代表已落盘; ⭐ `ADR-0029`: 给 `autoMerge:true` 时**本次调用内**执行**同一条**合并实现 —— 等价于背靠背调用 `yeban_merge_proposal`, ⛔ 不存在第二条落到 main 的路, 响应改为 `pendingMerge:false` + `autoMerged:true` + `merge:{…}`）。⭐ 用 `yeban_list_proposals` 查未合并的提案（`proposalId` / `title` / `opCount` / `opKinds` / `createdAt`）；⭐ 效果器参数名拼错（与某个已识别拼写的编辑距离 ≤ 2）会在**解析期** `INVALID_PARAMETER_RANGE`（`unknownEffectParam`，带最近邻建议）；引擎不认但距离更远的未知名字照旧接受, 并在响应的 `data.warnings[]` 里逐条报出。⭐ `#178`：`insertDevice` 装到一条**没有任何可发声内容**的源轨上时（主总线永不报；经路由入边连到可发声源的总线轨也不报）, 同一条 `warnings[]` 会多一条 `code:\"deviceOnSilentTrack\"`（带 `trackId` / `track` / `placements` / `notes` / 逐字 `hint`），⛔ **不阻断**提案（装是合法的, 只是该设备对这条轨的渲染输出不会产生影响；渲染侧源轨的同一读数在 `sources[].kind:\"silent\"`）。⭐ `G5`（审计 2026-10-27）: 内置**音色选择**的入口就是 `insertDevice` + `device.kind:\"InternalInstrument\"` —— 引擎在渲染时**真的求值**这些参数名: `osc1_wave` / `osc2_wave`（取值 = 波表下标 `0`=hollow / `1`=organ / `2`=vocal / `3`=metallic / `4`=glass, 越界钳到末表）、`osc1_level` / `osc1_detune_cents` / `osc2_level` / `osc2_detune_cents`、`cutoff_hz`(`cutoff`) / `resonance`(`res`) / `drive`, 以及鼓机键位 `kick_note` 等五个 `*_note` 与 `kick_*`/`snare_*`/`hihat_*`/`clap_*`/`master_level` 旋钮（权威判据: `yeban_engine::synth::is_consumed_instrument_param`）; **非采样器轨**上这些名字⛔ 不再触发 `deviceChainDsp` 登记（采样器轨的音源是 SFZ, 音源参数不生效 ⇒ 仍如实登记）。; ⭐ `ADR-0018`: 可与 `placement` 同给, 单次提案原子生成 `Op::AddClip` + `Op::AddClipPlacement`在指定片段执行音符增删改, 自动进行音域与发声数合法性校验; `create:true` 时用这个身份新建一条 MIDI 片段池条目 (材料创建); `ops[].kind:\"removeClip\"` 单独出现时把 `clipId` 这个**已有的**片段池条目取走 (`Op::RemoveClip`, 还有摆放引用它则报 `CONFLICT`); `placement.kind` 选择摆放编辑 (`add` 把已有片段摆到音轨时间轴上 / `move` 平移一条已有摆放 / `remove` 取走一条已有摆放); `ops[].kind` 的五个音轨级形态写 `trackId` 那条轨的静态混音值、通道条开关、自动化泳道属性与自动化点 (`setParam` 音量 / 声相 · `setTrackMute` · `setTrackSolo` 三者都可用 `ops[].trackId` 逐条点名另一条音轨, 单次提案即可批量跨轨静音/独奏/调音 · `setAutomationLane` 读开关 / 写模式 / 取值域 / 取走泳道 · `removeAutomationPoint` 取走一个点); `ops[].kind:\"setRoutingGain\"` 写 `edgeId` 那条路由边的静态增益 (`Op::SetRoutingGain`; `value:null` = 单位增益, 与 `0.0` 可区分); `ops[].kind:\"disconnectRouting\"` 把 `edgeId` 那条路由边**取走** (`Op::DisconnectRouting`; 撤销载荷 `previous_edge` 从当前文档读); `ops[].kind:\"removeRoutingNode\"` 把 `nodeId` 那个路由**节点**从 `routing_graph.nodes` 取走 (`Op::RemoveRoutingNode`; 载荷只有节点身份, 主总线节点被响亮拒绝); `ops[].kind:\"removeSection\"` 把 `sectionId` 那个**曲式段落**从工程里取走 (`Op::RemoveSection`, `sectionId` 是本操作自带的寻址; 撤销载荷 `previousSection` 从当前文档读, 段落不存在报 `ENTITY_NOT_FOUND` (reason `sectionNotFound`)); `ops[].kind:\"removeTrack\"` 把 `trackId` 那条**音轨本身**从工程里取走 (`Op::RemoveTrack`, `trackId` 是本操作自带的寻址, 顶层 `trackId`/`clipId` 对本形态无意义; 撤销载荷 `previousTrack` 从当前文档读 (整条音轨, 含它的摆放与自动化泳道), 音轨不存在报 `ENTITY_NOT_FOUND` (reason `trackNotFound`), 主总线被响亮拒绝 (reason `masterBusTrackCannotBeRemoved`); 提案里在它**之前**排上该轨在路由图里的逐条断边与移除节点 (`disconnectRouting` → `removeRoutingNode`, 顺序承重), 一次 `yeban_undo` 把边、节点与音轨一起复原; 本形态只能**单独**出现, 不能与别的 `kind` 或 `placement` 同给); `ops[].kind:\"removeScene\"` 把 `sceneId` 那个**场景**从工程里取走 (`Op::RemoveScene`, `sceneId` 是本操作自带的寻址; 撤销载荷 `previousScene` 从当前文档读, 场景不存在报 `ENTITY_NOT_FOUND` (reason `sceneNotFound`)); `ops[].kind:\"setScene\"` 写 `scene.sceneId` 那个**场景** (`Op::SetScene`; `scene.create:true` = 新建 (身份必须**不在**工程里, 否则 `CONFLICT` (reason `sceneAlreadyExists`), 且 `name` 必填), 缺省 = 更新 (身份必须**在**工程里, 否则 `ENTITY_NOT_FOUND` (reason `sceneNotFound`); 三个属性 `name`/`tempo`/`color` 按**合并**语义施加 (缺省 = 保留现值), 显式 `null` 清空 `tempo`/`color`); 撤销载荷 `oldScene` 从当前文档读 (新建时为空, 更新时是整条现值 → 一次 `yeban_undo` 就能把这个场景整条取走)",
         scope: Scope::AppAdmin,
         side_effect: SideEffect::ProjectState,
         params: &[
@@ -1751,7 +1758,7 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
     ToolSpec {
         spec_id: "MCP-TOOL-EXT-SCAN-PLUGINS",
         name: "yeban_scan_plugins",
-        summary: "枚举本机可用的 VST3 插件（ADR-0064 的扫描与验证，类比 Logic 的 auval 准入）：扫描 YEBAN_VST3_PATHS 环境变量给出的目录与平台标准路径，另加 `paths` 给出的额外目录；每个候选都尝试打开、枚举类、逐个实例化探针，失败逐个记原因、不中断扫描、不进可用列表。响应 data.plugins[]：每条给 path / className / classId / kind（instrument / effect / unknown）/ usable / error（失败时才有）；失败项也在列表里，但 usable 为假。只读：不改工程、不装载进工程、不落盘。扫描只证明插件能打开、能实例化、能通过验证激活，不证明它在真实工程里出声；真实商业插件兼容性未经验证。",
+        summary: "枚举本机可用的 VST3 插件（ADR-0069 的扫描与验证，类比 Logic 的 auval 准入）：扫描 YEBAN_VST3_PATHS 环境变量给出的目录与平台标准路径，另加 `paths` 给出的额外目录；每个候选都尝试打开、枚举类、逐个实例化探针（控制器／兼容类不作组件探针，单列说明），失败逐个记原因、不中断扫描、不进可用列表。响应 data.plugins[]：每条给 path / className / classId / kind（instrument / effect / unknown）/ usable / error（失败时才有）；失败项也在列表里，但 usable 为假。只读：不改工程、不装载进工程、不落盘。扫描只证明插件能打开、能实例化、能通过验证激活，不证明它在真实工程里出声；真实商业插件兼容性未经验证。",
         scope: Scope::AppAdmin,
         // 只读枚举：Host::scan 只读目录、打开库、实例化探针，不写工程、不落盘。
         side_effect: SideEffect::ReadOnly,
@@ -1774,7 +1781,7 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
     ToolSpec {
         spec_id: "MCP-TOOL-EXT-LOAD-PLUGIN",
         name: "yeban_load_plugin",
-        summary: "验证加载一个 VST3 插件并经提案路径把它挂到指定轨道上（ADR-0064）：先用宿主打开 `pluginPath`、按 `pluginId` 指名类（不给则按 `kind` 取首个同类）、做验证激活，失败则整个调用失败、不写提案；成功后以缺省提案挂一台外部设备（name 为插件名，latency_samples 为实例上报值，plugin 绑定记 path 与 class），slot_index 为该轨 devices 长度（追加到末尾）。`kind` 缺省 `instrument`（挂 ExternalInstrument；音源优先级：非旁通的已宿主外部乐器胜过引擎合成器与采样器绑定）；`kind` 为 `effect` 时挂 ExternalEffect（渲染时包在轨源输出之外，首个非旁通带绑定效果器胜出，其余仍进 externalPlugins 收据）。缺省建提案；`autoMerge` 为真时当场落 main，与 `yeban_edit_notes` 同一条提案纪律，不另设直写路。带绑定但加载失败的轨在渲染时响亮失败。测试桩 stub:sine（乐器）／stub:gain（效果器）可用（仅测试夹具）。",
+        summary: "验证加载一个 VST3 插件并经提案路径把它挂到指定轨道上（ADR-0069）：先用宿主打开 `pluginPath`、按 `pluginId` 指名类（不给则按 `kind` 取首个同类）、做验证激活，失败则整个调用失败、不写提案；成功后以缺省提案挂一台外部设备（name 为插件名，latency_samples 为实例上报值，plugin 绑定记 path 与 class），slot_index 为该轨 devices 长度（追加到末尾）。`kind` 缺省 `instrument`（挂 ExternalInstrument；音源优先级：非旁通的已宿主外部乐器胜过引擎合成器与采样器绑定）；`kind` 为 `effect` 时挂 ExternalEffect（渲染时包在轨源输出之外，首个非旁通带绑定效果器胜出，其余仍进 externalPlugins 收据）。缺省建提案；`autoMerge` 为真时当场落 main，与 `yeban_edit_notes` 同一条提案纪律，不另设直写路。带绑定但加载失败的轨在渲染时响亮失败。测试桩 stub:sine（乐器）／stub:gain（效果器）可用（仅测试夹具）。",
         scope: Scope::AppAdmin,
         // 提案路径：建提案（ProjectState），autoMerge 时同一调用内合并；⛔ 不直写 main。
         side_effect: SideEffect::ProjectState,
@@ -1825,9 +1832,101 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
             ErrorCode::InvalidParameterRange,
         ],
     },
+    ToolSpec {
+        spec_id: "MCP-TOOL-EXT-SVS-SUBMIT",
+        name: "synthesize_singing",
+        summary: "把乐谱提交到伶人 SVS 服务（只提交、不含推理）：`parts` 数组每项 `{label, score, voice_id, model?, variant?, takes?, seeds?, options?}`，与 `POST /v1/synthesize` 的 part 形状一致；`score = {bpm, language?, notes: [{lyric, midi, start_s, dur_s, tie?, phoneme?}]}`，`lyric` 为 `''` 或 `'<SP>'` 表示休止；`takes` 缺省 1（1..=8）。返回 `{jobId, status, partsTotal, takesTotal, serviceUrl}`；提交失败（连不上、4xx/5xx）直接报 `IO_ERROR`，⛔ 不返回空任务。配置：服务地址 = 实参 `service_url` > 环境变量 `YEBAN_SVS_URL` > 缺省 `http://127.0.0.1:8000`；API key **只**从环境变量 `YEBAN_SVS_API_KEY` 读，⛔ 不是工具参数、⛔ 不进工程文件、⛔ 不出现在响应里。只支持 `http`（`std` 客户端无 TLS，`https` 在配置解析时就响亮拒绝，见 `domain::svs` 模块头）。`dryRun` 只校验参数、不提交。⚠ 工具名**不带** `yeban_` 前缀：名字由 Phase 1 规格定，是跨线契约（服务文档与调用方都按此名），见注册判据的例外说明。",
+        scope: Scope::AppAdmin,
+        // 外部副作用（服务端建任务）：不改工程、不落盘，但 `dryRun` 必须短路它。
+        side_effect: SideEffect::External,
+        params: &[
+            param(
+                "parts",
+                "array",
+                true,
+                "乐谱 part 数组（至少 1 项），每项 `{label, score, voice_id, model?, variant?, takes?, seeds?, options?}`；`score = {bpm, language?, notes: [{lyric, midi, start_s, dur_s, tie?, phoneme?}]}`；`lyric` 为 `''` 或 `'<SP>'` = 休止；`takes` 缺省 1（1..=8）；未知 `model` 由服务端响亮拒绝，本层不另抄一份模型白名单",
+            ),
+            param(
+                "service_url",
+                "string",
+                false,
+                "SVS 服务地址（只支持 http）；缺省读 `YEBAN_SVS_URL` 环境变量，再缺省 `http://127.0.0.1:8000`",
+            ),
+        ],
+        errors: &[ErrorCode::InvalidParameterRange, ErrorCode::IoError],
+    },
+    ToolSpec {
+        spec_id: "MCP-TOOL-EXT-SVS-JOB",
+        name: "svs_job",
+        summary: "查 SVS 任务状态、取音频与回执（`want` 缺省 `status`）。`status`：返回 `{jobId, status, partsTotal, takesTotal, partsCompleted, takesCompleted, error}`，`failed` 时 `error` 原文照带。`receipt`：返回服务端回执全文（每遍 seed、耗时、对齐数组、门记录）。`audio`：按 `part` + `take` 取一遍 wav（多 part 多遍时每次取一遍，⛔ 不替用户混音）；取前先查状态：任务失败 ⇒ `IO_ERROR` + 服务端 `error` 原文（门耗尽同属这一条，⛔ 不返回静音 wav），未完成 ⇒ `IO_ERROR`（`jobNotCompleted`）。取回的 wav 写稳定暂存路径（`temp_dir/yeban-svs/{job}_{part}_take{n}.wav`，重复取同一遍覆盖同一文件）；给了 `trackId` 就按放置语义落轨（走 `yeban_import_audio` 同一机制：`license` 此时必填且须在白名单内，`gainDb` 缺省 0.0，`startTick` 缺省 0），不给 `trackId` 只返回暂存路径、不落轨。放置语义：SoulX 按乐谱时钟贴轨（起点 = `startTick`，回执实测偏差只作校验，超 100 ms 的条目进 `deviationWarnings`，⛔ 不自动移位）；VocalRender 按回执实测起点贴（首个非休止音节的 `measured_onset_s` 对齐 `startTick`，其余按实测相对位置落位）；休止（`lyric` 为 `''` 或 `'<SP>'` 的 SP 条目）放置时忽略。取回的 wav 作为**普通音频片段**走现有音频片段机制，⛔ 不另设 SVS 片段类型；导入时重采样到工程采样率是渲染路径已有的行为（`yeban_render_master` 的音频片段路径）。⚠ 工具名**不带** `yeban_` 前缀：名字由 Phase 1 规格定，是跨线契约，见注册判据的例外说明。",
+        scope: Scope::AppAdmin,
+        // 按最坏情况：`want=audio` + `trackId` 时改工程（与 `yeban_edit_automation` 同款口径）。
+        side_effect: SideEffect::ProjectState,
+        params: &[
+            param("job_id", "string", true, "SVS 任务 id（服务端生成的 16 位十六进制；本层只接受字母 / 数字 / `_` / `-`，防 URL 路径与暂存文件名越界）"),
+            param(
+                "want",
+                "string",
+                false,
+                "`status` | `audio` | `receipt`，缺省 `status`",
+            ),
+            param(
+                "part",
+                "string",
+                false,
+                "`want=audio` 时必填：part label（服务端允许多遍歧义回落，但本工具⛔ 不替调用方猜是哪一遍）",
+            ),
+            param(
+                "take",
+                "integer",
+                false,
+                "`want=audio` 时必填：遍号（0 起）",
+            ),
+            param(
+                "trackId",
+                "string",
+                false,
+                "`want=audio` 时可选：给了就把取回的 wav 落到该轨（26 字符 ULID）；不给只返回暂存路径",
+            ),
+            param(
+                "startTick",
+                "integer",
+                false,
+                "落轨时乐谱起点 tick（缺省 0；只在给了 `trackId` 时有效；SoulX 按此贴轨，VocalRender 在此基础上按实测首音节移位）",
+            ),
+            bounded_param(
+                "license",
+                "string",
+                false,
+                "落轨时必填：资产许可标识（须在 `assets/samples/manifest.json` 白名单内，如 `CC0-1.0`；与 `yeban_import_audio` 同一条 MUST-GATE-014 判定，本工具不发明默认值）",
+                Some(1),
+                None,
+            ),
+            param(
+                "gainDb",
+                "number",
+                false,
+                "落轨时片段增益（dB，缺省 0.0；只在给了 `trackId` 时有效）",
+            ),
+            param(
+                "service_url",
+                "string",
+                false,
+                "SVS 服务地址（只支持 http）；缺省读 `YEBAN_SVS_URL` 环境变量，再缺省 `http://127.0.0.1:8000`",
+            ),
+        ],
+        errors: &[
+            ErrorCode::InvalidParameterRange,
+            ErrorCode::IoError,
+            ErrorCode::EntityNotFound,
+            ErrorCode::NoActiveProject,
+            ErrorCode::TrackNotFound,
+            ErrorCode::Conflict,
+        ],
+    },
 ];
 
-/// 按名查找工具（`const` 数组上的线性查找；28 个元素，无需哈希表）。
+/// 按名查找工具（`const` 数组上的线性查找；30 个元素，无需哈希表）。
 #[must_use]
 pub fn tool(name: &str) -> Option<&'static ToolSpec> {
     TOOLS.iter().find(|spec| spec.name == name)
@@ -2255,10 +2354,15 @@ mod tests {
         names.sort_unstable();
         names.dedup();
         assert_eq!(names.len(), TOOL_COUNT, "工具名不得重复");
+        // ⭐ SVS 例外（Phase 2，跨线契约名）：`synthesize_singing` / `svs_job`
+        // 的名字由 Phase 1 规格定（服务文档与调用方都按此名），是 `yeban_`
+        // 族之外的第一个工具族。例外**只此两条**：新增工具仍须 `yeban_` 前缀；
+        // 对齐守卫的 `TABLE_TOOL_RE` 同步放了这两条（见该脚本注释）。
+        const SVS_NAMES: [&str; 2] = ["synthesize_singing", "svs_job"];
         for spec in &TOOLS {
             assert!(
-                spec.name.starts_with("yeban_"),
-                "工具名必须是 yeban_* : {}",
+                spec.name.starts_with("yeban_") || SVS_NAMES.contains(&spec.name),
+                "工具名必须是 yeban_*（SVS 两条除外）: {}",
                 spec.name
             );
             assert!(!spec.summary.is_empty());

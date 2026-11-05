@@ -9,7 +9,7 @@
 //!
 //! | 判据 | 对象 | 单位 |
 //! | :--- | :--- | :--- |
-//! | [`list_proposals_is_discoverable_and_the_counts_move_with_it`] | `tools/list` 里的工具数 / `TOOL_COUNT` / 样本 `registry.count` / 契约 enum | **工具个数**（26） |
+//! | [`list_proposals_is_discoverable_and_the_counts_move_with_it`] | `tools/list` 里的工具数 / `TOOL_COUNT` / 样本 `registry.count` / 契约 enum | **工具个数**（30） |
 //! | [`a_pending_proposal_is_listed_and_disappears_after_merge`] | `yeban_list_proposals` 的 `openCount` | **提案条数**（1 → 0） |
 //! | [`the_empty_state_is_an_empty_array_plus_one_sentence`] | 空态响应 | 1 个空数组 + 1 句逐字 `note` |
 //! | [`ten_broadcast_tools_publish_an_output_schema_their_real_responses_satisfy`] | [`COVERED_TOOLS`](yeban_mcp::output_schema::COVERED_TOOLS) 那十个工具的真实 `data` | **10 份 schema**，每份都被自己的响应反校 |
@@ -187,8 +187,8 @@ fn list_proposals_is_discoverable_and_the_counts_move_with_it() {
     );
     assert_eq!(
         tools::TOOL_COUNT,
-        26,
-        "10 个规范工具 + 16 个扩展 = 26（#176 新增 1 条、#290 新增场景启动 1 条、#345 新增 MIDI 导入 1 条、`ADR-0030` 新增分轨导出 1 条、审计 `N13` 新增会话乐器清单 1 条）"
+        30,
+        "10 个规范工具 + 20 个扩展 = 30（#176 新增 1 条、#290 新增场景启动 1 条、#345 新增 MIDI 导入 1 条、`ADR-0030` 新增分轨导出 1 条、审计 `N13` 新增会话乐器清单 1 条、插件宿主一期新增 `yeban_scan_plugins` 与 `yeban_load_plugin` 2 条、SVS 新增 `synthesize_singing` 与 `svs_job` 2 条）"
     );
     assert_eq!(
         registry["count"],
@@ -201,11 +201,11 @@ fn list_proposals_is_discoverable_and_the_counts_move_with_it() {
     );
     assert_eq!(
         tools::EXTENSION_NAMES.last().copied(),
-        Some("yeban_list_instruments"),
+        Some("svs_job"),
         "扩展清单顺序 = 注册顺序（新工具追加在末尾）"
     );
 
-    // 契约 enum 也是 26 个名字，且与注册表逐字相同（顺序一致）。
+    // 契约 enum 也是 30 个名字，且与注册表逐字相同（顺序一致）。
     let contract: Value = serde_json::from_str(
         &std::fs::read_to_string(
             PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -227,7 +227,7 @@ fn list_proposals_is_discoverable_and_the_counts_move_with_it() {
         "### 契约 enum 尾部\n{:?}",
         &enum_names[enum_names.len().saturating_sub(3)..]
     );
-    assert_eq!(enum_names.len(), 26, "契约 enum 的工具个数");
+    assert_eq!(enum_names.len(), 30, "契约 enum 的工具个数");
     assert_eq!(enum_names, tools::tool_names(), "enum 顺序 = 注册表顺序");
 }
 
@@ -982,22 +982,22 @@ fn the_validator_can_go_red_and_the_schema_is_not_idealised() {
     assert_eq!(violation.path, "$.commitModel");
 }
 
-/// 判据 ⑦：`#156` 的 **83 个拼写**（46 规范 + 37 别名）一个不少（两侧）。
+/// 判据 ⑦：`#156` 的 **84 个拼写**（47 规范 + 37 别名）一个不少（两侧）。
 ///
 /// ⚠ 沿革：`#156` 当时的读数是 **81**（45 规范 + 36 别名）；**round-robin / tape_asym
 /// 片**给磁带组加了一条规范拼写 `tape_asym`（别名 `saturation_asym`）⇒ **＋1 规范、
-/// ＋1 别名 = 83**（读数由本判据现算，⛔ 不是抄来的数字）。
+/// ＋1 别名 = 83**；**立体声卷积**给卷积组加一条规范拼写 `conv_ir_stereo`（无别名）⇒ **＋1 规范、＋0 别名 = 84**（读数由本判据现算，⛔ 不是抄来的数字）。
 #[test]
 fn the_58_published_spellings_are_still_all_there() {
     use yeban_mcp::{effect_params, op_schema};
     let names = effect_params::recognised_names();
-    assert_eq!(names.len(), 83, "46 规范 + 37 别名");
+    assert_eq!(names.len(), 84, "47 规范 + 37 别名");
     assert_eq!(
         effect_params::EFFECT_GROUPS
             .iter()
             .map(|group| group.params.len())
             .sum::<usize>(),
-        46
+        47
     );
     let items = op_schema::ops_items();
     let insert = items["oneOf"]
@@ -1009,7 +1009,7 @@ fn the_58_published_spellings_are_still_all_there() {
     let branches = insert["properties"]["device"]["properties"]["params"]["items"]["oneOf"]
         .as_array()
         .expect("device.params.items.oneOf");
-    assert_eq!(branches.len(), 46);
+    assert_eq!(branches.len(), 47);
     let published: usize = branches
         .iter()
         .map(|branch| {
@@ -1019,7 +1019,7 @@ fn the_58_published_spellings_are_still_all_there() {
                 .len()
         })
         .sum();
-    assert_eq!(published, 83, "公告面的拼写个数");
+    assert_eq!(published, 84, "公告面的拼写个数");
     assert!(effect_params::recognise("eq_low_gain").is_some());
     assert!(effect_params::recognise("eq_low_gian").is_none());
     assert_eq!(

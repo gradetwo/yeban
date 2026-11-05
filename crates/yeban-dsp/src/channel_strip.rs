@@ -287,6 +287,19 @@ pub struct DynEqParams {
     pub threshold_db: f32,
     /// 最大衰减量（dB，正数）。钳到 `0..=18`；`0` = 旁通。
     pub max_cut_db: f32,
+    /// ⭐ 带通/峰值的 Q（`#346`，本仓新增）。钳到 `0.3..=8.0`。
+    ///
+    /// **为什么它必须是字段**：`Q` 固定 `0.9` 时，`4.8 kHz` 的 −4 dB 凹槽
+    /// 实测覆盖 `2.4–9.6 kHz`（约两个八度）—— 那正好把 3–6 kHz 的"刺"和
+    /// 8–10 kHz 的"齿音"一起压掉，同时把 2.5 kHz 的清晰度带走。评审要的是
+    /// "扫描 3–6 kHz、找一个点、窄带宽（High Q）"：`Q 2.8` 在 `4.8 kHz` 只覆盖
+    /// `3.9–6.0 kHz`。没有这个字段，那条处方**无法照做**。
+    pub q: f32,
+    /// ⭐ 压缩比（`#346`）。钳到 `1.0..=20.0`；`1.0` = 不压（等价旁通）。
+    ///
+    /// 固定 `4.0` 把"−3 dB 的轻微收刺"和"−12 dB 的硬性压扁"锁在同一个斜率上：
+    /// 想要更大衰减量只能抬 `max_cut_db`，于是超过阈值的第一 dB 就跳 3 dB 的台阶。
+    pub ratio: f32,
 }
 
 impl DynEqParams {
@@ -306,10 +319,18 @@ impl DynEqParams {
     ///    约 `12 kHz / 0.9 ≈ 13 kHz`，已覆盖到 Nyquist 之上；再高的中心频率
     ///    只是把整条带的检波器变成"高频总和"，没有新的分辨力。
     pub const MAX_FREQ: f32 = 12000.0;
-    /// 固定 Q（与 EQ 中频段的默认带宽同量级）。
+    /// Q 的缺省值（与 EQ 中频段的默认带宽同量级）。
     pub const Q: f32 = 0.9;
-    /// 固定压缩比。
+    /// Q 的合法域（下界 ⇒ 约两个八度；上界 ⇒ 约 1/6 八度，够"扫点"）。
+    pub const MIN_Q: f32 = 0.3;
+    /// Q 的合法域上界。
+    pub const MAX_Q: f32 = 8.0;
+    /// 压缩比的缺省值。
     pub const RATIO: f32 = 4.0;
+    /// 压缩比的合法域（`1.0` = 不压）。
+    pub const MIN_RATIO: f32 = 1.0;
+    /// 压缩比的合法域上界。
+    pub const MAX_RATIO: f32 = 20.0;
     /// 起振时间常数（秒）。`8 ms` 跟得上音符包络，慢到不会在单个周期上抽气。
     pub const ATTACK_S: f32 = 0.008;
     /// 释放时间常数（秒）。`160 ms` 让句子之间能回位。
@@ -325,6 +346,8 @@ impl DynEqParams {
         freq_hz: 300.0,
         threshold_db: -24.0,
         max_cut_db: 0.0,
+        q: Self::Q,
+        ratio: Self::RATIO,
     };
 
     /// 钳到合法域；非有限值归到**旁通**。
@@ -339,6 +362,8 @@ impl DynEqParams {
                 -24.0,
             ),
             max_cut_db: clamp_or(self.max_cut_db, 0.0, Self::MAX_CUT_DB, 0.0),
+            q: clamp_or(self.q, Self::MIN_Q, Self::MAX_Q, Self::Q),
+            ratio: clamp_or(self.ratio, Self::MIN_RATIO, Self::MAX_RATIO, Self::RATIO),
         }
     }
 
@@ -383,6 +408,17 @@ pub struct ChannelStripParams {
     /// 立体声宽度（M/S 缩放，`#343`）。`1.0` = 原样，`0.0` = 单声道，`2.0` = 加倍。
     /// 钳到 `0..=2`。
     pub width: f32,
+    /// ⭐ **M/S 中频增益**（`#346`，本仓新增）：只加在 **mid** 上的一个峰值均衡（dB）。
+    ///
+    /// `0.0` = 旁通（本级不执行，且 M/S 往返一次都不做 ⇒ 逐位透明）。
+    ///
+    /// **为什么需要它**：本仓的中频均衡（`eq.mid_*`）是**全带宽**的 —— 抬 3 kHz 会
+    /// 同时抬 side 里的镲片与混响尾巴，声场因此变"糊"。而"让人声/主旋律更突出"
+    /// 在 M/S 域里是**只抬 mid**：中心更清楚，两侧不动。这就是评审 §2 的
+    /// "Mid Channel 提升 2–4 kHz"。
+    pub ms_mid_gain_db: f32,
+    /// M/S 中频峰值的中心频率（Hz）。钳到 `100..=12000`。
+    pub ms_mid_freq_hz: f32,
     /// **mono-maker**（`#344`）：把这个频率以下的 side 分量整段丢掉的转折频率（Hz）。
     /// `0` = 旁通；钳到 `0..=`[`MAX_MONO_BELOW_HZ`]。
     ///
@@ -396,6 +432,13 @@ pub struct ChannelStripParams {
 }
 
 impl ChannelStripParams {
+    /// M/S 中频的下界（Hz）：低于此值等于"只在低频中央加厚"，那是 `eq.low_*` 的活。
+    pub const MS_MID_MIN_HZ: f32 = 100.0;
+    /// M/S 中频的上界（Hz）。
+    pub const MS_MID_MAX_HZ: f32 = 12000.0;
+    /// M/S 中频的固定 Q（与 `eq.mid_q` 的缺省同量级：一个八度左右）。
+    pub const MS_MID_Q: f32 = 0.9;
+
     /// 默认参数：输入 / 输出增益 `0 dB`（数学恒等），三级**全部启用**，
     /// EQ 平坦（[`EqParams::default`]），低通截止 `20 kHz`（最透明），
     /// 压缩用 [`CompressorParams::DEFAULT`]。
@@ -417,6 +460,8 @@ impl ChannelStripParams {
         compressor_enabled: true,
         compressor: CompressorParams::DEFAULT,
         dyn_eq: DynEqParams::DEFAULT,
+        ms_mid_gain_db: 0.0,
+        ms_mid_freq_hz: 2000.0,
         width: 1.0,
         mono_below_hz: MONO_BELOW_BYPASS_HZ,
         output_gain_db: 0.0,
@@ -445,6 +490,13 @@ impl ChannelStripParams {
             compressor_enabled: self.compressor_enabled,
             compressor: self.compressor.sanitised(),
             dyn_eq: self.dyn_eq.sanitised(),
+            ms_mid_gain_db: sanitise_gain_db(self.ms_mid_gain_db),
+            ms_mid_freq_hz: clamp_or(
+                self.ms_mid_freq_hz,
+                Self::MS_MID_MIN_HZ,
+                Self::MS_MID_MAX_HZ,
+                2000.0,
+            ),
             width: clamp_or(self.width, 0.0, 2.0, 1.0),
             mono_below_hz: clamp_or(
                 self.mono_below_hz,
@@ -493,6 +545,8 @@ pub struct ChannelStrip {
     deq_r: Biquad,
     /// ④ 动态 EQ 的包络（线性，带通电平的跟随值）。
     deq_env: f32,
+    /// ④⁗ **M/S 中频**的峰值滤波器（`#346`）：只作用在 side/mid 分解后的 mid 上。
+    ms_mid: Biquad,
     /// ④⁗ mono-maker 的 **side 高通**（`#344`）：二阶，状态是左右声道**共用的那一条**
     /// side 序列（`0.5·(L−R)`）的递推 —— 一个双二阶就够，⛔ 不是左右各一份。
     ///
@@ -534,12 +588,26 @@ fn configure_hpf(bq: &mut Biquad, sample_rate: f32, params: HpfParams) {
 
 /// 把检波带通配到动态 EQ 的中心频率。
 fn configure_deq_detector(bq: &mut Biquad, sample_rate: f32, params: DynEqParams) {
-    bq.bandpass(sample_rate, params.freq_hz, DynEqParams::Q);
+    bq.bandpass(sample_rate, params.freq_hz, params.q);
 }
 
 /// 把一只峰值滤波器配到动态 EQ 的中心频率，增益 `gain_db`（负数是切除）。
 fn configure_deq_peak(bq: &mut Biquad, sample_rate: f32, params: DynEqParams, gain_db: f32) {
-    bq.peaking(sample_rate, params.freq_hz, DynEqParams::Q, gain_db);
+    bq.peaking(sample_rate, params.freq_hz, params.q, gain_db);
+}
+
+/// 把 M/S 中频的峰值滤波器配到中心频率与增益（增益 0 ⇒ 置为单位变换）。
+fn configure_ms_mid(bq: &mut Biquad, sample_rate: f32, params: ChannelStripParams) {
+    if params.ms_mid_gain_db == 0.0 {
+        *bq = Biquad::identity();
+    } else {
+        bq.peaking(
+            sample_rate,
+            params.ms_mid_freq_hz,
+            ChannelStripParams::MS_MID_Q,
+            params.ms_mid_gain_db,
+        );
+    }
 }
 
 /// 把 mono-maker 的 side 高通配到转折频率（旁通时置为单位变换）。
@@ -584,6 +652,30 @@ impl ChannelStrip {
         configure_deq_peak(&mut self.deq_l, self.sample_rate, params, -cut);
         configure_deq_peak(&mut self.deq_r, self.sample_rate, params, -cut);
         self.deq_l.process_in_place(left, right, frames);
+    }
+
+    /// ④⁗ **M/S 中频**（`#346`）：一帧的 M/S 分解 → **只**给 mid 过一只峰值滤波器 →
+    /// 合成回去。
+    ///
+    /// ```text
+    /// mid  = 0.5·(l + r)   mid ← Peak(mid)      // 中心
+    /// side = 0.5·(l − r)   side 原样            // 两侧不动
+    /// (l, r) = (mid + side, mid − side)
+    /// ```
+    ///
+    /// **旁通**：`ms_mid_gain_db == 0` ⇒ 直接返回入参（⛔ 连 M/S 往返都不做）。
+    /// M/S 往返在 `f32` 下不是逐位恒等（`(m+s)+(m−s) ≠ 2m`），不旁通就会破坏
+    /// "默认参数逐位透明"这条既有承诺。
+    #[inline]
+    fn mid_make(&mut self, l: f32, r: f32) -> (f32, f32) {
+        if self.params.ms_mid_gain_db == 0.0 {
+            return (l, r);
+        }
+        let mid = 0.5 * (l + r);
+        let side = 0.5 * (l - r);
+        let mut m = [mid];
+        self.ms_mid.process_mono_in_place(&mut m, 1);
+        (m[0] + side, m[0] - side)
     }
 
     /// ④⁗ mono-maker（`#344`）：一帧的 M/S 分解 → side 去掉低频 → 合成回去。
@@ -674,7 +766,7 @@ impl ChannelStrip {
 
         let level_db = 20.0 * peak.max(1.0e-9).log10();
         let over = (level_db - params.threshold_db).max(0.0);
-        (over * (1.0 - 1.0 / DynEqParams::RATIO)).min(params.max_cut_db)
+        (over * (1.0 - 1.0 / params.ratio.max(1.0))).min(params.max_cut_db)
     }
 
     /// 单声道版的 [`Self::apply_dyn_eq`]：检波与处理都只看这一路。
@@ -731,6 +823,8 @@ impl ChannelStrip {
         configure_deq_peak(&mut deq_r, sample_rate, params.dyn_eq, 0.0);
         let mut side_hp = Biquad::identity();
         configure_mono_maker(&mut side_hp, sample_rate, params.mono_below_hz);
+        let mut ms_mid = Biquad::identity();
+        configure_ms_mid(&mut ms_mid, sample_rate, params);
         Self {
             input_gain: db_to_gain(params.input_gain_db),
             output_gain: db_to_gain(params.output_gain_db),
@@ -741,6 +835,7 @@ impl ChannelStrip {
             deq_l,
             deq_r,
             deq_env: 0.0,
+            ms_mid,
             side_hp,
             filter_l,
             filter_r,
@@ -788,6 +883,12 @@ impl ChannelStrip {
         // 与上面几级同纪律）。
         if params.mono_below_hz != self.params.mono_below_hz {
             configure_mono_maker(&mut self.side_hp, self.sample_rate, params.mono_below_hz);
+        }
+        // M/S 中频（`#346`）：增益或中心频率变了才重算系数（⛔ 不清状态）。
+        if params.ms_mid_gain_db != self.params.ms_mid_gain_db
+            || params.ms_mid_freq_hz != self.params.ms_mid_freq_hz
+        {
+            configure_ms_mid(&mut self.ms_mid, self.sample_rate, params);
         }
         self.params = params;
     }
@@ -1149,6 +1250,9 @@ impl ChannelStrip {
             (mid + side, mid - side)
         };
 
+        // ④⁗ M/S 中频（`#346`）：只抬/压中心，两侧原样。
+        let (l, r) = self.mid_make(l, r);
+
         // ④⁗ mono-maker（`#344`）：把 `mono_below_hz` 以下的 side 丢掉。
         let (l, r) = self.mono_make(l, r);
 
@@ -1207,6 +1311,9 @@ impl ChannelStrip {
             let side = 0.5 * (l - r) * self.params.width;
             (mid + side, mid - side)
         };
+
+        // ④⁗ M/S 中频（`#346`）：与 `render_frame` 同一位置（宽度之后、mono-maker 之前）。
+        let (l, r) = self.mid_make(l, r);
 
         // ④⁗ mono-maker（`#344`）：把 `mono_below_hz` 以下的 side 丢掉。
         //    旁通时 `mono_make` 原样返回 ⇒ `width == 1.0` 的逐位透明不受影响。
@@ -1516,7 +1623,11 @@ mod tests {
                 freq_hz: f32::INFINITY,
                 threshold_db: f32::NAN,
                 max_cut_db: -1.0e9,
+                q: f32::NAN,
+                ratio: f32::NAN,
             },
+            ms_mid_gain_db: f32::NAN,
+            ms_mid_freq_hz: f32::INFINITY,
             width: f32::NAN,
             mono_below_hz: f32::NEG_INFINITY,
             output_gain_db: f32::INFINITY,
@@ -1524,6 +1635,11 @@ mod tests {
         let p = hostile.sanitised();
         assert_eq!(p.input_gain_db, 0.0, "NaN 增益必须归到恒等（0 dB）");
         assert_eq!(p.output_gain_db, 0.0, "+∞ 增益必须归到恒等（0 dB）");
+        assert_eq!(p.ms_mid_gain_db, 0.0, "NaN 的 M/S 中频增益必须归到旁通");
+        assert_eq!(
+            p.ms_mid_freq_hz, 2000.0,
+            "非有限频率归缺省（最不改变信号的一侧，与增益 0 dB 同一条原则）"
+        );
         assert_eq!(p.eq.low_gain, 0.0);
         assert_eq!(
             p.eq.low_freq, 200.0,

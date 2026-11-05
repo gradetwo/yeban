@@ -998,8 +998,8 @@ fn the_seven_cases_are_the_compressor_fields_minus_threshold() {
     assert_eq!(EIGHT.len(), 8, "压缩字段是 8 个");
     assert_eq!(
         StripField::ALL.len(),
-        28,
-        "通道条共 28 个字段（14 增益/EQ/滤波 ＋ 8 压缩 ＋ 1 低切 ＋ 3 动态 EQ ＋ 1 宽度 ＋ 1 mono-maker）"
+        32,
+        "通道条共 32 个字段（14 增益/EQ/滤波 ＋ 8 压缩 ＋ 1 低切 ＋ 5 动态 EQ ＋ 1 宽度 ＋ 1 mono-maker ＋ 2 ms_mid）"
     );
     assert_eq!(COMP_CASES.len(), 7, "除 threshold_db 外是 7 个");
     assert_eq!(covered, expected, "COMP_CASES 必须逐字覆盖这 7 个字段");

@@ -44,11 +44,19 @@ pub const IAUDIO_PROCESSOR_IID: Tuid = tuid(0x4204_3F99, 0xB7DA_453C, 0xA569_E79
 /// `Vst::IEditController` 的 IID（`vst/ivsteditcontroller.h` 原文）。
 pub const IEDIT_CONTROLLER_IID: Tuid = tuid(0xDCD7_BBE3, 0x7742_448D, 0xA874_AACC, 0x979C_759E);
 
+/// `IConnectionPoint`（`pluginterfaces/base/iconnectionpoint.h` 原文；字节取自
+/// Dexed.so 的 `Steinberg::Vst::IConnectionPoint_iid`，2026-11-03 实测）。
+pub const ICONNECTIONPOINT_IID: Tuid = tuid(0x70A4_156F, 0x6E6E_4026, 0x9891_48BF, 0xAA60_D8D1);
+
 /// `tresult` 成功（`kResultOk`）。
 pub const RESULT_OK: i32 = 0;
 
-/// `tresult` 真（`kResultTrue`）。
-pub const RESULT_TRUE: i32 = 1;
+/// `tresult` 真（`kResultTrue`）。注意 SDK 原文：`kResultTrue == kResultOk == 0`，
+/// 与 C 布尔惯例（真＝1）相反；真插件（JUCE）实测亦如此。
+pub const RESULT_TRUE: i32 = 0;
+
+/// `tresult` 假（`kResultFalse`）。
+pub const RESULT_FALSE: i32 = 1;
 
 /// `tresult` 无接口（`kNoInterface`）。
 pub const RESULT_NO_INTERFACE: i32 = -1;
@@ -65,7 +73,7 @@ pub fn tuid_hex(id: &Tuid) -> String {
     id.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
-/// 一期宿主发给插件的 MIDI 事件（只含音符 on／off；CC 一期不发，见 ADR-0064 D7）。
+/// 一期宿主发给插件的 MIDI 事件（只含音符 on／off；CC 一期不发，见 ADR-0069 D7）。
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct MidiEvent {
     /// 块内偏移（帧；`0..frames`）。
@@ -133,7 +141,7 @@ impl ParamInfo {
 
 /// 插件类的粗分类（扫描与加载时的乐器判定用）。
 ///
-/// 判定口径（ADR-0064 D12）：乐器 ⟺ 有事件输入总线且**无**音频输入总线；
+/// 判定口径（ADR-0069 D12）：乐器 ⟺ 有事件输入总线且**无**音频输入总线；
 /// 效果器 ⟺ 有音频输入总线。枚举失败（实例化失败）时为 `Unknown`。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PluginKind {
@@ -181,7 +189,7 @@ impl PluginDescriptor {
     }
 }
 
-/// 插件状态容器（一期格式，见 ADR-0064 D9）。
+/// 插件状态容器（一期格式，见 ADR-0069 D9）。
 ///
 /// 布局（全部小端）：magic `b"YBPGST01"`（8 字节）＋版本 u32（＝1）＋
 /// 处理器 blob 长度 u32＋处理器 blob＋控制器 blob 长度 u32＋控制器 blob。
@@ -287,7 +295,7 @@ pub trait PluginInstance: Send + Sync {
     fn deactivate(&mut self);
 
     /// 插件上报的处理延迟（采样点；`getLatencySamples`，激活后读）。
-    /// 未激活时为 0（一期 PDC 不消费它，见 ADR-0064 D11）。
+    /// 未激活时为 0（一期 PDC 不消费它，见 ADR-0069 D11）。
     fn latency_samples(&self) -> u32;
 
     /// 参数表（控制器枚举；无控制器时为空）。
@@ -301,14 +309,14 @@ pub trait PluginInstance: Send + Sync {
     /// 无错误通道，控制器存在时恒返回 `Some`——“参数不存在”不可观测）。
     fn parameter_value(&mut self, id: u32) -> Option<f64>;
 
-    /// 直接设一个参数的归一化值（一期唯一的参数写入口，见 ADR-0064 D8）。
+    /// 直接设一个参数的归一化值（一期唯一的参数写入口，见 ADR-0069 D8）。
     ///
     /// # Errors
     ///
     /// 控制器缺席或插件拒绝 ⇒ [`HostError`]。
     fn set_parameter(&mut self, id: u32, value: f64) -> Result<(), HostError>;
 
-    /// 保存状态（两段 `getState`，见 ADR-0064 D9）。
+    /// 保存状态（两段 `getState`，见 ADR-0069 D9）。
     ///
     /// # Errors
     ///

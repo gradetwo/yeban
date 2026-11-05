@@ -127,6 +127,30 @@ fn fixture_load_by_cid_hex_picks_separate_class() {
 }
 
 #[test]
+fn fixture_loads_by_bundle_path() {
+    let dir = test_dir();
+    let plugin = compile_fixture(&dir);
+    // 包布局（按平台子目录，与扫描测试同款口径）。
+    #[cfg(target_os = "linux")]
+    let bundle_sub = "Contents/x86_64-linux";
+    #[cfg(target_os = "macos")]
+    let bundle_sub = "Contents/MacOS";
+    #[cfg(target_os = "windows")]
+    let bundle_sub = "Contents/x86_64-win";
+    let bundle_dir = dir.join("Test.vst3").join(bundle_sub);
+    std::fs::create_dir_all(&bundle_dir).expect("建包目录");
+    #[cfg(target_os = "windows")]
+    let bundle_file = bundle_dir.join("plugin.vst3");
+    #[cfg(not(target_os = "windows"))]
+    let bundle_file = bundle_dir.join(format!("fixture_plugin.{DYLIB_EXT}"));
+    std::fs::copy(&plugin, &bundle_file).expect("拷包内文件");
+    // 传包路径（不是包内动态库路径）应能加载（加载侧与扫描侧同一解析口径）。
+    let instance =
+        Host::load(dir.join("Test.vst3").to_str().unwrap(), None).expect("包路径应能加载");
+    assert_eq!(instance.name(), "TestSine");
+}
+
+#[test]
 fn fixture_renders_sine_with_sample_accurate_offsets() {
     let dir = test_dir();
     let plugin = compile_fixture(&dir);
@@ -459,19 +483,18 @@ fn scan_lists_usable_plugins_and_isolates_bad_files() {
         .expect("坏文件应在扫描结果里");
     assert!(!bad.usable());
     assert!(bad.error.is_some());
-    // 散文件可用：3 个类（2 乐器＋1 效果器）。
+    // 散文件可用：4 个类（2 乐器＋1 效果器＋1 控制器）。
     let loose_entry = found
         .iter()
         .find(|entry| entry.path == loose.to_string_lossy())
         .expect("散文件应在扫描结果里");
     assert!(loose_entry.usable());
-    assert_eq!(loose_entry.classes.len(), 3);
+    assert_eq!(loose_entry.classes.len(), 4);
     assert!(
-        loose_entry
-            .classes
+        loose_entry.classes[..2]
             .iter()
             .all(|class| class.error.is_none()),
-        "夹具类探针应全通过"
+        "夹具组件类探针应全通过"
     );
     assert_eq!(loose_entry.classes[0].name, "TestSine");
     assert_eq!(loose_entry.classes[0].kind, PluginKind::Instrument);
@@ -479,6 +502,14 @@ fn scan_lists_usable_plugins_and_isolates_bad_files() {
     assert_eq!(loose_entry.classes[1].kind, PluginKind::Instrument);
     assert_eq!(loose_entry.classes[2].name, "TestGain");
     assert_eq!(loose_entry.classes[2].kind, PluginKind::Effect);
+    // 控制器类不作组件探针：单列说明，不记 createInstance 失败，模块仍可用。
+    let controller = &loose_entry.classes[3];
+    assert_eq!(controller.name, "TestSineController");
+    assert_eq!(controller.kind, PluginKind::Unknown);
+    assert_eq!(
+        controller.error.as_deref(),
+        Some("控制器／兼容类：不作组件实例化（VST3 正常现象）")
+    );
     // 包内文件可用（路径指向包内动态库，不是包目录本身）。
     let bundle_entry = found
         .iter()

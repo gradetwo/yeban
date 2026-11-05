@@ -119,6 +119,26 @@ pub fn pade_tanh(x: f32) -> f32 {
     (x * (27.0 + x2)) / (27.0 + 9.0 * x2)
 }
 
+/// [`pade_tanh`] 的导数：`d/dx [ x(27 + x²) / (27 + 9x²) ] = 9(x² − 9)² / (27 + 9x²)²`。
+///
+/// 化简后为 `(x² − 9)² / (9(3 + x²)²)`，`x = 0` 处恰 `1`、`|x| → 3` 处降到 `0`、
+/// 再往外重新爬升（Padé 逼近在 `|x| > 3` 之后不再单调，与 [`pade_tanh`] 的
+/// 同一条已知局限）。**非有限**输入归 `0`（饱和级会把它当"不可用的斜率"跳过归一化）。
+///
+/// 用途见 [`crate::tape`]：把曲线沿 x 轴平移（`tape_asym`）之后，工作点的斜率
+/// 由 `1` 掉到 `pade_tanh'(g·asym)` ⇒ 小信号增益跟着掉。要"只改谐波、不改电平"
+/// 就必须按这条斜率把增益除回去。
+#[inline]
+#[must_use]
+pub fn pade_tanh_slope(x: f32) -> f32 {
+    if !x.is_finite() {
+        return 0.0;
+    }
+    let shifted = x * x - 9.0;
+    let denominator = 9.0 * (3.0 + x * x) * (3.0 + x * x);
+    (shifted * shifted) / denominator
+}
+
 /// 把采样率钳制到 [`MIN_SAMPLE_RATE`] 之上。
 ///
 /// 每个需要采样率的入口都先过这里：`0`/负数/`NaN` 会让系数变成 `inf` 或 `NaN`。
@@ -399,6 +419,38 @@ mod tests {
         assert!((pade_tanh(0.5) - 0.5f32.tanh()).abs() < 5e-3);
         assert!((pade_tanh(1.0) - 1.0f32.tanh()).abs() < 0.02);
         assert!(pade_tanh(1.0) > pade_tanh(0.5));
+    }
+
+    /// ⭐ [`pade_tanh_slope`] 必须与 [`pade_tanh`] 的**数值导数**一致（同一事实只写一处）。
+    ///
+    /// 差分跑在 `f64` 上：`pade_tanh` 在 `|x| → 3` 处输出贴到 `1`，`f32` 的
+    /// `1 ULP ≈ 6e-8` 除以 `2h` 就是导数上的 `3e-5` 噪声 —— 在 `|x| = 2.8`
+    /// （真斜率 `1.3e-3`）上那是 2 %，量级比要测的东西还大。`f64` 差分＋
+    /// `h = 1e-2`（截断 `O(h²) ≈ 1e-7`，仍远小于 1e-3）才比得出信息量。
+    /// 扫描区间只到 `|x| = 2.9`：再往外 Padé 逼近本身不再单调，比不出信息量；
+    /// 端点 `|x| = 3` 单独钉——闭式在那一处恰为 `0`。
+    #[test]
+    fn the_slope_matches_the_numerical_derivative_of_pade_tanh() {
+        let pade64 = |x: f64| {
+            let x2 = x * x;
+            (x * (27.0 + x2)) / (27.0 + 9.0 * x2)
+        };
+        assert_eq!(pade_tanh_slope(0.0), 1.0);
+        assert_eq!(pade_tanh_slope(3.0), 0.0);
+        assert_eq!(pade_tanh_slope(-3.0), 0.0);
+        for step in -58..=58 {
+            let x = step as f64 * 0.05;
+            let h = 1e-2;
+            let numeric = (pade64(x + h) - pade64(x - h)) / (2.0 * h);
+            let closed = f64::from(pade_tanh_slope(x as f32));
+            assert!(
+                (numeric - closed).abs() < 5e-3 * numeric.abs() + 1e-6,
+                "slope({x}): 闭式 {closed} vs 数值 {numeric}"
+            );
+        }
+        // 非有限归 0（饱和级据此判定"斜率不可用"）。
+        assert_eq!(pade_tanh_slope(f32::NAN), 0.0);
+        assert_eq!(pade_tanh_slope(f32::INFINITY), 0.0);
     }
 
     #[test]

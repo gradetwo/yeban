@@ -479,7 +479,7 @@ impl ParameterValue {
     }
 }
 
-/// 插件绑定（ADR-0064 D4）：设备挂接的外部插件。
+/// 插件绑定（ADR-0069 D4）：设备挂接的外部插件。
 ///
 /// 只有 `ExternalInstrument` / `ExternalEffect` 可带绑定（[`DeviceDefinition::validate`]
 /// 强制执行）；其它 kind 带绑定 ⇒ 模型校验拒绝。`path` 约定：`.vst3` 包路径／
@@ -524,7 +524,7 @@ pub struct DeviceDefinition {
     /// **合法**上报值不可区分，缺字段会被静默读成"零延迟设备"，而 PDC 的相位对齐恰恰
     /// 依赖这个数字。缺字段 ⇒ 响亮失败。
     pub latency_samples: u32,
-    /// 插件绑定（ADR-0064 D4；`None` = 无绑定，旧文档逐字可读）。
+    /// 插件绑定（ADR-0069 D4；`None` = 无绑定，旧文档逐字可读）。
     ///
     /// 只有 `ExternalInstrument` / `ExternalEffect` 可带绑定（见 [`Self::validate`]）。
     /// `params` 是 f32 数值对，路径放不进 ⇒ 绑定必须是一个独立字段，随工程落盘

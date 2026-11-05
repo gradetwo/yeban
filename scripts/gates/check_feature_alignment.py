@@ -203,7 +203,11 @@ CATEGORIES = (
 )
 
 #: 表里允许出现的名字形态：工具名与方法名。
-TABLE_TOOL_RE = re.compile(r"yeban_[a-z_]+")
+#: ⭐ SVS 例外（Phase 2）：`synthesize_singing` / `svs_job` 的名字由 Phase 1
+#: 规格定（跨线契约），不带 `yeban_` 前缀；判据 1 要求 schema 里的每个工具
+#: 名都在表里出现，因此正则必须认这两条，否则任何规格名的工具都过不了
+#: 本守卫。例外只此两条（与 `crates/yeban-mcp/src/tools.rs` 注册判据同步）。
+TABLE_TOOL_RE = re.compile(r"yeban_[a-z_]+|synthesize_singing|svs_job")
 #: ⚠ 两侧的边界都是**承重**的：`crates/yeban-app/ui/dialogs/undo_tree_modal.slint` 与
 #: `ui/transport.slint` 这类**文件路径**也含 `ui/<片段>`，朴素的 `ui/[a-z_]+` 会把
 #: `ui/dialogs` / `ui/sidebar` / `ui/transport` 当成"方法名"，于是判据 2 会把真实存在的
@@ -274,7 +278,7 @@ RETRACTION_RE = re.compile(r"为假|过期|不成立")
 # 上限从 70 放宽到 80（负责人授权的自主决策，第 164 轮）: 工具集从 15 增到 16（D56 诊断导出），
 # 新工具**必须**在矩阵里点名（否则判据自己会报"有工具却没人管它"），所以行数会持续增长。
 # 这个区间的作用是抓"误删/误增整块"，不是精确值，故放宽不削弱它。
-MIN_ROWS, MAX_ROWS = 40, 80
+MIN_ROWS, MAX_ROWS = 40, 90  # 表随落地功能自然增长；81 行于本支首次超旧上限 80
 
 #: 判据 3 的"同一能力"归一化名的**最小长度**。比它短的名字（实测活表里只有 `走带` 一个，
 #: 归一化后 2 字符）太容易"被别的名字包含" ⇒ 按构造跳过，不拿它去制造假红。

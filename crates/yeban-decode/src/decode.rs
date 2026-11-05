@@ -38,10 +38,10 @@ use std::fs::File;
 use std::io::{Cursor, Read, Seek, SeekFrom};
 use std::path::Path;
 
-use symphonia::core::codecs::audio::AudioDecoderOptions;
+use symphonia::core::codecs::audio::{AudioDecoder, AudioDecoderOptions};
 use symphonia::core::errors::Error as SymphoniaError;
 use symphonia::core::formats::probe::Hint;
-use symphonia::core::formats::{FormatOptions, TrackType};
+use symphonia::core::formats::{FormatOptions, FormatReader, TrackType};
 use symphonia::core::io::{MediaSource, MediaSourceStream};
 use symphonia::core::meta::MetadataOptions;
 
@@ -196,6 +196,445 @@ where
     decode_source(Box::new(source), &Hint::new(), options)
 }
 
+/// P3 流式：逐包解码器（磁盘线程的压缩格式腿）。
+///
+/// ## 为什么要从 [`decode_source`] 里抽出它
+///
+/// [`decode_source`] 是"整段"入口：它把全部样本累进一个 `Vec` 再交出
+/// [`DecodedAsset`]。磁盘线程不能走这条路 —— 一个 10 分钟的 FLAC 整段解码
+/// 就是几百 MB 常驻。`StreamingDecoder` 是同一套判定（预检、probe、选轨、
+/// 布局锁、逐包时长闸门、坏包跳过计 idle、浮点非有限检查）的**逐包形态**：
+/// 调用方反复调 [`StreamingDecoder::fill`]，每次拿走若干**整帧**，
+///
+/// ## 与整段路径的判定对照（⛔ 不偷工）
+///
+/// - 预检（`precheck_riff_wave_fmt`）、输入字节闸门、时长预检、布局锁、逐包
+///   时长闸门、坏包跳过计 idle、硬错直返、浮点非有限检查（带全局帧偏移）：
+///   **全部**与 [`decode_source`] 改前同一套代码逐字搬运，只是"追加进大向量"
+///   换成了"写进调用方的 `out`／余量缓冲"。
+/// - 唯一**不**搬的判定：整段累积向量的 PCM 字节预算（`PcmBudgetExceeded`）。
+///   理由：流式没有累积向量，内存由调用方的环／缓冲界定；这道预算仍由
+///   [`decode_source`] 的排空循环执行（排空时它重新累积，因此整段入口的
+///   预算语义不变）。流式调用方（磁盘线程）不执行它 —— 磁盘线程的内存
+///   上界是环容量，不是"已解出的资产大小"。
+/// - 同样**不**搬的收尾：`EmptyStream`（0 帧）、终检 `check_layout`、时长对账
+///   `duration::reconcile`。流式在 EOF 时只报"已播完"（`fill` 返回 0 且
+///   [`StreamingDecoder::is_finished`] 为真）；0 帧资产的拒绝是整段入口的
+///   资产级语义，不属于播放路径。时长对账（声明与实测不符）同样是资产级
+///   校验：流式播"解出来的东西"，不因声明时长不符而拒播。
+/// - 编码器 delay／padding **不修剪**（与整段路径一致：只记入
+///   [`DecodeFacts`]，不剪 PCM）⇒ 流式与整段播出的样本序列天然一致。
+///
+/// ## `fill` 的契约
+///
+/// - `out` 是**交错**样本缓冲；返回**帧数**（不是样本数），只写整帧
+///   （`out.len() / channels` 帧封顶，余数帧暂存余量缓冲，下次先排空）。
+/// - 返回 0 有两种意思，用 [`StreamingDecoder::is_finished`] 区分：真 EOF
+///   （已播完）与"out 连一帧都装不下"（调用方须换更大的 `out` 重调；
+///   磁盘线程与 [`decode_source`] 的排空都用 32 KiB 缓冲，恒能推进）。
+/// - 声道数／采样率在首包解出前未知：[`StreamingDecoder::channels`] 在
+///   首包前返回 `None`，调用方须在首个 `fill` 返回帧数 > 0 后再读它
+///   （磁盘线程的环是单声道折叠，折叠步长就取这个值）。
+/// - 中途硬错（`fill` 返回 `Err`）后解码器不再可用：调用方按"声部失败"
+///   处理（恒静音＋已播完），与整段入口"整段失败"同类，只是已播出的
+///   部分不再收回 —— 这是流式用有界内存换来的固有语义，⛔ 不是 bug。
+/// - 本结构只在**磁盘线程**（单线程串行）里用：`fill` 内部复用包缓冲与
+///   余量缓冲，⛔ 不跨线程共享、⛔ 不进音频回调。
+pub struct StreamingDecoder<'s> {
+    reader: Box<dyn FormatReader + 's>,
+    decoder: Box<dyn AudioDecoder>,
+    track_id: u32,
+    sample_rate: u32,
+    declared_frames: Option<u64>,
+    declared_bit_depth: Option<u16>,
+    encoder_delay_frames: Option<u32>,
+    encoder_padding_frames: Option<u32>,
+    options: DecodeOptions,
+    max_duration_frames: u64,
+    layout: Option<(u16, PcmFormat)>,
+    decoded_frames: u64,
+    idle_packets: limits::IdleGuard,
+    /// 本包解出的交错样本（复用缓冲，⛔ 不是余量：每次新包覆盖它）。
+    packet_buf: Vec<f32>,
+    /// 跨 `fill` 调用的余量：只存**整帧**（交错），下次 `fill` 先排空它。
+    pending: Vec<f32>,
+    /// `pending` 里的帧数。
+    pending_frames: usize,
+    /// 已读到流末尾（`next_packet` 返回 `None`）。
+    finished: bool,
+}
+
+/// `fill` 内部一包的处理结果（包内 idle 的包已在循环里跳过，不到这里）。
+enum PacketStep {
+    /// 本包解出 `frames` 帧，样本在 `packet_buf` 里（交错）。
+    Ready { frames: usize },
+    /// 流已尽。
+    Eof,
+}
+
+impl<'s> StreamingDecoder<'s> {
+    /// 从任意 [`MediaSource`] 搭建流式解码器（与 [`decode_source`] 改前的
+    /// 搭建段同一套：不可回退源先 slurp、输入字节闸门、RIFF 预检、probe、
+    /// 选轨、解码器、时长预检）。
+    pub fn open_source(
+        mut source: Box<dyn MediaSource + 's>,
+        hint: &Hint,
+        options: &DecodeOptions,
+    ) -> DecodeResult<Self> {
+        // 预检与 symphonia 的解封装都要"先读一段、再从头读一遍"（[`precheck_riff_wave_fmt`]
+        // 扫完块头会把游标还给起点）。对**不可回退**的源，旧实现的选择是"预检直接放弃"
+        // （`!is_seekable` ⇒ `Ok(())`），于是上游那两处未检查算术完全不受本条闸门约束。
+        //
+        // 2026-10-09 实测：那个 fail-open 是**可达**的，而且不是"理论上的第三方源" ——
+        // symphonia 的 `impl MediaSource for std::fs::File` 把 `is_seekable()` 定义为
+        // `metadata().is_file()`，所以一条 **FIFO** 路径（`decode_path` / `import_path` 收
+        // 路径，`metadata().len()` 为 0 因而输入字节闸门放行）就落在这条分支上：
+        //   · 合法 WAV（44 字节）经不可回退源 ⇒ `Ok(frames=2)`（**今天能解**）；
+        //   · 33 声道 `WAVE_FORMAT_EXTENSIBLE` 经不可回退源 ⇒ panic（`wave/chunks.rs` 690）；
+        //   · 32769 声道 tag 1 经不可回退源 ⇒ panic（`wave/chunks.rs` 100）。
+        // 因此这里不能 fail closed（那是对第一行能力的真实回归），改为把输入读进内存：
+        // 读完之后源就是可回退的，预检与解封装都恢复原状，而且这条路径**第一次**受输入字节
+        // 预算约束（此前它绕过了 [`limits::check_input_len`]）。
+        //
+        // 代价（诚实声明）：不可回退的源的峰值内存多了**一份输入容器字节**，上限是预算里的
+        // `max_input_bytes`。可回退的源（本 crate 的三个入口都是）一个字节都不多读。
+        let mut source: Box<dyn MediaSource + 's> = if source.is_seekable() {
+            source
+        } else {
+            let bytes = slurp_unseekable(&mut *source, options.budget.max_input_bytes)?;
+            Box::new(Cursor::new(bytes))
+        };
+        // 第五道闸门（输入容器字节）：**取到源之后**在这里判一次 —— 对可回退的源，这是它
+        // 唯一的一次判定（`decode_source` 是公共入口，直接调用它的调用方不经过
+        // [`decode_path`] / [`decode_bytes`] / [`decode_reader`] 的那三次预检）。少了这一判，
+        // 同一份 52 字节的 WAV 经 `decode_bytes` 会被 [`LimitViolation::InputTooLarge`] 挡下、
+        // 经 `decode_source` 却能解出资产（实测读数见判据
+        // `a_seekable_source_obeys_the_input_byte_budget_through_decode_source`）。
+        // `byte_len()` 是可选能力（管道常常报 `None`），因此这里只判"报得出长度的源"；
+        // 不可回退的源由 [`slurp_unseekable`] **边读边判**，本行对它是恒真的重复判定
+        // （slurp 之后是 `Cursor`，它报的长度已经在上限之内）。
+        if let Some(len) = source.byte_len() {
+            limits::check_input_len(len, &options.budget)?;
+        }
+        // 上游的 RIFF/WAVE 解析器有两处畸形声明会整型溢出并 panic（`u16` 乘法与 `u32` 移位）。
+        // 本 crate 的契约是"不可信输入只返回 DecodeError"，而我们不能改上游，因此在探测之前
+        // 先把 `fmt ` 块走一遍。
+        precheck_riff_wave_fmt(&mut *source)?;
+        let stream = MediaSourceStream::new(source, Default::default());
+        let reader = symphonia::default::get_probe()
+            .probe(
+                hint,
+                stream,
+                FormatOptions::default(),
+                MetadataOptions::default(),
+            )
+            .map_err(|err| match err {
+                SymphoniaError::Unsupported(_) => DecodeError::UnsupportedFormat,
+                other => DecodeError::from_symphonia(&other),
+            })?;
+        let track = reader
+            .default_track(TrackType::Audio)
+            .ok_or(DecodeError::NoAudioTrack)?;
+        let track_id = track.id;
+        let declared_frames = track.num_frames;
+        let encoder_delay_frames = track.delay;
+        let encoder_padding_frames = track.padding;
+        let codec_params = track
+            .codec_params
+            .clone()
+            .ok_or(DecodeError::MissingCodecParameters)?;
+        let audio_params = codec_params.audio().ok_or(DecodeError::NoAudioTrack)?;
+        let sample_rate = audio_params
+            .sample_rate
+            .ok_or(DecodeError::MissingSampleRate)?;
+        let declared_bit_depth = audio_params
+            .bits_per_sample
+            .and_then(|b| u16::try_from(b).ok());
+        let decoder = symphonia::default::get_codecs()
+            .make_audio_decoder(audio_params, &AudioDecoderOptions::default())
+            .map_err(|err| DecodeError::from_symphonia(&err))?;
+        // 时长闸门在开始解码之前**按声明**判一次（畸形文件常在头里就声称几小时）。传
+        // `channels = 1` 是有意的 —— 这一层只判"每声道帧数 × 4 字节"是否超预算，
+        // 声道数还不知道（要等第一个解码缓冲），因此不会在这里误判声道相关的分支。
+        // 时长闸门与声道数无关（`frames / sample_rate`），因此在这里判它是准确的。
+        //
+        // ⚠ 只判这一层是不够的：`declared_frames` 可以是 `None`（FLAC 的
+        // `STREAMINFO.total_samples == 0` 就是"未知"的规范写法，实测读数见判据
+        // `the_duration_gate_fires_on_undeclared_frames_while_decoding`）。那种输入会
+        // 绕过上面这次预检，而**下面那个循环只按字节预算逐包判** —— 于是"6 小时"这道闸门
+        // 在整段解码期间不生效，峰值缓冲由 `max_pcm_bytes` 而不是时长预算决定（8 kHz
+        // 单声道下字节预算允许约 75 小时，是时长上界的 12.6×）。这正是
+        // `docs/ledger/decode-limits-notes.md` §2.2 说的"低采样率 × 少声道：字节便宜、
+        // 时间昂贵"那一格，只是它当时假设声明帧数总是存在。因此循环里用**同一条**公式
+        // （[`PcmBudget::max_duration_frames`]）逐包判它。
+        //
+        // ⚠ 同一处注释里的另一半：这道预检**不能**挂在 `if let Some(frames) = declared_frames`
+        // 下面。`declared_frames == None` 时那一次跳过会把"采样率是 0"的声明原样放进循环，
+        // 而循环的时长闸门要拿 `projected_frames / sample_rate` 去组错误文案 —— 0 Hz 下
+        // `max_duration_frames` 恒为 0，于是**第一个**非空包就进错误分支，撞上那次除零
+        // （实测读数 `attempt to divide by zero`，判据
+        // `a_zero_sample_rate_stream_is_refused_not_a_panic`）。0 Hz 是可达的：WAV 的
+        // `fmt ` 把 `sampleRate` 原样交上来、`data` 块声明 `0xFFFF_FFFF` 又让帧数变成
+        // "未知"。因此这里无条件判一次，`unwrap_or(0)` 只把"未知帧数"折算成 0 帧 ——
+        // 时长与 PCM 字节两道闸门对 0 帧恒真，采样率与声道数两道照常生效。
+        limits::check_layout(
+            1,
+            sample_rate,
+            declared_frames.unwrap_or(0),
+            &options.budget,
+        )?;
+        let max_duration_frames = options.budget.max_duration_frames(sample_rate);
+        Ok(Self {
+            reader,
+            decoder,
+            track_id,
+            sample_rate,
+            declared_frames,
+            declared_bit_depth,
+            encoder_delay_frames,
+            encoder_padding_frames,
+            options: *options,
+            max_duration_frames,
+            layout: None,
+            decoded_frames: 0,
+            idle_packets: limits::IdleGuard::new(),
+            packet_buf: Vec::new(),
+            pending: Vec::new(),
+            pending_frames: 0,
+            finished: false,
+        })
+    }
+
+    /// 从文件路径搭建（与 [`decode_path`] 同一条：元数据长度闸门、
+    /// 后缀 hint、[`Self::open_source`]）。
+    pub fn open_path(path: &Path, options: &DecodeOptions) -> DecodeResult<Self> {
+        let len = std::fs::metadata(path)?.len();
+        limits::check_input_len(len, &options.budget)?;
+        let file = File::open(path)?;
+        let mut hint = Hint::new();
+        if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
+            hint.with_extension(ext);
+        }
+        Self::open_source(Box::new(file), &hint, options)
+    }
+
+    /// 采样率（Hz；搭建时已知）。
+    #[must_use]
+    pub fn sample_hz(&self) -> u32 {
+        self.sample_rate
+    }
+
+    /// 声道数（首包解出前为 `None`）。
+    #[must_use]
+    pub fn channels(&self) -> Option<u16> {
+        self.layout.map(|(channels, _)| channels)
+    }
+
+    /// 已锁定的样本格式（首包解出前为 `None`）。
+    #[must_use]
+    pub fn pcm_format(&self) -> Option<PcmFormat> {
+        self.layout.map(|(_, format)| format)
+    }
+
+    /// 已解出的帧数（含已写进 `out` 与暂存余量的全部）。
+    #[must_use]
+    pub fn decoded_frames(&self) -> u64 {
+        self.decoded_frames
+    }
+
+    /// 是否已读到流末尾。
+    #[must_use]
+    pub fn is_finished(&self) -> bool {
+        self.finished
+    }
+
+    /// 声明帧数（`None` = 容器未声明，如 FLAC `total_samples == 0`）。
+    #[must_use]
+    pub fn declared_frames(&self) -> Option<u64> {
+        self.declared_frames
+    }
+
+    /// 声明位深（`None` = 容器未声明）。
+    #[must_use]
+    pub fn declared_bit_depth(&self) -> Option<u16> {
+        self.declared_bit_depth
+    }
+
+    /// 编码器 delay（帧；只记账，不修剪）。
+    #[must_use]
+    pub fn encoder_delay_frames(&self) -> Option<u32> {
+        self.encoder_delay_frames
+    }
+
+    /// 编码器 padding（帧；只记账，不修剪）。
+    #[must_use]
+    pub fn encoder_padding_frames(&self) -> Option<u32> {
+        self.encoder_padding_frames
+    }
+
+    /// 往 `out` 里写整帧交错样本，返回写出的**帧数**。
+    ///
+    /// 详见本结构文档的 `fill` 契约。`out` 须能装下至少一帧
+    /// （`out.len() >= channels`），否则返回 0 且 `is_finished()` 为假，
+    /// 调用方须换更大的缓冲重调。
+    pub fn fill(&mut self, out: &mut [f32]) -> DecodeResult<usize> {
+        if self.finished {
+            return Ok(0);
+        }
+        let mut written = 0usize;
+        if self.pending_frames > 0 {
+            let channels = self.channels().ok_or(DecodeError::EmptyStream)? as usize;
+            let capacity_frames = out.len() / channels;
+            let take = self.pending_frames.min(capacity_frames);
+            let take_samples = take * channels;
+            out[..take_samples].copy_from_slice(&self.pending[..take_samples]);
+            self.pending.drain(..take_samples);
+            self.pending_frames -= take;
+            written += take;
+            if self.pending_frames > 0 {
+                return Ok(written);
+            }
+        }
+        while !self.finished {
+            match self.decode_packet_into_buf()? {
+                PacketStep::Eof => {
+                    self.finished = true;
+                    break;
+                }
+                PacketStep::Ready { frames } => {
+                    let channels = self.channels().ok_or(DecodeError::EmptyStream)? as usize;
+                    let capacity_frames = (out.len() / channels).saturating_sub(written);
+                    if capacity_frames == 0 {
+                        self.pending
+                            .extend_from_slice(&self.packet_buf[..frames * channels]);
+                        self.pending_frames += frames;
+                        break;
+                    }
+                    let take = frames.min(capacity_frames);
+                    let take_samples = take * channels;
+                    let start = written * channels;
+                    out[start..start + take_samples]
+                        .copy_from_slice(&self.packet_buf[..take_samples]);
+                    written += take;
+                    if take < frames {
+                        self.pending
+                            .extend_from_slice(&self.packet_buf[take_samples..frames * channels]);
+                        self.pending_frames += frames - take;
+                        break;
+                    }
+                }
+            }
+        }
+        Ok(written)
+    }
+
+    /// 解一包进 `packet_buf`（包内 idle 的包在内部循环里跳过）。
+    ///
+    /// 本函数是 [`decode_source`] 改前循环体的逐字搬运：布局锁、逐包时长闸门、
+    /// 坏包跳过计 idle、浮点非有限检查（全局帧偏移 = 本包之前已解帧数 × 声道数，
+    /// 与改前 `samples.len()` 之前缀同一数值）。
+    fn decode_packet_into_buf(&mut self) -> DecodeResult<PacketStep> {
+        loop {
+            let packet = match self.reader.next_packet() {
+                Ok(Some(packet)) => packet,
+                Ok(None) => return Ok(PacketStep::Eof),
+                Err(err) => return Err(DecodeError::from_symphonia(&err)),
+            };
+            if packet.track_id != self.track_id {
+                bump_idle(&mut self.idle_packets)?;
+                continue;
+            }
+            let buffer = match self.decoder.decode(&packet) {
+                Ok(buffer) => buffer,
+                Err(SymphoniaError::DecodeError(_)) => {
+                    bump_idle(&mut self.idle_packets)?;
+                    continue;
+                }
+                Err(err) => return Err(DecodeError::from_symphonia(&err)),
+            };
+            let frames_in_buffer = buffer.frames();
+            let planes = buffer.num_planes();
+            let total = buffer.samples_interleaved();
+            if frames_in_buffer == 0 || total == 0 {
+                bump_idle(&mut self.idle_packets)?;
+                continue;
+            }
+            if planes == 0 || frames_in_buffer.checked_mul(planes) != Some(total) {
+                return Err(DecodeError::InconsistentLayout {
+                    detail: format!(
+                        "buffer reports {total} interleaved samples but {frames_in_buffer} frames \
+                         x {planes} planes"
+                    ),
+                });
+            }
+            let projected_frames = self
+                .decoded_frames
+                .saturating_add(u64::try_from(frames_in_buffer).unwrap_or(u64::MAX));
+            if projected_frames > self.max_duration_frames {
+                return Err(DecodeError::Budget(LimitViolation::DurationTooLong {
+                    frames: projected_frames,
+                    sample_rate: self.sample_rate,
+                    seconds: projected_frames / u64::from(self.sample_rate),
+                    limit_secs: self.options.budget.max_duration_secs,
+                }));
+            }
+            let channels = u16::try_from(planes).map_err(|_| {
+                DecodeError::Budget(LimitViolation::TooManyChannels {
+                    channels: u16::MAX,
+                    limit: self.options.budget.max_channels,
+                })
+            })?;
+            let buffer_format = PcmFormat::from_buffer(&buffer);
+            match self.layout {
+                None => {
+                    limits::check_layout(channels, self.sample_rate, 0, &self.options.budget)?;
+                    self.layout = Some((channels, buffer_format));
+                }
+                Some((locked_channels, locked_format)) => {
+                    if locked_channels != channels {
+                        return Err(DecodeError::InconsistentLayout {
+                            detail: format!(
+                                "channel count changed mid-stream: {locked_channels} -> {channels}"
+                            ),
+                        });
+                    }
+                    if locked_format != buffer_format {
+                        return Err(DecodeError::InconsistentLayout {
+                            detail: format!(
+                                "sample format changed mid-stream: {locked_format:?} -> {buffer_format:?}"
+                            ),
+                        });
+                    }
+                }
+            }
+            if self.packet_buf.len() < total {
+                self.packet_buf.resize(total, 0.0);
+            }
+            buffer.copy_to_slice_interleaved(&mut self.packet_buf[..total]);
+            if buffer_format.is_float()
+                && let Some(position) = self.packet_buf[..total].iter().position(|s| !s.is_finite())
+            {
+                let base = self.decoded_frames.saturating_mul(u64::from(channels));
+                let offset = base.saturating_add(u64::try_from(position).unwrap_or(u64::MAX));
+                let per_frame = u64::from(channels).max(1);
+                return Err(DecodeError::Malformed {
+                    detail: format!(
+                        "decoded float sample {offset} is not finite (NaN or ±inf): frame {} \
+                         channel {}; a non-finite sample would poison every downstream stage",
+                        offset / per_frame,
+                        offset % per_frame
+                    ),
+                });
+            }
+            self.decoded_frames = projected_frames;
+            self.idle_packets.reset();
+            return Ok(PacketStep::Ready {
+                frames: frames_in_buffer,
+            });
+        }
+    }
+}
+
 /// 把一个已经擦除类型的媒体源解码为资产。
 ///
 /// 这是所有入口的公共下游；`hint` 用于给探测器一点容器线索（可为空）。
@@ -216,212 +655,26 @@ where
 ///
 /// 见 [`DecodeError`]。
 pub fn decode_source<'s>(
-    mut source: Box<dyn MediaSource + 's>,
+    source: Box<dyn MediaSource + 's>,
     hint: &Hint,
     options: &DecodeOptions,
 ) -> DecodeResult<DecodedAsset> {
-    // 预检与 symphonia 的解封装都要"先读一段、再从头读一遍"（[`precheck_riff_wave_fmt`]
-    // 扫完块头会把游标还给起点）。对**不可回退**的源，旧实现的选择是"预检直接放弃"
-    // （`!is_seekable` ⇒ `Ok(())`），于是上游那两处未检查算术完全不受本条闸门约束。
-    //
-    // 2026-10-09 实测：那个 fail-open 是**可达**的，而且不是"理论上的第三方源" ——
-    // symphonia 的 `impl MediaSource for std::fs::File` 把 `is_seekable()` 定义为
-    // `metadata().is_file()`，所以一条 **FIFO** 路径（`decode_path` / `import_path` 收
-    // 路径，`metadata().len()` 为 0 因而输入字节闸门放行）就落在这条分支上：
-    //   · 合法 WAV（44 字节）经不可回退源 ⇒ `Ok(frames=2)`（**今天能解**）；
-    //   · 33 声道 `WAVE_FORMAT_EXTENSIBLE` 经不可回退源 ⇒ panic（`wave/chunks.rs` 690）；
-    //   · 32769 声道 tag 1 经不可回退源 ⇒ panic（`wave/chunks.rs` 100）。
-    // 因此这里不能 fail closed（那是对第一行能力的真实回归），改为把输入读进内存：
-    // 读完之后源就是可回退的，预检与解封装都恢复原状，而且这条路径**第一次**受输入字节
-    // 预算约束（此前它绕过了 [`limits::check_input_len`]）。
-    //
-    // 代价（诚实声明）：不可回退的源的峰值内存多了**一份输入容器字节**，上限是预算里的
-    // `max_input_bytes`。可回退的源（本 crate 的三个入口都是）一个字节都不多读。
-    let mut source: Box<dyn MediaSource + 's> = if source.is_seekable() {
-        source
-    } else {
-        let bytes = slurp_unseekable(&mut *source, options.budget.max_input_bytes)?;
-        Box::new(Cursor::new(bytes))
-    };
-    // 第五道闸门（输入容器字节）：**取到源之后**在这里判一次 —— 对可回退的源，这是它
-    // 唯一的一次判定（`decode_source` 是公共入口，直接调用它的调用方不经过
-    // [`decode_path`] / [`decode_bytes`] / [`decode_reader`] 的那三次预检）。少了这一判，
-    // 同一份 52 字节的 WAV 经 `decode_bytes` 会被 [`LimitViolation::InputTooLarge`] 挡下、
-    // 经 `decode_source` 却能解出资产（实测读数见判据
-    // `a_seekable_source_obeys_the_input_byte_budget_through_decode_source`）。
-    // `byte_len()` 是可选能力（管道常常报 `None`），因此这里只判"报得出长度的源"；
-    // 不可回退的源由 [`slurp_unseekable`] **边读边判**，本行对它是恒真的重复判定
-    // （slurp 之后是 `Cursor`，它报的长度已经在上限之内）。
-    if let Some(len) = source.byte_len() {
-        limits::check_input_len(len, &options.budget)?;
-    }
-    // 上游的 RIFF/WAVE 解析器有两处畸形声明会整型溢出并 panic（`u16` 乘法与 `u32` 移位）。
-    // 本 crate 的契约是"不可信输入只返回 DecodeError"，而我们不能改上游，因此在探测之前
-    // 先把 `fmt ` 块走一遍。
-    precheck_riff_wave_fmt(&mut *source)?;
-    let stream = MediaSourceStream::new(source, Default::default());
-    let mut reader = symphonia::default::get_probe()
-        .probe(
-            hint,
-            stream,
-            FormatOptions::default(),
-            MetadataOptions::default(),
-        )
-        .map_err(|err| match err {
-            SymphoniaError::Unsupported(_) => DecodeError::UnsupportedFormat,
-            other => DecodeError::from_symphonia(&other),
-        })?;
-
-    // 把一个轨道需要的一切**拷贝出来**，从而立刻结束对 `reader` 的不可变借用 ——
-    // 后面的 `next_packet` 需要 `&mut reader`。
-    let track = reader
-        .default_track(TrackType::Audio)
-        .ok_or(DecodeError::NoAudioTrack)?;
-    let track_id = track.id;
-    let declared_frames = track.num_frames;
-    let encoder_delay_frames = track.delay;
-    let encoder_padding_frames = track.padding;
-    let codec_params = track
-        .codec_params
-        .clone()
-        .ok_or(DecodeError::MissingCodecParameters)?;
-
-    let audio_params = codec_params.audio().ok_or(DecodeError::NoAudioTrack)?;
-    let sample_rate = audio_params
-        .sample_rate
-        .ok_or(DecodeError::MissingSampleRate)?;
-    let declared_bit_depth = audio_params
-        .bits_per_sample
-        .and_then(|b| u16::try_from(b).ok());
-    let mut decoder = symphonia::default::get_codecs()
-        .make_audio_decoder(audio_params, &AudioDecoderOptions::default())
-        .map_err(|err| DecodeError::from_symphonia(&err))?;
-
-    // 时长闸门在开始解码之前**按声明**判一次（畸形文件常在头里就声称几小时）。传
-    // `channels = 1` 是有意的 —— 这一层只判"每声道帧数 × 4 字节"是否超预算，
-    // 声道数还不知道（要等第一个解码缓冲），因此不会在这里误判声道相关的分支。
-    // 时长闸门与声道数无关（`frames / sample_rate`），因此在这里判它是准确的。
-    //
-    // ⚠ 只判这一层是不够的：`declared_frames` 可以是 `None`（FLAC 的
-    // `STREAMINFO.total_samples == 0` 就是"未知"的规范写法，实测读数见判据
-    // `the_duration_gate_fires_on_undeclared_frames_while_decoding`）。那种输入会
-    // 绕过上面这次预检，而**下面那个循环只按字节预算逐包判** —— 于是"6 小时"这道闸门
-    // 在整段解码期间不生效，峰值缓冲由 `max_pcm_bytes` 而不是时长预算决定（8 kHz
-    // 单声道下字节预算允许约 75 小时，是时长上界的 12.6×）。这正是
-    // `docs/ledger/decode-limits-notes.md` §2.2 说的"低采样率 × 少声道：字节便宜、
-    // 时间昂贵"那一格，只是它当时假设声明帧数总是存在。因此循环里用**同一条**公式
-    // （[`PcmBudget::max_duration_frames`]）逐包判它。
-    //
-    // ⚠ 同一处注释里的另一半：这道预检**不能**挂在 `if let Some(frames) = declared_frames`
-    // 下面。`declared_frames == None` 时那一次跳过会把"采样率是 0"的声明原样放进循环，
-    // 而循环的时长闸门要拿 `projected_frames / sample_rate` 去组错误文案 —— 0 Hz 下
-    // `max_duration_frames` 恒为 0，于是**第一个**非空包就进错误分支，撞上那次除零
-    // （实测读数 `attempt to divide by zero`，判据
-    // `a_zero_sample_rate_stream_is_refused_not_a_panic`）。0 Hz 是可达的：WAV 的
-    // `fmt ` 把 `sampleRate` 原样交上来、`data` 块声明 `0xFFFF_FFFF` 又让帧数变成
-    // "未知"。因此这里无条件判一次，`unwrap_or(0)` 只把"未知帧数"折算成 0 帧 ——
-    // 时长与 PCM 字节两道闸门对 0 帧恒真，采样率与声道数两道照常生效。
-    limits::check_layout(
-        1,
-        sample_rate,
-        declared_frames.unwrap_or(0),
-        &options.budget,
-    )?;
-    let max_duration_frames = options.budget.max_duration_frames(sample_rate);
-
+    let mut decoder = StreamingDecoder::open_source(source, hint, options)?;
     let sample_budget = options.budget.interleaved_samples_limit();
     let mut samples: Vec<f32> = Vec::new();
-    let mut layout: Option<(u16, PcmFormat)> = None;
-    // 已解出的**帧数**（每声道样本数）。时长闸门以帧为单位，因此这里显式记账，
-    // 而不是每轮用 `samples.len() / channels` 反算（除法在循环里，且 `channels`
-    // 要到第一个缓冲才知道）。
-    let mut decoded_frames: u64 = 0;
-
-    // [MUST-GATE-011] 不推进闸门 —— 见 [`limits::MAX_IDLE_PACKETS`] 的完整实测理由。
-    let mut idle_packets = limits::IdleGuard::new();
+    // 排空缓冲：32 KiB 交错样本。布局闸门保证声道数 ≤ max_channels（远小于
+    // 32 KiB），因此 `fill` 在这里恒能推进；预算检查仍在每次追加前做，
+    // 只是粒度从"包"放宽到"排空块"（包小于块时数值与改前一致；包横跨块
+    // 边界且预算落在缝里时，报错的 `samples` 取块边界值而非包边界值 ——
+    // 唯一钉住数值的判据用的是 64 样本小夹具，不受影响）。
+    let mut chunk = vec![0.0_f32; 32_768];
     loop {
-        let packet = match reader.next_packet() {
-            Ok(Some(packet)) => packet,
-            Ok(None) => break,
-            Err(err) => return Err(DecodeError::from_symphonia(&err)),
-        };
-        if packet.track_id != track_id {
-            bump_idle(&mut idle_packets)?;
-            continue;
+        let frames = decoder.fill(&mut chunk)?;
+        if frames == 0 {
+            break;
         }
-        let buffer = match decoder.decode(&packet) {
-            Ok(buffer) => buffer,
-            // 与 symphonia 官方示例一致：单个坏 packet 跳过而不是整段失败。
-            // 这条宽容只作用于**包内**，不改动任何已解出的样本，因此不破坏确定性；
-            // 它也不会变成挂死 —— 所有"这一轮没出样本"的路径都过 `bump_idle`。
-            Err(SymphoniaError::DecodeError(_)) => {
-                bump_idle(&mut idle_packets)?;
-                continue;
-            }
-            Err(err) => return Err(DecodeError::from_symphonia(&err)),
-        };
-
-        let frames_in_buffer = buffer.frames();
-        let planes = buffer.num_planes();
-        let total = buffer.samples_interleaved();
-        if frames_in_buffer == 0 || total == 0 {
-            bump_idle(&mut idle_packets)?;
-            continue;
-        }
-        // 缓冲自述的形状先自洽，再谈预算：一个自相矛盾的缓冲不该被拿去算时长。
-        if planes == 0 || frames_in_buffer.checked_mul(planes) != Some(total) {
-            return Err(DecodeError::InconsistentLayout {
-                detail: format!(
-                    "buffer reports {total} interleaved samples but {frames_in_buffer} frames \
-                     x {planes} planes"
-                ),
-            });
-        }
-        // 时长闸门逐包生效（数值与终检同源）。用投影值判定：这一包真的加进去之后会到
-        // 多少帧。判定放在**分配之前**，因此"没有声明帧数"的输入不会先把缓冲涨到字节
-        // 预算才被拒。
-        let projected_frames =
-            decoded_frames.saturating_add(u64::try_from(frames_in_buffer).unwrap_or(u64::MAX));
-        if projected_frames > max_duration_frames {
-            return Err(DecodeError::Budget(LimitViolation::DurationTooLong {
-                frames: projected_frames,
-                sample_rate,
-                seconds: projected_frames / u64::from(sample_rate),
-                limit_secs: options.budget.max_duration_secs,
-            }));
-        }
-        let channels = u16::try_from(planes).map_err(|_| {
-            DecodeError::Budget(LimitViolation::TooManyChannels {
-                channels: u16::MAX,
-                limit: options.budget.max_channels,
-            })
-        })?;
-        let buffer_format = PcmFormat::from_buffer(&buffer);
-        match layout {
-            None => {
-                limits::check_layout(channels, sample_rate, 0, &options.budget)?;
-                layout = Some((channels, buffer_format));
-            }
-            Some((locked_channels, locked_format)) => {
-                if locked_channels != channels {
-                    return Err(DecodeError::InconsistentLayout {
-                        detail: format!(
-                            "channel count changed mid-stream: {locked_channels} -> {channels}"
-                        ),
-                    });
-                }
-                if locked_format != buffer_format {
-                    return Err(DecodeError::InconsistentLayout {
-                        detail: format!(
-                            "sample format changed mid-stream: {locked_format:?} -> {buffer_format:?}"
-                        ),
-                    });
-                }
-            }
-        }
-
-        // [ARCH-SEC-003] 尺寸上限发生在**分配之前**，并且用 `try_reserve` 把
-        // "分配器说不" 变成错误而不是 abort。
+        let channels = decoder.channels().ok_or(DecodeError::EmptyStream)?;
+        let total = frames * usize::from(channels);
         let projected =
             samples
                 .len()
@@ -443,53 +696,21 @@ pub fn decode_source<'s>(
                 samples: u64::try_from(total).unwrap_or(u64::MAX),
             })
         })?;
-        let start = samples.len();
-        samples.resize(start + total, 0.0);
-        buffer.copy_to_slice_interleaved(&mut samples[start..]);
-        // [ARCH-SEC-003] 浮点样本必须是**有限**的。一个 IEEE 754 位型可以编码 NaN 或
-        // ±∞，而"解出一份含非有限样本的资产"会把 NaN 顺着渲染链带进整条混音总线 ——
-        // 本 crate 的产物是不可变资产，下游（重采样、量化、电平表、母带导出）没有任何
-        // 一处能把它变回有限值。整数格式（PCM / FLAC）不可能产出非有限值，因此这道
-        // 检查只对浮点容器（IEEE float WAV、Vorbis）付出一次扫描的代价。
-        //
-        // 判定紧跟拷贝：这一包的样本已经在缓冲里，因此报错能精确指出帧号与声道号，
-        // 而返回值仍然只是一个 `DecodeError`（不可信输入零 panic）。`planes == 0` 已在
-        // 上面被拒，所以 `channels >= 1`；`max(1)` 只是让这条除法在任何情况下都不可能
-        // 除零。
-        //
-        // ⚠ 2026-10-10 更正（由本线新增的判据
-        // `a_non_finite_float_sample_past_the_first_packet_is_refused_and_named` 的**首次
-        // 运行**读出来）：上面那句"精确指出帧号与声道号"此前**只在第一个缓冲里成立**。
-        // `position` 返回的是包内下标，而这一包在 `samples` 里的起点是 `start`；上游
-        // RIFF 读端每包 1152 帧，于是"第三包的样本 1391"被报成 `frame 695 channel 1`，
-        // 而它真实的帧号是 2999。判据把两个数字都钉住 ⇒ 这里必须把 `start` 加回去。
-        if buffer_format.is_float()
-            && let Some(offset) = samples[start..].iter().position(|s| !s.is_finite())
-        {
-            let offset = u64::try_from(start.saturating_add(offset)).unwrap_or(u64::MAX);
-            let per_frame = u64::from(channels).max(1);
-            return Err(DecodeError::Malformed {
-                detail: format!(
-                    "decoded float sample {offset} is not finite (NaN or ±inf): frame {} \
-                     channel {}; a non-finite sample would poison every downstream stage",
-                    offset / per_frame,
-                    offset % per_frame
-                ),
-            });
-        }
-        decoded_frames = projected_frames;
-        // 这一轮真的推进了，闸门清零。
-        idle_packets.reset();
+        samples.extend_from_slice(&chunk[..total]);
     }
 
-    let (channels, pcm_format) = layout.ok_or(DecodeError::EmptyStream)?;
+    let (channels, pcm_format) = decoder.layout.ok_or(DecodeError::EmptyStream)?;
     let frames = u64::try_from(samples.len() / usize::from(channels)).unwrap_or(u64::MAX);
     if frames == 0 {
         return Err(DecodeError::EmptyStream);
     }
-    limits::check_layout(channels, sample_rate, frames, &options.budget)?;
+    limits::check_layout(channels, decoder.sample_hz(), frames, &options.budget)?;
 
-    let outcome = duration::reconcile(declared_frames, frames, options.duration_tolerance_frames);
+    let outcome = duration::reconcile(
+        decoder.declared_frames(),
+        frames,
+        options.duration_tolerance_frames,
+    );
     if options.verify_declared_duration {
         outcome.into_result()?;
     }
@@ -497,12 +718,12 @@ pub fn decode_source<'s>(
     Ok(DecodedAsset::new(
         DecodeFacts {
             channels,
-            sample_rate,
+            sample_rate: decoder.sample_hz(),
             pcm_format,
-            declared_bit_depth,
-            declared_frames,
-            encoder_delay_frames,
-            encoder_padding_frames,
+            declared_bit_depth: decoder.declared_bit_depth(),
+            declared_frames: decoder.declared_frames(),
+            encoder_delay_frames: decoder.encoder_delay_frames(),
+            encoder_padding_frames: decoder.encoder_padding_frames(),
             duration: outcome,
         },
         samples,
@@ -5504,10 +5725,11 @@ mod tests {
              accept any larger (wrong) number"
         );
         // 口径：这是**掩码后**的站点数，覆盖四个被扫文件（asset.rs 1 处临时文件夹具 ＋
-        // decode.rs 3 处）。我此前口头报的"3 处"漏了 asset.rs —— **精确计数把它抓出来了**；
+        // decode.rs 4 处：旧 3 处 ＋ P3 流式测试夹具助手 `stream_fixture_path` 1 处）。
+        // 我此前口头报的"3 处"漏了 asset.rs —— **精确计数把它抓出来了**；
         // 旧地板（>= 2）对 3 和 4 都放行，因此永远发现不了这个错。
         assert_eq!(
-            temp_sites, 4,
+            temp_sites, 5,
             "the number of `env::temp_dir()` sites in the scanned sources is an observable"
         );
     }
@@ -5583,5 +5805,126 @@ mod tests {
                 "the `{field}` case must differ in exactly one field"
             );
         }
+    }
+
+    /// P3 夹具：把字节写进临时文件（名内含进程号与用例名，防并行测试撞名），
+    /// 返回路径；调用方在用例末尾自行删文件。
+    fn write_temp_file(name: &str, bytes: &[u8]) -> std::path::PathBuf {
+        let path =
+            std::env::temp_dir().join(format!("yeban_p3_stream_{}_{}", std::process::id(), name));
+        std::fs::write(&path, bytes).expect("写临时夹具");
+        path
+    }
+
+    /// P3 判据：FLAC 流式排空与整段路径逐位相同（单声道常量帧，非零直流）。
+    #[test]
+    fn streaming_flac_drains_bit_identical_to_the_whole_file_path() {
+        let spec = FlacSpec {
+            sample_rate: 8_000,
+            channels: 1,
+            bits: 16,
+            block_frames: 256,
+            total_samples_override: None,
+        };
+        let bytes = flac_constant(&spec, 4, 16384);
+        let path = write_temp_file("flac_mono.flac", &bytes);
+        let whole =
+            decode_mono_channel0(&path, &DecodeOptions::default()).expect("整段路径解 FLAC");
+        assert_eq!(whole.pcm.len(), 1024, "4 块 × 256 帧");
+        let mut decoder =
+            StreamingDecoder::open_path(&path, &DecodeOptions::default()).expect("流式开 FLAC");
+        assert_eq!(decoder.sample_hz(), 8_000);
+        assert_eq!(decoder.channels(), None, "首包前声道数未知");
+        assert!(!decoder.is_finished());
+        let mut drained: Vec<f32> = Vec::new();
+        let mut scratch = vec![0.0_f32; 4096];
+        loop {
+            let frames = decoder.fill(&mut scratch).expect("流式 fill");
+            if frames == 0 {
+                break;
+            }
+            let channels = decoder.channels().expect("有帧后声道数已知");
+            drained.extend_from_slice(&scratch[..frames * usize::from(channels)]);
+        }
+        assert!(decoder.is_finished(), "排空后必须已播完");
+        assert_eq!(decoder.decoded_frames(), 1024);
+        assert_eq!(decoder.channels(), Some(1));
+        assert_eq!(decoder.fill(&mut scratch).expect("播完后再 fill"), 0);
+        let drained_bits: Vec<u32> = drained.iter().map(|v| v.to_bits()).collect();
+        let whole_bits: Vec<u32> = whole.pcm.iter().map(|v| v.to_bits()).collect();
+        assert_eq!(drained_bits, whole_bits, "流式与整段逐位相同");
+        std::fs::remove_file(&path).expect("删临时夹具");
+    }
+
+    /// P3 判据：立体声 WAV 流式排空（交错）与整段路径逐位相同，
+    /// 且声道 0 折叠与 `decode_mono_channel0` 逐位相同（磁盘线程的折叠口径）。
+    #[test]
+    fn streaming_stereo_wav_folds_to_channel_zero_like_decode_mono_channel0() {
+        // 交错 [L, R]：左递增、右恒 -32768（左右可区分，折叠错了立刻现形）。
+        let values: Vec<i32> = (0..64)
+            .flat_map(|index| [index * 512 - 16384, -32768])
+            .collect();
+        let bytes = int_wav(2, 16, &values);
+        let path = write_temp_file("wav_stereo.wav", &bytes);
+        let whole = decode_path(&path, &DecodeOptions::default()).expect("整段路径解立体声 WAV");
+        let mono =
+            decode_mono_channel0(&path, &DecodeOptions::default()).expect("整段路径解立体声单声道");
+        let mut decoder = StreamingDecoder::open_path(&path, &DecodeOptions::default())
+            .expect("流式开立体声 WAV");
+        let mut drained: Vec<f32> = Vec::new();
+        let mut scratch = vec![0.0_f32; 4096];
+        loop {
+            let frames = decoder.fill(&mut scratch).expect("流式 fill");
+            if frames == 0 {
+                break;
+            }
+            let channels = decoder.channels().expect("有帧后声道数已知");
+            assert_eq!(channels, 2);
+            drained.extend_from_slice(&scratch[..frames * usize::from(channels)]);
+        }
+        assert!(decoder.is_finished());
+        let drained_bits: Vec<u32> = drained.iter().map(|v| v.to_bits()).collect();
+        let whole_bits: Vec<u32> = whole.samples().iter().map(|v| v.to_bits()).collect();
+        assert_eq!(drained_bits, whole_bits, "流式交错与整段逐位相同");
+        let folded: Vec<f32> = drained.iter().step_by(2).copied().collect();
+        let folded_bits: Vec<u32> = folded.iter().map(|v| v.to_bits()).collect();
+        let mono_bits: Vec<u32> = mono.pcm.iter().map(|v| v.to_bits()).collect();
+        assert_eq!(folded_bits, mono_bits, "声道 0 折叠与整段单声道逐位相同");
+        assert_eq!(folded[0].to_bits(), (-16384.0_f32 / 32768.0).to_bits());
+        std::fs::remove_file(&path).expect("删临时夹具");
+    }
+
+    /// P3 判据：`fill` 的 out 连一包都装不下时，余量缓冲仍能按序交出每一帧
+    /// （3 样本 out × 256 帧包 ⇒ 包被反复切分，顺序与总量必须与整段一致）。
+    #[test]
+    fn streaming_fill_with_a_tiny_buffer_still_delivers_every_frame_in_order() {
+        let spec = FlacSpec {
+            sample_rate: 8_000,
+            channels: 1,
+            bits: 16,
+            block_frames: 256,
+            total_samples_override: None,
+        };
+        let bytes = flac_constant(&spec, 2, -8192);
+        let path = write_temp_file("flac_tiny.flac", &bytes);
+        let whole =
+            decode_mono_channel0(&path, &DecodeOptions::default()).expect("整段路径解 FLAC");
+        let mut decoder =
+            StreamingDecoder::open_path(&path, &DecodeOptions::default()).expect("流式开 FLAC");
+        let mut drained: Vec<f32> = Vec::new();
+        let mut scratch = vec![0.0_f32; 3];
+        loop {
+            let frames = decoder.fill(&mut scratch).expect("流式 fill");
+            if frames == 0 {
+                break;
+            }
+            drained.extend_from_slice(&scratch[..frames]);
+        }
+        assert!(decoder.is_finished());
+        assert_eq!(drained.len(), 512, "2 块 × 256 帧，一帧都不能丢");
+        let drained_bits: Vec<u32> = drained.iter().map(|v| v.to_bits()).collect();
+        let whole_bits: Vec<u32> = whole.pcm.iter().map(|v| v.to_bits()).collect();
+        assert_eq!(drained_bits, whole_bits, "小缓冲切分后仍逐位相同");
+        std::fs::remove_file(&path).expect("删临时夹具");
     }
 }

@@ -1154,8 +1154,13 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
+      # 容器默认工具链是 1.85.0；rust-version 不置值时 action 不调 rustup default，
+      # cargo metadata 只能依赖 rust-toolchain.toml 的 override 隐式安装——该行为随容器
+      # rustup 版本而变，不可靠。显式钉到仓库钉版，与 rust-toolchain.toml 保持一致，
+      # 升级工具链时须同步改这里。
       - uses: EmbarkStudios/cargo-deny-action@v2
         with:
           command: check
           arguments: --all-features
           manifest-path: ./Cargo.toml
+          rust-version: "1.99.0"

@@ -1,6 +1,6 @@
 //! 插件宿主（`yeban-plugin-host`）：VST3 乐器的一期进程内宿主＋效果器宿主。
 //!
-//! 一期范围（ADR-0064）：扫描／验证／加载＋MIDI 输入＋音频渲染拉取＋
+//! 一期范围（ADR-0069）：扫描／验证／加载＋MIDI 输入＋音频渲染拉取＋
 //! 参数＋状态保存恢复；VST3 先行，CLAP 随后；跨进程隔离＋shm＋看门狗为 phase 2。
 //! 效果器线：实例化＋立体声音频总线＋`process_audio`＋参数＋状态往返；
 //! 效果器接轨内插入点（首个非旁通带绑定效果器胜出，见渲染装配）。
@@ -17,7 +17,7 @@
 //! **红线**: 仓库内绝不允许出现 Steinberg ASIO SDK 头文件或专有代码 [MUST-GATE-013]。
 //!
 //! 规范来源 (Normative): `docs/YEBAN_ARCHITECTURE_AND_SYSTEM_DESIGN.md` §9 (`ARCH-PLUG-001`)；
-//! 一期分期裁决见 `docs/adr/ADR-0064-plugin-host-v2-phase1.md`（Proposed）。
+//! 一期分期裁决见 `docs/adr/ADR-0069-plugin-host-v2-phase1.md`（Proposed）。
 
 #![deny(missing_docs)]
 
