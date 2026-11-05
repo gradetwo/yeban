@@ -22,7 +22,7 @@ fn transparent_strip() -> ChannelStripParams {
     p.eq_enabled = false;
     p.filter_enabled = false;
     p.compressor_enabled = false;
-    p.hpf = HpfParams::DEFAULT; // freq = 20 Hz = 旁通
+    p.hpf = HpfParams::DEFAULT; // freq = 0 Hz = 旁通
     p.dyn_eq = DynEqParams::DEFAULT; // max_cut_db = 0 = 旁通
     p
 }
@@ -78,18 +78,18 @@ fn the_hpf_cuts_below_the_corner_and_leaves_everything_above_it() {
 
 #[test]
 fn a_hpf_at_or_below_the_bypass_frequency_is_a_no_op() {
-    // 20 Hz 与 19 Hz 都落在旁通区（19 Hz 被钳到 20）⇒ 输出逐位相同。
+    // 0 Hz 与 −5 Hz 都落在旁通区（`<= 0` 旁通）⇒ 输出逐位相同。
     let input = sine(120.0, 0.5, 0.5);
     let mut a = ChannelStrip::new(
         ChannelStripParams {
-            hpf: HpfParams { freq_hz: 20.0 },
+            hpf: HpfParams { freq_hz: 0.0 },
             ..transparent_strip()
         },
         SR,
     );
     let mut b = ChannelStrip::new(
         ChannelStripParams {
-            hpf: HpfParams { freq_hz: 19.0 },
+            hpf: HpfParams { freq_hz: -5.0 },
             ..transparent_strip()
         },
         SR,
@@ -99,6 +99,64 @@ fn a_hpf_at_or_below_the_bypass_frequency_is_a_no_op() {
     a.process_mono(&mut x);
     b.process_mono(&mut y);
     assert_eq!(x, y, "旁通区的两个低切频率必须给出逐位相同的输出");
+}
+
+/// 20 Hz 低切必须真的滤波：直流偏置过 20 Hz 高通后，残余直流 < 0.002。
+///
+/// 根因（凛冬 v6 实测）：旧旁通阈值 `20 Hz` 让 `hpf_hz = 20` 整级旁通，
+/// Master 的 20 Hz 高通从未滤波，直流偏置 −0.0247 原样留在混音里。
+/// 20 Hz 是真实滤波（Logic Pro 的通道 EQ 高通同档也是真实滤波），不是旁通。
+#[test]
+fn a_twenty_hertz_hpf_removes_dc() {
+    // 直流偏置 −0.0247：v5 混音实测值。
+    let dc = -0.0247f32;
+    let input = vec![dc; (SR * 1.0) as usize];
+
+    // 20 Hz 低切：丢掉前 100 ms（滤波器起振），后段均值必须 < 0.002。
+    let mut strip = ChannelStrip::new(
+        ChannelStripParams {
+            hpf: HpfParams { freq_hz: 20.0 },
+            ..transparent_strip()
+        },
+        SR,
+    );
+    let mut buf = input.clone();
+    strip.process_mono(&mut buf);
+    let settled = &buf[(SR * 0.1) as usize..];
+    let mean: f64 = settled.iter().map(|v| f64::from(*v)).sum::<f64>() / settled.len() as f64;
+    assert!(
+        mean.abs() < 0.002,
+        "20 Hz 低切后残余直流 {mean:.5}，必须 < 0.002（输入直流 {dc}）"
+    );
+
+    // 对照：旁通（0 Hz）必须原样保留直流 —— 证明上面清掉直流的是滤波器。
+    let mut bypassed = ChannelStrip::new(transparent_strip(), SR);
+    let mut buf2 = input.clone();
+    bypassed.process_mono(&mut buf2);
+    let settled2 = &buf2[(SR * 0.1) as usize..];
+    let mean2: f64 = settled2.iter().map(|v| f64::from(*v)).sum::<f64>() / settled2.len() as f64;
+    assert!(
+        (mean2 - f64::from(dc)).abs() < 1e-6,
+        "旁通必须原样保留直流 {dc}，实测均值 {mean2:.5}"
+    );
+
+    // 20 Hz 低切不该吃可听低频：100 Hz 正弦稳态增益在 ±0.2 dB 内。
+    let tone = sine(100.0, 0.5, 1.0);
+    let mut strip2 = ChannelStrip::new(
+        ChannelStripParams {
+            hpf: HpfParams { freq_hz: 20.0 },
+            ..transparent_strip()
+        },
+        SR,
+    );
+    let mut buf3 = tone.clone();
+    strip2.process_mono(&mut buf3);
+    let skip = (SR * 0.1) as usize;
+    let kept = rms_db(&buf3[skip..]) - rms_db(&tone[skip..]);
+    assert!(
+        kept.abs() < 0.2,
+        "20 Hz 低切不该动 100 Hz，实测 {kept:+.2} dB"
+    );
 }
 
 #[test]

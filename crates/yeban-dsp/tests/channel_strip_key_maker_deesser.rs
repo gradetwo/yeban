@@ -27,7 +27,7 @@ fn transparent_strip() -> ChannelStripParams {
     p.eq_enabled = false;
     p.filter_enabled = false;
     p.compressor_enabled = false;
-    p.hpf = HpfParams::DEFAULT; // freq = 20 Hz = 旁通
+    p.hpf = HpfParams::DEFAULT; // freq = 0 Hz = 旁通
     p.dyn_eq = DynEqParams::DEFAULT; // max_cut_db = 0 = 旁通
     p
 }
