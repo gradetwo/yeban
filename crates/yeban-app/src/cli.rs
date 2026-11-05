@@ -377,7 +377,8 @@ pub fn usage_text() -> String {
                            缺省 = **第一条非 master 音轨**
   --import-midi <path>     把标准 MIDI 文件里的音符导入**第一条非 master 音轨**, 每个音符的
                            来源标记是 `OpOrigin::MidiInput`; 在导出与 --save-as **之前**执行
-                           (同一命令里的导出/保存都能看到导入的音符); 非法输入不改坏工程
+                           (同一命令里的导出/保存都能看到导入的音符); 非法输入不改坏工程;
+                           多轨拆分时新建音轨自动连 master (单位增益), 无需手动接线即可出声
   --import-audio <path>    把一份音频文件导入工程的片段池 (clip_pool), 来源标记是
                            `OpOrigin::Import`; 字节按内容寻址 (源字节的 SHA-256) 落进
                            --save-as 容器的 `assets/{{sha256}}`; 与 --import-midi 同位置
@@ -406,7 +407,7 @@ pub fn usage_text() -> String {
                            原样使用, 不再做秒×采样率换算; 与 --wav-seconds **互斥**;
                            必须是**正**整数 (0 帧是空产物, 按用法错误拒绝)
   --render-threads <n>     --export-wav 的显式渲染线程数 (与 MCP render_master.threads 同量纲):
-                           缺省 = 单线程默认路径; 给了就透传给渲染器, 输出逐字节相同;
+                           缺省 = 多线程默认路径 (可用并行度); 给了就透传给渲染器, 输出逐字节相同;
                            必须是**正**整数 (0 线程没有语义, 按用法错误拒绝)
   --export-midi <path>     把当前工程导出成**标准 MIDI 文件** (SMF 1): conductor 轨
                            (tick 0 的 tempo + 拍号) + 每条含 MIDI 的轨道一条 MTrk
@@ -1255,7 +1256,7 @@ pub struct Options {
     pub wav_limiter: bool,
     /// `--render-threads <n>`：`--export-wav` 的显式渲染线程数（审评 2026-10-31，P1-1）。
     ///
-    /// 缺省（`None`）= 单线程默认路径，与今天逐字节相同。给了就透传给渲染器；
+    /// 缺省（`None`）= 多线程默认路径（可用并行度；Nightfall v1），与今天逐字节相同。给了就透传给渲染器；
     /// 输出与线程数无关（固定顺序汇聚）。取值必须是正的十进制整数（`0` /
     /// 非整数 ⇒ [`ParseError::RenderThreadsInvalid`]，⛔ 不静默钳制）。
     /// 与 MCP `render_master.threads` 同量纲。
@@ -4845,7 +4846,7 @@ pub fn run_batch(options: &Options) -> Result<Vec<String>, CliError> {
         );
         // ⭐ 任务单 `#302`：per-call 限制器开关；默认关 ⇒ 旧导出逐字节不变。
         wav_options.limiter = options.wav_limiter;
-        // ⭐ 审评 2026-10-31（P1-1）：显式线程数透传；缺省 `None` ⇒ 单线程默认路径。
+        // ⭐ 审评 2026-10-31（P1-1）：显式线程数透传；缺省 `None` ⇒ 多线程默认路径（Nightfall v1）。
         wav_options.threads = options.wav_threads;
         // ⭐ 任务单 `#168`：`--open` 那个文件所在目录 = 相对 SFZ 路径的第一个候选根
         //    ⇒ "样本放在工程旁边"在**任意 cwd** 下都读得到。样本形态（没有 `--open`）

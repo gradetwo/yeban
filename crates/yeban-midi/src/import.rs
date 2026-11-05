@@ -173,6 +173,10 @@ pub struct MidiImportOptions {
     /// 目标片段；`None` = 目标音轨的**第一个**摆放（`placement`）。
     pub clip_id: Option<EntityId>,
     /// 是否拆分多轨（若为 true 且为多轨文件，含有音符的后续轨道将自动创建新音轨/片段/摆放/路由；若为 false，所有音符塞入目标片段）。
+    ///
+    /// ⭐ 自动连 master：每个新建音轨都会在路由图里连一条到 master 的边
+    /// （`ConnectRouting`，`TrackToBus`，单位增益），导入的音符无需手动接线即可出声；
+    /// 第 0 轨走缺省目标音轨（它假定已在路由图里），不另发接线。
     pub split_tracks: bool,
 }
 
@@ -1988,6 +1992,8 @@ pub fn plan_midi_import(
                     ..ClipPlacement::default()
                 },
             });
+            // ⭐ 自动连 master：新建音轨发一条 `TrackToBus` 边到 master（单位增益），
+            // 导入的音符无需手动接线即可出声；第 0 轨走缺省目标音轨，不经这条路。
             ops.push(Op::ConnectRouting {
                 edge: RoutingEdge {
                     id: edge_id,

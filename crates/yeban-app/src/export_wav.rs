@@ -116,9 +116,9 @@ pub struct WavExportOptions {
     /// ⚠ 这是**每次调用**的开关：⛔ 不写进 `project.schema.json`（任务单 `#302`
     /// 的硬边界），由 CLI `--limiter` / MCP `yeban_render` 的 `limiter` 参数传入。
     pub limiter: bool,
-    /// ⭐ 审评 2026-10-31（P1-1）：显式渲染线程数（`None` = 缺省单线程路径）。
+    /// ⭐ 审评 2026-10-31（P1-1）：显式渲染线程数（`None` = 缺省多线程路径）。
     ///
-    /// 由 CLI `--render-threads` 传入（GUI 导出不设 ⇒ `None` ⇒ 单线程，与今天逐字节
+    /// 由 CLI `--render-threads` 传入（GUI 导出不设 ⇒ `None` ⇒ 多线程，与今天逐字节
     /// 相同）。透传给 `render_core` 的 `RenderOptions::threads`；输出与线程数无关。
     pub threads: Option<usize>,
 }
