@@ -652,13 +652,21 @@ pub fn track_latencies(tracks: &BTreeMap<EntityId, TrackV3>) -> BTreeMap<EntityI
     tracks
         .iter()
         .map(|(id, track)| {
-            let total = track
+            let declared = track
                 .devices
                 .iter()
                 .filter(|device| !device.bypassed)
                 .fold(0u32, |accumulated, device| {
                     accumulated.saturating_add(device.latency_samples)
                 });
+            // 内置限制器的前瞻延迟**不由模型声明**：`latency_samples` 是给插件用的
+            // 字段，而限制器的延迟是它自己的参数（`limiter_lookahead`，单位帧）。
+            // 这里把那一份加进来 —— 判决点只有 `limiter_source_slot` 一处，与
+            // "器件真的会被建出来"同一条规则（旁通/非来源设备都不计）。
+            //
+            // ⚠ 不加这一段，一条带限制器的轨会比别的轨**早**一个前瞻长度到达求和点，
+            // 听感是这一轨整体前移（0.7–4 ms），叠加时会梳状滤波。
+            let total = declared.saturating_add(crate::inserts::limiter_latency_frames(track));
             (*id, total)
         })
         .collect()

@@ -8,8 +8,8 @@
 //! | [`a_misspelled_effect_param_is_refused_with_the_nearest_name`] | 一次 `insertDevice`（`eq_low_gian`）的**带内错误** | 1 个错误码 + 1 条建议（最近邻） |
 //! | [`the_correct_spelling_is_accepted_and_reads_back_clean`] | `eq_low_gain` 合并后 `inserts[].unrecognisedParams` | **参数名个数**（0） |
 //! | [`a_deliberately_unrecognised_name_is_accepted_but_warned`] | `reverb_mix`（#156 刻意不认） | 1 条 `warnings[]` + 读回 1 个未识别名 |
-//! | [`the_eight_fifty_eight_published_spellings_are_still_all_there`] | `insertDevice.device.params.items` 的 `name.enum` | **拼写个数**（47 规范 + 37 别名 = 84；⭐ `conv_ir_stereo` 之后） |
-//! | [`the_warning_hands_back_the_exact_accepted_spellings`] ⭐ G14 | 每条 `unrecognisedEffectParam` 警告的 `knownParams` | **拼写个数**（84；⭐ `conv_ir_stereo` 之后）+ 1 个键集合 + 2 个"不许广告"的反面名 |
+//! | [`the_eight_fifty_eight_published_spellings_are_still_all_there`] | `insertDevice.device.params.items` 的 `name.enum` | **拼写个数**（52 规范 + 37 别名 = 89；⭐ `conv_ir_stereo` 之后、`P6` 的 `limiter` 组再 +5） |
+//! | [`the_warning_hands_back_the_exact_accepted_spellings`] ⭐ G14 | 每条 `unrecognisedEffectParam` 警告的 `knownParams` | **拼写个数**（89；⭐ `conv_ir_stereo` 之后、`P6` 的 `limiter` 组再 +5）+ 1 个键集合 + 2 个"不许广告"的反面名 |
 //! | [`edit_notes_description_says_the_proposal_must_be_merged`] | `tools/list` 的 `yeban_edit_notes.description` | 1 句逐字 + 响应里 `pendingMerge` |
 //!
 //! 复跑读数：`cargo test -p yeban-mcp --test trap_175 -- --nocapture`
@@ -328,22 +328,23 @@ fn a_deliberately_unrecognised_name_is_accepted_but_warned() {
 /// 判据 ④：`#156` 的 **84 个拼写**（47 规范 + 37 别名）一个不少 —— 公告面与查表面两侧。
 ///
 /// ⚠ 沿革：`#156` 的读数是 81（45 + 36）；**`tape_asym`** 给磁带组加一条规范拼写
-/// ＋一条别名 ⇒ 83；**`conv_ir_stereo`** 给卷积组加一条规范拼写（无别名）⇒ 84。
+/// ＋一条别名 ⇒ 83；**`conv_ir_stereo`** 给卷积组加一条规范拼写（无别名）⇒ 84；
+/// ⭐ **`P6`** 新增 `limiter` 组，5 条规范拼写、0 别名 ⇒ **89**（52 + 37）。
 #[test]
 fn the_eight_fifty_eight_published_spellings_are_still_all_there() {
     let names = effect_params::recognised_names();
     assert_eq!(
         names.len(),
-        84,
-        "拼写总数必须是 47 规范 + 37 别名 = 84，实测 {names:?}"
+        89,
+        "拼写总数必须是 52 规范 + 37 别名 = 89，实测 {names:?}"
     );
     assert_eq!(
         effect_params::EFFECT_GROUPS
             .iter()
             .map(|group| group.params.len())
             .sum::<usize>(),
-        47,
-        "规范名个数（`#156` 的 45 ＋ `tape_asym` ＋ `conv_ir_stereo`）"
+        52,
+        "规范名个数（`#156` 的 45 ＋ `tape_asym` ＋ `conv_ir_stereo` ＋ `P6` 的 5 条 `limiter_*`）"
     );
 
     // 公告面：`tools/list` 的 `insertDevice.device.params.items.oneOf[].name.enum`。
@@ -357,7 +358,7 @@ fn the_eight_fifty_eight_published_spellings_are_still_all_there() {
     let branches = insert["properties"]["device"]["properties"]["params"]["items"]["oneOf"]
         .as_array()
         .expect("device.params.items.oneOf");
-    assert_eq!(branches.len(), 47, "每个引擎参数一个分支");
+    assert_eq!(branches.len(), 52, "每个引擎参数一个分支");
     let published: Vec<String> = branches
         .iter()
         .flat_map(|branch| {
@@ -369,7 +370,7 @@ fn the_eight_fifty_eight_published_spellings_are_still_all_there() {
                 .collect::<Vec<_>>()
         })
         .collect();
-    assert_eq!(published.len(), 84, "公告的拼写总数");
+    assert_eq!(published.len(), 89, "公告的拼写总数");
     for name in &names {
         assert!(
             published.iter().any(|item| item == name),
@@ -440,7 +441,7 @@ fn edit_notes_description_says_the_proposal_must_be_merged() {
     assert_eq!(response["data"]["pendingMerge"], true, "{response}");
     assert_eq!(response["data"]["proposal"]["status"], "open", "{response}");
 }
-/// 判据 ⑥（G14）：警告**当场给拼写表** —— `knownParams` 逐字列出引擎认的 84 个拼写，
+/// 判据 ⑥（G14）：警告**当场给拼写表** —— `knownParams` 逐字列出引擎认的 89 个拼写，
 /// 调用方不必先 `tools/list` 再重发（省一次往返），⛔ 也不许多广告一个认不出的名字。
 #[test]
 fn the_warning_hands_back_the_exact_accepted_spellings() {
@@ -479,8 +480,8 @@ fn the_warning_hands_back_the_exact_accepted_spellings() {
     let table = effect_params::recognised_names();
     assert_eq!(
         table.len(),
-        84,
-        "本判据的前提是词表有 84 个拼写（判据 ④ 也钉这个数）"
+        89,
+        "本判据的前提是词表有 89 个拼写（判据 ④ 也钉这个数）"
     );
 
     for warning in warnings {

@@ -964,6 +964,115 @@ impl TapeField {
     }
 }
 
+/// 插入式限制器上**可被 `DeviceParam` 自动化落点**的字段。
+///
+/// 与 `limiter_of` 的静态投影**同一张拼写表**（[`Self::SPELLINGS`]）。
+///
+/// 五个字段全部是 `Limiter::configure` 的入参；`configure` 不分配、不动状态
+/// ⇒ 块边界自动化可以逐块调用（与 `TapeSaturation::set_params` 同一纪律）。
+///
+/// ⚠ `Lookahead` 是唯一一个**改了会动延迟**的字段：`configure` 允许改，
+/// 但渲染侧的上报延迟（`DeviceDefinition::latency_samples`）只在建立渲染计划时读一次，
+/// 播放途中改前瞻会让补偿量与真实延迟脱钩。判据见 `inserts.rs` 的
+/// `limiter_latency_is_reported_from_the_projection`。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum LimiterField {
+    /// 阈值（dBFS，−30..0）。`limiter_threshold_db`。
+    ThresholdDb,
+    /// 天花板（dBFS，−6..0）。`limiter_ceiling_db`。
+    CeilingDb,
+    /// 释放时间（ms，10..1000）。`limiter_release_ms`。
+    ReleaseMs,
+    /// 前瞻（帧，1..192）。`limiter_lookahead`。
+    Lookahead,
+    /// 真峰值检测开关。`limiter_true_peak`。
+    TruePeak,
+}
+
+impl LimiterField {
+    /// 全部字段。
+    pub const ALL: &'static [Self] = &[
+        Self::ThresholdDb,
+        Self::CeilingDb,
+        Self::ReleaseMs,
+        Self::Lookahead,
+        Self::TruePeak,
+    ];
+
+    /// **全部拼写** → 字段（`5` 条 = `5` 个字段）。
+    ///
+    /// ⛔ 不提供 `threshold_db` / `ceiling_db` 这类裸名：它们与压缩器的
+    /// `threshold_db` 同名，`recognise()` 只认第一个命中者 —— 裸名会让"限制器的阈值"
+    /// 悄悄写进压缩器。这也与 `tape_` / `delay_` / `conv_` 的前缀惯例一致。
+    pub const SPELLINGS: &'static [(&'static str, Self)] = &[
+        ("limiter_threshold_db", Self::ThresholdDb),
+        ("limiter_ceiling_db", Self::CeilingDb),
+        ("limiter_release_ms", Self::ReleaseMs),
+        ("limiter_lookahead", Self::Lookahead),
+        ("limiter_true_peak", Self::TruePeak),
+    ];
+
+    /// 名字 → 字段（大小写不敏感）。
+    #[must_use]
+    pub fn from_name(name: &str) -> Option<Self> {
+        Self::SPELLINGS
+            .iter()
+            .find(|(spelling, _)| name.eq_ignore_ascii_case(spelling))
+            .map(|(_, field)| *field)
+    }
+
+    /// 规范名。
+    #[must_use]
+    pub const fn canonical_name(self) -> &'static str {
+        match self {
+            Self::ThresholdDb => "limiter_threshold_db",
+            Self::CeilingDb => "limiter_ceiling_db",
+            Self::ReleaseMs => "limiter_release_ms",
+            Self::Lookahead => "limiter_lookahead",
+            Self::TruePeak => "limiter_true_peak",
+        }
+    }
+
+    /// 本字段是否是**开关**（读作 `1.0` / `0.0`）。
+    #[must_use]
+    pub const fn is_flag(self) -> bool {
+        matches!(self, Self::TruePeak)
+    }
+
+    /// 从参数结构里读这个字段。
+    #[must_use]
+    pub fn read(self, params: &crate::limiter::LimiterParams) -> f32 {
+        match self {
+            Self::ThresholdDb => params.threshold_db,
+            Self::CeilingDb => params.ceiling_db,
+            Self::ReleaseMs => params.release_ms,
+            Self::Lookahead => params.lookahead,
+            Self::TruePeak => f32::from(u8::from(params.true_peak > 0.5)),
+        }
+    }
+
+    /// 把**原生绝对值**写进参数结构（⛔ 不在这里钳制：钳制在 `sanitised()`）。
+    pub fn store(self, params: &mut crate::limiter::LimiterParams, value: f32) {
+        match self {
+            Self::ThresholdDb => params.threshold_db = value,
+            Self::CeilingDb => params.ceiling_db = value,
+            Self::ReleaseMs => params.release_ms = value,
+            Self::Lookahead => params.lookahead = value,
+            Self::TruePeak => params.true_peak = if value != 0.0 { 1.0 } else { 0.0 },
+        }
+    }
+
+    /// 与器件**同一次**钳制：把值写进一份 `DEFAULT`、`sanitised()`、再读回来。
+    ///
+    /// ⛔ 不复制上下界：[`crate::limiter::LimiterParams::sanitised`] 是唯一一份规则。
+    #[must_use]
+    pub fn sanitise(self, value: f32) -> f32 {
+        let mut params = crate::limiter::LimiterParams::DEFAULT;
+        self.store(&mut params, value);
+        self.read(&params.sanitised())
+    }
+}
+
 /// 一条 `DeviceParam` 泳道在离线插入链上的**落点**：器件族 ＋ 字段。
 ///
 /// [`Self::from_name`] 是“哪个名字有落点”的**唯一**判定处：静态投影
@@ -980,6 +1089,8 @@ pub enum DeviceParamField {
     Convolution(ConvolutionField),
     /// 乒乓延迟字段。
     Delay(DelayField),
+    /// 插入式限制器字段。
+    Limiter(LimiterField),
 }
 
 /// 强制实例化按**器件族**分开。
@@ -995,6 +1106,8 @@ pub enum DeviceParamFamily {
     Convolution,
     /// 乒乓延迟。
     Delay,
+    /// 限制器。
+    Limiter,
 }
 
 impl DeviceParamField {
@@ -1007,6 +1120,7 @@ impl DeviceParamField {
             .or_else(|| ReverbField::from_name(name).map(Self::Reverb))
             .or_else(|| ConvolutionField::from_name(name).map(Self::Convolution))
             .or_else(|| DelayField::from_name(name).map(Self::Delay))
+            .or_else(|| LimiterField::from_name(name).map(Self::Limiter))
     }
 
     /// 规范名。
@@ -1018,6 +1132,7 @@ impl DeviceParamField {
             Self::Reverb(field) => field.canonical_name(),
             Self::Convolution(field) => field.canonical_name(),
             Self::Delay(field) => field.canonical_name(),
+            Self::Limiter(field) => field.canonical_name(),
         }
     }
 
@@ -1030,6 +1145,7 @@ impl DeviceParamField {
             Self::Reverb(_) => DeviceParamFamily::Reverb,
             Self::Convolution(_) => DeviceParamFamily::Convolution,
             Self::Delay(_) => DeviceParamFamily::Delay,
+            Self::Limiter(_) => DeviceParamFamily::Limiter,
         }
     }
 
@@ -1042,6 +1158,7 @@ impl DeviceParamField {
             Self::Reverb(field) => field.sanitise(value),
             Self::Convolution(field) => field.sanitise(value),
             Self::Delay(field) => field.sanitise(value),
+            Self::Limiter(field) => field.sanitise(value),
         }
     }
 }

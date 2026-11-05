@@ -2,7 +2,7 @@
 # 分类口径：float_bits ＝ 判据体内有 to_bits()；integer_count ＝ 只比整数/长度
 # class：hard ＝ 产线可达集无宿主 libm 超越函数；platform ＝ 有（只在本架构有意义）
 #        no_callee ＝ 不调用本 crate 产线函数
-# 合计 307 条：float_bits 79 ／ integer_count 228；其中 hard 64 ／ platform 12
+# 合计 309 条：float_bits 80 ／ integer_count 229；其中 hard 65 ／ platform 12
 # 列：kind | class | reach | host | file | test
 integer_count | no_callee | 0 | - | src/block.rs | accumulate_matches_scalar_reference
 integer_count | no_callee | 0 | - | src/block.rs | mismatched_lengths_are_truncated_instead_of_panicking
@@ -134,21 +134,23 @@ float_bits | hard | 5 | - | src/filter.rs | the_cutoff_ceiling_ratio_is_pinned_b
 float_bits | hard | 6 | - | src/filter.rs | the_drive_range_is_pinned_to_a_uniform_decibel_scale
 float_bits | hard | 5 | - | src/filter.rs | the_full_resonance_feedback_is_pinned_by_a_literal
 float_bits | hard | 1 | - | src/filter.rs | the_saturation_knee_is_pinned_from_both_sides
-float_bits | hard | 6 | - | src/limiter.rs | a_loud_right_channel_drives_the_shared_gain
+float_bits | hard | 8 | - | src/limiter.rs | a_loud_right_channel_drives_the_shared_gain
 integer_count | no_callee | 0 | - | src/limiter.rs | a_peak_exactly_at_the_threshold_is_not_a_reduction
-float_bits | hard | 4 | - | src/limiter.rs | a_silent_channel_stays_bit_silent
-float_bits | hard | 5 | - | src/limiter.rs | a_single_spike_is_exactly_limited_and_the_tail_is_bit_silent
-float_bits | hard | 7 | - | src/limiter.rs | an_empty_block_never_moves_an_already_advanced_instance
+float_bits | hard | 6 | - | src/limiter.rs | a_silent_channel_stays_bit_silent
+float_bits | hard | 7 | - | src/limiter.rs | a_single_spike_is_exactly_limited_and_the_tail_is_bit_silent
+float_bits | hard | 9 | - | src/limiter.rs | an_empty_block_never_moves_an_already_advanced_instance
+float_bits | hard | 11 | - | src/limiter.rs | default_config_is_the_bus_limiter
 integer_count | no_callee | 0 | - | src/limiter.rs | gain_release_is_bounded_per_sample
-float_bits | hard | 4 | - | src/limiter.rs | illegal_overrides_fall_back_to_the_spec_constants
+float_bits | hard | 5 | - | src/limiter.rs | illegal_overrides_fall_back_to_the_spec_constants
 integer_count | no_callee | 0 | - | src/limiter.rs | limit_engages_in_a_single_sample
 integer_count | no_callee | 0 | - | src/limiter.rs | limited_peak_never_exceeds_threshold
-float_bits | hard | 5 | - | src/limiter.rs | mismatched_slice_lengths_are_clamped_to_the_shorter_one
+float_bits | hard | 7 | - | src/limiter.rs | mismatched_slice_lengths_are_clamped_to_the_shorter_one
 integer_count | no_callee | 0 | - | src/limiter.rs | reset_reproduces_a_freshly_built_limiter_bit_for_bit
 integer_count | no_callee | 0 | - | src/limiter.rs | stereo_linking_follows_the_louder_channel
-float_bits | hard | 6 | - | src/limiter.rs | sub_threshold_samples_are_bit_identical
+float_bits | hard | 8 | - | src/limiter.rs | sub_threshold_samples_are_bit_identical
 float_bits | hard | 1 | - | src/limiter.rs | the_documented_ceiling_is_pinned_by_a_literal_not_by_itself
 integer_count | no_callee | 0 | - | src/limiter.rs | the_release_ramp_never_overshoots_its_target
+integer_count | no_callee | 0 | - | src/limiter.rs | true_peak_detection_engages_on_an_inter_sample_peak
 integer_count | no_callee | 0 | - | src/limiter.rs | zero_frames_is_a_no_op
 integer_count | no_callee | 0 | - | src/loop_window.rs | a_loop_seam_wraps_without_a_step
 integer_count | no_callee | 0 | - | src/loop_window.rs | out_of_range_lookup_is_clamped
