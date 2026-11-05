@@ -119,7 +119,7 @@ pub enum StripField {
     ReleaseS,
     /// makeup 补偿增益（dB）。`makeup_db` / `makeup`。
     MakeupDb,
-    /// 低切转折频率（Hz，`<= 20` 旁通）。`hpf_hz` / `high_pass_hz`。
+    /// 低切转折频率（Hz，`<= 0` 旁通）。`hpf_hz` / `high_pass_hz`。
     HpfHz,
     /// 动态 EQ 的中心频率（Hz）。`deq_freq` / `dyn_eq_freq`。
     DynEqFreq,

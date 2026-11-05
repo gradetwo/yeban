@@ -215,22 +215,29 @@ impl Default for FilterParams {
 
 /// 低切（高通）参数。`#341`。
 ///
-/// **旁通语义**：`freq_hz <= [`Self::BYPASS_HZ`]` 时整级不执行。用频率而不是布尔开关，
-/// 是因为"低切 0 Hz"在设备参数表里只是一个数字 —— 不需要第二个字段表达"关"，
-/// 也就不会出现 `enabled = true` 而 `freq = 0` 这种自相矛盾的组合。
+/// **旁通语义**：`freq_hz <= [`Self::BYPASS_HZ`]`（即 `<= 0 Hz`）时整级不执行。
+/// 用频率而不是布尔开关，是因为"低切 0 Hz"在设备参数表里只是一个数字 —— 不需要
+/// 第二个字段表达"关"，也就不会出现 `enabled = true` 而 `freq = 0` 这种自相矛盾的组合。
+///
+/// ⚠ 旁通阈值曾是 `20 Hz`（"20 Hz 已是听阈下沿，切在这里等于没切"）。那是对
+/// 可听频率的判断，对**直流**是错的：直流是 0 Hz，20 Hz 高通本应把它滤掉；
+/// 而 `hpf_hz = 20` 被当成旁通，Master 的 20 Hz 高通从未滤波，直流偏置
+/// −0.0247 原样留在混音里（凛冬 v6 实测）。Logic Pro 的通道 EQ 高通可设到
+/// 20 Hz 且是真实滤波 —— 本修法与之对齐：20 Hz 是滤波，不是旁通。
 ///
 /// Q 固定 [`Self::Q`]（Butterworth，最平坦的通带）：低切的作用是**去掉**，
 /// 不是"在转折点做一个峰"。要共振用 EQ 的低架或中频峰。
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct HpfParams {
-    /// 转折频率（Hz）。钳到 `20..=1000`；`<= BYPASS_HZ` 表示旁通。
+    /// 转折频率（Hz）。滤波时钳到 `20..=1000`；`<= 0` 表示旁通。
     pub freq_hz: f32,
 }
 
 impl HpfParams {
-    /// 低于等于此频率视为旁通（`20 Hz` 已是听阈下沿，切在这里等于没切）。
-    pub const BYPASS_HZ: f32 = 20.0;
-    /// 频率下界（Hz，与 [`BYPASS_HZ`](Self::BYPASS_HZ) 同值）。
+    /// 低于等于此频率视为旁通。`0 Hz` 是"关"的哨兵值（与 mono-maker 的
+    /// `MONO_BELOW_BYPASS_HZ = 0.0` 同口径）；20 Hz 是真实滤波，可作直流阻断。
+    pub const BYPASS_HZ: f32 = 0.0;
+    /// 滤波频率下界（Hz）。高于 0 但低于此值的频率钳到此处。
     pub const MIN_HZ: f32 = 20.0;
     /// 频率上界（Hz）。
     pub const MAX_HZ: f32 = 1000.0;
@@ -241,11 +248,18 @@ impl HpfParams {
         freq_hz: Self::BYPASS_HZ,
     };
 
-    /// 钳到合法域；非有限值归到**旁通**（最不改变信号的一侧）。
+    /// 钳到合法域；`<= 0` 与非有限值归到**旁通**（最不改变信号的一侧）。
+    ///
+    /// 注意 `<= 0` 必须先于钳制返回：`clamp_or(0, MIN_HZ, MAX_HZ, _)` 会把
+    /// 旁通值 0 钳成 20 Hz，那是滤波不是旁通。
     #[must_use]
     pub fn sanitised(self) -> Self {
         Self {
-            freq_hz: clamp_or(self.freq_hz, Self::MIN_HZ, Self::MAX_HZ, Self::BYPASS_HZ),
+            freq_hz: if !self.freq_hz.is_finite() || self.freq_hz <= Self::BYPASS_HZ {
+                Self::BYPASS_HZ
+            } else {
+                self.freq_hz.clamp(Self::MIN_HZ, Self::MAX_HZ)
+            },
         }
     }
 
