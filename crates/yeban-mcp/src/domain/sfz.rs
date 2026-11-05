@@ -1230,11 +1230,20 @@ pub type SampledProviderTable = Vec<SampledProviderEntry>;
 /// - **键位切换**（摊平期 `last=None`、`down≡false` 时的 `keyswitch_ok`）：`sw_down` ⇒ 永假；
 ///   `sw_last` 有值且与 `sw_default` 不等（含无缺省）⇒ 假；`sw_up` 不挡；无门控 ⇒ 过。
 /// - **CC 门控**：离线探针只来自本轨 `MidiCc` 泳道 ＋ 宏级联（`CcProbe`；`set_ccN` 种子只进
-///   实时会话 CC 域，⛔ 不进离线触发探针）。无有效探针 ⇒ 渲染走无探针入口，门控区域
-///   一律不发声；探针存在时，无泳道的控制器恒 `0`，有泳道的控制器取值落在
+///   实时会话 CC 域，⛔ 不进离线触发探针）。**没有探针不等于控制器不可达**：MIDI CC 的
+///   缺省值是 `0`，所以无探针时每一路控制器都按 `(0, 0)` 参与门控判定 —— 含 `0` 的区间
+///   （例如 `hicc105=63`、`locc1=0 hicc1=127`）照常发声，不含 `0` 的区间（例如
+///   `locc105=64`）不发声。有探针时，无泳道的控制器同样恒 `0`，有泳道的控制器取值落在
 ///   「曲线值域 ＋ 宏偏移值域」内（`value_at` 首末保持、段内插值 ⇒ 值恒在点值域内；
 ///   宏偏移 ＝ 各路 `depth × 宏曲线值` 之和）。CC 门控一控制器一门 ⇒ 逐门区间交集
 ///   判定是精确的（各控制器取值独立选取）。
+///
+///   ⚠ 修前这一条写的是「无有效探针 ⇒ 门控区域一律不发声」。实测后果：`locc/hicc`
+///   分层选奏法的库（`cithara-barbarica` 的 `locc105=64`/`hicc105=63`、
+///   `aliexpress-erhu`、`ixox-flute` 的 `locc$F1_ART=0 hicc$F1_ART=42`）在没有 CC 泳道
+///   的工程里被**整件判死** —— 渲染回执是 `samples=0`、`silent=全部区域`、
+///   `missing=[全部样本]`，而同一个 sfz 走 `yeban_load_sfz` 却逐条 `file(... frames=…)`。
+///   这就是「编辑器里能试听、渲染出来整轨没声」的根因。
 /// - **音符匹配**：键/力度范围（`trigger_by_note == false` 即 `key=-1` ⇒ 永不命中）＋ trigger 族。
 ///   `Attack`/`First`/`Legato` 走 note-on 掩码；`First` 要求 `held == 0`（轨内首个音符起音时
 ///   恒成立 ⇒ 只要有匹配音符就计入，多算安全）；`Legato` 要求 `held > 0`（至少两个音符
@@ -1251,10 +1260,8 @@ pub struct DemandLoadFilter {
     /// 本轨音符总数（`Legato` 门控用）。
     total_notes: usize,
     /// 每路控制器的离线探针可达整数区间 `[lo, hi]`（已 clamp 到 `0..=127`）。
-    /// 无条目的控制器在探针存在时恒 `0`。
+    /// 无条目的控制器恒 `0`（与「没有探针」同一条缺省，见 `wants` 的 CC 分支）。
     cc_reachable: BTreeMap<u8, (u8, u8)>,
-    /// 本轨是否存在有效 CC 探针（任一控制器的有效泳道或宏级联）。
-    probe_exists: bool,
 }
 
 impl DemandLoadFilter {
@@ -1352,7 +1359,6 @@ impl DemandLoadFilter {
             }
         }
         let mut cc_reachable: BTreeMap<u8, (u8, u8)> = BTreeMap::new();
-        let mut probe_exists = false;
         let controllers: BTreeSet<u8> = curve_range
             .keys()
             .copied()
@@ -1366,7 +1372,6 @@ impl DemandLoadFilter {
             if !has_curve && !has_cascade {
                 continue;
             }
-            probe_exists = true;
             let (mut raw_lo, mut raw_hi) = if has_curve {
                 curve_range[&controller]
             } else {
@@ -1385,7 +1390,6 @@ impl DemandLoadFilter {
             notes,
             total_notes,
             cc_reachable,
-            probe_exists,
         }
     }
 
@@ -1405,16 +1409,13 @@ impl DemandLoadFilter {
         {
             return false;
         }
-        // CC 门控。
-        if !region.cc_gates.is_empty() {
-            if !self.probe_exists {
+        // CC 门控。⚠ 无探针时**不是**"一律不发声"：MIDI CC 的缺省值是 0，
+        // `locc/hicc` 的常见写法正是「0..63 一层、64..127 另一层」，缺省 0 落在第一层。
+        // 修前这里 `if !probe_exists { return false }` 把整件库判死（见结构体文档）。
+        for gate in &region.cc_gates {
+            let (lo, hi) = self.cc_reachable.get(&gate.cc).copied().unwrap_or((0, 0));
+            if hi < gate.lo || lo > gate.hi {
                 return false;
-            }
-            for gate in &region.cc_gates {
-                let (lo, hi) = self.cc_reachable.get(&gate.cc).copied().unwrap_or((0, 0));
-                if hi < gate.lo || lo > gate.hi {
-                    return false;
-                }
             }
         }
         // `key=-1` 的区域不被任何音符触发。
@@ -3046,16 +3047,27 @@ mod tests {
         assert!(filter.wants(&regions[4]), "sw_up 不挡（down 恒假）");
     }
 
-    /// P1：CC 门控跟离线探针（无探针 ⇒ 门控全假；有探针 ⇒ 无泳道控制器恒 0）。
+    /// P1：CC 门控跟离线探针（无探针 ⇒ 控制器取缺省 0；有探针 ⇒ 无泳道控制器恒 0）。
     #[test]
     fn demand_load_cc_gates_follow_offline_probe() {
         let track_id = demand_uid(1004);
-        // 无任何泳道 ⇒ 无探针 ⇒ 门控区域一律不命中。
+        // 无任何泳道 ⇒ 无探针 ⇒ 每一路控制器取缺省值 0 ⇒ 含 0 的门过、不含 0 的门假。
         let project = demand_project(track_id, &[(60, 100)]);
         let filter = DemandLoadFilter::from_project_track(&project, track_id);
-        let text = "<region> sample=a.wav key=60 locc1=0 hicc1=127\n";
+        let text = "<region> sample=a.wav key=60 locc1=0 hicc1=127\n\
+                    <region> sample=b.wav key=60 locc105=64 hicc105=127\n\
+                    <region> sample=c.wav key=60 hicc105=63\n";
         let instrument = parse_text(text, &ParseLimits::default()).expect("解析");
-        assert!(!filter.wants(&instrument.regions()[0]), "无探针时门控恒假");
+        let regions = instrument.regions();
+        assert!(filter.wants(&regions[0]), "缺省 0 落在 [0,127] ⇒ 发声");
+        assert!(
+            !filter.wants(&regions[1]),
+            "缺省 0 不在 [64,127] ⇒ 不发声（这是 cithara 的上层奏法）"
+        );
+        assert!(
+            filter.wants(&regions[2]),
+            "缺省 0 落在 [..,63] ⇒ 发声（这是 cithara 的默认奏法）"
+        );
         // 有一条 CC2 泳道 ⇒ 探针存在；CC1 无泳道 ⇒ 恒 0。
         let mut project = demand_project(track_id, &[(60, 100)]);
         demand_cc_lane(&mut project, track_id, 2, &[(0, 64.0)], true);
@@ -3077,15 +3089,21 @@ mod tests {
         let regions = instrument.regions();
         assert!(filter.wants(&regions[0]), "值域 [10,20] 与 [15,25] 相交");
         assert!(!filter.wants(&regions[1]), "值域 [10,20] 与 [30,40] 不交");
-        // 泳道被关掉 ⇒ 不算曲线 ⇒ 无探针 ⇒ 门控假。
+        // 泳道被关掉 ⇒ 不算曲线 ⇒ 该控制器退回缺省 0。
         let mut project = demand_project(track_id, &[(60, 100)]);
         demand_cc_lane(&mut project, track_id, 1, &[(0, 10.0)], false);
         let filter = DemandLoadFilter::from_project_track(&project, track_id);
-        let text = "<region> sample=a.wav key=60 locc1=0 hicc1=127\n";
+        let text = "<region> sample=a.wav key=60 locc1=0 hicc1=127\n\
+                    <region> sample=b.wav key=60 locc1=64 hicc1=127\n";
         let instrument = parse_text(text, &ParseLimits::default()).expect("解析");
+        let regions = instrument.regions();
         assert!(
-            !filter.wants(&instrument.regions()[0]),
-            "关掉的泳道不建探针"
+            filter.wants(&regions[0]),
+            "关掉的泳道 ⇒ 退回缺省 0 ⇒ 含 0 过"
+        );
+        assert!(
+            !filter.wants(&regions[1]),
+            "关掉的泳道 ⇒ 退回缺省 0 ⇒ 不含 0 假"
         );
     }
 
@@ -3193,11 +3211,15 @@ mod tests {
                 },
             );
         let filter = DemandLoadFilter::from_project_track(&project, track_id);
-        let text = "<region> sample=a.wav key=60 locc1=0 hicc1=127\n";
+        // 全零宏级联 ⇒ 该控制器不进探针 ⇒ 取值退回缺省 0（⛔ 不是"整件不发声"）。
+        let text = "<region> sample=a.wav key=60 locc1=0 hicc1=127\n\
+                    <region> sample=b.wav key=60 locc1=64 hicc1=127\n";
         let instrument = parse_text(text, &ParseLimits::default()).expect("解析");
+        let regions = instrument.regions();
+        assert!(filter.wants(&regions[0]), "全零级联 ⇒ 缺省 0 ⇒ 含 0 的门过");
         assert!(
-            !filter.wants(&instrument.regions()[0]),
-            "全零宏级联不建探针"
+            !filter.wants(&regions[1]),
+            "全零级联 ⇒ 缺省 0 ⇒ 不含 0 的门假"
         );
     }
 
