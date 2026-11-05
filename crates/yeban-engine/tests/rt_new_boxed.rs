@@ -15,7 +15,7 @@
 //! | # | 判据 | 口径 |
 //! | :- | :--- | :--- |
 //! | ① | **1 MiB 栈直构** | `std::thread::Builder::stack_size(1 << 20)` 上构造 ＋ 渲染 4 个量子 ⇒ 必须成功 |
-//! | ② | **崩溃阈值（二分）** | 两条构造路径各在**子进程**里二分"最小可构造栈"⇒ `new_boxed` 必须**严格低于** `new`，且 ≤ 1024 KiB |
+//! | ② | **崩溃阈值（二分）** | 两条构造路径各在**子进程**里二分"最小可构造栈"⇒ `new_boxed` 必须**严格低于** `new`（Windows 例外：见下修订注，只断言 `<=`），且 ≤ 1024 KiB |
 //! | ③ | **等价性** | 同一夹具、同一量子数 ⇒ `new_boxed` 与按值构造的左右声道**逐位相同**（指纹相等） |
 //!
 //! ⚠ 为什么 ② 必须走子进程：栈溢出是 `abort`（`fatal runtime error: stack overflow`）
@@ -50,6 +50,17 @@
 //! ⚠ **修订（侧链 v1）**：值尺寸再 **＋32 B**（键抽头池指针 8 B ＋ 填充标记 16 B
 //! ＋ 布局对齐填充 8 B；堆上 8192 B 不计入值尺寸）⇒ 仍在 1024 KiB 门槛内；
 //! 逐位等价判据钉的尺寸同步改为 `186768`。
+//!
+//! ⚠ **修订（Anatomy 支 Windows 单腿红，2026-11-06）**：分支上 Windows 两次
+//! 测得 `new=208 KiB / new_boxed=208 KiB`（下降 0 KiB），`boxed < by_value`
+//! 在 246 行崩；同一分支 Linux 测得 `224 / 176 KiB`（下降 48 KiB），主干
+//! Linux `192 / 144 KiB`（下降 48 KiB）。根因不是装箱失效：Anatomy 让
+//! `DrumMachine<16>` 从 14384 B 长到 23904 B（每槽 `Generator` 多一个
+//! `AnatomyVoice`），构造期栈两边同涨约 19 KiB，差值仍是 48 KiB；但
+//! Windows 的线程栈保留按 64 KiB 分配粒度取整（另有一页守卫页），45 KiB
+//! 的差值不到一个桶，两边落在同一桶里就量不出严格小于。⇒ 严格小于只在
+//! Linux/macOS 断言；Windows 断言 `boxed <= by_value`，另由 ①（1 MiB 下
+//! 构造＋渲染）与 ③（尺寸钉 45680 ＋逐位等价）继续覆盖 Windows 腿。
 //!
 //! ⛔ 本文件**不测** `new_boxed` 与 `new` 的内部结构，只测它们的**栈用量**与**输出**。
 
@@ -243,10 +254,21 @@ fn boxed_constructor_lowers_the_crash_threshold() {
         boxed_at_default,
         "new_boxed 必须能在 Windows 主线程默认栈（{WINDOWS_MAIN_STACK_KIB} KiB）下构造"
     );
-    assert!(
-        boxed < by_value,
-        "装箱构造必须把栈阈值压下来：new={by_value} KiB, new_boxed={boxed} KiB"
-    );
+    // Windows 上线程栈保留按 64 KiB 分配粒度取整（另有一页守卫页），二分的
+    // 16 KiB 读数只能落在 64 KiB 的桶里；装箱省下的栈（`size_of::<EngineRuntime>()`
+    // = 45680 B ≈ 45 KiB）不到一个桶 ⇒ 严格小于在 Windows 上量不出来。
+    // Windows 腿只断言不劣于按值；严格小于仍由 Linux/macOS 腿在 CI 里钉。
+    if cfg!(windows) {
+        assert!(
+            boxed <= by_value,
+            "装箱构造不许比按值更费栈：new={by_value} KiB, new_boxed={boxed} KiB"
+        );
+    } else {
+        assert!(
+            boxed < by_value,
+            "装箱构造必须把栈阈值压下来：new={by_value} KiB, new_boxed={boxed} KiB"
+        );
+    }
     assert!(
         boxed <= WINDOWS_MAIN_STACK_KIB,
         "new_boxed 的阈值（{boxed} KiB）必须落在目标平台默认栈之内"

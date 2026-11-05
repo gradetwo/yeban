@@ -2,7 +2,7 @@
 # 列：file|test|category|首条整数断言的证据（截断 90 字符）
 # 口径（R118）：只有 collection_size **界定集合大小** ⇒ 才算非真空下界；
 #   值界／元素值界／条件计数器 **⛔ 不算**。分类优先级：condition_counter > collection_size > element_value_bound > value_bound。
-# 合计 229 条：collection_size 37 ／ value_bound 183 ／ element_value_bound 5 ／ condition_counter 4
+# 合计 232 条：collection_size 39 ／ value_bound 184 ／ element_value_bound 5 ／ condition_counter 4
 src/block.rs|accumulate_matches_scalar_reference|value_bound|assert!((out[i] - expect[i]).abs() < 1e-6, "mismatch at {i}"
 src/block.rs|mismatched_lengths_are_truncated_instead_of_panicking|value_bound|assert_eq!(out[..4], [1.0, 1.0, 1.0, 0.0]
 src/block.rs|mix2_handles_non_multiple_of_four|value_bound|assert!((v - 1.0).abs() < 1e-6
@@ -74,6 +74,9 @@ src/delay.rs|two_instances_do_not_share_time_or_feedback|value_bound|assert!(   
 src/device_param.rs|delay_spellings_resolve_to_the_same_field|collection_size|assert_eq!(DelayField::SPELLINGS.len(), 15, "延迟拼写共 15 条"
 src/device_param.rs|delay_sync_conversion_table_at_84_bpm|value_bound|assert!(                 (got - expected).abs() < 1e-4,                 "84 BPM {num}/{den
 src/device_param.rs|delay_sync_off_or_bad_bpm_keeps_written_time|value_bound|assert!(             (delay_params_from_stage(&stage, 84.0).time_s - 2.0).abs() < f32::EPS
+src/drums/anatomy.rs|default_preset_coefficients_match_the_groove_formulas|collection_size|assert!(                 (f64::from(got) - want).abs() < 1e-4,                 "系数 {got} 与
+src/drums/anatomy.rs|kick_style_from_f32_threshold|value_bound|assert_eq!(KickStyle::from_f32(0.0), KickStyle::Classic
+src/drums/anatomy.rs|preset_table_is_complete_and_verbatim|collection_size|assert_eq!(ANATOMY_KICK_PRESETS.len(), 9
 src/drums/mod.rs|a_closed_hat_chokes_every_ringing_open_hat|value_bound|assert_eq!(machine.active_slots(), 2
 src/drums/mod.rs|a_finished_hit_frees_its_slot|value_bound|assert_eq!(machine.active_slots(), 1
 src/drums/mod.rs|an_untouched_machine_renders_bit_exact_silence|value_bound|assert!(             out.iter().all(|sample| *sample == 0.0),             "空闲器件必须输出逐位 0"
