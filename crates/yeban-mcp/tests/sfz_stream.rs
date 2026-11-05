@@ -14,17 +14,21 @@ use std::path::{Path, PathBuf};
 use std::str::FromStr as _;
 use std::time::{Duration, Instant};
 
+use yeban_decode::testfix::{FlacSpec, flac_constant};
+use yeban_decode::{DecodeOptions, decode_mono_channel0};
 use yeban_mcp::domain::sfz::{
     DemandLoadFilter, SampleLimits, SampleStore, SfzLoad, TrackSampleCache, load_with, parse,
     read_sample_file,
 };
 use yeban_mcp::domain::sfz_stream::{
-    StreamEngine, StreamOptions, StreamVoice, preview_sources, realtime_sources,
+    StreamCacheConfig, StreamEngine, StreamOptions, StreamVoice, StreamingVoicePool,
+    preview_sources, realtime_sources,
 };
 use yeban_model::{
     ClipContent, ClipPlacement, ClipPoolEntry, EntityId, LoopConfig, MidiNote, TrackV3,
     YebanProjectV1,
 };
+use yeban_sfz::voice_pool::StealFade;
 
 /// 一个临时目录，`Drop` 时删除自己。
 struct Scratch {
@@ -344,4 +348,223 @@ fn missing_file_voice_is_silent_and_finished() {
     assert_eq!(read.underrun, 128, "失败声部全块补零");
     assert_eq!(block.len(), 128, "守卫界：读块非空，all 断言非真空");
     assert!(block.iter().all(|&sample| sample == 0.0));
+}
+
+/// 等池内声部就绪（`voice_ready() == Some(true)`；与 `wait_ready` 同口径轮询）。
+fn wait_pool_ready(
+    pool: &StreamingVoicePool,
+    handle: yeban_sfz::voice_pool::VoiceHandle,
+    what: &str,
+) {
+    let start = Instant::now();
+    while pool.voice_ready(handle) != Some(true) {
+        if start.elapsed() > Duration::from_secs(10) {
+            panic!("{what} 在 10 秒内未就绪");
+        }
+        std::thread::sleep(Duration::from_millis(1));
+    }
+}
+
+/// 等缓存统计量收敛到稳态（磁盘线程按序喂完、全部 insert 落袋后才稳定）。
+fn wait_cache_steady(pool: &StreamingVoicePool, entries: usize, evictions: u64, what: &str) {
+    let start = Instant::now();
+    loop {
+        let stats = pool.cache_stats();
+        if stats.entries == entries && stats.evictions == evictions {
+            return;
+        }
+        if start.elapsed() > Duration::from_secs(10) {
+            panic!(
+                "{what} 在 10 秒内未收敛（entries={} evictions={}）",
+                stats.entries, stats.evictions
+            );
+        }
+        std::thread::sleep(Duration::from_millis(1));
+    }
+}
+
+/// 逐位比对两条 f32 序列（`to_bits` 向量相等；不走近似比较）。
+fn assert_bits_eq(actual: &[f32], expected: &[f32], what: &str) {
+    assert_eq!(actual.len(), expected.len(), "{what}：长度不同");
+    let actual_bits: Vec<u32> = actual.iter().map(|sample| sample.to_bits()).collect();
+    let expected_bits: Vec<u32> = expected.iter().map(|sample| sample.to_bits()).collect();
+    assert_eq!(actual_bits, expected_bits, "{what}：逐位不同");
+}
+
+/// P3 池两声部求和与 P1 整文件解码求和逐位相同（0 dB、无包络、无抢占、无循环）。
+#[test]
+fn pool_sums_two_voices_bit_identical_to_p1() {
+    let scratch = Scratch::new("pool_sum");
+    let a = scratch.join("a.wav");
+    let b = scratch.join("b.wav");
+    write_constant_wav(&a, 0.25, 4800);
+    write_constant_wav(&b, 0.5, 4800);
+    let options = StreamOptions {
+        preload_frames: 4800,
+        ring_frames: 16384,
+        chunk_frames: 4096,
+    };
+    let mut pool = StreamingVoicePool::new(4, 48000.0, 4096).expect("建池");
+    let ha = pool.trigger(60, 100, 0.0, &a, options).started();
+    let hb = pool.trigger(64, 100, 0.0, &b, options).started();
+    wait_pool_ready(&pool, ha, "声部 a");
+    wait_pool_ready(&pool, hb, "声部 b");
+    let mut rendered = Vec::new();
+    for _ in 0..5 {
+        let mut block = vec![0.0_f32; 1024];
+        pool.render_block(&mut block);
+        rendered.extend_from_slice(&block);
+    }
+    let pcm_a = expected_pcm(&a);
+    let pcm_b = expected_pcm(&b);
+    let mut expected = Vec::with_capacity(5120);
+    for i in 0..5120 {
+        let mut sample = 0.0_f32;
+        if i < 4800 {
+            sample += pcm_a[i];
+            sample += pcm_b[i];
+        }
+        expected.push(sample);
+    }
+    assert_bits_eq(&rendered, &expected, "池求和与 P1 求和");
+    assert_eq!(pool.active_count(), 0, "两声部播完后槽位应全部回收");
+}
+
+/// note-off 退役淡出：每采样按 `StealFade::gain_at` 衰减，144 帧后归零并回收槽位。
+#[test]
+fn pool_retire_fade_follows_steal_fade_per_sample() {
+    let scratch = Scratch::new("pool_retire");
+    let file = scratch.join("c.wav");
+    write_constant_wav(&file, 0.5, 4800);
+    let options = StreamOptions {
+        preload_frames: 4800,
+        ring_frames: 16384,
+        chunk_frames: 4096,
+    };
+    let mut pool = StreamingVoicePool::new(2, 48000.0, 4096).expect("建池");
+    let handle = pool.trigger(60, 100, 0.0, &file, options).started();
+    wait_pool_ready(&pool, handle, "退役声部");
+    let mut head = vec![0.0_f32; 100];
+    pool.render_block(&mut head);
+    assert_bits_eq(&head, &vec![0.5_f32; 100], "退役前应为全增益");
+    pool.note_off(handle).expect("note-off");
+    let mut tail = vec![0.0_f32; 200];
+    pool.render_block(&mut tail);
+    let fade = StealFade::new(48000.0);
+    let pcm = expected_pcm(&file);
+    let mut expected = Vec::with_capacity(200);
+    for i in 0..200 {
+        expected.push(pcm[100 + i] * 1.0 * fade.gain_at(i as u32));
+    }
+    assert_bits_eq(&tail, &expected, "退役淡出应逐采样跟随 StealFade");
+    assert_eq!(pool.active_count(), 0, "淡出走完后槽位应回收");
+}
+
+/// 抢占：新声部按 `StealFade` 的剩余计数镜像淡入（首采样 0.0，144 帧后满增益）。
+#[test]
+fn pool_steal_fades_in_the_replacement_per_sample() {
+    let scratch = Scratch::new("pool_steal");
+    let a = scratch.join("a.wav");
+    let b = scratch.join("b.wav");
+    write_constant_wav(&a, 0.25, 4800);
+    write_constant_wav(&b, 0.5, 4800);
+    let options = StreamOptions {
+        preload_frames: 4800,
+        ring_frames: 16384,
+        chunk_frames: 4096,
+    };
+    let mut pool = StreamingVoicePool::new(1, 48000.0, 4096).expect("建池");
+    let ha = pool.trigger(60, 100, 0.0, &a, options).started();
+    let outcome = pool.trigger(64, 100, 0.0, &b, options);
+    assert_eq!(
+        outcome.victim(),
+        Some(ha),
+        "容量 1 时第二触发必须窃取第一声部"
+    );
+    let hb = outcome.started();
+    wait_pool_ready(&pool, hb, "窃取后的新声部");
+    let mut block = vec![0.0_f32; 200];
+    pool.render_block(&mut block);
+    let fade = StealFade::new(48000.0);
+    let pcm_b = expected_pcm(&b);
+    let mut expected = Vec::with_capacity(200);
+    for (i, sample) in pcm_b.iter().take(200).enumerate() {
+        let gain = if i < 144 {
+            fade.gain_at((144 - i) as u32)
+        } else {
+            1.0
+        };
+        expected.push(sample * 1.0 * gain);
+    }
+    assert_bits_eq(&block, &expected, "窃取后的新声部应逐采样淡入");
+    assert_eq!(pool.active_count(), 1, "新声部仍在播");
+}
+
+/// 样本回收：上限 2 时触发 3 个不同文件，必有 1 次淘汰、条目数回到上限。
+#[test]
+fn pool_cache_evicts_under_a_small_cap() {
+    let scratch = Scratch::new("pool_gc");
+    let files: Vec<PathBuf> = ["a.wav", "b.wav", "c.wav"]
+        .iter()
+        .map(|name| {
+            let path = scratch.join(name);
+            write_constant_wav(&path, 0.3, 4800);
+            path
+        })
+        .collect();
+    let options = StreamOptions {
+        preload_frames: 4800,
+        ring_frames: 16384,
+        chunk_frames: 4096,
+    };
+    let mut pool = StreamingVoicePool::with_cache_config(
+        4,
+        48000.0,
+        4096,
+        StreamCacheConfig {
+            max_entries: 2,
+            idle_timeout_secs: 3600,
+        },
+    )
+    .expect("建池");
+    let mut handles = Vec::new();
+    for (index, file) in files.iter().enumerate() {
+        let handle = pool
+            .trigger(60 + index as u8, 100, 0.0, file, options)
+            .started();
+        handles.push(handle);
+    }
+    for (index, handle) in handles.iter().enumerate() {
+        wait_pool_ready(&pool, *handle, &format!("GC 声部 {index}"));
+    }
+    wait_cache_steady(&pool, 2, 1, "GC 缓存");
+    let stats = pool.cache_stats();
+    assert_eq!(stats.hits, 0, "三文件各触发一次 ⇒ 无命中");
+    assert_eq!(stats.misses, 3, "三文件各触发一次 ⇒ 三次未命中");
+    assert_eq!(stats.evictions, 1, "上限 2 存 3 条 ⇒ 恰一次淘汰");
+    assert_eq!(stats.entries, 2, "淘汰后条目数回到上限");
+}
+
+/// 流式 FLAC 声部：磁盘线程解出的 PCM 与 `decode_mono_channel0` 逐位相同。
+#[test]
+fn streamed_flac_voice_matches_decode_mono_channel0() {
+    let scratch = Scratch::new("stream_flac");
+    let spec = FlacSpec {
+        sample_rate: 48000,
+        channels: 1,
+        bits: 16,
+        block_frames: 256,
+        total_samples_override: None,
+    };
+    let bytes = flac_constant(&spec, 4, 16384);
+    let path = scratch.join("tone.flac");
+    fs::write(&path, &bytes).expect("写 FLAC 夹具");
+    let engine = StreamEngine::new();
+    let voice = engine.trigger(&path, StreamOptions::default());
+    wait_ready(&voice, "FLAC 声部");
+    let drained = drain_voice(&voice);
+    let expected = decode_mono_channel0(&path, &DecodeOptions::default())
+        .expect("整文件解 FLAC")
+        .pcm;
+    assert_bits_eq(&drained, &expected, "流式 FLAC 与整文件解码");
 }

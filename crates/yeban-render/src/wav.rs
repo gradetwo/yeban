@@ -339,6 +339,238 @@ pub fn read_plain_wav_mono_f32(
     Ok((samples, format.sample_rate, describe))
 }
 
+/// P3 流式：WAV 按需分页读取器（磁盘线程的 WAV 腿）。
+///
+/// ## 为什么是"按需读"而不是"映射"
+///
+/// 原定方案是内存映射（`mmap`）：文件映射进地址空间、按帧按需换算，
+///
+/// 常驻内存只有页表＋工作集。但 2026-11-04 实测推翻了前提：锁文件里唯一
+/// 的映射库 `memmap2 0.9.11` 在 0.9 里把**全部**文件映射构造都改成了
+/// `unsafe fn`（`Mmap::map`、`MmapOptions::map` 皆是，见其 `src/lib.rs`），
+/// 而本 crate `#![forbid(unsafe_code)]` —— 按需读腿**不能**写进本 crate；
+/// 新立一个允许 `unsafe` 的小 crate 又要改根清单（集成者专属，本线不动）。
+/// 因此本腿改用纯 `std` 的 `Seek + Read` 按需读：**目标不变，机制换一条**。
+///
+/// 目标（与原定 mmap 腿逐条对齐）：整文件**不**解码进内存 —— 每次
+/// `read_mono_frames` 只 `seek` 到帧偏移、读一窗口字节、换算出 `f32`；
+/// 常驻内存只有磁盘线程的环（有界）与本腿复用的窗口缓冲（有界）；
+/// 页缓存仍由操作系统提供（`read` 同样走页缓存）。与 mmap 相比，唯一
+/// 多出的是每窗口一次 `seek + read` 系统调用（页缓存命中时可忽略）
+/// 与每缓存句柄一个打开的描述符（缓存上限 256 条 ⇒ 描述符上限同数，
+/// 在默认 1024 软限制内）；而 mmap 的"零拷贝"在本架构里本就不存在 ——
+/// 磁盘线程无论如何都要把样本**拷贝进环**（`SampleRing` 是独立缓冲）。
+/// 接口与原定按需读腿同形（`open`／`frames`／`sample_hz`／`channels`／
+/// `read_mono_frames`），将来若集成者授权新 crate 做映射隔离，本腿可直换。
+///
+/// ## 接受面（窄，⛔ 不贪）
+///
+/// 只接受 [`crate::rf64::parse_container`] 能解析、且满足下述全部条件的 WAV：
+/// 整数 16/24 位、浮点 32 位；声道数 ≥ 1；采样率 > 0；`data` 负载长度是
+/// `block_align` 的整数倍（末尾残帧 ⇒ 拒绝）。其余一切（ADPCM、8/32 位整数、
+/// 扩展子格式之外的 GUID、残帧、非 WAV）一律 `Err` ⇒ 调用方**回落整文件腿**
+/// （`read_plain_wav_mono_f32`），行为与 P2 之前逐字相同 —— 按需读腿只加速
+/// 它能精确覆盖的格式，⛔ 不扩大"能读"的集合。
+///
+/// ## 逐位一致承诺
+///
+/// 同一文件，`read_mono_frames` 全量读出的 `f32` 与
+/// [`read_plain_wav_mono_f32`] 的输出**逐位相同**：整数除数同为 `2^(bits-1)`
+/// （`#254` 口径）、浮点直用、声道折叠同为"取第 0 声道"（⛔ 不降混）。
+/// 判据见本模块测试（int16／int24／float32、单声道／立体声、data 前有
+/// 杂 chunk 三组，全量比位）。
+///
+/// ## 预算口径
+///
+/// 按需读腿**不**执行 `read_sample_file` 的单文件 64 MiB 上限：那条上限管的是
+/// "解码拷贝常驻内存"，而按需读不拷贝 —— 常驻的是磁盘线程的环（有界）与窗口
+/// 缓冲（有界）。文件数／帧数预算仍由调用方（装载层／预载收据）记账，
+/// 本腿只报 `frames()`／`sample_hz()` 供记账。离线 P1 路径的 64 MiB 上限不动。
+///
+/// ## 生命周期
+///
+/// 句柄持有打开的 `File`（`open` 时定位一次 `data` 位置，之后每次读都
+/// `seek` 回窗口起点 ⇒ **同一句柄可供多个声部共享**，磁盘线程串行喂环，
+/// 共享不需要锁）；这正是 P3 样本回收缓存（`sfz_stream::SourceCache`）
+/// 能缓存它的原因。流式解码器（FLAC／OGG）是有位置状态的，⛔ 不能这样共享。
+pub struct PagedWav {
+    file: std::fs::File,
+    /// `data` 负载在文件里的起始偏移。
+    data_start: u64,
+    /// `data` 负载字节数（恒为 `block_align` 的整数倍，`open` 已验）。
+    data_len: u64,
+    /// 每帧字节数（`channels × bytes_per_sample`）。
+    block_align: usize,
+    /// 声道数（折叠时步长）。
+    channels: usize,
+    /// 采样率（Hz）。
+    sample_rate: u32,
+    /// 位深（整数 16／24；浮点时恒为 32）。
+    bits: u16,
+    /// 是否 IEEE 浮点容器。
+    is_float: bool,
+    /// 复用的窗口字节缓冲（磁盘线程侧分配，⛔ 不在音频回调里用）。
+    scratch: Vec<u8>,
+}
+
+impl PagedWav {
+    /// 打开一个 WAV 文件并定位 `data`（只读头、不解码、不拷贝样本）。
+    ///
+    /// # Errors
+    ///
+    /// 人话原因（调用方按"回落整文件腿"处理，⛔ 不是 `Fault`）：文件打不开、
+    /// 不是 RIFF/RF64/WAVE 容器、`fmt `／`data` 缺失或非法、位深／声道／采样率
+    /// 不在接受面、`data` 末尾残帧。注意：容器解析要读 `fmt ` 与 `data` 的位置，
+    /// 因此 `open` 会把文件头读进一个临时缓冲（只读头，⛔ 不是整文件）；
+    /// 头超过 1 MiB（病态多 chunk）时同样 `Err` ⇒ 回落整文件腿。
+    pub fn open(path: &Path) -> Result<Self, String> {
+        use std::io::Read as _;
+        let mut file = std::fs::File::open(path)
+            .map_err(|error| format!("{} ({})", path.display(), error.kind()))?;
+        let len = file
+            .metadata()
+            .map_err(|error| format!("{}: 取长度失败 ({error})", path.display()))?
+            .len();
+        // 头缓冲上限 1 MiB：正常 WAV 的 fmt＋data 头在几百字节内；超限即回落。
+        let head_len = len.min(1 << 20) as usize;
+        let mut head = vec![0u8; head_len];
+        file.read_exact(&mut head)
+            .map_err(|error| format!("{}: 读头失败 ({error})", path.display()))?;
+        let parsed = crate::rf64::parse_container(&head)
+            .map_err(|error| format!("{}: 容器解析失败 ({error})", path.display()))?;
+        let format = parsed.format;
+        let data_range = parsed.data;
+        // `parse_container` 只保证 data 区间在"头缓冲"内；若 data 起点在头外
+        // （头被 1 MiB 截断的病态文件），同样拒绝 ⇒ 回落。
+        if data_range.end > head_len {
+            return Err(format!("{}: data 位置超出头缓冲 ⇒ 回落", path.display()));
+        }
+        let bytes_per_sample = usize::from(format.bytes_per_sample());
+        let channels = usize::from(format.channels);
+        let block_align = channels * bytes_per_sample;
+        let data_len = (data_range.end - data_range.start) as u64;
+        let int_ok = !format.is_float && matches!(format.bits_per_sample, 16 | 24);
+        let float_ok = format.is_float && format.bits_per_sample == 32;
+        if !int_ok && !float_ok {
+            return Err(format!(
+                "{}: 位深 {}（浮点：{}）不在按需读接受面（整数 16/24、浮点 32）",
+                path.display(),
+                format.bits_per_sample,
+                format.is_float
+            ));
+        }
+        if format.sample_rate == 0 {
+            return Err(format!("{}: 采样率为 0", path.display()));
+        }
+        if block_align == 0 || !data_len.is_multiple_of(block_align as u64) {
+            return Err(format!(
+                "{}: data 负载 {} 字节不是帧对齐 {} 字节的整数倍",
+                path.display(),
+                data_len,
+                block_align
+            ));
+        }
+        Ok(Self {
+            file,
+            data_start: data_range.start as u64,
+            data_len,
+            block_align,
+            channels,
+            sample_rate: format.sample_rate,
+            bits: format.bits_per_sample,
+            is_float: format.is_float,
+            scratch: Vec::new(),
+        })
+    }
+
+    /// 总帧数（`data` 负载字节数 ÷ 帧对齐）。
+    #[must_use]
+    pub fn frames(&self) -> u64 {
+        self.data_len / (self.block_align as u64)
+    }
+
+    /// 采样率（Hz）。
+    #[must_use]
+    pub fn sample_hz(&self) -> u32 {
+        self.sample_rate
+    }
+
+    /// 声道数。
+    #[must_use]
+    pub fn channels(&self) -> usize {
+        self.channels
+    }
+
+    /// 从 `start_frame` 起读单声道（第 0 声道）帧进 `out`，返回实读帧数。
+    ///
+    /// 换算口径与 [`read_plain_wav_mono_f32`] 逐字相同（整数除 `2^(bits-1)`、
+    /// 浮点直用）；`start_frame` 越界或 `out` 为空时返回 0。读盘中途出错
+    /// （文件被删／截断）时返回已读帧数 —— 调用方按"流已尽"处理，与
+    /// 整文件腿读失败时的"恒静音＋已播完"结局同类（⛔ 不把 IO 错升级成
+    /// 音频回调里的错误）。
+    pub fn read_mono_frames(&mut self, start_frame: u64, out: &mut [f32]) -> usize {
+        use std::io::{Read as _, Seek as _};
+        let total = self.frames();
+        if start_frame >= total || out.is_empty() {
+            return 0;
+        }
+        let remaining = total - start_frame;
+        let count = (out.len() as u64).min(remaining) as usize;
+        let bytes_per_sample = self.block_align / self.channels;
+        let byte_count = count * self.block_align;
+        if self.scratch.len() < byte_count {
+            self.scratch.resize(byte_count, 0);
+        }
+        let byte_offset = self.data_start + start_frame * (self.block_align as u64);
+        if self
+            .file
+            .seek(std::io::SeekFrom::Start(byte_offset))
+            .is_err()
+        {
+            return 0;
+        }
+        if self
+            .file
+            .read_exact(&mut self.scratch[..byte_count])
+            .is_err()
+        {
+            return 0;
+        }
+        for (frame_bytes, slot) in self
+            .scratch
+            .chunks_exact(self.block_align)
+            .zip(out.iter_mut())
+            .take(count)
+        {
+            let sample = &frame_bytes[..bytes_per_sample];
+            *slot = if self.is_float {
+                f32::from_le_bytes(sample.try_into().expect("浮点样本恰好 4 字节"))
+            } else {
+                match self.bits {
+                    16 => {
+                        let value =
+                            i16::from_le_bytes(sample.try_into().expect("16 位样本恰好 2 字节"));
+                        f32::from(value) * (1.0_f32 / 32768.0)
+                    }
+                    24 => {
+                        let raw = (sample[0] as i32)
+                            | ((sample[1] as i32) << 8)
+                            | ((sample[2] as i32) << 16);
+                        let value = if raw & 0x800000 != 0 {
+                            raw - 0x1000000
+                        } else {
+                            raw
+                        };
+                        (value as f32) * (1.0_f32 / 8388608.0)
+                    }
+                    _ => unreachable!("open 已把整数位深收敛到 16/24，浮点只留 32 位直用分支"),
+                }
+            };
+        }
+        count
+    }
+}
+
 /// WAV 里的 chunk 布局（fourcc + 负载长度, 按文件顺序）。
 ///
 /// 用 [`crate::rf64::chunk_order`] 与 [`crate::rf64::chunk_lengths`] 取得,
@@ -1384,5 +1616,210 @@ mod tests {
                 "24-bit 正满量程必须是 1 - 2^-23"
             );
         }
+    }
+
+    /// P3 夹具：手写最小 RIFF WAV（可选 data 前的 JUNK chunk；奇长时带填充字节，
+    /// 验 chunk 步进）。`data` 长度故意可由调用方控制（残帧情形）。
+    fn riff_wav(
+        channels: u16,
+        sample_rate: u32,
+        bits: u16,
+        is_float: bool,
+        data: &[u8],
+        junk: &[u8],
+    ) -> Vec<u8> {
+        let block_align = channels * (bits / 8);
+        let byte_rate = sample_rate * u32::from(block_align);
+        let mut chunks = Vec::new();
+        if !junk.is_empty() {
+            chunks.extend_from_slice(b"JUNK");
+            chunks.extend_from_slice(&(junk.len() as u32).to_le_bytes());
+            chunks.extend_from_slice(junk);
+            if junk.len() % 2 == 1 {
+                chunks.push(0);
+            }
+        }
+        chunks.extend_from_slice(b"fmt ");
+        chunks.extend_from_slice(&16u32.to_le_bytes());
+        chunks.extend_from_slice(&(if is_float { 3u16 } else { 1u16 }).to_le_bytes());
+        chunks.extend_from_slice(&channels.to_le_bytes());
+        chunks.extend_from_slice(&sample_rate.to_le_bytes());
+        chunks.extend_from_slice(&byte_rate.to_le_bytes());
+        chunks.extend_from_slice(&block_align.to_le_bytes());
+        chunks.extend_from_slice(&bits.to_le_bytes());
+        chunks.extend_from_slice(b"data");
+        chunks.extend_from_slice(&(data.len() as u32).to_le_bytes());
+        chunks.extend_from_slice(data);
+        if data.len() % 2 == 1 {
+            chunks.push(0);
+        }
+        let mut out = Vec::new();
+        out.extend_from_slice(b"RIFF");
+        out.extend_from_slice(&((4 + chunks.len()) as u32).to_le_bytes());
+        out.extend_from_slice(b"WAVE");
+        out.extend_from_slice(&chunks);
+        out
+    }
+
+    /// 逐位相等断言（不用 `.all()`：`Vec<u32>` 整体 `assert_eq!`）。
+    fn assert_bit_identical(left: &[f32], right: &[f32]) {
+        let left_bits: Vec<u32> = left.iter().map(|value| value.to_bits()).collect();
+        let right_bits: Vec<u32> = right.iter().map(|value| value.to_bits()).collect();
+        assert_eq!(left_bits, right_bits);
+    }
+
+    /// P3 判据：按需读腿全量读出与整文件腿逐位相同（int16／int24／float32）。
+    #[test]
+    fn paged_wav_reads_bit_identical_to_the_whole_file_leg_for_each_depth() {
+        let directory = tempfile::tempdir().expect("临时目录");
+        // int16 单声道（含负满量程与正满量程）。
+        let path16 = directory.path().join("mmap16.wav");
+        let buffer16 = PcmBuffer::Int16(vec![-32768, -16384, 0, 16384, 32767]);
+        write_plain_wav(&path16, &PcmFormat::integer(1, 48_000, 16), &buffer16)
+            .expect("写 int16 夹具");
+        let (whole16, _, _) = read_plain_wav_mono_f32(&path16).expect("整文件腿读 int16");
+        let mut mapped16 = PagedWav::open(&path16).expect("按需读腿开 int16");
+        assert_eq!(mapped16.frames(), 5);
+        assert_eq!(mapped16.sample_hz(), 48_000);
+        assert_eq!(mapped16.channels(), 1);
+        let mut out16 = vec![0.0_f32; 5];
+        assert_eq!(mapped16.read_mono_frames(0, &mut out16), 5);
+        assert_bit_identical(&out16, &whole16);
+        // int24 单声道。
+        let path24 = directory.path().join("mmap24.wav");
+        let buffer24 = PcmBuffer::Int24(vec![-(1 << 23), -1, 0, 1, (1 << 23) - 1]);
+        write_plain_wav(&path24, &PcmFormat::integer(1, 48_000, 24), &buffer24)
+            .expect("写 int24 夹具");
+        let (whole24, _, _) = read_plain_wav_mono_f32(&path24).expect("整文件腿读 int24");
+        let mut mapped24 = PagedWav::open(&path24).expect("按需读腿开 int24");
+        let mut out24 = vec![0.0_f32; 5];
+        assert_eq!(mapped24.read_mono_frames(0, &mut out24), 5);
+        assert_bit_identical(&out24, &whole24);
+        // float32 单声道。
+        let path32 = directory.path().join("mmapf32.wav");
+        let buffer32 = PcmBuffer::Float32(vec![-1.0, -0.5, 0.0, 0.5, 1.0]);
+        write_plain_wav(&path32, &PcmFormat::float(1, 48_000, 32), &buffer32)
+            .expect("写 float32 夹具");
+        let (whole32, _, _) = read_plain_wav_mono_f32(&path32).expect("整文件腿读 float32");
+        let mut mapped32 = PagedWav::open(&path32).expect("按需读腿开 float32");
+        let mut out32 = vec![0.0_f32; 5];
+        assert_eq!(mapped32.read_mono_frames(0, &mut out32), 5);
+        assert_bit_identical(&out32, &whole32);
+    }
+
+    /// P3 判据：立体声按需读腿只取第 0 声道（⛔ 不降混），与整文件腿一致。
+    #[test]
+    fn paged_wav_takes_the_first_channel_of_stereo() {
+        let directory = tempfile::tempdir().expect("临时目录");
+        let path = directory.path().join("mmap_stereo.wav");
+        // 交错 [L0, R0, L1, R1, L2, R2]：左恒 0.25 步进，右恒 -1.0（用 int16 表值）。
+        let buffer = PcmBuffer::Int16(vec![8192, -32768, 16384, -32768, 24576, -32768]);
+        write_plain_wav(&path, &PcmFormat::integer(2, 48_000, 16), &buffer).expect("写立体声夹具");
+        let (whole, _, _) = read_plain_wav_mono_f32(&path).expect("整文件腿读立体声");
+        assert_eq!(whole.len(), 3, "整文件腿应折出 3 帧左声道");
+        let mut mapped = PagedWav::open(&path).expect("按需读腿开立体声");
+        assert_eq!(mapped.frames(), 3);
+        assert_eq!(mapped.channels(), 2);
+        let mut out = vec![0.0_f32; 3];
+        assert_eq!(mapped.read_mono_frames(0, &mut out), 3);
+        assert_bit_identical(&out, &whole);
+        assert_eq!(out[0].to_bits(), (8192.0_f32 / 32768.0).to_bits());
+    }
+
+    /// P3 判据：data 前有 JUNK chunk 时按需读腿仍能定位 data。
+    ///
+    /// 分两档：偶长 JUNK（两腿都能读 ⇒ 与整文件腿逐位比）；奇长 JUNK（带填充字节 ——
+    /// hound 跳未知 chunk 时不跳填充字节，读这种文件会失败，见 hound `read.rs` 的
+    /// `Unknown` 分支 —— 因此只断言按需读腿自己的读数，用手算值核对）。
+    #[test]
+    fn paged_wav_skips_a_junk_chunk_before_data() {
+        let directory = tempfile::tempdir().expect("临时目录");
+        let path = directory.path().join("paged_junk.wav");
+        let mut data = Vec::new();
+        for value in [-32768_i16, 0, 32767] {
+            data.extend_from_slice(&value.to_le_bytes());
+        }
+        // 偶长 JUNK：两腿一致。
+        let bytes = riff_wav(1, 48_000, 16, false, &data, b"abcd");
+        std::fs::write(&path, &bytes).expect("写 JUNK 夹具");
+        let (whole, _, _) = read_plain_wav_mono_f32(&path).expect("整文件腿读 JUNK 夹具");
+        let mut mapped = PagedWav::open(&path).expect("按需读腿开 JUNK 夹具");
+        assert_eq!(mapped.frames(), 3);
+        let mut out = vec![0.0_f32; 3];
+        assert_eq!(mapped.read_mono_frames(0, &mut out), 3);
+        assert_bit_identical(&out, &whole);
+        // 奇长 JUNK：只核按需读腿（hound 读不了这种文件，不是本腿的问题）。
+        let path_odd = directory.path().join("paged_junk_odd.wav");
+        let bytes_odd = riff_wav(1, 48_000, 16, false, &data, b"abc");
+        std::fs::write(&path_odd, &bytes_odd).expect("写奇长 JUNK 夹具");
+        let mut mapped_odd = PagedWav::open(&path_odd).expect("按需读腿开奇长 JUNK 夹具");
+        let mut out_odd = vec![0.0_f32; 3];
+        assert_eq!(mapped_odd.read_mono_frames(0, &mut out_odd), 3);
+        let expected = vec![-1.0_f32, 0.0, 32767.0_f32 / 32768.0];
+        assert_bit_identical(&out_odd, &expected);
+    }
+
+    /// P3 判据：按需读腿窗口读（起帧偏移、超长 out、越界起帧）与整文件腿切片一致。
+    #[test]
+    fn paged_wav_partial_reads_are_windowed_correctly() {
+        let directory = tempfile::tempdir().expect("临时目录");
+        let path = directory.path().join("mmap_window.wav");
+        let values: Vec<i16> = (0..8).map(|index| (index * 4096 - 16384) as i16).collect();
+        write_plain_wav(
+            &path,
+            &PcmFormat::integer(1, 48_000, 16),
+            &PcmBuffer::Int16(values),
+        )
+        .expect("写窗口夹具");
+        let (whole, _, _) = read_plain_wav_mono_f32(&path).expect("整文件腿读窗口夹具");
+        let mut mapped = PagedWav::open(&path).expect("按需读腿开窗口夹具");
+        let mut window = vec![0.0_f32; 4];
+        assert_eq!(mapped.read_mono_frames(3, &mut window), 4);
+        assert_bit_identical(&window, &whole[3..7]);
+        let mut overlong = vec![0.0_f32; 10];
+        assert_eq!(mapped.read_mono_frames(6, &mut overlong), 2);
+        assert_bit_identical(&overlong[..2], &whole[6..8]);
+        let mut empty = vec![0.0_f32; 4];
+        assert_eq!(mapped.read_mono_frames(8, &mut empty), 0);
+        assert_eq!(mapped.read_mono_frames(100, &mut empty), 0);
+    }
+
+    /// P3 判据：接受面之外的格式按需读腿一律拒绝（调用方回落整文件腿，
+    /// 整文件腿对 int32 同样拒绝 ⇒ 行为不扩大）。
+    #[test]
+    fn paged_wav_rejects_formats_outside_its_acceptance_surface() {
+        let directory = tempfile::tempdir().expect("临时目录");
+        // 32 位整数：按需读腿拒绝，整文件腿同样拒绝。
+        let path_int32 = directory.path().join("mmap_int32.wav");
+        let mut data32 = Vec::new();
+        for value in [0_i32, 1_000_000] {
+            data32.extend_from_slice(&value.to_le_bytes());
+        }
+        std::fs::write(&path_int32, riff_wav(1, 48_000, 32, false, &data32, b""))
+            .expect("写 int32 夹具");
+        assert!(
+            PagedWav::open(&path_int32).is_err(),
+            "按需读腿必须拒绝 32 位整数"
+        );
+        assert!(
+            read_plain_wav_mono_f32(&path_int32).is_err(),
+            "整文件腿同样拒绝 32 位整数 ⇒ 拒绝面一致"
+        );
+        // 残帧：mono int16 的 data 只有 3 字节（不是 2 的倍数）。
+        let path_trunc = directory.path().join("mmap_trunc.wav");
+        std::fs::write(
+            &path_trunc,
+            riff_wav(1, 48_000, 16, false, &[0u8, 1, 2], b""),
+        )
+        .expect("写残帧夹具");
+        assert!(PagedWav::open(&path_trunc).is_err(), "按需读腿必须拒绝残帧");
+        // 非 WAV。
+        let path_text = directory.path().join("mmap_text.wav");
+        std::fs::write(&path_text, b"not a wav file at all, just text........")
+            .expect("写文本夹具");
+        assert!(
+            PagedWav::open(&path_text).is_err(),
+            "按需读腿必须拒绝非 WAV"
+        );
     }
 }
