@@ -41,9 +41,9 @@ src/oscillator.rs|1130|variable|&oscillator.phase(|variable_needle|needle 非字
 src/oscillator.rs|1201|variable|&v|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
 src/oscillator.rs|1266|variable|&value|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
 src/polysynth.rs|1595|variable||voice| voice.active && voice.freq_hz == freq_hz|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
-src/polysynth.rs|2225|variable||index| {|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
-src/polysynth.rs|2294|variable||index| {|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
-src/polysynth.rs|2753|variable||index| whole[*index].to_bits(|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
+src/polysynth.rs|2233|variable||index| {|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
+src/polysynth.rs|2302|variable||index| {|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
+src/polysynth.rs|2761|variable||index| whole[*index].to_bits(|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
 src/smoothing.rs|472|variable|&smoother.alpha(|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
 src/tape.rs|432|variable|&params.drive|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
 src/tape.rs|433|variable|&params.mix|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点

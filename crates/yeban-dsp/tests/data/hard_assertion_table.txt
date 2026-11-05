@@ -2,7 +2,7 @@
 # 分类口径：float_bits ＝ 判据体内有 to_bits()；integer_count ＝ 只比整数/长度
 # class：hard ＝ 产线可达集无宿主 libm 超越函数；platform ＝ 有（只在本架构有意义）
 #        no_callee ＝ 不调用本 crate 产线函数
-# 合计 306 条：float_bits 79 ／ integer_count 227；其中 hard 64 ／ platform 12
+# 合计 307 条：float_bits 79 ／ integer_count 228；其中 hard 64 ／ platform 12
 # 列：kind | class | reach | host | file | test
 integer_count | no_callee | 0 | - | src/block.rs | accumulate_matches_scalar_reference
 integer_count | no_callee | 0 | - | src/block.rs | mismatched_lengths_are_truncated_instead_of_panicking
@@ -126,12 +126,13 @@ integer_count | no_callee | 0 | - | src/drums/mod.rs | the_voice_discriminants_r
 float_bits | hard | 10 | - | src/envelope.rs | reset_reproduces_a_freshly_built_envelope_bit_for_bit
 integer_count | no_callee | 0 | - | src/envelope.rs | the_first_parameter_request_always_recomputes_the_coefficients
 integer_count | no_callee | 0 | - | src/envelope.rs | zero_sustain_voice_finishes_while_key_held
+integer_count | no_callee | 0 | - | src/filter.rs | drive_actually_distorts_a_sine
 integer_count | no_callee | 0 | - | src/filter.rs | is_transparent_below_the_knee
 integer_count | no_callee | 0 | - | src/filter.rs | never_emits_subnormal_tail_values
-float_bits | hard | 3 | - | src/filter.rs | the_cutoff_ceiling_is_pinned_at_forty_five_percent_of_the_sample_rate
-float_bits | hard | 3 | - | src/filter.rs | the_cutoff_ceiling_ratio_is_pinned_by_a_literal
-float_bits | hard | 3 | - | src/filter.rs | the_drive_range_is_pinned_from_unity_to_the_documented_maximum
-float_bits | hard | 3 | - | src/filter.rs | the_full_resonance_feedback_is_pinned_by_a_literal
+float_bits | hard | 5 | - | src/filter.rs | the_cutoff_ceiling_is_pinned_at_forty_five_percent_of_the_sample_rate
+float_bits | hard | 5 | - | src/filter.rs | the_cutoff_ceiling_ratio_is_pinned_by_a_literal
+float_bits | hard | 6 | - | src/filter.rs | the_drive_range_is_pinned_to_a_uniform_decibel_scale
+float_bits | hard | 5 | - | src/filter.rs | the_full_resonance_feedback_is_pinned_by_a_literal
 float_bits | hard | 1 | - | src/filter.rs | the_saturation_knee_is_pinned_from_both_sides
 float_bits | hard | 6 | - | src/limiter.rs | a_loud_right_channel_drives_the_shared_gain
 integer_count | no_callee | 0 | - | src/limiter.rs | a_peak_exactly_at_the_threshold_is_not_a_reduction

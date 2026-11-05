@@ -2,7 +2,7 @@
 # 列：file|test|category|首条整数断言的证据（截断 90 字符）
 # 口径（R118）：只有 collection_size **界定集合大小** ⇒ 才算非真空下界；
 #   值界／元素值界／条件计数器 **⛔ 不算**。分类优先级：condition_counter > collection_size > element_value_bound > value_bound。
-# 合计 227 条：collection_size 37 ／ value_bound 181 ／ element_value_bound 5 ／ condition_counter 4
+# 合计 228 条：collection_size 37 ／ value_bound 182 ／ element_value_bound 5 ／ condition_counter 4
 src/block.rs|accumulate_matches_scalar_reference|value_bound|assert!((out[i] - expect[i]).abs() < 1e-6, "mismatch at {i}"
 src/block.rs|mismatched_lengths_are_truncated_instead_of_panicking|value_bound|assert_eq!(out[..4], [1.0, 1.0, 1.0, 0.0]
 src/block.rs|mix2_handles_non_multiple_of_four|value_bound|assert!((v - 1.0).abs() < 1e-6
@@ -87,6 +87,7 @@ src/drums/mod.rs|the_steal_fade_cap_is_pinned_for_absurd_sample_rates|collection
 src/drums/mod.rs|the_voice_discriminants_round_trip|collection_size|assert_eq!(usize::from(voice.as_u8()), index
 src/envelope.rs|the_first_parameter_request_always_recomputes_the_coefficients|value_bound|assert!(             short < 0.4,             "请求 10 ms 起振，第 120 帧却到了 {short} ⇒ 起振被当成了 1 个
 src/envelope.rs|zero_sustain_voice_finishes_while_key_held|value_bound|assert_eq!(render(&mut env, true, 128), 0.0
+src/filter.rs|drive_actually_distorts_a_sine|value_bound|assert!(                     thd_db < -70.0,                     "零位必须透明（THD {thd_db:.1} d
 src/filter.rs|is_transparent_below_the_knee|condition_counter|assert!(ratio < -70.0, "filter colours a clean sine: {ratio:.1} dB"
 src/filter.rs|never_emits_subnormal_tail_values|value_bound|assert!(                 value == 0.0 || value.abs() >= f32::MIN_POSITIVE,                
 src/limiter.rs|a_peak_exactly_at_the_threshold_is_not_a_reduction|collection_size|assert_eq!(limiter.reduction_count(), 0
@@ -191,7 +192,7 @@ src/polysynth.rs|stealing_is_deterministic|value_bound|assert_eq!(synth.voice_st
 src/polysynth.rs|the_earliest_voice_is_stolen_first|value_bound|assert_eq!(synth.voice_steals(), 1
 src/polysynth.rs|the_pitch_grid_is_anchored_to_the_note_and_not_to_the_caller_block|value_bound|assert_eq!(whole, at_16, "16 帧切法与整块必须逐位相同"
 src/polysynth.rs|the_second_oscillator_adds_its_own_fundamental|value_bound|assert!(             dual_220 > 20.0 * single_220,             "第二条振荡器必须带来它自己的基频: 单 {singl
-src/polysynth.rs|the_voice_size_is_pinned_after_adding_the_requested_frequency|value_bound|assert_eq!(             size, 296,             "size_of::<PolyVoice>() = {size}（⭐ 实测 296；⭐
+src/polysynth.rs|the_voice_size_is_pinned_after_adding_the_requested_frequency|value_bound|assert_eq!(             size, 304,             "size_of::<PolyVoice>() = {size}（⭐ 实测 304；⭐
 src/polysynth.rs|ties_on_start_sample_are_broken_by_the_smallest_index|value_bound|assert_eq!(synth.voice_steals(), 1
 src/reverb.rs|an_unconfigured_reverb_is_a_passthrough|value_bound|assert!(             (verb.params().mix - 0.5).abs() < 1e-6,             "the finite knob 
 src/reverb.rs|changing_the_pre_delay_length_never_replays_stale_audio|value_bound|assert_eq!(             stale_peak,             0.0,             "预延迟变长后湿路重放了旧长度下写进缓冲的音频：峰
