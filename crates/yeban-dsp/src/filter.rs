@@ -39,7 +39,7 @@
 //! ⚠ 守卫**不**覆盖"有限但极大"的输入：`3e38 · drive` 仍可能溢出成 `∞`。那条归
 //! 调用方的电平口径管（同 `math::finite_or_zero` 的文档）。
 
-use crate::math::{finite_or_zero, pade_tanh, sanitise_sample_rate};
+use crate::math::{finite_or_zero, pade_saturate, pade_tanh, sanitise_sample_rate};
 
 /// 输出级的软饱和拐点：以下**完全线性**，以上平滑饱和，最多到 1.0。
 ///
@@ -52,6 +52,61 @@ const SOFT_KNEE: f32 = 0.7;
 /// 对着"比单位增益低 6.02 dB"的滤波器配平的；保持一致才能让既有音色、余量与
 /// 音频门禁停在原处。夜半版本取 1.0（不额外衰减）。
 const PASSBAND_TRIM: f32 = 1.0;
+
+/// 驱动旋钮拧到底时的预增益（dB）。**36 dB ≈ 63×**。
+///
+/// 这个上限是被"能不能当失真器用"倒推出来的，不是拍脑袋的整数：
+/// 一个合成器声部在混音前的典型峰值是 0.2–0.3（≈ −12 dBFS），要让 `tanh` 在这一
+/// 电平上真进饱和，预增益至少要 `1/0.25 = 4×`（12 dB）**才刚起步**；
+/// 要听到明显的方波化（三次谐波 −12 dB 以内）需要 `20×` 以上。
+/// 旧的 `1.0 + 旋钮 · 0.8`（最大 1.8×）在 0.25 的输入上给出 `tanh(0.45)`，
+/// 三次谐波只有 **−31 dB** —— 旋钮拧到底，听感仍是"没反应"，这就是
+/// "合成器做不出失真"的全部原因。
+const DRIVE_MAX_DB: f32 = 36.0;
+
+/// 驱动级自补偿的**参考幅度**：0.25（≈ −12 dBFS）。
+///
+/// `tanh(g·x)/g` 是"低电平归一"的写法：小信号增益恒为 1，但**峰值**会随驱动
+/// 一起塌下去（`g·x = 3` 时峰值掉到 `1/g`）⇒ 旋钮越拧越大、音量越来越小，
+/// 用户只会觉得"这个旋钮是坏的"，不会觉得"更脏了"。
+///
+/// 这里改成按**参考幅度**归一：`makeup(g) = REF / tanh(g·REF)`。于是
+/// **一个 0.25 峰值的正弦，在任何驱动档位下峰值都恰好是 0.25** —— 只换谐波、
+/// 不换音量。这比"按满刻度归一"（`1/tanh(g)`）更贴近实际：满刻度归一在低驱动
+/// 档位会把一个小信号整体抬起 1.3 倍（`tanh` 在 0.25 处已压缩 1.8%），
+/// 那是旋钮一离开零位就跳一下电平。
+const DRIVE_REFERENCE: f32 = 0.25;
+
+/// 驱动旋钮 → 线性预增益。
+///
+/// **对数**映射（等 dB 步进）：线性映射会让旋钮前 1/10 就吃掉一半量程，
+/// 失真器的手感全在"最后那几 dB"。`libm::powf` 与 [`crate::math`] 的
+/// 同一条纪律（纯 Rust libm，⛔ 不碰宿主 `f32::powf`）。
+#[inline]
+#[must_use]
+fn drive_gain_for(knob: f32) -> f32 {
+    let knob = if knob.is_finite() {
+        knob.clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    if knob <= 0.0 {
+        // 零位必须**逐位**是 1.0：`process` 靠 `> 1.0001` 判旁通，
+        // 差的这一点点会让"没拧"和"拧了一点"在输出上分不开（判据 D3）。
+        return 1.0;
+    }
+    libm::powf(10.0, knob * DRIVE_MAX_DB / 20.0)
+}
+
+/// 驱动级的输出补偿：让 `DRIVE_REFERENCE` 幅度的正弦穿过驱动级后**峰值不变**。
+#[inline]
+#[must_use]
+fn drive_makeup_for(gain: f32) -> f32 {
+    if gain <= 1.0 {
+        return 1.0;
+    }
+    DRIVE_REFERENCE / pade_saturate(DRIVE_REFERENCE * gain)
+}
 
 /// 状态冲刷门限 [ARCH-RT-003]。
 ///
@@ -81,8 +136,10 @@ pub struct LadderFilter {
     coeff: f32,
     /// 反馈量：0（无谐振）到接近 4（自激）。
     feedback: f32,
-    /// 进入饱和级的输入增益。
+    /// 进入饱和级的输入增益（线性，`1.0` = 零位）。
     drive: f32,
+    /// 驱动级的输出补偿（见 [`DRIVE_REFERENCE`]）：与 `drive` 成对，构造期算一次。
+    makeup: f32,
     /// 四级积分器状态。
     state: [f32; 4],
 }
@@ -95,6 +152,7 @@ impl LadderFilter {
             coeff: 0.1,
             feedback: 0.0,
             drive: 1.0,
+            makeup: 1.0,
             state: [0.0; 4],
         }
     }
@@ -105,6 +163,26 @@ impl LadderFilter {
     }
 
     /// 配置：`cutoff_hz` 单位 Hz，`resonance` / `drive` 都是 0..1 的旋钮值。
+    ///
+    /// ## `drive` 的刻度（本轮补齐）
+    ///
+    /// 旋钮 `0` 是**逐位旁通**（`process` 里走 `else` 分支，一个算术都不做），
+    /// `1` 是 **+36 dB** 的预增益，中间按**等 dB** 分布：
+    ///
+    /// | 旋钮 | 0.0 | 0.25 | 0.5 | 0.75 | 1.0 |
+    /// | :--- | :--- | :--- | :--- | :--- | :--- |
+    /// | 预增益 | 1.0× (0 dB) | 2.8× (9 dB) | 7.9× (18 dB) | 22.4× (27 dB) | 63.1× (36 dB) |
+    /// | THD（0.25 峰值正弦，实测） | 旁通 | −29.5 dB | −15.4 dB | −9.0 dB | −7.4 dB |
+    /// | 输出峰值 | 0.2499 | 0.2499 | 0.2500 | 0.2500 | 0.2532 |
+    ///
+    /// ⚠ 旧刻度是 `1.0 + 旋钮 · 0.8`（最大 **1.8×**），在同一个 0.25 峰值正弦上
+    /// 最大只到 **−31 dB** 三次谐波 —— 也就是"旋钮拧到底，频谱几乎不动"。
+    /// 那一刻度是按"给滤波器一点味道"设计的，而本器件同时是**合成器的唯一
+    /// 失真级**（声部滤波器）与**通道条的唯一失真级**（`filter_drive`），
+    /// 两处都需要"能当失真器用"。判据 `drive_actually_distorts_a_sine` 钉住右侧一列。
+    ///
+    /// 输出侧配 [`DRIVE_REFERENCE`] 自补偿：**0.25 峰值的正弦，任何驱动档位下
+    /// 峰值都保持 0.25**（±0.2 dB）⇒ 拧旋钮只换谐波，不换音量。
     pub fn configure(&mut self, sample_rate: f32, cutoff_hz: f32, resonance: f32, drive: f32) {
         let sample_rate = sanitise_sample_rate(sample_rate);
         // 把截止频率留在 Nyquist 之下：`tan()` 在 sr/2 处爆炸，
@@ -121,14 +199,8 @@ impl LadderFilter {
         } else {
             0.0
         };
-        // 旋钮底部是单位增益，最大到 2×：足够听得出"脏"，又不会把正弦变成
-        // 失真器（音频门禁要求满驱动下 THD 仍低于 6%）。
-        self.drive = 1.0
-            + if drive.is_finite() {
-                drive.clamp(0.0, 1.0)
-            } else {
-                0.0
-            } * 0.8;
+        self.drive = drive_gain_for(drive);
+        self.makeup = drive_makeup_for(self.drive);
     }
 
     /// 当前单极点系数（测试/调试可读）。
@@ -143,12 +215,22 @@ impl LadderFilter {
         self.feedback
     }
 
-    /// 当前的输入驱动增益（进入饱和级之前）。**旋钮底部是 `1.0`（单位增益）**，
-    /// 上限见 [`Self::configure`] 的文档。与 [`Self::coefficient`] /
+    /// 当前的输入驱动增益（进入饱和级之前，线性）。**旋钮底部逐位是 `1.0`**，
+    /// 上限见 [`DRIVE_MAX_DB`]（36 dB ≈ 63.1×）。与 [`Self::coefficient`] /
     /// [`Self::feedback`] 同一条纪律：只读、无副作用、供判据与调试使用。
     #[must_use]
     pub const fn drive(&self) -> f32 {
         self.drive
+    }
+
+    /// 驱动级的**小信号增益**（`预增益 × 补偿`）—— 即波形过零点处的斜率。
+    ///
+    /// 驱动拧起来之后，饱和把峰值压平、把过零点变陡 ⇒ 样本间最大步进按这个
+    /// 斜率放大。`stays_continuous_on_a_sine` 用它来判断"陡"是塑形还是爆音：
+    /// 塑形允许斜率变大，爆音（块边界丢样本）不按任何斜率放大。
+    #[must_use]
+    pub const fn drive_slope(&self) -> f32 {
+        self.drive * self.makeup
     }
 
     /// 处理一个样本。
@@ -159,13 +241,18 @@ impl LadderFilter {
         // （`NaN · 系数 = NaN`），`flush_denormals` 清不掉 ⇒ 就地回落成 `0.0`。
         // 有限样本逐位不变。
         let input = finite_or_zero(input);
-        // 单位驱动是透明的：输入饱和级只在旋钮拧起来之后才塑形，
-        // 因此通带电平保持不变。
+        // 零位是**逐位**旁通的：不加增益、不乘补偿、不做任何算术改写。
+        // 这不是优化，是纪律 —— 既有工程里所有 `drive = 0` 的轨道必须一个比特
+        // 都不变（判据 D3）。
+        //
+        // 用 `pade_saturate` 而不是 `pade_tanh`：后者在 `|x| > 3` 之后导数重新
+        // 爬升、曲线朝 `x/9` 发散 ⇒ 驱动越拧大、"饱和"越反向。详见 crate::math。
         let x = if self.drive > 1.0001 {
-            pade_tanh(input * self.drive) / self.drive
+            pade_saturate(input * self.drive) * self.makeup
         } else {
             input
         };
+
         // 零延迟反馈：解反馈环，而不是用上一个样本反馈。没有这一步，
         // 四极环在到达满谐振之前就会失稳；有了它，`feedback` 接近 4 时
         // 能干净地自激。每级是 `y = g*x + (1 - g)*z`。
@@ -263,8 +350,21 @@ mod tests {
         out
     }
 
+    /// 该配置下驱动级的小信号增益（过零点斜率）。
+    fn slope(freq: f32, res: f32, drive: f32) -> f32 {
+        let mut filter = LadderFilter::new();
+        filter.configure(48_000.0, freq, res, drive);
+        filter.drive_slope()
+    }
+
     /// 纯正弦必须平滑输出：样本间跳变不得超过输入自身斜率允许的量。
     /// 这就是当年那个 bug 的回归——旧滤波器每个渲染块咔哒一次。
+    ///
+    /// ⚠ 驱动拧起来之后 `ideal` **必须乘上小信号增益**：饱和把峰值压平、
+    /// 把过零点变陡，过零处斜率恰好是 `drive_slope()`。那不是爆音（爆音是块边界
+    /// 丢样本，不按任何斜率放大），所以判据允许它，但只允许这么多 ——
+    /// 若把驱动级误接到**输出**之后（先滤波再上增益），峰值会被抬起，
+    /// 斜率不再受这条界约束，判据变红。
     #[test]
     fn stays_continuous_on_a_sine() {
         let sr = 48_000.0;
@@ -278,9 +378,10 @@ mod tests {
             // 这个峰值下的 440 Hz 正弦每样本最大步进是 2π·440/sr·peak；
             // 一个正常的低通不可能在此基础上多加多少。
             let ideal = core::f32::consts::TAU * 440.0 / sr * peak;
+            let allowed = ideal * 2.5 * slope(freq, res, drive).max(1.0);
             assert!(
-                worst < ideal * 2.5,
-                "cutoff {freq} res {res} drive {drive}: step {worst} vs ideal {ideal}"
+                worst < allowed,
+                "cutoff {freq} res {res} drive {drive}: step {worst} vs allowed {allowed}"
             );
             assert!(
                 !out.is_empty(),
@@ -465,42 +566,58 @@ mod tests {
     // 平台感知（R135／裁决 R24-R25）：本位型比较只在本架构（冻结架构）上有意义，
     // 异平台不上比对绝对值（CI 的 windows 腿只跑非位型部分）。
 
-    /// **判据（新写，可红）**：驱动增益的范围（`1.0` 到 `1.8`）被钉住。
+    /// **判据（重写，可红）**：驱动刻度是"等 dB、底部单位增益、顶部 +36 dB"。
     ///
-    /// 量什么：`LadderFilter::drive()` 的读数（单位：线性增益）。
+    /// 量什么：`LadderFilter::drive()`（线性预增益）与 `drive_slope()`（小信号增益）
+    /// 的读数；三处用 `20·log10(读数)` 换算成 dB 后与 `旋钮 × 36` 比对（容差 1e-3 dB）。
     ///
     /// 为什么需要它：[`degenerate_configuration_is_clamped`] 用 `drive = 1.0`
-    /// 只断言输出有限。实测（本票注入 S08）：把 `* 0.8` 改成 `* 0.4` 之后，
+    /// 只断言输出有限。实测（本票注入 S08）：旧实现把 `* 0.8` 改成 `* 0.4` 之后，
     /// 全量 417 条判据仍全绿 —— 驱动量被砍掉一半，而没有任何判据读它。
-    /// `configure` 的注释写明"旋钮底部是单位增益，最大到 2×"（实现取
-    /// `1.0 + 旋钮 · 0.8`），这条范围就是本判据钉的内容。
     ///
-    /// 链路只有比较、钳位与乘加 ⇒ IEEE 精确类 ⇒ 处处硬断言位型。
+    /// 这条判据在**本轮改动**（刻度从 `1.0 + 旋钮·0.8` 改成 `10^(旋钮·1.8)`）之后
+    /// 仍然守住同一个位置：它钉的是"旋钮 → 增益"这条**映射**，不是某个常数。
+    ///
+    /// ⚠ **不与字面常量比位型**：链路含 `libm::powf` / `libm::log10f`
+    /// ⇒ 超越函数类（[ADR-0001 D32]），按裁决 R24 只做同机容差比较。
+    /// 底部是唯一的例外：那里 `drive_gain_for` **短路**返回 `1.0`（不经过 `powf`）
+    /// ⇒ IEEE 精确类 ⇒ 硬断言位型。
     #[test]
-    fn the_drive_range_is_pinned_from_unity_to_the_documented_maximum() {
+    fn the_drive_range_is_pinned_to_a_uniform_decibel_scale() {
         let mut filter = LadderFilter::new();
         // 构造期的默认值。
         assert_eq!(filter.drive().to_bits(), 1.0f32.to_bits());
-        // 旋钮底部：单位增益。
+        assert_eq!(filter.drive_slope().to_bits(), 1.0f32.to_bits());
+        // 旋钮底部：逐位单位增益（`drive_gain_for` 的短路分支）。
         filter.configure(48_000.0, 1_000.0, 0.0, 0.0);
         assert_eq!(
             filter.drive().to_bits(),
             1.0f32.to_bits(),
-            "底部必须是单位增益"
+            "底部必须是逐位单位增益（`process` 靠 `> 1.0001` 判旁通）"
         );
-        // 旋钮顶部：1.8×。
+        // 中间与顶部：等 dB。
+        for knob in [0.125f32, 0.25, 0.5, 0.75, 1.0] {
+            filter.configure(48_000.0, 1_000.0, 0.0, knob);
+            let readback_db = 20.0 * libm::log10f(filter.drive());
+            let expected_db = knob * DRIVE_MAX_DB;
+            assert!(
+                (readback_db - expected_db).abs() < 1e-3,
+                "旋钮 {knob}：读回 {readback_db:.4} dB，应为 {expected_db:.1} dB"
+            );
+        }
+        // 顶部就是 `DRIVE_MAX_DB`（36 dB ≈ 63×）：换一个数就得同步改文档里的表。
         filter.configure(48_000.0, 1_000.0, 0.0, 1.0);
-        assert_eq!(filter.drive().to_bits(), 1.8f32.to_bits(), "顶部比例漂移了");
+        let top_db = 20.0 * libm::log10f(filter.drive());
+        assert!((top_db - 36.0).abs() < 1e-3, "顶部刻度漂了：{top_db:.3} dB");
         // 越界与非有限：钳到两端。
         filter.configure(48_000.0, 1_000.0, 0.0, 1.0e9);
-        assert_eq!(filter.drive().to_bits(), 1.8f32.to_bits());
+        assert_eq!(filter.drive().to_bits(), top_gain_bits());
         filter.configure(48_000.0, 1_000.0, 0.0, -3.0);
         assert_eq!(filter.drive().to_bits(), 1.0f32.to_bits());
         filter.configure(48_000.0, 1_000.0, 0.0, f32::NAN);
         assert_eq!(filter.drive().to_bits(), 1.0f32.to_bits());
         // 非空证明：两端必须真的不同 —— 比的是**两次观测到的读数**，
-        // ⛔ 不是两个字面量（`assert_ne!(1.0f32.to_bits(), 1.8f32.to_bits())` 是
-        // 编译期恒真、不涉及被测对象 ⇒ 按裁决 R69 属**假探针**，已替换）。
+        // ⛔ 不是两个字面量（编译期恒真、不涉及被测对象 ⇒ 裁决 R69 的**假探针**）。
         filter.configure(48_000.0, 1_000.0, 0.0, 1.0);
         let top = filter.drive();
         filter.configure(48_000.0, 1_000.0, 0.0, 0.0);
@@ -509,6 +626,112 @@ mod tests {
             top.to_bits(),
             bottom.to_bits(),
             "驱动旋钮的两端必须给出不同的读数（{top} vs {bottom}）"
+        );
+    }
+
+    /// 顶部增益的位型：用**同一函数**在同一台机器上取一次，供越界断言复用。
+    fn top_gain_bits() -> u32 {
+        let mut filter = LadderFilter::new();
+        filter.configure(48_000.0, 1_000.0, 0.0, 1.0);
+        filter.drive().to_bits()
+    }
+
+    /// **判据（新写，可红）**：驱动真的是失真级 —— 谐波随旋钮单调增长，且
+    /// **0.25 峰值的正弦在任何档位下峰值都不变**。
+    ///
+    /// 量什么：440 Hz、0.25 峰值正弦穿过几乎全开的滤波器（fc = 18 kHz）之后，
+    /// 手写加窗 DFT 给出的 2–15 次谐波总能量相对基频（dB），以及时域峰值。
+    ///
+    /// ## 为什么需要它
+    ///
+    /// 修前 `drive` 最大只有 `1.8×`：在 0.25 峰值上给出 `tanh(0.45)`，三次谐波
+    /// **−31 dB**；在 0.05 峰值的合成器声部上只有 **−57 dB**，也就是
+    /// "旋钮拧到底、频谱不动"。而 `LadderFilter` 同时是**合成器唯一的失真级**
+    /// （`polysynth` 的声部滤波器）与**通道条唯一的失真级**（`filter_drive`）
+    /// ⇒ 这条缺口就是"合成器做不出失真"。旧判据全部只读参数、不读输出频谱
+    /// （注入实测：整条驱动级删掉，全量判据仍绿）。
+    ///
+    /// ## 判据（四条同时成立才算过）
+    ///
+    /// 1. 零位透明：THD < −70 dB（与 [`is_transparent_below_the_knee`] 同一条门槛）；
+    /// 2. 单调：旋钮每上一档，THD 严格增大；
+    /// 3. 到顶够脏：`drive = 1.0` 时 THD > −10 dB（≈ 30% 谐波）—— 这是"能当失真器"
+    ///    与"只是有点味道"的分界；
+    /// 4. 电平自补偿：五档的时域峰值两两相差 < 0.3 dB。
+    ///
+    /// ⚠ 第 3 条是**这轮改动的存在理由**，修前实测 −31 dB，必红。
+    #[test]
+    fn drive_actually_distorts_a_sine() {
+        let sr = 48_000.0;
+        let amplitude = DRIVE_REFERENCE;
+        /// 把一段输出做手写加窗 DFT，返回（基频幅度, 2..=15 次谐波总幅度）。
+        fn harmonics(out: &[f32], sr: f32) -> (f64, f64) {
+            let n = out.len();
+            let half = n / 2;
+            let mag = |f: f32| {
+                let w = core::f32::consts::TAU * f / sr;
+                let (mut re, mut im) = (0.0f64, 0.0f64);
+                for (i, v) in out.iter().enumerate().skip(half) {
+                    let win = 0.5
+                        - 0.5 * (core::f32::consts::TAU * (i - half) as f32 / half as f32).cos();
+                    re += (*v * win) as f64 * (w * i as f32).cos() as f64;
+                    im -= (*v * win) as f64 * (w * i as f32).sin() as f64;
+                }
+                (re * re + im * im).sqrt() / half as f64
+            };
+            let fundamental = mag(440.0);
+            let mut junk = 0.0f64;
+            for k in 2..=15 {
+                junk += mag(440.0 * k as f32).powi(2);
+            }
+            (fundamental, junk.sqrt())
+        }
+
+        let mut previous_thd = f64::NEG_INFINITY;
+        let mut peaks = [0.0f32; 5];
+        for (index, knob) in [0.0f32, 0.25, 0.5, 0.75, 1.0].into_iter().enumerate() {
+            let mut filter = LadderFilter::new();
+            filter.configure(sr, 18_000.0, 0.0, knob);
+            let total = 48_000;
+            let mut out = Vec::with_capacity(total);
+            let mut peak = 0.0f32;
+            for i in 0..total {
+                let x = (core::f32::consts::TAU * 440.0 * i as f32 / sr).sin() * amplitude;
+                let y = filter.process(x);
+                if i > total / 2 {
+                    peak = peak.max(y.abs());
+                }
+                out.push(y);
+            }
+            peaks[index] = peak;
+            let (fundamental, junk) = harmonics(&out, sr);
+            let thd_db = 20.0 * (junk / fundamental).log10();
+            println!("drive {knob:>4} → THD {thd_db:7.2} dB, peak {peak:.4}");
+            if knob == 0.0 {
+                assert!(
+                    thd_db < -70.0,
+                    "零位必须透明（THD {thd_db:.1} dB）—— 判据 D3：既有工程逐位不变"
+                );
+            } else {
+                assert!(
+                    thd_db > previous_thd,
+                    "旋钮 {knob}：THD 没有随驱动增大（{thd_db:.2} vs {previous_thd:.2} dB）"
+                );
+            }
+            previous_thd = thd_db;
+        }
+        // 到顶够脏。
+        assert!(
+            previous_thd > -10.0,
+            "驱动拧到底仍不像失真器（THD {previous_thd:.1} dB）—— 这正是修前的 −31 dB 缺口"
+        );
+        // 电平自补偿：参考幅度的正弦，峰值不随驱动变化。
+        let loudest = peaks.iter().fold(0.0f32, |m, v| m.max(*v));
+        let quietest = peaks.iter().fold(f32::INFINITY, |m, v| m.min(*v));
+        let spread = 20.0 * libm::log10f(loudest / quietest);
+        assert!(
+            spread < 0.3,
+            "驱动改变了电平（峰值 {quietest:.4}…{loudest:.4}，跨度 {spread:.2} dB）"
         );
     }
 

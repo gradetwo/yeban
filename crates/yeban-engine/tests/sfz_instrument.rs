@@ -267,8 +267,10 @@ fn fnv1a_64(samples: &[f32]) -> u64 {
 /// `EngineRuntime` 的现读尺寸（⭐ `#261` 的 186720 = `#173` 的 181936 ＋ 逐边发送量表/
 /// 平滑器/重放副本 **4784 B**；⭐ **S1 第一片**再加两个 `u64` 事件计数
 /// `strip_output_gain_events` / `strip_output_gain_value_rejects` = **＋16 B** ⇒ **现读 186736**；
-/// 门槛仍是 192 KiB = 196608）。
-const ENGINE_RUNTIME_BYTES: usize = 45_648;
+/// 门槛仍是 192 KiB = 196608）。⭐ **`P6` 插入式限制器片** ＋32 B ⇒ **现读 45680**
+/// （母线限制器新增 `ceiling`/`true_peak`/`history`；窗口已改常量泛型，192 帧存储只在
+/// `InsertLimiter` 里，运行时不背）。
+const ENGINE_RUNTIME_BYTES: usize = 45_680;
 
 /// S5 夹具：两个音符（1 tick = 25 样本）。⭐ 本夹具与**接线前**测指纹时**一字不差**。
 const SFZ_NOTES: [NoteSpec; 2] = [

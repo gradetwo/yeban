@@ -153,7 +153,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use yeban_dsp::channel_strip::{ChannelStrip, ChannelStripParams, MONO_BELOW_BYPASS_HZ};
 use yeban_dsp::convolution_reverb::{ConvolutionReverb, ConvolutionReverbParams};
 use yeban_dsp::delay::{Delay, DelayParams};
-use yeban_dsp::device_param::delay_params_from_stage;
+use yeban_dsp::device_param::{LimiterField, delay_params_from_stage};
+use yeban_dsp::limiter::{InsertLimiter, LimiterParams};
 use yeban_dsp::noise::Rng;
 use yeban_dsp::oversample::OS_TAPS;
 use yeban_dsp::reverb::{Reverb, ReverbParams};
@@ -264,6 +265,12 @@ pub struct InsertChain {
     /// 乒乓延迟参数（音符同步已在投影期按工程 `bpm` 换算成 `time_s`）；
     /// `None` = 本轨没有延迟。
     delay: Option<DelayParams>,
+    /// 插入式限制器参数；`None` = 本轨没有限制器。
+    ///
+    /// ⚠ 它是本链**唯一**会引入延迟的器件（前瞻 = [`LimiterParams::latency_frames`]），
+    /// 因此渲染计划必须把那几帧加进本节点的 `latency`（见 [`crate::render::track_latencies`]），
+    /// 否则多轨合流时这一轨整体前移一个前瞻长度。
+    limiter: Option<LimiterParams>,
     /// **编译期强制实例化通道条**（任务单 `#266`）。
     ///
     /// `true` = 本轨有**非恒等**的 `DeviceParam` 泳道 ⇒ 即使投影结果是"全恒等"
@@ -286,6 +293,9 @@ pub struct InsertChain {
     /// **编译期强制实例化乒乓延迟**（与 `#293` 同理）：静态 `delay_mix: 0`
     /// 时运行态不建器件，但一条非恒等延迟泳道会在块边界把它拉起来。
     force_delay: bool,
+    /// **编译期强制实例化限制器**（与 `#293` 同理）：一条非恒等的限制器泳道
+    /// 在块边界改参数时，器件必须已经存在。
+    force_limiter: bool,
 }
 
 impl InsertChain {
@@ -298,11 +308,13 @@ impl InsertChain {
             reverb: None,
             convolution: None,
             delay: None,
+            limiter: None,
             force_strip: false,
             force_saturation: false,
             force_reverb: false,
             force_convolution: false,
             force_delay: false,
+            force_limiter: false,
         }
     }
 
@@ -324,6 +336,7 @@ impl InsertChain {
         let mut reverb: Option<ReverbParams> = None;
         let mut convolution: Option<ConvolutionPlan> = None;
         let mut delay: Option<DelayParams> = None;
+        let mut limiter: Option<LimiterParams> = None;
         for device in devices {
             if device.bypassed || device.kind != DeviceKind::InternalEffect {
                 continue;
@@ -343,11 +356,15 @@ impl InsertChain {
             if delay.is_none() {
                 delay = delay_of(device, bpm);
             }
+            if limiter.is_none() {
+                limiter = limiter_of(device);
+            }
             if strip.is_some()
                 && saturation.is_some()
                 && reverb.is_some()
                 && convolution.is_some()
                 && delay.is_some()
+                && limiter.is_some()
             {
                 break;
             }
@@ -358,11 +375,13 @@ impl InsertChain {
             reverb,
             convolution,
             delay,
+            limiter: limiter.map(LimiterParams::sanitised),
             force_strip: false,
             force_saturation: false,
             force_reverb: false,
             force_convolution: false,
             force_delay: false,
+            force_limiter: false,
         }
     }
 
@@ -434,6 +453,25 @@ impl InsertChain {
         self.force_delay
     }
 
+    /// 置"强制实例化限制器"位（与 `#293` 同理）。见 [`Self::force_limiter`]。
+    #[must_use]
+    pub const fn with_forced_limiter(mut self, force: bool) -> Self {
+        self.force_limiter = force;
+        self
+    }
+
+    /// 本链是否被编译期强制实例化了限制器（读数用）。
+    #[must_use]
+    pub const fn is_forced_limiter(&self) -> bool {
+        self.force_limiter
+    }
+
+    /// 本链的插入式限制器参数（读数用）。
+    #[must_use]
+    pub const fn limiter(&self) -> Option<LimiterParams> {
+        self.limiter
+    }
+
     /// 本链是否为空（没有任何**离线会执行**的器件）。
     ///
     /// ⭐ `#303`：**只有压缩参数的通道条算非空** —— 压缩级现在真的执行（§1.1）。
@@ -445,6 +483,7 @@ impl InsertChain {
             && self.reverb.is_none()
             && self.convolution.is_none()
             && self.delay.is_none()
+            && self.limiter.is_none()
     }
 
     /// 本链的**静态投影**是否会执行**压缩级**（读数用；⛔ 不是生产判据）。
@@ -598,6 +637,8 @@ pub struct ForcedInsertInstances {
     pub convolution: BTreeSet<EntityId>,
     /// 需要强制实例化乒乓延迟的轨。
     pub delay: BTreeSet<EntityId>,
+    /// 需要强制实例化限制器的轨。
+    pub limiter: BTreeSet<EntityId>,
 }
 
 impl ForcedInsertInstances {
@@ -609,6 +650,7 @@ impl ForcedInsertInstances {
             && self.reverb.is_empty()
             && self.convolution.is_empty()
             && self.delay.is_empty()
+            && self.limiter.is_empty()
     }
 }
 
@@ -631,7 +673,8 @@ pub fn project_inserts_with_forced_instances(
                 .with_forced_saturation(forced.saturation.contains(&id))
                 .with_forced_reverb(forced.reverb.contains(&id))
                 .with_forced_convolution(forced.convolution.contains(&id))
-                .with_forced_delay(forced.delay.contains(&id));
+                .with_forced_delay(forced.delay.contains(&id))
+                .with_forced_limiter(forced.limiter.contains(&id));
             if chain.is_empty() {
                 None
             } else {
@@ -902,6 +945,56 @@ pub fn delay_source_slot(track: &TrackV3) -> Option<usize> {
     })
 }
 
+/// 单台设备 → 限制器参数（`None` = 一个已识别的限制器名字都没有）。
+///
+/// 与 [`tape_of`] 同式：只认 [`LimiterField::SPELLINGS`]（`limiter_` 前缀），
+/// 未写字段保持 [`LimiterParams::DEFAULT`]。
+///
+/// ⚠ 这里**不**做 dB→线性换算：换算需要采样率，而采样率在
+/// [`InsertRuntime::new`] 手里。投影只负责"哪些字段被写过"。
+fn limiter_of(device: &DeviceDefinition) -> Option<LimiterParams> {
+    let mut params = LimiterParams::DEFAULT;
+    let mut seen = false;
+    for param in &device.params {
+        if let Some(field) = LimiterField::from_name(&param.name) {
+            field.store(&mut params, param.value);
+            seen = true;
+        }
+    }
+    if seen { Some(params) } else { None }
+}
+
+/// 本轨 **限制器来源设备**的下标（`from_devices` 的"首个含已识别限制器名字的设备"）。
+///
+/// 与 [`strip_source_slot`] 同一条规则；自动化只能落在这一台上。
+#[must_use]
+pub fn limiter_source_slot(track: &TrackV3) -> Option<usize> {
+    track.devices.iter().position(|device| {
+        !device.bypassed
+            && device.kind == DeviceKind::InternalEffect
+            && limiter_of(device).is_some()
+    })
+}
+
+/// 本轨限制器**来源设备**的投影参数（未 sanitised；器件 `config` 再净化一次）。
+#[must_use]
+pub fn limiter_source_params(track: &TrackV3) -> Option<LimiterParams> {
+    let slot = limiter_source_slot(track)?;
+    limiter_of(&track.devices[slot])
+}
+
+/// 本轨限制器引入的**上报延迟**（帧）。
+///
+/// 渲染计划（[`crate::render::track_latencies`]）要用它，才能让 PDC 把这一轨的
+/// 前瞻延迟补回去。`None` = 本轨没有限制器 ⇒ 0 帧。
+///
+/// ⚠ 判决点**只有** [`limiter_source_slot`] 一处：与"器件真的会被建出来"同一条规则。
+/// 拿整条设备链里任意一台 limiter 设备的 `lookahead` 当延迟，会在"来源设备被旁通、
+/// 后面还有一台"的情形下多报。
+#[must_use]
+pub fn limiter_latency_frames(track: &TrackV3) -> u32 {
+    limiter_source_params(track).map_or(0, LimiterParams::latency_frames)
+}
 /// 本轨乒乓延迟**来源设备**的投影期参数（未换算；音符同步换算在 `delay_of` 里做，
 /// 与 `from_devices` 交给器件的同一份换算前输入）。
 #[must_use]
@@ -1434,6 +1527,12 @@ pub(crate) struct InsertRuntime {
     /// 延迟当前参数（块边界自动化改这一份；`process` 按钳制后 `mix` 门控，
     /// 见 [`Self::process`] 的 `-0.0` 注记）。
     delay_params: DelayParams,
+    /// 插入式限制器状态；`None` = 本轨没有限制器。
+    limiter: Option<InsertLimiter>,
+    /// 限制器当前参数（块边界自动化改这一份，再 `configure` 成器件配置）。
+    limiter_params: LimiterParams,
+    /// 采样率：只为把限制器的 dB/ms 参数换算成器件域（构造期一次，之后复用）。
+    sample_rate: f32,
     /// 左声道去交错缓冲。
     left: Vec<f32>,
     /// 右声道去交错缓冲。
@@ -1546,6 +1645,10 @@ impl InsertRuntime {
                 None
             }
         });
+        let limiter_params = chain.limiter.unwrap_or_default();
+        let limiter = chain
+            .limiter
+            .map(|params| InsertLimiter::with_config(params.config(sample_rate_f32)));
         Self {
             strip,
             saturation,
@@ -1553,6 +1656,9 @@ impl InsertRuntime {
             convolution,
             delay,
             delay_params,
+            limiter,
+            limiter_params,
+            sample_rate: sample_rate_f32,
             left: vec![0.0; block_size],
             right: vec![0.0; block_size],
             key_left: vec![0.0; block_size],
@@ -1578,6 +1684,9 @@ impl InsertRuntime {
         }
         if let Some(delay) = &mut self.delay {
             delay.reset();
+        }
+        if let Some(limiter) = &mut self.limiter {
+            limiter.reset();
         }
     }
 
@@ -1625,6 +1734,18 @@ impl InsertRuntime {
                     convolution.set_params(params);
                 }
             }
+            // 限制器：五个字段先落进参数结构，再整体 `configure`。
+            // `configure` 不清状态（增益不会被块边界拉回 1.0），因此没有复位爆音。
+            // ⚠ 前瞻若在块边界被改，真实延迟变了而上报值没变 —— 见 `LimiterField` 的文档。
+            DeviceParamField::Limiter(field) => {
+                if self.limiter.is_some() {
+                    field.store(&mut self.limiter_params, value);
+                    let config = self.limiter_params.config(self.sample_rate);
+                    if let Some(limiter) = &mut self.limiter {
+                        limiter.configure(config);
+                    }
+                }
+            }
             // 延迟的 5 个器件字段直接写进运行参数（`Delay::process` 每块读它）；
             // 同步四字段是**投影期输入**，块边界没有 `bpm` 可重算 ⇒ 这里不改
             // `time_s`（同步泳道仍报 applied、仍强制建器件，见 ADR-0061）。
@@ -1665,6 +1786,7 @@ impl InsertRuntime {
             convolution,
             delay,
             delay_params,
+            limiter,
             left,
             right,
             tape_upsampled,
@@ -1705,6 +1827,11 @@ impl InsertRuntime {
         {
             delay.process(*delay_params, &mut left[..frames], &mut right[..frames]);
         }
+        // 限制器是链上**最后**一级：它要看到全部前级处理之后的峰值。
+        // 它永远执行（没有 `mix` 概念），因此不走"按参数门控"的那条路。
+        if let Some(limiter) = limiter {
+            limiter.process_stereo(&mut left[..frames], &mut right[..frames]);
+        }
         for frame in 0..frames {
             buffer[2 * frame] = left[frame];
             buffer[2 * frame + 1] = right[frame];
@@ -1735,10 +1862,12 @@ impl InsertRuntime {
             delay_params,
             left,
             right,
+            limiter,
             key_left,
             key_right,
             tape_upsampled,
             tape_scratch,
+            ..
         } = self;
         for frame in 0..frames {
             left[frame] = buffer[2 * frame];
@@ -1780,6 +1909,10 @@ impl InsertRuntime {
             && DelayField::Mix.sanitise(delay_params.mix) != 0.0
         {
             delay.process(*delay_params, &mut left[..frames], &mut right[..frames]);
+        }
+        // 键模式同样落在限制器上（它读节目、不读键 —— 键只喂检波器）。
+        if let Some(limiter) = limiter {
+            limiter.process_stereo(&mut left[..frames], &mut right[..frames]);
         }
         for frame in 0..frames {
             buffer[2 * frame] = left[frame];
@@ -1877,6 +2010,11 @@ mod tests {
             DeviceParamField::Delay(DelayField::SyncDotted) => 0.0,
             DeviceParamField::Delay(DelayField::SyncNum) => 4.0,
             DeviceParamField::Delay(DelayField::SyncDen) => 4.0,
+            DeviceParamField::Limiter(LimiterField::ThresholdDb) => -6.0,
+            DeviceParamField::Limiter(LimiterField::CeilingDb) => -1.5,
+            DeviceParamField::Limiter(LimiterField::ReleaseMs) => 250.0,
+            DeviceParamField::Limiter(LimiterField::Lookahead) => 96.0,
+            DeviceParamField::Limiter(LimiterField::TruePeak) => 0.0,
         }
     }
 
@@ -1937,6 +2075,23 @@ mod tests {
                         convolution_field.read(&device.params()).to_bits(),
                         convolution_field.sanitise(value).to_bits(),
                         "{name} 的器件读数与恒等判定值必须同一个"
+                    );
+                }
+                DeviceParamField::Limiter(limiter_field) => {
+                    let projected = limiter_of(&device(&[(name, value)]))
+                        .unwrap_or_else(|| panic!("{name}={value} 必须被 limiter_of 认出来"))
+                        .sanitised();
+                    // 器件侧再走一次 own 换算：`config` 是唯一一份 dB→线性，
+                    // 判据比的是"投影读数"与"恒等判定读数"，两者都来自同一份 `sanitised`。
+                    let limiter = InsertLimiter::with_config(projected.config(48_000.0));
+                    assert_eq!(
+                        limiter_field.read(&projected.sanitised()).to_bits(),
+                        limiter_field.sanitise(value).to_bits(),
+                        "{name} 的投影值与恒等判定值必须同一个"
+                    );
+                    assert_eq!(
+                        limiter.latency_samples(),
+                        projected.latency_frames() as usize
                     );
                 }
                 DeviceParamField::Delay(delay_field) => {

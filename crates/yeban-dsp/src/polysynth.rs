@@ -1794,18 +1794,26 @@ mod tests {
     /// 因此 `#311b` 选择把形状只放在声部上、被窃取时直接改写
     /// [`PolyVoice::pitch_shape`]（淡出窗口内不更新音高）。
     ///
-    /// ⚠ **每槽成本**：⭐ `VOICES_PER_TRACK = 16` ⇒ ⭐ 一个轨道槽的声部池 = `296 × 16`
-    /// = **`4736`** 字节（⭐ 跨 16 个音轨 = `75776` 字节；⭐ 本判据钉住单声部这一格）。
+    /// ⚠ **每槽成本**：⭐ `VOICES_PER_TRACK = 16` ⇒ ⭐ 一个轨道槽的声部池 = `304 × 16`
+    /// = **`4864`** 字节（⭐ 跨 16 个音轨 = `77824` 字节；⭐ 本判据钉住单声部这一格）。
+    ///
+    /// ⚠ **本轮改动（`P5`，驱动刻度重做）实测 `296 → 304`**：`LadderFilter` 新增
+    /// `makeup: f32`（驱动级的输出补偿，见 `filter.rs` 的 `DRIVE_REFERENCE`）。
+    /// `PolyVoice` 里塞进 4 B 之后越过 8 字节对齐 ⇒ 实测 `304`（+8 B/声部
+    /// ⇒ 一个轨道槽 +128 B、16 轨 +2048 B）。**没有**把它做成 `process` 里现算：
+    /// 那是每样本一次除法 + 一次有理式求值，乘 16 声部 × 48 kHz 是 2.3 M 次/秒，
+    /// 而 `configure` 只在换音色时调用一次 ⇒ 存下来是划算的那一侧。
     #[test]
     fn the_voice_size_is_pinned_after_adding_the_requested_frequency() {
         let size = core::mem::size_of::<PolyVoice>();
         eprintln!("DIAGNOSTIC PolyVoice size_of = {size}");
-        // ⭐ **实测值**（本机 48 kHz 构建，⭐ 2026-10-25 加 `pitch_shape: u16` 之后重取）：⭐ `296` 字节。
+        // ⭐ **实测值**（本机 48 kHz 构建，⭐ `P5` 加 `LadderFilter::makeup` 之后重取）：⭐ `304` 字节。
         // ⭐ 加 `freq_hz: f32` 之前是 `292`；⭐ `pending_freq_hz` ＋ `pending_released`
-        // 两字段实测落进既有填充；⭐ `pitch_shape: u16` 填进尾部 2 B padding。
+        // 两字段实测落进既有填充；⭐ `pitch_shape: u16` 填进尾部 2 B padding（仍 296）；
+        // ⭐ `P5` 的 `makeup: f32` 越过 8 B 对齐 ⇒ `304`。
         assert_eq!(
-            size, 296,
-            "size_of::<PolyVoice>() = {size}（⭐ 实测 296；⭐ 上一票 296 = 加 freq_hz 之前的 292 + 4）\
+            size, 304,
+            "size_of::<PolyVoice>() = {size}（⭐ 实测 304；⭐ 上一票 296，`P5` 的 `LadderFilter::makeup` +8）\
              ⇒ 布局变了 ⇒ 重新测量并把新值钉在这里"
         );
     }

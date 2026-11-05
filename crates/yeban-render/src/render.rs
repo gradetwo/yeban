@@ -81,12 +81,21 @@ use crate::sum;
 /// 而不仅仅是性能选择: 块大小变了, 参数平滑与延迟线的时间量化就变了。
 pub const L1_BLOCK_SIZE: usize = 128;
 
+/// 缺省工作线程数：可用并行度（Nightfall v1，Wang 2026-11-01 定：离线渲染缺省改多线程）。
+/// 显式 `threads` 仍优先；取不到并行度时退回 1 线程。
+fn default_thread_count() -> usize {
+    std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(1)
+}
+
 /// 渲染选项。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RenderOptions {
     /// 处理块大小 (帧)。默认 [`L1_BLOCK_SIZE`]。
     pub block_size: usize,
-    /// 工作线程数。`None` = 由 Rayon 决定。
+    /// 工作线程数。`None` = 缺省多线程（可用并行度，与 Rayon 不设 `num_threads`
+    /// 时的缺省一致）。
     pub threads: Option<usize>,
     /// 确定性随机种子 ([ARCH-DET-001] "固定种子 PRNG")。渲染器自身不使用熵源;
     /// 它把种子透传给样本源 (抖动/噪声必须由它派生)。
@@ -652,13 +661,21 @@ pub fn track_latencies(tracks: &BTreeMap<EntityId, TrackV3>) -> BTreeMap<EntityI
     tracks
         .iter()
         .map(|(id, track)| {
-            let total = track
+            let declared = track
                 .devices
                 .iter()
                 .filter(|device| !device.bypassed)
                 .fold(0u32, |accumulated, device| {
                     accumulated.saturating_add(device.latency_samples)
                 });
+            // 内置限制器的前瞻延迟**不由模型声明**：`latency_samples` 是给插件用的
+            // 字段，而限制器的延迟是它自己的参数（`limiter_lookahead`，单位帧）。
+            // 这里把那一份加进来 —— 判决点只有 `limiter_source_slot` 一处，与
+            // "器件真的会被建出来"同一条规则（旁通/非来源设备都不计）。
+            //
+            // ⚠ 不加这一段，一条带限制器的轨会比别的轨**早**一个前瞻长度到达求和点，
+            // 听感是这一轨整体前移（0.7–4 ms），叠加时会梳状滤波。
+            let total = declared.saturating_add(crate::inserts::limiter_latency_frames(track));
             (*id, total)
         })
         .collect()
@@ -1309,13 +1326,15 @@ impl RenderPlan {
         }
 
         let pool = rayon::ThreadPoolBuilder::new()
-            // `None`（auto）解析为 **1 线程**，依据是**实测扫描**而不是直觉：在参考机（M2 Max）上以
-            // tracks=4/8/16/32/64、各 30 秒扫过两种模式，**并行在每一个尺寸都更慢**（1.9–4.4×；
-            // 32 轨时 auto 95.5× vs 单线程 229.3×），说明这条路是**开销/带宽受限**而非粒度受限 ——
-            // 为一个 ~130 ms 的顺序任务转 12 个线程、还要做固定顺序合并（为保 bit-exact），是亏本买卖。
-            // 因此默认不再启用并行；要用多核请显式 `with_threads(n)`，其逐字节等价性由 lib.rs 的
-            // 1/2/4/8 线程等价判据守着。等有人**量出**真正的交叉点再改回按阈值启用。
-            .num_threads(self.options.threads.unwrap_or(1))
+            // ⭐ Nightfall v1（Wang 2026-11-01 定）：离线渲染缺省改多线程。`None`
+            // 解析为可用并行度（见 [`default_thread_count`]），与 Rayon 不设
+            // `num_threads` 时的缺省一致；显式 `with_threads(n)` 仍优先。
+            // 历史实测保留作参考：在参考机（M2 Max）上以 tracks=4/8/16/32/64、各 30 秒
+            // 扫过两种模式，并行在每一个尺寸都更慢（1.9–4.4×；32 轨时 auto 95.5× vs
+            // 单线程 229.3×）——这条路是开销/带宽受限而非粒度受限。缺省改为多线程是
+            // 产品决定，不是对该实测的推翻；多线程与单线程逐字节一致由 lib.rs 的
+            // 1/2/4/8 线程等价判据守着。
+            .num_threads(self.options.threads.unwrap_or_else(default_thread_count))
             .build()
             .map_err(|error| RenderError::ThreadPool(error.to_string()))?;
 
@@ -1719,6 +1738,29 @@ mod tests {
         assert_eq!(reference.channels, 2);
         assert_eq!(reference.blocks, 16, "2048 / 128 = 16 块");
         assert_eq!(reference.samples.len(), 2_048 * 2);
+    }
+
+    /// ⭐ Nightfall v1：缺省（`threads: None`）走多线程解析，输出仍与单线程逐位相同。
+    /// 这条判据直接跑缺省路径（`default_thread_count`），而不是显式 `with_threads`。
+    #[test]
+    fn default_options_render_matches_single_thread() {
+        let (routing, master, sources) = star_graph(16);
+        let options = RenderOptions::l1(2_048, 2, 48_000, 0xC0FF_EE00);
+        assert_eq!(options.threads, None, "l1 缺省 threads = None");
+        let mut default_plan = RenderPlan::compile(&routing, master, options).expect("编译");
+        let default_output = default_plan
+            .execute(synthetic_sources(&sources, options.seed))
+            .expect("渲染");
+        let mut single_plan =
+            RenderPlan::compile(&routing, master, options.with_threads(1)).expect("编译");
+        let single_output = single_plan
+            .execute(synthetic_sources(&sources, options.seed))
+            .expect("渲染");
+        assert_eq!(
+            default_output.digest, single_output.digest,
+            "缺省多线程的输出与 1 线程不同 —— 缺省路径没有走等价解析"
+        );
+        assert_eq!(default_output.samples, single_output.samples);
     }
 
     /// 判据: 同线程数、同输入重复执行 ⇒ 同摘要 (进程内可复现)。

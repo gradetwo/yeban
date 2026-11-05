@@ -242,7 +242,10 @@ const FILTER: EffectGroup = EffectGroup {
             min: 0.0,
             max: 1.0,
             default: 0.0,
-            doc: "驱动量（0..=1 的旋钮值）",
+            doc: "驱动量（0..=1 的旋钮，**等 dB** 映射到 0..=+36 dB 预增益）。`0` 是逐位旁通；\
+                  输出按 0.25 参考幅度自补偿 ⇒ 只换谐波、不换音量。⚠ 修前只有 0..=+5.1 dB\
+                  （`1.0 + 旋钮 · 0.8`）⇒ 在 −12 dBFS 的声部上谐波比约 −31 dB，听感是\"旋钮没反应\"。\
+                  本旋钮是**合成器与通道条唯一的失真级**：要\"后级失真\"就把 `cutoff_hz` 开大再拧它",
         },
     ],
 };
@@ -582,8 +585,78 @@ const TAPE: EffectGroup = EffectGroup {
     ],
 };
 
+/// 插入式限制器：前瞻 + 峰值检测的砖墙限制器（**本组是新增器件**）。
+///
+/// 与母线那份（`BusLimiter`，阈值/天花板写死、永远在 master 末端）不同，
+/// 这一份是**可插在任意轨上的器件**，四个旋钮全部生效：
+///
+/// - **前瞻**（`limiter_lookahead`，帧）：输出相对输入后移这么多帧，同时就是
+///   上报给 PDC 的延迟（渲染侧按它补相位）；
+/// - **真峰值**（`limiter_true_peak`）：检波器在样本之间做三次插值估计，
+///   抓"样本没超但重建波形超了"的那一类峰；
+/// - **天花板**（`limiter_ceiling_db`）：软膝渐近到它 ⇒ 输出**严格**不超过它；
+/// - **释放**（`limiter_release_ms`）：增益从 0 回到 1 所需时间。
+///
+/// 攻击没有旋钮，是**一步到位**的：任何"慢攻击"都会让瞬态漏过阈值，
+/// 那正是限制器与压缩器的分界。要软一点请用动态组的压缩器。
+const LIMITER: EffectGroup = EffectGroup {
+    id: "limiter",
+    title: "限制器（前瞻 + 峰值检测）",
+    summary: "砖墙限制器：前瞻延迟 + 峰值/真峰值检波 + 软膝天花板。攻击一步到位，\
+              释放可调。链上位置在**全部插入之后**（本轨最后一级）。\
+              前瞻帧数会计入 PDC（`latency_samples`），多轨合流不会相位错位。",
+    params: &[
+        EffectParam {
+            name: "limiter_threshold_db",
+            aliases: &[],
+            unit: "dB",
+            min: -30.0,
+            max: 0.0,
+            default: -1.0,
+            doc: "阈值：窗口峰值超过它就压。默认 −1 dBFS",
+        },
+        EffectParam {
+            name: "limiter_ceiling_db",
+            aliases: &[],
+            unit: "dB",
+            min: -6.0,
+            max: 0.0,
+            default: -0.3,
+            doc: "天花板：软膝渐近值，输出严格不超过它。必须高于阈值",
+        },
+        EffectParam {
+            name: "limiter_release_ms",
+            aliases: &[],
+            unit: "ms",
+            min: 10.0,
+            max: 1000.0,
+            default: 80.0,
+            doc: "释放：增益从 0 回到 1 所需时间（每样本回升量 = 1/(ms×sr/1000)）",
+        },
+        EffectParam {
+            name: "limiter_lookahead",
+            aliases: &[],
+            unit: "frames",
+            min: 1.0,
+            max: 192.0,
+            default: 48.0,
+            doc: "前瞻帧数（1–192；48 kHz 下 1 帧 ≈ 0.021 ms）。同时是本器件上报的延迟",
+        },
+        EffectParam {
+            name: "limiter_true_peak",
+            aliases: &[],
+            unit: "",
+            min: 0.0,
+            max: 1.0,
+            default: 1.0,
+            doc: "真峰值检测（1 = 开）：在样本之间做三次插值估计，抓 inter-sample peak。\
+                  口径是估计器，⛔ 不是 ITU-R BS.1770-4 的 4× 过采样表",
+        },
+    ],
+};
+
 /// 全部**引擎真正认**的效果器参数，按器件分组（顺序稳定，schema 与读回共用）。
-pub const EFFECT_GROUPS: [EffectGroup; 8] = [
+pub const EFFECT_GROUPS: [EffectGroup; 9] = [
     CHANNEL_STRIP,
     EQ,
     FILTER,
@@ -592,6 +665,7 @@ pub const EFFECT_GROUPS: [EffectGroup; 8] = [
     CONVOLUTION,
     TAPE,
     DELAY,
+    LIMITER,
 ];
 
 /// 按名字（大小写不敏感）查一个参数的归属。

@@ -12,6 +12,9 @@
 //! 3. **换域**（R55）：自动化值是 **dB**，而源输出已经含静态推子
 //!    `db_to_linear(track.volume_db)`，因此这里给出的是**乘子**
 //!    `db_to_linear(自动化 dB) / db_to_linear(track.volume_db)`。
+//!    ⭐ 这就是“自动化遮蔽静态值”：有自动化值时用自动化值，静态值被除掉
+//!    （`static × (auto / static) = auto`）；无自动化值时 `is_identity` 为真，
+//!    整段跳过、静态值原样起作用。
 //!    ⛔ 分母**不是** `mute`/`solo` 之后的轨增益（那个在静音时是 `0.0`）：
 //!    把它当分母会除零，或者把静音轨“复活”。
 //!    ⚠ **声相不走 R55**：它的值域是位置（`-1 ..= 1`），平滑的是位置本身，乘的是
@@ -36,8 +39,8 @@
 //!
 //! - 只接 [`AutomationTarget::TrackVolume`]（含主总线）、[`AutomationTarget::SendGain`]、
 //!   [`AutomationTarget::TrackPan`] 与 [`AutomationTarget::DeviceParam`] 里**插入链能改的
-//!   标量字段**（[`APPLIED_DEVICE_PARAM_NAMES`]：100 个拼写 = 54 个字段，含别名；
-//!   通道条 28（14 增益/EQ/滤波 ＋ 8 压缩 ＋ 1 低切 ＋ 3 动态 EQ ＋ 1 宽度 ＋ 1 mono-maker）＋ 磁带饱和 5 ＋ Freeverb 4 ＋ 卷积标量 4 ＋ 延迟 9）；**卷积
+//!   标量字段**（[`APPLIED_DEVICE_PARAM_NAMES`]：105 个拼写 = 59 个字段，含别名；
+//!   通道条 28（14 增益/EQ/滤波 ＋ 8 压缩 ＋ 1 低切 ＋ 3 动态 EQ ＋ 1 宽度 ＋ 1 mono-maker）＋ 磁带饱和 5 ＋ Freeverb 4 ＋ 卷积标量 4 ＋ 延迟 9 ＋ 限制器 5）；**卷积
 //!   IR 形状**（`conv_ir_decay*` / `conv_ir_seed` / `conv_ir_stereo`）如实登记（⛔ 不冒充已支持）；
 //!   ⭐ `#304` 起**压缩 8 字段**也在这张表里（`compressor_enabled` + 7 个标量），
 //!   静态投影与自动化因此读**同一张**名字表；
@@ -1163,6 +1166,12 @@ pub const APPLIED_DEVICE_PARAM_NAMES: &[&str] = &[
     "saturation_hf_hz",
     "tape_asym",
     "saturation_asym",
+    // 插入式限制器（5 = 5 个字段；⛔ 无别名：裸 `threshold_db` 会撞压缩器）。
+    "limiter_threshold_db",
+    "limiter_ceiling_db",
+    "limiter_release_ms",
+    "limiter_lookahead",
+    "limiter_true_peak",
 ];
 
 /// 名字是否是本切片会落点的设备参数（**大小写不敏感**，与静态投影的同一口径）。
@@ -1209,6 +1218,10 @@ fn static_insert_field_value(track: &TrackV3, field: DeviceParamField) -> Option
         }
         DeviceParamField::Delay(field) => {
             let params = delay_source_params(track)?;
+            Some(field.sanitise(field.read(&params)))
+        }
+        DeviceParamField::Limiter(field) => {
+            let params = crate::inserts::limiter_source_params(track)?;
             Some(field.sanitise(field.read(&params)))
         }
     }
@@ -1264,6 +1277,9 @@ fn applicable_device_param(
         DeviceParamFamily::Reverb => reverb_source_slot(track) == Some(slot_index),
         DeviceParamFamily::Convolution => convolution_source_slot(track) == Some(slot_index),
         DeviceParamFamily::Delay => delay_source_slot(track) == Some(slot_index),
+        DeviceParamFamily::Limiter => {
+            crate::inserts::limiter_source_slot(track) == Some(slot_index)
+        }
     };
     if !slot_is_source {
         return None;
@@ -1844,6 +1860,9 @@ pub fn forced_insert_instances(
                 }
                 DeviceParamFamily::Delay => {
                     forced.delay.insert(*track_id);
+                }
+                DeviceParamFamily::Limiter => {
+                    forced.limiter.insert(*track_id);
                 }
             }
         }
@@ -3171,6 +3190,38 @@ mod tests {
             0.05,
             0.35,
         ),
+        // 插入式限制器 5 字段：两端都落在器件合法域内，且差值足够大
+        // （判据要求"中点真的在动"，差值 < 1e-3 会被 `ramps_monotonically` 判成恒等）。
+        (
+            DeviceParamField::Limiter(yeban_dsp::device_param::LimiterField::ThresholdDb),
+            "limiter_threshold_db",
+            -1.0,
+            -6.0,
+        ),
+        (
+            DeviceParamField::Limiter(yeban_dsp::device_param::LimiterField::CeilingDb),
+            "limiter_ceiling_db",
+            -0.3,
+            -1.5,
+        ),
+        (
+            DeviceParamField::Limiter(yeban_dsp::device_param::LimiterField::ReleaseMs),
+            "limiter_release_ms",
+            80.0,
+            250.0,
+        ),
+        (
+            DeviceParamField::Limiter(yeban_dsp::device_param::LimiterField::Lookahead),
+            "limiter_lookahead",
+            48.0,
+            96.0,
+        ),
+        (
+            DeviceParamField::Limiter(yeban_dsp::device_param::LimiterField::TruePeak),
+            "limiter_true_peak",
+            0.0,
+            1.0,
+        ),
     ];
 
     /// 一个**名单拼写**的用例：落点、规范名、静态值、终点值。
@@ -3300,8 +3351,9 @@ mod tests {
             + ReverbField::SPELLINGS.len()
             + ConvolutionField::SPELLINGS.len()
             + DelayField::SPELLINGS.len()
-            + TapeField::SPELLINGS.len();
-        assert_eq!(expected_len, 100, "61 + 6 + 8 + 15 + 10 = 100 个拼写");
+            + TapeField::SPELLINGS.len()
+            + yeban_dsp::device_param::LimiterField::SPELLINGS.len();
+        assert_eq!(expected_len, 105, "61 + 6 + 8 + 15 + 10 + 5 = 105 个拼写");
         assert_eq!(
             APPLIED_DEVICE_PARAM_NAMES.len(),
             expected_len,
@@ -3316,6 +3368,11 @@ mod tests {
             .chain(ConvolutionField::SPELLINGS.iter().map(|(name, _)| *name))
             .chain(DelayField::SPELLINGS.iter().map(|(name, _)| *name))
             .chain(TapeField::SPELLINGS.iter().map(|(name, _)| *name))
+            .chain(
+                yeban_dsp::device_param::LimiterField::SPELLINGS
+                    .iter()
+                    .map(|(name, _)| *name),
+            )
             .collect();
         expected.sort_unstable();
         assert_eq!(sorted, expected, "名单必须与五张 SPELLINGS 完全一致");
