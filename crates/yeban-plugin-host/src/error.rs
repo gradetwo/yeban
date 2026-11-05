@@ -38,6 +38,8 @@ pub enum HostError {
     },
     /// 实例未激活就被要求渲染（`process` 之前必须先 `activate`）。
     NotActivated,
+    /// 激活态直设参数被拒（参数变化须走每块参数变化通道；停用后可直设）。
+    SetParameterWhileActive,
     /// 插件路径非法（空串、或既非文件又非 `.vst3` 包）。
     InvalidPluginPath(String),
     /// 状态容器损坏（magic／版本／长度对不上）。
@@ -67,6 +69,10 @@ impl fmt::Display for HostError {
                 write!(f, "插件调用 `{method}` 失败（tresult = {code}）")
             }
             Self::NotActivated => write!(f, "插件实例未激活就被要求渲染（须先 activate）"),
+            Self::SetParameterWhileActive => write!(
+                f,
+                "激活态直设参数被拒：参数变化须走每块参数变化通道（停用后可直设）"
+            ),
             Self::InvalidPluginPath(detail) => write!(f, "插件路径非法: {detail}"),
             Self::StateCorrupt(detail) => write!(f, "插件状态容器损坏: {detail}"),
             Self::Other(detail) => write!(f, "{detail}"),

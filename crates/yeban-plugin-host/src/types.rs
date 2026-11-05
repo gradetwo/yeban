@@ -44,6 +44,10 @@ pub const IAUDIO_PROCESSOR_IID: Tuid = tuid(0x4204_3F99, 0xB7DA_453C, 0xA569_E79
 /// `Vst::IEditController` 的 IID（`vst/ivsteditcontroller.h` 原文）。
 pub const IEDIT_CONTROLLER_IID: Tuid = tuid(0xDCD7_BBE3, 0x7742_448D, 0xA874_AACC, 0x979C_759E);
 
+/// `Vst::IMidiMapping` 的 IID（`vst/ivsteditcontroller.h` 的 `DECLARE_CLASS_IID` 原文；
+/// GUID `DF0FF9F7-49B7-4669-B63A-B7327ADBF5E5` 按本文件 `tuid` 口径拼成 4 个 u32）。
+pub const IMIDI_MAPPING_IID: Tuid = tuid(0xDF0F_F9F7, 0x49B7_4669, 0xB63A_B732, 0x7ADB_F5E5);
+
 /// `IConnectionPoint`（`pluginterfaces/base/iconnectionpoint.h` 原文；字节取自
 /// Dexed.so 的 `Steinberg::Vst::IConnectionPoint_iid`，2026-11-03 实测）。
 pub const ICONNECTIONPOINT_IID: Tuid = tuid(0x70A4_156F, 0x6E6E_4026, 0x9891_48BF, 0xAA60_D8D1);
@@ -109,6 +113,18 @@ pub enum MidiEventKind {
         velocity: f32,
         /// 与对应 NoteOn 相同的 `note_id`。
         note_id: i32,
+    },
+    /// 弯音：不走 VST3 事件表，经每块参数变化通道送达（见 `vst3.rs` 的通道装配；
+    /// Logic Pro 口径：弯音是演奏数据，随 MIDI 流同块送达、按通道、采样点精确，
+    /// 不是自动化轨数据；note-expression 路不走，GS1 未声明该表达式类型）。
+    ///
+    /// `value` 是归一化弯音（0.0..=1.0，0.5＝中心），与力度同款约定：渲染层
+    /// 把原始 14 位弯音值除以 16383.0 换算，宿主层不再换算第二遍。
+    PitchBend {
+        /// MIDI 通道（0..=15）。
+        channel: u8,
+        /// 归一化弯音值（0.0..=1.0；0.5＝中心）。
+        value: f64,
     },
 }
 
@@ -309,11 +325,14 @@ pub trait PluginInstance: Send + Sync {
     /// 无错误通道，控制器存在时恒返回 `Some`——“参数不存在”不可观测）。
     fn parameter_value(&mut self, id: u32) -> Option<f64>;
 
-    /// 直接设一个参数的归一化值（一期唯一的参数写入口，见 ADR-0069 D8）。
+    /// 直接设一个参数的归一化值（⛔ 仅停用态可用：激活态调用返回
+    /// [`HostError::SetParameterWhileActive`]；激活态的参数变化（弯音与自动化）
+    /// 一律走 `process` 的每块参数变化通道。收敛原因：nih-plug 等插件的
+    /// `setParamNormalized` 在处理中直接返回 Ok 而不写值，激活态直设会静默丢失）。
     ///
     /// # Errors
     ///
-    /// 控制器缺席或插件拒绝 ⇒ [`HostError`]。
+    /// 控制器缺席、插件拒绝、或实例已激活 ⇒ [`HostError`]。
     fn set_parameter(&mut self, id: u32, value: f64) -> Result<(), HostError>;
 
     /// 保存状态（两段 `getState`，见 ADR-0069 D9）。
@@ -351,17 +370,23 @@ pub trait PluginInstance: Send + Sync {
     /// 输入与输出片 ⛔ 不得重叠（宿主不保证原地处理；包装层一律用分离缓冲）。
     /// 只走离线路径，⛔ 不进 RT 回调。
     ///
+    /// `events`：随音频同块送达的事件；其中弯音进参数变化通道（与乐器
+    /// `process` 同款：参数 id 经 `IMidiMapping` 映射，带采样偏移），音符
+    /// 事件在效果器路径上无意义，直接忽略。渲染层目前不向效果器路由 MIDI，
+    /// 故渲染调用方传空片；通道已接通，路由落地后内容即随之送达。
+    ///
     /// # Errors
     ///
     /// 未激活、不是效果器、片长不对、插件 `process` 返回负值 ⇒ [`HostError`]。
     fn process_audio(
         &mut self,
+        events: &[MidiEvent],
         in_l: &[f32],
         in_r: &[f32],
         out_l: &mut [f32],
         out_r: &mut [f32],
     ) -> Result<(), HostError> {
-        let _ = (in_l, in_r, out_l, out_r);
+        let _ = (events, in_l, in_r, out_l, out_r);
         Err(HostError::NotAnEffect(
             "该实例不是效果器（process_audio 只有效果器实现）".to_owned(),
         ))

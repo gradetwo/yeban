@@ -135,6 +135,9 @@ impl AudioSource for PluginEffectSource {
         }
         self.plugin
             .process_audio(
+                // 渲染层目前不向效果器路由 MIDI：传空片，通道已接通，
+                // 路由落地后弯音即随同块送达（见 trait 文档）。
+                &[],
                 &self.in_l[..frames],
                 &self.in_r[..frames],
                 &mut self.out_l[..frames],

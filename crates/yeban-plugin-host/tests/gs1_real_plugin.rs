@@ -110,12 +110,14 @@ fn diff_fraction(a: &[f32], b: &[f32]) -> f32 {
 /// 渲染一个音符：块首开音、1.5 秒处关音、共 `seconds` 秒；返回左右声道全段。
 /// 块长 4096（须 ≤ 激活块上限）；事件按块内偏移投递。
 /// GS1 是真立体声合成器（左右声道内容不同），故分别返回两声道，不作 L＝R 断言。
+/// `bend` 为 `Some(v)` 时块首同送弯音事件（归一化值，0.5＝中心）。
 fn render_note(
     instance: &mut Box<dyn PluginInstance>,
     note: u8,
     seconds: f64,
     sample_rate: f64,
     block: usize,
+    bend: Option<f64>,
 ) -> (Vec<f32>, Vec<f32>) {
     let total = (seconds * sample_rate) as usize;
     let off_frame = (1.5 * sample_rate) as usize;
@@ -127,6 +129,12 @@ fn render_note(
         let mut events = Vec::new();
         if done == 0 {
             events.push(note_on(0, note, 0));
+            if let Some(value) = bend {
+                events.push(MidiEvent {
+                    sample_offset: 0,
+                    kind: MidiEventKind::PitchBend { channel: 0, value },
+                });
+            }
         }
         if done <= off_frame && off_frame < done + frames {
             events.push(note_off((off_frame - done) as u32, note, 0));
@@ -177,7 +185,7 @@ fn gs1_loads_renders_and_switches_presets() {
 
     // 3. 激活＋预制 0、A4（69）渲染 2.0 秒。
     instance.activate(SAMPLE_RATE, 4096).expect("激活");
-    let (base, base_r) = render_note(&mut instance, 69, SECONDS, SAMPLE_RATE, 4096);
+    let (base, base_r) = render_note(&mut instance, 69, SECONDS, SAMPLE_RATE, 4096, None);
     let base_peak = peak(&base).max(peak(&base_r));
     let base_rms = rms(&base);
     let (base_f0, base_window_peak) = estimate_f0(&base, SAMPLE_RATE, 0.02, 0.3);
@@ -200,7 +208,7 @@ fn gs1_loads_renders_and_switches_presets() {
     // 4. 同预制换高音区 A5（81）：F0 应约为 A4 的 2 倍。
     instance.deactivate();
     instance.activate(SAMPLE_RATE, 4096).expect("重激活");
-    let (high, high_r) = render_note(&mut instance, 81, SECONDS, SAMPLE_RATE, 4096);
+    let (high, high_r) = render_note(&mut instance, 81, SECONDS, SAMPLE_RATE, 4096, None);
     let high_peak = peak(&high).max(peak(&high_r));
     let (high_f0, _) = estimate_f0(&high, SAMPLE_RATE, 0.02, 0.3);
     eprintln!(
@@ -235,7 +243,8 @@ fn gs1_loads_renders_and_switches_presets() {
             "Preset 回读应 ≈ {normalized}，实为 {read_back}"
         );
         instance.activate(SAMPLE_RATE, 4096).expect("重激活");
-        let (rendered, rendered_r) = render_note(&mut instance, 69, SECONDS, SAMPLE_RATE, 4096);
+        let (rendered, rendered_r) =
+            render_note(&mut instance, 69, SECONDS, SAMPLE_RATE, 4096, None);
         let rendered_peak = peak(&rendered).max(peak(&rendered_r));
         let diff = diff_fraction(&base, &rendered);
         eprintln!(
@@ -251,4 +260,29 @@ fn gs1_loads_renders_and_switches_presets() {
     }
     let (switched_preset, diff) = switched.expect("至少一个候选预制应与预制 0 输出不同");
     eprintln!("预制切换证实：预制 {switched_preset} 与预制 0 差异占比 {diff:.3}");
+
+    // 6. 弯音经参数变化通道送达：预制重置 0 后，控制渲染与弯音 1.0 渲染对比。
+    // 直设必须在停用状态下做（与 §5 同款原因：激活态直设静默丢失）。
+    instance.deactivate();
+    instance.set_parameter(preset_id, 0.0).expect("预制重置 0");
+    instance.activate(SAMPLE_RATE, 4096).expect("重激活");
+    let (control, _) = render_note(&mut instance, 69, SECONDS, SAMPLE_RATE, 4096, None);
+    let (control_f0, _) = estimate_f0(&control, SAMPLE_RATE, 0.02, 0.3);
+    let (bent, bent_r) = render_note(&mut instance, 69, SECONDS, SAMPLE_RATE, 4096, Some(1.0));
+    let bent_peak = peak(&bent).max(peak(&bent_r));
+    let (bent_f0, _) = estimate_f0(&bent, SAMPLE_RATE, 0.02, 0.3);
+    eprintln!(
+        "弯音：控制 F0 {control_f0:.1} Hz，弯音 1.0 F0 {bent_f0:.1} Hz（比值 {:.3}），弯音峰值 {bent_peak:.6}",
+        bent_f0 / control_f0
+    );
+    assert!(bent_peak > 0.01, "弯音渲染须非静音");
+    assert!(
+        (400.0..480.0).contains(&control_f0),
+        "控制渲染 F0 应 ≈440 Hz，实为 {control_f0:.1} Hz"
+    );
+    assert!(
+        (1.08..1.17).contains(&(bent_f0 / control_f0)),
+        "弯音 1.0／控制的 F0 比应 ≈1.122（＋2 半音），实为 {:.3}",
+        bent_f0 / control_f0
+    );
 }

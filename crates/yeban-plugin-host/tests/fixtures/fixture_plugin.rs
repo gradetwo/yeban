@@ -20,10 +20,22 @@
 //! - `TestGain`（组合式效果器）：音频输入 1 条＋音频输出 1 条，无事件输入；
 //!   `process` 把立体声输入 × 增益写到立体声输出（直通增益 1.0 时逐位不变）。
 //!   宿主探针据此定 kind＝`Effect`，效果器线经它证明 VST3 音频输入路径。
+//!   效果器分支亦读 `input_parameter_changes`：MIDI 弯音点按通道折算为
+//!   增益因子 (1 + (bend - 0.5))（左＝通道 0、右＝通道 1），供测试观测
+//!   效果器路径的参数通道是否送达；无弯音点时因子为 1。
 //! - `TestRejectF32`（组合式乐器，与 `TestSine` 同款视图，只差
 //!   `canProcessSampleSize` 恒返 1／`kResultFalse`）：结果码负向夹具——
 //!   宿主 `activate` 必须报 `SampleSizeUnsupported`；旧判定 `code != 1`
 //!   会把 1 当接受而放行。
+//! - `TestNoMidiMap`（组合式乐器，与 `TestSine` 同款视图，只差
+//!   `IMidiMapping` 查询恒拒）：弯音跳过夹具——宿主问不到映射时必须
+//!   优雅跳过弯音（记日志、不崩溃），音符照常出声、弯音不生效。
+//!
+//! 弯音行为（`TestSine`／`TestSineSeparate`／`TestNoMidiMap` 共用）：
+//! 处理器读 `input_parameter_changes`，把落在 nih-plug MIDI 参数区
+//! （`START ＋ cc ＋ channel × 130`，cc 129＝弯音）的点按通道记为弯音值
+//! （归一化 0.0..=1.0，0.5＝中心），按采样偏移逐采样应用到各声部频率
+//! （±2 半音：`freq × 2^((bend－0.5)×4/12)`）。
 //!
 //! 处理器虚表是 nih-plug 布局（`IAudioProcessor` 直接继承 `FUnknown`，无
 //! `initialize`／`terminate` 垫项）：宿主若误垫两项，`canProcessSampleSize`
@@ -71,6 +83,9 @@ const FUNKNOWN_IID: Tuid = tuid(0x0000_0000, 0x0000_0000, 0xC000_0000, 0x0000_00
 const ICOMPONENT_IID: Tuid = tuid(0xE831_FF31, 0xF2D5_4301, 0x928E_BBEE, 0x2569_7802);
 const IAUDIO_PROCESSOR_IID: Tuid = tuid(0x4204_3F99, 0xB7DA_453C, 0xA569_E79D, 0x9AAE_C33D);
 const IEDIT_CONTROLLER_IID: Tuid = tuid(0xDCD7_BBE3, 0x7742_448D, 0xA874_AACC, 0x979C_759E);
+/// `IMidiMapping` 的 IID（SDK `ivsteditcontroller.h` 原文；
+/// GUID `DF0FF9F7-49B7-4669-B63A-B7327ADBF5E5` 按本文件 `tuid` 口径拼成 4 个 u32）。
+const IMIDI_MAPPING_IID: Tuid = tuid(0xDF0F_F9F7, 0x49B7_4669, 0xB63A_B732, 0x7ADB_F5E5);
 
 /// 组合式类标识（夹具自造）。
 const CID_COMBINED: Tuid = tuid(0x1111_1111, 0x2222_2222, 0x3333_3333, 0x4444_4444);
@@ -82,6 +97,15 @@ const CID_SEPARATE_CTRL: Tuid = tuid(0x9999_9999, 0xAAAA_AAAA, 0xBBBB_BBBB, 0xCC
 const CID_EFFECT: Tuid = tuid(0xDDDD_DDDD, 0xEEEE_EEEE, 0xFFFF_FFFF, 0x1212_1212);
 /// 拒 f32 类标识（夹具自造）。
 const CID_REJECT_F32: Tuid = tuid(0xAAAA_AAAA, 0xBBBB_BBBB, 0xCCCC_CCCC, 0xDDDD_DDDD);
+/// 无弯音映射类标识（夹具自造）。
+const CID_NO_MIDI_MAP: Tuid = tuid(0xEEEE_EEEE, 0xFFFF_FFFF, 0x1212_1212, 0x3434_3434);
+
+/// nih-plug 的 MIDI 参数区段首（`VST3_MIDI_PARAMS_START`＝2^31－2080）。
+const VST3_MIDI_PARAMS_START: u32 = 2_147_481_568;
+/// nih-plug 的每通道 MIDI 参数数（128 CC＋触后＋弯音＝130）。
+const VST3_MIDI_CCS: u32 = 130;
+/// nih-plug 的 MIDI 参数总数（130 × 16 通道）。
+const VST3_MIDI_NUM_PARAMS: u32 = VST3_MIDI_CCS * 16;
 
 const RESULT_OK: i32 = 0;
 const RESULT_NO_INTERFACE: i32 = -1;
@@ -285,6 +309,39 @@ struct EventListVtbl {
     add_event: unsafe extern "system" fn(*mut c_void, *const Event) -> i32,
 }
 
+/// `IParamValueQueue` 虚表（宿主侧对象布局，见宿主 `vst3.rs`；夹具只读路径）。
+#[repr(C)]
+struct ParamValueQueueVtbl {
+    base: FUnknownVtbl,
+    get_parameter_id: unsafe extern "system" fn(*mut c_void) -> u32,
+    get_point_count: unsafe extern "system" fn(*mut c_void) -> i32,
+    get_point: unsafe extern "system" fn(*mut c_void, i32, *mut i32, *mut f64) -> i32,
+    add_point: unsafe extern "system" fn(*mut c_void, i32, f64, *mut i32) -> i32,
+}
+
+/// `IParameterChanges` 虚表（宿主侧对象布局，见宿主 `vst3.rs`；夹具只读路径）。
+#[repr(C)]
+struct ParameterChangesVtbl {
+    base: FUnknownVtbl,
+    get_parameter_count: unsafe extern "system" fn(*mut c_void) -> i32,
+    get_parameter_data: unsafe extern "system" fn(*mut c_void, i32) -> *mut c_void,
+    add_parameter_data:
+        unsafe extern "system" fn(*mut c_void, *const u32, *mut i32) -> *mut c_void,
+}
+
+/// `IMidiMapping` 虚表（`FUnknown` 3 项＋`getMidiControllerAssignment`）。
+#[repr(C)]
+struct MidiMappingVtbl {
+    base: FUnknownVtbl,
+    get_midi_controller_assignment: unsafe extern "system" fn(
+        *mut c_void,
+        i32,
+        i16,
+        i16,
+        *mut u32,
+    ) -> i32,
+}
+
 #[repr(C)]
 struct BStreamVtbl {
     base: FUnknownVtbl,
@@ -301,20 +358,23 @@ struct BStreamVtbl {
 #[derive(Clone, Copy)]
 struct Voice {
     active: bool,
-    freq_hz: f64,
+    /// 未弯音的基础频率（Hz）；弯音按通道实时折算，不改本字段（相位连续）。
+    base_freq_hz: f64,
     phase: f64,
     velocity: f32,
     note_id: i32,
+    channel: u8,
 }
 
 impl Voice {
     const fn idle() -> Self {
         Self {
             active: false,
-            freq_hz: 0.0,
+            base_freq_hz: 0.0,
             phase: 0.0,
             velocity: 0.0,
             note_id: 0,
+            channel: 0,
         }
     }
 }
@@ -328,11 +388,15 @@ struct Inner {
     effect: bool,
     /// 是否恒拒 f32（`TestRejectF32` 专用：`canProcessSampleSize` 恒返 1）。
     reject_f32: bool,
+    /// 是否无弯音映射（`TestNoMidiMap` 专用：`IMidiMapping` 查询恒拒）。
+    no_midi_mapping: bool,
     gain_cell: *mut f32,
     sample_rate: f64,
     active: bool,
     processing: bool,
     voices: [Voice; 16],
+    /// 各通道当前弯音值（归一化 0.0..=1.0，0.5＝中心；缺省 0.5＝无弯音）。
+    bend: [f64; 16],
 }
 
 impl Inner {
@@ -342,11 +406,13 @@ impl Inner {
             combined,
             effect,
             reject_f32: false,
+            no_midi_mapping: false,
             gain_cell,
             sample_rate: 48000.0,
             active: false,
             processing: false,
             voices: [Voice::idle(); 16],
+            bend: [0.5; 16],
         }))
     }
 
@@ -409,9 +475,57 @@ unsafe extern "system" fn query_component(
         unsafe { add_ref(this) };
         unsafe { *out = view as *mut c_void };
         RESULT_OK
+    } else if want == IMIDI_MAPPING_IID && !inner.no_midi_mapping {
+        let view = Box::into_raw(Box::new(MidiMappingView {
+            vtbl: &MIDI_MAPPING_VTBL,
+            inner: inner_of(this),
+        }));
+        unsafe { add_ref(this) };
+        unsafe { *out = view as *mut c_void };
+        RESULT_OK
     } else {
         RESULT_NO_INTERFACE
     }
+}
+
+unsafe extern "system" fn query_midi_mapping(
+    this: *mut c_void,
+    iid: *const Tuid,
+    out: *mut *mut c_void,
+) -> i32 {
+    let want = unsafe { *iid };
+    if want == FUNKNOWN_IID || want == IMIDI_MAPPING_IID {
+        unsafe { add_ref(this) };
+        unsafe { *out = this };
+        RESULT_OK
+    } else {
+        RESULT_NO_INTERFACE
+    }
+}
+
+unsafe extern "system" fn ref_midi_mapping(this: *mut c_void) -> u32 {
+    unsafe { add_ref(this) }
+}
+unsafe extern "system" fn rel_midi_mapping(this: *mut c_void) -> u32 {
+    unsafe { release(this) }
+}
+
+/// 弯音映射（nih-plug 式：`START ＋ cc ＋ channel × 130`；只认总线 0、
+/// 通道 0..=15、cc 0..=129，其余返 `kResultFalse`＝1）。
+unsafe extern "system" fn midi_get_assignment(
+    _this: *mut c_void,
+    bus: i32,
+    channel: i16,
+    cc: i16,
+    out_id: *mut u32,
+) -> i32 {
+    if bus != 0 || !(0..16).contains(&channel) || !(0..130).contains(&cc) {
+        return 1;
+    }
+    unsafe {
+        *out_id = VST3_MIDI_PARAMS_START + cc as u32 + channel as u32 * VST3_MIDI_CCS;
+    }
+    RESULT_OK
 }
 
 unsafe extern "system" fn query_processor(
@@ -478,6 +592,12 @@ struct ProcessorView {
 #[repr(C)]
 struct ControllerView {
     vtbl: *const EditControllerVtbl,
+    inner: *mut Inner,
+}
+
+#[repr(C)]
+struct MidiMappingView {
+    vtbl: *const MidiMappingVtbl,
     inner: *mut Inner,
 }
 
@@ -668,7 +788,10 @@ unsafe extern "system" fn proc_process(this: *mut c_void, data: *mut ProcessData
     let inner = unsafe { &mut *inner_of(this) };
     let data = unsafe { &mut *data };
     let frames = data.num_samples.max(0) as usize;
-    // 效果器分支：立体声输入 × 增益 → 立体声输出（不读事件）。
+    // 效果器分支：立体声输入 × 增益 → 立体声输出；参数变化通道中的
+    // MIDI 弯音点（cc 129）按通道折算为增益因子 (1 + (bend - 0.5))：
+    // 左声道用通道 0、右声道用通道 1；无弯音点时因子为 1（既有测试
+    // 不受影响）。这是夹具的可观测手段，不是真实效果器的语义。
     if inner.effect {
         if data.num_inputs < 1 || data.inputs.is_null() || data.num_outputs < 1 || data.outputs.is_null()
         {
@@ -683,22 +806,73 @@ unsafe extern "system" fn proc_process(this: *mut c_void, data: *mut ProcessData
         {
             return RESULT_NOT_IMPLEMENTED;
         }
+        let mut bend_points: Vec<(u32, u8, f64)> = Vec::new();
+        if !data.input_parameter_changes.is_null() {
+            let changes = data.input_parameter_changes;
+            let changes_vtbl = unsafe { &*(*(changes as *mut *const ParameterChangesVtbl)) };
+            let queue_count = unsafe { (changes_vtbl.get_parameter_count)(changes) };
+            for queue_index in 0..queue_count {
+                let queue = unsafe { (changes_vtbl.get_parameter_data)(changes, queue_index) };
+                if queue.is_null() {
+                    continue;
+                }
+                let queue_vtbl = unsafe { &*(*(queue as *mut *const ParamValueQueueVtbl)) };
+                let param_id = unsafe { (queue_vtbl.get_parameter_id)(queue) };
+                if !(VST3_MIDI_PARAMS_START..VST3_MIDI_PARAMS_START + VST3_MIDI_NUM_PARAMS)
+                    .contains(&param_id)
+                {
+                    continue;
+                }
+                let relative = param_id - VST3_MIDI_PARAMS_START;
+                let cc = relative % VST3_MIDI_CCS;
+                let channel = (relative / VST3_MIDI_CCS) as u8;
+                if cc != 129 {
+                    continue;
+                }
+                let point_count = unsafe { (queue_vtbl.get_point_count)(queue) };
+                for point_index in 0..point_count {
+                    let mut offset: i32 = 0;
+                    let mut value: f64 = 0.5;
+                    let code =
+                        unsafe { (queue_vtbl.get_point)(queue, point_index, &mut offset, &mut value) };
+                    if code < 0 {
+                        continue;
+                    }
+                    bend_points.push((offset.max(0) as u32, channel, value.clamp(0.0, 1.0)));
+                }
+            }
+        }
+        bend_points.sort_by_key(|point| point.0);
         let gain = inner.gain();
         let in_l = unsafe { *in_bus.channel_buffers };
         let in_r = unsafe { *in_bus.channel_buffers.add(1) };
         let out_l = unsafe { *out_bus.channel_buffers };
         let out_r = unsafe { *out_bus.channel_buffers.add(1) };
+        let mut bend_l = 0.5_f64;
+        let mut bend_r = 0.5_f64;
+        let mut cursor = 0_usize;
         for sample in 0..frames {
+            while cursor < bend_points.len() && bend_points[cursor].0 <= sample as u32 {
+                let (_, channel, value) = bend_points[cursor];
+                if channel == 0 {
+                    bend_l = value;
+                } else if channel == 1 {
+                    bend_r = value;
+                }
+                cursor += 1;
+            }
             unsafe {
-                *out_l.add(sample) = *in_l.add(sample) * gain;
-                *out_r.add(sample) = *in_r.add(sample) * gain;
+                *out_l.add(sample) =
+                    *in_l.add(sample) * gain * (1.0 + (bend_l - 0.5)) as f32;
+                *out_r.add(sample) =
+                    *in_r.add(sample) * gain * (1.0 + (bend_r - 0.5)) as f32;
             }
         }
         return RESULT_OK;
     }
     // 事件：读宿主事件列表（虚表布局与 SDK 一致），按偏移收集后逐采样应用
     // （插件负责块内偏移精度：偏移 N 的事件在采样 N 之前生效）。
-    let mut pending: Vec<(u32, i16, u8, f32, i32)> = Vec::new();
+    let mut pending: Vec<(u32, i16, u8, u8, f32, i32)> = Vec::new();
     if !data.input_events.is_null() {
         let list = data.input_events;
         let vtbl = unsafe { &*(*(list as *mut *const EventListVtbl)) };
@@ -718,6 +892,7 @@ unsafe extern "system" fn proc_process(this: *mut c_void, data: *mut ProcessData
                 continue;
             }
             let pitch = i16::from_le_bytes([event.data[2], event.data[3]]) as u8;
+            let channel = i16::from_le_bytes([event.data[0], event.data[1]]) as u8;
             // NoteOn 速度在联合＋8（长度在＋4），NoteOff 速度在联合＋4：
             // 与宿主 `vst3.rs` 的 `Event` 保持一致（⛔ 不可凭 SDK 印象改）。
             let velocity = if event.event_type == 0 {
@@ -752,6 +927,7 @@ unsafe extern "system" fn proc_process(this: *mut c_void, data: *mut ProcessData
             pending.push((
                 event.sample_offset.max(0) as u32,
                 event.event_type,
+                channel,
                 pitch,
                 velocity,
                 note_id,
@@ -759,6 +935,45 @@ unsafe extern "system" fn proc_process(this: *mut c_void, data: *mut ProcessData
         }
     }
     pending.sort_by_key(|event| event.0);
+    // 参数变化：读弯音点（IMidiMapping 映射的参量 id 落在 MIDI 区时，cc 129＝弯音）。
+    // 点按偏移升序；通道与值随点记下，采样循环里按偏移逐点应用到各通道的弯音值。
+    let mut bend_points: Vec<(u32, u8, f64)> = Vec::new();
+    if !data.input_parameter_changes.is_null() {
+        let changes = data.input_parameter_changes;
+        let changes_vtbl = unsafe { &*(*(changes as *mut *const ParameterChangesVtbl)) };
+        let queue_count = unsafe { (changes_vtbl.get_parameter_count)(changes) };
+        for queue_index in 0..queue_count {
+            let queue = unsafe { (changes_vtbl.get_parameter_data)(changes, queue_index) };
+            if queue.is_null() {
+                continue;
+            }
+            let queue_vtbl = unsafe { &*(*(queue as *mut *const ParamValueQueueVtbl)) };
+            let param_id = unsafe { (queue_vtbl.get_parameter_id)(queue) };
+            if !(VST3_MIDI_PARAMS_START..VST3_MIDI_PARAMS_START + VST3_MIDI_NUM_PARAMS)
+                .contains(&param_id)
+            {
+                continue;
+            }
+            let relative = param_id - VST3_MIDI_PARAMS_START;
+            let cc = relative % VST3_MIDI_CCS;
+            let channel = (relative / VST3_MIDI_CCS) as u8;
+            if cc != 129 {
+                continue;
+            }
+            let point_count = unsafe { (queue_vtbl.get_point_count)(queue) };
+            for point_index in 0..point_count {
+                let mut offset: i32 = 0;
+                let mut value: f64 = 0.5;
+                let code =
+                    unsafe { (queue_vtbl.get_point)(queue, point_index, &mut offset, &mut value) };
+                if code < 0 {
+                    continue;
+                }
+                bend_points.push((offset.max(0) as u32, channel, value.clamp(0.0, 1.0)));
+            }
+        }
+    }
+    bend_points.sort_by_key(|point| point.0);
     // 输出：立体声总线 0 号，双声道写同一正弦混音。
     if data.num_outputs < 1 || data.outputs.is_null() {
         return RESULT_NOT_IMPLEMENTED;
@@ -771,19 +986,26 @@ unsafe extern "system" fn proc_process(this: *mut c_void, data: *mut ProcessData
     let right = unsafe { *out_bus.channel_buffers.add(1) };
     let gain = inner.gain();
     let mut next = 0_usize;
+    let mut bend_next = 0_usize;
     for sample in 0..frames {
+        while bend_next < bend_points.len() && (bend_points[bend_next].0 as usize) == sample {
+            let (_, channel, value) = bend_points[bend_next];
+            inner.bend[channel as usize] = value;
+            bend_next += 1;
+        }
         while next < pending.len() && (pending[next].0 as usize) == sample {
-            let (_, event_type, pitch, velocity, note_id) = pending[next];
+            let (_, event_type, channel, pitch, velocity, note_id) = pending[next];
             if event_type == 0 {
                 let freq = 440.0 * 2_f64.powf((f64::from(pitch) - 69.0) / 12.0);
                 for voice in inner.voices.iter_mut() {
                     if !voice.active || voice.note_id == note_id {
                         *voice = Voice {
                             active: true,
-                            freq_hz: freq,
+                            base_freq_hz: freq,
                             phase: 0.0,
                             velocity,
                             note_id,
+                            channel,
                         };
                         break;
                     }
@@ -802,8 +1024,11 @@ unsafe extern "system" fn proc_process(this: *mut c_void, data: *mut ProcessData
             if !voice.active {
                 continue;
             }
+            // 弯音按通道实时折算频率（±2 半音），相位连续不跳变。
+            let bend = inner.bend[voice.channel as usize];
+            let freq = voice.base_freq_hz * 2_f64.powf((bend - 0.5) * 4.0 / 12.0);
             mixed += voice.phase.sin() as f32 * voice.velocity;
-            voice.phase += 2.0 * std::f64::consts::PI * voice.freq_hz / inner.sample_rate;
+            voice.phase += 2.0 * std::f64::consts::PI * freq / inner.sample_rate;
             if voice.phase >= 2.0 * std::f64::consts::PI {
                 voice.phase %= 2.0 * std::f64::consts::PI;
             }
@@ -955,6 +1180,15 @@ static CONTROLLER_VTBL: EditControllerVtbl = EditControllerVtbl {
     create_view: ctrl_create_view,
 };
 
+static MIDI_MAPPING_VTBL: MidiMappingVtbl = MidiMappingVtbl {
+    base: FUnknownVtbl {
+        query_interface: query_midi_mapping,
+        add_ref: ref_midi_mapping,
+        release: rel_midi_mapping,
+    },
+    get_midi_controller_assignment: midi_get_assignment,
+};
+
 // --- 工厂 ---
 
 #[repr(C)]
@@ -990,7 +1224,7 @@ unsafe extern "system" fn factory_get_info(_this: *mut c_void, info: *mut PFacto
     RESULT_OK
 }
 unsafe extern "system" fn factory_count(_this: *mut c_void) -> i32 {
-    5
+    6
 }
 unsafe extern "system" fn factory_get_class(_this: *mut c_void, index: i32, info: *mut PClassInfo) -> i32 {
     let slot = unsafe { &mut *info };
@@ -1022,6 +1256,12 @@ unsafe extern "system" fn factory_get_class(_this: *mut c_void, index: i32, info
             slot.cid = CID_REJECT_F32;
             write_char_str(&mut slot.category, "Audio Module Class");
             write_char_str(&mut slot.name, "TestRejectF32");
+        }
+        // 无弯音映射类（枚举可见、组件探针通过，弯音跳过测试用）。
+        5 => {
+            slot.cid = CID_NO_MIDI_MAP;
+            write_char_str(&mut slot.category, "Audio Module Class");
+            write_char_str(&mut slot.name, "TestNoMidiMap");
         }
         _ => return 0,
     }
@@ -1063,12 +1303,16 @@ unsafe extern "system" fn factory_create(
         } else {
             RESULT_NO_INTERFACE
         }
-    } else if cid == CID_COMBINED || cid == CID_REJECT_F32 {
+    } else if cid == CID_COMBINED || cid == CID_REJECT_F32 || cid == CID_NO_MIDI_MAP {
         let gain_cell = Box::into_raw(Box::new(0.8_f32));
         let inner = Inner::new(true, gain_cell, false);
         // 拒 f32 类与 TestSine 同款视图，只把 `canProcessSampleSize` 置为恒拒。
         if cid == CID_REJECT_F32 {
             unsafe { (*inner).reject_f32 = true };
+        }
+        // 无弯音映射类与 TestSine 同款视图，只把 `IMidiMapping` 查询置为恒拒。
+        if cid == CID_NO_MIDI_MAP {
+            unsafe { (*inner).no_midi_mapping = true };
         }
         if iid == ICOMPONENT_IID {
             let view = Box::into_raw(Box::new(ComponentView {

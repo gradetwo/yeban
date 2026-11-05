@@ -165,12 +165,15 @@ impl PluginTrackSource {
             self.cursor += 1;
         }
         // 同块同偏移先 off 后 on（ADR-0069 D7）；稳定排序保同组内调度顺序。
+        // 弯音排在开音之后：宿主把弯音拆进参数变化通道（与音符事件无关），
+        // 此顺序只影响桩路径，插件侧的弯音生效点只看参数点的采样偏移。
         self.events.sort_by_key(|event| {
             (
                 event.sample_offset,
                 match event.kind {
                     MidiEventKind::NoteOff { .. } => 0,
                     MidiEventKind::NoteOn { .. } => 1,
+                    MidiEventKind::PitchBend { .. } => 2,
                 },
             )
         });

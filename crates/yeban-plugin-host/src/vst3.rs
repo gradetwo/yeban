@@ -63,9 +63,9 @@ use crate::dylib::Library;
 use crate::error::HostError;
 use crate::types::{
     FUNKNOWN_IID, IAUDIO_PROCESSOR_IID, ICOMPONENT_IID, ICONNECTIONPOINT_IID, IEDIT_CONTROLLER_IID,
-    MidiEvent, MidiEventKind, ParamInfo, PluginClass, PluginInstance, PluginKind, PluginState,
-    RESULT_FALSE, RESULT_NO_INTERFACE, RESULT_NOT_IMPLEMENTED, RESULT_OK, RESULT_TRUE,
-    TUID_INVALID, Tuid,
+    IMIDI_MAPPING_IID, MidiEvent, MidiEventKind, ParamInfo, PluginClass, PluginInstance,
+    PluginKind, PluginState, RESULT_FALSE, RESULT_NO_INTERFACE, RESULT_NOT_IMPLEMENTED, RESULT_OK,
+    RESULT_TRUE, TUID_INVALID, Tuid,
 };
 
 // ---------------------------------------------------------------------------
@@ -92,6 +92,13 @@ pub const ARRANGEMENT_STEREO: u64 = 0x3;
 pub const EVENT_NOTE_ON: i16 = 0;
 /// 事件类型：音符关（`Event.type` 为 i16，见模块文档）。
 pub const EVENT_NOTE_OFF: i16 = 1;
+/// MIDI CC 弯音号（`CtrlNumber`，`kPitchBend`＝129；128＝通道触后）。
+pub const MIDI_CC_PITCH_BEND: i16 = 129;
+/// nih-plug 的 MIDI 参数区段首（`VST3_MIDI_PARAMS_START`＝2^31－2080；
+/// 映射式：`START ＋ cc ＋ channel × 130`，见 `vst3-sys`／nih-plug `util.rs`）。
+pub const VST3_MIDI_PARAMS_START: u32 = 2_147_481_568;
+/// nih-plug 的每通道 MIDI 参数数（128 CC＋触后＋弯音＝130）。
+pub const VST3_MIDI_CCS: u32 = 130;
 /// `IBStream::seek` 模式：从头。
 pub const SEEK_SET: i32 = 0;
 /// `IBStream::seek` 模式：从当前位置。
@@ -380,6 +387,36 @@ struct EventListVtbl {
     add_event: unsafe extern "system" fn(*mut c_void, *const Event) -> i32,
 }
 
+/// `IParamValueQueue` 虚表（`FUnknown` 3 项＋参数 id／点数／取点／加点；
+/// SDK `ivstparameterchanges.h` 原文；宿主只实现读路径，加点恒拒）。
+#[repr(C)]
+struct ParamValueQueueVtbl {
+    base: FUnknownVtbl,
+    get_parameter_id: unsafe extern "system" fn(*mut c_void) -> u32,
+    get_point_count: unsafe extern "system" fn(*mut c_void) -> i32,
+    get_point: unsafe extern "system" fn(*mut c_void, i32, *mut i32, *mut f64) -> i32,
+    add_point: unsafe extern "system" fn(*mut c_void, i32, f64, *mut i32) -> i32,
+}
+
+/// `IParameterChanges` 虚表（`FUnknown` 3 项＋队列数／取队列／加队列；
+/// SDK `ivstparameterchanges.h` 原文；输入方向只读，加队列恒返空）。
+#[repr(C)]
+struct ParameterChangesVtbl {
+    base: FUnknownVtbl,
+    get_parameter_count: unsafe extern "system" fn(*mut c_void) -> i32,
+    get_parameter_data: unsafe extern "system" fn(*mut c_void, i32) -> *mut c_void,
+    add_parameter_data: unsafe extern "system" fn(*mut c_void, *const u32, *mut i32) -> *mut c_void,
+}
+
+/// `IMidiMapping` 虚表（`FUnknown` 3 项＋`getMidiControllerAssignment`；
+/// SDK `ivsteditcontroller.h` 原文）。
+#[repr(C)]
+struct MidiMappingVtbl {
+    base: FUnknownVtbl,
+    get_midi_controller_assignment:
+        unsafe extern "system" fn(*mut c_void, i32, i16, i16, *mut u32) -> i32,
+}
+
 #[repr(C)]
 struct BStreamVtbl {
     base: FUnknownVtbl,
@@ -594,6 +631,172 @@ unsafe extern "system" fn event_list_get(this: *mut c_void, index: i32, out: *mu
 unsafe extern "system" fn event_list_add(_this: *mut c_void, _event: *const Event) -> i32 {
     // 宿主事件列表只读（输入方向）：插件写输出事件一期不支持。
     RESULT_NOT_IMPLEMENTED
+}
+
+/// 参数变化点（宿主侧存储；插件只经 `get_point` 的写槽读到偏移与值，
+/// ⛔ 不直接读本结构体的布局）。
+#[derive(Clone, Copy)]
+struct ParamPoint {
+    sample_offset: i32,
+    value: f64,
+}
+
+/// 宿主侧参数值队列（栈上构造，只在一次 `process` 调用内有效）。
+/// `points` 指向调用帧的点表，插件在 `process` 返回前只读。
+#[repr(C)]
+struct HostParamValueQueue {
+    vtbl: *const ParamValueQueueVtbl,
+    param_id: u32,
+    points: *const ParamPoint,
+    count: i32,
+}
+
+impl HostParamValueQueue {
+    fn new(param_id: u32, points: &[ParamPoint]) -> Self {
+        static VTBL: ParamValueQueueVtbl = ParamValueQueueVtbl {
+            base: FUnknownVtbl {
+                query_interface: host_app_query,
+                add_ref: host_noop_ref,
+                release: host_noop_ref,
+            },
+            get_parameter_id: param_queue_id,
+            get_point_count: param_queue_count,
+            get_point: param_queue_get_point,
+            add_point: param_queue_add_point,
+        };
+        Self {
+            vtbl: &VTBL,
+            param_id,
+            points: points.as_ptr(),
+            count: points.len() as i32,
+        }
+    }
+}
+
+unsafe extern "system" fn param_queue_id(this: *mut c_void) -> u32 {
+    // SAFETY: `this` 是调用帧内的 `HostParamValueQueue`，只读。
+    unsafe { (*this.cast::<HostParamValueQueue>()).param_id }
+}
+
+unsafe extern "system" fn param_queue_count(this: *mut c_void) -> i32 {
+    // SAFETY: `this` 是调用帧内的 `HostParamValueQueue`，只读。
+    unsafe { (*this.cast::<HostParamValueQueue>()).count }
+}
+
+unsafe extern "system" fn param_queue_get_point(
+    this: *mut c_void,
+    index: i32,
+    sample_offset: *mut i32,
+    value: *mut f64,
+) -> i32 {
+    // SAFETY: `this` 是调用帧内的 `HostParamValueQueue`；两写槽是插件提供的。
+    let queue = unsafe { &*this.cast::<HostParamValueQueue>() };
+    if index < 0 || index >= queue.count {
+        return RESULT_FALSE; // `kResultFalse`：越界＝无此点。
+    }
+    // SAFETY: 下标已越界检查；两写槽是插件提供的。
+    unsafe {
+        let point = &*queue.points.add(index as usize);
+        *sample_offset = point.sample_offset;
+        *value = point.value;
+    }
+    RESULT_OK
+}
+
+unsafe extern "system" fn param_queue_add_point(
+    _this: *mut c_void,
+    _sample_offset: i32,
+    _value: f64,
+    _index: *mut i32,
+) -> i32 {
+    // 输入方向的参数队列只读：插件加点一期不支持。
+    RESULT_NOT_IMPLEMENTED
+}
+
+/// 宿主侧参数变化表（栈上构造，只在一次 `process` 调用内有效）。
+/// `queues` 指向调用帧的队列数组，插件在 `process` 返回前只读。
+#[repr(C)]
+struct HostParameterChanges {
+    vtbl: *const ParameterChangesVtbl,
+    queues: *const HostParamValueQueue,
+    count: i32,
+}
+
+impl HostParameterChanges {
+    fn new(queues: &[HostParamValueQueue]) -> Self {
+        static VTBL: ParameterChangesVtbl = ParameterChangesVtbl {
+            base: FUnknownVtbl {
+                query_interface: host_app_query,
+                add_ref: host_noop_ref,
+                release: host_noop_ref,
+            },
+            get_parameter_count: param_changes_count,
+            get_parameter_data: param_changes_get_queue,
+            add_parameter_data: param_changes_add_queue,
+        };
+        Self {
+            vtbl: &VTBL,
+            queues: queues.as_ptr(),
+            count: queues.len() as i32,
+        }
+    }
+}
+
+unsafe extern "system" fn param_changes_count(this: *mut c_void) -> i32 {
+    // SAFETY: `this` 是调用帧内的 `HostParameterChanges`，只读。
+    unsafe { (*this.cast::<HostParameterChanges>()).count }
+}
+
+unsafe extern "system" fn param_changes_get_queue(this: *mut c_void, index: i32) -> *mut c_void {
+    // SAFETY: `this` 是调用帧内的 `HostParameterChanges`，只读。
+    let changes = unsafe { &*this.cast::<HostParameterChanges>() };
+    if index < 0 || index >= changes.count {
+        return ptr::null_mut(); // 越界＝无此队列（nih-plug 的 `upgrade()` 会跳过空指针）。
+    }
+    // SAFETY: 下标已越界检查；队列地址在 `process` 调用内稳定。
+    unsafe { changes.queues.add(index as usize) as *mut c_void }
+}
+
+unsafe extern "system" fn param_changes_add_queue(
+    _this: *mut c_void,
+    _id: *const u32,
+    _index: *mut i32,
+) -> *mut c_void {
+    // 输入方向的参数变化表只读：插件加队列一期不支持。
+    ptr::null_mut()
+}
+
+/// 弯音事件按通道归组为参数变化队列（纯函数：可单测，不进插件）。
+///
+/// - 每通道一个队列（参数 id 由 `map_channel` 给：`IMidiMapping` 的弯音映射）；
+/// - 队列内点按偏移升序（稳定排序）；偏移 ≥ `frames` 的点丢弃（与音符事件同款容错）；
+/// - `map_channel` 返回 `None` 的通道整组跳过（插件无该通道的弯音映射）。
+fn pitch_bend_queues(
+    bends: &[(u8, u32, f64)],
+    frames: usize,
+    map_channel: &dyn Fn(u8) -> Option<u32>,
+) -> Vec<(u32, Vec<(u32, f64)>)> {
+    // 通道升序归组（`BTreeMap` 定序：队列顺序确定，与事件到达顺序无关）。
+    let mut by_channel: std::collections::BTreeMap<u8, Vec<(u32, f64)>> =
+        std::collections::BTreeMap::new();
+    for (channel, offset, value) in bends {
+        if (*offset as usize) >= frames {
+            continue;
+        }
+        by_channel
+            .entry(*channel)
+            .or_default()
+            .push((*offset, *value));
+    }
+    let mut out = Vec::new();
+    for (channel, mut points) in by_channel {
+        let Some(param_id) = map_channel(channel) else {
+            continue;
+        };
+        points.sort_by_key(|point| point.0);
+        out.push((param_id, points));
+    }
+    out
 }
 
 /// 内存流（`IBStream` 的宿主实现；栈上构造，只在一次 `getState`／`setState` 内有效）。
@@ -918,6 +1121,11 @@ pub struct Vst3Instance {
     // 控制器是否分离式（工厂另建）：分离式须单独 `initialize`／`terminate`；
     // 组合式（`queryInterface` 得来，与组件同一对象）已随组件初始化，勿重复。
     controller_separate: bool,
+    // `IMidiMapping` 查询引用（`open` 时在组件上问到，无则为 `None`；
+    // `Drop` 内 `release` 一次。弯音参数 id 经它映射，见 `midi_param_id`）。
+    midi_mapping: Option<*mut c_void>,
+    // 弯音因无映射被跳过时是否已记过日志（每实例只记一次，避免长渲染刷屏）。
+    bend_skip_logged: bool,
     // 双向连接点（`queryInterface` 各持一引用；`Drop` 内先断开组件侧再释放
     // 组件侧查询引用，控制器侧查询引用故意不释放（见 `Drop` 的说明）；
     // 连接失败／无控制器时为 `None`，不拦 `open`）。
@@ -993,8 +1201,15 @@ impl Vst3Instance {
         let mut component: *mut c_void = ptr::null_mut();
         let mut processor: *mut c_void = ptr::null_mut();
         let mut controller: Option<*mut c_void> = None;
-        // `open` 闭包的返回三元组（`kind`、双向连接点、控制器是否分离式）。
-        type OpenOutcome = (PluginKind, Option<(*mut c_void, *mut c_void)>, bool);
+        let mut midi_mapping: Option<*mut c_void> = None;
+        // `open` 闭包的返回四元组（`kind`、双向连接点、控制器是否分离式、
+        // `IMidiMapping` 查询引用——无则为 `None`，不拦 `open`）。
+        type OpenOutcome = (
+            PluginKind,
+            Option<(*mut c_void, *mut c_void)>,
+            bool,
+            Option<*mut c_void>,
+        );
         let result = (|| -> Result<OpenOutcome, HostError> {
             component = module.create_instance(class_id, &ICOMPONENT_IID)?;
             // SAFETY: `component` 刚创建有效；虚表为组件虚表。
@@ -1046,6 +1261,10 @@ impl Vst3Instance {
                 // SAFETY: `ctrl` 是刚解析的控制器指针；handler 指针由实例拥有，地址稳定。
                 let _ = unsafe { (ctrl_vtbl.set_component_handler)(ctrl, handler_ptr) };
             }
+            // `IMidiMapping` 查询（弯音参数 id 的映射源，见 `midi_param_id`）：
+            // 在组件上问（SDK 口径：映射由组件实现）；问不到即 `None`，
+            // 弯音事件届时跳过（记日志，不崩溃），不拦 `open`。
+            midi_mapping = Vst3Module::query_interface(component, &IMIDI_MAPPING_IID).ok();
             // 双向连接（事件投递前提，见模块文档）：组件连接点接控制器连接点，
             // 控制器连接点接回组件连接点；任一查询失败即跳过，不拦 `open`。
             // 组合式控制器（与组件同一对象）不另连：同一指针自连无意义。
@@ -1084,16 +1303,18 @@ impl Vst3Instance {
                     (None, None) => {}
                 }
             }
-            Ok((kind, connection, controller_separate))
+            Ok((kind, connection, controller_separate, midi_mapping))
         })();
         match result {
-            Ok((kind, connection, controller_separate)) => Ok(Self {
+            Ok((kind, connection, controller_separate, midi_mapping)) => Ok(Self {
                 module: std::sync::Arc::clone(&module.inner),
                 component,
                 processor,
                 controller,
                 controller_separate,
                 connection,
+                midi_mapping,
+                bend_skip_logged: false,
                 handler,
                 host_app,
                 name: class_name.to_owned(),
@@ -1106,6 +1327,9 @@ impl Vst3Instance {
             Err(error) => {
                 // SAFETY: 配对释放（已建的才放；空指针不放）。
                 unsafe {
+                    if let Some(mapping) = midi_mapping {
+                        Vst3Module::release(mapping);
+                    }
                     if let Some(ctrl) = controller {
                         Vst3Module::release(ctrl);
                     }
@@ -1125,6 +1349,75 @@ impl Vst3Instance {
     #[must_use]
     pub fn kind(&self) -> PluginKind {
         self.kind
+    }
+
+    /// 某通道的弯音参数 id（`IMidiMapping::getMidiControllerAssignment`，
+    /// 总线 0、cc 129＝弯音；nih-plug 式映射：`START ＋ 129 ＋ channel × 130`）。
+    /// 插件未暴露 `IMidiMapping` 或查询失败 ⇒ `None`（弯音届时跳过）。
+    fn midi_param_id(&self, channel: u8) -> Option<u32> {
+        let mapping = self.midi_mapping?;
+        // SAFETY: `mapping` 是 `open` 时查询到的有效 `IMidiMapping` 指针。
+        let vtbl = unsafe { vtbl::<MidiMappingVtbl>(mapping) };
+        let mut id: u32 = 0;
+        // SAFETY: `mapping` 有效；虚表调用按 SDK 签名。
+        let code = unsafe {
+            (vtbl.get_midi_controller_assignment)(
+                mapping,
+                0,
+                i16::from(channel),
+                MIDI_CC_PITCH_BEND,
+                &mut id,
+            )
+        };
+        if code != RESULT_OK { None } else { Some(id) }
+    }
+
+    /// 从弯音事件装配一次 `process` 调用内的参数变化通道（乐器 `process`
+    /// 与效果器 `process_audio` 共用；点表、队列、通道对象三者须活到
+    /// `process` 返回，返回后 ⛔ 不得再向点表／队列 push——重分配会使通道内
+    /// 裸指针失效）。
+    ///
+    /// 弯音按通道归组为队列（参数 id 经 `IMidiMapping` 映射）；无弯音时
+    /// 队列为空（调用方传空指针，插件保持上次弯音值）；无映射的通道整组
+    /// 跳过，每实例只记一次日志（长渲染不刷屏）。
+    fn bend_param_channel(
+        &mut self,
+        bends: &[(u8, u32, f64)],
+        frames: usize,
+    ) -> (
+        Vec<Vec<ParamPoint>>,
+        Vec<HostParamValueQueue>,
+        HostParameterChanges,
+    ) {
+        let bend_queues = pitch_bend_queues(bends, frames, &|channel| self.midi_param_id(channel));
+        let kept_points: usize = bend_queues.iter().map(|(_, points)| points.len()).sum();
+        if bends.len() > kept_points && !self.bend_skip_logged {
+            self.bend_skip_logged = true;
+            eprintln!(
+                "VST3 宿主：{} 个弯音事件因插件未暴露弯音映射被跳过（实例 `{}`）",
+                bends.len() - kept_points,
+                self.name
+            );
+        }
+        let point_vecs: Vec<Vec<ParamPoint>> = bend_queues
+            .iter()
+            .map(|(_, points)| {
+                points
+                    .iter()
+                    .map(|(offset, value)| ParamPoint {
+                        sample_offset: *offset as i32,
+                        value: *value,
+                    })
+                    .collect()
+            })
+            .collect();
+        let param_queues: Vec<HostParamValueQueue> = bend_queues
+            .iter()
+            .zip(point_vecs.iter())
+            .map(|((param_id, _), points)| HostParamValueQueue::new(*param_id, points))
+            .collect();
+        let param_changes = HostParameterChanges::new(&param_queues);
+        (point_vecs, param_queues, param_changes)
     }
 
     /// 停用（`setProcessing(false)`＋`setActive(false)`；未激活时为空操作）。
@@ -1173,6 +1466,10 @@ impl Drop for Vst3Instance {
         self.deactivate_inner();
         // SAFETY: `terminate` 在 `release` 之前（SDK 顺序）。
         unsafe {
+            // `IMidiMapping` 查询引用配对释放一次（对象本身仍由组件引用保活）。
+            if let Some(mapping) = self.midi_mapping {
+                Vst3Module::release(mapping);
+            }
             let comp_vtbl = vtbl::<ComponentVtbl>(self.component);
             let _ = (comp_vtbl.base.terminate)(self.component);
             if let Some(ctrl) = self.controller {
@@ -1376,6 +1673,12 @@ impl PluginInstance for Vst3Instance {
     }
 
     fn set_parameter(&mut self, id: u32, value: f64) -> Result<(), HostError> {
+        // ⛔ 仅停用态直设：激活态的直设对 nih-plug 等插件静默丢失
+        // （`setParamNormalized` 在处理中直接返 Ok 不写值），故响亮拒绝，
+        // 调用方改走每块参数变化通道。
+        if self.active {
+            return Err(HostError::SetParameterWhileActive);
+        }
         let Some(ctrl) = self.controller else {
             return Err(HostError::InterfaceMissing("IEditController"));
         };
@@ -1473,25 +1776,44 @@ impl PluginInstance for Vst3Instance {
             )));
         }
         // 事件转换（按块重建，离线路径专用，⛔ 不进 RT）。
+        // 音符事件进 VST3 事件表；弯音事件进参数变化通道（Logic Pro 口径：
+        // 弯音是演奏数据，随 MIDI 流同块送达，与音符事件在同一次 `process`
+        // 调用中送达，⛔ 不走 note-expression 路）。
         let mut vst_events = Vec::with_capacity(events.len());
+        let mut bends: Vec<(u8, u32, f64)> = Vec::new();
         for event in events {
             if (event.sample_offset as usize) >= frames {
                 continue; // 越界事件丢弃（调用方应保证窗口内；不响亮失败是为容错）。
             }
-            vst_events.push(match event.kind {
+            match event.kind {
                 MidiEventKind::NoteOn {
                     channel,
                     pitch,
                     velocity,
                     note_id,
-                } => Event::note_on(channel, pitch, velocity, note_id, event.sample_offset),
+                } => vst_events.push(Event::note_on(
+                    channel,
+                    pitch,
+                    velocity,
+                    note_id,
+                    event.sample_offset,
+                )),
                 MidiEventKind::NoteOff {
                     channel,
                     pitch,
                     velocity,
                     note_id,
-                } => Event::note_off(channel, pitch, velocity, note_id, event.sample_offset),
-            });
+                } => vst_events.push(Event::note_off(
+                    channel,
+                    pitch,
+                    velocity,
+                    note_id,
+                    event.sample_offset,
+                )),
+                MidiEventKind::PitchBend { channel, value } => {
+                    bends.push((channel, event.sample_offset, value));
+                }
+            }
         }
         // 同块同偏移先 off 后 on（ADR-0069 D7：off 优先，避免同音符粘连）；
         // 稳定排序：同偏移同类型保持调度顺序。
@@ -1507,6 +1829,16 @@ impl PluginInstance for Vst3Instance {
         });
         let mut event_list = HostEventList::new(&vst_events);
         let event_ptr = (&mut event_list) as *mut HostEventList as *mut c_void;
+        // 参数变化通道：弯音按通道归组为队列（参数 id 经 `IMidiMapping` 映射）；
+        // 无弯音时传空指针（插件保持上次弯音值）；无映射的通道整组跳过，
+        // 每实例只记一次日志（长渲染不刷屏）。点表与队列须活到 process 返回。
+        let (_point_vecs, param_queues, mut param_changes) =
+            self.bend_param_channel(&bends, frames);
+        let param_changes_ptr = if param_queues.is_empty() {
+            ptr::null_mut()
+        } else {
+            (&mut param_changes) as *mut HostParameterChanges as *mut c_void
+        };
         let mut channel_ptrs: [*mut f32; 2] = [out_l.as_mut_ptr(), out_r.as_mut_ptr()];
         let mut out_bus = AudioBusBuffers {
             num_channels: 2,
@@ -1525,7 +1857,7 @@ impl PluginInstance for Vst3Instance {
             outputs: &mut out_bus,
             input_events: event_ptr,
             output_events: ptr::null_mut(),
-            input_parameter_changes: ptr::null_mut(),
+            input_parameter_changes: param_changes_ptr,
             output_parameter_changes: ptr::null_mut(),
             process_context: ptr::null_mut(),
         };
@@ -1539,6 +1871,7 @@ impl PluginInstance for Vst3Instance {
 
     fn process_audio(
         &mut self,
+        events: &[MidiEvent],
         in_l: &[f32],
         in_r: &[f32],
         out_l: &mut [f32],
@@ -1568,6 +1901,24 @@ impl PluginInstance for Vst3Instance {
                 self.max_block
             )));
         }
+        // 弯音进参数变化通道（与乐器 process 同款 helper）；音符事件在效果器
+        // 路径上无意义，直接忽略（效果器无事件输入总线，input_events 恒为空）。
+        let bends: Vec<(u8, u32, f64)> = events
+            .iter()
+            .filter_map(|event| match event.kind {
+                MidiEventKind::PitchBend { channel, value } => {
+                    Some((channel, event.sample_offset, value))
+                }
+                _ => None,
+            })
+            .collect();
+        let (_point_vecs, param_queues, mut param_changes) =
+            self.bend_param_channel(&bends, frames);
+        let param_changes_ptr = if param_queues.is_empty() {
+            ptr::null_mut()
+        } else {
+            (&mut param_changes) as *mut HostParameterChanges as *mut c_void
+        };
         // 输入指针：VST3 契约里输入与输出片分离时插件 ⛔ 不得写输入；
         // 本方法只在输入／输出片分离的前提下被调用（见 trait 文档）。
         // SAFETY: `in_l`／`in_r` 在调用帧内有效；插件在 `process` 返回前只读它们。
@@ -1596,7 +1947,7 @@ impl PluginInstance for Vst3Instance {
             outputs: &mut out_bus,
             input_events: ptr::null_mut(),
             output_events: ptr::null_mut(),
-            input_parameter_changes: ptr::null_mut(),
+            input_parameter_changes: param_changes_ptr,
             output_parameter_changes: ptr::null_mut(),
             process_context: ptr::null_mut(),
         };
@@ -1681,6 +2032,85 @@ mod tests {
         assert_eq!(offset_of!(AudioProcessorVtbl, set_processing), 8 * ptr);
         assert_eq!(offset_of!(AudioProcessorVtbl, process), 9 * ptr);
         assert_eq!(offset_of!(AudioProcessorVtbl, get_tail_samples), 10 * ptr);
+    }
+
+    #[test]
+    fn parameter_changes_vtable_slots_match_sdk() {
+        // `IParamValueQueue`：`FUnknown` 3 项＋4 方法＝7 槽；
+        // `IParameterChanges`：`FUnknown` 3 项＋3 方法＝6 槽（SDK 原文顺序）。
+        let ptr = size_of::<*const ()>();
+        assert_eq!(size_of::<ParamValueQueueVtbl>(), 7 * ptr);
+        assert_eq!(offset_of!(ParamValueQueueVtbl, get_parameter_id), 3 * ptr);
+        assert_eq!(offset_of!(ParamValueQueueVtbl, get_point_count), 4 * ptr);
+        assert_eq!(offset_of!(ParamValueQueueVtbl, get_point), 5 * ptr);
+        assert_eq!(offset_of!(ParamValueQueueVtbl, add_point), 6 * ptr);
+        assert_eq!(size_of::<ParameterChangesVtbl>(), 6 * ptr);
+        assert_eq!(
+            offset_of!(ParameterChangesVtbl, get_parameter_count),
+            3 * ptr
+        );
+        assert_eq!(
+            offset_of!(ParameterChangesVtbl, get_parameter_data),
+            4 * ptr
+        );
+        assert_eq!(
+            offset_of!(ParameterChangesVtbl, add_parameter_data),
+            5 * ptr
+        );
+        // `IMidiMapping`：`FUnknown` 3 项＋1 方法＝4 槽。
+        assert_eq!(size_of::<MidiMappingVtbl>(), 4 * ptr);
+        assert_eq!(
+            offset_of!(MidiMappingVtbl, get_midi_controller_assignment),
+            3 * ptr
+        );
+    }
+
+    #[test]
+    fn pitch_bend_queues_group_by_channel_and_map_ids() {
+        // nih-plug 式映射：通道 0 弯音 → START＋129；通道 1 → START＋129＋130。
+        let map = |channel: u8| -> Option<u32> {
+            Some(
+                VST3_MIDI_PARAMS_START
+                    + MIDI_CC_PITCH_BEND as u32
+                    + u32::from(channel) * VST3_MIDI_CCS,
+            )
+        };
+        let bends = vec![
+            (0_u8, 100_u32, 1.0_f64),
+            (1_u8, 0_u32, 0.0),
+            (0_u8, 0_u32, 0.5),
+        ];
+        let queues = pitch_bend_queues(&bends, 4096, &map);
+        assert_eq!(queues.len(), 2, "两通道应各成一队列");
+        assert_eq!(queues[0].0, VST3_MIDI_PARAMS_START + 129);
+        assert_eq!(
+            queues[0].1,
+            vec![(0, 0.5), (100, 1.0)],
+            "同通道点按偏移升序"
+        );
+        assert_eq!(queues[1].0, VST3_MIDI_PARAMS_START + 129 + 130);
+        assert_eq!(queues[1].1, vec![(0, 0.0)]);
+    }
+
+    #[test]
+    fn pitch_bend_queues_drop_out_of_frame_and_unmapped_channels() {
+        let map = |channel: u8| -> Option<u32> {
+            if channel == 5 {
+                None // 该通道无映射：整组跳过。
+            } else {
+                Some(VST3_MIDI_PARAMS_START + u32::from(channel))
+            }
+        };
+        let bends = vec![
+            (0_u8, 4096_u32, 1.0_f64), // 偏移 ≥ 帧数：丢弃。
+            (0_u8, 10_u32, 0.5),
+            (5_u8, 0_u32, 1.0), // 无映射通道：丢弃。
+        ];
+        let queues = pitch_bend_queues(&bends, 4096, &map);
+        assert_eq!(queues.len(), 1);
+        assert_eq!(queues[0].1, vec![(10, 0.5)]);
+        // 无弯音 ⇒ 无队列（`process` 传空指针，插件保持上次弯音值）。
+        assert!(pitch_bend_queues(&[], 4096, &map).is_empty());
     }
 
     #[test]

@@ -134,6 +134,10 @@ impl PluginInstance for StubEffect {
     }
 
     fn set_parameter(&mut self, id: u32, value: f64) -> Result<(), HostError> {
+        // ⛔ 仅停用态直设（与 `PluginInstance` 契约一致：激活态改走参数变化通道）。
+        if self.active {
+            return Err(HostError::SetParameterWhileActive);
+        }
         if id == STUB_GAIN_PARAM_ID {
             self.gain = value.clamp(0.0, 1.0) as f32;
             Ok(())
@@ -180,6 +184,7 @@ impl PluginInstance for StubEffect {
 
     fn process_audio(
         &mut self,
+        _events: &[MidiEvent],
         in_l: &[f32],
         in_r: &[f32],
         out_l: &mut [f32],
@@ -250,6 +255,10 @@ impl PluginInstance for StubInstrument {
     }
 
     fn set_parameter(&mut self, id: u32, value: f64) -> Result<(), HostError> {
+        // ⛔ 仅停用态直设（与 `PluginInstance` 契约一致：激活态改走参数变化通道）。
+        if self.active {
+            return Err(HostError::SetParameterWhileActive);
+        }
         if id == STUB_GAIN_PARAM_ID {
             self.gain = value.clamp(0.0, 1.0) as f32;
             Ok(())
@@ -326,6 +335,8 @@ impl PluginInstance for StubInstrument {
                     MidiEventKind::NoteOff { note_id, .. } => {
                         self.voices.remove(&note_id);
                     }
+                    // 桩无弯音合成：弯音事件忽略（弯音的通道投递由夹具与真插件测试覆盖）。
+                    MidiEventKind::PitchBend { .. } => {}
                 }
                 next += 1;
             }
