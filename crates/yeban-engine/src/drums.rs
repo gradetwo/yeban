@@ -82,6 +82,8 @@
 //! | `open_hat_note` | `open_hat_note` |
 //! | `clap_note` | `clap_note` |
 //! | `kit.kick.*` | `kick_tune_hz`、`kick_glide_hz`、`kick_glide_s`、`kick_attack_s`、`kick_decay_s`、`kick_level` |
+//! | `kit.kick_style` | `kick_style`（`0` = 经典、`>= 0.5` = Anatomy，见 [`KickStyle::from_f32`]） |
+//! | `kit.anatomy.*` | `anatomy_softness`、`anatomy_click_amount`、`anatomy_tame_highs`、`anatomy_grit`、`anatomy_boom_to_where`、`anatomy_hit_skin`、`anatomy_rumble`、`anatomy_base_pitch_hz`、`anatomy_volume`、`anatomy_sub_mute`、`anatomy_sub_solo`、`anatomy_thump_mute`、`anatomy_thump_solo`、`anatomy_click_mute`、`anatomy_click_solo` |
 //! | `kit.snare.*` | `snare_tone_hz`、`snare_tone_ratio`、`snare_tone_decay_s`、`snare_tone_level`、`snare_noise_highpass_hz`、`snare_noise_lowpass_hz`、`snare_noise_decay_s`、`snare_noise_level`、`snare_attack_s`、`snare_level` |
 //! | `kit.hihat.*` | `hihat_base_hz`、`hihat_highpass_hz`、`hihat_lowpass_hz`、`hihat_attack_s`、`hihat_closed_decay_s`、`hihat_open_decay_s`、`hihat_level` |
 //! | `kit.clap.*` | `clap_highpass_hz`、`clap_lowpass_hz`、`clap_bursts`、`clap_burst_decay_s`、`clap_burst_spacing_s`、`clap_attack_s`、`clap_decay_s`、`clap_level` |
@@ -170,8 +172,9 @@ use yeban_model::{DeviceDefinition, DeviceKind};
 // 判据（`tests/drums_instrument.rs` 的 D2）按这些名字断言"引擎的鼓机**就是** dsp 的鼓机"
 // （类型同一性）。
 pub use yeban_dsp::drums::{
-    ClapParams, DRUM_SLOTS, DrumHit, DrumKitParams, DrumMachine, DrumVoice, HiHatParams,
-    KickParams, SnareParams,
+    ANATOMY_KICK_PRESETS, AnatomyKickCategory, AnatomyKickParams, AnatomyKickPreset, ClapParams,
+    DRUM_SLOTS, DrumHit, DrumKitParams, DrumMachine, DrumVoice, HiHatParams, KickParams, KickStyle,
+    SnareParams,
 };
 
 /// 一台鼓机的**键位映射**：五个鼓件各自的 MIDI 音高（`0..=127`）。
@@ -379,6 +382,16 @@ fn note_from_f32(value: f32) -> Option<u8> {
     Some(note)
 }
 
+/// 开关量 `f32 → bool`：非有限 ⇒ `false`；`>= 0.5` ⇒ `true`。
+///
+/// 与 [`KickStyle::from_f32`] 同一款阈值（`0.5`），理由相同：设备参数只有
+/// `f32` 一个通道，开关只能用阈值表达；`NaN` 落到"关"（保守：不静音
+/// 也不独奏，声音不断）。
+#[must_use]
+fn bool_from_f32(value: f32) -> bool {
+    value.is_finite() && value >= 0.5
+}
+
 /// `clap_bursts` 的 `f32 → u32`：非有限 ⇒ 器件默认值（规则 5）。
 ///
 /// 合法域（`1..=8`）由 [`ClapParams::sanitised`] 在收尾时钳制 —— 这里只做类型转换，
@@ -406,6 +419,23 @@ fn apply_kit_knob(kit: &mut DrumKitParams, name: &str, value: f32) -> bool {
         "kick_attack_s" => kit.kick.attack_s = value,
         "kick_decay_s" => kit.kick.decay_s = value,
         "kick_level" => kit.kick.level = value,
+        // --- 底鼓声部选择与 Anatomy 参数 ---
+        "kick_style" => kit.kick_style = KickStyle::from_f32(value),
+        "anatomy_softness" => kit.anatomy.softness = value,
+        "anatomy_click_amount" => kit.anatomy.click_amount = value,
+        "anatomy_tame_highs" => kit.anatomy.tame_highs = value,
+        "anatomy_grit" => kit.anatomy.grit = value,
+        "anatomy_boom_to_where" => kit.anatomy.boom_to_where = value,
+        "anatomy_hit_skin" => kit.anatomy.hit_skin = value,
+        "anatomy_rumble" => kit.anatomy.rumble = value,
+        "anatomy_base_pitch_hz" => kit.anatomy.base_pitch_hz = value,
+        "anatomy_volume" => kit.anatomy.volume = value,
+        "anatomy_sub_mute" => kit.anatomy.sub_mute = bool_from_f32(value),
+        "anatomy_sub_solo" => kit.anatomy.sub_solo = bool_from_f32(value),
+        "anatomy_thump_mute" => kit.anatomy.thump_mute = bool_from_f32(value),
+        "anatomy_thump_solo" => kit.anatomy.thump_solo = bool_from_f32(value),
+        "anatomy_click_mute" => kit.anatomy.click_mute = bool_from_f32(value),
+        "anatomy_click_solo" => kit.anatomy.click_solo = bool_from_f32(value),
         // --- 军鼓 ---
         "snare_tone_hz" => kit.snare.tone_hz = value,
         "snare_tone_ratio" => kit.snare.tone_ratio = value,
@@ -602,6 +632,44 @@ mod tests {
         assert_eq!(kit.snare.tone_hz.to_bits(), default.snare.tone_hz.to_bits());
         assert_eq!(kit.hihat.level.to_bits(), default.hihat.level.to_bits());
         assert_eq!(kit.clap.decay_s.to_bits(), default.clap.decay_s.to_bits());
+    }
+
+    /// Anatomy 旋钮投影：`kick_style` 与 9 个连续参数 + 6 个开关逐字段覆盖默认值；
+    /// 未写的字段保持器件默认值；`NaN` 开关落到"关"。
+    #[test]
+    fn anatomy_knobs_project_onto_the_kit() {
+        let params = DrumsParams::from_devices(&[kit_device(
+            DeviceKind::InternalInstrument,
+            false,
+            &[
+                ("kick_style", 1.0),
+                ("anatomy_base_pitch_hz", 50.0),
+                ("anatomy_grit", 0.5),
+                ("anatomy_click_solo", 1.0),
+                ("anatomy_sub_mute", f32::NAN),
+            ],
+        )])
+        .expect("五个键位写全 ⇒ 必须武装");
+        let kit = params.kit();
+        assert_eq!(kit.kick_style, KickStyle::Anatomy);
+        assert_eq!(kit.anatomy.base_pitch_hz.to_bits(), 50.0f32.to_bits());
+        assert_eq!(kit.anatomy.grit.to_bits(), 0.5f32.to_bits());
+        assert!(kit.anatomy.click_solo);
+        assert!(!kit.anatomy.sub_mute, "NaN 开关落到关");
+        // 未写的字段保持器件默认值。
+        let default = AnatomyKickParams::DEFAULT;
+        assert_eq!(kit.anatomy.softness.to_bits(), default.softness.to_bits());
+        assert_eq!(kit.anatomy.volume.to_bits(), default.volume.to_bits());
+        // 经典声部仍是缺省：不写 kick_style ⇒ Classic。
+        let classic =
+            DrumsParams::from_devices(&[kit_device(DeviceKind::InternalInstrument, false, &[])])
+                .expect("五个键位写全 ⇒ 必须武装");
+        assert_eq!(classic.kit().kick_style, KickStyle::Classic);
+        // `consumes_drum_param` 承认新名字（探针复用同一张认名逻辑）。
+        assert!(consumes_drum_param("kick_style"));
+        assert!(consumes_drum_param("anatomy_grit"));
+        assert!(consumes_drum_param("anatomy_click_solo"));
+        assert!(!consumes_drum_param("anatomy_nope"));
     }
 
     /// 规则 2：映射不完整的设备不是来源，继续找下一条；规则 3：同名后者胜。

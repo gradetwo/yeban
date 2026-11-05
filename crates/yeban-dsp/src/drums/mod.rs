@@ -212,7 +212,13 @@
 use crate::envelope::STEAL_RELEASE_SECONDS;
 use crate::math::sanitise_sample_rate;
 
+mod anatomy;
 mod voice;
+
+pub use anatomy::{
+    ANATOMY_BASE_PITCH_MAX_HZ, ANATOMY_BASE_PITCH_MIN_HZ, ANATOMY_KICK_PRESETS, ANATOMY_VOLUME_MAX,
+    AnatomyKickCategory, AnatomyKickParams, AnatomyKickPreset, KickStyle,
+};
 
 use voice::Generator;
 
@@ -642,6 +648,11 @@ impl Default for ClapParams {
 pub struct DrumKitParams {
     /// 底鼓。
     pub kick: KickParams,
+    /// 底鼓声部的选择（`Classic` = 既有的 808 式下滑正弦，
+    /// `Anatomy` = [`AnatomyKickParams`] 的三层体感分解）。
+    pub kick_style: KickStyle,
+    /// Anatomy 底鼓参数（只在 `kick_style == KickStyle::Anatomy` 时消费）。
+    pub anatomy: AnatomyKickParams,
     /// 军鼓。
     pub snare: SnareParams,
     /// 踩镲（闭镲与开镲）。
@@ -659,6 +670,8 @@ impl DrumKitParams {
     /// 默认鼓组（= 4 个音色各自的 [`Default`]）。
     pub const DEFAULT: Self = Self {
         kick: KickParams::DEFAULT,
+        kick_style: KickStyle::Classic,
+        anatomy: AnatomyKickParams::DEFAULT,
         snare: SnareParams::DEFAULT,
         hihat: HiHatParams::DEFAULT,
         clap: ClapParams::DEFAULT,
@@ -670,6 +683,8 @@ impl DrumKitParams {
     pub fn sanitised(self) -> Self {
         Self {
             kick: self.kick.sanitised(),
+            kick_style: self.kick_style,
+            anatomy: self.anatomy.sanitised(),
             snare: self.snare.sanitised(),
             hihat: self.hihat.sanitised(),
             clap: self.clap.sanitised(),
@@ -1129,7 +1144,7 @@ impl<const SLOTS: usize> DrumMachine<SLOTS> {
             .wrapping_mul(0x9E37_79B9)
             .wrapping_add(self.trigger_seed);
         let pending = PendingHit {
-            generator: Generator::new(voice_id, &self.params, self.sample_rate, seed),
+            generator: Generator::new(voice_id, &self.params, self.sample_rate, seed, hit.gain()),
             gain: hit.gain(),
             start_sample: hit.start_sample(),
         };
@@ -1295,6 +1310,24 @@ mod tests {
                 decay_s: 1.0e9,
                 level: f32::NEG_INFINITY,
             },
+            kick_style: KickStyle::Anatomy,
+            anatomy: AnatomyKickParams {
+                softness: f32::NAN,
+                click_amount: f32::INFINITY,
+                tame_highs: -1.0,
+                grit: 2.0,
+                boom_to_where: f32::NEG_INFINITY,
+                hit_skin: f32::NAN,
+                rumble: 1.5,
+                base_pitch_hz: f32::NAN,
+                volume: f32::INFINITY,
+                sub_mute: true,
+                sub_solo: false,
+                thump_mute: false,
+                thump_solo: true,
+                click_mute: true,
+                click_solo: false,
+            },
             snare: SnareParams {
                 tone_hz: -1.0,
                 tone_ratio: f32::NAN,
@@ -1338,6 +1371,31 @@ mod tests {
         assert!((MIN_TIME_S..=MAX_TIME_S).contains(&kit.kick.attack_s));
         assert!((MIN_TIME_S..=MAX_TIME_S).contains(&kit.kick.decay_s));
         assert_eq!(kit.kick.level, 0.0, "NaN 音量必须退化为静音");
+        assert_eq!(kit.kick_style, KickStyle::Anatomy, "声部选择原样保留");
+        assert_eq!(
+            kit.anatomy.softness.to_bits(),
+            0.0f32.to_bits(),
+            "NaN 归下界"
+        );
+        assert_eq!(kit.anatomy.click_amount.to_bits(), 0.0f32.to_bits());
+        assert_eq!(kit.anatomy.tame_highs.to_bits(), 0.0f32.to_bits());
+        assert_eq!(kit.anatomy.grit.to_bits(), 1.0f32.to_bits());
+        assert_eq!(kit.anatomy.boom_to_where.to_bits(), 0.0f32.to_bits());
+        assert_eq!(
+            kit.anatomy.hit_skin.to_bits(),
+            0.0f32.to_bits(),
+            "NaN 归下界"
+        );
+        assert_eq!(kit.anatomy.rumble.to_bits(), 1.0f32.to_bits());
+        assert_eq!(
+            kit.anatomy.base_pitch_hz.to_bits(),
+            ANATOMY_BASE_PITCH_MIN_HZ.to_bits(),
+            "NaN 归下界 32 Hz"
+        );
+        assert_eq!(kit.anatomy.volume.to_bits(), 0.0f32.to_bits());
+        assert!(kit.anatomy.sub_mute && !kit.anatomy.sub_solo);
+        assert!(!kit.anatomy.thump_mute && kit.anatomy.thump_solo);
+        assert!(kit.anatomy.click_mute && !kit.anatomy.click_solo);
         assert!((MIN_RATIO..=MAX_RATIO).contains(&kit.snare.tone_ratio));
         assert!(
             kit.snare.noise_lowpass_hz >= kit.snare.noise_highpass_hz * MIN_BAND_RATIO,
@@ -1363,6 +1421,15 @@ mod tests {
             kit.kick.attack_s,
             kit.kick.decay_s,
             kit.kick.level,
+            kit.anatomy.softness,
+            kit.anatomy.click_amount,
+            kit.anatomy.tame_highs,
+            kit.anatomy.grit,
+            kit.anatomy.boom_to_where,
+            kit.anatomy.hit_skin,
+            kit.anatomy.rumble,
+            kit.anatomy.base_pitch_hz,
+            kit.anatomy.volume,
             kit.snare.tone_hz,
             kit.snare.tone_ratio,
             kit.snare.tone_decay_s,
@@ -1485,6 +1552,26 @@ mod tests {
                 attack_s: f32::INFINITY,
                 decay_s: f32::NAN,
                 level: f32::NAN,
+            },
+            // 敌意渲染走 Anatomy 声部：`set_params` 的钳制 + `trigger` 的
+            // 速度快照必须让 Anatomy 声部同样产出全有限样本。
+            kick_style: KickStyle::Anatomy,
+            anatomy: AnatomyKickParams {
+                softness: f32::NAN,
+                click_amount: f32::NAN,
+                tame_highs: f32::NAN,
+                grit: f32::NAN,
+                boom_to_where: f32::NAN,
+                hit_skin: f32::NAN,
+                rumble: f32::NAN,
+                base_pitch_hz: f32::NAN,
+                volume: f32::NAN,
+                sub_mute: false,
+                sub_solo: false,
+                thump_mute: false,
+                thump_solo: false,
+                click_mute: false,
+                click_solo: false,
             },
             snare: SnareParams {
                 tone_hz: f32::INFINITY,

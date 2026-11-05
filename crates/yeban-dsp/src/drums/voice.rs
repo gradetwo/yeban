@@ -12,10 +12,15 @@
 //! | 幅度/音高/噪声/尾巴包络 | [`crate::envelope::Adsr`]（含 `STEAL_RELEASE_SECONDS`） | `envelope.rs:52` / `:31` |
 //! | 白噪声与确定性 RNG | [`crate::noise::Rng`]（xorshift32，显式播种） | `noise.rs:24` / `:34` |
 //! | 带通（`LP(hi) ∘ (x − LP(lo))⁴`） | [`crate::filter::LadderFilter`] | `filter.rs:64` / `:93` |
+//! | Anatomy 三层的低通/带通 | [`crate::shaping::Biquad`]（RBJ 低通/带通，`pub(crate)`） | `shaping.rs` |
+//! | Anatomy 的失真与解析包络 | `libm::tanhf` / `libm::expf` | `anatomy.rs` |
 //!
-//! **带通不是新滤波器**：它是既有 `LadderFilter` 的组合（见 [`Band`] 与
-//! [`HIGHPASS_STAGES`]）。`shaping::Biquad`（`shaping.rs:252`）是私有类型，
-//! 本 crate 的公共面里没有带通；组合既有公开器件与
+//! **带通不是新滤波器**：经典声部的带通是既有 `LadderFilter` 的组合
+//! （见 [`Band`] 与 [`HIGHPASS_STAGES`]）。`shaping::Biquad`
+//! （`shaping.rs:252`）是 `pub(crate)` 类型、**不在**本 crate 的公共面上；
+//! Anatomy 声部用它的 RBJ 低通 / 带通（与 Web Audio `BiquadFilterNode`
+//! 同一套系数表），`lowpass` 方法与逐样本 `process_sample` 是在同一文件里
+//! 按已有方法的同款公式补的（不是新滤波器）；组合既有器件与
 //! `channel_strip`（`channel_strip.rs:1`）的"组合既有器件"纪律同形。
 //! ⚠ 第一版用的是 `LP(hi) − LP(lo)`，实测低频裙边太缓（452 Hz 只压到 −14 dB）
 //! ⇒ 被 [`Band`] 的文档记录并换掉。
@@ -32,6 +37,13 @@
 //!   （`math::exp2` 调 `f32::exp2`、`filter.rs:102` 调 `tan`、`shaping.rs` 调
 //!   `sin_cos`），跨平台一致性口径与它们相同：**不是本模块新引入的依赖**；
 //! - **方波**直接看相位最高位，没有超越函数。
+//! - **Anatomy 声部是例外**：它的四层包络是解析式（每层每样本一次 `expf`），
+//!   总线失真器每样本一次 `tanhf`。这两者与 `sinf` 同一款 `libm` 调用
+//!   （`math::exp2` 调 `f32::exp2`、`filter.rs:102` 调 `tan`、`shaping.rs`
+//!   调 `sin_cos`），跨平台一致性口径与它们相同：**不是本模块新引入的依赖**；
+//!   经典声部的逐样本路径仍保持"没有除法、没有超越函数（除正弦本身）"。
+//!   Anatomy 的包络与音高滑频都是触发后秒数的解析函数 ⇒ 与块切分无关
+//!   （见 `tests/anatomy_kick_render.rs` 的块切分判据）。
 //!
 //! ## 3. 数值安全（不许 NaN / Inf）
 //!
@@ -64,6 +76,7 @@ use crate::math::sanitise_sample_rate;
 use crate::noise::Rng;
 
 use super::DrumKitParams;
+use super::anatomy::{AnatomyVoice, KickStyle};
 
 /// 踩镲的方波支路条数（经典 808 踩镲的做法是"多条非谐方波"）。
 pub(super) const HAT_PARTIALS: usize = 6;
@@ -237,6 +250,9 @@ impl Band {
 /// snare 用 `body_env`（音调）+ `tail_env`（噪声）+ `phases[0..2]` + `rng`，
 /// 踩镲用 `body_env` + `phases[0..6]`，拍手用 `burst_env` + `tail_env` + `rng`。
 /// 未用到的字段保持 [`Adsr`] 的 Idle（值 0）⇒ 它们不发声，也不产生 `NaN`。
+/// Anatomy 底鼓是 kick 槽位的第二种声部（`kick_style == Anatomy` 时启用）：
+/// 它的状态住在 [`AnatomyVoice`] 里（4 层相位 + 3 节 biquad + 淡出包络 +
+/// 解析系数），`anatomy_kick` 是分发开关。
 ///
 /// 取并集（而不是 `enum` 套 `struct`）的理由：整个结构是 `Copy` 值类型，
 /// 槽位池因此也是定长数组，`render` / `trigger` 零分配
@@ -286,6 +302,11 @@ pub(super) struct Generator {
     /// 是否已进入窃取/闭镲淡出。淡出期间**不再**重触发 clap 的 onset ——
     /// 否则包络会在淡出中途回升，那就是一次咔哒。
     choking: bool,
+    /// Anatomy 底鼓声部（只在 `voice == VOICE_KICK` 且 `anatomy_kick` 时用）。
+    anatomy: AnatomyVoice,
+    /// kick 槽位当前是不是 Anatomy 声部（由 `DrumKitParams::kick_style` 定，
+    /// `reconfigure` 时更新；经典声部为 `false`）。
+    anatomy_kick: bool,
 }
 
 impl Generator {
@@ -310,23 +331,43 @@ impl Generator {
         bursts: 1,
         spacing_frames: 1,
         choking: false,
+        anatomy: AnatomyVoice::IDLE,
+        anatomy_kick: false,
     };
 
     /// 触发一个音色：把 `kit` 解析成系数，并把"本帧就发声"的包络 gate_on。
     ///
     /// `seed` 是白噪声的确定性种子（由 [`super::DrumMachine::trigger`] 从
     /// 音色与触发序号推出）⇒ 同一次触发序列给同一段噪声 [ARCH-DET-001]。
-    pub(super) fn new(voice: u8, kit: &DrumKitParams, sample_rate: f32, seed: u32) -> Self {
+    /// `gain` 是这一击的速度（`0..=1`，已由 [`super::DrumHit`] 钳制）：
+    /// 经典声部不用它（电平由 `Slot::gain` 在 `render` 末尾给），
+    /// Anatomy 声部用它做速度-音色映射（见 `anatomy.rs` §2）。
+    pub(super) fn new(
+        voice: u8,
+        kit: &DrumKitParams,
+        sample_rate: f32,
+        seed: u32,
+        gain: f32,
+    ) -> Self {
         let mut generator = Self {
             voice,
             rng: Rng::new(seed),
             ..Self::IDLE
         };
+        if voice == super::VOICE_KICK {
+            // Anatomy 声部的层开关与速度是触发时快照（`AnatomyVoice::trigger`），
+            // 必须在 `reconfigure`（用它们算系数）之前存入。
+            generator.anatomy.trigger(&kit.anatomy, gain);
+        }
         generator.reconfigure(kit, sample_rate);
         match voice {
             super::VOICE_KICK => {
-                generator.pitch_env.gate_on();
-                generator.body_env.gate_on();
+                if generator.anatomy_kick {
+                    generator.anatomy.gate_on();
+                } else {
+                    generator.pitch_env.gate_on();
+                    generator.body_env.gate_on();
+                }
             }
             super::VOICE_SNARE => {
                 generator.body_env.gate_on();
@@ -353,12 +394,18 @@ impl Generator {
     ///
     /// 单位与包络同量纲（`0..=1`，无量纲）。kick/踩镲是 `body_env`；
     /// snare 与 clap 是两段里较大的那一段（它们的两个分量各自独立衰减）。
+    /// Anatomy 底鼓是四层解析包络里较大的那一段（再乘淡出包络）。
     #[must_use]
     pub(super) fn level(&self) -> f32 {
         match self.voice {
-            super::VOICE_KICK | super::VOICE_CLOSED_HAT | super::VOICE_OPEN_HAT => {
-                self.body_env.value()
+            super::VOICE_KICK => {
+                if self.anatomy_kick {
+                    self.anatomy.level(self.frame)
+                } else {
+                    self.body_env.value()
+                }
             }
+            super::VOICE_CLOSED_HAT | super::VOICE_OPEN_HAT => self.body_env.value(),
             super::VOICE_SNARE => self.body_env.value().max(self.tail_env.value()),
             _ => self.burst_env.value().max(self.tail_env.value()),
         }
@@ -368,12 +415,18 @@ impl Generator {
     ///
     /// clap 的 onset 序列没有走完时**永不**返回 `true`：onset 之间的包络可能
     /// 落到 Idle，但下一拍还要重触发（否则槽位会被中途回收、拍手少一拍）。
+    /// Anatomy 底鼓按解析包络的发声总长判定（`AnatomyVoice::is_finished`）。
     #[must_use]
     pub(super) fn is_finished(&self) -> bool {
         match self.voice {
-            super::VOICE_KICK | super::VOICE_CLOSED_HAT | super::VOICE_OPEN_HAT => {
-                !self.body_env.is_active()
+            super::VOICE_KICK => {
+                if self.anatomy_kick {
+                    self.anatomy.is_finished(self.frame)
+                } else {
+                    !self.body_env.is_active()
+                }
             }
+            super::VOICE_CLOSED_HAT | super::VOICE_OPEN_HAT => !self.body_env.is_active(),
             super::VOICE_SNARE => !self.body_env.is_active() && !self.tail_env.is_active(),
             _ => {
                 self.burst_index + 1 >= self.bursts
@@ -391,6 +444,7 @@ impl Generator {
         self.body_env.start_steal_fade();
         self.tail_env.start_steal_fade();
         self.burst_env.start_steal_fade();
+        self.anatomy.begin_fade();
     }
 
     /// 按新的 `kit` 重算"参数 → 系数"的映射，**保留全部状态值**
@@ -403,14 +457,24 @@ impl Generator {
         let sample_rate = sanitise_sample_rate(sample_rate);
         match self.voice {
             super::VOICE_KICK => {
-                let params = &kit.kick;
-                self.voice_level = params.level;
-                self.inc_lo = increment_for(params.tune_hz, sample_rate);
-                self.inc_hi = increment_for(params.glide_hz, sample_rate);
-                self.pitch_env
-                    .set_params(0.0, params.glide_s, 0.0, params.glide_s);
-                self.body_env
-                    .set_params(params.attack_s, params.decay_s, 0.0, params.decay_s);
+                if kit.kick_style == KickStyle::Anatomy {
+                    self.anatomy_kick = true;
+                    // 电平已在 Anatomy 峰值公式里（`volume`），`next()` 末尾的
+                    // `voice_level` 乘子因此取 1，不再乘第二遍；
+                    // 击的电平由 `Slot::gain` 在 `render` 末尾给（见 `anatomy.rs` D1）。
+                    self.voice_level = 1.0;
+                    self.anatomy.reconfigure(&kit.anatomy, sample_rate);
+                } else {
+                    self.anatomy_kick = false;
+                    let params = &kit.kick;
+                    self.voice_level = params.level;
+                    self.inc_lo = increment_for(params.tune_hz, sample_rate);
+                    self.inc_hi = increment_for(params.glide_hz, sample_rate);
+                    self.pitch_env
+                        .set_params(0.0, params.glide_s, 0.0, params.glide_s);
+                    self.body_env
+                        .set_params(params.attack_s, params.decay_s, 0.0, params.decay_s);
+                }
             }
             super::VOICE_SNARE => {
                 let params = &kit.snare;
@@ -494,7 +558,13 @@ impl Generator {
     #[inline]
     pub(super) fn next(&mut self) -> f32 {
         let value = match self.voice {
-            super::VOICE_KICK => self.kick(),
+            super::VOICE_KICK => {
+                if self.anatomy_kick {
+                    self.anatomy.next(self.frame)
+                } else {
+                    self.kick()
+                }
+            }
             super::VOICE_SNARE => self.snare(),
             super::VOICE_CLOSED_HAT | super::VOICE_OPEN_HAT => self.hihat(),
             super::VOICE_CLAP => self.clap(),

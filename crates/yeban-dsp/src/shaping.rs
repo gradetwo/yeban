@@ -354,6 +354,26 @@ impl Biquad {
         );
     }
 
+    /// RBJ 二阶低通（`12 dB/octave` 渐近线），`q` 定谐振峰。
+    ///
+    /// 与 [`Self::highpass`] 同一套 RBJ 系数表：`b0 = (1 − cos)/2`、`b1 = 1 − cos`、
+    /// `b2 = (1 − cos)/2`、`a0 = 1 + alpha`、`a1 = −2cos`、`a2 = 1 − alpha`，
+    /// `alpha = sin/(2q)`。Web Audio 的 `BiquadFilterNode` 低通就是这一节
+    ///（缺省 `Q = 1`）；Anatomy 底鼓的 sub 低通（140 Hz）用它。
+    pub(crate) fn lowpass(&mut self, sample_rate: f32, freq: f32, q: f32) {
+        let w0 = TAU * (freq / sample_rate);
+        let (sin, cos) = w0.sin_cos();
+        let alpha = sin / (2.0 * q.max(0.05));
+        self.set(
+            (1.0 - cos) * 0.5,
+            1.0 - cos,
+            (1.0 - cos) * 0.5,
+            1.0 + alpha,
+            -2.0 * cos,
+            1.0 - alpha,
+        );
+    }
+
     /// RBJ 二阶带通（峰值 0 dB，`q` 定带宽）。动态 EQ 用它做**侧链检波**：
     /// 只看被处理的那个频带，⛔ 不看全带宽 —— 否则一记大鼓就会把中频压下去。
     pub(crate) fn bandpass(&mut self, sample_rate: f32, freq: f32, q: f32) {
@@ -423,6 +443,20 @@ impl Biquad {
             self.v[0][1] = v1;
             *x = y;
         }
+    }
+
+    /// 单个样本过一节（**只用声道 0 的状态**），与
+    /// [`Self::process_mono_in_place`] 同一条递推（转置直接 II 型），
+    /// 给逐样本声部（Anatomy 底鼓的三层滤波）用。
+    #[inline]
+    pub(crate) fn process_sample(&mut self, x: f32) -> f32 {
+        let v1 = self.v[0][0];
+        let v2 = self.v[0][1];
+        let v = x - self.a1 * v1 - self.a2 * v2;
+        let y = self.b0 * v + self.b1 * v1 + self.b2 * v2;
+        self.v[0][0] = v;
+        self.v[0][1] = v1;
+        y
     }
 }
 
