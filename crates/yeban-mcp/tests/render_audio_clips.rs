@@ -213,6 +213,10 @@ struct Tune {
     effect_stub: bool,
     /// ⭐ 效果器线：坏绑定路径（打不开的插件；与 `effect_stub` 二选一）。
     effect_bad_path: bool,
+    /// ⭐ OpenTune 真插件线（Job 1c）：音轨挂真 OpenTune bundle 作外部效果器
+    /// （路径取 `OPENTUNE_VST3_PATH`，缺省 `~/.vst3/OpenTune.vst3`）。
+    /// 只在 `#[ignore]` 的真插件判据里用，不进 CI。
+    effect_opentune: bool,
 }
 
 impl Default for Tune {
@@ -230,6 +234,7 @@ impl Default for Tune {
             loop_config: LoopConfig::default(),
             effect_stub: false,
             effect_bad_path: false,
+            effect_opentune: false,
         }
     }
 }
@@ -305,6 +310,27 @@ fn fixture(bytes: Vec<u8>, tune: &Tune) -> Fixture {
             plugin: Some(PluginBinding {
                 path: "/definitely/not/a/plugin.so".to_owned(),
                 class: None,
+            }),
+        });
+    }
+    if tune.effect_opentune {
+        let bundle = match std::env::var("OPENTUNE_VST3_PATH") {
+            Ok(path) if !path.is_empty() => path,
+            _ => {
+                let home = std::env::var("HOME").unwrap_or_else(|_| "/home/hatch".to_owned());
+                format!("{home}/.vst3/OpenTune.vst3")
+            }
+        };
+        devices.push(DeviceDefinition {
+            id: id(104),
+            name: "OpenTune".to_owned(),
+            kind: DeviceKind::ExternalEffect,
+            bypassed: false,
+            params: Vec::new(),
+            latency_samples: 0,
+            plugin: Some(PluginBinding {
+                path: bundle,
+                class: Some("OpenTune".to_owned()),
             }),
         });
     }
@@ -3934,5 +3960,119 @@ fn a_broken_effect_binding_fails_the_render_loudly() {
     assert!(
         message.contains("pluginEffectLoad") || message.contains("效果器装载失败"),
         "失败原因应指向效果器装载，实为 {message}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// OpenTune 真插件线（Job 1c）：渲染直通
+// ---------------------------------------------------------------------------
+
+/// 440 Hz 正弦立体声素材（振幅 0.5，交错）。
+fn sine_440(frames: usize) -> Vec<f32> {
+    let mut out = Vec::with_capacity(frames * 2);
+    for index in 0..frames {
+        let value =
+            (2.0 * std::f64::consts::PI * 440.0 * index as f64 / 48_000.0).sin() as f32 * 0.5;
+        out.push(value);
+        out.push(value);
+    }
+    out
+}
+
+/// 自相关估 F0（窗内去均值，滞后取 80–1000 Hz 区间；与宿主层真插件测试同款）。
+fn estimate_f0_render(samples: &[f32], sample_rate: f64, from_s: f64, to_s: f64) -> f64 {
+    let from = (from_s * sample_rate) as usize;
+    let to = (to_s * sample_rate).min(samples.len() as f64) as usize;
+    if to <= from + 2 {
+        return 0.0;
+    }
+    let window = &samples[from..to];
+    let mean = window.iter().sum::<f32>() / window.len() as f32;
+    let centered: Vec<f32> = window.iter().map(|sample| sample - mean).collect();
+    let energy: f32 = centered.iter().map(|sample| sample * sample).sum();
+    if energy <= 0.0 {
+        return 0.0;
+    }
+    let min_lag = (sample_rate / 1000.0) as usize;
+    let max_lag = (sample_rate / 80.0) as usize;
+    let mut best_lag = 0_usize;
+    let mut best_corr = f32::NEG_INFINITY;
+    for lag in min_lag..=max_lag.min(centered.len() - 1) {
+        let corr: f32 = centered[..centered.len() - lag]
+            .iter()
+            .zip(&centered[lag..])
+            .map(|(a, b)| a * b)
+            .sum();
+        let normalized = corr / energy;
+        if normalized > best_corr {
+            best_corr = normalized;
+            best_lag = lag;
+        }
+    }
+    if best_lag == 0 {
+        return 0.0;
+    }
+    sample_rate / best_lag as f64
+}
+
+/// OpenTune 真插件线 [①]：440 Hz 正弦人声测试素材经挂 OpenTune 的轨渲染，
+/// 输出与素材逐样本一致（容差同既有判据的 2 LSB），`sources[].peak` = 0.5，
+/// 收据恰为 `["deviceChainDsp"]`（效果器已被宿主消费，不登记
+/// `externalPlugins`）。默认态 OpenTune 是逐位直通（宿主层实测最大偏差
+/// 0.0），故本判据钉的是“装配接上了、音频真流过、没静默丢”；纠音本身在默认态
+/// 不发生（宿主层 `opentune_real_plugin.rs` 已量：452 Hz 输入末窗仍为
+/// 452.8 Hz），不在此断言纠音。
+///
+/// 默认 `#[ignore]`：依赖本机外的 bundle，不进 CI。跑法（须 `--nocapture`）：
+/// `cargo test -p yeban-mcp --test render_audio_clips opentune -- --ignored --nocapture`
+#[test]
+#[ignore = "依赖本机外的真 OpenTune bundle，不进 CI"]
+fn an_opentune_effect_passes_audio_through_and_leaves_the_receipt() {
+    let scratch = Scratch::new("effect-opentune");
+    let samples = sine_440(48_000);
+    let tune = Tune {
+        effect_opentune: true,
+        ..Default::default()
+    };
+    let fixture = fixture(wav_f32(2, 48_000, &samples), &tune);
+    let out = scratch.join("master.wav");
+    let artifact = build_with(&fixture.project, &pool(&fixture), &out, args(&out)).expect("渲染");
+    let data = artifact.response_data();
+    assert_eq!(
+        data["unsupported"],
+        json!(["deviceChainDsp"]),
+        "已宿主的 OpenTune 不得登记 externalPlugins: {}",
+        data["unsupported"]
+    );
+    let peak = data["sources"][0]["peak"].as_f64().expect("峰值读数");
+    assert!(
+        (peak - 0.5).abs() < 1e-6,
+        "sources[].peak 应含效果器输出（440 Hz 正弦振幅 0.5 ⇒ 0.5），实为 {peak}"
+    );
+    let rendered = payload_samples(&artifact);
+    assert_eq!(
+        rendered.len(),
+        samples.len(),
+        "渲染输出长度须与素材一致（{} vs {}）",
+        rendered.len(),
+        samples.len()
+    );
+    let tolerance = 2.0 / 8_388_608.0;
+    let mut worst = 0.0f32;
+    for (index, expected) in samples.iter().enumerate() {
+        worst = worst.max((rendered[index] - expected).abs());
+    }
+    eprintln!("OpenTune 渲染直通: 最大逐样本偏差 {worst}（容差 {tolerance}）");
+    assert!(
+        worst <= tolerance,
+        "直通效果器不得改样本：最大偏差 {worst} > 容差 {tolerance}"
+    );
+    // 左声道 F0 实测（0.2–0.8 秒窗）：输出须仍是 440 Hz 的正弦。
+    let left: Vec<f32> = rendered.iter().step_by(2).copied().collect();
+    let f0 = estimate_f0_render(&left, 48_000.0, 0.2, 0.8);
+    eprintln!("OpenTune 渲染直通: 输出 F0 ≈ {f0:.1} Hz（目标 440 Hz）");
+    assert!(
+        (420.0..460.0).contains(&f0),
+        "输出 F0 应 ≈440 Hz，实为 {f0:.1} Hz"
     );
 }

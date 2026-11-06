@@ -8540,3 +8540,125 @@ fn tempo_and_time_signature_points_deletion_is_reverted_by_undo() {
         }
     );
 }
+
+// ---------------------------------------------------------------------------
+// OpenTune 真插件线（Job 1c）：扫描＋MCP 装载
+// ---------------------------------------------------------------------------
+
+/// OpenTune bundle 路径：环境变量优先，未设时用默认安装路径。
+fn opentune_path() -> String {
+    match std::env::var("OPENTUNE_VST3_PATH") {
+        Ok(path) if !path.is_empty() => path,
+        _ => {
+            let home = std::env::var("HOME").unwrap_or_else(|_| "/home/hatch".to_owned());
+            format!("{home}/.vst3/OpenTune.vst3")
+        }
+    }
+}
+
+/// 真 OpenTune bundle 的 MCP 扫描＋装载：`yeban_scan_plugins`（无实参，
+/// `~/.vst3` 是默认根）须列出 OpenTune 为可用效果器；`yeban_load_plugin`
+///（`kind: "effect"`，`autoMerge: true`）须在目标轨链尾追加一台
+/// `ExternalEffect` 设备，绑定记 `{path, class: "OpenTune"}`，
+/// `latency_samples` 为实例上报值（实测 0）。
+///
+/// 默认 `#[ignore]`：依赖本机外的 bundle，不进 CI。跑法（须 `--nocapture`）：
+/// `cargo test -p yeban-mcp --test tools_e2e opentune -- --ignored --nocapture`
+#[test]
+#[ignore = "依赖本机外的真 OpenTune bundle，不进 CI"]
+fn opentune_scan_and_load_via_mcp() {
+    let bundle = opentune_path();
+    eprintln!("OpenTune bundle: {bundle}");
+    let (mut dispatcher, auth) = dispatcher();
+
+    // ① 扫描（无实参）：须有一行 className=OpenTune / kind=effect / usable=true。
+    let scanned = call(&mut dispatcher, &auth, "yeban_scan_plugins", json!({}));
+    assert_eq!(scanned["status"], "success", "{scanned}");
+    let plugins = scanned["data"]["plugins"].as_array().expect("plugins 数组");
+    for row in plugins {
+        eprintln!(
+            "扫描行: path={} className={} kind={} usable={} error={}",
+            row["path"], row["className"], row["kind"], row["usable"], row["error"]
+        );
+    }
+    let row = plugins
+        .iter()
+        .find(|row| row["className"] == "OpenTune")
+        .expect("扫描结果须含 OpenTune 行");
+    assert_eq!(row["kind"], "effect", "OpenTune 须被判为效果器: {row}");
+    assert_eq!(row["usable"], true, "OpenTune 须可用: {row}");
+    assert_eq!(row["vendor"], "DAYA", "厂商须为 DAYA: {row}");
+
+    // ② 装载到带宏的 lead 轨（autoMerge: true ⇒ 直接合入工程）。
+    let scratch = Scratch::new("opentune-load");
+    open(&scratch, &mut dispatcher, &auth);
+    let track = macro_track(&dispatcher);
+    let chain_before = dispatcher
+        .domain()
+        .active_project()
+        .expect("工程")
+        .tracks
+        .values()
+        .find(|t| t.id.to_canonical_string() == track)
+        .expect("目标轨")
+        .devices
+        .len();
+    let loaded = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_load_plugin",
+        json!({
+            "trackId": track,
+            "pluginPath": bundle,
+            "pluginId": "OpenTune",
+            "kind": "effect",
+            "autoMerge": true,
+        }),
+    );
+    assert_eq!(loaded["status"], "success", "{loaded}");
+    eprintln!("装载响应: {loaded}");
+    // autoMerge 时 ops 在 `data.merge.proposal.ops` 里（`data.proposal` 只是摘要）。
+    let device = &loaded["data"]["merge"]["proposal"]["ops"][0]["op"]["InsertDevice"]["device"];
+    assert_eq!(device["name"], "OpenTune", "设备名须为类名: {loaded}");
+    assert_eq!(
+        device["kind"], "ExternalEffect",
+        "设备 kind 须为效果器: {loaded}"
+    );
+    assert_eq!(
+        device["plugin"]["path"], bundle,
+        "绑定须记 bundle 路径: {loaded}"
+    );
+    assert_eq!(
+        device["plugin"]["class"], "OpenTune",
+        "绑定须记类名: {loaded}"
+    );
+    let latency = device["latency_samples"]
+        .as_u64()
+        .expect("latency_samples 读数");
+    eprintln!("OpenTune latency_samples（实例上报）: {latency}");
+    assert_eq!(
+        latency, 0,
+        "OpenTune 实例上报延迟须为 0（宿主层实测）: {loaded}"
+    );
+
+    // ③ 读侧：引擎状态须在链尾报出这台设备。
+    let reading = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_query_engine_state",
+        json!({ "trackId": track }),
+    );
+    assert_eq!(reading["status"], "success", "{reading}");
+    let devices = reading["data"]["track"]["devices"]
+        .as_array()
+        .expect("devices 数组");
+    assert_eq!(
+        devices.len(),
+        chain_before + 1,
+        "链上须多一台设备: {reading}"
+    );
+    let last = devices.last().expect("链尾设备");
+    assert_eq!(last["name"], "OpenTune", "链尾须为 OpenTune: {reading}");
+    assert_eq!(last["kind"], "ExternalEffect", "{reading}");
+    assert_eq!(last["latencySamples"], 0, "{reading}");
+}
