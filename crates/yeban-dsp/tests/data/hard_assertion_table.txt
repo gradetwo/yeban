@@ -2,7 +2,7 @@
 # 分类口径：float_bits ＝ 判据体内有 to_bits()；integer_count ＝ 只比整数/长度
 # class：hard ＝ 产线可达集无宿主 libm 超越函数；platform ＝ 有（只在本架构有意义）
 #        no_callee ＝ 不调用本 crate 产线函数
-# 合计 335 条：float_bits 84 ／ integer_count 251；其中 hard 69 ／ platform 12
+# 合计 337 条：float_bits 84 ／ integer_count 253；其中 hard 69 ／ platform 12
 # 列：kind | class | reach | host | file | test
 integer_count | no_callee | 0 | - | src/block.rs | accumulate_matches_scalar_reference
 integer_count | no_callee | 0 | - | src/block.rs | mismatched_lengths_are_truncated_instead_of_panicking
@@ -312,9 +312,10 @@ integer_count | no_callee | 0 | - | src/tape.rs | reset_reproduces_a_freshly_bui
 integer_count | no_callee | 0 | - | src/tape.rs | sanitised_clamps_every_field_into_its_documented_domain
 integer_count | no_callee | 0 | - | src/tape.rs | small_signal_gain_is_approximately_one
 integer_count | no_callee | 0 | - | src/vocal_chunk.rs | breath_not_a_cut_point
-integer_count | no_callee | 0 | - | src/vocal_chunk.rs | chunked_matches_whole_up_to_time_shift
+integer_count | no_callee | 0 | - | src/vocal_chunk.rs | chunked_with_drift_carry_matches_whole_bit_identical
 integer_count | no_callee | 0 | - | src/vocal_chunk.rs | cut_is_hop_aligned
 integer_count | no_callee | 0 | - | src/vocal_chunk.rs | cuts_land_in_silence
+integer_count | no_callee | 0 | - | src/vocal_chunk.rs | fresh_instances_still_drift_by_time_shift
 integer_count | no_callee | 0 | - | src/vocal_chunk.rs | no_cut_without_silence
 integer_count | no_callee | 0 | - | src/vocal_chunk.rs | render_length_mismatch_errors
 integer_count | no_callee | 0 | - | src/vocal_chunk.rs | short_and_empty_input
@@ -322,6 +323,7 @@ integer_count | no_callee | 0 | - | src/vocal_chunk.rs | tail_not_cut
 integer_count | no_callee | 0 | - | src/vocal_pitch_shift.rs | boundary_no_click_abrupt_with_fade
 integer_count | no_callee | 0 | - | src/vocal_pitch_shift.rs | boundary_no_click_gradual_without_fade
 integer_count | no_callee | 0 | - | src/vocal_pitch_shift.rs | defaults_are_pinned
+integer_count | no_callee | 0 | - | src/vocal_pitch_shift.rs | drift_carry_round_trip_matches_whole_line
 integer_count | no_callee | 0 | - | src/vocal_pitch_shift.rs | estimator_finds_pure_tones
 integer_count | no_callee | 0 | - | src/vocal_pitch_shift.rs | receipt_marks_every_chunk
 integer_count | no_callee | 0 | - | src/vocal_pitch_shift.rs | shift_up_inserts_shift_down_deletes

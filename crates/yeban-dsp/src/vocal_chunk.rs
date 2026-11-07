@@ -38,10 +38,22 @@
 //!
 //! 切块渲染与整行渲染是否逐位相同，取决于渲染器状态：分块后每 chunk
 //! 用新实例渲染，实例状态在静音段内是否收敛到整行实例的状态，须实测
-//! 判定，不得先验断言。等价性实测（硬切与 lead-in 交叠两种方案、合成
-//! 信号与 pilot 行）见 `~/workspace/vocaledit-phase2/REPORT-p1-2.md`，
-//! 结论只写实测。
+//! 判定，不得先验断言。
+//!
+//! * **不带漂移携带**（[`render_chunked`]＋每 chunk 新实例）：实测否定
+//!   逐位相同——两路输出差一个恒定时移（合成信号最佳滞后 SSE 比 lag 0
+//!   小四个量级以上；pilot take 最佳滞后 146 采样）。见
+//!   `~/workspace/vocaledit-phase2/REPORT-p1-2.md`，测试
+//!   `fresh_instances_still_drift_by_time_shift` 把该形态钉死。
+//! * **带漂移携带**（[`render_chunked_with_drift_carry`]／
+//!   [`render_chunked_with_drift_carry_and_lead_in`]）：上一 chunk
+//!   结束时的漂移状态传给下一 chunk 的新实例，切块输出与整行输出逐位
+//!   相同（滞后 0，含切点静音段内的 240 采样淡出尾）；测试
+//!   `chunked_with_drift_carry_matches_whole_bit_identical` 与 take
+//!   探针（`vocal_align --chunked-carry`）实测。机制见
+//!   `vocal_pitch_shift` 模块文档「漂移携带」。
 
+use crate::vocal_pitch_shift::{DriftState, PitchShiftConfig, PitchShifter};
 use crate::vocal_timemap::{SILENCE_DB, SILENCE_MIN_S};
 use std::error::Error;
 use std::fmt;
@@ -554,6 +566,109 @@ where
     Ok(out)
 }
 
+/// 分块移调渲染（硬切，带漂移携带）：每 chunk 新建 [`PitchShifter`] 实例，
+/// 但把上一 chunk 结束时的漂移状态（[`DriftState`]）传给下一 chunk 的新实例，
+/// 使切块输出与整行单实例输出逐位相同（滞后 0；见模块文档「等价性说明」）。
+///
+/// * `voiced`：整行逐 chunk 的检测器 valid 标志（与
+///   [`PitchShifter::process`] 的 `voiced` 同口径，长度须 ≥
+///   `ceil(samples.len() / config.chunk_samples)`，不足返回
+///   [`ChunkError::InvalidInput`]）；每 chunk 按绝对下标切片，不重算。
+/// * 每 chunk 渲染起点须按 `config.chunk_samples` 对齐（规划的切点是 hop
+///   对齐的，默认配置下 hop 与 `chunk_samples` 同为 480 采样，天然满足）；
+///   不对齐时 panic。
+/// * `sample_rate` 须与 `plan.sample_rate` 一致，否则返回
+///   [`ChunkError::InvalidInput`]。
+///
+/// 本函数只用于离线渲染（见模块文档）。
+pub fn render_chunked_with_drift_carry(
+    samples: &[f32],
+    plan: &ChunkPlan,
+    sample_rate: u32,
+    config: PitchShiftConfig,
+    voiced: &[bool],
+) -> Result<Vec<f32>, ChunkError> {
+    render_chunked_shifted_inner(samples, plan, sample_rate, config, voiced, false)
+}
+
+/// 分块移调渲染（lead-in 交叠，带漂移携带）：与
+/// [`render_chunked_with_drift_carry`] 相同，但每 chunk 从切点减 lead_in 起渲染，
+/// 拼接时丢弃 lead_in 段输出。漂移状态在渲染起点（切点减 lead_in）处恢复——
+/// 读指针按 `output_pos` 与起点的差回退，同一快照对两种起点都正确
+/// （见 `vocal_pitch_shift` 模块文档「漂移携带」）。
+///
+/// 本函数只用于离线渲染（见模块文档）。
+pub fn render_chunked_with_drift_carry_and_lead_in(
+    samples: &[f32],
+    plan: &ChunkPlan,
+    sample_rate: u32,
+    config: PitchShiftConfig,
+    voiced: &[bool],
+) -> Result<Vec<f32>, ChunkError> {
+    render_chunked_shifted_inner(samples, plan, sample_rate, config, voiced, true)
+}
+
+fn render_chunked_shifted_inner(
+    samples: &[f32],
+    plan: &ChunkPlan,
+    sample_rate: u32,
+    config: PitchShiftConfig,
+    voiced: &[bool],
+    lead_in: bool,
+) -> Result<Vec<f32>, ChunkError> {
+    config.validate();
+    if samples.len() != plan.total_samples {
+        return Err(ChunkError::InvalidInput(format!(
+            "samples len {} does not match plan total {}",
+            samples.len(),
+            plan.total_samples
+        )));
+    }
+    if sample_rate != plan.sample_rate {
+        return Err(ChunkError::InvalidInput(format!(
+            "sample_rate {sample_rate} does not match plan sample_rate {}",
+            plan.sample_rate
+        )));
+    }
+    let chunk_samples = config.chunk_samples;
+    let n_flags = samples.len().div_ceil(chunk_samples);
+    if voiced.len() < n_flags {
+        return Err(ChunkError::InvalidInput(format!(
+            "voiced flags len {} is below {} (ceil(samples / chunk_samples))",
+            voiced.len(),
+            n_flags
+        )));
+    }
+    let mut out: Vec<f32> = Vec::with_capacity(samples.len());
+    let mut carry: Option<DriftState> = None;
+    for (index, chunk) in plan.chunks.iter().enumerate() {
+        let skip = if lead_in && index > 0 {
+            plan.cuts[index - 1].lead_in_samples
+        } else {
+            0
+        };
+        let render_start = chunk.start - skip;
+        assert_eq!(
+            render_start % chunk_samples,
+            0,
+            "chunked shift render requires chunk starts aligned to chunk_samples {chunk_samples}, got render_start {render_start}"
+        );
+        let slice = &samples[render_start..chunk.end];
+        let mut shifter = PitchShifter::new(sample_rate as f32, config);
+        if let Some(state) = &carry {
+            shifter.restore_drift(state, render_start);
+        }
+        let first_flag = render_start / chunk_samples;
+        let flag_len = slice.len().div_ceil(chunk_samples);
+        let flags = &voiced[first_flag..first_flag + flag_len];
+        let (rendered, _) = shifter.process(slice, flags);
+        debug_assert_eq!(rendered.len(), slice.len());
+        carry = Some(shifter.drift_state());
+        out.extend_from_slice(&rendered[skip..]);
+    }
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -721,12 +836,12 @@ mod tests {
         (outside, inside)
     }
 
-    /// 真实 PitchShifter（+50 音分）整行渲染：单实例＋RMS 浊音标志。
-    fn render_whole(samples: &[f32]) -> Vec<f32> {
+    /// 真实 PitchShifter 整行渲染：单实例＋RMS 浊音标志。
+    fn render_whole(samples: &[f32], cents: f32) -> Vec<f32> {
         let mut shifter = PitchShifter::new(
             SR_F,
             PitchShiftConfig {
-                shift_cents: 50.0,
+                shift_cents: cents,
                 ..Default::default()
             },
         );
@@ -735,13 +850,13 @@ mod tests {
         out
     }
 
-    /// 真实 PitchShifter（+50 音分）切块渲染：每 chunk 新实例。
-    fn render_hard_cut(samples: &[f32], plan: &ChunkPlan) -> Vec<f32> {
+    /// 真实 PitchShifter 切块渲染：每 chunk 新实例（不带漂移携带）。
+    fn render_hard_cut(samples: &[f32], plan: &ChunkPlan, cents: f32) -> Vec<f32> {
         render_chunked(samples, plan, |_, slice| {
             let mut shifter = PitchShifter::new(
                 SR_F,
                 PitchShiftConfig {
-                    shift_cents: 50.0,
+                    shift_cents: cents,
                     ..Default::default()
                 },
             );
@@ -752,14 +867,14 @@ mod tests {
         .expect("hard-cut render must succeed")
     }
 
-    /// 真实 PitchShifter（+50 音分）切块渲染（lead-in 交叠）：每 chunk
-    /// 新实例，从切点减 lead_in 起渲染。
-    fn render_lead_in_cut(samples: &[f32], plan: &ChunkPlan) -> Vec<f32> {
+    /// 真实 PitchShifter 切块渲染（lead-in 交叠）：每 chunk
+    /// 新实例（不带漂移携带），从切点减 lead_in 起渲染。
+    fn render_lead_in_cut(samples: &[f32], plan: &ChunkPlan, cents: f32) -> Vec<f32> {
         render_chunked_with_lead_in(samples, plan, |_, slice| {
             let mut shifter = PitchShifter::new(
                 SR_F,
                 PitchShiftConfig {
-                    shift_cents: 50.0,
+                    shift_cents: cents,
                     ..Default::default()
                 },
             );
@@ -768,6 +883,39 @@ mod tests {
             out
         })
         .expect("lead-in render must succeed")
+    }
+
+    /// 真实 PitchShifter 切块渲染（硬切，带漂移携带）：整行 RMS 浊音标志
+    /// 按绝对下标切片，漂移状态随 chunk 传递。
+    fn render_carry_cut(samples: &[f32], plan: &ChunkPlan, cents: f32) -> Vec<f32> {
+        let flags = rms_voiced_flags(samples, SR, DEFAULT_CHUNK_SAMPLES, SILENCE_DB);
+        render_chunked_with_drift_carry(
+            samples,
+            plan,
+            SR,
+            PitchShiftConfig {
+                shift_cents: cents,
+                ..Default::default()
+            },
+            &flags,
+        )
+        .expect("drift-carry render must succeed")
+    }
+
+    /// 真实 PitchShifter 切块渲染（lead-in 交叠，带漂移携带）。
+    fn render_carry_lead_in(samples: &[f32], plan: &ChunkPlan, cents: f32) -> Vec<f32> {
+        let flags = rms_voiced_flags(samples, SR, DEFAULT_CHUNK_SAMPLES, SILENCE_DB);
+        render_chunked_with_drift_carry_and_lead_in(
+            samples,
+            plan,
+            SR,
+            PitchShiftConfig {
+                shift_cents: cents,
+                ..Default::default()
+            },
+            &flags,
+        )
+        .expect("drift-carry lead-in render must succeed")
     }
 
     /// 最佳滞后（采样数）与均方误差：窗口内 whole[i] 与 chunked[i+lag]
@@ -800,32 +948,56 @@ mod tests {
         (best_lag, best_sse / len as f64, sse0 / len as f64)
     }
 
-    /// 切块与整行对照（真实 PitchShifter，+50 音分）。
+    /// 切块与整行对照（带漂移携带，真实 PitchShifter）。
     ///
-    /// 注意：本测试**不**断言 brief 原定的“除含切点的 Silence 段外
-    /// 逐位相同”——实测否定了该前提（见 REPORT-p1-2.md）：合成信号
-    /// 上段外差异 504,160 采样、pilot take 上 2,941,895 采样，硬切与
-    /// lead-in 交叠两方案数逐位相同。根因是移调器的读指针漂移（每
-    /// 周期误差扩散余量，界为一个周期）在静音段内冻结：整行实例带
-    /// 着漂移进浊音恢复，新实例从零起步，两路输出差一个恒定时移
-    /// （合成信号上最佳滞后 SSE 比 lag 0 小四个量级以上）。lead-in
-    /// 不能修它：lead-in 只让新实例在同一静音段内早 50 ms 起步，
-    /// 直通段读指针仍按 1.0 推进，漂移仍为零。
-    ///
-    /// 本测试钉死实测的等价形态：首刀之前逐位相同；切点静音段内
-    /// 逐位相同（合成信号）；首刀之后差异是恒定时移（最佳滞后
-    /// 对齐后误差极小）；lead-in 与硬切只差浮点舍入（最大绝对差
-    /// 6.0e-8，该移调器上 lead-in 无信号级作用，见报告）。逐位相同
-    /// 口径是否须改为此时移口径，由协调员裁决——改移调器（静音处
-    /// 重同步读指针）或每 chunk 预热状态均超出 P1-2 范围。
+    /// 漂移状态随 chunk 传递后，切块输出与整行输出逐位相同（滞后 0）：
+    /// 硬切与 lead-in 交叠两种起点、升调（+50 音分）与降调（−50 音分）
+    /// 各一遍；分区差异数（段外／段内）均为 0，含切点静音段内的淡出尾
+    /// （P1-2 的 240 采样段内差异随漂移携带一并消失，见
+    /// REPORT-adjudication.md §1.3(a)／(c)）。
     #[test]
-    fn chunked_matches_whole_up_to_time_shift() {
+    fn chunked_with_drift_carry_matches_whole_bit_identical() {
         let samples = alternating();
         let plan = plan_chunks(&samples, SR, ChunkPlanConfig::default());
         assert!(plan.cut_count() >= 1);
-        let whole = render_whole(&samples);
-        let chunked = render_hard_cut(&samples, &plan);
-        let lead_in = render_lead_in_cut(&samples, &plan);
+        for &cents in &[50.0, -50.0] {
+            let whole = render_whole(&samples, cents);
+            let chunked = render_carry_cut(&samples, &plan, cents);
+            let lead_in = render_carry_lead_in(&samples, &plan, cents);
+            assert_eq!(whole.len(), chunked.len());
+            assert_eq!(whole.len(), lead_in.len());
+            assert_eq!(
+                whole, chunked,
+                "drift-carry hard cut must match whole line at {cents} cents"
+            );
+            assert_eq!(
+                whole, lead_in,
+                "drift-carry lead-in must match whole line at {cents} cents"
+            );
+            let (outside, inside) = partition_diffs(&whole, &chunked, &plan);
+            assert_eq!(outside, 0, "outside diffs at {cents} cents");
+            assert_eq!(inside, 0, "inside diffs at {cents} cents");
+        }
+    }
+
+    /// 切块与整行对照（不带漂移携带，真实 PitchShifter，+50 音分）。
+    ///
+    /// 注意：本测试**不**断言逐位相同——它把 P1-2 的实测诊断钉死：
+    /// 每 chunk 新实例时，合成信号上段外差异 504,160 采样、首刀之前逐位
+    /// 相同、首刀之后差异是恒定时移（第三段音内 9.5–10.0 秒窗口，最佳滞后
+    /// SSE 比 lag 0 小三个量级以上，实测 0.000019 对 0.499612）；lead-in
+    /// 与硬切只差浮点舍入（最大绝对差 6.0e-8）。根因是移调器的读指针漂移
+    /// （每周期误差扩散余量，界为一个周期）在静音段内冻结：整行实例带着
+    /// 漂移进浊音恢复，新实例从零起步。修法是漂移携带（见
+    /// `chunked_with_drift_carry_matches_whole_bit_identical`），不在本测试里。
+    #[test]
+    fn fresh_instances_still_drift_by_time_shift() {
+        let samples = alternating();
+        let plan = plan_chunks(&samples, SR, ChunkPlanConfig::default());
+        assert!(plan.cut_count() >= 1);
+        let whole = render_whole(&samples, 50.0);
+        let chunked = render_hard_cut(&samples, &plan, 50.0);
+        let lead_in = render_lead_in_cut(&samples, &plan, 50.0);
         assert_eq!(whole.len(), chunked.len());
         assert_eq!(whole.len(), lead_in.len());
         let (outside, inside) = partition_diffs(&whole, &chunked, &plan);

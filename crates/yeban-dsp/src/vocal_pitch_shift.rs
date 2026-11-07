@@ -59,6 +59,32 @@
 //!   `boundary_no_click_gradual_without_fade` 的对照说明）。
 //! * 共振峰不修正（factor 恒 1.0）：大移调量下音色会随音高漂移，
 //!   与 P0-1 路由的 ≥75 音分走神经腿的设定一致（大偏差不走本腿）。
+//!
+//! # 漂移携带（drift carry）
+//!
+//! 切块渲染时，每 chunk 用新实例会丢失读指针漂移：整行实例带着漂移
+//! （读指针减已处理输出采样数，界约为一个周期）进浊音恢复，新实例
+//! 从零起步，两路输出差一个恒定时移（见 `vocal_chunk` 的等价性实测，
+//! 根因见 `~/workspace/vocaledit-phase2/REPORT-p1-2.md` §9 与
+//! `REPORT-adjudication.md` §1.3(a)）。
+//! [`DriftState`] 是 `process` 结束时影响后续输出的全部可恢复状态；
+//! 上一 chunk 结束时 [`PitchShifter::drift_state`] 捕获它，下一 chunk
+//! 的新实例在渲染前 [`PitchShifter::restore_drift`] 装入它，滞后归零，
+//! 切块输出与整行输出逐位相同。
+//!
+//! **读指针按绝对坐标存**：[`PitchShifter::in_pos`] 与周期网格
+//! （`period_start`／`next_boundary`）一律是相对整行输入起点的绝对
+//! 坐标（`input_origin` 是本实例输入在整行中的起点，`process` 只在
+//! 索引 slice 时减它）。这样两路实例做的 f64 运算逐位相同——
+//! 相对坐标会在不同量级累加 `ratio`，插值权重末位不同，输出差 1 个
+//! f32 ulp（实测最大 5.96e-08，与 P1-2 记的 lead-in／硬切浮点舍入
+//! 同量级）。恢复时读指针按 `output_pos` 与新渲染起点的差回退：
+//! lead-in 段是纯静音直通，读指针在段内按 1.0 推进，回退精确；
+//! 因此同一快照对硬切（起点＝切点）与 lead-in 交叠（起点＝切点减
+//! lead_in）都正确。
+//!
+//! 计数收据（累计插入／删除周期数）是纯诊断计数，不影响音频，不携带：
+//! 每 chunk 实例的收据计数从 0 起，与现行 fresh-instance 语义一致。
 
 use libm::pow;
 
@@ -235,6 +261,53 @@ pub struct PitchShiftReceipt {
     pub periods_deleted: u32,
 }
 
+/// 过渡淡入淡出的可携带快照（[`FadeState`] 的公开形态）。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DriftFade {
+    /// 剩余淡入淡出采样数。
+    pub remaining: usize,
+    /// 总淡入淡出采样数。
+    pub total: usize,
+    /// 淡出侧是否为浊音（为真：浊音→清音；为假：清音→浊音）。
+    pub from_voiced: bool,
+}
+
+/// 移调器漂移状态：一次 [`PitchShifter::process`] 调用结束时，影响
+/// 后续输出的全部可恢复状态（见模块文档「漂移携带」）。全部位置量
+/// 都是输入绝对坐标（相对整行输入起点），与
+/// [`PitchShifter::restore_drift`] 的 `input_start` 配合换算。
+///
+/// 快照不含累计插入／删除周期数：那是纯诊断计数，不影响音频；
+/// 每 chunk 实例的收据计数从 0 起。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DriftState {
+    /// 读指针（输入绝对坐标）：整行实例在捕获时刻的读指针位置。
+    pub read_pos: f64,
+    /// 捕获时刻的输出位置（输入绝对坐标）：`input_origin + 已处理输出采样数`。
+    /// 恢复时读指针按它与新渲染起点的差回退（见 [`PitchShifter::restore_drift`]）。
+    pub output_pos: usize,
+    /// 读指针漂移（采样数，诊断用）：`read_pos - output_pos`，界约为一个周期。
+    pub drift: f64,
+    /// 当前网格周期（采样数）；`None` 表示尚未估计出周期。
+    pub period: Option<f32>,
+    /// 当前周期网格起点（输入绝对坐标）。
+    pub period_start: f64,
+    /// 下一个周期边界（输入绝对坐标）。
+    pub next_boundary: f64,
+    /// 当前周期已完成的发射次数。
+    pub emissions_done: u32,
+    /// 当前周期的计划发射次数。
+    pub emissions_planned: u32,
+    /// 误差扩散进位：发射次数的小数部分累计。
+    pub carry: f64,
+    /// 待执行的重复跳变：剩余确认采样数。
+    pub pending_repeat: Option<usize>,
+    /// 上一 chunk 的实际处理模式（浊音移调／直通）。
+    pub prev_effective_voiced: Option<bool>,
+    /// 进行中的过渡淡入淡出；切点落在静音段内时通常为 `None`。
+    pub fade: Option<DriftFade>,
+}
+
 /// 滞后 `lag` 处的归一化自相关值（能量归一化，`energy` 为窗内总能量）。
 fn autocorr_at(samples: &[f32], energy: f32, lag: usize) -> f32 {
     if energy <= 0.0 || lag >= samples.len() {
@@ -383,7 +456,11 @@ pub struct PitchShifter {
     ratio: f64,
     /// 过渡淡入淡出长度（采样数，由 `transition_fade_s` 换算）。
     fade_samples: usize,
-    /// 读指针（输入采样坐标，连续状态，永不 snap 回写指针）。
+    /// 本实例输入在整行中的绝对起点（采样下标）；`new` 构造时为 0，
+    /// [`PitchShifter::restore_drift`] 按新 chunk 的渲染起点设置。
+    /// 读指针与周期网格一律存绝对坐标，`process` 只在索引 slice 时减它。
+    input_origin: usize,
+    /// 读指针（输入绝对坐标，连续状态，永不 snap 回写指针）。
     in_pos: f64,
     /// 当前网格周期（采样数）；`None` 表示尚未估计出周期。
     period: Option<f32>,
@@ -407,6 +484,10 @@ pub struct PitchShifter {
     inserted_total: u32,
     /// 累计删除（跳过）的周期数。
     deleted_total: u32,
+    /// 自构造（或上次 [`PitchShifter::reset`]／[`PitchShifter::restore_drift`]）
+    /// 以来已处理（输出）的采样总数；供 [`PitchShifter::drift_state`]
+    /// 算漂移（`in_pos - processed`）。只记数，不分配。
+    processed: usize,
 }
 
 impl PitchShifter {
@@ -432,6 +513,7 @@ impl PitchShifter {
             cents_applied,
             ratio,
             fade_samples,
+            input_origin: 0,
             in_pos: 0.0,
             period: None,
             period_start: 0.0,
@@ -444,6 +526,7 @@ impl PitchShifter {
             fade: None,
             inserted_total: 0,
             deleted_total: 0,
+            processed: 0,
         }
     }
 
@@ -455,6 +538,7 @@ impl PitchShifter {
     /// 重置全部流式状态（读指针、周期网格、进位、淡入淡出），
     /// 配置与采样率不变。
     pub fn reset(&mut self) {
+        self.input_origin = 0;
         self.in_pos = 0.0;
         self.period = None;
         self.period_start = 0.0;
@@ -465,6 +549,77 @@ impl PitchShifter {
         self.pending_repeat = None;
         self.prev_effective_voiced = None;
         self.fade = None;
+        self.inserted_total = 0;
+        self.deleted_total = 0;
+        self.processed = 0;
+    }
+
+    /// 捕获漂移状态（见模块文档「漂移携带」）。
+    ///
+    /// 调用方须保证本实例自构造（或上次
+    /// [`PitchShifter::restore_drift`]）以来只处理过同一段连续输入
+    /// （分块渲染里每实例恰调一次 `process`，天然满足）。
+    pub fn drift_state(&self) -> DriftState {
+        let output_pos = self.input_origin + self.processed;
+        DriftState {
+            read_pos: self.in_pos,
+            output_pos,
+            drift: self.in_pos - output_pos as f64,
+            period: self.period,
+            period_start: self.period_start,
+            next_boundary: self.next_boundary,
+            emissions_done: self.emissions_done,
+            emissions_planned: self.emissions_planned,
+            carry: self.carry,
+            pending_repeat: self.pending_repeat,
+            prev_effective_voiced: self.prev_effective_voiced,
+            fade: self.fade.map(|f| DriftFade {
+                remaining: f.remaining,
+                total: f.total,
+                from_voiced: f.from_voiced,
+            }),
+        }
+    }
+
+    /// 恢复漂移状态：把 `state`（由另一实例在另一 chunk 结束时捕获）
+    /// 装入本实例，使本实例从 `input_start`（本实例将要处理的输入在
+    /// 整行中的绝对起点）起的行为，与整行实例在同一位置的行为逐位相同。
+    ///
+    /// 读指针按 `state.output_pos` 与 `input_start` 的差回退：硬切时
+    /// 两者相等，读指针原样装入；lead-in 交叠时 `input_start` 在
+    /// `output_pos` 之前，回退量恰是 lead_in 段长——该段是纯静音直通，
+    /// 读指针按 1.0 推进，回退精确。网格坐标是绝对的，不动。
+    /// `input_start` 不得大于 `state.output_pos`（不能向未来恢复）。
+    ///
+    /// 须在 fresh 实例（或 [`PitchShifter::reset`] 之后）的第一次
+    /// `process` 调用前调用；已处理过输入后调用时 panic。恢复后累计
+    /// 插入／删除计数从 0 起（见 [`DriftState`]）。
+    pub fn restore_drift(&mut self, state: &DriftState, input_start: usize) {
+        assert!(
+            self.processed == 0,
+            "restore_drift must be called before any process call (processed={})",
+            self.processed
+        );
+        assert!(
+            input_start <= state.output_pos,
+            "restore_drift input_start {input_start} is after captured output_pos {}",
+            state.output_pos
+        );
+        self.input_origin = input_start;
+        self.in_pos = state.read_pos - (state.output_pos as f64 - input_start as f64);
+        self.period = state.period;
+        self.period_start = state.period_start;
+        self.next_boundary = state.next_boundary;
+        self.emissions_done = state.emissions_done;
+        self.emissions_planned = state.emissions_planned;
+        self.carry = state.carry;
+        self.pending_repeat = state.pending_repeat;
+        self.prev_effective_voiced = state.prev_effective_voiced;
+        self.fade = state.fade.map(|f| FadeState {
+            remaining: f.remaining,
+            total: f.total,
+            from_voiced: f.from_voiced,
+        });
         self.inserted_total = 0;
         self.deleted_total = 0;
     }
@@ -481,6 +636,7 @@ impl PitchShifter {
     /// 本函数只用于离线渲染（见模块文档）。
     pub fn process(&mut self, input: &[f32], voiced: &[bool]) -> (Vec<f32>, PitchShiftReceipt) {
         let n = input.len();
+        self.processed += n;
         let mut output = Vec::with_capacity(n);
         let mut receipt = PitchShiftReceipt::default();
         if n == 0 {
@@ -514,7 +670,9 @@ impl PitchShifter {
             }
             let ins_before = self.inserted_total;
             let del_before = self.deleted_total;
-            let win_start = (self.in_pos.floor() as usize).min(n.saturating_sub(1));
+            // 读指针是绝对坐标，估计窗按相对坐标索引当前 slice。
+            let rel_pos = self.in_pos - self.input_origin as f64;
+            let win_start = (rel_pos.floor() as usize).min(n.saturating_sub(1));
             let win_end = (win_start + self.config.estimation_window_samples).min(n);
             if detector_voiced
                 && win_end - win_start >= MIN_ESTIMATION_WINDOW_SAMPLES
@@ -628,7 +786,7 @@ impl PitchShifter {
     /// 时按计划重复或跳过一个整周期。重复跳变经前视确认后执行。
     fn shifted_sample(&mut self, input: &[f32]) -> f32 {
         if self.period.is_none() {
-            let out = Self::read_at(input, self.in_pos);
+            let out = Self::read_at(input, self.in_pos - self.input_origin as f64);
             self.in_pos += 1.0;
             return out;
         }
@@ -639,7 +797,7 @@ impl PitchShifter {
                 self.pending_repeat = Some(countdown);
             }
         }
-        let out = Self::read_at(input, self.in_pos);
+        let out = Self::read_at(input, self.in_pos - self.input_origin as f64);
         self.in_pos += self.ratio;
         if let Some(countdown) = self.pending_repeat.take() {
             self.pending_repeat = Some(countdown.saturating_sub(1));
@@ -1188,5 +1346,139 @@ mod tests {
             ..PitchShiftConfig::default()
         };
         let _ = PitchShifter::new(SR, cfg);
+    }
+
+    /// 漂移携带的往返信号：2 s 音／1 s 静音／2 s 音，相位连续的 220 Hz
+    /// 纯音（幅值 0.5）；浊音标志按段拼（每段长均为 480 的倍数）。
+    /// 切点在静音中点（2.5 s＝120,000 采样）。
+    fn drift_signal() -> (Vec<f32>, Vec<bool>) {
+        let mut signal = Vec::new();
+        let mut phase = 0.0f32;
+        for &(dur, voiced) in &[(2.0f64, true), (1.0, false), (2.0, true)] {
+            let len = (dur * f64::from(SR)).round() as usize;
+            for _ in 0..len {
+                if voiced {
+                    signal.push(0.5 * sinf(phase));
+                    phase += 2.0 * PI * 220.0 / SR;
+                    if phase >= 2.0 * PI {
+                        phase -= 2.0 * PI;
+                    }
+                } else {
+                    signal.push(0.0);
+                }
+            }
+        }
+        let mut flags = Vec::new();
+        flags.extend(std::iter::repeat_n(true, 200));
+        flags.extend(std::iter::repeat_n(false, 100));
+        flags.extend(std::iter::repeat_n(true, 200));
+        assert_eq!(signal.len(), 240_000);
+        assert_eq!(flags.len(), signal.len().div_ceil(480));
+        (signal, flags)
+    }
+
+    /// 漂移携带往返：带携带的两段渲染与整行单实例渲染逐位相同
+    /// （硬切与 lead-in 交叠两种起点）；不带携带的差一个时移
+    /// （P1-2 的根因，见 REPORT-p1-2.md §9）。
+    ///
+    /// 升调（+50 音分）与降调（−50 音分）各跑一遍：降调的漂移多为负值，
+    /// 走另一条读指针路径。
+    #[test]
+    fn drift_carry_round_trip_matches_whole_line() {
+        let (signal, flags) = drift_signal();
+        const CUT: usize = 120_000;
+        const LEAD_IN: usize = 2_400;
+        for &cents in &[50.0, -50.0] {
+            let config = PitchShiftConfig {
+                shift_cents: cents,
+                ..Default::default()
+            };
+            let mut whole_shifter = PitchShifter::new(SR, config);
+            let (whole, _) = whole_shifter.process(&signal, &flags);
+            // 第一段：新实例从头渲染到切点，捕获漂移状态。
+            let mut first = PitchShifter::new(SR, config);
+            let (mut out_first, _) = first.process(&signal[..CUT], &flags[..CUT / 480]);
+            let state = first.drift_state();
+            // 漂移界约为一个周期（220 Hz 下约 218 采样；最低 50 Hz 下约
+            // 960 采样，取 1000 作跨 F0 的宽松上界）。
+            assert!(
+                state.drift.abs() < 1000.0,
+                "drift {0} out of bound at {cents} cents",
+                state.drift
+            );
+            assert!(state.period.is_some(), "period must be estimated");
+            // 硬切：第二段新实例在切点处恢复漂移状态。
+            let mut second = PitchShifter::new(SR, config);
+            second.restore_drift(&state, CUT);
+            let (out_second, _) = second.process(&signal[CUT..], &flags[CUT / 480..]);
+            out_first.extend_from_slice(&out_second);
+            assert_eq!(
+                out_first, whole,
+                "drift-carry hard cut must match whole line at {cents} cents"
+            );
+            // lead-in 交叠：第二段新实例在切点减 lead_in 处恢复同一快照，
+            // 渲染后丢弃 lead_in 段输出。
+            let mut second_lead = PitchShifter::new(SR, config);
+            second_lead.restore_drift(&state, CUT - LEAD_IN);
+            let (out_lead, _) =
+                second_lead.process(&signal[CUT - LEAD_IN..], &flags[(CUT - LEAD_IN) / 480..]);
+            let mut carried_lead = PitchShifter::new(SR, config)
+                .process(&signal[..CUT], &flags[..CUT / 480])
+                .0;
+            carried_lead.extend_from_slice(&out_lead[LEAD_IN..]);
+            assert_eq!(
+                carried_lead, whole,
+                "drift-carry lead-in must match whole line at {cents} cents"
+            );
+            // 不带携带：第二段新实例从零起步，浊音恢复段必差（差值数 > 0）。
+            let mut fresh = PitchShifter::new(SR, config);
+            let (out_fresh, _) = fresh.process(&signal[CUT..], &flags[CUT / 480..]);
+            let mut diffs = 0usize;
+            for i in 0..out_fresh.len() {
+                if out_fresh[i] != whole[CUT + i] {
+                    diffs += 1;
+                }
+            }
+            assert!(
+                diffs > 0,
+                "fresh second instance must drift from whole line at {cents} cents"
+            );
+        }
+    }
+
+    /// 恢复 fresh 状态是恒等操作：未处理过输入的实例捕获的状态
+    /// （漂移 0、无周期）装入另一 fresh 实例后，输出与收据逐位相同。
+    #[test]
+    fn restore_of_fresh_state_is_identity() {
+        let input = staircase();
+        let voiced = vec![true; input.len().div_ceil(480)];
+        let cfg = PitchShiftConfig {
+            shift_cents: 50.0,
+            ..Default::default()
+        };
+        let fresh = PitchShifter::new(SR, cfg);
+        let state = fresh.drift_state();
+        assert_eq!(state.drift, 0.0);
+        assert_eq!(state.period, None);
+        let mut restored = PitchShifter::new(SR, cfg);
+        restored.restore_drift(&state, 0);
+        let (out_restored, receipt_restored) = restored.process(&input, &voiced);
+        let mut plain = PitchShifter::new(SR, cfg);
+        let (out_plain, receipt_plain) = plain.process(&input, &voiced);
+        assert_eq!(out_restored, out_plain);
+        assert_eq!(receipt_restored, receipt_plain);
+    }
+
+    /// 已处理过输入后恢复时 panic（恢复只能发生在第一次 process 之前）。
+    #[test]
+    #[should_panic(expected = "restore_drift must be called before any process call")]
+    fn restore_after_process_panics() {
+        let input = staircase();
+        let voiced = vec![true; input.len().div_ceil(480)];
+        let cfg = PitchShiftConfig::default();
+        let mut shifter = PitchShifter::new(SR, cfg);
+        let _ = shifter.process(&input, &voiced);
+        let state = PitchShifter::new(SR, cfg).drift_state();
+        shifter.restore_drift(&state, 0);
     }
 }
