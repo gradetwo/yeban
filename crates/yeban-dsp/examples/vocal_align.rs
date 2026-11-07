@@ -6,7 +6,12 @@
 //!   --take lead_take0.wav --notes notes.tsv \
 //!   --out-wav warped.wav --report report.tsv \
 //!   --out-end 4.05 --tail-in-end 4.30 [--config preset] [--align-drop N]
+//!   [--residual-mix [--residual-gain 1.0] [--residual-cutoff 1000]]
 //! ```
+//!
+//! `--residual-mix`（P0-2B 证伪实验）：从原声 take 提非周期高频残差，
+//! 按同一 timemap 弯曲后混入拉伸输出，只在锚定 VOP 窗口内；默认关闭，
+//! 关闭时输出与不加开关逐位相同。收据行写入报告 TSV。
 //!
 //! 输入 TSV（无表头，制表符分隔）：
 //! `idx score_vop_s score_end_s coarse_s prev_bound_s next_bound_s`
@@ -28,6 +33,9 @@ use std::fs::File;
 use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::process::ExitCode;
 use yeban_dsp::vocal_refine::{RefinedNote, breath_spans, detect_adlib, refine_note};
+use yeban_dsp::vocal_residual_mix::{
+    ResidualMixConfig, ResidualMixReceipt, extract_aperiodic_high, mix_residual, warp_residual,
+};
 use yeban_dsp::vocal_timemap::{
     StretchConfig, SyllableIn, SyllableTarget, TimemapOptions, build_timemap, gate_verdict,
     render_continuous_timemap,
@@ -44,6 +52,9 @@ struct Args {
     align_drop: Option<usize>,
     adlib_start: Option<f64>,
     adlib_end: Option<f64>,
+    residual_mix: bool,
+    residual_gain: Option<f32>,
+    residual_cutoff: Option<f32>,
 }
 
 fn parse_args() -> Result<Args, String> {
@@ -58,6 +69,9 @@ fn parse_args() -> Result<Args, String> {
     let mut align_drop = None;
     let mut adlib_start = None;
     let mut adlib_end = None;
+    let mut residual_mix = false;
+    let mut residual_gain = None;
+    let mut residual_cutoff = None;
     let mut i = 0;
     while i < argv.len() {
         let flag = argv[i].as_str();
@@ -94,6 +108,13 @@ fn parse_args() -> Result<Args, String> {
             "--adlib-end" => {
                 adlib_end = Some(value(&mut i)?.parse::<f64>().map_err(|e| e.to_string())?);
             }
+            "--residual-mix" => residual_mix = true,
+            "--residual-gain" => {
+                residual_gain = Some(value(&mut i)?.parse::<f32>().map_err(|e| e.to_string())?);
+            }
+            "--residual-cutoff" => {
+                residual_cutoff = Some(value(&mut i)?.parse::<f32>().map_err(|e| e.to_string())?);
+            }
             other => return Err(format!("unknown flag {other}")),
         }
         i += 1;
@@ -110,6 +131,9 @@ fn parse_args() -> Result<Args, String> {
         align_drop,
         adlib_start,
         adlib_end,
+        residual_mix,
+        residual_gain,
+        residual_cutoff,
     })
 }
 
@@ -468,7 +492,28 @@ fn run(args: &Args) -> Result<(), String> {
         args.config,
         args.align_drop,
     );
-    write_wav(&args.out_wav, &rendered, sample_rate)?;
+    // P0-2B：残差混合（默认关闭）。VOP 锚点取锚定音节的目标 VOP
+    // （输出秒）；残差从原声 take 提取、按同一 timemap 弯曲。
+    let (final_audio, residual_receipt): (Vec<f32>, Option<ResidualMixReceipt>) =
+        if args.residual_mix {
+            let config = ResidualMixConfig {
+                enabled: true,
+                sample_rate,
+                mix_gain: args.residual_gain.unwrap_or(1.0),
+                hf_cutoff_hz: args.residual_cutoff.unwrap_or(1000.0),
+                ..ResidualMixConfig::default()
+            };
+            let residual = extract_aperiodic_high(&take, &config).map_err(|e| e.to_string())?;
+            let warped = warp_residual(&residual, &build.map, rendered.len(), &config)
+                .map_err(|e| e.to_string())?;
+            let vop_targets: Vec<f64> = anchored.iter().map(|(row, _)| row.score_vop).collect();
+            let (mixed, receipt) = mix_residual(&rendered, &warped, &vop_targets, &config)
+                .map_err(|e| e.to_string())?;
+            (mixed, Some(receipt))
+        } else {
+            (rendered, None)
+        };
+    write_wav(&args.out_wav, &final_audio, sample_rate)?;
     let mut report = BufWriter::new(File::create(&args.report).map_err(|e| e.to_string())?);
     writeln!(report, "# gate_pass={gate_pass_reported}").map_err(|e| e.to_string())?;
     writeln!(report, "# gate_rate_pass={}", verdict.pass).map_err(|e| e.to_string())?;
@@ -547,6 +592,34 @@ fn run(args: &Args) -> Result<(), String> {
             "# render_step_clamp cursor={cursor} requested={requested} clamped={clamped}"
         )
         .map_err(|e| e.to_string())?;
+    }
+    if let Some(receipt) = &residual_receipt {
+        writeln!(
+            report,
+            "# residual_mix=1 gain={:.3} cutoff_hz={:.0} peak_in={:.4} peak_out={:.4} windows={}",
+            args.residual_gain.unwrap_or(1.0),
+            args.residual_cutoff.unwrap_or(1000.0),
+            receipt.peak_in,
+            receipt.peak_out,
+            receipt.windows
+        )
+        .map_err(|e| e.to_string())?;
+        for window in &receipt.per_window {
+            writeln!(
+                report,
+                "# residual_window target={:.4} peak_residual={:.4} flux_offset={} misaligned={}",
+                window.target_vop_s,
+                window.peak_residual,
+                window
+                    .flux_peak_offset_samples
+                    .map(|o| o.to_string())
+                    .unwrap_or_else(|| "none".to_owned()),
+                window.misaligned
+            )
+            .map_err(|e| e.to_string())?;
+        }
+    } else {
+        writeln!(report, "# residual_mix=0").map_err(|e| e.to_string())?;
     }
     writeln!(report, "# breath_spans={}", breaths.len()).map_err(|e| e.to_string())?;
     for span in &breaths {

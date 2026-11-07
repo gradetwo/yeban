@@ -2,7 +2,7 @@
 # 列：file|test|category|首条整数断言的证据（截断 90 字符）
 # 口径（R118）：只有 collection_size **界定集合大小** ⇒ 才算非真空下界；
 #   值界／元素值界／条件计数器 **⛔ 不算**。分类优先级：condition_counter > collection_size > element_value_bound > value_bound。
-# 合计 232 条：collection_size 39 ／ value_bound 184 ／ element_value_bound 5 ／ condition_counter 4
+# 合计 239 条：collection_size 40 ／ value_bound 190 ／ element_value_bound 5 ／ condition_counter 4
 src/block.rs|accumulate_matches_scalar_reference|value_bound|assert!((out[i] - expect[i]).abs() < 1e-6, "mismatch at {i}"
 src/block.rs|mismatched_lengths_are_truncated_instead_of_panicking|value_bound|assert_eq!(out[..4], [1.0, 1.0, 1.0, 0.0]
 src/block.rs|mix2_handles_non_multiple_of_four|value_bound|assert!((v - 1.0).abs() < 1e-6
@@ -228,6 +228,13 @@ src/tape.rs|sanitised_clamps_every_field_into_its_documented_domain|value_bound|
 src/tape.rs|small_signal_gain_is_approximately_one|value_bound|assert!(                     (*sample - 0.01).abs() < 1e-3,                     "drive {dr
 src/vocal_refine.rs|refine_finds_vop_pre_off_and_f0|value_bound|assert!(             (note.f0_median_hz - 150.0).abs() <= 5.0,             "F0 {} must be 
 src/vocal_refine.rs|refine_legato_fallback_finds_second_vowel|value_bound|assert!(             (note.f0_median_hz - 200.0).abs() <= 5.0,             "F0 {} must be 
+src/vocal_residual_mix.rs|config_validation_rejects_bad_values|value_bound|assert_eq!(             mix_residual(&[0.0; 8], &[0.0; 4], &[], &base),             Err(Re
+src/vocal_residual_mix.rs|mechanism_mixed_onset_rises_earlier|value_bound|assert!(             rise_mixed < rise_stretched,             "mixed rise {rise_mixed:.4}s
+src/vocal_residual_mix.rs|mix_only_inside_windows|value_bound|assert_eq!(receipt.windows, 1
+src/vocal_residual_mix.rs|mix_output_bounded_no_nan|value_bound|assert!(receipt.peak_out <= receipt.peak_in + config.mix_gain * 0.5 + 1e-6
+src/vocal_residual_mix.rs|noise_burst_residual_retained|value_bound|assert!(             rms(burst) > 0.5 * rms(&input[..SR as usize / 10]),             "burs
+src/vocal_residual_mix.rs|transient_detected_at_burst|collection_size|assert!(             hits.iter().any(|c| (*c as i64 - SR as i64).abs() <= 1024),          
+src/vocal_residual_mix.rs|warp_identity_map_is_exact|value_bound|assert!(max_diff < 1e-6, "max diff {max_diff}"
 src/vocal_timemap.rs|build_gap_silence_absorbs_slack|collection_size|assert_eq!(cores.len(), 2
 src/vocal_timemap.rs|build_single_syllable_locks|value_bound|assert!(             (delta - 0.10).abs() < 1e-6,             "lock window slope must be 1
 src/vocal_timemap.rs|gate_pass_and_fail|collection_size|assert_eq!(fail_hard.out_of_hard_count, 1

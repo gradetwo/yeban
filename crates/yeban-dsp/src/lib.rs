@@ -59,6 +59,7 @@
 //! | [`drums`] | 4 音色鼓机（底鼓/军鼓/踩镲/拍手）的**合成配方** + 定容槽位池 + 确定性窃取 + 3 ms 指数淡出 + 闭镲 choke 开镲。⚠ **不是** 808/909 电路建模（未实现清单见该模块 §0.1） | 新写 [ARCH-RT-001, ARCH-RT-004, ARCH-DET-001] |
 //! | [`vocal_refine`] | 本地声学边界精修器：±80 ms 窗内 VOP/起音/收音精修 + F0/HNR/置信度 + 换气分段 + ad-lib 检出（**离线限定**） | 新写 [ADR-0067] |
 //! | [`vocal_timemap`] | 连续流式 timemap 人声对齐：单实例拉伸渲染 + VOP 锚定映射构造 + 门检 verdict（**离线限定**，不进实时回调） | 新写 [ADR-0067] |
+//! | [`vocal_residual_mix`] | 残差混合证伪实验（P0-2B）：原声非周期高频残差提取 + timemap 弯曲 + VOP 锚定混合（**离线限定**，默认关闭；只在证伪通过后才可能采用） | 新写 [vocaledit Phase 2 P0-2B] |
 //!
 //! ## 规范来源 (Normative)
 //!
@@ -95,6 +96,7 @@ pub mod shaping;
 pub mod smoothing;
 pub mod tape;
 pub mod vocal_refine;
+pub mod vocal_residual_mix;
 pub mod vocal_timemap;
 
 /// 采样率的合法性下限（Hz）。所有需要采样率的构造/配置入口都用它做钳制，
