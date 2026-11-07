@@ -180,7 +180,16 @@ pub const EXPECTED_SITES: [(&str, &[&str]); 55] = [
 /// `setTempoPoint` / `setTimeSignaturePoint` 形态构造（`domain/notes.rs` 的
 /// `parse_one` / `compile`），`SetKeySignature` 那条是**陈旧登记**（其构造点早已存在，
 /// 本票把它补进 `EXPECTED_SITES`）。工具面因此**覆盖了模型 `Op` 全集**。
-const KNOWN_UNREACHABLE: [(&str, &str); 0] = [];
+///
+/// ⭐ UI 轨道交互线（2026-11-07）：本清单**再次打开一条** —— `MoveTrack` 只由
+/// `yeban-app` 宿主构造（包头拖拽松手 + `MoveSelectedTrackBy` 快捷键，
+/// `crates/yeban-app/src/host.rs`），MCP 工具面**没有**构造点（移轨暂无 MCP 工具）。
+/// 按本文件的口径（欠账要显式，⛔ 不许为过判据伪造构造点），如实登记为不可达；
+/// 工具面要覆盖它需另加 MCP 工具（不在本支范围）。
+const KNOWN_UNREACHABLE: [(&str, &str); 1] = [(
+    "MoveTrack",
+    "仅由 yeban-app 宿主构造（包头拖拽 + MoveSelectedTrackBy）；MCP 工具面无构造点",
+)];
 // ⭐ 历史: 本清单的清空**是证明过的**（临时加回一条 ⇒ 反向断言逐字报"`SetTempo` 既在
 // `KNOWN_UNREACHABLE` 又在 `EXPECTED_SITES` ⇒ 两处矛盾，请二选一" ⇒ 然后恢复）。
 

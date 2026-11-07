@@ -46,10 +46,10 @@ const NOW_MS: u64 = 1_760_000_000_000;
 const WINDOW: Size = Size::new(1440, 900);
 
 /// 逻辑键入口的两个方向（Slint 的私有码点，与 `input.rs` 的 `LogicalKey::from_text` 同源）。
+/// （`LEFT` / `RIGHT` 曾供 `Cmd+←/→` 缩放路使用，2026-11-07 跟进删掉
+/// —— 既有判据要求 `Cmd/Ctrl+←/→` 放行，快捷键路改走 `Cmd+=` / `Cmd+-`。）
 const UP: &str = "\u{f700}";
 const DOWN: &str = "\u{f701}";
-const LEFT: &str = "\u{f702}";
-const RIGHT: &str = "\u{f703}";
 
 /// 一次滚轮的步长（像素）。`advance_scroll` 是纯累加 ⇒ 期望值可以直接手算。
 const WHEEL_STEP: f32 = 120.0;
@@ -219,8 +219,8 @@ impl Rig {
                 return;
             }
             assert!(
-                self.key(RIGHT, false, false, false, true),
-                "`Cmd+→` 必须被消费（横向放大）"
+                self.key("=", false, false, false, true),
+                "`Cmd+=` 必须被消费（横向放大）"
             );
             self.refresh();
         }
@@ -237,7 +237,7 @@ impl Rig {
             if self.content_px() < 1440.0 - 168.0 {
                 return;
             }
-            self.key(LEFT, false, false, false, true);
+            self.key("-", false, false, false, true);
             self.refresh();
         }
         assert!(
@@ -348,7 +348,10 @@ impl Rig {
     }
 }
 
-/// ①：缩放按钮 + `Cmd+→/←` + 滑块三路都改横向缩放，且剪辑 x 跟着动。
+/// ①：缩放按钮 + `Cmd+=/-` + 滑块三路都改横向缩放，且剪辑 x 跟着动。
+/// （⚠ 2026-11-07 跟进：初版用 `Cmd+→/←` 作快捷键路，但既有判据
+/// `arrow_keys_resolve_to_the_four_spec_nudge_steps` 要求 `Cmd/Ctrl+←/→`
+/// 归 caret 语义、必须放行，故快捷键路改走 `Cmd+=` / `Cmd+-`。）
 #[test]
 fn zoom_button_shortcut_and_slider_change_horizontal_zoom() {
     let mut rig = Rig::new();
@@ -373,17 +376,17 @@ fn zoom_button_shortcut_and_slider_change_horizontal_zoom() {
         "缩放往返后剪辑 x 必须复原"
     );
 
-    // 快捷键路：`Cmd+→` = 放大（与按钮同一条步进算法）、`Cmd+←` = 缩小。
+    // 快捷键路：`Cmd+=` = 放大（与按钮同一条步进算法）、`Cmd+-` = 缩小。
     assert!(
-        rig.key(RIGHT, false, false, false, true),
-        "`Cmd+→` 必须被消费（横向放大）"
+        rig.key("=", false, false, false, true),
+        "`Cmd+=` 必须被消费（横向放大）"
     );
-    assert_eq!(rig.tpp(), zoomed_in, "`Cmd+→` 必须与放大按钮同一步进");
+    assert_eq!(rig.tpp(), zoomed_in, "`Cmd+=` 必须与放大按钮同一步进");
     assert!(
-        rig.key(LEFT, false, false, false, true),
-        "`Cmd+←` 必须被消费（横向缩小）"
+        rig.key("-", false, false, false, true),
+        "`Cmd+-` 必须被消费（横向缩小）"
     );
-    assert_eq!(rig.tpp(), 30, "`Cmd+←` 必须回到起点 30");
+    assert_eq!(rig.tpp(), 30, "`Cmd+-` 必须回到起点 30");
 
     // 滑块路：右端 ⇒ tpp 变大（缩小），左端 ⇒ tpp 变小（放大）。
     // 滑块 TouchArea 的 fraction = (mouse-x − 7px) / 114px（局部坐标，见 `.slint` 注释）。

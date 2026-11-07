@@ -1277,11 +1277,13 @@ impl InputContext {
                     Resolution::Action(Action::ZoomIn)
                 }
                 (Key::Character('-'), false, false) => Resolution::Action(Action::ZoomOut),
-                // 横向缩放：Cmd+→ / Cmd+←（Logic Pro 同款键位：Cmd+→ = 横向放大、
-                // Cmd+← = 横向缩小；该两格此前是空的 —— `←/→` 在本分支里只有
-                // `+Alt` 两条（混音声像微调），`(false, false)` 落到 `PassThrough`）。
-                (Key::RightArrow, false, false) => Resolution::Action(Action::ZoomIn),
-                (Key::LeftArrow, false, false) => Resolution::Action(Action::ZoomOut),
+                // ⚠ `Cmd/Ctrl+←/→` **不绑缩放**（2026-11-07 UI 支跟进）：
+                // Logic Pro 里 Cmd+→/← 是横向缩放，但本仓规范判据
+                // `arrow_keys_resolve_to_the_four_spec_nudge_steps` 明确要求
+                // `Cmd/Ctrl+←/→` 归文本 / 系统的 caret 语义、必须放行
+                //（`Ctrl+←` 与 `Meta+→` 两格被逐条钉死）。键盘横向缩放只走
+                // `Cmd/Ctrl+=` / `Cmd/Ctrl+-`（上两臂）+ 工具栏滑块/按钮
+                // + `Option+滚轮`。
                 // 垂直缩放：Cmd+↓ = 放大、Cmd+↑ = 缩小（⚠ **行为变更**，2026-11-07
                 // 按 Logic Pro 对调：此前 Cmd+↑ = 放大、Cmd+↓ = 缩小，与 Logic 相反。
                 // Logic：Cmd+↓ = Zoom Vertical In、Cmd+↑ = Zoom Vertical Out。）
@@ -1502,9 +1504,14 @@ mod tests {
         assert_eq!(ctx.resolve(Equal, Modifiers::meta()), Act(ZoomIn));
         assert_eq!(ctx.resolve(Minus, Modifiers::none()), Act(ZoomOut));
         assert_eq!(ctx.resolve(Minus, Modifiers::meta()), Act(ZoomOut));
-        // Cmd+→ / Cmd+← = 横向缩放（Logic Pro 同款；`=`/`-` 仍是备用）。
-        assert_eq!(ctx.resolve(RightArrow, Modifiers::meta()), Act(ZoomIn));
-        assert_eq!(ctx.resolve(LeftArrow, Modifiers::meta()), Act(ZoomOut));
+        // ⚠ `Cmd/Ctrl+→/←` **不**是横向缩放（2026-11-07 UI 支跟进）：
+        // 本支初版曾把它们绑成缩放并在此加了两条断言，但既有判据
+        // `arrow_keys_resolve_to_the_four_spec_nudge_steps` 要求
+        // `Cmd/Ctrl+←/→` 归文本 / 系统 caret 语义、必须放行 —— 两条判据
+        // 互相矛盾，不可能同时绿。权威是既有判据（基底已有、带维护史），
+        // 故删掉本支加的两条断言；键盘横向缩放只走 `=`/`-`（上四条）。
+        assert_eq!(ctx.resolve(RightArrow, Modifiers::meta()), PassThrough);
+        assert_eq!(ctx.resolve(LeftArrow, Modifiers::meta()), PassThrough);
 
         // 4. Vertical zoom（⚠ 2026-11-07 按 Logic Pro 对调：Cmd+↓ = 放大、Cmd+↑ = 缩小。
         // 此前是 Cmd+↑ = 放大、Cmd+↓ = 缩小，与 Logic 相反。）
