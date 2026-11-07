@@ -201,6 +201,10 @@ pub enum ChunkRoute {
     DspShift,
     /// 本 chunk 直通（移调量为 0、清音、或周期估计失败）。
     Passthrough,
+    /// 本 chunk 走了神经声码器重合成（P0-1 路由：块内任一有声帧
+    /// |偏差| ≥ 路由阈值）。移调器自身永不产生本路由，只由
+    /// [`crate::vocal_pitch_route::HybridPitchRouter`] 标记。
+    NeuralVocoder,
 }
 
 /// 一个 chunk 的收据：路由与偏差信息逐 chunk 标记。
@@ -212,6 +216,11 @@ pub struct ChunkReceipt {
     pub route: ChunkRoute,
     /// 本 chunk 实际施加的移调量（音分，snap 后）。
     pub cents_applied: f32,
+    /// 本 chunk 的最大 |偏差|（音分）：移调器直用时等于
+    /// `|cents_applied|`；P0-1 路由层覆写为块内有声帧实测的最大
+    /// |偏差|（路由决策的依据，见
+    /// [`crate::vocal_pitch_route::chunk_needs_vocoder`]）。
+    pub max_abs_deviation_cents: f32,
     /// 检测器 valid 标志（调用方传入的浊音判定）。
     pub voiced: bool,
     /// 本 chunk 移调所用的周期（采样数）；直通 chunk 为 `None`。
@@ -233,6 +242,8 @@ pub struct PitchShiftReceipt {
     pub periods_inserted: u32,
     /// 本次调用删除（跳过）的周期总数。
     pub periods_deleted: u32,
+    /// 本次调用走神经声码器的 chunk 数（P0-1 路由填；移调器直用时为 0）。
+    pub neural_chunks: u32,
 }
 
 /// 滞后 `lag` 处的归一化自相关值（能量归一化，`energy` 为窗内总能量）。
@@ -452,6 +463,28 @@ impl PitchShifter {
         self.cents_applied
     }
 
+    /// 改移调量（音分）：只改缓存的施加量与比率，流式状态（读指针、
+    /// 周期网格、误差扩散进位、淡入淡出）不动。P0-1 路由用它在
+    /// [`PitchShifter::process_with_shift_schedule`] 里按 chunk 换量；
+    /// 比率变化立即作用于逐采样推进，周期发射计划在下一个周期边界
+    /// 处按新比率重算（本周期内沿用旧计划，`carry` 吸收分数误差）。
+    /// 移调量只改音高、不改时长：读指针连续，chunk 边界处只有速率
+    /// 变化、没有位置跳变。
+    ///
+    /// # Panics
+    ///
+    /// `|cents| > 1200` 时 panic（与 [`PitchShiftConfig::validate`]
+    /// 同口径）。
+    pub fn set_shift_cents(&mut self, cents: f32) {
+        assert!(
+            cents.abs() <= MAX_SHIFT_CENTS,
+            "shift_cents |{cents}| exceeds +/-{MAX_SHIFT_CENTS} cents"
+        );
+        self.config.shift_cents = cents;
+        self.cents_applied = self.config.applied_cents();
+        self.ratio = pitch_ratio_from_cents(self.cents_applied);
+    }
+
     /// 重置全部流式状态（读指针、周期网格、进位、淡入淡出），
     /// 配置与采样率不变。
     pub fn reset(&mut self) {
@@ -480,6 +513,33 @@ impl PitchShifter {
     /// 不变）；移调量为 0 时输出与输入逐位相同（快速路径）。
     /// 本函数只用于离线渲染（见模块文档）。
     pub fn process(&mut self, input: &[f32], voiced: &[bool]) -> (Vec<f32>, PitchShiftReceipt) {
+        self.process_inner(input, voiced, None)
+    }
+
+    /// 按 chunk 移调表移调一整段单声道音频（P0-1 路由用）。
+    ///
+    /// 与 [`PitchShifter::process`] 相同，但每个 chunk 的移调量取自
+    /// `shift_cents_per_chunk[c]`（不足按 `0.0` 计，多余忽略），
+    /// 调用期间用 [`PitchShifter::set_shift_cents`] 在 chunk 边界处换量；
+    /// 返回前恢复调用前的移调量配置。全部 chunk 移调量均为 0 时走
+    /// 与 `process` 相同的快速路径（输出与输入逐位相同）。
+    /// 本函数只用于离线渲染（见模块文档）。
+    pub fn process_with_shift_schedule(
+        &mut self,
+        input: &[f32],
+        voiced: &[bool],
+        shift_cents_per_chunk: &[f32],
+    ) -> (Vec<f32>, PitchShiftReceipt) {
+        self.process_inner(input, voiced, Some(shift_cents_per_chunk))
+    }
+
+    fn process_inner(
+        &mut self,
+        input: &[f32],
+        voiced: &[bool],
+        schedule: Option<&[f32]>,
+    ) -> (Vec<f32>, PitchShiftReceipt) {
+        let base_shift_cents = self.config.shift_cents;
         let n = input.len();
         let mut output = Vec::with_capacity(n);
         let mut receipt = PitchShiftReceipt::default();
@@ -488,7 +548,20 @@ impl PitchShifter {
         }
         let chunk = self.config.chunk_samples.max(1);
         let n_chunks = n.div_ceil(chunk);
-        if self.cents_applied.abs() < f32::EPSILON {
+        let all_zero = match schedule {
+            None => self.cents_applied.abs() < f32::EPSILON,
+            Some(shifts) => {
+                let mut zero = true;
+                for c in shifts {
+                    if c.abs() >= f32::EPSILON {
+                        zero = false;
+                        break;
+                    }
+                }
+                zero
+            }
+        };
+        if all_zero {
             output.extend_from_slice(input);
             self.in_pos += n as f64;
             for c in 0..n_chunks {
@@ -496,6 +569,7 @@ impl PitchShifter {
                     chunk_index: c,
                     route: ChunkRoute::Passthrough,
                     cents_applied: 0.0,
+                    max_abs_deviation_cents: 0.0,
                     voiced: voiced.get(c).copied().unwrap_or(false),
                     period_samples: None,
                     periods_inserted: 0,
@@ -509,6 +583,10 @@ impl PitchShifter {
             let start = c * chunk;
             let end = (start + chunk).min(n);
             let detector_voiced = voiced.get(c).copied().unwrap_or(false);
+            if let Some(shifts) = schedule {
+                let shift = shifts.get(c).copied().unwrap_or(0.0);
+                self.set_shift_cents(shift);
+            }
             if self.pending_repeat.take().is_some() {
                 self.execute_repeat();
             }
@@ -592,6 +670,7 @@ impl PitchShifter {
                     ChunkRoute::Passthrough
                 },
                 cents_applied: self.cents_applied,
+                max_abs_deviation_cents: self.cents_applied.abs(),
                 voiced: detector_voiced,
                 period_samples: period_used,
                 periods_inserted: self.inserted_total - ins_before,
@@ -601,6 +680,9 @@ impl PitchShifter {
         }
         receipt.periods_inserted = self.inserted_total;
         receipt.periods_deleted = self.deleted_total;
+        if schedule.is_some() {
+            self.set_shift_cents(base_shift_cents);
+        }
         (output, receipt)
     }
 
@@ -1088,6 +1170,72 @@ mod tests {
             assert!(
                 out_ratio <= 1e-3,
                 "boundary window {i} HF/fundamental ratio {out_ratio:.2e} exceeds 1e-3"
+            );
+        }
+    }
+
+    #[test]
+    fn shift_schedule_matches_fixed_shift() {
+        // 同一移调量：移调表调用与固定配置调用必须逐位相同（P0-1 路由
+        // 依赖此等价性：DSP 腿按 chunk 换量时不改变移调器行为）。
+        let input = staircase();
+        let n_chunks = input.len().div_ceil(480);
+        let voiced = vec![true; n_chunks];
+        let mut fixed = PitchShifter::new(
+            SR,
+            PitchShiftConfig {
+                shift_cents: 50.0,
+                ..PitchShiftConfig::default()
+            },
+        );
+        let (fixed_out, fixed_receipt) = fixed.process(&input, &voiced);
+        let mut scheduled = PitchShifter::new(SR, PitchShiftConfig::default());
+        let schedule = vec![50.0f32; n_chunks];
+        let (sched_out, sched_receipt) =
+            scheduled.process_with_shift_schedule(&input, &voiced, &schedule);
+        assert_eq!(sched_out, fixed_out, "schedule must match fixed shift");
+        assert_eq!(sched_receipt, fixed_receipt, "receipts must match");
+        assert_eq!(
+            scheduled.applied_cents(),
+            0.0,
+            "schedule call must restore the pre-call shift"
+        );
+        // 全零移调表走快速路径：输出与输入逐位相同。
+        let mut zero = PitchShifter::new(SR, PitchShiftConfig::default());
+        let zero_schedule = vec![0.0f32; n_chunks];
+        let (zero_out, _) = zero.process_with_shift_schedule(&input, &voiced, &zero_schedule);
+        assert_eq!(zero_out, input, "all-zero schedule must be bit-identical");
+    }
+
+    #[test]
+    fn shift_schedule_changes_shift_per_chunk() {
+        // 440 Hz 纯音 14400 采样＝30 chunk（每 chunk 480 采样），移调表
+        // 按 10 chunk 一组取 [0, +50, 0]：中间组 F0 须移到目标 ±5 音分内，
+        // 两侧组保持 440 Hz；首组输出与输入逐位相同。
+        let mut phase = 0.0f32;
+        let input = tone(440.0, 14_400, &mut phase);
+        let voiced = vec![true; 30];
+        let mut schedule = vec![0.0f32; 10];
+        schedule.extend_from_slice(&[50.0; 10]);
+        schedule.extend_from_slice(&[0.0; 10]);
+        let mut shifter = PitchShifter::new(SR, PitchShiftConfig::default());
+        let (output, receipt) = shifter.process_with_shift_schedule(&input, &voiced, &schedule);
+        assert_eq!(output.len(), input.len());
+        assert_eq!(receipt.chunks.len(), 30);
+        assert_eq!(receipt.chunks[0].cents_applied, 0.0);
+        assert_eq!(receipt.chunks[10].cents_applied, 50.0);
+        assert_eq!(receipt.chunks[20].cents_applied, 0.0);
+        assert_eq!(output[..4800], input[..4800], "group 0 must be untouched");
+        let target = 440.0 * 2.0f32.powf(50.0 / 1200.0);
+        for (group, want) in [(1usize, target), (2usize, 440.0f32)] {
+            let segment = &output[group * 4800..(group + 1) * 4800];
+            let period = estimate_period(segment, SR).expect("period must be found");
+            let measured = SR / period;
+            let err = cents_error(measured, want);
+            eprintln!("schedule group {group}: measured {measured:.2} Hz ({err:.2} cents)");
+            assert!(
+                err.abs() <= 5.0,
+                "schedule group {group} F0 error {err:.2} cents exceeds +/-5"
             );
         }
     }
