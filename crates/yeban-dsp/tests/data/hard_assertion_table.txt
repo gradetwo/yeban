@@ -2,7 +2,7 @@
 # 分类口径：float_bits ＝ 判据体内有 to_bits()；integer_count ＝ 只比整数/长度
 # class：hard ＝ 产线可达集无宿主 libm 超越函数；platform ＝ 有（只在本架构有意义）
 #        no_callee ＝ 不调用本 crate 产线函数
-# 合计 316 条：float_bits 84 ／ integer_count 232；其中 hard 69 ／ platform 12
+# 合计 325 条：float_bits 87 ／ integer_count 238；其中 hard 72 ／ platform 12
 # 列：kind | class | reach | host | file | test
 integer_count | no_callee | 0 | - | src/block.rs | accumulate_matches_scalar_reference
 integer_count | no_callee | 0 | - | src/block.rs | mismatched_lengths_are_truncated_instead_of_panicking
@@ -311,6 +311,15 @@ integer_count | no_callee | 0 | - | src/tape.rs | oversampling_aliasing_is_below
 integer_count | no_callee | 0 | - | src/tape.rs | reset_reproduces_a_freshly_built_device_bit_for_bit
 integer_count | no_callee | 0 | - | src/tape.rs | sanitised_clamps_every_field_into_its_documented_domain
 integer_count | no_callee | 0 | - | src/tape.rs | small_signal_gain_is_approximately_one
+integer_count | no_callee | 0 | - | src/vocal_per_note_eq.rs | attenuation_applies_only_inside_the_target_note
+float_bits | hard | 1 | - | src/vocal_per_note_eq.rs | default_config_pins_the_fade
+float_bits | hard | 1 | - | src/vocal_per_note_eq.rs | envelope_is_exactly_zero_outside_and_one_inside
+float_bits | hard | 7 | - | src/vocal_per_note_eq.rs | interval_edges_are_exactly_dry
+integer_count | no_callee | 0 | - | src/vocal_per_note_eq.rs | nan_inside_the_interval_does_not_poison_state
+integer_count | no_callee | 0 | - | src/vocal_per_note_eq.rs | no_bands_output_is_bit_identical
+integer_count | no_callee | 0 | - | src/vocal_per_note_eq.rs | process_is_deterministic_and_reset_restores
+integer_count | no_callee | 0 | - | src/vocal_per_note_eq.rs | receipt_counts_applied_bands
+integer_count | no_callee | 0 | - | src/vocal_per_note_eq.rs | zero_gain_band_is_skipped_and_identity
 integer_count | no_callee | 0 | - | src/vocal_refine.rs | refine_finds_vop_pre_off_and_f0
 integer_count | no_callee | 0 | - | src/vocal_refine.rs | refine_legato_fallback_finds_second_vowel
 integer_count | no_callee | 0 | - | src/vocal_timemap.rs | build_gap_silence_absorbs_slack
