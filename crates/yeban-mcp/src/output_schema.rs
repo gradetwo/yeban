@@ -829,7 +829,7 @@ fn source_items() -> Value {
 // `normalize` / `loudness` / `bwf` / `midiSource` / `contributionsBasis`）加一处
 // **连 `items` 都没有**的 `{"type":"array"}`（`contributions`，比裸对象更弱：元素形状完全未声明）。
 // 每条名册的**唯一事实源**是 `domain/render.rs` 里那一个 `json!` 拼装点：逐键照它抄，
-// ⛔ 不写"理想形状"。两处刻意留弱（`unsupportedCounts` 的开键映射、`ops` 的 55 变体标签联合）
+// ⛔ 不写"理想形状"。两处刻意留弱（`unsupportedCounts` 的开键映射、`ops` 的 56 变体标签联合）
 // 由各自的判据点名，理由写在 [`render_master`] 末尾。
 //
 // ⚠ `const` 只用在工作量小的**字面量布尔/整数旗标**上（`wired: true` 那类）：它们变假就是
