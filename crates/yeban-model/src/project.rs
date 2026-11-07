@@ -1749,6 +1749,24 @@ pub struct YebanProjectV1 {
     ///
     /// **必需** [ADR-0001 D43]：缺键等于静默丢掉整份资产索引。
     pub assets: BTreeMap<AssetHash, AssetMetadata>,
+    /// 内嵌采样映射表：渲染根相对路径 → 资产 SHA-256（64 位小写十六进制）。
+    ///
+    /// 键是**解析后**路径：`.sfz` 文件本身取绑定 `path` 原样；样本取以绑定 `path`
+    /// 所在目录为基、按 `sample=` 解析规则拼接后的渲染根相对路径（`sample_path()`
+    /// 的原串，含 `default_path=` 前缀）。SFZ 文本与样本字节本身住在会话 CAS 池
+    /// （容器 `assets/{sha256}` 条目），本表是唯一的索引 —— 渲染侧先查本表，
+    /// 命中则从 CAS 取字节，⛔ 不读盘；未命中则走盘上路径（旧工程回退）。
+    ///
+    /// `#[serde(default, skip_serializing_if = "BTreeMap::is_empty")]` 与
+    /// `sampler: None` 同一条 skip discipline ⇒ **空表不写出**：旧工程逐字节不动，
+    /// 只读打开旧工程、渲染旧工程输出逐位不变。重新保存旧工程会按新默认填入本表
+    ///（Wang 要的新行为），但打开与渲染行为不变 —— 两句分开，不许混淆。
+    ///
+    /// 边界：`#include` 的 SFZ 不进本表（保存时跳过该轨内嵌，渲染走盘上）；
+    /// CC 触发的区域只算音符触发（`DemandLoadFilter::wants` 的音符命中是触发条件，
+    /// CC 泳道只作门控过滤）；内建静音 `sample=*silence` 不是文件，⛔ 不进本表。
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub embedded_samples: BTreeMap<String, String>,
 }
 
 impl Default for YebanProjectV1 {
@@ -1777,6 +1795,7 @@ impl Default for YebanProjectV1 {
             scenes: BTreeMap::new(),
             clip_pool: BTreeMap::new(),
             assets: BTreeMap::new(),
+            embedded_samples: BTreeMap::new(),
         }
     }
 }
@@ -3435,7 +3454,16 @@ mod tests {
     /// 本判据随之改为直接读契约文件并断言**零分歧** —— 契约再漂移就立刻变红。
     #[test]
     fn implementation_matches_the_schema_type_table_exactly() {
-        let value = serde_json::to_value(YebanProjectV1::default()).expect("to_value");
+        let mut project = YebanProjectV1::default();
+        // `embedded_samples` 是顶层唯一的 `skip_serializing_if` 字段（空表不写出 ——
+        // 与 `sampler: None` 同一条 discipline，旧工程逐字节不动）⇒ 默认工程的
+        // 序列化里没有它；类型对账须用一份带一条目的工程，否则本判据会把"有意省略"
+        // 误报成"契约要求但实现未序列化"。值是 64 位小写十六进制（与契约的 pattern
+        // 同一条），键是渲染根相对路径（与保存侧的落点同一条）。
+        project
+            .embedded_samples
+            .insert("assets/samples/kit/001.sfz".to_owned(), "0".repeat(64));
+        let value = serde_json::to_value(project).expect("to_value");
         let mut divergences: Vec<String> = Vec::new();
         let table = schema_top_level_types();
         assert!(
@@ -6050,6 +6078,67 @@ mod tests {
         assert!(
             json.contains(r#""sampler":{"path":"instruments/lead.sfz"}"#),
             "落盘形态必须是单键对象 `sampler.path`: {json}"
+        );
+    }
+
+    /// 内嵌采样映射表：**默认不落盘**、带值时**逐字节往返**、键与值**原样**保留。
+    ///
+    /// 与 `sampler` 同一条 skip discipline：空表 ⇒ 键**消失**（不是 `{}`），
+    /// 既有夹具工程的字节不动（只读打开旧工程、渲染旧工程逐位不变的模型面）。
+    /// 值是 SHA-256 小写十六进制 —— 模型只收字符串，⛔ 不校验哈希形状
+    /// （与 `SamplerBinding.path` 同一口径：留痕字符串，校验是控制侧的事）。
+    #[test]
+    fn embedded_samples_is_absent_by_default_and_round_trips_verbatim() {
+        // ---- ① 默认：键**消失**，不是写成 `{}` ----
+        let default_project =
+            serde_json::to_value(YebanProjectV1::default()).expect("序列化默认工程");
+        assert!(
+            default_project.get("embedded_samples").is_none(),
+            "默认工程不得写出 `embedded_samples` 键（空表 ⇒ `skip_serializing_if`）: {default_project}"
+        );
+
+        // ---- ② 空表显式写回 ⇒ 整份夹具工程逐字节不变 ----
+        let mut without = filled_project();
+        without.embedded_samples = BTreeMap::new();
+        assert_eq!(
+            serde_json::to_string(&without).expect("序列化"),
+            serde_json::to_string(&filled_project()).expect("序列化"),
+            "`embedded_samples` 为空不得移动既有夹具工程的任何一个字节"
+        );
+
+        // ---- ③ 带值：往返逐字节稳定 ＋ 键升序 ＋ 键/值原样 ----
+        let mut project = filled_project();
+        project
+            .embedded_samples
+            .insert("assets/samples/kit/001.sfz".to_owned(), "a".repeat(64));
+        project
+            .embedded_samples
+            .insert("assets/samples/kit/snare.wav".to_owned(), "b".repeat(64));
+        assert_eq!(project.validate(), Ok(()), "映射表不得被模型校验拒绝");
+        assert_eq!(project.check_readable(), Ok(()));
+        let first = serde_json::to_string_pretty(&project).expect("序列化");
+        let back: YebanProjectV1 = serde_json::from_str(&first).expect("读回");
+        assert_eq!(back, project, "映射表往返后必须逐字段相等");
+        assert_eq!(
+            serde_json::to_string_pretty(&back).expect("再序列化"),
+            first,
+            "映射表往返必须**逐字节**相同"
+        );
+        // BTreeMap ⇒ 落盘键升序：`.sfz` 在 `.wav` 之前（`001.sfz` < `snare.wav`）。
+        let sfz_at = first
+            .find("\"assets/samples/kit/001.sfz\"")
+            .expect("sfz 键在");
+        let wav_at = first
+            .find("\"assets/samples/kit/snare.wav\"")
+            .expect("wav 键在");
+        assert!(sfz_at < wav_at, "映射表落盘必须按键升序: {first}");
+        // 缺键读回 ⇒ 空表（旧工程无此键，`#[serde(default)]` 顶上）。
+        let old: YebanProjectV1 =
+            serde_json::from_str(&serde_json::to_string(&filled_project()).expect("序列化"))
+                .expect("旧工程读回");
+        assert!(
+            old.embedded_samples.is_empty(),
+            "无 `embedded_samples` 键的旧工程读回必须是空表"
         );
     }
 

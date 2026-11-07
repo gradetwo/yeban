@@ -1216,6 +1216,14 @@
           }
         }
       }
+    },
+    "embedded_samples": {
+      "type": "object",
+      "description": "Embedded-sample map: render-root-relative path -> asset SHA-256 (lowercase hex). Keys are the resolved paths: the .sfz file itself uses its binding path verbatim; each sample uses its binding directory joined with the resolved sample= string. Empty maps are not written out (skip_serializing_if, same discipline as sampler: None), so old projects are byte-identical.",
+      "additionalProperties": {
+        "type": "string",
+        "pattern": "^[0-9a-f]{64}$"
+      }
     }
   }
 }

@@ -471,6 +471,7 @@ pub fn filled_project() -> YebanProjectV1 {
                 license: "CC0-1.0".to_owned(),
             },
         )]),
+        embedded_samples: BTreeMap::new(),
     }
 }
 

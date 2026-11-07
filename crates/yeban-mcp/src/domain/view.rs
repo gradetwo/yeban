@@ -33,7 +33,7 @@ use crate::tools::ErrorCode;
 /// （其值与单独选择 `sections` 逐字节同形，满足"每个选择器都取得到根键"的单元判据），
 /// 还输出一个独立顶层键 `sectionsTimeline`（按 `(start_tick, id)` 升序的段落数组）。
 /// `sections` 的原始键序是**身份序**（ULID 插入序，⛔ 不是时间序），调用方本来必须自己重排。
-pub const SELECTORS: [&str; 28] = [
+pub const SELECTORS: [&str; 29] = [
     "id",
     "title",
     "author",
@@ -55,6 +55,7 @@ pub const SELECTORS: [&str; 28] = [
     "scenes",
     "clip_pool",
     "assets",
+    "embedded_samples",
     "routing_graph",
     "tracks.id",
     "tracks.name",

@@ -2823,13 +2823,18 @@ pub fn build(
                 project_path,
                 &mut sampler_store,
                 request.sample_limits,
+                assets,
             ) {
-                Ok((armed, samples)) => {
+                Ok((armed, samples, sfz_text)) => {
                     // ⭐ `#279`：解码表**直接**交给引擎（`(sample= 原样字符串, (PCM, 原始采样率))`），
                     // ⛔ 不再经 `ArmedSamplerTrack` 中转一次深拷贝（旧 `armed.samples.clone()`）。
                     let resolved = armed.load.path.clone();
                     sampler_loads.insert(track, armed);
-                    ArmedSfzInput::new(resolved, samples)
+                    let input = ArmedSfzInput::new(resolved, samples);
+                    match sfz_text {
+                        Some(text) => input.with_sfz_text(text),
+                        None => input,
+                    }
                 }
                 Err(fault) => {
                     if sampler_failure.is_none() {
@@ -4223,11 +4228,21 @@ struct ArmedSamplerTrack {
 /// [`sfz::load_with`] 在同一次装载里既产出 `SfzLoad` 读数，又产出提供表；
 /// 样本文件由 [`sfz::SampleStore`]（一次渲染共享）负责"同一文件只解码一次"。
 ///
+/// 两条腿（⛔ 不混用）：
+/// * **内嵌腿**：绑定在工程 `embedded_samples` 表里 ⇒ SFZ 文本与样本字节全部来自
+///   会话 CAS 池（[`sfz::load_with_embedded`]）；`SfzLoad.path` ＝ 绑定路径原样
+///   （留痕：`ArmedSfzSummary.resolved_path` 显示绑定，不显示磁盘路径）；
+///   多返一份 SFZ 文本（`Some` ⇒ 引擎直接解析这份文本，⛔ 不读盘 ——
+///   `from_snapshot_armed` 按 `resolved_path` 重读文本，无采样库的机器上绑定路径
+///   在盘上不存在）。
+/// * **磁盘腿**：旧工程回退 —— 原样（`resolve_sampler_path` ＋ [`sfz::load_with`]）。
+///
 /// 读不到 ⇒ **不放进提供表**（引擎按缺样本 ⇒ 静音 ＋ 计数，⛔ 不发明替代内容）。
 ///
 /// # Errors
 ///
-/// 路径解析不到 / SFZ 文件读不到 / 文本非法 ⇒ `RENDER_FAILED`（报文与原形状逐字相同）。
+/// 路径解析不到 / SFZ 文件读不到 / 文本非法 / 内嵌资产不在池里 / 内嵌文本含 `#include`
+/// ⇒ `RENDER_FAILED`（报文与原形状逐字相同，`reason` 复用 `samplerUnreadable`）。
 fn prepare_sampler_track(
     track: EntityId,
     raw: &str,
@@ -4235,40 +4250,102 @@ fn prepare_sampler_track(
     project_path: &Path,
     store: &mut sfz::SampleStore,
     limits: sfz::SampleLimits,
-) -> Result<(ArmedSamplerTrack, Vec<ArmedSfzSample>), Fault> {
-    let resolved = resolve_sampler_path(raw, project_path)?;
+    assets: &dyn AssetStore,
+) -> Result<(ArmedSamplerTrack, Vec<ArmedSfzSample>, Option<String>), Fault> {
     // ⭐ `#276`：装载与提供表**同一次解析**；解码由 `store` 去重（同一文件只解一次）。
     // ⭐ 预算来自本次渲染的实参（`maxSampleFiles` / `maxSampleFrames`），⛔ 不是常量。
     // ⭐ P1 按需装载：只解码本轨音符/CC 判定为会发声的区域（见 `sfz::DemandLoadFilter`）；
     // 预算只对已用子集记账，已用子集超预算仍响亮拒绝（`TrackSampleCache` 原有行为）。
     let filter = sfz::DemandLoadFilter::from_project_track(project, track);
-    let mut cache = sfz::TrackSampleCache::with_limits(store, limits);
-    let (load, table) = sfz::load_with(
-        &resolved,
-        project.audio_config.sample_rate.hz() as f32,
-        0,
-        false,
-        &mut cache,
-        Some(&filter),
-    )
-    .map_err(|fault| {
-        let cause = fault.into_result().map_or_else(
-            |error| serde_json::json!({ "code": error.code, "message": error.message }),
-            |value| value["error"].clone(),
-        );
-        render_failed(
-            format!(
-                "采样器定义文件读不到或解析不了: {} (工程里登记的是 `{raw}`)",
-                resolved.display()
-            ),
-            serde_json::json!({
-                "reason": "samplerUnreadable",
-                "path": raw,
-                "resolvedPath": resolved.display().to_string(),
-                "cause": cause,
-            }),
+    let sample_hz = project.audio_config.sample_rate.hz() as f32;
+    // ① 内嵌腿：绑定在表里 ⇒ CAS 文本 ＋ CAS 样本。
+    let (load, table, sfz_text) = if let Some(hash_text) = project.embedded_samples.get(raw) {
+        let hash = AssetHash::parse(hash_text).map_err(|error| {
+            render_failed(
+                format!("内嵌采样器绑定 `{raw}` 的哈希 `{hash_text}` 非法: {error}"),
+                serde_json::json!({
+                    "reason": "samplerUnreadable",
+                    "path": raw,
+                }),
+            )
+        })?;
+        let bytes = assets.asset(&hash).ok_or_else(|| {
+            render_failed(
+                format!(
+                    "内嵌采样器定义文件 `{raw}` 的资产 `{hash}` 不在会话 CAS 池里（容器缺资产条目）"
+                ),
+                serde_json::json!({
+                    "reason": "samplerUnreadable",
+                    "path": raw,
+                }),
+            )
+        })?;
+        let text = String::from_utf8(bytes.to_vec()).map_err(|error| {
+            render_failed(
+                format!("内嵌采样器定义文件 `{raw}` 不是合法 UTF-8: {error}"),
+                serde_json::json!({
+                    "reason": "samplerUnreadable",
+                    "path": raw,
+                }),
+            )
+        })?;
+        let (load, table) = sfz::load_with_embedded(
+            text.clone(),
+            hash_text.clone(),
+            raw,
+            &project.embedded_samples,
+            assets,
+            sample_hz,
+            0,
+            false,
+            limits,
+            Some(&filter),
         )
-    })?;
+        .map_err(|fault| {
+            let cause = fault.into_result().map_or_else(
+                |error| serde_json::json!({ "code": error.code, "message": error.message }),
+                |value| value["error"].clone(),
+            );
+            render_failed(
+                format!(
+                    "采样器定义文件读不到或解析不了: 内嵌文本 `{raw}` (工程里登记的是 `{raw}`)"
+                ),
+                serde_json::json!({
+                    "reason": "samplerUnreadable",
+                    "path": raw,
+                    "embeddedHash": hash_text,
+                    "cause": cause,
+                }),
+            )
+        })?;
+        (load, table, Some(text))
+    } else {
+        // ② 磁盘腿（旧工程回退）：原样。
+        let resolved = resolve_sampler_path(raw, project_path)?;
+        let mut cache = sfz::TrackSampleCache::with_limits(store, limits);
+        let (load, table) =
+            sfz::load_with(&resolved, sample_hz, 0, false, &mut cache, Some(&filter)).map_err(
+                |fault| {
+                    let cause = fault.into_result().map_or_else(
+                        |error| serde_json::json!({ "code": error.code, "message": error.message }),
+                        |value| value["error"].clone(),
+                    );
+                    render_failed(
+                        format!(
+                            "采样器定义文件读不到或解析不了: {} (工程里登记的是 `{raw}`)",
+                            resolved.display()
+                        ),
+                        serde_json::json!({
+                            "reason": "samplerUnreadable",
+                            "path": raw,
+                            "resolvedPath": resolved.display().to_string(),
+                            "cause": cause,
+                        }),
+                    )
+                },
+            )?;
+        (load, table, None)
+    };
     // 读不到 ⇒ 不进提供表（引擎按缺样本处理），原因已在 `SfzLoad::sample_failures`
     // 里如实登记。表的顺序/键与修前逐条相同：区域首见顺序、`sample_path()` 原样字符串。
     // ⭐ `#279`：池里那份已解码 PCM 是 `Arc<Vec<f32>>` ⇒ 这里只 `Arc::clone`
@@ -4283,7 +4360,7 @@ fn prepare_sampler_track(
         })
         .collect();
     let decoded: BTreeSet<String> = samples.iter().map(|(path, _)| path.clone()).collect();
-    Ok((ArmedSamplerTrack { load, decoded }, samples))
+    Ok((ArmedSamplerTrack { load, decoded }, samples, sfz_text))
 }
 
 /// 解析（必要时解码 + 重采样）一个音频资产；结果按哈希缓存。

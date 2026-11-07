@@ -141,6 +141,13 @@ pub struct ArmedSfzInput {
     ///
     /// ⭐ `#279`：列表只搬 `Arc` 指针（构造/搬动都是常数级）；PCM 元素不在这里被复制。
     pub samples: Vec<ArmedSfzSample>,
+    /// 预解析用的 SFZ 文本（内嵌腿）：`Some` ⇒ 引擎直接解析这份文本
+    /// （[`SfzInstrument::load`]，⛔ 不读盘 —— 无采样库的机器上 `resolved_path`
+    /// 指的绑定路径在盘上不存在）；`None` ⇒ 按 `resolved_path` 读盘（旧腿原样）。
+    ///
+    /// 内嵌文本含 `#include` 时调用方必须**不**走这条路（保存侧从不内嵌这类 SFZ，
+    /// 装载侧 `load_with_embedded` 也响亮拒绝 —— `SfzInstrument::load` 不展开 include）。
+    pub sfz_text: Option<String>,
 }
 
 impl ArmedSfzInput {
@@ -150,7 +157,15 @@ impl ArmedSfzInput {
         Self {
             resolved_path,
             samples,
+            sfz_text: None,
         }
+    }
+
+    /// 造一份带 SFZ 文本的输入（内嵌腿）：引擎解析这份文本，不读 `resolved_path`。
+    #[must_use]
+    pub fn with_sfz_text(mut self, text: String) -> Self {
+        self.sfz_text = Some(text);
+        self
     }
 
     /// 空输入（provider 失败时的占位：调用方随后会用自己捕获的错误**响亮失败**，
@@ -160,6 +175,7 @@ impl ArmedSfzInput {
         Self {
             resolved_path: resolved_path.into(),
             samples: Vec::new(),
+            sfz_text: None,
         }
     }
 }
@@ -282,7 +298,17 @@ impl EngineTimbre {
         let mut armed: BTreeMap<EntityId, ArmedSfzSummary> = BTreeMap::new();
         for (track, raw_path) in pending {
             let input = provider(track, &raw_path);
-            let instrument = load_sfz_instrument(&input.resolved_path)?;
+            // 内嵌腿：provider 已把 SFZ 文本从 CAS 池取出来 ⇒ 直接解析文本，
+            // ⛔ 不读盘（`resolved_path` 只是绑定路径的留痕）；旧腿（`None`）原样读盘。
+            let instrument = match input.sfz_text {
+                Some(text) => {
+                    let display = input.resolved_path.display().to_string();
+                    SfzInstrument::load(text, &ParseLimits::default()).map_err(|error| {
+                        EngineSourceError::new(format!("SFZ 文本非法 ({display}): {error}"))
+                    })?
+                }
+                None => load_sfz_instrument(&input.resolved_path)?,
+            };
             let provided: Vec<(String, InMemorySample)> = input
                 .samples
                 .into_iter()
