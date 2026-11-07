@@ -12,7 +12,8 @@
 //!   之外的任何事。
 //! * [`render_continuous_timemap`]：整行/整段只用一个拉伸实例，不在锚点
 //!   处切开、不做段间交叉淡化。固定 240 采样输出块，输入步长由映射斜率
-//!   决定；步长钳制到 `[1, 960]` 并计数（见 [`RenderReport`]）。
+//!   决定；步长钳制到 `[1, 960]` 并计数（见 [`RenderReport`]）。拉伸实例
+//!   用固定种子（[`STRETCH_SEED`]）播种构造，逐轮逐位相同。
 //!
 //! # 离线限定
 //!
@@ -51,6 +52,17 @@ pub const OUT_CHUNK: usize = 240;
 pub const SILENCE_DB: f64 = -55.0;
 /// 静音最短持续：短于此的低能量段按换气处理，不按静音吸收。
 pub const SILENCE_MIN_S: f64 = 0.030;
+/// 拉伸实例的固定种子：任意固定值，只求逐轮相同。
+///
+/// signalsmith-stretch 的默认构造以 `std::random_device` 播种内部 RNG，
+/// 拉伸倍数超过 2.0 的段逐轮输出不同（见
+/// `~/workspace/vocaledit-phase2/REPORT-jitter-diagnosis.md`）。本模块的
+/// 渲染一律用播种构造建实例，种子钉死为此常量。种子值本身任意，可配置：
+/// 调用方可用 [`render_continuous_timemap_with_seed`] 传其它种子。保证边界
+/// 是同一构建、同一平台、同一调用序列下的逐位相同，不宣称跨工具链逐位相同。
+/// 实测注：本工具链 `std::default_random_engine`（minstd_rand0）下种子 0
+/// 与种子 1 产出同一随机流（0 映到状态 1），故种子比较只以种子 2 为异流对照。
+pub const STRETCH_SEED: i64 = 0;
 
 /// 拉伸实例配置：探针修正后的两种合法构造（二选一）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -637,6 +649,9 @@ pub struct RenderReport {
 ///   [`default_align_drop`] 的 pilot 实测值（不用 `output_latency()` 声称值，
 ///   见该函数文档）；调用方传入实测值可覆盖。
 ///
+/// 拉伸实例用播种构造建（种子见 [`STRETCH_SEED`]），故同一次渲染逐轮逐位
+/// 相同；保证边界是同一构建、同一平台、同一调用序列，不宣称跨工具链逐位相同。
+///
 /// 固定 240 采样输出块；每块输入步长 = 映射差值四舍五入，钳制到
 /// `[1, 960]` 并计数。映射平段（步长 ≤0，多见于钳制后的空缺间隙）
 /// 喂 1 个零采样（拉伸器自然衰减后归于静音，不喂冻结采样 drones）。
@@ -650,9 +665,31 @@ pub fn render_continuous_timemap(
     config: StretchConfig,
     align_drop: Option<usize>,
 ) -> (Vec<f32>, RenderReport) {
+    render_continuous_timemap_with_seed(
+        source,
+        sample_rate,
+        map,
+        target_len,
+        config,
+        align_drop,
+        STRETCH_SEED,
+    )
+}
+
+/// 与 [`render_continuous_timemap`] 相同，但拉伸实例用调用方给定的 `seed`
+/// 播种（种子比较实验与可配置点；默认路径一律走 [`STRETCH_SEED`]）。
+pub fn render_continuous_timemap_with_seed(
+    source: &[f32],
+    sample_rate: u32,
+    map: &PiecewiseTimeMap,
+    target_len: usize,
+    config: StretchConfig,
+    align_drop: Option<usize>,
+    seed: i64,
+) -> (Vec<f32>, RenderReport) {
     let mut stretch = match config {
-        StretchConfig::Custom2400_480 => Stretch::new(1, 2400, 480),
-        StretchConfig::PresetDefault => Stretch::preset_default(1, sample_rate),
+        StretchConfig::Custom2400_480 => Stretch::new_seeded(1, 2400, 480, seed),
+        StretchConfig::PresetDefault => Stretch::preset_default_seeded(1, sample_rate, seed),
     };
     let drop = align_drop.unwrap_or_else(|| default_align_drop(config, sample_rate));
     let total = target_len + drop;
@@ -908,8 +945,8 @@ mod tests {
         assert_eq!(report_a.step_clamps, 0);
     }
 
-    /// 抖动诊断探针（REPORT-jitter-diagnosis.md）：速率 > 2.0 的拉伸在逐轮
-    /// 之间逐位不同，速率 ≤ 2.0 的逐位相同。
+    /// 抖动诊断探针（REPORT-jitter-diagnosis.md），修后翻转（REPORT-jitter-fix.md）：
+    /// 速率 > 2.0 的拉伸在修前逐轮逐位不同，修后（固定种子）逐位相同。
     ///
     /// 机理（signalsmith-stretch 0.1.3，`signalsmith-stretch.h`）：
     /// 默认构造以 `std::random_device{}()` 播种 RNG（:38），Rust 绑定
@@ -918,10 +955,10 @@ mod tests {
     /// 时，逐 bin 从该 RNG 取随机时间因子（:614–615，:724，:744）。
     /// 速率 ≤ 2.0 时三目取固定分支，不取数，故逐位确定。
     ///
-    /// 3.0 臂钉住“修前不同”：修法（固定种子）落地后须改为 `assert_eq!`，
-    /// 与 1.5 臂同形；两臂合起来即修后逐轮逐位相同的回归判据。
+    /// 修法：vendor 该库并给固定种子（[`STRETCH_SEED`]），渲染一律走播种
+    /// 构造；以下各臂合起来即修后逐轮逐位相同的回归判据。
     #[test]
-    fn render_rate_3p0_differs_across_instances() {
+    fn render_rate_3p0_is_deterministic() {
         let sr = 48_000;
         let mut source = vec![0.0_f32; sr];
         for (i, sample) in source.iter_mut().enumerate() {
@@ -945,12 +982,7 @@ mod tests {
             None,
         );
         assert_eq!(a.len(), sr);
-        let diffs = a.iter().zip(b.iter()).filter(|(x, y)| x != y).count();
-        eprintln!("rate 3.0: differing samples {diffs} / {}", a.len());
-        assert_ne!(
-            a, b,
-            "rate 3.0 renders must differ across instances (pre-fix probe)"
-        );
+        assert_eq!(a, b, "rate 3.0 renders must be deterministic");
     }
 
     #[test]
@@ -978,6 +1010,155 @@ mod tests {
             None,
         );
         assert_eq!(a, b, "rate 1.5 renders must be deterministic");
+    }
+
+    /// 7.56 臂：覆盖行 00 的真实触发倍数（REPORT-jitter-diagnosis.md 分叉点表）。
+    #[test]
+    fn render_rate_7p56_is_deterministic() {
+        let sr = 48_000;
+        let mut source = vec![0.0_f32; sr];
+        for (i, sample) in source.iter_mut().enumerate() {
+            *sample = (i as f32 * 0.001).sin() * 0.5;
+        }
+        let map = linear_map(7.56);
+        let (a, _) = render_continuous_timemap(
+            &source,
+            sr as u32,
+            &map,
+            sr,
+            StretchConfig::Custom2400_480,
+            None,
+        );
+        let (b, _) = render_continuous_timemap(
+            &source,
+            sr as u32,
+            &map,
+            sr,
+            StretchConfig::Custom2400_480,
+            None,
+        );
+        assert_eq!(a, b, "rate 7.56 renders must be deterministic");
+    }
+
+    /// 2.0 边界臂：取随机数的条件是严格不等式（`timeFactor > 2`），输入
+    /// 间隔取整会使恰好 2.0 的块在边界两侧摆动；固定种子下任何倍数都逐位
+    /// 相同，该边界自然消失。
+    #[test]
+    fn render_rate_2p0_is_deterministic() {
+        let sr = 48_000;
+        let mut source = vec![0.0_f32; sr];
+        for (i, sample) in source.iter_mut().enumerate() {
+            *sample = (i as f32 * 0.001).sin() * 0.5;
+        }
+        let map = linear_map(2.0);
+        let (a, _) = render_continuous_timemap(
+            &source,
+            sr as u32,
+            &map,
+            sr,
+            StretchConfig::Custom2400_480,
+            None,
+        );
+        let (b, _) = render_continuous_timemap(
+            &source,
+            sr as u32,
+            &map,
+            sr,
+            StretchConfig::Custom2400_480,
+            None,
+        );
+        assert_eq!(a, b, "rate 2.0 renders must be deterministic");
+    }
+
+    /// PresetDefault 配置复核：时间因子算式与 2.0 阈值与配置无关，但须实测
+    /// 一次 PresetDefault 下倍数 3.0 两次相同，不只推断。
+    #[test]
+    fn render_rate_3p0_preset_default_is_deterministic() {
+        let sr = 48_000;
+        let mut source = vec![0.0_f32; sr];
+        for (i, sample) in source.iter_mut().enumerate() {
+            *sample = (i as f32 * 0.001).sin() * 0.5;
+        }
+        let map = linear_map(3.0);
+        let (a, _) = render_continuous_timemap(
+            &source,
+            sr as u32,
+            &map,
+            sr,
+            StretchConfig::PresetDefault,
+            None,
+        );
+        let (b, _) = render_continuous_timemap(
+            &source,
+            sr as u32,
+            &map,
+            sr,
+            StretchConfig::PresetDefault,
+            None,
+        );
+        assert_eq!(a, b, "rate 3.0 PresetDefault renders must be deterministic");
+    }
+
+    /// 种子比较：同一-seed 两次渲染逐位相同（回归判据）；不同种子之间的
+    /// 输出差异量级只打印、不钉硬门——不同种子是不同但同样有效的相位抽取，
+    /// 差异量级由 REPORT-jitter-fix.md 实测量值记录，不由本测试裁决。
+    #[test]
+    fn render_same_seed_deterministic_across_seeds() {
+        let sr = 48_000;
+        let mut source = vec![0.0_f32; sr];
+        for (i, sample) in source.iter_mut().enumerate() {
+            *sample = (i as f32 * 0.001).sin() * 0.5;
+        }
+        let map = linear_map(3.0);
+        let render = |seed: i64| {
+            render_continuous_timemap_with_seed(
+                &source,
+                sr as u32,
+                &map,
+                sr,
+                StretchConfig::Custom2400_480,
+                None,
+                seed,
+            )
+            .0
+        };
+        let seed0_a = render(STRETCH_SEED);
+        let seed0_b = render(STRETCH_SEED);
+        assert_eq!(seed0_a, seed0_b, "seed 0 renders must be identical");
+        let seed1_a = render(1);
+        let seed1_b = render(1);
+        assert_eq!(seed1_a, seed1_b, "seed 1 renders must be identical");
+        let seed2_a = render(2);
+        let seed2_b = render(2);
+        assert_eq!(seed2_a, seed2_b, "seed 2 renders must be identical");
+        let stats = |x: &[f32], y: &[f32]| -> (f32, f32) {
+            let mut max_abs = 0.0_f32;
+            let mut sum_sq = 0.0_f64;
+            for (a, b) in x.iter().zip(y.iter()) {
+                let d = (a - b).abs();
+                if d > max_abs {
+                    max_abs = d;
+                }
+                sum_sq += (a - b) as f64 * (a - b) as f64;
+            }
+            (max_abs, (sum_sq / x.len() as f64).sqrt() as f32)
+        };
+        let level = |x: &[f32]| -> (f32, f32) {
+            let peak = x.iter().fold(0.0_f32, |acc, s| acc.max(s.abs()));
+            let rms = (x.iter().map(|s| (*s as f64) * (*s as f64)).sum::<f64>() / x.len() as f64)
+                .sqrt() as f32;
+            (peak, rms)
+        };
+        let (peak0, rms0) = level(&seed0_a);
+        let (peak1, rms1) = level(&seed1_a);
+        let (peak2, rms2) = level(&seed2_a);
+        eprintln!("seed 0: peak {peak0:.6}, rms {rms0:.6}");
+        eprintln!("seed 1: peak {peak1:.6}, rms {rms1:.6}");
+        eprintln!("seed 2: peak {peak2:.6}, rms {rms2:.6}");
+        let (max01, rms01) = stats(&seed0_a, &seed1_a);
+        let (max02, rms02) = stats(&seed0_a, &seed2_a);
+        eprintln!("seed 0 vs 1: max|Δ| {max01:.6}, rms Δ {rms01:.6}");
+        eprintln!("seed 0 vs 2: max|Δ| {max02:.6}, rms Δ {rms02:.6}");
     }
 
     #[test]

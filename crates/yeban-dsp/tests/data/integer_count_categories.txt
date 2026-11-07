@@ -2,7 +2,7 @@
 # 列：file|test|category|首条整数断言的证据（截断 90 字符）
 # 口径（R118）：只有 collection_size **界定集合大小** ⇒ 才算非真空下界；
 #   值界／元素值界／条件计数器 **⛔ 不算**。分类优先级：condition_counter > collection_size > element_value_bound > value_bound。
-# 合计 232 条：collection_size 39 ／ value_bound 184 ／ element_value_bound 5 ／ condition_counter 4
+# 合计 233 条：collection_size 39 ／ value_bound 185 ／ element_value_bound 5 ／ condition_counter 4
 src/block.rs|accumulate_matches_scalar_reference|value_bound|assert!((out[i] - expect[i]).abs() < 1e-6, "mismatch at {i}"
 src/block.rs|mismatched_lengths_are_truncated_instead_of_panicking|value_bound|assert_eq!(out[..4], [1.0, 1.0, 1.0, 0.0]
 src/block.rs|mix2_handles_non_multiple_of_four|value_bound|assert!((v - 1.0).abs() < 1e-6
@@ -234,4 +234,5 @@ src/vocal_timemap.rs|gate_pass_and_fail|collection_size|assert_eq!(fail_hard.out
 src/vocal_timemap.rs|map_interpolates_and_extends|value_bound|assert!((map.map(2.0) - 2.0 / 1.5).abs() < 1e-9
 src/vocal_timemap.rs|render_burst_alignment_identity_and_stretched|value_bound|assert!(                 error_ms <= bound,                 "identity burst alignment erro
 src/vocal_timemap.rs|render_identity_is_deterministic|collection_size|assert_eq!(a.len(), sr / 2
+src/vocal_timemap.rs|render_same_seed_deterministic_across_seeds|value_bound|assert_eq!(seed0_a, seed0_b, "seed 0 renders must be identical"
 src/vocal_timemap.rs|render_silence_stays_silence|value_bound|assert!(peak < 1e-4, "silence in must stay silence, peak {peak}"
