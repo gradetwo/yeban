@@ -97,7 +97,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use yeban_model::{AssetHash, AutomationTarget, ClipContent, EntityId, PPQ, YebanProjectV1};
-use yeban_render::wav::read_plain_wav_mono_f32;
+use yeban_render::wav::{read_plain_wav_mono_f32, read_plain_wav_mono_f32_from_bytes};
 use yeban_sfz::SampleEnd;
 use yeban_sfz::instrument::{AMPLITUDE_DEFAULT_PERCENT, Instrument, Region, Trigger};
 use yeban_sfz::modulation::ModTarget;
@@ -1508,6 +1508,41 @@ pub fn load_with(
     let digest = AssetHash::of_bytes(&bytes).as_str().to_owned();
     // ⭐ `#208`：先把 `#include` 展开（缺失只记一条、循环/超深报错），再解析片段序列。
     let resolution = resolve_include_sources(&text, path)?;
+    load_with_resolved(
+        text,
+        metadata.len(),
+        digest,
+        path,
+        resolution,
+        sample_hz,
+        assign_id,
+        reused,
+        cache,
+        wanted,
+    )
+}
+
+/// [`load_with`] 与 [`load_with_embedded`] 共用的装载体：SFZ 文本已在手里，
+/// 只差 `#include` 展开结果与样本来源（盘上缓存 / 内嵌 CAS 缓存）。
+///
+/// `sfz_path` 的双重身份：① `#include` 基准目录与 `sample=` 解析的锚点
+/// （盘上腿 = 磁盘路径；内嵌腿 = 绑定路径原样 —— `resolve_sample_path`
+/// 拼出的就是内嵌映射表的键）；② `SfzLoad.path` 的回显值。
+/// 内嵌腿调用方必须保证 `resolution` 是 `None`（无 `#include`，见
+/// [`load_with_embedded`]），⛔ 不能把绑定路径交给磁盘解析器去找 include 文件。
+#[allow(clippy::too_many_arguments)]
+fn load_with_resolved(
+    text: String,
+    byte_len: u64,
+    digest: String,
+    sfz_path: &Path,
+    resolution: Option<ResolvedIncludeSources>,
+    sample_hz: f32,
+    assign_id: u64,
+    reused: bool,
+    cache: &mut dyn SampleReads,
+    wanted: Option<&DemandLoadFilter>,
+) -> Result<(SfzLoad, SampledProviderTable), Fault> {
     // ---- 逐区域**真读** `sample=<path>`（有界；读不到如实回退，⛔ 不让装载失败）----
     // ⭐ `#218`：`sample=*silence` **⛔ 不读盘**（它不是文件）—— 区域状态记内建静音，
     // ⛔ 不进 `sampleFailures`。判定只有一份：`yeban-sfz` 的 `Region::is_builtin_silence()`。
@@ -1563,7 +1598,7 @@ pub fn load_with(
                     summary.sample_file_state = "noSampleOpcode".to_owned();
                     true
                 } else {
-                    let resolved = resolve_sample_path(path, &sample);
+                    let resolved = resolve_sample_path(sfz_path, &sample);
                     let outcome = cache.get(&resolved);
                     // ⭐ 提供表的键是 `sample_path()` 的**原样字符串**（含 `default_path=`
                     // 前缀、⛔ 不规范化）—— 与引擎摊平的去重键同一句。
@@ -1626,8 +1661,8 @@ pub fn load_with(
     Ok((
         SfzLoad {
             id: assign_id,
-            path: path.to_path_buf(),
-            bytes: metadata.len(),
+            path: sfz_path.to_path_buf(),
+            bytes: byte_len,
             digest,
             text,
             sources,
@@ -1647,6 +1682,373 @@ pub fn load_with(
         },
         provider,
     ))
+}
+
+// ---------------------------------------------------------------------------
+// ③ 采样内嵌（`embedded_samples`）：CAS 字节装载与逐音触发集
+// ---------------------------------------------------------------------------
+
+/// 内嵌映射表的样本键：绑定目录 + `sample=` 原串的词法拼接。
+///
+/// 与 [`resolve_sample_path`] 的**同一条解析语义**（`sample_path()` 原串、
+/// `\\` 先归一成 `/`、相对路径相对 SFZ 所在目录），只差两点：
+/// ① 锚点是**绑定路径**（渲染根相对）而不是磁盘路径 —— 根被约掉之后，
+/// 保存侧与渲染侧算出同一个键；② 结果再经 [`collapse_embedded_path`] 词法折叠
+/// （`.`/`..` 消解），因为渲染侧 `resolve_sample_path` 拼出的路径**不**折叠，
+/// 而映射表里只存折叠后的那一份（缓存入口处统一折叠，见
+/// [`EmbeddedSampleCache::get`]）。
+///
+/// 绝对路径（POSIX `/…` 或 Windows 盘符 `C:/…`）没有渲染根相对形态 ——
+/// 原样（折叠后）作键：键只需在保存/渲染两侧算出同一个字符串，不必非是相对路径。
+#[must_use]
+pub(crate) fn embedded_sample_key(binding_path: &str, raw_sample: &str) -> String {
+    let raw = raw_sample.replace('\\', "/");
+    if raw.starts_with('/') || is_windows_drive_absolute(Path::new(&raw)) {
+        return collapse_embedded_path(&raw);
+    }
+    let base = binding_path.replace('\\', "/");
+    let base_dir = match base.rfind('/') {
+        Some(index) => &base[..index],
+        None => "",
+    };
+    if base_dir.is_empty() {
+        collapse_embedded_path(&raw)
+    } else {
+        collapse_embedded_path(&format!("{base_dir}/{raw}"))
+    }
+}
+
+/// 词法折叠一条 `/` 分隔路径：`.` 丢弃、`..` 弹一格（到顶为止）、空段丢弃；
+/// 绝对路径（`/` 开头）保留前导 `/`。⛔ 不碰文件系统（无 symlink 解析），
+/// 因此保存侧与渲染侧算出**同一个**字符串。
+#[must_use]
+fn collapse_embedded_path(path: &str) -> String {
+    let absolute = path.starts_with('/');
+    let mut parts: Vec<&str> = Vec::new();
+    for segment in path.split('/') {
+        match segment {
+            "" | "." => {}
+            ".." => {
+                parts.pop();
+            }
+            other => parts.push(other),
+        }
+    }
+    let joined = parts.join("/");
+    if absolute {
+        format!("/{joined}")
+    } else {
+        joined
+    }
+}
+
+/// 从 CAS 字节解码一份样本（与 [`read_sample_file`] 同一条格式口径，⛔ 不另写一份）。
+///
+/// * WAV（`wav` / `wave` 后缀）⇒ [`read_plain_wav_mono_f32_from_bytes`]
+///   （hound 腿，与盘上腿**逐位相同**）；
+/// * 其余 ⇒ `yeban-decode` 按内容探测（与盘上非 WAV 腿同一条）后折声道 0
+///   （与 [`yeban_decode::decode_mono_channel0`] 同一个 `step_by(channels)`）。
+///
+/// 单文件字节上限与盘上腿同一条（[`MAX_SAMPLE_FILE_BYTES`]，⛔ 不截断）；
+/// 描述串用调用方给的 `display`（渲染根相对键，跨机稳定）。
+/// 读不到 ⇒ 返回**人话原因**（调用方按"缺样本 ⇒ 静音 ＋ 计数"处理，⛔ 不让装载失败）。
+pub(crate) fn decode_sample_bytes(
+    bytes: &[u8],
+    display: &str,
+) -> Result<SampleFileReading, String> {
+    let len = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
+    if len > MAX_SAMPLE_FILE_BYTES {
+        return Err(format!(
+            "{display} 有 {len} 字节, 超过单文件上限 {MAX_SAMPLE_FILE_BYTES} 字节 (拒绝读取, ⛔ 不截断)"
+        ));
+    }
+    let (pcm, sample_rate, describe) = if is_plain_wav_suffix(Path::new(display)) {
+        read_plain_wav_mono_f32_from_bytes(bytes, display)
+            .map_err(|error| format!("{display}: {error:?}"))?
+    } else {
+        let asset = yeban_decode::decode_bytes(bytes, &yeban_decode::DecodeOptions::default())
+            .map_err(|error| format!("{display}: {error}"))?;
+        let channels = usize::from(asset.channels().max(1));
+        let pcm: Vec<f32> = asset.samples().iter().step_by(channels).copied().collect();
+        let describe = format!(
+            "file({display} frames={} rate={})",
+            pcm.len(),
+            asset.sample_rate()
+        );
+        (pcm, asset.sample_rate(), describe)
+    };
+    let frames = u64::try_from(pcm.len()).unwrap_or(u64::MAX);
+    Ok(SampleFileReading {
+        pcm: Arc::new(pcm),
+        sample_hz: sample_rate as f32,
+        frames,
+        describe,
+    })
+}
+
+/// 从会话 CAS 池读一份内嵌样本（`key` → 哈希 → 字节 → 解码）。
+///
+/// 键不在表里 / 哈希非法 / 资产不在池里 ⇒ 人话原因（调用方按缺样本处理）。
+fn read_embedded_sample(
+    map: &BTreeMap<String, String>,
+    assets: &dyn super::render::AssetStore,
+    key: &str,
+) -> Result<SampleFileReading, String> {
+    let hash_text = map
+        .get(key)
+        .ok_or_else(|| format!("内嵌映射表里没有样本 `{key}`（容器与映射表不一致）"))?;
+    let hash = AssetHash::parse(hash_text)
+        .map_err(|error| format!("内嵌映射表里样本 `{key}` 的哈希 `{hash_text}` 非法: {error}"))?;
+    let bytes = assets.asset(&hash).ok_or_else(|| {
+        format!("内嵌样本 `{key}` 的资产 `{hash}` 不在会话 CAS 池里（容器缺资产条目）")
+    })?;
+    decode_sample_bytes(bytes, key)
+}
+
+/// 内嵌样本缓存：[`SampleReads`] 的 CAS 实现。
+///
+/// 查表键是 [`load_with_resolved`] 经 [`resolve_sample_path`] 拼出的渲染根相对路径
+/// （`load_with_embedded` 传绑定路径当锚点）—— 入口处先经
+/// [`collapse_embedded_path`] 折叠，与保存侧 [`embedded_sample_key`] 的输出
+/// **逐字相同**。记账（文件数 / 帧数 / 截断）与 [`SampleCache`] 共用
+/// [`cache_get`]，⛔ 不另写一份。
+pub(crate) struct EmbeddedSampleCache<'a> {
+    map: &'a BTreeMap<String, String>,
+    assets: &'a dyn super::render::AssetStore,
+    entries: SampleEntries,
+    frames_loaded: u64,
+    truncated: bool,
+    limits: SampleLimits,
+}
+
+impl<'a> EmbeddedSampleCache<'a> {
+    /// 空缓存，指定预算（渲染实参透传的那一份，与盘上腿同一条）。
+    #[must_use]
+    pub(crate) fn with_limits(
+        map: &'a BTreeMap<String, String>,
+        assets: &'a dyn super::render::AssetStore,
+        limits: SampleLimits,
+    ) -> Self {
+        Self {
+            map,
+            assets,
+            entries: SampleEntries::new(),
+            frames_loaded: 0,
+            truncated: false,
+            limits,
+        }
+    }
+}
+
+impl SampleReads for EmbeddedSampleCache<'_> {
+    fn get(&mut self, path: &Path) -> Result<SampleFileReading, String> {
+        // ⚠ 折叠必须发生在这里（而不是调用方）：`load_with_resolved` 拼出的路径
+        // 不折叠 `..`，而映射表的键是折叠后的 —— 两侧的唯一交汇点就是这一行。
+        let key = collapse_embedded_path(&path.to_string_lossy());
+        let key_path = PathBuf::from(&key);
+        // 共享引用是 `Copy` ⇒ 先拷出，再把 `&mut` 借给 `cache_get`（⛔ 不解构：
+        // 解构 `&mut self` 会让 `map` / `assets` 变成 `&mut &…`，闭包里要再解一次）。
+        let map = self.map;
+        let assets = self.assets;
+        cache_get(
+            &key_path,
+            &mut self.entries,
+            &mut self.frames_loaded,
+            &mut self.truncated,
+            self.limits,
+            |resolved| read_embedded_sample(map, assets, &resolved.to_string_lossy()),
+        )
+    }
+
+    fn entries(&self) -> &SampleEntries {
+        &self.entries
+    }
+
+    fn truncated(&self) -> bool {
+        self.truncated
+    }
+
+    fn frames_loaded(&self) -> u64 {
+        self.frames_loaded
+    }
+
+    fn limits(&self) -> SampleLimits {
+        self.limits
+    }
+}
+
+/// 内嵌腿装载：SFZ 文本与样本字节**全部来自会话 CAS 池**，⛔ 不读盘。
+///
+/// `binding_path` 是工程里登记的绑定路径原样（渲染根相对）；`map` 是工程的
+/// `embedded_samples` 表；`assets` 是会话 CAS 池。SFZ 文本由调用方
+/// （`prepare_sampler_track`）按 `map[binding_path]` 从池里取出；`digest` 是
+/// 该文本的 SHA-256（即表里的值）。
+///
+/// * `#include`：内嵌文本含 `#include` 时**响亮失败**（`samplerUnreadable` ——
+///   保存侧从不内嵌这类 SFZ，因此它只可能来自手工拼的容器；展开需要磁盘解析器，
+///   在无采样库的机器上没有可信的基准目录）。
+/// * 缺样本：与盘上腿同一口径 —— 不进提供表 ⇒ 引擎按缺样本静音 ＋ 计数
+///   （`missing_sample_paths`），⛔ 不发明替代内容；但**映射表本身悬空**
+///   （键在表里、资产不在池里）是容器不一致 ⇒ `read_embedded_sample` 的失败
+///   同样进 `sampleFailures`，由调用方按既有口径登记。
+///
+/// # Errors
+///
+/// 文本不是合法 UTF-8 / 含 `#include` / 文本非法 ⇒ [`Fault`]（消息含绑定路径）。
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn load_with_embedded(
+    text: String,
+    digest: String,
+    binding_path: &str,
+    map: &BTreeMap<String, String>,
+    assets: &dyn super::render::AssetStore,
+    sample_hz: f32,
+    assign_id: u64,
+    reused: bool,
+    limits: SampleLimits,
+    wanted: Option<&DemandLoadFilter>,
+) -> Result<(SfzLoad, SampledProviderTable), Fault> {
+    let file_name = Path::new(binding_path)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| {
+            Fault::domain_with_data(
+                CODE_IO,
+                format!("内嵌采样器绑定路径没有文件名，无法装载: `{binding_path}`"),
+                serde_json::json!({
+                    "reason": "samplerUnreadable",
+                    "path": binding_path,
+                }),
+            )
+        })?;
+    if embedded_text_has_include(&text, file_name)? {
+        return Err(Fault::domain_with_data(
+            CODE_IO,
+            format!(
+                "内嵌采样器定义文件含 `#include`，无法只凭容器装载: `{binding_path}`（保存侧从不内嵌这类 SFZ；请用磁盘上的原文件渲染）"
+            ),
+            serde_json::json!({
+                "reason": "samplerUnreadable",
+                "path": binding_path,
+            }),
+        ));
+    }
+    let byte_len = u64::try_from(text.len()).unwrap_or(u64::MAX);
+    let mut cache = EmbeddedSampleCache::with_limits(map, assets, limits);
+    load_with_resolved(
+        text,
+        byte_len,
+        digest,
+        Path::new(binding_path),
+        None,
+        sample_hz,
+        assign_id,
+        reused,
+        &mut cache,
+        wanted,
+    )
+}
+
+/// 探测一段 SFZ 文本是否含 `#include`：把文本写进一个**空**临时目录再走真实的
+/// [`resolve_include_sources`] —— 有 include ⇒ 至少一条目标在空目录里找不到 ⇒
+/// `issues` 非空（或 `sources` 多于根文件本身）；无 include ⇒ 两者皆空。
+///
+/// 判据：`sources.len() == 1 && issues.is_empty()` ⟺ 无 include（`sources[0]`
+/// 是根文件；`resolve_inner` 的文件数"含入口本身"）。
+///
+/// # Errors
+///
+/// 临时目录建不出 / 文本写不出 / 解析器报结构性错误（成环 / 超深 / 沙箱逃逸）⇒ [`Fault`]。
+fn embedded_text_has_include(text: &str, file_name: &str) -> Result<bool, Fault> {
+    let dir = std::env::temp_dir().join(format!(
+        "yeban-embed-include-probe-{}-{}",
+        std::process::id(),
+        EntityId::new().to_canonical_string()
+    ));
+    std::fs::create_dir_all(&dir).map_err(|error| {
+        Fault::domain(CODE_IO, format!("建内嵌 `#include` 探测目录失败: {error}"))
+    })?;
+    let probe = dir.join(file_name);
+    let outcome = (|| {
+        std::fs::write(&probe, text).map_err(|error| {
+            Fault::domain(CODE_IO, format!("写内嵌 `#include` 探测文件失败: {error}"))
+        })?;
+        let resolution = resolve_include_sources(text, &probe)?;
+        Ok(resolution.is_some_and(|(sources, issues)| sources.len() > 1 || !issues.is_empty()))
+    })();
+    let _ = std::fs::remove_dir_all(&dir);
+    outcome
+}
+
+/// 本轨谱子实际触发的 `(sample= 原串, 内嵌键)` 去重排序集。
+///
+/// 复用引擎既有区域匹配逻辑：[`DemandLoadFilter::from_project_track`] 逐音算 ＋
+/// [`DemandLoadFilter::wants`] 逐区域判定（⛔ 不另写一套匹配；力度缺省值
+/// —— 音符力度取模型值、新音符缺省 `DEFAULT_VELOCITY = 100` —— 键位切换、CC 门控
+/// 全部与渲染的按需装载同一口径；CC 触发的区域（`trigger_by_note == false`）
+/// 不在本次范围，见 `wants` 的同一条判定）。
+///
+/// `sfz_disk_path = Some(disk)` ⇒ 磁盘 SFZ：`#include` 走真实展开；含 include
+/// 时返回 `Ok(None)`（调用方跳过该轨的内嵌 —— 展开后的片段无法用单文件键索引，
+/// 且保存时静默改写 SFZ 文本是禁区）。
+/// `sfz_disk_path = None` ⇒ 已内嵌文本：含 include 时同样返回 `Ok(None)`。
+///
+/// 内建静音 `sample=*silence` 不是文件、⛔ 不进集；`sample=` 为空的区域同理。
+///
+/// # Errors
+///
+/// SFZ 文本非法 ⇒ `sfzParseFailed`（与 [`load_with`] 同一条）。
+pub(crate) fn triggered_sample_keys(
+    text: &str,
+    sfz_disk_path: Option<&Path>,
+    binding_path: &str,
+    filter: &DemandLoadFilter,
+) -> Result<Option<BTreeSet<(String, String)>>, Fault> {
+    // ⚠ `resolution` 只活在 `Some` 分支里 —— `Instrument` 借它，因此触发集
+    // 必须在**同一分支内**算完（⛔ 不能把 `instrument` 带出 match）。
+    let triggered = |instrument: &Instrument<'_>| {
+        let mut out: BTreeSet<(String, String)> = BTreeSet::new();
+        for region in instrument.regions().iter() {
+            if !filter.wants(region) {
+                continue;
+            }
+            if region.is_builtin_silence() {
+                continue;
+            }
+            let raw = region.sample_path().into_owned();
+            if raw.trim().is_empty() {
+                continue;
+            }
+            out.insert((raw.clone(), embedded_sample_key(binding_path, &raw)));
+        }
+        out
+    };
+    match sfz_disk_path {
+        Some(disk) => {
+            let resolution = resolve_include_sources(text, disk)?;
+            if let Some((sources, issues)) = &resolution
+                && (sources.len() > 1 || !issues.is_empty())
+            {
+                return Ok(None);
+            }
+            let instrument = parse_expanded(
+                text,
+                resolution.as_ref().map(|(sources, _)| sources.as_slice()),
+            )?;
+            Ok(Some(triggered(&instrument)))
+        }
+        None => {
+            let file_name = Path::new(binding_path)
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("");
+            if file_name.is_empty() || embedded_text_has_include(text, file_name)? {
+                return Ok(None);
+            }
+            let instrument = parse(text)?;
+            Ok(Some(triggered(&instrument)))
+        }
+    }
 }
 
 /// 一条区域的摘要（字段直接读 `yeban-sfz` 的公开字段，⛔ 不重写键/力度判定）。
@@ -3279,5 +3681,152 @@ mod tests {
                 region.sample.as_ref()
             );
         }
+    }
+
+    /// 内嵌键：绑定目录 + `sample=` 原串的词法拼接（`\` 归一、`.`/`..` 折叠）。
+    #[test]
+    fn embedded_sample_key_joins_binding_dir_and_collapses_segments() {
+        let binding = "assets/samples/kit/001.sfz";
+        assert_eq!(
+            embedded_sample_key(binding, "tone60.wav"),
+            "assets/samples/kit/tone60.wav"
+        );
+        assert_eq!(
+            embedded_sample_key(binding, "sub\\tone60.wav"),
+            "assets/samples/kit/sub/tone60.wav"
+        );
+        assert_eq!(
+            embedded_sample_key(binding, "../shared/kick.wav"),
+            "assets/samples/shared/kick.wav"
+        );
+        assert_eq!(
+            embedded_sample_key(binding, "./tone60.wav"),
+            "assets/samples/kit/tone60.wav"
+        );
+        // `sample_path()` 含 `default_path=` 前缀时照原串拼（前缀就是路径的一段）。
+        assert_eq!(
+            embedded_sample_key(binding, "samples/tone60.wav"),
+            "assets/samples/kit/samples/tone60.wav"
+        );
+        // 无目录的绑定 ⇒ 键就是原串本身。
+        assert_eq!(embedded_sample_key("001.sfz", "a.wav"), "a.wav");
+        // 绝对路径没有渲染根相对形态 —— 原样（折叠后）作键。
+        assert_eq!(
+            embedded_sample_key(binding, "/abs/kick.wav"),
+            "/abs/kick.wav"
+        );
+        assert_eq!(
+            embedded_sample_key(binding, "C:/lib/kick.wav"),
+            "C:/lib/kick.wav"
+        );
+        assert_eq!(
+            embedded_sample_key(binding, "sub/../tone60.wav"),
+            "assets/samples/kit/tone60.wav"
+        );
+    }
+
+    /// `#include` 探测：无 include ⇒ `false`；行首与行中 include ⇒ `true`。
+    ///
+    /// 探测走真实的 `resolve_include_sources`（空目录当沙箱），不是子串扫描：
+    /// 行中 include（`<group> #include "…"`）同样能被认出。
+    #[test]
+    fn embedded_text_has_include_detects_only_real_includes() {
+        let plain = "<region> sample=a.wav key=60\n<region> sample=b.wav key=61\n";
+        assert!(
+            !embedded_text_has_include(plain, "001.sfz").expect("探测"),
+            "无 include 的文本必须报 false"
+        );
+        let with_include =
+            "<region> sample=a.wav key=60\n#include \"sub.sfz\"\n<region> sample=b.wav key=61\n";
+        assert!(
+            embedded_text_has_include(with_include, "001.sfz").expect("探测"),
+            "行首 include 必须报 true"
+        );
+        let mid_line =
+            "<group> #include \"data/vel.txt\" lovel=1 hivel=26\n<region> sample=a.wav key=60\n";
+        assert!(
+            embedded_text_has_include(mid_line, "001.sfz").expect("探测"),
+            "行中 include 必须报 true"
+        );
+    }
+
+    /// 逐音触发集：只收音符命中区域的样本（多力度层只收触发到的层），
+    /// 内建静音与未命中区域不收；磁盘腿与内嵌文本腿同一份集。
+    #[test]
+    fn triggered_sample_keys_collects_only_note_hit_regions() {
+        let track_id = demand_uid(1010);
+        let project = demand_project(track_id, &[(60, 100), (72, 32)]);
+        let filter = DemandLoadFilter::from_project_track(&project, track_id);
+        let binding = "assets/samples/kit/001.sfz";
+        let text = "<region> sample=a.wav key=60\n\
+                    <region> sample=b.wav key=61\n\
+                    <region> sample=c.wav key=60 lovel=101\n\
+                    <region> sample=shared.wav key=72 lovel=0 hivel=63\n\
+                    <region> sample=shared.wav key=72 lovel=64 hivel=127\n\
+                    <region> sample=*silence key=60\n";
+        // 内嵌文本腿（`None`）：无磁盘路径。
+        let from_text = triggered_sample_keys(text, None, binding, &filter)
+            .expect("解析")
+            .expect("无 include ⇒ 必须有集");
+        // 磁盘腿（`Some`）：SFZ 写进临时目录，`#include` 走真实展开（无 include）。
+        let dir = std::env::temp_dir().join(format!(
+            "yeban-embed-triggered-{}-{}",
+            std::process::id(),
+            EntityId::new().to_canonical_string()
+        ));
+        std::fs::create_dir_all(&dir).expect("建临时目录");
+        let disk_path = dir.join("001.sfz");
+        std::fs::write(&disk_path, text).expect("写 SFZ 夹具");
+        let from_disk = triggered_sample_keys(text, Some(&disk_path), binding, &filter)
+            .expect("解析")
+            .expect("无 include ⇒ 必须有集");
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(from_text, from_disk, "磁盘腿与内嵌文本腿的触发集必须相同");
+        let expected: BTreeSet<(String, String)> = [
+            ("a.wav".to_owned(), "assets/samples/kit/a.wav".to_owned()),
+            (
+                "shared.wav".to_owned(),
+                "assets/samples/kit/shared.wav".to_owned(),
+            ),
+        ]
+        .into_iter()
+        .collect();
+        assert_eq!(
+            from_text, expected,
+            "只收命中项：a（60/100）与 shared（72/32 低力度层）；b（61 无音符）、c（60 但力度 101 未触发）、*silence 都不收"
+        );
+    }
+
+    /// 含 `#include` 的 SFZ：磁盘腿与内嵌文本腿都返回 `None`（调用方跳过该轨内嵌）。
+    #[test]
+    fn triggered_sample_keys_skips_sfz_with_includes() {
+        let track_id = demand_uid(1011);
+        let project = demand_project(track_id, &[(60, 100)]);
+        let filter = DemandLoadFilter::from_project_track(&project, track_id);
+        let binding = "assets/samples/kit/001.sfz";
+        let dir = std::env::temp_dir().join(format!(
+            "yeban-embed-triggered-inc-{}-{}",
+            std::process::id(),
+            EntityId::new().to_canonical_string()
+        ));
+        std::fs::create_dir_all(&dir).expect("建临时目录");
+        std::fs::write(dir.join("sub.sfz"), "<region> sample=a.wav key=60\n")
+            .expect("写 include 目标");
+        let text = "<region> sample=b.wav key=61\n#include \"sub.sfz\"\n";
+        let disk_path = dir.join("001.sfz");
+        std::fs::write(&disk_path, text).expect("写 SFZ 夹具");
+        assert!(
+            triggered_sample_keys(text, Some(&disk_path), binding, &filter)
+                .expect("解析")
+                .is_none(),
+            "磁盘腿：含 include ⇒ None"
+        );
+        assert!(
+            triggered_sample_keys(text, None, binding, &filter)
+                .expect("解析")
+                .is_none(),
+            "内嵌文本腿：含 include ⇒ None"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -152,6 +152,17 @@ if serde_json::from_value::<YebanProjectV1>(document).is_ok() {
 | 17 | `…notes.*.syllable` | `MidiNote::syllable` | 已声明、非 required；4 个键实测删键可读 ✅ |
 | 18 | `…notes.*.phonemes` | `MidiNote::phonemes` | 已声明、非 required；夹具里不落盘 |
 | 19 | `#.tracks.*.sampler` | `tracks[*].sampler` | 已声明、非 required；**夹具里不落盘**（任务单 `#76` 新增，见下） |
+| 20 | `#.embedded_samples` | 根 `embedded_samples` | 已声明、非 required；**夹具里不落盘**（采样内嵌线新增，见下） |
+
+⚠ **第 20 项（采样内嵌线，2026-11-07 追加）**：`YebanProjectV1::embedded_samples`
+（`BTreeMap<String, String>` + `#[serde(default)]` + `skip_serializing_if`，空表不落盘）
+与第 19 项**同形** ⇒ 契约里只能声明为可选属性，而既有夹具**刻意不落盘**它
+（夹具无采样器轨；填进夹具会改变 `project.filled.json` 的冻结 sha256）。
+⇒ 不登记 ⇒ 判据 ⑥ 报"棘轮盲区"；唯一出路是登记。本次与该行同时更新了
+`model-no-compat-notes.md` §5.4。它同样受 ④/⑤ 双向反证：删键必须读成功、
+且不得进任何 `required`。
+（注：本表另缺 `#348` 的 `channel` 与任务单 `#350` 的 `key_signature` 两行 ——
+常量里有、表里无，此前已漂移，本线只标注、不替旧账改数。）
 
 ⚠ **第 19 项（任务单 `#76`，2026-10-16 追加）**：`TrackV3::sampler`
 （`Option<SamplerBinding>`，"这条轨用哪份 SFZ"）与第 6/7 项**同形**

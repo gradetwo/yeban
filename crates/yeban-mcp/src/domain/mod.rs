@@ -53,6 +53,8 @@
 pub mod automation;
 pub mod automation_audit;
 pub mod diagnostics;
+// ⭐ 保存侧内嵌收集：逐音触发样本 ＋ SFZ 文本进会话 CAS 池（`embedded_samples`）。
+pub mod embed_samples;
 pub mod engine_state;
 pub mod error;
 pub mod export_midi;
@@ -89,6 +91,7 @@ use std::path::{Path, PathBuf};
 
 use serde_json::{Map, Value};
 
+use yeban_model::container::ContainerLimits;
 use yeban_model::{
     AssetHash, ClipContent, CommitDraft, CommitGraph, DeviceDefinition, DeviceKind, EntityId, Op,
     OpOrigin, PluginBinding, SessionRuntimeState, StampedOp, TrackV3, YebanProjectV1,
@@ -1030,6 +1033,9 @@ pub enum Plan {
         assets: usize,
         /// 将写进 `history.dag` 的提交数。
         history_commits: usize,
+        /// 保存时一并安装的内嵌载荷（plan 阶段算好，apply 阶段安装进会话；
+        /// `bytes` 里已经是带 `embedded_samples` 表的工程）。
+        embedded: embed_samples::EmbeddedCollection,
     },
     /// `yeban_close_project`
     Close {
@@ -1610,6 +1616,7 @@ impl Plan {
                 changed,
                 assets,
                 history_commits,
+                embedded: _,
             } => {
                 preview.insert("path".to_owned(), Value::from(path.display().to_string()));
                 preview.insert("bytes".to_owned(), Value::from(bytes.len()));
@@ -2594,16 +2601,26 @@ fn plan_save(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
             format!("工程 `{}` 是只读打开的, 拒绝落盘", active.path.display()),
         ));
     }
-    let (bytes, digest, assets, history_commits) = save_material(domain)?;
+    let material = save_material(domain)?;
     Ok(Plan::Save {
         path: active.path.clone(),
-        changed: digest != active.saved_digest,
-        assets,
-        history_commits,
-        bytes,
-        digest,
+        changed: material.digest != active.saved_digest,
+        assets: material.assets,
+        history_commits: material.history_commits,
+        bytes: material.bytes,
+        digest: material.digest,
+        embedded: material.embedded,
         force: arg_bool(call, "force", false),
     })
+}
+
+/// `save_material` 的产物：容器字节 ＋ 摘要 ＋ 计数 ＋ 内嵌安装载荷。
+struct SaveMaterial {
+    bytes: Vec<u8>,
+    digest: String,
+    assets: usize,
+    history_commits: usize,
+    embedded: embed_samples::EmbeddedCollection,
 }
 
 /// "这份工程现在会写出哪些字节 / 摘要 / 条目数" —— `yeban_save_project` 与
@@ -2611,24 +2628,57 @@ fn plan_save(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
 ///
 /// 为什么不各算一遍：容器字节的口径（`ARCH-SEC-003`：工程 + 提交图谱 + CAS 资产池）
 /// 一旦有两份实现，迟早会出现"工具保存写进去的东西与宿主保存写进去的不一样"。
+/// `yeban_close_project` 的 save-first 也走这里（⛔ 不再内联第二份序列化）。
+///
+/// 保存时一并算内嵌（[`embed_samples::collect`]）：写出的工程带
+/// `embedded_samples` 表、容器带触发样本 ＋ SFZ 文本；会话里的工程本身不动 ——
+/// 表与资产的安装是 apply 阶段的事（[`apply_save`] / [`host_save_project`]）。
+/// 缺触发样本或超容器上限 ⇒ 保存被拒绝（响亮失败，⛔ 不写半成品）。
 ///
 /// # Errors
 ///
-/// 没有活跃工程、工程 / 图谱序列化失败、或容器层拒绝。
-fn save_material(domain: &Domain) -> Result<(Vec<u8>, String, usize, usize), Fault> {
+/// 没有活跃工程、内嵌收集失败、工程 / 图谱序列化失败、上限预检失败、或容器层拒绝。
+fn save_material(domain: &Domain) -> Result<SaveMaterial, Fault> {
     let active = domain.active.as_ref().ok_or_else(no_active_project)?;
-    let json = store::serialize_project(&active.project)?;
+    // ① 收集内嵌（逐音触发集 ＋ SFZ 文本）；缺样本 ⇒ 响亮失败，保存被拒绝。
+    let collected = embed_samples::collect(&active.project, &active.path, &active.assets)?;
+    // ② 带内嵌表的工程副本（会话里的工程本身不动 —— 安装是 apply 阶段的事）。
+    let mut project = active.project.clone();
+    project.embedded_samples.clone_from(&collected.map);
+    // ③ 合并后的 CAS 池（旧池 ＋ 新收 − 剪枝；剪枝绝不碰工程 `assets` 引用的音频）。
+    let mut assets = active.assets.clone();
+    for (hash, bytes) in &collected.added {
+        assets.insert(hash.clone(), bytes.clone());
+    }
+    for hash in &collected.pruned {
+        assets.remove(hash);
+    }
+    let json = store::serialize_project(&project)?;
     let digest = store::digest_of(json.as_bytes());
+    // ④ 上限预检（写容器路径本身不执行这三道上限 —— 读侧才查 —— 因此保存侧先算）。
+    let history_dag = serde_json::to_vec(&domain.graph).map_err(|error| {
+        Fault::domain_with_data(
+            ErrorCode::IoError,
+            format!("序列化提交图谱失败: {error}"),
+            serde_json::json!({ "specId": "ARCH-OPS-002" }),
+        )
+    })?;
+    embed_samples::check_container_limits(
+        json.len(),
+        history_dag.len(),
+        &assets,
+        &ContainerLimits::default(),
+    )?;
     // 落盘字节 = `ARCH-SEC-003` 的容器（`project.json` + `history.dag` + `assets/{sha256}`）。
     // 与"工程内容摘要"是**两个量**：前者含提交图谱与资产，后者只描述工程文档。
-    let bytes =
-        store::container_bytes(&active.path, &active.project, &domain.graph, &active.assets)?;
-    Ok((
+    let bytes = store::container_bytes(&active.path, &project, &domain.graph, &assets)?;
+    Ok(SaveMaterial {
         bytes,
         digest,
-        active.assets.len(),
-        domain.graph.commit_count(),
-    ))
+        assets: assets.len(),
+        history_commits: domain.graph.commit_count(),
+        embedded: collected,
+    })
 }
 
 /// `yeban_close_project`。
@@ -2636,18 +2686,16 @@ fn plan_close(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
     let active = domain.active.as_ref().ok_or_else(no_active_project)?;
     let save_first = arg_bool(call, "saveFirst", true);
     let save = if save_first && !active.read_only {
-        let json = store::serialize_project(&active.project)?;
-        let digest = store::digest_of(json.as_bytes());
-        let bytes =
-            store::container_bytes(&active.path, &active.project, &domain.graph, &active.assets)?;
+        let material = save_material(domain)?;
         Some(Box::new(Plan::Save {
             path: active.path.clone(),
-            bytes,
-            digest,
+            bytes: material.bytes,
+            digest: material.digest,
             force: false,
             changed: true,
-            assets: active.assets.len(),
-            history_commits: domain.graph.commit_count(),
+            assets: material.assets,
+            history_commits: material.history_commits,
+            embedded: material.embedded,
         }))
     } else {
         None
@@ -4144,7 +4192,7 @@ pub fn host_save_project(
     target: &Path,
     force: bool,
 ) -> Result<HostSaveOutcome, Fault> {
-    let (bytes, digest, assets, history_commits, changed, session_path) = {
+    let (bytes, digest, assets, history_commits, changed, session_path, embedded) = {
         let active = domain.active.as_ref().ok_or_else(no_active_project)?;
         if active.read_only {
             return Err(Fault::domain(
@@ -4155,15 +4203,16 @@ pub fn host_save_project(
                 ),
             ));
         }
-        let (bytes, digest, assets, history_commits) = save_material(domain)?;
-        let changed = digest != active.saved_digest;
+        let material = save_material(domain)?;
+        let changed = material.digest != active.saved_digest;
         (
-            bytes,
-            digest,
-            assets,
-            history_commits,
+            material.bytes,
+            material.digest,
+            material.assets,
+            material.history_commits,
             changed,
             active.path.clone(),
+            material.embedded,
         )
     };
     if !force && !changed {
@@ -4181,6 +4230,15 @@ pub fn host_save_project(
         && let Some(active) = domain.active.as_mut()
     {
         active.saved_digest.clone_from(&digest);
+        // 内嵌安装（与 `apply_save` 同一条；只在写回会话自身路径时安装 ——
+        // 另存到别处时会话仍指向旧路径，表与池不动）。
+        active.project.embedded_samples = embedded.map;
+        for (hash, bytes) in embedded.added {
+            active.assets.insert(hash, bytes);
+        }
+        for hash in embedded.pruned {
+            active.assets.remove(&hash);
+        }
     }
     Ok(HostSaveOutcome {
         path: target.to_path_buf(),
@@ -4374,8 +4432,9 @@ fn apply_plan_model(domain: &mut Domain, plan: Plan) -> Result<ToolResponse, Fau
             digest,
             force,
             changed,
+            embedded,
             ..
-        } => apply_save(domain, &path, &bytes, digest, force, changed),
+        } => apply_save(domain, &path, &bytes, digest, force, changed, embedded),
         Plan::Close {
             save_first,
             save,
@@ -4782,6 +4841,7 @@ fn apply_save(
     digest: String,
     force: bool,
     changed: bool,
+    embedded: embed_samples::EmbeddedCollection,
 ) -> Result<ToolResponse, Fault> {
     if !force && !changed {
         return Ok(ToolResponse::success(serde_json::json!({
@@ -4797,6 +4857,15 @@ fn apply_save(
     store::write_project_atomic(path, bytes)?;
     if let Some(active) = domain.active.as_mut() {
         active.saved_digest.clone_from(&digest);
+        // 内嵌安装：表 ＋ 新收资产进池 ＋ 剪枝。跳过时不安装 —— 摘要一致 ⇒
+        // 表与池已在位（`changed` 是按带内嵌表的摘要算的，见 `plan_save`）。
+        active.project.embedded_samples = embedded.map;
+        for (hash, bytes) in embedded.added {
+            active.assets.insert(hash, bytes);
+        }
+        for hash in embedded.pruned {
+            active.assets.remove(&hash);
+        }
     }
     Ok(ToolResponse::success(serde_json::json!({
         "saved": true,
@@ -4827,10 +4896,11 @@ fn apply_close(
         digest,
         force,
         changed,
+        embedded,
         ..
     }) = save.map(|boxed| *boxed)
     {
-        apply_save(domain, &save_path, &bytes, digest, force, changed)?;
+        apply_save(domain, &save_path, &bytes, digest, force, changed, embedded)?;
         saved = true;
     }
     let was_read_only = domain.is_read_only();

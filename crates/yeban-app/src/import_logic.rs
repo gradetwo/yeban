@@ -964,6 +964,7 @@ fn build_project(
         scenes: BTreeMap::new(),
         clip_pool,
         assets: project_assets,
+        embedded_samples: BTreeMap::new(),
     };
     Ok(BuiltProject {
         project,

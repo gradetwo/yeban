@@ -238,6 +238,14 @@ pub fn write_plain_wav(
 /// 不校验就等于把"文件说了什么"当成自己的数据。这条与 [`check_match`] 同源。
 pub fn read_plain_wav(path: impl AsRef<Path>) -> Result<(PcmFormat, PcmBuffer), WavError> {
     let mut reader = WavReader::open(path)?;
+    read_plain_wav_from_reader(&mut reader)
+}
+
+/// [`read_plain_wav`] 的 `hound::WavReader` 腿：路径腿与字节腿共用同一份
+/// 格式校验与样本读取（⛔ 不许各写一份：位深/越界口径漂移会直接改渲染字节）。
+fn read_plain_wav_from_reader(
+    reader: &mut WavReader<impl std::io::Read + std::io::Seek>,
+) -> Result<(PcmFormat, PcmBuffer), WavError> {
     let spec = reader.spec();
     let format = PcmFormat {
         channels: spec.channels,
@@ -301,6 +309,13 @@ pub fn read_plain_wav(path: impl AsRef<Path>) -> Result<(PcmFormat, PcmBuffer), 
 /// `yeban-mcp` **都**依赖本 crate。放在这里 ⇒ 两处调用方共用一份口径，
 /// ⛔ 不需要新 crate、⛔ 不需要新依赖。
 ///
+/// ## 字节腿（采样内嵌）
+///
+/// [`read_plain_wav_mono_f32_from_bytes`] 与本函数**同一份换算**
+/// （[`mono_f32_from_plain`]），只差输入是内存字节而不是磁盘路径 ——
+/// 内嵌样本（CAS 字节）与盘上样本解出的 PCM **逐位相同**，`display` 是
+/// 渲染根相对键（跨机稳定的描述，不含本机绝对路径）。
+///
 /// # Errors
 ///
 /// 与 [`read_plain_wav`] 同（位深不支持 / 格式整体不可用 / 样本越界 / I/O 失败）。
@@ -308,7 +323,42 @@ pub fn read_plain_wav_mono_f32(
     path: impl AsRef<Path>,
 ) -> Result<(Vec<f32>, u32, String), WavError> {
     let path = path.as_ref();
+    let display = path.display().to_string();
     let (format, buffer) = read_plain_wav(path)?;
+    mono_f32_from_plain(format, buffer, &display)
+}
+
+/// 与 [`read_plain_wav_mono_f32`] 同口径的**内存字节**腿：`bytes` 是一份完整 WAV
+/// 的字节（通常来自容器 CAS 池），`display` 只进描述串（`file(<display> …)`）。
+///
+/// # Errors
+///
+/// 与 [`read_plain_wav_mono_f32`] 同；另：`bytes` 不是合法 WAV ⇒ `Hound` 错误。
+pub fn read_plain_wav_mono_f32_from_bytes(
+    bytes: &[u8],
+    display: &str,
+) -> Result<(Vec<f32>, u32, String), WavError> {
+    let (format, buffer) = read_plain_wav_bytes(bytes)?;
+    mono_f32_from_plain(format, buffer, display)
+}
+
+/// [`read_plain_wav`] 的内存字节腿：`bytes` 是一份完整 WAV 的字节。
+///
+/// # Errors
+///
+/// 与 [`read_plain_wav`] 同（位深不支持 / 格式整体不可用 / 样本越界）。
+pub fn read_plain_wav_bytes(bytes: &[u8]) -> Result<(PcmFormat, PcmBuffer), WavError> {
+    let mut reader = WavReader::new(std::io::Cursor::new(bytes))?;
+    read_plain_wav_from_reader(&mut reader)
+}
+
+/// `hound` 读出的 `(格式, 缓冲)` 折成单声道 `f32`（与 [`read_plain_wav_mono_f32`]
+/// 同一份换算，⛔ 不许各写一份：分母/声道口径漂移会直接改渲染字节）。
+fn mono_f32_from_plain(
+    format: PcmFormat,
+    buffer: PcmBuffer,
+    display: &str,
+) -> Result<(Vec<f32>, u32, String), WavError> {
     let channels = usize::from(format.channels.max(1));
     // ⚠ 顺序**必须**先判浮点：`BitDepth::scale` 对 `Float32` 是 panic。
     // `#254`：分母是 `2^(bits-1)`（`BitDepth::scale()`），⛔ 不是 `2^(bits-1) - 1`
@@ -331,8 +381,7 @@ pub fn read_plain_wav_mono_f32(
         PcmBuffer::Float32(values) => values.iter().step_by(channels).copied().collect(),
     };
     let describe = format!(
-        "file({} frames={} rate={})",
-        path.display(),
+        "file({display} frames={} rate={})",
         samples.len(),
         format.sample_rate
     );
@@ -1537,6 +1586,64 @@ mod tests {
             let (pcm, _rate, _describe) = read_plain_wav_mono_f32(&path).expect("读回");
             assert_eq!(pcm, vec![0.125, -0.25, 0.5, -1.0], "浮点必须逐样本直用");
         }
+    }
+
+    /// 字节腿与路径腿**逐位相同**（采样内嵌：同一份 WAV 经 CAS 字节解出的 PCM
+    /// 必须等于盘上读出的 PCM，否则跨机渲染的摘要会对不上）。
+    ///
+    /// 三种位深各一例；`display` 只进描述串，⛔ 不影响 PCM。
+    #[test]
+    fn read_plain_wav_mono_f32_from_bytes_matches_the_path_leg_bit_exactly() {
+        // 16-bit 单声道：含负满量程（分母口径的试金石）与正满量程。
+        {
+            let directory = tempfile::tempdir().expect("临时目录");
+            let path = directory.path().join("s16.wav");
+            let format = PcmFormat::integer(1, 48_000, 16);
+            let buffer = PcmBuffer::Int16(vec![i16::MIN, -1, 0, 1, i16::MAX, 12_345, -12_345]);
+            write_plain_wav(&path, &format, &buffer).expect("写夹具");
+            let bytes = std::fs::read(&path).expect("读夹具字节");
+            let (from_path, rate_path, _) = read_plain_wav_mono_f32(&path).expect("路径腿");
+            let (from_bytes, rate_bytes, describe) =
+                read_plain_wav_mono_f32_from_bytes(&bytes, "lib/s16.wav").expect("字节腿");
+            assert_eq!(rate_bytes, rate_path, "采样率必须一致");
+            assert_eq!(from_bytes, from_path, "16-bit PCM 必须逐位相同");
+            assert!(
+                describe.starts_with("file(lib/s16.wav frames=7 rate=48000)"),
+                "字节腿的描述必须用调用方给的 display: {describe}"
+            );
+        }
+        // 24-bit 立体声：取第 0 声道。
+        {
+            let directory = tempfile::tempdir().expect("临时目录");
+            let path = directory.path().join("s24.wav");
+            let format = PcmFormat::integer(2, 44_100, 24);
+            let buffer = PcmBuffer::Int24(vec![1_000_000, -2_000_000, -8_388_608, 8_388_607]);
+            write_plain_wav(&path, &format, &buffer).expect("写夹具");
+            let bytes = std::fs::read(&path).expect("读夹具字节");
+            let (from_path, _, _) = read_plain_wav_mono_f32(&path).expect("路径腿");
+            let (from_bytes, _, _) =
+                read_plain_wav_mono_f32_from_bytes(&bytes, "lib/s24.wav").expect("字节腿");
+            assert_eq!(from_bytes, from_path, "24-bit PCM 必须逐位相同");
+            assert_eq!(from_bytes.len(), 2, "立体声 2 帧 ⇒ 单声道 2 个样本");
+        }
+        // 32-bit 浮点：直用。
+        {
+            let directory = tempfile::tempdir().expect("临时目录");
+            let path = directory.path().join("f32.wav");
+            let format = PcmFormat::float(1, 48_000, 32);
+            let buffer = PcmBuffer::Float32(vec![0.125, -0.25, 0.5, -1.0, 0.0]);
+            write_plain_wav(&path, &format, &buffer).expect("写夹具");
+            let bytes = std::fs::read(&path).expect("读夹具字节");
+            let (from_path, _, _) = read_plain_wav_mono_f32(&path).expect("路径腿");
+            let (from_bytes, _, _) =
+                read_plain_wav_mono_f32_from_bytes(&bytes, "lib/f32.wav").expect("字节腿");
+            assert_eq!(from_bytes, from_path, "浮点 PCM 必须逐位相同");
+        }
+        // 非 WAV 字节 ⇒ 明确错误（⛔ 不静默出空 PCM）。
+        assert!(
+            read_plain_wav_mono_f32_from_bytes(b"not a wav at all", "lib/bad.wav").is_err(),
+            "非 WAV 字节必须报错"
+        );
     }
 
     /// ⭐ `#254` 判据 ③：**负满量程必须落在 `-1.0`，⛔ 不是 `-1.0000305`**。
