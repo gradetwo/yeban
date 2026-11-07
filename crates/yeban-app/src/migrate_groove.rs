@@ -812,6 +812,7 @@ fn migrate_bytes(
             project,
             history_dag: Vec::new(),
             assets: Vec::new(),
+            embedded_presets: Vec::new(),
         },
         report,
     ))

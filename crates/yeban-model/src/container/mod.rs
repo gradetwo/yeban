@@ -61,6 +61,11 @@ pub const ASSETS_DIR: &str = "assets";
 /// `assets/` 前缀（含分隔符），拼接与剥离都用它，避免两处字面量漂移。
 const ASSETS_PREFIX: &str = "assets/";
 
+/// 内嵌用户预制条目的前缀（设计稿 §5：`presets/user/<id>.json`）。
+pub const EMBEDDED_PRESET_PREFIX: &str = "presets/user/";
+/// 内嵌用户预制条目的后缀。
+pub const EMBEDDED_PRESET_SUFFIX: &str = ".json";
+
 /// 单条目解压后体积上限的默认值：2 GB。
 ///
 /// 规范原文是"≤ 2 GB"。这里取**十进制 2×10⁹**而不是 2 GiB（2×2³⁰）：后者比 2 GB 宽 7.4%，
@@ -185,6 +190,10 @@ pub struct ProjectArchive {
     pub history_dag: Vec<u8>,
     /// `assets/{sha256}` 资产池，按哈希升序（= 容器内顺序 = `BTreeMap` 顺序）。
     pub assets: Vec<(AssetHash, Vec<u8>)>,
+    /// 内嵌的用户预制（`presets/user/<ulid>.json`，一律 stored；设计稿 §5）。
+    ///
+    /// 系统预制凭标识引用，不进包；只有**用户**预制缺省物化进包。条目按名升序。
+    pub embedded_presets: Vec<(String, Vec<u8>)>,
 }
 
 /// `.yeban` 容器层的错误类型。
@@ -606,6 +615,26 @@ pub fn write_project_container_borrowed(
     history_dag: &[u8],
     assets: &[(&AssetHash, &[u8])],
 ) -> Result<Vec<u8>, ContainerError> {
+    write_project_container_with_presets_borrowed(project, history_dag, assets, &[])
+}
+
+/// 按 §5.3 布局写出工程容器，另加内嵌用户预制（设计稿 §5）。
+///
+/// 预制条目按名**升序**写出（与资产按哈希升序同一确定性口径）；每条须是
+/// `presets/user/<ulid>.json` 且不超过 64 KiB（[`crate::preset::PRESET_MAX_BYTES`]），
+/// 否则 [`ContainerError::ContainerSerialization`]。写出只用 `stored`
+/// （[`zip::write_zip_borrowed`] 本来就只写 method 0），`deflate` 条目
+/// 在读侧会被拒绝。
+///
+/// # Errors
+///
+/// 同 [`write_project_container_borrowed`]，外加预制条目名非法或超限。
+pub fn write_project_container_with_presets_borrowed(
+    project: &YebanProjectV1,
+    history_dag: &[u8],
+    assets: &[(&AssetHash, &[u8])],
+    presets: &[(&str, &[u8])],
+) -> Result<Vec<u8>, ContainerError> {
     let json =
         serde_json::to_vec(project).map_err(|error| ContainerError::ContainerSerialization {
             detail: error.to_string(),
@@ -627,13 +656,42 @@ pub fn write_project_container_borrowed(
         names.push(asset_entry_name(hash));
     }
 
-    let mut entries: Vec<(&str, &[u8])> = Vec::with_capacity(2 + ordered.len());
+    let mut entries: Vec<(&str, &[u8])> = Vec::with_capacity(2 + ordered.len() + presets.len());
     entries.push((PROJECT_JSON_NAME, json.as_slice()));
     entries.push((HISTORY_DAG_NAME, history_dag));
     for (index, &(_, data)) in ordered.iter().enumerate() {
         entries.push((names[index].as_str(), data));
     }
+    let mut ordered_presets: Vec<(&str, &[u8])> = presets.to_vec();
+    ordered_presets.sort_by(|left, right| left.0.cmp(right.0));
+    for (name, data) in ordered_presets {
+        validate_embedded_preset_entry(name, data)?;
+        entries.push((name, data));
+    }
     zip::write_zip_borrowed(&entries)
+}
+
+/// 校验一条内嵌预制条目（名形 + 64 KiB 上限）。
+///
+/// # Errors
+///
+/// 名不是 `presets/user/<ulid>.json` 或字节超限 → `ContainerSerialization`。
+fn validate_embedded_preset_entry(name: &str, data: &[u8]) -> Result<(), ContainerError> {
+    let ok = name
+        .strip_prefix(EMBEDDED_PRESET_PREFIX)
+        .and_then(|rest| rest.strip_suffix(EMBEDDED_PRESET_SUFFIX))
+        .is_some_and(|ulid| !ulid.is_empty() && !ulid.contains('/'));
+    if !ok {
+        return Err(ContainerError::ContainerSerialization {
+            detail: format!("内嵌预制条目名非法（须为 presets/user/<ulid>.json）: {name}"),
+        });
+    }
+    if data.len() > crate::preset::PRESET_MAX_BYTES {
+        return Err(ContainerError::ContainerSerialization {
+            detail: format!("内嵌预制 {name} 超过 64 KiB 上限（{} 字节）", data.len()),
+        });
+    }
+    Ok(())
 }
 
 /// 读取一个按 §5.3 布局写出的工程容器，并校验 CAS 完整性。
@@ -646,6 +704,7 @@ pub fn write_project_container_borrowed(
 /// - 资产名不是规范 SHA-256（[`ContainerError::InvalidAssetName`]）或内容哈希不符
 ///   （[`ContainerError::AssetHashMismatch`]）；
 /// - `project.json` 反序列化失败（[`ContainerError::InvalidProjectJson`]）；
+/// - 内嵌预制条目名非法或超过 64 KiB（[`ContainerError::ContainerSerialization`]）；
 /// - 以及 [`read_container`] 的全部错误（两条 MUST 防御先于内容解读生效）。
 pub fn read_project_container(
     bytes: &[u8],
@@ -655,6 +714,7 @@ pub fn read_project_container(
     let mut project_json: Option<&[u8]> = None;
     let mut history_dag: Option<Vec<u8>> = None;
     let mut assets: Vec<(AssetHash, Vec<u8>)> = Vec::new();
+    let mut embedded_presets: Vec<(String, Vec<u8>)> = Vec::new();
     for entry in archive.entries() {
         if entry.name == PROJECT_JSON_NAME {
             project_json = Some(&entry.data);
@@ -672,6 +732,9 @@ pub fn read_project_container(
                 });
             }
             assets.push((hash, entry.data.clone()));
+        } else if entry.name.starts_with(EMBEDDED_PRESET_PREFIX) {
+            validate_embedded_preset_entry(&entry.name, &entry.data)?;
+            embedded_presets.push((entry.name.clone(), entry.data.clone()));
         } else {
             return Err(ContainerError::UnexpectedContainerEntry {
                 name: entry.name.clone(),
@@ -686,5 +749,6 @@ pub fn read_project_container(
         project,
         history_dag: history_dag.ok_or(ContainerError::MissingHistoryDag)?,
         assets,
+        embedded_presets,
     })
 }

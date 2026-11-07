@@ -6,7 +6,8 @@
 //!   （契约与规范冲突时以规范为准，并且**改契约**留痕）、**D43**（无兼容包袱：
 //!   设计上必需 ⇒ 缺键即报错；语义上可选 ⇒ `Option<T>` / 空集才允许默认）；
 //! - `docs/ledger/model-no-compat-notes.md` **§5**（收紧清单）与 **§5.4**（D43 豁免集，
-//!   历史 18 项 ＋ 任务单 `#76` 新增的第 19 项 `tracks[*].sampler`）；
+//!   历史 18 项 ＋ 任务单 `#76` 新增的第 19 项 `tracks[*].sampler` ＋ 夜半原生预制线
+//!   新增的第 20–28 项 `tracks[*].preset` 一组 9 条）；
 //! - `MODEL-AST-002`（`YebanProjectV1`）、`MODEL-AST-003`（`BTreeMap` 确定性，红线 4）。
 //!
 //! ## 为什么要有这条常设判据
@@ -94,6 +95,7 @@ use yeban_model::samples::filled_project;
 /// | 11 | `#.routing_graph.edges[].gain_db` | `routing_graph.edges[*].gain_db` | `Option<f32>` ⇒ 不落盘 |
 /// | 12–18 | `#.clip_pool.*.content.Midi.notes.*.{probability,ratchet,micro_timing_ticks,slide,pitch_bend_curve,syllable,phonemes}` | 同左（7 个表现力字段） | `None` / 空集 ⇒ 不落盘（稀疏编码） |
 /// | 19 | `#.tracks.*.sampler` | `tracks[*].sampler` | `None` ⇒ 不落盘（任务单 `#76` 新增） |
+/// | 20–28 | `#.tracks.*.preset` 及其 8 个子路径（`preset_id` / `bypassed` / `auto_load` / `previous` / `previous.strip` / `previous.effects` / `previous.sends` / `previous.macros`） | `tracks[*].preset` 一组 | `None` / 缺省值 / 空集 ⇒ 不落盘（夜半原生预制线新增） |
 ///
 /// **注意反例**：`clip_pool[*].content.Audio.gain_db` **不在**本表里 —— 那里 `gain_db`
 /// 是裸 `f32`，所以它**是**必需的（§5.4 原文明确点名了这个对比）。
@@ -107,6 +109,13 @@ use yeban_model::samples::filled_project;
 /// `project.filled.json` 的冻结 sha256 ⇒ 唯一正确的出路就是登记它。
 /// 因此 §5.4 的 18 项在这里**长成了 19 项**；账本 `model-no-compat-notes.md` §5.4
 /// 与 `schema-ratchet-notes.md` §3 已同步补上同一行。
+///
+/// ⚠ **第 20–28 项的来历**（夜半原生预制线，2026-11-07）：`TrackV3::preset` 是
+/// `Option<Box<TrackPresetState>>` + `#[serde(default)]` + `skip_serializing_if`，
+/// 8 个子路径也全是 `#[serde(default, skip_serializing_if = …)]`（`Option` / 缺省布尔 /
+/// 空 `Map` / 空 `Vec`）⇒ 与第 19 项**同形**，契约里只能声明为可选属性。
+/// 既有夹具一处都不落盘它们（"默认不改变既有工程"），填进夹具会改掉冻结 sha256 ⇒
+/// 唯一正确的出路同样是登记。§5.4 在这里从 19 项**长成了 28 项**；两份账本已同步。
 const D43_EXEMPT_REQUIRED_PATHS: &[&str] = &[
     "#.author",
     "#.metadata.description",
@@ -116,6 +125,15 @@ const D43_EXEMPT_REQUIRED_PATHS: &[&str] = &[
     "#.tracks.*.folder_id",
     "#.tracks.*.color",
     "#.tracks.*.sampler",
+    "#.tracks.*.preset",
+    "#.tracks.*.preset.preset_id",
+    "#.tracks.*.preset.bypassed",
+    "#.tracks.*.preset.auto_load",
+    "#.tracks.*.preset.previous",
+    "#.tracks.*.preset.previous.strip",
+    "#.tracks.*.preset.previous.effects",
+    "#.tracks.*.preset.previous.sends",
+    "#.tracks.*.preset.previous.macros",
     "#.sections.*.color",
     "#.scenes.*.tempo",
     "#.scenes.*.color",
@@ -961,7 +979,8 @@ fn direction_b_every_contract_required_path_is_required_by_the_reader() {
 // ④ 方向 B 的反面：§5.4 豁免项**确实**可以缺键
 // ---------------------------------------------------------------------------
 
-/// D43 豁免集（§5.4 的 18 项 ＋ 任务单 `#76` 的 `tracks[*].sampler`）逐个"删键 ⇒ 必须**读成功**"。
+/// D43 豁免集（§5.4 的 18 项 ＋ 任务单 `#76` 的 `tracks[*].sampler` ＋ 夜半原生预制线的
+/// `tracks[*].preset` 一组 9 条）逐个"删键 ⇒ 必须**读成功**"。
 ///
 /// 这一条专门证明**豁免集没写错**：若 §5.4 里某一项其实是**必需**的（清单有误），
 /// 本判据会红并点名它 —— 那时**不要**改豁免集换绿，把清单报给集成者。
@@ -999,8 +1018,8 @@ fn direction_b_d43_exempt_paths_tolerate_missing_keys() {
 
     assert_eq!(
         D43_EXEMPT_REQUIRED_PATHS.len(),
-        21,
-        "D43 豁免集 = §5.4 的 18 项 ＋ 任务单 `#76` 的 `tracks[*].sampler` ＋ `#348` 的 `channel` ＋ 任务单 `#350` 的 `key_signature`（逐项对应见常量上的表）"
+        30,
+        "D43 豁免集 = §5.4 的 18 项 ＋ 任务单 `#76` 的 `tracks[*].sampler` ＋ `#348` 的 `channel` ＋ 任务单 `#350` 的 `key_signature` ＋ 夜半原生预制线的 `tracks[*].preset` 一组 9 条（逐项对应见常量上的表）"
     );
     assert!(
         present_paths >= 8,
@@ -1021,7 +1040,7 @@ fn direction_b_d43_exempt_paths_tolerate_missing_keys() {
 // ⑤ §5.4 的机械形式：豁免项绝不能被契约 required
 // ---------------------------------------------------------------------------
 
-/// D43 豁免集（§5.4 的 18 项 ＋ `tracks[*].sampler`）**一律不得**出现在契约的任何 `required` 里 [ADR-0001 D43]。
+/// D43 豁免集（§5.4 的 18 项 ＋ `tracks[*].sampler` ＋ `tracks[*].preset` 一组 9 条）**一律不得**出现在契约的任何 `required` 里 [ADR-0001 D43]。
 ///
 /// 这是 notes §5.4 "判据 ④ 是这条原则的机械形式"的落地版，而且是**直接读契约**的：
 /// 收紧线若把某个语义可选字段收进 `required`，本判据立刻红 —— 那比"漏检"更糟，

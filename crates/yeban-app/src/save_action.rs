@@ -121,6 +121,7 @@ impl SaveRequest {
                 project,
                 history_dag,
                 assets: Vec::new(),
+                embedded_presets: Vec::new(),
             },
         }
     }
@@ -145,6 +146,7 @@ impl SaveRequest {
                 project,
                 history_dag,
                 assets,
+                embedded_presets: Vec::new(),
             },
         }
     }

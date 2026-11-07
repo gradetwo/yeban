@@ -512,6 +512,16 @@
         },
         {
           "required": [
+            "SetTrackPreset"
+          ],
+          "properties": {
+            "SetTrackPreset": {
+              "type": "object"
+            }
+          }
+        },
+        {
+          "required": [
             "SetTrackName"
           ],
           "properties": {

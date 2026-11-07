@@ -44,7 +44,7 @@
 //!
 //! | 面 | reason 数 | 规范行数 | SHA-256 |
 //! | :--- | ---: | ---: | :--- |
-//! | `reason`（**可分类**面：字面量 ＋ 可解析的字面量 `let` ＋ **调用点传播**，含顺序） | 237 | 1012 | `79753d74374871f57706552a213dc49858545f415254e264fa47990f1c30348b` |
+//! | `reason`（**可分类**面：字面量 ＋ 可解析的字面量 `let` ＋ **调用点传播**，含顺序） | 237 | 1013 | `fdfcf05e5d1df9e29ff0bc016d5d2c938f448a888c5e91b8d43c20c9d0eec76f` |
 //!
 //! ⚠ `ADR-0030`（`yeban_export_stems`）：两条新字面站点 `masterBusTrack` /
 //! `notASourceNode`（各带 `trackId` / `name` / `reason` 三个同级键）进入规范文本
@@ -58,6 +58,11 @@
 //! ⚠ 效果器宿主（本支）：`domain/render.rs` 的 `pluginEffectActivate`（`reason` / `node` 2 键）
 //! 与 `pluginEffectLoad`（`reason` / `pluginPath` / `pluginId` 3 键）2 条新字面站点进入规范文本
 //! ⇒ 235 → 237 个 reason、1005 → 1012 行（2 reason 行 ＋ 5 键行）；**新摘要照抄判据自己的报出值**
+//! （本表里那一位与 `FROZEN_REASON_SURFACE_SHA256` 在同一次提交里一起换成新值）。
+//!
+//! ⚠ 夜半原生预制线：`yeban_save_project` 的收据多 `embeddedPresets` 一键（`domain/mod.rs` 的
+//! `apply_save` 两分支）⇒ reason 数不变、1012 → 1013 行（0 reason 行 ＋ 1 键行）；生产区 `.rs`
+//! 文件分母 47 → 48（新增 `src/domain/preset.rs`）；**新摘要照抄判据自己的报出值**
 //! （本表里那一位与 `FROZEN_REASON_SURFACE_SHA256` 在同一次提交里一起换成新值）。
 //!
 //! ⚠ `#274`：摘要随"登记位置搬进 provider"重钉（集合不变、顺序变了）；
@@ -2658,6 +2663,7 @@ pub const GOLDEN_INFO_REASON_PAYLOADS: [(&str, &[&str]); 4] = [
         "内存状态与磁盘一致; 传 force: true 可强制落盘",
         &[
             "bytes",
+            "embeddedPresets",
             "format",
             "path",
             "projectDigest",
@@ -2995,13 +3001,18 @@ fn the_reason_payload_shape_is_the_published_table() {
 /// `read_non_empty_string` 传播、2 条字面 `quantizeGridMustBeNonZero` /
 /// `duplicateClipPlacementPairRequired`）⇒ 207 → **216** 个 reason。
 /// 新摘要由本判据的 `left:` 报出值照抄（⛔ 不手算）。
+///
+/// ⭐ **夜半原生预制线**（2026-11-07）重钉：`yeban_save_project` 的收据多 `embeddedPresets`
+/// 一键 ⇒ reason 数不变（237）、1012 → **1013** 行。新摘要
+/// `fdfcf05e5d1df9e29ff0bc016d5d2c938f448a888c5e91b8d43c20c9d0eec76f`
+/// 由本判据的 `left:` 报出值照抄（⛔ 不手算）。
 pub const FROZEN_REASON_SURFACE_SHA256: &str =
-    "79753d74374871f57706552a213dc49858545f415254e264fa47990f1c30348b";
+    "fdfcf05e5d1df9e29ff0bc016d5d2c938f448a888c5e91b8d43c20c9d0eec76f";
 
 /// 规范形式里的 reason 数 / 规范行数（与摘要一起构成"两端"读数）。
 pub const REASON_SURFACE_REASONS: usize = 237;
 /// 规范行数（每个 reason 一行 ＋ 每个键一行）。
-pub const REASON_SURFACE_LINES: usize = 1012;
+pub const REASON_SURFACE_LINES: usize = 1013;
 
 /// 单文件里的 `reason` 面：**保留出现顺序**的 `(reason, keys)`。
 ///
@@ -3156,8 +3167,10 @@ fn the_reason_surface_digest_is_frozen_and_documented() {
     // `pluginEffectLoad`（`reason` / `pluginPath` / `pluginId` 3 键）⇒ reason 数 235 → 237、
     // 规范行数 1005 → 1012（2 reason 行 ＋ 5 键行）、摘要同批重钉。
     // P2：新增 `src/domain/sfz_stream.rs` ⇒ 46 → 47（同样不含 `reason` 键，摘要逐位不变）。
+    // 夜半原生预制线：新增 `src/domain/preset.rs` ⇒ 47 → 48；`yeban_save_project` 的收据
+    // 多 `embeddedPresets` 一键 ⇒ 规范行数 1012 → 1013（0 reason 行 ＋ 1 键行）、摘要同批重钉。
     // ⇒ 本条只证明"分母变了一位"。
-    assert_eq!(files.len(), 47, "生产区 `.rs` 文件数（规范形式的分母之一）");
+    assert_eq!(files.len(), 48, "生产区 `.rs` 文件数（规范形式的分母之一）");
     let canonical = reason_surface(&files);
     let digest = yeban_model::AssetHash::of_bytes(canonical.as_bytes())
         .as_str()

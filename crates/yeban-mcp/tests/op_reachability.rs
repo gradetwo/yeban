@@ -41,7 +41,7 @@ use yeban_mcp::undo_session::read_rust_sources;
 /// 黄金表：每个 `Op` 变体**必须**在哪些工具模块里有一个构造点。
 ///
 /// 读法：删掉任一处登记的构造点 ⇒ 本判据红。
-pub const EXPECTED_SITES: [(&str, &[&str]); 55] = [
+pub const EXPECTED_SITES: [(&str, &[&str]); 56] = [
     ("AddNote", &["domain/notes.rs"]),
     ("DeleteNote", &["domain/notes.rs"]),
     ("MoveNote", &["domain/notes.rs"]),
@@ -160,6 +160,10 @@ pub const EXPECTED_SITES: [(&str, &[&str]); 55] = [
     // ⭐ 本票新增：`project.time_signature_map` 同一条缺口
     // ⇒ `setTimeSignaturePoint` 的 `parse_one` / `compile` 构造 `Op::SetTimeSignaturePoint`。
     ("SetTimeSignaturePoint", &["domain/notes.rs"]),
+    // ⭐ 夜半原生预制线新增：`yeban_apply_preset` / `yeban_preset_bypass` 的
+    // `build_apply_ops` / `build_bypass_ops` 在 `domain/preset.rs` 构造
+    // `Op::SetTrackPreset`（每批提案的最后一项，写轨的 `preset` 状态）。
+    ("SetTrackPreset", &["domain/preset.rs"]),
 ];
 
 /// **模型里有、而工具面**确实**没有构造点**的 `Op` 变体（显式欠账清单）。
@@ -440,9 +444,9 @@ fn every_op_variant_has_a_registered_construction_site() {
     assert_eq!(names.len(), EXPECTED_SITES.len(), "变体名不得重复");
     assert_eq!(
         names.len(),
-        55,
-        "登记表有 55 条（⭐ 它**不是**模型变体数 —— 模型全集由 \
-         `every_model_op_variant_is_registered_or_declared_unreachable` 管）"
+        56,
+        "登记表有 56 条（⭐ 它**不是**模型变体数 —— 模型全集由 \
+         `every_model_op_variant_is_registered_or_declared_unreachable` 管；夜半原生预制线加 `SetTrackPreset` 一条 ⇒ 55 → 56）"
     );
 }
 

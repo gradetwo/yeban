@@ -79,7 +79,7 @@ use std::path::{Path, PathBuf};
 
 use yeban_model::container::{
     ContainerError, ContainerLimits, MAX_ENTRY_NAME_BYTES, read_project_container,
-    write_project_container,
+    write_project_container_with_presets_borrowed,
 };
 use yeban_model::{AssetHash, CommitGraph, EntityId, YebanProjectV1};
 
@@ -129,6 +129,9 @@ pub struct LoadedProject {
     pub graph: Option<CommitGraph>,
     /// `assets/{sha256}` 解出的 CAS 资产池（键序确定）；没有资产时为空。
     pub assets: BTreeMap<AssetHash, Vec<u8>>,
+    /// 容器里 `presets/user/*.json` 的内嵌用户预制条目（名 + 字节，名升序）；
+    /// 没有内嵌预制时为空。解析与校验在打开时由领域层做（`Domain::set_embedded_presets`）。
+    pub embedded_presets: Vec<(String, Vec<u8>)>,
 }
 
 /// 这份字节有没有 ZIP 结构（三种签名：local header / EOCD / data descriptor）。
@@ -593,6 +596,7 @@ fn load_container(
         bytes: len,
         graph,
         assets: archive.assets.into_iter().collect(),
+        embedded_presets: archive.embedded_presets,
     })
 }
 
@@ -672,6 +676,23 @@ pub fn container_bytes(
     graph: &CommitGraph,
     assets: &BTreeMap<AssetHash, Vec<u8>>,
 ) -> Result<Vec<u8>, Fault> {
+    container_bytes_with_presets(path, project, graph, assets, &[])
+}
+
+/// 同 [`container_bytes`]，但把内嵌用户预制一并物化进包（设计稿 §5）：
+/// 条目名 `presets/user/<ulid>.json`，一律 stored。`presets` 为空时与
+/// [`container_bytes`] 逐字节相同。
+///
+/// # Errors
+///
+/// 同 [`container_bytes`]，另加内嵌预制条目名/大小不合格 → `IO_ERROR`。
+pub fn container_bytes_with_presets(
+    path: &Path,
+    project: &YebanProjectV1,
+    graph: &CommitGraph,
+    assets: &BTreeMap<AssetHash, Vec<u8>>,
+    presets: &[(String, Vec<u8>)],
+) -> Result<Vec<u8>, Fault> {
     let history_dag = serde_json::to_vec(graph).map_err(|error| {
         Fault::domain_with_data(
             ErrorCode::IoError,
@@ -679,8 +700,21 @@ pub fn container_bytes(
             serde_json::json!({ "specId": "ARCH-OPS-002" }),
         )
     })?;
-    write_project_container(project, &history_dag, assets)
-        .map_err(|error| container_fault(path, &error))
+    let borrowed_assets: Vec<(&AssetHash, &[u8])> = assets
+        .iter()
+        .map(|(hash, data)| (hash, data.as_slice()))
+        .collect();
+    let borrowed_presets: Vec<(&str, &[u8])> = presets
+        .iter()
+        .map(|(name, data)| (name.as_str(), data.as_slice()))
+        .collect();
+    write_project_container_with_presets_borrowed(
+        project,
+        &history_dag,
+        &borrowed_assets,
+        &borrowed_presets,
+    )
+    .map_err(|error| container_fault(path, &error))
 }
 
 /// **原子**把 `bytes` 落盘到 `path`（同目录临时文件 + `fsync` + `rename`）。

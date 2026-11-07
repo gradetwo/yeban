@@ -365,6 +365,48 @@
               }
             }
           },
+          "preset": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "description": "Optional preset state (track.preset): current preset id (sys:<instrument>:<name> or user:<ulid>), bypassed flag, autoLoad switch (default true) and the single previous-processing snapshot used by bypass. Absent key or null means \"this track uses no preset\" and is the semantic default, so the writer omits it.",
+            "properties": {
+              "preset_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "bypassed": {
+                "type": "boolean"
+              },
+              "auto_load": {
+                "type": "boolean"
+              },
+              "previous": {
+                "type": [
+                  "object",
+                  "null"
+                ],
+                "description": "Snapshot of processing parameters only (strip/effects/sends/macros); never stores sampler bindings or instrument paths.",
+                "properties": {
+                  "strip": {
+                    "type": "object"
+                  },
+                  "effects": {
+                    "type": "object"
+                  },
+                  "sends": {
+                    "type": "array"
+                  },
+                  "macros": {
+                    "type": "array"
+                  }
+                }
+              }
+            }
+          },
           "devices": {
             "type": "array",
             "items": {

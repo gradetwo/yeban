@@ -50,6 +50,7 @@ use serde::{Deserialize, Serialize};
 use crate::error::ModelError;
 use crate::ids::{AssetHash, EntityId};
 use crate::music::{MidiNote, SlideConfig};
+use crate::preset::TrackPresetState;
 use crate::project::{
     AssetMetadata, AutomationLane, AutomationPoint, AutomationTarget, ClipContent, ClipPlacement,
     ClipPoolEntry, DeviceDefinition, KeySignature, LoopConfig, MAX_BPM, MIN_BPM, RoutingEdge,
@@ -1032,6 +1033,23 @@ pub enum Op {
         /// 修改后的绑定（`None` = 解绑 = 回到"不用采样器"）。
         new_sampler: Option<SamplerBinding>,
     },
+    /// 设置音轨的**预制状态**（[`TrackV3::preset`]，设计稿 §2.6）。
+    ///
+    /// 与 [`Op::SetTrackSampler`] 同型：只写这一个字段（`preset_id` /
+    /// `bypassed` / `auto_load` / `previous` 整体换值），不碰设备链 /
+    /// 宏 / 自动化 / 路由 / 混音标量，也不碰其它轨。设备链与宏的改动
+    /// 由各自的 `Op`（`InsertDevice` / `RemoveDevice` / `SetMacro`）表达，
+    /// 预制应用时与本变体**同批**提交（提案路径，与 `yeban_edit_notes`
+    /// 同一条路径）。两边都是 `Option<TrackPresetState>`：`None` 是一等状态
+    /// （“这条轨不用预制”），相等是逐字节 + 同态，因此陈旧载荷必被拒。
+    SetTrackPreset {
+        /// 目标音轨。
+        track_id: EntityId,
+        /// 修改前的预制状态（`None` = 该轨本来不用预制）。
+        old_preset: Option<TrackPresetState>,
+        /// 修改后的预制状态（`None` = 清除 = 回到“不用预制”）。
+        new_preset: Option<TrackPresetState>,
+    },
     /// 设置音轨**名字**（[`TrackV3::name`]）。
     ///
     /// ⚠ **本变体补上了什么**：⭐ **在它出现之前，`TrackV3::name` 在操作日志层
@@ -1281,6 +1299,7 @@ impl Op {
             Self::SetTrackName { .. } => "SetTrackName",
             Self::SetTrackColor { .. } => "SetTrackColor",
             Self::SetTrackSampler { .. } => "SetTrackSampler",
+            Self::SetTrackPreset { .. } => "SetTrackPreset",
             Self::SetTransportConfig { .. } => "SetTransportConfig",
             Self::SetTempo { .. } => "SetTempo",
             Self::SetTempoPoint { .. } => "SetTempoPoint",
@@ -1909,6 +1928,16 @@ impl Op {
                 ..
             } => {
                 if doc.track(track_id)?.sampler != *old_sampler {
+                    return Err(ModelError::OpStateMismatch { op: self.name() });
+                }
+                Ok(())
+            }
+            Self::SetTrackPreset {
+                track_id,
+                old_preset,
+                ..
+            } => {
+                if doc.track(track_id)?.preset.as_deref() != old_preset.as_ref() {
                     return Err(ModelError::OpStateMismatch { op: self.name() });
                 }
                 Ok(())
@@ -2673,6 +2702,15 @@ impl Op {
                 old_sampler: new_sampler.clone(),
                 new_sampler: old_sampler.clone(),
             },
+            Self::SetTrackPreset {
+                track_id,
+                old_preset,
+                new_preset,
+            } => Self::SetTrackPreset {
+                track_id: *track_id,
+                old_preset: new_preset.clone(),
+                new_preset: old_preset.clone(),
+            },
             Self::SetTrackName {
                 track_id,
                 old_name,
@@ -3144,6 +3182,15 @@ impl Op {
                 ..
             } => {
                 doc.track_mut(track_id)?.sampler = new_sampler.clone();
+                Ok(())
+            }
+            // 只写那**一个**预制状态字段：不碰设备链、宏、自动化、路由、混音标量。
+            Self::SetTrackPreset {
+                track_id,
+                new_preset,
+                ..
+            } => {
+                doc.track_mut(track_id)?.preset = new_preset.clone().map(Box::new);
                 Ok(())
             }
             // 只写那**一个**名字字段：不碰 `volume_db` / `pan` / `mute` / `solo` /
@@ -4139,6 +4186,19 @@ mod tests {
                 old_sampler: None,
                 new_sampler: Some(SamplerBinding {
                     path: "instruments/lead.sfz".to_owned(),
+                }),
+            },
+            // 预制状态：**此前只能在建轨时给**（`AddTrack` 的载荷）⇒ 换预制只能删轨重建。
+            // `old_preset: None` 对应夹具的 `TrackV3::default()`（`preset` 默认 `None`
+            // ＝“这条轨不用预制”，是一等状态）；新值只记标识与开关，不带设备链。
+            Op::SetTrackPreset {
+                track_id: f.lead,
+                old_preset: None,
+                new_preset: Some(crate::preset::TrackPresetState {
+                    preset_id: Some("sys:salamander-grand:piano-warm-room".to_owned()),
+                    bypassed: false,
+                    auto_load: true,
+                    previous: None,
                 }),
             },
             Op::SetTrackName {
@@ -9590,7 +9650,7 @@ mod tests {
     #[test]
     fn op_write_differential_root_keys_match_frozen_table() {
         /// 冻结读数：变体名 → 它改动的**顶层字段**（每行右侧已按字典序）。
-        const FROZEN: [(&str, &[&str]); 55] = [
+        const FROZEN: [(&str, &[&str]); 56] = [
             ("AddClip", &["clip_pool"]),
             ("AddClipPlacement", &["tracks"]),
             ("AddNote", &["clip_pool"]),
@@ -9644,6 +9704,7 @@ mod tests {
             ("SetTrackMute", &["tracks"]),
             ("SetTrackName", &["tracks"]),
             ("SetTrackSampler", &["tracks"]),
+            ("SetTrackPreset", &["tracks"]),
             ("SetTrackSolo", &["tracks"]),
             ("SetTransportConfig", &["transport"]),
         ];
@@ -9792,7 +9853,7 @@ mod tests {
     ///
     /// # 为什么末端段要先过一次词法过滤
     ///
-    /// 那 55 行的末端段里混着三类**实例键**（身份，⛔ 字段名）：
+    /// 那 56 行的末端段里混着三类**实例键**（身份，⛔ 字段名）：
     ///
     /// * 26 字符 Crockford base32 —— `EntityId`（ULID，如 `01J8ZQ…0502`）；
     /// * 64 字符小写十六进制 —— 资产内容哈希（`assets` 的键）；
@@ -9812,9 +9873,10 @@ mod tests {
     ///    不符 ⇒ 红；反过来若某变体退化成"零差异"（扫描器坏了／op 不写了），未过滤集合
     ///    变空 ⇒ 同样红 —— 两种"看起来是空所以通过"都关掉了。
     ///
-    /// 冻结读数（2026-10-30 本机 `cargo test -p yeban-model --lib`）：55 行 ＝
-    /// **14** 行纯实例键（容器增删／键即身份）＋ **41** 行有字段名；过滤后字段名
-    /// **36** 个去重／**53** 个段。
+    /// 冻结读数（2026-10-30 本机 `cargo test -p yeban-model --lib`，2026-11-07
+    /// 加 `SetTrackPreset` 后重算）：56 行 ＝
+    /// **14** 行纯实例键（容器增删／键即身份）＋ **42** 行有字段名；过滤后字段名
+    /// **37** 个去重／**54** 个段。
     ///
     /// ⭐ 为什么这张表确实闭得上判据四那个洞：**判据六**已经实测过"只改
     /// `tracks.<id>.folder_id`"这一处改动的读数是 `(根键＝[tracks], 末端＝[folder_id])`
@@ -9854,7 +9916,7 @@ mod tests {
         ///
         /// 空表 `&[]` 的 14 行⛔ 表示"这个变体什么都不改"，而表示"它改的是**一条容器记录**
         /// （新增／删除），末端段是那条记录的身份"—— 上面第 2 条断言就是用来证明这一点的。
-        const FROZEN_LEAVES: [(&str, &[&str]); 55] = [
+        const FROZEN_LEAVES: [(&str, &[&str]); 56] = [
             ("AddClip", &[]),
             ("AddClipPlacement", &[]),
             ("AddNote", &[]),
@@ -9911,6 +9973,7 @@ mod tests {
             ("SetTrackMute", &["mute"]),
             ("SetTrackName", &["name"]),
             ("SetTrackSampler", &["sampler"]),
+            ("SetTrackPreset", &["preset"]),
             ("SetTrackSolo", &["solo"]),
             (
                 "SetTransportConfig",

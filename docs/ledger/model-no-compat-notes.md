@@ -238,8 +238,8 @@ cargo test -p yeban-model --test no_compat -- --ignored --nocapture
 > ### ⚠ 两条同样重要：§5.1–§5.3 是"该收紧的"，**§5.4 是"绝不能收紧的"**
 >
 > 集成者明确要求把豁免清单放在显眼位置（原话：**豁免比收紧更容易出错：收紧了语义上可选的字段就是 bug**）。
-> 因此：**§5.4 的字段一律不得进任何 `required`** —— 今天共 **19** 项（历史 18 项 ＋ 任务单 `#76`
-> 新增的 `tracks[*].sampler`），其中 16 个本写入器**会在默认值上省略**
+> 因此：**§5.4 的字段一律不得进任何 `required`** —— 今天共 **28** 项（历史 18 项 ＋ 任务单 `#76`
+> 新增的 `tracks[*].sampler` ＋ 夜半原生预制线新增的 `tracks[*].preset` 一组 9 条），其中 25 个本写入器**会在默认值上省略**
 > （`Option::None` 或空集 + `skip_serializing_if`），另 3 个（`author` / `description` / `tags`）本写入器总是写出但**读取器接受缺失**。
 > 一旦把 §5.4 的字段写进 `required`，本写入器自己的输出就会被 schema 判为非法。判据 ④（§4）是这条原则的机械形式。
 
@@ -292,7 +292,7 @@ cargo test -p yeban-model --test no_compat -- --ignored --nocapture
 > CI run **37248121161 = success**（含 `rust (workspace 全量)` 真跑），已合并进 main。
 > 结果：根 `required` **11 → 18 键**；补齐 `metadata`/`transport`/`sections`/`scenes`/`assets` +
 > `tracks[*].{color,devices,macros,automation_lanes,clips}` + `clip_pool[*]`（原空壳）+ `routing_graph.edges[*]`；
-> 各对象 required 共 **23 个路径**；**§5.4 的 18 项豁免由机器审计逐条确认未进任何 required**。
+> 各对象 required 共 **23 个路径**；**§5.4 的 28 项豁免由机器审计逐条确认未进任何 required**。
 > 合并后复跑核心判据：`export_schema_samples` + `validate_schemas.py --repo-assets --samples-dir` **通过**。
 >
 > ⇒ **下面这一节保留为"当时的清单"（历史原样），不再是待办。**
@@ -327,6 +327,7 @@ cargo test -p yeban-model --test no_compat -- --ignored --nocapture
 | `tracks[*].automation_lanes[*]` | `domain` | `None` ⇒ **不落盘** |
 | `tracks[*]` | `folder_id`, `color` | `None` ⇒ **不落盘** |
 | `tracks[*]` | `sampler` | `None` ⇒ **不落盘**（**任务单 `#76` 新增的第 19 项**；`Option<SamplerBinding>` = "这条轨用哪份采样器定义文件"，⛔ 不含运行时对象） |
+| `tracks[*]` | `preset`, `preset.preset_id`, `preset.bypassed`, `preset.auto_load`, `preset.previous`, `previous.strip`, `previous.effects`, `previous.sends`, `previous.macros` | `None` / 缺省值 / 空集 ⇒ **不落盘**（**夜半原生预制线新增的第 20–28 项**；`Option<Box<TrackPresetState>>` = "这条轨当前用的预制、旁通与默认加载开关"，子路径全是 `#[serde(default, skip_serializing_if = …)]`） |
 | `sections[*]` | `color` | `None` ⇒ **不落盘** |
 | `scenes[*]` | `tempo`, `color` | `None` ⇒ **不落盘** |
 | `routing_graph.edges[*]` | `gain_db` | `None` ⇒ **不落盘**（对比 `clip_pool[*].content.Audio.gain_db`：那里是裸 `f32`，所以**是**必需） |
@@ -338,6 +339,13 @@ cargo test -p yeban-model --test no_compat -- --ignored --nocapture
 就会**变红**（"棘轮盲区"），而"把它填进夹具"会改掉 `project.filled.json` 的冻结 sha256。
 ⇒ 唯一正确的出路是**登记**，这就是本节从 18 长成 19 的原因（同一行已同步进
 `docs/ledger/schema-ratchet-notes.md` §3）。
+
+⚠ **第 20–28 项的机械后果**（照实登记，与第 19 项同一理由）：`tracks[*].preset` 一组 9 条在既有夹具
+`samples::filled_project()` 里**一处都不落盘** —— 那正是"默认不改变既有工程"这条判据本身。
+因此 `tests/schema_ratchet.rs` 的判据 ⑥ 会把它们记成"契约声明了、夹具里一处都没有"的 `unjudged`；
+不登记进 `D43_EXEMPT_REQUIRED_PATHS` 就会**变红**（"棘轮盲区"），而"把它填进夹具"会改掉
+`project.filled.json` 的冻结 sha256。⇒ 唯一正确的出路同样是**登记**，这就是本节从 19 长成 28 的原因
+（同一组已同步进 `docs/ledger/schema-ratchet-notes.md` §3 与 `tests/schema_ratchet.rs` 的常量表）。
 
 一句话记忆法：**"写入器会省略的键，schema 一律不得 required"**；反过来，"schema required 的键，写入器必须总是写出、读取器必须要求存在"。判据 ④ 是这条原则的机械形式。
 

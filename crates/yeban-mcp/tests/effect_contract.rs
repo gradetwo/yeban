@@ -119,6 +119,9 @@ fn tools_list_publishes_one_branch_per_parser_kind() {
 /// 这是对"字面量抄写"的机械对账（本 crate ⛔ 不依赖 `yeban-engine`，因此读源码
 /// 而不是链接）：少一个名字 / 多一个引擎不认的名字都会红。
 ///
+/// ⚠ 本判据是**单向**的：它拦不住"引擎认、公告不认"的漂移（通道条 `#341/#342/#343/
+/// #344/#346` 十条就是这么漏的）。反向由判据 ②′（`every_engine_effect_name_is_published`）钉住。
+///
 /// 白名单住在两处，缺一不可：`insert.rs` 自己的匹配臂（通道条 / 混响 / 卷积）＋
 /// `yeban-dsp` 的 `device_param.rs` 共享拼写表（延迟 15 拼写；引擎的 `delay_of`
 /// 直接调 `DelayField::from_name`，⛔ 不在引擎里抄第二份表 —— 抄了就会漂）。
@@ -167,6 +170,92 @@ fn every_published_effect_name_is_a_quoted_literal_in_insert_rs() {
     // 大小写不敏感（引擎把名字转小写后匹配）。
     assert!(effect_params::recognise("EQ_LOW_GAIN").is_some());
     assert!(effect_params::recognise("Reverb_Wet").is_some());
+}
+
+/// 判据 ②′：反向对账 —— 引擎真认的每个名字，公告表都必须认。
+///
+/// 判据 ② 是单向的（表 ⊆ 引擎），拦不住“引擎认、公告不认”的漂移：通道条
+/// `#341/#342/#343/#344/#346` 十条（`hpf_hz` / `strip_width` / `mono_below_hz` /
+/// `ms_mid_*` / `deq_*`，各 1 别名）就是这么漏的 —— 夜半原生预制线实测：
+/// `Preset: Channel Strip` 的 `strip_width` 等被报 `unrecognisedEffectParam`
+/// （“不会生效”），而渲染侧 `insert.rs` 的 `StripProjection::apply` 真生效。
+/// 本判据同时扫两份引擎真相：`insert.rs` 的 match 臂与 `device_param.rs` 的
+/// `SPELLINGS` 表；任一名字不在公告里即红。
+#[test]
+fn every_engine_effect_name_is_published() {
+    use yeban_mcp::effect_params;
+    let crate_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let insert_source = std::fs::read_to_string(
+        crate_dir
+            .join("..")
+            .join("yeban-engine")
+            .join("src")
+            .join("insert.rs"),
+    )
+    .expect("读 insert.rs");
+    let dsp_source = std::fs::read_to_string(
+        crate_dir
+            .join("..")
+            .join("yeban-dsp")
+            .join("src")
+            .join("device_param.rs"),
+    )
+    .expect("读 device_param.rs");
+    let mut engine_names: Vec<String> = Vec::new();
+    // `insert.rs` 的 match 臂：`"名" | "别名" =>`（小写蛇形名才收；大写打头的
+    // 设备 kind 字面量不在此列）。
+    for line in insert_source.lines() {
+        let Some(arrow) = line.find("=>") else {
+            continue;
+        };
+        engine_names.extend(quoted_snake_names(&line[..arrow]));
+    }
+    // `device_param.rs` 的拼写表：`("名", Self::字段),`。
+    for line in dsp_source.lines() {
+        let trimmed = line.trim_start();
+        if !trimmed.starts_with("(\"") || !trimmed.contains(", Self::") {
+            continue;
+        }
+        engine_names.extend(quoted_snake_names(trimmed));
+    }
+    assert!(
+        !engine_names.is_empty(),
+        "引擎侧一个名字都没扫到：扫描器坏了，不是表全了"
+    );
+    let mut missing: Vec<String> = Vec::new();
+    for name in &engine_names {
+        if effect_params::recognise(name).is_none() {
+            missing.push(name.clone());
+        }
+    }
+    missing.sort();
+    missing.dedup();
+    assert!(
+        missing.is_empty(),
+        "这些引擎真认的名字在公告表里找不到（调用方会被误报 `unrecognisedEffectParam`）: {missing:?}"
+    );
+}
+
+/// 一行里 `=>` 之前（或拼写表行里）的全部带引号小写蛇形名。
+fn quoted_snake_names(text: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut rest = text;
+    while let Some(start) = rest.find('"') {
+        let after = &rest[start + 1..];
+        let Some(end) = after.find('"') else {
+            break;
+        };
+        let name = &after[..end];
+        if !name.is_empty()
+            && name
+                .chars()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+        {
+            out.push(name.to_owned());
+        }
+        rest = &after[end + 1..];
+    }
+    out
 }
 
 /// 判据 ③：每个参数分支都能读到 **名字 + 类型 + 范围 + 单位 + 缺省值**。

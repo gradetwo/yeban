@@ -65,6 +65,7 @@ pub mod lock;
 pub mod macros;
 pub mod midi_input;
 pub mod notes;
+pub mod preset;
 pub mod project_create;
 pub mod proposal;
 pub mod record_wav;
@@ -89,6 +90,7 @@ use std::path::{Path, PathBuf};
 
 use serde_json::{Map, Value};
 
+use yeban_model::preset::Preset;
 use yeban_model::{
     AssetHash, ClipContent, CommitDraft, CommitGraph, DeviceDefinition, DeviceKind, EntityId, Op,
     OpOrigin, PluginBinding, SessionRuntimeState, StampedOp, TrackV3, YebanProjectV1,
@@ -242,6 +244,13 @@ pub struct Domain {
     sfz_instruments: BTreeMap<u64, sfz::SfzLoad>,
     /// 下一个 `instrumentId`（单调；从 1 开始，`0` 从不出现 ⇒ 客户端可把它当"未提供"）。
     sfz_next_id: u64,
+    /// **会话内嵌的用户预制副本**（设计稿 §5）：打开工程时从容器
+    /// `presets/user/*.json` 条目读进来的已解析预制，键 = 预制标识。
+    ///
+    /// 它是**会话运行态**（`MODEL-ISO-001` 第 2 层）：打开 / 关闭工程整体重置，
+    /// 不进 `project.json`、不进 `history.dag`。轨引用指向它，`save` 时它就是
+    /// 重新物化进包的来源（用户库是第二来源）。
+    embedded_presets: BTreeMap<String, Preset>,
     /// **施加修订号**：每施加一个**可能改工程**的计划就 +1（只读计划不推进）。
     ///
     /// 它是**宿主投影刷新的触发口径**（`ROAD-M4-008` 选项 (a)）：形态 A 的
@@ -279,8 +288,25 @@ impl Domain {
             now_ms: 0,
             sfz_instruments: BTreeMap::new(),
             sfz_next_id: 1,
+            embedded_presets: BTreeMap::new(),
             apply_revision: 0,
         }
+    }
+
+    /// 会话内嵌的用户预制（只读；`yeban_apply_preset` / 保存的解析来源）。
+    #[must_use]
+    pub fn embedded_presets(&self) -> &BTreeMap<String, Preset> {
+        &self.embedded_presets
+    }
+
+    /// 装入打开时从容器读到的内嵌用户预制（逐条解析并校验；坏条目 ⇒ 响亮拒绝打开）。
+    ///
+    /// # Errors
+    ///
+    /// 任一条目不是合法预制（格式 / 标识 / 超 64 KiB）。
+    pub fn set_embedded_presets(&mut self, entries: &[(String, Vec<u8>)]) -> Result<(), Fault> {
+        self.embedded_presets = preset::parse_embedded_presets(entries)?;
+        Ok(())
     }
 
     /// 会话内已装载的 SFZ 乐器数。
@@ -774,6 +800,9 @@ impl Domain {
         // 乐器"悄悄参与这一份工程的导出）。
         self.sfz_instruments.clear();
         self.sfz_next_id = 1;
+        // 内嵌用户预制同样是会话运行态：换一个工程之后上一份工程的内嵌副本
+        // 不该还能被引用（否则“上一份工程的预制”会悄悄参与这一份工程的导出）。
+        self.embedded_presets.clear();
         // 场景启动队列与引擎读数都是**会话运行态**：换工程 ⇒ 上一份工程的排队请求
         // 与旧引擎的 applied 计数一律作废（⛔ 不让它们跨打开边界存活）。
         self.pending_scene_launches.clear();
@@ -859,6 +888,10 @@ pub struct OpenRequest {
     pub history: Option<Box<CommitGraph>>,
     /// `assets/{sha256}` 解出的会话 CAS 资产池。
     pub assets: BTreeMap<AssetHash, Vec<u8>>,
+    /// 容器里 `presets/user/*.json` 的内嵌用户预制条目（名 + 字节，名升序）。
+    /// `apply_open` 在 `reset_history` 之后解析装入会话（`plan` 里已校验过
+    /// 引用与条目，因此 `apply` 只做装入，不再重做引用校验）。
+    pub embedded_presets: Vec<(String, Vec<u8>)>,
     /// **新建**工程的落盘字节（`create: true` 且目标路径不存在时才有值）。
     ///
     /// 为什么放在这里而不是在 [`apply_open`] 里现算：`plan` 是**只读**的
@@ -1000,6 +1033,12 @@ pub struct HostSaveOutcome {
     pub assets: usize,
     /// 写进 `history.dag` 的提交数。
     pub history_commits: usize,
+    /// 写进容器的内嵌用户预制数（设计稿 §5 的导出收据）。
+    pub embedded_preset_count: usize,
+    /// 内嵌用户预制的字节总数。
+    pub embedded_preset_bytes: usize,
+    /// 本次保存是否带出用户预制（缺省 `true`）。
+    pub include_user_presets: bool,
     /// 工程内容摘要（规范化 JSON 的 SHA-256）。
     pub digest: String,
 }
@@ -1030,6 +1069,13 @@ pub enum Plan {
         assets: usize,
         /// 将写进 `history.dag` 的提交数。
         history_commits: usize,
+        /// 将写进容器的内嵌用户预制数（设计稿 §5 的导出收据）。
+        embedded_preset_count: usize,
+        /// 内嵌用户预制的字节总数。
+        embedded_preset_bytes: usize,
+        /// 本次保存是否带出用户预制（`yeban_save_project` 的 `includeUserPresets`，
+        /// 缺省 `true`；`false` 时上面两数均为 0，接收方打开缺预制会响亮报错）。
+        include_user_presets: bool,
     },
     /// `yeban_close_project`
     Close {
@@ -1154,6 +1200,22 @@ pub enum Plan {
         /// 已经组装好的清单（`instruments` / `count` / `note`）。
         data: Value,
     },
+    /// `yeban_save_preset`：把当前轨状态另存为一份用户预制（设计稿 §2.4）。
+    /// 预制在 `plan` 里已经构造并校验好（≤ 64 KiB）；`apply` 只负责写用户库，
+    /// 因此 `dryRun` 拿到的预览与真调用是同一份预制，且一个字节都不写。
+    /// 不改工程、不动提交图谱。
+    SavePreset {
+        /// 已校验的预制（`plan` 的产物）。`Box` 是刻意的：`Preset` 含多个
+        /// `String` / `Value` / `Vec`，内联会把 `Plan` 的最大变体撑过 clippy
+        /// 的 `large_enum_variant` 线（与 `Open(Box<OpenRequest>)` 同一口径）。
+        preset: Box<Preset>,
+        /// 用户库目标路径。
+        path: PathBuf,
+        /// 是否覆盖了同名旧文件。
+        overwritten: bool,
+        /// 来源音轨。
+        track_id: EntityId,
+    },
     /// `yeban_import_audio` [ADR-0001 **D46** 第 3 类能力]
     ImportAudio {
         /// 只读规划的产物（片段条目 + 需要登记进 CAS 池的字节）。
@@ -1249,6 +1311,7 @@ impl Plan {
             Self::LaunchScene { .. } => "launch_scene",
             Self::ListProposals { .. } => "list_proposals",
             Self::ListInstruments { .. } => "list_instruments",
+            Self::SavePreset { .. } => "save_preset",
             Self::ImportAudio { .. } => "import_audio",
             Self::ExportMidi { .. } => "export_midi",
             Self::ImportMidi(_) => "import_midi",
@@ -1306,6 +1369,8 @@ impl Plan {
             | Self::ListProposals { .. }
             // 会话乐器清单同样只读（枚举会话 registry）。
             | Self::ListInstruments { .. }
+            // 用户预制另存只写用户库（不改工程、不动图谱）。
+            | Self::SavePreset { .. }
             // SMF 导出也是**只读**的（字节只回传，不落盘、不改工程）。
             | Self::ExportMidi { .. }
             // SFZ 装载只动**会话态** registry（不是工程文档）；SFZ 导出与录音只写盘。
@@ -1389,6 +1454,8 @@ impl Plan {
             | Self::ListProposals { .. }
             // 会话乐器清单同样只读（枚举会话 registry）。
             | Self::ListInstruments { .. }
+            // 用户预制另存只写用户库（不改工程文档）。
+            | Self::SavePreset { .. }
             // SMF 导出也是**只读**的（字节只回传，不落盘、不改工程）。
             | Self::ExportMidi { .. }
             // SFZ 装载只动会话态 registry（不是工程文档）；SFZ 导出与录音只写盘。
@@ -1555,6 +1622,8 @@ impl Plan {
             | Self::EngineState { .. }
             | Self::ListProposals { .. }
             | Self::ListInstruments { .. }
+            // 用户预制另存不改工程内容 ⇒ `dryRun` 的“工程差异”是 `None`。
+            | Self::SavePreset { .. }
             | Self::ExportMidi { .. }
             | Self::LoadSfz { .. }
             | Self::RenderSfzWav { .. }
@@ -1610,17 +1679,31 @@ impl Plan {
                 changed,
                 assets,
                 history_commits,
+                embedded_preset_count,
+                embedded_preset_bytes,
+                include_user_presets,
             } => {
                 preview.insert("path".to_owned(), Value::from(path.display().to_string()));
                 preview.insert("bytes".to_owned(), Value::from(bytes.len()));
                 preview.insert("format".to_owned(), Value::from(store::DOCUMENT_FORMAT));
-                preview.insert("containerEntries".to_owned(), Value::from(2 + assets));
+                preview.insert(
+                    "containerEntries".to_owned(),
+                    Value::from(2 + assets + embedded_preset_count),
+                );
                 preview.insert("assets".to_owned(), Value::from(*assets));
                 preview.insert("historyCommits".to_owned(), Value::from(*history_commits));
                 preview.insert("projectDigest".to_owned(), Value::from(digest.clone()));
                 preview.insert("force".to_owned(), Value::from(*force));
                 preview.insert("changed".to_owned(), Value::from(*changed));
                 preview.insert("atomic".to_owned(), Value::from(true));
+                preview.insert(
+                    "embeddedPresets".to_owned(),
+                    serde_json::json!({
+                        "count": embedded_preset_count,
+                        "bytes": embedded_preset_bytes,
+                        "includedUserPresets": include_user_presets,
+                    }),
+                );
                 preview.insert(
                     "strategy".to_owned(),
                     Value::from(
@@ -1727,6 +1810,31 @@ impl Plan {
                 );
                 preview.insert("reason".to_owned(), Value::from(reason.clone()));
                 preview.insert("proposal".to_owned(), snapshot.summary());
+            }
+            Self::SavePreset {
+                preset,
+                path,
+                overwritten,
+                track_id,
+            } => {
+                preview.insert("id".to_owned(), Value::from(preset.id.clone()));
+                preview.insert("name".to_owned(), Value::from(preset.name.clone()));
+                preview.insert(
+                    "instrument".to_owned(),
+                    Value::from(preset.instrument.clone()),
+                );
+                preview.insert("path".to_owned(), Value::from(path.display().to_string()));
+                preview.insert("overwritten".to_owned(), Value::from(*overwritten));
+                preview.insert(
+                    "trackId".to_owned(),
+                    Value::from(track_id.to_canonical_string()),
+                );
+                preview.insert(
+                    "note".to_owned(),
+                    Value::from(
+                        "写用户预制库；不改工程。要进工程包须保存工程（导出缺省带出用户预制）。",
+                    ),
+                );
             }
             Self::LoadSfz { load } => {
                 // 装载在 `plan`（只读）里就完成了: 因此预览里的区域数与 SHA-256
@@ -2292,6 +2400,10 @@ pub fn plan(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
         "yeban_launch_scene" => plan_launch_scene(domain, call),
         "yeban_list_proposals" => plan_list_proposals(domain, call),
         "yeban_list_instruments" => plan_list_instruments(domain, call),
+        "yeban_list_presets" => plan_list_presets(call),
+        "yeban_apply_preset" => plan_apply_preset(domain, call),
+        "yeban_save_preset" => plan_save_preset(domain, call),
+        "yeban_preset_bypass" => plan_preset_bypass(domain, call),
         "yeban_scan_plugins" => plan_scan_plugins(call),
         "yeban_load_plugin" => plan_load_plugin(domain, call),
         "yeban_import_audio" => plan_import_audio(domain, call),
@@ -2454,6 +2566,10 @@ fn plan_open(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
         ));
     }
     let loaded = store::load_project(&path)?;
+    // 内嵌预制先解析、再校验轨引用：系统预制必须在发行表里，用户预制必须
+    // 在内嵌副本或用户库里；查不到 ⇒ 响亮拒绝打开，不静默回干声（设计稿 §5）。
+    let embedded = preset::parse_embedded_presets(&loaded.embedded_presets)?;
+    preset::validate_preset_references(&loaded.project, &embedded)?;
     let json = store::serialize_project(&loaded.project)?;
     let digest = store::digest_of(json.as_bytes());
     let already_open = domain.active_path().is_some_and(|open| open == path);
@@ -2487,6 +2603,7 @@ fn plan_open(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
         already_open,
         history: loaded.graph.map(Box::new),
         assets: loaded.assets,
+        embedded_presets: loaded.embedded_presets,
         created: None,
     })))
 }
@@ -2577,6 +2694,7 @@ fn plan_create(
         already_open: false,
         history: None,
         assets: BTreeMap::new(),
+        embedded_presets: Vec::new(),
         created: Some(CreatedSeed {
             bytes,
             master_bus_track_id: created.master_bus_track_id,
@@ -2594,16 +2712,38 @@ fn plan_save(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
             format!("工程 `{}` 是只读打开的, 拒绝落盘", active.path.display()),
         ));
     }
-    let (bytes, digest, assets, history_commits) = save_material(domain)?;
+    // `includeUserPresets` 缺省 `true`（设计稿 §5：导出缺省带出用户预制）。
+    let include_user_presets = arg_bool(call, "includeUserPresets", true);
+    let material = save_material(domain, include_user_presets)?;
     Ok(Plan::Save {
         path: active.path.clone(),
-        changed: digest != active.saved_digest,
-        assets,
-        history_commits,
-        bytes,
-        digest,
+        changed: material.digest != active.saved_digest,
+        assets: material.assets,
+        history_commits: material.history_commits,
+        bytes: material.bytes,
+        digest: material.digest,
         force: arg_bool(call, "force", false),
+        embedded_preset_count: material.embedded_preset_count,
+        embedded_preset_bytes: material.embedded_preset_bytes,
+        include_user_presets,
     })
+}
+
+/// [`save_material`] 的产物：一次保存要写出的全部实测数字。具名结构是刻意的：
+/// 六元组会触发 clippy 的 `type_complexity` 线，且调用方按位置解构容易错位。
+struct SaveMaterial {
+    /// 容器字节（`ARCH-SEC-003`）。
+    bytes: Vec<u8>,
+    /// 工程内容摘要（规范化 JSON 的 SHA-256）。
+    digest: String,
+    /// 写进容器的 CAS 资产数。
+    assets: usize,
+    /// 写进 `history.dag` 的提交数。
+    history_commits: usize,
+    /// 写进容器的内嵌用户预制数（设计稿 §5 的导出收据）。
+    embedded_preset_count: usize,
+    /// 内嵌用户预制的字节总数。
+    embedded_preset_bytes: usize,
 }
 
 /// "这份工程现在会写出哪些字节 / 摘要 / 条目数" —— `yeban_save_project` 与
@@ -2612,23 +2752,40 @@ fn plan_save(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
 /// 为什么不各算一遍：容器字节的口径（`ARCH-SEC-003`：工程 + 提交图谱 + CAS 资产池）
 /// 一旦有两份实现，迟早会出现"工具保存写进去的东西与宿主保存写进去的不一样"。
 ///
+/// `include_user_presets = false` 时内嵌预制数为 0（设计稿 §5：用户可选择不导出）。
+///
 /// # Errors
 ///
-/// 没有活跃工程、工程 / 图谱序列化失败、或容器层拒绝。
-fn save_material(domain: &Domain) -> Result<(Vec<u8>, String, usize, usize), Fault> {
+/// 没有活跃工程、工程 / 图谱序列化失败、容器层拒绝、或引用的用户预制查不到
+/// （响亮拒绝保存，不静默写出缺件工程）。
+fn save_material(domain: &Domain, include_user_presets: bool) -> Result<SaveMaterial, Fault> {
     let active = domain.active.as_ref().ok_or_else(no_active_project)?;
     let json = store::serialize_project(&active.project)?;
     let digest = store::digest_of(json.as_bytes());
     // 落盘字节 = `ARCH-SEC-003` 的容器（`project.json` + `history.dag` + `assets/{sha256}`）。
     // 与"工程内容摘要"是**两个量**：前者含提交图谱与资产，后者只描述工程文档。
-    let bytes =
-        store::container_bytes(&active.path, &active.project, &domain.graph, &active.assets)?;
-    Ok((
+    let embedded = preset::collect_embedded_presets(
+        &domain.embedded_presets,
+        &active.project,
+        include_user_presets,
+    )?;
+    let embedded_preset_count = embedded.len();
+    let embedded_preset_bytes = embedded.iter().map(|(_, data)| data.len()).sum();
+    let bytes = store::container_bytes_with_presets(
+        &active.path,
+        &active.project,
+        &domain.graph,
+        &active.assets,
+        &embedded,
+    )?;
+    Ok(SaveMaterial {
         bytes,
         digest,
-        active.assets.len(),
-        domain.graph.commit_count(),
-    ))
+        assets: active.assets.len(),
+        history_commits: domain.graph.commit_count(),
+        embedded_preset_count,
+        embedded_preset_bytes,
+    })
 }
 
 /// `yeban_close_project`。
@@ -2636,18 +2793,18 @@ fn plan_close(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
     let active = domain.active.as_ref().ok_or_else(no_active_project)?;
     let save_first = arg_bool(call, "saveFirst", true);
     let save = if save_first && !active.read_only {
-        let json = store::serialize_project(&active.project)?;
-        let digest = store::digest_of(json.as_bytes());
-        let bytes =
-            store::container_bytes(&active.path, &active.project, &domain.graph, &active.assets)?;
+        let material = save_material(domain, true)?;
         Some(Box::new(Plan::Save {
             path: active.path.clone(),
-            bytes,
-            digest,
+            bytes: material.bytes,
+            digest: material.digest,
             force: false,
             changed: true,
-            assets: active.assets.len(),
-            history_commits: domain.graph.commit_count(),
+            assets: material.assets,
+            history_commits: material.history_commits,
+            embedded_preset_count: material.embedded_preset_count,
+            embedded_preset_bytes: material.embedded_preset_bytes,
+            include_user_presets: true,
         }))
     } else {
         None
@@ -3132,7 +3289,7 @@ fn plan_edit_notes(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
         - scene_level
         - track_entity_level
         - device_level;
-    let description = if removing_clip {
+    let mut description = if removing_clip {
         format!("取走片段池条目: {clip_id}")
     } else if removing_track {
         // `removeTrack` 单独成一路（`reject_remove_track_conflicts` 保证），
@@ -3202,6 +3359,68 @@ fn plan_edit_notes(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
     } else {
         track_id
     };
+    // ⭐ 预制自动加载（设计稿 §2.6）：本批给某条轨换了采样器（`SetTrackSampler`）
+    // 且该轨 `track.preset.autoLoad` 缺省 `true`、尚未应用同一预制时，把该乐器
+    // 的默认预制应用追加进**同一批**提案。`SetTrackSampler` 本身不动设备链 /
+    // 宏 / `preset` 字段，因此追加的 `Op` 的旧值（`previous` 快照）从当前工程
+    // 读就是对的；追加的规划里排除 `instrument` 类（绑定已由本批那条 op 负责，
+    // 再写一次会在模拟里撞 `OpStateMismatch`）。
+    {
+        let mut auto_loaded: Vec<(EntityId, String)> = Vec::new();
+        for op in compiled.clone() {
+            let Op::SetTrackSampler {
+                track_id: target,
+                new_sampler: Some(sampler),
+                ..
+            } = op
+            else {
+                continue;
+            };
+            if auto_loaded.iter().any(|(seen, _)| *seen == target) {
+                continue;
+            }
+            let Some(slug) = yeban_model::preset::slug_for_sfz_path(&sampler.path) else {
+                continue;
+            };
+            let Some(default_id) = yeban_model::preset::default_preset_id_for_instrument(slug)
+            else {
+                continue;
+            };
+            let Ok(track) = project.track(&target) else {
+                continue;
+            };
+            let current = track.preset.as_ref();
+            if current.is_some_and(|state| !state.auto_load) {
+                continue;
+            }
+            if current.is_some_and(|state| {
+                state.preset_id.as_deref() == Some(default_id) && !state.bypassed
+            }) {
+                continue;
+            }
+            let Ok(preset) = preset::resolve_preset(&domain.embedded_presets, default_id) else {
+                continue;
+            };
+            let Ok(plan) = preset::build_apply_ops(
+                project,
+                &target,
+                &preset,
+                &["strip", "effects", "sends", "macros"],
+            ) else {
+                continue;
+            };
+            compiled.extend(plan.ops);
+            auto_loaded.push((target, default_id.to_owned()));
+        }
+        if !auto_loaded.is_empty() {
+            let names: Vec<String> = auto_loaded
+                .iter()
+                .map(|(target, id)| format!("音轨 {target} ← {id}"))
+                .collect();
+            // 描述里点名自动加载的预制（提案摘要随响应回传）。
+            description.push_str(&format!("；自动加载默认预制：{}", names.join("、")));
+        }
+    }
     propose_draft(
         domain,
         project,
@@ -3240,6 +3459,136 @@ fn plan_set_macro(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
         format!("宏调整: 音轨 {track_id} 宏 #{macro_index} → {value}"),
         format!("set_macro {track_id}#{macro_index}"),
         macro_plan.ops,
+        call,
+    )
+}
+
+/// `yeban_list_presets`（只读；不要求活跃工程）。
+///
+/// `kind` 缺省 `all`；`instrument` 可选（乐器 slug 过滤）。
+fn plan_list_presets(call: &ToolCall) -> Result<Plan, Fault> {
+    let kind = arg_str(call, "kind").unwrap_or("all");
+    if !matches!(kind, "system" | "user" | "all") {
+        return Err(Fault::domain(
+            ErrorCode::InvalidParameterRange,
+            format!("`kind` 只认 system/user/all，实际收到 `{kind}`"),
+        ));
+    }
+    let instrument = arg_str(call, "instrument");
+    Ok(Plan::Query {
+        data: preset::list_presets_json(kind, instrument),
+    })
+}
+
+/// `yeban_apply_preset`（提案路径；`autoMerge: true` 可一次调用落 main）。
+///
+/// 跳过的发送 / 宏不静默丢弃：写进提案描述（提案摘要随响应回传）。
+fn plan_apply_preset(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
+    let project = require_active(domain)?;
+    let track_id = arg_id(call, "trackId")?;
+    let preset_id = arg_str(call, "presetId").ok_or_else(|| {
+        Fault::domain(ErrorCode::InvalidParameterRange, "`presetId` 必须是字符串")
+    })?;
+    let preset = preset::resolve_preset(&domain.embedded_presets, preset_id)?;
+    let categories = preset::parse_categories(call.arguments.get("categories"))?;
+    let plan = preset::build_apply_ops(project, &track_id, &preset, &categories)?;
+    let mut description = format!(
+        "应用预制 {preset_id} → 音轨 {track_id}（类别：{}）",
+        plan.categories.join(", ")
+    );
+    if !plan.sends_skipped.is_empty() {
+        description.push_str(&format!(
+            "；跳过的发送（目标 Aux 不存在）：{}",
+            plan.sends_skipped.join(", ")
+        ));
+    }
+    if plan.macros_skipped > 0 {
+        description.push_str(&format!(
+            "；跳过的宏（超出当前宏位数）：{} 个",
+            plan.macros_skipped
+        ));
+    }
+    propose_draft(
+        domain,
+        project,
+        "preset",
+        description,
+        format!("apply_preset {track_id} {preset_id}"),
+        plan.ops,
+        call,
+    )
+}
+
+/// `yeban_save_preset`（写用户库，不改工程；`plan` 只构造校验好的预制，`apply`
+/// 才写盘，因此 `dryRun` 一个字节都不写 —— 不走 `Plan::Query`，因为 `plan` 阶段
+/// 写盘违反“plan 只读、dryRun 短路”纪律）。
+///
+/// 名重复时响亮拒绝（`overwrite: true` 才覆盖同一标识的文件）。
+fn plan_save_preset(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
+    let project = require_active(domain)?;
+    let track_id = arg_id(call, "trackId")?;
+    let name = arg_str(call, "name")
+        .ok_or_else(|| Fault::domain(ErrorCode::InvalidParameterRange, "`name` 必须是字符串"))?;
+    let scope = match arg_str(call, "scope").unwrap_or("instrument") {
+        "instrument" => yeban_model::preset::PresetScope::Instrument,
+        "track" => yeban_model::preset::PresetScope::Track,
+        other => {
+            return Err(Fault::domain(
+                ErrorCode::InvalidParameterRange,
+                format!("`scope` 只认 instrument/track，实际收到 `{other}`"),
+            ));
+        }
+    };
+    let overwrite = arg_bool(call, "overwrite", false);
+    let (preset, path, overwritten) =
+        preset::build_save_preset(project, &track_id, name, scope, overwrite)?;
+    Ok(Plan::SavePreset {
+        preset: Box::new(preset),
+        path,
+        overwritten,
+        track_id,
+    })
+}
+
+/// `yeban_preset_bypass`（提案路径；`autoMerge: true` 可一次调用落 main）。
+///
+/// `bypassed = true`：恢复 `previous` 快照，只旁通处理、不换乐器；
+/// `bypassed = false`：按当前 `preset_id` 重新应用该预制。
+fn plan_preset_bypass(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
+    let project = require_active(domain)?;
+    let track_id = arg_id(call, "trackId")?;
+    let bypassed = call
+        .arguments
+        .get("bypassed")
+        .and_then(Value::as_bool)
+        .ok_or_else(|| {
+            Fault::domain(ErrorCode::InvalidParameterRange, "`bypassed` 必须是布尔值")
+        })?;
+    let (ops, sends_skipped, macros_skipped) =
+        preset::build_bypass_ops(project, &track_id, bypassed, &domain.embedded_presets)?;
+    let mut description = if bypassed {
+        format!("旁通预制处理：音轨 {track_id}（恢复应用前快照，乐器不变）")
+    } else {
+        format!("取消预制旁通：音轨 {track_id}（按当前预制重新应用）")
+    };
+    if !sends_skipped.is_empty() {
+        description.push_str(&format!(
+            "；跳过的发送（目标 Aux 不存在）：{}",
+            sends_skipped.join(", ")
+        ));
+    }
+    if macros_skipped > 0 {
+        description.push_str(&format!(
+            "；跳过的宏（超出当前宏位数）：{macros_skipped} 个"
+        ));
+    }
+    propose_draft(
+        domain,
+        project,
+        "preset",
+        description,
+        format!("preset_bypass {track_id} bypassed={bypassed}"),
+        ops,
         call,
     )
 }
@@ -4144,7 +4493,7 @@ pub fn host_save_project(
     target: &Path,
     force: bool,
 ) -> Result<HostSaveOutcome, Fault> {
-    let (bytes, digest, assets, history_commits, changed, session_path) = {
+    let (material, changed, session_path) = {
         let active = domain.active.as_ref().ok_or_else(no_active_project)?;
         if active.read_only {
             return Err(Fault::domain(
@@ -4155,17 +4504,18 @@ pub fn host_save_project(
                 ),
             ));
         }
-        let (bytes, digest, assets, history_commits) = save_material(domain)?;
-        let changed = digest != active.saved_digest;
-        (
-            bytes,
-            digest,
-            assets,
-            history_commits,
-            changed,
-            active.path.clone(),
-        )
+        let material = save_material(domain, true)?;
+        let changed = material.digest != active.saved_digest;
+        (material, changed, active.path.clone())
     };
+    let SaveMaterial {
+        bytes,
+        digest,
+        assets,
+        history_commits,
+        embedded_preset_count,
+        embedded_preset_bytes,
+    } = material;
     if !force && !changed {
         return Ok(HostSaveOutcome {
             path: target.to_path_buf(),
@@ -4173,6 +4523,9 @@ pub fn host_save_project(
             skipped: true,
             assets,
             history_commits,
+            embedded_preset_count,
+            embedded_preset_bytes,
+            include_user_presets: true,
             digest,
         });
     }
@@ -4188,6 +4541,9 @@ pub fn host_save_project(
         skipped: false,
         assets,
         history_commits,
+        embedded_preset_count,
+        embedded_preset_bytes,
+        include_user_presets: true,
         digest,
     })
 }
@@ -4354,6 +4710,7 @@ pub fn commit_model_of(plan: &Plan) -> &'static str {
         | Plan::LaunchScene { .. }
         | Plan::ListProposals { .. }
         | Plan::ListInstruments { .. }
+        | Plan::SavePreset { .. }
         | Plan::ExportMidi { .. }
         | Plan::RenderSfzWav { .. }
         | Plan::ExportStems { .. }
@@ -4374,8 +4731,23 @@ fn apply_plan_model(domain: &mut Domain, plan: Plan) -> Result<ToolResponse, Fau
             digest,
             force,
             changed,
+            embedded_preset_count,
+            embedded_preset_bytes,
+            include_user_presets,
             ..
-        } => apply_save(domain, &path, &bytes, digest, force, changed),
+        } => apply_save(
+            domain,
+            &path,
+            &bytes,
+            digest,
+            force,
+            changed,
+            EmbeddedPresetReceipt {
+                count: embedded_preset_count,
+                bytes: embedded_preset_bytes,
+                included: include_user_presets,
+            },
+        ),
         Plan::Close {
             save_first,
             save,
@@ -4439,6 +4811,12 @@ fn apply_plan_model(domain: &mut Domain, plan: Plan) -> Result<ToolResponse, Fau
         // 只读：清单在 `plan` 里就组装好了（`apply` 一位都不改）。
         Plan::ListProposals { data } => Ok(ToolResponse::success(data)),
         Plan::ListInstruments { data } => Ok(ToolResponse::success(data)),
+        Plan::SavePreset {
+            preset,
+            path,
+            overwritten,
+            track_id,
+        } => apply_save_preset(&preset, &path, overwritten, &track_id),
         Plan::ImportAudio { import } => import_audio::apply(domain, &import),
         Plan::SvsSubmit { data } => Ok(ToolResponse::success(data)),
         Plan::SvsJob { data } => Ok(ToolResponse::success(data)),
@@ -4674,9 +5052,11 @@ fn apply_open(domain: &mut Domain, request: OpenRequest) -> Result<ToolResponse,
         already_open,
         history,
         assets,
+        embedded_presets,
         created,
     } = request;
     let asset_count = assets.len();
+    let embedded_count = embedded_presets.len();
     let history_commits = history.as_ref().map_or(0, |graph| graph.commit_count());
     if already_open {
         // 幂等: 同一个工程重复打开不是错误, 但也不重建历史。
@@ -4733,6 +5113,9 @@ fn apply_open(domain: &mut Domain, request: OpenRequest) -> Result<ToolResponse,
         history: history.map(|graph| *graph),
         assets,
     })?;
+    // `reset_history` 整体清空会话运行态（内嵌预制也在其中），因此这里再装入
+    // 本次打开的内嵌副本；`plan_open` 已校验过条目与引用，这里只做装入。
+    domain.set_embedded_presets(&embedded_presets)?;
     let seed_summary = created.as_ref().map(|seed| seed.summary.clone());
     Ok(ToolResponse::success(serde_json::json!({
         "opened": true,
@@ -4754,6 +5137,7 @@ fn apply_open(domain: &mut Domain, request: OpenRequest) -> Result<ToolResponse,
         "historyRestored": history_commits > 0,
         "historyCommits": domain.commit_count(),
         "assets": domain.asset_count(),
+        "embeddedPresets": embedded_count,
         "projectDigest": digest,
         "project": domain
             .active_project()
@@ -4775,6 +5159,18 @@ fn lock_mode(read_only: bool) -> store::LockMode {
 ///
 /// `bytes` 是**容器字节**（`ARCH-SEC-003`），落盘协议仍是 `ARCH-SEC-004` 的
 /// 同目录临时文件 + `fsync` + `rename`（唯一入口 [`store::write_project_atomic`]）。
+/// 保存收据里的内嵌预制三件套（设计稿 §5）：条目数、字节数、是否带出用户预制。
+/// 具名结构是刻意的：`apply_save` 的 9 个参数会触发 clippy 的 `too_many_arguments` 线。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct EmbeddedPresetReceipt {
+    /// 写进容器的内嵌用户预制数。
+    count: usize,
+    /// 内嵌用户预制的字节总数。
+    bytes: usize,
+    /// 本次保存是否带出用户预制。
+    included: bool,
+}
+
 fn apply_save(
     domain: &mut Domain,
     path: &Path,
@@ -4782,7 +5178,13 @@ fn apply_save(
     digest: String,
     force: bool,
     changed: bool,
+    embedded: EmbeddedPresetReceipt,
 ) -> Result<ToolResponse, Fault> {
+    let embedded = serde_json::json!({
+        "count": embedded.count,
+        "bytes": embedded.bytes,
+        "includedUserPresets": embedded.included,
+    });
     if !force && !changed {
         return Ok(ToolResponse::success(serde_json::json!({
             "saved": false,
@@ -4792,6 +5194,7 @@ fn apply_save(
             "bytes": bytes.len(),
             "format": store::DOCUMENT_FORMAT,
             "projectDigest": digest,
+            "embeddedPresets": embedded,
         })));
     }
     store::write_project_atomic(path, bytes)?;
@@ -4810,6 +5213,30 @@ fn apply_save(
         "historyCommits": domain.commit_count(),
         "projectDigest": digest,
         "forced": force,
+        "embeddedPresets": embedded,
+    })))
+}
+
+/// `yeban_save_preset` 的施加：把 `plan` 里已校验的预制写进用户库。
+///
+/// 不改工程、不动提交图谱、不动会话态（用户库是本机配置层，与工程无关）。
+fn apply_save_preset(
+    preset: &Preset,
+    path: &Path,
+    overwritten: bool,
+    track_id: &EntityId,
+) -> Result<ToolResponse, Fault> {
+    preset::write_user_preset_file(path, preset)?;
+    Ok(ToolResponse::success(serde_json::json!({
+        "saved": true,
+        "id": preset.id,
+        "name": preset.name,
+        "instrument": preset.instrument,
+        "scope": if preset.scope == yeban_model::preset::PresetScope::Track { "track" } else { "instrument" },
+        "path": path.display().to_string(),
+        "overwritten": overwritten,
+        "trackId": track_id.to_canonical_string(),
+        "note": "已写用户预制库；不改工程。要进工程包须保存工程（导出缺省带出用户预制）。",
     })))
 }
 
@@ -4827,10 +5254,25 @@ fn apply_close(
         digest,
         force,
         changed,
+        embedded_preset_count,
+        embedded_preset_bytes,
+        include_user_presets,
         ..
     }) = save.map(|boxed| *boxed)
     {
-        apply_save(domain, &save_path, &bytes, digest, force, changed)?;
+        apply_save(
+            domain,
+            &save_path,
+            &bytes,
+            digest,
+            force,
+            changed,
+            EmbeddedPresetReceipt {
+                count: embedded_preset_count,
+                bytes: embedded_preset_bytes,
+                included: include_user_presets,
+            },
+        )?;
         saved = true;
     }
     let was_read_only = domain.is_read_only();

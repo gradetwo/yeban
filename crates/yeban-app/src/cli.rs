@@ -3319,6 +3319,7 @@ pub fn load_project_with_clock(
                     project,
                     history_dag: Vec::new(),
                     assets: options.sample.assets(),
+                    embedded_presets: Vec::new(),
                 },
                 source: ProjectSource::Sample(options.sample),
             })
@@ -5931,6 +5932,7 @@ mod tests {
                 project: yeban_model::samples::default_project(),
                 history_dag: Vec::new(),
                 assets: Vec::new(),
+                embedded_presets: Vec::new(),
             },
             &path,
         )
@@ -8520,6 +8522,7 @@ mod tests {
                 project: crate::bridge::demo_project(),
                 history_dag: Vec::new(),
                 assets: Vec::new(),
+                embedded_presets: Vec::new(),
             },
             source: ProjectSource::Sample(Sample::Default),
         };
@@ -8585,6 +8588,7 @@ mod author_report_tests {
                 project,
                 history_dag: Vec::new(),
                 assets: Vec::new(),
+                embedded_presets: Vec::new(),
             },
             source: ProjectSource::Sample(Sample::Default),
         }

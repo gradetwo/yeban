@@ -1,0 +1,89 @@
+{
+  "format": 1,
+  "id": "sys:karoryfer-big-rusty-drums:drums-punchy-room",
+  "name": "Drums Punchy Room",
+  "instrument": "karoryfer-big-rusty-drums",
+  "instrument_sfz": "assets/samples/karoryfer-big-rusty-drums/Programs/01-full.sfz",
+  "scope": "instrument",
+  "author": "Yeban factory",
+  "version": "1.0.0",
+  "draft": true,
+  "draftNote": "设计稿 §3 散文草案：通道条压缩较重，磁带饱和轻量；发送到 Room Aux（-20 dB）。数值全是草案，待耳验。",
+  "strip": {
+    "input_gain_db": 0.0,
+    "hpf": {
+      "freq_hz": 0.0
+    },
+    "eq_enabled": true,
+    "eq": {
+      "low_gain": 0.0,
+      "low_freq": 200.0,
+      "mid_gain": 0.0,
+      "mid_freq": 1000.0,
+      "mid_q": 0.9,
+      "high_gain": 0.0,
+      "high_freq": 4000.0
+    },
+    "filter_enabled": true,
+    "filter": {
+      "cutoff_hz": 20000.0,
+      "resonance": 0.0,
+      "drive": 0.0
+    },
+    "compressor_enabled": true,
+    "compressor": {
+      "threshold_db": -12.0,
+      "ratio": 4.0,
+      "knee_db": 6.0,
+      "detector_s": 0.005,
+      "attack_s": 0.005,
+      "release_s": 0.1,
+      "makeup_db": 2.0
+    },
+    "dyn_eq": {
+      "freq_hz": 300.0,
+      "threshold_db": -24.0,
+      "max_cut_db": 0.0,
+      "q": 0.9,
+      "ratio": 4.0
+    },
+    "width": 1.0,
+    "ms_mid_gain_db": 0.0,
+    "ms_mid_freq_hz": 2000.0,
+    "mono_below_hz": 0.0,
+    "output_gain_db": 0.0
+  },
+  "sends": [
+    {
+      "aux": "Room",
+      "gain_db": -20.0,
+      "effect": "freeverb"
+    }
+  ],
+  "macros": [
+    {
+      "name": "打击感",
+      "value": 0.5,
+      "mappings": []
+    },
+    {
+      "name": "房间量",
+      "value": 0.5,
+      "mappings": []
+    }
+  ],
+  "saturation": {
+    "drive": 0.15,
+    "mix": 0.5,
+    "trim_db": 0.0,
+    "hf_hz": 20000.0,
+    "asym": 0.0
+  },
+  "reverb": {
+    "size": 0.45,
+    "damp": 0.35,
+    "mix": 0.25,
+    "width": 0.8,
+    "predelay": 0.012
+  }
+}
