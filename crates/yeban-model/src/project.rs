@@ -3460,10 +3460,9 @@ mod tests {
         // 序列化里没有它；类型对账须用一份带一条目的工程，否则本判据会把"有意省略"
         // 误报成"契约要求但实现未序列化"。值是 64 位小写十六进制（与契约的 pattern
         // 同一条），键是渲染根相对路径（与保存侧的落点同一条）。
-        project.embedded_samples.insert(
-            "assets/samples/kit/001.sfz".to_owned(),
-            "0".repeat(64),
-        );
+        project
+            .embedded_samples
+            .insert("assets/samples/kit/001.sfz".to_owned(), "0".repeat(64));
         let value = serde_json::to_value(project).expect("to_value");
         let mut divergences: Vec<String> = Vec::new();
         let table = schema_top_level_types();

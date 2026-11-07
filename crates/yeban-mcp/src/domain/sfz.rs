@@ -1721,11 +1721,17 @@ pub(crate) fn embedded_sample_key(binding_path: &str, raw_sample: &str) -> Strin
 /// 词法折叠一条 `/` 分隔路径：`.` 丢弃、`..` 弹一格（到顶为止）、空段丢弃；
 /// 绝对路径（`/` 开头）保留前导 `/`。⛔ 不碰文件系统（无 symlink 解析），
 /// 因此保存侧与渲染侧算出**同一个**字符串。
+///
+/// ⭐ Windows 分隔符先归一成 `/`：渲染侧的输入来自 `PathBuf::to_string_lossy()`
+///（Windows 上是 `\`），而保存侧的键是字符串拼出的 `/` 形式 —— 归一必须
+/// 发生在这里（两侧的唯一交汇点），否则 Windows 上查表永远失配
+///（`assets/samples/kit\low.wav` 查不到 `assets/samples/kit/low.wav`）。
 #[must_use]
 fn collapse_embedded_path(path: &str) -> String {
-    let absolute = path.starts_with('/');
+    let normalized = path.replace('\\', "/");
+    let absolute = normalized.starts_with('/');
     let mut parts: Vec<&str> = Vec::new();
-    for segment in path.split('/') {
+    for segment in normalized.split('/') {
         match segment {
             "" | "." => {}
             ".." => {
@@ -3722,6 +3728,25 @@ mod tests {
         assert_eq!(
             embedded_sample_key(binding, "sub/../tone60.wav"),
             "assets/samples/kit/tone60.wav"
+        );
+    }
+
+    /// 渲染侧查表键：`EmbeddedSampleCache::get` 收到的是 `PathBuf::to_string_lossy()`
+    /// 的结果 —— Windows 上是 `\` 分隔符。`collapse_embedded_path` 必须先把 `\`
+    /// 归一成 `/`，否则查不到保存侧的正斜杠键（Windows CI 独败，Linux/macOS 全过）。
+    #[test]
+    fn collapse_embedded_path_normalises_windows_separators() {
+        assert_eq!(
+            collapse_embedded_path("assets\\samples\\kit\\low.wav"),
+            "assets/samples/kit/low.wav"
+        );
+        assert_eq!(
+            collapse_embedded_path("assets\\samples\\kit\\..\\shared\\kick.wav"),
+            "assets/samples/shared/kick.wav"
+        );
+        assert_eq!(
+            collapse_embedded_path("assets/samples/kit/low.wav"),
+            "assets/samples/kit/low.wav"
         );
     }
 
