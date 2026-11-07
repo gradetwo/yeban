@@ -908,6 +908,78 @@ mod tests {
         assert_eq!(report_a.step_clamps, 0);
     }
 
+    /// 抖动诊断探针（REPORT-jitter-diagnosis.md）：速率 > 2.0 的拉伸在逐轮
+    /// 之间逐位不同，速率 ≤ 2.0 的逐位相同。
+    ///
+    /// 机理（signalsmith-stretch 0.1.3，`signalsmith-stretch.h`）：
+    /// 默认构造以 `std::random_device{}()` 播种 RNG（:38），Rust 绑定
+    /// （`src/wrapper.cpp`）只用默认构造，从不调播种构造（:39）；
+    /// 块 `timeFactor`（≈ 局部拉伸倍数）> `maxCleanStretch`（2，:484）
+    /// 时，逐 bin 从该 RNG 取随机时间因子（:614–615，:724，:744）。
+    /// 速率 ≤ 2.0 时三目取固定分支，不取数，故逐位确定。
+    ///
+    /// 3.0 臂钉住“修前不同”：修法（固定种子）落地后须改为 `assert_eq!`，
+    /// 与 1.5 臂同形；两臂合起来即修后逐轮逐位相同的回归判据。
+    #[test]
+    fn render_rate_3p0_differs_across_instances() {
+        let sr = 48_000;
+        let mut source = vec![0.0_f32; sr];
+        for (i, sample) in source.iter_mut().enumerate() {
+            *sample = (i as f32 * 0.001).sin() * 0.5;
+        }
+        let map = linear_map(3.0);
+        let (a, _) = render_continuous_timemap(
+            &source,
+            sr as u32,
+            &map,
+            sr,
+            StretchConfig::Custom2400_480,
+            None,
+        );
+        let (b, _) = render_continuous_timemap(
+            &source,
+            sr as u32,
+            &map,
+            sr,
+            StretchConfig::Custom2400_480,
+            None,
+        );
+        assert_eq!(a.len(), sr);
+        let diffs = a.iter().zip(b.iter()).filter(|(x, y)| x != y).count();
+        eprintln!("rate 3.0: differing samples {diffs} / {}", a.len());
+        assert_ne!(
+            a, b,
+            "rate 3.0 renders must differ across instances (pre-fix probe)"
+        );
+    }
+
+    #[test]
+    fn render_rate_1p5_is_deterministic() {
+        let sr = 48_000;
+        let mut source = vec![0.0_f32; sr];
+        for (i, sample) in source.iter_mut().enumerate() {
+            *sample = (i as f32 * 0.001).sin() * 0.5;
+        }
+        let map = linear_map(1.5);
+        let (a, _) = render_continuous_timemap(
+            &source,
+            sr as u32,
+            &map,
+            sr,
+            StretchConfig::Custom2400_480,
+            None,
+        );
+        let (b, _) = render_continuous_timemap(
+            &source,
+            sr as u32,
+            &map,
+            sr,
+            StretchConfig::Custom2400_480,
+            None,
+        );
+        assert_eq!(a, b, "rate 1.5 renders must be deterministic");
+    }
+
     #[test]
     fn render_burst_alignment_identity_and_stretched() {
         // 指标：突发包络峰在输出中的位置（采样）与映射预测位置之差（毫秒）。
