@@ -716,21 +716,29 @@ fn logic_pro_workflow_view_toggles_and_zoom() {
     );
 
     // 5. 测试 Cmd+Up / Cmd+Down 纵向音轨高度缩放 (Vertical Zoom In / Out)
+    //
+    // ⚠ 方向于 2026-11-07 按 Logic Pro 对调（UI 轨道交互支）：Logic 里
+    // `Cmd+↓` = Zoom Vertical In（轨道变高）、`Cmd+↑` = Zoom Vertical Out
+    //（轨道变矮），此前实现是反的。本判据 §5 此前钉的是旧方向，随本次
+    // 行为变更同步改过来；新测试 `track_reorder_and_navigation` 的判据 ②
+    // 已钉新方向。五处独立来源一致：dummies / shortcutfoo / slideshare /
+    // logicprokeycommands / cheatography 均写 `⌘↑ = Vertical Out`、
+    // `⌘↓ = Vertical In`。
     let h_start = ui.get_track_height_percent();
-    let consumed_v_in = ui.invoke_key_action("\u{f700}".into(), false, false, false, true);
-    assert!(consumed_v_in, "Cmd+Up 纵向放大必须被消费");
+    let consumed_v_in = ui.invoke_key_action("\u{f701}".into(), false, false, false, true);
+    assert!(consumed_v_in, "Cmd+Down 纵向放大必须被消费");
     let h_after_in = ui.get_track_height_percent();
     assert!(
         h_after_in > h_start,
-        "Cmd+Up 后 track_height_percent 必须增大"
+        "Cmd+Down 后 track_height_percent 必须增大"
     );
 
-    let consumed_v_out = ui.invoke_key_action("\u{f701}".into(), false, false, false, true);
-    assert!(consumed_v_out, "Cmd+Down 纵向缩小必须被消费");
+    let consumed_v_out = ui.invoke_key_action("\u{f700}".into(), false, false, false, true);
+    assert!(consumed_v_out, "Cmd+Up 纵向缩小必须被消费");
     let h_after_out = ui.get_track_height_percent();
     assert!(
         h_after_out < h_after_in,
-        "Cmd+Down 后 track_height_percent 必须减小"
+        "Cmd+Up 后 track_height_percent 必须减小"
     );
 }
 
