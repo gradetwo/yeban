@@ -2430,6 +2430,13 @@ pub fn build_live_ui_with(
         host::wire_track_select(&window, undo);
         host::wire_track_rename(&window, undo);
         host::wire_track_arm(&window);
+        // ⭐ 2026-11-07 夜半 UI 轨道交互修复线：缩放控件 / 移轨 / 横向滚动
+        // （与 `main.rs` 的产品进程调**同一个**函数 ⇒ 无头面与生产面不分叉；
+        // `tests/d_ui_11_serve_header_gestures.rs` 的名单对账要求两处都在场）。
+        host::wire_zoom_controls(&window, undo);
+        host::wire_track_reorder(&window, undo);
+        host::wire_arrangement_wheel(&window, undo);
+        host::wire_arrangement_hscroll(&window, undo);
         // `ADR-0004` S1 的纵向入口：与 `wire_track_select` 共用轨道头那一块 `TouchArea`
         // （按下 = 选中 + 抓住行高，移动 = 改高，松手 / `Escape` = 收尾）。
         host::wire_track_height_drag(&window, undo);

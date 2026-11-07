@@ -484,7 +484,10 @@ const PER_FRAME_ARRAY_REWRITE_BUDGET: usize = 58;
 /// ⭐ `D-UI-16`（2026-11-02）：多**一行** `ui.set_clip_mutes`（`Cmd/Ctrl+M` 的结果读数，
 /// 与上面 `track-mutes` 同族）⇒ **100 → 101**。它的消费者住在**默认帧**（编曲视图的
 /// `clip-{ulid}-header` 底色），但默认全 `muted = false` ⇒ 底色不变 ⇒ ⛔ 基准无需重录。
-const APPLY_VIEW_WRITE_SITE_BUDGET: usize = 101;
+/// ⭐ 2026-11-07（夜半 UI 轨道交互修复线）：多**一行** `ui.set_arrangement_content_px`
+/// （横向滚动条的滑块大小与位置 ⇒ 内容总长，标量）⇒ **101 → 102**。消费者是编曲视图
+/// 底部的滚动条（默认帧新增控件 ⇒ 基准须重录，见完结回执）。
+const APPLY_VIEW_WRITE_SITE_BUDGET: usize = 102;
 
 /// 取 `[BASELINE-003]` 第 `frame` 帧的滚动偏移（与 `examples/fps_gpu.rs` 同款换算）。
 fn scroll_at(frame: usize) -> f32 {

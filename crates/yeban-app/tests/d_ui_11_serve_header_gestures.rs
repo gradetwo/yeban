@@ -575,8 +575,12 @@ fn dragging_a_track_header_resizes_that_row_on_the_serve_surface() {
     assert!(!start_active, "起点不该有进行中的手势");
     assert_eq!(start_track, "", "起点不该有粘住的「拖的是哪一行」");
 
-    // 落点与判据 ②③④ 同一个（`HEADER_SAFE_X`, 行中）⇒ 一次按下**同时**是选中与拖拽起手，
-    // 这正是 `.slint` 那一块 `TouchArea` 的 down 分支写下的两个回调。
+    // 落点与判据 ②③④ 同一个 x（`HEADER_SAFE_X`），y 改为**底边 6px 内** ⇒ 一次按下
+    // **同时**是选中与拖拽起手，这正是 `.slint` 那一块 `TouchArea` 的 down 分支写下的
+    // 两个回调。
+    // ⭐ 2026-11-07（夜半 UI 轨道交互修复线）：包头手势分区后，行中按下 = **重排**
+    // （名称区），只有底边 6px 才是高度拖拽。旧的"行中按下"会进重排链、行高一位不动，
+    // ⛔ 不是"行高拖不动"。按下点改 `h - 3`（底边 6px 内），位移期望不变。
     let (hx, hy, w, h) = rig.bounds("track-1-header");
     assert!(
         w > HEADER_SAFE_X && h > 0.0,
@@ -584,7 +588,7 @@ fn dragging_a_track_header_resizes_that_row_on_the_serve_surface() {
     );
 
     // ⚠ 位移量必须**留在这一行内**，而且这是本判据的边界，不是巧合：
-    // 按下点在行中 ⇒ 向上的可用行程只有 `h/2`（实测行高 54 ⇒ 27 px）。
+    // 按下点在底边 3px 处 ⇒ 向上的可用行程约 `h - 3`（实测行高 54 ⇒ 51 px）。
     // 无头注入的 `ui/dispatch_pointer_move` 带的是**窗口绝对坐标**，事件按"当前落点
     // 命中谁"归属；跨元素之后是否还保持按下那一刻的捕获 = **未证**（真实 winit 路径由
     // Slint 自己抓指针，两条路不是一条，⛔ 不拿一条的存在去推另一条）。
@@ -593,14 +597,15 @@ fn dragging_a_track_header_resizes_that_row_on_the_serve_surface() {
     // 那一条红**不能**读成"行高拖不动"，它读的是"指针离开了这一行"。
     let rise = h / 2.0 - 4.0;
 
-    rig.tap_start("track-1-header", HEADER_SAFE_X, h / 2.0);
+    rig.tap_start("track-1-header", HEADER_SAFE_X, h - 3.0);
     assert!(
         rig.drag_state().0,
         "按下后手势必须处于进行中（`.slint` 的 down → `track-height-grab` 转发了）"
     );
 
     // 向上拖 `rise` px（Slint 的 y 轴向下 ⇒ 绝对 y 减小 = 变高）。
-    rig.pointer_move(hx + HEADER_SAFE_X, hy + h / 2.0 - rise);
+    // 按下点在底边 3px 处 ⇒ 终点 y = h−3−rise，仍在行内（见上）。
+    rig.pointer_move(hx + HEADER_SAFE_X, hy + h - 3.0 - rise);
     rig.pointer_up();
 
     let (active, track) = rig.drag_state();
@@ -635,8 +640,8 @@ fn dragging_a_track_header_resizes_that_row_on_the_serve_surface() {
     // 边界**观测**（⛔ 不是判据）：把指针拖出这一行之后，无头面还认不认这次捕获。
     // 记下来是为了让报告能说清"行内可测"与"跨元素未证"这两件事的界线，
     // 而不是把一次红误读成产品缺陷（首版就误读过一次）。
-    // ---------------------------------------------------------------------
-    rig.tap_start("track-1-header", HEADER_SAFE_X, h / 2.0);
+    // ⭐ 2026-11-07：按下点同样改底边 3px 处（行中按下已是重排链，不再是高度拖拽）。
+    rig.tap_start("track-1-header", HEADER_SAFE_X, h - 3.0);
     rig.pointer_move(hx + HEADER_SAFE_X, hy - 10.0); // 行上沿以外
     rig.pointer_up();
     let outside = rig.heights();

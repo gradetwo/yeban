@@ -1729,6 +1729,31 @@ pub struct YebanProjectV1 {
     /// 列为 required，此前的 `#[serde(default)]` 让实现**静默违反自己的契约**；
     /// 而且缺键等于静默清空整首曲子的音轨。
     pub tracks: BTreeMap<EntityId, TrackV3>,
+    /// 轨道**显示顺序**：非主总线轨道的身份，按用户看到的上下顺序排列。
+    ///
+    /// 顺序载体（2026-11-07 夜半 UI 轨道交互修复线，二选一的裁决）：
+    /// (i) 本字段（顶层 `Vec<EntityId>`）胜过 (ii) `TrackV3` 上加 `order` 字段。
+    /// 理由三条：① 改动面最小 —— 顺序只住一处，投影只改两处顺序敏感点
+    /// （`bridge::track_rows_with_layout` 与 `ViewState::from_project…` 的轨道循环）；
+    /// ② 旧工程逐位不变 —— 空表不写出（见下），未移动过的工程渲染逐位相同；
+    /// ③ 确定性不破 —— 顺序是**显式**的 `Vec`（不是 `HashMap`），`BTreeMap` 的
+    /// 身份升序仍是"没有显式顺序时"的唯一回退。
+    ///
+    /// `#[serde(default, skip_serializing_if = "Vec::is_empty")]` 与
+    /// `embedded_samples` 同一条 skip discipline ⇒ **空表不写出**：旧工程逐字节不动，
+    /// 只读打开旧工程、渲染旧工程输出逐位不变。第一次移动轨道时物化整表
+    /// （见 [`YebanProjectV1::move_track`]）。
+    ///
+    /// 语义：
+    /// - 空表 = 没有显式顺序 ⇒ 显示顺序 = `tracks` 的 `BTreeMap` 身份升序
+    ///   （与 `MoveTrack` 出现之前逐位相同）；
+    /// - 非空表 = 显式顺序：表中**存在且非主总线**的身份按表序排在前面，
+    ///   表中**缺失**的轨道（旧文件 / 手改文件）按身份升序追加在后面 ——
+    ///   投影**永不丢轨**（见 [`YebanProjectV1::display_track_ids`]）；
+    /// - 表里只应有非主总线身份：主总线身份若在表里，投影忽略它
+    ///   （`validate` 不为此拒收整个工程 —— 手改文件仍能打开）。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub track_order: Vec<EntityId>,
     /// 主总线音轨身份。
     ///
     /// **必需** [ADR-0001 D43]：这是唯一声学出口的身份，缺字段会静默退化成 nil。
@@ -1790,6 +1815,7 @@ impl Default for YebanProjectV1 {
             transport: TransportConfig::default(),
             sections: BTreeMap::new(),
             tracks: BTreeMap::new(),
+            track_order: Vec::new(),
             master_bus_track_id: EntityId::default(),
             routing_graph: RoutingGraph::default(),
             scenes: BTreeMap::new(),
@@ -1962,6 +1988,21 @@ impl YebanProjectV1 {
             }
         }
 
+        // 显式轨道顺序：重复身份 / 不存在的身份 ⇒ 整个工程拒收（与键与实体不一致同档）。
+        // 缺失的身份**不**拒收（投影按身份升序追加，⛔ 永不丢轨）；主总线身份在表里
+        // 也不拒收（投影忽略它，手改文件仍能打开）。
+        {
+            let mut seen = std::collections::BTreeSet::new();
+            for id in &self.track_order {
+                if !seen.insert(*id) {
+                    return Err(ModelError::DuplicateEntityId { id: *id });
+                }
+                if !self.tracks.contains_key(id) {
+                    return Err(ModelError::TrackNotFound { id: *id });
+                }
+            }
+        }
+
         for (key, entry) in &self.clip_pool {
             if *key != entry.id {
                 return Err(ModelError::EntityKeyMismatch {
@@ -2057,6 +2098,10 @@ impl YebanProjectV1 {
         if self.tracks.contains_key(&track.id) {
             return Err(ModelError::DuplicateEntityId { id: track.id });
         }
+        // 显式顺序在场时新轨追加到表尾（主总线永不进表）⇒ 建轨不打乱既有顺序。
+        if !self.track_order.is_empty() && track.id != self.master_bus_track_id {
+            self.track_order.push(track.id);
+        }
         self.tracks.insert(track.id, track);
         Ok(())
     }
@@ -2067,9 +2112,73 @@ impl YebanProjectV1 {
     ///
     /// 音轨不存在 → [`ModelError::TrackNotFound`]。
     pub fn remove_track(&mut self, id: &EntityId) -> Result<TrackV3, ModelError> {
+        self.track_order.retain(|candidate| candidate != id);
         self.tracks
             .remove(id)
             .ok_or(ModelError::TrackNotFound { id: *id })
+    }
+
+    /// 非主总线轨道的**显示顺序**（身份列表）。
+    ///
+    /// 空表 ⇒ `BTreeMap` 身份升序（与 `MoveTrack` 出现之前逐位相同）；
+    /// 非空表 ⇒ 表序在前、表中缺失的轨道按身份升序追加在后（⛔ 永不丢轨）；
+    /// 主总线身份 ⇒ 恒被排除（它有固定角色，不参与显示顺序）。
+    #[must_use]
+    pub fn display_track_ids(&self) -> Vec<EntityId> {
+        if self.track_order.is_empty() {
+            return self
+                .tracks
+                .values()
+                .filter(|track| track.id != self.master_bus_track_id)
+                .map(|track| track.id)
+                .collect();
+        }
+        let mut ordered: Vec<EntityId> = Vec::with_capacity(self.tracks.len());
+        for id in &self.track_order {
+            if *id == self.master_bus_track_id {
+                continue;
+            }
+            if self.tracks.contains_key(id) && !ordered.contains(id) {
+                ordered.push(*id);
+            }
+        }
+        for track in self.tracks.values() {
+            if track.id != self.master_bus_track_id && !ordered.contains(&track.id) {
+                ordered.push(track.id);
+            }
+        }
+        ordered
+    }
+
+    /// 把一轨移到显示顺序的 `new_index` 处（`0..显示轨数`）。
+    ///
+    /// 调用方（[`crate::ops::Op::MoveTrack`] 的前置条件）保证：轨道存在且非主总线、
+    /// `new_index` 在界内、且确实换了位置。本函数只做物化 + 搬移，⛔ 不再校验
+    /// （与 `insert_track` / `remove_track` 的分工同款：校验在 `Op` 层）。
+    ///
+    /// 首次调用时物化整表（当前显示顺序原样写入 `track_order`），之后只搬一项。
+    pub fn move_track(&mut self, track_id: &EntityId, new_index: usize) {
+        // 表空、或表里没有这一轨（手改文件）⇒ 先物化整张显示顺序（缺失轨已追加在后）。
+        if self.track_order.is_empty() || !self.track_order.contains(track_id) {
+            self.track_order = self.display_track_ids();
+        }
+        if let Some(position) = self.track_order.iter().position(|id| id == track_id) {
+            self.track_order.remove(position);
+            let at = new_index.min(self.track_order.len());
+            self.track_order.insert(at, *track_id);
+        }
+        // 规范化：移完若与默认身份升序逐位相同 ⇒ 清回空表。显示顺序一位不变，
+        // 但"移过去再移回来"能**精确还原**（`Op::MoveTrack` 的逆操作依赖这一点：
+        // 正向物化了表，逆向必须能把它清掉，否则 `doc != snapshot`）。
+        let default: Vec<EntityId> = self
+            .tracks
+            .values()
+            .filter(|track| track.id != self.master_bus_track_id)
+            .map(|track| track.id)
+            .collect();
+        if self.track_order == default {
+            self.track_order.clear();
+        }
     }
 
     /// 只读访问音轨。
@@ -3455,14 +3564,17 @@ mod tests {
     #[test]
     fn implementation_matches_the_schema_type_table_exactly() {
         let mut project = YebanProjectV1::default();
-        // `embedded_samples` 是顶层唯一的 `skip_serializing_if` 字段（空表不写出 ——
-        // 与 `sampler: None` 同一条 discipline，旧工程逐字节不动）⇒ 默认工程的
-        // 序列化里没有它；类型对账须用一份带一条目的工程，否则本判据会把"有意省略"
-        // 误报成"契约要求但实现未序列化"。值是 64 位小写十六进制（与契约的 pattern
-        // 同一条），键是渲染根相对路径（与保存侧的落点同一条）。
+        // `embedded_samples` 与 `track_order` 是顶层仅有的两个 `skip_serializing_if`
+        // 字段（空表不写出 —— 与 `sampler: None` 同一条 discipline，旧工程逐字节不动）
+        // ⇒ 默认工程的序列化里没有它们；类型对账须用一份带条目的工程，否则本判据会
+        // 把"有意省略"误报成"契约要求但实现未序列化"。`embedded_samples` 的值是 64 位
+        // 小写十六进制（与契约的 pattern 同一条），键是渲染根相对路径（与保存侧的落点
+        // 同一条）；`track_order` 的值是一条 ULID（与契约的 pattern 同一条）。
+        // 本判据只量 JSON 类型，⛔ 不量文档合法性（默认工程本就没有轨道）。
         project
             .embedded_samples
             .insert("assets/samples/kit/001.sfz".to_owned(), "0".repeat(64));
+        project.track_order = vec![fixture_id(2)];
         let value = serde_json::to_value(project).expect("to_value");
         let mut divergences: Vec<String> = Vec::new();
         let table = schema_top_level_types();

@@ -959,6 +959,7 @@ fn build_project(
         transport: TransportConfig::default(),
         sections: BTreeMap::new(),
         tracks,
+        track_order: Vec::new(),
         master_bus_track_id: master_id,
         routing_graph: RoutingGraph { nodes, edges },
         scenes: BTreeMap::new(),

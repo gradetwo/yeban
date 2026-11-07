@@ -826,6 +826,74 @@ impl ElementRegistry {
             "走带光标",
             true,
         );
+        // ⭐ 2026-11-07（夜半 UI 轨道交互修复线）：缩放工具栏 / 横向滚动条 /
+        // 空车道拖动面 / 移轨插入线。角色与 `.slint` 的 `accessible-role` 保持一致。
+        // 插入线只在重排拖动时实例化（条件元素），注册表仍**无条件**登记 ——
+        // 对账是静态文本比对（`slint_accessible_ids_and_registry_cover_each_other`），
+        // 条件元素的 id 不登记会被判成"`.slint` 里有、注册表里无"。
+        registry.add(
+            "arrangement-zoom-h-out-button",
+            ElementKind::Button,
+            "workspace/arrangement_view.slint",
+            "横向缩小",
+            false,
+        );
+        registry.add(
+            "arrangement-zoom-h-slider",
+            ElementKind::Slider,
+            "workspace/arrangement_view.slint",
+            "横向缩放",
+            false,
+        );
+        registry.add(
+            "arrangement-zoom-h-in-button",
+            ElementKind::Button,
+            "workspace/arrangement_view.slint",
+            "横向放大",
+            false,
+        );
+        registry.add(
+            "arrangement-zoom-v-out-button",
+            ElementKind::Button,
+            "workspace/arrangement_view.slint",
+            "纵向缩小",
+            false,
+        );
+        registry.add(
+            "arrangement-zoom-v-slider",
+            ElementKind::Slider,
+            "workspace/arrangement_view.slint",
+            "纵向缩放",
+            false,
+        );
+        registry.add(
+            "arrangement-zoom-v-in-button",
+            ElementKind::Button,
+            "workspace/arrangement_view.slint",
+            "纵向放大",
+            false,
+        );
+        registry.add(
+            "arrangement-hscroll",
+            ElementKind::Slider,
+            "workspace/arrangement_view.slint",
+            "编曲横向滚动条",
+            false,
+        );
+        registry.add(
+            "arrangement-lane-scroll-area",
+            ElementKind::Region,
+            "workspace/arrangement_view.slint",
+            "编曲空车道拖动滚动面",
+            false,
+        );
+        registry.add(
+            "track-reorder-insertion-line",
+            ElementKind::Image,
+            "workspace/arrangement_view.slint",
+            "轨道插入位置",
+            true,
+        );
 
         // ---- 自动化泳道（`line/app-automation-ui`） ----
         //

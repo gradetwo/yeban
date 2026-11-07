@@ -302,6 +302,16 @@
         },
         {
           "required": [
+            "MoveTrack"
+          ],
+          "properties": {
+            "MoveTrack": {
+              "type": "object"
+            }
+          }
+        },
+        {
+          "required": [
             "ConnectRouting"
           ],
           "properties": {

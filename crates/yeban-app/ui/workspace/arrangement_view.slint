@@ -68,6 +68,13 @@ export component ArrangementView inherits Rectangle {
     property <length> drag-origin-x: 0px;
     property <bool> drag-moved: false;
     property <bool> dragging: false;
+    // ⭐ 2026-11-07（夜半 UI 轨道交互修复线）：空车道拖动的**界面本地**读数
+    // （与卷帘 `piano_roll.slint` 的拖动滚动手势面同款：`drag-last-x` 是上一帧的 x，
+    // 增量 = 上一帧 − 当前帧 ⇒ 向右拖内容左移、偏移增加）。
+    property <length> lane-drag-origin-x: 0px;
+    property <length> lane-drag-last-x: 0px;
+    property <bool> lane-drag-moved: false;
+    property <bool> lane-dragging: false;
     // 每条非主总线轨道的行几何 (投影的**前缀和**; ADR-0004 S0)。
     // 与 `tracks` **同索引集**: 包头用 `track_index`、时间轴车道用 `lane_index`。
     in property <[length]> track-ys: [];
@@ -239,9 +246,239 @@ export component ArrangementView inherits Rectangle {
     /// 起点 tick 由宿主从投影的 `SectionView.start_tick` 现读）。
     callback section-seek(int);
 
+    // ---------------------------------------------------------------- ⭐ 2026-11-07 夜半 UI 轨道交互修复线
+    //
+    // 横向偏移（`scroll-x`）与内容总长（`content-px`）由 `app.slint` 从根转发：
+    // 偏移是宿主拥有的 `roll-scroll-x`（与卷帘共用）；总长是 `apply_view` 每次注入的
+    // `arrangement-content-px`。剪辑 x / 标尺小节线 x / 章节卡片 x / 循环区 x /
+    // 走带光标 x / 自动化折线 x **各减 `scroll-x`**（包头列固定，仿 Logic 的轨道列表列）；
+    // 注入的仍是**绝对值**（`apply_view` 不减滚动），减法只在 `.slint` 这一处。
+    in property <float> scroll-x: 0.0;
+    in property <float> content-px: 0.0;
+    // 缩放滑块 fraction（根 → 视图单向；拖动经 `zoom-*-slider` 回宿主）。
+    in property <float> zoom-h-fraction: 0.495;
+    in property <float> zoom-v-fraction: 0.231;
+    // 重排手势态（根 → 视图单向；`preview-index` < 0 ⇒ 不画插入线）。
+    in property <bool> track-reorder-active: false;
+    in property <int> track-reorder-index: -1;
+    in property <int> track-reorder-preview-index: -1;
+    in property <float> track-reorder-preview-y: 0.0;
+    /// 缩放按钮：`(放大?)` ⇒ `host::wire_zoom_controls`（与键盘同一条步进算法）。
+    callback zoom-h-step(bool);
+    callback zoom-v-step(bool);
+    /// 缩放滑块：`(0.0..=1.0)` ⇒ 宿主换算后走 `set_*`（唯一写点）。
+    callback zoom-h-slider(float);
+    callback zoom-v-slider(float);
+    /// 重排手势（`host::wire_track_reorder`）：按下 / 拖动（**行空间 y**）/ 收尾。
+    callback track-reorder-grab(int, length);
+    callback track-reorder-drag(int, length);
+    callback track-reorder-release(int);
+    /// 包头无障碍动作：`(轨道下标, 方向)`（-1 = 上移一格，+1 = 下移一格）⇒ 直接提交。
+    callback track-reorder-step(int, int);
+    /// 编曲滚轮（`host::wire_arrangement_wheel`）：`(横向增量, 纵向增量, Shift, Option)`。
+    callback arrangement-wheel(length, length, bool, bool);
+    /// 横向滚动条（`host::wire_arrangement_hscroll`）：绝对目标 px。
+    callback arrangement-scroll-to(length);
+    /// 空车道拖动 ⇒ 横向滚动（与卷帘 `scroll-requested` 同一条回调，宿主
+    /// `install_roll_scroll`；只在空白车道区生效，不与剪辑拖拽抢事件）。
+    callback scroll-requested(length);
+
+    // ---------------------------------------------------------------- ⭐ 缩放工具栏（2026-11-07 ①：可见控件路）
+    //
+    // 位置：左上 168×42 的空角（章节带与标尺带的 x < 168 区域，今日空白；包头列从
+    // `rows-top` = 42px 才开始）。两行：H 行（y 0–20，横向）与 V 行（y 20–42，纵向），
+    // 每行 [− 按钮][滑块][+ 按钮]。按钮调既有步进（与键盘同一条算法）；滑块是自定义
+    // 控件（轨道 + 滑块 TouchArea 拖动报 fraction，按下即定位）。
+    //
+    // 滑块映射（宿主 `host::zoom_*_fraction` 双向换算，纯函数有单测）：
+    // H 用对数（fraction = ln(tpp)/ln(960)，tpp 1..960），V 用线性
+    // （fraction = (percent−40)/260，percent 40..300）。滑块 fraction 由根属性
+    // `zoom-*-fraction` 驱动（宿主在 `set_*` 唯一写点同步 ⇒ 按钮与滑块不可能分叉）。
+    // 滑块 TouchArea 的 fraction = (mouse-x − 7px) / 114px：7px = (轨道 x 22 −
+    // TouchArea x 20) + 半个滑块 5px（`mouse-x` 是 TouchArea 局部坐标，⛔ 不是绝对值）。
+    //
+    // ⚠ 默认帧会被改动（角落工具栏 + 底部滚动条）⇒ golden 须按仓库流程重录
+    // （`YEBAN_WRITE_GOLDEN=1`，见完结回执）。
+    // H 行：横向缩放
+    Rectangle {
+        x: 2px;
+        y: 1px;
+        width: 18px;
+        height: 18px;
+        background: Tokens.bg-panel;
+        border-radius: Tokens.radius-sm;
+        accessible-role: button;
+        accessible-id: "arrangement-zoom-h-out-button";
+        accessible-label: "横向缩小";
+        accessible-action-default => { root.zoom-h-step(false); }
+        UiText {
+            x: 0;
+            y: 0;
+            width: parent.width;
+            height: parent.height;
+            text: "-";
+            color: Tokens.ink-2;
+            font-size: Tokens.font-size-md;
+            horizontal-alignment: center;
+        }
+        TouchArea {
+            width: parent.width;
+            height: parent.height;
+            clicked => { root.zoom-h-step(false); }
+        }
+    }
+    Rectangle {
+        x: 22px;
+        y: 8px;
+        width: 124px;
+        height: 4px;
+        background: Tokens.line;
+        border-radius: 2px;
+    }
+    Rectangle {
+        x: 22px + root.zoom-h-fraction * 114px;
+        y: 2px;
+        width: 10px;
+        height: 16px;
+        background: Tokens.gold;
+        border-radius: Tokens.radius-sm;
+    }
+    TouchArea {
+        x: 20px;
+        y: 0;
+        width: 128px;
+        height: 20px;
+        accessible-role: slider;
+        accessible-id: "arrangement-zoom-h-slider";
+        accessible-label: "横向缩放";
+        accessible-value: "" + Math.round(root.zoom-h-fraction * 100) + "%";
+        accessible-action-increment => { root.zoom-h-step(true); }
+        accessible-action-decrement => { root.zoom-h-step(false); }
+        pointer-event(event) => {
+            if event.kind == PointerEventKind.down || event.kind == PointerEventKind.move {
+                root.zoom-h-slider(max(0.0, min(1.0, (self.mouse-x - 7px) / 114px)));
+            }
+        }
+    }
+    Rectangle {
+        x: 148px;
+        y: 1px;
+        width: 18px;
+        height: 18px;
+        background: Tokens.bg-panel;
+        border-radius: Tokens.radius-sm;
+        accessible-role: button;
+        accessible-id: "arrangement-zoom-h-in-button";
+        accessible-label: "横向放大";
+        accessible-action-default => { root.zoom-h-step(true); }
+        UiText {
+            x: 0;
+            y: 0;
+            width: parent.width;
+            height: parent.height;
+            text: "+";
+            color: Tokens.ink-2;
+            font-size: Tokens.font-size-md;
+            horizontal-alignment: center;
+        }
+        TouchArea {
+            width: parent.width;
+            height: parent.height;
+            clicked => { root.zoom-h-step(true); }
+        }
+    }
+    // V 行：纵向缩放
+    Rectangle {
+        x: 2px;
+        y: 21px;
+        width: 18px;
+        height: 18px;
+        background: Tokens.bg-panel;
+        border-radius: Tokens.radius-sm;
+        accessible-role: button;
+        accessible-id: "arrangement-zoom-v-out-button";
+        accessible-label: "纵向缩小";
+        accessible-action-default => { root.zoom-v-step(false); }
+        UiText {
+            x: 0;
+            y: 0;
+            width: parent.width;
+            height: parent.height;
+            text: "-";
+            color: Tokens.ink-2;
+            font-size: Tokens.font-size-md;
+            horizontal-alignment: center;
+        }
+        TouchArea {
+            width: parent.width;
+            height: parent.height;
+            clicked => { root.zoom-v-step(false); }
+        }
+    }
+    Rectangle {
+        x: 22px;
+        y: 28px;
+        width: 124px;
+        height: 4px;
+        background: Tokens.line;
+        border-radius: 2px;
+    }
+    Rectangle {
+        x: 22px + root.zoom-v-fraction * 114px;
+        y: 22px;
+        width: 10px;
+        height: 16px;
+        background: Tokens.gold;
+        border-radius: Tokens.radius-sm;
+    }
+    TouchArea {
+        x: 20px;
+        y: 20px;
+        width: 128px;
+        height: 20px;
+        accessible-role: slider;
+        accessible-id: "arrangement-zoom-v-slider";
+        accessible-label: "纵向缩放";
+        accessible-value: "" + Math.round(root.zoom-v-fraction * 100) + "%";
+        accessible-action-increment => { root.zoom-v-step(true); }
+        accessible-action-decrement => { root.zoom-v-step(false); }
+        pointer-event(event) => {
+            if event.kind == PointerEventKind.down || event.kind == PointerEventKind.move {
+                root.zoom-v-slider(max(0.0, min(1.0, (self.mouse-x - 7px) / 114px)));
+            }
+        }
+    }
+    Rectangle {
+        x: 148px;
+        y: 21px;
+        width: 18px;
+        height: 18px;
+        background: Tokens.bg-panel;
+        border-radius: Tokens.radius-sm;
+        accessible-role: button;
+        accessible-id: "arrangement-zoom-v-in-button";
+        accessible-label: "纵向放大";
+        accessible-action-default => { root.zoom-v-step(true); }
+        UiText {
+            x: 0;
+            y: 0;
+            width: parent.width;
+            height: parent.height;
+            text: "+";
+            color: Tokens.ink-2;
+            font-size: Tokens.font-size-md;
+            horizontal-alignment: center;
+        }
+        TouchArea {
+            width: parent.width;
+            height: parent.height;
+            clicked => { root.zoom-v-step(true); }
+        }
+    }
+
     // ---------------------------------------------------------------- 章节卡片层 (§4.3)
     for section_name[section_index] in root.sections : Rectangle {
-        x: 168px + root.section-positions[section_index];
+        x: 168px + root.section-positions[section_index] - (root.scroll-x * 1px);
         y: 0;
         width: root.section-widths[section_index];
         height: 20px;
@@ -337,6 +574,17 @@ export component ArrangementView inherits Rectangle {
             moved => {
                 root.ruler-seek(self.mouse-x);
             }
+            // ⭐ 2026-11-07（夜半 UI 轨道交互修复线）：滚轮分流 —— 带 Shift / Option
+            // 时接宿主（横向滚动 / 纵向缩放 / 横向缩放），无修饰返回 `reject`
+            // （标尺带不在 Flickable 内，无修饰的滚轮本来就什么都不做 ⇒ 行为不变）。
+            scroll-event(event) => {
+                if event.modifiers.shift || event.modifiers.alt {
+                    root.arrangement-wheel(event.delta-x, event.delta-y, event.modifiers.shift, event.modifiers.alt);
+                    accept
+                } else {
+                    reject
+                }
+            }
         }
 
         // 小节线位置由投影给出（一小节 = 960 PPQ × 分子 × 4 ÷ 分母 tick）。
@@ -344,7 +592,7 @@ export component ArrangementView inherits Rectangle {
         // 只有索引的 `for [i] in <model>`（上游 parser 的 doc 注释里有，真实语法没有）。
         // 实测解析错误见 docs/ledger/app-binding-notes.md（CI run 37228953370）。
         for _[bar_index] in root.bar-positions : Rectangle {
-            x: root.bar-positions[bar_index];
+            x: root.bar-positions[bar_index] - (root.scroll-x * 1px);
             y: 0;
             width: 1px;
             height: parent.height;
@@ -353,7 +601,7 @@ export component ArrangementView inherits Rectangle {
 
         // Logic Pro 循环区指示带 (Cycle/Loop bar)
         if root.cycle-enabled : Rectangle {
-            x: max(0px, (root.cycle-start-ticks / max(1, root.ticks-per-pixel)) * 1px);
+            x: max(0px, (root.cycle-start-ticks / max(1, root.ticks-per-pixel)) * 1px - (root.scroll-x * 1px));
             y: 0px;
             width: max(4px, ((root.cycle-end-ticks - root.cycle-start-ticks) / max(1, root.ticks-per-pixel)) * 1px);
             height: 4px;
@@ -388,7 +636,7 @@ export component ArrangementView inherits Rectangle {
         x: 0;
         y: root.rows-top;
         width: parent.width;
-        height: parent.height - root.rows-top;
+        height: parent.height - root.rows-top - 14px;
         content-width: self.width;
         content-height: max(self.height, root.sheet-height * 1px);
         interactive: true;
@@ -419,6 +667,11 @@ export component ArrangementView inherits Rectangle {
         // 无障碍默认动作 = 选中这条轨（与下面 `TouchArea` 的 down 逐字同一个回调）。
         // 屏读器 / 自动化因此**不需要**点像素坐标就能选中一条轨。
         accessible-action-default => { root.track-select(track_index); }
+        // ⭐ 2026-11-07（夜半 UI 轨道交互修复线）：包头无障碍移轨动作 ——
+        // 增 = 下移一格，减 = 上移一格（落点 `host::wire_track_reorder` 的
+        // `track-reorder-step`，直接提交；无菜单系统 ⇒ 这是键盘之外的配套操作）。
+        accessible-action-increment => { root.track-reorder-step(track_index, 1); }
+        accessible-action-decrement => { root.track-reorder-step(track_index, -1); }
 
         // 轨道头拖拽面（`ADR-0004` S1 的纵向入口）。
         //
@@ -428,24 +681,63 @@ export component ArrangementView inherits Rectangle {
         // - 它是包头矩形的**第一个**子元素（最底层）：静音 / 独奏两个 `TouchArea` 排在它
         //   之后，Slint 的命中测试自前往后 ⇒ 那两个按钮照旧先拿到点击，拖拽面只接管
         //   剩下的区域（这才是"轨道头可以按"与"按钮还能按"同时成立的原因）。
+        //
+        // ⭐ 2026-11-07（夜半 UI 轨道交互修复线）：手势分区（按 Logic：拖轨道号/名称区 =
+        // 重排，拖包头底部边缘条 = 高度）。按下时按 `mouse-y` 定区 —— y < 高度−6px 为
+        // 重排区（名称区），底边 6px 为高度区（现有行为保留、触发区收窄）。
+        // ⚠ **行为变更**：此前整个包头都改行高；此后行中按下不再改行高，既有高度拖拽
+        // 判据（`tests/d_ui_11_serve_header_gestures.rs` ⑤、`tests/live_ui_mcp.rs` 两处）
+        // 已同步改成"底边 6px 内按下"。单击仍选中（down 照旧调 `track-select`）。
         TouchArea {
             width: parent.width;
             height: parent.height;
             pointer-event(event) => {
                 if event.kind == PointerEventKind.down {
                     // ⭐ 任务单 `#192`：按下即选中（一次点击 = 选中这条轨，⛔ 不提交工程）。
-                    // 与拖行高共用**同一个** TouchArea ⇒ 零新像素、零新命中区域；
+                    // 与拖行高 / 重排共用**同一个** TouchArea ⇒ 零新像素、零新命中区域；
                     // 静音 / 独奏两个 `TouchArea` 仍先拿到点击（见上面的排序说明）。
                     root.track-select(track_index);
-                    root.track-height-grab(track_index, self.mouse-y);
+                    if self.mouse-y < self.height - 6px {
+                        // 名称区 ⇒ 重排：报**行空间 y**（行顶沿 + 头内 y），宿主算插入位置。
+                        root.track-reorder-grab(track_index, root.track-ys[track_index] + self.mouse-y);
+                    } else {
+                        root.track-height-grab(track_index, self.mouse-y);
+                    }
                 } else if event.kind == PointerEventKind.move {
-                    root.track-height-drag(track_index, self.mouse-y);
+                    if root.track-reorder-active {
+                        // ⭐ 2026-11-07：重排进行中按**已抓取下标**路由 —— 按下时的 `track-select`
+                        // 改选中会走 `apply_view` 重注模型（每次新建 `VecModel`）、重建包头项，
+                        // 按下那一刻的指针抓取随之失效（`i-slint-core` 的 `handle_mouse_grab` 遇
+                        // 上已销毁项就把事件交回命中测试），移出原包头后事件会落到别行的
+                        // TouchArea。下标取已抓取的那条；行空间 y 仍由接收头的自身几何算
+                        // （`track-ys[接收下标] + 头内 y`，在哪一行收到都是同一个行空间点）。
+                        root.track-reorder-drag(root.track-reorder-index, root.track-ys[track_index] + self.mouse-y);
+                    } else {
+                        root.track-height-drag(track_index, self.mouse-y);
+                    }
                 } else {
                     // `up` 与 `cancel` 都是收尾。`cancel` 由上游在"指针离开窗口 /
                     // 控件被禁用"时导出（`i-slint-core` 的 `input_items.rs`：
                     // `MouseEvent::Exit` ⇒ `PointerEventKind::Cancel`）⇒ 拖到窗口外松手
                     // 也走这条路，不会留下粘住的拖拽态。
-                    root.track-height-release(track_index);
+                    if root.track-reorder-active {
+                        // ⭐ 2026-11-07：同上，松手点若已越出原包头，`track_index` 是命
+                        // 中测试的那一行，不是拖的那条 ⇒ 按已抓取下标收尾，否则宿主因
+                        // 下标不符丢弃提交、拖拽态粘住。
+                        root.track-reorder-release(root.track-reorder-index);
+                    } else {
+                        root.track-height-release(track_index);
+                    }
+                }
+            }
+            // ⭐ 2026-11-07：滚轮分流 —— 带 Shift / Option 时接宿主，无修饰返回
+            // `reject` ⇒ 冒泡给 Flickable 纵向滚动（与车道滚轮同一条口径）。
+            scroll-event(event) => {
+                if event.modifiers.shift || event.modifiers.alt {
+                    root.arrangement-wheel(event.delta-x, event.delta-y, event.modifiers.shift, event.modifiers.alt);
+                    accept
+                } else {
+                    reject
                 }
             }
         }
@@ -617,10 +909,64 @@ export component ArrangementView inherits Rectangle {
         border-color: Tokens.line;
     }
 
+    // ⭐ 2026-11-07（夜半 UI 轨道交互修复线）：空车道拖动 ⇒ 横向滚动。
+    //
+    // 一块覆盖全部车道的 TouchArea（置于车道矩形循环之后、剪辑循环之前 ⇒ 剪辑仍在
+    // 上层，命中测试先到剪辑；只在空白车道区生效，不与剪辑拖拽抢事件）。
+    // 照抄卷帘 `piano_roll.slint` 的 `scroll-requested(drag-last-x - mouse-x)` 模式：
+    // 按下记 `drag-last-x`，move 时报增量并更新，越过 4px 阈值才滚动（小抖动不滚）。
+    // 高度 = 行区内容高（`sheet-height`）；纵向位移不处理（纵向归 Flickable）。
+    TouchArea {
+        x: 168px;
+        y: 0;
+        width: parent.width - 168px;
+        height: root.sheet-height * 1px;
+        accessible-role: region;
+        accessible-id: "arrangement-lane-scroll-area";
+        accessible-label: "编曲空车道拖动滚动面";
+        pointer-event(event) => {
+            if event.kind == PointerEventKind.down {
+                root.lane-drag-origin-x = self.mouse-x;
+                root.lane-drag-last-x = self.mouse-x;
+                root.lane-drag-moved = false;
+                root.lane-dragging = true;
+            } else if event.kind == PointerEventKind.up {
+                root.lane-dragging = false;
+                root.lane-drag-moved = false;
+            } else if event.kind == PointerEventKind.move {
+                if !root.lane-drag-moved
+                    && ((self.mouse-x - root.lane-drag-origin-x) > 4px
+                        || (root.lane-drag-origin-x - self.mouse-x) > 4px) {
+                    root.lane-drag-moved = true;
+                }
+                if root.lane-dragging && root.lane-drag-moved {
+                    root.scroll-requested(root.lane-drag-last-x - self.mouse-x);
+                    root.lane-drag-last-x = self.mouse-x;
+                }
+            } else {
+                // `cancel`：收尾但不提交（拖动滚动没有草稿要丢，只有状态要清）。
+                root.lane-dragging = false;
+                root.lane-drag-moved = false;
+            }
+        }
+        // ⭐ 滚轮分流 —— 带 Shift / Option 时接宿主，无修饰返回 `reject` ⇒
+        // 冒泡给 Flickable 纵向滚动（与包头滚轮同一条口径）。
+        scroll-event(event) => {
+            if event.modifiers.shift || event.modifiers.alt {
+                root.arrangement-wheel(event.delta-x, event.delta-y, event.modifiers.shift, event.modifiers.alt);
+                accept
+            } else {
+                reject
+            }
+        }
+    }
+
     for clip_ulid[clip_index] in root.clip-ulids : Rectangle {
         // 拖动期只有**正在被拖**的那一条读草稿位移；其余（以及没有手势时）逐像素不变。
+        // ⭐ 2026-11-07：减 `scroll-x`（注入的是绝对值，见文件头注释）。
         x: 168px + root.clip-positions[clip_index]
-            + (clip_ulid == root.clip-drag-ulid ? root.clip-drag-preview-dx * 1px : 0px);
+            + (clip_ulid == root.clip-drag-ulid ? root.clip-drag-preview-dx * 1px : 0px)
+            - (root.scroll-x * 1px);
         // 剪辑的 y / 高由投影从所在行的行几何派生 (ADR-0004 S0)。
         y: root.clip-ys[clip_index] - root.rows-top;
         width: root.clip-widths[clip_index];
@@ -699,7 +1045,9 @@ export component ArrangementView inherits Rectangle {
     //
     // 只覆盖包头以下的剪辑体：包头归选中臂（`clip-{ulid}-header`），两者不抢同一块像素。
     for clip_ulid[clip_index] in root.clip-ulids : TouchArea {
-        x: 168px + root.clip-positions[clip_index];
+        // ⭐ 2026-11-07：减 `scroll-x`（与剪辑矩形同一格；位移量是同一 TouchArea 内的
+        // 局部坐标差，减法不影响 `clip_drag_target_tick` 的位移读数）。
+        x: 168px + root.clip-positions[clip_index] - (root.scroll-x * 1px);
         y: root.clip-ys[clip_index] + 18px - root.rows-top;
         width: root.clip-widths[clip_index];
         height: root.clip-heights[clip_index] - 18px;
@@ -785,11 +1133,14 @@ export component ArrangementView inherits Rectangle {
         accessible-label: root.automation-lane-labels[lane_index];
 
         Path {
+            // ⭐ 2026-11-07：折线顶点是绝对像素（`automation.rs` 的 `path_commands`），
+            // 与剪辑同格减 `scroll-x`。做法是滑 `viewbox-x` 窗口（不是移元素 x：
+            // 元素宽 = 视口宽，移元素会把右半曲线裁在元素 bounds 之外）。带与轴标签不动。
             x: 0;
             y: 0;
             width: parent.width;
             height: parent.height;
-            viewbox-x: 0;
+            viewbox-x: root.scroll-x;
             viewbox-y: 0;
             viewbox-width: parent.width / 1px;
             viewbox-height: parent.height / 1px;
@@ -827,14 +1178,31 @@ export component ArrangementView inherits Rectangle {
         }
     }
 
+    // ⭐ 2026-11-07（夜半 UI 轨道交互修复线）：轨道重排的插入指示线。
+    //
+    // 2px 金线，y = 宿主算好的插入行顶沿或表底（行空间坐标，减 `rows-top` 进内容坐标），
+    // 满宽（包头列 + 车道，仿 Logic 拖动时的蓝线）。只在重排拖动越过 4px 阈值后出现
+    // （`preview-index >= 0`）；松手 / `Escape` 后宿主清零即消失。草稿期不碰工程。
+    if root.track-reorder-preview-index >= 0 : Rectangle {
+        x: 0;
+        y: root.track-reorder-preview-y * 1px - root.rows-top;
+        width: parent.width;
+        height: 2px;
+        background: Tokens.gold;
+        accessible-role: image;
+        accessible-id: "track-reorder-insertion-line";
+        accessible-label: "轨道插入位置";
+    }
+
     }  // ← 行区滚动容器到此结束
 
     // ---------------------------------------------------------------- 走带光标 [UI-MCP-002]
     // 高频刷新区域: 无头截图比对前必须按这个 ID 的包围盒置黑。
     // x 跟随引擎读数（tick 0 ⇒ 168px，即时间轴左沿）；`max(1, …)` 只是除零护栏
     // （宿主写进来的缩放恒在 1..=960，见 `bridge::clamp_ticks_per_pixel`）。
+    // ⭐ 2026-11-07：减 `scroll-x`（与剪辑同格；卷帘走带光标早已是同一口径）。
     Rectangle {
-        x: 168px + (root.playhead-ticks / max(1, root.ticks-per-pixel)) * 1px;
+        x: 168px + (root.playhead-ticks / max(1, root.ticks-per-pixel)) * 1px - (root.scroll-x * 1px);
         y: 20px;
         width: 1px;
         height: parent.height - 20px;
@@ -843,5 +1211,62 @@ export component ArrangementView inherits Rectangle {
         accessible-id: "arrangement-playhead";
         accessible-label: "走带光标";
         accessible-value: root.playhead-timecode;
+    }
+
+    // ---------------------------------------------------------------- ⭐ 横向滚动条（2026-11-07 ③：按钮路）
+    //
+    // 自定义 Slint 控件（轨道 + 可拖滑块 TouchArea），在编曲视图底部 14px：
+    // Flickable 的高度已相应缩 14px（不遮挡车道）。滑块大小与位置反映内容总长与
+    // 视口比（`content-px` 由 `apply_view` 每次注入 ⇒ 缩放一变滑块同步更新）；
+    // 滑块拖动与轨道点击经 `arrangement-scroll-to` 报**绝对目标 px**，宿主夹紧 ≥ 0
+    // 后重投影（`host::wire_arrangement_hscroll`）。
+    //
+    // 几何（逻辑像素）：轨道 x = 168px（与车道同宽，包头列下方不设滚动条）、
+    // 宽 = 视口宽 − 168px；滑块宽 = max(20px, 视口/内容 × 轨道宽)，
+    // 滑块 x = 轨道 x + fraction × (轨道宽 − 滑块宽)，fraction =
+    // scroll-x / max(0, 内容 − 视口)。内容 ≤ 视口时滑块占满轨道（fraction 分母护栏 1.0）。
+    Rectangle {
+        x: 168px;
+        y: parent.height - 14px;
+        width: parent.width - 168px;
+        height: 14px;
+        background: Tokens.bg-panel;
+        // 本地推导量（只读，不进模型）：视口宽（float px）/ 最大偏移 / 当前 fraction /
+        // 滑块宽。内容 ≤ 视口时 `max-scroll` = 0 ⇒ 滑块占满轨道、fraction 恒 0。
+        property <float> viewport-px: (parent.width - 168px) / 1px;
+        property <float> max-scroll: max(0.0, root.content-px - self.viewport-px);
+        property <float> scroll-fraction: root.scroll-x / max(1.0, self.max-scroll);
+        property <length> thumb-width: min(parent.width, max(20px, parent.width * self.viewport-px / max(1.0, root.content-px)));
+        accessible-role: slider;
+        accessible-id: "arrangement-hscroll";
+        accessible-label: "编曲横向滚动条";
+        accessible-value: "" + Math.round(100 * self.scroll-fraction) + "%";
+        accessible-action-increment => {
+            root.arrangement-scroll-to((root.scroll-x + self.viewport-px) * 1px);
+        }
+        accessible-action-decrement => {
+            root.arrangement-scroll-to((root.scroll-x - self.viewport-px) * 1px);
+        }
+        Rectangle {
+            x: parent.scroll-fraction * (parent.width - parent.thumb-width);
+            y: 2px;
+            width: parent.thumb-width;
+            height: 10px;
+            background: Tokens.ink-2;
+            border-radius: Tokens.radius-sm;
+        }
+        TouchArea {
+            width: parent.width;
+            height: parent.height;
+            pointer-event(event) => {
+                if event.kind == PointerEventKind.down || event.kind == PointerEventKind.move {
+                    // 滑块中心跟指针：fraction = (mouse-x − 半个滑块) / (轨道宽 − 滑块宽)。
+                    // ⭐ 2026-11-07：fraction 夹到 [0,1] —— 点轨道末端时滑块中心只能到轨道
+                    // 末端，不能越过；未夹时点 75% 处可算出 fraction 1.39，偏移 733px 越过
+                    // max-scroll 528px、剪辑被推出窗口外（控件树按窗口裁剪，读不到剪辑）。
+                    root.arrangement-scroll-to(min(1.0, max(0.0, (self.mouse-x - parent.thumb-width / 2) / max(1px, parent.width - parent.thumb-width))) * parent.max-scroll * 1px);
+                }
+            }
+        }
     }
 }

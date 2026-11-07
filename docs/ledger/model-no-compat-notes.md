@@ -317,7 +317,7 @@ cargo test -p yeban-model --test no_compat -- --ignored --nocapture
 
 顺带：`properties.tracks.additionalProperties.properties.solo_safe` 已存在（作为可选属性），**只需把它加进 required 即可**。
 
-### 5.4 ⚠ **绝不能**加进任何 `required` 的字段（D43 豁免集，18 项 ＋ 1）
+### 5.4 ⚠ **绝不能**加进任何 `required` 的字段（D43 豁免集，18 项 ＋ 3）
 
 这些字段**本写入器会在默认值上省略**（`Option::None` + `skip_serializing_if`，或空集）。一旦 schema 要求它们，**本写入器自己的输出就会被 schema 判为非法** —— 那比"漏检"更糟：它会制造一批"实现与契约互相指责"的假事故。
 
@@ -330,6 +330,7 @@ cargo test -p yeban-model --test no_compat -- --ignored --nocapture
 | `tracks[*]` | `folder_id`, `color` | `None` ⇒ **不落盘** |
 | `tracks[*]` | `sampler` | `None` ⇒ **不落盘**（**任务单 `#76` 新增的第 19 项**；`Option<SamplerBinding>` = "这条轨用哪份采样器定义文件"，⛔ 不含运行时对象） |
 | 根 | `embedded_samples` | 空表 ⇒ **不落盘**（**采样内嵌线新增的第 20 项**；`BTreeMap<渲染根相对路径, SHA-256>` = "用到的采样在容器里的索引"，渲染侧先查表、命中则读 CAS） |
+| 根 | `track_order` | 空表 ⇒ **不落盘**（**UI 轨道交互线新增的第 21 项**；`Vec<EntityId>` = "轨道显示顺序"，缺键/空表时投影按 BTreeMap 的 id 序，旧工程默认顺序不变） |
 | `sections[*]` | `color` | `None` ⇒ **不落盘** |
 | `scenes[*]` | `tempo`, `color` | `None` ⇒ **不落盘** |
 | `routing_graph.edges[*]` | `gain_db` | `None` ⇒ **不落盘**（对比 `clip_pool[*].content.Audio.gain_db`：那里是裸 `f32`，所以**是**必需） |

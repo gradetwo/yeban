@@ -3616,7 +3616,7 @@ pub struct ShortcutRow {
 /// 每一项把**规范写法**、**动作**、**键位**与**落地状态**放在一起。这张表的**意义**是
 /// 让策略表的判定结果可被人与 CI 直接阅读 —— 尤其是 `[UI-A11Y-002]` 的 IME 分支,
 /// 以及"规范点名了、本版本还没做"的那一列（见 [`UNIMPLEMENTED_MARKER`]）。
-const SHORTCUTS: [ShortcutRow; 48] = [
+const SHORTCUTS: [ShortcutRow; 50] = [
     ShortcutRow {
         label: "Space → 播放/暂停",
         action: Action::PlayPause,
@@ -4067,6 +4067,28 @@ const SHORTCUTS: [ShortcutRow; 48] = [
         action: Action::SelectTrackBy(1),
         key: PhysicalKey::DownArrow,
         modifiers: Modifiers::alt(),
+        implemented: true,
+    },
+    // ⭐ **界面决定**（⛔ 不是规范点名）：**移轨**入口，`Cmd/Ctrl+Shift+↑` / `↓`。
+    //
+    // 该组合此前落在第 3 步的 `_ => PassThrough`；裸 `↑/↓`（网格 / 半音微调）、
+    // `Shift+↑/↓`（八度）、`Alt+↑/↓`（选轨）与 `Cmd/Ctrl+Alt+↑/↓`（音量微调）一格不动。
+    // 落点是 `host::apply_action` 的 `MoveSelectedTrackBy` 臂 ⇒ 提交一条
+    // `Op::MoveTrack`（可撤销）。⚠ 键位**未经 Logic Pro 官方证实**（官方快捷键表里
+    // 没有 Move Track 条目，只见于第三方教程）⇒ 逐条理由见
+    // `Action::MoveSelectedTrackBy` 的文档；登记在 `docs/ledger/app-cli-notes.md` §5.4。
+    ShortcutRow {
+        label: "Cmd/Ctrl+Shift+↑ → 选中轨上移一格",
+        action: Action::MoveSelectedTrackBy(-1),
+        key: PhysicalKey::UpArrow,
+        modifiers: Modifiers::ctrl_shift(),
+        implemented: true,
+    },
+    ShortcutRow {
+        label: "Cmd/Ctrl+Shift+↓ → 选中轨下移一格",
+        action: Action::MoveSelectedTrackBy(1),
+        key: PhysicalKey::DownArrow,
+        modifiers: Modifiers::ctrl_shift(),
         implemented: true,
     },
     // 以下**一条**是本版本仅剩的 `implemented: false` 条目。

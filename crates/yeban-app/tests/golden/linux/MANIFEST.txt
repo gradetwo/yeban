@@ -250,9 +250,20 @@ headSha `bef7ab82`，artifact `golden-linux`（id 12951880348，470971 字节）
 - 5 张仍是 4 个不同 sha256，`arrangement-full` 与 `model-driven-demo-project` 共用同一个（`f87e550f…`）—— 与「这两个场景本就逐字节相同」的既有记录一致。
 ⚠ 五张的**字节数相同**（6222418）**不构成任何证据**（存储式 deflate，1920×1080 恒为该长度），判内容的是上面的 sha256 与逐行带读数。
 
+
+**⚠ 2026-11-07 再录一次（`line/ui-track-zoom-scroll-reorder`，headSha `7872b5a6`）**: 本批给编曲视图加三项交互 —— 左上角缩放工具栏（H/V 滑块行 + 按钮）、底部 14px 横向滚动条、包头拖拽移轨。前两项是默认帧里**可见且未被遮罩**的静态像素 ⇒ 5 张里 3 张确定性过期；`session-full` 不含编曲画布 ⇒ 0 差异（逐字节相同）。
+生成地点与生成方式同上：手动档 `gates-manual.yml` 的 `gate=goldens`，run id **42375655913**（conclusion=success；job `goldens (生成分平台基准图集)` success，8 步，13:09:29Z–13:12:47Z），ref `line/ui-track-zoom-scroll-reorder`，headSha `7872b5a6`，artifact `golden-linux`（id 13575667767，447980 字节）；⚠ artifact 自带的 `MANIFEST.txt` 是**本改动前的仓库副本**（含旧哈希）⇒ **未采用**（本节与下表由集成者在本机重写，下表用 `--write-table` 从磁盘生成）。
+**入库前的复核（⚖ 判定量 = 两处已知区域外不一致像素数）**: 把提交 `7872b5a6` 的 5 张（旧）与 artifact 的 5 张（新）都用 Pillow 解码成 1920 × 1080 的 RGB 帧逐像素比较（numpy 逐通道）：
+- `app-main-window-arrangement-full` / `app-model-driven-demo-project` / `app-model-driven-filled-project`：**各 19,776 个差异像素** = 缩放工具栏两条滑块行 `y 49..66 / 69..86 × x 242..405` **2,528 px** ＋ 横向滚动条带 `y 617..630 × x 408..1639` **17,248 px**（14 行 × 1,232 列，逐像素算术闭合）；两处之外不一致像素数 = **0**；
+- `app-main-window-arrangement-compact`：**26,552 个差异像素**，同样两处：工具栏 **2,528 px**（`x 38..201`，与 full 相差 **204** = 画布左沿 240 与 36 之差）＋ 滚动条带 **24,024 px**（`y 617..630 × x 204..1919`，14 行 × 1,716 列；compact 下轨道头更窄，内容区更宽）；两处之外不一致像素数 = **0**；
+- `app-main-window-session-full`：**0 个差异像素（逐字节相同）**，该帧不含编曲画布；
+- 与**同 headSha 的另一次渲染**交叉验证：`ci.yml` run **42371860207** 的 `ui-screenshots-yeban-app` artifact（id 13574483086，961190 字节；该 run 因比对旧基准而 failure）里可比的两张与本批**逐字节相同** —— `app-main-window-arrangement-full` sha256 `fb82171f…`、`app-model-driven-filled-project` `a451c156…`（2/2）⇒ 渲染**可复现**；
+- `arrangement-full` 与 `demo-project` 新表里**仍然共用**同一个 sha256（`fb82171f…`），与「这两个场景本就逐字节相同」的既有记录一致。
+⚠ 五张的**字节数相同**（6222418）**不构成任何证据**（存储式 deflate），判内容的是上面的 sha256 与逐像素读数。
+
 文件	sha256	字节
-app-main-window-arrangement-compact-1920x1080.png	5cfa70c881117f56fe1470b2228839269ec4404687bc38b0e75822c40a25148c	6222418
-app-main-window-arrangement-full-1920x1080.png	f87e550f8a61d89187c28d0bb9ddbe0f945e486797afb26972b407d74c623eb8	6222418
+app-main-window-arrangement-compact-1920x1080.png	4725927f9404ec1b6f0da7df2462218f2c104e848ff7807a265856a10c978a6a	6222418
+app-main-window-arrangement-full-1920x1080.png	fb82171f4cd64883a850117c194d234801c51bea4ddc87fc63c305a267b87571	6222418
 app-main-window-session-full-1920x1080.png	989cc11c9fb44d982a2d6eddcd2eb49e702d8bc0b9dcab1780ed6d6d1b6052b1	6222418
-app-model-driven-demo-project-1920x1080.png	f87e550f8a61d89187c28d0bb9ddbe0f945e486797afb26972b407d74c623eb8	6222418
-app-model-driven-filled-project-1920x1080.png	c48bc99e9920ad92ef1199b1d50fcdc299ad143a27639c18e5d6d3695fca5998	6222418
+app-model-driven-demo-project-1920x1080.png	fb82171f4cd64883a850117c194d234801c51bea4ddc87fc63c305a267b87571	6222418
+app-model-driven-filled-project-1920x1080.png	a451c156880531b07d141544032585107ad3aee86618c860e0d71b1e9818b043	6222418

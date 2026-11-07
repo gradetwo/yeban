@@ -338,6 +338,15 @@ pub fn apply_view(ui: &MainWindow, view: &ViewState, viewport_width: f32, scroll
     ui.set_note_selected(slint::ModelRc::new(slint::VecModel::from(flags)));
     // 把偏移**留在界面对象上**：撤销刷新要复用同一个值（账本第 200/201 轮）。
     ui.set_roll_scroll_x(scroll_x);
+    // ⭐ 2026-11-07（夜半 UI 轨道交互修复线）：编曲横向滚动条的内容总长（逻辑像素）。
+    // 唯一事实源 = 投影的 `content_end_tick`（`Shift+Z` 全曲总览读的同一格）× 当前
+    // 横向缩放 ⇒ 缩放一变，滚动条滑块的大小 / 位置同步更新。`tick_to_px` 失败
+    // （溢出）⇒ 0（滑块退回"内容不可见"，⛔ 不 panic）。本行计入
+    // `APPLY_VIEW_WRITE_SITE_BUDGET`（101 → 102，见 `tests/perf_draw_budget.rs`）。
+    ui.set_arrangement_content_px(
+        crate::bridge::tick_to_px(view.content_end_tick(), roll_ticks_per_pixel(ui))
+            .map_or(0.0, |px| px as f32),
+    );
     // `[UI-NOTE-001]` 步骤 ①：把裁剪窗口换算成 tick 上下界并发布（音高上下界待做, 见账本第 201 轮）。
     let (min_tick, max_tick) = view.visible_tick_range(scroll_x, viewport_width);
     ui.set_roll_min_tick(tick_to_i32_saturating(min_tick));
@@ -611,6 +620,9 @@ pub fn set_track_height_percent(ui: &MainWindow, percent: u32) -> bool {
         return false;
     }
     write_track_height_layout(ui, &layout);
+    // 纵向缩放滑块与之同步（`zoom-v-fraction` 的**唯一写点**与本函数同处：
+    // 任何改 `percent` 的路都经过这里 ⇒ 滑块不可能与行高分叉）。
+    ui.set_zoom_v_fraction(zoom_v_fraction(percent));
     true
 }
 
@@ -666,6 +678,9 @@ pub fn set_roll_ticks_per_pixel(ui: &MainWindow, ticks_per_pixel: u64) -> bool {
         return false;
     }
     ui.set_roll_ticks_per_pixel(value);
+    // 横向缩放滑块与之同步（`zoom-h-fraction` 的**唯一写点**与本函数同处：
+    // 任何改 `ticks_per_pixel` 的路都经过这里 ⇒ 滑块不可能与时间轴分叉）。
+    ui.set_zoom_h_fraction(zoom_h_fraction(clamped));
     true
 }
 
@@ -994,6 +1009,332 @@ fn cancel_track_height_drag(ui: &MainWindow, port: Option<&Rc<UndoPort>>) -> boo
         reproject_track_heights(ui, port);
     }
     true
+}
+
+// ===========================================================================
+// ⭐ 2026-11-07 夜半 UI 轨道交互修复线：缩放控件 / 移轨 / 横向滚动
+// ===========================================================================
+//
+// 三项缺失的修法（根因与 Logic Pro 对照见完结回执；本块只写接线）：
+// ① 缩放：滑块 + 按钮（`wire_zoom_controls`）＋ Cmd+←/→ 与对调后的 Cmd+↑/↓
+//    （`input.rs`）＋ Option+滚轮（`wire_arrangement_wheel`）；
+// ② 移轨：`Op::MoveTrack`（`yeban-model`）＋ `wire_track_reorder`（包头手势分区）
+//    ＋ `MoveSelectedTrackBy`（`apply_action`，Cmd+Shift+↑/↓）＋ 包头无障碍动作；
+// ③ 横向查看：`wire_arrangement_hscroll`（底部滚动条）＋ 空车道拖动（既有
+//    `scroll-requested`）＋ Shift+滚轮（`wire_arrangement_wheel`）＋ `.slint` 减
+//    `roll-scroll-x`（`apply_view` 注入的仍是绝对值，见那里的注释）。
+
+/// 用**给定的**横向偏移重投影（滚轮 / 滚动条的共用落点）。
+///
+/// 与 [`install_roll_scroll`] 的 `on_scroll_requested` 同一条链（端口在场 ⇒ 用此刻
+/// 的工程投影；没有活跃工程 ⇒ 什么都不做，⛔ 不 panic）。`next` 只夹下界 0
+/// （与 [`advance_scroll`] 同款：上限暂不设，内容长度由投影决定）。
+fn reproject_with_scroll(ui: &MainWindow, port: &UndoPort, next: f32) {
+    let Some(project) = port.try_project() else {
+        return;
+    };
+    let Ok(view) = project_with_view_state(&project, ui) else {
+        return;
+    };
+    let width = slint::ComponentHandle::window(ui).size().width as f32;
+    apply_view(ui, &view, width, next.max(0.0));
+}
+
+/// 把编曲视图的缩放控件接到宿主（2026-11-07 ①：可见控件路）。
+///
+/// 回调（`app.slint` 的 `MainWindow`，与 `.slint` 里的控件一一对应）：
+/// `zoom-h-step(bool)` / `zoom-v-step(bool)`（`true` = 放大）⇒ 既有
+/// `zoom_horizontal_step` / `zoom_vertical_step`（步进与键盘同一条算法）；
+/// `zoom-h-slider(float)` / `zoom-v-slider(float)`（`0.0..=1.0`）⇒
+/// `zoom_h_ticks_per_pixel` / `zoom_v_percent` 换算后走 `set_*`（唯一写点，
+/// 滑块 fraction 在那里同步 ⇒ 按钮与滑块不可能分叉），再重投影。
+pub fn wire_zoom_controls(ui: &MainWindow, port: &Rc<UndoPort>) {
+    let weak = ui.as_weak();
+    ui.on_zoom_h_step({
+        let weak = weak.clone();
+        let port = Rc::clone(port);
+        move |zoom_in| {
+            let Some(ui) = weak.upgrade() else {
+                debug_assert!(false, "MainWindow 在回调执行期间被销毁");
+                return;
+            };
+            zoom_horizontal_step(&ui, Some(port.as_ref()), zoom_in);
+        }
+    });
+    let weak = ui.as_weak();
+    ui.on_zoom_v_step({
+        let weak = weak.clone();
+        let port = Rc::clone(port);
+        move |zoom_in| {
+            let Some(ui) = weak.upgrade() else {
+                debug_assert!(false, "MainWindow 在回调执行期间被销毁");
+                return;
+            };
+            zoom_vertical_step(&ui, Some(port.as_ref()), zoom_in);
+        }
+    });
+    let weak = ui.as_weak();
+    ui.on_zoom_h_slider({
+        let weak = weak.clone();
+        let port = Rc::clone(port);
+        move |fraction| {
+            let Some(ui) = weak.upgrade() else {
+                debug_assert!(false, "MainWindow 在回调执行期间被销毁");
+                return;
+            };
+            if set_roll_ticks_per_pixel(&ui, zoom_h_ticks_per_pixel(fraction)) {
+                reproject_with_scroll(&ui, &port, ui.get_roll_scroll_x());
+            }
+        }
+    });
+    let weak = ui.as_weak();
+    ui.on_zoom_v_slider({
+        let weak = weak.clone();
+        let port = Rc::clone(port);
+        move |fraction| {
+            let Some(ui) = weak.upgrade() else {
+                debug_assert!(false, "MainWindow 在回调执行期间被销毁");
+                return;
+            };
+            if set_track_height_percent(&ui, zoom_v_percent(fraction)) {
+                reproject_track_heights(&ui, &port);
+            }
+        }
+    });
+}
+
+/// 把一轨沿显示顺序移动 `direction` 格并提交（移轨三路的**唯一**提交点）。
+///
+/// 键盘（`apply_action` 的 `MoveSelectedTrackBy` 臂）、包头手势松手
+/// （`wire_track_reorder` 的 `track-reorder-release`）、包头无障碍动作
+/// （`track-reorder-step`）三路都调这里 ⇒ "下一个下标"只有一份算法。
+/// `track_id` 是 26 字符规范文本；`direction` 为 `-1`（上移）或 `+1`（下移）。
+/// 边界（首轨上移 / 末轨下移 / 身份不在 `track-ids` 里）与提交被拒时返回 `false`
+/// （调用方不消费）；成功时刷新撤销窗口并返回 `true`。
+fn commit_move_track_by_id(
+    ui: &MainWindow,
+    port: &UndoPort,
+    track_id: &str,
+    direction: i32,
+) -> bool {
+    let ids = read_strings(&ui.get_track_ids());
+    let Some(position) = ids.iter().position(|id| id.as_str() == track_id) else {
+        return false;
+    };
+    let target = position as i32 + direction;
+    if target < 0 || target as usize >= ids.len() {
+        return false;
+    }
+    let Ok(id) = track_id.parse::<yeban_model::EntityId>() else {
+        return false;
+    };
+    let op = yeban_model::Op::MoveTrack {
+        track_id: id,
+        old_index: position,
+        new_index: target as usize,
+    };
+    if port.commit_ops(now_ms(), "move track", vec![op]).is_err() {
+        eprintln!("[yeban-app] 移轨提交被拒绝（工程未改）");
+        return false;
+    }
+    refresh_undo_window(ui, port, true);
+    true
+}
+
+/// 重排拖动的阈值（逻辑像素）：指针越过它才进入重排拖（与剪辑拖拽的 4px 同款口径，
+/// 见 `clip_drag_target_tick` 一带的注释 —— 小于它的是"点了一下"，不是"拖"）。
+const TRACK_REORDER_DRAG_THRESHOLD_PX: f32 = 4.0;
+
+/// 把轨道头重排手势接到宿主（2026-11-07 ②：手势路）。
+///
+/// 手势分区在 `.slint`（包头 TouchArea 内分流）：名称区按下 ⇒ `track-reorder-grab`
+/// （报**行空间 y** = `track-ys[index] + mouse-y`）；底边 6px 按下 ⇒ 既有高度拖拽。
+/// 拖动中宿主写 `track-reorder-preview-index` / `track-reorder-preview-y`，界面在
+/// 行区画一条 2px 插入指示线；松手恰好提交一次 `Op::MoveTrack`，草稿期⛔ 不碰工程
+/// （与 `clip-drag-preview-dx` 同款纪律）。`track-reorder-step(index, direction)` 是
+/// 包头无障碍动作（上移 / 下移）的落点，直接提交。
+pub fn wire_track_reorder(ui: &MainWindow, port: &Rc<UndoPort>) {
+    let weak = ui.as_weak();
+    ui.on_track_reorder_grab({
+        let weak = weak.clone();
+        move |index, pointer_y| {
+            let Some(ui) = weak.upgrade() else {
+                debug_assert!(false, "MainWindow 在回调执行期间被销毁");
+                return;
+            };
+            let Some(track_id) = track_id_at(&ui, index) else {
+                return;
+            };
+            ui.set_track_reorder_active(true);
+            ui.set_track_reorder_index(index);
+            ui.set_track_reorder_track(track_id.into());
+            ui.set_track_reorder_start_y(pointer_y);
+            ui.set_track_reorder_preview_index(-1);
+            ui.set_track_reorder_preview_y(0.0);
+        }
+    });
+    let weak = ui.as_weak();
+    ui.on_track_reorder_drag({
+        let weak = weak.clone();
+        move |index, pointer_y| {
+            let Some(ui) = weak.upgrade() else {
+                debug_assert!(false, "MainWindow 在回调执行期间被销毁");
+                return;
+            };
+            if !ui.get_track_reorder_active() || ui.get_track_reorder_index() != index {
+                return;
+            }
+            if (pointer_y - ui.get_track_reorder_start_y()).abs() < TRACK_REORDER_DRAG_THRESHOLD_PX
+            {
+                ui.set_track_reorder_preview_index(-1);
+                return;
+            }
+            use slint::Model as _;
+            let tops: Vec<f32> = ui.get_track_ys().iter().collect();
+            let heights: Vec<f32> = ui.get_track_heights().iter().collect();
+            let insertion = reorder_insertion_index(&tops, &heights, pointer_y);
+            ui.set_track_reorder_preview_index(i32::try_from(insertion).unwrap_or(i32::MAX));
+            let line_y = if insertion < tops.len() {
+                tops[insertion]
+            } else {
+                tops.last().copied().unwrap_or(0.0) + heights.last().copied().unwrap_or(0.0)
+            };
+            ui.set_track_reorder_preview_y(line_y);
+        }
+    });
+    let weak = ui.as_weak();
+    ui.on_track_reorder_release({
+        let weak = weak.clone();
+        let port = Rc::clone(port);
+        move |index| {
+            let Some(ui) = weak.upgrade() else {
+                debug_assert!(false, "MainWindow 在回调执行期间被销毁");
+                return;
+            };
+            if !ui.get_track_reorder_active() || ui.get_track_reorder_index() != index {
+                return;
+            }
+            let preview = ui.get_track_reorder_preview_index();
+            let track_id = ui.get_track_reorder_track().to_string();
+            ui.set_track_reorder_active(false);
+            ui.set_track_reorder_preview_index(-1);
+            if preview < 0 {
+                return;
+            }
+            // 插入位置按**当前**顺序重算（`preview` 是对当前行几何算的，`position` 是
+            // 该轨在当前 `track-ids` 里的下标）：拖动期间顺序若变了（撤销 / 控制面写入），
+            // 也不按拖动开始时的旧下标提交。按下时的下标只用于"这个 release 属于哪一次
+            // 按下"的归属判断（上面已验过），不进下标算术。
+            let insertion = preview as usize;
+            let ids = read_strings(&ui.get_track_ids());
+            let Some(position) = ids.iter().position(|id| id.as_str() == track_id) else {
+                return;
+            };
+            if insertion == position || insertion == position + 1 {
+                return;
+            }
+            let new_index = if insertion > position {
+                insertion - 1
+            } else {
+                insertion
+            };
+            let Ok(id) = track_id.parse::<yeban_model::EntityId>() else {
+                return;
+            };
+            let op = yeban_model::Op::MoveTrack {
+                track_id: id,
+                old_index: position,
+                new_index,
+            };
+            if port.commit_ops(now_ms(), "move track", vec![op]).is_err() {
+                eprintln!("[yeban-app] 移轨提交被拒绝（工程未改）");
+                return;
+            }
+            refresh_undo_window(&ui, &port, true);
+        }
+    });
+    let weak = ui.as_weak();
+    ui.on_track_reorder_step({
+        let weak = weak.clone();
+        let port = Rc::clone(port);
+        move |index, direction| {
+            let Some(ui) = weak.upgrade() else {
+                debug_assert!(false, "MainWindow 在回调执行期间被销毁");
+                return;
+            };
+            let Some(track_id) = track_id_at(&ui, index) else {
+                return;
+            };
+            commit_move_track_by_id(&ui, &port, &track_id, direction);
+        }
+    });
+}
+
+/// `Escape`（`Action::Cancel`）在**有重排手势在手**时的收尾：丢弃草稿（⛔ 不提交）。
+///
+/// 返回 `false` = 此刻没有进行中的重排手势 ⇒ 这一键与 DAW 无关，照旧放行。
+/// 只清视图态（指示线读 `track-reorder-preview-index`，清零即消失）⇒
+/// ⛔ 不需要重投影（与高度拖拽的取消不同：那里改过行高，要把几何拉回起点）。
+pub fn cancel_track_reorder(ui: &MainWindow) -> bool {
+    if !ui.get_track_reorder_active() {
+        return false;
+    }
+    ui.set_track_reorder_active(false);
+    ui.set_track_reorder_preview_index(-1);
+    true
+}
+
+/// 把编曲视图的滚轮接到宿主（2026-11-07 ①③：滚轮路）。
+///
+/// 回调 `arrangement-wheel(delta-x, delta-y, shift, alt)`：`.slint` 的三个 TouchArea
+/// （车道 / 包头 / 标尺）共用；**无修饰时 `.slint` 直接返回 `Reject`**（冒泡给
+/// Flickable 纵向滚动），宿主只见三种带修饰的组合：
+/// - `Shift+滚轮` ⇒ 横向滚动（`delta = −delta_y`：轮下 = 向后看，与卷帘
+///   `piano_roll.slint` 的 `scroll-requested(drag-last-x - mouse-x)` 同向）；
+/// - `Option+滚轮` ⇒ 纵向缩放（`delta_y > 0` = 放大，`< 0` = 缩小）；
+/// - `Option+Shift+滚轮` ⇒ 横向缩放（同上）。
+///
+/// `delta-x` 今天不用（触控板横向滚轮事件经 `shift` 位走同一条路；竖井滚轮没有横向分量）。
+pub fn wire_arrangement_wheel(ui: &MainWindow, port: &Rc<UndoPort>) {
+    let weak = ui.as_weak();
+    ui.on_arrangement_wheel({
+        let weak = weak.clone();
+        let port = Rc::clone(port);
+        move |_delta_x, delta_y, shift, alt| {
+            let Some(ui) = weak.upgrade() else {
+                debug_assert!(false, "MainWindow 在回调执行期间被销毁");
+                return;
+            };
+            if shift && alt {
+                zoom_horizontal_step(&ui, Some(port.as_ref()), delta_y > 0.0);
+            } else if alt {
+                zoom_vertical_step(&ui, Some(port.as_ref()), delta_y > 0.0);
+            } else if shift {
+                let next = advance_scroll(ui.get_roll_scroll_x(), -delta_y);
+                reproject_with_scroll(&ui, &port, next);
+            }
+        }
+    });
+}
+
+/// 把编曲视图底部的横向滚动条接到宿主（2026-11-07 ③：按钮路）。
+///
+/// 回调 `arrangement-scroll-to(length)`：`.slint` 的滑块按 fraction 换算出的**绝对**
+/// 目标 px（`0..=content-px − viewport`，`.slint` 内已夹紧）；宿主夹下界 0 后重投影。
+/// 内容总长（`arrangement-content-px`）由 `apply_view` 每次注入 ⇒ 缩放一变滑块同步更新。
+pub fn wire_arrangement_hscroll(ui: &MainWindow, port: &Rc<UndoPort>) {
+    let weak = ui.as_weak();
+    ui.on_arrangement_scroll_to({
+        let weak = weak.clone();
+        let port = Rc::clone(port);
+        move |target_px| {
+            let Some(ui) = weak.upgrade() else {
+                debug_assert!(false, "MainWindow 在回调执行期间被销毁");
+                return;
+            };
+            reproject_with_scroll(&ui, &port, target_px);
+        }
+    });
 }
 
 // ===========================================================================
@@ -6309,6 +6650,28 @@ pub fn ruler_seek_tick(
     Some(snapped.min(span_ticks))
 }
 
+/// 横向滚动后的标尺定位 tick（纯函数）：标尺带的局部 x ＋ 当前横向偏移。
+///
+/// 标尺带的 TouchArea 报的是**带内局部坐标**（`mouse-x`），而 `ruler_seek_tick`
+/// 要的是**时间轴绝对像素** ⇒ 先加 `scroll_x` 再换算（与 `.slint` 里剪辑 x 减
+/// `scroll-x` 同一条口径，只是方向相反：事件进门加、画面出门减）。
+/// `scroll_x < 0` 视作 0（`advance_scroll` 只夹下界，负值到不了这里）。
+#[must_use]
+pub fn ruler_seek_tick_with_scroll(
+    px: f32,
+    scroll_x: f32,
+    ticks_per_pixel: u64,
+    span_ticks: u64,
+    bar_length_ticks: u64,
+) -> Option<u64> {
+    ruler_seek_tick(
+        px + scroll_x.max(0.0),
+        ticks_per_pixel,
+        span_ticks,
+        bar_length_ticks,
+    )
+}
+
 /// 无障碍「上一 / 下一小节」的目标 tick（纯函数）：`current ± steps × bar_length_ticks`，
 /// 夹在 `[0, span_ticks]`（⛔ 不回绕、⛔ 不越过投影网格）。
 ///
@@ -6411,7 +6774,13 @@ pub fn wire_ruler_seek(
                 state.bar_length_ticks,
             )
         };
-        let Some(tick) = ruler_seek_tick(x, roll_ticks_per_pixel(&ui), span, bar) else {
+        let Some(tick) = ruler_seek_tick_with_scroll(
+            x,
+            ui.get_roll_scroll_x(),
+            roll_ticks_per_pixel(&ui),
+            span,
+            bar,
+        ) else {
             return;
         };
         commit_seek(&ui, &click_engine, tick, "ruler-seek");
@@ -9736,7 +10105,9 @@ fn apply_action(
             let velocity = cancel_velocity_drag(ui);
             // 7. 编曲剪辑平移手势在手 ⇒ 落 [`cancel_clip_drag`]（丢弃草稿、⛔ 不提交）。
             let clip = cancel_clip_drag(ui);
-            height || mixer || note || velocity || clip
+            // 8. 轨道重排手势在手 ⇒ 落 [`cancel_track_reorder`]（丢弃草稿、⛔ 不提交）。
+            let reorder = cancel_track_reorder(ui);
+            height || mixer || note || velocity || clip || reorder
         }
         // 双视图：`Tab` 是切换，`F5`/`F6`/`Alt+1`/`Alt+2` 是直达。写的是**界面属性**，
         // 与 `ui/switch_main_view` 走的是同一个属性（管理动作那边有回读判据）。
@@ -9823,6 +10194,20 @@ fn apply_action(
                 }
                 _ => false,
             }
+        }
+        // `Cmd/Ctrl+Shift+↑/↓`：把**选中轨**在显示顺序里上移 / 下移一格（2026-11-07 ②）。
+        //
+        // 落点是 [`commit_move_track_by_id`]（与包头手势松手、包头无障碍动作共用
+        // **唯一**提交点 ⇒ "下一个下标"只有一份算法）。三条边界一律**不消费**：
+        // 没有撤销端口 / 没有选中轨 / 首轨上移 / 末轨下移（空操作⛔ 不进撤销栈）。
+        Action::MoveSelectedTrackBy(direction) => {
+            let Some(port) = undo else {
+                return false;
+            };
+            let Some(selected) = selected_track_id(ui) else {
+                return false;
+            };
+            commit_move_track_by_id(ui, port, &selected, i32::from(direction))
         }
         // ⭐ 任务单 `#227`（Logic 的 `Go to Beginning`）：`Return` / `Enter`（裸键）。
         //
@@ -10396,6 +10781,61 @@ fn zoom_action(ui: &MainWindow, port: &UndoPort, action: Action) -> bool {
     };
     apply_view(ui, &next, viewport_px as f32, scroll_x);
     true
+}
+
+/// 横向缩放滑块的位置（`0.0..=1.0`）⇄ `ticks_per_pixel`（纯函数，双向）。
+///
+/// 横向用**对数**映射：`tpp` 的档位是乘法步进（`zoom_horizontal_step` 是 `×3/4` /
+/// `×4/3`），线性滑块会在"放大端"一步跨太多、在"缩小端"一步几乎不动。
+/// `fraction = ln(tpp) / ln(960)`（`ln(1) = 0`、`ln(960) = 1`）；反向
+/// `tpp = round(960^fraction)`，夹回 `1..=960`。
+/// 默认 `tpp = 30` ⇒ `fraction ≈ 0.495`（`.slint` 的 `zoom-h-fraction` 默认值）。
+#[must_use]
+pub fn zoom_h_fraction(ticks_per_pixel: u64) -> f32 {
+    let tpp = crate::bridge::clamp_ticks_per_pixel(ticks_per_pixel) as f32;
+    tpp.ln() / (crate::bridge::MAX_TICKS_PER_PIXEL as f32).ln()
+}
+
+/// 反向：滑块位置 ⇒ `ticks_per_pixel`（纯函数；越界 fraction 先夹到 `[0, 1]`）。
+#[must_use]
+pub fn zoom_h_ticks_per_pixel(fraction: f32) -> u64 {
+    let fraction = fraction.clamp(0.0, 1.0);
+    let tpp = (crate::bridge::MAX_TICKS_PER_PIXEL as f32).powf(fraction);
+    crate::bridge::clamp_ticks_per_pixel(tpp.round() as u64)
+}
+
+/// 纵向缩放滑块的位置（`0.0..=1.0`）⇄ 行高百分比（纯函数，双向）。
+///
+/// 纵向用**线性**映射：`percent` 的步进是加法（`zoom_vertical_step` 是 `±20`），
+/// `fraction = (percent − 40) / 260`（`40..=300`）。默认 `percent = 100` ⇒
+/// `fraction ≈ 0.231`（`.slint` 的 `zoom-v-fraction` 默认值）。
+#[must_use]
+pub fn zoom_v_fraction(percent: u32) -> f32 {
+    (percent.saturating_sub(40).min(260) as f32) / 260.0
+}
+
+/// 反向：滑块位置 ⇒ 行高百分比（纯函数；越界 fraction 先夹到 `[0, 1]`）。
+#[must_use]
+pub fn zoom_v_percent(fraction: f32) -> u32 {
+    (fraction.clamp(0.0, 1.0) * 260.0).round() as u32 + 40
+}
+
+/// 重排拖动的**插入位置**（纯函数）：指针 y 落在第几条行的中点之前。
+///
+/// `row_tops` / `row_heights` = 各行顶沿与行高（行空间坐标，升序；与
+/// `apply_row_geometry` 注入的 `track-ys` / `track-heights` **同一索引集**）；
+/// `pointer_y` = 指针在行空间里的 y。
+///
+/// 返回 `p ∈ 0..=n`：`p` = 中点在指针**上方**的行数（`p == 0` = 插到最顶，
+/// `p == n` = 插到最底）。`p == s` 或 `p == s+1`（`s` = 被拖行的原下标）⇒
+/// **无移动**（调用方不得提交）。行高不等时各行中点各算各的（⛔ 不取等高近似）。
+#[must_use]
+pub fn reorder_insertion_index(row_tops: &[f32], row_heights: &[f32], pointer_y: f32) -> usize {
+    row_tops
+        .iter()
+        .zip(row_heights.iter())
+        .filter(|(top, height)| **top + **height / 2.0 < pointer_y)
+        .count()
 }
 
 /// 横向时间轴单步缩放（放大 / 缩小）。
@@ -13507,6 +13947,91 @@ mod tests {
             "负偏移必须被夹到 0"
         );
         assert!((advance_scroll(8.0, -100.0) - 0.0).abs() < f32::EPSILON);
+    }
+
+    /// 2026-11-07（夜半 UI 轨道交互修复线）：缩放滑块 fraction 双向换算（纯函数）。
+    #[test]
+    fn zoom_fractions_round_trip_both_directions() {
+        // 横向（对数）：端点精确，默认 30 ⇒ ≈ 0.495，往返误差 < 1 tpp。
+        assert!((super::zoom_h_fraction(1) - 0.0).abs() < f32::EPSILON);
+        assert!((super::zoom_h_fraction(960) - 1.0).abs() < f32::EPSILON);
+        assert!((super::zoom_h_fraction(30) - 0.495).abs() < 0.001);
+        for tpp in [1, 2, 5, 30, 120, 480, 960] {
+            let back = super::zoom_h_ticks_per_pixel(super::zoom_h_fraction(tpp));
+            assert!(
+                back.abs_diff(tpp) <= 1,
+                "横向往返：{tpp} → {back}，误差必须 ≤ 1 tpp"
+            );
+        }
+        assert_eq!(
+            super::zoom_h_ticks_per_pixel(-0.5),
+            1,
+            "越界 fraction 夹到 0"
+        );
+        assert_eq!(
+            super::zoom_h_ticks_per_pixel(1.5),
+            960,
+            "越界 fraction 夹到 1"
+        );
+        // 纵向（线性）：端点精确，默认 100 ⇒ ≈ 0.231，往返精确（整数步进 260 格）。
+        assert!((super::zoom_v_fraction(40) - 0.0).abs() < f32::EPSILON);
+        assert!((super::zoom_v_fraction(300) - 1.0).abs() < f32::EPSILON);
+        assert!((super::zoom_v_fraction(100) - 0.231).abs() < 0.001);
+        for percent in [40, 60, 100, 200, 300] {
+            assert_eq!(
+                super::zoom_v_percent(super::zoom_v_fraction(percent)),
+                percent,
+                "纵向往返：{percent} 必须精确还原"
+            );
+        }
+        assert_eq!(super::zoom_v_percent(-0.5), 40);
+        assert_eq!(super::zoom_v_percent(1.5), 300);
+    }
+
+    /// 2026-11-07（夜半 UI 轨道交互修复线）：重排插入位置（纯函数）。
+    #[test]
+    fn reorder_insertion_index_counts_midpoints_above_the_pointer() {
+        // 三行等高 56：顶沿 42 / 98 / 154，中点 70 / 126 / 182。
+        let tops = [42.0, 98.0, 154.0];
+        let heights = [56.0, 56.0, 56.0];
+        assert_eq!(super::reorder_insertion_index(&tops, &heights, 0.0), 0);
+        assert_eq!(super::reorder_insertion_index(&tops, &heights, 69.0), 0);
+        assert_eq!(super::reorder_insertion_index(&tops, &heights, 71.0), 1);
+        assert_eq!(super::reorder_insertion_index(&tops, &heights, 127.0), 2);
+        assert_eq!(super::reorder_insertion_index(&tops, &heights, 183.0), 3);
+        // 行高不等时各行中点各算各的：第二行高 112（中点 154），指针 150 仍在它中点之上。
+        let tall = [42.0, 98.0, 210.0];
+        let tall_heights = [56.0, 112.0, 56.0];
+        assert_eq!(
+            super::reorder_insertion_index(&tall, &tall_heights, 150.0),
+            1,
+            "第二行中点 154 > 150 ⇒ 只数第一行"
+        );
+        assert_eq!(
+            super::reorder_insertion_index(&tall, &tall_heights, 155.0),
+            2
+        );
+    }
+
+    /// 2026-11-07（夜半 UI 轨道交互修复线）：标尺定位先加横向偏移再换算。
+    #[test]
+    fn ruler_seek_tick_with_scroll_adds_the_offset_before_converting() {
+        // 960 PPQ / 拍，tpp = 30：局部 x = 100、scroll = 60 ⇒ 绝对 160px ⇒ 4800 tick，
+        // 网格 960 ⇒ 恰落在网格线上（`snap_tick` 不动它）。
+        assert_eq!(
+            super::ruler_seek_tick_with_scroll(100.0, 60.0, 30, u64::MAX, 960),
+            Some(4800)
+        );
+        // scroll = 0 ⇒ 与旧 `ruler_seek_tick` 逐位相同。
+        assert_eq!(
+            super::ruler_seek_tick_with_scroll(100.0, 0.0, 30, u64::MAX, 3840),
+            super::ruler_seek_tick(100.0, 30, u64::MAX, 3840)
+        );
+        // 负 scroll 视作 0。
+        assert_eq!(
+            super::ruler_seek_tick_with_scroll(100.0, -50.0, 30, u64::MAX, 3840),
+            super::ruler_seek_tick(100.0, 30, u64::MAX, 3840)
+        );
     }
 
     #[test]
