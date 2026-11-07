@@ -86,8 +86,8 @@ enum BoundStatus {
     Unbounded(&'static str),
 }
 
-/// 36 条 string 参数声明（`TOOLS` 里 `json_type == "string"` 的**不同名**）。
-const STRING_PARAM_BOUNDS: [(&str, BoundStatus); 36] = [
+/// 39 条 string 参数声明（`TOOLS` 里 `json_type == "string"` 的**不同名**）。
+const STRING_PARAM_BOUNDS: [(&str, BoundStatus); 39] = [
     ("idempotencyKey", BoundStatus::Length(None, Some(256))),
     ("name", BoundStatus::Length(Some(1), None)),
     ("license", BoundStatus::Length(Some(1), None)),
@@ -225,6 +225,23 @@ const STRING_PARAM_BOUNDS: [(&str, BoundStatus); 36] = [
             "调用方自选的任务内 part 标签；后果限于该次调用的查找失败与报文长度。收口面：`schemas/**`。",
         ),
     ),
+    // 夜半原生预制 4 条新增的 3 个不同名 string 参数（`trackId`、`name`、
+    // `mergeCommitMessage` 已在表内；`categories` 是 array，不进本表）。
+    (
+        "instrument",
+        BoundStatus::Unbounded(
+            "乐器 slug 过滤（`yeban_list_presets`）：调用方自选的过滤串；未知 slug 只滤出空列表，不写工程、不落盘。后果限于该次调用的报文长度。\n收口面：`schemas/**` 的 `maxLength`（集成者独占）。",
+        ),
+    ),
+    (
+        "presetId",
+        BoundStatus::Parsed(
+            "`sys:<乐器>:<名>` 或 `user:<ulid>`（`domain::preset::resolve_preset` 的标识形状）；查不到 ⇒ `ENTITY_NOT_FOUND`，响亮拒绝，不静默回干声",
+        ),
+    ),
+    // `yeban_save_preset` 的 scope：`instrument`（乐器调优，缺省）| `track`
+    // （整轨快照）；其它值 ⇒ `INVALID_PARAMETER_RANGE`。
+    ("scope", BoundStatus::WordList),
 ];
 
 #[test]

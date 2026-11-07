@@ -1645,7 +1645,8 @@
             },
             "name": {
               "type": "string",
-              "description": "预制显示名（用户库内不得重名，除非 overwrite: true）"
+              "description": "预制显示名（非空，用户库内不得重名，除非 overwrite: true）",
+              "minLength": 1
             },
             "scope": {
               "type": "string",

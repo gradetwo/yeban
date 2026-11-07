@@ -6235,6 +6235,30 @@ mod tests {
                     "pluginPath": "stub:sine",
                 }),
             ),
+            // 原生预制 4 条：清单只读 ⇒ 规划成功；应用走提案路径 ⇒ 规划成功；
+            // 另存与旁通在这个夹具上响亮拒绝（见下面两个 match 分支）。
+            ("yeban_list_presets", serde_json::json!({})),
+            (
+                "yeban_apply_preset",
+                serde_json::json!({
+                    "trackId": track.to_canonical_string(),
+                    "presetId": "sys:salamander-grand:piano-warm-room",
+                }),
+            ),
+            (
+                "yeban_save_preset",
+                serde_json::json!({
+                    "trackId": track.to_canonical_string(),
+                    "name": "plan-arm-save",
+                }),
+            ),
+            (
+                "yeban_preset_bypass",
+                serde_json::json!({
+                    "trackId": track.to_canonical_string(),
+                    "bypassed": true,
+                }),
+            ),
             // SVS 提交：合法 parts + 不可达服务 ⇒ 规划阶段响亮 `IO_ERROR`。
             (
                 "synthesize_singing",
@@ -6342,6 +6366,19 @@ mod tests {
                     //（响亮失败，绝不静默空成功；正向通路在 `tests/svs_tools.rs`）。
                     let fault = outcome.expect_err("服务不可达必须响亮失败");
                     assert_eq!(fault.domain_code(), Some(ErrorCode::IoError));
+                }
+                "yeban_save_preset" => {
+                    // 这个夹具的音轨**没有**绑定采样器 ⇒ 规划阶段响亮拒绝
+                    // （`INVALID_PARAMETER_RANGE`，不是 -32005，也不是 panic）。
+                    // 绑了采样器的正向通路由 `tests/preset_tools.rs` 覆盖。
+                    let fault = outcome.expect_err("夹具音轨没有采样器");
+                    assert_eq!(fault.domain_code(), Some(ErrorCode::InvalidParameterRange));
+                }
+                "yeban_preset_bypass" => {
+                    // 这个夹具的音轨**没有**预制状态 ⇒ 旁通无从谈起，规划阶段响亮拒绝。
+                    // 有快照的正向通路由 `tests/preset_tools.rs` 覆盖。
+                    let fault = outcome.expect_err("夹具音轨没有预制状态");
+                    assert_eq!(fault.domain_code(), Some(ErrorCode::InvalidParameterRange));
                 }
                 _ => {
                     outcome.unwrap_or_else(|fault| panic!("{name} 规划失败: {fault:?}"));

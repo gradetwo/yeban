@@ -2015,7 +2015,17 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
         side_effect: SideEffect::Disk,
         params: &[
             param("trackId", "string", true, "来源音轨 EntityId（26 字符 ULID）"),
-            param("name", "string", true, "预制显示名（用户库内不得重名，除非 `overwrite: true`）"),
+            // ⭐ D46 收口（实现侧）：与 `yeban_import_audio` 的 `name` 同一条纪律 ——
+            // 契约 `minLength: 1`，空名字必须在参数层被拒（`build_save_preset` 在
+            // plan 层同样拒空名；两道口径一致）。
+            bounded_param(
+                "name",
+                "string",
+                true,
+                "预制显示名（非空，用户库内不得重名，除非 `overwrite: true`）",
+                Some(1),
+                None,
+            ),
             param(
                 "scope",
                 "string",
@@ -2832,7 +2842,9 @@ mod tests {
                 // 审计 `N13`：会话 SFZ registry 枚举 —— 只读 `domain.sfz_instruments`。
                 "yeban_list_instruments",
                 // 插件扫描：只枚举路径并逐个实例化探针，不改工程、不落盘 ⇒ 读-only。
-                "yeban_scan_plugins"
+                "yeban_scan_plugins",
+                // 原生预制清单：只读发行表 + 用户库，不改工程、不落盘 ⇒ 读-only。
+                "yeban_list_presets"
             ],
             "只读工具必须显式分类为 read-only"
         );
