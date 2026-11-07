@@ -844,6 +844,56 @@ export component MainWindow inherits Window {
     callback track-height-drag(int, length);
     /// 收尾：松开 / 指针离开窗口（`PointerEventKind.cancel`）/ 打断。
     callback track-height-release(int);
+    // =====================================================================
+    // ⭐ 2026-11-07 夜半 UI 轨道交互修复线：缩放 / 移轨 / 横向滚动
+    // =====================================================================
+    // 三项缺失的修法（根因与 Logic Pro 对照见完结回执）：
+    // ① 缩放：本块的滑块 fraction + 按钮/滑块回调（`host::wire_zoom_controls`）＋
+    //    `Cmd+←/→` 与对调后的 `Cmd+↑/↓`（`input.rs`）＋ Option+滚轮；
+    // ② 移轨：`Op::MoveTrack`（`yeban-model`）＋ 本块的重排手势态与回调
+    //    （`host::wire_track_reorder`）＋ `MoveSelectedTrackBy`（`apply_action`）；
+    // ③ 横向查看：本块的 `arrangement-content-px`（`apply_view` 注入）＋ 滚动条回调
+    //    （`host::wire_arrangement_hscroll`）＋ 滚轮回调（`host::wire_arrangement_wheel`）。
+    //
+    // 缩放滑块 fraction（宿主拥有、重新注入，与 `roll-ticks-per-pixel` 同款）：
+    // - `zoom-h-fraction` = ln(tpp) / ln(960)（对数，tpp 1..960；默认 tpp=30 ⇒ ≈ 0.495）；
+    // - `zoom-v-fraction` = (percent − 40) / 260（线性，percent 40..300；默认 100 ⇒ ≈ 0.231）。
+    // 唯一写点是 `host::set_roll_ticks_per_pixel` / `host::set_track_height_percent`
+    // （与属性本体同处 ⇒ 滑块与缩放不可能分叉）。
+    in-out property <float> zoom-h-fraction: 0.495;
+    in-out property <float> zoom-v-fraction: 0.231;
+    /// 横向滚动条的内容总长（逻辑像素）—— `host::apply_view` 每次注入
+    /// （`bridge::tick_to_px(content_end_tick, tpp)`）⇒ 缩放一变滑块同步更新。
+    in property <float> arrangement-content-px: 0.0;
+    /// 缩放控件（`host::wire_zoom_controls`）：按钮步进（`true` = 放大）/ 滑块绝对值。
+    callback zoom-h-step(bool);
+    callback zoom-v-step(bool);
+    callback zoom-h-slider(float);
+    callback zoom-v-slider(float);
+    // 轨道重排手势态（宿主拥有；与 `track-height-drag-*` 同款"宿主手势状态机"，
+    // 界面只报事件、宿主算插入位置、松手恰好提交一次 `Op::MoveTrack`）。
+    // `track-reorder-preview-index` = 插入位置（0..=n，-1 = 未越 4px 阈值 ⇒ 不画线）；
+    // `track-reorder-preview-y` = 插入线的行空间 y（行顶沿或表底）。
+    in-out property <bool> track-reorder-active: false;
+    in-out property <int> track-reorder-index: 0;
+    in-out property <string> track-reorder-track: "";
+    in-out property <float> track-reorder-start-y: 0.0;
+    in-out property <int> track-reorder-preview-index: -1;
+    in-out property <float> track-reorder-preview-y: 0.0;
+    /// 重排手势（`host::wire_track_reorder`）：按下 / 拖动（报**行空间 y** =
+    /// `track-ys[index] + mouse-y`）/ 收尾。
+    callback track-reorder-grab(int, length);
+    callback track-reorder-drag(int, length);
+    callback track-reorder-release(int);
+    /// 包头无障碍动作：`(轨道下标, 方向)`（-1 = 上移一格，+1 = 下移一格）⇒ 直接提交。
+    callback track-reorder-step(int, int);
+    /// 编曲滚轮（`host::wire_arrangement_wheel`）：`(横向增量, 纵向增量, Shift, Option)`。
+    /// `.slint` 只在带 Shift / Option 时调用（无修饰返回 `reject` ⇒ 冒泡给 Flickable
+    /// 纵向滚动）；宿主按修饰分流：Shift = 横向滚动、Option = 纵向缩放、
+    /// Option+Shift = 横向缩放。
+    callback arrangement-wheel(length, length, bool, bool);
+    /// 横向滚动条（`host::wire_arrangement_hscroll`）：绝对目标 px（已夹紧 ≥ 0）。
+    callback arrangement-scroll-to(length);
     // ⭐ 任务单 `#192`：轨道头点击 ⇒ **选中这条轨**（界面只报下标；身份查表与
     // `selected-track-id` 的写入全在 `host::wire_track_select`）。
     //
@@ -1604,6 +1654,44 @@ export component MainWindow inherits Window {
                     track-height-release(track_index) => {
                         root.track-height-release(track_index);
                     }
+                    // ⭐ 2026-11-07 夜半 UI 轨道交互修复线：缩放 / 移轨 / 横向滚动的转发
+                    // （界面只做单向搬运，⛔ 不解释、不持有第二份值域；宿主是唯一实现）。
+                    // 横向偏移与内容总长（滚动条与 `.slint` 减法共用同一读数）。
+                    scroll-x: root.roll-scroll-x;
+                    content-px: root.arrangement-content-px;
+                    // 缩放滑块 fraction（根 → 视图单向；滑块拖动经回调回宿主）。
+                    zoom-h-fraction: root.zoom-h-fraction;
+                    zoom-v-fraction: root.zoom-v-fraction;
+                    zoom-h-step(zoom_in) => { root.zoom-h-step(zoom_in); }
+                    zoom-v-step(zoom_in) => { root.zoom-v-step(zoom_in); }
+                    zoom-h-slider(fraction) => { root.zoom-h-slider(fraction); }
+                    zoom-v-slider(fraction) => { root.zoom-v-slider(fraction); }
+                    // 重排手势态（根 → 视图单向；手势事件经回调回宿主）。
+                    track-reorder-active: root.track-reorder-active;
+                    track-reorder-index: root.track-reorder-index;
+                    track-reorder-preview-index: root.track-reorder-preview-index;
+                    track-reorder-preview-y: root.track-reorder-preview-y;
+                    track-reorder-grab(track_index, pointer_y) => {
+                        root.track-reorder-grab(track_index, pointer_y);
+                    }
+                    track-reorder-drag(track_index, pointer_y) => {
+                        root.track-reorder-drag(track_index, pointer_y);
+                    }
+                    track-reorder-release(track_index) => {
+                        root.track-reorder-release(track_index);
+                    }
+                    track-reorder-step(track_index, direction) => {
+                        root.track-reorder-step(track_index, direction);
+                    }
+                    // 横向滚动：滚轮（带修饰才调宿主）/ 滚动条（绝对目标 px）/ 空车道拖动
+                    // （`scroll-requested` 是卷帘那条既有回调，宿主 `install_roll_scroll`）。
+                    arrangement-wheel(delta_x, delta_y, shift, alt) => {
+                        root.arrangement-wheel(delta_x, delta_y, shift, alt);
+                    }
+                    arrangement-scroll-to(target_px) => {
+                        root.arrangement-scroll-to(target_px);
+                    }
+                    scroll-requested(delta) => { root.scroll-requested(delta); }
                     // 静音 / 独奏开关：点击原样上抛给宿主，界面不改任何工程值。
                     // 落点是 MainWindow 上**已有**的两条回调 —— 它们的唯一实现
                     // （`host::wire_mixer_switch`）按下标查宿主注入的 `track-ids`，

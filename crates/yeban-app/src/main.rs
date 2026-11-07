@@ -841,6 +841,12 @@ fn run_gui(options: &Options) -> Result<Vec<String>, cli::CliError> {
     // 落点是 `ui.set_selected-track-id`（唯一写点）+ 用同一个端口重投影，
     // ⛔ 不调用 `UndoPort::commit_ops`。端口在这里只用来取"此刻权威的工程"。
     host::wire_track_select(&ui, &undo_port);
+    // ⭐ 2026-11-07 夜半 UI 轨道交互修复线：缩放控件 / 移轨 / 横向滚动
+    // （与 `live_surface.rs` 的无头装配调**同一个**函数 ⇒ 两条执行面不分叉）。
+    host::wire_zoom_controls(&ui, &undo_port);
+    host::wire_track_reorder(&ui, &undo_port);
+    host::wire_arrangement_wheel(&ui, &undo_port);
+    host::wire_arrangement_hscroll(&ui, &undo_port);
     host::wire_track_rename(&ui, &undo_port);
     host::wire_track_arm(&ui);
     // 混音台（控制台 Tab 2）的**写入面**：推子 / 声相 / 静音 / 独奏。

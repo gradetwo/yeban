@@ -1091,10 +1091,13 @@ pub fn track_rows_with_layout(
 ) -> Vec<RowGeometry> {
     let mut rows = Vec::new();
     let mut y = crate::automation::TRACK_LANE_TOP_PX;
-    for track in project.tracks.values() {
-        if track.id == project.master_bus_track_id {
+    // 行顺序 = **显示顺序**（`YebanProjectV1::display_track_ids`：显式 `Vec`，空表时
+    // 回退到身份升序 ⇒ 未移动过的工程与改动前逐位相同）。主总线不占行。
+    // 确定性：顺序载体是显式 `Vec`（⛔ 不是 `HashMap`），红线 4 不破。
+    for id in project.display_track_ids() {
+        let Some(track) = project.tracks.get(&id) else {
             continue;
-        }
+        };
         let height_px = layout.effective_px(&track.id.to_canonical_string());
         #[allow(clippy::cast_precision_loss)] // ≤ MAX_TRACK_HEIGHT_PX = 320 ≪ 2^24 ⇒ 精确
         let stride = height_px as f32;
@@ -3819,13 +3822,19 @@ impl ViewState {
         let mut master: Option<TrackView> = None;
         let mut clips: Vec<ClipView> = Vec::new();
 
-        // `BTreeMap::values()` 是**身份升序**：跨进程、跨重启、跨机器都给出同一顺序
-        // （红线 4 的确定性要求）。这里刻意不排序 —— 排序会掩盖"集合被换成 HashMap"。
-        for track in project.tracks.values() {
-            if track.id == project.master_bus_track_id {
-                master = Some(track_view(track, 0, true, None));
+        // 主总线单独挑出（不进 `tracks`，不占行）。
+        if let Some(track) = project.tracks.get(&project.master_bus_track_id) {
+            master = Some(track_view(track, 0, true, None));
+        }
+        // 轨道顺序 = **显示顺序**（`YebanProjectV1::display_track_ids`：显式 `Vec`，
+        // 空表时回退到身份升序 ⇒ 未移动过的工程与改动前逐位相同）。`index` 与上面
+        // `track_rows_with_layout` 的行下标**同一套顺序** ⇒ 行几何与轨道视图不可能错位。
+        // 确定性：顺序载体是显式 `Vec`（⛔ 不是 `HashMap`），红线 4 不破 ——
+        // `BTreeMap::values()` 的身份升序仍是"没有显式顺序时"的唯一回退。
+        for id in project.display_track_ids() {
+            let Some(track) = project.tracks.get(&id) else {
                 continue;
-            }
+            };
             let index = tracks.len();
             let row = rows.get(index).copied();
             for placement in track.clips.values() {

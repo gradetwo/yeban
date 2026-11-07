@@ -1005,6 +1005,21 @@ pub enum Action {
     /// 方向 `-1` = 上一条，`+1` = 下一条。边界（顶到两端）仍**消费**（重复选中同一条是
     /// `wire_track_select` 里的早退）；工程里一条轨都没有时**不消费**（见 `apply_action`）。
     SelectTrackBy(i8),
+    /// `Cmd/Ctrl+Shift+↑/↓`：把**选中轨**在显示顺序里上移 / 下移一格
+    /// （2026-11-07 夜半 UI 轨道交互修复线）。
+    ///
+    /// 方向 `-1` = 上移一格，`+1` = 下移一格。落点**唯一**：`host::apply_action` 的
+    /// `MoveSelectedTrackBy` 臂 ⇒ 读 `selected-track-id` 与 `track-ids` 的当前顺序 ⇒
+    /// 提交一条 `Op::MoveTrack`（绝对值下标，可撤销）。边界（首轨上移 / 末轨下移）与
+    /// 无选中轨时**不消费**（返回 `false`，键照旧冒泡）—— 与 `SelectTrackBy` 的"边界
+    /// 仍消费"相反：移轨是写操作，空操作⛔ 不进撤销栈。
+    ///
+    /// 键位口径（⚠ **未经 Logic Pro 官方证实**）：Logic Pro 官方快捷键表（Tracks 一节）
+    /// 里**没有** Move Track 条目；`Cmd+Shift+↑/↓ = Move Track Up/Down` 只见于第三方
+    /// 教程，本实现**不**把它写成"Logic 官方键位"。键位本身是本仓的界面决定：该格在 `Cmd`
+    /// 分支里此前是空的（`(UpArrow, shift=true, alt=false)` 落到 `PassThrough`），
+    /// 与 `Cmd+↑/↓`（垂直缩放）只差一个 `Shift`，与 `Alt+↑/↓`（选轨）只差一个 `Cmd`。
+    MoveSelectedTrackBy(i8),
     /// `1`–`5`: 切到某个卷帘工具。
     SelectTool(Tool),
     /// `Shift+Enter`: 采纳**点选了的那一条** AI 提案。
@@ -1257,14 +1272,25 @@ impl InputContext {
                 }),
                 // Logic Pro 工作流：Cmd+T 剪辑切分
                 (Key::Character('t'), false, false) => Resolution::Action(Action::SplitAtPlayhead),
-                // 横向缩放：Cmd+= / Cmd++ / Cmd+-
+                // 横向缩放：Cmd+= / Cmd++ / Cmd+-（`=`/`-` 备用，见第 6 步）
                 (Key::Character('='), false, false) | (Key::Character('+'), _, false) => {
                     Resolution::Action(Action::ZoomIn)
                 }
                 (Key::Character('-'), false, false) => Resolution::Action(Action::ZoomOut),
-                // 垂直音轨高度缩放：Cmd+Up / Cmd+Down
-                (Key::UpArrow, false, false) => Resolution::Action(Action::VerticalZoomIn),
-                (Key::DownArrow, false, false) => Resolution::Action(Action::VerticalZoomOut),
+                // 横向缩放：Cmd+→ / Cmd+←（Logic Pro 同款键位：Cmd+→ = 横向放大、
+                // Cmd+← = 横向缩小；该两格此前是空的 —— `←/→` 在本分支里只有
+                // `+Alt` 两条（混音声像微调），`(false, false)` 落到 `PassThrough`）。
+                (Key::RightArrow, false, false) => Resolution::Action(Action::ZoomIn),
+                (Key::LeftArrow, false, false) => Resolution::Action(Action::ZoomOut),
+                // 垂直缩放：Cmd+↓ = 放大、Cmd+↑ = 缩小（⚠ **行为变更**，2026-11-07
+                // 按 Logic Pro 对调：此前 Cmd+↑ = 放大、Cmd+↓ = 缩小，与 Logic 相反。
+                // Logic：Cmd+↓ = Zoom Vertical In、Cmd+↑ = Zoom Vertical Out。）
+                (Key::UpArrow, false, false) => Resolution::Action(Action::VerticalZoomOut),
+                (Key::DownArrow, false, false) => Resolution::Action(Action::VerticalZoomIn),
+                // 移轨：Cmd+Shift+↑/↓ = 选中轨上移 / 下移一格（该两格此前是空的，
+                // 落到 `_ => PassThrough`；见 [`Action::MoveSelectedTrackBy`] 的 caveat）。
+                (Key::UpArrow, true, false) => Resolution::Action(Action::MoveSelectedTrackBy(-1)),
+                (Key::DownArrow, true, false) => Resolution::Action(Action::MoveSelectedTrackBy(1)),
                 _ => Resolution::PassThrough,
             };
         }
@@ -1402,13 +1428,13 @@ mod tests {
 
     use Action::{
         AcceptAiSuggestion, AuditionMain, AuditionProposal, Cancel, DeleteSelection, Duplicate,
-        FocusSidebarSearch, GoToBeginning, NudgeMixerChannel, NudgeSelection, OpenProject,
-        OpenTimeMachine, PlayPause, Redo, ResizeSelectionDuration, ResumeFromCursor, SaveProject,
-        SaveProjectAs, SelectConsoleTab, SelectTool, SelectTrackBy, ShowView, SplitAtPlayhead,
-        ToggleAiDrawer, ToggleAutomation, ToggleClipMute, ToggleConsoleMaximize, ToggleCycle,
-        ToggleEditor, ToggleMixer, TogglePencilTool, ToggleRecord, ToggleSidebar, ToggleTrackMute,
-        ToggleTrackSolo, ToggleView, Undo, VerticalZoomIn, VerticalZoomOut, ZoomIn, ZoomOut,
-        ZoomToFit, ZoomToSelection,
+        FocusSidebarSearch, GoToBeginning, MoveSelectedTrackBy, NudgeMixerChannel, NudgeSelection,
+        OpenProject, OpenTimeMachine, PlayPause, Redo, ResizeSelectionDuration, ResumeFromCursor,
+        SaveProject, SaveProjectAs, SelectConsoleTab, SelectTool, SelectTrackBy, ShowView,
+        SplitAtPlayhead, ToggleAiDrawer, ToggleAutomation, ToggleClipMute, ToggleConsoleMaximize,
+        ToggleCycle, ToggleEditor, ToggleMixer, TogglePencilTool, ToggleRecord, ToggleSidebar,
+        ToggleTrackMute, ToggleTrackSolo, ToggleView, Undo, VerticalZoomIn, VerticalZoomOut,
+        ZoomIn, ZoomOut, ZoomToFit, ZoomToSelection,
     };
     use Focus::{MainCanvas, Other, TextInput};
     use MixerParam::{Pan, Volume};
@@ -1476,12 +1502,29 @@ mod tests {
         assert_eq!(ctx.resolve(Equal, Modifiers::meta()), Act(ZoomIn));
         assert_eq!(ctx.resolve(Minus, Modifiers::none()), Act(ZoomOut));
         assert_eq!(ctx.resolve(Minus, Modifiers::meta()), Act(ZoomOut));
+        // Cmd+→ / Cmd+← = 横向缩放（Logic Pro 同款；`=`/`-` 仍是备用）。
+        assert_eq!(ctx.resolve(RightArrow, Modifiers::meta()), Act(ZoomIn));
+        assert_eq!(ctx.resolve(LeftArrow, Modifiers::meta()), Act(ZoomOut));
 
-        // 4. Vertical zoom
-        assert_eq!(ctx.resolve(UpArrow, Modifiers::meta()), Act(VerticalZoomIn));
+        // 4. Vertical zoom（⚠ 2026-11-07 按 Logic Pro 对调：Cmd+↓ = 放大、Cmd+↑ = 缩小。
+        // 此前是 Cmd+↑ = 放大、Cmd+↓ = 缩小，与 Logic 相反。）
+        assert_eq!(
+            ctx.resolve(UpArrow, Modifiers::meta()),
+            Act(VerticalZoomOut)
+        );
         assert_eq!(
             ctx.resolve(DownArrow, Modifiers::meta()),
-            Act(VerticalZoomOut)
+            Act(VerticalZoomIn)
+        );
+
+        // 4b. Move track（Cmd+Shift+↑/↓ = 选中轨上移 / 下移一格；该格此前是空的）。
+        assert_eq!(
+            ctx.resolve(UpArrow, Modifiers::meta_shift()),
+            Act(MoveSelectedTrackBy(-1))
+        );
+        assert_eq!(
+            ctx.resolve(DownArrow, Modifiers::meta_shift()),
+            Act(MoveSelectedTrackBy(1))
         );
 
         // 5. In TextInput: bare keys must pass through

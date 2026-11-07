@@ -688,6 +688,21 @@ pub enum Op {
         /// 移除前的完整音轨。
         previous_track: TrackV3,
     },
+    /// 移动音轨在显示顺序里的位置（2026-11-07 夜半 UI 轨道交互修复线）。
+    ///
+    /// 下标是**显示顺序**里的位置（[`YebanProjectV1::display_track_ids`]，
+    /// 非主总线轨；主总线不参与显示顺序，移它即拒收），不是 `BTreeMap` 的身份序。
+    /// 载荷用绝对值形态（`old_index` / `new_index`，与 [`Op::MoveClipPlacement`]
+    /// 的 `old_start_tick` / `new_start_tick` 同型）⇒ 重放同一条 op 必然被前置条件
+    /// 拒绝（第二遍的现位置已是 `new_index` ≠ `old_index`），⛔ 不是相对变换。
+    MoveTrack {
+        /// 被移动的音轨身份。
+        track_id: EntityId,
+        /// 移动前在显示顺序里的位置（必须等于文档现值）。
+        old_index: usize,
+        /// 移动后在显示顺序里的位置（`0..显示轨数`）。
+        new_index: usize,
+    },
     /// 连接一条路由边。
     ConnectRouting {
         /// 被连接的路由边。
@@ -1269,6 +1284,7 @@ impl Op {
             Self::SetClipPlacementDuration { .. } => "SetClipPlacementDuration",
             Self::AddTrack { .. } => "AddTrack",
             Self::RemoveTrack { .. } => "RemoveTrack",
+            Self::MoveTrack { .. } => "MoveTrack",
             Self::ConnectRouting { .. } => "ConnectRouting",
             Self::DisconnectRouting { .. } => "DisconnectRouting",
             Self::SetRoutingGain { .. } => "SetRoutingGain",
@@ -1637,6 +1653,34 @@ impl Op {
                 }
                 let current = doc.track(track_id)?;
                 if current != previous_track {
+                    return Err(ModelError::OpStateMismatch { op: self.name() });
+                }
+                Ok(())
+            }
+            Self::MoveTrack {
+                track_id,
+                old_index,
+                new_index,
+            } => {
+                // 主总线不参与显示顺序：移它没有合法的目标位置。
+                if *track_id == doc.master_bus_track_id && !track_id.is_nil() {
+                    return Err(ModelError::OpStateMismatch { op: self.name() });
+                }
+                doc.track(track_id)?;
+                let order = doc.display_track_ids();
+                let current = order
+                    .iter()
+                    .position(|id| id == track_id)
+                    .ok_or(ModelError::TrackNotFound { id: *track_id })?;
+                if current != *old_index {
+                    return Err(ModelError::OpStateMismatch { op: self.name() });
+                }
+                if *new_index >= order.len() {
+                    return Err(ModelError::OpStateMismatch { op: self.name() });
+                }
+                if *new_index == *old_index {
+                    // 原地不动不是一次编辑（首轨上移 / 末轨下移的边界在宿主层拦住；
+                    // 这里是第二道防线：不让空操作进撤销栈）。
                     return Err(ModelError::OpStateMismatch { op: self.name() });
                 }
                 Ok(())
@@ -2466,6 +2510,16 @@ impl Op {
             Self::RemoveTrack { previous_track, .. } => Self::AddTrack {
                 track: previous_track.clone(),
             },
+            // 纯结构化取反：只交换"前 / 后"两个下标（与 `MoveClipPlacement` 同型）。
+            Self::MoveTrack {
+                track_id,
+                old_index,
+                new_index,
+            } => Self::MoveTrack {
+                track_id: *track_id,
+                old_index: *new_index,
+                new_index: *old_index,
+            },
             Self::SetClipName {
                 clip_id,
                 old_name,
@@ -3042,6 +3096,14 @@ impl Op {
             }
             Self::AddTrack { track } => doc.insert_track(track.clone()),
             Self::RemoveTrack { track_id, .. } => doc.remove_track(track_id).map(|_removed| ()),
+            Self::MoveTrack {
+                track_id,
+                new_index,
+                ..
+            } => {
+                doc.move_track(track_id, *new_index);
+                Ok(())
+            }
             Self::ConnectRouting { edge } => {
                 let graph = &mut doc.routing_graph;
                 if graph.edges.insert(edge.id, *edge).is_none() {
@@ -3974,6 +4036,12 @@ mod tests {
                     ..TrackV3::default()
                 },
             },
+            // 显示顺序：lead（`0`）→ bass（`1`）；把 lead 移到 `1` 处 ⇒ [bass, lead]。
+            Op::MoveTrack {
+                track_id: f.lead,
+                old_index: 0,
+                new_index: 1,
+            },
             Op::AddClip {
                 clip: empty_midi_clip(fresh_placement),
             },
@@ -4346,6 +4414,7 @@ mod tests {
             "MoveClipPlacement",
             "AddTrack",
             "RemoveTrack",
+            "MoveTrack",
             "ConnectRouting",
             "DisconnectRouting",
             "SetRoutingGain",
@@ -6108,6 +6177,154 @@ mod tests {
         assert_eq!(
             op.apply(&mut doc),
             Err(ModelError::OpStateMismatch { op: "RemoveTrack" })
+        );
+    }
+
+    /// `Op::MoveTrack`：应用 + 逆操作 + 撤销（`apply_inverse`）+ 边界 + 旧工程不变。
+    #[test]
+    fn move_track_applies_inverts_and_rejects_the_boundaries() {
+        let f = fixture();
+        let mut doc = fixture_document();
+        // 夹具显示顺序：lead（`0`）→ bass（`1`）；主总线不参与。
+        assert_eq!(doc.display_track_ids(), vec![f.lead, f.bass]);
+
+        let forward = Op::MoveTrack {
+            track_id: f.lead,
+            old_index: 0,
+            new_index: 1,
+        };
+        forward.apply(&mut doc).expect("lead 0→1 必须成功");
+        assert_eq!(doc.display_track_ids(), vec![f.bass, f.lead]);
+        // 第一次移动物化了整表（空表 ⇒ 写出），且表里只有两条非主总线轨。
+        assert_eq!(doc.track_order, vec![f.bass, f.lead]);
+        doc.validate().expect("移完的文档必须合法");
+
+        // 逆操作精确还原（含空表还原：移回默认顺序 ⇒ 表清回空）。
+        let inverse = forward.invert(&doc).expect("求逆");
+        assert_eq!(
+            inverse,
+            Op::MoveTrack {
+                track_id: f.lead,
+                old_index: 1,
+                new_index: 0,
+            }
+        );
+        inverse.apply(&mut doc).expect("逆操作必须成功");
+        assert_eq!(
+            doc,
+            fixture_document(),
+            "逆操作必须精确还原（含 track_order 清空）"
+        );
+
+        // `apply_inverse` 与 `invert + apply` 等价。
+        let mut staged = fixture_document();
+        forward.apply(&mut staged).expect("apply");
+        forward.apply_inverse(&mut staged).expect("apply_inverse");
+        assert_eq!(staged, fixture_document());
+
+        // 边界：首轨上移 / 末轨下移是空操作 ⇒ 前置条件拒绝，文档一位不动。
+        let mut doc = fixture_document();
+        let up_from_top = Op::MoveTrack {
+            track_id: f.lead,
+            old_index: 0,
+            new_index: 0,
+        };
+        assert_eq!(
+            up_from_top.apply(&mut doc),
+            Err(ModelError::OpStateMismatch { op: "MoveTrack" })
+        );
+        let down_from_bottom = Op::MoveTrack {
+            track_id: f.bass,
+            old_index: 1,
+            new_index: 1,
+        };
+        assert_eq!(
+            down_from_bottom.apply(&mut doc),
+            Err(ModelError::OpStateMismatch { op: "MoveTrack" })
+        );
+        let out_of_range = Op::MoveTrack {
+            track_id: f.lead,
+            old_index: 0,
+            new_index: 2,
+        };
+        assert_eq!(
+            out_of_range.apply(&mut doc),
+            Err(ModelError::OpStateMismatch { op: "MoveTrack" })
+        );
+        // 陈旧的 old_index（重放同一条 op）⇒ 拒绝，文档逐位不动。
+        forward.apply(&mut doc).expect("第一遍成功");
+        assert_eq!(
+            forward.apply(&mut doc),
+            Err(ModelError::OpStateMismatch { op: "MoveTrack" })
+        );
+        // 主总线移不得。
+        let master = Op::MoveTrack {
+            track_id: f.master,
+            old_index: 0,
+            new_index: 1,
+        };
+        assert_eq!(
+            master.apply(&mut doc),
+            Err(ModelError::OpStateMismatch { op: "MoveTrack" })
+        );
+        // 不存在的轨 ⇒ TrackNotFound（前置条件的 `doc.track` 一臂）。
+        let ghost = Op::MoveTrack {
+            track_id: fixture_id(999),
+            old_index: 0,
+            new_index: 1,
+        };
+        assert_eq!(
+            ghost.apply(&mut doc),
+            Err(ModelError::TrackNotFound {
+                id: fixture_id(999)
+            })
+        );
+    }
+
+    /// 旧工程加载：没有 `track_order` 键 ⇒ 空表 ⇒ 顺序 = 身份升序，渲染逐位不变。
+    #[test]
+    fn old_project_without_track_order_loads_in_identity_order() {
+        let f = fixture();
+        let doc = fixture_document();
+        let bytes = serde_json::to_vec(&doc).expect("夹具可序列化");
+        assert!(
+            !String::from_utf8_lossy(&bytes).contains("track_order"),
+            "空表不得写出：旧工程的磁盘字节里没有 track_order"
+        );
+        let loaded: YebanProjectV1 = serde_json::from_slice(&bytes).expect("旧工程可加载");
+        assert_eq!(loaded.track_order, Vec::<EntityId>::new());
+        assert_eq!(loaded.display_track_ids(), vec![f.lead, f.bass]);
+        assert_eq!(loaded, doc, "旧工程加载后逐位相同");
+    }
+
+    /// 显式顺序的防御语义：缺失轨追加在后（⛔ 永不丢轨），重复 / 未知身份拒收。
+    #[test]
+    fn display_order_appends_missing_tracks_and_validate_rejects_bad_tables() {
+        let f = fixture();
+        let mut doc = fixture_document();
+        // 表里只有 bass ⇒ lead 缺失，按身份升序追加在后。
+        doc.track_order = vec![f.bass];
+        assert_eq!(doc.display_track_ids(), vec![f.bass, f.lead]);
+        doc.validate().expect("缺失轨是合法的（追加在后）");
+
+        // 主总线身份在表里 ⇒ 投影忽略它。
+        doc.track_order = vec![f.master, f.bass];
+        assert_eq!(doc.display_track_ids(), vec![f.bass, f.lead]);
+        doc.validate().expect("主总线在表里也不拒收（投影忽略）");
+
+        // 重复身份 ⇒ 拒收。
+        doc.track_order = vec![f.bass, f.bass];
+        assert_eq!(
+            doc.validate(),
+            Err(ModelError::DuplicateEntityId { id: f.bass })
+        );
+        // 未知身份 ⇒ 拒收。
+        doc.track_order = vec![fixture_id(999)];
+        assert_eq!(
+            doc.validate(),
+            Err(ModelError::TrackNotFound {
+                id: fixture_id(999)
+            })
         );
     }
 
@@ -9590,7 +9807,7 @@ mod tests {
     #[test]
     fn op_write_differential_root_keys_match_frozen_table() {
         /// 冻结读数：变体名 → 它改动的**顶层字段**（每行右侧已按字典序）。
-        const FROZEN: [(&str, &[&str]); 55] = [
+        const FROZEN: [(&str, &[&str]); 56] = [
             ("AddClip", &["clip_pool"]),
             ("AddClipPlacement", &["tracks"]),
             ("AddNote", &["clip_pool"]),
@@ -9604,6 +9821,7 @@ mod tests {
             ("ModifyNoteVelocity", &["clip_pool"]),
             ("MoveClipPlacement", &["tracks"]),
             ("MoveNote", &["clip_pool"]),
+            ("MoveTrack", &["track_order"]),
             ("RemoveAsset", &["assets"]),
             ("RemoveAutomationLane", &["tracks"]),
             ("RemoveAutomationPoint", &["tracks"]),
@@ -9854,7 +10072,7 @@ mod tests {
         ///
         /// 空表 `&[]` 的 14 行⛔ 表示"这个变体什么都不改"，而表示"它改的是**一条容器记录**
         /// （新增／删除），末端段是那条记录的身份"—— 上面第 2 条断言就是用来证明这一点的。
-        const FROZEN_LEAVES: [(&str, &[&str]); 55] = [
+        const FROZEN_LEAVES: [(&str, &[&str]); 56] = [
             ("AddClip", &[]),
             ("AddClipPlacement", &[]),
             ("AddNote", &[]),
@@ -9868,6 +10086,7 @@ mod tests {
             ("ModifyNoteVelocity", &["velocity"]),
             ("MoveClipPlacement", &["start_tick"]),
             ("MoveNote", &["pitch", "start_tick"]),
+            ("MoveTrack", &["track_order"]),
             ("RemoveAsset", &[]),
             ("RemoveAutomationLane", &["automation_lanes"]),
             ("RemoveAutomationPoint", &["automation_lanes"]),

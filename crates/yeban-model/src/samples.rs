@@ -444,6 +444,7 @@ pub fn filled_project() -> YebanProjectV1 {
             (bass_id, bass),
             (aux_id, aux),
         ]),
+        track_order: Vec::new(),
         master_bus_track_id: master_id,
         routing_graph: RoutingGraph {
             nodes: vec![lead_id, bass_id, aux_id, master_id],

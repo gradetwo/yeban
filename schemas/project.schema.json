@@ -1224,6 +1224,14 @@
         "type": "string",
         "pattern": "^[0-9a-f]{64}$"
       }
+    },
+    "track_order": {
+      "type": "array",
+      "description": "Display order of non-master tracks (EntityId ULIDs, top to bottom). Empty array is not written out (skip_serializing_if, same discipline as embedded_samples), so old projects are byte-identical; empty/absent means BTreeMap identity order. Entries must exist in tracks and be unique; the master-bus id is ignored by projection if present; tracks missing from the list are appended in identity order (projection never drops a track).",
+      "items": {
+        "type": "string",
+        "pattern": "^[0-7][0-9A-HJKMNP-TV-Z]{25}$"
+      }
     }
   }
 }

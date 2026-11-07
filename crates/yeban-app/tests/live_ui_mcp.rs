@@ -5172,9 +5172,11 @@ fn the_track_header_drag_gesture_changes_the_row_geometry_and_ends_cleanly() {
     let (header_x, header_y, header_h) = header_box(&mut plane, 201);
     let header_w = header_box_width(&mut plane, 201);
     assert_eq!(header_h, 54.0, "默认行高的包头高就是注入的 54px");
-    // 取包头**靠右**的一点（躲开左上角的静音 / 独奏按钮与色标），纵向取行中。
+    // 取包头**靠右**的一点（躲开左上角的静音 / 独奏按钮与色标），纵向取底边 6px 内。
+    // ⭐ 2026-11-07（夜半 UI 轨道交互修复线）：包头手势分区后行中按下 = **重排**
+    // （名称区），只有底边 6px 才是高度拖拽。旧的"行中按下"会进重排链、行高一位不动。
     let grab_x = header_x + 150.0;
-    let grab_y = header_y + header_h / 2.0;
+    let grab_y = header_y + header_h - 3.0;
 
     // ---- 按下 + 向上拖 40px ----
     let down = plane.plane().try_line(&yeban_ui_mcp::live::request_line(
@@ -5183,7 +5185,7 @@ fn the_track_header_drag_gesture_changes_the_row_geometry_and_ends_cleanly() {
         Some(json!({
             "elementId": "track-0-header",
             "xOffset": 150.0,
-            "yOffset": header_h / 2.0,
+            "yOffset": header_h - 3.0,
             "button": "left"
         })),
     ));
@@ -5286,13 +5288,14 @@ fn escape_cancels_the_track_height_drag_and_restores_the_starting_height() {
     };
 
     // ---- 坐标来自**运行时树**（不写死像素：布局一改判据跟着走）----
+    // ⭐ 2026-11-07：按下点取底边 6px 内（包头手势分区后行中按下 = 重排，见上一判据）。
     let (header_x, header_y, header_h) = header_box(&mut plane, 210);
     let grab_x = header_x + 150.0;
-    let grab_y = header_y + header_h / 2.0;
+    let grab_y = header_y + header_h - 3.0;
     assert_eq!(header_h, 54.0, "默认行高的包头高就是注入的 54px");
 
     // ---- 第一次手势：拖到 96px 并**松手**（这一拖算数）----
-    let down = grab(&mut plane, 211, 150.0, header_h / 2.0);
+    let down = grab(&mut plane, 211, 150.0, header_h - 3.0);
     assert!(!down.is_error(), "{down:?}");
     let moved = plane.plane().try_line(&yeban_ui_mcp::live::request_line(
         212,
@@ -5311,12 +5314,16 @@ fn escape_cancels_the_track_height_drag_and_restores_the_starting_height() {
     assert!(!window.get_track_height_drag_active());
 
     // ---- 第二次手势：从 96px 再拖 20px（到 116），然后按 `Escape` ----
-    let down2 = grab(&mut plane, 214, 150.0, header_h / 2.0);
+    // ⭐ 2026-11-07：第一次松手后包头已是 94px 高，底边 6px 的落点须按**当前**行高
+    // 重算（`committed[0] - 3`），旧的 `header_h - 3`（51px）会落进重排区。
+    let second_header_h = f64::from(committed[0]);
+    let grab2_y = header_y + second_header_h - 3.0;
+    let down2 = grab(&mut plane, 214, 150.0, second_header_h - 3.0);
     assert!(!down2.is_error(), "{down2:?}");
     let moved2 = plane.plane().try_line(&yeban_ui_mcp::live::request_line(
         215,
         "ui/dispatch_pointer_move",
-        Some(json!({"x": grab_x, "y": grab_y - 20.0})),
+        Some(json!({"x": grab_x, "y": grab2_y - 20.0})),
     ));
     assert!(!moved2.is_error(), "{moved2:?}");
     assert_eq!(
