@@ -5,8 +5,8 @@
 //! | 判据 | 断言 | 证什么 / 不证什么 |
 //! | :--- | :--- | :--- |
 //! | ① 1440×900 两段全可见 | 窗口 `1440×900` ⇒ 两段的**每个**语义 ID 都在运行时控件树里，且包围盒满足 `0 ≤ x`、`0 ≤ y`、`x+w ≤ 1440`、`y+h ≤ 900` | 证"窄窗口下不需要拖动/滚动就够得着"；⛔ 不证人眼看过 |
-//! | ② 1920×1080 不变 | 两段的关键节点包围盒**逐格等于** `#180`／`#181` 注册的那组数（`840 / 544 / 1384`、`1040 / 328`、`1256 / 72`…）；同一帧的像素指纹一并报出 | 证"改布局没有挪动默认档一位" |
-//! | ③ 1280×800 | 同上，但下界是 `1280×800`；第二段右沿必须 `≤ 1280` 且左沿 `≥ 824`（⛔ 不与第一段重叠） | 证"极窄档也不裁"；⛔ 不证更窄（见文件末的边界） |
+//! | ② 1920×1080 不变 | 两段的关键节点包围盒**逐格等于** `#180`／`#181` 注册的那组数（`840 / 544 / 1384`、`1040 / 328`、`1256 / 72`…）；同一帧的像素指纹一并报出 | 证"改布局没有挪动默认档一位"；⭐ 总览图面板是有意变更：1920 档面板展开 104px，3:2 分摊 ⇒ 全部 y −62、`device-rack` 高 −42，x/宽一位未动 |
+//! | ③ 1280×800 | 同上，但下界是 `1280×800`；第二段右沿必须 `≤ 1280` 且左沿 `≥ 824`（⛔ 不与第一段重叠） | 证"极窄档也不裁"；⛔ 不证更窄（见文件末的边界）；⭐ 1440/1280 档面板折叠为 22px，3:2 分摊 ⇒ y −13、架高 −9 |
 //! | ④ 交互仍可用 | 同一个 `1440×900` 活窗口上：装设备 / 旁通 / EQ 滑块各一次 ⇒ `commit_count` **各 +1** | 证"布局改动没有吃掉手势"；⛔ 不证听感 |
 //! | ⑤ 无头可判 | 三条窗口都由 `LivePort`（Tier-1 软件光栅化平台）构造 | 证"CI 无显示器也能跑" |
 //!
@@ -255,13 +255,15 @@ fn both_segments_are_inside_a_1440x900_window() {
     assert_inside(&rows, size);
 
     // 第二段在 1440 下仍是 `#180` 的原值（面板宽 1440 ≥ 1392 ⇒ 公式恒等于常量）。
-    assert_bounds(tree, "master-device-rack", (840, 583, 544, 260));
+    // ⭐ 总览图面板：1440×900 档面板折叠为 22px，3:2 弹性分摊 ⇒ 工作区 −13、控制台 −9，
+    // 架内全部节点 y −13（`device-rack` 高 321→312）。
+    assert_bounds(tree, "master-device-rack", (840, 570, 544, 260));
     // 第一段一位未动（面板宽变化不影响它的绝对坐标）。
-    assert_bounds(tree, "device-rack-track-label", (8, 561, 420, 16));
-    assert_bounds(tree, "device-rack", (0, 555, 1440, 321));
+    assert_bounds(tree, "device-rack-track-label", (8, 548, 420, 16));
+    assert_bounds(tree, "device-rack", (0, 542, 1440, 312));
 
     report_line(&format!(
-        "[#183 ①] 1440×900：两段 {} 个语义节点全部在窗口内；第二段 x=840 w=544 ⇒ 右沿 1384 ≤ 1440 ✓；面板 y=555 h=321 ⇒ 下沿 876 ≤ 900 ✓",
+        "[#183 ①] 1440×900：两段 {} 个语义节点全部在窗口内；第二段 x=840 w=544 ⇒ 右沿 1384 ≤ 1440 ✓；面板 y=542 h=312 ⇒ 下沿 854 ≤ 900 ✓",
         rows.len()
     ));
     let _ = fingerprint(&live, "1440x900");
@@ -279,27 +281,29 @@ fn the_1920x1080_geometry_is_bit_for_bit_the_registered_one() {
     assert_inside(&rows, size);
 
     // 第一段：`#157` 起就没动过的那组坐标。
-    assert_bounds(tree, "device-rack", (0, 663, 1920, 393));
-    assert_bounds(tree, "device-rack-track-label", (8, 669, 420, 16));
-    assert_bounds(tree, "device-rack-count", (436, 669, 200, 16));
-    assert_bounds(tree, "device-rack-eq-curve", (8, 691, 420, 100));
-    assert_bounds(tree, "device-eq-low-gain-panel", (444, 691, 380, 100));
-    assert_bounds(tree, "device-eq-low-gain-slider", (452, 731, 300, 24));
-    assert_bounds(tree, "device-insert-eq-button", (8, 839, 84, 20));
-    assert_bounds(tree, "device-0-card", (8, 879, 420, 44));
-    assert_bounds(tree, "device-0-remove-button", (400, 883, 20, 20));
+    // ⭐ 总览图面板：1920×1080 档面板展开 104px，3:2 弹性分摊 ⇒ 工作区 −62、控制台 −42，
+    // 架内全部节点 y −62（`device-rack` 高 393→351，其余节点高不变）。
+    assert_bounds(tree, "device-rack", (0, 601, 1920, 351));
+    assert_bounds(tree, "device-rack-track-label", (8, 607, 420, 16));
+    assert_bounds(tree, "device-rack-count", (436, 607, 200, 16));
+    assert_bounds(tree, "device-rack-eq-curve", (8, 629, 420, 100));
+    assert_bounds(tree, "device-eq-low-gain-panel", (444, 629, 380, 100));
+    assert_bounds(tree, "device-eq-low-gain-slider", (452, 669, 300, 24));
+    assert_bounds(tree, "device-insert-eq-button", (8, 777, 84, 20));
+    assert_bounds(tree, "device-0-card", (8, 817, 420, 44));
+    assert_bounds(tree, "device-0-remove-button", (400, 821, 20, 20));
 
     // 第二段：`#180`／`#181`／`#182` 注册的 `840 / 544 / 1384` 那一组。
-    assert_bounds(tree, "master-device-rack", (840, 691, 544, 260));
-    assert_bounds(tree, "master-device-track-label", (848, 695, 360, 16));
-    assert_bounds(tree, "master-device-rack-count", (1224, 695, 144, 16));
-    assert_bounds(tree, "master-device-insert-eq-button", (848, 719, 84, 20));
-    assert_bounds(tree, "master-device-eq-panel", (1040, 713, 328, 48));
-    assert_bounds(tree, "master-device-eq-value", (1048, 727, 312, 12));
-    assert_bounds(tree, "master-device-eq-slider", (1048, 741, 300, 18));
-    assert_bounds(tree, "master-device-0-card", (844, 763, 528, 44));
-    assert_bounds(tree, "master-device-0-bypass-switch", (1256, 767, 72, 20));
-    assert_bounds(tree, "master-device-0-remove-button", (1344, 767, 20, 20));
+    assert_bounds(tree, "master-device-rack", (840, 629, 544, 260));
+    assert_bounds(tree, "master-device-track-label", (848, 633, 360, 16));
+    assert_bounds(tree, "master-device-rack-count", (1224, 633, 144, 16));
+    assert_bounds(tree, "master-device-insert-eq-button", (848, 657, 84, 20));
+    assert_bounds(tree, "master-device-eq-panel", (1040, 651, 328, 48));
+    assert_bounds(tree, "master-device-eq-value", (1048, 665, 312, 12));
+    assert_bounds(tree, "master-device-eq-slider", (1048, 679, 300, 18));
+    assert_bounds(tree, "master-device-0-card", (844, 701, 528, 44));
+    assert_bounds(tree, "master-device-0-bypass-switch", (1256, 705, 72, 20));
+    assert_bounds(tree, "master-device-0-remove-button", (1344, 705, 20, 20));
 
     report_line(
         "[#183 ②] 1920×1080：两段 24 个节点的包围盒与 `#180`/`#181` 注册值**逐格相等**（840/544/1384、1040/328、1256/72、1344/20）",
@@ -319,17 +323,19 @@ fn both_segments_fit_a_1280x800_window_without_overlapping() {
     assert_inside(&rows, size);
 
     // 第二段让宽度而不是让左沿：左沿仍 840（> 824 = 第一段的右沿）⇒ ⛔ 不重叠。
-    assert_bounds(tree, "master-device-rack", (840, 523, 432, 253));
+    // ⭐ 总览图面板：1280×800 档面板折叠为 22px，3:2 弹性分摊 ⇒ 工作区 −13、控制台 −9，
+    // 第二段 y −13（`master-device-rack` 高 253→244，段内节点高不变）。
+    assert_bounds(tree, "master-device-rack", (840, 510, 432, 244));
     // 段内右沿全部收敛到 1272（= 1280 − 8）。
-    assert_bounds(tree, "master-device-rack-count", (1112, 527, 144, 16));
-    assert_bounds(tree, "master-device-eq-panel", (1032, 545, 224, 48));
-    assert_bounds(tree, "master-device-eq-slider", (1040, 573, 196, 18));
-    assert_bounds(tree, "master-device-0-card", (844, 595, 416, 44));
-    assert_bounds(tree, "master-device-0-bypass-switch", (1144, 599, 72, 20));
-    assert_bounds(tree, "master-device-0-remove-button", (1232, 599, 20, 20));
+    assert_bounds(tree, "master-device-rack-count", (1112, 514, 144, 16));
+    assert_bounds(tree, "master-device-eq-panel", (1032, 532, 224, 48));
+    assert_bounds(tree, "master-device-eq-slider", (1040, 560, 196, 18));
+    assert_bounds(tree, "master-device-0-card", (844, 582, 416, 44));
+    assert_bounds(tree, "master-device-0-bypass-switch", (1144, 586, 72, 20));
+    assert_bounds(tree, "master-device-0-remove-button", (1232, 586, 20, 20));
 
     report_line(
-        "[#183 ③] 1280×800：第一段 0..824；第二段 840..1272（宽 432，高收到 253）⇒ 右沿 1280 − 8 = 1272 ✓、下沿 776 ≤ 800 ✓、左沿 840 ≥ 824 ⇒ 两段**无重叠** ✓；删除键在树里（`#180` 的常量在 1280 下会让它整格消失）",
+        "[#183 ③] 1280×800：第一段 0..824；第二段 840..1272（宽 432，高收到 244）⇒ 右沿 1280 − 8 = 1272 ✓、下沿 754 ≤ 800 ✓、左沿 840 ≥ 824 ⇒ 两段**无重叠** ✓；删除键在树里（`#180` 的常量在 1280 下会让它整格消失）",
     );
 }
 

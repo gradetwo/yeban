@@ -644,7 +644,9 @@ fn check_mixer_console(width: u32, height: u32) -> (usize, usize) {
             "[#186 {width}] 窄档素材池必须与通道条右沿同列起点"
         );
         assert_eq!(open_x, 8 + 104 * 6 + 6, "[#186 {width}] 窄档工程按钮 x");
-        assert_eq!(asset_y, 200, "[#186 {width}] 窄档素材池 y");
+        // ⭐ 总览图面板：窄档素材池 y 由 200 上移至 194（去掉末尾一个 `space-3` 间隙），
+        // 否则 1024×800 档面板高仅 72、第二行素材落到面板底沿之下。
+        assert_eq!(asset_y, 194, "[#186 {width}] 窄档素材池 y");
         assert!(
             asset_x + asset.2 as i32 <= master_x,
             "[#186 {width}] 素材池右沿 {} 必须 ≤ 主控左沿 {}",

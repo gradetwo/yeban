@@ -53,8 +53,10 @@ export component ModuleActions inherits Rectangle {
     in property <string> clipping-warning: "";
     // ⭐ 任务单 `#319`：**MIDI 文件导入的损失摘要行**（空串 = 不显示）。
     //
-    // 与 `clipping-warning` **同一物理槽位**（`y = 448`、264×16）—— 版面实测（1440×900）
-    // 右栏只剩 11px，放不下第四条独立行。两条**互斥**：唯一写者
+    // 与 `clipping-warning` **同一物理槽位**（`y = 444`、264×16）—— 版面实测（1440×900）
+    // 右栏只剩 11px，放不下第四条独立行。⭐ 总览图面板：1440 档右栏 475→462，
+    // 槽位由 448 上移至 444（444+16=460 ≤ 462），与回执行（止于 440）仍留 4px 间距。
+    // 两条**互斥**：唯一写者
     // `host::apply_module_receipt_with_alerts` 每次动作同时写两条，没给的那条写空串
     // ⇒ 任一时刻最多一条非空（判据 `tests/import_midi_losses_ui.rs` 两臂断言）。
     // 文本由宿主从 `MidiImportReport.losses` 生成（与 CLI 的 `imported-midi:` 行同一个
@@ -317,7 +319,7 @@ export component ModuleActions inherits Rectangle {
     // （⚠ / 母带削波 / N 个样本 / 建议减 X dB），不会出现"末尾被省略号吃掉"的形态。
     UiText {
         x: Tokens.space-4;
-        y: 448px;
+        y: 444px;
         width: parent.width - 2 * Tokens.space-4;
         height: 16px;
         visible: root.clipping-warning != "";
@@ -335,8 +337,9 @@ export component ModuleActions inherits Rectangle {
     }
 
     // ------------------------------------------------- 导入损失摘要行（⭐ `#319`／`#320`）
-    // 与上面那条削波警示**共用** `y = 448` 这个槽位（版面实测：1440×900 的右栏只剩
-    // 11px，放不下第四条独立 16px 行；1440 档 448+16=464 < 475 才装得下）。
+    // 与上面那条削波警示**共用** `y = 444` 这个槽位（版面实测：1440×900 的右栏只剩
+    // 11px，放不下第四条独立 16px 行；面板加入前面板前 448+16=464 < 475 才装得下，
+    // 面板加入后右栏 475→462，槽位上移至 444：444+16=460 ≤ 462）。
     // 两条**互斥**：唯一写者 `host::apply_module_receipt_with_alerts` 每次动作同时写
     // 两条、没给的那条写空串 ⇒ 任一时刻最多一条 `visible` ⇒ 不可能叠字。
     // 文本由宿主从 `MidiImportReport.losses` ＋ `report.lyrics` 生成（与 CLI 的
@@ -354,7 +357,7 @@ export component ModuleActions inherits Rectangle {
     // 默认空串 ⇒ `visible: false` ⇒ 不进运行时树、零像素（默认帧指纹不变）。
     UiText {
         x: Tokens.space-4;
-        y: 448px;
+        y: 444px;
         width: parent.width - 2 * Tokens.space-4;
         height: 16px;
         visible: root.import-losses != "";
