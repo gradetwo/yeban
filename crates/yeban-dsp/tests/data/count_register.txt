@@ -11,5 +11,5 @@ rows_src_match_sites|51|structural|证据文件行数（去掉 # 表头）
 rows_device_injection_evidence|15|structural|证据文件行数（去掉 # 表头）
 digits_in_comment_fragments|18221|raw|对 // 片段内的数字字符计数（含数字的注释片段）；等价脚本 ~/workspace/tools/dsp-mask-count.py 同口径计
 digits_in_string_fragments|1747|raw|对 "…" 片段内的数字字符计数（含数字的字符串片段）；等价脚本 ~/workspace/tools/dsp-mask-count.py 同口径计
-test_result_lines_last_run|27|log_lines|上一轮 test 门日志里 'test result:' 的行数（暂取 P2-1 支值，合入树全量跑完后按实测重填）
-runtime_passed_last_run|650|runtime_passed|上一轮 test 门 'test result:' 行的 passed 求和（暂取 P0-1 支值，合入树全量跑完后按实测重填）
+test_result_lines_last_run|28|log_lines|上一轮 test 门日志里 'test result:' 的行数（合入树全量 28 个二进制）
+runtime_passed_last_run|696|runtime_passed|上一轮 test 门 'test result:' 行的 passed 求和（合入树全量 696）
