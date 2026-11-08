@@ -754,6 +754,147 @@ pub fn classify_decode_failure(path: &Path, error: &DecodeError) -> SampleReadFa
 /// 只在该音符**有**匹配区域且样本文件**存在但读不了**时返回错误？⛔ 不 —— 本函数**不**返回错误：
 /// 读不到就回退（并要求调用方把回退写进输出行）。⇒ 实际上返回 `Result` 是为了**路径不可解析**这类
 /// 需要调用方知道的失败；样本不可读按"回退"处理。
+/// ⭐ **"尾巴"的上限**（秒）：`note-off` 之后允许继续渲染多久。
+///
+/// 取 8 s 的理由：语料里最长的单次衰减（钢琴踏板、镲片）在 6 s 内落到 −60 dB；
+/// 再长就不是"尾巴"而是漏了 `loop_mode` 的 bug。上限的作用是**防止 OOM**，
+/// ⛔ 不是音乐判断 —— 真正的停点由释放段走完 / 采样到尾决定。
+const MAX_TAIL_SECONDS: u64 = 8;
+
+/// ⭐ **每个音符的轮替序号**（任务 `#310`）：同一音高上第几次触发（`0` 起）。
+///
+/// 顺序**就是** `notes` 给定顺序（`track_notes_in_frames` 已按起始帧升序）
+/// ⇒ 与实时路径"第 n 次 note-on"同一口径。
+fn occurrences_of(notes: &[(u64, u64, u8, u8)]) -> Vec<u32> {
+    let mut counter: BTreeMap<u8, u32> = BTreeMap::new();
+    notes
+        .iter()
+        .map(|(_, _, pitch, _)| {
+            let slot = counter.entry(*pitch).or_insert(0);
+            let occurrence = *slot;
+            *slot = slot.saturating_add(1);
+            occurrence
+        })
+        .collect()
+}
+
+/// ⭐ **region 级样本表**（任务 `#310`）：把这份 SFZ 里**所有** `sample=` 指向的文件
+/// 各读一次，键用 SFZ 里的**原样字符串**（与 `Region::sample_path()` 逐字相同）。
+///
+/// # 三种区域
+///
+/// | 区域 | 表里放什么 |
+/// | :--- | :--- |
+/// | `sample=*silence`（内建静音，`#217`） | **空 PCM** ⇒ 渲染时一帧都不写（⛔ 不是正弦） |
+/// | 正常 `sample=xxx.wav` | 真读出来的 PCM |
+/// | **读不到**（不存在／截断／格式不支持） | 回退的内存正弦 ＋ 来源文案里写明原因 |
+///
+/// ⚠ 最后一行是**保留的旧语义**（`region_sample_for` 一直是这么做的）：本单
+/// ⛔ 不把它改成"静音"，因为那会静默改变既有工程的产物字节；要的是"**每个区域**
+/// 各自回退"，而不是"所有区域共用第一个匹配区域的回退"。
+///
+/// ⚠ 红线 7：读盘与解码都发生在**构造期**（离线/控制侧），⛔ 不进音频回调。
+/// ⭐ **`--sfz` 的 region 级样本表 ＋ 它的诊断**（任务 `#311`）。
+///
+/// # 为什么要把"读不到"单独记下来
+///
+/// 修前：[`build_region_samples`] 在 `read_sample_file` 失败时**静默**塞一份
+/// 440 Hz 正弦（`InMemorySample::sine`）继续渲染。用户听到的是"音色完全不对"，
+/// 而 stdout 上只有一行 `loaded-sfz: ...` 看起来一切正常 —— 一次真实的排查里，
+/// 这个静默回退让我先怀疑了音源、采样率、包络三条错路，最后才发现是 `.sfz`
+/// 里的相对路径没解对。
+///
+/// ⇒ 现在把失败清单（`raw` 路径 ＋ 原因）带出来，由调用方**明确地**报给用户。
+/// ⚠ 回退本身**保留**（⛔ 不改渲染行为：少一个采样的工程仍然能出带子，这是对的），
+/// 改的只是"**不再静默**"。
+#[derive(Debug, Clone, Default)]
+pub struct RegionSampleTable {
+    /// 共享表（全工程一份；`Arc` 只加引用计数）。
+    pub samples: Arc<BTreeMap<String, InMemorySample>>,
+    /// 第一条成功读到的样本描述（`sample_source` 的来源文案）。
+    pub describe: String,
+    /// ⭐ **读不到的区域**：`(sfz 里写的 sample= 原文, 失败原因)`。
+    pub missing: Vec<(String, String)>,
+}
+
+/// ⭐ **把一个 `.sfz` 里所有区域的 `sample=` 解码成共享表**（任务 `#310`）。
+///
+/// 每个 `sample=` 原文 → 一份 `InMemorySample`；同一份表被全工程所有轨共享
+/// （`Arc` 只加引用计数）⇒ 79 轨的工程也只解码一遍（修前逐轨各解一次 ⇒ OOM）。
+///
+/// 读不到的区域**记进 [`RegionSampleTable::missing`]**（⛔ 不再静默回退）——
+/// 回退成 440 Hz 正弦**保留**（工程仍能出带子），但用户会被明确告知。
+pub fn build_region_samples(instrument: &SfzInstrument, sfz_path: &Path) -> RegionSampleTable {
+    let mut table: BTreeMap<String, InMemorySample> = BTreeMap::new();
+    let mut describe = String::new();
+    let mut missing: Vec<(String, String)> = Vec::new();
+    let Ok(items) = instrument.with_instrument(|parsed| {
+        parsed
+            .regions()
+            .iter()
+            .map(|region| {
+                (
+                    region.sample_path().into_owned(),
+                    region.is_builtin_silence(),
+                )
+            })
+            .collect::<Vec<_>>()
+    }) else {
+        return RegionSampleTable {
+            samples: Arc::new(table),
+            describe,
+            missing,
+        };
+    };
+    for (raw, silence) in items {
+        if table.contains_key(&raw) {
+            continue;
+        }
+        // ⚠ 这一行**必须先有值**：`describe` 是"第一条"的来源文案，内建静音也要能说清
+        //    自己是谁（`#217` 的判据钉的就是 `source=sfz(builtin-silence(*silence))`）。
+        //    修前这条走的是 `per_note`（`region_sample_for` 填的），本单改走共享表之后
+        //    必须在这里补上，否则 CLI 路径会退回 `in-memory-sine(440Hz)` ——
+        //    那正是 `sfz_silence_pseudo_sample` 当场红掉的原因。
+        let line: String;
+        let in_memory = if silence {
+            // `#217`：内建静音 —— 空 PCM ＋ ⛔ 不走 `read_sample_file`（那会记一次
+            // "解码尝试"并把一份健康文件登记成 `NotFound`）。
+            line = BUILTIN_SILENCE_SOURCE.to_owned();
+            InMemorySample {
+                pcm: Arc::new(Vec::new()),
+                sample_hz: 48_000.0,
+            }
+        } else {
+            let resolved = resolve_sample_path(sfz_path, Path::new(&raw));
+            match read_sample_file(&resolved) {
+                Ok((in_memory, _, det)) => {
+                    line = det;
+                    in_memory
+                }
+                Err(error) => {
+                    line = format!("in-memory-sine(440Hz, 回退: {error})");
+                    // ⭐ 任务 `#311`：**记下来**（⛔ 不再静默）—— 由调用方报给用户。
+                    //    去重按 `raw` 做：同一个坏路径在 79 轨里只会记一条。
+                    if !missing.iter().any(|(seen, _)| seen == &raw) {
+                        missing.push((raw.clone(), error.to_string()));
+                    }
+                    InMemorySample::sine(440.0, 48_000.0, 48_000)
+                }
+            }
+        };
+        if describe.is_empty() {
+            describe = line;
+        }
+        table.insert(raw, in_memory);
+    }
+    RegionSampleTable {
+        samples: Arc::new(table),
+        describe,
+        missing,
+    }
+}
+
+/// 为一个音符挑**第一条**匹配区域的样本（旧入口的样本选择，保留给来源文案与判据对照）。
 #[must_use]
 pub fn region_sample_for(
     instrument: &SfzInstrument,
@@ -1342,7 +1483,40 @@ pub struct SfzTrackSource {
     /// 共享的样本数据（**未指定 SFZ 路径**时的回退：内存正弦）。
     sample: InMemorySample,
     /// 每个音符自己的样本与来源文案（`None` = 用共享的内存正弦）。
+    ///
+    /// ⚠ 保留它**只为来源文案**（[`Self::sample_source`]）与旧入口的样本选择；
+    /// 真正的渲染从任务 `#310` 起走 [`Self::samples`]（region 级）。
     per_note: Vec<Option<(InMemorySample, String)>>,
+    /// ⭐ **region 级样本表**（任务 `#310`）：键 ＝ `region.sample_path()` 的**原样字符串**
+    /// （即 SFZ 里 `sample=` 写的那一串，⛔ 不是展开后的绝对路径）。
+    ///
+    /// ## 为什么必须到 region 级
+    ///
+    /// 修前每个**音符**只拿**一份**样本（[`region_sample_for`] 取第一个匹配区域），
+    /// 而 [`SfzInstrument::render_note_into`] 会把**所有**匹配区域都用这一份渲染 ⇒
+    /// 三件事一起错：
+    ///
+    /// * 力度分层（`lovel`/`hivel` 重叠）⇒ 同一份采样播 N 遍叠加；
+    /// * round-robin（`seq_length`）⇒ 两个变体同相叠成 +6 dB，轮替本身消失；
+    /// * 多音区共用一个 `sample=` 的写法（`key=` 范围重叠）⇒ 高音区播低音区采样。
+    ///
+    /// 表里**没有**的区域 ⇒ 该区域不发声（⛔ 不静默借用别的样本）。
+    /// 空表 ⇒ 退回"所有区域共用 [`Self::sample`] 的内存正弦"（`new()` 的判据对照路径）。
+    samples: Option<Arc<BTreeMap<String, InMemorySample>>>,
+    /// 这张表的**来源文案**（第一条成功读到的样本描述）。
+    ///
+    /// ⚠ 与 [`Self::per_note`] 的分工：后者是"第一个音符命中的区域"，前者是"表里第一条"。
+    /// [`Self::sample_source`] 优先用 `per_note`（历史口径逐字不变），只在它为空时用本字段
+    /// —— 也就是"共享表的注入路径"（[`Self::with_shared_samples`]）。
+    describe: String,
+    /// ⭐ **每个音符的轮替序号**（任务 `#310`）：同一音高上**第几次**触发（`0` 起，
+    /// 按 `notes` 给定顺序）。喂给 [`SfzInstrument::render_note_into_from_samples`] 的
+    /// `occurrence` ⇒ 与实时声部 [`yeban_engine::sfz_instrument::SfzVoicePool::trigger_note`]
+    /// 的 `seq_occurrence[note]` **同一条**轮替判据。
+    ///
+    /// ⚠ 只有在 SFZ 里出现 `seq_length > 1` 时才改变输出；其余音色拿到它也一字不变
+    /// （判据 `region.seq_length > 1` 才参与互斥）。
+    occurrences: Vec<u32>,
     /// 引擎采样率。
     engine_hz: f32,
     /// 声道数。
@@ -1429,6 +1603,11 @@ impl SfzTrackSource {
                 })
                 .collect(),
             per_note: Vec::new(),
+            // ⭐ `None` ⇒ 渲染退回"所有区域共用内存正弦"（判据对照路径的字节一位不变）。
+            samples: None,
+            describe: String::new(),
+            // ⭐ 轮替序号：同一音高按 `notes` 顺序计数（`0` 起）。
+            occurrences: occurrences_of(notes),
         }
     }
 
@@ -1445,6 +1624,17 @@ impl SfzTrackSource {
         channels: usize,
     ) -> Self {
         let mut source = Self::new(instrument.clone(), notes, engine_hz, channels);
+        // ⭐ **region 级样本表**（任务 `#310`）：一次装齐所有 `sample=` 指向的文件，
+        //    键用 SFZ 里的原样字符串（与 `region.sample_path()` 逐字相同）。
+        //    ⚠ 逐 region 读盘仍发生在**构造期**（红线 7：不进音频回调）。
+        let built = build_region_samples(&instrument, sfz_path);
+        source.samples = Some(built.samples);
+        source.describe = built.describe;
+        // ⚠ 本入口（逐轨自建表）**不回报** `missing`：它只被 `--sfz` 的共享表路径使用
+        //    （[`Self::with_shared_samples`] ＋ `render_core` 统一打印一次，⛔ 不是每轨一遍）。
+        //    诊断不丢：`decode_sfz_plan` 那条路本来就有 `missing_sample_paths`。
+        drop(built.missing);
+        // ⚠ `per_note` 只服务来源文案：从表里查，⛔ 不再逐音符重复读盘。
         source.per_note = notes
             .iter()
             .map(|(_, _, pitch, velocity)| {
@@ -1462,6 +1652,7 @@ impl SfzTrackSource {
             .flatten()
             .map(|(_, describe)| describe.clone())
             .next()
+            .or_else(|| (!self.describe.is_empty()).then(|| self.describe.clone()))
             .unwrap_or_else(|| SAMPLE_SOURCE.to_owned())
     }
 
@@ -1496,25 +1687,94 @@ impl SfzTrackSource {
         self
     }
 
+    /// ⭐ **注入跨轨共享的 region 级样本表**（任务 `#310`）。
+    ///
+    /// ## 为什么必须共享（一次真实的 OOM 换来的）
+    ///
+    /// 第一版让每条轨自己调 [`build_region_samples`] ⇒ 79 轨的工程把 212 个鼓采样
+    /// **各解码 79 遍**（`InMemorySample::pcm` 是 `Arc<Vec<f32>>`，但**每次解码都是一个新
+    /// Arc**）⇒ 进程被 OOM killer 干掉（`exit=137`）。
+    /// 注入同一份 `Arc` 之后，`BTreeMap` 的克隆只加引用计数，PCM 全进程一份。
+    ///
+    /// ⚠ `describe` 是这张表的来源文案（第一条成功读到的样本）；`per_note` 为空时
+    /// （本入口就是），[`Self::sample_source`] 会用它。
+    #[must_use]
+    pub fn with_shared_samples(
+        mut self,
+        samples: Arc<BTreeMap<String, InMemorySample>>,
+        describe: String,
+    ) -> Self {
+        self.samples = Some(samples);
+        self.describe = describe;
+        self
+    }
+
     /// 保证第 `index` 个音符**整段**渲染完成（只做一次）。
+    ///
+    /// ## ⭐ note-off 与"尾巴"（任务 `#310`）
+    ///
+    /// 修前这里固定按**时值**分配 `scratch` 并调 [`SfzInstrument::render_note_into`] ——
+    /// 那条路**没有 note-off**，于是三件事同时发生：
+    ///
+    /// * `ampeg_release` **一点不生效**（实时声部生效、导出不生效 ⇒ 试听与成品不同）；
+    /// * `loop_mode=one_shot` 的采样（鼓／镲）被时值**硬切**；
+    /// * 任何有自然衰减的采样（钢琴／吉他）都在时值处截断 ⇒ "断气"。
+    ///
+    /// 修法：走 [`SfzInstrument::render_note_into_from_samples`]，`held_frames = 时值`，
+    /// 且缓冲**按需扩容**：只要这次写满了缓冲（说明释放段/采样还没完），就翻倍重来，
+    /// 上限 [`MAX_TAIL_SECONDS`]。⚠ 扩容是"重渲染"，⛔ 不是拼接 —— 因为包络的时刻
+    /// 依赖 `out` 的起点，分段渲染会在接缝处重置包络。
     fn ensure_rendered(&mut self, index: usize) {
         if self.notes[index].rendered > 0 {
             return;
         }
-        let target = usize::try_from(self.notes[index].target_frames).unwrap_or(usize::MAX);
+        let held = self.notes[index].target_frames;
         let pitch = self.notes[index].pitch;
         let velocity = self.notes[index].velocity;
-        let mut scratch = vec![0.0_f32; target.max(1)];
-        // 该音符的区域样本（文件样本或回退的内存正弦）。
-        let sample = self
-            .per_note
-            .get(index)
-            .and_then(|entry| entry.as_ref())
-            .map_or(&self.sample, |(in_memory, _)| in_memory);
-        let written = self
-            .instrument
-            .render_note_into(sample, pitch, velocity, &mut scratch, self.engine_hz)
+        // ⭐ 轮替序号（同一音高第几次触发）；表缺失 ⇒ 0（等价于"总是第一个变体"）。
+        let occurrence = self.occurrences.get(index).copied().unwrap_or(0);
+        let ceiling =
+            held.saturating_add((self.engine_hz.max(0.0) as u64).saturating_mul(MAX_TAIL_SECONDS));
+        // ⭐ 起点：时值 + 5 ms（刚好越过 note-off 一帧，好让"是否还在响"可判）。
+        let mut cap = held.saturating_add(2_048_u64.min(ceiling.saturating_sub(held)));
+        let (mut scratch, written) = loop {
+            let size = usize::try_from(cap).unwrap_or(usize::MAX).max(1);
+            let mut buf = vec![0.0_f32; size];
+            // ⭐ 有共享表 ⇒ region 级 ＋ note-off ＋ 轮替；无表 ⇒ 旧入口（判据对照腿，
+            //    逐位等于接线前：内存正弦、无 note-off、无轮替）。
+            let got = match self.samples.as_deref() {
+                Some(table) => self.instrument.render_note_into_from_samples(
+                    table,
+                    pitch,
+                    velocity,
+                    Some(held),
+                    Some(occurrence),
+                    &mut buf,
+                    self.engine_hz,
+                ),
+                None => {
+                    let sample = self
+                        .per_note
+                        .get(index)
+                        .and_then(|entry| entry.as_ref())
+                        .map_or(&self.sample, |(in_memory, _)| in_memory);
+                    self.instrument.render_note_into(
+                        sample,
+                        pitch,
+                        velocity,
+                        &mut buf,
+                        self.engine_hz,
+                    )
+                }
+            }
             .unwrap_or(0);
+            // 写满了 ⇒ 声音还没完 ⇒ 翻倍再试（到顶就认了）。
+            if got == size && cap < ceiling {
+                cap = cap.saturating_mul(2).min(ceiling);
+                continue;
+            }
+            break (buf, got);
+        };
         // ⭐ **引擎层的轨增益门**乘在**乐器层输出之外**（归属裁决 `R711`：两者相乘、
         //    ⛔ 不重复）。乐器层（`render_note_into`）已经含它自己的 `volume_gain` /
         //    `velocity_gain` / 交叉淡化等 —— 这里**只**乘轨增益这一半。
@@ -1526,6 +1786,8 @@ impl SfzTrackSource {
                 *sample *= track_gain;
             }
         }
+        // ⚠ `written` 在解构里没有 `mut`：这里重绑定成可变值（后面还要用最大值语义）。
+        let written = written.max(1).min(scratch.len());
         let state = &mut self.notes[index];
         state.scratch = scratch;
         state.rendered = written;
@@ -1550,8 +1812,13 @@ impl yeban_render::render::AudioSource for SfzTrackSource {
                 continue;
             }
             let window_start = block_start.saturating_sub(note_start);
-            let window_end = ((block_end - note_start).min(self.notes[index].target_frames))
-                .min(u64::from(u32::MAX));
+            // ⭐⭐ **窗口上限不再钉在时值上**（任务 `#310`）：修前是
+            //    `.min(target_frames)` ⇒ `ampeg_release` 的尾巴与 `loop_mode=one_shot`
+            //    采样的自然尾音都被这条线切断（与实时声部行为不同）。
+            //    现在只按"本块还剩多少帧"取上限，真正的停点由下面 `limit`（＝
+            //    `rendered`）决定 —— 那个数要等 [`Self::ensure_rendered`] 跑完才知道，
+            //    ⛔ 不能在这里当窗口上限用（否则第一次调用时它是 0 ⇒ 一个音符都不渲染）。
+            let window_end = (block_end - note_start).min(u64::from(u32::MAX));
             if window_end <= window_start {
                 continue;
             }
