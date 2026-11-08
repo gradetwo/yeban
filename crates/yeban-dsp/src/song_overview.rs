@@ -598,10 +598,15 @@ impl LoudnessTrack {
     }
 }
 
-/// 非有限读数（窗口未满的负无穷）→ 哨兵值。
+/// 非有限读数（窗口未满的负无穷）→ 哨兵值；有限读数夹到 [−70, 0]。
+///
+/// 近静音小节的短时窗能量极小，其对数是有限值但荒谬（演示工程实测
+/// −1009.74 LUFS），直通会污染动态范围（实测 996.39 LU）与压缩挤压诊断。
+/// BS.1770 绝对门限为 −70 LUFS，低于门限即记哨兵；高于 0 LUFS 不可能
+/// 出现，夹到 0 防呆。
 fn sanitize_lufs(value: f32) -> f32 {
     if value.is_finite() {
-        value
+        value.clamp(NO_LOUDNESS_READING_LUFS, 0.0)
     } else {
         NO_LOUDNESS_READING_LUFS
     }

@@ -122,6 +122,48 @@ fn silence_gives_zero_tension_and_floor_values() {
 }
 
 #[test]
+fn near_silent_bar_lufs_is_clamped_to_sentinel() {
+    // 演示工程的真实 bug：近静音小节的短时 LUFS 是有限值但荒谬（实测 −1009.74），
+    // 直通后动态范围 996.39 LU。修后应夹到哨兵 −70。
+    // 6 秒音频：前 2 秒 −20 LUFS 正弦，后 4 秒静音；120 BPM，3 小节（每小节 2 秒）。
+    // 每拍一个音符，谱面覆盖 3 小节。
+    let mut samples = sine_stereo(0.1, 997.0, 48_000.0, 48_000 * 2);
+    samples.extend(vec![0.0f32; 48_000 * 4 * 2]);
+    let audio = AudioInput {
+        samples: &samples,
+        sample_rate: 48_000.0,
+    };
+    let notes: Vec<NoteEvent> = (0..12)
+        .map(|b| note(b as f32, 1.0, 60, 100, 0, false))
+        .collect();
+    let overview = analyze_song_overview(&score_with(notes), Some(&audio));
+    assert_eq!(overview.song_meta.total_bars, 3);
+    assert!(
+        overview
+            .bar_series
+            .lufs_short
+            .iter()
+            .all(|&v| (-70.0..=0.0).contains(&v)),
+        "lufs_short 全部落在 [−70, 0] 内，实际 {:?}",
+        overview.bar_series.lufs_short
+    );
+    assert_eq!(
+        overview.bar_series.lufs_short[2], NO_LOUDNESS_READING_LUFS,
+        "全静音小节的 lufs_short 记哨兵值 −70，不应是 −1009 之类的有限极端值"
+    );
+    assert!(
+        overview.bar_series.lufs_momentary_max[2] == NO_LOUDNESS_READING_LUFS,
+        "全静音小节的瞬时最大值记哨兵值 −70，实际 {}",
+        overview.bar_series.lufs_momentary_max[2]
+    );
+    assert!(
+        overview.structural_summary.dynamic_range_lu < 70.0,
+        "动态范围应小于 70 LU，实际 {}",
+        overview.structural_summary.dynamic_range_lu
+    );
+}
+
+#[test]
 fn single_sine_1400hz_puts_energy_in_presence_band() {
     // 1 秒、幅 0.1 的 1400 Hz 正弦（取 Band 5 几何中心附近，避开 1000 Hz 频段边界）：
     // 时域均方 0.005 → −23.01 dBFS；Band 5（1000–2000 Hz）几何中心 1414 Hz，
