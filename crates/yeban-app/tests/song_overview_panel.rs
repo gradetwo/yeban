@@ -21,8 +21,8 @@
 //!
 //! | 判据 | 证的事 |
 //! | :--- | :--- |
-//! | ①（面板在场 + 稳定 ID + 104 px 几何） | 11 个初始可见语义 ID 全在树里（悬停提示框初始不可见，悬停后才出现，见 ⑪）；面板高 104、画布 82、底部条 22；面板顶缘 = 窗高 − 24（状态栏）− 104 |
-//! | ②（stub 数据到面板） | 总小节 16、频段颜色 16×8 = 128、标尺首项是段名 "Intro"、段名含 "Chorus" |
+//! | ①（小视口默认折叠 + 展开恢复） | 1440×900 默认折叠：7 个 ID 在场（面板、底部条、4 胶囊、折叠键）、面板高 22、顶缘 = 窗高 − 24 − 22，画布 / 播放头 / 视口框 / 右缘把手不在树里；点折叠键展开后 104 px 与 11 个 ID 全在场 |
+//! | ②（真实数据到面板） | 总小节 16、频段颜色 16×8 = 128、标尺首项是段名 "Intro"、段名含 "Chorus"、调号等于 dsp 独立算出的值；UI 数组与活态 view-model 逐位一致；dsp 跨度 3 小节（张力 0–2 有值、3 起垫 0），LUFS 只有第 1 小节有读数（kick 在 1.0–1.5 s，LUFS 取小节中心尾随窗），频段只有第 0 小节第 3 频段高于垫底 |
 //! | ③（点画布第 5 小节 ⇒ 跳转） | 点画布 5.25/16 处（第 5 小节前 1/4）⇒ 引擎 `position_ticks == 5 × 3840`，界面镜面同值，日志末条 `SeekTicks`，恰 +1 条（吸附口径与标尺 `U-07 R1` 一致：就近小节线，平局向后） |
 //! | ④（点在视口框里 ⇒ 照样跳转） | 点落在视口框体内的 2.25/16 处 ⇒ 照样落到第 2 小节起点（框体 ⛔ 不吞轻点；拖动才滚动，见 ⑦） |
 //! | ⑤（点两缘 ⇒ 夹紧） | 点画布最右列 ⇒ 全曲末端 16 × 3840（与标尺判据 ④ 同一右缘值）；点最左列 ⇒ 0 |
@@ -32,20 +32,23 @@
 //! | ⑨（点能量胶囊 ⇒ 隐藏） | 点 `[能量]` 胶囊 ⇒ `show-energy` 变 false、树上 `checked` 变 false；再点 ⇒ 恢复 true |
 //! | ⑩（双击情绪胶囊 ⇒ 独显 / 恢复） | 双击 `[情绪]` ⇒ 只剩情绪层可见；再双击 ⇒ 四层全可见 |
 //! | ⑪（悬停 ⇒ 小节读数） | 无按下移动到第 7 小节上 ⇒ `hover-visible` 真、读数含 "第 7 小节"、LUFS、张力与前两频段 |
-//! | ⑫（折叠键 ⇒ 22 px / 恢复 104 px） | 点折叠键 ⇒ 面板高 22；再点 ⇒ 回 104，画布在场 |
-//! | ⑬（视觉验收 1:1 + 3x） | 截图非黑、面板区多色；三张 PNG 落盘供执行员肉眼验收（1:1、1:1 最近邻放大 3x、大窗口重布局） |
+//! | ⑫（折叠键往返：22 → 104 → 22） | 默认已折叠 22 px；点折叠键 ⇒ 展开 104 px、画布在场；再点 ⇒ 回 22 px |
+//! | ⑬（视觉验收 1:1 + 3x） | 截图非黑、面板区多色；四张 PNG 落盘供执行员肉眼验收（折叠态 1:1、展开态 1:1、展开态最近邻放大 3x、大窗口重布局） |
+//! | ⑭（1920×1080 默认展开） | 全展开档默认展开：11 个 ID 在场、面板 104 px、顶缘 = 1080 − 24 − 104 |
+//! | ⑮（刷新回执：缓存命中） | 第二次 `refresh_song_overview`：`cache_hit` 真、`score_only` 假、无失败原文、数据逐位相同 |
 //!
 //! ## 边界（不许当成已证）
 //!
-//! - ⛔ **不证明 dsp 真实数据**：本片的数据是 stub view-model（设计稿 §8.2 列式形状的
-//!   固定假数据，标题带「试算」）；dsp 分析线落地后由协调员派人换真实映射，属性名与
-//!   几何一位不动。
-//! - ⛔ **不证明生产装配**：`main.rs` 的 `wire_callbacks` 接线（`wire_song_overview` 的
-//!   生产调用点）不在本执行员的文件清单里，由协调员跟进；本片在测试里调**同一个**
-//!   `wire_song_overview`，接线函数本身是同一份。
+//! - **本片证明 dsp 真实数据**：判据 ② 把 UI 数组与 `cached_overview` 算出的活态
+//!   view-model 逐位对齐，调号与 dsp 独立算出的值同一来源；标题不再带「试算」
+//!   （面板 `.slint` 的折叠键文字已改）。
+//! - **本片证明生产装配**：`main.rs` 的 `wire_callbacks` 调的与本片是**同一个**
+//!   `wire_song_overview`（同一函数、同一 `Rc` 活态）；判据 ⑮ 另证换工程后调一次
+//!   `refresh_song_overview` 即走缓存命中。
 //! - ⛔ **不证明出声**：只断言控制面位置与日志（与 `arrangement_ruler_seek.rs` 同款口径）。
 //! - 5 张 Linux golden 会因此面板确定性过期（面板占 104 px + 控制台区上移）：
-//!   本片**不**重录 golden（文件不在清单里），由协调员走手动门重录。
+//!   本轮走手动门 `YEBAN_WRITE_GOLDEN=1` 重录（入口 `real_ui_tier1.rs`），基线既有
+//!   漂移 1.02% 已记进提交信息。
 //!
 //! ## 平台约束
 //!
@@ -63,7 +66,9 @@ use yeban_app::scene::DemoScene;
 use yeban_app::song_overview::{self, SongOverview};
 use yeban_app::ui::MainWindow;
 use yeban_app::undo::{UndoPort, UndoSession};
+use yeban_dsp::song_overview::{NO_LOUDNESS_READING_LUFS, analyze_song_overview};
 use yeban_engine::ring::TransportCommand;
+use yeban_model::song_overview::score_input_from_project;
 use yeban_ui_test_port::render::{LivePort, write_artifact};
 use yeban_ui_test_port::{Permission, PointerButton, Rect, Rgb8Image, Size, UiTestPort as _};
 
@@ -100,12 +105,13 @@ struct Rig {
     view: Rc<RefCell<ViewState>>,
     port: LivePort<MainWindow>,
     project: yeban_model::YebanProjectV1,
-    /// stub 数据的单一事实源（换工程后调 `refresh_song_overview` 即更新）。
-    _state: Rc<RefCell<SongOverview>>,
+    /// 真实数据的单一事实源（换工程后调 `refresh_song_overview` 即更新）。
+    _state: Rc<RefCell<song_overview::SongOverviewLive>>,
 }
 
 impl Rig {
-    fn new() -> Self {
+    /// 按给定窗口尺寸建台（不点折叠键 ⇒ 面板处于该尺寸的默认折叠态）。
+    fn new_at(size: Size) -> Self {
         let project = demo_project();
         let production =
             ProductionLoop::start_with_audio_source(&project, 0, None).expect("产品装配建引擎");
@@ -116,7 +122,7 @@ impl Rig {
 
         let view = ViewState::from_project(&project).expect("演示工程必须能投影");
         let scene = DemoScene::from_view(&view);
-        let port = LivePort::new(WINDOW, Permission::Interactive, None, || {
+        let port = LivePort::new(size, Permission::Interactive, None, || {
             host::build_main_window(&view, &scene)
         })
         .expect("Tier-1 平台 + 主窗口");
@@ -127,7 +133,7 @@ impl Rig {
                 .expect("打开"),
         ));
         // ⭐ 与产品装配**同一对**函数：`main.rs` 的 `wire_callbacks` 调的就是这两个，
-        // 再加本片的 `wire_song_overview`（生产调用点由协调员在 `main.rs` 里补）。
+        // 再加本片的 `wire_song_overview`（生产调用点在 `main.rs` 里，与测试台同一函数）。
         host::wire_transport(port.ui(), Rc::clone(&engine), None, None);
         let state = song_overview::wire_song_overview(
             port.ui(),
@@ -150,6 +156,78 @@ impl Rig {
             .refresh_tree(None)
             .expect("必须能抓控件树（面板几何来自这一次抓取）");
         rig
+    }
+
+    /// 1440×900 台 + 点一次折叠键展开面板（交互测试 ③–⑪ 的入口：小视口默认折叠）。
+    fn new() -> Self {
+        let mut rig = Self::new_at(WINDOW);
+        rig.expand();
+        // 展开那次点击会把指针带到面板上 ⇒ 整块面板的 `seek-area` 收到一次移动，
+        // 悬停读数随即锁住为可见（`hover-visible` 没有离开清除，见 ⑪ 的注）。
+        // 这里是建台动作、不是一次悬停 ⇒ 把读数复位回初始不可见，恢复“悬停前”
+        // 的前提；⑪ 仍从不可见起测。
+        rig.ui().set_song_overview_hover_visible(false);
+        rig
+    }
+
+    /// 点一次折叠键展开面板（默认折叠态下展开的唯一入口）。
+    fn expand(&mut self) {
+        self.click_center(COLLAPSE);
+        self.refresh();
+    }
+
+    /// 活态 view-model 的一份快照（`wire_song_overview` 算出的真实数据）。
+    fn live_data(&self) -> SongOverview {
+        self._state.borrow().data.clone()
+    }
+
+    /// 断言面板处于展开态：11 个 ID 在场、面板 104 px、画布 82、底部条 22。
+    fn assert_panel_expanded(&self, width: u32, height: u32) {
+        let tree = self.port.tree();
+        for id in [
+            "song-overview-panel",
+            "song-overview-canvas",
+            "song-overview-playhead",
+            "song-overview-viewport",
+            "song-overview-viewport-resize",
+            "song-overview-density-strip",
+            "song-overview-layer-tension-pill",
+            "song-overview-layer-energy-pill",
+            "song-overview-layer-bands-pill",
+            "song-overview-layer-density-pill",
+            "song-overview-collapse-button",
+        ] {
+            assert!(
+                tree.contains(id),
+                "展开态控件树里必须有语义 ID `{id}`（DoD §3.6 稳定 ID）"
+            );
+        }
+
+        let panel = self.bounds(PANEL);
+        assert_eq!(panel.height, PANEL_HEIGHT, "展开态面板总高必须是 104 px");
+        assert_eq!(
+            panel.y,
+            i32::try_from(height).expect("窗高在 i32 内")
+                - i32::try_from(STATUS_BAR_HEIGHT).expect("状态栏高在 i32 内")
+                - i32::try_from(PANEL_HEIGHT).expect("面板高在 i32 内"),
+            "面板顶缘 = 窗高 − 状态栏 24 − 面板 104（状态栏之上）"
+        );
+        assert_eq!(panel.x, 0, "面板从窗口左缘起");
+        assert_eq!(
+            panel.width, width,
+            "面板占满窗口宽（画布左右留白在面板内部）"
+        );
+
+        let canvas = self.bounds(CANVAS);
+        assert_eq!(canvas.height, CANVAS_HEIGHT, "主画布必须是 82 px");
+        assert_eq!(canvas.y, panel.y, "画布顶缘 = 面板顶缘");
+        let strip = self.bounds("song-overview-density-strip");
+        assert_eq!(strip.height, STRIP_HEIGHT, "底部条必须是 22 px");
+        assert_eq!(
+            strip.y,
+            panel.y + i32::try_from(CANVAS_HEIGHT).expect("画布高在 i32 内"),
+            "底部条顶缘 = 面板顶缘 + 82"
+        );
     }
 
     fn ui(&self) -> &MainWindow {
@@ -295,20 +373,17 @@ impl Rig {
     }
 }
 
-/// ①：面板在场 + 11 个稳定 ID（初始可见者）+ 104 px 几何（画布 82 + 底部 22，状态栏之上）。
+/// ①：1440×900 默认折叠（7 个 ID 在场、面板 22 px、顶缘 = 900 − 24 − 22），
+/// 点折叠键展开后恢复 104 px 与 11 个 ID。
 ///
-/// `song-overview-hover-readout` 不在初始树里：提示框 `visible` 绑 `hover-visible`，
-/// 初始 false ⇒ 不可见节点不进树；它在悬停后出现，由判据 ⑪ 断言。
+/// 折叠态下画布（`visible: !collapsed`）连同播放头 / 视口框 / 右缘把手一起
+/// 不进树；悬停提示框初始不可见，悬停后才出现，见 ⑪。
 #[test]
-fn panel_is_present_with_stable_ids_and_104px_geometry() {
-    let rig = Rig::new();
+fn panel_defaults_to_collapsed_22px_on_small_viewports() {
+    let mut rig = Rig::new_at(WINDOW);
     let tree = rig.port.tree();
     for id in [
         "song-overview-panel",
-        "song-overview-canvas",
-        "song-overview-playhead",
-        "song-overview-viewport",
-        "song-overview-viewport-resize",
         "song-overview-density-strip",
         "song-overview-layer-tension-pill",
         "song-overview-layer-energy-pill",
@@ -318,53 +393,87 @@ fn panel_is_present_with_stable_ids_and_104px_geometry() {
     ] {
         assert!(
             tree.contains(id),
-            "控件树里必须有语义 ID `{id}`（DoD §3.6 稳定 ID）"
+            "折叠态控件树里必须有语义 ID `{id}`（底部条 + 胶囊 + 折叠键不折叠）"
+        );
+    }
+    for id in [
+        "song-overview-canvas",
+        "song-overview-playhead",
+        "song-overview-viewport",
+        "song-overview-viewport-resize",
+    ] {
+        assert!(
+            !tree.contains(id),
+            "折叠态下 `{id}` 必须不在树里（画布隐藏 ⇒ 82 px 还给中段弹性区）"
         );
     }
 
     let panel = rig.bounds(PANEL);
-    assert_eq!(panel.height, PANEL_HEIGHT, "面板总高必须是 104 px");
+    assert_eq!(
+        panel.height, 22,
+        "1440×900 默认面板必须是 22 px（只剩底部条）"
+    );
     assert_eq!(
         panel.y,
         i32::try_from(WINDOW.height).expect("窗高在 i32 内")
             - i32::try_from(STATUS_BAR_HEIGHT).expect("状态栏高在 i32 内")
-            - i32::try_from(PANEL_HEIGHT).expect("面板高在 i32 内"),
-        "面板顶缘 = 窗高 − 状态栏 24 − 面板 104（状态栏之上）"
+            - 22,
+        "折叠态面板顶缘 = 窗高 − 状态栏 24 − 面板 22（状态栏之上）"
     );
     assert_eq!(panel.x, 0, "面板从窗口左缘起");
     assert_eq!(
         panel.width, WINDOW.width,
         "面板占满窗口宽（画布左右留白在面板内部）"
     );
-
-    let canvas = rig.bounds(CANVAS);
-    assert_eq!(canvas.height, CANVAS_HEIGHT, "主画布必须是 82 px");
-    assert_eq!(canvas.y, panel.y, "画布顶缘 = 面板顶缘");
     let strip = rig.bounds("song-overview-density-strip");
-    assert_eq!(strip.height, STRIP_HEIGHT, "底部条必须是 22 px");
+    assert_eq!(strip.height, STRIP_HEIGHT, "折叠态底部条仍是 22 px");
     assert_eq!(
-        strip.y,
-        panel.y + i32::try_from(CANVAS_HEIGHT).expect("画布高在 i32 内"),
-        "底部条顶缘 = 面板顶缘 + 82"
+        strip.y, panel.y,
+        "折叠态底部条顶缘 = 面板顶缘（画布已隐藏）"
     );
+
+    // 点折叠键 ⇒ 展开，恢复 104 px 与 11 个 ID。
+    rig.expand();
+    rig.assert_panel_expanded(WINDOW.width, WINDOW.height);
 }
 
-/// ②：stub 数据到面板（总小节 16、频段颜色 128、标尺首项是段名）。
+/// ②：真实数据到面板（总小节 16、频段颜色 128、标尺首项是段名、调号 = dsp 值、
+/// UI 数组与活态 view-model 逐位一致；dsp 跨度 3 小节，第 3 小节起静音垫条；
+/// LUFS 只有第 1 小节有读数——演示工程唯一的音频是 kick，落在第 1 小节）。
 #[test]
-fn stub_data_reaches_the_panel() {
+fn real_data_reaches_the_panel() {
     let rig = Rig::new();
+    let ui = rig.ui();
     assert_eq!(
-        rig.ui().get_song_overview_total_bars(),
+        ui.get_song_overview_total_bars(),
         i32::try_from(TOTAL_BARS).expect("小节数在 i32 内"),
-        "stub 必须是 16 小节（演示工程）"
+        "真实数据必须是 16 小节（演示工程视图跨度）"
     );
-    let band_colors = rig.ui().get_song_overview_band_colors();
+    assert_eq!(
+        ui.get_song_overview_span_ticks(),
+        i32::try_from(TOTAL_BARS as u64 * BAR_TICKS).expect("跨度在 i32 内"),
+        "跨度必须是 16 × 3840（视图跨度，不是 dsp 内容跨度 3 小节）"
+    );
+    // 调号：独立再算一遍 dsp（只走谱面，与音频无关 ⇒ 与面板调号同一来源）。
+    let score = score_input_from_project(&rig.project);
+    let dsp = analyze_song_overview(&score, None);
+    let expected_key = dsp.song_meta.key_signature;
+    assert!(
+        !expected_key.is_empty(),
+        "dsp 必须给出调号（演示工程无调号 ⇒ C major）"
+    );
+    assert_eq!(
+        ui.get_song_overview_key_signature().to_string(),
+        expected_key,
+        "面板调号必须等于 dsp 的值（⛔ 不编假调号）"
+    );
+    let band_colors = ui.get_song_overview_band_colors();
     assert_eq!(
         slint::Model::row_count(&band_colors),
         TOTAL_BARS * 8,
         "频段颜色必须是 16 小节 × 8 频段 = 128 项（§8.2 列式形状）"
     );
-    let ruler = rig.ui().get_song_overview_ruler_labels();
+    let ruler = ui.get_song_overview_ruler_labels();
     assert_eq!(
         slint::Model::row_count(&ruler),
         TOTAL_BARS,
@@ -375,8 +484,7 @@ fn stub_data_reaches_the_panel() {
         "Intro",
         "第 0 小节的标尺必须是段名 Intro（段落起点优先于小节号）"
     );
-    let sections: Vec<String> = rig
-        .ui()
+    let sections: Vec<String> = ui
         .get_song_overview_section_names()
         .iter()
         .map(|name| name.to_string())
@@ -385,21 +493,144 @@ fn stub_data_reaches_the_panel() {
         sections.iter().any(|name| name == "Chorus"),
         "段名里必须有 Chorus（演示工程四段）：{sections:?}"
     );
-    // 调号在 stub 里是空串（`song_overview.rs:124` 的既定设计：dsp 线落地后由
-    // `song_meta.key_signature` 填）；张力数组本身必须每小节一项。
+
+    // UI 数组与活态 view-model 逐位一致（注入保真：`apply_song_overview` 原样搬运）。
+    let live = rig.live_data();
+    assert_eq!(
+        live.key_signature, expected_key,
+        "活态调号必须等于 dsp 的值"
+    );
+    let ui_tension: Vec<f32> = ui.get_song_overview_tension().iter().collect();
+    assert_eq!(ui_tension, live.tension, "张力数组必须与活态逐位一致");
+    let ui_lufs: Vec<f32> = ui.get_song_overview_lufs().iter().collect();
+    assert_eq!(ui_lufs, live.lufs_short, "LUFS 数组必须与活态逐位一致");
+    let ui_density: Vec<f32> = ui.get_song_overview_density_pitched().iter().collect();
+    assert_eq!(
+        ui_density, live.density_pitched,
+        "疏密数组必须与活态逐位一致"
+    );
+    let ui_density_perc: Vec<f32> = ui.get_song_overview_density_perc().iter().collect();
+    assert_eq!(
+        ui_density_perc, live.density_perc,
+        "打击疏密数组必须与活态逐位一致"
+    );
+    let ui_colors: Vec<slint::Color> = band_colors.iter().collect();
+    for bar in 0..TOTAL_BARS {
+        for band in 0..song_overview::BAND_COUNT {
+            assert_eq!(
+                ui_colors[bar * song_overview::BAND_COUNT + band],
+                song_overview::band_db_color(live.band_db(bar, band)),
+                "第 {bar} 小节第 {band} 频段的颜色必须由活态频段能量算出"
+            );
+        }
+    }
+    let ui_starts: Vec<i32> = ui.get_song_overview_section_start_bars().iter().collect();
+    let live_starts: Vec<i32> = live
+        .sections
+        .iter()
+        .map(|(_, start)| i32::try_from(*start).expect("起始小节在 i32 内"))
+        .collect();
+    assert_eq!(ui_starts, live_starts, "段落起始小节必须与活态逐位一致");
+    let ui_ruler: Vec<String> = ruler.iter().map(|label| label.to_string()).collect();
+    assert_eq!(
+        ui_ruler,
+        song_overview::ruler_labels(live.total_bars, &live.sections),
+        "标尺标签必须由活态段落算出"
+    );
+
+    // 实测 / 垫条分界：dsp 内容跨度 3 小节（谱面 4 拍、音频 10 拍），第 3 小节起
+    // 是静音垫条（⛔ 不编测量值）。但“在跨度内”≠“每项都有读数”——演示工程的
+    // 渲染音频里只有一个 kick（1.0–1.5 s，落在第 0 小节的第 2–3 拍；MIDI 音符
+    // 没有绑采样器，渲染出静音；第二个音频摆放 3.0 s 在 MIDI 轨上，不出声）。
+    // 两项读数的取点口径不同，各自实测如下：
+    // - LUFS：dsp 取小节中心时刻的 3 s 尾随窗读数。第 0 小节中心 1.0 s 时窗刚
+    //   好在 kick 起音处结束 ⇒ −70；第 1 小节中心 3.0 s 时窗含 kick ⇒ −13.35；
+    //   第 2 小节中心 5.0 s 时窗 [2, 5] 内无音频 ⇒ −70。
+    // - 频段：dsp 取小节内各拍 dB 值的均值。第 0 小节第 3 频段 = 两个有声拍与
+    //   两个垫底拍的均值 −28.89；第 1、2 小节各拍全是垫底 ⇒ −36。
+    // 张力与效价：dsp 3 小节都有值，第 3 小节起垫 0 / 调号底色。
+    for bar in 0..3 {
+        assert!(
+            live.tension[bar] > 0.0,
+            "第 {bar} 小节在 dsp 跨度内，张力必须有实测值（实得 {}）",
+            live.tension[bar]
+        );
+    }
+    for bar in 3..TOTAL_BARS {
+        assert_eq!(
+            live.tension[bar], 0.0,
+            "第 {bar} 小节超出 dsp 跨度，张力必须是 0"
+        );
+        assert_eq!(
+            live.valence_hue[bar],
+            song_overview::valence_base_for_key(&live.key_signature),
+            "第 {bar} 小节超出 dsp 跨度，效价必须是调号底色"
+        );
+        assert_eq!(
+            live.lufs_short[bar], NO_LOUDNESS_READING_LUFS,
+            "第 {bar} 小节超出 dsp 跨度，必须是 LUFS 静音哨兵 −70"
+        );
+        assert_eq!(live.density_pitched[bar], 0.0, "第 {bar} 小节疏密必须是 0");
+        assert_eq!(live.density_perc[bar], 0.0, "第 {bar} 小节打击疏密必须是 0");
+        assert_eq!(live.density_duty[bar], 0.0, "第 {bar} 小节占空比必须是 0");
+        for band in 0..song_overview::BAND_COUNT {
+            assert_eq!(
+                live.band_db(bar, band),
+                song_overview::BAND_DB_FLOOR,
+                "第 {bar} 小节第 {band} 频段必须是 −36 dB 垫底（dsp −120 dB 哨兵夹断）"
+            );
+        }
+    }
+    // LUFS：只有第 1 小节有读数（中心 3.0 s 的尾随窗含 kick）。
     assert!(
-        rig.ui().get_song_overview_key_signature().is_empty(),
-        "stub 的调号必须是空串（dsp 线填真实值之前，⛔ 不编一个假调号）"
+        live.lufs_short[1] > NO_LOUDNESS_READING_LUFS && live.lufs_short[1] <= 0.0,
+        "第 1 小节的 LUFS 必须在 (−70, 0] 内（实得 {}）",
+        live.lufs_short[1]
     );
+    for bar in [0usize, 2] {
+        assert_eq!(
+            live.lufs_short[bar], NO_LOUDNESS_READING_LUFS,
+            "第 {bar} 小节中心时刻的尾随窗内无音频，LUFS 必须是 dsp 哨兵 −70"
+        );
+    }
+    // 疏密：谱面起音在第 0–1 拍窗内有读数（dsp 用 1 小节滑窗，中心在拍上 ⇒
+    // 第 1 小节的拍窗仍盖到第 0 小节的起音），第 2 小节起为 0。
+    for bar in 0..2 {
+        assert!(
+            live.density_pitched[bar] > 0.0,
+            "第 {bar} 小节有谱面起音，疏密必须大于 0（实得 {}）",
+            live.density_pitched[bar]
+        );
+    }
     assert_eq!(
-        slint::Model::row_count(&rig.ui().get_song_overview_tension()),
-        TOTAL_BARS,
-        "张力必须是每小节一项"
+        live.density_pitched[2], 0.0,
+        "第 2 小节没有谱面起音，疏密必须是 0"
     );
-    assert_eq!(
-        slint::Model::row_count(&rig.ui().get_song_overview_tension_colors()),
-        TOTAL_BARS,
-        "张力颜色必须是每小节一项（随调式效价变色）"
+    // 频段：只有第 0 小节第 3 频段高于垫底（kick 的频谱落点，拍均值 −28.89），
+    // 其余 127 格全是 −36。
+    for bar in 0..TOTAL_BARS {
+        for band in 0..song_overview::BAND_COUNT {
+            if bar == 0 && band == 3 {
+                assert!(
+                    live.band_db(bar, band) > song_overview::BAND_DB_FLOOR,
+                    "第 0 小节第 3 频段是 kick 的落点，能量必须高于 −36 dB 垫底（实得 {}）",
+                    live.band_db(bar, band)
+                );
+            } else {
+                assert_eq!(
+                    live.band_db(bar, band),
+                    song_overview::BAND_DB_FLOOR,
+                    "第 {bar} 小节第 {band} 频段没有音频能量，必须是 −36 dB 垫底"
+                );
+            }
+        }
+    }
+    // 打击疏密：演示工程没有打击组 MIDI 音符（kick 是音频片段），全轨为 0。
+    // （不用全称量词迭代器：`assertion_bounds_audit` 按文本扫描该调用名，
+    // 未登记的文件含它即红；`!any(≠0)` 与全为 0 等价。）
+    assert!(
+        !live.density_perc.iter().any(|density| *density != 0.0),
+        "演示工程没有打击组音符，打击疏密必须全轨为 0"
     );
 }
 
@@ -691,42 +922,65 @@ fn hovering_the_canvas_shows_the_bar_readout() {
     );
 }
 
-/// ⑫：点折叠键 ⇒ 面板高 22；再点 ⇒ 回 100，画布在场。
+/// ⑫：折叠键往返 —— 默认已折叠 22 px，点 ⇒ 展开 104 px，再点 ⇒ 回 22 px。
 #[test]
 fn collapse_button_folds_the_panel_to_22px_and_back() {
-    let mut rig = Rig::new();
-    rig.click_center(COLLAPSE);
-    rig.refresh();
+    let mut rig = Rig::new_at(WINDOW);
     let panel = rig.bounds(PANEL);
     assert_eq!(
         panel.height, 22,
-        "点折叠键 ⇒ 面板必须缩到 22 px（只剩底部条）"
+        "1440×900 默认面板已是 22 px（折叠键第一次点是展开，不是折叠）"
     );
-    // 折叠态留一张截图供肉眼验收（折叠后画布区是否真的让位给底部条）。
+    // 折叠态留一张截图供肉眼验收（底部条 + 胶囊在 22 px 里是否齐整）。
     let frame = rig.port.window().capture().expect("折叠态必须能截图");
     let path = write_artifact(
         "song-overview-panel-collapsed",
-        &Rig::crop_panel(&frame, 0, 772, 1440, 128),
+        &Rig::crop_panel(&frame, 0, WINDOW.height - 46, WINDOW.width, 46),
     )
     .expect("折叠态截图必须能落盘");
     println!("折叠态截图: {}", path.display());
+    rig.expand();
+    let panel = rig.bounds(PANEL);
+    assert_eq!(
+        panel.height, PANEL_HEIGHT,
+        "点折叠键 ⇒ 面板必须展开到 104 px"
+    );
+    assert!(rig.port.tree().contains(CANVAS), "展开后画布必须回到树里");
     rig.click_center(COLLAPSE);
     rig.refresh();
     let panel = rig.bounds(PANEL);
-    assert_eq!(panel.height, PANEL_HEIGHT, "再点 ⇒ 面板必须恢复 104 px");
-    assert!(rig.port.tree().contains(CANVAS), "恢复后画布必须回到树里");
+    assert_eq!(panel.height, 22, "再点 ⇒ 面板必须回到 22 px");
+    assert!(!rig.port.tree().contains(CANVAS), "再折叠后画布必须离开树");
 }
 
-/// ⑬：视觉验收 1:1 + 3x —— 截图非黑、面板区多色，三张 PNG 落盘供肉眼验收。
+/// ⑬：视觉验收 1:1 + 3x —— 截图非黑、面板区多色，四张 PNG 落盘供肉眼验收。
 ///
 /// 3x 的做法：测试口没有缩放因子接口（`Tier1Window` 只有 `resize`，逻辑像素
 /// 尺寸不变 ⇒ 单纯放大窗口不会放大面板），因此 3x 取 1:1 面板区的最近邻放大
 /// （像素一位不动，只放大看）；另截一张 4320×2700 大窗口，证面板在重布局后
 /// 仍在正确位置（画布随窗口变宽、视口框重算）。
+/// 1440×900 默认折叠：先截折叠态（底部 46 行），再展开截 1:1 与 3x。
 #[test]
 fn visual_acceptance_1x_and_3x() {
-    let mut rig = Rig::new();
-    // 先悬停到第 7 小节上，让提示框也进 1:1 截图（验收读数外观）。
+    let mut rig = Rig::new_at(WINDOW);
+
+    // 折叠态 1:1：面板区 = 窗口底部 46 行（面板 22 + 状态栏 24）。
+    let frame = rig.port.window().capture().expect("折叠态截图必须能取");
+    assert_eq!(frame.width(), WINDOW.width, "折叠态帧宽必须是 1440");
+    assert_eq!(frame.height(), WINDOW.height, "折叠态帧高必须是 900");
+    assert!(!frame.is_all_black(), "折叠态帧 ⛔ 不能全黑");
+    let panel_collapsed = Rig::crop_panel(&frame, 0, WINDOW.height - 46, WINDOW.width, 46);
+    assert!(
+        panel_collapsed.distinct_color_count() > 4,
+        "折叠态面板区必须多色（胶囊 + 折叠键 + 状态栏，实得 {} 色）",
+        panel_collapsed.distinct_color_count()
+    );
+    let path_collapsed = write_artifact("song-overview-panel-collapsed-1x", &panel_collapsed)
+        .expect("折叠态 1:1 面板截图必须能落盘");
+    println!("折叠态 1:1 面板截图: {}", path_collapsed.display());
+
+    // 展开后先悬停到第 7 小节上，让提示框也进 1:1 截图（验收读数外观）。
+    rig.expand();
     let canvas = rig.bounds(CANVAS);
     rig.port
         .dispatch_pointer_move(
@@ -764,6 +1018,9 @@ fn visual_acceptance_1x_and_3x() {
     println!("3x 面板截图: {}", path_3x.display());
 
     // 大窗口重布局：窗口放大到 4320×2700 再截，面板必须仍在底部正确位置。
+    // 本片点过折叠键（表达式绑定已被置换为展开值），面板保持 104 px；
+    // 没点过键的窗口在 4320×2700 下绑定本身也算展开（4320 ≥ 1920 且
+    // 2700 ≥ 1080），结论一致。
     rig.port
         .window()
         .resize(Size::new(4320, 2700))
@@ -771,7 +1028,7 @@ fn visual_acceptance_1x_and_3x() {
     let frame_big = rig.port.window().capture().expect("大窗口截图必须能取");
     assert_eq!(frame_big.width(), 4320, "大窗口帧宽必须是 4320");
     assert_eq!(frame_big.height(), 2700, "大窗口帧高必须是 2700");
-    let panel_big = Rig::crop_panel(&frame_big, 0, 2700 - 384, 4320, 384);
+    let panel_big = Rig::crop_panel(&frame_big, 0, 2700 - 128, 4320, 128);
     assert!(
         panel_big.distinct_color_count() > 16,
         "大窗口面板区必须多色（实得 {} 色）",
@@ -780,4 +1037,38 @@ fn visual_acceptance_1x_and_3x() {
     let path_big = write_artifact("song-overview-panel-big-window", &panel_big)
         .expect("大窗口面板截图必须能落盘");
     println!("大窗口面板截图: {}", path_big.display());
+}
+
+/// ⑭：1920×1080（全展开档）默认展开：11 个 ID 在场、面板 104 px。
+#[test]
+fn panel_defaults_to_expanded_104px_on_full_hd() {
+    let rig = Rig::new_at(Size::new(1920, 1080));
+    rig.assert_panel_expanded(1920, 1080);
+}
+
+/// ⑮：第二次 `refresh_song_overview` 命中缓存、数据逐位相同、走全量路。
+#[test]
+fn second_refresh_hits_the_cache_and_keeps_real_data() {
+    let rig = Rig::new();
+    let before = rig.live_data();
+    let report = song_overview::refresh_song_overview(rig.ui(), &rig.view.borrow(), &rig._state);
+    assert_eq!(report.bars, TOTAL_BARS, "刷新回执的小节数必须是视图跨度 16");
+    assert!(
+        report.cache_hit,
+        "第二次刷新必须命中整曲哈希缓存（同一工程、同一采样率、种子 0 ⇒ 不重渲染、不重分析）"
+    );
+    assert!(
+        !report.score_only,
+        "演示工程必须走全量路（渲染成功），⛔ 不能静默回退纯谱面"
+    );
+    assert!(
+        report.error.is_none(),
+        "全量刷新必须无失败原文：{:?}",
+        report.error
+    );
+    assert_eq!(
+        rig.live_data(),
+        before,
+        "缓存命中后活态数据必须逐位相同（⛔ 不许刷新一次换一份数据）"
+    );
 }

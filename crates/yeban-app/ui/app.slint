@@ -716,8 +716,7 @@ export component MainWindow inherits Window {
     // 整曲多层总览图（Song Overview，Phase 1）—— 设计稿 §7 / §11 MVP
     // =====================================================================
     // 数据面（`in`）：唯一写者 = `song_overview::apply_song_overview`。
-    // 本轮是 stub view-model（标题带「试算」）；dsp 分析线落地后由协调员派人换成
-    // `yeban-dsp` 的输出映射，属性名与几何一位不动。
+    // 数据是真实管线（工程 → 离线渲染 → dsp 分析 → 映射），标题不再带「试算」。
     // 视图态面（`in-out`）：图层开关 / 折叠 / 悬停读数，唯一写者 =
     // `song_overview::wire_song_overview`（界面不自己翻转任何状态）。
     // 布局：底部、状态栏之上、可折叠、总高 104 px（主画布 82 + 底部 22；设计稿 §11
@@ -735,7 +734,18 @@ export component MainWindow inherits Window {
     in property <[string]> song-overview-ruler-labels: [];
     in property <int> song-overview-span-ticks: 0;
     in property <string> song-overview-key-signature: "";
-    in-out property <bool> song-overview-collapsed: false;
+    /// 总览面板是否折叠（22 px 条带）。
+    ///
+    /// 默认值是**表达式绑定**，不是写死 `false`：窗口不在 UI-GRID-002 的全展开档
+    /// （≥1920×1080）时默认折叠，展开档默认展开。`pane_no_overlap` 的实测：
+    /// 常驻 104 px 时 1024x800 与 1440x900 两档各丢底部节点（8 个失败），1920x1080
+    /// 全过 —— 折叠档只认 `compact`（宽 < 1180）盖不住 1440 档，因此默认折叠的
+    /// 档位取全展开档本身（宽 < 1920 或高 < 1080 即折叠），两个数都引自 §1.2 的
+    /// 全展开档定义，⛔ 不是新发明的断点值。折叠后多出的 82 px 还给中段弹性区。
+    ///
+    /// 与 `compact` 同款：Rust 写一次即覆盖本实例的绑定（Slint 语义）⇒ 用户按
+    /// 折叠键后跟 toggle 走，窗口再拉宽/拉窄不再自动翻（默认折叠只是默认值）。
+    in-out property <bool> song-overview-collapsed: self.width < 1920px || self.height < 1080px;
     in-out property <bool> song-overview-show-tension: true;
     in-out property <bool> song-overview-show-energy: true;
     in-out property <bool> song-overview-show-bands: true;
@@ -1913,6 +1923,13 @@ export component MainWindow inherits Window {
         }
 
         // --------------------------------------- 底部控制台 (弹性区的 40%)
+        // ⭐ 窄档分栏维持 3:2（`Tokens.console-stretch`）：曾试过窄档把控制台
+        // stretch 提到 2.4–2.6 给素材池腾高度（1024x800 档素材池第二行要
+        // 控制台 ≥ 334 px），但控制台 ≥ 312 px 时设备链占位卡翻为可见，与
+        // `pane_no_overlap.rs` 的 1024 窄档清单（6 项、无占位卡）冲突 ——
+        // 素材池与设备链在 1024 档要的是相反的控制台高度，单靠分栏无解；
+        // 须由素材池/设备链的归属线改窄档座位或判据清单，本轮不越权改动。
+        // （折叠面板已把 82 px 还给中段：素材池第一行已回树，只剩第二行。）
         console-tabs := ConsoleTabs {
             vertical-stretch: Tokens.console-stretch;
             active-tab: root.console-tab;
@@ -2260,7 +2277,8 @@ export component MainWindow inherits Window {
 
         // --------------------------------------- 整曲多层总览图（底部、状态栏之上）
         // Phase 1：可折叠 104 px（主画布 82 + 底部 22；「100 px」是约数）。数据由 `song_overview.rs`
-        // 的 stub view-model 注入（标题带「试算」）；dsp 线落地后换真实映射。
+        // 的真实管线注入（工程 → 离线渲染 → dsp 分析 → 映射）；默认折叠见
+        // `song-overview-collapsed` 的表达式绑定（非全展开档默认 22 px）。
         // 画布左缘 = 左侧资源栏宽 + 168 px 轨道头列（与编排视图时间轴同一起点），
         // 右缘留出右 AI 协作栏宽（compact 时为 0）。
         SongOverviewPanel {

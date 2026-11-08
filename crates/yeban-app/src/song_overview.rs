@@ -8,18 +8,53 @@
 //! - 底部可折叠 104 px 面板（主画布 82 px + 底部 22 px），四层叠合渲染。
 //! - 4 项核心交互：点击跳转播放头、视口联动框（拖动滚动 / 右缘拖动缩放）、
 //!   图层开关胶囊（单击隐藏 / 双击独显）、悬停小节读数。
-//! - 数据是 **stub view-model**：按 §8.2 的 `bar_series` 列式形状造的固定假数据
-//!   （闭式确定性函数，无随机数，两次生成逐位相同）。dsp 分析线落地后由协调员派
-//!   本模块的作者把它换成 `yeban-dsp` 的输出映射 —— 本轮不做那一步。
-//! - 面板标题带「试算」字样：stub 数据不是测量值，界面不假装它是。
+//! - 数据是 **真实管线**：工程 → `yeban_render::song_overview::cached_overview`
+//!   （整曲哈希缓存；谱面映射与离线渲染都在那一层）→ dsp `SongOverview` → 本模块的
+//!   view-model 映射（[`overview_from_dsp`]）。标题不再带「试算」。
+//! - 默认折叠：窗口不在 UI-GRID-002 的全展开档（≥1920×1080）时面板默认折叠
+//!   （22 px），展开档默认展开。默认值是 `app.slint` 里 `song-overview-collapsed`
+//!   的表达式绑定；用户按一次折叠键后 Rust 写一次属性，绑定即被覆盖，之后跟 toggle 走。
 //!
 //! ## 数据流（与仓库纪律一致）
 //!
 //! ```text
-//! ViewState（活投影：小节数 / 段落 / 小节长）
-//!   └─ refresh_song_overview ──> SongOverview（stub 列式数据，Rc<RefCell> 单一事实源）
-//!        └─ apply_song_overview ──> MainWindow 的 song-overview-* 属性 ──> .slint 只画数
+//! UndoPort::try_project（活工程，换工程自动跟着换）
+//!   └─ refresh_song_overview ──> cached_overview（命中不重算）
+//!        └─ overview_from_dsp ──> SongOverview（面板 view-model，活态的单一事实源）
+//!             └─ apply_song_overview ──> MainWindow 的 song-overview-* 属性 ──> .slint 只画数
 //! ```
+//!
+//! - 界面不算任何东西：Magma 配色、张力配色、悬停文本、标尺标签全在这里算好再注入。
+//! - 小节数口径：**视图说了算**。dsp 的 `total_bars` 是内容跨度（谱面末音 / 音频末端
+//!   向上取整），视图的 `bar_positions.len()` 是工程跨度（段落排布）；演示工程上前者
+//!   是 3、后者是 16。面板的 `total-bars` / `span-ticks` 必须与视图一致（走带吸附、
+//!   视口框、播放头都读视图跨度），因此映射按视图小节数定长：dsp 有数的小节原样映射，
+//!   超出 dsp 跨度的小节按 dsp 自己的静音哨兵填（LUFS −70、频段 −36 dB、疏密 0、
+//!   张力 0），⛔ 不编测量值；dsp 比视图长时截断（不画视图之外的部分）。
+//! - 渲染失败时回退到纯谱面分析（`analyze_song_overview(score, None)`，dsp 的既定
+//!   回退口径：能量 / 频率记哨兵，情绪响度分量走谱面力度代理，疏密与和声照常算），
+//!   并把回退写进 [`RefreshReport`] 与日志；纯谱面也空时才画静音面板，⛔ 不留旧工程
+//!   的数据（那会把上一首歌的曲线画到新工程上）。
+//! - SFZ provider（[`arm_sfz_input`]）：只走磁盘腿（`resolve_sampler_path` 的既定
+//!   候选顺序：工程目录 ⇒ 采样库根 ⇒ 仓库根 ⇒ cwd）+ 既有解码（`build_region_samples`）。
+//!   内嵌 SFZ（`.yeban` 容器内）本轮不接：解析不到时 provider 记失败并返回空输入，
+//!   渲染层随即响亮失败（⛔ 不拿静音轨去渲染），refresh 走纯谱面回退。缺样本的区域
+//!   按引擎既定口径记静音（不进提供表），⛔ 不塞正弦占位。
+//! - 刷新是同步的（调用线程上跑完整曲渲染 + 分析，首算付一次，之后同一哈希命中缓存
+//!   不重算）；换工程后调一次 [`refresh_song_overview`] 即可。
+//!
+//! ## 生产接线
+//!
+//! `main.rs` 的 `wire_callbacks` 里，在 `host::wire_ruler_seek(..)` 之后加：
+//!
+//! ```ignore
+//! let overview = yeban_app::song_overview::wire_song_overview(ui, Rc::clone(engine), Rc::clone(&view), undo);
+//! yeban_app::song_overview::refresh_song_overview(ui, &view.borrow(), &overview);
+//! ```
+//!
+//! `wire_song_overview` 在装配时已经按活工程算过一次真实数据并注入；换工程会重跑
+//! `wire_callbacks`（`main.rs` 的 `after` 闭包），于是接线 + 刷新各再跑一次。
+//! 只换缩放不换工程时不用调（数据是按小节的，与 `ticks-per-pixel` 无关）。
 //!
 //! - 界面不算任何东西：Magma 配色、张力配色、悬停文本、标尺标签全在这里算好再注入。
 //! - 走带定位走**既有的** `EngineHost::seek`（`TransportCommand::SeekTicks` 的唯一
@@ -31,19 +66,6 @@
 //!   `host::wire_zoom_controls` 的滑块臂同一条路）。
 //! - 定位 / 图层开关 / 折叠都是**会话运行态**（`MODEL-ISO-001` 第二层）：⛔ 不碰工程、
 //!   ⛔ 不进撤销栈、⛔ 不改 `projectDigest`。
-//!
-//! ## 生产接线（协调员跟进：本文件不在 `host.rs` / `main.rs` 里写）
-//!
-//! `main.rs` 的 `wire_callbacks` 里，在 `host::wire_ruler_seek(..)` 之后加一行：
-//!
-//! ```ignore
-//! yeban_app::song_overview::wire_song_overview(ui, Rc::clone(engine), Rc::clone(&view), undo);
-//! ```
-//!
-//! 它在装配时已经按当前投影生成并注入一份 stub（`refresh_song_overview` 在内）。
-//! 换工程之后调一次 `refresh_song_overview(ui, &view.borrow(), &state)`（`state` 是
-//! `wire_song_overview` 的返回值），小节数 / 段落跟着换；只换缩放不换工程时不用调
-//! （stub 是按小节的，与 `ticks-per-pixel` 无关）。
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -53,8 +75,17 @@ use slint::{ComponentHandle as _, ModelRc, SharedString, VecModel};
 use crate::bridge::ViewState;
 use crate::engine_host::EngineHost;
 use crate::host::{apply_transport, apply_view, project_with_view_state, set_roll_ticks_per_pixel};
+use crate::sfz_load::{
+    SfzRoots, build_region_samples, load_sfz_with_instrument, resolve_sampler_path,
+};
 use crate::ui::MainWindow;
 use crate::undo::UndoPort;
+use yeban_dsp::song_overview::{
+    DENSITY_ANCHOR_NOTES_PER_SEC, NO_LOUDNESS_READING_LUFS, analyze_song_overview,
+};
+use yeban_model::song_overview::score_input_from_project;
+use yeban_render::engine_source::{ArmedSfzInput, ArmedSfzSample};
+use yeban_render::song_overview::{RenderSettings, SongOverviewCache, cached_overview};
 
 /// 频率层频段数（设计稿 §4.1：8 频段音乐职能倍频程）。
 pub const BAND_COUNT: usize = 8;
@@ -121,7 +152,7 @@ pub struct SongOverview {
     pub bar_length_ticks: u64,
     /// 全曲 tick 跨度（= `total_bars * bar_length_ticks`）。
     pub span_ticks: u64,
-    /// 调号文本（设计稿 §8.2 `song_meta.key_signature`；stub 里为空串）。
+    /// 调号文本（设计稿 §8.2 `song_meta.key_signature`，如 `"C major"`；无工程时为空串）。
     pub key_signature: String,
     /// 段落（名，起始小节 0 起），按起始小节升序。
     pub sections: Vec<(String, usize)>,
@@ -285,58 +316,80 @@ pub fn ruler_labels(total_bars: usize, sections: &[(String, usize)]) -> Vec<Stri
     labels
 }
 
-/// 段落名 → stub 张力基线（闭式假数据的形状，不含任何测量值）。
-/// 主歌低、副歌高、桥段中段回落、尾奏收束 —— 只为让 4 项交互有可看的弧线。
-fn section_tension_base(name: &str) -> f32 {
-    match name {
-        "Intro" => 0.28,
-        "Verse" => 0.42,
-        "Chorus" => 0.82,
-        "Bridge" => 0.55,
-        "Outro" => 0.30,
-        _ => 0.45,
+/// 每拍触发数（次/拍）→ 归一化疏密（`0.0..=1.0`，面板的疏密条码读这个）。
+///
+/// 口径与 dsp 张力公式里的密度分量**同一条**（设计稿 §3.2）：先按基准速度折成
+/// 每秒触发数 `d = onsets_per_beat × bpm / 60`，再对数压缩
+/// `D̂ = ln(1 + d) / ln(1 + 16)`（16 = 120 BPM 下双轨十六分音符满铺的锚点）。
+/// 速度非法 / 非有限 ⇒ 按 120 BPM 计（dsp 的 `DEFAULT_BPM` 同值）。
+#[must_use]
+pub fn normalize_density(onsets_per_beat: f32, bpm: f32) -> f32 {
+    let bpm = if bpm.is_finite() && bpm > 0.0 {
+        bpm
+    } else {
+        120.0
+    };
+    let notes_per_sec = onsets_per_beat.max(0.0) * bpm / 60.0;
+    ((1.0 + notes_per_sec).ln() / (1.0 + DENSITY_ANCHOR_NOTES_PER_SEC).ln()).clamp(0.0, 1.0)
+}
+
+/// 调号文本 → 效价底色（dsp 的 `valence_base`：小调 −0.6、大调 +0.6）。
+///
+/// dsp 的 `key_signature` 形如 `"D minor"` / `"C major"`；后缀读不出时中性 0.0
+/// （⛔ 不猜调式）。静音垫条的效价就取这个底色（张力为 0 时 dsp 的公式退化成底色本身）。
+#[must_use]
+pub fn valence_base_for_key(key_signature: &str) -> f32 {
+    if key_signature.ends_with("minor") {
+        -0.6
+    } else if key_signature.ends_with("major") {
+        0.6
+    } else {
+        0.0
     }
 }
 
-/// 按当前投影造一份 stub 总览数据（闭式确定性函数，无随机数）。
+/// 视图段落 → 面板段落表（名，起始小节 0 起，按起始小节升序）。
 ///
-/// 小节数与段落取自 `view`（`bar_positions.len()` 与 `sections`）；张力 / LUFS / 频段 / 疏密
-/// 是 `bar` 的闭式函数（段落基线 + 正弦起伏），两次生成逐位相同。
-/// ⚠ 假数据：只用于把面板与 4 项交互跑通，⛔ 不是测量值。dsp 线落地后由协调员派人
-/// 把这个函数换成 `yeban-dsp` 的输出映射。
-#[must_use]
-pub fn stub_overview(view: &ViewState) -> SongOverview {
-    let total_bars = view.bar_positions.len();
-    let bar_length_ticks = view.bar_length_ticks;
-    let sections: Vec<(String, usize)> = view
-        .sections
+/// 段落是工程结构（⛔ 不是测量值），因此取自视图（与 round 1 的 stub 同源），
+/// 不取 dsp 的逐小节 `section` 列（那一列只覆盖内容跨度，演示工程上只有 3 小节，
+/// 会丢掉第 4 小节起的 Verse / Chorus / Outro 分界线）。
+fn sections_from_view(view: &ViewState, total_bars: usize) -> Vec<(String, usize)> {
+    view.sections
         .iter()
         .map(|section| {
             // ⚠ 不手写 `if bar_length_ticks == 0` 再除：clippy `manual_checked_ops`
             // 会判手动查除数；`checked_div` 的 None（除数为 0）即 0。
             let start = section
                 .start_tick
-                .checked_div(bar_length_ticks)
+                .checked_div(view.bar_length_ticks)
                 .unwrap_or_default() as usize;
             (
                 section.name.clone(),
                 start.min(total_bars.saturating_sub(1)),
             )
         })
-        .collect();
-    let section_of = |bar: usize| -> &str {
-        let mut name = "全曲";
-        for (section_name, start) in &sections {
-            if bar >= *start {
-                name = section_name.as_str();
-            }
-        }
-        name
-    };
+        .collect()
+}
 
-    // 设计稿 §8.2 示例里的 8 频段倾斜补偿后基线（dB）。
-    const BAND_BASE_DB: [f32; BAND_COUNT] =
-        [-18.2, -14.5, -12.0, -11.4, -15.0, -19.2, -24.0, -31.5];
+/// dsp `SongOverview` → 面板 view-model（[`SongOverview`]，列式形状见 §8.2）。
+///
+/// - 小节数 / 小节长 / 跨度 / 段落取自视图（见模块文档的小节数口径）。
+/// - 张力 / 效价 / LUFS 原样取 dsp 列（各夹到面板的设计量程）；频段能量夹到
+///   [−36 dB, 0 dB]（dsp 无音频时记 −120 dB 哨兵，面板的 Magma 映射以 −36 dB 为底，
+///   夹断即最暗，不另造一档）；疏密按 [`normalize_density`] 归一化。
+/// - 超出 dsp 跨度的小节是静音垫条（LUFS −70、频段 −36 dB、疏密 0、张力 0，
+///   效价取调号底色）；dsp 比视图长时截断。调号取 dsp 的 `song_meta.key_signature`。
+#[must_use]
+pub fn overview_from_dsp(
+    dsp: &yeban_dsp::song_overview::SongOverview,
+    view: &ViewState,
+) -> SongOverview {
+    let total_bars = view.bar_positions.len();
+    let bar_length_ticks = view.bar_length_ticks;
+    let series = &dsp.bar_series;
+    let dsp_bars = series.len();
+    let bpm = dsp.song_meta.base_bpm;
+    let valence_base = valence_base_for_key(&dsp.song_meta.key_signature);
     let mut tension = Vec::with_capacity(total_bars);
     let mut valence_hue = Vec::with_capacity(total_bars);
     let mut lufs_short = Vec::with_capacity(total_bars);
@@ -345,42 +398,40 @@ pub fn stub_overview(view: &ViewState) -> SongOverview {
     let mut density_perc = Vec::with_capacity(total_bars);
     let mut bands_db = Vec::with_capacity(total_bars.saturating_mul(BAND_COUNT));
     for bar in 0..total_bars {
-        let bar_f = bar as f32;
-        // 副歌进入处的阶跃 + 段内正弦起伏（平滑滤波是 dsp 线的事，stub 只给形状）。
-        let base = section_tension_base(section_of(bar));
-        let t = (base + 0.08 * (bar_f * 0.9).sin()).clamp(0.05, 0.97);
-        tension.push(t);
-        // 小调底色 −0.35，副歌暖 0.25。
-        let hue = (-0.35
-            + if section_of(bar) == "Chorus" {
-                0.25
-            } else {
-                0.0
+        if bar < dsp_bars {
+            tension.push(series.tension[bar].clamp(0.0, 1.0));
+            valence_hue.push(series.valence_hue[bar].clamp(-1.0, 1.0));
+            lufs_short.push(series.lufs_short[bar]);
+            density_pitched.push(normalize_density(
+                series.density_pitched_onsets_per_beat[bar],
+                bpm,
+            ));
+            density_duty.push(series.density_pitched_duty[bar].clamp(0.0, 1.0));
+            density_perc.push(normalize_density(
+                series.density_perc_onsets_per_beat[bar],
+                bpm,
+            ));
+            for band in 0..BAND_COUNT {
+                bands_db.push(series.bands_tilted_db[bar][band].clamp(BAND_DB_FLOOR, BAND_DB_CEIL));
             }
-            + 0.12 * (bar_f * 0.7).sin())
-        .clamp(-1.0, 1.0);
-        valence_hue.push(hue);
-        lufs_short.push((-24.0 + 10.0 * t + 2.0 * (bar_f * 1.3).sin()).clamp(-30.0, -8.0));
-        density_pitched.push((0.30 + 0.50 * t + 0.08 * (bar_f * 1.7).sin()).clamp(0.0, 1.0));
-        density_duty.push((0.45 + 0.35 * (bar_f * 0.5).sin()).clamp(0.05, 1.0));
-        let perc = if section_of(bar) == "Chorus" {
-            0.80
         } else {
-            0.30
-        };
-        density_perc.push((perc + 0.10 * (bar_f * 2.1).sin()).clamp(0.0, 1.0));
-        for (band, base_db) in BAND_BASE_DB.iter().enumerate() {
-            let db = (*base_db + 8.0 * t + 1.5 * (bar_f * (0.6 + band as f32 * 0.13)).sin())
-                .clamp(BAND_DB_FLOOR, BAND_DB_CEIL);
-            bands_db.push(db);
+            // 静音垫条：超出 dsp 内容跨度的小节（无音符、无音频），按 dsp 自己的
+            // 静音哨兵填，⛔ 不编测量值。
+            tension.push(0.0);
+            valence_hue.push(valence_base);
+            lufs_short.push(NO_LOUDNESS_READING_LUFS);
+            density_pitched.push(0.0);
+            density_duty.push(0.0);
+            density_perc.push(0.0);
+            bands_db.extend(std::iter::repeat_n(BAND_DB_FLOOR, BAND_COUNT));
         }
     }
     SongOverview {
         total_bars,
         bar_length_ticks,
         span_ticks: (total_bars as u64).saturating_mul(bar_length_ticks),
-        key_signature: String::new(),
-        sections,
+        key_signature: dsp.song_meta.key_signature.clone(),
+        sections: sections_from_view(view, total_bars),
         tension,
         valence_hue,
         lufs_short,
@@ -391,6 +442,28 @@ pub fn stub_overview(view: &ViewState) -> SongOverview {
     }
 }
 
+/// 没有任何测量值的静音面板（视图几何 + 全哨兵）：没有工程、或纯谱面也空时用。
+///
+/// 调号未知 ⇒ 效价底色取 0.0 中性（⛔ 不编一个假调号）。
+#[must_use]
+pub fn silent_overview(view: &ViewState) -> SongOverview {
+    let total_bars = view.bar_positions.len();
+    let bar_length_ticks = view.bar_length_ticks;
+    SongOverview {
+        total_bars,
+        bar_length_ticks,
+        span_ticks: (total_bars as u64).saturating_mul(bar_length_ticks),
+        key_signature: String::new(),
+        sections: sections_from_view(view, total_bars),
+        tension: vec![0.0; total_bars],
+        valence_hue: vec![0.0; total_bars],
+        lufs_short: vec![NO_LOUDNESS_READING_LUFS; total_bars],
+        density_pitched: vec![0.0; total_bars],
+        density_duty: vec![0.0; total_bars],
+        density_perc: vec![0.0; total_bars],
+        bands_db: vec![BAND_DB_FLOOR; total_bars.saturating_mul(BAND_COUNT)],
+    }
+}
 /// `[float]` 属性 ← `&[f32]`（与 `host.rs` 的 `lengths` 同款，⛔ 不复用私函数）。
 fn floats(values: &[f32]) -> ModelRc<f32> {
     ModelRc::new(VecModel::from(values.to_vec()))
@@ -460,16 +533,173 @@ pub fn apply_song_overview(ui: &MainWindow, overview: &SongOverview) {
     )));
 }
 
-/// 按当前投影重建 stub 并注入（换工程后调一次；只换缩放不换工程时不用调）。
-///
-/// 返回新的单一事实源（`wire_song_overview` 的返回值就是同一份 `Rc`，调用方留着它
-/// 以备下一次刷新 —— 刷新原地改写这份 `Rc` 里的内容，回调闭包读到的永远是最新份）。
-pub fn refresh_song_overview(ui: &MainWindow, view: &ViewState, state: &Rc<RefCell<SongOverview>>) {
-    let fresh = stub_overview(view);
-    *state.borrow_mut() = fresh.clone();
-    apply_song_overview(ui, &fresh);
+/// 刷新一次总览数据的结果（给调用方与测试读的回执，不是界面状态）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RefreshReport {
+    /// 本次注入面板的小节数（= 视图小节数）。
+    pub bars: usize,
+    /// 本次是否命中整曲哈希缓存（命中 ⇒ 没有重渲染、没有重分析）。
+    pub cache_hit: bool,
+    /// 本次是否走了纯谱面回退（渲染失败时才为真；见 [`refresh_song_overview`]）。
+    pub score_only: bool,
+    /// 失败 / 回退的原因（成功且全量时为 `None`；回退时记渲染失败原文）。
+    pub error: Option<String>,
 }
 
+/// 总览面板的活态（`wire_song_overview` 的返回值，`Rc<RefCell>` 单一事实源）。
+pub struct SongOverviewLive {
+    /// 当前注入面板的那份 view-model（回调闭包读它算悬停读数）。
+    pub data: SongOverview,
+    /// 整曲哈希缓存（`cached_overview` 的进程内缓存，跨刷新常驻）。
+    pub cache: SongOverviewCache,
+    /// 活工程的来源（`try_project()`，换工程自动跟着换；`None` ⇒ 无工程）。
+    pub port: Option<Rc<UndoPort>>,
+    /// SFZ 磁盘解析的工程目录根（装配时从引擎现读；换工程重接线时重读）。
+    pub project_dir: Option<std::path::PathBuf>,
+}
+
+/// SFZ 武装输入（`cached_overview` 的 provider）：磁盘腿。
+///
+/// - 路径解析走既有的 [`resolve_sampler_path`]（工程目录 ⇒ 采样库根 ⇒ 仓库根 ⇒ cwd）。
+/// - 样本解码走既有的 [`build_region_samples`]（读不到的区域记缺样本，引擎按静音处理，
+///   ⛔ 不塞正弦占位；内建静音 `*silence` 不进提供表，引擎同样记静音）。
+/// - 解析 / 读盘失败 ⇒ 把原因记进 `failures` 并返回空输入；渲染层随即响亮失败
+///   （`load_sfz_instrument` 读不到空输入指的路径），⛔ 不拿静音轨去渲染。
+///   内嵌 SFZ（`.yeban` 容器内）本轮不接：盘上解析不到即走这条失败路，refresh 再回退
+///   到纯谱面分析（见 [`refresh_song_overview`]）。
+fn arm_sfz_input(
+    raw: &str,
+    roots: SfzRoots<'_>,
+    engine_hz: f32,
+    failures: &mut Vec<String>,
+) -> ArmedSfzInput {
+    let resolved = match resolve_sampler_path(raw, roots) {
+        Ok(path) => path,
+        Err(error) => {
+            failures.push(format!("SFZ 路径解析失败 `{raw}`：{error}"));
+            return ArmedSfzInput::empty(raw);
+        }
+    };
+    let instrument = match load_sfz_with_instrument(&resolved, None, engine_hz) {
+        Ok((_, instrument)) => instrument,
+        Err(error) => {
+            failures.push(format!(
+                "SFZ 读盘/解析失败 `{}`：{error}",
+                resolved.display()
+            ));
+            return ArmedSfzInput::empty(raw);
+        }
+    };
+    let table = build_region_samples(&instrument, &resolved);
+    for (missing, reason) in &table.missing {
+        failures.push(format!(
+            "SFZ 缺样本 `{missing}`（{reason}）：该区域按静音渲染"
+        ));
+    }
+    let samples: Vec<ArmedSfzSample> = table
+        .samples
+        .iter()
+        .filter(|(path, _)| !yeban_sfz::instrument::is_builtin_silence_sample(path))
+        .map(|(path, sample)| {
+            (
+                path.clone(),
+                (std::sync::Arc::clone(&sample.pcm), sample.sample_hz),
+            )
+        })
+        .collect();
+    ArmedSfzInput::new(resolved, samples)
+}
+
+/// 按活工程重算总览数据并注入面板（换工程后调一次；只换缩放不换工程时不用调）。
+///
+/// - 全量路：`cached_overview`（工程 JSON + 采样率 + 种子哈希；命中不重算）。
+///   采样率取工程 `audio_config` 的值（与渲染层校验的口径同一条）；种子 0。
+/// - 渲染失败时回退到纯谱面分析（`analyze_song_overview(score, None)`）；回退原因
+///   写进回执与日志，面板画的是谱面实测值 + 能量/频率哨兵，⛔ 不是假全量。
+/// - 纯谱面也空（空工程）时画静音面板；没有工程（`port` 为 `None` 或取不到工程）
+///   时同样画静音面板，⛔ 不留旧工程的数据。
+/// - 刷新是同步的：首算在调用线程上跑完整曲渲染 + 分析，之后同一哈希命中缓存。
+///
+/// 返回回执（小节数 / 是否命中 / 是否回退 / 失败原文）。调用方留着 `state`
+/// （`wire_song_overview` 的返回值就是同一份 `Rc`）以备下一次刷新 —— 刷新原地
+/// 改写这份 `Rc` 里的内容，回调闭包读到的永远是最新份。
+#[must_use]
+pub fn refresh_song_overview(
+    ui: &MainWindow,
+    view: &ViewState,
+    state: &Rc<RefCell<SongOverviewLive>>,
+) -> RefreshReport {
+    let port = state.borrow().port.clone();
+    let project_dir = state.borrow().project_dir.clone();
+    let Some(project) = port.as_ref().and_then(|port| port.try_project()) else {
+        let silent = silent_overview(view);
+        let report = RefreshReport {
+            bars: silent.total_bars,
+            cache_hit: false,
+            score_only: false,
+            error: Some("没有活工程：总览面板画静音（不留旧工程数据）".to_string()),
+        };
+        state.borrow_mut().data = silent.clone();
+        apply_song_overview(ui, &silent);
+        eprintln!("[yeban-app] 总览图刷新：没有活工程 ⇒ 面板画静音");
+        return report;
+    };
+    let settings = RenderSettings::new(project.audio_config.sample_rate.hz(), 0);
+    let roots = match project_dir.as_ref() {
+        Some(dir) => SfzRoots::under_project(dir),
+        None => SfzRoots::none(),
+    };
+    let mut failures: Vec<String> = Vec::new();
+    let engine_hz = settings.sample_rate_hz as f32;
+    let result = {
+        let mut live = state.borrow_mut();
+        cached_overview(&mut live.cache, &project, &settings, |_, raw| {
+            arm_sfz_input(raw, roots, engine_hz, &mut failures)
+        })
+    };
+    match result {
+        Ok((dsp, hit)) => {
+            let mapped = overview_from_dsp(&dsp, view);
+            let report = RefreshReport {
+                bars: mapped.total_bars,
+                cache_hit: hit,
+                score_only: false,
+                error: None,
+            };
+            state.borrow_mut().data = mapped.clone();
+            apply_song_overview(ui, &mapped);
+            if !failures.is_empty() {
+                eprintln!(
+                    "[yeban-app] 总览图刷新：SFZ 有 {} 处缺口（已按静音渲染）：{}",
+                    failures.len(),
+                    failures.join("；")
+                );
+            }
+            report
+        }
+        Err(error) => {
+            // 渲染失败 ⇒ 纯谱面回退（dsp 的既定回退口径），不留旧工程数据。
+            let score = score_input_from_project(&project);
+            let dsp = analyze_song_overview(&score, None);
+            let message = format!("渲染失败（{error:?}），回退到纯谱面分析");
+            eprintln!("[yeban-app] 总览图刷新：{message}");
+            let (mapped, score_only) = if dsp.bar_series.is_empty() {
+                (silent_overview(view), true)
+            } else {
+                (overview_from_dsp(&dsp, view), true)
+            };
+            let report = RefreshReport {
+                bars: mapped.total_bars,
+                cache_hit: false,
+                score_only,
+                error: Some(message),
+            };
+            state.borrow_mut().data = mapped.clone();
+            apply_song_overview(ui, &mapped);
+            report
+        }
+    }
+}
 /// 走带定位的提交口（与 `host::commit_seek` 同一条路，只是那一个函数是私有的）。
 ///
 /// 引擎借不到（同一线程重入）⇒ 降级（一行 `eprintln`，走带与界面一位不动），
@@ -509,19 +739,29 @@ fn reproject_after_zoom(ui: &MainWindow, port: &Option<Rc<UndoPort>>) {
 /// `Rc<RefCell<EngineHost>>`（点总览图与点标尺作用在同一条走带上），`view` 是
 /// `host::wire_clip_scope` / `host::wire_ruler_seek` 拿的**同一个**活投影
 /// （网格右缘 / 小节长度都从它现读，换工程之后跟着换），`port` 是
-/// `host::wire_zoom_controls` 拿的**同一个**撤销端口（视口缩放要重投影）。
-/// `port` 传 `None` 时缩放只写属性（见 [`reproject_after_zoom`]）。
+/// `host::wire_zoom_controls` 拿的**同一个**撤销端口（视口缩放要重投影；同时也是
+/// 活工程的来源，见 [`refresh_song_overview`]）。
+/// `port` 传 `None` 时缩放只写属性（见 [`reproject_after_zoom`]），且面板画静音
+/// （没有活工程可算）。
 ///
-/// 返回 stub 数据的单一事实源：换工程后调 [`refresh_song_overview`]（传这份 `Rc`）
-/// 即可更新数据，⛔ 不用重接回调。
+/// 返回活态的单一事实源：装配时已经按活工程算过一次真实数据并注入；换工程后调
+/// [`refresh_song_overview`]（传这份 `Rc`）即可更新数据，⛔ 不用重接回调。
 pub fn wire_song_overview(
     ui: &MainWindow,
     engine: Rc<RefCell<EngineHost>>,
     view: Rc<RefCell<ViewState>>,
     port: Option<Rc<UndoPort>>,
-) -> Rc<RefCell<SongOverview>> {
-    let state = Rc::new(RefCell::new(stub_overview(&view.borrow())));
-    apply_song_overview(ui, &state.borrow());
+) -> Rc<RefCell<SongOverviewLive>> {
+    let project_dir = engine.borrow().project_dir().map(|path| path.to_path_buf());
+    let state = Rc::new(RefCell::new(SongOverviewLive {
+        data: silent_overview(&view.borrow()),
+        cache: SongOverviewCache::new(),
+        port: port.clone(),
+        project_dir,
+    }));
+    // 装配时按活工程算一次真实数据并注入（`refresh_song_overview` 在内）。
+    // 回执只作装配期诊断：缓存命中/回退已由刷新写进日志，这里不展开用。
+    let _assembly_report = refresh_song_overview(ui, &view.borrow(), &state);
 
     // ① 点击跳转播放头：界面只报横坐标分数（0..1），换算 / 吸附 / 夹紧全在这里。
     let weak = ui.as_weak();
@@ -546,7 +786,7 @@ pub fn wire_song_overview(
         }
     });
 
-    // ④ 悬停小节读数：界面只报横坐标分数，文本全在这里按 stub 数据算好写回。
+    // ④ 悬停小节读数：界面只报横坐标分数，文本全在这里按真实数据算好写回。
     let weak = ui.as_weak();
     ui.on_song_overview_hover({
         let weak = weak.clone();
@@ -555,13 +795,14 @@ pub fn wire_song_overview(
             let Some(ui) = weak.upgrade() else {
                 return;
             };
-            let overview = state.borrow();
+            let borrowed = state.borrow();
+            let overview = &borrowed.data;
             if overview.total_bars == 0 {
                 return;
             }
             let bar = bar_at_fraction(fraction, overview.total_bars);
-            let text = hover_readout(&overview, bar);
-            drop(overview);
+            let text = hover_readout(overview, bar);
+            drop(borrowed);
             ui.set_song_overview_hover_text(text.into());
             ui.set_song_overview_hover_fraction(fraction.clamp(0.0, 1.0));
             ui.set_song_overview_hover_visible(true);
@@ -829,38 +1070,146 @@ mod tests {
         assert_eq!(plain[2], "");
     }
 
-    /// stub 是确定性的：同一投影两次生成逐位相同，且全部数值落在设计量程内。
+    /// 疏密归一化：0 触发 ⇒ 0；120 BPM 下 1 次/拍（= 2 次/秒）⇒ ln3/ln17；
+    /// 8 次/拍（= 16 次/秒，设计锚点）⇒ 1；超锚点夹到 1；非法速度按 120 BPM 计。
     #[test]
-    fn stub_overview_is_deterministic_and_inside_the_design_ranges() {
+    fn normalize_density_matches_the_design_anchor() {
+        assert_eq!(normalize_density(0.0, 120.0), 0.0);
+        let one_per_beat = normalize_density(1.0, 120.0);
+        let expected = (3.0f32).ln() / (17.0f32).ln();
+        assert!(
+            (one_per_beat - expected).abs() < 1e-6,
+            "1 次/拍 @120 BPM 应为 ln3/ln17 = {expected}，实得 {one_per_beat}"
+        );
+        assert_eq!(normalize_density(8.0, 120.0), 1.0);
+        assert_eq!(normalize_density(100.0, 120.0), 1.0);
+        assert_eq!(normalize_density(-1.0, 120.0), 0.0);
+        // 速度非法时按 120 BPM 计（与 1 次/拍 @120 同值）。
+        assert_eq!(normalize_density(1.0, 0.0), one_per_beat);
+        assert_eq!(normalize_density(1.0, f32::NAN), one_per_beat);
+        // 同样的每拍触发数，速度翻倍 ⇒ 每秒触发数翻倍 ⇒ 归一化值更大。
+        assert!(normalize_density(1.0, 240.0) > one_per_beat);
+    }
+
+    /// 效价底色只读调号后缀：小调 −0.6、大调 +0.6、读不出时中性 0.0（⛔ 不猜调式）。
+    #[test]
+    fn valence_base_for_key_reads_the_mode_suffix() {
+        assert_eq!(valence_base_for_key("D minor"), -0.6);
+        assert_eq!(valence_base_for_key("C major"), 0.6);
+        assert_eq!(valence_base_for_key(""), 0.0);
+        assert_eq!(valence_base_for_key("C"), 0.0);
+    }
+
+    /// 映射：dsp 有数的小节原样映射，超出 dsp 跨度的小节是静音垫条（不是测量值）。
+    ///
+    /// 用 dsp 自己的 `analyze_song_overview`（纯谱面，无音频）造一份 1 小节的真输出，
+    /// 再映射到 16 小节的演示视图上。
+    #[test]
+    fn overview_from_dsp_maps_measured_bars_and_pads_silent_bars() {
+        use yeban_dsp::song_overview::{
+            NoteEvent, ScoreInput, SectionMarker, analyze_song_overview,
+        };
+        let score = ScoreInput {
+            notes: vec![
+                NoteEvent {
+                    start_beat: 0.0,
+                    duration_beats: 1.0,
+                    midi: 60,
+                    velocity: 100,
+                    track: 0,
+                    is_percussion: false,
+                },
+                NoteEvent {
+                    start_beat: 1.0,
+                    duration_beats: 1.0,
+                    midi: 69,
+                    velocity: 100,
+                    track: 0,
+                    is_percussion: false,
+                },
+            ],
+            tempo_map: vec![],
+            beats_per_bar: 4,
+            key_tonic_pc: 0,
+            is_minor: false,
+            markers: vec![SectionMarker {
+                bar: 1,
+                label: "Intro".to_string(),
+            }],
+        };
+        let dsp = analyze_song_overview(&score, None);
+        assert_eq!(dsp.song_meta.total_bars, 1, "2 拍内容 ⇒ dsp 只给 1 小节");
+        assert_eq!(dsp.song_meta.key_signature, "C major");
+
         let project = crate::bridge::demo_project();
         let view = ViewState::from_project(&project).expect("演示工程必须能投影");
-        let first = stub_overview(&view);
-        let second = stub_overview(&view);
-        assert_eq!(first, second, "stub 两次生成必须逐位相同（⛔ 不许随机数）");
-        assert_eq!(first.total_bars, view.bar_positions.len());
+        let mapped = overview_from_dsp(&dsp, &view);
+        assert_eq!(mapped.total_bars, view.bar_positions.len());
         assert_eq!(
-            first.span_ticks,
-            first.total_bars as u64 * first.bar_length_ticks
+            mapped.total_bars, 16,
+            "小节数取视图（16），不是 dsp 的内容跨度（1）"
         );
-        assert_eq!(first.bands_db.len(), first.total_bars * BAND_COUNT);
-        for (index, tension) in first.tension.iter().enumerate() {
-            assert!(
-                (0.0..=1.0).contains(tension),
-                "tension[{index}] = {tension} 越界"
+        assert_eq!(mapped.span_ticks, 16 * mapped.bar_length_ticks);
+        assert_eq!(mapped.key_signature, "C major");
+        assert_eq!(mapped.bands_db.len(), 16 * BAND_COUNT);
+        // 第 0 小节：张力 / LUFS 与 dsp 逐位相同；频段无音频 ⇒ −120 dB 哨兵夹到 −36。
+        assert_eq!(mapped.tension[0], dsp.bar_series.tension[0]);
+        assert_eq!(mapped.lufs_short[0], dsp.bar_series.lufs_short[0]);
+        assert!(mapped.tension[0] > 0.0, "有音符的小节张力必须大于 0");
+        assert_eq!(
+            mapped.density_pitched[0],
+            normalize_density(
+                dsp.bar_series.density_pitched_onsets_per_beat[0],
+                dsp.song_meta.base_bpm
+            )
+        );
+        assert!(
+            mapped.density_pitched[0] > 0.0,
+            "有起音的小节疏密必须大于 0"
+        );
+        for band in 0..BAND_COUNT {
+            assert_eq!(mapped.band_db(0, band), BAND_DB_FLOOR);
+        }
+        // 第 1–15 小节：静音垫条（⛔ 不是测量值）。
+        for bar in 1..16 {
+            assert_eq!(mapped.tension[bar], 0.0, "垫条张力必须为 0（bar {bar}）");
+            assert_eq!(
+                mapped.lufs_short[bar], NO_LOUDNESS_READING_LUFS,
+                "垫条 LUFS 必须是 −70 哨兵（bar {bar}）"
             );
-            assert!(
-                (-30.0..=-8.0).contains(&first.lufs_short[index]),
-                "lufs[{index}] = {} 越界",
-                first.lufs_short[index]
-            );
+            assert_eq!(mapped.density_pitched[bar], 0.0);
+            assert_eq!(mapped.density_duty[bar], 0.0);
+            assert_eq!(mapped.density_perc[bar], 0.0);
+            assert_eq!(mapped.valence_hue[bar], 0.6, "大调垫条效价取底色 +0.6");
             for band in 0..BAND_COUNT {
-                let db = first.band_db(index, band);
-                assert!(
-                    (BAND_DB_FLOOR..=BAND_DB_CEIL).contains(&db),
-                    "band {index}/{band} = {db}"
-                );
+                assert_eq!(mapped.band_db(bar, band), BAND_DB_FLOOR);
             }
         }
-        assert_eq!(first.sections[0].0, "Intro");
+        // 段落是工程结构（视图），不是 dsp 的 1 小节截断：仍有 Chorus。
+        assert!(
+            mapped.sections.iter().any(|(name, _)| name == "Chorus"),
+            "段落表必须含 Chorus（视图的 16 小节结构）：{:?}",
+            mapped.sections
+        );
+    }
+
+    /// 静音面板：视图几何 + 全哨兵，调号空串（⛔ 不编一个假调号）。
+    #[test]
+    fn silent_overview_has_the_view_geometry_and_no_measurements() {
+        let project = crate::bridge::demo_project();
+        let view = ViewState::from_project(&project).expect("演示工程必须能投影");
+        let silent = silent_overview(&view);
+        assert_eq!(silent.total_bars, 16);
+        assert_eq!(silent.span_ticks, 16 * silent.bar_length_ticks);
+        assert!(silent.key_signature.is_empty());
+        assert_eq!(silent.sections[0].0, "Intro");
+        for bar in 0..16 {
+            assert_eq!(silent.tension[bar], 0.0);
+            assert_eq!(silent.lufs_short[bar], NO_LOUDNESS_READING_LUFS);
+            assert_eq!(silent.density_pitched[bar], 0.0);
+            for band in 0..BAND_COUNT {
+                assert_eq!(silent.band_db(bar, band), BAND_DB_FLOOR);
+            }
+        }
     }
 }

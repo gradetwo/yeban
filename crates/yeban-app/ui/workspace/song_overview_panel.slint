@@ -14,7 +14,7 @@
 //
 // 数据流方向：只画数，不算数。Magma 配色、张力配色、悬停文本、标尺标签全由
 // `src/song_overview.rs` 算好注入；本文件只做几何（`bar × 画布宽 / 小节数`）。
-// 本轮数据是 stub（标题带「试算」字样）；dsp 分析线落地后换真实映射，几何一位不动。
+// 数据是真实管线（工程 → 离线渲染 → dsp 分析 → 映射），标题不再带「试算」。
 //
 // 交互（设计稿 §7.3，4 项 P0 全是真接线，⛔ 不是摆设）：
 //   1. 点击跳转播放头：整块面板的 TouchArea（最底层）报横坐标分数 → Rust 换算 tick 并 seek。
@@ -492,7 +492,7 @@ export component SongOverviewPanel inherits Rectangle {
             y: 0;
             width: parent.width;
             height: parent.height;
-            text: root.collapsed ? "总览 ▸ 试算" : "总览 ▾ 试算";
+            text: root.collapsed ? "总览 ▸" : "总览 ▾";
             color: Tokens.ink-1;
             font-size: Tokens.font-size-xs;
             horizontal-alignment: center;
