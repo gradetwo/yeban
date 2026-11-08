@@ -2,7 +2,7 @@
 # 列：file|test|category|首条整数断言的证据（截断 90 字符）
 # 口径（R118）：只有 collection_size **界定集合大小** ⇒ 才算非真空下界；
 #   值界／元素值界／条件计数器 **⛔ 不算**。分类优先级：condition_counter > collection_size > element_value_bound > value_bound。
-# 合计 266 条：collection_size 50 ／ value_bound 206 ／ element_value_bound 5 ／ condition_counter 5
+# 合计 276 条：collection_size 59 ／ value_bound 207 ／ element_value_bound 5 ／ condition_counter 5
 src/block.rs|accumulate_matches_scalar_reference|value_bound|assert!((out[i] - expect[i]).abs() < 1e-6, "mismatch at {i}"
 src/block.rs|mismatched_lengths_are_truncated_instead_of_panicking|value_bound|assert_eq!(out[..4], [1.0, 1.0, 1.0, 0.0]
 src/block.rs|mix2_handles_non_multiple_of_four|value_bound|assert!((v - 1.0).abs() < 1e-6
@@ -226,6 +226,15 @@ src/tape.rs|oversampling_aliasing_is_below_the_direct_formula|value_bound|assert
 src/tape.rs|reset_reproduces_a_freshly_built_device_bit_for_bit|value_bound|assert_eq!(left, left2
 src/tape.rs|sanitised_clamps_every_field_into_its_documented_domain|value_bound|assert_eq!(nan.asym, 0.0, "非有限的 `asym` 归 `0`（＝对称 ⇒ 恒等）"
 src/tape.rs|small_signal_gain_is_approximately_one|value_bound|assert!(                     (*sample - 0.01).abs() < 1e-3,                     "drive {dr
+src/vocal_chunk.rs|breath_not_a_cut_point|collection_size|assert_eq!(plan.cut_count(), 1, "expected exactly one cut"
+src/vocal_chunk.rs|chunked_with_drift_carry_matches_whole_bit_identical|collection_size|assert!(plan.cut_count() >= 1
+src/vocal_chunk.rs|cut_is_hop_aligned|collection_size|assert!(plan.cut_count() >= 1
+src/vocal_chunk.rs|cuts_land_in_silence|collection_size|assert!(plan.cut_count() >= 1, "expected cuts, got none"
+src/vocal_chunk.rs|fresh_instances_still_drift_by_time_shift|collection_size|assert!(plan.cut_count() >= 1
+src/vocal_chunk.rs|no_cut_without_silence|collection_size|assert_eq!(plan.cut_count(), 0
+src/vocal_chunk.rs|render_length_mismatch_errors|collection_size|assert_eq!(chunk_index, 0
+src/vocal_chunk.rs|short_and_empty_input|collection_size|assert_eq!(plan.cut_count(), 0
+src/vocal_chunk.rs|tail_not_cut|collection_size|assert_eq!(samples.len(), (8.0 * f64::from(SR)).round() as usize
 src/vocal_key_detect.rs|a_minor_scale_detects_a_minor|value_bound|assert_eq!(det.tonic, 9, "根音须为 A，实测 {}", det.name()
 src/vocal_key_detect.rs|a_minor_triad_heavy_detects_a_minor|value_bound|assert_eq!(det.tonic, 9, "根音须为 A，实测 {}", det.name()
 src/vocal_key_detect.rs|c_major_scale_detects_c_major|value_bound|assert_eq!(det.tonic, 0, "根音须为 C，实测 {}", det.name()
@@ -250,6 +259,7 @@ src/vocal_pitch_route.rs|zero_deviation_is_bit_identical_to_phase1|value_bound|a
 src/vocal_pitch_shift.rs|boundary_no_click_abrupt_with_fade|value_bound|assert!(             boundary <= 3.0 * interior,             "abrupt boundary click: bound
 src/vocal_pitch_shift.rs|boundary_no_click_gradual_without_fade|value_bound|assert!(             boundary <= 3.0 * interior,             "gradual boundary click witho
 src/vocal_pitch_shift.rs|defaults_are_pinned|value_bound|assert_eq!(cfg.lookahead_samples, 5
+src/vocal_pitch_shift.rs|drift_carry_round_trip_matches_whole_line|value_bound|assert!(                 state.drift.abs() < 1000.0,                 "drift {0} out of bou
 src/vocal_pitch_shift.rs|estimator_finds_pure_tones|value_bound|assert!(                 err.abs() <= 5.0,                 "estimator: {freq} Hz measured 
 src/vocal_pitch_shift.rs|receipt_marks_every_chunk|collection_size|assert_eq!(receipt.chunks.len(), 120
 src/vocal_pitch_shift.rs|shift_schedule_changes_shift_per_chunk|collection_size|assert_eq!(receipt.chunks.len(), 30

@@ -6,7 +6,19 @@
 //!   --take lead_take0.wav --notes notes.tsv \
 //!   --out-wav warped.wav --report report.tsv \
 //!   --out-end 4.05 --tail-in-end 4.30 [--config preset] [--align-drop N]
+//!   [--chunked]
 //! ```
+//!
+//! `--chunked`（默认关闭）：对 take 做静音感知分块规划，分块经同一
+//! 移调路径（P1-1 `PitchShifter`，固定 +50 音分，voiced 标志由同一
+//! RMS 曲线推导）渲染，并与整行单实例渲染逐位对照；切块计划（刀数、
+//! 切点秒、chunk 长度、静音段）与对照差异数写进报告 TSV 的 `# chunked_*`
+//! 行。关闭时行为与旧版逐位相同（不改 warped 输出与既有报告行）。
+//!
+//! `--chunked-carry`（默认关闭）：与 `--chunked` 同一路诊断，但分块
+//! 渲染用漂移携带（`render_chunked_with_drift_carry`），对照差异写进
+//! 报告 TSV 的 `# chunked_carry_*` 行；漂移携带开启时切块与整行输出
+//! 逐位相同（outside_diff=0、inside_diff=0）。与 `--chunked` 不可同开。
 //!
 //! 输入 TSV（无表头，制表符分隔）：
 //! `idx score_vop_s score_end_s coarse_s prev_bound_s next_bound_s`
@@ -27,10 +39,14 @@ use std::env;
 use std::fs::File;
 use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::process::ExitCode;
+use yeban_dsp::vocal_chunk::{
+    ChunkPlanConfig, plan_chunks, render_chunked, render_chunked_with_drift_carry, rms_voiced_flags,
+};
+use yeban_dsp::vocal_pitch_shift::{DEFAULT_CHUNK_SAMPLES, PitchShiftConfig, PitchShifter};
 use yeban_dsp::vocal_refine::{RefinedNote, breath_spans, detect_adlib, refine_note};
 use yeban_dsp::vocal_timemap::{
-    StretchConfig, SyllableIn, SyllableTarget, TimemapOptions, build_timemap, gate_verdict,
-    render_continuous_timemap,
+    SILENCE_DB, StretchConfig, SyllableIn, SyllableTarget, TimemapOptions, build_timemap,
+    gate_verdict, render_continuous_timemap,
 };
 
 struct Args {
@@ -44,6 +60,8 @@ struct Args {
     align_drop: Option<usize>,
     adlib_start: Option<f64>,
     adlib_end: Option<f64>,
+    chunked: bool,
+    chunked_carry: bool,
 }
 
 fn parse_args() -> Result<Args, String> {
@@ -58,6 +76,8 @@ fn parse_args() -> Result<Args, String> {
     let mut align_drop = None;
     let mut adlib_start = None;
     let mut adlib_end = None;
+    let mut chunked = false;
+    let mut chunked_carry = false;
     let mut i = 0;
     while i < argv.len() {
         let flag = argv[i].as_str();
@@ -94,11 +114,20 @@ fn parse_args() -> Result<Args, String> {
             "--adlib-end" => {
                 adlib_end = Some(value(&mut i)?.parse::<f64>().map_err(|e| e.to_string())?);
             }
+            "--chunked" => {
+                chunked = true;
+            }
+            "--chunked-carry" => {
+                chunked_carry = true;
+            }
             other => return Err(format!("unknown flag {other}")),
         }
         i += 1;
     }
     // adlib 模式只须 --take + --adlib-start/end，其余参数可省。
+    if chunked && chunked_carry {
+        return Err("--chunked and --chunked-carry are mutually exclusive".to_owned());
+    }
     Ok(Args {
         take: take.ok_or("--take required")?,
         notes: notes.unwrap_or_default(),
@@ -110,6 +139,8 @@ fn parse_args() -> Result<Args, String> {
         align_drop,
         adlib_start,
         adlib_end,
+        chunked,
+        chunked_carry,
     })
 }
 
@@ -208,6 +239,109 @@ fn write_wav(path: &str, samples: &[f32], sample_rate: u32) -> Result<(), String
     }
     out.flush().map_err(|e| e.to_string())?;
     Ok(())
+}
+
+/// `--chunked` 诊断：对 take 做静音感知分块规划，分块经同一移调路径
+/// （P1-1 `PitchShifter`，固定 +50 音分，voiced 标志由同一 RMS 曲线
+/// 推导）渲染，并与整行单实例渲染逐位对照；返回写进报告 TSV 的
+/// `# chunked_*` 行（刀数、切点秒、chunk 长度、静音段、对照差异数）。
+/// `carry` 为真时分块渲染用漂移携带（`render_chunked_with_drift_carry`），
+/// 行名前缀改为 `# chunked_carry_*`；为假时与 P1-2 的 `--chunked` 诊断
+/// 逐行相同（不改既有行）。
+fn chunked_diagnostic(take: &[f32], sample_rate: u32, carry: bool) -> Result<Vec<String>, String> {
+    let plan = plan_chunks(take, sample_rate, ChunkPlanConfig::default());
+    let config = PitchShiftConfig {
+        shift_cents: 50.0,
+        ..Default::default()
+    };
+    let mut whole_shifter = PitchShifter::new(sample_rate as f32, config);
+    let whole_flags = rms_voiced_flags(take, sample_rate, DEFAULT_CHUNK_SAMPLES, SILENCE_DB);
+    let (whole, _) = whole_shifter.process(take, &whole_flags);
+    let chunked = if carry {
+        render_chunked_with_drift_carry(take, &plan, sample_rate, config, &whole_flags)
+            .map_err(|e| e.to_string())?
+    } else {
+        render_chunked(take, &plan, |_, slice| {
+            let mut shifter = PitchShifter::new(sample_rate as f32, config);
+            let flags = rms_voiced_flags(slice, sample_rate, DEFAULT_CHUNK_SAMPLES, SILENCE_DB);
+            let (out, _) = shifter.process(slice, &flags);
+            out
+        })
+        .map_err(|e| e.to_string())?
+    };
+    let mut outside_diff = 0usize;
+    let mut inside_diff = 0usize;
+    let mut outside_max_abs = 0.0f32;
+    let mut inside_first: Option<usize> = None;
+    let mut inside_last: Option<usize> = None;
+    for i in 0..whole.len() {
+        if whole[i] != chunked[i] {
+            let mut in_cut_silence = false;
+            for cut in &plan.cuts {
+                if i >= cut.silence_start && i < cut.silence_end {
+                    in_cut_silence = true;
+                }
+            }
+            if in_cut_silence {
+                inside_diff += 1;
+                if inside_first.is_none() {
+                    inside_first = Some(i);
+                }
+                inside_last = Some(i);
+            } else {
+                outside_diff += 1;
+                let diff = (whole[i] - chunked[i]).abs();
+                if diff > outside_max_abs {
+                    outside_max_abs = diff;
+                }
+            }
+        }
+    }
+    // 携带开关只改行名前缀；为假时以下各行与 P1-2 的 `--chunked` 诊断
+    // 逐行相同。
+    let p = if carry { "carry_" } else { "" };
+    let mut lines = vec![format!(
+        "# chunked_{p}cuts={} chunks={} silences={}",
+        plan.cuts.len(),
+        plan.chunks.len(),
+        plan.silences.len()
+    )];
+    for seg in &plan.silences {
+        lines.push(format!(
+            "# chunk_{p}silence {:.4} {:.4}",
+            seg.start as f64 / sample_rate as f64,
+            seg.end as f64 / sample_rate as f64
+        ));
+    }
+    for cut in &plan.cuts {
+        lines.push(format!(
+            "# chunk_{p}cut {:.4} silence {:.4} {:.4} lead_in_ms={:.1}",
+            cut.at as f64 / sample_rate as f64,
+            cut.silence_start as f64 / sample_rate as f64,
+            cut.silence_end as f64 / sample_rate as f64,
+            cut.lead_in_samples as f64 / sample_rate as f64 * 1000.0
+        ));
+    }
+    for chunk in &plan.chunks {
+        lines.push(format!(
+            "# chunk_{p}span {:.4} {:.4} len_s={:.3}",
+            chunk.start as f64 / sample_rate as f64,
+            chunk.end as f64 / sample_rate as f64,
+            chunk.len_s(sample_rate)
+        ));
+    }
+    let inside_range = match (inside_first, inside_last) {
+        (Some(first), Some(last)) => format!(
+            "{:.4}..{:.4}",
+            first as f64 / sample_rate as f64,
+            last as f64 / sample_rate as f64
+        ),
+        _ => "-".to_owned(),
+    };
+    lines.push(format!(
+        "# chunked_{p}vs_whole outside_diff={outside_diff} inside_diff={inside_diff} outside_max_abs={outside_max_abs:.4} inside_range_s={inside_range}"
+    ));
+    Ok(lines)
 }
 
 struct NoteRow {
@@ -459,6 +593,13 @@ fn run(args: &Args) -> Result<(), String> {
         .map(|pair| (pair[0].off_s, pair[1].pre_s))
         .collect();
     let breaths = breath_spans(&take, sample_rate, &gaps);
+    let chunked_lines = if args.chunked {
+        chunked_diagnostic(&take, sample_rate, false)?
+    } else if args.chunked_carry {
+        chunked_diagnostic(&take, sample_rate, true)?
+    } else {
+        Vec::new()
+    };
     let target_len = (args.out_end * sample_rate as f64).round() as usize;
     let (rendered, render_report) = render_continuous_timemap(
         &take,
@@ -556,6 +697,9 @@ fn run(args: &Args) -> Result<(), String> {
             span.start_s, span.end_s, span.kind, span.rms_db
         )
         .map_err(|e| e.to_string())?;
+    }
+    for line in &chunked_lines {
+        writeln!(report, "{line}").map_err(|e| e.to_string())?;
     }
     let mut core_iter = build
         .intervals

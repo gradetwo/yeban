@@ -57,6 +57,7 @@
 //! | [`polysynth`] | 双振荡器减法复音合成器（定容声部池 + 确定性窃取 + 3 ms 指数淡出 + 整数相位波表 + 声部级梯形低通） | engine `synth.rs` 上移 [ARCH-RT-001, ARCH-RT-004, ARCH-DET-001]，见该模块 §0 |
 //! | [`device_param`] | 设备参数落点表：三个器件族的字段枚举 ＋ 拼写表 ＋ 与器件同次的钳制（`read`/`store`/`sanitise`）| 从 `yeban_render::inserts` 下移（依赖方向 `render → engine → dsp`）|
 //! | [`drums`] | 4 音色鼓机（底鼓/军鼓/踩镲/拍手）的**合成配方** + 定容槽位池 + 确定性窃取 + 3 ms 指数淡出 + 闭镲 choke 开镲。⚠ **不是** 808/909 电路建模（未实现清单见该模块 §0.1） | 新写 [ARCH-RT-001, ARCH-RT-004, ARCH-DET-001] |
+//! | [`vocal_chunk`] | 静音感知分块：只在静音段内落刀的渲染 chunk 边界规划 + 分块渲染（硬切／lead-in 交叠）+ 收据（**离线限定**，不进实时回调） | 新写 [vocaledit Phase 2 P1-2] |
 //! | [`vocal_key_detect`] | K-S 调式检测：F0 轨迹 → 调式（根音＋大／小）与置信度（**离线限定**，不进实时回调） | 新写 [vocaledit Phase 2 P2-2] |
 //! | [`vocal_per_note_eq`] | 逐音符 EQ 粒度：指定音符区间内单峰值频段增益，区间外逐位不变（**离线限定**） | 新写 [vocaledit Phase 2 P2-1] |
 //! | [`vocal_pitch_route`] | 75 音分混合移调路由：DSP 腿（P1-1 移调器）＋神经腿（后端 trait，未配置大声失败）＋逐 chunk 收据（**离线限定**，不进实时回调） | 新写 [vocaledit Phase 2 P0-1] |
@@ -98,6 +99,7 @@ pub mod reverb;
 pub mod shaping;
 pub mod smoothing;
 pub mod tape;
+pub mod vocal_chunk;
 pub mod vocal_key_detect;
 pub mod vocal_per_note_eq;
 pub mod vocal_pitch_route;
