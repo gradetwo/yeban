@@ -10,7 +10,10 @@
 //!   配器 0.15）+ 一维双边滤波（r = 2 拍，σ_v = 0.18），段落 Marker 处硬切断。
 //!   **严禁全曲 Min-Max 动态拉伸**——所有归一化锚点都是固定心理声学常数。
 //! - 频率层：4096 点 Hann 窗 STFT、50% 重叠、8 频段、+4.5 dB/oct 粉红倾斜补偿，
-//!   按拍均方池化。FFT 复用树内已有的 [`crate::math::fft`]，不引新依赖。
+//!   按拍均方池化。FFT 用 [`realfft`]（纯 Rust 确定性实现）；旧实现复用的
+//!   [`crate::math::fft`]（f64 朴素基 2）实测 4 分钟全曲 2.37 s，未达设计稿
+//!   §9.1 的 30 ms 目标，故换 realfft（单次 4096 点约 2.2 μs）。数值须与旧
+//!   实现逐位一致，由集成测试的已知答案断言钉死。
 //! - 能量层：复用 [`crate::loudness::GatedLoudness`] 的 BS.1770-4 实现
 //!   （瞬时 400 ms、短时 3 s），不重写 LUFS、不引 ebur128。
 //! - 疏密层：旋律与打击分轨；旋律组用 Clustered Onset 率（同拍 30 ms 内柱式
@@ -24,7 +27,7 @@
 //! （本模块实际只用 `Vec` 与定长数组）。
 
 use crate::loudness::GatedLoudness;
-use crate::math::fft;
+use realfft::RealFftPlanner;
 use std::cmp::Ordering;
 
 /// 设计稿 schema 版本（§8.2）。
@@ -646,7 +649,7 @@ fn build_loudness_track(audio: Option<&AudioInput<'_>>) -> LoudnessTrack {
 }
 
 // ---------------------------------------------------------------------------
-// 内部：STFT 频段能量（复用 crate::math::fft）
+// 内部：STFT 频段能量（realfft 实数 FFT）
 // ---------------------------------------------------------------------------
 
 /// 频率（Hz）所属的频段下标；低于 20 Hz 或 ≥ 20 kHz 时无频段。
@@ -683,8 +686,19 @@ fn band_energies_per_beat(
             * (1.0 - libm::cos(2.0 * std::f64::consts::PI * n as f64 / (STFT_WINDOW as f64 - 1.0)));
     }
     let window_power: f64 = window.iter().map(|w| w * w).sum();
-    let mut re = vec![0.0f64; STFT_WINDOW];
-    let mut im = vec![0.0f64; STFT_WINDOW];
+    // realfft 实数 FFT：plan 一次复用；输出为 N/2+1 个复数 bin（0..=N/2），
+    // 与旧 math::fft 的正频半区逐位一致（未归一化正变换，无 1/N 缩放）。
+    let mut planner = RealFftPlanner::<f64>::new();
+    let fft = planner.plan_fft_forward(STFT_WINDOW);
+    let mut input = fft.make_input_vec();
+    let mut spectrum = fft.make_output_vec();
+    // bin→频段表：每帧 2047 个 bin 各做一次 8 段线性查表太贵（约 1150 万次），
+    // 改为每采样率只算一次（2048 项），帧循环里只做数组下标。表内容与
+    // band_index_for_freq 逐位一致，数值不受影响。
+    let mut bin_band = [None; STFT_WINDOW / 2];
+    for (k, slot) in bin_band.iter_mut().enumerate().skip(1) {
+        *slot = band_index_for_freq(k as f64 * sample_rate / STFT_WINDOW as f64);
+    }
     // 每拍累积线性功率与帧数（均方池化）。
     let mut energy = vec![[0.0f64; 8]; total_beats];
     let mut counts = vec![0u32; total_beats];
@@ -694,19 +708,24 @@ fn band_energies_per_beat(
         for n in 0..STFT_WINDOW {
             let l = f64::from(audio.samples[(start + n) * 2]);
             let r = f64::from(audio.samples[(start + n) * 2 + 1]);
-            re[n] = (l + r) * 0.5 * window[n];
-            im[n] = 0.0;
+            input[n] = (l + r) * 0.5 * window[n];
         }
-        fft(&mut re, &mut im, false);
+        // 输入/输出向量由 plan 给出，长度恒合规；失败只可能来自长度错配。
+        fft.process(&mut input, &mut spectrum)
+            .expect("realfft 输入/输出长度由 plan 给出，process 不应失败");
         let center_sec = (start + STFT_WINDOW / 2) as f32 / audio.sample_rate;
         let beat = tempo.sec_to_beat(center_sec) as usize;
         if beat < total_beats {
-            for k in 1..(STFT_WINDOW / 2) {
-                let freq = k as f64 * sample_rate / STFT_WINDOW as f64;
-                let Some(band) = band_index_for_freq(freq) else {
+            for (k, bin) in spectrum
+                .iter()
+                .enumerate()
+                .skip(1)
+                .take(STFT_WINDOW / 2 - 1)
+            {
+                let Some(band) = bin_band[k] else {
                     continue;
                 };
-                energy[beat][band] += re[k] * re[k] + im[k] * im[k];
+                energy[beat][band] += bin.norm_sqr();
             }
             counts[beat] += 1;
         }

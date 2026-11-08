@@ -550,8 +550,9 @@ fn analyze_is_deterministic() {
 
 /// 4 分钟全曲纯计算耗时实测（`#[ignore]`：只在 release 档手动跑，不进常规套件）。
 ///
-/// 目标 < 30 ms（设计稿 §9.1，realfft 口径）；本实现复用树内 `math::fft`（f64），
-/// 先测实数再定是否需要 realfft。
+/// 目标 < 30 ms（设计稿 §9.1，realfft 口径）。实测见下：FFT 已换 realfft；
+/// 剩余耗时主要在逐帧频段映射、LUFS 双二阶滤波与交错声道拆分（均为线性成本，
+/// 非二次）。整曲哈希缓存使该耗时每版歌曲只付一次。
 #[test]
 #[ignore]
 fn four_minute_timing_probe() {
