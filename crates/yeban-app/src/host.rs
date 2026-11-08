@@ -86,6 +86,20 @@ fn strings(values: &[String]) -> ModelRc<SharedString> {
     ))
 }
 
+/// `[string]` 属性 ← `&[&str]`（`ViewState::track_kinds()` 返回静态串切片）。
+///
+/// ⭐ `[PATCH UI-TRACK-KINDS-01]`：轨道类型是 `&'static str`（`bridge::kind_name()` 的常量），
+/// 不是 `String` ⇒ ⛔ 不把 `strings()` 放宽成泛型、⛔ 不改动它现有的所有调用点，只加这一条
+/// 窄通道。界面拿到的仍是逐字相同的类型文本，宿主侧不另造一份类型枚举。
+fn static_strings(values: &[&str]) -> ModelRc<SharedString> {
+    ModelRc::new(VecModel::from(
+        values
+            .iter()
+            .map(|value| SharedString::from(*value))
+            .collect::<Vec<_>>(),
+    ))
+}
+
 /// `[length]` 属性 ← `&[f32]`（Slint 的 `length` 在 Rust 侧就是 `f32`）。
 fn lengths(values: &[f32]) -> ModelRc<f32> {
     ModelRc::new(VecModel::from(values.to_vec()))
@@ -152,6 +166,10 @@ pub fn apply_view(ui: &MainWindow, view: &ViewState, viewport_width: f32, scroll
         grid.map_or(0, |grid| i32::try_from(grid.ticks_per_bar()).unwrap_or(0)),
     );
     ui.set_track_names(strings(&view.track_names()));
+    // ⭐ [PATCH UI-TRACK-KINDS-01]：轨道类型（`ViewState::track_kinds()`）与
+    // `track-names` 同索引集、同一次注入 ⇒ 换工程后包头类型色带 / 徽标与名字一起更新，
+    // 不会留下一份过期的类型副本。⛔ 界面不按下标猜类型、⛔ 宿主不另造类型枚举。
+    ui.set_track_kinds(static_strings(&view.track_kinds()));
     // 轨道**身份**数组：拖拽手势落在轨道头上（界面只能报下标），而每轨高度覆盖按
     // **身份**键控 ⇒ 宿主需要这一格"下标 → 身份"的查表。它与下面两行的行几何来自同一次
     // 注入，因此换工程之后两者一起更新，不会有一份过期的身份副本。
@@ -2735,6 +2753,79 @@ pub fn wire_mixer_sampler_browse(ui: &MainWindow, picker: Rc<dyn crate::file_pic
         };
         *slot = text;
         ui.set_track_sampler_paths(ModelRc::new(VecModel::from(paths)));
+    });
+}
+
+/// ⭐ `[PATCH UI-WIRING-01]`：**WAV 导出对话框 `Ctrl/Cmd+O` 路径浏览的唯一接线**。
+///
+/// ## 补的是哪一条线（不是新能力）
+///
+/// 仓库里**已经**有完整的「挑一个路径」能力面（[`crate::file_picker::FilePicker`]，
+/// 任务单 `#86` 乙），并且已经被 [`wire_mixer_sampler_browse`]、[`wire_import_audio`]、
+/// [`wire_save_with_engine`] 等处消费。唯独 `ui/dialogs/export_wav_dialog.slint` 的
+/// 「输出路径」那一格只能**手敲**或靠 `YEBAN_UI_EXPORT_WAV_PATH` 环境变量
+/// （`ui/module_actions.slint` 与 [`ModulePaths`] 的旧注释把这一半登记为"另一票"）。
+/// 本函数把那个洞补上：界面只上抛一个无参回调，宿主问一次对话框，把结果**原样**
+/// 写回 `MainWindow.export-wav-path` —— 与用户手敲的文本走**同一条两向绑定**，
+/// 因此 [`wire_module_actions_with_capture`] 的 `on_export_wav` 一位都不用改。
+///
+/// ## 装配（两条腿，与既有 FilePicker 接线逐字同款）
+///
+/// | 装配 | 实现 | 谁调 |
+/// | :--- | :--- | :--- |
+/// | 产品 `run_gui`（`main.rs`） | [`crate::file_picker::NativeFilePicker`] | 下面 `wire_export_wav_browse` |
+/// | 无头 / 控制面（`live_surface.rs`、`ui_mcp_serve`） | [`crate::file_picker::NoPicker`] | 同上（`choose_save` 恒 `None` ⇒ 取消语义） |
+/// | 判据 | 测试自己的假实现 | `tests/export_wav_browse.rs` |
+///
+/// ## 边界（如实登记，⛔ 不假装覆盖）
+///
+/// * **只填框、不导出**：写出仍只有 `root.run()` → `on_export_wav` 那一条。
+///   与 [`wire_mixer_sampler_browse`] 的"浏览只填框、SET 才提交"同一条纪律
+///   ⇒ 用户挑了路径却没按「导出」，工程与磁盘都一位不动。
+/// * **取消不是错误**：`choose_save` 回 `None` ⇒ 立即返回，⛔ 不改属性、⛔ 不写回执、
+///   ⛔ 不把"我不想"报成失败（[`crate::file_picker`] 的模块契约）。
+/// * **不验证路径**：存在性 / 可写 / 建目录是 `export_wav` 写出器的契约，本层不重复判。
+/// * **补后缀**：[`crate::file_picker::with_default_extension`] 统一补 `.wav`
+///   （`rfd` 的 `add_filter` 在 macOS 会补、别的平台不一定）。已带后缀逐字不动。
+/// * **无窗口装配**：`NoPicker` 恒 `None` ⇒ 这一格在那条腿上就是"每次都取消"。
+///   控制面仍可用 `ui/property` 直接写 `export-wav-path`（既有通道，⛔ 不变）。
+pub fn wire_export_wav_browse(ui: &MainWindow, picker: Rc<dyn crate::file_picker::FilePicker>) {
+    let weak = ui.as_weak();
+    ui.on_browse_export_wav_path(move || {
+        let Some(ui) = weak.upgrade() else {
+            debug_assert!(false, "MainWindow 在回调执行期间被销毁");
+            return;
+        };
+        // 建议名 / 起始目录取**当前框里的值**（⛔ 不猜一个与眼前无关的固定路径）：
+        // 空 ⇒ 用与 CLI / `ModulePaths` 同名的 `ui-export.wav`；非空 ⇒ 用它的文件名与父目录。
+        let current = ui.get_export_wav_path().to_string();
+        let trimmed = current.trim();
+        let (name, directory) = if trimmed.is_empty() {
+            ("ui-export.wav".to_owned(), None)
+        } else {
+            let path = std::path::Path::new(trimmed);
+            let name = path
+                .file_name()
+                .map(|part| part.to_string_lossy().into_owned())
+                .filter(|part| !part.is_empty())
+                .unwrap_or_else(|| "ui-export.wav".to_owned());
+            let directory = path
+                .parent()
+                .filter(|parent| !parent.as_os_str().is_empty())
+                .map(std::path::Path::to_path_buf);
+            (name, directory)
+        };
+        let mut request = crate::file_picker::PickerRequest::save("选择 WAV 导出路径", name)
+            .with_extensions(["wav"]);
+        if let Some(directory) = directory {
+            request = request.in_directory(directory);
+        }
+        // ⚠ 取消 ⇒ 一位不动（⛔ 不把"我不想"写成一条错误）。
+        let Some(path) = picker.choose_save(&request) else {
+            return;
+        };
+        let path = crate::file_picker::with_default_extension(path, "wav");
+        ui.set_export_wav_path(SharedString::from(path.to_string_lossy().as_ref()));
     });
 }
 
@@ -8053,10 +8144,14 @@ fn save_first_through_the_existing_entry(ui: &MainWindow) -> Result<(), String> 
 /// `ui-instrument.sfz` / `ui-record.wav`），⛔ **不**落到系统临时目录：后者的路径里带
 /// 随机分量，会让回执行不可复现，而"回执里的路径"正是判据要断言的东西。
 ///
-/// ⚠ 边界（如实登记）：本票**没有**原生文件对话框 —— 用户不能在这里挑文件，
-/// 只能走上面那几个环境变量。那是**另一票**（需要 platform 侧的新能力）；
-/// `#86` 乙给 SFZ 采样器加的那条"浏览…"是**另一条**通道（`host::wire_mixer_sampler_browse`），
-/// ⛔ 本结构不消费它。
+/// ⚠ 边界（`[PATCH UI-WIRING-01]` 更正，如实登记）：本结构**只负责给缺省路径**，
+/// ⛔ 不认识文件对话框。`#86` 乙的 [`crate::file_picker::FilePicker`] 能力面早已存在，
+/// 现在由 [`wire_export_wav_browse`] 把 **WAV 导出那一格**接上 `Ctrl/Cmd+O` 路径浏览：选中的路径
+/// 写回 `MainWindow.export-wav-path` ⇒ 覆盖本结构的 `export_wav` 缺省
+/// （`on_export_wav` 现读的是那条两向绑定，⛔ 不需要第二份出口）。
+/// ⚠ 其余四条模块入口（导入 MIDI / 装载 SFZ / 录音 / 导出 MIDI）**仍只能**走环境变量
+/// 或手输；给它们逐一加对话框属后续切片（见交付说明文档的 ROI 表）。
+/// ⛔ 本结构不消费 `FilePicker`，也不因那条接线改变任何缺省值。
 #[derive(Clone, Debug, PartialEq)]
 pub struct ModulePaths {
     /// `导出 WAV` 的落盘路径。

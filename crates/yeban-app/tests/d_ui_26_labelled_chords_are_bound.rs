@@ -624,6 +624,17 @@ const PINNED_PROMISES: &[(&str, usize, Action)] = &[
     ("Cmd/Ctrl + Alt + A", 1, Action::ToggleAiDrawer),
     ("Cmd+Z", 3, Action::Undo),
     ("Shift+Enter", 3, Action::AcceptAiSuggestion),
+    // ⭐ `[PATCH UI-WIRING-01]`：导出 WAV 弹窗的路径标题新印了 `Ctrl/Cmd+O`
+    // （`ui/dialogs/export_wav_dialog.slint` 的 `text:` 字面 ⇒ ① 的多重集对账要求
+    // 这里同步添一行，否则就是「新增的承诺没有判据」）。
+    // 期望动作按**画布口径**逐字现读 `src/input.rs` 第 3 步 `command()` 分支：
+    // `(Character('o'), shift=false, alt=false) => Action::OpenProject`（`Ctrl` 与 `Cmd`
+    // 两条腿都命中）。⚠ 语境复用（如实登记，⛔ 不假装是同一件事）：导出弹窗打开时
+    // `export-trap` 把这一键 `accept` 吞掉、改做「浏览输出路径」
+    // （`host::wire_export_wav_browse`），画布收不到键（`D-UI-19`）⇒ 两处**都有动作**，
+    // ⛔ 不是"念出来却什么都不会发生"的空承诺；本清单钉的是画布键表那一侧。
+    // 次数 = 1（只有那一行标题字面；`elements.rs` 登记名没有这一句）。
+    ("Ctrl/Cmd+O", 1, Action::OpenProject),
 ];
 
 fn pinned_counts() -> BTreeMap<&'static str, usize> {

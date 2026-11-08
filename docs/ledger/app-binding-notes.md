@@ -414,3 +414,47 @@ running 9 tests   →  test result: ok. 9 passed; 0 failed      # Tier-1 判据�
    这已经是第 3 条线（`ui-test-port` / `render-master` / 本线）用同一手法，值得写成方法。
 3. **hoist → `docs/ledger/app-introspect-notes.md` §6.1 的数字**：注册表仍是 **184 条 / 14 动态区**，
    但它的**构造方式**已从"硬编码常量"变成"投影构造"。数字没变，语义变了 —— 建议在那份 notes 里注明。
+
+---
+
+## 11. 关闭登记：`tracks[*].kind` → 图标位（2026-11-08，`[PATCH UI-TRACK-KINDS-01]`）
+
+> 本仓纪律：**带日期的记录只追加、不改写**。上表第 49 行的
+> `| tracks[*].kind | … | —（待接图标位） | … |` 是当时的历史结论，原文保留不动；
+> 这一节把它**关闭**，不涂抹它。
+
+**结论**：`tracks[*].kind` 现在**已接到界面**。补的是「底层已有、只差注入」的一条线 ——
+`bridge::ViewState::track_kinds()` 早就把每轨类型（`midi` / `audio` / `aux-return`）投影成
+`Vec<&'static str>`，`ViewState::TrackView.kind` 也一直在 `canonical_lines()` 的 `kind=` 里；
+缺的只是**没有任何一条属性把这份读数送进 Slint**。
+
+| 环节 | 落点 | 性质 |
+| :--- | :--- | :--- |
+| 唯一真相源 | `bridge::ViewState::track_kinds()`（`TrackView.kind` 的投影） | 既有，未改 |
+| 唯一写者 | `host::apply_view` → `ui.set_track_kinds(static_strings(&view.track_kinds()))` | 新增 1 行 setter |
+| 窄转换 | `host::static_strings(&[&str])`（`strings(&[String])` 的签名一位未动） | 新增 1 个私有 helper |
+| 根声明 / 转发 | `app.slint` 的 `in property <[string]> track-kinds` → `ArrangementView.track-kinds` | 新增 2 行 |
+| 子组件声明 | `arrangement_view.slint` 的 `in property <[string]> track-kinds` | 新增 1 行 |
+| 消费点 | 包头左沿 3px 类型色带 / 2px 顶边 / 36×18 类型徽标（`MIDI` / `AUD` / `AUX`） | 3 个**纯视觉**节点 |
+
+**边界（如实登记，⛔ 不夸大）**：
+
+1. 三个消费节点**全部纯视觉**：无 `accessible-id`（不进 `ui/tree` 控件树）、无 `TouchArea` /
+   `clicked` / `callback`（不改命中测试与活文档计数）、不动包头的
+   `accessible-label: "轨道 " + track_name`、不把 `selected-track-id` 引入可见样式、
+   不用全界面唯一强调色令牌。⇒ `pane_no_overlap` / `elements` 注册表 / `track_selection` /
+   `theme_selection` 的既有判据口径一位未动。
+2. `track-kinds` **只**转发给 `ArrangementView`，⛔ 不进 `ConsoleTabs → MixerConsole` 的
+   两级注入集合（那两级的「集合逐条对齐」判据不认它，混进去会红）。
+3. `visible` 用「下标 + 非空」双守卫：`track-kinds` 未注入或与 `tracks` 不等长时整组不画
+   ⇒ 单独预览 `.slint`（空数组）不会伪造任何类型读数。
+4. **未接的部分**：`session_view.slint` 的列头、混音台通道条、剪辑片段块仍不区分轨道类型
+   （本轮 ROI 只改编曲包头这一处「每个轨道的视图」；session 列头有
+   `fabricated_state_honesty` 的逐字底色判据，改动面更大，留待独立切片）。
+5. **像素**：注入工程的默认帧里这 3 个节点可见且未被遮罩 ⇒ 4 张 arrangement / model-driven
+   Linux golden 确定性过期，`session-full` 逐字节不变。本机按 `AGENTS.md` §5.2 **未重录**，
+   待重录声明见 `crates/yeban-app/tests/golden/linux/MANIFEST.txt` 末尾（2026-11-08）。
+6. 判据：`tests/track_kinds_wiring.rs`（3 条：运行时逐字对账 / 声明面闭环 / 纯视觉边界）、
+   `tests/perf_draw_budget.rs` 的 `APPLY_VIEW_WRITE_SITE_BUDGET` 102 → 103 与
+   `array_instance_addrs` 清单补 `track-kinds`（`PER_FRAME_ARRAY_REWRITE_BUDGET` 仍 58，
+   实测 55 ≤ 58）。

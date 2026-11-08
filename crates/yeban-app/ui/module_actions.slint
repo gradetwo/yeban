@@ -63,7 +63,10 @@ export component ModuleActions inherits Rectangle {
 
     // 五个入口各一条回调。**都不带参数**：目标路径 / 端口由宿主解析
     // （`YEBAN_UI_<动作>_PATH`、`YEBAN_UI_MIDI_IN_PORT`，缺省在工作目录 / 端口 `0`），
-    // 界面不猜路径也不弹文件对话框 —— 原生文件对话框是**另一票**（见 notes 的 needs 登记）。
+    // 界面不猜路径、不自己弹文件对话框 —— 能力面在宿主 `file_picker::FilePicker`。
+    // ⭐ `[PATCH UI-WIRING-01]`：「导出 WAV」的选项对话框里已接上 `Ctrl/Cmd+O` 路径浏览
+    // （`host::wire_export_wav_browse` ⇒ `choose_save` ⇒ 写回 `export-wav-path`）；
+    // 其余四条入口仍走环境变量 / 手输，逐条补对话框属后续切片（见交付说明的 ROI 表）。
     // 「导出 WAV」不再是"按下即按宿主缺省导出"：它打开选项对话框
     // （`ui/dialogs/export_wav_dialog.slint`），真正的导出仍走 `MainWindow.export-wav`。
     callback open-export-wav();

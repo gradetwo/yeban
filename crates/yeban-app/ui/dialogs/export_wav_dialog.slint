@@ -47,6 +47,7 @@
 // | `Tab` / `Shift+Tab`（`\u{9}` / `\u{19}` Backtab） | trap 做**七格闭环轮转**（四框 + 限制器 + 导出 + ✕）并 `accept` ⇒ 焦点逃不出模态 |
 // | `Return`（`\u{a}`）落在四框内 | 该框的 `accepted` ⇒ `root.run()` —— 与「导出」钮、`accessible-action-default` **同一条回调** |
 // | `Return` / `Space`（`\u{20}`）落在三格按钮上 | 那一格自己的 `FocusScope.key-pressed` ⇒ 与 `TouchArea.clicked` **逐字同一落点** |
+// | `Ctrl/Cmd+O`（`[PATCH UI-WIRING-01]`） | trap ⇒ `root.browse-path()` ⇒ 原生保存对话框；`accept` ⇒ 仍不下发快捷键层 |
 // | `Esc` | 调**既有的** `close` 回调（与 ✕ 按钮、`accessible-action-default` 同一条实现） |
 // | 其它裸键 | `reject` ⇒ 冒泡到本组件之外、无人消费 ⇒ 快捷键层⛔ 收不到（焦点不在那里） |
 //
@@ -80,6 +81,25 @@
 //   ⛔ 它不改变焦点。时光机那一份在同款位置（`undo_tree_modal.slint`）。
 // * `Cmd/Ctrl` 组合（保存、撤销、`D-UI-18` 的搜索聚焦）在弹窗打开期间**同样到不了宿主**
 //   —— 模态持有键盘是本票的目的，不是副作用。
+//
+// ⭐ `[PATCH UI-WIRING-01]` 的登记（诚实性边界，⛔ 不假装覆盖）：
+// * **没有新增可见按钮**。加一枚「浏览…」按钮要同时改动
+//   `tests/export_dialog_button_focus.rs`、`export_dialog_key_capture.rs`、
+//   `d_ui_21_modal_mask_swallows_clicks.rs`、`ui_export_dialog.rs` 的 `DIALOG_IDS`
+//   与 `src/elements.rs` 注册表里十余处硬编码计数（ROI 低、回归面大）。
+//   本切片取「零结构改动」：唯一入口是 `Ctrl/Cmd+O`，可见提示写在路径标题里
+//   （既有无 ID 节点 ⇒ 控件树 / 5 张金帧 / 寻址面一位不动）。
+//   ⇒ 鼠标用户目前**只能**用这个和弦（或 `ui/property` 控制面直写路径）；
+//   补一枚可点击按钮列为 `[UI-A11Y-003]` 的后续切片，⛔ 不写成"已经能点"。
+// * `Ctrl/Cmd+O` 落在 `export-trap`（四框与三格按钮的**共同祖先** `FocusScope`）：
+//   带 `control`/`meta` 的组合键不会被 `TextInput` 当文本吃掉 ⇒ 冒泡到 trap；
+//   `accept` ⇒ 这一键⛔ 不冒到快捷键层（模态仍持键盘）。
+// * 「浏览」只**填框**、⛔ 不导出：真正的写出仍只有「导出」钮那一条 `root.run()`
+//   （与 `host::wire_mixer_sampler_browse` 的"浏览只填框、SET 才提交"同一条纪律）。
+// * 取消（`FilePicker::choose_save` 回 `None`）⇒ 一位不动：不改路径、不写回执、
+//   ⛔ 不把"我不想"写成一条错误（`src/file_picker.rs` 的模块契约）。
+// * 无窗口装配（`live_surface.rs` / `ui_mcp_serve`）接 `NoPicker` ⇒ 恒为"取消"；
+//   控制面仍可用既有 `ui/property` 通道直写 `export-wav-path`。
 
 import { Tokens, UiText, UiTitleText } from "../tokens.slint";
 
@@ -99,6 +119,14 @@ export component ExportWavDialog inherits Rectangle {
 
     callback run();
     callback close();
+    // ⭐ [PATCH UI-WIRING-01]：把「输出路径」接到**已经存在**的
+    // `file_picker::FilePicker::choose_save`（任务单 `#86` 乙 的同一条能力面，
+    // 见 `src/file_picker.rs` 与 `host::wire_mixer_sampler_browse` 的既有范式）。
+    // 界面只上抛：⛔ 不解析路径、⛔ 不构造对话框、⛔ 不写盘。唯一落点是
+    // `host::wire_export_wav_browse` —— 生产腿 `NativeFilePicker`、无头腿 `NoPicker`，
+    // 选中的路径原样写回 `root.path`（两向绑定 ⇒ 与手敲的文本同一个出口，
+    // `host::on_export_wav` 不需要任何改动就能消费它）。
+    callback browse-path();
 
     background: Tokens.mask-black.with-alpha(0.65);
     clip: true;
@@ -151,6 +179,17 @@ export component ExportWavDialog inherits Rectangle {
                     root.focus-next-control();
                     accept
                 }
+            } else if ((event.modifiers.control || event.modifiers.meta)
+                       && (event.text == "o" || event.text == "O")) {
+                // ⭐ [PATCH UI-WIRING-01]：`Ctrl/Cmd+O` = 浏览输出路径。
+                // 落在 trap（四框与三格按钮的**共同祖先**）而不是某一格 `FocusScope`
+                // ⇒ 焦点在哪一格都能唤起；`accept` ⇒ 这一键⛔ 不冒到快捷键层
+                // （模态仍然持有键盘，与 `D-UI-19` 那条"弹窗开着 DAW 收不到键"不矛盾）。
+                // ⚠ 本切片**没有**可见按钮 ⇒ 这是路径选择的唯一入口；
+                // 它刻意⛔ 不改 `focus-control` 的七格轮转表（两组计数判据钉死）。
+                // 见文件头「已知边界」的 `[PATCH]` 登记。
+                root.browse-path();
+                accept
             } else if (event.text == "\u{1b}") {
                 // `Esc` 调**既有的** `close` 回调：与 ✕ 按钮、`accessible-action-default`
                 // 同一实现（宿主 `on_close_export_wav`）⇒ ⛔ 不是第二份"关闭弹窗"的逻辑。
@@ -249,7 +288,9 @@ export component ExportWavDialog inherits Rectangle {
                 y: 52px;
                 width: parent.width - 48px;
                 height: 16px;
-                text: "输出路径（空 = 宿主缺省）";
+                // ⭐ [PATCH UI-WIRING-01]：把**已存在**的键盘入口写进可见文案 ——
+                // 不改这一格就不会有人知道 `Ctrl/Cmd+O` 能挑路径（见下方按钮的登记）。
+                text: "输出路径（Ctrl/Cmd+O 浏览…；空 = 宿主缺省）";
                 color: Tokens.ink-2;
                 font-size: Tokens.font-size-xs;
             }
@@ -257,11 +298,15 @@ export component ExportWavDialog inherits Rectangle {
             export-wav-path-input := TextInput {
                 x: Tokens.space-6;
                 y: 72px;
+                // ⭐ [PATCH UI-WIRING-01]：宽度一位不改 —— 本切片不新增任何可见控件，
+                // 路径选择走 `Ctrl/Cmd+O`（提示写在上面的标题里）。
                 width: parent.width - 48px;
                 height: 24px;
                 // [PATCH export-wav-dialog-binding] 两向绑定：`text:` 是**单向**赋值，
                 // 用户一敲键，TextInput 自己的 text 就与 root.path 脱钩，root 永远停在
                 // 宿主播种的初值 ⇒ 导出恒用初值（8 秒 / 跟随工程的采样率）。
+                // ⭐ 选中路径回写 `root.path` 走的也是这条两向绑定 ⇒ 宿主
+                // `on_export_wav` 现读到的就是用户挑的那一条，⛔ 不需要第二份出口。
                 text <=> root.path;
                 single-line: true;
                 font-family: Tokens.font-mono;
@@ -281,6 +326,17 @@ export component ExportWavDialog inherits Rectangle {
                 //   理由记在 `docs/ledger/app-zimmer-ui-notes.md` §34。
                 accepted => { root.run(); }
             }
+
+            // ⭐ [PATCH UI-WIRING-01]：**刻意不画「浏览…」按钮**。
+            //
+            // 加一枚可见按钮 = 新增 `accessible-id` / `TouchArea` / `clicked` 各一处，
+            // 会把 `tests/export_dialog_button_focus.rs`、`export_dialog_key_capture.rs`、
+            // `d_ui_21_modal_mask_swallows_clicks.rs` 等「活文档」判据里十余处硬编码计数
+            // 全部顶掉，还要连带改 `DIALOG_IDS` 与 `elements.rs` 注册表 —— 回归面远大于
+            // 那一枚按钮的收益。按 ROI 取「零结构改动」方案：能力接在
+            // `host::wire_export_wav_browse`，入口是 trap 的 `Ctrl/Cmd+O`，可见提示写在
+            // 上面那行标题里（标题是既有的无 ID 节点 ⇒ 控件树、金帧、寻址面一位不动）。
+            // ⚠ 后续切片若要补鼠标按钮，应连同上述计数判据一起在同一提交里更新。
 
             // ------------------------------------------------------------ 采样率
             UiText {

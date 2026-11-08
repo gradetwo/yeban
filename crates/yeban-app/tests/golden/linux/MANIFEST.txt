@@ -267,3 +267,10 @@ app-main-window-arrangement-full-1920x1080.png	fb82171f4cd64883a850117c194d23480
 app-main-window-session-full-1920x1080.png	989cc11c9fb44d982a2d6eddcd2eb49e702d8bc0b9dcab1780ed6d6d1b6052b1	6222418
 app-model-driven-demo-project-1920x1080.png	fb82171f4cd64883a850117c194d234801c51bea4ddc87fc63c305a267b87571	6222418
 app-model-driven-filled-project-1920x1080.png	a451c156880531b07d141544032585107ad3aee86618c860e0d71b1e9818b043	6222418
+
+**⚠ 待重录声明（2026-11-08，`[PATCH UI-TRACK-KINDS-01]` / `[PATCH UI-DRAG-01]`，台账 #8/#9）**: 上面这张表的 5 行仍然**逐字节等于本目录磁盘上的 5 个 PNG**（本票一个 PNG 都没动，因此表的 sha256 / 字节数**一位未改**，`scripts/gates/check_golden_manifest.py` 的读数不变）。但编曲包头在**注入了工程的默认帧**里新增了可见且未被遮罩的像素 ⇒ 5 张里 4 张确定性过期：
+- `[PATCH UI-TRACK-KINDS-01]` 给 `ui/workspace/arrangement_view.slint` 的每条包头加 3 个**纯视觉**节点（左沿 3px 类型色带、2px 类型色顶边、36×18 类型徽标），颜色 / 文字按 `host::apply_view` 新注入的 `track-kinds`（`ViewState::track_kinds()` 投影读数）取。默认帧加载的工程（`arrangement-compact` / `arrangement-full` / `model-driven-demo-project` / `model-driven-filled-project`）里 `track-kinds` 非空 ⇒ 包头左沿 / 顶边 / 徽标都画出来，且不属于 `[UI-MCP-002]` 该遮罩的动态区；
+- `app-main-window-session-full-1920x1080.png` **不含编曲画布** ⇒ 0 差异（逐字节相同）；
+- `[PATCH UI-DRAG-01]` 只改 `pointer-event` 的守卫逻辑（3 处 `self.pressed` 与若干诚实性注释），**不改任何静态可见像素** ⇒ 对基准无贡献。
+⇒ `src/test_port_adapter.rs` 的 `[UI-MCP-003]` 逐字节比对**会红**，直到按手动档 `gates-manual.yml` 的 `gate=goldens`（`YEBAN_WRITE_GOLDEN=1 cargo test -p yeban-app --locked --test real_ui_tier1`）重录并由人复核（复核量 = 包头左沿 3px 竖带 / 顶边 2px 横带 / 第二行 x 82..118 徽标块的 x 列与每列 y 区间，逐类型色板 `Tokens.gold` / `gold-deep` / `playing`；`session-full` 必须 0 差异）。
+**本票未重录**：执行环境按 `AGENTS.md` §5.2 禁止在本机产出 Linux golden；本次**没有**用 `--write-table` 重写表（表没有漂移，重写它不会产生任何信息）。差异像素的精确计数与逐项算术闭合由 CI 重录档补上 —— 本机不把未测的读数写成已证事实。
