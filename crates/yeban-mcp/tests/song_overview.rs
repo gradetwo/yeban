@@ -8,16 +8,19 @@
 //! 后另行接线，本文件只钉 stub 下的注册 / schema / handler / 边界）。
 
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use serde_json::{Value, json};
 
 use yeban_mcp::dispatch::Dispatcher;
-use yeban_mcp::domain::song_overview::StubSongOverviewProvider;
+use yeban_mcp::domain::error::Fault;
+use yeban_mcp::domain::song_overview::{
+    SongOverviewProvider, SongOverviewRequest, StubSongOverviewProvider,
+};
 use yeban_mcp::output_schema::{BAND_DEFINITIONS_HZ, SongOverview, for_tool};
 use yeban_mcp::security::{BearerToken, Channel, RunMode, ScopeSet};
 use yeban_mcp::tools::{EXTENSION_NAMES, EXTENSION_TOOL_COUNT, TOOL_COUNT};
-use yeban_model::samples::filled_project;
+use yeban_model::samples::{demo_project, filled_project};
 use yeban_model::{EntityId, YebanProjectV1};
 
 // ---------------------------------------------------------------------------
@@ -468,4 +471,85 @@ fn registry_and_schema_counts_agree() {
         .expect("$defs");
     assert_eq!(defs.len(), 21);
     assert!(defs.contains_key("get_song_overview"));
+}
+
+// ---------------------------------------------------------------------------
+// 真实 provider 的接线口径（round 2）：`Domain` 把**当前**活跃工程传给 provider
+// ---------------------------------------------------------------------------
+
+/// 回显 provider：记下 handler 传进来的工程，再把调用交给 stub。
+///
+/// 用于证明 trait 的工程参数就是 `Domain` 当前的活跃工程（不是挂载时的快照、
+/// 不是共享 cell 里上一次刷新的版本）。真实 provider（`yeban-app` 的
+/// `RealSongOverviewProvider`）用同一条参数拿工程，见
+/// `crates/yeban-mcp/src/domain/song_overview.rs` 的模块文档。
+#[derive(Debug, Default)]
+struct ProjectEchoProvider {
+    seen: Arc<Mutex<Option<YebanProjectV1>>>,
+}
+
+impl SongOverviewProvider for ProjectEchoProvider {
+    fn name(&self) -> &'static str {
+        "echo"
+    }
+
+    fn overview(
+        &self,
+        project: &YebanProjectV1,
+        request: &SongOverviewRequest,
+    ) -> Result<SongOverview, Fault> {
+        *self.seen.lock().expect("echo 锁未被毒化") = Some(project.clone());
+        StubSongOverviewProvider.overview(project, request)
+    }
+}
+
+fn dispatcher_with_echo(project: YebanProjectV1) -> (Dispatcher, Arc<ProjectEchoProvider>) {
+    let echo = Arc::new(ProjectEchoProvider::default());
+    let token = BearerToken::generate().token;
+    let mut dispatcher = Dispatcher::new(token, ScopeSet::all(), RunMode::Production);
+    dispatcher.domain_mut().set_now_ms(1_760_000_000_000);
+    dispatcher
+        .domain_mut()
+        .open_in_memory(unique_path("echo"), project, false)
+        .expect("注入规范工程");
+    let provider: Arc<dyn SongOverviewProvider> = Arc::<ProjectEchoProvider>::clone(&echo);
+    dispatcher.domain_mut().set_song_overview_provider(provider);
+    (dispatcher, echo)
+}
+
+#[test]
+fn provider_receives_the_live_active_project() {
+    let project = filled_project();
+    let (mut dispatcher, echo) = dispatcher_with_echo(project.clone());
+    let response = call_tool(&mut dispatcher, "get_song_overview", json!({}));
+    let data = ok_data(&response);
+    assert_eq!(data["provider"], "echo");
+    let seen = echo.seen.lock().expect("echo 锁").clone();
+    assert_eq!(
+        seen,
+        Some(project),
+        "provider 拿到的必须是 Domain 当前的活跃工程（逐位相同）"
+    );
+}
+
+#[test]
+fn provider_sees_the_project_after_it_is_replaced() {
+    let first = filled_project();
+    let (mut dispatcher, echo) = dispatcher_with_echo(first);
+    let _ = call_tool(&mut dispatcher, "get_song_overview", json!({}));
+    // 同一个 Domain 换一份工程再调：provider 必须看到新工程，不是挂载时的快照。
+    // `open_in_memory` 经 `reset_history` 换活跃工程，但不碰已注入的 provider。
+    let second = demo_project();
+    dispatcher
+        .domain_mut()
+        .open_in_memory(unique_path("second"), second.clone(), false)
+        .expect("换工程");
+    let response = call_tool(&mut dispatcher, "get_song_overview", json!({}));
+    assert_eq!(ok_data(&response)["provider"], "echo");
+    let seen = echo.seen.lock().expect("echo 锁").clone();
+    assert_eq!(
+        seen,
+        Some(second),
+        "换工程后 provider 必须看到新工程（快照接线会在这里红）"
+    );
 }

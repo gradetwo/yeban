@@ -6648,6 +6648,7 @@ dependencies = [
  "slint-build",
  "yeban-decode",
  "yeban-diagnostics",
+ "yeban-dsp",
  "yeban-engine",
  "yeban-mcp",
  "yeban-midi",

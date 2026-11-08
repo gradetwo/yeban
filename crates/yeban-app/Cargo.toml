@@ -70,6 +70,18 @@ yeban-sfz = { workspace = true }
 yeban-render = { workspace = true }
 
 # ---------------------------------------------------------------------------
+# yeban-dsp: 整曲总览图真实 provider 的映射侧 (song_overview_provider)
+# ---------------------------------------------------------------------------
+# 为什么需要一条**直接**边: provider 把 `yeban_render::song_overview`
+# 产出的 dsp 总览映射成 MCP 的 JSON structs, 映射函数签名与单元测试
+# 都要写出 dsp 的类型名 (`yeban_dsp::song_overview::SongOverview`)。
+# 这是**工作区内**依赖边, 零新增包: `yeban-dsp` 早已在传递依赖里
+# (`yeban-app → yeban-render → yeban-dsp`), `Cargo.lock` 只多一行依赖名。
+# 它不进默认构建的任何新功能: provider 模块本身只在 `in-process-mcp`
+# feature 下编译 (见 `src/song_overview_provider.rs` 的 `cfg` 门)。
+yeban-dsp = { workspace = true }
+
+# ---------------------------------------------------------------------------
 # yeban-decode: SFZ 样本的**通用解码入口** (symphonia / rubato), 任务单 #85
 # ---------------------------------------------------------------------------
 # 为什么 app 需要它: SFZ v2 音色库里的样本**不只是 PCM WAV** —— FLAC / OGG 是常见形态

@@ -183,6 +183,11 @@ pub mod undo;
 #[cfg(feature = "in-process-mcp")]
 pub mod mcp_mount;
 
+/// 整曲总览图真实 provider（设计稿 §8，Phase 1）—— 只在 `in-process-mcp`
+/// 下编译，与 `mcp_mount` 同一个 `cfg` 门：没有控制面就没有要注入的 provider。
+#[cfg(feature = "in-process-mcp")]
+pub mod song_overview_provider;
+
 // ---------------------------------------------------------------------------
 // 生产窗口的运行期重投影钩子 (`ROAD-M4-008` 选项 (a) 第 (b) 项, 2026-10-06)
 // ---------------------------------------------------------------------------

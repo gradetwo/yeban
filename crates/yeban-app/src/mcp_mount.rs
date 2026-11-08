@@ -128,6 +128,7 @@
 //! bash scripts/dev/cargo-local.sh test -p yeban-app --features in-process-mcp --tests
 //! ```
 
+use std::collections::BTreeMap;
 use std::fmt;
 use std::io::Write as _;
 use std::net::{Shutdown, SocketAddr, TcpStream};
@@ -150,6 +151,7 @@ use yeban_mcp::undo_session::UndoDisplay;
 use yeban_model::{AssetHash, CommitGraph, YebanProjectV1};
 
 use crate::engine_host::{EngineHost, SceneLaunchRequest as EngineSceneLaunchRequest};
+use crate::song_overview_provider::RealSongOverviewProvider;
 
 // ---------------------------------------------------------------------------
 // 两道开关（第二道）与时间常量
@@ -1057,10 +1059,28 @@ pub(crate) fn session_dispatcher(
     // scope 给全：`ui:inject` 的硬禁**不在这里**判，而在 `security::authorize`
     // 按 `RunMode::Production` 判 —— 少给 scope 不等于更安全，只会让别的工具也失灵。
     let mut dispatcher = Dispatcher::new(token, ScopeSet::all(), RunMode::Production);
+    // ⭐ 整曲总览图 Phase 1：会话 CAS 池要进**两处** —— `Domain` 的资产池
+    // （渲染层读它）与真实 provider 的内嵌腿（SFZ 文本与样本由此取）。
+    // 先收成一张表再分发：`Domain` 拿一份拷贝（挂载时一次性的字节复制），
+    // provider 拿原件。没有内嵌绑定的会话一次都不读这份表。
+    let asset_map: BTreeMap<AssetHash, Vec<u8>> = assets.into_iter().collect();
+    let provider_assets = Arc::new(asset_map.clone());
     dispatcher
         .domain_mut()
-        .open_in_memory_with_assets(path.to_path_buf(), project.clone(), read_only, assets)
+        .open_in_memory_with_assets(path.to_path_buf(), project.clone(), read_only, asset_map)
         .map_err(|fault| MountError::Domain(format!("{fault:?}")))?;
+    // ⭐ 整曲总览图 Phase 1：注入真实 provider（设计稿 §8）。磁盘腿 SFZ 解析
+    // 的工程目录 = 会话工程文件所在目录；内存会话（标签路径）没有目录 ⇒ `None`。
+    let project_dir = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .map(Path::to_path_buf);
+    dispatcher
+        .domain_mut()
+        .set_song_overview_provider(Arc::new(RealSongOverviewProvider::new(
+            project_dir,
+            provider_assets,
+        )));
     Ok(dispatcher)
 }
 
@@ -1096,3 +1116,7 @@ mod embedded_digest;
 // 导出时，片段不能在渲染层被当成"声明了但没有字节"。与上面三个子模块同一条装配。
 #[cfg(test)]
 mod embedded_audio_pool;
+// ⭐ 整曲总览图 Phase 1：真实 provider 的内嵌装配判据 —— 演示工程经
+// `session_dispatcher` 调 `get_song_overview`，与直接跑 B 线管线的独立重算逐项对照。
+#[cfg(test)]
+mod embedded_song_overview;

@@ -29,6 +29,16 @@
 //! §8.2 的 JSON）提供；dsp 线落地后由协调员派人接真实 provider，
 //! 本轮不新建那条依赖边、也不等它。
 //!
+//! ## provider 怎么拿到工程（round 2 的接线口径）
+//!
+//! [`SongOverviewProvider::overview`] 的第一个参数就是 [`Domain`] 当前的活跃工程
+//! —— `plan_song_overview` 里 `require_active` 取到的那一份**原样传进**，
+//! provider 不自己缓存工程快照。三个被否掉的方案：① provider 在构造时领一份
+//! 快照 ⇒ 工具改过工程后它看到的还是旧谱面（过期）；② provider 持共享 cell、
+//! 宿主在修订号前进时刷新 ⇒ 工具调用与刷新之间有竞态窗口；③ provider 回头读
+//! `Domain` ⇒ 调用时正持着分发器的锁，重入即死锁。当前方案三者都没有：
+//! 每一次调用都拿到调用那一刻的活跃工程。
+//!
 //! ## `diagnostics` 的归属
 //!
 //! 异常检测逻辑（`low_mid_buildup`、`compression_squash` 等）由 dsp 线实现并由
@@ -52,6 +62,8 @@
 //!   `commit_delta` 为 0，`commitModel` 为 `"none"`）。
 
 use serde_json::Value;
+
+use yeban_model::YebanProjectV1;
 
 use crate::output_schema::{
     BAND_DEFINITIONS_HZ, BarRow, DetectedAnomaly, SongMeta, SongOverview, StructuralSummary,
@@ -102,12 +114,19 @@ pub trait SongOverviewProvider: std::fmt::Debug + Send + Sync {
     /// 自述名（进响应 `data.provider`，供调用方与判据区分 stub 与真实实现）。
     fn name(&self) -> &'static str;
 
-    /// 对当前活跃工程做一次总览分析。
+    /// 对给定的活跃工程做一次总览分析。
+    ///
+    /// `project` 是 [`Domain`] 当前的活跃工程（调用那一刻的版本，见模块头的
+    /// 接线口径）—— provider 不缓存它、不回头读它。
     ///
     /// # Errors
     ///
     /// 分析不可用（无渲染音频、无谱面）时响亮失败，⛔ 不返回空总览。
-    fn overview(&self, request: &SongOverviewRequest) -> Result<SongOverview, Fault>;
+    fn overview(
+        &self,
+        project: &YebanProjectV1,
+        request: &SongOverviewRequest,
+    ) -> Result<SongOverview, Fault>;
 }
 
 /// 保留 2 位小数（归一化指标，§8.2）。
@@ -152,7 +171,7 @@ fn rounded(mut overview: SongOverview) -> SongOverview {
 /// （`INVALID_PARAMETER_RANGE`）、宿主未注入 provider（`CONFLICT` +
 /// `providerUnavailable`），或 provider 自身响亮失败（原样转发）。
 pub fn plan_song_overview(domain: &Domain, call: &ToolCall) -> Result<super::Plan, Fault> {
-    let _project = require_active(domain)?;
+    let project = require_active(domain)?;
     let resolution = match arg_str(call, "resolution") {
         None | Some("bar") => Resolution::Bar,
         Some("beat") => Resolution::Beat,
@@ -183,7 +202,7 @@ pub fn plan_song_overview(domain: &Domain, call: &ToolCall) -> Result<super::Pla
         )
     })?;
     let request = SongOverviewRequest { resolution };
-    let overview = provider.overview(&request)?;
+    let overview = provider.overview(project, &request)?;
     let overview = rounded(overview);
     let mut data = serde_json::to_value(&overview).map_err(|error| {
         Fault::domain(
@@ -432,7 +451,11 @@ impl SongOverviewProvider for StubSongOverviewProvider {
         "stub"
     }
 
-    fn overview(&self, request: &SongOverviewRequest) -> Result<SongOverview, Fault> {
+    fn overview(
+        &self,
+        _project: &YebanProjectV1,
+        request: &SongOverviewRequest,
+    ) -> Result<SongOverview, Fault> {
         let mut bar_series: Vec<BarRow> = Vec::new();
         for (index, bar) in FIXTURE_BARS.iter().enumerate() {
             let bar_no = index as u64 + 1;
@@ -455,7 +478,9 @@ impl SongOverviewProvider for StubSongOverviewProvider {
             match request.resolution {
                 Resolution::Bar => bar_series.push(row),
                 // stub 的拍级展开（文档化的替身行为）：4/4 拍，一小节 4 拍，
-                // 每拍 0.5 s，值沿用所属小节；真实 provider 按拍重算，不走这条路。
+                // 每拍 0.5 s，值沿用所属小节。真实 provider 在 Phase 1 也走同一条
+                // 继承口径：dsp 只输出小节级序列，逐拍重算需要 dsp 的拍级输出，
+                // 那是 Phase 2 的事（见 `yeban-app` 的 `song_overview_provider`）。
                 Resolution::Beat => {
                     for beat in 1..=4u64 {
                         let mut beat_row = row.clone();
