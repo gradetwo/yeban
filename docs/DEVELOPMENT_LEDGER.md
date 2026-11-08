@@ -2013,9 +2013,18 @@ D24 的结论不变（不捆绑字体），但**理由要改成"依赖系统字�
 
 - 新增 `scripts/gates/check_vendor.sh`（我的地盘）：
   · **轻档（不联网）**：① 每个 `.slint` 都被 git 跟踪（实测 **14 个**）② `cargo metadata --locked` 通过（锁确定）
-    ③ 若存在 `vendor/` 则 `.cargo/config.toml` 必须真指向它 **且** `--offline --locked` 能解析；
+    ③ 若 `vendor/` 是真 `cargo vendor` 产出则 `.cargo/config.toml` 必须真指向它 **且** `--offline --locked` 能解析；
+      单个打补丁的 path 依赖的 `vendor/`（无 `.cargo-checksum.json`、crate 数远少于依赖数）跳过，见 2026-11-08 选项 A；
   · **重档 `--full`**：真跑 `cargo vendor --locked` 到临时目录并报告 crate 数与体积 ⇒ 已接进**联网的**手动档 `inventory`
     （"重活放 CI"的正用法；本地不跑）。
+- **2026-11-08 选项 A（改判据，不动依赖/构建/目录名）**：主干定时 Gates 首次红（run 42470504461），第 ③ 步报
+  "存在 vendor/ 但 .cargo/config.toml 没有指向它"。核实：`vendor/` 只是单个打补丁的 path 依赖
+  （`signalsmith-stretch` 0.1.3，1.3M，`[patch.crates-io]`，见 `vendor/signalsmith-stretch/VENDORED.md`），
+  不是完整 `cargo vendor` 产出（完整应为 657 crate、约 959M）；加 config 会断全部构建，不可行。
+  判据第 ③ 步的前提（"vendor/ 存在 = 完整离线依赖集"）是假的，故改判据：只在 `vendor/` 是真 `cargo vendor` 产出时
+  才要求 config 指向它。判定法（二者其一即是）：(a) 各 crate 有 `.cargo-checksum.json`；(b) crate 数 ≥ 依赖数一半。
+  单个 path 依赖的 `vendor/`（实测 1 crate、无 checksum、依赖共 661 个）走 `[skip]`，不报 FAIL。
+  其余判据（.slint 跟踪、锁确定、`--full` 真跑 vendor）不变。轻档与 `--full`（657 crate / 959M）本地亲验通过。
 - **我在这条脚本上抓到一次自己的假红（值得记）**：第一版直接 `cargo metadata --locked ...`，而脚本里 **cargo 不在 PATH 上**
   ⇒ `if` 失败 ⇒ 报 **FAIL「Cargo.lock 与清单不一致」**。**那是把"工具不可用"说成"锁坏了"** ——
   而**假红和假绿一样有害**：它会让读门禁的人开始**忽略**门禁。已修：脚本先 `source scripts/dev/local-env.sh`（若存在），
