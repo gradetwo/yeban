@@ -914,6 +914,98 @@ impl ElementRegistry {
             );
         }
 
+        // ------------------------------------------------- 整曲多层总览图（Song Overview Phase 1）
+        //
+        // 面板本体 `ui/workspace/song_overview_panel.slint`（底部、状态栏之上、可折叠
+        // 100 px）。标签必须与 `.slint` 的 `accessible-label` **逐字相同**
+        // （运行时树对账断言 label 相等）。
+        // `song-overview-playhead` 是动态区：走带光标每帧跳变 ⇒ 截图遮罩按它的包围盒置黑。
+        // `song-overview-hover-readout` 是动态区：悬停文本随指针变 ⇒ 同样遮罩。
+        registry.add(
+            "song-overview-panel",
+            ElementKind::Region,
+            "workspace/song_overview_panel.slint",
+            "整曲多层总览图",
+            false,
+        );
+        registry.add(
+            "song-overview-canvas",
+            ElementKind::Image,
+            "workspace/song_overview_panel.slint",
+            "整曲总览图：频率热力图、能量面积与情绪曲线",
+            false,
+        );
+        registry.add(
+            "song-overview-playhead",
+            ElementKind::Slider,
+            "workspace/song_overview_panel.slint",
+            "总览图走带光标",
+            true,
+        );
+        registry.add(
+            "song-overview-viewport",
+            ElementKind::Slider,
+            "workspace/song_overview_panel.slint",
+            "当前编排视口",
+            false,
+        );
+        registry.add(
+            "song-overview-viewport-resize",
+            ElementKind::Slider,
+            "workspace/song_overview_panel.slint",
+            "拖动缩放编排视口",
+            false,
+        );
+        registry.add(
+            "song-overview-hover-readout",
+            ElementKind::Text,
+            "workspace/song_overview_panel.slint",
+            "悬停小节读数",
+            true,
+        );
+        registry.add(
+            "song-overview-density-strip",
+            ElementKind::Image,
+            "workspace/song_overview_panel.slint",
+            "疏密条码与小节标尺",
+            false,
+        );
+        registry.add(
+            "song-overview-layer-tension-pill",
+            ElementKind::Button,
+            "workspace/song_overview_panel.slint",
+            "情绪层开关",
+            false,
+        );
+        registry.add(
+            "song-overview-layer-energy-pill",
+            ElementKind::Button,
+            "workspace/song_overview_panel.slint",
+            "能量层开关",
+            false,
+        );
+        registry.add(
+            "song-overview-layer-bands-pill",
+            ElementKind::Button,
+            "workspace/song_overview_panel.slint",
+            "频段层开关",
+            false,
+        );
+        registry.add(
+            "song-overview-layer-density-pill",
+            ElementKind::Button,
+            "workspace/song_overview_panel.slint",
+            "疏密层开关",
+            false,
+        );
+        registry.add(
+            "song-overview-collapse-button",
+            ElementKind::Button,
+            "workspace/song_overview_panel.slint",
+            "折叠 / 展开总览面板",
+            false,
+        );
+
         // ------------------------------------------------------------ 控制台导轨
         registry.add(
             "console-tab-rail",
@@ -2575,7 +2667,7 @@ mod tests {
     /// `console/asset_pool_panel.slint`（15 号）是**任务单 `#133`** 加的素材池面板：
     /// 独立组件（住在 `MixerConsole` 里，Tab 1 才可见）⇒ 默认帧像素不变。它与上面
     /// 那一族同一条纪律：UI 加一个文件就必须在清单里显式改。
-    const SLINT_MANIFEST: [&str; 17] = [
+    const SLINT_MANIFEST: [&str; 18] = [
         "app.slint",
         "transport.slint",
         "status_bar.slint",
@@ -2584,6 +2676,10 @@ mod tests {
         "tokens.slint",
         "workspace/session_view.slint",
         "workspace/arrangement_view.slint",
+        // 整曲多层总览图面板（`line/songmap-overview` Phase 1）：独立组件。
+        // UI 加一个文件就必须在清单里显式改（与 `module_actions.slint` /
+        // `console/asset_pool_panel.slint` 同一条纪律）。
+        "workspace/song_overview_panel.slint",
         "console/console_tabs.slint",
         "console/piano_roll.slint",
         "console/mixer_console.slint",

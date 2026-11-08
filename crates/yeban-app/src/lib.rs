@@ -168,6 +168,10 @@ pub mod save;
 pub mod samples;
 pub mod save_action;
 pub mod scene;
+// ⭐ **整曲多层可视化总览图（Song Overview）Phase 1 UI 面板**：stub view-model +
+// 4 项核心交互的接线（点击跳转 / 视口联动框 / 图层胶囊 / 悬停读数）。
+// 数据是按设计稿 §8.2 列式形状造的固定假数据；dsp 分析线落地后换真实映射。
+pub mod song_overview;
 pub mod undo;
 
 // ---------------------------------------------------------------------------

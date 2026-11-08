@@ -44,6 +44,7 @@ import { StatusBar } from "status_bar.slint";
 import { Sidebar } from "sidebar.slint";
 import { SessionView } from "workspace/session_view.slint";
 import { ArrangementView } from "workspace/arrangement_view.slint";
+import { SongOverviewPanel } from "workspace/song_overview_panel.slint";
 import { ConsoleTabs } from "console/console_tabs.slint";
 import { MusicalPrDrawer } from "dialogs/musical_pr_drawer.slint";
 import { UndoTreeModal } from "dialogs/undo_tree_modal.slint";
@@ -711,6 +712,51 @@ export component MainWindow inherits Window {
     // ⛔ 界面**不**自己清屏：`host::apply_engine_error` 只在**真的发布成功**那一跳写空串
     // （标记没变的那一跳一位不动）—— 否则 60Hz 心跳会让横幅闪一下就走，等于没做。
     in-out property <string> engine-error: "";
+    // =====================================================================
+    // 整曲多层总览图（Song Overview，Phase 1）—— 设计稿 §7 / §11 MVP
+    // =====================================================================
+    // 数据面（`in`）：唯一写者 = `song_overview::apply_song_overview`。
+    // 本轮是 stub view-model（标题带「试算」）；dsp 分析线落地后由协调员派人换成
+    // `yeban-dsp` 的输出映射，属性名与几何一位不动。
+    // 视图态面（`in-out`）：图层开关 / 折叠 / 悬停读数，唯一写者 =
+    // `song_overview::wire_song_overview`（界面不自己翻转任何状态）。
+    // 布局：底部、状态栏之上、可折叠、总高 104 px（主画布 82 + 底部 22；设计稿 §11
+    // 的「100 px」是约数，82 + 22 = 104，见面板本体文件头的算术说明）。
+    in property <int> song-overview-total-bars: 0;
+    in property <[float]> song-overview-tension: [];
+    in property <[color]> song-overview-tension-colors: [];
+    in property <[float]> song-overview-lufs: [];
+    in property <[color]> song-overview-band-colors: [];
+    in property <[float]> song-overview-density-pitched: [];
+    in property <[float]> song-overview-density-perc: [];
+    in property <[float]> song-overview-density-duty: [];
+    in property <[string]> song-overview-section-names: [];
+    in property <[int]> song-overview-section-start-bars: [];
+    in property <[string]> song-overview-ruler-labels: [];
+    in property <int> song-overview-span-ticks: 0;
+    in property <string> song-overview-key-signature: "";
+    in-out property <bool> song-overview-collapsed: false;
+    in-out property <bool> song-overview-show-tension: true;
+    in-out property <bool> song-overview-show-energy: true;
+    in-out property <bool> song-overview-show-bands: true;
+    in-out property <bool> song-overview-show-density: true;
+    in-out property <bool> song-overview-hover-visible: false;
+    in-out property <float> song-overview-hover-fraction: 0.0;
+    in-out property <string> song-overview-hover-text: "";
+    /// 点击总览图 ⇒ 走带定位（分数 0..1；落点 = `song_overview::wire_song_overview`）。
+    callback song-overview-seek(float);
+    /// 悬停总览图 ⇒ 小节读数（分数 0..1）。
+    callback song-overview-hover(float);
+    /// 图层胶囊单击 ⇒ 隐藏/显示（下标 0 情绪 / 1 能量 / 2 频段 / 3 疏密）。
+    callback song-overview-layer-toggle(int);
+    /// 图层胶囊双击 ⇒ 独显（已独显则恢复全显）。
+    callback song-overview-layer-solo(int);
+    /// 拖视口框 ⇒ 滚动编排视图（目标横向偏移 px，已夹紧）。
+    callback song-overview-viewport-scroll(float);
+    /// 拖视口框右缘 ⇒ 缩放编排视图（目标 tick/px）。
+    callback song-overview-viewport-zoom(int);
+    /// 折叠键 ⇒ 翻转 `song-overview-collapsed`。
+    callback song-overview-toggle-collapsed();
     callback open-musical-pr();
     callback accept-ai-proposal();
     callback reject-ai-proposal();
@@ -2210,6 +2256,48 @@ export component MainWindow inherits Window {
             mixer-master-pan-reset() => {
                 root.mixer-master-pan-reset();
             }
+        }
+
+        // --------------------------------------- 整曲多层总览图（底部、状态栏之上）
+        // Phase 1：可折叠 104 px（主画布 82 + 底部 22；「100 px」是约数）。数据由 `song_overview.rs`
+        // 的 stub view-model 注入（标题带「试算」）；dsp 线落地后换真实映射。
+        // 画布左缘 = 左侧资源栏宽 + 168 px 轨道头列（与编排视图时间轴同一起点），
+        // 右缘留出右 AI 协作栏宽（compact 时为 0）。
+        SongOverviewPanel {
+            time-origin-x: sidebar.width + 168px;
+            right-reserve: root.compact ? 0px : Tokens.right-rail-width;
+            total-bars: root.song-overview-total-bars;
+            tension: root.song-overview-tension;
+            tension-colors: root.song-overview-tension-colors;
+            lufs: root.song-overview-lufs;
+            band-colors: root.song-overview-band-colors;
+            density-pitched: root.song-overview-density-pitched;
+            density-perc: root.song-overview-density-perc;
+            density-duty: root.song-overview-density-duty;
+            section-names: root.song-overview-section-names;
+            section-start-bars: root.song-overview-section-start-bars;
+            ruler-labels: root.song-overview-ruler-labels;
+            span-ticks: root.song-overview-span-ticks;
+            key-signature: root.song-overview-key-signature;
+            collapsed: root.song-overview-collapsed;
+            show-tension: root.song-overview-show-tension;
+            show-energy: root.song-overview-show-energy;
+            show-bands: root.song-overview-show-bands;
+            show-density: root.song-overview-show-density;
+            hover-visible: root.song-overview-hover-visible;
+            hover-fraction: root.song-overview-hover-fraction;
+            hover-text: root.song-overview-hover-text;
+            viewport-scroll-x: root.roll-scroll-x;
+            viewport-ticks-per-pixel: root.roll-ticks-per-pixel;
+            playhead-ticks: root.playhead-ticks;
+            playhead-timecode: root.timecode;
+            seek-requested(fraction) => { root.song-overview-seek(fraction); }
+            hover-requested(fraction) => { root.song-overview-hover(fraction); }
+            layer-toggle(index) => { root.song-overview-layer-toggle(index); }
+            layer-solo(index) => { root.song-overview-layer-solo(index); }
+            viewport-scroll-requested(target) => { root.song-overview-viewport-scroll(target); }
+            viewport-zoom-requested(target) => { root.song-overview-viewport-zoom(target); }
+            toggle-collapsed() => { root.song-overview-toggle-collapsed(); }
         }
 
         // ---------------------------------------------------------- 24px 状态栏
