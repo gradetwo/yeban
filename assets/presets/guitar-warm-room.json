@@ -1,0 +1,89 @@
+{
+  "format": 1,
+  "id": "sys:freepats-spanish-classical-guitar:guitar-warm-room",
+  "name": "Guitar Warm Room",
+  "instrument": "freepats-spanish-classical-guitar",
+  "instrument_sfz": "assets/samples/freepats-spanish-classical-guitar/SpanishClassicalGuitar-20190618.sfz",
+  "scope": "instrument",
+  "author": "Yeban factory",
+  "version": "1.0.0",
+  "draft": true,
+  "draftNote": "设计稿 §3 散文草案：通道条高通，中频微调；磁带饱和轻量；发送到 Room Aux（-18 dB）。散文未给高通频率与中频量，暂取 80 Hz 与 +1 dB，待耳验定。数值全是草案，待耳验。",
+  "strip": {
+    "input_gain_db": 0.0,
+    "hpf": {
+      "freq_hz": 80.0
+    },
+    "eq_enabled": true,
+    "eq": {
+      "low_gain": 0.0,
+      "low_freq": 200.0,
+      "mid_gain": 1.0,
+      "mid_freq": 1000.0,
+      "mid_q": 0.9,
+      "high_gain": 0.0,
+      "high_freq": 4000.0
+    },
+    "filter_enabled": true,
+    "filter": {
+      "cutoff_hz": 20000.0,
+      "resonance": 0.0,
+      "drive": 0.0
+    },
+    "compressor_enabled": false,
+    "compressor": {
+      "threshold_db": -12.0,
+      "ratio": 4.0,
+      "knee_db": 6.0,
+      "detector_s": 0.005,
+      "attack_s": 0.01,
+      "release_s": 0.1,
+      "makeup_db": 0.0
+    },
+    "dyn_eq": {
+      "freq_hz": 300.0,
+      "threshold_db": -24.0,
+      "max_cut_db": 0.0,
+      "q": 0.9,
+      "ratio": 4.0
+    },
+    "width": 1.0,
+    "ms_mid_gain_db": 0.0,
+    "ms_mid_freq_hz": 2000.0,
+    "mono_below_hz": 0.0,
+    "output_gain_db": 0.0
+  },
+  "sends": [
+    {
+      "aux": "Room",
+      "gain_db": -18.0,
+      "effect": "freeverb"
+    }
+  ],
+  "macros": [
+    {
+      "name": "混响量",
+      "value": 0.5,
+      "mappings": []
+    },
+    {
+      "name": "明亮度",
+      "value": 0.5,
+      "mappings": []
+    }
+  ],
+  "saturation": {
+    "drive": 0.15,
+    "mix": 0.5,
+    "trim_db": 0.0,
+    "hf_hz": 20000.0,
+    "asym": 0.0
+  },
+  "reverb": {
+    "size": 0.45,
+    "damp": 0.35,
+    "mix": 0.25,
+    "width": 0.8,
+    "predelay": 0.012
+  }
+}

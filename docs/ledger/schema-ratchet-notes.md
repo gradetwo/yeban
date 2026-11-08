@@ -173,6 +173,15 @@ if serde_json::from_value::<YebanProjectV1>(document).is_ok() {
 且不得进任何 `required`。
 （注：本表另缺 `#348` 的 `channel` 与任务单 `#350` 的 `key_signature` 两行 ——
 常量里有、表里无，此前已漂移，本线只标注、不替旧账改数。）
+| 22 | `#.tracks.*.preset` | `tracks[*].preset` | 已声明、非 required；**夹具里不落盘**（夜半原生预制线新增，见下） |
+| 23 | `#.tracks.*.preset.preset_id` | `TrackPresetState::preset_id` | 已声明、非 required；夹具里不落盘 |
+| 24 | `#.tracks.*.preset.bypassed` | `TrackPresetState::bypassed` | 已声明、非 required；夹具里不落盘 |
+| 25 | `#.tracks.*.preset.auto_load` | `TrackPresetState::auto_load` | 已声明、非 required；夹具里不落盘 |
+| 26 | `#.tracks.*.preset.previous` | `TrackPresetState::previous` | 已声明、非 required；夹具里不落盘 |
+| 27 | `#.tracks.*.preset.previous.strip` | `TrackPresetSnapshot::strip` | 已声明、非 required；夹具里不落盘 |
+| 28 | `#.tracks.*.preset.previous.effects` | `TrackPresetSnapshot::effects` | 已声明、非 required；夹具里不落盘 |
+| 29 | `#.tracks.*.preset.previous.sends` | `TrackPresetSnapshot::sends` | 已声明、非 required；夹具里不落盘 |
+| 30 | `#.tracks.*.preset.previous.macros` | `TrackPresetSnapshot::macros` | 已声明、非 required；夹具里不落盘 |
 
 ⚠ **第 19 项（任务单 `#76`，2026-10-16 追加）**：`TrackV3::sampler`
 （`Option<SamplerBinding>`，"这条轨用哪份 SFZ"）与第 6/7 项**同形**
@@ -181,6 +190,14 @@ if serde_json::from_value::<YebanProjectV1>(document).is_ok() {
 ⇒ 不登记 ⇒ 判据 ⑥ 报"棘轮盲区"（`leaked`）；填进夹具 ⇒ `project.filled.json` 的冻结
 sha256 改变 ⇒ 唯一出路是登记。本次与该行同时更新了 `model-no-compat-notes.md` §5.4。
 它同样受 ④/⑤ 双向反证：删键必须读成功、且不得进任何 `required`。
+
+⚠ **第 20–28 项（夜半原生预制线，2026-11-07 追加）**：`TrackV3::preset`
+（`Option<Box<TrackPresetState>>`，"这条轨当前用的预制"）与第 19 项**同形**
+（`None` + `skip_serializing_if` + `#[serde(default)]`），8 个子路径也全是
+`#[serde(default, skip_serializing_if = …)]` ⇒ 契约里只能声明为可选属性，
+而现有夹具**刻意不落盘**它们（那正是"默认不改变既有工程"的判据）。
+⇒ 不登记 ⇒ 判据 ⑥ 报"棘轮盲区"；填进夹具 ⇒ 冻结 sha256 改变 ⇒ 唯一出路是登记。
+本次与该组同时更新了 `model-no-compat-notes.md` §5.4 与 `tests/schema_ratchet.rs` 的常量表。
 
 **反例（§5.4 原文点名）**：`clip_pool[*].content.Audio.gain_db` **不在**豁免表里 ——
 那里是裸 `f32`，所以它**是**必需的。判据 ③ 删它，实测报

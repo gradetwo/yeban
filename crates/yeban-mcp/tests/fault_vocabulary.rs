@@ -44,7 +44,7 @@
 //!
 //! | 面 | reason 数 | 规范行数 | SHA-256 |
 //! | :--- | ---: | ---: | :--- |
-//! | `reason`（**可分类**面：字面量 ＋ 可解析的字面量 `let` ＋ **调用点传播**，含顺序） | 237 | 1013 | `1ace30ddae1089f85107ff405cec63cb21f76fd8006f3a3520d75a58b6308241` |
+//! | `reason`（**可分类**面：字面量 ＋ 可解析的字面量 `let` ＋ **调用点传播**，含顺序） | 237 | 1014 | `06f8094c882e7d526c24eb4b1187fc002d27fa7119337c45a8bb32d10233239d` |
 //!
 //! ⚠ `ADR-0030`（`yeban_export_stems`）：两条新字面站点 `masterBusTrack` /
 //! `notASourceNode`（各带 `trackId` / `name` / `reason` 三个同级键）进入规范文本
@@ -60,10 +60,14 @@
 //! ⇒ 235 → 237 个 reason、1005 → 1012 行（2 reason 行 ＋ 5 键行）；**新摘要照抄判据自己的报出值**
 //! （本表里那一位与 `FROZEN_REASON_SURFACE_SHA256` 在同一次提交里一起换成新值）。
 //!
-//! ⚠ 内嵌采样（本支）：新增 `src/domain/embed_samples.rs` ⇒ 生产区 `.rs` 文件 47 → 48；
-//! 7 处新 `samplerUnreadable` 字面站点（`reason` 键站点 263 → 270），其中渲染腿的绑定哈希非法分支
-//! 给 `samplerUnreadable` 多一个 `embeddedHash` 键 ⇒ reason 数不变（仍是 237）、
-//! 规范行数 1012 → 1013（只多 1 个键行）；**新摘要照抄判据自己的报出值**
+//! ⚠ 内嵌采样（本支）：新增 `src/domain/embed_samples.rs` ⇒ 生产区 `.rs` 文件 47 → 49
+//! （本合入另有 `src/domain/preset.rs`，见下条）；7 处新 `samplerUnreadable` 字面站点
+//! （`reason` 键站点 263 → 270），其中渲染腿的绑定哈希非法分支给 `samplerUnreadable` 多一个
+//! `embeddedHash` 键 ⇒ reason 数不变（仍是 237）、规范行数 1012 → 1014
+//! （本条只多 1 个键行，另 1 行见下条）；**新摘要照抄判据自己的报出值**
+//! ⚠ 夜半原生预制线：新增 `src/domain/preset.rs` ⇒ 生产区 `.rs` 文件 47 → 49
+//! （与上条合计）；`yeban_save_project` 的收据多 `embeddedPresets` 一键 ⇒ reason 数不变、
+//! 1012 → 1014 行（本条只多 1 个键行）；**新摘要照抄判据自己的报出值**
 //! （本表里那一位与 `FROZEN_REASON_SURFACE_SHA256` 在同一次提交里一起换成新值）。
 //!
 //! ⚠ `#274`：摘要随"登记位置搬进 provider"重钉（集合不变、顺序变了）；
@@ -2677,6 +2681,7 @@ pub const GOLDEN_INFO_REASON_PAYLOADS: [(&str, &[&str]); 4] = [
         "内存状态与磁盘一致; 传 force: true 可强制落盘",
         &[
             "bytes",
+            "embeddedPresets",
             "format",
             "path",
             "projectDigest",
@@ -3014,13 +3019,18 @@ fn the_reason_payload_shape_is_the_published_table() {
 /// `read_non_empty_string` 传播、2 条字面 `quantizeGridMustBeNonZero` /
 /// `duplicateClipPlacementPairRequired`）⇒ 207 → **216** 个 reason。
 /// 新摘要由本判据的 `left:` 报出值照抄（⛔ 不手算）。
+///
+/// ⭐ **夜半原生预制线**（2026-11-07）重钉：`yeban_save_project` 的收据多 `embeddedPresets`
+/// 一键 ⇒ reason 数不变（237）、1012 → **1013** 行。新摘要
+/// `fdfcf05e5d1df9e29ff0bc016d5d2c938f448a888c5e91b8d43c20c9d0eec76f`
+/// 由本判据的 `left:` 报出值照抄（⛔ 不手算）。
 pub const FROZEN_REASON_SURFACE_SHA256: &str =
-    "1ace30ddae1089f85107ff405cec63cb21f76fd8006f3a3520d75a58b6308241";
+    "06f8094c882e7d526c24eb4b1187fc002d27fa7119337c45a8bb32d10233239d";
 
 /// 规范形式里的 reason 数 / 规范行数（与摘要一起构成"两端"读数）。
 pub const REASON_SURFACE_REASONS: usize = 237;
 /// 规范行数（每个 reason 一行 ＋ 每个键一行）。
-pub const REASON_SURFACE_LINES: usize = 1013;
+pub const REASON_SURFACE_LINES: usize = 1014;
 
 /// 单文件里的 `reason` 面：**保留出现顺序**的 `(reason, keys)`。
 ///
@@ -3175,12 +3185,16 @@ fn the_reason_surface_digest_is_frozen_and_documented() {
     // `pluginEffectLoad`（`reason` / `pluginPath` / `pluginId` 3 键）⇒ reason 数 235 → 237、
     // 规范行数 1005 → 1012（2 reason 行 ＋ 5 键行）、摘要同批重钉。
     // P2：新增 `src/domain/sfz_stream.rs` ⇒ 46 → 47（同样不含 `reason` 键，摘要逐位不变）。
-    // 内嵌采样（本支）：新增 `src/domain/embed_samples.rs` ⇒ 47 → 48，带 7 处新
+    // 内嵌采样（本支）：新增 `src/domain/embed_samples.rs` ⇒ 47 → 49
+    // （本合入另有 `src/domain/preset.rs`，见下条），带 7 处新
     // `samplerUnreadable` 字面站点（`reason` 键站点 263 → 270），其中渲染腿的
     // 绑定哈希非法分支给 `samplerUnreadable` 多一个 `embeddedHash` 键 ⇒
-    // 规范行数 1012 → 1013、摘要同批重钉。
+    // 规范行数 1012 → 1014（本条只多 1 个键行）、摘要同批重钉。
+    // 夜半原生预制线：新增 `src/domain/preset.rs` ⇒ 47 → 49（与上条合计）；
+    // `yeban_save_project` 的收据多 `embeddedPresets` 一键 ⇒ 规范行数 1012 → 1014
+    // （本条只多 1 个键行）、摘要同批重钉。
     // ⇒ 本条只证明"分母变了一位"。
-    assert_eq!(files.len(), 48, "生产区 `.rs` 文件数（规范形式的分母之一）");
+    assert_eq!(files.len(), 49, "生产区 `.rs` 文件数（规范形式的分母之一）");
     let canonical = reason_surface(&files);
     let digest = yeban_model::AssetHash::of_bytes(canonical.as_bytes())
         .as_str()

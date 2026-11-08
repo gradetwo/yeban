@@ -1491,6 +1491,28 @@ fn no_tool_answers_with_a_blanket_not_implemented() {
                 "pluginPath": "stub:sine",
             }),
         ),
+        // 原生预制 4 条：清单只读（空参数合法）；应用走提案路径（发行预制 + 夹具音轨 ⇒
+        // 提案成功）；另存与旁通在这个夹具上响亮拒绝（音轨无采样器／无预制状态 ⇒ 带内
+        // `INVALID_PARAMETER_RANGE`，仍是契约形状，不是一律 -32005）。
+        ("yeban_list_presets", json!({})),
+        (
+            "yeban_apply_preset",
+            json!({
+                "trackId": track,
+                "presetId": "sys:salamander-grand:piano-warm-room",
+            }),
+        ),
+        (
+            "yeban_save_preset",
+            json!({
+                "trackId": track,
+                "name": "e2e-save-preset",
+            }),
+        ),
+        (
+            "yeban_preset_bypass",
+            json!({"trackId": track, "bypassed": true}),
+        ),
         // 伶人 SVS 两条：服务地址指到一个刚释放的环回端口 ⇒ 连接被拒，
         // 走带内 `IO_ERROR`（不是实现级出口）；这里只要求"走到领域实现 +
         // 契约形状"，真服务链路的证据在 `tests/svs_tools.rs`（桩服务）。

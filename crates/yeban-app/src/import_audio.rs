@@ -588,6 +588,7 @@ mod tests {
             project: project.clone(),
             history_dag: Vec::new(),
             assets: vec![(plan.asset.clone(), plan.bytes.clone())],
+            embedded_presets: Vec::new(),
         };
         let container = write_project_container(
             &archive.project,

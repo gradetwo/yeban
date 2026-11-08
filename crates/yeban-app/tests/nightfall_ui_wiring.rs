@@ -61,6 +61,7 @@ fn synth_track(id: EntityId, name: &str, kind: TrackKind) -> TrackV3 {
         folder_id: None,
         color: None,
         sampler: None,
+        preset: None,
         devices: Vec::new(),
         macros: Vec::new(),
         automation_lanes: BTreeMap::new(),

@@ -55,7 +55,11 @@
             "yeban_scan_plugins",
             "yeban_load_plugin",
             "synthesize_singing",
-            "svs_job"
+            "svs_job",
+            "yeban_list_presets",
+            "yeban_apply_preset",
+            "yeban_save_preset",
+            "yeban_preset_bypass"
           ]
         },
         "arguments": {
@@ -451,6 +455,82 @@
             "properties": {
               "arguments": {
                 "$ref": "#/definitions/ExtensionToolArguments/$defs/svs_job"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "name"
+            ],
+            "properties": {
+              "name": {
+                "const": "yeban_list_presets"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "arguments": {
+                "$ref": "#/definitions/ExtensionToolArguments/$defs/yeban_list_presets"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "name"
+            ],
+            "properties": {
+              "name": {
+                "const": "yeban_apply_preset"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "arguments": {
+                "$ref": "#/definitions/ExtensionToolArguments/$defs/yeban_apply_preset"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "name"
+            ],
+            "properties": {
+              "name": {
+                "const": "yeban_save_preset"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "arguments": {
+                "$ref": "#/definitions/ExtensionToolArguments/$defs/yeban_save_preset"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "name"
+            ],
+            "properties": {
+              "name": {
+                "const": "yeban_preset_bypass"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "arguments": {
+                "$ref": "#/definitions/ExtensionToolArguments/$defs/yeban_preset_bypass"
               }
             }
           }
@@ -1483,6 +1563,150 @@
           },
           "required": [
             "job_id"
+          ]
+        },
+        "yeban_list_presets": {
+          "title": "yeban_list_presets",
+          "type": "object",
+          "description": "列出可用的预制：系统预制（assets/presets/ 发行表，6 件草案）+ 用户预制库（~/Music/Audio Music Apps/Patches/，抄 Logic）。只读，不要求活跃工程；kind 缺省 all；instrument 按乐器 slug 过滤。响应 presets[] 每条给 id / name / kind（system/user）/ instrument / instrumentSfz / scope / draft / default / macros / sends；坏文件逐条进 skipped，不拦整个列表。",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "description": "system | user | all（缺省 all）；其它值报 INVALID_PARAMETER_RANGE"
+            },
+            "instrument": {
+              "type": "string",
+              "description": "乐器 slug 过滤（如 salamander-grand）；不给则不过滤"
+            },
+            "dryRun": {
+              "type": "boolean",
+              "default": false
+            },
+            "idempotencyKey": {
+              "type": "string",
+              "maxLength": 256
+            }
+          }
+        },
+        "yeban_apply_preset": {
+          "title": "yeban_apply_preset",
+          "type": "object",
+          "description": "把一份预制应用到指定音轨（提案路径）：通道条与四件落成 Preset: … 设备（确定性身份），发送只改已有边的增益（不增边、不删边、不建 Aux），宏只调已有的宏位（超出跳过并报告），乐器绑定变化时写 SetTrackSampler，最后写 track.preset（previous = 应用前快照）。categories 缺省全开（instrument/strip/effects/sends/macros），未知类名报 INVALID_PARAMETER_RANGE。跳过的发送 / 宏写进提案描述。缺省建提案；autoMerge 为真时当场落 main。预制查不到报 ENTITY_NOT_FOUND，响亮报错，不静默回干声。",
+          "properties": {
+            "trackId": {
+              "type": "string",
+              "description": "目标音轨 EntityId（26 字符 ULID）"
+            },
+            "presetId": {
+              "type": "string",
+              "description": "预制标识（sys:<乐器>:<名> 或 user:<ulid>）；查不到报 ENTITY_NOT_FOUND"
+            },
+            "categories": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "应用类别（缺省 = 全部五类）：instrument / strip / effects / sends / macros；未知类名报 INVALID_PARAMETER_RANGE"
+            },
+            "includeOps": {
+              "type": "boolean",
+              "description": "是否回传完整 op 载荷: 缺省 false = 只回结构化字段, true = 额外回传逐条 ops (审查用途) [BASELINE-006]"
+            },
+            "autoMerge": {
+              "type": "boolean",
+              "description": "[ADR-0029]: 缺省 false = 只建提案 (pendingMerge:true)。true = 同一次调用内背靠背执行既有的 yeban_merge_proposal 合并实现, 响应 = 提案回执 ⊕ 合并回执"
+            },
+            "mergeCommitMessage": {
+              "type": "string",
+              "description": "[ADR-0029]: autoMerge 合并提交的信息, 只随 autoMerge:true 生效"
+            },
+            "dryRun": {
+              "type": "boolean",
+              "default": false
+            },
+            "idempotencyKey": {
+              "type": "string",
+              "maxLength": 256
+            }
+          },
+          "required": [
+            "trackId",
+            "presetId"
+          ]
+        },
+        "yeban_save_preset": {
+          "title": "yeban_save_preset",
+          "type": "object",
+          "description": "把当前轨状态另存为一份用户预制：从轨上的 Preset: 设备收通道条与四件、从 SendToAux 边收发送、取轨宏数组，写进用户预制库（~/Music/Audio Music Apps/Patches/<ulid>.json，抄 Logic），标识 user:<ulid>。不改工程、不动提交图谱；要进工程包须保存工程（导出缺省带出用户预制）。名重复报 CONFLICT（overwrite: true 才覆盖同一标识的文件）。单份超 64 KiB 拒绝保存。轨未绑定已知乐器报 INVALID_PARAMETER_RANGE。",
+          "properties": {
+            "trackId": {
+              "type": "string",
+              "description": "来源音轨 EntityId（26 字符 ULID）"
+            },
+            "name": {
+              "type": "string",
+              "description": "预制显示名（非空，用户库内不得重名，除非 overwrite: true）",
+              "minLength": 1
+            },
+            "scope": {
+              "type": "string",
+              "description": "instrument（乐器调优，缺省）| track（整轨快照，另记 mute/solo）；其它值报 INVALID_PARAMETER_RANGE"
+            },
+            "overwrite": {
+              "type": "boolean",
+              "description": "同名已存在时是否覆盖同一标识的文件（缺省 false = 响亮拒绝，不静默覆盖）"
+            },
+            "dryRun": {
+              "type": "boolean",
+              "default": false
+            },
+            "idempotencyKey": {
+              "type": "string",
+              "maxLength": 256
+            }
+          },
+          "required": [
+            "trackId",
+            "name"
+          ]
+        },
+        "yeban_preset_bypass": {
+          "title": "yeban_preset_bypass",
+          "type": "object",
+          "description": "开关一条轨的预制旁通（提案路径）：bypassed: true = 恢复 previous 快照（通道条、四件、发送、宏），只旁通处理、不换乐器；没有快照响亮拒绝。bypassed: false = 按当前 preset_id 重新应用该预制。跳过的发送 / 宏写进提案描述。缺省建提案；autoMerge 为真时当场落 main。",
+          "properties": {
+            "trackId": {
+              "type": "string",
+              "description": "目标音轨 EntityId（26 字符 ULID）"
+            },
+            "bypassed": {
+              "type": "boolean",
+              "description": "true = 旁通（恢复应用前快照），false = 取消旁通（重新应用当前预制）"
+            },
+            "includeOps": {
+              "type": "boolean",
+              "description": "是否回传完整 op 载荷: 缺省 false = 只回结构化字段, true = 额外回传逐条 ops (审查用途) [BASELINE-006]"
+            },
+            "autoMerge": {
+              "type": "boolean",
+              "description": "[ADR-0029]: 缺省 false = 只建提案 (pendingMerge:true)。true = 同一次调用内背靠背执行既有的 yeban_merge_proposal 合并实现, 响应 = 提案回执 ⊕ 合并回执"
+            },
+            "mergeCommitMessage": {
+              "type": "string",
+              "description": "[ADR-0029]: autoMerge 合并提交的信息, 只随 autoMerge:true 生效"
+            },
+            "dryRun": {
+              "type": "boolean",
+              "default": false
+            },
+            "idempotencyKey": {
+              "type": "string",
+              "maxLength": 256
+            }
+          },
+          "required": [
+            "trackId",
+            "bypassed"
           ]
         }
       }

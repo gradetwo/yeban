@@ -85,11 +85,12 @@ pub struct EffectGroup {
     pub params: &'static [EffectParam],
 }
 
-/// 通道条：增益级与三个级开关。
+/// 通道条：增益级、三个级开关、低切（`#341`）、立体声宽度（`#343`）、
+/// mono-maker（`#344`）与 M/S 中频（`#346`）。
 const CHANNEL_STRIP: EffectGroup = EffectGroup {
     id: "channelStrip",
     title: "通道条",
-    summary: "`kind:\"InternalEffect\"` 的设备写这些名字会武装引擎内置通道条（增益级 + EQ + 低通 + 压缩）",
+    summary: "`kind:\"InternalEffect\"` 的设备写这些名字会武装引擎内置通道条（增益级 + 低切 + EQ + 低通 + 压缩 + 宽度 / mono-maker / M/S 中频）",
     params: &[
         EffectParam {
             name: "input_gain_db",
@@ -135,6 +136,51 @@ const CHANNEL_STRIP: EffectGroup = EffectGroup {
             max: 1.0,
             default: 1.0,
             doc: "动态级开关；0.0 = 关，非零 = 开",
+        },
+        EffectParam {
+            name: "hpf_hz",
+            aliases: &["high_pass_hz"],
+            unit: "Hz",
+            min: 0.0,
+            max: 1000.0,
+            default: 0.0,
+            doc: "低切转折频率（`#341`，链上第二级，在 EQ 之前；≤ 0 = 旁通，20..=1000 = 真实滤波）",
+        },
+        EffectParam {
+            name: "strip_width",
+            aliases: &["channel_width"],
+            unit: "",
+            min: 0.0,
+            max: 2.0,
+            default: 1.0,
+            doc: "立体声宽度（`#343`，M/S 缩放；1.0 = 原样，0.0 = 单声道，2.0 = 加倍）",
+        },
+        EffectParam {
+            name: "mono_below_hz",
+            aliases: &["mono_maker_hz"],
+            unit: "Hz",
+            min: 0.0,
+            max: 1000.0,
+            default: 0.0,
+            doc: "mono-maker 转折频率（`#344`；≤ 0 = 旁通，该频率以下的 side 分量整段丢掉）",
+        },
+        EffectParam {
+            name: "ms_mid_gain_db",
+            aliases: &["ms_mid_gain"],
+            unit: "dB",
+            min: -60.0,
+            max: 24.0,
+            default: 0.0,
+            doc: "M/S 中频增益（`#346`，只加在 mid 上的峰值均衡；0.0 = 旁通）",
+        },
+        EffectParam {
+            name: "ms_mid_freq_hz",
+            aliases: &["ms_mid_freq"],
+            unit: "Hz",
+            min: 100.0,
+            max: 12000.0,
+            default: 2000.0,
+            doc: "M/S 中频峰值的中心频率（`#346`）",
         },
     ],
 };
@@ -318,6 +364,60 @@ const DYNAMICS: EffectGroup = EffectGroup {
             max: 24.0,
             default: 0.0,
             doc: "补偿增益（负值合法）",
+        },
+    ],
+};
+
+/// 动态 EQ（`#342`，通道条第四级，在 EQ 之后、低通之前）。
+const DYN_EQ: EffectGroup = EffectGroup {
+    id: "dynEq",
+    title: "动态 EQ",
+    summary: "窄带动态衰减（扫描找点、压指定频段的刺 / 齿音）；`deq_cut_db = 0` = 旁通",
+    params: &[
+        EffectParam {
+            name: "deq_freq",
+            aliases: &["dyn_eq_freq"],
+            unit: "Hz",
+            min: 80.0,
+            max: 12000.0,
+            default: 300.0,
+            doc: "被处理频带的中心频率",
+        },
+        EffectParam {
+            name: "deq_threshold_db",
+            aliases: &["dyn_eq_threshold_db"],
+            unit: "dBFS",
+            min: -60.0,
+            max: 0.0,
+            default: -24.0,
+            doc: "触发阈值（带通电平）",
+        },
+        EffectParam {
+            name: "deq_cut_db",
+            aliases: &["dyn_eq_cut_db"],
+            unit: "dB",
+            min: 0.0,
+            max: 18.0,
+            default: 0.0,
+            doc: "最大衰减量（正数；0 = 旁通）",
+        },
+        EffectParam {
+            name: "deq_q",
+            aliases: &["dyn_eq_q"],
+            unit: "Q",
+            min: 0.3,
+            max: 8.0,
+            default: 0.9,
+            doc: "带通 / 峰值的 Q",
+        },
+        EffectParam {
+            name: "deq_ratio",
+            aliases: &["dyn_eq_ratio"],
+            unit: "",
+            min: 1.0,
+            max: 20.0,
+            default: 4.0,
+            doc: "压缩比（1.0 = 不压，等价旁通）",
         },
     ],
 };
@@ -656,11 +756,12 @@ const LIMITER: EffectGroup = EffectGroup {
 };
 
 /// 全部**引擎真正认**的效果器参数，按器件分组（顺序稳定，schema 与读回共用）。
-pub const EFFECT_GROUPS: [EffectGroup; 9] = [
+pub const EFFECT_GROUPS: [EffectGroup; 10] = [
     CHANNEL_STRIP,
     EQ,
     FILTER,
     DYNAMICS,
+    DYN_EQ,
     REVERB,
     CONVOLUTION,
     TAPE,

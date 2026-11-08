@@ -45,6 +45,7 @@ pub mod loop_plan;
 pub mod music;
 pub mod note_plan;
 pub mod ops;
+pub mod preset;
 pub mod project;
 pub mod sampler_path;
 pub mod samples;
@@ -71,6 +72,13 @@ pub use local_config::{
 pub use loop_plan::LoopRepeat;
 pub use music::{CurveType, MidiNote, SlideConfig};
 pub use ops::{Op, OpOrigin, StampedOp};
+pub use preset::{
+    EMBEDDED_USER_PRESET_PREFIX, FACTORY_PRESET_IDS, FACTORY_PRESETS_DIR, PRESET_FORMAT_VERSION,
+    PRESET_MAX_BYTES, Preset, PresetError, PresetScope, PresetSend, TrackPresetSnapshot,
+    TrackPresetState, default_preset_id_for_instrument, embedded_entry_name, instrument_sfz_path,
+    is_factory_preset, preset_id_from_embedded_entry, slug_for_sfz_path, strip_param_pairs,
+    user_preset_library_dir, validate_preset_id,
+};
 pub use project::{
     AssetMetadata, AutomationLane, AutomationPoint, AutomationTarget, AutomationUnit,
     AutomationValueDomain, AutomationWriteMode, BitDepth, BlockSize, ClipContent, ClipPlacement,

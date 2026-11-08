@@ -7759,6 +7759,7 @@ pub fn new_project_archive_with_clock(
         project,
         history_dag: Vec::new(),
         assets: Vec::new(),
+        embedded_presets: Vec::new(),
     }
 }
 

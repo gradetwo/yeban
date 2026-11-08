@@ -1300,6 +1300,17 @@ pub struct TrackV3 {
     /// `Copy`，并让 `yeban-mcp` 里四处**穷举** `DeviceKind` 的 match 失配）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sampler: Option<SamplerBinding>,
+    /// 预制状态（这条轨当前用的预制、旁通与默认加载开关，设计稿 §2.6）。
+    ///
+    /// `None` 是一等状态（“这条轨不用预制”），保留 `#[serde(default)]`
+    /// [ADR-0001 D43 对 `Option<T>` 的豁免]，并与 `skip_serializing_if` 对偶
+    /// ⇒ **默认（无预制）的工程逐字节不变**：本字段为 `None` 时**不落盘**
+    /// （与 `sampler` 字段同一口径）。`Box` 是刻意的：`TrackV3` 住在
+    /// `NoteOp::AddTrack` 里，状态内联会把枚举最大变体撑过 clippy 的
+    /// `large_enum_variant` 线（`TrackPresetState` 含快照的两个 `Map` 与两个
+    /// `Vec`，约 128 字节）；`None` 占 8 字节。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preset: Option<Box<crate::preset::TrackPresetState>>,
     /// 设备链（有序）。
     ///
     /// **必需** [ADR-0001 D43]：设备链是音轨内容的一部分，缺键等于静默清空整条链。
@@ -1337,6 +1348,7 @@ impl Default for TrackV3 {
             folder_id: None,
             color: None,
             sampler: None,
+            preset: None,
             devices: Vec::new(),
             macros: Vec::new(),
             automation_lanes: BTreeMap::new(),
@@ -1373,6 +1385,15 @@ impl TrackV3 {
         }
         for device in &self.devices {
             device.validate()?;
+        }
+        if let Some(preset) = &self.preset
+            && let Some(previous) = &preset.previous
+        {
+            // 标识合法性由 `Preset::parse` 与 MCP 层的预制解析把关（模型错误枚举
+            // 没有通用“字段非法”变体，不在这里新增变体）；轨校验只验快照里的宏。
+            for macro_parameter in &previous.macros {
+                macro_parameter.validate()?;
+            }
         }
         for macro_parameter in &self.macros {
             macro_parameter.validate()?;
@@ -3677,6 +3698,7 @@ mod tests {
         "src/ops.rs::Op::SetTempo.new_bpm",
         "src/ops.rs::Op::SetTempoPoint.new_bpm",
         "src/ops.rs::Op::SetTempoPoint.old_bpm",
+        "src/preset.rs::PresetSend::gain_db",
         "src/project.rs::ParameterValue::value",
         "src/project.rs::MacroMapping::depth",
         "src/project.rs::MacroParameter::value",
@@ -3779,6 +3801,11 @@ mod tests {
             "src/ops.rs::Op::SetTempoPoint.old_bpm",
             "旧值只做逐位比较：NaN ⇒ OpStateMismatch",
             probe_set_tempo_point_old,
+        ),
+        (
+            "src/preset.rs::PresetSend::gain_db",
+            "非有限拒绝（Preset::validate 的 sends 校验）；有限极值接受（dB 无模型级范围）；None=单位增益",
+            probe_preset_send_gain,
         ),
         (
             "src/project.rs::ParameterValue::value",
@@ -4598,6 +4625,28 @@ mod tests {
         Ok(())
     }
 
+    fn probe_preset_send_gain() -> Result<(), String> {
+        use crate::preset::PresetSend;
+        let mut preset = minimal_preset();
+        preset.sends = vec![PresetSend {
+            aux: "Room".to_owned(),
+            gain_db: Some(f32::NAN),
+            effect: None,
+        }];
+        if preset.validate().is_ok() {
+            return Err("发送增益 NaN 必须被 Preset::validate 拒绝".to_owned());
+        }
+        preset.sends[0].gain_db = Some(-14.0);
+        preset
+            .validate()
+            .map_err(|error| format!("有限发送增益必须被接受，实际 {error}"))?;
+        preset.sends[0].gain_db = None;
+        preset
+            .validate()
+            .map_err(|error| format!("缺省发送增益（None=单位增益）必须被接受，实际 {error}"))?;
+        Ok(())
+    }
+
     fn probe_routing_edge_gain() -> Result<(), String> {
         let edge = |gain_db| RoutingEdge {
             id: fixture_id(3),
@@ -4656,6 +4705,31 @@ mod tests {
         master: EntityId,
         edge: EntityId,
         point: EntityId,
+    }
+
+    fn minimal_preset() -> crate::preset::Preset {
+        crate::preset::Preset {
+            format: crate::preset::PRESET_FORMAT_VERSION,
+            id: "sys:salamander-grand:piano-warm-room".to_owned(),
+            name: "Piano Warm Room".to_owned(),
+            instrument: "salamander-grand".to_owned(),
+            instrument_sfz: crate::preset::instrument_sfz_path("salamander-grand")
+                .expect("工厂乐器有 SFZ 路径")
+                .to_owned(),
+            scope: crate::preset::PresetScope::Instrument,
+            author: String::new(),
+            version: "1.0.0".to_owned(),
+            draft: true,
+            strip: serde_json::json!({"input_gain_db": 0.0}),
+            saturation: None,
+            reverb: None,
+            convolution: None,
+            delay: None,
+            sends: Vec::new(),
+            aux: None,
+            mix: None,
+            macros: Vec::new(),
+        }
     }
 
     fn numeric_fixture() -> (YebanProjectV1, NumericFixture) {

@@ -14,7 +14,7 @@
 //! | [`the_empty_state_is_an_empty_array_plus_one_sentence`] | 空态响应 | 1 个空数组 + 1 句逐字 `note` |
 //! | [`ten_broadcast_tools_publish_an_output_schema_their_real_responses_satisfy`] | [`COVERED_TOOLS`](yeban_mcp::output_schema::COVERED_TOOLS) 那十个工具的真实 `data` | **10 份 schema**，每份都被自己的响应反校 |
 //! | [`the_validator_can_go_red_and_the_schema_is_not_idealised`] | 校验器 | 5 种注入（少 required / 错类型 / 声明字段缺席 / 违 `const` / 违 `enum`）各 1 条 |
-//! | [`the_58_published_spellings_are_still_all_there`] | `insertDevice.device.params.items` | **拼写个数**（81） |
+//! | [`the_58_published_spellings_are_still_all_there`] | `insertDevice.device.params.items` | **拼写个数**（109） |
 //!
 //! 复跑读数：`cargo test -p yeban-mcp --test props_176 -- --nocapture`
 
@@ -187,8 +187,8 @@ fn list_proposals_is_discoverable_and_the_counts_move_with_it() {
     );
     assert_eq!(
         tools::TOOL_COUNT,
-        30,
-        "10 个规范工具 + 20 个扩展 = 30（#176 新增 1 条、#290 新增场景启动 1 条、#345 新增 MIDI 导入 1 条、`ADR-0030` 新增分轨导出 1 条、审计 `N13` 新增会话乐器清单 1 条、插件宿主一期新增 `yeban_scan_plugins` 与 `yeban_load_plugin` 2 条、SVS 新增 `synthesize_singing` 与 `svs_job` 2 条）"
+        34,
+        "10 个规范工具 + 24 个扩展 = 34（#176 新增 1 条、#290 新增场景启动 1 条、#345 新增 MIDI 导入 1 条、`ADR-0030` 新增分轨导出 1 条、审计 `N13` 新增会话乐器清单 1 条、插件宿主一期新增 `yeban_scan_plugins` 与 `yeban_load_plugin` 2 条、SVS 新增 `synthesize_singing` 与 `svs_job` 2 条、夜半原生预制新增 `yeban_list_presets` / `yeban_apply_preset` / `yeban_save_preset` / `yeban_preset_bypass` 4 条）"
     );
     assert_eq!(
         registry["count"],
@@ -201,11 +201,11 @@ fn list_proposals_is_discoverable_and_the_counts_move_with_it() {
     );
     assert_eq!(
         tools::EXTENSION_NAMES.last().copied(),
-        Some("svs_job"),
+        Some("yeban_preset_bypass"),
         "扩展清单顺序 = 注册顺序（新工具追加在末尾）"
     );
 
-    // 契约 enum 也是 30 个名字，且与注册表逐字相同（顺序一致）。
+    // 契约 enum 也是 34 个名字，且与注册表逐字相同（顺序一致）。
     let contract: Value = serde_json::from_str(
         &std::fs::read_to_string(
             PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -227,7 +227,7 @@ fn list_proposals_is_discoverable_and_the_counts_move_with_it() {
         "### 契约 enum 尾部\n{:?}",
         &enum_names[enum_names.len().saturating_sub(3)..]
     );
-    assert_eq!(enum_names.len(), 30, "契约 enum 的工具个数");
+    assert_eq!(enum_names.len(), 34, "契约 enum 的工具个数");
     assert_eq!(enum_names, tools::tool_names(), "enum 顺序 = 注册表顺序");
 }
 
@@ -990,19 +990,22 @@ fn the_validator_can_go_red_and_the_schema_is_not_idealised() {
 /// ⭐ **`P6` 插入式限制器**新增第九组 `limiter`，5 条规范拼写、**0 别名**
 /// （`limiter_threshold_db` / `limiter_ceiling_db` / `limiter_release_ms` /
 /// `limiter_lookahead` / `limiter_true_peak`）⇒ **52 规范 + 37 别名 = 89**。
+/// ⭐ **夜半原生预制线**：通道条 `#341/#342/#343/#344/#346` 十条（低切 `hpf_hz` /
+/// 宽度 `strip_width` / mono-maker `mono_below_hz` / M/S 中频 `ms_mid_*` /
+/// 动态 EQ `deq_*`，各 1 别名）⇒ **＋10 规范、＋10 别名 = 109**（62 + 47）。
 /// ⛔ 故意不给裸 `threshold_db` 之类别名：它已经被压缩器占着，同名会让"写进设备的是
 /// 谁的阈值"变成猜的。
 #[test]
 fn the_58_published_spellings_are_still_all_there() {
     use yeban_mcp::{effect_params, op_schema};
     let names = effect_params::recognised_names();
-    assert_eq!(names.len(), 89, "52 规范 + 37 别名");
+    assert_eq!(names.len(), 109, "62 规范 + 47 别名");
     assert_eq!(
         effect_params::EFFECT_GROUPS
             .iter()
             .map(|group| group.params.len())
             .sum::<usize>(),
-        52
+        62
     );
     let items = op_schema::ops_items();
     let insert = items["oneOf"]
@@ -1014,7 +1017,7 @@ fn the_58_published_spellings_are_still_all_there() {
     let branches = insert["properties"]["device"]["properties"]["params"]["items"]["oneOf"]
         .as_array()
         .expect("device.params.items.oneOf");
-    assert_eq!(branches.len(), 52);
+    assert_eq!(branches.len(), 62);
     let published: usize = branches
         .iter()
         .map(|branch| {
@@ -1024,7 +1027,7 @@ fn the_58_published_spellings_are_still_all_there() {
                 .len()
         })
         .sum();
-    assert_eq!(published, 89, "公告面的拼写个数");
+    assert_eq!(published, 109, "公告面的拼写个数");
     assert!(effect_params::recognise("eq_low_gain").is_some());
     assert!(effect_params::recognise("eq_low_gian").is_none());
     assert_eq!(

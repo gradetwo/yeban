@@ -190,7 +190,9 @@ fn project_container_round_trips() {
         project: read_project,
         history_dag,
         assets: read_assets,
+        embedded_presets: read_presets,
     } = read_project_container(&bytes, &ContainerLimits::default()).expect("读回必须成功");
+    assert!(read_presets.is_empty(), "无内嵌预制的容器读回必须为空");
 
     assert_eq!(read_project, project);
     assert_eq!(history_dag, history);

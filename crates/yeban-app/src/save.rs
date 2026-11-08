@@ -265,7 +265,21 @@ pub fn save_archive_file(
     for (hash, data) in &archive.assets {
         assets.insert(hash.clone(), data.clone());
     }
-    let bytes = write_project_container(&archive.project, &archive.history_dag, &assets)?;
+    let borrowed_assets: Vec<(&AssetHash, &[u8])> = assets
+        .iter()
+        .map(|(hash, data)| (hash, data.as_slice()))
+        .collect();
+    let borrowed_presets: Vec<(&str, &[u8])> = archive
+        .embedded_presets
+        .iter()
+        .map(|(name, data)| (name.as_str(), data.as_slice()))
+        .collect();
+    let bytes = yeban_model::container::write_project_container_with_presets_borrowed(
+        &archive.project,
+        &archive.history_dag,
+        &borrowed_assets,
+        &borrowed_presets,
+    )?;
     // 与 [`save_project_file`] 同一条门：`--save-as` 因此与 `ui/force_save`、与
     // 控制面的 `yeban_save_project` 争**同一把** `.yeban.lock`。
     let _lock = acquire_write_lock(path)?;
@@ -563,6 +577,7 @@ mod tests {
             project: project.clone(),
             history_dag: b"commit-graph-bytes".to_vec(),
             assets: vec![(AssetHash::of_bytes(&asset), asset.clone())],
+            embedded_presets: Vec::new(),
         };
 
         let dir = scratch_dir("archive");

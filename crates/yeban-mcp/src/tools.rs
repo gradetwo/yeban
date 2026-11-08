@@ -104,8 +104,8 @@ pub const INCLUDE_OPS_PARAM: &str = "includeOps";
 /// 调用方的记忆里搬进生产代码）。
 pub const COMMIT_MODEL_KEY: &str = "commitModel";
 
-/// 工具集规模（规范表格的 10 个 + `ADR-0001` D45/D46 的扩展 + 插件扫描／装载 2 条 + 伶人 SVS 2 条）。
-pub const TOOL_COUNT: usize = 30;
+/// 工具集规模（规范表格的 10 个 + `ADR-0001` D45/D46 的扩展 + 插件扫描／装载 2 条 + 伶人 SVS 2 条 + 原生预制 4 条）。
+pub const TOOL_COUNT: usize = 34;
 
 /// **规范表格**里的工具数（`MCP-TOOL-001..010`）。
 pub const DOCUMENTED_TOOL_COUNT: usize = 10;
@@ -119,7 +119,9 @@ pub const DOCUMENTED_TOOL_COUNT: usize = 10;
 /// + **插件扫描 1 条**（`ADR-0069`，VST3 发现与验证的只读枚举）
 /// + **插件装载 1 条**（`ADR-0069`，验证加载后经提案路径挂外部乐器设备）。
 /// + **伶人 SVS 2 条**（`synthesize_singing` 提交 + `svs_job` 查询/取回，Phase 2）。
-pub const EXTENSION_TOOL_COUNT: usize = 20;
+/// + **原生预制 4 条**（`yeban_list_presets` / `yeban_apply_preset` /
+///   `yeban_save_preset` / `yeban_preset_bypass`，夜半原生预制机制一期，MCP-only）。
+pub const EXTENSION_TOOL_COUNT: usize = 24;
 
 /// 扩展工具的规范 ID 前缀。
 ///
@@ -153,6 +155,10 @@ pub const EXTENSION_NAMES: [&str; EXTENSION_TOOL_COUNT] = [
     "yeban_load_plugin",
     "synthesize_singing",
     "svs_job",
+    "yeban_list_presets",
+    "yeban_apply_preset",
+    "yeban_save_preset",
+    "yeban_preset_bypass",
 ];
 
 /// 规范 ID 前缀。
@@ -648,7 +654,7 @@ pub fn string_items() -> Value {
     serde_json::json!({ "type": "string" })
 }
 
-/// 二十八个工具，**规范顺序**（`MCP-TOOL-001..010` 在前，D45/D46 及后续的扩展在后）。
+/// 三十四个工具，**规范顺序**（`MCP-TOOL-001..010` 在前，D45/D46 及后续的扩展在后）。
 pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
     ToolSpec {
         spec_id: "MCP-TOOL-001",
@@ -723,7 +729,15 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
         summary: "将内存权威状态与 CAS 资产原子刷盘",
         scope: Scope::AppSave,
         side_effect: SideEffect::Disk,
-        params: &[param("force", "boolean", false, "忽略未保存标记强制落盘")],
+        params: &[
+            param("force", "boolean", false, "忽略未保存标记强制落盘"),
+            param(
+                "includeUserPresets",
+                "boolean",
+                false,
+                "导出时是否带出用户预制（设计稿 §5；缺省 true = 物化进包，条目名 `presets/user/<id>.json`，一律 stored；false = 不内嵌，接收方打开缺用户预制会响亮报错）。收据 `embeddedPresets` 如实报内嵌预制数、字节数与本取值",
+            ),
+        ],
         errors: &[ErrorCode::IoError, ErrorCode::DiskFull],
     },
     ToolSpec {
@@ -1924,9 +1938,154 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
             ErrorCode::Conflict,
         ],
     },
+    ToolSpec {
+        spec_id: "MCP-TOOL-EXT-LIST-PRESETS",
+        name: "yeban_list_presets",
+        summary: "列出可用的预制（夜半原生预制机制一期）：系统预制（`assets/presets/` 发行表，6 件草案）+ 用户预制库（`~/Music/Audio Music Apps/Patches/`，抄 Logic）。只读，不要求活跃工程；`kind` 缺省 `all`；`instrument` 按乐器 slug 过滤。响应 `presets[]` 每条给 `id` / `name` / `kind`（system/user）/ `instrument` / `instrumentSfz` / `scope` / `draft` / `default`（该乐器的默认预制）/ `macros`（宏名）/ `sends`；坏文件逐条进 `skipped`，不拦整个列表。",
+        scope: Scope::AppAdmin,
+        side_effect: SideEffect::ReadOnly,
+        params: &[
+            param(
+                "kind",
+                "string",
+                false,
+                "`system` | `user` | `all`（缺省 `all`）；其它值 ⇒ `INVALID_PARAMETER_RANGE`",
+            ),
+            param(
+                "instrument",
+                "string",
+                false,
+                "乐器 slug 过滤（如 `salamander-grand`）；不给则不过滤",
+            ),
+        ],
+        errors: &[ErrorCode::InvalidParameterRange],
+    },
+    ToolSpec {
+        spec_id: "MCP-TOOL-EXT-APPLY-PRESET",
+        name: "yeban_apply_preset",
+        summary: "把一份预制应用到指定音轨（夜半原生预制机制一期，提案路径）：通道条与四件落成 `Preset: …` 设备（确定性身份），发送只改已有边的增益（不增边、不删边、不建 Aux），宏只调已有的宏位（超出跳过并报告），乐器绑定变化时写 `SetTrackSampler`，最后写 `track.preset`（`previous` = 应用前快照）。`categories` 缺省全开（instrument/strip/effects/sends/macros），未知类名 ⇒ `INVALID_PARAMETER_RANGE`。跳过的发送 / 宏写进提案描述。缺省建提案；`autoMerge` 为真时当场落 main，与 `yeban_edit_notes` 同一条提案纪律。预制查不到 ⇒ `ENTITY_NOT_FOUND`，响亮报错，不静默回干声。",
+        scope: Scope::AppAdmin,
+        side_effect: SideEffect::ProjectState,
+        params: &[
+            param("trackId", "string", true, "目标音轨 EntityId（26 字符 ULID）"),
+            param(
+                "presetId",
+                "string",
+                true,
+                "预制标识（`sys:<乐器>:<名>` 或 `user:<ulid>`）；查不到 ⇒ `ENTITY_NOT_FOUND`",
+            ),
+            array_param(
+                "categories",
+                false,
+                "应用类别（缺省 = 全部五类）：`instrument` / `strip` / `effects` / `sends` / `macros`；未知类名 ⇒ `INVALID_PARAMETER_RANGE`",
+                crate::tools::string_items,
+            ),
+            param(
+                INCLUDE_OPS_PARAM,
+                "boolean",
+                false,
+                "是否回传完整 op 载荷: 缺省 false = 只回结构化字段 (willCreate + opCount/opKinds), true = 额外回传逐条 ops (审查用途) [BASELINE-006]",
+            ),
+            param(
+                "autoMerge",
+                "boolean",
+                false,
+                "[ADR-0029]: 缺省 false = 逐字节不变 (只建提案, `pendingMerge:true`)。true = 同一次调用内**背靠背执行既有的** `yeban_merge_proposal` 合并实现 (同一把锁、同一预演、同一多父合并提交), 响应 = 提案回执 ⊕ 合并回执 (`autoMerged:true` / `pendingMerge:false` / `projectUnchanged:false` / `mergeTool:\\\"applied-in-process:autoMerge\\\"` / `merge:{...}`, `proposal` 投影随合并后状态)。第二步失败 ⇒ 提案**保持 Open**, 错误 `data` 带 `proposalCreated:true` + `proposalId` + `proposalRemainsOpen:true` (⛔ 不假装回滚)",
+            ),
+            param(
+                "mergeCommitMessage",
+                "string",
+                false,
+                "[ADR-0029]: `autoMerge` 合并提交的信息, 只随 `autoMerge:true` 生效; 缺省同手动合并的既有缺省 `\\\"merge proposal {id}\\\"`",
+            ),
+        ],
+        errors: &[
+            ErrorCode::TrackNotFound,
+            ErrorCode::EntityNotFound,
+            ErrorCode::InvalidParameterRange,
+            ErrorCode::NoActiveProject,
+            ErrorCode::Conflict,
+        ],
+    },
+    ToolSpec {
+        spec_id: "MCP-TOOL-EXT-SAVE-PRESET",
+        name: "yeban_save_preset",
+        summary: "把当前轨状态另存为一份用户预制（夜半原生预制机制一期）：从轨上的 `Preset:` 设备收通道条与四件、从 `SendToAux` 边收发送、取轨宏数组，写进用户预制库（`~/Music/Audio Music Apps/Patches/<ulid>.json`，抄 Logic），标识 `user:<ulid>`。不改工程、不动提交图谱；要进工程包须保存工程（导出缺省带出用户预制）。名重复 ⇒ `CONFLICT`（`overwrite: true` 才覆盖同一标识的文件）。单份超 64 KiB ⇒ 拒绝保存。轨未绑定已知乐器 ⇒ `INVALID_PARAMETER_RANGE`。",
+        scope: Scope::AppAdmin,
+        side_effect: SideEffect::Disk,
+        params: &[
+            param("trackId", "string", true, "来源音轨 EntityId（26 字符 ULID）"),
+            // ⭐ D46 收口（实现侧）：与 `yeban_import_audio` 的 `name` 同一条纪律 ——
+            // 契约 `minLength: 1`，空名字必须在参数层被拒（`build_save_preset` 在
+            // plan 层同样拒空名；两道口径一致）。
+            bounded_param(
+                "name",
+                "string",
+                true,
+                "预制显示名（非空，用户库内不得重名，除非 `overwrite: true`）",
+                Some(1),
+                None,
+            ),
+            param(
+                "scope",
+                "string",
+                false,
+                "`instrument`（乐器调优，缺省）| `track`（整轨快照，另记 mute/solo）；其它值 ⇒ `INVALID_PARAMETER_RANGE`",
+            ),
+            param(
+                "overwrite",
+                "boolean",
+                false,
+                "同名已存在时是否覆盖同一标识的文件（缺省 false = 响亮拒绝，不静默覆盖）",
+            ),
+        ],
+        errors: &[
+            ErrorCode::TrackNotFound,
+            ErrorCode::Conflict,
+            ErrorCode::InvalidParameterRange,
+            ErrorCode::NoActiveProject,
+            ErrorCode::IoError,
+        ],
+    },
+    ToolSpec {
+        spec_id: "MCP-TOOL-EXT-PRESET-BYPASS",
+        name: "yeban_preset_bypass",
+        summary: "开关一条轨的预制旁通（夜半原生预制机制一期，提案路径）：`bypassed: true` = 恢复 `previous` 快照（通道条、四件、发送、宏），只旁通处理、不换乐器；没有快照 ⇒ 响亮拒绝。`bypassed: false` = 按当前 `preset_id` 重新应用该预制。跳过的发送 / 宏写进提案描述。缺省建提案；`autoMerge` 为真时当场落 main，与 `yeban_edit_notes` 同一条提案纪律。",
+        scope: Scope::AppAdmin,
+        side_effect: SideEffect::ProjectState,
+        params: &[
+            param("trackId", "string", true, "目标音轨 EntityId（26 字符 ULID）"),
+            param("bypassed", "boolean", true, "true = 旁通（恢复应用前快照），false = 取消旁通（重新应用当前预制）"),
+            param(
+                INCLUDE_OPS_PARAM,
+                "boolean",
+                false,
+                "是否回传完整 op 载荷: 缺省 false = 只回结构化字段 (willCreate + opCount/opKinds), true = 额外回传逐条 ops (审查用途) [BASELINE-006]",
+            ),
+            param(
+                "autoMerge",
+                "boolean",
+                false,
+                "[ADR-0029]: 缺省 false = 逐字节不变 (只建提案, `pendingMerge:true`)。true = 同一次调用内**背靠背执行既有的** `yeban_merge_proposal` 合并实现 (同一把锁、同一预演、同一多父合并提交), 响应 = 提案回执 ⊕ 合并回执 (`autoMerged:true` / `pendingMerge:false` / `projectUnchanged:false` / `mergeTool:\\\"applied-in-process:autoMerge\\\"` / `merge:{...}`, `proposal` 投影随合并后状态)。第二步失败 ⇒ 提案**保持 Open**, 错误 `data` 带 `proposalCreated:true` + `proposalId` + `proposalRemainsOpen:true` (⛔ 不假装回滚)",
+            ),
+            param(
+                "mergeCommitMessage",
+                "string",
+                false,
+                "[ADR-0029]: `autoMerge` 合并提交的信息, 只随 `autoMerge:true` 生效; 缺省同手动合并的既有缺省 `\\\"merge proposal {id}\\\"`",
+            ),
+        ],
+        errors: &[
+            ErrorCode::TrackNotFound,
+            ErrorCode::EntityNotFound,
+            ErrorCode::InvalidParameterRange,
+            ErrorCode::NoActiveProject,
+            ErrorCode::Conflict,
+        ],
+    },
 ];
 
-/// 按名查找工具（`const` 数组上的线性查找；30 个元素，无需哈希表）。
+/// 按名查找工具（`const` 数组上的线性查找；34 个元素，无需哈希表）。
 #[must_use]
 pub fn tool(name: &str) -> Option<&'static ToolSpec> {
     TOOLS.iter().find(|spec| spec.name == name)
@@ -2683,7 +2842,9 @@ mod tests {
                 // 审计 `N13`：会话 SFZ registry 枚举 —— 只读 `domain.sfz_instruments`。
                 "yeban_list_instruments",
                 // 插件扫描：只枚举路径并逐个实例化探针，不改工程、不落盘 ⇒ 读-only。
-                "yeban_scan_plugins"
+                "yeban_scan_plugins",
+                // 原生预制清单：只读发行表 + 用户库，不改工程、不落盘 ⇒ 读-only。
+                "yeban_list_presets"
             ],
             "只读工具必须显式分类为 read-only"
         );
