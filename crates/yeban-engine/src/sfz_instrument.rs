@@ -1904,6 +1904,39 @@ impl InMemorySample {
     }
 }
 
+/// ⭐ **离线渲染的一组入参**（本片新增，任务 `#310`）。
+///
+/// 存在的理由是 `clippy::too_many_arguments`：离线渲染现在要同时表达"样本从哪来"
+/// （单份 `source` / region 级样本表）、"有没有 note-off"（`held_frames`）、
+/// "轮替发第几个变体"（`occurrence`）三件事，摊平成参数会到 9 个。
+///
+/// # 三组取值的**兼容性契约**（判据在 `tests/sfz_offline_note_off.rs`）
+///
+/// | 字段 | `None` / 旧值 | `Some` / 新值 |
+/// | :--- | :--- | :--- |
+/// | [`Self::source`] ＋ [`Self::samples`] | `samples = None` ⇒ **每个匹配区域都用同一份** `source`（＝ 接线前的行为） | `samples = Some(表)` ⇒ 每个区域按 `region.sample_path()` 取**自己**的样本 |
+/// | [`Self::held_frames`] | `None` ⇒ `EnvRun::frame = u64::MAX`（**永不进释放段**，＝ 接线前的行为） | `Some(n)` ⇒ 引擎绝对帧 `n` 处 **note-off**，`ampeg_release` 真正生效 |
+/// | [`Self::occurrence`] | `None` ⇒ 不启用轮替互斥（所有 `seq_*` 变体照旧叠加，＝ 接线前的行为） | `Some(k)` ⇒ 只发 `seq_position == k % seq_length + 1` 那一条（与 [`SfzVoicePool::trigger_note`] 同口径） |
+///
+/// ⚠ **三项全 `None` ＋ `source = Some`** ⇒ 与接线前**逐位相同**（这是旧入口
+/// [`SfzInstrument::render_note_into`] 走的组合）。
+struct NoteInputs<'a> {
+    /// 单份样本（旧语义：所有匹配区域共用）。
+    source: Option<&'a InMemorySample>,
+    /// region 级样本表（键 ＝ `region.sample_path()` 原样字符串）。
+    samples: Option<&'a BTreeMap<String, InMemorySample>>,
+    /// 音高。
+    note: u8,
+    /// 力度。
+    velocity: u8,
+    /// CC 探针（`None` ⇒ 走严格策略与基准值）。
+    cc: Option<&'a dyn Fn(u8) -> u8>,
+    /// note-off 帧（引擎绝对帧，`out[0]` 记作第 0 帧）；`None` ⇒ 无 note-off。
+    held_frames: Option<u64>,
+    /// 轮替序号（第几次触发同一音高）；`None` ⇒ 不启用互斥。
+    occurrence: Option<u32>,
+}
+
 impl SfzInstrument {
     /// **离线**渲染一个音符到 `out`（`+=` 叠加），返回写入的帧数。
     ///
@@ -1916,6 +1949,13 @@ impl SfzInstrument {
     /// 独立声部），⛔ 不是「只取 `find` 的第一条」。返回值 = 各匹配区域写入帧数的**最大值**
     /// （⛔ 不是各区域之和；所有区域共享同一份 `source.pcm`，故它即最长那条的帧数）。
     /// [`PreparedSfz::render_block_into`] 用同一口径。
+    ///
+    /// ⚠ ⚠ **追加修订段（任务 `#310`）—— 被修订的是上面"所有区域共享同一份 `source.pcm`"
+    /// 那一句**（⛔ 原文一字未删，口径同台账第 278 条：保留原文 ＋ 追加修订段 ＋ 点名被修订的支）：
+    /// 本函数（旧入口）**仍然**共用一份 `source`；要"每个区域各用自己的 `sample=`"请用
+    /// [`Self::render_note_into_from_samples`]。**共用**在一份 SFZ 有 round-robin
+    /// （`seq_length > 1`）或力度分层时是**错的**：N 个变体会用**同一份 PCM** 同相叠加
+    /// ⇒ 电平 +6 dB × log2(N)、轮替消失。那正是 `#310` 修掉的第二、三条缺口。
     ///
     /// ⭐ **`offset`/`end` 已应用**（步 3）：源位置从 `span.start` 起、在
     /// `min(span.end, PCM 长度)` 停 —— 与摊平表/实时声部共用 [`reduce_span`] 的**一份**归约。
@@ -1969,8 +2009,95 @@ impl SfzInstrument {
         out: &mut [f32],
         engine_hz: f32,
     ) -> Result<usize, SfzError> {
-        let pcm_len = source.pcm.len();
-        let rates = RenderRates::new(source.sample_hz, engine_hz);
+        self.render_note_with(
+            NoteInputs {
+                source: Some(source),
+                samples: None,
+                note,
+                velocity,
+                cc,
+                held_frames: None,
+                occurrence: None,
+            },
+            out,
+            engine_hz,
+        )
+    }
+
+    /// ⭐⭐ **离线渲染 ＋ region 级样本表 ＋ note-off ＋ 轮替**（任务 `#310`）。
+    ///
+    /// 这是把离线导出拉回**与实时声部同口径**的入口：[`SfzVoicePool`] 早就有
+    /// note-off（`ampeg_release` 生效）与 `seq_*` 互斥，而离线两条路
+    /// （本函数所在的路与 [`PreparedSfz::render_block_into`]）都没有
+    /// ⇒ 同一份工程"试听"与"导出"会产出**不同**的声音。
+    ///
+    /// # 参数
+    ///
+    /// * `samples` —— 键是 SFZ 里 `sample=` 的**原样字符串**（`region.sample_path()`）。
+    ///   ⚠ 表里**没有**的区域 ⇒ 该区域**不写任何帧**（⛔ 不静默回退到正弦、⛔ 不借用别的样本）；
+    ///   返回帧数因此可能小到 0。这是有意的：错样本比静音更难查。
+    /// * `held_frames` —— note-off 所在的**引擎绝对帧**（`out[0]` 是第 0 帧）。
+    ///   `None` ⇒ 永不进释放段（＝ 接线前的 `u64::MAX`）。
+    ///   `Some(n)` ⇒ 第 `n` 帧起进释放段，`ampeg_release` 决定释放长度；
+    ///   释放走完（`EnvRun::advance` 返回 `None`）或样本到尾，两者谁先到就停在哪。
+    /// * `occurrence` —— 该音高上的**第几次**触发（`0` 起）。`None` ⇒ 不启用轮替互斥。
+    ///
+    /// # 释放段的长度谁来保证
+    ///
+    /// **调用方**：`out.len()` 必须 ≥ `held_frames + release 帧数`，否则释放段会被
+    /// `out` 截断（不会越界，只是尾巴没了）。本函数**不**替调用方估算释放帧数 ——
+    /// `ampeg_release` 可被 `ampeg_releaseccN` / `ampeg_release_onccN` 调制，
+    /// 只有调用方知道给了哪一组 CC 探针。
+    ///
+    /// # Errors
+    /// 同 [`Self::render_note_into`]。没有匹配区域 ⇒ `Ok(0)`。
+    // ⚠ `clippy::too_many_arguments`：这 7 个是**互不相关的输入维度**（样本表 / 音高 /
+    //    力度 / note-off 帧 / 轮替序号 / 输出缓冲 / 采样率），合并成结构体只会让 90% 的
+    //    调用点写一行 `NoteOverrides::none()` 样板。⚠ 内层 [`Self::render_note_with`] 收的
+    //    就是结构体（[`NoteInputs`]）—— 本函数是**公开便利入口**，不是实现体。
+    //    先例：`yeban_app::automation` / `audio_clip` 的同名 allow。
+    #[allow(clippy::too_many_arguments)]
+    pub fn render_note_into_from_samples(
+        &self,
+        samples: &BTreeMap<String, InMemorySample>,
+        note: u8,
+        velocity: u8,
+        held_frames: Option<u64>,
+        occurrence: Option<u32>,
+        out: &mut [f32],
+        engine_hz: f32,
+    ) -> Result<usize, SfzError> {
+        self.render_note_with(
+            NoteInputs {
+                source: None,
+                samples: Some(samples),
+                note,
+                velocity,
+                cc: None,
+                held_frames,
+                occurrence,
+            },
+            out,
+            engine_hz,
+        )
+    }
+
+    /// 三条离线入口的**唯一实现**（⛔ 不许第二份：本仓"同一口径只有一个实现"的纪律）。
+    fn render_note_with(
+        &self,
+        inp: NoteInputs<'_>,
+        out: &mut [f32],
+        engine_hz: f32,
+    ) -> Result<usize, SfzError> {
+        let NoteInputs {
+            source: fixed_source,
+            samples,
+            note,
+            velocity,
+            cc,
+            held_frames,
+            occurrence,
+        } = inp;
         let query = RegionQuery::new(note, velocity);
         // ⭐ 探针同时注入**既有**的 CC 门控（`loccN`/`hiccN`）；`None` ⇒ 严格策略不变。
         let query = match cc {
@@ -1983,6 +2110,36 @@ impl SfzInstrument {
                 if !region.matches_query(&query) {
                     continue;
                 }
+                // ⭐ **轮替互斥**（任务 `#310`）：与 [`SfzVoicePool::trigger_note`] 的
+                //    [`PreparedRegion::selects_occurrence`] **同一条判据**
+                //    （`seq_position == occurrence % seq_length + 1`）。
+                //    `seq_length <= 1` 的区域**不参与**互斥（语料绝大多数没有 `seq_*`
+                //    ⇒ 它们照旧叠加，后向兼容的全部）。
+                //    ⚠ `occurrence = None` ⇒ 整段跳过 ⇒ 接线前的"全部叠加"逐位不变。
+                if let Some(occurrence) = occurrence
+                    && region.seq_length > 1
+                    && region.seq_position != occurrence % region.seq_length + 1
+                {
+                    continue;
+                }
+                // ⭐ **region 级样本**（任务 `#310`）：`samples = Some(表)` ⇒ 每个区域
+                //    按自己的 `sample=` 取样本。表里没有 ⇒ **该区域静默地不发声**
+                //    （`continue`），⛔ 不借用别的样本、⛔ 不回退正弦 —— 错样本比静音难查。
+                //    `samples = None` ⇒ 退回"所有区域共用 `fixed_source`"（接线前的行为）。
+                let source: &InMemorySample = match (samples, fixed_source) {
+                    (Some(table), _) => {
+                        let path = region.sample_path();
+                        let path: &str = path.as_ref();
+                        match table.get(path) {
+                            Some(sample) => sample,
+                            None => continue,
+                        }
+                    }
+                    (None, Some(sample)) => sample,
+                    (None, None) => continue,
+                };
+                let pcm_len = source.pcm.len();
+                let rates = RenderRates::new(source.sample_hz, engine_hz);
                 // ⭐ 任务单 `#217`：`sample=*silence` 的 region **存在、会被选中**，但
                 // ⛔ **不产生任何采样输出**。必须在**这里**判，⛔ 不能靠"PCM 为空"：
                 // 本函数与 [`crate::sfz_instrument::probe_note_energy`] 的调用方给的是
@@ -2064,11 +2221,14 @@ impl SfzInstrument {
                 // （`gain == 1.0` ⇒ 那个逐帧乘法逐位不变）。
                 let mut fade = FadeRamp::NONE;
                 // ⭐ 包络（任务 `#92`）：与摊平/实时两条路**同一份归约**（[`ampeg_run_from`]）。
-                // 这条路**没有 note-off** ⇒ 只走 起音→保持→衰减→保持
-                // （`frame = u64::MAX`：永远不会进释放段）；
-                // ⚠ `abs_base = 0` 只用于释放进度，这条路上用不到。
-                // ⚠ `frame = u64::MAX`（这条路没有 note-off ⇒ 永不进释放段）、
-                // `abs_base = 0`（释放进度用不到）、`loop_during_release = false`。
+                // ⚠ **这条路的沿革（任务 `#310` 改写本段；原文一字未删的版本见 git 历史）**：
+                //    `#92` 的原理由是"这条路**没有 note-off** ⇒ 只走 起音→保持→衰减→保持
+                //    （`frame = u64::MAX`：永远不会进释放段）"。
+                //    `#310` 起**有了**：`held_frames = Some(n)` ⇒ `frame = n`，第 `n` 帧进释放段
+                //    ⇒ `ampeg_release` 真正生效（这条路的时长与"离线导出与实时同口径"由此闭合）。
+                //    `held_frames = None`（旧入口）仍是 `u64::MAX` ⇒ 与接线前逐位相同。
+                // ⚠ `abs_base = 0`：输出缓冲的 `out[0]` 就是第 0 帧，所以"引擎绝对帧"＝本块内下标，
+                //    这个值对两条路径都成立（不再有"释放进度用不到"的例外）。
                 // ⭐ CC 调制（任务单 `#104`）：五个参数按探针求值，走
                 // `yeban-sfz` 的**同一份**求值本体（`cc_value_with_baked`；
                 // `#115` 起按 `ModTarget` 过滤，⛔ 公式未变）；
@@ -2097,8 +2257,50 @@ impl SfzInstrument {
                     value(AmpegParam::Sustain),
                     value(AmpegParam::Release),
                 );
-                let mut env = ampeg_run_from(attack, hold, decay, sustain, release, engine_hz)
-                    .map(|run| EnvRun::new(run, ENV_STAGE_IDLE, 0, u64::MAX, 0, false));
+                // ⭐⭐ **note-off**（任务 `#310`）：`held_frames = Some(n)` ⇒ `EnvRun::frame`
+                // 就是第 `n` 帧 ⇒ [`EnvRun::advance`] 在 `abs_frame >= n` 处把段位打上
+                // `ENV_RELEASING`，`ampeg_release` 从那一刻开始走。
+                // ⚠ `None` ⇒ `u64::MAX` ⇒ 与接线前**逐位相同**（永不进释放段）。
+                // ⭐ **释放期是否继续回绕**：与实时声部同一条规范
+                // （`loop_continuous` 释放期照旧循环；`no_loop` / `loop_sustain` 不循环）
+                // ⇒ 只有"有窗口 ＋ `loop_continuous`"才置真。`held_frames = None` 时
+                // 这个位永远读不到（永不进释放段）⇒ 对旧入口无影响。
+                let loop_during_release = loop_window.is_some()
+                    && region.effective_loop_mode() == LoopMode::LoopContinuous;
+                // ⭐ **`one_shot` 忽略 note-off**（规范逐字："The entire sample will always
+                //    play back in full."）⇒ 这一档上 `held` 作废，声部照旧播到样本尾。
+                //    ⚠ 与实时声部同一条裁决（`SfzVoice` 在 `one_shot` 上既不退休、也不起释放）。
+                let held = if region.effective_loop_mode() == LoopMode::OneShot {
+                    None
+                } else {
+                    held_frames
+                };
+                // ⭐⭐ **没有 `ampeg_*` 的区域也必须响应 note-off**（任务 `#310`）：
+                //    `ampeg_run_from` 对"五个值全在透明缺省上"短路成 `None`，而
+                //    `mix_span_into` 对 `env == None` 的读数是 `env_gain = 1.0`（恒等）
+                //    ⇒ note-off 形同不存在。
+                //    这里显式补一个**零长释放**的 run：`f32::EPSILON` 只用来绕开那条短路，
+                //    换成帧仍是 `0` ⇒ 声部在 note-off 那一帧立刻停（＝ 规范"释放 0.001 s"
+                //    在本仓取 0 的那条登记裁决）。
+                //    ⚠ 只在 `held == Some` 时造 ⇒ 旧入口（`held_frames = None`）仍是
+                //    `env = None`，逐位不变。
+                let run = ampeg_run_from(attack, hold, decay, sustain, release, engine_hz).or_else(
+                    || {
+                        held.and_then(|_| {
+                            ampeg_run_from(0.0, 0.0, 0.0, 100.0, f32::EPSILON, engine_hz)
+                        })
+                    },
+                );
+                let mut env = run.map(|run| {
+                    EnvRun::new(
+                        run,
+                        ENV_STAGE_IDLE,
+                        0,
+                        held.unwrap_or(u64::MAX),
+                        0,
+                        loop_during_release,
+                    )
+                });
                 let region_written = mix_span_into(
                     &source.pcm,
                     &mut position,
@@ -2247,6 +2449,32 @@ pub fn rate_is_usable(rate: f32) -> bool {
 /// 4. **合法窗口**：半开区间 `[loop_start, loop_end)`，⛔ 不夹、⛔ 不改写。
 ///
 /// ⚠ **零分配、零锁、零 I/O**（纯整数比较）⇒ 可被实时声部在**逐块**路径调用 [MUST-GATE-001]。
+///
+/// # ⭐⭐ 追加修订段（任务 `#311`）—— 被修订的是上面**第 2、3 条**
+///
+/// ⛔ 原文一字未删；被改的只有两处**判定**，理由都是"规范写了缺省值，本仓没实现"：
+///
+/// | # | 修前 | 修后 | 出处 |
+/// | :--- | :--- | :--- | :--- |
+/// | ① | `loop_end == 0` 与 `loop_start == 0` 组合 ⇒ **不循环** | `loop_end == 0` **＝ 未指定** ⇒ 窗口尾取 `source_end` | `sfzformat.com/opcodes/loop_end/`："Default: `-1` (end of sample)" |
+/// | ② | `loop_end > source_end` ⇒ **整条判死**（不循环） | **钳到** `source_end`（再钳到 `pcm_len`）后仍循环 | 同上：`end=-1` 时 `source_end = pcm_len`，与"写到 `loop_end = 总帧数`"的文件本就该同解 |
+///
+/// ## 为什么 ① 是必须修的（一次真实的编曲事故）
+///
+/// 绝大多数采样器音色（含 `vsco2ce` 全套弦乐）的 `.sfz` 里**只写** `loop_mode=loop_continuous`，
+/// 循环点写在 WAV 的 `smpl` 块里、或者干脆就是"整段循环"。解析器把未写的 `loop_end`
+/// 读成 `0`（[`read_u32(.., 0)`](yeban_sfz::instrument) 的缺省），于是 `0 <= 0` ⇒ 窗口 `None`
+/// ⇒ **一个本该延音的长音在样本尾被硬切**。用户听到的是"弦乐断气"、"长音突然没声"，
+/// 而 `.sfz` 与采样都是好的。这条修完，`loop_mode` 才真的等于"能延音"。
+///
+/// ## ② 为什么要"钳"而不是"判死"
+///
+/// `end=-1`（缺省）⇒ `reduce_span` 给的 `source_end` 是 `pcm_len`；而音色作者手写
+/// `loop_end=<样本总帧数>` 时也是 `pcm_len`。两者**语义等价**，修前却一条过一条死。
+/// 钳位是唯一能同时容纳两者的裁决，且钳位后仍然 `<= pcm_len`（不越界读）。
+///
+/// ⚠ 退化窗口（`end <= start`）**仍然**返回 `None` —— 判据 `S31` 钉的就是这一条，
+/// 本修订⛔ 不碰它（`loop_start=100 loop_end=100` 依旧不循环）。
 #[must_use]
 pub fn reduce_loop_window(
     loop_mode: LoopMode,
@@ -2258,21 +2486,34 @@ pub fn reduce_loop_window(
     if !matches!(loop_mode, LoopMode::LoopContinuous | LoopMode::LoopSustain) {
         return None;
     }
-    if loop_end <= loop_start {
-        return None;
-    }
-    if u64::from(loop_end) > source_end {
-        return None;
-    }
+    // ⭐ 任务 `#311` ①：`loop_end == 0` ＝ 规范缺省（`-1`，样本尾）。
+    //    ⚠ 解析把"未写"与"写了 0"都存成 `0`（不可区分）⇒ 一律按缺省处理：
+    //    零长窗口本来就没有意义，这个方向没有歧义。
+    // ⭐ 任务 `#311` ②：越界不再判死，钳到 `source_end`（语义等价的那两种写法由此同解）。
+    let end: u64 = if loop_end == 0 || u64::from(loop_end) > source_end {
+        source_end
+    } else {
+        u64::from(loop_end)
+    };
     // ⭐ 任务单 `#97`：**超过** `pcm_len` 才拒绝（旧口径是 `>=`）。
     // 恰好等于 `pcm_len` 的窗口**照常循环** ⇒ 回绕点上的插值由 `mix_span_into` 钳位
     // （⛔ 不是把窗口判成"不循环"）。
-    if loop_end as usize > pcm_len {
+    // ⚠ `#311` 起这里由"拒绝"变成"钳位"：`source_end` 理论上已 `<= pcm_len`，
+    // 但它是 `u64`，钳一次把越界读的可能性彻底收掉。
+    let end = end.min(pcm_len as u64);
+    let start = u64::from(loop_start);
+    if end <= start {
+        return None;
+    }
+    // ⭐ 任务 `#311`：起点也必须落在 PCM 内（否则回绕第一帧就越界）。
+    //    `loop_start >= pcm_len` 是"作者写错"而不是"要不要循环"的问题 ⇒ 按不循环处理，
+    //    与 `end <= start` 同一条出口（⛔ 不新增错误类型）。
+    if start >= pcm_len as u64 {
         return None;
     }
     Some(LoopWindow {
         start: loop_start,
-        end: loop_end,
+        end: u32::try_from(end).unwrap_or(u32::MAX),
     })
 }
 
