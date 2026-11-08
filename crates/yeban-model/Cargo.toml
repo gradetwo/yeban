@@ -18,6 +18,11 @@ serde_json.workspace = true
 sha2.workspace = true
 thiserror.workspace = true
 ulid.workspace = true
+# 谱面特征提取（`song_overview`）返回 dsp 分析线的输入契约
+# （`yeban_dsp::song_overview::ScoreInput`）：同一份类型、同一份约定，
+# 不在模型里发明第二套输入类型。`yeban-dsp` 不依赖本 crate ⇒ 无环；
+# 本 crate 仍零 GUI 依赖（dsp 是纯数学 crate）。
+yeban-dsp.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true

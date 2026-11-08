@@ -110,6 +110,9 @@ pub use yeban_midi::midi;
 pub mod inserts;
 pub mod pdc;
 pub mod render;
+/// 整曲多层可视化总览图 Phase 1：工程 → 离线总线音频（内存缓冲）→ dsp
+/// 四层分析 + 整曲哈希缓存（设计稿 `yeban-songmap-design.md` §9 / §11）。
+pub mod song_overview;
 // ⭐ `ADR-0011`：引擎音色源（本 crate 里碰 `yeban-engine` 的两个模块之一；
 // 另一个是 `plugin_source`，它只读调度表类型，不复制引擎音色逻辑）。
 // CLI 的 `export_wav` 与 MCP 的 `yeban_render_master` 共用这一份 —— ⛔ 不写第二份音源。
