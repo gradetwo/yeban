@@ -195,6 +195,8 @@ pub struct PluginDescriptor {
     pub classes: Vec<PluginClass>,
     /// 模块级失败原因（打不开／无工厂／无类时 `Some`，此时 `classes` 为空）。
     pub error: Option<String>,
+    /// ARA 能力（模块含 `ARA Main Factory Class` 时 `Some`；扫描的 ARA 列）。
+    pub ara: Option<crate::ara::AraFactoryInfo>,
 }
 
 impl PluginDescriptor {

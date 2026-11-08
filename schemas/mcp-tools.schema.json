@@ -54,6 +54,9 @@
             "yeban_list_instruments",
             "yeban_scan_plugins",
             "yeban_load_plugin",
+            "yeban_ara_bind",
+            "yeban_ara_query",
+            "yeban_ara_render",
             "synthesize_singing",
             "svs_job",
             "yeban_list_presets",
@@ -418,6 +421,63 @@
             "properties": {
               "arguments": {
                 "$ref": "#/definitions/ExtensionToolArguments/$defs/yeban_load_plugin"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "name"
+            ],
+            "properties": {
+              "name": {
+                "const": "yeban_ara_bind"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "arguments": {
+                "$ref": "#/definitions/ExtensionToolArguments/$defs/yeban_ara_bind"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "name"
+            ],
+            "properties": {
+              "name": {
+                "const": "yeban_ara_query"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "arguments": {
+                "$ref": "#/definitions/ExtensionToolArguments/$defs/yeban_ara_query"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "name"
+            ],
+            "properties": {
+              "name": {
+                "const": "yeban_ara_render"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "arguments": {
+                "$ref": "#/definitions/ExtensionToolArguments/$defs/yeban_ara_render"
               }
             }
           }
@@ -1502,6 +1562,102 @@
           "required": [
             "trackId",
             "pluginPath"
+          ]
+        },
+        "yeban_ara_bind": {
+          "title": "yeban_ara_bind",
+          "type": "object",
+          "description": "把一段音频 wav 绑定到 ARA 插件（ARA2 宿主原型）：plan 只做实参校验 + wav 解码，apply 打开 ARA 会话并以 sessionId 登记进会话 registry。绑定不改工程、不落盘（会话运行态）；sessionId 只在本会话有效。",
+          "properties": {
+            "pluginPath": {
+              "type": "string",
+              "description": "插件路径：.vst3 包路径或散动态库路径；打不开 ⇒ IO_ERROR"
+            },
+            "pluginId": {
+              "type": "string",
+              "description": "ARA 类名；不给则取首个 ARA 类；指名类不存在或无同名 Audio Module 类 ⇒ INVALID_PARAMETER_RANGE"
+            },
+            "wavPath": {
+              "type": "string",
+              "description": "片段 wav 路径；解码失败 ⇒ IO_ERROR"
+            },
+            "tempoBpm": {
+              "type": "number",
+              "description": "片段速度（BPM）；缺省 120；须大于 0"
+            },
+            "loopIterations": {
+              "type": "integer",
+              "description": "循环迭代数；缺省 1；须 ≥ 1"
+            },
+            "muted": {
+              "type": "boolean",
+              "description": "静音摆放；缺省 false；静音时不建 playback region"
+            },
+            "dryRun": {
+              "type": "boolean",
+              "default": false
+            },
+            "idempotencyKey": {
+              "type": "string",
+              "maxLength": 256
+            }
+          },
+          "required": [
+            "pluginPath",
+            "wavPath"
+          ]
+        },
+        "yeban_ara_query": {
+          "title": "yeban_ara_query",
+          "type": "object",
+          "description": "ARA 会话的分析状态与内容查询（只读）：回 sessionId、factory 名与版本、analysisAvailable、regionCount、head/tail 秒数、notes（可用时）与 notesError（不可用时）。内容不可用时不报错。",
+          "properties": {
+            "sessionId": {
+              "type": "string",
+              "description": "会话 id（yeban_ara_bind 的响应）；不存在 ⇒ INVALID_PARAMETER_RANGE"
+            },
+            "dryRun": {
+              "type": "boolean",
+              "default": false
+            },
+            "idempotencyKey": {
+              "type": "string",
+              "maxLength": 256
+            }
+          },
+          "required": [
+            "sessionId"
+          ]
+        },
+        "yeban_ara_render": {
+          "title": "yeban_ara_render",
+          "type": "object",
+          "description": "把已绑定 ARA 会话离线渲染成 WAV（ARA2 宿主原型 companion API）：按块调处理器 process() 渲染整段，编成 32-bit float WAV 后原子落盘。渲染仅支持 44100Hz 片段，非 44100 片段响亮失败。",
+          "properties": {
+            "sessionId": {
+              "type": "string",
+              "description": "会话 id（yeban_ara_bind 的响应）；不存在 ⇒ INVALID_PARAMETER_RANGE"
+            },
+            "outPath": {
+              "type": "string",
+              "description": "输出 wav 路径；父目录不存在 ⇒ IO_ERROR"
+            },
+            "blockFrames": {
+              "type": "integer",
+              "description": "渲染块大小；缺省 1024；须在 1..=4096 内"
+            },
+            "dryRun": {
+              "type": "boolean",
+              "default": false
+            },
+            "idempotencyKey": {
+              "type": "string",
+              "maxLength": 256
+            }
+          },
+          "required": [
+            "sessionId",
+            "outPath"
           ]
         },
         "synthesize_singing": {

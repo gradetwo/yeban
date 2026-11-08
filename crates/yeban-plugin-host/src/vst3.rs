@@ -62,10 +62,10 @@ use std::ptr;
 use crate::dylib::Library;
 use crate::error::HostError;
 use crate::types::{
-    FUNKNOWN_IID, IAUDIO_PROCESSOR_IID, ICOMPONENT_IID, ICONNECTIONPOINT_IID, IEDIT_CONTROLLER_IID,
-    IMIDI_MAPPING_IID, MidiEvent, MidiEventKind, ParamInfo, PluginClass, PluginInstance,
-    PluginKind, PluginState, RESULT_FALSE, RESULT_NO_INTERFACE, RESULT_NOT_IMPLEMENTED, RESULT_OK,
-    RESULT_TRUE, TUID_INVALID, Tuid,
+    MidiEvent, MidiEventKind, ParamInfo, PluginClass, PluginInstance, PluginKind, PluginState,
+    Tuid, FUNKNOWN_IID, IAUDIO_PROCESSOR_IID, ICOMPONENT_IID, ICONNECTIONPOINT_IID,
+    IEDIT_CONTROLLER_IID, IMIDI_MAPPING_IID, RESULT_FALSE, RESULT_NOT_IMPLEMENTED,
+    RESULT_NO_INTERFACE, RESULT_OK, RESULT_TRUE, TUID_INVALID,
 };
 
 // ---------------------------------------------------------------------------
@@ -86,6 +86,9 @@ pub const IO_SIMPLE: i32 = 0;
 pub const PROCESS_REALTIME: i32 = 0;
 /// 符号样本大小：32 位浮点。
 pub const SAMPLE_32: i32 = 0;
+/// 符号样本大小：64 位浮点（PitchNet 这类 double 精度插件只接受此值；
+/// `canProcessSampleSize(0)` 返回 0、`canProcessSampleSize(1)` 返回 1，实测）。
+pub const SAMPLE_64: i32 = 1;
 /// 立体声扬声器排布（`SpeakerArrangement`，`kStereo = 0x3`）。
 pub const ARRANGEMENT_STEREO: u64 = 0x3;
 /// 事件类型：音符开（`Event.type` 为 i16，见模块文档）。
@@ -217,6 +220,88 @@ struct AudioBusBuffers {
     _pad: i32,
     silence_flags: u64,
     channel_buffers: *mut *mut f32,
+}
+
+/// `ProcessContext`：112 字节（Steinberg `pluginterfaces/vst/ivstprocesscontext.h`
+/// 原文翻译；⛔ 不可凭记忆改字段顺序）。
+///
+/// 布局：`state` u32＋补齐＋`sampleRate` f64＋3 个 i64 时间戳＋5 个 f64
+/// 音乐位置／速度＋拍号 2×i32＋`Chord`（key u8＋root u8＋mask i16＝4 字节）
+/// ＋`smpteOffsetSubframes` i32＋`FrameRate`（2×i32）＋`samplesToNextClock` i32
+/// ＋补齐。ARA 渲染只读 `state`／`sampleRate`／`projectTimeSamples`／
+/// `tempo`／拍号／音乐位置；其余字段原型置 0（不置对应 valid 位）。
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct ProcessContext {
+    /// 走带与有效性位（见 `STATE_*` 常量）。
+    pub state: u32,
+    pub(crate) _pad: u32,
+    /// 采样率（Hz）。
+    pub sample_rate: f64,
+    /// 工程时间（采样帧；ARA 渲染器据此定位 region 内音频）。
+    pub project_time_samples: i64,
+    /// 系统时间（原型不用，置 0）。
+    pub system_time: i64,
+    /// 连续时间（原型与工程时间同值）。
+    pub continuous_time_samples: i64,
+    /// 工程音乐时间（四分音符数）。
+    pub project_time_music: f64,
+    /// 小节位置（四分音符数；原型与工程音乐时间同值）。
+    pub bar_position_music: f64,
+    /// 循环起点（四分音符；原型不用，置 0）。
+    pub cycle_start_music: f64,
+    /// 循环终点（四分音符；原型不用，置 0）。
+    pub cycle_end_music: f64,
+    /// 速度（BPM）。
+    pub tempo: f64,
+    /// 拍号分子。
+    pub time_sig_numerator: i32,
+    /// 拍号分母。
+    pub time_sig_denominator: i32,
+    /// 和弦调（`Chord.key`；原型不用，置 0）。
+    pub chord_key: u8,
+    /// 和弦根音（`Chord.root`；原型不用，置 0）。
+    pub chord_root: u8,
+    /// 和弦掩码（`Chord.chordMask`；原型不用，置 0）。
+    pub chord_mask: i16,
+    /// SMPTE 子帧偏移（原型不用，置 0）。
+    pub smpte_offset_subframes: i32,
+    /// 帧率分子（原型不用，置 0）。
+    pub frame_rate_numerator: i32,
+    /// 帧率分母（原型不用，置 0）。
+    pub frame_rate_denominator: i32,
+    /// 到下一时钟的采样数（原型不用，置 0）。
+    pub samples_to_next_clock: i32,
+    pub(crate) _pad2: i32,
+}
+
+impl ProcessContext {
+    /// 走带播放中（`kPlaying`）。
+    pub const STATE_PLAYING: u32 = 1 << 1;
+    /// 循环激活（`kCycleActive`；原型不用，仅备查）。
+    pub const STATE_CYCLE_ACTIVE: u32 = 1 << 2;
+    /// 录音中（`kRecording`；原型不用，仅备查）。
+    pub const STATE_RECORDING: u32 = 1 << 3;
+    /// 系统时间有效（`kSystemTimeValid`；原型不用，仅备查）。
+    pub const STATE_SYSTEM_TIME_VALID: u32 = 1 << 8;
+    /// 连续时间有效（`kContTimeValid`；原型不用，仅备查）。
+    pub const STATE_CONT_TIME_VALID: u32 = 1 << 9;
+    /// 工程音乐时间有效（`kProjectTimeMusicValid`）。
+    pub const STATE_PROJECT_TIME_MUSIC_VALID: u32 = 1 << 10;
+    /// 小节位置有效（`kBarPositionValid`）。
+    pub const STATE_BAR_POSITION_VALID: u32 = 1 << 11;
+    /// 循环区间有效（`kCycleValid`；原型不用，仅备查）。
+    pub const STATE_CYCLE_VALID: u32 = 1 << 12;
+    /// 速度有效（`kTempoValid`）。
+    pub const STATE_TEMPO_VALID: u32 = 1 << 13;
+    /// 拍号有效（`kTimeSigValid`）。
+    pub const STATE_TIME_SIG_VALID: u32 = 1 << 14;
+    /// 和弦有效（`kChordValid`；原型不用，仅备查）。
+    pub const STATE_CHORD_VALID: u32 = 1 << 15;
+    /// SMPTE 有效（`kSmpteValid`；原型不用，仅备查）。
+    pub const STATE_SMPTE_VALID: u32 = 1 << 16;
+    /// 时钟有效（`kClockValid`；原型不用，仅备查）。
+    pub const STATE_CLOCK_VALID: u32 = 1 << 17;
 }
 
 /// `ProcessData`：80 字节。
@@ -1032,7 +1117,7 @@ impl Vst3Module {
     /// # Errors
     ///
     /// 工厂拒绝 ⇒ `CallFailed`。
-    fn create_instance(&self, cid: &Tuid, iid: &Tuid) -> Result<*mut c_void, HostError> {
+    pub(crate) fn create_instance(&self, cid: &Tuid, iid: &Tuid) -> Result<*mut c_void, HostError> {
         // SAFETY: `factory` 有效；`cid`／`iid` 是调用方提供的 16 字节标识。
         let vtbl = unsafe { vtbl::<PluginFactoryVtbl>(self.inner.factory) };
         let mut obj: *mut c_void = ptr::null_mut();
@@ -1053,7 +1138,7 @@ impl Vst3Module {
     /// # Errors
     ///
     /// 插件不实现该接口 ⇒ `CallFailed`（`kNoInterface`）。
-    fn query_interface(obj: *mut c_void, iid: &Tuid) -> Result<*mut c_void, HostError> {
+    pub(crate) fn query_interface(obj: *mut c_void, iid: &Tuid) -> Result<*mut c_void, HostError> {
         // SAFETY: `obj` 是插件对象指针；虚表首 3 项为 `FUnknown`。
         let vtbl = unsafe { vtbl::<FUnknownVtbl>(obj) };
         let mut out: *mut c_void = ptr::null_mut();
@@ -1142,6 +1227,8 @@ pub struct Vst3Instance {
     latency: u32,
     sample_rate: f64,
     max_block: usize,
+    /// 激活时插件接受的样本大小（`SAMPLE_32` 或 `SAMPLE_64`；未激活为 0）。
+    sample_size: i32,
 }
 
 // SAFETY: 实例单主持有；全部插件调用都在持有 `&mut self` 的调用方线程上发生；
@@ -1323,6 +1410,7 @@ impl Vst3Instance {
                 latency: 0,
                 sample_rate: 0.0,
                 max_block: 0,
+                sample_size: SAMPLE_32,
             }),
             Err(error) => {
                 // SAFETY: 配对释放（已建的才放；空指针不放）。
@@ -1369,7 +1457,11 @@ impl Vst3Instance {
                 &mut id,
             )
         };
-        if code != RESULT_OK { None } else { Some(id) }
+        if code != RESULT_OK {
+            None
+        } else {
+            Some(id)
+        }
     }
 
     /// 从弯音事件装配一次 `process` 调用内的参数变化通道（乐器 `process`
@@ -1418,6 +1510,84 @@ impl Vst3Instance {
             .collect();
         let param_changes = HostParameterChanges::new(&param_queues);
         (point_vecs, param_queues, param_changes)
+    }
+
+    /// 组件对象裸指针（ARA 绑定用：`IPlugInEntryPoint2` 从组件上查；
+    /// 指针在实例生命周期内有效，调用方不得释放）。
+    #[must_use]
+    pub(crate) fn component_ptr(&self) -> *mut c_void {
+        self.component
+    }
+
+    /// ARA companion 渲染一快（ARA SDK `VST3RenderBuffer` 同款配方）：
+    /// 输入与输出共享同一缓冲（输入 silence 标志全置位＝静音输入），
+    /// `process_context` 带走带位置；插件内部按块时间位置渲染已指派的
+    /// playback region。输出缓冲先清零（插件在 ARA 路径内亦清零，
+    /// 双保险；⛔ 不依赖插件的清零行为）。
+    ///
+    /// # Errors
+    ///
+    /// 未激活、片长不符、块超限、插件调用失败 ⇒ [`HostError`]。
+    pub(crate) fn process_ara(
+        &mut self,
+        frames: usize,
+        out_l: &mut [f32],
+        out_r: &mut [f32],
+        context: &ProcessContext,
+    ) -> Result<(), HostError> {
+        if !self.active {
+            return Err(HostError::NotActivated);
+        }
+        if out_l.len() != frames || out_r.len() != frames {
+            return Err(HostError::Other(format!(
+                "输出片长（{}／{}）≠ 帧数 {frames}",
+                out_l.len(),
+                out_r.len()
+            )));
+        }
+        if frames > self.max_block {
+            return Err(HostError::Other(format!(
+                "帧数 {frames} ＞ 激活块上限 {}",
+                self.max_block
+            )));
+        }
+        for sample in out_l.iter_mut().chain(out_r.iter_mut()) {
+            *sample = 0.0;
+        }
+        let mut channel_ptrs: [*mut f32; 2] = [out_l.as_mut_ptr(), out_r.as_mut_ptr()];
+        let mut in_bus = AudioBusBuffers {
+            num_channels: 2,
+            _pad: 0,
+            silence_flags: u64::MAX,
+            channel_buffers: channel_ptrs.as_mut_ptr(),
+        };
+        let mut out_bus = AudioBusBuffers {
+            num_channels: 2,
+            _pad: 0,
+            silence_flags: 0,
+            channel_buffers: channel_ptrs.as_mut_ptr(),
+        };
+        let mut data = ProcessData {
+            process_mode: PROCESS_REALTIME,
+            symbolic_sample_size: SAMPLE_32,
+            num_samples: frames as i32,
+            num_inputs: 1,
+            num_outputs: 1,
+            _pad: 0,
+            inputs: &mut in_bus,
+            outputs: &mut out_bus,
+            input_events: ptr::null_mut(),
+            output_events: ptr::null_mut(),
+            input_parameter_changes: ptr::null_mut(),
+            output_parameter_changes: ptr::null_mut(),
+            process_context: context as *const ProcessContext as *mut c_void,
+        };
+        // SAFETY: `processor` 是本实例的有效指针；`data` 指向调用帧内的
+        // 总线与上下文，插件在 `process` 返回前只用它们。
+        unsafe {
+            let proc_vtbl = vtbl::<AudioProcessorVtbl>(self.processor);
+            check("process", (proc_vtbl.process)(self.processor, &mut data))
+        }
     }
 
     /// 停用（`setProcessing(false)`＋`setActive(false)`；未激活时为空操作）。
@@ -1501,14 +1671,24 @@ impl PluginInstance for Vst3Instance {
         // SAFETY: `processor`／`component` 是本实例的有效指针。
         unsafe {
             let proc_vtbl = vtbl::<AudioProcessorVtbl>(self.processor);
-            // 32 位浮点必须被插件接受（`kResultTrue`＝0；1＝`kResultFalse`＝不支持）。
-            let code = (proc_vtbl.can_process_sample_size)(self.processor, SAMPLE_32);
-            if code != RESULT_TRUE {
+            // 样本大小：优先 32 位（乐器路径现状不变），不支持则退 64 位
+            // （PitchNet 这类 double 精度插件只接受 64 位）；两路皆拒 ⇒ 响亮失败。
+            // `canProcessSampleSize` 返回 `kResultTrue`（＝0，见 types.rs）表接受，
+            // `kResultFalse`（＝1）表不支持。
+            let sample_size = if (proc_vtbl.can_process_sample_size)(self.processor, SAMPLE_32)
+                == RESULT_TRUE
+            {
+                SAMPLE_32
+            } else if (proc_vtbl.can_process_sample_size)(self.processor, SAMPLE_64) == RESULT_TRUE
+            {
+                SAMPLE_64
+            } else {
                 return Err(HostError::SampleSizeUnsupported);
-            }
+            };
+            self.sample_size = sample_size;
             let setup = ProcessSetup {
                 process_mode: PROCESS_REALTIME,
-                symbolic_sample_size: SAMPLE_32,
+                symbolic_sample_size: sample_size,
                 max_samples_per_block: max_block as i32,
                 _pad: 0,
                 sample_rate,
@@ -1517,81 +1697,68 @@ impl PluginInstance for Vst3Instance {
                 "setupProcessing",
                 (proc_vtbl.setup_processing)(self.processor, &setup),
             )?;
-            // 总线排布按 kind 分支（效果器线新增）：一期只接立体声。
+            // 总线排布按实测总线数定（效果器线新增）：一期只接立体声。
             // `setBusArrangements` 的返回值语义是布尔式（0＝`kResultTrue`＝接受，
             // 1＝`kResultFalse`＝拒绝），不是 ok／error；接受与否以事后
             // `getBusArrangement` 的实测排布为准。
             // 未知 kind（既无事件输入又无音频输入）无法定排布 ⇒ 响亮失败。
+            let event_in = bus_count(self.component, MEDIA_EVENT, DIR_INPUT)?;
+            let audio_in = bus_count(self.component, MEDIA_AUDIO, DIR_INPUT)?;
+            if event_in == 0 && audio_in == 0 {
+                return Err(HostError::Other(
+                    "插件类未能判定 kind（既无事件输入又无音频输入），无法激活".to_owned(),
+                ));
+            }
             let mut out_arr = [ARRANGEMENT_STEREO];
+            if audio_in >= 1 {
+                let mut in_arr = [ARRANGEMENT_STEREO];
+                let _ = (proc_vtbl.set_bus_arrangements)(
+                    self.processor,
+                    in_arr.as_mut_ptr(),
+                    1,
+                    out_arr.as_mut_ptr(),
+                    1,
+                );
+                let mut actual_in: u64 = 0;
+                check(
+                    "getBusArrangement",
+                    (proc_vtbl.get_bus_arrangement)(self.processor, DIR_INPUT, 0, &mut actual_in),
+                )?;
+                if actual_in != ARRANGEMENT_STEREO {
+                    return Err(HostError::InputNotStereo);
+                }
+            } else {
+                let _ = (proc_vtbl.set_bus_arrangements)(
+                    self.processor,
+                    ptr::null_mut(),
+                    0,
+                    out_arr.as_mut_ptr(),
+                    1,
+                );
+            }
             let mut actual: u64 = 0;
-            match self.kind {
-                PluginKind::Instrument => {
-                    let _ = (proc_vtbl.set_bus_arrangements)(
-                        self.processor,
-                        ptr::null_mut(),
-                        0,
-                        out_arr.as_mut_ptr(),
-                        1,
-                    );
-                    check(
-                        "getBusArrangement",
-                        (proc_vtbl.get_bus_arrangement)(self.processor, DIR_OUTPUT, 0, &mut actual),
-                    )?;
-                    if actual != ARRANGEMENT_STEREO {
-                        return Err(HostError::OutputNotStereo);
-                    }
-                }
-                PluginKind::Effect => {
-                    let mut in_arr = [ARRANGEMENT_STEREO];
-                    let _ = (proc_vtbl.set_bus_arrangements)(
-                        self.processor,
-                        in_arr.as_mut_ptr(),
-                        1,
-                        out_arr.as_mut_ptr(),
-                        1,
-                    );
-                    check(
-                        "getBusArrangement",
-                        (proc_vtbl.get_bus_arrangement)(self.processor, DIR_INPUT, 0, &mut actual),
-                    )?;
-                    if actual != ARRANGEMENT_STEREO {
-                        return Err(HostError::InputNotStereo);
-                    }
-                    check(
-                        "getBusArrangement",
-                        (proc_vtbl.get_bus_arrangement)(self.processor, DIR_OUTPUT, 0, &mut actual),
-                    )?;
-                    if actual != ARRANGEMENT_STEREO {
-                        return Err(HostError::OutputNotStereo);
-                    }
-                }
-                PluginKind::Unknown => {
-                    return Err(HostError::Other(
-                        "插件类未能判定 kind（既无事件输入又无音频输入），无法激活".to_owned(),
-                    ));
-                }
+            check(
+                "getBusArrangement",
+                (proc_vtbl.get_bus_arrangement)(self.processor, DIR_OUTPUT, 0, &mut actual),
+            )?;
+            if actual != ARRANGEMENT_STEREO {
+                return Err(HostError::OutputNotStereo);
             }
             let comp_vtbl = vtbl::<ComponentVtbl>(self.component);
-            // 主总线激活（失败 ⇒ 响亮失败）：乐器＝事件输入 0 号＋音频输出 0 号；
-            // 效果器＝音频输入 0 号＋音频输出 0 号（事件总线一期不接）。
-            match self.kind {
-                PluginKind::Instrument => {
-                    check(
-                        "activateBus",
-                        (comp_vtbl.activate_bus)(self.component, MEDIA_EVENT, DIR_INPUT, 0, 1),
-                    )?;
-                }
-                PluginKind::Effect => {
-                    check(
-                        "activateBus",
-                        (comp_vtbl.activate_bus)(self.component, MEDIA_AUDIO, DIR_INPUT, 0, 1),
-                    )?;
-                }
-                PluginKind::Unknown => {
-                    return Err(HostError::Other(
-                        "插件类未能判定 kind，无法激活总线".to_owned(),
-                    ));
-                }
+            // 主总线激活（只激活探针证实存在的总线：效果器无事件输入总线时
+            // 不激活它——对不存在的总线调 `activateBus` 的返回值插件自定，
+            // 不应成为效果器激活失败的来源；失败 ⇒ 响亮失败）。
+            if event_in >= 1 {
+                check(
+                    "activateBus",
+                    (comp_vtbl.activate_bus)(self.component, MEDIA_EVENT, DIR_INPUT, 0, 1),
+                )?;
+            }
+            if audio_in >= 1 {
+                check(
+                    "activateBus",
+                    (comp_vtbl.activate_bus)(self.component, MEDIA_AUDIO, DIR_INPUT, 0, 1),
+                )?;
             }
             check(
                 "activateBus",
@@ -1760,6 +1927,14 @@ impl PluginInstance for Vst3Instance {
         if self.kind == PluginKind::Effect {
             return Err(HostError::Other(
                 "效果器实例不能走乐器 process 路径（须用 process_audio）".to_owned(),
+            ));
+        }
+        // f32 trait 路径只服务 32 位插件；64 位插件无 trait 路径
+        // （⛔ 不得把 f32 缓冲硬塞给 double 插件静默出声）。
+        // ARA 侧 64 位协商插件走 `process_ara`（f32，见 ara.rs 注释）。
+        if self.sample_size == SAMPLE_64 {
+            return Err(HostError::Other(
+                "插件只接受 64 位浮点，f32 trait 路径不可用".to_owned(),
             ));
         }
         if out_l.len() != frames || out_r.len() != frames {
