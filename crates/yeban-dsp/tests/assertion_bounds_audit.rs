@@ -58,6 +58,10 @@ const SOURCES: &[(&str, &str)] = &[
     ("src/shaping.rs", include_str!("../src/shaping.rs")),
     ("src/tape.rs", include_str!("../src/tape.rs")),
     (
+        "src/vocal_key_detect.rs",
+        include_str!("../src/vocal_key_detect.rs"),
+    ),
+    (
         "src/vocal_pitch_shift.rs",
         include_str!("../src/vocal_pitch_shift.rs"),
     ),

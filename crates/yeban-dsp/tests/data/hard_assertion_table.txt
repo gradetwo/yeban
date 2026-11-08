@@ -2,7 +2,7 @@
 # 分类口径：float_bits ＝ 判据体内有 to_bits()；integer_count ＝ 只比整数/长度
 # class：hard ＝ 产线可达集无宿主 libm 超越函数；platform ＝ 有（只在本架构有意义）
 #        no_callee ＝ 不调用本 crate 产线函数
-# 合计 336 条：float_bits 85 ／ integer_count 251；其中 hard 70 ／ platform 12
+# 合计 344 条：float_bits 85 ／ integer_count 259；其中 hard 70 ／ platform 12
 # 列：kind | class | reach | host | file | test
 integer_count | no_callee | 0 | - | src/block.rs | accumulate_matches_scalar_reference
 integer_count | no_callee | 0 | - | src/block.rs | mismatched_lengths_are_truncated_instead_of_panicking
@@ -311,6 +311,14 @@ integer_count | no_callee | 0 | - | src/tape.rs | oversampling_aliasing_is_below
 integer_count | no_callee | 0 | - | src/tape.rs | reset_reproduces_a_freshly_built_device_bit_for_bit
 integer_count | no_callee | 0 | - | src/tape.rs | sanitised_clamps_every_field_into_its_documented_domain
 integer_count | no_callee | 0 | - | src/tape.rs | small_signal_gain_is_approximately_one
+integer_count | no_callee | 0 | - | src/vocal_key_detect.rs | a_minor_scale_detects_a_minor
+integer_count | no_callee | 0 | - | src/vocal_key_detect.rs | a_minor_triad_heavy_detects_a_minor
+integer_count | no_callee | 0 | - | src/vocal_key_detect.rs | c_major_scale_detects_c_major
+integer_count | no_callee | 0 | - | src/vocal_key_detect.rs | c_major_triad_heavy_confidence_above_point_one
+integer_count | no_callee | 0 | - | src/vocal_key_detect.rs | empty_and_unvoiced_return_none
+integer_count | no_callee | 0 | - | src/vocal_key_detect.rs | energy_length_mismatch_returns_none
+integer_count | no_callee | 0 | - | src/vocal_key_detect.rs | energy_weighting_raises_triad_confidence
+integer_count | no_callee | 0 | - | src/vocal_key_detect.rs | pilot_lines_detection_is_recorded
 float_bits | hard | 1 | - | src/vocal_pitch_route.rs | defaults_are_pinned
 integer_count | no_callee | 0 | - | src/vocal_pitch_route.rs | disabled_router_is_passthrough
 integer_count | no_callee | 0 | - | src/vocal_pitch_route.rs | dsp_leg_shifts_f0_toward_target

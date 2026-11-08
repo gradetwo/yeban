@@ -2,7 +2,7 @@
 # 列：file|test|category|首条整数断言的证据（截断 90 字符）
 # 口径（R118）：只有 collection_size **界定集合大小** ⇒ 才算非真空下界；
 #   值界／元素值界／条件计数器 **⛔ 不算**。分类优先级：condition_counter > collection_size > element_value_bound > value_bound。
-# 合计 251 条：collection_size 45 ／ value_bound 196 ／ element_value_bound 5 ／ condition_counter 5
+# 合计 259 条：collection_size 45 ／ value_bound 204 ／ element_value_bound 5 ／ condition_counter 5
 src/block.rs|accumulate_matches_scalar_reference|value_bound|assert!((out[i] - expect[i]).abs() < 1e-6, "mismatch at {i}"
 src/block.rs|mismatched_lengths_are_truncated_instead_of_panicking|value_bound|assert_eq!(out[..4], [1.0, 1.0, 1.0, 0.0]
 src/block.rs|mix2_handles_non_multiple_of_four|value_bound|assert!((v - 1.0).abs() < 1e-6
@@ -226,6 +226,14 @@ src/tape.rs|oversampling_aliasing_is_below_the_direct_formula|value_bound|assert
 src/tape.rs|reset_reproduces_a_freshly_built_device_bit_for_bit|value_bound|assert_eq!(left, left2
 src/tape.rs|sanitised_clamps_every_field_into_its_documented_domain|value_bound|assert_eq!(nan.asym, 0.0, "非有限的 `asym` 归 `0`（＝对称 ⇒ 恒等）"
 src/tape.rs|small_signal_gain_is_approximately_one|value_bound|assert!(                     (*sample - 0.01).abs() < 1e-3,                     "drive {dr
+src/vocal_key_detect.rs|a_minor_scale_detects_a_minor|value_bound|assert_eq!(det.tonic, 9, "根音须为 A，实测 {}", det.name()
+src/vocal_key_detect.rs|a_minor_triad_heavy_detects_a_minor|value_bound|assert_eq!(det.tonic, 9, "根音须为 A，实测 {}", det.name()
+src/vocal_key_detect.rs|c_major_scale_detects_c_major|value_bound|assert_eq!(det.tonic, 0, "根音须为 C，实测 {}", det.name()
+src/vocal_key_detect.rs|c_major_triad_heavy_confidence_above_point_one|value_bound|assert_eq!(det.tonic, 0, "根音须为 C，实测 {}", det.name()
+src/vocal_key_detect.rs|empty_and_unvoiced_return_none|value_bound|assert!(             detect_key(&[0.0, 0.0, -3.0, f32::NAN], None).is_none(),             
+src/vocal_key_detect.rs|energy_length_mismatch_returns_none|value_bound|assert!(             detect_key(&f0, Some(&short_energy)).is_none(),             "能量长度与 F0
+src/vocal_key_detect.rs|energy_weighting_raises_triad_confidence|value_bound|assert_eq!(weighted.tonic, 0, "加权后根音仍为 C"
+src/vocal_key_detect.rs|pilot_lines_detection_is_recorded|value_bound|assert!(                 (0.0..=1.0).contains(&det.confidence),                 "行 {line_n
 src/vocal_pitch_route.rs|disabled_router_is_passthrough|collection_size|assert_eq!(receipt.chunks.len(), 10
 src/vocal_pitch_route.rs|dsp_leg_shifts_f0_toward_target|value_bound|assert!(             err.abs() <= 5.0,             "DSP leg F0 error {err:.2} cents exceed
 src/vocal_pitch_route.rs|mixed_take_routes_per_chunk|collection_size|assert_eq!(receipt.chunks.len(), 4
