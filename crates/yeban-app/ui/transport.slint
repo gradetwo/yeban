@@ -322,6 +322,11 @@ export component Transport inherits Rectangle {
         accessible-role: text;
         accessible-id: "transport-timecode";
         accessible-label: "主时间码";
+        // ⭐ [PATCH UI-A11Y-004]：主时间码是**动态读数**（`host::apply_transport` 从
+        // `bridge::timecode_for_ticks` 注入 `MainWindow.timecode`，再转发到这里）。
+        // 静态名字只念得出「主时间码」，念不出当前码值 ⇒ 把内容也接到无障碍值通道，
+        // 绑**同一条属性**（⛔ 不是第二份真相源）。零可见像素、零新控件、零 golden。
+        accessible-value: root.timecode;
 
         UiMonoText {
             x: Tokens.space-4;

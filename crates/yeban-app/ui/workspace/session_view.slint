@@ -151,6 +151,10 @@ export component SessionView inherits Rectangle {
         accessible-role: text;
         accessible-id: "scene-launch-column-header";
         accessible-label: "场景一键激发列";
+        // ⭐ [PATCH UI-A11Y-004]：列头在有当前场景时会**逐字说出场景名**（`#283`），
+        // 静态名字念不出这段内容 ⇒ 无障碍值绑与可见 `text` **同一个表达式**
+        // （⛔ 不是第二份真相源）。零可见像素、零新控件、零 golden。
+        accessible-value: root.current-scene-name == "" ? "场景" : "场景 · " + root.current-scene-name;
 
         UiText {
             x: Tokens.space-3;
@@ -267,6 +271,10 @@ export component SessionView inherits Rectangle {
         accessible-role: text;
         accessible-id: "session-scene-launch-status";
         accessible-label: "场景启动状态";
+        // ⭐ [PATCH UI-A11Y-004]：宿主 `host::wire_scene_launch` 写的**如实回执**
+        // （没有引擎 / 事件环满时逐字说明原因）。静态名字念不出回执内容 ⇒
+        // 无障碍值绑**同一条属性**（⛔ 不是第二份真相源）。零可见像素、零 golden。
+        accessible-value: root.scene-launch-status;
 
         UiText {
             x: 0;
