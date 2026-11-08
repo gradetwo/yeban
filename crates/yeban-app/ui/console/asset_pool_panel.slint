@@ -116,7 +116,7 @@ export component AssetPoolPanel inherits Rectangle {
     // ⛔ 不留一片空白。它与下面的行循环由**同一份**长度互斥。
     Rectangle {
         x: Tokens.space-3;
-        y: 44px;
+        y: 42px;
         width: parent.width - 12px;
         height: 18px;
         visible: root.asset-pool-names.length == 0;
@@ -138,9 +138,11 @@ export component AssetPoolPanel inherits Rectangle {
     // ---------------------------------------------------------------- 每条一行
     // 行数**由投影决定**（`for … in root.asset-pool-names`），⛔ 不是写死的条数。
     // 名字一行、类型 + 可用字段一行（面板窄，两行比省略号更容易读到字节数）。
+    // ⭐ 总览图面板：行起点由 44 上移至 42（窄档面板随控制台缩短，1024×800 档
+    // 面板高仅 78，两行须在 42/74 才能都落在面板内）。
     for asset_name[row_index] in root.asset-pool-names : Rectangle {
         x: Tokens.space-3;
-        y: 44px + 32px * row_index;
+        y: 42px + 32px * row_index;
         width: parent.width - 12px;
         height: 30px;
         accessible-role: list-item;

@@ -19,6 +19,9 @@ signalsmith-stretch.workspace = true
 # L1 确定性要求"统一启用纯 Rust libm"、禁止平台 libm [ARCH-DET-001]:
 # ADSR 的一极点系数等超越函数一律走 libm, 结果与宿主 libm 实现无关。
 libm.workspace = true
+# 整曲总览图 STFT：4096 点实数 FFT（song_overview.rs）。realfft 后端 rustfft
+# 为纯 Rust 确定性实现；只替换 math::fft 调用，数值须与旧实现逐位一致（测试钉死）。
+realfft.workspace = true
 
 [lints]
 workspace = true

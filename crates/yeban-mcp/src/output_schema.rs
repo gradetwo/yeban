@@ -2069,6 +2069,132 @@ fn steps_receipt(verb_key: &str, tool_name: &str, description: &str) -> Value {
     ))
 }
 
+// ===========================================================================
+// `get_song_overview` 的输出 JSON structs（设计稿 `~/workspace/yeban-songmap-design.md`
+// §8.2 的形状，小节级列式数组）。
+//
+// 为什么住在这里而不是 `domain/song_overview.rs`：本模块是"成功响应的 `data`
+// 形状"的**唯一**落点（见模块头）；`handler`（`song_overview::plan_song_overview`）
+// 只做"取 provider 数据 → 按 §8.2 量化取整 → 序列化"，形状本身由这里的 struct
+// 定死 —— "发出去的 JSON 长什么样"只有这一处能改。
+//
+// ⚠ `for_tool("get_song_overview")` 仍返回 `None`（**不广播** `outputSchema`）：
+// 扩展工具的既有口径（`yeban_list_proposals` 的判据钉着"`None` 不是空对象"）
+// 是"没写 schema 的工具不广播"。本工具的 `data` 形状由这里的 struct + 新测试
+// `tests/song_overview.rs` 的逐字段反校钉住，而不是由广播面钉住；
+// 广播面（`COVERED_TOOLS`）的扩面是另一次切片的事，⛔ 不在本轮顺手改
+// （`props_176.rs` 的十工具判据与本模块的 `COVERED_TOOLS.len() == 10`
+// 断言都按"十个"写死，改广播面必须连那两处一起改）。
+// ===========================================================================
+
+/// §8.2 的 8 频段定义（Hz，[低端，高端），与设计稿 §4.1 的表逐字一致）。
+///
+/// **唯一**事实源：`song_overview` 的 stub 与将来的 dsp provider 都从这里读，
+// ⛔ 不在各自文件里手抄第二份。
+pub const BAND_DEFINITIONS_HZ: [[u32; 2]; 8] = [
+    [20, 90],
+    [90, 250],
+    [250, 500],
+    [500, 1000],
+    [1000, 2000],
+    [2000, 5000],
+    [5000, 10000],
+    [10000, 20000],
+];
+
+/// `get_song_overview` 成功响应的 `data`（设计稿 §8.2）。
+///
+/// 量化口径（§8.2）：归一化指标保留 2 位小数（0.00–1.00），响度与频段能量保留
+/// 1 位小数（单位 dB）。取整由 `domain::song_overview` 的 handler 在序列化前做，
+// struct 本身只定形状 —— "几位小数"不在类型里，⛔ 不要在这里发明第二套口径。
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct SongOverview {
+    /// 契约版本（§8.2 示例：`"1.0"`）。
+    pub schema_version: String,
+    /// 歌曲元数据。
+    pub song_meta: SongMeta,
+    /// 8 频段定义（Hz），与 [`BAND_DEFINITIONS_HZ`] 逐值相等。
+    pub band_definitions_hz: [[u32; 2]; 8],
+    /// 结构摘要（高潮小节、动态范围、自动异常诊断）。
+    pub structural_summary: StructuralSummary,
+    /// 小节级列式数组（`resolution: "bar"` 时一小节一行；`"beat"` 时一拍一行，
+    /// 此时每行多一个 `beat` 键 = 该拍在小节内的序号 1..=拍号拍数）。
+    pub bar_series: Vec<BarRow>,
+}
+
+/// `song_meta`（设计稿 §8.2）。
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct SongMeta {
+    /// 总小节数。
+    pub total_bars: u64,
+    /// 全曲时长（秒，保留 1 位小数）。
+    pub duration_sec: f64,
+    /// 基准速度（BPM，保留 1 位小数）。
+    pub base_bpm: f64,
+    /// 调号（如 `"D minor"`）。
+    pub key_signature: String,
+    /// 曲风档（Phase 1 只有固定默认权重，见设计稿 §3.6；此处只记录档名）。
+    pub profile: String,
+}
+
+/// `structural_summary`（设计稿 §8.2）。
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct StructuralSummary {
+    /// 张力最高的小节号（`bar_series` 里 `tension` 最大那一行）。
+    pub climax_bar: u64,
+    /// 该小节的张力（保留 2 位小数）。
+    pub climax_tension: f64,
+    /// 全曲动态范围（`max(lufs_short) - min(lufs_short)`，单位 LU，保留 1 位小数）。
+    pub dynamic_range_lu: f64,
+    /// 自动异常诊断摘要（`provider` 侧已算好的条目，handler 只做映射，
+    /// ⛔ 不在 MCP 里复制检测算法）。
+    pub detected_anomalies: Vec<DetectedAnomaly>,
+}
+
+/// `detected_anomalies[]` 的一条（设计稿 §8.2）。
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct DetectedAnomaly {
+    /// 异常覆盖的小节区间 `[起, 止]`（含端点）。
+    pub bars: [u64; 2],
+    /// 异常类型（如 `"low_mid_buildup"` / `"compression_squash"`）。
+    #[serde(rename = "type")]
+    pub anomaly_type: String,
+    /// 人话描述（须含可复算的数字，如频段超量 `+5.2 dB`、力度涨幅与 LUFS 变化）。
+    pub description: String,
+}
+
+/// `bar_series[]` 的一行（设计稿 §8.2）。
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct BarRow {
+    /// 小节号（1 起）。
+    pub bar: u64,
+    /// 该拍在小节内的序号（`resolution: "beat"` 时才有，1 起；`"bar"` 时缺席）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub beat: Option<u64>,
+    /// 该行起始的物理秒数（保留 2 位小数）。
+    pub time_sec: f64,
+    /// 段落标签（如 `"Intro"`；无标记时为空串）。
+    pub section: String,
+    /// 综合情绪张力指数（设计稿 §3.2，保留 2 位小数）。
+    pub tension: f64,
+    /// 效价色相（冷负 / 暖正，保留 2 位小数）。
+    pub valence_hue: f64,
+    /// 短时响度（BS.1770 Short-Term，单位 LUFS，保留 1 位小数）。
+    pub lufs_short: f64,
+    /// 瞬时响度峰值（Momentary 最大值，单位 LUFS，保留 1 位小数）。
+    pub lufs_momentary_max: f64,
+    /// 谱面合成力度（归一化，保留 2 位小数）。
+    pub score_dyn: f64,
+    /// 旋律和声组每拍触发数（保留 2 位小数）。
+    pub density_pitched_onsets_per_beat: f64,
+    /// 旋律和声组发声占空比（保留 2 位小数）。
+    pub density_pitched_duty: f64,
+    /// 打击组每拍触发数（保留 2 位小数）。
+    pub density_perc_onsets_per_beat: f64,
+    /// 8 频段倾斜补偿后能量（设计稿 §4.3，`+4.5 dB/oct`，单位 dB，保留 1 位小数）。
+    pub bands_tilted_db: [f64; 8],
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -1175,11 +1175,20 @@ fn wire_callbacks(
     host::wire_proposal_drawer(ui, proposal_source);
     // ⭐ `[UI-NOTE-001]` 剪辑选中态 ⇒ 卷帘作用域：与无头装配（`live_surface.rs`）调的是
     // **同一个** `host::wire_clip_scope`（选中是视图态，写属性 + 重注入，⛔ 不 `commit_ops`）。
-    host::wire_clip_scope(ui, Rc::clone(&view), undo);
+    host::wire_clip_scope(ui, Rc::clone(&view), undo.clone());
     // ⭐ 点编曲标尺 ⇒ 走带定位：引擎 `Rc` 与 `wire_transport` **同一个**（点标尺与按
     // `Space` 回起点作用在同一条走带上），投影 `Rc` 与 `wire_clip_scope` / `wire_scene_launch`
     // **同一个**（网格右缘要从活投影读，换工程之后跟着换）。⛔ 不提交 `Op`。
     host::wire_ruler_seek(ui, Rc::clone(engine), Rc::clone(&view));
+    // ⭐ 整曲多层总览图：面板接进正式应用二进制（与测试台调的是**同一个**
+    // `wire_song_overview`）。装配时已经按活工程算过一次真实数据并注入；
+    // 换工程会重跑 `wire_callbacks`（`main.rs` 的 `after` 闭包），于是接线 +
+    // 刷新各再跑一次 —— 这里的刷新是换工程后的那一次（缓存命中，不重算）。
+    let overview_state =
+        yeban_app::song_overview::wire_song_overview(ui, Rc::clone(engine), Rc::clone(&view), undo);
+    // 换工程后的那一次刷新（缓存命中，不重算）；回执只作装配期诊断，这里不展开用。
+    let _overview_refresh =
+        yeban_app::song_overview::refresh_song_overview(ui, &view.borrow(), &overview_state);
     // ⭐ 章节卡片点击 ⇒ 走带定位到段起点（`U-05`）：与上一行**同一对** `Rc`
     // （同一条走带、同一份活投影），落点也是同一个 `commit_seek`。
     host::wire_section_seek(ui, Rc::clone(engine), Rc::clone(&view));

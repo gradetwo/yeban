@@ -168,6 +168,10 @@ pub mod save;
 pub mod samples;
 pub mod save_action;
 pub mod scene;
+// ⭐ **整曲多层可视化总览图（Song Overview）Phase 1 UI 面板**：stub view-model +
+// 4 项核心交互的接线（点击跳转 / 视口联动框 / 图层胶囊 / 悬停读数）。
+// 数据是按设计稿 §8.2 列式形状造的固定假数据；dsp 分析线落地后换真实映射。
+pub mod song_overview;
 pub mod undo;
 
 // ---------------------------------------------------------------------------
@@ -178,6 +182,11 @@ pub mod undo;
 // 这就是「发行物默认关」在源码层面的落点 —— 与 `ui-test-port` 是同一套做法。
 #[cfg(feature = "in-process-mcp")]
 pub mod mcp_mount;
+
+/// 整曲总览图真实 provider（设计稿 §8，Phase 1）—— 只在 `in-process-mcp`
+/// 下编译，与 `mcp_mount` 同一个 `cfg` 门：没有控制面就没有要注入的 provider。
+#[cfg(feature = "in-process-mcp")]
+pub mod song_overview_provider;
 
 // ---------------------------------------------------------------------------
 // 生产窗口的运行期重投影钩子 (`ROAD-M4-008` 选项 (a) 第 (b) 项, 2026-10-06)

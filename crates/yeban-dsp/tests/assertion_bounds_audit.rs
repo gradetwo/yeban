@@ -130,6 +130,7 @@ const SOURCES: &[(&str, &str)] = &[
         "tests/runtime_paths_rt_zero_alloc.rs",
         include_str!("runtime_paths_rt_zero_alloc.rs"),
     ),
+    ("tests/song_overview.rs", include_str!("song_overview.rs")),
     (
         "tests/stretch_contract.rs",
         include_str!("stretch_contract.rs"),
@@ -140,7 +141,7 @@ const SOURCES: &[(&str, &str)] = &[
 ///
 /// 主判据是"无界站点数 == 基线"；整组删掉一个被扫文件**不会**让无界站点数增加 ⇒
 /// 本判据仍绿，而 R115 的覆盖面已静默缩水。只有本下界能拦住这种**单向**偷工。
-const MIN_SOURCES: usize = 34;
+const MIN_SOURCES: usize = 35;
 
 /// 注册基线：允许存在的"无界断言站点"数。⭐ **棘轮** —— 只能减，不能增。
 const UNBOUNDED_BASELINE: usize = 0;
@@ -161,6 +162,21 @@ const ALLOWLIST: &[(&str, &str, &str)] = &[
         "src/tape.rs",
         "assert!(right.iter().all(|s| *s == 0.0), \"右声道无输入 ⇒ 无串音\");",
         "测试内断言：512 样本定长冲激块右声道全零（无串音），规模由测试构造固定，非生产路径",
+    ),
+    (
+        "tests/song_overview.rs",
+        ".all(|&v| v == BAND_DB_FLOOR),",
+        "测试内断言：静音输入下首小节 8 频段全为 −120 dB 底，`bands_tilted_db[0]` 为定长 `[f32; 8]`，规模由类型固定，非生产路径",
+    ),
+    (
+        "tests/song_overview.rs",
+        ".all(|&v| (-70.0..=0.0).contains(&v)),",
+        "测试内断言：3 小节测试曲的 lufs_short 全落在 [−70, 0] 内，长度等于总小节数 3（同测试内已断言），规模由测试输入固定，非生产路径",
+    ),
+    (
+        "tests/song_overview.rs",
+        ".all(|a| a.anomaly_type != AnomalyType::LowMidBuildup),",
+        "测试内断言：1000 Hz 单音独奏不应报 low_mid_buildup，diagnostics 为有限异常列表的切片，规模由检测器输出固定，非生产路径",
     ),
 ];
 

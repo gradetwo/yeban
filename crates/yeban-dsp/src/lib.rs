@@ -98,6 +98,7 @@ pub mod polysynth;
 pub mod reverb;
 pub mod shaping;
 pub mod smoothing;
+pub mod song_overview;
 pub mod tape;
 pub mod vocal_chunk;
 pub mod vocal_key_detect;

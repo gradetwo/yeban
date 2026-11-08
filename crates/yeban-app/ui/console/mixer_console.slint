@@ -482,19 +482,21 @@ export component MixerConsole inherits Rectangle {
         // ⛔ 本组件不读盘、不造数据：三个数组**全部**来自投影（见 `src/bridge.rs` 的
         // `AssetPoolRowView`），空池显示「尚无素材」。
         // ⭐ 任务单 `#186`：宽档仍是「工程」面板正下方（`y = 8 + 104 + space-3 = 118px`）；
-        // 窄档（`root.narrow`）时它排在**竖排后的「工程」面板**正下方（`y = 200px`），
-        // 高度随之收成 `root.height - 200`（下沿贴到调音台底，仍被 `clip: true` 裁住），
-        // 使整列的右沿/下沿都不越出主控通道条与调音台裁剪区，且两行素材（`y = 44/76`、高 30）
-        // 都在面板内。
+        // 窄档（`root.narrow`）时它排在**竖排后的「工程」面板**正下方（`y = 194px`），
+        // 高度随之收成 `root.height - 194`（下沿贴到调音台底，仍被 `clip: true` 裁住），
+        // 使整列的右沿/下沿都不越出主控通道条与调音台裁剪区，且两行素材（`y = 42/74`、高 30）
+        // 都在面板内。⭐ 总览图面板：控制台被面板挤占 9px（1024×800 档），本面板随之
+        // 上移 6px（`y` 去掉末尾一个 `space-3` 间隙，200→194）且行起点上移 2px
+        // （42/74），否则第二行（`y = 76`）会落到面板底沿（72）之下、判据取不到它。
         AssetPoolPanel {
             x: root.narrow
                 ? Tokens.space-4 + 104px * root.track-names.length
                 : Tokens.space-4 + 104px * root.track-names.length + 216px + Tokens.space-3;
             y: root.narrow
-                ? Tokens.space-4 + 76px + Tokens.space-3 + 104px + Tokens.space-3
+                ? Tokens.space-4 + 76px + Tokens.space-3 + 104px
                 : Tokens.space-4 + 104px + Tokens.space-3;
             width: 216px;
-            height: root.narrow ? root.height - 200px : root.height - 128px;
+            height: root.narrow ? root.height - 194px : root.height - 128px;
             asset-pool-names: root.asset-pool-names;
             asset-pool-kinds: root.asset-pool-kinds;
             asset-pool-details: root.asset-pool-details;

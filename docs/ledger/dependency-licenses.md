@@ -3,16 +3,16 @@
 > 由 `python3 scripts/gates/license_inventory.py` 从 `cargo metadata --locked` 生成。
 > CI 用 `--check` 对账：加依赖/升版本后忘记重新生成，这一项会变红。
 
-- `Cargo.lock` SHA-256（前 16 位）: `414f62b2d64a5086`
-- 外部依赖包数: **633**（不含 28 个 workspace 成员）
+- `Cargo.lock` SHA-256（前 16 位）: `0882086bf8349034`
+- 外部依赖包数: **638**（不含 28 个 workspace 成员）
 - 许可来源: 各包 `Cargo.toml` 的 `license` 字段（SPDX 表达式，未经人工改写）
 
 ## 许可族分布
 
 | SPDX 表达式 | 包数 |
 | :--- | ---: |
-| `MIT OR Apache-2.0` | 293 |
-| `MIT` | 130 |
+| `MIT OR Apache-2.0` | 297 |
+| `MIT` | 131 |
 | `Apache-2.0 OR MIT` | 52 |
 | `Unicode-3.0` | 27 |
 | `Apache-2.0` | 18 |
@@ -416,6 +416,7 @@
 | `ppv-lite86` | `0.2.21` | `MIT OR Apache-2.0` | 传递 | — |
 | `presser` | `0.3.1` | `MIT OR Apache-2.0` | 传递 | — |
 | `prettyplease` | `0.2.37` | `MIT OR Apache-2.0` | 传递 | — |
+| `primal-check` | `0.3.4` | `MIT OR Apache-2.0` | 传递 | — |
 | `proc-macro-crate` | `3.5.0` | `MIT OR Apache-2.0` | 传递 | — |
 | `proc-macro2` | `1.0.107` | `MIT OR Apache-2.0` | 传递 | — |
 | `profiling` | `1.0.18` | `MIT OR Apache-2.0` | 传递 | — |
@@ -439,6 +440,7 @@
 | `rayon` | `1.12.0` | `MIT OR Apache-2.0` | 直接 | `yeban-render` |
 | `rayon-core` | `1.13.0` | `MIT OR Apache-2.0` | 传递 | — |
 | `read-fonts` | `0.41.0` | `MIT OR Apache-2.0` | 传递 | — |
+| `realfft` | `3.5.1` | `MIT` | 直接 | `yeban-dsp` |
 | `redox_syscall` | `0.4.1` | `MIT` | 传递 | — |
 | `redox_syscall` | `0.5.18` | `MIT` | 传递 | — |
 | `redox_syscall` | `0.9.4` | `MIT` | 传递 | — |
@@ -458,6 +460,7 @@
 | `rustc-hash` | `1.1.0` | `Apache-2.0/MIT` | 传递 | — |
 | `rustc-hash` | `2.1.3` | `Apache-2.0 OR MIT` | 传递 | — |
 | `rustc_version` | `0.4.1` | `MIT OR Apache-2.0` | 传递 | — |
+| `rustfft` | `6.4.1` | `MIT OR Apache-2.0` | 传递 | — |
 | `rustix` | `0.38.44` | `Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT` | 传递 | — |
 | `rustix` | `1.1.5` | `Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT` | 传递 | — |
 | `rustversion` | `1.0.23` | `MIT OR Apache-2.0` | 传递 | — |
@@ -470,7 +473,7 @@
 | `serde` | `1.0.229` | `MIT OR Apache-2.0` | 直接 | `yeban-mcp`, `yeban-model`, `yeban-ui-mcp`, `yeban-ui-test-port` |
 | `serde_core` | `1.0.229` | `MIT OR Apache-2.0` | 传递 | — |
 | `serde_derive` | `1.0.229` | `MIT OR Apache-2.0` | 传递 | — |
-| `serde_json` | `1.0.151` | `MIT OR Apache-2.0` | 直接 | `yeban-app`, `yeban-mcp`, `yeban-model`, `yeban-ui-mcp`, `yeban-ui-test-port` |
+| `serde_json` | `1.0.151` | `MIT OR Apache-2.0` | 直接 | `yeban-app`, `yeban-mcp`, `yeban-model`, `yeban-render`, `yeban-ui-mcp`, `yeban-ui-test-port` |
 | `serde_repr` | `0.1.21` | `MIT OR Apache-2.0` | 传递 | — |
 | `serde_spanned` | `1.1.1` | `MIT OR Apache-2.0` | 传递 | — |
 | `sha2` | `0.11.0` | `MIT OR Apache-2.0` | 直接 | `yeban-diagnostics`, `yeban-model`, `yeban-render` |
@@ -501,6 +504,7 @@
 | `spirv` | `0.4.0+sdk-1.4.341.0` | `Apache-2.0` | 传递 | — |
 | `stable_deref_trait` | `1.2.1` | `MIT OR Apache-2.0` | 传递 | — |
 | `static_assertions` | `1.1.0` | `MIT OR Apache-2.0` | 传递 | — |
+| `strength_reduce` | `0.2.4` | `MIT OR Apache-2.0` | 传递 | — |
 | `strict-num` | `0.1.1` | `MIT` | 传递 | — |
 | `strum` | `0.28.0` | `MIT` | 传递 | — |
 | `strum_macros` | `0.28.0` | `MIT` | 传递 | — |
@@ -544,6 +548,7 @@
 | `tracing` | `0.1.44` | `MIT` | 传递 | — |
 | `tracing-attributes` | `0.1.31` | `MIT` | 传递 | — |
 | `tracing-core` | `0.1.36` | `MIT` | 传递 | — |
+| `transpose` | `0.2.3` | `MIT OR Apache-2.0` | 传递 | — |
 | `tree_magic_mini` | `3.2.2` | `MIT` | 传递 | — |
 | `ttf-parser` | `0.25.1` | `MIT OR Apache-2.0` | 传递 | — |
 | `typed-index-collections` | `3.5.0` | `MIT OR Apache-2.0` | 传递 | — |

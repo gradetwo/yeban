@@ -86,8 +86,8 @@ enum BoundStatus {
     Unbounded(&'static str),
 }
 
-/// 39 条 string 参数声明（`TOOLS` 里 `json_type == "string"` 的**不同名**）。
-const STRING_PARAM_BOUNDS: [(&str, BoundStatus); 39] = [
+/// 40 条 string 参数声明（`TOOLS` 里 `json_type == "string"` 的**不同名**）。
+const STRING_PARAM_BOUNDS: [(&str, BoundStatus); 40] = [
     ("idempotencyKey", BoundStatus::Length(None, Some(256))),
     ("name", BoundStatus::Length(Some(1), None)),
     ("license", BoundStatus::Length(Some(1), None)),
@@ -242,6 +242,9 @@ const STRING_PARAM_BOUNDS: [(&str, BoundStatus); 39] = [
     // `yeban_save_preset` 的 scope：`instrument`（乐器调优，缺省）| `track`
     // （整轨快照）；其它值 ⇒ `INVALID_PARAMETER_RANGE`。
     ("scope", BoundStatus::WordList),
+    // 整曲总览图：`get_song_overview` 的 `resolution` —— 取值是固定词表（`bar` / `beat`），
+    // 未知值由 `plan_song_overview` 以 `unknownResolution` 拒绝并列出 `accepted`。
+    ("resolution", BoundStatus::WordList),
 ];
 
 #[test]

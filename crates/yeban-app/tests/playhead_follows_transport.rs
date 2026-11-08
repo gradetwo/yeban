@@ -206,8 +206,8 @@ fn both_playheads_follow_the_engine_transport_reading() {
     );
     assert_eq!(
         app.matches("playhead-ticks: root.playhead-ticks;").count(),
-        2,
-        "编曲与卷帘两条光标都必须拿同一份 `playhead-ticks`"
+        3,
+        "编曲、卷帘与总览图三条光标都必须拿同一份 `playhead-ticks`（第三条是总览图的 `song-overview-playhead`，见 `ui/workspace/song_overview_panel.slint`）"
     );
 
     let source = include_str!("../src/host.rs");

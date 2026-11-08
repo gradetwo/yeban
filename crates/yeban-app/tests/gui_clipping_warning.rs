@@ -6,7 +6,7 @@
 //! | :--- | :--- |
 //! | 数据通道 | ✓ `module-status` 里多了 `clipping_note="…"`（完整读数） |
 //! | 窗口可见性 | ⛔ 回执行宽 264px，前缀 `module:action=export-wav:outcome=ok:` 占 216px，`clipping_note` 是最后一个字段 ⇒ 被 `elide` |
-//! | ⭐ **本单** | ⭐ 右栏 `module-clipping-warning`（**独立一行**，`y = 448`、宽 264、默认空串 ⇒ `visible: false`）：削波时显示 `⚠ 母带削波：N 个样本，建议减 X dB`；不削波 / 其它模块动作 ⇒ 清空 |
+//! | ⭐ **本单** | ⭐ 右栏 `module-clipping-warning`（**独立一行**，`y = 444`、宽 264、默认空串 ⇒ `visible: false`）：削波时显示 `⚠ 母带削波：N 个样本，建议减 X dB`；不削波 / 其它模块动作 ⇒ 清空 |
 //!
 //! # 判据
 //!
@@ -67,7 +67,7 @@ const SAMPLE_WARNING: &str = "⚠ 母带削波：384000 个样本，建议减 24
 /// 三档窗口（与 `tests/pane_no_overlap.rs` 同一组）。
 const TIERS: &[(u32, u32)] = &[(1920, 1080), (1440, 900), (1024, 800)];
 
-/// 相邻的模块行（警示行在 `y = 448`，它下面没有第二个新控件；这里取同族的 5 个近邻）。
+/// 相邻的模块行（警示行在 `y = 444`，它下面没有第二个新控件；这里取同族的 5 个近邻）。
 const NEIGHBOURS: &[&str] = &[
     "module-actions-title",
     "module-midi-in-button",

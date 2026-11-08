@@ -50,6 +50,7 @@ pub mod project;
 pub mod sampler_path;
 pub mod samples;
 pub mod session;
+pub mod song_overview;
 pub mod time_math;
 
 pub use automation::{NOMINAL_GAIN_MAX_DB, NOMINAL_GAIN_MIN_DB};

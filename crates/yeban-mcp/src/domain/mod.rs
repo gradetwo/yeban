@@ -47,6 +47,7 @@
 //! | [`extension_pure`] | 三个扩展工具的**零第三方依赖**纯逻辑（词表 / 来源二选一 / 确定性标签），本机可单独验证 |
 //! | [`extension_audit`] | **零依赖**文本守卫：写路径 / `dryRun` 入口 / 错误码词表 / 无孤儿模块，本机可单独验证 |
 //! | [`sfz`] | `yeban_load_sfz` / `yeban_render_sfz_wav`：`yeban-sfz` 装载 + 用 SFZ 区域离线导出 WAV |
+//! | [`song_overview`] | `get_song_overview`：整曲多层总览图（设计稿 §8，Phase 1）—— `SongOverviewProvider` trait + stub；分析住在 `yeban-dsp`，宿主注入 |
 //! | [`sfz_stream`] | P2 磁盘流式引擎：后台读盘线程＋逐声部无锁环＋起音预载（预览＝已用区域、实时＝整件乐器） |
 //! | [`record_wav`] | `yeban_record_wav`：`ARCH-REC-001` 三段（无锁环 + 后台抽干）→ 24-bit WAV |
 
@@ -82,6 +83,7 @@ pub mod section;
 pub mod section_build;
 pub mod sfz;
 pub mod sfz_stream;
+pub mod song_overview;
 pub mod stems;
 pub mod store;
 pub mod svs;
@@ -89,6 +91,7 @@ pub mod view;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use serde_json::{Map, Value};
 
@@ -235,6 +238,18 @@ pub struct Domain {
     /// 线程上，`EngineHost` 拿不到 stats）⇒ `engine.sceneLaunchesApplied` 如实为
     /// `null`，⛔ 不沿用上一代引擎的旧数字。
     scene_launches_applied: Option<u64>,
+    /// 宿主注入的整曲总览分析 provider（`get_song_overview` 的唯一分析来源）。
+    ///
+    /// `None` = 宿主没有注入（形态 B 的独立 stdio 进程，或 dsp 线尚未落地）
+    /// ⇒ 工具响亮报 `CONFLICT` + `reason: "providerUnavailable"`，⛔ 不返回
+    /// 空总览。真实实现由 `yeban-app` 在挂载时注入（app 能同时依赖
+    /// `yeban-dsp` 与 `yeban-mcp`）；`yeban-mcp` 自身**不**依赖 `yeban-dsp`
+    /// （见 `domain::song_overview` 模块头的证据）。
+    ///
+    /// 它是**宿主能力**，不是工程状态：打开 / 关闭工程**不**重置它（与
+    /// [`Self::engine`] 的引擎读数镜像同一口径 —— 换一份工程不等于换一台
+    /// 分析引擎）。`Arc` 共享：宿主与控制面会话可各持一份句柄。
+    song_overview_provider: Option<Arc<dyn song_overview::SongOverviewProvider>>,
     now_ms: u64,
     /// **会话内已装载的 SFZ 乐器**（`yeban_load_sfz` 的登记表），键 = instrumentId。
     ///
@@ -288,6 +303,7 @@ impl Domain {
             scene_launch_host_attached: false,
             pending_scene_launches: Vec::new(),
             scene_launches_applied: None,
+            song_overview_provider: None,
             now_ms: 0,
             sfz_instruments: BTreeMap::new(),
             sfz_next_id: 1,
@@ -469,6 +485,27 @@ impl Domain {
     #[must_use]
     pub const fn scene_launches_applied(&self) -> Option<u64> {
         self.scene_launches_applied
+    }
+
+    /// 宿主注入的整曲总览分析 provider（`None` = 未注入）。
+    ///
+    /// **只对宿主开放**：没有任何工具会写它（判据 `tests/song_overview.rs`
+    /// 用"调用前后 provider 句柄逐位相同"钉住）。
+    #[must_use]
+    pub fn song_overview_provider(&self) -> Option<Arc<dyn song_overview::SongOverviewProvider>> {
+        self.song_overview_provider.clone()
+    }
+
+    /// 注入 / 替换整曲总览分析 provider（形态 A 的 `yeban-app` 在挂载时调用；
+    /// 挂载之后再注入同样生效，工具下一次调用即用新 provider）。
+    ///
+    /// 注入是**宿主能力声明**，不是工程写操作：它不推进 `apply_revision`，
+    /// 也不动提交图谱。打开 / 关闭工程不清除它（见字段文档）。
+    pub fn set_song_overview_provider(
+        &mut self,
+        provider: Arc<dyn song_overview::SongOverviewProvider>,
+    ) {
+        self.song_overview_provider = Some(provider);
     }
 
     /// 把模型会话态里那份**撤销游标镜像**同步成权威值（见 [`Domain::session`]）。
@@ -1288,6 +1325,15 @@ pub enum Plan {
         /// SVS 侧报告（任务 / part / 遍 / 模型 / 放置语义 / 暂存路径）。
         report: Value,
     },
+    /// `get_song_overview`（**只读**）：整曲多层总览图（设计稿 §8，Phase 1）。
+    /// `data` 在 `plan` 里就组装好（`apply` 原样回传，一位都不改）。
+    SongOverview {
+        /// 已经组装好的总览（`schema_version` / `song_meta` /
+        /// `band_definitions_hz` / `structural_summary` / `bar_series`
+        /// + `provider` / `resolution`，`include_png_path` 时另有
+        ///   `pngPath: null` + `pngNote`）。
+        data: Value,
+    },
     /// **宿主动作**（形态 A 的 GUI 经唯一可变权威写入；`ROAD-M4-008` 选项 (a) 第二片）。
     ///
     /// 工具面的 [`plan`] **永远不产出**这个变体（它不是任何一个 `yeban_*` 工具）；
@@ -1329,6 +1375,7 @@ impl Plan {
             Self::SvsSubmit { .. } => "svs_submit",
             Self::SvsJob { .. } => "svs_job",
             Self::SvsAudio { .. } => "svs_audio",
+            Self::SongOverview { .. } => "song_overview",
             // 宿主动作不是工具（`plan` 不产出它）；名字只用于留痕与判据点名。
             Self::Host(_) => "host_action",
         }
@@ -1389,6 +1436,8 @@ impl Plan {
             // SVS 提交 / 状态 / 回执不产生提交；落轨那条走上面的 `SvsAudio` 臂。
             | Self::SvsSubmit { .. }
             | Self::SvsJob { .. }
+            // 整曲总览是只读读数（provider 只算数，不改工程）。
+            | Self::SongOverview { .. }
             // 场景启动不改工程文档（只改会话/引擎运行态）⇒ 提交数不变。
             | Self::LaunchScene { .. }
             // 撤销 / 重做**不动提交图谱**（只动文档与游标）⇒ 提交数不变。
@@ -1476,7 +1525,9 @@ impl Plan {
             | Self::LaunchScene { .. }
             // SVS 提交 / 状态 / 回执不改工程文档（提交是外部副作用）。
             | Self::SvsSubmit { .. }
-            | Self::SvsJob { .. } => false,
+            | Self::SvsJob { .. }
+            // 整曲总览是只读读数（provider 只算数）。
+            | Self::SongOverview { .. } => false,
         }
     }
 
@@ -1638,7 +1689,9 @@ impl Plan {
             // 探针不改工程内容（连工程都不要求活跃）。
             | Self::MidiInputProbe { .. }
             // 场景启动不改工程文档 ⇒ `dryRun` 的“工程差异”是 `None`。
-            | Self::LaunchScene { .. } => Ok(None),
+            | Self::LaunchScene { .. }
+            // 整曲总览是只读读数 ⇒ `dryRun` 的“工程差异”同样是 `None`。
+            | Self::SongOverview { .. } => Ok(None),
         }
     }
 
@@ -2050,6 +2103,16 @@ impl Plan {
                 preview.insert("readOnly".to_owned(), Value::from(true));
                 preview.insert("result".to_owned(), data.clone());
             }
+            // 整曲总览：只读读数，预览 = 真做（与 `SvsJob` 同一做法）。
+            Self::SongOverview { data } => {
+                if let Value::Object(fields) = data.clone() {
+                    for (key, value) in fields {
+                        preview.insert(key, value);
+                    }
+                }
+                preview.insert("readOnly".to_owned(), Value::from(true));
+                preview.insert("result".to_owned(), data.clone());
+            }
             // SVS 取音频：报告键 +（落轨时）导入计划的 `data()`，与音频导入同款。
             Self::SvsAudio { import, report } => {
                 if let Value::Object(fields) = report.clone() {
@@ -2424,6 +2487,7 @@ pub fn plan(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
         "yeban_midi_input_probe" => plan_midi_input_probe(call),
         "synthesize_singing" => svs::plan_synthesize(domain, call),
         "svs_job" => svs::plan_svs_job(domain, call),
+        "get_song_overview" => song_overview::plan_song_overview(domain, call),
         // `ToolCall::from_params` 已按契约枚举把关, 因此这里不可达;
         // 用 CONFLICT 而不是 panic: 未知工具名不该让服务进程倒下。
         other => Err(Fault::domain(
@@ -4776,7 +4840,8 @@ pub fn commit_model_of(plan: &Plan) -> &'static str {
         | Plan::RecordWav { .. }
         | Plan::MidiInputProbe { .. }
         | Plan::SvsSubmit { .. }
-        | Plan::SvsJob { .. } => "none",
+        | Plan::SvsJob { .. }
+        | Plan::SongOverview { .. } => "none",
     }
 }
 
@@ -4883,6 +4948,8 @@ fn apply_plan_model(domain: &mut Domain, plan: Plan) -> Result<ToolResponse, Fau
         Plan::ImportAudio { import } => import_audio::apply(domain, &import),
         Plan::SvsSubmit { data } => Ok(ToolResponse::success(data)),
         Plan::SvsJob { data } => Ok(ToolResponse::success(data)),
+        // 只读：总览在 `plan` 里就组装好了，`apply` 原样回传（一位都不改）。
+        Plan::SongOverview { data } => Ok(ToolResponse::success(data)),
         Plan::SvsAudio { import, report } => svs::apply_svs_audio(domain, import, report),
         Plan::Diagnostics { export } => diagnostics::apply(domain, &export),
         // 只读：字节在 `plan` 里就编好了，`apply` 原样回传（一位都不改、不落盘）。
@@ -6169,7 +6236,10 @@ mod tests {
     #[test]
     fn every_tool_has_a_plan_arm_and_no_not_implemented_report() {
         // 十个工具都必须能进 `plan`（不再一律 -32005）。
-        let domain = domain();
+        let mut domain = domain();
+        // `get_song_overview` 的 provider 是宿主注入的：本夹具注入 stub
+        // （无 provider 的那条响亮拒绝由 `tests/song_overview.rs` 单独覆盖）。
+        domain.set_song_overview_provider(Arc::new(song_overview::StubSongOverviewProvider));
         let track = fixture_track(&domain);
         // SVS 服务不在：绑一个临时端口后立刻释放 ⇒ 连接必被拒
         //（不依赖“某个端口恰好没人用”这种运气）。
@@ -6369,6 +6439,8 @@ mod tests {
                     "service_url": closed_service_url,
                 }),
             ),
+            // 整曲总览：stub provider 已注入 ⇒ 缺省实参规划成功（8 小节总览）。
+            ("get_song_overview", serde_json::json!({})),
         ];
         for spec in &crate::tools::TOOLS {
             assert!(

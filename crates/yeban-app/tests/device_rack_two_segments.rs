@@ -466,33 +466,37 @@ fn the_1920x1080_geometry_is_still_the_registered_one() {
     let live = live(size);
     let tree = live.tree();
 
+    // ⭐ 总览图面板是有意布局变更（不是无意挪动）：1920×1080 档面板展开 104px，
+    // 3:2 弹性分摊 ⇒ 工作区 −62、控制台 −42 ⇒ 本表全部 y −62，
+    // `device-rack` 高 393→351；x/宽/其余节点高一位未动。
+    // `#184` 的"不许挪动"守卫仍有效：此后任何**非面板原因**的改动仍须逐格相等。
     let registered: &[(&str, Bounds)] = &[
         // 第一段（`#157` 起就没动过的那组坐标，`#181` 又加了 EQ 两格）。
-        ("device-rack", (0, 663, 1920, 393)),
-        ("device-rack-track-label", (8, 669, 420, 16)),
-        ("device-rack-count", (436, 669, 200, 16)),
-        ("device-rack-eq-curve", (8, 691, 420, 100)),
-        ("device-eq-low-gain-panel", (444, 691, 380, 100)),
-        ("device-eq-value", (452, 711, 364, 16)),
-        ("device-eq-low-gain-slider", (452, 731, 300, 24)),
-        ("device-insert-eq-button", (8, 839, 84, 20)),
-        ("device-insert-reverb-button", (100, 839, 84, 20)),
-        ("clip-create-button", (192, 839, 120, 20)),
-        ("device-0-card", (8, 879, 420, 44)),
-        ("device-0-bypass-switch", (312, 883, 72, 20)),
-        ("device-0-remove-button", (400, 883, 20, 20)),
+        ("device-rack", (0, 601, 1920, 351)),
+        ("device-rack-track-label", (8, 607, 420, 16)),
+        ("device-rack-count", (436, 607, 200, 16)),
+        ("device-rack-eq-curve", (8, 629, 420, 100)),
+        ("device-eq-low-gain-panel", (444, 629, 380, 100)),
+        ("device-eq-value", (452, 649, 364, 16)),
+        ("device-eq-low-gain-slider", (452, 669, 300, 24)),
+        ("device-insert-eq-button", (8, 777, 84, 20)),
+        ("device-insert-reverb-button", (100, 777, 84, 20)),
+        ("clip-create-button", (192, 777, 120, 20)),
+        ("device-0-card", (8, 817, 420, 44)),
+        ("device-0-bypass-switch", (312, 821, 72, 20)),
+        ("device-0-remove-button", (400, 821, 20, 20)),
         // 第二段（`#180`／`#181`／`#182` 注册的 `840 / 544 / 1384` 那一组）。
-        ("master-device-rack", (840, 691, 544, 260)),
-        ("master-device-track-label", (848, 695, 360, 16)),
-        ("master-device-rack-count", (1224, 695, 144, 16)),
-        ("master-device-insert-eq-button", (848, 719, 84, 20)),
-        ("master-device-insert-reverb-button", (948, 719, 84, 20)),
-        ("master-device-eq-panel", (1040, 713, 328, 48)),
-        ("master-device-eq-value", (1048, 727, 312, 12)),
-        ("master-device-eq-slider", (1048, 741, 300, 18)),
-        ("master-device-0-card", (844, 763, 528, 44)),
-        ("master-device-0-bypass-switch", (1256, 767, 72, 20)),
-        ("master-device-0-remove-button", (1344, 767, 20, 20)),
+        ("master-device-rack", (840, 629, 544, 260)),
+        ("master-device-track-label", (848, 633, 360, 16)),
+        ("master-device-rack-count", (1224, 633, 144, 16)),
+        ("master-device-insert-eq-button", (848, 657, 84, 20)),
+        ("master-device-insert-reverb-button", (948, 657, 84, 20)),
+        ("master-device-eq-panel", (1040, 651, 328, 48)),
+        ("master-device-eq-value", (1048, 665, 312, 12)),
+        ("master-device-eq-slider", (1048, 679, 300, 18)),
+        ("master-device-0-card", (844, 701, 528, 44)),
+        ("master-device-0-bypass-switch", (1256, 705, 72, 20)),
+        ("master-device-0-remove-button", (1344, 705, 20, 20)),
     ];
     for (id, want) in registered {
         assert_eq!(

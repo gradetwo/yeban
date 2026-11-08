@@ -1,0 +1,507 @@
+// 夜半 (Yeban) — 整曲多层可视化总览图（Song Overview）Phase 1
+//
+// 设计稿：`~/workspace/yeban-songmap-design.md`（§7 视觉编码与交互、§11 MVP Phase 1）。
+//
+// 布局（设计稿 §7.1）：总高 104 px —— 主画布 82 px（三层正交叠合：底层 8 行频率热力图
+// Magma 色表；中层能量层半透明面积冰青色 Alpha 0.22；顶层情绪起伏线 2.5 px + 4 px 深色
+// 描边护城河，随调式效价变色）+ 底部 22 px（上方 14 px 旋律/打击双行疏密脉冲条码，
+// 下方 8 px 小节号与段落结构标签尺）。可折叠：折叠后只剩 22 px 条带。
+//
+// ⚠ 总高是 104 px，不是设计稿 §11 与任务简报里写的「100 px」：82 + 22 = 104，
+// 「100 px」只是约数（§7.1 的硬约束是总高 96–120 px，104 在内）。按 100 px
+// 做会把底部条的末 4 px（正是标签尺的下半）裁掉 —— 2026-11-08 视觉验收实测：
+// 标签只剩顶部 1 px 金色残影。改 104 px 是按设计稿的两个分项尺寸算出的，不是改设计。
+//
+// 数据流方向：只画数，不算数。Magma 配色、张力配色、悬停文本、标尺标签全由
+// `src/song_overview.rs` 算好注入；本文件只做几何（`bar × 画布宽 / 小节数`）。
+// 数据是真实管线（工程 → 离线渲染 → dsp 分析 → 映射），标题不再带「试算」。
+//
+// 交互（设计稿 §7.3，4 项 P0 全是真接线，⛔ 不是摆设）：
+//   1. 点击跳转播放头：整块面板的 TouchArea（最底层）报横坐标分数 → Rust 换算 tick 并 seek。
+//   2. 视口联动框：金色半透明矩形框 = 当前编排视口（由 `roll-scroll-x` /
+//      `roll-ticks-per-pixel` 活算）；拖框体滚动，拖右缘缩放。
+//   3. 图层开关胶囊：右上角 [情绪][能量][频段][疏密] —— 单击隐藏/显示，双击独显。
+//   4. 悬停小节读数：`moved`（未按下）报分数 → Rust 写回 `hover-text`。
+//
+// 时间轴对齐：画布左缘 = 左侧资源栏宽 + 168 px 轨道头列（与编排视图的时间轴同一起点），
+// 右缘留出右 AI 协作栏宽（compact 时为 0）。`time-origin-x` / `right-reserve` 由
+// `app.slint` 传入；4 项交互全按**分数**换算，⛔ 不依赖像素对齐。
+//
+// 张力线是**按小节的阶梯段**（不是 Path 平滑曲线）：数据本身就是小节级（§8.2），
+// 且 Slint 的 Path 命令串无法由运行期画布宽推导（改宽就要重建命令串）；dsp 线
+// 落地给出拍级数据后再评估 Path 平滑线。阶梯段在 120 小节下每段约 10 px，
+// 视觉上就是一条带小台阶的连续线。
+
+import { Tokens, UiText } from "../tokens.slint";
+
+export component SongOverviewPanel inherits Rectangle {
+    // ---- 几何输入（app.slint 传入）----
+    /// 画布左缘（= 左侧资源栏宽 + 168 px 轨道头列），默认 0 = 画布从面板左缘起。
+    in property <length> time-origin-x: 0px;
+    /// 画布右缘预留（= 右 AI 协作栏宽；compact 时为 0）。
+    in property <length> right-reserve: 0px;
+
+    // ---- 数据输入（src/song_overview.rs 注入，列式形状见 §8.2）----
+    in property <int> total-bars: 0;
+    in property <[float]> tension: [];
+    in property <[color]> tension-colors: [];
+    in property <[float]> lufs: [];
+    /// 平铺 `bar * 8 + band`（band 0 = Sub 在下，band 7 = Air 在上）。
+    in property <[color]> band-colors: [];
+    in property <[float]> density-pitched: [];
+    in property <[float]> density-perc: [];
+    in property <[float]> density-duty: [];
+    in property <[string]> section-names: [];
+    in property <[int]> section-start-bars: [];
+    in property <[string]> ruler-labels: [];
+    in property <int> span-ticks: 0;
+    in property <string> key-signature: "";
+    /// 图层键名（与胶囊循环同序：0 情绪 / 1 能量 / 2 频段 / 3 疏密）。
+    /// ⚠ 不能写进 accessible-id 的三元表达式里：`elements.rs` 的 `id_pattern`
+    /// 会把右值里**全部**引号字符串当作按序必现的段，于是三元的 4 个候选名
+    /// （tension/energy/bands/density）会被判成必须同时出现 —— 模板永远
+    /// 匹配不上任何一个注册表 ID（2026-11-08 实测：bands-pill 覆盖判据红）。
+    /// 键名放数组属性里，accessible-id 行只剩首尾两段，模板才能匹配。
+    in property <[string]> layer-keys: ["tension", "energy", "bands", "density"];
+
+    // ---- 视图态输入（MainWindow 拥有，宿主是唯一写者）----
+    in property <bool> collapsed: false;
+    in property <bool> show-tension: true;
+    in property <bool> show-energy: true;
+    in property <bool> show-bands: true;
+    in property <bool> show-density: true;
+    in property <bool> hover-visible: false;
+    in property <float> hover-fraction: 0.0;
+    in property <string> hover-text: "";
+    /// 编排视图横向偏移（px，活读 `MainWindow.roll-scroll-x`）。
+    in property <float> viewport-scroll-x: 0.0;
+    /// 编排视图横向缩放（tick/px，活读 `MainWindow.roll-ticks-per-pixel`）。
+    in property <int> viewport-ticks-per-pixel: 30;
+    /// 走带位置（tick，活读 `MainWindow.playhead-ticks`）。
+    in property <int> playhead-ticks: 0;
+    in property <string> playhead-timecode: "";
+
+    // ---- 回调（只上报，换算 / 夹紧 / 状态翻转全在 Rust）----
+    /// 横坐标分数（0..1）⇒ 走带定位到对应小节。
+    callback seek-requested(float);
+    /// 横坐标分数（0..1）⇒ 悬停读数。
+    callback hover-requested(float);
+    /// 图层下标（0 情绪 / 1 能量 / 2 频段 / 3 疏密）⇒ 隐藏/显示。
+    callback layer-toggle(int);
+    /// 图层下标 ⇒ 独显（已独显则恢复全显）。
+    callback layer-solo(int);
+    /// 目标横向偏移（px，已夹紧）⇒ 滚动编排视图。
+    callback viewport-scroll-requested(float);
+    /// 目标横向缩放（tick/px）⇒ 缩放编排视图。
+    callback viewport-zoom-requested(int);
+    /// 折叠键 ⇒ 翻转 `collapsed`。
+    callback toggle-collapsed();
+
+    // ---- 派生几何（本文件内唯一的算术）----
+    property <length> canvas-width: max(0px, root.width - root.time-origin-x - root.right-reserve);
+    /// 视口左缘占全曲的分数（0..1）。
+    property <float> viewport-start-frac: root.span-ticks > 0 ? root.viewport-scroll-x * root.viewport-ticks-per-pixel / root.span-ticks : 0.0;
+    /// 视口宽度占全曲的分数（0..1，已夹紧）。
+    property <float> viewport-width-frac: root.span-ticks > 0 ? max(0.0, min(1.0, (root.canvas-width / 1px) * root.viewport-ticks-per-pixel / root.span-ticks)) : 1.0;
+    /// 视口框内拖动时按下的点与框左缘的分数差（按下时记，移动时用）。
+    property <float> lens-grab-offset-frac: 0.0;
+    /// 视口框内按下的指针分数（按下时记，松手时判“轻点还是拖动”）。
+    property <float> lens-press-frac: 0.0;
+    property <bool> lens-dragging: false;
+    /// 右缘缩放拖动时按下的指针分数与框宽分数（按下时记，移动时用）。
+    property <float> resize-grab-pointer-frac: 0.0;
+    property <float> resize-grab-width-frac: 0.0;
+    property <bool> resize-dragging: false;
+
+    min-height: root.collapsed ? 22px : 104px;
+    max-height: root.collapsed ? 22px : 104px;
+    background: Tokens.bg-panel;
+    border-width: 1px;
+    border-color: Tokens.line;
+    clip: true;
+
+    accessible-role: region;
+    accessible-id: "song-overview-panel";
+    accessible-label: "整曲多层总览图";
+
+    // ================================================================ ① 点击跳转 / ④ 悬停
+    //
+    // 整块面板的 TouchArea（最底层声明 ⇒ 在最下层命中；胶囊 / 视口框 / 折叠键的
+    // TouchArea 后声明 ⇒ 压在它上面先拿到事件）。
+    // `mouse-x` 是面板局部坐标 ⇒ 分数 = (x − 画布左缘) / 画布宽。
+    //
+    // ⚠ 悬停必须走 `pointer-event` 的 `PointerEventKind.move` 分支：
+    // Slint 1.18.1 的 `TouchArea.moved` 只在按住（grabbed）时触发，悬停时根本不
+    // 触发（`i-slint-core/.../input_items.rs` 的 Moved 臂：`pointer-event` 无条件
+    // 触发，`moved` 只在 `grabbed` 时触发）。拖动连续定位也走同一分支，`moved`
+    // 一律不用（留着会在拖动里与本分支重复发定位、走带日志翻倍）。
+    seek-area := TouchArea {
+        width: parent.width;
+        height: parent.height;
+        pointer-event(event) => {
+            if event.kind == PointerEventKind.down {
+                root.seek-requested((self.mouse-x - root.time-origin-x) / root.canvas-width);
+            } else if event.kind == PointerEventKind.move && root.canvas-width > 0px {
+                if self.pressed {
+                    // 按住拖动 ⇒ 连续定位（与标尺 `U-07 R3` 同款）。
+                    root.seek-requested((self.mouse-x - root.time-origin-x) / root.canvas-width);
+                } else {
+                    // 悬停 ⇒ 小节读数。
+                    root.hover-requested((self.mouse-x - root.time-origin-x) / root.canvas-width);
+                }
+            }
+        }
+    }
+
+    // ================================================================ 主画布 82 px
+    canvas := Rectangle {
+        x: root.time-origin-x;
+        y: 0;
+        width: root.canvas-width;
+        height: 82px;
+        visible: !root.collapsed;
+        background: Tokens.bg-void;
+        clip: true;
+
+        accessible-role: image;
+        accessible-id: "song-overview-canvas";
+        accessible-label: "整曲总览图：频率热力图、能量面积与情绪曲线";
+
+        // ---- 底层：8 行频率热力图（Magma 色表，颜色由 Rust 算好）----
+        // 行序：band-row 0 = Air（顶）……band-row 7 = Sub（底）。
+        for band-row in 8 : Rectangle {
+            x: 0;
+            y: band-row * parent.height / 8;
+            width: parent.width;
+            height: parent.height / 8 + 1px;
+            visible: root.show-bands;
+            for bar in root.total-bars : Rectangle {
+                x: bar * parent.width / root.total-bars;
+                y: 0;
+                width: parent.width / root.total-bars + 1px;
+                height: parent.height;
+                background: root.band-colors[bar * 8 + (7 - band-row)];
+            }
+        }
+
+        // ---- 中层：能量层半透明面积（冰青色 Alpha 0.22，LUFS −36..−6 映射全高）----
+        for bar in root.total-bars : Rectangle {
+            x: bar * parent.width / root.total-bars;
+            // 柱顶 = 画布底 − 归一化高度 × 画布高（`self.height` 不在同一绑定里用，
+            // 用显式公式避免自引用）。
+            y: parent.height - max(0.0, min(1.0, (root.lufs[bar] + 36.0) / 30.0)) * parent.height;
+            width: parent.width / root.total-bars + 1px;
+            height: max(0.0, min(1.0, (root.lufs[bar] + 36.0) / 30.0)) * parent.height;
+            background: #38BDF8;
+            opacity: 0.22;
+            visible: root.show-energy;
+        }
+
+        // ---- 顶层：情绪起伏线（2.5 px + 4 px 深色描边护城河，随调式效价变色）----
+        // 护城河：比线宽 8 px 的深色底衬（线上下各 4 px），先画。
+        for bar in root.total-bars : Rectangle {
+            x: bar * parent.width / root.total-bars;
+            y: max(0px, (1.0 - root.tension[bar]) * (parent.height - 2.5px) - 4px);
+            width: parent.width / root.total-bars + 1px;
+            height: 10.5px;
+            background: #0B0D12;
+            opacity: 0.55;
+            visible: root.show-tension;
+        }
+        // 线本体：按小节的阶梯段（见文件头注释）。
+        for bar in root.total-bars : Rectangle {
+            x: bar * parent.width / root.total-bars;
+            y: (1.0 - root.tension[bar]) * (parent.height - 2.5px);
+            width: parent.width / root.total-bars + 1px;
+            height: 2.5px;
+            background: root.tension-colors[bar];
+            visible: root.show-tension;
+        }
+
+        // ---- 走带光标（与编排 / 卷帘同一条引擎读数）----
+        Rectangle {
+            // ⚠ 必须先乘后除：`playhead-ticks / span-ticks` 是 int/int 除法，未满全曲恒得 0；
+            // `tick * 画布宽 / 总长` 才是逐 tick 的光标列（与编排视图 `tick / tpp * 1px` 同款先除后乘的反例）。
+            x: root.span-ticks > 0 ? root.playhead-ticks * parent.width / root.span-ticks : 0px;
+            y: 0;
+            width: 1px;
+            height: parent.height;
+            background: Tokens.gold;
+            visible: root.total-bars > 0;
+            accessible-role: slider;
+            accessible-id: "song-overview-playhead";
+            accessible-label: "总览图走带光标";
+            accessible-value: root.playhead-timecode;
+        }
+
+        // ============================================================ ② 视口联动框
+        //
+        // 框 = 当前编排视口（左缘 / 宽度全由 `roll-scroll-x` 与 `roll-ticks-per-pixel`
+        // 活算 ⇒ 编排视图滚了 / 缩了，框自己跟着走，⛔ 不用 Rust 推）。
+        // 拖框体 ⇒ 滚动；拖右缘 6 px 把手 ⇒ 缩放（左缘锚定）。
+        lens := Rectangle {
+            x: min(root.viewport-start-frac, 1.0 - root.viewport-width-frac) * parent.width;
+            y: 0;
+            width: min(root.viewport-width-frac, 1.0 - root.viewport-start-frac) * parent.width;
+            height: parent.height;
+            background: #FFFFFF;
+            opacity: 0.10;
+            border-width: 1px;
+            border-color: Tokens.gold;
+            visible: root.span-ticks > 0;
+
+            accessible-role: slider;
+            accessible-id: "song-overview-viewport";
+            accessible-label: "当前编排视口";
+            accessible-value: root.total-bars > 0 ? "第 " + (Math.floor(root.viewport-start-frac * root.total-bars) + 1) + "–" + Math.min(Math.floor((root.viewport-start-frac + root.viewport-width-frac) * root.total-bars) + 1, root.total-bars) + " 小节" : "无数据";
+
+            // 框体拖动：按下记「指针分数 − 框左缘分数」，移动时按绝对指针分数反推目标左缘。
+            //
+            // ⚠ 框体盖在画布左段上，命中测试先拿到事件 ⇒ 不做这一步，点在框里的
+            // 轻点会被框体吞掉、走带一位不动（「点击总览图任意横坐标 ⇒ 跳转」就破了）。
+            // 判据：松手时指针位移 < 3 px ⇒ 轻点 ⇒ 按当前分数跳转；≥ 3 px ⇒ 拖动 ⇒
+            // 只滚动不跳转。悬停转发走 `pointer-event` 的 move 分支（`moved` 只在
+            // 按住时触发，见面板根部 `seek-area` 的注释）。
+            TouchArea {
+                width: parent.width;
+                height: parent.height;
+                pointer-event(event) => {
+                    if event.kind == PointerEventKind.down {
+                        root.lens-dragging = true;
+                        root.lens-grab-offset-frac = (parent.x + self.mouse-x) / canvas.width - root.viewport-start-frac;
+                        root.lens-press-frac = (parent.x + self.mouse-x) / canvas.width;
+                    } else if event.kind == PointerEventKind.up || event.kind == PointerEventKind.cancel {
+                        if root.lens-dragging && root.canvas-width > 0px {
+                            // 位移（px）= 分数差 × 画布宽；取绝对值不用 Math.abs（手写三元更稳）。
+                            if ((parent.x + self.mouse-x) / canvas.width - root.lens-press-frac) * (root.canvas-width / 1px) < 3.0 && (root.lens-press-frac - (parent.x + self.mouse-x) / canvas.width) * (root.canvas-width / 1px) < 3.0 {
+                                root.seek-requested((parent.x + self.mouse-x) / canvas.width);
+                            }
+                        }
+                        root.lens-dragging = false;
+                    } else if event.kind == PointerEventKind.move && !self.pressed && root.canvas-width > 0px {
+                        // 非拖动的移动 ⇒ 转发悬停（否则框上没有小节读数）。
+                        root.hover-requested((parent.x + self.mouse-x) / canvas.width);
+                    }
+                }
+                moved => {
+                    // `moved` 只在按住时触发 ⇒ 这里只有拖动滚动一种事。
+                    if root.lens-dragging && root.span-ticks > 0 {
+                        // 绝对指针分数 − 按下时的偏移 = 新的框左缘分数，夹在 [0, 1−框宽]。
+                        root.viewport-scroll-requested(max(0.0, min(1.0 - root.viewport-width-frac, (parent.x + self.mouse-x) / canvas.width - root.lens-grab-offset-frac)) * root.span-ticks / max(1, root.viewport-ticks-per-pixel));
+                    }
+                }
+            }
+
+            // 右缘把手（6 px）：拖动 ⇒ 框宽变 ⇒ 缩放（左缘锚定，目标 tpp 由 Rust 夹紧 + 重投影）。
+            Rectangle {
+                x: parent.width - 6px;
+                y: 0;
+                width: 6px;
+                height: parent.height;
+                background: Tokens.gold;
+                opacity: 0.7;
+            }
+            TouchArea {
+                x: parent.width - 6px;
+                y: 0;
+                width: 6px;
+                height: parent.height;
+                accessible-role: slider;
+                accessible-id: "song-overview-viewport-resize";
+                accessible-label: "拖动缩放编排视口";
+                pointer-event(event) => {
+                    if event.kind == PointerEventKind.down {
+                        root.resize-dragging = true;
+                        root.resize-grab-pointer-frac = (lens.x + self.x + self.mouse-x) / canvas.width;
+                        root.resize-grab-width-frac = root.viewport-width-frac;
+                    } else if event.kind == PointerEventKind.up || event.kind == PointerEventKind.cancel {
+                        root.resize-dragging = false;
+                    } else if event.kind == PointerEventKind.move && !self.pressed && canvas.width > 0px {
+                        // 非拖动的移动 ⇒ 转发悬停（`moved` 只在按住时触发，见 `seek-area` 注释；
+                        // 把手只有 6 px 宽，不转发则此处无读数）。
+                        root.hover-requested((lens.x + self.x + self.mouse-x) / canvas.width);
+                    }
+                }
+                moved => {
+                    // `moved` 只在按住时触发 ⇒ 这里只有拖动缩放一种事。
+                    if root.resize-dragging && root.span-ticks > 0 && canvas.width > 0px {
+                        // 新框宽分数 = 按下时的框宽 + 指针分数的位移，夹在 [0.02, 1−左缘]。
+                        root.viewport-zoom-requested(Math.round(max(0.02, min(1.0 - root.viewport-start-frac, root.resize-grab-width-frac + (lens.x + self.x + self.mouse-x) / canvas.width - root.resize-grab-pointer-frac)) * root.span-ticks / (canvas.width / 1px)));
+                    }
+                }
+            }
+        }
+
+        // ============================================================ ④ 悬停小节读数
+        // 提示框 300 px 宽：读数全文（「第 N 小节 · -19.6 LUFS · 张力 0.24 ·
+        // 突出 中频/中低」）约 255 px + 12 px 内边距；220 px 会把第二个频段名
+        // 截成「…」（2026-11-08 视觉验收实测），300 px 才放得下。
+        Rectangle {
+            x: max(0px, min(parent.width - 300px, root.hover-fraction * parent.width - 150px));
+            y: 4px;
+            width: min(300px, parent.width);
+            height: 30px;
+            background: #0B0D12;
+            opacity: 0.92;
+            border-width: 1px;
+            border-color: Tokens.line-strong;
+            visible: root.hover-visible && root.total-bars > 0;
+            accessible-role: text;
+            accessible-id: "song-overview-hover-readout";
+            accessible-label: "悬停小节读数";
+            accessible-value: root.hover-text;
+
+            UiText {
+                x: 6px;
+                y: 0;
+                width: parent.width - 12px;
+                height: parent.height;
+                text: root.hover-text;
+                color: Tokens.ink-0;
+                font-size: Tokens.font-size-xs;
+                overflow: elide;
+            }
+        }
+    }
+
+    // ================================================================ 底部 22 px
+    strip := Rectangle {
+        x: root.time-origin-x;
+        y: root.collapsed ? 0px : 82px;
+        width: root.canvas-width;
+        height: 22px;
+        background: Tokens.bg-panel;
+        clip: true;
+
+        accessible-role: image;
+        accessible-id: "song-overview-density-strip";
+        accessible-label: "疏密条码与小节标尺";
+
+        // ---- 上方 14 px：旋律/打击双行疏密脉冲条码 ----
+        // 旋律行（8 px）：竖线密度编码 Onset 率，底色饱和度编码长音占空比。
+        for bar in root.total-bars : Rectangle {
+            x: bar * parent.width / root.total-bars;
+            y: 0;
+            width: parent.width / root.total-bars;
+            height: 8px;
+            background: #34D399;
+            opacity: root.density-duty[bar] * 0.25;
+            visible: root.show-density;
+        }
+        for bar in root.total-bars : Rectangle {
+            x: bar * parent.width / root.total-bars;
+            y: 8px - root.density-pitched[bar] * 8px;
+            width: parent.width / root.total-bars;
+            height: root.density-pitched[bar] * 8px;
+            background: #34D399;
+            visible: root.show-density;
+        }
+        // 打击行（6 px）：珊瑚橙竖线，底对齐。
+        for bar in root.total-bars : Rectangle {
+            x: bar * parent.width / root.total-bars;
+            y: 14px - root.density-perc[bar] * 6px;
+            width: parent.width / root.total-bars;
+            height: root.density-perc[bar] * 6px;
+            background: #FB923C;
+            visible: root.show-density;
+        }
+
+        // ---- 段落分界线（金色 1 px，贯穿 22 px）----
+        for _[section-index] in root.section-names : Rectangle {
+            x: root.section-start-bars[section-index] * parent.width / root.total-bars;
+            y: 0;
+            width: 1px;
+            height: parent.height;
+            background: Tokens.gold;
+            opacity: 0.5;
+            visible: root.section-start-bars[section-index] > 0;
+        }
+
+        // ---- 下方 8 px：小节号与段落结构标签尺（标签由 Rust 算好）----
+        for bar in root.total-bars : UiText {
+            x: bar * parent.width / root.total-bars + 2px;
+            y: 14px;
+            width: parent.width / root.total-bars;
+            height: 8px;
+            text: root.ruler-labels[bar];
+            color: Tokens.gold;
+            font-size: 8px;
+            overflow: elide;
+        }
+    }
+
+    // ================================================================ ③ 图层开关胶囊（右上）
+    //
+    // 单击 = 隐藏/显示，双击 = 独显（已独显则恢复全显）。状态由 Rust 翻转，
+    // 界面只上报下标；`accessible-checked` 读同一份属性 ⇒ 屏读器与树断言同源。
+    for pill-index in 4 : Rectangle {
+        x: root.width - 8px - (4 - pill-index) * 48px;
+        y: 2px;
+        width: 44px;
+        height: 16px;
+        background: (pill-index == 0 && root.show-tension) || (pill-index == 1 && root.show-energy) || (pill-index == 2 && root.show-bands) || (pill-index == 3 && root.show-density) ? Tokens.gold : Tokens.bg-panel;
+        border-radius: 8px;
+        border-width: 1px;
+        border-color: Tokens.line;
+        accessible-role: button;
+        // ⚠ 必须写成 `"前缀-" + 中段 + "-pill"` 的拼接模板形（与 `track-{i}-fader` 同款）：
+        // 覆盖率判据按字面段匹配 —— 三元字面量（`"a" : "b" : "c"`）会被读成“单段非模板”，
+        // 只有第一项能对上注册表，其余三项会被判成“注册表凭空发明元素”。
+        accessible-id: "song-overview-layer-" + root.layer-keys[pill-index] + "-pill";
+        accessible-label: pill-index == 0 ? "情绪层开关" : pill-index == 1 ? "能量层开关" : pill-index == 2 ? "频段层开关" : "疏密层开关";
+        accessible-checkable: true;
+        accessible-checked: pill-index == 0 ? root.show-tension : pill-index == 1 ? root.show-energy : pill-index == 2 ? root.show-bands : root.show-density;
+        accessible-action-default => { root.layer-toggle(pill-index); }
+
+        UiText {
+            x: 0;
+            y: 0;
+            width: parent.width;
+            height: parent.height;
+            text: pill-index == 0 ? "情绪" : pill-index == 1 ? "能量" : pill-index == 2 ? "频段" : "疏密";
+            color: (pill-index == 0 && root.show-tension) || (pill-index == 1 && root.show-energy) || (pill-index == 2 && root.show-bands) || (pill-index == 3 && root.show-density) ? #060A14 : Tokens.ink-2;
+            font-size: Tokens.font-size-xs;
+            horizontal-alignment: center;
+        }
+
+        TouchArea {
+            width: parent.width;
+            height: parent.height;
+            clicked => { root.layer-toggle(pill-index); }
+            double-clicked => { root.layer-solo(pill-index); }
+        }
+    }
+
+    // ================================================================ 折叠键（左上）
+    Rectangle {
+        x: 4px;
+        y: 2px;
+        width: 86px;
+        height: 16px;
+        background: Tokens.bg-panel;
+        border-radius: 8px;
+        border-width: 1px;
+        border-color: Tokens.line;
+        accessible-role: button;
+        accessible-id: "song-overview-collapse-button";
+        accessible-label: "折叠 / 展开总览面板";
+        accessible-action-default => { root.toggle-collapsed(); }
+
+        UiText {
+            x: 0;
+            y: 0;
+            width: parent.width;
+            height: parent.height;
+            text: root.collapsed ? "总览 ▸" : "总览 ▾";
+            color: Tokens.ink-1;
+            font-size: Tokens.font-size-xs;
+            horizontal-alignment: center;
+        }
+
+        TouchArea {
+            width: parent.width;
+            height: parent.height;
+            clicked => { root.toggle-collapsed(); }
+        }
+    }
+}

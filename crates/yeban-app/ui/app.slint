@@ -44,6 +44,7 @@ import { StatusBar } from "status_bar.slint";
 import { Sidebar } from "sidebar.slint";
 import { SessionView } from "workspace/session_view.slint";
 import { ArrangementView } from "workspace/arrangement_view.slint";
+import { SongOverviewPanel } from "workspace/song_overview_panel.slint";
 import { ConsoleTabs } from "console/console_tabs.slint";
 import { MusicalPrDrawer } from "dialogs/musical_pr_drawer.slint";
 import { UndoTreeModal } from "dialogs/undo_tree_modal.slint";
@@ -83,7 +84,7 @@ component AiRail inherits Rectangle {
     // 唯一写者 = 宿主 `host::wire_module_actions` 的 `export-wav` 分支。
     in property <string> module-clipping-warning: "";
     // ⭐ 任务单 `#319`：MIDI 文件导入的损失摘要行（空串 = 不显示）。
-    // 与削波警示**同一物理槽位**（`y = 448`）、互斥；唯一写者 =
+    // 与削波警示**同一物理槽位**（`y = 444`）、互斥；唯一写者 =
     // `host::apply_module_receipt_with_alerts`（每次动作两条都写，没给的写空串）。
     in property <string> module-import-losses: "";
 
@@ -184,7 +185,8 @@ component AiRail inherits Rectangle {
     // 而「声学诊断」卡住 `y: 104px`、高 64 ⇒ `104..168` ⇒ **两键相交 20px**
     // （1920 档实测 `(1648,152,272,64)` ⟂ `(1648,196,272,28)`；三档全中）。
     // 为什么不是"整体下移 28px"：`AiRail` 的竖向预算在 1440 档只剩 7px
-    // （内容 440 < 栏高 475）、1024 档本来就已溢出（415）⇒ 再下移 28 会在 1440
+    // （内容 440 < 栏高 475；⭐ 总览图面板加入后栏高 475→462、警示槽位上移至 444，
+    // 预算进一步收至 2px）、1024 档本来就已溢出（415）⇒ 再下移 28 会在 1440
     // 把最后一条回执行推出裁剪区，是拿一个缺陷换另一个。
     // 因此改为**不占新高度**的并排：两个键同住 `y: 172..200`（诊断卡下沿 168 ＋ 4px），
     // 下面 `ModuleActions` 的 `212px` 标题一位不动。
@@ -644,7 +646,7 @@ export component MainWindow inherits Window {
     // 完整读数仍在 `module-status` 的 `clipping_note="…"` 字段里（`#229` 的数据通道）。
     in-out property <string> module-clipping-warning: "";
     // ⭐ 任务单 `#319`／`#320`：MIDI 文件导入的损失摘要行（`ui/module_actions.slint`
-    // 的 `module-import-losses`，与削波警示共用 `y = 448`、互斥）。空串 = 不显示；
+    // 的 `module-import-losses`，与削波警示共用 `y = 444`、互斥）。空串 = 不显示；
     // 完整 24 类明细与歌词五字段在 `module-status` 的 `loss_detail="…"`／
     // `lyrics_detail="…"` 字段里（同一个 `MidiImportLosses`／`MidiLyricCounts`，
     // 与 CLI 的 `imported-midi:` 行同源）。
@@ -715,6 +717,61 @@ export component MainWindow inherits Window {
     // ⛔ 界面**不**自己清屏：`host::apply_engine_error` 只在**真的发布成功**那一跳写空串
     // （标记没变的那一跳一位不动）—— 否则 60Hz 心跳会让横幅闪一下就走，等于没做。
     in-out property <string> engine-error: "";
+    // =====================================================================
+    // 整曲多层总览图（Song Overview，Phase 1）—— 设计稿 §7 / §11 MVP
+    // =====================================================================
+    // 数据面（`in`）：唯一写者 = `song_overview::apply_song_overview`。
+    // 数据是真实管线（工程 → 离线渲染 → dsp 分析 → 映射），标题不再带「试算」。
+    // 视图态面（`in-out`）：图层开关 / 折叠 / 悬停读数，唯一写者 =
+    // `song_overview::wire_song_overview`（界面不自己翻转任何状态）。
+    // 布局：底部、状态栏之上、可折叠、总高 104 px（主画布 82 + 底部 22；设计稿 §11
+    // 的「100 px」是约数，82 + 22 = 104，见面板本体文件头的算术说明）。
+    in property <int> song-overview-total-bars: 0;
+    in property <[float]> song-overview-tension: [];
+    in property <[color]> song-overview-tension-colors: [];
+    in property <[float]> song-overview-lufs: [];
+    in property <[color]> song-overview-band-colors: [];
+    in property <[float]> song-overview-density-pitched: [];
+    in property <[float]> song-overview-density-perc: [];
+    in property <[float]> song-overview-density-duty: [];
+    in property <[string]> song-overview-section-names: [];
+    in property <[int]> song-overview-section-start-bars: [];
+    in property <[string]> song-overview-ruler-labels: [];
+    in property <int> song-overview-span-ticks: 0;
+    in property <string> song-overview-key-signature: "";
+    /// 总览面板是否折叠（22 px 条带）。
+    ///
+    /// 默认值是**表达式绑定**，不是写死 `false`：窗口不在 UI-GRID-002 的全展开档
+    /// （≥1920×1080）时默认折叠，展开档默认展开。`pane_no_overlap` 的实测：
+    /// 常驻 104 px 时 1024x800 与 1440x900 两档各丢底部节点（8 个失败），1920x1080
+    /// 全过 —— 折叠档只认 `compact`（宽 < 1180）盖不住 1440 档，因此默认折叠的
+    /// 档位取全展开档本身（宽 < 1920 或高 < 1080 即折叠），两个数都引自 §1.2 的
+    /// 全展开档定义，⛔ 不是新发明的断点值。折叠后多出的 82 px 还给中段弹性区。
+    ///
+    /// 与 `compact` 同款：Rust 写一次即覆盖本实例的绑定（Slint 语义）⇒ 用户按
+    /// 折叠键后跟 toggle 走，窗口再拉宽/拉窄不再自动翻（默认折叠只是默认值）。
+    in-out property <bool> song-overview-collapsed: self.width < 1920px || self.height < 1080px;
+    in-out property <bool> song-overview-show-tension: true;
+    in-out property <bool> song-overview-show-energy: true;
+    in-out property <bool> song-overview-show-bands: true;
+    in-out property <bool> song-overview-show-density: true;
+    in-out property <bool> song-overview-hover-visible: false;
+    in-out property <float> song-overview-hover-fraction: 0.0;
+    in-out property <string> song-overview-hover-text: "";
+    /// 点击总览图 ⇒ 走带定位（分数 0..1；落点 = `song_overview::wire_song_overview`）。
+    callback song-overview-seek(float);
+    /// 悬停总览图 ⇒ 小节读数（分数 0..1）。
+    callback song-overview-hover(float);
+    /// 图层胶囊单击 ⇒ 隐藏/显示（下标 0 情绪 / 1 能量 / 2 频段 / 3 疏密）。
+    callback song-overview-layer-toggle(int);
+    /// 图层胶囊双击 ⇒ 独显（已独显则恢复全显）。
+    callback song-overview-layer-solo(int);
+    /// 拖视口框 ⇒ 滚动编排视图（目标横向偏移 px，已夹紧）。
+    callback song-overview-viewport-scroll(float);
+    /// 拖视口框右缘 ⇒ 缩放编排视图（目标 tick/px）。
+    callback song-overview-viewport-zoom(int);
+    /// 折叠键 ⇒ 翻转 `song-overview-collapsed`。
+    callback song-overview-toggle-collapsed();
     callback open-musical-pr();
     callback accept-ai-proposal();
     callback reject-ai-proposal();
@@ -1881,6 +1938,13 @@ export component MainWindow inherits Window {
         }
 
         // --------------------------------------- 底部控制台 (弹性区的 40%)
+        // ⭐ 窄档分栏维持 3:2（`Tokens.console-stretch`）：曾试过窄档把控制台
+        // stretch 提到 2.4–2.6 给素材池腾高度（1024x800 档素材池第二行要
+        // 控制台 ≥ 334 px），但控制台 ≥ 312 px 时设备链占位卡翻为可见，与
+        // `pane_no_overlap.rs` 的 1024 窄档清单（6 项、无占位卡）冲突 ——
+        // 素材池与设备链在 1024 档要的是相反的控制台高度，单靠分栏无解；
+        // 须由素材池/设备链的归属线改窄档座位或判据清单，本轮不越权改动。
+        // （折叠面板已把 82 px 还给中段：素材池第一行已回树，只剩第二行。）
         console-tabs := ConsoleTabs {
             vertical-stretch: Tokens.console-stretch;
             active-tab: root.console-tab;
@@ -2224,6 +2288,49 @@ export component MainWindow inherits Window {
             mixer-master-pan-reset() => {
                 root.mixer-master-pan-reset();
             }
+        }
+
+        // --------------------------------------- 整曲多层总览图（底部、状态栏之上）
+        // Phase 1：可折叠 104 px（主画布 82 + 底部 22；「100 px」是约数）。数据由 `song_overview.rs`
+        // 的真实管线注入（工程 → 离线渲染 → dsp 分析 → 映射）；默认折叠见
+        // `song-overview-collapsed` 的表达式绑定（非全展开档默认 22 px）。
+        // 画布左缘 = 左侧资源栏宽 + 168 px 轨道头列（与编排视图时间轴同一起点），
+        // 右缘留出右 AI 协作栏宽（compact 时为 0）。
+        SongOverviewPanel {
+            time-origin-x: sidebar.width + 168px;
+            right-reserve: root.compact ? 0px : Tokens.right-rail-width;
+            total-bars: root.song-overview-total-bars;
+            tension: root.song-overview-tension;
+            tension-colors: root.song-overview-tension-colors;
+            lufs: root.song-overview-lufs;
+            band-colors: root.song-overview-band-colors;
+            density-pitched: root.song-overview-density-pitched;
+            density-perc: root.song-overview-density-perc;
+            density-duty: root.song-overview-density-duty;
+            section-names: root.song-overview-section-names;
+            section-start-bars: root.song-overview-section-start-bars;
+            ruler-labels: root.song-overview-ruler-labels;
+            span-ticks: root.song-overview-span-ticks;
+            key-signature: root.song-overview-key-signature;
+            collapsed: root.song-overview-collapsed;
+            show-tension: root.song-overview-show-tension;
+            show-energy: root.song-overview-show-energy;
+            show-bands: root.song-overview-show-bands;
+            show-density: root.song-overview-show-density;
+            hover-visible: root.song-overview-hover-visible;
+            hover-fraction: root.song-overview-hover-fraction;
+            hover-text: root.song-overview-hover-text;
+            viewport-scroll-x: root.roll-scroll-x;
+            viewport-ticks-per-pixel: root.roll-ticks-per-pixel;
+            playhead-ticks: root.playhead-ticks;
+            playhead-timecode: root.timecode;
+            seek-requested(fraction) => { root.song-overview-seek(fraction); }
+            hover-requested(fraction) => { root.song-overview-hover(fraction); }
+            layer-toggle(index) => { root.song-overview-layer-toggle(index); }
+            layer-solo(index) => { root.song-overview-layer-solo(index); }
+            viewport-scroll-requested(target) => { root.song-overview-viewport-scroll(target); }
+            viewport-zoom-requested(target) => { root.song-overview-viewport-zoom(target); }
+            toggle-collapsed() => { root.song-overview-toggle-collapsed(); }
         }
 
         // ---------------------------------------------------------- 24px 状态栏
