@@ -34,6 +34,7 @@ fn sample() -> InMemorySample {
     InMemorySample {
         pcm: Arc::new(vec![0.25; 480]),
         sample_hz: RATE,
+        loop_points: None,
     }
 }
 

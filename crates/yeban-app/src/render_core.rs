@@ -766,6 +766,33 @@ pub fn render_project_f32_with_plans_under(
         .into_iter()
         .filter(|id| *id != project.master_bus_track_id && project.tracks.contains_key(id))
         .collect();
+    // ⭐⭐ **"空渲染"必须说出来**（任务 `#311`）。
+    //
+    // 修前：`renderable` 静默排掉主总线轨（那是**对的** —— 总线不产生素材），但如果工程的
+    // 素材恰好**全在**主总线轨上（导入的工程、手改过的 `.yeban`、把 clip 拖错轨），
+    // 导出会**成功**、`exported-wav:` 一切正常、拿到一条**全静音**的带子。
+    // 这不是假设：一次编曲里我先怀疑了音色、采样率、包络，最后才发现素材挂错了轨。
+    //
+    // ⇒ 只在"**可渲染轨上真的什么都没有**"时报（有一条 clip 或一个采样器绑定就不报，
+    //    ⛔ 不出假警）。
+    {
+        let has_content = renderable.iter().any(|id| {
+            project
+                .tracks
+                .get(id)
+                .is_some_and(|track| !track.clips.is_empty() || track.sampler.is_some())
+        });
+        if !has_content {
+            let master_clips = project
+                .tracks
+                .get(&project.master_bus_track_id)
+                .map_or(0, |track| track.clips.len());
+            eprintln!(
+                "render-empty: 可渲染轨上没有任何 clip 或采样器（主总线轨上有 {master_clips} 个 clip，\
+                 按设计**不参与渲染**）—— 导出会是全静音。请检查素材是否挂在了主总线轨上。"
+            );
+        }
+    }
     // ---- 2a-pre. ⭐ `TrackPan` 自动化（任务单 `#257`）----
     //
     // 两个导出的**同一份**扫描器（`yeban_render::automation::pan_automations`）。
@@ -799,6 +826,33 @@ pub fn render_project_f32_with_plans_under(
         // ⚠ 这段必须在这里算：SFZ 分支**不建引擎快照**（见上面的 `snapshot` 判据），
         // 因此拿不到 `NoteSchedule::track_gain`；改调**同一个** `track_gain_scale` 就不会分叉。
         let any_solo = project.tracks.values().any(|track| track.solo);
+        // ⭐ **region 级样本表：全工程只建一次**（任务 `#310`）。
+        //    逐轨各建一次会把每个采样解码 N 遍（79 轨 × 212 个鼓采样 ⇒ OOM，
+        //    实测 `exit=137`）；共享 `Arc` 之后 PCM 全进程一份。
+        let shared_samples = sfz_path
+            .as_ref()
+            .map(|path| crate::sfz_load::build_region_samples(instrument, path));
+        // ⭐⭐ **读不到的采样必须说出来**（任务 `#311`）。
+        //
+        // 修前这里什么都没有：`build_region_samples` 静默回退 440 Hz 正弦，导出照常成功，
+        // 用户只听到"音色完全不对"。一次真实排查里我先怀疑了音源、采样率、包络三条错路。
+        // ⇒ 现在逐条报到 stderr（`sample-missing:` 前缀，与 `loaded-sfz:` 同族的机器可读行），
+        //    并给出**上限**（坏掉一百个采样时不要刷屏 —— 剩下的只报条数）。
+        if let Some(table) = shared_samples.as_ref()
+            && !table.missing.is_empty()
+        {
+            const SHOWN: usize = 10;
+            eprintln!(
+                "sample-missing: {} 个区域的采样读不到，已**回退为 440 Hz 正弦**（音色会完全不对）：",
+                table.missing.len()
+            );
+            for (raw, why) in table.missing.iter().take(SHOWN) {
+                eprintln!("  - {raw}: {why}");
+            }
+            if table.missing.len() > SHOWN {
+                eprintln!("  …… 另有 {} 个，未列出", table.missing.len() - SHOWN);
+            }
+        }
         for track_id in renderable.clone() {
             let notes = track_notes_in_frames(project, track_id, options.sample_rate);
             // ⭐ `#296`：总线轨的推子改由输出级乘 ⇒ 源侧只保留 `mute`/`solo` 门
@@ -808,13 +862,16 @@ pub fn render_project_f32_with_plans_under(
             } else {
                 track_gain_of(project, track_id, any_solo)
             };
-            let track_source = match sfz_path {
-                Some(sfz_path) => crate::sfz_load::SfzTrackSource::new_from_sfz_path(
+            let track_source = match shared_samples.as_ref() {
+                Some(table) => crate::sfz_load::SfzTrackSource::new(
                     instrument.clone(),
-                    sfz_path,
                     &notes,
                     options.sample_rate as f32,
                     options.channels,
+                )
+                .with_shared_samples(
+                    std::sync::Arc::clone(&table.samples),
+                    table.describe.clone(),
                 ),
                 None => crate::sfz_load::SfzTrackSource::new(
                     instrument.clone(),

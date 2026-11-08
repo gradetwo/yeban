@@ -633,8 +633,8 @@ fn b5_sizes_stay_under_the_192_kib_red_line() {
         "SfzVoicePool 必须是 1712 B ＋ round-robin 的 512 B ＋ `#341` held_notes `Option<u32>` 的 8 B ＋ portamento 池级四字段 8 B ＝ 2240 B"
     );
     assert_eq!(
-        region, 6_168,
-        "PreparedRegion 必须仍是 6160 B ＋ round-robin 的 8 B ＝ 6168 B"
+        region, 6_176,
+        "PreparedRegion 必须仍是 6160 B ＋ round-robin 的 8 B ＋ #331 off_time f32 的 8 B ＝ 6176 B"
     );
     assert!(runtime < 204_800, "EngineRuntime 必须 < 200 KiB");
 }

@@ -312,7 +312,16 @@ impl EngineTimbre {
             let provided: Vec<(String, InMemorySample)> = input
                 .samples
                 .into_iter()
-                .map(|(path, (pcm, sample_hz))| (path, InMemorySample { pcm, sample_hz }))
+                .map(|(path, (pcm, sample_hz))| {
+                    (
+                        path,
+                        InMemorySample {
+                            pcm,
+                            sample_hz,
+                            loop_points: None,
+                        },
+                    )
+                })
                 .collect();
             let plan = SfzPlan::prepare_with_samples(&instrument, &provided, engine_hz).map_err(
                 |error| {

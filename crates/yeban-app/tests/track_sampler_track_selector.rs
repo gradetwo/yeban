@@ -494,7 +494,7 @@ fn the_selector_requires_the_track_sampler_switch() {
 
     // (b) 直接构造 `Options`（绕过解析器）⇒ `run_batch` 的第二道守卫。
     let options = cli::Options {
-        sampler_track: Some(aux),
+        sampler_track: vec![aux],
         ..cli::Options::default()
     };
     let error = cli::run_batch(&options).expect_err("run_batch 必须拒绝");
