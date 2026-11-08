@@ -55,7 +55,8 @@
             "yeban_scan_plugins",
             "yeban_load_plugin",
             "synthesize_singing",
-            "svs_job"
+            "svs_job",
+            "get_song_overview"
           ]
         },
         "arguments": {
@@ -451,6 +452,25 @@
             "properties": {
               "arguments": {
                 "$ref": "#/definitions/ExtensionToolArguments/$defs/svs_job"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "name"
+            ],
+            "properties": {
+              "name": {
+                "const": "get_song_overview"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "arguments": {
+                "$ref": "#/definitions/ExtensionToolArguments/$defs/get_song_overview"
               }
             }
           }
@@ -1484,6 +1504,33 @@
           "required": [
             "job_id"
           ]
+        },
+        "get_song_overview": {
+          "title": "get_song_overview",
+          "type": "object",
+          "description": "整曲多层可视化总览图（设计稿 §8，Phase 1）：返回小节级列式 JSON 与自动异常诊断摘要（schema_version / song_meta / band_definitions_hz / structural_summary / bar_series）。resolution 缺省 bar（一小节一行），给 beat 则一拍一行；include_png_path 缺省 false，Phase 1 只接受参数、不产 PNG（给 true 时 pngPath 为 null + 一句 Phase 2 说明）。只读：不改工程、不落盘；需要活跃工程与宿主注入的 provider，未注入响亮报 CONFLICT + providerUnavailable。",
+          "properties": {
+            "resolution": {
+              "type": "string",
+              "enum": [
+                "bar",
+                "beat"
+              ],
+              "description": "时间分辨率：bar（一小节一行，缺省）或 beat（一拍一行）"
+            },
+            "include_png_path": {
+              "type": "boolean",
+              "description": "是否返回 PNG 路径（缺省 false）。Phase 1 只接受参数、不产 PNG：给 true 时响应带 pngPath: null + 一句 Phase 2 说明"
+            },
+            "dryRun": {
+              "type": "boolean",
+              "default": false
+            },
+            "idempotencyKey": {
+              "type": "string",
+              "maxLength": 256
+            }
+          }
         }
       }
     }

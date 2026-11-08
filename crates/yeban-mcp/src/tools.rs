@@ -10,11 +10,13 @@
 //! 这两份契约在"错误码"上**不一致**（见 [`ErrorCode`] 的说明），本模块的处置是
 //! "两份都实现、把差异钉成常量、让判据把它暴露出来"，而不是悄悄选一边。
 //!
-//! ## 二十四个工具 = 规范表格的十个 + 十四条**扩展**（ADR-0001 D45 / D46 + 后续线）
+//! ## 三十一个工具 = 规范表格的十个 + 二十一条**扩展**（ADR-0001 D45 / D46 + 后续线）
 //!
 //! 扩展段的**唯一清单**是 [`EXTENSION_NAMES`]：D45 的撤销 / 重做 2 条、D46 的三类能力 3 条、
 //! D56 的诊断包 1 条、SMF 导出 1 条、SMF 导入 1 条、SFZ 装载与 SFZ 音色导出 2 条、录音导出 1 条、
-//! 物理 MIDI 输入探针 1 条、未合并提案清单 1 条（`#176`）、场景启动 1 条（`#290`）= **14** 条。
+//! 物理 MIDI 输入探针 1 条、未合并提案清单 1 条（`#176`）、场景启动 1 条（`#290`）、
+//! 分轨导出 1 条（`ADR-0030`）、会话乐器清单 1 条（审计 `N13`）、插件扫描 1 条 +
+//! 插件装载 1 条（`ADR-0069`）、伶人 SVS 2 条、整曲总览 1 条（设计稿 §8，Phase 1）= **21** 条。
 //!
 //! `ADR-0001` **D46** 明文："十工具是**起点不是上限**；扩充时必须同步
 //! `schemas/mcp-tools.schema.json`（契约是唯一权威定义）"。**D45** 则要求撤销入口
@@ -38,7 +40,8 @@
 //! | `yeban_launch_scene` | 把一次**量化场景启动**交给宿主（`#290`；引擎由形态 A 的 app 经 attach 口接上） | `MCP-TOOL-EXT-SCENE-LAUNCH` |
 //! | `yeban_export_stems` | 一次调用把每条轨弹成**一个 32-bit float WAV 分轨**（`ADR-0030`；`N + 1` 次渲染，母带 24-bit 路径逐字节不变） | `MCP-TOOL-EXT-EXPORT-STEMS` |
 //! | `yeban_list_instruments` | 会话 SFZ registry 的只读枚举（审计 `N13`） | `MCP-TOOL-EXT-LIST-INSTRUMENTS` |
-//!
+//! | `get_song_overview` | 整曲多层总览图：小节级列式 JSON + 自动异常诊断摘要（设计稿 §8，Phase 1；只读；分析由宿主注入的 provider 提供） | `MCP-TOOL-EXT-SONG-OVERVIEW` |
+
 //! ### 为什么它们的 `specId` 不是 `MCP-TOOL-011/012`
 //!
 //! `AGENTS.md` §4.1 立过先例（`MODEL-AST-006` 在规范里缺号 ⇒ **不得凭空发明编号**）：
@@ -104,8 +107,8 @@ pub const INCLUDE_OPS_PARAM: &str = "includeOps";
 /// 调用方的记忆里搬进生产代码）。
 pub const COMMIT_MODEL_KEY: &str = "commitModel";
 
-/// 工具集规模（规范表格的 10 个 + `ADR-0001` D45/D46 的扩展 + 插件扫描／装载 2 条 + 伶人 SVS 2 条）。
-pub const TOOL_COUNT: usize = 30;
+/// 工具集规模（规范表格的 10 个 + `ADR-0001` D45/D46 的扩展 + 插件扫描／装载 2 条 + 伶人 SVS 2 条 + 整曲总览 1 条）。
+pub const TOOL_COUNT: usize = 31;
 
 /// **规范表格**里的工具数（`MCP-TOOL-001..010`）。
 pub const DOCUMENTED_TOOL_COUNT: usize = 10;
@@ -119,7 +122,8 @@ pub const DOCUMENTED_TOOL_COUNT: usize = 10;
 /// + **插件扫描 1 条**（`ADR-0069`，VST3 发现与验证的只读枚举）
 /// + **插件装载 1 条**（`ADR-0069`，验证加载后经提案路径挂外部乐器设备）。
 /// + **伶人 SVS 2 条**（`synthesize_singing` 提交 + `svs_job` 查询/取回，Phase 2）。
-pub const EXTENSION_TOOL_COUNT: usize = 20;
+/// + **整曲总览 1 条**（设计稿 §8，Phase 1：`get_song_overview`，小节级列式 JSON + 自动异常诊断摘要）。
+pub const EXTENSION_TOOL_COUNT: usize = 21;
 
 /// 扩展工具的规范 ID 前缀。
 ///
@@ -153,6 +157,7 @@ pub const EXTENSION_NAMES: [&str; EXTENSION_TOOL_COUNT] = [
     "yeban_load_plugin",
     "synthesize_singing",
     "svs_job",
+    "get_song_overview",
 ];
 
 /// 规范 ID 前缀。
@@ -648,7 +653,7 @@ pub fn string_items() -> Value {
     serde_json::json!({ "type": "string" })
 }
 
-/// 二十八个工具，**规范顺序**（`MCP-TOOL-001..010` 在前，D45/D46 及后续的扩展在后）。
+/// 三十一个工具，**规范顺序**（`MCP-TOOL-001..010` 在前，D45/D46 及后续的扩展在后）。
 pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
     ToolSpec {
         spec_id: "MCP-TOOL-001",
@@ -1924,9 +1929,40 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
             ErrorCode::Conflict,
         ],
     },
+    ToolSpec {
+        spec_id: "MCP-TOOL-EXT-SONG-OVERVIEW",
+        name: "get_song_overview",
+        summary: "返回整曲多层可视化总览图的小节级列式 JSON 与自动异常诊断摘要（设计稿 §8.2：`schema_version` / `song_meta` / `band_definitions_hz` / `structural_summary` / `bar_series`；归一化指标保留 2 位小数，响度与频段能量保留 1 位小数）。`resolution` 缺省 `\"bar\"`（一小节一行），给 `\"beat\"` 则一拍一行；`include_png_path` 缺省 `false`，Phase 1 只接受参数、不产 PNG（给 `true` 时 `pngPath: null` + 一句 Phase 2 说明，见设计稿 §8.1）。只读：不改工程、不落盘；需要活跃工程与宿主注入的 provider（分析住在 `yeban-dsp`，由 `yeban-app` 挂载时注入；未注入 ⇒ `CONFLICT` + `providerUnavailable`，⛔ 不返回空总览）。⚠ 工具名**不带** `yeban_` 前缀：名字由设计稿 §8.1/§12 定，是跨线契约名，见注册判据的例外说明。",
+        scope: Scope::AppAdmin,
+        // 只读：取 provider 已算好的总览做映射，不改工程、不落盘。
+        side_effect: SideEffect::ReadOnly,
+        params: &[
+            // ⚠ 必须与 `schemas/mcp-tools.schema.json` 的
+            // `definitions.ExtensionToolArguments.$defs.get_song_overview` 逐字段一致
+            // （判据 `tests/contract.rs::extension_argument_constraints_match_the_registry`
+            // 双向核对属性集合 / 类型 / 必填集合）。
+            param(
+                "resolution",
+                "string",
+                false,
+                "时间分辨率：\"bar\"（缺省，一小节一行）或 \"beat\"（一拍一行）；其它值 ⇒ `INVALID_PARAMETER_RANGE`",
+            ),
+            param(
+                "include_png_path",
+                "boolean",
+                false,
+                "是否返回 PNG 路径（缺省 false）。Phase 1 只接受参数、不产 PNG：给 true 时响应带 `pngPath: null` + 一句 Phase 2 说明（设计稿 §8.1）",
+            ),
+        ],
+        errors: &[
+            ErrorCode::NoActiveProject,
+            ErrorCode::InvalidParameterRange,
+            ErrorCode::Conflict,
+        ],
+    },
 ];
 
-/// 按名查找工具（`const` 数组上的线性查找；30 个元素，无需哈希表）。
+/// 按名查找工具（`const` 数组上的线性查找；31 个元素，无需哈希表）。
 #[must_use]
 pub fn tool(name: &str) -> Option<&'static ToolSpec> {
     TOOLS.iter().find(|spec| spec.name == name)
@@ -2354,15 +2390,18 @@ mod tests {
         names.sort_unstable();
         names.dedup();
         assert_eq!(names.len(), TOOL_COUNT, "工具名不得重复");
-        // ⭐ SVS 例外（Phase 2，跨线契约名）：`synthesize_singing` / `svs_job`
-        // 的名字由 Phase 1 规格定（服务文档与调用方都按此名），是 `yeban_`
-        // 族之外的第一个工具族。例外**只此两条**：新增工具仍须 `yeban_` 前缀；
-        // 对齐守卫的 `TABLE_TOOL_RE` 同步放了这两条（见该脚本注释）。
-        const SVS_NAMES: [&str; 2] = ["synthesize_singing", "svs_job"];
+        // ⭐ 规格名例外（跨线契约名，不带 `yeban_` 前缀）：`synthesize_singing` /
+        // `svs_job` 的名字由 SVS Phase 1 规格定（服务文档与调用方都按此名），
+        // 是 `yeban_` 族之外的第一个工具族；`get_song_overview` 的名字由整曲
+        // 总览设计稿 §8.1/§12 定（MCP 工具名就叫它），是第二个。例外**只此三条**：
+        // 新增工具仍须 `yeban_` 前缀；对齐守卫的 `TABLE_TOOL_RE` 同步放了这三条
+        // （见该脚本注释）。
+        const NON_YEBAN_PREFIX_NAMES: [&str; 3] =
+            ["synthesize_singing", "svs_job", "get_song_overview"];
         for spec in &TOOLS {
             assert!(
-                spec.name.starts_with("yeban_") || SVS_NAMES.contains(&spec.name),
-                "工具名必须是 yeban_*（SVS 两条除外）: {}",
+                spec.name.starts_with("yeban_") || NON_YEBAN_PREFIX_NAMES.contains(&spec.name),
+                "工具名必须是 yeban_*（SVS 两条与 get_song_overview 除外）: {}",
                 spec.name
             );
             assert!(!spec.summary.is_empty());
@@ -2683,7 +2722,9 @@ mod tests {
                 // 审计 `N13`：会话 SFZ registry 枚举 —— 只读 `domain.sfz_instruments`。
                 "yeban_list_instruments",
                 // 插件扫描：只枚举路径并逐个实例化探针，不改工程、不落盘 ⇒ 读-only。
-                "yeban_scan_plugins"
+                "yeban_scan_plugins",
+                // 整曲总览：只取 provider 已算好的总览做映射，不改工程、不落盘 ⇒ 只读。
+                "get_song_overview"
             ],
             "只读工具必须显式分类为 read-only"
         );

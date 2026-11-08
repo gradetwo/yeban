@@ -1,0 +1,504 @@
+//! `get_song_overview` —— 整曲多层可视化总览图的 MCP 工具
+//! （设计稿 `~/workspace/yeban-songmap-design.md` §8，Phase 1）。
+//!
+//! ## 架构落点：`SongOverviewProvider` trait + 宿主注入
+//!
+//! 证据（先查再定，不凭假设）：
+//!
+//! 1. `cargo tree -p yeban-mcp -e normal` 里 **`yeban-dsp` 只出现在
+//!    `yeban-render` 的传递依赖里**（`yeban-mcp → yeban-render → yeban-dsp`），
+//!    `yeban-mcp/Cargo.toml` 的 `[dependencies]` 里**没有**它；
+//! 2. `scripts/gates/check_mcp_dependency_direction.py` 的 `FORBIDDEN` 逐字含
+//!    `"yeban-dsp"`（音频栈）、`"yeban-render"`、`"yeban-engine"`，且
+//!    `yeban-render` 那条边只是**已登记例外**（`EXCEPTIONS` 里
+//!    `(yeban-mcp, yeban-render)` 一条）—— 再加一条 `yeban-dsp`
+//!    **直接**依赖边就是第二条未登记违规，守卫会红；
+//! 3. `crates/yeban-app/src/mcp_mount.rs` 的既有口径是**宿主注入镜像**
+//!    （`Domain::set_engine_readings` + `EngineReadingsHandle`）：
+//!    宿主在挂载后把读数交给正在服务的那个 `Domain`，工具只读镜像。
+//!
+//! 因此分析（STFT / LUFS / 情绪公式 / 异常检测）**不住**在 `yeban-mcp` 里：
+//! 本模块只定义
+//!
+//! - 输出形状（[`crate::output_schema::SongOverview`]，§8.2），
+//! - [`SongOverviewProvider`] trait（方法返回那份形状），
+//! - [`plan_song_overview`]（参数校验 + 取 provider + 按 §8.2 量化取整 + 组装）。
+//!
+//! 真实现由 `yeban-app`（挂载时经 [`super::Domain::set_song_overview_provider`]
+//! 注入；app 能同时依赖 `yeban-dsp` 与 `yeban-mcp`，负责把 dsp 输出映射成
+//! §8.2 的 JSON）提供；dsp 线落地后由协调员派人接真实 provider，
+//! 本轮不新建那条依赖边、也不等它。
+//!
+//! ## `diagnostics` 的归属
+//!
+//! 异常检测逻辑（`low_mid_buildup`、`compression_squash` 等）由 dsp 线实现并由
+//! 两边共用；本 handler **只消费 provider 已算好的序列与异常条目做映射**，
+//! ⛔ 不在 MCP 里复制一份检测算法（阈值扫描、频段超量判定都不出现在这里）。
+//! 下面的 stub 只在测试里用：它的异常条目是**手算的固定夹具值**（算术写在注释里），
+//! 不是一套检测算法 —— 换真实 provider 时整段 stub 被替掉，handler 一位不动。
+//!
+//! ## 参数与失败语义
+//!
+//! - `resolution`：`"bar"`（缺省）或 `"beat"`；其它值 ⇒ `INVALID_PARAMETER_RANGE`
+//!   （`reason: "unknownResolution"`）。
+//! - `include_png_path`：缺省 `false`。Phase 1 **只接受参数、不产 PNG**：
+//!   给 `true` 时响应带 `pngPath: null` + 一句 `pngNote`（Phase 2 再接 Slint
+//!   离屏渲染，设计稿 §8.1），⛔ 不声称已实现未实现的功能。
+//! - 没有活跃工程 ⇒ `NO_ACTIVE_PROJECT`（与其它只读工具同一口径）。
+//! - 宿主没有注入 provider ⇒ `CONFLICT` + `reason: "providerUnavailable"`
+//!   （与 `yeban_launch_scene` 的 `engineUnavailable` 同一款"响亮拒绝"，
+//!   ⛔ 不返回空总览冒充成功）。
+//! - 只读：不改工程、不落盘、不进提交图谱（`Plan::SongOverview` 的
+//!   `commit_delta` 为 0，`commitModel` 为 `"none"`）。
+
+use serde_json::Value;
+
+use crate::output_schema::{
+    BAND_DEFINITIONS_HZ, BarRow, DetectedAnomaly, SongMeta, SongOverview, StructuralSummary,
+};
+use crate::tools::{ErrorCode, ToolCall};
+
+use super::error::Fault;
+use super::{Domain, arg_bool, arg_str, require_active};
+
+/// 宿主没有注入 provider 时的 `data.reason`（与 `engineUnavailable` 同款命名）。
+pub const PROVIDER_UNAVAILABLE_REASON: &str = "providerUnavailable";
+
+/// 时间分辨率（设计稿 §8.2：`resolution` 参数，`bar` | `beat`，缺省 `bar`）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Resolution {
+    /// 小节级（缺省）：`bar_series` 一小节一行。
+    Bar,
+    /// 拍级：`bar_series` 一拍一行（行里多一个 `beat` 键）。
+    Beat,
+}
+
+impl Resolution {
+    /// 响应里的自述词。
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Bar => "bar",
+            Self::Beat => "beat",
+        }
+    }
+}
+
+/// 传给 provider 的请求（只有分辨率；`include_png_path` 是 handler 层的呈现开关，
+/// 不进 provider —— provider 只算数，不产图）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SongOverviewRequest {
+    /// 时间分辨率。
+    pub resolution: Resolution,
+}
+
+/// 整曲总览分析的**唯一**入口。
+///
+/// 实现方（`yeban-dsp` 侧的真实分析，或测试里的 stub）只做一件事：对当前活跃
+/// 工程算出 §8.2 形状的 [`SongOverview`]。`Debug` 是 trait 约束的一部分 ——
+/// [`Domain`] 派生 `Debug`，provider 以 `Arc<dyn SongOverviewProvider>` 住在
+/// 会话运行态里，`Arc` 的 `Debug` 要求 trait 本身是 `Debug`。
+pub trait SongOverviewProvider: std::fmt::Debug + Send + Sync {
+    /// 自述名（进响应 `data.provider`，供调用方与判据区分 stub 与真实实现）。
+    fn name(&self) -> &'static str;
+
+    /// 对当前活跃工程做一次总览分析。
+    ///
+    /// # Errors
+    ///
+    /// 分析不可用（无渲染音频、无谱面）时响亮失败，⛔ 不返回空总览。
+    fn overview(&self, request: &SongOverviewRequest) -> Result<SongOverview, Fault>;
+}
+
+/// 保留 2 位小数（归一化指标，§8.2）。
+fn round2(value: f64) -> f64 {
+    (value * 100.0).round() / 100.0
+}
+
+/// 保留 1 位小数（响度与频段能量 dB，§8.2）。
+fn round1(value: f64) -> f64 {
+    (value * 10.0).round() / 10.0
+}
+
+/// 对 provider 返回的总览按 §8.2 的量化口径取整（handler 的唯一数值动作）。
+fn rounded(mut overview: SongOverview) -> SongOverview {
+    overview.song_meta.duration_sec = round1(overview.song_meta.duration_sec);
+    overview.song_meta.base_bpm = round1(overview.song_meta.base_bpm);
+    overview.structural_summary.climax_tension = round2(overview.structural_summary.climax_tension);
+    overview.structural_summary.dynamic_range_lu =
+        round1(overview.structural_summary.dynamic_range_lu);
+    for row in &mut overview.bar_series {
+        row.time_sec = round2(row.time_sec);
+        row.tension = round2(row.tension);
+        row.valence_hue = round2(row.valence_hue);
+        row.lufs_short = round1(row.lufs_short);
+        row.lufs_momentary_max = round1(row.lufs_momentary_max);
+        row.score_dyn = round2(row.score_dyn);
+        row.density_pitched_onsets_per_beat = round2(row.density_pitched_onsets_per_beat);
+        row.density_pitched_duty = round2(row.density_pitched_duty);
+        row.density_perc_onsets_per_beat = round2(row.density_perc_onsets_per_beat);
+        for band in &mut row.bands_tilted_db {
+            *band = round1(*band);
+        }
+    }
+    overview
+}
+
+/// `get_song_overview` 的只读规划（`plan` / `apply` 分工见 `domain/mod.rs` 模块头）。
+///
+/// # Errors
+///
+/// 无活跃工程（`NO_ACTIVE_PROJECT`）、`resolution` 非法
+/// （`INVALID_PARAMETER_RANGE`）、宿主未注入 provider（`CONFLICT` +
+/// `providerUnavailable`），或 provider 自身响亮失败（原样转发）。
+pub fn plan_song_overview(domain: &Domain, call: &ToolCall) -> Result<super::Plan, Fault> {
+    let _project = require_active(domain)?;
+    let resolution = match arg_str(call, "resolution") {
+        None | Some("bar") => Resolution::Bar,
+        Some("beat") => Resolution::Beat,
+        Some(other) => {
+            return Err(Fault::domain_with_data(
+                ErrorCode::InvalidParameterRange,
+                format!("`resolution` 只接受 \"bar\" 或 \"beat\"，实际收到 \"{other}\""),
+                serde_json::json!({
+                    "reason": "unknownResolution",
+                    "accepted": ["bar", "beat"],
+                }),
+            ));
+        }
+    };
+    let include_png_path = arg_bool(call, "include_png_path", false);
+    let provider = domain.song_overview_provider().ok_or_else(|| {
+        Fault::domain_with_data(
+            ErrorCode::Conflict,
+            "本形态没有总览分析 provider：独立 stdio 进程（形态 B）不托管 yeban-dsp 分析，\
+             get_song_overview 无法计算总览。",
+            serde_json::json!({
+                "reason": PROVIDER_UNAVAILABLE_REASON,
+                "form": "stdio",
+                "providerAttached": false,
+                "hint": "请在形态 A（yeban-app 的进程内控制面）里调用；\
+                         真实 provider 由 yeban-dsp 线提供，经 Domain::set_song_overview_provider 注入",
+            }),
+        )
+    })?;
+    let request = SongOverviewRequest { resolution };
+    let overview = provider.overview(&request)?;
+    let overview = rounded(overview);
+    let mut data = serde_json::to_value(&overview).map_err(|error| {
+        Fault::domain(
+            ErrorCode::IoError,
+            format!("总览序列化失败（实现级状况，不应发生）: {error}"),
+        )
+    })?;
+    let object = data.as_object_mut().expect("SongOverview 序列化后是对象");
+    object.insert("provider".to_owned(), Value::from(provider.name()));
+    object.insert("resolution".to_owned(), Value::from(resolution.as_str()));
+    if include_png_path {
+        // Phase 1 只接受参数、不产 PNG（设计稿 §8.1 的 PNG 是 Phase 2 的 Slint
+        // 离屏渲染）：`pngPath: null` + 一句如实说明，⛔ 不编造路径。
+        object.insert("pngPath".to_owned(), Value::Null);
+        object.insert(
+            "pngNote".to_owned(),
+            Value::from("Phase 2 再接 Slint 离屏渲染（设计稿 §8.1）：本轮只接受参数、不产 PNG。"),
+        );
+    }
+    Ok(super::Plan::SongOverview { data })
+}
+
+// ===========================================================================
+// 测试替身：StubSongOverviewProvider
+//
+// 8 小节、120 BPM、4/4、D minor 的固定夹具。张力按设计稿 §3.2 的公式从每小节
+// 的分量算出（不是手抄的"看起来对"的数），异常条目是手算的固定值。
+// 独立重算的对照在 `crates/yeban-mcp/tests/song_overview.rs` 里：
+// 那里的重算函数与这里的公式是**两份独立实现**，同一组分量必须逐位一致。
+// ===========================================================================
+
+/// 一小节的 stub 分量（§3.2 的五个张力分量 + §8.2 的行字段）。
+///
+/// 字段顺序 = 下面 `FIXTURE_BARS` 逐行的顺序：
+/// `lufs_short` / `lufs_momentary_max` / `score_dyn` /
+/// `density_pitched_onsets_per_beat` / `density_pitched_duty` /
+/// `density_perc_onsets_per_beat` / `pitch_center_midi` / `harmony` /
+/// `active_tracks` / `octave_bandwidth` / `valence_hue` / `section`。
+#[derive(Clone, Copy, Debug)]
+struct FixtureBar {
+    lufs_short: f64,
+    lufs_momentary_max: f64,
+    score_dyn: f64,
+    density_pitched_onsets_per_beat: f64,
+    density_pitched_duty: f64,
+    density_perc_onsets_per_beat: f64,
+    pitch_center_midi: f64,
+    harmony: f64,
+    active_tracks: f64,
+    octave_bandwidth: f64,
+    valence_hue: f64,
+    section: &'static str,
+}
+
+/// 8 小节夹具分量（`bands_tilted_db` 另见 [`FIXTURE_BANDS`]）。
+const FIXTURE_BARS: [FixtureBar; 8] = [
+    FixtureBar {
+        lufs_short: -22.4,
+        lufs_momentary_max: -19.8,
+        score_dyn: 0.28,
+        density_pitched_onsets_per_beat: 1.5,
+        density_pitched_duty: 0.65,
+        density_perc_onsets_per_beat: 0.5,
+        pitch_center_midi: 57.0,
+        harmony: 0.20,
+        active_tracks: 2.0,
+        octave_bandwidth: 1.5,
+        valence_hue: -0.62,
+        section: "Intro",
+    },
+    FixtureBar {
+        lufs_short: -20.1,
+        lufs_momentary_max: -17.5,
+        score_dyn: 0.34,
+        density_pitched_onsets_per_beat: 2.0,
+        density_pitched_duty: 0.68,
+        density_perc_onsets_per_beat: 1.0,
+        pitch_center_midi: 59.0,
+        harmony: 0.25,
+        active_tracks: 3.0,
+        octave_bandwidth: 2.0,
+        valence_hue: -0.58,
+        section: "Intro",
+    },
+    FixtureBar {
+        lufs_short: -18.6,
+        lufs_momentary_max: -16.0,
+        score_dyn: 0.42,
+        density_pitched_onsets_per_beat: 2.5,
+        density_pitched_duty: 0.70,
+        density_perc_onsets_per_beat: 1.0,
+        pitch_center_midi: 60.0,
+        harmony: 0.30,
+        active_tracks: 3.0,
+        octave_bandwidth: 2.0,
+        valence_hue: -0.55,
+        section: "Verse",
+    },
+    FixtureBar {
+        lufs_short: -16.2,
+        lufs_momentary_max: -13.6,
+        score_dyn: 0.48,
+        density_pitched_onsets_per_beat: 3.0,
+        density_pitched_duty: 0.72,
+        density_perc_onsets_per_beat: 2.0,
+        pitch_center_midi: 62.0,
+        harmony: 0.35,
+        active_tracks: 4.0,
+        octave_bandwidth: 2.5,
+        valence_hue: -0.50,
+        section: "Verse",
+    },
+    FixtureBar {
+        lufs_short: -13.8,
+        lufs_momentary_max: -11.2,
+        score_dyn: 0.52,
+        density_pitched_onsets_per_beat: 3.5,
+        density_pitched_duty: 0.75,
+        density_perc_onsets_per_beat: 2.5,
+        pitch_center_midi: 64.0,
+        harmony: 0.42,
+        active_tracks: 5.0,
+        octave_bandwidth: 3.0,
+        valence_hue: -0.44,
+        section: "Chorus",
+    },
+    FixtureBar {
+        lufs_short: -14.0,
+        lufs_momentary_max: -11.4,
+        score_dyn: 0.40,
+        density_pitched_onsets_per_beat: 2.0,
+        density_pitched_duty: 0.60,
+        density_perc_onsets_per_beat: 1.0,
+        pitch_center_midi: 60.0,
+        harmony: 0.30,
+        active_tracks: 3.0,
+        octave_bandwidth: 2.0,
+        valence_hue: -0.52,
+        section: "Chorus",
+    },
+    FixtureBar {
+        lufs_short: -13.6,
+        lufs_momentary_max: -11.0,
+        score_dyn: 0.54,
+        density_pitched_onsets_per_beat: 4.0,
+        density_pitched_duty: 0.78,
+        density_perc_onsets_per_beat: 3.0,
+        pitch_center_midi: 65.0,
+        harmony: 0.48,
+        active_tracks: 6.0,
+        octave_bandwidth: 3.5,
+        valence_hue: -0.40,
+        section: "Chorus",
+    },
+    FixtureBar {
+        lufs_short: -12.4,
+        lufs_momentary_max: -9.8,
+        score_dyn: 0.58,
+        density_pitched_onsets_per_beat: 4.5,
+        density_pitched_duty: 0.80,
+        density_perc_onsets_per_beat: 3.5,
+        pitch_center_midi: 67.0,
+        harmony: 0.55,
+        active_tracks: 7.0,
+        octave_bandwidth: 4.0,
+        valence_hue: -0.35,
+        section: "Outro",
+    },
+];
+
+/// 8 小节夹具的 8 频段倾斜能量（dB，§4.3；列序 = [`BAND_DEFINITIONS_HZ`]）。
+///
+/// 第 5、6 小节的 Band 3（250–500 Hz）为 −6.8 dB，其余小节约 −12.0 dB ⇒
+/// 超量 **+5.2 dB**（异常条目 `low_mid_buildup` 的算术，见 [`fixture_anomalies`]）。
+const FIXTURE_BANDS: [[f64; 8]; 8] = [
+    [-18.2, -14.5, -12.0, -11.4, -15.0, -19.2, -24.0, -31.5],
+    [-17.0, -13.8, -12.1, -11.0, -14.6, -18.8, -23.5, -31.0],
+    [-16.2, -13.2, -11.9, -10.6, -14.0, -18.0, -22.8, -30.2],
+    [-15.0, -12.4, -12.2, -10.2, -13.5, -17.4, -22.0, -29.5],
+    [-14.2, -11.8, -6.8, -10.0, -13.2, -17.0, -21.6, -29.0],
+    [-14.6, -12.0, -6.8, -10.4, -13.6, -17.5, -22.2, -29.6],
+    [-13.8, -11.2, -12.0, -9.8, -13.0, -16.8, -21.2, -28.6],
+    [-13.0, -10.6, -11.8, -9.4, -12.6, -16.2, -20.8, -28.0],
+];
+
+/// 夹具的异常条目（**手算固定值**，不是检测算法；算术逐条写明）：
+///
+/// - `low_mid_buildup` [5, 6]：Band 3 在这两小节为 −6.8 dB，其余小节约
+///   −12.0 dB ⇒ 超量 **+5.2 dB**；
+/// - `compression_squash` [7, 8]：谱面力度从第 6 小节 0.40 涨到第 7 小节
+///   0.54（**+35.0%**），而渲染 LUFS 只从 −14.0 变到 −13.6（**+0.4 LU**）。
+fn fixture_anomalies() -> Vec<DetectedAnomaly> {
+    vec![
+        DetectedAnomaly {
+            bars: [5, 6],
+            anomaly_type: "low_mid_buildup".to_owned(),
+            description: "Band 3 (250-500Hz) exceeds tilted balance by +5.2 dB".to_owned(),
+        },
+        DetectedAnomaly {
+            bars: [7, 8],
+            anomaly_type: "compression_squash".to_owned(),
+            description: "Score velocity rises +35% but rendered LUFS changes only +0.4 LU"
+                .to_owned(),
+        },
+    ]
+}
+
+/// §3.2 的张力公式（固定默认权重；固定心理声学锚点，⛔ 不用全曲 Min-Max）。
+///
+/// `T = 0.30·L̂ + 0.20·D̂ + 0.20·P̂ + 0.15·Ĥ + 0.15·Ô`，其中
+/// `L̂ = clamp((LUFS + 36) / 28)`（锚点 −36 / −8 LUFS）、
+/// `D̂ = clamp(ln(1 + d) / ln(17))`（每秒 16 音符满分）、
+/// `P̂ = clamp((p − 36) / 48)`（锚点 C2 / C6）、
+/// `Ô = 0.5·min(N/8, 1) + 0.5·min(B/5, 1)`。
+/// 设计稿 §3.2 的张力公式（与 `yeban-dsp` 的 `tension` 同一结构）：
+/// `T = 0.30·L̂ + 0.20·D̂ + 0.20·P̂ + 0.15·Ĥ + 0.15·Ô`。
+///
+/// 密度项 `D̂ = clamp(ln(1+d)/ln(1+16))` 里 `d` 是**每秒等效触发数**
+/// （设计稿 §3.2：速度是密度计算的时基乘数）。stub 的夹具只有"每拍触发数"，
+/// 故 `d = (旋律起音/拍 + 打击起音/拍) × 拍/秒`（120 BPM ⇒ 2 拍/秒）。
+/// ⚠ 两处与真实 provider 的差别（stub 口径，如实写明）：
+/// ① 真实 provider 用 dsp 的聚类后 Onset 数（同拍 30 ms 内柱式和弦记 1 次），
+/// stub 没有逐音时序、聚不了类，用未聚类的两组之和（聚类数的上界）；
+/// ② 占空比 `density_pitched_duty` 不进密度公式（只作行字段回传，与 dsp 同口径）。
+fn tension_of(bar: &FixtureBar) -> f64 {
+    let loudness = ((bar.lufs_short + 36.0) / 28.0).clamp(0.0, 1.0);
+    // 120 BPM ⇒ 一拍 0.5 s ⇒ 每秒 2 拍。
+    let beats_per_sec = 2.0;
+    let notes_per_sec =
+        (bar.density_pitched_onsets_per_beat + bar.density_perc_onsets_per_beat) * beats_per_sec;
+    let density = ((1.0 + notes_per_sec).ln() / 17.0f64.ln()).clamp(0.0, 1.0);
+    let pitch = ((bar.pitch_center_midi - 36.0) / 48.0).clamp(0.0, 1.0);
+    let orchestration =
+        0.5 * (bar.active_tracks / 8.0).min(1.0) + 0.5 * (bar.octave_bandwidth / 5.0).min(1.0);
+    0.30 * loudness + 0.20 * density + 0.20 * pitch + 0.15 * bar.harmony + 0.15 * orchestration
+}
+
+/// 测试替身 provider：对夹具工程返回上面那组固定序列。
+///
+/// ⚠ 只供测试与本地开发用：真实 provider 由 dsp 线提供（见模块头）。
+#[derive(Clone, Copy, Debug, Default)]
+pub struct StubSongOverviewProvider;
+
+impl SongOverviewProvider for StubSongOverviewProvider {
+    fn name(&self) -> &'static str {
+        "stub"
+    }
+
+    fn overview(&self, request: &SongOverviewRequest) -> Result<SongOverview, Fault> {
+        let mut bar_series: Vec<BarRow> = Vec::new();
+        for (index, bar) in FIXTURE_BARS.iter().enumerate() {
+            let bar_no = index as u64 + 1;
+            let bar_start_sec = index as f64 * 2.0;
+            let row = BarRow {
+                bar: bar_no,
+                beat: None,
+                time_sec: bar_start_sec,
+                section: bar.section.to_owned(),
+                tension: tension_of(bar),
+                valence_hue: bar.valence_hue,
+                lufs_short: bar.lufs_short,
+                lufs_momentary_max: bar.lufs_momentary_max,
+                score_dyn: bar.score_dyn,
+                density_pitched_onsets_per_beat: bar.density_pitched_onsets_per_beat,
+                density_pitched_duty: bar.density_pitched_duty,
+                density_perc_onsets_per_beat: bar.density_perc_onsets_per_beat,
+                bands_tilted_db: FIXTURE_BANDS[index],
+            };
+            match request.resolution {
+                Resolution::Bar => bar_series.push(row),
+                // stub 的拍级展开（文档化的替身行为）：4/4 拍，一小节 4 拍，
+                // 每拍 0.5 s，值沿用所属小节；真实 provider 按拍重算，不走这条路。
+                Resolution::Beat => {
+                    for beat in 1..=4u64 {
+                        let mut beat_row = row.clone();
+                        beat_row.beat = Some(beat);
+                        beat_row.time_sec = bar_start_sec + (beat - 1) as f64 * 0.5;
+                        bar_series.push(beat_row);
+                    }
+                }
+            }
+        }
+        let climax = bar_series
+            .iter()
+            .max_by(|left, right| {
+                left.tension
+                    .partial_cmp(&right.tension)
+                    .expect("张力是有限数")
+            })
+            .expect("夹具至少有一行");
+        let loudest = bar_series
+            .iter()
+            .map(|row| row.lufs_short)
+            .fold(f64::NEG_INFINITY, f64::max);
+        let quietest = bar_series
+            .iter()
+            .map(|row| row.lufs_short)
+            .fold(f64::INFINITY, f64::min);
+        Ok(SongOverview {
+            schema_version: "1.0".to_owned(),
+            song_meta: SongMeta {
+                total_bars: FIXTURE_BARS.len() as u64,
+                duration_sec: 16.0,
+                base_bpm: 120.0,
+                key_signature: "D minor".to_owned(),
+                profile: "orchestral_cinematic".to_owned(),
+            },
+            band_definitions_hz: BAND_DEFINITIONS_HZ,
+            structural_summary: StructuralSummary {
+                climax_bar: climax.bar,
+                climax_tension: climax.tension,
+                dynamic_range_lu: loudest - quietest,
+                detected_anomalies: fixture_anomalies(),
+            },
+            bar_series,
+        })
+    }
+}
