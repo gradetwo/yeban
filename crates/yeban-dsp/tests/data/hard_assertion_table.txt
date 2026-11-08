@@ -2,7 +2,7 @@
 # 分类口径：float_bits ＝ 判据体内有 to_bits()；integer_count ＝ 只比整数/长度
 # class：hard ＝ 产线可达集无宿主 libm 超越函数；platform ＝ 有（只在本架构有意义）
 #        no_callee ＝ 不调用本 crate 产线函数
-# 合计 344 条：float_bits 85 ／ integer_count 259；其中 hard 70 ／ platform 12
+# 合计 353 条：float_bits 88 ／ integer_count 265；其中 hard 73 ／ platform 12
 # 列：kind | class | reach | host | file | test
 integer_count | no_callee | 0 | - | src/block.rs | accumulate_matches_scalar_reference
 integer_count | no_callee | 0 | - | src/block.rs | mismatched_lengths_are_truncated_instead_of_panicking
@@ -319,6 +319,15 @@ integer_count | no_callee | 0 | - | src/vocal_key_detect.rs | empty_and_unvoiced
 integer_count | no_callee | 0 | - | src/vocal_key_detect.rs | energy_length_mismatch_returns_none
 integer_count | no_callee | 0 | - | src/vocal_key_detect.rs | energy_weighting_raises_triad_confidence
 integer_count | no_callee | 0 | - | src/vocal_key_detect.rs | pilot_lines_detection_is_recorded
+integer_count | no_callee | 0 | - | src/vocal_per_note_eq.rs | attenuation_applies_only_inside_the_target_note
+float_bits | hard | 1 | - | src/vocal_per_note_eq.rs | default_config_pins_the_fade
+float_bits | hard | 1 | - | src/vocal_per_note_eq.rs | envelope_is_exactly_zero_outside_and_one_inside
+float_bits | hard | 7 | - | src/vocal_per_note_eq.rs | interval_edges_are_exactly_dry
+integer_count | no_callee | 0 | - | src/vocal_per_note_eq.rs | nan_inside_the_interval_does_not_poison_state
+integer_count | no_callee | 0 | - | src/vocal_per_note_eq.rs | no_bands_output_is_bit_identical
+integer_count | no_callee | 0 | - | src/vocal_per_note_eq.rs | process_is_deterministic_and_reset_restores
+integer_count | no_callee | 0 | - | src/vocal_per_note_eq.rs | receipt_counts_applied_bands
+integer_count | no_callee | 0 | - | src/vocal_per_note_eq.rs | zero_gain_band_is_skipped_and_identity
 float_bits | hard | 1 | - | src/vocal_pitch_route.rs | defaults_are_pinned
 integer_count | no_callee | 0 | - | src/vocal_pitch_route.rs | disabled_router_is_passthrough
 integer_count | no_callee | 0 | - | src/vocal_pitch_route.rs | dsp_leg_shifts_f0_toward_target

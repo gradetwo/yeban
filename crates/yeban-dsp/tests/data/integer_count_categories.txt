@@ -2,7 +2,7 @@
 # 列：file|test|category|首条整数断言的证据（截断 90 字符）
 # 口径（R118）：只有 collection_size **界定集合大小** ⇒ 才算非真空下界；
 #   值界／元素值界／条件计数器 **⛔ 不算**。分类优先级：condition_counter > collection_size > element_value_bound > value_bound。
-# 合计 259 条：collection_size 45 ／ value_bound 204 ／ element_value_bound 5 ／ condition_counter 5
+# 合计 265 条：collection_size 50 ／ value_bound 205 ／ element_value_bound 5 ／ condition_counter 5
 src/block.rs|accumulate_matches_scalar_reference|value_bound|assert!((out[i] - expect[i]).abs() < 1e-6, "mismatch at {i}"
 src/block.rs|mismatched_lengths_are_truncated_instead_of_panicking|value_bound|assert_eq!(out[..4], [1.0, 1.0, 1.0, 0.0]
 src/block.rs|mix2_handles_non_multiple_of_four|value_bound|assert!((v - 1.0).abs() < 1e-6
@@ -234,6 +234,12 @@ src/vocal_key_detect.rs|empty_and_unvoiced_return_none|value_bound|assert!(     
 src/vocal_key_detect.rs|energy_length_mismatch_returns_none|value_bound|assert!(             detect_key(&f0, Some(&short_energy)).is_none(),             "能量长度与 F0
 src/vocal_key_detect.rs|energy_weighting_raises_triad_confidence|value_bound|assert_eq!(weighted.tonic, 0, "加权后根音仍为 C"
 src/vocal_key_detect.rs|pilot_lines_detection_is_recorded|value_bound|assert!(                 (0.0..=1.0).contains(&det.confidence),                 "行 {line_n
+src/vocal_per_note_eq.rs|attenuation_applies_only_inside_the_target_note|collection_size|assert_eq!(receipt.applied, 1
+src/vocal_per_note_eq.rs|nan_inside_the_interval_does_not_poison_state|collection_size|assert_eq!(non_finite, 0, "内区 NaN 经湿路消毒后输出须处处有限"
+src/vocal_per_note_eq.rs|no_bands_output_is_bit_identical|collection_size|assert_eq!(receipt.applied, 0
+src/vocal_per_note_eq.rs|process_is_deterministic_and_reset_restores|collection_size|assert_eq!(differing(&run1, &run2), 0, "同一输入两次运行须逐位相同"
+src/vocal_per_note_eq.rs|receipt_counts_applied_bands|value_bound|assert_eq!(receipt.applied, 2
+src/vocal_per_note_eq.rs|zero_gain_band_is_skipped_and_identity|collection_size|assert_eq!(receipt.applied, 0
 src/vocal_pitch_route.rs|disabled_router_is_passthrough|collection_size|assert_eq!(receipt.chunks.len(), 10
 src/vocal_pitch_route.rs|dsp_leg_shifts_f0_toward_target|value_bound|assert!(             err.abs() <= 5.0,             "DSP leg F0 error {err:.2} cents exceed
 src/vocal_pitch_route.rs|mixed_take_routes_per_chunk|collection_size|assert_eq!(receipt.chunks.len(), 4
