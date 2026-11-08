@@ -100,6 +100,19 @@
 //! - `[ARCH-SLINT-001]`：Slint 上游能力核验与自研兜底 —— 本文件把"Slint 1.18.1 没有
 //!   运行时选风格 API"这条**核验结论**变成了可执行判据（见 ③ 的 `compiled_slint_style`）。
 //! - `AGENTS.md` §3 DoD 6「UI 变更必须双重验证」：③ 是无头控件属性断言那一半。
+//! - `[TEST-SPEC-006]`「WCAG 2.1 AA 对比度自动化校验」：由本文件的 ①c / ①c-bis /
+//!   ①c-quater 承担 —— **数字是算出来的**（[`contrast_ratio`] 现读活组件的 token 取值），
+//!   不是目测、也不是抄注释。①c 用 `wcag_cases` 的**同一张**阈值表逐支重算四副调色板；
+//!   负责人调色板达不到的那几对**不删、不放宽阈值**，而是把实测比值钉死（①c-bis /
+//!   ①c-quater），于是往坏改和往好改都会红，缺口既不会被悄悄放大、也不会被悄悄"修好"
+//!   而无人复核。口径：**单位＝个（前景/背景配对数）**，对象＝`ui/**` 里**真实存在**的
+//!   落点 —— `bg-head` / `bg-control` / `bg-lane` / `bg-lane2` 在 `ui/**` 里从不作
+//!   `background:` 出现，`bg-shell` 的那一处落点内也没有文字 ⇒ 它们**不进表**（进了就是
+//!   给界面里不存在的配对造判据）。
+//! - `[UI-A11Y-004]`：本文件覆盖其第 2 条里**可自动化**的那一半（对比度实测）。同一条的
+//!   「AAA 级高对比度**模式**」仍缺 —— `YebanTheme` 只有 `brand` / `yeban` / `inkmoor` /
+//!   `plume` 四支，没有任何高对比度分支；补它要新增颜色，而调色板是负责人下发的权威输入
+//!   （见 `ui/tokens.slint` §6e「不悄悄改色」）⇒ 属**人类裁决**项，本文件不代为发明取值。
 
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
@@ -881,6 +894,18 @@ fn the_effective_palette_follows_the_selection() {
             tokens.get_bg_panel_alt(),
             tokens.get_bg_raised(),
         ];
+        // ⚠ 上面那张 `surfaces` 与 `recorded` 是靠 **zip** 配对的：zip 在** shorter 处静
+        // 停止**。若有人只改一边（加了一支板、忘了加记录行，或反过来），这段会少测几对而
+        // **照样全绿** —— 正是「新增了一个判据文件 ≠ 新增了一条判据」那一类缺口。所以先
+        // 钉死两侧长度，再 zip。
+        assert_eq!(
+            recorded.len(),
+            surfaces.len(),
+            "`[{skin}] 缺口记录表 ({}) 与板表 ({}) 长度不等 ⇒ zip 会静默截断，\
+             少的每一对都是一条**没在跑**的判据",
+            recorded.len(),
+            surfaces.len()
+        );
         for ((label, expected, shortfall), background) in recorded.iter().zip(surfaces.iter()) {
             let ratio = contrast_ratio(faint, *background);
             let rounded = (ratio * 100.0).round() / 100.0;
