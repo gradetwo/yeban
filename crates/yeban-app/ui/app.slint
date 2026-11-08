@@ -666,6 +666,10 @@ export component MainWindow inherits Window {
     // 「导出 WAV」入口打开选项对话框；关闭它只改视图态（⛔ 不碰工程）。
     callback open-export-wav();
     callback close-export-wav();
+    // ⭐ [PATCH UI-WIRING-01]：导出对话框的 `Ctrl/Cmd+O` 路径浏览。唯一落点
+    // `host::wire_export_wav_browse` → `FilePicker::choose_save` → 写回 `export-wav-path`。
+    // ⛔ 不写盘、⛔ 不猜缺省路径、⛔ 不构造第二份导出实现。
+    callback browse-export-wav-path();
     callback import-midi();
     callback load-sfz();
     callback record-wav();
@@ -773,6 +777,13 @@ export component MainWindow inherits Window {
     // 因此不需要额外的 `track-count` 标量属性 —— 少一个可能与数组不一致的状态。
     in property <string> window-title: "夜半 Yeban";
     in property <[string]> track-names: [];
+    // ⭐ [PATCH UI-TRACK-KINDS-01]（2026-11-08）：与 `track-names` 同索引集的轨道类型
+    // （`"midi"` / `"audio"` / `"aux-return"`）。唯一写者 = `host::apply_view`
+    // （`ViewState::track_kinds()` 的投影读数）；只转发给 `ArrangementView` 挑类型色带 /
+    // 徽标 —— ⛔ 不进 `ConsoleTabs → MixerConsole` 链（那两级的注入集合判据逐条对齐，
+    // 轨道类型不属于混音台的注入面）。关闭 `docs/ledger/app-binding-notes.md` 的历史登记
+    // `tracks[*].kind` →「待接图标位」。
+    in property <[string]> track-kinds: [];
     // 编排行几何（行顶沿 y / 行高，逻辑像素）—— 由投影的前缀和算一次（ADR-0004 S0），
     // 与 `track-names` 同索引集；`.slint` 不再做 `42px + 56px * i`。
     in property <[length]> track-ys: [];
@@ -1632,6 +1643,9 @@ export component MainWindow inherits Window {
                     height: parent.height;
                     visible: root.arrangement-view;
                     tracks: root.track-names;
+                    // ⭐ [PATCH UI-TRACK-KINDS-01]：轨道类型与 `tracks` 同一次注入、同索引集；
+                    // 包头用它在左沿画类型色带 / 在控制区印类型徽标（纯视觉，不新增控件）。
+                    track-kinds: root.track-kinds;
                     // ⭐ 任务单 `#192`：选中态按**身份**键控（无障碍 `accessible-item-selected`
                     // 读它）。两个属性都是从根转发的**同一份**注入（⛔ 界面不造第二份表）。
                     track-ids: root.track-ids;
@@ -2418,6 +2432,9 @@ export component MainWindow inherits Window {
 
         run => { root.export-wav(); }
         close => { root.close-export-wav(); }
+        // ⭐ [PATCH UI-WIRING-01]：路径浏览（`Ctrl/Cmd+O`，见弹窗的 `export-trap`）。
+        // 与 `run` 一样只上抛 ⇒ 弹窗组件里没有第二份"挑路径"的实现。
+        browse-path => { root.browse-export-wav-path(); }
     }
 
     /// 导出弹窗的焦点读数（`-1` = 焦点不在任何输入格内；`0..3` = 路径 / 采样率 / 位深 / 时长）。

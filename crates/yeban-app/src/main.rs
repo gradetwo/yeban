@@ -895,6 +895,10 @@ fn run_gui(options: &Options) -> Result<Vec<String>, cli::CliError> {
     // ⛔ 它**不**提交工程内容：提交仍是既有的 SET / 回车那一处
     // （`host::wire_mixer_edit` ⇒ `wire_mixer_sampler`）⇒ 文本框与 CLI 两条路一位没变。
     host::wire_mixer_sampler_browse(&ui, Rc::new(yeban_app::file_picker::NativeFilePicker));
+    // ⭐ `[PATCH UI-WIRING-01]`：**WAV 导出选项框的 `Ctrl/Cmd+O` 路径浏览** —— 同一个
+    // `FilePicker` 能力面的产品腿。选中路径只写回 `export-wav-path`（两向绑定），
+    // ⛔ 不写盘、⛔ 不跳过「导出」钮；与上面 SFZ 采样器那条逐字同款。
+    host::wire_export_wav_browse(&ui, Rc::new(yeban_app::file_picker::NativeFilePicker));
     // ⭐ 把刚建好的实时腿句柄填进心跳的共享槽（见上面 `midi_live_state` 的注释）：
     // 从这一刻起，硬件 MIDI 会话在窗口内采到的事件就会在 60Hz 心跳里进引擎的音符路径。
     // ⭐ 实时腿的落点（音轨 ＋ 片段）也一并记下：提交音符时按它构造 `Op::AddNote`。

@@ -44,6 +44,12 @@ export component ArrangementView inherits Rectangle {
     in property <[length]> clip-heights: [];
 
     in property <[string]> tracks: [];
+    // ⭐ [PATCH UI-TRACK-KINDS-01]（2026-11-08）：轨道类型（`"midi"` / `"audio"` /
+    // `"aux-return"`），与 `tracks` / `track-ids` **同索引集**。唯一写者 =
+    // `host::apply_view`（`ViewState::track_kinds()` 的投影读数），界面只读它挑
+    // 类型色带 / 顶边 / 徽标 —— ⛔ 不自己记第二份、⛔ 不按下标猜类型。
+    // 关闭 `docs/ledger/app-binding-notes.md` 的 `tracks[*].kind` →「待接图标位」登记。
+    in property <[string]> track-kinds: [];
     // ⭐ 任务单 `#192`：与 `tracks` **同索引集**的轨道身份（26 字符 `EntityId` 文本）。
     // 只用于**无障碍选中态**（`accessible-item-selected` 绑"身份 == 选中身份"）——
     // 选中态按**身份**键控而不是下标：删轨 / 撤销之后下标会指向另一条轨，身份不会。
@@ -355,7 +361,15 @@ export component ArrangementView inherits Rectangle {
         accessible-action-increment => { root.zoom-h-step(true); }
         accessible-action-decrement => { root.zoom-h-step(false); }
         pointer-event(event) => {
-            if event.kind == PointerEventKind.down || event.kind == PointerEventKind.move {
+            // ⭐ [PATCH UI-DRAG-01] hover ≠ 拖动。Slint 1.18.1 的
+            // `TouchArea::input_event` 对 `MouseEvent::Moved` **无条件**派发
+            // `PointerEventKind::Move`（`items/input_items.rs:179-185`），而 `moved` 回调
+            // 只在 `grabbed`（按下）时触发（`186-188`）。旧写法 `down || move` 因此让
+            // 未按下时的悬浮也改缩放 —— 即「没长按也能拖 / 悬浮过去就变了」。
+            // `self.pressed` 是 `out property <bool>`，仅在本区域按下时为真
+            // （`builtin_elements.rs:1311-1312`），且 grab 期间移出区域仍为真 ⇒ 不切断真拖动。
+            if event.kind == PointerEventKind.down
+                || (event.kind == PointerEventKind.move && self.pressed) {
                 root.zoom-h-slider(max(0.0, min(1.0, (self.mouse-x - 7px) / 114px)));
             }
         }
@@ -443,7 +457,10 @@ export component ArrangementView inherits Rectangle {
         accessible-action-increment => { root.zoom-v-step(true); }
         accessible-action-decrement => { root.zoom-v-step(false); }
         pointer-event(event) => {
-            if event.kind == PointerEventKind.down || event.kind == PointerEventKind.move {
+            // ⭐ [PATCH UI-DRAG-01]：与横向缩放滑块同款 —— `move` 只在 `self.pressed`
+            // 时跟进，未按下时的悬浮不再改行高（根因见上面横滑块的登记）。
+            if event.kind == PointerEventKind.down
+                || (event.kind == PointerEventKind.move && self.pressed) {
                 root.zoom-v-slider(max(0.0, min(1.0, (self.mouse-x - 7px) / 114px)));
             }
         }
@@ -713,6 +730,19 @@ export component ArrangementView inherits Rectangle {
                         // （`track-ys[接收下标] + 头内 y`，在哪一行收到都是同一个行空间点）。
                         root.track-reorder-drag(root.track-reorder-index, root.track-ys[track_index] + self.mouse-y);
                     } else {
+                        // ⭐ [PATCH UI-DRAG-01] 复核结论（2026-11-08）：这里**不能**加
+                        // `self.pressed`（或任何"本控件按下态"）守卫。两条硬理由：
+                        // ① 包头 `down` 先调 `track-select` ⇒ 宿主 `apply_view` 重注模型、
+                        //    重建包头项 ⇒ 按下那一刻的指针抓取随之失效，`move` 落到新建的
+                        //    TouchArea（它从未收到 `down` ⇒ `self.pressed == false`）；
+                        //    加守卫会把真实拖拽整条吞掉（`d_ui_11` ⑤ 回归实证：行高一位不动）。
+                        //    行高与重排其实是**同一条跨控件路径**，不是"包头内手势"。
+                        // ② 悬浮（未按下）的 `move` **不会**误改行高：宿主
+                        //    `host::track_height_drag_target_px` 以 `track-height-drag-active`
+                        //    为唯一读数，先查 `active`、再查"下标 == 起手那一行的身份"，
+                        //    孤立的 move 直接 `return`（`host.rs` 注释："一个孤立的 move
+                        //    永远改不动几何"）；只有 `grab` 置位、`release` 清零。
+                        //    ⇒ 手势门槛在宿主侧已闭环，界面无需也不该有第二份守卫。
                         root.track-height-drag(track_index, self.mouse-y);
                     }
                 } else {
@@ -739,6 +769,82 @@ export component ArrangementView inherits Rectangle {
                 } else {
                     reject
                 }
+            }
+        }
+
+        // -------------------------------------------------------------- [PATCH UI-TRACK-KINDS-01]
+        // Logic Pro 风格轨道头：按 `ViewState::track_kinds()` 的投影读数，给每类轨道一条
+        // **类型色带**（左沿 3px 全高）＋ 一条**类型色顶边**（2px）＋ 一个**类型徽标**
+        // （第二行按钮组与音量读数之间的 40px 空档）。
+        //
+        // ⛔ 三条纪律：
+        // ① 三个节点全是**纯视觉**（Rectangle / UiText）：无 `accessible-id` ⇒ 不进 ui/tree
+        //    控件树（pane_no_overlap / elements 注册表一位不动）；无 `TouchArea` /
+        //    `clicked` / `callback` ⇒ 不改命中测试、不改活文档计数。它们排在包头拖拽
+        //    `TouchArea` **之后**声明，因此"拖拽面是第一个子元素"的既有假设一位不动。
+        // ② 不改包头 `accessible-label: "轨道 " + track_name`（live_ui_mcp 逐字断言），
+        //    不把 `selected-track-id` 引入可见样式（track_selection 棘轮）。
+        // ③ `visible` 用「下标 + 非空」双守卫：`track-kinds` 未注入或与 `tracks` 不等长
+        //    时整组不画 ⇒ 不伪造"这条轨道是什么类型"的读数（与注入族同款诚实口径）。
+        //
+        // 色板（三支都是随主题的既有令牌、色相拉开；⛔ 不用全界面唯一强调色令牌）：
+        //   midi       → `Tokens.gold`（渔火·暖金）
+        //   audio      → `Tokens.gold-deep`（客船·冷蓝）
+        //   aux-return → `Tokens.playing`（铜绿）
+        //   其它 / 空  → `Tokens.line-strong`（雾线·中性；此时 `visible: false` ⇒ 不画）
+        // 类型映射在每个节点内联重复（⛔ 不用局部 `property` 共享）：repeater 元素的
+        // `parent.*` 自定义属性作用域在 Slint 1.18 下不稳，内联是最直白的唯一真相源写法。
+
+        // ① 左沿类型色带 —— Logic Pro 轨道头最标志性的那条竖直色带，贯通整行高。
+        Rectangle {
+            x: 0;
+            y: 0;
+            width: 3px;
+            height: parent.height;
+            visible: root.track-kinds.length > track_index && root.track-kinds[track_index] != "";
+            background: root.track-kinds[track_index] == "midi" ? Tokens.gold
+                : (root.track-kinds[track_index] == "audio" ? Tokens.gold-deep
+                : (root.track-kinds[track_index] == "aux-return" ? Tokens.playing
+                : Tokens.line-strong));
+        }
+
+        // ② 类型色顶边 —— 给每行一个清晰的顶部分层（Logic Pro 的轨道分组线）。
+        Rectangle {
+            x: 3px;
+            y: 0;
+            width: parent.width - 3px;
+            height: 2px;
+            visible: root.track-kinds.length > track_index && root.track-kinds[track_index] != "";
+            background: root.track-kinds[track_index] == "midi" ? Tokens.gold
+                : (root.track-kinds[track_index] == "audio" ? Tokens.gold-deep
+                : (root.track-kinds[track_index] == "aux-return" ? Tokens.playing
+                : Tokens.line-strong));
+        }
+
+        // ③ 类型徽标 —— 深色字压在类型实色上，MIDI / AUD / AUX 一眼可分。
+        Rectangle {
+            x: 82px;
+            y: 26px;
+            width: 36px;
+            height: 18px;
+            visible: root.track-kinds.length > track_index && root.track-kinds[track_index] != "";
+            border-radius: Tokens.radius-sm;
+            background: root.track-kinds[track_index] == "midi" ? Tokens.gold
+                : (root.track-kinds[track_index] == "audio" ? Tokens.gold-deep
+                : (root.track-kinds[track_index] == "aux-return" ? Tokens.playing
+                : Tokens.line-strong));
+
+            UiText {
+                x: 0;
+                y: 0;
+                width: parent.width;
+                height: parent.height;
+                text: root.track-kinds[track_index] == "midi" ? "MIDI"
+                    : (root.track-kinds[track_index] == "audio" ? "AUD"
+                    : (root.track-kinds[track_index] == "aux-return" ? "AUX" : ""));
+                color: Tokens.bg-void;
+                font-size: Tokens.font-size-xs;
+                horizontal-alignment: center;
             }
         }
 
@@ -1259,7 +1365,10 @@ export component ArrangementView inherits Rectangle {
             width: parent.width;
             height: parent.height;
             pointer-event(event) => {
-                if event.kind == PointerEventKind.down || event.kind == PointerEventKind.move {
+                // ⭐ [PATCH UI-DRAG-01]：横滚条与两个缩放滑块同款，`move` 只在
+                // `self.pressed` 时跟进 ⇒ 鼠标扫过滚动条不再把画布拖走。
+                if event.kind == PointerEventKind.down
+                    || (event.kind == PointerEventKind.move && self.pressed) {
                     // 滑块中心跟指针：fraction = (mouse-x − 半个滑块) / (轨道宽 − 滑块宽)。
                     // ⭐ 2026-11-07：fraction 夹到 [0,1] —— 点轨道末端时滑块中心只能到轨道
                     // 末端，不能越过；未夹时点 75% 处可算出 fraction 1.39，偏移 733px 越过

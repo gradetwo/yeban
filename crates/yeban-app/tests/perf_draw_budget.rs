@@ -487,7 +487,12 @@ const PER_FRAME_ARRAY_REWRITE_BUDGET: usize = 58;
 /// ⭐ 2026-11-07（夜半 UI 轨道交互修复线）：多**一行** `ui.set_arrangement_content_px`
 /// （横向滚动条的滑块大小与位置 ⇒ 内容总长，标量）⇒ **101 → 102**。消费者是编曲视图
 /// 底部的滚动条（默认帧新增控件 ⇒ 基准须重录，见完结回执）。
-const APPLY_VIEW_WRITE_SITE_BUDGET: usize = 102;
+/// ⭐ 2026-11-08（`[PATCH UI-TRACK-KINDS-01]`）：多**一行** `ui.set_track_kinds`
+/// （轨道类型数组，与 `track-names` 同索引集）⇒ **102 → 103**。消费者是编曲包头左沿的
+/// 类型色带与控制区的类型徽标（默认帧新增**纯视觉**节点 ⇒ 基准须重录，见
+/// `tests/golden/linux/MANIFEST.txt` 末尾的待重录声明）；该数组同时计入 ③b 的
+/// `array_instance_addrs` 清单。
+const APPLY_VIEW_WRITE_SITE_BUDGET: usize = 103;
 
 /// 取 `[BASELINE-003]` 第 `frame` 帧的滚动偏移（与 `examples/fps_gpu.rs` 同款换算）。
 fn scroll_at(frame: usize) -> f32 {
@@ -508,6 +513,9 @@ fn array_instance_addrs(ui: &yeban_app::ui::MainWindow) -> Vec<(&'static str, us
         }};
     }
     push!("track-names", get_track_names);
+    // ⭐ [PATCH UI-TRACK-KINDS-01]：轨道类型数组也在 `apply_view` 的每帧路径上
+    // （⛔ 不是手势路径）⇒ 必须计入这份清单，否则"又加了一个每帧换模型实例的数组"会漏数。
+    push!("track-kinds", get_track_kinds);
     push!("track-ids", get_track_ids);
     push!("track-ys", get_track_ys);
     push!("track-heights", get_track_heights);

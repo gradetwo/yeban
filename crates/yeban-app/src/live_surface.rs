@@ -2456,6 +2456,11 @@ pub fn build_live_ui_with(
         options.undo.clone(),
         options.save_path.as_deref().and_then(|path| path.parent()),
     );
+    // ⭐ `[PATCH UI-WIRING-01]`：**WAV 导出选项框的 `Ctrl/Cmd+O` 路径浏览** 在本装配也要有注册者，
+    // 否则 Slint 的 `on_*` 空实现 ⇒ 控制面上按下去什么都不动（与 `D-UI-8` 同族）。
+    // 本档没有 OS 窗口 ⇒ 接 `NoPicker`（`choose_save` 恒 `None` = 每次都取消），
+    // 与 `wire_save` 那一处逐字同款；`ui/property` 直写 `export-wav-path` 的既有通道不变。
+    host::wire_export_wav_browse(&window, std::rc::Rc::new(yeban_app::file_picker::NoPicker));
     // ⭐ 缺陷 `D-UI-8`（2026-11-01，创作第二首时撞上）：**保存入口在本装配里没接线**。
     //
     // 上面的那九个 `wire_*` 是**改工程**的写入面，而"把改完的工程写进文件"这一条

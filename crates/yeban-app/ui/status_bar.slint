@@ -67,6 +67,17 @@
 // ② `tests/status_bar_honesty.rs` 的源码文本判据。补 `accessible-value` 属
 // `[UI-A11Y-003]` 的独立切片（它改无障碍树、要配套的运行时判据），不在本票改动面。
 //
+// ✅ **`[UI-A11Y-003]` 关闭登记（`[PATCH UI-A11Y-003]`）**：上面那段"仍未做"已由
+// 本次切片关闭 —— `selection` / `chord` / `shortcut-tip` / `device` 四格各补一条
+// `accessible-value`，值 = 各自的可见文本（同一个属性或同一个表达式 ⇒ ⛔ 不是
+// 第二份真相源）。屏读器与 `ui/tree` 的 `value` 因此能现读这几格的内容，
+// "接线真的到了界面"从两条观测面变成三条（像素 / 源码判据 / 无障碍读数）。
+// ⚠ 只加无障碍属性 ⇒ ⛔ 不改可见文本、⛔ 不新增可寻址节点 ⇒ 5 张金帧一位不动。
+// ⚠ `chord` 的 `accessible-label` 同步改成如实描述 —— 原名"实时和弦识别"是**假承诺**
+//   （app 侧没有 `yeban-theory` 依赖边、这一格没有宿主写者、永远显示 `(none)`）；
+//   `src/elements.rs` 的注册表标签逐字同步（判据要求运行时 label == 注册表 label）。
+// ⚠ 保留下面所有带日期的历史记录原文（本仓纪律：带日期的记录只标注、不改写）。
+
 // 下面这段是**本票之前**的登记，按纪律保留原文（带日期的历史记录不改写）：
 //
 // ⚠ **诚实性审计登记（2026-10-08，那一票未修，如实登记不假装）**：
@@ -172,6 +183,10 @@ export component StatusBar inherits Rectangle {
         accessible-role: text;
         accessible-id: "status-bar-selection";
         accessible-label: "选区信息";
+        // ⭐ [PATCH UI-A11Y-003]：可见文本 = `accessible-value` ⇒ 屏读器与 `ui/tree`
+        // 的 `value` 读到的是**同一串字节**（与 `module-last-status` 同款纪律）。
+        // 只加无障碍属性 ⇒ ⛔ 不改可见像素 ⇒ 5 张金帧一位不动。
+        accessible-value: root.selection;
     }
 
     UiText {
@@ -184,7 +199,11 @@ export component StatusBar inherits Rectangle {
         font-size: Tokens.font-size-xs;
         accessible-role: text;
         accessible-id: "status-bar-chord";
-        accessible-label: "实时和弦识别";
+        // ⭐ [PATCH UI-A11Y-003]：原名"实时和弦识别"是**假的承诺** —— app 侧没有
+        // `yeban-theory` 依赖边、这一格没有宿主写者、永远显示 `(none)`（R9 登记）。
+        // 改成如实描述，⛔ 不改可见文本（`(none)` 是 D24 字体 tofu 判据的对照样本）。
+        accessible-label: "和弦识别（当前版本无读数）";
+        accessible-value: "和弦 " + root.chord;
     }
 
     // 快捷键提示（原来的那一格，仍在注册表里：`status-bar-shortcut-tip`）。
@@ -204,6 +223,9 @@ export component StatusBar inherits Rectangle {
         accessible-role: text;
         accessible-id: "status-bar-shortcut-tip";
         accessible-label: "快捷键提示";
+        // ⭐ [PATCH UI-A11Y-003]：提示的**内容**此前只能靠像素读；现在 `ui/tree` 的
+        // `value` 与屏读器能现读到同一句（`d_ui_27` 判据钉的那一串承诺）。
+        accessible-value: root.tip;
     }
 
     // 最近一次保存的结果 —— 成功 / 被拒的**原话**（宿主 `host::apply_save_outcome` 是唯一写者）。
@@ -247,5 +269,7 @@ export component StatusBar inherits Rectangle {
         // （`project.audio_config`，引擎据此向声卡协商），不是声卡协商回来的结果。
         // 注册表标签必须逐字相同（`crates/yeban-app/src/elements.rs`）。
         accessible-label: "音频配置与性能目标";
+        // ⭐ [PATCH UI-A11Y-003]：真实工程音频配置（`audio_config_display`）也能被读屏读到。
+        accessible-value: root.device;
     }
 }
