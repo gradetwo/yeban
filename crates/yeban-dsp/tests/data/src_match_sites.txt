@@ -56,6 +56,6 @@ src/tape.rs|528|variable|&normalise|variable_needle|needle 非字面量：本表
 src/vocal_key_detect.rs|350|variable|&pc|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
 src/vocal_key_detect.rs|395|variable|&det.confidence|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
 src/vocal_refine.rs|224|variable|&f0|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
-src/vocal_timemap.rs|748|variable|&line_ratio|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
-src/vocal_timemap.rs|753|variable|*rate|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
-src/vocal_timemap.rs|767|variable|*rate|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
+src/vocal_timemap.rs|785|variable|&line_ratio|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
+src/vocal_timemap.rs|790|variable|*rate|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
+src/vocal_timemap.rs|804|variable|*rate|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点

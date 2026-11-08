@@ -3,8 +3,8 @@
 > 由 `python3 scripts/gates/license_inventory.py` 从 `cargo metadata --locked` 生成。
 > CI 用 `--check` 对账：加依赖/升版本后忘记重新生成，这一项会变红。
 
-- `Cargo.lock` SHA-256（前 16 位）: `b2c20a3099929e2f`
-- 外部依赖包数: **634**（不含 27 个 workspace 成员）
+- `Cargo.lock` SHA-256（前 16 位）: `414f62b2d64a5086`
+- 外部依赖包数: **633**（不含 28 个 workspace 成员）
 - 许可来源: 各包 `Cargo.toml` 的 `license` 字段（SPDX 表达式，未经人工改写）
 
 ## 许可族分布
@@ -12,7 +12,7 @@
 | SPDX 表达式 | 包数 |
 | :--- | ---: |
 | `MIT OR Apache-2.0` | 293 |
-| `MIT` | 131 |
+| `MIT` | 130 |
 | `Apache-2.0 OR MIT` | 52 |
 | `Unicode-3.0` | 27 |
 | `Apache-2.0` | 18 |
@@ -99,8 +99,8 @@
 | `autocfg` | `1.5.1` | `Apache-2.0 OR MIT` | 传递 | — |
 | `base64` | `0.23.1` | `MIT OR Apache-2.0` | 传递 | — |
 | `bincode` | `2.0.1` | `MIT` | 传递 | — |
-| `bindgen` | `0.70.1` | `BSD-3-Clause` | 传递 | — |
-| `bindgen` | `0.72.1` | `BSD-3-Clause` | 传递 | — |
+| `bindgen` | `0.70.1` | `BSD-3-Clause` | 直接 | `signalsmith-stretch` |
+| `bindgen` | `0.72.1` | `BSD-3-Clause` | 直接 | `signalsmith-stretch` |
 | `bit-set` | `0.10.0` | `Apache-2.0 OR MIT` | 传递 | — |
 | `bit-vec` | `0.9.1` | `Apache-2.0 OR MIT` | 传递 | — |
 | `bitflags` | `1.3.2` | `MIT/Apache-2.0` | 传递 | — |
@@ -119,7 +119,7 @@
 | `calloop` | `0.13.0` | `MIT` | 传递 | — |
 | `calloop` | `0.14.5` | `MIT` | 传递 | — |
 | `calloop-wayland-source` | `0.3.0` | `MIT` | 传递 | — |
-| `cc` | `1.6.0` | `MIT OR Apache-2.0` | 传递 | — |
+| `cc` | `1.6.0` | `MIT OR Apache-2.0` | 直接 | `signalsmith-stretch` |
 | `cexpr` | `0.6.0` | `Apache-2.0/MIT` | 传递 | — |
 | `cfg-if` | `1.0.5` | `MIT OR Apache-2.0` | 传递 | — |
 | `cfg_aliases` | `0.2.2` | `MIT` | 传递 | — |
@@ -143,7 +143,7 @@
 | `core-graphics-types` | `0.1.3` | `MIT OR Apache-2.0` | 传递 | — |
 | `coreaudio-rs` | `0.14.2` | `MIT/Apache-2.0` | 传递 | — |
 | `countme` | `3.0.1` | `MIT OR Apache-2.0` | 传递 | — |
-| `cpal` | `0.18.2` | `Apache-2.0` | 直接 | `yeban-engine` |
+| `cpal` | `0.18.2` | `Apache-2.0` | 直接 | `signalsmith-stretch`, `yeban-engine` |
 | `cpufeatures` | `0.3.1` | `MIT OR Apache-2.0` | 传递 | — |
 | `crc32fast` | `1.5.2` | `MIT OR Apache-2.0` | 传递 | — |
 | `critical-section` | `1.2.0` | `MIT OR Apache-2.0` | 传递 | — |
@@ -155,7 +155,7 @@
 | `crypto-common` | `0.2.2` | `MIT OR Apache-2.0` | 传递 | — |
 | `ctor` | `0.10.1` | `Apache-2.0 OR MIT` | 传递 | — |
 | `cursor-icon` | `1.2.0` | `MIT OR Apache-2.0 OR Zlib` | 传递 | — |
-| `dasp` | `0.11.0` | `MIT OR Apache-2.0` | 传递 | — |
+| `dasp` | `0.11.0` | `MIT OR Apache-2.0` | 直接 | `signalsmith-stretch` |
 | `dasp_envelope` | `0.11.0` | `MIT OR Apache-2.0` | 传递 | — |
 | `dasp_frame` | `0.11.0` | `MIT OR Apache-2.0` | 传递 | — |
 | `dasp_interpolate` | `0.11.0` | `MIT OR Apache-2.0` | 传递 | — |
@@ -249,7 +249,7 @@
 | `hermit-abi` | `0.3.9` | `MIT OR Apache-2.0` | 传递 | — |
 | `hermit-abi` | `0.5.3` | `MIT OR Apache-2.0` | 传递 | — |
 | `hex` | `0.4.3` | `MIT OR Apache-2.0` | 传递 | — |
-| `hound` | `3.5.1` | `Apache-2.0` | 直接 | `yeban-render` |
+| `hound` | `3.5.1` | `Apache-2.0` | 直接 | `signalsmith-stretch`, `yeban-render` |
 | `htmlparser` | `0.2.1` | `MIT OR Apache-2.0` | 传递 | — |
 | `hybrid-array` | `0.4.15` | `MIT OR Apache-2.0` | 传递 | — |
 | `i-slint-backend-linuxkms` | `1.18.1` | `GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0` | 传递 | — |
@@ -477,7 +477,6 @@
 | `shlex` | `1.3.0` | `MIT OR Apache-2.0` | 传递 | — |
 | `shlex` | `2.0.1` | `MIT OR Apache-2.0` | 传递 | — |
 | `signal-hook-registry` | `1.4.8` | `MIT OR Apache-2.0` | 传递 | — |
-| `signalsmith-stretch` | `0.1.3` | `MIT` | 直接 | `yeban-dsp` |
 | `simd-adler32` | `0.3.10` | `MIT` | 传递 | — |
 | `simd_cesu8` | `1.2.0` | `Apache-2.0 OR MIT` | 传递 | — |
 | `simdutf8` | `0.1.5` | `MIT OR Apache-2.0` | 传递 | — |

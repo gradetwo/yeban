@@ -2,7 +2,7 @@
 # 分类口径：float_bits ＝ 判据体内有 to_bits()；integer_count ＝ 只比整数/长度
 # class：hard ＝ 产线可达集无宿主 libm 超越函数；platform ＝ 有（只在本架构有意义）
 #        no_callee ＝ 不调用本 crate 产线函数
-# 合计 353 条：float_bits 88 ／ integer_count 265；其中 hard 73 ／ platform 12
+# 合计 354 条：float_bits 88 ／ integer_count 266；其中 hard 73 ／ platform 12
 # 列：kind | class | reach | host | file | test
 integer_count | no_callee | 0 | - | src/block.rs | accumulate_matches_scalar_reference
 integer_count | no_callee | 0 | - | src/block.rs | mismatched_lengths_are_truncated_instead_of_panicking
@@ -356,4 +356,5 @@ integer_count | no_callee | 0 | - | src/vocal_timemap.rs | gate_pass_and_fail
 integer_count | no_callee | 0 | - | src/vocal_timemap.rs | map_interpolates_and_extends
 integer_count | no_callee | 0 | - | src/vocal_timemap.rs | render_burst_alignment_identity_and_stretched
 integer_count | no_callee | 0 | - | src/vocal_timemap.rs | render_identity_is_deterministic
+integer_count | no_callee | 0 | - | src/vocal_timemap.rs | render_same_seed_deterministic_across_seeds
 integer_count | no_callee | 0 | - | src/vocal_timemap.rs | render_silence_stays_silence

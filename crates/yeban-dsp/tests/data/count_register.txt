@@ -2,14 +2,14 @@
 # 口径五类：masked（排除注释/字符串后计）｜raw（全文原样计）｜structural（结构性条目数）｜log_lines（日志行数）｜runtime_passed（运行期 passed 求和）
 # 列：name|value|class|basis
 # 合计 11 条：raw 3 ／ masked 1 ／ structural 5 ／ log_lines 1 ／ runtime_passed 1
-raw_assert_in_src|1881|raw|grep -rno assert crates/yeban-dsp/src 后 wc -l（未掩码的全文扫描）
-masked_assert_in_src|1861|masked|掩码器：等价脚本 ~/workspace/tools/dsp-mask-count.py 按同一口径计（排除 // 与 /* */ 注释及 "…" 字符串后计 assert）
+raw_assert_in_src|1890|raw|grep -rno assert crates/yeban-dsp/src 后 wc -l（未掩码的全文扫描）
+masked_assert_in_src|1870|masked|掩码器：等价脚本 ~/workspace/tools/dsp-mask-count.py 按同一口径计（排除 // 与 /* */ 注释及 "…" 字符串后计 assert）
 impl_default_for|50|structural|grep -rc '^impl Default for' crates/yeban-dsp/src/**/*.rs 求和（数组条目式；`Limiter<W>` 写成 `impl<const W: usize> Default` 故不被该谓词计到）
-rows_hard_assertion_table|353|structural|证据文件行数（去掉 # 表头）
-rows_integer_count_categories|265|structural|证据文件行数（去掉 # 表头）
+rows_hard_assertion_table|354|structural|证据文件行数（去掉 # 表头）
+rows_integer_count_categories|266|structural|证据文件行数（去掉 # 表头）
 rows_src_match_sites|51|structural|证据文件行数（去掉 # 表头）
 rows_device_injection_evidence|15|structural|证据文件行数（去掉 # 表头）
-digits_in_comment_fragments|17904|raw|对 // 片段内的数字字符计数（含数字的注释片段）；等价脚本 ~/workspace/tools/dsp-mask-count.py 同口径计
-digits_in_string_fragments|1690|raw|对 "…" 片段内的数字字符计数（含数字的字符串片段）；等价脚本 ~/workspace/tools/dsp-mask-count.py 同口径计
+digits_in_comment_fragments|17954|raw|对 // 片段内的数字字符计数（含数字的注释片段）；等价脚本 ~/workspace/tools/dsp-mask-count.py 同口径计
+digits_in_string_fragments|1735|raw|对 "…" 片段内的数字字符计数（含数字的字符串片段）；等价脚本 ~/workspace/tools/dsp-mask-count.py 同口径计
 test_result_lines_last_run|27|log_lines|上一轮 test 门日志里 'test result:' 的行数（暂取 P2-1 支值，合入树全量跑完后按实测重填）
 runtime_passed_last_run|650|runtime_passed|上一轮 test 门 'test result:' 行的 passed 求和（暂取 P0-1 支值，合入树全量跑完后按实测重填）
