@@ -112,6 +112,10 @@ const SLINT_SOURCES: &[(&str, &str)] = &[
         "ui/workspace/session_view.slint",
         include_str!("../ui/workspace/session_view.slint"),
     ),
+    (
+        "ui/workspace/song_overview_panel.slint",
+        include_str!("../ui/workspace/song_overview_panel.slint"),
+    ),
 ];
 
 /// 承诺源 B：控件登记表（`registry.add(id, kind, file, name, ..)`）。
