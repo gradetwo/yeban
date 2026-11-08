@@ -9053,6 +9053,60 @@ fn a_source_that_renders_silence_in_the_window_is_named_in_a_warning() {
     );
 }
 
+/// ⭐ §5.3 回归（2026-11-02 夜半 v8 核查）：采样器绑了 SFZ、音符命中了区域、
+/// 但 `sample=` 文件读不到 ⇒ 该轨在本渲染里一个非零样本都没出 ⇒
+/// `warnings[]` 里必须有一条 `silentSources` 点名它 —— “渲染成功”不能掩盖
+/// “采样库没接上”（旧坑：不设采样库根时整曲渲成 −39 dB 近乎静音且不报错）。
+/// 夹具：复用 #221 的采样器轨形状，SFZ 只写 `sample=missing.wav`（不落盘）。
+#[test]
+fn a_sampler_with_missing_sample_files_is_named_in_silent_sources() {
+    let scratch = Scratch::new("missing-sample-warning");
+    let dir = scratch.join("sampler-missing");
+    fs::create_dir_all(&dir).expect("建目录");
+    fs::write(dir.join("m.sfz"), sampler_sfz_body("missing.wav")).expect("写 SFZ");
+    let project = project_with_sampler(Some(&dir.join("m.sfz").display().to_string()));
+    let (_sha, _peak, response) = render_once(&scratch, "missing", &project);
+    let data = &response["data"];
+    let warnings = data["warnings"].as_array().expect("warnings 必须是数组");
+    let silent: Vec<&Value> = warnings
+        .iter()
+        .filter(|warning| warning["code"] == "silentSources")
+        .collect();
+    assert_eq!(
+        silent.len(),
+        1,
+        "缺样本的采样器轨必须被 silentSources 点名（warnings = {warnings:?}）"
+    );
+    let named = silent[0]["sources"].as_array().expect("sources 数组");
+    assert_eq!(named.len(), 1, "{silent:?}");
+    // 逐源读数：同一条轨的 sampler 子对象必须如实登记缺失（不是“无内容”）。
+    let sources = data["sources"].as_array().expect("sources 必须是数组");
+    let sampler_source = sources
+        .iter()
+        .find(|source| source["kind"] == "sfz-sampler")
+        .expect("必须有一条 sfz-sampler 源");
+    assert_eq!(
+        named[0]["track"], sampler_source["track"],
+        "点名的必须是缺样本的那条轨: {silent:?}"
+    );
+    assert!(named[0]["notes"].as_u64().unwrap_or(0) > 0, "{silent:?}");
+    let sampler = &sampler_source["sampler"];
+    assert_eq!(
+        sampler["notesWithoutSample"], 1,
+        "命中区域却无解码样本的音符必须计为 1: {sampler}"
+    );
+    let missing = sampler["missingSamplePaths"]
+        .as_array()
+        .expect("missingSamplePaths 必须是数组");
+    assert!(
+        missing
+            .iter()
+            .filter_map(|path| path.as_str())
+            .any(|path| path.contains("missing.wav")),
+        "缺失路径必须点名 missing.wav: {sampler}"
+    );
+}
+
 /// ⭐ `G5`（审计 2026-10-27）判据：内置**音色选择**的入口 = 乐器设备的
 /// `osc1_wave` / `osc2_wave`（取值 = 波表下标 0=hollow/1=organ/2=vocal/
 /// 3=metallic/4=glass）。三条断言：
