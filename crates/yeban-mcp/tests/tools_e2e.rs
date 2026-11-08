@@ -1517,6 +1517,10 @@ fn no_tool_answers_with_a_blanket_not_implemented() {
                 "service_url": format!("http://127.0.0.1:{}", closed_port),
             }),
         ),
+        // 整曲总览图：本 harness 不注入 provider ⇒ 带内 `CONFLICT` +
+        // `providerUnavailable`（不是实现级出口）；这里只要求"走到领域实现 +
+        // 契约形状"，真 provider 的证据在 `tests/song_overview.rs`（stub）。
+        ("get_song_overview", json!({ "resolution": "bar" })),
         // 关闭放最后: 前面的用例都要有活跃工程。
         ("yeban_close_project", json!({ "saveFirst": false })),
     ];

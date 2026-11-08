@@ -44,7 +44,7 @@
 //!
 //! | 面 | reason 数 | 规范行数 | SHA-256 |
 //! | :--- | ---: | ---: | :--- |
-//! | `reason`（**可分类**面：字面量 ＋ 可解析的字面量 `let` ＋ **调用点传播**，含顺序） | 237 | 1013 | `1ace30ddae1089f85107ff405cec63cb21f76fd8006f3a3520d75a58b6308241` |
+//! | `reason`（**可分类**面：字面量 ＋ 可解析的字面量 `let` ＋ **调用点传播**，含顺序） | 239 | 1021 | `80b97a03f9c83fa22da7a8d7dbbc30b0b978dee344f9dbc9974c6df0d0946a74` |
 //!
 //! ⚠ `ADR-0030`（`yeban_export_stems`）：两条新字面站点 `masterBusTrack` /
 //! `notASourceNode`（各带 `trackId` / `name` / `reason` 三个同级键）进入规范文本
@@ -66,6 +66,12 @@
 //! 规范行数 1012 → 1013（只多 1 个键行）；**新摘要照抄判据自己的报出值**
 //! （本表里那一位与 `FROZEN_REASON_SURFACE_SHA256` 在同一次提交里一起换成新值）。
 //!
+//! ⚠ 整曲总览图（本支）：新增 `src/domain/song_overview.rs` ⇒ 生产区 `.rs` 文件 48 → 49；
+//! 2 处新 `reason` 字面站点（`unknownResolution` 与经 `PROVIDER_UNAVAILABLE_REASON`
+//! 常量解析的 `providerUnavailable`，`reason` 键站点 270 → 272）⇒ reason 数 237 → 239、
+//! 规范行数 1013 → 1021（2 reason 行 ＋ 6 键行）；**新摘要照抄判据自己的报出值**
+//! （本表里那一位与 `FROZEN_REASON_SURFACE_SHA256` 在同一次提交里一起换成新值）。
+//!
 //! ⚠ `#274`：摘要随"登记位置搬进 provider"重钉（集合不变、顺序变了）；
 //! 见 `FROZEN_REASON_SURFACE_SHA256` 的沿革注释。
 //! ⚠ `#340`：摘要**只覆盖可分类面**。运行时站点（`format!` / 转发入参 /
@@ -83,7 +89,7 @@ use yeban_mcp::undo_session::read_rust_sources;
 /// （2026-10-28 起, 见 [`PROPAGATED_REASON_SITES`]）。⛔ 真看不见的运行时站点不进这张表，
 /// 由 [`EXEMPT_DYNAMIC_REASON_SITES`] 逐条登记。
 /// 这是黄金表：任何改名 / 新增 / 删除都必须**故意**改这一行。
-pub const GOLDEN_REASONS: [&str; 233] = [
+pub const GOLDEN_REASONS: [&str; 235] = [
     "assetChannelLayout",
     "assetDecodeFailed",
     "assetHashMismatch",
@@ -193,6 +199,7 @@ pub const GOLDEN_REASONS: [&str; 233] = [
     "pointAddressRequired",
     "projectAlreadyExists",
     "proposalNotFound",
+    "providerUnavailable",
     "quantizeGridMustBeNonZero",
     "recordDrainFailed",
     "removeClipIsNotPlacement",
@@ -256,6 +263,7 @@ pub const GOLDEN_REASONS: [&str; 233] = [
     "unknownRemoveSceneField",
     "unknownRemoveSectionField",
     "unknownRemoveTrackField",
+    "unknownResolution",
     "unknownRoutingGainField",
     "unknownSetAssetField",
     "unknownSetSceneField",
@@ -1490,16 +1498,21 @@ const REASON_ARGUMENT_NAME_USES: [ReasonArgumentNameUse; 3] = [
 // 键站点 263 → 270、字面站点 252 → 259
 // （恒等式仍闭合：270 = 字面 259 ＋ 可解析 `let` 2 ＋ 运行时 6 ＋ 传播 3；
 // 273 = 270 ＋ 参数名 3。）
+// 整曲总览图（本支）：`domain/song_overview.rs` 的 `unknownResolution` 字面站点与
+// `providerUnavailable`（经 `PROVIDER_UNAVAILABLE_REASON` 常量解析的字面站点）
+// ⇒ 出现 273 → 275、键站点 270 → 272、字面站点 259 → 261
+// （恒等式仍闭合：272 = 字面 261 ＋ 可解析 `let` 2 ＋ 运行时 6 ＋ 传播 3；
+// 275 = 272 ＋ 参数名 3。）
 // 2 处新字面 `"reason"` 键站点 ⇒ 出现 264 → 266、键站点 261 → 263、字面站点 250 → 252
 // （恒等式仍闭合：263 = 字面 252 ＋ 可解析 `let` 2 ＋ 运行时 6 ＋ 传播 3；
 // 266 = 263 ＋ 参数名 3。）
-const REASON_OCCURRENCES_TOTAL: usize = 273;
+const REASON_OCCURRENCES_TOTAL: usize = 275;
 // ⭐ MCP-TOOL-003：键站点 208 → 216、字面站点 200 → 208 —— 新形态在
 // `domain/notes.rs` / `tools.rs` 里新增的 8 处字面 `"reason"` 站点
 // （tick 0、`bpmOutOfRange` 复用、`tempoPointNotFound`、`timeSignaturePointNotFound`
 // 与描述文本里的键形状；逐文件拆分以扫描器读数为准，此处不手数）。
-const REASON_KEY_SITES_TOTAL: usize = 270;
-const REASON_LITERAL_SITES_TOTAL: usize = 259;
+const REASON_KEY_SITES_TOTAL: usize = 272;
+const REASON_LITERAL_SITES_TOTAL: usize = 261;
 const REASON_RESOLVED_SITES_TOTAL: usize = 2;
 const REASON_DYNAMIC_SITES_TOTAL: usize = 6;
 const REASON_PROPAGATED_SITES_TOTAL: usize = 3;
@@ -1822,7 +1835,7 @@ fn every_reason_is_asserted_somewhere() {
 /// 每条 `reason` 在生产区**字面 `json!` 对象**里带的同级键（排序）。
 /// ⚠ 口径：只收字面 `json!` 里的键；运行时 `map.insert(...)` 加进去的键不在内。
 /// 空数组 = 该 reason 的 `data` 里**没有**同级键（或 Data 由别的构造方式给出）。
-pub const GOLDEN_REASON_PAYLOADS: [(&str, &[&str]); 233] = [
+pub const GOLDEN_REASON_PAYLOADS: [(&str, &[&str]); 235] = [
     (
         "assetChannelLayout",
         &[
@@ -2111,6 +2124,10 @@ pub const GOLDEN_REASON_PAYLOADS: [(&str, &[&str]); 233] = [
             "reason",
         ],
     ),
+    (
+        "providerUnavailable",
+        &["form", "hint", "providerAttached", "reason"],
+    ),
     ("quantizeGridMustBeNonZero", &["field", "reason"]),
     ("recordDrainFailed", &["ioError", "reason"]),
     ("removeClipIsNotPlacement", &["hint", "reason"]),
@@ -2389,6 +2406,7 @@ pub const GOLDEN_REASON_PAYLOADS: [(&str, &[&str]); 233] = [
             "unsupportedFields",
         ],
     ),
+    ("unknownResolution", &["accepted", "reason"]),
     (
         "unknownRoutingGainField",
         &[
@@ -3015,12 +3033,12 @@ fn the_reason_payload_shape_is_the_published_table() {
 /// `duplicateClipPlacementPairRequired`）⇒ 207 → **216** 个 reason。
 /// 新摘要由本判据的 `left:` 报出值照抄（⛔ 不手算）。
 pub const FROZEN_REASON_SURFACE_SHA256: &str =
-    "1ace30ddae1089f85107ff405cec63cb21f76fd8006f3a3520d75a58b6308241";
+    "80b97a03f9c83fa22da7a8d7dbbc30b0b978dee344f9dbc9974c6df0d0946a74";
 
 /// 规范形式里的 reason 数 / 规范行数（与摘要一起构成"两端"读数）。
-pub const REASON_SURFACE_REASONS: usize = 237;
+pub const REASON_SURFACE_REASONS: usize = 239;
 /// 规范行数（每个 reason 一行 ＋ 每个键一行）。
-pub const REASON_SURFACE_LINES: usize = 1013;
+pub const REASON_SURFACE_LINES: usize = 1021;
 
 /// 单文件里的 `reason` 面：**保留出现顺序**的 `(reason, keys)`。
 ///
@@ -3179,8 +3197,11 @@ fn the_reason_surface_digest_is_frozen_and_documented() {
     // `samplerUnreadable` 字面站点（`reason` 键站点 263 → 270），其中渲染腿的
     // 绑定哈希非法分支给 `samplerUnreadable` 多一个 `embeddedHash` 键 ⇒
     // 规范行数 1012 → 1013、摘要同批重钉。
+    // 整曲总览图（本支）：新增 `src/domain/song_overview.rs` ⇒ 48 → 49，带 2 处新
+    // `reason` 字面站点（`unknownResolution` 与经常量解析的 `providerUnavailable`）
+    // ⇒ reason 数 237 → 239、规范行数 1013 → 1021（2 reason 行 ＋ 6 键行）、摘要同批重钉。
     // ⇒ 本条只证明"分母变了一位"。
-    assert_eq!(files.len(), 48, "生产区 `.rs` 文件数（规范形式的分母之一）");
+    assert_eq!(files.len(), 49, "生产区 `.rs` 文件数（规范形式的分母之一）");
     let canonical = reason_surface(&files);
     let digest = yeban_model::AssetHash::of_bytes(canonical.as_bytes())
         .as_str()

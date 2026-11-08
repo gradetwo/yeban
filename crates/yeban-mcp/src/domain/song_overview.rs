@@ -240,7 +240,7 @@ pub fn plan_song_overview(domain: &Domain, call: &ToolCall) -> Result<super::Pla
 /// `lufs_short` / `lufs_momentary_max` / `score_dyn` /
 /// `density_pitched_onsets_per_beat` / `density_pitched_duty` /
 /// `density_perc_onsets_per_beat` / `pitch_center_midi` / `harmony` /
-/// `active_tracks` / `octave_bandwidth` / `valence_hue` / `section`。
+/// `active_tracks` / `octave_bandwidth` / `valence_hue` / `density` / `section`。
 #[derive(Clone, Copy, Debug)]
 struct FixtureBar {
     lufs_short: f64,
@@ -254,6 +254,11 @@ struct FixtureBar {
     active_tracks: f64,
     octave_bandwidth: f64,
     valence_hue: f64,
+    /// 预计算归一化密度 `D̂ = clamp(ln(1+d)/ln(17))`（`d` = 每秒等效触发数，
+    /// 设计稿 §3.2；6 位小数，与现场算的 2 位小数取整逐位相同）。
+    /// 夹具数据固定 ⇒ 密度是常量，直接写死；生产区不得调用超越函数
+    /// （`probe_authenticity` R56：`.ln()` 等会让位级硬断言变成跨平台假设）。
+    density: f64,
     section: &'static str,
 }
 
@@ -271,6 +276,7 @@ const FIXTURE_BARS: [FixtureBar; 8] = [
         active_tracks: 2.0,
         octave_bandwidth: 1.5,
         valence_hue: -0.62,
+        density: 0.568061,
         section: "Intro",
     },
     FixtureBar {
@@ -285,6 +291,7 @@ const FIXTURE_BARS: [FixtureBar; 8] = [
         active_tracks: 3.0,
         octave_bandwidth: 2.0,
         valence_hue: -0.58,
+        density: 0.686821,
         section: "Intro",
     },
     FixtureBar {
@@ -299,6 +306,7 @@ const FIXTURE_BARS: [FixtureBar; 8] = [
         active_tracks: 3.0,
         octave_bandwidth: 2.0,
         valence_hue: -0.55,
+        density: 0.733952,
         section: "Verse",
     },
     FixtureBar {
@@ -313,6 +321,7 @@ const FIXTURE_BARS: [FixtureBar; 8] = [
         active_tracks: 4.0,
         octave_bandwidth: 2.5,
         valence_hue: -0.50,
+        density: 0.846352,
         section: "Verse",
     },
     FixtureBar {
@@ -327,6 +336,7 @@ const FIXTURE_BARS: [FixtureBar; 8] = [
         active_tracks: 5.0,
         octave_bandwidth: 3.0,
         valence_hue: -0.44,
+        density: 0.905315,
         section: "Chorus",
     },
     FixtureBar {
@@ -341,6 +351,7 @@ const FIXTURE_BARS: [FixtureBar; 8] = [
         active_tracks: 3.0,
         octave_bandwidth: 2.0,
         valence_hue: -0.52,
+        density: 0.686821,
         section: "Chorus",
     },
     FixtureBar {
@@ -355,6 +366,7 @@ const FIXTURE_BARS: [FixtureBar; 8] = [
         active_tracks: 6.0,
         octave_bandwidth: 3.5,
         valence_hue: -0.40,
+        density: 0.955823,
         section: "Chorus",
     },
     FixtureBar {
@@ -369,6 +381,7 @@ const FIXTURE_BARS: [FixtureBar; 8] = [
         active_tracks: 7.0,
         octave_bandwidth: 4.0,
         valence_hue: -0.35,
+        density: 1.0,
         section: "Outro",
     },
 ];
@@ -427,17 +440,17 @@ fn fixture_anomalies() -> Vec<DetectedAnomaly> {
 /// ① 真实 provider 用 dsp 的聚类后 Onset 数（同拍 30 ms 内柱式和弦记 1 次），
 /// stub 没有逐音时序、聚不了类，用未聚类的两组之和（聚类数的上界）；
 /// ② 占空比 `density_pitched_duty` 不进密度公式（只作行字段回传，与 dsp 同口径）。
+/// 夹具小节的张力（设计稿 §3.2 公式
+/// `T = 0.30·L̂ + 0.20·D̂ + 0.20·P̂ + 0.15·Ĥ + 0.15·Ô`）。
+/// 密度项 `D̂` 直接读 `FixtureBar::density` 预计算值（现场算含 `ln`，
+/// 生产区调用超越函数会红 `probe_authenticity`（R56）；夹具数据固定，
+/// 预计算值与公式的 2 位小数取整逐位相同）。
 fn tension_of(bar: &FixtureBar) -> f64 {
     let loudness = ((bar.lufs_short + 36.0) / 28.0).clamp(0.0, 1.0);
-    // 120 BPM ⇒ 一拍 0.5 s ⇒ 每秒 2 拍。
-    let beats_per_sec = 2.0;
-    let notes_per_sec =
-        (bar.density_pitched_onsets_per_beat + bar.density_perc_onsets_per_beat) * beats_per_sec;
-    let density = ((1.0 + notes_per_sec).ln() / 17.0f64.ln()).clamp(0.0, 1.0);
     let pitch = ((bar.pitch_center_midi - 36.0) / 48.0).clamp(0.0, 1.0);
     let orchestration =
         0.5 * (bar.active_tracks / 8.0).min(1.0) + 0.5 * (bar.octave_bandwidth / 5.0).min(1.0);
-    0.30 * loudness + 0.20 * density + 0.20 * pitch + 0.15 * bar.harmony + 0.15 * orchestration
+    0.30 * loudness + 0.20 * bar.density + 0.20 * pitch + 0.15 * bar.harmony + 0.15 * orchestration
 }
 
 /// 测试替身 provider：对夹具工程返回上面那组固定序列。

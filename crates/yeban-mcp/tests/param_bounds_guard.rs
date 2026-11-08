@@ -86,8 +86,8 @@ enum BoundStatus {
     Unbounded(&'static str),
 }
 
-/// 36 条 string 参数声明（`TOOLS` 里 `json_type == "string"` 的**不同名**）。
-const STRING_PARAM_BOUNDS: [(&str, BoundStatus); 36] = [
+/// 37 条 string 参数声明（`TOOLS` 里 `json_type == "string"` 的**不同名**）。
+const STRING_PARAM_BOUNDS: [(&str, BoundStatus); 37] = [
     ("idempotencyKey", BoundStatus::Length(None, Some(256))),
     ("name", BoundStatus::Length(Some(1), None)),
     ("license", BoundStatus::Length(Some(1), None)),
@@ -225,6 +225,9 @@ const STRING_PARAM_BOUNDS: [(&str, BoundStatus); 36] = [
             "调用方自选的任务内 part 标签；后果限于该次调用的查找失败与报文长度。收口面：`schemas/**`。",
         ),
     ),
+    // 整曲总览图：`get_song_overview` 的 `resolution` —— 取值是固定词表（`bar` / `beat`），
+    // 未知值由 `plan_song_overview` 以 `unknownResolution` 拒绝并列出 `accepted`。
+    ("resolution", BoundStatus::WordList),
 ];
 
 #[test]
