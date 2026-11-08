@@ -1997,39 +1997,6 @@ struct NoteInputs<'a> {
     occurrence: Option<u32>,
 }
 
-/// ⭐ **离线渲染的一组入参**（本片新增，任务 `#310`）。
-///
-/// 存在的理由是 `clippy::too_many_arguments`：离线渲染现在要同时表达"样本从哪来"
-/// （单份 `source` / region 级样本表）、"有没有 note-off"（`held_frames`）、
-/// "轮替发第几个变体"（`occurrence`）三件事，摊平成参数会到 9 个。
-///
-/// # 三组取值的**兼容性契约**（判据在 `tests/sfz_offline_note_off.rs`）
-///
-/// | 字段 | `None` / 旧值 | `Some` / 新值 |
-/// | :--- | :--- | :--- |
-/// | [`Self::source`] ＋ [`Self::samples`] | `samples = None` ⇒ **每个匹配区域都用同一份** `source`（＝ 接线前的行为） | `samples = Some(表)` ⇒ 每个区域按 `region.sample_path()` 取**自己**的样本 |
-/// | [`Self::held_frames`] | `None` ⇒ `EnvRun::frame = u64::MAX`（**永不进释放段**，＝ 接线前的行为） | `Some(n)` ⇒ 引擎绝对帧 `n` 处 **note-off**，`ampeg_release` 真正生效 |
-/// | [`Self::occurrence`] | `None` ⇒ 不启用轮替互斥（所有 `seq_*` 变体照旧叠加，＝ 接线前的行为） | `Some(k)` ⇒ 只发 `seq_position == k % seq_length + 1` 那一条（与 [`SfzVoicePool::trigger_note`] 同口径） |
-///
-/// ⚠ **三项全 `None` ＋ `source = Some`** ⇒ 与接线前**逐位相同**（这是旧入口
-/// [`SfzInstrument::render_note_into`] 走的组合）。
-struct NoteInputs<'a> {
-    /// 单份样本（旧语义：所有匹配区域共用）。
-    source: Option<&'a InMemorySample>,
-    /// region 级样本表（键 ＝ `region.sample_path()` 原样字符串）。
-    samples: Option<&'a BTreeMap<String, InMemorySample>>,
-    /// 音高。
-    note: u8,
-    /// 力度。
-    velocity: u8,
-    /// CC 探针（`None` ⇒ 走严格策略与基准值）。
-    cc: Option<&'a dyn Fn(u8) -> u8>,
-    /// note-off 帧（引擎绝对帧，`out[0]` 记作第 0 帧）；`None` ⇒ 无 note-off。
-    held_frames: Option<u64>,
-    /// 轮替序号（第几次触发同一音高）；`None` ⇒ 不启用互斥。
-    occurrence: Option<u32>,
-}
-
 impl SfzInstrument {
     /// **离线**渲染一个音符到 `out`（`+=` 叠加），返回写入的帧数。
     ///
