@@ -5,7 +5,7 @@
 # 与 `cargo vendor` 离线依赖"。
 #
 # 本脚本两部分:
-#   (轻) 不联网: ① 每个 `.slint` 都被 git 跟踪 ② `Cargo.lock` 确定（`--locked` 可解） ③ 指向 vendor 的配置存在且自洽;
+#   (轻) 不联网: ① 每个 `.slint` 都被 git 跟踪 ② `Cargo.lock` 确定（`--locked` 可解） ③ 若 vendor/ 是真 `cargo vendor` 产出则配置必须指向它且自洽（单个打补丁的 path 依赖的 vendor/ 跳过，见下）;
 #   (重) `--full`: 真跑 `cargo vendor --locked` 到临时目录（**联网**、体积大）⇒ 只在手动档跑。
 # 用法: `bash scripts/gates/check_vendor.sh [--full]`
 set -uo pipefail
@@ -45,17 +45,37 @@ else
   bad "Cargo.lock 与清单不一致（--locked 失败）—— 发布包不可复现"
 fi
 
-# ③ 若仓库声明了 vendor 目录，配置必须真的指向它并且是可离线解析的
+# ③ 若仓库有真正的 `cargo vendor` 产出，配置必须真的指向它并且是可离线解析的。
+#     但 vendor/ 也可能只是单个打补丁的 path 依赖（不是 cargo vendor 产出）——
+#     例如 signalsmith-stretch（见 vendor/signalsmith-stretch/VENDORED.md）：
+#     它没有 .cargo-checksum.json、crate 数（1）远少于依赖数（661）。
+#     对这种目录要求 config 指向它会断全部构建（定夺：选项 A，改判据，不动依赖/构建/目录名）。
+#     判定“真 vendor 产出”（二者其一即是）：
+#       (a) vendor/ 内各 crate 都有 .cargo-checksum.json；或
+#       (b) vendor/ 的 crate 数与 `cargo metadata` 的依赖数基本一致（≥ 一半）。
 if [ -d vendor ]; then
-  if ! grep -rqs 'directory *= *"vendor"' .cargo/config.toml .cargo/config 2>/dev/null; then
-    bad "存在 vendor/ 但 .cargo/config.toml 没有指向它 —— 离线包不会被使用"
-  else
-    note "[ok] vendor/ 存在且 .cargo/config.toml 指向它"
+  vendor_dirs=$(find vendor -maxdepth 1 -mindepth 1 -type d | wc -l | tr -d ' ')
+  checksum_dirs=$(find vendor -maxdepth 2 -name '.cargo-checksum.json' -type f | wc -l | tr -d ' ')
+  dep_count=$(cargo metadata --locked --format-version 1 2>/dev/null | python3 -c "import json,sys; print(len(json.load(sys.stdin)['packages']))" 2>/dev/null || echo 0)
+  real_vendor=0
+  if [ "$vendor_dirs" -gt 0 ] && [ "$checksum_dirs" -eq "$vendor_dirs" ]; then
+    real_vendor=1
+  elif [ "$dep_count" -gt 0 ] && [ "$((vendor_dirs * 2))" -ge "$dep_count" ]; then
+    real_vendor=1
   fi
-  if cargo metadata --offline --locked --format-version 1 >/dev/null 2>&1; then
-    note "[ok] 离线解析通过: cargo metadata --offline --locked"
+  if [ "$real_vendor" -eq 1 ]; then
+    if ! grep -rqs 'directory *= *"vendor"' .cargo/config.toml .cargo/config 2>/dev/null; then
+      bad "存在 vendor/ 但 .cargo/config.toml 没有指向它 —— 离线包不会被使用"
+    else
+      note "[ok] vendor/ 存在且 .cargo/config.toml 指向它"
+    fi
+    if cargo metadata --offline --locked --format-version 1 >/dev/null 2>&1; then
+      note "[ok] 离线解析通过: cargo metadata --offline --locked"
+    else
+      bad "vendor/ 存在但 --offline 解析失败 —— 离线包不完整"
+    fi
   else
-    bad "vendor/ 存在但 --offline 解析失败 —— 离线包不完整"
+    note "[skip] vendor/ 不是 cargo vendor 产出（${vendor_dirs} 个 crate，无 .cargo-checksum.json；依赖共 ${dep_count} 个）—— 单个打补丁的 path 依赖，见 vendor/signalsmith-stretch/VENDORED.md；第 ③ 步不适用"
   fi
 else
   note "[skip] 仓库内没有 vendor/（发布时由打包流程产出；--full 可验证它能被产出）"
