@@ -244,6 +244,43 @@ pub const PRINT_THEME_SWITCH: &str = "--print-theme";
 pub const SAMPLER_TRACK_PAIRING_ERROR: &str =
     "`--sampler-track` 必须与 `--track-sampler` 一起给 (它只选目标轨; 单独给会被静默忽略)";
 
+/// ⭐ 任务单 `#331`：一次 `--track-sampler` 装的**一份**乐器（路径 ＋ 可选目标轨）。
+///
+/// # 为什么要有这个类型（而不是两个平行 `Vec`）
+///
+/// `#287` 起"目标轨"是**独立开关**（`--sampler-track`，理由是路径里允许 `:`，见
+/// [`Options::sampler_track`] 的文档）。一旦两个开关都可以重复，就只剩一种不需要
+/// 猜的配对口径：**按出现位置一一配对**（第 i 个 `--sampler-track` 配第 i 个
+/// `--track-sampler`）。把配对**一次算完**再交给应用层，⛔ 不让应用层自己
+/// `zip` 两个向量 —— 那样"长度不等怎么办"会在两个调用点各答一次（本仓
+/// "同一口径只有一个实现"的纪律）。
+///
+/// ⚠ 配对**不看**路径、⛔ 不排序：`--track-sampler a.sfz --track-sampler b.sfz`
+/// 配 `--sampler-track X --sampler-track Y` ⇒ `a.sfz→X`、`b.sfz→Y`。交换其中任意
+/// 一对的顺序就是换配对 —— 这是位置配对唯一可预期的行为。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SamplerInstall {
+    /// 这份 SFZ 的路径（原样，未规范化）。
+    pub path: PathBuf,
+    /// 目标轨身份（`Some`）；`None` ⇒ 旧口径（身份序第一条非主总线轨）。
+    pub track: Option<String>,
+}
+
+/// ⭐ 任务单 `#331`：`--track-sampler` 与 `--sampler-track` **数量对不上**时的
+/// **逐字**用法错误（`{samplers}` / `{tracks}` 是两边的条数）。
+///
+/// 为什么这是用法错误而不是"多余的忽略掉"：两份乐器装到同一条轨 ⇒ 后者覆盖前者，
+/// 前一份**静默不生效**（用户以为装了两份，实际只有一份）。本仓对"看起来成功、
+/// 其实没生效"一律响亮拒绝（与 [`resolve_sampler_track`] 拒绝主总线同一条纪律）。
+#[must_use]
+pub fn sampler_pairing_count_error(samplers: usize, tracks: usize) -> String {
+    format!(
+        "`--track-sampler` 给了 {samplers} 份而 `--sampler-track` 给了 {tracks} 个: \
+         两个开关**按出现位置一一配对**, 条数必须相等 (或者一个 `--sampler-track` 都不给, \
+         仅限只有 1 份乐器时 —— 那时装到身份序第一条非主总线轨)"
+    )
+}
+
 /// `SLINT_STYLE` 的字面值 —— Slint **自己**的编译期风格选择入口（本仓库不改它的语义）。
 ///
 /// 为什么要在用法文本里写它：Slint 1.18.1 的**风格**只能在编译期选，而 `--theme` 只能在
@@ -332,6 +369,7 @@ pub fn usage_text() -> String {
                            PCM WAV; 读不到 ⇒ 如实回退到内存正弦并把原因写进 source=)
   --track-sampler <path>   把这份 SFZ **装到一条轨** (TrackV3::sampler), 走既有的
                            Op::SetTrackSampler ⇒ 一次提交、可撤销;
+                           **可重复**: N 份乐器 = N 条轨, 整批**一次**提交 (一次撤销全撤);
                            目标轨 = --sampler-track 给的身份, 缺省 = 身份序第一条
                            非主总线轨 (旧行为, 逐字节不变; CLI 没有选中态);
                            样本字节缺失 ⇒ 响亮拒绝 (不把一条有声的轨装成静音);
@@ -344,9 +382,13 @@ pub fn usage_text() -> String {
                            (不回落); 主总线被拒的理由: 它是唯一混音出口, 渲染的
                            renderable 排除它 ⇒ 装上去的 sampler 永远不会有消费点;
                            必须与 --track-sampler 一起给 (单独给 = 用法错误, 退出码 {usage});
-                           两种形状:
+                           **可重复**, 与 --track-sampler **按出现位置一一配对** ⇒ 条数必须相等
+                           (同一个目标轨指定两次 = 用法错误: 后者会覆盖前者);
+                           三种形状:
                              yeban-app --track-sampler p.sfz          # 旧 = 身份序第一条非主总线轨
                              yeban-app --sampler-track <trackId> --track-sampler p.sfz
+                             yeban-app --sampler-track <idA> --track-sampler a.sfz \\
+                                       --sampler-track <idB> --track-sampler b.sfz   # 一次装两份
   --midi-in <port>         打开一个**物理 MIDI 输入端口**并采集 (**需要** midi-input 特性;
                            默认构建会给出结构化错误并说明怎么开)
                            <port> = 端口序号 (全十进制) 或端口名**子串** (大小写敏感);
@@ -566,7 +608,10 @@ pub fn usage_text() -> String {
                                --sampler-track 只**选目标轨**, 必须与 --track-sampler 一起给
                                (单独给 = 用法错误, 退出码 {usage}); 缺省 = 身份序第一条
                                非主总线轨 (旧行为, 逐字节不变); 指定不存在的身份 / 主总线
-                               = 响亮报错 (退出码 {open}), ⛔ 不静默回落到第一条
+                               = 响亮报错 (退出码 {open}), ⛔ 不静默回落到第一条;
+                               两个开关都可重复, **按出现位置一一配对** ⇒ 条数必须相等
+                               (多份乐器不给目标轨 / 条数不等 / 同一目标轨两次 = 用法错误,
+                               退出码 {usage}: 后者会静默覆盖前者)
   --save-as 不给 --open        保存的是演示工程, 输出 `saved: ... from=sample=default` 明说
   --save-as 与 --headless      两者都是无窗口路径, 可以一起给 (保存不需要窗口)
   --export-elements 与 --export-midi 与 --export-als 与 --export-logic 与 --save-as 任意组合
@@ -637,7 +682,8 @@ pub fn usage_text() -> String {
   {open} --sfz 失败 (读文件 / SFZ 文本非法)
   {open} --track-sampler 失败 (没有展示轨 / 路径不是 UTF-8 / 样本字节缺失 / 提交被拒 /
       --sampler-track 的身份形状不对 / 工程里没有该身份 / 该身份是主总线)
-  {usage} --sampler-track 没和 --track-sampler 一起给
+  {usage} --sampler-track 没和 --track-sampler 一起给,
+      或两个开关的条数对不上 / 同一个目标轨被指定两次 (可重复, 按出现位置一一配对)
   {open} --midi-in 失败 (端口不存在或名字有歧义 / 宿主不可用 / 本次构建未编译 `midi-input` 特性)
   {open} --midi-in-write-notes / --midi-in-render 失败 (一条音符都没有 / 没有可写目标 /
      没有可发声的目标音轨 / 音轨选择器命中 0 或多条 / 提交被拒 / 引擎重建失败)
@@ -1156,7 +1202,20 @@ pub struct Options {
     ///
     /// ⭐ 任务单 `#287`：目标轨可以用 [`Self::sampler_track`] **显式指定**；不给时
     /// 仍是上面第 1 条的老规则（逐字节不变）。
-    pub track_sampler: Option<PathBuf>,
+    ///
+    /// ⭐⭐ **追加修订段（任务单 `#331`）—— 被修订的是本字段的**类型**（`Option<PathBuf>`
+    /// ⇒ `Vec<PathBuf>`；上面四段原文一字未删，语义全部**仍然成立**）：
+    /// 本开关现在**可重复**，一次命令可以装**多份**乐器（每份一条轨）。
+    ///
+    /// * 重复次数 = 要装的乐器份数，**按出现位置**与 [`Self::sampler_track`] 一一配对
+    ///   （见 [`SamplerInstall`]）；
+    /// * **只给 1 份** ⇒ 与 `#210`/`#287` **逐字节相同**（包括报告行、包括缺省目标轨）；
+    /// * 每份乐器都是**同一次提交**里的一条 `Op::SetTrackSampler` ⇒ 一次撤销把这一批
+    ///   全部撤回（⛔ 不是 N 次独立提交：那会让撤销栈只剩最后一份）；
+    /// * 报告行仍是**每份一行** `track-sampler: track=… path=… ops=…`（1 份 ⇒ 与接线前逐字节相同）；
+    /// * 同一份目标轨被指定两次 / 条数对不上 ⇒ **用法错误**（⛔ 不静默丢前者），见
+    ///   [`sampler_pairing_count_error`]。
+    pub track_sampler: Vec<PathBuf>,
     /// ⭐ 任务单 `#287`：`--sampler-track <trackId>`：`--track-sampler` 装到**哪条**轨。
     ///
     /// 取值是工程里的**音轨身份**（26 字符 ULID，大小写不敏感）—— 即 `project.json`
@@ -1172,7 +1231,11 @@ pub struct Options {
     /// 允许出现 `:`（POSIX 文件名的合法字符；Windows 盘符是第二个例子）⇒ 那种形状
     /// 会把一个**合法**的旧调用重新解释成 `id:path`，破坏"旧用法逐字节不变"。独立
     /// 开关也与既有的 `--midi-in-track`（同样是独立的目标选择器）同形。
-    pub sampler_track: Option<String>,
+    ///
+    /// ⭐⭐ **追加修订段（任务单 `#331`）—— 被修订的是本字段的**类型**（`Option<String>`
+    /// ⇒ `Vec<String>`；上面原文一字未删）：本开关现在**可重复**，第 i 个取值是第 i 份
+    /// `--track-sampler` 的目标轨。条数必须相等（或者一个都不给，且只有 1 份乐器）。
+    pub sampler_track: Vec<String>,
     /// `--midi-in <端口>`：⭐ **打开一个物理 MIDI 输入端口并采集**（⭐ 本仓第一条
     /// **用户可触发**的硬件 MIDI 入口）。
     ///
@@ -1517,10 +1580,11 @@ pub const ACTION_SWITCHES: &[ActionSwitch] = &[
         path: SwitchPath::Batch,
     },
     // ⭐ 任务单 `#210`：装乐器是**编辑**（不是只读装载）⇒ 自己就把进程推离 GUI 路径。
+    // ⭐ 任务单 `#331`：可重复 ⇒ 判据是"至少一份"（⛔ `is_some` 已不成立）。
     ActionSwitch {
         name: "--track-sampler",
-        present: |options| options.track_sampler.is_some(),
-        grant: |options| options.track_sampler = Some(PathBuf::from("probe")),
+        present: |options| !options.track_sampler.is_empty(),
+        grant: |options| options.track_sampler = vec![PathBuf::from("probe")],
         path: SwitchPath::Batch,
     },
     ActionSwitch {
@@ -1625,6 +1689,72 @@ impl Options {
             || self.dump_elements
             || self.print_shortcuts
             || self.export_elements.is_some()
+    }
+
+    /// ⭐ 任务单 `#331`：把两个可重复开关**配成**一份安装清单（**唯一**配对实现）。
+    ///
+    /// # 规则（顺序即判据，⛔ 没有"猜"也没有"回落"）
+    ///
+    /// | `--track-sampler` | `--sampler-track` | 结果 |
+    /// | ---: | ---: | :--- |
+    /// | 0 | 0 | `Ok(空)` —— 没请求装乐器（⛔ 不是错误） |
+    /// | 0 | ≥1 | `Err`（[`SAMPLER_TRACK_PAIRING_ERROR`]；`#287` 的原文案逐字不变） |
+    /// | 1 | 0 | `Ok([{path, track: None}])` —— **`#287` 的旧口径逐字节不变** |
+    /// | 1 | 1 | `Ok([{path, track: Some(id)}])` |
+    /// | N | 0（N ≥ 2） | `Err`（[`sampler_pairing_count_error`]：多份乐器不给目标轨 ⇒ 全部装同一条轨，只有最后一份生效） |
+    /// | N | M ≠ N | `Err`（[`sampler_pairing_count_error`]） |
+    /// | N | N | `Ok`（位置配对） |
+    ///
+    /// 外加一条**独立**判据：同一份目标轨被指定两次 ⇒ `Err`（后者会静默覆盖前者）。
+    /// 判据只用**规范化后的身份文本**比较（大小写不敏感 ⇒ 先 `to_ascii_uppercase`）——
+    /// ⛔ 这里不查"身份是否存在"（那是 [`resolve_sampler_track`] 的活，应用期才知道
+    /// 工程长什么样）。
+    ///
+    /// # Errors
+    /// 返回**人可读**的逐字原因（调用方负责包成 [`ParseError`] 或 [`CliError::Usage`]）。
+    pub fn sampler_installs(&self) -> Result<Vec<SamplerInstall>, String> {
+        let samplers = self.track_sampler.len();
+        let tracks = self.sampler_track.len();
+        if samplers == 0 {
+            if tracks > 0 {
+                return Err(SAMPLER_TRACK_PAIRING_ERROR.to_owned());
+            }
+            return Ok(Vec::new());
+        }
+        if tracks == 0 {
+            if samplers > 1 {
+                return Err(sampler_pairing_count_error(samplers, 0));
+            }
+            return Ok(vec![SamplerInstall {
+                path: self.track_sampler[0].clone(),
+                track: None,
+            }]);
+        }
+        if tracks != samplers {
+            return Err(sampler_pairing_count_error(samplers, tracks));
+        }
+        let mut installs: Vec<SamplerInstall> = Vec::with_capacity(samplers);
+        for (index, path) in self.track_sampler.iter().enumerate() {
+            let wanted = self.sampler_track[index].clone();
+            if let Some(previous) = installs.iter().position(|done| {
+                done.track
+                    .as_deref()
+                    .is_some_and(|track| track.eq_ignore_ascii_case(&wanted))
+            }) {
+                return Err(format!(
+                    "`--sampler-track` 把同一个目标轨指定了两次 (第 {} 个与第 {} 个都是 `{wanted}`): \
+                     一份轨上只能装一份乐器 —— 后者会覆盖前者, 前一份 `--track-sampler` ({}) 将静默不生效",
+                    previous + 1,
+                    index + 1,
+                    self.track_sampler[previous].display(),
+                ));
+            }
+            installs.push(SamplerInstall {
+                path: path.clone(),
+                track: Some(wanted),
+            });
+        }
+        Ok(installs)
     }
 }
 
@@ -1792,6 +1922,13 @@ pub enum ParseError {
     /// "独立给"：`--sampler-track` 自己不选无窗口路径 ⇒ 静默进 GUI 路径、彻底
     /// 什么也不做（本仓最忌讳的假绿）。文本见 [`SAMPLER_TRACK_PAIRING_ERROR`]。
     SamplerTrackWithoutTrackSampler,
+    /// ⭐ 任务单 `#331`：`--track-sampler` 与 `--sampler-track` 的**条数对不上**，
+    /// 或者同一个目标轨被指定了两次（承载逐字原因，见
+    /// [`Options::sampler_installs`]）。
+    ///
+    /// ⛔ 不静默丢多余的那几份：两份乐器装到同一条轨 ⇒ 后者覆盖前者 ⇒ 前一份
+    /// "看起来装上了、其实不生效"，本仓对这种形态一律响亮拒绝。
+    SamplerInstallMismatch(String),
 }
 
 impl ParseError {
@@ -1969,6 +2106,7 @@ impl fmt::Display for ParseError {
             Self::SamplerTrackWithoutTrackSampler => {
                 formatter.write_str(SAMPLER_TRACK_PAIRING_ERROR)
             }
+            Self::SamplerInstallMismatch(reason) => formatter.write_str(reason),
         }
     }
 }
@@ -2087,15 +2225,15 @@ pub fn parse(args: &[String]) -> Result<Options, ParseError> {
             }
             "--track-sampler" => {
                 let value = take_value("--track-sampler", inline, args, &mut cursor)?;
-                set_once(
-                    &mut options.track_sampler,
-                    "--track-sampler",
-                    PathBuf::from(value),
-                )?;
+                // ⭐ 任务单 `#331`：**可重复**（一次装多份乐器，按出现位置与
+                //    `--sampler-track` 配对）⇒ 不再是 `set_once`。⚠ 重复本身不是错误：
+                //    条数／重复目标轨的判据在 [`Options::sampler_installs`]（一处实现）。
+                options.track_sampler.push(PathBuf::from(value));
             }
             "--sampler-track" => {
                 let value = take_value("--sampler-track", inline, args, &mut cursor)?;
-                set_once_string(&mut options.sampler_track, "--sampler-track", value)?;
+                // ⭐ 任务单 `#331`：与 `--track-sampler` 同款**可重复**（位置配对）。
+                options.sampler_track.push(value);
             }
             "--midi-in" => {
                 let value = take_value("--midi-in", inline, args, &mut cursor)?;
@@ -2420,8 +2558,17 @@ pub fn parse(args: &[String]) -> Result<Options, ParseError> {
     // 无窗口路径上跑，而 `--sampler-track` 自己不选路径 —— 放在那里会让"单独给"
     // 悄悄进 GUI 路径、什么也不做（本仓最忌讳的假绿）。`run_batch` 仍留第二道守卫
     // （`Options` 的字段是公开的，判据可以直接构造组合）。
-    if options.sampler_track.is_some() && options.track_sampler.is_none() {
-        return Err(ParseError::SamplerTrackWithoutTrackSampler);
+    //
+    // ⭐ 任务单 `#331`：两个开关都可重复 ⇒ 这里改判**配对结果**（唯一实现
+    // [`Options::sampler_installs`]）：它同时覆盖"单独给选择器"（`#287` 原文案逐字不变）、
+    // "条数对不上"、"同一目标轨指定两次"三种情形。`ParseError::SamplerTrackWithoutTrackSampler`
+    // 仍是"单独给"那一档的**专用**变体（文案与退出码都不变）；另外两种走通用用法错误。
+    match options.sampler_installs() {
+        Ok(_) => {}
+        Err(reason) if reason == SAMPLER_TRACK_PAIRING_ERROR => {
+            return Err(ParseError::SamplerTrackWithoutTrackSampler);
+        }
+        Err(reason) => return Err(ParseError::SamplerInstallMismatch(reason)),
     }
     Ok(options)
 }
@@ -4429,69 +4576,142 @@ fn selectable_track_list(project: &YebanProjectV1) -> String {
 /// `cli.rs:3986`、绑定在 `4138`）⇒ `--record-wav --track-sampler X` 录到的是**绑定前**的
 /// 音源。录音块因此在**副本**上先跑一次本函数（`run_batch` 的 `recorded_bound_project`），
 /// 真身仍在导入之后的原位置应用 ⇒ 其它组合的次序与字节不变。
-fn apply_track_sampler(
+/// ⭐ 任务单 `#210`／`#239`／`#331`：`--track-sampler` 的**唯一**应用实现（**批量**）。
+///
+/// 一次调用装 **N 份**乐器 ＝ **恰好一次提交**（`commit_ops` 一次收全部
+/// `Op::SetTrackSampler`）⇒ 一次撤销把这一批**全部**撤回。⛔ 不是 N 次独立提交：
+/// 那会让撤销栈只剩最后一份（用户按一次撤销只撤掉一件乐器，前面那些留在原地）。
+/// 已经装有这份乐器的那些轨 ⇒ **不带 op**（⛔ 不制造"什么也没改"的提交）；全批都
+/// 不带 op ⇒ **一次都不提交**，工程按引用原样返回。
+///
+/// 返回**应用之后的工程**与**每份一条**的报告行（顺序 ＝ [`SamplerInstall`] 的顺序）；
+/// 由调用方决定把它落到哪里。
+///
+/// ## 目标轨（⭐ 任务单 `#287`）
+///
+/// [`SamplerInstall::track`] 为 `None` ⇒ **旧行为**：展示轨 = [`crate::bridge::device_rack_track`]
+/// （身份序第一条非主总线轨），逐字节不变；为 `Some` ⇒ 只认
+/// [`resolve_sampler_track`] 解析出的那一条（形状不对 / 查不到 / 主总线 ⇒ 响亮报错，
+/// ⛔ 不回落）。配对规则（条数、重复目标轨）**不在这里**判 —— 唯一实现在
+/// [`Options::sampler_installs`]，本函数只吃已经配好的清单。
+///
+/// ## 为什么返回值里带工程（`#239`）
+///
+/// `--record-wav` 读的是**工程快照**，而绑定原先排在录音块之后（`#222` 实测：录制在旧
+/// `cli.rs:3986`、绑定在 `4138`）⇒ `--record-wav --track-sampler X` 录到的是**绑定前**的
+/// 音源。录音块因此在**副本**上先跑一次本函数（`run_batch` 的 `recorded_bound_project`），
+/// 真身仍在导入之后的原位置应用 ⇒ 其它组合的次序与字节不变。
+///
+/// ## 报告行（`#331` 起是 N 行）
+///
+/// 每份一行，格式与 `#210` **逐字相同**（`track=` / `path=` / `ops=` / `commit_count=` /
+/// `undoable=`）⇒ **只装 1 份时输出与接线前逐字节相同**。`commit_count` / `undoable`
+/// 是**会话级**读数，N 行里重复出现（每行都能独立读出"这一批提交进了史、可撤销"）。
+fn apply_track_samplers(
     project: &YebanProjectV1,
-    path: &Path,
-    track_id: Option<&str>,
-) -> Result<(YebanProjectV1, String), CliError> {
-    let sfz_text = path.to_str().ok_or_else(|| CliError::TrackSampler {
-        path: path.to_path_buf(),
-        reason: "路径不是 UTF-8，无法逐字写进 `TrackV3::sampler.path`".to_owned(),
-    })?;
-    // 目标轨：显式身份（`#287`）或展示轨（身份序第一条非主总线轨；CLI 没有选中态
-    // ⇒ 与 GUI 的兜底同一档）。显式身份**没有**第二条解析路径。
-    let track = match track_id {
-        Some(wanted) => Some(
-            resolve_sampler_track(project, wanted)
-                .map_err(|reason| CliError::TrackSampler {
-                    path: path.to_path_buf(),
-                    reason,
-                })?
-                .clone(),
-        ),
-        None => crate::bridge::device_rack_track(project).cloned(),
-    };
-    let track_label = track
-        .as_ref()
-        .map_or_else(|| "<无>".to_owned(), |track| track.name.clone());
-    let ops =
-        crate::bridge::instrument_install_ops_on(track.as_ref(), sfz_text).map_err(|reason| {
-            CliError::TrackSampler {
+    installs: &[SamplerInstall],
+) -> Result<(YebanProjectV1, Vec<String>), CliError> {
+    // 每份的**已解析**计划：行里要的两个标签 ＋ 待提交的 ops。
+    // ⚠ 先全部解析、再一次性提交：任何一份失败都在**提交之前**返回 ⇒ 不会留下半批。
+    struct Planned {
+        track_label: String,
+        sfz_text: String,
+        path: PathBuf,
+        ops: Vec<yeban_model::Op>,
+    }
+    let mut planned: Vec<Planned> = Vec::with_capacity(installs.len());
+    for install in installs {
+        let path = &install.path;
+        let sfz_text = path.to_str().ok_or_else(|| CliError::TrackSampler {
+            path: path.to_path_buf(),
+            reason: "路径不是 UTF-8，无法逐字写进 `TrackV3::sampler.path`".to_owned(),
+        })?;
+        // 目标轨：显式身份（`#287`）或展示轨（身份序第一条非主总线轨；CLI 没有选中态
+        // ⇒ 与 GUI 的兜底同一档）。显式身份**没有**第二条解析路径。
+        let track = match install.track.as_deref() {
+            Some(wanted) => Some(
+                resolve_sampler_track(project, wanted)
+                    .map_err(|reason| CliError::TrackSampler {
+                        path: path.to_path_buf(),
+                        reason,
+                    })?
+                    .clone(),
+            ),
+            None => crate::bridge::device_rack_track(project).cloned(),
+        };
+        let track_label = track
+            .as_ref()
+            .map_or_else(|| "<无>".to_owned(), |track| track.name.clone());
+        let ops = crate::bridge::instrument_install_ops_on(track.as_ref(), sfz_text).map_err(
+            |reason| CliError::TrackSampler {
                 path: path.to_path_buf(),
                 reason: reason.to_owned(),
-            }
-        })?;
-    if ops.is_empty() {
-        // 已经是这份乐器：⛔ 不提交（不制造"什么也没改"的提交）。
+            },
+        )?;
+        planned.push(Planned {
+            track_label,
+            sfz_text: sfz_text.to_owned(),
+            path: path.clone(),
+            ops,
+        });
+    }
+    let pending: usize = planned.iter().map(|plan| plan.ops.len()).sum();
+    if pending == 0 {
+        // 每一份都已经是这份乐器：⛔ 不提交（不制造"什么也没改"的提交）。
         return Ok((
             project.clone(),
-            format!(
-                "track-sampler: track={track_label} path={sfz_text} ops=0 (已经是这份乐器, 工程未改)"
-            ),
+            planned
+                .iter()
+                .map(|plan| {
+                    format!(
+                        "track-sampler: track={} path={} ops=0 (已经是这份乐器, 工程未改)",
+                        plan.track_label, plan.sfz_text
+                    )
+                })
+                .collect(),
         ));
     }
     let now = crate::host::now_ms();
     let session =
         crate::undo::UndoSession::open("<cli:track-sampler>", "yeban-app", project.clone(), now)
             .map_err(|error| CliError::TrackSampler {
-                path: path.to_path_buf(),
+                path: planned
+                    .first()
+                    .map_or_else(PathBuf::new, |plan| plan.path.clone()),
                 reason: format!("建会话失败: {error}"),
             })?;
     let port = crate::undo::UndoPort::new(session);
-    port.commit_ops(now, "set track sampler", ops)
+    let mut batch: Vec<yeban_model::Op> = Vec::with_capacity(pending);
+    for plan in &planned {
+        batch.extend(plan.ops.iter().cloned());
+    }
+    port.commit_ops(now, "set track sampler", batch)
         .map_err(|error| CliError::TrackSampler {
-            path: path.to_path_buf(),
+            path: planned
+                .first()
+                .map_or_else(PathBuf::new, |plan| plan.path.clone()),
             reason: format!("提交被拒: {error}"),
         })?;
     let display = port.display();
-    let line = format!(
-        "track-sampler: track={track_label} path={sfz_text} ops=1 \
-         commit_count={} undoable={}",
-        display.commit_count, display.undoable
-    );
+    let lines = planned
+        .iter()
+        .map(|plan| {
+            if plan.ops.is_empty() {
+                return format!(
+                    "track-sampler: track={} path={} ops=0 (已经是这份乐器, 工程未改)",
+                    plan.track_label, plan.sfz_text
+                );
+            }
+            format!(
+                "track-sampler: track={} path={} ops=1 \
+                 commit_count={} undoable={}",
+                plan.track_label, plan.sfz_text, display.commit_count, display.undoable
+            )
+        })
+        .collect();
     // 会话是权威 ⇒ 交给调用方落回归档：同一命令里的 `--export-wav` / `--save-as` /
     // `--record-wav` 看的是这一份。
-    Ok((port.project(), line))
+    Ok((port.project(), lines))
 }
 
 /// 无窗口路径的执行：返回**它应当打印的每一行**（打印由 [`emit`] / [`finish`] 做）。
@@ -4524,9 +4744,8 @@ pub fn run_batch(options: &Options) -> Result<Vec<String>, CliError> {
     }
     // ⭐ 任务单 `#287`：`--sampler-track` 的第二道守卫（`parse()` 已拒；这里兜住
     // 直接构造的 [`Options`] —— 字段是公开的，判据可以绕过解析器）。
-    if options.sampler_track.is_some() && options.track_sampler.is_none() {
-        return Err(CliError::Usage(SAMPLER_TRACK_PAIRING_ERROR.to_owned()));
-    }
+    // ⭐ 任务单 `#331`：判据改走**唯一配对实现**（`#287` 的"单独给"原文案逐字不变）。
+    let sampler_installs = options.sampler_installs().map_err(CliError::Usage)?;
     if options.headless_idle {
         // 防假绿守卫，**不是**形式主义：本函数的模块文档第一句就是"零 Slint 依赖"，
         // 而 `--headless-idle` 的全部价值在于"真的建了控件树"。放它过去 ⇒
@@ -4637,18 +4856,12 @@ pub fn run_batch(options: &Options) -> Result<Vec<String>, CliError> {
     //   * 给了 `--sfz` ⇒ 录音走 SFZ 旁路（`record_project_under` 的 `sfz` 参数），
     //     `TrackV3.sampler` 不参与该次渲染。
     let recorded_bound_project: Option<YebanProjectV1> =
-        match (options.record_wav.as_ref(), options.track_sampler.as_ref()) {
-            (Some(_), Some(sampler))
+        match (options.record_wav.as_ref(), sampler_installs.is_empty()) {
+            (Some(_), false)
                 if options.record_source.as_deref() != Some("tone") && options.sfz.is_none() =>
             {
-                Some(
-                    apply_track_sampler(
-                        &loaded.archive.project,
-                        sampler,
-                        options.sampler_track.as_deref(),
-                    )?
-                    .0,
-                )
+                // ⭐ `#331`：批量走同一条应用实现（1 份时与 `#239` 逐字节相同）。
+                Some(apply_track_samplers(&loaded.archive.project, &sampler_installs)?.0)
             }
             _ => None,
         };
@@ -4812,17 +5025,16 @@ pub fn run_batch(options: &Options) -> Result<Vec<String>, CliError> {
 
     // ⭐ 任务单 `#210`：`--track-sampler` —— **装乐器**是编辑 ⇒ 与两条导入同一位次
     // （导出与保存都能看到它）。一次装 ＝ **恰好一次** `Op::SetTrackSampler` ＋ 一次提交。
-    // ⭐ 任务单 `#239`：应用逻辑唯一实现在 [`apply_track_sampler`] —— 录音块在**副本**上先用
+    // ⭐ 任务单 `#239`：应用逻辑唯一实现在 [`apply_track_samplers`] —— 录音块在**副本**上先用
     // 同一份实现（`recorded_bound_project`），这里仍是**真身**的落点（导入之后）。
-    if let Some(path) = options.track_sampler.as_ref() {
-        let (project, line) = apply_track_sampler(
-            &loaded.archive.project,
-            path,
-            options.sampler_track.as_deref(),
-        )?;
+    // ⭐ 任务单 `#331`：`--track-sampler` 可重复 ⇒ 这里是**批量**落点（N 份一次提交，
+    //    每份一行报告行；1 份时输出与接线前逐字节相同）。
+    if !sampler_installs.is_empty() {
+        let (project, install_lines) =
+            apply_track_samplers(&loaded.archive.project, &sampler_installs)?;
         // 会话是权威 ⇒ 落回归档：同一命令里的 `--export-wav` / `--save-as` 看的是这一份。
         loaded.archive.project = project;
-        lines.push(line);
+        lines.extend(install_lines);
     }
 
     if let Some(path) = options.export_elements.as_ref() {

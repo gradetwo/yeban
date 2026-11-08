@@ -145,7 +145,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use yeban_decode::{DecodeError, DecodeOptions, decode_path};
-use yeban_engine::sfz_instrument::{InMemorySample, SfzInstrument, SfzPlan};
+use yeban_engine::sfz_instrument::{InMemorySample, SampleLoop, SfzInstrument, SfzPlan};
 use yeban_engine::snapshot::EngineSnapshot;
 use yeban_model::EntityId;
 use yeban_render::wav::WavError;
@@ -497,6 +497,106 @@ fn is_wav_suffix(path: &Path) -> bool {
         })
 }
 
+/// ⭐ **读 WAV 的 `smpl` 块里第一个 loop**（任务单 `#331`）。
+///
+/// # 为什么要自己扫 chunk
+///
+/// `read_plain_wav_mono_f32`（以及底下的 `hound`）只关心格式与 PCM —— **不暴露
+/// `smpl`**。而 SFZ 规范把"没写 `loop_start`/`loop_end` 时用样本自带的第一个 loop"
+/// 写成了缺省行为（<https://sfzformat.com/opcodes/loop_start/>），采样库的常态正是
+/// "loop 画在音频编辑器里、写进 WAV，SFZ 只写 `loop_mode`" ⇒ 不读它，这些音色就
+/// **整段不循环**（听感上是"一个音只响一声"，很难查到根因）。
+///
+/// # 口径
+///
+/// * **流式**：只读 `RIFF`/`WAVE` 头与 8 字节 chunk 头，遇到 `data` **seek 跳过**
+///   （⛔ 不把几十 MB 的采样读进内存 —— 解码那一步已经读过一遍了）；
+/// * **只认 `RIFF`**（little-endian）：`RIFX`（big-endian）与 `RF64` 一律 `None`
+///   （本仓的 WAV 读腿只吃 RIFF，不认识的文件在解码那一步就已经失败了）；
+/// * **取第一个 loop**（`dwNumSampleLoops` 的第 0 条）—— 规范逐字 "the first loop
+///   defined in the file"，多 loop 时"只能拿到第一个"正是规范说的事实；
+/// * ⭐ **`dwEnd` 是含的**（"sample index of the loop end"），本仓的窗口是**半开**
+///   `[start, end)` ⇒ 这里 **＋1**。差一不补的后果是每次循环丢一个样本（听感是
+///   "循环缝里有周期性咔哒"，在低频长音上极明显）；
+/// * 任何一步读不动 / 尺寸不够 / `end < start` ⇒ `None`（⛔ 不 panic、⛔ 不猜）。
+///
+/// ⚠ **失败是静默的**：`smpl` 缺失/损坏 ⇒ `None` ⇒ 退回"整段循环"（接线前的行为）。
+/// 这与"解码失败"不同（那个有 `unreadable_samples` 报告行）—— `smpl` 只是**可选的
+/// 元数据**，它的缺失不改变"这个样本能不能播"。
+fn read_wav_smpl_loop(path: &Path) -> Option<SampleLoop> {
+    use std::io::{Read as _, Seek as _, SeekFrom};
+    let mut file = std::fs::File::open(path).ok()?;
+    let mut riff = [0u8; 12];
+    file.read_exact(&mut riff).ok()?;
+    if &riff[0..4] != b"RIFF" || &riff[8..12] != b"WAVE" {
+        return None;
+    }
+    loop {
+        let mut header = [0u8; 8];
+        // 尾部不完整（有些写入器不带 padding）⇒ 结束扫描。
+        if file.read_exact(&mut header).is_err() {
+            return None;
+        }
+        let size = u64::from(u32::from_le_bytes([
+            header[4], header[5], header[6], header[7],
+        ]));
+        if &header[0..4] == b"smpl" {
+            // `smpl` 头 36 B ＋ 每条 loop 24 B；⛔ 不读超过 1 KiB（恶意/损坏的尺寸）。
+            let take = usize::try_from(size.min(1024)).ok()?;
+            let mut payload = vec![0u8; take];
+            file.read_exact(&mut payload).ok()?;
+            return parse_wav_smpl_loop(&payload);
+        }
+        // RIFF 的 chunk 一律**偶数字节对齐**（奇数长度后有一个 padding 字节）。
+        let skip = size + (size & 1);
+        let skip = i64::try_from(skip).ok()?;
+        if file.seek(SeekFrom::Current(skip)).is_err() {
+            return None;
+        }
+    }
+}
+
+/// `smpl` 块 payload → [`SampleLoop`]（半开区间；见 [`read_wav_smpl_loop`] 的口径）。
+///
+/// 布局（little-endian，`smpl` 规范）：
+///
+/// | 偏移 | 字段 |
+/// | ---: | :--- |
+/// | 0 | `dwManufacturer`（9 个 u32 的块头，到 28 为止是 `dwNumSampleLoops`） |
+/// | 28 | `dwNumSampleLoops` |
+/// | 32 | `dwSamplerData` |
+/// | 36 | `dwCuePointID`（第 0 条 loop 从这里开始） |
+/// | 40 | `dwType`（0 = 正向） |
+/// | 44 | `dwStart` |
+/// | 48 | `dwEnd`（**含**） |
+/// | 52 | `dwFraction` |
+/// | 56 | `dwPlayCount` |
+fn parse_wav_smpl_loop(payload: &[u8]) -> Option<SampleLoop> {
+    /// 读到第 0 条 loop 的 `dwEnd` 为止需要 52 字节（`48 + 4`）。
+    const NEEDED: usize = 52;
+    if payload.len() < NEEDED {
+        return None;
+    }
+    let word = |offset: usize| {
+        u32::from_le_bytes([
+            payload[offset],
+            payload[offset + 1],
+            payload[offset + 2],
+            payload[offset + 3],
+        ])
+    };
+    if word(28) == 0 {
+        return None;
+    }
+    let start = word(44);
+    // ⭐ `dwEnd` 含 ⇒ 半开上界 ＋1（`u32::MAX` 之上饱和，窗口随后由引擎钳到 PCM 尾）。
+    let end = word(48).saturating_add(1);
+    if end <= start {
+        return None;
+    }
+    Some(SampleLoop { start, end })
+}
+
 /// **WAV 腿**（⛔ 逐字保留接线前的实现，任务单 `#79`／`#83`）。
 ///
 /// ⭐ **共享实现**（`yeban-render`；MCP 线把它唯一化了）与本地那份**逐行同口径**：
@@ -512,6 +612,9 @@ fn decode_with_hound(path: &Path) -> Result<(InMemorySample, u64, String), Unrea
                     // ⭐ `#279`：解码结果包一次 `Arc` ⇒ 摊平表 `Arc::clone` 共享它。
                     pcm: Arc::new(pcm),
                     sample_hz: sample_rate as f32,
+                    // ⭐ `#331`：文件自带的循环点（WAV 的 `smpl` 块）。`read_plain_wav`
+                    // **不读**它（它只关心采样与格式）⇒ 这里单独扫一次 chunk 头。
+                    loop_points: read_wav_smpl_loop(path),
                 },
                 frames,
                 describe,
@@ -568,6 +671,7 @@ fn decode_with_yeban_decode(
                     // ⭐ `#279`：与 WAV 腿同一条 —— 包一次 `Arc`，摊平表共享它。
                     pcm: Arc::new(pcm),
                     sample_hz: sample_rate as f32,
+                    loop_points: None,
                 },
                 frames,
                 describe,
@@ -855,6 +959,8 @@ pub fn build_region_samples(instrument: &SfzInstrument, sfz_path: &Path) -> Regi
         //    修前这条走的是 `per_note`（`region_sample_for` 填的），本单改走共享表之后
         //    必须在这里补上，否则 CLI 路径会退回 `in-memory-sine(440Hz)` ——
         //    那正是 `sfz_silence_pseudo_sample` 当场红掉的原因。
+        // ⚠ 两条分支都只在**自己**里面赋值 ⇒ 这里用不带初值的 `let line: String;`，
+        //    ⛔ 不再先 `String::new()` 再覆盖（那是"赋值后从未读取"的警告）。
         let line: String;
         let in_memory = if silence {
             // `#217`：内建静音 —— 空 PCM ＋ ⛔ 不走 `read_sample_file`（那会记一次
@@ -863,6 +969,7 @@ pub fn build_region_samples(instrument: &SfzInstrument, sfz_path: &Path) -> Regi
             InMemorySample {
                 pcm: Arc::new(Vec::new()),
                 sample_hz: 48_000.0,
+                loop_points: None,
             }
         } else {
             let resolved = resolve_sample_path(sfz_path, Path::new(&raw));
@@ -926,6 +1033,7 @@ pub fn region_sample_for(
             InMemorySample {
                 pcm: Arc::new(Vec::new()),
                 sample_hz: 48_000.0,
+                loop_points: None,
             },
             BUILTIN_SILENCE_SOURCE.to_owned(),
         ));

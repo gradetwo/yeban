@@ -42,6 +42,7 @@ fn flat(value: f32, frames: usize) -> InMemorySample {
     InMemorySample {
         pcm: Arc::new(vec![value; frames]),
         sample_hz: HZ,
+        loop_points: None,
     }
 }
 

@@ -275,6 +275,19 @@
 //!     裁决 **C**）；而 `off_time` 不在本片范围内（语料分布：`time` 4 次）；
 //!     ⛔ 不是静默降级（显式取值一律原样解析、原样带出，`S44` 钉住集合外的取值仍报 `Err`）。
 //!
+//!     ⭐⭐ **`#331` 修订段（原文保留，本段追加；上面那句"`off_time` 不在本片范围内"与
+//!     "`off_mode=time` 按 `normal` 处理"自此**作废**：`#331` 真的读 per-region `off_time`
+//!     并把 `time` 落成"一段长度 ＝ `off_time` 的淡出"。落地形状：
+//!     `PreparedRegion::off_time: f32`（摊平期取 `Region::effective_off_time()`，缺省
+//!     `0.006 s`）→ [`stop_off_by_victims`] 的 [`OffMode::Time`] 分支 →
+//!     `seconds_to_frames()` → 池级 `fade[index] = FadeRamp::new(frames)`。
+//!     ⛔ 不动 `end_sample`（那是 `normal` 支的做法）；⛔ 不动 `AmpegRun` 的 release 段
+//!     （规范明写 independent of the sample release time）。
+//!     `off_time == 0` **显式硬停**（`FadeRamp::new(0)` 是 `NONE`，不硬停就变成"0 秒淡出
+//!     等于永远响"；判据 `sfz_off_time::a_zero_off_time_hard_stops`）。
+//!     `ADR-0008` **裁决 C 就此撤销**（不是"暂缓"）。仍未做的只剩 `off_shape` / `off_curve`
+//!     （曲线控制，登记在台账 §5.3）。
+//!
 //!     ⚠ **与 `ARCH-RT-004` 的 3 ms 不冲突**：那条管的是**窃取路**（池满抢占），
 //!     与 `off_time`（**`off_by` 独占组路／`off_mode=time` 路**）**是两条不同的路**。
 //!
@@ -1873,6 +1886,35 @@ impl SfzInstrument {
 
 /// **只在内存里的样本源**（本切片的"样本源"）。
 ///
+/// ⭐ **采样文件自带的循环点**（任务单 `#331`）：WAV 的 `smpl` 块里**第一个** loop。
+///
+/// # 规范逐字
+///
+/// <https://sfzformat.com/opcodes/loop_start/>：
+/// > If `loop_start` is not specified and the sample has a loop defined, the SFZ player
+/// > will use **the start point of the first loop defined in the file**. … For files which
+/// > have multiple loops defined, this is the only way to get anything other than the first
+/// > defined loop to play.
+///
+/// ⇒ 第一个 loop 的起点/终点就是"SFZ 没写 `loop_start`/`loop_end`"时的**缺省值**。
+/// 这是采样库的常态：音频编辑器里画好 loop、写进 WAV 的 `smpl` 块，SFZ 里只写
+/// `loop_mode=loop_continuous`。
+///
+/// # 半开区间（⛔ 与 `smpl` 块的 inclusive 差一）
+///
+/// `smpl` 块的 `dwEnd` 是**最后一个被循环的样本**（含），本仓的 [`LoopWindow`] 是
+/// **半开** `[start, end)` ⇒ 读盘时 `end` 一律 **＋1**。这一步在 `sfz_load` 里做，
+/// 本类型承载的已经是**半开**上界（判据：`smpl_loop_end_is_inclusive`）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SampleLoop {
+    /// 循环起点（采样帧，含）。
+    pub start: u32,
+    /// 循环终点（采样帧，**不含** ⇒ `smpl` 的 `dwEnd + 1`）。
+    pub end: u32,
+}
+
+/// 单个采样（**单声道、已归一化**的 PCM ＋ 它自己的采样率 ＋ 文件自带的循环点）。
+///
 /// ⚠ 本仓目前**没有**采样文件读取/解码 ⇒ 样本数据必须由**调用方**提供；
 /// 本类型是离线/控制侧的最小载体（构造期分配，⛔ 不用于实时回调）。
 #[derive(Debug, Clone)]
@@ -1885,6 +1927,13 @@ pub struct InMemorySample {
     pub pcm: Arc<Vec<f32>>,
     /// 该 PCM 的原始采样率（Hz）—— 换算交给 `yeban-sfz` 的 `RenderRates`。
     pub sample_hz: f32,
+    /// ⭐ **文件自带的循环点**（任务单 `#331`；`None` ＝ 文件里没有 loop，
+    /// 或这份 PCM 不是从带 `smpl` 块的文件来的）。
+    ///
+    /// 只有 `SFZ 一个点都没写`（`loop_end == 0`）时才会被读（见
+    /// [`reduce_loop_window`] 的 `sample_loop` 参数）—— SFZ 显式写的点**永远优先**。
+    /// ⚠ 与"内建静音"（`*silence`，空 PCM）无关：那份样本恒 `None`。
+    pub loop_points: Option<SampleLoop>,
 }
 
 impl InMemorySample {
@@ -1900,8 +1949,52 @@ impl InMemorySample {
         Self {
             pcm: Arc::new(pcm),
             sample_hz,
+            loop_points: None,
         }
     }
+
+    /// ⭐ **挂上文件自带的循环点**（构造期链式调用；`#331`）。
+    ///
+    /// 之所以做成链式而不是第五个构造参数：既有 30+ 处 `InMemorySample { .. }` 字面量
+    /// 全部只关心 PCM 与采样率，⛔ 不该为了一个"多数样本没有"的字段改签名。
+    #[must_use]
+    pub fn with_loop_points(mut self, loop_points: Option<SampleLoop>) -> Self {
+        self.loop_points = loop_points;
+        self
+    }
+}
+
+/// ⭐ **离线渲染的一组入参**（本片新增，任务 `#310`）。
+///
+/// 存在的理由是 `clippy::too_many_arguments`：离线渲染现在要同时表达"样本从哪来"
+/// （单份 `source` / region 级样本表）、"有没有 note-off"（`held_frames`）、
+/// "轮替发第几个变体"（`occurrence`）三件事，摊平成参数会到 9 个。
+///
+/// # 三组取值的**兼容性契约**（判据在 `tests/sfz_offline_note_off.rs`）
+///
+/// | 字段 | `None` / 旧值 | `Some` / 新值 |
+/// | :--- | :--- | :--- |
+/// | [`Self::source`] ＋ [`Self::samples`] | `samples = None` ⇒ **每个匹配区域都用同一份** `source`（＝ 接线前的行为） | `samples = Some(表)` ⇒ 每个区域按 `region.sample_path()` 取**自己**的样本 |
+/// | [`Self::held_frames`] | `None` ⇒ `EnvRun::frame = u64::MAX`（**永不进释放段**，＝ 接线前的行为） | `Some(n)` ⇒ 引擎绝对帧 `n` 处 **note-off**，`ampeg_release` 真正生效 |
+/// | [`Self::occurrence`] | `None` ⇒ 不启用轮替互斥（所有 `seq_*` 变体照旧叠加，＝ 接线前的行为） | `Some(k)` ⇒ 只发 `seq_position == k % seq_length + 1` 那一条（与 [`SfzVoicePool::trigger_note`] 同口径） |
+///
+/// ⚠ **三项全 `None` ＋ `source = Some`** ⇒ 与接线前**逐位相同**（这是旧入口
+/// [`SfzInstrument::render_note_into`] 走的组合）。
+struct NoteInputs<'a> {
+    /// 单份样本（旧语义：所有匹配区域共用）。
+    source: Option<&'a InMemorySample>,
+    /// region 级样本表（键 ＝ `region.sample_path()` 原样字符串）。
+    samples: Option<&'a BTreeMap<String, InMemorySample>>,
+    /// 音高。
+    note: u8,
+    /// 力度。
+    velocity: u8,
+    /// CC 探针（`None` ⇒ 走严格策略与基准值）。
+    cc: Option<&'a dyn Fn(u8) -> u8>,
+    /// note-off 帧（引擎绝对帧，`out[0]` 记作第 0 帧）；`None` ⇒ 无 note-off。
+    held_frames: Option<u64>,
+    /// 轮替序号（第几次触发同一音高）；`None` ⇒ 不启用互斥。
+    occurrence: Option<u32>,
 }
 
 /// ⭐ **离线渲染的一组入参**（本片新增，任务 `#310`）。
@@ -2209,6 +2302,7 @@ impl SfzInstrument {
                     region.effective_loop_mode(),
                     region.loop_start,
                     region.loop_end,
+                    source.loop_points,
                     source_end,
                     pcm_len,
                 );
@@ -2480,12 +2574,32 @@ pub fn reduce_loop_window(
     loop_mode: LoopMode,
     loop_start: u32,
     loop_end: u32,
+    sample_loop: Option<SampleLoop>,
     source_end: u64,
     pcm_len: usize,
 ) -> Option<LoopWindow> {
     if !matches!(loop_mode, LoopMode::LoopContinuous | LoopMode::LoopSustain) {
         return None;
     }
+    // ⭐⭐ **样本自带的循环点**（任务单 `#331`）。规范逐字
+    // （<https://sfzformat.com/opcodes/loop_start/>）：
+    // > If `loop_start` is not specified and the sample has a loop defined, the SFZ
+    // > player will use the start point of the first loop defined in the file.
+    //
+    // ⇒ **SFZ 一个点都没写**（`loop_end == 0`，本仓对"未写"的唯一编码，见下一段）
+    // 且样本有 loop ⇒ 用样本的 `[start, end)`。
+    //
+    // ⚠ **书面偏离（已登记，不是遗漏）**：规范是**逐点**回退（只写 `loop_end` 时
+    // `loop_start` 仍取样本的），本仓改成**整体**回退。理由：`Region::loop_start` 是
+    // `u32`、缺省值 `0`，"显式写 0"与"没写"在**解析后的数据结构里不可区分** ⇒ 逐点
+    // 回退会把"想从 0 起循环"的作者（语料里常见）判成"用样本的 4503 起"
+    // ⇒ 窗口退化、**不循环**（比不读 `smpl` 更糟）。要真正逐点靠的是给
+    // `yeban-sfz::instrument::Region` 加两个"写了没"的布尔（公共面改动，另开单）。
+    // 代价如实登记：只写 `loop_end` 不写 `loop_start` 的文件仍从 0 起（＝ 接线前）。
+    let (loop_start, loop_end) = match sample_loop {
+        Some(found) if loop_end == 0 => (found.start, found.end),
+        _ => (loop_start, loop_end),
+    };
     // ⭐ 任务 `#311` ①：`loop_end == 0` ＝ 规范缺省（`-1`，样本尾）。
     //    ⚠ 解析把"未写"与"写了 0"都存成 `0`（不可区分）⇒ 一律按缺省处理：
     //    零长窗口本来就没有意义，这个方向没有歧义。
@@ -2682,6 +2796,29 @@ impl AmpegRun {
     }
 }
 
+/// ⭐ **"秒 → 引擎帧"换算的唯一实现**（任务单 `#331` 从 [`ampeg_run_from`] 里提出来）。
+///
+/// 提出来的理由只有一个：`off_time`（`off_mode=time` 的淡出长度，单位**秒**）与
+/// `ampeg_*` 的四个时间参数是**同一种量**，必须走**同一份**换算 —— 两份实现迟早在
+/// 舍入（`round` vs 截断）或 `NaN` 处理上分叉，而那种分叉在听感上是"包络短了一帧"，
+/// 极难查。
+///
+/// 口径（与 `#92` 起的历史行为**逐字相同**）：
+/// * `frames = round(秒 × engine_hz)`（⛔ 不是截断：`0.01 s @ 48 kHz` 截断会得 479）；
+/// * 非有限 / 非正的乘积 ⇒ `0`（调用方给不出正常采样率时 ⛔ 不 panic、⛔ 不产出 `NaN`）；
+/// * 超过 `u32::MAX` ⇒ 饱和到 `u32::MAX`（⛔ 不 panic）。
+#[must_use]
+pub fn seconds_to_frames(seconds: f32, engine_hz: f32) -> u32 {
+    let raw = f64::from(seconds) * f64::from(engine_hz);
+    if !raw.is_finite() || raw <= 0.0 {
+        0
+    } else if raw >= f64::from(u32::MAX) {
+        u32::MAX
+    } else {
+        raw.round() as u32
+    }
+}
+
 /// ⭐ **包络归约的唯一实现**（任务单 `#92`）：把 `ampeg_*` 的**秒 / 百分比**
 /// 换算成引擎帧口径的 [`AmpegRun`]。
 ///
@@ -2715,20 +2852,10 @@ pub fn ampeg_run_from(
     {
         return None;
     }
-    let frames = |seconds: f32| -> u32 {
-        let raw = f64::from(seconds) * f64::from(engine_hz);
-        if !raw.is_finite() || raw <= 0.0 {
-            0
-        } else if raw >= f64::from(u32::MAX) {
-            u32::MAX
-        } else {
-            raw.round() as u32
-        }
-    };
-    let attack = frames(attack_seconds);
-    let hold = frames(hold_seconds);
-    let decay = frames(decay_seconds);
-    let release = frames(release_seconds);
+    let attack = seconds_to_frames(attack_seconds, engine_hz);
+    let hold = seconds_to_frames(hold_seconds, engine_hz);
+    let decay = seconds_to_frames(decay_seconds, engine_hz);
+    let release = seconds_to_frames(release_seconds, engine_hz);
     let sustain = (sustain_percent / 100.0).clamp(0.0, 1.0);
     let hold_end = attack.saturating_add(hold);
     Some(AmpegRun {
@@ -3189,7 +3316,28 @@ pub struct PreparedRegion {
     ///   per-region `off_time`**、`time` 按 `normal` 处理（`ADR-0008` 裁决 **C**），
     ///   而 `off_time` 不在本片范围内；与 `ARCH-RT-004` 的 3 ms（**窃取路**）**不冲突**
     ///   —— 两条不同的路；见模块头的"off_by 关断"一节。
+    ///
+    /// ⭐⭐ **追加修订段（任务单 `#331`）—— 被修订的是上面第三条 `time` 那一支**
+    /// （⛔ 原文一字未删，口径同台账第 278 条：保留原文 ＋ 追加修订段 ＋ 点名被修订的支）：
+    /// `off_mode=time` **不再按 `normal` 处理**，`ADR-0008` 裁决 **C** 的那条书面偏离
+    /// **撤销**。现在它走 [`Self::off_time`] 给的一段**独立于 `ampeg_release`** 的淡出
+    /// （规范逐字："specifies the fadeout time for regions being muted by
+    /// voice-stealing" ＋ "independent of the sample release time"）。
+    /// 判据 `sfz_off_time::*`（4 条）。
     off_mode: OffMode,
+    /// ⭐ **`off_time`（秒）**（任务单 `#331`）：`off_mode=time` 关断时的淡出长度。
+    ///
+    /// 来源是 [`yeban_sfz::instrument::Region::effective_off_time`]（源文件给出则原样，
+    /// 否则规范缺省 `0.006 s`）⇒ 摊平期就已经是**生效值**，⛔ 本结构不再区分
+    /// `None` / `Some(0.0)`（那个区分在解析层，见它的文档）。
+    ///
+    /// ⚠ **单位是秒**（⛔ 不是帧）：帧化在**关断那一刻**用摊平期的
+    /// [`PreparedSfz::engine_hz`] 做（[`seconds_to_frames`]，与 `ampeg_*` **同一份**
+    /// 换算）—— 与 `ampeg_*` 的"秒不帧化"同一条纪律。
+    ///
+    /// ⚠ **只在 `off_mode=time` 上被读**：`fast` / `normal` 两支⛔ 不看它
+    /// （⛔ 不用它去覆盖 `ampeg_release`：规范说它**独立于** sample release time）。
+    off_time: f32,
     /// ⭐ **播放方向**（`direction`；任务单 `#113`）。
     ///
     /// 解析与取值域在 `yeban-sfz` 里**早已落地**（[`PlayDirection`]：`forward` 缺省 /
@@ -3413,13 +3561,22 @@ impl PreparedRegion {
     ///
     /// 直接转交 [`reduce_loop_window`]（⭐ **唯一**归约），把存储的三个字段与
     /// [`Self::span_bounds`] 的终点、PCM 长度折成一个判断 ⇒ 与离线/摊平两条路同口径。
+    ///
+    /// ⭐ `sample_loop`（任务单 `#331`）：该声部**自己那份样本**自带的循环点
+    /// （[`InMemorySample::loop_points`] 经 [`PreparedSample`] 摊平过来）。
+    /// `None` ⇒ 与接线前**逐位相同**（SFZ 没写点时窗口仍是"整段"）。
     #[must_use]
-    pub fn loop_window(&self, pcm_len: usize) -> Option<LoopWindow> {
+    pub fn loop_window(
+        &self,
+        pcm_len: usize,
+        sample_loop: Option<SampleLoop>,
+    ) -> Option<LoopWindow> {
         let (_, source_end) = self.span_bounds(pcm_len)?;
         reduce_loop_window(
             self.loop_mode,
             self.loop_start,
             self.loop_end,
+            sample_loop,
             source_end,
             pcm_len,
         )
@@ -3458,6 +3615,15 @@ impl PreparedRegion {
     #[must_use]
     pub const fn off_mode(&self) -> OffMode {
         self.off_mode
+    }
+
+    /// ⭐ 本区域的 **`off_time`（秒）**（任务单 `#331`）：`off_mode=time` 关断时的淡出长度。
+    ///
+    /// 只读副本 ⇒ 判据可以直接回读"摊平表**真的**带上了这份读数"，
+    /// ⛔ 不是只看解析层（`yeban-sfz` 早就解析了，缺口一直在**消费者**这一侧）。
+    #[must_use]
+    pub const fn off_time_seconds(&self) -> f32 {
+        self.off_time
     }
 
     /// ⭐ 本区域的**同音同时发声数上限**（`note_polyphony` ＋ `note_selfmask`，原样）。
@@ -3965,6 +4131,12 @@ pub struct PreparedSample {
     pcm: Arc<Vec<f32>>,
     /// 该 PCM 的原始采样率（Hz；摊平期已在 `Region::playback_rate` 里换算过）。
     sample_hz: f32,
+    /// ⭐ **文件自带的循环点**（任务单 `#331`；`None` ＝ 没有）。
+    ///
+    /// 与 [`InMemorySample::loop_points`]**同一份读数**（摊平期抄过来，⛔ 不重算）：
+    /// 实时侧与两条一次性渲染路都要判断"SFZ 没写点时用样本的点"，
+    /// 而实时回调拿不到 [`InMemorySample`]（摊平之后只剩本结构）。
+    loop_points: Option<SampleLoop>,
 }
 
 impl PreparedSample {
@@ -3984,6 +4156,14 @@ impl PreparedSample {
     #[must_use]
     pub const fn sample_hz(&self) -> f32 {
         self.sample_hz
+    }
+
+    /// ⭐ **文件自带的循环点**（任务单 `#331`；`None` ＝ 没有）。
+    ///
+    /// 只有 SFZ 一个点都没写（`loop_end == 0`）时才会被 [`reduce_loop_window`] 采用。
+    #[must_use]
+    pub const fn loop_points(&self) -> Option<SampleLoop> {
+        self.loop_points
     }
 
     /// 帧数。
@@ -4006,6 +4186,7 @@ impl PreparedSample {
             path,
             pcm: Arc::clone(&source.pcm),
             sample_hz: source.sample_hz,
+            loop_points: source.loop_points,
         }
     }
 }
@@ -4633,7 +4814,7 @@ impl PreparedSfz {
             // （`cc == None` ⇒ `gain_at` 的老口径，逐位不变）。
             let gain = region.gain_at_with_cc(note, velocity, cc);
             // ⭐ 循环窗口（本单）：归约已把模式／退化／越界三条判完（`None` ⇒ 不循环）。
-            let loop_window = region.loop_window(pcm.len());
+            let loop_window = region.loop_window(pcm.len(), sample.loop_points());
             // ⭐ **播放方向**（任务单 `#113`）：与离线/实时两条路**同一份**归约
             // （[`reduce_travel`]）。⚠ `forward` ⇒ 三项逐位不变（判据 `S33`/`S37`/`S65`）。
             let (mut position, rate, source_end) =
@@ -4896,6 +5077,11 @@ fn flatten_regions(
                 group: region.group,
                 off_by: region.off_by,
                 off_mode: region.off_mode,
+                // ⭐ `#331`：`off_time` 取**生效值**（源文件给出则原样，否则规范缺省
+                // 6 ms）。⚠ 取 `effective_off_time()` 而**不是** `region.off_time`：
+                // 后者是 `Option<f32>`，摊平表要的是"关断时直接用"的秒数 ⇒ 缺省值在
+                // 解析层就折叠掉（那一层的 `None` / `Some(0.0)` 区分仍然保留）。
+                off_time: region.effective_off_time(),
                 // ⭐ 同音复音限制（任务单 `#100`）：`note_polyphony` ＋ `note_selfmask`
                 // 归约出的**一份** `Copy` 读数原样搬进摊平表（`yeban-sfz` 早已解析并裁决：
                 // `limit = 0` ⇒ 不限制、`self_mask` 缺省 `on`）⇒ 本片只**搬运**，
@@ -5500,6 +5686,9 @@ pub const SFZ_VOICES_PER_TRACK: usize = 16;
 /// * ⭐ **`off_by` 关断不是第二条终点口径**：被关掉的声部走的就是上面这几条
 ///   （`fast` ⇒ 硬停；`normal` / `time` ⇒ 把它自己的 `end_sample` 挪到"现在"），
 ///   见模块头的"独占组"一节与 [`SfzVoicePool::stop_off_by_victims`]。
+///   ⭐ **追加修订段（任务单 `#331`）—— 被修订的是本行里的 `time` 那一支**（⛔ 原文未删）：
+///   `time` 现在**不挪 `end_sample`** —— 它铺一段 `off_time` 长的 [`FadeRamp`] 淡出
+///   （`ampeg_release` 不参与），走完由"`mix_span_into` 提前 break ⇒ `silence_slot`"退休。
 ///
 /// ⭐ **循环由区域（[`PreparedRegion`]）拥有、⛔ 不由声部拥有**：声部只带
 /// [`Self::region_index`] 指路 ⇒ `position` ＋ `region_index` 就够（[`Self::sample_index`]
@@ -6208,6 +6397,18 @@ impl SfzVoicePool {
     ///   [`SfzVoice::end_sample`] 置 `0` ＝「note-off 就是现在」，剩下**完全**由既有
     ///   note-off 机接手（透明包络 ⇒ 硬停；有包络 ⇒ 释放段；`loop_continuous` ⇒ 释放期
     ///   照旧循环）—— ⛔ 本函数**不新造**任何包络/淡化路径；
+    ///   ⭐⭐ **追加修订段（任务单 `#331`）—— 被修订的是本行里的 `time` 那一支**
+    ///   （⛔ 原文一字未删）：`time` **不再**走本支，改为**一段 `off_time` 长的独立淡出**
+    ///   （见下一行）；`normal` 那一支**逐字不变**。
+    /// * ⭐ **`off_time`（`off_mode=time`；任务单 `#331`）**：规范逐字 "specifies the
+    ///   fadeout time for regions being muted by voice-stealing" ＋ "independent of the
+    ///   sample release time" ⇒ 用**既有**的 [`FadeRamp`] 铺一段
+    ///   `seconds_to_frames(off_time, engine_hz)` 的淡出，⛔ 不碰 `end_sample`、⛔ 不碰
+    ///   包络段位（碰了就是 `normal` 的行为）。`off_time == 0` ⇒ **显式硬停**
+    ///   （`FadeRamp::new(0)` 是 `NONE` ⇒ 不淡出也不退休，⛔ 不能拿它当"0 秒"）。
+    ///   ⚠ 仍不给 `one_shot` victim（上面那条"忽略 note-off"是完整裁决，`off_by` 同此）。
+    ///   ⚠ 淡出曲线用的是**窃取路那条指数**（`STEAL_FADE_FLOOR`），`off_shape` /
+    ///   `off_curve` 仍未做（登记在台账）。
     /// * ⭐ **透明包络的 victim 直接走硬停那一支**（即使 `off_mode=normal`）：没有包络就
     ///   没有释放阶段可言（规范那张表只覆盖"进 release"这一种），而走 `end_sample = 0`
     ///   会经 `render_slot` 的 `silence_slot` 分支**连带清掉同槽的 `pending`**。
@@ -6228,6 +6429,33 @@ impl SfzVoicePool {
                 continue;
             };
             if victim_region.group() != off_by || victim_region.ignores_note_off() {
+                continue;
+            }
+            // ⭐⭐ **`off_mode=time`（任务单 `#331`）：一段 `off_time` 长的独立淡出。**
+            //    规范逐字（<https://sfzformat.com/opcodes/off_mode/>）：ARIA 的 `time`
+            //    "can be used to specify a time **independent of the sample release time**
+            //    using `off_time`"；`off_time` 页："specifies the fadeout time for regions
+            //    being muted by voice-stealing"。
+            //
+            //    ⇒ ⛔ 不动 `end_sample`（那会启动 `ampeg_release`，＝ `normal` 的行为）、
+            //    ⛔ 不动包络段位 ⇒ 声部在 `off_time` 内淡出，**与 `ampeg_release` 无关**。
+            //    落地原语是**既有**的 [`FadeRamp`]（窃取路那条淡出，⛔ 不是第二套淡出实现）：
+            //    `mix_span_into` 在 `fade` 走完时 `break` ⇒ `render_slot` 看到
+            //    `written < remaining` ⇒ [`Self::silence_slot`] 退休（⭐ 无需新状态位、
+            //    ⛔ 声部尺寸不变，判据 `S9` 仍 40 B）。
+            //
+            //    ⚠ `off_time == 0`（显式 `off_time=0`）⇒ [`FadeRamp::new`] 返回 `NONE`
+            //    ⇒ 不淡出也不退休 ⇒ 必须**显式硬停**（"0 秒淡出"＝ 立刻停，⛔ 不是"永远响"）。
+            //    ⚠ 已在淡出中的 victim 会被**重置**成完整的一段（新的一次关断请求），
+            //    与 `fast` 那一支"归零 `fade`"是同一条纪律（那个 `fade` 属于旧裁决）。
+            if victim_region.off_mode() == OffMode::Time {
+                let frames = seconds_to_frames(victim_region.off_time_seconds(), plan.engine_hz());
+                if frames == 0 {
+                    self.voices[index].silence();
+                    self.fade[index] = FadeRamp::NONE;
+                } else {
+                    self.fade[index] = FadeRamp::new(frames);
+                }
                 continue;
             }
             let hard_stop =
@@ -6710,8 +6938,10 @@ impl SfzVoicePool {
         cc: Option<&dyn Fn(u8) -> u8>,
     ) -> Option<SlotReadings> {
         let region = plan.regions().get(voice.region_index as usize)?;
-        let pcm_len = plan.sample(voice.sample_index)?.pcm().len();
-        let loop_window = region.loop_window(pcm_len);
+        let sample = plan.sample(voice.sample_index)?;
+        let pcm_len = sample.pcm().len();
+        // ⭐ `#331`：循环窗口的缺省点来自**该声部自己那份样本**（`smpl` 块）。
+        let loop_window = region.loop_window(pcm_len, sample.loop_points());
         // ⭐ ⭐ CC 轴交叉淡化（任务单 `#108`）：**逐块现算**本声部的逐样本增益 ——
         // 乐器层（含 CC 轴）由 `region.gain_at_with_cc` 求值、再乘引擎层的
         // `voice.track_gain`（触发期抄下）。`note` / `velocity` / `region_index` 早就在

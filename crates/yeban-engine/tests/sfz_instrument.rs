@@ -543,6 +543,7 @@ fn s1c_a_mid_block_note_starts_on_its_own_frame_and_does_not_double() {
     let sample = InMemorySample {
         pcm: Arc::new(vec![0.5; 4_096]),
         sample_hz: 48_000.0,
+        loop_points: None,
     };
     let prepared = PreparedSfz::prepare(&sfz, &sample, 48_000.0).expect("摊平必须成功");
     let track = EntityId::new();
@@ -1051,10 +1052,12 @@ fn s9_sizes_are_printed_and_the_runtime_stays_under_200_kib() {
     // 共 6 B —— ⭐ 现值由 `size_of` 现读：见判据 `S85`）。
     let gate_bytes = CC_GATE_CAP * std::mem::size_of::<CcGate>();
     assert!(
-        (5768 + gate_bytes..=5768 + gate_bytes + 16)
+        (5768 + gate_bytes..=5768 + gate_bytes + 24)
             .contains(&std::mem::size_of::<PreparedRegion>()),
         "⭐ `#109` 的每区域代价 ＝ `CC_GATE_CAP × size_of::<CcGate>()`（＝ {gate_bytes} B）\
-         ＋ 条数 `u8` ＋ 尾部对齐（≤ 8 B）＋ ⭐ **round-robin 的两个 `u32`（8 B）**"
+         ＋ 条数 `u8` ＋ 尾部对齐（≤ 8 B）＋ ⭐ **round-robin 的两个 `u32`（8 B）**\
+         → ⭐ **`#331` 修订：`off_time: f32` 再 ＋8 ⇒ 上界 6168 → 6176（＋16 的余量改为 ＋24，\
+         多出的 8 是 `off_time`，⛔ 不是放宽判据——下界 5768 ＋ 384 未动）**"
     );
     // ⚠ `SfzVoice::gain` 本片**改了名**（→ `SfzVoice::track_gain`）而**⛔ 没有加字段**：
     // 它只存**引擎层**那一份，乐器层（含 CC 轴交叉淡化）由逐块路径现算 —— 见判据 `S68`／`S71`。
@@ -1427,6 +1430,7 @@ fn s12b_the_plan_shares_the_callers_pcm_instead_of_copying_it() {
                 .collect::<Vec<f32>>(),
         ),
         sample_hz: 48_000.0,
+        loop_points: None,
     };
     let mut provided = vec![("a.wav".to_owned(), caller.clone())];
     let plan = SfzPlan::prepare_with_samples(&sfz, &provided, 48_000.0).expect("摊平必须成功");
@@ -1442,9 +1446,11 @@ fn s12b_the_plan_shares_the_callers_pcm_instead_of_copying_it() {
     );
     assert_eq!(
         core::mem::size_of::<PreparedSample>(),
-        40,
+        48,
         "⭐ `PreparedSample` = `String` 24 ＋ `Arc` 8 ＋ `f32` 4 ＋ 对齐 ⇒ **40 B**\
-         （`#279` 前是 `Vec` 24 ⇒ 56 B；⛔ 不进实时对象）"
+         （`#279` 前是 `Vec` 24 ⇒ 56 B；⛔ 不进实时对象）\
+         → ⭐ **`#331` 修订：`loop_points: Option<SampleLoop>`（两个 `u32`）净 ＋8 ⇒ 48 B**\
+         （原文 40 B 保留不删；⛔ 仍不进实时对象 —— 它按**样本数**计、摊平期定）"
     );
     assert!(
         core::ptr::eq(sample.pcm().as_ptr(), caller.pcm.as_ptr()),
@@ -2125,6 +2131,7 @@ fn constant_plan(regions: usize, key: u8) -> PreparedSfz {
     let sample = InMemorySample {
         pcm: Arc::new(vec![1.0f32; SAMPLE_FRAMES]),
         sample_hz: 48_000.0,
+        loop_points: None,
     };
     PreparedSfz::prepare(&sfz, &sample, 48_000.0).expect("摊平必须成功")
 }
@@ -3175,6 +3182,7 @@ fn ramp_sample(frames: usize) -> InMemorySample {
                 .collect::<Vec<f32>>(),
         ),
         sample_hz: 48_000.0,
+        loop_points: None,
     }
 }
 
@@ -3274,7 +3282,7 @@ fn s28_the_loop_cycle_is_exactly_loop_end_minus_loop_start() {
         "⭐ 生效循环模式必须进摊平表"
     );
     let window = region
-        .loop_window(LOOP_PCM_FRAMES)
+        .loop_window(LOOP_PCM_FRAMES, None)
         .expect("loop_continuous ＋ 合法窗口 ⇒ 必须有窗口");
     assert_eq!(
         (window.start as usize, window.end as usize),
@@ -3350,11 +3358,15 @@ fn s29_no_loop_and_one_shot_do_not_loop_and_one_shot_ignores_note_off() {
         &ramp_sample(LOOP_PCM_FRAMES),
     );
     assert!(
-        no_loop.regions()[0].loop_window(LOOP_PCM_FRAMES).is_none(),
+        no_loop.regions()[0]
+            .loop_window(LOOP_PCM_FRAMES, None)
+            .is_none(),
         "`no_loop` 即使写了 `loop_start`/`loop_end` 也⛔ 不产生窗口"
     );
     assert!(
-        one_shot.regions()[0].loop_window(LOOP_PCM_FRAMES).is_none(),
+        one_shot.regions()[0]
+            .loop_window(LOOP_PCM_FRAMES, None)
+            .is_none(),
         "`one_shot` 同样⛔ 不产生窗口"
     );
 
@@ -3422,7 +3434,7 @@ fn s30_the_loop_window_really_feeds_the_per_sample_path() {
             (LOOP_START as u32, loop_end as u32),
             "回读的循环字段必须逐字等于文件"
         );
-        let window = region.loop_window(LOOP_PCM_FRAMES).expect("有效窗口");
+        let window = region.loop_window(LOOP_PCM_FRAMES, None).expect("有效窗口");
         assert_eq!(
             (
                 window.start as usize,
@@ -3485,7 +3497,7 @@ fn s31_illegal_loop_input_still_fails_loudly_on_the_engine_path() {
     .expect("⭐ 两个值各自合法 ⇒ `load` 必须 `Ok`（⛔ 不新增降级机制）");
     let plan = PreparedSfz::prepare(&degenerate, &ramp_sample(LOOP_PCM_FRAMES), 48_000.0)
         .expect("摊平必须成功");
-    let window = plan.regions()[0].loop_window(LOOP_PCM_FRAMES);
+    let window = plan.regions()[0].loop_window(LOOP_PCM_FRAMES, None);
     println!(
         "[engine-sfz/S31] `loop_mode=bogus` ⇒ {bad_mode:?}；越界 `loop_start` ⇒ {bad_start:?}；\
          退化窗口（`loop_end == loop_start`）⇒ `load` Ok、`loop_window` = {window:?}"
@@ -3620,6 +3632,7 @@ fn flat_sample(frames: usize) -> InMemorySample {
     InMemorySample {
         pcm: Arc::new(vec![1.0f32; frames]),
         sample_hz: 48_000.0,
+        loop_points: None,
     }
 }
 
@@ -4862,9 +4875,13 @@ fn s46_a_window_ending_exactly_at_the_sample_end_still_loops() {
             (LOOP_START as u32, loop_end as u32),
             "⭐ {label}：摊平表必须逐字带出两个循环点"
         );
-        let window = region.loop_window(LOOP_PCM_FRAMES).unwrap_or_else(|| {
-            panic!("⭐ {label}：`loop_end <= pcm_len` ⇒ 必须有**有效窗口**（⛔ 不是按不循环渲染）")
-        });
+        let window = region
+            .loop_window(LOOP_PCM_FRAMES, None)
+            .unwrap_or_else(|| {
+                panic!(
+                    "⭐ {label}：`loop_end <= pcm_len` ⇒ 必须有**有效窗口**（⛔ 不是按不循环渲染）"
+                )
+            });
         assert_eq!(
             (
                 window.start as usize,
@@ -4951,6 +4968,7 @@ fn s47_the_clamp_stays_inside_the_window_and_bounds_every_sample() {
     let sample = InMemorySample {
         pcm: Arc::new(pcm.clone()),
         sample_hz: 48_000.0,
+        loop_points: None,
     };
     let peak = pcm.iter().fold(0.0f32, |acc, value| acc.max(value.abs()));
 
@@ -5873,6 +5891,7 @@ fn s55_two_cc_values_change_the_envelope_by_the_specification_formula() {
     let sample = InMemorySample {
         pcm: Arc::new(vec![1.0; FRAMES + 1_024]),
         sample_hz: HZ,
+        loop_points: None,
     };
     let plan = prepare_with(SFZ, &sample);
     assert_eq!(
@@ -6056,6 +6075,7 @@ fn s57_the_fixture_can_actually_show_the_difference() {
     let sample = InMemorySample {
         pcm: Arc::new(vec![1.0; FRAMES + 1_024]),
         sample_hz: HZ,
+        loop_points: None,
     };
     let measure = |text: &str, cc: u8| -> usize {
         let instrument = SfzInstrument::load(text.to_owned(), &Default::default()).expect("解析");
@@ -6341,6 +6361,7 @@ fn s60_two_velocities_change_the_envelope_by_the_specification_formula() {
     let sample = InMemorySample {
         pcm: Arc::new(vec![1.0; FRAMES + 1_024]),
         sample_hz: HZ,
+        loop_points: None,
     };
     let plan = prepare_with(SFZ_WITH, &sample);
     assert_eq!(
@@ -6435,6 +6456,7 @@ fn s61_the_realtime_path_matches_the_flat_path_bit_for_bit_at_the_same_velocity(
     let sample = InMemorySample {
         pcm: Arc::new(vec![1.0; 4_096]),
         sample_hz: HZ,
+        loop_points: None,
     };
     let plan = prepare_with(SFZ, &sample);
     let expected = |velocity: u8| -> usize {
@@ -6526,6 +6548,7 @@ fn s62_the_reverse_legs_and_the_three_load_bearing_fingerprints() {
     let sample = InMemorySample {
         pcm: Arc::new(vec![1.0; 4_096]),
         sample_hz: HZ,
+        loop_points: None,
     };
     let measure = |text: &str, velocity: u8| -> (usize, Vec<f32>) {
         let plan = prepare_with(text, &sample);
@@ -6685,6 +6708,7 @@ fn s63_the_realtime_path_reads_cc_and_follows_the_specification_formula() {
     let sample = InMemorySample {
         pcm: Arc::new(vec![1.0; 4_096]),
         sample_hz: HZ,
+        loop_points: None,
     };
     let plan = prepare_with(CC_ATTACK_FIXTURE, &sample);
     assert_eq!(
@@ -6788,6 +6812,7 @@ fn s64_the_three_paths_agree_bit_for_bit_at_the_same_cc() {
     let sample = InMemorySample {
         pcm: Arc::new(vec![1.0; 4_096]),
         sample_hz: HZ,
+        loop_points: None,
     };
     let plan = prepare_with(CC_ATTACK_FIXTURE, &sample);
 
@@ -7044,6 +7069,7 @@ fn constant_sample(frames: usize) -> InMemorySample {
     InMemorySample {
         pcm: Arc::new(vec![1.0; frames]),
         sample_hz: 48_000.0,
+        loop_points: None,
     }
 }
 
@@ -8994,15 +9020,18 @@ fn s91_the_110_registration_the_bound_and_the_sizes_are_judgeable() {
     // 上面两条 `88 → 240` 的腿整条有效）；⛔ `SfzVoice` / 池 / `EngineRuntime` 三条
     // **＋0 边界一条未动**（下面三条断言逐字保留）。
     assert_eq!(
-        region, 6168,
+        region, 6176,
         "⭐ `#113` 后的**绝对值**基线（`6152 ＋ 8`；⛔ 三条实时边界仍 ＋0）；\
-         ⭐ **round-robin 片再 ＋8 ⇒ 6168**（`seq_position` / `seq_length` 两个 `u32`）"
+         ⭐ **round-robin 片再 ＋8 ⇒ 6168**（`seq_position` / `seq_length` 两个 `u32`） → ⭐ **`#331` 修订：`off_time: f32` 再 ＋8 ⇒ 6176**"
     );
     assert_eq!(
         region,
-        6152 + 16,
+        6152 + 16 + 8,
         "⭐ `#113` 的**增量** ＝ `direction: PlayDirection` ＋ 尾部对齐（⛔ 不是 `per-table` 那一份）；\
-         ⭐ 现读 `6152 ＋ 16`：后 8 B 是 **round-robin** 的两个 `u32`"
+         ⭐ 现读 `6152 ＋ 16`：后 8 B 是 **round-robin** 的两个 `u32`\
+         → ⭐ **`#331` 修订：再加 `off_time: f32` 的 8 B ⇒ `6152 ＋ 16 ＋ 8`。\
+         ⚠ 原文的 `6152 ＋ 16` 逐字保留在式子里（⛔ 不是把式子改成 `6152 ＋ 24` 了事），\
+         这样「多出来的 8 是谁」在代码里就能看出来**"
     );
     assert_eq!(voice, 40, "⛔ `SfzVoice` 必须 ＋0（仍是 40 B）");
     assert_eq!(
@@ -9515,6 +9544,7 @@ fn s95_reverse_is_really_reversed_and_matches_the_reversed_source_reading() {
     let reversed_sample = InMemorySample {
         pcm: Arc::new(reversed_pcm),
         sample_hz: sample.sample_hz,
+        loop_points: None,
     };
     let reference = prepare_with(
         "<region> sample=a.wav key=60 pitch_keycenter=60\n",
@@ -9769,15 +9799,16 @@ fn s98_the_direction_sizes_and_the_zero_allocation_disposition_are_judgeable() {
         200 * 1024 - runtime
     );
     assert_eq!(
-        region, 6168,
+        region, 6176,
         "⭐ 本单唯一的代价：`PreparedRegion` `6152 → 6160`（＋8 ＝ `direction` ＋ 对齐；摊平期）；\
-         ⭐ **round-robin 片再 ＋8 ⇒ 6168**"
+         ⭐ **round-robin 片再 ＋8 ⇒ 6168** → ⭐ **`#331` 修订：`off_time: f32` 再 ＋8 ⇒ 6176**"
     );
     assert_eq!(
         region,
-        6152 + 16,
+        6152 + 16 + 8,
         "⭐ 增量腿：`direction: PlayDirection`（`size_of` ＝ 1）＋ 尾部对齐 ＝ ＋8；\
-         ⭐ **round-robin 的两个 `u32`** 再 ＋8 ⇒ 合计 `6152 ＋ 16`"
+         ⭐ **round-robin 的两个 `u32`** 再 ＋8 ⇒ 合计 `6152 ＋ 16`\
+         → ⭐ **`#331` 修订：`off_time: f32` 再 ＋8 ⇒ `6152 ＋ 16 ＋ 8`（原文式子保留在式子里）**"
     );
     assert_eq!(voice, 40, "⛔ `SfzVoice` 必须 ＋0（零新逐声部字段）");
     assert_eq!(
@@ -10081,9 +10112,9 @@ fn s100_the_target_enum_the_census_and_the_sizes_are_judgeable() {
         200 * 1024 - runtime,
     );
     assert_eq!(
-        region, 6168,
+        region, 6176,
         "⭐ `#115` 的 `amplitude: f32` 落进既有尾部对齐空隙 ⇒ `PreparedRegion` **＋0**；\
-         ⭐ **round-robin 片再 ＋8 ⇒ 6168**（两个 `u32`）"
+         ⭐ **round-robin 片再 ＋8 ⇒ 6168**（两个 `u32`） → ⭐ **`#331` 修订：`off_time: f32` 再 ＋8 ⇒ 6176**"
     );
     assert_eq!(voice, 40, "⛔ `SfzVoice` 必须 ＋0（仍是 40 B）");
     assert_eq!(
@@ -10702,10 +10733,10 @@ fn s106_the_tune_spec_the_census_and_the_sizes_are_judgeable() {
         200 * 1024 - runtime,
     );
     assert_eq!(
-        region, 6168,
+        region, 6176,
         "⭐ `#116` ⛔ 没有新增任何每区域字段（基准 `tune` 早在 `rate_per_note` 里、\
          调制项早在 `cc_mods` 里）⇒ `PreparedRegion` **＋0**；\
-         ⭐ **round-robin 片再 ＋8 ⇒ 6168**"
+         ⭐ **round-robin 片再 ＋8 ⇒ 6168** → ⭐ **`#331` 修订：`off_time: f32` 再 ＋8 ⇒ 6176**"
     );
     assert_eq!(voice, 40, "⛔ `SfzVoice` 必须 ＋0（仍是 40 B）");
     assert_eq!(
@@ -11317,6 +11348,9 @@ fn ramp_at(sample_hz: f32, frames: usize) -> InMemorySample {
                 .collect::<Vec<f32>>(),
         ),
         sample_hz,
+        // ⭐ `#331`：这些夹具不关心 `smpl` 循环点（⛔ 不是"没写就当没有"的缩写 ——
+        // 字段是显式的，判据能一眼看出该夹具没有循环点元数据）。
+        loop_points: None,
     }
 }
 
@@ -11691,9 +11725,9 @@ fn s111_the_unit_is_explicit_and_tune_rejects_the_percent_suffix() {
         200 * 1024
     );
     assert_eq!(
-        region, 6168,
+        region, 6176,
         "⭐ `#117` 没新增任何每区域字段 ⇒ `PreparedRegion` ＋0；\
-         ⭐ **round-robin 片再 ＋8 ⇒ 6168**"
+         ⭐ **round-robin 片再 ＋8 ⇒ 6168** → ⭐ **`#331` 修订：`off_time: f32` 再 ＋8 ⇒ 6176**"
     );
     assert_eq!(voice, 40, "⛔ `SfzVoice` 必须 ＋0（仍是 40 B）");
     assert_eq!(
@@ -12763,9 +12797,9 @@ fn s113_the_pitch_family_is_the_tune_alias_across_three_paths() {
         200 * 1024 - runtime,
     );
     assert_eq!(
-        region, 6168,
+        region, 6176,
         "⭐ `#118` 没新增任何每区域字段 ⇒ `PreparedRegion` ＋0；\
-         ⭐ **round-robin 片再 ＋8 ⇒ 6168**"
+         ⭐ **round-robin 片再 ＋8 ⇒ 6168** → ⭐ **`#331` 修订：`off_time: f32` 再 ＋8 ⇒ 6176**"
     );
     assert_eq!(voice, 40, "⛔ `SfzVoice` 必须 ＋0（仍是 40 B）");
     assert_eq!(
@@ -13688,9 +13722,9 @@ fn s114_the_volume_family_is_the_third_unit_category_across_three_paths() {
         200 * 1024 - runtime,
     );
     assert_eq!(
-        region, 6168,
+        region, 6176,
         "⭐ `#119` 没新增任何每区域字段（`volume` 基准早在 `volume_gain` 里、乘子是栈上值）\
-         ⇒ `PreparedRegion` ＋0；⭐ **round-robin 片再 ＋8 ⇒ 6168**"
+         ⇒ `PreparedRegion` ＋0；⭐ **round-robin 片再 ＋8 ⇒ 6168** → ⭐ **`#331` 修订：`off_time: f32` 再 ＋8 ⇒ 6176**"
     );
     assert_eq!(voice, 40, "⛔ `SfzVoice` 必须 ＋0（仍是 40 B）");
     assert_eq!(
@@ -14235,8 +14269,8 @@ fn s115_the_three_revised_volume_counters_and_the_scope_absence() {
     );
     assert_eq!(
         (region, voice, pool, runtime),
-        (6168, 40, 2240, ENGINE_RUNTIME_BYTES),
-        "⛔ `#121` 只改文档 ＋ 计数 ⇒ 四个尺寸读数全 ＋0"
+        (6176, 40, 2240, ENGINE_RUNTIME_BYTES),
+        "⛔ `#121` 只改文档 ＋ 计数 ⇒ 四个尺寸读数全 ＋0 ／ ⭐ `#331` 修订：① `PreparedRegion` ＋8（`off_time: f32`）⇒ 6176（不是 ＋0）；②③④ 仍 ＋0"
     );
 }
 
@@ -14851,8 +14885,8 @@ fn s116_the_ampeg_attack_three_tiers_name_their_caliber() {
     );
     assert_eq!(
         (region, voice, pool, runtime),
-        (6168, 40, 2240, ENGINE_RUNTIME_BYTES),
-        "⛔ `#123` 只改文档 ＋ 判据 ⇒ 四个尺寸读数全 ＋0"
+        (6176, 40, 2240, ENGINE_RUNTIME_BYTES),
+        "⛔ `#123` 只改文档 ＋ 判据 ⇒ 四个尺寸读数全 ＋0 ／ ⭐ `#331` 修订：① `PreparedRegion` ＋8（`off_time: f32`）⇒ 6176（不是 ＋0）；②③④ 仍 ＋0"
     );
 }
 
@@ -15811,8 +15845,8 @@ fn s117_the_gain_spelling_is_the_volume_alias_across_three_paths() {
     );
     assert_eq!(
         (region, voice, pool, runtime),
-        (6168, 40, 2240, ENGINE_RUNTIME_BYTES),
-        "⛔ `#124` 只加一个**名字**（识别支）⇒ 四个尺寸读数全 ＋0"
+        (6176, 40, 2240, ENGINE_RUNTIME_BYTES),
+        "⛔ `#124` 只加一个**名字**（识别支）⇒ 四个尺寸读数全 ＋0 ／ ⭐ `#331` 修订：① `PreparedRegion` ＋8（`off_time: f32`）⇒ 6176（不是 ＋0）；②③④ 仍 ＋0"
     );
     assert!(runtime < 200 * 1024, "⛔ `EngineRuntime` 必须 < 200 KiB");
 }
@@ -16056,11 +16090,14 @@ fn s118_the_not_done_registrations_are_swept_and_still_hold() {
         SweepRow {
             file: 0,
             needle: "`off_time` 不在本片范围",
-            verdict: "仍成立（引擎侧仍未应用 `off_time`）",
-            basis: "⚠ **必须写清**：`off_time` **已经被解析并携带**（见下一条），本条的「未做」\
-                    指的是**引擎侧没有任何消费者** —— 剥注释后引擎代码里没有 `off_time` 这个\
-                    标识符，`off_mode=time` 仍按 `normal` 处理（本行自身的书面偏离）",
-            check: SweepCheck::NotInCode(0, &["off_time"]),
+            verdict: "⭐ `#331` **已关闭**（原文保留：本条曾判「仍成立（引擎侧仍未应用 `off_time`）」）",
+            basis: "⭐ **`#331` 修订段**：`off_time` 已落进引擎 —— `PreparedRegion::off_time`\
+                    ＋ `stop_off_by_victims` 的 `OffMode::Time` 支 ＋ `seconds_to_frames(..)`\
+                    ⇒ 剥注释后引擎代码里**有** `off_time` 这个标识符；`ADR-0008` 裁决 **C 撤销**。\
+                    ⚠ 本条因此从 `NotInCode` **翻转**成 `InCode`（⛔ 不是删行：删掉就没有\
+                    「登记被落地的见证」了，这正是这一条的牙）。仍未做的只剩 `off_shape` /\
+                    `off_curve`（曲线控制，台账 §5.3）",
+            check: SweepCheck::InCode(0, "off_time"),
         },
         SweepRow {
             file: 0,
@@ -16487,8 +16524,8 @@ fn s118_the_not_done_registrations_are_swept_and_still_hold() {
     );
     assert_eq!(
         (region, voice, pool, runtime),
-        (6168, 40, 2240, ENGINE_RUNTIME_BYTES),
-        "⛔ `#125` 只改注释／登记／判据 ⇒ 四个尺寸读数全 ＋0"
+        (6176, 40, 2240, ENGINE_RUNTIME_BYTES),
+        "⛔ `#125` 只改注释／登记／判据 ⇒ 四个尺寸读数全 ＋0 ／ ⭐ `#331` 修订：① `PreparedRegion` ＋8（`off_time: f32`）⇒ 6176（不是 ＋0）；②③④ 仍 ＋0"
     );
     assert!(runtime < 200 * 1024, "⛔ `EngineRuntime` 必须 < 200 KiB");
 }

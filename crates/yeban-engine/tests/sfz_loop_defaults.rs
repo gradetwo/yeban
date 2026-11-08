@@ -46,6 +46,7 @@ fn ramp() -> InMemorySample {
     InMemorySample {
         pcm: Arc::new(pcm),
         sample_hz: HZ,
+        loop_points: None,
     }
 }
 
