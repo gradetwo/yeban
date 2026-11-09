@@ -699,12 +699,19 @@ export component Transport inherits Rectangle {
     }
 
     // ------------------------------------------------- 右侧 AI 协作栏抽屉开关
+    // ⭐ [PATCH UI-FEEDBACK-01]：抽屉展开态此前只有 `accessible-expanded` 知道，人眼
+    // 看到的「AI」按钮从不变化（原先唯一的变化是按下时板变 `bg-raised`）。金底 = 当前态
+    // （与全屏键同款信号），悬浮 / 按下走 `bg-raised`。默认帧（未展开、未悬浮、未按下）
+    // 逐字回落到原来的 `bg-panel-alt` / `gold` ⇒ golden 零像素位移；不碰描边，
+    // 主题判据 ⑥ 的唯一强调色 / `bg-control` 计数与 ⑦ 的 AI 徽章冷色描边都不动。
     Rectangle {
         x: root.width - 56px;
         y: Tokens.space-4;
         width: 32px;
         height: 32px;
-        background: drawer_area.pressed ? Tokens.bg-raised : Tokens.bg-panel-alt;
+        background: root.ai-drawer-open ? Tokens.gold
+            : (drawer_area.pressed || drawer_area.has-hover) ? Tokens.bg-raised
+            : Tokens.bg-panel-alt;
         border-radius: Tokens.radius-md;
         accessible-role: button;
         accessible-id: "transport-ai-drawer-button";
@@ -726,7 +733,7 @@ export component Transport inherits Rectangle {
             width: parent.width;
             height: parent.height;
             text: "AI";
-            color: Tokens.gold;
+            color: root.ai-drawer-open ? #060A14 : Tokens.gold;
             font-size: Tokens.font-size-md;
             horizontal-alignment: center;
         }

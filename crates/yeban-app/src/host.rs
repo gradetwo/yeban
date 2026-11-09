@@ -10130,10 +10130,11 @@ fn apply_action(
         // 1. 时光机开着 ⇒ 落 [`UiAction::CloseUndoTree`]（**只改界面运行态**，不碰工程）；
         // 2. 导出设置弹窗开着 ⇒ 落窗口回调 `close-export-wav`（**只改视图态**，⛔ 不落盘、
         //    ⛔ 不碰工程）；
-        // 3. AI 提案抽屉开着 ⇒ 落窗口回调 `toggle-ai-drawer`（**只改视图态**，⛔ 不拒绝提案、
-        //    ⛔ 不碰工程）；`U-11` 的最小修复见这条；
-        // 4. 总览面板全屏开着 ⇒ 落窗口回调 `song-overview-toggle-fullscreen`
+        // 3. 总览面板全屏开着 ⇒ 落窗口回调 `song-overview-toggle-fullscreen`
         //    （**只改视图态**，⛔ 不碰工程；Wang 2026-11-08 19:56 要求）；
+        //    `[PATCH UI-FEEDBACK-01]`：排在 AI 抽屉之前 —— 组合态下 `Esc` 必须先退全屏；
+        // 4. AI 提案抽屉开着 ⇒ 落窗口回调 `toggle-ai-drawer`（**只改视图态**，⛔ 不拒绝提案、
+        //    ⛔ 不碰工程）；`U-11` 的最小修复见这条；
         // 5. 纵向拖拽在手 ⇒ 落 [`cancel_track_height_drag`]（写回起点高度）；
         // 6. 混音手势在手 ⇒ 落窗口回调 `mixer-cancel-gesture` → [`cancel_mixer_gesture`]
         //    （写回起点音量 / 声相）；
@@ -10185,18 +10186,6 @@ fn apply_action(
                 ui.invoke_close_export_wav();
                 return true;
             }
-            // ⭐ `U-11`（`~/zimmer-ui-mode-report.md`）：AI 提案抽屉**开着**时 `Escape`
-            // 应当像其余面板一样收起来。落点**只能是**界面回调：`on_toggle_ai_drawer`
-            // 是走带按钮与 `Cmd/Ctrl+Alt+A` 的**同一个**实现（`ai-drawer-open` 的单写者）
-            // ⇒ 键盘 / 鼠标 / 屏读器不可能分叉。
-            //
-            // ⚠ 这只关**面板**（视图态），⛔ **不是**"放弃 AI 提案"：提案仍留在队列里，
-            // 拒绝只有可点等价物 `musical-pr-reject-button`（`Action::Cancel` 的文档
-            // 仍保留这条裁决）。关抽屉不碰工程、不进撤销栈。
-            if ui.get_ai_drawer_open() {
-                ui.invoke_toggle_ai_drawer();
-                return true;
-            }
             // ⭐ 总览面板全屏（Wang 2026-11-08 19:56 要求）：全屏态时 `Escape` 退出
             // 全屏（恢复 104 px，折叠态 22 px），非全屏态不消费（放行给后面的手势臂）。
             // 落点**只能是**界面回调：`on_song_overview_toggle_fullscreen` 是全屏键的
@@ -10206,11 +10195,30 @@ fn apply_action(
             // ⚠ **前置**只有"全屏开着"这一格：`Esc` 在非全屏态是直通（不折叠面板、
             // 不展开面板）—— 折叠键有自己的按钮，`Esc` 不兼任折叠（`elements.rs`
             // 的注记：一键两义须有裁决；本条的裁决是 `Esc` 只退全屏，不碰折叠）。
-            // 顺序在 AI 抽屉之后、手势之前：面板先于手势收尾（与时光机 / 导出弹窗 /
-            // AI 抽屉同向）；抽屉与全屏不会同开（抽屉在右栏，全屏时右栏已塌掉），
-            // 因此这一臂与上一臂互斥，不存在"一次 `Escape` 关两个面板"。
+            // ⭐ [PATCH UI-FEEDBACK-01]：这一臂**必须**在 AI 抽屉之前。此前注释断言
+            // "抽屉与全屏不会同开（抽屉在右栏，全屏时右栏已塌掉）"，但 `app.slint`
+            // 的 compact 抽屉是**根级覆盖层**（`visible: root.compact && root.ai-drawer-open`，
+            // 不含 `!song-overview-fullscreen`）：全屏时主工作区虽塌掉，它仍浮在画布
+            // 右侧 ⇒ 两者可以同开。若抽屉臂在前，这种组合态下按 `Esc` 会先关一个悬在
+            // 画布上的抽屉，全屏却纹丝不动 —— 用户按了"退出全屏"的键却没退出。
+            // 全屏是更外层的视图态，优先收；抽屉留待第二次 `Esc`。
             if ui.get_song_overview_fullscreen() {
                 ui.invoke_song_overview_toggle_fullscreen();
+                return true;
+            }
+            // ⭐ `U-11`（`~/zimmer-ui-mode-report.md`）：AI 提案抽屉**开着**时 `Escape`
+            // 应当像其余面板一样收起来。落点**只能是**界面回调：`on_toggle_ai_drawer`
+            // 是走带按钮与 `Cmd/Ctrl+Alt+A` 的**同一个**实现（`ai-drawer-open` 的单写者）
+            // ⇒ 键盘 / 鼠标 / 屏读器不可能分叉。
+            //
+            // ⚠ 这只关**面板**（视图态），⛔ **不是**"放弃 AI 提案"：提案仍留在队列里，
+            // 拒绝只有可点等价物 `musical-pr-reject-button`（`Action::Cancel` 的文档
+            // 仍保留这条裁决）。关抽屉不碰工程、不进撤销栈。
+            // 顺序在**全屏之后**、手势之前：面板先于手势收尾（与时光机 / 导出弹窗 /
+            // 全屏同向）。全屏与抽屉可以同开时先退全屏再关抽屉（两次 `Esc`），
+            // 不存在"一次 `Escape` 关两个面板"。
+            if ui.get_ai_drawer_open() {
+                ui.invoke_toggle_ai_drawer();
                 return true;
             }
             let height = cancel_track_height_drag(ui, undo);

@@ -478,10 +478,14 @@ export component SongOverviewPanel inherits Rectangle {
         y: 2px;
         width: 44px;
         height: 16px;
-        background: (pill-index == 0 && root.show-tension) || (pill-index == 1 && root.show-energy) || (pill-index == 2 && root.show-bands) || (pill-index == 3 && root.show-density) ? Tokens.gold : Tokens.bg-panel;
+        // ⭐ [PATCH UI-FEEDBACK-01]：胶囊此前只有「选中态」会变色，鼠标悬浮 / 按下
+        // 一位不动 —— 用户不确定自己有没有指到。金边 = 悬浮，按下时板提亮。默认帧
+        // （未悬浮、未按下）逐字回落到原来的状态三元 / `line` ⇒ 选中态与 golden 零像素位移。
+        background: pill_touch.pressed ? Tokens.bg-raised
+            : ((pill-index == 0 && root.show-tension) || (pill-index == 1 && root.show-energy) || (pill-index == 2 && root.show-bands) || (pill-index == 3 && root.show-density) ? Tokens.gold : Tokens.bg-panel);
         border-radius: 8px;
         border-width: 1px;
-        border-color: Tokens.line;
+        border-color: pill_touch.has-hover ? Tokens.gold : Tokens.line;
         accessible-role: button;
         // ⚠ 必须写成 `"前缀-" + 中段 + "-pill"` 的拼接模板形（与 `track-{i}-fader` 同款）：
         // 覆盖率判据按字面段匹配 —— 三元字面量（`"a" : "b" : "c"`）会被读成“单段非模板”，
@@ -503,7 +507,7 @@ export component SongOverviewPanel inherits Rectangle {
             horizontal-alignment: center;
         }
 
-        TouchArea {
+        pill_touch := TouchArea {
             width: parent.width;
             height: parent.height;
             clicked => { root.layer-toggle(pill-index); }
@@ -517,10 +521,12 @@ export component SongOverviewPanel inherits Rectangle {
         y: 2px;
         width: 86px;
         height: 16px;
-        background: Tokens.bg-panel;
+        // ⭐ [PATCH UI-FEEDBACK-01]：折叠键此前点下去一位不动。金边 = 悬浮，按下提亮；
+        // 默认帧逐字回落到原来的 `bg-panel` / `line` ⇒ golden 零像素位移。
+        background: collapse_touch.pressed ? Tokens.bg-raised : Tokens.bg-panel;
         border-radius: 8px;
         border-width: 1px;
-        border-color: Tokens.line;
+        border-color: collapse_touch.has-hover ? Tokens.gold : Tokens.line;
         accessible-role: button;
         accessible-id: "song-overview-collapse-button";
         accessible-label: "折叠 / 展开总览面板";
@@ -540,7 +546,7 @@ export component SongOverviewPanel inherits Rectangle {
             horizontal-alignment: center;
         }
 
-        TouchArea {
+        collapse_touch := TouchArea {
             width: parent.width;
             height: parent.height;
             clicked => { root.toggle-collapsed(); }
@@ -556,10 +562,14 @@ export component SongOverviewPanel inherits Rectangle {
         y: 2px;
         width: 86px;
         height: 16px;
-        background: root.fullscreen ? Tokens.gold : Tokens.bg-panel;
+        // ⭐ [PATCH UI-FEEDBACK-01]：全屏键已有「金底 = 当前态」的状态色，但悬浮 / 按下
+        // 没有反馈。默认帧逐字回落到原来的 `bg-panel` / `line` ⇒ golden 零像素位移；
+        // 全屏态仍逐字是 `gold` ⇒ 原状态色不变。
+        background: fullscreen_touch.pressed && !root.fullscreen ? Tokens.bg-raised
+            : (root.fullscreen ? Tokens.gold : Tokens.bg-panel);
         border-radius: 8px;
         border-width: 1px;
-        border-color: Tokens.line;
+        border-color: fullscreen_touch.has-hover ? Tokens.gold : Tokens.line;
         accessible-role: button;
         accessible-id: "song-overview-fullscreen-button";
         accessible-label: "全屏 / 退出全屏总览面板";
@@ -576,7 +586,7 @@ export component SongOverviewPanel inherits Rectangle {
             horizontal-alignment: center;
         }
 
-        TouchArea {
+        fullscreen_touch := TouchArea {
             width: parent.width;
             height: parent.height;
             clicked => { root.toggle-fullscreen(); }

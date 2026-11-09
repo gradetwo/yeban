@@ -1464,7 +1464,8 @@ fn escape_exits_fullscreen_and_passes_through_when_not_fullscreen() {
     rig.refresh();
     assert!(
         !rig.ui().get_song_overview_fullscreen(),
-        "全屏态按 `Esc` ⇒ `fullscreen` 必须回 false（`Action::Cancel` 级联的第 4 臂）"
+        "全屏态按 `Esc` ⇒ `fullscreen` 必须回 false（`Action::Cancel` 级联的第 3 臂；\
+         `[PATCH UI-FEEDBACK-01]` 把它提到 AI 抽屉之前）"
     );
     assert!(
         !rig.ui().get_song_overview_collapsed(),

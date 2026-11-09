@@ -311,7 +311,10 @@ export component ArrangementView inherits Rectangle {
         y: 1px;
         width: 18px;
         height: 18px;
-        background: Tokens.bg-panel;
+        // ⭐ [PATCH UI-FEEDBACK-01]：缩放 ± 键此前只有 `clicked`，悬浮 / 按下一位不动。
+        // 板提亮 = 悬浮或按下；默认帧（两者皆假）逐字回落到原来的 `bg-panel`
+        // ⇒ golden 零像素位移。不新增边框，避免改动几何。四个缩放键同款。
+        background: zoom_h_out_touch.pressed || zoom_h_out_touch.has-hover ? Tokens.bg-raised : Tokens.bg-panel;
         border-radius: Tokens.radius-sm;
         accessible-role: button;
         accessible-id: "arrangement-zoom-h-out-button";
@@ -327,7 +330,7 @@ export component ArrangementView inherits Rectangle {
             font-size: Tokens.font-size-md;
             horizontal-alignment: center;
         }
-        TouchArea {
+        zoom_h_out_touch := TouchArea {
             width: parent.width;
             height: parent.height;
             clicked => { root.zoom-h-step(false); }
@@ -379,7 +382,8 @@ export component ArrangementView inherits Rectangle {
         y: 1px;
         width: 18px;
         height: 18px;
-        background: Tokens.bg-panel;
+        // [PATCH UI-FEEDBACK-01]：与横向缩小键同款（悬浮 / 按下 ⇒ `bg-raised`，默认帧零位移）。
+        background: zoom_h_in_touch.pressed || zoom_h_in_touch.has-hover ? Tokens.bg-raised : Tokens.bg-panel;
         border-radius: Tokens.radius-sm;
         accessible-role: button;
         accessible-id: "arrangement-zoom-h-in-button";
@@ -395,7 +399,7 @@ export component ArrangementView inherits Rectangle {
             font-size: Tokens.font-size-md;
             horizontal-alignment: center;
         }
-        TouchArea {
+        zoom_h_in_touch := TouchArea {
             width: parent.width;
             height: parent.height;
             clicked => { root.zoom-h-step(true); }
@@ -407,7 +411,8 @@ export component ArrangementView inherits Rectangle {
         y: 21px;
         width: 18px;
         height: 18px;
-        background: Tokens.bg-panel;
+        // [PATCH UI-FEEDBACK-01]：与横向缩小键同款（悬浮 / 按下 ⇒ `bg-raised`，默认帧零位移）。
+        background: zoom_v_out_touch.pressed || zoom_v_out_touch.has-hover ? Tokens.bg-raised : Tokens.bg-panel;
         border-radius: Tokens.radius-sm;
         accessible-role: button;
         accessible-id: "arrangement-zoom-v-out-button";
@@ -423,7 +428,7 @@ export component ArrangementView inherits Rectangle {
             font-size: Tokens.font-size-md;
             horizontal-alignment: center;
         }
-        TouchArea {
+        zoom_v_out_touch := TouchArea {
             width: parent.width;
             height: parent.height;
             clicked => { root.zoom-v-step(false); }
@@ -470,7 +475,8 @@ export component ArrangementView inherits Rectangle {
         y: 21px;
         width: 18px;
         height: 18px;
-        background: Tokens.bg-panel;
+        // [PATCH UI-FEEDBACK-01]：与横向缩小键同款（悬浮 / 按下 ⇒ `bg-raised`，默认帧零位移）。
+        background: zoom_v_in_touch.pressed || zoom_v_in_touch.has-hover ? Tokens.bg-raised : Tokens.bg-panel;
         border-radius: Tokens.radius-sm;
         accessible-role: button;
         accessible-id: "arrangement-zoom-v-in-button";
@@ -486,7 +492,7 @@ export component ArrangementView inherits Rectangle {
             font-size: Tokens.font-size-md;
             horizontal-alignment: center;
         }
-        TouchArea {
+        zoom_v_in_touch := TouchArea {
             width: parent.width;
             height: parent.height;
             clicked => { root.zoom-v-step(true); }

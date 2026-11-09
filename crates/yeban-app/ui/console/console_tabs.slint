@@ -356,12 +356,19 @@ export component ConsoleTabs inherits Rectangle {
     }
 
     // 最大化 / 还原底部控制台 [UI-A11Y-001] Cmd/Ctrl + Alt + M 的可点等价物
+    // ⭐ [PATCH UI-FEEDBACK-01]：切换态此前只有 `accessible-checked` 告诉屏读器，人眼
+    // 看到的板 / 字始终是同一个样子 —— 用户点完不知道当前是「已最大化」还是「已还原」。
+    // 金底 = 当前态（与全屏键 / 图层胶囊同款信号），悬浮 / 按下走 `bg-raised`。默认帧
+    // （未最大化、未悬浮、未按下）逐字回落到原来的 `bg-panel-alt` / `ink-1`
+    // ⇒ golden 零像素位移；不新增边框，避免改动几何。
     Rectangle {
         x: root.width - 28px;
         y: Tokens.space-2;
         width: 20px;
         height: 20px;
-        background: Tokens.bg-panel-alt;
+        background: root.console-maximized ? Tokens.gold
+            : (mx_touch.pressed || mx_touch.has-hover) ? Tokens.bg-raised
+            : Tokens.bg-panel-alt;
         border-radius: Tokens.radius-sm;
         accessible-role: button;
         accessible-id: "console-maximize-button";
@@ -378,12 +385,12 @@ export component ConsoleTabs inherits Rectangle {
             width: parent.width;
             height: parent.height;
             text: "⤢";
-            color: Tokens.ink-1;
+            color: root.console-maximized ? #060A14 : Tokens.ink-1;
             font-size: Tokens.font-size-sm;
             horizontal-alignment: center;
         }
 
-        TouchArea {
+        mx_touch := TouchArea {
             width: parent.width;
             height: parent.height;
             clicked => { root.console-maximize-toggle(); }
