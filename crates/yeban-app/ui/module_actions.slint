@@ -110,7 +110,7 @@ export component ModuleActions inherits Rectangle {
         y: 236px;
         width: parent.width - 2 * Tokens.space-4;
         height: 28px;
-        background: Tokens.bg-panel-alt;
+        background: (export_wav_touch.pressed || export_wav_touch.has-hover) ? Tokens.bg-raised : Tokens.bg-panel-alt;
         border-radius: Tokens.radius-md;
         accessible-role: button;
         accessible-id: "module-export-wav-button";
@@ -127,7 +127,7 @@ export component ModuleActions inherits Rectangle {
             font-size: Tokens.font-size-xs;
         }
 
-        TouchArea {
+        export_wav_touch := TouchArea {
             width: parent.width;
             height: parent.height;
             clicked => { root.open-export-wav(); }
@@ -142,7 +142,7 @@ export component ModuleActions inherits Rectangle {
         y: 268px;
         width: parent.width - 2 * Tokens.space-4;
         height: 28px;
-        background: Tokens.bg-panel-alt;
+        background: (import_midi_touch.pressed || import_midi_touch.has-hover) ? Tokens.bg-raised : Tokens.bg-panel-alt;
         border-radius: Tokens.radius-md;
         accessible-role: button;
         accessible-id: "module-import-midi-button";
@@ -159,7 +159,7 @@ export component ModuleActions inherits Rectangle {
             font-size: Tokens.font-size-xs;
         }
 
-        TouchArea {
+        import_midi_touch := TouchArea {
             width: parent.width;
             height: parent.height;
             clicked => { root.import-midi(); }
@@ -174,7 +174,7 @@ export component ModuleActions inherits Rectangle {
         y: 300px;
         width: parent.width - 2 * Tokens.space-4;
         height: 28px;
-        background: Tokens.bg-panel-alt;
+        background: (load_sfz_touch.pressed || load_sfz_touch.has-hover) ? Tokens.bg-raised : Tokens.bg-panel-alt;
         border-radius: Tokens.radius-md;
         accessible-role: button;
         accessible-id: "module-load-sfz-button";
@@ -191,7 +191,7 @@ export component ModuleActions inherits Rectangle {
             font-size: Tokens.font-size-xs;
         }
 
-        TouchArea {
+        load_sfz_touch := TouchArea {
             width: parent.width;
             height: parent.height;
             clicked => { root.load-sfz(); }
@@ -207,7 +207,7 @@ export component ModuleActions inherits Rectangle {
         y: 332px;
         width: parent.width - 2 * Tokens.space-4;
         height: 28px;
-        background: Tokens.bg-panel-alt;
+        background: (record_wav_touch.pressed || record_wav_touch.has-hover) ? Tokens.bg-raised : Tokens.bg-panel-alt;
         border-radius: Tokens.radius-md;
         accessible-role: button;
         accessible-id: "module-record-wav-button";
@@ -224,7 +224,7 @@ export component ModuleActions inherits Rectangle {
             font-size: Tokens.font-size-xs;
         }
 
-        TouchArea {
+        record_wav_touch := TouchArea {
             width: parent.width;
             height: parent.height;
             clicked => { root.record-wav(); }
@@ -247,7 +247,7 @@ export component ModuleActions inherits Rectangle {
         y: 364px;
         width: parent.width - 2 * Tokens.space-4;
         height: 28px;
-        background: Tokens.bg-panel-alt;
+        background: (midi_in_touch.pressed || midi_in_touch.has-hover) ? Tokens.bg-raised : Tokens.bg-panel-alt;
         border-radius: Tokens.radius-md;
         accessible-role: button;
         accessible-id: "module-midi-in-button";
@@ -264,7 +264,7 @@ export component ModuleActions inherits Rectangle {
             font-size: Tokens.font-size-xs;
         }
 
-        TouchArea {
+        midi_in_touch := TouchArea {
             width: parent.width;
             height: parent.height;
             clicked => { root.midi-in(); }

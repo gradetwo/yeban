@@ -195,7 +195,7 @@ component AiRail inherits Rectangle {
         y: 172px;
         width: 108px;
         height: 28px;
-        background: Tokens.bg-panel-alt;
+        background: (diag_export_touch.pressed || diag_export_touch.has-hover) ? Tokens.bg-raised : Tokens.bg-panel-alt;
         border-radius: Tokens.radius-md;
         accessible-role: button;
         accessible-id: "diagnostics-export-action";
@@ -213,7 +213,7 @@ component AiRail inherits Rectangle {
             font-size: Tokens.font-size-xs;
         }
 
-        TouchArea {
+        diag_export_touch := TouchArea {
             width: parent.width;
             height: parent.height;
             clicked => { root.export-diagnostics(); }
@@ -225,7 +225,7 @@ component AiRail inherits Rectangle {
         y: 172px;
         width: parent.width - 2 * Tokens.space-4 - 108px - Tokens.space-2;
         height: 28px;
-        background: Tokens.bg-panel-alt;
+        background: (musical_pr_touch.pressed || musical_pr_touch.has-hover) ? Tokens.bg-raised : Tokens.bg-panel-alt;
         border-radius: Tokens.radius-md;
         accessible-role: button;
         accessible-id: "ai-rail-musical-pr-button";
@@ -244,7 +244,7 @@ component AiRail inherits Rectangle {
             horizontal-alignment: center;
         }
 
-        TouchArea {
+        musical_pr_touch := TouchArea {
             width: parent.width;
             height: parent.height;
             clicked => { root.open-musical-pr(); }

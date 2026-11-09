@@ -116,7 +116,7 @@ export component Transport inherits Rectangle {
         y: Tokens.space-4;
         width: 32px;
         height: 32px;
-        background: play_area.pressed ? Tokens.bg-raised : Tokens.bg-panel-alt;
+        background: (play_area.pressed || play_area.has-hover) ? Tokens.bg-raised : Tokens.bg-panel-alt;
         border-radius: Tokens.radius-md;
         accessible-role: button;
         accessible-id: "transport-play-button";
@@ -153,7 +153,7 @@ export component Transport inherits Rectangle {
         y: Tokens.space-4;
         width: 32px;
         height: 32px;
-        background: stop_area.pressed ? Tokens.bg-raised : Tokens.bg-panel-alt;
+        background: (stop_area.pressed || stop_area.has-hover) ? Tokens.bg-raised : Tokens.bg-panel-alt;
         border-radius: Tokens.radius-md;
         accessible-role: button;
         accessible-id: "transport-stop-button";
@@ -191,7 +191,7 @@ export component Transport inherits Rectangle {
         y: Tokens.space-4;
         width: 32px;
         height: 32px;
-        background: rec_area.pressed ? Tokens.bg-raised : Tokens.bg-panel-alt;
+        background: (rec_area.pressed || rec_area.has-hover) ? Tokens.bg-raised : Tokens.bg-panel-alt;
         border-radius: Tokens.radius-md;
         accessible-role: button;
         accessible-id: "transport-record-button";
@@ -407,7 +407,7 @@ export component Transport inherits Rectangle {
         y: Tokens.space-4;
         width: 32px;
         height: 32px;
-        background: revert_area.pressed ? Tokens.bg-raised : Tokens.bg-panel-alt;
+        background: (revert_area.pressed || revert_area.has-hover) ? Tokens.bg-raised : Tokens.bg-panel-alt;
         border-radius: Tokens.radius-md;
         accessible-role: button;
         accessible-id: "transport-revert-button";
@@ -450,7 +450,7 @@ export component Transport inherits Rectangle {
         y: Tokens.space-4;
         width: 56px;
         height: 32px;
-        background: save_area.pressed ? Tokens.bg-raised : Tokens.bg-control;
+        background: (save_area.pressed || save_area.has-hover) ? Tokens.bg-raised : Tokens.bg-control;
         border-radius: Tokens.radius-md;
         accessible-role: button;
         accessible-id: "transport-save-button";
@@ -514,7 +514,7 @@ export component Transport inherits Rectangle {
         y: Tokens.space-4;
         width: 120px;
         height: 32px;
-        background: proposal_area.pressed ? Tokens.bg-raised : Tokens.bg-panel-alt;
+        background: (proposal_area.pressed || proposal_area.has-hover) ? Tokens.bg-raised : Tokens.bg-panel-alt;
         border-radius: Tokens.radius-md;
         border-width: 1px;
         border-color: Tokens.ai-suggestion;
@@ -568,7 +568,7 @@ export component Transport inherits Rectangle {
         y: Tokens.space-4;
         width: 32px;
         height: 32px;
-        background: metronome_area.pressed ? Tokens.bg-raised : Tokens.bg-panel-alt;
+        background: (metronome_area.pressed || metronome_area.has-hover) ? Tokens.bg-raised : Tokens.bg-panel-alt;
         border-radius: Tokens.radius-md;
         accessible-role: button;
         accessible-id: "transport-metronome-button";
@@ -672,7 +672,7 @@ export component Transport inherits Rectangle {
         y: Tokens.space-4;
         width: 32px;
         height: 32px;
-        background: toggle_area.pressed ? Tokens.bg-raised : Tokens.bg-panel-alt;
+        background: (toggle_area.pressed || toggle_area.has-hover) ? Tokens.bg-raised : Tokens.bg-panel-alt;
         border-radius: Tokens.radius-md;
         accessible-role: button;
         accessible-id: "transport-view-toggle-button";
