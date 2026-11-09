@@ -6,6 +6,15 @@
 //! ## 本轮的范围（Phase 1）
 //!
 //! - 底部可折叠 104 px 面板（主画布 82 px + 底部 22 px），四层叠合渲染。
+//! - 全屏最大化（Wang 2026-11-08 19:56 要求）：面板占满主窗口可用区（编排 /
+//!   卷帘 / 控制台塌掉，顶栏 48 px 与状态栏 24 px 不动）；画布高 = 面板高 − 22 px
+//!   条带，4 项交互在全屏态下照常可用。进入全屏即展开、折叠即退出全屏，
+//!   `(collapsed, fullscreen)` 的唯一写者是 [`wire_song_overview`] 的两条 toggle；
+//!   `Esc` 退出全屏走 `Action::Cancel` 级联（`host::apply_action`），落点是同一个
+//!   `toggle-fullscreen` 回调。Logic Pro 对照见 `app.slint` 的全屏属性注释：
+//!   Logic 的编辑器全屏是窗口级最大化 + 按钮退出、退出恢复原窗口态 —— 本面板
+//!   抄的是"退出恢复原态"这一点；`Esc` 退出是本仓库 `Action::Cancel` 级联的既有
+//!   口径（面板先于手势收尾），Logic 里 `Esc` 不退全屏。
 //! - 4 项核心交互：点击跳转播放头、视口联动框（拖动滚动 / 右缘拖动缩放）、
 //!   图层开关胶囊（单击隐藏 / 双击独显）、悬停小节读数。
 //! - 数据是 **真实管线**：工程 → `yeban_render::song_overview::cached_overview`
@@ -915,12 +924,39 @@ pub fn wire_song_overview(
     });
 
     // 可折叠：界面只报“按了折叠键”，状态翻转的唯一写者是这里。
+    // ⭐ 全屏与折叠是**协调的一对**，两条 toggle 共享同一个所有权（本函数是
+    // `(collapsed, fullscreen)` 的唯一写者，见 `wire_song_overview` 头注）：
+    // 折叠时若全屏开着，先退出全屏（面板落到 22 px 条带）；两者**不同时为真**，
+    // 因此 `.slint` 里 `collapsed ? 22px : (fullscreen ? …)` 的分支互不抢。
+    // 全屏态下按折叠键：`fullscreen` 清零、`collapsed` 翻为 `true` ⇒ 22 px 条带；
+    // 展开态按折叠键：`fullscreen` 本已是 `false`，只翻 `collapsed`。
     let weak = ui.as_weak();
     ui.on_song_overview_toggle_collapsed({
         let weak = weak.clone();
         move || {
             if let Some(ui) = weak.upgrade() {
+                ui.set_song_overview_fullscreen(false);
                 ui.set_song_overview_collapsed(!ui.get_song_overview_collapsed());
+            }
+        }
+    });
+
+    // ⭐ 全屏最大化（Wang 2026-11-08 19:56 要求）：界面只报“按了全屏键 / Esc”，
+    // 状态翻转的唯一写者是这里（与折叠 toggle 同一所有权）。
+    // 进入全屏即展开（清 `collapsed`）：全屏面板占满主窗口可用区，22 px 条带
+    // 态没有意义；退出全屏恢复 104 px（`collapsed` 仍为 `false`）。`Esc` 退出
+    // 全屏落点也是这里（`host::apply_action` 的 Cancel 臂只调同一个回调，
+    // ⛔ 不在键盘臂再写一次属性 —— 单写者纪律，见那一臂的注释）。
+    let weak = ui.as_weak();
+    ui.on_song_overview_toggle_fullscreen({
+        let weak = weak.clone();
+        move || {
+            if let Some(ui) = weak.upgrade() {
+                let fullscreen = ui.get_song_overview_fullscreen();
+                ui.set_song_overview_fullscreen(!fullscreen);
+                if !fullscreen {
+                    ui.set_song_overview_collapsed(false);
+                }
             }
         }
     });

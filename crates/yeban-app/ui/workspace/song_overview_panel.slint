@@ -6,6 +6,12 @@
 // Magma 色表；中层能量层半透明面积冰青色 Alpha 0.22；顶层情绪起伏线 2.5 px + 4 px 深色
 // 描边护城河，随调式效价变色）+ 底部 22 px（上方 14 px 旋律/打击双行疏密脉冲条码，
 // 下方 8 px 小节号与段落结构标签尺）。可折叠：折叠后只剩 22 px 条带。
+// 全屏（Wang 2026-11-08 19:56 要求）：占满主窗口可用区（编排/卷帘/控制台塌掉，
+// 顶栏 48 px 与状态栏 24 px 不动）；画布高 = 面板高 − 22 px 条带，8 行频段 / 能量 /
+// 张力 / 走带光标 / 视口框 / 悬停读数全部随高缩放（几何全是 `parent.height` 的相对量，
+// 只有 canvas 的 `82px` 与 strip 的 `y: 82px` 两处写死值改成了全屏分支）；
+// 底部条保持 22 px；Esc 或全屏键退出，恢复 104 px（折叠态 22 px，见 `src/song_overview.rs`
+// 的协调 toggle）。
 //
 // ⚠ 总高是 104 px，不是设计稿 §11 与任务简报里写的「100 px」：82 + 22 = 104，
 // 「100 px」只是约数（§7.1 的硬约束是总高 96–120 px，104 在内）。按 100 px
@@ -22,6 +28,9 @@
 //      `roll-ticks-per-pixel` 活算）；拖框体滚动，拖右缘缩放。
 //   3. 图层开关胶囊：右上角 [情绪][能量][频段][疏密] —— 单击隐藏/显示，双击独显。
 //   4. 悬停小节读数：`moved`（未按下）报分数 → Rust 写回 `hover-text`。
+//   5. 全屏最大化（Wang 2026-11-08 19:56 要求，设计稿 §7.3 之外）：左上全屏键
+//      或 `Esc`（`Action::Cancel` 级联）进出全屏；4 项交互在全屏态下照常可用
+//      （分数换算不依赖像素对齐）。
 //
 // 时间轴对齐：画布左缘 = 左侧资源栏宽 + 168 px 轨道头列（与编排视图的时间轴同一起点），
 // 右缘留出右 AI 协作栏宽（compact 时为 0）。`time-origin-x` / `right-reserve` 由
@@ -66,6 +75,11 @@ export component SongOverviewPanel inherits Rectangle {
 
     // ---- 视图态输入（MainWindow 拥有，宿主是唯一写者）----
     in property <bool> collapsed: false;
+    /// 全屏态（Wang 2026-11-08 19:56 要求）：面板占满主窗口可用区。
+    /// 与 `collapsed` 是协调的一对（见 `src/song_overview.rs` 的 toggle 注释）：
+    /// 进入全屏即展开，折叠即退出全屏，两者不同时为真。`Esc` 退出全屏走
+    /// `Action::Cancel` 级联，落点是同一个 `toggle-fullscreen` 回调。
+    in property <bool> fullscreen: false;
     in property <bool> show-tension: true;
     in property <bool> show-energy: true;
     in property <bool> show-bands: true;
@@ -96,6 +110,8 @@ export component SongOverviewPanel inherits Rectangle {
     callback viewport-zoom-requested(int);
     /// 折叠键 ⇒ 翻转 `collapsed`。
     callback toggle-collapsed();
+    /// 全屏键 / `Esc` ⇒ 翻转 `fullscreen`（进入时宿主同时清 `collapsed`）。
+    callback toggle-fullscreen();
 
     // ---- 派生几何（本文件内唯一的算术）----
     property <length> canvas-width: max(0px, root.width - root.time-origin-x - root.right-reserve);
@@ -113,8 +129,11 @@ export component SongOverviewPanel inherits Rectangle {
     property <float> resize-grab-width-frac: 0.0;
     property <bool> resize-dragging: false;
 
-    min-height: root.collapsed ? 22px : 104px;
-    max-height: root.collapsed ? 22px : 104px;
+    // 全屏时高度由布局给（`vertical-stretch: 1` 吃掉全部弹性高度）：`min-height`
+    // 归零、`max-height` 放到 100000 px（Slint 没有"无限"长度，取一个窗口永远
+    // 到不了的值）；非全屏时仍是 104 / 22 写死值。
+    min-height: root.fullscreen ? 0px : (root.collapsed ? 22px : 104px);
+    max-height: root.fullscreen ? 100000px : (root.collapsed ? 22px : 104px);
     background: Tokens.bg-panel;
     border-width: 1px;
     border-color: Tokens.line;
@@ -153,12 +172,12 @@ export component SongOverviewPanel inherits Rectangle {
         }
     }
 
-    // ================================================================ 主画布 82 px
+    // ================================================================ 主画布 82 px（全屏时 = 面板高 − 22 px 条带）
     canvas := Rectangle {
         x: root.time-origin-x;
         y: 0;
         width: root.canvas-width;
-        height: 82px;
+        height: root.fullscreen ? parent.height - 22px : 82px;
         visible: !root.collapsed;
         background: Tokens.bg-void;
         clip: true;
@@ -340,8 +359,16 @@ export component SongOverviewPanel inherits Rectangle {
         // 提示框 300 px 宽：读数全文（「第 N 小节 · -19.6 LUFS · 张力 0.24 ·
         // 突出 中频/中低」）约 255 px + 12 px 内边距；220 px 会把第二个频段名
         // 截成「…」（2026-11-08 视觉验收实测），300 px 才放得下。
+        //
+        // ⚠ x 的上界有两道夹：画布右缘（`parent.width − 300px`）与胶囊区左缘
+        // （`root.width − time-origin-x − 508px`）。只夹画布右缘时，悬停到右侧
+        // （如 13.5/16，第 14 小节）读数框右端会伸进胶囊区 —— 胶囊后声明、画在
+        // 上层，“情绪”胶囊盖住读数“中频/低频”一段（2026-11-09 全屏 3x 亲验）。
+        // 508 = 300（框宽）+ 200（胶囊区：4 胶囊 × 48 px 间距）+ 8（间隙）；
+        // 胶囊左缘换算到画布坐标是 `root.width − 200px − time-origin-x`。
+        // 两态共用同一绑定 ⇒ 展开态与全屏态同修。
         Rectangle {
-            x: max(0px, min(parent.width - 300px, root.hover-fraction * parent.width - 150px));
+            x: max(0px, min(min(parent.width - 300px, root.width - root.time-origin-x - 508px), root.hover-fraction * parent.width - 150px));
             y: 4px;
             width: min(300px, parent.width);
             height: 30px;
@@ -376,10 +403,10 @@ export component SongOverviewPanel inherits Rectangle {
         }
     }
 
-    // ================================================================ 底部 22 px
+    // ================================================================ 底部 22 px（全屏时贴面板底缘）
     strip := Rectangle {
         x: root.time-origin-x;
-        y: root.collapsed ? 0px : 82px;
+        y: root.collapsed ? 0px : (root.fullscreen ? parent.height - 22px : 82px);
         width: root.canvas-width;
         height: 22px;
         background: Tokens.bg-panel;
@@ -517,6 +544,42 @@ export component SongOverviewPanel inherits Rectangle {
             width: parent.width;
             height: parent.height;
             clicked => { root.toggle-collapsed(); }
+        }
+    }
+
+    // ================================================================ 全屏键（折叠键右侧，4 px 间隙）
+    // 与折叠键同款式；点击 ⇒ `toggle-fullscreen`。全屏态时底色改金色（与图层胶囊
+    // 独显态同款信号：金底 = 当前态），文字改深色。`Esc` 退出全屏不走这里，走
+    // `Action::Cancel` 级联，落点是同一个回调。
+    Rectangle {
+        x: 94px;
+        y: 2px;
+        width: 86px;
+        height: 16px;
+        background: root.fullscreen ? Tokens.gold : Tokens.bg-panel;
+        border-radius: 8px;
+        border-width: 1px;
+        border-color: Tokens.line;
+        accessible-role: button;
+        accessible-id: "song-overview-fullscreen-button";
+        accessible-label: "全屏 / 退出全屏总览面板";
+        accessible-action-default => { root.toggle-fullscreen(); }
+
+        UiText {
+            x: 0;
+            y: 0;
+            width: parent.width;
+            height: parent.height;
+            text: root.fullscreen ? "退出全屏" : "全屏";
+            color: root.fullscreen ? #060A14 : Tokens.ink-1;
+            font-size: Tokens.font-size-xs;
+            horizontal-alignment: center;
+        }
+
+        TouchArea {
+            width: parent.width;
+            height: parent.height;
+            clicked => { root.toggle-fullscreen(); }
         }
     }
 }

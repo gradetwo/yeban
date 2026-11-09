@@ -10126,27 +10126,29 @@ fn apply_action(
         // `Escape` = **收尾**：取消当前手势（`ADR-0004` S1 的纵向拖拽 / `ADR-0005` 的
         // 推子与声相），或关闭模态面板（时光机与导出设置弹窗；`[UI-A11Y-003]` §7.3）。
         //
-        // 八个来源各自独立、各自有唯一清零点，因此这里**都问一遍**（任一命中即消费）：
+        // 九个来源各自独立、各自有唯一清零点，因此这里**都问一遍**（任一命中即消费）：
         // 1. 时光机开着 ⇒ 落 [`UiAction::CloseUndoTree`]（**只改界面运行态**，不碰工程）；
         // 2. 导出设置弹窗开着 ⇒ 落窗口回调 `close-export-wav`（**只改视图态**，⛔ 不落盘、
         //    ⛔ 不碰工程）；
         // 3. AI 提案抽屉开着 ⇒ 落窗口回调 `toggle-ai-drawer`（**只改视图态**，⛔ 不拒绝提案、
         //    ⛔ 不碰工程）；`U-11` 的最小修复见这条；
-        // 4. 纵向拖拽在手 ⇒ 落 [`cancel_track_height_drag`]（写回起点高度）；
-        // 5. 混音手势在手 ⇒ 落窗口回调 `mixer-cancel-gesture` → [`cancel_mixer_gesture`]
+        // 4. 总览面板全屏开着 ⇒ 落窗口回调 `song-overview-toggle-fullscreen`
+        //    （**只改视图态**，⛔ 不碰工程；Wang 2026-11-08 19:56 要求）；
+        // 5. 纵向拖拽在手 ⇒ 落 [`cancel_track_height_drag`]（写回起点高度）；
+        // 6. 混音手势在手 ⇒ 落窗口回调 `mixer-cancel-gesture` → [`cancel_mixer_gesture`]
         //    （写回起点音量 / 声相）；
-        // 6. `[UI-NOTE-003]` 卷帘音符移动手势在手 ⇒ 落 [`cancel_note_drag`]
+        // 7. `[UI-NOTE-003]` 卷帘音符移动手势在手 ⇒ 落 [`cancel_note_drag`]
         //    （**丢弃草稿**；拖动期从未写进工程 ⇒ ⛔ 不提交、⛔ 不重投影）；
-        // 7. `[UI-NOTE-003]` 卷帘**力度**手势在手 ⇒ 落 [`cancel_velocity_drag`]
+        // 8. `[UI-NOTE-003]` 卷帘**力度**手势在手 ⇒ 落 [`cancel_velocity_drag`]
         //    （同上：只丢弃草稿；两个卷帘手势互斥，但两条清零各自独立 ⇒ 谁也不会漏收尾）；
-        // 8. 编曲**剪辑平移**手势在手 ⇒ 落 [`cancel_clip_drag`]（同上：只丢弃草稿）。
+        // 9. 编曲**剪辑平移**手势在手 ⇒ 落 [`cancel_clip_drag`]（同上：只丢弃草稿）。
         //
         // 顺序是**决定**，不是巧合：模态 / 面板在最前面，因此"手势还在手"时按 `Escape`
-        // 先关面板（与 `[UI-A11Y-003]` 的模态语义同向）。八条各自独立：关掉时光机
+        // 先关面板（与 `[UI-A11Y-003]` 的模态语义同向）。九条各自独立：关掉时光机
         // **不会**顺带取消手势（用户还要按第二次 `Escape`），没有手势在手也不会把
         // 关闭动作算作"已收尾"。
         //
-        // 八条都没有命中时返回 `false`（照旧放行给焦点系统）—— 与 `Escape` 接线之前
+        // 九条都没有命中时返回 `false`（照旧放行给焦点系统）—— 与 `Escape` 接线之前
         // 的行为逐位相同。这里**没有**新增 `Action` 变体：`Action::Cancel` 本来就在
         // 策略表里（`input.rs` 的 `Key::Escape => Resolution::Action(Action::Cancel)`），
         // 它此前只是没有落地实现（`action_has_implementation` 把它列在未实现里）。
@@ -10193,6 +10195,22 @@ fn apply_action(
             // 仍保留这条裁决）。关抽屉不碰工程、不进撤销栈。
             if ui.get_ai_drawer_open() {
                 ui.invoke_toggle_ai_drawer();
+                return true;
+            }
+            // ⭐ 总览面板全屏（Wang 2026-11-08 19:56 要求）：全屏态时 `Escape` 退出
+            // 全屏（恢复 104 px，折叠态 22 px），非全屏态不消费（放行给后面的手势臂）。
+            // 落点**只能是**界面回调：`on_song_overview_toggle_fullscreen` 是全屏键的
+            // **同一个**实现（`(collapsed, fullscreen)` 的单写者，
+            // `song_overview::wire_song_overview`）⇒ 键盘 / 鼠标 / 屏读器不可能分叉。
+            //
+            // ⚠ **前置**只有"全屏开着"这一格：`Esc` 在非全屏态是直通（不折叠面板、
+            // 不展开面板）—— 折叠键有自己的按钮，`Esc` 不兼任折叠（`elements.rs`
+            // 的注记：一键两义须有裁决；本条的裁决是 `Esc` 只退全屏，不碰折叠）。
+            // 顺序在 AI 抽屉之后、手势之前：面板先于手势收尾（与时光机 / 导出弹窗 /
+            // AI 抽屉同向）；抽屉与全屏不会同开（抽屉在右栏，全屏时右栏已塌掉），
+            // 因此这一臂与上一臂互斥，不存在"一次 `Escape` 关两个面板"。
+            if ui.get_song_overview_fullscreen() {
+                ui.invoke_song_overview_toggle_fullscreen();
                 return true;
             }
             let height = cancel_track_height_drag(ui, undo);

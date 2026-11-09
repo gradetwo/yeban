@@ -21,7 +21,7 @@
 //!
 //! | 判据 | 证的事 |
 //! | :--- | :--- |
-//! | ①（小视口默认折叠 + 展开恢复） | 1440×900 默认折叠：7 个 ID 在场（面板、底部条、4 胶囊、折叠键）、面板高 22、顶缘 = 窗高 − 24 − 22，画布 / 播放头 / 视口框 / 右缘把手不在树里；点折叠键展开后 104 px 与 11 个 ID 全在场 |
+//! | ①（小视口默认折叠 + 展开恢复） | 1440×900 默认折叠：8 个 ID 在场（面板、底部条、4 胶囊、折叠键、全屏键）、面板高 22、顶缘 = 窗高 − 24 − 22，画布 / 播放头 / 视口框 / 右缘把手不在树里；点折叠键展开后 104 px 与 12 个 ID 全在场 |
 //! | ②（真实数据到面板） | 总小节 16、频段颜色 16×8 = 128、标尺首项是段名 "Intro"、段名含 "Chorus"、调号等于 dsp 独立算出的值；UI 数组与活态 view-model 逐位一致；dsp 跨度 3 小节（张力 0–2 有值、3 起垫 0），LUFS 只有第 1 小节有读数（kick 在 1.0–1.5 s，LUFS 取小节中心尾随窗），频段只有第 0 小节第 3 频段高于垫底 |
 //! | ③（点画布第 5 小节 ⇒ 跳转） | 点画布 5.25/16 处（第 5 小节前 1/4）⇒ 引擎 `position_ticks == 5 × 3840`，界面镜面同值，日志末条 `SeekTicks`，恰 +1 条（吸附口径与标尺 `U-07 R1` 一致：就近小节线，平局向后） |
 //! | ④（点在视口框里 ⇒ 照样跳转） | 点落在视口框体内的 2.25/16 处 ⇒ 照样落到第 2 小节起点（框体 ⛔ 不吞轻点；拖动才滚动，见 ⑦） |
@@ -31,11 +31,15 @@
 //! | ⑧（拖框右缘 ⇒ 缩放 + 重投影） | 右缘向右拖 40 px ⇒ `roll-ticks-per-pixel` 从 30 变 34（±1），第 5 条小节线列位跟着变 |
 //! | ⑨（点能量胶囊 ⇒ 隐藏） | 点 `[能量]` 胶囊 ⇒ `show-energy` 变 false、树上 `checked` 变 false；再点 ⇒ 恢复 true |
 //! | ⑩（双击情绪胶囊 ⇒ 独显 / 恢复） | 双击 `[情绪]` ⇒ 只剩情绪层可见；再双击 ⇒ 四层全可见 |
-//! | ⑪（悬停 ⇒ 小节读数） | 无按下移动到第 7 小节上 ⇒ `hover-visible` 真、读数含 "第 7 小节"、LUFS、张力与前两频段 |
+//! | ⑪（悬停 ⇒ 小节读数） | 无按下移动到第 7 小节上 ⇒ `hover-visible` 真、读数含 "第 7 小节"、LUFS、张力与前两频段；悬停到最右侧（13.5/16）⇒ 读数框右缘停在胶囊区左缘 8 px 之前（2026-11-09 全屏 3x 亲验：旧绑定只夹画布右缘，“情绪”胶囊盖住“中频/低频”一段） |
 //! | ⑫（折叠键往返：22 → 104 → 22） | 默认已折叠 22 px；点折叠键 ⇒ 展开 104 px、画布在场；再点 ⇒ 回 22 px |
 //! | ⑬（视觉验收 1:1 + 3x） | 截图非黑、面板区多色；四张 PNG 落盘供执行员肉眼验收（折叠态 1:1、展开态 1:1、展开态最近邻放大 3x、大窗口重布局） |
-//! | ⑭（1920×1080 默认展开） | 全展开档默认展开：11 个 ID 在场、面板 104 px、顶缘 = 1080 − 24 − 104 |
+//! | ⑭（1920×1080 默认展开） | 全展开档默认展开：12 个 ID 在场、面板 104 px、顶缘 = 1080 − 24 − 104 |
 //! | ⑮（刷新回执：缓存命中） | 第二次 `refresh_song_overview`：`cache_hit` 真、`score_only` 假、无失败原文、数据逐位相同 |
+//! | ⑯（全屏键：占满可用区 + 4 项交互照常） | 点全屏键 ⇒ 面板高 = 窗高 − 48 − 24、顶缘 48、画布 = 面板 − 22、底部条 22 贴底、12 个 ID 全在场；点击跳转、拖框滚动、胶囊开关、悬停读数在全屏态下全部可用；悬停到最右侧 ⇒ 读数框右缘停在胶囊区左缘 8 px 之前；再点全屏键 ⇒ 恢复 104 px |
+//! | ⑰（`Esc` 退出全屏） | 全屏态按 `Esc`（真事件源经 `wire_keys` → `Action::Cancel` 级联）⇒ 恢复 104 px；非全屏态再按 `Esc` ⇒ 不折叠、不展开、无任何视图态变化 |
+//! | ⑱（全屏与折叠协调） | 全屏态点折叠键 ⇒ 退出全屏并落到 22 px；折叠态点全屏键 ⇒ 进入全屏且 `collapsed` 清零（两者不同时为真） |
+//! | ⑲（全屏视觉验收 1:1 + 3x） | 全屏态截图非黑、面板区多色；四张 PNG 落盘供执行员肉眼验收（全屏态 1:1 整幅 + 3x 左上 controls + 3x 右上胶囊读数 + 3x 底部条带；全屏 3x 整图超 10 MiB 写不进产物口，见测试内注）；读数框与胶囊无重叠另有数值断言（右缘在胶囊区左缘 8 px 之前） |
 //!
 //! ## 边界（不许当成已证）
 //!
@@ -49,6 +53,8 @@
 //! - 5 张 Linux golden 会因此面板确定性过期（面板占 104 px + 控制台区上移）：
 //!   本轮走手动门 `YEBAN_WRITE_GOLDEN=1` 重录（入口 `real_ui_tier1.rs`），基线既有
 //!   漂移 1.02% 已记进提交信息。
+//! - 全屏键另加 1 处默认帧像素变化（左上多一个 86 px 全屏键）：同一批 5 张 golden
+//!   一并重录，⛔ 不在本片本地重录（Wang 2026-11-09 令：批量合入后由父 agent 统一重录）。
 //!
 //! ## 平台约束
 //!
@@ -70,7 +76,9 @@ use yeban_dsp::song_overview::{NO_LOUDNESS_READING_LUFS, analyze_song_overview};
 use yeban_engine::ring::TransportCommand;
 use yeban_model::song_overview::score_input_from_project;
 use yeban_ui_test_port::render::{LivePort, write_artifact};
-use yeban_ui_test_port::{Permission, PointerButton, Rect, Rgb8Image, Size, UiTestPort as _};
+use yeban_ui_test_port::{
+    KeyCode, Permission, PointerButton, Rect, Rgb8Image, Size, UiTestPort as _,
+};
 
 /// 与其余 Tier-1 判据同款。
 const WINDOW: Size = Size::new(1440, 900);
@@ -94,7 +102,11 @@ const LENS: &str = "song-overview-viewport";
 const RESIZE: &str = "song-overview-viewport-resize";
 const ENERGY_PILL: &str = "song-overview-layer-energy-pill";
 const TENSION_PILL: &str = "song-overview-layer-tension-pill";
+const READOUT: &str = "song-overview-hover-readout";
 const COLLAPSE: &str = "song-overview-collapse-button";
+const FULLSCREEN: &str = "song-overview-fullscreen-button";
+/// 顶栏高 48 px（`app.slint` 的 Transport 固定行）。
+const TRANSPORT_HEIGHT: u32 = 48;
 
 /// 生产形状的夹具：真引擎（`ProductionLoop`）＋ 真活窗口 ＋ **产品那一个**接线函数。
 struct Rig {
@@ -141,6 +153,18 @@ impl Rig {
             Rc::clone(&live_view),
             Some(Rc::clone(&undo)),
         );
+        // ⭐ 键盘层也按产品装配接上（`main.rs` 的同一行）：`Esc` 经 `wire_keys` →
+        // `Action::Cancel` 级联，全屏态才消费（⑰）。不接它，`dispatch_key_press`
+        // 到不了 `apply_action`，Esc 测试只能测到回调、测不到真链路。
+        // `InputContext` 是新建的（与 `main.rs` 同款）；`project.clone()` 须在
+        // `project` 移进结构体之前克隆。
+        host::wire_keys(
+            port.ui(),
+            Rc::new(RefCell::new(yeban_app::input::InputContext::new())),
+            Some(Rc::clone(&undo)),
+            Some(Rc::clone(&engine)),
+            Some(Rc::new(project.clone())),
+        );
         host::apply_transport(port.ui(), engine.borrow().transport());
 
         let mut rig = Self {
@@ -176,12 +200,103 @@ impl Rig {
         self.refresh();
     }
 
+    /// 点一次全屏键进入全屏（折叠态下点 ⇒ 展开 + 全屏；展开态下点 ⇒ 全屏）。
+    fn enter_fullscreen(&mut self) {
+        self.click_center(FULLSCREEN);
+        self.refresh();
+    }
+
+    /// 断言面板处于全屏态：12 个 ID 在场、面板占满主窗口可用区（顶栏 48 之下、
+    /// 状态栏 24 之上）、画布 = 面板 − 22、底部条 22 贴底。
+    ///
+    /// 面板高 = 窗高 − 48 − 24：中段（编排/卷帘）与控制台的 `vertical-stretch`
+    /// 归零 + 控制台 `min-height` 归零 + 分割条 min/max 归零（`visible: false`
+    /// 在 Slint 1.18 布局里**不让空间**，实测：只加 `visible` 时面板高 792 =
+    /// 900−48−24−32−4，控制台 32 px 与分割条 4 px 各保 min-height；三处归零
+    /// 后 828。本条就是那次实测的钉子）。
+    fn assert_panel_fullscreen(&self, width: u32, height: u32) {
+        assert!(
+            self.ui().get_song_overview_fullscreen(),
+            "全屏态 `song-overview-fullscreen` 必须是 true"
+        );
+        assert!(
+            !self.ui().get_song_overview_collapsed(),
+            "全屏态 `collapsed` 必须是 false（进入全屏即展开，两者不同时为真）"
+        );
+        let tree = self.port.tree();
+        for id in [
+            "song-overview-panel",
+            "song-overview-canvas",
+            "song-overview-playhead",
+            "song-overview-viewport",
+            "song-overview-viewport-resize",
+            "song-overview-density-strip",
+            "song-overview-layer-tension-pill",
+            "song-overview-layer-energy-pill",
+            "song-overview-layer-bands-pill",
+            "song-overview-layer-density-pill",
+            "song-overview-collapse-button",
+            "song-overview-fullscreen-button",
+        ] {
+            assert!(
+                tree.contains(id),
+                "全屏态控件树里必须有语义 ID `{id}`（DoD §3.6 稳定 ID）"
+            );
+        }
+
+        let panel = self.bounds(PANEL);
+        let expected_height = height
+            .checked_sub(TRANSPORT_HEIGHT)
+            .and_then(|h| h.checked_sub(STATUS_BAR_HEIGHT))
+            .expect("窗高必须大于 48 + 24");
+        assert_eq!(
+            panel.height, expected_height,
+            "全屏态面板高必须是窗高 − 顶栏 48 − 状态栏 24（实得 {}，窗高 {height}）",
+            panel.height
+        );
+        assert_eq!(
+            panel.y,
+            i32::try_from(TRANSPORT_HEIGHT).expect("顶栏高在 i32 内"),
+            "全屏态面板顶缘 = 顶栏 48（中段已塌掉）"
+        );
+        assert_eq!(panel.x, 0, "面板从窗口左缘起");
+        assert_eq!(
+            panel.width, width,
+            "面板占满窗口宽（全屏时 `time-origin-x` 与 `right-reserve` 归零）"
+        );
+
+        let canvas = self.bounds(CANVAS);
+        assert_eq!(
+            canvas.height,
+            panel.height - STRIP_HEIGHT,
+            "全屏态主画布必须是面板高 − 22（实得 {}，面板 {}）",
+            canvas.height,
+            panel.height
+        );
+        assert_eq!(canvas.y, panel.y, "画布顶缘 = 面板顶缘");
+        assert_eq!(
+            canvas.x, 0,
+            "全屏态画布左缘 = 面板左缘（`time-origin-x` 归零）"
+        );
+        assert_eq!(
+            canvas.width, width,
+            "全屏态画布占满窗口宽（`right-reserve` 归零）"
+        );
+        let strip = self.bounds("song-overview-density-strip");
+        assert_eq!(strip.height, STRIP_HEIGHT, "全屏态底部条仍是 22 px");
+        assert_eq!(
+            strip.y,
+            panel.y + i32::try_from(canvas.height).expect("画布高在 i32 内"),
+            "全屏态底部条顶缘 = 面板顶缘 + 画布高（贴面板底缘）"
+        );
+    }
+
     /// 活态 view-model 的一份快照（`wire_song_overview` 算出的真实数据）。
     fn live_data(&self) -> SongOverview {
         self._state.borrow().data.clone()
     }
 
-    /// 断言面板处于展开态：11 个 ID 在场、面板 104 px、画布 82、底部条 22。
+    /// 断言面板处于展开态：12 个 ID 在场、面板 104 px、画布 82、底部条 22。
     fn assert_panel_expanded(&self, width: u32, height: u32) {
         let tree = self.port.tree();
         for id in [
@@ -196,6 +311,7 @@ impl Rig {
             "song-overview-layer-bands-pill",
             "song-overview-layer-density-pill",
             "song-overview-collapse-button",
+            "song-overview-fullscreen-button",
         ] {
             assert!(
                 tree.contains(id),
@@ -247,6 +363,21 @@ impl Rig {
             .expect("控件树里必须有该语义 ID")
             .bounds
             .expect("该元素必须有几何包围盒")
+    }
+
+    /// 悬停读数框右缘必须停在胶囊区左缘 8 px 之前（两态同修：2026-11-09 全屏
+    /// 3x 亲验，悬停右侧时旧绑定只夹到画布右缘，“情绪”胶囊盖住读数“中频/低频”
+    /// 一段；`.slint` 的 x 绑定现夹两道，见该处注释）。
+    fn assert_readout_clear_of_pills(&mut self) {
+        self.refresh();
+        let readout = self.bounds(READOUT);
+        let tension_pill = self.bounds(TENSION_PILL);
+        let readout_right = readout.x + i32::try_from(readout.width).expect("读数框宽在 i32 内");
+        assert!(
+            readout_right + 8 <= tension_pill.x,
+            "悬停读数右缘必须在胶囊区左缘 8 px 之前（读数右缘 {readout_right}，胶囊左缘 {}）",
+            tension_pill.x,
+        );
     }
 
     /// 引擎的走带位置（**事实源**，不是界面镜面）。
@@ -390,10 +521,11 @@ fn panel_defaults_to_collapsed_22px_on_small_viewports() {
         "song-overview-layer-bands-pill",
         "song-overview-layer-density-pill",
         "song-overview-collapse-button",
+        "song-overview-fullscreen-button",
     ] {
         assert!(
             tree.contains(id),
-            "折叠态控件树里必须有语义 ID `{id}`（底部条 + 胶囊 + 折叠键不折叠）"
+            "折叠态控件树里必须有语义 ID `{id}`（底部条 + 胶囊 + 折叠键 + 全屏键不折叠）"
         );
     }
     for id in [
@@ -432,7 +564,7 @@ fn panel_defaults_to_collapsed_22px_on_small_viewports() {
         "折叠态底部条顶缘 = 面板顶缘（画布已隐藏）"
     );
 
-    // 点折叠键 ⇒ 展开，恢复 104 px 与 11 个 ID。
+    // 点折叠键 ⇒ 展开，恢复 104 px 与 12 个 ID。
     rig.expand();
     rig.assert_panel_expanded(WINDOW.width, WINDOW.height);
 }
@@ -920,6 +1052,22 @@ fn hovering_the_canvas_shows_the_bar_readout() {
         rig.port.tree().contains("song-overview-hover-readout"),
         "悬停后提示框必须出现在控件树里"
     );
+
+    // 右缘夹紧（展开态也覆盖）：悬停到最右侧（13.5/16，第 14 小节）⇒ 读数框
+    // 右缘必须停在胶囊区左缘 8 px 之前，不得伸进胶囊区之下。
+    let canvas = rig.bounds(CANVAS);
+    rig.port
+        .dispatch_pointer_move(
+            f64::from(canvas.x) + f64::from(canvas.width) * (13.5 / 16.0),
+            f64::from(canvas.y) + 41.0,
+        )
+        .expect("悬停移动必须送达");
+    let text = rig.ui().get_song_overview_hover_text().to_string();
+    assert!(
+        text.contains("第 14 小节"),
+        "悬停到最右侧 ⇒ 读数必须跟到第 14 小节（实得 \"{text}\"）"
+    );
+    rig.assert_readout_clear_of_pills();
 }
 
 /// ⑫：折叠键往返 —— 默认已折叠 22 px，点 ⇒ 展开 104 px，再点 ⇒ 回 22 px。
@@ -1039,7 +1187,7 @@ fn visual_acceptance_1x_and_3x() {
     println!("大窗口面板截图: {}", path_big.display());
 }
 
-/// ⑭：1920×1080（全展开档）默认展开：11 个 ID 在场、面板 104 px。
+/// ⑭：1920×1080（全展开档）默认展开：12 个 ID 在场、面板 104 px。
 #[test]
 fn panel_defaults_to_expanded_104px_on_full_hd() {
     let rig = Rig::new_at(Size::new(1920, 1080));
@@ -1077,7 +1225,7 @@ fn second_refresh_hits_the_cache_and_keeps_real_data() {
 // 第四轮补完（2026-11-08）：[PATCH UI-HOVER-01] / [PATCH UI-A11Y-005]
 // ---------------------------------------------------------------------------
 
-/// ⑬ [PATCH UI-HOVER-01]：指针移出面板后悬停读数框必须离开控件树。
+/// ⑯ [PATCH UI-HOVER-01]：指针移出面板后悬停读数框必须离开控件树。
 ///
 /// 修复前 `hover-visible` 只有 `true` 写者（`src/song_overview.rs` 的
 /// `on_song_overview_hover`），Rust 侧没有清除路径 ⇒ 300×30 的读数框一旦出现就
@@ -1110,7 +1258,7 @@ fn hover_readout_leaves_the_tree_when_the_pointer_exits_the_panel() {
     );
 }
 
-/// ⑭ [PATCH UI-A11Y-005]：折叠键的状态、缩放把手的档位必须走无障碍值通道。
+/// ⑰ [PATCH UI-A11Y-005]：折叠键的状态、缩放把手的档位必须走无障碍值通道。
 #[test]
 fn the_two_controls_expose_their_state_through_the_accessibility_value_channel() {
     let rig = Rig::new();
@@ -1134,7 +1282,7 @@ fn the_two_controls_expose_their_state_through_the_accessibility_value_channel()
     );
 }
 
-/// ⑮ 声明面防回潮：退出条件、同源绑定、静态名字、通道计数逐字钉住。
+/// ⑱ 声明面防回潮：退出条件、同源绑定、静态名字、通道计数逐字钉住。
 #[test]
 fn the_declarations_stay_honest_and_the_hover_exit_condition_is_pinned() {
     let source = include_str!("../ui/workspace/song_overview_panel.slint");
@@ -1163,4 +1311,308 @@ fn the_declarations_stay_honest_and_the_hover_exit_condition_is_pinned() {
             && source.contains("accessible-id: \"song-overview-viewport-resize\""),
         "两个语义 ID 不许退化"
     );
+}
+
+/// ⑲：全屏键 ⇒ 面板占满主窗口可用区，4 项交互在全屏态下全部可用；再点全屏键 ⇒ 恢复 104 px。
+///
+/// 全屏态框宽分数 = 1440×30/61440 = 0.703（`.slint` 的 `viewport-width-frac`
+/// 公式）：悬停点取 13.5/16（第 14 小节，框外）；点击跳转取 5.25/16（框内也
+/// 跳转，见 ④）。拖框滚动的期望值按实测画布宽算（⑦ 的公式换宽：100/画布宽
+/// ×61440÷30），⛔ 不写死 142 —— 画布宽若不是 1440，期望值跟着错才是诚实的。
+#[test]
+fn fullscreen_button_expands_the_panel_and_keeps_all_four_interactions() {
+    let mut rig = Rig::new_at(WINDOW);
+    assert_eq!(
+        rig.bounds(PANEL).height,
+        22,
+        "前提：1440×900 默认折叠 22 px（从折叠态进全屏，覆盖 `collapsed` 清零那条路）"
+    );
+    rig.enter_fullscreen();
+    rig.assert_panel_fullscreen(WINDOW.width, WINDOW.height);
+
+    // 交互 1 —— 点击跳转：点画布 5.25/16 处 ⇒ 第 5 小节起点（框内也跳转，见 ④）。
+    let journal_before = rig.journal_len();
+    rig.click_canvas_fraction(5.25 / 16.0);
+    assert_eq!(
+        rig.position(),
+        5 * BAR_TICKS,
+        "全屏态点画布 5.25/16 ⇒ 走带必须落到第 5 小节起点（实得 {} tick）",
+        rig.position()
+    );
+    assert_eq!(
+        rig.journal_len(),
+        journal_before + 1,
+        "全屏态点击跳转必须恰 +1 条日志"
+    );
+    assert_eq!(
+        rig.last_command(),
+        Some(TransportCommand::SeekTicks(5 * BAR_TICKS)),
+        "全屏态点击跳转的末条命令必须是 `SeekTicks`"
+    );
+
+    // 交互 2 —— 拖框体滚动：框体向右拖 100 px ⇒ 滚动按画布宽换算，走带不动。
+    let canvas_w = f64::from(rig.bounds(CANVAS).width);
+    let lens = rig.bounds(LENS);
+    let start_x = f64::from(lens.x) + f64::from(lens.width) / 2.0;
+    let start_y = f64::from(lens.y) + f64::from(lens.height) / 2.0;
+    let scroll_before = rig.ui().get_roll_scroll_x();
+    rig.port
+        .dispatch_pointer_down(
+            LENS,
+            f64::from(lens.width) / 2.0,
+            f64::from(lens.height) / 2.0,
+            PointerButton::Left,
+        )
+        .expect("全屏态框体必须可按下");
+    for step in 1..=4 {
+        let fraction = f64::from(step) / 4.0;
+        rig.port
+            .dispatch_pointer_move(start_x + 100.0 * fraction, start_y)
+            .expect("全屏态拖动必须送达");
+    }
+    rig.port
+        .dispatch_pointer_up(PointerButton::Left)
+        .expect("释放必须送达");
+    let expected_scroll = 100.0 / canvas_w * 61440.0 / 30.0;
+    let scroll_after = rig.ui().get_roll_scroll_x();
+    let scroll_delta = f64::from(scroll_after - scroll_before);
+    assert!(
+        (scroll_delta - expected_scroll).abs() <= 3.0,
+        "全屏态框体向右拖 100 px ⇒ 滚动必须是约 {expected_scroll:.1} px（100/{canvas_w:.0}×61440÷30，实得增量 {scroll_delta:.1} px）",
+    );
+    assert_eq!(
+        rig.position(),
+        5 * BAR_TICKS,
+        "全屏态拖动框体 ⛔ 不跳转：走带位置必须仍是第 5 小节起点"
+    );
+    rig.refresh();
+    let lens_after = rig.bounds(LENS);
+    assert!(
+        (f64::from(lens_after.x) - f64::from(lens.x) - 100.0).abs() <= 2.0,
+        "全屏态框体本身必须跟着向右移 100 px（实得左缘 {}，原左缘 {}）",
+        lens_after.x,
+        lens.x
+    );
+
+    // 交互 3 —— 图层胶囊：点 `[能量]` ⇒ 隐藏，再点 ⇒ 恢复。
+    assert!(
+        rig.ui().get_song_overview_show_energy(),
+        "前提：全屏态能量层初始可见"
+    );
+    rig.click_center(ENERGY_PILL);
+    assert!(
+        !rig.ui().get_song_overview_show_energy(),
+        "全屏态点一次 `[能量]` ⇒ 能量层必须隐藏"
+    );
+    rig.click_center(ENERGY_PILL);
+    assert!(
+        rig.ui().get_song_overview_show_energy(),
+        "全屏态再点 `[能量]` ⇒ 能量层必须恢复"
+    );
+
+    // 交互 4 —— 悬停读数：无按下移动到第 14 小节上（13.5/16，框外）⇒ 读数更新。
+    // ⚠ 这里**不**断言"悬停前读数不可见"：前三项交互已让指针在面板上移动过，
+    // `hover-visible` 没有离开清除（见 `Rig::new` 的注）⇒ 到这一步读数早已锁住
+    // 可见；"不可见 → 可见"的过渡由 ⑪ 从干净台覆盖。本条只证全屏态下读数能跟到
+    // 正确小节（分数换算不依赖像素对齐）。
+    let canvas = rig.bounds(CANVAS);
+    rig.port
+        .dispatch_pointer_move(
+            f64::from(canvas.x) + f64::from(canvas.width) * (13.5 / 16.0),
+            f64::from(canvas.y) + 41.0,
+        )
+        .expect("全屏态悬停移动必须送达");
+    assert!(
+        rig.ui().get_song_overview_hover_visible(),
+        "全屏态无按下移动到画布上 ⇒ 悬停读数必须出现"
+    );
+    let text = rig.ui().get_song_overview_hover_text().to_string();
+    assert!(
+        text.contains("第 14 小节"),
+        "全屏态读数必须含当前小节号（实得 \"{text}\"）"
+    );
+    assert!(
+        text.contains("LUFS"),
+        "全屏态读数必须含短时 LUFS（实得 \"{text}\"）"
+    );
+
+    // 右缘夹紧（全屏态正是亲验出问题的那一处）：悬停在 13.5/16 ⇒ 读数框右缘
+    // 必须停在胶囊区左缘 8 px 之前，不得伸进胶囊区之下。
+    rig.assert_readout_clear_of_pills();
+
+    // 退出全屏：再点全屏键 ⇒ 恢复 104 px 展开态（`collapsed` 仍为 false）。
+    rig.click_center(FULLSCREEN);
+    rig.refresh();
+    assert!(
+        !rig.ui().get_song_overview_fullscreen(),
+        "再点全屏键 ⇒ `fullscreen` 必须回 false"
+    );
+    rig.assert_panel_expanded(WINDOW.width, WINDOW.height);
+}
+
+/// ⑳：`Esc` 退出全屏 —— 真事件源经 `wire_keys` → `Action::Cancel` 级联；
+/// 非全屏态再按 `Esc` ⇒ 不折叠、不展开、无任何视图态变化。
+#[test]
+fn escape_exits_fullscreen_and_passes_through_when_not_fullscreen() {
+    let mut rig = Rig::new_at(WINDOW);
+    rig.enter_fullscreen();
+    rig.assert_panel_fullscreen(WINDOW.width, WINDOW.height);
+
+    rig.port
+        .dispatch_key_press(KeyCode::Escape)
+        .expect("`Esc` 必须落到真实窗口（Interactive 档）");
+    rig.refresh();
+    assert!(
+        !rig.ui().get_song_overview_fullscreen(),
+        "全屏态按 `Esc` ⇒ `fullscreen` 必须回 false（`Action::Cancel` 级联的第 4 臂）"
+    );
+    assert!(
+        !rig.ui().get_song_overview_collapsed(),
+        "`Esc` 只退全屏、⛔ 不碰折叠：退出后 `collapsed` 必须是 false"
+    );
+    rig.assert_panel_expanded(WINDOW.width, WINDOW.height);
+
+    // 落空的 `Esc`：面板既不折叠也不展开，视图态一位不动。
+    let panel_before = rig.bounds(PANEL);
+    rig.port
+        .dispatch_key_press(KeyCode::Escape)
+        .expect("落空的 `Esc` 也必须被窗口接受（放行给焦点系统）");
+    rig.refresh();
+    assert!(
+        !rig.ui().get_song_overview_fullscreen(),
+        "非全屏态按 `Esc` ⇒ `fullscreen` 必须仍是 false"
+    );
+    assert!(
+        !rig.ui().get_song_overview_collapsed(),
+        "非全屏态按 `Esc` ⇒ `collapsed` 必须仍是 false（`Esc` 不兼任折叠）"
+    );
+    let panel_after = rig.bounds(PANEL);
+    assert_eq!(
+        panel_after.height, panel_before.height,
+        "落空的 `Esc` 不许改面板高（实得 {}，原 {}）",
+        panel_after.height, panel_before.height
+    );
+}
+
+/// ㉑：全屏与折叠协调 —— 全屏态点折叠键 ⇒ 退出全屏并落到 22 px；
+/// 折叠态点全屏键 ⇒ 进入全屏且 `collapsed` 清零（两者不同时为真）。
+#[test]
+fn collapse_while_fullscreen_folds_to_22px_and_fullscreen_from_collapsed_expands() {
+    let mut rig = Rig::new_at(WINDOW);
+    rig.enter_fullscreen();
+    rig.assert_panel_fullscreen(WINDOW.width, WINDOW.height);
+
+    rig.click_center(COLLAPSE);
+    rig.refresh();
+    assert!(
+        !rig.ui().get_song_overview_fullscreen(),
+        "全屏态点折叠键 ⇒ `fullscreen` 必须回 false"
+    );
+    assert!(
+        rig.ui().get_song_overview_collapsed(),
+        "全屏态点折叠键 ⇒ `collapsed` 必须是 true"
+    );
+    let panel = rig.bounds(PANEL);
+    assert_eq!(panel.height, 22, "全屏态点折叠键 ⇒ 面板必须落到 22 px");
+    assert!(!rig.port.tree().contains(CANVAS), "折叠后画布必须离开树");
+
+    rig.click_center(FULLSCREEN);
+    rig.refresh();
+    assert!(
+        rig.ui().get_song_overview_fullscreen(),
+        "折叠态点全屏键 ⇒ `fullscreen` 必须是 true"
+    );
+    assert!(
+        !rig.ui().get_song_overview_collapsed(),
+        "折叠态点全屏键 ⇒ `collapsed` 必须清零（两者不同时为真）"
+    );
+    rig.assert_panel_fullscreen(WINDOW.width, WINDOW.height);
+}
+
+/// ㉒：全屏视觉验收 1:1 + 3x —— 截图非黑、面板区多色，PNG 落盘供肉眼验收。
+///
+/// 3x 的做法与 ⑬ 同款：1:1 面板区最近邻放大（像素一位不动，只放大看）。
+/// 全屏态面板区 = 窗口 y 48 起、828 行（顶栏之下、状态栏之上）；悬停到第 14 小节
+/// 上，让提示框也进 1:1 截图（验收读数在全屏大画布上的外观）。
+/// ⚠ 全屏 3x **整图** 4320×2484 写不进 `write_artifact`（32,197,647 字节 >
+/// 10 MiB 上限，stored deflate 不压缩，AGENTS.md §2 红线 9）⇒ 3x 只写三张
+/// 局部裁剪（左上 controls、右上胶囊 + 读数、底部条带），各在上限内；整幅只留 1:1。
+#[test]
+fn fullscreen_visual_acceptance_1x_and_3x() {
+    let mut rig = Rig::new_at(WINDOW);
+    rig.enter_fullscreen();
+    rig.assert_panel_fullscreen(WINDOW.width, WINDOW.height);
+
+    let canvas = rig.bounds(CANVAS);
+    rig.port
+        .dispatch_pointer_move(
+            f64::from(canvas.x) + f64::from(canvas.width) * (13.5 / 16.0),
+            f64::from(canvas.y) + 41.0,
+        )
+        .expect("悬停移动必须送达");
+
+    // 右缘夹紧的数值断言（与截图的肉眼验收同一处：读数框右缘停在胶囊区左缘
+    // 8 px 之前，读数全文完整可见）。
+    rig.assert_readout_clear_of_pills();
+
+    let frame = rig.port.window().capture().expect("全屏态截图必须能取");
+    assert_eq!(frame.width(), WINDOW.width, "全屏态帧宽必须是 1440");
+    assert_eq!(frame.height(), WINDOW.height, "全屏态帧高必须是 900");
+    assert!(!frame.is_all_black(), "全屏态帧 ⛔ 不能全黑");
+    let panel_1x = Rig::crop_panel(
+        &frame,
+        0,
+        TRANSPORT_HEIGHT,
+        WINDOW.width,
+        WINDOW.height - TRANSPORT_HEIGHT - STATUS_BAR_HEIGHT,
+    );
+    assert_eq!(panel_1x.width(), 1440, "全屏 1:1 面板宽必须是 1440");
+    assert_eq!(panel_1x.height(), 828, "全屏 1:1 面板高必须是 828");
+    assert!(
+        panel_1x.distinct_color_count() > 16,
+        "全屏 1:1 面板区必须多色（热力图 + 能量 + 张力 + 胶囊 + 全屏键，实得 {} 色）",
+        panel_1x.distinct_color_count()
+    );
+    let path_1x = write_artifact("song-overview-panel-fullscreen-1x", &panel_1x)
+        .expect("全屏 1:1 面板截图必须能落盘");
+    println!("全屏 1:1 面板截图: {}", path_1x.display());
+
+    // 3x 左上：折叠键 + 全屏键 + 左半热力图（720×276 ⇒ 2160×828，约 5.4 MB）。
+    let top_left_3x = Rig::upscale_3x(&Rig::crop_panel(&panel_1x, 0, 0, 720, 276));
+    assert_eq!(top_left_3x.width(), 2160, "全屏 3x 左上宽必须是 2160");
+    assert_eq!(top_left_3x.height(), 828, "全屏 3x 左上高必须是 828");
+    assert!(
+        top_left_3x.distinct_color_count() > 16,
+        "全屏 3x 左上必须多色（实得 {} 色）",
+        top_left_3x.distinct_color_count()
+    );
+    let path_tl = write_artifact("song-overview-panel-fullscreen-3x-topleft", &top_left_3x)
+        .expect("全屏 3x 左上截图必须能落盘");
+    println!("全屏 3x 左上截图: {}", path_tl.display());
+
+    // 3x 右上：图层胶囊 + 悬停读数 + 右半热力图（720×276 ⇒ 2160×828，约 5.4 MB）。
+    let top_right_3x = Rig::upscale_3x(&Rig::crop_panel(&panel_1x, 720, 0, 720, 276));
+    assert_eq!(top_right_3x.width(), 2160, "全屏 3x 右上宽必须是 2160");
+    assert_eq!(top_right_3x.height(), 828, "全屏 3x 右上高必须是 828");
+    assert!(
+        top_right_3x.distinct_color_count() > 16,
+        "全屏 3x 右上必须多色（实得 {} 色）",
+        top_right_3x.distinct_color_count()
+    );
+    let path_tr = write_artifact("song-overview-panel-fullscreen-3x-topright", &top_right_3x)
+        .expect("全屏 3x 右上截图必须能落盘");
+    println!("全屏 3x 右上截图: {}", path_tr.display());
+
+    // 3x 底部：疏密条码 + 小节标尺（1440×66 ⇒ 4320×198，约 2.6 MB）。
+    let bottom_3x = Rig::upscale_3x(&Rig::crop_panel(&panel_1x, 0, 762, 1440, 66));
+    assert_eq!(bottom_3x.width(), 4320, "全屏 3x 底部宽必须是 4320");
+    assert_eq!(bottom_3x.height(), 198, "全屏 3x 底部高必须是 198");
+    assert!(
+        bottom_3x.distinct_color_count() > 4,
+        "全屏 3x 底部必须多色（实得 {} 色）",
+        bottom_3x.distinct_color_count()
+    );
+    let path_bottom = write_artifact("song-overview-panel-fullscreen-3x-bottom", &bottom_3x)
+        .expect("全屏 3x 底部截图必须能落盘");
+    println!("全屏 3x 底部截图: {}", path_bottom.display());
 }

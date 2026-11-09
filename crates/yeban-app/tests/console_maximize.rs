@@ -187,7 +187,7 @@ fn a_real_click_on_the_console_maximize_button_maximizes_the_console() {
         "`ConsoleTabs` 实例必须拿到同一份视图态（按钮的 `accessible-checked` 读它）"
     );
     assert!(
-        app.contains("vertical-stretch: root.console-maximized ? 0 : Tokens.workspace-stretch;"),
+        app.contains("vertical-stretch: (root.console-maximized || root.song-overview-fullscreen) ? 0 : Tokens.workspace-stretch;"),
         "中段的弹性高度必须绑定到 `console-maximized`（不是死值）"
     );
 

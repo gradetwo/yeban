@@ -755,6 +755,19 @@ export component MainWindow inherits Window {
     /// 与 `compact` 同款：Rust 写一次即覆盖本实例的绑定（Slint 语义）⇒ 用户按
     /// 折叠键后跟 toggle 走，窗口再拉宽/拉窄不再自动翻（默认折叠只是默认值）。
     in-out property <bool> song-overview-collapsed: self.width < 1920px || self.height < 1080px;
+    /// 总览面板是否全屏（Wang 2026-11-08 19:56 要求）：占满主窗口可用区。
+    ///
+    /// 默认 `false`。与 `song-overview-collapsed` 是协调的一对（见
+    /// `song_overview::wire_song_overview`）：进入全屏即展开，折叠即退出全屏。
+    /// 全屏时中段（编排/卷帘）与控制台的 `vertical-stretch` 归零 + `visible: false`
+    ///（`console-maximized` 同款伸缩口径），面板拿 `vertical-stretch: 1` 与放开的
+    /// `max-height` 吃掉全部弹性高度；顶栏 48 px 与状态栏 24 px 不动。
+    ///
+    /// Logic Pro 对照（Wang 立规：不确定处抄 Logic）：Logic 的编辑器全屏是窗口级
+    /// 最大化 + 按钮退出、退出恢复原窗口态 —— 本面板抄的是"退出恢复原态"这一点
+    ///（退出全屏恢复 104 px，折叠态 22 px）；`Esc` 退出是本仓库 `Action::Cancel`
+    /// 级联的既有口径（面板先于手势收尾），Logic 里 `Esc` 不退全屏，直说。
+    in-out property <bool> song-overview-fullscreen: false;
     in-out property <bool> song-overview-show-tension: true;
     in-out property <bool> song-overview-show-energy: true;
     in-out property <bool> song-overview-show-bands: true;
@@ -776,6 +789,9 @@ export component MainWindow inherits Window {
     callback song-overview-viewport-zoom(int);
     /// 折叠键 ⇒ 翻转 `song-overview-collapsed`。
     callback song-overview-toggle-collapsed();
+    /// 全屏键 / `Esc`（`Action::Cancel` 级联）⇒ 翻转 `song-overview-fullscreen`。
+    /// `Esc` 只在全屏态才消费（见 `host::apply_action` 的 Cancel 臂）。
+    callback song-overview-toggle-fullscreen();
     callback open-musical-pr();
     callback accept-ai-proposal();
     callback reject-ai-proposal();
@@ -1624,7 +1640,12 @@ export component MainWindow inherits Window {
         HorizontalLayout {
             // ⭐ 控制台最大化：让出**全部**弹性高度（stretch 0 ⇒ 只剩首选高度，
             // 工作区画布按设计缩到 0）⇒ 剩下的都给控制台。还原 ⇒ 回到 3 : 2。
-            vertical-stretch: root.console-maximized ? 0 : Tokens.workspace-stretch;
+            // ⭐ 总览面板全屏：同款口径，`vertical-stretch` 归零 **且** `visible: false`
+            //（中段无 min-height 钳制，伸缩归零即塌到 0；`visible: false` 只停渲染
+            // 与命中测试，在 Slint 1.18 布局里**不让空间** —— 空间靠伸缩/min-height
+            // 归零腾，见分割条与控制台两处的实测注）。
+            vertical-stretch: (root.console-maximized || root.song-overview-fullscreen) ? 0 : Tokens.workspace-stretch;
+            visible: !root.song-overview-fullscreen;
 
             // 240px 左资源栏 (compact 时 36px 图标导轨)
             sidebar := Sidebar {
@@ -1893,9 +1914,13 @@ export component MainWindow inherits Window {
         // ---------------------------------------------------------- 4px splitter
         // [UI-GRID-002] 拖拽范围硬限 220–600px（钳位在宿主 = 唯一写者）。指针状态机与
         // 卷帘拖动同款（§6.1）：down 记按下点、move 报目标高度、up/cancel 收手。
+        // 总览面板全屏时归零（`visible: false` 在 Slint 1.18 布局里**不让空间**，
+        // 实测：只加 `visible` 面板高 792 = 900−48−24−32−4；min/max 归零后 828。
+        // 见 `tests/song_overview_panel.rs` ⑯ 的钉子）。
         Rectangle {
-            min-height: Tokens.splitter-height;
-            max-height: Tokens.splitter-height;
+            min-height: root.song-overview-fullscreen ? 0px : Tokens.splitter-height;
+            max-height: root.song-overview-fullscreen ? 0px : Tokens.splitter-height;
+            visible: !root.song-overview-fullscreen;
             background: Tokens.line-strong;
 
             accessible-role: slider;
@@ -1950,7 +1975,15 @@ export component MainWindow inherits Window {
         // 须由素材池/设备链的归属线改窄档座位或判据清单，本轮不越权改动。
         // （折叠面板已把 82 px 还给中段：素材池第一行已回树，只剩第二行。）
         console-tabs := ConsoleTabs {
-            vertical-stretch: Tokens.console-stretch;
+            // 总览面板全屏：`vertical-stretch` 归零 **且** `min-height` 归零 **且**
+            // `visible: false` —— 三者缺一不可：只归零伸缩腾不出控制台的 32 px
+            // 首选高度（`console_tabs.slint:288` 的 `min-height: 32px`），只隐藏
+            // 在 Slint 1.18 布局里不让空间（实测 792 vs 828）；实例上的 `min-height`
+            // 赋值优先于组件内默认值。32 px 在此与组件内同值（该组件不认 fullscreen，
+            // 只能在实例上覆盖；改组件内数值时须同步改这里）。
+            vertical-stretch: root.song-overview-fullscreen ? 0 : Tokens.console-stretch;
+            min-height: root.song-overview-fullscreen ? 0px : 32px;
+            visible: !root.song-overview-fullscreen;
             active-tab: root.console-tab;
             console-maximized: root.console-maximized;
             note-ulids: root.note-ulids;
@@ -2300,9 +2333,14 @@ export component MainWindow inherits Window {
         // `song-overview-collapsed` 的表达式绑定（非全展开档默认 22 px）。
         // 画布左缘 = 左侧资源栏宽 + 168 px 轨道头列（与编排视图时间轴同一起点），
         // 右缘留出右 AI 协作栏宽（compact 时为 0）。
+        // 全屏（Wang 2026-11-08 19:56 要求）：中段与控制台塌掉后，面板拿
+        // `vertical-stretch: 1` 吃掉全部弹性高度（顶栏 48 px 与状态栏 24 px 不动）；
+        // 左侧资源栏与右 AI 栏随中段一起隐藏，时间对齐无意义 ⇒ `time-origin-x` 与
+        // `right-reserve` 强制归零，画布占满整宽。
         SongOverviewPanel {
-            time-origin-x: sidebar.width + 168px;
-            right-reserve: root.compact ? 0px : Tokens.right-rail-width;
+            vertical-stretch: root.song-overview-fullscreen ? 1 : 0;
+            time-origin-x: root.song-overview-fullscreen ? 0px : sidebar.width + 168px;
+            right-reserve: root.song-overview-fullscreen ? 0px : (root.compact ? 0px : Tokens.right-rail-width);
             total-bars: root.song-overview-total-bars;
             tension: root.song-overview-tension;
             tension-colors: root.song-overview-tension-colors;
@@ -2317,6 +2355,7 @@ export component MainWindow inherits Window {
             span-ticks: root.song-overview-span-ticks;
             key-signature: root.song-overview-key-signature;
             collapsed: root.song-overview-collapsed;
+            fullscreen: root.song-overview-fullscreen;
             show-tension: root.song-overview-show-tension;
             show-energy: root.song-overview-show-energy;
             show-bands: root.song-overview-show-bands;
@@ -2335,6 +2374,7 @@ export component MainWindow inherits Window {
             viewport-scroll-requested(target) => { root.song-overview-viewport-scroll(target); }
             viewport-zoom-requested(target) => { root.song-overview-viewport-zoom(target); }
             toggle-collapsed() => { root.song-overview-toggle-collapsed(); }
+            toggle-fullscreen() => { root.song-overview-toggle-fullscreen(); }
         }
 
         // ---------------------------------------------------------- 24px 状态栏
