@@ -1937,7 +1937,10 @@ const MASTER_EQ_PANEL_CHILDREN: &[&str] = &[
     "master-device-eq-reason",
 ];
 
-/// ⑤ `UndoTreeModal` 6 个真实节点（`node-hidden: 2`）时的 9 个控件。
+/// ⑤ `UndoTreeModal` 6 个真实节点（`node-hidden: 2`）时的 10 个控件。
+/// ⭐ [PATCH UI-REDO-01]（2026-11-09）：新增 `undo-tree-redo-button`（与撤销按钮对称），
+/// 段内控件数随之 9 → 10；清单必须同步扩，否则 `assert_pairwise_owned` 的
+/// "段内控件数 == 清单数" 会判红。按钮落在撤销按钮右侧、同一 y，`space-3` 留缝 ⇒ 不相交。
 fn undo_tree_controls() -> Vec<String> {
     let mut ids = vec!["undo-tree-close-button".to_owned()];
     for index in 0..6 {
@@ -1945,14 +1948,17 @@ fn undo_tree_controls() -> Vec<String> {
     }
     ids.push("undo-tree-truncation-note".to_owned());
     ids.push("undo-tree-undo-button".to_owned());
+    ids.push("undo-tree-redo-button".to_owned());
     ids
 }
 
-/// ⑤ 空提交链（`node-count: 0`）时的 3 个控件。
+/// ⑤ 空提交链（`node-count: 0`）时的 4 个控件。
+/// ⭐ [PATCH UI-REDO-01]：重做按钮与 `can-redo` 无关，任何节点数下都常驻 ⇒ 同步 +1。
 const UNDO_TREE_EMPTY: &[&str] = &[
     "undo-tree-close-button",
     "undo-tree-empty-state",
     "undo-tree-undo-button",
+    "undo-tree-redo-button",
 ];
 
 /// ⑥ 零提案抽屉的 3 个控件（图例 / 空态 / 关闭键）。`accept` / `reject` 零提案时按设计不画。

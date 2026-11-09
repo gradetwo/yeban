@@ -18,7 +18,7 @@
 //! | ④ 面板自己仍可点 | 点弹窗内的 ✕（`export-wav-close-button`）⇒ 弹窗关闭 ⇒ 遮罩声明在面板**之前**，面板里的命中测试一位未动 |
 //! | ⑤ 关掉后同一条路复活 | 弹窗已关 ⇒ 再点同一处 ⇒ 翻 `true` ⇒ 证 ③ 的「没翻」是遮罩，⛔ 不是回调坏了 |
 //! | ⑥ 时光机同款 | `undo-tree-open` 期间点同一处 ⇒ **不翻**；关掉 ⇒ 翻回来 ⇒ 两份模态一起钉 |
-//! | ⑦ 源码纪律 | 两份模态各有**恰好一枚**「无 `clicked` 的全尺寸 `TouchArea`」，且它排在面板 id 之前；`accessible-id` 位数一位未增（⛔ 不新增可寻址控件） |
+//! | ⑦ 源码纪律 | 两份模态各有**恰好一枚**「无 `clicked` 的全尺寸 `TouchArea`」（`TouchArea − clicked == 1`），且它排在面板 id 之前；`accessible-id` 位数按模态钉值。`[PATCH UI-REDO-01]` 时光机新增「重做一步」按钮后为 `10 / 8`（导出 / 时光机），差集不变量不变 |
 //!
 //! ⚠ 本文件**不**跑导出：只开合弹窗与点按钮 ⇒ ⛔ 不写任何文件（`export-wav` 的落盘路径因此
 //! 不需要覆盖成临时目录）。
@@ -213,20 +213,44 @@ fn each_modal_has_exactly_one_actionless_full_size_pointer_blocker() {
     let dialog = code_only(include_str!("../ui/dialogs/export_wav_dialog.slint"));
     let time_machine = code_only(include_str!("../ui/dialogs/undo_tree_modal.slint"));
 
-    for (name, source, panel_id, id_count) in [
-        ("导出弹窗", dialog.as_str(), "export-wav-panel", 10_usize),
-        ("时光机", time_machine.as_str(), "undo-tree-panel", 7_usize),
+    // ⭐ [PATCH UI-REDO-01]（2026-11-09）：时光机新增「重做一步」按钮 ⇒
+    // 可寻址控件 7 → 8、`TouchArea` 4 → 5、`clicked` 3 → 4。三个钉值原是写死的 4/3/7，
+    // 这里提到循环参数里按模态分别钉，并把「恰好一枚无 clicked 的遮罩」从绝对数
+    // 改成**差集不变量** `TouchArea − clicked == 1`（新增动作按钮不会破坏这条语义）。
+    // 导出弹窗数字一位未动（10 / 4 / 3）。
+    for (name, source, panel_id, id_count, touch_count, clicked_count) in [
+        (
+            "导出弹窗",
+            dialog.as_str(),
+            "export-wav-panel",
+            10_usize,
+            4,
+            3,
+        ),
+        (
+            "时光机",
+            time_machine.as_str(),
+            "undo-tree-panel",
+            8_usize,
+            5,
+            4,
+        ),
     ] {
-        // 三枚会做事的 + 一枚只吞不做的 = 四枚。
+        // 会做事的 TouchArea（每枚带一个 clicked）+ 一枚只吞不做的遮罩。
         assert_eq!(
             source.matches("TouchArea {").count(),
-            4,
-            "⑦ `{name}` 的 `TouchArea` 必须是 4 枚（三枚动作 + 遮罩那一枚）"
+            touch_count,
+            "⑦ `{name}` 的 `TouchArea` 必须是 {touch_count} 枚（动作 + 遮罩那一枚）"
         );
         assert_eq!(
             source.matches("clicked =>").count(),
-            3,
-            "⑦ `{name}` 的 `clicked` 必须仍是 3 枚 ⇒ **恰好一枚** `TouchArea` 只吞不做\
+            clicked_count,
+            "⑦ `{name}` 的 `clicked` 必须是 {clicked_count} 枚"
+        );
+        assert_eq!(
+            touch_count - clicked_count,
+            1,
+            "⑦ `{name}` 必须**恰好一枚** `TouchArea` 只吞不做（差集恒为 1）\
              （它若带了 `clicked`，就把「点遮罩不关面板」这条既有语义改了）"
         );
 

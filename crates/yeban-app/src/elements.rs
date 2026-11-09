@@ -2117,6 +2117,16 @@ impl ElementRegistry {
             "撤销一步 (Cmd+Z)",
             false,
         );
+        // ⭐ [PATCH UI-REDO-01]（2026-11-09）：与「撤销一步」对称的重做按钮。
+        // 登记名**刻意不带任何键位承诺** ⇒ 不进 `d_ui_26` 的 PINNED 清单
+        // （本票只补界面消费端，⛔ 不新增一条用户可见的快捷键承诺）。
+        registry.add(
+            "undo-tree-redo-button",
+            ElementKind::Button,
+            "dialogs/undo_tree_modal.slint",
+            "重做一步",
+            false,
+        );
         // 导出 WAV 选项框：默认关闭（`export-wav-open=false`），因此不进运行时控件树，
         // 也不改任何金帧。打开后宿主把 `module-export-wav-button` 的动作接到这里，
         // 真正的写出仍走 `MainWindow.export-wav` → `export_wav::export_wav_with_sfz_file`。

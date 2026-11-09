@@ -61,6 +61,10 @@ export component UndoTreeModal inherits Rectangle {
 
     // ---- 模型读数（宿主注入；界面不自己算）------------------------------------
     in property <bool> can-undo: false;
+    // ⭐ [PATCH UI-REDO-01]（2026-11-09）：与 `can-undo` 对称的「能否重做」读数。
+    // 宿主 `apply_undo` 每帧写 `undo-can-redo`，此前却是**死写属性**（全 `ui/` 无读者）；
+    // 现在经 `app.slint` 转到这里，只驱动按钮置灰与步数读数 —— 界面不自己判断能否重做。
+    in property <bool> can-redo: false;
     in property <int> undo-depth: 0;
     in property <int> undone-depth: 0;
     in property <int> commit-count: 0;
@@ -69,6 +73,10 @@ export component UndoTreeModal inherits Rectangle {
     callback close();
     // D45: 这个回调**真的**执行撤销（宿主 → `UndoPort::perform(UiAction::Undo)`）。
     callback undo-step();
+    // ⭐ [PATCH UI-REDO-01]（2026-11-09）：与 `undo-step` 对称的「重做一步」入口。
+    // 落点全在宿主（`host::wire_undo` → `UndoPort::perform(UiAction::Redo)`，
+    // 与键盘重做同一个落点）；界面只报"用户点了重做"，不复制第二份重做逻辑。
+    callback redo-step();
     // 点击某个版本节点 = 回到那个版本。参数 = 节点下标（0 = 活跃分支头，
     // 与 `CommitGraph::ancestry(head)` 的顺序一致）。落点全在宿主
     // （`host::wire_undo` → `UndoPort::perform(UiAction::UndoMany | RedoMany)`）：
@@ -320,6 +328,44 @@ export component UndoTreeModal inherits Rectangle {
                 width: parent.width;
                 height: parent.height;
                 clicked => { root.undo-step(); }
+            }
+        }
+
+        // ------------------------------------------------------- 重做一步
+        // ⭐ [PATCH UI-REDO-01]（2026-11-09）：与左侧「撤销一步」对称的入口。
+        // 底层 `UiAction::Redo` 早已存在（键盘可达），宿主 `undo-can-redo` 也每帧写，
+        // 缺的从来只是**界面消费端**。这里不写任何快捷键字面量（避免新增一条用户
+        // 可见承诺），也不重复造重做逻辑：两格都只把"点了"上报给宿主。
+        // 步数读数 = `undone-depth`（已撤销步数 = 可重做步数），与左侧 `undo-depth` 同源。
+        Rectangle {
+            x: Tokens.space-6 + 180px + Tokens.space-3;
+            y: parent.height - 76px;
+            width: 180px;
+            height: 32px;
+            background: root.can-redo ? Tokens.bg-raised : Tokens.bg-void;
+            border-radius: Tokens.radius-md;
+            border-width: 1px;
+            border-color: root.can-redo ? Tokens.gold : Tokens.line-strong;
+            accessible-role: button;
+            accessible-id: "undo-tree-redo-button";
+            accessible-label: "重做一步";
+            accessible-action-default => { root.redo-step(); }
+
+            UiText {
+                x: 0;
+                y: 0;
+                width: parent.width;
+                height: parent.height;
+                text: root.can-redo ? "重做一步 (" + root.undone-depth + " 步可重做)" : "无历史可重做";
+                color: root.can-redo ? Tokens.gold-bright : Tokens.ink-2;
+                font-size: Tokens.font-size-xs;
+                horizontal-alignment: center;
+            }
+
+            TouchArea {
+                width: parent.width;
+                height: parent.height;
+                clicked => { root.redo-step(); }
             }
         }
 

@@ -596,6 +596,10 @@ export component MainWindow inherits Window {
     callback close-undo-tree();
     // D45: 时光机里的"撤销一步"（与 `Cmd+Z` 汇到同一个 `UndoPort::perform`）。
     callback undo-step();
+    // ⭐ [PATCH UI-REDO-01]（2026-11-09）：时光机里的"重做一步"。唯一注册者 =
+    // `host::wire_undo` 的 `on_redo_step` → `UndoPort::perform(UiAction::Redo)`，
+    // 与键盘重做同一个落点；界面只上报，不复制第二份重做逻辑。
+    callback redo-step();
     // 时光机里**点击版本节点**：参数 = 节点下标（0 = 活跃分支头）；宿主
     // `host::wire_undo` 把它换算成 `UndoMany` / `RedoMany` 落到同一个 `UndoPort::perform`。
     callback undo-node-selected(int);
@@ -2460,7 +2464,13 @@ export component MainWindow inherits Window {
         focus-on-tab-navigation: false;
         key-pressed(event) => {
             // Slint 1.18 的字符串转义只认 `\"` / `\\` / `\n` / `\u{...}`，`\t` 会编译失败。
-            if (event.text == "\u{9}") {
+            // ⭐ [PATCH UI-FOCUS-01]（2026-11-09）：Backtab 与 Tab 必须**一起**吞。
+            // Shift+Tab 在部分平台以 Backtab 到达；`i-slint-core` 内建焦点轮转两种都认，
+            // 而本模态原先只认 Tab ⇒ Backtab 落进下面的 `key-action` / `reject`，
+            // 焦点会经内建轮转逃出模态。这里没有子 FocusScope 可轮转（弹窗按钮都是
+            // TouchArea），闭环 = 两种 Tab 都 `accept`，⛔ 不调 focus-previous/next。
+            // 与 `dialogs/export_wav_dialog.slint` 的双吞同口径（那边另做七格轮转）。
+            if (event.text == "\u{9}" || event.text == "\u{19}") {
                 accept
             } else if (root.key-action(event.text, event.modifiers.shift,
                                        event.modifiers.control, event.modifiers.alt,
@@ -2482,6 +2492,9 @@ export component MainWindow inherits Window {
 
         // 显示态 = 模型读数（宿主注入；界面只显示）。
         can-undo: root.undo-can-undo;
+        // ⭐ [PATCH UI-REDO-01]：`undo-can-redo` 此前是死写属性（宿主写、界面无人读），
+        // 这里补上唯一读者 —— 与 `can-undo` 同一条注入链、同一个 `apply_undo`。
+        can-redo: root.undo-can-redo;
         undo-depth: root.undo-depth;
         undone-depth: root.undo-undone;
         commit-count: root.undo-commit-count;
@@ -2492,6 +2505,7 @@ export component MainWindow inherits Window {
         node-hidden: root.undo-node-hidden;
 
         undo-step => { root.undo-step(); }
+        redo-step => { root.redo-step(); }
         node-selected(index) => { root.undo-node-selected(index); }
         close => { root.close-undo-tree(); }
     }

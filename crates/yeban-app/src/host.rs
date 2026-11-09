@@ -11103,15 +11103,16 @@ fn undo_tree_projection(port: &UndoPort) -> (Vec<String>, usize) {
     (labels, chain.len().saturating_sub(UNDO_TREE_MAX_NODES))
 }
 
-/// 把撤销入口接到界面上（`toggle-undo-tree`、× 关闭、时光机的"撤销一步"按钮、节点点击）。
+/// 把撤销入口接到界面上（`toggle-undo-tree`、× 关闭、时光机的"撤销一步"/"重做一步"按钮、节点点击）。
 ///
-/// 四条回调都汇到**同一个** [`UndoPort::perform`]：
+/// 这些回调都汇到**同一个** [`UndoPort::perform`]：
 ///
 /// | 界面回调 | 动作 | 工程会不会变 |
 /// | :--- | :--- | :--- |
 /// | `toggle-undo-tree` | `UiAction::ToggleUndoTree` | 不会（只开关弹窗） |
 /// | `close-undo-tree`（× / 无障碍关闭） | `UiAction::CloseUndoTree` | 不会（只关弹窗，与 `Esc` 同动作） |
 /// | `undo-step`（弹窗按钮） | `UiAction::Undo` | **会**（走模型的撤销入口） |
+/// | `redo-step`（弹窗按钮，`[PATCH UI-REDO-01]`） | `UiAction::Redo` | **会**（走模型的重做入口，与键盘重做同源） |
 /// | `undo-node-selected`（点一个版本节点） | `UiAction::UndoMany` / `RedoMany` | **会**（回到那一版） |
 /// | `revert-to-last-commit`（走带区 ↻） | `UiAction::Undo` | **会**（同上 —— 每次提交恰好一条 `Op::Batch` ⇒ 一步撤销 = 回退一个 Commit） |
 ///
@@ -11157,6 +11158,20 @@ pub fn wire_undo(ui: &MainWindow, port: &Rc<UndoPort>) {
         let weak = slint::ComponentHandle::as_weak(ui);
         ui.on_undo_step(move || {
             port.perform(UiAction::Undo);
+            refresh_undo(&weak, &port, true);
+        });
+    }
+    {
+        // ⭐ [PATCH UI-REDO-01]（2026-11-09）：时光机「重做一步」按钮的唯一注册者。
+        // 与 `on_undo_step` **完全对称**：同一个 `UndoPort::perform`、同一个
+        // `refresh_undo(..., true)`（重做改工程 ⇒ 必须重投影），落点是 `UiAction::Redo`
+        // —— 与键盘重做、`undo_wiring_ui.rs` 里那条 UI 路径**同一个**动作，不复制逻辑。
+        // `can-redo` 能否点由 `apply_undo` 注入的模型读数决定；没有可重做历史时端口
+        // 自己拒绝并留痕（与左侧「无历史可撤」同口径），这里不预判断。
+        let port = Rc::clone(port);
+        let weak = slint::ComponentHandle::as_weak(ui);
+        ui.on_redo_step(move || {
+            port.perform(UiAction::Redo);
             refresh_undo(&weak, &port, true);
         });
     }

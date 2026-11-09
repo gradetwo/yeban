@@ -191,7 +191,14 @@ export component PianoRoll inherits Rectangle {
         font-size: Tokens.font-size-xs;
         accessible-role: text;
         accessible-id: "piano-roll-status";
-        accessible-label: root.edit-status-shown ? root.edit-status : "卷帘吸附与音域状态";
+        accessible-label: "卷帘吸附与音域状态";
+        // ⭐ [PATCH UI-A11Y-006]（2026-11-09）：label 固定为**静态语义名**（与
+        // `elements.rs` 注册表、`pane_no_overlap.rs` 的判据逐字一致），当前读数走
+        // `value` 通道。修前 label 在回执态会变成拒绝原因（名字即内容），默认态又
+        // 只念静态名、拿不到吸附档位/音域；屏读器两种状态都缺稳定的「名称 + 值」。
+        // value 与上面 `text` **逐字同源**（同一个三元表达式），⛔ 不是第二份读数、
+        // ⛔ 不改可见像素、⛔ 不新增可寻址节点。
+        accessible-value: root.edit-status-shown ? root.edit-status : "吸附 1/16 · PPQ 960 · 显示 C2 – C7";
     }
 
     // ---------------------------------------------------------------- 琴键列
