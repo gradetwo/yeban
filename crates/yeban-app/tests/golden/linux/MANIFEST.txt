@@ -270,8 +270,8 @@ headSha `bef7ab82`，artifact `golden-linux`（id 12951880348，470971 字节）
 **⚠ 位置说明（2026-11-08 补记，`[PATCH UI-MANIFEST-01]`）**：本节初稿曾误写在表**之后**，`check_golden_manifest.py` 判据 2/3 要求「表必须是文件最后一块、表头之后不许再有空行或别的正文」，于是整节 6 行加分隔空行被当成表数据行判红（7 条 `[FAIL]`）。本次只把本节整体移到表**之前**、并把方位词「上面这张表」订正为「下面这张表」（与上文 2026-10-08 历史声明同口径）；声明的事实断言、日期、run 记述与表的 5 行哈希 / 字节数**一字未动**，表本身**一行未改**。
 
 文件	sha256	字节
-app-main-window-arrangement-compact-1920x1080.png	8792ff3ec023c0174eb9845ce338f723296ad428250b349a42b1e847df3588b4	6222418
-app-main-window-arrangement-full-1920x1080.png	85ddc668e2b14b80ff80c62d6f0e922ff9e2fd5d8d07bb9d002b504b0eea2e64	6222418
-app-main-window-session-full-1920x1080.png	2a2cf5d17d705433fa7bfe6355c3788cf3681b51deb8bd116d1e431e1f4cbdaa	6222418
-app-model-driven-demo-project-1920x1080.png	85ddc668e2b14b80ff80c62d6f0e922ff9e2fd5d8d07bb9d002b504b0eea2e64	6222418
-app-model-driven-filled-project-1920x1080.png	4134f6ebe9832a9993accba60a69dc4ef4e43f677a8e2ee8c5b3ae25e6bed1bd	6222418
+app-main-window-arrangement-compact-1920x1080.png	e89b576c8263767ef0f78928996d772ae643b41e6c187de7529848197e9eb07e	6222418
+app-main-window-arrangement-full-1920x1080.png	d9b6b4f5264608c6c11e1928c633b21e5dba253cde32c255af03c98f29ef9316	6222418
+app-main-window-session-full-1920x1080.png	df509da6073e5d22ca5f54ab93193b5aa6c750a9ba33b2606d1807403262ed59	6222418
+app-model-driven-demo-project-1920x1080.png	d9b6b4f5264608c6c11e1928c633b21e5dba253cde32c255af03c98f29ef9316	6222418
+app-model-driven-filled-project-1920x1080.png	9198487a6af8895b344d40b733028fbebb94428930d95a09d5f714ddb80dcf88	6222418
