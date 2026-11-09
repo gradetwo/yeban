@@ -62,10 +62,10 @@ use std::ptr;
 use crate::dylib::Library;
 use crate::error::HostError;
 use crate::types::{
-    MidiEvent, MidiEventKind, ParamInfo, PluginClass, PluginInstance, PluginKind, PluginState,
-    Tuid, FUNKNOWN_IID, IAUDIO_PROCESSOR_IID, ICOMPONENT_IID, ICONNECTIONPOINT_IID,
-    IEDIT_CONTROLLER_IID, IMIDI_MAPPING_IID, RESULT_FALSE, RESULT_NOT_IMPLEMENTED,
-    RESULT_NO_INTERFACE, RESULT_OK, RESULT_TRUE, TUID_INVALID,
+    FUNKNOWN_IID, IAUDIO_PROCESSOR_IID, ICOMPONENT_IID, ICONNECTIONPOINT_IID, IEDIT_CONTROLLER_IID,
+    IMIDI_MAPPING_IID, MidiEvent, MidiEventKind, ParamInfo, PluginClass, PluginInstance,
+    PluginKind, PluginState, RESULT_FALSE, RESULT_NO_INTERFACE, RESULT_NOT_IMPLEMENTED, RESULT_OK,
+    RESULT_TRUE, TUID_INVALID, Tuid,
 };
 
 // ---------------------------------------------------------------------------
@@ -1457,11 +1457,7 @@ impl Vst3Instance {
                 &mut id,
             )
         };
-        if code != RESULT_OK {
-            None
-        } else {
-            Some(id)
-        }
+        if code != RESULT_OK { None } else { Some(id) }
     }
 
     /// 从弯音事件装配一次 `process` 调用内的参数变化通道（乐器 `process`

@@ -86,8 +86,8 @@ enum BoundStatus {
     Unbounded(&'static str),
 }
 
-/// 40 条 string 参数声明（`TOOLS` 里 `json_type == "string"` 的**不同名**）。
-const STRING_PARAM_BOUNDS: [(&str, BoundStatus); 40] = [
+/// 43 条 string 参数声明（`TOOLS` 里 `json_type == "string"` 的**不同名**）。
+const STRING_PARAM_BOUNDS: [(&str, BoundStatus); 43] = [
     ("idempotencyKey", BoundStatus::Length(None, Some(256))),
     ("name", BoundStatus::Length(Some(1), None)),
     ("license", BoundStatus::Length(Some(1), None)),
@@ -245,6 +245,26 @@ const STRING_PARAM_BOUNDS: [(&str, BoundStatus); 40] = [
     // 整曲总览图：`get_song_overview` 的 `resolution` —— 取值是固定词表（`bar` / `beat`），
     // 未知值由 `plan_song_overview` 以 `unknownResolution` 拒绝并列出 `accepted`。
     ("resolution", BoundStatus::WordList),
+    // ARA 宿主：`yeban_ara_bind` / `yeban_ara_query` / `yeban_ara_render` 新增的
+    // 3 个不同名 string 参数（`pluginPath`、`pluginId` 已在表内）。
+    (
+        "wavPath",
+        BoundStatus::Unbounded(
+            "片段 wav 路径（`yeban_ara_bind`）：操作员自选的本机音频文件路径，解码失败 ⇒ `IO_ERROR`。\\n后果限于该次调用的解码失败报文长度；路径本身不进工程文件（会话只活在内存注册表里）。\\n收口面：`schemas/**` 的 `maxLength`（集成者独占）。",
+        ),
+    ),
+    (
+        "sessionId",
+        BoundStatus::Unbounded(
+            "ARA 会话 id（`yeban_ara_query` / `yeban_ara_render`）：服务端生成的 `ara-N`（自增数），\\n本层只作注册表键查找；未知值 ⇒ `INVALID_PARAMETER_RANGE` + `araSessionNotFound`。\\n后果限于该次调用的报文长度；不写工程、不落盘。收口面：`schemas/**` 的 `maxLength`（集成者独占）。",
+        ),
+    ),
+    (
+        "outPath",
+        BoundStatus::Unbounded(
+            "渲染输出 wav 路径（`yeban_ara_render`）：操作员自选的本机输出路径；父目录不存在 ⇒ `IO_ERROR`。\\n后果限于该次调用的落盘失败报文长度与该路径的一次写盘。收口面：`schemas/**` 的 `maxLength`（集成者独占）。",
+        ),
+    ),
 ];
 
 #[test]
