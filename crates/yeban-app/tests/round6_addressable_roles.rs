@@ -2,7 +2,7 @@
 //!
 //! ## 本轮要证的三句话
 //!
-//! 1. **全仓闭环**：`ui/**/*.slint` 的 **223 个可寻址节点块**（带 `accessible-id`
+//! 1. **全仓闭环**：`ui/**/*.slint` 的 **224 个可寻址节点块**（带 `accessible-id`
 //!    的元素）里，本轮之前恰好有 **4 个**没写显式 `accessible-role`；补齐后
 //!    **0 缺口**。本判据把「有 id ⇒ 必须有显式 role」升级为**全仓常驻门禁**，
 //!    以后谁新增可寻址节点却忘了 role，立刻红。
@@ -281,7 +281,7 @@ fn every_addressable_node_declares_an_explicit_accessible_role() {
         "非真空：必须真的扫过大批可寻址节点（实测 {total}，下限 200）"
     );
     assert_eq!(
-        total, 223,
+        total, 224,
         "全仓可寻址节点块数应与本轮基线一致；变了要复核清单与解析口径"
     );
     assert!(
