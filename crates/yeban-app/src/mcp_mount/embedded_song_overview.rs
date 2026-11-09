@@ -82,6 +82,7 @@ fn mounted_real_provider_matches_the_direct_pipeline() {
         &mut cache,
         &project,
         &RenderSettings::default(),
+        &yeban_dsp::song_overview::AnalysisOptions::default(),
         never_called_provider(),
     )
     .expect("B 线管线");

@@ -87,10 +87,13 @@ use crate::host::{apply_transport, apply_view, project_with_view_state, set_roll
 use crate::sfz_load::{
     SfzRoots, build_region_samples, load_sfz_with_instrument, resolve_sampler_path,
 };
+use std::collections::BTreeMap;
+
 use crate::ui::MainWindow;
 use crate::undo::UndoPort;
 use yeban_dsp::song_overview::{
-    DENSITY_ANCHOR_NOTES_PER_SEC, NO_LOUDNESS_READING_LUFS, analyze_song_overview,
+    AnalysisOptions, DENSITY_ANCHOR_NOTES_PER_SEC, NO_ENVELOPE, NO_LOUDNESS_READING_LUFS,
+    TensionProfile, analyze_song_overview_with_options,
 };
 use yeban_model::song_overview::score_input_from_project;
 use yeban_render::engine_source::{ArmedSfzInput, ArmedSfzSample};
@@ -179,6 +182,48 @@ pub struct SongOverview {
     pub density_perc: Vec<f32>,
     /// 8 频段倾斜补偿后能量（设计稿 §4.3，单位 dB，平铺 `bar * 8 + band`）。
     pub bands_db: Vec<f32>,
+    /// 谱面合成力度（设计稿 §5.1：归一化 0–1；面板画成 LUFS 面积上的细虚线）。
+    pub score_dyn: Vec<f32>,
+    /// 期望带下沿（Phase 2，设计稿 §3.5）：有期望等级的小节为带下沿，
+    /// 无等级的小节为 dsp 的 `NO_ENVELOPE` 哨兵（−1）。
+    pub envelope_lo: Vec<f32>,
+    /// 期望带上沿（Phase 2）：有期望等级的小节为带上沿，无等级为哨兵。
+    pub envelope_hi: Vec<f32>,
+    /// 该小节实际张力是否超出期望带 0.15 以上（Phase 2 告警，面板画琥珀高亮）。
+    pub envelope_alert: Vec<bool>,
+    /// 曲风档名（Phase 2，设计稿 §3.6：`"default"` / `"orchestral"` / `"electronic"`；
+    /// 面板预设按钮显示它的中文名，见 [`profile_display_name`]）。
+    pub profile: String,
+}
+
+/// 曲风档名 → 面板预设按钮的中文名（Phase 2，设计稿 §3.6）。
+#[must_use]
+pub fn profile_display_name(profile: &str) -> &'static str {
+    match profile {
+        "orchestral" => "管弦",
+        "electronic" => "电子",
+        _ => "均衡",
+    }
+}
+
+/// 下一个曲风档（Phase 2：Default → Orchestral → Electronic → Default 循环）。
+#[must_use]
+pub const fn next_profile(profile: TensionProfile) -> TensionProfile {
+    match profile {
+        TensionProfile::Default => TensionProfile::Orchestral,
+        TensionProfile::Orchestral => TensionProfile::Electronic,
+        TensionProfile::Electronic => TensionProfile::Default,
+    }
+}
+
+/// 段落期望等级循环（Phase 2：None → 1 → 2 → 3 → 4 → 5 → None）。
+#[must_use]
+pub const fn cycle_level(level: Option<u8>) -> Option<u8> {
+    match level {
+        None => Some(1),
+        Some(5) => None,
+        Some(level) => Some(level + 1),
+    }
 }
 
 impl SongOverview {
@@ -290,20 +335,34 @@ pub fn seek_tick_for_fraction(
 ///
 /// 格式：`第 5 小节 · -18.2 LUFS · 张力 0.62 · 突出 中频/临场感`
 /// （小节号 1 起；LUFS 1 位小数；张力 2 位小数）。
+/// Phase 2：该小节偏离期望带告警时末尾追加 ` · 偏离期望带 0.17`
+/// （偏离量 = 实际张力到最近带边界的距离，2 位小数）。
 #[must_use]
 pub fn hover_readout(overview: &SongOverview, bar: usize) -> String {
     if overview.total_bars == 0 || bar >= overview.total_bars {
         return String::new();
     }
     let (first, second) = overview.top_bands(bar);
-    format!(
+    let mut text = format!(
         "第 {} 小节 · {:.1} LUFS · 张力 {:.2} · 突出 {}/{}",
         bar + 1,
         overview.lufs_short[bar],
         overview.tension[bar],
         BAND_SHORT_NAMES[first],
         BAND_SHORT_NAMES[second]
-    )
+    );
+    if overview.envelope_alert.get(bar).copied().unwrap_or(false) {
+        let tension = overview.tension[bar];
+        let lo = overview.envelope_lo.get(bar).copied().unwrap_or(0.0);
+        let hi = overview.envelope_hi.get(bar).copied().unwrap_or(1.0);
+        let deviation = if tension < lo {
+            lo - tension
+        } else {
+            tension - hi
+        };
+        text.push_str(&format!(" · 偏离期望带 {deviation:.2}"));
+    }
+    text
 }
 
 /// 底部 8 px 标尺每小节的标签（Rust 侧算好，`.slint` 只画）：
@@ -406,6 +465,10 @@ pub fn overview_from_dsp(
     let mut density_duty = Vec::with_capacity(total_bars);
     let mut density_perc = Vec::with_capacity(total_bars);
     let mut bands_db = Vec::with_capacity(total_bars.saturating_mul(BAND_COUNT));
+    let mut score_dyn = Vec::with_capacity(total_bars);
+    let mut envelope_lo = Vec::with_capacity(total_bars);
+    let mut envelope_hi = Vec::with_capacity(total_bars);
+    let mut envelope_alert = Vec::with_capacity(total_bars);
     for bar in 0..total_bars {
         if bar < dsp_bars {
             tension.push(series.tension[bar].clamp(0.0, 1.0));
@@ -423,6 +486,14 @@ pub fn overview_from_dsp(
             for band in 0..BAND_COUNT {
                 bands_db.push(series.bands_tilted_db[bar][band].clamp(BAND_DB_FLOOR, BAND_DB_CEIL));
             }
+            // Phase 2：谱面力度原样（虚线数据源）；期望带原样（哨兵即无等级）；
+            // 告警 = 偏离量超过 dsp 的告警阈值（与 dsp 的异常判定同一条线）。
+            score_dyn.push(series.score_dyn[bar].clamp(0.0, 1.0));
+            envelope_lo.push(series.envelope_lo[bar]);
+            envelope_hi.push(series.envelope_hi[bar]);
+            envelope_alert.push(
+                series.target_deviation[bar] > yeban_dsp::song_overview::ENVELOPE_DEVIATION_ALERT,
+            );
         } else {
             // 静音垫条：超出 dsp 内容跨度的小节（无音符、无音频），按 dsp 自己的
             // 静音哨兵填，⛔ 不编测量值。
@@ -433,6 +504,10 @@ pub fn overview_from_dsp(
             density_duty.push(0.0);
             density_perc.push(0.0);
             bands_db.extend(std::iter::repeat_n(BAND_DB_FLOOR, BAND_COUNT));
+            score_dyn.push(0.0);
+            envelope_lo.push(NO_ENVELOPE);
+            envelope_hi.push(NO_ENVELOPE);
+            envelope_alert.push(false);
         }
     }
     SongOverview {
@@ -448,6 +523,11 @@ pub fn overview_from_dsp(
         density_duty,
         density_perc,
         bands_db,
+        score_dyn,
+        envelope_lo,
+        envelope_hi,
+        envelope_alert,
+        profile: dsp.song_meta.profile.clone(),
     }
 }
 
@@ -471,6 +551,11 @@ pub fn silent_overview(view: &ViewState) -> SongOverview {
         density_duty: vec![0.0; total_bars],
         density_perc: vec![0.0; total_bars],
         bands_db: vec![BAND_DB_FLOOR; total_bars.saturating_mul(BAND_COUNT)],
+        score_dyn: vec![0.0; total_bars],
+        envelope_lo: vec![NO_ENVELOPE; total_bars],
+        envelope_hi: vec![NO_ENVELOPE; total_bars],
+        envelope_alert: vec![false; total_bars],
+        profile: TensionProfile::Default.as_str().to_owned(),
     }
 }
 /// `[float]` 属性 ← `&[f32]`（与 `host.rs` 的 `lengths` 同款，⛔ 不复用私函数）。
@@ -503,6 +588,11 @@ fn colors(values: &[slint::Color]) -> ModelRc<slint::Color> {
     ModelRc::new(VecModel::from(values.to_vec()))
 }
 
+/// `[bool]` 属性 ← `&[bool]`。
+fn bools(values: &[bool]) -> ModelRc<bool> {
+    ModelRc::new(VecModel::from(values.to_vec()))
+}
+
 /// 把一份 [`SongOverview`] 单向注入 `MainWindow` 的 `song-overview-*` 属性。
 ///
 /// 幂等：同一份数据重复注入得到同一个界面。悬停读数（`hover-*`）⛔ 不在这里碰 ——
@@ -528,6 +618,12 @@ pub fn apply_song_overview(ui: &MainWindow, overview: &SongOverview) {
     ui.set_song_overview_density_pitched(floats(&overview.density_pitched));
     ui.set_song_overview_density_perc(floats(&overview.density_perc));
     ui.set_song_overview_density_duty(floats(&overview.density_duty));
+    // Phase 2：谱面力度虚线、期望带、偏离告警、曲风档（面板只画数，不算数）。
+    ui.set_song_overview_score_dyn(floats(&overview.score_dyn));
+    ui.set_song_overview_envelope_lo(floats(&overview.envelope_lo));
+    ui.set_song_overview_envelope_hi(floats(&overview.envelope_hi));
+    ui.set_song_overview_envelope_alert(bools(&overview.envelope_alert));
+    ui.set_song_overview_profile(profile_display_name(&overview.profile).into());
     let section_names: Vec<String> = overview
         .sections
         .iter()
@@ -565,6 +661,12 @@ pub struct SongOverviewLive {
     pub port: Option<Rc<UndoPort>>,
     /// SFZ 磁盘解析的工程目录根（装配时从引擎现读；换工程重接线时重读）。
     pub project_dir: Option<std::path::PathBuf>,
+    /// 曲风预设档（Phase 2，设计稿 §3.6）：面板预设按钮与 MCP `profile`
+    /// 参数的同一份会话态；换档即重算（缓存键含档名，见 render 侧哈希）。
+    pub profile: TensionProfile,
+    /// 段落期望张力等级表（Phase 2，设计稿 §3.5）：段落名 → 1–5 级；
+    /// 只活在本次分析请求的会话态里，不写工程。
+    pub expected_levels: BTreeMap<String, u8>,
 }
 
 /// SFZ 武装输入（`cached_overview` 的 provider）：磁盘腿。
@@ -658,11 +760,20 @@ pub fn refresh_song_overview(
         Some(dir) => SfzRoots::under_project(dir),
         None => SfzRoots::none(),
     };
+    // Phase 2：本次分析的选项取自活态（预设档 + 期望等级表）；先读出，
+    // 再借缓存（`borrow_mut` 期间不能再借 state）。
+    let options = {
+        let live = state.borrow();
+        AnalysisOptions {
+            profile: live.profile,
+            expected_levels: live.expected_levels.clone(),
+        }
+    };
     let mut failures: Vec<String> = Vec::new();
     let engine_hz = settings.sample_rate_hz as f32;
     let result = {
         let mut live = state.borrow_mut();
-        cached_overview(&mut live.cache, &project, &settings, |_, raw| {
+        cached_overview(&mut live.cache, &project, &settings, &options, |_, raw| {
             arm_sfz_input(raw, roots, engine_hz, &mut failures)
         })
     };
@@ -688,8 +799,9 @@ pub fn refresh_song_overview(
         }
         Err(error) => {
             // 渲染失败 ⇒ 纯谱面回退（dsp 的既定回退口径），不留旧工程数据。
+            // 回退同样走本次分析的选项（档与等级表与全量路一致）。
             let score = score_input_from_project(&project);
-            let dsp = analyze_song_overview(&score, None);
+            let dsp = analyze_song_overview_with_options(&score, None, &options);
             let message = format!("渲染失败（{error:?}），回退到纯谱面分析");
             eprintln!("[yeban-app] 总览图刷新：{message}");
             let (mapped, score_only) = if dsp.bar_series.is_empty() {
@@ -767,6 +879,8 @@ pub fn wire_song_overview(
         cache: SongOverviewCache::new(),
         port: port.clone(),
         project_dir,
+        profile: TensionProfile::Default,
+        expected_levels: BTreeMap::new(),
     }));
     // 装配时按活工程算一次真实数据并注入（`refresh_song_overview` 在内）。
     // 回执只作装配期诊断：缓存命中/回退已由刷新写进日志，这里不展开用。
@@ -961,6 +1075,65 @@ pub fn wire_song_overview(
         }
     });
 
+    // Phase 2 曲风预设（设计稿 §3.6）：界面只报“按了预设键”，档位循环与重算
+    // 的唯一写者是这里。Default → Orchestral → Electronic → Default；
+    // 刷新后预设按钮的中文名由 `apply_song_overview` 从新数据的档名写回。
+    let weak = ui.as_weak();
+    ui.on_song_overview_profile_cycle({
+        let weak = weak.clone();
+        let state = Rc::clone(&state);
+        let view = Rc::clone(&view);
+        move || {
+            let Some(ui) = weak.upgrade() else {
+                return;
+            };
+            let next = next_profile(state.borrow().profile);
+            state.borrow_mut().profile = next;
+            let _ = refresh_song_overview(&ui, &view.borrow(), &state);
+        }
+    });
+
+    // Phase 2 段落期望等级（设计稿 §3.5）：界面只报“点了第几个段落标签”，
+    // 等级循环与重算的唯一写者是这里。None → 1 → … → 5 → None；
+    // 等级只活在 `state.expected_levels`（会话态），不写工程。
+    // 下标越界（段落表已变）⇒ 静默忽略，不重算。
+    let weak = ui.as_weak();
+    ui.on_song_overview_target_cycle({
+        let weak = weak.clone();
+        let state = Rc::clone(&state);
+        let view = Rc::clone(&view);
+        move |section_index| {
+            let Some(ui) = weak.upgrade() else {
+                return;
+            };
+            let Ok(index) = usize::try_from(section_index) else {
+                return;
+            };
+            let Some(name) = state
+                .borrow()
+                .data
+                .sections
+                .get(index)
+                .map(|(name, _)| name.clone())
+            else {
+                return;
+            };
+            {
+                let mut live = state.borrow_mut();
+                let current = live.expected_levels.get(&name).copied();
+                match cycle_level(current) {
+                    Some(level) => {
+                        live.expected_levels.insert(name, level);
+                    }
+                    None => {
+                        live.expected_levels.remove(&name);
+                    }
+                }
+            }
+            let _ = refresh_song_overview(&ui, &view.borrow(), &state);
+        }
+    });
+
     state
 }
 
@@ -1082,6 +1255,11 @@ mod tests {
                 -17.0, -13.0, -9.0, -8.0, -13.0, -17.0, -22.0, -29.0, // bar 2
                 -19.0, -15.0, -13.0, -12.0, -16.0, -20.0, -25.0, -32.0, // bar 3
             ],
+            score_dyn: vec![0.28, 0.34, 0.42, 0.30],
+            envelope_lo: vec![NO_ENVELOPE; 4],
+            envelope_hi: vec![NO_ENVELOPE; 4],
+            envelope_alert: vec![false; 4],
+            profile: "default".to_owned(),
         };
         // bar 1 的最高两段是 Mid（-9.0）与 Low-Mid（-10.0）。
         assert_eq!(overview.top_bands(1), (3, 2));
@@ -1171,6 +1349,7 @@ mod tests {
             markers: vec![SectionMarker {
                 bar: 1,
                 label: "Intro".to_string(),
+                expected_level: None,
             }],
         };
         let dsp = analyze_song_overview(&score, None);
@@ -1206,6 +1385,13 @@ mod tests {
         for band in 0..BAND_COUNT {
             assert_eq!(mapped.band_db(0, band), BAND_DB_FLOOR);
         }
+        // Phase 2：谱面力度原样透传（虚线数据源）；无期望等级表时全哨兵、
+        // 无告警；档名取 dsp 的元数据（缺省档）。
+        assert_eq!(mapped.score_dyn[0], dsp.bar_series.score_dyn[0]);
+        assert_eq!(mapped.envelope_lo[0], NO_ENVELOPE);
+        assert_eq!(mapped.envelope_hi[0], NO_ENVELOPE);
+        assert!(!mapped.envelope_alert[0]);
+        assert_eq!(mapped.profile, "default");
         // 第 1–15 小节：静音垫条（⛔ 不是测量值）。
         for bar in 1..16 {
             assert_eq!(mapped.tension[bar], 0.0, "垫条张力必须为 0（bar {bar}）");
@@ -1220,6 +1406,10 @@ mod tests {
             for band in 0..BAND_COUNT {
                 assert_eq!(mapped.band_db(bar, band), BAND_DB_FLOOR);
             }
+            assert_eq!(mapped.score_dyn[bar], 0.0, "垫条谱面力度为 0（bar {bar}）");
+            assert_eq!(mapped.envelope_lo[bar], NO_ENVELOPE);
+            assert_eq!(mapped.envelope_hi[bar], NO_ENVELOPE);
+            assert!(!mapped.envelope_alert[bar]);
         }
         // 段落是工程结构（视图），不是 dsp 的 1 小节截断：仍有 Chorus。
         assert!(
@@ -1246,6 +1436,88 @@ mod tests {
             for band in 0..BAND_COUNT {
                 assert_eq!(silent.band_db(bar, band), BAND_DB_FLOOR);
             }
+            // Phase 2：静音面板无力度、无期望带、无告警、缺省档。
+            assert_eq!(silent.score_dyn[bar], 0.0);
+            assert_eq!(silent.envelope_lo[bar], NO_ENVELOPE);
+            assert_eq!(silent.envelope_hi[bar], NO_ENVELOPE);
+            assert!(!silent.envelope_alert[bar]);
         }
+        assert_eq!(silent.profile, "default");
+    }
+
+    /// 曲风档循环：Default → Orchestral → Electronic → Default（三档闭环）。
+    #[test]
+    fn next_profile_cycles_through_three_presets() {
+        assert_eq!(
+            next_profile(TensionProfile::Default),
+            TensionProfile::Orchestral
+        );
+        assert_eq!(
+            next_profile(TensionProfile::Orchestral),
+            TensionProfile::Electronic
+        );
+        assert_eq!(
+            next_profile(TensionProfile::Electronic),
+            TensionProfile::Default
+        );
+        assert_eq!(profile_display_name("default"), "均衡");
+        assert_eq!(profile_display_name("orchestral"), "管弦");
+        assert_eq!(profile_display_name("electronic"), "电子");
+        assert_eq!(profile_display_name("unknown"), "均衡");
+    }
+
+    /// 期望等级循环：None → 1 → 2 → 3 → 4 → 5 → None（六态闭环）。
+    #[test]
+    fn cycle_level_cycles_none_to_five_and_back() {
+        let mut level = None;
+        for expected in [1u8, 2, 3, 4, 5] {
+            level = cycle_level(level);
+            assert_eq!(level, Some(expected));
+        }
+        assert_eq!(cycle_level(level), None);
+    }
+
+    /// 悬停读数：告警小节末尾追加偏离量；不告警小节格式不变。
+    #[test]
+    fn hover_readout_appends_deviation_warning_when_alerting() {
+        let mut overview = SongOverview {
+            total_bars: 2,
+            bar_length_ticks: 3840,
+            span_ticks: 7680,
+            key_signature: String::new(),
+            sections: vec![("Intro".to_string(), 0)],
+            tension: vec![0.42, 0.79],
+            valence_hue: vec![-0.5, -0.2],
+            lufs_short: vec![-22.4, -12.0],
+            density_pitched: vec![0.3, 0.8],
+            density_duty: vec![0.6, 0.7],
+            density_perc: vec![0.2, 0.9],
+            bands_db: vec![
+                -18.2, -14.5, -12.0, -11.4, -15.0, -19.2, -24.0,
+                -31.5, // bar 0：最高两段是 Mid 与 Low-Mid
+                -18.0, -14.0, -10.0, -9.0, -14.0, -18.0, -23.0, -30.0, // bar 1：同款
+            ],
+            score_dyn: vec![0.28, 0.58],
+            envelope_lo: vec![0.0, 0.75],
+            envelope_hi: vec![0.25, 1.0],
+            envelope_alert: vec![true, false],
+            profile: "default".to_owned(),
+        };
+        assert_eq!(
+            hover_readout(&overview, 0),
+            "第 1 小节 · -22.4 LUFS · 张力 0.42 · 突出 中频/中低 · 偏离期望带 0.17"
+        );
+        assert!(
+            !hover_readout(&overview, 1).contains("偏离期望带"),
+            "不告警小节不追加偏离"
+        );
+        // 第 2 小节张力落到 0.58（低于带下沿 0.75，偏离 0.17）且告警时追加偏离。
+        overview.tension[1] = 0.58;
+        overview.envelope_alert[1] = true;
+        assert!(
+            hover_readout(&overview, 1).contains("偏离期望带 0.17"),
+            "{}",
+            hover_readout(&overview, 1)
+        );
     }
 }

@@ -51,6 +51,13 @@
 //!
 //! - `resolution`：`"bar"`（缺省）或 `"beat"`；其它值 ⇒ `INVALID_PARAMETER_RANGE`
 //!   （`reason: "unknownResolution"`）。
+//! - `profile`（Phase 2，设计稿 §3.6）：`"default"`（缺省）/ `"orchestral"` /
+//!   `"electronic"`；其它值 ⇒ `INVALID_PARAMETER_RANGE`（`reason: "unknownProfile"`）。
+//! - `expected_levels`（Phase 2，设计稿 §3.5）：段落名 → 期望张力等级（1–5 级）
+//!   的对象，如 `{"Chorus": 5}`；**非对象** ⇒ 协议层 `-32602`（注册表类型
+//!   校验先于领域层）；对象内非整数值、越界等级 ⇒
+//!   `INVALID_PARAMETER_RANGE`（`reason: "invalidExpectedLevels"`）。空对象
+//!   `{}` 合法 = 无标注。等级只活在本次分析请求里，不写工程。
 //! - `include_png_path`：缺省 `false`。Phase 1 **只接受参数、不产 PNG**：
 //!   给 `true` 时响应带 `pngPath: null` + 一句 `pngNote`（Phase 2 再接 Slint
 //!   离屏渲染，设计稿 §8.1），⛔ 不声称已实现未实现的功能。
@@ -62,6 +69,8 @@
 //!   `commit_delta` 为 0，`commitModel` 为 `"none"`）。
 
 use serde_json::Value;
+
+use std::collections::BTreeMap;
 
 use yeban_model::YebanProjectV1;
 
@@ -75,6 +84,46 @@ use super::{Domain, arg_bool, arg_str, require_active};
 
 /// 宿主没有注入 provider 时的 `data.reason`（与 `engineUnavailable` 同款命名）。
 pub const PROVIDER_UNAVAILABLE_REASON: &str = "providerUnavailable";
+
+/// 曲风预设档（Phase 2，设计稿 §3.6；MCP 侧的档名表）。
+///
+/// 权重本身住在 `yeban-dsp` 的 `TensionProfile::weights`（唯一事实源）；
+/// 这里只定档名与解析（MCP crate 禁依赖 dsp，见模块头）。真实 provider
+/// （`yeban-app`）把本档名映射成 dsp 档；stub 用同一组数字手算夹具张力
+/// （见下面的 `profile_weights`，与 dsp 逐位一致）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum Profile {
+    /// 均衡流行摇滚（默认）。
+    #[default]
+    Default,
+    /// 管弦 / 原声叙事。
+    Orchestral,
+    /// 电子 / 律动。
+    Electronic,
+}
+
+impl Profile {
+    /// 档名（进响应 `song_meta.profile`，与 dsp 的档名同一组词）。
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Default => "default",
+            Self::Orchestral => "orchestral",
+            Self::Electronic => "electronic",
+        }
+    }
+
+    /// 按档名解析；未知档名返回 `None`（handler 响亮拒绝，不静默回退）。
+    #[must_use]
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "default" => Some(Self::Default),
+            "orchestral" => Some(Self::Orchestral),
+            "electronic" => Some(Self::Electronic),
+            _ => None,
+        }
+    }
+}
 
 /// 时间分辨率（设计稿 §8.2：`resolution` 参数，`bar` | `beat`，缺省 `bar`）。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -96,12 +145,29 @@ impl Resolution {
     }
 }
 
-/// 传给 provider 的请求（只有分辨率；`include_png_path` 是 handler 层的呈现开关，
-/// 不进 provider —— provider 只算数，不产图）。
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// 传给 provider 的请求（分辨率 + Phase 2 的曲风档与期望等级表；
+/// `include_png_path` 是 handler 层的呈现开关，不进 provider —— provider
+/// 只算数，不产图）。
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SongOverviewRequest {
     /// 时间分辨率。
     pub resolution: Resolution,
+    /// 曲风预设档（缺省 [`Profile::Default`]）。
+    pub profile: Profile,
+    /// 按段落名给的期望张力等级（段落名 → 1–5 级；空表 = 无标注）。
+    pub expected_levels: BTreeMap<String, u8>,
+}
+
+impl SongOverviewRequest {
+    /// 只有分辨率的请求（缺省档、无期望等级表；测试与旧调用点的简写）。
+    #[must_use]
+    pub fn with_resolution(resolution: Resolution) -> Self {
+        Self {
+            resolution,
+            profile: Profile::Default,
+            expected_levels: BTreeMap::new(),
+        }
+    }
 }
 
 /// 整曲总览分析的**唯一**入口。
@@ -153,6 +219,9 @@ fn rounded(mut overview: SongOverview) -> SongOverview {
         row.lufs_short = round1(row.lufs_short);
         row.lufs_momentary_max = round1(row.lufs_momentary_max);
         row.score_dyn = round2(row.score_dyn);
+        row.envelope_lo = row.envelope_lo.map(round2);
+        row.envelope_hi = row.envelope_hi.map(round2);
+        row.target_deviation = round2(row.target_deviation);
         row.density_pitched_onsets_per_beat = round2(row.density_pitched_onsets_per_beat);
         row.density_pitched_duty = round2(row.density_pitched_duty);
         row.density_perc_onsets_per_beat = round2(row.density_perc_onsets_per_beat);
@@ -163,12 +232,51 @@ fn rounded(mut overview: SongOverview) -> SongOverview {
     overview
 }
 
+/// 读 `expected_levels` 实参：缺席 ⇒ 空表；对象 ⇒ 逐项校验（值须为 1–5 级
+/// 的整数）；其它形状 ⇒ `INVALID_PARAMETER_RANGE`（`reason: "invalidExpectedLevels"`）。
+fn arg_expected_levels(call: &ToolCall) -> Result<BTreeMap<String, u8>, Fault> {
+    let Some(value) = call.arguments.get("expected_levels") else {
+        return Ok(BTreeMap::new());
+    };
+    let object = value.as_object().ok_or_else(|| {
+        Fault::domain_with_data(
+            ErrorCode::InvalidParameterRange,
+            "`expected_levels` 必须是段落名到期望等级（1–5）的对象，如 {\"Chorus\": 5}",
+            serde_json::json!({
+                "reason": "invalidExpectedLevels",
+                "received": value,
+            }),
+        )
+    })?;
+    let mut levels = BTreeMap::new();
+    for (section, level) in object {
+        let level = level
+            .as_u64()
+            .filter(|&v| (1..=5).contains(&v))
+            .ok_or_else(|| {
+                Fault::domain_with_data(
+                    ErrorCode::InvalidParameterRange,
+                    format!("`expected_levels[\"{section}\"]` 必须是 1–5 的整数，实际收到 {level}"),
+                    serde_json::json!({
+                        "reason": "invalidExpectedLevels",
+                        "section": section,
+                        "received": level,
+                    }),
+                )
+            })?;
+        levels.insert(section.clone(), u8::try_from(level).expect("1–5 在 u8 内"));
+    }
+    Ok(levels)
+}
+
 /// `get_song_overview` 的只读规划（`plan` / `apply` 分工见 `domain/mod.rs` 模块头）。
 ///
 /// # Errors
 ///
 /// 无活跃工程（`NO_ACTIVE_PROJECT`）、`resolution` 非法
-/// （`INVALID_PARAMETER_RANGE`）、宿主未注入 provider（`CONFLICT` +
+/// （`INVALID_PARAMETER_RANGE`）、`profile` 非法（同码 +
+/// `reason: "unknownProfile"`）、`expected_levels` 非法（同码 +
+/// `reason: "invalidExpectedLevels"`）、宿主未注入 provider（`CONFLICT` +
 /// `providerUnavailable`），或 provider 自身响亮失败（原样转发）。
 pub fn plan_song_overview(domain: &Domain, call: &ToolCall) -> Result<super::Plan, Fault> {
     let project = require_active(domain)?;
@@ -186,6 +294,22 @@ pub fn plan_song_overview(domain: &Domain, call: &ToolCall) -> Result<super::Pla
             ));
         }
     };
+    let profile = match arg_str(call, "profile") {
+        None => Profile::Default,
+        Some(name) => Profile::from_name(name).ok_or_else(|| {
+            Fault::domain_with_data(
+                ErrorCode::InvalidParameterRange,
+                format!(
+                    "`profile` 只接受 \"default\"、\"orchestral\" 或 \"electronic\"，实际收到 \"{name}\""
+                ),
+                serde_json::json!({
+                    "reason": "unknownProfile",
+                    "accepted": ["default", "orchestral", "electronic"],
+                }),
+            )
+        })?,
+    };
+    let expected_levels = arg_expected_levels(call)?;
     let include_png_path = arg_bool(call, "include_png_path", false);
     let provider = domain.song_overview_provider().ok_or_else(|| {
         Fault::domain_with_data(
@@ -201,7 +325,11 @@ pub fn plan_song_overview(domain: &Domain, call: &ToolCall) -> Result<super::Pla
             }),
         )
     })?;
-    let request = SongOverviewRequest { resolution };
+    let request = SongOverviewRequest {
+        resolution,
+        profile,
+        expected_levels,
+    };
     let overview = provider.overview(project, &request)?;
     let overview = rounded(overview);
     let mut data = serde_json::to_value(&overview).map_err(|error| {
@@ -407,6 +535,48 @@ const FIXTURE_BANDS: [[f64; 8]; 8] = [
 ///   −12.0 dB ⇒ 超量 **+5.2 dB**；
 /// - `compression_squash` [7, 8]：谱面力度从第 6 小节 0.40 涨到第 7 小节
 ///   0.54（**+35.0%**），而渲染 LUFS 只从 −14.0 变到 −13.6（**+0.4 LU**）。
+///
+/// 偏离告警阈值（Phase 2）：实际张力超出期望带边界超过 0.15 即告警。
+/// 与 dsp 的 `ENVELOPE_DEVIATION_ALERT` 同值（dsp 是唯一事实源；stub 侧
+/// 的复制值由 mcp 测试钉死，见 `envelope_deviation_anomaly_appears`）。
+pub const ENVELOPE_DEVIATION_ALERT: f64 = 0.15;
+
+/// 期望带偏离异常（Phase 2）：把连续超阈的小节合并成一条
+/// `envelope_deviation` 异常（`bars: [起, 止]`，含端点；描述带最大偏离量）。
+/// 输入是小节级 `(bar, section, deviation)`，须按小节升序。
+fn envelope_anomalies(deviations: &[(u64, String, f64)]) -> Vec<DetectedAnomaly> {
+    let mut anomalies = Vec::new();
+    let mut run: Option<(u64, u64, String, f64)> = None;
+    let flush = |run: &mut Option<(u64, u64, String, f64)>,
+                 anomalies: &mut Vec<DetectedAnomaly>| {
+        if let Some((start, end, section, max_deviation)) = run.take() {
+            anomalies.push(DetectedAnomaly {
+                bars: [start, end],
+                anomaly_type: "envelope_deviation".to_owned(),
+                description: format!(
+                    "Section \"{section}\" tension deviates from its expected band by up to {max_deviation:.2}"
+                ),
+            });
+        }
+    };
+    for &(bar, ref section, deviation) in deviations {
+        match &mut run {
+            Some((_, end, run_section, max_deviation))
+                if bar == *end + 1 && section == run_section =>
+            {
+                *end = bar;
+                *max_deviation = max_deviation.max(deviation);
+            }
+            _ => {
+                flush(&mut run, &mut anomalies);
+                run = Some((bar, bar, section.clone(), deviation));
+            }
+        }
+    }
+    flush(&mut run, &mut anomalies);
+    anomalies
+}
+
 fn fixture_anomalies() -> Vec<DetectedAnomaly> {
     vec![
         DetectedAnomaly {
@@ -423,16 +593,13 @@ fn fixture_anomalies() -> Vec<DetectedAnomaly> {
     ]
 }
 
-/// §3.2 的张力公式（固定默认权重；固定心理声学锚点，⛔ 不用全曲 Min-Max）。
+/// §3.2 的张力公式（固定心理声学锚点，⛔ 不用全曲 Min-Max）。
 ///
-/// `T = 0.30·L̂ + 0.20·D̂ + 0.20·P̂ + 0.15·Ĥ + 0.15·Ô`，其中
+/// `T = w_L·L̂ + w_D·D̂ + w_P·P̂ + w_H·Ĥ + w_O·Ô`，其中
 /// `L̂ = clamp((LUFS + 36) / 28)`（锚点 −36 / −8 LUFS）、
 /// `D̂ = clamp(ln(1 + d) / ln(17))`（每秒 16 音符满分）、
 /// `P̂ = clamp((p − 36) / 48)`（锚点 C2 / C6）、
 /// `Ô = 0.5·min(N/8, 1) + 0.5·min(B/5, 1)`。
-/// 设计稿 §3.2 的张力公式（与 `yeban-dsp` 的 `tension` 同一结构）：
-/// `T = 0.30·L̂ + 0.20·D̂ + 0.20·P̂ + 0.15·Ĥ + 0.15·Ô`。
-///
 /// 密度项 `D̂ = clamp(ln(1+d)/ln(1+16))` 里 `d` 是**每秒等效触发数**
 /// （设计稿 §3.2：速度是密度计算的时基乘数）。stub 的夹具只有"每拍触发数"，
 /// 故 `d = (旋律起音/拍 + 打击起音/拍) × 拍/秒`（120 BPM ⇒ 2 拍/秒）。
@@ -440,17 +607,41 @@ fn fixture_anomalies() -> Vec<DetectedAnomaly> {
 /// ① 真实 provider 用 dsp 的聚类后 Onset 数（同拍 30 ms 内柱式和弦记 1 次），
 /// stub 没有逐音时序、聚不了类，用未聚类的两组之和（聚类数的上界）；
 /// ② 占空比 `density_pitched_duty` 不进密度公式（只作行字段回传，与 dsp 同口径）。
-/// 夹具小节的张力（设计稿 §3.2 公式
-/// `T = 0.30·L̂ + 0.20·D̂ + 0.20·P̂ + 0.15·Ĥ + 0.15·Ô`）。
+/// 权重按请求的曲风档取（Phase 2）：唯一事实源是 dsp 的
+/// `TensionProfile::weights`，这里的表与之逐位一致（见 `profile_weights`）。
 /// 密度项 `D̂` 直接读 `FixtureBar::density` 预计算值（现场算含 `ln`，
 /// 生产区调用超越函数会红 `probe_authenticity`（R56）；夹具数据固定，
 /// 预计算值与公式的 2 位小数取整逐位相同）。
-fn tension_of(bar: &FixtureBar) -> f64 {
+fn tension_of(bar: &FixtureBar, weights: [f64; 5]) -> f64 {
     let loudness = ((bar.lufs_short + 36.0) / 28.0).clamp(0.0, 1.0);
     let pitch = ((bar.pitch_center_midi - 36.0) / 48.0).clamp(0.0, 1.0);
     let orchestration =
         0.5 * (bar.active_tracks / 8.0).min(1.0) + 0.5 * (bar.octave_bandwidth / 5.0).min(1.0);
-    0.30 * loudness + 0.20 * bar.density + 0.20 * pitch + 0.15 * bar.harmony + 0.15 * orchestration
+    weights[0] * loudness
+        + weights[1] * bar.density
+        + weights[2] * pitch
+        + weights[3] * bar.harmony
+        + weights[4] * orchestration
+}
+
+/// 曲风档权重（Phase 2）：与 dsp `TensionProfile::weights` 逐位一致。
+/// Default [0.30, 0.20, 0.20, 0.15, 0.15]；Orchestral [0.25, 0.15, 0.30, 0.20, 0.10]；
+/// Electronic [0.35, 0.30, 0.10, 0.10, 0.15]。
+/// ⚠ 方差自适应**不在** stub 里：夹具是 8 行固定值、无逐拍分量，算不出 σ；
+/// stub 只证“档位换权重 ⇒ 张力跟着换”这一层，自适应由 dsp 专测钉死。
+fn profile_weights(profile: Profile) -> [f64; 5] {
+    match profile {
+        Profile::Default => [0.30, 0.20, 0.20, 0.15, 0.15],
+        Profile::Orchestral => [0.25, 0.15, 0.30, 0.20, 0.10],
+        Profile::Electronic => [0.35, 0.30, 0.10, 0.10, 0.15],
+    }
+}
+
+/// 期望等级 → 期望带（Phase 2，dsp `envelope_band` 的 f64 复算）：
+/// 中心 `0.1 + 0.2 × (L − 1)`，半宽 0.15，夹到 [0, 1]。
+fn envelope_band_f64(level: u8) -> (f64, f64) {
+    let center = 0.1 + 0.2 * f64::from(level - 1);
+    ((center - 0.15).max(0.0), (center + 0.15).min(1.0))
 }
 
 /// 测试替身 provider：对夹具工程返回上面那组固定序列。
@@ -469,20 +660,47 @@ impl SongOverviewProvider for StubSongOverviewProvider {
         _project: &YebanProjectV1,
         request: &SongOverviewRequest,
     ) -> Result<SongOverview, Fault> {
+        let weights = profile_weights(request.profile);
         let mut bar_series: Vec<BarRow> = Vec::new();
+        // 小节级偏离（拍级展开前收集：异常按小节合并，与 dsp 同口径）。
+        let mut envelope_deviations: Vec<(u64, String, f64)> = Vec::new();
         for (index, bar) in FIXTURE_BARS.iter().enumerate() {
             let bar_no = index as u64 + 1;
             let bar_start_sec = index as f64 * 2.0;
+            let tension = tension_of(bar, weights);
+            // 期望带（Phase 2）：按段落名查期望等级表；有等级时填带与偏离量，
+            // 无等级时两端为 None、偏离为 0.0（与 dsp 的 −1 哨兵对应，见 app 映射）。
+            let (envelope_lo, envelope_hi, target_deviation) =
+                match request.expected_levels.get(bar.section) {
+                    Some(&level) => {
+                        let (lo, hi) = envelope_band_f64(level);
+                        let deviation = if tension < lo {
+                            lo - tension
+                        } else if tension > hi {
+                            tension - hi
+                        } else {
+                            0.0
+                        };
+                        (Some(lo), Some(hi), deviation)
+                    }
+                    None => (None, None, 0.0),
+                };
+            if target_deviation > ENVELOPE_DEVIATION_ALERT {
+                envelope_deviations.push((bar_no, bar.section.to_owned(), target_deviation));
+            }
             let row = BarRow {
                 bar: bar_no,
                 beat: None,
                 time_sec: bar_start_sec,
                 section: bar.section.to_owned(),
-                tension: tension_of(bar),
+                tension,
                 valence_hue: bar.valence_hue,
                 lufs_short: bar.lufs_short,
                 lufs_momentary_max: bar.lufs_momentary_max,
                 score_dyn: bar.score_dyn,
+                envelope_lo,
+                envelope_hi,
+                target_deviation,
                 density_pitched_onsets_per_beat: bar.density_pitched_onsets_per_beat,
                 density_pitched_duty: bar.density_pitched_duty,
                 density_perc_onsets_per_beat: bar.density_perc_onsets_per_beat,
@@ -520,6 +738,8 @@ impl SongOverviewProvider for StubSongOverviewProvider {
             .iter()
             .map(|row| row.lufs_short)
             .fold(f64::INFINITY, f64::min);
+        let mut detected_anomalies = fixture_anomalies();
+        detected_anomalies.extend(envelope_anomalies(&envelope_deviations));
         Ok(SongOverview {
             schema_version: "1.0".to_owned(),
             song_meta: SongMeta {
@@ -527,14 +747,14 @@ impl SongOverviewProvider for StubSongOverviewProvider {
                 duration_sec: 16.0,
                 base_bpm: 120.0,
                 key_signature: "D minor".to_owned(),
-                profile: "orchestral_cinematic".to_owned(),
+                profile: request.profile.as_str().to_owned(),
             },
             band_definitions_hz: BAND_DEFINITIONS_HZ,
             structural_summary: StructuralSummary {
                 climax_bar: climax.bar,
                 climax_tension: climax.tension,
                 dynamic_range_lu: loudest - quietest,
-                detected_anomalies: fixture_anomalies(),
+                detected_anomalies,
             },
             bar_series,
         })

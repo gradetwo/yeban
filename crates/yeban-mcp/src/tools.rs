@@ -2199,7 +2199,7 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
     ToolSpec {
         spec_id: "MCP-TOOL-EXT-SONG-OVERVIEW",
         name: "get_song_overview",
-        summary: "返回整曲多层可视化总览图的小节级列式 JSON 与自动异常诊断摘要（设计稿 §8.2：`schema_version` / `song_meta` / `band_definitions_hz` / `structural_summary` / `bar_series`；归一化指标保留 2 位小数，响度与频段能量保留 1 位小数）。`resolution` 缺省 `\"bar\"`（一小节一行），给 `\"beat\"` 则一拍一行；`include_png_path` 缺省 `false`，Phase 1 只接受参数、不产 PNG（给 `true` 时 `pngPath: null` + 一句 Phase 2 说明，见设计稿 §8.1）。只读：不改工程、不落盘；需要活跃工程与宿主注入的 provider（分析住在 `yeban-dsp`，由 `yeban-app` 挂载时注入；未注入 ⇒ `CONFLICT` + `providerUnavailable`，⛔ 不返回空总览）。⚠ 工具名**不带** `yeban_` 前缀：名字由设计稿 §8.1/§12 定，是跨线契约名，见注册判据的例外说明。",
+        summary: "返回整曲多层可视化总览图的小节级列式 JSON 与自动异常诊断摘要（设计稿 §8.2：`schema_version` / `song_meta` / `band_definitions_hz` / `structural_summary` / `bar_series`；归一化指标保留 2 位小数，响度与频段能量保留 1 位小数）。`resolution` 缺省 `\"bar\"`（一小节一行），给 `\"beat\"` 则一拍一行；Phase 2：`profile`（曲风预设，缺省 `default`）与 `expected_levels`（段落期望张力等级表，缺省无标注）；`include_png_path` 缺省 `false`，Phase 1 只接受参数、不产 PNG（给 `true` 时 `pngPath: null` + 一句 Phase 2 说明，见设计稿 §8.1）。只读：不改工程、不落盘；需要活跃工程与宿主注入的 provider（分析住在 `yeban-dsp`，由 `yeban-app` 挂载时注入；未注入 ⇒ `CONFLICT` + `providerUnavailable`，⛔ 不返回空总览）。⚠ 工具名**不带** `yeban_` 前缀：名字由设计稿 §8.1/§12 定，是跨线契约名，见注册判据的例外说明。",
         scope: Scope::AppAdmin,
         // 只读：取 provider 已算好的总览做映射，不改工程、不落盘。
         side_effect: SideEffect::ReadOnly,
@@ -2213,6 +2213,18 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
                 "string",
                 false,
                 "时间分辨率：\"bar\"（缺省，一小节一行）或 \"beat\"（一拍一行）；其它值 ⇒ `INVALID_PARAMETER_RANGE`",
+            ),
+            param(
+                "profile",
+                "string",
+                false,
+                "曲风预设档（Phase 2，设计稿 §3.6）：缺省 `default`（均衡流行摇滚，权重 w_L 0.30 / w_D 0.20 / w_P 0.20 / w_H 0.15 / w_O 0.15）；`orchestral`（管弦/原声叙事：音区与和声权重调高，[0.25, 0.15, 0.30, 0.20, 0.10]）；`electronic`（电子/律动：响度与密度权重调高，[0.35, 0.30, 0.10, 0.10, 0.15]）。方差自适应：某特征全曲标准差 σ ≤ 0.05 时该权重衰减 50% 并按比例重分配给活跃特征。其它值 ⇒ `INVALID_PARAMETER_RANGE`（`reason: \"unknownProfile\"`，`accepted: [\"default\", \"orchestral\", \"electronic\"]`）",
+            ),
+            param(
+                "expected_levels",
+                "object",
+                false,
+                "段落期望张力等级表（Phase 2，设计稿 §3.5）：对象，键 = 段落名（如 `Chorus`），值 = 期望张力等级 1–5 的整数（例 `{\"Chorus\": 5}`）。期望带中心 = 0.1 + 0.2 × (等级 − 1)，半宽 0.15；实际张力超出带边界超过 0.15 的小节进 `envelope_deviation` 异常。空对象 `{}` 合法 = 无标注。非对象 ⇒ 协议层 `-32602`（注册表类型先拒）；对象内非整数值、越界等级 ⇒ `INVALID_PARAMETER_RANGE`（`reason: \"invalidExpectedLevels\"`）。等级只活在本次分析请求里，不写工程",
             ),
             param(
                 "include_png_path",

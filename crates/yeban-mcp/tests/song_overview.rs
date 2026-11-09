@@ -1,4 +1,5 @@
-//! 整曲多层可视化总览图（`get_song_overview`，设计稿 §8，Phase 1）的端到端判据。
+//! 整曲多层可视化总览图（`get_song_overview`，设计稿 §8，Phase 1；Phase 2
+//! 的 `profile` / `expected_levels` 参数与包络列也在本文件钉死）的端到端判据。
 //!
 //! 全部断言都以** stub provider 的同一份 8 小节序列**为被测对象，但期望值
 //! 走本文件内**独立重算**的第二条路径：张力按设计稿 §3.2 的公式从分量表
@@ -128,12 +129,16 @@ const BANDS: [[f64; 8]; 8] = [
 ];
 
 /// 设计稿 §3.2 字面公式（固定锚点，不做全曲 Min-Max）：
-/// `T = 0.30·L̂ + 0.20·D̂ + 0.20·P̂ + 0.15·Ĥ + 0.15·Ô`。
+/// `T = w_L·L̂ + w_D·D̂ + w_P·P̂ + w_H·Ĥ + w_O·Ô`。
 /// 密度项 `D̂ = clamp(ln(1+d)/ln(1+16))` 里 `d` 是**每秒等效触发数**：
 /// `d = (旋律起音/拍 + 打击起音/拍) × 拍/秒`（120 BPM ⇒ 2 拍/秒；速度是
 /// 密度计算的时基乘数）。占空比不进密度公式（与 dsp 同口径）。
 /// 本函数是**独立于 handler 的第二份实现**：分量表另抄、公式逐字照设计稿抄。
-fn recompute_tension(c: &[f64; 11]) -> f64 {
+/// 权重按曲风档取（Phase 2，设计稿 §3.6；与 dsp 的 `TensionProfile::weights`
+/// 逐位一致）：Default [0.30, 0.20, 0.20, 0.15, 0.15]、
+/// Orchestral [0.25, 0.15, 0.30, 0.20, 0.10]、
+/// Electronic [0.35, 0.30, 0.10, 0.10, 0.15]。
+fn recompute_tension_with_weights(c: &[f64; 11], weights: [f64; 5]) -> f64 {
     let lufs = c[0];
     let pitched_onsets = c[3];
     let perc_onsets = c[5];
@@ -147,8 +152,17 @@ fn recompute_tension(c: &[f64; 11]) -> f64 {
     let p_hat = ((pitch_center - 36.0) / 48.0).clamp(0.0, 1.0);
     // `Ô`：配器宽度（活跃轨数 / 8 与八度带宽 / 5 各占一半）。
     let o_hat = 0.5 * (active_tracks / 8.0).min(1.0) + 0.5 * (octave_bw / 5.0).min(1.0);
-    let t = 0.30 * l_hat + 0.20 * d_hat + 0.20 * p_hat + 0.15 * harmony + 0.15 * o_hat;
+    let t = weights[0] * l_hat
+        + weights[1] * d_hat
+        + weights[2] * p_hat
+        + weights[3] * harmony
+        + weights[4] * o_hat;
     (t * 100.0).round() / 100.0
+}
+
+/// 缺省档（Default）的张力重算（旧测试的简写）。
+fn recompute_tension(c: &[f64; 11]) -> f64 {
+    recompute_tension_with_weights(c, [0.30, 0.20, 0.20, 0.15, 0.15])
 }
 
 fn round2(v: f64) -> f64 {
@@ -170,6 +184,24 @@ fn error_data(response: &Value) -> (&str, &Value) {
     )
 }
 
+/// 同上，但**不拆包**：协议层（JSON-RPC）的拒绝也要能被断言。
+///
+/// 需要它是因为注册表类型校验先于领域层：`expected_levels` 不是对象时，
+/// 请求走不到 handler（`-32602`），于是"参数问题"在这里有**两个合法的落点**
+/// （口径先例：`tests/export_stems.rs` 的 `call_raw`）。
+fn call_raw(dispatcher: &mut Dispatcher, arguments: Value) -> yeban_mcp::Response {
+    let auth = bearer(dispatcher);
+    let line = json!({
+        "jsonrpc": "2.0",
+        "id": "t",
+        "method": "tools/call",
+        "params": {"name": "get_song_overview", "arguments": arguments}
+    })
+    .to_string();
+    let outcome = dispatcher.handle_line(Channel::Http, Some(&auth), &line);
+    outcome.response.expect("必须有响应")
+}
+
 // ---------------------------------------------------------------------------
 // 判据
 // ---------------------------------------------------------------------------
@@ -189,7 +221,8 @@ fn stub_bar_overview_matches_independent_recomputation() {
     assert_eq!(data["song_meta"]["duration_sec"], 16.0);
     assert_eq!(data["song_meta"]["base_bpm"], 120.0);
     assert_eq!(data["song_meta"]["key_signature"], "D minor");
-    assert_eq!(data["song_meta"]["profile"], "orchestral_cinematic");
+    // 缺省档 = `default`（Phase 2：stub 的 profile 现在跟请求走，不再写死）。
+    assert_eq!(data["song_meta"]["profile"], "default");
     assert_eq!(data["band_definitions_hz"], json!(BAND_DEFINITIONS_HZ));
     // 缺省不给 `include_png_path` 时两个键根本不出席（不是 null 占位）。
     assert!(data.get("pngPath").is_none(), "缺省不给 png_path");
@@ -235,6 +268,10 @@ fn stub_bar_overview_matches_independent_recomputation() {
             );
         }
         assert!(row.get("beat").is_none(), "bar 模式不带 beat 键");
+        // 无期望等级表时包络列缺席、偏离为 0.0（Phase 2：`None` 不序列化）。
+        assert!(row.get("envelope_lo").is_none(), "无标注时不带 envelope_lo");
+        assert!(row.get("envelope_hi").is_none(), "无标注时不带 envelope_hi");
+        assert_eq!(row["target_deviation"], 0.0, "无标注时偏离为 0.0");
     }
 
     // 结构摘要：高潮在第 8 小节（张力 0.79），动态范围 10.0 LU。
@@ -441,6 +478,10 @@ fn struct_round_trip_and_rounding() {
         for b in &row.bands_tilted_db {
             assert_eq!((*b * 10.0).round() / 10.0, *b);
         }
+        // 无期望等级表时包络列缺席、偏离为 0.0（Phase 2 的反序列化口径）。
+        assert_eq!(row.envelope_lo, None);
+        assert_eq!(row.envelope_hi, None);
+        assert_eq!(row.target_deviation, 0.0);
     }
     assert_eq!(
         (overview.structural_summary.dynamic_range_lu * 10.0).round() / 10.0,
@@ -552,4 +593,183 @@ fn provider_sees_the_project_after_it_is_replaced() {
         Some(second),
         "换工程后 provider 必须看到新工程（快照接线会在这里红）"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Phase 2（设计稿 §3.5 / §3.6）：曲风预设与期望等级表
+// ---------------------------------------------------------------------------
+
+#[test]
+fn orchestral_profile_changes_tension_and_meta_profile() {
+    let mut dispatcher = dispatcher_with_project(filled_project(), true);
+    let response = call_tool(
+        &mut dispatcher,
+        "get_song_overview",
+        json!({"profile": "orchestral"}),
+    );
+    let data = ok_data(&response);
+    assert_eq!(data["song_meta"]["profile"], "orchestral");
+    // 张力按管弦权重独立重算（第二条路径）：逐位一致，且第 8 小节
+    // 0.75 ≠ 缺省档 0.79（档位真的换了权重，不只是改档名）。
+    let series = data["bar_series"].as_array().expect("bar_series");
+    assert_eq!(series.len(), 8);
+    for (i, row) in series.iter().enumerate() {
+        let expected =
+            recompute_tension_with_weights(&COMPONENTS[i], [0.25, 0.15, 0.30, 0.20, 0.10]);
+        assert_eq!(
+            row["tension"].as_f64().expect("tension"),
+            expected,
+            "第 {} 小节管弦档张力",
+            i + 1
+        );
+    }
+    assert_eq!(series[7]["tension"], 0.75);
+    assert_eq!(recompute_tension(&COMPONENTS[7]), 0.79);
+}
+
+#[test]
+fn electronic_profile_changes_tension() {
+    let mut dispatcher = dispatcher_with_project(filled_project(), true);
+    let response = call_tool(
+        &mut dispatcher,
+        "get_song_overview",
+        json!({"profile": "electronic"}),
+    );
+    let data = ok_data(&response);
+    assert_eq!(data["song_meta"]["profile"], "electronic");
+    let series = data["bar_series"].as_array().expect("bar_series");
+    for (i, row) in series.iter().enumerate() {
+        let expected =
+            recompute_tension_with_weights(&COMPONENTS[i], [0.35, 0.30, 0.10, 0.10, 0.15]);
+        assert_eq!(
+            row["tension"].as_f64().expect("tension"),
+            expected,
+            "第 {} 小节电子档张力",
+            i + 1
+        );
+    }
+    // 第 8 小节电子档 0.84 ≠ 缺省档 0.79。
+    assert_eq!(series[7]["tension"], 0.84);
+}
+
+#[test]
+fn unknown_profile_is_invalid_parameter_range() {
+    let mut dispatcher = dispatcher_with_project(filled_project(), true);
+    let response = call_tool(
+        &mut dispatcher,
+        "get_song_overview",
+        json!({"profile": "rock"}),
+    );
+    let (code, data) = error_data(&response);
+    assert_eq!(code, "INVALID_PARAMETER_RANGE");
+    assert_eq!(data["reason"], "unknownProfile");
+    assert_eq!(
+        data["accepted"],
+        json!(["default", "orchestral", "electronic"])
+    );
+}
+
+#[test]
+fn expected_levels_fill_envelope_band_and_flag_deviation() {
+    let mut dispatcher = dispatcher_with_project(filled_project(), true);
+    let response = call_tool(
+        &mut dispatcher,
+        "get_song_overview",
+        json!({"expected_levels": {"Chorus": 5, "Intro": 1}}),
+    );
+    let data = ok_data(&response);
+    let series = data["bar_series"].as_array().expect("bar_series");
+    assert_eq!(series.len(), 8);
+
+    // Intro（L1，带 [0, 0.25]）：第 1 小节张力 0.42 偏离 0.17，
+    // 第 2 小节张力 0.50 偏离 0.25，两小节都超 0.15 告警阈值。
+    assert_eq!(series[0]["envelope_lo"], 0.0);
+    assert_eq!(series[0]["envelope_hi"], 0.25);
+    assert_eq!(series[0]["target_deviation"], 0.17);
+    assert_eq!(series[1]["envelope_lo"], 0.0);
+    assert_eq!(series[1]["envelope_hi"], 0.25);
+    assert_eq!(series[1]["target_deviation"], 0.25);
+    // Chorus（L5，带 [0.75, 1.0]）：第 5 小节张力 0.69 偏离 0.06（带内告警线下），
+    // 第 6 小节张力 0.58 偏离 0.17（超阈），第 7 小节张力 0.73 偏离 0.02。
+    assert_eq!(series[4]["envelope_lo"], 0.75);
+    assert_eq!(series[4]["envelope_hi"], 1.0);
+    assert_eq!(series[4]["target_deviation"], 0.06);
+    assert_eq!(series[5]["target_deviation"], 0.17);
+    assert_eq!(series[6]["target_deviation"], 0.02);
+    // Verse 无标注：包络列缺席、偏离为 0.0。
+    assert!(series[2].get("envelope_lo").is_none());
+    assert!(series[2].get("envelope_hi").is_none());
+    assert_eq!(series[2]["target_deviation"], 0.0);
+
+    // 异常：2 条夹具异常 + 2 条包络偏离异常（Intro [1,2] 与 Chorus [6,6]，
+    // 连续超阈小节合并，单小节也成条）。
+    let anomalies = data["structural_summary"]["detected_anomalies"]
+        .as_array()
+        .expect("detected_anomalies");
+    assert_eq!(anomalies.len(), 4, "2 条夹具异常 + 2 条包络偏离异常");
+    assert_eq!(anomalies[2]["type"], "envelope_deviation");
+    assert_eq!(anomalies[2]["bars"], json!([1, 2]));
+    assert!(
+        anomalies[2]["description"]
+            .as_str()
+            .expect("description")
+            .contains("Intro"),
+        "{}",
+        anomalies[2]["description"]
+    );
+    assert_eq!(anomalies[3]["type"], "envelope_deviation");
+    assert_eq!(anomalies[3]["bars"], json!([6, 6]));
+    assert!(
+        anomalies[3]["description"]
+            .as_str()
+            .expect("description")
+            .contains("Chorus"),
+        "{}",
+        anomalies[3]["description"]
+    );
+
+    // 包络列反序列化回 structs：有等级的行带值，无等级的行缺席。
+    let overview: SongOverview =
+        serde_json::from_value(data.clone()).expect("SongOverview 反序列化");
+    assert_eq!(overview.bar_series[0].envelope_lo, Some(0.0));
+    assert_eq!(overview.bar_series[0].envelope_hi, Some(0.25));
+    assert_eq!(overview.bar_series[0].target_deviation, 0.17);
+    assert_eq!(overview.bar_series[2].envelope_lo, None);
+    assert_eq!(overview.bar_series[2].envelope_hi, None);
+    assert_eq!(overview.bar_series[2].target_deviation, 0.0);
+}
+
+#[test]
+fn invalid_expected_levels_are_rejected() {
+    let mut dispatcher = dispatcher_with_project(filled_project(), true);
+    // 非对象 ⇒ 协议层先拒（`-32602`，注册表类型校验；请求走不到领域层）。
+    let response = call_raw(&mut dispatcher, json!({"expected_levels": 5}));
+    assert!(response.result.is_none(), "类型非法不得同时带 result");
+    let error = response.error.expect("非对象必须是 JSON-RPC 层错误");
+    assert_eq!(error.code, -32602, "类型非法是 INVALID_PARAMS");
+    let detail = serde_json::to_string(&error.data).expect("错误 data 必须可序列化");
+    assert!(
+        detail.contains("expected_levels"),
+        "报文必须点名是哪个参数: {detail}"
+    );
+    // 对象内等级 0、等级 6、非整数、字符串值 ⇒ 领域层响亮拒绝。
+    for arguments in [
+        json!({"expected_levels": {"Chorus": 0}}),
+        json!({"expected_levels": {"Chorus": 6}}),
+        json!({"expected_levels": {"Chorus": 3.5}}),
+        json!({"expected_levels": {"Chorus": "high"}}),
+    ] {
+        let response = call_tool(&mut dispatcher, "get_song_overview", arguments);
+        let (code, data) = error_data(&response);
+        assert_eq!(code, "INVALID_PARAMETER_RANGE");
+        assert_eq!(data["reason"], "invalidExpectedLevels");
+    }
+    // 空对象合法 = 无标注（与缺省调用逐位相同）。
+    let empty = call_tool(
+        &mut dispatcher,
+        "get_song_overview",
+        json!({"expected_levels": {}}),
+    );
+    let plain = call_tool(&mut dispatcher, "get_song_overview", json!({}));
+    assert_eq!(ok_data(&empty), ok_data(&plain));
 }

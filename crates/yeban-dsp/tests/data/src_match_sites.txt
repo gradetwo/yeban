@@ -7,7 +7,7 @@
 #      实测本 crate 这三类 needle **各 0 处** ⇒ 当前口径**无漏判**（不是靠巧合）。
 #   ③ 注释：跳过 trim_start() 后以 // 开头的行。
 #   ④ 行尾：text.lines() 已去 \n／\r；读表时走 read_evidence_text() 再归一化（R134）。
-# 合计 51 处：literal 7 ／ variable 44；其中 **twin_point_risk 0 处**
+# 合计 53 处：literal 7 ／ variable 46；其中 **twin_point_risk 0 处**
 src/comb.rs|443|variable|&c.feedback(|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
 src/comb.rs|444|variable|&c.damp(|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
 src/compressor.rs|1431|variable|&gain|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
@@ -47,6 +47,8 @@ src/polysynth.rs|2233|variable||index| {|variable_needle|needle 非字面量：�
 src/polysynth.rs|2302|variable||index| {|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
 src/polysynth.rs|2761|variable||index| whole[*index].to_bits(|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
 src/smoothing.rs|472|variable|&smoother.alpha(|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
+src/song_overview.rs|209|variable|&level|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
+src/song_overview.rs|355|variable|&level|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
 src/tape.rs|432|variable|&params.drive|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
 src/tape.rs|433|variable|&params.mix|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
 src/tape.rs|435|variable|&params.trim_db|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点

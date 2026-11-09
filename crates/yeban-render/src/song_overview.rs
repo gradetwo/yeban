@@ -44,9 +44,10 @@
 //!
 //! ## 缓存
 //!
-//! 整曲哈希 = 工程 JSON（确定性序列化）+ 渲染设置（采样率、种子）的 SHA-256。
+//! 整曲哈希 = 工程 JSON（确定性序列化）+ 渲染设置（采样率、种子）+
+//! 分析选项（曲风档、期望等级表，Phase 2）的 SHA-256。
 //! 哈希只认**内容**：工程里任何一位变化（音符、速度、调号、采样器绑定、
-//! 设备参数、元数据时间戳）或渲染设置变化 ⇒ 哈希变 ⇒ 旧结果失效。
+//! 设备参数、元数据时间戳）或渲染设置 / 分析选项变化 ⇒ 哈希变 ⇒ 旧结果失效。
 //! 缓存是进程内内存（[`SongOverviewCache`]），不写盘、不碰持久化 AST。
 //! 采样率必须与工程 `audio_config` 一致（引擎快照按工程采样率投影），
 //! 否则 [`SongOverviewError::SampleRateMismatch`] 响亮失败。
@@ -54,7 +55,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use sha2::{Digest, Sha256};
-use yeban_dsp::song_overview::{AudioInput, SongOverview, analyze_song_overview};
+use yeban_dsp::song_overview::{
+    AnalysisOptions, AudioInput, SongOverview, analyze_song_overview_with_options,
+};
 use yeban_engine::mixer::{PanLaw, pan_gains};
 use yeban_model::{
     ClipContent, DeviceKind, EntityId, PPQ, RoutingKind, YebanProjectV1,
@@ -213,12 +216,19 @@ impl AudioSource for Silence {
     }
 }
 
-/// 工程 + 渲染设置的整曲哈希（SHA-256）。
+/// 工程 + 渲染设置 + 分析选项的整曲哈希（SHA-256）。
 ///
 /// 工程侧是 `serde_json` 确定性序列化（`BTreeMap` 键升序、结构体字段定序）；
-/// 设置侧是采样率与种子的定长小端字节。任一一位变化 ⇒ 哈希变 ⇒ 缓存失效。
+/// 设置侧是采样率与种子的定长小端字节；选项侧是曲风档名与期望等级表
+/// （`BTreeMap` 升序：段落名 + 等级字节）。任一一位变化 ⇒ 哈希变 ⇒ 缓存失效。
+/// Phase 2 加选项侧：同一工程换档 / 改期望等级必须是不命中的另一条缓存项，
+/// ⛔ 不许返回 Default 档的旧结果。
 #[must_use]
-pub fn song_overview_hash(project: &YebanProjectV1, settings: &RenderSettings) -> [u8; 32] {
+pub fn song_overview_hash(
+    project: &YebanProjectV1,
+    settings: &RenderSettings,
+    options: &AnalysisOptions,
+) -> [u8; 32] {
     let mut hasher = Sha256::new();
     // `YebanProjectV1` 的 `Serialize` 是确定性的（见上）；序列化失败只可能
     // 是内存分配失败 ⇒ 退回 `Debug` 文本（同样确定），⛔ 不 panic。
@@ -228,6 +238,11 @@ pub fn song_overview_hash(project: &YebanProjectV1, settings: &RenderSettings) -
     }
     hasher.update(settings.sample_rate_hz.to_le_bytes());
     hasher.update(settings.seed.to_le_bytes());
+    hasher.update(options.profile.as_str().as_bytes());
+    for (section, level) in &options.expected_levels {
+        hasher.update(section.as_bytes());
+        hasher.update([*level]);
+    }
     let output = hasher.finalize();
     let mut digest = [0u8; 32];
     for (slot, byte) in digest.iter_mut().zip(output.iter()) {
@@ -311,6 +326,8 @@ impl SongOverviewCache {
 ///
 /// 命中缓存时不渲染、不分析，直接返回克隆结果（`hit = true`）。
 /// 未命中时全量跑一遍后把结果存入缓存（`hit = false`）。
+/// `options` 是 Phase 2 分析选项（曲风档 / 期望等级表）：进哈希（见
+/// [`song_overview_hash`]），也进分析（[`analyze_song_overview_with_options`]）。
 ///
 /// # Errors
 ///
@@ -320,12 +337,13 @@ pub fn cached_overview<F>(
     cache: &mut SongOverviewCache,
     project: &YebanProjectV1,
     settings: &RenderSettings,
+    options: &AnalysisOptions,
     mut sfz_provider: F,
 ) -> Result<(SongOverview, bool), SongOverviewError>
 where
     F: FnMut(EntityId, &str) -> ArmedSfzInput,
 {
-    let hash = song_overview_hash(project, settings);
+    let hash = song_overview_hash(project, settings, options);
     if let Some(cached) = cache.get(&hash).cloned() {
         cache.hits = cache.hits.saturating_add(1);
         return Ok((cached, true));
@@ -334,7 +352,7 @@ where
     let rendered = render_project_to_buffer(project, settings, &mut sfz_provider)?;
     let score = score_input_from_project(project);
     let audio = rendered.as_audio_input();
-    let overview = analyze_song_overview(&score, Some(&audio));
+    let overview = analyze_song_overview_with_options(&score, Some(&audio), options);
     cache.insert(hash, overview.clone());
     Ok((overview, false))
 }

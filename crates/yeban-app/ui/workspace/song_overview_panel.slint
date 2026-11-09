@@ -1,6 +1,7 @@
-// 夜半 (Yeban) — 整曲多层可视化总览图（Song Overview）Phase 1
+// 夜半 (Yeban) — 整曲多层可视化总览图（Song Overview）Phase 1 + Phase 2 核心三项
 //
-// 设计稿：`~/workspace/yeban-songmap-design.md`（§7 视觉编码与交互、§11 MVP Phase 1）。
+// 设计稿：`~/workspace/yeban-songmap-design.md`（§7 视觉编码与交互、§11 MVP Phase 1；
+// Phase 2 核心三项：§3.5 期望结构包络带、§3.6 曲风预设、§5.1 谱面力度虚线对照）。
 //
 // 布局（设计稿 §7.1）：总高 104 px —— 主画布 82 px（三层正交叠合：底层 8 行频率热力图
 // Magma 色表；中层能量层半透明面积冰青色 Alpha 0.22；顶层情绪起伏线 2.5 px + 4 px 深色
@@ -31,6 +32,9 @@
 //   5. 全屏最大化（Wang 2026-11-08 19:56 要求，设计稿 §7.3 之外）：左上全屏键
 //      或 `Esc`（`Action::Cancel` 级联）进出全屏；4 项交互在全屏态下照常可用
 //      （分数换算不依赖像素对齐）。
+//   6. Phase 2（设计稿 §3.5 / §3.6 / §5.1）：左上预设键循环曲风档（均衡 → 管弦 →
+//      电子）；点段落标签循环该段期望等级（无 → 1 → … → 5 → 无），期望带画浅灰带、
+//      偏离超 0.15 的小节画琥珀高亮；谱面力度细虚线叠在 LUFS 面积上（与能量层同显隐）。
 //
 // 时间轴对齐：画布左缘 = 左侧资源栏宽 + 168 px 轨道头列（与编排视图的时间轴同一起点），
 // 右缘留出右 AI 协作栏宽（compact 时为 0）。`time-origin-x` / `right-reserve` 由
@@ -60,6 +64,15 @@ export component SongOverviewPanel inherits Rectangle {
     in property <[float]> density-pitched: [];
     in property <[float]> density-perc: [];
     in property <[float]> density-duty: [];
+    // Phase 2（设计稿 §5.1）：谱面合成力度（0–1），画成 LUFS 面积上的细虚线。
+    in property <[float]> score-dyn: [];
+    // Phase 2（设计稿 §3.5）：期望带下沿 / 上沿（无等级的小节为 −1 哨兵，
+    // 面板只画 ≥ 0 的带）与偏离告警（面板画琥珀高亮）。
+    in property <[float]> envelope-lo: [];
+    in property <[float]> envelope-hi: [];
+    in property <[bool]> envelope-alert: [];
+    // Phase 2（设计稿 §3.6）：曲风档中文名（"均衡" / "管弦" / "电子"，Rust 算好）。
+    in property <string> profile: "均衡";
     in property <[string]> section-names: [];
     in property <[int]> section-start-bars: [];
     in property <[string]> ruler-labels: [];
@@ -112,6 +125,10 @@ export component SongOverviewPanel inherits Rectangle {
     callback toggle-collapsed();
     /// 全屏键 / `Esc` ⇒ 翻转 `fullscreen`（进入时宿主同时清 `collapsed`）。
     callback toggle-fullscreen();
+    /// Phase 2 预设键 ⇒ 曲风档循环（Default → Orchestral → Electronic）。
+    callback profile-cycle();
+    /// Phase 2 段落标签 ⇒ 该段落的期望等级循环（None → 1 → … → 5 → None）。
+    callback target-cycle(int);
 
     // ---- 派生几何（本文件内唯一的算术）----
     property <length> canvas-width: max(0px, root.width - root.time-origin-x - root.right-reserve);
@@ -214,6 +231,43 @@ export component SongOverviewPanel inherits Rectangle {
             background: #38BDF8;
             opacity: 0.22;
             visible: root.show-energy;
+        }
+
+        // ---- Phase 2（设计稿 §5.1）：谱面力度细虚线（近白 #F8FAFC，1.5 px），叠在
+        // LUFS 面积上，与能量层同显隐（`show-energy`）。每小节一段居中短线（55%
+        // 宽），小节间留白即虚线断点；纵轴与张力线同一 0–1 量程，形状可直接对照。
+        for bar in root.total-bars : Rectangle {
+            x: bar * parent.width / root.total-bars + 0.225 * parent.width / root.total-bars;
+            y: (1.0 - root.score-dyn[bar]) * (parent.height - 1.5px);
+            width: 0.55 * parent.width / root.total-bars;
+            height: 1.5px;
+            background: #F8FAFC;
+            visible: root.show-energy;
+        }
+
+        // ---- Phase 2（设计稿 §3.5）：期望结构包络带（浅灰 #9CA3AF，Alpha 0.20）。
+        // 每小节一格，纵向 = [envelope-lo, envelope-hi]；无等级（哨兵 −1）不画。
+        // 画在能量层之后、张力线之前；带是张力期望，随 `show-tension` 显隐。
+        for bar in root.total-bars : Rectangle {
+            x: bar * parent.width / root.total-bars;
+            y: (1.0 - root.envelope-hi[bar]) * parent.height;
+            width: parent.width / root.total-bars + 1px;
+            height: max(0.0, (root.envelope-hi[bar] - root.envelope-lo[bar])) * parent.height;
+            background: #9CA3AF;
+            opacity: 0.20;
+            visible: root.show-tension && root.envelope-lo[bar] >= 0.0;
+        }
+
+        // ---- Phase 2（设计稿 §3.5）：偏离告警高亮（琥珀 #F59E0B，Alpha 0.18，
+        // 贯穿画布全高）。只在 `envelope-alert` 为真的小节画，与期望带同显隐。
+        for bar in root.total-bars : Rectangle {
+            x: bar * parent.width / root.total-bars;
+            y: 0;
+            width: parent.width / root.total-bars + 1px;
+            height: parent.height;
+            background: #F59E0B;
+            opacity: 0.18;
+            visible: root.show-tension && root.envelope-alert[bar];
         }
 
         // ---- 顶层：情绪起伏线（2.5 px + 4 px 深色描边护城河，随调式效价变色）----
@@ -467,6 +521,18 @@ export component SongOverviewPanel inherits Rectangle {
             font-size: 8px;
             overflow: elide;
         }
+
+        // ---- Phase 2（设计稿 §3.5）：段落标签点击 ⇒ 该段落期望等级循环。
+        // 每段一格（段落起始小节那一格，8 px 高），无 accessible-id（与视口框内
+        // 的 TouchArea 同款：纯指针控件，不进无障碍树）。声明在标签文字之后 ⇒
+        // 压在文字上面先拿到点击；点标签不触发底层的 seek（同款层叠口径见视口框）。
+        for _[section-index] in root.section-names : TouchArea {
+            x: root.section-start-bars[section-index] * parent.width / root.total-bars;
+            y: 14px;
+            width: parent.width / root.total-bars;
+            height: 8px;
+            clicked => { root.target-cycle(section-index); }
+        }
     }
 
     // ================================================================ ③ 图层开关胶囊（右上）
@@ -590,6 +656,42 @@ export component SongOverviewPanel inherits Rectangle {
             width: parent.width;
             height: parent.height;
             clicked => { root.toggle-fullscreen(); }
+        }
+    }
+
+    // ================================================================ Phase 2 曲风预设键（全屏键右侧，4 px 间隙）
+    // 与折叠键 / 全屏键同款式；点击 ⇒ `profile-cycle`（档位循环由 Rust 写）。
+    // 文字 = "预设：" + 当前档中文名（Rust 算好，`profile` 属性）。
+    Rectangle {
+        x: 184px;
+        y: 2px;
+        width: 86px;
+        height: 16px;
+        background: Tokens.bg-panel;
+        border-radius: 8px;
+        border-width: 1px;
+        border-color: Tokens.line;
+        accessible-role: button;
+        accessible-id: "song-overview-profile-button";
+        accessible-label: "曲风预设";
+        accessible-value: root.profile;
+        accessible-action-default => { root.profile-cycle(); }
+
+        UiText {
+            x: 0;
+            y: 0;
+            width: parent.width;
+            height: parent.height;
+            text: "预设：" + root.profile;
+            color: Tokens.ink-1;
+            font-size: Tokens.font-size-xs;
+            horizontal-alignment: center;
+        }
+
+        TouchArea {
+            width: parent.width;
+            height: parent.height;
+            clicked => { root.profile-cycle(); }
         }
     }
 }

@@ -44,7 +44,7 @@
 //!
 //! | 面 | reason 数 | 规范行数 | SHA-256 |
 //! | :--- | ---: | ---: | :--- |
-//! | `reason`（**可分类**面：字面量 ＋ 可解析的字面量 `let` ＋ **调用点传播**，含顺序） | 240 | 1025 | `58f2a81612ca0d318ea30a51f920f353df39f471e028d88acac6d42de25d7a7e` |
+//! | `reason`（**可分类**面：字面量 ＋ 可解析的字面量 `let` ＋ **调用点传播**，含顺序） | 242 | 1032 | `7dc30cc50e9f77a5b482ee44345e547da301a6f2e619720b35145987f4459d7a` |
 //!
 //! ⚠ `ADR-0030`（`yeban_export_stems`）：两条新字面站点 `masterBusTrack` /
 //! `notASourceNode`（各带 `trackId` / `name` / `reason` 三个同级键）进入规范文本
@@ -83,6 +83,16 @@
 //! 该文件本身不含 `reason` 键）；**新摘要照抄判据自己的报出值**（本表里那一位与
 //! `FROZEN_REASON_SURFACE_SHA256` 在同一次提交里一起换成新值）。
 //!
+//! ⚠ 整曲总览图 Phase 2（本支）：`domain/song_overview.rs` 新增 2 个 reason
+//! （`invalidExpectedLevels` 2 处字面站点、`unknownProfile` 1 处）⇒ reason 数
+//! 240 → 242、规范行数 1025 → 1032（2 reason 行 ＋ 5 键行：`invalidExpectedLevels`
+//! 带 `received` / `reason` / `section` 3 键，`unknownProfile` 带 `accepted` /
+//! `reason` 2 键）；`reason` 键站点 273 → 276、字面站点 262 → 265、总出现
+//! 276 → 279；新摘要
+//! `7dc30cc50e9f77a5b482ee44345e547da301a6f2e619720b35145987f4459d7a`
+//! 由本判据的 `left:` 报出值照抄（本表里那一位与
+//! `FROZEN_REASON_SURFACE_SHA256` 在同一次提交里一起换成新值）。
+//!
 //! ⚠ `#274`：摘要随"登记位置搬进 provider"重钉（集合不变、顺序变了）；
 //! 见 `FROZEN_REASON_SURFACE_SHA256` 的沿革注释。
 //! ⚠ `#340`：摘要**只覆盖可分类面**。运行时站点（`format!` / 转发入参 /
@@ -100,7 +110,7 @@ use yeban_mcp::undo_session::read_rust_sources;
 /// （2026-10-28 起, 见 [`PROPAGATED_REASON_SITES`]）。⛔ 真看不见的运行时站点不进这张表，
 /// 由 [`EXEMPT_DYNAMIC_REASON_SITES`] 逐条登记。
 /// 这是黄金表：任何改名 / 新增 / 删除都必须**故意**改这一行。
-pub const GOLDEN_REASONS: [&str; 236] = [
+pub const GOLDEN_REASONS: [&str; 238] = [
     "araSessionNotFound",
     "assetChannelLayout",
     "assetDecodeFailed",
@@ -154,6 +164,8 @@ pub const GOLDEN_REASONS: [&str; 236] = [
     "framesExceedCap",
     "indexTooLarge",
     "invalidDeviceDefinition",
+    // ⭐ Songmap Phase 2（本支）：`expected_levels` 形状 / 取值非法。
+    "invalidExpectedLevels",
     // ⭐ `#290`：`sceneId` 不是合法 ULID。
     "invalidSceneId",
     "laneMustBeString",
@@ -268,6 +280,8 @@ pub const GOLDEN_REASONS: [&str; 236] = [
     "unknownPlacementKind",
     "unknownPointField",
     "unknownPointRemovalField",
+    // ⭐ Songmap Phase 2（本支）：`profile` 档名不在三档内。
+    "unknownProfile",
     "unknownRemoveAssetField",
     "unknownRemoveClipField",
     "unknownRemoveDeviceField",
@@ -1522,13 +1536,17 @@ const REASON_ARGUMENT_NAME_USES: [ReasonArgumentNameUse; 3] = [
 // 出现 275 → 276、键站点 272 → 273、字面站点 261 → 262
 // （恒等式仍闭合：273 = 字面 262 ＋ 可解析 `let` 2 ＋ 运行时 6 ＋ 传播 3；
 // 276 = 273 ＋ 参数名 3。）
-const REASON_OCCURRENCES_TOTAL: usize = 276;
+// 整曲总览图 Phase 2（本支）：`domain/song_overview.rs` 的 `invalidExpectedLevels`
+// 2 处字面站点与 `unknownProfile` 1 处 ⇒ 出现 276 → 279、键站点 273 → 276、
+// 字面站点 262 → 265（恒等式仍闭合：276 = 字面 265 ＋ 可解析 `let` 2 ＋
+// 运行时 6 ＋ 传播 3；279 = 276 ＋ 参数名 3。）
+const REASON_OCCURRENCES_TOTAL: usize = 279;
 // ⭐ MCP-TOOL-003：键站点 208 → 216、字面站点 200 → 208 —— 新形态在
 // `domain/notes.rs` / `tools.rs` 里新增的 8 处字面 `"reason"` 站点
 // （tick 0、`bpmOutOfRange` 复用、`tempoPointNotFound`、`timeSignaturePointNotFound`
 // 与描述文本里的键形状；逐文件拆分以扫描器读数为准，此处不手数）。
-const REASON_KEY_SITES_TOTAL: usize = 273;
-const REASON_LITERAL_SITES_TOTAL: usize = 262;
+const REASON_KEY_SITES_TOTAL: usize = 276;
+const REASON_LITERAL_SITES_TOTAL: usize = 265;
 const REASON_RESOLVED_SITES_TOTAL: usize = 2;
 const REASON_DYNAMIC_SITES_TOTAL: usize = 6;
 const REASON_PROPAGATED_SITES_TOTAL: usize = 3;
@@ -1851,7 +1869,7 @@ fn every_reason_is_asserted_somewhere() {
 /// 每条 `reason` 在生产区**字面 `json!` 对象**里带的同级键（排序）。
 /// ⚠ 口径：只收字面 `json!` 里的键；运行时 `map.insert(...)` 加进去的键不在内。
 /// 空数组 = 该 reason 的 `data` 里**没有**同级键（或 Data 由别的构造方式给出）。
-pub const GOLDEN_REASON_PAYLOADS: [(&str, &[&str]); 236] = [
+pub const GOLDEN_REASON_PAYLOADS: [(&str, &[&str]); 238] = [
     ("araSessionNotFound", &["loadedSessionIds", "reason"]),
     (
         "assetChannelLayout",
@@ -1966,6 +1984,9 @@ pub const GOLDEN_REASON_PAYLOADS: [(&str, &[&str]); 236] = [
     ("framesExceedCap", &["frames", "maxFrames", "reason"]),
     ("indexTooLarge", &["field", "reason", "value"]),
     ("invalidDeviceDefinition", &["deviceId", "reason"]),
+    // ⭐ Songmap Phase 2（本支）：两处出口的键并集（形状非法只带 `received`，
+    // 取值非法多带 `section`）。
+    ("invalidExpectedLevels", &["received", "reason", "section"]),
     // ⭐ `#290`：非法 `sceneId`。
     ("invalidSceneId", &["hint", "reason", "sceneId"]),
     ("laneMustBeString", &["allowed", "field", "reason"]),
@@ -2360,6 +2381,8 @@ pub const GOLDEN_REASON_PAYLOADS: [(&str, &[&str]); 236] = [
             "unsupportedFields",
         ],
     ),
+    // ⭐ Songmap Phase 2（本支）：`profile` 档名不在三档内。
+    ("unknownProfile", &["accepted", "reason"]),
     (
         "unknownRemoveAssetField",
         &[
@@ -3056,12 +3079,12 @@ fn the_reason_payload_shape_is_the_published_table() {
 /// `fdfcf05e5d1df9e29ff0bc016d5d2c938f448a888c5e91b8d43c20c9d0eec76f`
 /// 由本判据的 `left:` 报出值照抄（⛔ 不手算）。
 pub const FROZEN_REASON_SURFACE_SHA256: &str =
-    "58f2a81612ca0d318ea30a51f920f353df39f471e028d88acac6d42de25d7a7e";
+    "7dc30cc50e9f77a5b482ee44345e547da301a6f2e619720b35145987f4459d7a";
 
 /// 规范形式里的 reason 数 / 规范行数（与摘要一起构成"两端"读数）。
-pub const REASON_SURFACE_REASONS: usize = 240;
+pub const REASON_SURFACE_REASONS: usize = 242;
 /// 规范行数（每个 reason 一行 ＋ 每个键一行）。
-pub const REASON_SURFACE_LINES: usize = 1025;
+pub const REASON_SURFACE_LINES: usize = 1032;
 
 /// 单文件里的 `reason` 面：**保留出现顺序**的 `(reason, keys)`。
 ///

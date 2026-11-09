@@ -56,11 +56,11 @@
 //! dsp 按约定出哨兵值（LUFS −70、频段 −120 dB），调用正常返回。
 //! 只有**渲染本身**失败（缺 SFZ、无内容、采样率不一致）才响亮报错。
 //!
-//! ## 拍级展开（Phase 1 的诚实口径）
+//! ## 拍级展开（Phase 1 的诚实口径，Phase 2 未变）
 //!
 //! dsp 只输出**小节级**序列。`resolution: "beat"` 时每行继承所属小节的值，
 //! `time_sec` 按 `60 / base_bpm` 步进。逐拍重算需要 dsp 的拍级输出，
-//! 那是 Phase 2 的事 —— 这里不假装算过。
+//! 不在 Phase 2 核心三项内 —— 这里不假装算过。
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -69,10 +69,14 @@ use std::sync::{Arc, Mutex};
 use serde_json::{Value, json};
 
 use yeban_decode::{DecodeOptions, decode_bytes};
-use yeban_dsp::song_overview::SongOverview as DspSongOverview;
+use yeban_dsp::song_overview::{
+    AnalysisOptions, NO_ENVELOPE, SongOverview as DspSongOverview, TensionProfile,
+};
 use yeban_engine::sfz_instrument::SfzInstrument;
 use yeban_mcp::domain::error::Fault;
-use yeban_mcp::domain::song_overview::{Resolution, SongOverviewProvider, SongOverviewRequest};
+use yeban_mcp::domain::song_overview::{
+    Profile as McpProfile, Resolution, SongOverviewProvider, SongOverviewRequest,
+};
 use yeban_mcp::output_schema::{
     BAND_DEFINITIONS_HZ, BarRow, DetectedAnomaly, SongMeta, SongOverview as McpSongOverview,
     StructuralSummary,
@@ -313,12 +317,22 @@ impl SongOverviewProvider for RealSongOverviewProvider {
     ) -> Result<McpSongOverview, Fault> {
         let sample_rate_hz = project.audio_config.sample_rate.hz();
         let settings = RenderSettings::new(sample_rate_hz, 0);
+        // Phase 2（设计稿 §3.5 / §3.6）：请求里的曲风档与期望等级表进分析
+        // 选项；档名是 MCP 侧的词，这里映射成 dsp 的档（两档同名同义）。
+        let options = AnalysisOptions {
+            profile: match request.profile {
+                McpProfile::Default => TensionProfile::Default,
+                McpProfile::Orchestral => TensionProfile::Orchestral,
+                McpProfile::Electronic => TensionProfile::Electronic,
+            },
+            expected_levels: request.expected_levels.clone(),
+        };
         // 缓存命中时不预检、不渲染、不解码（预检的 I/O 只在未命中时付一次）。
         // 注意：`SongOverviewCache::get` 不计命中数（见 render 侧文档），命中
         // 计数只能走 `cached_overview`；所以这里只做一次不计数的预判，真正的
         // 取值与计数都交给下面那次 `cached_overview` 调用（命中时它不调闭包、
         // 不渲染，直接计一次命中返回克隆结果）。
-        let hash = song_overview_hash(project, &settings);
+        let hash = song_overview_hash(project, &settings, &options);
         let peek_hit = self
             .cache
             .lock()
@@ -337,22 +351,23 @@ impl SongOverviewProvider for RealSongOverviewProvider {
             .cache
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let (dsp_overview, _hit) = cached_overview(&mut cache, project, &settings, |track, raw| {
-            armed
-                .as_ref()
-                .and_then(|armed| armed.get(&track).cloned())
-                .unwrap_or_else(|| ArmedSfzInput::empty(raw))
-        })
-        .map_err(|error| {
-            Fault::domain_with_data(
-                ErrorCode::RenderFailed,
-                format!("总览渲染失败: {error}"),
-                json!({
-                    "reason": "renderFailed",
-                    "cause": error.to_string(),
-                }),
-            )
-        })?;
+        let (dsp_overview, _hit) =
+            cached_overview(&mut cache, project, &settings, &options, |track, raw| {
+                armed
+                    .as_ref()
+                    .and_then(|armed| armed.get(&track).cloned())
+                    .unwrap_or_else(|| ArmedSfzInput::empty(raw))
+            })
+            .map_err(|error| {
+                Fault::domain_with_data(
+                    ErrorCode::RenderFailed,
+                    format!("总览渲染失败: {error}"),
+                    json!({
+                        "reason": "renderFailed",
+                        "cause": error.to_string(),
+                    }),
+                )
+            })?;
         let beats = score_input_from_project(project).beats_per_bar();
         Ok(map_song_overview(&dsp_overview, request.resolution, beats))
     }
@@ -489,6 +504,21 @@ pub fn map_song_overview(
     );
     debug_assert_eq!(series.score_dyn.len(), total_bars, "dsp score_dyn 列长度");
     debug_assert_eq!(
+        series.envelope_lo.len(),
+        total_bars,
+        "dsp envelope_lo 列长度"
+    );
+    debug_assert_eq!(
+        series.envelope_hi.len(),
+        total_bars,
+        "dsp envelope_hi 列长度"
+    );
+    debug_assert_eq!(
+        series.target_deviation.len(),
+        total_bars,
+        "dsp target_deviation 列长度"
+    );
+    debug_assert_eq!(
         series.density_pitched_onsets_per_beat.len(),
         total_bars,
         "dsp density_pitched 列长度"
@@ -507,6 +537,10 @@ pub fn map_song_overview(
 
     let mut bar_series: Vec<BarRow> = Vec::with_capacity(total_bars);
     for index in 0..total_bars {
+        // 期望带（Phase 2）：dsp 的哨兵 −1（`NO_ENVELOPE`）= 无等级 ⇒
+        // MCP 侧为 `None`（不序列化）；有等级时两端按 f32 原值转 f64。
+        let envelope_lo = f64::from(series.envelope_lo[index]);
+        let envelope_hi = f64::from(series.envelope_hi[index]);
         bar_series.push(BarRow {
             bar: series.bar[index] as u64,
             beat: None,
@@ -517,6 +551,17 @@ pub fn map_song_overview(
             lufs_short: f64::from(series.lufs_short[index]),
             lufs_momentary_max: f64::from(series.lufs_momentary_max[index]),
             score_dyn: f64::from(series.score_dyn[index]),
+            envelope_lo: if envelope_lo == f64::from(NO_ENVELOPE) {
+                None
+            } else {
+                Some(envelope_lo)
+            },
+            envelope_hi: if envelope_hi == f64::from(NO_ENVELOPE) {
+                None
+            } else {
+                Some(envelope_hi)
+            },
+            target_deviation: f64::from(series.target_deviation[index]),
             density_pitched_onsets_per_beat: f64::from(
                 series.density_pitched_onsets_per_beat[index],
             ),
@@ -609,6 +654,10 @@ mod tests {
                 profile: "default".to_owned(),
             },
             band_definitions_hz: yeban_dsp::song_overview::BAND_DEFINITIONS_HZ,
+            // Phase 2：自适应权重（本夹具无死特征 = 缺省档原权重）与包络列
+            // （第 1 小节 Intro L3 带 [0.35, 0.65]、张力 0.42 带内偏离 0；
+            // 第 2 小节 Verse 无等级 = 哨兵、偏离 0）。
+            effective_weights: [0.30, 0.20, 0.20, 0.15, 0.15],
             structural_summary: DspStructuralSummary {
                 climax_bar: 2,
                 climax_tension: 0.79,
@@ -628,6 +677,9 @@ mod tests {
                 lufs_short: vec![-22.4, -12.4],
                 lufs_momentary_max: vec![-19.8, -9.8],
                 score_dyn: vec![0.28, 0.58],
+                envelope_lo: vec![0.35, NO_ENVELOPE],
+                envelope_hi: vec![0.65, NO_ENVELOPE],
+                target_deviation: vec![0.0, 0.0],
                 density_pitched_onsets_per_beat: vec![1.5, 4.5],
                 density_pitched_duty: vec![0.65, 0.8],
                 density_perc_onsets_per_beat: vec![0.5, 3.5],
@@ -642,6 +694,8 @@ mod tests {
     fn bar_request() -> SongOverviewRequest {
         SongOverviewRequest {
             resolution: Resolution::Bar,
+            profile: McpProfile::Default,
+            expected_levels: BTreeMap::new(),
         }
     }
 
@@ -700,6 +754,13 @@ mod tests {
         assert_eq!(second.time_sec, 2.0);
         assert_eq!(second.section, "Verse");
         assert_eq!(second.tension, 0.79f32 as f64);
+        // Phase 2：包络列映射（哨兵 −1 ⇒ None；有等级的行带值、偏离原值）。
+        assert_eq!(first.envelope_lo, Some(0.35f32 as f64));
+        assert_eq!(first.envelope_hi, Some(0.65f32 as f64));
+        assert_eq!(first.target_deviation, 0.0);
+        assert_eq!(second.envelope_lo, None);
+        assert_eq!(second.envelope_hi, None);
+        assert_eq!(second.target_deviation, 0.0);
     }
 
     #[test]
@@ -713,6 +774,16 @@ mod tests {
             assert_eq!(row.beat, Some(beat));
             assert_eq!(row.time_sec, index as f64 * 0.5, "120 BPM ⇒ 0.5 秒一拍");
             // 拍行继承所属小节的值（Phase 1 口径，见模块文档）。
+            // 包络列同样继承（Phase 2：拍级不重算期望带，沿用小节值）。
+            assert_eq!(
+                row.envelope_lo,
+                if bar == 1 { Some(0.35f32 as f64) } else { None }
+            );
+            assert_eq!(
+                row.envelope_hi,
+                if bar == 1 { Some(0.65f32 as f64) } else { None }
+            );
+            assert_eq!(row.target_deviation, 0.0);
             assert_eq!(
                 row.tension,
                 if bar == 1 {
@@ -746,6 +817,7 @@ mod tests {
                 profile: "default".to_owned(),
             },
             band_definitions_hz: yeban_dsp::song_overview::BAND_DEFINITIONS_HZ,
+            effective_weights: [0.30, 0.20, 0.20, 0.15, 0.15],
             structural_summary: DspStructuralSummary {
                 climax_bar: 0,
                 climax_tension: 0.0,
@@ -761,6 +833,9 @@ mod tests {
                 lufs_short: Vec::new(),
                 lufs_momentary_max: Vec::new(),
                 score_dyn: Vec::new(),
+                envelope_lo: Vec::new(),
+                envelope_hi: Vec::new(),
+                target_deviation: Vec::new(),
                 density_pitched_onsets_per_beat: Vec::new(),
                 density_pitched_duty: Vec::new(),
                 density_perc_onsets_per_beat: Vec::new(),

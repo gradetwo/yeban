@@ -19,8 +19,16 @@
 //! - 疏密层：旋律与打击分轨；旋律组用 Clustered Onset 率（同拍 30 ms 内柱式
 //!   和弦记 1 次）+ 占空比，打击组只算 Onset 率。1 小节滑窗、1 拍步进。
 //!
-//! 诊断（[`Anomaly`]，MCP 与 UI 共用）：低频中段淤积（`low_mid_buildup`）与
-//! 总线压缩压扁（`compression_squash`），均为纯逻辑阈值判定。
+//! 诊断（[`Anomaly`]，MCP 与 UI 共用）：低频中段淤积（`low_mid_buildup`）、
+//! 总线压缩压扁（`compression_squash`）与期望带偏离（`envelope_deviation`，
+//! Phase 2），均为纯逻辑阈值判定。谱面力度虚线（设计稿 §5.1）直接画
+//! `bar_series.score_dyn` 列，不另算。
+//!
+//! Phase 2（设计稿 §3.5/§3.6/§5.1）：曲风预设 3 档 + 方差自适应权重
+//! （[`TensionProfile`] / [`adaptive_weights`]）、期望结构包络带与偏离告警
+//! （[`AnalysisOptions::expected_levels`] / [`envelope_band`]）、谱面力度列
+//! 已存在、虚线由 UI 画。分析选项经 [`AnalysisOptions`] 传入，默认选项与
+//! Phase 1 逐位一致。
 //!
 //! 约束：离线分析，不在实时音频回调里调用；确定性——固定锚点、固定阈值，
 //! 同一输入跨进程结果一致；不写 `unsafe`；持久化集合只用 `BTreeMap`/`BTreeSet`
@@ -67,6 +75,155 @@ pub const WEIGHT_PITCH: f32 = 0.20;
 pub const WEIGHT_HARMONY: f32 = 0.15;
 /// 情绪张力权重（设计稿 §3.2）：配器激活厚度。
 pub const WEIGHT_ORCHESTRATION: f32 = 0.15;
+
+/// 曲风预设档（设计稿 §3.6，Phase 2）：三档权重。
+///
+/// - Default：设计稿 §3.2 的固定默认权重（均衡流行摇滚）。
+/// - Orchestral：管弦 / 原声叙事 —— 音区 +0.10、和声 +0.05（叙事靠音区抬升与
+///   和声张力推高潮）；响度 −0.05、密度 −0.05、配器 −0.05。
+/// - Electronic：电子 / 律动 —— 响度 +0.05、密度 +0.10；音区 −0.10、和声 −0.05。
+///   诚实口径：Phase 1 公式里**没有**频谱亮度分量，亮度权重无处可落；
+///   滤波打开时响度感知与打击密度同向抬升，故亮度落到响度 + 密度两项上。
+///   真正的频谱质心分量是后一轮的事，不在本轮假装已算。
+///
+/// 三档权重和恒为 1.0。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum TensionProfile {
+    /// 均衡流行摇滚（默认）。
+    #[default]
+    Default,
+    /// 管弦 / 原声叙事。
+    Orchestral,
+    /// 电子 / 律动。
+    Electronic,
+}
+
+impl TensionProfile {
+    /// 档名（进 `song_meta.profile`，与 MCP `profile` 参数同一组词）。
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Default => "default",
+            Self::Orchestral => "orchestral",
+            Self::Electronic => "electronic",
+        }
+    }
+
+    /// 按档名解析；未知档名返回 `None`（调用方响亮拒绝，不静默回退）。
+    #[must_use]
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "default" => Some(Self::Default),
+            "orchestral" => Some(Self::Orchestral),
+            "electronic" => Some(Self::Electronic),
+            _ => None,
+        }
+    }
+
+    /// 本档的五维权重 `[响度, 密度, 音区, 和声, 配器]`，和恒为 1.0。
+    #[must_use]
+    pub const fn weights(self) -> [f32; 5] {
+        match self {
+            Self::Default => [
+                WEIGHT_LOUDNESS,
+                WEIGHT_DENSITY,
+                WEIGHT_PITCH,
+                WEIGHT_HARMONY,
+                WEIGHT_ORCHESTRATION,
+            ],
+            Self::Orchestral => [0.25, 0.15, 0.30, 0.20, 0.10],
+            Self::Electronic => [0.35, 0.30, 0.10, 0.10, 0.15],
+        }
+    }
+}
+
+/// 方差自适应衰减的 σ 门限（设计稿 §3.6）：某特征全曲标准差 ≤ 0.05 时视为
+/// “死特征”（如单一和弦 Loop 的和声张力几乎不变）。
+pub const ADAPTIVE_SIGMA_THRESHOLD: f32 = 0.05;
+/// 方差自适应衰减的幅度：死特征的权重衰减 50%。
+pub const ADAPTIVE_ATTENUATION: f32 = 0.5;
+
+/// 方差自适应权重（设计稿 §3.6）：死特征权重 × 0.5，腾出的权重按比例重分配
+/// 给方差较大的活跃特征（按活跃特征衰减后的权重占比分）。
+///
+/// 全部特征都死（全曲无方差，如单小节）时无处可分，衰减后的权重重归一到和为 1
+/// —— 此时衰减是均匀的 × 0.5，重归一后等于原权重，不编造信息。
+/// 返回的权重和恒为 1.0（输入权重和为 1 时）。纯函数、确定性。
+#[must_use]
+pub fn adaptive_weights(base: [f32; 5], std_devs: [f32; 5]) -> [f32; 5] {
+    let mut attenuated = [0.0f32; 5];
+    let mut removed = 0.0f32;
+    for i in 0..5 {
+        if std_devs[i] <= ADAPTIVE_SIGMA_THRESHOLD {
+            attenuated[i] = base[i] * ADAPTIVE_ATTENUATION;
+            removed += base[i] - attenuated[i];
+        } else {
+            attenuated[i] = base[i];
+        }
+    }
+    if removed <= 0.0 {
+        return base;
+    }
+    let active_sum: f32 = attenuated
+        .iter()
+        .zip(std_devs.iter())
+        .filter(|(_, sigma)| **sigma > ADAPTIVE_SIGMA_THRESHOLD)
+        .map(|(&w, _)| w)
+        .sum();
+    if active_sum <= 0.0 {
+        // 全部特征都死：重归一（均匀 × 0.5 ⇒ 回到原权重）。
+        let sum: f32 = attenuated.iter().sum();
+        if sum > 0.0 {
+            return attenuated.map(|w| w / sum);
+        }
+        return base;
+    }
+    let mut out = attenuated;
+    for (i, w) in out.iter_mut().enumerate() {
+        if std_devs[i] > ADAPTIVE_SIGMA_THRESHOLD {
+            *w += removed * attenuated[i] / active_sum;
+        }
+    }
+    out
+}
+
+/// 期望结构包络带的半宽（张力单位，Phase 2 择优值）：期望等级 L（1–5 级）的
+/// 中心为 `0.1 + 0.2 × (L − 1)`（L1 = 0.1、L3 = 0.5、L5 = 0.9），带为
+/// 中心 ± 0.15，夹到 [0, 1]。半宽 0.15 的理由：双边滤波的值域 σ_v = 0.18，
+/// 小于 0.15 的偏离会被滤波抹平、不是结构信号；带宽 0.30 覆盖相邻等级间距
+/// （0.2）以上，避免相邻等级的带互相打架。
+pub const ENVELOPE_HALF_WIDTH: f32 = 0.15;
+/// 期望带偏离告警阈值（张力单位，Phase 2 择优值）：实际张力超出期望带边界
+/// 0.15 以上即告警。取 0.15 的理由：与半宽同量级 —— 偏离超过一整个半宽
+/// 才算结构塌陷（如标了高潮、实际塌掉），带边附近的抖动（< 0.15）只记
+/// `target_deviation` 列、不进异常摘要。
+pub const ENVELOPE_DEVIATION_ALERT: f32 = 0.15;
+/// 包络带缺失哨兵：该小节无期望等级时 `envelope_lo` / `envelope_hi` 记此值
+/// （张力域为 [0, 1]，−1 在域外，不会与真带混淆）。
+pub const NO_ENVELOPE: f32 = -1.0;
+
+/// 期望等级（1–5 级）→ 期望带 `[下沿, 上沿]`（夹到 [0, 1]）；等级越界时
+/// 返回 `None`（无带，不编造）。
+#[must_use]
+pub fn envelope_band(level: u8) -> Option<(f32, f32)> {
+    if !(1..=5).contains(&level) {
+        return None;
+    }
+    let center = 0.1 + 0.2 * f32::from(level - 1);
+    Some((
+        (center - ENVELOPE_HALF_WIDTH).max(0.0),
+        (center + ENVELOPE_HALF_WIDTH).min(1.0),
+    ))
+}
+
+/// 实际张力相对期望带的偏离量（≥ 0）：带内为 0，带外为到最近边界的距离。
+#[must_use]
+pub fn envelope_deviation(tension: f32, band_lo: f32, band_hi: f32) -> f32 {
+    if band_lo < 0.0 || band_hi < 0.0 {
+        return 0.0;
+    }
+    (band_lo - tension).max(tension - band_hi).max(0.0)
+}
 
 /// 响度归一化锚点下限（LUFS，设计稿 §3.2）：极弱背景。
 pub const LOUDNESS_ANCHOR_MIN_LUFS: f32 = -36.0;
@@ -146,12 +303,60 @@ pub struct TempoChange {
 }
 
 /// 段落标记（Marker）：双边滤波的硬切断边界，也是小节 `section` 标签的来源。
+///
+/// `expected_level` 是 Phase 2 的期望张力等级（设计稿 §3.5）：1–5 级，
+/// `None` = 用户未标注（无期望带）。越界值（0 或 > 5）在分析时按无带处理，
+/// 不编造。标注入口见 [`AnalysisOptions::expected_levels`]（MCP 参数）与
+/// 面板标尺点击（UI 入口）；工程 `sections` 本身不存等级（持久化模型未改），
+/// 等级只活在分析请求的会话态里。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SectionMarker {
     /// 段落起始小节（1-based）。
     pub bar: u32,
     /// 段落名（如 "Intro"、"Chorus"）。
     pub label: String,
+    /// 期望张力等级（1–5 级；`None` = 未标注）。
+    pub expected_level: Option<u8>,
+}
+
+/// Phase 2 分析选项（`analyze_song_overview` 的默认选项 = 全默认）。
+///
+/// `profile` 是曲风预设档（设计稿 §3.6）；`expected_levels` 是按段落名给的
+/// 期望张力等级表（设计稿 §3.5，MCP `expected_levels` 参数的原样），只在
+/// 分析请求里生效：匹配到的 Marker 按此表设 `expected_level`，未匹配到的
+/// Marker 保持原值（直接写在 `SectionMarker.expected_level` 里的等级）。
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct AnalysisOptions {
+    /// 曲风预设档（默认 [`TensionProfile::Default`]）。
+    pub profile: TensionProfile,
+    /// 按段落名给的期望张力等级（段落名 → 1–5 级；越界值忽略）。
+    pub expected_levels: std::collections::BTreeMap<String, u8>,
+}
+
+impl AnalysisOptions {
+    /// 只指定曲风档的选项（无期望等级表）。
+    #[must_use]
+    pub fn with_profile(profile: TensionProfile) -> Self {
+        Self {
+            profile,
+            expected_levels: std::collections::BTreeMap::new(),
+        }
+    }
+}
+
+/// 把期望等级表写到谱面 Marker 上（按段落名精确匹配；越界等级与无匹配段落
+/// 忽略）。匹配到的 Marker 以本表为准，未匹配到的保持原值。
+pub fn apply_expected_levels(
+    score: &mut ScoreInput,
+    levels: &std::collections::BTreeMap<String, u8>,
+) {
+    for marker in &mut score.markers {
+        if let Some(&level) = levels.get(&marker.label)
+            && (1..=5).contains(&level)
+        {
+            marker.expected_level = Some(level);
+        }
+    }
 }
 
 /// 谱面输入：render/model 线把 `YebanProjectV1` 映射到本结构。
@@ -248,13 +453,16 @@ pub struct Anomaly {
     pub description: String,
 }
 
-/// 结构异常的类型（设计稿 §8.2 示例列出的两类；Phase 1 只做这两类）。
+/// 结构异常的类型（设计稿 §8.2 示例列出的两类；Phase 2 加期望带偏离一类）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum AnomalyType {
     /// 低频中段淤积：Band 3（250–500 Hz）持续高于其余频段均值。
     LowMidBuildup,
     /// 总线压缩压扁：谱面力度上升、渲染 LUFS 几乎不动。
     CompressionSquash,
+    /// 期望带偏离（Phase 2，设计稿 §3.5）：实际张力超出用户标注的期望带
+    /// 边界 [`ENVELOPE_DEVIATION_ALERT`] 以上。
+    EnvelopeDeviation,
 }
 
 impl AnomalyType {
@@ -264,6 +472,7 @@ impl AnomalyType {
         match self {
             Self::LowMidBuildup => "low_mid_buildup",
             Self::CompressionSquash => "compression_squash",
+            Self::EnvelopeDeviation => "envelope_deviation",
         }
     }
 }
@@ -279,7 +488,8 @@ pub struct SongMeta {
     pub base_bpm: f32,
     /// 调号（如 "D minor"、"C major"）。
     pub key_signature: String,
-    /// 权重预设档：Phase 1 固定默认权重，恒为 `"default"`（§3.6 的 3 档预设是 Phase 2）。
+    /// 权重预设档：Phase 2 的 3 档（`default` / `orchestral` / `electronic`，
+    /// 设计稿 §3.6）；方差自适应后的实际权重见 [`SongOverview::effective_weights`]。
     pub profile: String,
 }
 
@@ -319,7 +529,17 @@ pub struct BarSeries {
     /// 小节内瞬时 LUFS（400 ms 窗）的最大值；无有效读数时为哨兵值。
     pub lufs_momentary_max: Vec<f32>,
     /// 谱面力度（0–1：本小节起音的平均力度 / 127；无起音时为 0）。
+    /// Phase 2 的谱面力度虚线（设计稿 §5.1）直接画这一列。
     pub score_dyn: Vec<f32>,
+    /// 期望带下沿（Phase 2，设计稿 §3.5）：有期望等级的小节为带下沿，
+    /// 无等级的小节为 [`NO_ENVELOPE`] 哨兵。
+    pub envelope_lo: Vec<f32>,
+    /// 期望带上沿（Phase 2）：有期望等级的小节为带上沿，无等级为哨兵。
+    pub envelope_hi: Vec<f32>,
+    /// 实际张力相对期望带的偏离量（Phase 2）：带内或无等级时为 0，
+    /// 带外为到最近边界的距离；超过 [`ENVELOPE_DEVIATION_ALERT`] 即告警
+    /// （`envelope_deviation` 异常，面板上按此列高亮）。
+    pub target_deviation: Vec<f32>,
     /// 旋律组去重后 Onset 率（次/拍）。
     pub density_pitched_onsets_per_beat: Vec<f32>,
     /// 旋律组发声占空比（0–1）。
@@ -353,6 +573,10 @@ pub struct SongOverview {
     pub song_meta: SongMeta,
     /// 频段定义（Hz，恒为 [`BAND_DEFINITIONS_HZ`]，Sub → Air）。
     pub band_definitions_hz: [[f32; 2]; 8],
+    /// 方差自适应后的实际权重 `[响度, 密度, 音区, 和声, 配器]`（Phase 2，
+    /// 设计稿 §3.6）：无死特征时等于所选档的权重；有死特征时按
+    /// [`adaptive_weights`] 衰减并重分配；和恒为 1.0。
+    pub effective_weights: [f32; 5],
     /// 结构摘要（含高潮小节、动态范围与异常列表）。
     pub structural_summary: StructuralSummary,
     /// 小节级列式序列。
@@ -847,8 +1071,11 @@ fn fallback_lufs(active: &[&NoteEvent]) -> f32 {
 
 /// 每拍特征（滤波前）。
 struct BeatFeatures {
-    /// 综合情绪张力（未平滑）。
+    /// 综合情绪张力（未平滑；方差自适应权重算出后填，见主入口第二遍）。
     tension: f32,
+    /// 五维归一化分量 `[响度, 密度, 音区, 和声, 配器]`（各 0–1；方差自适应
+    /// 的 σ 就按这五列逐拍算）。
+    components: [f32; 5],
     /// 旋律组去重后 Onset 率（次/拍）。
     density_pitched: f32,
     /// 旋律组发声占空比（0–1）。
@@ -866,9 +1093,28 @@ struct BeatFeatures {
 /// 音频缺失时：能量层与频率层记哨兵值（LUFS −70、频段 −120 dB），情绪层的
 /// 响度分量回退到谱面力度代理；疏密层与和声层只用谱面，照常计算。
 /// 空谱面且无音频时返回空 `bar_series`（`total_bars = 0`）。
+/// 默认选项（`Default` 档、无期望等级表）；要指定曲风档或期望等级表时用
+/// [`analyze_song_overview_with_options`]。
 #[must_use]
 pub fn analyze_song_overview(score: &ScoreInput, audio: Option<&AudioInput<'_>>) -> SongOverview {
-    // 采样率非法或无帧的音频按缺失处理。
+    analyze_song_overview_with_options(score, audio, &AnalysisOptions::default())
+}
+
+/// 整曲四层离线分析（设计稿 Phase 2 选项版）：曲风预设档（§3.6）与期望等级
+/// 表（§3.5）经 [`AnalysisOptions`] 传入。
+///
+/// 两遍结构：第一遍逐拍算五维归一化分量；第二遍按全曲逐维标准差算方差自适应
+/// 权重（死特征衰减 50% 并重分配），再点乘得张力、双边滤波、小节聚合。
+/// 期望等级表只改本次分析用的 Marker 副本（调用方的 `ScoreInput` 不动）。
+#[must_use]
+pub fn analyze_song_overview_with_options(
+    score: &ScoreInput,
+    audio: Option<&AudioInput<'_>>,
+    options: &AnalysisOptions,
+) -> SongOverview {
+    let mut score = score.clone();
+    apply_expected_levels(&mut score, &options.expected_levels);
+    let score = &score;
     let audio = audio.filter(|a| a.sample_rate.is_finite() && a.sample_rate > 0.0 && !a.is_empty());
     let bpb = score.beats_per_bar();
     let bpb_f = bpb as f32;
@@ -1007,12 +1253,14 @@ pub fn analyze_song_overview(score: &ScoreInput, audio: Option<&AudioInput<'_>>)
         let orchestration =
             0.5 * (tracks.len() as f32 / 8.0).min(1.0) + 0.5 * (pitch_span_oct / 5.0).min(1.0);
 
-        let tension = (WEIGHT_LOUDNESS * loudness_norm
-            + WEIGHT_DENSITY * density_norm
-            + WEIGHT_PITCH * pitch_norm
-            + WEIGHT_HARMONY * harmony
-            + WEIGHT_ORCHESTRATION * orchestration)
-            .clamp(0.0, 1.0);
+        let tension = 0.0f32; // 第二遍：方差自适应权重算出后点乘填（见循环后）。
+        let components = [
+            loudness_norm,
+            density_norm,
+            pitch_norm,
+            harmony,
+            orchestration,
+        ];
 
         // 疏密层：旋律组聚类 Onset 率 + 占空比；打击组只算原始 Onset 率。
         let pitched_onset_seconds: Vec<f32> = onsets
@@ -1039,10 +1287,41 @@ pub fn analyze_song_overview(score: &ScoreInput, audio: Option<&AudioInput<'_>>)
 
         beat_features.push(BeatFeatures {
             tension,
+            components,
             density_pitched,
             duty_pitched,
             density_perc,
         });
+    }
+
+    // -- 第二遍：方差自适应权重（设计稿 §3.6）--
+    // 五维分量逐拍的总体标准差；单拍 / 空曲时 σ 全为 0（全部死特征 ⇒
+    // adaptive_weights 重归一回原权重，张力与固定权重逐位一致）。
+    let mut std_devs = [0.0f32; 5];
+    if !beat_features.is_empty() {
+        let n = beat_features.len() as f32;
+        for (dim, std_dev) in std_devs.iter_mut().enumerate() {
+            let mean = beat_features.iter().map(|f| f.components[dim]).sum::<f32>() / n;
+            let variance = beat_features
+                .iter()
+                .map(|f| {
+                    let d = f.components[dim] - mean;
+                    d * d
+                })
+                .sum::<f32>()
+                / n;
+            *std_dev = libm::sqrtf(variance);
+        }
+    }
+    let effective_weights = adaptive_weights(options.profile.weights(), std_devs);
+    for features in &mut beat_features {
+        features.tension = features
+            .components
+            .iter()
+            .zip(effective_weights.iter())
+            .map(|(c, w)| c * w)
+            .sum::<f32>()
+            .clamp(0.0, 1.0);
     }
 
     // -- 双边滤波：段落 Marker 处硬切断 --
@@ -1068,6 +1347,9 @@ pub fn analyze_song_overview(score: &ScoreInput, audio: Option<&AudioInput<'_>>)
         lufs_short: Vec::with_capacity(total_bars),
         lufs_momentary_max: Vec::with_capacity(total_bars),
         score_dyn: Vec::with_capacity(total_bars),
+        envelope_lo: Vec::with_capacity(total_bars),
+        envelope_hi: Vec::with_capacity(total_bars),
+        target_deviation: Vec::with_capacity(total_bars),
         density_pitched_onsets_per_beat: Vec::with_capacity(total_bars),
         density_pitched_duty: Vec::with_capacity(total_bars),
         density_perc_onsets_per_beat: Vec::with_capacity(total_bars),
@@ -1139,10 +1421,15 @@ pub fn analyze_song_overview(score: &ScoreInput, audio: Option<&AudioInput<'_>>)
             }
             out
         };
-        let section = sorted_markers
-            .iter()
-            .rfind(|m| m.bar <= (bar as u32) + 1)
-            .map_or_else(|| "Untitled".to_string(), |m| m.label.clone());
+        let current_marker = sorted_markers.iter().rfind(|m| m.bar <= (bar as u32) + 1);
+        let section = current_marker.map_or_else(|| "Untitled".to_string(), |m| m.label.clone());
+        // 期望带（Phase 2 §3.5）：本小节所属段落的期望等级 → 带；未标注 ⇒ 哨兵。
+        // 偏离量按显示的张力（双边滤波后的小节均值）算，与面板画的线同一条。
+        let (env_lo, env_hi) = current_marker
+            .and_then(|m| m.expected_level)
+            .and_then(envelope_band)
+            .unwrap_or((NO_ENVELOPE, NO_ENVELOPE));
+        let deviation = envelope_deviation(tension, env_lo, env_hi);
 
         series.bar.push((bar as u32) + 1);
         series.time_sec.push(bar_start_sec);
@@ -1154,6 +1441,9 @@ pub fn analyze_song_overview(score: &ScoreInput, audio: Option<&AudioInput<'_>>)
         series.lufs_short.push(short_term);
         series.lufs_momentary_max.push(momentary_max);
         series.score_dyn.push(score_dyn);
+        series.envelope_lo.push(env_lo);
+        series.envelope_hi.push(env_hi);
+        series.target_deviation.push(deviation);
         series
             .density_pitched_onsets_per_beat
             .push(mean_beat(&|f: &BeatFeatures| f.density_pitched));
@@ -1187,6 +1477,13 @@ pub fn analyze_song_overview(score: &ScoreInput, audio: Option<&AudioInput<'_>>)
         0.0
     };
     let mut anomalies = Vec::new();
+    // 期望带偏离（Phase 2 §3.5）：与音频无关，纯谱面标注 + 张力曲线即可判；
+    // 连续超标小节合并为一段（单小节超标也报 —— 单小节塌掉就是一次结构信号，
+    // 与频段淤积那种需要 4 小节防抖的噪声不同）。
+    anomalies.extend(detect_envelope_deviation(
+        &series.target_deviation,
+        &series.section,
+    ));
     if audio.is_some() {
         anomalies.extend(detect_low_mid_buildup(&series.bands_tilted_db));
         anomalies.extend(detect_compression_squash(
@@ -1202,9 +1499,10 @@ pub fn analyze_song_overview(score: &ScoreInput, audio: Option<&AudioInput<'_>>)
             duration_sec,
             base_bpm: tempo.base_bpm(),
             key_signature,
-            profile: "default".to_string(),
+            profile: options.profile.as_str().to_string(),
         },
         band_definitions_hz: BAND_DEFINITIONS_HZ,
+        effective_weights,
         structural_summary: StructuralSummary {
             climax_bar,
             climax_tension,
@@ -1218,6 +1516,40 @@ pub fn analyze_song_overview(score: &ScoreInput, audio: Option<&AudioInput<'_>>)
 // ---------------------------------------------------------------------------
 // 内部：诊断
 // ---------------------------------------------------------------------------
+
+/// 期望带偏离（设计稿 §3.5）：偏离量超过 [`ENVELOPE_DEVIATION_ALERT`] 的
+/// 连续小节合并为一段；描述含该段峰值偏离与段落名。
+fn detect_envelope_deviation(deviation: &[f32], sections: &[String]) -> Vec<Anomaly> {
+    let mut anomalies = Vec::new();
+    let mut i = 0usize;
+    while i < deviation.len() {
+        if deviation[i] <= ENVELOPE_DEVIATION_ALERT {
+            i += 1;
+            continue;
+        }
+        let start = i;
+        let mut peak = deviation[i];
+        while i < deviation.len() && deviation[i] > ENVELOPE_DEVIATION_ALERT {
+            peak = peak.max(deviation[i]);
+            i += 1;
+        }
+        let end = i - 1;
+        let section = sections
+            .get(start)
+            .cloned()
+            .unwrap_or_else(|| "Untitled".to_string());
+        anomalies.push(Anomaly {
+            bars: [(start as u32) + 1, (end as u32) + 1],
+            anomaly_type: AnomalyType::EnvelopeDeviation,
+            description: format!(
+                "Tension deviates from the {section} target envelope by up to {peak:.2} over bars {}-{}",
+                start + 1,
+                end + 1
+            ),
+        });
+    }
+    anomalies
+}
 
 /// 低频中段淤积（设计稿 §8.2）：Band 3（250–500 Hz）超过其余 7 频段均值
 /// [`LOW_MID_EXCESS_DB`] dB 以上、连续至少 [`DIAGNOSTIC_MIN_BARS`] 小节。

@@ -1017,6 +1017,15 @@ impl ElementRegistry {
             "全屏 / 退出全屏总览面板",
             false,
         );
+        // Phase 2 曲风预设键（设计稿 §3.6）：标签与 `.slint` 的
+        // `accessible-label` 逐字相同（"曲风预设"）。
+        registry.add(
+            "song-overview-profile-button",
+            ElementKind::Button,
+            "workspace/song_overview_panel.slint",
+            "曲风预设",
+            false,
+        );
 
         // ------------------------------------------------------------ 控制台导轨
         registry.add(

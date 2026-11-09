@@ -743,6 +743,12 @@ export component MainWindow inherits Window {
     in property <[string]> song-overview-ruler-labels: [];
     in property <int> song-overview-span-ticks: 0;
     in property <string> song-overview-key-signature: "";
+    // Phase 2（设计稿 §3.5 / §3.6 / §5.1）：谱面力度、期望带、偏离告警、曲风档中文名。
+    in property <[float]> song-overview-score-dyn: [];
+    in property <[float]> song-overview-envelope-lo: [];
+    in property <[float]> song-overview-envelope-hi: [];
+    in property <[bool]> song-overview-envelope-alert: [];
+    in property <string> song-overview-profile: "均衡";
     /// 总览面板是否折叠（22 px 条带）。
     ///
     /// 默认值是**表达式绑定**，不是写死 `false`：窗口不在 UI-GRID-002 的全展开档
@@ -792,6 +798,10 @@ export component MainWindow inherits Window {
     /// 全屏键 / `Esc`（`Action::Cancel` 级联）⇒ 翻转 `song-overview-fullscreen`。
     /// `Esc` 只在全屏态才消费（见 `host::apply_action` 的 Cancel 臂）。
     callback song-overview-toggle-fullscreen();
+    /// Phase 2 预设键 ⇒ 曲风档循环。
+    callback song-overview-profile-cycle();
+    /// Phase 2 段落标签 ⇒ 该段落的期望等级循环（参数 = 段落下标）。
+    callback song-overview-target-cycle(int);
     callback open-musical-pr();
     callback accept-ai-proposal();
     callback reject-ai-proposal();
@@ -2354,6 +2364,11 @@ export component MainWindow inherits Window {
             ruler-labels: root.song-overview-ruler-labels;
             span-ticks: root.song-overview-span-ticks;
             key-signature: root.song-overview-key-signature;
+            score-dyn: root.song-overview-score-dyn;
+            envelope-lo: root.song-overview-envelope-lo;
+            envelope-hi: root.song-overview-envelope-hi;
+            envelope-alert: root.song-overview-envelope-alert;
+            profile: root.song-overview-profile;
             collapsed: root.song-overview-collapsed;
             fullscreen: root.song-overview-fullscreen;
             show-tension: root.song-overview-show-tension;
@@ -2375,6 +2390,8 @@ export component MainWindow inherits Window {
             viewport-zoom-requested(target) => { root.song-overview-viewport-zoom(target); }
             toggle-collapsed() => { root.song-overview-toggle-collapsed(); }
             toggle-fullscreen() => { root.song-overview-toggle-fullscreen(); }
+            profile-cycle() => { root.song-overview-profile-cycle(); }
+            target-cycle(index) => { root.song-overview-target-cycle(index); }
         }
 
         // ---------------------------------------------------------- 24px 状态栏

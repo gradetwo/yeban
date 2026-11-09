@@ -2133,7 +2133,8 @@ pub struct SongMeta {
     pub base_bpm: f64,
     /// 调号（如 `"D minor"`）。
     pub key_signature: String,
-    /// 曲风档（Phase 1 只有固定默认权重，见设计稿 §3.6；此处只记录档名）。
+    /// 曲风档（Phase 2：`default` / `orchestral` / `electronic`，设计稿 §3.6；
+    /// 方差自适应后的实际权重不进本 JSON，见 dsp 的 `effective_weights`）。
     pub profile: String,
 }
 
@@ -2185,6 +2186,16 @@ pub struct BarRow {
     pub lufs_momentary_max: f64,
     /// 谱面合成力度（归一化，保留 2 位小数）。
     pub score_dyn: f64,
+    /// 期望带下沿（Phase 2，设计稿 §3.5）：该小节所属段落有期望等级时为带下沿，
+    /// 无等级时缺席（`None` 不序列化）。张力单位，保留 2 位小数。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub envelope_lo: Option<f64>,
+    /// 期望带上沿（Phase 2）：有期望等级时为带上沿，无等级时缺席。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub envelope_hi: Option<f64>,
+    /// 实际张力相对期望带的偏离量（Phase 2）：带内或无等级时为 0.0，
+    /// 带外为到最近边界的距离；超过 0.15 即进 `envelope_deviation` 异常。
+    pub target_deviation: f64,
     /// 旋律和声组每拍触发数（保留 2 位小数）。
     pub density_pitched_onsets_per_beat: f64,
     /// 旋律和声组发声占空比（保留 2 位小数）。

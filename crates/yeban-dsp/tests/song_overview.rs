@@ -7,9 +7,10 @@
 //! 规范锚点：设计稿 `~/workspace/yeban-songmap-design.md` §3–§6、§8.2。
 
 use yeban_dsp::song_overview::{
-    AnomalyType, AudioInput, BAND_DB_FLOOR, NO_LOUDNESS_READING_LUFS, NoteEvent, ScoreInput,
-    SectionMarker, analyze_song_overview, bilateral_smooth, circle_of_fifths_distance,
-    roughness_of_midis,
+    AnalysisOptions, AnomalyType, AudioInput, BAND_DB_FLOOR, NO_ENVELOPE, NO_LOUDNESS_READING_LUFS,
+    NoteEvent, ScoreInput, SectionMarker, TensionProfile, adaptive_weights, analyze_song_overview,
+    analyze_song_overview_with_options, bilateral_smooth, circle_of_fifths_distance, envelope_band,
+    envelope_deviation, roughness_of_midis,
 };
 
 /// 正弦夹具（相位用 `f64` 算），返回交错立体声。
@@ -360,15 +361,32 @@ fn density_clusters_chord_to_one_onset() {
 #[test]
 fn single_note_tension_known_value() {
     // 1 小节 C4 全音符（力度 100，无音频 → 谱面力度代理）：
-    // L̂ ≈ 0.926（代理 −10.08 LUFS），D̂ 拍均 ≈ 0.187，P̂ = 0.5，
-    // Ĥ ≈ 0，Ô = 0.0625 → 张力 ≈ 0.425（双边滤波后拍均）。
+    // Phase 2 方差自适应改写了固定权重下的旧已知答案 0.425（不是回归）：
+    // 逐拍五维分量里只有密度在变（末拍窗内无起音 ⇒ D̂ 从 0.245 跌到 0，
+    // σ_D ≈ 0.09 > 0.05）；响度、音区、和声、配器逐拍恒定（σ = 0，死特征），
+    // 各减半、腾出的 0.40 全归密度 ⇒ 有效权重 [0.15, 0.60, 0.10, 0.075, 0.075]。
+    // 逐拍张力 = 0.15×0.926 + 0.60×D̂ + 0.10×0.5 + 0.075×0.0625
+    // ≈ [0.341, 0.302, 0.279, 0.194]；相邻拍差 < σ_v = 0.18，双边滤波
+    // 强力抹平 ⇒ 小节均值约 0.28（实测 0.2813）。
     let notes = vec![note(0.0, 4.0, 60, 100, 0, false)];
     let overview = analyze_song_overview(&score_with(notes), None);
     assert_eq!(overview.song_meta.total_bars, 1);
+    let expected_weights = [0.15, 0.60, 0.10, 0.075, 0.075];
+    for (i, (got, want)) in overview
+        .effective_weights
+        .iter()
+        .zip(expected_weights.iter())
+        .enumerate()
+    {
+        assert!(
+            (got - want).abs() < 1e-6,
+            "第 {i} 维有效权重应为 {want}，实际 {got}"
+        );
+    }
     let tension = overview.bar_series.tension[0];
     assert!(
-        (0.41..0.44).contains(&tension),
-        "单音 C4 全音符的张力应约 0.425，实际 {tension}"
+        (0.27..0.30).contains(&tension),
+        "单音 C4 全音符的张力应约 0.28（自适应权重下），实际 {tension}"
     );
 }
 
@@ -403,10 +421,12 @@ fn marker_sections_label_bars() {
         SectionMarker {
             bar: 1,
             label: "Intro".to_string(),
+            expected_level: None,
         },
         SectionMarker {
             bar: 3,
             label: "Chorus".to_string(),
+            expected_level: None,
         },
     ];
     let overview = analyze_song_overview(&score, None);
@@ -540,6 +560,24 @@ fn output_shape_matches_design_schema() {
     assert_eq!(overview.song_meta.base_bpm, 120.0);
     assert_eq!(overview.song_meta.key_signature, "C major");
     assert_eq!(overview.song_meta.profile, "default");
+    // 有效权重由方差自适应定（本夹具有 8 秒音频：响度从哨兵爬到 −20 LUFS，
+    // 是唯一活跃特征；其余四维死 ⇒ [0.65, 0.10, 0.10, 0.075, 0.075]）：
+    // 此处只断言和为 1 且各维在 [0, 1] 内，精确值由方差自适应专测钉死。
+    let weight_sum: f32 = overview.effective_weights.iter().sum();
+    assert!(
+        (weight_sum - 1.0).abs() < 1e-6,
+        "有效权重和须为 1.0，实际 {weight_sum}"
+    );
+    // 断言审计（R115）：`.all(` 须有界 —— 权重数组 5 维，先钉长度再断言取值。
+    assert_eq!(overview.effective_weights.len(), 5);
+    assert!(
+        overview
+            .effective_weights
+            .iter()
+            .all(|&w| (0.0..=1.0).contains(&w)),
+        "有效权重各维须在 [0, 1] 内，实际 {:?}",
+        overview.effective_weights
+    );
     let series = &overview.bar_series;
     assert_eq!(series.len(), 4);
     for column_len in [
@@ -550,6 +588,9 @@ fn output_shape_matches_design_schema() {
         series.lufs_short.len(),
         series.lufs_momentary_max.len(),
         series.score_dyn.len(),
+        series.envelope_lo.len(),
+        series.envelope_hi.len(),
+        series.target_deviation.len(),
         series.density_pitched_onsets_per_beat.len(),
         series.density_pitched_duty.len(),
         series.density_perc_onsets_per_beat.len(),
@@ -620,4 +661,376 @@ fn four_minute_timing_probe() {
         elapsed.as_millis() < 10_000,
         "4 分钟分析耗时应 < 10 s，实际 {elapsed:?}"
     );
+}
+
+// ===========================================================================
+// Phase 2（设计稿 §3.5 / §3.6 / §5.1）：曲风预设 3 档、方差自适应权重、
+// 期望结构包络带与偏离告警。谱面力度列（§5.1 虚线的数据源）是既有列，
+// 其数值由 `score_dyn` 的既有判据钉住（单音 / 爬升两测），虚线本身由
+// 面板集成测试 ㉕ 断言。
+// ===========================================================================
+
+#[test]
+fn profile_weights_are_exact_and_sum_to_one() {
+    assert_eq!(
+        TensionProfile::Default.weights(),
+        [0.30, 0.20, 0.20, 0.15, 0.15],
+        "Default 档必须是设计稿 §3.2 的固定默认权重"
+    );
+    assert_eq!(
+        TensionProfile::Orchestral.weights(),
+        [0.25, 0.15, 0.30, 0.20, 0.10],
+        "Orchestral 档：音区 0.30、和声 0.20（叙事靠音区与和声推高潮）"
+    );
+    assert_eq!(
+        TensionProfile::Electronic.weights(),
+        [0.35, 0.30, 0.10, 0.10, 0.15],
+        "Electronic 档：响度 0.35、密度 0.30（亮度落到响度 + 密度，见实现注释）"
+    );
+    for profile in [
+        TensionProfile::Default,
+        TensionProfile::Orchestral,
+        TensionProfile::Electronic,
+    ] {
+        let sum: f32 = profile.weights().iter().sum();
+        assert!(
+            (sum - 1.0).abs() < 1e-6,
+            "{profile:?} 的权重和须为 1.0，实际 {sum}"
+        );
+        assert_eq!(
+            TensionProfile::from_name(profile.as_str()),
+            Some(profile),
+            "档名往返解析须一致"
+        );
+    }
+    assert_eq!(TensionProfile::from_name("orchestral_cinematic"), None);
+    assert_eq!(TensionProfile::from_name(""), None);
+    assert_eq!(TensionProfile::default(), TensionProfile::Default);
+}
+
+#[test]
+fn adaptive_weights_known_answers() {
+    // 密度与和声死（σ ≤ 0.05）：各衰减 50%，腾出 0.10 + 0.075 = 0.175，
+    // 按活跃特征（响度 0.30、音区 0.20、配器 0.15，和 0.65）占比重分。
+    let out = adaptive_weights(
+        [0.30, 0.20, 0.20, 0.15, 0.15],
+        [0.10, 0.02, 0.10, 0.03, 0.10],
+    );
+    let expected = [
+        0.30 + 0.175 * 0.30 / 0.65,
+        0.10,
+        0.20 + 0.175 * 0.20 / 0.65,
+        0.075,
+        0.15 + 0.175 * 0.15 / 0.65,
+    ];
+    for (i, (got, want)) in out.iter().zip(expected.iter()).enumerate() {
+        assert!(
+            (got - want).abs() < 1e-5,
+            "第 {i} 维自适应权重应为 {want}，实际 {got}"
+        );
+    }
+    let sum: f32 = out.iter().sum();
+    assert!(
+        (sum - 1.0).abs() < 1e-6,
+        "自适应后权重和须为 1.0，实际 {sum}"
+    );
+
+    // 全活跃 ⇒ 原权重一位不动。
+    assert_eq!(
+        adaptive_weights([0.30, 0.20, 0.20, 0.15, 0.15], [0.10; 5]),
+        [0.30, 0.20, 0.20, 0.15, 0.15]
+    );
+    // 全死 ⇒ 重归一回原权重（均匀 × 0.5 后再 ÷ 0.5）。
+    assert_eq!(
+        adaptive_weights([0.30, 0.20, 0.20, 0.15, 0.15], [0.0; 5]),
+        [0.30, 0.20, 0.20, 0.15, 0.15]
+    );
+    // σ 恰为 0.05 视为死（≤ 门限）。
+    let out = adaptive_weights(
+        [0.30, 0.20, 0.20, 0.15, 0.15],
+        [0.05, 0.10, 0.10, 0.10, 0.10],
+    );
+    assert!(
+        (out[0] - 0.15).abs() < 1e-6,
+        "σ = 0.05 的响度权重须衰减到 0.15，实际 {}",
+        out[0]
+    );
+}
+
+/// 包络带上下沿的近似比较（f32 舍入：L2 上沿算出 0.45000002，字面 0.45
+/// 是另一位 f32；逐位相等会把舍入当失败）。
+fn assert_band(level: u8, want_lo: f32, want_hi: f32) {
+    let (lo, hi) = envelope_band(level).expect("1–5 级必须有带");
+    assert!(
+        (lo - want_lo).abs() < 1e-6,
+        "L{level} 下沿应为 {want_lo}，实际 {lo}"
+    );
+    assert!(
+        (hi - want_hi).abs() < 1e-6,
+        "L{level} 上沿应为 {want_hi}，实际 {hi}"
+    );
+}
+
+#[test]
+fn envelope_band_known_answers() {
+    assert_band(1, 0.0, 0.25);
+    assert_band(3, 0.35, 0.65);
+    assert_band(5, 0.75, 1.0);
+    assert_band(2, 0.15, 0.45);
+    assert_band(4, 0.55, 0.85);
+    assert_eq!(envelope_band(0), None, "0 级越界 ⇒ 无带");
+    assert_eq!(envelope_band(6), None, "6 级越界 ⇒ 无带");
+    assert_eq!(envelope_deviation(0.5, 0.35, 0.65), 0.0, "带内偏离为 0");
+    assert_eq!(
+        envelope_deviation(0.9, 0.35, 0.65),
+        0.25,
+        "带上 0.25 ⇒ 偏离 0.25"
+    );
+    assert_eq!(
+        envelope_deviation(0.1, 0.35, 0.65),
+        0.25,
+        "带下 0.25 ⇒ 偏离 0.25"
+    );
+    assert_eq!(
+        envelope_deviation(0.5, NO_ENVELOPE, NO_ENVELOPE),
+        0.0,
+        "无带时偏离恒为 0"
+    );
+}
+
+/// 4 小节高低音区交替全音符（高区：84/72 交替；低区：36/48 交替；同力度、
+/// 同节奏、无音频）：音区是唯一活跃特征（σ_P ≈ 0.08 > 0.05），其余四维
+/// 逐拍恒定（响度 σ ≈ 0.03、密度 σ ≈ 0.026、和声与配器 σ = 0）⇒ 死特征
+/// 各减半、腾出的一半全归音区 ⇒ 音区有效权重 = 档权重 + 0.5×(1 − 档权重)：
+/// Default 0.60、Orchestral 0.65、Electronic 0.55；其余四维 = 档权重 × 0.5。
+/// 两谱面除音区外逐拍完全相同 ⇒ 张力差 = 音区有效权重 × 音区均值差（0.75）。
+fn alternating_register_gap(profile: TensionProfile) -> (f32, [f32; 5]) {
+    let score = |high: bool| {
+        let (a, b) = if high { (84, 72) } else { (36, 48) };
+        let notes: Vec<NoteEvent> = (0..4)
+            .map(|bar| {
+                note(
+                    bar as f32 * 4.0,
+                    4.0,
+                    if bar % 2 == 0 { a } else { b },
+                    100,
+                    0,
+                    false,
+                )
+            })
+            .collect();
+        analyze_song_overview_with_options(
+            &score_with(notes),
+            None,
+            &AnalysisOptions::with_profile(profile),
+        )
+    };
+    let high = score(true);
+    let low = score(false);
+    assert_eq!(high.song_meta.profile, profile.as_str());
+    let mean = |overview: &yeban_dsp::song_overview::SongOverview| {
+        overview.bar_series.tension.iter().sum::<f32>() / 4.0
+    };
+    (mean(&high) - mean(&low), high.effective_weights)
+}
+
+#[test]
+fn profile_changes_the_register_gap_by_its_pitch_weight() {
+    // 音区有效权重（唯一活跃特征 ⇒ 档权重 + 0.5×(1 − 档权重)），逐位钉死。
+    let (default_gap, default_weights) = alternating_register_gap(TensionProfile::Default);
+    assert!(
+        (default_weights[2] - 0.60).abs() < 1e-4,
+        "Default 档音区有效权重应为 0.60，实际 {:?}",
+        default_weights
+    );
+    let (orchestral_gap, orchestral_weights) = alternating_register_gap(TensionProfile::Orchestral);
+    assert!(
+        (orchestral_weights[2] - 0.65).abs() < 1e-4,
+        "Orchestral 档音区有效权重应为 0.65，实际 {:?}",
+        orchestral_weights
+    );
+    let (electronic_gap, electronic_weights) = alternating_register_gap(TensionProfile::Electronic);
+    assert!(
+        (electronic_weights[2] - 0.55).abs() < 1e-4,
+        "Electronic 档音区有效权重应为 0.55，实际 {:?}",
+        electronic_weights
+    );
+    // 张力差 = 音区有效权重 × 0.75（音区均值差），排序与权重排序一致。
+    // 双边滤波的值域权重会轻微压缩差值，门取理论值的 0.9 倍。
+    assert!(
+        default_gap > 0.60 * 0.75 * 0.9,
+        "Default 档高低音区张力差应约 0.45，实际 {default_gap}"
+    );
+    assert!(
+        orchestral_gap > default_gap + 0.01,
+        "Orchestral 档张力差须大于 Default 档，实际 {orchestral_gap} vs {default_gap}"
+    );
+    assert!(
+        electronic_gap < default_gap - 0.01,
+        "Electronic 档张力差须小于 Default 档，实际 {electronic_gap} vs {default_gap}"
+    );
+}
+
+#[test]
+fn variance_adaptation_halves_dead_features_end_to_end() {
+    // 8 小节 C4 全音符，力度 30 / 120 隔小节交替：音区、和声、配器三维
+    // 逐拍恒定（σ = 0，必死）；响度随力度大幅波动（σ > 0.05，必活）；
+    // 密度只随窗口长短微动（σ ≈ 0.027 < 0.05，死）。死特征权重各减半，
+    // 腾出的 0.35 全归响度：有效权重 = [0.65, 0.10, 0.10, 0.075, 0.075]。
+    let mut notes = Vec::new();
+    for bar in 0..8 {
+        let velocity = if bar % 2 == 0 { 30 } else { 120 };
+        notes.push(note(bar as f32 * 4.0, 4.0, 60, velocity, 0, false));
+    }
+    let overview = analyze_song_overview(&score_with(notes), None);
+    assert_eq!(overview.song_meta.total_bars, 8);
+    let weights = overview.effective_weights;
+    let expected = [0.65, 0.10, 0.10, 0.075, 0.075];
+    for (i, (got, want)) in weights.iter().zip(expected.iter()).enumerate() {
+        assert!(
+            (got - want).abs() < 1e-4,
+            "第 {i} 维有效权重应为 {want}，实际 {got}（全权重 {weights:?}）"
+        );
+    }
+    let sum: f32 = weights.iter().sum();
+    assert!((sum - 1.0).abs() < 1e-6, "有效权重和须为 1.0，实际 {sum}");
+    // 断言审计（R115）：`.all(` 须有界 —— 8 小节张力列，先钉长度再断言取值。
+    assert_eq!(overview.bar_series.tension.len(), 8);
+    assert!(
+        overview
+            .bar_series
+            .tension
+            .iter()
+            .all(|&t| (0.0..=1.0).contains(&t)),
+        "自适应后张力仍须在 [0, 1] 内"
+    );
+}
+
+fn four_bar_score_with_markers() -> ScoreInput {
+    let mut notes = Vec::new();
+    for bar in 0..4 {
+        notes.push(note(bar as f32 * 4.0, 4.0, 60, 100, 0, false));
+    }
+    let mut score = score_with(notes);
+    score.markers = vec![
+        SectionMarker {
+            bar: 1,
+            label: "Intro".to_string(),
+            expected_level: None,
+        },
+        SectionMarker {
+            bar: 3,
+            label: "Chorus".to_string(),
+            expected_level: None,
+        },
+    ];
+    score
+}
+
+#[test]
+fn envelope_band_and_deviation_from_expected_levels() {
+    // 期望等级表经选项传入：Intro L3（带 [0.35, 0.65]）、Chorus L5（带 [0.75, 1.0]）。
+    // 四小节同音符的张力约 0.425：Intro 带内（偏离 0），Chorus 带下偏离约 0.325 > 0.15 ⇒ 告警 [3, 4]。
+    let mut options = AnalysisOptions::default();
+    options.expected_levels.insert("Intro".to_string(), 3);
+    options.expected_levels.insert("Chorus".to_string(), 5);
+    let overview =
+        analyze_song_overview_with_options(&four_bar_score_with_markers(), None, &options);
+    let series = &overview.bar_series;
+    assert_eq!(series.envelope_lo, vec![0.35, 0.35, 0.75, 0.75]);
+    assert_eq!(series.envelope_hi, vec![0.65, 0.65, 1.0, 1.0]);
+    assert_eq!(series.target_deviation[0], 0.0, "Intro 张力在带内 ⇒ 偏离 0");
+    assert_eq!(series.target_deviation[1], 0.0);
+    assert!(
+        series.target_deviation[2] > 0.15,
+        "Chorus 张力应在 L5 带下 0.15 以上，实际偏离 {}（张力 {}）",
+        series.target_deviation[2],
+        series.tension[2]
+    );
+    assert!(
+        (series.target_deviation[2] - (0.75 - series.tension[2])).abs() < 1e-6,
+        "偏离量须等于带下沿减张力"
+    );
+    let found = overview
+        .diagnostics()
+        .iter()
+        .find(|a| a.anomaly_type == AnomalyType::EnvelopeDeviation);
+    let anomaly = found.expect("Chorus 偏离超 0.15 应报 envelope_deviation");
+    assert_eq!(anomaly.bars, [3, 4], "偏离区间应为 Chorus 两小节");
+    assert!(
+        anomaly.description.contains("Chorus"),
+        "描述应点名段落 Chorus，实际 {}",
+        anomaly.description
+    );
+
+    // 对照：无期望等级表 ⇒ 全哨兵、无偏离、无该类异常。
+    let plain = analyze_song_overview(&four_bar_score_with_markers(), None);
+    // 断言审计（R115）：`.all(` 须有界 —— 4 小节三列，先钉长度再断言取值。
+    assert_eq!(plain.bar_series.envelope_lo.len(), 4);
+    assert_eq!(plain.bar_series.envelope_hi.len(), 4);
+    assert_eq!(plain.bar_series.target_deviation.len(), 4);
+    assert!(
+        plain
+            .bar_series
+            .envelope_lo
+            .iter()
+            .all(|&v| v == NO_ENVELOPE),
+        "无标注时包络下沿全为哨兵"
+    );
+    assert!(
+        plain
+            .bar_series
+            .envelope_hi
+            .iter()
+            .all(|&v| v == NO_ENVELOPE),
+        "无标注时包络上沿全为哨兵"
+    );
+    assert!(
+        plain.bar_series.target_deviation.iter().all(|&v| v == 0.0),
+        "无标注时偏离全为 0"
+    );
+    // 断言审计（R115）：`diagnostics()` 是方法调用接收者、无字段长度可钉 ——
+    // 改写成计数断言（不含 `.all(`，不产生无界站点），语义与原断言同一条。
+    assert_eq!(
+        plain
+            .diagnostics()
+            .iter()
+            .filter(|a| a.anomaly_type == AnomalyType::EnvelopeDeviation)
+            .count(),
+        0,
+        "无标注时不应报 envelope_deviation"
+    );
+
+    // 对照：越界等级（9）与未知段落名忽略 ⇒ 同样无带。
+    let mut bad = AnalysisOptions::default();
+    bad.expected_levels.insert("Chorus".to_string(), 9);
+    bad.expected_levels.insert("Bridge".to_string(), 5);
+    let overview = analyze_song_overview_with_options(&four_bar_score_with_markers(), None, &bad);
+    // 断言审计（R115）：`.all(` 须有界 —— 4 小节包络下沿，先钉长度再断言取值。
+    assert_eq!(overview.bar_series.envelope_lo.len(), 4);
+    assert!(
+        overview
+            .bar_series
+            .envelope_lo
+            .iter()
+            .all(|&v| v == NO_ENVELOPE),
+        "越界等级与未知段落必须被忽略"
+    );
+}
+
+#[test]
+fn envelope_level_on_the_marker_itself_works() {
+    // 等级直接写在 Marker 上（不经选项表）同样出带：Intro L1 ⇒ [0, 0.25]。
+    let mut score = four_bar_score_with_markers();
+    score.markers[0].expected_level = Some(1);
+    let overview = analyze_song_overview(&score, None);
+    assert_eq!(overview.bar_series.envelope_lo[0], 0.0);
+    assert_eq!(overview.bar_series.envelope_hi[0], 0.25);
+    assert_eq!(overview.bar_series.envelope_lo[2], NO_ENVELOPE);
+    // 选项表匹配到的 Marker 以表为准（Intro 改 L5）。
+    let mut options = AnalysisOptions::default();
+    options.expected_levels.insert("Intro".to_string(), 5);
+    let overview = analyze_song_overview_with_options(&score, None, &options);
+    assert_eq!(overview.bar_series.envelope_lo[0], 0.75);
+    assert_eq!(overview.bar_series.envelope_hi[0], 1.0);
 }

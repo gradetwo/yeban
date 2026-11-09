@@ -1888,7 +1888,7 @@
         "get_song_overview": {
           "title": "get_song_overview",
           "type": "object",
-          "description": "整曲多层可视化总览图（设计稿 §8，Phase 1）：返回小节级列式 JSON 与自动异常诊断摘要（schema_version / song_meta / band_definitions_hz / structural_summary / bar_series）。resolution 缺省 bar（一小节一行），给 beat 则一拍一行；include_png_path 缺省 false，Phase 1 只接受参数、不产 PNG（给 true 时 pngPath 为 null + 一句 Phase 2 说明）。只读：不改工程、不落盘；需要活跃工程与宿主注入的 provider，未注入响亮报 CONFLICT + providerUnavailable。",
+          "description": "整曲多层可视化总览图（设计稿 §8，Phase 1；Phase 2 加曲风预设 profile 与段落期望等级表 expected_levels）：返回小节级列式 JSON 与自动异常诊断摘要（schema_version / song_meta / band_definitions_hz / structural_summary / bar_series）。resolution 缺省 bar（一小节一行），给 beat 则一拍一行；profile 缺省 default；expected_levels 缺省无标注；include_png_path 缺省 false，Phase 1 只接受参数、不产 PNG（给 true 时 pngPath 为 null + 一句 Phase 2 说明）。只读：不改工程、不落盘；需要活跃工程与宿主注入的 provider，未注入响亮报 CONFLICT + providerUnavailable。",
           "properties": {
             "resolution": {
               "type": "string",
@@ -1897,6 +1897,24 @@
                 "beat"
               ],
               "description": "时间分辨率：bar（一小节一行，缺省）或 beat（一拍一行）"
+            },
+            "profile": {
+              "type": "string",
+              "enum": [
+                "default",
+                "orchestral",
+                "electronic"
+              ],
+              "description": "曲风预设档（Phase 2，设计稿 §3.6）：default（均衡流行摇滚，缺省）、orchestral（管弦/原声叙事）、electronic（电子/律动）"
+            },
+            "expected_levels": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 5
+              },
+              "description": "段落期望张力等级表（Phase 2，设计稿 §3.5）：对象，键 = 段落名，值 = 期望张力等级 1–5 的整数；空对象 = 无标注"
             },
             "include_png_path": {
               "type": "boolean",

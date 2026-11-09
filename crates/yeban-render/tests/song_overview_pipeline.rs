@@ -5,6 +5,7 @@
 //! 的全曲渲染因 6 条 Discord GM 采样器文件不在本机磁盘上而无法在本机跑通，
 //! 见 folk 探针报告（不属于本测试文件的断言范围）。
 
+use yeban_dsp::song_overview::{AnalysisOptions, TensionProfile};
 use yeban_model::samples::demo_project;
 use yeban_model::{TrackKind, TrackV3, YebanProjectV1};
 use yeban_render::engine_source::ArmedSfzInput;
@@ -55,15 +56,25 @@ fn the_cached_pipeline_analyses_the_demo_end_to_end() {
     let settings = RenderSettings::default();
     let mut cache = SongOverviewCache::new();
 
-    let (first, first_hit) =
-        cached_overview(&mut cache, &project, &settings, never_called_provider())
-            .expect("首次分析");
+    let (first, first_hit) = cached_overview(
+        &mut cache,
+        &project,
+        &settings,
+        &AnalysisOptions::default(),
+        never_called_provider(),
+    )
+    .expect("首次分析");
     assert!(!first_hit, "首次必须是未命中");
     assert_eq!((cache.hits(), cache.misses()), (0, 1));
 
-    let (second, second_hit) =
-        cached_overview(&mut cache, &project, &settings, never_called_provider())
-            .expect("二次分析");
+    let (second, second_hit) = cached_overview(
+        &mut cache,
+        &project,
+        &settings,
+        &AnalysisOptions::default(),
+        never_called_provider(),
+    )
+    .expect("二次分析");
     assert!(second_hit, "第二次同一哈希必须命中，不重算");
     assert_eq!((cache.hits(), cache.misses()), (1, 1));
     assert_eq!(first, second, "缓存返回的结果必须与现算逐位相同");
@@ -82,6 +93,9 @@ fn the_cached_pipeline_analyses_the_demo_end_to_end() {
         series.lufs_short.len(),
         series.lufs_momentary_max.len(),
         series.score_dyn.len(),
+        series.envelope_lo.len(),
+        series.envelope_hi.len(),
+        series.target_deviation.len(),
         series.density_pitched_onsets_per_beat.len(),
         series.density_pitched_duty.len(),
         series.density_perc_onsets_per_beat.len(),
@@ -116,10 +130,10 @@ fn the_cached_pipeline_analyses_the_demo_end_to_end() {
 fn the_hash_changes_when_the_project_or_the_settings_change() {
     let project = demo_project();
     let settings = RenderSettings::default();
-    let base = song_overview_hash(&project, &settings);
+    let base = song_overview_hash(&project, &settings, &AnalysisOptions::default());
     assert_eq!(
         base,
-        song_overview_hash(&project, &settings),
+        song_overview_hash(&project, &settings, &AnalysisOptions::default()),
         "同一输入同一哈希"
     );
 
@@ -127,7 +141,7 @@ fn the_hash_changes_when_the_project_or_the_settings_change() {
     faster.bpm = 121.0;
     assert_ne!(
         base,
-        song_overview_hash(&faster, &settings),
+        song_overview_hash(&faster, &settings, &AnalysisOptions::default()),
         "工程内容变化 ⇒ 哈希变 ⇒ 缓存失效"
     );
 
@@ -135,8 +149,90 @@ fn the_hash_changes_when_the_project_or_the_settings_change() {
     other_seed.seed = 1;
     assert_ne!(
         base,
-        song_overview_hash(&project, &other_seed),
+        song_overview_hash(&project, &other_seed, &AnalysisOptions::default()),
         "渲染设置变化 ⇒ 哈希变 ⇒ 缓存失效"
+    );
+
+    // Phase 2：分析选项（曲风档 / 期望等级表）同样进哈希 —— 同一工程换档
+    // 必须是不命中的另一条缓存项，⛔ 不许返回 Default 档的旧结果。
+    let orchestral = AnalysisOptions::with_profile(TensionProfile::Orchestral);
+    assert_ne!(
+        base,
+        song_overview_hash(&project, &settings, &orchestral),
+        "曲风档变化 ⇒ 哈希变 ⇒ 缓存失效"
+    );
+    let mut levels = AnalysisOptions::default();
+    levels.expected_levels.insert("Intro".to_string(), 5);
+    assert_ne!(
+        base,
+        song_overview_hash(&project, &settings, &levels),
+        "期望等级表变化 ⇒ 哈希变 ⇒ 缓存失效"
+    );
+}
+
+#[test]
+fn profile_and_expected_levels_flow_through_the_cache() {
+    let project = demo_project();
+    let settings = RenderSettings::default();
+    let mut cache = SongOverviewCache::new();
+
+    let (defaulted, _) = cached_overview(
+        &mut cache,
+        &project,
+        &settings,
+        &AnalysisOptions::default(),
+        never_called_provider(),
+    )
+    .expect("Default 档分析");
+    assert_eq!(defaulted.song_meta.profile, "default");
+
+    // 换 Orchestral 档：未命中（新哈希）、档名进 meta、至少一小节张力变了。
+    let (orchestral, hit) = cached_overview(
+        &mut cache,
+        &project,
+        &settings,
+        &AnalysisOptions::with_profile(TensionProfile::Orchestral),
+        never_called_provider(),
+    )
+    .expect("Orchestral 档分析");
+    assert!(!hit, "换档必须是未命中");
+    assert_eq!(orchestral.song_meta.profile, "orchestral");
+    assert_ne!(
+        defaulted.bar_series.tension, orchestral.bar_series.tension,
+        "换档后张力列必须变（否则档位没生效）"
+    );
+
+    // 同档再调：命中，逐位相同。
+    let (again, hit) = cached_overview(
+        &mut cache,
+        &project,
+        &settings,
+        &AnalysisOptions::with_profile(TensionProfile::Orchestral),
+        never_called_provider(),
+    )
+    .expect("同档二次分析");
+    assert!(hit, "同档二次必须是命中");
+    assert_eq!(orchestral, again);
+
+    // 期望等级表：Intro L5（带 [0.75, 1.0]）⇒ 第一小节有带，且张力低于带下沿
+    // 时偏离 > 0（演示工程第一小节张力 < 0.75，见打印值）。
+    let mut levels = AnalysisOptions::default();
+    levels.expected_levels.insert("Intro".to_string(), 5);
+    let (targeted, hit) = cached_overview(
+        &mut cache,
+        &project,
+        &settings,
+        &levels,
+        never_called_provider(),
+    )
+    .expect("带期望等级的分析");
+    assert!(!hit, "新期望等级表必须是未命中");
+    assert_eq!(targeted.bar_series.envelope_lo[0], 0.75);
+    assert_eq!(targeted.bar_series.envelope_hi[0], 1.0);
+    assert!(
+        targeted.bar_series.target_deviation[0] > 0.0,
+        "第一小节张力 {} 应在 L5 带之下、偏离 > 0",
+        targeted.bar_series.tension[0]
     );
 }
 

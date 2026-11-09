@@ -262,6 +262,9 @@ fn project_markers(project: &YebanProjectV1, beats_per_bar: u32) -> Vec<SectionM
         markers.push(SectionMarker {
             bar,
             label: section.name.clone(),
+            // 工程 `sections` 不存期望等级（持久化模型未改）：等级只活在
+            // 分析请求的会话态里（见 dsp `AnalysisOptions::expected_levels`）。
+            expected_level: None,
         });
     }
     markers

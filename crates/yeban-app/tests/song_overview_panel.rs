@@ -40,6 +40,10 @@
 //! | ⑰（`Esc` 退出全屏） | 全屏态按 `Esc`（真事件源经 `wire_keys` → `Action::Cancel` 级联）⇒ 恢复 104 px；非全屏态再按 `Esc` ⇒ 不折叠、不展开、无任何视图态变化 |
 //! | ⑱（全屏与折叠协调） | 全屏态点折叠键 ⇒ 退出全屏并落到 22 px；折叠态点全屏键 ⇒ 进入全屏且 `collapsed` 清零（两者不同时为真） |
 //! | ⑲（全屏视觉验收 1:1 + 3x） | 全屏态截图非黑、面板区多色；四张 PNG 落盘供执行员肉眼验收（全屏态 1:1 整幅 + 3x 左上 controls + 3x 右上胶囊读数 + 3x 底部条带；全屏 3x 整图超 10 MiB 写不进产物口，见测试内注）；读数框与胶囊无重叠另有数值断言（右缘在胶囊区左缘 8 px 之前） |
+//! | ㉓（Phase 2 预设切换） | 点 `[预设]` 键 ⇒ 档名 均衡 → 管弦 → 电子 → 均衡循环；管弦档张力数组与活态逐位一致且至少一小节与缺省档不同；回到缺省档后张力逐位恢复（缓存命中同一份分析） |
+//! | ㉔（Phase 2 段落期望等级） | 点 Intro 段落标签 ⇒ 等级 None → 1 → … → 5 → None 循环；设档后第 0 小节包络带 = 该等级的带（f32 舍入 1e-6 内）、偏离超 0.15 的小节告警、悬停读数含偏离量、走带一位不动；6 次点击回到无标注（带哨兵、无告警）。⚠ Chorus 在第 4 小节、落在 dsp 内容跨度（3 小节）之外是垫条，带画不出 ⇒ 本判据用跨度内的 Intro（见测试内注） |
+//! | ㉕（Phase 2 谱面力度虚线） | UI `score-dyn` 数组与活态逐位一致；第 0 小节有起音 ⇒ 力度大于 0；垫条区（第 3 小节起）力度为 0；无标注时包络列全哨兵、无告警、档名 "均衡" |
+//! | ㉖（Phase 2 视觉验收 1:1 + 3x） | 管弦档 + Intro 5 级（或 1 级，按张力选保证告警的那档）展开态截图非黑、面板区多色；1:1 与 3x 两张 PNG 落盘供执行员肉眼验收（期望带浅灰、琥珀告警、谱面力度虚线、预设键 "预设：管弦"） |
 //!
 //! ## 边界（不许当成已证）
 //!
@@ -72,7 +76,7 @@ use yeban_app::scene::DemoScene;
 use yeban_app::song_overview::{self, SongOverview};
 use yeban_app::ui::MainWindow;
 use yeban_app::undo::{UndoPort, UndoSession};
-use yeban_dsp::song_overview::{NO_LOUDNESS_READING_LUFS, analyze_song_overview};
+use yeban_dsp::song_overview::{NO_ENVELOPE, NO_LOUDNESS_READING_LUFS, analyze_song_overview};
 use yeban_engine::ring::TransportCommand;
 use yeban_model::song_overview::score_input_from_project;
 use yeban_ui_test_port::render::{LivePort, write_artifact};
@@ -105,6 +109,10 @@ const TENSION_PILL: &str = "song-overview-layer-tension-pill";
 const READOUT: &str = "song-overview-hover-readout";
 const COLLAPSE: &str = "song-overview-collapse-button";
 const FULLSCREEN: &str = "song-overview-fullscreen-button";
+/// Phase 2 曲风预设键（设计稿 §3.6）。
+const PROFILE: &str = "song-overview-profile-button";
+/// Phase 2 底部条（段落标签点击的目标，设计稿 §3.5）。
+const STRIP: &str = "song-overview-density-strip";
 /// 顶栏高 48 px（`app.slint` 的 Transport 固定行）。
 const TRANSPORT_HEIGHT: u32 = 48;
 
@@ -446,6 +454,26 @@ impl Rig {
                 .dispatch_pointer_up(PointerButton::Left)
                 .expect("释放必须送达");
         }
+    }
+
+    /// Phase 2（设计稿 §3.5）：点第 `section_index` 个段落的标签格（底部条标签行，
+    /// 条带局部坐标 `y = 18`，`x` = 该段起始小节格中点）⇒ 该段期望等级循环一次。
+    /// 段落下标取自活态 `sections`（与 `.slint` 的 `target-cycle` 参数同一口径）。
+    fn click_section_label(&mut self, section_index: usize) {
+        let start_bar = self
+            .live_data()
+            .sections
+            .get(section_index)
+            .map(|(_, start)| *start)
+            .expect("段落下标必须在活态段落表内");
+        let strip = self.bounds(STRIP);
+        let x = (start_bar as f64 + 0.5) * f64::from(strip.width) / TOTAL_BARS as f64;
+        self.port
+            .dispatch_pointer_down(STRIP, x, 18.0, PointerButton::Left)
+            .expect("Interactive 权限下底部条必须可按下");
+        self.port
+            .dispatch_pointer_up(PointerButton::Left)
+            .expect("释放必须送达");
     }
 
     /// 投影画出的第 `index` 条小节线在**编排视图**里的列（= 界面自己的读数）。
@@ -1301,10 +1329,14 @@ fn the_declarations_stay_honest_and_the_hover_exit_condition_is_pinned() {
         ),
         "缩放把手的无障碍值必须绑注入属性"
     );
+    assert!(
+        source.contains("accessible-value: root.profile;"),
+        "预设键的无障碍值必须绑 `profile`（与可见 text 的 \"预设：\" + profile 同源，⛔ 不是第二份读数）"
+    );
     assert_eq!(
         source.matches("accessible-value:").count(),
-        5,
-        "该文件原有 3 条 + 本轮 2 条；多一条就是第二份读数"
+        6,
+        "该文件原有 3 条 + 全屏轮 2 条 + Phase 2 预设键 1 条；多一条就是第二份读数"
     );
     assert!(
         source.contains("accessible-id: \"song-overview-collapse-button\"")
@@ -1616,4 +1648,266 @@ fn fullscreen_visual_acceptance_1x_and_3x() {
     let path_bottom = write_artifact("song-overview-panel-fullscreen-3x-bottom", &bottom_3x)
         .expect("全屏 3x 底部截图必须能落盘");
     println!("全屏 3x 底部截图: {}", path_bottom.display());
+}
+
+// ---------------------------------------------------------------------------
+// Phase 2 核心三项（设计稿 §3.5 / §3.6 / §5.1）：㉓ ㉔ ㉕ ㉖
+//
+// ⚠ 段落取 Intro 不取 Chorus：演示工程四段各 2 小节（Intro 0–1、Verse 2–3、
+// Chorus 4–5、Outro 6–7），而 dsp 内容跨度只有 3 小节（谱面 4 拍、音频 10 拍），
+// 第 3 小节起是静音垫条 —— Chorus 落在垫条区，期望带画不出、告警出不来。
+// ㉔/㉖ 因此用跨度内的 Intro（第 0–1 小节）；Chorus 的带要等 dsp 跨度盖到它。
+// ---------------------------------------------------------------------------
+
+/// ㉓：点 `[预设]` 键 ⇒ 档名 均衡 → 管弦 → 电子 → 均衡循环；管弦档张力数组与
+/// 活态逐位一致且至少一小节与缺省档不同；回到缺省档后张力逐位恢复。
+#[test]
+fn profile_button_cycles_presets_and_changes_tension() {
+    let mut rig = Rig::new();
+    let default_tension: Vec<f32> = rig.ui().get_song_overview_tension().iter().collect();
+    assert_eq!(
+        rig.ui().get_song_overview_profile().to_string(),
+        "均衡",
+        "缺省档按钮文字必须是 “预设：均衡” 的档名部分"
+    );
+    assert_eq!(rig.live_data().profile, "default");
+
+    rig.click_center(PROFILE);
+    assert_eq!(
+        rig.ui().get_song_overview_profile().to_string(),
+        "管弦",
+        "点一次 ⇒ 管弦档"
+    );
+    let live = rig.live_data();
+    assert_eq!(live.profile, "orchestral", "活态档名必须是 orchestral");
+    let orch_tension: Vec<f32> = rig.ui().get_song_overview_tension().iter().collect();
+    assert_eq!(
+        orch_tension, live.tension,
+        "管弦档张力数组必须与活态逐位一致（注入保真）"
+    );
+    assert!(
+        orch_tension
+            .iter()
+            .zip(default_tension.iter())
+            .any(|(a, b)| (a - b).abs() > 1e-6),
+        "换档必须真的改张力（缺省 {default_tension:?}，管弦 {orch_tension:?}）"
+    );
+
+    rig.click_center(PROFILE);
+    assert_eq!(
+        rig.ui().get_song_overview_profile().to_string(),
+        "电子",
+        "再点一次 ⇒ 电子档"
+    );
+    assert_eq!(rig.live_data().profile, "electronic");
+
+    rig.click_center(PROFILE);
+    assert_eq!(
+        rig.ui().get_song_overview_profile().to_string(),
+        "均衡",
+        "第三次 ⇒ 回到缺省档"
+    );
+    assert_eq!(rig.live_data().profile, "default");
+    let back: Vec<f32> = rig.ui().get_song_overview_tension().iter().collect();
+    assert_eq!(
+        back, default_tension,
+        "回到缺省档后张力必须逐位恢复（缓存命中同一份分析）"
+    );
+}
+
+/// ㉔：点 Intro 段落标签 ⇒ 等级 None → 1 → … → 5 → None 循环；设档后第 0 小节
+/// 包络带 = 该等级的带、偏离超 0.15 的小节告警、悬停读数含偏离量、走带一位不动；
+/// 6 次点击回到无标注。
+#[test]
+fn section_label_cycles_expected_level_and_flags_deviation() {
+    let mut rig = Rig::new();
+    let live = rig.live_data();
+    let intro_index = live
+        .sections
+        .iter()
+        .position(|(name, _)| name == "Intro")
+        .expect("演示工程段落表里必须有 Intro");
+    assert_eq!(
+        live.sections[intro_index].1, 0,
+        "Intro 必须从第 0 小节起（演示工程四段各 2 小节）"
+    );
+    // 选保证告警的档：第 0 小节张力 > 0.4 时 1 级带 [0, 0.25] 必告警
+    // （偏离 = 张力 − 0.25 > 0.15）；否则 5 级带 [0.75, 1.0] 必告警
+    // （偏离 = 0.75 − 张力 > 0.15）。带值是 f32 算术，断言留 1e-6 舍入。
+    let tension0 = live.tension[0];
+    let (clicks, level, lo, hi) = if tension0 > 0.4 {
+        (1usize, 1u8, 0.0f32, 0.25f32)
+    } else {
+        (5usize, 5u8, 0.75f32, 1.0f32)
+    };
+    for _ in 0..clicks {
+        rig.click_section_label(intro_index);
+    }
+    let live = rig.live_data();
+    assert!(
+        (live.envelope_lo[0] - lo).abs() < 1e-6,
+        "第 0 小节带下沿必须是 {level} 级带的 {lo}（实得 {}）",
+        live.envelope_lo[0]
+    );
+    assert!(
+        (live.envelope_hi[0] - hi).abs() < 1e-6,
+        "第 0 小节带上沿必须是 {level} 级带的 {hi}（实得 {}）",
+        live.envelope_hi[0]
+    );
+    assert!(
+        live.envelope_alert[0],
+        "第 0 小节张力 {tension0} 相对 {level} 级带偏离必须超 0.15（告警）"
+    );
+    // UI 数组与活态一致（带列近似 1e-6、告警列逐位）。
+    let ui_lo: Vec<f32> = rig.ui().get_song_overview_envelope_lo().iter().collect();
+    let ui_hi: Vec<f32> = rig.ui().get_song_overview_envelope_hi().iter().collect();
+    for bar in 0..TOTAL_BARS {
+        assert!(
+            (ui_lo[bar] - live.envelope_lo[bar]).abs() < 1e-6,
+            "第 {bar} 小节带下沿 UI 必须与活态一致"
+        );
+        assert!(
+            (ui_hi[bar] - live.envelope_hi[bar]).abs() < 1e-6,
+            "第 {bar} 小节带上沿 UI 必须与活态一致"
+        );
+    }
+    let ui_alert: Vec<bool> = rig.ui().get_song_overview_envelope_alert().iter().collect();
+    assert_eq!(ui_alert, live.envelope_alert, "告警数组必须与活态逐位一致");
+    // 悬停第 0 小节 ⇒ 读数含偏离量（视口框盖左段，悬停经框体转发，见面板注释）。
+    let canvas = rig.bounds(CANVAS);
+    rig.port
+        .dispatch_pointer_move(
+            f64::from(canvas.x) + f64::from(canvas.width) * (0.5 / 16.0),
+            f64::from(canvas.y) + 41.0,
+        )
+        .expect("悬停移动必须送达");
+    let text = rig.ui().get_song_overview_hover_text().to_string();
+    assert!(
+        text.contains("偏离期望带"),
+        "告警小节的悬停读数必须含偏离量（实得 \"{text}\"）"
+    );
+    // 点标签不跳转：走带一位不动（标签格是控件，不是画布）。
+    assert_eq!(
+        rig.position(),
+        0,
+        "点段落标签 ⛔ 不得跳转走带（实得 {} tick）",
+        rig.position()
+    );
+    // 剩下的点击回到无标注：6 次循环 ⇒ None。
+    for _ in 0..(6 - clicks) {
+        rig.click_section_label(intro_index);
+    }
+    let live = rig.live_data();
+    assert_eq!(
+        live.envelope_lo[0], NO_ENVELOPE,
+        "6 次点击后第 0 小节带下沿必须回哨兵 −1（无标注）"
+    );
+    assert_eq!(
+        live.envelope_hi[0], NO_ENVELOPE,
+        "6 次点击后第 0 小节带上沿必须回哨兵 −1（无标注）"
+    );
+    assert!(!live.envelope_alert[0], "回到无标注后第 0 小节必须无告警");
+}
+
+/// ㉕：UI `score-dyn` 数组与活态逐位一致；第 0 小节有起音 ⇒ 力度大于 0；
+/// 垫条区（第 3 小节起）力度为 0；无标注时包络列全哨兵、无告警、档名 "均衡"。
+#[test]
+fn score_dyn_reaches_the_panel_and_is_nonzero_on_the_first_bar() {
+    let rig = Rig::new();
+    let live = rig.live_data();
+    assert!(
+        live.score_dyn[0] > 0.0,
+        "第 0 小节有谱面起音，谱面力度必须大于 0（实得 {}）",
+        live.score_dyn[0]
+    );
+    let ui_dyn: Vec<f32> = rig.ui().get_song_overview_score_dyn().iter().collect();
+    assert_eq!(ui_dyn.len(), TOTAL_BARS, "谱面力度必须是 16 小节一项");
+    assert_eq!(
+        ui_dyn, live.score_dyn,
+        "谱面力度数组必须与活态逐位一致（虚线数据源）"
+    );
+    for bar in 3..TOTAL_BARS {
+        assert_eq!(
+            live.score_dyn[bar], 0.0,
+            "第 {bar} 小节是垫条，谱面力度必须是 0"
+        );
+    }
+    // 无标注时包络列全哨兵、无告警、档名缺省。
+    let ui_lo: Vec<f32> = rig.ui().get_song_overview_envelope_lo().iter().collect();
+    let ui_hi: Vec<f32> = rig.ui().get_song_overview_envelope_hi().iter().collect();
+    let ui_alert: Vec<bool> = rig.ui().get_song_overview_envelope_alert().iter().collect();
+    for bar in 0..TOTAL_BARS {
+        assert_eq!(ui_lo[bar], NO_ENVELOPE, "无标注时第 {bar} 小节带下沿是哨兵");
+        assert_eq!(ui_hi[bar], NO_ENVELOPE, "无标注时第 {bar} 小节带上沿是哨兵");
+        assert!(!ui_alert[bar], "无标注时第 {bar} 小节必须无告警");
+    }
+    assert_eq!(
+        rig.ui().get_song_overview_profile().to_string(),
+        "均衡",
+        "缺省档名必须是 “均衡”"
+    );
+}
+
+/// ㉖：Phase 2 视觉验收 1:1 + 3x —— 管弦档 + Intro 保证告警的那一级，展开态
+/// 截图非黑、面板区多色，两张 PNG 落盘供执行员肉眼验收。
+///
+/// 档位选择与 ㉔ 同款：张力 > 0.4 标 1 级，否则标 5 级 ⇒ 第 0 小节必告警。
+/// 1:1 面板区 = 窗口底部 128 行（面板 104 + 状态栏 24）；3x = 最近邻放大
+/// （1440×128 ⇒ 4320×384，约 5.0 MB，在 10 MiB 产物上限内）。
+#[test]
+fn phase2_visual_acceptance_1x_and_3x() {
+    let mut rig = Rig::new();
+    rig.click_center(PROFILE);
+    assert_eq!(
+        rig.ui().get_song_overview_profile().to_string(),
+        "管弦",
+        "视觉验收的前提：档已切到管弦"
+    );
+    let live = rig.live_data();
+    let intro_index = live
+        .sections
+        .iter()
+        .position(|(name, _)| name == "Intro")
+        .expect("演示工程段落表里必须有 Intro");
+    let clicks = if live.tension[0] > 0.4 { 1 } else { 5 };
+    for _ in 0..clicks {
+        rig.click_section_label(intro_index);
+    }
+    let live = rig.live_data();
+    assert_eq!(live.profile, "orchestral");
+    assert!(
+        live.envelope_alert[0],
+        "视觉验收的前提：第 0 小节必须告警（张力 {}）",
+        live.tension[0]
+    );
+    assert!(
+        (live.envelope_lo[0] - if clicks == 1 { 0.0 } else { 0.75 }).abs() < 1e-6,
+        "视觉验收的前提：第 0 小节带下沿必须与所标等级一致"
+    );
+
+    let frame = rig.port.window().capture().expect("1:1 截图必须能取");
+    assert_eq!(frame.width(), WINDOW.width, "1:1 帧宽必须是 1440");
+    assert_eq!(frame.height(), WINDOW.height, "1:1 帧高必须是 900");
+    assert!(!frame.is_all_black(), "1:1 帧 ⛔ 不能全黑");
+    let panel_1x = Rig::crop_panel(&frame, 0, 772, 1440, 128);
+    assert!(
+        panel_1x.distinct_color_count() > 16,
+        "1:1 面板区必须多色（热力图 + 能量 + 张力 + 虚线 + 期望带 + 告警 + 胶囊 + 预设键，实得 {} 色）",
+        panel_1x.distinct_color_count()
+    );
+    let path_1x = write_artifact("song-overview-panel-phase2-1x", &panel_1x)
+        .expect("Phase 2 1:1 面板截图必须能落盘");
+    println!("Phase 2 1:1 面板截图: {}", path_1x.display());
+
+    let panel_3x = Rig::upscale_3x(&panel_1x);
+    assert_eq!(panel_3x.width(), 4320, "3x 面板宽必须是 4320");
+    assert_eq!(panel_3x.height(), 384, "3x 面板高必须是 384");
+    assert!(
+        panel_3x.distinct_color_count() > 16,
+        "3x 面板区必须多色（实得 {} 色）",
+        panel_3x.distinct_color_count()
+    );
+    let path_3x = write_artifact("song-overview-panel-phase2-3x", &panel_3x)
+        .expect("Phase 2 3x 面板截图必须能落盘");
+    println!("Phase 2 3x 面板截图: {}", path_3x.display());
 }
