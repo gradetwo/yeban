@@ -1072,3 +1072,95 @@ fn second_refresh_hits_the_cache_and_keeps_real_data() {
         "缓存命中后活态数据必须逐位相同（⛔ 不许刷新一次换一份数据）"
     );
 }
+
+// ---------------------------------------------------------------------------
+// 第四轮补完（2026-11-08）：[PATCH UI-HOVER-01] / [PATCH UI-A11Y-005]
+// ---------------------------------------------------------------------------
+
+/// ⑬ [PATCH UI-HOVER-01]：指针移出面板后悬停读数框必须离开控件树。
+///
+/// 修复前 `hover-visible` 只有 `true` 写者（`src/song_overview.rs` 的
+/// `on_song_overview_hover`），Rust 侧没有清除路径 ⇒ 300×30 的读数框一旦出现就
+/// 一直压在画布上。修复是在 `.slint` 的 `visible` 上补一个**纯界面态**
+/// `seek-area.has-hover`（Slint 1.18.1 在 `MouseEvent::Exit` 时置 false），
+/// 宿主仍是 `hover-visible` 的唯一写者，界面不造第二份状态。
+#[test]
+fn hover_readout_leaves_the_tree_when_the_pointer_exits_the_panel() {
+    let mut rig = Rig::new();
+    let canvas = rig.bounds(CANVAS);
+    let inside_x = f64::from(canvas.x) + f64::from(canvas.width) * 0.5;
+    let inside_y = f64::from(canvas.y) + 41.0;
+    rig.port
+        .dispatch_pointer_move(inside_x, inside_y)
+        .expect("画布内悬停必须送达");
+    rig.refresh();
+    assert!(
+        rig.port.tree().contains("song-overview-hover-readout"),
+        "前提：指针在面板内 ⇒ 读数框必须进控件树"
+    );
+
+    // 窗口左上角（远离底部总览面板）。
+    rig.port
+        .dispatch_pointer_move(8.0, 8.0)
+        .expect("移出面板的移动必须送达");
+    rig.refresh();
+    assert!(
+        !rig.port.tree().contains("song-overview-hover-readout"),
+        "指针移出面板 ⇒ 读数框必须消失（⛔ 不许常驻遮挡画布）"
+    );
+}
+
+/// ⑭ [PATCH UI-A11Y-005]：折叠键的状态、缩放把手的档位必须走无障碍值通道。
+#[test]
+fn the_two_controls_expose_their_state_through_the_accessibility_value_channel() {
+    let rig = Rig::new();
+    let tree = rig.port.tree();
+    let collapse = tree
+        .find_by_id(COLLAPSE)
+        .expect("展开态控件树里必须有折叠键");
+    assert_eq!(
+        collapse.value.as_deref(),
+        Some("总览 ▾"),
+        "展开态折叠键的值必须与可见文本逐字同源"
+    );
+    let resize = tree
+        .find_by_id(RESIZE)
+        .expect("展开态控件树里必须有缩放把手");
+    let expected = format!("1 px = {} ticks", rig.ui().get_roll_ticks_per_pixel());
+    assert_eq!(
+        resize.value.as_deref(),
+        Some(expected.as_str()),
+        "slider 角色必须念得出当前缩放档（与注入属性同源，⛔ 不是第二份读数）"
+    );
+}
+
+/// ⑮ 声明面防回潮：退出条件、同源绑定、静态名字、通道计数逐字钉住。
+#[test]
+fn the_declarations_stay_honest_and_the_hover_exit_condition_is_pinned() {
+    let source = include_str!("../ui/workspace/song_overview_panel.slint");
+    assert!(
+        source
+            .contains("visible: root.hover-visible && root.total-bars > 0 && seek-area.has-hover;"),
+        "悬停读数框必须保留 `has-hover` 退出条件"
+    );
+    assert!(
+        source.contains("accessible-value: root.collapsed ? \"总览 ▸\" : \"总览 ▾\";"),
+        "折叠键的无障碍值必须与可见 text 是同一个表达式"
+    );
+    assert!(
+        source.contains(
+            "accessible-value: \"1 px = \" + root.viewport-ticks-per-pixel + \" ticks\";"
+        ),
+        "缩放把手的无障碍值必须绑注入属性"
+    );
+    assert_eq!(
+        source.matches("accessible-value:").count(),
+        5,
+        "该文件原有 3 条 + 本轮 2 条；多一条就是第二份读数"
+    );
+    assert!(
+        source.contains("accessible-id: \"song-overview-collapse-button\"")
+            && source.contains("accessible-id: \"song-overview-viewport-resize\""),
+        "两个语义 ID 不许退化"
+    );
+}

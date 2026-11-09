@@ -309,6 +309,10 @@ export component SongOverviewPanel inherits Rectangle {
                 accessible-role: slider;
                 accessible-id: "song-overview-viewport-resize";
                 accessible-label: "拖动缩放编排视口";
+                // ⭐ [PATCH UI-A11Y-005]：slider 角色必须有值通道，否则屏读器只能念出
+                // 「拖动缩放编排视口」、念不出当前缩放档。绑**同一条**注入属性
+                // `viewport-ticks-per-pixel`（⛔ 不是第二份读数），零可见像素。
+                accessible-value: "1 px = " + root.viewport-ticks-per-pixel + " ticks";
                 pointer-event(event) => {
                     if event.kind == PointerEventKind.down {
                         root.resize-dragging = true;
@@ -345,7 +349,15 @@ export component SongOverviewPanel inherits Rectangle {
             opacity: 0.92;
             border-width: 1px;
             border-color: Tokens.line-strong;
-            visible: root.hover-visible && root.total-bars > 0;
+            // ⭐ [PATCH UI-HOVER-01]（2026-11-08）：`hover-visible` 只是宿主写的
+            // 「收到过悬停读数」标记，Rust 侧**没有**清除路径（见
+            // tests/song_overview_panel.rs 的 ⑪ 注）⇒ 单靠它会让读数框在指针移开后
+            // 常驻、300×30 一直遮挡画布。用覆盖整块面板的 `seek-area.has-hover`
+            // （Slint 1.18.1 在 MouseEvent::Exit 时置 false，见
+            // i-slint-core/items/input_items.rs:102-103,117-118）作纯界面退出条件：
+            // 零新增属性、零新增控件、零默认帧可见像素（默认 hover-visible = false）。
+            // ⛔ 宿主仍是 hover-visible 的唯一写者，界面不造第二份状态。
+            visible: root.hover-visible && root.total-bars > 0 && seek-area.has-hover;
             accessible-role: text;
             accessible-id: "song-overview-hover-readout";
             accessible-label: "悬停小节读数";
@@ -485,6 +497,9 @@ export component SongOverviewPanel inherits Rectangle {
         accessible-role: button;
         accessible-id: "song-overview-collapse-button";
         accessible-label: "折叠 / 展开总览面板";
+        // ⭐ [PATCH UI-A11Y-005]：静态名字念不出「当前是折叠还是展开」。把与可见 `text`
+        // **逐字同一个表达式**接到无障碍值通道（⛔ 不是第二份真相源），零可见像素。
+        accessible-value: root.collapsed ? "总览 ▸" : "总览 ▾";
         accessible-action-default => { root.toggle-collapsed(); }
 
         UiText {
