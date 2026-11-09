@@ -1008,6 +1008,15 @@ impl ElementRegistry {
             "折叠 / 展开总览面板",
             false,
         );
+        // ⭐ 全屏键（Wang 2026-11-08 19:56 要求）：标签与 `.slint` 的
+        // `accessible-label` 逐字相同（运行时树对账断言 label 相等）。
+        registry.add(
+            "song-overview-fullscreen-button",
+            ElementKind::Button,
+            "workspace/song_overview_panel.slint",
+            "全屏 / 退出全屏总览面板",
+            false,
+        );
 
         // ------------------------------------------------------------ 控制台导轨
         registry.add(
