@@ -1491,6 +1491,26 @@ fn no_tool_answers_with_a_blanket_not_implemented() {
                 "pluginPath": "stub:sine",
             }),
         ),
+        // ARA 宿主三条：绑定只做实参校验 + 解码（不开插件），wav 不存在 ⇒
+        // 带内 `IO_ERROR`；查询与渲染先查会话注册表，不存在 ⇒ 带内
+        // `INVALID_PARAMETER_RANGE` + `araSessionNotFound`。这里只要求"走到
+        // 领域实现 + 契约形状"，真插件链路的证据在 `tests/fixture_ara_plugin.rs`
+        //（桩 ARA 插件）与 `domain/mod.rs` 的 ARA 单元判据。
+        (
+            "yeban_ara_bind",
+            json!({
+                "pluginPath": "stub:sine",
+                "wavPath": scratch.text("missing.wav"),
+            }),
+        ),
+        ("yeban_ara_query", json!({ "sessionId": "ara-999" })),
+        (
+            "yeban_ara_render",
+            json!({
+                "sessionId": "ara-999",
+                "outPath": scratch.text("ara-out.wav"),
+            }),
+        ),
         // 原生预制 4 条：清单只读（空参数合法）；应用走提案路径（发行预制 + 夹具音轨 ⇒
         // 提案成功）；另存与旁通在这个夹具上响亮拒绝（音轨无采样器／无预制状态 ⇒ 带内
         // `INVALID_PARAMETER_RANGE`，仍是契约形状，不是一律 -32005）。

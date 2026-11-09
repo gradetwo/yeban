@@ -94,6 +94,8 @@ impl Host {
     ///
     /// 不存在的目录静默跳过（⛔ 不是失败：标准路径在很多机器上本来就不存在）。
     /// 同一模块被多个根命中时各列一条（不去重：诊断时要看清是哪个路径的副本）。
+    /// 每行另带 ARA 能力列（模块含 `ARA Main Factory Class` 时 `Some`；
+    /// ARA 探针失败 ⇒ `None`，不阻塞扫描、不记入模块 `error`）。
     #[must_use]
     pub fn scan(dirs: &[PathBuf]) -> Vec<PluginDescriptor> {
         let mut candidates: Vec<PathBuf> = Vec::new();
@@ -112,18 +114,25 @@ impl Host {
         let mut out = Vec::new();
         for candidate in candidates {
             let path_string = candidate.to_string_lossy().into_owned();
+            // ARA 能力列：模块能打开时才探（打不开的模块无 ARA 列，
+            // 与模块 `error` 分开记——ARA 缺失不是模块失败）。
+            let ara = Vst3Module::load(&path_string)
+                .ok()
+                .and_then(|module| crate::ara::inspect_ara_factory(&module));
             match inspect_module(&path_string) {
                 Ok((vendor, classes)) => out.push(PluginDescriptor {
                     path: path_string,
                     vendor,
                     classes,
                     error: None,
+                    ara,
                 }),
                 Err(error) => out.push(PluginDescriptor {
                     path: path_string,
                     vendor: String::new(),
                     classes: Vec::new(),
                     error: Some(error.to_string()),
+                    ara,
                 }),
             }
         }
@@ -265,6 +274,19 @@ impl Host {
             ))),
         }
     }
+}
+
+/// 模块路径解析（`.vst3` 包路径或散动态库路径 → 实际动态库路径；
+/// ARA 会话打开与 MCP 绑定共用此口径，不另造第二份解析规则）。
+///
+/// # Examples
+///
+/// ```ignore
+/// // .vst3 包 → 包内平台动态库；散动态库 → 自身；其余 → None。
+/// ```
+#[must_use]
+pub(crate) fn resolve_module_path(path: &Path) -> Option<PathBuf> {
+    resolve_candidate(path)
 }
 
 /// 扫描候选解析：`.vst3` 包 → 包内平台动态库；散动态库 → 自身；其余 → 无。
