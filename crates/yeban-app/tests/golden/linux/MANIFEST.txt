@@ -269,9 +269,18 @@ headSha `bef7ab82`，artifact `golden-linux`（id 12951880348，470971 字节）
 **本票未重录**：执行环境按 `AGENTS.md` §5.2 禁止在本机产出 Linux golden；本次**没有**用 `--write-table` 重写表（表没有漂移，重写它不会产生任何信息）。差异像素的精确计数与逐项算术闭合由 CI 重录档补上 —— 本机不把未测的读数写成已证事实。
 **⚠ 位置说明（2026-11-08 补记，`[PATCH UI-MANIFEST-01]`）**：本节初稿曾误写在表**之后**，`check_golden_manifest.py` 判据 2/3 要求「表必须是文件最后一块、表头之后不许再有空行或别的正文」，于是整节 6 行加分隔空行被当成表数据行判红（7 条 `[FAIL]`）。本次只把本节整体移到表**之前**、并把方位词「上面这张表」订正为「下面这张表」（与上文 2026-10-08 历史声明同口径）；声明的事实断言、日期、run 记述与表的 5 行哈希 / 字节数**一字未动**，表本身**一行未改**。
 
+**⚠ 2026-11-10 再录一次（Songmap Phase 2，提交 `4cfe5e70`）**: 本批在曲概面板头加曲风预设键 —— 86×16 px，位于面板 `x=184`、`y=2`（帧内 `x 184..269 × y 954..969`），文字为「预设：」+ 当前档中文名（默认「均衡」）。该键是默认帧里可见且未被遮罩的静态像素 ⇒ 5 张基准确定性过期。
+生成方式与地点同上：手动档 `gates-manual.yml` 的 `gate=goldens`，run id **42705853201**（conclusion=success；job `goldens (生成分平台基准图集)` success），ref `main`，headSha `4cfe5e70`，artifact `golden-linux`（id 13712639664，478487 字节）；⚠ artifact 自带的 `MANIFEST.txt` 是本改动前的仓库副本（含旧哈希）⇒ **未采用**（本节与下表由集成者在本机重写，下表用 `--write-table` 从磁盘生成）。
+**入库前的复核（⚖ 判定量 = 预设键矩形外不一致像素数）**: 把合入前的 5 张（旧）与 artifact 的 5 张（新）都用 Pillow 解码成 1920 × 1080 的 RGB 帧逐像素比较（numpy 逐通道；`np.asarray` 后 `.astype()`，不用 `dtype=` 参数）：
+- 5 张差异像素数 = `arrangement-compact` **1,124** / 其余 4 张**各 539**；差异包围盒**五张全为** `(184, 954)..(269, 969)`（含端点；右开即 `x ∈ [184, 270) × y ∈ [954, 970)`），**与预设键的包围盒逐像素吻合**，**矩形外不一致像素数 = 0**；
+- compact 计数更高的原因已核实：同一矩形内，compact 帧按钮底色也变（中心像素 `14,18,22 → 19,26,34`），其余四张底色与旧帧相同（`19,26,34`）、只变文字与边框像素 ⇒ 计数差来自底色，不是第二处改动；
+- `arrangement-full` 与 `demo-project` 新表里**仍然共用**同一个 sha256（`6914d0f6…`），与「这两个场景本就逐字节相同」的既有记录一致。
+**2026-11-08 待重录声明至此解除**：实测差异只在预设键矩形内，声明预测的包头色带/顶边/徽标像素在这 5 帧里没有出现。
+⚠ 五张的**字节数相同**（6222418）**不构成任何证据**（存储式 deflate），判内容的是上面的 sha256 与逐像素读数。
+
 文件	sha256	字节
-app-main-window-arrangement-compact-1920x1080.png	5082cafe845869d3d53dd8695c0eba3ce32bb2c5eb93bb7b3b71dec9c0a22b39	6222418
-app-main-window-arrangement-full-1920x1080.png	ea9be65daeb296a581b6883d452be03fbebe1f6762025c897a69afc35e620732	6222418
-app-main-window-session-full-1920x1080.png	f5b7c50014f2a60a50ed7d37bcc85e9ae664d0c69b86448381f82c902e8f1943	6222418
-app-model-driven-demo-project-1920x1080.png	ea9be65daeb296a581b6883d452be03fbebe1f6762025c897a69afc35e620732	6222418
-app-model-driven-filled-project-1920x1080.png	86b8e8c700eb9925eeb489afcfd820519e57f2f589c44c4f795bce731e827c8c	6222418
+app-main-window-arrangement-compact-1920x1080.png	02584bfcc56d90ba78e73c032b51fb65580cf5176abafac82a1d88a944b4548a	6222418
+app-main-window-arrangement-full-1920x1080.png	6914d0f6a57868b29ca1787a79d90fc11bd8a20b54d1f445cde3ce7999250eeb	6222418
+app-main-window-session-full-1920x1080.png	e7de808661f17e681ccf30c881f8b81b289c66fca054dea932686e36cb5195ea	6222418
+app-model-driven-demo-project-1920x1080.png	6914d0f6a57868b29ca1787a79d90fc11bd8a20b54d1f445cde3ce7999250eeb	6222418
+app-model-driven-filled-project-1920x1080.png	f3e82b14ed1ee01a09bf32441fa154f817c7860fdfdc531aa1d091e9f1277c7c	6222418
