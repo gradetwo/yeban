@@ -767,6 +767,8 @@ export component MixerConsole inherits Rectangle {
                 color: Tokens.gold;
                 font-size: Tokens.font-size-xs;
                 vertical-alignment: center;
+                // [PATCH UI-A11Y-007]：可寻址节点必须显式声明 role（注册表 = ElementKind::TextInput）。
+                accessible-role: text-input;
                 accessible-id: "track-" + track_index + "-sampler-path";
                 accessible-label: "轨道 " + track_name + " SFZ 采样器路径";
                 // 回车 = SET。⛔ 不是第二份提交实现：与 SET 按钮发**同一条**回调。

@@ -95,6 +95,8 @@ export component ModuleActions inherits Rectangle {
         text: "模块入口";
         color: Tokens.gold;
         font-size: Tokens.font-size-sm;
+        // [PATCH UI-A11Y-007]：可寻址节点必须显式声明 role（注册表 = ElementKind::Text）。
+        accessible-role: text;
         accessible-id: "module-actions-title";
         accessible-label: "模块入口：导出 WAV / 导入 MIDI / 装载 SFZ / 录音 / 硬件 MIDI 输入";
     }
@@ -280,6 +282,8 @@ export component ModuleActions inherits Rectangle {
         color: root.midi-in-status-succeeded ? Tokens.ink-2 : Tokens.record-red;
         font-size: Tokens.font-size-xs;
         overflow: elide;
+        // [PATCH UI-A11Y-007]：可寻址节点必须显式声明 role（注册表 = ElementKind::Text）。
+        accessible-role: text;
         accessible-id: "module-midi-in-status";
         // ⚠ 标签**静态**（与 `module-last-status` 同款理由：`[TEST-SPEC-005]` 要求
         // 可见且可寻址的节点必须有非空无障碍名，而默认是空串）。
@@ -302,6 +306,8 @@ export component ModuleActions inherits Rectangle {
         color: root.status-succeeded ? Tokens.ink-2 : Tokens.record-red;
         font-size: Tokens.font-size-xs;
         overflow: elide;
+        // [PATCH UI-A11Y-007]：可寻址节点必须显式声明 role（注册表 = ElementKind::Text）。
+        accessible-role: text;
         accessible-id: "module-last-status";
         // ⚠ 标签是**静态**的，不绑 `root.status`：`[TEST-SPEC-005]` 要求"可见且可寻址的
         // 节点必须有非空无障碍名"（`tests/a11y_screen_reader.rs` 遍历整棵树断言），
