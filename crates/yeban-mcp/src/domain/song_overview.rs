@@ -75,7 +75,8 @@ use std::collections::BTreeMap;
 use yeban_model::YebanProjectV1;
 
 use crate::output_schema::{
-    BAND_DEFINITIONS_HZ, BarRow, DetectedAnomaly, SongMeta, SongOverview, StructuralSummary,
+    BAND_DEFINITIONS_HZ, BarRow, DetectedAnomaly, RepetitionSummary, SongMeta, SongOverview,
+    StructuralSummary,
 };
 use crate::tools::{ErrorCode, ToolCall};
 
@@ -219,6 +220,14 @@ pub fn rounded(mut overview: SongOverview) -> SongOverview {
     overview.structural_summary.climax_tension = round2(overview.structural_summary.climax_tension);
     overview.structural_summary.dynamic_range_lu =
         round1(overview.structural_summary.dynamic_range_lu);
+    // schema 1.1 的 `repetition`：归一化指标保留 2 位小数（§8.2 同口径）。
+    for best in &mut overview.repetition.best_matches {
+        best.similarity = round2(best.similarity);
+    }
+    overview.repetition.mechanical_index = round2(overview.repetition.mechanical_index);
+    for passage in &mut overview.repetition.repeated_passages {
+        passage.mean_similarity = round2(passage.mean_similarity);
+    }
     for row in &mut overview.bar_series {
         row.time_sec = round2(row.time_sec);
         row.tension = round2(row.tension);
@@ -748,7 +757,7 @@ impl SongOverviewProvider for StubSongOverviewProvider {
         let mut detected_anomalies = fixture_anomalies();
         detected_anomalies.extend(envelope_anomalies(&envelope_deviations));
         Ok(SongOverview {
-            schema_version: "1.0".to_owned(),
+            schema_version: "1.1".to_owned(),
             song_meta: SongMeta {
                 total_bars: FIXTURE_BARS.len() as u64,
                 duration_sec: 16.0,
@@ -762,6 +771,13 @@ impl SongOverviewProvider for StubSongOverviewProvider {
                 climax_tension: climax.tension,
                 dynamic_range_lu: loudest - quietest,
                 detected_anomalies,
+            },
+            // stub 不算重复检测（检测在 dsp；见模块头"diagnostics 的归属"）：
+            // 8 行夹具不声称重复与否，字段只保形状完整，值为空摘要。
+            repetition: RepetitionSummary {
+                best_matches: Vec::new(),
+                mechanical_index: 0.0,
+                repeated_passages: Vec::new(),
             },
             bar_series,
         })

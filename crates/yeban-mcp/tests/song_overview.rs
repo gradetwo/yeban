@@ -212,10 +212,14 @@ fn stub_bar_overview_matches_independent_recomputation() {
     let response = call_tool(&mut dispatcher, "get_song_overview", json!({}));
     let data = ok_data(&response);
 
-    // 顶层形状（设计稿 §8.2）。
-    assert_eq!(data["schema_version"], "1.0");
+    // 顶层形状（设计稿 §8.2；schema 1.1 起加 `repetition`）。
+    assert_eq!(data["schema_version"], "1.1");
     assert_eq!(data["provider"], "stub");
     assert_eq!(data["resolution"], "bar");
+    // stub 不算重复检测：重复摘要为空（形状完整、值为空）。
+    assert_eq!(data["repetition"]["best_matches"], json!([]));
+    assert_eq!(data["repetition"]["mechanical_index"], 0.0);
+    assert_eq!(data["repetition"]["repeated_passages"], json!([]));
     // `song_meta` 的键名以 `output_schema::SongMeta` 为准（无 title / bpm 别名）。
     assert_eq!(data["song_meta"]["total_bars"], 8);
     assert_eq!(data["song_meta"]["duration_sec"], 16.0);
