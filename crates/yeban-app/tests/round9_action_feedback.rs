@@ -337,7 +337,16 @@ fn the_deliberate_boundaries_are_still_intact() {
     let cancel = HOST_RS
         .find("Action::Cancel => {")
         .expect("`apply_action` 必须有 `Action::Cancel` 臂");
-    let segment = &HOST_RS[cancel..cancel + 6000];
+    // `HOST_RS` 在 Windows 检出是 CRLF：每行多 1 字节，`cancel + 6000` 会落在
+    // 多字节字符中间（主干 CI run 42733188432 Windows 腿：末字节 559649 落在
+    // '据' 内，`cancel + 6000` 不是字符边界）。把窗口末端进到下一个字符
+    // 边界，最多补 2 字节，内容只多不少；LF 下 6000 本已是边界，行为不变。
+    let rest = &HOST_RS[cancel..];
+    let mut end = 6000.min(rest.len());
+    while end < rest.len() && !rest.is_char_boundary(end) {
+        end += 1;
+    }
+    let segment = &rest[..end];
     let fullscreen = segment
         .find("song_overview_toggle_fullscreen")
         .expect("全屏臂必须在 `Action::Cancel` 段内");
