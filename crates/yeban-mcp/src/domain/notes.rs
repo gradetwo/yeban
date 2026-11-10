@@ -4259,17 +4259,26 @@ impl NoteOp {
     /// （音轨实体级 + 设备级，它们永远自带 `trackId`），`setParam` / `setTrackMute` /
     /// `setTrackSolo` 在**逐条给了** `trackId` 时也算自带 —— 于是"一次调用对多条音轨
     /// 静音/独奏/调音"成立，顶层 `trackId` 对本批不被读取（可为占位身份，
-    /// 与 `removeTrack` / 设备形态同一条路）。
+    /// 与 `removeTrack` / 设备形态同一条路）。**`addTrack` 也算**：它只建新轨，
+    /// 身份就是操作对象自带的 `trackId`，顶层 `trackId` 一个字节都不读
+    /// （[`compile`] 的 `AddTrack` 臂只读操作对象自己的 `track`）；把它漏在外面，
+    /// 纯新建一批反而要一个根本不存在的顶层音轨 —— 判据
+    /// `per_op_track_id_batches_target_each_track_and_fall_back_to_the_envelope`
+    /// 的 ⑤ 钉住这条。
     ///
     /// ⚠ **向后兼容**：这三条形态**没给** `trackId` 时本方法为 `false` ⇒ 顶层
     /// `trackId` 照旧必填、照旧是唯一目标（旧调用逐字节不变）。**空批不算**（`false`），
-    /// 与 [`Self::all_self_addressed`] 同一理由。
+    /// 与 [`Self::all_self_addressed`] 同一理由。`addTrack` 进本方法**不**进
+    /// [`Self::all_self_addressed`]：后者是 MCP 占位路 ① 的门（无摆放/新建守卫），
+    /// `addTrack` + 摆放的组合必须走 ② 那条带守卫的路，顶层身份照旧被查。
     #[must_use]
     pub fn all_ops_address_their_own_track(ops: &[Self]) -> bool {
         !ops.is_empty()
-            && ops
-                .iter()
-                .all(|op| op.is_self_addressed() || op.addresses_own_track())
+            && ops.iter().all(|op| {
+                op.is_self_addressed()
+                    || op.addresses_own_track()
+                    || matches!(op, Self::AddTrack { .. })
+            })
     }
 
     /// 该形态**读**工具顶层的 `clipId`（`#177` 坑④：`clipId` 从无条件必填改成条件必需）。
@@ -8696,7 +8705,7 @@ pub fn compile(
     // `trackId` / `clipId`（那两个是"目标片段所在的音轨"的寻址）。判据
     // `remove_track_does_not_need_midi_and_ignores_the_envelope` 钉住这条。
     // 空批不算"全是"（`parse_ops` 本来就挡空数组）。
-    // 寻址自带的形态（`removeTrack` 与两个设备形态，以及**逐条给了** `trackId` 的
+    // 寻址自带的形态（`removeTrack` 与两个设备形态、`addTrack`，以及**逐条给了** `trackId` 的
     // `setParam` / `setTrackMute` / `setTrackSolo`）不读工具顶层的 `trackId` /
     // `clipId`：它们的寻址在操作对象自己身上。判据
     // `remove_track_does_not_need_midi_and_ignores_the_envelope` 与
@@ -13276,6 +13285,35 @@ mod tests {
         .expect("解析不查文档");
         let fault = compile(&project, &nil, &nil, &ghost_ops).expect_err("幽灵点名必须响亮失败");
         assert_eq!(fault.domain_code(), Some(ErrorCode::TrackNotFound));
+
+        // ⑤ 纯 `addTrack` 批 ⇒ 批谓词为真，顶层身份取占位 nil 也能编译（`addTrack`
+        // 只建新轨，身份就是操作对象自带的 `trackId`；此前漏在谓词外，纯新建一批
+        // 反而要一个根本不存在的顶层音轨，在 `compile` 入口报 `TRACK_NOT_FOUND`）。
+        let new_track = "01J8Z5Q0R7K3M9X2V4B6N8P0T7";
+        let add_only = parse_ops(&serde_json::json!([
+            {"kind": "addTrack", "trackId": new_track, "name": "新轨", "trackKind": "Midi"},
+        ]))
+        .expect("addTrack 形状合法");
+        assert!(
+            NoteOp::all_ops_address_their_own_track(&add_only),
+            "addTrack 只建新轨 ⇒ 顶层 trackId 不该被读"
+        );
+        let add_only = compile(&project, &nil, &nil, &add_only).expect("占位身份编译");
+        assert_eq!(add_only.len(), 1);
+        assert!(
+            matches!(&add_only[0], Op::AddTrack { track } if track.id.to_canonical_string() == new_track),
+            "编译出的必须是 AddTrack，身份是操作对象自带的"
+        );
+        // ⑤′ `addTrack` + 一条回退形态 ⇒ 批谓词为假，顶层身份照旧必填。
+        let mixed_add = parse_ops(&serde_json::json!([
+            {"kind": "addTrack", "trackId": new_track, "name": "新轨", "trackKind": "Midi"},
+            {"kind": "setTrackMute", "value": true},
+        ]))
+        .expect("混合形状合法");
+        assert!(
+            !NoteOp::all_ops_address_their_own_track(&mixed_add),
+            "有一条回退形态 ⇒ 顶层 trackId 照旧必填"
+        );
     }
 
     /// 两个开关是**音轨级**的：纯开关调用不要求片段是 MIDI（一个音符都不读），

@@ -3318,7 +3318,8 @@ fn plan_edit_notes(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
     let placement_raw = call.arguments.get(notes::PLACEMENT_FIELD);
     // ⭐ 占位 envelope 身份的两条路: ① 批内**全是**自带寻址形态（`removeTrack` / 设备
     // 形态, 逐字节旧行为）; ② 批内**每条**要么自带寻址、要么自带 `ops[].trackId`
-    // （`setParam` / `setTrackMute` / `setTrackSolo` 的逐条点名形态）, 且没有 `placement`
+    // （`setParam` / `setTrackMute` / `setTrackSolo` 的逐条点名形态, 以及只建新轨的
+    // `addTrack` —— 它连顶层 `trackId` 都不读）, 且没有 `placement`
     // 在场、也不是 `create`（那两件事的语义挂在顶层身份上, 占位身份会把它们引向 nil）。
     // 判定住在 `notes::NoteOp::all_ops_address_their_own_track`（与 `compile` 同一份真相）。
     let self_addressed_only = if notes::NoteOp::all_self_addressed(&note_ops) {
