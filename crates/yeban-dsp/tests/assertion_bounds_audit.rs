@@ -56,6 +56,9 @@ const SOURCES: &[(&str, &str)] = &[
     ("src/polysynth.rs", include_str!("../src/polysynth.rs")),
     ("src/reverb.rs", include_str!("../src/reverb.rs")),
     ("src/shaping.rs", include_str!("../src/shaping.rs")),
+    // C2 音频切片器（2026-11-10）：`detect_onsets` 的最小间隔贪心里有一处生产
+    // 谓词 `.all(`（非断言站点，见 `production_predicates_are_not_criteria…`）。
+    ("src/slicer.rs", include_str!("../src/slicer.rs")),
     ("src/tape.rs", include_str!("../src/tape.rs")),
     ("src/vocal_chunk.rs", include_str!("../src/vocal_chunk.rs")),
     (
@@ -141,7 +144,7 @@ const SOURCES: &[(&str, &str)] = &[
 ///
 /// 主判据是"无界站点数 == 基线"；整组删掉一个被扫文件**不会**让无界站点数增加 ⇒
 /// 本判据仍绿，而 R115 的覆盖面已静默缩水。只有本下界能拦住这种**单向**偷工。
-const MIN_SOURCES: usize = 35;
+const MIN_SOURCES: usize = 36;
 
 /// 注册基线：允许存在的"无界断言站点"数。⭐ **棘轮** —— 只能减，不能增。
 const UNBOUNDED_BASELINE: usize = 0;
