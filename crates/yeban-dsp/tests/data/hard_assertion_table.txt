@@ -2,7 +2,7 @@
 # 分类口径：float_bits ＝ 判据体内有 to_bits()；integer_count ＝ 只比整数/长度
 # class：hard ＝ 产线可达集无宿主 libm 超越函数；platform ＝ 有（只在本架构有意义）
 #        no_callee ＝ 不调用本 crate 产线函数
-# 合计 364 条：float_bits 88 ／ integer_count 276；其中 hard 73 ／ platform 12
+# 合计 373 条：float_bits 88 ／ integer_count 285；其中 hard 73 ／ platform 12
 # 列：kind | class | reach | host | file | test
 integer_count | no_callee | 0 | - | src/block.rs | accumulate_matches_scalar_reference
 integer_count | no_callee | 0 | - | src/block.rs | mismatched_lengths_are_truncated_instead_of_panicking
@@ -284,6 +284,12 @@ float_bits | hard | 5 | - | src/reverb.rs | re_applying_the_same_params_is_a_no_
 float_bits | hard | 6 | - | src/reverb.rs | reset_reproduces_a_freshly_built_device_bit_for_bit
 float_bits | hard | 5 | - | src/reverb.rs | the_wet_impulse_response_is_frozen_bit_for_bit
 integer_count | no_callee | 0 | - | src/reverb.rs | width_controls_the_stereo_spread
+integer_count | no_callee | 0 | - | src/sample_edit.rs | correct_pitch_lands_within_half_a_cent
+integer_count | no_callee | 0 | - | src/sample_edit.rs | measure_fundamental_finds_a_pure_sine_within_one_cent
+integer_count | no_callee | 0 | - | src/sample_edit.rs | midi_69_is_440_hz
+integer_count | no_callee | 0 | - | src/sample_edit.rs | normalize_rms_reaches_the_target
+integer_count | no_callee | 0 | - | src/sample_edit.rs | synthesize_layer_has_no_start_transient
+integer_count | no_callee | 0 | - | src/sample_edit.rs | synthesize_layer_keeps_only_the_high_band
 integer_count | no_callee | 0 | - | src/shaping.rs | a_bit_depth_below_the_floor_is_folded_onto_the_floor
 integer_count | no_callee | 0 | - | src/shaping.rs | bit_depth_sets_the_quantisation_step
 integer_count | no_callee | 0 | - | src/shaping.rs | deeper_divisors_push_the_mirror_lower_in_level_and_frequency
@@ -293,6 +299,9 @@ integer_count | no_callee | 0 | - | src/shaping.rs | eq_flat_is_unity
 integer_count | no_callee | 0 | - | src/shaping.rs | eq_shelves_reach_their_gain_at_the_ends_and_slope_back
 integer_count | no_callee | 0 | - | src/shaping.rs | short_and_mismatched_buffers_are_safe
 integer_count | no_callee | 0 | - | src/shaping.rs | the_transient_shaper_is_level_independent
+integer_count | no_callee | 0 | - | src/slicer.rs | empty_or_degenerate_input_detects_nothing
+integer_count | no_callee | 0 | - | src/slicer.rs | fades_on_a_single_sample_do_not_panic
+integer_count | no_callee | 0 | - | src/slicer.rs | tape_rejects_out_of_range_rates_and_accepts_empty_input
 float_bits | hard | 9 | - | src/smoothing.rs | a_non_finite_target_or_snap_never_enters_the_recursive_state
 integer_count | no_callee | 0 | - | src/smoothing.rs | block_rendering_stays_on_the_ramp
 integer_count | no_callee | 0 | - | src/smoothing.rs | sample_rate_changes_recompute_the_coefficient

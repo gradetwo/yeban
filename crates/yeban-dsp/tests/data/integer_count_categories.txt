@@ -2,7 +2,7 @@
 # 列：file|test|category|首条整数断言的证据（截断 90 字符）
 # 口径（R118）：只有 collection_size **界定集合大小** ⇒ 才算非真空下界；
 #   值界／元素值界／条件计数器 **⛔ 不算**。分类优先级：condition_counter > collection_size > element_value_bound > value_bound。
-# 合计 276 条：collection_size 59 ／ value_bound 207 ／ element_value_bound 5 ／ condition_counter 5
+# 合计 285 条：collection_size 60 ／ value_bound 214 ／ element_value_bound 5 ／ condition_counter 6
 src/block.rs|accumulate_matches_scalar_reference|value_bound|assert!((out[i] - expect[i]).abs() < 1e-6, "mismatch at {i}"
 src/block.rs|mismatched_lengths_are_truncated_instead_of_panicking|value_bound|assert_eq!(out[..4], [1.0, 1.0, 1.0, 0.0]
 src/block.rs|mix2_handles_non_multiple_of_four|value_bound|assert!((v - 1.0).abs() < 1e-6
@@ -202,6 +202,12 @@ src/reverb.rs|an_unconfigured_reverb_is_a_passthrough|value_bound|assert!(      
 src/reverb.rs|changing_the_pre_delay_length_never_replays_stale_audio|value_bound|assert_eq!(             stale_peak,             0.0,             "预延迟变长后湿路重放了旧长度下写进缓冲的音频：峰
 src/reverb.rs|predelay_is_measured_in_seconds_at_any_sample_rate|value_bound|assert!(                 (added - 50.0).abs() < 2.0,                 "at {sample_rate} Hz 
 src/reverb.rs|width_controls_the_stereo_spread|value_bound|assert!(diff0 < diff * 0.1, "width 0 should collapse to mono"
+src/sample_edit.rs|correct_pitch_lands_within_half_a_cent|value_bound|assert!(             cents <= TUNE_DEADBAND_CENTS,             "校正后 {} Hz，偏离 {cents:.3} 音分
+src/sample_edit.rs|measure_fundamental_finds_a_pure_sine_within_one_cent|value_bound|assert!(             cents < 1.0,             "440 Hz 正弦测得 {} Hz，偏离 {cents:.3} 音分（限 1 音分）"
+src/sample_edit.rs|midi_69_is_440_hz|value_bound|assert!((note_to_hz(69.0) - 440.0).abs() < 1e-4, "69 号音 = 440 Hz"
+src/sample_edit.rs|normalize_rms_reaches_the_target|value_bound|assert!(             (peak - 0.1 * core::f32::consts::SQRT_2).abs() < 1e-5,             "峰
+src/sample_edit.rs|synthesize_layer_has_no_start_transient|value_bound|assert!(             peak < 8.0 * body_rms,             "层峰值 {peak:.5}（体 RMS {body_rms:.5}
+src/sample_edit.rs|synthesize_layer_keeps_only_the_high_band|condition_counter|assert!(low_ratio < 0.06, "1 kHz 层剩 {low_ratio:.3}（限 <6%）"
 src/shaping.rs|a_bit_depth_below_the_floor_is_folded_onto_the_floor|value_bound|assert_ne!(render(6.0), floor, "6 bit 必须与 4 bit 不同"
 src/shaping.rs|bit_depth_sets_the_quantisation_step|value_bound|assert!(                 worst_grid < 1e-2,                 "{bits} bits: an output is {wo
 src/shaping.rs|deeper_divisors_push_the_mirror_lower_in_level_and_frequency|value_bound|assert!(                 level > -40.0,                 "down {down}: no mirror found ({le
@@ -211,6 +217,9 @@ src/shaping.rs|eq_flat_is_unity|value_bound|assert!(gain.abs() < 0.05, "flat EQ 
 src/shaping.rs|eq_shelves_reach_their_gain_at_the_ends_and_slope_back|value_bound|assert!(             (bottom - 12.0).abs() < 1.0,             "low shelf at 65 Hz: {bottom
 src/shaping.rs|short_and_mismatched_buffers_are_safe|value_bound|assert_eq!(again, [0.5f32; 512]
 src/shaping.rs|the_transient_shaper_is_level_independent|value_bound|assert!(             db(steady).abs() < 1.0,             "a held note should settle to uni
+src/slicer.rs|empty_or_degenerate_input_detects_nothing|collection_size|assert!(detect_onsets(&[], 48_000, &OnsetOptions::default()).is_empty()
+src/slicer.rs|fades_on_a_single_sample_do_not_panic|value_bound|assert_eq!(one[0], 0.0
+src/slicer.rs|tape_rejects_out_of_range_rates_and_accepts_empty_input|value_bound|assert!(matches!(             tape_varispeed(&[0.0; 10], 0.1),             Err(SlicerError
 src/smoothing.rs|block_rendering_stays_on_the_ramp|value_bound|assert!(pair[1] > pair[0]
 src/smoothing.rs|sample_rate_changes_recompute_the_coefficient|value_bound|assert!(             smoother.alpha() > at_48k,             "a shorter τ in samples must s
 src/smoothing.rs|the_response_matches_the_closed_form|value_bound|assert!(                 (value - expected).abs() < 1e-4,                 "sample {sample}

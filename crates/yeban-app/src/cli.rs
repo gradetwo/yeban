@@ -755,7 +755,7 @@ pub fn usage_text() -> String {
   yeban-app --open a.yeban 用打开的那个工程启动 GUI
   任一\"无窗口开关\"(--headless / --dump-elements / --print-shortcuts /
   --print-theme / --export-elements / --export-midi / --export-wav /
-  --export-song-overview / --apply-ops / --export-stems / --export-als / --export-logic / --save-as /
+  --export-song-overview / --apply-ops / --export-stems / --edit-samples / --slice-audio / --export-als / --export-logic / --save-as /
   --record-wav / --sfz /
   --track-sampler / --midi-in / --midi-in-render / --midi-in-write-notes)
   都不构造窗口、不进事件循环, 并打印握手行 `{handshake}`。
