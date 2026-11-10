@@ -727,7 +727,7 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
                 "seed",
                 "object",
                 false,
-                "`create:true` 时的最小内容: `{trackCount: 1..=8, clipName: string, notes: [{pitch: 0..=127, durationTicks: >=1}]}`。缺省 = 1 条 MIDI 轨 + 4 个种子音符 + 一小节摆放 (因此新建的工程立即可 `render_master`, 且 `propose_section` 有 MIDI 材料可用)",
+                "`create:true` 时的最小内容: `{trackCount: 1..=8, clipName: string, notes: [{pitch: 0..=127, durationTicks: >=1}]}`。`sampler` 是 SFZ 路径，绑到第一条种子轨；缺省不绑。缺省 = 1 条 MIDI 轨 + 4 个种子音符 + 一小节摆放 (因此新建的工程立即可 `render_master`, 且 `propose_section` 有 MIDI 材料可用)",
             ),
         ],
         // `CONFLICT` 是 `ADR-0001` D25 的 20 值联集与 §7.2 表格里都有的既有码,

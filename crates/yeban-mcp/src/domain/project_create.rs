@@ -144,6 +144,10 @@ pub struct CreateConfig {
     pub clip_name: String,
     /// 种子音符 `(音高 0..=127, 时值 tick >= 1)`；空 ⇒ 默认四个音。
     pub notes: Vec<(u8, u64)>,
+    /// 种子采样器：SFZ 路径（可选；缺省不绑）。有值 ⇒ 绑到第一条种子轨，
+    /// 再由 `plan_create` 走与 `setTrackSampler` 同一条预制自动加载
+    /// （设计稿 §2.2/§2.6）；路径存入时按 `setTrackSampler` 同一条口径归一化。
+    pub sampler: Option<String>,
 }
 
 impl Default for CreateConfig {
@@ -155,6 +159,7 @@ impl Default for CreateConfig {
             track_count: DEFAULT_TRACK_COUNT,
             clip_name: "Motif".to_owned(),
             notes: DEFAULT_SEED_NOTES.to_vec(),
+            sampler: None,
         }
     }
 }
@@ -167,7 +172,9 @@ pub struct CreatedProject {
     /// 主总线音轨身份（**非 nil**，且在 `routing_graph.nodes` 里）。
     pub master_bus_track_id: EntityId,
     /// 内容改动批次的规范描述（`AddClip` / `AddClipPlacement` / `AddRoutingNode` /
-    /// `ConnectRouting`），用于响应 `data.seed`。
+    /// `ConnectRouting`；给了 `seed.sampler` 时另有 `SetTrackSampler`，以及预制
+    /// 自动加载追加的 op——`SetTrackPreset` / `InsertDevice` / `SetMacro` 等，
+    /// 只在命中默认预制时出现），用于响应 `data.seed`。
     pub ops: Vec<Op>,
 }
 
@@ -249,6 +256,7 @@ pub fn parse_config(
     track_count: Option<&Value>,
     clip_name: Option<&Value>,
     notes: Option<&Value>,
+    sampler: Option<&Value>,
 ) -> Result<CreateConfig, Fault> {
     let mut config = CreateConfig::default();
     if let Some(value) = title {
@@ -283,6 +291,14 @@ pub fn parse_config(
             )));
         }
         config.track_count = count;
+    }
+    if let Some(value) = sampler {
+        config.sampler = Some(
+            value
+                .as_str()
+                .ok_or_else(|| invalid("`seed.sampler` 必须是字符串"))?
+                .to_owned(),
+        );
     }
     if let Some(value) = notes {
         let array = value
@@ -430,6 +446,21 @@ pub fn build_with_clock(
             },
         });
         track_ids.push(track_id);
+    }
+    // 2.5 种子采样器：有值 ⇒ 绑到第一条种子轨（`AddTrack` 之后，轨必须先存在）。
+    // 预制自动加载不在这里做 —— `build` 只产内容批次，钩子由调用方
+    // （`plan_create`）在批次应用后跑同一共享函数（设计稿 §2.2）。
+    if let (Some(sampler), Some(first)) = (config.sampler.as_ref(), track_ids.first().copied()) {
+        ops.push(Op::SetTrackSampler {
+            track_id: first,
+            old_sampler: None,
+            new_sampler: Some(yeban_model::SamplerBinding {
+                path: yeban_model::sampler_path::normalize_sampler_path_for_storage(
+                    &super::sample_roots::library_root(),
+                    sampler,
+                ),
+            }),
+        });
     }
     // 2a. 第一条轨道上有真实材料：一条 MIDI 片段 + 它的一小节摆放。
     //     `propose_section` 要求 `clip_pool` 里至少有一条带音符的 MIDI 条目
@@ -685,14 +716,23 @@ mod tests {
             None,
             None,
             None,
+            None,
         )
         .expect_err("越界 BPM 必须被拒");
         assert_eq!(
             too_fast.domain_code(),
             Some(ErrorCode::InvalidParameterRange)
         );
-        let zero_tracks = parse_config(None, None, None, Some(&serde_json::json!(0)), None, None)
-            .expect_err("0 轨必须被拒");
+        let zero_tracks = parse_config(
+            None,
+            None,
+            None,
+            Some(&serde_json::json!(0)),
+            None,
+            None,
+            None,
+        )
+        .expect_err("0 轨必须被拒");
         assert_eq!(
             zero_tracks.domain_code(),
             Some(ErrorCode::InvalidParameterRange)
@@ -704,6 +744,7 @@ mod tests {
             None,
             None,
             Some(&serde_json::json!([{"pitch": 200}])),
+            None,
         )
         .expect_err("越界音高必须被拒");
         assert_eq!(
@@ -717,6 +758,7 @@ mod tests {
             None,
             None,
             Some(&serde_json::json!([{"pitch": 60, "durationTicks": 0}])),
+            None,
         )
         .expect_err("0 时值必须被拒");
         assert_eq!(
@@ -857,11 +899,27 @@ mod tests {
     #[test]
     fn the_seed_track_count_ceiling_is_the_published_eight() {
         assert_eq!(MAX_TRACK_COUNT, 8);
-        let eight = parse_config(None, None, None, Some(&serde_json::json!(8)), None, None)
-            .expect("trackCount == 8 必须放行");
+        let eight = parse_config(
+            None,
+            None,
+            None,
+            Some(&serde_json::json!(8)),
+            None,
+            None,
+            None,
+        )
+        .expect("trackCount == 8 必须放行");
         assert_eq!(eight.track_count, 8);
-        let nine = parse_config(None, None, None, Some(&serde_json::json!(9)), None, None)
-            .expect_err("trackCount == 9 必须被拒");
+        let nine = parse_config(
+            None,
+            None,
+            None,
+            Some(&serde_json::json!(9)),
+            None,
+            None,
+            None,
+        )
+        .expect_err("trackCount == 9 必须被拒");
         assert_eq!(nine.domain_code(), Some(ErrorCode::InvalidParameterRange));
         // 合法上界的那一次真的建得出 8 条内容轨 + 主总线。
         let created = build(&eight, &path()).expect("建工程");
@@ -882,6 +940,7 @@ mod tests {
             None,
             None,
             Some(&serde_json::json!([{"pitch": 127, "startTick": 0, "durationTicks": 960}])),
+            None,
         )
         .expect("pitch == 127 必须放行");
         assert_eq!(top.notes[0].0, 127, "种子音符是 (音高, 时值) 二元组");
@@ -892,6 +951,7 @@ mod tests {
             None,
             None,
             Some(&serde_json::json!([{"pitch": 128, "startTick": 0, "durationTicks": 960}])),
+            None,
         )
         .expect_err("pitch == 128 必须被拒");
         assert_eq!(
@@ -914,12 +974,14 @@ mod tests {
             None,
             None,
             None,
+            None,
         )
         .expect("bpm == 999 必须放行");
         assert_eq!(fastest.bpm, Some(999.0));
         let too_fast = parse_config(
             None,
             Some(&serde_json::json!(999.5)),
+            None,
             None,
             None,
             None,

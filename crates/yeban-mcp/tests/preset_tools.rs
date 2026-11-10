@@ -11,6 +11,9 @@
 //! | 未知预制 | 错误码 | `ENTITY_NOT_FOUND` |
 //! | 旁通 | 旁通后设备数 / 取消后设备数 | 0 件 / 恢复 |
 //! | 自动加载 | 绑定采样器后 `preset_id` | 钢琴预制标识 |
+//! | 创建钩子 | 带 `seed.sampler` 新建后 `preset_id` | 钢琴预制标识 |
+//! | 创建钩子 | 不带 sampler 新建 | 首轨无预制 |
+//! | 创建钩子 | 带 sampler 新建后旁通 | 设备拆掉、采样器保留 |
 //! | 另存 | 用户库文件 / 重名 | 落盘 / `CONFLICT` |
 //! | 保存收据 | 内嵌预制数（带出 / 不带出） | 1 / 0 |
 
@@ -120,6 +123,28 @@ fn call_any(dispatcher: &mut Dispatcher, name: &str, arguments: Value) -> Value 
         "`{name}` 不得产出 JSON-RPC 层错误: {outcome:?}"
     );
     outcome.response.expect("响应").result.expect("result")
+}
+
+/// 无活跃工程的调度器（`create:true` 用；已有活跃工程时再建新工程会 `CONFLICT`）。
+fn dispatcher_empty() -> Dispatcher {
+    let token = BearerToken::generate().token;
+    let mut dispatcher = Dispatcher::new(token, ScopeSet::all(), RunMode::Production);
+    dispatcher.domain_mut().set_now_ms(1_760_000_000_000);
+    dispatcher
+}
+
+/// 经真实 `tools/call` 管线新建工程（`create:true`），回 `data`。
+fn create_project(dispatcher: &mut Dispatcher, path: &Path, seed: Value) -> Value {
+    call(
+        dispatcher,
+        "yeban_open_project",
+        serde_json::json!({
+            "path": path.display().to_string(),
+            "create": true,
+            "title": "Hook",
+            "seed": seed,
+        }),
+    )
 }
 
 /// 成功路径：`status` 必须是 `success`，回 `data`。
@@ -448,6 +473,92 @@ fn auto_load_applies_default_preset_on_sampler_bind() {
         preset_device_names(&after),
         vec!["Preset: Channel Strip", "Preset: Reverb"],
         "钢琴预制的通道条与混响须落轨"
+    );
+}
+
+/// 创建钩子：带 `seed.sampler` 新建 ⇒ 首轨绑采样器并自动加载默认钢琴预制。
+#[test]
+fn create_with_seed_sampler_auto_loads_default_preset() {
+    let scratch = Scratch::new("create-hook-a");
+    let mut dispatcher = dispatcher_empty();
+    let path = scratch.dir.join("with-sampler.yeban");
+    let data = create_project(
+        &mut dispatcher,
+        &path,
+        serde_json::json!({"sampler": format!("assets/samples/salamander-grand/{PIANO_SFZ_FRAGMENT}")}),
+    );
+    assert_eq!(data["created"], true, "{data}");
+    assert!(path.exists(), "工程容器必须真的落盘: {}", path.display());
+    let first = track_snapshot(&dispatcher, "Track 1");
+    assert!(
+        first
+            .sampler
+            .as_ref()
+            .is_some_and(|sampler| sampler.path.contains(PIANO_SFZ_FRAGMENT)),
+        "采样器须绑上: {:?}",
+        first.sampler
+    );
+    assert_eq!(
+        first
+            .preset
+            .as_ref()
+            .map(|state| state.preset_id.as_deref()),
+        Some(Some(PIANO_PRESET)),
+        "自动加载须记下钢琴预制"
+    );
+    assert_eq!(
+        preset_device_names(&first),
+        vec!["Preset: Channel Strip", "Preset: Reverb"],
+        "钢琴预制的通道条与混响须落轨"
+    );
+}
+
+/// 创建钩子：不带 `seed.sampler` 新建 ⇒ 首轨无采样器、无预制（旧行为逐字节不变）。
+#[test]
+fn create_without_seed_sampler_applies_no_preset() {
+    let scratch = Scratch::new("create-hook-b");
+    let mut dispatcher = dispatcher_empty();
+    let path = scratch.dir.join("no-sampler.yeban");
+    let data = create_project(&mut dispatcher, &path, serde_json::json!({}));
+    assert_eq!(data["created"], true, "{data}");
+    let first = track_snapshot(&dispatcher, "Track 1");
+    assert_eq!(first.sampler, None, "不给 sampler 不得绑采样器");
+    assert_eq!(first.preset, None, "不给 sampler 不得加载预制");
+}
+
+/// 创建钩子：带 `seed.sampler` 新建后旁通 ⇒ 预制设备拆掉、采样器保留、`bypassed` 为 true。
+/// （“旁通时不加载”指旁通后预制处理不生效，即本条断言；工具面没有设 `autoLoad=false` 的开关。）
+#[test]
+fn create_with_seed_sampler_bypass_removes_preset_devices() {
+    let scratch = Scratch::new("create-hook-c");
+    let mut dispatcher = dispatcher_empty();
+    let path = scratch.dir.join("bypass.yeban");
+    let _ = create_project(
+        &mut dispatcher,
+        &path,
+        serde_json::json!({"sampler": format!("assets/samples/salamander-grand/{PIANO_SFZ_FRAGMENT}")}),
+    );
+    let first_id = track_snapshot(&dispatcher, "Track 1")
+        .id
+        .to_canonical_string();
+    let _ = call(
+        &mut dispatcher,
+        "yeban_preset_bypass",
+        serde_json::json!({"trackId": first_id, "bypassed": true, "autoMerge": true}),
+    );
+    let after = track_snapshot(&dispatcher, "Track 1");
+    assert_eq!(preset_device_names(&after).len(), 0, "旁通须拆掉预制设备");
+    assert_eq!(
+        after.preset.as_ref().map(|state| state.bypassed),
+        Some(true)
+    );
+    assert!(
+        after
+            .sampler
+            .as_ref()
+            .is_some_and(|sampler| sampler.path.contains(PIANO_SFZ_FRAGMENT)),
+        "旁通只旁通处理，不换乐器: {:?}",
+        after.sampler
     );
 }
 
