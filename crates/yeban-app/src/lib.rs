@@ -99,6 +99,7 @@ pub mod engine_host;
 // * 界面侧**没有**第二份参数名 / 范围表 —— 改契约时 UI 被动跟着变，不会漂移；
 // * ⚠ 它今天的**家**还在 `yeban-mcp`；把这份契约上提到 `yeban-model` 一层、
 //   让 MCP 与 UI 都从模型读，属 **S6**（本单登记，⛔ 不做）。
+pub mod audio_slicer;
 #[path = "../../yeban-mcp/src/effect_params.rs"]
 pub mod effect_params;
 pub mod export_als;

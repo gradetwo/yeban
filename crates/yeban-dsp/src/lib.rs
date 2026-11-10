@@ -64,6 +64,7 @@
 //! | [`vocal_pitch_shift`] | 周期重采样移调器：逐样本类 PSOLA 修音 + snap／valid 开关 + 逐 chunk 收据（**离线限定**，不进实时回调） | 新写 [vocaledit Phase 2 P1-1] |
 //! | [`vocal_refine`] | 本地声学边界精修器：±80 ms 窗内 VOP/起音/收音精修 + F0/HNR/置信度 + 换气分段 + ad-lib 检出（**离线限定**） | 新写 [ADR-0067] |
 //! | [`vocal_timemap`] | 连续流式 timemap 人声对齐：单实例拉伸渲染 + VOP 锚定映射构造 + 门检 verdict（**离线限定**，不进实时回调） | 新写 [ADR-0067] |
+//! | [`slicer`] | 音频切片：onset 检测切出片段 → tape 变速变调 / shift 移调 / stretch 拉伸 → 4/10 ms 淡入淡出（**离线限定**，不进实时回调） | 新写 [缺口分级 C 级 ②] |
 //!
 //! ## 规范来源 (Normative)
 //!
@@ -98,6 +99,7 @@ pub mod polysynth;
 pub mod reverb;
 pub mod sample_edit;
 pub mod shaping;
+pub mod slicer;
 pub mod smoothing;
 pub mod song_overview;
 pub mod tape;

@@ -219,6 +219,11 @@ pub const EXPORT_STEMS_FEATURE: &str = "in-process-mcp";
 /// 与 [`SONG_OVERVIEW_SWITCH`] 同一个理由：用法文本与用法错误都要打得出来，
 /// 因此字面值住在这里，而不住在 [`crate::sample_editor`] 里。
 pub const SAMPLE_EDIT_SWITCH: &str = "--edit-samples";
+/// `--slice-audio` 的字面值（音频切片的**批处理**出口）。
+///
+/// 与 [`SONG_OVERVIEW_SWITCH`] 同一个理由：默认构建的用法文本与错误信息都要打
+/// 得出来，因此字面值住在这里，而不住在会被 `cfg` 掉的 [`crate::audio_slicer`] 里。
+pub const SLICE_AUDIO_SWITCH: &str = "--slice-audio";
 
 /// `--export-logic` 的字面值（实验性 Logic Pro `.logicx` bundle 导出的**唯一**用户出口）。
 ///
@@ -600,6 +605,30 @@ pub fn usage_text() -> String {
   --sample-edit-report-only
                            `--edit-samples` 的**口径修饰**: 只测算、只写报告, 不写音频
                            (预览口径); 单独给 = 用法错误 (退出码 {usage})
+  --slice-audio <input.wav>  把一段音频切成采样器 region (onset 检测切到字 →
+                           tape（变速变调）/shift/stretch 三变形 → 4/10 ms
+                           淡入淡出): 产物是 `<stem>_<nnn>.wav` (32 位浮点,
+                           与输入同采样率同声道) ＋ `<stem>.sfz` (每片一个
+                           `<region>`, 根音从 `--slice-base-key` 起逐片 +1),
+                           落在 `--slice-out` 指定的目录 (会创建, 含父目录);
+                           采样器可直接加载; ⭐ 不开窗口、不建 MCP 会话、
+                           不碰工程 ⇒ 没有显示器的机器上也能批量切; 输入
+                           超 64 MiB 门 (与 `--import-audio` 同门) ⇒ 拒绝不截断;
+                           回执一行: `sliced-audio:` + 输入/输出目录/SFZ/片数/
+                           变形/根音/丢弃首段帧数
+  --slice-out <dir>         `--slice-audio` 的**输出目录** (必填); 单独给 = 用法错误
+  --slice-transform <spec>  `--slice-audio` 的**变形**: none（缺省, 不变形）|
+                           tape:<比值 0.25..=4>（变速变调）| shift:<音分 -1200..=1200>
+                           （移调, 时长不变）| stretch:<比值 0.25..=4>（拉伸, 音高不变）;
+                           单独给 = 用法错误
+  --slice-base-key <0..127> `--slice-audio` 的**第 0 片根音** (MIDI, 缺省 60 = C4;
+                           第 i 片根音 = base_key + i, 超出 127 ⇒ 失败); 单独给 = 用法错误
+  --slice-cuts <csv秒>      `--slice-audio` 的**显式切点** (秒, 逗号分隔, 如 0.25,0.5):
+                           给定时覆盖 onset 检测, 第 0 帧起切, 什么都不丢; 单独给 = 用法错误
+  --slice-min-gap-ms <ms>   `--slice-audio` 的 onset 检测**最小切点间隔** (毫秒, 缺省 80);
+                           单独给 = 用法错误
+  --slice-threshold-db <db> `--slice-audio` 的 onset 检测**绝对底线** (dBFS, 缺省 -50);
+                           单独给 = 用法错误
   --export-als <path>      把当前工程导出成**实验性** Ableton Live Set (`.als`, 即
                            Gzip 压缩的 LiveSet XML) [ARCH-FMT-002]; 与 --export-midi
                            并列, 同属 ADR-0001 D47 的\"导出唯一出口 = app CLI\";
@@ -1518,6 +1547,31 @@ pub struct Options {
     /// `--sample-edit-report-only`：`--edit-samples` 的**修饰** —— 只测算、只写报告，
     /// 不写音频（预览口径）。单独给 ⇒ 用法错误。
     pub sample_edit_report_only: bool,
+    /// `--slice-audio <input.wav>`：把一段音频切成采样器 region（SFZ ＋ 每片一段 WAV）。
+    ///
+    /// 与 `--export-song-overview` 同族（批处理出口，跑完就退出、不碰 GUI 路径），
+    /// 但不依赖工程：输入只是一段 WAV，产物是一组采样器 region。
+    /// 意义见 [`crate::audio_slicer`] 的模块文档 —— 一句话：替代原来靠手写脚本
+    /// （`chop.py`）切字的路子。
+    pub slice_audio: Option<PathBuf>,
+    /// `--slice-out <dir>`：`--slice-audio` 的输出目录（必填，会创建含父目录）。
+    /// 单独给（没有 `--slice-audio`）⇒ 用法错误。
+    pub slice_out: Option<PathBuf>,
+    /// `--slice-transform <spec>`：`--slice-audio` 的变形（缺省 `none`）。
+    /// 单独给 ⇒ 用法错误。
+    pub slice_transform: Option<crate::audio_slicer::SliceTransform>,
+    /// `--slice-base-key <0..127>`：`--slice-audio` 的第 0 片根音（缺省 60）。
+    /// 单独给 ⇒ 用法错误。
+    pub slice_base_key: Option<u8>,
+    /// `--slice-cuts <csv秒>`：`--slice-audio` 的显式切点（秒）；给定时覆盖 onset 检测。
+    /// 单独给 ⇒ 用法错误。
+    pub slice_cuts: Option<Vec<f64>>,
+    /// `--slice-min-gap-ms <ms>`：`--slice-audio` 的 onset 检测最小切点间隔（缺省 80）。
+    /// 单独给 ⇒ 用法错误。
+    pub slice_min_gap_ms: Option<f32>,
+    /// `--slice-threshold-db <db>`：`--slice-audio` 的 onset 检测绝对底线（缺省 −50）。
+    /// 单独给 ⇒ 用法错误。
+    pub slice_threshold_db: Option<f32>,
     /// `--export-wav <path>`：把当前工程**离线渲染**成一段 WAV（导出族）。
     ///
     /// 与 `--export-midi` 同族：不给 `--open` 时导出**演示工程**并在输出里明说；
@@ -1829,6 +1883,14 @@ pub const ACTION_SWITCHES: &[ActionSwitch] = &[
         name: SAMPLE_EDIT_SWITCH,
         present: |options| options.edit_samples.is_some(),
         grant: |options| options.edit_samples = Some(PathBuf::from("probe")),
+        path: SwitchPath::Batch,
+    },
+    // ⭐ `--slice-audio`：与 `--export-song-overview` 同族（写一组文件、跑完就退出）。
+    // 它**自己**就把进程推离 GUI 路径 —— 这正是它的价值（无显示器也能批量切）。
+    ActionSwitch {
+        name: SLICE_AUDIO_SWITCH,
+        present: |options| options.slice_audio.is_some(),
+        grant: |options| options.slice_audio = Some(PathBuf::from("probe")),
         path: SwitchPath::Batch,
     },
     // `--export-wav` 与 `--export-midi` **同族**（`--help` 的 `--export-wav` 一条逐字
@@ -2277,6 +2339,16 @@ pub enum ParseError {
     /// 一个给**精确帧数**、一个给**秒数换算**，同时给必然有一个被静默丢掉 ——
     /// 本仓不接受这种组合（⛔ 不靠"谁优先"发明语义）。
     WavFramesConflict,
+    /// `--slice-*` 修饰开关的取值非法（变形规格串 / 根音 / 切点 / 间隔 / 底线）。
+    ///
+    /// payload 是开关名与原因（`SliceTransform::parse` 的原因原样带出）。
+    SliceValueInvalid(&'static str, String),
+    /// `--slice-out` 或任一 `--slice-*` 修饰开关单独给了（没有 `--slice-audio`）。
+    ///
+    /// payload 是那个开关名。
+    SliceOptionWithoutAudio(&'static str),
+    /// `--slice-audio` 给了但没给 `--slice-out`（输出目录必填）。
+    SliceOutMissing,
     /// ⭐ 任务单 `#287`：`--sampler-track` 单独给（没配 `--track-sampler`）。
     ///
     /// 它只是 `--track-sampler` 的**目标选择器**，没有主语时什么也不选。⛔ 不接受
@@ -2527,6 +2599,17 @@ impl fmt::Display for ParseError {
                 formatter,
                 "`--wav-frames` 与 `--wav-seconds` 互斥 —— 一个给精确帧数、一个给秒数换算, \
                  同时给必然有一个被静默丢掉"
+            ),
+            Self::SliceValueInvalid(switch, reason) => {
+                write!(formatter, "`{switch}` 的取值非法: {reason}")
+            }
+            Self::SliceOptionWithoutAudio(switch) => write!(
+                formatter,
+                "`{switch}` 只修饰 `--slice-audio` —— 它只改那一份产物的口径, 单独给 = 没有任何东西可修饰"
+            ),
+            Self::SliceOutMissing => write!(
+                formatter,
+                "`--slice-audio` 须配 `--slice-out <dir>`（输出目录必填）"
             ),
             Self::SamplerTrackWithoutTrackSampler => {
                 formatter.write_str(SAMPLER_TRACK_PAIRING_ERROR)
@@ -2832,6 +2915,98 @@ pub fn parse(args: &[String]) -> Result<Options, ParseError> {
                 options.sample_edit_report_only = true;
                 cursor += 1;
             }
+            // `--slice-audio`：音频切片的批处理出口（与 `--export-song-overview` 同族，
+            // 写一组文件、跑完就退出）。
+            "--slice-audio" => {
+                let value = take_value("--slice-audio", inline, args, &mut cursor)?;
+                set_once(
+                    &mut options.slice_audio,
+                    "--slice-audio",
+                    PathBuf::from(value),
+                )?;
+            }
+            "--slice-out" => {
+                let value = take_value("--slice-out", inline, args, &mut cursor)?;
+                set_once(&mut options.slice_out, "--slice-out", PathBuf::from(value))?;
+            }
+            // `--slice-transform`：**修饰**开关（只改 `--slice-audio` 的产物口径，
+            // ⛔ 自己不选路径 ⇒ 与 `--overview-score-only` 同档，不进 `ACTION_SWITCHES`）。
+            "--slice-transform" => {
+                let value = take_value("--slice-transform", inline, args, &mut cursor)?;
+                if options.slice_transform.is_some() {
+                    return Err(ParseError::DuplicateOption("--slice-transform"));
+                }
+                options.slice_transform = Some(
+                    crate::audio_slicer::SliceTransform::parse(&value).map_err(|reason| {
+                        ParseError::SliceValueInvalid("--slice-transform", reason)
+                    })?,
+                );
+            }
+            "--slice-base-key" => {
+                let value = take_value("--slice-base-key", inline, args, &mut cursor)?;
+                if options.slice_base_key.is_some() {
+                    return Err(ParseError::DuplicateOption("--slice-base-key"));
+                }
+                let key: u8 = value.parse().map_err(|_| {
+                    ParseError::SliceValueInvalid(
+                        "--slice-base-key",
+                        format!("`{value}` 不是 0..=127 的整数"),
+                    )
+                })?;
+                options.slice_base_key = Some(key);
+            }
+            "--slice-cuts" => {
+                let value = take_value("--slice-cuts", inline, args, &mut cursor)?;
+                if options.slice_cuts.is_some() {
+                    return Err(ParseError::DuplicateOption("--slice-cuts"));
+                }
+                let mut cuts = Vec::new();
+                for part in value.split(',') {
+                    let seconds: f64 = part.trim().parse().map_err(|_| {
+                        ParseError::SliceValueInvalid("--slice-cuts", format!("`{part}` 不是秒数"))
+                    })?;
+                    cuts.push(seconds);
+                }
+                options.slice_cuts = Some(cuts);
+            }
+            "--slice-min-gap-ms" => {
+                let value = take_value("--slice-min-gap-ms", inline, args, &mut cursor)?;
+                if options.slice_min_gap_ms.is_some() {
+                    return Err(ParseError::DuplicateOption("--slice-min-gap-ms"));
+                }
+                let ms: f32 = value.parse().map_err(|_| {
+                    ParseError::SliceValueInvalid(
+                        "--slice-min-gap-ms",
+                        format!("`{value}` 不是毫秒数"),
+                    )
+                })?;
+                if !ms.is_finite() || ms <= 0.0 {
+                    return Err(ParseError::SliceValueInvalid(
+                        "--slice-min-gap-ms",
+                        format!("`{value}` 须是正的有限毫秒数"),
+                    ));
+                }
+                options.slice_min_gap_ms = Some(ms);
+            }
+            "--slice-threshold-db" => {
+                let value = take_value("--slice-threshold-db", inline, args, &mut cursor)?;
+                if options.slice_threshold_db.is_some() {
+                    return Err(ParseError::DuplicateOption("--slice-threshold-db"));
+                }
+                let db: f32 = value.parse().map_err(|_| {
+                    ParseError::SliceValueInvalid(
+                        "--slice-threshold-db",
+                        format!("`{value}` 不是分贝数"),
+                    )
+                })?;
+                if !db.is_finite() {
+                    return Err(ParseError::SliceValueInvalid(
+                        "--slice-threshold-db",
+                        format!("`{value}` 不是有限数"),
+                    ));
+                }
+                options.slice_threshold_db = Some(db);
+            }
             // `--wav-*`：只改 `--export-wav` 的产物形状，⛔ 不选路径
             // （与 `--midi-in-seconds` / `--idle-seconds` 同档的**修饰**开关，
             //  因此 ⛔ 不进 `ACTION_SWITCHES`）。
@@ -3039,6 +3214,7 @@ pub fn parse(args: &[String]) -> Result<Options, ParseError> {
             (options.apply_ops.is_some(), APPLY_OPS_SWITCH),
             (options.export_stems.is_some(), EXPORT_STEMS_SWITCH),
             (options.edit_samples.is_some(), SAMPLE_EDIT_SWITCH),
+            (options.slice_audio.is_some(), SLICE_AUDIO_SWITCH),
             (options.export_als.is_some(), ALS_EXPORT_SWITCH),
             (options.export_logic.is_some(), LOGIC_EXPORT_SWITCH),
             (options.save_as.is_some(), "--save-as"),
@@ -3081,6 +3257,7 @@ pub fn parse(args: &[String]) -> Result<Options, ParseError> {
             (options.apply_ops.is_some(), APPLY_OPS_SWITCH),
             (options.export_stems.is_some(), EXPORT_STEMS_SWITCH),
             (options.edit_samples.is_some(), SAMPLE_EDIT_SWITCH),
+            (options.slice_audio.is_some(), SLICE_AUDIO_SWITCH),
             (options.export_als.is_some(), ALS_EXPORT_SWITCH),
             (options.export_logic.is_some(), LOGIC_EXPORT_SWITCH),
             (options.save_as.is_some(), "--save-as"),
@@ -3112,6 +3289,7 @@ pub fn parse(args: &[String]) -> Result<Options, ParseError> {
             (options.apply_ops.is_some(), APPLY_OPS_SWITCH),
             (options.export_stems.is_some(), EXPORT_STEMS_SWITCH),
             (options.edit_samples.is_some(), SAMPLE_EDIT_SWITCH),
+            (options.slice_audio.is_some(), SLICE_AUDIO_SWITCH),
             (options.export_als.is_some(), ALS_EXPORT_SWITCH),
             (options.export_logic.is_some(), LOGIC_EXPORT_SWITCH),
             (options.save_as.is_some(), "--save-as"),
@@ -3201,6 +3379,25 @@ pub fn parse(args: &[String]) -> Result<Options, ParseError> {
                 "--sample-edit-report-only".to_string(),
             ));
         }
+    }
+    // `--slice-audio` 的配对纪律（与 `--overview-score-only` 同一条）：
+    // 修饰开关与 `--slice-out` 单独给 = 用法错误，⛔ 不静默忽略；`--slice-audio`
+    // 给了但没给 `--slice-out`（输出目录必填）同样是用法错误。
+    if options.slice_audio.is_none() {
+        for (given, name) in [
+            (options.slice_out.is_some(), "--slice-out"),
+            (options.slice_transform.is_some(), "--slice-transform"),
+            (options.slice_base_key.is_some(), "--slice-base-key"),
+            (options.slice_cuts.is_some(), "--slice-cuts"),
+            (options.slice_min_gap_ms.is_some(), "--slice-min-gap-ms"),
+            (options.slice_threshold_db.is_some(), "--slice-threshold-db"),
+        ] {
+            if given {
+                return Err(ParseError::SliceOptionWithoutAudio(name));
+            }
+        }
+    } else if options.slice_out.is_none() {
+        return Err(ParseError::SliceOutMissing);
     }
     // ⭐ 任务单 `#287`：`--sampler-track` 只是 `--track-sampler` 的**目标选择器**。
     // 单独给 ⇒ 用法错误。这道检查放在**解析期**（而不是 `run_batch` 里）：后者只在
@@ -3868,6 +4065,19 @@ pub enum CliError {
         /// 人话原因（逐字带出去）。
         reason: String,
     },
+    /// `--slice-audio` 失败（输入不是音频 / 超门 / 切点非法 / 变形失败 / 落盘失败）。
+    ///
+    /// 为什么带一个 `code` 字段：`AudioSlicerError` 的变体是稳定的失败类
+    /// （`NOT_A_FILE` / `TOO_LARGE` / `DECODE` / `EMPTY` / `INVALID_CUT` /
+    /// `BASE_KEY_OVERFLOW` / `TRANSFORM` / `IO_ERROR`），脚本据此分辨。
+    SliceAudio {
+        /// 输入路径。
+        path: PathBuf,
+        /// 稳定错误码。
+        code: &'static str,
+        /// 人话原因（`AudioSlicerError` 的原文，逐字带出去）。
+        reason: String,
+    },
     /// `--export-als` 失败（映射 / Gzip 封装 / 落盘）。
     ExportAls {
         /// 目标路径。
@@ -4000,6 +4210,7 @@ impl CliError {
             | Self::SongOverviewExport { .. }
             | Self::ExportStems { .. }
             | Self::SampleEdit { .. }
+            | Self::SliceAudio { .. }
             | Self::ExportAls { .. }
             | Self::ExportLogic { .. } => EXIT_EXPORT,
         }
@@ -4081,6 +4292,13 @@ impl fmt::Display for CliError {
                 write!(
                     formatter,
                     "编辑采样 `{}` 失败 [{code}]: {reason}",
+                    path.display()
+                )
+            }
+            Self::SliceAudio { path, code, reason } => {
+                write!(
+                    formatter,
+                    "切片 `{}` 失败 [{code}]: {reason}",
                     path.display()
                 )
             }
@@ -4182,6 +4400,7 @@ impl std::error::Error for CliError {
             | Self::ExportStemsNotCompiled
             | Self::SongOverviewExport { .. }
             | Self::SampleEdit { .. }
+            | Self::SliceAudio { .. }
             | Self::SongOverviewNotCompiled
             | Self::LogicNotCompiled
             | Self::InspectLogic { .. } => None,
@@ -6046,6 +6265,75 @@ pub fn run_batch(options: &Options) -> Result<Vec<String>, CliError> {
                 .to_owned(),
         ));
     }
+    // `--slice-audio`：音频切片的**批处理**出口（与 `--export-song-overview` 同位置、
+    // 同一条失败语义：失败 ⇒ 直接 `Err`，⛔ 不继续保存）。
+    //
+    // 它与 `--export-song-overview` 的**本质区别**：那条的产物是"这首曲子的分析读数"
+    // （要工程），本条的产物是"一段音频的采样器 region"（不要工程）—— 所以它
+    // 不读 `loaded`，只读输入 WAV。
+    if let Some(input) = options.slice_audio.as_ref() {
+        let out_dir = options.slice_out.as_ref().expect(
+            "`parse` 保证 `--slice-audio` 配 `--slice-out`；直接构造 `Options` 的第二道守卫在下面",
+        );
+        let slice_options = crate::audio_slicer::SliceOptions {
+            transform: options.slice_transform.unwrap_or_default(),
+            base_key: options
+                .slice_base_key
+                .unwrap_or(crate::audio_slicer::DEFAULT_BASE_KEY),
+            cuts: options.slice_cuts.clone(),
+            min_gap_ms: options
+                .slice_min_gap_ms
+                .unwrap_or(crate::audio_slicer::DEFAULT_MIN_GAP_MS),
+            threshold_db: options
+                .slice_threshold_db
+                .unwrap_or(crate::audio_slicer::DEFAULT_THRESHOLD_DB),
+        };
+        let report = crate::audio_slicer::slice_audio_file(input, out_dir, &slice_options)
+            .map_err(|error| {
+                let code = match error {
+                    crate::audio_slicer::AudioSlicerError::NotAFile { .. } => "NOT_A_FILE",
+                    crate::audio_slicer::AudioSlicerError::TooLarge { .. } => "TOO_LARGE",
+                    crate::audio_slicer::AudioSlicerError::Read { .. } => "IO_ERROR",
+                    crate::audio_slicer::AudioSlicerError::Decode { .. } => "DECODE",
+                    crate::audio_slicer::AudioSlicerError::EmptyAudio { .. } => "EMPTY",
+                    crate::audio_slicer::AudioSlicerError::Transform { .. } => "TRANSFORM",
+                    crate::audio_slicer::AudioSlicerError::InvalidCut { .. } => "INVALID_CUT",
+                    crate::audio_slicer::AudioSlicerError::BaseKeyOverflow { .. } => {
+                        "BASE_KEY_OVERFLOW"
+                    }
+                    crate::audio_slicer::AudioSlicerError::Write { .. } => "IO_ERROR",
+                };
+                CliError::SliceAudio {
+                    path: input.clone(),
+                    code,
+                    reason: error.to_string(),
+                }
+            })?;
+        lines.push(report.line());
+    }
+    // 第二道守卫（`Options` 的字段是公开的 ⇒ 判据可以绕过 `parse`）：
+    // `--slice-out` 与修饰开关没有 `--slice-audio` 就没有落点；`--slice-audio`
+    // 没有 `--slice-out` 就没有输出目录。
+    if options.slice_audio.is_none() {
+        for (given, name) in [
+            (options.slice_out.is_some(), "--slice-out"),
+            (options.slice_transform.is_some(), "--slice-transform"),
+            (options.slice_base_key.is_some(), "--slice-base-key"),
+            (options.slice_cuts.is_some(), "--slice-cuts"),
+            (options.slice_min_gap_ms.is_some(), "--slice-min-gap-ms"),
+            (options.slice_threshold_db.is_some(), "--slice-threshold-db"),
+        ] {
+            if given {
+                return Err(CliError::Usage(format!(
+                    "`{name}` 只修饰 `--slice-audio` —— 它只改那一份产物的口径, 单独给 = 没有任何东西可修饰"
+                )));
+            }
+        }
+    } else if options.slice_out.is_none() {
+        return Err(CliError::Usage(
+            "`--slice-audio` 须配 `--slice-out <dir>`（输出目录必填）".to_owned(),
+        ));
+    }
 
     // `--export-wav`：与 `--export-midi` 同一位置与同一失败语义（失败 ⇒ 直接 `Err`, ⛔ 不继续保存）。
     if let Some(path) = options.export_wav.as_ref() {
@@ -7654,12 +7942,14 @@ mod tests {
                 }
                 // `--headless-idle` 单独给是**成对性**用法错误（必须配 `--idle-seconds`），
                 // `--edit-samples` 单独给也是**成对性**用法错误（必须配 `--sample-edit-out`，
-                // 出目录⛔ 不默认写到输入旁边）；编译期门禁开关在默认构建里也解析不成 ——
-                // 三者的**路由**归属都已由 ① 证明，这里只登记"解析不成"的原因。
+                // 出目录⛔ 不默认写到输入旁边），`--slice-audio` 单独给也是**成对性**
+                // 用法错误（必须配 `--slice-out`，出目录必填）；编译期门禁开关在默认构建里
+                // 也解析不成 —— 四者的**路由**归属都已由 ① 证明，这里只登记"解析不成"的原因。
                 Err(error)
                     if is_compile_time_gate(&error)
                         || matches!(error, ParseError::IdleSecondsMissing)
-                        || matches!(error, ParseError::SampleEditOutMissing) => {}
+                        || matches!(error, ParseError::SampleEditOutMissing)
+                        || matches!(error, ParseError::SliceOutMissing) => {}
                 Err(other) => failures.push(format!(
                     "`{}`: 单独解析失败 (不该是这个原因): {other}",
                     switch.name
