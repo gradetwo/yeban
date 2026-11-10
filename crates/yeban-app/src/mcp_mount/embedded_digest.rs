@@ -522,6 +522,8 @@ fn cli_render(
         bit_depth: BitDepth::Int24,
         limiter: false,
         threads: None,
+        // 渲染侧不读响度字段（只在导出写盘路径生效）⇒ `None`。
+        loudness: None,
     };
     crate::render_core::render_project_f32_with_assets_under(project, options, None, assets, None)
         .expect("CLI 导出腿必须能渲染这份工程")

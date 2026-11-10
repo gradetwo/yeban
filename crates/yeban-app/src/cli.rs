@@ -50,6 +50,7 @@ use yeban_model::EntityId;
 use yeban_model::container::ProjectArchive;
 use yeban_model::project::{SampleRate, TrackV3, YebanProjectV1};
 use yeban_render::dither::BitDepth;
+use yeban_render::mastering::ExportPreset;
 use yeban_render::midi::MidiFormat;
 
 use crate::bridge::{BridgeError, ViewState};
@@ -183,6 +184,19 @@ pub const SONG_OVERVIEW_FEATURE: &str = "in-process-mcp";
 ///
 /// 同 [`ALS_EXPORT_SWITCH`] 的理由：默认构建的用法文本与"没编译它"的错误信息都要打得出来。
 pub const LOGIC_EXPORT_SWITCH: &str = "--export-logic";
+
+/// `--loudness-target` 的字面值（`--export-wav` 的响度归一化目标，单位 LUFS）。
+///
+/// 修饰开关，不是动作开关：它只改 `--export-wav` 的产物（渲染后施加增益达到目标响度），
+/// 因此 ⛔ 不进 `ACTION_SWITCHES`。取值范围与 MCP `render_master.targetLufs` 的
+/// `TARGET_LUFS_RANGE`（`[-70, 0]`）同口径。
+pub const LOUDNESS_TARGET_SWITCH: &str = "--loudness-target";
+
+/// `--true-peak-ceiling` 的字面值（`--export-wav` 的真峰值上限，单位 dBTP）。
+///
+/// 与 [`LOUDNESS_TARGET_SWITCH`] 同档：只改 `--export-wav` 的产物（上限赢时减小增益），
+/// ⛔ 不进 `ACTION_SWITCHES`。取值必须 ≤ 0 dBTP（上限高于满量程没有语义）。
+pub const TRUE_PEAK_CEILING_SWITCH: &str = "--true-peak-ceiling";
 
 /// 让 `--export-logic` 真的可执行的那个**非默认** feature 名。
 ///
@@ -464,6 +478,13 @@ pub fn usage_text() -> String {
   --render-threads <n>     --export-wav 的显式渲染线程数 (与 MCP render_master.threads 同量纲):
                            缺省 = 多线程默认路径 (可用并行度); 给了就透传给渲染器, 输出逐字节相同;
                            必须是**正**整数 (0 线程没有语义, 按用法错误拒绝)
+  --loudness-target <lufs>  --export-wav 的响度归一化目标 (LUFS, -70 到 0):
+                           渲染后施加增益达到目标响度, 增益写进样本再落盘;
+                           达不到目标 (偏离超过 0.5 LU) 时响亮失败, 不写文件;
+                           不给 = 不归一化 (suggestedTrimDb 照旧只报建议)
+  --true-peak-ceiling <dbtp> --export-wav 的真峰值上限 (dBTP, 必须 ≤ 0):
+                           上限赢时减小增益 (目标没达到是预期, 如实报告);
+                           只给上限不给目标时只做上限 (超了就衰减, 不抬响度)
   --export-midi <path>     把当前工程导出成**标准 MIDI 文件** (SMF 1): conductor 轨
                            (tick 0 的 tempo + 拍号) + 每条含 MIDI 的轨道一条 MTrk
                            (通道按导出顺序 0,1,2,…); **PPQ 与工程一致 (960)**;
@@ -1383,6 +1404,23 @@ pub struct Options {
     /// 非整数 ⇒ [`ParseError::RenderThreadsInvalid`]，⛔ 不静默钳制）。
     /// 与 MCP `render_master.threads` 同量纲。
     pub wav_threads: Option<usize>,
+    /// `--loudness-target <lufs>`：`--export-wav` 的响度归一化目标（LUFS）。
+    ///
+    /// 缺省（`None`）= 不归一化，与今天逐字节相同（`suggestedTrimDb` 照旧只报建议）。
+    /// 给了 ⇒ 渲染后对整条立体声母带施加 [`ExportPreset::apply`]（16× 真峰值口径），
+    /// 增益写进样本再落盘；施加后偏离目标超过
+    /// [`yeban_render::mastering::LOUDNESS_TARGET_TOLERANCE_LU`]（`0.5 LU`）⇒
+    /// 响亮失败（[`crate::export_wav::WavExportError::Loudness`]），⛔ 不悄悄交付偏离目标的文件。
+    /// 取值必须是 `[-70, 0]` 内的有限数（与 MCP `render_master.targetLufs` 的
+    /// `TARGET_LUFS_RANGE` 同口径；范围外 ⇒ [`ParseError::LoudnessTargetInvalid`]）。
+    pub loudness_target: Option<f32>,
+    /// `--true-peak-ceiling <dbtp>`：`--export-wav` 的真峰值上限（dBTP）。
+    ///
+    /// 缺省（`None`）= 不设上限。给了 ⇒ 与 [`Self::loudness_target`] 同一条预设：
+    /// 上限赢时减小增益（目标没达到是**预期**，如实报告、不失败）；只给上限不给目标
+    /// 时只做上限（超了就衰减，不抬响度）。取值必须是 ≤ 0 的有限数
+    /// （范围外 ⇒ [`ParseError::TruePeakCeilingInvalid`]）。
+    pub true_peak_ceiling: Option<f32>,
     /// `--export-als <path>`：当前工程导出成实验性 Ableton `.als`（Gzip XML）
     /// `[ARCH-FMT-002]` / `[ROAD-M4-007]`，与 `--export-midi` 并列同属 `D47` 的 CLI 出口。
     ///
@@ -1991,6 +2029,14 @@ pub enum ParseError {
     ///
     /// ⛔ 不接受 `0`：零线程没有语义；⛔ 不静默钳制到 1（那会把用法错误藏成默认行为）。
     RenderThreadsInvalid(String),
+    /// `--loudness-target` 的取值不是 `[-70, 0]` 内的有限 LUFS 数。
+    ///
+    /// ⛔ 不静默钳制到范围里（那会把用法错误藏成默认行为）；⛔ 不接受 `NaN` / `inf`。
+    LoudnessTargetInvalid(String),
+    /// `--true-peak-ceiling` 的取值不是 ≤ 0 的有限 dBTP 数。
+    ///
+    /// ⛔ 不接受正数（上限高于满量程没有语义）；⛔ 不接受 `NaN` / `inf`。
+    TruePeakCeilingInvalid(String),
     /// `--wav-frames` 与 `--wav-seconds` 同时给了。
     ///
     /// 一个给**精确帧数**、一个给**秒数换算**，同时给必然有一个被静默丢掉 ——
@@ -2188,6 +2234,14 @@ impl fmt::Display for ParseError {
             Self::RenderThreadsInvalid(value) => write!(
                 formatter,
                 "`--render-threads` 的取值 `{value}` 非法 (需要正的十进制整数线程数; 0 线程没有语义)"
+            ),
+            Self::LoudnessTargetInvalid(value) => write!(
+                formatter,
+                "`--loudness-target` 的取值 `{value}` 非法 (需要 -70 到 0 之间的有限 LUFS 数)"
+            ),
+            Self::TruePeakCeilingInvalid(value) => write!(
+                formatter,
+                "`--true-peak-ceiling` 的取值 `{value}` 非法 (需要小于等于 0 的有限 dBTP 数)"
             ),
             Self::WavFramesConflict => write!(
                 formatter,
@@ -2483,6 +2537,38 @@ pub fn parse(args: &[String]) -> Result<Options, ParseError> {
                     return Err(ParseError::DuplicateOption("--render-threads"));
                 }
                 options.wav_threads = Some(threads);
+            }
+            "--loudness-target" => {
+                // 与 `--wav-seconds` 同款解析（先取值、再校验、重复给 ⇒ 明确报错）。
+                // 取值范围与 MCP `render_master.targetLufs` 的 `TARGET_LUFS_RANGE`
+                //（`[-70, 0]`）同口径；`NaN` / `inf` 是 `f32::parse` 能认的字面值，
+                // 必须由 `is_finite` 再拦一次。
+                let value = take_value(LOUDNESS_TARGET_SWITCH, inline, args, &mut cursor)?;
+                let target = value
+                    .parse::<f32>()
+                    .map_err(|_| ParseError::LoudnessTargetInvalid(value.clone()))?;
+                if !(target.is_finite() && (-70.0..=0.0).contains(&target)) {
+                    return Err(ParseError::LoudnessTargetInvalid(value));
+                }
+                if options.loudness_target.is_some() {
+                    return Err(ParseError::DuplicateOption(LOUDNESS_TARGET_SWITCH));
+                }
+                options.loudness_target = Some(target);
+            }
+            "--true-peak-ceiling" => {
+                // 与 `--loudness-target` 同款解析；取值必须 ≤ 0 dBTP（上限高于满量程
+                // 没有语义），下限不限（严格的上限是合法请求）。
+                let value = take_value(TRUE_PEAK_CEILING_SWITCH, inline, args, &mut cursor)?;
+                let ceiling = value
+                    .parse::<f32>()
+                    .map_err(|_| ParseError::TruePeakCeilingInvalid(value.clone()))?;
+                if !(ceiling.is_finite() && ceiling <= 0.0) {
+                    return Err(ParseError::TruePeakCeilingInvalid(value));
+                }
+                if options.true_peak_ceiling.is_some() {
+                    return Err(ParseError::DuplicateOption(TRUE_PEAK_CEILING_SWITCH));
+                }
+                options.true_peak_ceiling = Some(ceiling);
             }
             "--limiter" => {
                 // 布尔修饰开关：⛔ 不吃值（与 `--wav-*` 同档，只改 `--export-wav`
@@ -5080,6 +5166,12 @@ pub fn run_batch(options: &Options) -> Result<Vec<String>, CliError> {
         (options.wav_limiter, "--limiter"),
         // ⭐ 审评 2026-10-31（P1-1）：`--render-threads` 同属 `--export-wav` 的修饰开关。
         (options.wav_threads.is_some(), "--render-threads"),
+        // ⭐ 响度归一化两开关同属 `--export-wav` 的修饰开关（只改产物，不选进程形态）。
+        (options.loudness_target.is_some(), LOUDNESS_TARGET_SWITCH),
+        (
+            options.true_peak_ceiling.is_some(),
+            TRUE_PEAK_CEILING_SWITCH,
+        ),
     ] {
         if given && options.export_wav.is_none() {
             return Err(CliError::Usage(format!(
@@ -5313,6 +5405,12 @@ pub fn run_batch(options: &Options) -> Result<Vec<String>, CliError> {
         wav_options.limiter = options.wav_limiter;
         // ⭐ 审评 2026-10-31（P1-1）：显式线程数透传；缺省 `None` ⇒ 多线程默认路径（Nightfall v1）。
         wav_options.threads = options.wav_threads;
+        // ⭐ 响度归一化预设：两个开关都不给 ⇒ `None` ⇒ 旧导出逐字节不变；
+        // 给了任一个 ⇒ 拼成一份预设（没给的那一项是 `None` = 不约束那一侧）。
+        wav_options.loudness = match (options.loudness_target, options.true_peak_ceiling) {
+            (None, None) => None,
+            (target, ceiling) => Some(ExportPreset::new(target, ceiling)),
+        };
         // ⭐ 任务单 `#168`：`--open` 那个文件所在目录 = 相对 SFZ 路径的第一个候选根
         //    ⇒ "样本放在工程旁边"在**任意 cwd** 下都读得到。样本形态（没有 `--open`）
         //    给 `None`，解析从仓库根开始（旧口径）。
@@ -5335,6 +5433,11 @@ pub fn run_batch(options: &Options) -> Result<Vec<String>, CliError> {
         // ⭐ 任务单 `#226`：削波时**多打一行**（含 `clippedSamples` / `suggestedTrimDb`）。
         //    ⛔ 不削波时**一行都不多** ⇒ `--export-wav` 的既有 stdout 逐字不变。
         if let Some(note) = report.clipping_note() {
+            lines.push(note);
+        }
+        // ⭐ 响度归一化时**多打一行**（目标／实测／增益／谁赢了）。⛔ 没给开关时
+        // **一行都不多** ⇒ `--export-wav` 的既有 stdout 逐字不变。
+        if let Some(note) = report.loudness_note() {
             lines.push(note);
         }
     }

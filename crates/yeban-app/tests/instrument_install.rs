@@ -286,6 +286,8 @@ fn render(project: &YebanProjectV1) -> yeban_app::render_core::RenderProjectOutp
         bit_depth: BitDepth::Int24,
         limiter: false,
         threads: None,
+        // 渲染侧不读响度字段 ⇒ `None`。
+        loudness: None,
     };
     render_project_f32_with_assets(project, options, None, &[]).expect("引擎渲染路径")
 }

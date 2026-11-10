@@ -1018,5 +1018,7 @@ fn record_wav_options(options: &RecordOptions) -> yeban_app::export_wav::WavExpo
         bit_depth: yeban_render::dither::BitDepth::Int24,
         limiter: false,
         threads: None,
+        // 渲染侧不读响度字段 ⇒ `None`。
+        loudness: None,
     }
 }

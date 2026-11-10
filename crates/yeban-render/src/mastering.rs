@@ -152,6 +152,13 @@ pub const EBU_R128_TARGET_LUFS: f32 = -23.0;
 /// 两个内置预设共用的真峰值上限（dBTP）。**工程选择**: 规范未定义真峰值上限。
 pub const DEFAULT_TRUE_PEAK_CEILING_DBTP: f32 = -1.0;
 
+/// 导出侧"达到目标响度"的判定容差（LU）。
+///
+/// 与 MCP `render_master` 的判定口径 `TARGET_TOLERANCE_LU` 同值（`crates/yeban-mcp/src/domain/render.rs:567`），
+/// 刻意不共享常量：两仓的口径由 yeban-app 的判据钉住（见 `crates/yeban-app/tests/export_wav_loudness.rs`
+/// 的 `the_loudness_tolerance_matches_the_mcp_verdict`），一侧改值另一侧判据立即红。
+pub const LOUDNESS_TARGET_TOLERANCE_LU: f32 = 0.5;
+
 /// 真峰值检测器的**过采样倍数**（`yeban_dsp::meter::TruePeakDetector` 的相位数）。
 ///
 /// 这是一个**封闭**的两档枚举, 而不是一个裸 `usize`: `yeban-dsp` 只接受 8 与 16

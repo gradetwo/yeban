@@ -1972,6 +1972,112 @@ fn export_wav_render_threads_change_only_time_not_bytes() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// 判据：`--loudness-target` / `--true-peak-ceiling` 的用法护栏与真二进制落点。
+///
+/// - 两开关同属 `--export-wav` 的**修饰**开关：单独给 = 用法错误（退出码 2），与
+///   `--wav-*` / `--render-threads` 同款（上一判据第 ③ 节的口径）；
+/// - 值域护栏：目标超出 `[-70, 0]`、上限为正、非数字、`NaN` 都必须被拒（⛔ 不静默钳制）；
+/// - 重复给同一开关 = 用法错误；
+/// - 真二进制：演示工程 `--loudness-target -16` ⇒ 退出码 0 且 stdout 多一行 `loudness:`。
+#[test]
+fn export_wav_loudness_switches_are_guarded_and_reach_the_target() {
+    let dir = scratch_dir("export-wav-loudness");
+
+    // ---- ① 修饰开关单独给 = 用法错误（⛔ 不静默忽略）----
+    for (flag, value) in [("--loudness-target", "-16"), ("--true-peak-ceiling", "-1")] {
+        let run = invoke(&["--headless", flag, value]);
+        assert_eq!(
+            run.code, 2,
+            "`{flag}` 单独给（不给 --export-wav）必须是用法错误 (退出码 2); stderr={}",
+            run.stderr
+        );
+        assert!(
+            run.stderr.contains(flag) && run.stderr.contains("--export-wav"),
+            "错误必须点名两个开关; stderr={}",
+            run.stderr
+        );
+    }
+
+    // ---- ② 值域护栏：⛔ 不静默接受非法取值 ----
+    for (flag, value) in [
+        ("--loudness-target", "5"),   // 高于 0
+        ("--loudness-target", "-71"), // 低于 −70
+        ("--loudness-target", "abc"),
+        ("--loudness-target", "nan"),
+        ("--loudness-target", "inf"),
+        ("--true-peak-ceiling", "1"), // 上限高于满量程没有语义
+        ("--true-peak-ceiling", "abc"),
+        ("--true-peak-ceiling", "nan"),
+    ] {
+        let run = invoke(&[
+            "--headless",
+            "--export-wav",
+            dir.join("never.wav").to_str().expect("utf8"),
+            flag,
+            value,
+        ]);
+        assert_eq!(
+            run.code, 2,
+            "`{flag} {value}` 必须被拒 (退出码 2); stderr={}",
+            run.stderr
+        );
+        assert!(
+            run.stderr.contains(flag),
+            "错误必须点名开关; stderr={}",
+            run.stderr
+        );
+    }
+
+    // ---- ③ 重复给同一开关 = 用法错误 ----
+    let run = invoke(&[
+        "--headless",
+        "--export-wav",
+        dir.join("never.wav").to_str().expect("utf8"),
+        "--loudness-target",
+        "-16",
+        "--loudness-target",
+        "-14",
+    ]);
+    assert_eq!(
+        run.code, 2,
+        "重复给 --loudness-target 必须是用法错误 (退出码 2); stderr={}",
+        run.stderr
+    );
+
+    // ---- ④ 真二进制：演示工程到 −16 LUFS ⇒ 成功且 stdout 多一行 ----
+    // `--wav-seconds 1`：只导 1 秒（演示工程的音符在开头），与 `export_wav_loudness.rs`
+    // 的真 CLI 判据同款 —— 8 秒全长在 4 线程并行下会撞上 120 秒调用超时（实测两连）。
+    let source = write_real_container(&dir, "loudness.yeban");
+    let out = dir.join("loud.wav");
+    let run = invoke(&[
+        "--open",
+        source.to_str().expect("utf8"),
+        "--export-wav",
+        out.to_str().expect("utf8"),
+        "--wav-seconds",
+        "1",
+        "--loudness-target",
+        "-16",
+    ]);
+    assert_eq!(
+        run.code, 0,
+        "带响度目标的导出必须成功; stderr={}",
+        run.stderr
+    );
+    let note = run
+        .stdout
+        .lines()
+        .find(|line| line.starts_with("loudness:"))
+        .unwrap_or_else(|| panic!("给开关时 stdout 必须有 loudness: 行:\n{}", run.stdout));
+    assert!(note.contains("target=-16.0"), "行里必须有目标: {note}");
+    assert!(
+        note.contains("bound=LoudnessTarget"),
+        "行里必须写谁赢了: {note}"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// 判据 B13: `--export-midi` 的失败语义与既有 CLI 一致 —— 非容器输入 ⇒ 退出码 **3**
 /// 且一个字节都不写；目标不可写 ⇒ 退出码 **5**、精确原因、**不留下半个文件**。
 #[test]
