@@ -121,6 +121,7 @@ pub mod import_audio;
 pub mod import_logic;
 pub mod import_midi;
 pub mod input;
+pub mod lyrics_export;
 pub mod meters;
 pub mod metronome;
 pub mod midi_in;

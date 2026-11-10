@@ -191,6 +191,11 @@ pub fn code_for_model(error: &ModelError) -> ErrorCode {
         | ModelError::NonFiniteValue { .. }
         | ModelError::PluginBindingKindMismatch { .. }
         | ModelError::PitchBendTicksNotAscending { .. }
+        // 歌词轨线（2026-11-10）：空行文本 / 起始 tick 不升序 / tick 换算失败 ——
+        // 与 `PitchBendTicksNotAscending` 同款"载荷形状不合法"，不是"量越界"。
+        | ModelError::LyricTextEmpty { .. }
+        | ModelError::LyricStartNotAscending { .. }
+        | ModelError::LyricTimeConversionFailed { .. }
         | ModelError::TempoMapZeroTick { .. } => ErrorCode::InvalidParameterRange,
         ModelError::SchemaVersionTooNew { .. }
         | ModelError::ReaderTooOld { .. }
@@ -289,6 +294,14 @@ mod tests {
                 previous: 240,
                 tick: 120,
             },
+            // 歌词轨线（2026-11-10）的三个形状错误：与 `PitchBendTicksNotAscending`
+            // 同组 —— 空行文本 / 起始 tick 不升序 / tick 换算失败都是"载荷形状不合法"。
+            ModelError::LyricTextEmpty { start_tick: 0 },
+            ModelError::LyricStartNotAscending {
+                previous: 100,
+                start_tick: 100,
+            },
+            ModelError::LyricTimeConversionFailed { tick: 0 },
         ];
         for error in &samples {
             let code = code_for_model(error);
@@ -314,6 +327,21 @@ mod tests {
                 previous: 2,
                 tick: 2
             }),
+            ErrorCode::InvalidParameterRange
+        );
+        assert_eq!(
+            code_for_model(&ModelError::LyricTextEmpty { start_tick: 0 }),
+            ErrorCode::InvalidParameterRange
+        );
+        assert_eq!(
+            code_for_model(&ModelError::LyricStartNotAscending {
+                previous: 100,
+                start_tick: 100
+            }),
+            ErrorCode::InvalidParameterRange
+        );
+        assert_eq!(
+            code_for_model(&ModelError::LyricTimeConversionFailed { tick: 0 }),
             ErrorCode::InvalidParameterRange
         );
     }

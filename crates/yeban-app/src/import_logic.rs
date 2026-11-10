@@ -967,6 +967,7 @@ fn build_project(
         clip_pool,
         assets: project_assets,
         embedded_samples: BTreeMap::new(),
+        lyrics: Vec::new(),
     };
     Ok(BuiltProject {
         project,

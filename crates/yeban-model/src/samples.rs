@@ -473,6 +473,10 @@ pub fn filled_project() -> YebanProjectV1 {
             },
         )]),
         embedded_samples: BTreeMap::new(),
+        // ⭐ 夹具**刻意不落盘**歌词时间轴（与 `track_order` 同一条纪律）：
+        // 填进夹具会改变 `project.filled.json` 的冻结 sha256 与顶层键集。
+        // 歌词时间轴的落盘形态由 `tests/lyrics.rs` 另行钉住。
+        lyrics: Vec::new(),
     }
 }
 
