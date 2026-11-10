@@ -8532,7 +8532,7 @@ fn module_trace(action: &str, started: std::time::Instant, receipt: &str) {
 ///
 /// 六条里 `import-midi` 与 `midi-in` 改工程，两条走的都是装配给的那个 [`UndoPort`] —— 与
 /// `Cmd+Z` / `yeban_undo` **同一个**端口，因此"界面上弹/导入出来的音符"与"撤销栈"不可能分叉。
-/// 另外四条（含 `export-midi`）读工程时用 `port.project()`（端口的当前读数），**不**用装配时的
+/// 另外四条（含 `export-midi`）读工程时用 `port.try_project()`（端口的当前读数），**不**用装配时的
 /// 快照 ⇒ 撤销之后按导出，导出的是撤销之后的那一版。
 ///
 /// ## `port` 为 `None` 时
