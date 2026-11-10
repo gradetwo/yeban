@@ -612,6 +612,7 @@ export component DeviceRack inherits Rectangle {
         // 手势面：位置**不随数值动**（读 `self.mouse-x`，若控件自己也动就自己喂自己）。
         // ⭐ 任务单 `#182`：按下携带**设备身份**（`eq-device-id`），⛔ 不是行下标。
         TouchArea {
+            mouse-cursor: MouseCursor.grab;
             x: Tokens.space-4;
             y: 40px;
             width: 300px;
@@ -1026,6 +1027,7 @@ export component DeviceRack inherits Rectangle {
 
             // 手势面：位置**不随数值动**（读 `self.mouse-x`，若控件自己也动就自己喂自己）。
             TouchArea {
+                mouse-cursor: MouseCursor.grab;
                 x: 0;
                 y: 20px;
                 width: parent.slider-width;

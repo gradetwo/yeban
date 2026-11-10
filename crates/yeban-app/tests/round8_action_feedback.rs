@@ -243,11 +243,16 @@ fn the_hover_feedback_inventory_is_pinned_across_the_whole_ui() {
     let cases: &[(&str, &str, usize)] = &[
         ("app.slint", APP, 2),
         ("console/console_tabs.slint", CONSOLE_TABS, 1),
+        (
+            "console/mixer_console.slint",
+            include_str!("../ui/console/mixer_console.slint"),
+            3,
+        ),
         ("module_actions.slint", MODULE_ACTIONS, 5),
         ("transport.slint", TRANSPORT, 9),
         ("workspace/arrangement_view.slint", ARRANGEMENT, 4),
         ("workspace/song_overview_panel.slint", SONG_OVERVIEW, 6),
-        ("workspace/session_view.slint", SESSION_VIEW, 1),
+        ("workspace/session_view.slint", SESSION_VIEW, 2),
     ];
     for (file, src, want) in cases {
         assert_eq!(
@@ -261,9 +266,10 @@ fn the_hover_feedback_inventory_is_pinned_across_the_whole_ui() {
         total += src.matches("has-hover").count();
     }
     // ⭐ 第九轮 `[PATCH UI-FEEDBACK-03]`：曲风预设键 + 返回编曲各补 1 处 ⇒ 26→28。
+    // ⭐ 第十轮 `[PATCH UI-FEEDBACK-04]`：Session 场景激发键 1 + Mixer Tab1 三键 3 ⇒ 28→32。
     assert_eq!(
-        total, 28,
-        "全仓 `has-hover` 总数应为 28（第七轮 11 + 第八轮 15 + 第九轮 2）；\
+        total, 32,
+        "全仓 `has-hover` 总数应为 32（第七轮 11 + 第八轮 15 + 第九轮 2 + 第十轮 4）；\
          改了要同步复核清单、解析口径与交付说明"
     );
     assert_eq!(SLINT_FILES.len(), 18, "判据清单仍须是 18 个 `.slint`");

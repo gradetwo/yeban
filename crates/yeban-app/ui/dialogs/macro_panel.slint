@@ -97,6 +97,7 @@ export component MacroPanel inherits Rectangle {
             }
 
             TouchArea {
+                mouse-cursor: MouseCursor.pointer;
                 width: parent.width;
                 height: parent.height;
                 clicked => {
@@ -208,6 +209,7 @@ export component MacroPanel inherits Rectangle {
 
         // 手势面：位置**不随数值动**（读 `self.mouse-x`，若控件自己也动就自己喂自己）。
         TouchArea {
+            mouse-cursor: MouseCursor.grab;
             x: 0;
             y: 20px;
             width: parent.width;

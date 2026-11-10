@@ -176,9 +176,12 @@ fn section_label_click_target_is_discoverable_without_new_pixels() {
     for (_, src) in SLINT_FILES {
         cursor_total += src.matches("mouse-cursor: MouseCursor.pointer;").count();
     }
+    // ⭐ 第十轮 `[PATCH UI-FEEDBACK-04]`：覆盖层 11 个可点控件补齐手型光标 ⇒ 2→13。
+    // 统计口径仍是精确串 `mouse-cursor: MouseCursor.pointer;`；本轮新增的
+    // `MouseCursor.grab`（可拖光标）不在此串内，由 `round10_action_feedback.rs` 单独钉。
     assert_eq!(
-        cursor_total, 2,
-        "全仓手型光标应恰好 2 处（提案行先例 1 + 段落标签 1）；多一处就是别处也改了光标"
+        cursor_total, 13,
+        "全仓手型光标应为 13 处（第九轮 2 + 第十轮 11）；改了要同步复核清单与交付说明"
     );
 }
 
@@ -196,10 +199,11 @@ fn back_to_arrangement_button_is_no_longer_half_wired() {
             .contains("background: back_area.pressed ? Tokens.bg-raised : Tokens.bg-void;"),
         "改动前的「只按下不悬浮」半套写法必须已消失"
     );
+    // ⭐ 第十轮 `[PATCH UI-FEEDBACK-04]`：场景激发键又补 1 处 ⇒ 1→2。
     assert_eq!(
         SESSION_VIEW.matches("has-hover").count(),
-        1,
-        "session_view.slint 本轮只新增这一处反馈"
+        2,
+        "session_view.slint 共 2 处反馈（第九轮返回编曲 1 + 第十轮场景激发 1）"
     );
     assert!(
         SESSION_VIEW.contains("background: Tokens.bg-panel;"),
@@ -207,20 +211,26 @@ fn back_to_arrangement_button_is_no_longer_half_wired() {
     );
 }
 
-/// ④ 全仓 `has-hover` 棘轮 = 28，并复核第七/八轮扩钉值与本轮一致。
+/// ④ 全仓 `has-hover` 棘轮 = 32（第十轮 `[PATCH UI-FEEDBACK-04]` 由 28 扩钉），
+/// 并复核第七/八轮扩钉值与本轮一致。
 /// 删任一反馈 ⇒ 少一次，红；新增反馈不登记 ⇒ 多一次，也红。
 #[test]
 fn the_hover_inventory_and_round7_round8_pins_stay_consistent() {
     let cases: &[(&str, &str, usize)] = &[
         ("app.slint", APP, 2),
         ("transport.slint", TRANSPORT, 9),
-        ("workspace/session_view.slint", SESSION_VIEW, 1),
+        ("workspace/session_view.slint", SESSION_VIEW, 2),
         ("workspace/arrangement_view.slint", ARRANGEMENT, 4),
         ("workspace/song_overview_panel.slint", SONG_OVERVIEW, 6),
         (
             "console/console_tabs.slint",
             include_str!("../ui/console/console_tabs.slint"),
             1,
+        ),
+        (
+            "console/mixer_console.slint",
+            include_str!("../ui/console/mixer_console.slint"),
+            3,
         ),
         (
             "module_actions.slint",
@@ -240,8 +250,8 @@ fn the_hover_inventory_and_round7_round8_pins_stay_consistent() {
         total += src.matches("has-hover").count();
     }
     assert_eq!(
-        total, 28,
-        "全仓 `has-hover` 总数应为 28（第七轮 11 + 第八轮 15 + 第九轮 2）"
+        total, 32,
+        "全仓 `has-hover` 总数应为 32（第七轮 11 + 第八轮 15 + 第九轮 2 + 第十轮 4）"
     );
     assert_eq!(SLINT_FILES.len(), 18, "判据清单仍须是 18 个 `.slint`");
 
