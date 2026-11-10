@@ -113,7 +113,7 @@ fontconfig，缺了它会在"编译依赖"时直接红 —— 那不是代码错
 ```bash
 sudo apt-get install -y --no-install-recommends \
   pkg-config libfontconfig1-dev libfreetype-dev \
-  libxkbcommon-dev libwayland-dev libx11-dev libgl1-mesa-dev \
+  libxkbcommon-dev libxkbcommon-x11-0 libwayland-dev libx11-dev libgl1-mesa-dev \
   libasound2-dev fonts-noto-cjk
 ```
 
@@ -121,6 +121,7 @@ sudo apt-get install -y --no-install-recommends \
 - `fonts-noto-cjk`：**运行时环境依赖，不是仓库资产**（见 ADR-0001 D24）。没有它，中文会渲染成豆腐块，
   而 Golden 会"稳定地"记录这个错误（比随机失败更危险）。实测：无字体时汉字区域墨迹 24 px，
   装上后 648 px，`cjk_ink >= 150` 已成为判据。
+- `libxkbcommon-x11-0`：**运行时依赖**。winit 经 `xkbcommon-dl` 在打开 X11 窗口时动态加载 `libxkbcommon-x11.so.0`；`libxkbcommon-dev` 只依赖 `libxkbcommon0`，不带它。真桌面首启缺它会 panic；CI 用 `--headless` 从不开窗，此前从未暴露。
 
 另外两处只有 Slint 才会触发的合规现实（都已在 main 上处理）：
 
