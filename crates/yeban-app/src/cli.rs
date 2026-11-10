@@ -214,6 +214,11 @@ pub const APPLY_OPS_FEATURE: &str = "in-process-mcp";
 /// 落盘（`stems::export` / `stems::write`）全住在那里。⛔ 本仓不新增第七条
 /// feature —— 一条出口、一个开关。
 pub const EXPORT_STEMS_FEATURE: &str = "in-process-mcp";
+/// `--edit-samples` 的字面值（采样库编辑的**批处理**出口）。
+///
+/// 与 [`SONG_OVERVIEW_SWITCH`] 同一个理由：用法文本与用法错误都要打得出来，
+/// 因此字面值住在这里，而不住在 [`crate::sample_editor`] 里。
+pub const SAMPLE_EDIT_SWITCH: &str = "--edit-samples";
 
 /// `--export-logic` 的字面值（实验性 Logic Pro `.logicx` bundle 导出的**唯一**用户出口）。
 ///
@@ -569,6 +574,32 @@ pub fn usage_text() -> String {
                            回执: `exported-stems:` 汇总 + 每条 `stem:`; **只在**
                            `--features {export_stems_feature}` 的构建里存在 —— 默认构建给
                            这个开关 = 用法错误 (退出码 {usage})
+  --edit-samples <input>   采样库编辑的**批处理**出口 (缺口报告 C-1): 输入是采样目录
+                           (递归取 .wav / .wave / .flac / .ogg) 或 .sfz 文件
+                           (按 region 的 sample 与 pitch_keycenter 定目标音高);
+                           每采样测基频 → 校正到 ±0.5 cent → 用 >2.2 kHz 分量
+                           合成 mf/f 力度层 → 全部输出按目标 RMS 归一;
+                           产物: <stem>_tuned.wav + <stem>_mf.wav + <stem>_f.wav
+                           (+ .sfz 输入时多一份 <stem>_edited.sfz);
+                           必须配 --sample-edit-out <dir> (不给 = 用法错误, 退出码 {usage});
+                           ⭐ 不开窗口、不建 MCP 会话 ⇒ **没有显示器的机器上也能批量编**;
+                           落盘走**原子**实现 (同目录临时文件 -> rename, 失败不留半成品);
+                           测不到基频 / 偏离超一个八度 ⇒ **该采样跳过并记入报告**
+                           (不静默编一个数, 不中止整批); 回执一行: `edited-samples:` +
+                           输入/输出/采样数/校正数/层数/跳过数/目标 RMS/报告落点
+  --sample-edit-out <dir>  `--edit-samples` 的**输出目录** (报告与编辑后样本的落点;
+                           不存在即创建); 单独给 = 用法错误 (退出码 {usage})
+  --sample-edit-rms <dbfs> `--edit-samples` 的**口径修饰**: 目标 RMS (dBFS, 缺省 -18);
+                           取值域 -60..=0, 域外 = 用法错误 (退出码 {usage});
+                           单独给 = 用法错误
+  --sample-edit-layers <list>
+                           `--edit-samples` 的**口径修饰**: 合成哪些伪造力度层
+                           (none|mf|f|mf,f, 缺省 mf,f); 单独给 = 用法错误 (退出码 {usage})
+  --sample-edit-no-tune    `--edit-samples` 的**口径修饰**: 跳过音准校正 (只做层合成
+                           与归一); 单独给 = 用法错误 (退出码 {usage})
+  --sample-edit-report-only
+                           `--edit-samples` 的**口径修饰**: 只测算、只写报告, 不写音频
+                           (预览口径); 单独给 = 用法错误 (退出码 {usage})
   --export-als <path>      把当前工程导出成**实验性** Ableton Live Set (`.als`, 即
                            Gzip 压缩的 LiveSet XML) [ARCH-FMT-002]; 与 --export-midi
                            并列, 同属 ADR-0001 D47 的\"导出唯一出口 = app CLI\";
@@ -751,11 +782,12 @@ pub fn usage_text() -> String {
   --export-logic 不给 --open  导出的是演示工程, 输出 `exported-logic: ... from=sample=...` 明说
   --help / -h, --version / -V  短路: 出现即打印并退出 {ok}, 其余参数(含未知参数)不再检查
   --open / --save-as / --export-elements / --export-midi / {overview_switch} /
-  --apply-ops / --export-stems /
+  --apply-ops / --export-stems / {sample_edit_switch} /
   --export-als / --export-logic
                                各只能给一次; 重复给 = 用法错误 (退出码 {usage})
   --headless-idle 与 --save-as / --export-elements / --export-midi /
-  {overview_switch} / --apply-ops / --export-stems / --export-als / --export-logic / --dump-elements / --print-shortcuts
+  {overview_switch} / --apply-ops / --export-stems / {sample_edit_switch} /
+  --export-als / --export-logic / --dump-elements / --print-shortcuts
                                不能组合 = 用法错误 (退出码 {usage}): 那会把写盘 / 导出
                                **静默**丢掉, 而本模式的输出契约只有一条 —— 建树 + 空闲 + 读数
   --headless-idle 与 --idle-seconds
@@ -764,7 +796,7 @@ pub fn usage_text() -> String {
                                不能组合 = 用法错误 (退出码 {usage}): 控制面要挂在**正在跑的
                                GUI 进程**里 (形态 A), 批处理路径挂上去只会\"刚绑好就拆掉\"
   {ui_mcp_switch} 与 --headless / --dump-elements / --print-shortcuts /
-  --export-* / --save-as / {mcp_switch}
+  --export-* / --save-as / {mcp_switch} / {sample_edit_switch}
                                不能组合 = 用法错误 (退出码 {usage}): 前一组会被**静默丢掉**;
                                与领域 MCP 那条不在同一个进程形态里 —— 领域控制面要挂在
                                **正在跑的 GUI 事件循环**里, 而 ui/* 的 Tier-1 执行面只能装在
@@ -892,6 +924,7 @@ pub fn usage_text() -> String {
         overview_switch = SONG_OVERVIEW_SWITCH,
         apply_ops_feature = APPLY_OPS_FEATURE,
         export_stems_feature = EXPORT_STEMS_FEATURE,
+        sample_edit_switch = SAMPLE_EDIT_SWITCH,
         logic_feature = LOGIC_EXPORT_FEATURE,
         logic_inspect_switch = LOGIC_INSPECT_SWITCH,
         logic_import_feature = LOGIC_INSPECT_FEATURE,
@@ -1462,6 +1495,29 @@ pub struct Options {
     /// 失败（⛔ 不伪造成功）。单独给（没有 `--apply-ops`）⇒ 用法错误；与
     /// `--save-as` 同给 ⇒ 用法错误（保存的会是没改过的工程）。
     pub dry_run: bool,
+    /// `--edit-samples <input>`：采样库编辑的批处理出口（缺口报告 C-1）。
+    ///
+    /// 输入是采样目录（递归取 `.wav` / `.wave` / `.flac` / `.ogg`）或 `.sfz` 文件
+    /// （解析出 region 的 `sample` 与 `pitch_keycenter`）；每采样测基频 → 校正到
+    /// ±0.5 cent → 用 >2.2 kHz 分量合成 mf/f 力度层 → 全部输出按目标 RMS 归一。
+    /// 意义见 [`crate::sample_editor`] 的模块文档 —— 一句话：**284 个采样手工不可能**，
+    /// 批量编辑不必再手写脚本。单独给（没有 `--sample-edit-out`）⇒ 用法错误。
+    pub edit_samples: Option<PathBuf>,
+    /// `--sample-edit-out <dir>`：`--edit-samples` 的**输出目录**（报告与编辑后样本
+    /// 的落点；不存在即创建）。单独给（没有 `--edit-samples`）⇒ 用法错误。
+    pub sample_edit_out: Option<PathBuf>,
+    /// `--sample-edit-rms <dbfs>`：`--edit-samples` 的**修饰** —— 目标 RMS（dBFS，
+    /// 缺省 −18）。取值域 −60..=0；域外 ⇒ 用法错误。单独给 ⇒ 用法错误。
+    pub sample_edit_rms_dbfs: Option<f32>,
+    /// `--sample-edit-layers <list>`：`--edit-samples` 的**修饰** —— 合成哪些伪造
+    /// 力度层（`none` / `mf` / `f` / `mf,f`，缺省 `mf,f`）。单独给 ⇒ 用法错误。
+    pub sample_edit_layers: Option<String>,
+    /// `--sample-edit-no-tune`：`--edit-samples` 的**修饰** —— 跳过音准校正（只做层
+    /// 合成与归一）。单独给 ⇒ 用法错误。
+    pub sample_edit_no_tune: bool,
+    /// `--sample-edit-report-only`：`--edit-samples` 的**修饰** —— 只测算、只写报告，
+    /// 不写音频（预览口径）。单独给 ⇒ 用法错误。
+    pub sample_edit_report_only: bool,
     /// `--export-wav <path>`：把当前工程**离线渲染**成一段 WAV（导出族）。
     ///
     /// 与 `--export-midi` 同族：不给 `--open` 时导出**演示工程**并在输出里明说；
@@ -1765,6 +1821,14 @@ pub const ACTION_SWITCHES: &[ActionSwitch] = &[
         name: EXPORT_STEMS_SWITCH,
         present: |options| options.export_stems.is_some(),
         grant: |options| options.export_stems = Some(PathBuf::from("probe")),
+        path: SwitchPath::Batch,
+    },
+    // ⭐ `--edit-samples`：与 `--export-song-overview` 同族（批量编辑、跑完就退出）。
+    // 它**自己**就把进程推离 GUI 路径 —— 采样库编辑不需要窗口。
+    ActionSwitch {
+        name: SAMPLE_EDIT_SWITCH,
+        present: |options| options.edit_samples.is_some(),
+        grant: |options| options.edit_samples = Some(PathBuf::from("probe")),
         path: SwitchPath::Batch,
     },
     // `--export-wav` 与 `--export-midi` **同族**（`--help` 的 `--export-wav` 一条逐字
@@ -2174,6 +2238,22 @@ pub enum ParseError {
     /// ⛔ 不静默接受任意 Hz：`yeban-model` 的采样率是**枚举**（工程的唯一权威来源），
     /// 放行一个枚举外的速率会产生"工程写不回这一份配置"的产物。
     WavSampleRateInvalid(String),
+    /// `--edit-samples` 没配 `--sample-edit-out <dir>`。
+    ///
+    /// 编辑的产出**只能**是 `--sample-edit-out` 那个目录：不给它就没有"编到哪里"，
+    /// 而"默认写到输入旁边"会让一条批量命令突然写输入目录 —— 本仓库不猜落点。
+    SampleEditOutMissing,
+    /// `--edit-samples` 的修饰开关（`--sample-edit-out` / `--sample-edit-rms` /
+    /// `--sample-edit-layers` / `--sample-edit-no-tune` / `--sample-edit-report-only`）
+    /// 单独给（没有 `--edit-samples`）。payload 是那个开关名。
+    ///
+    /// 与 [`Self::OverviewScoreOnlyWithoutExport`] 同一条纪律：修饰开关单独给 =
+    /// 用法错误，⛔ 不静默忽略。
+    SampleEditModifierWithoutEdit(String),
+    /// `--sample-edit-rms` 的取值不是 −60..=0 内的有限 dBFS 数。
+    SampleEditRmsInvalid(String),
+    /// `--sample-edit-layers` 的取值不是 `none` / `mf` / `f` / `mf,f`。
+    SampleEditLayersInvalid(String),
     /// `--wav-seconds` 的取值不是**正的有限**十进制秒数。
     WavSecondsInvalid(String),
     /// `--wav-frames` 的取值不是**正的**十进制整数帧数。
@@ -2404,6 +2484,24 @@ impl fmt::Display for ParseError {
                     .map(|rate| rate.hz().to_string())
                     .collect::<Vec<_>>()
                     .join("|")
+            ),
+            Self::SampleEditOutMissing => write!(
+                formatter,
+                "`{SAMPLE_EDIT_SWITCH}` 必须配 `--sample-edit-out <dir>` 指定编辑后样本的落点 \
+                 (⛔ 不默认写到输入旁边: 输入目录只读, 落点必须由调用方给)"
+            ),
+            Self::SampleEditModifierWithoutEdit(switch) => write!(
+                formatter,
+                "`{switch}` 只是 `{SAMPLE_EDIT_SWITCH}` 的修饰, 不能单独给 —— \
+                 接受它只会把 `{switch}` 静默丢掉"
+            ),
+            Self::SampleEditRmsInvalid(value) => write!(
+                formatter,
+                "`--sample-edit-rms` 的取值 `{value}` 非法 (需要 -60..=0 内的有限 dBFS 数)"
+            ),
+            Self::SampleEditLayersInvalid(value) => write!(
+                formatter,
+                "`--sample-edit-layers` 的取值 `{value}` 非法 (可用: none|mf|f|mf,f)"
             ),
             Self::WavSecondsInvalid(value) => write!(
                 formatter,
@@ -2666,6 +2764,74 @@ pub fn parse(args: &[String]) -> Result<Options, ParseError> {
                 options.dry_run = true;
                 cursor += 1;
             }
+            // `--edit-samples`：采样库编辑的批处理出口（缺口报告 C-1）。
+            // 它**自己**选路径 ⇒ 进 `ACTION_SWITCHES`（见上）；修饰开关
+            // （`--sample-edit-out` / `--sample-edit-rms` / `--sample-edit-layers` /
+            // `--sample-edit-no-tune` / `--sample-edit-report-only`）只改它的产物口径，
+            // ⛔ 自己不选路径 ⇒ 不进 `ACTION_SWITCHES`。
+            "--edit-samples" => {
+                let value = take_value("--edit-samples", inline, args, &mut cursor)?;
+                set_once(
+                    &mut options.edit_samples,
+                    "--edit-samples",
+                    PathBuf::from(value),
+                )?;
+            }
+            "--sample-edit-out" => {
+                let value = take_value("--sample-edit-out", inline, args, &mut cursor)?;
+                set_once(
+                    &mut options.sample_edit_out,
+                    "--sample-edit-out",
+                    PathBuf::from(value),
+                )?;
+            }
+            "--sample-edit-rms" => {
+                let value = take_value("--sample-edit-rms", inline, args, &mut cursor)?;
+                let rms = value
+                    .parse::<f32>()
+                    .ok()
+                    .filter(|db| db.is_finite() && (-60.0..=0.0).contains(db))
+                    .ok_or_else(|| ParseError::SampleEditRmsInvalid(value.clone()))?;
+                // `set_once` 只接 `PathBuf`（见其定义）：f32 的重复检查手写同一条
+                // 三行（与 `set_once` / `set_once_string` 同款）。
+                if options.sample_edit_rms_dbfs.is_some() {
+                    return Err(ParseError::DuplicateOption("--sample-edit-rms"));
+                }
+                options.sample_edit_rms_dbfs = Some(rms);
+            }
+            "--sample-edit-layers" => {
+                let value = take_value("--sample-edit-layers", inline, args, &mut cursor)?;
+                // 取值域在解析期就钉死（与 `LayerSet::parse` 的域一致）：
+                // ⛔ 不放行拼写错误的层名（那会产出"以为合了 mf 层、实际没合"的产物）。
+                if crate::sample_editor::LayerSet::parse(&value).is_err() {
+                    return Err(ParseError::SampleEditLayersInvalid(value));
+                }
+                set_once_string(
+                    &mut options.sample_edit_layers,
+                    "--sample-edit-layers",
+                    value,
+                )?;
+            }
+            "--sample-edit-no-tune" => {
+                if inline.is_some() {
+                    return Err(ParseError::UnexpectedValue("--sample-edit-no-tune"));
+                }
+                if options.sample_edit_no_tune {
+                    return Err(ParseError::DuplicateOption("--sample-edit-no-tune"));
+                }
+                options.sample_edit_no_tune = true;
+                cursor += 1;
+            }
+            "--sample-edit-report-only" => {
+                if inline.is_some() {
+                    return Err(ParseError::UnexpectedValue("--sample-edit-report-only"));
+                }
+                if options.sample_edit_report_only {
+                    return Err(ParseError::DuplicateOption("--sample-edit-report-only"));
+                }
+                options.sample_edit_report_only = true;
+                cursor += 1;
+            }
             // `--wav-*`：只改 `--export-wav` 的产物形状，⛔ 不选路径
             // （与 `--midi-in-seconds` / `--idle-seconds` 同档的**修饰**开关，
             //  因此 ⛔ 不进 `ACTION_SWITCHES`）。
@@ -2872,6 +3038,7 @@ pub fn parse(args: &[String]) -> Result<Options, ParseError> {
             (options.export_song_overview.is_some(), SONG_OVERVIEW_SWITCH),
             (options.apply_ops.is_some(), APPLY_OPS_SWITCH),
             (options.export_stems.is_some(), EXPORT_STEMS_SWITCH),
+            (options.edit_samples.is_some(), SAMPLE_EDIT_SWITCH),
             (options.export_als.is_some(), ALS_EXPORT_SWITCH),
             (options.export_logic.is_some(), LOGIC_EXPORT_SWITCH),
             (options.save_as.is_some(), "--save-as"),
@@ -2913,6 +3080,7 @@ pub fn parse(args: &[String]) -> Result<Options, ParseError> {
             (options.export_song_overview.is_some(), SONG_OVERVIEW_SWITCH),
             (options.apply_ops.is_some(), APPLY_OPS_SWITCH),
             (options.export_stems.is_some(), EXPORT_STEMS_SWITCH),
+            (options.edit_samples.is_some(), SAMPLE_EDIT_SWITCH),
             (options.export_als.is_some(), ALS_EXPORT_SWITCH),
             (options.export_logic.is_some(), LOGIC_EXPORT_SWITCH),
             (options.save_as.is_some(), "--save-as"),
@@ -2943,6 +3111,7 @@ pub fn parse(args: &[String]) -> Result<Options, ParseError> {
             (options.export_song_overview.is_some(), SONG_OVERVIEW_SWITCH),
             (options.apply_ops.is_some(), APPLY_OPS_SWITCH),
             (options.export_stems.is_some(), EXPORT_STEMS_SWITCH),
+            (options.edit_samples.is_some(), SAMPLE_EDIT_SWITCH),
             (options.export_als.is_some(), ALS_EXPORT_SWITCH),
             (options.export_logic.is_some(), LOGIC_EXPORT_SWITCH),
             (options.save_as.is_some(), "--save-as"),
@@ -3000,6 +3169,38 @@ pub fn parse(args: &[String]) -> Result<Options, ParseError> {
     // `--dry-run` 与 `--save-as` 同给：保存的会是**没改过**的工程 —— 静默的假交付。
     if options.dry_run && options.save_as.is_some() {
         return Err(ParseError::DryRunWithSaveAs);
+    }
+    // `--edit-samples` 的配对检查（与 `--overview-score-only` 同一条纪律）：
+    // 输出目录必须给；修饰开关单独给 = 用法错误，⛔ 不静默忽略。
+    if options.edit_samples.is_some() && options.sample_edit_out.is_none() {
+        return Err(ParseError::SampleEditOutMissing);
+    }
+    if options.edit_samples.is_none() {
+        if options.sample_edit_out.is_some() {
+            return Err(ParseError::SampleEditModifierWithoutEdit(
+                "--sample-edit-out".to_string(),
+            ));
+        }
+        if options.sample_edit_rms_dbfs.is_some() {
+            return Err(ParseError::SampleEditModifierWithoutEdit(
+                "--sample-edit-rms".to_string(),
+            ));
+        }
+        if options.sample_edit_layers.is_some() {
+            return Err(ParseError::SampleEditModifierWithoutEdit(
+                "--sample-edit-layers".to_string(),
+            ));
+        }
+        if options.sample_edit_no_tune {
+            return Err(ParseError::SampleEditModifierWithoutEdit(
+                "--sample-edit-no-tune".to_string(),
+            ));
+        }
+        if options.sample_edit_report_only {
+            return Err(ParseError::SampleEditModifierWithoutEdit(
+                "--sample-edit-report-only".to_string(),
+            ));
+        }
     }
     // ⭐ 任务单 `#287`：`--sampler-track` 只是 `--track-sampler` 的**目标选择器**。
     // 单独给 ⇒ 用法错误。这道检查放在**解析期**（而不是 `run_batch` 里）：后者只在
@@ -3653,6 +3854,20 @@ pub enum CliError {
         /// 人话原因（provider 的原文，逐字带出去）。
         reason: String,
     },
+    /// `--edit-samples` 失败（输入读不到 / 没有可用采样 / 写入失败 / SFZ 解析失败）。
+    ///
+    /// 为什么带一个 `code` 字段而不是只有人话：与
+    /// [`Self::SongOverviewExport`] 同一条理由 —— 脚本与 CI 要能分辨
+    /// "输入不存在"与"落盘失败"，⛔ 不是从文案里正则抠出来的。
+    SampleEdit {
+        /// 输入路径（目录或 `.sfz` 文件）。
+        path: PathBuf,
+        /// 稳定错误码（`INPUT_UNREADABLE` / `NO_SAMPLES` / `OUTPUT_FAILED` /
+        /// `SFZ_PARSE_FAILED`）。
+        code: &'static str,
+        /// 人话原因（逐字带出去）。
+        reason: String,
+    },
     /// `--export-als` 失败（映射 / Gzip 封装 / 落盘）。
     ExportAls {
         /// 目标路径。
@@ -3784,6 +3999,7 @@ impl CliError {
             | Self::ExportWav { .. }
             | Self::SongOverviewExport { .. }
             | Self::ExportStems { .. }
+            | Self::SampleEdit { .. }
             | Self::ExportAls { .. }
             | Self::ExportLogic { .. } => EXIT_EXPORT,
         }
@@ -3858,6 +4074,13 @@ impl fmt::Display for CliError {
                 write!(
                     formatter,
                     "导出总览图到 `{}` 失败 [{code}]: {reason}",
+                    path.display()
+                )
+            }
+            Self::SampleEdit { path, code, reason } => {
+                write!(
+                    formatter,
+                    "编辑采样 `{}` 失败 [{code}]: {reason}",
                     path.display()
                 )
             }
@@ -3958,6 +4181,7 @@ impl std::error::Error for CliError {
             | Self::ApplyOpsNotCompiled
             | Self::ExportStemsNotCompiled
             | Self::SongOverviewExport { .. }
+            | Self::SampleEdit { .. }
             | Self::SongOverviewNotCompiled
             | Self::LogicNotCompiled
             | Self::InspectLogic { .. } => None,
@@ -5749,6 +5973,80 @@ pub fn run_batch(options: &Options) -> Result<Vec<String>, CliError> {
         ));
     }
 
+    // `--edit-samples` 没配 `--sample-edit-out` 的第二道（与 `--overview-score-only`
+    // 同款）：`Options` 的字段是公开的 ⇒ 判据可以绕过 `parse` 直接构造组合。
+    // 这道守卫必须在分发**之前** —— 否则下面那个 `expect` 会在直接构造的组合上 panic。
+    if options.edit_samples.is_some() && options.sample_edit_out.is_none() {
+        return Err(CliError::Usage(
+            "`--edit-samples` 必须配 `--sample-edit-out <dir>` 指定编辑后样本的落点".to_owned(),
+        ));
+    }
+
+    // ⭐ `--edit-samples`：采样库编辑的**批处理**出口（缺口报告 C-1，与
+    // `--export-song-overview` 同位置、同一条失败语义：失败 ⇒ 直接 `Err`，
+    // ⛔ 不继续保存）。
+    //
+    // 它与 `--export-wav` / `--export-midi` 的**本质区别**：那两条导出的是"这首曲子
+    // 的另一种格式"，本条编辑的是**采样库本身** —— 它不读工程（`loaded` 只用来
+    // 走到这里），不碰当前工程的任何一字节；输入是目录或 `.sfz`，产物是编辑后的
+    // 样本 + `report.json`（+ `.sfz` 输入时多一份扁平重发出的 `.sfz`）。
+    if let Some(input) = options.edit_samples.as_ref() {
+        let out_dir = options
+            .sample_edit_out
+            .clone()
+            .expect("parse 期已保证 --edit-samples 配 --sample-edit-out");
+        let layers = options
+            .sample_edit_layers
+            .as_deref()
+            .map(|text| {
+                crate::sample_editor::LayerSet::parse(text)
+                    .expect("parse 期已钉死 --sample-edit-layers 的取值域")
+            })
+            .unwrap_or_default();
+        let cli_options = crate::sample_editor::SampleEditCliOptions {
+            input: input.clone(),
+            out_dir,
+            target_rms_dbfs: options
+                .sample_edit_rms_dbfs
+                .unwrap_or(crate::sample_editor::DEFAULT_TARGET_RMS_DBFS),
+            layers,
+            no_tune: options.sample_edit_no_tune,
+            report_only: options.sample_edit_report_only,
+        };
+        let report = crate::sample_editor::edit_samples(&cli_options).map_err(|error| {
+            CliError::SampleEdit {
+                path: input.clone(),
+                code: error.code(),
+                reason: error.to_string(),
+            }
+        })?;
+        lines.push(report.line());
+        // ⭐ 跳过的采样**不是**失败（测不到基频 / 偏离超八度都合法），但"成功的退出码
+        // ＋ 一份报告里全是 skip"是最坏的一种沉默 ⇒ 跳过数 > 0 时多打一行可 grep 的
+        // 诊断（与总览图的 `silent_note` 同款）。
+        if report.skipped > 0 {
+            lines.push(format!(
+                "sample-edit-skipped: {} of {} samples skipped (see report.json rows with status=skipped)",
+                report.skipped, report.samples
+            ));
+        }
+    }
+    // `--edit-samples` 的修饰开关第二道（与 `--overview-score-only` 同款）：
+    // `Options` 的字段是公开的 ⇒ 判据可以直接构造组合，绕过 `parse`。
+    if options.edit_samples.is_none()
+        && (options.sample_edit_out.is_some()
+            || options.sample_edit_rms_dbfs.is_some()
+            || options.sample_edit_layers.is_some()
+            || options.sample_edit_no_tune
+            || options.sample_edit_report_only)
+    {
+        return Err(CliError::Usage(
+            "采样库编辑的修饰开关只修饰 `--edit-samples` —— \
+             没有它就没有可修饰的编辑"
+                .to_owned(),
+        ));
+    }
+
     // `--export-wav`：与 `--export-midi` 同一位置与同一失败语义（失败 ⇒ 直接 `Err`, ⛔ 不继续保存）。
     if let Some(path) = options.export_wav.as_ref() {
         // ⭐ `&loaded.archive.assets` 是**归档资产池**（`--open` 读进来的 `assets/{sha256}`）：
@@ -7355,11 +7653,13 @@ mod tests {
                     }
                 }
                 // `--headless-idle` 单独给是**成对性**用法错误（必须配 `--idle-seconds`），
-                // 编译期门禁开关在默认构建里也解析不成 —— 两者的**路由**归属
-                // 都已由 ① 证明，这里只登记"解析不成"的原因。
+                // `--edit-samples` 单独给也是**成对性**用法错误（必须配 `--sample-edit-out`，
+                // 出目录⛔ 不默认写到输入旁边）；编译期门禁开关在默认构建里也解析不成 ——
+                // 三者的**路由**归属都已由 ① 证明，这里只登记"解析不成"的原因。
                 Err(error)
                     if is_compile_time_gate(&error)
-                        || matches!(error, ParseError::IdleSecondsMissing) => {}
+                        || matches!(error, ParseError::IdleSecondsMissing)
+                        || matches!(error, ParseError::SampleEditOutMissing) => {}
                 Err(other) => failures.push(format!(
                     "`{}`: 单独解析失败 (不该是这个原因): {other}",
                     switch.name
