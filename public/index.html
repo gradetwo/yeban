@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>夜半 Yeban — 纯血 Rust 原生专业 DAW</title>
-<meta name="description" content="夜半 (Yeban) 是一台从零设计的原生桌面数字音频工作站：Slint 声明式矢量界面 + 纯 Rust 低时延实时音频引擎，960 PPQ 整数时钟，GPLv3 开源。">
+<title data-i18n="meta.title">夜半 Yeban — 纯血 Rust 原生专业 DAW</title>
+<meta name="description" data-i18n-attr="content:meta.description" content="夜半 (Yeban) 是一台从零设计的原生桌面数字音频工作站：Slint 声明式矢量界面 + 纯 Rust 低时延实时音频引擎，960 PPQ 整数时钟，GPLv3 开源。">
 <meta name="color-scheme" content="dark light">
 <meta name="theme-color" content="#060A14" media="(prefers-color-scheme: dark)">
 <meta name="theme-color" content="#FDFCFA" media="(prefers-color-scheme: light)">
@@ -168,13 +168,13 @@
       </div>
 
       <h3 class="qs-sub" data-i18n="quickstart.build_title">构建</h3>
-      <pre class="code-block"><code>git clone https://github.com/gradetwo/yeban.git
+      <pre class="code-block"><code data-i18n="quickstart.build_code">git clone https://github.com/gradetwo/yeban.git
 cd yeban
 cargo build --release                     # 构建整个工作区（首次需要几分钟）
 cargo build --release -p yeban-app        # 只构建桌面 GUI 二进制</code></pre>
 
       <h3 class="qs-sub" data-i18n="quickstart.run_title">运行</h3>
-      <pre class="code-block"><code>cargo run --release -p yeban-app                  # 打开桌面主窗口（需要显示器）
+      <pre class="code-block"><code data-i18n="quickstart.run_code">cargo run --release -p yeban-app                  # 打开桌面主窗口（需要显示器）
 cargo run --release -p yeban-app -- --headless    # 无需显示器：打印 headless ok 后退出 0
 cargo run --release -p yeban-app -- --help        # 全部开关 + 组合语义 + 退出码
 
@@ -296,7 +296,7 @@ cargo clippy --workspace --all-targets -- -D warnings</code></pre>
             </tr>
           </thead>
           <tbody>
-            <tr><th scope="row"><code>Slint</code></th><td data-i18n="stack.slint_role">声明式矢量 GUI</td><td>GPLv3 / 商业双轨</td></tr>
+            <tr><th scope="row"><code>Slint</code></th><td data-i18n="stack.slint_role">声明式矢量 GUI</td><td data-i18n="stack.slint_license">GPLv3 / 商业双轨</td></tr>
             <tr><th scope="row"><code>cpal</code></th><td data-i18n="stack.cpal_role">跨平台声卡直驱</td><td>Apache-2.0</td></tr>
             <tr><th scope="row"><code>rtrb</code></th><td data-i18n="stack.rtrb_role">无锁通道</td><td>MIT / Apache-2.0</td></tr>
             <tr><th scope="row"><code>symphonia</code></th><td data-i18n="stack.symphonia_role">全格式解码</td><td>MPL-2.0</td></tr>

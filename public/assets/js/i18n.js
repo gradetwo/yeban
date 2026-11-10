@@ -100,7 +100,7 @@
   }
 
   function fetchDict(lang) {
-    return fetch("/assets/i18n/" + lang + ".json", { cache: "force-cache" })
+    return fetch("/assets/i18n/" + lang + ".json", { cache: "default" })
       .then(function (res) {
         if (!res.ok) throw new Error("i18n " + lang + " HTTP " + res.status);
         return res.json();
