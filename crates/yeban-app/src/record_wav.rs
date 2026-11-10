@@ -884,6 +884,9 @@ pub fn record_project_under(
         limiter: false,
         // ⭐ 审评 2026-10-31（P1-1）：录制走缺省多线程（与 `--export-wav` 缺省同一口径）。
         threads: None,
+        // 响度归一化是**导出侧**的 per-call 开关：录制不设 ⇒ `None` ⇒ 不做
+        // （与上面 `--limiter` 的"只开导出侧"同款纪律）。
+        loudness: None,
     };
     // ⭐ `#170`：与 `--export-wav` **同一个**渲染入口 —— 工程目录（若知道）是相对
     //    `sampler.path` 的第一个候选根。`project_dir = None` ⇒ `&[]` 资产池 ＋ 旧根，

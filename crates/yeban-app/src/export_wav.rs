@@ -80,15 +80,21 @@ use yeban_engine::snapshot::EngineSnapshot;
 use yeban_model::project::SampleRate;
 use yeban_model::{EntityId, YebanProjectV1};
 use yeban_render::dither::{BitDepth, quantize};
+use yeban_render::mastering::{
+    ExportPreset, GainBound, LOUDNESS_TARGET_TOLERANCE_LU, NormalizeOutcome,
+};
 // ⭐ `ADR-0011`：引擎音色源已搬到 `yeban-render`（CLI 与 MCP 共用同一份，⛔ 不写第二份）。
 #[cfg(test)]
 use yeban_render::engine_source::EngineTrackSource;
-use yeban_render::render::{AudioSource, BlockContext, RenderError};
+use yeban_render::render::{AudioSource, BlockContext, RenderError, RenderOutput};
 use yeban_render::rng::DeterministicDitherRng;
 use yeban_render::wav::{format_of, write_plain_wav};
 
 /// 导出参数（秒数／采样率／声道／位深／种子）。
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+///
+/// ⚠ `Eq` 被去掉：新增的 [`Self::loudness`] 字段含 `f32` 读数（与
+/// [`WavExportReport`] 同款理由），既有判据只用 `PartialEq`。
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct WavExportOptions {
     /// 总帧数。
     pub frames: u64,
@@ -121,6 +127,14 @@ pub struct WavExportOptions {
     /// 由 CLI `--render-threads` 传入（GUI 导出不设 ⇒ `None` ⇒ 多线程，与今天逐字节
     /// 相同）。透传给 `render_core` 的 `RenderOptions::threads`；输出与线程数无关。
     pub threads: Option<usize>,
+    /// ⭐ 响度归一化预设（`None` = 不做，默认行为逐字节不变）。
+    ///
+    /// 由 CLI `--loudness-target` / `--true-peak-ceiling` 传入：渲染之后、量化/抖动
+    /// 之前，对整条立体声母带跑一次 [`ExportPreset::apply`]（16× 真峰值口径），
+    /// 增益写进样本再落盘。`None` 时本路径一位不改（`suggestedTrimDb` 照旧只报建议）。
+    /// ⛔ 只在导出写盘路径生效：渲染侧（[`crate::render_core`]）只读本结构体的
+    /// 渲染字段，`loudness` 在那里被忽略。
+    pub loudness: Option<ExportPreset>,
 }
 
 /// `--wav-seconds` / UI 缺省时长（秒）。
@@ -140,6 +154,7 @@ impl Default for WavExportOptions {
             bit_depth: BitDepth::Int24,
             limiter: false,
             threads: None,
+            loudness: None,
         }
     }
 }
@@ -307,6 +322,54 @@ pub struct WavExportReport {
     /// "峰值 ≤ 阈值"：后者在**从未越阈值**的夹具上永真（假绿，`yeban-dsp/src/limiter.rs`
     /// 的 `reduction_count` 文档自己就警告过这一点）。
     pub limiter_reductions: u64,
+    /// ⭐ 响度归一化报告（`--loudness-target` / `--true-peak-ceiling` 给了才有）。
+    ///
+    /// `None` = 没给开关 ⇒ 本次导出与今天逐字节相同，[`Self::summary`] 也不多一行。
+    pub loudness: Option<WavLoudnessReport>,
+}
+
+/// ⭐ 响度归一化报告：用户给的目标／上限 ＋ 落盘文件的实测值 ＋ 谁定下了增益。
+///
+/// 读数来自 [`ExportPreset::apply`] 返回的 [`NormalizeOutcome`]（施加之后**重测**，不是推算）。
+/// `target_lufs` / `true_peak_ceiling_dbtp` 是用户给的值（`None` = 没给那一项）；
+/// `achieved_lufs` / `achieved_true_peak_dbtp` 是落盘文件的实测值（测不出 ⇒ `None`，
+/// ⛔ 不写假 0）。`bound` 说清增益是谁定下的：`TruePeakCeiling` ⇒ 目标没达到，是上限挡的。
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct WavLoudnessReport {
+    /// 用户给的目标响度（LUFS）；`None` = 只给了上限、没给目标。
+    pub target_lufs: Option<f32>,
+    /// 用户给的真峰值上限（dBTP）；`None` = 只给了目标、没给上限。
+    pub true_peak_ceiling_dbtp: Option<f32>,
+    /// 实际施加的增益（dB）。`0.0` = 样本逐位未改动。
+    pub gain_db: f32,
+    /// 落盘文件的门限积分响度（LUFS）；测不出 ⇒ `None`。
+    pub achieved_lufs: Option<f32>,
+    /// 落盘文件的真峰值（dBTP；16× 口径）；测不出 ⇒ `None`。
+    pub achieved_true_peak_dbtp: Option<f32>,
+    /// 定下这个增益的约束。
+    pub bound: GainBound,
+}
+
+impl WavLoudnessReport {
+    /// 由预设与一次归一化的结果拼出报告（`None` 的实测值 = 测不出，⛔ 不写假 0）。
+    #[must_use]
+    pub fn from_preset_and_outcome(preset: &ExportPreset, outcome: &NormalizeOutcome) -> Self {
+        Self {
+            target_lufs: preset.target_lufs(),
+            true_peak_ceiling_dbtp: preset.true_peak_ceiling_dbtp(),
+            gain_db: outcome.gain_db,
+            achieved_lufs: outcome
+                .after
+                .integrated_is_measurable()
+                .then_some(outcome.after.integrated_lufs),
+            achieved_true_peak_dbtp: outcome
+                .after
+                .true_peak_dbtp
+                .is_finite()
+                .then_some(outcome.after.true_peak_dbtp),
+            bound: outcome.bound,
+        }
+    }
 }
 
 impl WavExportReport {
@@ -327,9 +390,13 @@ impl WavExportReport {
             self.source,
             self.digest
         );
+        let mut text = legacy;
+        if let Some(note) = self.loudness_note() {
+            text = format!("{text}\n{note}");
+        }
         match self.clipping_note() {
-            Some(note) => format!("{legacy}\n{note}"),
-            None => legacy,
+            Some(note) => format!("{text}\n{note}"),
+            None => text,
         }
     }
 
@@ -391,6 +458,126 @@ impl WavExportReport {
             self.suggested_trim_db
         ))
     }
+
+    /// ⭐ 响度归一化提示行（恰好一行；没给开关 ⇒ `None`）。
+    ///
+    /// 格式：`loudness: target=<目标> LUFS achieved=<实测> LUFS gain=<增益> dB
+    /// bound=<约束> truePeak=<实测真峰值> dBTP`。`bound=TruePeakCeiling` ⇒ 目标没达到，
+    /// 是上限挡的（实测值与目标值并列，用户一眼看得出差多少）；`unmeasurable` = 测不出。
+    #[must_use]
+    pub fn loudness_note(&self) -> Option<String> {
+        let loudness = self.loudness.as_ref()?;
+        let target = loudness
+            .target_lufs
+            .map_or_else(|| "none".to_owned(), |value| format!("{value:.1}"));
+        let achieved = loudness
+            .achieved_lufs
+            .map_or_else(|| "unmeasurable".to_owned(), |value| format!("{value:.1}"));
+        let true_peak = loudness
+            .achieved_true_peak_dbtp
+            .map_or_else(|| "unmeasurable".to_owned(), |value| format!("{value:.1}"));
+        let bound = match loudness.bound {
+            GainBound::LoudnessTarget => "LoudnessTarget",
+            GainBound::TruePeakCeiling => "TruePeakCeiling",
+            GainBound::NothingToDo => "NothingToDo",
+        };
+        Some(format!(
+            "loudness: target={target} LUFS achieved={achieved} LUFS gain={:+.2} dB bound={bound} truePeak={true_peak} dBTP",
+            loudness.gain_db
+        ))
+    }
+}
+
+/// 对已渲染的交错母带施加响度归一化预设，并重算位级摘要。
+///
+/// 顺序（⛔ 增益只发生在这里，量化/抖动/落盘都在之后）：
+/// 立体声守卫 → 拆声道 → [`ExportPreset::apply`]（16× 真峰值口径）→ 有限性检查 →
+/// 伺服守卫 → 合并声道 → 重算 `digest`。
+///
+/// 伺服守卫只看**目标赢**的那一侧：目标有限、施加前可测、且 `bound == LoudnessTarget`
+/// 时，施加后必须落在 [`LOUDNESS_TARGET_TOLERANCE_LU`] 内；否则是实现漂移（门限测量
+/// 对增益不是严格线性的），响亮失败。`bound == TruePeakCeiling` ⇒ 目标没达到是**预期**
+/// （上限赢），如实报告、不失败。静音（施加前测不出）＋ 有目标 ⇒ 任何增益都够不到目标，
+/// 响亮失败；静音 ＋ 只有上限 ⇒ `apply` 本就不动样本，是成功的空操作。
+///
+/// 失败时 `samples` 与 `digest` **保持原样**（⛔ 不留半成品：调用方在失败时直接返回，
+/// 落盘根本不会发生）。
+fn apply_loudness_preset(
+    samples: &mut [f32],
+    digest: &mut String,
+    channels: usize,
+    sample_rate: u32,
+    preset: &ExportPreset,
+) -> Result<WavLoudnessReport, WavExportError> {
+    if channels != 2 {
+        return Err(WavExportError::Loudness(format!(
+            "响度归一化只支持立体声母带，本次导出是 {channels} 声道"
+        )));
+    }
+    let frames = samples.len() / 2;
+    let mut left = Vec::with_capacity(frames);
+    let mut right = Vec::with_capacity(frames);
+    for frame in samples.as_chunks::<2>().0 {
+        left.push(frame[0]);
+        right.push(frame[1]);
+    }
+    let Some(outcome) = preset.apply(sample_rate, &mut left, &mut right) else {
+        return Err(WavExportError::Loudness(format!(
+            "采样率 {sample_rate} Hz 没有 K 计权系数，响度测不出来"
+        )));
+    };
+    if left
+        .iter()
+        .chain(right.iter())
+        .any(|sample| !sample.is_finite())
+    {
+        return Err(WavExportError::Loudness(
+            "归一化后的样本含非有限值（增益溢出），拒绝写出".to_owned(),
+        ));
+    }
+    if let Some(target) = preset.target_lufs() {
+        if !outcome.before.integrated_is_measurable() {
+            return Err(WavExportError::Loudness(
+                "母带是静音（响度测不出），任何增益都够不到目标".to_owned(),
+            ));
+        }
+        // 上限赢时目标没达到是预期，不进伺服守卫；目标赢时施加后必须落在容差内。
+        if outcome.bound == GainBound::LoudnessTarget {
+            if !outcome.after.integrated_is_measurable() {
+                return Err(WavExportError::Loudness(
+                    "归一化后响度仍测不出来，拒绝写出".to_owned(),
+                ));
+            }
+            if (outcome.after.integrated_lufs - target).abs() > LOUDNESS_TARGET_TOLERANCE_LU {
+                return Err(WavExportError::Loudness(format!(
+                    "归一化后响度 {:.1} LUFS，仍偏离目标 {target:.1} LUFS 超过容差 {LOUDNESS_TARGET_TOLERANCE_LU} LU",
+                    outcome.after.integrated_lufs
+                )));
+            }
+        }
+    }
+    // 合并声道（逐位：`apply` 只改了两个声道向量，交错顺序与渲染输出一致）。
+    for (index, sample) in samples.iter_mut().enumerate() {
+        *sample = if index % 2 == 0 {
+            left[index / 2]
+        } else {
+            right[index / 2]
+        };
+    }
+    // 摘要描述的是**最终**样本（与 `render_core` 的"主推子后重算"同款纪律）。
+    *digest = hex_digest(&RenderOutput::digest_of(samples));
+    Ok(WavLoudnessReport::from_preset_and_outcome(preset, &outcome))
+}
+
+/// `RenderOutput::digest`（`[u8; 32]`）→ 小写十六进制（与 `render_core` 同款编码）。
+#[must_use]
+fn hex_digest(digest: &[u8; 32]) -> String {
+    let mut text = String::with_capacity(digest.len() * 2);
+    for byte in digest {
+        use core::fmt::Write;
+        let _ = write!(text, "{byte:02x}");
+    }
+    text
 }
 
 /// ⭐ `#226`：削波时建议的 **trim 量**（dB；负值 = 减，`0.0` = 不需要减）。
@@ -488,6 +675,10 @@ pub enum WavExportError {
     /// ⭐ **模型 SFZ 链条解码失败**（任务单 `#79`）：`TrackV3.sampler` 指到的 SFZ 文件
     /// 读不到 / 文本非法。⛔ 不静默回退到复音合成器（那会出一版**不是它**的声音）。
     Sfz(String),
+    /// ⭐ **响度归一化失败**（`--loudness-target` / `--true-peak-ceiling`）：
+    /// 静音够不到目标、采样率无 K 计权系数、非立体声、或归一化后仍偏离目标
+    /// 超过容差。⛔ 不悄悄交付偏离目标的文件，⛔ 不留半成品。
+    Loudness(String),
 }
 
 impl core::fmt::Display for WavExportError {
@@ -499,6 +690,7 @@ impl core::fmt::Display for WavExportError {
             Self::Empty(reason) => write!(formatter, "没有可导出的内容: {reason}"),
             Self::Engine(reason) => write!(formatter, "引擎装载失败: {reason}"),
             Self::Sfz(reason) => write!(formatter, "SFZ 解码失败: {reason}"),
+            Self::Loudness(reason) => write!(formatter, "响度归一化失败: {reason}"),
         }
     }
 }
@@ -887,12 +1079,27 @@ pub fn export_wav_with_sfz_file_and_assets_under(
         assets,
         project_dir,
     )?;
-    let (samples, frames, source_label, digest) = (
+    let (mut samples, frames, source_label, mut digest) = (
         rendered.samples,
         rendered.frames,
         rendered.source_label,
         rendered.digest,
     );
+    // ⭐ 响度归一化（`--loudness-target` / `--true-peak-ceiling`）：渲染之后、量化
+    // 之前，对整条立体声母带施加一次 [`ExportPreset::apply`]（16× 真峰值口径）。
+    // 削波读数与 `suggestedTrimDb` 都在**增益之后**的样本上量 ⇒ 它们描述的是落盘文件。
+    // ⛔ 达不到目标时响亮失败（不悄悄交付偏离目标的文件）；⛔ 失败时不留半成品
+    // （`write_interleaved_wav` 在这一步之后才调用，失败直接返回）。
+    let loudness_report = match options.loudness {
+        None => None,
+        Some(preset) => Some(apply_loudness_preset(
+            &mut samples,
+            &mut digest,
+            options.channels,
+            options.sample_rate,
+            &preset,
+        )?),
+    };
     // 本函数只负责**报告**：量化 ＋ 一次落盘走 [`write_interleaved_wav`]（唯一实现）。
     // ⭐ `#226`：削波读数（**只读**：在抖动／量化**之前**的浮点母带上量，⛔ 不改一个样本）。
     //    口径与 MCP 的 `data.clippedSamples` / `truePeakDbfs` / `headroomDb` 逐条相同
@@ -963,6 +1170,7 @@ pub fn export_wav_with_sfz_file_and_assets_under(
         trim_basis,
         loudest_source,
         limiter_reductions: rendered.limiter_reductions,
+        loudness: loudness_report,
     })
 }
 
@@ -1812,6 +2020,8 @@ mod tests {
                 bit_depth: BitDepth::Float32,
                 limiter: false,
                 threads: None,
+                // 响度归一化是导出侧 per-call 开关：本判据不设 ⇒ `None`。
+                loudness: None,
             };
             export_wav_with_sfz_file_and_assets(&project, &path, options, None, &assets)
                 .unwrap_or_else(|error| panic!("{tag} 必须导出成功: {error}"));
