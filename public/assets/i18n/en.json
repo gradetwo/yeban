@@ -131,5 +131,7 @@
   "caps.c7_body": "Used samples and their SFZ definitions live inside the .yeban container; rendering checks the embedded pool first, disk second; old projects stay byte-identical.",
   "caps.c8_title": "Native presets",
   "caps.c8_body": "Four MCP tools and six factory presets (piano, cello, classical guitar, flute, saxophone, drums) that load with tuned processing.",
-  "caps.note": "Plus 38 MCP intent tools, an in-process VST3 plug-in host, and singing synthesis via the external Lingren SVS service over MCP."
+  "caps.note": "The MCP surface is already powerful: 38 MCP intent tools, plus an in-process VST3 plug-in host, and singing synthesis via the external Lingren SVS service over MCP.",
+  "platform.title": "Platform support",
+  "platform.body": "macOS and Linux are fully tested. Windows is not yet thoroughly tested. The UI layer is still being refined."
 }

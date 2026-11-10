@@ -131,5 +131,7 @@
   "caps.c7_body": "用到的采样与 SFZ 定义内嵌进 .yeban 容器；渲染先查内嵌、再查磁盘；旧工程逐字节不动。",
   "caps.c8_title": "原生预制",
   "caps.c8_body": "4 个 MCP 工具 + 6 个工厂预制（钢琴、大提琴、古典吉他、长笛、萨克斯、鼓组），载入即带调好的处理。",
-  "caps.note": "另有 38 个 MCP 意图工具、VST3 插件宿主（进程内），以及经 MCP 直通外部伶人 SVS 服务的歌声合成。"
+  "caps.note": "MCP 功能已经很强大：38 个 MCP 意图工具，外加 VST3 插件宿主（进程内），以及经 MCP 直通外部伶人 SVS 服务的歌声合成。",
+  "platform.title": "平台支持",
+  "platform.body": "macOS 与 Linux 有完整测试。Windows 平台测试尚不充分。UI 层面还在完善."
 }
