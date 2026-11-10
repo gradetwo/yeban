@@ -8408,6 +8408,34 @@ fn module_receipt(action: &str, fields: &[String]) -> String {
 }
 
 /// 失败回执的字段（`outcome=error` + 稳定码 + 原文）。
+/// 模块回执里"**当前没有活跃工程**"那一档的稳定错误码（`export-wav` / `export-midi` /
+/// `import-midi` / 实时 MIDI 落地**共用**一个码）。
+///
+/// 与 `no-undo-port` 刻意**分开**：那个说的是"这一次装配压根没有撤销端口"（结构上不可用），
+/// 这个说的是"端口在，但控制面已经把工程关了"（`yeban_close_project`，运行期状态）。
+/// 两者的恢复动作不同（前者要重开窗口，后者只要 `yeban_open_project`），
+/// 因此不能共用一个码 —— 判据（和读日志的人）据此分得清。
+pub const NO_ACTIVE_PROJECT_CODE: &str = "no-active-project";
+
+/// 实时 MIDI 腿的**落点解析**（音轨 ＋ 片段）：`None` = 这一刻没有落点。
+///
+/// 三种"没有落点"都返回 `None`、都**不 panic**：
+/// 1. 这一次装配没有撤销端口（`port` 为 `None`）；
+/// 2. 端口在、但控制面已经把工程关了（`UndoPort::try_project() == None`）；
+/// 3. 工程里没有可用目标（`midi_notes::live_destination` 报错 —— 例如零音轨的工程）。
+///
+/// ⭐ 这是**唯一**一处把"工程读数"喂给 `live_destination` 的地方 ⇒ 装配期（
+/// `wire_module_actions_with_capture`）与判据走同一段代码，不可能各说各话。
+/// ⛔ 它**不**用 [`UndoPort::project`]：那个入口在没有活跃工程时 panic，
+/// 而装配期与 60Hz 心跳期都完全可能落在"工程刚被关掉"这一刻。
+#[must_use]
+pub fn live_note_target_of(
+    port: Option<&UndoPort>,
+) -> Option<(yeban_model::EntityId, yeban_model::EntityId)> {
+    let project = port?.try_project()?;
+    crate::midi_notes::live_destination(&project).ok()
+}
+
 fn module_error_fields(code: &str, message: &str) -> Vec<String> {
     vec![
         "outcome=error".to_owned(),
@@ -8681,7 +8709,23 @@ pub fn wire_module_actions_with_capture(
                 module_trace("export-wav", started, &receipt);
                 return;
             };
-            let project = port.project();
+            // ⭐ 与上面"没有端口"**同一档**：端口在、但控制面已经把工程关了
+            // （`yeban_close_project`）⇒ 同样**没有工程可导出**，如实拒绝。
+            // ⛔ 不能在这里用 `port.project()`：那个入口在"权威会话没有活跃工程"时
+            // **panic**（见 `UndoPort::project` 的 `# Panics`），而用户按下导出按钮的
+            // 这一刻完全可能正是工程刚被控制面关掉之后。
+            let Some(project) = port.try_project() else {
+                let receipt = module_receipt(
+                    "export-wav",
+                    &module_error_fields(
+                        NO_ACTIVE_PROJECT_CODE,
+                        "控制面已关闭当前工程（`yeban_close_project`）⇒ 没有可导出的工程读数",
+                    ),
+                );
+                apply_module_receipt(&ui, &receipt, false);
+                module_trace("export-wav", started, &receipt);
+                return;
+            };
             // 装载过 SFZ ⇒ 连**文件路径**一起交下去，于是 `sample=` 指向的 wav 会被**真读**
             // （与 CLI 的 `--sfz <f> --export-wav out.wav` 是同一个参数形态）。
             let sfz = loaded_sfz
@@ -8839,7 +8883,20 @@ pub fn wire_module_actions_with_capture(
                 module_trace("export-midi", started, &receipt);
                 return;
             };
-            let project = port.project();
+            // ⭐ 与 `export-wav` 同一条兜底：端口在、工程已被控制面关掉 ⇒ 如实拒绝
+            //（⛔ 不用会 panic 的 `port.project()`，理由见那条的注释）。
+            let Some(project) = port.try_project() else {
+                let receipt = module_receipt(
+                    "export-midi",
+                    &module_error_fields(
+                        NO_ACTIVE_PROJECT_CODE,
+                        "控制面已关闭当前工程（`yeban_close_project`）⇒ 没有可导出的工程读数",
+                    ),
+                );
+                apply_module_receipt(&ui, &receipt, false);
+                module_trace("export-midi", started, &receipt);
+                return;
+            };
             let (receipt, ok) = match crate::export_midi::export_project_to_file(&project, &target)
             {
                 Ok(report) => (
@@ -8900,7 +8957,20 @@ pub fn wire_module_actions_with_capture(
                 module_trace("import-midi", started, &receipt);
                 return;
             };
-            let project = port.project();
+            // ⭐ 同上：工程被控制面关掉 ⇒ 没有落点可写，如实拒绝
+            //（⛔ 不用会 panic 的 `port.project()`）。
+            let Some(project) = port.try_project() else {
+                let receipt = module_receipt(
+                    "import-midi",
+                    &module_error_fields(
+                        NO_ACTIVE_PROJECT_CODE,
+                        "控制面已关闭当前工程（`yeban_close_project`）⇒ 没有可写入的工程",
+                    ),
+                );
+                apply_module_receipt(&ui, &receipt, false);
+                module_trace("import-midi", started, &receipt);
+                return;
+            };
             let (receipt, ok, loss_line) = match crate::import_midi::import_midi_file(
                 port,
                 &project,
@@ -9114,10 +9184,14 @@ pub fn wire_module_actions_with_capture(
         // 与"写音符"那一半**同一条**规则（`midi_notes::destination`：`track = None` ⇒
         // 第一条非 master 音轨 ＋ 它的第一个摆放）⇒ 听到的音与落谱的音在同一条轨、
         // 同一个片段上。⚠ 在 **UI 线程**上解析（`EntityId` 是纯数据，可 `Send`）。
+        // ⭐ 目标**不可解析**不是装配失败：端口在、但控制面已经把工程关了
+        // （`yeban_close_project`）⇒ 这一档是 `None`（= 实时腿暂时没有落点）。
+        // ⛔ 这里**必须**走 `try_project()`：装配是**在跑的过程**，控制面可以在这中间
+        // 关掉工程 —— 用 `project()` 会让整个进程 panic（本判据的第一版实测：
+        // `undo.rs:547`，栈在 `wire_module_actions_with_capture` 的闭包里）。
         let live_note_target: Option<(yeban_model::EntityId, yeban_model::EntityId)> =
             if capture.is_none() {
-                port.as_ref()
-                    .and_then(|port| crate::midi_notes::live_destination(&port.project()).ok())
+                live_note_target_of(port.as_deref())
             } else {
                 None
             };
@@ -9675,17 +9749,24 @@ fn land_captured_notes(
     if pairing.notes.is_empty() {
         return Ok(None);
     }
-    let project = port.project();
+    // ⭐ 有音符、但**工程已经被控制面关掉**（`yeban_close_project`）⇒ 没有落点。
+    // ⛔ 不用会 panic 的 `port.project()`（见 `UndoPort::project` 的 `# Panics`）：
+    // 采集是**异步**的，3 秒窗口里工程完全可能被控制面关掉。
+    let Some(project) = port.try_project() else {
+        return Err(MidiInLandingError::NoActiveProject);
+    };
     crate::midi_notes::write_notes(port, &project, &pairing, None, now_ms())
         .map(Some)
         .map_err(MidiInLandingError::Notes)
 }
 
-/// ⭐ 落地失败的**两种**原因（稳定码由 [`Self::code`] 给出，⛔ 不用 `Display` 原文当判别式）。
+/// ⭐ 落地失败的**三种**原因（稳定码由 [`Self::code`] 给出，⛔ 不用 `Display` 原文当判别式）。
 #[derive(Debug)]
 enum MidiInLandingError {
     /// 这一次装配没有撤销端口 ⇒ 谱面那一半**结构上**做不了（与 `import-midi` **同码**）。
     NoPort,
+    /// 端口在、但控制面已经把工程关了 ⇒ 这一刻**没有**可写的工程。
+    NoActiveProject,
     /// 有音符，但写不进工程（没有目标音轨 / 摆放，或提交被撤销端口拒绝）。
     Notes(crate::midi_notes::MidiNoteError),
 }
@@ -9695,6 +9776,7 @@ impl MidiInLandingError {
     fn code(&self) -> &'static str {
         match self {
             Self::NoPort => "no-undo-port",
+            Self::NoActiveProject => NO_ACTIVE_PROJECT_CODE,
             Self::Notes(_) => "midi-notes",
         }
     }
@@ -9707,6 +9789,11 @@ impl core::fmt::Display for MidiInLandingError {
                 formatter,
                 "这一次装配没有撤销端口 ⇒ 采到的音符写不进工程（与 `import-midi` 同一道门：\
                  ⛔ 不静默用一个临时会话把编辑吞掉）"
+            ),
+            Self::NoActiveProject => write!(
+                formatter,
+                "采到音符之后当前工程被控制面关闭了（`yeban_close_project`）⇒ \
+                 这一批音符没有落点（⛔ 不静默丢弃，也不另建一个临时工程接住它们）"
             ),
             Self::Notes(error) => write!(formatter, "{error}"),
         }

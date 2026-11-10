@@ -188,6 +188,15 @@ pub mod mcp_mount;
 #[cfg(feature = "in-process-mcp")]
 pub mod song_overview_provider;
 
+/// `--export-song-overview`：总览图的**批处理**出口。
+///
+/// 与 `song_overview_provider` 同一个 `cfg` 门 —— 它产出的 JSON 就是
+/// `get_song_overview` 的 `data`（§8.2 的 structs 与取整函数都住在 `yeban-mcp`，
+/// 那个依赖边只在 `in-process-mcp` 下存在）。默认构建里这个开关**存在但会拒绝**
+/// （`--features in-process-mcp` 的用法错误，见 `cli::ParseError::SongOverviewNotCompiled`）。
+#[cfg(feature = "in-process-mcp")]
+pub mod song_overview_export;
+
 // ---------------------------------------------------------------------------
 // 生产窗口的运行期重投影钩子 (`ROAD-M4-008` 选项 (a) 第 (b) 项, 2026-10-06)
 // ---------------------------------------------------------------------------

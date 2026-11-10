@@ -71,6 +71,7 @@ use serde_json::{Value, json};
 use yeban_decode::{DecodeOptions, decode_bytes};
 use yeban_dsp::song_overview::{
     AnalysisOptions, NO_ENVELOPE, SongOverview as DspSongOverview, TensionProfile,
+    analyze_song_overview_with_options,
 };
 use yeban_engine::sfz_instrument::SfzInstrument;
 use yeban_mcp::domain::error::Fault;
@@ -371,6 +372,30 @@ impl SongOverviewProvider for RealSongOverviewProvider {
         let beats = score_input_from_project(project).beats_per_bar();
         Ok(map_song_overview(&dsp_overview, request.resolution, beats))
     }
+}
+
+/// **纯谱面**总览：不渲染、不解码、不读盘 —— 只有谱面分析与它产生的哨兵。
+///
+/// ## 谁需要它
+///
+/// `--export-song-overview --overview-score-only`（批处理）要一份"只有谱面"的总览，
+/// 且要它在 JSON 上与全量那一份**同构**（同一套字段、同一套取整）。GUI 面板的回退分支
+/// （`crate::song_overview::refresh_song_overview` 的 `Err(_)` 一支）算的也是同一件事 ——
+/// 但那一支住在 UI 侧（它要画图），批处理够不着，因此这里给它一个**纯函数**出口。
+///
+/// ⛔ 它不是"渲染失败时偷偷用一下"的兜底：调用方必须**显式**要它
+/// （见 [`crate::song_overview_export`] 的模块文档"失败语义"）。
+///
+/// # Errors
+///
+/// 当前实现不会失败（纯内存计算）；返回 `Result` 是为了与 provider 的口径一致，
+/// 将来真的接上"谱面读不出来"时不必改签名。
+pub fn score_only_overview(project: &YebanProjectV1) -> Result<McpSongOverview, Fault> {
+    let score = score_input_from_project(project);
+    let beats = score.beats_per_bar();
+    let options = AnalysisOptions::default();
+    let dsp = analyze_song_overview_with_options(&score, None, &options);
+    Ok(map_song_overview(&dsp, Resolution::Bar, beats))
 }
 
 /// 采样器失败的结构化错误（`RENDER_FAILED` + `reason: "samplerUnreadable"`，

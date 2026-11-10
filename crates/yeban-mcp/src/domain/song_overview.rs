@@ -206,7 +206,14 @@ fn round1(value: f64) -> f64 {
 }
 
 /// 对 provider 返回的总览按 §8.2 的量化口径取整（handler 的唯一数值动作）。
-fn rounded(mut overview: SongOverview) -> SongOverview {
+///
+/// ⭐ 公开的理由（`--export-song-overview`）：批处理出口要与 `tools/call get_song_overview`
+/// 的 `data` **逐字节**可比 —— 那意味着取整必须走**同一个**函数，⛔ 不是在 app 侧再写一份
+/// "看起来一样"的 `round1`/`round2`（两份取整迟早会漂移，而漂移表现为"同一份工程，
+/// CLI 的文件与工具的回包差 0.1"）。
+///
+/// 调用它的**唯一**义务：`provider.overview()` 之后、序列化之前。
+pub fn rounded(mut overview: SongOverview) -> SongOverview {
     overview.song_meta.duration_sec = round1(overview.song_meta.duration_sec);
     overview.song_meta.base_bpm = round1(overview.song_meta.base_bpm);
     overview.structural_summary.climax_tension = round2(overview.structural_summary.climax_tension);

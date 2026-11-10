@@ -166,6 +166,19 @@ pub const ALS_EXPORT_SWITCH: &str = "--export-als";
 /// `FORBIDDEN_DEFAULT_FEATURES` 成员 —— 默认构建里它必须关着。
 pub const ALS_EXPORT_FEATURE: &str = "experimental-als-export";
 
+/// `--export-song-overview` 的字面值（整曲总览图的**批处理**出口）。
+///
+/// 与 [`ALS_EXPORT_SWITCH`] 同一个理由：默认构建的用法文本与"没编译它"的错误信息都要打
+/// 得出来，因此字面值住在这里，而不住在会被 `cfg` 掉的 [`crate::song_overview_export`] 里。
+pub const SONG_OVERVIEW_SWITCH: &str = "--export-song-overview";
+
+/// 让 [`SONG_OVERVIEW_SWITCH`] 真的可执行的那个 feature 名。
+///
+/// 就是形态 A 的那条 **既有** 依赖边（`yeban-mcp`）：本出口的产物必须与
+/// `tools/call get_song_overview` 的 `data` 逐字节相同，因此 §8.2 的 structs 与取整函数
+/// 只能来自那里。⛔ 本仓不新增第七条 feature —— 一条出口、一个开关。
+pub const SONG_OVERVIEW_FEATURE: &str = "in-process-mcp";
+
 /// `--export-logic` 的字面值（实验性 Logic Pro `.logicx` bundle 导出的**唯一**用户出口）。
 ///
 /// 同 [`ALS_EXPORT_SWITCH`] 的理由：默认构建的用法文本与"没编译它"的错误信息都要打得出来。
@@ -456,6 +469,22 @@ pub fn usage_text() -> String {
                            (通道按导出顺序 0,1,2,…); **PPQ 与工程一致 (960)**;
                            字节由 yeban-render 的**唯一** SMF 编码器产出 (ADR-0001 D47),
                            与 --export-elements / --save-as 共用同一份**原子**落盘实现
+  --export-song-overview <path.json>
+                           把当前工程的**整曲总览图**算出来落成 JSON (设计稿 §8.2 的 `data`):
+                           内容与 `tools/call get_song_overview` 的响应 `data` 对应 —— 同一份
+                           工程经 `jq -S` 之后两边逐字节相同 (取整走 yeban-mcp 的**同一个**
+                           `rounded`); 落盘缩进 2 空格 + 末尾换行 (给人看 / 给 diff 看);
+                           ⭐ 不开窗口、不建 MCP 会话、不占端口、不碰会话令牌 ⇒ **没有显示器
+                           的机器上也能批量算** (旧办法要起 GUI + 挂 xvfb + 连 MCP, 一次一个
+                           工程); 落盘走**原子**实现 (同目录临时文件 -> rename, 失败不留半成品);
+                           采样器读不到 ⇒ **响亮失败** (`samplerUnreadable`, 退出码 {export}),
+                           ⛔ 不悄悄降级成纯谱面 (要那一档请显式给 --overview-score-only);
+                           回执一行: `exported-song-overview:` + 落点/字节/小节数/渲染口径/
+                           响度范围/高潮小节/异常条数; **只在** `--features {overview_feature}`
+                           的构建里存在 —— 默认构建给这个开关 = 用法错误 (退出码 {usage})
+  --overview-score-only     `--export-song-overview` 的**口径修饰**: 跳过整曲渲染, 只出谱面
+                           分析 (回执 `render=score-only`, JSON 多一个 `renderMode` 字段);
+                           单独给 = 用法错误 (它只改那一份产物的口径, 没有东西可修饰)
   --export-als <path>      把当前工程导出成**实验性** Ableton Live Set (`.als`, 即
                            Gzip 压缩的 LiveSet XML) [ARCH-FMT-002]; 与 --export-midi
                            并列, 同属 ADR-0001 D47 的\"导出唯一出口 = app CLI\";
@@ -582,7 +611,8 @@ pub fn usage_text() -> String {
   yeban-app --open a.yeban 用打开的那个工程启动 GUI
   任一\"无窗口开关\"(--headless / --dump-elements / --print-shortcuts /
   --print-theme / --export-elements / --export-midi / --export-wav /
-  --export-als / --export-logic / --save-as / --record-wav / --sfz /
+  --export-song-overview / --export-als / --export-logic / --save-as /
+  --record-wav / --sfz /
   --track-sampler / --midi-in / --midi-in-render / --midi-in-write-notes)
   都不构造窗口、不进事件循环, 并打印握手行 `{handshake}`。
   `--headless-idle` 是**另一档**: 它同样不创建 OS 窗口、不进阻塞事件循环, 但它**会**
@@ -614,19 +644,24 @@ pub fn usage_text() -> String {
                                退出码 {usage}: 后者会静默覆盖前者)
   --save-as 不给 --open        保存的是演示工程, 输出 `saved: ... from=sample=default` 明说
   --save-as 与 --headless      两者都是无窗口路径, 可以一起给 (保存不需要窗口)
-  --export-elements 与 --export-midi 与 --export-als 与 --export-logic 与 --save-as 任意组合
-                               顺序固定: **先**导出元素, **再**导出 MIDI, **再**导出 .als,
-                               **再**导出 .logicx, **最后**保存工程; 任一导出失败 ⇒ 不写工程
-                               (退出码 {export})
+  --export-elements 与 --export-midi 与 --export-song-overview 与 --export-als
+  与 --export-logic 与 --save-as 任意组合
+                               顺序固定: **先**导出元素, **再**导出 MIDI, **再**导出总览图,
+                               **再**导出 .als, **再**导出 .logicx, **最后**保存工程;
+                               任一导出失败 ⇒ 不写工程 (退出码 {export})
   --export-midi 不给 --open    导出的是演示工程, 输出 `exported-midi: ... from=sample=...` 明说
   --export-wav 不给 --open    同上: 导出演示工程, 输出 `exported-wav: ... from=sample=...` 明说
+  {overview_switch} 不给 --open
+                               同上: 算的是演示工程 (回执里没有 from= 字段 —— 工程来源仍由
+                               `project-source:` 那一行给, 不再有第二个说法)
   --export-als 不给 --open    导出的是演示工程, 输出 `exported-als: ... from=sample=...` 明说
   --export-logic 不给 --open  导出的是演示工程, 输出 `exported-logic: ... from=sample=...` 明说
   --help / -h, --version / -V  短路: 出现即打印并退出 {ok}, 其余参数(含未知参数)不再检查
-  --open / --save-as / --export-elements / --export-midi / --export-als / --export-logic
+  --open / --save-as / --export-elements / --export-midi / {overview_switch} /
+  --export-als / --export-logic
                                各只能给一次; 重复给 = 用法错误 (退出码 {usage})
   --headless-idle 与 --save-as / --export-elements / --export-midi /
-  --export-als / --export-logic / --dump-elements / --print-shortcuts
+  {overview_switch} / --export-als / --export-logic / --dump-elements / --print-shortcuts
                                不能组合 = 用法错误 (退出码 {usage}): 那会把写盘 / 导出
                                **静默**丢掉, 而本模式的输出契约只有一条 —— 建树 + 空闲 + 读数
   --headless-idle 与 --idle-seconds
@@ -669,6 +704,8 @@ pub fn usage_text() -> String {
       --idle-seconds 单独给或与 --headless-idle 组合不当 / 非法空闲秒数 / 不该组合的开关同给 /
       --enable-mcp-http 与无窗口开关同给或本次构建未编译 `in-process-mcp` /
       {ui_mcp_switch} 与不该组合的开关同给或本次构建未编译 `{ui_mcp_feature}` /
+      {overview_switch} 在本次构建未编译 `{overview_feature}` /
+      --overview-score-only 单独给 (它只修饰 {overview_switch}) /
       --export-als 在本次构建未编译 `{als_feature}` /
       --export-logic 在本次构建未编译 `{logic_feature}` /
       {logic_inspect_switch} 在本次构建未编译 `{logic_import_feature}`,
@@ -695,7 +732,9 @@ pub fn usage_text() -> String {
   {open} --open 失败 (读文件失败 / 超过 4 GiB 上限 / 不是 `.yeban` 容器 /
      容器拒绝: 压缩法 / Zip-Slip / 解压炸弹 / 截断 / CRC 不匹配 / 缺件 / 非法 project.json …)
   {save} --save-as 失败 (临时文件 / 刷盘 / 原子重命名任一步失败, 或容器写出被拒)
-  {export} --export-elements 失败 / --export-midi 失败 / --export-wav 失败 / --export-als 失败 / --export-logic 失败
+  {export} --export-elements 失败 / --export-midi 失败 / --export-wav 失败 /
+      {overview_switch} 失败 (采样器读不到 / 渲染失败 / 落盘失败; 错误行里带稳定码) /
+      --export-als 失败 / --export-logic 失败
       (I/O; 或工程里没有可导出的 MIDI 音符 / 拍号分母不是 2 的幂 /
       工程 PPQ 与编码器默认 PPQ 不一致 / 编码器拒绝越界的音高或力度 /
       .als 的映射或 Gzip 封装失败 / .logicx 的 bundle 目录建不出来)
@@ -720,6 +759,8 @@ pub fn usage_text() -> String {
   yeban-app --open song.yeban --import-audio kick.wav --save-as song.yeban
   yeban-app --open song.yeban --export-midi song.mid
   yeban-app --open song.yeban --export-wav song.wav
+  yeban-app --open song.yeban --export-song-overview overview.json  # 无显示器也能算总览
+  yeban-app --open song.yeban --export-song-overview score.json --overview-score-only
   yeban-app --open song.yeban --export-wav shaped.wav --wav-bit-depth 16 --wav-sample-rate 44100 --wav-seconds 4
   yeban-app --open song.yeban --export-wav exact.wav --wav-frames 192000  # 与 MCP render_master.frames 对齐
   yeban-app --open song.yeban --export-logic out/Song.logicx
@@ -743,6 +784,8 @@ pub fn usage_text() -> String {
         ui_mcp_path = UI_MCP_PATH,
         mcp_switch = MCP_HTTP_SWITCH,
         als_feature = ALS_EXPORT_FEATURE,
+        overview_feature = SONG_OVERVIEW_FEATURE,
+        overview_switch = SONG_OVERVIEW_SWITCH,
         logic_feature = LOGIC_EXPORT_FEATURE,
         logic_inspect_switch = LOGIC_INSPECT_SWITCH,
         logic_import_feature = LOGIC_INSPECT_FEATURE,
@@ -1273,6 +1316,22 @@ pub struct Options {
     pub midi_in_track: Option<String>,
     /// `--export-midi <path>`：当前工程导出成标准 MIDI 文件（SMF 1）[ADR-0001 **D47**]。
     pub export_midi: Option<PathBuf>,
+    /// `--export-song-overview <path.json>`：把当前工程的**整曲总览图**算出来落成 JSON。
+    ///
+    /// 内容 = `tools/call get_song_overview` 响应里的 `data`（§8.2 的 structs），
+    /// 只多一个 `renderMode` 字段（`full` / `score-only`，只有这条出口有这一档）。
+    /// 意义见 [`crate::song_overview_export`] 的模块文档 —— 一句话：**没有显示器的机器
+    /// 也能批量算总览**，不必起 GUI ＋ 挂 `xvfb` ＋ 连 MCP。
+    ///
+    /// 只在 `in-process-mcp` 构建里可执行（§8.2 的 structs 与取整函数住在 `yeban-mcp`）。
+    pub export_song_overview: Option<PathBuf>,
+    /// `--overview-score-only`：`--export-song-overview` 的**修饰** —— 跳过整曲渲染，
+    /// 只出谱面分析（`render=score-only`）。
+    ///
+    /// 为什么是显式开关而不是"渲染失败就自动回退"：GUI 面板总得画点什么，所以它回退；
+    /// 批处理产出的是一份**交付物**，"因为渲染失败所以全是哨兵值"的文件若与正常文件长得
+    /// 一样，就是假的。单独给（没有 `--export-song-overview`）⇒ 用法错误。
+    pub overview_score_only: bool,
     /// `--export-wav <path>`：把当前工程**离线渲染**成一段 WAV（导出族）。
     ///
     /// 与 `--export-midi` 同族：不给 `--open` 时导出**演示工程**并在输出里明说；
@@ -1535,6 +1594,14 @@ pub const ACTION_SWITCHES: &[ActionSwitch] = &[
         name: "--export-midi",
         present: |options| options.export_midi.is_some(),
         grant: |options| options.export_midi = Some(PathBuf::from("probe")),
+        path: SwitchPath::Batch,
+    },
+    // ⭐ `--export-song-overview`：与 `--export-midi` 同族（写一份文件、跑完就退出）。
+    // 它**自己**就把进程推离 GUI 路径 —— 这正是它的价值（无显示器也能算总览）。
+    ActionSwitch {
+        name: SONG_OVERVIEW_SWITCH,
+        present: |options| options.export_song_overview.is_some(),
+        grant: |options| options.export_song_overview = Some(PathBuf::from("probe")),
         path: SwitchPath::Batch,
     },
     // `--export-wav` 与 `--export-midi` **同族**（`--help` 的 `--export-wav` 一条逐字
@@ -1836,6 +1903,19 @@ pub enum ParseError {
     /// 不存在，用户要的是一个 `.logicx` bundle 而二进制里根本没有那个出口 ——
     /// 那必须是一次**点名 feature 的**用法错误。
     LogicNotCompiled,
+    /// 给了 `--export-song-overview`，但这次构建**没有**编译 `in-process-mcp`。
+    ///
+    /// 为什么一个批处理出口也要这道门：它的产物**就是** `get_song_overview` 的 `data`
+    /// （§8.2 的 structs 与取整函数 `rounded` 都住在 `yeban-mcp`），默认构建里那条依赖边
+    /// **不在** ⇒ 不可能产出"与工具逐字节相同"的 JSON。与其在 app 侧手写一份"看起来像"
+    /// 的映射（两份迟早漂移），不如点名 feature（退出码 [`EXIT_USAGE`]）。
+    SongOverviewNotCompiled,
+    /// 给了 `--overview-score-only`，但没给 `--export-song-overview`。
+    ///
+    /// 它只是那一份产物的**口径修饰**（跳过渲染、只出谱面），单独给没有任何东西可修饰 ——
+    /// 与 `--wav-*` 只修饰 `--export-wav` 同一条纪律：静默忽略 = 用户以为"纯谱面那一份
+    /// 已经写出来了"。
+    OverviewScoreOnlyWithoutExport,
     /// 给了 `--inspect-logic`，但这次构建**没有**编译 [`LOGIC_INSPECT_FEATURE`]（`#143`）。
     ///
     /// 与 [`Self::LogicNotCompiled`] 同一条纪律：默认构建里 `yeban-render` 的
@@ -2023,6 +2103,17 @@ impl fmt::Display for ParseError {
                 "`{LOGIC_EXPORT_SWITCH}` 需要本次构建带 `--features {LOGIC_EXPORT_FEATURE}` \
                  (实验性 .logicx 导出默认关: AGENTS.md §2 红线 6 与 [MUST-GATE-009] 同一条纪律; \
                  它就是 [ARCH-FMT-002] / [ROAD-M4-007] 那条导出的唯一用户出口)"
+            ),
+            Self::SongOverviewNotCompiled => write!(
+                formatter,
+                "{SONG_OVERVIEW_SWITCH} 需要本次构建带 `--features {SONG_OVERVIEW_FEATURE}` \
+                 (它的产物就是 `get_song_overview` 的 `data` —— §8.2 的 structs 与取整函数都住在 \
+                 yeban-mcp, 默认构建里那条依赖边不在 ⇒ 产不出与工具逐字节相同的 JSON)"
+            ),
+            Self::OverviewScoreOnlyWithoutExport => write!(
+                formatter,
+                "`--overview-score-only` 只修饰 `{SONG_OVERVIEW_SWITCH}` —— 它只改那一份产物的\
+                 口径 (跳过整曲渲染), 没有 {SONG_OVERVIEW_SWITCH} 时它无处落地"
             ),
             Self::InspectLogicNotCompiled => write!(
                 formatter,
@@ -2295,6 +2386,26 @@ pub fn parse(args: &[String]) -> Result<Options, ParseError> {
                     PathBuf::from(value),
                 )?;
             }
+            "--export-song-overview" => {
+                let value = take_value("--export-song-overview", inline, args, &mut cursor)?;
+                set_once(
+                    &mut options.export_song_overview,
+                    "--export-song-overview",
+                    PathBuf::from(value),
+                )?;
+            }
+            // `--overview-score-only`：**修饰**开关（只改 `--export-song-overview` 的产物口径，
+            // ⛔ 自己不选路径 ⇒ 与 `--wav-*` 同档，不进 `ACTION_SWITCHES`）。
+            "--overview-score-only" => {
+                if inline.is_some() {
+                    return Err(ParseError::UnexpectedValue("--overview-score-only"));
+                }
+                if options.overview_score_only {
+                    return Err(ParseError::DuplicateOption("--overview-score-only"));
+                }
+                options.overview_score_only = true;
+                cursor += 1;
+            }
             // `--wav-*`：只改 `--export-wav` 的产物形状，⛔ 不选路径
             // （与 `--midi-in-seconds` / `--idle-seconds` 同档的**修饰**开关，
             //  因此 ⛔ 不进 `ACTION_SWITCHES`）。
@@ -2466,6 +2577,7 @@ pub fn parse(args: &[String]) -> Result<Options, ParseError> {
             (options.midi_in.is_some(), "--midi-in"),
             (options.export_midi.is_some(), "--export-midi"),
             (options.export_wav.is_some(), "--export-wav"),
+            (options.export_song_overview.is_some(), SONG_OVERVIEW_SWITCH),
             (options.export_als.is_some(), ALS_EXPORT_SWITCH),
             (options.export_logic.is_some(), LOGIC_EXPORT_SWITCH),
             (options.save_as.is_some(), "--save-as"),
@@ -2504,6 +2616,7 @@ pub fn parse(args: &[String]) -> Result<Options, ParseError> {
             (options.midi_in.is_some(), "--midi-in"),
             (options.export_midi.is_some(), "--export-midi"),
             (options.export_wav.is_some(), "--export-wav"),
+            (options.export_song_overview.is_some(), SONG_OVERVIEW_SWITCH),
             (options.export_als.is_some(), ALS_EXPORT_SWITCH),
             (options.export_logic.is_some(), LOGIC_EXPORT_SWITCH),
             (options.save_as.is_some(), "--save-as"),
@@ -2531,6 +2644,7 @@ pub fn parse(args: &[String]) -> Result<Options, ParseError> {
             (options.midi_in.is_some(), "--midi-in"),
             (options.export_midi.is_some(), "--export-midi"),
             (options.export_wav.is_some(), "--export-wav"),
+            (options.export_song_overview.is_some(), SONG_OVERVIEW_SWITCH),
             (options.export_als.is_some(), ALS_EXPORT_SWITCH),
             (options.export_logic.is_some(), LOGIC_EXPORT_SWITCH),
             (options.save_as.is_some(), "--save-as"),
@@ -2552,6 +2666,18 @@ pub fn parse(args: &[String]) -> Result<Options, ParseError> {
     // 模块不存在，因此同样必须是一次**点名 feature** 的用法错误。
     if options.export_logic.is_some() && !cfg!(feature = "experimental-logic-export") {
         return Err(ParseError::LogicNotCompiled);
+    }
+    // ⭐ `--export-song-overview` 的编译期那道开关（同族，但理由不同）：
+    // 它要的不是"某段可选代码"，而是 `yeban-mcp` 的那**一套 §8.2 structs 与取整函数** ——
+    // 产物必须与 `tools/call get_song_overview` 逐字节相同，手抄一份"看起来像"的映射
+    // 就是第二个真相源。因此默认构建给这个开关 = 点名 feature 的用法错误。
+    if options.export_song_overview.is_some() && !cfg!(feature = "in-process-mcp") {
+        return Err(ParseError::SongOverviewNotCompiled);
+    }
+    // `--overview-score-only` 只修饰 `--export-song-overview`（与 `--wav-*` 只修饰
+    // `--export-wav` 同一条纪律）：单独给 = 用法错误，⛔ 不静默忽略。
+    if options.overview_score_only && options.export_song_overview.is_none() {
+        return Err(ParseError::OverviewScoreOnlyWithoutExport);
     }
     // ⭐ 任务单 `#287`：`--sampler-track` 只是 `--track-sampler` 的**目标选择器**。
     // 单独给 ⇒ 用法错误。这道检查放在**解析期**（而不是 `run_batch` 里）：后者只在
@@ -3191,6 +3317,20 @@ pub enum CliError {
         /// 导出层的原样裁决（含 `yeban-render` 渲染器与 WAV 写出器的拒绝原因）。
         source: crate::export_wav::WavExportError,
     },
+    /// `--export-song-overview` 失败（采样器读不到 / 渲染失败 / 落盘失败）。
+    ///
+    /// 为什么带一个 `code` 字段而不是只有人话：provider 的失败里有**几类完全不同**的
+    /// 原因（`RENDER_FAILED` 里还分 `samplerUnreadable` / `renderFailed`，以及 `IO_ERROR`
+    /// 的落盘失败），脚本与 CI 要能分辨。`code` 来自 provider 的 `Fault`
+    /// （或落盘层的 `IO_ERROR`），⛔ 不是从文案里正则抠出来的。
+    SongOverviewExport {
+        /// 目标路径。
+        path: PathBuf,
+        /// 稳定错误码（`RENDER_FAILED` / `IO_ERROR` 等）。
+        code: &'static str,
+        /// 人话原因（provider 的原文，逐字带出去）。
+        reason: String,
+    },
     /// `--export-als` 失败（映射 / Gzip 封装 / 落盘）。
     ExportAls {
         /// 目标路径。
@@ -3225,6 +3365,11 @@ pub enum CliError {
     ///
     /// 与 [`Self::AlsNotCompiled`] 同款的第二道防假绿。
     LogicNotCompiled,
+    /// `--export-song-overview` 被送进了**没有**编译 `in-process-mcp` 的 [`run_batch`]。
+    ///
+    /// 与 [`Self::AlsNotCompiled`] 同款的第二道防假绿（第一道在 `parse()`）：
+    /// 那段产物需要 `yeban-mcp` 的 §8.2 structs，默认构建里那条依赖边不存在。
+    SongOverviewNotCompiled,
     /// `--headless-idle` 被送进了**零 Slint 依赖**的 [`run_batch`]。
     ///
     /// 这一档存在的唯一理由是**防假绿**：该开关的语义是"**真的**构造 Slint 控件树"，
@@ -3259,6 +3404,7 @@ impl CliError {
             | Self::McpHttpNotBatch => EXIT_UI,
             Self::AlsNotCompiled => EXIT_USAGE,
             Self::LogicNotCompiled => EXIT_USAGE,
+            Self::SongOverviewNotCompiled => EXIT_USAGE,
             Self::InspectLogic { .. } => EXIT_OPEN,
             Self::Open { .. }
             | Self::ImportMidi { .. }
@@ -3275,6 +3421,7 @@ impl CliError {
             Self::Export { .. }
             | Self::ExportMidi { .. }
             | Self::ExportWav { .. }
+            | Self::SongOverviewExport { .. }
             | Self::ExportAls { .. }
             | Self::ExportLogic { .. } => EXIT_EXPORT,
         }
@@ -3345,6 +3492,13 @@ impl fmt::Display for CliError {
                     path.display()
                 )
             }
+            Self::SongOverviewExport { path, code, reason } => {
+                write!(
+                    formatter,
+                    "导出总览图到 `{}` 失败 [{code}]: {reason}",
+                    path.display()
+                )
+            }
             Self::InspectLogic { path, source } => {
                 write!(
                     formatter,
@@ -3361,6 +3515,12 @@ impl fmt::Display for CliError {
                 formatter,
                 "`{LOGIC_EXPORT_SWITCH}` 需要本次构建带 `--features {LOGIC_EXPORT_FEATURE}` \
                  (默认构建里那条导出路径不存在; parse() 与 run_batch() 都会拒绝, 绝不静默忽略)"
+            ),
+            Self::SongOverviewNotCompiled => write!(
+                formatter,
+                "{SONG_OVERVIEW_SWITCH} 需要本次构建带 `--features {SONG_OVERVIEW_FEATURE}` \
+                 (§8.2 的 structs 与取整函数住在 yeban-mcp; 默认构建里那条依赖边不存在 ⇒ \
+                 parse() 与 run_batch() 都会拒绝, 绝不静默忽略)"
             ),
             Self::HeadlessIdleNotBatch => write!(
                 formatter,
@@ -3405,6 +3565,8 @@ impl std::error::Error for CliError {
             | Self::McpHttpNotBatch
             | Self::AlsNotCompiled
             | Self::TrackSampler { .. }
+            | Self::SongOverviewExport { .. }
+            | Self::SongOverviewNotCompiled
             | Self::LogicNotCompiled
             | Self::InspectLogic { .. } => None,
         }
@@ -5063,6 +5225,74 @@ pub fn run_batch(options: &Options) -> Result<Vec<String>, CliError> {
             }
         })?;
         lines.push(exported_midi_line(&report, &loaded));
+    }
+
+    // ⭐ `--export-song-overview`：总览图的**批处理**出口（与 `--export-midi` 同位置、
+    // 同一条失败语义：失败 ⇒ 直接 `Err`，⛔ 不继续保存）。
+    //
+    // 它与 `--export-wav` / `--export-midi` 的**本质区别**：那两条的产物是"这首曲子的
+    // 另一种格式"，本条的产物是**分析读数**（§8.2 的 JSON）—— 所以它要的是
+    // `provider` ＋ 采样器武装，不是渲染器的输出格式参数。
+    #[cfg(feature = "in-process-mcp")]
+    if let Some(path) = options.export_song_overview.as_ref() {
+        let mode = if options.overview_score_only {
+            crate::song_overview_export::RenderMode::ScoreOnly
+        } else {
+            crate::song_overview_export::RenderMode::Full
+        };
+        let report = crate::song_overview_export::export_song_overview(
+            &loaded.archive.project,
+            path,
+            loaded.project_dir().as_deref(),
+            &loaded.archive.assets,
+            mode,
+        )
+        .map_err(|error| match error {
+            crate::song_overview_export::OverviewExportError::Render(fault) => {
+                // provider 的稳定码原样带出去（`RENDER_FAILED` 等）：
+                // 脚本据此分辨"采样器读不到"与"落盘失败"，⛔ 不从文案里正则抠。
+                let (code, reason) = match fault.as_ref() {
+                    yeban_mcp::domain::error::Fault::Domain { code, message, .. } => {
+                        (code.as_str(), message.clone())
+                    }
+                    yeban_mcp::domain::error::Fault::Impl { error } => {
+                        ("INTERNAL_ERROR", format!("{error:?}"))
+                    }
+                };
+                CliError::SongOverviewExport {
+                    path: path.clone(),
+                    code,
+                    reason,
+                }
+            }
+            crate::song_overview_export::OverviewExportError::Save { path, source } => {
+                CliError::SongOverviewExport {
+                    path,
+                    code: "IO_ERROR",
+                    reason: source.to_string(),
+                }
+            }
+        })?;
+        lines.push(report.line());
+        // ⭐ 静音**不是**失败（空工程 / 无音源 / 全休止都合法），但"成功的退出码 ＋
+        // 一份数字全是哨兵的 JSON"是最坏的一种沉默 ⇒ 多打一行可 grep 的诊断。
+        // ⛔ 不静音时一行都不多（与 `--export-wav` 只在削波时多打一行同款）。
+        if let Some(note) = report.silent_note() {
+            lines.push(note);
+        }
+    }
+    // 默认构建的第二道防假绿（`Options` 的字段是公开的 ⇒ 判据可以绕过 `parse`）。
+    #[cfg(not(feature = "in-process-mcp"))]
+    if options.export_song_overview.is_some() {
+        return Err(CliError::SongOverviewNotCompiled);
+    }
+    // `--overview-score-only` 的第二道（同上）：它没有 `--export-song-overview` 就没有落点。
+    if options.overview_score_only && options.export_song_overview.is_none() {
+        return Err(CliError::Usage(
+            "`--overview-score-only` 只修饰 `--export-song-overview` —— \
+             它只改那一份产物的口径 (跳过整曲渲染), 单独给 = 没有任何东西可修饰"
+                .to_owned(),
+        ));
     }
 
     // `--export-wav`：与 `--export-midi` 同一位置与同一失败语义（失败 ⇒ 直接 `Err`, ⛔ 不继续保存）。
