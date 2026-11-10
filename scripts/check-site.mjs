@@ -207,7 +207,9 @@ for (const rel of brandAssets) {
 // -------------------------------------------------------------------- C10
 
 if (html.includes("0.0.0.0")) fail("C10", "页面出现 0.0.0.0");
-const allowedHosts = ["github.com", "yeban.wangda.today", "schema.org", "www.w3.org"];
+// 白名单：github.com（仓库）/ yeban.wangda.today（本站）/ trilogy.wangda.today
+// （Wang 自己的三部曲作品站，同站主）/ schema.org / www.w3.org（规范引用）。
+const allowedHosts = ["github.com", "yeban.wangda.today", "trilogy.wangda.today", "schema.org", "www.w3.org"];
 for (const m of html.matchAll(/https?:\/\/([^/"'\s]+)/g)) {
   const host = m[1];
   if (!allowedHosts.some((h) => host === h || host.endsWith("." + h))) {
