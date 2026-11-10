@@ -1813,6 +1813,19 @@ pub struct YebanProjectV1 {
     /// CC 泳道只作门控过滤）；内建静音 `sample=*silence` 不是文件，⛔ 不进本表。
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub embedded_samples: BTreeMap<String, String>,
+    /// 歌词时间轴：按 `start_tick` 严格升序的一行词（[`crate::lyrics::LyricLine`]）。
+    ///
+    /// 一行 = 一个 LRC 行（起始 tick + 整行文本），不是音符级的音节：
+    /// `MidiNote::syllable` 是单个音节（SVS 对齐输入），行边界只存在于这里。
+    ///
+    /// `#[serde(default, skip_serializing_if = "Vec::is_empty")]` 与 `track_order` /
+    /// `embedded_samples` 同一条 skip discipline ⇒ **空表不写出**：旧工程逐字节不动，
+    /// 只读打开旧工程、渲染旧工程输出逐位不变。缺键/空表 = 没有歌词时间轴。
+    ///
+    /// 不变量由 [`crate::lyrics::validate_lyrics`] 在 [`Self::validate`] 里机械检查：
+    /// 行文本非空、`start_tick` 严格升序。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub lyrics: Vec<crate::lyrics::LyricLine>,
 }
 
 impl Default for YebanProjectV1 {
@@ -1843,6 +1856,7 @@ impl Default for YebanProjectV1 {
             clip_pool: BTreeMap::new(),
             assets: BTreeMap::new(),
             embedded_samples: BTreeMap::new(),
+            lyrics: Vec::new(),
         }
     }
 }
@@ -1966,6 +1980,7 @@ impl YebanProjectV1 {
         if let Some(ref ks) = self.key_signature {
             ks.validate()?;
         }
+        crate::lyrics::validate_lyrics(&self.lyrics)?;
 
         if self.tracks.is_empty() {
             if !self.master_bus_track_id.is_nil() {
@@ -3585,7 +3600,7 @@ mod tests {
     #[test]
     fn implementation_matches_the_schema_type_table_exactly() {
         let mut project = YebanProjectV1::default();
-        // `embedded_samples` 与 `track_order` 是顶层仅有的两个 `skip_serializing_if`
+        // `embedded_samples`、`track_order`、`lyrics` 是顶层仅有的三个 `skip_serializing_if`
         // 字段（空表不写出 —— 与 `sampler: None` 同一条 discipline，旧工程逐字节不动）
         // ⇒ 默认工程的序列化里没有它们；类型对账须用一份带条目的工程，否则本判据会
         // 把"有意省略"误报成"契约要求但实现未序列化"。`embedded_samples` 的值是 64 位
@@ -3596,6 +3611,10 @@ mod tests {
             .embedded_samples
             .insert("assets/samples/kit/001.sfz".to_owned(), "0".repeat(64));
         project.track_order = vec![fixture_id(2)];
+        project.lyrics = vec![crate::lyrics::LyricLine {
+            start_tick: 0,
+            text: "x".to_owned(),
+        }];
         let value = serde_json::to_value(project).expect("to_value");
         let mut divergences: Vec<String> = Vec::new();
         let table = schema_top_level_types();

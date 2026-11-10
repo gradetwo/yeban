@@ -92,6 +92,30 @@ pub enum ModelError {
         tick: u64,
     },
 
+    /// 歌词行文本为空：LRC 行没有落点，是退化数据。
+    #[error("lyric line at tick {start_tick} has empty text")]
+    LyricTextEmpty {
+        /// 该行的起始 tick。
+        start_tick: u64,
+    },
+
+    /// 歌词时间轴的 `start_tick` 不**严格**升序（同一 tick 两行词在 LRC 里是同一时间戳
+    /// 的两行，播放器只会显示其中一行 —— 与 [`Self::PitchBendTicksNotAscending`] 同一条理由）。
+    #[error("lyric start ticks are not strictly ascending: {previous} then {start_tick}")]
+    LyricStartNotAscending {
+        /// 前一个（本来应当更小的）tick。
+        previous: u64,
+        /// 违反升序的当前 tick。
+        start_tick: u64,
+    },
+
+    /// 歌词行 tick 换算不成秒（病态 BPM —— 已校验的工程不会走到这里）。
+    #[error("lyric tick {tick} cannot be converted to seconds")]
+    LyricTimeConversionFailed {
+        /// 换算失败的 tick。
+        tick: u64,
+    },
+
     /// 时长为零：音符必须有正时长。
     #[error("duration must be non-zero")]
     ZeroDuration,

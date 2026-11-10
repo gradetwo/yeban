@@ -42,6 +42,7 @@ pub mod error;
 pub mod ids;
 pub mod local_config;
 pub mod loop_plan;
+pub mod lyrics;
 pub mod music;
 pub mod note_plan;
 pub mod ops;

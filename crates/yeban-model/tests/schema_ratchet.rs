@@ -133,6 +133,14 @@ use yeban_model::samples::filled_project;
 /// `project.filled.json` 的冻结 sha256 与顶层键集 —— 后者是
 /// `model_isolation` 对 default/filled 两份样本的同一冻结集，单份填表无法闭合）
 /// ⇒ 登记是唯一出路。账本两处已同步补行。
+///
+/// ⚠ **第 33 项的来历**（歌词轨线，2026-11-10）：`YebanProjectV1::lyrics`
+/// 是 `Vec<LyricLine>` + `#[serde(default)]` + `skip_serializing_if`（空表不落盘），
+/// 与第 19/31/32 项**同形** ⇒ 契约里只能声明为可选属性。既有夹具
+/// （`samples::filled_project()`）刻意不落盘它（填进夹具会改变
+/// `project.filled.json` 的冻结 sha256 与顶层键集 —— 后者是
+/// `model_isolation` 对 default/filled 两份样本的同一冻结集，单份填表无法闭合）
+/// ⇒ 登记是唯一出路。账本两处已同步补行。
 const D43_EXEMPT_REQUIRED_PATHS: &[&str] = &[
     "#.author",
     "#.metadata.description",
@@ -166,6 +174,7 @@ const D43_EXEMPT_REQUIRED_PATHS: &[&str] = &[
     "#.key_signature",
     "#.embedded_samples",
     "#.track_order",
+    "#.lyrics",
 ];
 
 /// **已退役**的"契约收紧待办"登记表（曾经 = notes §5.1/§5.2 的 12 项）。
@@ -1037,8 +1046,8 @@ fn direction_b_d43_exempt_paths_tolerate_missing_keys() {
 
     assert_eq!(
         D43_EXEMPT_REQUIRED_PATHS.len(),
-        32,
-        "D43 豁免集 = §5.4 的 18 项 ＋ 任务单 `#76` 的 `tracks[*].sampler` ＋ `#348` 的 `channel` ＋ 任务单 `#350` 的 `key_signature` ＋ 采样内嵌线的 `embedded_samples` ＋ UI 轨道交互线的 `track_order` ＋ 夜半原生预制线的 `tracks[*].preset` 一组 9 条（逐项对应见常量上的表）"
+        33,
+        "D43 豁免集 = §5.4 的 18 项 ＋ 任务单 `#76` 的 `tracks[*].sampler` ＋ `#348` 的 `channel` ＋ 任务单 `#350` 的 `key_signature` ＋ 采样内嵌线的 `embedded_samples` ＋ UI 轨道交互线的 `track_order` ＋ 夜半原生预制线的 `tracks[*].preset` 一组 9 条 ＋ 歌词轨线的 `lyrics`（逐项对应见常量上的表）"
     );
     assert!(
         present_paths >= 8,

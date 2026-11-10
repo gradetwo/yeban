@@ -173,6 +173,13 @@ pub const ALS_EXPORT_FEATURE: &str = "experimental-als-export";
 /// 得出来，因此字面值住在这里，而不住在会被 `cfg` 掉的 [`crate::song_overview_export`] 里。
 pub const SONG_OVERVIEW_SWITCH: &str = "--export-song-overview";
 
+/// `--export-lyrics` 的字面值（歌词时间轴的**批处理**出口）。
+///
+/// 与 [`SONG_OVERVIEW_SWITCH`] 的不同：本出口的产物是纯模型数据（`YebanProjectV1::lyrics` ⇒
+/// LRC 文本），不经过 MCP，因此不需要 `in-process-mcp` 这一道门；与 [`ALS_EXPORT_SWITCH`]
+/// 同一个理由住在这里：默认构建的用法文本与错误信息都要打得出来。
+pub const LYRICS_SWITCH: &str = "--export-lyrics";
+
 /// 让 [`SONG_OVERVIEW_SWITCH`] 真的可执行的那个 feature 名。
 ///
 /// 就是形态 A 的那条 **既有** 依赖边（`yeban-mcp`）：本出口的产物必须与
@@ -629,6 +636,15 @@ pub fn usage_text() -> String {
                            单独给 = 用法错误
   --slice-threshold-db <db> `--slice-audio` 的 onset 检测**绝对底线** (dBFS, 缺省 -50);
                            单独给 = 用法错误
+  --export-lyrics <path.lrc> 把当前工程的歌词时间轴导出成 LRC (词 + 时间戳):
+                           每行词一个 `[mm:ss.cc]行` 时间戳 (与 Wang 的参照 LRC
+                           `winter.lrc` 同一口径: 厘秒四舍五入, `[ti:标题]` /
+                           `[ar:作者]` / `[by:Yeban]` / `[length:时:分.厘秒]` /
+                           `[offset:0]` 头标签, 无词的工程只出头标签);
+                           ⭐ 不开窗口、不建 MCP 会话、不占端口、不碰会话令牌 ⇒ **没有显示器
+                           的机器上也能批量导出**; 落盘走**原子**实现 (同目录临时文件 -> rename,
+                           失败不留半成品); 回执一行: `exported-lyrics:` + 落点/字节/行数;
+                           **任何**构建里都存在 (产物是纯模型数据, 不经过 MCP, 不需要 feature 门)
   --export-als <path>      把当前工程导出成**实验性** Ableton Live Set (`.als`, 即
                            Gzip 压缩的 LiveSet XML) [ARCH-FMT-002]; 与 --export-midi
                            并列, 同属 ADR-0001 D47 的\"导出唯一出口 = app CLI\";
@@ -755,7 +771,7 @@ pub fn usage_text() -> String {
   yeban-app --open a.yeban 用打开的那个工程启动 GUI
   任一\"无窗口开关\"(--headless / --dump-elements / --print-shortcuts /
   --print-theme / --export-elements / --export-midi / --export-wav /
-  --export-song-overview / --apply-ops / --export-stems / --edit-samples / --slice-audio / --export-als / --export-logic / --save-as /
+  --export-song-overview / --apply-ops / --export-stems / --edit-samples / --slice-audio / --export-lyrics / --export-als / --export-logic / --save-as /
   --record-wav / --sfz /
   --track-sampler / --midi-in / --midi-in-render / --midi-in-write-notes)
   都不构造窗口、不进事件循环, 并打印握手行 `{handshake}`。
@@ -794,6 +810,10 @@ pub fn usage_text() -> String {
                                顺序固定: **先**导出元素, **再**导出 MIDI, **再**导出总览图,
                                **再**导出 WAV, **再**导出分轨, **再**导出 .als, **再**导出
                                .logicx, **最后**保存工程;
+  --export-elements 与 --export-midi 与 --export-song-overview 与 --export-lyrics
+  与 --export-als 与 --export-logic 与 --save-as 任意组合
+                               顺序固定: **先**导出元素, **再**导出 MIDI, **再**导出总览图,
+                               **再**导出 LRC, **再**导出 .als, **再**导出 .logicx, **最后**保存工程;
                                任一导出失败 ⇒ 不写工程 (退出码 {export})
   --apply-ops 与 --save-as    真执行**必须**配 --save-as (不给 = 用法错误, 退出码 {usage});
                                编辑发生在内存里, 不给落点就等于改完即丢 (⛔ 不猜落点,
@@ -806,6 +826,9 @@ pub fn usage_text() -> String {
   --export-wav 不给 --open    同上: 导出演示工程, 输出 `exported-wav: ... from=sample=...` 明说
   {overview_switch} 不给 --open
                                同上: 算的是演示工程 (回执里没有 from= 字段 —— 工程来源仍由
+                               `project-source:` 那一行给, 不再有第二个说法)
+  {lyrics_switch} 不给 --open
+                               同上: 导出的是演示工程 (回执里没有 from= 字段 —— 工程来源仍由
                                `project-source:` 那一行给, 不再有第二个说法)
   --export-als 不给 --open    导出的是演示工程, 输出 `exported-als: ... from=sample=...` 明说
   --export-logic 不给 --open  导出的是演示工程, 输出 `exported-logic: ... from=sample=...` 明说
@@ -926,6 +949,7 @@ pub fn usage_text() -> String {
   yeban-app --open song.yeban --apply-ops ops.json --save-as edited.yeban  # 无显示器也能批量改工程
   yeban-app --open song.yeban --apply-ops ops.json --dry-run  # 只模拟, 不写盘
   yeban-app --open song.yeban --export-stems stems/  # 无显示器也能取分轨 (目录须已存在)
+  yeban-app --open song.yeban --export-lyrics song.lrc  # 歌词时间轴导出成 LRC
   yeban-app --open song.yeban --export-wav shaped.wav --wav-bit-depth 16 --wav-sample-rate 44100 --wav-seconds 4
   yeban-app --open song.yeban --export-wav exact.wav --wav-frames 192000  # 与 MCP render_master.frames 对齐
   yeban-app --open song.yeban --export-logic out/Song.logicx
@@ -954,6 +978,7 @@ pub fn usage_text() -> String {
         apply_ops_feature = APPLY_OPS_FEATURE,
         export_stems_feature = EXPORT_STEMS_FEATURE,
         sample_edit_switch = SAMPLE_EDIT_SWITCH,
+        lyrics_switch = LYRICS_SWITCH,
         logic_feature = LOGIC_EXPORT_FEATURE,
         logic_inspect_switch = LOGIC_INSPECT_SWITCH,
         logic_import_feature = LOGIC_INSPECT_FEATURE,
@@ -1572,6 +1597,14 @@ pub struct Options {
     /// `--slice-threshold-db <db>`：`--slice-audio` 的 onset 检测绝对底线（缺省 −50）。
     /// 单独给 ⇒ 用法错误。
     pub slice_threshold_db: Option<f32>,
+    /// `--export-lyrics <path.lrc>`：把当前工程的歌词时间轴导出成 LRC。
+    ///
+    /// 意义见 [`crate::lyrics_export`] 的模块文档 —— 一句话：**没有显示器的机器
+    /// 也能批量导出 LRC**，不必再比对 ASR 音频 + 编曲事件硬算。
+    ///
+    /// 与 `--export-song-overview` 的不同：产物是纯模型数据（`YebanProjectV1::lyrics` ⇒
+    /// LRC 文本），不经过 MCP，**任何**构建里都可执行，不需要 feature 门。
+    pub export_lyrics: Option<PathBuf>,
     /// `--export-wav <path>`：把当前工程**离线渲染**成一段 WAV（导出族）。
     ///
     /// 与 `--export-midi` 同族：不给 `--open` 时导出**演示工程**并在输出里明说；
@@ -1891,6 +1924,14 @@ pub const ACTION_SWITCHES: &[ActionSwitch] = &[
         name: SLICE_AUDIO_SWITCH,
         present: |options| options.slice_audio.is_some(),
         grant: |options| options.slice_audio = Some(PathBuf::from("probe")),
+        path: SwitchPath::Batch,
+    },
+    // ⭐ `--export-lyrics`：与 `--export-midi` 同族（写一份文件、跑完就退出）。
+    // 它**自己**就把进程推离 GUI 路径 —— 这正是它的价值（无显示器也能导出 LRC）。
+    ActionSwitch {
+        name: LYRICS_SWITCH,
+        present: |options| options.export_lyrics.is_some(),
+        grant: |options| options.export_lyrics = Some(PathBuf::from("probe")),
         path: SwitchPath::Batch,
     },
     // `--export-wav` 与 `--export-midi` **同族**（`--help` 的 `--export-wav` 一条逐字
@@ -2811,6 +2852,14 @@ pub fn parse(args: &[String]) -> Result<Options, ParseError> {
                     PathBuf::from(value),
                 )?;
             }
+            "--export-lyrics" => {
+                let value = take_value("--export-lyrics", inline, args, &mut cursor)?;
+                set_once(
+                    &mut options.export_lyrics,
+                    "--export-lyrics",
+                    PathBuf::from(value),
+                )?;
+            }
             // `--overview-score-only`：**修饰**开关（只改 `--export-song-overview` 的产物口径，
             // ⛔ 自己不选路径 ⇒ 与 `--wav-*` 同档，不进 `ACTION_SWITCHES`）。
             "--overview-score-only" => {
@@ -3215,6 +3264,7 @@ pub fn parse(args: &[String]) -> Result<Options, ParseError> {
             (options.export_stems.is_some(), EXPORT_STEMS_SWITCH),
             (options.edit_samples.is_some(), SAMPLE_EDIT_SWITCH),
             (options.slice_audio.is_some(), SLICE_AUDIO_SWITCH),
+            (options.export_lyrics.is_some(), LYRICS_SWITCH),
             (options.export_als.is_some(), ALS_EXPORT_SWITCH),
             (options.export_logic.is_some(), LOGIC_EXPORT_SWITCH),
             (options.save_as.is_some(), "--save-as"),
@@ -3258,6 +3308,7 @@ pub fn parse(args: &[String]) -> Result<Options, ParseError> {
             (options.export_stems.is_some(), EXPORT_STEMS_SWITCH),
             (options.edit_samples.is_some(), SAMPLE_EDIT_SWITCH),
             (options.slice_audio.is_some(), SLICE_AUDIO_SWITCH),
+            (options.export_lyrics.is_some(), LYRICS_SWITCH),
             (options.export_als.is_some(), ALS_EXPORT_SWITCH),
             (options.export_logic.is_some(), LOGIC_EXPORT_SWITCH),
             (options.save_as.is_some(), "--save-as"),
@@ -3290,6 +3341,7 @@ pub fn parse(args: &[String]) -> Result<Options, ParseError> {
             (options.export_stems.is_some(), EXPORT_STEMS_SWITCH),
             (options.edit_samples.is_some(), SAMPLE_EDIT_SWITCH),
             (options.slice_audio.is_some(), SLICE_AUDIO_SWITCH),
+            (options.export_lyrics.is_some(), LYRICS_SWITCH),
             (options.export_als.is_some(), ALS_EXPORT_SWITCH),
             (options.export_logic.is_some(), LOGIC_EXPORT_SWITCH),
             (options.save_as.is_some(), "--save-as"),
@@ -4078,6 +4130,13 @@ pub enum CliError {
         /// 人话原因（`AudioSlicerError` 的原文，逐字带出去）。
         reason: String,
     },
+    /// `--export-lyrics` 失败（LRC 文本算不出来 / 落盘失败）。
+    LyricsExport {
+        /// 目标路径。
+        path: PathBuf,
+        /// 导出层的原样裁决。
+        reason: String,
+    },
     /// `--export-als` 失败（映射 / Gzip 封装 / 落盘）。
     ExportAls {
         /// 目标路径。
@@ -4211,6 +4270,7 @@ impl CliError {
             | Self::ExportStems { .. }
             | Self::SampleEdit { .. }
             | Self::SliceAudio { .. }
+            | Self::LyricsExport { .. }
             | Self::ExportAls { .. }
             | Self::ExportLogic { .. } => EXIT_EXPORT,
         }
@@ -4301,6 +4361,9 @@ impl fmt::Display for CliError {
                     "切片 `{}` 失败 [{code}]: {reason}",
                     path.display()
                 )
+            }
+            Self::LyricsExport { path, reason } => {
+                write!(formatter, "导出 LRC 到 `{}` 失败: {reason}", path.display())
             }
             Self::InspectLogic { path, source } => {
                 write!(
@@ -4401,6 +4464,7 @@ impl std::error::Error for CliError {
             | Self::SongOverviewExport { .. }
             | Self::SampleEdit { .. }
             | Self::SliceAudio { .. }
+            | Self::LyricsExport { .. }
             | Self::SongOverviewNotCompiled
             | Self::LogicNotCompiled
             | Self::InspectLogic { .. } => None,
@@ -6333,6 +6397,17 @@ pub fn run_batch(options: &Options) -> Result<Vec<String>, CliError> {
         return Err(CliError::Usage(
             "`--slice-audio` 须配 `--slice-out <dir>`（输出目录必填）".to_owned(),
         ));
+    }
+    // `--export-lyrics`：与 `--export-midi` 同一位置与同一失败语义（失败 ⇒ 直接 `Err`, ⛔ 不继续保存）。
+    // 无词不是失败：空工程导出头标签 + `lines=0` 的回执（与总览图的静音自报同款纪律）。
+    if let Some(path) = options.export_lyrics.as_ref() {
+        let report = crate::lyrics_export::export_lyrics(&loaded.archive.project, path).map_err(
+            |error| CliError::LyricsExport {
+                path: path.clone(),
+                reason: error.to_string(),
+            },
+        )?;
+        lines.push(report.line());
     }
 
     // `--export-wav`：与 `--export-midi` 同一位置与同一失败语义（失败 ⇒ 直接 `Err`, ⛔ 不继续保存）。
