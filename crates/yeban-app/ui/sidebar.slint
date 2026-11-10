@@ -278,6 +278,7 @@ export component Sidebar inherits Rectangle {
         }
 
         TouchArea {
+            mouse-cursor: MouseCursor.pointer;
             width: parent.width;
             height: parent.height;
             clicked => { root.select-category(category_index); }
@@ -362,6 +363,7 @@ export component Sidebar inherits Rectangle {
         }
 
         TouchArea {
+            mouse-cursor: MouseCursor.pointer;
             width: parent.width;
             height: parent.height;
             clicked => { root.select-item(item_index); }

@@ -114,6 +114,8 @@ const SLINT_FILES: &[(&str, &str)] = &[
 ];
 
 /// ① 覆盖层 11 个可点控件补齐手型光标：逐文件精确计数 + 全仓棘轮 = 13。
+/// ⭐ 第十一轮 `[PATCH UI-FEEDBACK-05]` 把全仓手型光标扩到 50（只扩不放宽，
+/// 逐文件新分布由 `round11_action_feedback.rs` ① 单独钉）。
 /// 删任一处 ⇒ 少一次，红；别处又加 ⇒ 多一次，也红。指针串沿用第九轮精确写法。
 #[test]
 fn overlay_action_controls_are_discoverable_with_pointer_cursors() {
@@ -147,13 +149,14 @@ fn overlay_action_controls_are_discoverable_with_pointer_cursors() {
         pointer_total += src.matches("mouse-cursor: MouseCursor.pointer;").count();
     }
     assert_eq!(
-        pointer_total, 13,
-        "全仓手型光标 = 13（第九轮 2 + 第十轮 11）；多一处就是别处也改了光标"
+        pointer_total, 50,
+        "全仓手型光标 = 50（第九轮 2 + 第十轮 11 + 第十一轮 37）；多一处就是别处也改了光标"
     );
     assert_eq!(SLINT_FILES.len(), 18, "判据清单仍须是 18 个 `.slint`");
 }
 
 /// ② 7 处拖拽手势面补「可拖」光标：这是本轮唯一的新交互语言。
+/// ⭐ 第十一轮新增 `MouseCursor.row-resize`（主窗口分隔条），本句只描述第十轮当时状态。
 /// `Grab` 是 `i-slint-common-1.18.1::MouseCursor` 的真实变体（编译探针已验），
 /// 且用 `grab` 而非 `pointer` ⇒ 不混进 ① 的精确串计数。
 #[test]
@@ -177,9 +180,10 @@ fn drag_surfaces_now_show_a_grabbable_cursor() {
         cursor_total += src.matches("mouse-cursor:").count();
     }
     assert_eq!(grab_total, 7, "全仓可拖光标恰好 7 处");
+    // ⭐ 第十一轮：+37 pointer +1 row-resize ⇒ 20→58（grab 7 一位未动）。
     assert_eq!(
-        cursor_total, 20,
-        "全仓光标恰好 20 处 = 13 pointer + 7 grab；多一处就是别处也改了光标"
+        cursor_total, 58,
+        "全仓光标恰好 58 处 = 50 pointer + 7 grab + 1 row-resize；多一处就是别处也改了光标"
     );
     // 拖拽手势面本身仍是「不画任何像素」的静态矩形，⛔ 没改成会渲染的控件。
     assert!(MIXER_CONSOLE.contains("它们是**静态矩形**"));

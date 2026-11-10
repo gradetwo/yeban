@@ -610,6 +610,7 @@ export component MixerConsole inherits Rectangle {
 
                 // 点击 ⇒ `Op::SetTrackMute`（一次点击 = 一次可撤销的编辑）。
                 TouchArea {
+                    mouse-cursor: MouseCursor.pointer;
                     width: parent.width;
                     height: parent.height;
                     clicked => {
@@ -647,6 +648,7 @@ export component MixerConsole inherits Rectangle {
 
                 // 点击 ⇒ `Op::SetTrackSolo`。与静音按钮**成对相邻**（静音 x=4、独奏 x=30）。
                 TouchArea {
+                    mouse-cursor: MouseCursor.pointer;
                     width: parent.width;
                     height: parent.height;
                     clicked => {
@@ -813,6 +815,7 @@ export component MixerConsole inherits Rectangle {
                 }
 
                 TouchArea {
+                    mouse-cursor: MouseCursor.pointer;
                     width: parent.width;
                     height: parent.height;
                     clicked => {
@@ -849,6 +852,7 @@ export component MixerConsole inherits Rectangle {
                 }
 
                 TouchArea {
+                    mouse-cursor: MouseCursor.pointer;
                     width: parent.width;
                     height: parent.height;
                     clicked => {
@@ -885,6 +889,7 @@ export component MixerConsole inherits Rectangle {
                 }
 
                 TouchArea {
+                    mouse-cursor: MouseCursor.pointer;
                     width: parent.width;
                     height: parent.height;
                     clicked => {
@@ -1049,6 +1054,7 @@ export component MixerConsole inherits Rectangle {
 
             // 点击 ⇒ `Op::SetTrackMute`（目标 = 主总线那条轨；一次点击 = 一次可撤销的编辑）。
             TouchArea {
+                mouse-cursor: MouseCursor.pointer;
                 width: parent.width;
                 height: parent.height;
                 clicked => {
@@ -1085,6 +1091,7 @@ export component MixerConsole inherits Rectangle {
 
             // 点击 ⇒ `Op::SetTrackSolo`。与主控静音按钮**成对相邻**（静音 x=4、独奏 x=30）。
             TouchArea {
+                mouse-cursor: MouseCursor.pointer;
                 width: parent.width;
                 height: parent.height;
                 clicked => {

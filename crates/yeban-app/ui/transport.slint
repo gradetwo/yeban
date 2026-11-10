@@ -627,6 +627,7 @@ export component Transport inherits Rectangle {
         }
 
         view_session_area := TouchArea {
+            mouse-cursor: MouseCursor.pointer;
             width: parent.width;
             height: parent.height;
             clicked => { root.show-session(); }
@@ -660,6 +661,7 @@ export component Transport inherits Rectangle {
         }
 
         view_arr_area := TouchArea {
+            mouse-cursor: MouseCursor.pointer;
             width: parent.width;
             height: parent.height;
             clicked => { root.show-arrangement(); }
