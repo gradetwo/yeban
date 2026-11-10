@@ -96,6 +96,7 @@ pub mod oscillator;
 pub mod oversample;
 pub mod polysynth;
 pub mod reverb;
+pub mod sample_edit;
 pub mod shaping;
 pub mod smoothing;
 pub mod song_overview;
