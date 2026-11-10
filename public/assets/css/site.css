@@ -138,10 +138,13 @@ code {
   border-bottom: 1px solid var(--border);
 }
 
+/* 页眉单独放宽：英文导航 7 项 + 两组切换在 1120 内容宽下溢出，切换组被挤到第二行 */
+.site-header .wrap { max-width: 1200px; }
+
 .header-inner {
   display: flex;
   align-items: center;
-  gap: 18px;
+  gap: 14px;
   min-height: 68px;
   flex-wrap: wrap;
 }
@@ -176,7 +179,7 @@ code {
 }
 .site-nav a {
   color: var(--text-soft);
-  padding: 7px 11px;
+  padding: 7px 9px;
   border-radius: var(--radius-sm);
   font-size: 0.94rem;
   transition: background var(--dur) ease, color var(--dur) ease;
