@@ -44,6 +44,29 @@
 
 ---
 
+## 用夜半创作的作品
+
+**[《慢性崩溃环 THE CHRONIC MOBIUS》](https://trilogy.wangda.today)**——用夜半创作的三部曲作品。三章——I. 雨声太吵、II. 失语呢喃、III. 潮·失——组成一个沉浸式视觉体验，点击拓扑节点跃迁情绪相位。
+
+## 强大功能
+
+- **Songmap 整曲总览图**（`get_song_overview` MCP 工具，或 CLI `--export-song-overview`）：一幅小节级四层诊断图——能量、频率、疏密、情绪——附自动异常诊断。Phase 2 加段落期望张力等级包络带、3 档流派预设（`default` / `orchestral` / `electronic`）与谱面力度虚线。段内自相似度检查开发中。
+- **命令行母带**：`--loudness-target` 配 `--true-peak-ceiling`，在 `--export-wav` 上应用响度目标；目标达不到就响亮失败，绝不静默降级。
+- **批量操作与分轨**：`--apply-ops` 把一文件编曲操作一次提交；`--export-stems` 分轨导出，与 MCP 工具同一后端。
+- **采样库编辑器**：`--edit-samples` 把每个采样的音准校到 ±0.5 音分以内（FFT 基频），合成 mf/f 力度层并做 RMS 归一化。
+- **音频切片器**：`--slice-audio` 检测起音、按音节切分、变调 / 变速 / 磁带变速，写出 SFZ 采样区。
+- **歌词轨**：`--export-lyrics` 把歌词时间轴存进工程，导出 LRC。
+- **工程自带一切**：用到的采样与 SFZ 定义内嵌进 `.yeban` 容器；渲染先查容器内嵌、再查磁盘；旧工程逐字节不动。
+- **原生预制**：4 个 MCP 工具（`yeban_list_presets`、`yeban_apply_preset`、`yeban_save_preset`、`yeban_preset_bypass`）与 6 个工厂预制（钢琴、大提琴、古典吉他、长笛、萨克斯、鼓组），载入即带调好的处理，不是干声。
+- **歌声合成（经外部 SVS 服务）**：`synthesize_singing` 提交谱子、`svs_job` 取回结果——夜半是 MCP 客户端，合成在伶人 SVS 服务侧进行。
+- **38 个 MCP 工具，已经很强大**（意图 API v2）与 **VST3 插件宿主**（进程内；跨进程隔离为二期）。
+
+## 平台支持
+
+macOS 与 Linux 有完整测试。Windows 平台测试尚不充分。UI 层面还在完善。
+
+---
+
 ## 🚀 快速开始
 
 > **环境要求 → 构建 → 运行**，顺序如下。下面的命令都可以直接复制粘贴。

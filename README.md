@@ -30,7 +30,30 @@
 | Website (bilingual, light/dark) | <https://yeban.wangda.today> |
 | Contact | <yeban@wangda.today> |
 | Repository | <https://github.com/gradetwo/yeban> |
-| Status | Early development — Phase 0 (feasibility spikes). **Nothing is playable yet.** |
+| Status | Active development — the engine renders audio deterministically; the app still starts with a demo project. See [What Yeban can do](#what-yeban-can-do). |
+
+---
+
+## Made with Yeban
+
+**[《慢性崩溃环 THE CHRONIC MOBIUS》](https://trilogy.wangda.today)** — a trilogy created with Yeban. Three chapters — I. 雨声太吵 (The Rain Is Too Loud), II. 失语呢喃, III. 潮·失 — in one immersive visual experience: click the topology nodes to jump between emotional phases.
+
+## What Yeban can do
+
+- **Songmap — whole-song overview** (`get_song_overview` MCP tool, or `--export-song-overview` on the CLI): one bar-level diagnostic in four layers — energy, frequency, density and emotion — with an automatic anomaly summary. Phase 2 adds expected-level envelope bands, three genre presets (`default` / `orchestral` / `electronic`) and a score-dynamics ghost line. A within-song self-similarity check is in development.
+- **Mastering from the command line**: `--loudness-target` with `--true-peak-ceiling` applies the loudness target on `--export-wav`; an unreachable target fails loudly instead of silently degrading.
+- **Batch edits and stems**: `--apply-ops` commits a file of edit operations as one batch; `--export-stems` renders stems with the same backend as the MCP tool.
+- **Sample-library editor**: `--edit-samples` corrects each sample's pitch to within ±0.5 cents (FFT fundamental), synthesises mf/f velocity layers and normalises RMS.
+- **Audio slicer**: `--slice-audio` detects onsets, cuts audio into syllables, shifts / stretches / tape-varispeeds them and writes SFZ sampler regions.
+- **Lyrics track**: `--export-lyrics` stores a lyrics timeline in the project and exports LRC.
+- **Projects carry what they use**: used samples and their SFZ definitions are embedded in the `.yeban` container; rendering checks the embedded pool first, disk second; old projects are byte-identical.
+- **Native presets**: four MCP tools (`yeban_list_presets`, `yeban_apply_preset`, `yeban_save_preset`, `yeban_preset_bypass`) and six factory presets (piano, cello, classical guitar, flute, saxophone, drums) that load with tuned processing instead of a dry sound.
+- **Singing synthesis, via the external SVS service**: `synthesize_singing` submits a score and `svs_job` polls it back — Yeban is the MCP client; synthesis itself runs in the Lingren SVS service.
+- **38 MCP tools — already a powerful surface** (Intent API v2) and a **VST3 plug-in host** (in-process; cross-process isolation is phase 2).
+
+## Platform support
+
+macOS and Linux are fully tested. Windows is not yet thoroughly tested. The UI layer is still being refined.
 
 ---
 
