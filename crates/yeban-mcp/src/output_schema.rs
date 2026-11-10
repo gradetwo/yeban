@@ -2109,7 +2109,7 @@ pub const BAND_DEFINITIONS_HZ: [[u32; 2]; 8] = [
 // struct 本身只定形状 —— "几位小数"不在类型里，⛔ 不要在这里发明第二套口径。
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct SongOverview {
-    /// 契约版本（§8.2 示例：`"1.0"`）。
+    /// 契约版本（§8.2 示例：`"1.1"`；1.1 起加 `repetition`）。
     pub schema_version: String,
     /// 歌曲元数据。
     pub song_meta: SongMeta,
@@ -2117,9 +2117,44 @@ pub struct SongOverview {
     pub band_definitions_hz: [[u32; 2]; 8],
     /// 结构摘要（高潮小节、动态范围、自动异常诊断）。
     pub structural_summary: StructuralSummary,
+    /// 段内自相似度摘要（schema 1.1：最相似小节对、机械指数与成段重复）。
+    pub repetition: RepetitionSummary,
     /// 小节级列式数组（`resolution: "bar"` 时一小节一行；`"beat"` 时一拍一行，
     /// 此时每行多一个 `beat` 键 = 该拍在小节内的序号 1..=拍号拍数）。
     pub bar_series: Vec<BarRow>,
+}
+
+/// `repetition`（设计稿 §8.2 追加，schema 1.1）：段内自相似度摘要。
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct RepetitionSummary {
+    /// 相似度最高的前 5 对小节（降序；间隔 ≥ 4 小节）。
+    pub best_matches: Vec<BestMatch>,
+    /// 机械指数（0–1，保留 2 位小数）：最佳非邻匹配 ≥ 0.95 的小节占比。
+    pub mechanical_index: f64,
+    /// 成段重复（连续 ≥ 4 小节、逐小节匹配到前面某段）。
+    pub repeated_passages: Vec<RepeatedPassage>,
+}
+
+/// `repetition.best_matches[]` 的一条。
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct BestMatch {
+    /// 较早的小节（1 起）。
+    pub bar_a: u64,
+    /// 较晚的小节（1 起；`bar_b - bar_a >= 4`）。
+    pub bar_b: u64,
+    /// 余弦相似度（0–1，保留 2 位小数）。
+    pub similarity: f64,
+}
+
+/// `repetition.repeated_passages[]` 的一条。
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct RepeatedPassage {
+    /// 重复段的小节区间 `[起, 止]`（含端点）。
+    pub bars: [u64; 2],
+    /// 匹配到的源段区间 `[起, 止]`（含端点；与 `bars` 同长）。
+    pub source_bars: [u64; 2],
+    /// 该段逐小节相似度的均值（0–1，保留 2 位小数）。
+    pub mean_similarity: f64,
 }
 
 /// `song_meta`（设计稿 §8.2）。

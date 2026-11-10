@@ -8,9 +8,9 @@
 
 use yeban_dsp::song_overview::{
     AnalysisOptions, AnomalyType, AudioInput, BAND_DB_FLOOR, NO_ENVELOPE, NO_LOUDNESS_READING_LUFS,
-    NoteEvent, ScoreInput, SectionMarker, TensionProfile, adaptive_weights, analyze_song_overview,
-    analyze_song_overview_with_options, bilateral_smooth, circle_of_fifths_distance, envelope_band,
-    envelope_deviation, roughness_of_midis,
+    NoteEvent, ScoreInput, SectionMarker, TensionProfile, adaptive_weights, analyze_repetition,
+    analyze_song_overview, analyze_song_overview_with_options, bilateral_smooth,
+    circle_of_fifths_distance, envelope_band, envelope_deviation, roughness_of_midis,
 };
 
 /// 正弦夹具（相位用 `f64` 算），返回交错立体声。
@@ -541,7 +541,7 @@ fn output_shape_matches_design_schema() {
         sample_rate: 48_000.0,
     };
     let overview = analyze_song_overview(&score_with(notes), Some(&audio));
-    assert_eq!(overview.schema_version, "1.0");
+    assert_eq!(overview.schema_version, "1.1");
     assert_eq!(
         overview.band_definitions_hz,
         [
@@ -1033,4 +1033,202 @@ fn envelope_level_on_the_marker_itself_works() {
     let overview = analyze_song_overview_with_options(&score, None, &options);
     assert_eq!(overview.bar_series.envelope_lo[0], 0.75);
     assert_eq!(overview.bar_series.envelope_hi[0], 1.0);
+}
+
+/// 由 14 维行（张力、LUFS、谱面力度、旋律 Onset 率、占空比、打击 Onset 率、
+/// 8 频段 dB）拼一条 `BarSeries`（只为 `analyze_repetition` 的已知答案测试；
+/// 不进 14 维的列（色相、瞬时 LUFS、包络列）填与分析无关的固定值）。
+fn series_from_rows(rows: &[[f32; 14]]) -> yeban_dsp::song_overview::BarSeries {
+    let n = rows.len();
+    yeban_dsp::song_overview::BarSeries {
+        bar: (1..=n as u32).collect(),
+        time_sec: (0..n).map(|i| i as f32 * 2.0).collect(),
+        section: vec!["Untitled".to_string(); n],
+        tension: rows.iter().map(|r| r[0]).collect(),
+        valence_hue: vec![0.0; n],
+        lufs_short: rows.iter().map(|r| r[1]).collect(),
+        lufs_momentary_max: vec![NO_LOUDNESS_READING_LUFS; n],
+        score_dyn: rows.iter().map(|r| r[2]).collect(),
+        envelope_lo: vec![NO_ENVELOPE; n],
+        envelope_hi: vec![NO_ENVELOPE; n],
+        target_deviation: vec![0.0; n],
+        density_pitched_onsets_per_beat: rows.iter().map(|r| r[3]).collect(),
+        density_pitched_duty: rows.iter().map(|r| r[4]).collect(),
+        density_perc_onsets_per_beat: rows.iter().map(|r| r[5]).collect(),
+        bands_tilted_db: rows
+            .iter()
+            .map(|r| [r[6], r[7], r[8], r[9], r[10], r[11], r[12], r[13]])
+            .collect(),
+    }
+}
+
+/// 余弦 1.0 的容差：同一向量两次求模的 f32 舍入可使商偏离 1.0 不到 1e-6。
+fn assert_similarity_one(value: f32) {
+    assert!(
+        (value - 1.0).abs() < 1e-6,
+        "同一行与自身的相似度须为 1.0，实际 {value}"
+    );
+}
+
+#[test]
+fn repetition_identical_rows_are_similarity_one() {
+    // 8 行全同（非零行）：每对间隔 ≥ 4 的小节相似度均为 1.0。
+    let row = [
+        0.5, -20.0, 0.5, 2.0, 0.7, 1.0, -18.0, -14.0, -12.0, -11.0, -15.0, -19.0, -24.0, -31.0,
+    ];
+    let summary = analyze_repetition(&series_from_rows(&[row; 8]));
+    assert_eq!(summary.best_matches.len(), 5, "只保留前 5 对");
+    assert_eq!(summary.best_matches[0].bar_a, 1);
+    assert_eq!(summary.best_matches[0].bar_b, 5);
+    assert_similarity_one(summary.best_matches[0].similarity);
+    // 每小节都有间隔 4 的 1.0 匹配（1↔5、2↔6、3↔7、4↔8）⇒ 机械指数 1.0。
+    assert_eq!(summary.mechanical_index, 1.0);
+    // 滞后 4 的对角线长 4（5–8 对 1–4）；滞后 ≥ 5 的对角线至多 3 小节，
+    // 天然不成段 ⇒ 恰一段。
+    assert_eq!(summary.repeated_passages.len(), 1);
+    assert_eq!(summary.repeated_passages[0].bars, [5, 8]);
+    assert_eq!(summary.repeated_passages[0].source_bars, [1, 4]);
+    assert_similarity_one(summary.repeated_passages[0].mean_similarity);
+}
+
+#[test]
+fn repetition_four_bar_verbatim_repeat_is_reported() {
+    // 前 4 小节各不相同（张力/LUFS/力度逐小节拉开），后 4 小节逐字重复前 4 小节。
+    let a = [
+        [
+            0.1, -30.0, 0.2, 1.0, 0.5, 0.5, -20.0, -16.0, -14.0, -12.0, -16.0, -20.0, -25.0, -32.0,
+        ],
+        [
+            0.4, -20.0, 0.5, 2.0, 0.6, 1.0, -18.0, -14.0, -12.0, -11.0, -15.0, -19.0, -24.0, -31.0,
+        ],
+        [
+            0.7, -15.0, 0.8, 3.0, 0.7, 2.0, -16.0, -13.0, -11.0, -10.0, -14.0, -18.0, -23.0, -30.0,
+        ],
+        [
+            1.0, -10.0, 1.0, 4.0, 0.8, 3.0, -14.0, -12.0, -10.0, -9.0, -13.0, -17.0, -22.0, -29.0,
+        ],
+    ];
+    let rows = [a[0], a[1], a[2], a[3], a[0], a[1], a[2], a[3]];
+    let summary = analyze_repetition(&series_from_rows(&rows));
+    assert_eq!(summary.repeated_passages.len(), 1);
+    assert_eq!(summary.repeated_passages[0].bars, [5, 8]);
+    assert_eq!(summary.repeated_passages[0].source_bars, [1, 4]);
+    assert_similarity_one(summary.repeated_passages[0].mean_similarity);
+    assert_eq!(summary.mechanical_index, 1.0);
+    // 前 4 对 best_matches 是四组 1.0 的对角对（小节号升序）。
+    assert_eq!(summary.best_matches.len(), 5);
+    for (index, (a, b)) in [(1, 5), (2, 6), (3, 7), (4, 8)].iter().enumerate() {
+        assert_eq!(summary.best_matches[index].bar_a, *a);
+        assert_eq!(summary.best_matches[index].bar_b, *b);
+        assert_similarity_one(summary.best_matches[index].similarity);
+    }
+}
+
+#[test]
+fn repetition_single_bar_repeat_is_not_reported() {
+    // 8 行：中性底（LUFS −70、频段 −120 dB ⇒ 归一化全 0）上每行只在一个
+    // 维度上为 1；只有第 1 行与第 5 行同维（张力）。其余任意两行支撑不交 ⇒
+    // 相似度恰为 0.0。
+    let mut rows = [[0.0f32; 14]; 8];
+    for row in rows.iter_mut() {
+        row[1] = -70.0;
+        row[6..14].fill(-120.0);
+    }
+    rows[0][0] = 1.0;
+    rows[1][2] = 1.0;
+    rows[2][1] = 0.0; // LUFS 0 dB ⇒ 锚点归一化 1.0
+    rows[3][4] = 1.0;
+    rows[4][0] = 1.0;
+    rows[5][6] = 0.0; // 频段 0 dB ⇒ 锚点归一化 1.0
+    rows[6][13] = 0.0; // 频段 0 dB ⇒ 锚点归一化 1.0
+    rows[7][3] = 8.0; // 旋律 Onset 率 8 次/拍 ⇒ 锚点归一化 1.0
+    let summary = analyze_repetition(&series_from_rows(&rows));
+    assert_eq!(summary.best_matches[0].bar_a, 1);
+    assert_eq!(summary.best_matches[0].bar_b, 5);
+    assert_similarity_one(summary.best_matches[0].similarity);
+    assert_eq!(summary.best_matches[1].similarity, 0.0);
+    // 只有 1、5 两小节的最佳非邻匹配 ≥ 0.95 ⇒ 机械指数 2/8。
+    assert_eq!(summary.mechanical_index, 0.25);
+    // 滞后 4 的对角线上只有第 5 小节撞分（长 1），不成段。
+    assert!(summary.repeated_passages.is_empty());
+}
+
+#[test]
+fn repetition_empty_series_is_empty() {
+    let summary = analyze_repetition(&series_from_rows(&[]));
+    assert!(summary.best_matches.is_empty());
+    assert_eq!(summary.mechanical_index, 0.0);
+    assert!(summary.repeated_passages.is_empty());
+}
+
+#[test]
+fn repetition_verbatim_chorus_is_flagged_end_to_end() {
+    // 16 小节：同一 4 小节型（每小节 4 个四分音符，音高按小节位 60/62/64/66，
+    // 力度 80）连排 4 遍。中间 14 小节（2–15）各有间隔 4 的逐位相同对照 ⇒
+    // 机械指数至少 14/16；滞后 4 的对角线上有长 10 的 1.0 段 ⇒ 必有一段。
+    // （首尾两小节的冷启动/截断边效应只影响段的起止，不影响"有段"。）
+    let mut notes = Vec::new();
+    for bar in 0..16 {
+        let midi = 60 + (bar % 4) as u8 * 2;
+        for beat in 0..4 {
+            notes.push(note(
+                bar as f32 * 4.0 + beat as f32,
+                1.0,
+                midi,
+                80,
+                0,
+                false,
+            ));
+        }
+    }
+    let overview = analyze_song_overview(&score_with(notes), None);
+    assert_eq!(overview.schema_version, "1.1");
+    assert!(
+        overview.repetition.mechanical_index >= 0.875,
+        "机械指数至少 14/16，实际 {}",
+        overview.repetition.mechanical_index
+    );
+    assert!(
+        !overview.repetition.repeated_passages.is_empty(),
+        "4 遍逐字重复必须报出成段"
+    );
+    assert!(
+        overview
+            .diagnostics()
+            .iter()
+            .any(|a| a.anomaly_type == AnomalyType::ArrangementRepetition),
+        "成段重复必须进 detected_anomalies"
+    );
+}
+
+#[test]
+fn repetition_no_passage_for_short_song() {
+    // 7 小节：同一 4 小节型连排，第 5–7 小节是该型的头 3 小节。
+    // 结构界：滞后 4 的对角线最长 7 − 4 = 3 小节 < MIN_REPEAT_BARS，
+    // 任何滞后都成不了段 ⇒ 不报段落、不报异常（与相似度值无关）。
+    // 贯穿变化的曲子不报段落，靠真实材料耳验裁决（设计稿 §5），不在此断言。
+    let mut notes = Vec::new();
+    for bar in 0..7 {
+        let midi = 60 + (bar % 4) as u8 * 2;
+        for beat in 0..4 {
+            notes.push(note(
+                bar as f32 * 4.0 + beat as f32,
+                1.0,
+                midi,
+                80,
+                0,
+                false,
+            ));
+        }
+    }
+    let overview = analyze_song_overview(&score_with(notes), None);
+    assert_eq!(overview.song_meta.total_bars, 7);
+    assert!(overview.repetition.repeated_passages.is_empty());
+    assert!(
+        !overview
+            .diagnostics()
+            .iter()
+            .any(|a| a.anomaly_type == AnomalyType::ArrangementRepetition),
+        "7 小节成不了 4 小节段，不得报 arrangement_repetition"
+    );
 }

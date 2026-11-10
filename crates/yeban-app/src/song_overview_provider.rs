@@ -79,8 +79,8 @@ use yeban_mcp::domain::song_overview::{
     Profile as McpProfile, Resolution, SongOverviewProvider, SongOverviewRequest,
 };
 use yeban_mcp::output_schema::{
-    BAND_DEFINITIONS_HZ, BarRow, DetectedAnomaly, SongMeta, SongOverview as McpSongOverview,
-    StructuralSummary,
+    BAND_DEFINITIONS_HZ, BarRow, BestMatch, DetectedAnomaly, RepeatedPassage, RepetitionSummary,
+    SongMeta, SongOverview as McpSongOverview, StructuralSummary,
 };
 use yeban_mcp::tools::ErrorCode;
 use yeban_model::song_overview::score_input_from_project;
@@ -627,6 +627,34 @@ pub fn map_song_overview(
                 })
                 .collect(),
         },
+        // schema 1.1：段内自相似度摘要原样搬运（只做 f32 → f64；取整不在这里，
+        // 见 `domain::song_overview::rounded`）。
+        repetition: RepetitionSummary {
+            best_matches: overview
+                .repetition
+                .best_matches
+                .iter()
+                .map(|best| BestMatch {
+                    bar_a: u64::from(best.bar_a),
+                    bar_b: u64::from(best.bar_b),
+                    similarity: f64::from(best.similarity),
+                })
+                .collect(),
+            mechanical_index: f64::from(overview.repetition.mechanical_index),
+            repeated_passages: overview
+                .repetition
+                .repeated_passages
+                .iter()
+                .map(|passage| RepeatedPassage {
+                    bars: [u64::from(passage.bars[0]), u64::from(passage.bars[1])],
+                    source_bars: [
+                        u64::from(passage.source_bars[0]),
+                        u64::from(passage.source_bars[1]),
+                    ],
+                    mean_similarity: f64::from(passage.mean_similarity),
+                })
+                .collect(),
+        },
         bar_series,
     }
 }
@@ -661,8 +689,9 @@ fn expand_to_beats(bar_series: Vec<BarRow>, beats_per_bar: u32, base_bpm: f64) -
 mod tests {
     use super::*;
     use yeban_dsp::song_overview::{
-        Anomaly, AnomalyType, BarSeries, SongMeta as DspSongMeta,
-        StructuralSummary as DspStructuralSummary,
+        Anomaly, AnomalyType, BarSeries, BestMatch as DspBestMatch,
+        RepeatedPassage as DspRepeatedPassage, RepetitionSummary as DspRepetitionSummary,
+        SongMeta as DspSongMeta, StructuralSummary as DspStructuralSummary,
     };
     use yeban_model::SamplerBinding;
     use yeban_model::samples::demo_project;
@@ -670,7 +699,7 @@ mod tests {
     /// 两小节的手算 dsp 夹具（列式；与 `map_song_overview` 的输入形状一致）。
     fn two_bar_dsp_overview() -> DspSongOverview {
         DspSongOverview {
-            schema_version: "1.0",
+            schema_version: "1.1",
             song_meta: DspSongMeta {
                 total_bars: 2,
                 duration_sec: 4.0,
@@ -693,6 +722,8 @@ mod tests {
                     description: "Band 3 (250-500Hz) exceeds tilted balance by +5.2 dB".to_owned(),
                 }],
             },
+            // schema 1.1：两小节成不了段，重复摘要为空。
+            repetition: DspRepetitionSummary::default(),
             bar_series: BarSeries {
                 bar: vec![1, 2],
                 time_sec: vec![0.0, 2.0],
@@ -731,7 +762,7 @@ mod tests {
     #[test]
     fn mapping_turns_columns_into_rows() {
         let mapped = map_song_overview(&two_bar_dsp_overview(), Resolution::Bar, 4);
-        assert_eq!(mapped.schema_version, "1.0");
+        assert_eq!(mapped.schema_version, "1.1");
         assert_eq!(mapped.song_meta.total_bars, 2);
         assert_eq!(mapped.song_meta.duration_sec, 4.0);
         assert_eq!(mapped.song_meta.base_bpm, 120.0);
@@ -789,6 +820,46 @@ mod tests {
     }
 
     #[test]
+    fn mapping_copies_a_non_empty_repetition_summary() {
+        // schema 1.1：非空重复摘要原样搬运（f32 → f64 逐位；取整不在映射层）。
+        // 值取 8 小节歌的结构（[5, 8] 重复 [1, 4]），只测映射、不测检测。
+        let mut dsp = two_bar_dsp_overview();
+        dsp.repetition = DspRepetitionSummary {
+            best_matches: vec![
+                DspBestMatch {
+                    bar_a: 1,
+                    bar_b: 5,
+                    similarity: 0.97,
+                },
+                DspBestMatch {
+                    bar_a: 2,
+                    bar_b: 6,
+                    similarity: 0.5,
+                },
+            ],
+            mechanical_index: 0.5,
+            repeated_passages: vec![DspRepeatedPassage {
+                bars: [5, 8],
+                source_bars: [1, 4],
+                mean_similarity: 0.97,
+            }],
+        };
+        let mapped = map_song_overview(&dsp, Resolution::Bar, 4);
+        assert_eq!(mapped.repetition.best_matches.len(), 2);
+        assert_eq!(mapped.repetition.best_matches[0].bar_a, 1);
+        assert_eq!(mapped.repetition.best_matches[0].bar_b, 5);
+        assert_eq!(mapped.repetition.best_matches[0].similarity, 0.97f32 as f64);
+        assert_eq!(mapped.repetition.mechanical_index, 0.5f32 as f64);
+        assert_eq!(mapped.repetition.repeated_passages.len(), 1);
+        assert_eq!(mapped.repetition.repeated_passages[0].bars, [5, 8]);
+        assert_eq!(mapped.repetition.repeated_passages[0].source_bars, [1, 4]);
+        assert_eq!(
+            mapped.repetition.repeated_passages[0].mean_similarity,
+            0.97f32 as f64
+        );
+    }
+
+    #[test]
     fn beat_resolution_expands_bars_and_steps_by_beat_seconds() {
         let mapped = map_song_overview(&two_bar_dsp_overview(), Resolution::Beat, 4);
         assert_eq!(mapped.bar_series.len(), 8, "2 小节 × 4 拍 = 8 行");
@@ -833,7 +904,7 @@ mod tests {
     #[test]
     fn mapping_an_empty_overview_stays_empty() {
         let empty = DspSongOverview {
-            schema_version: "1.0",
+            schema_version: "1.1",
             song_meta: DspSongMeta {
                 total_bars: 0,
                 duration_sec: 0.0,
@@ -849,6 +920,7 @@ mod tests {
                 dynamic_range_lu: 0.0,
                 detected_anomalies: Vec::new(),
             },
+            repetition: DspRepetitionSummary::default(),
             bar_series: BarSeries {
                 bar: Vec::new(),
                 time_sec: Vec::new(),

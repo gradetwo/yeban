@@ -21,8 +21,9 @@
 //!
 //! 诊断（[`Anomaly`]，MCP 与 UI 共用）：低频中段淤积（`low_mid_buildup`）、
 //! 总线压缩压扁（`compression_squash`）与期望带偏离（`envelope_deviation`，
-//! Phase 2），均为纯逻辑阈值判定。谱面力度虚线（设计稿 §5.1）直接画
-//! `bar_series.score_dyn` 列，不另算。
+//! Phase 2），均为纯逻辑阈值判定；段内自相似度（[`analyze_repetition`]）
+//! 找跨段重复（`arrangement_repetition`，设计稿 §8.2 追加，schema 1.1），
+//! 谱面力度虚线（设计稿 §5.1）直接画 `bar_series.score_dyn` 列，不另算。
 //!
 //! Phase 2（设计稿 §3.5/§3.6/§5.1）：曲风预设 3 档 + 方差自适应权重
 //! （[`TensionProfile`] / [`adaptive_weights`]）、期望结构包络带与偏离告警
@@ -38,8 +39,8 @@ use crate::loudness::GatedLoudness;
 use realfft::RealFftPlanner;
 use std::cmp::Ordering;
 
-/// 设计稿 schema 版本（§8.2）。
-pub const SCHEMA_VERSION: &str = "1.0";
+/// 设计稿 schema 版本（§8.2；1.1 起加 `repetition` 与 `arrangement_repetition`）。
+pub const SCHEMA_VERSION: &str = "1.1";
 
 /// 8 频段边界（Hz），顺序为 Sub → Air（设计稿 §4.1）。
 pub const BAND_DEFINITIONS_HZ: [[f32; 2]; 8] = [
@@ -254,6 +255,19 @@ pub const ROUGHNESS_REFERENCE: f64 = 0.5;
 pub const LOW_MID_EXCESS_DB: f32 = 4.0;
 /// 诊断所需的最短连续小节数。
 pub const DIAGNOSTIC_MIN_BARS: usize = 4;
+
+/// 段内自相似度：重复判定阈值（余弦相似度；设计稿 §8.2 追加：重复段检查）。
+pub const REPEAT_SIMILARITY: f32 = 0.95;
+/// 段内自相似度：成段重复的最短小节数（短于此只算撞分，不报段落）。
+pub const MIN_REPEAT_BARS: usize = 4;
+/// 段内自相似度：邻居间隔下限（小节）：间隔小于此的对是同质邻居，
+/// 不是跨段重复，候选时排除。
+pub const NEIGHBOR_GAP_BARS: usize = 4;
+/// 段内自相似度：`best_matches` 最多保留几对。
+pub const BEST_MATCHES_LIMIT: usize = 5;
+/// 段内自相似度：疏密 Onset 率的固定锚点（次/拍）：`DENSITY_ANCHOR_NOTES_PER_SEC`
+/// （16 音符/秒）在 [`DEFAULT_BPM`]（120 BPM，0.5 秒/拍）下折合 8 次/拍。
+pub const DENSITY_ONSETS_PER_BEAT_ANCHOR: f32 = 8.0;
 /// 压缩压扁诊断阈值：谱面力度在窗口内至少上升这么多（0–1 归一化力度）。
 pub const SQUASH_SCORE_RISE: f32 = 0.25;
 /// 压缩压扁诊断阈值：渲染 LUFS 在窗口内至多上升这么多（LU）。
@@ -453,7 +467,8 @@ pub struct Anomaly {
     pub description: String,
 }
 
-/// 结构异常的类型（设计稿 §8.2 示例列出的两类；Phase 2 加期望带偏离一类）。
+/// 结构异常的类型（设计稿 §8.2 示例列出的两类；Phase 2 加期望带偏离一类；
+/// schema 1.1 加段内重复一类）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum AnomalyType {
     /// 低频中段淤积：Band 3（250–500 Hz）持续高于其余频段均值。
@@ -463,6 +478,9 @@ pub enum AnomalyType {
     /// 期望带偏离（Phase 2，设计稿 §3.5）：实际张力超出用户标注的期望带
     /// 边界 [`ENVELOPE_DEVIATION_ALERT`] 以上。
     EnvelopeDeviation,
+    /// 成段重复（schema 1.1，设计稿 §8.2 追加）：连续 ≥ [`MIN_REPEAT_BARS`]
+    /// 小节逐小节匹配到前面某段（相似度 ≥ [`REPEAT_SIMILARITY`]）。
+    ArrangementRepetition,
 }
 
 impl AnomalyType {
@@ -473,6 +491,7 @@ impl AnomalyType {
             Self::LowMidBuildup => "low_mid_buildup",
             Self::CompressionSquash => "compression_squash",
             Self::EnvelopeDeviation => "envelope_deviation",
+            Self::ArrangementRepetition => "arrangement_repetition",
         }
     }
 }
@@ -504,6 +523,40 @@ pub struct StructuralSummary {
     pub dynamic_range_lu: f32,
     /// 检测到的结构异常（与 [`SongOverview::diagnostics`] 同一份列表）。
     pub detected_anomalies: Vec<Anomaly>,
+}
+
+/// 最相似小节对（`repetition.best_matches` 的一条；设计稿 §8.2 追加，schema 1.1）。
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct BestMatch {
+    /// 较早的小节（1-based）。
+    pub bar_a: u32,
+    /// 较晚的小节（1-based；`bar_b - bar_a >= NEIGHBOR_GAP_BARS`）。
+    pub bar_b: u32,
+    /// 余弦相似度（0–1）。
+    pub similarity: f32,
+}
+
+/// 成段重复（`repetition.repeated_passages` 的一条）：连续 ≥ [`MIN_REPEAT_BARS`]
+/// 小节逐小节匹配到前面某段。
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct RepeatedPassage {
+    /// 重复段的小节区间（闭区间，1-based）。
+    pub bars: [u32; 2],
+    /// 匹配到的源段区间（闭区间，1-based；与 `bars` 同长）。
+    pub source_bars: [u32; 2],
+    /// 该段逐小节相似度的均值（0–1）。
+    pub mean_similarity: f32,
+}
+
+/// 段内自相似度摘要（设计稿 §8.2 追加：`SongOverview.repetition`，schema 1.1）。
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct RepetitionSummary {
+    /// 相似度最高的前 [`BEST_MATCHES_LIMIT`] 对小节（降序；间隔 ≥ [`NEIGHBOR_GAP_BARS`]）。
+    pub best_matches: Vec<BestMatch>,
+    /// 机械指数（0–1）：最佳非邻匹配 ≥ [`REPEAT_SIMILARITY`] 的小节占比。
+    pub mechanical_index: f32,
+    /// 成段重复（连续 ≥ [`MIN_REPEAT_BARS`] 小节、逐小节匹配到前面某段）。
+    pub repeated_passages: Vec<RepeatedPassage>,
 }
 
 /// 小节级列式序列（设计稿 §8.2：MCP 默认返回小节级**列式**数组，
@@ -579,6 +632,8 @@ pub struct SongOverview {
     pub effective_weights: [f32; 5],
     /// 结构摘要（含高潮小节、动态范围与异常列表）。
     pub structural_summary: StructuralSummary,
+    /// 段内自相似度摘要（schema 1.1：最相似小节对、机械指数与成段重复）。
+    pub repetition: RepetitionSummary,
     /// 小节级列式序列。
     pub bar_series: BarSeries,
 }
@@ -1084,6 +1139,180 @@ struct BeatFeatures {
     density_perc: f32,
 }
 
+/// 一小节的 14 维自相似度特征（固定锚点归一化到 0–1，不做全曲 Min-Max 拉伸）：
+/// 张力 1、短时 LUFS 1（锚点 −70–0 LUFS）、谱面力度 1、疏密 3
+/// （旋律 Onset 率、旋律占空比、打击 Onset 率）、8 频段能量 8
+/// （锚点 −120–0 dB）。调用方保证各列等长（见 [`BarSeries`]）。
+fn repetition_feature_row(series: &BarSeries, index: usize) -> [f32; 14] {
+    let mut row = [0.0f32; 14];
+    row[0] = series.tension[index];
+    row[1] = anchored(series.lufs_short[index], NO_LOUDNESS_READING_LUFS, 0.0);
+    row[2] = series.score_dyn[index];
+    row[3] = anchored(
+        series.density_pitched_onsets_per_beat[index],
+        0.0,
+        DENSITY_ONSETS_PER_BEAT_ANCHOR,
+    );
+    row[4] = series.density_pitched_duty[index];
+    row[5] = anchored(
+        series.density_perc_onsets_per_beat[index],
+        0.0,
+        DENSITY_ONSETS_PER_BEAT_ANCHOR,
+    );
+    for band in 0..8 {
+        row[6 + band] = anchored(series.bands_tilted_db[index][band], BAND_DB_FLOOR, 0.0);
+    }
+    row
+}
+
+/// 余弦相似度（0–1）：零向量小节（全列为 0，如静默小节）与任何小节的
+/// 相似度记 0（余弦未定义；静默不算重复）。
+fn cosine_similarity(left: &[f32; 14], right: &[f32; 14]) -> f32 {
+    let mut dot = 0.0f32;
+    let mut norm_left = 0.0f32;
+    let mut norm_right = 0.0f32;
+    for index in 0..14 {
+        dot += left[index] * right[index];
+        norm_left += left[index] * left[index];
+        norm_right += right[index] * right[index];
+    }
+    if norm_left <= 0.0 || norm_right <= 0.0 {
+        return 0.0;
+    }
+    (dot / libm::sqrtf(norm_left * norm_right)).clamp(0.0, 1.0)
+}
+
+/// 段内自相似度分析（设计稿 §8.2 追加，schema 1.1）：对 [`BarSeries`] 的
+/// 14 维小节特征逐对算余弦相似度，找跨段重复。纯函数，无音频 I/O。
+///
+/// - `best_matches`：间隔 ≥ [`NEIGHBOR_GAP_BARS`] 的小节对按相似度降序，
+///   取前 [`BEST_MATCHES_LIMIT`] 对；并列时小节号小的在前（确定性）。
+/// - `mechanical_index`：最佳非邻匹配 ≥ [`REPEAT_SIMILARITY`] 的小节占比。
+/// - `repeated_passages`：按滞后（`lag = 后段小节 − 前段小节`）扫对角线：
+///   同一滞后上连续 ≥ [`MIN_REPEAT_BARS`] 小节逐小节相似度 ≥ 阈值 ⇒ 一段；
+///   重叠的段按（长度降序、滞后升序、起点升序）贪心取，同一小节只进一段。
+///   滞后 < [`MIN_REPEAT_BARS`] 的对角线最长不过 `n − lag < MIN_REPEAT_BARS`，
+///   天然不成段 —— 只有间隔 ≥ [`NEIGHBOR_GAP_BARS`] 的跨段重复才能成段。
+#[must_use]
+pub fn analyze_repetition(series: &BarSeries) -> RepetitionSummary {
+    let n = series.len();
+    if n == 0 {
+        return RepetitionSummary::default();
+    }
+    let features: Vec<[f32; 14]> = (0..n)
+        .map(|index| repetition_feature_row(series, index))
+        .collect();
+    // 对称相似度矩阵（对角线为 0，不用；每对算两次，n ≤ 200 时约 4 万对 × 14 维，
+    // 1 ms 级 —— 可读性优先于这点重复计算）。
+    let similarity: Vec<Vec<f32>> = features
+        .iter()
+        .enumerate()
+        .map(|(i, left)| {
+            features
+                .iter()
+                .enumerate()
+                .map(|(j, right)| {
+                    if i == j {
+                        0.0
+                    } else {
+                        cosine_similarity(left, right)
+                    }
+                })
+                .collect()
+        })
+        .collect();
+    let mut pairs: Vec<(usize, usize, f32)> = Vec::new();
+    for (i, row) in similarity.iter().enumerate() {
+        for (j, &value) in row.iter().enumerate().skip(i + NEIGHBOR_GAP_BARS) {
+            pairs.push((i, j, value));
+        }
+    }
+    pairs.sort_by(|a, b| {
+        b.2.partial_cmp(&a.2)
+            .unwrap_or(Ordering::Equal)
+            .then(a.0.cmp(&b.0))
+            .then(a.1.cmp(&b.1))
+    });
+    let best_matches: Vec<BestMatch> = pairs
+        .iter()
+        .take(BEST_MATCHES_LIMIT)
+        .map(|&(i, j, value)| BestMatch {
+            bar_a: (i as u32) + 1,
+            bar_b: (j as u32) + 1,
+            similarity: value,
+        })
+        .collect();
+    let mut mechanical = 0usize;
+    for (i, row) in similarity.iter().enumerate() {
+        let best = row
+            .iter()
+            .enumerate()
+            .filter(|(j, _)| i.abs_diff(*j) >= NEIGHBOR_GAP_BARS)
+            .map(|(_, &value)| value)
+            .fold(0.0f32, f32::max);
+        if best >= REPEAT_SIMILARITY {
+            mechanical += 1;
+        }
+    }
+    let mechanical_index = mechanical as f32 / n as f32;
+    let mut candidates: Vec<RepeatedPassage> = Vec::new();
+    for lag in NEIGHBOR_GAP_BARS..n {
+        let mut start = lag;
+        while start < n {
+            if similarity[start][start - lag] < REPEAT_SIMILARITY {
+                start += 1;
+                continue;
+            }
+            let mut end = start;
+            while end + 1 < n && similarity[end + 1][end + 1 - lag] >= REPEAT_SIMILARITY {
+                end += 1;
+            }
+            let len = end - start + 1;
+            if len >= MIN_REPEAT_BARS {
+                let mean = (start..=end)
+                    .map(|index| similarity[index][index - lag])
+                    .sum::<f32>()
+                    / len as f32;
+                candidates.push(RepeatedPassage {
+                    bars: [(start as u32) + 1, (end as u32) + 1],
+                    source_bars: [((start - lag) as u32) + 1, ((end - lag) as u32) + 1],
+                    mean_similarity: mean,
+                });
+            }
+            start = end + 1;
+        }
+    }
+    candidates.sort_by(|a, b| {
+        let len_a = a.bars[1] - a.bars[0];
+        let len_b = b.bars[1] - b.bars[0];
+        let lag_a = a.bars[0] - a.source_bars[0];
+        let lag_b = b.bars[0] - b.source_bars[0];
+        len_b
+            .cmp(&len_a)
+            .then(lag_a.cmp(&lag_b))
+            .then(a.bars[0].cmp(&b.bars[0]))
+    });
+    let mut claimed = vec![false; n];
+    let mut repeated_passages: Vec<RepeatedPassage> = Vec::new();
+    for passage in candidates {
+        let start = (passage.bars[0] - 1) as usize;
+        let end = (passage.bars[1] - 1) as usize;
+        if claimed[start..=end].iter().any(|&taken| taken) {
+            continue;
+        }
+        for taken in &mut claimed[start..=end] {
+            *taken = true;
+        }
+        repeated_passages.push(passage);
+    }
+    repeated_passages.sort_by_key(|passage| passage.bars[0]);
+    RepetitionSummary {
+        best_matches,
+        mechanical_index,
+        repeated_passages,
+    }
+}
+
 // ---------------------------------------------------------------------------
 // 主入口
 // ---------------------------------------------------------------------------
@@ -1491,6 +1720,24 @@ pub fn analyze_song_overview_with_options(
             &series.lufs_short,
         ));
     }
+    // -- 段内自相似度与重复段诊断（schema 1.1）--
+    // 成段重复每段一条 `arrangement_repetition` 异常（与音频无关，纯谱面
+    // 序列即可判；单小节撞分不成段，故只看 `repeated_passages`）。
+    let repetition = analyze_repetition(&series);
+    for passage in &repetition.repeated_passages {
+        anomalies.push(Anomaly {
+            bars: passage.bars,
+            anomaly_type: AnomalyType::ArrangementRepetition,
+            description: format!(
+                "Bars {}-{} repeat bars {}-{} (mean similarity {:.2})",
+                passage.bars[0],
+                passage.bars[1],
+                passage.source_bars[0],
+                passage.source_bars[1],
+                passage.mean_similarity
+            ),
+        });
+    }
 
     SongOverview {
         schema_version: SCHEMA_VERSION,
@@ -1509,6 +1756,7 @@ pub fn analyze_song_overview_with_options(
             dynamic_range_lu,
             detected_anomalies: anomalies,
         },
+        repetition,
         bar_series: series,
     }
 }
