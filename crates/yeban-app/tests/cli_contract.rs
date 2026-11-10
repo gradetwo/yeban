@@ -923,6 +923,101 @@ fn default_artifact_refuses_the_song_overview_switch() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// 判据 B7e: **默认产物层面**拒绝 `--apply-ops`。
+///
+/// 与 B7d 同一条纪律：执行管线（`parse_ops` / `compile` / `UndoPort` 提交）全住在
+/// `yeban-mcp`，默认构建里那条依赖边不存在 ⇒ 必须是以用法错误（退出码 2）被拒、并
+/// **点名**缺的 feature，绝不静默地"以为改了其实没改"。
+///
+/// 为什么只在默认构建里跑：带 feature 时它是合法的无窗口开关，正面判据是同包的
+/// `tests/apply_ops.rs`（改名走 `--save-as` 回读即是新名）。
+#[cfg(not(feature = "in-process-mcp"))]
+#[test]
+fn default_artifact_refuses_the_apply_ops_switch() {
+    let dir = scratch_dir("apply-ops-not-compiled");
+    let ops = dir.join("ops.json");
+    std::fs::write(
+        &ops,
+        r#"{"trackId": "01J8Z5Q0R7K3M9X2V4B6N8P0T1", "ops": [{"kind": "setTrackName", "trackId": "01J8Z5Q0R7K3M9X2V4B6N8P0T1", "name": "新鼓"}]}"#,
+    )
+    .expect("写 ops 文件");
+    let target = dir.join("never.yeban");
+    let run = invoke(&[
+        "--project-sample",
+        "default",
+        "--apply-ops",
+        ops.to_str().expect("utf8"),
+        "--save-as",
+        target.to_str().expect("utf8"),
+    ]);
+    assert_eq!(
+        run.code, 2,
+        "默认产物必须拒绝 --apply-ops; stderr={}",
+        run.stderr
+    );
+    assert!(
+        run.stderr.contains("--apply-ops") && run.stderr.contains("in-process-mcp"),
+        "拒绝必须同时点名开关与缺的 feature: {}",
+        run.stderr
+    );
+    assert!(
+        run.stderr.contains("用法:"),
+        "用法错误必须带用法提示: {}",
+        run.stderr
+    );
+    assert!(run.stdout.is_empty(), "不该有 stdout");
+    assert!(!target.exists(), "被拒的开关不许写出任何文件");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// 判据 B7f: **默认产物层面**拒绝 `--export-stems`。
+///
+/// 与 B7d 同一条纪律：渲染与落盘（`stems::export` / `stems::write`）全住在
+/// `yeban-mcp`，默认构建里那条依赖边不存在 ⇒ 必须是以用法错误（退出码 2）被拒、并
+/// **点名**缺的 feature，绝不静默地"以为导了其实没导"。
+///
+/// 为什么只在默认构建里跑：带 feature 时它是合法的无窗口开关，正面判据是同包的
+/// `tests/export_stems.rs`（每条轨各得一个有效 32-bit Float WAV）。
+#[cfg(not(feature = "in-process-mcp"))]
+#[test]
+fn default_artifact_refuses_the_export_stems_switch() {
+    let dir = scratch_dir("export-stems-not-compiled");
+    let out = dir.join("stems");
+    std::fs::create_dir(&out).expect("建输出目录");
+    let run = invoke(&[
+        "--project-sample",
+        "default",
+        "--export-stems",
+        out.to_str().expect("utf8"),
+    ]);
+    assert_eq!(
+        run.code, 2,
+        "默认产物必须拒绝 --export-stems; stderr={}",
+        run.stderr
+    );
+    assert!(
+        run.stderr.contains("--export-stems") && run.stderr.contains("in-process-mcp"),
+        "拒绝必须同时点名开关与缺的 feature: {}",
+        run.stderr
+    );
+    assert!(
+        run.stderr.contains("用法:"),
+        "用法错误必须带用法提示: {}",
+        run.stderr
+    );
+    assert!(run.stdout.is_empty(), "不该有 stdout");
+    assert!(
+        std::fs::read_dir(&out)
+            .expect("读输出目录")
+            .next()
+            .is_none(),
+        "被拒的开关不许写出任何文件"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// 判据 B8: `--export-elements` 与 `--dump-elements` 同源（同一批行、同一个字节数）。
 #[test]
 fn export_elements_matches_dump_elements() {

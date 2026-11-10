@@ -197,6 +197,24 @@ pub mod song_overview_provider;
 #[cfg(feature = "in-process-mcp")]
 pub mod song_overview_export;
 
+/// `--apply-ops`：批量编辑（ops）的**批处理**出口。
+///
+/// 与 `song_overview_export` 同一个 `cfg` 门 —— 执行管线（`parse_ops` /
+/// `compile` / `UndoPort` 提交）全住在 `yeban-mcp`，那个依赖边只在
+/// `in-process-mcp` 下存在。默认构建里这个开关**存在但会拒绝**
+/// （`--features in-process-mcp` 的用法错误，见 `cli::ParseError::ApplyOpsNotCompiled`）。
+#[cfg(feature = "in-process-mcp")]
+pub mod apply_ops;
+
+/// `--export-stems`：分轨导出的**批处理**出口。
+///
+/// 与 `song_overview_export` 同一个 `cfg` 门 —— 渲染与落盘（`stems::export` /
+/// `stems::write`）全住在 `yeban-mcp`，那个依赖边只在 `in-process-mcp`
+/// 下存在。默认构建里这个开关**存在但会拒绝**
+/// （`--features in-process-mcp` 的用法错误，见 `cli::ParseError::ExportStemsNotCompiled`）。
+#[cfg(feature = "in-process-mcp")]
+pub mod export_stems;
+
 // ---------------------------------------------------------------------------
 // 生产窗口的运行期重投影钩子 (`ROAD-M4-008` 选项 (a) 第 (b) 项, 2026-10-06)
 // ---------------------------------------------------------------------------

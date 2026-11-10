@@ -180,6 +180,41 @@ pub const SONG_OVERVIEW_SWITCH: &str = "--export-song-overview";
 /// 只能来自那里。⛔ 本仓不新增第七条 feature —— 一条出口、一个开关。
 pub const SONG_OVERVIEW_FEATURE: &str = "in-process-mcp";
 
+/// `--apply-ops` 的字面值（批量编辑 ops 的**批处理**出口，B 级缺口）。
+///
+/// 与 [`SONG_OVERVIEW_SWITCH`] 同一个理由：默认构建的用法文本与"没编译它"的
+/// 错误信息都要打得出来，因此字面值住在这里，而不住在会被 `cfg` 掉的
+/// [`crate::apply_ops`] 里。文件格式就是 `yeban_edit_notes` 的实参对象
+/// （`{"trackId"?, "clipId"?, "ops": [...]}`）。
+pub const APPLY_OPS_SWITCH: &str = "--apply-ops";
+
+/// `--export-stems` 的字面值（分轨导出的**批处理**出口，B 级缺口）。
+///
+/// 与 [`SONG_OVERVIEW_SWITCH`] 同一个理由：默认构建的用法文本与"没编译它"的
+/// 错误信息都要打得出来，因此字面值住在这里，而不住在会被 `cfg` 掉的
+/// [`crate::export_stems`] 里。值是输出目录（**必须已存在**，不自动创建）。
+pub const EXPORT_STEMS_SWITCH: &str = "--export-stems";
+
+/// `--dry-run` 的字面值（只修饰 [`APPLY_OPS_SWITCH`] 的布尔开关：模拟，不写盘）。
+///
+/// 与 `--overview-score-only` 同一个定位：修饰器，不是动作；它本身不在
+/// `ACTION_SWITCHES` 里。没有 `--apply-ops` 时它无处落地 ⇒ 用法错误。
+pub const DRY_RUN_SWITCH: &str = "--dry-run";
+
+/// 让 [`APPLY_OPS_SWITCH`] 真的可执行的那个 feature 名。
+///
+/// 就是 [`SONG_OVERVIEW_FEATURE`] 的那条**既有**依赖边（`yeban-mcp`）：执行管线
+/// （`parse_ops` / `compile` / `UndoPort` 提交）全住在那里。⛔ 本仓不新增
+/// 第七条 feature —— 一条出口、一个开关。
+pub const APPLY_OPS_FEATURE: &str = "in-process-mcp";
+
+/// 让 [`EXPORT_STEMS_SWITCH`] 真的可执行的那个 feature 名。
+///
+/// 就是 [`SONG_OVERVIEW_FEATURE`] 的那条**既有**依赖边（`yeban-mcp`）：渲染与
+/// 落盘（`stems::export` / `stems::write`）全住在那里。⛔ 本仓不新增第七条
+/// feature —— 一条出口、一个开关。
+pub const EXPORT_STEMS_FEATURE: &str = "in-process-mcp";
+
 /// `--export-logic` 的字面值（实验性 Logic Pro `.logicx` bundle 导出的**唯一**用户出口）。
 ///
 /// 同 [`ALS_EXPORT_SWITCH`] 的理由：默认构建的用法文本与"没编译它"的错误信息都要打得出来。
@@ -506,6 +541,34 @@ pub fn usage_text() -> String {
   --overview-score-only     `--export-song-overview` 的**口径修饰**: 跳过整曲渲染, 只出谱面
                            分析 (回执 `render=score-only`, JSON 多一个 `renderMode` 字段);
                            单独给 = 用法错误 (它只改那一份产物的口径, 没有东西可修饰)
+  --apply-ops <ops.json>    按 ops JSON 文件对当前工程做一次**批量编辑** (B 级缺口: ops 有
+                           53 种, 以前只有 MCP `propose_section` / `yeban_edit_notes` 能执行,
+                           都要 GUI + 会话); 文件格式就是 `yeban_edit_notes` 的实参对象
+                           (`{{\"trackId\"?, \"clipId\"?, \"ops\": [...]}}`, 顶层必须是对象,
+                           顶层数组不接受); 执行管线与它**同一条** (`parse_ops` → `compile` →
+                           一次 `Op::Batch` 提交, 来源 `OpOrigin::Import`, 一步撤销);
+                           真执行**必须**配 `--save-as <out.yeban>` (⛔ 不猜落点, 不原地改
+                           `--open` 的文件); 先全部解析、再一次性提交, 任何一步失败都在
+                           提交之前返回 ⇒ 不留半批; 回执一行: `applied-ops:` + 文件/条数/
+                           kind 列表/提交数; **只在** `--features {apply_ops_feature}` 的
+                           构建里存在 —— 默认构建给这个开关 = 用法错误 (退出码 {usage})
+  --dry-run                `--apply-ops` 的**口径修饰**: 模拟, 不写盘 (解析与编译照旧跑,
+                           提交改成在克隆上模拟施加 + 校验; 前置不满足时模拟照样失败,
+                           ⛔ 不伪造成功); 回执一行: `applied-ops-dryrun:` + 文件/条数/
+                           kind 列表 + `written=no`; 单独给 = 用法错误; 与 `--save-as`
+                           同给 = 用法错误 (保存的会是**没改过**的工程)
+  --export-stems <dir>     把当前工程的每条非 master 源节点轨各弹成一个 32-bit Float WAV,
+                           落到指定目录 (B 级缺口: 以前只有 MCP `yeban_export_stems` 能做,
+                           取分轨要开 GUI 挂 xvfb 一条条拿); 后端与它**同一份**
+                           (`stems::export` / `stems::write`, `N + 1` 次渲染);
+                           文件名 `{{序号}}.{{清洗后的轨名}}.wav` (序号最小 4 位, 字符集只留
+                           `[0-9A-Za-z._-]`, 其余逐个换 `_`); 主总线与非源节点轨**不出文件**
+                           但在回执里各有一行 `stem-skipped:` (⛔ 不静默丢轨); 目录**必须已存在**
+                           (⛔ 不自动创建), 目标文件已存在时整批拒绝 (⛔ 不覆盖); 落盘逐条原子,
+                           第 k 条失败时前 k−1 条保留、回执带续跑起点 (D5 部分成功是一等状态);
+                           回执: `exported-stems:` 汇总 + 每条 `stem:`; **只在**
+                           `--features {export_stems_feature}` 的构建里存在 —— 默认构建给
+                           这个开关 = 用法错误 (退出码 {usage})
   --export-als <path>      把当前工程导出成**实验性** Ableton Live Set (`.als`, 即
                            Gzip 压缩的 LiveSet XML) [ARCH-FMT-002]; 与 --export-midi
                            并列, 同属 ADR-0001 D47 的\"导出唯一出口 = app CLI\";
@@ -632,7 +695,7 @@ pub fn usage_text() -> String {
   yeban-app --open a.yeban 用打开的那个工程启动 GUI
   任一\"无窗口开关\"(--headless / --dump-elements / --print-shortcuts /
   --print-theme / --export-elements / --export-midi / --export-wav /
-  --export-song-overview / --export-als / --export-logic / --save-as /
+  --export-song-overview / --apply-ops / --export-stems / --export-als / --export-logic / --save-as /
   --record-wav / --sfz /
   --track-sampler / --midi-in / --midi-in-render / --midi-in-write-notes)
   都不构造窗口、不进事件循环, 并打印握手行 `{handshake}`。
@@ -665,11 +728,20 @@ pub fn usage_text() -> String {
                                退出码 {usage}: 后者会静默覆盖前者)
   --save-as 不给 --open        保存的是演示工程, 输出 `saved: ... from=sample=default` 明说
   --save-as 与 --headless      两者都是无窗口路径, 可以一起给 (保存不需要窗口)
-  --export-elements 与 --export-midi 与 --export-song-overview 与 --export-als
+  --export-elements 与 --export-midi 与 --export-song-overview 与 --export-wav
+  与 --export-stems 与 --export-als
   与 --export-logic 与 --save-as 任意组合
                                顺序固定: **先**导出元素, **再**导出 MIDI, **再**导出总览图,
-                               **再**导出 .als, **再**导出 .logicx, **最后**保存工程;
+                               **再**导出 WAV, **再**导出分轨, **再**导出 .als, **再**导出
+                               .logicx, **最后**保存工程;
                                任一导出失败 ⇒ 不写工程 (退出码 {export})
+  --apply-ops 与 --save-as    真执行**必须**配 --save-as (不给 = 用法错误, 退出码 {usage});
+                               编辑发生在内存里, 不给落点就等于改完即丢 (⛔ 不猜落点,
+                               不原地改 --open 的文件); `--dry-run` 时**不**配 --save-as
+                               (干跑不写盘; 同给 = 用法错误)
+  --apply-ops 不给 --open     编辑的是演示工程, 保存时输出 `saved: ... from=sample=...` 明说
+  --export-stems 不给 --open  同上: 导出的是演示工程, 回执里没有 from= 字段 —— 工程来源仍由
+                               `project-source:` 那一行给, 不再有第二个说法
   --export-midi 不给 --open    导出的是演示工程, 输出 `exported-midi: ... from=sample=...` 明说
   --export-wav 不给 --open    同上: 导出演示工程, 输出 `exported-wav: ... from=sample=...` 明说
   {overview_switch} 不给 --open
@@ -679,10 +751,11 @@ pub fn usage_text() -> String {
   --export-logic 不给 --open  导出的是演示工程, 输出 `exported-logic: ... from=sample=...` 明说
   --help / -h, --version / -V  短路: 出现即打印并退出 {ok}, 其余参数(含未知参数)不再检查
   --open / --save-as / --export-elements / --export-midi / {overview_switch} /
+  --apply-ops / --export-stems /
   --export-als / --export-logic
                                各只能给一次; 重复给 = 用法错误 (退出码 {usage})
   --headless-idle 与 --save-as / --export-elements / --export-midi /
-  {overview_switch} / --export-als / --export-logic / --dump-elements / --print-shortcuts
+  {overview_switch} / --apply-ops / --export-stems / --export-als / --export-logic / --dump-elements / --print-shortcuts
                                不能组合 = 用法错误 (退出码 {usage}): 那会把写盘 / 导出
                                **静默**丢掉, 而本模式的输出契约只有一条 —— 建树 + 空闲 + 读数
   --headless-idle 与 --idle-seconds
@@ -727,6 +800,9 @@ pub fn usage_text() -> String {
       {ui_mcp_switch} 与不该组合的开关同给或本次构建未编译 `{ui_mcp_feature}` /
       {overview_switch} 在本次构建未编译 `{overview_feature}` /
       --overview-score-only 单独给 (它只修饰 {overview_switch}) /
+      --apply-ops / --export-stems 在本次构建未编译 `in-process-mcp` /
+      --dry-run 单独给 (它只修饰 --apply-ops) /
+      --apply-ops 真执行没配 --save-as / --dry-run 与 --save-as 同给 /
       --export-als 在本次构建未编译 `{als_feature}` /
       --export-logic 在本次构建未编译 `{logic_feature}` /
       {logic_inspect_switch} 在本次构建未编译 `{logic_import_feature}`,
@@ -753,6 +829,10 @@ pub fn usage_text() -> String {
   {open} --open 失败 (读文件失败 / 超过 4 GiB 上限 / 不是 `.yeban` 容器 /
      容器拒绝: 压缩法 / Zip-Slip / 解压炸弹 / 截断 / CRC 不匹配 / 缺件 / 非法 project.json …)
   {save} --save-as 失败 (临时文件 / 刷盘 / 原子重命名任一步失败, 或容器写出被拒)
+  {open} --apply-ops 失败 (读文件 / ops JSON 非法 / 未知 kind / 缺顶层身份 /
+      编译失败 / 提交被拒)
+  {export} --export-stems 失败 (目录不存在或不是目录 / 目标文件已存在 /
+      渲染失败 / 落盘失败; 错误行里带稳定码; 落盘失败时带 D5 部分成功回执)
   {export} --export-elements 失败 / --export-midi 失败 / --export-wav 失败 /
       {overview_switch} 失败 (采样器读不到 / 渲染失败 / 落盘失败; 错误行里带稳定码) /
       --export-als 失败 / --export-logic 失败
@@ -782,6 +862,9 @@ pub fn usage_text() -> String {
   yeban-app --open song.yeban --export-wav song.wav
   yeban-app --open song.yeban --export-song-overview overview.json  # 无显示器也能算总览
   yeban-app --open song.yeban --export-song-overview score.json --overview-score-only
+  yeban-app --open song.yeban --apply-ops ops.json --save-as edited.yeban  # 无显示器也能批量改工程
+  yeban-app --open song.yeban --apply-ops ops.json --dry-run  # 只模拟, 不写盘
+  yeban-app --open song.yeban --export-stems stems/  # 无显示器也能取分轨 (目录须已存在)
   yeban-app --open song.yeban --export-wav shaped.wav --wav-bit-depth 16 --wav-sample-rate 44100 --wav-seconds 4
   yeban-app --open song.yeban --export-wav exact.wav --wav-frames 192000  # 与 MCP render_master.frames 对齐
   yeban-app --open song.yeban --export-logic out/Song.logicx
@@ -807,6 +890,8 @@ pub fn usage_text() -> String {
         als_feature = ALS_EXPORT_FEATURE,
         overview_feature = SONG_OVERVIEW_FEATURE,
         overview_switch = SONG_OVERVIEW_SWITCH,
+        apply_ops_feature = APPLY_OPS_FEATURE,
+        export_stems_feature = EXPORT_STEMS_FEATURE,
         logic_feature = LOGIC_EXPORT_FEATURE,
         logic_inspect_switch = LOGIC_INSPECT_SWITCH,
         logic_import_feature = LOGIC_INSPECT_FEATURE,
@@ -1353,6 +1438,30 @@ pub struct Options {
     /// 批处理产出的是一份**交付物**，"因为渲染失败所以全是哨兵值"的文件若与正常文件长得
     /// 一样，就是假的。单独给（没有 `--export-song-overview`）⇒ 用法错误。
     pub overview_score_only: bool,
+    /// `--apply-ops <ops.json>`：按 ops JSON 文件对当前工程做一次**批量编辑**。
+    ///
+    /// 文件格式就是 `yeban_edit_notes` 的实参对象（`{"trackId"?, "clipId"?, "ops": [...]}`），
+    /// 执行管线与它同一条（`parse_ops` → `compile` → 一次 `Op::Batch` 提交）。
+    /// 真执行必须配 `--save-as`（⛔ 不猜落点、不原地改 `--open` 的文件）；
+    /// `--dry-run` 时模拟、不写盘、不要求 `--save-as`。
+    ///
+    /// 只在 `in-process-mcp` 构建里可执行（执行管线住在 `yeban-mcp`）。
+    pub apply_ops: Option<PathBuf>,
+    /// `--export-stems <dir>`：把当前工程的每条非 master 源节点轨各弹成一个 32-bit
+    /// Float WAV，落到指定目录。
+    ///
+    /// 后端与 `yeban_export_stems` 同一份（`stems::export` / `stems::write`）：
+    /// 文件名 `{序号}.{清洗后的轨名}.wav`，主总线与非源节点轨不出文件但点名。
+    /// 目录**必须已存在**（⛔ 不自动创建），目标文件已存在时整批拒绝。
+    ///
+    /// 只在 `in-process-mcp` 构建里可执行（渲染与落盘住在 `yeban-mcp`）。
+    pub export_stems: Option<PathBuf>,
+    /// `--dry-run`：`--apply-ops` 的**修饰** —— 模拟，不写盘。
+    ///
+    /// 解析与编译照旧跑，提交改成在克隆上模拟施加 + 校验；前置不满足时模拟照样
+    /// 失败（⛔ 不伪造成功）。单独给（没有 `--apply-ops`）⇒ 用法错误；与
+    /// `--save-as` 同给 ⇒ 用法错误（保存的会是没改过的工程）。
+    pub dry_run: bool,
     /// `--export-wav <path>`：把当前工程**离线渲染**成一段 WAV（导出族）。
     ///
     /// 与 `--export-midi` 同族：不给 `--open` 时导出**演示工程**并在输出里明说；
@@ -1640,6 +1749,22 @@ pub const ACTION_SWITCHES: &[ActionSwitch] = &[
         name: SONG_OVERVIEW_SWITCH,
         present: |options| options.export_song_overview.is_some(),
         grant: |options| options.export_song_overview = Some(PathBuf::from("probe")),
+        path: SwitchPath::Batch,
+    },
+    // ⭐ `--apply-ops`：与 `--export-song-overview` 同族（无窗口、跑完就退出）。
+    // 它**自己**就把进程推离 GUI 路径 —— 这正是它的价值（无显示器也能批量改工程）。
+    ActionSwitch {
+        name: APPLY_OPS_SWITCH,
+        present: |options| options.apply_ops.is_some(),
+        grant: |options| options.apply_ops = Some(PathBuf::from("probe")),
+        path: SwitchPath::Batch,
+    },
+    // ⭐ `--export-stems`：与 `--export-wav` 同族（写一堆文件、跑完就退出）。
+    // 它**自己**就把进程推离 GUI 路径 —— 这正是它的价值（无显示器也能取分轨）。
+    ActionSwitch {
+        name: EXPORT_STEMS_SWITCH,
+        present: |options| options.export_stems.is_some(),
+        grant: |options| options.export_stems = Some(PathBuf::from("probe")),
         path: SwitchPath::Batch,
     },
     // `--export-wav` 与 `--export-midi` **同族**（`--help` 的 `--export-wav` 一条逐字
@@ -1954,6 +2079,36 @@ pub enum ParseError {
     /// 与 `--wav-*` 只修饰 `--export-wav` 同一条纪律：静默忽略 = 用户以为"纯谱面那一份
     /// 已经写出来了"。
     OverviewScoreOnlyWithoutExport,
+    /// 给了 `--apply-ops`，但这次构建**没有**编译 `in-process-mcp`。
+    ///
+    /// 与 [`Self::SongOverviewNotCompiled`] 同一条纪律：执行管线（`parse_ops` /
+    /// `compile` / `UndoPort` 提交）全住在 `yeban-mcp`，默认构建里那条依赖边
+    /// **不在** ⇒ 不可能"与 MCP 执行同一条语义"。与其在 app 侧手写一份"看起来像"
+    /// 的 ops 执行（两份迟早漂移），不如点名 feature（退出码 [`EXIT_USAGE`]）。
+    ApplyOpsNotCompiled,
+    /// 给了 `--export-stems`，但这次构建**没有**编译 `in-process-mcp`。
+    ///
+    /// 与 [`Self::SongOverviewNotCompiled`] 同一条纪律：渲染与落盘
+    /// （`stems::export` / `stems::write`）全住在 `yeban-mcp`，默认构建里那条依赖边
+    /// **不在** ⇒ 不可能产出"与工具同一份"的分轨。点名 feature（退出码 [`EXIT_USAGE`]）。
+    ExportStemsNotCompiled,
+    /// 给了 `--dry-run`，但没给 `--apply-ops`。
+    ///
+    /// 它只是那一次编辑的**口径修饰**（模拟、不写盘），单独给没有任何东西可修饰 ——
+    /// 与 `--overview-score-only` 只修饰 `--export-song-overview` 同一条纪律：
+    /// 静默忽略 = 用户以为"已经干跑过那批 ops 了"。
+    DryRunWithoutApplyOps,
+    /// 给了 `--apply-ops`（真执行），但没给 `--save-as`。
+    ///
+    /// 编辑发生在内存里，不给落点就等于改完即丢 —— 与 `--import-logic` 必须配
+    /// `--save-as` 同一条纪律（⛔ 不猜落点、不原地改 `--open` 的文件）。干跑
+    /// （`--dry-run`）不走这条：它本来就不写盘。
+    ApplyOpsNeedsSaveAs,
+    /// `--dry-run` 与 `--save-as` 同给。
+    ///
+    /// 干跑不写盘，保存的会是**没改过**的工程 —— 静默的假交付。两个口径互相矛盾，
+    /// 必须在解析时拒绝，⛔ 不猜"用户到底想要哪一个"。
+    DryRunWithSaveAs,
     /// 给了 `--inspect-logic`，但这次构建**没有**编译 [`LOGIC_INSPECT_FEATURE`]（`#143`）。
     ///
     /// 与 [`Self::LogicNotCompiled`] 同一条纪律：默认构建里 `yeban-render` 的
@@ -2160,6 +2315,33 @@ impl fmt::Display for ParseError {
                 formatter,
                 "`--overview-score-only` 只修饰 `{SONG_OVERVIEW_SWITCH}` —— 它只改那一份产物的\
                  口径 (跳过整曲渲染), 没有 {SONG_OVERVIEW_SWITCH} 时它无处落地"
+            ),
+            Self::ApplyOpsNotCompiled => write!(
+                formatter,
+                "{APPLY_OPS_SWITCH} 需要本次构建带 `--features {APPLY_OPS_FEATURE}` \
+                 (执行管线 `parse_ops` / `compile` / `UndoPort` 提交都住在 yeban-mcp, \
+                 默认构建里那条依赖边不在 ⇒ 产不出与 MCP 同一条语义的执行)"
+            ),
+            Self::ExportStemsNotCompiled => write!(
+                formatter,
+                "{EXPORT_STEMS_SWITCH} 需要本次构建带 `--features {EXPORT_STEMS_FEATURE}` \
+                 (渲染与落盘 `stems::export` / `stems::write` 都住在 yeban-mcp, \
+                 默认构建里那条依赖边不在 ⇒ 产不出与 `yeban_export_stems` 同一份的分轨)"
+            ),
+            Self::DryRunWithoutApplyOps => write!(
+                formatter,
+                "`{DRY_RUN_SWITCH}` 只修饰 `{APPLY_OPS_SWITCH}` —— 它只改那一次编辑的口径 \
+                 (模拟、不写盘), 没有 {APPLY_OPS_SWITCH} 时它无处落地"
+            ),
+            Self::ApplyOpsNeedsSaveAs => write!(
+                formatter,
+                "`{APPLY_OPS_SWITCH}` 把编辑做在内存里, 必须配 `--save-as <out.yeban>` \
+                 (⛔ 不猜落点, 不原地改 `--open` 的文件); 干跑 (`{DRY_RUN_SWITCH}`) 不走这条"
+            ),
+            Self::DryRunWithSaveAs => write!(
+                formatter,
+                "`{DRY_RUN_SWITCH}` 不写盘, 与 `--save-as` 同给时保存的会是**没改过**的工程 —— \
+                 静默的假交付, 必须二选一"
             ),
             Self::InspectLogicNotCompiled => write!(
                 formatter,
@@ -2460,6 +2642,30 @@ pub fn parse(args: &[String]) -> Result<Options, ParseError> {
                 options.overview_score_only = true;
                 cursor += 1;
             }
+            "--apply-ops" => {
+                let value = take_value("--apply-ops", inline, args, &mut cursor)?;
+                set_once(&mut options.apply_ops, "--apply-ops", PathBuf::from(value))?;
+            }
+            "--export-stems" => {
+                let value = take_value("--export-stems", inline, args, &mut cursor)?;
+                set_once(
+                    &mut options.export_stems,
+                    "--export-stems",
+                    PathBuf::from(value),
+                )?;
+            }
+            // `--dry-run`：**修饰**开关（只改 `--apply-ops` 的口径：模拟、不写盘，
+            // ⛔ 自己不选路径 ⇒ 与 `--overview-score-only` 同档，不进 `ACTION_SWITCHES`）。
+            "--dry-run" => {
+                if inline.is_some() {
+                    return Err(ParseError::UnexpectedValue("--dry-run"));
+                }
+                if options.dry_run {
+                    return Err(ParseError::DuplicateOption("--dry-run"));
+                }
+                options.dry_run = true;
+                cursor += 1;
+            }
             // `--wav-*`：只改 `--export-wav` 的产物形状，⛔ 不选路径
             // （与 `--midi-in-seconds` / `--idle-seconds` 同档的**修饰**开关，
             //  因此 ⛔ 不进 `ACTION_SWITCHES`）。
@@ -2664,6 +2870,8 @@ pub fn parse(args: &[String]) -> Result<Options, ParseError> {
             (options.export_midi.is_some(), "--export-midi"),
             (options.export_wav.is_some(), "--export-wav"),
             (options.export_song_overview.is_some(), SONG_OVERVIEW_SWITCH),
+            (options.apply_ops.is_some(), APPLY_OPS_SWITCH),
+            (options.export_stems.is_some(), EXPORT_STEMS_SWITCH),
             (options.export_als.is_some(), ALS_EXPORT_SWITCH),
             (options.export_logic.is_some(), LOGIC_EXPORT_SWITCH),
             (options.save_as.is_some(), "--save-as"),
@@ -2703,6 +2911,8 @@ pub fn parse(args: &[String]) -> Result<Options, ParseError> {
             (options.export_midi.is_some(), "--export-midi"),
             (options.export_wav.is_some(), "--export-wav"),
             (options.export_song_overview.is_some(), SONG_OVERVIEW_SWITCH),
+            (options.apply_ops.is_some(), APPLY_OPS_SWITCH),
+            (options.export_stems.is_some(), EXPORT_STEMS_SWITCH),
             (options.export_als.is_some(), ALS_EXPORT_SWITCH),
             (options.export_logic.is_some(), LOGIC_EXPORT_SWITCH),
             (options.save_as.is_some(), "--save-as"),
@@ -2731,6 +2941,8 @@ pub fn parse(args: &[String]) -> Result<Options, ParseError> {
             (options.export_midi.is_some(), "--export-midi"),
             (options.export_wav.is_some(), "--export-wav"),
             (options.export_song_overview.is_some(), SONG_OVERVIEW_SWITCH),
+            (options.apply_ops.is_some(), APPLY_OPS_SWITCH),
+            (options.export_stems.is_some(), EXPORT_STEMS_SWITCH),
             (options.export_als.is_some(), ALS_EXPORT_SWITCH),
             (options.export_logic.is_some(), LOGIC_EXPORT_SWITCH),
             (options.save_as.is_some(), "--save-as"),
@@ -2764,6 +2976,30 @@ pub fn parse(args: &[String]) -> Result<Options, ParseError> {
     // `--export-wav` 同一条纪律）：单独给 = 用法错误，⛔ 不静默忽略。
     if options.overview_score_only && options.export_song_overview.is_none() {
         return Err(ParseError::OverviewScoreOnlyWithoutExport);
+    }
+    // ⭐ `--apply-ops` / `--export-stems` 的编译期那道开关（与 `--export-song-overview` 同族）：
+    // 执行管线与分轨后端全住在 `yeban-mcp`，默认构建里那条依赖边不在 ⇒
+    // 点名 feature 的用法错误（顺序在配对检查之前：开关在本次构建里根本不存在时，
+    // "它该配什么"是无意义的问题）。
+    if options.apply_ops.is_some() && !cfg!(feature = "in-process-mcp") {
+        return Err(ParseError::ApplyOpsNotCompiled);
+    }
+    if options.export_stems.is_some() && !cfg!(feature = "in-process-mcp") {
+        return Err(ParseError::ExportStemsNotCompiled);
+    }
+    // `--dry-run` 只修饰 `--apply-ops`（与 `--overview-score-only` 只修饰
+    // `--export-song-overview` 同一条纪律）：单独给 = 用法错误，⛔ 不静默忽略。
+    if options.dry_run && options.apply_ops.is_none() {
+        return Err(ParseError::DryRunWithoutApplyOps);
+    }
+    // `--apply-ops`（真执行）必须配 `--save-as`（与 `--import-logic` 同一条纪律）：
+    // 编辑发生在内存里，不给落点就等于改完即丢。干跑不写盘，不走这条。
+    if options.apply_ops.is_some() && !options.dry_run && options.save_as.is_none() {
+        return Err(ParseError::ApplyOpsNeedsSaveAs);
+    }
+    // `--dry-run` 与 `--save-as` 同给：保存的会是**没改过**的工程 —— 静默的假交付。
+    if options.dry_run && options.save_as.is_some() {
+        return Err(ParseError::DryRunWithSaveAs);
     }
     // ⭐ 任务单 `#287`：`--sampler-track` 只是 `--track-sampler` 的**目标选择器**。
     // 单独给 ⇒ 用法错误。这道检查放在**解析期**（而不是 `run_batch` 里）：后者只在
@@ -3456,6 +3692,42 @@ pub enum CliError {
     /// 与 [`Self::AlsNotCompiled`] 同款的第二道防假绿（第一道在 `parse()`）：
     /// 那段产物需要 `yeban-mcp` 的 §8.2 structs，默认构建里那条依赖边不存在。
     SongOverviewNotCompiled,
+    /// `--apply-ops` 被送进了**没有**编译 `in-process-mcp` 的 [`run_batch`]。
+    ///
+    /// 与 [`Self::SongOverviewNotCompiled`] 同款的第二道防假绿（第一道在 `parse()`）：
+    /// 那段执行管线需要 `yeban-mcp` 的 `parse_ops` / `compile` / `UndoPort` 提交，
+    /// 默认构建里那条依赖边不存在。
+    ApplyOpsNotCompiled,
+    /// `--export-stems` 被送进了**没有**编译 `in-process-mcp` 的 [`run_batch`]。
+    ///
+    /// 与 [`Self::SongOverviewNotCompiled`] 同款的第二道防假绿：那段分轨后端需要
+    /// `yeban-mcp` 的 `stems::export` / `stems::write`，默认构建里那条依赖边不存在。
+    ExportStemsNotCompiled,
+    /// `--apply-ops` 失败（读文件 / 解析 / 编译 / 提交被拒）。
+    ///
+    /// 它是一次**编辑**（像 `--import-midi`，不像导出）：退出码是 [`EXIT_OPEN`]。
+    /// `code` 来自领域的 `Fault`（或读文件层的 `IO_ERROR`），⛔ 不是从文案里正则抠出来的。
+    ApplyOps {
+        /// ops 文件路径。
+        path: PathBuf,
+        /// 稳定错误码（`INVALID_PARAMETER_RANGE` / `CONFLICT` / `IO_ERROR` 等）。
+        code: &'static str,
+        /// 人话原因（领域 `Fault` 的原文，逐字带出去）。
+        reason: String,
+    },
+    /// `--export-stems` 失败（目录不存在 / 目标已存在 / 渲染失败 / 落盘失败）。
+    ///
+    /// 它是一次**导出**（像 `--export-wav`）：退出码是 [`EXIT_EXPORT`]。
+    /// 落盘失败时 `code` 是 `IO_ERROR`，`reason` 里带 D5 的部分成功回执
+    /// （已完成的分轨 / 失败的轨 / 续跑起点）。
+    ExportStems {
+        /// 输出目录。
+        path: PathBuf,
+        /// 稳定错误码（`INVALID_PARAMETER_RANGE` / `RENDER_FAILED` / `IO_ERROR` 等）。
+        code: &'static str,
+        /// 人话原因（领域 `Fault` 的原文，逐字带出去）。
+        reason: String,
+    },
     /// `--headless-idle` 被送进了**零 Slint 依赖**的 [`run_batch`]。
     ///
     /// 这一档存在的唯一理由是**防假绿**：该开关的语义是"**真的**构造 Slint 控件树"，
@@ -3491,12 +3763,15 @@ impl CliError {
             Self::AlsNotCompiled => EXIT_USAGE,
             Self::LogicNotCompiled => EXIT_USAGE,
             Self::SongOverviewNotCompiled => EXIT_USAGE,
+            Self::ApplyOpsNotCompiled => EXIT_USAGE,
+            Self::ExportStemsNotCompiled => EXIT_USAGE,
             Self::InspectLogic { .. } => EXIT_OPEN,
             Self::Open { .. }
             | Self::ImportMidi { .. }
             | Self::ImportAudio { .. }
             | Self::Sfz { .. }
             | Self::TrackSampler { .. }
+            | Self::ApplyOps { .. }
             | Self::MidiIn { .. } => EXIT_OPEN,
             // ⭐ `--midi-in-*` 的写音符 / 渲染：退出码由 `MidiNoteError` 自己按变体给
             //（WAV 落盘失败 ⇒ `EXIT_EXPORT`，其余 ⇒ `EXIT_OPEN`）⇒ ⛔ 不在这里再写第二张表。
@@ -3508,6 +3783,7 @@ impl CliError {
             | Self::ExportMidi { .. }
             | Self::ExportWav { .. }
             | Self::SongOverviewExport { .. }
+            | Self::ExportStems { .. }
             | Self::ExportAls { .. }
             | Self::ExportLogic { .. } => EXIT_EXPORT,
         }
@@ -3608,6 +3884,32 @@ impl fmt::Display for CliError {
                  (§8.2 的 structs 与取整函数住在 yeban-mcp; 默认构建里那条依赖边不存在 ⇒ \
                  parse() 与 run_batch() 都会拒绝, 绝不静默忽略)"
             ),
+            Self::ApplyOpsNotCompiled => write!(
+                formatter,
+                "{APPLY_OPS_SWITCH} 需要本次构建带 `--features {APPLY_OPS_FEATURE}` \
+                 (执行管线 `parse_ops` / `compile` / `UndoPort` 提交住在 yeban-mcp; 默认构建里那条依赖边不存在 ⇒ \
+                 parse() 与 run_batch() 都会拒绝, 绝不静默忽略)"
+            ),
+            Self::ExportStemsNotCompiled => write!(
+                formatter,
+                "{EXPORT_STEMS_SWITCH} 需要本次构建带 `--features {EXPORT_STEMS_FEATURE}` \
+                 (渲染与落盘 `stems::export` / `stems::write` 住在 yeban-mcp; 默认构建里那条依赖边不存在 ⇒ \
+                 parse() 与 run_batch() 都会拒绝, 绝不静默忽略)"
+            ),
+            Self::ApplyOps { path, code, reason } => {
+                write!(
+                    formatter,
+                    "批量编辑 `{}` 失败 [{code}]: {reason}",
+                    path.display()
+                )
+            }
+            Self::ExportStems { path, code, reason } => {
+                write!(
+                    formatter,
+                    "导出分轨到 `{}` 失败 [{code}]: {reason}",
+                    path.display()
+                )
+            }
             Self::HeadlessIdleNotBatch => write!(
                 formatter,
                 "`--headless-idle` 不能走 run_batch: 那条路径零 Slint 依赖, \
@@ -3651,6 +3953,10 @@ impl std::error::Error for CliError {
             | Self::McpHttpNotBatch
             | Self::AlsNotCompiled
             | Self::TrackSampler { .. }
+            | Self::ApplyOps { .. }
+            | Self::ExportStems { .. }
+            | Self::ApplyOpsNotCompiled
+            | Self::ExportStemsNotCompiled
             | Self::SongOverviewExport { .. }
             | Self::SongOverviewNotCompiled
             | Self::LogicNotCompiled
@@ -4965,21 +5271,35 @@ fn apply_track_samplers(
 
 /// 无窗口路径的执行：返回**它应当打印的每一行**（打印由 [`emit`] / [`finish`] 做）。
 ///
-/// 顺序是契约的一部分：
-/// 1. `--dump-elements` 的元素行（先于握手行 —— 沿用旧行为）;
-/// 2. `--print-shortcuts` 的策略表;
-/// 3. 握手行 [`HEADLESS_HANDSHAKE`]（无窗口路径**一定**打印它）;
-/// 4. 来源行 / `project:` / `project-counts:` / **`automation-engine:`**
-///    （`#259`：实时引擎不执行的自动化泳道；需要投影时再加 `view-counts:`）;
-/// 5. 边界声明行（`headless:` 开头，说清这一版无头**没有**验证什么）;
-///    ⚠ **导入（编辑）先于一切导出与保存**：`--import-midi` / `--import-audio` 的
-///    `imported-midi:` / `imported-audio:` 报告行落在这里（顺序契约 —— 同一命令里的
-///    `--export-*` 与 `--save-as` 看到的必须是**导入后**的工程）;
-/// 6. `--export-elements` 的 `exported:`（失败 ⇒ 直接 `Err`，**不**继续保存）;
-/// 7. `--export-midi` 的 `exported-midi:`（失败 ⇒ 直接 `Err`，**不**继续保存）;
-/// 8. `--export-als` 的 `exported-als:` + 损失表行（同样失败即止）;
-/// 9. `--export-logic` 的 `exported-logic:` + 损失表行（同样失败即止）;
-/// 10. `--save-as` 的 `saved:`。
+/// 顺序是契约的一部分（本表与代码逐块对齐，⛔ 不写代码里没有的顺序）：
+/// 1. `--help` / `--version` 短路；
+/// 2. 第二道守卫（`--headless-idle` / `--enable-mcp-http` / `--enable-ui-mcp-http` /
+///    `--export-als` / `--export-logic` 的 feature 门 —— `Options` 直接构造时 `parse()` 的
+///    守卫不在场）；
+/// 3. `--dump-elements` 的元素行（先于握手行 —— 沿用旧行为）；
+/// 4. `--print-shortcuts` 的策略表 / `--print-theme` 的主题行；
+/// 5. 握手行 [`HEADLESS_HANDSHAKE`]（无窗口路径**一定**打印它）；
+/// 6. 来源行 / `project:` / `project-counts:` / **`automation-engine:`**
+///    （`#259`：实时引擎不执行的自动化泳道；需要投影时再加 `view-counts:`）；
+/// 7. 边界声明行（`headless:` 开头，说清这一版无头**没有**验证什么）；
+/// 8. `--record-wav` 的 `recorded:`（`--track-sampler` 同给时在**副本**上先应用一次，
+///    只喂给录音 —— 真身仍在第 11 步落点）；
+/// 9. `--midi-in` 的采集报告 + 写音符 / 离线渲染（谱面 → 声音）；
+///    ⚠ **导入与编辑先于一切导出与保存**：`--import-midi` / `--import-audio` 的
+///    `imported-midi:` / `imported-audio:` 报告行、`--track-sampler` 的安装行与
+///    `--apply-ops` 的 `applied-ops:` 行都落在这里（顺序契约 —— 同一命令里的
+///    `--export-*` 与 `--save-as` 看到的必须是**导入与编辑后**的工程）；
+/// 10. `--export-elements` 的 `exported:`（失败 ⇒ 直接 `Err`，**不**继续保存）；
+/// 11. `--export-midi` 的 `exported-midi:`（失败 ⇒ 直接 `Err`，**不**继续保存）；
+/// 12. `--export-song-overview` 的 `exported-song-overview:`（失败 ⇒ 直接 `Err`，
+///     **不**继续保存；静音时多打一行诊断）；
+/// 13. `--export-wav` 的 `exported-wav:`（失败 ⇒ 直接 `Err`，**不**继续保存；
+///     削波时多打一行）；
+/// 14. `--export-stems` 的 `exported-stems:` + 每条 `stem:` / `stem-skipped:`
+///     （失败 ⇒ 直接 `Err`，**不**继续保存）；
+/// 15. `--export-als` 的 `exported-als:` + 损失表行（同样失败即止）；
+/// 16. `--export-logic` 的 `exported-logic:` + 损失表行（同样失败即止）；
+/// 17. `--save-as` 的 `saved:`。
 ///
 /// # Errors
 ///
@@ -5292,6 +5612,48 @@ pub fn run_batch(options: &Options) -> Result<Vec<String>, CliError> {
         lines.extend(install_lines);
     }
 
+    // ⭐ `--apply-ops` —— **批量编辑**是编辑 ⇒ 与 `--track-sampler` 同一位次
+    // （导入之后、一切导出与保存之前）。真执行是一次 `Op::Batch` 提交（来源
+    // `OpOrigin::Import`，一条提交 = 一步撤销）；`--dry-run` 只模拟、不改 `loaded`、
+    // 不写盘。失败 ⇒ 直接 `Err`，⛔ 不继续导出与保存（半批不交付）。
+    #[cfg(feature = "in-process-mcp")]
+    if let Some(path) = options.apply_ops.as_ref() {
+        if options.dry_run {
+            let report =
+                crate::apply_ops::dry_run_ops(&loaded.archive.project, path).map_err(|error| {
+                    CliError::ApplyOps {
+                        path: path.clone(),
+                        code: error.code(),
+                        reason: error.reason(),
+                    }
+                })?;
+            lines.push(report.line());
+        } else {
+            let (project, report) = crate::apply_ops::apply_ops(&loaded.archive.project, path)
+                .map_err(|error| CliError::ApplyOps {
+                    path: path.clone(),
+                    code: error.code(),
+                    reason: error.reason(),
+                })?;
+            // 会话是权威 ⇒ 落回归档：同一命令里的 `--export-*` / `--save-as` 看的是这一份。
+            loaded.archive.project = project;
+            lines.push(report.line());
+        }
+    }
+    // 默认构建的第二道防假绿（`Options` 的字段是公开的 ⇒ 判据可以绕过 `parse`）。
+    #[cfg(not(feature = "in-process-mcp"))]
+    if options.apply_ops.is_some() {
+        return Err(CliError::ApplyOpsNotCompiled);
+    }
+    // `--dry-run` 的第二道（同上）：它没有 `--apply-ops` 就没有落点。
+    if options.dry_run && options.apply_ops.is_none() {
+        return Err(CliError::Usage(
+            "`--dry-run` 只修饰 `--apply-ops` —— \
+             它只改那一次编辑的口径 (模拟、不写盘), 单独给 = 没有任何东西可修饰"
+                .to_owned(),
+        ));
+    }
+
     if let Some(path) = options.export_elements.as_ref() {
         let view = view.as_ref().expect("needs_projection 保证视图已构造");
         let text = element_dump_text(view);
@@ -5440,6 +5802,36 @@ pub fn run_batch(options: &Options) -> Result<Vec<String>, CliError> {
         if let Some(note) = report.loudness_note() {
             lines.push(note);
         }
+    }
+
+    // ⭐ `--export-stems` —— 分轨导出是**导出** ⇒ 在 `--export-wav` 之后（同是音频渲染，
+    // 母带先出、分轨后出）、`--export-als` 之前。失败 ⇒ 直接 `Err`，⛔ 不继续保存。
+    // 工程路径：`--open` 时是那个文件；样本工程时是当前工作目录（SFZ 相对路径的解析根）。
+    #[cfg(feature = "in-process-mcp")]
+    if let Some(dir) = options.export_stems.as_ref() {
+        let project_path = match &loaded.source {
+            ProjectSource::File { path, .. } => path.clone(),
+            ProjectSource::Sample(_) => {
+                std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
+            }
+        };
+        let report = crate::export_stems::export_stems(
+            &loaded.archive.project,
+            &project_path,
+            dir,
+            &loaded.archive.assets,
+        )
+        .map_err(|error| CliError::ExportStems {
+            path: dir.clone(),
+            code: error.code(),
+            reason: error.reason(),
+        })?;
+        lines.extend(report.lines());
+    }
+    // 默认构建的第二道防假绿（`Options` 的字段是公开的 ⇒ 判据可以绕过 `parse`）。
+    #[cfg(not(feature = "in-process-mcp"))]
+    if options.export_stems.is_some() {
+        return Err(CliError::ExportStemsNotCompiled);
     }
 
     // 顺序契约（`--help` 的"组合语义"一节）：元素 → MIDI → .als → .logicx → 保存工程。
@@ -6897,6 +7289,12 @@ mod tests {
     ///
     /// 它们在默认构建里"解析不成"是"这段代码没编进来"，⛔ 不是"路由错了"
     /// ⇒ 判据用 [`ActionSwitch::grant`] 直接设字段来单独证明这些开关的**路由**归属。
+    /// 编译期门禁错误：默认构建里解析不成**不是**路由漂移，是开关在本次构建里
+    /// 根本不存在。⚠ 每新增一个编译期门禁 `ParseError` 都必须登记到这里，
+    /// 否则两条 census 判据会把新开关报成漂移（`SongOverviewNotCompiled`
+    /// 的漏登记曾让主干 CI 红，见 d5ddf340；`--apply-ops` / `--export-stems`
+    /// 同类再犯，补登记于此）。
+    #[cfg(test)]
     fn is_compile_time_gate(error: &ParseError) -> bool {
         matches!(
             error,
@@ -6905,6 +7303,8 @@ mod tests {
                 | ParseError::UiMcpHttpNotCompiled
                 | ParseError::McpHttpNotCompiled
                 | ParseError::SongOverviewNotCompiled
+                | ParseError::ApplyOpsNotCompiled
+                | ParseError::ExportStemsNotCompiled
         )
     }
 
