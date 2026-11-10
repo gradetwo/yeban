@@ -133,5 +133,6 @@
   "caps.c8_body": "Four MCP tools and six factory presets (piano, cello, classical guitar, flute, saxophone, drums) that load with tuned processing.",
   "caps.note": "The MCP surface is already powerful: 38 MCP intent tools, plus an in-process VST3 plug-in host, and singing synthesis via the external Lingren SVS service over MCP.",
   "platform.title": "Platform support",
-  "platform.body": "macOS and Linux are fully tested. Windows is not yet thoroughly tested. The UI layer is still being refined."
+  "platform.body": "macOS and Linux are fully tested. Windows is not yet thoroughly tested. The UI layer is still being refined.",
+  "showcase.listen_label": "Preview “雨声太吵” (The Rain Is Too Loud) — a quick taste; the full experience, visuals synced to the music, is on the trilogy site."
 }
