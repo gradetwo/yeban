@@ -168,6 +168,7 @@ export component UndoTreeModal inherits Rectangle {
             }
 
             TouchArea {
+                mouse-cursor: MouseCursor.pointer;
                 width: parent.width;
                 height: parent.height;
                 clicked => { root.close(); }
@@ -216,6 +217,7 @@ export component UndoTreeModal inherits Rectangle {
             }
 
             TouchArea {
+                mouse-cursor: MouseCursor.pointer;
                 width: parent.width;
                 height: parent.height;
                 clicked => { root.node-selected(node_index); }
@@ -325,6 +327,7 @@ export component UndoTreeModal inherits Rectangle {
             }
 
             TouchArea {
+                mouse-cursor: MouseCursor.pointer;
                 width: parent.width;
                 height: parent.height;
                 clicked => { root.undo-step(); }
@@ -363,6 +366,7 @@ export component UndoTreeModal inherits Rectangle {
             }
 
             TouchArea {
+                mouse-cursor: MouseCursor.pointer;
                 width: parent.width;
                 height: parent.height;
                 clicked => { root.redo-step(); }

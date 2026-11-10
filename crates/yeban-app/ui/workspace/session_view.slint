@@ -177,7 +177,7 @@ export component SessionView inherits Rectangle {
         height: 64px;
         // ⭐ `#283`：**当前场景**高亮（读宿主的 `current-scene-index`；默认 `-1`
         // ⇒ 基准帧与接线前逐像素相同）。
-        background: root.current-scene-index == scene_index ? Tokens.bg-raised : Tokens.bg-panel-alt;
+        background: (scene_touch.pressed || scene_touch.has-hover || root.current-scene-index == scene_index) ? Tokens.bg-raised : Tokens.bg-panel-alt;
         border-radius: Tokens.radius-md;
         border-width: root.current-scene-index == scene_index ? 2px : 1px;
         border-color: root.current-scene-index == scene_index ? Tokens.gold-bright : Tokens.gold-deep;
@@ -218,7 +218,7 @@ export component SessionView inherits Rectangle {
             horizontal-alignment: center;
         }
 
-        TouchArea {
+        scene_touch := TouchArea {
             width: parent.width;
             height: parent.height;
             clicked => { root.scene-launch(scene_index); }

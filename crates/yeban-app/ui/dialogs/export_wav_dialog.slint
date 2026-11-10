@@ -276,6 +276,7 @@ export component ExportWavDialog inherits Rectangle {
                 }
 
                 TouchArea {
+                    mouse-cursor: MouseCursor.pointer;
                     width: parent.width;
                     height: parent.height;
                     clicked => { root.close(); }
@@ -510,6 +511,7 @@ export component ExportWavDialog inherits Rectangle {
                 }
 
                 TouchArea {
+                    mouse-cursor: MouseCursor.pointer;
                     width: parent.width;
                     height: parent.height;
                     clicked => { root.limiter = !root.limiter; }
@@ -586,6 +588,7 @@ export component ExportWavDialog inherits Rectangle {
                 }
 
                 TouchArea {
+                    mouse-cursor: MouseCursor.pointer;
                     width: parent.width;
                     height: parent.height;
                     clicked => { root.run(); }
