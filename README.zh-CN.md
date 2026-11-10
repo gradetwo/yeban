@@ -48,6 +48,8 @@
 
 **[《慢性崩溃环 THE CHRONIC MOBIUS》](https://trilogy.wangda.today)**——用夜半创作的三部曲作品。三章——I. 雨声太吵、II. 失语呢喃、III. 潮·失——组成一个沉浸式视觉体验，点击拓扑节点跃迁情绪相位。
 
+▶ 试听《雨声太吵》（4 分 24 秒，[直接播放](https://trilogy.wangda.today/assets/05-yushengtaichao.mp3)）——完整体验在[三部曲站](https://trilogy.wangda.today)，视觉配合音乐。
+
 ## 强大功能
 
 - **Songmap 整曲总览图**（`get_song_overview` MCP 工具，或 CLI `--export-song-overview`）：一幅小节级四层诊断图——能量、频率、疏密、情绪——附自动异常诊断。Phase 2 加段落期望张力等级包络带、3 档流派预设（`default` / `orchestral` / `electronic`）与谱面力度虚线。段内自相似度检查开发中。
