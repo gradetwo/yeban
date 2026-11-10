@@ -38,6 +38,8 @@
 
 **[《慢性崩溃环 THE CHRONIC MOBIUS》](https://trilogy.wangda.today)** — a trilogy created with Yeban. Three chapters — I. 雨声太吵 (The Rain Is Too Loud), II. 失语呢喃, III. 潮·失 — in one immersive visual experience: click the topology nodes to jump between emotional phases.
 
+▶ Listen to 《雨声太吵》 (4:24, [direct audio](https://trilogy.wangda.today/assets/05-yushengtaichao.mp3)) — the full experience, visuals synced to the music, is on [the trilogy site](https://trilogy.wangda.today).
+
 ## What Yeban can do
 
 - **Songmap — whole-song overview** (`get_song_overview` MCP tool, or `--export-song-overview` on the CLI): one bar-level diagnostic in four layers — energy, frequency, density and emotion — with an automatic anomaly summary. Phase 2 adds expected-level envelope bands, three genre presets (`default` / `orchestral` / `electronic`) and a score-dynamics ghost line. A within-song self-similarity check is in development.
