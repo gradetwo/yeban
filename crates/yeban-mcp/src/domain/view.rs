@@ -33,7 +33,7 @@ use crate::tools::ErrorCode;
 /// （其值与单独选择 `sections` 逐字节同形，满足"每个选择器都取得到根键"的单元判据），
 /// 还输出一个独立顶层键 `sectionsTimeline`（按 `(start_tick, id)` 升序的段落数组）。
 /// `sections` 的原始键序是**身份序**（ULID 插入序，⛔ 不是时间序），调用方本来必须自己重排。
-pub const SELECTORS: [&str; 30] = [
+pub const SELECTORS: [&str; 31] = [
     "id",
     "title",
     "author",
@@ -54,6 +54,8 @@ pub const SELECTORS: [&str; 30] = [
     // UI 轨道交互线新增：`track_order` 是 schema 顶层键，须进白名单
     //（`view_selectors` 判据双向对账：schema 有而白名单无 ⇒ 静默漏字段）。
     "track_order",
+    // C3 歌词轨新增：`lyrics` 是 schema 顶层键，须进白名单（同上）。
+    "lyrics",
     "sections",
     "scenes",
     "clip_pool",
