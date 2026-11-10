@@ -7943,13 +7943,17 @@ mod tests {
                 // `--headless-idle` 单独给是**成对性**用法错误（必须配 `--idle-seconds`），
                 // `--edit-samples` 单独给也是**成对性**用法错误（必须配 `--sample-edit-out`，
                 // 出目录⛔ 不默认写到输入旁边），`--slice-audio` 单独给也是**成对性**
-                // 用法错误（必须配 `--slice-out`，出目录必填）；编译期门禁开关在默认构建里
-                // 也解析不成 —— 四者的**路由**归属都已由 ① 证明，这里只登记"解析不成"的原因。
+                // 用法错误（必须配 `--slice-out`，出目录必填），`--apply-ops` 单独给也是
+                // **成对性**用法错误（必须配 `--save-as`，⛔ 不猜落点）；带 `in-process-mcp`
+                // 特性构建时 `--apply-ops` 的编译期门禁不触发，解析走到这条成对性检查 ——
+                // 编译期门禁开关在默认构建里也解析不成；五者的**路由**归属都已由 ① 证明，
+                // 这里只登记"解析不成"的原因。
                 Err(error)
                     if is_compile_time_gate(&error)
                         || matches!(error, ParseError::IdleSecondsMissing)
                         || matches!(error, ParseError::SampleEditOutMissing)
-                        || matches!(error, ParseError::SliceOutMissing) => {}
+                        || matches!(error, ParseError::SliceOutMissing)
+                        || matches!(error, ParseError::ApplyOpsNeedsSaveAs) => {}
                 Err(other) => failures.push(format!(
                     "`{}`: 单独解析失败 (不该是这个原因): {other}",
                     switch.name
