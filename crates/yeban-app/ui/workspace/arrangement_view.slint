@@ -910,6 +910,7 @@ export component ArrangementView inherits Rectangle {
             }
 
             TouchArea {
+                mouse-cursor: MouseCursor.pointer;
                 width: parent.width;
                 height: parent.height;
                 // 点击 ⇒ `Op::SetTrackMute`（一次点击 = 一次可撤销的编辑）。
@@ -949,6 +950,7 @@ export component ArrangementView inherits Rectangle {
             }
 
             TouchArea {
+                mouse-cursor: MouseCursor.pointer;
                 width: parent.width;
                 height: parent.height;
                 // 点击 ⇒ `Op::SetTrackSolo`。与静音开关**成对同款**，只换目标字段。
@@ -985,6 +987,7 @@ export component ArrangementView inherits Rectangle {
             }
 
             TouchArea {
+                mouse-cursor: MouseCursor.pointer;
                 width: parent.width;
                 height: parent.height;
                 clicked => {

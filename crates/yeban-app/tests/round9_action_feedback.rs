@@ -179,9 +179,12 @@ fn section_label_click_target_is_discoverable_without_new_pixels() {
     // ⭐ 第十轮 `[PATCH UI-FEEDBACK-04]`：覆盖层 11 个可点控件补齐手型光标 ⇒ 2→13。
     // 统计口径仍是精确串 `mouse-cursor: MouseCursor.pointer;`；本轮新增的
     // `MouseCursor.grab`（可拖光标）不在此串内，由 `round10_action_feedback.rs` 单独钉。
+    // ⭐ 第十一轮 `[PATCH UI-FEEDBACK-05]`：全仓剩余 37 个高频可点控件收官 ⇒ 13→50。
+    // `MouseCursor.row-resize`（分隔条）同样不在此串内，由 `round11` 单独钉。
+    // 带日期记录只追加、不改写，上面两行原文保留。
     assert_eq!(
-        cursor_total, 13,
-        "全仓手型光标应为 13 处（第九轮 2 + 第十轮 11）；改了要同步复核清单与交付说明"
+        cursor_total, 50,
+        "全仓手型光标应为 50 处（第九轮 2 + 第十轮 11 + 第十一轮 37）；改了要同步复核清单与交付说明"
     );
 }
 

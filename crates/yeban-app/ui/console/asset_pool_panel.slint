@@ -105,6 +105,7 @@ export component AssetPoolPanel inherits Rectangle {
         }
 
         TouchArea {
+            mouse-cursor: MouseCursor.pointer;
             width: parent.width;
             height: parent.height;
             clicked => { root.import-audio(); }

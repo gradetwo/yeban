@@ -173,6 +173,7 @@ component AiRail inherits Rectangle {
         }
 
         TouchArea {
+            mouse-cursor: MouseCursor.pointer;
             width: parent.width;
             height: parent.height;
             clicked => { root.run-acoustic-diagnosis(); }
@@ -1945,6 +1946,7 @@ export component MainWindow inherits Window {
             accessible-value: "" + Math.round(root.console-height-readout / 1px);
 
             splitter-touch := TouchArea {
+                mouse-cursor: MouseCursor.row-resize;
                 // 命中带上下各扩 2px：4px 的细线不好抓（⛔ 不改可视几何）。
                 width: parent.width;
                 y: -2px;
