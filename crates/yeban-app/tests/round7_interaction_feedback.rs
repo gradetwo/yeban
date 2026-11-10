@@ -188,24 +188,28 @@ fn every_target_touch_area_is_named_and_drives_a_visual_feedback() {
 /// 计数用 `assert_eq!` 而不是「至少」—— 多一条就是有人偷偷改了默认帧或加了第二套口径。
 #[test]
 fn default_frame_falls_back_to_the_original_tokens() {
+    // ⭐ 第九轮 `[PATCH UI-FEEDBACK-03]` 给「曲风预设键」补了与折叠键**同款**的
+    // 悬浮金边 + 按下提亮，下面三条精确计数各 +1（3→4 / 3→4 / 1→2）。这是新增
+    // 合法反馈带来的**预期增长**，⛔ 不是放宽：`assert_eq!` 仍是精确计数，多一条
+    // （偷改默认帧）或少一条（删反馈）都红。
     assert_eq!(
         SONG_OVERVIEW
             .matches("? Tokens.gold : Tokens.line;")
             .count(),
-        3,
-        "胶囊 / 折叠键 / 全屏键三条 hover 金边的 false 分支必须都是 `line`"
+        4,
+        "胶囊 / 折叠键 / 全屏键 / 曲风预设键四条 hover 金边的 false 分支必须都是 `line`"
     );
     assert_eq!(
         SONG_OVERVIEW.matches("? Tokens.bg-raised").count(),
-        3,
-        "胶囊 / 折叠键 / 全屏键三条按下提亮"
+        4,
+        "胶囊 / 折叠键 / 全屏键 / 曲风预设键四条按下提亮"
     );
     assert_eq!(
         SONG_OVERVIEW
             .matches("? Tokens.bg-raised : Tokens.bg-panel;")
             .count(),
-        1,
-        "折叠键按下的 false 分支必须是 `bg-panel`"
+        2,
+        "折叠键与曲风预设键按下的 false 分支都必须逐字回落到 `bg-panel`"
     );
     assert_eq!(
         SONG_OVERVIEW

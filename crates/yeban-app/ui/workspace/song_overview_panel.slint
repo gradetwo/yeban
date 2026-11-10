@@ -531,6 +531,11 @@ export component SongOverviewPanel inherits Rectangle {
             y: 14px;
             width: parent.width / root.total-bars;
             height: 8px;
+            // ⭐ [PATCH UI-FEEDBACK-03]：Phase 2「点段落标签循环期望等级」是隐藏交互 ——
+            // 8 px 高、无边框、无光标提示，用户根本看不出能点。给这块纯指针控件加
+            // `pointer` 光标（全仓先例见 musical_pr_drawer.slint 的提案行）⇒ 移上去变手型
+            // 立刻可发现；光标不进渲染帧 ⇒ 默认帧零像素位移，不新增控件 / 几何 / 可寻址节点。
+            mouse-cursor: MouseCursor.pointer;
             clicked => { root.target-cycle(section-index); }
         }
     }
@@ -667,10 +672,13 @@ export component SongOverviewPanel inherits Rectangle {
         y: 2px;
         width: 86px;
         height: 16px;
-        background: Tokens.bg-panel;
+        // ⭐ [PATCH UI-FEEDBACK-03]：预设键与同排 6 键（4 胶囊 / 折叠 / 全屏）同款式，
+        // 却独漏第七/八轮的「悬浮金边 + 按下提亮」—— 鼠标扫过一排只有它不亮，
+        // 看起来不像能点。默认帧逐字回落到原来的 `bg-panel` / `line` ⇒ 零像素位移。
+        background: profile_touch.pressed ? Tokens.bg-raised : Tokens.bg-panel;
         border-radius: 8px;
         border-width: 1px;
-        border-color: Tokens.line;
+        border-color: profile_touch.has-hover ? Tokens.gold : Tokens.line;
         accessible-role: button;
         accessible-id: "song-overview-profile-button";
         accessible-label: "曲风预设";
@@ -688,7 +696,7 @@ export component SongOverviewPanel inherits Rectangle {
             horizontal-alignment: center;
         }
 
-        TouchArea {
+        profile_touch := TouchArea {
             width: parent.width;
             height: parent.height;
             clicked => { root.profile-cycle(); }

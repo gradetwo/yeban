@@ -77,6 +77,7 @@ const APP: &str = include_str!("../ui/app.slint");
 const CONSOLE_TABS: &str = include_str!("../ui/console/console_tabs.slint");
 const ARRANGEMENT: &str = include_str!("../ui/workspace/arrangement_view.slint");
 const SONG_OVERVIEW: &str = include_str!("../ui/workspace/song_overview_panel.slint");
+const SESSION_VIEW: &str = include_str!("../ui/workspace/session_view.slint");
 
 /// 全仓 `.slint` 清单：与 `round6_addressable_roles.rs::SLINT_FILES`、
 /// `src/elements.rs::SLINT_MANIFEST` 同一份 18 文件口径（编译期固定）。
@@ -245,7 +246,8 @@ fn the_hover_feedback_inventory_is_pinned_across_the_whole_ui() {
         ("module_actions.slint", MODULE_ACTIONS, 5),
         ("transport.slint", TRANSPORT, 9),
         ("workspace/arrangement_view.slint", ARRANGEMENT, 4),
-        ("workspace/song_overview_panel.slint", SONG_OVERVIEW, 5),
+        ("workspace/song_overview_panel.slint", SONG_OVERVIEW, 6),
+        ("workspace/session_view.slint", SESSION_VIEW, 1),
     ];
     for (file, src, want) in cases {
         assert_eq!(
@@ -258,9 +260,10 @@ fn the_hover_feedback_inventory_is_pinned_across_the_whole_ui() {
     for (_, src) in SLINT_FILES {
         total += src.matches("has-hover").count();
     }
+    // ⭐ 第九轮 `[PATCH UI-FEEDBACK-03]`：曲风预设键 + 返回编曲各补 1 处 ⇒ 26→28。
     assert_eq!(
-        total, 26,
-        "全仓 `has-hover` 总数应为 26（第七轮 11 + 本轮 15）；\
+        total, 28,
+        "全仓 `has-hover` 总数应为 28（第七轮 11 + 第八轮 15 + 第九轮 2）；\
          改了要同步复核清单、解析口径与交付说明"
     );
     assert_eq!(SLINT_FILES.len(), 18, "判据清单仍须是 18 个 `.slint`");
@@ -379,7 +382,7 @@ fn the_deliberate_boundaries_are_still_intact() {
         SONG_OVERVIEW
             .matches("? Tokens.gold : Tokens.line;")
             .count(),
-        3,
-        "第七轮钉住的 3 条 hover 金边 false 分支未被动过"
+        4,
+        "第七轮 3 条 + 第九轮曲风预设键 1 条 hover 金边 false 分支未被动过"
     );
 }

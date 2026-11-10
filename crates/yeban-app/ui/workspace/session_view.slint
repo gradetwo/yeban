@@ -232,7 +232,7 @@ export component SessionView inherits Rectangle {
         y: 32px + 68px * root.scenes.length + 8px;
         width: 104px;
         height: 28px;
-        background: back_area.pressed ? Tokens.bg-raised : Tokens.bg-void;
+        background: (back_area.pressed || back_area.has-hover) ? Tokens.bg-raised : Tokens.bg-void;
         border-radius: Tokens.radius-sm;
         border-width: 1px;
         border-color: Tokens.record-red;
