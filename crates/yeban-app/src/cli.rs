@@ -6801,6 +6801,7 @@ mod tests {
                 | ParseError::LogicNotCompiled
                 | ParseError::UiMcpHttpNotCompiled
                 | ParseError::McpHttpNotCompiled
+                | ParseError::SongOverviewNotCompiled
         )
     }
 
@@ -6851,7 +6852,7 @@ mod tests {
                     }
                 }
                 // `--headless-idle` 单独给是**成对性**用法错误（必须配 `--idle-seconds`），
-                // 三条编译期门禁开关在默认构建里也解析不成 —— 两者的**路由**归属
+                // 编译期门禁开关在默认构建里也解析不成 —— 两者的**路由**归属
                 // 都已由 ① 证明，这里只登记"解析不成"的原因。
                 Err(error)
                     if is_compile_time_gate(&error)
@@ -6981,8 +6982,9 @@ mod tests {
                     }
                 }
                 Err(error) if is_compile_time_gate(&error) => {
-                    // 默认构建里 `--enable-ui-mcp-http` / `--export-logic` 示例行本来
-                    // 就被编译期门禁拒; 它们的路由归属由判据 A 的表覆盖。
+                    // 默认构建里 `--enable-ui-mcp-http` / `--export-logic` /
+                    // `--export-song-overview` 示例行本来就被编译期门禁拒;
+                    // 它们的路由归属由判据 A 的表覆盖。
                 }
                 Err(other) => {
                     failures.push(format!("`yeban-app {}` 解析失败: {other}", args.join(" ")))
