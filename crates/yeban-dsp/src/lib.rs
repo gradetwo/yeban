@@ -104,6 +104,7 @@ pub mod shaping;
 pub mod slicer;
 pub mod smoothing;
 pub mod song_overview;
+pub mod song_overview_report;
 pub mod tape;
 pub mod vocal_chunk;
 pub mod vocal_key_detect;

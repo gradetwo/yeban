@@ -355,3 +355,142 @@ fn a_silent_full_render_says_so_without_failing() {
         "`score-only` 本来就没有音频 ⇒ ⛔ 不该报「静音」"
     );
 }
+
+/// **第六判据**：HTML 报告出口与工具的 `format: "html"` 是**同一份报告**。
+///
+/// 论证顺序与核心判据同款（真 socket 的工具出口 vs 真二进制的批处理出口），
+/// 只差一点：HTML 没有"去掉刻意差异"那一步 —— 两边都是渲染器直出的字符串，
+/// 必须**逐字节相同**（没有 `commitModel` / `renderMode` 可去掉，`data` 本身就是字符串）。
+#[test]
+fn the_html_export_is_the_same_report_as_the_tool_html() {
+    let dir = scratch("html-parity");
+    let target = dir.join("overview.html");
+
+    // ---- 工具出口（形态 A：真 socket，format=html） ----
+    let mount = InProcessMcp::start_for_project(
+        true,
+        demo_project(),
+        SessionSource::InMemory(PathBuf::from("<test:overview-html-parity>")),
+        yeban_model::samples::demo_project_assets(),
+    )
+    .expect("挂载决策")
+    .expect("运行期开关打开时必须真的挂载");
+    let bearer = format!("Bearer {}", mount.token().expose());
+    let reply = call(
+        mount.address(),
+        &bearer,
+        r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_song_overview","arguments":{"format":"html"}}}"#,
+    );
+    assert_eq!(reply["result"]["status"], "success", "{reply}");
+    let tool_html = reply["result"]["data"]
+        .as_str()
+        .expect("html 形态的 data 是字符串")
+        .to_owned();
+    mount.stop().expect("停机必须成功");
+
+    // ---- 批处理出口 ----
+    let lines = run_export(&[
+        "--project-sample",
+        "default",
+        "--export-song-overview-html",
+        &target.display().to_string(),
+    ])
+    .expect("演示工程的 HTML 报告必须能算出来");
+    let text = std::fs::read_to_string(&target).expect("HTML 必须真的落盘");
+
+    assert_eq!(
+        text, tool_html,
+        "⭐ 批处理 HTML 出口与 `get_song_overview {{format: html}}` 的 `data` 必须是同一份报告"
+    );
+    assert!(text.starts_with("<!doctype html>"), "报告以 doctype 开头");
+    assert!(!text.contains("<script"), "报告里不含脚本");
+
+    // 回执：前缀是 HTML 专用的那一个，读数与文件对得上。
+    let receipt = lines
+        .iter()
+        .find(|line| line.starts_with("exported-song-overview-html:"))
+        .unwrap_or_else(|| panic!("缺少 HTML 回执行:\n{}", lines.join("\n")));
+    assert!(
+        receipt.contains("bars=3"),
+        "回执的小节数必须是实测值（演示工程 3 小节）: {receipt}"
+    );
+    assert!(
+        receipt.contains(&format!("bytes={}", text.len())),
+        "回执的字节数必须是落盘后的实测值: {receipt}"
+    );
+    assert!(
+        receipt.contains("provider=real") && receipt.contains("render=full"),
+        "回执必须说清是哪条算法、哪种渲染口径: {receipt}"
+    );
+    assert!(
+        !lines
+            .iter()
+            .any(|line| line.starts_with("exported-song-overview: ")),
+        "HTML 这一轮不得同时打 JSON 的回执（前缀不同）: {}",
+        lines.join("\n")
+    );
+}
+
+/// **第七判据**：JSON 与 HTML 双开关同时给时，**两份都写出**（各走各的落点与回执）。
+#[test]
+fn json_and_html_switches_together_write_both_files() {
+    let dir = scratch("both");
+    let json_target = dir.join("overview.json");
+    let html_target = dir.join("overview.html");
+    let lines = run_export(&[
+        "--project-sample",
+        "default",
+        "--export-song-overview",
+        &json_target.display().to_string(),
+        "--export-song-overview-html",
+        &html_target.display().to_string(),
+    ])
+    .expect("双开关必须都能算出来");
+    assert!(json_target.exists(), "JSON 必须落盘");
+    assert!(html_target.exists(), "HTML 必须落盘");
+    let data: Value =
+        serde_json::from_str(&std::fs::read_to_string(&json_target).expect("读 JSON"))
+            .expect("落盘的必须是 JSON");
+    assert_eq!(data["renderMode"], "full");
+    let html = std::fs::read_to_string(&html_target).expect("读 HTML");
+    assert!(html.starts_with("<!doctype html>"));
+    assert!(
+        lines
+            .iter()
+            .any(|line| line.starts_with("exported-song-overview:")),
+        "必须有 JSON 回执: {}",
+        lines.join("\n")
+    );
+    assert!(
+        lines
+            .iter()
+            .any(|line| line.starts_with("exported-song-overview-html:")),
+        "必须有 HTML 回执: {}",
+        lines.join("\n")
+    );
+}
+
+/// **第八判据**：`--overview-score-only` 也修饰 HTML 出口（纯谱面的 HTML 报告）。
+#[test]
+fn score_only_html_export_also_works() {
+    let dir = scratch("score-only-html");
+    let target = dir.join("score.html");
+    let lines = run_export(&[
+        "--project-sample",
+        "default",
+        "--overview-score-only",
+        "--export-song-overview-html",
+        &target.display().to_string(),
+    ])
+    .expect("纯谱面的 HTML 报告也必须有产出");
+    let html = std::fs::read_to_string(&target).expect("HTML 必须真的落盘");
+    assert!(html.starts_with("<!doctype html>"));
+    let receipt = lines
+        .iter()
+        .find(|line| line.starts_with("exported-song-overview-html:"))
+        .expect("必须有 HTML 回执行");
+    assert!(
+        receipt.contains("render=score-only"),
+        "回执必须说清这一份没有渲染: {receipt}"
+    );
+}

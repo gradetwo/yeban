@@ -16,9 +16,12 @@ use serde_json::{Value, json};
 use yeban_mcp::dispatch::Dispatcher;
 use yeban_mcp::domain::error::Fault;
 use yeban_mcp::domain::song_overview::{
-    SongOverviewProvider, SongOverviewRequest, StubSongOverviewProvider,
+    SongOverviewProvider, SongOverviewRequest, StubSongOverviewProvider, overview_html_report,
 };
-use yeban_mcp::output_schema::{BAND_DEFINITIONS_HZ, SongOverview, for_tool};
+use yeban_mcp::output_schema::{
+    BAND_DEFINITIONS_HZ, BarRow, DetectedAnomaly, RepetitionSummary, SongMeta, SongOverview,
+    StructuralSummary, for_tool,
+};
 use yeban_mcp::security::{BearerToken, Channel, RunMode, ScopeSet};
 use yeban_mcp::tools::{EXTENSION_NAMES, EXTENSION_TOOL_COUNT, TOOL_COUNT};
 use yeban_model::samples::{demo_project, filled_project};
@@ -776,4 +779,168 @@ fn invalid_expected_levels_are_rejected() {
     );
     let plain = call_tool(&mut dispatcher, "get_song_overview", json!({}));
     assert_eq!(ok_data(&empty), ok_data(&plain));
+}
+
+// ---------------------------------------------------------------------------
+// `format` 参数（HTML 报告）：缺省 json 一字不动，html 走唯一渲染器
+// ---------------------------------------------------------------------------
+
+/// `format` 缺省前（`{}`）的金标：2026-11-11 抓自改动前代码（临时抓取测试已删），
+/// 规范序 JSON（`serde_json::to_string` 的键序）逐字节钉死。
+const GOLDEN_JSON: &str = r#"{"band_definitions_hz":[[20,90],[90,250],[250,500],[500,1000],[1000,2000],[2000,5000],[5000,10000],[10000,20000]],"bar_series":[{"bands_tilted_db":[-18.2,-14.5,-12.0,-11.4,-15.0,-19.2,-24.0,-31.5],"bar":1,"density_perc_onsets_per_beat":0.5,"density_pitched_duty":0.65,"density_pitched_onsets_per_beat":1.5,"lufs_momentary_max":-19.8,"lufs_short":-22.4,"score_dyn":0.28,"section":"Intro","target_deviation":0.0,"tension":0.42,"time_sec":0.0,"valence_hue":-0.62},{"bands_tilted_db":[-17.0,-13.8,-12.1,-11.0,-14.6,-18.8,-23.5,-31.0],"bar":2,"density_perc_onsets_per_beat":1.0,"density_pitched_duty":0.68,"density_pitched_onsets_per_beat":2.0,"lufs_momentary_max":-17.5,"lufs_short":-20.1,"score_dyn":0.34,"section":"Intro","target_deviation":0.0,"tension":0.5,"time_sec":2.0,"valence_hue":-0.58},{"bands_tilted_db":[-16.2,-13.2,-11.9,-10.6,-14.0,-18.0,-22.8,-30.2],"bar":3,"density_perc_onsets_per_beat":1.0,"density_pitched_duty":0.7,"density_pitched_onsets_per_beat":2.5,"lufs_momentary_max":-16.0,"lufs_short":-18.6,"score_dyn":0.42,"section":"Verse","target_deviation":0.0,"tension":0.54,"time_sec":4.0,"valence_hue":-0.55},{"bands_tilted_db":[-15.0,-12.4,-12.2,-10.2,-13.5,-17.4,-22.0,-29.5],"bar":4,"density_perc_onsets_per_beat":2.0,"density_pitched_duty":0.72,"density_pitched_onsets_per_beat":3.0,"lufs_momentary_max":-13.6,"lufs_short":-16.2,"score_dyn":0.48,"section":"Verse","target_deviation":0.0,"tension":0.62,"time_sec":6.0,"valence_hue":-0.5},{"bands_tilted_db":[-14.2,-11.8,-6.8,-10.0,-13.2,-17.0,-21.6,-29.0],"bar":5,"density_perc_onsets_per_beat":2.5,"density_pitched_duty":0.75,"density_pitched_onsets_per_beat":3.5,"lufs_momentary_max":-11.2,"lufs_short":-13.8,"score_dyn":0.52,"section":"Chorus","target_deviation":0.0,"tension":0.69,"time_sec":8.0,"valence_hue":-0.44},{"bands_tilted_db":[-14.6,-12.0,-6.8,-10.4,-13.6,-17.5,-22.2,-29.6],"bar":6,"density_perc_onsets_per_beat":1.0,"density_pitched_duty":0.6,"density_pitched_onsets_per_beat":2.0,"lufs_momentary_max":-11.4,"lufs_short":-14.0,"score_dyn":0.4,"section":"Chorus","target_deviation":0.0,"tension":0.58,"time_sec":10.0,"valence_hue":-0.52},{"bands_tilted_db":[-13.8,-11.2,-12.0,-9.8,-13.0,-16.8,-21.2,-28.6],"bar":7,"density_perc_onsets_per_beat":3.0,"density_pitched_duty":0.78,"density_pitched_onsets_per_beat":4.0,"lufs_momentary_max":-11.0,"lufs_short":-13.6,"score_dyn":0.54,"section":"Chorus","target_deviation":0.0,"tension":0.73,"time_sec":12.0,"valence_hue":-0.4},{"bands_tilted_db":[-13.0,-10.6,-11.8,-9.4,-12.6,-16.2,-20.8,-28.0],"bar":8,"density_perc_onsets_per_beat":3.5,"density_pitched_duty":0.8,"density_pitched_onsets_per_beat":4.5,"lufs_momentary_max":-9.8,"lufs_short":-12.4,"score_dyn":0.58,"section":"Outro","target_deviation":0.0,"tension":0.79,"time_sec":14.0,"valence_hue":-0.35}],"commitModel":"none","provider":"stub","repetition":{"best_matches":[],"mechanical_index":0.0,"repeated_passages":[]},"resolution":"bar","schema_version":"1.1","song_meta":{"base_bpm":120.0,"duration_sec":16.0,"key_signature":"D minor","profile":"default","total_bars":8},"structural_summary":{"climax_bar":8,"climax_tension":0.79,"detected_anomalies":[{"bars":[5,6],"description":"Band 3 (250-500Hz) exceeds tilted balance by +5.2 dB","type":"low_mid_buildup"},{"bars":[7,8],"description":"Score velocity rises +35% but rendered LUFS changes only +0.4 LU","type":"compression_squash"}],"dynamic_range_lu":10.0}}"#;
+
+#[test]
+fn default_json_is_byte_identical_to_pre_change_golden() {
+    let mut dispatcher = dispatcher_with_project(filled_project(), true);
+    for arguments in [json!({}), json!({"format": "json"})] {
+        let response = call_tool(&mut dispatcher, "get_song_overview", arguments);
+        let data = ok_data(&response);
+        let canonical = serde_json::to_string(data).expect("data 可序列化");
+        assert_eq!(canonical, GOLDEN_JSON, "缺省 json 与改前逐字节一致");
+        assert!(data.get("format").is_none(), "响应里不回显 format 参数");
+    }
+}
+
+#[test]
+fn format_html_returns_the_same_report_the_renderer_produces() {
+    let mut dispatcher = dispatcher_with_project(filled_project(), true);
+    let json_response = call_tool(&mut dispatcher, "get_song_overview", json!({}));
+    let overview: SongOverview =
+        serde_json::from_value(ok_data(&json_response).clone()).expect("json data 反序列化");
+    let html_response = call_tool(
+        &mut dispatcher,
+        "get_song_overview",
+        json!({"format": "html"}),
+    );
+    let html = ok_data(&html_response)
+        .as_str()
+        .expect("html data 是字符串");
+    assert_eq!(
+        html,
+        overview_html_report(&overview),
+        "handler 与渲染器同一份输出"
+    );
+    assert!(html.starts_with("<!doctype html>"));
+    assert!(html.contains("整曲总览报告"));
+    assert!(!html.contains("<script"), "报告里不含脚本");
+}
+
+#[test]
+fn format_unknown_value_is_rejected() {
+    let mut dispatcher = dispatcher_with_project(filled_project(), true);
+    let response = call_tool(
+        &mut dispatcher,
+        "get_song_overview",
+        json!({"format": "yaml"}),
+    );
+    let (code, data) = error_data(&response);
+    assert_eq!(code, "INVALID_PARAMETER_RANGE");
+    assert_eq!(data["reason"], "unknownFormat");
+    assert_eq!(data["accepted"], json!(["json", "html"]));
+}
+
+#[test]
+fn format_non_string_is_protocol_error() {
+    let mut dispatcher = dispatcher_with_project(filled_project(), true);
+    let response = call_raw(&mut dispatcher, json!({"format": 42}));
+    assert!(response.result.is_none(), "类型非法不得同时带 result");
+    let error = response.error.expect("非字符串必须是 JSON-RPC 层错误");
+    assert_eq!(error.code, -32602, "类型非法是 INVALID_PARAMS");
+    let detail = serde_json::to_string(&error.data).expect("错误 data 必须可序列化");
+    assert!(
+        detail.contains("format"),
+        "报文必须点名是哪个参数: {detail}"
+    );
+}
+
+#[test]
+fn format_html_with_png_path_is_rejected() {
+    let mut dispatcher = dispatcher_with_project(filled_project(), true);
+    let response = call_tool(
+        &mut dispatcher,
+        "get_song_overview",
+        json!({"format": "html", "include_png_path": true}),
+    );
+    let (code, data) = error_data(&response);
+    assert_eq!(code, "INVALID_PARAMETER_RANGE");
+    assert_eq!(data["reason"], "includePngPathRequiresJson");
+}
+
+/// 手写 2 小节总览：拍行去重 + 无期望带哨兵。
+fn two_bar_overview_with_beat_duplicate() -> SongOverview {
+    let row = |bar: u64, beat: Option<u64>, time_sec: f64| BarRow {
+        bar,
+        beat,
+        time_sec,
+        section: if bar == 1 { "Intro" } else { "Verse" }.to_owned(),
+        tension: if bar == 1 { 0.42 } else { 0.5 },
+        valence_hue: -0.6,
+        lufs_short: -22.4,
+        lufs_momentary_max: -19.8,
+        score_dyn: 0.28,
+        envelope_lo: None,
+        envelope_hi: None,
+        target_deviation: 0.0,
+        density_pitched_onsets_per_beat: 1.0,
+        density_pitched_duty: 0.65,
+        density_perc_onsets_per_beat: 2.0,
+        bands_tilted_db: [-18.2, -14.5, -12.0, -11.4, -15.0, -19.2, -24.0, -31.5],
+    };
+    SongOverview {
+        schema_version: "1.1".to_owned(),
+        song_meta: SongMeta {
+            total_bars: 2,
+            duration_sec: 4.0,
+            base_bpm: 120.0,
+            key_signature: "D minor".to_owned(),
+            profile: "default".to_owned(),
+        },
+        band_definitions_hz: BAND_DEFINITIONS_HZ,
+        structural_summary: StructuralSummary {
+            climax_bar: 2,
+            climax_tension: 0.5,
+            dynamic_range_lu: 10.0,
+            detected_anomalies: vec![],
+        },
+        repetition: RepetitionSummary {
+            best_matches: vec![],
+            mechanical_index: 0.0,
+            repeated_passages: vec![],
+        },
+        bar_series: vec![
+            row(1, Some(1), 0.0),
+            row(1, Some(2), 1.5),
+            row(2, None, 3.0),
+        ],
+    }
+}
+
+#[test]
+fn overview_html_report_dedupes_beat_rows_and_shows_missing_envelope() {
+    let html = overview_html_report(&two_bar_overview_with_beat_duplicate());
+    assert!(
+        !html.contains(">1.50<"),
+        "去重后第 2 拍行（时间 1.5）不进报告"
+    );
+    assert!(html.contains(">3.00<"), "第 2 小节（时间 3.0）在报告里");
+    assert!(html.contains("—"), "无期望带的小节显示 —（哨兵）");
+}
+
+#[test]
+fn html_report_keeps_unknown_anomaly_text() {
+    let mut overview = two_bar_overview_with_beat_duplicate();
+    overview.structural_summary.detected_anomalies = vec![DetectedAnomaly {
+        bars: [1, 2],
+        anomaly_type: "phantom_type".to_owned(),
+        description: "phantom 异常：描述原样保留".to_owned(),
+    }];
+    let html = overview_html_report(&overview);
+    assert!(
+        html.contains("phantom 异常：描述原样保留"),
+        "未知异常类型的描述文本原样保留"
+    );
+    assert!(
+        html.contains("low_mid_buildup"),
+        "未知类型兜底成 low_mid_buildup（契约外值不可达，见转置文档）"
+    );
 }
