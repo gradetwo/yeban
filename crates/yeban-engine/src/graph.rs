@@ -956,7 +956,7 @@ impl PhaseBank {
 
     /// 已武装的条数（= 有非恒等相位设置的节点数）。
     #[must_use]
-    pub fn len(&self) -> usize {
+    pub const fn len(&self) -> usize {
         self.armed
     }
 
