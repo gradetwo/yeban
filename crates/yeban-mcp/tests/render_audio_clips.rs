@@ -634,9 +634,15 @@ fn clip_offset_moves_the_first_audible_frame_by_exactly_the_offset() {
         clip_offset_samples: 240,
         ..Tune::default()
     };
-    let fixture = fixture(wav_f32(2, 48_000, &samples), &plus);
+    let plus_fixture = fixture(wav_f32(2, 48_000, &samples), &plus);
     let out = scratch.join("plus.wav");
-    let artifact = build_with(&fixture.project, &pool(&fixture), &out, args(&out)).expect("渲染");
+    let artifact = build_with(
+        &plus_fixture.project,
+        &pool(&plus_fixture),
+        &out,
+        args(&out),
+    )
+    .expect("渲染");
     let rendered = payload_samples(&artifact);
     assert_eq!(
         artifact.frames, 48_240,

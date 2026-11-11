@@ -5529,7 +5529,7 @@ fn clip_view(
     // 换算之后加，起点夹到 0；亚像素量级下多数缩放里不可见，但投影保持诚实）。
     // `dx` 是偏移换算成像素：采样 → tick（`samples_per_tick`）→ 像素。
     let offset = placement.offset_samples.unwrap_or(0);
-    #[allow(clippy::cast_possible_truncation)]
+    #[allow(clippy::cast_possible_truncation, clippy::cast_precision_loss)]
     let dx = if offset == 0 {
         0.0
     } else {
@@ -5539,7 +5539,7 @@ fn clip_view(
                 PPQ,
                 project.audio_config.sample_rate.hz(),
             )
-            / f64::from(ticks_per_pixel)
+            / ticks_per_pixel as f64
     } as f32;
     let x = (x + dx).max(0.0);
     let x_end = x_end + dx;
