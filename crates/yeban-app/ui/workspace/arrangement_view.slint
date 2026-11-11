@@ -288,8 +288,8 @@ export component ArrangementView inherits Rectangle {
     /// 空车道拖动 ⇒ 横向滚动（与卷帘 `scroll-requested` 同一条回调，宿主
     /// `install_roll_scroll`；只在空白车道区生效，不与剪辑拖拽抢事件）。
     callback scroll-requested(length);
-    /// 点击自动化车道添加或编辑点 (G-A1): (车道下标, 点击处相对于车道区域的 x, 点击处相对于车道区域的 y)
-    callback automation-lane-click(int, length, length);
+    /// 点击自动化车道添加或编辑点 (G-A1): (点击处相对于车道区域的 x, 点击处相对于行区内容顶部的 y)
+    callback automation-lane-click(length, length);
 
     // ---------------------------------------------------------------- ⭐ 缩放工具栏（2026-11-07 ①：可见控件路）
     //
@@ -1049,6 +1049,9 @@ export component ArrangementView inherits Rectangle {
                 root.lane-dragging = true;
             } else if event.kind == PointerEventKind.up {
                 root.lane-dragging = false;
+                if !root.lane-drag-moved {
+                    root.automation-lane-click(self.mouse-x, self.mouse-y);
+                }
                 root.lane-drag-moved = false;
             } else if event.kind == PointerEventKind.move {
                 if !root.lane-drag-moved
@@ -1160,17 +1163,6 @@ export component ArrangementView inherits Rectangle {
     // 因此"动的"只有画面，输入面的坐标系**不动**；指针按下后 Slint 会把后续事件继续
     // 送给这个抓取中的 `TouchArea`（即使指针已离开它的外框）。
     //
-    // ⭐ G-A1 自动化泳道点击交互面：置于剪辑拖动面之前 ⇒ 剪辑仍在最上层（不抢剪辑拖拽手势）。
-    for _[lane_index] in root.automation-lane-target-keys : TouchArea {
-        x: 168px;
-        y: root.automation-lane-band-ys[lane_index] - root.rows-top;
-        width: parent.width - 168px;
-        height: root.automation-lane-band-heights[lane_index];
-        visible: root.automation-visible;
-        clicked => {
-            root.automation-lane-click(lane_index, self.mouse-x, self.mouse-y);
-        }
-    }
 
     // 只覆盖包头以下的剪辑体：包头归选中臂（`clip-{ulid}-header`），两者不抢同一块像素。
     for clip_ulid[clip_index] in root.clip-ulids : TouchArea {

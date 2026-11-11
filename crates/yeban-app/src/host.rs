@@ -1517,27 +1517,40 @@ pub fn wire_automation_lane_click(ui: &MainWindow, port: &Rc<UndoPort>) {
     ui.on_automation_lane_click({
         let weak = weak.clone();
         let port = Rc::clone(&port);
-        move |lane_idx, click_x, click_y| {
+        move |click_x, click_y| {
             let Some(ui) = weak.upgrade() else {
                 return;
             };
+            if !ui.get_automation_visible() {
+                return;
+            }
             let Some(project) = port.try_project() else {
                 return;
             };
             let Ok(view) = crate::bridge::ViewState::from_project(&project) else {
                 return;
             };
-            let lane_idx = usize::try_from(lane_idx).unwrap_or(usize::MAX);
-            if lane_idx >= view.automation_lanes.len() {
-                return;
+            // 找到包含 click_y 的泳道
+            // Flickable 内容区内，各泳道带顶沿是 band_y - 42.0 (rows-top)
+            let mut matched_lane = None;
+            for (idx, lane) in view.automation_lanes.iter().enumerate() {
+                let lane_top = lane.band_y - 42.0;
+                let lane_bottom = lane_top + lane.band_height;
+                if click_y >= lane_top && click_y < lane_bottom {
+                    let local_y = click_y - lane_top;
+                    matched_lane = Some((idx, local_y, lane.band_height));
+                    break;
+                }
             }
-            let height_px = view.automation_lanes[lane_idx].band_height;
+            let Some((lane_idx, local_y, height_px)) = matched_lane else {
+                return;
+            };
             let scroll_x = ui.get_roll_scroll_x();
             let ops = crate::bridge::automation_lane_click_ops(
                 &project,
                 lane_idx,
                 click_x,
-                click_y,
+                local_y,
                 scroll_x,
                 view.ticks_per_pixel,
                 height_px,
