@@ -2541,6 +2541,7 @@ pub fn clip_create_ops_on(
         duration_ticks,
         loop_config: LoopConfig::default(),
         muted: false,
+        offset_samples: None,
     };
     Ok(vec![
         Op::AddClip { clip },

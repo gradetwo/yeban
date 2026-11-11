@@ -13656,6 +13656,8 @@ fn duplicate_selected_clip_placement(
         duration_ticks: placement.duration_ticks,
         loop_config: placement.loop_config,
         muted: placement.muted,
+        // 复制片段继承原片段的 offset：丢掉它等于复制后偷偷取消用户的微移。
+        offset_samples: placement.offset_samples,
     };
     let new_id = new_placement.id.to_string();
     let ops = vec![
@@ -13784,6 +13786,8 @@ fn split_selected_clip_at_playhead(
         duration_ticks: right_duration,
         loop_config: placement.loop_config,
         muted: placement.muted,
+        // 切分右半继承原片段的 offset：切分不得偷偷取消用户的微移。
+        offset_samples: placement.offset_samples,
     };
     let new_right_id = right_placement.id.to_string();
     ops.push(yeban_model::ops::Op::AddClipPlacement {
