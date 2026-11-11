@@ -247,7 +247,9 @@ class MockServer:
             job_id = f"job-import-{self.import_count}"
             self.jobs[job_id] = {"kind": "import", "polls": 0,
                                  "result": {}, "contentId": content_id}
-            return {"jobId": job_id}, None
+            # 真形状：任务 id 在嵌套的 job 对象里（probe 日志）。
+            return {"job": {"jobId": job_id, "kind": "import",
+                            "state": "queued"}}, None
         if method == "project.get":
             contents = [{"contentId": "c-demo"}]
             if self.last_content_id:
@@ -348,7 +350,8 @@ class MockServer:
             self.jobs[job_id] = {"kind": "export", "polls": 0,
                                  "path": params.get("path", ""),
                                  "contentId": self.last_content_id}
-            return {"jobId": job_id}, None
+            return {"job": {"jobId": job_id, "kind": "export",
+                            "state": "queued"}}, None
         if method == "job.get":
             job = self.jobs.get(params.get("jobId", ""))
             if job is None:

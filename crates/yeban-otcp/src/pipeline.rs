@@ -387,12 +387,11 @@ impl OtcpDriver {
         recover_modal(&mut session.client, job_id, 3)?;
 
         let outcome = self.run_with_session(&mut session, request, receipt, deadline);
-        // 关闭（每条路径都走）：先解模态框再退出。
-        // 注：OTCP 的 import/export 任务 id 未在收据里跟踪，取消只对
-        // yeban 任务 id 做 best-effort；服务端退出本身（quit/kill）
-        // 已保证无残留进程。
-        let job_ids = vec![job_id.clone()];
-        shutdown_server(&mut session, config, &job_ids, &|client, id| {
+        // 关闭（每条路径都走）：先解模态框再退出。取消只对服务端派发
+        // 的任务 id（`session.otcp_jobs`，`j:…` 形）做 best-effort；
+        // 服务端退出本身（quit/kill）已保证无残留进程。
+        let otcp_jobs = session.otcp_jobs.clone();
+        shutdown_server(&mut session, config, &otcp_jobs, &|client, id| {
             recover_modal(client, id, 3)
         });
         outcome
@@ -431,11 +430,8 @@ impl OtcpDriver {
                 "idempotencyKey": job_id,
             }),
         )?;
-        let import_job_id = import_job
-            .get("jobId")
-            .and_then(Value::as_str)
-            .unwrap_or("")
-            .to_owned();
+        let import_job_id = server_job_id(&import_job)?;
+        session.otcp_jobs.push(import_job_id.clone());
         wait_job_terminal(client, job_id, &import_job_id, deadline)?;
 
         // 3. 取最后的 content。
@@ -502,6 +498,7 @@ impl OtcpDriver {
             &export_path,
             Duration::from_secs(config.timeouts.export_wait_secs),
             deadline,
+            &mut session.otcp_jobs,
         )
         .map_err(|error| {
             enrich_render_failed(
@@ -590,11 +587,8 @@ fn run_self_test(
             "idempotencyKey": format!("{job_id}-selftest"),
         }),
     )?;
-    let import_job_id = import_job
-        .get("jobId")
-        .and_then(Value::as_str)
-        .unwrap_or("")
-        .to_owned();
+    let import_job_id = server_job_id(&import_job)?;
+    session.otcp_jobs.push(import_job_id.clone());
     wait_job_terminal(client, job_id, &import_job_id, deadline)?;
     let (content_id, _) = last_content_id(client, job_id)?;
     let placement_id = wait_f0_ready(
@@ -619,6 +613,7 @@ fn run_self_test(
         &export_path,
         Duration::from_secs(config.timeouts.export_wait_secs),
         deadline,
+        &mut session.otcp_jobs,
     );
     let unvoiced_gap = match export_result {
         Ok(_) => "pass".to_owned(),
@@ -949,6 +944,26 @@ fn verify_notes(before: &[Note], after: &[Note], key: &Key) -> Result<(), OtcpEr
     Ok(())
 }
 
+/// 从 `import.start` / `export.start` 的回值里取服务端派发的任务 id。
+///
+/// 真形状（probe 日志 `otcp_log2.jsonl`，`j:<短id>:<序号>` 形）：
+/// `result.job.jobId`。顶层 `jobId` 不存在——取空串再传给 `job.get`
+/// 会报 `INVALID_ARGUMENT(jobId does not have the form of a job id)`；
+/// 缺失即大声报协议错，⛔ 不静默用空串。
+fn server_job_id(result: &Value) -> Result<String, OtcpError> {
+    let nested = result
+        .get("job")
+        .and_then(|j| j.get("jobId"))
+        .and_then(Value::as_str);
+    let flat = result.get("jobId").and_then(Value::as_str);
+    match nested.or(flat) {
+        Some(id) if !id.is_empty() => Ok(id.to_owned()),
+        _ => Err(OtcpError::protocol(format!(
+            "start 调用未返回 job.jobId：{}",
+            result.to_string().chars().take(200).collect::<String>()
+        ))),
+    }
+}
 /// 写调用（设计稿 §4.2）：每次写操作前先跑模态恢复循环；
 /// 写调用本身报 `BUSY(modal_open)` 时再恢复一次并重试一次。
 /// 读调用（`project.get`/`getDetails`/`getNotes`/`job.get`）不受
@@ -995,7 +1010,7 @@ fn apply_note_ops(
 }
 
 /// 导出 clip（`export.start` + 轮询）；`export_wait_timeout` → 只重导一次。
-/// 返回导出任务的 `result`。
+/// 返回导出任务的 `result`。启动的服务端任务 id 记进 `otcp_jobs`（供关机取消）。
 fn export_clip(
     client: &mut OtcpClient,
     job_id: &str,
@@ -1003,6 +1018,7 @@ fn export_clip(
     export_path: &Path,
     budget: Duration,
     deadline: Instant,
+    otcp_jobs: &mut Vec<String>,
 ) -> Result<Value, OtcpError> {
     let mut attempt = 0;
     loop {
@@ -1019,11 +1035,8 @@ fn export_clip(
                 "allowDry": false,
             }),
         )?;
-        let export_job_id = start
-            .get("jobId")
-            .and_then(Value::as_str)
-            .unwrap_or("")
-            .to_owned();
+        let export_job_id = server_job_id(&start)?;
+        otcp_jobs.push(export_job_id.clone());
         let export_deadline = Instant::now() + budget;
         let export_deadline = export_deadline.min(deadline);
         match wait_job_terminal(client, job_id, &export_job_id, export_deadline) {

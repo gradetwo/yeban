@@ -67,6 +67,9 @@ pub struct ServerSession {
     pub editing_scheme: String,
     /// 子进程句柄（Drop 时兜底杀掉）。
     child: Option<Child>,
+    /// 本会话上启动过的服务端任务 id（`j:<短id>:<序号>` 形，供关机取消；
+    /// ⛔ 不是 yeban 任务 id——`job.cancel` 只认服务端派发的形）。
+    pub otcp_jobs: Vec<String>,
     /// 任务临时目录（Drop 时删除）。
     job_temp_dir: PathBuf,
     /// 控制目录（任务根下的 `control/<job_id>`）。
@@ -221,6 +224,7 @@ fn start_server_inner(
         processing,
         editing_scheme,
         child: None,
+        otcp_jobs: Vec::new(),
         job_temp_dir: job_temp_dir.to_owned(),
         control_dir: control_dir.to_owned(),
     })
