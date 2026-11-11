@@ -787,6 +787,18 @@ pub struct EngineHost {
     /// ⛔ 不许静默丢：没有写进去的值会在**下一跳**重算并重发（采样是幂等的：同一个
     /// `position_ticks` 给出同一批值），同时这里逐条计数 —— 控制面能看出"最近有没有丢"。
     automation_dropped: u64,
+    /// **R55 去重缓存**：最近一次**真的写进 SPSC** 的 `(参数地址, 值)`。
+    ///
+    /// 60 Hz 心跳每跳都重采自动化（[`Self::publish_automation`]），而采样是位置的
+    /// 纯函数 ⇒ 停住时每一跳给出的都是同一批值。原样重发会把 256 条的环在约 1 s 内
+    /// 灌满，之后 `send_transport` 的走带命令一条都写不进去（`publish` 返回 0，而
+    /// 调用方不检查），控制面驱动（无声卡）下走带**永久**失灵（实测：两次点击
+    /// `written=0`，`rt_applied` 每泵 +128 条陈旧 `SetParam`）。因此只发与上次
+    /// 成功写入不同的值；写失败（环满）的条目不进缓存，下一跳重发（与
+    /// `automation_dropped`"下一跳重算并重发"同一口径）。新运行时（`reload` /
+    /// `open_device`）与新工程缓存（`Some(project)`）都要清掉它，否则新
+    /// `ParamTable`（默认值）永远等不到第一批值。
+    automation_last_values: Vec<(ParamAddress, f32)>,
     /// **`#259` 的读数**：最近一跳"**实时引擎不执行**"的自动化泳道（gauge，不是累计）。
     ///
     /// 由 [`unapplied_automation_lanes`] 在 [`Self::publish_automation`] 的每一跳重采；
@@ -1231,6 +1243,8 @@ impl EngineHost {
         self.transport_mirror = Some(mirror);
         self.generation = generation;
         self.snapshot_revision = revision;
+        // 新运行时 ⇒ 新 `ParamTable`（默认值）⇒ 去重缓存清掉，下一跳全量重发。
+        self.automation_last_values.clear();
         // 新快照**就是** `project` 的投影 ⇒ "已经反映的标记"未知，由调用方用
         // [`EngineHost::mark_applied`] 记下（生产路径与判据都这么做）；在此之前
         // [`EngineHost::should_publish`] 恒为 `true`（宁多发一次，不漏发）。
@@ -1363,6 +1377,8 @@ impl EngineHost {
         self.transport_mirror = Some(mirror);
         self.retire = Some(retire);
         self.device = Some(handle);
+        // 新运行时 ⇒ 新 `ParamTable`（默认值）⇒ 去重缓存清掉，下一跳全量重发。
+        self.automation_last_values.clear();
         Ok((
             DeviceOpening {
                 device_name,
@@ -1619,6 +1635,8 @@ impl EngineHost {
         // 之后每一跳都用缓存里的那一份采样（克隆仍只发生在本来就克隆的那一跳）。
         if let Some(project) = project {
             self.automation_project = Some(project.clone());
+            // 工程可能改了 ⇒ 上次写进去的值可能已过期，下一批全量重发（去重缓存清掉）。
+            self.automation_last_values.clear();
         }
         let Some(project) = self.automation_project.as_ref() else {
             // 没有工程缓存 ⇒ 没有泳道可数（把读数归零，⛔ 不留下上一份工程的旧值）。
@@ -1810,6 +1828,25 @@ impl EngineHost {
                 len += 1;
             }
         }
+        // ⭐ 去重：采样是位置的纯函数 ⇒ 停住时每一跳都是同一批值。原样重发会把 256 条
+        // 的环在约 1 s 内灌满，之后走带命令一条都写不进去（控制面驱动下走带永久失灵，
+        // 实测见 `automation_lanes_are_sampled_from_the_audio_clock_and_published`）。
+        // 只留与上次成功写入不同的条目；写失败的条目不进缓存，下一跳重发。
+        let mut kept = 0usize;
+        for i in 0..len {
+            let keep = match batch[i] {
+                EngineEvent::SetParam { target, value } => !self
+                    .automation_last_values
+                    .iter()
+                    .any(|(t, v)| *t == target && *v == value),
+                _ => true,
+            };
+            if keep {
+                batch[kept] = batch[i];
+                kept += 1;
+            }
+        }
+        len = kept;
         let written = if len == 0 {
             0
         } else {
@@ -1817,6 +1854,20 @@ impl EngineHost {
                 .as_mut()
                 .map_or(0, |sender| sender.publish(&batch[..len]))
         };
+        // 只把**真的写进去**的前 `written` 条记进缓存（`publish` 写的是前缀；没写进去
+        // 的下一跳重发 —— 与 `automation_dropped` 同一口径）。
+        for event in &batch[..written] {
+            if let EngineEvent::SetParam { target, value } = event {
+                match self
+                    .automation_last_values
+                    .iter_mut()
+                    .find(|(t, _)| *t == *target)
+                {
+                    Some(slot) => slot.1 = *value,
+                    None => self.automation_last_values.push((*target, *value)),
+                }
+            }
+        }
         self.automation_published = self.automation_published.saturating_add(written as u64);
         self.automation_dropped = self
             .automation_dropped
@@ -2651,11 +2702,14 @@ mod tests {
         assert!(matches!(error, EngineHostError::NoEngine), "{error:?}");
     }
 
-    /// 判据（**R55**）：自动化泳道被采样成 `SetParam` 下发，且三条边界都成立。
+    /// 判据（**R55**）：自动化泳道被采样成 `SetParam` 下发，且四条边界都成立。
     ///
     /// 1. **开着的** `TrackVolume` 泳道 ⇒ 至少下发 1 条；
-    /// 2. 同一个采样时点再发一次 ⇒ **条数相同**（采样是 tick 的纯函数 ⇒ 幂等）；
-    /// 3. `read_enabled = false` ⇒ **一条都不发**（关掉的泳道是"没有值"，不是"值等于 0"）。
+    /// 2. 同一个采样时点再发一次 ⇒ **0 条**（值没变就不重发；原样重发会灌满 256 条的
+    ///    环、让走带命令写不进去 —— 控制面驱动下走带永久失灵的根因）；
+    /// 3. 位置变了 ⇒ `None` 跳从缓存工程里采出**新值**并下发（R68 的原意：`None` 跳
+    ///    照常采样，⛔ 不是"采样挂在入参上"的静默丢失）；
+    /// 4. `read_enabled = false` ⇒ **一条都不发**（关掉的泳道是"没有值"，不是"值等于 0"）。
     ///
     /// 采样时点是 `EngineHost::transport().position_ticks`（RT→UI 镜面 = 音频时钟）；
     /// 本判据**不注入任何时钟**（`reload` 推 4 个量子 ⇒ 手算得 20 tick）。
@@ -2727,23 +2781,34 @@ mod tests {
         // 第 1 跳传 `Some`（= 生产在"标记变了"那一跳的形态）⇒ 更新缓存并下发。
         let written = host.publish_automation(Some(&project));
         assert!(written >= 1, "开着的泳道必须至少下发一条（实得 {written}）");
-        // ⭐ **R68：生产的常态是 `None`**（`src/main.rs` 的定时器只在标记变了时才
-        // `try_project()`）。若采样挂在入参上，这里会**静默返回 0** —— 那正是本判据要抓的
-        // 缺陷（自动化只在工程改动的那一跳生效）。有了工程缓存，`None` 跳必须给出**同一批**。
+        // ⭐ **去重**：同一个采样时点再发一次 ⇒ 值一位没变 ⇒ **0 条**。原样重发会把
+        // 256 条的环在约 1 s 内灌满，之后走带命令一条都写不进去（控制面驱动下走带
+        // 永久失灵 —— 本修的根因）。`None` 跳返回 0 在这里是"没变"，⛔ 不是 R68 的
+        // 静默丢失（见下一步：位置变了，`None` 跳必须下发新值）。
         let again = host.publish_automation(None);
-        assert_eq!(
-            again, written,
-            "`None` 跳必须仍然从**缓存的工程**里采样并给出同一批条数（R68）"
-        );
-        // R58：同一条 `==` 上的 `assert_ne!` —— 同时钉住本票修的缺陷本身：
-        // `None` 跳**绝不允许**返回 0（那正是"采样挂在入参上"时的行为）。
+        assert_eq!(again, 0, "同一时点重采必须 0 条（值没变就不重发）");
+        // R58：同一条 `==` 上的 `assert_ne!` —— 证明这一跳不是原样重发上一批。
         assert_ne!(
-            again, 0,
-            "`None` 跳返回 0 就是 R68 修的静默丢失（自动化只在工程改动的那一跳生效）"
+            again, written,
+            "去重的一跳不得原样重发上一批（实得 {again}，上一批 {written}）"
         );
         assert_eq!(
             host.automation_counts(),
-            (written as u64 * 2, 0),
+            (written as u64, 0),
+            "去重的一跳不得产生任何计数"
+        );
+        // ⭐ **R68 的原意**（`None` 跳照常从缓存工程里采样）：位置变了 ⇒ 采样值变了 ⇒
+        // `None` 跳必须下发新值。`seek(960)` 把时点搬到泳道第二点（0.0 dB），与
+        // 20 tick 处的 -11.75 dB 不同。
+        host.seek(960);
+        let moved = host.publish_automation(None);
+        assert!(
+            moved >= 1,
+            "`None` 跳在位置变了之后必须下发新值（实得 {moved}）"
+        );
+        assert_eq!(
+            host.automation_counts(),
+            ((written + moved) as u64, 0),
             "计数必须逐条对得上，且这一路没有丢"
         );
 
